@@ -3,7 +3,7 @@ include tools/tools.mk
 FILE     = VERSION
 VERSION := $(shell git describe --abbrev=0 --tags 2>/dev/null)
 DATE    := $(shell git log -1 --format=%ct $(VERSION) 2>/dev/null)
-GEN_DIR := proto/genpb
+GEN_DIR := api/genpb
 
 .PHONY: test
 test:

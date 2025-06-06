@@ -3,5 +3,5 @@ go 1.24.2
 use (
 	.
 	./tools
-	./proto/genpb
+	./api/genpb
 )

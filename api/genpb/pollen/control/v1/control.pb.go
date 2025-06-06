@@ -204,7 +204,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x06result\x18\x01 \x01(\fR\x06result2\x9f\x01\n" +
 	"\x0eControlService\x12G\n" +
 	"\x04Seed\x12\x1e.pollen.control.v1.SeedRequest\x1a\x1f.pollen.control.v1.SeedResponse\x12D\n" +
-	"\x03Run\x12\x1d.pollen.control.v1.RunRequest\x1a\x1e.pollen.control.v1.RunResponseB9Z7github.com/sambigeara/pollen/genpb/control/v1;controlv1b\x06proto3"
+	"\x03Run\x12\x1d.pollen.control.v1.RunRequest\x1a\x1e.pollen.control.v1.RunResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
 
 var (
 	file_pollen_control_v1_control_proto_rawDescOnce sync.Once
