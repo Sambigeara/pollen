@@ -1,0 +1,26 @@
+version: v2
+inputs:
+  - directory: ../proto/public
+plugins:
+  - local:
+      - go
+      - run
+      - google.golang.org/protobuf/cmd/protoc-gen-go
+    out: proto/genpb
+    opt: paths=source_relative
+
+  - local:
+      - go
+      - run
+      - github.com/planetscale/vtprotobuf/cmd/protoc-gen-go-vtproto
+    out: proto/genpb
+    opt:
+      - paths=source_relative
+      - features=marshal+unmarshal+size
+
+  - local:
+      - go
+      - run
+      - connectrpc.com/connect/cmd/protoc-gen-connect-go
+    out: proto/genpb
+    opt: paths=source_relative

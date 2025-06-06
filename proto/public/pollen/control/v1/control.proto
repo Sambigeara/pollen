@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package pollen.control.v1;
+
+// import "google/protobuf/empty.proto";
+
+option go_package = "github.com/sambigeara/pollen/genpb/control/v1;controlv1";
+
+service ControlService {
+  rpc Seed(SeedRequest) returns (SeedResponse);
+  rpc Run(RunRequest) returns (RunResponse);
+}
+
+message SeedRequest {
+  string wasm_path = 1;
+}
+message SeedResponse {}
+
+message RunRequest {
+  string name = 1;
+}
+message RunResponse {
+  bytes result = 1;
+}
