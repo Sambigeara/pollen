@@ -18,7 +18,7 @@ func NewNodeService(addr, peers string) *NodeService {
 	n := New(addr)
 
 	if peers != "" {
-		for _, peer := range strings.Split(peers, ",") {
+		for peer := range strings.SplitSeq(peers, ",") {
 			n.AddPeer(peer)
 		}
 	}

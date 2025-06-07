@@ -1,0 +1,120 @@
+---
+version: "2"
+run:
+  build-tags:
+    - tests
+
+linters:
+  enable:
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - copyloopvar
+    - dupl
+    - durationcheck
+    - errorlint
+    - exhaustive
+    - forbidigo
+    - forcetypeassert
+    - goconst
+    - gocritic
+    - godot
+    - goheader
+    - gomoddirectives
+    - gosec
+    - importas
+    - makezero
+    - misspell
+    - mnd
+    - nakedret
+    - nestif
+    - nilerr
+    - noctx
+    - nolintlint
+    - prealloc
+    - predeclared
+    - promlinter
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - tagliatelle
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - usetesting
+    - wastedassign
+    - whitespace
+
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    gosec:
+      excludes:
+        - G115 # integer overflow conversion
+
+    govet:
+      disable:
+        - shadow
+      enable-all: true
+
+    nolintlint:
+      allow-unused: true # false would be preferable, but it's flaky (https://github.com/golangci/golangci-lint/issues/3228)
+      require-specific: true
+
+    tagliatelle:
+      case:
+        rules:
+          bson: goCamel
+          json: goCamel
+          xml: goCamel
+          yaml: goCamel
+
+  exclusions:
+    generated: lax
+
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+
+    rules:
+      - linters:
+          - dupl
+          - forcetypeassert
+          - goconst
+          - govet
+          - mnd
+        path: _test\.go
+
+    paths:
+      - ^api/*
+
+issues:
+  max-same-issues: 30
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/sambigeara/pollen)
+        - blank
+        - dot
+      custom-order: true
+
+    gofumpt:
+      extra-rules: true
+
+  exclusions:
+    generated: lax
+
+    paths:
+      - ^api/*

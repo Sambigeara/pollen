@@ -20,4 +20,3 @@ message RunRequest {
 message RunResponse {
   bytes result = 1;
 }
-

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log"
 	"net"
 	"os"
@@ -10,37 +9,23 @@ import (
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/spf13/cobra"
 )
 
 func main() {
-	rootCmd := &cobra.Command{Use: "pollen"}
-
 	nodeCmd := &cobra.Command{
-		Use:   "node",
+		Use:   "pollend",
 		Short: "Start a Pollen node",
 		Run:   runNode,
 	}
 	nodeCmd.Flags().String("listen", ":8080", "Listen address")
 	nodeCmd.Flags().String("peers", "", "Initial peers")
 
-	seedCmd := &cobra.Command{
-		Use:   "seed [wasm-file]",
-		Short: "Deploy a function to the network",
-		Run:   runSeed,
+	if err := nodeCmd.Execute(); err != nil {
+		log.Fatalf("Failed to execute command: %q", err)
 	}
-
-	runCmd := &cobra.Command{
-		Use:   "run [function-name]",
-		Short: "Execute a function",
-		Run:   runRun,
-	}
-
-	rootCmd.AddCommand(nodeCmd, seedCmd, runCmd)
-	rootCmd.Execute()
 }
 
 func runNode(cmd *cobra.Command, args []string) {
@@ -48,6 +33,7 @@ func runNode(cmd *cobra.Command, args []string) {
 	peers, _ := cmd.Flags().GetString("peers")
 
 	server := grpc.NewServer()
+
 	controlv1.RegisterControlServiceServer(server, node.NewNodeService(addr, peers))
 
 	socketPath := "/tmp/pollen.sock"
@@ -79,33 +65,3 @@ func runNode(cmd *cobra.Command, args []string) {
 		}
 	}
 }
-
-func runSeed(cmd *cobra.Command, args []string) {
-	if len(args) == 0 {
-		cmd.Println("Error: wasm file argument required")
-		cmd.Usage()
-		return
-	}
-
-	wasmFile := args[0]
-
-	conn, err := grpc.NewClient("unix:///tmp/pollen.sock", grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		log.Fatalf("failed to connect to node: %v", err)
-	}
-	defer conn.Close()
-
-	client := controlv1.NewControlServiceClient(conn)
-
-	ctx := context.Background()
-	_, err = client.Seed(ctx, &controlv1.SeedRequest{
-		WasmPath: wasmFile,
-	})
-	if err != nil {
-		log.Fatalf("failed to seed function: %v", err)
-	}
-
-	cmd.Printf("Successfully seeded function from %s\n", wasmFile)
-}
-
-func runRun(cmd *cobra.Command, args []string) {}
