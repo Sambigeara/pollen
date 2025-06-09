@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"log"
+	"path/filepath"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	"github.com/sambigeara/pollen/pkg/workspace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -39,7 +41,12 @@ func runSeed(cmd *cobra.Command, args []string) {
 
 	wasmFile := args[0]
 
-	conn, err := grpc.NewClient("unix:///tmp/pollen.sock", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	pollenDir, err := workspace.EnsurePollenDir()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	conn, err := grpc.NewClient("unix:"+filepath.Join(pollenDir, "pollen.sock"), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("failed to connect to node: %v", err)
 	}

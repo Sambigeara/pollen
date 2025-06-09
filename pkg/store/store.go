@@ -7,7 +7,7 @@ import (
 type LWWElement struct {
 	ID        string    `json:"id"`
 	Timestamp time.Time `json:"timestamp"`
-	Hash      string    `json:"hash"` // WASM blob hash
+	Hash      string    `json:"hash"`
 	Deleted   bool      `json:"deleted"`
 }
 

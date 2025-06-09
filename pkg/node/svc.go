@@ -4,9 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"strings"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	// "google.golang.org/grpc/status"
 )
 
 type NodeService struct {
@@ -14,18 +14,7 @@ type NodeService struct {
 	node *Node
 }
 
-func NewNodeService(addr, peers string) *NodeService {
-	n := New(addr)
-
-	if peers != "" {
-		for peer := range strings.SplitSeq(peers, ",") {
-			n.AddPeer(peer)
-		}
-	}
-
-	go n.StartGossip()
-	go n.Listen()
-
+func NewNodeService(n *Node) *NodeService {
 	return &NodeService{node: n}
 }
 
@@ -39,7 +28,7 @@ func (s *NodeService) Seed(ctx context.Context, request *controlv1.SeedRequest) 
 	hash := sha256.Sum256(data)
 	h := hex.EncodeToString(hash[:])
 
-	s.node.AddFunction(request.WasmPath, h)
+	s.node.addFunction(request.WasmPath, h)
 	return &controlv1.SeedResponse{}, nil
 }
 

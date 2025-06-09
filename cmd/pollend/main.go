@@ -1,17 +1,26 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
-	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
-	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
-	"google.golang.org/grpc"
+	"github.com/sirupsen/logrus"
+	"github.com/sourcegraph/conc/pool"
+	"github.com/spf13/cobra"
 
 	"github.com/sambigeara/pollen/pkg/node"
-	"github.com/spf13/cobra"
+	"github.com/sambigeara/pollen/pkg/server"
+	"github.com/sambigeara/pollen/pkg/workspace"
+)
+
+const (
+	pollenRootDir = ".pollen"
+	socketName    = "pollen.sock"
 )
 
 func main() {
@@ -29,39 +38,43 @@ func main() {
 }
 
 func runNode(cmd *cobra.Command, args []string) {
+	log := logrus.New()
+	log.Formatter = new(logrus.TextFormatter)
+	log.Formatter.(*logrus.TextFormatter).DisableTimestamp = true
+	log.Level = logrus.TraceLevel
+	log.Out = os.Stdout
+
 	addr, _ := cmd.Flags().GetString("listen")
 	peers, _ := cmd.Flags().GetString("peers")
 
-	server := grpc.NewServer()
+	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopFunc()
 
-	controlv1.RegisterControlServiceServer(server, node.NewNodeService(addr, peers))
-
-	socketPath := "/tmp/pollen.sock"
-	os.Remove(socketPath)
-
-	l, err := net.Listen("unix", socketPath)
+	pollenDir, err := workspace.EnsurePollenDir()
 	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+		log.Fatal(err)
 	}
-	defer os.Remove(socketPath)
 
-	serverErr := make(chan error, 1)
-	go func() {
-		serverErr <- server.Serve(l)
-	}()
+	n := node.NewNode(log, addr, peers)
+
+	nodeSrv := node.NewNodeService(n)
 
 	cmd.Print("Successfully started node\n")
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
+	p.Go(func(ctx context.Context) error {
+		grpcSrv := server.NewGRPCServer()
+		return grpcSrv.TryStart(ctx, nodeSrv, filepath.Join(pollenDir, socketName))
+	})
 
-	select {
-	case sig := <-sigCh:
-		cmd.Printf("Received signal %v, shutting down...\n", sig)
-		server.GracefulStop()
-	case err := <-serverErr:
-		if err != nil {
-			log.Fatalf("server error: %v", err)
+	p.Go(func(ctx context.Context) error {
+		return n.Start(ctx)
+	})
+
+	if err := p.Wait(); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
 		}
+		log.Fatal(err)
 	}
 }
