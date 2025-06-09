@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/sirupsen/logrus"
@@ -45,7 +46,7 @@ func runNode(cmd *cobra.Command, args []string) {
 	log.Out = os.Stdout
 
 	addr, _ := cmd.Flags().GetString("listen")
-	peers, _ := cmd.Flags().GetString("peers")
+	peerString, _ := cmd.Flags().GetString("peers")
 
 	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopFunc()
@@ -55,6 +56,10 @@ func runNode(cmd *cobra.Command, args []string) {
 		log.Fatal(err)
 	}
 
+	var peers []string
+	if len(peerString) > 0 {
+		peers = strings.Split(peerString, ",")
+	}
 	n := node.NewNode(log, addr, peers)
 
 	nodeSrv := node.NewNodeService(n)
