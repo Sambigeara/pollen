@@ -69,6 +69,8 @@ func runNode(cmd *cobra.Command, args []string) {
 	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
 	p.Go(func(ctx context.Context) error {
 		grpcSrv := server.NewGRPCServer()
+		// TODO(saml) this needs to be self healing, in case another local node which originally owned
+		// the grpc server port disappears and this one needs to claim it.
 		return grpcSrv.TryStart(ctx, nodeSrv, filepath.Join(pollenDir, socketName))
 	})
 

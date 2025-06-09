@@ -15,9 +15,10 @@ type Function struct {
 }
 
 type Peer struct {
-	Addr   string
-	ID     string // TODO(saml) currently redundant, requires thought
-	Active bool
+	ID        string // TODO(saml) currently redundant, requires thought
+	Addr      string
+	Timestamp time.Time
+	Active    bool
 }
 
 type NodeStore struct {
@@ -33,9 +34,10 @@ func NewNodeStore(log logrus.FieldLogger, addr string, peers []string) *NodeStor
 
 	peerMap := map[string]*Peer{
 		addr: {
-			Addr:   addr,
-			ID:     selfID,
-			Active: true,
+			ID:        selfID,
+			Timestamp: time.Now(),
+			Addr:      addr,
+			Active:    true,
 		},
 	}
 
@@ -80,7 +82,7 @@ func (s *NodeStore) Merge(other *NodeStore) {
 	}
 
 	for addr, peer := range other.Peers {
-		if addr == s.OriginAddr {
+		if existing, ok := s.Peers[addr]; ok && peer.Timestamp.Before(existing.Timestamp) {
 			continue
 		}
 		s.Peers[addr] = peer
@@ -108,5 +110,6 @@ func (s *NodeStore) DisablePeer(addr string) {
 	if p, ok := s.Peers[addr]; ok {
 		s.log.Debugf("Disabling peer %s", addr)
 		p.Active = false
+		p.Timestamp = time.Now()
 	}
 }

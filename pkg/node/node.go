@@ -33,9 +33,14 @@ func NewNode(log logrus.FieldLogger, addr string, peers []string) *Node {
 
 func (n *Node) Start(ctx context.Context) error {
 	go n.listen(ctx)
-	go n.publishPeers(ctx)
+	go n.startPublish(ctx)
 
 	<-ctx.Done()
+
+	// after shutdown, attempt to notify peers of closure
+	n.set.DisablePeer(n.addr)
+	n.publishPeers()
+
 	return ctx.Err()
 }
 
@@ -89,7 +94,10 @@ func (n *Node) consumePeers(conn net.Conn) error {
 	return nil
 }
 
-func (n *Node) publishPeers(ctx context.Context) error {
+func (n *Node) startPublish(ctx context.Context) error {
+	// immediate initial sync
+	n.publishPeers()
+
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -98,19 +106,23 @@ func (n *Node) publishPeers(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			n.mu.RLock()
-			peers := n.GetPeerAddresses()
-			n.mu.RUnlock()
-
-			for _, peer := range peers {
-				go func() {
-					if err := n.gossipToPeer(peer); err != nil {
-						n.log.Debugf("Failed to publish to peer %s: %v", peer, err)
-						n.set.DisablePeer(peer)
-					}
-				}()
-			}
+			n.publishPeers()
 		}
+	}
+}
+
+func (n *Node) publishPeers() {
+	n.mu.RLock()
+	peers := n.GetPeerAddresses()
+	n.mu.RUnlock()
+
+	for _, peer := range peers {
+		go func() {
+			if err := n.gossipToPeer(peer); err != nil {
+				n.log.Debugf("Failed to publish to peer %s: %v", peer, err)
+				n.set.DisablePeer(peer)
+			}
+		}()
 	}
 }
 
