@@ -12,7 +12,9 @@ service ControlService {
 message SeedRequest {
   string wasm_path = 1;
 }
-message SeedResponse {}
+message SeedResponse {
+  string hash = 1;
+}
 
 message RunRequest {
   string name = 1;

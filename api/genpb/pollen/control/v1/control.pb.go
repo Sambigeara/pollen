@@ -67,6 +67,7 @@ func (x *SeedRequest) GetWasmPath() string {
 
 type SeedResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -99,6 +100,13 @@ func (x *SeedResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use SeedResponse.ProtoReflect.Descriptor instead.
 func (*SeedResponse) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *SeedResponse) GetHash() string {
+	if x != nil {
+		return x.Hash
+	}
+	return ""
 }
 
 type RunRequest struct {
@@ -195,8 +203,9 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\"*\n" +
 	"\vSeedRequest\x12\x1b\n" +
-	"\twasm_path\x18\x01 \x01(\tR\bwasmPath\"\x0e\n" +
-	"\fSeedResponse\" \n" +
+	"\twasm_path\x18\x01 \x01(\tR\bwasmPath\"\"\n" +
+	"\fSeedResponse\x12\x12\n" +
+	"\x04hash\x18\x01 \x01(\tR\x04hash\" \n" +
 	"\n" +
 	"RunRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"%\n" +

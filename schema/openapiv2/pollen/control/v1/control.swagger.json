@@ -55,7 +55,12 @@
       }
     },
     "v1SeedResponse": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "hash": {
+          "type": "string"
+        }
+      }
     }
   }
 }

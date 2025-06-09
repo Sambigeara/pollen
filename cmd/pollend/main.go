@@ -32,6 +32,7 @@ func main() {
 	}
 	nodeCmd.Flags().String("listen", ":8080", "Listen address")
 	nodeCmd.Flags().String("peers", "", "Initial peers")
+	nodeCmd.Flags().String("sock", socketName, "UDS for GRPC server")
 
 	if err := nodeCmd.Execute(); err != nil {
 		log.Fatalf("Failed to execute command: %q", err)
@@ -47,6 +48,7 @@ func runNode(cmd *cobra.Command, args []string) {
 
 	addr, _ := cmd.Flags().GetString("listen")
 	peerString, _ := cmd.Flags().GetString("peers")
+	sock, _ := cmd.Flags().GetString("sock")
 
 	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopFunc()
@@ -71,7 +73,7 @@ func runNode(cmd *cobra.Command, args []string) {
 		grpcSrv := server.NewGRPCServer()
 		// TODO(saml) this needs to be self healing, in case another local node which originally owned
 		// the grpc server port disappears and this one needs to claim it.
-		return grpcSrv.TryStart(ctx, nodeSrv, filepath.Join(pollenDir, socketName))
+		return grpcSrv.TryStart(ctx, nodeSrv, filepath.Join(pollenDir, sock))
 	})
 
 	p.Go(func(ctx context.Context) error {

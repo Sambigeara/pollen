@@ -11,6 +11,7 @@ type Function struct {
 	ID        string
 	Timestamp time.Time
 	Hash      string
+	Blob      []byte
 	Deleted   bool
 }
 
@@ -56,11 +57,12 @@ func NewNodeStore(log logrus.FieldLogger, addr string, peers []string) *NodeStor
 	}
 }
 
-func (s *NodeStore) AddFunction(id, hash string) {
+func (s *NodeStore) AddFunction(id, hash string, blob []byte) {
 	fn := &Function{
 		ID:        id,
 		Hash:      hash,
 		Timestamp: time.Now(),
+		Blob:      blob,
 	}
 
 	s.mu.Lock()

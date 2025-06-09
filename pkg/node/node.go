@@ -146,11 +146,18 @@ func (n *Node) gossipToPeer(peer string) error {
 	return nil
 }
 
-func (n *Node) addFunction(id, hash string) {
+func (n *Node) addFunction(id, hash string, blob []byte) {
 	n.mu.Lock()
-	n.set.AddFunction(id, hash)
+	n.set.AddFunction(id, hash, blob)
 	n.mu.Unlock()
 	n.log.Infof("Added function %s with hash %s", id, hash)
+}
+
+func (n *Node) getFunction(id string) *store.Function {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	return n.set.Functions[id]
 }
 
 func (s *Node) GetPeerAddresses() []string {

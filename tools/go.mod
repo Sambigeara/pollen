@@ -290,6 +290,7 @@ require (
 	golang.org/x/tools v0.33.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20250505200425-f936aa4a68b2 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250505200425-f936aa4a68b2 // indirect
+	google.golang.org/grpc/cmd/protoc-gen-go-grpc v1.5.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	honnef.co/go/tools v0.6.1 // indirect

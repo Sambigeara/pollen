@@ -4,20 +4,21 @@ go 1.24.2
 
 require (
 	connectrpc.com/connect v1.18.1
+	github.com/oklog/ulid/v2 v2.1.1
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10
+	github.com/sirupsen/logrus v1.9.3
+	github.com/sourcegraph/conc v0.3.0
 	github.com/spf13/cobra v1.9.1
 	google.golang.org/grpc v1.72.1
 	google.golang.org/protobuf v1.36.6
 )
 
 require (
-	github.com/adrg/xdg v0.5.3 // indirect
+	github.com/bytecodealliance/wasmtime-go/v33 v33.0.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/oklog/ulid/v2 v2.1.1 // indirect
-	github.com/sirupsen/logrus v1.9.3 // indirect
-	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
+	github.com/stretchr/testify v1.10.0 // indirect
 	go.opentelemetry.io/otel v1.35.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.35.0 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
