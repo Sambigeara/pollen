@@ -3,6 +3,8 @@ package store
 import (
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 type Function struct {
@@ -13,35 +15,39 @@ type Function struct {
 }
 
 type Peer struct {
-	Addr    string
-	ID      string // TODO(saml) currently redundant, requires thought
-	Deleted bool
+	Addr   string
+	ID     string // TODO(saml) currently redundant, requires thought
+	Active bool
 }
 
 type NodeStore struct {
+	log        logrus.FieldLogger
 	OriginAddr string
 	mu         sync.RWMutex
 	Functions  map[string]*Function
 	Peers      map[string]*Peer
 }
 
-func NewNodeStore(addr string, peers []string) *NodeStore {
+func NewNodeStore(log logrus.FieldLogger, addr string, peers []string) *NodeStore {
 	selfID := NewID().String()
 
 	peerMap := map[string]*Peer{
 		addr: {
-			Addr: addr,
-			ID:   selfID,
+			Addr:   addr,
+			ID:     selfID,
+			Active: true,
 		},
 	}
 
 	for _, p := range peers {
 		peerMap[p] = &Peer{
-			Addr: p,
+			Addr:   p,
+			Active: true, // TODO(saml) not strictly true, but works for now
 		}
 	}
 
 	return &NodeStore{
+		log:        log,
 		OriginAddr: addr,
 		Functions:  make(map[string]*Function),
 		Peers:      peerMap,
@@ -87,8 +93,20 @@ func (s *NodeStore) GetPeers() []*Peer {
 
 	addrs := make([]*Peer, 0, len(s.Peers))
 	for _, p := range s.Peers {
-		addrs = append(addrs, p)
+		if p.Active {
+			addrs = append(addrs, p)
+		}
 	}
 
 	return addrs
+}
+
+func (s *NodeStore) DisablePeer(addr string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if p, ok := s.Peers[addr]; ok {
+		s.log.Debugf("Disabling peer %s", addr)
+		p.Active = false
+	}
 }

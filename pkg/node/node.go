@@ -25,7 +25,7 @@ func NewNode(log logrus.FieldLogger, addr string, peers []string) *Node {
 	n := &Node{
 		log:  log,
 		addr: addr,
-		set:  store.NewNodeStore(addr, peers),
+		set:  store.NewNodeStore(log, addr, peers),
 	}
 
 	return n
@@ -105,7 +105,8 @@ func (n *Node) publishPeers(ctx context.Context) error {
 			for _, peer := range peers {
 				go func() {
 					if err := n.gossipToPeer(peer); err != nil {
-						n.log.Errorf("Failed to gossip to peer %s: %v", peer, err)
+						n.log.Debugf("Failed to publish to peer %s: %v", peer, err)
+						n.set.DisablePeer(peer)
 					}
 				}()
 			}
@@ -115,7 +116,7 @@ func (n *Node) publishPeers(ctx context.Context) error {
 
 // TODO(saml) phase out arbitrary JSON
 func (n *Node) gossipToPeer(peer string) error {
-	n.log.Debugf("gossiping with peer: %s", peer)
+	n.log.Debugf("publishing to peer: %s", peer)
 
 	conn, err := net.Dial("tcp", peer)
 	if err != nil {
