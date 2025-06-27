@@ -1,0 +1,14 @@
+---
+version: v1
+name: buf.build/sambigeara/pollen
+deps:
+  - "buf.build/googleapis/googleapis"
+  - "buf.build/bufbuild/protovalidate"
+
+lint:
+  use:
+    - DEFAULT
+
+breaking:
+  use:
+    - WIRE_JSON
