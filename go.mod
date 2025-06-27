@@ -4,6 +4,7 @@ go 1.24.2
 
 require (
 	connectrpc.com/connect v1.18.1
+	github.com/bytecodealliance/wasmtime-go/v33 v33.0.0
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10
 	github.com/sirupsen/logrus v1.9.3
@@ -14,7 +15,6 @@ require (
 )
 
 require (
-	github.com/bytecodealliance/wasmtime-go/v33 v33.0.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect

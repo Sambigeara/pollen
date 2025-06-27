@@ -160,6 +160,18 @@ func (n *Node) getFunction(id string) *store.Function {
 	return n.set.Functions[id]
 }
 
+func (n *Node) listFunctions() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	names := make([]string, 0, len(n.set.Functions))
+	for k := range n.set.Functions {
+		names = append(names, k)
+	}
+
+	return names
+}
+
 func (s *Node) GetPeerAddresses() []string {
 	peers := s.set.GetPeers()
 	addrs := make([]string, 0, len(peers))

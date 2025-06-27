@@ -45,6 +45,17 @@
         }
       }
     },
+    "v1ListFunctionsResponse": {
+      "type": "object",
+      "properties": {
+        "functions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "v1RunResponse": {
       "type": "object",
       "properties": {

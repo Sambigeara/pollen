@@ -197,6 +197,86 @@ func (x *RunResponse) GetResult() []byte {
 	return nil
 }
 
+type ListFunctionsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListFunctionsRequest) Reset() {
+	*x = ListFunctionsRequest{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListFunctionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListFunctionsRequest) ProtoMessage() {}
+
+func (x *ListFunctionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListFunctionsRequest.ProtoReflect.Descriptor instead.
+func (*ListFunctionsRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{4}
+}
+
+type ListFunctionsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Functions     []string               `protobuf:"bytes,1,rep,name=functions,proto3" json:"functions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListFunctionsResponse) Reset() {
+	*x = ListFunctionsResponse{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListFunctionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListFunctionsResponse) ProtoMessage() {}
+
+func (x *ListFunctionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListFunctionsResponse.ProtoReflect.Descriptor instead.
+func (*ListFunctionsResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ListFunctionsResponse) GetFunctions() []string {
+	if x != nil {
+		return x.Functions
+	}
+	return nil
+}
+
 var File_pollen_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_pollen_control_v1_control_proto_rawDesc = "" +
@@ -210,10 +290,14 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"RunRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"%\n" +
 	"\vRunResponse\x12\x16\n" +
-	"\x06result\x18\x01 \x01(\fR\x06result2\x9f\x01\n" +
+	"\x06result\x18\x01 \x01(\fR\x06result\"\x16\n" +
+	"\x14ListFunctionsRequest\"5\n" +
+	"\x15ListFunctionsResponse\x12\x1c\n" +
+	"\tfunctions\x18\x01 \x03(\tR\tfunctions2\x83\x02\n" +
 	"\x0eControlService\x12G\n" +
 	"\x04Seed\x12\x1e.pollen.control.v1.SeedRequest\x1a\x1f.pollen.control.v1.SeedResponse\x12D\n" +
-	"\x03Run\x12\x1d.pollen.control.v1.RunRequest\x1a\x1e.pollen.control.v1.RunResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
+	"\x03Run\x12\x1d.pollen.control.v1.RunRequest\x1a\x1e.pollen.control.v1.RunResponse\x12b\n" +
+	"\rListFunctions\x12'.pollen.control.v1.ListFunctionsRequest\x1a(.pollen.control.v1.ListFunctionsResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
 
 var (
 	file_pollen_control_v1_control_proto_rawDescOnce sync.Once
@@ -227,20 +311,24 @@ func file_pollen_control_v1_control_proto_rawDescGZIP() []byte {
 	return file_pollen_control_v1_control_proto_rawDescData
 }
 
-var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_pollen_control_v1_control_proto_goTypes = []any{
-	(*SeedRequest)(nil),  // 0: pollen.control.v1.SeedRequest
-	(*SeedResponse)(nil), // 1: pollen.control.v1.SeedResponse
-	(*RunRequest)(nil),   // 2: pollen.control.v1.RunRequest
-	(*RunResponse)(nil),  // 3: pollen.control.v1.RunResponse
+	(*SeedRequest)(nil),           // 0: pollen.control.v1.SeedRequest
+	(*SeedResponse)(nil),          // 1: pollen.control.v1.SeedResponse
+	(*RunRequest)(nil),            // 2: pollen.control.v1.RunRequest
+	(*RunResponse)(nil),           // 3: pollen.control.v1.RunResponse
+	(*ListFunctionsRequest)(nil),  // 4: pollen.control.v1.ListFunctionsRequest
+	(*ListFunctionsResponse)(nil), // 5: pollen.control.v1.ListFunctionsResponse
 }
 var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	0, // 0: pollen.control.v1.ControlService.Seed:input_type -> pollen.control.v1.SeedRequest
 	2, // 1: pollen.control.v1.ControlService.Run:input_type -> pollen.control.v1.RunRequest
-	1, // 2: pollen.control.v1.ControlService.Seed:output_type -> pollen.control.v1.SeedResponse
-	3, // 3: pollen.control.v1.ControlService.Run:output_type -> pollen.control.v1.RunResponse
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
+	4, // 2: pollen.control.v1.ControlService.ListFunctions:input_type -> pollen.control.v1.ListFunctionsRequest
+	1, // 3: pollen.control.v1.ControlService.Seed:output_type -> pollen.control.v1.SeedResponse
+	3, // 4: pollen.control.v1.ControlService.Run:output_type -> pollen.control.v1.RunResponse
+	5, // 5: pollen.control.v1.ControlService.ListFunctions:output_type -> pollen.control.v1.ListFunctionsResponse
+	3, // [3:6] is the sub-list for method output_type
+	0, // [0:3] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -257,7 +345,7 @@ func file_pollen_control_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_control_v1_control_proto_rawDesc), len(file_pollen_control_v1_control_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

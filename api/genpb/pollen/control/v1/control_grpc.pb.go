@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ControlService_Seed_FullMethodName = "/pollen.control.v1.ControlService/Seed"
-	ControlService_Run_FullMethodName  = "/pollen.control.v1.ControlService/Run"
+	ControlService_Seed_FullMethodName          = "/pollen.control.v1.ControlService/Seed"
+	ControlService_Run_FullMethodName           = "/pollen.control.v1.ControlService/Run"
+	ControlService_ListFunctions_FullMethodName = "/pollen.control.v1.ControlService/ListFunctions"
 )
 
 // ControlServiceClient is the client API for ControlService service.
@@ -29,6 +30,7 @@ const (
 type ControlServiceClient interface {
 	Seed(ctx context.Context, in *SeedRequest, opts ...grpc.CallOption) (*SeedResponse, error)
 	Run(ctx context.Context, in *RunRequest, opts ...grpc.CallOption) (*RunResponse, error)
+	ListFunctions(ctx context.Context, in *ListFunctionsRequest, opts ...grpc.CallOption) (*ListFunctionsResponse, error)
 }
 
 type controlServiceClient struct {
@@ -59,12 +61,23 @@ func (c *controlServiceClient) Run(ctx context.Context, in *RunRequest, opts ...
 	return out, nil
 }
 
+func (c *controlServiceClient) ListFunctions(ctx context.Context, in *ListFunctionsRequest, opts ...grpc.CallOption) (*ListFunctionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListFunctionsResponse)
+	err := c.cc.Invoke(ctx, ControlService_ListFunctions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ControlServiceServer is the server API for ControlService service.
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
 type ControlServiceServer interface {
 	Seed(context.Context, *SeedRequest) (*SeedResponse, error)
 	Run(context.Context, *RunRequest) (*RunResponse, error)
+	ListFunctions(context.Context, *ListFunctionsRequest) (*ListFunctionsResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
 
@@ -80,6 +93,9 @@ func (UnimplementedControlServiceServer) Seed(context.Context, *SeedRequest) (*S
 }
 func (UnimplementedControlServiceServer) Run(context.Context, *RunRequest) (*RunResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Run not implemented")
+}
+func (UnimplementedControlServiceServer) ListFunctions(context.Context, *ListFunctionsRequest) (*ListFunctionsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListFunctions not implemented")
 }
 func (UnimplementedControlServiceServer) mustEmbedUnimplementedControlServiceServer() {}
 func (UnimplementedControlServiceServer) testEmbeddedByValue()                        {}
@@ -138,6 +154,24 @@ func _ControlService_Run_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_ListFunctions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListFunctionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).ListFunctions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_ListFunctions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).ListFunctions(ctx, req.(*ListFunctionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ControlService_ServiceDesc is the grpc.ServiceDesc for ControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -152,6 +186,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Run",
 			Handler:    _ControlService_Run_Handler,
+		},
+		{
+			MethodName: "ListFunctions",
+			Handler:    _ControlService_ListFunctions_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

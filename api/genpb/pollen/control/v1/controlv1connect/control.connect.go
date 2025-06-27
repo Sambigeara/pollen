@@ -37,12 +37,16 @@ const (
 	ControlServiceSeedProcedure = "/pollen.control.v1.ControlService/Seed"
 	// ControlServiceRunProcedure is the fully-qualified name of the ControlService's Run RPC.
 	ControlServiceRunProcedure = "/pollen.control.v1.ControlService/Run"
+	// ControlServiceListFunctionsProcedure is the fully-qualified name of the ControlService's
+	// ListFunctions RPC.
+	ControlServiceListFunctionsProcedure = "/pollen.control.v1.ControlService/ListFunctions"
 )
 
 // ControlServiceClient is a client for the pollen.control.v1.ControlService service.
 type ControlServiceClient interface {
 	Seed(context.Context, *connect.Request[v1.SeedRequest]) (*connect.Response[v1.SeedResponse], error)
 	Run(context.Context, *connect.Request[v1.RunRequest]) (*connect.Response[v1.RunResponse], error)
+	ListFunctions(context.Context, *connect.Request[v1.ListFunctionsRequest]) (*connect.Response[v1.ListFunctionsResponse], error)
 }
 
 // NewControlServiceClient constructs a client for the pollen.control.v1.ControlService service. By
@@ -68,13 +72,20 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("Run")),
 			connect.WithClientOptions(opts...),
 		),
+		listFunctions: connect.NewClient[v1.ListFunctionsRequest, v1.ListFunctionsResponse](
+			httpClient,
+			baseURL+ControlServiceListFunctionsProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("ListFunctions")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // controlServiceClient implements ControlServiceClient.
 type controlServiceClient struct {
-	seed *connect.Client[v1.SeedRequest, v1.SeedResponse]
-	run  *connect.Client[v1.RunRequest, v1.RunResponse]
+	seed          *connect.Client[v1.SeedRequest, v1.SeedResponse]
+	run           *connect.Client[v1.RunRequest, v1.RunResponse]
+	listFunctions *connect.Client[v1.ListFunctionsRequest, v1.ListFunctionsResponse]
 }
 
 // Seed calls pollen.control.v1.ControlService.Seed.
@@ -87,10 +98,16 @@ func (c *controlServiceClient) Run(ctx context.Context, req *connect.Request[v1.
 	return c.run.CallUnary(ctx, req)
 }
 
+// ListFunctions calls pollen.control.v1.ControlService.ListFunctions.
+func (c *controlServiceClient) ListFunctions(ctx context.Context, req *connect.Request[v1.ListFunctionsRequest]) (*connect.Response[v1.ListFunctionsResponse], error) {
+	return c.listFunctions.CallUnary(ctx, req)
+}
+
 // ControlServiceHandler is an implementation of the pollen.control.v1.ControlService service.
 type ControlServiceHandler interface {
 	Seed(context.Context, *connect.Request[v1.SeedRequest]) (*connect.Response[v1.SeedResponse], error)
 	Run(context.Context, *connect.Request[v1.RunRequest]) (*connect.Response[v1.RunResponse], error)
+	ListFunctions(context.Context, *connect.Request[v1.ListFunctionsRequest]) (*connect.Response[v1.ListFunctionsResponse], error)
 }
 
 // NewControlServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -112,12 +129,20 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("Run")),
 		connect.WithHandlerOptions(opts...),
 	)
+	controlServiceListFunctionsHandler := connect.NewUnaryHandler(
+		ControlServiceListFunctionsProcedure,
+		svc.ListFunctions,
+		connect.WithSchema(controlServiceMethods.ByName("ListFunctions")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/pollen.control.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ControlServiceSeedProcedure:
 			controlServiceSeedHandler.ServeHTTP(w, r)
 		case ControlServiceRunProcedure:
 			controlServiceRunHandler.ServeHTTP(w, r)
+		case ControlServiceListFunctionsProcedure:
+			controlServiceListFunctionsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -133,4 +158,8 @@ func (UnimplementedControlServiceHandler) Seed(context.Context, *connect.Request
 
 func (UnimplementedControlServiceHandler) Run(context.Context, *connect.Request[v1.RunRequest]) (*connect.Response[v1.RunResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.Run is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) ListFunctions(context.Context, *connect.Request[v1.ListFunctionsRequest]) (*connect.Response[v1.ListFunctionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.ListFunctions is not implemented"))
 }

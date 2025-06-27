@@ -15,6 +15,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+var _ controlv1.ControlServiceServer = (*NodeService)(nil)
+
 type NodeService struct {
 	controlv1.UnimplementedControlServiceServer
 	node *Node
@@ -70,5 +72,11 @@ func (s *NodeService) Run(ctx context.Context, req *controlv1.RunRequest) (*cont
 
 	return &controlv1.RunResponse{
 		Result: []byte(fmt.Sprintf("Result: %v", res)),
+	}, nil
+}
+
+func (s *NodeService) ListFunctions(ctx context.Context, _ *controlv1.ListFunctionsRequest) (*controlv1.ListFunctionsResponse, error) {
+	return &controlv1.ListFunctionsResponse{
+		Functions: s.node.listFunctions(),
 	}, nil
 }
