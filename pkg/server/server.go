@@ -25,7 +25,7 @@ func NewGRPCServer() *GrpcServer {
 	return &GrpcServer{}
 }
 
-func (s *GrpcServer) TryStart(ctx context.Context, nodeServ *node.NodeService, path string) error {
+func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path string) error {
 	ctx, cancelFunc := context.WithCancel(ctx)
 	defer cancelFunc()
 

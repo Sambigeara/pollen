@@ -2,57 +2,70 @@ package node
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
-	"sync"
+	"path/filepath"
 	"time"
 
-	"github.com/sambigeara/pollen/pkg/store"
-	"github.com/sirupsen/logrus"
-	"github.com/sourcegraph/conc/pool"
+	"github.com/flynn/noise"
+
+	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	"github.com/sambigeara/pollen/pkg/peers"
+	"github.com/sambigeara/pollen/pkg/workspace"
+	"go.uber.org/zap"
 )
 
+const nodePingInternal = time.Second * 25
+
 type Node struct {
-	log  logrus.FieldLogger
+	log  *zap.SugaredLogger
 	addr string
-	set  *store.NodeStore
-	mu   sync.RWMutex
-	pool *pool.ContextPool
+	mesh *noiseMesh
 }
 
-func NewNode(log logrus.FieldLogger, addr string, peers []string) *Node {
-	n := &Node{
-		log:  log,
-		addr: addr,
-		set:  store.NewNodeStore(log, addr, peers),
+func New(addr string, pollenDir string) (*Node, error) {
+	log := zap.S().Named("node")
+
+	peersStore, err := peers.Load(filepath.Join(pollenDir, workspace.PeersDir))
+	if err != nil {
+		log.Error("failed to load peers", zap.Error(err))
+		return nil, err
 	}
 
-	return n
+	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
+
+	noiseKey, err := GenLocalStaticKey(cs, filepath.Join(pollenDir, workspace.CredsDir))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load noise static key: %w", err)
+	}
+
+	mesh, err := newNoiseMesh(peersStore, cs, noiseKey, addr)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Node{
+		log:  log,
+		addr: addr,
+		mesh: mesh,
+	}, nil
 }
 
-func (n *Node) Start(ctx context.Context) error {
+func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 	go n.listen(ctx)
-	go n.startPublish(ctx)
+	go n.connectPeers(ctx, token)
 
 	<-ctx.Done()
-
-	// after shutdown, attempt to notify peers of closure
-	n.set.DisablePeer(n.addr)
-	n.publishPeers()
-
-	return ctx.Err()
+	return n.shutdown(ctx)
 }
 
 func (n *Node) listen(ctx context.Context) error {
+	// TODO(saml) change to UDP
 	ln, err := net.Listen("tcp", n.addr)
 	if err != nil {
-		n.log.Errorf("Unable to listen to address: %s", n.addr)
 		return err
 	}
 	defer ln.Close()
-
-	n.log.Infof("Node listening on %s", n.addr)
 
 	go func() {
 		<-ctx.Done()
@@ -60,7 +73,7 @@ func (n *Node) listen(ctx context.Context) error {
 	}()
 
 	for {
-		conn, err := ln.Accept()
+		insecureConn, err := ln.Accept()
 		if err != nil {
 			select {
 			case <-ctx.Done():
@@ -71,116 +84,48 @@ func (n *Node) listen(ctx context.Context) error {
 			}
 		}
 
-		go n.consumePeers(conn)
+		go n.handleInitiatorConn(insecureConn)
 	}
 }
 
-func (n *Node) consumePeers(conn net.Conn) error {
-	defer conn.Close()
-
-	decoder := json.NewDecoder(conn)
-	var peerStore store.NodeStore
-	if err := decoder.Decode(&peerStore); err != nil {
-		n.log.Errorf("Error decoding peer set: %v", err)
-		return fmt.Errorf("Decode error: %v", err)
+func (n *Node) handleInitiatorConn(conn net.Conn) {
+	noiseConn, err := n.mesh.performResponderNoiseHandshake(conn)
+	if err != nil {
+		n.log.Errorf("Noise handshake failed: %v", err)
+		conn.Close()
+		return
 	}
 
-	n.mu.Lock()
-	n.set.Merge(&peerStore)
-	n.mu.Unlock()
+	n.mesh.updateConn(string(noiseConn.peerStatic), noiseConn)
 
-	n.log.Debugf("Merged state from peer %s, now have %d functions", peerStore.OriginAddr, len(n.set.Functions))
+	if err := n.consumePeers(noiseConn); err != nil {
+		n.log.Errorf("Failed to consume peer data: %v", err)
+	}
+}
 
+func (n *Node) consumePeers(_ net.Conn) error {
 	return nil
 }
 
-func (n *Node) startPublish(ctx context.Context) error {
-	// immediate initial sync
-	n.publishPeers()
+func (n *Node) connectPeers(ctx context.Context, token *peerv1.Invite) error {
+	n.mesh.establishPublishConns(token)
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(nodePingInternal)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			n.publishPeers()
+			n.mesh.establishPublishConns(nil)
 		}
 	}
 }
 
-func (n *Node) publishPeers() {
-	n.mu.RLock()
-	peers := n.GetPeerAddresses()
-	n.mu.RUnlock()
-
-	for _, peer := range peers {
-		go func() {
-			if err := n.gossipToPeer(peer); err != nil {
-				n.log.Debugf("Failed to publish to peer %s: %v", peer, err)
-				n.set.DisablePeer(peer)
-			}
-		}()
-	}
-}
-
-// TODO(saml) phase out arbitrary JSON
-func (n *Node) gossipToPeer(peer string) error {
-	n.log.Debugf("publishing to peer: %s", peer)
-
-	conn, err := net.Dial("tcp", peer)
-	if err != nil {
-		return fmt.Errorf("Failed to connect to %s: %v", peer, err)
-	}
-	defer conn.Close()
-
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
-	if err := json.NewEncoder(conn).Encode(n.set); err != nil {
-		return fmt.Errorf("Failed to send to %s: %v", peer, err)
+func (n *Node) shutdown(ctx context.Context) error {
+	if err := n.mesh.shutdown(ctx); err != nil {
+		return err
 	}
 
-	return nil
-}
-
-func (n *Node) addFunction(id, hash string, blob []byte) {
-	n.mu.Lock()
-	n.set.AddFunction(id, hash, blob)
-	n.mu.Unlock()
-	n.log.Infof("Added function %s with hash %s", id, hash)
-}
-
-func (n *Node) getFunction(id string) *store.Function {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
-	return n.set.Functions[id]
-}
-
-func (n *Node) listFunctions() []string {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
-	names := make([]string, 0, len(n.set.Functions))
-	for k := range n.set.Functions {
-		names = append(names, k)
-	}
-
-	return names
-}
-
-func (s *Node) GetPeerAddresses() []string {
-	peers := s.set.GetPeers()
-	addrs := make([]string, 0, len(peers))
-	for _, p := range peers {
-		if p.Addr == s.addr {
-			continue
-		}
-		addrs = append(addrs, p.Addr)
-	}
-
-	return addrs
+	return ctx.Err()
 }

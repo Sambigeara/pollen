@@ -7,62 +7,80 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
-	"github.com/sirupsen/logrus"
 	"github.com/sourcegraph/conc/pool"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
 
+	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	"github.com/sambigeara/pollen/pkg/node"
+	"github.com/sambigeara/pollen/pkg/observability/logging"
 	"github.com/sambigeara/pollen/pkg/server"
 	"github.com/sambigeara/pollen/pkg/workspace"
 )
 
 const (
-	pollenRootDir = ".pollen"
-	socketName    = "pollen.sock"
+	pollenDir  = ".pollen"
+	socketName = "pollen.sock"
 )
 
 func main() {
+	base, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("unable to retrieve user config dir: %v", err)
+	}
+	defaultRootDir := filepath.Join(base, pollenDir)
+
+	rootCmd := &cobra.Command{Use: "pollend"}
+
 	nodeCmd := &cobra.Command{
-		Use:   "pollend",
+		Use:   "node",
 		Short: "Start a Pollen node",
 		Run:   runNode,
 	}
+	nodeCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
 	nodeCmd.Flags().String("listen", ":8080", "Listen address")
-	nodeCmd.Flags().String("peers", "", "Initial peers")
-	nodeCmd.Flags().String("sock", socketName, "UDS for GRPC server")
+	nodeCmd.Flags().String("join", "", "Invite token to join remote peer")
 
-	if err := nodeCmd.Execute(); err != nil {
+	rootCmd.AddCommand(nodeCmd)
+
+	if err := rootCmd.Execute(); err != nil {
 		log.Fatalf("Failed to execute command: %q", err)
 	}
 }
 
 func runNode(cmd *cobra.Command, args []string) {
-	log := logrus.New()
-	log.Formatter = new(logrus.TextFormatter)
-	log.Formatter.(*logrus.TextFormatter).DisableTimestamp = true
-	log.Level = logrus.TraceLevel
-	log.Out = os.Stdout
+	logging.Init()
+	defer zap.L().Sync()
+
+	zap.L().Info("starting pollen...", zap.String("version", "0.1.0")) // TODO(saml) retrieve version
+	log := zap.S().Named("pollend")
 
 	addr, _ := cmd.Flags().GetString("listen")
-	peerString, _ := cmd.Flags().GetString("peers")
-	sock, _ := cmd.Flags().GetString("sock")
+	joinToken, _ := cmd.Flags().GetString("join")
+	dir, _ := cmd.Flags().GetString("dir")
 
 	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopFunc()
 
-	pollenDir, err := workspace.EnsurePollenDir()
+	pollenDir, err := workspace.EnsurePollenDir(dir)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	var peers []string
-	if len(peerString) > 0 {
-		peers = strings.Split(peerString, ",")
+	var tkn *peerv1.Invite
+	if joinToken != "" {
+		tkn, err = node.DecodeToken(joinToken)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
-	n := node.NewNode(log, addr, peers)
+
+	n, err := node.New(addr, pollenDir)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	nodeSrv := node.NewNodeService(n)
 
@@ -73,11 +91,11 @@ func runNode(cmd *cobra.Command, args []string) {
 		grpcSrv := server.NewGRPCServer()
 		// TODO(saml) this needs to be self healing, in case another local node which originally owned
 		// the grpc server port disappears and this one needs to claim it.
-		return grpcSrv.TryStart(ctx, nodeSrv, filepath.Join(pollenDir, sock))
+		return grpcSrv.Start(ctx, nodeSrv, filepath.Join(pollenDir, socketName))
 	})
 
 	p.Go(func(ctx context.Context) error {
-		return n.Start(ctx)
+		return n.Start(ctx, tkn)
 	})
 
 	if err := p.Wait(); err != nil {
