@@ -40,7 +40,7 @@ func main() {
 		Run:   runNode,
 	}
 	nodeCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
-	nodeCmd.Flags().String("listen", ":8080", "Listen address")
+	nodeCmd.Flags().Int("port", 8080, "Listen address")
 	nodeCmd.Flags().String("join", "", "Invite token to join remote peer")
 
 	rootCmd.AddCommand(nodeCmd)
@@ -57,7 +57,7 @@ func runNode(cmd *cobra.Command, args []string) {
 	zap.L().Info("starting pollen...", zap.String("version", "0.1.0")) // TODO(saml) retrieve version
 	log := zap.S().Named("pollend")
 
-	addr, _ := cmd.Flags().GetString("listen")
+	port, _ := cmd.Flags().GetInt("port")
 	joinToken, _ := cmd.Flags().GetString("join")
 	dir, _ := cmd.Flags().GetString("dir")
 
@@ -77,7 +77,7 @@ func runNode(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	n, err := node.New(addr, pollenDir)
+	n, err := node.New(port, pollenDir)
 	if err != nil {
 		log.Fatal(err)
 	}

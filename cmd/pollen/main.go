@@ -9,6 +9,7 @@ import (
 
 	"github.com/flynn/noise"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/peers"
 	"github.com/sambigeara/pollen/pkg/workspace"
@@ -178,7 +179,7 @@ func runInvite(cmd *cobra.Command, args []string) {
 
 	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
 	credsDir := filepath.Join(pollenDir, workspace.CredsDir)
-	noiseKey, err := node.GenLocalStaticKey(cs, credsDir)
+	noiseKey, err := mesh.GenStaticKey(cs, credsDir)
 	if err != nil {
 		log.Fatalf("failed to load noise key: %v", err)
 	}

@@ -93,12 +93,12 @@ func (s *PeerStore) Get(key PeerStaticPublicKey) (*peerv1.Known, bool) {
 	return pub, ok
 }
 
-func (s *PeerStore) PromoteToPeer(key PeerStaticPublicKey, invID InviteID, peerAddr string) {
+func (s *PeerStore) PromoteToPeer(key PeerStaticPublicKey, peerAddr string) {
 	s.Add(&peerv1.Known{
 		StaticKey: key,
 		Addr:      peerAddr,
 	})
-	s.DeleteInvite(invID)
+	// s.DeleteInvite(invID)
 }
 
 func (s *PeerStore) AddInvite(inv *peerv1.Invite) {
