@@ -100,7 +100,6 @@ func (s *PeerStore) PromoteToPeer(key PeerStaticPublicKey, peerAddr string) {
 		StaticKey: key,
 		Addr:      peerAddr,
 	})
-	// s.DeleteInvite(invID)
 }
 
 func (s *PeerStore) AddInvite(inv *peerv1.Invite) {

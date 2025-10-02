@@ -103,7 +103,7 @@ func (m *Mesh) listen(ctx context.Context) error {
 				return nil
 			}
 
-			noiseConn, err := hs.progress(m.conn, dg.msg, dg.senderUDPAddr)
+			noiseConn, err := hs.progress(m.conn, dg.msg, dg.senderUDPAddr, dg.senderID)
 			if err != nil {
 				m.log.Errorf("failed to progress for senderID (%d), kind (%d): %v", dg.senderID, dg.tp, err)
 				return nil // TODO(saml) return err to cancel others?
@@ -127,7 +127,7 @@ func (m *Mesh) handleInitiators(ctx context.Context, token *peerv1.Invite) error
 			return err
 		}
 
-		if _, err := hs.progress(m.conn, nil, nil); err != nil {
+		if _, err := hs.progress(m.conn, nil, nil, 0); err != nil {
 			m.log.Error("failed to start XXpsk2 handshake")
 			return err
 		}
@@ -148,7 +148,7 @@ func (m *Mesh) handleInitiators(ctx context.Context, token *peerv1.Invite) error
 			return err
 		}
 
-		if _, err := hs.progress(m.conn, nil, nil); err != nil {
+		if _, err := hs.progress(m.conn, nil, nil, 0); err != nil {
 			m.log.Error("failed to start IK handshake")
 			return err
 		}
