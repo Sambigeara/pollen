@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"runtime"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/flynn/noise"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
@@ -64,43 +67,55 @@ func (m *Mesh) Start(ctx context.Context, token *peerv1.Invite) error {
 	return nil
 }
 
-func (m *Mesh) listen(ctx context.Context) {
+func (m *Mesh) listen(ctx context.Context) error {
+	g, ctx := errgroup.WithContext(ctx)
+	// TODO(saml) there will be a lof of IO so we can probably tune up aggressively
+	g.SetLimit(runtime.NumCPU() + 4)
+
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return g.Wait()
 		default:
 		}
 
 		dg, err := read(m.conn, nil)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
-				return
+				return g.Wait()
 			}
-			m.log.Errorf("failed to read UDP packet: %v", err)
+			m.log.Errorf("read UDP: %v", err)
+			continue
 		}
 
-		go func() {
-			hs, err := m.hsStore.get(dg.tp, dg.senderID)
-			if err != nil {
-				m.log.Errorf("failed to get handshake state: %v", err)
+		g.Go(func() error {
+			if dg.tp == messageTypeTransportData {
+				return nil
 			}
 
+			hs, err := m.hsStore.get(dg)
+			if err != nil {
+				m.log.Errorf("get hs: %v", err)
+				return nil
+			}
 			if hs == nil {
 				m.log.Debugf("unrecognised senderID: %d", dg.senderID)
-				return
+				return nil
 			}
 
 			noiseConn, err := hs.progress(m.conn, dg.msg, dg.senderUDPAddr)
 			if err != nil {
 				m.log.Errorf("failed to progress for senderID (%d), kind (%d): %v", dg.senderID, dg.tp, err)
+				return nil // TODO(saml) return err to cancel others?
 			}
 
 			if noiseConn != nil {
 				m.log.Infof("established connection for: %d", dg.tp)
 				m.hsStore.clear(dg.senderID)
 			}
-		}()
+
+			return nil
+		})
 	}
 }
 
