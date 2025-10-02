@@ -12,8 +12,10 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 )
 
-type InviteID string
-type PeerStaticPublicKey []byte
+type (
+	InviteID            string
+	PeerStaticPublicKey []byte
+)
 
 type PeerStore struct {
 	*peerv1.PeerStore

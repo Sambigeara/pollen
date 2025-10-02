@@ -20,12 +20,12 @@ var handshakePrologue = []byte("pollenv1")
 
 type Mesh struct {
 	log            *zap.SugaredLogger
-	port           int
 	peers          *peers.PeerStore
 	localStaticKey *noise.DHKey
 	noiseCS        *noise.CipherSuite
 	conn           *net.UDPConn
 	hsStore        *handshakeStore
+	port           int
 }
 
 func New(peers *peers.PeerStore, pollenDir string, port int) (*Mesh, error) {
@@ -91,7 +91,6 @@ func (m *Mesh) listen() error {
 			m.log.Infof("established connection for: %d", dg.kind)
 			m.hsStore.clear(dg.senderID)
 		}
-
 	}
 }
 
@@ -150,8 +149,8 @@ func (m *Mesh) Shutdown(ctx context.Context) error {
 }
 
 type noiseConn struct {
-	peerStatic []byte
 	// TODO(saml) implement send.Rekey() on both every 1<<20 bytes or 1000 messages or whatever Wireguards standard is
-	send *noise.CipherState
-	recv *noise.CipherState
+	send       *noise.CipherState
+	recv       *noise.CipherState
+	peerStatic []byte
 }

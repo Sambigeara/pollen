@@ -41,7 +41,7 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 		if errors.Is(err, os.ErrExist) {
 			return nil
 		}
-		return fmt.Errorf("failed to listen: %v", err)
+		return fmt.Errorf("failed to listen: %w", err)
 	}
 
 	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()

@@ -96,7 +96,6 @@ func runSeed(cmd *cobra.Command, args []string) {
 }
 
 func runRun(cmd *cobra.Command, args []string) {
-
 	if len(args) == 0 {
 		cmd.Println("Error: function name required")
 		cmd.Usage()

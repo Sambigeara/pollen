@@ -13,10 +13,12 @@ import (
 	"github.com/sambigeara/pollen/pkg/peers"
 )
 
-var _ handshake = (*handshakeIKInit)(nil)
-var _ handshake = (*handshakeIKResp)(nil)
-var _ handshake = (*handshakeXXPsk2Init)(nil)
-var _ handshake = (*handshakeXXPsk2Resp)(nil)
+var (
+	_ handshake = (*handshakeIKInit)(nil)
+	_ handshake = (*handshakeIKResp)(nil)
+	_ handshake = (*handshakeXXPsk2Init)(nil)
+	_ handshake = (*handshakeXXPsk2Resp)(nil)
+)
 
 type handshake interface {
 	progress(conn *net.UDPConn, msg []byte, peerUDPAddr *net.UDPAddr) (*noiseConn, error)
@@ -126,11 +128,11 @@ const (
 
 type handshakeIKInit struct {
 	*noise.HandshakeState
-	sessionID   uint32
-	peerRawAddr string
 	peerUDPAddr *net.UDPAddr
+	peerRawAddr string
 	nextStage   handshakeStage
 	mu          sync.Mutex
+	sessionID   uint32
 }
 
 func newHandshakeIKInit(cs *noise.CipherSuite, localStaticKey *noise.DHKey, peerStaticKey []byte, peerRawAddr string) (*handshakeIKInit, error) {
@@ -254,12 +256,12 @@ func (hs *handshakeIKResp) progress(conn *net.UDPConn, rcvMsg []byte, peerUDPAdd
 
 type handshakeXXPsk2Init struct {
 	*noise.HandshakeState
-	sessionID   uint32
 	peersStore  *peers.PeerStore
-	tokenID     string
 	peerUDPAddr *net.UDPAddr
+	tokenID     string
 	nextStage   handshakeStage
 	mu          sync.Mutex
+	sessionID   uint32
 }
 
 func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey *noise.DHKey, token *peerv1.Invite, peersStore *peers.PeerStore) (*handshakeXXPsk2Init, error) {
@@ -343,12 +345,12 @@ func (hs *handshakeXXPsk2Init) progress(conn *net.UDPConn, rcvMsg []byte, _ *net
 
 type handshakeXXPsk2Resp struct {
 	*noise.HandshakeState
-	sessionID   uint32
 	peersStore  *peers.PeerStore
 	peerUDPAddr *net.UDPAddr
-	nextStage   handshakeStage
 	buf         []byte
+	nextStage   handshakeStage
 	mu          sync.Mutex
+	sessionID   uint32
 }
 
 func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, localStaticKey *noise.DHKey, senderID uint32, peersStore *peers.PeerStore) (*handshakeXXPsk2Resp, error) {
@@ -394,7 +396,7 @@ func (hs *handshakeXXPsk2Resp) progress(conn *net.UDPConn, rcvMsg []byte, peerUD
 		}
 
 		if err = hs.SetPresharedKey(inv.Psk); err != nil {
-			return nil, fmt.Errorf("failed to set psk: %v", err)
+			return nil, fmt.Errorf("failed to set psk: %w", err)
 		}
 
 		msg2, _, _, err := hs.WriteMessage(nil, nil)
@@ -438,10 +440,10 @@ func genSessionID() (uint32, error) {
 }
 
 type datagram struct {
-	kind          handshakeKind
-	senderID      uint32
 	senderUDPAddr *net.UDPAddr
 	msg           []byte
+	kind          handshakeKind
+	senderID      uint32
 }
 
 func write(conn *net.UDPConn, addr *net.UDPAddr, kind handshakeKind, senderID uint32, msg []byte) error {
