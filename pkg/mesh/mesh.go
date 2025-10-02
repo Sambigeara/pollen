@@ -2,7 +2,6 @@ package mesh
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -98,7 +97,7 @@ func (m *Mesh) listen() error {
 
 func (m *Mesh) handleInitiators(ctx context.Context, token *peerv1.Invite) error {
 	if token != nil {
-		hs, err := m.hsStore.create(handshakeKindXXPsk2Init, nil, token)
+		hs, err := m.hsStore.initXXPsk2(token)
 		if err != nil {
 			m.log.Error("failed to create XXpsk2 handshake")
 			return err
@@ -119,7 +118,7 @@ func (m *Mesh) handleInitiators(ctx context.Context, token *peerv1.Invite) error
 	// 	case <-ticker.C:
 
 	for _, k := range m.peers.GetAllKnown() {
-		hs, err := m.hsStore.create(handshakeKindIKInit, k.StaticKey, nil)
+		hs, err := m.hsStore.initIK(k.StaticKey)
 		if err != nil {
 			m.log.Error("failed to create IK handshake")
 			return err
@@ -135,33 +134,6 @@ func (m *Mesh) handleInitiators(ctx context.Context, token *peerv1.Invite) error
 	// }
 
 	return nil
-}
-
-func read(conn *net.UDPConn, buf []byte) (*datagram, error) {
-	if buf == nil {
-		buf = make([]byte, 2048)
-	}
-	n, addr, err := conn.ReadFromUDP(buf)
-	if err != nil {
-		return nil, err
-	}
-	if n < 8 { // 4 bytes kind + 4 bytes senderID
-		return nil, fmt.Errorf("handshake frame too short: %d", n)
-	}
-
-	return &datagram{
-		kind:          handshakeKind(binary.BigEndian.Uint32(buf[:4])),
-		senderID:      binary.BigEndian.Uint32(buf[4:8]),
-		senderUDPAddr: addr,
-		msg:           append([]byte(nil), buf[8:n]...), // copy to decouple from shared buffer
-	}, nil
-}
-
-type datagram struct {
-	kind          handshakeKind
-	senderID      uint32
-	senderUDPAddr *net.UDPAddr
-	msg           []byte
 }
 
 func (m *Mesh) Shutdown(ctx context.Context) error {

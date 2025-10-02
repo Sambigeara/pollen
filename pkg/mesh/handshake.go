@@ -1,9 +1,10 @@
 package mesh
 
 import (
+	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
-	"math/rand"
 	"net"
 	"sync"
 
@@ -18,7 +19,6 @@ var _ handshake = (*handshakeXXPsk2Init)(nil)
 var _ handshake = (*handshakeXXPsk2Resp)(nil)
 
 type handshake interface {
-	getSenderID() uint32
 	progress(conn *net.UDPConn, msg []byte, peerUDPAddr *net.UDPAddr) (*noiseConn, error)
 }
 
@@ -79,43 +79,42 @@ func (st *handshakeStore) get(k handshakeKind, senderID uint32) (handshake, erro
 	return hs, nil
 }
 
-func (st *handshakeStore) clear(senderID uint32) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
+func (st *handshakeStore) initIK(peerStaticKey []byte) (handshake, error) {
+	p, ok := st.peers.Get(peerStaticKey)
+	if !ok {
+		return nil, errors.New("static key not recognised")
+	}
 
-	delete(st.st, senderID)
-}
-
-// TODO(saml) might be a pointless function
-func (st *handshakeStore) create(k handshakeKind, peerStaticKey []byte, token *peerv1.Invite) (handshake, error) {
-	// TODO(saml) can inline the function now
-	hs, err := st.createNewHandshake(k, peerStaticKey, token)
+	hs, err := newHandshakeIKInit(st.cs, st.localStaticKey, peerStaticKey, p.Addr)
 	if err != nil {
 		return nil, err
 	}
 
 	st.mu.Lock()
-	st.st[hs.getSenderID()] = hs
+	st.st[hs.sessionID] = hs
 	st.mu.Unlock()
 
 	return hs, nil
 }
 
-func (st *handshakeStore) createNewHandshake(k handshakeKind, peerStaticKey []byte, token *peerv1.Invite) (handshake, error) {
-	switch k {
-	case handshakeKindIKInit:
-		if p, ok := st.peers.Get(peerStaticKey); ok {
-			return newHandshakeIKInit(st.cs, st.localStaticKey, peerStaticKey, p.Addr)
-		}
-	case handshakeKindXXPsk2Init:
-		return newHandshakeXXPsk2Init(st.cs, st.localStaticKey, token, st.peers)
+func (st *handshakeStore) initXXPsk2(token *peerv1.Invite) (handshake, error) {
+	hs, err := newHandshakeXXPsk2Init(st.cs, st.localStaticKey, token, st.peers)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, nil
+	st.mu.Lock()
+	st.st[hs.sessionID] = hs
+	st.mu.Unlock()
+
+	return hs, nil
 }
 
-func (st *handshakeStore) createXXpsk2InitHandshake(k handshakeKind, token *peerv1.Invite) (handshake, error) {
-	return newHandshakeXXPsk2Init(st.cs, st.localStaticKey, token, st.peers)
+func (st *handshakeStore) clear(senderID uint32) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	delete(st.st, senderID)
 }
 
 type handshakeStage int
@@ -152,17 +151,18 @@ func newHandshakeIKInit(cs *noise.CipherSuite, localStaticKey *noise.DHKey, peer
 		return nil, err
 	}
 
+	sessID, err := genSessionID()
+	if err != nil {
+		return nil, err
+	}
+
 	return &handshakeIKInit{
 		HandshakeState: hs,
-		sessionID:      rand.Uint32(),
+		sessionID:      sessID,
 		peerRawAddr:    peerRawAddr,
 		peerUDPAddr:    peerUDPAddr,
 		nextStage:      stage1,
 	}, nil
-}
-
-func (hs *handshakeIKInit) getSenderID() uint32 {
-	return hs.sessionID
 }
 
 func (hs *handshakeIKInit) progress(conn *net.UDPConn, rcvMsg []byte, _ *net.UDPAddr) (*noiseConn, error) {
@@ -223,10 +223,6 @@ func newHandshakeIKResp(cs *noise.CipherSuite, localStaticKey *noise.DHKey, send
 	}, nil
 }
 
-func (hs *handshakeIKResp) getSenderID() uint32 {
-	return hs.sessionID
-}
-
 func (hs *handshakeIKResp) progress(conn *net.UDPConn, rcvMsg []byte, peerUDPAddr *net.UDPAddr) (*noiseConn, error) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
@@ -285,18 +281,19 @@ func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey *noise.DHKey, 
 		return nil, err
 	}
 
+	sessID, err := genSessionID()
+	if err != nil {
+		return nil, err
+	}
+
 	return &handshakeXXPsk2Init{
 		HandshakeState: hs,
-		sessionID:      rand.Uint32(),
+		sessionID:      sessID,
 		peersStore:     peersStore,
 		tokenID:        token.Id,
 		peerUDPAddr:    peerUDPAddr,
 		nextStage:      stage1,
 	}, nil
-}
-
-func (hs *handshakeXXPsk2Init) getSenderID() uint32 {
-	return hs.sessionID
 }
 
 func (hs *handshakeXXPsk2Init) progress(conn *net.UDPConn, rcvMsg []byte, _ *net.UDPAddr) (*noiseConn, error) {
@@ -375,10 +372,6 @@ func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, localStaticKey *noise.DHKey, 
 	}, nil
 }
 
-func (hs *handshakeXXPsk2Resp) getSenderID() uint32 {
-	return hs.sessionID
-}
-
 func (hs *handshakeXXPsk2Resp) progress(conn *net.UDPConn, rcvMsg []byte, peerUDPAddr *net.UDPAddr) (*noiseConn, error) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
@@ -436,6 +429,21 @@ func (hs *handshakeXXPsk2Resp) progress(conn *net.UDPConn, rcvMsg []byte, peerUD
 	return nil, nil
 }
 
+func genSessionID() (uint32, error) {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint32(b), nil
+}
+
+type datagram struct {
+	kind          handshakeKind
+	senderID      uint32
+	senderUDPAddr *net.UDPAddr
+	msg           []byte
+}
+
 func write(conn *net.UDPConn, addr *net.UDPAddr, kind handshakeKind, senderID uint32, msg []byte) error {
 	datagram := make([]byte, 8+len(msg))
 	binary.BigEndian.PutUint32(datagram[:4], uint32(kind))
@@ -444,4 +452,24 @@ func write(conn *net.UDPConn, addr *net.UDPAddr, kind handshakeKind, senderID ui
 
 	_, err := conn.WriteToUDP(datagram, addr)
 	return err
+}
+
+func read(conn *net.UDPConn, buf []byte) (*datagram, error) {
+	if buf == nil {
+		buf = make([]byte, 2048)
+	}
+	n, addr, err := conn.ReadFromUDP(buf)
+	if err != nil {
+		return nil, err
+	}
+	if n < 8 { // 4 bytes kind + 4 bytes senderID
+		return nil, fmt.Errorf("handshake frame too short: %d", n)
+	}
+
+	return &datagram{
+		kind:          handshakeKind(binary.BigEndian.Uint32(buf[:4])),
+		senderID:      binary.BigEndian.Uint32(buf[4:8]),
+		senderUDPAddr: addr,
+		msg:           append([]byte(nil), buf[8:n]...), // copy to decouple from shared buffer
+	}, nil
 }
