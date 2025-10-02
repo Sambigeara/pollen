@@ -29,6 +29,7 @@ type Mesh struct {
 	noiseCS        *noise.CipherSuite
 	conn           *net.UDPConn
 	hsStore        *handshakeStore
+	csStore        *cipherStateStore
 	port           int
 }
 
@@ -47,6 +48,7 @@ func New(peers *peers.PeerStore, pollenDir string, port int) (*Mesh, error) {
 		localStaticKey: staticKey,
 		noiseCS:        &cs,
 		hsStore:        newHandshakeStore(&cs, peers, staticKey),
+		csStore:        newCipherStateStore(),
 	}, nil
 }
 
@@ -112,6 +114,7 @@ func (m *Mesh) listen(ctx context.Context) error {
 			if noiseConn != nil {
 				m.log.Infof("established connection for: %d", dg.tp)
 				m.hsStore.clear(dg.senderID)
+				m.csStore.set(dg.senderID, noiseConn)
 			}
 
 			return nil
@@ -171,11 +174,4 @@ func (m *Mesh) Shutdown(ctx context.Context) error {
 	}
 
 	return ctx.Err()
-}
-
-// TODO(saml) implement send.Rekey() on both every 1<<20 bytes or 1000 messages or whatever Wireguards standard is.
-type noiseConn struct {
-	send       *noise.CipherState
-	recv       *noise.CipherState
-	peerStatic []byte
 }

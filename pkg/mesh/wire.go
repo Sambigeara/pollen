@@ -4,6 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"sync"
+
+	"github.com/flynn/noise"
 )
 
 type messageType uint32
@@ -16,6 +19,36 @@ const (
 
 	messageTypeTransportData
 )
+
+// TODO(saml) implement send.Rekey() on both every 1<<20 bytes or 1000 messages or whatever Wireguards standard is.
+type noiseConn struct {
+	send *noise.CipherState
+	recv *noise.CipherState
+}
+
+type cipherStateStore struct {
+	m  map[uint32]*noiseConn
+	mu sync.RWMutex
+}
+
+func newCipherStateStore() *cipherStateStore {
+	return &cipherStateStore{
+		m: make(map[uint32]*noiseConn),
+	}
+}
+
+func (s *cipherStateStore) set(peerID uint32, conn *noiseConn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[peerID] = conn
+}
+
+func (s *cipherStateStore) get(peerID uint32) (*noiseConn, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.m[peerID]
+	return c, ok
+}
 
 type datagram struct {
 	senderUDPAddr *net.UDPAddr
