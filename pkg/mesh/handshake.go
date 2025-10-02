@@ -24,15 +24,6 @@ type handshake interface {
 	progress(conn *net.UDPConn, msg []byte, peerUDPAddr *net.UDPAddr) (*noiseConn, error)
 }
 
-type handshakeKind uint32
-
-const (
-	handshakeKindXXPsk2Init handshakeKind = iota
-	handshakeKindXXPsk2Resp
-	handshakeKindIKInit
-	handshakeKindIKResp
-)
-
 type handshakeStore struct {
 	cs             *noise.CipherSuite
 	peers          *peers.PeerStore
@@ -51,7 +42,7 @@ func newHandshakeStore(cs *noise.CipherSuite, peersStore *peers.PeerStore, local
 	}
 }
 
-func (st *handshakeStore) get(k handshakeKind, senderID uint32) (handshake, error) {
+func (st *handshakeStore) get(k messageType, senderID uint32) (handshake, error) {
 	st.mu.RLock()
 	hs, ok := st.st[senderID]
 	st.mu.RUnlock()
@@ -61,13 +52,13 @@ func (st *handshakeStore) get(k handshakeKind, senderID uint32) (handshake, erro
 		defer st.mu.Unlock()
 
 		switch k {
-		case handshakeKindIKInit:
+		case messageTypeHandshakeIKInit:
 			var err error
 			hs, err = newHandshakeIKResp(st.cs, st.localStaticKey, senderID)
 			if err != nil {
 				return nil, err
 			}
-		case handshakeKindXXPsk2Init:
+		case messageTypeHandshakeXXPsk2Init:
 			var err error
 			hs, err = newHandshakeXXPsk2Resp(st.cs, st.localStaticKey, senderID, st.peers)
 			if err != nil {
@@ -177,7 +168,7 @@ func (hs *handshakeIKInit) progress(conn *net.UDPConn, rcvMsg []byte, _ *net.UDP
 		if err != nil {
 			return nil, err
 		}
-		if err := write(conn, hs.peerUDPAddr, handshakeKindIKInit, hs.sessionID, msg1); err != nil {
+		if err := write(conn, hs.peerUDPAddr, messageTypeHandshakeIKInit, hs.sessionID, msg1); err != nil {
 			return nil, err
 		}
 	case stage2:
@@ -240,7 +231,7 @@ func (hs *handshakeIKResp) progress(conn *net.UDPConn, rcvMsg []byte, peerUDPAdd
 			return nil, err
 		}
 
-		if err := write(conn, peerUDPAddr, handshakeKindIKResp, hs.sessionID, msg2); err != nil {
+		if err := write(conn, peerUDPAddr, messageTypeHandshakeIKResp, hs.sessionID, msg2); err != nil {
 			return nil, err
 		}
 
@@ -308,7 +299,7 @@ func (hs *handshakeXXPsk2Init) progress(conn *net.UDPConn, rcvMsg []byte, _ *net
 		if err != nil {
 			return nil, err
 		}
-		if err := write(conn, hs.peerUDPAddr, handshakeKindXXPsk2Init, hs.sessionID, msg1); err != nil {
+		if err := write(conn, hs.peerUDPAddr, messageTypeHandshakeXXPsk2Init, hs.sessionID, msg1); err != nil {
 			return nil, err
 		}
 	case stage2:
@@ -320,7 +311,7 @@ func (hs *handshakeXXPsk2Init) progress(conn *net.UDPConn, rcvMsg []byte, _ *net
 		if err != nil {
 			return nil, err
 		}
-		if err := write(conn, hs.peerUDPAddr, handshakeKindXXPsk2Init, hs.sessionID, msg3); err != nil {
+		if err := write(conn, hs.peerUDPAddr, messageTypeHandshakeXXPsk2Init, hs.sessionID, msg3); err != nil {
 			return nil, err
 		}
 
@@ -403,7 +394,7 @@ func (hs *handshakeXXPsk2Resp) progress(conn *net.UDPConn, rcvMsg []byte, peerUD
 		if err != nil {
 			return nil, err
 		}
-		if err := write(conn, peerUDPAddr, handshakeKindXXPsk2Resp, hs.sessionID, msg2); err != nil {
+		if err := write(conn, peerUDPAddr, messageTypeHandshakeXXPsk2Resp, hs.sessionID, msg2); err != nil {
 			return nil, err
 		}
 
@@ -437,41 +428,4 @@ func genSessionID() (uint32, error) {
 		return 0, err
 	}
 	return binary.BigEndian.Uint32(b), nil
-}
-
-type datagram struct {
-	senderUDPAddr *net.UDPAddr
-	msg           []byte
-	kind          handshakeKind
-	senderID      uint32
-}
-
-func write(conn *net.UDPConn, addr *net.UDPAddr, kind handshakeKind, senderID uint32, msg []byte) error {
-	datagram := make([]byte, 8+len(msg))
-	binary.BigEndian.PutUint32(datagram[:4], uint32(kind))
-	binary.BigEndian.PutUint32(datagram[4:8], senderID)
-	copy(datagram[8:], msg)
-
-	_, err := conn.WriteToUDP(datagram, addr)
-	return err
-}
-
-func read(conn *net.UDPConn, buf []byte) (*datagram, error) {
-	if buf == nil {
-		buf = make([]byte, 2048)
-	}
-	n, addr, err := conn.ReadFromUDP(buf)
-	if err != nil {
-		return nil, err
-	}
-	if n < 8 { // 4 bytes kind + 4 bytes senderID
-		return nil, fmt.Errorf("handshake frame too short: %d", n)
-	}
-
-	return &datagram{
-		kind:          handshakeKind(binary.BigEndian.Uint32(buf[:4])),
-		senderID:      binary.BigEndian.Uint32(buf[4:8]),
-		senderUDPAddr: addr,
-		msg:           append([]byte(nil), buf[8:n]...), // copy to decouple from shared buffer
-	}, nil
 }

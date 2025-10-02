@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
@@ -53,44 +54,53 @@ func (m *Mesh) Start(ctx context.Context, token *peerv1.Invite) error {
 		return err
 	}
 
-	go m.listen()
+	go m.listen(ctx)
 	go m.handleInitiators(ctx, token)
 
 	<-ctx.Done()
 
+	m.log.Debug("closing down...")
 	m.conn.Close()
 	return nil
 }
 
-func (m *Mesh) listen() error {
+func (m *Mesh) listen(ctx context.Context) {
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		dg, err := read(m.conn, nil)
 		if err != nil {
-			return err
-		}
-		m.log.Debugf("handling datagram from senderID (%d), kind (%d)", dg.senderID, dg.kind)
-
-		hs, err := m.hsStore.get(dg.kind, dg.senderID)
-		if err != nil {
-			return err
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			m.log.Errorf("failed to read UDP packet: %v", err)
 		}
 
-		if hs == nil {
-			m.log.Debugf("unrecognised senderID: %d", dg.senderID)
-			continue
-		}
+		go func() {
+			hs, err := m.hsStore.get(dg.tp, dg.senderID)
+			if err != nil {
+				m.log.Errorf("failed to get handshake state: %v", err)
+			}
 
-		// TODO(saml) can probably go in a goroutine or similar concurrency pattern when we're confident
-		noiseConn, err := hs.progress(m.conn, dg.msg, dg.senderUDPAddr)
-		if err != nil {
-			m.log.Errorf("failed to progress for senderID (%d), kind (%d): %v", dg.senderID, dg.kind, err)
-			return err
-		}
+			if hs == nil {
+				m.log.Debugf("unrecognised senderID: %d", dg.senderID)
+				return
+			}
 
-		if noiseConn != nil {
-			m.log.Infof("established connection for: %d", dg.kind)
-			m.hsStore.clear(dg.senderID)
-		}
+			noiseConn, err := hs.progress(m.conn, dg.msg, dg.senderUDPAddr)
+			if err != nil {
+				m.log.Errorf("failed to progress for senderID (%d), kind (%d): %v", dg.senderID, dg.tp, err)
+			}
+
+			if noiseConn != nil {
+				m.log.Infof("established connection for: %d", dg.tp)
+				m.hsStore.clear(dg.senderID)
+			}
+		}()
 	}
 }
 
@@ -148,8 +158,8 @@ func (m *Mesh) Shutdown(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// TODO(saml) implement send.Rekey() on both every 1<<20 bytes or 1000 messages or whatever Wireguards standard is.
 type noiseConn struct {
-	// TODO(saml) implement send.Rekey() on both every 1<<20 bytes or 1000 messages or whatever Wireguards standard is
 	send       *noise.CipherState
 	recv       *noise.CipherState
 	peerStatic []byte

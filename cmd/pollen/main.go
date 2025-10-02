@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -201,5 +202,5 @@ func runInvite(cmd *cobra.Command, args []string) {
 
 	peersStore.AddInvite(token)
 
-	cmd.Printf("%s\n", encoded)
+	fmt.Fprint(cmd.OutOrStdout(), encoded)
 }
