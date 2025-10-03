@@ -190,8 +190,9 @@ func (hs *handshakeIKInit) progress(conn *net.UDPConn, rcvMsg []byte, _ *net.UDP
 		}
 
 		return &noiseConn{
-			send: csSend,
-			recv: csRecv,
+			peerAddr: hs.peerUDPAddr,
+			send:     csSend,
+			recv:     csRecv,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
@@ -247,8 +248,9 @@ func (hs *handshakeIKResp) progress(conn *net.UDPConn, rcvMsg []byte, peerUDPAdd
 		}
 
 		return &noiseConn{
-			send: csSend,
-			recv: csRecv,
+			peerAddr: peerUDPAddr,
+			send:     csSend,
+			recv:     csRecv,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
@@ -331,8 +333,9 @@ func (hs *handshakeXXPsk2Init) progress(conn *net.UDPConn, rcvMsg []byte, _ *net
 		})
 
 		return &noiseConn{
-			send: csSend,
-			recv: csRecv,
+			peerAddr: hs.peerUDPAddr,
+			send:     csSend,
+			recv:     csRecv,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
@@ -415,11 +418,10 @@ func (hs *handshakeXXPsk2Resp) progress(conn *net.UDPConn, rcvMsg []byte, peerUD
 
 		hs.peersStore.PromoteToPeer(hs.PeerStatic(), hs.peerUDPAddr.String())
 
-		// TODO(saml) need to delete the invite regardless of success (maybe index differently in peersStore?)
-
 		return &noiseConn{
-			send: csSend,
-			recv: csRecv,
+			peerAddr: hs.peerUDPAddr,
+			send:     csSend,
+			recv:     csRecv,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)

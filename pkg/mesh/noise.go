@@ -3,8 +3,10 @@ package mesh
 import (
 	"crypto/rand"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/flynn/noise"
 	"google.golang.org/protobuf/proto"
@@ -13,6 +15,37 @@ import (
 )
 
 const noiseStaticFile = "noise_static.pb"
+
+// TODO(saml) implement send.Rekey() on both every 1<<20 bytes or 1000 messages or whatever Wireguards standard is.
+type noiseConn struct {
+	peerAddr *net.UDPAddr
+	send     *noise.CipherState
+	recv     *noise.CipherState
+}
+
+type cipherStateStore struct {
+	m  map[uint32]*noiseConn
+	mu sync.RWMutex
+}
+
+func newCipherStateStore() *cipherStateStore {
+	return &cipherStateStore{
+		m: make(map[uint32]*noiseConn),
+	}
+}
+
+func (s *cipherStateStore) set(peerID uint32, conn *noiseConn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[peerID] = conn
+}
+
+func (s *cipherStateStore) get(peerID uint32) (*noiseConn, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.m[peerID]
+	return c, ok
+}
 
 func GenStaticKey(cs noise.CipherSuite, dir string) (*noise.DHKey, error) {
 	path := filepath.Join(dir, noiseStaticFile)
