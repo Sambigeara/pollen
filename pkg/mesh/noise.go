@@ -3,48 +3,67 @@ package mesh
 import (
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	"sync"
+	"time"
 
+	"github.com/bluele/gcache"
 	"github.com/flynn/noise"
 	"google.golang.org/protobuf/proto"
 
 	cryptov1 "github.com/sambigeara/pollen/api/genpb/pollen/crypto/v1"
 )
 
-const noiseStaticFile = "noise_static.pb"
+const (
+	noiseStaticFile             = "noise_static.pb"
+	noiseSessionRefreshInterval = time.Second * 120                // new IK handshake every 2 mins
+	noiseSessionDuration        = noiseSessionRefreshInterval + 10 // give 10 second overlap to deal with inflight packets
+	maxConnections              = 256
+)
 
-// TODO(saml) implement send.Rekey() on both every 1<<20 bytes or 1000 messages or whatever Wireguards standard is.
-type noiseConn struct {
-	peerAddr *net.UDPAddr
-	send     *noise.CipherState
-	recv     *noise.CipherState
+type cipherStore struct {
+	c gcache.Cache
 }
 
-type cipherStateStore struct {
-	m  map[uint32]*noiseConn
-	mu sync.RWMutex
-}
-
-func newCipherStateStore() *cipherStateStore {
-	return &cipherStateStore{
-		m: make(map[uint32]*noiseConn),
+func newCipherStore() *cipherStore {
+	return &cipherStore{
+		c: gcache.New(maxConnections).
+			LRU().
+			Expiration(noiseSessionDuration).
+			EvictedFunc(func(key, value any) {
+				// TODO(saml)
+				fmt.Printf("expired key=%v value=%v\n", key, value)
+			}).
+			Build(),
 	}
 }
 
-func (s *cipherStateStore) set(peerID uint32, conn *noiseConn) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.m[peerID] = conn
+func (s *cipherStore) set(peerID uint32, conn *noiseConn) error {
+	if err := s.c.Set(peerID, conn); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (s *cipherStateStore) get(peerID uint32) (*noiseConn, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	c, ok := s.m[peerID]
-	return c, ok
+
+type noiseConn struct {
+	createdAt     time.Time
+	peerAddr      *net.UDPAddr
+	send          *noise.CipherState
+	recv          *noise.CipherState
+	peerStaticKey []byte
+}
+
+func newNoiseConn(peerAddr *net.UDPAddr, peerStaticKey []byte, send, recv *noise.CipherState) *noiseConn {
+	return &noiseConn{
+		createdAt:     time.Now(),
+		peerAddr:      peerAddr,
+		peerStaticKey: peerStaticKey,
+		send:          send,
+		recv:          recv,
+	}
 }
 
 func GenStaticKey(cs noise.CipherSuite, dir string) (*noise.DHKey, error) {

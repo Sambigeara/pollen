@@ -28,8 +28,9 @@ type Mesh struct {
 	localStaticKey *noise.DHKey
 	noiseCS        *noise.CipherSuite
 	conn           *net.UDPConn
-	hsStore        *handshakeStore
-	csStore        *cipherStateStore
+	handshakeStore *handshakeStore
+	cipherStore    *cipherStore
+	rekeyMgr       *rekeyManager
 	port           int
 }
 
@@ -47,8 +48,9 @@ func New(peers *peers.PeerStore, pollenDir string, port int) (*Mesh, error) {
 		peers:          peers,
 		localStaticKey: staticKey,
 		noiseCS:        &cs,
-		hsStore:        newHandshakeStore(&cs, peers, staticKey),
-		csStore:        newCipherStateStore(),
+		handshakeStore: newHandshakeStore(&cs, peers, staticKey),
+		cipherStore:    newCipherStore(),
+		rekeyMgr:       newRekeyManager(),
 	}, nil
 }
 
@@ -66,6 +68,7 @@ func (m *Mesh) Start(ctx context.Context, token *peerv1.Invite) error {
 
 	m.log.Debug("closing down...")
 	m.conn.Close()
+
 	return nil
 }
 
@@ -95,7 +98,7 @@ func (m *Mesh) listen(ctx context.Context) error {
 				return nil
 			}
 
-			hs, err := m.hsStore.get(dg)
+			hs, err := m.handshakeStore.get(dg)
 			if err != nil {
 				m.log.Errorf("get hs: %v", err)
 				return nil
@@ -113,8 +116,16 @@ func (m *Mesh) listen(ctx context.Context) error {
 
 			if noiseConn != nil {
 				m.log.Infof("established connection for: %d", dg.tp)
-				m.hsStore.clear(dg.senderID)
-				m.csStore.set(dg.senderID, noiseConn)
+				m.handshakeStore.clear(dg.senderID)
+
+				switch hs.(type) {
+				case *handshakeIKInit, *handshakeXXPsk2Init:
+					m.scheduleRekey(noiseConn.peerStaticKey)
+				case *handshakeIKResp:
+					m.rekeyMgr.resetIfExists(noiseConn.peerStaticKey, noiseSessionRefreshInterval)
+				}
+
+				m.cipherStore.set(dg.senderID, noiseConn)
 			}
 
 			return nil
@@ -122,43 +133,31 @@ func (m *Mesh) listen(ctx context.Context) error {
 	}
 }
 
+func (m *Mesh) scheduleRekey(staticKey []byte) {
+	t := time.AfterFunc(noiseSessionRefreshInterval, func() {
+		if err := m.handshakeStore.initIK(m.conn, staticKey); err != nil {
+			m.log.Error(err)
+		}
+		m.log.Info("successfully rekeyed")
+	})
+
+	m.rekeyMgr.set(staticKey, t)
+}
+
 func (m *Mesh) handleInitiators(ctx context.Context, token *peerv1.Invite) error {
 	if token != nil {
-		hs, err := m.hsStore.initXXPsk2(token)
-		if err != nil {
+		if err := m.handshakeStore.initXXPsk2(m.conn, token); err != nil {
 			m.log.Error("failed to create XXpsk2 handshake")
 			return err
 		}
-
-		if _, err := hs.progress(m.conn, nil, nil, 0); err != nil {
-			m.log.Error("failed to start XXpsk2 handshake")
-			return err
-		}
 	}
 
-	// ticker := time.NewTicker(nodePingInternal)
-	// defer ticker.Stop()
-	// for {
-	// 	select {
-	// 	case <-ctx.Done():
-	// 		return ctx.Err()
-	// 	case <-ticker.C:
-
 	for _, k := range m.peers.GetAllKnown() {
-		hs, err := m.hsStore.initIK(k.StaticKey)
-		if err != nil {
+		if err := m.handshakeStore.initIK(m.conn, k.StaticKey); err != nil {
 			m.log.Error("failed to create IK handshake")
 			return err
 		}
-
-		if _, err := hs.progress(m.conn, nil, nil, 0); err != nil {
-			m.log.Error("failed to start IK handshake")
-			return err
-		}
 	}
-
-	// 	}
-	// }
 
 	return nil
 }

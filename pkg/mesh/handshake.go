@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/flynn/noise"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
@@ -84,35 +85,43 @@ func (st *handshakeStore) get(dg *datagram) (handshake, error) {
 	return hs, err
 }
 
-func (st *handshakeStore) initIK(peerStaticKey []byte) (handshake, error) {
+func (st *handshakeStore) initIK(conn *net.UDPConn, peerStaticKey []byte) error {
 	p, ok := st.peers.Get(peerStaticKey)
 	if !ok {
-		return nil, errors.New("static key not recognised")
+		return errors.New("static key not recognised")
 	}
 
 	hs, err := newHandshakeIKInit(st.cs, st.localStaticKey, peerStaticKey, p.Addr)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	st.mu.Lock()
 	st.st[hs.localSessionID] = hs
 	st.mu.Unlock()
 
-	return hs, nil
+	if _, err := hs.progress(conn, nil, nil, 0); err != nil {
+		return fmt.Errorf("failed to start IK handshake: %w", err)
+	}
+
+	return nil
 }
 
-func (st *handshakeStore) initXXPsk2(token *peerv1.Invite) (handshake, error) {
+func (st *handshakeStore) initXXPsk2(conn *net.UDPConn, token *peerv1.Invite) error {
 	hs, err := newHandshakeXXPsk2Init(st.cs, st.localStaticKey, token, st.peers)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	st.mu.Lock()
 	st.st[hs.localSessionID] = hs
 	st.mu.Unlock()
 
-	return hs, nil
+	if _, err := hs.progress(conn, nil, nil, 0); err != nil {
+		return fmt.Errorf("failed to start XXpsk2 handshake: %w", err)
+	}
+
+	return nil
 }
 
 func (st *handshakeStore) clear(peerSessionID uint32) {
@@ -189,11 +198,7 @@ func (hs *handshakeIKInit) progress(conn *net.UDPConn, rcvMsg []byte, _ *net.UDP
 			return nil, err
 		}
 
-		return &noiseConn{
-			peerAddr: hs.peerUDPAddr,
-			send:     csSend,
-			recv:     csRecv,
-		}, nil
+		return newNoiseConn(hs.peerUDPAddr, hs.PeerStatic(), csSend, csRecv), nil
 	default:
 		return nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
 	}
@@ -247,11 +252,7 @@ func (hs *handshakeIKResp) progress(conn *net.UDPConn, rcvMsg []byte, peerUDPAdd
 			return nil, err
 		}
 
-		return &noiseConn{
-			peerAddr: peerUDPAddr,
-			send:     csSend,
-			recv:     csRecv,
-		}, nil
+		return newNoiseConn(peerUDPAddr, hs.PeerStatic(), csSend, csRecv), nil
 	default:
 		return nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
 	}
@@ -332,11 +333,7 @@ func (hs *handshakeXXPsk2Init) progress(conn *net.UDPConn, rcvMsg []byte, _ *net
 			Addr:      hs.peerUDPAddr.String(),
 		})
 
-		return &noiseConn{
-			peerAddr: hs.peerUDPAddr,
-			send:     csSend,
-			recv:     csRecv,
-		}, nil
+		return newNoiseConn(hs.peerUDPAddr, hs.PeerStatic(), csSend, csRecv), nil
 	default:
 		return nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
 	}
@@ -418,11 +415,7 @@ func (hs *handshakeXXPsk2Resp) progress(conn *net.UDPConn, rcvMsg []byte, peerUD
 
 		hs.peersStore.PromoteToPeer(hs.PeerStatic(), hs.peerUDPAddr.String())
 
-		return &noiseConn{
-			peerAddr: hs.peerUDPAddr,
-			send:     csSend,
-			recv:     csRecv,
-		}, nil
+		return newNoiseConn(hs.peerUDPAddr, hs.PeerStatic(), csSend, csRecv), nil
 	default:
 		return nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
 	}
@@ -438,4 +431,43 @@ func genSessionID() (uint32, error) {
 		return 0, err
 	}
 	return binary.BigEndian.Uint32(b), nil
+}
+
+type rekeyManager struct {
+	m  map[string]*time.Timer
+	mu sync.Mutex
+}
+
+func newRekeyManager() *rekeyManager {
+	return &rekeyManager{
+		m: make(map[string]*time.Timer),
+	}
+}
+
+// set should only be called if the node is known to be the initiator of the connection with
+// the given peerStaticKey. This is useful for differentiating between rekeys triggered by the
+// default interval and forced rekeys to avoid nonce expiration (which can be triggered on the
+// responder side).
+func (m *rekeyManager) set(peerStaticKey []byte, t *time.Timer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	key := string(peerStaticKey)
+
+	if oldT, ok := m.m[key]; ok {
+		oldT.Stop()
+	}
+
+	m.m[key] = t
+}
+
+// resetIfExists only resets the timer if one is present. This will only be called if the responder
+// (peer) needs to force a rekey to avoid nonce expiration.
+func (m *rekeyManager) resetIfExists(peerStaticKey []byte, d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if t, ok := m.m[string(peerStaticKey)]; ok {
+		t.Reset(d)
+	}
 }
