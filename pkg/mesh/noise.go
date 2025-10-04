@@ -3,7 +3,7 @@ package mesh
 import (
 	"crypto/rand"
 	"errors"
-	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -21,9 +21,13 @@ const (
 	noiseSessionRefreshInterval = time.Second * 120                // new IK handshake every 2 mins
 	noiseSessionDuration        = noiseSessionRefreshInterval + 10 // give 10 second overlap to deal with inflight packets
 	maxConnections              = 256
+
+	// Noise enforces a MaxNonce of 2^64-1. We halve that as it's still a massive number and I don't know any better
+	maxNonce = uint32(math.MaxUint32) - 1
 )
 
 type cipherStore struct {
+	// TODO(saml) use custom cache as gcache relies on reflection
 	c gcache.Cache
 }
 
@@ -32,10 +36,6 @@ func newCipherStore() *cipherStore {
 		c: gcache.New(maxConnections).
 			LRU().
 			Expiration(noiseSessionDuration).
-			EvictedFunc(func(key, value any) {
-				// TODO(saml)
-				fmt.Printf("expired key=%v value=%v\n", key, value)
-			}).
 			Build(),
 	}
 }
@@ -47,6 +47,45 @@ func (s *cipherStore) set(peerID uint32, conn *noiseConn) error {
 	return nil
 }
 
+func (s *cipherStore) read(peerID uint32, msg []byte) ([]byte, bool, error) {
+	val, err := s.c.Get(peerID)
+	if err != nil {
+		return nil, false, nil
+	}
+
+	// TODO(saml) yuck
+	nc := val.(*noiseConn)
+
+	dec, err := nc.recv.Decrypt(nil, nil, msg)
+	if err != nil {
+		return nil, false, nil
+	}
+
+	return dec, nc.recv.Nonce() >= uint64(maxNonce), nil
+}
+
+func (s *cipherStore) send(conn *net.UDPConn, peerID uint32, msg []byte) (bool, error) {
+	val, err := s.c.Get(peerID)
+	if err != nil {
+		return false, nil
+	}
+
+	// TODO(saml) yuck
+	nc := val.(*noiseConn)
+
+	enc, err := nc.send.Encrypt(nil, nil, msg)
+	if err != nil {
+		return false, nil
+	}
+
+	shouldRekey := nc.send.Nonce() >= uint64(maxNonce)
+
+	if err := write(conn, nc.peerAddr, messageTypeTransportData, 0, peerID, enc); err != nil {
+		return shouldRekey, err
+	}
+
+	return shouldRekey, nil
+}
 
 type noiseConn struct {
 	createdAt     time.Time

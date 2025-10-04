@@ -95,7 +95,7 @@ func (m *Mesh) listen(ctx context.Context) error {
 
 		g.Go(func() error {
 			if dg.tp == messageTypeTransportData {
-				return nil
+				return m.handleTransportDataMsg(dg)
 			}
 
 			hs, err := m.handshakeStore.get(dg)
@@ -120,9 +120,9 @@ func (m *Mesh) listen(ctx context.Context) error {
 
 				switch hs.(type) {
 				case *handshakeIKInit, *handshakeXXPsk2Init:
-					m.scheduleRekey(noiseConn.peerStaticKey)
+					m.scheduleRekey(dg.senderID, noiseConn.peerStaticKey)
 				case *handshakeIKResp:
-					m.rekeyMgr.resetIfExists(noiseConn.peerStaticKey, noiseSessionRefreshInterval)
+					m.rekeyMgr.resetIfExists(dg.senderID, noiseSessionRefreshInterval)
 				}
 
 				m.cipherStore.set(dg.senderID, noiseConn)
@@ -133,7 +133,21 @@ func (m *Mesh) listen(ctx context.Context) error {
 	}
 }
 
-func (m *Mesh) scheduleRekey(staticKey []byte) {
+func (m *Mesh) handleTransportDataMsg(dg *datagram) error {
+	_, shouldRekey, err := m.cipherStore.read(dg.receiverID, dg.msg)
+	if err != nil {
+		return err
+	}
+
+	if shouldRekey {
+		m.rekeyMgr.resetIfExists(dg.receiverID, noiseSessionRefreshInterval)
+	}
+
+	// 	fmt.Println(string(pt))
+	return nil
+}
+
+func (m *Mesh) scheduleRekey(peerSessionID uint32, staticKey []byte) {
 	t := time.AfterFunc(noiseSessionRefreshInterval, func() {
 		if err := m.handshakeStore.initIK(m.conn, staticKey); err != nil {
 			m.log.Error(err)
@@ -141,7 +155,7 @@ func (m *Mesh) scheduleRekey(staticKey []byte) {
 		m.log.Info("successfully rekeyed")
 	})
 
-	m.rekeyMgr.set(staticKey, t)
+	m.rekeyMgr.set(peerSessionID, staticKey, t)
 }
 
 func (m *Mesh) handleInitiators(ctx context.Context, token *peerv1.Invite) error {
@@ -157,6 +171,19 @@ func (m *Mesh) handleInitiators(ctx context.Context, token *peerv1.Invite) error
 			m.log.Error("failed to create IK handshake")
 			return err
 		}
+	}
+
+	return nil
+}
+
+func (m *Mesh) Send(ctx context.Context, peerID uint32, msg []byte) error {
+	shouldRekey, err := m.cipherStore.send(m.conn, peerID, msg)
+	if err != nil {
+		return err
+	}
+
+	if shouldRekey {
+		m.rekeyMgr.resetIfExists(peerID, noiseSessionRefreshInterval)
 	}
 
 	return nil
