@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
+	mathrand "math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
@@ -19,9 +20,10 @@ import (
 )
 
 const (
-	staticKeyFile          = "static_keys.pb"
-	sessionRefreshInterval = time.Second * 15            // new IK handshake every 2 mins
-	sessionDuration        = sessionRefreshInterval + 10 // give 10 second overlap to deal with inflight packets
+	staticKeyFile                = "static_keys.pb"
+	sessionRefreshInterval       = time.Second * 120 // new IK handshake every 2 mins
+	sessionRefreshIntervalJitter = 0.1
+	sessionDuration              = sessionRefreshInterval + 10 // give 10 second overlap to deal with inflight packets
 
 	// Noise enforces a MaxNonce of 2^64-1. We set a "slightly" lower limit.
 	maxNonce = uint32(math.MaxUint32) - 1
@@ -92,16 +94,17 @@ func newSession(peerAddr *net.UDPAddr, peerID uint32, send, recv *noise.CipherSt
 	zap.L().Named("session").Debug("Creating new session...")
 
 	go func() {
-		timer := time.NewTimer(sessionRefreshInterval)
+		// TODO(saml) ensure we persist a session until the new one is live and can replace it (use sessionDuration)
+		timer := time.NewTimer(jitteredSessionRefreshInterval())
 		fn := func(uint32) error { return nil }
 		for {
 			select {
 			case fn = <-s.fnCh:
 			case <-timer.C:
 				_ = fn(s.peerID)
-				timer.Reset(sessionRefreshInterval)
+				timer.Reset(jitteredSessionRefreshInterval())
 			case <-s.bumpCh:
-				timer.Reset(sessionRefreshInterval)
+				timer.Reset(jitteredSessionRefreshInterval())
 			case <-s.closeCh:
 				close(s.doneCh)
 				zap.L().Named("session").Debug("Closing session...")
@@ -111,6 +114,20 @@ func newSession(peerAddr *net.UDPAddr, peerID uint32, send, recv *noise.CipherSt
 	}()
 
 	return s
+}
+
+func jitteredSessionRefreshInterval() time.Duration {
+	return jitter(sessionRefreshInterval, sessionRefreshIntervalJitter)
+}
+
+// jitter returns d randomized by ±percent (0–1).
+// e.g. jitter(30*time.Second, 0.1) → 27s–33s
+func jitter(d time.Duration, percent float64) time.Duration {
+	delta := time.Duration(float64(d) * percent) // max deviation
+	// Sample in [0, 2*delta] then shift to [-delta, +delta].
+	n := int64(delta)*2 + 1
+	offset := time.Duration(mathrand.N(n)) - delta
+	return d + offset
 }
 
 func (s *session) setPingFn(fn func(uint32) error) {
