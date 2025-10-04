@@ -10,9 +10,9 @@ import (
 
 	"github.com/flynn/noise"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	"github.com/sambigeara/pollen/pkg/invites"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/node"
-	"github.com/sambigeara/pollen/pkg/peers"
 	"github.com/sambigeara/pollen/pkg/workspace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -194,13 +194,13 @@ func runInvite(cmd *cobra.Command, args []string) {
 		log.Fatalf("failed to encode invite: %v", err)
 	}
 
-	peersStore, err := peers.Load(filepath.Join(pollenDir, workspace.PeersDir))
+	invitesStore, err := invites.Load(filepath.Join(pollenDir, workspace.PeersDir))
 	if err != nil {
 		log.Fatalf("failed to load peers store: %v", err)
 	}
-	defer peersStore.Save()
+	defer invitesStore.Save()
 
-	peersStore.AddInvite(token)
+	invitesStore.AddInvite(token)
 
 	fmt.Fprint(cmd.OutOrStdout(), encoded)
 }

@@ -13,7 +13,6 @@ import (
 )
 
 type (
-	InviteID            string
 	PeerStaticPublicKey []byte
 )
 
@@ -48,10 +47,6 @@ func Load(dir string) (*PeerStore, error) {
 
 	if ps.Peers == nil {
 		ps.Peers = make(map[string]*peerv1.Known)
-	}
-
-	if ps.Invites == nil {
-		ps.Invites = make(map[string]*peerv1.Invite)
 	}
 
 	return &PeerStore{
@@ -100,28 +95,6 @@ func (s *PeerStore) PromoteToPeer(key PeerStaticPublicKey, peerAddr string) {
 		StaticKey: key,
 		Addr:      peerAddr,
 	})
-}
-
-func (s *PeerStore) AddInvite(inv *peerv1.Invite) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.Invites[inv.Id] = inv
-}
-
-func (s *PeerStore) GetInvite(id InviteID) (*peerv1.Invite, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	inv, ok := s.Invites[string(id)]
-	return inv, ok
-}
-
-func (s *PeerStore) DeleteInvite(id InviteID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	delete(s.Invites, string(id))
 }
 
 func (s *PeerStore) GetAllKnown() []*peerv1.Known {

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	"github.com/sambigeara/pollen/pkg/invites"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/peers"
 	"github.com/sambigeara/pollen/pkg/workspace"
@@ -25,7 +26,13 @@ func New(port int, pollenDir string) (*Node, error) {
 		return nil, err
 	}
 
-	mesh, err := mesh.New(peersStore, pollenDir, port)
+	invitesStore, err := invites.Load(filepath.Join(pollenDir, workspace.PeersDir))
+	if err != nil {
+		log.Error("failed to load peers", zap.Error(err))
+		return nil, err
+	}
+
+	mesh, err := mesh.New(peersStore, invitesStore, pollenDir, port)
 	if err != nil {
 		return nil, err
 	}

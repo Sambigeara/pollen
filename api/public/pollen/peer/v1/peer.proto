@@ -26,5 +26,10 @@ message Invite {
 
 message PeerStore {
   map<string, Known> peers = 1;
-  map<string, Invite> invites = 2;
+  // map<string, Invite> invites = 2;
+}
+
+message InviteStore {
+  // map<string, Known> peers = 1;
+  map<string, Invite> invites = 1;
 }

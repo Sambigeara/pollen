@@ -13,6 +13,7 @@ import (
 
 	"github.com/flynn/noise"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	"github.com/sambigeara/pollen/pkg/invites"
 	"github.com/sambigeara/pollen/pkg/peers"
 	"github.com/sambigeara/pollen/pkg/workspace"
 	"go.uber.org/zap"
@@ -25,16 +26,17 @@ var handshakePrologue = []byte("pollenv1")
 type Mesh struct {
 	log            *zap.SugaredLogger
 	peers          *peers.PeerStore
+	invites        *invites.InviteStore
 	localStaticKey *noise.DHKey
 	noiseCS        *noise.CipherSuite
 	conn           *net.UDPConn
 	handshakeStore *handshakeStore
-	cipherStore    *cipherStore
+	sessionStore   *sessionStore
 	rekeyMgr       *rekeyManager
 	port           int
 }
 
-func New(peers *peers.PeerStore, pollenDir string, port int) (*Mesh, error) {
+func New(peers *peers.PeerStore, invites *invites.InviteStore, pollenDir string, port int) (*Mesh, error) {
 	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
 
 	staticKey, err := GenStaticKey(cs, filepath.Join(pollenDir, workspace.CredsDir))
@@ -46,10 +48,11 @@ func New(peers *peers.PeerStore, pollenDir string, port int) (*Mesh, error) {
 		log:            zap.S().Named("mesh"),
 		port:           port,
 		peers:          peers,
+		invites:        invites,
 		localStaticKey: staticKey,
 		noiseCS:        &cs,
-		handshakeStore: newHandshakeStore(&cs, peers, staticKey),
-		cipherStore:    newCipherStore(),
+		handshakeStore: newHandshakeStore(&cs, invites, staticKey),
+		sessionStore:   newSessionStore(),
 		rekeyMgr:       newRekeyManager(),
 	}, nil
 }
@@ -95,10 +98,10 @@ func (m *Mesh) listen(ctx context.Context) error {
 
 		g.Go(func() error {
 			if dg.tp == messageTypeTransportData {
-				return m.handleTransportDataMsg(dg)
+				return m.handleTransportDataMsg(dg.receiverID, dg.msg)
 			}
 
-			hs, err := m.handshakeStore.get(dg)
+			hs, err := m.handshakeStore.get(dg.tp, dg.senderID, dg.receiverID)
 			if err != nil {
 				m.log.Errorf("get hs: %v", err)
 				return nil
@@ -108,24 +111,36 @@ func (m *Mesh) listen(ctx context.Context) error {
 				return nil
 			}
 
-			noiseConn, err := hs.progress(m.conn, dg.msg, dg.senderUDPAddr, dg.senderID)
+			sess, peerStaticKey, err := hs.progress(m.conn, dg.msg, dg.senderUDPAddr, dg.senderID)
 			if err != nil {
 				m.log.Errorf("failed to progress for senderID (%d), kind (%d): %v", dg.senderID, dg.tp, err)
 				return nil // TODO(saml) return err to cancel others?
 			}
 
-			if noiseConn != nil {
+			if sess != nil {
 				m.log.Infof("established connection for: %d", dg.tp)
 				m.handshakeStore.clear(dg.senderID)
 
-				switch hs.(type) {
-				case *handshakeIKInit, *handshakeXXPsk2Init:
-					m.scheduleRekey(dg.senderID, noiseConn.peerStaticKey)
+				switch t := hs.(type) {
+				case *handshakeIKInit:
+					m.scheduleRekey(dg.senderID, peerStaticKey)
+				case *handshakeXXPsk2Init:
+					m.scheduleRekey(dg.senderID, peerStaticKey)
+					m.peers.Add(&peerv1.Known{
+						StaticKey: peerStaticKey,
+						Addr:      t.peerUDPAddr.String(),
+					})
 				case *handshakeIKResp:
-					m.rekeyMgr.resetIfExists(dg.senderID, noiseSessionRefreshInterval)
+					m.rekeyMgr.resetIfExists(dg.senderID, sessionRefreshInterval)
+				case *handshakeXXPsk2Resp:
+					m.peers.PromoteToPeer(peerStaticKey, t.peerUDPAddr.String())
 				}
 
-				m.cipherStore.set(dg.senderID, noiseConn)
+				sess.setPingFn(func(peerID uint32) error {
+					m.log.Info("Ah, ah, ah, ah, (attempting to) stay alive, (attempting to) stay alive...")
+					return m.Send(peerID, []byte{})
+				})
+				m.sessionStore.set(peerStaticKey, dg.senderID, sess)
 			}
 
 			return nil
@@ -133,23 +148,33 @@ func (m *Mesh) listen(ctx context.Context) error {
 	}
 }
 
-func (m *Mesh) handleTransportDataMsg(dg *datagram) error {
-	_, shouldRekey, err := m.cipherStore.read(dg.receiverID, dg.msg)
+func (m *Mesh) handleTransportDataMsg(receiverID uint32, msg []byte) error {
+	sess, ok := m.sessionStore.get(receiverID)
+	if !ok {
+		return nil
+	}
+
+	pt, shouldRekey, err := sess.Decrypt(msg)
 	if err != nil {
 		return err
 	}
 
 	if shouldRekey {
-		m.rekeyMgr.resetIfExists(dg.receiverID, noiseSessionRefreshInterval)
+		m.rekeyMgr.resetIfExists(receiverID, sessionRefreshInterval)
 	}
 
-	// 	fmt.Println(string(pt))
+	fmt.Println(string(pt))
 	return nil
 }
 
 func (m *Mesh) scheduleRekey(peerSessionID uint32, staticKey []byte) {
-	t := time.AfterFunc(noiseSessionRefreshInterval, func() {
-		if err := m.handshakeStore.initIK(m.conn, staticKey); err != nil {
+	t := time.AfterFunc(sessionRefreshInterval, func() {
+		p, ok := m.peers.Get(staticKey)
+		if !ok {
+			return
+		}
+
+		if err := m.handshakeStore.initIK(m.conn, staticKey, p.Addr); err != nil {
 			m.log.Error(err)
 		}
 		m.log.Info("successfully rekeyed")
@@ -167,7 +192,7 @@ func (m *Mesh) handleInitiators(ctx context.Context, token *peerv1.Invite) error
 	}
 
 	for _, k := range m.peers.GetAllKnown() {
-		if err := m.handshakeStore.initIK(m.conn, k.StaticKey); err != nil {
+		if err := m.handshakeStore.initIK(m.conn, k.StaticKey, k.Addr); err != nil {
 			m.log.Error("failed to create IK handshake")
 			return err
 		}
@@ -176,14 +201,19 @@ func (m *Mesh) handleInitiators(ctx context.Context, token *peerv1.Invite) error
 	return nil
 }
 
-func (m *Mesh) Send(ctx context.Context, peerID uint32, msg []byte) error {
-	shouldRekey, err := m.cipherStore.send(m.conn, peerID, msg)
+func (m *Mesh) Send(peerID uint32, msg []byte) error {
+	sess, ok := m.sessionStore.get(peerID)
+	if !ok {
+		return nil
+	}
+
+	shouldRekey, err := sess.Send(m.conn, msg)
 	if err != nil {
 		return err
 	}
 
 	if shouldRekey {
-		m.rekeyMgr.resetIfExists(peerID, noiseSessionRefreshInterval)
+		m.rekeyMgr.resetIfExists(peerID, sessionRefreshInterval)
 	}
 
 	return nil
@@ -196,6 +226,10 @@ func (m *Mesh) Shutdown(ctx context.Context) error {
 	}
 
 	if err := m.peers.Save(); err != nil {
+		return err
+	}
+
+	if err := m.invites.Save(); err != nil {
 		return err
 	}
 
