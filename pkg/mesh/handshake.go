@@ -21,7 +21,7 @@ var (
 )
 
 type handshake interface {
-	progress(conn *net.UDPConn, msg []byte, peerUDPAddr *net.UDPAddr, peerSessionID uint32) (*session, []byte, error)
+	progress(conn *UDPConn, msg []byte, peerUDPAddr *net.UDPAddr, peerSessionID uint32) (*session, []byte, error)
 }
 
 type handshakeStore struct {
@@ -81,7 +81,7 @@ func (st *handshakeStore) get(tp messageType, peerSessionID, localSessionID uint
 	return hs, err
 }
 
-func (st *handshakeStore) initIK(conn *net.UDPConn, peerStaticKey []byte, peerRawAddress string) error {
+func (st *handshakeStore) initIK(conn *UDPConn, peerStaticKey []byte, peerRawAddress string) error {
 	hs, err := newHandshakeIKInit(st.cs, st.localStaticKey, peerStaticKey, peerRawAddress)
 	if err != nil {
 		return err
@@ -98,7 +98,7 @@ func (st *handshakeStore) initIK(conn *net.UDPConn, peerStaticKey []byte, peerRa
 	return nil
 }
 
-func (st *handshakeStore) initXXPsk2(conn *net.UDPConn, token *peerv1.Invite) error {
+func (st *handshakeStore) initXXPsk2(conn *UDPConn, token *peerv1.Invite) error {
 	hs, err := newHandshakeXXPsk2Init(st.cs, st.localStaticKey, token)
 	if err != nil {
 		return err
@@ -170,7 +170,7 @@ func newHandshakeIKInit(cs *noise.CipherSuite, localStaticKey *noise.DHKey, peer
 	}, nil
 }
 
-func (hs *handshakeIKInit) progress(conn *net.UDPConn, rcvMsg []byte, _ *net.UDPAddr, peerSessionID uint32) (*session, []byte, error) {
+func (hs *handshakeIKInit) progress(conn *UDPConn, rcvMsg []byte, _ *net.UDPAddr, _ uint32) (*session, []byte, error) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
@@ -189,7 +189,7 @@ func (hs *handshakeIKInit) progress(conn *net.UDPConn, rcvMsg []byte, _ *net.UDP
 			return nil, nil, err
 		}
 
-		return newSession(hs.peerUDPAddr, peerSessionID, csSend, csRecv), hs.PeerStatic(), nil
+		return newSession(hs.peerUDPAddr, csSend, csRecv), hs.PeerStatic(), nil
 	default:
 		return nil, nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
 	}
@@ -224,7 +224,7 @@ func newHandshakeIKResp(cs *noise.CipherSuite, localStaticKey *noise.DHKey, loca
 	}, nil
 }
 
-func (hs *handshakeIKResp) progress(conn *net.UDPConn, rcvMsg []byte, peerUDPAddr *net.UDPAddr, peerSessionID uint32) (*session, []byte, error) {
+func (hs *handshakeIKResp) progress(conn *UDPConn, rcvMsg []byte, peerUDPAddr *net.UDPAddr, peerSessionID uint32) (*session, []byte, error) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
@@ -243,7 +243,7 @@ func (hs *handshakeIKResp) progress(conn *net.UDPConn, rcvMsg []byte, peerUDPAdd
 			return nil, nil, err
 		}
 
-		return newSession(peerUDPAddr, peerSessionID, csSend, csRecv), hs.PeerStatic(), nil
+		return newSession(peerUDPAddr, csSend, csRecv), hs.PeerStatic(), nil
 	default:
 		return nil, nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
 	}
@@ -291,7 +291,7 @@ func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey *noise.DHKey, 
 	}, nil
 }
 
-func (hs *handshakeXXPsk2Init) progress(conn *net.UDPConn, rcvMsg []byte, _ *net.UDPAddr, peerSessionID uint32) (*session, []byte, error) {
+func (hs *handshakeXXPsk2Init) progress(conn *UDPConn, rcvMsg []byte, _ *net.UDPAddr, peerSessionID uint32) (*session, []byte, error) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
@@ -317,7 +317,7 @@ func (hs *handshakeXXPsk2Init) progress(conn *net.UDPConn, rcvMsg []byte, _ *net
 			return nil, nil, err
 		}
 
-		return newSession(hs.peerUDPAddr, peerSessionID, csSend, csRecv), hs.PeerStatic(), nil
+		return newSession(hs.peerUDPAddr, csSend, csRecv), hs.PeerStatic(), nil
 	default:
 		return nil, nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
 	}
@@ -358,7 +358,7 @@ func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, invitesStore *invites.InviteS
 	}, nil
 }
 
-func (hs *handshakeXXPsk2Resp) progress(conn *net.UDPConn, rcvMsg []byte, peerUDPAddr *net.UDPAddr, peerSessionID uint32) (*session, []byte, error) {
+func (hs *handshakeXXPsk2Resp) progress(conn *UDPConn, rcvMsg []byte, peerUDPAddr *net.UDPAddr, peerSessionID uint32) (*session, []byte, error) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
@@ -397,7 +397,7 @@ func (hs *handshakeXXPsk2Resp) progress(conn *net.UDPConn, rcvMsg []byte, peerUD
 			return nil, nil, err
 		}
 
-		return newSession(hs.peerUDPAddr, peerSessionID, csSend, csRecv), hs.PeerStatic(), nil
+		return newSession(hs.peerUDPAddr, csSend, csRecv), hs.PeerStatic(), nil
 	default:
 		return nil, nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
 	}

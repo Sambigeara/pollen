@@ -15,6 +15,7 @@ const (
 	messageTypeHandshakeIKResp
 
 	messageTypeTransportData
+	messageTypePing
 )
 
 type datagram struct {
@@ -25,9 +26,12 @@ type datagram struct {
 	receiverID    uint32
 }
 
-func write(conn *net.UDPConn, addr *net.UDPAddr, tp messageType, senderID, receiverID uint32, msg []byte) error {
+func write(conn *UDPConn, addr *net.UDPAddr, tp messageType, senderID, receiverID uint32, msg []byte) error {
 	var datagram []byte
 	switch tp {
+	case messageTypePing:
+		datagram = make([]byte, 4)
+		binary.BigEndian.PutUint32(datagram[:4], uint32(tp))
 	case messageTypeHandshakeIKInit, messageTypeHandshakeXXPsk2Init:
 		datagram = make([]byte, 8+len(msg))
 		binary.BigEndian.PutUint32(datagram[:4], uint32(tp))
@@ -50,7 +54,7 @@ func write(conn *net.UDPConn, addr *net.UDPAddr, tp messageType, senderID, recei
 	return err
 }
 
-func read(conn *net.UDPConn, buf []byte) (*datagram, error) {
+func read(conn *UDPConn, buf []byte) (*datagram, error) {
 	if buf == nil {
 		buf = make([]byte, 2048)
 	}
@@ -59,16 +63,21 @@ func read(conn *net.UDPConn, buf []byte) (*datagram, error) {
 		return nil, err
 	}
 
-	if n < 8 {
+	if n < 4 {
 		return nil, fmt.Errorf("handshake frame too short: %d", n)
 	}
 
 	var senderID, receiverID uint32
 	tp := messageType(binary.BigEndian.Uint32(buf[:4]))
-	payloadOffset := 8
+	payloadOffset := 4
 	switch tp {
+	case messageTypePing:
 	case messageTypeHandshakeIKInit, messageTypeHandshakeXXPsk2Init:
+		if n < 8 {
+			return nil, fmt.Errorf("handshake frame too short: %d", n)
+		}
 		senderID = binary.BigEndian.Uint32(buf[4:8])
+		payloadOffset = 8
 	case messageTypeHandshakeIKResp, messageTypeHandshakeXXPsk2Resp:
 		if n < 12 {
 			return nil, fmt.Errorf("handshake frame too short: %d", n)
@@ -77,7 +86,11 @@ func read(conn *net.UDPConn, buf []byte) (*datagram, error) {
 		receiverID = binary.BigEndian.Uint32(buf[8:12])
 		payloadOffset = 12
 	case messageTypeTransportData:
+		if n < 8 {
+			return nil, fmt.Errorf("handshake frame too short: %d", n)
+		}
 		receiverID = binary.BigEndian.Uint32(buf[4:8])
+		payloadOffset = 8
 	}
 
 	return &datagram{

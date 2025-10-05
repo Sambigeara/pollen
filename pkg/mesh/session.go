@@ -5,25 +5,19 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
-	mathrand "math/rand/v2"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/flynn/noise"
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
 	cryptov1 "github.com/sambigeara/pollen/api/genpb/pollen/crypto/v1"
 )
 
 const (
-	staticKeyFile                = "static_keys.pb"
-	sessionRefreshInterval       = time.Second * 120 // new IK handshake every 2 mins
-	sessionRefreshIntervalJitter = 0.1
-	sessionDuration              = sessionRefreshInterval + 10 // give 10 second overlap to deal with inflight packets
+	staticKeyFile = "static_keys.pb"
 
 	// Noise enforces a MaxNonce of 2^64-1. We set a "slightly" lower limit.
 	maxNonce = uint32(math.MaxUint32) - 1
@@ -46,14 +40,12 @@ func (s *sessionStore) set(staticKey []byte, sessionID uint32, conn *session) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if prevSessID, ok := s.keyIDMap[hex.EncodeToString(staticKey)]; ok {
-		if prevConn, ok := s.idSessMap[prevSessID]; ok {
-			prevConn.close()
-			delete(s.idSessMap, prevSessID)
-		}
+	k := hex.EncodeToString(staticKey)
+	if prevSessID, ok := s.keyIDMap[k]; ok {
+		delete(s.idSessMap, prevSessID)
 	}
 
-	s.keyIDMap[hex.EncodeToString(staticKey)] = sessionID
+	s.keyIDMap[k] = sessionID
 	s.idSessMap[sessionID] = conn
 }
 
@@ -68,88 +60,17 @@ func (s *sessionStore) get(peerID uint32) (*session, bool) {
 type pingFn func(uint32) error
 
 type session struct {
-	fnCh    chan pingFn
-	bumpCh  chan struct{}
-	closeCh chan struct{}
-	doneCh  chan struct{}
-
 	peerAddr *net.UDPAddr
-	peerID   uint32
 	send     *noise.CipherState
 	recv     *noise.CipherState
 }
 
-func newSession(peerAddr *net.UDPAddr, peerID uint32, send, recv *noise.CipherState) *session {
-	s := &session{
+func newSession(peerAddr *net.UDPAddr, send, recv *noise.CipherState) *session {
+	return &session{
 		peerAddr: peerAddr,
-		peerID:   peerID,
 		send:     send,
 		recv:     recv,
-		fnCh:     make(chan pingFn),
-		bumpCh:   make(chan struct{}),
-		closeCh:  make(chan struct{}),
-		doneCh:   make(chan struct{}),
 	}
-
-	zap.L().Named("session").Debug("Creating new session...")
-
-	go func() {
-		// TODO(saml) ensure we persist a session until the new one is live and can replace it (use sessionDuration)
-		timer := time.NewTimer(jitteredSessionRefreshInterval())
-		fn := func(uint32) error { return nil }
-		for {
-			select {
-			case fn = <-s.fnCh:
-			case <-timer.C:
-				_ = fn(s.peerID)
-				timer.Reset(jitteredSessionRefreshInterval())
-			case <-s.bumpCh:
-				timer.Reset(jitteredSessionRefreshInterval())
-			case <-s.closeCh:
-				close(s.doneCh)
-				zap.L().Named("session").Debug("Closing session...")
-				return
-			}
-		}
-	}()
-
-	return s
-}
-
-func jitteredSessionRefreshInterval() time.Duration {
-	return jitter(sessionRefreshInterval, sessionRefreshIntervalJitter)
-}
-
-// jitter returns d randomized by ±percent (0–1).
-// e.g. jitter(30*time.Second, 0.1) → 27s–33s
-func jitter(d time.Duration, percent float64) time.Duration {
-	delta := time.Duration(float64(d) * percent) // max deviation
-	// Sample in [0, 2*delta] then shift to [-delta, +delta].
-	n := int64(delta)*2 + 1
-	offset := time.Duration(mathrand.N(n)) - delta
-	return d + offset
-}
-
-func (s *session) setPingFn(fn func(uint32) error) {
-	go func() {
-		select {
-		case s.fnCh <- fn:
-		case <-s.doneCh:
-		}
-	}()
-}
-
-func (s *session) reset() {
-	go func() {
-		select {
-		case s.bumpCh <- struct{}{}:
-		case <-s.doneCh:
-		}
-	}()
-}
-
-func (s *session) close() {
-	s.closeCh <- struct{}{}
 }
 
 func (s *session) Decrypt(msg []byte) ([]byte, bool, error) {
@@ -158,22 +79,16 @@ func (s *session) Decrypt(msg []byte) ([]byte, bool, error) {
 		return nil, false, err
 	}
 
-	s.reset()
 	return pt, s.shouldRekey(), nil
 }
 
-func (s *session) Send(conn *net.UDPConn, msg []byte) (bool, error) {
+func (s *session) Encrypt(conn *UDPConn, msg []byte) ([]byte, bool, error) {
 	enc, err := s.send.Encrypt(nil, nil, msg)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 
-	if err := write(conn, s.peerAddr, messageTypeTransportData, 0, s.peerID, enc); err != nil {
-		return s.shouldRekey(), err
-	}
-
-	s.reset()
-	return s.shouldRekey(), nil
+	return enc, s.shouldRekey(), nil
 }
 
 func (s *session) shouldRekey() bool {

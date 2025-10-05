@@ -29,7 +29,7 @@ type Mesh struct {
 	invites        *invites.InviteStore
 	localStaticKey *noise.DHKey
 	noiseCS        *noise.CipherSuite
-	conn           *net.UDPConn
+	conn           *UDPConn
 	handshakeStore *handshakeStore
 	sessionStore   *sessionStore
 	rekeyMgr       *rekeyManager
@@ -59,7 +59,7 @@ func New(peers *peers.PeerStore, invites *invites.InviteStore, pollenDir string,
 
 func (m *Mesh) Start(ctx context.Context, token *peerv1.Invite) error {
 	var err error
-	m.conn, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: m.port})
+	m.conn, err = newUDPConn(ctx, m.port)
 	if err != nil {
 		return err
 	}
@@ -97,7 +97,11 @@ func (m *Mesh) listen(ctx context.Context) error {
 		}
 
 		g.Go(func() error {
-			if dg.tp == messageTypeTransportData {
+			switch dg.tp {
+			case messageTypePing:
+				zap.L().Named("session").Debug("...pinged!")
+				return nil
+			case messageTypeTransportData:
 				return m.handleTransportDataMsg(dg.receiverID, dg.msg)
 			}
 
@@ -123,6 +127,8 @@ func (m *Mesh) listen(ctx context.Context) error {
 
 				switch t := hs.(type) {
 				case *handshakeIKInit:
+					// TODO(saml) I've mixed up the rekey and the ping
+					// TODO(saml) ensure we persist a session until the new one is live and can replace it (use sessionDuration)
 					m.scheduleRekey(dg.senderID, peerStaticKey)
 				case *handshakeXXPsk2Init:
 					m.scheduleRekey(dg.senderID, peerStaticKey)
@@ -136,10 +142,6 @@ func (m *Mesh) listen(ctx context.Context) error {
 					m.peers.PromoteToPeer(peerStaticKey, t.peerUDPAddr.String())
 				}
 
-				sess.setPingFn(func(peerID uint32) error {
-					m.log.Info("Ah, ah, ah, ah, (attempting to) stay alive, (attempting to) stay alive...")
-					return m.Send(peerID, []byte{})
-				})
 				m.sessionStore.set(peerStaticKey, dg.senderID, sess)
 			}
 
@@ -207,8 +209,12 @@ func (m *Mesh) Send(peerID uint32, msg []byte) error {
 		return nil
 	}
 
-	shouldRekey, err := sess.Send(m.conn, msg)
+	enc, shouldRekey, err := sess.Encrypt(m.conn, msg)
 	if err != nil {
+		return err
+	}
+
+	if err := write(m.conn, sess.peerAddr, messageTypeTransportData, 0, peerID, enc); err != nil {
 		return err
 	}
 
