@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 
 	"github.com/flynn/noise"
@@ -25,8 +26,9 @@ import (
 )
 
 const (
-	pollenDir  = ".pollen"
-	socketName = "pollen.sock"
+	pollenDir      = ".pollen"
+	socketName     = "pollen.sock"
+	defaultUDPPort = "51820"
 )
 
 func main() {
@@ -43,16 +45,17 @@ func main() {
 		Short: "Start a Pollen node",
 		Run:   runNode,
 	}
-	nodeCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
-	nodeCmd.Flags().Int("port", 8080, "Listen address")
+	nodeCmd.Flags().String("port", defaultUDPPort, "Listening port")
 	nodeCmd.Flags().String("join", "", "Invite token to join remote peer")
+	nodeCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
 
 	inviteCmd := &cobra.Command{
 		Use:   "invite",
 		Short: "Generate an invite token for a peer",
 		Run:   runInvite,
 	}
-	inviteCmd.Flags().String("addr", "", "Peer address for the invite")
+	inviteCmd.Flags().IP("ip", []byte{}, "IP address advertised to peers")
+	inviteCmd.Flags().String("port", defaultUDPPort, "Port advertised to peers")
 	inviteCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
 
 	rootCmd.AddCommand(nodeCmd, inviteCmd)
@@ -69,7 +72,7 @@ func runNode(cmd *cobra.Command, args []string) {
 	zap.L().Info("starting pollen...", zap.String("version", "0.1.0")) // TODO(saml) retrieve version
 	log := zap.S().Named("pollen")
 
-	port, _ := cmd.Flags().GetInt("port")
+	portStr, _ := cmd.Flags().GetString("port")
 	joinToken, _ := cmd.Flags().GetString("join")
 	dir, _ := cmd.Flags().GetString("dir")
 
@@ -87,6 +90,11 @@ func runNode(cmd *cobra.Command, args []string) {
 		if err != nil {
 			log.Fatal(err)
 		}
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		log.Fatalf("port '%s' is invalid: %v", portStr, err)
 	}
 
 	n, err := node.New(port, pollenDir)
@@ -119,7 +127,8 @@ func runNode(cmd *cobra.Command, args []string) {
 }
 
 func runInvite(cmd *cobra.Command, args []string) {
-	addr, _ := cmd.Flags().GetString("addr")
+	ip, _ := cmd.Flags().GetIP("ip")
+	port, _ := cmd.Flags().GetString("port")
 	dir, _ := cmd.Flags().GetString("dir")
 
 	pollenDir, err := workspace.EnsurePollenDir(dir)
@@ -134,7 +143,15 @@ func runInvite(cmd *cobra.Command, args []string) {
 		log.Fatalf("failed to load noise key: %v", err)
 	}
 
-	token, err := node.NewInvite(addr, noiseKey.Public)
+	if ip == nil {
+		var err error
+		ip, err = mesh.DiscoverIP()
+		if err != nil {
+			log.Fatalf("failed to infer public IP")
+		}
+	}
+
+	token, err := node.NewInvite(ip, port, noiseKey.Public)
 	if err != nil {
 		log.Fatalf("failed to generate invite: %v", err)
 	}
