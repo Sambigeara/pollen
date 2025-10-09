@@ -77,7 +77,7 @@ func (m *Mesh) Start(ctx context.Context, token *peerv1.Invite) error {
 
 func (m *Mesh) listen(ctx context.Context) error {
 	g, ctx := errgroup.WithContext(ctx)
-	// TODO(saml) there will be a lof of IO so we can probably tune up aggressively
+	// TODO(saml) there will be a lot of IO so we can probably tune up aggressively
 	g.SetLimit(runtime.NumCPU() + 4)
 
 	for {
@@ -127,8 +127,6 @@ func (m *Mesh) listen(ctx context.Context) error {
 
 				switch t := hs.(type) {
 				case *handshakeIKInit:
-					// TODO(saml) I've mixed up the rekey and the ping
-					// TODO(saml) ensure we persist a session until the new one is live and can replace it (use sessionDuration)
 					m.scheduleRekey(dg.senderID, peerStaticKey)
 				case *handshakeXXPsk2Init:
 					m.scheduleRekey(dg.senderID, peerStaticKey)
