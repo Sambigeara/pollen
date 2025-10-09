@@ -2,22 +2,26 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
-	"strings"
+	"syscall"
 
 	"github.com/flynn/noise"
-	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	"github.com/sourcegraph/conc/pool"
+	"github.com/spf13/cobra"
+	"go.uber.org/zap"
+
+	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	"github.com/sambigeara/pollen/pkg/invites"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/node"
+	"github.com/sambigeara/pollen/pkg/observability/logging"
+	"github.com/sambigeara/pollen/pkg/server"
 	"github.com/sambigeara/pollen/pkg/workspace"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
-	"github.com/spf13/cobra"
 )
 
 const (
@@ -33,25 +37,15 @@ func main() {
 	defaultRootDir := filepath.Join(base, pollenDir)
 
 	rootCmd := &cobra.Command{Use: "pollen"}
-	rootCmd.PersistentFlags().String("root", defaultRootDir, "Pollen root directory where local state is persisted")
 
-	seedCmd := &cobra.Command{
-		Use:   "seed [wasm-file]",
-		Short: "Deploy a function to the network",
-		Run:   runSeed,
+	nodeCmd := &cobra.Command{
+		Use:   "node",
+		Short: "Start a Pollen node",
+		Run:   runNode,
 	}
-
-	runCmd := &cobra.Command{
-		Use:   "run [function-name]",
-		Short: "Execute a function",
-		Run:   runRun,
-	}
-
-	listCmd := &cobra.Command{
-		Use:   "list",
-		Short: "List all functions",
-		Run:   runList,
-	}
+	nodeCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
+	nodeCmd.Flags().Int("port", 8080, "Listen address")
+	nodeCmd.Flags().String("join", "", "Invite token to join remote peer")
 
 	inviteCmd := &cobra.Command{
 		Use:   "invite",
@@ -61,111 +55,67 @@ func main() {
 	inviteCmd.Flags().String("addr", "", "Peer address for the invite")
 	inviteCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
 
-	rootCmd.AddCommand(seedCmd, runCmd, listCmd, inviteCmd)
-	rootCmd.Execute()
+	rootCmd.AddCommand(nodeCmd, inviteCmd)
+
+	if err := rootCmd.Execute(); err != nil {
+		log.Fatalf("Failed to execute command: %q", err)
+	}
 }
 
-func runSeed(cmd *cobra.Command, args []string) {
-	if len(args) == 0 {
-		cmd.Println("Error: wasm file argument required")
-		cmd.Usage()
-		return
-	}
+func runNode(cmd *cobra.Command, args []string) {
+	logging.Init()
+	defer zap.L().Sync()
 
-	wasmFile := args[0]
+	zap.L().Info("starting pollen...", zap.String("version", "0.1.0")) // TODO(saml) retrieve version
+	log := zap.S().Named("pollen")
 
-	sockPath, err := resolveSocketPath(cmd)
+	port, _ := cmd.Flags().GetInt("port")
+	joinToken, _ := cmd.Flags().GetString("join")
+	dir, _ := cmd.Flags().GetString("dir")
+
+	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopFunc()
+
+	pollenDir, err := workspace.EnsurePollenDir(dir)
 	if err != nil {
-		log.Fatalf("failed to resolve socket: %v", err)
+		log.Fatal(err)
 	}
 
-	client, cleanup, err := connectToControlService(sockPath)
+	var tkn *peerv1.Invite
+	if joinToken != "" {
+		tkn, err = node.DecodeToken(joinToken)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	n, err := node.New(port, pollenDir)
 	if err != nil {
-		log.Fatalf("failed to connect to node: %v", err)
+		log.Fatal(err)
 	}
-	defer cleanup()
 
-	ctx := context.Background()
-	_, err = client.Seed(ctx, &controlv1.SeedRequest{
-		WasmPath: wasmFile,
+	nodeSrv := node.NewNodeService(n)
+
+	cmd.Print("Successfully started node\n")
+
+	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
+	p.Go(func(ctx context.Context) error {
+		grpcSrv := server.NewGRPCServer()
+		// TODO(saml) this needs to be self healing, in case another local node which originally owned
+		// the grpc server port disappears and this one needs to claim it.
+		return grpcSrv.Start(ctx, nodeSrv, filepath.Join(pollenDir, socketName))
 	})
-	if err != nil {
-		log.Fatalf("failed to seed function: %v", err)
-	}
 
-	cmd.Printf("Successfully seeded function from %s\n", wasmFile)
-}
-
-func runRun(cmd *cobra.Command, args []string) {
-	if len(args) == 0 {
-		cmd.Println("Error: function name required")
-		cmd.Usage()
-		return
-	}
-
-	fn := args[0]
-
-	sockPath, err := resolveSocketPath(cmd)
-	if err != nil {
-		log.Fatalf("failed to resolve socket: %v", err)
-	}
-
-	client, cleanup, err := connectToControlService(sockPath)
-	if err != nil {
-		log.Fatalf("failed to connect to node: %v", err)
-	}
-	defer cleanup()
-
-	ctx := context.Background()
-	resp, err := client.Run(ctx, &controlv1.RunRequest{
-		Name: fn,
+	p.Go(func(ctx context.Context) error {
+		return n.Start(ctx, tkn)
 	})
-	if err != nil {
-		log.Fatalf("failed to run function: %v", err)
+
+	if err := p.Wait(); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		log.Fatal(err)
 	}
-
-	cmd.Printf("%s\n", resp.Result)
-}
-
-func runList(cmd *cobra.Command, args []string) {
-	sockPath, err := resolveSocketPath(cmd)
-	if err != nil {
-		log.Fatalf("failed to resolve socket: %v", err)
-	}
-
-	client, cleanup, err := connectToControlService(sockPath)
-	if err != nil {
-		log.Fatalf("failed to connect to node: %v", err)
-	}
-	defer cleanup()
-
-	ctx := context.Background()
-	resp, err := client.ListFunctions(ctx, &controlv1.ListFunctionsRequest{})
-	if err != nil {
-		log.Fatalf("failed to list functions: %v", err)
-	}
-
-	cmd.Printf("%s\n", strings.Join(resp.Functions, "\n"))
-}
-
-func connectToControlService(sockPath string) (controlv1.ControlServiceClient, func() error, error) {
-	conn, err := grpc.NewClient("unix:"+sockPath, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	client := controlv1.NewControlServiceClient(conn)
-	return client, conn.Close, nil
-}
-
-func resolveSocketPath(cmd *cobra.Command) (string, error) {
-	root, _ := cmd.Flags().GetString("root")
-	pollenDir, err := workspace.EnsurePollenDir(root)
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.Join(pollenDir, socketName), nil
 }
 
 func runInvite(cmd *cobra.Command, args []string) {
