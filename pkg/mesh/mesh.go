@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"path/filepath"
 	"runtime"
 	"time"
 
@@ -15,7 +14,6 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	"github.com/sambigeara/pollen/pkg/invites"
 	"github.com/sambigeara/pollen/pkg/peers"
-	"github.com/sambigeara/pollen/pkg/workspace"
 	"go.uber.org/zap"
 )
 
@@ -28,7 +26,6 @@ type Mesh struct {
 	peers          *peers.PeerStore
 	invites        *invites.InviteStore
 	localStaticKey *noise.DHKey
-	noiseCS        *noise.CipherSuite
 	conn           *UDPConn
 	handshakeStore *handshakeStore
 	sessionStore   *sessionStore
@@ -36,22 +33,14 @@ type Mesh struct {
 	port           int
 }
 
-func New(peers *peers.PeerStore, invites *invites.InviteStore, pollenDir string, port int) (*Mesh, error) {
-	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
-
-	staticKey, err := GenStaticKey(cs, filepath.Join(pollenDir, workspace.CredsDir))
-	if err != nil {
-		return nil, fmt.Errorf("failed to load noise static key: %w", err)
-	}
-
+func New(cs *noise.CipherSuite, staticKey *noise.DHKey, peers *peers.PeerStore, invites *invites.InviteStore, port int) (*Mesh, error) {
 	return &Mesh{
 		log:            zap.S().Named("mesh"),
 		port:           port,
 		peers:          peers,
 		invites:        invites,
 		localStaticKey: staticKey,
-		noiseCS:        &cs,
-		handshakeStore: newHandshakeStore(&cs, invites, staticKey),
+		handshakeStore: newHandshakeStore(cs, invites, staticKey),
 		sessionStore:   newSessionStore(),
 		rekeyMgr:       newRekeyManager(),
 	}, nil

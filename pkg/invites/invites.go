@@ -11,6 +11,8 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 )
 
+const invitesDir = "invites"
+
 type (
 	InviteID string
 )
@@ -21,7 +23,9 @@ type InviteStore struct {
 	mu   sync.RWMutex
 }
 
-func Load(dir string) (*InviteStore, error) {
+func Load(pollenDir string) (*InviteStore, error) {
+	dir := filepath.Join(pollenDir, invitesDir)
+
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}

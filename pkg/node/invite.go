@@ -11,7 +11,7 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 )
 
-func NewInvite(ip net.IP, port string, staticKey []byte) (*peerv1.Invite, error) {
+func NewInvite(ip net.IP, port string) (*peerv1.Invite, error) {
 	id := uuid.NewString()
 
 	// TODO(saml) PSK should have expiry

@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/flynn/noise"
 	"github.com/sourcegraph/conc/pool"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -109,8 +108,6 @@ func runNode(cmd *cobra.Command, args []string) {
 	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
 	p.Go(func(ctx context.Context) error {
 		grpcSrv := server.NewGRPCServer()
-		// TODO(saml) this needs to be self healing, in case another local node which originally owned
-		// the grpc server port disappears and this one needs to claim it.
 		return grpcSrv.Start(ctx, nodeSrv, filepath.Join(pollenDir, socketName))
 	})
 
@@ -136,13 +133,6 @@ func runInvite(cmd *cobra.Command, args []string) {
 		log.Fatalf("failed to prepare pollen dir: %v", err)
 	}
 
-	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
-	credsDir := filepath.Join(pollenDir, workspace.CredsDir)
-	noiseKey, err := mesh.GenStaticKey(cs, credsDir)
-	if err != nil {
-		log.Fatalf("failed to load noise key: %v", err)
-	}
-
 	if ip == nil {
 		var err error
 		ip, err = mesh.DiscoverIP()
@@ -151,7 +141,7 @@ func runInvite(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	token, err := node.NewInvite(ip, port, noiseKey.Public)
+	token, err := node.NewInvite(ip, port)
 	if err != nil {
 		log.Fatalf("failed to generate invite: %v", err)
 	}
@@ -161,7 +151,7 @@ func runInvite(cmd *cobra.Command, args []string) {
 		log.Fatalf("failed to encode invite: %v", err)
 	}
 
-	invitesStore, err := invites.Load(filepath.Join(pollenDir, workspace.PeersDir))
+	invitesStore, err := invites.Load(pollenDir)
 	if err != nil {
 		log.Fatalf("failed to load peers store: %v", err)
 	}

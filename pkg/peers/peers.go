@@ -12,6 +12,9 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 )
 
+const peersDir = "peers"
+const peersFile = "peers.sha256"
+
 type (
 	PeerStaticPublicKey []byte
 )
@@ -22,12 +25,14 @@ type PeerStore struct {
 	mu   sync.RWMutex
 }
 
-func Load(dir string) (*PeerStore, error) {
+func Load(pollenDir string) (*PeerStore, error) {
+	dir := filepath.Join(pollenDir, peersDir)
+
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 
-	pinsPath := filepath.Join(dir, "peers.sha256")
+	pinsPath := filepath.Join(dir, peersFile)
 
 	f, err := os.OpenFile(pinsPath, os.O_RDONLY|os.O_CREATE, 0o600)
 	if err != nil {
