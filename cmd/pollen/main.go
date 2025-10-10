@@ -135,7 +135,7 @@ func runInvite(cmd *cobra.Command, args []string) {
 
 	if ip == nil {
 		var err error
-		ip, err = mesh.DiscoverIP()
+		ip, err = mesh.GetPublicIP()
 		if err != nil {
 			log.Fatalf("failed to infer public IP")
 		}
