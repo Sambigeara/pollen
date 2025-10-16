@@ -2,185 +2,142 @@ package node
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"net"
-	"sync"
-	"time"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"os"
+	"path/filepath"
 
-	"github.com/sambigeara/pollen/pkg/store"
-	"github.com/sirupsen/logrus"
-	"github.com/sourcegraph/conc/pool"
+	"github.com/flynn/noise"
+	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	"github.com/sambigeara/pollen/pkg/invites"
+	"github.com/sambigeara/pollen/pkg/mesh"
+	"github.com/sambigeara/pollen/pkg/peers"
+	"go.uber.org/zap"
+)
+
+const (
+	localKeysDir = "keys"
+
+	staticKeyName = "static.key"
+	staticPubName = "static.pub"
 )
 
 type Node struct {
-	log  logrus.FieldLogger
-	addr string
-	set  *store.NodeStore
-	mu   sync.RWMutex
-	pool *pool.ContextPool
+	log  *zap.SugaredLogger
+	mesh *mesh.Mesh
 }
 
-func NewNode(log logrus.FieldLogger, addr string, peers []string) *Node {
-	n := &Node{
-		log:  log,
-		addr: addr,
-		set:  store.NewNodeStore(log, addr, peers),
+func New(port int, pollenDir string) (*Node, error) {
+	log := zap.S().Named("node")
+
+	peersStore, err := peers.Load(pollenDir)
+	if err != nil {
+		log.Error("failed to load peers", zap.Error(err))
+		return nil, err
 	}
 
-	return n
+	invitesStore, err := invites.Load(pollenDir)
+	if err != nil {
+		log.Error("failed to load peers", zap.Error(err))
+		return nil, err
+	}
+
+	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
+
+	noiseKey, err := genStaticKey(cs, pollenDir)
+	if err != nil {
+		log.Fatalf("failed to load noise key: %v", err)
+	}
+
+	mesh, err := mesh.New(&cs, noiseKey, peersStore, invitesStore, port)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Node{
+		log:  log,
+		mesh: mesh,
+	}, nil
 }
 
-func (n *Node) Start(ctx context.Context) error {
-	go n.listen(ctx)
-	go n.startPublish(ctx)
+func (m *Node) Start(ctx context.Context, token *peerv1.Invite) error {
+	if err := m.mesh.Start(ctx, token); err != nil {
+		return err
+	}
 
 	<-ctx.Done()
 
-	// after shutdown, attempt to notify peers of closure
-	n.set.DisablePeer(n.addr)
-	n.publishPeers()
+	return m.shutdown(ctx)
+}
+
+func (m *Node) shutdown(ctx context.Context) error {
+	if err := m.mesh.Shutdown(ctx); err != nil {
+		return err
+	}
 
 	return ctx.Err()
 }
 
-func (n *Node) listen(ctx context.Context) error {
-	ln, err := net.Listen("tcp", n.addr)
+func genStaticKey(cs noise.CipherSuite, pollenDir string) (noise.DHKey, error) {
+	dir := filepath.Join(pollenDir, localKeysDir)
+
+	staticKeyPath := filepath.Join(dir, staticKeyName)
+	staticPubPath := filepath.Join(dir, staticPubName)
+
+	requireRegen := false
+	keyEnc, err := os.ReadFile(staticKeyPath)
 	if err != nil {
-		n.log.Errorf("Unable to listen to address: %s", n.addr)
-		return err
+		if errors.Is(err, os.ErrNotExist) {
+			requireRegen = true
+		} else {
+			return noise.DHKey{}, err
+		}
 	}
-	defer ln.Close()
 
-	n.log.Infof("Node listening on %s", n.addr)
-
-	go func() {
-		<-ctx.Done()
-		ln.Close()
-	}()
-
-	for {
-		conn, err := ln.Accept()
+	enc := base64.StdEncoding
+	var pubEnc []byte
+	if !requireRegen {
+		pubEnc, err = os.ReadFile(staticPubPath)
 		if err != nil {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-				n.log.Errorf("Accept error: %v", err)
-				continue
+			if !errors.Is(err, os.ErrNotExist) {
+				return noise.DHKey{}, err
 			}
-		}
-
-		go n.consumePeers(conn)
-	}
-}
-
-func (n *Node) consumePeers(conn net.Conn) error {
-	defer conn.Close()
-
-	decoder := json.NewDecoder(conn)
-	var peerStore store.NodeStore
-	if err := decoder.Decode(&peerStore); err != nil {
-		n.log.Errorf("Error decoding peer set: %v", err)
-		return fmt.Errorf("Decode error: %v", err)
-	}
-
-	n.mu.Lock()
-	n.set.Merge(&peerStore)
-	n.mu.Unlock()
-
-	n.log.Debugf("Merged state from peer %s, now have %d functions", peerStore.OriginAddr, len(n.set.Functions))
-
-	return nil
-}
-
-func (n *Node) startPublish(ctx context.Context) error {
-	// immediate initial sync
-	n.publishPeers()
-
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			n.publishPeers()
+		} else {
+			var key [32]byte
+			keyLen, err := enc.Decode(key[:], keyEnc)
+			if err != nil {
+				return noise.DHKey{}, err
+			}
+			var pub [32]byte
+			pubLen, err := enc.Decode(pub[:], pubEnc)
+			if err != nil {
+				return noise.DHKey{}, err
+			}
+			return noise.DHKey{Private: key[:keyLen], Public: pub[:pubLen]}, nil
 		}
 	}
-}
 
-func (n *Node) publishPeers() {
-	n.mu.RLock()
-	peers := n.GetPeerAddresses()
-	n.mu.RUnlock()
-
-	for _, peer := range peers {
-		go func() {
-			if err := n.gossipToPeer(peer); err != nil {
-				n.log.Debugf("Failed to publish to peer %s: %v", peer, err)
-				n.set.DisablePeer(peer)
-			}
-		}()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return noise.DHKey{}, err
 	}
-}
 
-// TODO(saml) phase out arbitrary JSON
-func (n *Node) gossipToPeer(peer string) error {
-	n.log.Debugf("publishing to peer: %s", peer)
-
-	conn, err := net.Dial("tcp", peer)
+	keyPair, err := cs.GenerateKeypair(rand.Reader)
 	if err != nil {
-		return fmt.Errorf("Failed to connect to %s: %v", peer, err)
-	}
-	defer conn.Close()
-
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
-	if err := json.NewEncoder(conn).Encode(n.set); err != nil {
-		return fmt.Errorf("Failed to send to %s: %v", peer, err)
+		return noise.DHKey{}, err
 	}
 
-	return nil
-}
-
-func (n *Node) addFunction(id, hash string, blob []byte) {
-	n.mu.Lock()
-	n.set.AddFunction(id, hash, blob)
-	n.mu.Unlock()
-	n.log.Infof("Added function %s with hash %s", id, hash)
-}
-
-func (n *Node) getFunction(id string) *store.Function {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
-	return n.set.Functions[id]
-}
-
-func (n *Node) listFunctions() []string {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-
-	names := make([]string, 0, len(n.set.Functions))
-	for k := range n.set.Functions {
-		names = append(names, k)
+	newKeyEnc := make([]byte, enc.EncodedLen(len(keyPair.Private)))
+	enc.Encode(newKeyEnc, keyPair.Private)
+	if err := os.WriteFile(staticKeyPath, newKeyEnc, 0o600); err != nil {
+		return noise.DHKey{}, err
 	}
 
-	return names
-}
-
-func (s *Node) GetPeerAddresses() []string {
-	peers := s.set.GetPeers()
-	addrs := make([]string, 0, len(peers))
-	for _, p := range peers {
-		if p.Addr == s.addr {
-			continue
-		}
-		addrs = append(addrs, p.Addr)
+	newPubEnc := make([]byte, enc.EncodedLen(len(keyPair.Public)))
+	enc.Encode(newPubEnc, keyPair.Public)
+	if err := os.WriteFile(staticPubPath, newPubEnc, 0o644); err != nil {
+		return noise.DHKey{}, err
 	}
 
-	return addrs
+	return keyPair, nil
 }

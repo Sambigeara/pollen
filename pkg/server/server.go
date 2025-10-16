@@ -25,7 +25,7 @@ func NewGRPCServer() *GrpcServer {
 	return &GrpcServer{}
 }
 
-func (s *GrpcServer) TryStart(ctx context.Context, nodeServ *node.NodeService, path string) error {
+func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path string) error {
 	ctx, cancelFunc := context.WithCancel(ctx)
 	defer cancelFunc()
 
@@ -41,7 +41,7 @@ func (s *GrpcServer) TryStart(ctx context.Context, nodeServ *node.NodeService, p
 		if errors.Is(err, os.ErrExist) {
 			return nil
 		}
-		return fmt.Errorf("failed to listen: %v", err)
+		return fmt.Errorf("failed to listen: %w", err)
 	}
 
 	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()

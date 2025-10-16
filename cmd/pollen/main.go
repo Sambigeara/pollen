@@ -2,131 +2,162 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"path/filepath"
-	"strings"
+	"strconv"
+	"syscall"
 
-	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
-	"github.com/sambigeara/pollen/pkg/workspace"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
+	"github.com/sourcegraph/conc/pool"
 	"github.com/spf13/cobra"
+	"go.uber.org/zap"
+
+	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	"github.com/sambigeara/pollen/pkg/invites"
+	"github.com/sambigeara/pollen/pkg/mesh"
+	"github.com/sambigeara/pollen/pkg/node"
+	"github.com/sambigeara/pollen/pkg/observability/logging"
+	"github.com/sambigeara/pollen/pkg/server"
+	"github.com/sambigeara/pollen/pkg/workspace"
 )
 
-const socketName = "pollen.sock"
+const (
+	pollenDir      = ".pollen"
+	socketName     = "pollen.sock"
+	defaultUDPPort = "51820"
+)
 
 func main() {
+	base, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("unable to retrieve user config dir: %v", err)
+	}
+	defaultRootDir := filepath.Join(base, pollenDir)
+
 	rootCmd := &cobra.Command{Use: "pollen"}
-	rootCmd.PersistentFlags().String("sock", socketName, "UDS for GRPC server")
 
-	seedCmd := &cobra.Command{
-		Use:   "seed [wasm-file]",
-		Short: "Deploy a function to the network",
-		Run:   runSeed,
+	nodeCmd := &cobra.Command{
+		Use:   "node",
+		Short: "Start a Pollen node",
+		Run:   runNode,
 	}
+	nodeCmd.Flags().String("port", defaultUDPPort, "Listening port")
+	nodeCmd.Flags().String("join", "", "Invite token to join remote peer")
+	nodeCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
 
-	runCmd := &cobra.Command{
-		Use:   "run [function-name]",
-		Short: "Execute a function",
-		Run:   runRun,
+	inviteCmd := &cobra.Command{
+		Use:   "invite",
+		Short: "Generate an invite token for a peer",
+		Run:   runInvite,
 	}
+	inviteCmd.Flags().IP("ip", []byte{}, "IP address advertised to peers")
+	inviteCmd.Flags().String("port", defaultUDPPort, "Port advertised to peers")
+	inviteCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
 
-	listCmd := &cobra.Command{
-		Use:   "list",
-		Short: "List all functions",
-		Run:   runList,
+	rootCmd.AddCommand(nodeCmd, inviteCmd)
+
+	if err := rootCmd.Execute(); err != nil {
+		log.Fatalf("Failed to execute command: %q", err)
 	}
-
-	rootCmd.AddCommand(seedCmd, runCmd, listCmd)
-	rootCmd.Execute()
 }
 
-func runSeed(cmd *cobra.Command, args []string) {
-	sock, _ := cmd.Flags().GetString("sock")
+func runNode(cmd *cobra.Command, args []string) {
+	logging.Init()
+	defer zap.L().Sync()
 
-	if len(args) == 0 {
-		cmd.Println("Error: wasm file argument required")
-		cmd.Usage()
-		return
-	}
+	zap.L().Info("starting pollen...", zap.String("version", "0.1.0")) // TODO(saml) retrieve version
+	log := zap.S().Named("pollen")
 
-	wasmFile := args[0]
+	portStr, _ := cmd.Flags().GetString("port")
+	joinToken, _ := cmd.Flags().GetString("join")
+	dir, _ := cmd.Flags().GetString("dir")
 
-	client, cleanup, err := connectToControlService(sock)
+	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopFunc()
+
+	pollenDir, err := workspace.EnsurePollenDir(dir)
 	if err != nil {
-		log.Fatalf("failed to connect to node: %v", err)
+		log.Fatal(err)
 	}
-	defer cleanup()
 
-	ctx := context.Background()
-	_, err = client.Seed(ctx, &controlv1.SeedRequest{
-		WasmPath: wasmFile,
+	var tkn *peerv1.Invite
+	if joinToken != "" {
+		tkn, err = node.DecodeToken(joinToken)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		log.Fatalf("port '%s' is invalid: %v", portStr, err)
+	}
+
+	n, err := node.New(port, pollenDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	nodeSrv := node.NewNodeService(n)
+
+	cmd.Print("Successfully started node\n")
+
+	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
+	p.Go(func(ctx context.Context) error {
+		grpcSrv := server.NewGRPCServer()
+		return grpcSrv.Start(ctx, nodeSrv, filepath.Join(pollenDir, socketName))
 	})
-	if err != nil {
-		log.Fatalf("failed to seed function: %v", err)
-	}
 
-	cmd.Printf("Successfully seeded function from %s\n", wasmFile)
-}
-
-func runRun(cmd *cobra.Command, args []string) {
-	sock, _ := cmd.Flags().GetString("sock")
-
-	if len(args) == 0 {
-		cmd.Println("Error: function name required")
-		cmd.Usage()
-		return
-	}
-
-	fn := args[0]
-
-	client, cleanup, err := connectToControlService(sock)
-	if err != nil {
-		log.Fatalf("failed to connect to node: %v", err)
-	}
-	defer cleanup()
-
-	ctx := context.Background()
-	resp, err := client.Run(ctx, &controlv1.RunRequest{
-		Name: fn,
+	p.Go(func(ctx context.Context) error {
+		return n.Start(ctx, tkn)
 	})
-	if err != nil {
-		log.Fatalf("failed to run function: %v", err)
-	}
 
-	cmd.Printf("%s\n", resp.Result)
+	if err := p.Wait(); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		log.Fatal(err)
+	}
 }
 
-func runList(cmd *cobra.Command, args []string) {
-	sock, _ := cmd.Flags().GetString("sock")
+func runInvite(cmd *cobra.Command, args []string) {
+	ip, _ := cmd.Flags().GetIP("ip")
+	port, _ := cmd.Flags().GetString("port")
+	dir, _ := cmd.Flags().GetString("dir")
 
-	client, cleanup, err := connectToControlService(sock)
+	pollenDir, err := workspace.EnsurePollenDir(dir)
 	if err != nil {
-		log.Fatalf("failed to connect to node: %v", err)
-	}
-	defer cleanup()
-
-	ctx := context.Background()
-	resp, err := client.ListFunctions(ctx, &controlv1.ListFunctionsRequest{})
-	if err != nil {
-		log.Fatalf("failed to list functions: %v", err)
+		log.Fatalf("failed to prepare pollen dir: %v", err)
 	}
 
-	cmd.Printf("%s\n", strings.Join(resp.Functions, "\n"))
-}
-
-func connectToControlService(sock string) (controlv1.ControlServiceClient, func() error, error) {
-	pollenDir, err := workspace.EnsurePollenDir()
-	if err != nil {
-		return nil, nil, err
+	if ip == nil {
+		var err error
+		ip, err = mesh.GetPublicIP()
+		if err != nil {
+			log.Fatalf("failed to infer public IP")
+		}
 	}
 
-	conn, err := grpc.NewClient("unix:"+filepath.Join(pollenDir, sock), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	token, err := node.NewInvite(ip, port)
 	if err != nil {
-		return nil, nil, err
+		log.Fatalf("failed to generate invite: %v", err)
 	}
 
-	client := controlv1.NewControlServiceClient(conn)
-	return client, conn.Close, nil
+	encoded, err := node.EncodeToken(token)
+	if err != nil {
+		log.Fatalf("failed to encode invite: %v", err)
+	}
+
+	invitesStore, err := invites.Load(pollenDir)
+	if err != nil {
+		log.Fatalf("failed to load peers store: %v", err)
+	}
+	defer invitesStore.Save()
+
+	invitesStore.AddInvite(token)
+
+	fmt.Fprint(cmd.OutOrStdout(), encoded)
 }
