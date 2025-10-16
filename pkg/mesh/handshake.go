@@ -27,12 +27,12 @@ type handshake interface {
 type handshakeStore struct {
 	cs             *noise.CipherSuite
 	invites        *invites.InviteStore
-	localStaticKey *noise.DHKey
+	localStaticKey noise.DHKey
 	st             map[uint32]handshake
 	mu             sync.RWMutex
 }
 
-func newHandshakeStore(cs *noise.CipherSuite, invites *invites.InviteStore, localStaticKey *noise.DHKey) *handshakeStore {
+func newHandshakeStore(cs *noise.CipherSuite, invites *invites.InviteStore, localStaticKey noise.DHKey) *handshakeStore {
 	return &handshakeStore{
 		cs:             cs,
 		invites:        invites,
@@ -138,13 +138,13 @@ type handshakeIKInit struct {
 	localSessionID uint32
 }
 
-func newHandshakeIKInit(cs *noise.CipherSuite, localStaticKey *noise.DHKey, peerStaticKey []byte, peerRawAddr string) (*handshakeIKInit, error) {
+func newHandshakeIKInit(cs *noise.CipherSuite, localStaticKey noise.DHKey, peerStaticKey []byte, peerRawAddr string) (*handshakeIKInit, error) {
 	hs, err := noise.NewHandshakeState(noise.Config{
 		CipherSuite:   *cs,
 		Pattern:       noise.HandshakeIK,
 		Initiator:     true,
 		Prologue:      handshakePrologue,
-		StaticKeypair: *localStaticKey,
+		StaticKeypair: localStaticKey,
 		PeerStatic:    peerStaticKey,
 	})
 	if err != nil {
@@ -206,12 +206,12 @@ type handshakeIKResp struct {
 	mu             sync.Mutex
 }
 
-func newHandshakeIKResp(cs *noise.CipherSuite, localStaticKey *noise.DHKey, localSessionID uint32) (*handshakeIKResp, error) {
+func newHandshakeIKResp(cs *noise.CipherSuite, localStaticKey noise.DHKey, localSessionID uint32) (*handshakeIKResp, error) {
 	hs, err := noise.NewHandshakeState(noise.Config{
 		CipherSuite:   *cs,
 		Pattern:       noise.HandshakeIK,
 		Prologue:      handshakePrologue,
-		StaticKeypair: *localStaticKey,
+		StaticKeypair: localStaticKey,
 	})
 	if err != nil {
 		return nil, err
@@ -258,7 +258,7 @@ type handshakeXXPsk2Init struct {
 	localSessionID uint32
 }
 
-func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey *noise.DHKey, token *peerv1.Invite) (*handshakeXXPsk2Init, error) {
+func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey noise.DHKey, token *peerv1.Invite) (*handshakeXXPsk2Init, error) {
 	hs, err := noise.NewHandshakeState(noise.Config{
 		CipherSuite:           *cs,
 		Pattern:               noise.HandshakeXX,
@@ -266,7 +266,7 @@ func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey *noise.DHKey, 
 		Prologue:              handshakePrologue,
 		PresharedKeyPlacement: 2,
 		PresharedKey:          token.Psk,
-		StaticKeypair:         *localStaticKey,
+		StaticKeypair:         localStaticKey,
 	})
 	if err != nil {
 		return nil, err
@@ -337,13 +337,13 @@ type handshakeXXPsk2Resp struct {
 	localSessionID uint32
 }
 
-func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, invitesStore *invites.InviteStore, localStaticKey *noise.DHKey, localSessionID uint32) (*handshakeXXPsk2Resp, error) {
+func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, invitesStore *invites.InviteStore, localStaticKey noise.DHKey, localSessionID uint32) (*handshakeXXPsk2Resp, error) {
 	hs, err := noise.NewHandshakeState(noise.Config{
 		CipherSuite:           *cs,
 		Pattern:               noise.HandshakeXX,
 		Prologue:              handshakePrologue,
 		PresharedKeyPlacement: 2,
-		StaticKeypair:         *localStaticKey,
+		StaticKeypair:         localStaticKey,
 	})
 	if err != nil {
 		return nil, err

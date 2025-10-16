@@ -25,7 +25,7 @@ type Mesh struct {
 	log            *zap.SugaredLogger
 	peers          *peers.PeerStore
 	invites        *invites.InviteStore
-	localStaticKey *noise.DHKey
+	noiseKey       noise.DHKey
 	conn           *UDPConn
 	handshakeStore *handshakeStore
 	sessionStore   *sessionStore
@@ -33,13 +33,13 @@ type Mesh struct {
 	port           int
 }
 
-func New(cs *noise.CipherSuite, staticKey *noise.DHKey, peers *peers.PeerStore, invites *invites.InviteStore, port int) (*Mesh, error) {
+func New(cs *noise.CipherSuite, staticKey noise.DHKey, peers *peers.PeerStore, invites *invites.InviteStore, port int) (*Mesh, error) {
 	return &Mesh{
 		log:            zap.S().Named("mesh"),
 		port:           port,
 		peers:          peers,
 		invites:        invites,
-		localStaticKey: staticKey,
+		noiseKey:       staticKey,
 		handshakeStore: newHandshakeStore(cs, invites, staticKey),
 		sessionStore:   newSessionStore(),
 		rekeyMgr:       newRekeyManager(),

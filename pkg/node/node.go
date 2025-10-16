@@ -79,7 +79,7 @@ func (m *Node) shutdown(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func genStaticKey(cs noise.CipherSuite, pollenDir string) (*noise.DHKey, error) {
+func genStaticKey(cs noise.CipherSuite, pollenDir string) (noise.DHKey, error) {
 	dir := filepath.Join(pollenDir, localKeysDir)
 
 	staticKeyPath := filepath.Join(dir, staticKeyName)
@@ -91,7 +91,7 @@ func genStaticKey(cs noise.CipherSuite, pollenDir string) (*noise.DHKey, error) 
 		if errors.Is(err, os.ErrNotExist) {
 			requireRegen = true
 		} else {
-			return nil, err
+			return noise.DHKey{}, err
 		}
 	}
 
@@ -101,43 +101,43 @@ func genStaticKey(cs noise.CipherSuite, pollenDir string) (*noise.DHKey, error) 
 		pubEnc, err = os.ReadFile(staticPubPath)
 		if err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
-				return nil, err
+				return noise.DHKey{}, err
 			}
 		} else {
 			var key [32]byte
 			keyLen, err := enc.Decode(key[:], keyEnc)
 			if err != nil {
-				return nil, err
+				return noise.DHKey{}, err
 			}
 			var pub [32]byte
 			pubLen, err := enc.Decode(pub[:], pubEnc)
 			if err != nil {
-				return nil, err
+				return noise.DHKey{}, err
 			}
-			return &noise.DHKey{Private: key[:keyLen], Public: pub[:pubLen]}, nil
+			return noise.DHKey{Private: key[:keyLen], Public: pub[:pubLen]}, nil
 		}
 	}
 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
+		return noise.DHKey{}, err
 	}
 
 	keyPair, err := cs.GenerateKeypair(rand.Reader)
 	if err != nil {
-		return nil, err
+		return noise.DHKey{}, err
 	}
 
 	newKeyEnc := make([]byte, enc.EncodedLen(len(keyPair.Private)))
 	enc.Encode(newKeyEnc, keyPair.Private)
 	if err := os.WriteFile(staticKeyPath, newKeyEnc, 0o600); err != nil {
-		return nil, err
+		return noise.DHKey{}, err
 	}
 
 	newPubEnc := make([]byte, enc.EncodedLen(len(keyPair.Public)))
 	enc.Encode(newPubEnc, keyPair.Public)
 	if err := os.WriteFile(staticPubPath, newPubEnc, 0o644); err != nil {
-		return nil, err
+		return noise.DHKey{}, err
 	}
 
-	return &keyPair, nil
+	return keyPair, nil
 }
