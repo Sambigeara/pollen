@@ -19,18 +19,16 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ControlService_Seed_FullMethodName          = "/pollen.control.v1.ControlService/Seed"
-	ControlService_Run_FullMethodName           = "/pollen.control.v1.ControlService/Run"
-	ControlService_ListFunctions_FullMethodName = "/pollen.control.v1.ControlService/ListFunctions"
+	ControlService_ListPeers_FullMethodName = "/pollen.control.v1.ControlService/ListPeers"
+	ControlService_Connect_FullMethodName   = "/pollen.control.v1.ControlService/Connect"
 )
 
 // ControlServiceClient is the client API for ControlService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ControlServiceClient interface {
-	Seed(ctx context.Context, in *SeedRequest, opts ...grpc.CallOption) (*SeedResponse, error)
-	Run(ctx context.Context, in *RunRequest, opts ...grpc.CallOption) (*RunResponse, error)
-	ListFunctions(ctx context.Context, in *ListFunctionsRequest, opts ...grpc.CallOption) (*ListFunctionsResponse, error)
+	ListPeers(ctx context.Context, in *ListPeersRequest, opts ...grpc.CallOption) (*ListPeersResponse, error)
+	Connect(ctx context.Context, in *ConnectRequest, opts ...grpc.CallOption) (*ConnectResponse, error)
 }
 
 type controlServiceClient struct {
@@ -41,30 +39,20 @@ func NewControlServiceClient(cc grpc.ClientConnInterface) ControlServiceClient {
 	return &controlServiceClient{cc}
 }
 
-func (c *controlServiceClient) Seed(ctx context.Context, in *SeedRequest, opts ...grpc.CallOption) (*SeedResponse, error) {
+func (c *controlServiceClient) ListPeers(ctx context.Context, in *ListPeersRequest, opts ...grpc.CallOption) (*ListPeersResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SeedResponse)
-	err := c.cc.Invoke(ctx, ControlService_Seed_FullMethodName, in, out, cOpts...)
+	out := new(ListPeersResponse)
+	err := c.cc.Invoke(ctx, ControlService_ListPeers_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *controlServiceClient) Run(ctx context.Context, in *RunRequest, opts ...grpc.CallOption) (*RunResponse, error) {
+func (c *controlServiceClient) Connect(ctx context.Context, in *ConnectRequest, opts ...grpc.CallOption) (*ConnectResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RunResponse)
-	err := c.cc.Invoke(ctx, ControlService_Run_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *controlServiceClient) ListFunctions(ctx context.Context, in *ListFunctionsRequest, opts ...grpc.CallOption) (*ListFunctionsResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListFunctionsResponse)
-	err := c.cc.Invoke(ctx, ControlService_ListFunctions_FullMethodName, in, out, cOpts...)
+	out := new(ConnectResponse)
+	err := c.cc.Invoke(ctx, ControlService_Connect_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -75,9 +63,8 @@ func (c *controlServiceClient) ListFunctions(ctx context.Context, in *ListFuncti
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
 type ControlServiceServer interface {
-	Seed(context.Context, *SeedRequest) (*SeedResponse, error)
-	Run(context.Context, *RunRequest) (*RunResponse, error)
-	ListFunctions(context.Context, *ListFunctionsRequest) (*ListFunctionsResponse, error)
+	ListPeers(context.Context, *ListPeersRequest) (*ListPeersResponse, error)
+	Connect(context.Context, *ConnectRequest) (*ConnectResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
 
@@ -88,14 +75,11 @@ type ControlServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedControlServiceServer struct{}
 
-func (UnimplementedControlServiceServer) Seed(context.Context, *SeedRequest) (*SeedResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Seed not implemented")
+func (UnimplementedControlServiceServer) ListPeers(context.Context, *ListPeersRequest) (*ListPeersResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListPeers not implemented")
 }
-func (UnimplementedControlServiceServer) Run(context.Context, *RunRequest) (*RunResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Run not implemented")
-}
-func (UnimplementedControlServiceServer) ListFunctions(context.Context, *ListFunctionsRequest) (*ListFunctionsResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ListFunctions not implemented")
+func (UnimplementedControlServiceServer) Connect(context.Context, *ConnectRequest) (*ConnectResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Connect not implemented")
 }
 func (UnimplementedControlServiceServer) mustEmbedUnimplementedControlServiceServer() {}
 func (UnimplementedControlServiceServer) testEmbeddedByValue()                        {}
@@ -118,56 +102,38 @@ func RegisterControlServiceServer(s grpc.ServiceRegistrar, srv ControlServiceSer
 	s.RegisterService(&ControlService_ServiceDesc, srv)
 }
 
-func _ControlService_Seed_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SeedRequest)
+func _ControlService_ListPeers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPeersRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ControlServiceServer).Seed(ctx, in)
+		return srv.(ControlServiceServer).ListPeers(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ControlService_Seed_FullMethodName,
+		FullMethod: ControlService_ListPeers_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlServiceServer).Seed(ctx, req.(*SeedRequest))
+		return srv.(ControlServiceServer).ListPeers(ctx, req.(*ListPeersRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ControlService_Run_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RunRequest)
+func _ControlService_Connect_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConnectRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ControlServiceServer).Run(ctx, in)
+		return srv.(ControlServiceServer).Connect(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ControlService_Run_FullMethodName,
+		FullMethod: ControlService_Connect_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlServiceServer).Run(ctx, req.(*RunRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _ControlService_ListFunctions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ListFunctionsRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ControlServiceServer).ListFunctions(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: ControlService_ListFunctions_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlServiceServer).ListFunctions(ctx, req.(*ListFunctionsRequest))
+		return srv.(ControlServiceServer).Connect(ctx, req.(*ConnectRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -180,16 +146,12 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*ControlServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "Seed",
-			Handler:    _ControlService_Seed_Handler,
+			MethodName: "ListPeers",
+			Handler:    _ControlService_ListPeers_Handler,
 		},
 		{
-			MethodName: "Run",
-			Handler:    _ControlService_Run_Handler,
-		},
-		{
-			MethodName: "ListFunctions",
-			Handler:    _ControlService_ListFunctions_Handler,
+			MethodName: "Connect",
+			Handler:    _ControlService_Connect_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

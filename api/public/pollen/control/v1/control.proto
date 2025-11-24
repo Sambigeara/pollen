@@ -5,26 +5,18 @@ package pollen.control.v1;
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1";
 
 service ControlService {
-  rpc Seed(SeedRequest) returns (SeedResponse);
-  rpc Run(RunRequest) returns (RunResponse);
-  rpc ListFunctions(ListFunctionsRequest) returns (ListFunctionsResponse);
+  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
+  rpc Connect(ConnectRequest) returns (ConnectResponse);
 }
 
-message SeedRequest {
-  string wasm_path = 1;
-}
-message SeedResponse {
-  string hash = 1;
+message ListPeersRequest {}
+message ListPeersResponse {
+  repeated bytes keys = 1;
 }
 
-message RunRequest {
-  string name = 1;
+message ConnectRequest {
+  string peer_id = 1; // hex string of the peer's noise key
 }
-message RunResponse {
-  bytes result = 1;
-}
-
-message ListFunctionsRequest {}
-message ListFunctionsResponse {
-  repeated string functions = 1;
+message ConnectResponse {
+  string status = 1;
 }

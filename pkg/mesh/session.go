@@ -60,19 +60,30 @@ func (s *sessionStore) get(peerID uint32) (*session, bool) {
 	return sess, ok
 }
 
+func (s *sessionStore) getID(staticKey []byte) (uint32, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	k := hex.EncodeToString(staticKey)
+	id, ok := s.keyIDMap[k]
+	return id, ok
+}
+
 type pingFn func(uint32) error
 
 type session struct {
-	peerAddr *net.UDPAddr
-	send     *noise.CipherState
-	recv     *noise.CipherState
+	peerAddr     *net.UDPAddr
+	peerNoiseKey []byte
+	send         *noise.CipherState
+	recv         *noise.CipherState
 }
 
-func newSession(peerAddr *net.UDPAddr, send, recv *noise.CipherState) *session {
+func newSession(peerAddr *net.UDPAddr, noiseKey []byte, send, recv *noise.CipherState) *session {
 	return &session{
-		peerAddr: peerAddr,
-		send:     send,
-		recv:     recv,
+		peerAddr:     peerAddr,
+		peerNoiseKey: noiseKey,
+		send:         send,
+		recv:         recv,
 	}
 }
 

@@ -7,8 +7,9 @@ import "buf/validate/validate.proto";
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1;peerv1";
 
 message Known {
-  bytes static_key = 1;
-  string addr = 2;
+  bytes noise_pub = 1;
+  bytes sig_pub = 2;
+  string addr = 3;
 }
 
 message Invite {
@@ -17,19 +18,10 @@ message Invite {
   string addr = 3;
 }
 
-// message Peer {
-//   oneof kind {
-//     Known known = 1;
-//     Invite invite = 2;
-//   }
-// }
-
 message PeerStore {
   map<string, Known> peers = 1;
-  // map<string, Invite> invites = 2;
 }
 
 message InviteStore {
-  // map<string, Known> peers = 1;
   map<string, Invite> invites = 1;
 }

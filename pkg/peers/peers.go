@@ -16,7 +16,8 @@ const peersDir = "peers"
 const peersFile = "peers.sha256"
 
 type (
-	PeerStaticPublicKey []byte
+	PeerNoiseKey []byte
+	PeerSig      []byte
 )
 
 type PeerStore struct {
@@ -84,21 +85,22 @@ func (s *PeerStore) Add(peer *peerv1.Known) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.Peers[encodeStaticPublicKey(peer.StaticKey)] = peer
+	s.Peers[EncodeStaticPublicKey(peer.NoisePub)] = peer
 }
 
-func (s *PeerStore) Get(key PeerStaticPublicKey) (*peerv1.Known, bool) {
+func (s *PeerStore) Get(key PeerNoiseKey) (*peerv1.Known, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	pub, ok := s.Peers[encodeStaticPublicKey(key)]
+	pub, ok := s.Peers[EncodeStaticPublicKey(key)]
 	return pub, ok
 }
 
-func (s *PeerStore) PromoteToPeer(key PeerStaticPublicKey, peerAddr string) {
+func (s *PeerStore) PromoteToPeer(key PeerNoiseKey, sig PeerSig, peerAddr string) {
 	s.Add(&peerv1.Known{
-		StaticKey: key,
-		Addr:      peerAddr,
+		NoisePub: key,
+		SigPub:   sig,
+		Addr:     peerAddr,
 	})
 }
 
@@ -114,6 +116,6 @@ func (s *PeerStore) GetAllKnown() []*peerv1.Known {
 	return known
 }
 
-func encodeStaticPublicKey(raw PeerStaticPublicKey) string {
+func EncodeStaticPublicKey(raw PeerNoiseKey) string {
 	return hex.EncodeToString(raw)
 }

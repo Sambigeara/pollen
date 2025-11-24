@@ -21,27 +21,26 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type SeedRequest struct {
+type ListPeersRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	WasmPath      string                 `protobuf:"bytes,1,opt,name=wasm_path,json=wasmPath,proto3" json:"wasm_path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SeedRequest) Reset() {
-	*x = SeedRequest{}
+func (x *ListPeersRequest) Reset() {
+	*x = ListPeersRequest{}
 	mi := &file_pollen_control_v1_control_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SeedRequest) String() string {
+func (x *ListPeersRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SeedRequest) ProtoMessage() {}
+func (*ListPeersRequest) ProtoMessage() {}
 
-func (x *SeedRequest) ProtoReflect() protoreflect.Message {
+func (x *ListPeersRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_pollen_control_v1_control_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -53,39 +52,32 @@ func (x *SeedRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SeedRequest.ProtoReflect.Descriptor instead.
-func (*SeedRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use ListPeersRequest.ProtoReflect.Descriptor instead.
+func (*ListPeersRequest) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *SeedRequest) GetWasmPath() string {
-	if x != nil {
-		return x.WasmPath
-	}
-	return ""
-}
-
-type SeedResponse struct {
+type ListPeersResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	Keys          [][]byte               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SeedResponse) Reset() {
-	*x = SeedResponse{}
+func (x *ListPeersResponse) Reset() {
+	*x = ListPeersResponse{}
 	mi := &file_pollen_control_v1_control_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SeedResponse) String() string {
+func (x *ListPeersResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SeedResponse) ProtoMessage() {}
+func (*ListPeersResponse) ProtoMessage() {}
 
-func (x *SeedResponse) ProtoReflect() protoreflect.Message {
+func (x *ListPeersResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_pollen_control_v1_control_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -97,39 +89,39 @@ func (x *SeedResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SeedResponse.ProtoReflect.Descriptor instead.
-func (*SeedResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use ListPeersResponse.ProtoReflect.Descriptor instead.
+func (*ListPeersResponse) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *SeedResponse) GetHash() string {
+func (x *ListPeersResponse) GetKeys() [][]byte {
 	if x != nil {
-		return x.Hash
+		return x.Keys
 	}
-	return ""
+	return nil
 }
 
-type RunRequest struct {
+type ConnectRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	PeerId        string                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"` // hex string of the peer's noise key
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RunRequest) Reset() {
-	*x = RunRequest{}
+func (x *ConnectRequest) Reset() {
+	*x = ConnectRequest{}
 	mi := &file_pollen_control_v1_control_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RunRequest) String() string {
+func (x *ConnectRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RunRequest) ProtoMessage() {}
+func (*ConnectRequest) ProtoMessage() {}
 
-func (x *RunRequest) ProtoReflect() protoreflect.Message {
+func (x *ConnectRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_pollen_control_v1_control_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -141,39 +133,39 @@ func (x *RunRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RunRequest.ProtoReflect.Descriptor instead.
-func (*RunRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use ConnectRequest.ProtoReflect.Descriptor instead.
+func (*ConnectRequest) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *RunRequest) GetName() string {
+func (x *ConnectRequest) GetPeerId() string {
 	if x != nil {
-		return x.Name
+		return x.PeerId
 	}
 	return ""
 }
 
-type RunResponse struct {
+type ConnectResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Result        []byte                 `protobuf:"bytes,1,opt,name=result,proto3" json:"result,omitempty"`
+	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RunResponse) Reset() {
-	*x = RunResponse{}
+func (x *ConnectResponse) Reset() {
+	*x = ConnectResponse{}
 	mi := &file_pollen_control_v1_control_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RunResponse) String() string {
+func (x *ConnectResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RunResponse) ProtoMessage() {}
+func (*ConnectResponse) ProtoMessage() {}
 
-func (x *RunResponse) ProtoReflect() protoreflect.Message {
+func (x *ConnectResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_pollen_control_v1_control_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -185,119 +177,33 @@ func (x *RunResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RunResponse.ProtoReflect.Descriptor instead.
-func (*RunResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use ConnectResponse.ProtoReflect.Descriptor instead.
+func (*ConnectResponse) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *RunResponse) GetResult() []byte {
+func (x *ConnectResponse) GetStatus() string {
 	if x != nil {
-		return x.Result
+		return x.Status
 	}
-	return nil
-}
-
-type ListFunctionsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListFunctionsRequest) Reset() {
-	*x = ListFunctionsRequest{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListFunctionsRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListFunctionsRequest) ProtoMessage() {}
-
-func (x *ListFunctionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListFunctionsRequest.ProtoReflect.Descriptor instead.
-func (*ListFunctionsRequest) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{4}
-}
-
-type ListFunctionsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Functions     []string               `protobuf:"bytes,1,rep,name=functions,proto3" json:"functions,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListFunctionsResponse) Reset() {
-	*x = ListFunctionsResponse{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListFunctionsResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListFunctionsResponse) ProtoMessage() {}
-
-func (x *ListFunctionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListFunctionsResponse.ProtoReflect.Descriptor instead.
-func (*ListFunctionsResponse) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *ListFunctionsResponse) GetFunctions() []string {
-	if x != nil {
-		return x.Functions
-	}
-	return nil
+	return ""
 }
 
 var File_pollen_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\n" +
-	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\"*\n" +
-	"\vSeedRequest\x12\x1b\n" +
-	"\twasm_path\x18\x01 \x01(\tR\bwasmPath\"\"\n" +
-	"\fSeedResponse\x12\x12\n" +
-	"\x04hash\x18\x01 \x01(\tR\x04hash\" \n" +
-	"\n" +
-	"RunRequest\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\"%\n" +
-	"\vRunResponse\x12\x16\n" +
-	"\x06result\x18\x01 \x01(\fR\x06result\"\x16\n" +
-	"\x14ListFunctionsRequest\"5\n" +
-	"\x15ListFunctionsResponse\x12\x1c\n" +
-	"\tfunctions\x18\x01 \x03(\tR\tfunctions2\x83\x02\n" +
-	"\x0eControlService\x12G\n" +
-	"\x04Seed\x12\x1e.pollen.control.v1.SeedRequest\x1a\x1f.pollen.control.v1.SeedResponse\x12D\n" +
-	"\x03Run\x12\x1d.pollen.control.v1.RunRequest\x1a\x1e.pollen.control.v1.RunResponse\x12b\n" +
-	"\rListFunctions\x12'.pollen.control.v1.ListFunctionsRequest\x1a(.pollen.control.v1.ListFunctionsResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
+	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\"\x12\n" +
+	"\x10ListPeersRequest\"'\n" +
+	"\x11ListPeersResponse\x12\x12\n" +
+	"\x04keys\x18\x01 \x03(\fR\x04keys\")\n" +
+	"\x0eConnectRequest\x12\x17\n" +
+	"\apeer_id\x18\x01 \x01(\tR\x06peerId\")\n" +
+	"\x0fConnectResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status2\xba\x01\n" +
+	"\x0eControlService\x12V\n" +
+	"\tListPeers\x12#.pollen.control.v1.ListPeersRequest\x1a$.pollen.control.v1.ListPeersResponse\x12P\n" +
+	"\aConnect\x12!.pollen.control.v1.ConnectRequest\x1a\".pollen.control.v1.ConnectResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
 
 var (
 	file_pollen_control_v1_control_proto_rawDescOnce sync.Once
@@ -311,24 +217,20 @@ func file_pollen_control_v1_control_proto_rawDescGZIP() []byte {
 	return file_pollen_control_v1_control_proto_rawDescData
 }
 
-var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_pollen_control_v1_control_proto_goTypes = []any{
-	(*SeedRequest)(nil),           // 0: pollen.control.v1.SeedRequest
-	(*SeedResponse)(nil),          // 1: pollen.control.v1.SeedResponse
-	(*RunRequest)(nil),            // 2: pollen.control.v1.RunRequest
-	(*RunResponse)(nil),           // 3: pollen.control.v1.RunResponse
-	(*ListFunctionsRequest)(nil),  // 4: pollen.control.v1.ListFunctionsRequest
-	(*ListFunctionsResponse)(nil), // 5: pollen.control.v1.ListFunctionsResponse
+	(*ListPeersRequest)(nil),  // 0: pollen.control.v1.ListPeersRequest
+	(*ListPeersResponse)(nil), // 1: pollen.control.v1.ListPeersResponse
+	(*ConnectRequest)(nil),    // 2: pollen.control.v1.ConnectRequest
+	(*ConnectResponse)(nil),   // 3: pollen.control.v1.ConnectResponse
 }
 var file_pollen_control_v1_control_proto_depIdxs = []int32{
-	0, // 0: pollen.control.v1.ControlService.Seed:input_type -> pollen.control.v1.SeedRequest
-	2, // 1: pollen.control.v1.ControlService.Run:input_type -> pollen.control.v1.RunRequest
-	4, // 2: pollen.control.v1.ControlService.ListFunctions:input_type -> pollen.control.v1.ListFunctionsRequest
-	1, // 3: pollen.control.v1.ControlService.Seed:output_type -> pollen.control.v1.SeedResponse
-	3, // 4: pollen.control.v1.ControlService.Run:output_type -> pollen.control.v1.RunResponse
-	5, // 5: pollen.control.v1.ControlService.ListFunctions:output_type -> pollen.control.v1.ListFunctionsResponse
-	3, // [3:6] is the sub-list for method output_type
-	0, // [0:3] is the sub-list for method input_type
+	0, // 0: pollen.control.v1.ControlService.ListPeers:input_type -> pollen.control.v1.ListPeersRequest
+	2, // 1: pollen.control.v1.ControlService.Connect:input_type -> pollen.control.v1.ConnectRequest
+	1, // 2: pollen.control.v1.ControlService.ListPeers:output_type -> pollen.control.v1.ListPeersResponse
+	3, // 3: pollen.control.v1.ControlService.Connect:output_type -> pollen.control.v1.ConnectResponse
+	2, // [2:4] is the sub-list for method output_type
+	0, // [0:2] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -345,7 +247,7 @@ func file_pollen_control_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_control_v1_control_proto_rawDesc), len(file_pollen_control_v1_control_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

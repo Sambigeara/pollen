@@ -21,10 +21,11 @@ var (
 )
 
 type handshake interface {
-	progress(conn *UDPConn, msg []byte, peerUDPAddr *net.UDPAddr, peerSessionID uint32) (*session, []byte, error)
+	progress(conn *UDPConn, msg []byte, peerUDPAddr *net.UDPAddr, peerSessionID uint32) (*session, []byte, []byte, error)
 }
 
 type handshakeStore struct {
+	localSigPub    []byte
 	cs             *noise.CipherSuite
 	invites        *invites.InviteStore
 	localStaticKey noise.DHKey
@@ -32,11 +33,12 @@ type handshakeStore struct {
 	mu             sync.RWMutex
 }
 
-func newHandshakeStore(cs *noise.CipherSuite, invites *invites.InviteStore, localStaticKey noise.DHKey) *handshakeStore {
+func newHandshakeStore(cs *noise.CipherSuite, invites *invites.InviteStore, localStaticKey noise.DHKey, localSigPub []byte) *handshakeStore {
 	return &handshakeStore{
 		cs:             cs,
 		invites:        invites,
 		localStaticKey: localStaticKey,
+		localSigPub:    localSigPub,
 		st:             make(map[uint32]handshake),
 		mu:             sync.RWMutex{},
 	}
@@ -71,7 +73,7 @@ func (st *handshakeStore) get(tp messageType, peerSessionID, localSessionID uint
 			return nil, err
 		}
 	case messageTypeHandshakeXXPsk2Init:
-		hs, err = newHandshakeXXPsk2Resp(st.cs, st.invites, st.localStaticKey, localSessionID)
+		hs, err = newHandshakeXXPsk2Resp(st.cs, st.invites, st.localStaticKey, st.localSigPub, localSessionID)
 		if err != nil {
 			return nil, err
 		}
@@ -91,15 +93,15 @@ func (st *handshakeStore) initIK(conn *UDPConn, peerStaticKey []byte, peerRawAdd
 	st.st[hs.localSessionID] = hs
 	st.mu.Unlock()
 
-	if _, _, err := hs.progress(conn, nil, nil, 0); err != nil {
+	if _, _, _, err := hs.progress(conn, nil, nil, 0); err != nil {
 		return fmt.Errorf("failed to start IK handshake: %w", err)
 	}
 
 	return nil
 }
 
-func (st *handshakeStore) initXXPsk2(conn *UDPConn, token *peerv1.Invite) error {
-	hs, err := newHandshakeXXPsk2Init(st.cs, st.localStaticKey, token)
+func (st *handshakeStore) initXXPsk2(conn *UDPConn, token *peerv1.Invite, peerSigPub []byte) error {
+	hs, err := newHandshakeXXPsk2Init(st.cs, st.localStaticKey, peerSigPub, token)
 	if err != nil {
 		return err
 	}
@@ -108,7 +110,7 @@ func (st *handshakeStore) initXXPsk2(conn *UDPConn, token *peerv1.Invite) error 
 	st.st[hs.localSessionID] = hs
 	st.mu.Unlock()
 
-	if _, _, err := hs.progress(conn, nil, nil, 0); err != nil {
+	if _, _, _, err := hs.progress(conn, nil, nil, 0); err != nil {
 		return fmt.Errorf("failed to start XXpsk2 handshake: %w", err)
 	}
 
@@ -170,7 +172,7 @@ func newHandshakeIKInit(cs *noise.CipherSuite, localStaticKey noise.DHKey, peerS
 	}, nil
 }
 
-func (hs *handshakeIKInit) progress(conn *UDPConn, rcvMsg []byte, _ *net.UDPAddr, _ uint32) (*session, []byte, error) {
+func (hs *handshakeIKInit) progress(conn *UDPConn, rcvMsg []byte, _ *net.UDPAddr, _ uint32) (*session, []byte, []byte, error) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
@@ -178,25 +180,25 @@ func (hs *handshakeIKInit) progress(conn *UDPConn, rcvMsg []byte, _ *net.UDPAddr
 	case stage1:
 		msg1, _, _, err := hs.WriteMessage(nil, nil)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if err := write(conn, hs.peerUDPAddr, messageTypeHandshakeIKInit, hs.localSessionID, 0, msg1); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	case stage2:
 		_, csSend, csRecv, err := hs.ReadMessage(nil, rcvMsg)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
-		return newSession(hs.peerUDPAddr, csSend, csRecv), hs.PeerStatic(), nil
+		return newSession(hs.peerUDPAddr, hs.PeerStatic(), csSend, csRecv), hs.PeerStatic(), nil, nil
 	default:
-		return nil, nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
+		return nil, nil, nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
 	}
 
 	hs.nextStage++
 
-	return nil, nil, nil
+	return nil, nil, nil, nil
 }
 
 type handshakeIKResp struct {
@@ -224,33 +226,34 @@ func newHandshakeIKResp(cs *noise.CipherSuite, localStaticKey noise.DHKey, local
 	}, nil
 }
 
-func (hs *handshakeIKResp) progress(conn *UDPConn, rcvMsg []byte, peerUDPAddr *net.UDPAddr, peerSessionID uint32) (*session, []byte, error) {
+func (hs *handshakeIKResp) progress(conn *UDPConn, rcvMsg []byte, peerUDPAddr *net.UDPAddr, peerSessionID uint32) (*session, []byte, []byte, error) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
 	switch hs.nextStage {
 	case stage1:
 		if _, _, _, err := hs.ReadMessage(nil, rcvMsg); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		msg2, csRecv, csSend, err := hs.WriteMessage(nil, nil)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		if err := write(conn, peerUDPAddr, messageTypeHandshakeIKResp, peerSessionID, hs.localSessionID, msg2); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
-		return newSession(peerUDPAddr, csSend, csRecv), hs.PeerStatic(), nil
+		return newSession(peerUDPAddr, hs.PeerStatic(), csSend, csRecv), hs.PeerStatic(), nil, nil
 	default:
-		return nil, nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
+		return nil, nil, nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
 	}
 }
 
 type handshakeXXPsk2Init struct {
 	*noise.HandshakeState
+	sigPub         []byte
 	peerUDPAddr    *net.UDPAddr
 	tokenID        string
 	nextStage      handshakeStage
@@ -258,7 +261,7 @@ type handshakeXXPsk2Init struct {
 	localSessionID uint32
 }
 
-func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey noise.DHKey, token *peerv1.Invite) (*handshakeXXPsk2Init, error) {
+func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey noise.DHKey, peerSigPub []byte, token *peerv1.Invite) (*handshakeXXPsk2Init, error) {
 	hs, err := noise.NewHandshakeState(noise.Config{
 		CipherSuite:           *cs,
 		Pattern:               noise.HandshakeXX,
@@ -284,6 +287,7 @@ func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey noise.DHKey, t
 
 	return &handshakeXXPsk2Init{
 		HandshakeState: hs,
+		sigPub:         peerSigPub,
 		localSessionID: senderID,
 		tokenID:        token.Id,
 		peerUDPAddr:    peerUDPAddr,
@@ -291,7 +295,7 @@ func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey noise.DHKey, t
 	}, nil
 }
 
-func (hs *handshakeXXPsk2Init) progress(conn *UDPConn, rcvMsg []byte, _ *net.UDPAddr, peerSessionID uint32) (*session, []byte, error) {
+func (hs *handshakeXXPsk2Init) progress(conn *UDPConn, rcvMsg []byte, _ *net.UDPAddr, peerSessionID uint32) (*session, []byte, []byte, error) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
@@ -299,45 +303,47 @@ func (hs *handshakeXXPsk2Init) progress(conn *UDPConn, rcvMsg []byte, _ *net.UDP
 	case stage1:
 		msg1, _, _, err := hs.WriteMessage(nil, []byte(hs.tokenID))
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if err := write(conn, hs.peerUDPAddr, messageTypeHandshakeXXPsk2Init, hs.localSessionID, 0, msg1); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	case stage2:
-		if _, _, _, err := hs.ReadMessage(nil, rcvMsg); err != nil {
-			return nil, nil, err
+		peerSig, _, _, err := hs.ReadMessage(nil, rcvMsg)
+		if err != nil {
+			return nil, nil, nil, err
 		}
 
-		msg3, csSend, csRecv, err := hs.WriteMessage(nil, nil)
+		msg3, csSend, csRecv, err := hs.WriteMessage(nil, []byte(hs.sigPub))
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if err := write(conn, hs.peerUDPAddr, messageTypeHandshakeXXPsk2Init, hs.localSessionID, peerSessionID, msg3); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
-		return newSession(hs.peerUDPAddr, csSend, csRecv), hs.PeerStatic(), nil
+		return newSession(hs.peerUDPAddr, hs.PeerStatic(), csSend, csRecv), hs.PeerStatic(), peerSig, nil
 	default:
-		return nil, nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
+		return nil, nil, nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
 	}
 
 	hs.nextStage++
 
-	return nil, nil, nil
+	return nil, nil, nil, nil
 }
 
 type handshakeXXPsk2Resp struct {
 	*noise.HandshakeState
 	inviteStore    *invites.InviteStore
 	peerUDPAddr    *net.UDPAddr
+	sigPub         []byte
 	buf            []byte
 	nextStage      handshakeStage
 	mu             sync.Mutex
 	localSessionID uint32
 }
 
-func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, invitesStore *invites.InviteStore, localStaticKey noise.DHKey, localSessionID uint32) (*handshakeXXPsk2Resp, error) {
+func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, invitesStore *invites.InviteStore, localStaticKey noise.DHKey, localSigPub []byte, localSessionID uint32) (*handshakeXXPsk2Resp, error) {
 	hs, err := noise.NewHandshakeState(noise.Config{
 		CipherSuite:           *cs,
 		Pattern:               noise.HandshakeXX,
@@ -352,13 +358,14 @@ func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, invitesStore *invites.InviteS
 	return &handshakeXXPsk2Resp{
 		HandshakeState: hs,
 		inviteStore:    invitesStore,
+		sigPub:         localSigPub,
 		localSessionID: localSessionID,
 		nextStage:      stage1,
 		buf:            make([]byte, 2048),
 	}, nil
 }
 
-func (hs *handshakeXXPsk2Resp) progress(conn *UDPConn, rcvMsg []byte, peerUDPAddr *net.UDPAddr, peerSessionID uint32) (*session, []byte, error) {
+func (hs *handshakeXXPsk2Resp) progress(conn *UDPConn, rcvMsg []byte, peerUDPAddr *net.UDPAddr, peerSessionID uint32) (*session, []byte, []byte, error) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 
@@ -367,7 +374,7 @@ func (hs *handshakeXXPsk2Resp) progress(conn *UDPConn, rcvMsg []byte, peerUDPAdd
 		hs.peerUDPAddr = peerUDPAddr
 		tokenBytes, _, _, err := hs.ReadMessage(nil, rcvMsg)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		tokenID := invites.InviteID(tokenBytes)
 
@@ -376,35 +383,35 @@ func (hs *handshakeXXPsk2Resp) progress(conn *UDPConn, rcvMsg []byte, peerUDPAdd
 
 		inv, exists := hs.inviteStore.GetInvite(tokenID)
 		if !exists {
-			return nil, nil, fmt.Errorf("unknown invite: %q", tokenID)
+			return nil, nil, nil, fmt.Errorf("unknown invite: %q", tokenID)
 		}
 
 		if err = hs.SetPresharedKey(inv.Psk); err != nil {
-			return nil, nil, fmt.Errorf("failed to set psk: %w", err)
+			return nil, nil, nil, fmt.Errorf("failed to set psk: %w", err)
 		}
 
-		msg2, _, _, err := hs.WriteMessage(nil, nil)
+		msg2, _, _, err := hs.WriteMessage(nil, hs.sigPub)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if err := write(conn, peerUDPAddr, messageTypeHandshakeXXPsk2Resp, peerSessionID, hs.localSessionID, msg2); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 	case stage2:
-		_, csRecv, csSend, err := hs.ReadMessage(nil, rcvMsg)
+		peerSig, csRecv, csSend, err := hs.ReadMessage(nil, rcvMsg)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
-		return newSession(hs.peerUDPAddr, csSend, csRecv), hs.PeerStatic(), nil
+		return newSession(hs.peerUDPAddr, hs.PeerStatic(), csSend, csRecv), hs.PeerStatic(), peerSig, nil
 	default:
-		return nil, nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
+		return nil, nil, nil, fmt.Errorf("unexpected mesh.handshakeStage: %#v", hs.nextStage)
 	}
 
 	hs.nextStage++
 
-	return nil, nil, nil
+	return nil, nil, nil, nil
 }
 
 func genSessionID() (uint32, error) {

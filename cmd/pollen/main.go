@@ -2,19 +2,27 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 
+	"connectrpc.com/connect"
 	"github.com/sourcegraph/conc/pool"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"golang.org/x/net/http2"
 
+	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	"github.com/sambigeara/pollen/api/genpb/pollen/control/v1/controlv1connect"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	"github.com/sambigeara/pollen/pkg/invites"
 	"github.com/sambigeara/pollen/pkg/mesh"
@@ -27,7 +35,7 @@ import (
 const (
 	pollenDir      = ".pollen"
 	socketName     = "pollen.sock"
-	defaultUDPPort = "51820"
+	defaultUDPPort = "60611"
 )
 
 func main() {
@@ -57,7 +65,28 @@ func main() {
 	inviteCmd.Flags().String("port", defaultUDPPort, "Port advertised to peers")
 	inviteCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
 
-	rootCmd.AddCommand(nodeCmd, inviteCmd)
+	peersCmd := &cobra.Command{
+		Use:   "peers",
+		Short: "Manage known peers",
+	}
+	peersListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all peer keys",
+		Run:   runListPeers,
+	}
+	peersListCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
+
+	peersConnectCmd := &cobra.Command{
+		Use:   "connect [peer-id]",
+		Short: "Open a TCP tunnel to a peer",
+		Args:  cobra.ExactArgs(1),
+		Run:   runConnect,
+	}
+	peersConnectCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
+
+	peersCmd.AddCommand(peersListCmd, peersConnectCmd)
+
+	rootCmd.AddCommand(nodeCmd, inviteCmd, peersCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatalf("Failed to execute command: %q", err)
@@ -160,4 +189,58 @@ func runInvite(cmd *cobra.Command, args []string) {
 	invitesStore.AddInvite(token)
 
 	fmt.Fprint(cmd.OutOrStdout(), encoded)
+}
+
+func runListPeers(cmd *cobra.Command, args []string) {
+	client := newControlClient(cmd)
+
+	resp, err := client.ListPeers(context.Background(), connect.NewRequest(&controlv1.ListPeersRequest{}))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, key := range resp.Msg.GetKeys() {
+		fmt.Printf("%x\n", key)
+	}
+}
+
+func runConnect(cmd *cobra.Command, args []string) {
+	client := newControlClient(cmd)
+
+	resp, err := client.Connect(context.Background(), connect.NewRequest(&controlv1.ConnectRequest{
+		PeerId: args[0],
+	}))
+	if err != nil {
+		log.Fatalf("Failed to connect: %v", err)
+	}
+
+	fmt.Printf("Success: %s\n", resp.Msg.Status)
+}
+
+func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient {
+	dir, _ := cmd.Flags().GetString("dir")
+	pollenDir, err := workspace.EnsurePollenDir(dir)
+	if err != nil {
+		log.Fatalf("failed to prepare pollen dir: %v", err)
+	}
+
+	socket := filepath.Join(pollenDir, socketName)
+
+	transport := &http2.Transport{
+		AllowHTTP: true,
+		DialTLS: func(_, _ string, _ *tls.Config) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(context.Background(), "unix", socket)
+		},
+	}
+
+	httpClient := &http.Client{
+		Timeout:   time.Second * 10,
+		Transport: transport,
+	}
+
+	return controlv1connect.NewControlServiceClient(
+		httpClient,
+		"http://unix",
+		connect.WithGRPC(),
+	)
 }

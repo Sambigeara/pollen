@@ -1,14 +1,9 @@
 {
   "swagger": "2.0",
   "info": {
-    "title": "pollen/control/v1/control.proto",
+    "title": "pollen/tcp/v1/tcp.proto",
     "version": "version not set"
   },
-  "tags": [
-    {
-      "name": "ControlService"
-    }
-  ],
   "consumes": [
     "application/json"
   ],
@@ -41,26 +36,6 @@
           "items": {
             "type": "object",
             "$ref": "#/definitions/protobufAny"
-          }
-        }
-      }
-    },
-    "v1ConnectResponse": {
-      "type": "object",
-      "properties": {
-        "status": {
-          "type": "string"
-        }
-      }
-    },
-    "v1ListPeersResponse": {
-      "type": "object",
-      "properties": {
-        "keys": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "format": "byte"
           }
         }
       }

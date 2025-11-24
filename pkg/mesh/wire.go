@@ -16,6 +16,9 @@ const (
 
 	messageTypeTransportData
 	messageTypePing
+
+	MessageTypeTCPTunnelRequest
+	MessageTypeTCPTunnelResponse
 )
 
 type datagram struct {
@@ -43,7 +46,7 @@ func write(conn *UDPConn, addr *net.UDPAddr, tp messageType, senderID, receiverI
 		binary.BigEndian.PutUint32(datagram[4:8], senderID)
 		binary.BigEndian.PutUint32(datagram[8:12], receiverID)
 		copy(datagram[12:], msg)
-	case messageTypeTransportData:
+	case messageTypeTransportData, MessageTypeTCPTunnelRequest, MessageTypeTCPTunnelResponse:
 		datagram = make([]byte, 8+len(msg))
 		binary.BigEndian.PutUint32(datagram[:4], uint32(tp))
 		binary.BigEndian.PutUint32(datagram[4:8], receiverID)
@@ -85,7 +88,7 @@ func read(conn *UDPConn, buf []byte) (*datagram, error) {
 		senderID = binary.BigEndian.Uint32(buf[4:8])
 		receiverID = binary.BigEndian.Uint32(buf[8:12])
 		payloadOffset = 12
-	case messageTypeTransportData:
+	case messageTypeTransportData, MessageTypeTCPTunnelRequest, MessageTypeTCPTunnelResponse:
 		if n < 8 {
 			return nil, fmt.Errorf("handshake frame too short: %d", n)
 		}
