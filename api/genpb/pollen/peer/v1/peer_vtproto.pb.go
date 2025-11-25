@@ -103,11 +103,13 @@ func (m *Invite) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		copy(dAtA[i:], m.unknownFields)
 	}
 	if len(m.Addr) > 0 {
-		i -= len(m.Addr)
-		copy(dAtA[i:], m.Addr)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Addr)))
-		i--
-		dAtA[i] = 0x1a
+		for iNdEx := len(m.Addr) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.Addr[iNdEx])
+			copy(dAtA[i:], m.Addr[iNdEx])
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Addr[iNdEx])))
+			i--
+			dAtA[i] = 0x1a
+		}
 	}
 	if len(m.Psk) > 0 {
 		i -= len(m.Psk)
@@ -272,9 +274,11 @@ func (m *Invite) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	l = len(m.Addr)
-	if l > 0 {
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	if len(m.Addr) > 0 {
+		for _, s := range m.Addr {
+			l = len(s)
+			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
 	}
 	n += len(m.unknownFields)
 	return n
@@ -602,7 +606,7 @@ func (m *Invite) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Addr = string(dAtA[iNdEx:postIndex])
+			m.Addr = append(m.Addr, string(dAtA[iNdEx:postIndex]))
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex

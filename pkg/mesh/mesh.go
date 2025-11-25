@@ -29,33 +29,40 @@ const (
 var handshakePrologue = []byte("pollenv1")
 
 type Mesh struct {
-	log            *zap.SugaredLogger
-	Peers          *peers.PeerStore
-	invites        *invites.InviteStore
-	noiseKey       noise.DHKey
-	signingKey     ed25519.PrivateKey
-	signingPubKey  ed25519.PublicKey
-	conn           *UDPConn
-	handshakeStore *handshakeStore
-	sessionStore   *sessionStore
-	listenerStore  *tcp.Store
-	rekeyMgr       *rekeyManager
-	port           int
+	log             *zap.SugaredLogger
+	advertisableIPs []net.IP
+	Peers           *peers.PeerStore
+	invites         *invites.InviteStore
+	noiseKey        noise.DHKey
+	signingKey      ed25519.PrivateKey
+	signingPubKey   ed25519.PublicKey
+	conn            *UDPConn
+	handshakeStore  *handshakeStore
+	sessionStore    *sessionStore
+	listenerStore   *tcp.Store
+	rekeyMgr        *rekeyManager
+	port            int
 }
 
 func New(cs *noise.CipherSuite, staticKey noise.DHKey, priv ed25519.PrivateKey, pub ed25519.PublicKey, peers *peers.PeerStore, invites *invites.InviteStore, port int) (*Mesh, error) {
+	ips, err := GetAdvertisableIPs()
+	if err != nil {
+		return nil, err
+	}
+
 	return &Mesh{
-		log:            zap.S().Named("mesh"),
-		port:           port,
-		Peers:          peers,
-		invites:        invites,
-		noiseKey:       staticKey,
-		signingKey:     priv,
-		signingPubKey:  pub,
-		handshakeStore: newHandshakeStore(cs, invites, staticKey, pub),
-		sessionStore:   newSessionStore(),
-		listenerStore:  tcp.NewStore(),
-		rekeyMgr:       newRekeyManager(),
+		log:             zap.S().Named("mesh"),
+		advertisableIPs: ips,
+		port:            port,
+		Peers:           peers,
+		invites:         invites,
+		noiseKey:        staticKey,
+		signingKey:      priv,
+		signingPubKey:   pub,
+		handshakeStore:  newHandshakeStore(cs, invites, staticKey, pub),
+		sessionStore:    newSessionStore(),
+		listenerStore:   tcp.NewStore(),
+		rekeyMgr:        newRekeyManager(),
 	}, nil
 }
 
@@ -101,13 +108,13 @@ func (m *Mesh) listen(ctx context.Context) error {
 		g.Go(func() error {
 			switch dg.tp {
 			case messageTypePing:
-				zap.L().Named("session").Debug("...pinged!")
+				m.log.Debugw("received ping", "peer", dg.senderUDPAddr)
 				return nil
 			case messageTypeTransportData:
 				return m.handleTransportDataMsg(dg.receiverID, dg.msg)
-			case MessageTypeTCPTunnelRequest:
+			case messageTypeTCPTunnelRequest:
 				return m.handleTCPTunnelRequest(dg.receiverID, dg.msg)
-			case MessageTypeTCPTunnelResponse:
+			case messageTypeTCPTunnelResponse:
 				// Tunnel frames mirror transport data: we always address the peer by receiverID, and
 				// we never stash our own session ID, so senderID stays zero.
 				if err := m.listenerStore.AckInflight(dg.receiverID, dg.msg); err != nil {
@@ -127,28 +134,34 @@ func (m *Mesh) listen(ctx context.Context) error {
 
 			sess, peerStaticKey, peerSigPub, err := hs.progress(m.conn, dg.msg, dg.senderUDPAddr, dg.senderID)
 			if err != nil {
-				m.log.Errorf("failed to progress for senderID (%d), kind (%d): %v", dg.senderID, dg.tp, err)
+				m.log.Errorw("failed to progress", "type", "error", err, dg.tp, "peer", dg.senderUDPAddr)
 				return nil // TODO(saml) return err to cancel others?
 			}
 
 			if sess != nil {
-				m.log.Infof("established connection for: %d", dg.tp)
 				m.handshakeStore.clear(dg.senderID)
 
+				var tp string
 				switch t := hs.(type) {
 				case *handshakeIKInit:
 					m.scheduleRekey(dg.senderID, peerStaticKey)
+					tp = "IKInit"
 				case *handshakeXXPsk2Init:
 					m.scheduleRekey(dg.senderID, peerStaticKey)
 					m.Peers.Add(&peerv1.Known{
 						NoisePub: peerStaticKey,
 						SigPub:   peerSigPub,
-						Addr:     t.peerUDPAddr.String()})
+						Addr:     sess.peerAddr.String()})
+					tp = "XXPsk2Init"
 				case *handshakeIKResp:
 					m.rekeyMgr.resetIfExists(dg.senderID, sessionRefreshInterval)
+					tp = "IKResp"
 				case *handshakeXXPsk2Resp:
 					m.Peers.PromoteToPeer(peerStaticKey, peerSigPub, t.peerUDPAddr.String())
+					tp = "XXPsk2Resp"
 				}
+
+				m.log.Infow("established session", "type", tp, "peer", dg.senderUDPAddr)
 
 				m.sessionStore.set(peerStaticKey, dg.senderID, sess)
 			}
@@ -278,15 +291,15 @@ func (m *Mesh) handleTCPTunnelRequest(peerID uint32, msg []byte) error {
 		return err
 	}
 
-	localIPs, err := GetLocalIPs()
-	if err != nil {
-		return err
+	addrs := make([]string, len(m.advertisableIPs))
+	for i, ip := range m.advertisableIPs {
+		addrs[i] = net.JoinHostPort(ip.String(), tcpSess.GetAddrPort())
 	}
 
 	respHs := &tcpv1.Handshake{
 		CertDer: ownCert.Certificate[0],
 		Sig:     ownSig,
-		Addr:    net.JoinHostPort(localIPs[0], tcpSess.GetAddrPort()), // TODO(saml) we require a single (or set of) static centralised, advertisable IP(s)
+		Addr:    addrs,
 	}
 
 	respBytes, err := proto.Marshal(respHs)
@@ -294,7 +307,7 @@ func (m *Mesh) handleTCPTunnelRequest(peerID uint32, msg []byte) error {
 		return err
 	}
 
-	if err := m.Send(peerID, respBytes, MessageTypeTCPTunnelResponse); err != nil {
+	if err := m.Send(peerID, respBytes, messageTypeTCPTunnelResponse); err != nil {
 		return err
 	}
 
@@ -345,7 +358,7 @@ func (m *Mesh) InitTCPTunnel(peerStaticKey []byte) error {
 	}
 	defer m.listenerStore.ExpireInflight(peerID)
 
-	if err := m.Send(peerID, reqBytes, MessageTypeTCPTunnelRequest); err != nil {
+	if err := m.Send(peerID, reqBytes, messageTypeTCPTunnelRequest); err != nil {
 		return err
 	}
 
@@ -389,8 +402,20 @@ func (m *Mesh) InitTCPTunnel(peerStaticKey []byte) error {
 
 	m.log.Infof("Dialing TCP Tunnel to %s", respHs.Addr)
 	tlsConfig := tcp.NewPinnedTLSConfig(false, ownTlsCert, peerCert)
-	if err := m.listenerStore.Dial(sess.peerNoiseKey, respHs.Addr, tlsConfig); err != nil {
-		return fmt.Errorf("TCP dial failed: %w", err)
+
+	// iterate over candidates until one works
+	var hasMatchingCandidate bool
+	for _, addr := range respHs.Addr {
+		if err := m.listenerStore.Dial(sess.peerNoiseKey, addr, tlsConfig); err != nil {
+			// return fmt.Errorf("TCP dial failed: %w", err)
+			m.log.Warnf("TCP dial failed: %w", err)
+			continue
+		}
+		hasMatchingCandidate = true
+	}
+
+	if !hasMatchingCandidate {
+		return ErrNoResolvableIP
 	}
 
 	// TODO(saml) remove proof of life

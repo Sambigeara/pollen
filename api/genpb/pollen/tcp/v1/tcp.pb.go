@@ -25,7 +25,7 @@ type Handshake struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CertDer       []byte                 `protobuf:"bytes,1,opt,name=cert_der,json=certDer,proto3" json:"cert_der,omitempty"`
 	Sig           []byte                 `protobuf:"bytes,2,opt,name=sig,proto3" json:"sig,omitempty"`
-	Addr          string                 `protobuf:"bytes,3,opt,name=addr,proto3" json:"addr,omitempty"`
+	Addr          []string               `protobuf:"bytes,3,rep,name=addr,proto3" json:"addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -74,11 +74,11 @@ func (x *Handshake) GetSig() []byte {
 	return nil
 }
 
-func (x *Handshake) GetAddr() string {
+func (x *Handshake) GetAddr() []string {
 	if x != nil {
 		return x.Addr
 	}
-	return ""
+	return nil
 }
 
 var File_pollen_tcp_v1_tcp_proto protoreflect.FileDescriptor
@@ -89,7 +89,7 @@ const file_pollen_tcp_v1_tcp_proto_rawDesc = "" +
 	"\tHandshake\x12\x19\n" +
 	"\bcert_der\x18\x01 \x01(\fR\acertDer\x12\x10\n" +
 	"\x03sig\x18\x02 \x01(\fR\x03sig\x12\x12\n" +
-	"\x04addr\x18\x03 \x01(\tR\x04addrB<Z:github.com/sambigeara/pollen/api/genpb/pollen/tcp/v1;tcpv1b\x06proto3"
+	"\x04addr\x18\x03 \x03(\tR\x04addrB<Z:github.com/sambigeara/pollen/api/genpb/pollen/tcp/v1;tcpv1b\x06proto3"
 
 var (
 	file_pollen_tcp_v1_tcp_proto_rawDescOnce sync.Once

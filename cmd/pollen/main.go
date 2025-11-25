@@ -61,7 +61,7 @@ func main() {
 		Short: "Generate an invite token for a peer",
 		Run:   runInvite,
 	}
-	inviteCmd.Flags().IP("ip", []byte{}, "IP address advertised to peers")
+	inviteCmd.Flags().IPSlice("ips", []net.IP{}, "IP addresses advertised to peers")
 	inviteCmd.Flags().String("port", defaultUDPPort, "Port advertised to peers")
 	inviteCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
 
@@ -89,16 +89,16 @@ func main() {
 	rootCmd.AddCommand(nodeCmd, inviteCmd, peersCmd)
 
 	if err := rootCmd.Execute(); err != nil {
-		log.Fatalf("Failed to execute command: %q", err)
+		log.Fatalf("failed to execute command: %q", err)
 	}
 }
 
 func runNode(cmd *cobra.Command, args []string) {
 	logging.Init()
-	defer zap.L().Sync()
+	defer zap.S().Sync()
 
-	zap.L().Info("starting pollen...", zap.String("version", "0.1.0")) // TODO(saml) retrieve version
-	log := zap.S().Named("pollen")
+	logger := zap.S()
+	logger.Infow("starting pollen...", "version", "0.1.0")
 
 	portStr, _ := cmd.Flags().GetString("port")
 	joinToken, _ := cmd.Flags().GetString("join")
@@ -109,30 +109,30 @@ func runNode(cmd *cobra.Command, args []string) {
 
 	pollenDir, err := workspace.EnsurePollenDir(dir)
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal(err)
 	}
 
 	var tkn *peerv1.Invite
 	if joinToken != "" {
 		tkn, err = node.DecodeToken(joinToken)
 		if err != nil {
-			log.Fatal(err)
+			logger.Fatal(err)
 		}
 	}
 
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		log.Fatalf("port '%s' is invalid: %v", portStr, err)
+		logger.Fatalf("port '%s' is invalid: %v", portStr, err)
 	}
 
 	n, err := node.New(port, pollenDir)
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal(err)
 	}
 
 	nodeSrv := node.NewNodeService(n)
 
-	cmd.Print("Successfully started node\n")
+	logger.Info("successfully started node")
 
 	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
 	p.Go(func(ctx context.Context) error {
@@ -148,12 +148,12 @@ func runNode(cmd *cobra.Command, args []string) {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
-		log.Fatal(err)
+		logger.Fatal(err)
 	}
 }
 
 func runInvite(cmd *cobra.Command, args []string) {
-	ip, _ := cmd.Flags().GetIP("ip")
+	ips, _ := cmd.Flags().GetIPSlice("ips")
 	port, _ := cmd.Flags().GetString("port")
 	dir, _ := cmd.Flags().GetString("dir")
 
@@ -162,15 +162,15 @@ func runInvite(cmd *cobra.Command, args []string) {
 		log.Fatalf("failed to prepare pollen dir: %v", err)
 	}
 
-	if ip == nil {
+	if len(ips) == 0 {
 		var err error
-		ip, err = mesh.GetPublicIP()
+		ips, err = mesh.GetAdvertisableIPs()
 		if err != nil {
 			log.Fatalf("failed to infer public IP")
 		}
 	}
 
-	token, err := node.NewInvite(ip, port)
+	token, err := node.NewInvite(ips, port)
 	if err != nil {
 		log.Fatalf("failed to generate invite: %v", err)
 	}

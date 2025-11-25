@@ -17,8 +17,8 @@ resource "aws_security_group" "pollen" {
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    from_port   = 51820
-    to_port     = 51820
+    from_port   = 60611
+    to_port     = 60611
     protocol    = "udp"
     cidr_blocks = ["0.0.0.0/0"]
   }

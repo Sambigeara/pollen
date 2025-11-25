@@ -15,7 +15,7 @@ message Known {
 message Invite {
   string id = 1 [(buf.validate.field).string = {uuid: true}];
   bytes psk = 2 [(buf.validate.field).bytes = {len: 32}];
-  string addr = 3;
+  repeated string addr = 3;
 }
 
 message PeerStore {

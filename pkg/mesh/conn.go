@@ -61,10 +61,7 @@ func (c *UDPConn) bumpPinger(addr *net.UDPAddr) {
 		return
 	}
 
-	// TODO(saml)
-	// multiple pingers being created for some reason
-	// problem might be with the key
-	zap.S().Infof("Creating new pinger: %s", addr.String())
+	zap.S().Infof("creating new pinger: %s", addr.String())
 	c.pingMgrs[addr.String()] = c.newPingMgr(addr)
 }
 
@@ -73,16 +70,17 @@ type pingMgr struct {
 }
 
 func (c *UDPConn) newPingMgr(peerAddr *net.UDPAddr) *pingMgr {
+	logger := zap.S().Named("mesh")
 	bumpCh := make(chan struct{}, 1)
 	go func() {
 		timer := time.NewTimer(jitteredPingInterval())
 		for {
 			select {
 			case <-c.ctx.Done():
-				zap.S().Named("session").Debugf("Closing session: %s", peerAddr.String())
+				logger.Debugf("closing pinger: %s", peerAddr.String())
 				return
 			case <-timer.C:
-				zap.L().Named("session").Debug("Pinging...")
+				logger.Debugf("pinging peer: %s", peerAddr.String())
 				write(c, peerAddr, messageTypePing, 0, 0, []byte{})
 				timer.Reset(jitteredPingInterval())
 			case <-bumpCh:

@@ -145,7 +145,7 @@ func (m *handshakeManager) expire(sessID uint32) {
 
 type Session struct {
 	ln   net.Listener
-	conn net.Conn // TODO(saml) make private again
+	conn net.Conn
 }
 
 func (s *Session) GetAddr() string {

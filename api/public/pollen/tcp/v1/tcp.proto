@@ -7,5 +7,5 @@ option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/tcp/v1;tcpv1"
 message Handshake {
   bytes cert_der = 1;
   bytes sig = 2;
-  string addr = 3;
+  repeated string addr = 3;
 }

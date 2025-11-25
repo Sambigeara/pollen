@@ -1,36 +1,139 @@
 package mesh
 
 import (
+	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
+	"time"
 )
 
-func GetPublicIP() (net.IP, error) {
-	resp, err := http.Get("https://api.ipify.org")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+const publicIPQueryTimeout = time.Second * 5
 
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	ip := net.ParseIP(string(b))
-	if ip == nil {
-		return nil, errors.New("failed to parse retrieved IP")
-	}
-
-	return ip, nil
+var providers = []string{
+	"https://api64.ipify.org",
+	"https://ifconfig.me/ip",
+	"https://icanhazip.com",
+	"https://ident.me",
 }
 
-// GetLocalIPs returns all non-loopback local IP addresses
-func GetLocalIPs() ([]string, error) {
-	var ips []string
+// GetAdvertisableIPs returns a prioritized list of IPs:
+// 1. Public IP (Globally Unique)
+// 2. Preferred Outbound IP (The interface used to reach the internet)
+// 3. Other Local IPs (Secondary interfaces/VPNs)
+func GetAdvertisableIPs() ([]net.IP, error) {
+	var results []net.IP
+	seen := make(map[string]bool)
+
+	ctx, cancelFn := context.WithTimeout(context.Background(), publicIPQueryTimeout)
+	defer cancelFn()
+
+	if pubIP, err := getPublicIP(ctx); err == nil {
+		str := pubIP.String()
+		results = append(results, pubIP)
+		seen[str] = true
+	}
+
+	if prefIP, err := getPreferredOutboundIP(); err == nil {
+		str := prefIP.String()
+		if !seen[str] {
+			results = append(results, prefIP)
+			seen[str] = true
+		}
+	}
+
+	others, err := getOtherLocalIPs()
+	if err == nil {
+		for _, ip := range others {
+			if !seen[ip.String()] {
+				results = append(results, ip)
+				seen[ip.String()] = true
+			}
+		}
+	}
+
+	if len(results) == 0 {
+		return nil, errors.New("could not determine any advertisable IP addresses")
+	}
+
+	return results, nil
+}
+
+// getPublicIP races multiple providers to return the first valid response.
+func getPublicIP(ctx context.Context) (net.IP, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	type result struct {
+		ip  net.IP
+		err error
+	}
+
+	resultCh := make(chan result, 1)
+	var wg sync.WaitGroup
+
+	for _, url := range providers {
+		wg.Add(1)
+		go func(providerURL string) {
+			defer wg.Done()
+
+			req, err := http.NewRequestWithContext(ctx, "GET", providerURL, nil)
+			if err != nil {
+				return
+			}
+
+			client := &http.Client{Timeout: 3 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return
+			}
+
+			ipStr := strings.TrimSpace(string(body))
+			ip := net.ParseIP(ipStr)
+
+			if isValidIP(ip) {
+				select {
+				case resultCh <- result{ip: ip}:
+				case <-ctx.Done():
+				}
+			}
+		}(url)
+	}
+
+	select {
+	case res := <-resultCh:
+		return res.ip, nil
+	case <-ctx.Done():
+		return nil, errors.New("timed out resolving public IP")
+	}
+}
+
+// getPreferredOutboundIP determines the local IP used to route to the internet.
+// This does not actually establish a connection.
+func getPreferredOutboundIP() (net.IP, error) {
+	// 8.8.8.8 is used as a reference to determine the default route.
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP, nil
+}
+
+// getOtherLocalIPs iterates all network interfaces for valid addresses.
+func getOtherLocalIPs() ([]net.IP, error) {
+	var ips []net.IP
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
@@ -43,7 +146,7 @@ func GetLocalIPs() ([]string, error) {
 
 		addrs, err := i.Addrs()
 		if err != nil {
-			return nil, err
+			continue
 		}
 
 		for _, addr := range addrs {
@@ -55,20 +158,15 @@ func GetLocalIPs() ([]string, error) {
 				ip = v.IP
 			}
 
-			if ip == nil || ip.IsLoopback() {
-				continue
+			if isValidIP(ip) {
+				ips = append(ips, ip)
 			}
-
-			ip = ip.To4()
-			if ip == nil {
-				continue
-			}
-
-			ips = append(ips, ip.String())
 		}
 	}
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("no active, non-loopback interface found")
-	}
 	return ips, nil
+}
+
+// isValidIP filters out Loopback, Multicast, Unspecified, and Link-Local (fe80::) addresses.
+func isValidIP(ip net.IP) bool {
+	return !(ip == nil || ip.IsLoopback() || ip.IsMulticast() || ip.IsUnspecified() || ip.IsLinkLocalUnicast())
 }
