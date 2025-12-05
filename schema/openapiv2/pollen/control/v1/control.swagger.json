@@ -45,14 +45,6 @@
         }
       }
     },
-    "v1ConnectResponse": {
-      "type": "object",
-      "properties": {
-        "status": {
-          "type": "string"
-        }
-      }
-    },
     "v1ListPeersResponse": {
       "type": "object",
       "properties": {

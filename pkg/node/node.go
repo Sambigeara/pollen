@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"os"
@@ -31,7 +32,7 @@ const (
 
 type Node struct {
 	log  *zap.SugaredLogger
-	mesh *mesh.Mesh
+	Mesh *mesh.Mesh
 }
 
 func New(port int, pollenDir string) (*Node, error) {
@@ -67,12 +68,16 @@ func New(port int, pollenDir string) (*Node, error) {
 	}
 
 	return &Node{
-		mesh: mesh,
+		Mesh: mesh,
 	}, nil
 }
 
+func (n *Node) ID() string {
+	return hex.EncodeToString(n.Mesh.NoiseKey.Public)
+}
+
 func (m *Node) Start(ctx context.Context, token *peerv1.Invite) error {
-	if err := m.mesh.Start(ctx, token); err != nil {
+	if err := m.Mesh.Start(ctx, token); err != nil {
 		return err
 	}
 
@@ -82,7 +87,7 @@ func (m *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 }
 
 func (m *Node) shutdown(ctx context.Context) error {
-	if err := m.mesh.Shutdown(ctx); err != nil {
+	if err := m.Mesh.Shutdown(ctx); err != nil {
 		return err
 	}
 

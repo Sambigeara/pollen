@@ -36,14 +36,11 @@ const (
 	// ControlServiceListPeersProcedure is the fully-qualified name of the ControlService's ListPeers
 	// RPC.
 	ControlServiceListPeersProcedure = "/pollen.control.v1.ControlService/ListPeers"
-	// ControlServiceConnectProcedure is the fully-qualified name of the ControlService's Connect RPC.
-	ControlServiceConnectProcedure = "/pollen.control.v1.ControlService/Connect"
 )
 
 // ControlServiceClient is a client for the pollen.control.v1.ControlService service.
 type ControlServiceClient interface {
 	ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error)
-	Connect(context.Context, *connect.Request[v1.ConnectRequest]) (*connect.Response[v1.ConnectResponse], error)
 }
 
 // NewControlServiceClient constructs a client for the pollen.control.v1.ControlService service. By
@@ -63,19 +60,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("ListPeers")),
 			connect.WithClientOptions(opts...),
 		),
-		connect: connect.NewClient[v1.ConnectRequest, v1.ConnectResponse](
-			httpClient,
-			baseURL+ControlServiceConnectProcedure,
-			connect.WithSchema(controlServiceMethods.ByName("Connect")),
-			connect.WithClientOptions(opts...),
-		),
 	}
 }
 
 // controlServiceClient implements ControlServiceClient.
 type controlServiceClient struct {
 	listPeers *connect.Client[v1.ListPeersRequest, v1.ListPeersResponse]
-	connect   *connect.Client[v1.ConnectRequest, v1.ConnectResponse]
 }
 
 // ListPeers calls pollen.control.v1.ControlService.ListPeers.
@@ -83,15 +73,9 @@ func (c *controlServiceClient) ListPeers(ctx context.Context, req *connect.Reque
 	return c.listPeers.CallUnary(ctx, req)
 }
 
-// Connect calls pollen.control.v1.ControlService.Connect.
-func (c *controlServiceClient) Connect(ctx context.Context, req *connect.Request[v1.ConnectRequest]) (*connect.Response[v1.ConnectResponse], error) {
-	return c.connect.CallUnary(ctx, req)
-}
-
 // ControlServiceHandler is an implementation of the pollen.control.v1.ControlService service.
 type ControlServiceHandler interface {
 	ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error)
-	Connect(context.Context, *connect.Request[v1.ConnectRequest]) (*connect.Response[v1.ConnectResponse], error)
 }
 
 // NewControlServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -107,18 +91,10 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("ListPeers")),
 		connect.WithHandlerOptions(opts...),
 	)
-	controlServiceConnectHandler := connect.NewUnaryHandler(
-		ControlServiceConnectProcedure,
-		svc.Connect,
-		connect.WithSchema(controlServiceMethods.ByName("Connect")),
-		connect.WithHandlerOptions(opts...),
-	)
 	return "/pollen.control.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ControlServiceListPeersProcedure:
 			controlServiceListPeersHandler.ServeHTTP(w, r)
-		case ControlServiceConnectProcedure:
-			controlServiceConnectHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -130,8 +106,4 @@ type UnimplementedControlServiceHandler struct{}
 
 func (UnimplementedControlServiceHandler) ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.ListPeers is not implemented"))
-}
-
-func (UnimplementedControlServiceHandler) Connect(context.Context, *connect.Request[v1.ConnectRequest]) (*connect.Response[v1.ConnectResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.Connect is not implemented"))
 }

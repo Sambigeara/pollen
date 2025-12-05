@@ -101,94 +101,6 @@ func (x *ListPeersResponse) GetKeys() [][]byte {
 	return nil
 }
 
-type ConnectRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	PeerId        string                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"` // hex string of the peer's noise key
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ConnectRequest) Reset() {
-	*x = ConnectRequest{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ConnectRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ConnectRequest) ProtoMessage() {}
-
-func (x *ConnectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ConnectRequest.ProtoReflect.Descriptor instead.
-func (*ConnectRequest) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *ConnectRequest) GetPeerId() string {
-	if x != nil {
-		return x.PeerId
-	}
-	return ""
-}
-
-type ConnectResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ConnectResponse) Reset() {
-	*x = ConnectResponse{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ConnectResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ConnectResponse) ProtoMessage() {}
-
-func (x *ConnectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ConnectResponse.ProtoReflect.Descriptor instead.
-func (*ConnectResponse) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *ConnectResponse) GetStatus() string {
-	if x != nil {
-		return x.Status
-	}
-	return ""
-}
-
 var File_pollen_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_pollen_control_v1_control_proto_rawDesc = "" +
@@ -196,14 +108,9 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\"\x12\n" +
 	"\x10ListPeersRequest\"'\n" +
 	"\x11ListPeersResponse\x12\x12\n" +
-	"\x04keys\x18\x01 \x03(\fR\x04keys\")\n" +
-	"\x0eConnectRequest\x12\x17\n" +
-	"\apeer_id\x18\x01 \x01(\tR\x06peerId\")\n" +
-	"\x0fConnectResponse\x12\x16\n" +
-	"\x06status\x18\x01 \x01(\tR\x06status2\xba\x01\n" +
+	"\x04keys\x18\x01 \x03(\fR\x04keys2h\n" +
 	"\x0eControlService\x12V\n" +
-	"\tListPeers\x12#.pollen.control.v1.ListPeersRequest\x1a$.pollen.control.v1.ListPeersResponse\x12P\n" +
-	"\aConnect\x12!.pollen.control.v1.ConnectRequest\x1a\".pollen.control.v1.ConnectResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
+	"\tListPeers\x12#.pollen.control.v1.ListPeersRequest\x1a$.pollen.control.v1.ListPeersResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
 
 var (
 	file_pollen_control_v1_control_proto_rawDescOnce sync.Once
@@ -217,20 +124,16 @@ func file_pollen_control_v1_control_proto_rawDescGZIP() []byte {
 	return file_pollen_control_v1_control_proto_rawDescData
 }
 
-var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_pollen_control_v1_control_proto_goTypes = []any{
 	(*ListPeersRequest)(nil),  // 0: pollen.control.v1.ListPeersRequest
 	(*ListPeersResponse)(nil), // 1: pollen.control.v1.ListPeersResponse
-	(*ConnectRequest)(nil),    // 2: pollen.control.v1.ConnectRequest
-	(*ConnectResponse)(nil),   // 3: pollen.control.v1.ConnectResponse
 }
 var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	0, // 0: pollen.control.v1.ControlService.ListPeers:input_type -> pollen.control.v1.ListPeersRequest
-	2, // 1: pollen.control.v1.ControlService.Connect:input_type -> pollen.control.v1.ConnectRequest
-	1, // 2: pollen.control.v1.ControlService.ListPeers:output_type -> pollen.control.v1.ListPeersResponse
-	3, // 3: pollen.control.v1.ControlService.Connect:output_type -> pollen.control.v1.ConnectResponse
-	2, // [2:4] is the sub-list for method output_type
-	0, // [0:2] is the sub-list for method input_type
+	1, // 1: pollen.control.v1.ControlService.ListPeers:output_type -> pollen.control.v1.ListPeersResponse
+	1, // [1:2] is the sub-list for method output_type
+	0, // [0:1] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -247,7 +150,7 @@ func file_pollen_control_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_control_v1_control_proto_rawDesc), len(file_pollen_control_v1_control_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

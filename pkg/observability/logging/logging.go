@@ -10,8 +10,9 @@ import (
 func Init() {
 	cfg := zap.NewProductionConfig()
 	cfg.Encoding = "console"
-	cfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel) // TODO(saml) make configurable
+	// cfg.DisableStacktrace = true
 	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel) // TODO(saml) make configurable
 
 	logger, err := cfg.Build()
 	if err != nil {

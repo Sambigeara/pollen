@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -29,6 +30,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
 	"github.com/sambigeara/pollen/pkg/server"
+	"github.com/sambigeara/pollen/pkg/tcp"
 	"github.com/sambigeara/pollen/pkg/workspace"
 )
 
@@ -65,6 +67,24 @@ func main() {
 	inviteCmd.Flags().String("port", defaultUDPPort, "Port advertised to peers")
 	inviteCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
 
+	serveCmd := &cobra.Command{
+		Use:   "serve [port]",
+		Short: "Expose a local port to the mesh",
+		Args:  cobra.ExactArgs(1),
+		Run:   runServe,
+	}
+	serveCmd.Flags().String("port", defaultUDPPort, "Listening UDP port for node")
+	serveCmd.Flags().String("dir", defaultRootDir, "State directory")
+
+	connectCmd := &cobra.Command{
+		Use:   "connect [peer-id]",
+		Short: "Tunnel a local port to a peer",
+		Args:  cobra.ExactArgs(1),
+		Run:   runConnect,
+	}
+	connectCmd.Flags().String("L", "", "Local port forwarding (e.g., 9090:8080)")
+	connectCmd.Flags().String("dir", defaultRootDir, "State directory")
+
 	peersCmd := &cobra.Command{
 		Use:   "peers",
 		Short: "Manage known peers",
@@ -76,17 +96,9 @@ func main() {
 	}
 	peersListCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
 
-	peersConnectCmd := &cobra.Command{
-		Use:   "connect [peer-id]",
-		Short: "Open a TCP tunnel to a peer",
-		Args:  cobra.ExactArgs(1),
-		Run:   runConnect,
-	}
-	peersConnectCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
+	peersCmd.AddCommand(peersListCmd)
 
-	peersCmd.AddCommand(peersListCmd, peersConnectCmd)
-
-	rootCmd.AddCommand(nodeCmd, inviteCmd, peersCmd)
+	rootCmd.AddCommand(nodeCmd, inviteCmd, serveCmd, connectCmd, peersCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatalf("failed to execute command: %q", err)
@@ -129,6 +141,8 @@ func runNode(cmd *cobra.Command, args []string) {
 	if err != nil {
 		logger.Fatal(err)
 	}
+
+	logger.Infow("Local Node ID", "id", n.ID())
 
 	nodeSrv := node.NewNodeService(n)
 
@@ -204,19 +218,96 @@ func runListPeers(cmd *cobra.Command, args []string) {
 	}
 }
 
-func runConnect(cmd *cobra.Command, args []string) {
-	client := newControlClient(cmd)
+func runServe(cmd *cobra.Command, args []string) {
+	// 1. Setup Node (reuse logic from runNode)
+	logging.Init()
+	portStr, _ := cmd.Flags().GetString("port")
+	dir, _ := cmd.Flags().GetString("dir")
+	pollenDir, _ := workspace.EnsurePollenDir(dir)
+	port, _ := strconv.Atoi(portStr)
 
-	resp, err := client.Connect(context.Background(), connect.NewRequest(&controlv1.ConnectRequest{
-		PeerId: args[0],
-	}))
+	n, err := node.New(port, pollenDir)
 	if err != nil {
-		log.Fatalf("Failed to connect: %v", err)
+		log.Fatal(err)
 	}
 
-	fmt.Printf("Success: %s\n", resp.Msg.Status)
+	// 2. Wiring: Handle incoming tunnels by dialing localhost
+	targetPort := args[0] // e.g., ":8080"
+	n.Mesh.SetTunnelHandler(func(tunnelConn net.Conn) {
+		localConn, err := net.Dial("tcp", "localhost"+targetPort)
+		if err != nil {
+			log.Printf("Failed to dial local service: %v", err)
+			tunnelConn.Close()
+			return
+		}
+		log.Printf("Proxying tunnel to %s", targetPort)
+		tcp.Bridge(tunnelConn, localConn)
+	})
+
+	// 3. Start Node
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := n.Start(ctx, nil); err != nil {
+		log.Fatal(err)
+	}
 }
 
+func runConnect(cmd *cobra.Command, args []string) {
+	peerHex := args[0]
+	localMap, _ := cmd.Flags().GetString("L") // Expected format "9090:8080" but we only need local port for now
+	// Simple parse for "9090:..." -> "9090"
+	localPort := localMap
+	if _, _, err := net.SplitHostPort(localMap); err == nil {
+		_, localPort, _ = net.SplitHostPort(localMap)
+	} else if _, port, err := net.SplitHostPort(":" + localMap); err == nil {
+		localPort = port
+	}
+
+	// 1. Setup Node
+	logging.Init()
+	dir, _ := cmd.Flags().GetString("dir")
+	pollenDir, _ := workspace.EnsurePollenDir(dir)
+	// Use 0 or specific port for initiator node
+	n, err := node.New(0, pollenDir)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// 2. Start Local Listener
+	l, err := net.Listen("tcp", ":"+localPort)
+	if err != nil {
+		log.Fatalf("Failed to listen on %s: %v", localPort, err)
+	}
+	log.Printf("Listening on :%s -> Tunnelling to %s...", localPort, peerHex)
+
+	go func() {
+		for {
+			clientConn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				// 3. Wiring: Dial Peer via Mesh
+				peerKey, _ := hex.DecodeString(peerHex)
+				meshConn, err := n.Mesh.InitTCPTunnel(peerKey)
+				if err != nil {
+					log.Printf("Tunnel failed: %v", err)
+					clientConn.Close()
+					return
+				}
+				// 4. Bridge
+				tcp.Bridge(clientConn, meshConn)
+			}()
+		}
+	}()
+
+	// 5. Start Node (Blocks)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := n.Start(ctx, nil); err != nil {
+		log.Fatal(err)
+	}
+}
 func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient {
 	dir, _ := cmd.Flags().GetString("dir")
 	pollenDir, err := workspace.EnsurePollenDir(dir)

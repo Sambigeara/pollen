@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ed25519"
@@ -33,7 +34,7 @@ type Mesh struct {
 	advertisableIPs []net.IP
 	Peers           *peers.PeerStore
 	invites         *invites.InviteStore
-	noiseKey        noise.DHKey
+	NoiseKey        noise.DHKey
 	signingKey      ed25519.PrivateKey
 	signingPubKey   ed25519.PublicKey
 	conn            *UDPConn
@@ -42,6 +43,8 @@ type Mesh struct {
 	listenerStore   *tcp.Store
 	rekeyMgr        *rekeyManager
 	port            int
+	tunnelHandler   func(net.Conn)
+	handshakeMu     sync.Mutex
 }
 
 func New(cs *noise.CipherSuite, staticKey noise.DHKey, priv ed25519.PrivateKey, pub ed25519.PublicKey, peers *peers.PeerStore, invites *invites.InviteStore, port int) (*Mesh, error) {
@@ -56,7 +59,7 @@ func New(cs *noise.CipherSuite, staticKey noise.DHKey, priv ed25519.PrivateKey, 
 		port:            port,
 		Peers:           peers,
 		invites:         invites,
-		noiseKey:        staticKey,
+		NoiseKey:        staticKey,
 		signingKey:      priv,
 		signingPubKey:   pub,
 		handshakeStore:  newHandshakeStore(cs, invites, staticKey, pub),
@@ -134,7 +137,7 @@ func (m *Mesh) listen(ctx context.Context) error {
 
 			sess, peerStaticKey, peerSigPub, err := hs.progress(m.conn, dg.msg, dg.senderUDPAddr, dg.senderID)
 			if err != nil {
-				m.log.Errorw("failed to progress", "type", "error", err, dg.tp, "peer", dg.senderUDPAddr)
+				m.log.Errorw("failed to progress", "error", err, "type", dg.tp, "peer", dg.senderUDPAddr)
 				return nil // TODO(saml) return err to cancel others?
 			}
 
@@ -316,30 +319,32 @@ func (m *Mesh) handleTCPTunnelRequest(peerID uint32, msg []byte) error {
 		return err
 	}
 
-	// TODO(saml) remove proof of life receiver
-	// go func() {
-	// 	buf := make([]byte, 1024)
-	// 	n, err := tcpSess.Conn.Read(buf)
-	// 	if err != nil {
-	// 		return
-	// 	}
-	// 	m.log.Infof("TCP Tunnel Accept received: %s", string(buf[:n]))
-
-	// 	fmt.Fprintf(tcpSess.Conn, "ACK_FROM_RESPONDER\n")
-	// }()
-
+	if m.tunnelHandler != nil {
+		go m.tunnelHandler(tcpSess.Conn)
+	} else {
+		m.log.Warn("Incoming TCP tunnel established, but no handler registered")
+		tcpSess.Conn.Close()
+	}
 	return nil
 }
 
-func (m *Mesh) InitTCPTunnel(peerStaticKey []byte) error {
+func (m *Mesh) SetTunnelHandler(h func(net.Conn)) {
+	m.tunnelHandler = h
+}
+
+func (m *Mesh) InitTCPTunnel(peerStaticKey []byte) (net.Conn, error) {
+	m.handshakeMu.Lock()
+	defer m.handshakeMu.Unlock()
+
 	peerID, ok := m.sessionStore.getID(peerStaticKey)
+
 	if !ok {
-		return fmt.Errorf("no active UDP session found for peer: %x", peerStaticKey)
+		return nil, fmt.Errorf("no active UDP session found for peer: %x", peerStaticKey)
 	}
 
 	ownTlsCert, ownSig, err := tcp.GenerateEphemeralCert(m.signingKey)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	reqHs := &tcpv1.Handshake{
@@ -349,17 +354,17 @@ func (m *Mesh) InitTCPTunnel(peerStaticKey []byte) error {
 
 	reqBytes, err := proto.Marshal(reqHs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	respCh := make(chan []byte)
 	if err := m.listenerStore.SetInflight(peerID, respCh); err != nil {
-		return err
+		return nil, err
 	}
 	defer m.listenerStore.ExpireInflight(peerID)
 
 	if err := m.Send(peerID, reqBytes, messageTypeTCPTunnelRequest); err != nil {
-		return err
+		return nil, err
 	}
 
 	m.log.Info("Waiting for TCP handshake response...")
@@ -369,17 +374,17 @@ func (m *Mesh) InitTCPTunnel(peerStaticKey []byte) error {
 	case respMsg = <-respCh:
 		t.Stop()
 	case <-t.C:
-		return errors.New("timed out waiting for TCP handshake response")
+		return nil, errors.New("timed out waiting for TCP handshake response")
 	}
 
 	sess, ok := m.sessionStore.get(peerID)
 	if !ok {
-		return errors.New("peer session lost during handshake")
+		return nil, errors.New("peer session lost during handshake")
 	}
 
 	respPlaintext, shouldRekey, err := sess.Decrypt(respMsg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if shouldRekey {
 		m.rekeyMgr.resetIfExists(peerID, sessionRefreshInterval)
@@ -387,59 +392,41 @@ func (m *Mesh) InitTCPTunnel(peerStaticKey []byte) error {
 
 	respHs := &tcpv1.Handshake{}
 	if err := proto.Unmarshal(respPlaintext, respHs); err != nil {
-		return err
+		return nil, err
 	}
 
 	peer, ok := m.Peers.Get(sess.peerNoiseKey)
 	if !ok {
-		return errors.New("peer not recognized in store") // Should be impossible if we got here
+		return nil, errors.New("peer not recognized in store") // Should be impossible if we got here
 	}
 
 	peerCert, err := tcp.VerifyPeerAttestation(peer.SigPub, respHs.CertDer, respHs.Sig)
 	if err != nil {
-		return fmt.Errorf("peer attestation failed: %w", err)
+		return nil, fmt.Errorf("peer attestation failed: %w", err)
 	}
 
 	m.log.Infof("Dialing TCP Tunnel to %s", respHs.Addr)
 	tlsConfig := tcp.NewPinnedTLSConfig(false, ownTlsCert, peerCert)
 
 	// iterate over candidates until one works
-	var hasMatchingCandidate bool
+	var finalConn net.Conn
 	for _, addr := range respHs.Addr {
 		if err := m.listenerStore.Dial(sess.peerNoiseKey, addr, tlsConfig); err != nil {
 			// return fmt.Errorf("TCP dial failed: %w", err)
-			m.log.Warnf("TCP dial failed: %w", err)
+			m.log.Warnf("TCP dial failed: %v", err)
 			continue
 		}
-		hasMatchingCandidate = true
+		if conn, ok := m.listenerStore.GetConn(sess.peerNoiseKey); ok {
+			finalConn = conn
+			break
+		}
 	}
 
-	if !hasMatchingCandidate {
-		return ErrNoResolvableIP
+	if finalConn == nil {
+		return nil, ErrNoResolvableIP
 	}
 
-	// TODO(saml) remove proof of life
-	// go func() {
-	// 	conn, ok := m.listenerStore.GetConn(sess.peerNoiseKey)
-	// 	if !ok {
-	// 		return
-	// 	}
-
-	// 	fmt.Fprintf(conn, "HELLO_FROM_TCP_TUNNEL\n")
-
-	// 	buf := make([]byte, 1024)
-	// 	// Set a read deadline so we don't hang forever if they don't reply
-	// 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	// 	n, err := conn.Read(buf)
-	// 	if err == nil {
-	// 		m.log.Infof("SUCCESS: Received on TCP Tunnel: %s", string(buf[:n]))
-	// 	} else {
-	// 		m.log.Warnf("TCP Tunnel connected, but read failed: %v", err)
-	// 	}
-	// 	conn.SetReadDeadline(time.Time{}) // Clear deadline
-	// }()
-
-	return nil
+	return finalConn, nil
 }
 
 func (m *Mesh) Shutdown(ctx context.Context) error {

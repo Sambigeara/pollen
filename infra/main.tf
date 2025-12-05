@@ -17,17 +17,19 @@ resource "aws_security_group" "pollen" {
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
+    description = "Pollen UDP Control Plane"
     from_port   = 60611
     to_port     = 60611
     protocol    = "udp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-  # ingress {
-  #   from_port   = 443
-  #   to_port     = 443
-  #   protocol    = "tcp"
-  #   cidr_blocks = ["0.0.0.0/0"]
-  # }
+  ingress {
+    description = "Pollen TCP Data Plane (Ephemeral Ports)"
+    from_port   = 1024
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
   ingress {
     from_port   = 22
     to_port     = 22

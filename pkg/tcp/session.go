@@ -55,7 +55,7 @@ func (s *Store) Dial(k peers.PeerNoiseKey, peerAddr string, cfg *tls.Config) err
 	}
 
 	sess := &Session{
-		conn: conn,
+		Conn: conn,
 	}
 
 	s.m[peers.EncodeStaticPublicKey(k)] = sess
@@ -98,10 +98,10 @@ func (s *Store) GetConn(k peers.PeerNoiseKey) (net.Conn, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.m[peers.EncodeStaticPublicKey(k)]
-	if !ok || sess.conn == nil {
+	if !ok || sess.Conn == nil {
 		return nil, false
 	}
-	return sess.conn, true
+	return sess.Conn, true
 }
 
 func (s *Session) GetAddrPort() string {
@@ -145,7 +145,7 @@ func (m *handshakeManager) expire(sessID uint32) {
 
 type Session struct {
 	ln   net.Listener
-	conn net.Conn
+	Conn net.Conn
 }
 
 func (s *Session) GetAddr() string {
@@ -163,13 +163,17 @@ func (s *Session) UpgradeToTLS(cfg *tls.Config) error {
 	}
 	fmt.Println("tcp: accepted TLS connection from", conn.RemoteAddr().String())
 
-	s.conn = conn
+	s.Conn = conn
 
 	return nil
 }
 
 func (s *Session) close() {
 	// TODO(saml) graceful handling of errors
-	s.ln.Close()
-	s.conn.Close()
+	if s.ln != nil {
+		s.ln.Close()
+	}
+	if s.Conn != nil {
+		s.Conn.Close()
+	}
 }
