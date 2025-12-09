@@ -2,14 +2,15 @@ package tcp
 
 import (
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"sync"
 	"time"
-
-	"github.com/sambigeara/pollen/pkg/peers"
 )
+
+type key []byte
 
 type Store struct {
 	m           map[string]*Session
@@ -26,7 +27,7 @@ func NewStore() *Store {
 	}
 }
 
-func (s *Store) CreateSession(k peers.PeerNoiseKey) (*Session, error) {
+func (s *Store) CreateSession(k key) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -39,12 +40,12 @@ func (s *Store) CreateSession(k peers.PeerNoiseKey) (*Session, error) {
 		ln: listener,
 	}
 
-	s.m[peers.EncodeStaticPublicKey(k)] = sess
+	s.m[hex.EncodeToString(k)] = sess
 
 	return sess, nil
 }
 
-func (s *Store) Dial(k peers.PeerNoiseKey, peerAddr string, cfg *tls.Config) error {
+func (s *Store) Dial(k key, peerAddr string, cfg *tls.Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -58,7 +59,7 @@ func (s *Store) Dial(k peers.PeerNoiseKey, peerAddr string, cfg *tls.Config) err
 		Conn: conn,
 	}
 
-	s.m[peers.EncodeStaticPublicKey(k)] = sess
+	s.m[hex.EncodeToString(k)] = sess
 
 	return nil
 }
@@ -94,10 +95,10 @@ func (s *Store) ExpireInflight(sessID uint32) {
 	s.inflightMgr.expire(sessID)
 }
 
-func (s *Store) GetConn(k peers.PeerNoiseKey) (net.Conn, bool) {
+func (s *Store) GetConn(k key) (net.Conn, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sess, ok := s.m[peers.EncodeStaticPublicKey(k)]
+	sess, ok := s.m[hex.EncodeToString(k)]
 	if !ok || sess.Conn == nil {
 		return nil, false
 	}

@@ -1,0 +1,142 @@
+package mesh
+
+import (
+	"crypto/rand"
+	"testing"
+
+	"github.com/flynn/noise"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ed25519"
+
+	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	"github.com/sambigeara/pollen/pkg/invites"
+)
+
+func TestHandshake_Pure_XX(t *testing.T) {
+	// Node A (Responder)
+	csA := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
+	kpA, _ := csA.GenerateKeypair(rand.Reader)
+	pubA, _, _ := ed25519.GenerateKey(rand.Reader)
+	invitesA, _ := invites.Load(t.TempDir())
+
+	// Node B (Initiator)
+	csB := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
+	kpB, _ := csB.GenerateKeypair(rand.Reader)
+
+	// Create Invite
+	psk := make([]byte, 32)
+	rand.Read(psk)
+	invite := &peerv1.Invite{
+		Id:   uuid.NewString(),
+		Psk:  psk,
+		Addr: []string{"1.2.3.4:5000"},
+	}
+	invitesA.AddInvite(invite)
+
+	// Setup Handshakes
+	hsInit, err := newHandshakeXXPsk2Init(&csB, kpB, pubA, invite)
+	require.NoError(t, err)
+
+	hsResp, err := newHandshakeXXPsk2Resp(&csA, invitesA, kpA, pubA, 999)
+	require.NoError(t, err)
+
+	// 1. Init (B) -> Msg1
+	res1, err := hsInit.Step(nil)
+	require.NoError(t, err)
+	assert.Equal(t, MessageTypeHandshakeXXPsk2Init, res1.MsgType)
+	assert.NotEmpty(t, res1.Msg)
+	assert.Len(t, res1.Targets, 1)
+
+	// 2. Resp (A) processes Msg1 -> Msg2
+	res2, err := hsResp.Step(res1.Msg)
+	require.NoError(t, err)
+	assert.Equal(t, MessageTypeHandshakeXXPsk2Resp, res2.MsgType)
+	assert.NotEmpty(t, res2.Msg)
+
+	// 3. Init (B) processes Msg2 -> Msg3 + Session
+	res3, err := hsInit.Step(res2.Msg)
+	require.NoError(t, err)
+	assert.Equal(t, MessageTypeHandshakeXXPsk2Init, res3.MsgType)
+	assert.NotEmpty(t, res3.Msg)
+	require.NotNil(t, res3.Session)
+	assert.Equal(t, kpA.Public, res3.PeerStaticKey)
+
+	// 4. Resp (A) processes Msg3 -> Session
+	res4, err := hsResp.Step(res3.Msg)
+	require.NoError(t, err)
+	require.NotNil(t, res4.Session)
+	assert.Equal(t, kpB.Public, res4.PeerStaticKey)
+
+	// 5. Verify Encryption Round-Trip
+	verifySession(t, res3.Session, res4.Session)
+}
+
+func TestHandshake_Pure_IK(t *testing.T) {
+	// Node A (Responder)
+	csA := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
+	kpA, _ := csA.GenerateKeypair(rand.Reader)
+
+	// Node B (Initiator)
+	csB := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
+	kpB, _ := csB.GenerateKeypair(rand.Reader)
+
+	// Happy Eyeballs Targets
+	targets := []string{"1.2.3.4:5000", "192.168.1.50:6000"}
+
+	// IK requires Initiator (B) to already know Responder's (A) static key
+	hsInit, err := newHandshakeIKInit(&csB, kpB, kpA.Public, targets)
+	require.NoError(t, err)
+
+	hsResp, err := newHandshakeIKResp(&csA, kpA, 888)
+	require.NoError(t, err)
+
+	// 1. Init (B) -> Msg1
+	res1, err := hsInit.Step(nil)
+	require.NoError(t, err)
+	assert.Equal(t, MessageTypeHandshakeIKInit, res1.MsgType)
+	assert.NotEmpty(t, res1.Msg)
+	assert.Len(t, res1.Targets, 2, "Should resolve all targets")
+
+	// 2. Resp (A) processes Msg1 -> Msg2 + Session
+	res2, err := hsResp.Step(res1.Msg)
+	require.NoError(t, err)
+	assert.Equal(t, MessageTypeHandshakeIKResp, res2.MsgType)
+	assert.NotEmpty(t, res2.Msg)
+	require.NotNil(t, res2.Session) // IK establishes responder session immediately
+	assert.Equal(t, kpB.Public, res2.PeerStaticKey)
+
+	// 3. Init (B) processes Msg2 -> Session
+	res3, err := hsInit.Step(res2.Msg)
+	require.NoError(t, err)
+	require.NotNil(t, res3.Session)
+	assert.Equal(t, kpA.Public, res3.PeerStaticKey)
+
+	// 4. Verify Encryption Round-Trip
+	verifySession(t, res3.Session, res2.Session)
+}
+
+func verifySession(t *testing.T, a, b *session) {
+	t.Helper()
+
+	msg := []byte("hello world")
+
+	// A Encrypts
+	enc, _, err := a.Encrypt(nil, msg)
+	require.NoError(t, err)
+
+	// B Decrypts
+	dec, _, err := b.Decrypt(enc)
+	require.NoError(t, err)
+	assert.Equal(t, msg, dec)
+
+	// B Encrypts
+	enc2, _, err := b.Encrypt(nil, msg)
+	require.NoError(t, err)
+
+	// A Decrypts
+	dec2, _, err := a.Decrypt(enc2)
+	require.NoError(t, err)
+	assert.Equal(t, msg, dec2)
+}

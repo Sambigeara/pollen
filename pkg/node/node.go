@@ -7,14 +7,16 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/flynn/noise"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/invites"
 	"github.com/sambigeara/pollen/pkg/mesh"
-	"github.com/sambigeara/pollen/pkg/peers"
+	"github.com/sambigeara/pollen/pkg/state"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ed25519"
 )
@@ -30,65 +32,108 @@ const (
 	pemTypePub        = "ED25519 PUBLIC KEY"
 )
 
-type Node struct {
-	log  *zap.SugaredLogger
-	Mesh *mesh.Mesh
+type Config struct {
+	Mesh      *mesh.Config
+	PollenDir string
 }
 
-func New(port int, pollenDir string) (*Node, error) {
+type Node struct {
+	log           *zap.SugaredLogger
+	conf          *Config
+	Mesh          *mesh.Mesh
+	Store         *state.Persistence
+	Invites       *invites.InviteStore
+	signingPubKey ed25519.PublicKey
+	noisePubKey   []byte
+}
+
+func New(conf *Config) (*Node, error) {
 	log := zap.S().Named("node")
-
-	peersStore, err := peers.Load(pollenDir)
-	if err != nil {
-		log.Error("failed to load peers", zap.Error(err))
-		return nil, err
-	}
-
-	invitesStore, err := invites.Load(pollenDir)
-	if err != nil {
-		log.Error("failed to load peers", zap.Error(err))
-		return nil, err
-	}
 
 	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
 
-	noiseKey, err := genNoiseKey(cs, pollenDir)
+	noiseKey, err := genNoiseKey(cs, conf.PollenDir)
 	if err != nil {
-		log.Fatalf("failed to load noise key: %v", err)
+		return nil, fmt.Errorf("failed to load noise key: %v", err)
+	}
+	nodeID := hex.EncodeToString(noiseKey.Public)
+
+	privKey, pubKey, err := genSigningKey(conf.PollenDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load signing keys: %v", err)
 	}
 
-	privKey, pubKey, err := genSigningKey(pollenDir)
+	stateStore, err := state.Load(conf.PollenDir, nodeID)
 	if err != nil {
-		log.Fatalf("failed to load signing keys: %v", err)
+		return nil, fmt.Errorf("failed to load state: %w", err)
 	}
 
-	mesh, err := mesh.New(&cs, noiseKey, privKey, pubKey, peersStore, invitesStore, port)
+	invitesStore, err := invites.Load(conf.PollenDir)
+	if err != nil {
+		log.Error("failed to load peers", zap.Error(err))
+		return nil, err
+	}
+
+	cluster := stateStore.Cluster
+
+	m, err := mesh.New(&cs, noiseKey, privKey, pubKey, cluster, invitesStore, conf.Mesh)
 	if err != nil {
 		return nil, err
 	}
 
+	m.SetGossipHandler(func(payload []byte) error {
+		delta := &statev1.DeltaState{}
+		if err := delta.UnmarshalVT(payload); err != nil {
+			return fmt.Errorf("malformed gossip payload: %w", err)
+		}
+
+		stateStore.Hydrate(delta)
+
+		log.Debugw("gossip merged", "nodes", len(delta.Nodes))
+		return nil
+	})
+
+	cluster.Nodes.Set(nodeID, &statev1.Node{
+		Id: nodeID,
+		// Name:      "local-node", // TODO(saml) Allow configuring hostname/alias
+		Addresses: m.GetAdvertisableAddrs(),
+		Keys: &statev1.Keys{
+			NoisePub:    noiseKey.Public,
+			IdentityPub: pubKey,
+		},
+	})
+
 	return &Node{
-		Mesh: mesh,
+		log:           log,
+		Mesh:          m,
+		Store:         stateStore,
+		Invites:       invitesStore,
+		signingPubKey: pubKey,
+		noisePubKey:   noiseKey.Public,
 	}, nil
 }
 
-func (n *Node) ID() string {
-	return hex.EncodeToString(n.Mesh.NoiseKey.Public)
-}
-
-func (m *Node) Start(ctx context.Context, token *peerv1.Invite) error {
-	if err := m.Mesh.Start(ctx, token); err != nil {
+func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
+	if err := n.Mesh.Start(ctx, token); err != nil {
 		return err
 	}
 
 	<-ctx.Done()
 
-	return m.shutdown(ctx)
+	return n.shutdown(ctx)
 }
 
-func (m *Node) shutdown(ctx context.Context) error {
-	if err := m.Mesh.Shutdown(ctx); err != nil {
-		return err
+func (n *Node) shutdown(ctx context.Context) error {
+	if err := n.Store.Save(); err != nil {
+		n.log.Errorf("failed to save state: %v", err)
+	} else {
+		n.log.Info("state saved to disk")
+	}
+
+	if err := n.Mesh.Shutdown(ctx); err != nil {
+		n.log.Errorf("failed to shut down mesh: %v", err)
+	} else {
+		n.log.Info("successfully shut down mesh")
 	}
 
 	return ctx.Err()
@@ -229,4 +274,11 @@ func genSigningKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, err
 	})
 
 	return priv, pub, err
+}
+
+func (n *Node) GetStateKeys() *statev1.Keys {
+	return &statev1.Keys{
+		NoisePub:    n.noisePubKey,
+		IdentityPub: n.signingPubKey,
+	}
 }

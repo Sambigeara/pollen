@@ -30,7 +30,11 @@ func newSessionStore() *sessionStore {
 	}
 }
 
-func (s *sessionStore) set(staticKey []byte, sessionID uint32, conn *session) {
+// set registers a session under both the local and peer-assigned session IDs.
+//   - keyIDMap maps staticKey -> peerSessionID (used when sending to set receiverID)
+//   - idSessMap maps both peerSessionID and localSessionID -> session (so inbound
+//     frames addressed to our local session ID can be decrypted)
+func (s *sessionStore) set(staticKey []byte, localSessionID uint32, peerSessionID uint32, conn *session) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -38,7 +42,7 @@ func (s *sessionStore) set(staticKey []byte, sessionID uint32, conn *session) {
 	if prevSessID, ok := s.keyIDMap[k]; ok {
 		// the chances of collision are hilariously low, but let's cover this for hypothetical scenarios
 		// of 100,000 nodes running over a decade :-)
-		if prevSessID != sessionID {
+		if prevSessID != peerSessionID {
 			// deletions occur after a grace period so that inflight packets have a higher chance of being processed
 			defer time.AfterFunc(rekeyGracePeriod, func() {
 				s.mu.Lock()
@@ -48,8 +52,16 @@ func (s *sessionStore) set(staticKey []byte, sessionID uint32, conn *session) {
 		}
 	}
 
-	s.keyIDMap[k] = sessionID
-	s.idSessMap[sessionID] = conn
+	// map static key to the peer's session ID (used when sending)
+	s.keyIDMap[k] = peerSessionID
+	// store by both peer and local IDs so we can resolve sessions in both directions
+	s.idSessMap[peerSessionID] = conn
+	s.idSessMap[localSessionID] = conn
+
+	// TODO(saml): Also evict the previous localSessionID mapping after a rekey.
+	// Currently we only schedule deletion of the prior peerSessionID entry. To fully
+	// avoid stale entries in idSessMap, track the previous localSessionID for this
+	// staticKey and delete s.idSessMap[oldLocalID] after rekeyGracePeriod.
 }
 
 func (s *sessionStore) get(peerID uint32) (*session, bool) {

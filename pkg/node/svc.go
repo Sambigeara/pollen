@@ -18,12 +18,12 @@ func NewNodeService(n *Node) *NodeService {
 }
 
 func (s *NodeService) ListPeers(ctx context.Context, req *controlv1.ListPeersRequest) (*controlv1.ListPeersResponse, error) {
-	known := s.node.Mesh.Peers.GetAllKnown()
+	nodes := s.node.Store.Cluster.Nodes.GetAll()
 
-	keys := make([][]byte, len(known))
+	keys := make([][]byte, 0, len(nodes))
 
-	for i, k := range known {
-		keys[i] = k.NoisePub
+	for _, n := range nodes {
+		keys = append(keys, n.Keys.NoisePub)
 	}
 
 	return &controlv1.ListPeersResponse{

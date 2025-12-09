@@ -2,10 +2,12 @@ package mesh
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,74 +17,124 @@ import (
 
 	"github.com/flynn/noise"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	tcpv1 "github.com/sambigeara/pollen/api/genpb/pollen/tcp/v1"
 	"github.com/sambigeara/pollen/pkg/invites"
-	"github.com/sambigeara/pollen/pkg/peers"
+	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/tcp"
+	"go.uber.org/multierr"
 	"go.uber.org/zap"
 )
 
 const (
-	nodePingInternal    = time.Second * 25
 	tcpHandshakeTimeout = time.Second * 5
 )
 
-var handshakePrologue = []byte("pollenv1")
+var (
+	handshakePrologue = []byte("pollenv1")
+
+	ErrNotConnected = errors.New("peer not connected")
+)
 
 type Mesh struct {
 	log             *zap.SugaredLogger
-	advertisableIPs []net.IP
-	Peers           *peers.PeerStore
+	conf            *Config
+	Cluster         *state.Cluster
 	invites         *invites.InviteStore
-	NoiseKey        noise.DHKey
 	signingKey      ed25519.PrivateKey
 	signingPubKey   ed25519.PublicKey
-	conn            *UDPConn
 	handshakeStore  *handshakeStore
 	sessionStore    *sessionStore
 	listenerStore   *tcp.Store
 	rekeyMgr        *rekeyManager
-	port            int
+	Conn            *UDPConn
 	tunnelHandler   func(net.Conn)
+	gossipHandler   func([]byte) error
+	testHandler     func([]byte)
 	handshakeMu     sync.Mutex
+	advertisableIPs []net.IP
 }
 
-func New(cs *noise.CipherSuite, staticKey noise.DHKey, priv ed25519.PrivateKey, pub ed25519.PublicKey, peers *peers.PeerStore, invites *invites.InviteStore, port int) (*Mesh, error) {
-	ips, err := GetAdvertisableIPs()
-	if err != nil {
-		return nil, err
+type Config struct {
+	PeerReconcileInterval time.Duration
+	GossipInterval        time.Duration
+	Port                  int
+	AdvertisedIPs         []string
+}
+
+func New(cs *noise.CipherSuite, staticKey noise.DHKey, priv ed25519.PrivateKey, pub ed25519.PublicKey, cluster *state.Cluster, invites *invites.InviteStore, conf *Config) (*Mesh, error) {
+	var ips []net.IP
+
+	if len(conf.AdvertisedIPs) > 0 {
+		for _, s := range conf.AdvertisedIPs {
+			if ip := net.ParseIP(s); ip != nil {
+				ips = append(ips, ip)
+			}
+		}
+	}
+
+	if len(ips) == 0 {
+		var err error
+		ips, err = GetAdvertisableIPs()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &Mesh{
 		log:             zap.S().Named("mesh"),
-		advertisableIPs: ips,
-		port:            port,
-		Peers:           peers,
+		conf:            conf,
+		Cluster:         cluster,
 		invites:         invites,
-		NoiseKey:        staticKey,
 		signingKey:      priv,
 		signingPubKey:   pub,
 		handshakeStore:  newHandshakeStore(cs, invites, staticKey, pub),
 		sessionStore:    newSessionStore(),
 		listenerStore:   tcp.NewStore(),
 		rekeyMgr:        newRekeyManager(),
+		advertisableIPs: ips,
 	}, nil
+}
+
+func (m *Mesh) SetGossipHandler(h func([]byte) error) {
+	m.gossipHandler = h
+}
+
+func (m *Mesh) SetTestHandler(h func([]byte)) {
+	m.testHandler = h
 }
 
 func (m *Mesh) Start(ctx context.Context, token *peerv1.Invite) error {
 	var err error
-	m.conn, err = newUDPConn(ctx, m.port)
+	m.Conn, err = newUDPConn(ctx, m.conf.Port)
 	if err != nil {
 		return err
 	}
 
 	go m.listen(ctx)
-	go m.handleInitiators(ctx, token)
+
+	// Handle the invite token exactly once (immediately)
+	if token != nil {
+		res, err := m.handshakeStore.initXXPsk2(token, m.signingPubKey)
+		if err != nil {
+			m.log.Errorf("failed to create XXpsk2 handshake: %v", err)
+		} else {
+			// Send the initial packet(s)
+			// For Init, receiverID is 0
+			if err := m.sendHandshakeResult(res, 0); err != nil {
+				m.log.Errorf("failed to send invite init: %v", err)
+			}
+		}
+	}
+
+	go m.startGossip(ctx)
+
+	go m.maintainConnections(ctx)
 
 	<-ctx.Done()
 
 	m.log.Debug("closing down...")
-	m.conn.Close()
+	m.Conn.Close()
 
 	return nil
 }
@@ -99,7 +151,7 @@ func (m *Mesh) listen(ctx context.Context) error {
 		default:
 		}
 
-		dg, err := read(m.conn, nil)
+		dg, err := read(m.Conn, nil)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return g.Wait()
@@ -110,15 +162,19 @@ func (m *Mesh) listen(ctx context.Context) error {
 
 		g.Go(func() error {
 			switch dg.tp {
-			case messageTypePing:
+			case MessageTypePing:
 				m.log.Debugw("received ping", "peer", dg.senderUDPAddr)
 				return nil
-			case messageTypeTransportData:
+			case MessageTypeTest:
+				return m.handleTestMsg(dg.receiverID, dg.msg)
+			case MessageTypeTransportData:
 				return m.handleTransportDataMsg(dg.receiverID, dg.msg)
-			case messageTypeTCPTunnelRequest:
+			case MessageTypeGossip:
+				return m.handleGossipMsg(dg.receiverID, dg.msg)
+			case MessageTypeTCPTunnelRequest:
 				return m.handleTCPTunnelRequest(dg.receiverID, dg.msg)
-			case messageTypeTCPTunnelResponse:
-				// Tunnel frames mirror transport data: we always address the peer by receiverID, and
+			case MessageTypeTCPTunnelResponse:
+				// tunnel frames mirror transport data: we always address the peer by receiverID, and
 				// we never stash our own session ID, so senderID stays zero.
 				if err := m.listenerStore.AckInflight(dg.receiverID, dg.msg); err != nil {
 					return err
@@ -131,47 +187,91 @@ func (m *Mesh) listen(ctx context.Context) error {
 				return nil
 			}
 			if hs == nil {
-				m.log.Debugf("unrecognised senderID: %d", dg.senderID)
+				// This is common during "Reconciliation Wars" - a packet for a
+				// handshake we already finished or haven't started arrives. Ignore it.
+				m.log.Debugf("dropping packet for unrecognised/stale session: %d", dg.senderID)
 				return nil
 			}
 
-			sess, peerStaticKey, peerSigPub, err := hs.progress(m.conn, dg.msg, dg.senderUDPAddr, dg.senderID)
+			res, err := hs.Step(dg.msg)
 			if err != nil {
-				m.log.Errorw("failed to progress", "error", err, "type", dg.tp, "peer", dg.senderUDPAddr)
-				return nil // TODO(saml) return err to cancel others?
+				m.log.Debugw("handshake step failed (ignoring)", "peer", dg.senderUDPAddr, "err", err)
+				return nil
 			}
 
-			if sess != nil {
-				m.handshakeStore.clear(dg.senderID)
+			if len(res.Targets) == 0 {
+				res.Targets = []*net.UDPAddr{dg.senderUDPAddr}
+			}
+			if err := m.sendHandshakeResult(res, dg.senderID); err != nil {
+				m.log.Errorf("failed to send handshake response: %v", err)
+			}
+
+			if res.Session != nil {
+				// bind the address that successfully completed the handshake
+				res.Session.peerAddr = dg.senderUDPAddr
 
 				var tp string
-				switch t := hs.(type) {
-				case *handshakeIKInit:
-					m.scheduleRekey(dg.senderID, peerStaticKey)
+				switch hs.(type) {
+				case *handshakeIKInit: // receiver of a pre-existing join
+					m.scheduleRekey(dg.senderID, res.PeerStaticKey)
 					tp = "IKInit"
-				case *handshakeXXPsk2Init:
-					m.scheduleRekey(dg.senderID, peerStaticKey)
-					m.Peers.Add(&peerv1.Known{
-						NoisePub: peerStaticKey,
-						SigPub:   peerSigPub,
-						Addr:     sess.peerAddr.String()})
+				case *handshakeXXPsk2Init: // receiver of a token join
+					m.scheduleRekey(dg.senderID, res.PeerStaticKey)
 					tp = "XXPsk2Init"
-				case *handshakeIKResp:
+				case *handshakeIKResp: // initiator of a known join
 					m.rekeyMgr.resetIfExists(dg.senderID, sessionRefreshInterval)
 					tp = "IKResp"
-				case *handshakeXXPsk2Resp:
-					m.Peers.PromoteToPeer(peerStaticKey, peerSigPub, t.peerUDPAddr.String())
+				case *handshakeXXPsk2Resp: // initiator of a token join
 					tp = "XXPsk2Resp"
 				}
 
+				// TODO(saml): we currently rely on the Node state to determine which peers
+				// are reachable, we set a temp placeholder to ensure they can receive gossip messages.
+				// This needs to be made better.
+				peerNodeID := hex.EncodeToString(res.PeerStaticKey)
+				m.Cluster.Nodes.SetPlaceholder(peerNodeID, &statev1.Node{
+					Id:        peerNodeID,
+					Addresses: []string{dg.senderUDPAddr.String()},
+					Keys: &statev1.Keys{
+						NoisePub:    res.PeerStaticKey,
+						IdentityPub: res.PeerSigPub,
+					},
+				})
+
 				m.log.Infow("established session", "type", tp, "peer", dg.senderUDPAddr)
 
-				m.sessionStore.set(peerStaticKey, dg.senderID, sess)
+				// Register session under both our local and the peer's session IDs.
+				// - res.LocalID: our local session identifier
+				// - dg.senderID: the peer's local session identifier (as seen in the last handshake frame)
+				m.sessionStore.set(res.PeerStaticKey, res.LocalSessionID, dg.senderID, res.Session)
 			}
 
 			return nil
 		})
 	}
+}
+
+func (m *Mesh) sendHandshakeResult(res HandshakeResult, remoteID uint32) error {
+	if len(res.Msg) == 0 {
+		return nil
+	}
+
+	var errs error
+	success := false
+
+	for _, addr := range res.Targets {
+		if err := write(m.Conn, addr, res.MsgType, res.LocalSessionID, remoteID, res.Msg); err != nil {
+			m.log.Debugf("failed to write to candidate %s: %v", addr, err)
+			errs = multierr.Append(errs, fmt.Errorf("%s: %w", addr, err))
+		} else {
+			success = true
+		}
+	}
+
+	if !success {
+		return errs
+	}
+	return nil
 }
 
 func (m *Mesh) handleTransportDataMsg(receiverID uint32, msg []byte) error {
@@ -186,63 +286,180 @@ func (m *Mesh) handleTransportDataMsg(receiverID uint32, msg []byte) error {
 	}
 
 	if shouldRekey {
-		m.rekeyMgr.resetIfExists(receiverID, sessionRefreshInterval)
+		if peerID, ok := m.sessionStore.getID(sess.peerNoiseKey); ok {
+			m.rekeyMgr.resetIfExists(peerID, sessionRefreshInterval)
+		}
 	}
 
 	return nil
 }
 
+func (m *Mesh) handleTestMsg(receiverID uint32, msg []byte) error {
+	sess, ok := m.sessionStore.get(receiverID)
+	if !ok {
+		return nil
+	}
+
+	pt, shouldRekey, err := sess.Decrypt(msg)
+	if err != nil {
+		return err
+	}
+
+	if shouldRekey {
+		if peerID, ok := m.sessionStore.getID(sess.peerNoiseKey); ok {
+			m.rekeyMgr.resetIfExists(peerID, sessionRefreshInterval)
+		}
+	}
+
+	if m.testHandler != nil {
+		m.testHandler(pt)
+	}
+	return nil
+}
+
+func (m *Mesh) handleGossipMsg(receiverID uint32, msg []byte) error {
+	sess, ok := m.sessionStore.get(receiverID)
+	if !ok {
+		return nil
+	}
+
+	pt, shouldRekey, err := sess.Decrypt(msg)
+	if err != nil {
+		return err
+	}
+
+	if shouldRekey {
+		if peerID, ok := m.sessionStore.getID(sess.peerNoiseKey); ok {
+			m.rekeyMgr.resetIfExists(peerID, sessionRefreshInterval)
+		}
+	}
+
+	if m.gossipHandler != nil {
+		if err := m.gossipHandler(pt); err != nil {
+			m.log.Warnf("failed to handle gossip: %v", err)
+		}
+	}
+	return nil
+}
+
 func (m *Mesh) scheduleRekey(peerSessionID uint32, staticKey []byte) {
 	t := time.AfterFunc(sessionRefreshInterval, func() {
-		p, ok := m.Peers.Get(staticKey)
+		n, ok := m.Cluster.Nodes.Get(hex.EncodeToString(staticKey))
 		if !ok {
 			return
 		}
 
-		if err := m.handshakeStore.initIK(m.conn, staticKey, p.Addr); err != nil {
+		res, err := m.handshakeStore.initIK(staticKey, n.Value.Addresses)
+		if err != nil {
+			m.log.Error(err)
+			return
+		}
+		if err := m.sendHandshakeResult(res, 0); err != nil {
 			m.log.Error(err)
 		}
+
 		m.log.Info("successfully rekeyed")
 	})
 
 	m.rekeyMgr.set(peerSessionID, staticKey, t)
 }
 
-func (m *Mesh) handleInitiators(ctx context.Context, token *peerv1.Invite) error {
-	if token != nil {
-		if err := m.handshakeStore.initXXPsk2(m.conn, token, m.signingPubKey); err != nil {
-			m.log.Errorf("failed to create XXpsk2 handshake: %v", err)
-			return err
+func (m *Mesh) startGossip(ctx context.Context) {
+	ticker := time.NewTicker(m.conf.GossipInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.gossip()
 		}
 	}
-
-	for _, k := range m.Peers.GetAllKnown() {
-		if len(k.NoisePub) == 0 || k.Addr == "" {
-			m.log.Warnf("skipping invalid peer (missing key/addr): %s", k.Addr)
-			continue
-		}
-
-		if err := m.handshakeStore.initIK(m.conn, k.NoisePub, k.Addr); err != nil {
-			m.log.Errorf("failed to create IK handshake for peer %s: %v", k.Addr, err)
-			continue
-		}
-	}
-
-	return nil
 }
 
-func (m *Mesh) Send(peerID uint32, msg []byte, typ messageType) error {
+func (m *Mesh) gossip() {
+	// TODO(saml) for now we're just gossiping to all, but down the line, this'll be much more selective
+	peers := m.Cluster.Nodes.GetAll()
+
+	// we're the only peer
+	if len(peers) == 1 {
+		return
+	}
+
+	delta := &statev1.DeltaState{
+		Nodes: state.ToNodeDelta(m.Cluster.Nodes),
+	}
+
+	payload, err := delta.MarshalVT()
+	if err != nil {
+		m.log.Errorf("failed to marshal gossip: %v", err)
+		return
+	}
+
+	for _, peer := range peers {
+		if peer.Id == m.Cluster.LocalID {
+			continue
+		}
+		m.Send(peer.Keys.NoisePub, payload, MessageTypeGossip)
+	}
+}
+
+func (m *Mesh) maintainConnections(ctx context.Context) {
+	ticker := time.NewTicker(m.conf.PeerReconcileInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.reconcilePeers()
+		}
+	}
+}
+
+func (m *Mesh) reconcilePeers() {
+	for _, node := range m.Cluster.Nodes.GetAll() {
+		if node.Id == m.Cluster.LocalID {
+			continue
+		}
+
+		if len(node.Keys.NoisePub) == 0 || len(node.Addresses) == 0 {
+			continue
+		}
+
+		if _, exists := m.sessionStore.getID(node.Keys.NoisePub); exists {
+			continue // already connected
+		}
+
+		m.log.Infow("dialing new peer found in state", "peer_id", node.Id[:8], "addr", node.Addresses[0])
+
+		res, err := m.handshakeStore.initIK(node.Keys.NoisePub, node.Addresses)
+		if err != nil {
+			m.log.Errorf("failed to create IK handshake for peer %s: %v", node.Addresses[0], err)
+			continue
+		}
+
+		// Send Init packet
+		if err := m.sendHandshakeResult(res, 0); err != nil {
+			m.log.Errorf("failed to send IK init: %v", err)
+		}
+	}
+}
+
+func (m *Mesh) sendByPeerID(peerID uint32, msg []byte, typ MessageType) error {
 	sess, ok := m.sessionStore.get(peerID)
 	if !ok {
 		return nil
 	}
 
-	enc, shouldRekey, err := sess.Encrypt(m.conn, msg)
+	enc, shouldRekey, err := sess.Encrypt(m.Conn, msg)
 	if err != nil {
 		return err
 	}
 
-	if err := write(m.conn, sess.peerAddr, typ, 0, peerID, enc); err != nil {
+	if err := write(m.Conn, sess.peerAddr, typ, 0, peerID, enc); err != nil {
 		return err
 	}
 
@@ -251,6 +468,14 @@ func (m *Mesh) Send(peerID uint32, msg []byte, typ messageType) error {
 	}
 
 	return nil
+}
+
+func (m *Mesh) Send(staticKey []byte, msg []byte, t MessageType) error {
+	sessID, ok := m.sessionStore.getID(staticKey)
+	if !ok {
+		return ErrNotConnected
+	}
+	return m.sendByPeerID(sessID, msg, t)
 }
 
 func (m *Mesh) handleTCPTunnelRequest(peerID uint32, msg []byte) error {
@@ -273,13 +498,13 @@ func (m *Mesh) handleTCPTunnelRequest(peerID uint32, msg []byte) error {
 		return err
 	}
 
-	peer, ok := m.Peers.Get(sess.peerNoiseKey)
+	peer, ok := m.Cluster.Nodes.Get(hex.EncodeToString(sess.peerNoiseKey))
 	if !ok {
 		// TODO(saml) this should not raise
 		return errors.New("noise key not recognised")
 	}
 
-	peerCert, err := tcp.VerifyPeerAttestation(peer.SigPub, reqHs.CertDer, reqHs.Sig)
+	peerCert, err := tcp.VerifyPeerAttestation(peer.Value.Keys.IdentityPub, reqHs.CertDer, reqHs.Sig)
 	if err != nil {
 		return err
 	}
@@ -310,7 +535,7 @@ func (m *Mesh) handleTCPTunnelRequest(peerID uint32, msg []byte) error {
 		return err
 	}
 
-	if err := m.Send(peerID, respBytes, messageTypeTCPTunnelResponse); err != nil {
+	if err := m.sendByPeerID(peerID, respBytes, MessageTypeTCPTunnelResponse); err != nil {
 		return err
 	}
 
@@ -363,7 +588,7 @@ func (m *Mesh) InitTCPTunnel(peerStaticKey []byte) (net.Conn, error) {
 	}
 	defer m.listenerStore.ExpireInflight(peerID)
 
-	if err := m.Send(peerID, reqBytes, messageTypeTCPTunnelRequest); err != nil {
+	if err := m.sendByPeerID(peerID, reqBytes, MessageTypeTCPTunnelRequest); err != nil {
 		return nil, err
 	}
 
@@ -395,12 +620,13 @@ func (m *Mesh) InitTCPTunnel(peerStaticKey []byte) (net.Conn, error) {
 		return nil, err
 	}
 
-	peer, ok := m.Peers.Get(sess.peerNoiseKey)
+	// peer, ok := m.Peers.Get(sess.peerNoiseKey)
+	peer, ok := m.Cluster.Nodes.Get(hex.EncodeToString(sess.peerNoiseKey))
 	if !ok {
 		return nil, errors.New("peer not recognized in store") // Should be impossible if we got here
 	}
 
-	peerCert, err := tcp.VerifyPeerAttestation(peer.SigPub, respHs.CertDer, respHs.Sig)
+	peerCert, err := tcp.VerifyPeerAttestation(peer.Value.Keys.IdentityPub, respHs.CertDer, respHs.Sig)
 	if err != nil {
 		return nil, fmt.Errorf("peer attestation failed: %w", err)
 	}
@@ -431,12 +657,8 @@ func (m *Mesh) InitTCPTunnel(peerStaticKey []byte) (net.Conn, error) {
 
 func (m *Mesh) Shutdown(ctx context.Context) error {
 	// TODO(saml) use multierr to gather?
-	if m.conn != nil {
-		m.conn.Close()
-	}
-
-	if err := m.Peers.Save(); err != nil {
-		return err
+	if m.Conn != nil {
+		m.Conn.Close()
 	}
 
 	if err := m.invites.Save(); err != nil {
@@ -445,5 +667,13 @@ func (m *Mesh) Shutdown(ctx context.Context) error {
 
 	m.listenerStore.Shutdown()
 
-	return ctx.Err()
+	return nil
+}
+
+func (m *Mesh) GetAdvertisableAddrs() []string {
+	res := make([]string, len(m.advertisableIPs))
+	for i, ip := range m.advertisableIPs {
+		res[i] = net.JoinHostPort(ip.String(), strconv.Itoa(m.conf.Port))
+	}
+	return res
 }

@@ -6,47 +6,50 @@ import (
 	"net"
 )
 
-type messageType uint32
+type MessageType uint32
 
 const (
-	messageTypeHandshakeXXPsk2Init messageType = iota
-	messageTypeHandshakeXXPsk2Resp
-	messageTypeHandshakeIKInit
-	messageTypeHandshakeIKResp
+	MessageTypeHandshakeXXPsk2Init MessageType = iota
+	MessageTypeHandshakeXXPsk2Resp
+	MessageTypeHandshakeIKInit
+	MessageTypeHandshakeIKResp
 
-	messageTypeTransportData
-	messageTypePing
+	MessageTypeTransportData
+	MessageTypePing
 
-	messageTypeTCPTunnelRequest
-	messageTypeTCPTunnelResponse
+	MessageTypeTCPTunnelRequest
+	MessageTypeTCPTunnelResponse
+
+	MessageTypeGossip
+	MessageTypeTest
 )
 
 type datagram struct {
 	senderUDPAddr *net.UDPAddr
 	msg           []byte
-	tp            messageType
+	tp            MessageType
 	senderID      uint32
 	receiverID    uint32
 }
 
-func write(conn *UDPConn, addr *net.UDPAddr, tp messageType, senderID, receiverID uint32, msg []byte) error {
+func write(conn *UDPConn, addr *net.UDPAddr, tp MessageType, senderID, receiverID uint32, msg []byte) error {
 	var datagram []byte
 	switch tp {
-	case messageTypePing:
+	case MessageTypePing:
 		datagram = make([]byte, 4)
 		binary.BigEndian.PutUint32(datagram[:4], uint32(tp))
-	case messageTypeHandshakeIKInit, messageTypeHandshakeXXPsk2Init:
+	case MessageTypeHandshakeIKInit, MessageTypeHandshakeXXPsk2Init:
 		datagram = make([]byte, 8+len(msg))
 		binary.BigEndian.PutUint32(datagram[:4], uint32(tp))
 		binary.BigEndian.PutUint32(datagram[4:8], senderID)
 		copy(datagram[8:], msg)
-	case messageTypeHandshakeIKResp, messageTypeHandshakeXXPsk2Resp:
+	case MessageTypeHandshakeIKResp, MessageTypeHandshakeXXPsk2Resp:
 		datagram = make([]byte, 12+len(msg))
 		binary.BigEndian.PutUint32(datagram[:4], uint32(tp))
 		binary.BigEndian.PutUint32(datagram[4:8], senderID)
 		binary.BigEndian.PutUint32(datagram[8:12], receiverID)
 		copy(datagram[12:], msg)
-	case messageTypeTransportData, messageTypeTCPTunnelRequest, messageTypeTCPTunnelResponse:
+	case MessageTypeTransportData, MessageTypeTCPTunnelRequest, MessageTypeTCPTunnelResponse, MessageTypeGossip, MessageTypeTest:
 		datagram = make([]byte, 8+len(msg))
 		binary.BigEndian.PutUint32(datagram[:4], uint32(tp))
 		binary.BigEndian.PutUint32(datagram[4:8], receiverID)
@@ -71,24 +74,24 @@ func read(conn *UDPConn, buf []byte) (*datagram, error) {
 	}
 
 	var senderID, receiverID uint32
-	tp := messageType(binary.BigEndian.Uint32(buf[:4]))
+	tp := MessageType(binary.BigEndian.Uint32(buf[:4]))
 	payloadOffset := 4
 	switch tp {
-	case messageTypePing:
-	case messageTypeHandshakeIKInit, messageTypeHandshakeXXPsk2Init:
+	case MessageTypePing:
+	case MessageTypeHandshakeIKInit, MessageTypeHandshakeXXPsk2Init:
 		if n < 8 {
 			return nil, fmt.Errorf("handshake frame too short: %d", n)
 		}
 		senderID = binary.BigEndian.Uint32(buf[4:8])
 		payloadOffset = 8
-	case messageTypeHandshakeIKResp, messageTypeHandshakeXXPsk2Resp:
+	case MessageTypeHandshakeIKResp, MessageTypeHandshakeXXPsk2Resp:
 		if n < 12 {
 			return nil, fmt.Errorf("handshake frame too short: %d", n)
 		}
 		senderID = binary.BigEndian.Uint32(buf[4:8])
 		receiverID = binary.BigEndian.Uint32(buf[8:12])
 		payloadOffset = 12
-	case messageTypeTransportData, messageTypeTCPTunnelRequest, messageTypeTCPTunnelResponse:
+	case MessageTypeTransportData, MessageTypeTCPTunnelRequest, MessageTypeTCPTunnelResponse, MessageTypeGossip, MessageTypeTest:
 		if n < 8 {
 			return nil, fmt.Errorf("handshake frame too short: %d", n)
 		}

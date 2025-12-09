@@ -23,13 +23,13 @@ resource "aws_security_group" "pollen" {
     protocol    = "udp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-  ingress {
-    description = "Pollen TCP Data Plane (Ephemeral Ports)"
-    from_port   = 1024
-    to_port     = 65535
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  # ingress {
+  #   description = "Pollen TCP Data Plane (Ephemeral Ports)"
+  #   from_port   = 1024
+  #   to_port     = 65535
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["0.0.0.0/0"]
+  # }
   ingress {
     from_port   = 22
     to_port     = 22

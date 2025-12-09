@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package pollen.state.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1";
+
+// Node represents the static topology information of a peer in the cluster.
+// This is the payload stored in the 'Nodes' CRDT map.
+message Node {
+  string id = 1 [(buf.validate.field).string = {
+    pattern: "^[a-fA-F0-9]{64}$"
+    len: 64
+  }];
+  string name = 2;
+  repeated string addresses = 3;
+  Keys keys = 4;
+}
+
+message Keys {
+  // The Noise Protocol static public key (32 bytes).
+  // Used for UDP encryption and establishing the secure tunnel.
+  bytes noise_pub = 1 [(buf.validate.field).bytes = {len: 32}];
+
+  // The Node's Identity Public Key (Ed25519, 32 bytes).
+  // Used to sign ephemeral mTLS certificates for TCP tunnels.
+  bytes identity_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+
+  // The Admin public key (32 bytes).
+  // Used to verify Executive Orders (bans).
+  // This is a cluster-level key, usually the same for all nodes in the config.
+  optional bytes admin_pub = 3 [(buf.validate.field).bytes = {len: 32}];
+}

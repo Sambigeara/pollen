@@ -10,6 +10,10 @@ default:
 
 build: generate lint
 
+bin os='' arch='':
+    @ CGO_ENABLED=0 GOOS={{os}} GOARCH={{arch}} \
+      go build -o pollen cmd/pollen/main.go
+
 compile:
     @ CGO_ENABLED=0 go build ./... && CGO_ENABLED=0 go test -run=ignore  ./... > /dev/null
 

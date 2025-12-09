@@ -38,6 +38,9 @@ const (
 	pollenDir      = ".pollen"
 	socketName     = "pollen.sock"
 	defaultUDPPort = "60611"
+
+	defaultPeerReconcileInterval = time.Second * 5
+	defaultGossipInterval        = time.Second * 5
 )
 
 func main() {
@@ -137,12 +140,19 @@ func runNode(cmd *cobra.Command, args []string) {
 		logger.Fatalf("port '%s' is invalid: %v", portStr, err)
 	}
 
-	n, err := node.New(port, pollenDir)
+	conf := &node.Config{
+		Mesh: &mesh.Config{
+			PeerReconcileInterval: defaultPeerReconcileInterval,
+			GossipInterval:        defaultGossipInterval,
+			Port:                  port,
+		},
+		PollenDir: pollenDir,
+	}
+
+	n, err := node.New(conf)
 	if err != nil {
 		logger.Fatal(err)
 	}
-
-	logger.Infow("Local Node ID", "id", n.ID())
 
 	nodeSrv := node.NewNodeService(n)
 
@@ -226,7 +236,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	pollenDir, _ := workspace.EnsurePollenDir(dir)
 	port, _ := strconv.Atoi(portStr)
 
-	n, err := node.New(port, pollenDir)
+	conf := &node.Config{
+		Mesh: &mesh.Config{
+			PeerReconcileInterval: defaultPeerReconcileInterval,
+			Port:                  port,
+		},
+		PollenDir: pollenDir,
+	}
+
+	n, err := node.New(conf)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -267,8 +285,17 @@ func runConnect(cmd *cobra.Command, args []string) {
 	logging.Init()
 	dir, _ := cmd.Flags().GetString("dir")
 	pollenDir, _ := workspace.EnsurePollenDir(dir)
+
+	conf := &node.Config{
+		Mesh: &mesh.Config{
+			PeerReconcileInterval: defaultPeerReconcileInterval,
+			Port:                  0,
+		},
+		PollenDir: pollenDir,
+	}
+
 	// Use 0 or specific port for initiator node
-	n, err := node.New(0, pollenDir)
+	n, err := node.New(conf)
 	if err != nil {
 		log.Fatal(err)
 	}
