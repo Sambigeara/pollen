@@ -96,39 +96,10 @@ func New(conf *Config) (*Node, error) {
 
 	tun := tunnel.New(
 		m.Send,
-		Directory{cluster: cluster},
+		&Directory{cluster: cluster},
 		privKey,
 		ips,
 	)
-
-	m.On(mesh.MessageTypeTCPTunnelRequest, tun.HandleRequest)
-	m.On(mesh.MessageTypeTCPTunnelResponse, tun.HandleResponse)
-
-	m.On(mesh.MessageTypeGossip, func(peerNoisePub []byte, plaintext []byte) error {
-		delta := &statev1.DeltaState{}
-		if err := delta.UnmarshalVT(plaintext); err != nil {
-			return fmt.Errorf("malformed gossip payload: %w", err)
-		}
-
-		stateStore.Hydrate(delta)
-
-		log.Debugw("gossip merged", "nodes", len(delta.Nodes))
-		return nil
-	})
-
-	m.SetPeerJoinHandler(func(noiseKey, identityKey []byte, addr *net.UDPAddr) {
-		id, _ := types.IDFromBytes(noiseKey)
-		cluster.Nodes.SetPlaceholder(id, &statev1.Node{
-			Id:        id.String(),
-			Addresses: []string{addr.String()},
-			Keys: &statev1.Keys{
-				NoisePub:    noiseKey,
-				IdentityPub: identityKey,
-			},
-		})
-
-		log.Infow("peer added to state via handshake", "peer_id", id[:8])
-	})
 
 	cluster.Nodes.Set(nodeID, &statev1.Node{
 		Id:        nodeID.String(),
@@ -153,12 +124,14 @@ func New(conf *Config) (*Node, error) {
 }
 
 func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
+	n.registerHandlers()
+
 	if err := n.Mesh.Start(ctx, token); err != nil {
 		return err
 	}
 
 	// initial synchronous run
-	n.reconcilePeers()
+	go n.reconcilePeers()
 
 	// continual watch
 	go n.maintainConnections(ctx)
@@ -169,6 +142,42 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 	n.shutdown()
 
 	return nil
+}
+
+func (n *Node) registerHandlers() {
+	n.Mesh.On(mesh.MessageTypeTCPTunnelRequest, n.Tunnel.HandleRequest)
+	n.Mesh.On(mesh.MessageTypeTCPTunnelResponse, n.Tunnel.HandleResponse)
+
+	n.Mesh.On(mesh.MessageTypeGossip, func(peerNoisePub []byte, plaintext []byte) error {
+		delta := &statev1.DeltaState{}
+		if err := delta.UnmarshalVT(plaintext); err != nil {
+			return fmt.Errorf("malformed gossip payload: %w", err)
+		}
+
+		n.Store.Hydrate(delta)
+
+		n.log.Debugw("gossip merged", "records", len(delta.Nodes))
+
+		// eager reconciliation in case a new peer arrived in the gossip
+		go n.reconcilePeers()
+
+		return nil
+	})
+
+	n.Mesh.SetPeerJoinHandler(func(noiseKey, identityKey []byte, addr *net.UDPAddr) {
+		id, _ := types.IDFromBytes(noiseKey)
+
+		n.Store.Cluster.Nodes.SetPlaceholder(id, &statev1.Node{
+			Id:        id.String(),
+			Addresses: []string{addr.String()},
+			Keys: &statev1.Keys{
+				NoisePub:    noiseKey,
+				IdentityPub: identityKey,
+			},
+		})
+
+		n.log.Infow("peer connected", "peer_id", id.String()[:8])
+	})
 }
 
 func (n *Node) startGossip(ctx context.Context) {

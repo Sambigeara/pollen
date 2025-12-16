@@ -12,7 +12,7 @@ type Directory struct {
 }
 
 // IdentityPub maps a peer's Noise static public key to their Ed25519 identity public key.
-func (d Directory) IdentityPub(peerNoisePub []byte) (ed25519.PublicKey, bool) {
+func (d *Directory) IdentityPub(peerNoisePub []byte) (ed25519.PublicKey, bool) {
 	id, ok := types.IDFromBytes(peerNoisePub)
 	if !ok {
 		return nil, false
