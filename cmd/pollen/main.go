@@ -142,11 +142,11 @@ func runNode(cmd *cobra.Command, args []string) {
 
 	conf := &node.Config{
 		Mesh: &mesh.Config{
-			PeerReconcileInterval: defaultPeerReconcileInterval,
-			GossipInterval:        defaultGossipInterval,
-			Port:                  port,
+			Port: port,
 		},
-		PollenDir: pollenDir,
+		GossipInterval:        defaultGossipInterval,
+		PeerReconcileInterval: defaultPeerReconcileInterval,
+		PollenDir:             pollenDir,
 	}
 
 	n, err := node.New(conf)
@@ -238,10 +238,11 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	conf := &node.Config{
 		Mesh: &mesh.Config{
-			PeerReconcileInterval: defaultPeerReconcileInterval,
-			Port:                  port,
+			Port: port,
 		},
-		PollenDir: pollenDir,
+		GossipInterval:        defaultGossipInterval,
+		PeerReconcileInterval: defaultPeerReconcileInterval,
+		PollenDir:             pollenDir,
 	}
 
 	n, err := node.New(conf)
@@ -251,7 +252,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	// 2. Wiring: Handle incoming tunnels by dialing localhost
 	targetPort := args[0] // e.g., ":8080"
-	n.Mesh.SetTunnelHandler(func(tunnelConn net.Conn) {
+	n.Tunnel.SetIncomingHandler(func(tunnelConn net.Conn) {
 		localConn, err := net.Dial("tcp", "localhost"+targetPort)
 		if err != nil {
 			log.Printf("Failed to dial local service: %v", err)
@@ -288,10 +289,11 @@ func runConnect(cmd *cobra.Command, args []string) {
 
 	conf := &node.Config{
 		Mesh: &mesh.Config{
-			PeerReconcileInterval: defaultPeerReconcileInterval,
-			Port:                  0,
+			Port: 0,
 		},
-		PollenDir: pollenDir,
+		GossipInterval:        defaultGossipInterval,
+		PeerReconcileInterval: defaultPeerReconcileInterval,
+		PollenDir:             pollenDir,
 	}
 
 	// Use 0 or specific port for initiator node
@@ -305,6 +307,26 @@ func runConnect(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatalf("Failed to listen on %s: %v", localPort, err)
 	}
+
+	peerKey, err := hex.DecodeString(peerHex)
+	if err != nil {
+		log.Fatalf("Failed to decode peer hex: %v", err)
+	}
+
+	if _, ok := n.Directory.IdentityPub(peerKey); !ok {
+		log.Fatal("Node not recognised, offline, or missing identity keys")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		if err := n.Start(ctx, nil); err != nil {
+			log.Printf("Node stopped: %v", err)
+			os.Exit(1)
+		}
+	}()
+
 	log.Printf("Listening on :%s -> Tunnelling to %s...", localPort, peerHex)
 
 	go func() {
@@ -314,9 +336,8 @@ func runConnect(cmd *cobra.Command, args []string) {
 				return
 			}
 			go func() {
-				// 3. Wiring: Dial Peer via Mesh
-				peerKey, _ := hex.DecodeString(peerHex)
-				meshConn, err := n.Mesh.InitTCPTunnel(peerKey)
+				// 3. Wiring: Dial Peer via Tunnel Manager
+				meshConn, err := n.Tunnel.Dial(ctx, peerKey)
 				if err != nil {
 					log.Printf("Tunnel failed: %v", err)
 					clientConn.Close()
@@ -328,13 +349,9 @@ func runConnect(cmd *cobra.Command, args []string) {
 		}
 	}()
 
-	// 5. Start Node (Blocks)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := n.Start(ctx, nil); err != nil {
-		log.Fatal(err)
-	}
+	<-ctx.Done()
 }
+
 func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient {
 	dir, _ := cmd.Flags().GetString("dir")
 	pollenDir, err := workspace.EnsurePollenDir(dir)

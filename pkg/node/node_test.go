@@ -10,6 +10,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/mesh"
+	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/testing/protocmp"
@@ -100,7 +101,7 @@ func TestNode(t *testing.T) {
 			nodeC, portC = newNode(t, dirC, 0)
 			go func() { stopC <- nodeC.Start(initCtx, tokenForC) }()
 
-			var storeA, storeB, storeC map[string]*statev1.Node
+			var storeA, storeB, storeC map[types.NodeID]*statev1.Node
 			expectPeers := 3
 
 			// Wait for state convergence
@@ -119,17 +120,17 @@ func TestNode(t *testing.T) {
 			idC := nodeC.Store.Cluster.LocalID
 
 			expectedA = &statev1.Node{
-				Id:        idA,
+				Id:        idA.String(),
 				Addresses: nodeA.Mesh.GetAdvertisableAddrs(),
 				Keys:      nodeA.GetStateKeys(),
 			}
 			expectedB = &statev1.Node{
-				Id:        idB,
+				Id:        idB.String(),
 				Addresses: nodeB.Mesh.GetAdvertisableAddrs(),
 				Keys:      nodeB.GetStateKeys(),
 			}
 			expectedC = &statev1.Node{
-				Id:        idC,
+				Id:        idC.String(),
 				Addresses: nodeC.Mesh.GetAdvertisableAddrs(),
 				Keys:      nodeC.GetStateKeys(),
 			}
@@ -150,11 +151,11 @@ func TestNode(t *testing.T) {
 
 			// Setup Reachability Test Handlers
 			recvA := make(chan []byte, 1)
-			nodeA.Mesh.SetTestHandler(func(b []byte) { recvA <- b })
+			nodeA.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error { recvA <- b; return nil })
 			recvB := make(chan []byte, 1)
-			nodeB.Mesh.SetTestHandler(func(b []byte) { recvB <- b })
+			nodeB.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error { recvB <- b; return nil })
 			recvC := make(chan []byte, 1)
-			nodeC.Mesh.SetTestHandler(func(b []byte) { recvC <- b })
+			nodeC.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error { recvC <- b; return nil })
 
 			skA := nodeA.GetStateKeys().NoisePub
 			skB := nodeB.GetStateKeys().NoisePub
@@ -214,11 +215,11 @@ func TestNode(t *testing.T) {
 
 			// Setup Reachability Test Handlers
 			recvA := make(chan []byte, 1)
-			nodeA.Mesh.SetTestHandler(func(b []byte) { recvA <- b })
+			nodeA.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error { recvA <- b; return nil })
 			recvB := make(chan []byte, 1)
-			nodeB.Mesh.SetTestHandler(func(b []byte) { recvB <- b })
+			nodeB.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error { recvB <- b; return nil })
 			recvC := make(chan []byte, 1)
-			nodeC.Mesh.SetTestHandler(func(b []byte) { recvC <- b })
+			nodeC.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error { recvC <- b; return nil })
 
 			payload := []byte("hello")
 
@@ -240,12 +241,12 @@ func newNode(t *testing.T, dir string, port int) (*Node, int) {
 
 	conf := &Config{
 		Mesh: &mesh.Config{
-			PeerReconcileInterval: time.Millisecond * 10,
-			GossipInterval:        time.Millisecond * 10,
-			Port:                  port,
-			AdvertisedIPs:         []string{"127.0.0.1"},
+			Port:          port,
+			AdvertisedIPs: []string{"127.0.0.1"},
 		},
-		PollenDir: dir,
+		GossipInterval:        time.Millisecond * 10,
+		PeerReconcileInterval: time.Millisecond * 10,
+		PollenDir:             dir,
 	}
 
 	node, err := New(conf)

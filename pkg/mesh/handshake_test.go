@@ -24,6 +24,7 @@ func TestHandshake_Pure_XX(t *testing.T) {
 	// Node B (Initiator)
 	csB := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
 	kpB, _ := csB.GenerateKeypair(rand.Reader)
+	pubB, _, _ := ed25519.GenerateKey(rand.Reader)
 
 	// Create Invite
 	psk := make([]byte, 32)
@@ -36,7 +37,7 @@ func TestHandshake_Pure_XX(t *testing.T) {
 	invitesA.AddInvite(invite)
 
 	// Setup Handshakes
-	hsInit, err := newHandshakeXXPsk2Init(&csB, kpB, pubA, invite)
+	hsInit, err := newHandshakeXXPsk2Init(&csB, kpB, pubB, invite)
 	require.NoError(t, err)
 
 	hsResp, err := newHandshakeXXPsk2Resp(&csA, invitesA, kpA, pubA, 999)
@@ -68,6 +69,9 @@ func TestHandshake_Pure_XX(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, res4.Session)
 	assert.Equal(t, kpB.Public, res4.PeerStaticKey)
+
+	assert.EqualValues(t, pubA, res3.PeerIdentityPub)
+	assert.EqualValues(t, pubB, res4.PeerIdentityPub)
 
 	// 5. Verify Encryption Round-Trip
 	verifySession(t, res3.Session, res4.Session)

@@ -32,9 +32,9 @@ type HandshakeResult struct {
 	Targets        []*net.UDPAddr
 
 	// populated when handshake completes
-	Session       *session
-	PeerStaticKey []byte
-	PeerSigPub    []byte
+	Session         *session
+	PeerStaticKey   []byte
+	PeerIdentityPub []byte
 }
 
 type handshake interface {
@@ -42,22 +42,22 @@ type handshake interface {
 }
 
 type handshakeStore struct {
-	localSigPub    []byte
-	cs             *noise.CipherSuite
-	invites        *invites.InviteStore
-	localStaticKey noise.DHKey
-	st             map[uint32]handshake
-	mu             sync.RWMutex
+	localIdentityPub []byte
+	cs               *noise.CipherSuite
+	invites          *invites.InviteStore
+	localStaticKey   noise.DHKey
+	st               map[uint32]handshake
+	mu               sync.RWMutex
 }
 
 func newHandshakeStore(cs *noise.CipherSuite, invites *invites.InviteStore, localStaticKey noise.DHKey, localSigPub []byte) *handshakeStore {
 	return &handshakeStore{
-		cs:             cs,
-		invites:        invites,
-		localStaticKey: localStaticKey,
-		localSigPub:    localSigPub,
-		st:             make(map[uint32]handshake),
-		mu:             sync.RWMutex{},
+		cs:               cs,
+		invites:          invites,
+		localStaticKey:   localStaticKey,
+		localIdentityPub: localSigPub,
+		st:               make(map[uint32]handshake),
+		mu:               sync.RWMutex{},
 	}
 }
 
@@ -98,7 +98,7 @@ func (st *handshakeStore) get(tp MessageType, peerSessionID, localSessionID uint
 		if lid, err = genSessionID(); err != nil {
 			return nil, err
 		}
-		hs, err = newHandshakeXXPsk2Resp(st.cs, st.invites, st.localStaticKey, st.localSigPub, lid)
+		hs, err = newHandshakeXXPsk2Resp(st.cs, st.invites, st.localStaticKey, st.localIdentityPub, lid)
 		if err != nil {
 			return nil, err
 		}
@@ -370,7 +370,7 @@ func (hs *handshakeXXPsk2Init) Step(rcvMsg []byte) (HandshakeResult, error) {
 		res.Msg = msg3
 		res.Session = newSession(nil, hs.PeerStatic(), csSend, csRecv)
 		res.PeerStaticKey = hs.PeerStatic()
-		res.PeerSigPub = peerSig
+		res.PeerIdentityPub = peerSig
 
 	default:
 		return res, fmt.Errorf("unexpected stage: %v", hs.nextStage)
@@ -453,7 +453,7 @@ func (hs *handshakeXXPsk2Resp) Step(rcvMsg []byte) (HandshakeResult, error) {
 
 		res.Session = newSession(nil, hs.PeerStatic(), csSend, csRecv)
 		res.PeerStaticKey = hs.PeerStatic()
-		res.PeerSigPub = peerSig
+		res.PeerIdentityPub = peerSig
 
 	default:
 		return res, fmt.Errorf("unexpected stage: %v", hs.nextStage)

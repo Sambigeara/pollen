@@ -25,7 +25,7 @@ const (
 type Known struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NoisePub      []byte                 `protobuf:"bytes,1,opt,name=noise_pub,json=noisePub,proto3" json:"noise_pub,omitempty"`
-	SigPub        []byte                 `protobuf:"bytes,2,opt,name=sig_pub,json=sigPub,proto3" json:"sig_pub,omitempty"`
+	IdentityPub   []byte                 `protobuf:"bytes,2,opt,name=identity_pub,json=identityPub,proto3" json:"identity_pub,omitempty"`
 	Addr          string                 `protobuf:"bytes,3,opt,name=addr,proto3" json:"addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -68,9 +68,9 @@ func (x *Known) GetNoisePub() []byte {
 	return nil
 }
 
-func (x *Known) GetSigPub() []byte {
+func (x *Known) GetIdentityPub() []byte {
 	if x != nil {
-		return x.SigPub
+		return x.IdentityPub
 	}
 	return nil
 }
@@ -234,10 +234,10 @@ var File_pollen_peer_v1_peer_proto protoreflect.FileDescriptor
 
 const file_pollen_peer_v1_peer_proto_rawDesc = "" +
 	"\n" +
-	"\x19pollen/peer/v1/peer.proto\x12\x0epollen.peer.v1\x1a\x1bbuf/validate/validate.proto\"Q\n" +
+	"\x19pollen/peer/v1/peer.proto\x12\x0epollen.peer.v1\x1a\x1bbuf/validate/validate.proto\"[\n" +
 	"\x05Known\x12\x1b\n" +
-	"\tnoise_pub\x18\x01 \x01(\fR\bnoisePub\x12\x17\n" +
-	"\asig_pub\x18\x02 \x01(\fR\x06sigPub\x12\x12\n" +
+	"\tnoise_pub\x18\x01 \x01(\fR\bnoisePub\x12!\n" +
+	"\fidentity_pub\x18\x02 \x01(\fR\videntityPub\x12\x12\n" +
 	"\x04addr\x18\x03 \x01(\tR\x04addr\"Q\n" +
 	"\x06Invite\x12\x18\n" +
 	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x02id\x12\x19\n" +

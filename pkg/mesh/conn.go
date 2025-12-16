@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/rand/v2"
 	"net"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -20,6 +21,7 @@ type UDPConn struct {
 	*net.UDPConn
 	ctx      context.Context
 	pingMgrs map[string]*pingMgr
+	mu       sync.RWMutex
 }
 
 func newUDPConn(ctx context.Context, port int) (*UDPConn, error) {
@@ -52,6 +54,9 @@ func (c *UDPConn) WriteToUDP(b []byte, addr *net.UDPAddr) (int, error) {
 }
 
 func (c *UDPConn) bumpPinger(addr *net.UDPAddr) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	mgr, ok := c.pingMgrs[addr.String()]
 	if ok {
 		select {

@@ -4,12 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/flynn/noise"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
@@ -17,6 +18,8 @@ import (
 	"github.com/sambigeara/pollen/pkg/invites"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/state"
+	"github.com/sambigeara/pollen/pkg/tunnel"
+	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ed25519"
 )
@@ -33,18 +36,22 @@ const (
 )
 
 type Config struct {
-	Mesh      *mesh.Config
-	PollenDir string
+	Mesh                  *mesh.Config
+	GossipInterval        time.Duration
+	PeerReconcileInterval time.Duration
+	PollenDir             string
 }
 
 type Node struct {
-	log           *zap.SugaredLogger
-	conf          *Config
-	Mesh          *mesh.Mesh
-	Store         *state.Persistence
-	Invites       *invites.InviteStore
-	signingPubKey ed25519.PublicKey
-	noisePubKey   []byte
+	log            *zap.SugaredLogger
+	conf           *Config
+	Mesh           *mesh.Mesh
+	Store          *state.Persistence
+	Invites        *invites.InviteStore
+	Tunnel         *tunnel.Manager
+	Directory      *Directory
+	identityPubKey ed25519.PublicKey
+	noisePubKey    []byte
 }
 
 func New(conf *Config) (*Node, error) {
@@ -56,9 +63,9 @@ func New(conf *Config) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load noise key: %v", err)
 	}
-	nodeID := hex.EncodeToString(noiseKey.Public)
+	nodeID, _ := types.IDFromBytes(noiseKey.Public)
 
-	privKey, pubKey, err := genSigningKey(conf.PollenDir)
+	privKey, pubKey, err := genIdentityKey(conf.PollenDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load signing keys: %v", err)
 	}
@@ -74,16 +81,32 @@ func New(conf *Config) (*Node, error) {
 		return nil, err
 	}
 
-	cluster := stateStore.Cluster
-
-	m, err := mesh.New(&cs, noiseKey, privKey, pubKey, cluster, invitesStore, conf.Mesh)
+	m, err := mesh.New(conf.Mesh, &cs, noiseKey, privKey, pubKey, invitesStore)
 	if err != nil {
 		return nil, err
 	}
 
-	m.SetGossipHandler(func(payload []byte) error {
+	// TODO(saml) this seems to be everywhere. Needs to be managed on the highest common layer and propogated down
+	ips, err := mesh.GetAdvertisableIPs()
+	if err != nil {
+		return nil, err
+	}
+
+	cluster := stateStore.Cluster
+
+	tun := tunnel.New(
+		m.Send,
+		Directory{cluster: cluster},
+		privKey,
+		ips,
+	)
+
+	m.On(mesh.MessageTypeTCPTunnelRequest, tun.HandleRequest)
+	m.On(mesh.MessageTypeTCPTunnelResponse, tun.HandleResponse)
+
+	m.On(mesh.MessageTypeGossip, func(peerNoisePub []byte, plaintext []byte) error {
 		delta := &statev1.DeltaState{}
-		if err := delta.UnmarshalVT(payload); err != nil {
+		if err := delta.UnmarshalVT(plaintext); err != nil {
 			return fmt.Errorf("malformed gossip payload: %w", err)
 		}
 
@@ -93,9 +116,22 @@ func New(conf *Config) (*Node, error) {
 		return nil
 	})
 
+	m.SetPeerJoinHandler(func(noiseKey, identityKey []byte, addr *net.UDPAddr) {
+		id, _ := types.IDFromBytes(noiseKey)
+		cluster.Nodes.SetPlaceholder(id, &statev1.Node{
+			Id:        id.String(),
+			Addresses: []string{addr.String()},
+			Keys: &statev1.Keys{
+				NoisePub:    noiseKey,
+				IdentityPub: identityKey,
+			},
+		})
+
+		log.Infow("peer added to state via handshake", "peer_id", id[:8])
+	})
+
 	cluster.Nodes.Set(nodeID, &statev1.Node{
-		Id: nodeID,
-		// Name:      "local-node", // TODO(saml) Allow configuring hostname/alias
+		Id:        nodeID.String(),
 		Addresses: m.GetAdvertisableAddrs(),
 		Keys: &statev1.Keys{
 			NoisePub:    noiseKey.Public,
@@ -104,12 +140,15 @@ func New(conf *Config) (*Node, error) {
 	})
 
 	return &Node{
-		log:           log,
-		Mesh:          m,
-		Store:         stateStore,
-		Invites:       invitesStore,
-		signingPubKey: pubKey,
-		noisePubKey:   noiseKey.Public,
+		log:            log,
+		Mesh:           m,
+		Store:          stateStore,
+		Invites:        invitesStore,
+		Tunnel:         tun,
+		Directory:      &Directory{cluster: cluster},
+		identityPubKey: pubKey,
+		noisePubKey:    noiseKey.Public,
+		conf:           conf,
 	}, nil
 }
 
@@ -118,25 +157,103 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 		return err
 	}
 
+	// initial synchronous run
+	n.reconcilePeers()
+
+	// continual watch
+	go n.maintainConnections(ctx)
+	go n.startGossip(ctx)
+
 	<-ctx.Done()
 
-	return n.shutdown(ctx)
+	n.shutdown()
+
+	return nil
 }
 
-func (n *Node) shutdown(ctx context.Context) error {
+func (n *Node) startGossip(ctx context.Context) {
+	ticker := time.NewTicker(n.conf.GossipInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n.gossip()
+		}
+	}
+}
+
+func (n *Node) gossip() {
+	// TODO(saml) for now we're just gossiping to all, but down the line, this'll be much more selective
+	peers := n.Store.Cluster.Nodes.GetAll()
+
+	// we're the only peer
+	if len(peers) == 1 {
+		return
+	}
+
+	delta := &statev1.DeltaState{
+		Nodes: state.ToNodeDelta(n.Store.Cluster.Nodes),
+	}
+
+	payload, err := delta.MarshalVT()
+	if err != nil {
+		n.log.Errorf("failed to marshal gossip: %v", err)
+		return
+	}
+
+	for _, peer := range peers {
+		if peer.Id == n.Store.Cluster.LocalID.String() {
+			continue
+		}
+		n.Mesh.Send(peer.Keys.NoisePub, payload, mesh.MessageTypeGossip)
+	}
+}
+
+func (n *Node) maintainConnections(ctx context.Context) {
+	ticker := time.NewTicker(n.conf.PeerReconcileInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n.reconcilePeers()
+		}
+	}
+}
+
+func (n *Node) reconcilePeers() {
+	for _, node := range n.Store.Cluster.Nodes.GetAll() {
+		if node.Id == n.Store.Cluster.LocalID.String() {
+			continue
+		}
+
+		if len(node.Keys.NoisePub) == 0 || len(node.Addresses) == 0 {
+			continue
+		}
+
+		if err := n.Mesh.RejoinPeer(node); err != nil {
+			continue
+		}
+	}
+}
+
+func (n *Node) shutdown() {
 	if err := n.Store.Save(); err != nil {
 		n.log.Errorf("failed to save state: %v", err)
 	} else {
 		n.log.Info("state saved to disk")
 	}
 
-	if err := n.Mesh.Shutdown(ctx); err != nil {
+	if err := n.Mesh.Shutdown(); err != nil {
 		n.log.Errorf("failed to shut down mesh: %v", err)
 	} else {
 		n.log.Info("successfully shut down mesh")
 	}
-
-	return ctx.Err()
 }
 
 func genNoiseKey(cs noise.CipherSuite, pollenDir string) (noise.DHKey, error) {
@@ -202,7 +319,7 @@ func genNoiseKey(cs noise.CipherSuite, pollenDir string) (noise.DHKey, error) {
 	return keyPair, nil
 }
 
-func genSigningKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
+func genIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
 	dir := filepath.Join(pollenDir, localKeysDir)
 
 	privPath := filepath.Join(dir, signingKeyName)
@@ -279,6 +396,6 @@ func genSigningKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, err
 func (n *Node) GetStateKeys() *statev1.Keys {
 	return &statev1.Keys{
 		NoisePub:    n.noisePubKey,
-		IdentityPub: n.signingPubKey,
+		IdentityPub: n.identityPubKey,
 	}
 }

@@ -2,6 +2,8 @@ package state
 
 import (
 	"sync"
+
+	"github.com/sambigeara/pollen/pkg/types"
 )
 
 type Record[T any] struct {
@@ -11,15 +13,15 @@ type Record[T any] struct {
 }
 
 type Map[T any] struct {
-	Data        map[string]Record[T]
+	Data        map[types.NodeID]Record[T]
 	Clock       int64
-	LocalNodeID string
+	LocalNodeID types.NodeID
 	mu          sync.RWMutex
 }
 
-func NewMap[T any](localNodeID string) *Map[T] {
+func NewMap[T any](localNodeID types.NodeID) *Map[T] {
 	return &Map[T]{
-		Data:        make(map[string]Record[T]),
+		Data:        make(map[types.NodeID]Record[T]),
 		LocalNodeID: localNodeID,
 		Clock:       0,
 	}
@@ -33,7 +35,7 @@ func (m *Map[T]) tick() Timestamp {
 	}
 }
 
-func (m *Map[T]) Set(key string, val T) {
+func (m *Map[T]) Set(key types.NodeID, val T) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -47,7 +49,7 @@ func (m *Map[T]) Set(key string, val T) {
 
 // SetPlaceholder sets the record with a zeroed clock, to ensure
 // a later call to `Set` overrides it.
-func (m *Map[T]) SetPlaceholder(key string, val T) {
+func (m *Map[T]) SetPlaceholder(key types.NodeID, val T) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -61,7 +63,7 @@ func (m *Map[T]) SetPlaceholder(key string, val T) {
 	}
 }
 
-func (m *Map[T]) Get(key string) (Record[T], bool) {
+func (m *Map[T]) Get(key types.NodeID) (Record[T], bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -69,11 +71,11 @@ func (m *Map[T]) Get(key string) (Record[T], bool) {
 	return v, ok
 }
 
-func (m *Map[T]) GetAll() map[string]T {
+func (m *Map[T]) GetAll() map[types.NodeID]T {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	out := make(map[string]T, len(m.Data))
+	out := make(map[types.NodeID]T, len(m.Data))
 	for k, rec := range m.Data {
 		if !rec.Tombstone {
 			out[k] = rec.Value
@@ -83,7 +85,7 @@ func (m *Map[T]) GetAll() map[string]T {
 	return out
 }
 
-func (m *Map[T]) Merge(remoteData map[string]Record[T]) {
+func (m *Map[T]) Merge(remoteData map[types.NodeID]Record[T]) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

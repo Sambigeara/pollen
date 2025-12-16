@@ -5,7 +5,8 @@ package pollen.tcp.v1;
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/tcp/v1;tcpv1";
 
 message Handshake {
-  bytes cert_der = 1;
-  bytes sig = 2;
-  repeated string addr = 3;
+  uint64 request_id = 1;
+  bytes cert_der = 2;
+  bytes sig = 3;
+  repeated string addr = 4;
 }

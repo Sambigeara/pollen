@@ -8,7 +8,7 @@ option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1;peerv
 
 message Known {
   bytes noise_pub = 1;
-  bytes sig_pub = 2;
+  bytes identity_pub = 2;
   string addr = 3;
 }
 

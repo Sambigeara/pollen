@@ -54,7 +54,7 @@ func (m *Handshake) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			copy(dAtA[i:], m.Addr[iNdEx])
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Addr[iNdEx])))
 			i--
-			dAtA[i] = 0x1a
+			dAtA[i] = 0x22
 		}
 	}
 	if len(m.Sig) > 0 {
@@ -62,14 +62,19 @@ func (m *Handshake) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		copy(dAtA[i:], m.Sig)
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Sig)))
 		i--
-		dAtA[i] = 0x12
+		dAtA[i] = 0x1a
 	}
 	if len(m.CertDer) > 0 {
 		i -= len(m.CertDer)
 		copy(dAtA[i:], m.CertDer)
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.CertDer)))
 		i--
-		dAtA[i] = 0xa
+		dAtA[i] = 0x12
+	}
+	if m.RequestId != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.RequestId))
+		i--
+		dAtA[i] = 0x8
 	}
 	return len(dAtA) - i, nil
 }
@@ -80,6 +85,9 @@ func (m *Handshake) SizeVT() (n int) {
 	}
 	var l int
 	_ = l
+	if m.RequestId != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.RequestId))
+	}
 	l = len(m.CertDer)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
@@ -128,6 +136,25 @@ func (m *Handshake) UnmarshalVT(dAtA []byte) error {
 		}
 		switch fieldNum {
 		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field RequestId", wireType)
+			}
+			m.RequestId = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.RequestId |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 2:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field CertDer", wireType)
 			}
@@ -161,7 +188,7 @@ func (m *Handshake) UnmarshalVT(dAtA []byte) error {
 				m.CertDer = []byte{}
 			}
 			iNdEx = postIndex
-		case 2:
+		case 3:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Sig", wireType)
 			}
@@ -195,7 +222,7 @@ func (m *Handshake) UnmarshalVT(dAtA []byte) error {
 				m.Sig = []byte{}
 			}
 			iNdEx = postIndex
-		case 3:
+		case 4:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Addr", wireType)
 			}

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"sync"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/types"
 )
 
 const (
@@ -22,7 +24,7 @@ type Persistence struct {
 	mu       sync.Mutex
 }
 
-func Load(pollenDir string, localNodeID string) (*Persistence, error) {
+func Load(pollenDir string, localNodeID types.NodeID) (*Persistence, error) {
 	dir := filepath.Join(pollenDir, stateDir)
 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -88,17 +90,33 @@ func (p *Persistence) Save() error {
 func (p *Persistence) Hydrate(delta *statev1.DeltaState) {
 	// We can manually reconstruct the Record structs to feed into the generic Merge.
 	// This ensures our internal Logic Clock respects the persisted state.
-	nodeRecords := make(map[string]Record[*statev1.Node], len(delta.Nodes))
+	nodeRecords := make(map[types.NodeID]Record[*statev1.Node], len(delta.Nodes))
 	for k, v := range delta.Nodes {
-		if k == p.Cluster.LocalID {
+		keyBytes, err := hex.DecodeString(k)
+		if err != nil {
 			continue
 		}
-		nodeRecords[k] = Record[*statev1.Node]{
+		nodeID, ok := types.IDFromBytes(keyBytes)
+		if !ok || nodeID == p.Cluster.LocalID {
+			continue
+		}
+
+		tsID := nodeID
+		if v.Ts == nil {
+			continue
+		}
+		if tsBytes, err := hex.DecodeString(v.Ts.NodeId); err == nil {
+			if decoded, ok := types.IDFromBytes(tsBytes); ok {
+				tsID = decoded
+			}
+		}
+
+		nodeRecords[nodeID] = Record[*statev1.Node]{
 			Value:     v.Value,
 			Tombstone: v.Tombstone,
 			Timestamp: Timestamp{
 				Counter: v.Ts.Counter,
-				NodeID:  v.Ts.NodeId,
+				NodeID:  tsID,
 			},
 		}
 	}

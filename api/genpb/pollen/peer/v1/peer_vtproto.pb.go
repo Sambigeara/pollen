@@ -55,10 +55,10 @@ func (m *Known) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x1a
 	}
-	if len(m.SigPub) > 0 {
-		i -= len(m.SigPub)
-		copy(dAtA[i:], m.SigPub)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.SigPub)))
+	if len(m.IdentityPub) > 0 {
+		i -= len(m.IdentityPub)
+		copy(dAtA[i:], m.IdentityPub)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.IdentityPub)))
 		i--
 		dAtA[i] = 0x12
 	}
@@ -248,7 +248,7 @@ func (m *Known) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	l = len(m.SigPub)
+	l = len(m.IdentityPub)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -395,7 +395,7 @@ func (m *Known) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field SigPub", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field IdentityPub", wireType)
 			}
 			var byteLen int
 			for shift := uint(0); ; shift += 7 {
@@ -422,9 +422,9 @@ func (m *Known) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.SigPub = append(m.SigPub[:0], dAtA[iNdEx:postIndex]...)
-			if m.SigPub == nil {
-				m.SigPub = []byte{}
+			m.IdentityPub = append(m.IdentityPub[:0], dAtA[iNdEx:postIndex]...)
+			if m.IdentityPub == nil {
+				m.IdentityPub = []byte{}
 			}
 			iNdEx = postIndex
 		case 3:

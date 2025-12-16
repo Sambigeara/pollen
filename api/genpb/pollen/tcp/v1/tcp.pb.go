@@ -23,9 +23,10 @@ const (
 
 type Handshake struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	CertDer       []byte                 `protobuf:"bytes,1,opt,name=cert_der,json=certDer,proto3" json:"cert_der,omitempty"`
-	Sig           []byte                 `protobuf:"bytes,2,opt,name=sig,proto3" json:"sig,omitempty"`
-	Addr          []string               `protobuf:"bytes,3,rep,name=addr,proto3" json:"addr,omitempty"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	CertDer       []byte                 `protobuf:"bytes,2,opt,name=cert_der,json=certDer,proto3" json:"cert_der,omitempty"`
+	Sig           []byte                 `protobuf:"bytes,3,opt,name=sig,proto3" json:"sig,omitempty"`
+	Addr          []string               `protobuf:"bytes,4,rep,name=addr,proto3" json:"addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -60,6 +61,13 @@ func (*Handshake) Descriptor() ([]byte, []int) {
 	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{0}
 }
 
+func (x *Handshake) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
 func (x *Handshake) GetCertDer() []byte {
 	if x != nil {
 		return x.CertDer
@@ -85,11 +93,13 @@ var File_pollen_tcp_v1_tcp_proto protoreflect.FileDescriptor
 
 const file_pollen_tcp_v1_tcp_proto_rawDesc = "" +
 	"\n" +
-	"\x17pollen/tcp/v1/tcp.proto\x12\rpollen.tcp.v1\"L\n" +
-	"\tHandshake\x12\x19\n" +
-	"\bcert_der\x18\x01 \x01(\fR\acertDer\x12\x10\n" +
-	"\x03sig\x18\x02 \x01(\fR\x03sig\x12\x12\n" +
-	"\x04addr\x18\x03 \x03(\tR\x04addrB<Z:github.com/sambigeara/pollen/api/genpb/pollen/tcp/v1;tcpv1b\x06proto3"
+	"\x17pollen/tcp/v1/tcp.proto\x12\rpollen.tcp.v1\"k\n" +
+	"\tHandshake\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x19\n" +
+	"\bcert_der\x18\x02 \x01(\fR\acertDer\x12\x10\n" +
+	"\x03sig\x18\x03 \x01(\fR\x03sig\x12\x12\n" +
+	"\x04addr\x18\x04 \x03(\tR\x04addrB<Z:github.com/sambigeara/pollen/api/genpb/pollen/tcp/v1;tcpv1b\x06proto3"
 
 var (
 	file_pollen_tcp_v1_tcp_proto_rawDescOnce sync.Once
