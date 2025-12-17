@@ -17,6 +17,7 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/invites"
+	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 )
@@ -76,6 +77,9 @@ type Mesh struct {
 	advertisableIPs []net.IP
 	handlers        handlerRegistry
 	peerJoinHandler PeerJoinHandler
+
+	dialMu   sync.Mutex
+	lastDial map[types.NodeID]time.Time
 }
 
 func New(conf *Config, cs *noise.CipherSuite, staticKey noise.DHKey, priv ed25519.PrivateKey, pub ed25519.PublicKey, invites *invites.InviteStore) (*Mesh, error) {
@@ -109,6 +113,7 @@ func New(conf *Config, cs *noise.CipherSuite, staticKey noise.DHKey, priv ed2551
 		rekeyMgr:        newRekeyManager(),
 		advertisableIPs: ips,
 		handlers:        newHandlerRegistry(),
+		lastDial:        make(map[types.NodeID]time.Time),
 	}, nil
 }
 
@@ -176,7 +181,7 @@ func (m *Mesh) listen(ctx context.Context) error {
 				return m.handleAppMsg(dg.receiverID, dg.tp, dg.msg)
 			}
 
-			hs, err := m.handshakeStore.get(dg.tp, dg.senderID, dg.receiverID)
+			hs, err := m.handshakeStore.getOrCreate(dg.senderID, dg.receiverID, dg.tp)
 			if err != nil {
 				m.log.Errorf("get hs: %v", err)
 				return nil
@@ -272,6 +277,7 @@ func (m *Mesh) sendHandshakeResult(res HandshakeResult, remoteID uint32) error {
 	var errs error
 	success := false
 
+	// happy eyeball
 	for _, addr := range res.Targets {
 		if err := write(m.Conn, addr, res.MsgType, res.LocalSessionID, remoteID, res.Msg); err != nil {
 			m.log.Debugf("failed to write to candidate %s: %v", addr, err)
@@ -325,9 +331,25 @@ func (m *Mesh) scheduleRekey(peerSessionID uint32, staticKey []byte, address str
 }
 
 func (m *Mesh) RejoinPeer(node *statev1.Node) error {
+	// session already exists
 	if _, exists := m.sessionStore.getID(node.Keys.NoisePub); exists {
 		return nil
 	}
+
+	nodeID, ok := types.IDFromBytes(node.Keys.NoisePub)
+	if !ok {
+		return nil
+	}
+
+	// don't dial if we tried recently
+	m.dialMu.Lock()
+	lastAttempt, found := m.lastDial[nodeID]
+	if found && time.Since(lastAttempt) < 5*time.Second {
+		m.dialMu.Unlock()
+		return nil // Handshake already in flight or backoff
+	}
+	m.lastDial[nodeID] = time.Now()
+	m.dialMu.Unlock()
 
 	m.log.Infow("dialing new peer found in state", "peer_id", node.Id[:8], "addr", node.Addresses[0])
 
@@ -348,7 +370,7 @@ func (m *Mesh) RejoinPeer(node *statev1.Node) error {
 func (m *Mesh) sendByPeerID(peerID uint32, msg []byte, typ MessageType) error {
 	sess, ok := m.sessionStore.get(peerID)
 	if !ok {
-		return nil
+		return ErrNotConnected
 	}
 
 	enc, shouldRekey, err := sess.Encrypt(m.Conn, msg)

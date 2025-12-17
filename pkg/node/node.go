@@ -86,7 +86,7 @@ func New(conf *Config) (*Node, error) {
 		return nil, err
 	}
 
-	// TODO(saml) this seems to be everywhere. Needs to be managed on the highest common layer and propogated down
+	// TODO(saml) this seems to be everywhere. Needs to be managed on the highest common layer and propagated down
 	ips, err := mesh.GetAdvertisableIPs()
 	if err != nil {
 		return nil, err
@@ -199,7 +199,7 @@ func (n *Node) gossip() {
 	peers := n.Store.Cluster.Nodes.GetAll()
 
 	// we're the only peer
-	if len(peers) == 1 {
+	if len(peers) <= 1 {
 		return
 	}
 
@@ -245,7 +245,16 @@ func (n *Node) reconcilePeers() {
 			continue
 		}
 
+		// Tie-breaker to prevent simultaneous open race conditions.
+		// Only initiate if our ID is "smaller" than the peer's ID.
+		// The peer with the "larger" ID will wait for the incoming handshake.
+		// TODO(saml) this requires a much more balanced and robust approach
+		if n.Store.Cluster.LocalID.String() > node.Id {
+			continue
+		}
+
 		if err := n.Mesh.RejoinPeer(node); err != nil {
+			n.log.Errorf("failed to rejoin peer: %v", err)
 			continue
 		}
 	}

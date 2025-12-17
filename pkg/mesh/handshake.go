@@ -61,7 +61,7 @@ func newHandshakeStore(cs *noise.CipherSuite, invites *invites.InviteStore, loca
 	}
 }
 
-func (st *handshakeStore) get(tp MessageType, peerSessionID, localSessionID uint32) (handshake, error) {
+func (st *handshakeStore) getOrCreate(peerSessionID, localSessionID uint32, tp MessageType) (handshake, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
@@ -83,22 +83,12 @@ func (st *handshakeStore) get(tp MessageType, peerSessionID, localSessionID uint
 		}
 		delete(st.st, localSessionID)
 	case MessageTypeHandshakeIKInit:
-		// Generate new ID
-		var lid uint32
-		if lid, err = genSessionID(); err != nil {
-			return nil, err
-		}
-		hs, err = newHandshakeIKResp(st.cs, st.localStaticKey, lid)
+		hs, err = newHandshakeIKResp(st.cs, st.localStaticKey)
 		if err != nil {
 			return nil, err
 		}
 	case MessageTypeHandshakeXXPsk2Init:
-		// Generate new ID
-		var lid uint32
-		if lid, err = genSessionID(); err != nil {
-			return nil, err
-		}
-		hs, err = newHandshakeXXPsk2Resp(st.cs, st.invites, st.localStaticKey, st.localIdentityPub, lid)
+		hs, err = newHandshakeXXPsk2Resp(st.cs, st.invites, st.localStaticKey, st.localIdentityPub)
 		if err != nil {
 			return nil, err
 		}
@@ -181,14 +171,15 @@ func newHandshakeIKInit(cs *noise.CipherSuite, localStaticKey noise.DHKey, peerS
 	if len(targets) == 0 {
 		return nil, ErrNoResolvableIP
 	}
-	senderID, err := genSessionID()
+
+	localSessionID, err := genSessionID()
 	if err != nil {
 		return nil, err
 	}
 
 	return &handshakeIKInit{
 		HandshakeState: hs,
-		localSessionID: senderID,
+		localSessionID: localSessionID,
 		targets:        targets,
 		nextStage:      stage1,
 	}, nil
@@ -236,7 +227,12 @@ type handshakeIKResp struct {
 	mu             sync.Mutex
 }
 
-func newHandshakeIKResp(cs *noise.CipherSuite, localStaticKey noise.DHKey, localSessionID uint32) (*handshakeIKResp, error) {
+func newHandshakeIKResp(cs *noise.CipherSuite, localStaticKey noise.DHKey) (*handshakeIKResp, error) {
+	localSessionID, err := genSessionID()
+	if err != nil {
+		return nil, err
+	}
+
 	hs, err := noise.NewHandshakeState(noise.Config{
 		CipherSuite:   *cs,
 		Pattern:       noise.HandshakeIK,
@@ -322,7 +318,7 @@ func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey noise.DHKey, p
 		return nil, ErrNoResolvableIP
 	}
 
-	senderID, err := genSessionID()
+	localSessionID, err := genSessionID()
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +326,7 @@ func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey noise.DHKey, p
 	return &handshakeXXPsk2Init{
 		HandshakeState: hs,
 		sigPub:         peerSigPub,
-		localSessionID: senderID,
+		localSessionID: localSessionID,
 		tokenID:        token.Id,
 		candidates:     candidates,
 		nextStage:      stage1,
@@ -389,7 +385,12 @@ type handshakeXXPsk2Resp struct {
 	localSessionID uint32
 }
 
-func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, invitesStore *invites.InviteStore, localStaticKey noise.DHKey, localSigPub []byte, localSessionID uint32) (*handshakeXXPsk2Resp, error) {
+func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, invitesStore *invites.InviteStore, localStaticKey noise.DHKey, localSigPub []byte) (*handshakeXXPsk2Resp, error) {
+	localSessionID, err := genSessionID()
+	if err != nil {
+		return nil, err
+	}
+
 	hs, err := noise.NewHandshakeState(noise.Config{
 		CipherSuite:           *cs,
 		Pattern:               noise.HandshakeXX,

@@ -19,27 +19,19 @@ import (
 func TestNode(t *testing.T) {
 	ctx := t.Context()
 
-	// Helper to normalize robust message testing across all sub-tests.
-	// We pass *testing.T explicitly to ensure assertions happen in the correct subtest scope.
 	verifyReachability := func(t *testing.T, sender *Node, targetKey []byte, recvChan <-chan []byte, payload []byte, msg string) {
 		t.Helper()
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
-			// 1. Attempt to send
 			err := sender.Mesh.Send(targetKey, payload, mesh.MessageTypeTest)
-			if err != nil {
-				// If send fails (e.g. peer not connected yet), fail soft so Eventually retries
-				assert.NoError(c, err)
-				return
-			}
+			assert.NoError(c, err)
 
-			// 2. Non-blocking read to avoid deadlocks
 			select {
 			case got := <-recvChan:
 				assert.Equal(c, payload, got)
 			case <-time.After(150 * time.Millisecond):
 				assert.Fail(c, "timed out waiting for message")
 			}
-		}, 5*time.Second, 200*time.Millisecond, msg)
+		}, 2*time.Second, 200*time.Millisecond, msg)
 	}
 
 	t.Run("converge after invite", func(t *testing.T) {
@@ -184,17 +176,17 @@ func TestNode(t *testing.T) {
 			nodeB, _ := newNode(t, dirB, portB)
 			nodeC, _ := newNode(t, dirC, portC)
 
-			// ensure the state is consistent from post-XXPsk2
-			storeA := nodeA.Store.Cluster.Nodes.GetAll()
-			storeB := nodeB.Store.Cluster.Nodes.GetAll()
-			storeC := nodeC.Store.Cluster.Nodes.GetAll()
-
 			idA := nodeA.Store.Cluster.LocalID
 			idB := nodeB.Store.Cluster.LocalID
 			idC := nodeC.Store.Cluster.LocalID
 
 			opts := []cmp.Option{protocmp.Transform(), protocmp.SortRepeatedFields(&statev1.Node{}, "addresses")}
 			require.EventuallyWithT(t, func(c *assert.CollectT) {
+				// ensure the state is consistent from post-XXPsk2
+				storeA := nodeA.Store.Cluster.Nodes.GetAll()
+				storeB := nodeB.Store.Cluster.Nodes.GetAll()
+				storeC := nodeC.Store.Cluster.Nodes.GetAll()
+
 				require.Empty(c, cmp.Diff(expectedA, storeA[idA], opts...))
 				require.Empty(c, cmp.Diff(expectedB, storeA[idB], opts...))
 				require.Empty(c, cmp.Diff(expectedC, storeA[idC], opts...))
@@ -206,20 +198,38 @@ func TestNode(t *testing.T) {
 				require.Empty(c, cmp.Diff(expectedC, storeC[idC], opts...))
 			}, 5*time.Second, 50*time.Millisecond, "nodes failed to converge state")
 
+			// Setup Reachability Test Handlers
+			recvA := make(chan []byte, 1)
+			nodeA.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error {
+				select {
+				case recvA <- b:
+				default:
+				}
+				return nil
+			})
+			recvB := make(chan []byte, 1)
+			nodeB.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error {
+				select {
+				case recvB <- b:
+				default:
+				}
+				return nil
+			})
+			recvC := make(chan []byte, 1)
+			nodeC.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error {
+				select {
+				case recvC <- b:
+				default:
+				}
+				return nil
+			})
+
 			go nodeA.Start(ctx, nil)
 			go nodeB.Start(ctx, nil)
 			go nodeC.Start(ctx, nil)
 
 			skB := nodeB.GetStateKeys().NoisePub
 			skC := nodeC.GetStateKeys().NoisePub
-
-			// Setup Reachability Test Handlers
-			recvA := make(chan []byte, 1)
-			nodeA.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error { recvA <- b; return nil })
-			recvB := make(chan []byte, 1)
-			nodeB.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error { recvB <- b; return nil })
-			recvC := make(chan []byte, 1)
-			nodeC.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error { recvC <- b; return nil })
 
 			payload := []byte("hello")
 
@@ -244,8 +254,8 @@ func newNode(t *testing.T, dir string, port int) (*Node, int) {
 			Port:          port,
 			AdvertisedIPs: []string{"127.0.0.1"},
 		},
-		GossipInterval:        time.Millisecond * 10,
-		PeerReconcileInterval: time.Millisecond * 10,
+		GossipInterval:        time.Millisecond * 50,
+		PeerReconcileInterval: time.Millisecond * 50,
 		PollenDir:             dir,
 	}
 
@@ -258,9 +268,9 @@ func newNode(t *testing.T, dir string, port int) (*Node, int) {
 func getFreePort(t *testing.T) int {
 	t.Helper()
 
-	l, err := net.Listen("tcp", "localhost:0")
+	l, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	require.NoError(t, err)
 
 	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
+	return l.LocalAddr().(*net.UDPAddr).Port
 }

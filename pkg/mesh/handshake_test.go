@@ -40,7 +40,7 @@ func TestHandshake_Pure_XX(t *testing.T) {
 	hsInit, err := newHandshakeXXPsk2Init(&csB, kpB, pubB, invite)
 	require.NoError(t, err)
 
-	hsResp, err := newHandshakeXXPsk2Resp(&csA, invitesA, kpA, pubA, 999)
+	hsResp, err := newHandshakeXXPsk2Resp(&csA, invitesA, kpA, pubA)
 	require.NoError(t, err)
 
 	// 1. Init (B) -> Msg1
@@ -93,7 +93,7 @@ func TestHandshake_Pure_IK(t *testing.T) {
 	hsInit, err := newHandshakeIKInit(&csB, kpB, kpA.Public, targets)
 	require.NoError(t, err)
 
-	hsResp, err := newHandshakeIKResp(&csA, kpA, 888)
+	hsResp, err := newHandshakeIKResp(&csA, kpA)
 	require.NoError(t, err)
 
 	// 1. Init (B) -> Msg1
