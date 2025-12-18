@@ -11,7 +11,7 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 )
 
-func NewInvite(ips []net.IP, port string) (*peerv1.Invite, error) {
+func NewInvite(ips []string, port string) (*peerv1.Invite, error) {
 	id := uuid.NewString()
 
 	// TODO(saml) PSK should have expiry
@@ -22,7 +22,7 @@ func NewInvite(ips []net.IP, port string) (*peerv1.Invite, error) {
 
 	addrs := make([]string, len(ips))
 	for i, ip := range ips {
-		addrs[i] = net.JoinHostPort(ip.String(), port)
+		addrs[i] = net.JoinHostPort(ip, port)
 	}
 
 	return &peerv1.Invite{

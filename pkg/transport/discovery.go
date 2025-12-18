@@ -1,4 +1,4 @@
-package mesh
+package transport
 
 import (
 	"context"
@@ -20,12 +20,8 @@ var providers = []string{
 	"https://ident.me",
 }
 
-// GetAdvertisableIPs returns a prioritized list of IPs:
-// 1. Public IP (Globally Unique)
-// 2. Preferred Outbound IP (The interface used to reach the internet)
-// 3. Other Local IPs (Secondary interfaces/VPNs)
-func GetAdvertisableIPs() ([]net.IP, error) {
-	var results []net.IP
+func GetAdvertisableAddrs() ([]string, error) {
+	var results []string
 	seen := make(map[string]bool)
 
 	ctx, cancelFn := context.WithTimeout(context.Background(), publicIPQueryTimeout)
@@ -33,14 +29,14 @@ func GetAdvertisableIPs() ([]net.IP, error) {
 
 	if pubIP, err := getPublicIP(ctx); err == nil {
 		str := pubIP.String()
-		results = append(results, pubIP)
+		results = append(results, pubIP.String())
 		seen[str] = true
 	}
 
 	if prefIP, err := getPreferredOutboundIP(); err == nil {
 		str := prefIP.String()
 		if !seen[str] {
-			results = append(results, prefIP)
+			results = append(results, prefIP.String())
 			seen[str] = true
 		}
 	}
@@ -49,7 +45,7 @@ func GetAdvertisableIPs() ([]net.IP, error) {
 	if err == nil {
 		for _, ip := range others {
 			if !seen[ip.String()] {
-				results = append(results, ip)
+				results = append(results, ip.String())
 				seen[ip.String()] = true
 			}
 		}

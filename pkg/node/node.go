@@ -14,9 +14,10 @@ import (
 	"github.com/flynn/noise"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/invites"
+	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/state"
+	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/tunnel"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
@@ -46,7 +47,7 @@ type Node struct {
 	conf           *Config
 	Mesh           *mesh.Mesh
 	Store          *state.Persistence
-	Invites        *invites.InviteStore
+	AdmissionStore admission.Store
 	Tunnel         *tunnel.Manager
 	Directory      *Directory
 	identityPubKey ed25519.PublicKey
@@ -74,19 +75,19 @@ func New(conf *Config) (*Node, error) {
 		return nil, fmt.Errorf("failed to load state: %w", err)
 	}
 
-	invitesStore, err := invites.Load(conf.PollenDir)
+	invitesStore, err := admission.Load(conf.PollenDir)
 	if err != nil {
 		log.Error("failed to load peers", zap.Error(err))
 		return nil, err
 	}
 
-	m, err := mesh.New(conf.Mesh, &cs, noiseKey, privKey, pubKey, invitesStore)
+	// TODO(saml) this seems to be everywhere. Needs to be managed on the highest common layer and propagated down
+	addrs, err := transport.GetAdvertisableAddrs()
 	if err != nil {
 		return nil, err
 	}
 
-	// TODO(saml) this seems to be everywhere. Needs to be managed on the highest common layer and propagated down
-	ips, err := mesh.GetAdvertisableIPs()
+	m, err := mesh.New(conf.Mesh, addrs, &cs, noiseKey, privKey, pubKey, invitesStore)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +98,7 @@ func New(conf *Config) (*Node, error) {
 		m.Send,
 		&Directory{cluster: cluster},
 		privKey,
-		ips,
+		addrs,
 	)
 
 	cluster.Nodes.Set(nodeID, &statev1.Node{
@@ -113,7 +114,7 @@ func New(conf *Config) (*Node, error) {
 		log:            log,
 		Mesh:           m,
 		Store:          stateStore,
-		Invites:        invitesStore,
+		AdmissionStore: invitesStore,
 		Tunnel:         tun,
 		Directory:      &Directory{cluster: cluster},
 		identityPubKey: pubKey,
@@ -123,14 +124,14 @@ func New(conf *Config) (*Node, error) {
 }
 
 func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
-	n.registerHandlers()
+	n.registerHandlers(ctx)
 
 	if err := n.Mesh.Start(ctx, token); err != nil {
 		return err
 	}
 
 	// initial synchronous run
-	go n.reconcilePeers()
+	go n.reconcilePeers(ctx)
 
 	// continual watch
 	go n.maintainConnections(ctx)
@@ -143,11 +144,11 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 	return nil
 }
 
-func (n *Node) registerHandlers() {
+func (n *Node) registerHandlers(ctx context.Context) {
 	n.Mesh.On(mesh.MessageTypeTCPTunnelRequest, n.Tunnel.HandleRequest)
 	n.Mesh.On(mesh.MessageTypeTCPTunnelResponse, n.Tunnel.HandleResponse)
 
-	n.Mesh.On(mesh.MessageTypeGossip, func(peerNoisePub []byte, plaintext []byte) error {
+	n.Mesh.On(mesh.MessageTypeGossip, func(_ context.Context, peerNoisePub []byte, plaintext []byte) error {
 		delta := &statev1.DeltaState{}
 		if err := delta.UnmarshalVT(plaintext); err != nil {
 			return fmt.Errorf("malformed gossip payload: %w", err)
@@ -158,7 +159,7 @@ func (n *Node) registerHandlers() {
 		n.log.Debugw("gossip merged", "records", len(delta.Nodes))
 
 		// eager reconciliation in case a new peer arrived in the gossip
-		go n.reconcilePeers()
+		go n.reconcilePeers(ctx)
 
 		return nil
 	})
@@ -168,7 +169,7 @@ func (n *Node) registerHandlers() {
 
 		n.Store.Cluster.Nodes.SetPlaceholder(id, &statev1.Node{
 			Id:        id.String(),
-			Addresses: []string{ev.PeerAddr.String()},
+			Addresses: []string{ev.PeerAddr},
 			Keys: &statev1.Keys{
 				NoisePub:    ev.PeerNoisePub,
 				IdentityPub: ev.PeerIdentityPub,
@@ -188,12 +189,12 @@ func (n *Node) startGossip(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n.gossip()
+			n.gossip(ctx)
 		}
 	}
 }
 
-func (n *Node) gossip() {
+func (n *Node) gossip(ctx context.Context) {
 	// TODO(saml) for now we're just gossiping to all, but down the line, this'll be much more selective
 	peers := n.Store.Cluster.Nodes.GetAll()
 
@@ -216,7 +217,7 @@ func (n *Node) gossip() {
 		if peer.Id == n.Store.Cluster.LocalID.String() {
 			continue
 		}
-		n.Mesh.Send(peer.Keys.NoisePub, payload, mesh.MessageTypeGossip)
+		n.Mesh.Send(ctx, peer.Keys.NoisePub, payload, mesh.MessageTypeGossip)
 	}
 }
 
@@ -229,12 +230,12 @@ func (n *Node) maintainConnections(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n.reconcilePeers()
+			n.reconcilePeers(ctx)
 		}
 	}
 }
 
-func (n *Node) reconcilePeers() {
+func (n *Node) reconcilePeers(ctx context.Context) {
 	for _, node := range n.Store.Cluster.Nodes.GetAll() {
 		if node.Id == n.Store.Cluster.LocalID.String() {
 			continue
@@ -252,7 +253,7 @@ func (n *Node) reconcilePeers() {
 			continue
 		}
 
-		if err := n.Mesh.EnsureSession(node.Keys.NoisePub, node.Addresses); err != nil {
+		if err := n.Mesh.EnsureSession(ctx, node.Keys.NoisePub, node.Addresses); err != nil {
 			n.log.Errorf("failed to ensure session with peer: %v", err)
 			continue
 		}
@@ -264,10 +265,6 @@ func (n *Node) shutdown() {
 		n.log.Errorf("failed to save state: %v", err)
 	} else {
 		n.log.Info("state saved to disk")
-	}
-
-	if err := n.Invites.Save(); err != nil {
-		n.log.Errorf("failed to save invites: %v", err)
 	}
 
 	if err := n.Mesh.Shutdown(); err != nil {

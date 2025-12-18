@@ -22,7 +22,7 @@ func TestNode(t *testing.T) {
 	verifyReachability := func(t *testing.T, sender *Node, targetKey []byte, recvChan <-chan []byte, payload []byte, msg string) {
 		t.Helper()
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
-			err := sender.Mesh.Send(targetKey, payload, mesh.MessageTypeTest)
+			err := sender.Mesh.Send(t.Context(), targetKey, payload, mesh.MessageTypeTest)
 			assert.NoError(c, err)
 
 			select {
@@ -38,10 +38,10 @@ func TestNode(t *testing.T) {
 		dirA := t.TempDir()
 		nodeA, portA := newNode(t, dirA, 0)
 
-		token, err := NewInvite([]net.IP{net.ParseIP("127.0.0.1")}, fmt.Sprintf("%d", portA))
+		token, err := NewInvite([]string{"127.0.0.1"}, fmt.Sprintf("%d", portA))
 		require.NoError(t, err)
 
-		nodeA.Invites.AddInvite(token)
+		nodeA.AdmissionStore.AddInvite(token)
 
 		go nodeA.Start(ctx, nil)
 
@@ -68,14 +68,14 @@ func TestNode(t *testing.T) {
 			var nodeA *Node
 			nodeA, portA = newNode(t, dirA, 0)
 
-			tokenForB, err := NewInvite([]net.IP{net.ParseIP("127.0.0.1")}, fmt.Sprintf("%d", portA))
+			tokenForB, err := NewInvite([]string{"127.0.0.1"}, fmt.Sprintf("%d", portA))
 			require.NoError(t, err)
 
-			tokenForC, err := NewInvite([]net.IP{net.ParseIP("127.0.0.1")}, fmt.Sprintf("%d", portA))
+			tokenForC, err := NewInvite([]string{"127.0.0.1"}, fmt.Sprintf("%d", portA))
 			require.NoError(t, err)
 
-			nodeA.Invites.AddInvite(tokenForB)
-			nodeA.Invites.AddInvite(tokenForC)
+			nodeA.AdmissionStore.AddInvite(tokenForB)
+			nodeA.AdmissionStore.AddInvite(tokenForC)
 
 			initCtx, cancelFn := context.WithCancel(ctx)
 			t.Cleanup(cancelFn)
@@ -143,11 +143,11 @@ func TestNode(t *testing.T) {
 
 			// Setup Reachability Test Handlers
 			recvA := make(chan []byte, 1)
-			nodeA.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error { recvA <- b; return nil })
+			nodeA.Mesh.On(mesh.MessageTypeTest, func(_ context.Context, _ []byte, b []byte) error { recvA <- b; return nil })
 			recvB := make(chan []byte, 1)
-			nodeB.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error { recvB <- b; return nil })
+			nodeB.Mesh.On(mesh.MessageTypeTest, func(_ context.Context, _ []byte, b []byte) error { recvB <- b; return nil })
 			recvC := make(chan []byte, 1)
-			nodeC.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error { recvC <- b; return nil })
+			nodeC.Mesh.On(mesh.MessageTypeTest, func(_ context.Context, _ []byte, b []byte) error { recvC <- b; return nil })
 
 			skA := nodeA.GetStateKeys().NoisePub
 			skB := nodeB.GetStateKeys().NoisePub
@@ -200,7 +200,7 @@ func TestNode(t *testing.T) {
 
 			// Setup Reachability Test Handlers
 			recvA := make(chan []byte, 1)
-			nodeA.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error {
+			nodeA.Mesh.On(mesh.MessageTypeTest, func(_ context.Context, _ []byte, b []byte) error {
 				select {
 				case recvA <- b:
 				default:
@@ -208,7 +208,7 @@ func TestNode(t *testing.T) {
 				return nil
 			})
 			recvB := make(chan []byte, 1)
-			nodeB.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error {
+			nodeB.Mesh.On(mesh.MessageTypeTest, func(_ context.Context, _ []byte, b []byte) error {
 				select {
 				case recvB <- b:
 				default:
@@ -216,7 +216,7 @@ func TestNode(t *testing.T) {
 				return nil
 			})
 			recvC := make(chan []byte, 1)
-			nodeC.Mesh.On(mesh.MessageTypeTest, func(_ []byte, b []byte) error {
+			nodeC.Mesh.On(mesh.MessageTypeTest, func(_ context.Context, _ []byte, b []byte) error {
 				select {
 				case recvC <- b:
 				default:

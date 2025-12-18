@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -15,12 +16,19 @@ import (
 
 	"github.com/flynn/noise"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	"github.com/sambigeara/pollen/pkg/admission"
+	"github.com/sambigeara/pollen/pkg/transport"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 )
 
 const (
 	tcpHandshakeTimeout = time.Second * 5
+
+	sessionRefreshInterval       = time.Second * 120 // new IK handshake every 2 mins
+	sessionRefreshIntervalJitter = 0.1
+	pingInterval                 = time.Second * 25
+	pingJitter                   = 0.05
 )
 
 var (
@@ -43,10 +51,10 @@ type InviteSource interface {
 type PeerUp struct {
 	PeerNoisePub    []byte
 	PeerIdentityPub []byte
-	PeerAddr        *net.UDPAddr
+	PeerAddr        string
 }
 
-type Handler func(peerNoisePub []byte, plaintext []byte) error
+type Handler func(ctx context.Context, peerNoisePub []byte, plaintext []byte) error
 
 type handlerRegistry struct {
 	mu sync.RWMutex
@@ -71,57 +79,50 @@ func (r *handlerRegistry) get(t MessageType) Handler {
 }
 
 type Mesh struct {
-	log             *zap.SugaredLogger
-	conf            *Config
-	invites         InviteSource
-	signingKey      ed25519.PrivateKey
-	signingPubKey   ed25519.PublicKey
-	handshakeStore  *handshakeStore
-	sessionStore    *sessionStore
-	rekeyMgr        *rekeyManager
-	Conn            *UDPConn
-	handshakeMu     sync.Mutex
-	advertisableIPs []net.IP
-	handlers        handlerRegistry
-	peerUpHandler   func(PeerUp)
+	log           *zap.SugaredLogger
+	conf          *Config
+	admission     admission.Admission
+	transport     transport.Transport
+	signingKey    ed25519.PrivateKey
+	signingPubKey ed25519.PublicKey
+
+	handshakeStore *handshakeStore
+	handshakeMu    sync.Mutex
+
+	sessionStore      *sessionStore
+	rekeyMgr          *rekeyManager
+	advertisableAddrs []string
+
+	handlers      handlerRegistry
+	peerUpHandler func(PeerUp)
+
+	pingMgrs map[string]*pingMgr
+	pingMu   sync.RWMutex
 }
 
-func New(conf *Config, cs *noise.CipherSuite, staticKey noise.DHKey, priv ed25519.PrivateKey, pub ed25519.PublicKey, invites InviteSource) (*Mesh, error) {
-	var ips []net.IP
-
+func New(conf *Config, addrs []string, cs *noise.CipherSuite, staticKey noise.DHKey, priv ed25519.PrivateKey, pub ed25519.PublicKey, admission admission.Admission) (*Mesh, error) {
 	if len(conf.AdvertisedIPs) > 0 {
-		for _, s := range conf.AdvertisedIPs {
-			if ip := net.ParseIP(s); ip != nil {
-				ips = append(ips, ip)
-			}
-		}
-	}
-
-	if len(ips) == 0 {
-		var err error
-		ips, err = GetAdvertisableIPs()
-		if err != nil {
-			return nil, err
-		}
+		addrs = slices.Clone(conf.AdvertisedIPs)
 	}
 
 	return &Mesh{
-		log:             zap.S().Named("mesh"),
-		conf:            conf,
-		invites:         invites,
-		signingKey:      priv,
-		signingPubKey:   pub,
-		handshakeStore:  newHandshakeStore(cs, invites, staticKey, pub),
-		sessionStore:    newSessionStore(),
-		rekeyMgr:        newRekeyManager(),
-		advertisableIPs: ips,
-		handlers:        newHandlerRegistry(),
+		log:               zap.S().Named("mesh"),
+		conf:              conf,
+		admission:         admission,
+		signingKey:        priv,
+		signingPubKey:     pub,
+		handshakeStore:    newHandshakeStore(cs, admission, staticKey, pub),
+		sessionStore:      newSessionStore(),
+		rekeyMgr:          newRekeyManager(),
+		advertisableAddrs: addrs,
+		handlers:          newHandlerRegistry(),
+		pingMgrs:          make(map[string]*pingMgr),
 	}, nil
 }
 
 func (m *Mesh) Start(ctx context.Context, token *peerv1.Invite) error {
 	var err error
-	m.Conn, err = newUDPConn(ctx, m.conf.Port)
+	m.transport, err = transport.NewTransport(m.conf.Port)
 	if err != nil {
 		return err
 	}
@@ -136,7 +137,7 @@ func (m *Mesh) Start(ctx context.Context, token *peerv1.Invite) error {
 		} else {
 			// Send the initial packet(s)
 			// For Init, receiverID is 0
-			if err := m.sendHandshakeResult(res, 0); err != nil {
+			if err := m.sendHandshakeResult(ctx, res, 0); err != nil {
 				m.log.Errorf("failed to send invite init: %v", err)
 			}
 		}
@@ -163,7 +164,7 @@ func (m *Mesh) listen(ctx context.Context) error {
 		default:
 		}
 
-		dg, err := read(m.Conn, nil)
+		dg, err := m.read(ctx)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return g.Wait()
@@ -180,7 +181,7 @@ func (m *Mesh) listen(ctx context.Context) error {
 			case MessageTypeTransportData:
 				return m.handleTransportDataMsg(dg.receiverID, dg.msg)
 			case MessageTypeGossip, MessageTypeTest, MessageTypeTCPTunnelRequest, MessageTypeTCPTunnelResponse:
-				return m.handleAppMsg(dg.receiverID, dg.tp, dg.msg)
+				return m.handleAppMsg(ctx, dg.receiverID, dg.tp, dg.msg)
 			}
 
 			hs, err := m.handshakeStore.getOrCreate(dg.senderID, dg.receiverID, dg.tp)
@@ -202,9 +203,9 @@ func (m *Mesh) listen(ctx context.Context) error {
 			}
 
 			if len(res.Targets) == 0 {
-				res.Targets = []*net.UDPAddr{dg.senderUDPAddr}
+				res.Targets = []string{dg.senderUDPAddr}
 			}
-			if err := m.sendHandshakeResult(res, dg.senderID); err != nil {
+			if err := m.sendHandshakeResult(ctx, res, dg.senderID); err != nil {
 				m.log.Errorf("failed to send handshake response: %v", err)
 			}
 
@@ -215,10 +216,10 @@ func (m *Mesh) listen(ctx context.Context) error {
 				var tp string
 				switch hs.(type) {
 				case *handshakeIKInit: // receiver of a pre-existing join
-					m.scheduleRekey(dg.senderID, res.PeerStaticKey, dg.senderUDPAddr.String())
+					m.scheduleRekey(ctx, dg.senderID, res.PeerStaticKey, dg.senderUDPAddr)
 					tp = "IKInit"
 				case *handshakeXXPsk2Init: // receiver of a token join
-					m.scheduleRekey(dg.senderID, res.PeerStaticKey, dg.senderUDPAddr.String())
+					m.scheduleRekey(ctx, dg.senderID, res.PeerStaticKey, dg.senderUDPAddr)
 					tp = "XXPsk2Init"
 				case *handshakeIKResp: // initiator of a known join
 					m.rekeyMgr.resetIfExists(dg.senderID, sessionRefreshInterval)
@@ -251,7 +252,7 @@ func (m *Mesh) listen(ctx context.Context) error {
 	}
 }
 
-func (m *Mesh) handleAppMsg(receiverID uint32, tp MessageType, ciphertext []byte) error {
+func (m *Mesh) handleAppMsg(ctx context.Context, receiverID uint32, tp MessageType, ciphertext []byte) error {
 	sess, ok := m.sessionStore.get(receiverID)
 	if !ok {
 		return nil // not connected (or stale)
@@ -272,10 +273,10 @@ func (m *Mesh) handleAppMsg(receiverID uint32, tp MessageType, ciphertext []byte
 		return nil
 	}
 
-	return h(sess.peerNoiseKey, pt)
+	return h(ctx, sess.peerNoiseKey, pt)
 }
 
-func (m *Mesh) sendHandshakeResult(res HandshakeResult, remoteID uint32) error {
+func (m *Mesh) sendHandshakeResult(ctx context.Context, res HandshakeResult, remoteID uint32) error {
 	if len(res.Msg) == 0 {
 		return nil
 	}
@@ -285,7 +286,7 @@ func (m *Mesh) sendHandshakeResult(res HandshakeResult, remoteID uint32) error {
 
 	// happy eyeball
 	for _, addr := range res.Targets {
-		if err := write(m.Conn, addr, res.MsgType, res.LocalSessionID, remoteID, res.Msg); err != nil {
+		if err := m.write(ctx, addr, res.MsgType, res.LocalSessionID, remoteID, res.Msg); err != nil {
 			m.log.Debugf("failed to write to candidate %s: %v", addr, err)
 			errs = multierr.Append(errs, fmt.Errorf("%s: %w", addr, err))
 		} else {
@@ -319,14 +320,14 @@ func (m *Mesh) handleTransportDataMsg(receiverID uint32, msg []byte) error {
 	return nil
 }
 
-func (m *Mesh) scheduleRekey(peerSessionID uint32, staticKey []byte, address string) {
+func (m *Mesh) scheduleRekey(ctx context.Context, peerSessionID uint32, staticKey []byte, address string) {
 	t := time.AfterFunc(sessionRefreshInterval, func() {
 		res, err := m.handshakeStore.initIK(staticKey, []string{address})
 		if err != nil {
 			m.log.Error(err)
 			return
 		}
-		if err := m.sendHandshakeResult(res, 0); err != nil {
+		if err := m.sendHandshakeResult(ctx, res, 0); err != nil {
 			m.log.Error(err)
 		}
 
@@ -338,7 +339,7 @@ func (m *Mesh) scheduleRekey(peerSessionID uint32, staticKey []byte, address str
 
 // EnsureSession initiates an idempotent connection to the given peer.
 // If a session already exists for this static key, it does nothing.
-func (m *Mesh) EnsureSession(peerNoisePub []byte, addrs []string) error {
+func (m *Mesh) EnsureSession(ctx context.Context, peerNoisePub []byte, addrs []string) error {
 	// session already exists
 	if _, exists := m.sessionStore.getID(peerNoisePub); exists {
 		return nil
@@ -353,25 +354,25 @@ func (m *Mesh) EnsureSession(peerNoisePub []byte, addrs []string) error {
 	}
 
 	// Send Init packet
-	if err := m.sendHandshakeResult(res, 0); err != nil {
+	if err := m.sendHandshakeResult(ctx, res, 0); err != nil {
 		m.log.Errorf("failed to send IK init: %v", err)
 	}
 
 	return nil
 }
 
-func (m *Mesh) sendByPeerID(peerID uint32, msg []byte, typ MessageType) error {
+func (m *Mesh) sendByPeerID(ctx context.Context, peerID uint32, msg []byte, typ MessageType) error {
 	sess, ok := m.sessionStore.get(peerID)
 	if !ok {
 		return ErrNotConnected
 	}
 
-	enc, shouldRekey, err := sess.Encrypt(m.Conn, msg)
+	enc, shouldRekey, err := sess.Encrypt(msg)
 	if err != nil {
 		return err
 	}
 
-	if err := write(m.Conn, sess.peerAddr, typ, 0, peerID, enc); err != nil {
+	if err := m.write(ctx, sess.peerAddr, typ, 0, peerID, enc); err != nil {
 		return err
 	}
 
@@ -382,12 +383,12 @@ func (m *Mesh) sendByPeerID(peerID uint32, msg []byte, typ MessageType) error {
 	return nil
 }
 
-func (m *Mesh) Send(peerNoisePub []byte, payload []byte, typ MessageType) error {
+func (m *Mesh) Send(ctx context.Context, peerNoisePub []byte, payload []byte, typ MessageType) error {
 	sessID, ok := m.sessionStore.getID(peerNoisePub)
 	if !ok {
 		return ErrNotConnected
 	}
-	return m.sendByPeerID(sessID, payload, typ)
+	return m.sendByPeerID(ctx, sessID, payload, typ)
 }
 
 func (m *Mesh) On(t MessageType, h Handler) {
@@ -395,17 +396,13 @@ func (m *Mesh) On(t MessageType, h Handler) {
 }
 
 func (m *Mesh) Shutdown() error {
-	if m.Conn != nil {
-		m.Conn.Close()
-	}
-
-	return nil
+	return m.transport.Close()
 }
 
 func (m *Mesh) GetAdvertisableAddrs() []string {
-	res := make([]string, len(m.advertisableIPs))
-	for i, ip := range m.advertisableIPs {
-		res[i] = net.JoinHostPort(ip.String(), strconv.Itoa(m.conf.Port))
+	res := make([]string, len(m.advertisableAddrs))
+	for i, ip := range m.advertisableAddrs {
+		res[i] = net.JoinHostPort(ip, strconv.Itoa(m.conf.Port))
 	}
 	return res
 }

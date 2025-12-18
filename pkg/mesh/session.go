@@ -2,7 +2,6 @@ package mesh
 
 import (
 	"math"
-	"net"
 	"sync"
 	"time"
 
@@ -83,14 +82,14 @@ func (s *sessionStore) getID(staticKey []byte) (uint32, bool) {
 type pingFn func(uint32) error
 
 type session struct {
-	peerAddr       *net.UDPAddr
+	peerAddr       string
 	peerNoiseKey   []byte
 	send           *noise.CipherState
 	recv           *noise.CipherState
 	sendMu, recvMu sync.RWMutex
 }
 
-func newSession(peerAddr *net.UDPAddr, noiseKey []byte, send, recv *noise.CipherState) *session {
+func newSession(peerAddr string, noiseKey []byte, send, recv *noise.CipherState) *session {
 	return &session{
 		peerAddr:     peerAddr,
 		peerNoiseKey: noiseKey,
@@ -99,7 +98,7 @@ func newSession(peerAddr *net.UDPAddr, noiseKey []byte, send, recv *noise.Cipher
 	}
 }
 
-func (s *session) Encrypt(conn *UDPConn, msg []byte) ([]byte, bool, error) {
+func (s *session) Encrypt(msg []byte) ([]byte, bool, error) {
 	s.sendMu.Lock()
 	enc, err := s.send.Encrypt(nil, nil, msg)
 	if err != nil {

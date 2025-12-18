@@ -25,12 +25,13 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/api/genpb/pollen/control/v1/controlv1connect"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
-	"github.com/sambigeara/pollen/pkg/invites"
+	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
 	"github.com/sambigeara/pollen/pkg/server"
 	"github.com/sambigeara/pollen/pkg/tcp"
+	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/workspace"
 )
 
@@ -177,7 +178,7 @@ func runNode(cmd *cobra.Command, args []string) {
 }
 
 func runInvite(cmd *cobra.Command, args []string) {
-	ips, _ := cmd.Flags().GetIPSlice("ips")
+	ips, _ := cmd.Flags().GetStringSlice("ips")
 	port, _ := cmd.Flags().GetString("port")
 	dir, _ := cmd.Flags().GetString("dir")
 
@@ -188,7 +189,7 @@ func runInvite(cmd *cobra.Command, args []string) {
 
 	if len(ips) == 0 {
 		var err error
-		ips, err = mesh.GetAdvertisableIPs()
+		ips, err = transport.GetAdvertisableAddrs()
 		if err != nil {
 			log.Fatalf("failed to infer public IP")
 		}
@@ -204,13 +205,13 @@ func runInvite(cmd *cobra.Command, args []string) {
 		log.Fatalf("failed to encode invite: %v", err)
 	}
 
-	invitesStore, err := invites.Load(pollenDir)
+	admission, err := admission.Load(pollenDir)
 	if err != nil {
 		log.Fatalf("failed to load peers store: %v", err)
 	}
-	defer invitesStore.Save()
+	defer admission.Save()
 
-	invitesStore.AddInvite(token)
+	admission.AddInvite(token)
 
 	fmt.Fprint(cmd.OutOrStdout(), encoded)
 }

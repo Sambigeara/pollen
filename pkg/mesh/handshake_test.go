@@ -11,7 +11,7 @@ import (
 	"golang.org/x/crypto/ed25519"
 
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
-	"github.com/sambigeara/pollen/pkg/invites"
+	"github.com/sambigeara/pollen/pkg/admission"
 )
 
 func TestHandshake_Pure_XX(t *testing.T) {
@@ -19,7 +19,7 @@ func TestHandshake_Pure_XX(t *testing.T) {
 	csA := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
 	kpA, _ := csA.GenerateKeypair(rand.Reader)
 	pubA, _, _ := ed25519.GenerateKey(rand.Reader)
-	invitesA, _ := invites.Load(t.TempDir())
+	invitesA, _ := admission.Load(t.TempDir())
 
 	// Node B (Initiator)
 	csB := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
@@ -127,7 +127,7 @@ func verifySession(t *testing.T, a, b *session) {
 	msg := []byte("hello world")
 
 	// A Encrypts
-	enc, _, err := a.Encrypt(nil, msg)
+	enc, _, err := a.Encrypt(msg)
 	require.NoError(t, err)
 
 	// B Decrypts
@@ -136,7 +136,7 @@ func verifySession(t *testing.T, a, b *session) {
 	assert.Equal(t, msg, dec)
 
 	// B Encrypts
-	enc2, _, err := b.Encrypt(nil, msg)
+	enc2, _, err := b.Encrypt(msg)
 	require.NoError(t, err)
 
 	// A Decrypts

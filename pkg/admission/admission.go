@@ -1,4 +1,4 @@
-package invites
+package admission
 
 import (
 	"io"
@@ -11,19 +11,27 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 )
 
+var _ Store = (*impl)(nil)
+
 const invitesDir = "invites"
 
-type (
-	InviteID string
-)
+type Admission interface {
+	ConsumePSK(tokenID string) (psk [32]byte, ok bool)
+}
 
-type InviteStore struct {
+type Store interface {
+	Admission
+	Save() error
+	AddInvite(inv *peerv1.Invite)
+}
+
+type impl struct {
 	*peerv1.InviteStore
 	path string
 	mu   sync.RWMutex
 }
 
-func Load(pollenDir string) (*InviteStore, error) {
+func Load(pollenDir string) (Store, error) {
 	dir := filepath.Join(pollenDir, invitesDir)
 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -52,13 +60,13 @@ func Load(pollenDir string) (*InviteStore, error) {
 		is.Invites = make(map[string]*peerv1.Invite)
 	}
 
-	return &InviteStore{
+	return &impl{
 		InviteStore: is,
 		path:        path,
 	}, nil
 }
 
-func (s *InviteStore) Save() error {
+func (s *impl) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -78,15 +86,14 @@ func (s *InviteStore) Save() error {
 	return err
 }
 
-func (s *InviteStore) AddInvite(inv *peerv1.Invite) {
+func (s *impl) AddInvite(inv *peerv1.Invite) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.Invites[inv.Id] = inv
 }
 
-// ConsumeInvite retrieves and deletes an invite atomically.
-func (s *InviteStore) ConsumeInvite(id string) (*peerv1.Invite, bool) {
+func (s *impl) ConsumePSK(id string) ([32]byte, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -94,5 +101,5 @@ func (s *InviteStore) ConsumeInvite(id string) (*peerv1.Invite, bool) {
 	if ok {
 		delete(s.Invites, id)
 	}
-	return inv, ok
+	return [32]byte(inv.Psk), ok
 }

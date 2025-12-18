@@ -1,9 +1,9 @@
 package mesh
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
-	"net"
 )
 
 type MessageType uint32
@@ -25,14 +25,14 @@ const (
 )
 
 type datagram struct {
-	senderUDPAddr *net.UDPAddr
+	senderUDPAddr string
 	msg           []byte
 	tp            MessageType
 	senderID      uint32
 	receiverID    uint32
 }
 
-func write(conn *UDPConn, addr *net.UDPAddr, tp MessageType, senderID, receiverID uint32, msg []byte) error {
+func (m *Mesh) write(ctx context.Context, addr string, tp MessageType, senderID, receiverID uint32, msg []byte) error {
 	var datagram []byte
 	switch tp {
 	case MessageTypePing:
@@ -56,19 +56,20 @@ func write(conn *UDPConn, addr *net.UDPAddr, tp MessageType, senderID, receiverI
 		copy(datagram[8:], msg)
 	}
 
-	_, err := conn.WriteToUDP(datagram, addr)
-	return err
+	m.bumpPinger(ctx, addr)
+
+	return m.transport.Send(addr, datagram)
 }
 
-func read(conn *UDPConn, buf []byte) (*datagram, error) {
-	if buf == nil {
-		buf = make([]byte, 2048)
-	}
-	n, addr, err := conn.ReadFromUDP(buf)
+func (m *Mesh) read(ctx context.Context) (*datagram, error) {
+	srcAddr, buf, err := m.transport.Recv(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	defer m.bumpPinger(ctx, srcAddr)
+
+	n := len(buf)
 	if n < 4 {
 		return nil, fmt.Errorf("handshake frame too short: %d", n)
 	}
@@ -103,7 +104,7 @@ func read(conn *UDPConn, buf []byte) (*datagram, error) {
 		tp:            tp,
 		senderID:      senderID,
 		receiverID:    receiverID,
-		senderUDPAddr: addr,
+		senderUDPAddr: srcAddr,
 		msg:           append([]byte(nil), buf[payloadOffset:n]...), // copy to decouple from shared buffer
 	}, nil
 }
