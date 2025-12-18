@@ -15,9 +15,6 @@ import (
 
 	"github.com/flynn/noise"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
-	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/invites"
-	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 )
@@ -35,6 +32,18 @@ var (
 type Config struct {
 	Port          int
 	AdvertisedIPs []string
+}
+
+// InviteSource abstracts the invite storage so mesh doesn't depend on the specific store implementation
+type InviteSource interface {
+	ConsumeInvite(id string) (*peerv1.Invite, bool)
+}
+
+// PeerUp event contains details about a successfully established session
+type PeerUp struct {
+	PeerNoisePub    []byte
+	PeerIdentityPub []byte
+	PeerAddr        *net.UDPAddr
 }
 
 type Handler func(peerNoisePub []byte, plaintext []byte) error
@@ -61,12 +70,10 @@ func (r *handlerRegistry) get(t MessageType) Handler {
 	return h
 }
 
-type PeerJoinHandler func(peerStaticKey []byte, peerSigPub []byte, peerAddr *net.UDPAddr)
-
 type Mesh struct {
 	log             *zap.SugaredLogger
 	conf            *Config
-	invites         *invites.InviteStore
+	invites         InviteSource
 	signingKey      ed25519.PrivateKey
 	signingPubKey   ed25519.PublicKey
 	handshakeStore  *handshakeStore
@@ -76,16 +83,12 @@ type Mesh struct {
 	handshakeMu     sync.Mutex
 	advertisableIPs []net.IP
 	handlers        handlerRegistry
-	peerJoinHandler PeerJoinHandler
-
-	dialMu   sync.Mutex
-	lastDial map[types.NodeID]time.Time
+	peerUpHandler   func(PeerUp)
 }
 
-func New(conf *Config, cs *noise.CipherSuite, staticKey noise.DHKey, priv ed25519.PrivateKey, pub ed25519.PublicKey, invites *invites.InviteStore) (*Mesh, error) {
+func New(conf *Config, cs *noise.CipherSuite, staticKey noise.DHKey, priv ed25519.PrivateKey, pub ed25519.PublicKey, invites InviteSource) (*Mesh, error) {
 	var ips []net.IP
 
-	// TODO(saml) currently this is only used for injecting IPs in tests, there's probably a better way of doing it
 	if len(conf.AdvertisedIPs) > 0 {
 		for _, s := range conf.AdvertisedIPs {
 			if ip := net.ParseIP(s); ip != nil {
@@ -113,7 +116,6 @@ func New(conf *Config, cs *noise.CipherSuite, staticKey noise.DHKey, priv ed2551
 		rekeyMgr:        newRekeyManager(),
 		advertisableIPs: ips,
 		handlers:        newHandlerRegistry(),
-		lastDial:        make(map[types.NodeID]time.Time),
 	}, nil
 }
 
@@ -143,10 +145,10 @@ func (m *Mesh) Start(ctx context.Context, token *peerv1.Invite) error {
 	return nil
 }
 
-func (m *Mesh) SetPeerJoinHandler(h PeerJoinHandler) {
+func (m *Mesh) OnPeerUp(h func(PeerUp)) {
 	m.handshakeMu.Lock()
 	defer m.handshakeMu.Unlock()
-	m.peerJoinHandler = h
+	m.peerUpHandler = h
 }
 
 func (m *Mesh) listen(ctx context.Context) error {
@@ -233,10 +235,14 @@ func (m *Mesh) listen(ctx context.Context) error {
 				m.sessionStore.set(res.PeerStaticKey, res.LocalSessionID, dg.senderID, res.Session)
 
 				m.handshakeMu.Lock()
-				handler := m.peerJoinHandler
+				handler := m.peerUpHandler
 				m.handshakeMu.Unlock()
 				if handler != nil {
-					go handler(res.PeerStaticKey, res.PeerIdentityPub, dg.senderUDPAddr)
+					go handler(PeerUp{
+						PeerNoisePub:    res.PeerStaticKey,
+						PeerIdentityPub: res.PeerIdentityPub,
+						PeerAddr:        dg.senderUDPAddr,
+					})
 				}
 			}
 
@@ -330,32 +336,19 @@ func (m *Mesh) scheduleRekey(peerSessionID uint32, staticKey []byte, address str
 	m.rekeyMgr.set(peerSessionID, staticKey, t)
 }
 
-func (m *Mesh) RejoinPeer(node *statev1.Node) error {
+// EnsureSession initiates an idempotent connection to the given peer.
+// If a session already exists for this static key, it does nothing.
+func (m *Mesh) EnsureSession(peerNoisePub []byte, addrs []string) error {
 	// session already exists
-	if _, exists := m.sessionStore.getID(node.Keys.NoisePub); exists {
+	if _, exists := m.sessionStore.getID(peerNoisePub); exists {
 		return nil
 	}
 
-	nodeID, ok := types.IDFromBytes(node.Keys.NoisePub)
-	if !ok {
-		return nil
-	}
+	m.log.Debugw("ensuring session for peer", "key_prefix", fmt.Sprintf("%x", peerNoisePub[:4]), "addrs", addrs)
 
-	// don't dial if we tried recently
-	m.dialMu.Lock()
-	lastAttempt, found := m.lastDial[nodeID]
-	if found && time.Since(lastAttempt) < 5*time.Second {
-		m.dialMu.Unlock()
-		return nil // Handshake already in flight or backoff
-	}
-	m.lastDial[nodeID] = time.Now()
-	m.dialMu.Unlock()
-
-	m.log.Infow("dialing new peer found in state", "peer_id", node.Id[:8], "addr", node.Addresses[0])
-
-	res, err := m.handshakeStore.initIK(node.Keys.NoisePub, node.Addresses)
+	res, err := m.handshakeStore.initIK(peerNoisePub, addrs)
 	if err != nil {
-		m.log.Errorf("failed to create IK handshake for peer %s: %v", node.Addresses[0], err)
+		m.log.Errorf("failed to create IK handshake for peer: %v", err)
 		return err
 	}
 
@@ -404,10 +397,6 @@ func (m *Mesh) On(t MessageType, h Handler) {
 func (m *Mesh) Shutdown() error {
 	if m.Conn != nil {
 		m.Conn.Close()
-	}
-
-	if err := m.invites.Save(); err != nil {
-		return err
 	}
 
 	return nil

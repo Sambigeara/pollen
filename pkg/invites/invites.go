@@ -85,17 +85,14 @@ func (s *InviteStore) AddInvite(inv *peerv1.Invite) {
 	s.Invites[inv.Id] = inv
 }
 
-func (s *InviteStore) GetInvite(id InviteID) (*peerv1.Invite, bool) {
+// ConsumeInvite retrieves and deletes an invite atomically.
+func (s *InviteStore) ConsumeInvite(id string) (*peerv1.Invite, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	inv, ok := s.Invites[string(id)]
+	inv, ok := s.Invites[id]
+	if ok {
+		delete(s.Invites, id)
+	}
 	return inv, ok
-}
-
-func (s *InviteStore) DeleteInvite(id InviteID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	delete(s.Invites, string(id))
 }

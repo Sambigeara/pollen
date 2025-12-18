@@ -7,7 +7,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -164,19 +163,19 @@ func (n *Node) registerHandlers() {
 		return nil
 	})
 
-	n.Mesh.SetPeerJoinHandler(func(noiseKey, identityKey []byte, addr *net.UDPAddr) {
-		id, _ := types.IDFromBytes(noiseKey)
+	n.Mesh.OnPeerUp(func(ev mesh.PeerUp) {
+		id, _ := types.IDFromBytes(ev.PeerNoisePub)
 
 		n.Store.Cluster.Nodes.SetPlaceholder(id, &statev1.Node{
 			Id:        id.String(),
-			Addresses: []string{addr.String()},
+			Addresses: []string{ev.PeerAddr.String()},
 			Keys: &statev1.Keys{
-				NoisePub:    noiseKey,
-				IdentityPub: identityKey,
+				NoisePub:    ev.PeerNoisePub,
+				IdentityPub: ev.PeerIdentityPub,
 			},
 		})
 
-		n.log.Infow("peer connected", "peer_id", id.String()[:8])
+		n.log.Infow("peer connected", "peer_id", id.String()[:8], "addr", ev.PeerAddr)
 	})
 }
 
@@ -253,8 +252,8 @@ func (n *Node) reconcilePeers() {
 			continue
 		}
 
-		if err := n.Mesh.RejoinPeer(node); err != nil {
-			n.log.Errorf("failed to rejoin peer: %v", err)
+		if err := n.Mesh.EnsureSession(node.Keys.NoisePub, node.Addresses); err != nil {
+			n.log.Errorf("failed to ensure session with peer: %v", err)
 			continue
 		}
 	}
@@ -265,6 +264,10 @@ func (n *Node) shutdown() {
 		n.log.Errorf("failed to save state: %v", err)
 	} else {
 		n.log.Info("state saved to disk")
+	}
+
+	if err := n.Invites.Save(); err != nil {
+		n.log.Errorf("failed to save invites: %v", err)
 	}
 
 	if err := n.Mesh.Shutdown(); err != nil {

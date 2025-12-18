@@ -11,7 +11,6 @@ import (
 
 	"github.com/flynn/noise"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
-	"github.com/sambigeara/pollen/pkg/invites"
 )
 
 var (
@@ -44,13 +43,13 @@ type handshake interface {
 type handshakeStore struct {
 	localIdentityPub []byte
 	cs               *noise.CipherSuite
-	invites          *invites.InviteStore
+	invites          InviteSource
 	localStaticKey   noise.DHKey
 	st               map[uint32]handshake
 	mu               sync.RWMutex
 }
 
-func newHandshakeStore(cs *noise.CipherSuite, invites *invites.InviteStore, localStaticKey noise.DHKey, localSigPub []byte) *handshakeStore {
+func newHandshakeStore(cs *noise.CipherSuite, invites InviteSource, localStaticKey noise.DHKey, localSigPub []byte) *handshakeStore {
 	return &handshakeStore{
 		cs:               cs,
 		invites:          invites,
@@ -378,14 +377,14 @@ func (hs *handshakeXXPsk2Init) Step(rcvMsg []byte) (HandshakeResult, error) {
 
 type handshakeXXPsk2Resp struct {
 	*noise.HandshakeState
-	inviteStore    *invites.InviteStore
+	inviteStore    InviteSource
 	sigPub         []byte
 	nextStage      handshakeStage
 	mu             sync.Mutex
 	localSessionID uint32
 }
 
-func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, invitesStore *invites.InviteStore, localStaticKey noise.DHKey, localSigPub []byte) (*handshakeXXPsk2Resp, error) {
+func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, invitesStore InviteSource, localStaticKey noise.DHKey, localSigPub []byte) (*handshakeXXPsk2Resp, error) {
 	localSessionID, err := genSessionID()
 	if err != nil {
 		return nil, err
@@ -426,12 +425,9 @@ func (hs *handshakeXXPsk2Resp) Step(rcvMsg []byte) (HandshakeResult, error) {
 		if err != nil {
 			return res, err
 		}
-		tokenID := invites.InviteID(tokenBytes)
+		tokenID := string(tokenBytes)
 
-		// delete regardless of the outcome of the handshake
-		defer hs.inviteStore.DeleteInvite(tokenID)
-
-		inv, exists := hs.inviteStore.GetInvite(tokenID)
+		inv, exists := hs.inviteStore.ConsumeInvite(tokenID)
 		if !exists {
 			return res, fmt.Errorf("unknown invite: %q", tokenID)
 		}

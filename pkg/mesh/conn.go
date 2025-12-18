@@ -85,7 +85,6 @@ func (c *UDPConn) newPingMgr(peerAddr *net.UDPAddr) *pingMgr {
 				logger.Debugf("closing pinger: %s", peerAddr.String())
 				return
 			case <-timer.C:
-				logger.Debugf("pinging peer: %s", peerAddr.String())
 				write(c, peerAddr, MessageTypePing, 0, 0, []byte{})
 				timer.Reset(jitteredPingInterval())
 			case <-bumpCh:
