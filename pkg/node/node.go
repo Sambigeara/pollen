@@ -21,6 +21,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/tunnel"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/util"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ed25519"
 )
@@ -30,15 +31,16 @@ var _ link.LocalCrypto = (*localCrypto)(nil)
 const (
 	localKeysDir = "keys"
 
-	noiseKeyName      = "noise.key"
-	noisePubKeyName   = "noise.pub"
-	signingKeyName    = "ed25519.key"
-	signingPubKeyName = "ed25519.pub"
-	pemTypePriv       = "ED25519 PRIVATE KEY"
-	pemTypePub        = "ED25519 PUBLIC KEY"
-	keyDirPerm        = 0o700
-	keyFilePerm       = 0o600
-	ensurePeerTimeout = 400 * time.Millisecond
+	noiseKeyName       = "noise.key"
+	noisePubKeyName    = "noise.pub"
+	signingKeyName     = "ed25519.key"
+	signingPubKeyName  = "ed25519.pub"
+	pemTypePriv        = "ED25519 PRIVATE KEY"
+	pemTypePub         = "ED25519 PUBLIC KEY"
+	keyDirPerm         = 0o700
+	keyFilePerm        = 0o600
+	ensurePeerTimeout  = 400 * time.Millisecond
+	loopIntervalJitter = 0.05
 )
 
 type Config struct {
@@ -143,7 +145,7 @@ func New(conf *Config) (*Node, error) {
 
 func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 	reconcileCh := make(chan struct{}, 1)
-	n.registerHandlers(ctx, reconcileCh)
+	n.registerHandlers(reconcileCh)
 
 	if err := n.link.Start(ctx); err != nil {
 		return err
@@ -158,9 +160,9 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 
 	trigger(reconcileCh)
 
-	gossipTicker := time.NewTicker(n.conf.GossipInterval)
+	gossipTicker := util.NewJitterTicker(ctx, n.conf.GossipInterval, loopIntervalJitter)
 	defer gossipTicker.Stop()
-	reconcileTicker := time.NewTicker(n.conf.PeerReconcileInterval)
+	reconcileTicker := util.NewJitterTicker(ctx, n.conf.PeerReconcileInterval, loopIntervalJitter)
 	defer reconcileTicker.Stop()
 
 	for {
@@ -179,7 +181,7 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 	}
 }
 
-func (n *Node) registerHandlers(ctx context.Context, reconcileCh chan<- struct{}) {
+func (n *Node) registerHandlers(reconcileCh chan<- struct{}) {
 	n.link.Handle(types.MsgTypeTCPTunnelRequest, n.Tunnel.HandleRequest)
 	n.link.Handle(types.MsgTypeTCPTunnelResponse, n.Tunnel.HandleResponse)
 
