@@ -252,6 +252,18 @@ func (n *Node) gossip(ctx context.Context) {
 		if peer.Id == n.Store.Cluster.LocalID.String() {
 			continue
 		}
+
+		dialCtx, cancel := context.WithTimeout(ctx, ensurePeerTimeout)
+		err := n.link.EnsurePeer(dialCtx, types.PeerKeyFromBytes(peer.Keys.NoisePub), peer.Addresses)
+		cancel()
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				continue
+			}
+			n.log.Debugw("ensure peer failed", "peer", peer.Id, "err", err)
+			continue
+		}
+
 		if err := n.link.Send(ctx, types.PeerKeyFromBytes(peer.Keys.NoisePub), types.Envelope{
 			Type:    types.MsgTypeGossip,
 			Payload: payload,
@@ -296,9 +308,10 @@ func (n *Node) reconcilePeers(ctx context.Context) {
 		dialCtx, cancel := context.WithTimeout(ctx, ensurePeerTimeout)
 		err := n.link.EnsurePeer(dialCtx, types.PeerKeyFromBytes(node.Keys.NoisePub), node.Addresses)
 		cancel()
-
-		// Ignore timeouts; next reconcile tick will retry.
-		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				continue
+			}
 			n.log.Debugw("ensure peer failed", "peer", node.Id, "err", err)
 		}
 	}

@@ -41,7 +41,7 @@ func Load(pollenDir string, localNodeID types.PeerKey) (*Persistence, error) {
 		filePath: path,
 	}
 
-	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, keyDirPerm)
+	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, keyFilePerm)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open state file: %w", err)
 	}

@@ -181,7 +181,7 @@ func runInvite(cmd *cobra.Command, args []string) {
 
 	logger := zap.S()
 
-	ips, _ := cmd.Flags().GetStringSlice("ips")
+	ips, _ := cmd.Flags().GetIPSlice("ips")
 	port, _ := cmd.Flags().GetString("port")
 	dir, _ := cmd.Flags().GetString("dir")
 
@@ -190,15 +190,20 @@ func runInvite(cmd *cobra.Command, args []string) {
 		logger.Fatalf("failed to prepare pollen dir: %v", err)
 	}
 
-	if len(ips) == 0 {
+	ipStrs := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		ipStrs = append(ipStrs, ip.String())
+	}
+
+	if len(ipStrs) == 0 {
 		var err error
-		ips, err = transport.GetAdvertisableAddrs()
+		ipStrs, err = transport.GetAdvertisableAddrs()
 		if err != nil {
 			logger.Fatalf("failed to infer public IP")
 		}
 	}
 
-	token, err := node.NewInvite(ips, port)
+	token, err := node.NewInvite(ipStrs, port)
 	if err != nil {
 		logger.Fatalf("failed to generate invite: %v", err)
 	}

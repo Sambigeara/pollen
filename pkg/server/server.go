@@ -27,6 +27,7 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 	server := grpc.NewServer()
 	controlv1.RegisterControlServiceServer(server, nodeServ)
 
+	// TODO(saml) why am I returning if the path is valid?
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
