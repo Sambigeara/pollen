@@ -9,10 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
-)
-
-const (
-	pskLength = 32
+	"github.com/sambigeara/pollen/pkg/admission"
 )
 
 func NewInvite(ips []string, port string) (*peerv1.Invite, error) {
@@ -37,7 +34,7 @@ func NewInvite(ips []string, port string) (*peerv1.Invite, error) {
 }
 
 func generatePSK() ([]byte, error) {
-	buf := make([]byte, pskLength)
+	buf := make([]byte, admission.PSKLength)
 	if _, err := rand.Read(buf); err != nil {
 		return nil, err
 	}

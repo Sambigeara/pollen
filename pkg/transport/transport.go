@@ -1,14 +1,13 @@
 package transport
 
 import (
-	"context"
 	"net"
 )
 
 var _ Transport = (*impl)(nil)
 
 type Transport interface {
-	Recv(ctx context.Context) (src string, b []byte, err error) // src is "ip:port"
+	Recv() (src string, b []byte, err error) // src is "ip:port"
 	Send(dst string, b []byte) error
 	LocalAddrs() []string
 	Close() error
@@ -36,7 +35,7 @@ func NewTransport(port int) (Transport, error) {
 	}, nil
 }
 
-func (i *impl) Recv(ctx context.Context) (string, []byte, error) {
+func (i *impl) Recv() (string, []byte, error) {
 	buf := make([]byte, 2048) //nolint:mnd
 	n, addr, err := i.conn.ReadFromUDP(buf)
 	if err != nil {

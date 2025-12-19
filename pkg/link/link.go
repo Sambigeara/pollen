@@ -2,7 +2,6 @@ package link
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"sync"
@@ -65,7 +64,7 @@ type impl struct {
 
 const eventBufSize = 64
 
-func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, pub ed25519.PublicKey, crypto LocalCrypto, admission admission.Admission) (Link, error) {
+func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission) (Link, error) {
 	tr, err := transport.NewTransport(port)
 	if err != nil {
 		return nil, err
@@ -75,7 +74,7 @@ func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, pub ed25519
 		log:            zap.S().Named("mesh"),
 		crypto:         crypto,
 		transport:      tr,
-		handshakeStore: newHandshakeStore(cs, admission, staticKey, pub),
+		handshakeStore: newHandshakeStore(cs, admission, staticKey, crypto.IdentityPub()),
 		sessionStore:   newSessionStore(),
 		rekeyMgr:       newRekeyManager(),
 		handlers:       make(map[types.MsgType]HandlerFn),
@@ -95,7 +94,7 @@ func (i *impl) Start(ctx context.Context) error {
 
 func (i *impl) loop(ctx context.Context) {
 	for {
-		src, b, err := i.transport.Recv(ctx)
+		src, b, err := i.transport.Recv()
 		if err != nil {
 			if ctx.Err() != nil {
 				return

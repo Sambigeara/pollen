@@ -1,6 +1,9 @@
 package types
 
-import "encoding/hex"
+import (
+	"bytes"
+	"encoding/hex"
+)
 
 type MsgType uint32
 
@@ -34,6 +37,10 @@ func (pk *PeerKey) Bytes() []byte {
 
 func (pk *PeerKey) String() string {
 	return hex.EncodeToString(pk[:])
+}
+
+func (pk PeerKey) Less(other PeerKey) bool {
+	return bytes.Compare(pk[:], other[:]) < 0
 }
 
 type PeerEventKind int

@@ -106,7 +106,7 @@ func New(conf *Config) (*Node, error) {
 		identityPubKey: pubKey,
 	}
 
-	link, err := link.NewLink(conf.Port, &cs, noiseKey, pubKey, crypto, invitesStore)
+	link, err := link.NewLink(conf.Port, &cs, noiseKey, crypto, invitesStore)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +289,7 @@ func (n *Node) reconcilePeers(ctx context.Context) {
 		// Only initiate if our ID is "smaller" than the peer's ID.
 		// The peer with the "larger" ID will wait for the incoming handshake.
 		// TODO(saml) this requires a much more balanced and robust approach
-		if n.Store.Cluster.LocalID.String() > node.Id {
+		if !n.Store.Cluster.LocalID.Less(types.PeerKeyFromBytes(node.Keys.NoisePub)) {
 			continue
 		}
 

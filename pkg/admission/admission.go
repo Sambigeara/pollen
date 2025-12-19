@@ -14,14 +14,14 @@ import (
 var _ Store = (*impl)(nil)
 
 const (
-	invitesDir = "invites"
-
+	invitesDir  = "invites"
+	PSKLength   = 32
 	keyFilePerm = 0o600
 	keyDirPerm  = 0o700
 )
 
 type Admission interface {
-	ConsumePSK(tokenID string) (psk [32]byte, ok bool)
+	ConsumePSK(tokenID string) (psk [PSKLength]byte, ok bool)
 }
 
 type Store interface {
@@ -98,13 +98,18 @@ func (s *impl) AddInvite(inv *peerv1.Invite) {
 	s.Invites[inv.Id] = inv
 }
 
-func (s *impl) ConsumePSK(id string) ([32]byte, bool) {
+func (s *impl) ConsumePSK(id string) ([PSKLength]byte, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	inv, ok := s.Invites[id]
-	if ok {
-		delete(s.Invites, id)
+	if !ok || inv == nil || len(inv.Psk) != PSKLength {
+		return [PSKLength]byte{}, false
 	}
-	return [32]byte(inv.Psk), ok
+
+	delete(s.Invites, id)
+
+	var psk [PSKLength]byte
+	copy(psk[:], inv.Psk)
+	return psk, true
 }
