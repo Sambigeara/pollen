@@ -142,11 +142,13 @@ func New(conf *Config) (*Node, error) {
 }
 
 func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
-	n.registerHandlers(ctx)
+	reconcileCh := make(chan struct{}, 1)
+	n.registerHandlers(ctx, reconcileCh)
 
 	if err := n.link.Start(ctx); err != nil {
 		return err
 	}
+	defer n.shutdown()
 
 	if token != nil {
 		if err := n.link.JoinWithInvite(ctx, token); err != nil {
@@ -154,23 +156,30 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 		}
 	}
 
-	// initial synchronous run
-	go n.reconcilePeers(ctx)
+	trigger(reconcileCh)
 
-	// continual watch
-	go n.maintainConnections(ctx)
-	go n.startGossip(ctx)
+	gossipTicker := time.NewTicker(n.conf.GossipInterval)
+	defer gossipTicker.Stop()
+	reconcileTicker := time.NewTicker(n.conf.PeerReconcileInterval)
+	defer reconcileTicker.Stop()
 
-	go n.handlePeerEvents(ctx)
-
-	<-ctx.Done()
-
-	n.shutdown()
-
-	return nil
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-gossipTicker.C:
+			n.gossip(ctx)
+		case <-reconcileTicker.C:
+			n.reconcilePeers(ctx)
+		case <-reconcileCh:
+			n.reconcilePeers(ctx)
+		case ev := <-n.link.Events():
+			n.handlePeerEvent(ev)
+		}
+	}
 }
 
-func (n *Node) registerHandlers(ctx context.Context) {
+func (n *Node) registerHandlers(ctx context.Context, reconcileCh chan<- struct{}) {
 	n.link.Handle(types.MsgTypeTCPTunnelRequest, n.Tunnel.HandleRequest)
 	n.link.Handle(types.MsgTypeTCPTunnelResponse, n.Tunnel.HandleResponse)
 
@@ -184,49 +193,10 @@ func (n *Node) registerHandlers(ctx context.Context) {
 
 		n.log.Debugw("gossip merged", "records", len(delta.Nodes))
 
-		// eager reconciliation in case a new peer arrived in the gossip
-		go n.reconcilePeers(ctx)
+		trigger(reconcileCh)
 
 		return nil
 	})
-}
-
-func (n *Node) startGossip(ctx context.Context) {
-	ticker := time.NewTicker(n.conf.GossipInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			n.gossip(ctx)
-		}
-	}
-}
-
-func (n *Node) handlePeerEvents(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev := <-n.link.Events():
-			switch ev.Kind {
-			case types.PeerEventKindUp:
-				id := ev.Peer
-				n.Store.Cluster.Nodes.SetPlaceholder(id, &statev1.Node{
-					Id:        id.String(),
-					Addresses: []string{ev.Addr},
-					Keys: &statev1.Keys{
-						NoisePub:    ev.Peer.Bytes(),
-						IdentityPub: ev.IdentityPub,
-					},
-				})
-				n.log.Infow("peer connected", "peer_id", id.String()[:8], "addr", ev.Addr)
-			case types.PeerEventKindDown:
-			}
-		}
-	}
 }
 
 func (n *Node) gossip(ctx context.Context) {
@@ -273,17 +243,27 @@ func (n *Node) gossip(ctx context.Context) {
 	}
 }
 
-func (n *Node) maintainConnections(ctx context.Context) {
-	ticker := time.NewTicker(n.conf.PeerReconcileInterval)
-	defer ticker.Stop()
+func (n *Node) handlePeerEvent(ev types.PeerEvent) {
+	switch ev.Kind {
+	case types.PeerEventKindUp:
+		id := ev.Peer
+		n.Store.Cluster.Nodes.SetPlaceholder(id, &statev1.Node{
+			Id:        id.String(),
+			Addresses: []string{ev.Addr},
+			Keys: &statev1.Keys{
+				NoisePub:    ev.Peer.Bytes(),
+				IdentityPub: ev.IdentityPub,
+			},
+		})
+		n.log.Infow("peer connected", "peer_id", id.String()[:8], "addr", ev.Addr)
+	case types.PeerEventKindDown:
+	}
+}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			n.reconcilePeers(ctx)
-		}
+func trigger(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
 	}
 }
 
