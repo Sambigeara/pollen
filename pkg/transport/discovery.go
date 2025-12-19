@@ -60,7 +60,7 @@ func GetAdvertisableAddrs() ([]string, error) {
 
 // getPublicIP races multiple providers to return the first valid response.
 func getPublicIP(ctx context.Context) (net.IP, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, publicIPQueryTimeout)
 	defer cancel()
 
 	ipCh := make(chan net.IP, 1)
@@ -76,7 +76,7 @@ func getPublicIP(ctx context.Context) (net.IP, error) {
 				return
 			}
 
-			client := &http.Client{Timeout: 3 * time.Second}
+			client := &http.Client{Timeout: publicIPQueryTimeout}
 			resp, err := client.Do(req)
 			if err != nil {
 				return
@@ -112,9 +112,8 @@ func getPublicIP(ctx context.Context) (net.IP, error) {
 // This does not actually establish a connection.
 func getPreferredOutboundIP(ctx context.Context) (net.IP, error) {
 	// 8.8.8.8 is used as a reference to determine the default route.
-	// conn, err := net.Dial("udp", "8.8.8.8:80")
 	d := &net.Dialer{
-		Timeout: 5 * time.Second,
+		Timeout: publicIPQueryTimeout,
 	}
 	conn, err := d.DialContext(ctx, "udp", "8.8.8.8:80")
 	if err != nil {
@@ -122,7 +121,7 @@ func getPreferredOutboundIP(ctx context.Context) (net.IP, error) {
 	}
 	defer conn.Close()
 
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	localAddr := conn.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
 	return localAddr.IP, nil
 }
 

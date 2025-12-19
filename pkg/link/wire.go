@@ -14,6 +14,7 @@ type frame struct {
 	receiverID uint32
 }
 
+//nolint:mnd
 func decodeFrame(buf []byte) (fr frame, _ error) {
 	n := len(buf)
 	if n < 4 {
@@ -56,6 +57,7 @@ func decodeFrame(buf []byte) (fr frame, _ error) {
 	}, nil
 }
 
+//nolint:mnd
 func encodeFrame(fr *frame) []byte {
 	var buf []byte
 

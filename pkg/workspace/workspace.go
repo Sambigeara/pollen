@@ -5,8 +5,12 @@ import (
 	"os"
 )
 
+const (
+	keyDirPerm = 0o700
+)
+
 func EnsurePollenDir(dir string) (string, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
 		return "", fmt.Errorf("unable to create pollen dir: %w", err)
 	}
 

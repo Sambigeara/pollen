@@ -13,7 +13,12 @@ import (
 
 var _ Store = (*impl)(nil)
 
-const invitesDir = "invites"
+const (
+	invitesDir = "invites"
+
+	keyFilePerm = 0o600
+	keyDirPerm  = 0o700
+)
 
 type Admission interface {
 	ConsumePSK(tokenID string) (psk [32]byte, ok bool)
@@ -34,13 +39,13 @@ type impl struct {
 func Load(pollenDir string) (Store, error) {
 	dir := filepath.Join(pollenDir, invitesDir)
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
 		return nil, err
 	}
 
 	path := filepath.Join(dir, "invites.sha256")
 
-	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, keyFilePerm)
 	if err != nil {
 		return nil, err
 	}

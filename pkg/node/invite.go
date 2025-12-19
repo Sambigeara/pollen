@@ -11,6 +11,10 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 )
 
+const (
+	pskLength = 32
+)
+
 func NewInvite(ips []string, port string) (*peerv1.Invite, error) {
 	id := uuid.NewString()
 
@@ -33,7 +37,7 @@ func NewInvite(ips []string, port string) (*peerv1.Invite, error) {
 }
 
 func generatePSK() ([]byte, error) {
-	buf := make([]byte, 32)
+	buf := make([]byte, pskLength)
 	if _, err := rand.Read(buf); err != nil {
 		return nil, err
 	}

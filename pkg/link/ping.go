@@ -12,6 +12,7 @@ import (
 const (
 	pingInterval = time.Second * 25
 	pingJitter   = 0.05
+	jitterScale  = 2
 )
 
 type pingMgr struct {
@@ -29,7 +30,9 @@ func (i *impl) newPingMgr(ctx context.Context, peerAddr string) *pingMgr {
 				logger.Debugf("closing pinger: %s", peerAddr)
 				return
 			case <-timer.C:
-				i.transport.Send(peerAddr, encodeFrame(&frame{typ: types.MsgTypePing}))
+				if err := i.transport.Send(peerAddr, encodeFrame(&frame{typ: types.MsgTypePing})); err != nil {
+					logger.Debugw("ping send failed", "addr", peerAddr, "err", err)
+				}
 				timer.Reset(jitteredPingInterval())
 			case <-bumpCh:
 				timer.Reset(jitteredPingInterval())
@@ -68,7 +71,8 @@ func jitteredPingInterval() time.Duration {
 func jitter(d time.Duration, percent float64) time.Duration {
 	delta := time.Duration(float64(d) * percent) // max deviation
 	// Sample in [0, 2*delta] then shift to [-delta, +delta].
-	n := int64(delta)*2 + 1
+	n := int64(delta)*jitterScale + 1
+	//nolint:gosec
 	offset := time.Duration(rand.N(n)) - delta
 	return d + offset
 }

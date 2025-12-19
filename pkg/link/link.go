@@ -63,6 +63,8 @@ type impl struct {
 	waitMu         sync.Mutex
 }
 
+const eventBufSize = 64
+
 func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, pub ed25519.PublicKey, crypto LocalCrypto, admission admission.Admission) (Link, error) {
 	tr, err := transport.NewTransport(port)
 	if err != nil {
@@ -77,7 +79,7 @@ func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, pub ed25519
 		sessionStore:   newSessionStore(),
 		rekeyMgr:       newRekeyManager(),
 		handlers:       make(map[types.MsgType]HandlerFn),
-		events:         make(chan types.PeerEvent, 64),
+		events:         make(chan types.PeerEvent, eventBufSize),
 		pingMgrs:       make(map[string]*pingMgr),
 		waitPeer:       make(map[types.PeerKey][]chan struct{}),
 	}, nil
@@ -185,7 +187,9 @@ func (i *impl) handleApp(ctx context.Context, fr frame) {
 	h := i.handlers[fr.typ]
 	i.handlersMu.RUnlock()
 	if h != nil {
-		h(ctx, types.PeerKeyFromBytes(sess.peerNoiseKey), pt)
+		if err := h(ctx, types.PeerKeyFromBytes(sess.peerNoiseKey), pt); err != nil {
+			i.log.Debugw("handler error", "err", err)
+		}
 	}
 }
 
@@ -284,7 +288,12 @@ func (i *impl) EnsurePeer(ctx context.Context, peer types.PeerKey, addrs []strin
 
 func (i *impl) peerLock(p types.PeerKey) *sync.Mutex {
 	v, _ := i.peerLocks.LoadOrStore(p, &sync.Mutex{})
-	return v.(*sync.Mutex)
+	if m, ok := v.(*sync.Mutex); ok {
+		return m
+	}
+	m := &sync.Mutex{}
+	i.peerLocks.Store(p, m)
+	return m
 }
 
 func (i *impl) addWaiter(k types.PeerKey) chan struct{} {

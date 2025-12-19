@@ -21,6 +21,11 @@ import (
 	tcpv1 "github.com/sambigeara/pollen/api/genpb/pollen/tcp/v1"
 )
 
+const (
+	dialTimeout   = 6 * time.Second
+	acceptTimeout = 10 * time.Second
+)
+
 type Send func(ctx context.Context, peer types.PeerKey, msg types.Envelope) error
 
 type PeerDirectory interface {
@@ -59,8 +64,8 @@ func New(sender Send, dir PeerDirectory, signPriv ed25519.PrivateKey, advertisab
 		dir:           dir,
 		signPriv:      signPriv,
 		ips:           advertisableIPs,
-		dialTimeout:   6 * time.Second,
-		acceptTimeout: 10 * time.Second,
+		dialTimeout:   dialTimeout,
+		acceptTimeout: acceptTimeout,
 		inflight:      make(map[uint64]inflight),
 	}
 }
@@ -90,7 +95,7 @@ func (m *Manager) HandleRequest(ctx context.Context, peerKey types.PeerKey, payl
 		return fmt.Errorf("peer attestation failed: %w", err)
 	}
 
-	ln, err := net.Listen("tcp", ":0")
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", ":0")
 	if err != nil {
 		return fmt.Errorf("listen tcp :0: %w", err)
 	}
@@ -280,7 +285,7 @@ func (m *Manager) Dial(ctx context.Context, peerNoisePub []byte) (net.Conn, erro
 
 func (m *Manager) getPeerLock(k types.PeerKey) *sync.Mutex {
 	v, _ := m.peerLocks.LoadOrStore(k, &sync.Mutex{})
-	return v.(*sync.Mutex)
+	return v.(*sync.Mutex) //nolint:forcetypeassert
 }
 
 func randUint64() (uint64, error) {

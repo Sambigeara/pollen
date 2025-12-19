@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+const (
+	allowedClockSkewInterval = 2 * time.Minute
+)
+
 // GenerateEphemeralCert creates a self-signed certificate for the TLS handshake.
 // It returns the tls.Certificate object, and the signature of those bytes created
 // by the node's long-term signing key.
@@ -23,7 +27,7 @@ func GenerateEphemeralCert(signPriv ed25519.PrivateKey) (tls.Certificate, []byte
 		return tls.Certificate{}, nil, err
 	}
 
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128)) //nolint:mnd
 	if err != nil {
 		return tls.Certificate{}, nil, err
 	}
@@ -32,8 +36,8 @@ func GenerateEphemeralCert(signPriv ed25519.PrivateKey) (tls.Certificate, []byte
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "pollen-ephemeral-peer"},
-		NotBefore:    now.Add(-1 * time.Minute),
-		NotAfter:     now.Add(5 * time.Minute),
+		NotBefore:    now.Add(-1 * time.Minute), //nolint:mnd
+		NotAfter:     now.Add(5 * time.Minute),  //nolint:mnd
 
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
@@ -78,7 +82,7 @@ func VerifyPeerAttestation(peerSigningPub ed25519.PublicKey, certDER, sig []byte
 	now := time.Now().UTC()
 
 	// Allow a small clock skew.
-	if now.Before(cert.NotBefore.Add(-2*time.Minute)) || now.After(cert.NotAfter.Add(2*time.Minute)) {
+	if now.Before(cert.NotBefore.Add(-allowedClockSkewInterval)) || now.After(cert.NotAfter.Add(allowedClockSkewInterval)) {
 		return nil, errors.New("peer certificate is expired or not yet valid")
 	}
 

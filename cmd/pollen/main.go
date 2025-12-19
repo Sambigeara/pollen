@@ -39,8 +39,9 @@ const (
 	socketName     = "pollen.sock"
 	defaultUDPPort = "60611"
 
-	defaultPeerReconcileInterval = time.Second * 5
-	defaultGossipInterval        = time.Second * 5
+	defaultPeerReconcileInterval = 5 * time.Second
+	defaultGossipInterval        = 5 * time.Second
+	defaultTimeout               = 5 * time.Second
 )
 
 func main() {
@@ -227,11 +228,12 @@ func runListPeers(cmd *cobra.Command, args []string) {
 
 	resp, err := client.ListPeers(context.Background(), connect.NewRequest(&controlv1.ListPeersRequest{}))
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
 	}
 
 	for _, key := range resp.Msg.GetKeys() {
-		fmt.Printf("%x\n", key)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%x\n", key)
 	}
 }
 
@@ -258,7 +260,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	// 2. Wiring: Handle incoming tunnels by dialing localhost
 	targetPort := args[0] // e.g., ":8080"
 	n.Tunnel.SetIncomingHandler(func(tunnelConn net.Conn) {
-		localConn, err := net.Dial("tcp", "localhost"+targetPort)
+		localConn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", "localhost"+targetPort)
 		if err != nil {
 			log.Printf("Failed to dial local service: %v", err)
 			tunnelConn.Close()
@@ -272,7 +274,8 @@ func runServe(cmd *cobra.Command, args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := n.Start(ctx, nil); err != nil {
-		log.Fatal(err)
+		log.Print("Failed to start node")
+		return
 	}
 }
 
@@ -304,22 +307,24 @@ func runConnect(cmd *cobra.Command, args []string) {
 		log.Fatal(err)
 	}
 
-	ctx, cancelFn := context.WithTimeout(context.Background(), time.Second*5)
+	ctx, cancelFn := context.WithTimeout(context.Background(), defaultTimeout)
 	defer cancelFn()
 
-	// 2. Start Local Listener
 	l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", ":"+localPort)
 	if err != nil {
-		log.Fatalf("Failed to listen on %s: %v", localPort, err)
+		log.Printf("Failed to listen on %s: %v", localPort, err)
+		return
 	}
 
 	peerKey, err := hex.DecodeString(peerHex)
 	if err != nil {
-		log.Fatalf("Failed to decode peer hex: %v", err)
+		log.Printf("Failed to decode peer hex: %v", err)
+		return
 	}
 
 	if _, ok := n.Directory.IdentityPub(peerKey); !ok {
-		log.Fatal("Node not recognised, offline, or missing identity keys")
+		log.Print("Node not recognised, offline, or missing identity keys")
+		return
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -374,7 +379,7 @@ func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient 
 	}
 
 	httpClient := &http.Client{
-		Timeout:   time.Second * 10,
+		Timeout:   defaultTimeout,
 		Transport: transport,
 	}
 

@@ -14,6 +14,11 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
+const (
+	preSharedKeyPlacement = 2
+	sessionIDLength       = 4
+)
+
 var (
 	_ handshake = (*handshakeIKInit)(nil)
 	_ handshake = (*handshakeIKResp)(nil)
@@ -71,6 +76,7 @@ func (st *handshakeStore) getOrCreate(peerSessionID, localSessionID uint32, tp t
 	var hs handshake
 	var err error
 
+	//nolint:exhaustive
 	switch tp {
 	case types.MsgTypeHandshakeIKResp, types.MsgTypeHandshakeXXPsk2Resp:
 		// If we init a handshake, we set the handshake to the localSessionID.
@@ -92,6 +98,7 @@ func (st *handshakeStore) getOrCreate(peerSessionID, localSessionID uint32, tp t
 			return nil, err
 		}
 	}
+	//nolint:exhaustive
 
 	st.st[peerSessionID] = hs
 	return hs, err
@@ -282,7 +289,7 @@ func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey noise.DHKey, p
 		Pattern:               noise.HandshakeXX,
 		Initiator:             true,
 		Prologue:              handshakePrologue,
-		PresharedKeyPlacement: 2,
+		PresharedKeyPlacement: preSharedKeyPlacement,
 		PresharedKey:          token.Psk,
 		StaticKeypair:         localStaticKey,
 	})
@@ -360,7 +367,7 @@ func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, invitesStore admission.Admiss
 		CipherSuite:           *cs,
 		Pattern:               noise.HandshakeXX,
 		Prologue:              handshakePrologue,
-		PresharedKeyPlacement: 2,
+		PresharedKeyPlacement: preSharedKeyPlacement,
 		StaticKeypair:         localStaticKey,
 	})
 	if err != nil {
@@ -432,7 +439,7 @@ func (hs *handshakeXXPsk2Resp) Step(rcvMsg []byte) (HandshakeResult, error) {
 }
 
 func genSessionID() (uint32, error) {
-	b := make([]byte, 4)
+	b := make([]byte, sessionIDLength)
 	if _, err := rand.Read(b); err != nil {
 		return 0, err
 	}

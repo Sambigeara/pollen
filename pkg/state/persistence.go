@@ -15,6 +15,9 @@ import (
 const (
 	stateDir  = "state"
 	stateFile = "cluster_state.bin"
+
+	keyFilePerm = 0o600
+	keyDirPerm  = 0o700
 )
 
 // Persistence handles the disk I/O for the cluster state.
@@ -27,7 +30,7 @@ type Persistence struct {
 func Load(pollenDir string, localNodeID types.PeerKey) (*Persistence, error) {
 	dir := filepath.Join(pollenDir, stateDir)
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
 		return nil, fmt.Errorf("failed to create state dir: %w", err)
 	}
 
@@ -38,7 +41,7 @@ func Load(pollenDir string, localNodeID types.PeerKey) (*Persistence, error) {
 		filePath: path,
 	}
 
-	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, keyDirPerm)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open state file: %w", err)
 	}
@@ -78,7 +81,7 @@ func (p *Persistence) Save() error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	if err := os.WriteFile(p.filePath, b, 0o600); err != nil {
+	if err := os.WriteFile(p.filePath, b, keyFilePerm); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 

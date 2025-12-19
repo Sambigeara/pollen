@@ -47,11 +47,15 @@ func TestNode(t *testing.T) {
 
 		nodeA.AdmissionStore.AddInvite(token)
 
-		go nodeA.Start(ctx, nil)
+		go func() {
+			require.NoError(t, nodeA.Start(ctx, nil))
+		}()
 
 		dirB := t.TempDir()
 		nodeB, _ := newNode(t, dirB, 0)
-		go nodeB.Start(ctx, token)
+		go func() {
+			require.NoError(t, nodeB.Start(ctx, token))
+		}()
 
 		expectPeers := 2
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
@@ -228,9 +232,15 @@ func TestNode(t *testing.T) {
 				return nil
 			})
 
-			go nodeA.Start(ctx, nil)
-			go nodeB.Start(ctx, nil)
-			go nodeC.Start(ctx, nil)
+			go func() {
+				require.NoError(t, nodeA.Start(ctx, nil))
+			}()
+			go func() {
+				require.NoError(t, nodeB.Start(ctx, nil))
+			}()
+			go func() {
+				require.NoError(t, nodeC.Start(ctx, nil))
+			}()
 
 			skB := types.PeerKeyFromBytes(nodeB.crypto.noisePubKey)
 			skC := types.PeerKeyFromBytes(nodeC.crypto.noisePubKey)

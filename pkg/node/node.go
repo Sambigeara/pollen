@@ -36,6 +36,9 @@ const (
 	signingPubKeyName = "ed25519.pub"
 	pemTypePriv       = "ED25519 PRIVATE KEY"
 	pemTypePub        = "ED25519 PUBLIC KEY"
+	keyDirPerm        = 0o700
+	keyFilePerm       = 0o600
+	ensurePeerTimeout = 400 * time.Millisecond
 )
 
 type Config struct {
@@ -249,10 +252,12 @@ func (n *Node) gossip(ctx context.Context) {
 		if peer.Id == n.Store.Cluster.LocalID.String() {
 			continue
 		}
-		n.link.Send(ctx, types.PeerKeyFromBytes(peer.Keys.NoisePub), types.Envelope{
+		if err := n.link.Send(ctx, types.PeerKeyFromBytes(peer.Keys.NoisePub), types.Envelope{
 			Type:    types.MsgTypeGossip,
 			Payload: payload,
-		})
+		}); err != nil {
+			n.log.Debugw("gossip send failed", "peer", peer.Id, "err", err)
+		}
 	}
 }
 
@@ -288,7 +293,7 @@ func (n *Node) reconcilePeers(ctx context.Context) {
 			continue
 		}
 
-		dialCtx, cancel := context.WithTimeout(ctx, 400*time.Millisecond)
+		dialCtx, cancel := context.WithTimeout(ctx, ensurePeerTimeout)
 		err := n.link.EnsurePeer(dialCtx, types.PeerKeyFromBytes(node.Keys.NoisePub), node.Addresses)
 		cancel()
 
@@ -331,6 +336,7 @@ func genNoiseKey(cs noise.CipherSuite, pollenDir string) (noise.DHKey, error) {
 
 	enc := base64.StdEncoding
 	var pubEnc []byte
+	//nolint:nestif
 	if !requireRegen {
 		pubEnc, err = os.ReadFile(pubKeyPath)
 		if err != nil {
@@ -352,7 +358,7 @@ func genNoiseKey(cs noise.CipherSuite, pollenDir string) (noise.DHKey, error) {
 		}
 	}
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
 		return noise.DHKey{}, err
 	}
 
@@ -363,13 +369,13 @@ func genNoiseKey(cs noise.CipherSuite, pollenDir string) (noise.DHKey, error) {
 
 	newKeyEnc := make([]byte, enc.EncodedLen(len(keyPair.Private)))
 	enc.Encode(newKeyEnc, keyPair.Private)
-	if err := os.WriteFile(keyPath, newKeyEnc, 0o600); err != nil {
+	if err := os.WriteFile(keyPath, newKeyEnc, keyFilePerm); err != nil {
 		return noise.DHKey{}, err
 	}
 
 	newPubEnc := make([]byte, enc.EncodedLen(len(keyPair.Public)))
 	enc.Encode(newPubEnc, keyPair.Public)
-	if err := os.WriteFile(pubKeyPath, newPubEnc, 0o644); err != nil {
+	if err := os.WriteFile(pubKeyPath, newPubEnc, keyFilePerm); err != nil {
 		return noise.DHKey{}, err
 	}
 
@@ -393,6 +399,7 @@ func genIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 	}
 
 	var pubEnc []byte
+	//nolint:nestif
 	if !requireRegen {
 		pubEnc, err = os.ReadFile(pubPath)
 		if err != nil {
@@ -416,7 +423,7 @@ func genIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 		}
 	}
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
 		return nil, nil, err
 	}
 
@@ -431,10 +438,12 @@ func genIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 	}
 	defer privFile.Close()
 
-	pem.Encode(privFile, &pem.Block{
+	if err := pem.Encode(privFile, &pem.Block{
 		Type:  pemTypePriv,
 		Bytes: priv.Seed(),
-	})
+	}); err != nil {
+		return nil, nil, err
+	}
 
 	pubFile, err := os.Create(pubPath)
 	if err != nil {
@@ -442,10 +451,12 @@ func genIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 	}
 	defer pubFile.Close()
 
-	pem.Encode(pubFile, &pem.Block{
+	if err := pem.Encode(pubFile, &pem.Block{
 		Type:  pemTypePub,
 		Bytes: pub,
-	})
+	}); err != nil {
+		return nil, nil, err
+	}
 
 	return priv, pub, err
 }

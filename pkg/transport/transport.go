@@ -37,7 +37,7 @@ func NewTransport(port int) (Transport, error) {
 }
 
 func (i *impl) Recv(ctx context.Context) (string, []byte, error) {
-	buf := make([]byte, 2048)
+	buf := make([]byte, 2048) //nolint:mnd
 	n, addr, err := i.conn.ReadFromUDP(buf)
 	if err != nil {
 		return "", nil, err
@@ -49,7 +49,7 @@ func (i *impl) Recv(ctx context.Context) (string, []byte, error) {
 func (i *impl) Send(dst string, b []byte) error {
 	addr, err := net.ResolveUDPAddr("udp", dst)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	if _, err = i.conn.WriteToUDP(b, addr); err != nil {
