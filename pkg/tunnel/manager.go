@@ -47,7 +47,7 @@ type Manager struct {
 }
 
 type inflight struct {
-	peerKey types.NodeID
+	peerKey types.PeerKey
 	ch      chan *tcpv1.Handshake
 }
 
@@ -206,7 +206,7 @@ func (m *Manager) Dial(ctx context.Context, peerNoisePub []byte) (net.Conn, erro
 		return nil, ErrUnknownPeerIdentity
 	}
 
-	lock := m.getPeerLock(types.NodeID(peerNoisePub))
+	lock := m.getPeerLock(types.PeerKeyFromBytes(peerNoisePub))
 	lock.Lock()
 	defer lock.Unlock()
 
@@ -232,7 +232,7 @@ func (m *Manager) Dial(ctx context.Context, peerNoisePub []byte) (net.Conn, erro
 
 	ch := make(chan *tcpv1.Handshake, 1)
 	m.inflightMu.Lock()
-	m.inflight[reqID] = inflight{peerKey: types.NodeID(peerNoisePub), ch: ch}
+	m.inflight[reqID] = inflight{peerKey: types.PeerKeyFromBytes(peerNoisePub), ch: ch}
 	m.inflightMu.Unlock()
 	defer func() {
 		m.inflightMu.Lock()
@@ -279,7 +279,7 @@ func (m *Manager) Dial(ctx context.Context, peerNoisePub []byte) (net.Conn, erro
 	return nil, ErrNoDialableAddress
 }
 
-func (m *Manager) getPeerLock(k types.NodeID) *sync.Mutex {
+func (m *Manager) getPeerLock(k types.PeerKey) *sync.Mutex {
 	v, _ := m.peerLocks.LoadOrStore(k, &sync.Mutex{})
 	return v.(*sync.Mutex)
 }

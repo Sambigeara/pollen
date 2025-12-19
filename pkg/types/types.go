@@ -2,16 +2,61 @@ package types
 
 import "encoding/hex"
 
-// 32 bytes for a standard Noise/Ed25519 public key
-type NodeID [32]byte
+type MsgType uint32
 
-func (n NodeID) String() string { return hex.EncodeToString(n[:]) }
+const (
+	MsgTypeHandshakeXXPsk2Init MsgType = iota
+	MsgTypeHandshakeXXPsk2Resp
+	MsgTypeHandshakeIKInit
+	MsgTypeHandshakeIKResp
 
-func IDFromBytes(b []byte) (NodeID, bool) {
-	var id NodeID
+	MsgTypeTransportData
+	MsgTypePing
+
+	MsgTypeTCPTunnelRequest
+	MsgTypeTCPTunnelResponse
+
+	MsgTypeGossip
+	MsgTypeTest
+)
+
+type PeerKey [32]byte // Noise static pub
+
+func PeerKeyFromBytes(b []byte) PeerKey {
 	if len(b) != 32 {
-		return id, false
+		// TODO(saml) remove
+		panic("IF I TRIGGER THEN PARTIAL KEYS ARE THE PROBLEM")
 	}
+	var id PeerKey
 	copy(id[:], b)
-	return id, true
+	return id
+}
+
+func (pk *PeerKey) Bytes() []byte {
+	return pk[:]
+}
+
+func (pk *PeerKey) String() string {
+	return hex.EncodeToString(pk[:])
+}
+
+type PeerEventKind int
+
+const (
+	PeerEventKindUp PeerEventKind = iota
+	PeerEventKindDown
+	// PeerEventKindRotated
+	// PeerEventKindRekeyed
+)
+
+type PeerEvent struct {
+	Peer        PeerKey
+	Addr        string        // the addr that “won” (optional)
+	Kind        PeerEventKind // Up/Down/Rotated/Rekeyed...
+	IdentityPub []byte
+}
+
+type Envelope struct {
+	Type    MsgType
+	Payload []byte
 }

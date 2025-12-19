@@ -24,7 +24,7 @@ type Persistence struct {
 	mu       sync.Mutex
 }
 
-func Load(pollenDir string, localNodeID types.NodeID) (*Persistence, error) {
+func Load(pollenDir string, localNodeID types.PeerKey) (*Persistence, error) {
 	dir := filepath.Join(pollenDir, stateDir)
 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -90,14 +90,14 @@ func (p *Persistence) Save() error {
 func (p *Persistence) Hydrate(delta *statev1.DeltaState) {
 	// We can manually reconstruct the Record structs to feed into the generic Merge.
 	// This ensures our internal Logic Clock respects the persisted state.
-	nodeRecords := make(map[types.NodeID]Record[*statev1.Node], len(delta.Nodes))
+	nodeRecords := make(map[types.PeerKey]Record[*statev1.Node], len(delta.Nodes))
 	for k, v := range delta.Nodes {
 		keyBytes, err := hex.DecodeString(k)
 		if err != nil {
 			continue
 		}
-		nodeID, ok := types.IDFromBytes(keyBytes)
-		if !ok || nodeID == p.Cluster.LocalID {
+		nodeID := types.PeerKeyFromBytes(keyBytes)
+		if nodeID == p.Cluster.LocalID {
 			continue
 		}
 
@@ -106,9 +106,7 @@ func (p *Persistence) Hydrate(delta *statev1.DeltaState) {
 			continue
 		}
 		if tsBytes, err := hex.DecodeString(v.Ts.NodeId); err == nil {
-			if decoded, ok := types.IDFromBytes(tsBytes); ok {
-				tsID = decoded
-			}
+			tsID = types.PeerKeyFromBytes(tsBytes)
 		}
 
 		nodeRecords[nodeID] = Record[*statev1.Node]{

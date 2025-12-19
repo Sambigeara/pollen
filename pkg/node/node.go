@@ -66,7 +66,7 @@ func New(conf *Config) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load noise key: %v", err)
 	}
-	nodeID, _ := types.IDFromBytes(noiseKey.Public)
+	nodeID := types.PeerKeyFromBytes(noiseKey.Public)
 
 	privKey, pubKey, err := genIdentityKey(conf.PollenDir)
 	if err != nil {
@@ -210,7 +210,7 @@ func (n *Node) handlePeerEvents(ctx context.Context) {
 		case ev := <-n.link.Events():
 			switch ev.Kind {
 			case types.PeerEventKindUp:
-				id := types.NodeID(ev.Peer)
+				id := ev.Peer
 				n.Store.Cluster.Nodes.SetPlaceholder(id, &statev1.Node{
 					Id:        id.String(),
 					Addresses: []string{ev.Addr},

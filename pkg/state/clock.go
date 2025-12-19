@@ -7,8 +7,8 @@ import (
 )
 
 type Timestamp struct {
-	Counter int64        `json:"c"`
-	NodeID  types.NodeID `json:"id"` // tie-breaker
+	Counter int64         `json:"c"`
+	NodeID  types.PeerKey `json:"id"` // tie-breaker
 }
 
 func (t Timestamp) Less(other Timestamp) bool {

@@ -6,11 +6,11 @@ import (
 )
 
 type Cluster struct {
-	LocalID types.NodeID
+	LocalID types.PeerKey
 	Nodes   *Map[*statev1.Node]
 }
 
-func NewCluster(localNodeID types.NodeID) *Cluster {
+func NewCluster(localNodeID types.PeerKey) *Cluster {
 	return &Cluster{
 		LocalID: localNodeID,
 		Nodes:   NewMap[*statev1.Node](localNodeID),

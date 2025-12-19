@@ -95,7 +95,7 @@ func TestNode(t *testing.T) {
 			nodeC, portC = newNode(t, dirC, 0)
 			go func() { stopC <- nodeC.Start(initCtx, tokenForC) }()
 
-			var storeA, storeB, storeC map[types.NodeID]*statev1.Node
+			var storeA, storeB, storeC map[types.PeerKey]*statev1.Node
 			expectPeers := 3
 
 			// Wait for state convergence
