@@ -29,7 +29,7 @@ func TestHandshake_Pure_XX(t *testing.T) {
 
 	// Create Invite
 	psk := make([]byte, 32)
-	rand.Read(psk)
+	rand.Read(psk) //nolint:errcheck
 	invite := &peerv1.Invite{
 		Id:   uuid.NewString(),
 		Psk:  psk,

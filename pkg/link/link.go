@@ -46,30 +46,21 @@ type LocalCrypto interface {
 }
 
 type impl struct {
-	log *zap.SugaredLogger
-
-	crypto    LocalCrypto
-	admission admission.Admission
-	transport transport.Transport
-
+	transport      transport.Transport
+	crypto         LocalCrypto
+	handlers       map[types.MsgType]HandlerFn
 	handshakeStore *handshakeStore
 	sessionStore   *sessionStore
 	rekeyMgr       *rekeyManager
-
-	handlersMu sync.RWMutex
-	handlers   map[types.MsgType]HandlerFn
-
-	events chan types.PeerEvent
-
-	cancel context.CancelFunc
-
-	pingMgrs map[string]*pingMgr
-	pingMu   sync.RWMutex
-
-	peerLocks sync.Map // map[types.PeerKey]*sync.Mutex
-
-	waitMu   sync.Mutex
-	waitPeer map[types.PeerKey][]chan struct{}
+	log            *zap.SugaredLogger
+	events         chan types.PeerEvent
+	cancel         context.CancelFunc
+	pingMgrs       map[string]*pingMgr
+	waitPeer       map[types.PeerKey][]chan struct{}
+	peerLocks      sync.Map
+	handlersMu     sync.RWMutex
+	pingMu         sync.RWMutex
+	waitMu         sync.Mutex
 }
 
 func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, pub ed25519.PublicKey, crypto LocalCrypto, admission admission.Admission) (Link, error) {
@@ -120,9 +111,11 @@ func (i *impl) loop(ctx context.Context) {
 		switch fr.typ {
 		case types.MsgTypePing:
 		case types.MsgTypeHandshakeIKInit, types.MsgTypeHandshakeIKResp, types.MsgTypeHandshakeXXPsk2Init, types.MsgTypeHandshakeXXPsk2Resp:
-			i.handleHandshake(ctx, src, fr)
+			if err := i.handleHandshake(ctx, src, fr); err != nil {
+				i.log.Debug("failed to handle handshake")
+			}
 		default:
-			i.handleApp(ctx, src, fr)
+			i.handleApp(ctx, fr)
 		}
 	}
 }
@@ -141,7 +134,7 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 		return err
 	}
 
-	if err := i.sendHandshakeResult(ctx, []string{src}, res, fr.senderID); err != nil {
+	if err := i.sendHandshakeResult([]string{src}, res, fr.senderID); err != nil {
 		i.log.Debugw("failed to send handshake reply", "err", err)
 	}
 
@@ -171,7 +164,7 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 	return nil
 }
 
-func (i *impl) handleApp(ctx context.Context, src string, fr frame) {
+func (i *impl) handleApp(ctx context.Context, fr frame) {
 	sess, ok := i.sessionStore.getByLocalID(fr.receiverID)
 	if !ok {
 		return
@@ -243,13 +236,13 @@ func (i *impl) Handle(t types.MsgType, h HandlerFn) {
 func (i *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 	res, err := i.handshakeStore.initXXPsk2(inv, i.crypto.IdentityPub())
 	if err != nil {
-		return fmt.Errorf("failed to create XXpsk2 handshake: %v", err)
+		return fmt.Errorf("failed to create XXpsk2 handshake: %w", err)
 	}
 
 	// Send the initial packet(s)
 	// For Init, receiverID is 0
-	if err := i.sendHandshakeResult(ctx, inv.Addr, res, 0); err != nil {
-		return fmt.Errorf("failed to send invite init: %v", err)
+	if err := i.sendHandshakeResult(inv.Addr, res, 0); err != nil {
+		return fmt.Errorf("failed to send invite init: %w", err)
 	}
 
 	return nil
@@ -277,7 +270,7 @@ func (i *impl) EnsurePeer(ctx context.Context, peer types.PeerKey, addrs []strin
 	if err != nil {
 		return err
 	}
-	if err := i.sendHandshakeResult(ctx, addrs, res, 0); err != nil {
+	if err := i.sendHandshakeResult(addrs, res, 0); err != nil {
 		return err
 	}
 
@@ -313,12 +306,11 @@ func (i *impl) notifyUp(p types.PeerKey) {
 	}
 }
 
-func (i *impl) sendHandshakeResult(ctx context.Context, addrs []string, res HandshakeResult, remoteID uint32) error {
+func (i *impl) sendHandshakeResult(addrs []string, res HandshakeResult, remoteID uint32) error {
 	if len(addrs) == 0 {
 		return ErrNoResolvableIP
 	}
 	if len(res.Msg) == 0 {
-
 		return nil
 	}
 

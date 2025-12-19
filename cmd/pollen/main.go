@@ -110,7 +110,7 @@ func main() {
 
 func runNode(cmd *cobra.Command, args []string) {
 	logging.Init()
-	defer zap.S().Sync()
+	defer zap.S().Sync() //nolint:errcheck
 
 	logger := zap.S()
 	logger.Infow("starting pollen...", "version", "0.1.0")
@@ -175,38 +175,47 @@ func runNode(cmd *cobra.Command, args []string) {
 }
 
 func runInvite(cmd *cobra.Command, args []string) {
+	logging.Init()
+	defer zap.S().Sync() //nolint:errcheck
+
+	logger := zap.S()
+
 	ips, _ := cmd.Flags().GetStringSlice("ips")
 	port, _ := cmd.Flags().GetString("port")
 	dir, _ := cmd.Flags().GetString("dir")
 
 	pollenDir, err := workspace.EnsurePollenDir(dir)
 	if err != nil {
-		log.Fatalf("failed to prepare pollen dir: %v", err)
+		logger.Fatalf("failed to prepare pollen dir: %v", err)
 	}
 
 	if len(ips) == 0 {
 		var err error
 		ips, err = transport.GetAdvertisableAddrs()
 		if err != nil {
-			log.Fatalf("failed to infer public IP")
+			logger.Fatalf("failed to infer public IP")
 		}
 	}
 
 	token, err := node.NewInvite(ips, port)
 	if err != nil {
-		log.Fatalf("failed to generate invite: %v", err)
+		logger.Fatalf("failed to generate invite: %v", err)
 	}
 
 	encoded, err := node.EncodeToken(token)
 	if err != nil {
-		log.Fatalf("failed to encode invite: %v", err)
+		logger.Fatalf("failed to encode invite: %v", err)
 	}
 
 	admission, err := admission.Load(pollenDir)
 	if err != nil {
-		log.Fatalf("failed to load peers store: %v", err)
+		logger.Fatalf("failed to load peers store: %v", err)
 	}
-	defer admission.Save()
+	defer func() {
+		if err := admission.Save(); err != nil {
+			logger.Errorf("failed to save admission: %w", err)
+		}
+	}()
 
 	admission.AddInvite(token)
 
@@ -295,8 +304,11 @@ func runConnect(cmd *cobra.Command, args []string) {
 		log.Fatal(err)
 	}
 
+	ctx, cancelFn := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancelFn()
+
 	// 2. Start Local Listener
-	l, err := net.Listen("tcp", ":"+localPort)
+	l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", ":"+localPort)
 	if err != nil {
 		log.Fatalf("Failed to listen on %s: %v", localPort, err)
 	}

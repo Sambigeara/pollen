@@ -6,8 +6,8 @@ import (
 )
 
 type Cluster struct {
-	LocalID types.PeerKey
 	Nodes   *Map[*statev1.Node]
+	LocalID types.PeerKey
 }
 
 func NewCluster(localNodeID types.PeerKey) *Cluster {

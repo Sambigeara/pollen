@@ -2,8 +2,10 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"syscall"
 	"testing"
 	"time"
 
@@ -259,10 +261,23 @@ func newNode(t *testing.T, dir string, port int) (*Node, int) {
 		PollenDir:             dir,
 	}
 
-	node, err := New(conf)
+	var node *Node
+	var err error
+	for range 8 {
+		node, err = New(conf)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			break
+		}
+		// Retry with a fresh port after a brief delay.
+		time.Sleep(10 * time.Millisecond)
+		conf.Port = getFreePort(t)
+	}
 	require.NoError(t, err)
 
-	return node, port
+	return node, conf.Port
 }
 
 func getFreePort(t *testing.T) int {

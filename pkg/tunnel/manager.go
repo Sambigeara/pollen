@@ -28,27 +28,22 @@ type PeerDirectory interface {
 }
 
 type Manager struct {
-	sender Send
-	dir    PeerDirectory
-
-	signPriv ed25519.PrivateKey
-	ips      []string
-
+	dir           PeerDirectory
+	sender        Send
+	incoming      func(net.Conn)
+	inflight      map[uint64]inflight
+	peerLocks     sync.Map
+	signPriv      ed25519.PrivateKey
+	ips           []string
 	dialTimeout   time.Duration
 	acceptTimeout time.Duration
-
-	incomingMu sync.RWMutex
-	incoming   func(net.Conn)
-
-	inflightMu sync.Mutex
-	inflight   map[uint64]inflight
-
-	peerLocks sync.Map // map[types.NodeID]*sync.Mutex
+	incomingMu    sync.RWMutex
+	inflightMu    sync.Mutex
 }
 
 type inflight struct {
-	peerKey types.PeerKey
 	ch      chan *tcpv1.Handshake
+	peerKey types.PeerKey
 }
 
 var (
@@ -269,7 +264,11 @@ func (m *Manager) Dial(ctx context.Context, peerNoisePub []byte) (net.Conn, erro
 	// Try candidates in order
 	dialer := &net.Dialer{Timeout: m.dialTimeout}
 	for _, addr := range resp.GetAddr() {
-		conn, err := tls.DialWithDialer(dialer, "tcp", addr, cfg)
+		d := &tls.Dialer{
+			NetDialer: dialer,
+			Config:    cfg,
+		}
+		conn, err := d.DialContext(ctx, "tcp", addr)
 		if err != nil {
 			continue
 		}

@@ -66,7 +66,7 @@ func GenerateEphemeralCert(signPriv ed25519.PrivateKey) (tls.Certificate, []byte
 
 // VerifyPeerAttestation checks that the peer's certificate is validly signed and timely.
 // This is used by both sides of the handshake.
-func VerifyPeerAttestation(peerSigningPub ed25519.PublicKey, certDER []byte, sig []byte) (*x509.Certificate, error) {
+func VerifyPeerAttestation(peerSigningPub ed25519.PublicKey, certDER, sig []byte) (*x509.Certificate, error) {
 	if !ed25519.Verify(peerSigningPub, certDER, sig) {
 		return nil, errors.New("peer certificate signature is invalid")
 	}

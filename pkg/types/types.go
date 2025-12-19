@@ -23,10 +23,6 @@ const (
 type PeerKey [32]byte // Noise static pub
 
 func PeerKeyFromBytes(b []byte) PeerKey {
-	if len(b) != 32 {
-		// TODO(saml) remove
-		panic("IF I TRIGGER THEN PARTIAL KEYS ARE THE PROBLEM")
-	}
 	var id PeerKey
 	copy(id[:], b)
 	return id
@@ -46,17 +42,17 @@ const (
 	PeerEventKindUp PeerEventKind = iota
 	PeerEventKindDown
 	// PeerEventKindRotated
-	// PeerEventKindRekeyed
+	// PeerEventKindRekeyed.
 )
 
 type PeerEvent struct {
-	Peer        PeerKey
-	Addr        string        // the addr that “won” (optional)
-	Kind        PeerEventKind // Up/Down/Rotated/Rekeyed...
+	Addr        string
 	IdentityPub []byte
+	Kind        PeerEventKind
+	Peer        PeerKey
 }
 
 type Envelope struct {
-	Type    MsgType
 	Payload []byte
+	Type    MsgType
 }

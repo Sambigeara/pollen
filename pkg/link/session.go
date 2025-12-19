@@ -13,7 +13,7 @@ const (
 	// Noise enforces a MaxNonce of 2^64-1. We set a "slightly" lower limit.
 	maxNonce = uint32(math.MaxUint32) - 1
 
-	rekeyGracePeriod = time.Second * 3 // old sessions hang around for 3 seconds to allow inflight packets targetting the old sessionID to land
+	rekeyGracePeriod = time.Second * 3 // old sessions hang around for 3 seconds to allow inflight packets targeting the old sessionID to land
 )
 
 type sessionStore struct {
@@ -66,16 +66,15 @@ func (s *sessionStore) getByLocalID(localID uint32) (*session, bool) {
 	return id, ok
 }
 
-type pingFn func(uint32) error
-
 type session struct {
-	localSessionID uint32
-	peerSessionID  uint32
-	peerAddr       string
-	peerNoiseKey   []byte
 	send           *noise.CipherState
 	recv           *noise.CipherState
-	sendMu, recvMu sync.RWMutex
+	peerAddr       string
+	peerNoiseKey   []byte
+	sendMu         sync.RWMutex
+	recvMu         sync.RWMutex
+	localSessionID uint32
+	peerSessionID  uint32
 }
 
 func newSession(localSessionID uint32, noiseKey []byte, send, recv *noise.CipherState) *session {
@@ -115,10 +114,4 @@ func (s *session) Decrypt(msg []byte) ([]byte, bool, error) {
 	s.sendMu.RUnlock()
 
 	return pt, should, nil
-}
-
-func (s *session) shouldRekey() bool {
-	s.sendMu.RLock()
-	defer s.sendMu.RUnlock()
-	return s.send.Nonce() >= uint64(maxNonce)
 }

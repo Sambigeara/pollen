@@ -33,7 +33,7 @@ func GetAdvertisableAddrs() ([]string, error) {
 		seen[str] = true
 	}
 
-	if prefIP, err := getPreferredOutboundIP(); err == nil {
+	if prefIP, err := getPreferredOutboundIP(ctx); err == nil {
 		str := prefIP.String()
 		if !seen[str] {
 			results = append(results, prefIP.String())
@@ -63,12 +63,7 @@ func getPublicIP(ctx context.Context) (net.IP, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	type result struct {
-		ip  net.IP
-		err error
-	}
-
-	resultCh := make(chan result, 1)
+	ipCh := make(chan net.IP, 1)
 	var wg sync.WaitGroup
 
 	for _, url := range providers {
@@ -98,7 +93,7 @@ func getPublicIP(ctx context.Context) (net.IP, error) {
 
 			if isValidIP(ip) {
 				select {
-				case resultCh <- result{ip: ip}:
+				case ipCh <- ip:
 				case <-ctx.Done():
 				}
 			}
@@ -106,8 +101,8 @@ func getPublicIP(ctx context.Context) (net.IP, error) {
 	}
 
 	select {
-	case res := <-resultCh:
-		return res.ip, nil
+	case ip := <-ipCh:
+		return ip, nil
 	case <-ctx.Done():
 		return nil, errors.New("timed out resolving public IP")
 	}
@@ -115,9 +110,13 @@ func getPublicIP(ctx context.Context) (net.IP, error) {
 
 // getPreferredOutboundIP determines the local IP used to route to the internet.
 // This does not actually establish a connection.
-func getPreferredOutboundIP() (net.IP, error) {
+func getPreferredOutboundIP(ctx context.Context) (net.IP, error) {
 	// 8.8.8.8 is used as a reference to determine the default route.
-	conn, err := net.Dial("udp", "8.8.8.8:80")
+	// conn, err := net.Dial("udp", "8.8.8.8:80")
+	d := &net.Dialer{
+		Timeout: 5 * time.Second,
+	}
+	conn, err := d.DialContext(ctx, "udp", "8.8.8.8:80")
 	if err != nil {
 		return nil, err
 	}
@@ -164,5 +163,5 @@ func getOtherLocalIPs() ([]net.IP, error) {
 
 // isValidIP filters out Loopback, Multicast, Unspecified, and Link-Local (fe80::) addresses.
 func isValidIP(ip net.IP) bool {
-	return !(ip == nil || ip.IsLoopback() || ip.IsMulticast() || ip.IsUnspecified() || ip.IsLinkLocalUnicast())
+	return ip != nil && !ip.IsLoopback() && !ip.IsMulticast() && !ip.IsUnspecified() && !ip.IsLinkLocalUnicast()
 }

@@ -28,14 +28,12 @@ var (
 )
 
 type HandshakeResult struct {
-	Msg            []byte
-	MsgType        types.MsgType
-	LocalSessionID uint32
-
-	// populated when handshake completes
 	Session         *session
+	Msg             []byte
 	PeerStaticKey   []byte
 	PeerIdentityPub []byte
+	MsgType         types.MsgType
+	LocalSessionID  uint32
 }
 
 type handshake interface {
@@ -43,11 +41,11 @@ type handshake interface {
 }
 
 type handshakeStore struct {
-	localIdentityPub []byte
-	cs               *noise.CipherSuite
 	invites          admission.Admission
-	localStaticKey   noise.DHKey
+	cs               *noise.CipherSuite
 	st               map[uint32]handshake
+	localStaticKey   noise.DHKey
+	localIdentityPub []byte
 	mu               sync.RWMutex
 }
 
@@ -271,8 +269,8 @@ func (hs *handshakeIKResp) Step(rcvMsg []byte) (HandshakeResult, error) {
 
 type handshakeXXPsk2Init struct {
 	*noise.HandshakeState
-	sigPub         []byte
 	tokenID        string
+	sigPub         []byte
 	nextStage      handshakeStage
 	mu             sync.Mutex
 	localSessionID uint32
@@ -330,7 +328,7 @@ func (hs *handshakeXXPsk2Init) Step(rcvMsg []byte) (HandshakeResult, error) {
 			return res, err
 		}
 
-		msg3, csSend, csRecv, err := hs.WriteMessage(nil, []byte(hs.sigPub))
+		msg3, csSend, csRecv, err := hs.WriteMessage(nil, hs.sigPub)
 		if err != nil {
 			return res, err
 		}
@@ -450,19 +448,6 @@ func newRekeyManager() *rekeyManager {
 	return &rekeyManager{
 		m: make(map[uint32]*time.Timer),
 	}
-}
-
-// set should only be called if the node is known to be the initiator of the connection with
-// the given peerStaticKey.
-func (m *rekeyManager) set(peerSessionID uint32, peerStaticKey []byte, t *time.Timer) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if oldT, ok := m.m[peerSessionID]; ok {
-		oldT.Stop()
-	}
-
-	m.m[peerSessionID] = t
 }
 
 func (m *rekeyManager) resetIfExists(peerSessionID uint32, d time.Duration) {

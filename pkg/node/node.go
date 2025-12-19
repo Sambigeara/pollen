@@ -39,11 +39,11 @@ const (
 )
 
 type Config struct {
-	Port                  int
+	PollenDir             string
 	AdvertisedIPs         []string
+	Port                  int
 	GossipInterval        time.Duration
 	PeerReconcileInterval time.Duration
-	PollenDir             string
 }
 
 type Node struct {
@@ -64,13 +64,13 @@ func New(conf *Config) (*Node, error) {
 
 	noiseKey, err := genNoiseKey(cs, conf.PollenDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load noise key: %v", err)
+		return nil, fmt.Errorf("failed to load noise key: %w", err)
 	}
 	nodeID := types.PeerKeyFromBytes(noiseKey.Public)
 
 	privKey, pubKey, err := genIdentityKey(conf.PollenDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load signing keys: %v", err)
+		return nil, fmt.Errorf("failed to load signing keys: %w", err)
 	}
 
 	stateStore, err := state.Load(conf.PollenDir, nodeID)
@@ -288,9 +288,13 @@ func (n *Node) reconcilePeers(ctx context.Context) {
 			continue
 		}
 
-		if err := n.link.EnsurePeer(ctx, types.PeerKeyFromBytes(node.Keys.NoisePub), node.Addresses); err != nil {
-			n.log.Errorf("failed to ensure session with peer: %v", err)
-			continue
+		dialCtx, cancel := context.WithTimeout(ctx, 400*time.Millisecond)
+		err := n.link.EnsurePeer(dialCtx, types.PeerKeyFromBytes(node.Keys.NoisePub), node.Addresses)
+		cancel()
+
+		// Ignore timeouts; next reconcile tick will retry.
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+			n.log.Debugw("ensure peer failed", "peer", node.Id, "err", err)
 		}
 	}
 }

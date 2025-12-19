@@ -14,11 +14,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/node"
 )
 
-const (
-	pollenRootDir = ".pollen"
-	socketName    = "pollen.sock"
-)
-
 type GrpcServer struct{}
 
 func NewGRPCServer() *GrpcServer {
@@ -36,7 +31,7 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 		return nil
 	}
 
-	l, err := net.Listen("unix", path)
+	l, err := (&net.ListenConfig{}).Listen(ctx, "unix", path)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return nil
