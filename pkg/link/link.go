@@ -25,22 +25,24 @@ const (
 
 var ErrNoSession = errors.New("no session for peer")
 
+type HandlerFn func(ctx context.Context, from types.PeerKey, payload []byte) error
+
 type Link interface {
 	Start(ctx context.Context) error
 	Close() error
 
 	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error             // XXpsk2 init
-	EnsurePeer(ctx context.Context, peer types.PeerKey, hints []string) error // IK init
+	EnsurePeer(ctx context.Context, peer types.PeerKey, addrs []string) error // IK init
 	Events() <-chan types.PeerEvent
 
 	Send(ctx context.Context, peer types.PeerKey, msg types.Envelope) error
-	Handle(t types.MsgType, h func(from types.PeerKey, payload []byte)) // dispatch after decrypt
+	Handle(t types.MsgType, h HandlerFn) // dispatch after decrypt
 }
 
 type LocalCrypto interface {
-	NoiseStatic() noise.DHKey
-	IdentityPub() []byte            // ed25519 pub
-	SignIdentity(msg []byte) []byte // ed25519 sign
+	NoisePub() []byte
+	IdentityPub() []byte // ed25519 pub
+	// SignIdentity(msg []byte) []byte // ed25519 sign
 }
 
 type impl struct {
@@ -55,7 +57,7 @@ type impl struct {
 	rekeyMgr       *rekeyManager
 
 	handlersMu sync.RWMutex
-	handlers   map[types.MsgType]func(from types.PeerKey, payload []byte)
+	handlers   map[types.MsgType]HandlerFn
 
 	events chan types.PeerEvent
 
@@ -70,7 +72,7 @@ type impl struct {
 	waitPeer map[types.PeerKey][]chan struct{}
 }
 
-func NewLink(port int, crypto LocalCrypto, cs *noise.CipherSuite, staticKey noise.DHKey, pub ed25519.PublicKey, admission admission.Admission) (Link, error) {
+func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, pub ed25519.PublicKey, crypto LocalCrypto, admission admission.Admission) (Link, error) {
 	tr, err := transport.NewTransport(port)
 	if err != nil {
 		return nil, err
@@ -83,7 +85,7 @@ func NewLink(port int, crypto LocalCrypto, cs *noise.CipherSuite, staticKey nois
 		handshakeStore: newHandshakeStore(cs, admission, staticKey, pub),
 		sessionStore:   newSessionStore(),
 		rekeyMgr:       newRekeyManager(),
-		handlers:       make(map[types.MsgType]func(from types.PeerKey, payload []byte)),
+		handlers:       make(map[types.MsgType]HandlerFn),
 		events:         make(chan types.PeerEvent, 64),
 		pingMgrs:       make(map[string]*pingMgr),
 		waitPeer:       make(map[types.PeerKey][]chan struct{}),
@@ -156,7 +158,12 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 		i.bumpPinger(ctx, res.Session.peerAddr)
 
 		select {
-		case i.events <- types.PeerEvent{Peer: types.PeerKeyFromBytes(res.PeerStaticKey), Kind: types.PeerEventKindUp}:
+		case i.events <- types.PeerEvent{
+			Peer:        types.PeerKeyFromBytes(res.PeerStaticKey),
+			Kind:        types.PeerEventKindUp,
+			Addr:        res.Session.peerAddr,
+			IdentityPub: res.PeerIdentityPub,
+		}:
 		default:
 		}
 	}
@@ -185,7 +192,7 @@ func (i *impl) handleApp(ctx context.Context, src string, fr frame) {
 	h := i.handlers[fr.typ]
 	i.handlersMu.RUnlock()
 	if h != nil {
-		h(types.PeerKeyFromBytes(sess.peerNoiseKey), pt)
+		h(ctx, types.PeerKeyFromBytes(sess.peerNoiseKey), pt)
 	}
 }
 
@@ -227,7 +234,7 @@ func (i *impl) Send(ctx context.Context, peer types.PeerKey, msg types.Envelope)
 	return nil
 }
 
-func (i *impl) Handle(t types.MsgType, h func(from types.PeerKey, payload []byte)) {
+func (i *impl) Handle(t types.MsgType, h HandlerFn) {
 	i.handlersMu.Lock()
 	defer i.handlersMu.Unlock()
 	i.handlers[t] = h
@@ -307,7 +314,11 @@ func (i *impl) notifyUp(p types.PeerKey) {
 }
 
 func (i *impl) sendHandshakeResult(ctx context.Context, addrs []string, res HandshakeResult, remoteID uint32) error {
+	if len(addrs) == 0 {
+		return ErrNoResolvableIP
+	}
 	if len(res.Msg) == 0 {
+
 		return nil
 	}
 

@@ -15,14 +15,13 @@ import (
 	"golang.org/x/crypto/ed25519"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/tcp"
 	"github.com/sambigeara/pollen/pkg/types"
 
 	tcpv1 "github.com/sambigeara/pollen/api/genpb/pollen/tcp/v1"
 )
 
-type Send func(ctx context.Context, peerNoisePub []byte, payload []byte, t mesh.MessageType) error
+type Send func(ctx context.Context, peer types.PeerKey, msg types.Envelope) error
 
 type PeerDirectory interface {
 	IdentityPub(peerNoisePub []byte) (ed25519.PublicKey, bool)
@@ -77,7 +76,7 @@ func (m *Manager) SetIncomingHandler(h func(net.Conn)) {
 	m.incomingMu.Unlock()
 }
 
-func (m *Manager) HandleRequest(ctx context.Context, fromNoisePub []byte, payload []byte) error {
+func (m *Manager) HandleRequest(ctx context.Context, peerKey types.PeerKey, payload []byte) error {
 	req := &tcpv1.Handshake{}
 	if err := proto.Unmarshal(payload, req); err != nil {
 		return fmt.Errorf("unmarshal tunnel request: %w", err)
@@ -86,7 +85,7 @@ func (m *Manager) HandleRequest(ctx context.Context, fromNoisePub []byte, payloa
 		return errors.New("tunnel request missing request_id")
 	}
 
-	peerIDPub, ok := m.dir.IdentityPub(fromNoisePub)
+	peerIDPub, ok := m.dir.IdentityPub(peerKey.Bytes())
 	if !ok {
 		return ErrUnknownPeerIdentity
 	}
@@ -131,7 +130,11 @@ func (m *Manager) HandleRequest(ctx context.Context, fromNoisePub []byte, payloa
 		return fmt.Errorf("marshal tunnel response: %w", err)
 	}
 
-	if err := m.sender(ctx, fromNoisePub, respBytes, mesh.MessageTypeTCPTunnelResponse); err != nil {
+	env := types.Envelope{
+		Type:    types.MsgTypeTCPTunnelResponse,
+		Payload: respBytes,
+	}
+	if err := m.sender(ctx, peerKey, env); err != nil {
 		ln.Close()
 		return fmt.Errorf("send tunnel response: %w", err)
 	}
@@ -166,7 +169,7 @@ func (m *Manager) acceptIncoming(ln net.Listener, ourCert tls.Certificate, peerC
 	h(conn)
 }
 
-func (m *Manager) HandleResponse(_ context.Context, fromNoisePub []byte, payload []byte) error {
+func (m *Manager) HandleResponse(_ context.Context, _ types.PeerKey, payload []byte) error {
 	resp := &tcpv1.Handshake{}
 	if err := proto.Unmarshal(payload, resp); err != nil {
 		return fmt.Errorf("unmarshal tunnel response: %w", err)
@@ -237,7 +240,11 @@ func (m *Manager) Dial(ctx context.Context, peerNoisePub []byte) (net.Conn, erro
 		m.inflightMu.Unlock()
 	}()
 
-	if err := m.sender(ctx, peerNoisePub, reqBytes, mesh.MessageTypeTCPTunnelRequest); err != nil {
+	env := types.Envelope{
+		Type:    types.MsgTypeTCPTunnelRequest,
+		Payload: reqBytes,
+	}
+	if err := m.sender(ctx, types.PeerKeyFromBytes(peerNoisePub), env); err != nil {
 		return nil, fmt.Errorf("send tunnel request: %w", err)
 	}
 

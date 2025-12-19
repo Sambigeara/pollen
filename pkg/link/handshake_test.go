@@ -1,4 +1,4 @@
-package mesh
+package link
 
 import (
 	"crypto/rand"
@@ -12,6 +12,7 @@ import (
 
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
+	"github.com/sambigeara/pollen/pkg/types"
 )
 
 func TestHandshake_Pure_XX(t *testing.T) {
@@ -46,20 +47,19 @@ func TestHandshake_Pure_XX(t *testing.T) {
 	// 1. Init (B) -> Msg1
 	res1, err := hsInit.Step(nil)
 	require.NoError(t, err)
-	assert.Equal(t, MessageTypeHandshakeXXPsk2Init, res1.MsgType)
+	assert.Equal(t, types.MsgTypeHandshakeXXPsk2Init, res1.MsgType)
 	assert.NotEmpty(t, res1.Msg)
-	assert.Len(t, res1.Targets, 1)
 
 	// 2. Resp (A) processes Msg1 -> Msg2
 	res2, err := hsResp.Step(res1.Msg)
 	require.NoError(t, err)
-	assert.Equal(t, MessageTypeHandshakeXXPsk2Resp, res2.MsgType)
+	assert.Equal(t, types.MsgTypeHandshakeXXPsk2Resp, res2.MsgType)
 	assert.NotEmpty(t, res2.Msg)
 
 	// 3. Init (B) processes Msg2 -> Msg3 + Session
 	res3, err := hsInit.Step(res2.Msg)
 	require.NoError(t, err)
-	assert.Equal(t, MessageTypeHandshakeXXPsk2Init, res3.MsgType)
+	assert.Equal(t, types.MsgTypeHandshakeXXPsk2Init, res3.MsgType)
 	assert.NotEmpty(t, res3.Msg)
 	require.NotNil(t, res3.Session)
 	assert.Equal(t, kpA.Public, res3.PeerStaticKey)
@@ -86,11 +86,8 @@ func TestHandshake_Pure_IK(t *testing.T) {
 	csB := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
 	kpB, _ := csB.GenerateKeypair(rand.Reader)
 
-	// Happy Eyeballs Targets
-	targets := []string{"1.2.3.4:5000", "192.168.1.50:6000"}
-
 	// IK requires Initiator (B) to already know Responder's (A) static key
-	hsInit, err := newHandshakeIKInit(&csB, kpB, kpA.Public, targets)
+	hsInit, err := newHandshakeIKInit(&csB, kpB, kpA.Public)
 	require.NoError(t, err)
 
 	hsResp, err := newHandshakeIKResp(&csA, kpA)
@@ -99,14 +96,13 @@ func TestHandshake_Pure_IK(t *testing.T) {
 	// 1. Init (B) -> Msg1
 	res1, err := hsInit.Step(nil)
 	require.NoError(t, err)
-	assert.Equal(t, MessageTypeHandshakeIKInit, res1.MsgType)
+	assert.Equal(t, types.MsgTypeHandshakeIKInit, res1.MsgType)
 	assert.NotEmpty(t, res1.Msg)
-	assert.Len(t, res1.Targets, 2, "Should resolve all targets")
 
 	// 2. Resp (A) processes Msg1 -> Msg2 + Session
 	res2, err := hsResp.Step(res1.Msg)
 	require.NoError(t, err)
-	assert.Equal(t, MessageTypeHandshakeIKResp, res2.MsgType)
+	assert.Equal(t, types.MsgTypeHandshakeIKResp, res2.MsgType)
 	assert.NotEmpty(t, res2.Msg)
 	require.NotNil(t, res2.Session) // IK establishes responder session immediately
 	assert.Equal(t, kpB.Public, res2.PeerStaticKey)

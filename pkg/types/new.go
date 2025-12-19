@@ -1,5 +1,7 @@
 package types
 
+import "encoding/hex"
+
 type MsgType uint32
 
 const (
@@ -32,7 +34,7 @@ func (pk *PeerKey) Bytes() []byte {
 }
 
 func (pk *PeerKey) String() string {
-	return string(pk.Bytes())
+	return hex.EncodeToString(pk[:])
 }
 
 type PeerInfo struct {
@@ -46,14 +48,15 @@ type PeerEventKind int
 const (
 	PeerEventKindUp PeerEventKind = iota
 	PeerEventKindDown
-	PeerEventKindRotated
-	PeerEventKindRekeyed
+	// PeerEventKindRotated
+	// PeerEventKindRekeyed
 )
 
 type PeerEvent struct {
-	Peer PeerKey
-	Addr string        // the addr that “won” (optional)
-	Kind PeerEventKind // Up/Down/Rotated/Rekeyed...
+	Peer        PeerKey
+	Addr        string        // the addr that “won” (optional)
+	Kind        PeerEventKind // Up/Down/Rotated/Rekeyed...
+	IdentityPub []byte
 }
 
 type Envelope struct {

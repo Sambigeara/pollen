@@ -26,7 +26,6 @@ import (
 	"github.com/sambigeara/pollen/api/genpb/pollen/control/v1/controlv1connect"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
-	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
 	"github.com/sambigeara/pollen/pkg/server"
@@ -142,9 +141,7 @@ func runNode(cmd *cobra.Command, args []string) {
 	}
 
 	conf := &node.Config{
-		Mesh: &mesh.Config{
-			Port: port,
-		},
+		Port:                  port,
 		GossipInterval:        defaultGossipInterval,
 		PeerReconcileInterval: defaultPeerReconcileInterval,
 		PollenDir:             pollenDir,
@@ -238,9 +235,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	port, _ := strconv.Atoi(portStr)
 
 	conf := &node.Config{
-		Mesh: &mesh.Config{
-			Port: port,
-		},
+		Port:                  port,
 		GossipInterval:        defaultGossipInterval,
 		PeerReconcileInterval: defaultPeerReconcileInterval,
 		PollenDir:             pollenDir,
@@ -289,9 +284,6 @@ func runConnect(cmd *cobra.Command, args []string) {
 	pollenDir, _ := workspace.EnsurePollenDir(dir)
 
 	conf := &node.Config{
-		Mesh: &mesh.Config{
-			Port: 0,
-		},
 		GossipInterval:        defaultGossipInterval,
 		PeerReconcileInterval: defaultPeerReconcileInterval,
 		PollenDir:             pollenDir,

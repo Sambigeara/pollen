@@ -51,6 +51,8 @@ func decodeFrame(buf []byte) (fr frame, _ error) {
 		senderID:   senderID,
 		receiverID: receiverID,
 		payload:    buf[payloadOffset:n],
+		// TODO(saml) If we ever start reusing buffers...
+		// payload: append([]byte(nil), buf[payloadOffset:n]...),
 	}, nil
 }
 

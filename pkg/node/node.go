@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -15,7 +16,7 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
-	"github.com/sambigeara/pollen/pkg/mesh"
+	"github.com/sambigeara/pollen/pkg/link"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/tunnel"
@@ -23,6 +24,8 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ed25519"
 )
+
+var _ link.LocalCrypto = (*localCrypto)(nil)
 
 const (
 	localKeysDir = "keys"
@@ -36,7 +39,8 @@ const (
 )
 
 type Config struct {
-	Mesh                  *mesh.Config
+	Port                  int
+	AdvertisedIPs         []string
 	GossipInterval        time.Duration
 	PeerReconcileInterval time.Duration
 	PollenDir             string
@@ -45,13 +49,12 @@ type Config struct {
 type Node struct {
 	log            *zap.SugaredLogger
 	conf           *Config
-	Mesh           *mesh.Mesh
+	link           link.Link
 	Store          *state.Persistence
 	AdmissionStore admission.Store
 	Tunnel         *tunnel.Manager
 	Directory      *Directory
-	identityPubKey ed25519.PublicKey
-	noisePubKey    []byte
+	crypto         *localCrypto
 }
 
 func New(conf *Config) (*Node, error) {
@@ -81,13 +84,26 @@ func New(conf *Config) (*Node, error) {
 		return nil, err
 	}
 
-	// TODO(saml) this seems to be everywhere. Needs to be managed on the highest common layer and propagated down
-	addrs, err := transport.GetAdvertisableAddrs()
-	if err != nil {
-		return nil, err
+	ips := conf.AdvertisedIPs
+	if len(ips) == 0 {
+		var err error
+		ips, err = transport.GetAdvertisableAddrs()
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	m, err := mesh.New(conf.Mesh, addrs, &cs, noiseKey, privKey, pubKey, invitesStore)
+	addrs := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		addrs = append(addrs, net.JoinHostPort(ip, fmt.Sprintf("%d", conf.Port)))
+	}
+
+	crypto := &localCrypto{
+		noisePubKey:    noiseKey.Public,
+		identityPubKey: pubKey,
+	}
+
+	link, err := link.NewLink(conf.Port, &cs, noiseKey, pubKey, crypto, invitesStore)
 	if err != nil {
 		return nil, err
 	}
@@ -95,15 +111,15 @@ func New(conf *Config) (*Node, error) {
 	cluster := stateStore.Cluster
 
 	tun := tunnel.New(
-		m.Send,
+		link.Send,
 		&Directory{cluster: cluster},
 		privKey,
-		addrs,
+		ips,
 	)
 
 	cluster.Nodes.Set(nodeID, &statev1.Node{
 		Id:        nodeID.String(),
-		Addresses: m.GetAdvertisableAddrs(),
+		Addresses: addrs,
 		Keys: &statev1.Keys{
 			NoisePub:    noiseKey.Public,
 			IdentityPub: pubKey,
@@ -112,13 +128,12 @@ func New(conf *Config) (*Node, error) {
 
 	return &Node{
 		log:            log,
-		Mesh:           m,
 		Store:          stateStore,
+		link:           link,
 		AdmissionStore: invitesStore,
 		Tunnel:         tun,
 		Directory:      &Directory{cluster: cluster},
-		identityPubKey: pubKey,
-		noisePubKey:    noiseKey.Public,
+		crypto:         crypto,
 		conf:           conf,
 	}, nil
 }
@@ -126,8 +141,14 @@ func New(conf *Config) (*Node, error) {
 func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 	n.registerHandlers(ctx)
 
-	if err := n.Mesh.Start(ctx, token); err != nil {
+	if err := n.link.Start(ctx); err != nil {
 		return err
+	}
+
+	if token != nil {
+		if err := n.link.JoinWithInvite(ctx, token); err != nil {
+			return fmt.Errorf("join with invite: %w", err)
+		}
 	}
 
 	// initial synchronous run
@@ -137,6 +158,8 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 	go n.maintainConnections(ctx)
 	go n.startGossip(ctx)
 
+	go n.handlePeerEvents(ctx)
+
 	<-ctx.Done()
 
 	n.shutdown()
@@ -145,10 +168,10 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 }
 
 func (n *Node) registerHandlers(ctx context.Context) {
-	n.Mesh.On(mesh.MessageTypeTCPTunnelRequest, n.Tunnel.HandleRequest)
-	n.Mesh.On(mesh.MessageTypeTCPTunnelResponse, n.Tunnel.HandleResponse)
+	n.link.Handle(types.MsgTypeTCPTunnelRequest, n.Tunnel.HandleRequest)
+	n.link.Handle(types.MsgTypeTCPTunnelResponse, n.Tunnel.HandleResponse)
 
-	n.Mesh.On(mesh.MessageTypeGossip, func(_ context.Context, peerNoisePub []byte, plaintext []byte) error {
+	n.link.Handle(types.MsgTypeGossip, func(_ context.Context, _ types.PeerKey, plaintext []byte) error {
 		delta := &statev1.DeltaState{}
 		if err := delta.UnmarshalVT(plaintext); err != nil {
 			return fmt.Errorf("malformed gossip payload: %w", err)
@@ -163,21 +186,6 @@ func (n *Node) registerHandlers(ctx context.Context) {
 
 		return nil
 	})
-
-	n.Mesh.OnPeerUp(func(ev mesh.PeerUp) {
-		id, _ := types.IDFromBytes(ev.PeerNoisePub)
-
-		n.Store.Cluster.Nodes.SetPlaceholder(id, &statev1.Node{
-			Id:        id.String(),
-			Addresses: []string{ev.PeerAddr},
-			Keys: &statev1.Keys{
-				NoisePub:    ev.PeerNoisePub,
-				IdentityPub: ev.PeerIdentityPub,
-			},
-		})
-
-		n.log.Infow("peer connected", "peer_id", id.String()[:8], "addr", ev.PeerAddr)
-	})
 }
 
 func (n *Node) startGossip(ctx context.Context) {
@@ -190,6 +198,30 @@ func (n *Node) startGossip(ctx context.Context) {
 			return
 		case <-ticker.C:
 			n.gossip(ctx)
+		}
+	}
+}
+
+func (n *Node) handlePeerEvents(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev := <-n.link.Events():
+			switch ev.Kind {
+			case types.PeerEventKindUp:
+				id := types.NodeID(ev.Peer)
+				n.Store.Cluster.Nodes.SetPlaceholder(id, &statev1.Node{
+					Id:        id.String(),
+					Addresses: []string{ev.Addr},
+					Keys: &statev1.Keys{
+						NoisePub:    ev.Peer.Bytes(),
+						IdentityPub: ev.IdentityPub,
+					},
+				})
+				n.log.Infow("peer connected", "peer_id", id.String()[:8], "addr", ev.Addr)
+			case types.PeerEventKindDown:
+			}
 		}
 	}
 }
@@ -217,7 +249,10 @@ func (n *Node) gossip(ctx context.Context) {
 		if peer.Id == n.Store.Cluster.LocalID.String() {
 			continue
 		}
-		n.Mesh.Send(ctx, peer.Keys.NoisePub, payload, mesh.MessageTypeGossip)
+		n.link.Send(ctx, types.PeerKeyFromBytes(peer.Keys.NoisePub), types.Envelope{
+			Type:    types.MsgTypeGossip,
+			Payload: payload,
+		})
 	}
 }
 
@@ -253,7 +288,7 @@ func (n *Node) reconcilePeers(ctx context.Context) {
 			continue
 		}
 
-		if err := n.Mesh.EnsureSession(ctx, node.Keys.NoisePub, node.Addresses); err != nil {
+		if err := n.link.EnsurePeer(ctx, types.PeerKeyFromBytes(node.Keys.NoisePub), node.Addresses); err != nil {
 			n.log.Errorf("failed to ensure session with peer: %v", err)
 			continue
 		}
@@ -267,8 +302,8 @@ func (n *Node) shutdown() {
 		n.log.Info("state saved to disk")
 	}
 
-	if err := n.Mesh.Shutdown(); err != nil {
-		n.log.Errorf("failed to shut down mesh: %v", err)
+	if err := n.link.Close(); err != nil {
+		n.log.Errorf("failed to shut down link: %v", err)
 	} else {
 		n.log.Info("successfully shut down mesh")
 	}
@@ -411,9 +446,22 @@ func genIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 	return priv, pub, err
 }
 
-func (n *Node) GetStateKeys() *statev1.Keys {
+type localCrypto struct {
+	identityPubKey ed25519.PublicKey
+	noisePubKey    []byte
+}
+
+func (c *localCrypto) GetStateKeys() *statev1.Keys {
 	return &statev1.Keys{
-		NoisePub:    n.noisePubKey,
-		IdentityPub: n.identityPubKey,
+		NoisePub:    c.noisePubKey,
+		IdentityPub: c.identityPubKey,
 	}
+}
+
+func (c *localCrypto) NoisePub() []byte {
+	return c.noisePubKey
+}
+
+func (c *localCrypto) IdentityPub() []byte {
+	return c.identityPubKey
 }

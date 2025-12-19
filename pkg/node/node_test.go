@@ -9,7 +9,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,10 +18,13 @@ import (
 func TestNode(t *testing.T) {
 	ctx := t.Context()
 
-	verifyReachability := func(t *testing.T, sender *Node, targetKey []byte, recvChan <-chan []byte, payload []byte, msg string) {
+	verifyReachability := func(t *testing.T, sender *Node, targetKey types.PeerKey, recvChan <-chan []byte, payload []byte, msg string) {
 		t.Helper()
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
-			err := sender.Mesh.Send(t.Context(), targetKey, payload, mesh.MessageTypeTest)
+			err := sender.link.Send(t.Context(), targetKey, types.Envelope{
+				Type:    types.MsgTypeTest,
+				Payload: payload,
+			})
 			assert.NoError(c, err)
 
 			select {
@@ -113,18 +115,18 @@ func TestNode(t *testing.T) {
 
 			expectedA = &statev1.Node{
 				Id:        idA.String(),
-				Addresses: nodeA.Mesh.GetAdvertisableAddrs(),
-				Keys:      nodeA.GetStateKeys(),
+				Addresses: advertisedAddrs([]string{"127.0.0.1"}, portA),
+				Keys:      nodeA.crypto.GetStateKeys(),
 			}
 			expectedB = &statev1.Node{
 				Id:        idB.String(),
-				Addresses: nodeB.Mesh.GetAdvertisableAddrs(),
-				Keys:      nodeB.GetStateKeys(),
+				Addresses: advertisedAddrs([]string{"127.0.0.1"}, portB),
+				Keys:      nodeB.crypto.GetStateKeys(),
 			}
 			expectedC = &statev1.Node{
 				Id:        idC.String(),
-				Addresses: nodeC.Mesh.GetAdvertisableAddrs(),
-				Keys:      nodeC.GetStateKeys(),
+				Addresses: advertisedAddrs([]string{"127.0.0.1"}, portC),
+				Keys:      nodeC.crypto.GetStateKeys(),
 			}
 
 			// Validate Exact State Match
@@ -143,15 +145,15 @@ func TestNode(t *testing.T) {
 
 			// Setup Reachability Test Handlers
 			recvA := make(chan []byte, 1)
-			nodeA.Mesh.On(mesh.MessageTypeTest, func(_ context.Context, _ []byte, b []byte) error { recvA <- b; return nil })
+			nodeA.link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error { recvA <- b; return nil })
 			recvB := make(chan []byte, 1)
-			nodeB.Mesh.On(mesh.MessageTypeTest, func(_ context.Context, _ []byte, b []byte) error { recvB <- b; return nil })
+			nodeB.link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error { recvB <- b; return nil })
 			recvC := make(chan []byte, 1)
-			nodeC.Mesh.On(mesh.MessageTypeTest, func(_ context.Context, _ []byte, b []byte) error { recvC <- b; return nil })
+			nodeC.link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error { recvC <- b; return nil })
 
-			skA := nodeA.GetStateKeys().NoisePub
-			skB := nodeB.GetStateKeys().NoisePub
-			skC := nodeC.GetStateKeys().NoisePub
+			skA := types.PeerKeyFromBytes(nodeA.crypto.noisePubKey)
+			skB := types.PeerKeyFromBytes(nodeB.crypto.noisePubKey)
+			skC := types.PeerKeyFromBytes(nodeC.crypto.noisePubKey)
 
 			payload := []byte("hello")
 
@@ -200,7 +202,7 @@ func TestNode(t *testing.T) {
 
 			// Setup Reachability Test Handlers
 			recvA := make(chan []byte, 1)
-			nodeA.Mesh.On(mesh.MessageTypeTest, func(_ context.Context, _ []byte, b []byte) error {
+			nodeA.link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error {
 				select {
 				case recvA <- b:
 				default:
@@ -208,7 +210,7 @@ func TestNode(t *testing.T) {
 				return nil
 			})
 			recvB := make(chan []byte, 1)
-			nodeB.Mesh.On(mesh.MessageTypeTest, func(_ context.Context, _ []byte, b []byte) error {
+			nodeB.link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error {
 				select {
 				case recvB <- b:
 				default:
@@ -216,7 +218,7 @@ func TestNode(t *testing.T) {
 				return nil
 			})
 			recvC := make(chan []byte, 1)
-			nodeC.Mesh.On(mesh.MessageTypeTest, func(_ context.Context, _ []byte, b []byte) error {
+			nodeC.link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error {
 				select {
 				case recvC <- b:
 				default:
@@ -228,8 +230,8 @@ func TestNode(t *testing.T) {
 			go nodeB.Start(ctx, nil)
 			go nodeC.Start(ctx, nil)
 
-			skB := nodeB.GetStateKeys().NoisePub
-			skC := nodeC.GetStateKeys().NoisePub
+			skB := types.PeerKeyFromBytes(nodeB.crypto.noisePubKey)
+			skC := types.PeerKeyFromBytes(nodeC.crypto.noisePubKey)
 
 			payload := []byte("hello")
 
@@ -250,10 +252,8 @@ func newNode(t *testing.T, dir string, port int) (*Node, int) {
 	}
 
 	conf := &Config{
-		Mesh: &mesh.Config{
-			Port:          port,
-			AdvertisedIPs: []string{"127.0.0.1"},
-		},
+		Port:                  port,
+		AdvertisedIPs:         []string{"127.0.0.1"},
 		GossipInterval:        time.Millisecond * 50,
 		PeerReconcileInterval: time.Millisecond * 50,
 		PollenDir:             dir,
@@ -273,4 +273,12 @@ func getFreePort(t *testing.T) int {
 
 	defer l.Close()
 	return l.LocalAddr().(*net.UDPAddr).Port
+}
+
+func advertisedAddrs(ips []string, port int) []string {
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		out = append(out, net.JoinHostPort(ip, fmt.Sprintf("%d", port)))
+	}
+	return out
 }
