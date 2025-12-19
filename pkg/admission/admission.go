@@ -1,4 +1,4 @@
-package invites
+package admission
 
 import (
 	"io"
@@ -11,28 +11,41 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 )
 
-const invitesDir = "invites"
+var _ Store = (*impl)(nil)
 
-type (
-	InviteID string
+const (
+	invitesDir  = "invites"
+	PSKLength   = 32
+	keyFilePerm = 0o600
+	keyDirPerm  = 0o700
 )
 
-type InviteStore struct {
+type Admission interface {
+	ConsumePSK(tokenID string) (psk [PSKLength]byte, ok bool)
+}
+
+type Store interface {
+	Admission
+	Save() error
+	AddInvite(inv *peerv1.Invite)
+}
+
+type impl struct {
 	*peerv1.InviteStore
 	path string
 	mu   sync.RWMutex
 }
 
-func Load(pollenDir string) (*InviteStore, error) {
+func Load(pollenDir string) (Store, error) {
 	dir := filepath.Join(pollenDir, invitesDir)
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
 		return nil, err
 	}
 
 	path := filepath.Join(dir, "invites.sha256")
 
-	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, keyFilePerm)
 	if err != nil {
 		return nil, err
 	}
@@ -52,13 +65,13 @@ func Load(pollenDir string) (*InviteStore, error) {
 		is.Invites = make(map[string]*peerv1.Invite)
 	}
 
-	return &InviteStore{
+	return &impl{
 		InviteStore: is,
 		path:        path,
 	}, nil
 }
 
-func (s *InviteStore) Save() error {
+func (s *impl) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -78,24 +91,25 @@ func (s *InviteStore) Save() error {
 	return err
 }
 
-func (s *InviteStore) AddInvite(inv *peerv1.Invite) {
+func (s *impl) AddInvite(inv *peerv1.Invite) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.Invites[inv.Id] = inv
 }
 
-func (s *InviteStore) GetInvite(id InviteID) (*peerv1.Invite, bool) {
+func (s *impl) ConsumePSK(id string) ([PSKLength]byte, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	inv, ok := s.Invites[string(id)]
-	return inv, ok
-}
+	inv, ok := s.Invites[id]
+	if !ok || inv == nil || len(inv.Psk) != PSKLength {
+		return [PSKLength]byte{}, false
+	}
 
-func (s *InviteStore) DeleteInvite(id InviteID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	delete(s.Invites, id)
 
-	delete(s.Invites, string(id))
+	var psk [PSKLength]byte
+	copy(psk[:], inv.Psk)
+	return psk, true
 }

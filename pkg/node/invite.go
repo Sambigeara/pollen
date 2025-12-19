@@ -9,9 +9,10 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	"github.com/sambigeara/pollen/pkg/admission"
 )
 
-func NewInvite(ip net.IP, port string) (*peerv1.Invite, error) {
+func NewInvite(ips []string, port string) (*peerv1.Invite, error) {
 	id := uuid.NewString()
 
 	// TODO(saml) PSK should have expiry
@@ -20,15 +21,20 @@ func NewInvite(ip net.IP, port string) (*peerv1.Invite, error) {
 		return nil, err
 	}
 
+	addrs := make([]string, len(ips))
+	for i, ip := range ips {
+		addrs[i] = net.JoinHostPort(ip, port)
+	}
+
 	return &peerv1.Invite{
 		Id:   id,
 		Psk:  psk,
-		Addr: net.JoinHostPort(ip.String(), port),
+		Addr: addrs,
 	}, nil
 }
 
 func generatePSK() ([]byte, error) {
-	buf := make([]byte, 32)
+	buf := make([]byte, admission.PSKLength)
 	if _, err := rand.Read(buf); err != nil {
 		return nil, err
 	}

@@ -45,31 +45,15 @@
         }
       }
     },
-    "v1ListFunctionsResponse": {
+    "v1ListPeersResponse": {
       "type": "object",
       "properties": {
-        "functions": {
+        "keys": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "format": "byte"
           }
-        }
-      }
-    },
-    "v1RunResponse": {
-      "type": "object",
-      "properties": {
-        "result": {
-          "type": "string",
-          "format": "byte"
-        }
-      }
-    },
-    "v1SeedResponse": {
-      "type": "object",
-      "properties": {
-        "hash": {
-          "type": "string"
         }
       }
     }

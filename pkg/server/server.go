@@ -14,11 +14,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/node"
 )
 
-const (
-	pollenRootDir = ".pollen"
-	socketName    = "pollen.sock"
-)
-
 type GrpcServer struct{}
 
 func NewGRPCServer() *GrpcServer {
@@ -32,11 +27,12 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 	server := grpc.NewServer()
 	controlv1.RegisterControlServiceServer(server, nodeServ)
 
+	// TODO(saml) why am I returning if the path is valid?
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
 
-	l, err := net.Listen("unix", path)
+	l, err := (&net.ListenConfig{}).Listen(ctx, "unix", path)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return nil

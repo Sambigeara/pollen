@@ -53,12 +53,19 @@ func (m *Known) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		copy(dAtA[i:], m.Addr)
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Addr)))
 		i--
+		dAtA[i] = 0x1a
+	}
+	if len(m.IdentityPub) > 0 {
+		i -= len(m.IdentityPub)
+		copy(dAtA[i:], m.IdentityPub)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.IdentityPub)))
+		i--
 		dAtA[i] = 0x12
 	}
-	if len(m.StaticKey) > 0 {
-		i -= len(m.StaticKey)
-		copy(dAtA[i:], m.StaticKey)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.StaticKey)))
+	if len(m.NoisePub) > 0 {
+		i -= len(m.NoisePub)
+		copy(dAtA[i:], m.NoisePub)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.NoisePub)))
 		i--
 		dAtA[i] = 0xa
 	}
@@ -96,11 +103,13 @@ func (m *Invite) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		copy(dAtA[i:], m.unknownFields)
 	}
 	if len(m.Addr) > 0 {
-		i -= len(m.Addr)
-		copy(dAtA[i:], m.Addr)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Addr)))
-		i--
-		dAtA[i] = 0x1a
+		for iNdEx := len(m.Addr) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.Addr[iNdEx])
+			copy(dAtA[i:], m.Addr[iNdEx])
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Addr[iNdEx])))
+			i--
+			dAtA[i] = 0x1a
+		}
 	}
 	if len(m.Psk) > 0 {
 		i -= len(m.Psk)
@@ -235,7 +244,11 @@ func (m *Known) SizeVT() (n int) {
 	}
 	var l int
 	_ = l
-	l = len(m.StaticKey)
+	l = len(m.NoisePub)
+	if l > 0 {
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	l = len(m.IdentityPub)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -261,9 +274,11 @@ func (m *Invite) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	l = len(m.Addr)
-	if l > 0 {
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	if len(m.Addr) > 0 {
+		for _, s := range m.Addr {
+			l = len(s)
+			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+		}
 	}
 	n += len(m.unknownFields)
 	return n
@@ -346,7 +361,7 @@ func (m *Known) UnmarshalVT(dAtA []byte) error {
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field StaticKey", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field NoisePub", wireType)
 			}
 			var byteLen int
 			for shift := uint(0); ; shift += 7 {
@@ -373,12 +388,46 @@ func (m *Known) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.StaticKey = append(m.StaticKey[:0], dAtA[iNdEx:postIndex]...)
-			if m.StaticKey == nil {
-				m.StaticKey = []byte{}
+			m.NoisePub = append(m.NoisePub[:0], dAtA[iNdEx:postIndex]...)
+			if m.NoisePub == nil {
+				m.NoisePub = []byte{}
 			}
 			iNdEx = postIndex
 		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field IdentityPub", wireType)
+			}
+			var byteLen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				byteLen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if byteLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + byteLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.IdentityPub = append(m.IdentityPub[:0], dAtA[iNdEx:postIndex]...)
+			if m.IdentityPub == nil {
+				m.IdentityPub = []byte{}
+			}
+			iNdEx = postIndex
+		case 3:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Addr", wireType)
 			}
@@ -557,7 +606,7 @@ func (m *Invite) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Addr = string(dAtA[iNdEx:postIndex])
+			m.Addr = append(m.Addr, string(dAtA[iNdEx:postIndex]))
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex

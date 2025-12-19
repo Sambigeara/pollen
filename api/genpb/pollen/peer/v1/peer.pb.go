@@ -24,8 +24,9 @@ const (
 
 type Known struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	StaticKey     []byte                 `protobuf:"bytes,1,opt,name=static_key,json=staticKey,proto3" json:"static_key,omitempty"`
-	Addr          string                 `protobuf:"bytes,2,opt,name=addr,proto3" json:"addr,omitempty"`
+	NoisePub      []byte                 `protobuf:"bytes,1,opt,name=noise_pub,json=noisePub,proto3" json:"noise_pub,omitempty"`
+	IdentityPub   []byte                 `protobuf:"bytes,2,opt,name=identity_pub,json=identityPub,proto3" json:"identity_pub,omitempty"`
+	Addr          string                 `protobuf:"bytes,3,opt,name=addr,proto3" json:"addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -60,9 +61,16 @@ func (*Known) Descriptor() ([]byte, []int) {
 	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *Known) GetStaticKey() []byte {
+func (x *Known) GetNoisePub() []byte {
 	if x != nil {
-		return x.StaticKey
+		return x.NoisePub
+	}
+	return nil
+}
+
+func (x *Known) GetIdentityPub() []byte {
+	if x != nil {
+		return x.IdentityPub
 	}
 	return nil
 }
@@ -78,7 +86,7 @@ type Invite struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Psk           []byte                 `protobuf:"bytes,2,opt,name=psk,proto3" json:"psk,omitempty"`
-	Addr          string                 `protobuf:"bytes,3,opt,name=addr,proto3" json:"addr,omitempty"`
+	Addr          []string               `protobuf:"bytes,3,rep,name=addr,proto3" json:"addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -127,16 +135,16 @@ func (x *Invite) GetPsk() []byte {
 	return nil
 }
 
-func (x *Invite) GetAddr() string {
+func (x *Invite) GetAddr() []string {
 	if x != nil {
 		return x.Addr
 	}
-	return ""
+	return nil
 }
 
 type PeerStore struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Peers         map[string]*Known      `protobuf:"bytes,1,rep,name=peers,proto3" json:"peers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // map<string, Invite> invites = 2;
+	Peers         map[string]*Known      `protobuf:"bytes,1,rep,name=peers,proto3" json:"peers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -179,9 +187,8 @@ func (x *PeerStore) GetPeers() map[string]*Known {
 }
 
 type InviteStore struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// map<string, Known> peers = 1;
-	Invites       map[string]*Invite `protobuf:"bytes,1,rep,name=invites,proto3" json:"invites,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Invites       map[string]*Invite     `protobuf:"bytes,1,rep,name=invites,proto3" json:"invites,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -227,15 +234,15 @@ var File_pollen_peer_v1_peer_proto protoreflect.FileDescriptor
 
 const file_pollen_peer_v1_peer_proto_rawDesc = "" +
 	"\n" +
-	"\x19pollen/peer/v1/peer.proto\x12\x0epollen.peer.v1\x1a\x1bbuf/validate/validate.proto\":\n" +
-	"\x05Known\x12\x1d\n" +
-	"\n" +
-	"static_key\x18\x01 \x01(\fR\tstaticKey\x12\x12\n" +
-	"\x04addr\x18\x02 \x01(\tR\x04addr\"Q\n" +
+	"\x19pollen/peer/v1/peer.proto\x12\x0epollen.peer.v1\x1a\x1bbuf/validate/validate.proto\"[\n" +
+	"\x05Known\x12\x1b\n" +
+	"\tnoise_pub\x18\x01 \x01(\fR\bnoisePub\x12!\n" +
+	"\fidentity_pub\x18\x02 \x01(\fR\videntityPub\x12\x12\n" +
+	"\x04addr\x18\x03 \x01(\tR\x04addr\"Q\n" +
 	"\x06Invite\x12\x18\n" +
 	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x02id\x12\x19\n" +
 	"\x03psk\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x03psk\x12\x12\n" +
-	"\x04addr\x18\x03 \x01(\tR\x04addr\"\x98\x01\n" +
+	"\x04addr\x18\x03 \x03(\tR\x04addr\"\x98\x01\n" +
 	"\tPeerStore\x12:\n" +
 	"\x05peers\x18\x01 \x03(\v2$.pollen.peer.v1.PeerStore.PeersEntryR\x05peers\x1aO\n" +
 	"\n" +
