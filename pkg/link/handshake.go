@@ -132,11 +132,12 @@ func (st *handshakeStore) initXXPsk2(token *peerv1.Invite, peerSigPub []byte) (H
 	return hs.Step(nil)
 }
 
-func (st *handshakeStore) clear(peerSessionID uint32) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-
-	delete(st.st, peerSessionID)
+func (st *handshakeStore) clear(peerSessionID uint32, after time.Duration) {
+	time.AfterFunc(after, func() {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		delete(st.st, peerSessionID)
+	})
 }
 
 type handshakeStage int
@@ -148,9 +149,9 @@ const (
 
 type handshakeIKInit struct {
 	*noise.HandshakeState
+	localSessionID uint32
 	nextStage      handshakeStage
 	mu             sync.Mutex
-	localSessionID uint32
 }
 
 func newHandshakeIKInit(cs *noise.CipherSuite, localStaticKey noise.DHKey, peerStaticKey []byte) (*handshakeIKInit, error) {
@@ -278,9 +279,9 @@ type handshakeXXPsk2Init struct {
 	*noise.HandshakeState
 	tokenID        string
 	sigPub         []byte
+	localSessionID uint32
 	nextStage      handshakeStage
 	mu             sync.Mutex
-	localSessionID uint32
 }
 
 func newHandshakeXXPsk2Init(cs *noise.CipherSuite, localStaticKey noise.DHKey, peerSigPub []byte, token *peerv1.Invite) (*handshakeXXPsk2Init, error) {
@@ -330,7 +331,7 @@ func (hs *handshakeXXPsk2Init) Step(rcvMsg []byte) (HandshakeResult, error) {
 		res.Msg = msg1
 
 	case stage2:
-		peerSig, _, _, err := hs.ReadMessage(nil, rcvMsg)
+		peerIdentityPub, _, _, err := hs.ReadMessage(nil, rcvMsg)
 		if err != nil {
 			return res, err
 		}
@@ -343,7 +344,7 @@ func (hs *handshakeXXPsk2Init) Step(rcvMsg []byte) (HandshakeResult, error) {
 		res.Msg = msg3
 		res.Session = newSession(hs.localSessionID, hs.PeerStatic(), csSend, csRecv)
 		res.PeerStaticKey = hs.PeerStatic()
-		res.PeerIdentityPub = peerSig
+		res.PeerIdentityPub = peerIdentityPub
 
 	default:
 		return res, fmt.Errorf("unexpected stage: %v", hs.nextStage)
@@ -357,9 +358,9 @@ type handshakeXXPsk2Resp struct {
 	*noise.HandshakeState
 	admission      admission.Admission
 	sigPub         []byte
+	localSessionID uint32
 	nextStage      handshakeStage
 	mu             sync.Mutex
-	localSessionID uint32
 }
 
 func newHandshakeXXPsk2Resp(cs *noise.CipherSuite, invitesStore admission.Admission, localStaticKey noise.DHKey, localSigPub []byte) (*handshakeXXPsk2Resp, error) {

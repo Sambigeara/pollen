@@ -20,6 +20,7 @@ var _ Link = (*impl)(nil)
 
 const (
 	sessionRefreshInterval = time.Second * 120 // new IK handshake every 2 mins
+	handshakeDedupTTL      = time.Second * 5
 )
 
 var ErrNoSession = errors.New("no session for peer")
@@ -109,13 +110,13 @@ func (i *impl) loop(ctx context.Context) {
 			continue
 		}
 
-		switch fr.typ {
+		switch fr.typ { //nolint:exhaustive
 		case types.MsgTypePing:
 		case types.MsgTypeHandshakeIKInit, types.MsgTypeHandshakeIKResp, types.MsgTypeHandshakeXXPsk2Init, types.MsgTypeHandshakeXXPsk2Resp:
 			if err := i.handleHandshake(ctx, src, fr); err != nil {
-				i.log.Debug("failed to handle handshake")
+				i.log.Debugf("failed to handle handshake: %s", err)
 			}
-		default:
+		case types.MsgTypeTransportData, types.MsgTypeTCPTunnelRequest, types.MsgTypeTCPTunnelResponse, types.MsgTypeGossip, types.MsgTypeTest:
 			i.handleApp(ctx, fr)
 		}
 	}
@@ -144,8 +145,14 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 		res.Session.peerSessionID = fr.senderID
 
 		i.sessionStore.set(res.Session)
+
+		// Clearing after a grace period gates against old handshakes from the same "batch" overriding
+		// successfully completed "quicker" ones (`handleHandshake.getOrCreate` returns handshakes with invalid
+		// stages, which are dropped).
+		// TODO(saml) need to sync up the various durations/grace periods. This timeout needs to be less than the
+		// handshake request TTL.
 		// TODO(saml) probably need to clear on hard errors too
-		i.handshakeStore.clear(fr.senderID)
+		i.handshakeStore.clear(fr.senderID, handshakeDedupTTL)
 
 		i.notifyUp(types.PeerKeyFromBytes(res.PeerStaticKey))
 		// start only when we trust the peer
@@ -199,10 +206,10 @@ func (i *impl) Close() error {
 
 func (i *impl) Events() <-chan types.PeerEvent { return i.events }
 
-func (i *impl) Send(ctx context.Context, peer types.PeerKey, msg types.Envelope) error {
-	sess, ok := i.sessionStore.getByPeer(peer)
+func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error {
+	sess, ok := i.sessionStore.getByPeer(peerKey)
 	if !ok {
-		return fmt.Errorf("%w: %s", ErrNoSession, peer.String())
+		return fmt.Errorf("%w: %s", ErrNoSession, peerKey.String())
 	}
 
 	ct, shouldRekey, err := sess.Encrypt(msg.Payload)

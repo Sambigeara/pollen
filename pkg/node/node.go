@@ -270,6 +270,7 @@ func trigger(ch chan<- struct{}) {
 }
 
 func (n *Node) reconcilePeers(ctx context.Context) {
+	// TODO(saml) skip peers who we've heard from within short duration
 	for _, node := range n.Store.Cluster.Nodes.GetAll() {
 		if node.Id == n.Store.Cluster.LocalID.String() {
 			continue
