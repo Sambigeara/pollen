@@ -39,91 +39,114 @@ const (
 	socketName     = "pollen.sock"
 	defaultUDPPort = "60611"
 
-	defaultPeerReconcileInterval = 5 * time.Second
-	defaultGossipInterval        = 5 * time.Second
-	defaultTimeout               = 5 * time.Second
+	defaultTimeout = 5 * time.Second
 )
 
 func main() {
-	base, err := os.UserHomeDir()
-	if err != nil {
-		log.Fatalf("unable to retrieve user config dir: %v", err)
-	}
-	defaultRootDir := filepath.Join(base, pollenDir)
-
 	rootCmd := &cobra.Command{Use: "pollen"}
-
-	nodeCmd := &cobra.Command{
-		Use:   "node",
-		Short: "Start a Pollen node",
-		Run:   runNode,
-	}
-	nodeCmd.Flags().String("port", defaultUDPPort, "Listening port")
-	nodeCmd.Flags().String("join", "", "Invite token to join remote peer")
-	nodeCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
-
-	inviteCmd := &cobra.Command{
-		Use:   "invite",
-		Short: "Generate an invite token for a peer",
-		Run:   runInvite,
-	}
-	inviteCmd.Flags().IPSlice("ips", []net.IP{}, "IP addresses advertised to peers")
-	inviteCmd.Flags().String("port", defaultUDPPort, "Port advertised to peers")
-	inviteCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
-
-	serveCmd := &cobra.Command{
-		Use:   "serve [port]",
-		Short: "Expose a local port to the mesh",
-		Args:  cobra.ExactArgs(1),
-		Run:   runServe,
-	}
-	serveCmd.Flags().String("port", defaultUDPPort, "Listening UDP port for node")
-	serveCmd.Flags().String("dir", defaultRootDir, "State directory")
-
-	connectCmd := &cobra.Command{
-		Use:   "connect [peer-id]",
-		Short: "Tunnel a local port to a peer",
-		Args:  cobra.ExactArgs(1),
-		Run:   runConnect,
-	}
-	connectCmd.Flags().String("L", "", "Local port forwarding (e.g., 9090:8080)")
-	connectCmd.Flags().String("dir", defaultRootDir, "State directory")
-
-	peersCmd := &cobra.Command{
-		Use:   "peers",
-		Short: "Manage known peers",
-	}
-	peersListCmd := &cobra.Command{
-		Use:   "list",
-		Short: "List all peer keys",
-		Run:   runListPeers,
-	}
-	peersListCmd.Flags().String("dir", defaultRootDir, "Directory where Pollen state is persisted")
-
-	peersCmd.AddCommand(peersListCmd)
-
-	rootCmd.AddCommand(nodeCmd, inviteCmd, serveCmd, connectCmd, peersCmd)
+	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted")
+	rootCmd.AddCommand(
+		newNodeCmd(),
+		newInviteCmd(),
+		newServeCmd(),
+		newConnectCmd(),
+		newPeersCmd(),
+	)
 
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatalf("failed to execute command: %q", err)
 	}
 }
 
+func defaultRootDir() string {
+	base, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("unable to retrieve user config dir: %v", err)
+	}
+	return filepath.Join(base, pollenDir)
+}
+
+func newNodeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "node",
+		Short: "Start a Pollen node",
+		Run:   runNode,
+	}
+	cmd.Flags().String("port", defaultUDPPort, "Listening port")
+	cmd.Flags().String("join", "", "Invite token to join remote peer")
+	return cmd
+}
+
+func newInviteCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "invite",
+		Short: "Generate an invite token for a peer",
+		Run:   runInvite,
+	}
+	cmd.Flags().IPSlice("ips", []net.IP{}, "IP addresses advertised to peers")
+	cmd.Flags().String("port", defaultUDPPort, "Port advertised to peers")
+	return cmd
+}
+
+func newServeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "serve [port]",
+		Short: "Expose a local port to the mesh",
+		Args:  cobra.ExactArgs(1),
+		Run:   runServe,
+	}
+	cmd.Flags().String("port", defaultUDPPort, "Listening UDP port for node")
+	return cmd
+}
+
+func newConnectCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "connect [peer-id]",
+		Short: "Tunnel a local port to a peer",
+		Args:  cobra.ExactArgs(1),
+		Run:   runConnect,
+	}
+	cmd.Flags().String("L", "", "Local port forwarding (e.g., 9090:8080)")
+	return cmd
+}
+
+func newPeersCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "peers",
+		Short: "Manage known peers",
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "list",
+		Short: "List all peer keys",
+		Run:   runListPeers,
+	})
+	return cmd
+}
+
+func pollenPath(cmd *cobra.Command) (string, error) {
+	dir, err := cmd.Flags().GetString("dir")
+	if err != nil {
+		return "", err
+	}
+	return workspace.EnsurePollenDir(dir)
+}
+
 func runNode(cmd *cobra.Command, args []string) {
 	logging.Init()
-	defer zap.S().Sync() //nolint:errcheck
+	defer func() {
+		_ = zap.S().Sync()
+	}()
 
 	logger := zap.S()
 	logger.Infow("starting pollen...", "version", "0.1.0")
 
 	portStr, _ := cmd.Flags().GetString("port")
 	joinToken, _ := cmd.Flags().GetString("join")
-	dir, _ := cmd.Flags().GetString("dir")
 
 	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopFunc()
 
-	pollenDir, err := workspace.EnsurePollenDir(dir)
+	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		logger.Fatal(err)
 	}
@@ -143,8 +166,8 @@ func runNode(cmd *cobra.Command, args []string) {
 
 	conf := &node.Config{
 		Port:                  port,
-		GossipInterval:        defaultGossipInterval,
-		PeerReconcileInterval: defaultPeerReconcileInterval,
+		GossipInterval:        defaultTimeout,
+		PeerReconcileInterval: defaultTimeout,
 		PollenDir:             pollenDir,
 	}
 
@@ -183,9 +206,8 @@ func runInvite(cmd *cobra.Command, args []string) {
 
 	ips, _ := cmd.Flags().GetIPSlice("ips")
 	port, _ := cmd.Flags().GetString("port")
-	dir, _ := cmd.Flags().GetString("dir")
 
-	pollenDir, err := workspace.EnsurePollenDir(dir)
+	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		logger.Fatalf("failed to prepare pollen dir: %v", err)
 	}
@@ -243,17 +265,24 @@ func runListPeers(cmd *cobra.Command, args []string) {
 }
 
 func runServe(cmd *cobra.Command, args []string) {
-	// 1. Setup Node (reuse logic from runNode)
 	logging.Init()
-	portStr, _ := cmd.Flags().GetString("port")
-	dir, _ := cmd.Flags().GetString("dir")
-	pollenDir, _ := workspace.EnsurePollenDir(dir)
-	port, _ := strconv.Atoi(portStr)
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		log.Fatal(err)
+	}
+	portStr, err := cmd.Flags().GetString("port")
+	if err != nil {
+		log.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		log.Fatalf("invalid port %q: %v", portStr, err)
+	}
 
 	conf := &node.Config{
 		Port:                  port,
-		GossipInterval:        defaultGossipInterval,
-		PeerReconcileInterval: defaultPeerReconcileInterval,
+		GossipInterval:        defaultTimeout,
+		PeerReconcileInterval: defaultTimeout,
 		PollenDir:             pollenDir,
 	}
 
@@ -262,8 +291,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		log.Fatal(err)
 	}
 
-	// 2. Wiring: Handle incoming tunnels by dialing localhost
-	targetPort := args[0] // e.g., ":8080"
+	targetPort := args[0]
 	n.Tunnel.SetIncomingHandler(func(tunnelConn net.Conn) {
 		localConn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", "localhost"+targetPort)
 		if err != nil {
@@ -275,19 +303,19 @@ func runServe(cmd *cobra.Command, args []string) {
 		tcp.Bridge(tunnelConn, localConn)
 	})
 
-	// 3. Start Node
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := n.Start(ctx, nil); err != nil {
 		log.Print("Failed to start node")
-		return
 	}
 }
 
 func runConnect(cmd *cobra.Command, args []string) {
 	peerHex := args[0]
-	localMap, _ := cmd.Flags().GetString("L") // Expected format "9090:8080" but we only need local port for now
-	// Simple parse for "9090:..." -> "9090"
+	localMap, err := cmd.Flags().GetString("L")
+	if err != nil {
+		log.Fatal(err)
+	}
 	localPort := localMap
 	if _, _, err := net.SplitHostPort(localMap); err == nil {
 		_, localPort, _ = net.SplitHostPort(localMap)
@@ -295,18 +323,18 @@ func runConnect(cmd *cobra.Command, args []string) {
 		localPort = port
 	}
 
-	// 1. Setup Node
 	logging.Init()
-	dir, _ := cmd.Flags().GetString("dir")
-	pollenDir, _ := workspace.EnsurePollenDir(dir)
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	conf := &node.Config{
-		GossipInterval:        defaultGossipInterval,
-		PeerReconcileInterval: defaultPeerReconcileInterval,
+		GossipInterval:        defaultTimeout,
+		PeerReconcileInterval: defaultTimeout,
 		PollenDir:             pollenDir,
 	}
 
-	// Use 0 or specific port for initiator node
 	n, err := node.New(conf)
 	if err != nil {
 		log.Fatal(err)
@@ -351,14 +379,12 @@ func runConnect(cmd *cobra.Command, args []string) {
 				return
 			}
 			go func() {
-				// 3. Wiring: Dial Peer via Tunnel Manager
 				meshConn, err := n.Tunnel.Dial(ctx, peerKey)
 				if err != nil {
 					log.Printf("Tunnel failed: %v", err)
 					clientConn.Close()
 					return
 				}
-				// 4. Bridge
 				tcp.Bridge(clientConn, meshConn)
 			}()
 		}
@@ -368,8 +394,7 @@ func runConnect(cmd *cobra.Command, args []string) {
 }
 
 func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient {
-	dir, _ := cmd.Flags().GetString("dir")
-	pollenDir, err := workspace.EnsurePollenDir(dir)
+	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		log.Fatalf("failed to prepare pollen dir: %v", err)
 	}
