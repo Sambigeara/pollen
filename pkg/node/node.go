@@ -54,7 +54,7 @@ type Config struct {
 type Node struct {
 	log            *zap.SugaredLogger
 	conf           *Config
-	link           link.Link
+	Link           link.Link
 	Store          *state.Persistence
 	AdmissionStore admission.Store
 	Tunnel         *tunnel.Manager
@@ -108,7 +108,7 @@ func New(conf *Config) (*Node, error) {
 		identityPubKey: pubKey,
 	}
 
-	link, err := link.NewLink(conf.Port, &cs, noiseKey, crypto, invitesStore)
+	link, err := link.NewLink(int(conf.Port), &cs, noiseKey, crypto, invitesStore)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +134,7 @@ func New(conf *Config) (*Node, error) {
 	return &Node{
 		log:            log,
 		Store:          stateStore,
-		link:           link,
+		Link:           link,
 		AdmissionStore: invitesStore,
 		Tunnel:         tun,
 		Directory:      &Directory{cluster: cluster},
@@ -147,13 +147,13 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 	reconcileCh := make(chan struct{}, 1)
 	n.registerHandlers(reconcileCh)
 
-	if err := n.link.Start(ctx); err != nil {
+	if err := n.Link.Start(ctx); err != nil {
 		return err
 	}
 	defer n.shutdown()
 
 	if token != nil {
-		if err := n.link.JoinWithInvite(ctx, token); err != nil {
+		if err := n.Link.JoinWithInvite(ctx, token); err != nil {
 			return fmt.Errorf("join with invite: %w", err)
 		}
 	}
@@ -175,17 +175,17 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 			n.reconcilePeers(ctx)
 		case <-reconcileCh:
 			n.reconcilePeers(ctx)
-		case ev := <-n.link.Events():
+		case ev := <-n.Link.Events():
 			n.handlePeerEvent(ev)
 		}
 	}
 }
 
 func (n *Node) registerHandlers(reconcileCh chan<- struct{}) {
-	n.link.Handle(types.MsgTypeTCPTunnelRequest, n.Tunnel.HandleRequest)
-	n.link.Handle(types.MsgTypeTCPTunnelResponse, n.Tunnel.HandleResponse)
+	n.Link.Handle(types.MsgTypeTCPTunnelRequest, n.Tunnel.HandleRequest)
+	n.Link.Handle(types.MsgTypeTCPTunnelResponse, n.Tunnel.HandleResponse)
 
-	n.link.Handle(types.MsgTypeGossip, func(_ context.Context, _ types.PeerKey, plaintext []byte) error {
+	n.Link.Handle(types.MsgTypeGossip, func(_ context.Context, _ types.PeerKey, plaintext []byte) error {
 		delta := &statev1.DeltaState{}
 		if err := delta.UnmarshalVT(plaintext); err != nil {
 			return fmt.Errorf("malformed gossip payload: %w", err)
@@ -226,7 +226,7 @@ func (n *Node) gossip(ctx context.Context) {
 		}
 
 		dialCtx, cancel := context.WithTimeout(ctx, ensurePeerTimeout)
-		err := n.link.EnsurePeer(dialCtx, types.PeerKeyFromBytes(peer.Keys.NoisePub), peer.Addresses)
+		err := n.Link.EnsurePeer(dialCtx, types.PeerKeyFromBytes(peer.Keys.NoisePub), peer.Addresses)
 		cancel()
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
@@ -236,7 +236,7 @@ func (n *Node) gossip(ctx context.Context) {
 			continue
 		}
 
-		if err := n.link.Send(ctx, types.PeerKeyFromBytes(peer.Keys.NoisePub), types.Envelope{
+		if err := n.Link.Send(ctx, types.PeerKeyFromBytes(peer.Keys.NoisePub), types.Envelope{
 			Type:    types.MsgTypeGossip,
 			Payload: payload,
 		}); err != nil {
@@ -289,7 +289,7 @@ func (n *Node) reconcilePeers(ctx context.Context) {
 		}
 
 		dialCtx, cancel := context.WithTimeout(ctx, ensurePeerTimeout)
-		err := n.link.EnsurePeer(dialCtx, types.PeerKeyFromBytes(node.Keys.NoisePub), node.Addresses)
+		err := n.Link.EnsurePeer(dialCtx, types.PeerKeyFromBytes(node.Keys.NoisePub), node.Addresses)
 		cancel()
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
@@ -307,7 +307,7 @@ func (n *Node) shutdown() {
 		n.log.Info("state saved to disk")
 	}
 
-	if err := n.link.Close(); err != nil {
+	if err := n.Link.Close(); err != nil {
 		n.log.Errorf("failed to shut down link: %v", err)
 	} else {
 		n.log.Info("successfully shut down mesh")

@@ -2,13 +2,90 @@ syntax = "proto3";
 
 package pollen.control.v1;
 
+import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
+
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1";
 
 service ControlService {
-  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
+  rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
+  rpc CreateInvite(CreateInviteRequest) returns (CreateInviteResponse);
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc RegisterService(RegisterServiceRequest) returns (RegisterServiceResponse);
+  rpc ConnectService(ConnectServiceRequest) returns (ConnectServiceResponse);
 }
 
-message ListPeersRequest {}
-message ListPeersResponse {
-  repeated bytes keys = 1;
+message NodeRef {
+  bytes peer_id = 1;
 }
+
+enum NodeStatus {
+  NODE_STATUS_UNSPECIFIED = 0;
+  NODE_STATUS_ONLINE = 1;
+  NODE_STATUS_OFFLINE = 2;
+}
+
+message NodeSummary {
+  NodeRef node = 1;
+  NodeStatus status = 2;
+  string addr = 3;
+  google.protobuf.Timestamp last_seen = 4;
+}
+
+message ServiceSummary {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  NodeRef provider = 2;
+  uint32 port = 3 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+}
+
+message JoinClusterRequest {
+  string token = 1 [(buf.validate.field).string = {min_len: 1}];
+}
+
+message JoinClusterResponse {
+  NodeRef self = 1;
+}
+
+message CreateInviteRequest {}
+
+message CreateInviteResponse {
+  string token = 1 [(buf.validate.field).string = {min_len: 1}];
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  NodeSummary self = 1;
+  repeated NodeSummary nodes = 2;
+  repeated ServiceSummary services = 3;
+}
+
+message RegisterServiceRequest {
+  uint32 port = 1 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+  optional string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+}
+
+message RegisterServiceResponse {}
+
+message ConnectServiceRequest {
+  NodeRef node = 1;
+  string port = 2;
+  // uint32 port = 2 [(buf.validate.field).uint32 = {
+  //   gt: 0
+  //   lte: 65535
+  // }];
+}
+
+message ConnectServiceResponse {}

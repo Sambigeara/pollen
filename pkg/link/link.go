@@ -37,6 +37,8 @@ type Link interface {
 
 	Send(ctx context.Context, peer types.PeerKey, msg types.Envelope) error
 	Handle(t types.MsgType, h HandlerFn) // dispatch after decrypt
+
+	GetActivePeerAddress(peer types.PeerKey) (string, bool)
 }
 
 type LocalCrypto interface {
@@ -209,11 +211,13 @@ func (i *impl) Events() <-chan types.PeerEvent { return i.events }
 func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error {
 	sess, ok := i.sessionStore.getByPeer(peerKey)
 	if !ok {
+		i.log.Errorf("%w: %s", ErrNoSession, peerKey.String())
 		return fmt.Errorf("%w: %s", ErrNoSession, peerKey.String())
 	}
 
 	ct, shouldRekey, err := sess.Encrypt(msg.Payload)
 	if err != nil {
+		i.log.Errorf("encrypt: %w", err)
 		return fmt.Errorf("encrypt: %w", err)
 	}
 
@@ -225,6 +229,7 @@ func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelo
 	}
 
 	if err := i.transport.Send(sess.peerAddr, encodeFrame(fr)); err != nil {
+		i.log.Errorf("send: %w", err)
 		return fmt.Errorf("send: %w", err)
 	}
 
@@ -300,6 +305,15 @@ func (i *impl) peerLock(p types.PeerKey) *sync.Mutex {
 	m := &sync.Mutex{}
 	i.peerLocks.Store(p, m)
 	return m
+}
+
+func (i *impl) GetActivePeerAddress(peerKey types.PeerKey) (string, bool) {
+	sess, ok := i.sessionStore.getByPeer(peerKey)
+	if !ok {
+		return "", false
+	}
+
+	return sess.peerAddr, true
 }
 
 func (i *impl) addWaiter(k types.PeerKey) chan struct{} {

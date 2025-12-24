@@ -9,4 +9,5 @@ message Handshake {
   bytes cert_der = 2;
   bytes sig = 3;
   repeated string addr = 4;
+  string service_port = 5;
 }

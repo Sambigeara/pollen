@@ -45,15 +45,98 @@
         }
       }
     },
-    "v1ListPeersResponse": {
+    "v1ConnectServiceResponse": {
+      "type": "object"
+    },
+    "v1CreateInviteResponse": {
       "type": "object",
       "properties": {
-        "keys": {
+        "token": {
+          "type": "string"
+        }
+      }
+    },
+    "v1GetStatusResponse": {
+      "type": "object",
+      "properties": {
+        "self": {
+          "$ref": "#/definitions/v1NodeSummary"
+        },
+        "nodes": {
           "type": "array",
           "items": {
-            "type": "string",
-            "format": "byte"
+            "type": "object",
+            "$ref": "#/definitions/v1NodeSummary"
           }
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ServiceSummary"
+          }
+        }
+      }
+    },
+    "v1JoinClusterResponse": {
+      "type": "object",
+      "properties": {
+        "self": {
+          "$ref": "#/definitions/v1NodeRef"
+        }
+      }
+    },
+    "v1NodeRef": {
+      "type": "object",
+      "properties": {
+        "peerId": {
+          "type": "string",
+          "format": "byte"
+        }
+      }
+    },
+    "v1NodeStatus": {
+      "type": "string",
+      "enum": [
+        "NODE_STATUS_UNSPECIFIED",
+        "NODE_STATUS_ONLINE",
+        "NODE_STATUS_OFFLINE"
+      ],
+      "default": "NODE_STATUS_UNSPECIFIED"
+    },
+    "v1NodeSummary": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "$ref": "#/definitions/v1NodeRef"
+        },
+        "status": {
+          "$ref": "#/definitions/v1NodeStatus"
+        },
+        "addr": {
+          "type": "string"
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "v1RegisterServiceResponse": {
+      "type": "object"
+    },
+    "v1ServiceSummary": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/definitions/v1NodeRef"
+        },
+        "port": {
+          "type": "integer",
+          "format": "int64"
         }
       }
     }

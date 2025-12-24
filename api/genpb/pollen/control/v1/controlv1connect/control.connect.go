@@ -33,14 +33,30 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// ControlServiceListPeersProcedure is the fully-qualified name of the ControlService's ListPeers
+	// ControlServiceJoinClusterProcedure is the fully-qualified name of the ControlService's
+	// JoinCluster RPC.
+	ControlServiceJoinClusterProcedure = "/pollen.control.v1.ControlService/JoinCluster"
+	// ControlServiceCreateInviteProcedure is the fully-qualified name of the ControlService's
+	// CreateInvite RPC.
+	ControlServiceCreateInviteProcedure = "/pollen.control.v1.ControlService/CreateInvite"
+	// ControlServiceGetStatusProcedure is the fully-qualified name of the ControlService's GetStatus
 	// RPC.
-	ControlServiceListPeersProcedure = "/pollen.control.v1.ControlService/ListPeers"
+	ControlServiceGetStatusProcedure = "/pollen.control.v1.ControlService/GetStatus"
+	// ControlServiceRegisterServiceProcedure is the fully-qualified name of the ControlService's
+	// RegisterService RPC.
+	ControlServiceRegisterServiceProcedure = "/pollen.control.v1.ControlService/RegisterService"
+	// ControlServiceConnectServiceProcedure is the fully-qualified name of the ControlService's
+	// ConnectService RPC.
+	ControlServiceConnectServiceProcedure = "/pollen.control.v1.ControlService/ConnectService"
 )
 
 // ControlServiceClient is a client for the pollen.control.v1.ControlService service.
 type ControlServiceClient interface {
-	ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error)
+	JoinCluster(context.Context, *connect.Request[v1.JoinClusterRequest]) (*connect.Response[v1.JoinClusterResponse], error)
+	CreateInvite(context.Context, *connect.Request[v1.CreateInviteRequest]) (*connect.Response[v1.CreateInviteResponse], error)
+	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
+	RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error)
+	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
 }
 
 // NewControlServiceClient constructs a client for the pollen.control.v1.ControlService service. By
@@ -54,10 +70,34 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 	baseURL = strings.TrimRight(baseURL, "/")
 	controlServiceMethods := v1.File_pollen_control_v1_control_proto.Services().ByName("ControlService").Methods()
 	return &controlServiceClient{
-		listPeers: connect.NewClient[v1.ListPeersRequest, v1.ListPeersResponse](
+		joinCluster: connect.NewClient[v1.JoinClusterRequest, v1.JoinClusterResponse](
 			httpClient,
-			baseURL+ControlServiceListPeersProcedure,
-			connect.WithSchema(controlServiceMethods.ByName("ListPeers")),
+			baseURL+ControlServiceJoinClusterProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("JoinCluster")),
+			connect.WithClientOptions(opts...),
+		),
+		createInvite: connect.NewClient[v1.CreateInviteRequest, v1.CreateInviteResponse](
+			httpClient,
+			baseURL+ControlServiceCreateInviteProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("CreateInvite")),
+			connect.WithClientOptions(opts...),
+		),
+		getStatus: connect.NewClient[v1.GetStatusRequest, v1.GetStatusResponse](
+			httpClient,
+			baseURL+ControlServiceGetStatusProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("GetStatus")),
+			connect.WithClientOptions(opts...),
+		),
+		registerService: connect.NewClient[v1.RegisterServiceRequest, v1.RegisterServiceResponse](
+			httpClient,
+			baseURL+ControlServiceRegisterServiceProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("RegisterService")),
+			connect.WithClientOptions(opts...),
+		),
+		connectService: connect.NewClient[v1.ConnectServiceRequest, v1.ConnectServiceResponse](
+			httpClient,
+			baseURL+ControlServiceConnectServiceProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("ConnectService")),
 			connect.WithClientOptions(opts...),
 		),
 	}
@@ -65,17 +105,45 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 
 // controlServiceClient implements ControlServiceClient.
 type controlServiceClient struct {
-	listPeers *connect.Client[v1.ListPeersRequest, v1.ListPeersResponse]
+	joinCluster     *connect.Client[v1.JoinClusterRequest, v1.JoinClusterResponse]
+	createInvite    *connect.Client[v1.CreateInviteRequest, v1.CreateInviteResponse]
+	getStatus       *connect.Client[v1.GetStatusRequest, v1.GetStatusResponse]
+	registerService *connect.Client[v1.RegisterServiceRequest, v1.RegisterServiceResponse]
+	connectService  *connect.Client[v1.ConnectServiceRequest, v1.ConnectServiceResponse]
 }
 
-// ListPeers calls pollen.control.v1.ControlService.ListPeers.
-func (c *controlServiceClient) ListPeers(ctx context.Context, req *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error) {
-	return c.listPeers.CallUnary(ctx, req)
+// JoinCluster calls pollen.control.v1.ControlService.JoinCluster.
+func (c *controlServiceClient) JoinCluster(ctx context.Context, req *connect.Request[v1.JoinClusterRequest]) (*connect.Response[v1.JoinClusterResponse], error) {
+	return c.joinCluster.CallUnary(ctx, req)
+}
+
+// CreateInvite calls pollen.control.v1.ControlService.CreateInvite.
+func (c *controlServiceClient) CreateInvite(ctx context.Context, req *connect.Request[v1.CreateInviteRequest]) (*connect.Response[v1.CreateInviteResponse], error) {
+	return c.createInvite.CallUnary(ctx, req)
+}
+
+// GetStatus calls pollen.control.v1.ControlService.GetStatus.
+func (c *controlServiceClient) GetStatus(ctx context.Context, req *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error) {
+	return c.getStatus.CallUnary(ctx, req)
+}
+
+// RegisterService calls pollen.control.v1.ControlService.RegisterService.
+func (c *controlServiceClient) RegisterService(ctx context.Context, req *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error) {
+	return c.registerService.CallUnary(ctx, req)
+}
+
+// ConnectService calls pollen.control.v1.ControlService.ConnectService.
+func (c *controlServiceClient) ConnectService(ctx context.Context, req *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error) {
+	return c.connectService.CallUnary(ctx, req)
 }
 
 // ControlServiceHandler is an implementation of the pollen.control.v1.ControlService service.
 type ControlServiceHandler interface {
-	ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error)
+	JoinCluster(context.Context, *connect.Request[v1.JoinClusterRequest]) (*connect.Response[v1.JoinClusterResponse], error)
+	CreateInvite(context.Context, *connect.Request[v1.CreateInviteRequest]) (*connect.Response[v1.CreateInviteResponse], error)
+	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
+	RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error)
+	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
 }
 
 // NewControlServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -85,16 +153,48 @@ type ControlServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	controlServiceMethods := v1.File_pollen_control_v1_control_proto.Services().ByName("ControlService").Methods()
-	controlServiceListPeersHandler := connect.NewUnaryHandler(
-		ControlServiceListPeersProcedure,
-		svc.ListPeers,
-		connect.WithSchema(controlServiceMethods.ByName("ListPeers")),
+	controlServiceJoinClusterHandler := connect.NewUnaryHandler(
+		ControlServiceJoinClusterProcedure,
+		svc.JoinCluster,
+		connect.WithSchema(controlServiceMethods.ByName("JoinCluster")),
+		connect.WithHandlerOptions(opts...),
+	)
+	controlServiceCreateInviteHandler := connect.NewUnaryHandler(
+		ControlServiceCreateInviteProcedure,
+		svc.CreateInvite,
+		connect.WithSchema(controlServiceMethods.ByName("CreateInvite")),
+		connect.WithHandlerOptions(opts...),
+	)
+	controlServiceGetStatusHandler := connect.NewUnaryHandler(
+		ControlServiceGetStatusProcedure,
+		svc.GetStatus,
+		connect.WithSchema(controlServiceMethods.ByName("GetStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
+	controlServiceRegisterServiceHandler := connect.NewUnaryHandler(
+		ControlServiceRegisterServiceProcedure,
+		svc.RegisterService,
+		connect.WithSchema(controlServiceMethods.ByName("RegisterService")),
+		connect.WithHandlerOptions(opts...),
+	)
+	controlServiceConnectServiceHandler := connect.NewUnaryHandler(
+		ControlServiceConnectServiceProcedure,
+		svc.ConnectService,
+		connect.WithSchema(controlServiceMethods.ByName("ConnectService")),
 		connect.WithHandlerOptions(opts...),
 	)
 	return "/pollen.control.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case ControlServiceListPeersProcedure:
-			controlServiceListPeersHandler.ServeHTTP(w, r)
+		case ControlServiceJoinClusterProcedure:
+			controlServiceJoinClusterHandler.ServeHTTP(w, r)
+		case ControlServiceCreateInviteProcedure:
+			controlServiceCreateInviteHandler.ServeHTTP(w, r)
+		case ControlServiceGetStatusProcedure:
+			controlServiceGetStatusHandler.ServeHTTP(w, r)
+		case ControlServiceRegisterServiceProcedure:
+			controlServiceRegisterServiceHandler.ServeHTTP(w, r)
+		case ControlServiceConnectServiceProcedure:
+			controlServiceConnectServiceHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -104,6 +204,22 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 // UnimplementedControlServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedControlServiceHandler struct{}
 
-func (UnimplementedControlServiceHandler) ListPeers(context.Context, *connect.Request[v1.ListPeersRequest]) (*connect.Response[v1.ListPeersResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.ListPeers is not implemented"))
+func (UnimplementedControlServiceHandler) JoinCluster(context.Context, *connect.Request[v1.JoinClusterRequest]) (*connect.Response[v1.JoinClusterResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.JoinCluster is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) CreateInvite(context.Context, *connect.Request[v1.CreateInviteRequest]) (*connect.Response[v1.CreateInviteResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.CreateInvite is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.GetStatus is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.RegisterService is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.ConnectService is not implemented"))
 }

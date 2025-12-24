@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"connectrpc.com/connect"
@@ -25,19 +26,17 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/api/genpb/pollen/control/v1/controlv1connect"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
-	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
 	"github.com/sambigeara/pollen/pkg/server"
-	"github.com/sambigeara/pollen/pkg/tcp"
-	"github.com/sambigeara/pollen/pkg/transport"
+	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/workspace"
 )
 
 const (
 	pollenDir      = ".pollen"
 	socketName     = "pollen.sock"
-	defaultUDPPort = "60611"
+	defaultUDPPort = 60611
 
 	defaultTimeout = 5 * time.Second
 )
@@ -45,12 +44,14 @@ const (
 func main() {
 	rootCmd := &cobra.Command{Use: "pollen"}
 	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted")
+
 	rootCmd.AddCommand(
 		newNodeCmd(),
+		newJoinCmd(),
 		newInviteCmd(),
+		newStatusCmd(),
 		newServeCmd(),
 		newConnectCmd(),
-		newPeersCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -72,19 +73,36 @@ func newNodeCmd() *cobra.Command {
 		Short: "Start a Pollen node",
 		Run:   runNode,
 	}
-	cmd.Flags().String("port", defaultUDPPort, "Listening port")
+	cmd.Flags().Int("port", defaultUDPPort, "Listening port")
 	cmd.Flags().String("join", "", "Invite token to join remote peer")
 	return cmd
+}
+
+func newJoinCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "join [token]",
+		Short: "Join a Pollen cluster",
+		Args:  cobra.ExactArgs(1),
+		Run:   joinCluster,
+	}
 }
 
 func newInviteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "invite",
-		Short: "Generate an invite token for a peer",
+		Short: "Generate an invite token",
 		Run:   runInvite,
 	}
-	cmd.Flags().IPSlice("ips", []net.IP{}, "IP addresses advertised to peers")
-	cmd.Flags().String("port", defaultUDPPort, "Port advertised to peers")
+	return cmd
+}
+
+func newStatusCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "status [nodes|services]",
+		Short: "Show status",
+		Args:  cobra.RangeArgs(0, 1),
+		Run:   runStatus,
+	}
 	return cmd
 }
 
@@ -95,7 +113,6 @@ func newServeCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Run:   runServe,
 	}
-	cmd.Flags().String("port", defaultUDPPort, "Listening UDP port for node")
 	return cmd
 }
 
@@ -110,19 +127,6 @@ func newConnectCmd() *cobra.Command {
 	return cmd
 }
 
-func newPeersCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "peers",
-		Short: "Manage known peers",
-	}
-	cmd.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List all peer keys",
-		Run:   runListPeers,
-	})
-	return cmd
-}
-
 func pollenPath(cmd *cobra.Command) (string, error) {
 	dir, err := cmd.Flags().GetString("dir")
 	if err != nil {
@@ -133,14 +137,12 @@ func pollenPath(cmd *cobra.Command) (string, error) {
 
 func runNode(cmd *cobra.Command, args []string) {
 	logging.Init()
-	defer func() {
-		_ = zap.S().Sync()
-	}()
+	defer func() { _ = zap.S().Sync() }()
 
 	logger := zap.S()
 	logger.Infow("starting pollen...", "version", "0.1.0")
 
-	portStr, _ := cmd.Flags().GetString("port")
+	port, _ := cmd.Flags().GetInt("port")
 	joinToken, _ := cmd.Flags().GetString("join")
 
 	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -157,11 +159,6 @@ func runNode(cmd *cobra.Command, args []string) {
 		if err != nil {
 			logger.Fatal(err)
 		}
-	}
-
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		logger.Fatalf("port '%s' is invalid: %v", portStr, err)
 	}
 
 	conf := &node.Config{
@@ -198,116 +195,108 @@ func runNode(cmd *cobra.Command, args []string) {
 	}
 }
 
-func runInvite(cmd *cobra.Command, args []string) {
-	logging.Init()
-	defer zap.S().Sync() //nolint:errcheck
+func joinCluster(cmd *cobra.Command, args []string) {
+	enc := args[0]
 
-	logger := zap.S()
-
-	ips, _ := cmd.Flags().GetIPSlice("ips")
-	port, _ := cmd.Flags().GetString("port")
-
-	pollenDir, err := pollenPath(cmd)
+	client := newControlClient(cmd)
+	_, err := client.JoinCluster(context.Background(), connect.NewRequest(&controlv1.JoinClusterRequest{
+		Token: enc,
+	}))
 	if err != nil {
-		logger.Fatalf("failed to prepare pollen dir: %v", err)
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
 	}
-
-	ipStrs := make([]string, 0, len(ips))
-	for _, ip := range ips {
-		ipStrs = append(ipStrs, ip.String())
-	}
-
-	if len(ipStrs) == 0 {
-		var err error
-		ipStrs, err = transport.GetAdvertisableAddrs()
-		if err != nil {
-			logger.Fatalf("failed to infer public IP")
-		}
-	}
-
-	token, err := node.NewInvite(ipStrs, port)
-	if err != nil {
-		logger.Fatalf("failed to generate invite: %v", err)
-	}
-
-	encoded, err := node.EncodeToken(token)
-	if err != nil {
-		logger.Fatalf("failed to encode invite: %v", err)
-	}
-
-	admission, err := admission.Load(pollenDir)
-	if err != nil {
-		logger.Fatalf("failed to load peers store: %v", err)
-	}
-	defer func() {
-		if err := admission.Save(); err != nil {
-			logger.Errorf("failed to save admission: %w", err)
-		}
-	}()
-
-	admission.AddInvite(token)
-
-	fmt.Fprint(cmd.OutOrStdout(), encoded)
 }
 
-func runListPeers(cmd *cobra.Command, args []string) {
+func runInvite(cmd *cobra.Command, args []string) {
 	client := newControlClient(cmd)
+	resp, err := client.CreateInvite(context.Background(), connect.NewRequest(&controlv1.CreateInviteRequest{}))
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+	fmt.Fprint(cmd.OutOrStdout(), resp.Msg.Token)
+}
 
-	resp, err := client.ListPeers(context.Background(), connect.NewRequest(&controlv1.ListPeersRequest{}))
+func runStatus(cmd *cobra.Command, args []string) {
+	mode := "all"
+	if len(args) == 1 {
+		mode = args[0]
+	}
+
+	client := newControlClient(cmd)
+	resp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
 
-	for _, key := range resp.Msg.GetKeys() {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%x\n", key)
+	// Sort for stable output
+	// sort.Slice(resp.Msg.Nodes, func(i, j int) bool {
+	// 	return string(resp.Msg.Nodes[i].Node.PeerId) < string(resp.Msg.Nodes[j].Node.PeerId)
+	// })
+	// sort.Slice(resp.Msg.Services, func(i, j int) bool {
+	// 	if resp.Msg.Services[i].Name == resp.Msg.Services[j].Name {
+	// 		return string(resp.Msg.Services[i].Provider.PeerId) < string(resp.Msg.Services[j].Provider.PeerId)
+	// 	}
+	// 	return resp.Msg.Services[i].Name < resp.Msg.Services[j].Name
+	// })
+
+	switch mode {
+	case "all":
+		printNodesTable(cmd, resp.Msg)
+		fmt.Fprintln(cmd.OutOrStdout())
+		printServicesTable(cmd, resp.Msg)
+	case "nodes", "node":
+		printNodesTable(cmd, resp.Msg)
+	case "services", "service", "serve":
+		printServicesTable(cmd, resp.Msg)
+	default:
+		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services)\n", mode)
 	}
 }
 
+func printNodesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse) {
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "PEER_ID\tSTATUS\tADDR")
+
+	for _, n := range st.Nodes {
+		peerKey := types.PeerKeyFromBytes(n.GetNode().GetPeerId())
+		// short := peerKey.String()[:12]
+		fmt.Fprintf(w, "%s\t%s\t%s\n", peerKey.String(), n.GetStatus().String(), n.Addr)
+	}
+	_ = w.Flush()
+}
+
+func printServicesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse) {
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tPROVIDER_PEER\tPORT")
+
+	for _, s := range st.Services {
+		peerKey := types.PeerKeyFromBytes(s.GetProvider().GetPeerId())
+		// short := peerKey.String()[:12]
+		fmt.Fprintf(w, "%s\t%s\t%d\n", s.GetName(), peerKey.String(), s.GetPort())
+	}
+	_ = w.Flush()
+}
+
 func runServe(cmd *cobra.Command, args []string) {
-	logging.Init()
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		log.Fatal(err)
-	}
-	portStr, err := cmd.Flags().GetString("port")
-	if err != nil {
-		log.Fatal(err)
-	}
+	portStr := args[0]
+
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		log.Fatalf("invalid port %q: %v", portStr, err)
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
 	}
 
-	conf := &node.Config{
-		Port:                  port,
-		GossipInterval:        defaultTimeout,
-		PeerReconcileInterval: defaultTimeout,
-		PollenDir:             pollenDir,
+	client := newControlClient(cmd)
+	if _, err = client.RegisterService(context.Background(), connect.NewRequest(&controlv1.RegisterServiceRequest{
+		Port: uint32(port),
+	})); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
 	}
 
-	n, err := node.New(conf)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	targetPort := args[0]
-	n.Tunnel.SetIncomingHandler(func(tunnelConn net.Conn) {
-		localConn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", "localhost"+targetPort)
-		if err != nil {
-			log.Printf("Failed to dial local service: %v", err)
-			tunnelConn.Close()
-			return
-		}
-		log.Printf("Proxying tunnel to %s", targetPort)
-		tcp.Bridge(tunnelConn, localConn)
-	})
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := n.Start(ctx, nil); err != nil {
-		log.Print("Failed to start node")
-	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Registered service on port: %s\n", portStr)
 }
 
 func runConnect(cmd *cobra.Command, args []string) {
@@ -323,74 +312,23 @@ func runConnect(cmd *cobra.Command, args []string) {
 		localPort = port
 	}
 
-	logging.Init()
-	pollenDir, err := pollenPath(cmd)
+	peerID, err := hex.DecodeString(peerHex)
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	conf := &node.Config{
-		GossipInterval:        defaultTimeout,
-		PeerReconcileInterval: defaultTimeout,
-		PollenDir:             pollenDir,
-	}
-
-	n, err := node.New(conf)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	ctx, cancelFn := context.WithTimeout(context.Background(), defaultTimeout)
-	defer cancelFn()
-
-	l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", ":"+localPort)
-	if err != nil {
-		log.Printf("Failed to listen on %s: %v", localPort, err)
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
 
-	peerKey, err := hex.DecodeString(peerHex)
+	client := newControlClient(cmd)
+	_, err = client.ConnectService(context.Background(), connect.NewRequest(&controlv1.ConnectServiceRequest{
+		Node: &controlv1.NodeRef{
+			PeerId: peerID,
+		},
+		Port: localPort,
+	}))
 	if err != nil {
-		log.Printf("Failed to decode peer hex: %v", err)
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
-
-	if _, ok := n.Directory.IdentityPub(peerKey); !ok {
-		log.Print("Node not recognised, offline, or missing identity keys")
-		return
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	go func() {
-		if err := n.Start(ctx, nil); err != nil {
-			log.Printf("Node stopped: %v", err)
-			os.Exit(1)
-		}
-	}()
-
-	log.Printf("Listening on :%s -> Tunnelling to %s...", localPort, peerHex)
-
-	go func() {
-		for {
-			clientConn, err := l.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				meshConn, err := n.Tunnel.Dial(ctx, peerKey)
-				if err != nil {
-					log.Printf("Tunnel failed: %v", err)
-					clientConn.Close()
-					return
-				}
-				tcp.Bridge(clientConn, meshConn)
-			}()
-		}
-	}()
-
-	<-ctx.Done()
 }
 
 func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient {
@@ -401,7 +339,7 @@ func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient 
 
 	socket := filepath.Join(pollenDir, socketName)
 
-	transport := &http2.Transport{
+	tr := &http2.Transport{
 		AllowHTTP: true,
 		DialTLS: func(_, _ string, _ *tls.Config) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(context.Background(), "unix", socket)
@@ -410,7 +348,7 @@ func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient 
 
 	httpClient := &http.Client{
 		Timeout:   defaultTimeout,
-		Transport: transport,
+		Transport: tr,
 	}
 
 	return controlv1connect.NewControlServiceClient(
