@@ -13,7 +13,8 @@ const (
 	// Noise enforces a MaxNonce of 2^64-1. We set a "slightly" lower limit.
 	maxNonce = uint32(math.MaxUint32) - 1
 
-	rekeyGracePeriod = time.Second * 3 // old sessions hang around for 3 seconds to allow inflight packets targeting the old sessionID to land
+	rekeyGracePeriod    = time.Second * 3  // old sessions hang around for 3 seconds to allow inflight packets targeting the old sessionID to land
+	sessionStaleTimeout = time.Second * 60 // sessions with no received messages for this duration are considered stale
 )
 
 type sessionStore struct {
@@ -66,6 +67,35 @@ func (s *sessionStore) getByLocalID(localID uint32) (*session, bool) {
 	return id, ok
 }
 
+// getStaleAndRemove finds sessions that haven't received messages recently,
+// removes them from the store, and returns their peer keys.
+func (s *sessionStore) getStaleAndRemove(now time.Time) []types.PeerKey {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var stale []types.PeerKey
+	for peerKey, sess := range s.byPeer {
+		if sess.isStale(now) {
+			stale = append(stale, peerKey)
+			delete(s.byPeer, peerKey)
+			delete(s.byLocalID, sess.localSessionID)
+		}
+	}
+	return stale
+}
+
+// getAllPeers returns all peer keys with active sessions.
+func (s *sessionStore) getAllPeers() []types.PeerKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	peers := make([]types.PeerKey, 0, len(s.byPeer))
+	for pk := range s.byPeer {
+		peers = append(peers, pk)
+	}
+	return peers
+}
+
 type session struct {
 	send           *noise.CipherState
 	recv           *noise.CipherState
@@ -75,6 +105,7 @@ type session struct {
 	recvMu         sync.RWMutex
 	localSessionID uint32
 	peerSessionID  uint32
+	lastRecvTime   time.Time
 }
 
 func newSession(localSessionID uint32, noiseKey []byte, send, recv *noise.CipherState) *session {
@@ -83,7 +114,20 @@ func newSession(localSessionID uint32, noiseKey []byte, send, recv *noise.Cipher
 		peerNoiseKey:   noiseKey,
 		send:           send,
 		recv:           recv,
+		lastRecvTime:   time.Now(),
 	}
+}
+
+func (s *session) touchRecv() {
+	s.recvMu.Lock()
+	s.lastRecvTime = time.Now()
+	s.recvMu.Unlock()
+}
+
+func (s *session) isStale(now time.Time) bool {
+	s.recvMu.RLock()
+	defer s.recvMu.RUnlock()
+	return now.Sub(s.lastRecvTime) > sessionStaleTimeout
 }
 
 func (s *session) Encrypt(msg []byte) ([]byte, bool, error) {

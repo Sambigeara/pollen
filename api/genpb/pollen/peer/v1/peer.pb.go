@@ -230,6 +230,110 @@ func (x *InviteStore) GetInvites() map[string]*Invite {
 	return nil
 }
 
+type PunchCoordRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PunchCoordRequest) Reset() {
+	*x = PunchCoordRequest{}
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PunchCoordRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PunchCoordRequest) ProtoMessage() {}
+
+func (x *PunchCoordRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PunchCoordRequest.ProtoReflect.Descriptor instead.
+func (*PunchCoordRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *PunchCoordRequest) GetPeerId() []byte {
+	if x != nil {
+		return x.PeerId
+	}
+	return nil
+}
+
+type PunchCoordTrigger struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	SelfAddr      string                 `protobuf:"bytes,2,opt,name=self_addr,json=selfAddr,proto3" json:"self_addr,omitempty"`
+	PeerAddr      string                 `protobuf:"bytes,3,opt,name=peer_addr,json=peerAddr,proto3" json:"peer_addr,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PunchCoordTrigger) Reset() {
+	*x = PunchCoordTrigger{}
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PunchCoordTrigger) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PunchCoordTrigger) ProtoMessage() {}
+
+func (x *PunchCoordTrigger) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PunchCoordTrigger.ProtoReflect.Descriptor instead.
+func (*PunchCoordTrigger) Descriptor() ([]byte, []int) {
+	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *PunchCoordTrigger) GetPeerId() []byte {
+	if x != nil {
+		return x.PeerId
+	}
+	return nil
+}
+
+func (x *PunchCoordTrigger) GetSelfAddr() string {
+	if x != nil {
+		return x.SelfAddr
+	}
+	return ""
+}
+
+func (x *PunchCoordTrigger) GetPeerAddr() string {
+	if x != nil {
+		return x.PeerAddr
+	}
+	return ""
+}
+
 var File_pollen_peer_v1_peer_proto protoreflect.FileDescriptor
 
 const file_pollen_peer_v1_peer_proto_rawDesc = "" +
@@ -253,7 +357,13 @@ const file_pollen_peer_v1_peer_proto_rawDesc = "" +
 	"\ainvites\x18\x01 \x03(\v2(.pollen.peer.v1.InviteStore.InvitesEntryR\ainvites\x1aR\n" +
 	"\fInvitesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
-	"\x05value\x18\x02 \x01(\v2\x16.pollen.peer.v1.InviteR\x05value:\x028\x01B>Z<github.com/sambigeara/pollen/api/genpb/pollen/peer/v1;peerv1b\x06proto3"
+	"\x05value\x18\x02 \x01(\v2\x16.pollen.peer.v1.InviteR\x05value:\x028\x01\",\n" +
+	"\x11PunchCoordRequest\x12\x17\n" +
+	"\apeer_id\x18\x01 \x01(\fR\x06peerId\"f\n" +
+	"\x11PunchCoordTrigger\x12\x17\n" +
+	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1b\n" +
+	"\tself_addr\x18\x02 \x01(\tR\bselfAddr\x12\x1b\n" +
+	"\tpeer_addr\x18\x03 \x01(\tR\bpeerAddrB>Z<github.com/sambigeara/pollen/api/genpb/pollen/peer/v1;peerv1b\x06proto3"
 
 var (
 	file_pollen_peer_v1_peer_proto_rawDescOnce sync.Once
@@ -267,18 +377,20 @@ func file_pollen_peer_v1_peer_proto_rawDescGZIP() []byte {
 	return file_pollen_peer_v1_peer_proto_rawDescData
 }
 
-var file_pollen_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_pollen_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_pollen_peer_v1_peer_proto_goTypes = []any{
-	(*Known)(nil),       // 0: pollen.peer.v1.Known
-	(*Invite)(nil),      // 1: pollen.peer.v1.Invite
-	(*PeerStore)(nil),   // 2: pollen.peer.v1.PeerStore
-	(*InviteStore)(nil), // 3: pollen.peer.v1.InviteStore
-	nil,                 // 4: pollen.peer.v1.PeerStore.PeersEntry
-	nil,                 // 5: pollen.peer.v1.InviteStore.InvitesEntry
+	(*Known)(nil),             // 0: pollen.peer.v1.Known
+	(*Invite)(nil),            // 1: pollen.peer.v1.Invite
+	(*PeerStore)(nil),         // 2: pollen.peer.v1.PeerStore
+	(*InviteStore)(nil),       // 3: pollen.peer.v1.InviteStore
+	(*PunchCoordRequest)(nil), // 4: pollen.peer.v1.PunchCoordRequest
+	(*PunchCoordTrigger)(nil), // 5: pollen.peer.v1.PunchCoordTrigger
+	nil,                       // 6: pollen.peer.v1.PeerStore.PeersEntry
+	nil,                       // 7: pollen.peer.v1.InviteStore.InvitesEntry
 }
 var file_pollen_peer_v1_peer_proto_depIdxs = []int32{
-	4, // 0: pollen.peer.v1.PeerStore.peers:type_name -> pollen.peer.v1.PeerStore.PeersEntry
-	5, // 1: pollen.peer.v1.InviteStore.invites:type_name -> pollen.peer.v1.InviteStore.InvitesEntry
+	6, // 0: pollen.peer.v1.PeerStore.peers:type_name -> pollen.peer.v1.PeerStore.PeersEntry
+	7, // 1: pollen.peer.v1.InviteStore.invites:type_name -> pollen.peer.v1.InviteStore.InvitesEntry
 	0, // 2: pollen.peer.v1.PeerStore.PeersEntry.value:type_name -> pollen.peer.v1.Known
 	1, // 3: pollen.peer.v1.InviteStore.InvitesEntry.value:type_name -> pollen.peer.v1.Invite
 	4, // [4:4] is the sub-list for method output_type
@@ -299,7 +411,7 @@ func file_pollen_peer_v1_peer_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_peer_v1_peer_proto_rawDesc), len(file_pollen_peer_v1_peer_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

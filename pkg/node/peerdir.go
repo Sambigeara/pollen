@@ -14,11 +14,11 @@ type Directory struct {
 // IdentityPub maps a peer's Noise static public key to their Ed25519 identity public key.
 func (d *Directory) IdentityPub(key types.PeerKey) (ed25519.PublicKey, bool) {
 	rec, ok := d.cluster.Nodes.Get(key)
-	if !ok || rec.Tombstone || rec.Value == nil || rec.Value.Keys == nil {
+	if !ok || rec.Tombstone || rec.Node == nil || rec.Node.Keys == nil {
 		return nil, false
 	}
 
-	pub := rec.Value.Keys.IdentityPub
+	pub := rec.Node.Keys.IdentityPub
 	if len(pub) != ed25519.PublicKeySize {
 		return nil, false
 	}

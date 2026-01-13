@@ -23,7 +23,7 @@ func TestNode(t *testing.T) {
 	verifyReachability := func(t *testing.T, sender *Node, targetKey types.PeerKey, recvChan <-chan []byte, payload []byte, msg string) {
 		t.Helper()
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
-			err := sender.link.Send(t.Context(), targetKey, types.Envelope{
+			err := sender.Link.Send(t.Context(), targetKey, types.Envelope{
 				Type:    types.MsgTypeTest,
 				Payload: payload,
 			})
@@ -151,11 +151,11 @@ func TestNode(t *testing.T) {
 
 			// Setup Reachability Test Handlers
 			recvA := make(chan []byte, 1)
-			nodeA.link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error { recvA <- b; return nil })
+			nodeA.Link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error { recvA <- b; return nil })
 			recvB := make(chan []byte, 1)
-			nodeB.link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error { recvB <- b; return nil })
+			nodeB.Link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error { recvB <- b; return nil })
 			recvC := make(chan []byte, 1)
-			nodeC.link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error { recvC <- b; return nil })
+			nodeC.Link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error { recvC <- b; return nil })
 
 			skA := types.PeerKeyFromBytes(nodeA.crypto.noisePubKey)
 			skB := types.PeerKeyFromBytes(nodeB.crypto.noisePubKey)
@@ -208,7 +208,7 @@ func TestNode(t *testing.T) {
 
 			// Setup Reachability Test Handlers
 			recvA := make(chan []byte, 1)
-			nodeA.link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error {
+			nodeA.Link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error {
 				select {
 				case recvA <- b:
 				default:
@@ -216,7 +216,7 @@ func TestNode(t *testing.T) {
 				return nil
 			})
 			recvB := make(chan []byte, 1)
-			nodeB.link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error {
+			nodeB.Link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error {
 				select {
 				case recvB <- b:
 				default:
@@ -224,7 +224,7 @@ func TestNode(t *testing.T) {
 				return nil
 			})
 			recvC := make(chan []byte, 1)
-			nodeC.link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error {
+			nodeC.Link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error {
 				select {
 				case recvC <- b:
 				default:
@@ -264,11 +264,11 @@ func newNode(t *testing.T, dir string, port int) (*Node, int) {
 	}
 
 	conf := &Config{
-		Port:                  port,
-		AdvertisedIPs:         []string{"127.0.0.1"},
-		GossipInterval:        time.Millisecond * 50,
-		PeerReconcileInterval: time.Millisecond * 50,
-		PollenDir:             dir,
+		Port:             port,
+		AdvertisedIPs:    []string{"127.0.0.1"},
+		GossipInterval:   time.Millisecond * 50,
+		PeerTickInterval: time.Millisecond * 50,
+		PollenDir:        dir,
 	}
 
 	var node *Node

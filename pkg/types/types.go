@@ -19,7 +19,11 @@ const (
 	MsgTypeTCPTunnelRequest
 	MsgTypeTCPTunnelResponse
 
+	MsgTypePunchCoordRequest
+	MsgTypePunchCoordResponse
+
 	MsgTypeGossip
+	MsgTypeDisconnect
 	MsgTypeTest
 )
 
@@ -29,6 +33,15 @@ func PeerKeyFromBytes(b []byte) PeerKey {
 	var id PeerKey
 	copy(id[:], b)
 	return id
+}
+
+func PeerKeyFromString(s string) (PeerKey, error) {
+	var id PeerKey
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return id, err
+	}
+	return PeerKeyFromBytes(b), nil
 }
 
 func (pk *PeerKey) Bytes() []byte {
@@ -41,22 +54,6 @@ func (pk *PeerKey) String() string {
 
 func (pk PeerKey) Less(other PeerKey) bool {
 	return bytes.Compare(pk[:], other[:]) < 0
-}
-
-type PeerEventKind int
-
-const (
-	PeerEventKindUp PeerEventKind = iota
-	PeerEventKindDown
-	// PeerEventKindRotated
-	// PeerEventKindRekeyed.
-)
-
-type PeerEvent struct {
-	Addr        string
-	IdentityPub []byte
-	Kind        PeerEventKind
-	Peer        PeerKey
 }
 
 type Envelope struct {

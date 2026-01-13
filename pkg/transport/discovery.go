@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,12 +14,18 @@ import (
 
 const publicIPQueryTimeout = time.Second * 5
 
-var providers = []string{
-	"https://api64.ipify.org",
-	"https://ifconfig.me/ip",
-	"https://icanhazip.com",
-	"https://ident.me",
-}
+var (
+	ipv4Providers = []string{
+		"https://api.ipify.org",
+		"https://ipv4.icanhazip.com",
+		"https://ifconfig.me/ip",
+	}
+	ipv6Providers = []string{
+		"https://api64.ipify.org",
+		"https://icanhazip.com",
+		"https://ident.me",
+	}
+)
 
 func GetAdvertisableAddrs() ([]string, error) {
 	var results []string
@@ -27,10 +34,20 @@ func GetAdvertisableAddrs() ([]string, error) {
 	ctx, cancelFn := context.WithTimeout(context.Background(), publicIPQueryTimeout)
 	defer cancelFn()
 
-	if pubIP, err := getPublicIP(ctx); err == nil {
+	if pubIP, err := getPublicIP(ctx, ipv4Providers); err == nil {
 		str := pubIP.String()
-		results = append(results, pubIP.String())
+		results = append(results, str)
 		seen[str] = true
+	}
+
+	// Try resolving IPv6 independently. Even if IPv4 already worked we still want IPv6 addresses
+	// to be advertised for dual-stack peers, but we keep IPv4 earlier in the list to favour it.
+	if pubIPv6, err := getPublicIP(ctx, ipv6Providers); err == nil {
+		str := pubIPv6.String()
+		if !seen[str] {
+			results = append(results, str)
+			seen[str] = true
+		}
 	}
 
 	if prefIP, err := getPreferredOutboundIP(ctx); err == nil {
@@ -59,7 +76,7 @@ func GetAdvertisableAddrs() ([]string, error) {
 }
 
 // getPublicIP races multiple providers to return the first valid response.
-func getPublicIP(ctx context.Context) (net.IP, error) {
+func getPublicIP(ctx context.Context, providers []string) (net.IP, error) {
 	ctx, cancel := context.WithTimeout(ctx, publicIPQueryTimeout)
 	defer cancel()
 
@@ -121,7 +138,7 @@ func getPreferredOutboundIP(ctx context.Context) (net.IP, error) {
 	}
 	defer conn.Close()
 
-	localAddr := conn.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
 	return localAddr.IP, nil
 }
 
@@ -162,5 +179,48 @@ func getOtherLocalIPs() ([]net.IP, error) {
 
 // isValidIP filters out Loopback, Multicast, Unspecified, and Link-Local (fe80::) addresses.
 func isValidIP(ip net.IP) bool {
-	return ip != nil && !ip.IsLoopback() && !ip.IsMulticast() && !ip.IsUnspecified() && !ip.IsLinkLocalUnicast()
+	if ip == nil {
+		return false
+	}
+
+	if ip.IsLoopback() || ip.IsMulticast() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+
+	// TODO(saml) remove
+	// Ignore Tailscale IPs
+	// if _, ignoreTailscale := os.LookupEnv("IP_IGNORE_TAILSCALE"); ignoreTailscale {
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+			return false
+		}
+	}
+	ip16 := ip.To16()
+	if ip16 == nil {
+		return false
+	}
+	// Tailscale IPv6 ULA (common): fd7a:115c:a1e0::/48
+	// fd 7a : 11 5c : a1 e0
+	if ip16[0] == 0xfd && ip16[1] == 0x7a && ip16[2] == 0x11 && ip16[3] == 0x5c && ip16[4] == 0xa1 && ip16[5] == 0xe0 {
+		return false
+	}
+	// }
+
+	if _, ignoreLocal := os.LookupEnv("IP_IGNORE_LOCAL"); ignoreLocal {
+		if ip4 := ip.To4(); ip4 != nil {
+			// 10.0.0.0/8
+			if ip4[0] == 10 {
+				return false
+			}
+			// 172.16.0.0/12
+			if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
+				return false
+			}
+			// 192.168.0.0/16
+			if ip4[0] == 192 && ip4[1] == 168 {
+				return false
+			}
+		}
+	}
+	return true
 }

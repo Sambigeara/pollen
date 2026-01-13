@@ -37,13 +37,13 @@ func (s *NodeService) JoinCluster(ctx context.Context, req *controlv1.JoinCluste
 func (s *NodeService) CreateInvite(_ context.Context, _ *controlv1.CreateInviteRequest) (*controlv1.CreateInviteResponse, error) {
 	local := s.node.Store.Cluster.LocalID
 	rec, ok := s.node.Store.Cluster.Nodes.Get(local)
-	if !ok || rec.Tombstone || rec.Value == nil {
+	if !ok || rec.Tombstone || rec.Node == nil {
 		return &controlv1.CreateInviteResponse{}, nil
 	}
 
 	var ips []string
 	port := ""
-	for _, a := range rec.Value.Addresses {
+	for _, a := range rec.Node.Addresses {
 		host, p, err := splitHostPort(a)
 		if err != nil {
 			continue

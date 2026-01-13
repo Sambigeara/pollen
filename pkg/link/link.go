@@ -10,17 +10,20 @@ import (
 	"github.com/flynn/noise"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
+	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
-	"go.uber.org/multierr"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 var _ Link = (*impl)(nil)
 
 const (
-	sessionRefreshInterval = time.Second * 120 // new IK handshake every 2 mins
-	handshakeDedupTTL      = time.Second * 5
+	sessionRefreshInterval   = time.Second * 120 // new IK handshake every 2 mins
+	handshakeDedupTTL        = time.Second * 5
+	ensurePeerTimeout        = time.Second * 4
+	staleSessionCheckInterval = time.Second * 15 // how often to check for stale sessions
 )
 
 var ErrNoSession = errors.New("no session for peer")
@@ -31,14 +34,15 @@ type Link interface {
 	Start(ctx context.Context) error
 	Close() error
 
-	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error             // XXpsk2 init
-	EnsurePeer(ctx context.Context, peer types.PeerKey, addrs []string) error // IK init
-	Events() <-chan types.PeerEvent
+	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error                // XXpsk2 init
+	EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string) error // IK init
+	Events() <-chan peer.Input
 
-	Send(ctx context.Context, peer types.PeerKey, msg types.Envelope) error
+	Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error
 	Handle(t types.MsgType, h HandlerFn) // dispatch after decrypt
 
-	GetActivePeerAddress(peer types.PeerKey) (string, bool)
+	GetActivePeerAddress(peerKey types.PeerKey) (string, bool)
+	BroadcastDisconnect() // notify all connected peers we're shutting down
 }
 
 type LocalCrypto interface {
@@ -55,7 +59,7 @@ type impl struct {
 	sessionStore   *sessionStore
 	rekeyMgr       *rekeyManager
 	log            *zap.SugaredLogger
-	events         chan types.PeerEvent
+	events         chan peer.Input
 	cancel         context.CancelFunc
 	pingMgrs       map[string]*pingMgr
 	waitPeer       map[types.PeerKey][]chan struct{}
@@ -81,7 +85,7 @@ func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto Loca
 		sessionStore:   newSessionStore(),
 		rekeyMgr:       newRekeyManager(),
 		handlers:       make(map[types.MsgType]HandlerFn),
-		events:         make(chan types.PeerEvent, eventBufSize),
+		events:         make(chan peer.Input, eventBufSize),
 		pingMgrs:       make(map[string]*pingMgr),
 		waitPeer:       make(map[types.PeerKey][]chan struct{}),
 	}, nil
@@ -92,12 +96,14 @@ func (i *impl) Start(ctx context.Context) error {
 	i.cancel = cancel
 
 	go i.loop(ctx)
+	go i.staleSessionChecker(ctx)
 	return nil
 }
 
 func (i *impl) loop(ctx context.Context) {
 	for {
 		src, b, err := i.transport.Recv()
+		i.log.Debugw("RAW RECV FRAME", "src", src)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -114,14 +120,119 @@ func (i *impl) loop(ctx context.Context) {
 
 		switch fr.typ { //nolint:exhaustive
 		case types.MsgTypePing:
+		case types.MsgTypePunchCoordRequest:
+			i.log.Debugw("received punch request", "src", src)
+			if err := i.handlePunchCoordRequest(ctx, src, fr); err != nil {
+				i.log.Debugf("failed to handle punch coord request: %s", err)
+			}
+		case types.MsgTypePunchCoordResponse:
+			i.log.Debugw("received punch trigger", "src", src)
+			if err := i.handlePunchCoordTrigger(ctx, src, fr); err != nil {
+				i.log.Debugf("failed to handle punch coord trigger: %s", err)
+			}
 		case types.MsgTypeHandshakeIKInit, types.MsgTypeHandshakeIKResp, types.MsgTypeHandshakeXXPsk2Init, types.MsgTypeHandshakeXXPsk2Resp:
 			if err := i.handleHandshake(ctx, src, fr); err != nil {
 				i.log.Debugf("failed to handle handshake: %s", err)
 			}
 		case types.MsgTypeTransportData, types.MsgTypeTCPTunnelRequest, types.MsgTypeTCPTunnelResponse, types.MsgTypeGossip, types.MsgTypeTest:
 			i.handleApp(ctx, fr)
+		case types.MsgTypeDisconnect:
+			i.handleDisconnect(fr)
 		}
 	}
+}
+
+func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame) error {
+	initSess, ok := i.sessionStore.getByLocalID(fr.receiverID)
+	if !ok {
+		// TODO(saml)
+		return errors.New("coord req session not found")
+	}
+
+	pt, _, err := initSess.Decrypt(fr.payload)
+	if err != nil {
+		return fmt.Errorf("decrypt request payload: %w", err)
+	}
+
+	req := &peerv1.PunchCoordRequest{}
+	if err := req.UnmarshalVT(pt); err != nil {
+		return fmt.Errorf("malformed request payload: %w", err)
+	}
+
+	recvSess, ok := i.sessionStore.getByPeer(types.PeerKeyFromBytes(req.PeerId))
+	if !ok {
+		// TODO(saml)
+		return nil
+	}
+
+	recvPeer := types.PeerKeyFromBytes(req.PeerId)
+	initPeer := types.PeerKeyFromBytes(initSess.peerNoiseKey)
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		resp := &peerv1.PunchCoordTrigger{
+			PeerId:   req.PeerId,
+			SelfAddr: src,
+			PeerAddr: recvSess.peerAddr,
+		}
+
+		b, err := resp.MarshalVT()
+		if err != nil {
+			return err
+		}
+
+		return i.Send(ctx, initPeer, types.Envelope{
+			Payload: b,
+			Type:    types.MsgTypePunchCoordResponse,
+		})
+	})
+
+	g.Go(func() error {
+		resp := &peerv1.PunchCoordTrigger{
+			PeerId:   initSess.peerNoiseKey,
+			SelfAddr: recvSess.peerAddr,
+			PeerAddr: src,
+		}
+
+		b, err := resp.MarshalVT()
+		if err != nil {
+			return err
+		}
+
+		return i.Send(ctx, recvPeer, types.Envelope{
+			Payload: b,
+			Type:    types.MsgTypePunchCoordResponse,
+		})
+	})
+	return g.Wait()
+}
+
+func (i *impl) handlePunchCoordTrigger(ctx context.Context, src string, fr frame) error {
+	sess, ok := i.sessionStore.getByLocalID(fr.receiverID)
+	if !ok {
+		return errors.New("coord trigger session not found")
+	}
+
+	b, _, err := sess.Decrypt(fr.payload)
+	if err != nil {
+		return fmt.Errorf("decrypt trigger payload: %w", err)
+	}
+
+	req := &peerv1.PunchCoordTrigger{}
+	if err := req.UnmarshalVT(b); err != nil {
+		return fmt.Errorf("malformed trigger payload: %w", err)
+	}
+
+	ensureCtx, cancel := context.WithTimeout(ctx, ensurePeerTimeout)
+	defer cancel()
+
+	peerID := types.PeerKeyFromBytes(req.PeerId)
+	if err := i.EnsurePeer(ensureCtx, peerID, []string{req.PeerAddr}); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		i.log.Debugw("ensure peer failed", "peer", peerID, "err", err)
+		return err
+	}
+
+	return nil
 }
 
 func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error {
@@ -138,8 +249,8 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 		return err
 	}
 
-	if err := i.sendHandshakeResult([]string{src}, res, fr.senderID); err != nil {
-		i.log.Debugw("failed to send handshake reply", "err", err)
+	if err := i.sendHandshakeResult(src, res, fr.senderID); err != nil {
+		// i.log.Debugw("failed to send handshake reply", "err", err)
 	}
 
 	if res.Session != nil {
@@ -161,9 +272,8 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 		i.bumpPinger(ctx, res.Session.peerAddr)
 
 		select {
-		case i.events <- types.PeerEvent{
-			Peer:        types.PeerKeyFromBytes(res.PeerStaticKey),
-			Kind:        types.PeerEventKindUp,
+		case i.events <- peer.ConnectPeer{
+			PeerKey:     types.PeerKeyFromBytes(res.PeerStaticKey),
 			Addr:        res.Session.peerAddr,
 			IdentityPub: res.PeerIdentityPub,
 		}:
@@ -185,6 +295,7 @@ func (i *impl) handleApp(ctx context.Context, fr frame) {
 		return
 	}
 
+	sess.touchRecv()
 	i.bumpPinger(ctx, sess.peerAddr)
 
 	if shouldRekey {
@@ -201,12 +312,61 @@ func (i *impl) handleApp(ctx context.Context, fr frame) {
 	}
 }
 
+func (i *impl) handleDisconnect(fr frame) {
+	sess, ok := i.sessionStore.getByLocalID(fr.receiverID)
+	if !ok {
+		return
+	}
+
+	peerKey := types.PeerKeyFromBytes(sess.peerNoiseKey)
+	i.log.Infow("received disconnect from peer", "peer", peerKey.String()[:8])
+
+	// Emit PeerDisconnected to state machine
+	select {
+	case i.events <- peer.PeerDisconnected{PeerKey: peerKey}:
+	default:
+	}
+}
+
+func (i *impl) staleSessionChecker(ctx context.Context) {
+	ticker := time.NewTicker(staleSessionCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stale := i.sessionStore.getStaleAndRemove(time.Now())
+			for _, peerKey := range stale {
+				i.log.Infow("session timed out", "peer", peerKey.String()[:8])
+				select {
+				case i.events <- peer.PeerDisconnected{PeerKey: peerKey}:
+				default:
+				}
+			}
+		}
+	}
+}
+
+func (i *impl) BroadcastDisconnect() {
+	peers := i.sessionStore.getAllPeers()
+	for _, peerKey := range peers {
+		if err := i.Send(context.Background(), peerKey, types.Envelope{
+			Type:    types.MsgTypeDisconnect,
+			Payload: nil,
+		}); err != nil {
+			i.log.Debugw("failed to send disconnect", "peer", peerKey.String()[:8], "err", err)
+		}
+	}
+}
+
 func (i *impl) Close() error {
 	i.cancel()
 	return i.transport.Close()
 }
 
-func (i *impl) Events() <-chan types.PeerEvent { return i.events }
+func (i *impl) Events() <-chan peer.Input { return i.events }
 
 func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error {
 	sess, ok := i.sessionStore.getByPeer(peerKey)
@@ -256,44 +416,65 @@ func (i *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 
 	// Send the initial packet(s)
 	// For Init, receiverID is 0
-	if err := i.sendHandshakeResult(inv.Addr, res, 0); err != nil {
+	g, ctx := errgroup.WithContext(ctx)
+	for _, addr := range inv.Addr {
+		g.Go(func() error {
+			return i.sendHandshakeResult(addr, res, 0)
+		})
+	}
+	if err := g.Wait(); err != nil {
 		return fmt.Errorf("failed to send invite init: %w", err)
 	}
+	i.log.Debug("join attempt complete")
 
 	return nil
 }
 
-func (i *impl) EnsurePeer(ctx context.Context, peer types.PeerKey, addrs []string) error {
-	// fast path
-	if _, ok := i.sessionStore.getByPeer(peer); ok {
+func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string) error {
+	if len(addrs) == 0 {
+		return errors.New("no addresses provided")
+	}
+
+	if _, ok := i.sessionStore.getByPeer(peerKey); ok {
 		return nil
 	}
 
-	mu := i.peerLock(peer)
+	mu := i.peerLock(peerKey)
 	mu.Lock()
 	defer mu.Unlock()
 
 	// re-check under lock
-	if _, ok := i.sessionStore.getByPeer(peer); ok {
+	if _, ok := i.sessionStore.getByPeer(peerKey); ok {
 		return nil
 	}
 
-	// register waiter *before* sending, so we can’t miss the PeerUp
-	upCh := i.addWaiter(peer)
+	// register waiter *before* sending, so we can't miss the PeerUp
+	upCh := i.addWaiter(peerKey)
 
-	res, err := i.handshakeStore.initIK(peer.Bytes())
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	res, err := i.handshakeStore.initIK(peerKey.Bytes())
 	if err != nil {
 		return err
 	}
-	if err := i.sendHandshakeResult(addrs, res, 0); err != nil {
-		return err
-	}
 
-	select {
-	case <-upCh:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	for {
+		select {
+		case <-upCh:
+			return nil
+		case <-ticker.C:
+			// Send to all addresses in parallel (happy eyeballs)
+			for _, addr := range addrs {
+				go func(addr string) {
+					if err := i.sendHandshakeResult(addr, res, 0); err != nil {
+						i.log.Debugw("handshake send failed", "addr", addr, "err", err)
+					}
+				}(addr)
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 }
 
@@ -335,36 +516,20 @@ func (i *impl) notifyUp(p types.PeerKey) {
 	}
 }
 
-func (i *impl) sendHandshakeResult(addrs []string, res HandshakeResult, remoteID uint32) error {
-	if len(addrs) == 0 {
-		return ErrNoResolvableIP
-	}
+func (i *impl) sendHandshakeResult(addr string, res HandshakeResult, remoteID uint32) error {
 	if len(res.Msg) == 0 {
-		return nil
+		return ErrEmptyMsg
 	}
 
-	var errs error
-	success := false
-
-	enc := encodeFrame(&frame{
+	if err := i.transport.Send(addr, encodeFrame(&frame{
 		payload:    res.Msg,
 		typ:        res.MsgType,
 		senderID:   res.LocalSessionID,
 		receiverID: remoteID,
-	})
-
-	// happy eyeballs
-	for _, addr := range addrs {
-		if err := i.transport.Send(addr, enc); err != nil {
-			i.log.Debugf("failed to write to candidate %s: %v", addr, err)
-			errs = multierr.Append(errs, fmt.Errorf("%s: %w", addr, err))
-		} else {
-			success = true
-		}
+	})); err != nil {
+		i.log.Debugf("failed to write to candidate %s: %v", addr, err)
+		return err
 	}
 
-	if !success {
-		return errs
-	}
 	return nil
 }

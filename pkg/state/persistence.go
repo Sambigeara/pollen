@@ -93,7 +93,7 @@ func (p *Persistence) Save() error {
 func (p *Persistence) Hydrate(delta *statev1.DeltaState) {
 	// We can manually reconstruct the Record structs to feed into the generic Merge.
 	// This ensures our internal Logic Clock respects the persisted state.
-	nodeRecords := make(map[types.PeerKey]Record[*statev1.Node], len(delta.Nodes))
+	nodeRecords := make(map[types.PeerKey]Record, len(delta.Nodes))
 	for k, v := range delta.Nodes {
 		keyBytes, err := hex.DecodeString(k)
 		if err != nil {
@@ -112,8 +112,8 @@ func (p *Persistence) Hydrate(delta *statev1.DeltaState) {
 			tsID = types.PeerKeyFromBytes(tsBytes)
 		}
 
-		nodeRecords[nodeID] = Record[*statev1.Node]{
-			Value:     v.Value,
+		nodeRecords[nodeID] = Record{
+			Node:      v.Value,
 			Tombstone: v.Tombstone,
 			Timestamp: Timestamp{
 				Counter: v.Ts.Counter,

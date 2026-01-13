@@ -3,67 +3,52 @@ package state
 import (
 	"sync"
 
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-type Record[T any] struct {
-	Value     T
+type Record struct {
+	Node      *statev1.Node
 	Timestamp Timestamp
 	Tombstone bool
 }
 
-type Map[T any] struct {
-	Data        map[types.PeerKey]Record[T]
-	Clock       int64
+type NodeMap struct {
+	Data        map[types.PeerKey]Record
+	clock       int64
 	LocalNodeID types.PeerKey
 	mu          sync.RWMutex
 }
 
-func NewMap[T any](localNodeID types.PeerKey) *Map[T] {
-	return &Map[T]{
-		Data:        make(map[types.PeerKey]Record[T]),
+func NewNodeMap(localNodeID types.PeerKey) *NodeMap {
+	return &NodeMap{
+		Data:        make(map[types.PeerKey]Record),
 		LocalNodeID: localNodeID,
-		Clock:       0,
+		clock:       0,
 	}
 }
 
-func (m *Map[T]) tick() Timestamp {
-	m.Clock++
+func (m *NodeMap) tick() Timestamp {
+	m.clock++
 	return Timestamp{
-		Counter: m.Clock,
+		Counter: m.clock,
 		NodeID:  m.LocalNodeID,
 	}
 }
 
-func (m *Map[T]) Set(key types.PeerKey, val T) {
+func (m *NodeMap) Set(key types.PeerKey, node *statev1.Node) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	ts := m.tick()
-	m.Data[key] = Record[T]{
-		Value:     val,
+	m.Data[key] = Record{
+		Node:      node,
 		Timestamp: ts,
 		Tombstone: false,
 	}
 }
 
-// SetPlaceholder sets the record with a zeroed clock, to ensure
-// a later call to `Set` overrides it.
-func (m *Map[T]) SetPlaceholder(key types.PeerKey, val T) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if _, ok := m.Data[key]; ok {
-		return
-	}
-
-	m.Data[key] = Record[T]{
-		Value:     val,
-		Tombstone: false,
-	}
-}
-
-func (m *Map[T]) Get(key types.PeerKey) (Record[T], bool) {
+func (m *NodeMap) Get(key types.PeerKey) (Record, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -71,27 +56,27 @@ func (m *Map[T]) Get(key types.PeerKey) (Record[T], bool) {
 	return v, ok
 }
 
-func (m *Map[T]) GetAll() map[types.PeerKey]T {
+func (m *NodeMap) GetAll() map[types.PeerKey]*statev1.Node {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	out := make(map[types.PeerKey]T, len(m.Data))
+	out := make(map[types.PeerKey]*statev1.Node, len(m.Data))
 	for k, rec := range m.Data {
 		if !rec.Tombstone {
-			out[k] = rec.Value
+			out[k] = rec.Node
 		}
 	}
 
 	return out
 }
 
-func (m *Map[T]) Merge(remoteData map[types.PeerKey]Record[T]) {
+func (m *NodeMap) Merge(remoteData map[types.PeerKey]Record) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	for k, remoteRec := range remoteData {
-		if remoteRec.Timestamp.Counter > m.Clock {
-			m.Clock = remoteRec.Timestamp.Counter
+		if remoteRec.Timestamp.Counter > m.clock {
+			m.clock = remoteRec.Timestamp.Counter
 		}
 
 		if localRec, exists := m.Data[k]; !exists || localRec.Timestamp.Less(remoteRec.Timestamp) {

@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"fmt"
 	"net"
 )
 
@@ -9,29 +10,22 @@ var _ Transport = (*impl)(nil)
 type Transport interface {
 	Recv() (src string, b []byte, err error) // src is "ip:port"
 	Send(dst string, b []byte) error
-	LocalAddrs() []string
 	Close() error
 }
 
 type impl struct {
-	conn       *net.UDPConn
-	localAddrs []string
+	conn *net.UDPConn
 }
 
 func NewTransport(port int) (Transport, error) {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: port})
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: nil, Port: port})
 	if err != nil {
-		return nil, err
-	}
-
-	localAddresses, err := GetAdvertisableAddrs()
-	if err != nil {
+		fmt.Printf("Failed to bind: %v\n", err)
 		return nil, err
 	}
 
 	return &impl{
-		conn:       conn,
-		localAddrs: localAddresses,
+		conn: conn,
 	}, nil
 }
 
@@ -56,10 +50,6 @@ func (i *impl) Send(dst string, b []byte) error {
 	}
 
 	return nil
-}
-
-func (i *impl) LocalAddrs() []string {
-	return i.localAddrs
 }
 
 func (i *impl) Close() error {

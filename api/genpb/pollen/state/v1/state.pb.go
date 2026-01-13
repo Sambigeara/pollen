@@ -22,8 +22,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Node represents the static topology information of a peer in the cluster.
-// This is the payload stored in the 'Nodes' CRDT map.
 type Node struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -93,17 +91,10 @@ func (x *Node) GetKeys() *Keys {
 }
 
 type Keys struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// The Noise Protocol static public key (32 bytes).
-	// Used for UDP encryption and establishing the secure tunnel.
-	NoisePub []byte `protobuf:"bytes,1,opt,name=noise_pub,json=noisePub,proto3" json:"noise_pub,omitempty"`
-	// The Node's Identity Public Key (Ed25519, 32 bytes).
-	// Used to sign ephemeral mTLS certificates for TCP tunnels.
-	IdentityPub []byte `protobuf:"bytes,2,opt,name=identity_pub,json=identityPub,proto3" json:"identity_pub,omitempty"`
-	// The Admin public key (32 bytes).
-	// Used to verify Executive Orders (bans).
-	// This is a cluster-level key, usually the same for all nodes in the config.
-	AdminPub      []byte `protobuf:"bytes,3,opt,name=admin_pub,json=adminPub,proto3,oneof" json:"admin_pub,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NoisePub      []byte                 `protobuf:"bytes,1,opt,name=noise_pub,json=noisePub,proto3" json:"noise_pub,omitempty"`
+	IdentityPub   []byte                 `protobuf:"bytes,2,opt,name=identity_pub,json=identityPub,proto3" json:"identity_pub,omitempty"`
+	AdminPub      []byte                 `protobuf:"bytes,3,opt,name=admin_pub,json=adminPub,proto3,oneof" json:"admin_pub,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

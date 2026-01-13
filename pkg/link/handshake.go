@@ -28,6 +28,7 @@ var (
 
 var (
 	ErrNoResolvableIP = errors.New("no resolvable IP from peer")
+	ErrEmptyMsg       = errors.New("no message to send")
 
 	handshakePrologue = []byte("pollenv1")
 )

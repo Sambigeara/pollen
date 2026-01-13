@@ -25,3 +25,13 @@ message PeerStore {
 message InviteStore {
   map<string, Invite> invites = 1;
 }
+
+message PunchCoordRequest {
+  bytes peer_id = 1;
+}
+
+message PunchCoordTrigger {
+  bytes peer_id = 1;
+  string self_addr = 2;
+  string peer_addr = 3;
+}

@@ -74,6 +74,7 @@ func newNodeCmd() *cobra.Command {
 		Run:   runNode,
 	}
 	cmd.Flags().Int("port", defaultUDPPort, "Listening port")
+	cmd.Flags().IPSlice("ips", []net.IP{}, "Advertisable IPs")
 	cmd.Flags().String("join", "", "Invite token to join remote peer")
 	return cmd
 }
@@ -144,6 +145,7 @@ func runNode(cmd *cobra.Command, args []string) {
 
 	port, _ := cmd.Flags().GetInt("port")
 	joinToken, _ := cmd.Flags().GetString("join")
+	ips, _ := cmd.Flags().GetIPSlice("ips")
 
 	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopFunc()
@@ -161,11 +163,20 @@ func runNode(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	var addrs []string
+	if len(ips) > 0 {
+		addrs = make([]string, len(ips))
+		for i, ip := range ips {
+			addrs[i] = ip.String()
+		}
+	}
+
 	conf := &node.Config{
-		Port:                  port,
-		GossipInterval:        defaultTimeout,
-		PeerReconcileInterval: defaultTimeout,
-		PollenDir:             pollenDir,
+		Port:             port,
+		GossipInterval:   defaultTimeout,
+		PeerTickInterval: time.Second,
+		PollenDir:        pollenDir,
+		AdvertisedIPs:    addrs,
 	}
 
 	n, err := node.New(conf)

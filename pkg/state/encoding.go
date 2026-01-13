@@ -4,7 +4,7 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 )
 
-func ToNodeDelta(m *Map[*statev1.Node]) map[string]*statev1.NodeRecord {
+func ToNodeDelta(m *NodeMap) map[string]*statev1.NodeRecord {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -12,7 +12,7 @@ func ToNodeDelta(m *Map[*statev1.Node]) map[string]*statev1.NodeRecord {
 
 	for key, record := range m.Data {
 		out[key.String()] = &statev1.NodeRecord{
-			Value:     record.Value,
+			Value:     record.Node,
 			Tombstone: record.Tombstone,
 			Ts: &statev1.Timestamp{
 				Counter: record.Timestamp.Counter,
