@@ -191,8 +191,18 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 }
 
 func (n *Node) registerHandlers(reconcileCh chan<- struct{}) {
-	n.Link.Handle(types.MsgTypeTCPTunnelRequest, n.Tunnel.HandleRequest)
-	n.Link.Handle(types.MsgTypeTCPTunnelResponse, n.Tunnel.HandleResponse)
+	// Set peer provider for TCP punch coordination
+	n.Tunnel.SetPeerProvider(n)
+
+	// Session handlers (multiplexed tunnels)
+	n.Link.Handle(types.MsgTypeSessionRequest, n.Tunnel.HandleSessionRequest)
+	n.Link.Handle(types.MsgTypeSessionResponse, n.Tunnel.HandleSessionResponse)
+
+	// TCP punch handlers
+	n.Link.Handle(types.MsgTypeTcpPunchRequest, n.Tunnel.HandlePunchRequest)
+	n.Link.Handle(types.MsgTypeTcpPunchTrigger, n.Tunnel.HandlePunchTrigger)
+	n.Link.Handle(types.MsgTypeTcpPunchReady, n.Tunnel.HandlePunchReady)
+	n.Link.Handle(types.MsgTypeTcpPunchResponse, n.Tunnel.HandlePunchResponse)
 
 	n.Link.Handle(types.MsgTypeGossip, func(_ context.Context, _ types.PeerKey, plaintext []byte) error {
 		delta := &statev1.DeltaState{}
@@ -309,7 +319,7 @@ func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordin
 	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.String()[:8], "coordinator", coordinator.String()[:8])
 
 	if err := n.Link.Send(context.Background(), coordinator, types.Envelope{
-		Type:    types.MsgTypePunchCoordRequest,
+		Type:    types.MsgTypeUdpPunchCoordRequest,
 		Payload: b,
 	}); err != nil {
 		n.log.Debugw("punch coord request failed", "peer", e.PeerKey.String()[:8], "err", err)
@@ -347,6 +357,18 @@ func (n *Node) shutdown() {
 	} else {
 		n.log.Info("successfully shut down mesh")
 	}
+}
+
+// GetConnectedPeers returns all currently connected peer keys.
+// Implements tunnel.ConnectedPeersProvider.
+func (n *Node) GetConnectedPeers() []types.PeerKey {
+	return n.Peers.GetAll(peer.PeerStateConnected)
+}
+
+// GetActivePeerAddress returns the active address for a connected peer.
+// Implements tunnel.ConnectedPeersProvider.
+func (n *Node) GetActivePeerAddress(peerKey types.PeerKey) (string, bool) {
+	return n.Link.GetActivePeerAddress(peerKey)
 }
 
 func genNoiseKey(cs noise.CipherSuite, pollenDir string) (noise.DHKey, error) {

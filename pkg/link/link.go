@@ -20,9 +20,9 @@ import (
 var _ Link = (*impl)(nil)
 
 const (
-	sessionRefreshInterval   = time.Second * 120 // new IK handshake every 2 mins
-	handshakeDedupTTL        = time.Second * 5
-	ensurePeerTimeout        = time.Second * 4
+	sessionRefreshInterval    = time.Second * 120 // new IK handshake every 2 mins
+	handshakeDedupTTL         = time.Second * 5
+	ensurePeerTimeout         = time.Second * 4
 	staleSessionCheckInterval = time.Second * 15 // how often to check for stale sessions
 )
 
@@ -103,7 +103,6 @@ func (i *impl) Start(ctx context.Context) error {
 func (i *impl) loop(ctx context.Context) {
 	for {
 		src, b, err := i.transport.Recv()
-		i.log.Debugw("RAW RECV FRAME", "src", src)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -120,12 +119,12 @@ func (i *impl) loop(ctx context.Context) {
 
 		switch fr.typ { //nolint:exhaustive
 		case types.MsgTypePing:
-		case types.MsgTypePunchCoordRequest:
+		case types.MsgTypeUdpPunchCoordRequest:
 			i.log.Debugw("received punch request", "src", src)
 			if err := i.handlePunchCoordRequest(ctx, src, fr); err != nil {
 				i.log.Debugf("failed to handle punch coord request: %s", err)
 			}
-		case types.MsgTypePunchCoordResponse:
+		case types.MsgTypeUdpPunchCoordResponse:
 			i.log.Debugw("received punch trigger", "src", src)
 			if err := i.handlePunchCoordTrigger(ctx, src, fr); err != nil {
 				i.log.Debugf("failed to handle punch coord trigger: %s", err)
@@ -134,7 +133,9 @@ func (i *impl) loop(ctx context.Context) {
 			if err := i.handleHandshake(ctx, src, fr); err != nil {
 				i.log.Debugf("failed to handle handshake: %s", err)
 			}
-		case types.MsgTypeTransportData, types.MsgTypeTCPTunnelRequest, types.MsgTypeTCPTunnelResponse, types.MsgTypeGossip, types.MsgTypeTest:
+		case types.MsgTypeTransportData, types.MsgTypeTcpPunchRequest, types.MsgTypeTcpPunchTrigger,
+			types.MsgTypeTcpPunchReady, types.MsgTypeTcpPunchResponse, types.MsgTypeGossip, types.MsgTypeTest,
+			types.MsgTypeSessionRequest, types.MsgTypeSessionResponse:
 			i.handleApp(ctx, fr)
 		case types.MsgTypeDisconnect:
 			i.handleDisconnect(fr)
@@ -183,7 +184,7 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 
 		return i.Send(ctx, initPeer, types.Envelope{
 			Payload: b,
-			Type:    types.MsgTypePunchCoordResponse,
+			Type:    types.MsgTypeUdpPunchCoordResponse,
 		})
 	})
 
@@ -201,7 +202,7 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 
 		return i.Send(ctx, recvPeer, types.Envelope{
 			Payload: b,
-			Type:    types.MsgTypePunchCoordResponse,
+			Type:    types.MsgTypeUdpPunchCoordResponse,
 		})
 	})
 	return g.Wait()

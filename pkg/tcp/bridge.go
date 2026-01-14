@@ -2,9 +2,10 @@ package tcp
 
 import (
 	"io"
-	"log"
 	"net"
 	"sync"
+
+	"go.uber.org/zap"
 )
 
 const bridgeCopyWorkers = 2
@@ -24,7 +25,7 @@ func Bridge(c1, c2 net.Conn) {
 	go func() {
 		defer wg.Done()
 		if _, err := copyWithPooledBuf(c1, c2); err != nil {
-			log.Printf("bridge copy c1<-c2 failed: %v", err)
+			zap.S().Debugw("bridge copy failed", "direction", "c1<-c2", "err", err)
 		}
 		c1.Close()
 	}()
@@ -32,7 +33,7 @@ func Bridge(c1, c2 net.Conn) {
 	go func() {
 		defer wg.Done()
 		if _, err := copyWithPooledBuf(c2, c1); err != nil {
-			log.Printf("bridge copy c2<-c1 failed: %v", err)
+			zap.S().Debugw("bridge copy failed", "direction", "c2<-c1", "err", err)
 		}
 		c2.Close()
 	}()

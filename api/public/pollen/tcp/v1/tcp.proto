@@ -11,3 +11,46 @@ message Handshake {
   repeated string addr = 4;
   string service_port = 5;
 }
+
+// Initiator → Coordinator: request TCP punch to target peer
+message TcpPunchRequest {
+  bytes peer_id = 1; // Target peer's noise public key
+  uint32 local_port = 2; // Initiator's bound TCP port
+  string service_port = 3; // Which service port on target
+  bytes cert_der = 4; // Initiator's ephemeral cert
+  bytes sig = 5; // Signature of cert
+}
+
+// Coordinator → Target: notification to participate in punch
+message TcpPunchTrigger {
+  bytes peer_id = 1; // Initiator's peer ID (noise pub)
+  string peer_addr = 2; // Initiator's external addr:port to dial
+  string service_port = 3; // Service port to connect locally
+  bytes peer_cert_der = 4; // Initiator's ephemeral cert
+  bytes peer_sig = 5; // Initiator's cert signature
+  uint64 request_id = 6; // For correlation
+}
+
+// Target → Coordinator: ready to receive connection
+message TcpPunchReady {
+  uint64 request_id = 1; // Correlates with trigger
+  uint32 local_port = 2; // Target's bound TCP port
+  bytes cert_der = 3; // Target's ephemeral cert
+  bytes sig = 4; // Target's cert signature
+}
+
+// Coordinator → Initiator: target is ready, start punching
+message TcpPunchResponse {
+  string peer_addr = 1; // Target's external addr:port to dial
+  bytes peer_cert_der = 2; // Target's ephemeral cert
+  bytes peer_sig = 3; // Target's cert signature
+}
+
+// SessionHandshake for establishing multiplexed tunnel sessions.
+// Sessions are long-lived connections that multiplex many streams.
+message SessionHandshake {
+  uint64 request_id = 1;
+  bytes cert_der = 2; // Ephemeral TLS cert
+  bytes sig = 3; // Ed25519 signature over cert
+  repeated string addr = 4; // Response only: addresses to dial
+}

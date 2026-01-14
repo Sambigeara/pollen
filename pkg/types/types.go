@@ -16,15 +16,22 @@ const (
 	MsgTypeTransportData
 	MsgTypePing
 
-	MsgTypeTCPTunnelRequest
-	MsgTypeTCPTunnelResponse
-
-	MsgTypePunchCoordRequest
-	MsgTypePunchCoordResponse
+	MsgTypeUdpPunchCoordRequest
+	MsgTypeUdpPunchCoordResponse
 
 	MsgTypeGossip
 	MsgTypeDisconnect
 	MsgTypeTest
+
+	// TCP punch coordination (NAT traversal for tunnels)
+	MsgTypeTcpPunchRequest
+	MsgTypeTcpPunchTrigger
+	MsgTypeTcpPunchReady
+	MsgTypeTcpPunchResponse
+
+	// Session establishment (multiplexed tunnels)
+	MsgTypeSessionRequest
+	MsgTypeSessionResponse
 )
 
 type PeerKey [32]byte // Noise static pub

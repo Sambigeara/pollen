@@ -97,6 +97,368 @@ func (x *Handshake) GetServicePort() string {
 	return ""
 }
 
+// Initiator → Coordinator: request TCP punch to target peer
+type TcpPunchRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`                // Target peer's noise public key
+	LocalPort     uint32                 `protobuf:"varint,2,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`      // Initiator's bound TCP port
+	ServicePort   string                 `protobuf:"bytes,3,opt,name=service_port,json=servicePort,proto3" json:"service_port,omitempty"` // Which service port on target
+	CertDer       []byte                 `protobuf:"bytes,4,opt,name=cert_der,json=certDer,proto3" json:"cert_der,omitempty"`             // Initiator's ephemeral cert
+	Sig           []byte                 `protobuf:"bytes,5,opt,name=sig,proto3" json:"sig,omitempty"`                                    // Signature of cert
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TcpPunchRequest) Reset() {
+	*x = TcpPunchRequest{}
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TcpPunchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TcpPunchRequest) ProtoMessage() {}
+
+func (x *TcpPunchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TcpPunchRequest.ProtoReflect.Descriptor instead.
+func (*TcpPunchRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *TcpPunchRequest) GetPeerId() []byte {
+	if x != nil {
+		return x.PeerId
+	}
+	return nil
+}
+
+func (x *TcpPunchRequest) GetLocalPort() uint32 {
+	if x != nil {
+		return x.LocalPort
+	}
+	return 0
+}
+
+func (x *TcpPunchRequest) GetServicePort() string {
+	if x != nil {
+		return x.ServicePort
+	}
+	return ""
+}
+
+func (x *TcpPunchRequest) GetCertDer() []byte {
+	if x != nil {
+		return x.CertDer
+	}
+	return nil
+}
+
+func (x *TcpPunchRequest) GetSig() []byte {
+	if x != nil {
+		return x.Sig
+	}
+	return nil
+}
+
+// Coordinator → Target: notification to participate in punch
+type TcpPunchTrigger struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`                  // Initiator's peer ID (noise pub)
+	PeerAddr      string                 `protobuf:"bytes,2,opt,name=peer_addr,json=peerAddr,proto3" json:"peer_addr,omitempty"`            // Initiator's external addr:port to dial
+	ServicePort   string                 `protobuf:"bytes,3,opt,name=service_port,json=servicePort,proto3" json:"service_port,omitempty"`   // Service port to connect locally
+	PeerCertDer   []byte                 `protobuf:"bytes,4,opt,name=peer_cert_der,json=peerCertDer,proto3" json:"peer_cert_der,omitempty"` // Initiator's ephemeral cert
+	PeerSig       []byte                 `protobuf:"bytes,5,opt,name=peer_sig,json=peerSig,proto3" json:"peer_sig,omitempty"`               // Initiator's cert signature
+	RequestId     uint64                 `protobuf:"varint,6,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`        // For correlation
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TcpPunchTrigger) Reset() {
+	*x = TcpPunchTrigger{}
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TcpPunchTrigger) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TcpPunchTrigger) ProtoMessage() {}
+
+func (x *TcpPunchTrigger) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TcpPunchTrigger.ProtoReflect.Descriptor instead.
+func (*TcpPunchTrigger) Descriptor() ([]byte, []int) {
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *TcpPunchTrigger) GetPeerId() []byte {
+	if x != nil {
+		return x.PeerId
+	}
+	return nil
+}
+
+func (x *TcpPunchTrigger) GetPeerAddr() string {
+	if x != nil {
+		return x.PeerAddr
+	}
+	return ""
+}
+
+func (x *TcpPunchTrigger) GetServicePort() string {
+	if x != nil {
+		return x.ServicePort
+	}
+	return ""
+}
+
+func (x *TcpPunchTrigger) GetPeerCertDer() []byte {
+	if x != nil {
+		return x.PeerCertDer
+	}
+	return nil
+}
+
+func (x *TcpPunchTrigger) GetPeerSig() []byte {
+	if x != nil {
+		return x.PeerSig
+	}
+	return nil
+}
+
+func (x *TcpPunchTrigger) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+// Target → Coordinator: ready to receive connection
+type TcpPunchReady struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // Correlates with trigger
+	LocalPort     uint32                 `protobuf:"varint,2,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"` // Target's bound TCP port
+	CertDer       []byte                 `protobuf:"bytes,3,opt,name=cert_der,json=certDer,proto3" json:"cert_der,omitempty"`        // Target's ephemeral cert
+	Sig           []byte                 `protobuf:"bytes,4,opt,name=sig,proto3" json:"sig,omitempty"`                               // Target's cert signature
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TcpPunchReady) Reset() {
+	*x = TcpPunchReady{}
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TcpPunchReady) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TcpPunchReady) ProtoMessage() {}
+
+func (x *TcpPunchReady) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TcpPunchReady.ProtoReflect.Descriptor instead.
+func (*TcpPunchReady) Descriptor() ([]byte, []int) {
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *TcpPunchReady) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *TcpPunchReady) GetLocalPort() uint32 {
+	if x != nil {
+		return x.LocalPort
+	}
+	return 0
+}
+
+func (x *TcpPunchReady) GetCertDer() []byte {
+	if x != nil {
+		return x.CertDer
+	}
+	return nil
+}
+
+func (x *TcpPunchReady) GetSig() []byte {
+	if x != nil {
+		return x.Sig
+	}
+	return nil
+}
+
+// Coordinator → Initiator: target is ready, start punching
+type TcpPunchResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerAddr      string                 `protobuf:"bytes,1,opt,name=peer_addr,json=peerAddr,proto3" json:"peer_addr,omitempty"`            // Target's external addr:port to dial
+	PeerCertDer   []byte                 `protobuf:"bytes,2,opt,name=peer_cert_der,json=peerCertDer,proto3" json:"peer_cert_der,omitempty"` // Target's ephemeral cert
+	PeerSig       []byte                 `protobuf:"bytes,3,opt,name=peer_sig,json=peerSig,proto3" json:"peer_sig,omitempty"`               // Target's cert signature
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TcpPunchResponse) Reset() {
+	*x = TcpPunchResponse{}
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TcpPunchResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TcpPunchResponse) ProtoMessage() {}
+
+func (x *TcpPunchResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TcpPunchResponse.ProtoReflect.Descriptor instead.
+func (*TcpPunchResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *TcpPunchResponse) GetPeerAddr() string {
+	if x != nil {
+		return x.PeerAddr
+	}
+	return ""
+}
+
+func (x *TcpPunchResponse) GetPeerCertDer() []byte {
+	if x != nil {
+		return x.PeerCertDer
+	}
+	return nil
+}
+
+func (x *TcpPunchResponse) GetPeerSig() []byte {
+	if x != nil {
+		return x.PeerSig
+	}
+	return nil
+}
+
+// SessionHandshake for establishing multiplexed tunnel sessions.
+// Sessions are long-lived connections that multiplex many streams.
+type SessionHandshake struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	CertDer       []byte                 `protobuf:"bytes,2,opt,name=cert_der,json=certDer,proto3" json:"cert_der,omitempty"` // Ephemeral TLS cert
+	Sig           []byte                 `protobuf:"bytes,3,opt,name=sig,proto3" json:"sig,omitempty"`                        // Ed25519 signature over cert
+	Addr          []string               `protobuf:"bytes,4,rep,name=addr,proto3" json:"addr,omitempty"`                      // Response only: addresses to dial
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SessionHandshake) Reset() {
+	*x = SessionHandshake{}
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionHandshake) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionHandshake) ProtoMessage() {}
+
+func (x *SessionHandshake) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionHandshake.ProtoReflect.Descriptor instead.
+func (*SessionHandshake) Descriptor() ([]byte, []int) {
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SessionHandshake) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *SessionHandshake) GetCertDer() []byte {
+	if x != nil {
+		return x.CertDer
+	}
+	return nil
+}
+
+func (x *SessionHandshake) GetSig() []byte {
+	if x != nil {
+		return x.Sig
+	}
+	return nil
+}
+
+func (x *SessionHandshake) GetAddr() []string {
+	if x != nil {
+		return x.Addr
+	}
+	return nil
+}
+
 var File_pollen_tcp_v1_tcp_proto protoreflect.FileDescriptor
 
 const file_pollen_tcp_v1_tcp_proto_rawDesc = "" +
@@ -108,7 +470,39 @@ const file_pollen_tcp_v1_tcp_proto_rawDesc = "" +
 	"\bcert_der\x18\x02 \x01(\fR\acertDer\x12\x10\n" +
 	"\x03sig\x18\x03 \x01(\fR\x03sig\x12\x12\n" +
 	"\x04addr\x18\x04 \x03(\tR\x04addr\x12!\n" +
-	"\fservice_port\x18\x05 \x01(\tR\vservicePortB<Z:github.com/sambigeara/pollen/api/genpb/pollen/tcp/v1;tcpv1b\x06proto3"
+	"\fservice_port\x18\x05 \x01(\tR\vservicePort\"\x99\x01\n" +
+	"\x0fTcpPunchRequest\x12\x17\n" +
+	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1d\n" +
+	"\n" +
+	"local_port\x18\x02 \x01(\rR\tlocalPort\x12!\n" +
+	"\fservice_port\x18\x03 \x01(\tR\vservicePort\x12\x19\n" +
+	"\bcert_der\x18\x04 \x01(\fR\acertDer\x12\x10\n" +
+	"\x03sig\x18\x05 \x01(\fR\x03sig\"\xc8\x01\n" +
+	"\x0fTcpPunchTrigger\x12\x17\n" +
+	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1b\n" +
+	"\tpeer_addr\x18\x02 \x01(\tR\bpeerAddr\x12!\n" +
+	"\fservice_port\x18\x03 \x01(\tR\vservicePort\x12\"\n" +
+	"\rpeer_cert_der\x18\x04 \x01(\fR\vpeerCertDer\x12\x19\n" +
+	"\bpeer_sig\x18\x05 \x01(\fR\apeerSig\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x06 \x01(\x04R\trequestId\"z\n" +
+	"\rTcpPunchReady\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x1d\n" +
+	"\n" +
+	"local_port\x18\x02 \x01(\rR\tlocalPort\x12\x19\n" +
+	"\bcert_der\x18\x03 \x01(\fR\acertDer\x12\x10\n" +
+	"\x03sig\x18\x04 \x01(\fR\x03sig\"n\n" +
+	"\x10TcpPunchResponse\x12\x1b\n" +
+	"\tpeer_addr\x18\x01 \x01(\tR\bpeerAddr\x12\"\n" +
+	"\rpeer_cert_der\x18\x02 \x01(\fR\vpeerCertDer\x12\x19\n" +
+	"\bpeer_sig\x18\x03 \x01(\fR\apeerSig\"r\n" +
+	"\x10SessionHandshake\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x19\n" +
+	"\bcert_der\x18\x02 \x01(\fR\acertDer\x12\x10\n" +
+	"\x03sig\x18\x03 \x01(\fR\x03sig\x12\x12\n" +
+	"\x04addr\x18\x04 \x03(\tR\x04addrB<Z:github.com/sambigeara/pollen/api/genpb/pollen/tcp/v1;tcpv1b\x06proto3"
 
 var (
 	file_pollen_tcp_v1_tcp_proto_rawDescOnce sync.Once
@@ -122,9 +516,14 @@ func file_pollen_tcp_v1_tcp_proto_rawDescGZIP() []byte {
 	return file_pollen_tcp_v1_tcp_proto_rawDescData
 }
 
-var file_pollen_tcp_v1_tcp_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_pollen_tcp_v1_tcp_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_pollen_tcp_v1_tcp_proto_goTypes = []any{
-	(*Handshake)(nil), // 0: pollen.tcp.v1.Handshake
+	(*Handshake)(nil),        // 0: pollen.tcp.v1.Handshake
+	(*TcpPunchRequest)(nil),  // 1: pollen.tcp.v1.TcpPunchRequest
+	(*TcpPunchTrigger)(nil),  // 2: pollen.tcp.v1.TcpPunchTrigger
+	(*TcpPunchReady)(nil),    // 3: pollen.tcp.v1.TcpPunchReady
+	(*TcpPunchResponse)(nil), // 4: pollen.tcp.v1.TcpPunchResponse
+	(*SessionHandshake)(nil), // 5: pollen.tcp.v1.SessionHandshake
 }
 var file_pollen_tcp_v1_tcp_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -145,7 +544,7 @@ func file_pollen_tcp_v1_tcp_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_tcp_v1_tcp_proto_rawDesc), len(file_pollen_tcp_v1_tcp_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   1,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
