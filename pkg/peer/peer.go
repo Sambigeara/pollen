@@ -28,14 +28,14 @@ const (
 )
 
 type Peer struct {
-	id            types.PeerKey
-	state         PeerState
-	stage         ConnectStage
+	nextActionAt  time.Time
+	connectedAt   time.Time
 	addrs         []string
 	identityPub   []byte
-	nextActionAt  time.Time
-	stageAttempts int // attempts within current stage
-	connectedAt   time.Time
+	state         PeerState
+	stage         ConnectStage
+	stageAttempts int
+	id            types.PeerKey
 }
 
 type Store struct {
@@ -48,14 +48,14 @@ func NewStore() *Store {
 	}
 }
 
-// Input events
+// Input events.
 type Input interface{ isInput() }
 
 // DiscoverPeer adds a new peer or updates known addresses for an existing peer.
 // Used on startup (from disk) or when learning about a peer from gossip.
 type DiscoverPeer struct {
-	PeerKey types.PeerKey
 	Addrs   []string
+	PeerKey types.PeerKey
 }
 
 func (DiscoverPeer) isInput() {}
@@ -67,9 +67,9 @@ func (Tick) isInput() {}
 
 // ConnectPeer signals a successful connection (handshake complete).
 type ConnectPeer struct {
-	PeerKey     types.PeerKey
 	Addr        string
 	IdentityPub []byte
+	PeerKey     types.PeerKey
 }
 
 func (ConnectPeer) isInput() {}
@@ -84,8 +84,8 @@ func (ConnectFailed) isInput() {}
 // UpdatePeerAddrs updates addresses for a peer, typically from gossip.
 // Resets backoff to allow immediate retry with new addresses.
 type UpdatePeerAddrs struct {
-	PeerKey types.PeerKey
 	Addrs   []string
+	PeerKey types.PeerKey
 }
 
 func (UpdatePeerAddrs) isInput() {}
@@ -98,7 +98,7 @@ type PeerDisconnected struct {
 
 func (PeerDisconnected) isInput() {}
 
-// Output effects
+// Output effects.
 type Output interface{ isOutput() }
 
 // PeerConnected signals a peer has transitioned to connected state.
@@ -110,31 +110,31 @@ func (PeerConnected) isOutput() {}
 
 // AttemptConnect signals the caller should try a direct connection to this peer.
 type AttemptConnect struct {
-	PeerKey types.PeerKey
 	Addrs   []string
+	PeerKey types.PeerKey
 }
 
 func (AttemptConnect) isOutput() {}
 
 // RequestPunchCoordination signals the caller should request NAT punch coordination.
 type RequestPunchCoordination struct {
-	PeerKey types.PeerKey
 	Addrs   []string
+	PeerKey types.PeerKey
 }
 
 func (RequestPunchCoordination) isOutput() {}
 
-// Configuration
+// Configuration.
 const (
 	baseBackoff  = 1 * time.Second
 	maxBackoff   = 60 * time.Second
 	firstBackoff = 500 * time.Millisecond
 
-	// Stage thresholds: how many failures before escalating to next stage
+	// Stage thresholds: how many failures before escalating to next stage.
 	directAttemptThreshold = 1
 	punchAttemptThreshold  = 3
 
-	// How long to wait before retrying an unreachable peer
+	// How long to wait before retrying an unreachable peer.
 	unreachableRetryInterval = 60 * time.Second
 )
 
@@ -290,7 +290,7 @@ func (s *Store) updatePeerAddrs(now time.Time, e UpdatePeerAddrs) []Output {
 	p, exists := s.m[e.PeerKey]
 	if !exists {
 		// Treat as discovery
-		return s.discoverPeer(now, DiscoverPeer{PeerKey: e.PeerKey, Addrs: e.Addrs})
+		return s.discoverPeer(now, DiscoverPeer(e))
 	}
 
 	if p.state == PeerStateConnected {

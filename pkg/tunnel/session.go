@@ -15,22 +15,22 @@ import (
 )
 
 var (
-	ErrSessionClosed   = errors.New("session closed")
-	ErrSessionExists   = errors.New("session already exists for peer")
-	ErrInvalidPortLen  = errors.New("invalid port length in stream header")
-	ErrNoServicePort   = errors.New("no service port in stream header")
+	ErrSessionClosed  = errors.New("session closed")
+	ErrSessionExists  = errors.New("session already exists for peer")
+	ErrInvalidPortLen = errors.New("invalid port length in stream header")
+	ErrNoServicePort  = errors.New("no service port in stream header")
 )
 
 // Session wraps a long-lived multiplexed connection to a peer.
 // All streams over this session share the same underlying TCP+TLS connection.
 type Session struct {
-	peerID    types.PeerKey
-	conn      net.Conn       // Underlying TCP+TLS connection
-	mux       *yamux.Session // Multiplexer over conn
-	isClient  bool           // Did we initiate this session?
+	conn      net.Conn
+	mux       *yamux.Session
 	closeCh   chan struct{}
-	closeOnce sync.Once
 	logger    *zap.SugaredLogger
+	closeOnce sync.Once
+	peerID    types.PeerKey
+	isClient  bool
 }
 
 // newClientSession creates a session as the initiator (client side of yamux).
@@ -162,9 +162,9 @@ type StreamHandler func(stream net.Conn, servicePort uint16)
 type SessionManager struct {
 	dial     DialFunc
 	sessions map[types.PeerKey]*Session
-	mu       sync.RWMutex
-	handler  StreamHandler // Called for incoming streams
+	handler  StreamHandler
 	logger   *zap.SugaredLogger
+	mu       sync.RWMutex
 }
 
 // NewSessionManager creates a new session manager.
