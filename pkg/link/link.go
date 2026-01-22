@@ -119,6 +119,14 @@ func (i *impl) loop(ctx context.Context) {
 
 		switch fr.typ { //nolint:exhaustive
 		case types.MsgTypePing:
+		case types.MsgTypeHandshakeIKInit, types.MsgTypeHandshakeIKResp, types.MsgTypeHandshakeXXPsk2Init, types.MsgTypeHandshakeXXPsk2Resp:
+			if err := i.handleHandshake(ctx, src, fr); err != nil {
+				i.log.Debugf("failed to handle handshake: %s", err)
+			}
+		case types.MsgTypeTransportData, types.MsgTypeTcpPunchRequest, types.MsgTypeTcpPunchTrigger,
+			types.MsgTypeTcpPunchReady, types.MsgTypeTcpPunchResponse, types.MsgTypeGossip, types.MsgTypeTest,
+			types.MsgTypeSessionRequest, types.MsgTypeSessionResponse:
+			i.handleApp(ctx, fr)
 		case types.MsgTypeUdpPunchCoordRequest:
 			i.log.Debugw("received punch request", "src", src)
 			if err := i.handlePunchCoordRequest(ctx, src, fr); err != nil {
@@ -129,14 +137,6 @@ func (i *impl) loop(ctx context.Context) {
 			if err := i.handlePunchCoordTrigger(ctx, src, fr); err != nil {
 				i.log.Debugf("failed to handle punch coord trigger: %s", err)
 			}
-		case types.MsgTypeHandshakeIKInit, types.MsgTypeHandshakeIKResp, types.MsgTypeHandshakeXXPsk2Init, types.MsgTypeHandshakeXXPsk2Resp:
-			if err := i.handleHandshake(ctx, src, fr); err != nil {
-				i.log.Debugf("failed to handle handshake: %s", err)
-			}
-		case types.MsgTypeTransportData, types.MsgTypeTcpPunchRequest, types.MsgTypeTcpPunchTrigger,
-			types.MsgTypeTcpPunchReady, types.MsgTypeTcpPunchResponse, types.MsgTypeGossip, types.MsgTypeTest,
-			types.MsgTypeSessionRequest, types.MsgTypeSessionResponse:
-			i.handleApp(ctx, fr)
 		case types.MsgTypeDisconnect:
 			i.handleDisconnect(fr)
 		}

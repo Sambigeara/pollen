@@ -23,13 +23,13 @@ const (
 	MsgTypeDisconnect
 	MsgTypeTest
 
-	// TCP punch coordination (NAT traversal for tunnels)
+	// TCP punch coordination (NAT traversal for tunnels).
 	MsgTypeTcpPunchRequest
 	MsgTypeTcpPunchTrigger
 	MsgTypeTcpPunchReady
 	MsgTypeTcpPunchResponse
 
-	// Session establishment (multiplexed tunnels)
+	// Session establishment (multiplexed tunnels).
 	MsgTypeSessionRequest
 	MsgTypeSessionResponse
 )

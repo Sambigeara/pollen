@@ -28,21 +28,21 @@ type ConnectedPeersProvider interface {
 
 // punchInflight tracks an in-progress punch dial from the initiator's perspective.
 type punchInflight struct {
+	cert     tls.Certificate
+	listener net.Listener
 	ch       chan *tcpv1.TcpPunchResponse
 	peerKey  types.PeerKey
-	listener net.Listener
-	cert     tls.Certificate
 }
 
 // pendingPunchReq tracks a punch request from the coordinator's perspective.
 type pendingPunchReq struct {
-	initiator    types.PeerKey
-	initiatorSrc string // initiator's external address as seen by coordinator
-	localPort    uint32
+	createdAt    time.Time
+	initiatorSrc string
+	servicePort  string
 	certDer      []byte
 	sig          []byte
-	servicePort  string
-	createdAt    time.Time
+	localPort    uint32
+	initiator    types.PeerKey
 }
 
 // HandlePunchRequest handles TcpPunchRequest messages (coordinator role).

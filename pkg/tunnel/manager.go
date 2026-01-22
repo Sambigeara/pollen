@@ -34,29 +34,23 @@ type PeerDirectory interface {
 }
 
 type Manager struct {
-	dir           PeerDirectory
-	sender        Send
-	peerProvider  ConnectedPeersProvider
-	services      map[string]serviceHandler
-	connections   map[string]connectionHandler
-	signPriv      ed25519.PrivateKey
-	ips           []string
-	dialTimeout   time.Duration
-	acceptTimeout time.Duration
-	serviceMu     sync.RWMutex
-	connectionMu  sync.RWMutex
-
-	// Session management
-	sessions *SessionManager
-
-	// Session establishment inflight tracking
+	peerProvider      ConnectedPeersProvider
+	dir               PeerDirectory
 	sessionInflight   map[uint64]sessionInflight
+	sessions          *SessionManager
+	connections       map[string]connectionHandler
+	pendingPunch      map[uint64]pendingPunchReq
+	services          map[string]serviceHandler
+	punchInflight     map[uint64]punchInflight
+	sender            Send
+	ips               []string
+	signPriv          ed25519.PrivateKey
+	acceptTimeout     time.Duration
+	dialTimeout       time.Duration
+	connectionMu      sync.RWMutex
+	serviceMu         sync.RWMutex
 	sessionInflightMu sync.Mutex
-
-	// TCP punch coordination state (for session establishment)
-	punchInflight map[uint64]punchInflight
-	pendingPunch  map[uint64]pendingPunchReq
-	punchMu       sync.Mutex
+	punchMu           sync.Mutex
 }
 
 type serviceHandler struct {
@@ -497,7 +491,7 @@ func (m *Manager) dialSessionDirect(ctx context.Context, peerNoisePub types.Peer
 }
 
 // dialSessionWithPunch attempts session establishment via TCP hole punching.
-func (m *Manager) dialSessionWithPunch(ctx context.Context, peerKey types.PeerKey, coordinator types.PeerKey) (net.Conn, error) {
+func (m *Manager) dialSessionWithPunch(ctx context.Context, peerKey, coordinator types.PeerKey) (net.Conn, error) {
 	logger := zap.S().Named("tunnel.session")
 	logger.Infow("attempting punch session dial",
 		"target", peerKey.String()[:8],

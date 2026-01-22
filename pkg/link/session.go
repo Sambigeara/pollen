@@ -97,6 +97,7 @@ func (s *sessionStore) getAllPeers() []types.PeerKey {
 }
 
 type session struct {
+	lastRecvTime   time.Time
 	send           *noise.CipherState
 	recv           *noise.CipherState
 	peerAddr       string
@@ -105,7 +106,6 @@ type session struct {
 	recvMu         sync.RWMutex
 	localSessionID uint32
 	peerSessionID  uint32
-	lastRecvTime   time.Time
 }
 
 func newSession(localSessionID uint32, noiseKey []byte, send, recv *noise.CipherState) *session {

@@ -77,8 +77,7 @@ func (st *handshakeStore) getOrCreate(peerSessionID, localSessionID uint32, tp t
 	var hs handshake
 	var err error
 
-	//nolint:exhaustive
-	switch tp {
+	switch tp { //nolint:exhaustive
 	case types.MsgTypeHandshakeIKResp, types.MsgTypeHandshakeXXPsk2Resp:
 		// If we init a handshake, we set the handshake to the localSessionID.
 		// These events will be the response to our init, so we swop out the local key for the peer one.
@@ -99,7 +98,6 @@ func (st *handshakeStore) getOrCreate(peerSessionID, localSessionID uint32, tp t
 			return nil, err
 		}
 	}
-	//nolint:exhaustive
 
 	st.st[peerSessionID] = hs
 	return hs, err
