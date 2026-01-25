@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ const (
 	handshakeDedupTTL         = 5 * time.Second
 	ensurePeerTimeout         = 4 * time.Second
 	ensurePeerInterval        = 200 * time.Millisecond
+	nHolepunchAttempts        = 10
 	staleSessionCheckInterval = 15 * time.Second // how often to check for stale sessions
 )
 
@@ -35,8 +37,8 @@ type Link interface {
 	Start(ctx context.Context) error
 	Close() error
 
-	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error                // XXpsk2 init
-	EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string) error // IK init
+	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error                               // XXpsk2 init
+	EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, nAttempts int) error // IK init
 	Events() <-chan peer.Input
 
 	Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error
@@ -63,7 +65,7 @@ type impl struct {
 	events         chan peer.Input
 	cancel         context.CancelFunc
 	pingMgrs       map[string]*pingMgr
-	waitPeer       map[types.PeerKey][]chan struct{}
+	waitPeer       map[types.PeerKey]chan struct{}
 	peerLocks      sync.Map
 	handlersMu     sync.RWMutex
 	pingMu         sync.RWMutex
@@ -88,7 +90,7 @@ func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto Loca
 		handlers:       make(map[types.MsgType]HandlerFn),
 		events:         make(chan peer.Input, eventBufSize),
 		pingMgrs:       make(map[string]*pingMgr),
-		waitPeer:       make(map[types.PeerKey][]chan struct{}),
+		waitPeer:       make(map[types.PeerKey]chan struct{}),
 	}, nil
 }
 
@@ -170,12 +172,18 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 	recvPeer := types.PeerKeyFromBytes(req.PeerId)
 	initPeer := types.PeerKeyFromBytes(initSess.peerNoiseKey)
 
+	peerAddrWithLocalPort, err := net.ResolveUDPAddr("udp", recvSess.peerAddr)
+	if err != nil {
+		return fmt.Errorf("unable to parse peerAddr from session")
+	}
+	peerAddrWithLocalPort.Port = int(req.GetLocalPort())
+
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		resp := &peerv1.PunchCoordTrigger{
-			PeerId:   req.PeerId,
-			SelfAddr: src,
-			PeerAddr: recvSess.peerAddr,
+			PeerId:    req.PeerId,
+			SelfAddr:  src,
+			PeerAddrs: []string{recvSess.peerAddr, peerAddrWithLocalPort.String()},
 		}
 
 		b, err := resp.MarshalVT()
@@ -191,9 +199,9 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 
 	g.Go(func() error {
 		resp := &peerv1.PunchCoordTrigger{
-			PeerId:   initSess.peerNoiseKey,
-			SelfAddr: recvSess.peerAddr,
-			PeerAddr: src,
+			PeerId:    initSess.peerNoiseKey,
+			SelfAddr:  recvSess.peerAddr,
+			PeerAddrs: []string{src},
 		}
 
 		b, err := resp.MarshalVT()
@@ -229,8 +237,8 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 	defer cancel()
 
 	peerID := types.PeerKeyFromBytes(req.PeerId)
-	if err := i.EnsurePeer(ensureCtx, peerID, []string{req.PeerAddr}); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-		i.log.Debugw("ensure peer failed", "peer", peerID, "err", err)
+	if err := i.EnsurePeer(ensureCtx, peerID, req.PeerAddrs, nHolepunchAttempts); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		i.log.Debugw("ensure peer failed", "peer", peerID.String()[:8], "err", err)
 		return err
 	}
 
@@ -269,7 +277,7 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 		// TODO(saml) probably need to clear on hard errors too
 		i.handshakeStore.clear(fr.senderID, handshakeDedupTTL)
 
-		i.notifyUp(types.PeerKeyFromBytes(res.PeerStaticKey))
+		i.removeWaiter(types.PeerKeyFromBytes(res.PeerStaticKey))
 		// start only when we trust the peer
 		i.bumpPinger(ctx, res.Session.peerAddr)
 
@@ -322,6 +330,8 @@ func (i *impl) handleDisconnect(fr frame) {
 
 	peerKey := types.PeerKeyFromBytes(sess.peerNoiseKey)
 	i.log.Infow("received disconnect from peer", "peer", peerKey.String()[:8])
+
+	i.sessionStore.removeByPeerKey(peerKey)
 
 	// Emit PeerDisconnected to state machine
 	select {
@@ -432,7 +442,7 @@ func (i *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 	return nil
 }
 
-func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string) error {
+func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, nAttempts int) error {
 	if len(addrs) == 0 {
 		return errors.New("no addresses provided")
 	}
@@ -451,33 +461,49 @@ func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []st
 	}
 
 	// register waiter *before* sending, so we can't miss the PeerUp
-	upCh := i.addWaiter(peerKey)
-
-	ticker := time.NewTicker(ensurePeerInterval)
-	defer ticker.Stop()
+	upCh, exists := i.addWaiter(peerKey)
+	if exists {
+		i.log.Debugf("waiter already pending for peer: %s", peerKey.String()[:8])
+		return nil
+	}
+	defer i.removeWaiter(peerKey)
 
 	res, err := i.handshakeStore.initIK(peerKey.Bytes())
 	if err != nil {
 		return err
 	}
 
-	for {
+	// Happy Eyeballs
+	sendToAll := func() {
+		for _, addr := range addrs {
+			go func(target string) {
+				// Quick check to see if we should abandon sending
+				if ctx.Err() != nil {
+					return
+				}
+				if err := i.sendHandshakeResult(target, res, 0); err != nil {
+					i.log.Debugw("handshake send failed", "addr", target, "err", err)
+				}
+			}(addr)
+		}
+	}
+
+	ticker := time.NewTicker(ensurePeerInterval)
+	defer ticker.Stop()
+
+	for attempt := 1; attempt <= nAttempts; attempt++ {
+		sendToAll()
 		select {
 		case <-upCh:
 			return nil
-		case <-ticker.C:
-			// Send to all addresses in parallel (happy eyeballs)
-			for _, addr := range addrs {
-				go func(addr string) {
-					if err := i.sendHandshakeResult(addr, res, 0); err != nil {
-						i.log.Debugw("handshake send failed", "addr", addr, "err", err)
-					}
-				}(addr)
-			}
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-ticker.C:
+			continue
 		}
 	}
+
+	return fmt.Errorf("timed out waiting for peer %s after %d attempts", peerKey.String()[:8], nAttempts)
 }
 
 func (i *impl) peerLock(p types.PeerKey) *sync.Mutex {
@@ -499,23 +525,26 @@ func (i *impl) GetActivePeerAddress(peerKey types.PeerKey) (string, bool) {
 	return sess.peerAddr, true
 }
 
-func (i *impl) addWaiter(k types.PeerKey) chan struct{} {
-	ch := make(chan struct{})
+func (i *impl) addWaiter(k types.PeerKey) (chan struct{}, bool) {
 	i.waitMu.Lock()
 	defer i.waitMu.Unlock()
-	i.waitPeer[k] = append(i.waitPeer[k], ch)
-	return ch
+	if _, ok := i.waitPeer[k]; ok {
+		return nil, true
+	}
+	ch := make(chan struct{})
+	i.waitPeer[k] = ch
+	return ch, false
 }
 
-func (i *impl) notifyUp(p types.PeerKey) {
+func (i *impl) removeWaiter(k types.PeerKey) {
 	i.waitMu.Lock()
-	waiters := i.waitPeer[p]
-	delete(i.waitPeer, p)
-	i.waitMu.Unlock()
-
-	for _, ch := range waiters {
-		close(ch)
+	defer i.waitMu.Unlock()
+	waiter := i.waitPeer[k]
+	if waiter == nil {
+		return
 	}
+	delete(i.waitPeer, k)
+	close(waiter)
 }
 
 func (i *impl) sendHandshakeResult(addr string, res HandshakeResult, remoteID uint32) error {

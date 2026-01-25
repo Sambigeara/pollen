@@ -132,10 +132,11 @@ const (
 
 	// Stage thresholds: how many failures before escalating to next stage.
 	directAttemptThreshold = 1
-	punchAttemptThreshold  = 3
+	punchAttemptThreshold  = 1
 
 	// How long to wait before retrying an unreachable peer.
-	unreachableRetryInterval = 60 * time.Second
+	unreachableRetryInterval  = 60 * time.Second
+	disconnectedRetryInterval = 60 * time.Second
 )
 
 func backoff(attempts int) time.Duration {
@@ -189,27 +190,28 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) []Output {
 func (s *Store) tick(now time.Time) []Output {
 	var outputs []Output //nolint:prealloc
 	for _, p := range s.m {
+		if now.Before(p.nextActionAt) {
+			continue
+		}
+
 		switch p.state { //nolint:exhaustive
 		case PeerStateConnected, PeerStateConnecting:
 			continue
 		case PeerStateUnreachable:
 			// Retry unreachable peers after backoff expires
-			if now.Before(p.nextActionAt) {
-				continue
-			}
 			p.state = PeerStateDiscovered
 			p.stage = ConnectStageDirect
 			p.stageAttempts = 0
 			// Fall through to connection logic
 		}
 
-		if len(p.addrs) == 0 || now.Before(p.nextActionAt) {
+		if len(p.addrs) == 0 {
 			continue
 		}
 
 		var out Output
 		switch p.stage {
-		case ConnectStageDirect, ConnectStageUnspecified:
+		case ConnectStageUnspecified, ConnectStageDirect:
 			out = AttemptConnect{PeerKey: p.id, Addrs: p.addrs}
 		case ConnectStagePunch:
 			out = RequestPunchCoordination{PeerKey: p.id, Addrs: p.addrs}
@@ -234,6 +236,7 @@ func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 	// Always update state, even if already connected (peer may have restarted)
 	p.state = PeerStateConnected
 	p.identityPub = e.IdentityPub
+	p.addrs = []string{e.Addr}
 	p.connectedAt = now
 	p.stage = ConnectStageDirect // reset for next time
 	p.stageAttempts = 0
@@ -274,7 +277,7 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
 
 func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) []Output {
 	p, exists := s.m[e.PeerKey]
-	if !exists || p.state != PeerStateConnected {
+	if !exists || (p.state != PeerStateConnected && p.state != PeerStateConnecting) {
 		return nil
 	}
 
@@ -282,7 +285,7 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) []Output {
 	p.state = PeerStateDiscovered
 	p.stage = ConnectStageDirect
 	p.stageAttempts = 0
-	p.nextActionAt = now
+	p.nextActionAt = now.Add(disconnectedRetryInterval)
 	return nil
 }
 

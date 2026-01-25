@@ -177,9 +177,9 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 		case <-ctx.Done():
 			return nil
 		case <-peerTicker.C:
-			n.tick(ctx)
+			n.tick()
 		case <-tickCh:
-			n.tick(ctx)
+			n.tick()
 		case <-gossipTicker.C:
 			n.gossip(ctx)
 		case in := <-n.Link.Events():
@@ -248,7 +248,7 @@ func (n *Node) handlePeerInput(in peer.Input) {
 	n.handleOutputs(outputs)
 }
 
-func (n *Node) tick(_ context.Context) {
+func (n *Node) tick() {
 	// First sync any new peers from gossip state
 	n.syncPeersFromGossip()
 
@@ -266,9 +266,8 @@ func (n *Node) syncPeersFromGossip() {
 			continue
 		}
 
-		peerKey := types.PeerKeyFromBytes(node.Keys.NoisePub)
 		n.Peers.Step(time.Now(), peer.DiscoverPeer{
-			PeerKey: peerKey,
+			PeerKey: types.PeerKeyFromBytes(node.Keys.NoisePub),
 			Addrs:   node.Addresses,
 		})
 	}
@@ -280,7 +279,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 		case peer.PeerConnected:
 			n.log.Infow("peer connected", "peer_id", e.PeerKey.String()[:8])
 		case peer.AttemptConnect:
-			go n.attemptConnect(e)
+			go n.attemptDirectConnect(e)
 		case peer.RequestPunchCoordination:
 			// Select coordinator in main loop to avoid race on Peers.GetAll
 			// TODO(saml) coordinator selection strategy - currently just picks first connected peer
@@ -295,11 +294,11 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 	}
 }
 
-func (n *Node) attemptConnect(e peer.AttemptConnect) {
+func (n *Node) attemptDirectConnect(e peer.AttemptConnect) {
 	ctx, cancel := context.WithTimeout(context.Background(), punchAttemptDuration)
 	defer cancel()
 
-	if err := n.Link.EnsurePeer(ctx, e.PeerKey, e.Addrs); err != nil {
+	if err := n.Link.EnsurePeer(ctx, e.PeerKey, e.Addrs, 1); err != nil { //nolint:mnd
 		n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "err", err)
 		n.peerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 	}
@@ -307,7 +306,8 @@ func (n *Node) attemptConnect(e peer.AttemptConnect) {
 
 func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordinator types.PeerKey) {
 	req := &peerv1.PunchCoordRequest{
-		PeerId: e.PeerKey.Bytes(),
+		PeerId:    e.PeerKey.Bytes(),
+		LocalPort: int32(n.conf.Port),
 	}
 	b, err := req.MarshalVT()
 	if err != nil {
@@ -330,7 +330,6 @@ func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordin
 	// Signal failure after timeout. If peer connected, ConnectPeer will be
 	// processed first (via Link.Events), and connectFailed will no-op.
 	time.AfterFunc(punchAttemptDuration, func() {
-		n.log.Debugw("punch attempt timed out", "peer", e.PeerKey.String()[:8])
 		n.peerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 	})
 }

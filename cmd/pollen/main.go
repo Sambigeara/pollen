@@ -46,7 +46,7 @@ func main() {
 	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted")
 
 	rootCmd.AddCommand(
-		newNodeCmd(),
+		newUpCmd(),
 		newJoinCmd(),
 		newInviteCmd(),
 		newStatusCmd(),
@@ -67,9 +67,9 @@ func defaultRootDir() string {
 	return filepath.Join(base, pollenDir)
 }
 
-func newNodeCmd() *cobra.Command {
+func newUpCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "node",
+		Use:   "up",
 		Short: "Start a Pollen node",
 		Run:   runNode,
 	}
