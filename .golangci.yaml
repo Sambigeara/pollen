@@ -99,6 +99,7 @@ linters:
 
     paths:
       - ^api/*
+      - ^udp_test/*
 
 issues:
   max-same-issues: 30

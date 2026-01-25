@@ -187,9 +187,9 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) []Output {
 }
 
 func (s *Store) tick(now time.Time) []Output {
-	var outputs []Output
+	var outputs []Output //nolint:prealloc
 	for _, p := range s.m {
-		switch p.state {
+		switch p.state { //nolint:exhaustive
 		case PeerStateConnected, PeerStateConnecting:
 			continue
 		case PeerStateUnreachable:

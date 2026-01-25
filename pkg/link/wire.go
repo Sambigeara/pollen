@@ -39,9 +39,9 @@ func decodeFrame(buf []byte) (fr frame, _ error) {
 		senderID = binary.BigEndian.Uint32(buf[4:8])
 		receiverID = binary.BigEndian.Uint32(buf[8:12])
 		payloadOffset = 12
-	case types.MsgTypeTransportData, types.MsgTypeTcpPunchRequest, types.MsgTypeTcpPunchTrigger,
-		types.MsgTypeTcpPunchReady, types.MsgTypeTcpPunchResponse, types.MsgTypeGossip,
-		types.MsgTypeUdpPunchCoordRequest, types.MsgTypeUdpPunchCoordResponse, types.MsgTypeDisconnect,
+	case types.MsgTypeTransportData, types.MsgTypeTCPPunchRequest, types.MsgTypeTCPPunchTrigger,
+		types.MsgTypeTCPPunchReady, types.MsgTypeTCPPunchResponse, types.MsgTypeGossip,
+		types.MsgTypeUDPPunchCoordRequest, types.MsgTypeUDPPunchCoordResponse, types.MsgTypeDisconnect,
 		types.MsgTypeTest, types.MsgTypeSessionRequest, types.MsgTypeSessionResponse:
 		if n < 8 {
 			return fr, fmt.Errorf("handshake frame too short: %d", n)
@@ -79,9 +79,9 @@ func encodeFrame(fr *frame) []byte {
 		binary.BigEndian.PutUint32(buf[4:8], fr.senderID)
 		binary.BigEndian.PutUint32(buf[8:12], fr.receiverID)
 		copy(buf[12:], fr.payload)
-	case types.MsgTypeTransportData, types.MsgTypeTcpPunchRequest, types.MsgTypeTcpPunchTrigger,
-		types.MsgTypeTcpPunchReady, types.MsgTypeTcpPunchResponse, types.MsgTypeGossip,
-		types.MsgTypeUdpPunchCoordRequest, types.MsgTypeUdpPunchCoordResponse, types.MsgTypeDisconnect,
+	case types.MsgTypeTransportData, types.MsgTypeTCPPunchRequest, types.MsgTypeTCPPunchTrigger,
+		types.MsgTypeTCPPunchReady, types.MsgTypeTCPPunchResponse, types.MsgTypeGossip,
+		types.MsgTypeUDPPunchCoordRequest, types.MsgTypeUDPPunchCoordResponse, types.MsgTypeDisconnect,
 		types.MsgTypeTest, types.MsgTypeSessionRequest, types.MsgTypeSessionResponse:
 		buf = make([]byte, 8+len(fr.payload))
 		binary.BigEndian.PutUint32(buf[:4], uint32(fr.typ))

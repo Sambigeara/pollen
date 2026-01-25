@@ -242,17 +242,6 @@ func runStatus(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	// Sort for stable output
-	// sort.Slice(resp.Msg.Nodes, func(i, j int) bool {
-	// 	return string(resp.Msg.Nodes[i].Node.PeerId) < string(resp.Msg.Nodes[j].Node.PeerId)
-	// })
-	// sort.Slice(resp.Msg.Services, func(i, j int) bool {
-	// 	if resp.Msg.Services[i].Name == resp.Msg.Services[j].Name {
-	// 		return string(resp.Msg.Services[i].Provider.PeerId) < string(resp.Msg.Services[j].Provider.PeerId)
-	// 	}
-	// 	return resp.Msg.Services[i].Name < resp.Msg.Services[j].Name
-	// })
-
 	switch mode {
 	case "all":
 		printNodesTable(cmd, resp.Msg)
@@ -267,6 +256,7 @@ func runStatus(cmd *cobra.Command, args []string) {
 	}
 }
 
+//nolint:mnd
 func printNodesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse) {
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "PEER_ID\tSTATUS\tADDR")
@@ -279,6 +269,7 @@ func printNodesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse) {
 	_ = w.Flush()
 }
 
+//nolint:mnd
 func printServicesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse) {
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tPROVIDER_PEER\tPORT")

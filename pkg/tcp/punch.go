@@ -12,6 +12,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const (
+	punchTimeout  = 2 * time.Second
+	punchInterval = 100 * time.Millisecond
+)
+
 // SimultaneousOpen attempts TCP simultaneous open by listening and dialing concurrently.
 // The listener is pre-bound (passed in) so we know the local port.
 // Returns the first successful connection (either from accept or dial).
@@ -54,11 +59,11 @@ func SimultaneousOpen(ctx context.Context, ln net.Listener, peerAddr string, tim
 	wg.Go(func() {
 		dialer := &net.Dialer{
 			LocalAddr: laddr,
-			Timeout:   2 * time.Second, // per-attempt timeout
+			Timeout:   punchTimeout, // per-attempt timeout
 			Control:   reusePortControl,
 		}
 
-		ticker := time.NewTicker(100 * time.Millisecond)
+		ticker := time.NewTicker(punchInterval)
 		defer ticker.Stop()
 
 		for {

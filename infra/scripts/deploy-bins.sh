@@ -19,23 +19,23 @@ else
   exit 1
 fi
 
-gamer_ip="$("$TS_BIN" status --json \
+tellybox_ip="$("$TS_BIN" status --json \
   | jq -r '
       [
-        (.Peer[]? | select(.HostName=="gamer" or .HostName=="samflix") | .TailscaleIPs[]?),
-        (.Peers[]? | select(.HostName=="gamer" or .HostName=="samflix") | .TailscaleIPs[]?)
+        (.Peer[]? | select(.HostName=="tellybox" or .HostName=="samflix") | .TailscaleIPs[]?),
+        (.Peers[]? | select(.HostName=="tellybox" or .HostName=="samflix") | .TailscaleIPs[]?)
       ]
       | map(select(startswith("100.")))[0] // .[0] // empty
     ')"
 
-if [[ -z "$gamer_ip" ]]; then
-  echo "gamer/samflix not found on Tailscale" >&2
+if [[ -z "$tellybox_ip" ]]; then
+  echo "tellybox/samflix not found on Tailscale" >&2
   exit 1
 fi
 
-echo "Copying to gamer..." >&2
-scp dist/pollen_linux_amd64_v1/pollen "sambigeara@${gamer_ip}:~/pollen"
-echo "Successfully copied to gamer!" >&2
+echo "Copying to tellybox..." >&2
+scp dist/pollen_linux_amd64_v1/pollen "sambigeara@${tellybox_ip}:~/pollen"
+echo "Successfully copied to tellybox!" >&2
 
 echo "Copying to relay..." >&2
 aws_ip="$(cd infra && tofu output -raw ip)"

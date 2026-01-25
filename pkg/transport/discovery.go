@@ -138,7 +138,7 @@ func getPreferredOutboundIP(ctx context.Context) (net.IP, error) {
 	}
 	defer conn.Close()
 
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	localAddr := conn.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
 	return localAddr.IP, nil
 }
 
@@ -206,7 +206,8 @@ func isValidIP(ip net.IP) bool {
 	}
 	// }
 
-	if _, ignoreLocal := os.LookupEnv("IP_IGNORE_LOCAL"); ignoreLocal {
+	//nolint:mnd
+	if _, ignoreLocal := os.LookupEnv("IP_IGNORE_LOCAL"); ignoreLocal { //nolint:nestif
 		if ip4 := ip.To4(); ip4 != nil {
 			// 10.0.0.0/8
 			if ip4[0] == 10 {

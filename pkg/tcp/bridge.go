@@ -8,12 +8,15 @@ import (
 	"go.uber.org/zap"
 )
 
-const bridgeCopyWorkers = 2
+const (
+	bridgeCopyWorkers = 2
+	bufSize           = 64 * 1024
+)
 
-var bufPool = sync.Pool{New: func() any { b := make([]byte, 64*1024); return &b }}
+var bufPool = sync.Pool{New: func() any { b := make([]byte, bufSize); return &b }}
 
 func copyWithPooledBuf(dst, src net.Conn) error {
-	p := bufPool.Get().(*[]byte)
+	p := bufPool.Get().(*[]byte) //nolint:forcetypeassert
 	defer bufPool.Put(p)
 	_, err := io.CopyBuffer(dst, src, *p)
 	return err

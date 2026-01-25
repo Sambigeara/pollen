@@ -133,7 +133,7 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 		"targetAddr", targetAddr)
 
 	return m.sender(ctx, targetPeer, types.Envelope{
-		Type:    types.MsgTypeTcpPunchTrigger,
+		Type:    types.MsgTypeTCPPunchTrigger,
 		Payload: triggerBytes,
 	})
 }
@@ -203,7 +203,7 @@ func (m *Manager) HandlePunchTrigger(ctx context.Context, fromPeer types.PeerKey
 		"localPort", localPort)
 
 	if err := m.sender(ctx, fromPeer, types.Envelope{
-		Type:    types.MsgTypeTcpPunchReady,
+		Type:    types.MsgTypeTCPPunchReady,
 		Payload: readyBytes,
 	}); err != nil {
 		ln.Close()
@@ -306,7 +306,7 @@ func (m *Manager) HandlePunchReady(ctx context.Context, fromPeer types.PeerKey, 
 		"peerAddr", resp.PeerAddr)
 
 	return m.sender(ctx, pending.initiator, types.Envelope{
-		Type:    types.MsgTypeTcpPunchResponse,
+		Type:    types.MsgTypeTCPPunchResponse,
 		Payload: respBytes,
 	})
 }

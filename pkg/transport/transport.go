@@ -20,8 +20,7 @@ type impl struct {
 func NewTransport(port int) (Transport, error) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: nil, Port: port})
 	if err != nil {
-		fmt.Printf("Failed to bind: %v\n", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to listen UDP: %w", err)
 	}
 
 	return &impl{
