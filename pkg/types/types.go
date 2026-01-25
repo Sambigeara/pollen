@@ -16,18 +16,18 @@ const (
 	MsgTypeTransportData
 	MsgTypePing
 
-	MsgTypeUdpPunchCoordRequest
-	MsgTypeUdpPunchCoordResponse
+	MsgTypeUDPPunchCoordRequest
+	MsgTypeUDPPunchCoordResponse
 
 	MsgTypeGossip
 	MsgTypeDisconnect
 	MsgTypeTest
 
 	// TCP punch coordination (NAT traversal for tunnels).
-	MsgTypeTcpPunchRequest
-	MsgTypeTcpPunchTrigger
-	MsgTypeTcpPunchReady
-	MsgTypeTcpPunchResponse
+	MsgTypeTCPPunchRequest
+	MsgTypeTCPPunchTrigger
+	MsgTypeTCPPunchReady
+	MsgTypeTCPPunchResponse
 
 	// Session establishment (multiplexed tunnels).
 	MsgTypeSessionRequest

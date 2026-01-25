@@ -20,10 +20,11 @@ import (
 var _ Link = (*impl)(nil)
 
 const (
-	sessionRefreshInterval    = time.Second * 120 // new IK handshake every 2 mins
-	handshakeDedupTTL         = time.Second * 5
-	ensurePeerTimeout         = time.Second * 4
-	staleSessionCheckInterval = time.Second * 15 // how often to check for stale sessions
+	sessionRefreshInterval    = 120 * time.Second // new IK handshake every 2 mins
+	handshakeDedupTTL         = 5 * time.Second
+	ensurePeerTimeout         = 4 * time.Second
+	ensurePeerInterval        = 200 * time.Millisecond
+	staleSessionCheckInterval = 15 * time.Second // how often to check for stale sessions
 )
 
 var ErrNoSession = errors.New("no session for peer")
@@ -123,18 +124,18 @@ func (i *impl) loop(ctx context.Context) {
 			if err := i.handleHandshake(ctx, src, fr); err != nil {
 				i.log.Debugf("failed to handle handshake: %s", err)
 			}
-		case types.MsgTypeTransportData, types.MsgTypeTcpPunchRequest, types.MsgTypeTcpPunchTrigger,
-			types.MsgTypeTcpPunchReady, types.MsgTypeTcpPunchResponse, types.MsgTypeGossip, types.MsgTypeTest,
+		case types.MsgTypeTransportData, types.MsgTypeTCPPunchRequest, types.MsgTypeTCPPunchTrigger,
+			types.MsgTypeTCPPunchReady, types.MsgTypeTCPPunchResponse, types.MsgTypeGossip, types.MsgTypeTest,
 			types.MsgTypeSessionRequest, types.MsgTypeSessionResponse:
 			i.handleApp(ctx, fr)
-		case types.MsgTypeUdpPunchCoordRequest:
+		case types.MsgTypeUDPPunchCoordRequest:
 			i.log.Debugw("received punch request", "src", src)
 			if err := i.handlePunchCoordRequest(ctx, src, fr); err != nil {
 				i.log.Debugf("failed to handle punch coord request: %s", err)
 			}
-		case types.MsgTypeUdpPunchCoordResponse:
+		case types.MsgTypeUDPPunchCoordResponse:
 			i.log.Debugw("received punch trigger", "src", src)
-			if err := i.handlePunchCoordTrigger(ctx, src, fr); err != nil {
+			if err := i.handlePunchCoordTrigger(ctx, fr); err != nil {
 				i.log.Debugf("failed to handle punch coord trigger: %s", err)
 			}
 		case types.MsgTypeDisconnect:
@@ -184,7 +185,7 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 
 		return i.Send(ctx, initPeer, types.Envelope{
 			Payload: b,
-			Type:    types.MsgTypeUdpPunchCoordResponse,
+			Type:    types.MsgTypeUDPPunchCoordResponse,
 		})
 	})
 
@@ -202,13 +203,13 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 
 		return i.Send(ctx, recvPeer, types.Envelope{
 			Payload: b,
-			Type:    types.MsgTypeUdpPunchCoordResponse,
+			Type:    types.MsgTypeUDPPunchCoordResponse,
 		})
 	})
 	return g.Wait()
 }
 
-func (i *impl) handlePunchCoordTrigger(ctx context.Context, src string, fr frame) error {
+func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 	sess, ok := i.sessionStore.getByLocalID(fr.receiverID)
 	if !ok {
 		return errors.New("coord trigger session not found")
@@ -251,7 +252,7 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 	}
 
 	if err := i.sendHandshakeResult(src, res, fr.senderID); err != nil {
-		// i.log.Debugw("failed to send handshake reply", "err", err)
+		i.log.Debugw("failed to send handshake reply", "err", err)
 	}
 
 	if res.Session != nil {
@@ -417,7 +418,7 @@ func (i *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 
 	// Send the initial packet(s)
 	// For Init, receiverID is 0
-	g, ctx := errgroup.WithContext(ctx)
+	g, _ := errgroup.WithContext(ctx)
 	for _, addr := range inv.Addr {
 		g.Go(func() error {
 			return i.sendHandshakeResult(addr, res, 0)
@@ -452,7 +453,7 @@ func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []st
 	// register waiter *before* sending, so we can't miss the PeerUp
 	upCh := i.addWaiter(peerKey)
 
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(ensurePeerInterval)
 	defer ticker.Stop()
 
 	res, err := i.handshakeStore.initIK(peerKey.Bytes())

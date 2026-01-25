@@ -112,7 +112,7 @@ func New(conf *Config) (*Node, error) {
 		identityPubKey: pubKey,
 	}
 
-	link, err := link.NewLink(int(conf.Port), &cs, noiseKey, crypto, invitesStore)
+	link, err := link.NewLink(conf.Port, &cs, noiseKey, crypto, invitesStore)
 	if err != nil {
 		return nil, err
 	}
@@ -199,10 +199,10 @@ func (n *Node) registerHandlers(reconcileCh chan<- struct{}) {
 	n.Link.Handle(types.MsgTypeSessionResponse, n.Tunnel.HandleSessionResponse)
 
 	// TCP punch handlers
-	n.Link.Handle(types.MsgTypeTcpPunchRequest, n.Tunnel.HandlePunchRequest)
-	n.Link.Handle(types.MsgTypeTcpPunchTrigger, n.Tunnel.HandlePunchTrigger)
-	n.Link.Handle(types.MsgTypeTcpPunchReady, n.Tunnel.HandlePunchReady)
-	n.Link.Handle(types.MsgTypeTcpPunchResponse, n.Tunnel.HandlePunchResponse)
+	n.Link.Handle(types.MsgTypeTCPPunchRequest, n.Tunnel.HandlePunchRequest)
+	n.Link.Handle(types.MsgTypeTCPPunchTrigger, n.Tunnel.HandlePunchTrigger)
+	n.Link.Handle(types.MsgTypeTCPPunchReady, n.Tunnel.HandlePunchReady)
+	n.Link.Handle(types.MsgTypeTCPPunchResponse, n.Tunnel.HandlePunchResponse)
 
 	n.Link.Handle(types.MsgTypeGossip, func(_ context.Context, _ types.PeerKey, plaintext []byte) error {
 		delta := &statev1.DeltaState{}
@@ -248,7 +248,7 @@ func (n *Node) handlePeerInput(in peer.Input) {
 	n.handleOutputs(outputs)
 }
 
-func (n *Node) tick(ctx context.Context) {
+func (n *Node) tick(_ context.Context) {
 	// First sync any new peers from gossip state
 	n.syncPeersFromGossip()
 
@@ -319,7 +319,7 @@ func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordin
 	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.String()[:8], "coordinator", coordinator.String()[:8])
 
 	if err := n.Link.Send(context.Background(), coordinator, types.Envelope{
-		Type:    types.MsgTypeUdpPunchCoordRequest,
+		Type:    types.MsgTypeUDPPunchCoordRequest,
 		Payload: b,
 	}); err != nil {
 		n.log.Debugw("punch coord request failed", "peer", e.PeerKey.String()[:8], "err", err)

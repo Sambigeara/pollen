@@ -565,7 +565,7 @@ func (m *Manager) dialSessionWithPunch(ctx context.Context, peerKey, coordinator
 		"localPort", localPort)
 
 	if err := m.sender(ctx, coordinator, types.Envelope{
-		Type:    types.MsgTypeTcpPunchRequest,
+		Type:    types.MsgTypeTCPPunchRequest,
 		Payload: reqBytes,
 	}); err != nil {
 		ln.Close()
