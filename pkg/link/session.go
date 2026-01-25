@@ -84,6 +84,17 @@ func (s *sessionStore) getStaleAndRemove(now time.Time) []types.PeerKey {
 	return stale
 }
 
+func (s *sessionStore) removeByPeerKey(k types.PeerKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.byPeer[k]
+	if !ok {
+		return
+	}
+	delete(s.byPeer, k)
+	delete(s.byLocalID, sess.localSessionID)
+}
+
 // getAllPeers returns all peer keys with active sessions.
 func (s *sessionStore) getAllPeers() []types.PeerKey {
 	s.mu.RLock()

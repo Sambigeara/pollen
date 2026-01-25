@@ -233,6 +233,7 @@ func (x *InviteStore) GetInvites() map[string]*Invite {
 type PunchCoordRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	LocalPort     int32                  `protobuf:"varint,2,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -274,11 +275,18 @@ func (x *PunchCoordRequest) GetPeerId() []byte {
 	return nil
 }
 
+func (x *PunchCoordRequest) GetLocalPort() int32 {
+	if x != nil {
+		return x.LocalPort
+	}
+	return 0
+}
+
 type PunchCoordTrigger struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
 	SelfAddr      string                 `protobuf:"bytes,2,opt,name=self_addr,json=selfAddr,proto3" json:"self_addr,omitempty"`
-	PeerAddr      string                 `protobuf:"bytes,3,opt,name=peer_addr,json=peerAddr,proto3" json:"peer_addr,omitempty"`
+	PeerAddrs     []string               `protobuf:"bytes,3,rep,name=peer_addrs,json=peerAddrs,proto3" json:"peer_addrs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -327,11 +335,11 @@ func (x *PunchCoordTrigger) GetSelfAddr() string {
 	return ""
 }
 
-func (x *PunchCoordTrigger) GetPeerAddr() string {
+func (x *PunchCoordTrigger) GetPeerAddrs() []string {
 	if x != nil {
-		return x.PeerAddr
+		return x.PeerAddrs
 	}
-	return ""
+	return nil
 }
 
 var File_pollen_peer_v1_peer_proto protoreflect.FileDescriptor
@@ -357,13 +365,16 @@ const file_pollen_peer_v1_peer_proto_rawDesc = "" +
 	"\ainvites\x18\x01 \x03(\v2(.pollen.peer.v1.InviteStore.InvitesEntryR\ainvites\x1aR\n" +
 	"\fInvitesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
-	"\x05value\x18\x02 \x01(\v2\x16.pollen.peer.v1.InviteR\x05value:\x028\x01\",\n" +
+	"\x05value\x18\x02 \x01(\v2\x16.pollen.peer.v1.InviteR\x05value:\x028\x01\"K\n" +
 	"\x11PunchCoordRequest\x12\x17\n" +
-	"\apeer_id\x18\x01 \x01(\fR\x06peerId\"f\n" +
+	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1d\n" +
+	"\n" +
+	"local_port\x18\x02 \x01(\x05R\tlocalPort\"h\n" +
 	"\x11PunchCoordTrigger\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1b\n" +
-	"\tself_addr\x18\x02 \x01(\tR\bselfAddr\x12\x1b\n" +
-	"\tpeer_addr\x18\x03 \x01(\tR\bpeerAddrB>Z<github.com/sambigeara/pollen/api/genpb/pollen/peer/v1;peerv1b\x06proto3"
+	"\tself_addr\x18\x02 \x01(\tR\bselfAddr\x12\x1d\n" +
+	"\n" +
+	"peer_addrs\x18\x03 \x03(\tR\tpeerAddrsB>Z<github.com/sambigeara/pollen/api/genpb/pollen/peer/v1;peerv1b\x06proto3"
 
 var (
 	file_pollen_peer_v1_peer_proto_rawDescOnce sync.Once
