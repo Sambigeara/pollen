@@ -599,7 +599,8 @@ func (*RegisterServiceResponse) Descriptor() ([]byte, []int) {
 type ConnectServiceRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Node          *NodeRef               `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
-	Port          string                 `protobuf:"bytes,2,opt,name=port,proto3" json:"port,omitempty"`
+	RemotePort    uint32                 `protobuf:"varint,2,opt,name=remote_port,json=remotePort,proto3" json:"remote_port,omitempty"`
+	LocalPort     uint32                 `protobuf:"varint,3,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -641,15 +642,23 @@ func (x *ConnectServiceRequest) GetNode() *NodeRef {
 	return nil
 }
 
-func (x *ConnectServiceRequest) GetPort() string {
+func (x *ConnectServiceRequest) GetRemotePort() uint32 {
 	if x != nil {
-		return x.Port
+		return x.RemotePort
 	}
-	return ""
+	return 0
+}
+
+func (x *ConnectServiceRequest) GetLocalPort() uint32 {
+	if x != nil {
+		return x.LocalPort
+	}
+	return 0
 }
 
 type ConnectServiceResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	LocalPort     uint32                 `protobuf:"varint,1,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -684,6 +693,13 @@ func (*ConnectServiceResponse) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{12}
 }
 
+func (x *ConnectServiceResponse) GetLocalPort() uint32 {
+	if x != nil {
+		return x.LocalPort
+	}
+	return 0
+}
+
 var File_pollen_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_pollen_control_v1_control_proto_rawDesc = "" +
@@ -716,11 +732,16 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x04port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\x04port\x12\"\n" +
 	"\x04name\x18\x02 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@H\x00R\x04name\x88\x01\x01B\a\n" +
 	"\x05_name\"\x19\n" +
-	"\x17RegisterServiceResponse\"[\n" +
+	"\x17RegisterServiceResponse\"\x9f\x01\n" +
 	"\x15ConnectServiceRequest\x12.\n" +
-	"\x04node\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04node\x12\x12\n" +
-	"\x04port\x18\x02 \x01(\tR\x04port\"\x18\n" +
-	"\x16ConnectServiceResponse*Z\n" +
+	"\x04node\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04node\x12,\n" +
+	"\vremote_port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\n" +
+	"remotePort\x12(\n" +
+	"\n" +
+	"local_port\x18\x03 \x01(\rB\t\xbaH\x06*\x04\x18\xff\xff\x03R\tlocalPort\"D\n" +
+	"\x16ConnectServiceResponse\x12*\n" +
+	"\n" +
+	"local_port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort*Z\n" +
 	"\n" +
 	"NodeStatus\x12\x1b\n" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +

@@ -156,28 +156,59 @@ func (m *Manager) RegisterService(port uint32) {
 
 // ConnectService establishes a tunnel to a remote service and listens locally.
 // Local connections to the port are forwarded to the remote peer's service.
-func (m *Manager) ConnectService(peerID types.PeerKey, port string) error {
+// If localPort is zero, it will attempt to bind to remotePort first, then fall
+// back to an ephemeral port if that fails.
+func (m *Manager) ConnectService(peerID types.PeerKey, remotePort uint32, localPort uint32) (uint32, error) {
 	if _, ok := m.dir.IdentityPub(peerID); !ok {
-		return errors.New("peerID not recognised")
+		return 0, errors.New("peerID not recognised")
+	}
+	if remotePort == 0 {
+		return 0, errors.New("remote port missing")
 	}
 
 	m.connectionMu.Lock()
 	defer m.connectionMu.Unlock()
 
 	ctx, cancelFn := context.WithCancel(context.Background())
+	var ln net.Listener
+	var err error
+	var requestedLocal uint32
 
-	l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", ":"+port)
-	if err != nil {
-		cancelFn()
-		return err
+	if localPort > 0 {
+		requestedLocal = localPort
+	} else {
+		requestedLocal = remotePort
 	}
 
-	portNum, _ := strconv.ParseUint(port, 10, 16)
+	ln, err = (&net.ListenConfig{}).Listen(ctx, "tcp", ":"+strconv.FormatUint(uint64(requestedLocal), 10))
+	if err != nil && localPort == 0 {
+		ln, err = (&net.ListenConfig{}).Listen(ctx, "tcp", ":0")
+	}
+
+	if err != nil {
+		cancelFn()
+		return 0, err
+	}
+
+	_, boundPortStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		cancelFn()
+		_ = ln.Close()
+		return 0, err
+	}
+	boundPort, err := strconv.ParseUint(boundPortStr, 10, 16)
+	if err != nil {
+		cancelFn()
+		_ = ln.Close()
+		return 0, err
+	}
+
+	portNum := uint16(remotePort)
 
 	go func() {
 		logger := zap.S().Named("tunnel")
 		for {
-			clientConn, err := l.Accept()
+			clientConn, err := ln.Accept()
 			if err != nil {
 				return
 			}
@@ -191,9 +222,9 @@ func (m *Manager) ConnectService(peerID types.PeerKey, port string) error {
 				}
 
 				// Open stream to remote service
-				stream, err := session.OpenStream(uint16(portNum))
+				stream, err := session.OpenStream(portNum)
 				if err != nil {
-					logger.Warnw("open stream failed", "peer", peerID.String()[:8], "port", port, "err", err)
+					logger.Warnw("open stream failed", "peer", peerID.String()[:8], "port", remotePort, "err", err)
 					_ = clientConn.Close()
 					return
 				}
@@ -203,12 +234,12 @@ func (m *Manager) ConnectService(peerID types.PeerKey, port string) error {
 		}
 	}()
 
-	m.connections[connectionKey(peerID.String(), port)] = connectionHandler{
+	m.connections[connectionKey(peerID.String(), boundPortStr)] = connectionHandler{
 		cancel: cancelFn,
 	}
 
-	zap.S().Infow("connected to service", "peer", peerID.String()[:8], "port", port)
-	return nil
+	zap.S().Infow("connected to service", "peer", peerID.String()[:8], "port", remotePort, "local_port", boundPort)
+	return uint32(boundPort), nil
 }
 
 // HandleSessionRequest handles incoming session establishment requests.
