@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -13,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -50,6 +50,7 @@ func main() {
 		newJoinCmd(),
 		newInviteCmd(),
 		newStatusCmd(),
+		newServiceCmd(),
 		newServeCmd(),
 		newConnectCmd(),
 	)
@@ -104,6 +105,35 @@ func newStatusCmd() *cobra.Command {
 		Args:  cobra.RangeArgs(0, 1),
 		Run:   runStatus,
 	}
+	cmd.Flags().Bool("wide", false, "Show full peer IDs and extra details")
+	cmd.Flags().Bool("all", false, "Include offline nodes and services")
+	return cmd
+}
+
+func newServiceCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "service",
+		Short: "Manage services",
+	}
+
+	listCmd := &cobra.Command{
+		Use:     "ls",
+		Short:   "List services",
+		Aliases: []string{"list"},
+		Run:     runServiceList,
+	}
+	listCmd.Flags().Bool("wide", false, "Show full peer IDs and extra details")
+	listCmd.Flags().Bool("all", false, "Include offline services")
+
+	exposeCmd := &cobra.Command{
+		Use:   "expose [port] [name]",
+		Short: "Expose a local port to the mesh",
+		Args:  cobra.RangeArgs(1, 2),
+		Run:   runServe,
+	}
+	exposeCmd.Flags().String("name", "", "Service name")
+
+	cmd.AddCommand(listCmd, exposeCmd)
 	return cmd
 }
 
@@ -114,17 +144,17 @@ func newServeCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Run:   runServe,
 	}
+	cmd.Flags().String("name", "", "Service name")
 	return cmd
 }
 
 func newConnectCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "connect [peer-id]",
-		Short: "Tunnel a local port to a peer",
-		Args:  cobra.ExactArgs(1),
+		Use:   "connect <service> [provider] [local-port]",
+		Short: "Tunnel a local port to a service",
+		Args:  cobra.RangeArgs(1, 3),
 		Run:   runConnect,
 	}
-	cmd.Flags().String("L", "", "Local port forwarding (e.g., 9090:8080)")
 	return cmd
 }
 
@@ -234,6 +264,9 @@ func runStatus(cmd *cobra.Command, args []string) {
 	if len(args) == 1 {
 		mode = args[0]
 	}
+	wide, _ := cmd.Flags().GetBool("wide")
+	includeAll, _ := cmd.Flags().GetBool("all")
+	opts := statusViewOpts{wide: wide, includeAll: includeAll}
 
 	client := newControlClient(cmd)
 	resp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
@@ -244,46 +277,109 @@ func runStatus(cmd *cobra.Command, args []string) {
 
 	switch mode {
 	case "all":
-		printNodesTable(cmd, resp.Msg)
+		printSelfLine(cmd, resp.Msg, opts)
+		printNodesTable(cmd, resp.Msg, opts)
 		fmt.Fprintln(cmd.OutOrStdout())
-		printServicesTable(cmd, resp.Msg)
+		printServicesTable(cmd, resp.Msg, opts)
 	case "nodes", "node":
-		printNodesTable(cmd, resp.Msg)
+		printSelfLine(cmd, resp.Msg, opts)
+		printNodesTable(cmd, resp.Msg, opts)
 	case "services", "service", "serve":
-		printServicesTable(cmd, resp.Msg)
+		printServicesTable(cmd, resp.Msg, opts)
 	default:
 		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services)\n", mode)
 	}
 }
 
-//nolint:mnd
-func printNodesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse) {
-	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "PEER_ID\tSTATUS\tADDR")
+type statusViewOpts struct {
+	wide       bool
+	includeAll bool
+}
 
-	for _, n := range st.Nodes {
-		peerKey := types.PeerKeyFromBytes(n.GetNode().GetPeerId())
-		// short := peerKey.String()[:12]
-		fmt.Fprintf(w, "%s\t%s\t%s\n", peerKey.String(), n.GetStatus().String(), n.Addr)
+func printSelfLine(cmd *cobra.Command, st *controlv1.GetStatusResponse, opts statusViewOpts) {
+	if st.GetSelf() == nil || st.GetSelf().GetNode() == nil {
+		return
 	}
-	_ = w.Flush()
+	peer := formatPeerID(st.GetSelf().GetNode().GetPeerId(), opts.wide)
+	addr := st.GetSelf().GetAddr()
+	if addr == "" {
+		addr = "-"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "self  %s  online  %s\n\n", peer, addr)
 }
 
 //nolint:mnd
-func printServicesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse) {
+func printNodesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse, opts statusViewOpts) {
+	if len(st.Nodes) == 0 {
+		return
+	}
+	filtered := 0
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tPROVIDER_PEER\tPORT")
+	fmt.Fprintln(w, "NODE\tSTATUS\tADDR")
 
-	for _, s := range st.Services {
-		peerKey := types.PeerKeyFromBytes(s.GetProvider().GetPeerId())
-		// short := peerKey.String()[:12]
-		fmt.Fprintf(w, "%s\t%s\t%d\n", s.GetName(), peerKey.String(), s.GetPort())
+	for _, n := range st.Nodes {
+		if !opts.includeAll && n.GetStatus() != controlv1.NodeStatus_NODE_STATUS_ONLINE {
+			filtered++
+			continue
+		}
+		peer := formatPeerID(n.GetNode().GetPeerId(), opts.wide)
+		status := formatStatus(n.GetStatus())
+		addr := n.GetAddr()
+		if addr == "" {
+			addr = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\n", peer, status, addr)
 	}
 	_ = w.Flush()
+
+	if filtered > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "offline nodes: %d (use --all)\n", filtered)
+	}
+}
+
+//nolint:mnd
+func printServicesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse, opts statusViewOpts) {
+	if len(st.Services) == 0 {
+		return
+	}
+	onlineProviders := map[string]bool{}
+	if st.GetSelf() != nil && st.GetSelf().GetNode() != nil {
+		selfID := peerKeyString(st.GetSelf().GetNode().GetPeerId())
+		onlineProviders[selfID] = true
+	}
+	for _, n := range st.Nodes {
+		if n.GetStatus() == controlv1.NodeStatus_NODE_STATUS_ONLINE {
+			id := peerKeyString(n.GetNode().GetPeerId())
+			onlineProviders[id] = true
+		}
+	}
+
+	filtered := 0
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "SERVICE\tPROVIDER\tPORT")
+
+	for _, s := range st.Services {
+		providerID := peerKeyString(s.GetProvider().GetPeerId())
+		if !opts.includeAll && !onlineProviders[providerID] {
+			filtered++
+			continue
+		}
+		provider := formatPeerID(s.GetProvider().GetPeerId(), opts.wide)
+		fmt.Fprintf(w, "%s\t%s\t%d\n", s.GetName(), provider, s.GetPort())
+	}
+	_ = w.Flush()
+
+	if filtered > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "offline services: %d (use --all)\n", filtered)
+	}
 }
 
 func runServe(cmd *cobra.Command, args []string) {
 	portStr := args[0]
+	name, _ := cmd.Flags().GetString("name")
+	if name == "" && len(args) > 1 {
+		name = args[1]
+	}
 
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
@@ -291,46 +387,193 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	client := newControlClient(cmd)
+	var namePtr *string
+	if name != "" {
+		namePtr = &name
+	}
 	if _, err = client.RegisterService(context.Background(), connect.NewRequest(&controlv1.RegisterServiceRequest{
 		Port: uint32(port),
+		Name: namePtr,
 	})); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
 
+	if name != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Registered service %s on port: %s\n", name, portStr)
+		return
+	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Registered service on port: %s\n", portStr)
 }
 
 func runConnect(cmd *cobra.Command, args []string) {
-	peerHex := args[0]
-	localMap, err := cmd.Flags().GetString("L")
-	if err != nil {
-		log.Fatal(err)
+	serviceArg := args[0]
+	providerArg := ""
+	localPortArg := ""
+	if len(args) >= 2 {
+		if len(args) == 2 && isPortArg(args[1]) {
+			localPortArg = args[1]
+		} else {
+			providerArg = args[1]
+		}
 	}
-	localPort := localMap
-	if _, _, err := net.SplitHostPort(localMap); err == nil {
-		_, localPort, _ = net.SplitHostPort(localMap)
-	} else if _, port, err := net.SplitHostPort(":" + localMap); err == nil {
-		localPort = port
+	if len(args) == 3 {
+		localPortArg = args[2]
 	}
 
-	peerID, err := hex.DecodeString(peerHex)
+	localPort := uint32(0)
+	if localPortArg != "" {
+		p, err := strconv.Atoi(localPortArg)
+		if err != nil || p <= 0 || p > 65535 {
+			fmt.Fprintln(cmd.ErrOrStderr(), "invalid local port")
+			return
+		}
+		localPort = uint32(p)
+	}
+
+	client := newControlClient(cmd)
+	statusResp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
 
-	client := newControlClient(cmd)
-	_, err = client.ConnectService(context.Background(), connect.NewRequest(&controlv1.ConnectServiceRequest{
-		Node: &controlv1.NodeRef{
-			PeerId: peerID,
-		},
-		Port: localPort,
+	svc, err := resolveService(statusResp.Msg, serviceArg, providerArg)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	connectResp, err := client.ConnectService(context.Background(), connect.NewRequest(&controlv1.ConnectServiceRequest{
+		Node:       &controlv1.NodeRef{PeerId: svc.GetProvider().GetPeerId()},
+		RemotePort: svc.GetPort(),
+		LocalPort:  localPort,
 	}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
+
+	local := connectResp.Msg.GetLocalPort()
+	provider := formatPeerID(svc.GetProvider().GetPeerId(), false)
+	fmt.Fprintf(cmd.OutOrStdout(), "forwarding localhost:%d -> %s (%s:%d)\n", local, svc.GetName(), provider, svc.GetPort())
+}
+
+func runServiceList(cmd *cobra.Command, _ []string) {
+	wide, _ := cmd.Flags().GetBool("wide")
+	includeAll, _ := cmd.Flags().GetBool("all")
+	opts := statusViewOpts{wide: wide, includeAll: includeAll}
+
+	client := newControlClient(cmd)
+	resp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+	printServicesTable(cmd, resp.Msg, opts)
+}
+
+func resolveService(st *controlv1.GetStatusResponse, serviceArg string, providerArg string) (*controlv1.ServiceSummary, error) {
+	if st == nil {
+		return nil, errors.New("no status available")
+	}
+
+	onlineProviders := map[string]bool{}
+	if st.GetSelf() != nil && st.GetSelf().GetNode() != nil {
+		selfID := peerKeyString(st.GetSelf().GetNode().GetPeerId())
+		onlineProviders[selfID] = true
+	}
+	for _, n := range st.Nodes {
+		if n.GetStatus() == controlv1.NodeStatus_NODE_STATUS_ONLINE {
+			onlineProviders[peerKeyString(n.GetNode().GetPeerId())] = true
+		}
+	}
+
+	portFilter := uint32(0)
+	if p, err := strconv.Atoi(serviceArg); err == nil && p > 0 && p <= 65535 {
+		portFilter = uint32(p)
+	}
+
+	var matches []*controlv1.ServiceSummary
+	for _, svc := range st.Services {
+		if portFilter > 0 {
+			if svc.GetPort() != portFilter && svc.GetName() != serviceArg {
+				continue
+			}
+		} else if svc.GetName() != serviceArg {
+			continue
+		}
+
+		providerID := peerKeyString(svc.GetProvider().GetPeerId())
+		if !onlineProviders[providerID] {
+			continue
+		}
+		if providerArg != "" && !peerIDHasPrefix(svc.GetProvider().GetPeerId(), providerArg) {
+			continue
+		}
+		matches = append(matches, svc)
+	}
+
+	if len(matches) == 0 {
+		if providerArg != "" {
+			return nil, fmt.Errorf("no online provider for %q on %q", serviceArg, providerArg)
+		}
+		return nil, fmt.Errorf("no online service match for %q", serviceArg)
+	}
+	if len(matches) > 1 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "service %q has multiple providers; use: pollen connect %s <provider>\n", serviceArg, serviceArg)
+		for _, svc := range matches {
+			provider := formatPeerID(svc.GetProvider().GetPeerId(), false)
+			fmt.Fprintf(&b, "- %s (%s:%d)\n", svc.GetName(), provider, svc.GetPort())
+		}
+		return nil, errors.New(strings.TrimSpace(b.String()))
+	}
+
+	return matches[0], nil
+}
+
+func peerKeyString(peerID []byte) string {
+	if len(peerID) == 0 {
+		return ""
+	}
+	key := types.PeerKeyFromBytes(peerID)
+	return (&key).String()
+}
+
+func formatPeerID(peerID []byte, wide bool) string {
+	full := peerKeyString(peerID)
+	if full == "" {
+		return "-"
+	}
+	if wide || len(full) <= 8 {
+		return full
+	}
+	return full[:8]
+}
+
+func formatStatus(s controlv1.NodeStatus) string {
+	switch s {
+	case controlv1.NodeStatus_NODE_STATUS_ONLINE:
+		return "online"
+	case controlv1.NodeStatus_NODE_STATUS_OFFLINE:
+		return "offline"
+	default:
+		return "offline"
+	}
+}
+
+func peerIDHasPrefix(peerID []byte, prefix string) bool {
+	if prefix == "" {
+		return true
+	}
+	full := peerKeyString(peerID)
+	return strings.HasPrefix(full, strings.ToLower(prefix))
+}
+
+func isPortArg(s string) bool {
+	p, err := strconv.Atoi(s)
+	return err == nil && p > 0 && p <= 65535
 }
 
 func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient {

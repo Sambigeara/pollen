@@ -46,7 +46,13 @@
       }
     },
     "v1ConnectServiceResponse": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "localPort": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
     },
     "v1CreateInviteResponse": {
       "type": "object",

@@ -70,6 +70,7 @@ type Node struct {
 	Directory      *Directory
 	crypto         *localCrypto
 	peerEvents     chan peer.Input
+	gossipNow      chan struct{}
 }
 
 func New(conf *Config) (*Node, error) {
@@ -162,6 +163,7 @@ func New(conf *Config) (*Node, error) {
 		crypto:         crypto,
 		conf:           conf,
 		peerEvents:     make(chan peer.Input, peerEventBufSize),
+		gossipNow:      make(chan struct{}, 1),
 	}, nil
 }
 
@@ -196,6 +198,8 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 			n.tick()
 		case <-tickCh:
 			n.tick()
+		case <-n.gossipNow:
+			n.gossip(ctx)
 		case <-gossipTicker.C:
 			n.gossip(ctx)
 		case in := <-n.Link.Events():
@@ -294,6 +298,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 		switch e := out.(type) {
 		case peer.PeerConnected:
 			n.log.Infow("peer connected", "peer_id", e.PeerKey.String()[:8])
+			trigger(n.gossipNow)
 		case peer.AttemptConnect:
 			go n.attemptDirectConnect(e)
 		case peer.RequestPunchCoordination:

@@ -28,6 +28,7 @@ type Node struct {
 	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	Addresses     []string               `protobuf:"bytes,3,rep,name=addresses,proto3" json:"addresses,omitempty"`
 	Keys          *Keys                  `protobuf:"bytes,4,opt,name=keys,proto3" json:"keys,omitempty"`
+	Services      []*Service             `protobuf:"bytes,5,rep,name=services,proto3" json:"services,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -90,6 +91,65 @@ func (x *Node) GetKeys() *Keys {
 	return nil
 }
 
+func (x *Node) GetServices() []*Service {
+	if x != nil {
+		return x.Services
+	}
+	return nil
+}
+
+type Service struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Port          uint32                 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Service) Reset() {
+	*x = Service{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Service) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Service) ProtoMessage() {}
+
+func (x *Service) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Service.ProtoReflect.Descriptor instead.
+func (*Service) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Service) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Service) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
 type Keys struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NoisePub      []byte                 `protobuf:"bytes,1,opt,name=noise_pub,json=noisePub,proto3" json:"noise_pub,omitempty"`
@@ -101,7 +161,7 @@ type Keys struct {
 
 func (x *Keys) Reset() {
 	*x = Keys{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[1]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -113,7 +173,7 @@ func (x *Keys) String() string {
 func (*Keys) ProtoMessage() {}
 
 func (x *Keys) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[1]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -126,7 +186,7 @@ func (x *Keys) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Keys.ProtoReflect.Descriptor instead.
 func (*Keys) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{1}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Keys) GetNoisePub() []byte {
@@ -154,12 +214,16 @@ var File_pollen_state_v1_state_proto protoreflect.FileDescriptor
 
 const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\n" +
-	"\x1bpollen/state/v1/state.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\"\x90\x01\n" +
+	"\x1bpollen/state/v1/state.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\"\xc6\x01\n" +
 	"\x04Node\x12+\n" +
 	"\x02id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1c\n" +
 	"\taddresses\x18\x03 \x03(\tR\taddresses\x12)\n" +
-	"\x04keys\x18\x04 \x01(\v2\x15.pollen.state.v1.KeysR\x04keys\"\x91\x01\n" +
+	"\x04keys\x18\x04 \x01(\v2\x15.pollen.state.v1.KeysR\x04keys\x124\n" +
+	"\bservices\x18\x05 \x03(\v2\x18.pollen.state.v1.ServiceR\bservices\">\n" +
+	"\aService\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
+	"\x04port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\x04port\"\x91\x01\n" +
 	"\x04Keys\x12$\n" +
 	"\tnoise_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\bnoisePub\x12*\n" +
 	"\fidentity_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\videntityPub\x12)\n" +
@@ -179,18 +243,20 @@ func file_pollen_state_v1_state_proto_rawDescGZIP() []byte {
 	return file_pollen_state_v1_state_proto_rawDescData
 }
 
-var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_pollen_state_v1_state_proto_goTypes = []any{
-	(*Node)(nil), // 0: pollen.state.v1.Node
-	(*Keys)(nil), // 1: pollen.state.v1.Keys
+	(*Node)(nil),    // 0: pollen.state.v1.Node
+	(*Service)(nil), // 1: pollen.state.v1.Service
+	(*Keys)(nil),    // 2: pollen.state.v1.Keys
 }
 var file_pollen_state_v1_state_proto_depIdxs = []int32{
-	1, // 0: pollen.state.v1.Node.keys:type_name -> pollen.state.v1.Keys
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	2, // 0: pollen.state.v1.Node.keys:type_name -> pollen.state.v1.Keys
+	1, // 1: pollen.state.v1.Node.services:type_name -> pollen.state.v1.Service
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_state_proto_init() }
@@ -198,14 +264,14 @@ func file_pollen_state_v1_state_proto_init() {
 	if File_pollen_state_v1_state_proto != nil {
 		return
 	}
-	file_pollen_state_v1_state_proto_msgTypes[1].OneofWrappers = []any{}
+	file_pollen_state_v1_state_proto_msgTypes[2].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_state_v1_state_proto_rawDesc), len(file_pollen_state_v1_state_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
