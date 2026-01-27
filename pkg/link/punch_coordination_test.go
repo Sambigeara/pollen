@@ -84,9 +84,9 @@ func TestPunchCoordination_ConnectsPeers(t *testing.T) {
 	require.NoError(t, linkB.JoinWithInvite(ctx, inviteB))
 	require.NoError(t, linkC.JoinWithInvite(ctx, inviteC))
 
-	awaitConnects(t, linkA.Events(), 2*time.Second, peerB, peerC)
-	awaitConnects(t, linkB.Events(), 2*time.Second, peerA)
-	awaitConnects(t, linkC.Events(), 2*time.Second, peerA)
+	awaitConnects(t, linkA.Events(), peerB, peerC)
+	awaitConnects(t, linkB.Events(), peerA)
+	awaitConnects(t, linkC.Events(), peerA)
 
 	req := &peerv1.PunchCoordRequest{
 		PeerId:    peerC.Bytes(),
@@ -100,8 +100,8 @@ func TestPunchCoordination_ConnectsPeers(t *testing.T) {
 		Payload: reqBytes,
 	}))
 
-	awaitConnects(t, linkB.Events(), 2*time.Second, peerC)
-	awaitConnects(t, linkC.Events(), 2*time.Second, peerB)
+	awaitConnects(t, linkB.Events(), peerC)
+	awaitConnects(t, linkC.Events(), peerB)
 
 	_, ok := linkB.GetActivePeerAddress(peerC)
 	require.True(t, ok)
@@ -166,7 +166,9 @@ func mustAdmission(t *testing.T) admission.Store {
 	return store
 }
 
-func awaitConnects(t *testing.T, events <-chan peer.Input, timeout time.Duration, peers ...types.PeerKey) {
+const connectTimeout = 2 * time.Second
+
+func awaitConnects(t *testing.T, events <-chan peer.Input, peers ...types.PeerKey) {
 	t.Helper()
 	if len(peers) == 0 {
 		return
@@ -177,7 +179,7 @@ func awaitConnects(t *testing.T, events <-chan peer.Input, timeout time.Duration
 		pending[p] = struct{}{}
 	}
 
-	deadline := time.After(timeout)
+	deadline := time.After(connectTimeout)
 	for len(pending) > 0 {
 		select {
 		case in := <-events:

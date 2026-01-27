@@ -199,82 +199,109 @@ func (s *NodeService) RegisterService(ctx context.Context, req *controlv1.Regist
 
 	name := req.GetName()
 	if name == "" {
-		name = strconv.FormatUint(uint64(req.Port), 10)
+		name = serviceNameForPort(req.Port)
 	}
 
 	localID := s.node.Store.Cluster.LocalID
-	if rec, ok := s.node.Store.Cluster.Nodes.Get(localID); ok {
-		if rec.Node != nil {
-			node := &statev1.Node{
-				Id:        rec.Node.Id,
-				Name:      rec.Node.Name,
-				Addresses: append([]string(nil), rec.Node.Addresses...),
-				Keys:      rec.Node.Keys,
-			}
-			services := make([]*statev1.Service, 0, len(rec.Node.Services)+1)
-			seen := false
-			for _, svc := range rec.Node.Services {
-				if svc.GetPort() == req.Port {
-					services = append(services, &statev1.Service{Name: name, Port: req.Port})
-					seen = true
-					continue
-				}
-				services = append(services, svc)
-			}
-			if !seen {
-				services = append(services, &statev1.Service{Name: name, Port: req.Port})
-			}
-			node.Services = services
-			s.node.Store.Cluster.Nodes.Set(localID, node)
-			trigger(s.node.gossipNow)
-		}
+	rec, ok := s.node.Store.Cluster.Nodes.Get(localID)
+	if !ok || rec.Node == nil {
+		return &controlv1.RegisterServiceResponse{}, nil
 	}
+
+	node := cloneNode(rec.Node)
+	node.Services = upsertService(node.Services, req.Port, name)
+	s.node.Store.Cluster.Nodes.Set(localID, node)
+	trigger(s.node.gossipNow)
 
 	return &controlv1.RegisterServiceResponse{}, nil
 }
 
 func (s *NodeService) UnregisterService(ctx context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
 	localID := s.node.Store.Cluster.LocalID
-	if rec, ok := s.node.Store.Cluster.Nodes.Get(localID); ok {
-		if rec.Node != nil {
-			port := req.GetPort()
-			name := req.GetName()
-			services := make([]*statev1.Service, 0, len(rec.Node.Services))
-			removed := false
-			for _, svc := range rec.Node.Services {
-				match := false
-				if port != 0 && svc.GetPort() == port {
-					match = true
-				}
-				if !match && name != "" {
-					if svc.GetName() == name {
-						match = true
-					} else if svc.GetName() == "" && strconv.FormatUint(uint64(svc.GetPort()), 10) == name {
-						match = true
-					}
-				}
-				if match {
-					removed = true
-					s.node.Tunnel.UnregisterService(svc.GetPort())
-					continue
-				}
-				services = append(services, svc)
-			}
-			if removed {
-				node := &statev1.Node{
-					Id:        rec.Node.Id,
-					Name:      rec.Node.Name,
-					Addresses: append([]string(nil), rec.Node.Addresses...),
-					Keys:      rec.Node.Keys,
-					Services:  services,
-				}
-				s.node.Store.Cluster.Nodes.Set(localID, node)
-				trigger(s.node.gossipNow)
-			}
-		}
+	rec, ok := s.node.Store.Cluster.Nodes.Get(localID)
+	if !ok || rec.Node == nil {
+		return &controlv1.UnregisterServiceResponse{}, nil
 	}
 
+	port := req.GetPort()
+	name := req.GetName()
+	updated, removed := removeServices(rec.Node.Services, port, name)
+	if len(removed) == 0 {
+		return &controlv1.UnregisterServiceResponse{}, nil
+	}
+	for _, p := range removed {
+		s.node.Tunnel.UnregisterService(p)
+	}
+
+	node := cloneNode(rec.Node)
+	node.Services = updated
+	s.node.Store.Cluster.Nodes.Set(localID, node)
+	trigger(s.node.gossipNow)
+
 	return &controlv1.UnregisterServiceResponse{}, nil
+}
+
+func cloneNode(node *statev1.Node) *statev1.Node {
+	if node == nil {
+		return &statev1.Node{}
+	}
+	return &statev1.Node{
+		Id:        node.Id,
+		Name:      node.Name,
+		Addresses: append([]string(nil), node.Addresses...),
+		Keys:      node.Keys,
+		Services:  append([]*statev1.Service(nil), node.Services...),
+	}
+}
+
+func upsertService(services []*statev1.Service, port uint32, name string) []*statev1.Service {
+	updated := make([]*statev1.Service, 0, len(services)+1)
+	seen := false
+	for _, svc := range services {
+		if svc.GetPort() == port {
+			updated = append(updated, &statev1.Service{Name: name, Port: port})
+			seen = true
+			continue
+		}
+		updated = append(updated, svc)
+	}
+	if !seen {
+		updated = append(updated, &statev1.Service{Name: name, Port: port})
+	}
+	return updated
+}
+
+func removeServices(services []*statev1.Service, port uint32, name string) ([]*statev1.Service, []uint32) {
+	updated := make([]*statev1.Service, 0, len(services))
+	removed := make([]uint32, 0, len(services))
+	for _, svc := range services {
+		if matchesService(svc, port, name) {
+			removed = append(removed, svc.GetPort())
+			continue
+		}
+		updated = append(updated, svc)
+	}
+	return updated, removed
+}
+
+func matchesService(svc *statev1.Service, port uint32, name string) bool {
+	if svc == nil {
+		return false
+	}
+	if port != 0 && svc.GetPort() == port {
+		return true
+	}
+	if name == "" {
+		return false
+	}
+	if svc.GetName() == name {
+		return true
+	}
+	return svc.GetName() == "" && serviceNameForPort(svc.GetPort()) == name
+}
+
+func serviceNameForPort(port uint32) string {
+	return strconv.FormatUint(uint64(port), 10)
 }
 
 func (s *NodeService) ConnectService(ctx context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
