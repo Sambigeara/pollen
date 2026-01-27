@@ -21,13 +21,83 @@ import (
 var _ Link = (*impl)(nil)
 
 const (
-	sessionRefreshInterval    = 120 * time.Second // new IK handshake every 2 mins
-	handshakeDedupTTL         = 5 * time.Second
-	ensurePeerTimeout         = 4 * time.Second
-	ensurePeerInterval        = 200 * time.Millisecond
-	nHolepunchAttempts        = 10
-	staleSessionCheckInterval = 15 * time.Second // how often to check for stale sessions
+	defaultSessionRefreshInterval    = 120 * time.Second // new IK handshake every 2 mins
+	defaultHandshakeDedupTTL         = 5 * time.Second
+	defaultEnsurePeerTimeout         = 4 * time.Second
+	defaultEnsurePeerInterval        = 200 * time.Millisecond
+	defaultHolepunchAttempts         = 10
+	defaultStaleSessionCheckInterval = 15 * time.Second // how often to check for stale sessions
 )
+
+type Option func(*config)
+
+type config struct {
+	sessionRefreshInterval    time.Duration
+	handshakeDedupTTL         time.Duration
+	ensurePeerTimeout         time.Duration
+	ensurePeerInterval        time.Duration
+	holepunchAttempts         int
+	staleSessionCheckInterval time.Duration
+}
+
+func defaultConfig() config {
+	return config{
+		sessionRefreshInterval:    defaultSessionRefreshInterval,
+		handshakeDedupTTL:         defaultHandshakeDedupTTL,
+		ensurePeerTimeout:         defaultEnsurePeerTimeout,
+		ensurePeerInterval:        defaultEnsurePeerInterval,
+		holepunchAttempts:         defaultHolepunchAttempts,
+		staleSessionCheckInterval: defaultStaleSessionCheckInterval,
+	}
+}
+
+func WithEnsurePeerTimeout(d time.Duration) Option {
+	return func(c *config) {
+		if d > 0 {
+			c.ensurePeerTimeout = d
+		}
+	}
+}
+
+func WithEnsurePeerInterval(d time.Duration) Option {
+	return func(c *config) {
+		if d > 0 {
+			c.ensurePeerInterval = d
+		}
+	}
+}
+
+func WithHolepunchAttempts(n int) Option {
+	return func(c *config) {
+		if n > 0 {
+			c.holepunchAttempts = n
+		}
+	}
+}
+
+func WithStaleSessionCheckInterval(d time.Duration) Option {
+	return func(c *config) {
+		if d > 0 {
+			c.staleSessionCheckInterval = d
+		}
+	}
+}
+
+func WithSessionRefreshInterval(d time.Duration) Option {
+	return func(c *config) {
+		if d > 0 {
+			c.sessionRefreshInterval = d
+		}
+	}
+}
+
+func WithHandshakeDedupTTL(d time.Duration) Option {
+	return func(c *config) {
+		if d > 0 {
+			c.handshakeDedupTTL = d
+		}
+	}
+}
 
 var ErrNoSession = errors.New("no session for peer")
 
@@ -70,14 +140,28 @@ type impl struct {
 	handlersMu     sync.RWMutex
 	pingMu         sync.RWMutex
 	waitMu         sync.Mutex
+	cfg            config
 }
 
 const eventBufSize = 64
 
-func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission) (Link, error) {
+func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission, opts ...Option) (Link, error) {
 	tr, err := transport.NewTransport(port)
 	if err != nil {
 		return nil, err
+	}
+
+	return NewLinkWithTransport(tr, cs, staticKey, crypto, admission, opts...)
+}
+
+func NewLinkWithTransport(tr transport.Transport, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission, opts ...Option) (Link, error) {
+	if tr == nil {
+		return nil, errors.New("transport is nil")
+	}
+
+	cfg := defaultConfig()
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 
 	return &impl{
@@ -91,6 +175,7 @@ func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto Loca
 		events:         make(chan peer.Input, eventBufSize),
 		pingMgrs:       make(map[string]*pingMgr),
 		waitPeer:       make(map[types.PeerKey]chan struct{}),
+		cfg:            cfg,
 	}, nil
 }
 
@@ -172,18 +257,23 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 	recvPeer := types.PeerKeyFromBytes(req.PeerId)
 	initPeer := types.PeerKeyFromBytes(initSess.peerNoiseKey)
 
-	peerAddrWithLocalPort, err := net.ResolveUDPAddr("udp", recvSess.peerAddr)
-	if err != nil {
-		return fmt.Errorf("unable to parse peerAddr from session")
+	initiatorAddrs := []string{src}
+	if req.GetLocalPort() > 0 {
+		initiatorAddrWithLocalPort, err := net.ResolveUDPAddr("udp", src)
+		if err == nil {
+			initiatorAddrWithLocalPort.Port = int(req.GetLocalPort())
+			if addr := initiatorAddrWithLocalPort.String(); addr != src {
+				initiatorAddrs = append(initiatorAddrs, addr)
+			}
+		}
 	}
-	peerAddrWithLocalPort.Port = int(req.GetLocalPort())
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		resp := &peerv1.PunchCoordTrigger{
 			PeerId:    req.PeerId,
 			SelfAddr:  src,
-			PeerAddrs: []string{recvSess.peerAddr, peerAddrWithLocalPort.String()},
+			PeerAddrs: []string{recvSess.peerAddr},
 		}
 
 		b, err := resp.MarshalVT()
@@ -201,7 +291,7 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 		resp := &peerv1.PunchCoordTrigger{
 			PeerId:    initSess.peerNoiseKey,
 			SelfAddr:  recvSess.peerAddr,
-			PeerAddrs: []string{src},
+			PeerAddrs: initiatorAddrs,
 		}
 
 		b, err := resp.MarshalVT()
@@ -233,11 +323,11 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 		return fmt.Errorf("malformed trigger payload: %w", err)
 	}
 
-	ensureCtx, cancel := context.WithTimeout(ctx, ensurePeerTimeout)
+	ensureCtx, cancel := context.WithTimeout(ctx, i.cfg.ensurePeerTimeout)
 	defer cancel()
 
 	peerID := types.PeerKeyFromBytes(req.PeerId)
-	if err := i.EnsurePeer(ensureCtx, peerID, req.PeerAddrs, nHolepunchAttempts); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+	if err := i.EnsurePeer(ensureCtx, peerID, req.PeerAddrs, i.cfg.holepunchAttempts); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		i.log.Debugw("ensure peer failed", "peer", peerID.String()[:8], "err", err)
 		return err
 	}
@@ -275,7 +365,7 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 		// TODO(saml) need to sync up the various durations/grace periods. This timeout needs to be less than the
 		// handshake request TTL.
 		// TODO(saml) probably need to clear on hard errors too
-		i.handshakeStore.clear(fr.senderID, handshakeDedupTTL)
+		i.handshakeStore.clear(fr.senderID, i.cfg.handshakeDedupTTL)
 
 		i.removeWaiter(types.PeerKeyFromBytes(res.PeerStaticKey))
 		// start only when we trust the peer
@@ -309,7 +399,7 @@ func (i *impl) handleApp(ctx context.Context, fr frame) {
 	i.bumpPinger(ctx, sess.peerAddr)
 
 	if shouldRekey {
-		i.rekeyMgr.resetIfExists(sess.peerSessionID, sessionRefreshInterval)
+		i.rekeyMgr.resetIfExists(sess.peerSessionID, i.cfg.sessionRefreshInterval)
 	}
 
 	i.handlersMu.RLock()
@@ -341,7 +431,7 @@ func (i *impl) handleDisconnect(fr frame) {
 }
 
 func (i *impl) staleSessionChecker(ctx context.Context) {
-	ticker := time.NewTicker(staleSessionCheckInterval)
+	ticker := time.NewTicker(i.cfg.staleSessionCheckInterval)
 	defer ticker.Stop()
 
 	for {
@@ -408,7 +498,7 @@ func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelo
 	i.bumpPinger(ctx, sess.peerAddr)
 
 	if shouldRekey {
-		i.rekeyMgr.resetIfExists(sess.peerSessionID, sessionRefreshInterval)
+		i.rekeyMgr.resetIfExists(sess.peerSessionID, i.cfg.sessionRefreshInterval)
 	}
 
 	return nil
@@ -488,7 +578,7 @@ func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []st
 		}
 	}
 
-	ticker := time.NewTicker(ensurePeerInterval)
+	ticker := time.NewTicker(i.cfg.ensurePeerInterval)
 	defer ticker.Stop()
 
 	for attempt := 1; attempt <= nAttempts; attempt++ {

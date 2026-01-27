@@ -46,11 +46,17 @@ const (
 )
 
 type Config struct {
-	PollenDir        string
-	AdvertisedIPs    []string
-	Port             int
-	GossipInterval   time.Duration
-	PeerTickInterval time.Duration
+	PollenDir           string
+	AdvertisedIPs       []string
+	Port                int
+	GossipInterval      time.Duration
+	PeerTickInterval    time.Duration
+	Transport           transport.Transport
+	PeerConfig          *peer.Config
+	LinkOptions         []link.Option
+	PunchAttemptTimeout time.Duration
+	GossipJitter        float64
+	DisableGossipJitter bool
 }
 
 type Node struct {
@@ -112,15 +118,25 @@ func New(conf *Config) (*Node, error) {
 		identityPubKey: pubKey,
 	}
 
-	link, err := link.NewLink(conf.Port, &cs, noiseKey, crypto, invitesStore)
+	var mesh link.Link
+	if conf.Transport != nil {
+		mesh, err = link.NewLinkWithTransport(conf.Transport, &cs, noiseKey, crypto, invitesStore, conf.LinkOptions...)
+	} else {
+		mesh, err = link.NewLink(conf.Port, &cs, noiseKey, crypto, invitesStore, conf.LinkOptions...)
+	}
 	if err != nil {
 		return nil, err
+	}
+
+	peerStore := peer.NewStore()
+	if conf.PeerConfig != nil {
+		peerStore = peer.NewStoreWithConfig(*conf.PeerConfig)
 	}
 
 	cluster := stateStore.Cluster
 
 	tun := tunnel.New(
-		link.Send,
+		mesh.Send,
 		&Directory{cluster: cluster},
 		privKey,
 		ips,
@@ -137,9 +153,9 @@ func New(conf *Config) (*Node, error) {
 
 	return &Node{
 		log:            log,
-		Peers:          peer.NewStore(),
+		Peers:          peerStore,
 		Store:          stateStore,
-		Link:           link,
+		Link:           mesh,
 		AdmissionStore: invitesStore,
 		Tunnel:         tun,
 		Directory:      &Directory{cluster: cluster},
@@ -166,7 +182,7 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 
 	trigger(tickCh)
 
-	gossipTicker := util.NewJitterTicker(ctx, n.conf.GossipInterval, loopIntervalJitter)
+	gossipTicker := util.NewJitterTicker(ctx, n.conf.GossipInterval, n.gossipJitter())
 	defer gossipTicker.Stop()
 
 	peerTicker := time.NewTicker(n.conf.PeerTickInterval)
@@ -295,7 +311,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 }
 
 func (n *Node) attemptDirectConnect(e peer.AttemptConnect) {
-	ctx, cancel := context.WithTimeout(context.Background(), punchAttemptDuration)
+	ctx, cancel := context.WithTimeout(context.Background(), n.punchAttemptDuration())
 	defer cancel()
 
 	if err := n.Link.EnsurePeer(ctx, e.PeerKey, e.Addrs, 1); err != nil { //nolint:mnd
@@ -329,9 +345,26 @@ func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordin
 
 	// Signal failure after timeout. If peer connected, ConnectPeer will be
 	// processed first (via Link.Events), and connectFailed will no-op.
-	time.AfterFunc(punchAttemptDuration, func() {
+	time.AfterFunc(n.punchAttemptDuration(), func() {
 		n.peerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 	})
+}
+
+func (n *Node) gossipJitter() float64 {
+	if n.conf.DisableGossipJitter {
+		return 0
+	}
+	if n.conf.GossipJitter > 0 {
+		return n.conf.GossipJitter
+	}
+	return loopIntervalJitter
+}
+
+func (n *Node) punchAttemptDuration() time.Duration {
+	if n.conf.PunchAttemptTimeout > 0 {
+		return n.conf.PunchAttemptTimeout
+	}
+	return punchAttemptDuration
 }
 
 func trigger(ch chan<- struct{}) {

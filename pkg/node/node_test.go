@@ -2,15 +2,17 @@ package node
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
-	"syscall"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/internal/testutil/memtransport"
+	"github.com/sambigeara/pollen/pkg/link"
+	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +21,7 @@ import (
 
 func TestNode(t *testing.T) {
 	ctx := t.Context()
+	reachabilityTimeout := 1 * time.Second
 
 	verifyReachability := func(t *testing.T, sender *Node, targetKey types.PeerKey, recvChan <-chan []byte, payload []byte, msg string) {
 		t.Helper()
@@ -35,12 +38,13 @@ func TestNode(t *testing.T) {
 			case <-time.After(150 * time.Millisecond):
 				assert.Fail(c, "timed out waiting for message")
 			}
-		}, 2*time.Second, 200*time.Millisecond, msg)
+		}, reachabilityTimeout, 200*time.Millisecond, msg)
 	}
 
 	t.Run("converge after invite", func(t *testing.T) {
+		network := memtransport.NewNetwork()
 		dirA := t.TempDir()
-		nodeA, portA := newNode(t, dirA, 0)
+		nodeA, portA := newNode(t, dirA, 0, network, nil)
 
 		token, err := NewInvite([]string{"127.0.0.1"}, fmt.Sprintf("%d", portA))
 		require.NoError(t, err)
@@ -52,7 +56,7 @@ func TestNode(t *testing.T) {
 		}()
 
 		dirB := t.TempDir()
-		nodeB, _ := newNode(t, dirB, 0)
+		nodeB, _ := newNode(t, dirB, 0, network, nil)
 		go func() {
 			require.NoError(t, nodeB.Start(ctx, token))
 		}()
@@ -61,10 +65,11 @@ func TestNode(t *testing.T) {
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			assert.Equal(c, expectPeers, len(nodeA.Store.Cluster.Nodes.GetAll()), "Node A should see peer B")
 			assert.Equal(c, expectPeers, len(nodeB.Store.Cluster.Nodes.GetAll()), "Node B should see peer A")
-		}, 10*time.Second, 100*time.Millisecond, "nodes failed to converge state")
+		}, 2*time.Second, 50*time.Millisecond, "nodes failed to converge state")
 	})
 
 	t.Run("converge after gossip", func(t *testing.T) {
+		network := memtransport.NewNetwork()
 		dirA := t.TempDir()
 		dirB := t.TempDir()
 		dirC := t.TempDir()
@@ -74,7 +79,7 @@ func TestNode(t *testing.T) {
 
 		t.Run("XXPsk2", func(t *testing.T) {
 			var nodeA *Node
-			nodeA, portA = newNode(t, dirA, 0)
+			nodeA, portA = newNode(t, dirA, 0, network, nil)
 
 			tokenForB, err := NewInvite([]string{"127.0.0.1"}, fmt.Sprintf("%d", portA))
 			require.NoError(t, err)
@@ -94,11 +99,11 @@ func TestNode(t *testing.T) {
 			go func() { stopA <- nodeA.Start(initCtx, nil) }()
 
 			var nodeB *Node
-			nodeB, portB = newNode(t, dirB, 0)
+			nodeB, portB = newNode(t, dirB, 0, network, nil)
 			go func() { stopB <- nodeB.Start(initCtx, tokenForB) }()
 
 			var nodeC *Node
-			nodeC, portC = newNode(t, dirC, 0)
+			nodeC, portC = newNode(t, dirC, 0, network, nil)
 			go func() { stopC <- nodeC.Start(initCtx, tokenForC) }()
 
 			var storeA, storeB, storeC map[types.PeerKey]*statev1.Node
@@ -113,7 +118,7 @@ func TestNode(t *testing.T) {
 				assert.Equal(c, expectPeers, len(storeA))
 				assert.Equal(c, expectPeers, len(storeB))
 				assert.Equal(c, expectPeers, len(storeC))
-			}, 5*time.Second, 100*time.Millisecond, "nodes failed to converge state")
+			}, 2*time.Second, 50*time.Millisecond, "nodes failed to converge state")
 
 			idA := nodeA.Store.Cluster.LocalID
 			idB := nodeB.Store.Cluster.LocalID
@@ -180,9 +185,9 @@ func TestNode(t *testing.T) {
 
 		t.Run("IK", func(t *testing.T) {
 			// Recreate new nodes with the same local state (persisted in dirs).
-			nodeA, _ := newNode(t, dirA, portA)
-			nodeB, _ := newNode(t, dirB, portB)
-			nodeC, _ := newNode(t, dirC, portC)
+			nodeA, _ := newNode(t, dirA, portA, network, nil)
+			nodeB, _ := newNode(t, dirB, portB, network, nil)
+			nodeC, _ := newNode(t, dirC, portC, network, nil)
 
 			idA := nodeA.Store.Cluster.LocalID
 			idB := nodeB.Store.Cluster.LocalID
@@ -204,7 +209,7 @@ func TestNode(t *testing.T) {
 				require.Empty(c, cmp.Diff(expectedA, storeC[idA], opts...))
 				require.Empty(c, cmp.Diff(expectedB, storeC[idB], opts...))
 				require.Empty(c, cmp.Diff(expectedC, storeC[idC], opts...))
-			}, 5*time.Second, 50*time.Millisecond, "nodes failed to converge state")
+			}, 2*time.Second, 25*time.Millisecond, "nodes failed to converge state")
 
 			// Setup Reachability Test Handlers
 			recvA := make(chan []byte, 1)
@@ -254,50 +259,135 @@ func TestNode(t *testing.T) {
 			verifyReachability(t, nodeC, skB, recvB, payload, "nodeC -> nodeB")
 		})
 	})
+
+	t.Run("punch coordination after direct failure", func(t *testing.T) {
+		network := memtransport.NewNetwork()
+
+		dirA := t.TempDir()
+		nodeA, portA := newNode(t, dirA, 0, network, []string{"127.0.0.1"})
+
+		tokenForB, err := NewInvite([]string{"127.0.0.1"}, fmt.Sprintf("%d", portA))
+		require.NoError(t, err)
+
+		tokenForC, err := NewInvite([]string{"127.0.0.1"}, fmt.Sprintf("%d", portA))
+		require.NoError(t, err)
+
+		nodeA.AdmissionStore.AddInvite(tokenForB)
+		nodeA.AdmissionStore.AddInvite(tokenForC)
+
+		initCtx, cancelFn := context.WithCancel(ctx)
+		t.Cleanup(cancelFn)
+
+		go func() {
+			require.NoError(t, nodeA.Start(initCtx, nil))
+		}()
+
+		nodeB, portB := newNode(t, t.TempDir(), 0, network, []string{"10.0.0.2"})
+		go func() {
+			require.NoError(t, nodeB.Start(initCtx, tokenForB))
+		}()
+
+		nodeC, portC := newNode(t, t.TempDir(), 0, network, []string{"10.0.0.3"})
+		go func() {
+			require.NoError(t, nodeC.Start(initCtx, tokenForC))
+		}()
+
+		idB := nodeB.Store.Cluster.LocalID
+		idC := nodeC.Store.Cluster.LocalID
+
+		require.EventuallyWithT(t, func(c *assert.CollectT) {
+			storeA := nodeA.Store.Cluster.Nodes.GetAll()
+			storeB := nodeB.Store.Cluster.Nodes.GetAll()
+			storeC := nodeC.Store.Cluster.Nodes.GetAll()
+
+			assert.Equal(c, 3, len(storeA))
+			assert.Equal(c, 3, len(storeB))
+			assert.Equal(c, 3, len(storeC))
+
+			if nodeRec, ok := storeB[idC]; ok {
+				assert.Equal(c, advertisedAddrs([]string{"10.0.0.3"}, portC), nodeRec.Addresses)
+			}
+			if nodeRec, ok := storeC[idB]; ok {
+				assert.Equal(c, advertisedAddrs([]string{"10.0.0.2"}, portB), nodeRec.Addresses)
+			}
+		}, 2*time.Second, 50*time.Millisecond, "nodes failed to converge state")
+
+		recvB := make(chan []byte, 1)
+		nodeB.Link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error {
+			select {
+			case recvB <- b:
+			default:
+			}
+			return nil
+		})
+		recvC := make(chan []byte, 1)
+		nodeC.Link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error {
+			select {
+			case recvC <- b:
+			default:
+			}
+			return nil
+		})
+
+		skB := types.PeerKeyFromBytes(nodeB.crypto.noisePubKey)
+		skC := types.PeerKeyFromBytes(nodeC.crypto.noisePubKey)
+
+		payload := []byte("hello")
+		verifyReachability(t, nodeB, skC, recvC, payload, "nodeB -> nodeC (punch)")
+		verifyReachability(t, nodeC, skB, recvB, payload, "nodeC -> nodeB (punch)")
+	})
 }
 
-func newNode(t *testing.T, dir string, port int) (*Node, int) {
+var portCounter uint32 = 10000
+
+func nextPort() int {
+	return int(atomic.AddUint32(&portCounter, 1))
+}
+
+func newNode(t *testing.T, dir string, port int, network *memtransport.Network, advertisedIPs []string) (*Node, int) {
 	t.Helper()
+	require.NotNil(t, network)
 
 	if port == 0 {
-		port = getFreePort(t)
+		port = nextPort()
 	}
+	if len(advertisedIPs) == 0 {
+		advertisedIPs = []string{"127.0.0.1"}
+	}
+
+	addr := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port))
+	tr, err := network.Bind(addr)
+	require.NoError(t, err)
 
 	conf := &Config{
 		Port:             port,
-		AdvertisedIPs:    []string{"127.0.0.1"},
-		GossipInterval:   time.Millisecond * 50,
-		PeerTickInterval: time.Millisecond * 50,
+		AdvertisedIPs:    advertisedIPs,
+		GossipInterval:   10 * time.Millisecond,
+		PeerTickInterval: 10 * time.Millisecond,
 		PollenDir:        dir,
+		Transport:        tr,
+		PeerConfig: &peer.Config{
+			FirstBackoff:              5 * time.Millisecond,
+			BaseBackoff:               5 * time.Millisecond,
+			MaxBackoff:                20 * time.Millisecond,
+			DirectAttemptThreshold:    1,
+			PunchAttemptThreshold:     1,
+			UnreachableRetryInterval:  20 * time.Millisecond,
+			DisconnectedRetryInterval: 20 * time.Millisecond,
+		},
+		LinkOptions: []link.Option{
+			link.WithEnsurePeerInterval(5 * time.Millisecond),
+			link.WithEnsurePeerTimeout(250 * time.Millisecond),
+			link.WithHolepunchAttempts(2),
+		},
+		PunchAttemptTimeout: 200 * time.Millisecond,
+		DisableGossipJitter: true,
 	}
 
-	var node *Node
-	var err error
-	for range 8 {
-		node, err = New(conf)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, syscall.EADDRINUSE) {
-			break
-		}
-		// Retry with a fresh port after a brief delay.
-		time.Sleep(10 * time.Millisecond)
-		conf.Port = getFreePort(t)
-	}
+	node, err := New(conf)
 	require.NoError(t, err)
 
 	return node, conf.Port
-}
-
-func getFreePort(t *testing.T) int {
-	t.Helper()
-
-	l, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-	require.NoError(t, err)
-
-	defer l.Close()
-	return l.LocalAddr().(*net.UDPAddr).Port
 }
 
 func advertisedAddrs(ips []string, port int) []string {

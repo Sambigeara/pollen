@@ -38,13 +38,30 @@ type Peer struct {
 	id            types.PeerKey
 }
 
+type Config struct {
+	FirstBackoff              time.Duration
+	BaseBackoff               time.Duration
+	MaxBackoff                time.Duration
+	DirectAttemptThreshold    int
+	PunchAttemptThreshold     int
+	UnreachableRetryInterval  time.Duration
+	DisconnectedRetryInterval time.Duration
+}
+
 type Store struct {
-	m map[types.PeerKey]*Peer
+	m   map[types.PeerKey]*Peer
+	cfg Config
 }
 
 func NewStore() *Store {
+	return NewStoreWithConfig(DefaultConfig())
+}
+
+func NewStoreWithConfig(cfg Config) *Store {
+	cfg = cfg.withDefaults()
 	return &Store{
-		m: make(map[types.PeerKey]*Peer),
+		m:   make(map[types.PeerKey]*Peer),
+		cfg: cfg,
 	}
 }
 
@@ -126,25 +143,61 @@ func (RequestPunchCoordination) isOutput() {}
 
 // Configuration.
 const (
-	baseBackoff  = 1 * time.Second
-	maxBackoff   = 60 * time.Second
-	firstBackoff = 500 * time.Millisecond
+	defaultBaseBackoff  = 1 * time.Second
+	defaultMaxBackoff   = 60 * time.Second
+	defaultFirstBackoff = 500 * time.Millisecond
 
-	// Stage thresholds: how many failures before escalating to next stage.
-	directAttemptThreshold = 1
-	punchAttemptThreshold  = 1
+	defaultDirectAttemptThreshold = 1
+	defaultPunchAttemptThreshold  = 1
 
-	// How long to wait before retrying an unreachable peer.
-	unreachableRetryInterval  = 60 * time.Second
-	disconnectedRetryInterval = 60 * time.Second
+	defaultUnreachableRetryInterval  = 60 * time.Second
+	defaultDisconnectedRetryInterval = 60 * time.Second
 )
 
-func backoff(attempts int) time.Duration {
+func DefaultConfig() Config {
+	return Config{
+		FirstBackoff:              defaultFirstBackoff,
+		BaseBackoff:               defaultBaseBackoff,
+		MaxBackoff:                defaultMaxBackoff,
+		DirectAttemptThreshold:    defaultDirectAttemptThreshold,
+		PunchAttemptThreshold:     defaultPunchAttemptThreshold,
+		UnreachableRetryInterval:  defaultUnreachableRetryInterval,
+		DisconnectedRetryInterval: defaultDisconnectedRetryInterval,
+	}
+}
+
+func (c Config) withDefaults() Config {
+	def := DefaultConfig()
+	if c.FirstBackoff <= 0 {
+		c.FirstBackoff = def.FirstBackoff
+	}
+	if c.BaseBackoff <= 0 {
+		c.BaseBackoff = def.BaseBackoff
+	}
+	if c.MaxBackoff <= 0 {
+		c.MaxBackoff = def.MaxBackoff
+	}
+	if c.DirectAttemptThreshold <= 0 {
+		c.DirectAttemptThreshold = def.DirectAttemptThreshold
+	}
+	if c.PunchAttemptThreshold <= 0 {
+		c.PunchAttemptThreshold = def.PunchAttemptThreshold
+	}
+	if c.UnreachableRetryInterval <= 0 {
+		c.UnreachableRetryInterval = def.UnreachableRetryInterval
+	}
+	if c.DisconnectedRetryInterval <= 0 {
+		c.DisconnectedRetryInterval = def.DisconnectedRetryInterval
+	}
+	return c
+}
+
+func (s *Store) backoff(attempts int) time.Duration {
 	if attempts == 0 {
-		return firstBackoff
+		return s.cfg.FirstBackoff
 	}
 	// exponential: 1s, 2s, 4s, 8s, ...
-	d := min(baseBackoff*(1<<(attempts-1)), maxBackoff)
+	d := min(s.cfg.BaseBackoff*(1<<(attempts-1)), s.cfg.MaxBackoff)
 	return d
 }
 
@@ -255,22 +308,22 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
 	// Check if we should escalate to next stage
 	switch p.stage {
 	case ConnectStageDirect, ConnectStageUnspecified:
-		if p.stageAttempts >= directAttemptThreshold {
+		if p.stageAttempts >= s.cfg.DirectAttemptThreshold {
 			p.stage = ConnectStagePunch
 			p.stageAttempts = 0
 		}
 	case ConnectStagePunch:
-		if p.stageAttempts >= punchAttemptThreshold {
+		if p.stageAttempts >= s.cfg.PunchAttemptThreshold {
 			// All connection methods exhausted, retry after long backoff
 			p.state = PeerStateUnreachable
-			p.nextActionAt = now.Add(unreachableRetryInterval)
+			p.nextActionAt = now.Add(s.cfg.UnreachableRetryInterval)
 			return nil
 		}
 	case ConnectStageRelay:
 		// TODO(saml) implement relay stage
 	}
 
-	p.nextActionAt = now.Add(backoff(p.stageAttempts))
+	p.nextActionAt = now.Add(s.backoff(p.stageAttempts))
 	p.state = PeerStateDiscovered // eligible for retry after backoff
 	return nil
 }
@@ -285,7 +338,7 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) []Output {
 	p.state = PeerStateDiscovered
 	p.stage = ConnectStageDirect
 	p.stageAttempts = 0
-	p.nextActionAt = now.Add(disconnectedRetryInterval)
+	p.nextActionAt = now.Add(s.cfg.DisconnectedRetryInterval)
 	return nil
 }
 
