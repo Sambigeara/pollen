@@ -81,11 +81,16 @@ message RegisterServiceResponse {}
 
 message ConnectServiceRequest {
   NodeRef node = 1;
-  string port = 2;
-  // uint32 port = 2 [(buf.validate.field).uint32 = {
-  //   gt: 0
-  //   lte: 65535
-  // }];
+  uint32 remote_port = 2 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+  uint32 local_port = 3 [(buf.validate.field).uint32 = {lte: 65535}];
 }
 
-message ConnectServiceResponse {}
+message ConnectServiceResponse {
+  uint32 local_port = 1 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+}

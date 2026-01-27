@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sourcegraph/conc/pool"
@@ -27,9 +28,13 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 	server := grpc.NewServer()
 	controlv1.RegisterControlServiceServer(server, nodeServ)
 
-	// TODO(saml) why am I returning if the path is valid?
 	if _, err := os.Stat(path); err == nil {
-		return nil
+		conn, dialErr := net.DialTimeout("unix", path, time.Second)
+		if dialErr == nil {
+			_ = conn.Close()
+			return nil
+		}
+		_ = os.Remove(path)
 	}
 
 	l, err := (&net.ListenConfig{}).Listen(ctx, "unix", path)
@@ -39,6 +44,7 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 		}
 		return fmt.Errorf("failed to listen: %w", err)
 	}
+	defer os.Remove(path)
 
 	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
 	p.Go(func(_ context.Context) error {
