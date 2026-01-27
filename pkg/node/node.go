@@ -51,6 +51,7 @@ type Config struct {
 	Port             int
 	GossipInterval   time.Duration
 	PeerTickInterval time.Duration
+	Transport        transport.Transport
 }
 
 type Node struct {
@@ -112,7 +113,12 @@ func New(conf *Config) (*Node, error) {
 		identityPubKey: pubKey,
 	}
 
-	link, err := link.NewLink(conf.Port, &cs, noiseKey, crypto, invitesStore)
+	var mesh link.Link
+	if conf.Transport != nil {
+		mesh, err = link.NewLinkWithTransport(conf.Transport, &cs, noiseKey, crypto, invitesStore)
+	} else {
+		mesh, err = link.NewLink(conf.Port, &cs, noiseKey, crypto, invitesStore)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +126,7 @@ func New(conf *Config) (*Node, error) {
 	cluster := stateStore.Cluster
 
 	tun := tunnel.New(
-		link.Send,
+		mesh.Send,
 		&Directory{cluster: cluster},
 		privKey,
 		ips,
@@ -139,7 +145,7 @@ func New(conf *Config) (*Node, error) {
 		log:            log,
 		Peers:          peer.NewStore(),
 		Store:          stateStore,
-		Link:           link,
+		Link:           mesh,
 		AdmissionStore: invitesStore,
 		Tunnel:         tun,
 		Directory:      &Directory{cluster: cluster},

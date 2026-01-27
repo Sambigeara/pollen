@@ -80,6 +80,14 @@ func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto Loca
 		return nil, err
 	}
 
+	return NewLinkWithTransport(tr, cs, staticKey, crypto, admission)
+}
+
+func NewLinkWithTransport(tr transport.Transport, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission) (Link, error) {
+	if tr == nil {
+		return nil, errors.New("transport is nil")
+	}
+
 	return &impl{
 		log:            zap.S().Named("mesh"),
 		crypto:         crypto,
