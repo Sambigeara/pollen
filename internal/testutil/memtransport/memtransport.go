@@ -18,8 +18,8 @@ var (
 )
 
 type Network struct {
-	mu        sync.RWMutex
 	endpoints map[string]*endpoint
+	mu        sync.RWMutex
 }
 
 type packet struct {
@@ -28,11 +28,11 @@ type packet struct {
 }
 
 type endpoint struct {
-	addr      string
 	recvCh    chan packet
+	addr      string
+	mu        sync.RWMutex
 	closeOnce sync.Once
 	closed    atomic.Bool
-	mu        sync.RWMutex
 }
 
 type memTransport struct {
