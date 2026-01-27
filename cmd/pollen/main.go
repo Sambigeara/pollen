@@ -39,6 +39,15 @@ const (
 	defaultUDPPort = 60611
 
 	defaultTimeout = 5 * time.Second
+
+	serviceExposeArgsMin = 1
+	serviceExposeArgsMax = 2
+	connectArgsMin       = 1
+	connectArgsMax       = 3
+	connectArgsProvider  = 2
+	connectArgsLocalPort = 3
+	argIndexProvider     = 1
+	argIndexLocalPort    = 2
 )
 
 func main() {
@@ -136,7 +145,7 @@ func newServiceCmd() *cobra.Command {
 	exposeCmd := &cobra.Command{
 		Use:   "expose [port] [name]",
 		Short: "Expose a local port to the mesh",
-		Args:  cobra.RangeArgs(1, 2),
+		Args:  cobra.RangeArgs(serviceExposeArgsMin, serviceExposeArgsMax),
 		Run:   runServe,
 	}
 	exposeCmd.Flags().String("name", "", "Service name")
@@ -160,7 +169,7 @@ func newConnectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "connect <service> [provider] [local-port]",
 		Short: "Tunnel a local port to a service",
-		Args:  cobra.RangeArgs(1, 3),
+		Args:  cobra.RangeArgs(connectArgsMin, connectArgsMax),
 		Run:   runConnect,
 	}
 	return cmd
@@ -445,15 +454,15 @@ func runConnect(cmd *cobra.Command, args []string) {
 	serviceArg := args[0]
 	providerArg := ""
 	localPortArg := ""
-	if len(args) >= 2 {
-		if len(args) == 2 && isPortArg(args[1]) {
-			localPortArg = args[1]
+	if len(args) >= connectArgsProvider {
+		if len(args) == connectArgsProvider && isPortArg(args[argIndexProvider]) {
+			localPortArg = args[argIndexProvider]
 		} else {
-			providerArg = args[1]
+			providerArg = args[argIndexProvider]
 		}
 	}
-	if len(args) == 3 {
-		localPortArg = args[2]
+	if len(args) == connectArgsLocalPort {
+		localPortArg = args[argIndexLocalPort]
 	}
 
 	localPort := uint32(0)
@@ -540,7 +549,7 @@ func runServiceRemove(cmd *cobra.Command, args []string) {
 	fmt.Fprintf(cmd.OutOrStdout(), "Unregistered service on port: %d\n", port)
 }
 
-func resolveService(st *controlv1.GetStatusResponse, serviceArg string, providerArg string) (*controlv1.ServiceSummary, error) {
+func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg string) (*controlv1.ServiceSummary, error) {
 	if st == nil {
 		return nil, errors.New("no status available")
 	}
@@ -561,7 +570,7 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg string, provider
 		portFilter = uint32(p)
 	}
 
-	var matches []*controlv1.ServiceSummary
+	matches := make([]*controlv1.ServiceSummary, 0, len(st.Services))
 	for _, svc := range st.Services {
 		if portFilter > 0 {
 			if svc.GetPort() != portFilter && svc.GetName() != serviceArg {
