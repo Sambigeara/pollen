@@ -32,6 +32,7 @@ type endpoint struct {
 	recvCh    chan packet
 	closeOnce sync.Once
 	closed    atomic.Bool
+	mu        sync.RWMutex
 }
 
 type memTransport struct {
@@ -88,8 +89,10 @@ func (n *Network) unbind(ep *endpoint) {
 
 func (e *endpoint) close() {
 	e.closeOnce.Do(func() {
+		e.mu.Lock()
 		e.closed.Store(true)
 		close(e.recvCh)
+		e.mu.Unlock()
 	})
 }
 
@@ -109,6 +112,12 @@ func (t *memTransport) Send(dst string, b []byte) error {
 	dest, ok := t.net.lookup(dst)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrUnknownDestination, dst)
+	}
+
+	dest.mu.RLock()
+	defer dest.mu.RUnlock()
+	if dest.closed.Load() {
+		return ErrTransportClosed
 	}
 
 	payload := make([]byte, len(b))
