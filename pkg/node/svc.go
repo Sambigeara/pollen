@@ -101,8 +101,9 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			Status: controlv1.NodeStatus_NODE_STATUS_ONLINE,
 			Addr:   selfAddr,
 		},
-		Services: []*controlv1.ServiceSummary{},
-		Nodes:    make([]*controlv1.NodeSummary, 0, len(nodes)),
+		Services:    []*controlv1.ServiceSummary{},
+		Nodes:       make([]*controlv1.NodeSummary, 0, len(nodes)),
+		Connections: []*controlv1.ConnectionSummary{},
 	}
 
 	for key, node := range nodes {
@@ -143,6 +144,25 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		}
 	}
 
+	connections := s.node.Tunnel.ListConnections()
+	for _, c := range connections {
+		name := ""
+		if node, ok := nodes[c.PeerID]; ok && node != nil {
+			for _, svc := range node.Services {
+				if svc.GetPort() == c.RemotePort {
+					name = svc.GetName()
+					break
+				}
+			}
+		}
+		out.Connections = append(out.Connections, &controlv1.ConnectionSummary{
+			Peer:        &controlv1.NodeRef{PeerId: c.PeerID.Bytes()},
+			RemotePort:  c.RemotePort,
+			LocalPort:   c.LocalPort,
+			ServiceName: name,
+		})
+	}
+
 	sort.Slice(out.Nodes, func(i, j int) bool {
 		li := out.Nodes[i].Status == controlv1.NodeStatus_NODE_STATUS_ONLINE
 		lj := out.Nodes[j].Status == controlv1.NodeStatus_NODE_STATUS_ONLINE
@@ -162,6 +182,13 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			return a.Port < b.Port
 		}
 		return types.PeerKeyFromBytes(a.Provider.PeerId).Less(types.PeerKeyFromBytes(b.Provider.PeerId))
+	})
+
+	sort.Slice(out.Connections, func(i, j int) bool {
+		if out.Connections[i].LocalPort != out.Connections[j].LocalPort {
+			return out.Connections[i].LocalPort < out.Connections[j].LocalPort
+		}
+		return types.PeerKeyFromBytes(out.Connections[i].Peer.PeerId).Less(types.PeerKeyFromBytes(out.Connections[j].Peer.PeerId))
 	})
 
 	return out, nil
@@ -204,6 +231,50 @@ func (s *NodeService) RegisterService(ctx context.Context, req *controlv1.Regist
 	}
 
 	return &controlv1.RegisterServiceResponse{}, nil
+}
+
+func (s *NodeService) UnregisterService(ctx context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
+	localID := s.node.Store.Cluster.LocalID
+	if rec, ok := s.node.Store.Cluster.Nodes.Get(localID); ok {
+		if rec.Node != nil {
+			port := req.GetPort()
+			name := req.GetName()
+			services := make([]*statev1.Service, 0, len(rec.Node.Services))
+			removed := false
+			for _, svc := range rec.Node.Services {
+				match := false
+				if port != 0 && svc.GetPort() == port {
+					match = true
+				}
+				if !match && name != "" {
+					if svc.GetName() == name {
+						match = true
+					} else if svc.GetName() == "" && strconv.FormatUint(uint64(svc.GetPort()), 10) == name {
+						match = true
+					}
+				}
+				if match {
+					removed = true
+					s.node.Tunnel.UnregisterService(svc.GetPort())
+					continue
+				}
+				services = append(services, svc)
+			}
+			if removed {
+				node := &statev1.Node{
+					Id:        rec.Node.Id,
+					Name:      rec.Node.Name,
+					Addresses: append([]string(nil), rec.Node.Addresses...),
+					Keys:      rec.Node.Keys,
+					Services:  services,
+				}
+				s.node.Store.Cluster.Nodes.Set(localID, node)
+				trigger(s.node.gossipNow)
+			}
+		}
+	}
+
+	return &controlv1.UnregisterServiceResponse{}, nil
 }
 
 func (s *NodeService) ConnectService(ctx context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {

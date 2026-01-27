@@ -45,6 +45,9 @@ const (
 	// ControlServiceRegisterServiceProcedure is the fully-qualified name of the ControlService's
 	// RegisterService RPC.
 	ControlServiceRegisterServiceProcedure = "/pollen.control.v1.ControlService/RegisterService"
+	// ControlServiceUnregisterServiceProcedure is the fully-qualified name of the ControlService's
+	// UnregisterService RPC.
+	ControlServiceUnregisterServiceProcedure = "/pollen.control.v1.ControlService/UnregisterService"
 	// ControlServiceConnectServiceProcedure is the fully-qualified name of the ControlService's
 	// ConnectService RPC.
 	ControlServiceConnectServiceProcedure = "/pollen.control.v1.ControlService/ConnectService"
@@ -56,6 +59,7 @@ type ControlServiceClient interface {
 	CreateInvite(context.Context, *connect.Request[v1.CreateInviteRequest]) (*connect.Response[v1.CreateInviteResponse], error)
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
 	RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error)
+	UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error)
 	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
 }
 
@@ -94,6 +98,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("RegisterService")),
 			connect.WithClientOptions(opts...),
 		),
+		unregisterService: connect.NewClient[v1.UnregisterServiceRequest, v1.UnregisterServiceResponse](
+			httpClient,
+			baseURL+ControlServiceUnregisterServiceProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("UnregisterService")),
+			connect.WithClientOptions(opts...),
+		),
 		connectService: connect.NewClient[v1.ConnectServiceRequest, v1.ConnectServiceResponse](
 			httpClient,
 			baseURL+ControlServiceConnectServiceProcedure,
@@ -105,11 +115,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 
 // controlServiceClient implements ControlServiceClient.
 type controlServiceClient struct {
-	joinCluster     *connect.Client[v1.JoinClusterRequest, v1.JoinClusterResponse]
-	createInvite    *connect.Client[v1.CreateInviteRequest, v1.CreateInviteResponse]
-	getStatus       *connect.Client[v1.GetStatusRequest, v1.GetStatusResponse]
-	registerService *connect.Client[v1.RegisterServiceRequest, v1.RegisterServiceResponse]
-	connectService  *connect.Client[v1.ConnectServiceRequest, v1.ConnectServiceResponse]
+	joinCluster       *connect.Client[v1.JoinClusterRequest, v1.JoinClusterResponse]
+	createInvite      *connect.Client[v1.CreateInviteRequest, v1.CreateInviteResponse]
+	getStatus         *connect.Client[v1.GetStatusRequest, v1.GetStatusResponse]
+	registerService   *connect.Client[v1.RegisterServiceRequest, v1.RegisterServiceResponse]
+	unregisterService *connect.Client[v1.UnregisterServiceRequest, v1.UnregisterServiceResponse]
+	connectService    *connect.Client[v1.ConnectServiceRequest, v1.ConnectServiceResponse]
 }
 
 // JoinCluster calls pollen.control.v1.ControlService.JoinCluster.
@@ -132,6 +143,11 @@ func (c *controlServiceClient) RegisterService(ctx context.Context, req *connect
 	return c.registerService.CallUnary(ctx, req)
 }
 
+// UnregisterService calls pollen.control.v1.ControlService.UnregisterService.
+func (c *controlServiceClient) UnregisterService(ctx context.Context, req *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error) {
+	return c.unregisterService.CallUnary(ctx, req)
+}
+
 // ConnectService calls pollen.control.v1.ControlService.ConnectService.
 func (c *controlServiceClient) ConnectService(ctx context.Context, req *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error) {
 	return c.connectService.CallUnary(ctx, req)
@@ -143,6 +159,7 @@ type ControlServiceHandler interface {
 	CreateInvite(context.Context, *connect.Request[v1.CreateInviteRequest]) (*connect.Response[v1.CreateInviteResponse], error)
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
 	RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error)
+	UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error)
 	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
 }
 
@@ -177,6 +194,12 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("RegisterService")),
 		connect.WithHandlerOptions(opts...),
 	)
+	controlServiceUnregisterServiceHandler := connect.NewUnaryHandler(
+		ControlServiceUnregisterServiceProcedure,
+		svc.UnregisterService,
+		connect.WithSchema(controlServiceMethods.ByName("UnregisterService")),
+		connect.WithHandlerOptions(opts...),
+	)
 	controlServiceConnectServiceHandler := connect.NewUnaryHandler(
 		ControlServiceConnectServiceProcedure,
 		svc.ConnectService,
@@ -193,6 +216,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceGetStatusHandler.ServeHTTP(w, r)
 		case ControlServiceRegisterServiceProcedure:
 			controlServiceRegisterServiceHandler.ServeHTTP(w, r)
+		case ControlServiceUnregisterServiceProcedure:
+			controlServiceUnregisterServiceHandler.ServeHTTP(w, r)
 		case ControlServiceConnectServiceProcedure:
 			controlServiceConnectServiceHandler.ServeHTTP(w, r)
 		default:
@@ -218,6 +243,10 @@ func (UnimplementedControlServiceHandler) GetStatus(context.Context, *connect.Re
 
 func (UnimplementedControlServiceHandler) RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.RegisterService is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.UnregisterService is not implemented"))
 }
 
 func (UnimplementedControlServiceHandler) ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error) {
