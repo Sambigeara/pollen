@@ -139,6 +139,12 @@ Follow the conventions below when making changes or writing tests.
   for stable cross-node tests.
 - The project prefers deterministic unit tests over sleep-heavy integration tests
 
+## CLI Status/Service Notes
+
+- `pollen status` uses live link sessions for `online/offline` and gossiped node services for service listings.
+- `pollen service rm` only removes services exposed by the local node; do not attempt to delete remote services.
+- Service removal now hard-revokes active streams and other nodes auto-remove forwards once gossip reflects the service removal.
+
 ## Cursor/Copilot Rules
 
 - None found in `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md`.
