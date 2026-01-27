@@ -54,6 +54,25 @@
         }
       }
     },
+    "v1ConnectionSummary": {
+      "type": "object",
+      "properties": {
+        "peer": {
+          "$ref": "#/definitions/v1NodeRef"
+        },
+        "remotePort": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "localPort": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "serviceName": {
+          "type": "string"
+        }
+      }
+    },
     "v1CreateInviteResponse": {
       "type": "object",
       "properties": {
@@ -80,6 +99,13 @@
           "items": {
             "type": "object",
             "$ref": "#/definitions/v1ServiceSummary"
+          }
+        },
+        "connections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1ConnectionSummary"
           }
         }
       }
@@ -145,6 +171,9 @@
           "format": "int64"
         }
       }
+    },
+    "v1UnregisterServiceResponse": {
+      "type": "object"
     }
   }
 }

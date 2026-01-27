@@ -12,6 +12,7 @@ service ControlService {
   rpc CreateInvite(CreateInviteRequest) returns (CreateInviteResponse);
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
   rpc RegisterService(RegisterServiceRequest) returns (RegisterServiceResponse);
+  rpc UnregisterService(UnregisterServiceRequest) returns (UnregisterServiceResponse);
   rpc ConnectService(ConnectServiceRequest) returns (ConnectServiceResponse);
 }
 
@@ -64,6 +65,20 @@ message GetStatusResponse {
   NodeSummary self = 1;
   repeated NodeSummary nodes = 2;
   repeated ServiceSummary services = 3;
+  repeated ConnectionSummary connections = 4;
+}
+
+message ConnectionSummary {
+  NodeRef peer = 1;
+  uint32 remote_port = 2 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+  uint32 local_port = 3 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+  string service_name = 4;
 }
 
 message RegisterServiceRequest {
@@ -78,6 +93,16 @@ message RegisterServiceRequest {
 }
 
 message RegisterServiceResponse {}
+
+message UnregisterServiceRequest {
+  uint32 port = 1 [(buf.validate.field).uint32 = {lte: 65535}];
+  optional string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+}
+
+message UnregisterServiceResponse {}
 
 message ConnectServiceRequest {
   NodeRef node = 1;

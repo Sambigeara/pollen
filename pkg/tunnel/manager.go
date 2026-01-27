@@ -60,6 +60,15 @@ type serviceHandler struct {
 
 type connectionHandler struct {
 	cancel context.CancelFunc
+	peerID types.PeerKey
+	remote uint32
+	local  uint32
+}
+
+type ConnectionInfo struct {
+	PeerID     types.PeerKey
+	RemotePort uint32
+	LocalPort  uint32
 }
 
 func connectionKey(peerID, port string) string {
@@ -236,10 +245,65 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort uint32, localP
 
 	m.connections[connectionKey(peerID.String(), boundPortStr)] = connectionHandler{
 		cancel: cancelFn,
+		peerID: peerID,
+		remote: remotePort,
+		local:  uint32(boundPort),
 	}
 
 	zap.S().Infow("connected to service", "peer", peerID.String()[:8], "port", remotePort, "local_port", boundPort)
 	return uint32(boundPort), nil
+}
+
+func (m *Manager) ListConnections() []ConnectionInfo {
+	m.connectionMu.RLock()
+	defer m.connectionMu.RUnlock()
+
+	out := make([]ConnectionInfo, 0, len(m.connections))
+	for _, h := range m.connections {
+		out = append(out, ConnectionInfo{
+			PeerID:     h.peerID,
+			RemotePort: h.remote,
+			LocalPort:  h.local,
+		})
+	}
+	return out
+}
+
+func (m *Manager) DisconnectLocalPort(port uint32) bool {
+	m.connectionMu.Lock()
+	defer m.connectionMu.Unlock()
+
+	var key string
+	var handler connectionHandler
+	found := false
+	for k, h := range m.connections {
+		if h.local == port {
+			key = k
+			handler = h
+			found = true
+			break
+		}
+	}
+	if !found {
+		return false
+	}
+	delete(m.connections, key)
+	handler.cancel()
+	return true
+}
+
+func (m *Manager) UnregisterService(port uint32) bool {
+	portStr := strconv.FormatUint(uint64(port), 10)
+
+	m.serviceMu.Lock()
+	defer m.serviceMu.Unlock()
+
+	if h, ok := m.services[portStr]; ok {
+		h.cancel()
+		delete(m.services, portStr)
+		return true
+	}
+	return false
 }
 
 // HandleSessionRequest handles incoming session establishment requests.

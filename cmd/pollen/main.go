@@ -125,6 +125,14 @@ func newServiceCmd() *cobra.Command {
 	listCmd.Flags().Bool("wide", false, "Show full peer IDs and extra details")
 	listCmd.Flags().Bool("all", false, "Include offline services")
 
+	removeCmd := &cobra.Command{
+		Use:     "rm <port|name>",
+		Short:   "Stop exposing a service",
+		Aliases: []string{"remove"},
+		Args:    cobra.ExactArgs(1),
+		Run:     runServiceRemove,
+	}
+
 	exposeCmd := &cobra.Command{
 		Use:   "expose [port] [name]",
 		Short: "Expose a local port to the mesh",
@@ -133,7 +141,7 @@ func newServiceCmd() *cobra.Command {
 	}
 	exposeCmd.Flags().String("name", "", "Service name")
 
-	cmd.AddCommand(listCmd, exposeCmd)
+	cmd.AddCommand(listCmd, exposeCmd, removeCmd)
 	return cmd
 }
 
@@ -279,8 +287,16 @@ func runStatus(cmd *cobra.Command, args []string) {
 	case "all":
 		printSelfLine(cmd, resp.Msg, opts)
 		printNodesTable(cmd, resp.Msg, opts)
-		fmt.Fprintln(cmd.OutOrStdout())
-		printServicesTable(cmd, resp.Msg, opts)
+		hasServices := len(resp.Msg.GetServices()) > 0
+		hasConnections := len(resp.Msg.GetConnections()) > 0
+		if hasServices {
+			fmt.Fprintln(cmd.OutOrStdout())
+			printServicesTable(cmd, resp.Msg, opts)
+		}
+		if hasConnections {
+			fmt.Fprintln(cmd.OutOrStdout())
+			printConnectionsTable(cmd, resp.Msg, opts)
+		}
 	case "nodes", "node":
 		printSelfLine(cmd, resp.Msg, opts)
 		printNodesTable(cmd, resp.Msg, opts)
@@ -372,6 +388,25 @@ func printServicesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse, opt
 	if filtered > 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "offline services: %d (use --all)\n", filtered)
 	}
+}
+
+//nolint:mnd
+func printConnectionsTable(cmd *cobra.Command, st *controlv1.GetStatusResponse, opts statusViewOpts) {
+	if len(st.Connections) == 0 {
+		return
+	}
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "LOCAL\tSERVICE\tPROVIDER\tREMOTE")
+
+	for _, c := range st.Connections {
+		service := c.GetServiceName()
+		if service == "" {
+			service = strconv.FormatUint(uint64(c.GetRemotePort()), 10)
+		}
+		provider := formatPeerID(c.GetPeer().GetPeerId(), opts.wide)
+		fmt.Fprintf(w, "%d\t%s\t%s\t%d\n", c.GetLocalPort(), service, provider, c.GetRemotePort())
+	}
+	_ = w.Flush()
 }
 
 func runServe(cmd *cobra.Command, args []string) {
@@ -471,6 +506,38 @@ func runServiceList(cmd *cobra.Command, _ []string) {
 		return
 	}
 	printServicesTable(cmd, resp.Msg, opts)
+}
+
+func runServiceRemove(cmd *cobra.Command, args []string) {
+	arg := args[0]
+	port := uint32(0)
+	name := ""
+	if isPortArg(arg) {
+		p, _ := strconv.Atoi(arg)
+		port = uint32(p)
+	} else {
+		name = arg
+	}
+
+	var namePtr *string
+	if name != "" {
+		namePtr = &name
+	}
+
+	client := newControlClient(cmd)
+	if _, err := client.UnregisterService(context.Background(), connect.NewRequest(&controlv1.UnregisterServiceRequest{
+		Port: port,
+		Name: namePtr,
+	})); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	if name != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Unregistered service %s\n", name)
+		return
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Unregistered service on port: %d\n", port)
 }
 
 func resolveService(st *controlv1.GetStatusResponse, serviceArg string, providerArg string) (*controlv1.ServiceSummary, error) {
