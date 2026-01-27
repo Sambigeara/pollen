@@ -19,11 +19,12 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ControlService_JoinCluster_FullMethodName     = "/pollen.control.v1.ControlService/JoinCluster"
-	ControlService_CreateInvite_FullMethodName    = "/pollen.control.v1.ControlService/CreateInvite"
-	ControlService_GetStatus_FullMethodName       = "/pollen.control.v1.ControlService/GetStatus"
-	ControlService_RegisterService_FullMethodName = "/pollen.control.v1.ControlService/RegisterService"
-	ControlService_ConnectService_FullMethodName  = "/pollen.control.v1.ControlService/ConnectService"
+	ControlService_JoinCluster_FullMethodName       = "/pollen.control.v1.ControlService/JoinCluster"
+	ControlService_CreateInvite_FullMethodName      = "/pollen.control.v1.ControlService/CreateInvite"
+	ControlService_GetStatus_FullMethodName         = "/pollen.control.v1.ControlService/GetStatus"
+	ControlService_RegisterService_FullMethodName   = "/pollen.control.v1.ControlService/RegisterService"
+	ControlService_UnregisterService_FullMethodName = "/pollen.control.v1.ControlService/UnregisterService"
+	ControlService_ConnectService_FullMethodName    = "/pollen.control.v1.ControlService/ConnectService"
 )
 
 // ControlServiceClient is the client API for ControlService service.
@@ -34,6 +35,7 @@ type ControlServiceClient interface {
 	CreateInvite(ctx context.Context, in *CreateInviteRequest, opts ...grpc.CallOption) (*CreateInviteResponse, error)
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
 	RegisterService(ctx context.Context, in *RegisterServiceRequest, opts ...grpc.CallOption) (*RegisterServiceResponse, error)
+	UnregisterService(ctx context.Context, in *UnregisterServiceRequest, opts ...grpc.CallOption) (*UnregisterServiceResponse, error)
 	ConnectService(ctx context.Context, in *ConnectServiceRequest, opts ...grpc.CallOption) (*ConnectServiceResponse, error)
 }
 
@@ -85,6 +87,16 @@ func (c *controlServiceClient) RegisterService(ctx context.Context, in *Register
 	return out, nil
 }
 
+func (c *controlServiceClient) UnregisterService(ctx context.Context, in *UnregisterServiceRequest, opts ...grpc.CallOption) (*UnregisterServiceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnregisterServiceResponse)
+	err := c.cc.Invoke(ctx, ControlService_UnregisterService_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *controlServiceClient) ConnectService(ctx context.Context, in *ConnectServiceRequest, opts ...grpc.CallOption) (*ConnectServiceResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ConnectServiceResponse)
@@ -103,6 +115,7 @@ type ControlServiceServer interface {
 	CreateInvite(context.Context, *CreateInviteRequest) (*CreateInviteResponse, error)
 	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
 	RegisterService(context.Context, *RegisterServiceRequest) (*RegisterServiceResponse, error)
+	UnregisterService(context.Context, *UnregisterServiceRequest) (*UnregisterServiceResponse, error)
 	ConnectService(context.Context, *ConnectServiceRequest) (*ConnectServiceResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
@@ -125,6 +138,9 @@ func (UnimplementedControlServiceServer) GetStatus(context.Context, *GetStatusRe
 }
 func (UnimplementedControlServiceServer) RegisterService(context.Context, *RegisterServiceRequest) (*RegisterServiceResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RegisterService not implemented")
+}
+func (UnimplementedControlServiceServer) UnregisterService(context.Context, *UnregisterServiceRequest) (*UnregisterServiceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UnregisterService not implemented")
 }
 func (UnimplementedControlServiceServer) ConnectService(context.Context, *ConnectServiceRequest) (*ConnectServiceResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ConnectService not implemented")
@@ -222,6 +238,24 @@ func _ControlService_RegisterService_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_UnregisterService_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnregisterServiceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).UnregisterService(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_UnregisterService_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).UnregisterService(ctx, req.(*UnregisterServiceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ControlService_ConnectService_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ConnectServiceRequest)
 	if err := dec(in); err != nil {
@@ -262,6 +296,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RegisterService",
 			Handler:    _ControlService_RegisterService_Handler,
+		},
+		{
+			MethodName: "UnregisterService",
+			Handler:    _ControlService_UnregisterService_Handler,
 		},
 		{
 			MethodName: "ConnectService",
