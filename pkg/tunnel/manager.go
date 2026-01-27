@@ -167,7 +167,7 @@ func (m *Manager) RegisterService(port uint32) {
 // Local connections to the port are forwarded to the remote peer's service.
 // If localPort is zero, it will attempt to bind to remotePort first, then fall
 // back to an ephemeral port if that fails.
-func (m *Manager) ConnectService(peerID types.PeerKey, remotePort uint32, localPort uint32) (uint32, error) {
+func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
 	if _, ok := m.dir.IdentityPub(peerID); !ok {
 		return 0, errors.New("peerID not recognised")
 	}

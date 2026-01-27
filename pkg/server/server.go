@@ -29,7 +29,10 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 	controlv1.RegisterControlServiceServer(server, nodeServ)
 
 	if _, err := os.Stat(path); err == nil {
-		conn, dialErr := net.DialTimeout("unix", path, time.Second)
+		dialCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		dialer := &net.Dialer{Timeout: time.Second}
+		conn, dialErr := dialer.DialContext(dialCtx, "unix", path)
 		if dialErr == nil {
 			_ = conn.Close()
 			return nil
