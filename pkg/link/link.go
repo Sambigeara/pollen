@@ -473,13 +473,13 @@ func (i *impl) Events() <-chan peer.Input { return i.events }
 func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error {
 	sess, ok := i.sessionStore.getByPeer(peerKey)
 	if !ok {
-		i.log.Errorf("%w: %s", ErrNoSession, peerKey.String())
+		i.log.Errorf("%v: %s", ErrNoSession, peerKey.String())
 		return fmt.Errorf("%w: %s", ErrNoSession, peerKey.String())
 	}
 
 	ct, shouldRekey, err := sess.Encrypt(msg.Payload)
 	if err != nil {
-		i.log.Errorf("encrypt: %w", err)
+		i.log.Errorf("encrypt: %v", err)
 		return fmt.Errorf("encrypt: %w", err)
 	}
 
@@ -491,7 +491,7 @@ func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelo
 	}
 
 	if err := i.transport.Send(sess.peerAddr, encodeFrame(fr)); err != nil {
-		i.log.Errorf("send: %w", err)
+		i.log.Errorf("send: %v", err)
 		return fmt.Errorf("send: %w", err)
 	}
 

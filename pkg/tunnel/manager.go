@@ -233,27 +233,27 @@ func (m *Manager) HandleSessionRequest(ctx context.Context, peerKey types.PeerKe
 
 	peerCert, err := tcp.VerifyPeerAttestation(peerIDPub, req.GetCertDer(), req.GetSig())
 	if err != nil {
-		logger.Errorf("peer attestation failed: %w", err)
+		logger.Errorf("peer attestation failed: %v", err)
 		return fmt.Errorf("peer attestation failed: %w", err)
 	}
 
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", ":0")
 	if err != nil {
-		logger.Errorw("listen tcp :0", err)
+		logger.Errorw("listen tcp :0", "err", err)
 		return fmt.Errorf("listen tcp :0: %w", err)
 	}
 
 	ownCert, ownSig, err := tcp.GenerateEphemeralCert(m.signPriv)
 	if err != nil {
 		ln.Close()
-		logger.Errorf("generate ephemeral cert: %w", err)
+		logger.Errorf("generate ephemeral cert: %v", err)
 		return fmt.Errorf("generate ephemeral cert: %w", err)
 	}
 
 	_, port, err := net.SplitHostPort(ln.Addr().String())
 	if err != nil {
 		ln.Close()
-		logger.Errorf("split listener addr: %w", err)
+		logger.Errorf("split listener addr: %v", err)
 		return fmt.Errorf("split listener addr: %w", err)
 	}
 
@@ -272,7 +272,7 @@ func (m *Manager) HandleSessionRequest(ctx context.Context, peerKey types.PeerKe
 	respBytes, err := resp.MarshalVT()
 	if err != nil {
 		ln.Close()
-		logger.Errorf("marshal session response: %w", err)
+		logger.Errorf("marshal session response: %v", err)
 		return fmt.Errorf("marshal session response: %w", err)
 	}
 
@@ -282,7 +282,7 @@ func (m *Manager) HandleSessionRequest(ctx context.Context, peerKey types.PeerKe
 	}
 	if err := m.sender(ctx, peerKey, env); err != nil {
 		ln.Close()
-		logger.Errorf("send session response: %w", err)
+		logger.Errorf("send session response: %v", err)
 		return fmt.Errorf("send session response: %w", err)
 	}
 
