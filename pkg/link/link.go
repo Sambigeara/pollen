@@ -257,18 +257,23 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 	recvPeer := types.PeerKeyFromBytes(req.PeerId)
 	initPeer := types.PeerKeyFromBytes(initSess.peerNoiseKey)
 
-	peerAddrWithLocalPort, err := net.ResolveUDPAddr("udp", recvSess.peerAddr)
-	if err != nil {
-		return fmt.Errorf("unable to parse peerAddr from session")
+	initiatorAddrs := []string{src}
+	if req.GetLocalPort() > 0 {
+		initiatorAddrWithLocalPort, err := net.ResolveUDPAddr("udp", src)
+		if err == nil {
+			initiatorAddrWithLocalPort.Port = int(req.GetLocalPort())
+			if addr := initiatorAddrWithLocalPort.String(); addr != src {
+				initiatorAddrs = append(initiatorAddrs, addr)
+			}
+		}
 	}
-	peerAddrWithLocalPort.Port = int(req.GetLocalPort())
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		resp := &peerv1.PunchCoordTrigger{
 			PeerId:    req.PeerId,
 			SelfAddr:  src,
-			PeerAddrs: []string{recvSess.peerAddr, peerAddrWithLocalPort.String()},
+			PeerAddrs: []string{recvSess.peerAddr},
 		}
 
 		b, err := resp.MarshalVT()
@@ -286,7 +291,7 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 		resp := &peerv1.PunchCoordTrigger{
 			PeerId:    initSess.peerNoiseKey,
 			SelfAddr:  recvSess.peerAddr,
-			PeerAddrs: []string{src},
+			PeerAddrs: initiatorAddrs,
 		}
 
 		b, err := resp.MarshalVT()
