@@ -11,6 +11,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/internal/testutil/memtransport"
+	"github.com/sambigeara/pollen/pkg/link"
+	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +21,7 @@ import (
 
 func TestNode(t *testing.T) {
 	ctx := t.Context()
-	reachabilityTimeout := 4 * time.Second
+	reachabilityTimeout := 1 * time.Second
 
 	verifyReachability := func(t *testing.T, sender *Node, targetKey types.PeerKey, recvChan <-chan []byte, payload []byte, msg string) {
 		t.Helper()
@@ -63,7 +65,7 @@ func TestNode(t *testing.T) {
 		require.EventuallyWithT(t, func(c *assert.CollectT) {
 			assert.Equal(c, expectPeers, len(nodeA.Store.Cluster.Nodes.GetAll()), "Node A should see peer B")
 			assert.Equal(c, expectPeers, len(nodeB.Store.Cluster.Nodes.GetAll()), "Node B should see peer A")
-		}, 10*time.Second, 100*time.Millisecond, "nodes failed to converge state")
+		}, 2*time.Second, 50*time.Millisecond, "nodes failed to converge state")
 	})
 
 	t.Run("converge after gossip", func(t *testing.T) {
@@ -116,7 +118,7 @@ func TestNode(t *testing.T) {
 				assert.Equal(c, expectPeers, len(storeA))
 				assert.Equal(c, expectPeers, len(storeB))
 				assert.Equal(c, expectPeers, len(storeC))
-			}, 5*time.Second, 100*time.Millisecond, "nodes failed to converge state")
+			}, 2*time.Second, 50*time.Millisecond, "nodes failed to converge state")
 
 			idA := nodeA.Store.Cluster.LocalID
 			idB := nodeB.Store.Cluster.LocalID
@@ -207,7 +209,7 @@ func TestNode(t *testing.T) {
 				require.Empty(c, cmp.Diff(expectedA, storeC[idA], opts...))
 				require.Empty(c, cmp.Diff(expectedB, storeC[idB], opts...))
 				require.Empty(c, cmp.Diff(expectedC, storeC[idC], opts...))
-			}, 5*time.Second, 50*time.Millisecond, "nodes failed to converge state")
+			}, 2*time.Second, 25*time.Millisecond, "nodes failed to converge state")
 
 			// Setup Reachability Test Handlers
 			recvA := make(chan []byte, 1)
@@ -308,7 +310,7 @@ func TestNode(t *testing.T) {
 			if nodeRec, ok := storeC[idB]; ok {
 				assert.Equal(c, advertisedAddrs([]string{"10.0.0.2"}, portB), nodeRec.Addresses)
 			}
-		}, 5*time.Second, 100*time.Millisecond, "nodes failed to converge state")
+		}, 2*time.Second, 50*time.Millisecond, "nodes failed to converge state")
 
 		recvB := make(chan []byte, 1)
 		nodeB.Link.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, b []byte) error {
@@ -360,10 +362,26 @@ func newNode(t *testing.T, dir string, port int, network *memtransport.Network, 
 	conf := &Config{
 		Port:             port,
 		AdvertisedIPs:    advertisedIPs,
-		GossipInterval:   time.Millisecond * 50,
-		PeerTickInterval: time.Millisecond * 50,
+		GossipInterval:   10 * time.Millisecond,
+		PeerTickInterval: 10 * time.Millisecond,
 		PollenDir:        dir,
 		Transport:        tr,
+		PeerConfig: &peer.Config{
+			FirstBackoff:              5 * time.Millisecond,
+			BaseBackoff:               5 * time.Millisecond,
+			MaxBackoff:                20 * time.Millisecond,
+			DirectAttemptThreshold:    1,
+			PunchAttemptThreshold:     1,
+			UnreachableRetryInterval:  20 * time.Millisecond,
+			DisconnectedRetryInterval: 20 * time.Millisecond,
+		},
+		LinkOptions: []link.Option{
+			link.WithEnsurePeerInterval(5 * time.Millisecond),
+			link.WithEnsurePeerTimeout(250 * time.Millisecond),
+			link.WithHolepunchAttempts(2),
+		},
+		PunchAttemptTimeout: 200 * time.Millisecond,
+		DisableGossipJitter: true,
 	}
 
 	node, err := New(conf)
