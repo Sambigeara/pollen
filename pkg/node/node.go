@@ -46,14 +46,14 @@ const (
 )
 
 type Config struct {
+	Transport           transport.Transport
+	PeerConfig          *peer.Config
 	PollenDir           string
 	AdvertisedIPs       []string
+	LinkOptions         []link.Option
 	Port                int
 	GossipInterval      time.Duration
 	PeerTickInterval    time.Duration
-	Transport           transport.Transport
-	PeerConfig          *peer.Config
-	LinkOptions         []link.Option
 	PunchAttemptTimeout time.Duration
 	GossipJitter        float64
 	DisableGossipJitter bool

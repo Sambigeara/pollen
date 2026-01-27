@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -196,10 +197,5 @@ func peerKey(n *Node) types.PeerKey {
 }
 
 func containsPeer(list []types.PeerKey, target types.PeerKey) bool {
-	for _, k := range list {
-		if k == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, target)
 }
