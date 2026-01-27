@@ -41,6 +41,7 @@ type Manager struct {
 	connections       map[string]connectionHandler
 	pendingPunch      map[uint64]pendingPunchReq
 	services          map[string]serviceHandler
+	activeStreams     map[uint32]map[net.Conn]struct{}
 	punchInflight     map[uint64]punchInflight
 	sender            Send
 	ips               []string
@@ -49,6 +50,7 @@ type Manager struct {
 	dialTimeout       time.Duration
 	connectionMu      sync.RWMutex
 	serviceMu         sync.RWMutex
+	streamMu          sync.Mutex
 	sessionInflightMu sync.Mutex
 	punchMu           sync.Mutex
 }
@@ -63,6 +65,22 @@ type connectionHandler struct {
 	peerID types.PeerKey
 	remote uint32
 	local  uint32
+	ln     net.Listener
+}
+
+type trackedConn struct {
+	net.Conn
+	onClose   func()
+	closeOnce sync.Once
+}
+
+func (c *trackedConn) Close() error {
+	c.closeOnce.Do(func() {
+		if c.onClose != nil {
+			c.onClose()
+		}
+	})
+	return c.Conn.Close()
 }
 
 type ConnectionInfo struct {
@@ -95,6 +113,7 @@ func New(sender Send, dir PeerDirectory, signPriv ed25519.PrivateKey, advertisab
 		sender:          sender,
 		services:        make(map[string]serviceHandler),
 		connections:     make(map[string]connectionHandler),
+		activeStreams:   make(map[uint32]map[net.Conn]struct{}),
 		signPriv:        signPriv,
 		ips:             advertisableIPs,
 		dialTimeout:     dialTimeout,
@@ -119,6 +138,15 @@ func (m *Manager) SetPeerProvider(p ConnectedPeersProvider) {
 // handleIncomingStream routes incoming streams to the appropriate service handler.
 func (m *Manager) handleIncomingStream(stream net.Conn, servicePort uint16) {
 	portStr := strconv.FormatUint(uint64(servicePort), 10)
+	port := uint32(servicePort)
+
+	tracked := &trackedConn{}
+	tracked.Conn = stream
+	tracked.onClose = func() {
+		m.removeActiveStream(port, tracked)
+	}
+	stream = tracked
+	m.addActiveStream(port, tracked)
 
 	m.serviceMu.RLock()
 	h, ok := m.services[portStr]
@@ -126,7 +154,7 @@ func (m *Manager) handleIncomingStream(stream net.Conn, servicePort uint16) {
 
 	if !ok {
 		zap.S().Warnw("no handler for incoming stream", "port", servicePort)
-		stream.Close()
+		_ = stream.Close()
 		return
 	}
 
@@ -248,6 +276,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 		peerID: peerID,
 		remote: remotePort,
 		local:  uint32(boundPort),
+		ln:     ln,
 	}
 
 	zap.S().Infow("connected to service", "peer", peerID.String()[:8], "port", remotePort, "local_port", boundPort)
@@ -288,8 +317,33 @@ func (m *Manager) DisconnectLocalPort(port uint32) bool {
 		return false
 	}
 	delete(m.connections, key)
+	if handler.ln != nil {
+		_ = handler.ln.Close()
+	}
 	handler.cancel()
 	return true
+}
+
+func (m *Manager) DisconnectRemoteService(peerID types.PeerKey, remotePort uint32) int {
+	m.connectionMu.Lock()
+	defer m.connectionMu.Unlock()
+
+	removed := 0
+	keys := make([]string, 0, len(m.connections))
+	for key, handler := range m.connections {
+		if handler.peerID == peerID && handler.remote == remotePort {
+			if handler.ln != nil {
+				_ = handler.ln.Close()
+			}
+			handler.cancel()
+			keys = append(keys, key)
+			removed++
+		}
+	}
+	for _, key := range keys {
+		delete(m.connections, key)
+	}
+	return removed
 }
 
 func (m *Manager) UnregisterService(port uint32) bool {
@@ -301,9 +355,49 @@ func (m *Manager) UnregisterService(port uint32) bool {
 	if h, ok := m.services[portStr]; ok {
 		h.cancel()
 		delete(m.services, portStr)
+		m.closeServiceStreams(port)
 		return true
 	}
+	m.closeServiceStreams(port)
 	return false
+}
+
+func (m *Manager) closeServiceStreams(port uint32) int {
+	m.streamMu.Lock()
+	streams := m.activeStreams[port]
+	delete(m.activeStreams, port)
+	m.streamMu.Unlock()
+
+	closed := 0
+	for stream := range streams {
+		_ = stream.Close()
+		closed++
+	}
+	return closed
+}
+
+func (m *Manager) addActiveStream(port uint32, stream net.Conn) {
+	m.streamMu.Lock()
+	defer m.streamMu.Unlock()
+	streams, ok := m.activeStreams[port]
+	if !ok {
+		streams = make(map[net.Conn]struct{})
+		m.activeStreams[port] = streams
+	}
+	streams[stream] = struct{}{}
+}
+
+func (m *Manager) removeActiveStream(port uint32, stream net.Conn) {
+	m.streamMu.Lock()
+	defer m.streamMu.Unlock()
+	streams, ok := m.activeStreams[port]
+	if !ok {
+		return
+	}
+	delete(streams, stream)
+	if len(streams) == 0 {
+		delete(m.activeStreams, port)
+	}
 }
 
 // HandleSessionRequest handles incoming session establishment requests.

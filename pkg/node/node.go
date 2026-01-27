@@ -271,6 +271,7 @@ func (n *Node) handlePeerInput(in peer.Input) {
 func (n *Node) tick() {
 	// First sync any new peers from gossip state
 	n.syncPeersFromGossip()
+	n.reconcileConnections()
 
 	// Then tick the state machine to get pending actions
 	outputs := n.Peers.Step(time.Now(), peer.Tick{})
@@ -313,6 +314,43 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			go n.requestPunchCoordination(e, connected[0])
 		}
 	}
+}
+
+func (n *Node) reconcileConnections() {
+	connections := n.Tunnel.ListConnections()
+	if len(connections) == 0 {
+		return
+	}
+
+	nodes := n.Store.Cluster.Nodes.GetAll()
+	missing := make(map[types.PeerKey]map[uint32]struct{}, len(connections))
+	for _, conn := range connections {
+		node := nodes[conn.PeerID]
+		if node == nil || !hasServicePort(node, conn.RemotePort) {
+			ports, ok := missing[conn.PeerID]
+			if !ok {
+				ports = make(map[uint32]struct{})
+				missing[conn.PeerID] = ports
+			}
+			ports[conn.RemotePort] = struct{}{}
+		}
+	}
+
+	for peerID, ports := range missing {
+		for port := range ports {
+			n.log.Infow("removing stale forward", "peer", peerID.String()[:8], "port", port)
+			n.Tunnel.DisconnectRemoteService(peerID, port)
+		}
+	}
+}
+
+func hasServicePort(node *statev1.Node, port uint32) bool {
+	for _, svc := range node.Services {
+		if svc.GetPort() == port {
+			return true
+		}
+	}
+	return false
 }
 
 func (n *Node) attemptDirectConnect(e peer.AttemptConnect) {
