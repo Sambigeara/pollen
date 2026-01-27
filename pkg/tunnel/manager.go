@@ -61,11 +61,11 @@ type serviceHandler struct {
 }
 
 type connectionHandler struct {
+	ln     net.Listener
 	cancel context.CancelFunc
-	peerID types.PeerKey
 	remote uint32
 	local  uint32
-	ln     net.Listener
+	peerID types.PeerKey
 }
 
 type trackedConn struct {
@@ -362,18 +362,15 @@ func (m *Manager) UnregisterService(port uint32) bool {
 	return false
 }
 
-func (m *Manager) closeServiceStreams(port uint32) int {
+func (m *Manager) closeServiceStreams(port uint32) {
 	m.streamMu.Lock()
 	streams := m.activeStreams[port]
 	delete(m.activeStreams, port)
 	m.streamMu.Unlock()
 
-	closed := 0
 	for stream := range streams {
 		_ = stream.Close()
-		closed++
 	}
-	return closed
 }
 
 func (m *Manager) addActiveStream(port uint32, stream net.Conn) {
