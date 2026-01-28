@@ -105,6 +105,7 @@ type TcpPunchRequest struct {
 	ServicePort   string                 `protobuf:"bytes,3,opt,name=service_port,json=servicePort,proto3" json:"service_port,omitempty"` // Which service port on target
 	CertDer       []byte                 `protobuf:"bytes,4,opt,name=cert_der,json=certDer,proto3" json:"cert_der,omitempty"`             // Initiator's ephemeral cert
 	Sig           []byte                 `protobuf:"bytes,5,opt,name=sig,proto3" json:"sig,omitempty"`                                    // Signature of cert
+	RequestId     uint64                 `protobuf:"varint,6,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`      // Initiator-generated ID for correlation
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -172,6 +173,13 @@ func (x *TcpPunchRequest) GetSig() []byte {
 		return x.Sig
 	}
 	return nil
+}
+
+func (x *TcpPunchRequest) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
 }
 
 // Coordinator → Target: notification to participate in punch
@@ -334,6 +342,7 @@ type TcpPunchResponse struct {
 	PeerAddr      string                 `protobuf:"bytes,1,opt,name=peer_addr,json=peerAddr,proto3" json:"peer_addr,omitempty"`            // Target's external addr:port to dial
 	PeerCertDer   []byte                 `protobuf:"bytes,2,opt,name=peer_cert_der,json=peerCertDer,proto3" json:"peer_cert_der,omitempty"` // Target's ephemeral cert
 	PeerSig       []byte                 `protobuf:"bytes,3,opt,name=peer_sig,json=peerSig,proto3" json:"peer_sig,omitempty"`               // Target's cert signature
+	RequestId     uint64                 `protobuf:"varint,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`        // Correlates with original request
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -387,6 +396,13 @@ func (x *TcpPunchResponse) GetPeerSig() []byte {
 		return x.PeerSig
 	}
 	return nil
+}
+
+func (x *TcpPunchResponse) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
 }
 
 // SessionHandshake for establishing multiplexed tunnel sessions.
@@ -470,14 +486,16 @@ const file_pollen_tcp_v1_tcp_proto_rawDesc = "" +
 	"\bcert_der\x18\x02 \x01(\fR\acertDer\x12\x10\n" +
 	"\x03sig\x18\x03 \x01(\fR\x03sig\x12\x12\n" +
 	"\x04addr\x18\x04 \x03(\tR\x04addr\x12!\n" +
-	"\fservice_port\x18\x05 \x01(\tR\vservicePort\"\x99\x01\n" +
+	"\fservice_port\x18\x05 \x01(\tR\vservicePort\"\xb8\x01\n" +
 	"\x0fTcpPunchRequest\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1d\n" +
 	"\n" +
 	"local_port\x18\x02 \x01(\rR\tlocalPort\x12!\n" +
 	"\fservice_port\x18\x03 \x01(\tR\vservicePort\x12\x19\n" +
 	"\bcert_der\x18\x04 \x01(\fR\acertDer\x12\x10\n" +
-	"\x03sig\x18\x05 \x01(\fR\x03sig\"\xc8\x01\n" +
+	"\x03sig\x18\x05 \x01(\fR\x03sig\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x06 \x01(\x04R\trequestId\"\xc8\x01\n" +
 	"\x0fTcpPunchTrigger\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1b\n" +
 	"\tpeer_addr\x18\x02 \x01(\tR\bpeerAddr\x12!\n" +
@@ -492,11 +510,13 @@ const file_pollen_tcp_v1_tcp_proto_rawDesc = "" +
 	"\n" +
 	"local_port\x18\x02 \x01(\rR\tlocalPort\x12\x19\n" +
 	"\bcert_der\x18\x03 \x01(\fR\acertDer\x12\x10\n" +
-	"\x03sig\x18\x04 \x01(\fR\x03sig\"n\n" +
+	"\x03sig\x18\x04 \x01(\fR\x03sig\"\x8d\x01\n" +
 	"\x10TcpPunchResponse\x12\x1b\n" +
 	"\tpeer_addr\x18\x01 \x01(\tR\bpeerAddr\x12\"\n" +
 	"\rpeer_cert_der\x18\x02 \x01(\fR\vpeerCertDer\x12\x19\n" +
-	"\bpeer_sig\x18\x03 \x01(\fR\apeerSig\"r\n" +
+	"\bpeer_sig\x18\x03 \x01(\fR\apeerSig\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x04 \x01(\x04R\trequestId\"r\n" +
 	"\x10SessionHandshake\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x19\n" +
