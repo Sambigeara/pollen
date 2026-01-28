@@ -738,6 +738,7 @@ func (m *Manager) dialSessionWithPunch(ctx context.Context, peerKey, coordinator
 		ServicePort: "", // Empty for session establishment
 		CertDer:     ownCert.Certificate[0],
 		Sig:         ownSig,
+		RequestId:   reqID,
 	}
 
 	reqBytes, err := req.MarshalVT()
