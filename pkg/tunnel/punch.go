@@ -18,6 +18,7 @@ import (
 const (
 	punchTimeout         = 10 * time.Second
 	punchKeepalivePeriod = 30 * time.Second
+	punchStaleTimeout    = 30 * time.Second // Pending punches auto-cleanup after this duration
 )
 
 // ConnectedPeersProvider is used to find connected peers that can act as coordinators.
@@ -74,11 +75,8 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 		return fmt.Errorf("no session to initiator peer %s", fromPeer.String()[:8])
 	}
 
-	// Generate request ID
-	reqID, err := randUint64()
-	if err != nil {
-		return fmt.Errorf("generate request id: %w", err)
-	}
+	// Use the initiator's request ID for correlation through the entire flow
+	reqID := req.RequestId
 
 	// Store pending request so we can complete it when target responds
 	//
@@ -112,6 +110,13 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 		createdAt:    time.Now(),
 	}
 	m.punchMu.Unlock()
+
+	// Auto-cleanup if target never responds
+	time.AfterFunc(punchStaleTimeout, func() {
+		m.punchMu.Lock()
+		delete(m.pendingPunch, reqID)
+		m.punchMu.Unlock()
+	})
 
 	// Send trigger to target
 	trigger := &tcpv1.TcpPunchTrigger{
@@ -184,37 +189,14 @@ func (m *Manager) HandlePunchTrigger(ctx context.Context, fromPeer types.PeerKey
 	}
 	localPort, _ := strconv.ParseUint(portStr, 10, 32)
 
-	// Send ready to coordinator
-	ready := &tcpv1.TcpPunchReady{
-		RequestId: trigger.RequestId,
-		LocalPort: uint32(localPort),
-		CertDer:   ownCert.Certificate[0],
-		Sig:       ownSig,
-	}
-
-	readyBytes, err := ready.MarshalVT()
-	if err != nil {
-		ln.Close()
-		return fmt.Errorf("marshal punch ready: %w", err)
-	}
-
-	logger.Infow("sending punch ready to coordinator",
-		"coordinator", fromPeer.String()[:8],
-		"localPort", localPort)
-
-	if err := m.sender(ctx, fromPeer, types.Envelope{
-		Type:    types.MsgTypeTCPPunchReady,
-		Payload: readyBytes,
-	}); err != nil {
-		ln.Close()
-		return fmt.Errorf("send punch ready: %w", err)
-	}
-
-	// Start TCP simultaneous open in background
+	// Start TCP simultaneous open IMMEDIATELY (speculative punching).
+	// This runs in parallel with sending Ready back to coordinator, so by the time
+	// the initiator receives the Response and starts its SimultaneousOpen, we're
+	// already sending SYNs. This cuts one round-trip from the critical path.
 	go func() {
 		defer ln.Close()
 
-		logger.Infow("starting TCP simultaneous open for session",
+		logger.Infow("starting TCP simultaneous open for session (speculative)",
 			"peerAddr", trigger.PeerAddr,
 			"localPort", localPort)
 
@@ -252,6 +234,30 @@ func (m *Manager) HandlePunchTrigger(ctx context.Context, fromPeer types.PeerKey
 			return
 		}
 	}()
+
+	// Send ready to coordinator (in parallel with punching above)
+	ready := &tcpv1.TcpPunchReady{
+		RequestId: trigger.RequestId,
+		LocalPort: uint32(localPort),
+		CertDer:   ownCert.Certificate[0],
+		Sig:       ownSig,
+	}
+
+	readyBytes, err := ready.MarshalVT()
+	if err != nil {
+		return fmt.Errorf("marshal punch ready: %w", err)
+	}
+
+	logger.Infow("sending punch ready to coordinator",
+		"coordinator", fromPeer.String()[:8],
+		"localPort", localPort)
+
+	if err := m.sender(ctx, fromPeer, types.Envelope{
+		Type:    types.MsgTypeTCPPunchReady,
+		Payload: readyBytes,
+	}); err != nil {
+		return fmt.Errorf("send punch ready: %w", err)
+	}
 
 	return nil
 }
@@ -294,6 +300,7 @@ func (m *Manager) HandlePunchReady(ctx context.Context, fromPeer types.PeerKey, 
 		PeerAddr:    net.JoinHostPort(extractIP(targetAddr), strconv.FormatUint(uint64(ready.LocalPort), 10)),
 		PeerCertDer: ready.CertDer,
 		PeerSig:     ready.Sig,
+		RequestId:   ready.RequestId,
 	}
 
 	respBytes, err := resp.MarshalVT()
@@ -321,18 +328,22 @@ func (m *Manager) HandlePunchResponse(_ context.Context, _ types.PeerKey, payloa
 		return fmt.Errorf("unmarshal punch response: %w", err)
 	}
 
-	logger.Infow("received punch response", "peerAddr", resp.PeerAddr)
+	logger.Infow("received punch response", "peerAddr", resp.PeerAddr, "requestId", resp.RequestId)
 
-	// Find the waiting inflight and signal it
+	// Find the waiting inflight by request ID and signal it
 	m.punchMu.Lock()
-	defer m.punchMu.Unlock()
+	inf, ok := m.punchInflight[resp.RequestId]
+	m.punchMu.Unlock()
 
-	// We need to find the right inflight - for now, signal all (there should only be one)
-	for _, inf := range m.punchInflight {
-		select {
-		case inf.ch <- resp:
-		default:
-		}
+	if !ok {
+		logger.Warnw("no inflight punch for request", "requestId", resp.RequestId)
+		return nil
+	}
+
+	select {
+	case inf.ch <- resp:
+	default:
+		logger.Warnw("inflight channel full, dropping response", "requestId", resp.RequestId)
 	}
 
 	return nil

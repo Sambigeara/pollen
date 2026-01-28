@@ -19,6 +19,7 @@ message TcpPunchRequest {
   string service_port = 3; // Which service port on target
   bytes cert_der = 4; // Initiator's ephemeral cert
   bytes sig = 5; // Signature of cert
+  uint64 request_id = 6; // Initiator-generated ID for correlation
 }
 
 // Coordinator → Target: notification to participate in punch
@@ -44,6 +45,7 @@ message TcpPunchResponse {
   string peer_addr = 1; // Target's external addr:port to dial
   bytes peer_cert_der = 2; // Target's ephemeral cert
   bytes peer_sig = 3; // Target's cert signature
+  uint64 request_id = 4; // Correlates with original request
 }
 
 // SessionHandshake for establishing multiplexed tunnel sessions.

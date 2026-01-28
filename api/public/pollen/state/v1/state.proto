@@ -3,6 +3,7 @@ syntax = "proto3";
 package pollen.state.v1;
 
 import "buf/validate/validate.proto";
+import "google/protobuf/empty.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1";
 
@@ -15,6 +16,7 @@ message Node {
   repeated string addresses = 3;
   Keys keys = 4;
   repeated Service services = 5;
+  map<string, google.protobuf.Empty> connected_peers = 6;
 }
 
 message Service {
