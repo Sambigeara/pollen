@@ -2,7 +2,6 @@ package node
 
 import (
 	"context"
-	"maps"
 	"net"
 	"sort"
 	"strconv"
@@ -247,12 +246,11 @@ func cloneNode(node *statev1.Node) *statev1.Node {
 		return &statev1.Node{}
 	}
 	return &statev1.Node{
-		Id:             node.Id,
-		Name:           node.Name,
-		Addresses:      append([]string(nil), node.Addresses...),
-		Keys:           node.Keys,
-		Services:       append([]*statev1.Service(nil), node.Services...),
-		ConnectedPeers: maps.Clone(node.ConnectedPeers),
+		Id:        node.Id,
+		Name:      node.Name,
+		Addresses: append([]string(nil), node.Addresses...),
+		Keys:      node.Keys,
+		Services:  append([]*statev1.Service(nil), node.Services...),
 	}
 }
 

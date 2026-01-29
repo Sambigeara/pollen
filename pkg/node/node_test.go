@@ -140,12 +140,8 @@ func TestNode(t *testing.T) {
 				Keys:      nodeC.crypto.GetStateKeys(),
 			}
 
-			// Validate Exact State Match (ignoring dynamic fields like connected_peers)
-			opts := []cmp.Option{
-				protocmp.Transform(),
-				protocmp.SortRepeatedFields(&statev1.Node{}, "addresses"),
-				protocmp.IgnoreFields(&statev1.Node{}, "connected_peers"),
-			}
+			// Validate Exact State Match
+			opts := []cmp.Option{protocmp.Transform(), protocmp.SortRepeatedFields(&statev1.Node{}, "addresses")}
 			require.Empty(t, cmp.Diff(expectedA, storeA[idA], opts...))
 			require.Empty(t, cmp.Diff(expectedA, storeB[idA], opts...))
 			require.Empty(t, cmp.Diff(expectedA, storeC[idA], opts...))
@@ -197,11 +193,7 @@ func TestNode(t *testing.T) {
 			idB := nodeB.Store.Cluster.LocalID
 			idC := nodeC.Store.Cluster.LocalID
 
-			opts := []cmp.Option{
-				protocmp.Transform(),
-				protocmp.SortRepeatedFields(&statev1.Node{}, "addresses"),
-				protocmp.IgnoreFields(&statev1.Node{}, "connected_peers"),
-			}
+			opts := []cmp.Option{protocmp.Transform(), protocmp.SortRepeatedFields(&statev1.Node{}, "addresses")}
 			require.EventuallyWithT(t, func(c *assert.CollectT) {
 				// ensure the state is consistent from post-XXPsk2
 				storeA := nodeA.Store.Cluster.Nodes.GetAll()

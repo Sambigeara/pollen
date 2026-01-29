@@ -10,7 +10,6 @@ import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -24,15 +23,14 @@ const (
 )
 
 type Node struct {
-	state          protoimpl.MessageState    `protogen:"open.v1"`
-	Id             string                    `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name           string                    `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Addresses      []string                  `protobuf:"bytes,3,rep,name=addresses,proto3" json:"addresses,omitempty"`
-	Keys           *Keys                     `protobuf:"bytes,4,opt,name=keys,proto3" json:"keys,omitempty"`
-	Services       []*Service                `protobuf:"bytes,5,rep,name=services,proto3" json:"services,omitempty"`
-	ConnectedPeers map[string]*emptypb.Empty `protobuf:"bytes,6,rep,name=connected_peers,json=connectedPeers,proto3" json:"connected_peers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Addresses     []string               `protobuf:"bytes,3,rep,name=addresses,proto3" json:"addresses,omitempty"`
+	Keys          *Keys                  `protobuf:"bytes,4,opt,name=keys,proto3" json:"keys,omitempty"`
+	Services      []*Service             `protobuf:"bytes,5,rep,name=services,proto3" json:"services,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Node) Reset() {
@@ -96,13 +94,6 @@ func (x *Node) GetKeys() *Keys {
 func (x *Node) GetServices() []*Service {
 	if x != nil {
 		return x.Services
-	}
-	return nil
-}
-
-func (x *Node) GetConnectedPeers() map[string]*emptypb.Empty {
-	if x != nil {
-		return x.ConnectedPeers
 	}
 	return nil
 }
@@ -223,17 +214,13 @@ var File_pollen_state_v1_state_proto protoreflect.FileDescriptor
 
 const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\n" +
-	"\x1bpollen/state/v1/state.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bgoogle/protobuf/empty.proto\"\xf5\x02\n" +
+	"\x1bpollen/state/v1/state.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\"\xc6\x01\n" +
 	"\x04Node\x12+\n" +
 	"\x02id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1c\n" +
 	"\taddresses\x18\x03 \x03(\tR\taddresses\x12)\n" +
 	"\x04keys\x18\x04 \x01(\v2\x15.pollen.state.v1.KeysR\x04keys\x124\n" +
-	"\bservices\x18\x05 \x03(\v2\x18.pollen.state.v1.ServiceR\bservices\x12R\n" +
-	"\x0fconnected_peers\x18\x06 \x03(\v2).pollen.state.v1.Node.ConnectedPeersEntryR\x0econnectedPeers\x1aY\n" +
-	"\x13ConnectedPeersEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
-	"\x05value\x18\x02 \x01(\v2\x16.google.protobuf.EmptyR\x05value:\x028\x01\">\n" +
+	"\bservices\x18\x05 \x03(\v2\x18.pollen.state.v1.ServiceR\bservices\">\n" +
 	"\aService\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\x04port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\x04port\"\x91\x01\n" +
@@ -256,24 +243,20 @@ func file_pollen_state_v1_state_proto_rawDescGZIP() []byte {
 	return file_pollen_state_v1_state_proto_rawDescData
 }
 
-var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_pollen_state_v1_state_proto_goTypes = []any{
-	(*Node)(nil),          // 0: pollen.state.v1.Node
-	(*Service)(nil),       // 1: pollen.state.v1.Service
-	(*Keys)(nil),          // 2: pollen.state.v1.Keys
-	nil,                   // 3: pollen.state.v1.Node.ConnectedPeersEntry
-	(*emptypb.Empty)(nil), // 4: google.protobuf.Empty
+	(*Node)(nil),    // 0: pollen.state.v1.Node
+	(*Service)(nil), // 1: pollen.state.v1.Service
+	(*Keys)(nil),    // 2: pollen.state.v1.Keys
 }
 var file_pollen_state_v1_state_proto_depIdxs = []int32{
 	2, // 0: pollen.state.v1.Node.keys:type_name -> pollen.state.v1.Keys
 	1, // 1: pollen.state.v1.Node.services:type_name -> pollen.state.v1.Service
-	3, // 2: pollen.state.v1.Node.connected_peers:type_name -> pollen.state.v1.Node.ConnectedPeersEntry
-	4, // 3: pollen.state.v1.Node.ConnectedPeersEntry.value:type_name -> google.protobuf.Empty
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_state_proto_init() }
@@ -288,7 +271,7 @@ func file_pollen_state_v1_state_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_state_v1_state_proto_rawDesc), len(file_pollen_state_v1_state_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
