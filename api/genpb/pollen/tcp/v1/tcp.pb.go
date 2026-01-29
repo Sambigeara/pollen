@@ -99,15 +99,16 @@ func (x *Handshake) GetServicePort() string {
 
 // Initiator → Coordinator: request TCP punch to target peer
 type TcpPunchRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`                // Target peer's noise public key
-	LocalPort     uint32                 `protobuf:"varint,2,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`      // Initiator's bound TCP port
-	ServicePort   string                 `protobuf:"bytes,3,opt,name=service_port,json=servicePort,proto3" json:"service_port,omitempty"` // Which service port on target
-	CertDer       []byte                 `protobuf:"bytes,4,opt,name=cert_der,json=certDer,proto3" json:"cert_der,omitempty"`             // Initiator's ephemeral cert
-	Sig           []byte                 `protobuf:"bytes,5,opt,name=sig,proto3" json:"sig,omitempty"`                                    // Signature of cert
-	RequestId     uint64                 `protobuf:"varint,6,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`      // Initiator-generated ID for correlation
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	PeerId               []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`                                              // Target peer's noise public key
+	LocalPort            uint32                 `protobuf:"varint,2,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`                                    // Initiator's bound TCP port
+	ServicePort          string                 `protobuf:"bytes,3,opt,name=service_port,json=servicePort,proto3" json:"service_port,omitempty"`                               // Which service port on target
+	CertDer              []byte                 `protobuf:"bytes,4,opt,name=cert_der,json=certDer,proto3" json:"cert_der,omitempty"`                                           // Initiator's ephemeral cert
+	Sig                  []byte                 `protobuf:"bytes,5,opt,name=sig,proto3" json:"sig,omitempty"`                                                                  // Signature of cert
+	RequestId            uint64                 `protobuf:"varint,6,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`                                    // Initiator-generated ID for correlation
+	ObservedExternalPort uint32                 `protobuf:"varint,7,opt,name=observed_external_port,json=observedExternalPort,proto3" json:"observed_external_port,omitempty"` // Initiator's observed external TCP port
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *TcpPunchRequest) Reset() {
@@ -178,6 +179,13 @@ func (x *TcpPunchRequest) GetSig() []byte {
 func (x *TcpPunchRequest) GetRequestId() uint64 {
 	if x != nil {
 		return x.RequestId
+	}
+	return 0
+}
+
+func (x *TcpPunchRequest) GetObservedExternalPort() uint32 {
+	if x != nil {
+		return x.ObservedExternalPort
 	}
 	return 0
 }
@@ -269,13 +277,14 @@ func (x *TcpPunchTrigger) GetRequestId() uint64 {
 
 // Target → Coordinator: ready to receive connection
 type TcpPunchReady struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // Correlates with trigger
-	LocalPort     uint32                 `protobuf:"varint,2,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"` // Target's bound TCP port
-	CertDer       []byte                 `protobuf:"bytes,3,opt,name=cert_der,json=certDer,proto3" json:"cert_der,omitempty"`        // Target's ephemeral cert
-	Sig           []byte                 `protobuf:"bytes,4,opt,name=sig,proto3" json:"sig,omitempty"`                               // Target's cert signature
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	RequestId            uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`                                    // Correlates with trigger
+	LocalPort            uint32                 `protobuf:"varint,2,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`                                    // Target's bound TCP port
+	CertDer              []byte                 `protobuf:"bytes,3,opt,name=cert_der,json=certDer,proto3" json:"cert_der,omitempty"`                                           // Target's ephemeral cert
+	Sig                  []byte                 `protobuf:"bytes,4,opt,name=sig,proto3" json:"sig,omitempty"`                                                                  // Target's cert signature
+	ObservedExternalPort uint32                 `protobuf:"varint,5,opt,name=observed_external_port,json=observedExternalPort,proto3" json:"observed_external_port,omitempty"` // Target's observed external TCP port
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *TcpPunchReady) Reset() {
@@ -334,6 +343,13 @@ func (x *TcpPunchReady) GetSig() []byte {
 		return x.Sig
 	}
 	return nil
+}
+
+func (x *TcpPunchReady) GetObservedExternalPort() uint32 {
+	if x != nil {
+		return x.ObservedExternalPort
+	}
+	return 0
 }
 
 // Coordinator → Initiator: target is ready, start punching
@@ -405,6 +421,157 @@ func (x *TcpPunchResponse) GetRequestId() uint64 {
 	return 0
 }
 
+// Initiator/Target -> Coordinator: request a probe listener for port discovery.
+type TcpPunchProbeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TcpPunchProbeRequest) Reset() {
+	*x = TcpPunchProbeRequest{}
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TcpPunchProbeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TcpPunchProbeRequest) ProtoMessage() {}
+
+func (x *TcpPunchProbeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TcpPunchProbeRequest.ProtoReflect.Descriptor instead.
+func (*TcpPunchProbeRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *TcpPunchProbeRequest) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+// Coordinator -> Initiator/Target: provides probe listener port.
+type TcpPunchProbeOffer struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	ProbePort     uint32                 `protobuf:"varint,2,opt,name=probe_port,json=probePort,proto3" json:"probe_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TcpPunchProbeOffer) Reset() {
+	*x = TcpPunchProbeOffer{}
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TcpPunchProbeOffer) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TcpPunchProbeOffer) ProtoMessage() {}
+
+func (x *TcpPunchProbeOffer) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TcpPunchProbeOffer.ProtoReflect.Descriptor instead.
+func (*TcpPunchProbeOffer) Descriptor() ([]byte, []int) {
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *TcpPunchProbeOffer) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *TcpPunchProbeOffer) GetProbePort() uint32 {
+	if x != nil {
+		return x.ProbePort
+	}
+	return 0
+}
+
+// Coordinator -> Initiator/Target: observed external port for probe connection.
+type TcpPunchProbeResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	ObservedPort  uint32                 `protobuf:"varint,2,opt,name=observed_port,json=observedPort,proto3" json:"observed_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TcpPunchProbeResult) Reset() {
+	*x = TcpPunchProbeResult{}
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TcpPunchProbeResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TcpPunchProbeResult) ProtoMessage() {}
+
+func (x *TcpPunchProbeResult) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TcpPunchProbeResult.ProtoReflect.Descriptor instead.
+func (*TcpPunchProbeResult) Descriptor() ([]byte, []int) {
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *TcpPunchProbeResult) GetRequestId() uint64 {
+	if x != nil {
+		return x.RequestId
+	}
+	return 0
+}
+
+func (x *TcpPunchProbeResult) GetObservedPort() uint32 {
+	if x != nil {
+		return x.ObservedPort
+	}
+	return 0
+}
+
 // SessionHandshake for establishing multiplexed tunnel sessions.
 // Sessions are long-lived connections that multiplex many streams.
 type SessionHandshake struct {
@@ -419,7 +586,7 @@ type SessionHandshake struct {
 
 func (x *SessionHandshake) Reset() {
 	*x = SessionHandshake{}
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[5]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -431,7 +598,7 @@ func (x *SessionHandshake) String() string {
 func (*SessionHandshake) ProtoMessage() {}
 
 func (x *SessionHandshake) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[5]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -444,7 +611,7 @@ func (x *SessionHandshake) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionHandshake.ProtoReflect.Descriptor instead.
 func (*SessionHandshake) Descriptor() ([]byte, []int) {
-	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{5}
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SessionHandshake) GetRequestId() uint64 {
@@ -486,7 +653,7 @@ const file_pollen_tcp_v1_tcp_proto_rawDesc = "" +
 	"\bcert_der\x18\x02 \x01(\fR\acertDer\x12\x10\n" +
 	"\x03sig\x18\x03 \x01(\fR\x03sig\x12\x12\n" +
 	"\x04addr\x18\x04 \x03(\tR\x04addr\x12!\n" +
-	"\fservice_port\x18\x05 \x01(\tR\vservicePort\"\xb8\x01\n" +
+	"\fservice_port\x18\x05 \x01(\tR\vservicePort\"\xee\x01\n" +
 	"\x0fTcpPunchRequest\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1d\n" +
 	"\n" +
@@ -495,7 +662,8 @@ const file_pollen_tcp_v1_tcp_proto_rawDesc = "" +
 	"\bcert_der\x18\x04 \x01(\fR\acertDer\x12\x10\n" +
 	"\x03sig\x18\x05 \x01(\fR\x03sig\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x06 \x01(\x04R\trequestId\"\xc8\x01\n" +
+	"request_id\x18\x06 \x01(\x04R\trequestId\x124\n" +
+	"\x16observed_external_port\x18\a \x01(\rR\x14observedExternalPort\"\xc8\x01\n" +
 	"\x0fTcpPunchTrigger\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1b\n" +
 	"\tpeer_addr\x18\x02 \x01(\tR\bpeerAddr\x12!\n" +
@@ -503,20 +671,33 @@ const file_pollen_tcp_v1_tcp_proto_rawDesc = "" +
 	"\rpeer_cert_der\x18\x04 \x01(\fR\vpeerCertDer\x12\x19\n" +
 	"\bpeer_sig\x18\x05 \x01(\fR\apeerSig\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x06 \x01(\x04R\trequestId\"z\n" +
+	"request_id\x18\x06 \x01(\x04R\trequestId\"\xb0\x01\n" +
 	"\rTcpPunchReady\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x1d\n" +
 	"\n" +
 	"local_port\x18\x02 \x01(\rR\tlocalPort\x12\x19\n" +
 	"\bcert_der\x18\x03 \x01(\fR\acertDer\x12\x10\n" +
-	"\x03sig\x18\x04 \x01(\fR\x03sig\"\x8d\x01\n" +
+	"\x03sig\x18\x04 \x01(\fR\x03sig\x124\n" +
+	"\x16observed_external_port\x18\x05 \x01(\rR\x14observedExternalPort\"\x8d\x01\n" +
 	"\x10TcpPunchResponse\x12\x1b\n" +
 	"\tpeer_addr\x18\x01 \x01(\tR\bpeerAddr\x12\"\n" +
 	"\rpeer_cert_der\x18\x02 \x01(\fR\vpeerCertDer\x12\x19\n" +
 	"\bpeer_sig\x18\x03 \x01(\fR\apeerSig\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x04 \x01(\x04R\trequestId\"r\n" +
+	"request_id\x18\x04 \x01(\x04R\trequestId\"5\n" +
+	"\x14TcpPunchProbeRequest\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\"R\n" +
+	"\x12TcpPunchProbeOffer\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x1d\n" +
+	"\n" +
+	"probe_port\x18\x02 \x01(\rR\tprobePort\"Y\n" +
+	"\x13TcpPunchProbeResult\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\x04R\trequestId\x12#\n" +
+	"\robserved_port\x18\x02 \x01(\rR\fobservedPort\"r\n" +
 	"\x10SessionHandshake\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x19\n" +
@@ -536,14 +717,17 @@ func file_pollen_tcp_v1_tcp_proto_rawDescGZIP() []byte {
 	return file_pollen_tcp_v1_tcp_proto_rawDescData
 }
 
-var file_pollen_tcp_v1_tcp_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_pollen_tcp_v1_tcp_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_pollen_tcp_v1_tcp_proto_goTypes = []any{
-	(*Handshake)(nil),        // 0: pollen.tcp.v1.Handshake
-	(*TcpPunchRequest)(nil),  // 1: pollen.tcp.v1.TcpPunchRequest
-	(*TcpPunchTrigger)(nil),  // 2: pollen.tcp.v1.TcpPunchTrigger
-	(*TcpPunchReady)(nil),    // 3: pollen.tcp.v1.TcpPunchReady
-	(*TcpPunchResponse)(nil), // 4: pollen.tcp.v1.TcpPunchResponse
-	(*SessionHandshake)(nil), // 5: pollen.tcp.v1.SessionHandshake
+	(*Handshake)(nil),            // 0: pollen.tcp.v1.Handshake
+	(*TcpPunchRequest)(nil),      // 1: pollen.tcp.v1.TcpPunchRequest
+	(*TcpPunchTrigger)(nil),      // 2: pollen.tcp.v1.TcpPunchTrigger
+	(*TcpPunchReady)(nil),        // 3: pollen.tcp.v1.TcpPunchReady
+	(*TcpPunchResponse)(nil),     // 4: pollen.tcp.v1.TcpPunchResponse
+	(*TcpPunchProbeRequest)(nil), // 5: pollen.tcp.v1.TcpPunchProbeRequest
+	(*TcpPunchProbeOffer)(nil),   // 6: pollen.tcp.v1.TcpPunchProbeOffer
+	(*TcpPunchProbeResult)(nil),  // 7: pollen.tcp.v1.TcpPunchProbeResult
+	(*SessionHandshake)(nil),     // 8: pollen.tcp.v1.SessionHandshake
 }
 var file_pollen_tcp_v1_tcp_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -564,7 +748,7 @@ func file_pollen_tcp_v1_tcp_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_tcp_v1_tcp_proto_rawDesc), len(file_pollen_tcp_v1_tcp_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

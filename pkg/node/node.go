@@ -223,6 +223,9 @@ func (n *Node) registerHandlers(reconcileCh chan<- struct{}) {
 	n.Link.Handle(types.MsgTypeTCPPunchTrigger, n.Tunnel.HandlePunchTrigger)
 	n.Link.Handle(types.MsgTypeTCPPunchReady, n.Tunnel.HandlePunchReady)
 	n.Link.Handle(types.MsgTypeTCPPunchResponse, n.Tunnel.HandlePunchResponse)
+	n.Link.Handle(types.MsgTypeTCPPunchProbeRequest, n.Tunnel.HandlePunchProbeRequest)
+	n.Link.Handle(types.MsgTypeTCPPunchProbeOffer, n.Tunnel.HandlePunchProbeOffer)
+	n.Link.Handle(types.MsgTypeTCPPunchProbeResult, n.Tunnel.HandlePunchProbeResult)
 
 	n.Link.Handle(types.MsgTypeGossip, func(_ context.Context, _ types.PeerKey, plaintext []byte) error {
 		delta := &statev1.DeltaState{}

@@ -22,6 +22,26 @@ func copyWithPooledBuf(dst, src net.Conn) error {
 	return err
 }
 
+type closeWriter interface {
+	CloseWrite() error
+}
+
+type closeReader interface {
+	CloseRead() error
+}
+
+func halfCloseWrite(conn net.Conn) {
+	if cw, ok := conn.(closeWriter); ok {
+		_ = cw.CloseWrite()
+	}
+}
+
+func halfCloseRead(conn net.Conn) {
+	if cr, ok := conn.(closeReader); ok {
+		_ = cr.CloseRead()
+	}
+}
+
 func Bridge(c1, c2 net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(bridgeCopyWorkers)
@@ -31,7 +51,8 @@ func Bridge(c1, c2 net.Conn) {
 		if err := copyWithPooledBuf(c1, c2); err != nil {
 			zap.S().Debugw("bridge copy failed", "direction", "c1<-c2", "err", err)
 		}
-		c1.Close()
+		halfCloseWrite(c1)
+		halfCloseRead(c2)
 	}()
 
 	go func() {
@@ -39,8 +60,11 @@ func Bridge(c1, c2 net.Conn) {
 		if err := copyWithPooledBuf(c2, c1); err != nil {
 			zap.S().Debugw("bridge copy failed", "direction", "c2<-c1", "err", err)
 		}
-		c2.Close()
+		halfCloseWrite(c2)
+		halfCloseRead(c1)
 	}()
 
 	wg.Wait()
+	_ = c1.Close()
+	_ = c2.Close()
 }

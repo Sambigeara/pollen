@@ -32,6 +32,11 @@ const (
 	// Session establishment (multiplexed tunnels).
 	MsgTypeSessionRequest
 	MsgTypeSessionResponse
+
+	// TCP punch probe (port discovery).
+	MsgTypeTCPPunchProbeRequest
+	MsgTypeTCPPunchProbeOffer
+	MsgTypeTCPPunchProbeResult
 )
 
 type PeerKey [32]byte // Noise static pub

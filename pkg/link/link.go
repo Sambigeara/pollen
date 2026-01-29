@@ -213,7 +213,8 @@ func (i *impl) loop(ctx context.Context) {
 			}
 		case types.MsgTypeTransportData, types.MsgTypeTCPPunchRequest, types.MsgTypeTCPPunchTrigger,
 			types.MsgTypeTCPPunchReady, types.MsgTypeTCPPunchResponse, types.MsgTypeGossip, types.MsgTypeTest,
-			types.MsgTypeSessionRequest, types.MsgTypeSessionResponse:
+			types.MsgTypeSessionRequest, types.MsgTypeSessionResponse,
+			types.MsgTypeTCPPunchProbeRequest, types.MsgTypeTCPPunchProbeOffer, types.MsgTypeTCPPunchProbeResult:
 			i.handleApp(ctx, fr)
 		case types.MsgTypeUDPPunchCoordRequest:
 			i.log.Debugw("received punch request", "src", src)
