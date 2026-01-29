@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -16,9 +17,11 @@ import (
 )
 
 const (
-	punchTimeout         = 10 * time.Second
-	punchKeepalivePeriod = 30 * time.Second
-	punchStaleTimeout    = 30 * time.Second // Pending punches auto-cleanup after this duration
+	punchTimeout       = 10 * time.Second
+	tcpKeepalivePeriod = 30 * time.Second
+	punchStaleTimeout  = 30 * time.Second // Pending punches auto-cleanup after this duration
+	probeTimeout       = 2 * time.Second
+	probeDialTimeout   = 1 * time.Second
 )
 
 // ConnectedPeersProvider is used to find connected peers that can act as coordinators.
@@ -33,6 +36,11 @@ type punchInflight struct {
 	listener net.Listener
 	ch       chan *tcpv1.TcpPunchResponse
 	peerKey  types.PeerKey
+}
+
+type probeInflight struct {
+	offerCh  chan *tcpv1.TcpPunchProbeOffer
+	resultCh chan *tcpv1.TcpPunchProbeResult
 }
 
 // pendingPunchReq tracks a punch request from the coordinator's perspective.
@@ -55,6 +63,9 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 	if err := req.UnmarshalVT(payload); err != nil {
 		return fmt.Errorf("unmarshal punch request: %w", err)
 	}
+	if req.GetRequestId() == 0 {
+		return errors.New("punch request missing request_id")
+	}
 
 	targetPeer := types.PeerKeyFromBytes(req.PeerId)
 	logger.Infow("received punch request",
@@ -62,21 +73,28 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 		"target", targetPeer.String()[:8],
 		"servicePort", req.ServicePort)
 
+	// Use the initiator's request ID for correlation through the entire flow
+	reqID := req.RequestId
+
+	initiatorPort := req.LocalPort
+	if req.ObservedExternalPort != 0 {
+		initiatorPort = req.ObservedExternalPort
+	}
+
 	// Verify we have a session to the target
 	targetAddr, ok := m.peerProvider.GetActivePeerAddress(targetPeer)
 	if !ok {
 		logger.Warnw("no session to target peer", "target", targetPeer.String()[:8])
+		m.sendPunchReject(ctx, fromPeer, reqID, "no session to target")
 		return fmt.Errorf("no session to target peer %s", targetPeer.String()[:8])
 	}
 
 	// Get initiator's external address
 	initiatorAddr, ok := m.peerProvider.GetActivePeerAddress(fromPeer)
 	if !ok {
+		m.sendPunchReject(ctx, fromPeer, reqID, "no session to initiator")
 		return fmt.Errorf("no session to initiator peer %s", fromPeer.String()[:8])
 	}
-
-	// Use the initiator's request ID for correlation through the entire flow
-	reqID := req.RequestId
 
 	// Store pending request so we can complete it when target responds
 	//
@@ -102,7 +120,7 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 	}
 	m.pendingPunch[reqID] = pendingPunchReq{
 		initiator:    fromPeer,
-		initiatorSrc: net.JoinHostPort(extractIP(initiatorAddr), strconv.FormatUint(uint64(req.LocalPort), 10)),
+		initiatorSrc: net.JoinHostPort(extractIP(initiatorAddr), strconv.FormatUint(uint64(initiatorPort), 10)),
 		localPort:    req.LocalPort,
 		certDer:      req.CertDer,
 		sig:          req.Sig,
@@ -121,7 +139,7 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 	// Send trigger to target
 	trigger := &tcpv1.TcpPunchTrigger{
 		PeerId:      fromPeer.Bytes(),
-		PeerAddr:    net.JoinHostPort(extractIP(initiatorAddr), strconv.FormatUint(uint64(req.LocalPort), 10)),
+		PeerAddr:    net.JoinHostPort(extractIP(initiatorAddr), strconv.FormatUint(uint64(initiatorPort), 10)),
 		ServicePort: req.ServicePort,
 		PeerCertDer: req.CertDer,
 		PeerSig:     req.Sig,
@@ -189,6 +207,8 @@ func (m *Manager) HandlePunchTrigger(ctx context.Context, fromPeer types.PeerKey
 	}
 	localPort, _ := strconv.ParseUint(portStr, 10, 32)
 
+	observedPort := m.discoverExternalPort(ctx, fromPeer, uint32(localPort))
+
 	// Start TCP simultaneous open IMMEDIATELY (speculative punching).
 	// This runs in parallel with sending Ready back to coordinator, so by the time
 	// the initiator receives the Response and starts its SimultaneousOpen, we're
@@ -207,17 +227,15 @@ func (m *Manager) HandlePunchTrigger(ctx context.Context, fromPeer types.PeerKey
 		}
 
 		// Tune socket before TLS wrap
-		if tc, ok := rawConn.(*net.TCPConn); ok {
-			_ = tc.SetNoDelay(true)
-			_ = tc.SetKeepAlive(true)
-			_ = tc.SetKeepAlivePeriod(punchKeepalivePeriod)
-		}
+		tuneTCPConn(rawConn)
 
 		// Wrap with TLS (we're the server in TLS terms)
 		cfg := tcp.NewPinnedTLSConfig(true, ownCert, peerCert)
 		tlsConn := tls.Server(rawConn, cfg)
 
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
+		handshakeCtx, cancel := context.WithTimeout(ctx, punchTimeout)
+		defer cancel()
+		if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
 			logger.Warnw("tls handshake failed", "err", err)
 			rawConn.Close()
 			return
@@ -237,10 +255,11 @@ func (m *Manager) HandlePunchTrigger(ctx context.Context, fromPeer types.PeerKey
 
 	// Send ready to coordinator (in parallel with punching above)
 	ready := &tcpv1.TcpPunchReady{
-		RequestId: trigger.RequestId,
-		LocalPort: uint32(localPort),
-		CertDer:   ownCert.Certificate[0],
-		Sig:       ownSig,
+		RequestId:            trigger.RequestId,
+		LocalPort:            uint32(localPort),
+		ObservedExternalPort: observedPort,
+		CertDer:              ownCert.Certificate[0],
+		Sig:                  ownSig,
 	}
 
 	readyBytes, err := ready.MarshalVT()
@@ -295,9 +314,14 @@ func (m *Manager) HandlePunchReady(ctx context.Context, fromPeer types.PeerKey, 
 		return fmt.Errorf("no session to target peer %s", fromPeer.String()[:8])
 	}
 
+	targetPort := ready.LocalPort
+	if ready.ObservedExternalPort != 0 {
+		targetPort = ready.ObservedExternalPort
+	}
+
 	// Send response to initiator with target's address and cert
 	resp := &tcpv1.TcpPunchResponse{
-		PeerAddr:    net.JoinHostPort(extractIP(targetAddr), strconv.FormatUint(uint64(ready.LocalPort), 10)),
+		PeerAddr:    net.JoinHostPort(extractIP(targetAddr), strconv.FormatUint(uint64(targetPort), 10)),
 		PeerCertDer: ready.CertDer,
 		PeerSig:     ready.Sig,
 		RequestId:   ready.RequestId,
@@ -349,6 +373,207 @@ func (m *Manager) HandlePunchResponse(_ context.Context, _ types.PeerKey, payloa
 	return nil
 }
 
+// HandlePunchProbeRequest handles TcpPunchProbeRequest messages (coordinator role).
+// It spins up a short-lived TCP listener to observe the caller's external port.
+func (m *Manager) HandlePunchProbeRequest(ctx context.Context, fromPeer types.PeerKey, payload []byte) error {
+	logger := zap.S().Named("tunnel.punch")
+
+	req := &tcpv1.TcpPunchProbeRequest{}
+	if err := req.UnmarshalVT(payload); err != nil {
+		return fmt.Errorf("unmarshal punch probe request: %w", err)
+	}
+	if req.GetRequestId() == 0 {
+		return errors.New("punch probe request missing request_id")
+	}
+
+	ln, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return fmt.Errorf("listen probe: %w", err)
+	}
+	defer ln.Close()
+
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		return fmt.Errorf("split probe listener addr: %w", err)
+	}
+	portNum, err := strconv.ParseUint(portStr, 10, 32)
+	if err != nil {
+		return fmt.Errorf("parse probe listener port: %w", err)
+	}
+
+	offer := &tcpv1.TcpPunchProbeOffer{
+		RequestId: req.RequestId,
+		ProbePort: uint32(portNum),
+	}
+	offerBytes, err := offer.MarshalVT()
+	if err != nil {
+		return fmt.Errorf("marshal probe offer: %w", err)
+	}
+
+	if err := m.sender(ctx, fromPeer, types.Envelope{
+		Type:    types.MsgTypeTCPPunchProbeOffer,
+		Payload: offerBytes,
+	}); err != nil {
+		return fmt.Errorf("send probe offer: %w", err)
+	}
+
+	if tl, ok := ln.(*net.TCPListener); ok {
+		_ = tl.SetDeadline(time.Now().Add(probeTimeout))
+	}
+
+	conn, err := ln.Accept()
+	if err != nil {
+		logger.Debugw("probe accept failed", "err", err)
+		m.sendProbeResult(ctx, fromPeer, req.RequestId, 0)
+		return nil
+	}
+
+	observedPort := 0
+	if addr, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		observedPort = addr.Port
+	}
+	_ = conn.Close()
+
+	m.sendProbeResult(ctx, fromPeer, req.RequestId, uint32(observedPort))
+	return nil
+}
+
+// HandlePunchProbeOffer handles TcpPunchProbeOffer messages (initiator/target role).
+func (m *Manager) HandlePunchProbeOffer(_ context.Context, _ types.PeerKey, payload []byte) error {
+	offer := &tcpv1.TcpPunchProbeOffer{}
+	if err := offer.UnmarshalVT(payload); err != nil {
+		return fmt.Errorf("unmarshal punch probe offer: %w", err)
+	}
+	if offer.GetRequestId() == 0 {
+		return errors.New("punch probe offer missing request_id")
+	}
+
+	m.probeMu.Lock()
+	inf, ok := m.probeInflight[offer.RequestId]
+	m.probeMu.Unlock()
+	if !ok {
+		return nil
+	}
+	select {
+	case inf.offerCh <- offer:
+	default:
+	}
+	return nil
+}
+
+// HandlePunchProbeResult handles TcpPunchProbeResult messages (initiator/target role).
+func (m *Manager) HandlePunchProbeResult(_ context.Context, _ types.PeerKey, payload []byte) error {
+	res := &tcpv1.TcpPunchProbeResult{}
+	if err := res.UnmarshalVT(payload); err != nil {
+		return fmt.Errorf("unmarshal punch probe result: %w", err)
+	}
+	if res.GetRequestId() == 0 {
+		return errors.New("punch probe result missing request_id")
+	}
+
+	m.probeMu.Lock()
+	inf, ok := m.probeInflight[res.RequestId]
+	m.probeMu.Unlock()
+	if !ok {
+		return nil
+	}
+	select {
+	case inf.resultCh <- res:
+	default:
+	}
+	return nil
+}
+
+func (m *Manager) discoverExternalPort(ctx context.Context, coordinator types.PeerKey, localPort uint32) uint32 {
+	logger := zap.S().Named("tunnel.punch")
+
+	if m.peerProvider == nil {
+		return 0
+	}
+	coordAddr, ok := m.peerProvider.GetActivePeerAddress(coordinator)
+	if !ok {
+		return 0
+	}
+
+	reqID, err := randUint64()
+	if err != nil {
+		return 0
+	}
+
+	offerCh := make(chan *tcpv1.TcpPunchProbeOffer, 1)
+	resultCh := make(chan *tcpv1.TcpPunchProbeResult, 1)
+
+	m.probeMu.Lock()
+	m.probeInflight[reqID] = probeInflight{offerCh: offerCh, resultCh: resultCh}
+	m.probeMu.Unlock()
+	defer func() {
+		m.probeMu.Lock()
+		delete(m.probeInflight, reqID)
+		m.probeMu.Unlock()
+	}()
+
+	probeReq := &tcpv1.TcpPunchProbeRequest{RequestId: reqID}
+	probeBytes, err := probeReq.MarshalVT()
+	if err != nil {
+		return 0
+	}
+
+	if err := m.sender(ctx, coordinator, types.Envelope{
+		Type:    types.MsgTypeTCPPunchProbeRequest,
+		Payload: probeBytes,
+	}); err != nil {
+		return 0
+	}
+
+	offerCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	var offer *tcpv1.TcpPunchProbeOffer
+	select {
+	case offer = <-offerCh:
+	case <-offerCtx.Done():
+		return 0
+	}
+	if offer.GetProbePort() == 0 {
+		return 0
+	}
+
+	probeAddr := net.JoinHostPort(extractIP(coordAddr), strconv.FormatUint(uint64(offer.ProbePort), 10))
+	dialer := tcp.NewReusePortDialer(int(localPort), probeDialTimeout)
+	dialCtx, dialCancel := context.WithTimeout(ctx, probeDialTimeout)
+	conn, err := dialer.DialContext(dialCtx, "tcp", probeAddr)
+	dialCancel()
+	if err != nil {
+		logger.Debugw("probe dial failed", "addr", probeAddr, "err", err)
+		return 0
+	}
+	_ = conn.Close()
+
+	resultCtx, resultCancel := context.WithTimeout(ctx, probeTimeout)
+	defer resultCancel()
+	var result *tcpv1.TcpPunchProbeResult
+	select {
+	case result = <-resultCh:
+	case <-resultCtx.Done():
+		return 0
+	}
+	if result.GetObservedPort() == 0 {
+		return 0
+	}
+	return result.ObservedPort
+}
+
+func (m *Manager) sendProbeResult(ctx context.Context, peer types.PeerKey, reqID uint64, port uint32) {
+	res := &tcpv1.TcpPunchProbeResult{RequestId: reqID, ObservedPort: port}
+	resBytes, err := res.MarshalVT()
+	if err != nil {
+		return
+	}
+	_ = m.sender(ctx, peer, types.Envelope{
+		Type:    types.MsgTypeTCPPunchProbeResult,
+		Payload: resBytes,
+	})
+}
+
 // extractIP extracts the IP part from an "ip:port" address string.
 func extractIP(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
@@ -356,4 +581,20 @@ func extractIP(addr string) string {
 		return addr
 	}
 	return host
+}
+
+func (m *Manager) sendPunchReject(ctx context.Context, initiator types.PeerKey, reqID uint64, reason string) {
+	logger := zap.S().Named("tunnel.punch")
+	resp := &tcpv1.TcpPunchResponse{RequestId: reqID}
+	respBytes, err := resp.MarshalVT()
+	if err != nil {
+		logger.Warnw("marshal punch reject failed", "reason", reason, "err", err)
+		return
+	}
+	if err := m.sender(ctx, initiator, types.Envelope{
+		Type:    types.MsgTypeTCPPunchResponse,
+		Payload: respBytes,
+	}); err != nil {
+		logger.Warnw("send punch reject failed", "reason", reason, "err", err)
+	}
 }
