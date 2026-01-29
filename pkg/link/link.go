@@ -396,6 +396,9 @@ func (i *impl) handleApp(ctx context.Context, fr frame) {
 
 	pt, shouldRekey, err := sess.Decrypt(fr.payload)
 	if err != nil {
+		if errors.Is(err, ErrReplay) || errors.Is(err, ErrTooOld) || errors.Is(err, ErrShortCiphertext) {
+			return
+		}
 		peerKey := types.PeerKeyFromBytes(sess.peerNoiseKey)
 		i.log.Debugw("handleApp: decrypt failed",
 			"peer", peerKey.String()[:8],
