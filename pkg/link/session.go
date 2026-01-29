@@ -2,6 +2,8 @@ package link
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"math"
 	"sync"
 	"time"
@@ -14,8 +16,18 @@ const (
 	// Noise enforces a MaxNonce of 2^64-1. We set a "slightly" lower limit.
 	maxNonce = uint32(math.MaxUint32) - 1
 
+	noncePrefixSize = 8
+	recvWindowSize  = 1024
+	recvWindowWords = recvWindowSize / 64
+
 	rekeyGracePeriod    = time.Second * 3  // old sessions hang around for 3 seconds to allow inflight packets targeting the old sessionID to land
 	sessionStaleTimeout = time.Second * 60 // sessions with no received messages for this duration are considered stale
+)
+
+var (
+	ErrReplay          = errors.New("replay detected")
+	ErrTooOld          = errors.New("message too old")
+	ErrShortCiphertext = errors.New("ciphertext too short")
 )
 
 type sessionStore struct {
@@ -132,8 +144,8 @@ func (s *sessionStore) getAllPeers() []types.PeerKey {
 
 type session struct {
 	lastRecvTime   time.Time
-	send           *noise.CipherState
-	recv           *noise.CipherState
+	send           noise.Cipher
+	recv           noise.Cipher
 	peerAddr       string
 	peerNoiseKey   []byte
 	sendMu         sync.RWMutex
@@ -141,14 +153,22 @@ type session struct {
 	localSessionID uint32
 	peerSessionID  uint32
 	isInitiator    bool // true if we initiated this handshake
+	sendNonce      uint64
+	recvWindow     nonceWindow
+}
+
+type nonceWindow struct {
+	max         uint64
+	seen        [recvWindowWords]uint64
+	initialized bool
 }
 
 func newSession(localSessionID uint32, noiseKey []byte, send, recv *noise.CipherState, isInitiator bool) *session {
 	return &session{
 		localSessionID: localSessionID,
 		peerNoiseKey:   noiseKey,
-		send:           send,
-		recv:           recv,
+		send:           send.Cipher(),
+		recv:           recv.Cipher(),
 		lastRecvTime:   time.Now(),
 		isInitiator:    isInitiator,
 	}
@@ -168,21 +188,34 @@ func (s *session) isStale(now time.Time) bool {
 
 func (s *session) Encrypt(msg []byte) ([]byte, bool, error) {
 	s.sendMu.Lock()
-	enc, err := s.send.Encrypt(nil, nil, msg)
-	if err != nil {
-		s.sendMu.Unlock()
-		return nil, false, err
-	}
+	nonce := s.sendNonce
+	enc := s.send.Encrypt(nil, nonce, nil, msg)
+	s.sendNonce++
 	// Check shouldRekey while still holding the writer lock to pair with Nonce mutation
-	should := s.send.Nonce() >= uint64(maxNonce)
+	should := s.sendNonce >= uint64(maxNonce)
 	s.sendMu.Unlock()
 
-	return enc, should, nil
+	out := make([]byte, noncePrefixSize+len(enc))
+	binary.BigEndian.PutUint64(out[:noncePrefixSize], nonce)
+	copy(out[noncePrefixSize:], enc)
+
+	return out, should, nil
 }
 
 func (s *session) Decrypt(msg []byte) ([]byte, bool, error) {
 	s.recvMu.Lock()
-	pt, err := s.recv.Decrypt(nil, nil, msg)
+	if len(msg) < noncePrefixSize {
+		s.recvMu.Unlock()
+		return nil, false, ErrShortCiphertext
+	}
+
+	nonce := binary.BigEndian.Uint64(msg[:noncePrefixSize])
+	ciphertext := msg[noncePrefixSize:]
+	if err := s.recvWindow.checkAndMark(nonce); err != nil {
+		s.recvMu.Unlock()
+		return nil, false, err
+	}
+	pt, err := s.recv.Decrypt(nil, nonce, nil, ciphertext)
 	s.recvMu.Unlock()
 	if err != nil {
 		return nil, false, err
@@ -190,8 +223,87 @@ func (s *session) Decrypt(msg []byte) ([]byte, bool, error) {
 
 	// Read send nonce under read lock to avoid racing with Encrypt
 	s.sendMu.RLock()
-	should := s.send.Nonce() >= uint64(maxNonce)
+	should := s.sendNonce >= uint64(maxNonce)
 	s.sendMu.RUnlock()
+	if nonce >= uint64(maxNonce) {
+		should = true
+	}
 
 	return pt, should, nil
+}
+
+func (w *nonceWindow) checkAndMark(nonce uint64) error {
+	if !w.initialized {
+		w.max = nonce
+		w.seen[0] = 1
+		w.initialized = true
+		return nil
+	}
+
+	if nonce > w.max {
+		delta := nonce - w.max
+		if delta >= uint64(recvWindowSize) {
+			w.clear()
+		} else {
+			w.shift(delta)
+		}
+		w.max = nonce
+		w.setBit(0)
+		return nil
+	}
+
+	offset := w.max - nonce
+	if offset >= uint64(recvWindowSize) {
+		return ErrTooOld
+	}
+	if w.hasBit(offset) {
+		return ErrReplay
+	}
+	w.setBit(offset)
+	return nil
+}
+
+func (w *nonceWindow) clear() {
+	for i := range w.seen {
+		w.seen[i] = 0
+	}
+}
+
+func (w *nonceWindow) shift(delta uint64) {
+	if delta == 0 {
+		return
+	}
+	if delta >= uint64(recvWindowSize) {
+		w.clear()
+		return
+	}
+
+	var next [recvWindowWords]uint64
+	wordShift := int(delta / 64)
+	bitShift := uint(delta % 64)
+	for i := recvWindowWords - 1; i >= 0; i-- {
+		src := i - wordShift
+		if src < 0 {
+			next[i] = 0
+			continue
+		}
+		val := w.seen[src] << bitShift
+		if bitShift > 0 && src > 0 {
+			val |= w.seen[src-1] >> (64 - bitShift)
+		}
+		next[i] = val
+	}
+	w.seen = next
+}
+
+func (w *nonceWindow) setBit(offset uint64) {
+	idx := int(offset / 64)
+	shift := uint(offset % 64)
+	w.seen[idx] |= uint64(1) << shift
+}
+
+func (w *nonceWindow) hasBit(offset uint64) bool {
+	idx := int(offset / 64)
+	shift := uint(offset % 64)
+	return w.seen[idx]&(uint64(1)<<shift) != 0
 }

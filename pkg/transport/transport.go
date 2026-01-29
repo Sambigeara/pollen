@@ -17,6 +17,8 @@ type impl struct {
 	conn *net.UDPConn
 }
 
+const udpReadBufferSize = 64 * 1024
+
 func NewTransport(port int) (Transport, error) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: nil, Port: port})
 	if err != nil {
@@ -29,7 +31,7 @@ func NewTransport(port int) (Transport, error) {
 }
 
 func (i *impl) Recv() (string, []byte, error) {
-	buf := make([]byte, 2048) //nolint:mnd
+	buf := make([]byte, udpReadBufferSize)
 	n, addr, err := i.conn.ReadFromUDP(buf)
 	if err != nil {
 		return "", nil, err
