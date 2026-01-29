@@ -20,6 +20,7 @@ message TcpPunchRequest {
   bytes cert_der = 4; // Initiator's ephemeral cert
   bytes sig = 5; // Signature of cert
   uint64 request_id = 6; // Initiator-generated ID for correlation
+  uint32 observed_external_port = 7; // Initiator's observed external TCP port
 }
 
 // Coordinator → Target: notification to participate in punch
@@ -38,6 +39,7 @@ message TcpPunchReady {
   uint32 local_port = 2; // Target's bound TCP port
   bytes cert_der = 3; // Target's ephemeral cert
   bytes sig = 4; // Target's cert signature
+  uint32 observed_external_port = 5; // Target's observed external TCP port
 }
 
 // Coordinator → Initiator: target is ready, start punching
@@ -46,6 +48,23 @@ message TcpPunchResponse {
   bytes peer_cert_der = 2; // Target's ephemeral cert
   bytes peer_sig = 3; // Target's cert signature
   uint64 request_id = 4; // Correlates with original request
+}
+
+// Initiator/Target -> Coordinator: request a probe listener for port discovery.
+message TcpPunchProbeRequest {
+  uint64 request_id = 1;
+}
+
+// Coordinator -> Initiator/Target: provides probe listener port.
+message TcpPunchProbeOffer {
+  uint64 request_id = 1;
+  uint32 probe_port = 2;
+}
+
+// Coordinator -> Initiator/Target: observed external port for probe connection.
+message TcpPunchProbeResult {
+  uint64 request_id = 1;
+  uint32 observed_port = 2;
 }
 
 // SessionHandshake for establishing multiplexed tunnel sessions.

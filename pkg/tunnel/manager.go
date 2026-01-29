@@ -23,8 +23,10 @@ import (
 )
 
 const (
-	dialTimeout   = 6 * time.Second
-	acceptTimeout = 10 * time.Second
+	dialTimeout          = 6 * time.Second
+	acceptTimeout        = 10 * time.Second
+	punchDelay           = 200 * time.Millisecond
+	maxPunchCoordinators = 2
 )
 
 type Send func(ctx context.Context, peer types.PeerKey, msg types.Envelope) error
@@ -43,6 +45,7 @@ type Manager struct {
 	services          map[string]serviceHandler
 	activeStreams     map[uint32]map[net.Conn]struct{}
 	punchInflight     map[uint64]punchInflight
+	probeInflight     map[uint64]probeInflight
 	sender            Send
 	ips               []string
 	signPriv          ed25519.PrivateKey
@@ -53,6 +56,7 @@ type Manager struct {
 	streamMu          sync.Mutex
 	sessionInflightMu sync.Mutex
 	punchMu           sync.Mutex
+	probeMu           sync.Mutex
 }
 
 type serviceHandler struct {
@@ -89,6 +93,12 @@ type ConnectionInfo struct {
 	LocalPort  uint32
 }
 
+type dialResult struct {
+	conn net.Conn
+	err  error
+	mode string
+}
+
 func connectionKey(peerID, port string) string {
 	return peerID + ":" + port
 }
@@ -121,6 +131,7 @@ func New(sender Send, dir PeerDirectory, signPriv ed25519.PrivateKey, advertisab
 		sessionInflight: make(map[uint64]sessionInflight),
 		punchInflight:   make(map[uint64]punchInflight),
 		pendingPunch:    make(map[uint64]pendingPunchReq),
+		probeInflight:   make(map[uint64]probeInflight),
 	}
 
 	// Initialize session manager with dial function and stream handler
@@ -490,18 +501,28 @@ func (m *Manager) acceptSession(peerKey types.PeerKey, ln net.Listener, ourCert 
 		_ = tl.SetDeadline(time.Now().Add(m.acceptTimeout))
 	}
 
-	tlsLn := tls.NewListener(ln, cfg)
-	conn, err := tlsLn.Accept()
+	rawConn, err := ln.Accept()
 	if err != nil {
 		logger.Warnw("error accepting session connection", "err", err)
 		return
 	}
 
+	tuneTCPConn(rawConn)
+
+	tlsConn := tls.Server(rawConn, cfg)
+	handshakeCtx, cancel := context.WithTimeout(context.Background(), m.acceptTimeout)
+	defer cancel()
+	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
+		logger.Warnw("tls handshake failed", "err", err)
+		_ = tlsConn.Close()
+		return
+	}
+
 	// Register the session
-	_, err = m.sessions.Accept(conn, peerKey)
+	_, err = m.sessions.Accept(tlsConn, peerKey)
 	if err != nil {
 		logger.Warnw("failed to accept session", "peer", peerKey.String()[:8], "err", err)
-		conn.Close()
+		_ = tlsConn.Close()
 		return
 	}
 
@@ -542,25 +563,61 @@ func (m *Manager) HandleSessionResponse(_ context.Context, _ types.PeerKey, payl
 func (m *Manager) dialSession(ctx context.Context, peerID types.PeerKey) (net.Conn, error) {
 	logger := zap.S().Named("tunnel.session")
 
-	// Stage 1: Try direct connection
-	conn, err := m.dialSessionDirect(ctx, peerID)
-	if err == nil {
-		return conn, nil
-	}
-	logger.Debugw("direct session dial failed, trying punch", "peer", peerID.String()[:8], "err", err)
+	coordinators := m.findCoordinators(peerID, maxPunchCoordinators)
+	attempts := 1 + len(coordinators)
+	resCh := make(chan dialResult, attempts)
 
-	// Stage 2: Try TCP hole punch via a coordinator
-	if m.peerProvider != nil {
-		coordinator := m.findCoordinator(peerID)
-		if coordinator != (types.PeerKey{}) {
-			conn, err = m.dialSessionWithPunch(ctx, peerID, coordinator)
-			if err == nil {
-				return conn, nil
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		conn, err := m.dialSessionDirect(ctx, peerID)
+		resCh <- dialResult{conn: conn, err: err, mode: "direct"}
+	}()
+
+	for _, coordinator := range coordinators {
+		coord := coordinator
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if punchDelay > 0 {
+				timer := time.NewTimer(punchDelay)
+				defer timer.Stop()
+				select {
+				case <-ctx.Done():
+					resCh <- dialResult{err: ctx.Err(), mode: "punch"}
+					return
+				case <-timer.C:
+				}
 			}
-			logger.Debugw("punch session dial failed", "peer", peerID.String()[:8], "err", err)
+			conn, err := m.dialSessionWithPunch(ctx, peerID, coord)
+			resCh <- dialResult{conn: conn, err: err, mode: "punch"}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(resCh)
+	}()
+
+	var lastErr error
+	for res := range resCh {
+		if res.err == nil && res.conn != nil {
+			cancel()
+			return res.conn, nil
+		}
+		if res.err != nil {
+			lastErr = res.err
+			logger.Debugw("session dial attempt failed", "peer", peerID.String()[:8], "mode", res.mode, "err", res.err)
 		}
 	}
 
+	if lastErr != nil {
+		logger.Debugw("session dial failed", "peer", peerID.String()[:8], "err", lastErr)
+	}
 	return nil, ErrNoDialableAddress
 }
 
@@ -644,21 +701,24 @@ func (m *Manager) dialSessionDirect(ctx context.Context, peerNoisePub types.Peer
 		wg.Add(1)
 		go func(addr string) {
 			defer wg.Done()
-			d := &tls.Dialer{
-				NetDialer: &net.Dialer{Timeout: m.dialTimeout},
-				Config:    cfg,
-			}
-			conn, err := d.DialContext(attemptCtx, "tcp", addr)
+			dialer := &net.Dialer{Timeout: m.dialTimeout}
+			rawConn, err := dialer.DialContext(attemptCtx, "tcp", addr)
 			if err != nil {
 				return
 			}
+			tuneTCPConn(rawConn)
+			tlsConn := tls.Client(rawConn, cfg)
+			if err := tlsConn.HandshakeContext(attemptCtx); err != nil {
+				_ = tlsConn.Close()
+				return
+			}
 			select {
-			case resCh <- conn:
+			case resCh <- tlsConn:
 				// We won; cancel remaining dials.
 				attemptCancel()
 			default:
 				// Another goroutine already won.
-				_ = conn.Close()
+				_ = tlsConn.Close()
 			}
 		}(a)
 	}
@@ -714,6 +774,8 @@ func (m *Manager) dialSessionWithPunch(ctx context.Context, peerKey, coordinator
 		return nil, fmt.Errorf("generate request id: %w", err)
 	}
 
+	observedPort := m.discoverExternalPort(ctx, coordinator, uint32(localPort))
+
 	// Register inflight
 	ch := make(chan *tcpv1.TcpPunchResponse, 1)
 	m.punchMu.Lock()
@@ -733,12 +795,13 @@ func (m *Manager) dialSessionWithPunch(ctx context.Context, peerKey, coordinator
 
 	// Send punch request to coordinator (with empty service port - session establishment)
 	req := &tcpv1.TcpPunchRequest{
-		PeerId:      peerKey.Bytes(),
-		LocalPort:   uint32(localPort),
-		ServicePort: "", // Empty for session establishment
-		CertDer:     ownCert.Certificate[0],
-		Sig:         ownSig,
-		RequestId:   reqID,
+		PeerId:               peerKey.Bytes(),
+		LocalPort:            uint32(localPort),
+		ObservedExternalPort: observedPort,
+		ServicePort:          "", // Empty for session establishment
+		CertDer:              ownCert.Certificate[0],
+		Sig:                  ownSig,
+		RequestId:            reqID,
 	}
 
 	reqBytes, err := req.MarshalVT()
@@ -770,6 +833,14 @@ func (m *Manager) dialSessionWithPunch(ctx context.Context, peerKey, coordinator
 		ln.Close()
 		return nil, fmt.Errorf("timed out waiting for punch response")
 	}
+	if resp.PeerAddr == "" {
+		ln.Close()
+		return nil, fmt.Errorf("coordinator rejected punch request")
+	}
+	if len(resp.PeerCertDer) == 0 || len(resp.PeerSig) == 0 {
+		ln.Close()
+		return nil, fmt.Errorf("coordinator returned empty peer attestation")
+	}
 
 	// Verify peer cert attestation
 	peerCert, err := tcp.VerifyPeerAttestation(peerIDPub, resp.PeerCertDer, resp.PeerSig)
@@ -790,18 +861,16 @@ func (m *Manager) dialSessionWithPunch(ctx context.Context, peerKey, coordinator
 	}
 
 	// Tune socket before TLS wrap
-	if tc, ok := rawConn.(*net.TCPConn); ok {
-		_ = tc.SetNoDelay(true)
-		_ = tc.SetKeepAlive(true)
-		_ = tc.SetKeepAlivePeriod(punchKeepalivePeriod)
-	}
+	tuneTCPConn(rawConn)
 
 	// Wrap with TLS (we're the client in TLS terms)
 	cfg := tcp.NewPinnedTLSConfig(false, ownCert, peerCert)
 	tlsConn := tls.Client(rawConn, cfg)
 
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		rawConn.Close()
+	handshakeCtx, cancel := context.WithTimeout(ctx, punchTimeout)
+	defer cancel()
+	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
+		_ = tlsConn.Close()
 		return nil, fmt.Errorf("tls handshake failed: %w", err)
 	}
 
@@ -811,22 +880,33 @@ func (m *Manager) dialSessionWithPunch(ctx context.Context, peerKey, coordinator
 	return tlsConn, nil
 }
 
-// findCoordinator finds a connected peer that can act as coordinator for punch.
-// Returns zero value if no coordinator is available.
-func (m *Manager) findCoordinator(target types.PeerKey) types.PeerKey {
-	if m.peerProvider == nil {
-		return types.PeerKey{}
+// findCoordinators finds connected peers that can act as coordinators for punch.
+func (m *Manager) findCoordinators(target types.PeerKey, limit int) []types.PeerKey {
+	if m.peerProvider == nil || limit <= 0 {
+		return nil
 	}
 
 	peers := m.peerProvider.GetConnectedPeers()
+	if len(peers) == 0 {
+		return nil
+	}
+
+	capHint := limit
+	if capHint > len(peers) {
+		capHint = len(peers)
+	}
+	out := make([]types.PeerKey, 0, capHint)
 	for _, p := range peers {
 		// Don't use the target as coordinator
 		if p == target {
 			continue
 		}
-		return p
+		out = append(out, p)
+		if len(out) >= limit {
+			break
+		}
 	}
-	return types.PeerKey{}
+	return out
 }
 
 // Close shuts down the manager and all sessions.

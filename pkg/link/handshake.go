@@ -201,7 +201,7 @@ func (hs *handshakeIKInit) Step(rcvMsg []byte) (HandshakeResult, error) {
 			return res, err
 		}
 
-		res.Session = newSession(hs.localSessionID, hs.PeerStatic(), csSend, csRecv)
+		res.Session = newSession(hs.localSessionID, hs.PeerStatic(), csSend, csRecv, true) // we initiated
 		res.PeerStaticKey = hs.PeerStatic()
 
 	default:
@@ -263,7 +263,7 @@ func (hs *handshakeIKResp) Step(rcvMsg []byte) (HandshakeResult, error) {
 		}
 
 		res.Msg = msg2
-		res.Session = newSession(hs.localSessionID, hs.PeerStatic(), csSend, csRecv)
+		res.Session = newSession(hs.localSessionID, hs.PeerStatic(), csSend, csRecv, false) // we responded
 		res.PeerStaticKey = hs.PeerStatic()
 
 	default:
@@ -341,7 +341,7 @@ func (hs *handshakeXXPsk2Init) Step(rcvMsg []byte) (HandshakeResult, error) {
 		}
 
 		res.Msg = msg3
-		res.Session = newSession(hs.localSessionID, hs.PeerStatic(), csSend, csRecv)
+		res.Session = newSession(hs.localSessionID, hs.PeerStatic(), csSend, csRecv, true) // we initiated
 		res.PeerStaticKey = hs.PeerStatic()
 		res.PeerIdentityPub = peerIdentityPub
 
@@ -426,7 +426,7 @@ func (hs *handshakeXXPsk2Resp) Step(rcvMsg []byte) (HandshakeResult, error) {
 			return res, err
 		}
 
-		res.Session = newSession(hs.localSessionID, hs.PeerStatic(), csSend, csRecv)
+		res.Session = newSession(hs.localSessionID, hs.PeerStatic(), csSend, csRecv, false) // we responded
 		res.PeerStaticKey = hs.PeerStatic()
 		res.PeerIdentityPub = peerSig
 

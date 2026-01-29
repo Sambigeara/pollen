@@ -169,7 +169,7 @@ func NewLinkWithTransport(tr transport.Transport, cs *noise.CipherSuite, staticK
 		crypto:         crypto,
 		transport:      tr,
 		handshakeStore: newHandshakeStore(cs, admission, staticKey, crypto.IdentityPub()),
-		sessionStore:   newSessionStore(),
+		sessionStore:   newSessionStore(crypto.NoisePub()),
 		rekeyMgr:       newRekeyManager(),
 		handlers:       make(map[types.MsgType]HandlerFn),
 		events:         make(chan peer.Input, eventBufSize),
@@ -213,7 +213,8 @@ func (i *impl) loop(ctx context.Context) {
 			}
 		case types.MsgTypeTransportData, types.MsgTypeTCPPunchRequest, types.MsgTypeTCPPunchTrigger,
 			types.MsgTypeTCPPunchReady, types.MsgTypeTCPPunchResponse, types.MsgTypeGossip, types.MsgTypeTest,
-			types.MsgTypeSessionRequest, types.MsgTypeSessionResponse:
+			types.MsgTypeSessionRequest, types.MsgTypeSessionResponse,
+			types.MsgTypeTCPPunchProbeRequest, types.MsgTypeTCPPunchProbeOffer, types.MsgTypeTCPPunchProbeResult:
 			i.handleApp(ctx, fr)
 		case types.MsgTypeUDPPunchCoordRequest:
 			i.log.Debugw("received punch request", "src", src)
@@ -387,11 +388,19 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 func (i *impl) handleApp(ctx context.Context, fr frame) {
 	sess, ok := i.sessionStore.getByLocalID(fr.receiverID)
 	if !ok {
+		i.log.Debugw("handleApp: session not found",
+			"receiverID", fr.receiverID,
+			"msgType", fr.typ)
 		return
 	}
 
 	pt, shouldRekey, err := sess.Decrypt(fr.payload)
 	if err != nil {
+		peerKey := types.PeerKeyFromBytes(sess.peerNoiseKey)
+		i.log.Debugw("handleApp: decrypt failed",
+			"peer", peerKey.String()[:8],
+			"msgType", fr.typ,
+			"err", err)
 		return
 	}
 

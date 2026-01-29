@@ -7,7 +7,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -26,7 +25,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/util"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ed25519"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 var _ link.LocalCrypto = (*localCrypto)(nil)
@@ -225,6 +223,9 @@ func (n *Node) registerHandlers(reconcileCh chan<- struct{}) {
 	n.Link.Handle(types.MsgTypeTCPPunchTrigger, n.Tunnel.HandlePunchTrigger)
 	n.Link.Handle(types.MsgTypeTCPPunchReady, n.Tunnel.HandlePunchReady)
 	n.Link.Handle(types.MsgTypeTCPPunchResponse, n.Tunnel.HandlePunchResponse)
+	n.Link.Handle(types.MsgTypeTCPPunchProbeRequest, n.Tunnel.HandlePunchProbeRequest)
+	n.Link.Handle(types.MsgTypeTCPPunchProbeOffer, n.Tunnel.HandlePunchProbeOffer)
+	n.Link.Handle(types.MsgTypeTCPPunchProbeResult, n.Tunnel.HandlePunchProbeResult)
 
 	n.Link.Handle(types.MsgTypeGossip, func(_ context.Context, _ types.PeerKey, plaintext []byte) error {
 		delta := &statev1.DeltaState{}
@@ -268,11 +269,6 @@ func (n *Node) gossip(ctx context.Context) {
 func (n *Node) handlePeerInput(in peer.Input) {
 	outputs := n.Peers.Step(time.Now(), in)
 	n.handleOutputs(outputs)
-
-	switch in.(type) {
-	case peer.ConnectPeer, peer.PeerDisconnected:
-		n.syncConnectedPeersToGossip()
-	}
 }
 
 func (n *Node) tick() {
@@ -301,31 +297,6 @@ func (n *Node) syncPeersFromGossip() {
 	}
 }
 
-// syncConnectedPeersToGossip updates the local node's connected_peers field
-// in the gossip state to reflect current connectivity.
-func (n *Node) syncConnectedPeersToGossip() {
-	localID := n.Store.Cluster.LocalID
-	rec, ok := n.Store.Cluster.Nodes.Get(localID)
-	if !ok || rec.Node == nil {
-		return
-	}
-
-	connected := n.Peers.GetAll(peer.PeerStateConnected)
-	peerIDs := make(map[string]*emptypb.Empty, len(connected))
-	for _, pk := range connected {
-		peerIDs[pk.String()] = &emptypb.Empty{}
-	}
-
-	// Check if connectivity changed
-	if maps.Equal(rec.Node.ConnectedPeers, peerIDs) {
-		return
-	}
-
-	node := cloneNode(rec.Node)
-	node.ConnectedPeers = peerIDs
-	n.Store.Cluster.Nodes.Set(localID, node)
-}
-
 func (n *Node) handleOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
@@ -335,46 +306,17 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 		case peer.AttemptConnect:
 			go n.attemptDirectConnect(e)
 		case peer.RequestPunchCoordination:
-			coordinator := n.selectCoordinator(e.PeerKey)
-			if coordinator == (types.PeerKey{}) {
+			// Select coordinator in main loop to avoid race on Peers.GetAll
+			// TODO(saml) coordinator selection strategy - currently just picks first connected peer
+			connected := n.Peers.GetAll(peer.PeerStateConnected)
+			if len(connected) == 0 {
 				n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.String()[:8])
 				n.peerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 				continue
 			}
-			go n.requestPunchCoordination(e, coordinator)
+			go n.requestPunchCoordination(e, connected[0])
 		}
 	}
-}
-
-// selectCoordinator finds a connected peer that can coordinate a punch to target.
-// It prefers peers that have confirmed connectivity to the target (via gossiped state).
-// Falls back to any connected peer if none have confirmed connectivity.
-func (n *Node) selectCoordinator(target types.PeerKey) types.PeerKey {
-	connected := n.Peers.GetAll(peer.PeerStateConnected)
-	if len(connected) == 0 {
-		return types.PeerKey{}
-	}
-
-	nodes := n.Store.Cluster.Nodes.GetAll()
-	targetID := target.String()
-
-	for _, candidate := range connected {
-		node := nodes[candidate]
-		if node == nil {
-			continue
-		}
-		if _, ok := node.ConnectedPeers[targetID]; ok {
-			n.log.Debugw("selected coordinator with target connectivity",
-				"coordinator", candidate.String()[:8],
-				"target", targetID[:8])
-			return candidate
-		}
-	}
-
-	n.log.Debugw("no coordinator with confirmed target connectivity, using first available",
-		"coordinator", connected[0].String()[:8],
-		"target", targetID[:8])
-	return connected[0]
 }
 
 func (n *Node) reconcileConnections() {

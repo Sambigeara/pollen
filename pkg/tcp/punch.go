@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	punchTimeout  = 2 * time.Second
-	punchInterval = 100 * time.Millisecond
+	punchAttemptTimeout = 250 * time.Millisecond
+	punchInterval       = 100 * time.Millisecond
 )
 
 // SimultaneousOpen attempts TCP simultaneous open by listening and dialing concurrently.
@@ -39,7 +39,9 @@ func SimultaneousOpen(ctx context.Context, ln net.Listener, peerAddr string, tim
 	var wg sync.WaitGroup
 
 	// Goroutine 1: Accept incoming connection
-	wg.Go(func() {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		if dl, ok := ln.(interface{ SetDeadline(time.Time) error }); ok {
 			_ = dl.SetDeadline(time.Now().Add(timeout))
 		}
@@ -53,28 +55,28 @@ func SimultaneousOpen(ctx context.Context, ln net.Listener, peerAddr string, tim
 		default:
 			c.Close()
 		}
-	})
+	}()
 
 	// Goroutine 2: Dial repeatedly until success or timeout
-	wg.Go(func() {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		dialer := &net.Dialer{
 			LocalAddr: laddr,
-			Timeout:   punchTimeout, // per-attempt timeout
 			Control:   reusePortControl,
 		}
-
-		ticker := time.NewTicker(punchInterval)
-		defer ticker.Stop()
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				c, err := dialer.DialContext(ctx, "tcp", peerAddr)
-				if err != nil {
-					continue
-				}
+			default:
+			}
+
+			attemptCtx, attemptCancel := context.WithTimeout(ctx, punchAttemptTimeout)
+			c, err := dialer.DialContext(attemptCtx, "tcp", peerAddr)
+			attemptCancel()
+			if err == nil {
 				select {
 				case resCh <- c:
 					cancel()
@@ -83,8 +85,14 @@ func SimultaneousOpen(ctx context.Context, ln net.Listener, peerAddr string, tim
 				}
 				return
 			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(punchInterval):
+			}
 		}
-	})
+	}()
 
 	// Wait for result or timeout
 	go func() {
@@ -110,6 +118,15 @@ func reusePortControl(network, address string, c syscall.RawConn) error {
 		err = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 	})
 	return err
+}
+
+// NewReusePortDialer creates a dialer that can share a local port with a listener.
+func NewReusePortDialer(localPort int, timeout time.Duration) *net.Dialer {
+	return &net.Dialer{
+		LocalAddr: &net.TCPAddr{Port: localPort},
+		Timeout:   timeout,
+		Control:   reusePortControl,
+	}
 }
 
 // ListenReusePort creates a TCP listener with SO_REUSEADDR and SO_REUSEPORT set.
