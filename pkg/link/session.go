@@ -1,6 +1,7 @@
 package link
 
 import (
+	"bytes"
 	"math"
 	"sync"
 	"time"
@@ -18,19 +19,24 @@ const (
 )
 
 type sessionStore struct {
-	byPeer    map[types.PeerKey]*session
-	byLocalID map[uint32]*session
-	mu        sync.RWMutex
+	byPeer        map[types.PeerKey]*session
+	byLocalID     map[uint32]*session
+	localNoiseKey []byte // our noise public key for tie-breaking
+	mu            sync.RWMutex
 }
 
-func newSessionStore() *sessionStore {
+func newSessionStore(localNoiseKey []byte) *sessionStore {
 	return &sessionStore{
-		byPeer:    make(map[types.PeerKey]*session),
-		byLocalID: make(map[uint32]*session),
+		byPeer:        make(map[types.PeerKey]*session),
+		byLocalID:     make(map[uint32]*session),
+		localNoiseKey: localNoiseKey,
 	}
 }
 
 // set registers a session under both the local and peer-assigned session IDs.
+// When simultaneous handshakes occur, deterministic tie-breaking ensures both
+// peers keep the same winning session: the peer with the lexicographically
+// smaller noise public key should be the initiator of the winning handshake.
 func (s *sessionStore) set(sess *session) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -38,9 +44,26 @@ func (s *sessionStore) set(sess *session) {
 	k := types.PeerKeyFromBytes(sess.peerNoiseKey)
 
 	if prev, ok := s.byPeer[k]; ok && prev.localSessionID != sess.localSessionID {
+		// Deterministic tie-breaking: smaller key = initiator wins
+		shouldBeInitiator := bytes.Compare(s.localNoiseKey, sess.peerNoiseKey) < 0
+
+		// If prev matches expected role and new doesn't, keep prev
+		if prev.isInitiator == shouldBeInitiator && sess.isInitiator != shouldBeInitiator {
+			// Register new session by localID for incoming messages during transition
+			s.byLocalID[sess.localSessionID] = sess
+			newID := sess.localSessionID
+			time.AfterFunc(rekeyGracePeriod, func() {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				delete(s.byLocalID, newID)
+			})
+			return // Don't replace byPeer
+		}
+
+		// Otherwise, new session wins - proceed with replacement
 		oldID := prev.localSessionID
 		// deletions occur after a grace period so that inflight packets have a higher chance of being processed
-		defer time.AfterFunc(rekeyGracePeriod, func() {
+		time.AfterFunc(rekeyGracePeriod, func() {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			delete(s.byLocalID, oldID)
@@ -117,15 +140,17 @@ type session struct {
 	recvMu         sync.RWMutex
 	localSessionID uint32
 	peerSessionID  uint32
+	isInitiator    bool // true if we initiated this handshake
 }
 
-func newSession(localSessionID uint32, noiseKey []byte, send, recv *noise.CipherState) *session {
+func newSession(localSessionID uint32, noiseKey []byte, send, recv *noise.CipherState, isInitiator bool) *session {
 	return &session{
 		localSessionID: localSessionID,
 		peerNoiseKey:   noiseKey,
 		send:           send,
 		recv:           recv,
 		lastRecvTime:   time.Now(),
+		isInitiator:    isInitiator,
 	}
 }
 

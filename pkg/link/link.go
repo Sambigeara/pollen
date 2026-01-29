@@ -169,7 +169,7 @@ func NewLinkWithTransport(tr transport.Transport, cs *noise.CipherSuite, staticK
 		crypto:         crypto,
 		transport:      tr,
 		handshakeStore: newHandshakeStore(cs, admission, staticKey, crypto.IdentityPub()),
-		sessionStore:   newSessionStore(),
+		sessionStore:   newSessionStore(crypto.NoisePub()),
 		rekeyMgr:       newRekeyManager(),
 		handlers:       make(map[types.MsgType]HandlerFn),
 		events:         make(chan peer.Input, eventBufSize),
