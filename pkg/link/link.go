@@ -387,11 +387,19 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 func (i *impl) handleApp(ctx context.Context, fr frame) {
 	sess, ok := i.sessionStore.getByLocalID(fr.receiverID)
 	if !ok {
+		i.log.Debugw("handleApp: session not found",
+			"receiverID", fr.receiverID,
+			"msgType", fr.typ)
 		return
 	}
 
 	pt, shouldRekey, err := sess.Decrypt(fr.payload)
 	if err != nil {
+		peerKey := types.PeerKeyFromBytes(sess.peerNoiseKey)
+		i.log.Debugw("handleApp: decrypt failed",
+			"peer", peerKey.String()[:8],
+			"msgType", fr.typ,
+			"err", err)
 		return
 	}
 
