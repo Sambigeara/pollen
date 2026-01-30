@@ -367,9 +367,14 @@ func (n *Node) attemptDirectConnect(e peer.AttemptConnect) {
 }
 
 func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordinator types.PeerKey) {
+	mode := peerv1.PunchMode_PUNCH_MODE_DIRECT
+	if e.Mode == peer.PunchModeBirthday {
+		mode = peerv1.PunchMode_PUNCH_MODE_BIRTHDAY
+	}
 	req := &peerv1.PunchCoordRequest{
 		PeerId:    e.PeerKey.Bytes(),
 		LocalPort: int32(n.conf.Port),
+		Mode:      mode,
 	}
 	b, err := req.MarshalVT()
 	if err != nil {

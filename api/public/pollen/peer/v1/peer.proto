@@ -26,13 +26,21 @@ message InviteStore {
   map<string, Invite> invites = 1;
 }
 
+enum PunchMode {
+  PUNCH_MODE_UNSPECIFIED = 0;
+  PUNCH_MODE_DIRECT = 1;
+  PUNCH_MODE_BIRTHDAY = 2;
+}
+
 message PunchCoordRequest {
   bytes peer_id = 1;
   int32 local_port = 2;
+  PunchMode mode = 3;
 }
 
 message PunchCoordTrigger {
   bytes peer_id = 1;
   string self_addr = 2;
   repeated string peer_addrs = 3;
+  PunchMode mode = 4;
 }

@@ -21,33 +21,47 @@ import (
 var _ Link = (*impl)(nil)
 
 const (
-	defaultSessionRefreshInterval    = 120 * time.Second // new IK handshake every 2 mins
-	defaultHandshakeDedupTTL         = 5 * time.Second
-	defaultEnsurePeerTimeout         = 4 * time.Second
-	defaultEnsurePeerInterval        = 200 * time.Millisecond
-	defaultHolepunchAttempts         = 10
-	defaultStaleSessionCheckInterval = 15 * time.Second // how often to check for stale sessions
+	defaultSessionRefreshInterval       = 120 * time.Second // new IK handshake every 2 mins
+	defaultHandshakeDedupTTL            = 5 * time.Second
+	defaultEnsurePeerTimeout            = 4 * time.Second
+	defaultEnsurePeerInterval           = 200 * time.Millisecond
+	defaultHolepunchAttempts            = 10
+	defaultStaleSessionCheckInterval    = 15 * time.Second // how often to check for stale sessions
+	defaultBirthdayPunchStartAttempt    = 1
+	defaultBirthdayPunchPortsPerAttempt = 256
+	defaultBirthdayPunchPortMin         = 49152
+	defaultBirthdayPunchPortMax         = 65535
 )
 
 type Option func(*config)
 
 type config struct {
-	sessionRefreshInterval    time.Duration
-	handshakeDedupTTL         time.Duration
-	ensurePeerTimeout         time.Duration
-	ensurePeerInterval        time.Duration
-	holepunchAttempts         int
-	staleSessionCheckInterval time.Duration
+	sessionRefreshInterval       time.Duration
+	handshakeDedupTTL            time.Duration
+	ensurePeerTimeout            time.Duration
+	ensurePeerInterval           time.Duration
+	holepunchAttempts            int
+	staleSessionCheckInterval    time.Duration
+	birthdayPunchEnabled         bool
+	birthdayPunchPortsPerAttempt int
+	birthdayPunchPortMin         int
+	birthdayPunchPortMax         int
+	birthdayPunchSeed            uint64
+	birthdayPunchSeeded          bool
 }
 
 func defaultConfig() config {
 	return config{
-		sessionRefreshInterval:    defaultSessionRefreshInterval,
-		handshakeDedupTTL:         defaultHandshakeDedupTTL,
-		ensurePeerTimeout:         defaultEnsurePeerTimeout,
-		ensurePeerInterval:        defaultEnsurePeerInterval,
-		holepunchAttempts:         defaultHolepunchAttempts,
-		staleSessionCheckInterval: defaultStaleSessionCheckInterval,
+		sessionRefreshInterval:       defaultSessionRefreshInterval,
+		handshakeDedupTTL:            defaultHandshakeDedupTTL,
+		ensurePeerTimeout:            defaultEnsurePeerTimeout,
+		ensurePeerInterval:           defaultEnsurePeerInterval,
+		holepunchAttempts:            defaultHolepunchAttempts,
+		staleSessionCheckInterval:    defaultStaleSessionCheckInterval,
+		birthdayPunchEnabled:         true,
+		birthdayPunchPortsPerAttempt: defaultBirthdayPunchPortsPerAttempt,
+		birthdayPunchPortMin:         defaultBirthdayPunchPortMin,
+		birthdayPunchPortMax:         defaultBirthdayPunchPortMax,
 	}
 }
 
@@ -72,6 +86,36 @@ func WithHolepunchAttempts(n int) Option {
 		if n > 0 {
 			c.holepunchAttempts = n
 		}
+	}
+}
+
+func WithBirthdayPunchEnabled(enabled bool) Option {
+	return func(c *config) {
+		c.birthdayPunchEnabled = enabled
+	}
+}
+
+func WithBirthdayPunchPortsPerAttempt(n int) Option {
+	return func(c *config) {
+		if n > 0 {
+			c.birthdayPunchPortsPerAttempt = n
+		}
+	}
+}
+
+func WithBirthdayPunchPortRange(minPort, maxPort int) Option {
+	return func(c *config) {
+		if minPort > 0 && maxPort >= minPort {
+			c.birthdayPunchPortMin = minPort
+			c.birthdayPunchPortMax = maxPort
+		}
+	}
+}
+
+func WithBirthdayPunchSeed(seed uint64) Option {
+	return func(c *config) {
+		c.birthdayPunchSeed = seed
+		c.birthdayPunchSeeded = true
 	}
 }
 
@@ -275,6 +319,7 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 			PeerId:    req.PeerId,
 			SelfAddr:  src,
 			PeerAddrs: []string{recvSess.peerAddr},
+			Mode:      req.GetMode(),
 		}
 
 		b, err := resp.MarshalVT()
@@ -293,6 +338,7 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 			PeerId:    initSess.peerNoiseKey,
 			SelfAddr:  recvSess.peerAddr,
 			PeerAddrs: initiatorAddrs,
+			Mode:      req.GetMode(),
 		}
 
 		b, err := resp.MarshalVT()
@@ -328,9 +374,22 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 	defer cancel()
 
 	peerID := types.PeerKeyFromBytes(req.PeerId)
-	if err := i.EnsurePeer(ensureCtx, peerID, req.PeerAddrs, i.cfg.holepunchAttempts); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-		i.log.Debugw("ensure peer failed", "peer", peerID.String()[:8], "err", err)
-		return err
+
+	var ensureErr error
+	switch req.GetMode() {
+	case peerv1.PunchMode_PUNCH_MODE_BIRTHDAY:
+		if i.cfg.birthdayPunchEnabled {
+			ensureErr = i.ensurePeerBirthday(ensureCtx, peerID, req.PeerAddrs)
+		} else {
+			ensureErr = i.EnsurePeer(ensureCtx, peerID, req.PeerAddrs, i.cfg.holepunchAttempts)
+		}
+	default:
+		ensureErr = i.EnsurePeer(ensureCtx, peerID, req.PeerAddrs, i.cfg.holepunchAttempts)
+	}
+
+	if ensureErr != nil && !errors.Is(ensureErr, context.DeadlineExceeded) && !errors.Is(ensureErr, context.Canceled) {
+		i.log.Debugw("ensure peer failed", "peer", peerID.String()[:8], "err", ensureErr)
+		return ensureErr
 	}
 
 	return nil
@@ -606,6 +665,80 @@ func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []st
 	}
 
 	return fmt.Errorf("timed out waiting for peer %s after %d attempts", peerKey.String()[:8], nAttempts)
+}
+
+func (i *impl) ensurePeerBirthday(ctx context.Context, peerKey types.PeerKey, addrs []string) error {
+	i.log.Debugf("attempting birthday punch: %s", peerKey.String()[:8])
+
+	if len(addrs) == 0 {
+		return errors.New("no addresses provided")
+	}
+
+	if _, ok := i.sessionStore.getByPeer(peerKey); ok {
+		return nil
+	}
+
+	mu := i.peerLock(peerKey)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// re-check under lock
+	if _, ok := i.sessionStore.getByPeer(peerKey); ok {
+		return nil
+	}
+
+	// register waiter *before* sending, so we can't miss the PeerUp
+	upCh, exists := i.addWaiter(peerKey)
+	if exists {
+		i.log.Debugf("waiter already pending for peer: %s", peerKey.String()[:8])
+		return nil
+	}
+	defer i.removeWaiter(peerKey)
+
+	res, err := i.handshakeStore.initIK(peerKey.Bytes())
+	if err != nil {
+		return err
+	}
+
+	birthday := newBirthdayPunchState(i.cfg, addrs)
+
+	// Sequential sends avoid goroutine fan-out for spray attempts.
+	sendTo := func(target string) {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := i.sendHandshakeResult(target, res, 0); err != nil {
+			i.log.Debugw("handshake send failed", "addr", target, "err", err)
+		}
+	}
+
+	// Send to base addresses first
+	for _, addr := range addrs {
+		sendTo(addr)
+	}
+
+	// Main retry loop
+	ticker := time.NewTicker(i.cfg.ensurePeerInterval)
+	defer ticker.Stop()
+
+	for {
+		birthdayAddrs := birthday.nextAddrs(i.cfg.birthdayPunchPortsPerAttempt)
+		for j, addr := range birthdayAddrs {
+			sendTo(addr)
+			// Pacing to avoid dropping packets in local buffer
+			if j%10 == 0 {
+				time.Sleep(2 * time.Millisecond)
+			}
+		}
+
+		select {
+		case <-upCh:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (i *impl) peerLock(p types.PeerKey) *sync.Mutex {
