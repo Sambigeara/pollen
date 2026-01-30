@@ -3,38 +3,44 @@ package link
 import (
 	"context"
 	"crypto/rand"
-	"net"
-	"strconv"
 	"testing"
 	"time"
 
 	"github.com/flynn/noise"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ed25519"
 
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
-	"github.com/sambigeara/pollen/internal/testutil/memtransport"
+	"github.com/sambigeara/pollen/internal/testutil/nattransport"
 	"github.com/sambigeara/pollen/pkg/admission"
-	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-func TestPunchCoordination_ConnectsPeers(t *testing.T) {
+func TestPunchCoordination_BirthdayParadoxSymmetricNAT(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	network := memtransport.NewNetwork()
+	network := nattransport.NewNetwork()
 
-	addrA := "127.0.0.1:11001"
-	addrB := "127.0.0.2:11002"
-	addrC := "127.0.0.3:11003"
+	addrA := "203.0.113.1:11001"
+	internalB := "10.0.0.2:11002"
+	internalC := "10.0.0.3:11003"
 
 	trA, err := network.Bind(addrA)
 	require.NoError(t, err)
-	trB, err := network.Bind(addrB)
+	trB, err := network.BindNAT(internalB, nattransport.NATConfig{
+		PublicIP: "198.51.100.2",
+		PortMin:  40000,
+		PortMax:  40063,
+		Seed:     1,
+	})
 	require.NoError(t, err)
-	trC, err := network.Bind(addrC)
+	trC, err := network.BindNAT(internalC, nattransport.NATConfig{
+		PublicIP: "198.51.100.3",
+		PortMin:  40000,
+		PortMax:  40063,
+		Seed:     2,
+	})
 	require.NoError(t, err)
 
 	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
@@ -54,23 +60,21 @@ func TestPunchCoordination_ConnectsPeers(t *testing.T) {
 	invitesA.AddInvite(inviteB)
 	invitesA.AddInvite(inviteC)
 
-	linkA, err := NewLinkWithTransport(trA, &cs, keyA, testCrypto{noisePub: keyA.Public, identityPub: pubA}, invitesA,
-		WithEnsurePeerInterval(5*time.Millisecond),
-		WithEnsurePeerTimeout(250*time.Millisecond),
+	opts := []Option{
+		WithEnsurePeerInterval(5 * time.Millisecond),
+		WithEnsurePeerTimeout(500 * time.Millisecond),
 		WithHolepunchAttempts(2),
-	)
+		WithBirthdayPunchPortRange(40000, 40063),
+		WithBirthdayPunchPortsPerAttempt(256),
+	}
+
+	linkA, err := NewLinkWithTransport(trA, &cs, keyA, testCrypto{noisePub: keyA.Public, identityPub: pubA}, invitesA, opts...)
 	require.NoError(t, err)
 	linkB, err := NewLinkWithTransport(trB, &cs, keyB, testCrypto{noisePub: keyB.Public, identityPub: pubB}, mustAdmission(t),
-		WithEnsurePeerInterval(5*time.Millisecond),
-		WithEnsurePeerTimeout(250*time.Millisecond),
-		WithHolepunchAttempts(2),
-	)
+		append(opts, WithBirthdayPunchSeed(1))...)
 	require.NoError(t, err)
 	linkC, err := NewLinkWithTransport(trC, &cs, keyC, testCrypto{noisePub: keyC.Public, identityPub: pubC}, mustAdmission(t),
-		WithEnsurePeerInterval(5*time.Millisecond),
-		WithEnsurePeerTimeout(250*time.Millisecond),
-		WithHolepunchAttempts(2),
-	)
+		append(opts, WithBirthdayPunchSeed(2))...)
 	require.NoError(t, err)
 
 	require.NoError(t, linkA.Start(ctx))
@@ -90,8 +94,8 @@ func TestPunchCoordination_ConnectsPeers(t *testing.T) {
 
 	req := &peerv1.PunchCoordRequest{
 		PeerId:    peerC.Bytes(),
-		LocalPort: int32(portFromAddr(t, addrB)),
-		Mode:      peerv1.PunchMode_PUNCH_MODE_DIRECT,
+		LocalPort: int32(portFromAddr(t, internalB)),
+		Mode:      peerv1.PunchMode_PUNCH_MODE_BIRTHDAY,
 	}
 	reqBytes, err := req.MarshalVT()
 	require.NoError(t, err)
@@ -103,11 +107,6 @@ func TestPunchCoordination_ConnectsPeers(t *testing.T) {
 
 	awaitConnects(t, linkB.Events(), peerC)
 	awaitConnects(t, linkC.Events(), peerB)
-
-	_, ok := linkB.GetActivePeerAddress(peerC)
-	require.True(t, ok)
-	_, ok = linkC.GetActivePeerAddress(peerB)
-	require.True(t, ok)
 
 	recvB := make(chan []byte, 1)
 	linkB.Handle(types.MsgTypeTest, func(_ context.Context, _ types.PeerKey, payload []byte) error {
@@ -132,82 +131,4 @@ func TestPunchCoordination_ConnectsPeers(t *testing.T) {
 
 	awaitPayload(t, recvC, payload)
 	awaitPayload(t, recvB, payload)
-}
-
-type testCrypto struct {
-	noisePub    []byte
-	identityPub []byte
-}
-
-func (c testCrypto) NoisePub() []byte {
-	return c.noisePub
-}
-
-func (c testCrypto) IdentityPub() []byte {
-	return c.identityPub
-}
-
-func newInvite(t *testing.T, addr string) *peerv1.Invite {
-	t.Helper()
-	psk := make([]byte, 32)
-	_, err := rand.Read(psk)
-	require.NoError(t, err)
-
-	return &peerv1.Invite{
-		Id:   uuid.NewString(),
-		Psk:  psk,
-		Addr: []string{addr},
-	}
-}
-
-func mustAdmission(t *testing.T) admission.Store {
-	t.Helper()
-	store, err := admission.Load(t.TempDir())
-	require.NoError(t, err)
-	return store
-}
-
-const connectTimeout = 2 * time.Second
-
-func awaitConnects(t *testing.T, events <-chan peer.Input, peers ...types.PeerKey) {
-	t.Helper()
-	if len(peers) == 0 {
-		return
-	}
-
-	pending := make(map[types.PeerKey]struct{}, len(peers))
-	for _, p := range peers {
-		pending[p] = struct{}{}
-	}
-
-	deadline := time.After(connectTimeout)
-	for len(pending) > 0 {
-		select {
-		case in := <-events:
-			if cp, ok := in.(peer.ConnectPeer); ok {
-				delete(pending, cp.PeerKey)
-			}
-		case <-deadline:
-			t.Fatalf("timeout waiting for peers: %v", pending)
-		}
-	}
-}
-
-func awaitPayload(t *testing.T, ch <-chan []byte, expected []byte) {
-	t.Helper()
-	select {
-	case got := <-ch:
-		require.Equal(t, expected, got)
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timeout waiting for payload")
-	}
-}
-
-func portFromAddr(t *testing.T, addr string) int {
-	t.Helper()
-	_, portStr, err := net.SplitHostPort(addr)
-	require.NoError(t, err)
-	port, err := strconv.Atoi(portStr)
-	require.NoError(t, err)
-	return port
 }
