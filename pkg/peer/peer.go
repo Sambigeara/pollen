@@ -24,7 +24,16 @@ const (
 	ConnectStageUnspecified ConnectStage = iota
 	ConnectStageDirect
 	ConnectStagePunch
+	ConnectStagePunchBirthday
 	ConnectStageRelay
+)
+
+type PunchMode int
+
+const (
+	PunchModeUnspecified PunchMode = iota
+	PunchModeDirect
+	PunchModeBirthday
 )
 
 type Peer struct {
@@ -39,13 +48,14 @@ type Peer struct {
 }
 
 type Config struct {
-	FirstBackoff              time.Duration
-	BaseBackoff               time.Duration
-	MaxBackoff                time.Duration
-	DirectAttemptThreshold    int
-	PunchAttemptThreshold     int
-	UnreachableRetryInterval  time.Duration
-	DisconnectedRetryInterval time.Duration
+	FirstBackoff                  time.Duration
+	BaseBackoff                   time.Duration
+	MaxBackoff                    time.Duration
+	DirectAttemptThreshold        int
+	PunchAttemptThreshold         int
+	PunchBirthdayAttemptThreshold int
+	UnreachableRetryInterval      time.Duration
+	DisconnectedRetryInterval     time.Duration
 }
 
 type Store struct {
@@ -137,6 +147,7 @@ func (AttemptConnect) isOutput() {}
 type RequestPunchCoordination struct {
 	Addrs   []string
 	PeerKey types.PeerKey
+	Mode    PunchMode
 }
 
 func (RequestPunchCoordination) isOutput() {}
@@ -147,8 +158,9 @@ const (
 	defaultMaxBackoff   = 60 * time.Second
 	defaultFirstBackoff = 500 * time.Millisecond
 
-	defaultDirectAttemptThreshold = 1
-	defaultPunchAttemptThreshold  = 1
+	defaultDirectAttemptThreshold        = 1
+	defaultPunchAttemptThreshold         = 1
+	defaultPunchBirthdayAttemptThreshold = 1
 
 	defaultUnreachableRetryInterval  = 60 * time.Second
 	defaultDisconnectedRetryInterval = 60 * time.Second
@@ -156,13 +168,14 @@ const (
 
 func DefaultConfig() Config {
 	return Config{
-		FirstBackoff:              defaultFirstBackoff,
-		BaseBackoff:               defaultBaseBackoff,
-		MaxBackoff:                defaultMaxBackoff,
-		DirectAttemptThreshold:    defaultDirectAttemptThreshold,
-		PunchAttemptThreshold:     defaultPunchAttemptThreshold,
-		UnreachableRetryInterval:  defaultUnreachableRetryInterval,
-		DisconnectedRetryInterval: defaultDisconnectedRetryInterval,
+		FirstBackoff:                  defaultFirstBackoff,
+		BaseBackoff:                   defaultBaseBackoff,
+		MaxBackoff:                    defaultMaxBackoff,
+		DirectAttemptThreshold:        defaultDirectAttemptThreshold,
+		PunchAttemptThreshold:         defaultPunchAttemptThreshold,
+		PunchBirthdayAttemptThreshold: defaultPunchBirthdayAttemptThreshold,
+		UnreachableRetryInterval:      defaultUnreachableRetryInterval,
+		DisconnectedRetryInterval:     defaultDisconnectedRetryInterval,
 	}
 }
 
@@ -182,6 +195,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.PunchAttemptThreshold <= 0 {
 		c.PunchAttemptThreshold = def.PunchAttemptThreshold
+	}
+	if c.PunchBirthdayAttemptThreshold <= 0 {
+		c.PunchBirthdayAttemptThreshold = def.PunchBirthdayAttemptThreshold
 	}
 	if c.UnreachableRetryInterval <= 0 {
 		c.UnreachableRetryInterval = def.UnreachableRetryInterval
@@ -267,7 +283,9 @@ func (s *Store) tick(now time.Time) []Output {
 		case ConnectStageUnspecified, ConnectStageDirect:
 			out = AttemptConnect{PeerKey: p.id, Addrs: p.addrs}
 		case ConnectStagePunch:
-			out = RequestPunchCoordination{PeerKey: p.id, Addrs: p.addrs}
+			out = RequestPunchCoordination{PeerKey: p.id, Addrs: p.addrs, Mode: PunchModeDirect}
+		case ConnectStagePunchBirthday:
+			out = RequestPunchCoordination{PeerKey: p.id, Addrs: p.addrs, Mode: PunchModeBirthday}
 		case ConnectStageRelay:
 			// TODO(saml): implement relay stage
 			continue
@@ -314,6 +332,11 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
 		}
 	case ConnectStagePunch:
 		if p.stageAttempts >= s.cfg.PunchAttemptThreshold {
+			p.stage = ConnectStagePunchBirthday
+			p.stageAttempts = 0
+		}
+	case ConnectStagePunchBirthday:
+		if p.stageAttempts >= s.cfg.PunchBirthdayAttemptThreshold {
 			// All connection methods exhausted, retry after long backoff
 			p.state = PeerStateUnreachable
 			p.nextActionAt = now.Add(s.cfg.UnreachableRetryInterval)
