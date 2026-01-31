@@ -97,7 +97,7 @@ Follow the conventions below when making changes or writing tests.
 
 ### Concurrency
 - Avoid data races; use locks/channels consistently
-- Prefer buffered channels for non-blocking event notifications
+- Prefer channels for non-blocking event notifications
 - When using `select`, include `default` only when truly non-blocking is required
 - Ensure goroutines have a clear shutdown path (`context.Context` or close channels)
 
@@ -105,6 +105,11 @@ Follow the conventions below when making changes or writing tests.
 - Use `MarshalVT` / `UnmarshalVT` for vtproto-generated messages
 - Keep payloads consistent with `types.MsgType` enums
 - Regenerate after proto edits: `just generate`
+
+### Comments
+- Avoid adding comments. Code should be self-documenting through clear naming and structure.
+- Only add comments for truly complex logic that cannot be made clear through refactoring.
+- Do not add explanatory comments like "// 1 round = try all addresses" - the variable name should convey intent.
 
 ## Testing Conventions
 

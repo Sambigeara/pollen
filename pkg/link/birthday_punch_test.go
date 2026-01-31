@@ -26,19 +26,19 @@ func TestPunchCoordination_BirthdayParadoxSymmetricNAT(t *testing.T) {
 	internalB := "10.0.0.2:11002"
 	internalC := "10.0.0.3:11003"
 
-	trA, err := network.Bind(addrA)
+	storeA, err := network.Bind(addrA)
 	require.NoError(t, err)
-	trB, err := network.BindNAT(internalB, nattransport.NATConfig{
+	storeB, err := network.BindNAT(internalB, nattransport.NATConfig{
 		PublicIP: "198.51.100.2",
 		PortMin:  40000,
-		PortMax:  40063,
+		PortMax:  40255, // Increased to support 256 sockets per birthday punch
 		Seed:     1,
 	})
 	require.NoError(t, err)
-	trC, err := network.BindNAT(internalC, nattransport.NATConfig{
+	storeC, err := network.BindNAT(internalC, nattransport.NATConfig{
 		PublicIP: "198.51.100.3",
 		PortMin:  40000,
-		PortMax:  40063,
+		PortMax:  40255, // Increased to support 256 sockets per birthday punch
 		Seed:     2,
 	})
 	require.NoError(t, err)
@@ -62,19 +62,16 @@ func TestPunchCoordination_BirthdayParadoxSymmetricNAT(t *testing.T) {
 
 	opts := []Option{
 		WithEnsurePeerInterval(5 * time.Millisecond),
-		WithEnsurePeerTimeout(500 * time.Millisecond),
+		WithEnsurePeerTimeout(2 * time.Second),
 		WithHolepunchAttempts(2),
-		WithBirthdayPunchPortRange(40000, 40063),
-		WithBirthdayPunchPortsPerAttempt(256),
+		WithBirthdayPunchSocketCount(64), // Use 64 sockets for the test
 	}
 
-	linkA, err := NewLinkWithTransport(trA, &cs, keyA, testCrypto{noisePub: keyA.Public, identityPub: pubA}, invitesA, opts...)
+	linkA, err := NewLink(storeA, &cs, keyA, testCrypto{noisePub: keyA.Public, identityPub: pubA}, invitesA, opts...)
 	require.NoError(t, err)
-	linkB, err := NewLinkWithTransport(trB, &cs, keyB, testCrypto{noisePub: keyB.Public, identityPub: pubB}, mustAdmission(t),
-		append(opts, WithBirthdayPunchSeed(1))...)
+	linkB, err := NewLink(storeB, &cs, keyB, testCrypto{noisePub: keyB.Public, identityPub: pubB}, mustAdmission(t), opts...)
 	require.NoError(t, err)
-	linkC, err := NewLinkWithTransport(trC, &cs, keyC, testCrypto{noisePub: keyC.Public, identityPub: pubC}, mustAdmission(t),
-		append(opts, WithBirthdayPunchSeed(2))...)
+	linkC, err := NewLink(storeC, &cs, keyC, testCrypto{noisePub: keyC.Public, identityPub: pubC}, mustAdmission(t), opts...)
 	require.NoError(t, err)
 
 	require.NoError(t, linkA.Start(ctx))
@@ -93,9 +90,8 @@ func TestPunchCoordination_BirthdayParadoxSymmetricNAT(t *testing.T) {
 	awaitConnects(t, linkC.Events(), peerA)
 
 	req := &peerv1.PunchCoordRequest{
-		PeerId:    peerC.Bytes(),
-		LocalPort: int32(portFromAddr(t, internalB)),
-		Mode:      peerv1.PunchMode_PUNCH_MODE_BIRTHDAY,
+		PeerId: peerC.Bytes(),
+		Mode:   peerv1.PunchMode_PUNCH_MODE_BIRTHDAY,
 	}
 	reqBytes, err := req.MarshalVT()
 	require.NoError(t, err)

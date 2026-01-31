@@ -16,9 +16,9 @@ func TestNetworkSendRecv(t *testing.T) {
 	require.NoError(t, err)
 
 	msg := []byte("ping")
-	require.NoError(t, a.Send("127.0.0.1:10002", msg))
+	require.NoError(t, a.Base().Send("127.0.0.1:10002", msg))
 
-	src, got, err := b.Recv()
+	src, got, err := b.Base().Recv()
 	require.NoError(t, err)
 	require.Equal(t, "127.0.0.1:10001", src)
 	require.Equal(t, msg, got)
@@ -30,7 +30,7 @@ func TestNetworkUnknownDestination(t *testing.T) {
 	a, err := net.Bind("127.0.0.1:10001")
 	require.NoError(t, err)
 
-	err = a.Send("127.0.0.1:10099", []byte("ping"))
+	err = a.Base().Send("127.0.0.1:10099", []byte("ping"))
 	require.ErrorIs(t, err, ErrUnknownDestination)
 }
 
@@ -42,7 +42,7 @@ func TestNetworkCloseUnblocksRecv(t *testing.T) {
 
 	resultCh := make(chan error, 1)
 	go func() {
-		_, _, err := a.Recv()
+		_, _, err := a.Base().Recv()
 		resultCh <- err
 	}()
 

@@ -46,7 +46,7 @@ const (
 )
 
 type Config struct {
-	Transport           transport.Transport
+	SocketStore         link.SocketStore
 	PeerConfig          *peer.Config
 	PollenDir           string
 	AdvertisedIPs       []string
@@ -119,12 +119,17 @@ func New(conf *Config) (*Node, error) {
 		identityPubKey: pubKey,
 	}
 
-	var mesh link.Link
-	if conf.Transport != nil {
-		mesh, err = link.NewLinkWithTransport(conf.Transport, &cs, noiseKey, crypto, invitesStore, conf.LinkOptions...)
+	var socketStore link.SocketStore
+	if conf.SocketStore != nil {
+		socketStore = conf.SocketStore
 	} else {
-		mesh, err = link.NewLink(conf.Port, &cs, noiseKey, crypto, invitesStore, conf.LinkOptions...)
+		socketStore, err = link.NewSocketStore(conf.Port)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create socket store: %w", err)
+		}
 	}
+
+	mesh, err := link.NewLink(socketStore, &cs, noiseKey, crypto, invitesStore, conf.LinkOptions...)
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +365,13 @@ func (n *Node) attemptDirectConnect(e peer.AttemptConnect) {
 	ctx, cancel := context.WithTimeout(context.Background(), n.punchAttemptDuration())
 	defer cancel()
 
-	if err := n.Link.EnsurePeer(ctx, e.PeerKey, e.Addrs, 1); err != nil { //nolint:mnd
+	sockets := []link.Socket{n.Link.SocketStore().Base()}
+	opts := link.EnsurePeerOpts{
+		SendInterval: 200 * time.Millisecond,
+		Rounds:       1,
+	}
+
+	if err := n.Link.EnsurePeer(ctx, e.PeerKey, e.Addrs, sockets, opts); err != nil {
 		n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "err", err)
 		n.peerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 	}
@@ -372,9 +383,8 @@ func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordin
 		mode = peerv1.PunchMode_PUNCH_MODE_BIRTHDAY
 	}
 	req := &peerv1.PunchCoordRequest{
-		PeerId:    e.PeerKey.Bytes(),
-		LocalPort: int32(n.conf.Port),
-		Mode:      mode,
+		PeerId: e.PeerKey.Bytes(),
+		Mode:   mode,
 	}
 	b, err := req.MarshalVT()
 	if err != nil {
@@ -440,6 +450,8 @@ func (n *Node) shutdown() {
 	} else {
 		n.log.Info("successfully shut down mesh")
 	}
+
+	n.log.Debug("successfully shutdown Node")
 }
 
 // GetConnectedPeers returns all currently connected peer keys.

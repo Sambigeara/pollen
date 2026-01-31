@@ -282,8 +282,7 @@ func (x *InviteStore) GetInvites() map[string]*Invite {
 type PunchCoordRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
-	LocalPort     int32                  `protobuf:"varint,2,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
-	Mode          PunchMode              `protobuf:"varint,3,opt,name=mode,proto3,enum=pollen.peer.v1.PunchMode" json:"mode,omitempty"`
+	Mode          PunchMode              `protobuf:"varint,2,opt,name=mode,proto3,enum=pollen.peer.v1.PunchMode" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -325,13 +324,6 @@ func (x *PunchCoordRequest) GetPeerId() []byte {
 	return nil
 }
 
-func (x *PunchCoordRequest) GetLocalPort() int32 {
-	if x != nil {
-		return x.LocalPort
-	}
-	return 0
-}
-
 func (x *PunchCoordRequest) GetMode() PunchMode {
 	if x != nil {
 		return x.Mode
@@ -343,7 +335,7 @@ type PunchCoordTrigger struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
 	SelfAddr      string                 `protobuf:"bytes,2,opt,name=self_addr,json=selfAddr,proto3" json:"self_addr,omitempty"`
-	PeerAddrs     []string               `protobuf:"bytes,3,rep,name=peer_addrs,json=peerAddrs,proto3" json:"peer_addrs,omitempty"`
+	PeerAddr      string                 `protobuf:"bytes,3,opt,name=peer_addr,json=peerAddr,proto3" json:"peer_addr,omitempty"`
 	Mode          PunchMode              `protobuf:"varint,4,opt,name=mode,proto3,enum=pollen.peer.v1.PunchMode" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -393,11 +385,11 @@ func (x *PunchCoordTrigger) GetSelfAddr() string {
 	return ""
 }
 
-func (x *PunchCoordTrigger) GetPeerAddrs() []string {
+func (x *PunchCoordTrigger) GetPeerAddr() string {
 	if x != nil {
-		return x.PeerAddrs
+		return x.PeerAddr
 	}
-	return nil
+	return ""
 }
 
 func (x *PunchCoordTrigger) GetMode() PunchMode {
@@ -430,17 +422,14 @@ const file_pollen_peer_v1_peer_proto_rawDesc = "" +
 	"\ainvites\x18\x01 \x03(\v2(.pollen.peer.v1.InviteStore.InvitesEntryR\ainvites\x1aR\n" +
 	"\fInvitesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
-	"\x05value\x18\x02 \x01(\v2\x16.pollen.peer.v1.InviteR\x05value:\x028\x01\"z\n" +
+	"\x05value\x18\x02 \x01(\v2\x16.pollen.peer.v1.InviteR\x05value:\x028\x01\"[\n" +
 	"\x11PunchCoordRequest\x12\x17\n" +
-	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1d\n" +
-	"\n" +
-	"local_port\x18\x02 \x01(\x05R\tlocalPort\x12-\n" +
-	"\x04mode\x18\x03 \x01(\x0e2\x19.pollen.peer.v1.PunchModeR\x04mode\"\x97\x01\n" +
+	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12-\n" +
+	"\x04mode\x18\x02 \x01(\x0e2\x19.pollen.peer.v1.PunchModeR\x04mode\"\x95\x01\n" +
 	"\x11PunchCoordTrigger\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1b\n" +
-	"\tself_addr\x18\x02 \x01(\tR\bselfAddr\x12\x1d\n" +
-	"\n" +
-	"peer_addrs\x18\x03 \x03(\tR\tpeerAddrs\x12-\n" +
+	"\tself_addr\x18\x02 \x01(\tR\bselfAddr\x12\x1b\n" +
+	"\tpeer_addr\x18\x03 \x01(\tR\bpeerAddr\x12-\n" +
 	"\x04mode\x18\x04 \x01(\x0e2\x19.pollen.peer.v1.PunchModeR\x04mode*W\n" +
 	"\tPunchMode\x12\x1a\n" +
 	"\x16PUNCH_MODE_UNSPECIFIED\x10\x00\x12\x15\n" +
