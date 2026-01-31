@@ -251,7 +251,7 @@ func (i *impl) loop(ctx context.Context) {
 				types.MsgTypeTCPPunchReady, types.MsgTypeTCPPunchResponse, types.MsgTypeGossip, types.MsgTypeTest,
 				types.MsgTypeSessionRequest, types.MsgTypeSessionResponse,
 				types.MsgTypeTCPPunchProbeRequest, types.MsgTypeTCPPunchProbeOffer, types.MsgTypeTCPPunchProbeResult:
-				i.handleApp(ctx, fr)
+				i.handleApp(ctx, evt.Src, evt.Socket, fr)
 			case types.MsgTypeUDPPunchCoordRequest:
 				i.log.Debugw("received punch request", "src", evt.Src)
 				if err := i.handlePunchCoordRequest(ctx, evt.Src, fr); err != nil {
@@ -303,7 +303,7 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 		resp := &peerv1.PunchCoordTrigger{
 			PeerId:   req.PeerId,
 			SelfAddr: src,
-			PeerAddr: recvSess.peerAddr,
+			PeerAddr: recvSess.peerAddrValue(),
 			Mode:     req.GetMode(),
 		}
 
@@ -321,7 +321,7 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 	g.Go(func() error {
 		resp := &peerv1.PunchCoordTrigger{
 			PeerId:   initSess.peerNoiseKey,
-			SelfAddr: recvSess.peerAddr,
+			SelfAddr: recvSess.peerAddrValue(),
 			PeerAddr: src,
 			Mode:     req.GetMode(),
 		}
@@ -436,14 +436,13 @@ func (i *impl) handleHandshake(ctx context.Context, src string, sock Socket, fr 
 	}
 
 	if res.Session != nil {
-		res.Session.peerAddr = src
+		res.Session.setPeerAddr(src)
 		res.Session.peerSessionID = fr.senderID
 
 		i.sessionStore.set(res.Session)
 
 		// Associate peer with the socket that successfully completed the handshake
 		peerKey := types.PeerKeyFromBytes(res.PeerStaticKey)
-		i.socketStore.AssociatePeerSocket(peerKey, sock)
 
 		// Clearing after a grace period gates against old handshakes from the same "batch" overriding
 		// successfully completed "quicker" ones (`handleHandshake.getOrCreate` returns handshakes with invalid
@@ -453,14 +452,21 @@ func (i *impl) handleHandshake(ctx context.Context, src string, sock Socket, fr 
 		// TODO(saml) probably need to clear on hard errors too
 		i.handshakeStore.clear(fr.senderID, i.cfg.handshakeDedupTTL)
 
+		active, ok := i.sessionStore.getByPeer(peerKey)
+		if !ok || active != res.Session {
+			return nil
+		}
+
+		i.socketStore.AssociatePeerSocket(peerKey, sock)
 		i.removeWaiter(peerKey)
 		// start only when we trust the peer
-		i.bumpPinger(ctx, res.Session.peerAddr)
+		addr := res.Session.peerAddrValue()
+		i.bumpPinger(ctx, addr)
 
 		select {
 		case i.events <- peer.ConnectPeer{
 			PeerKey:     peerKey,
-			Addr:        res.Session.peerAddr,
+			Addr:        addr,
 			IdentityPub: res.PeerIdentityPub,
 		}:
 		default:
@@ -470,7 +476,7 @@ func (i *impl) handleHandshake(ctx context.Context, src string, sock Socket, fr 
 	return nil
 }
 
-func (i *impl) handleApp(ctx context.Context, fr frame) {
+func (i *impl) handleApp(ctx context.Context, src string, sock Socket, fr frame) {
 	sess, ok := i.sessionStore.getByLocalID(fr.receiverID)
 	if !ok {
 		i.log.Debugw("handleApp: session not found",
@@ -478,13 +484,13 @@ func (i *impl) handleApp(ctx context.Context, fr frame) {
 			"msgType", fr.typ)
 		return
 	}
+	peerKey := types.PeerKeyFromBytes(sess.peerNoiseKey)
 
 	pt, shouldRekey, err := sess.Decrypt(fr.payload)
 	if err != nil {
 		if errors.Is(err, ErrReplay) || errors.Is(err, ErrTooOld) || errors.Is(err, ErrShortCiphertext) {
 			return
 		}
-		peerKey := types.PeerKeyFromBytes(sess.peerNoiseKey)
 		i.log.Debugw("handleApp: decrypt failed",
 			"peer", peerKey.String()[:8],
 			"msgType", fr.typ,
@@ -493,7 +499,16 @@ func (i *impl) handleApp(ctx context.Context, fr frame) {
 	}
 
 	sess.touchRecv()
-	i.bumpPinger(ctx, sess.peerAddr)
+	if src != "" {
+		sess.setPeerAddr(src)
+	}
+	if sock != nil {
+		i.socketStore.AssociatePeerSocket(peerKey, sock)
+	}
+	addr := sess.peerAddrValue()
+	if addr != "" {
+		i.bumpPinger(ctx, addr)
+	}
 
 	if shouldRekey {
 		i.rekeyMgr.resetIfExists(sess.peerSessionID, i.cfg.sessionRefreshInterval)
@@ -503,7 +518,7 @@ func (i *impl) handleApp(ctx context.Context, fr frame) {
 	h := i.handlers[fr.typ]
 	i.handlersMu.RUnlock()
 	if h != nil {
-		if err := h(ctx, types.PeerKeyFromBytes(sess.peerNoiseKey), pt); err != nil {
+		if err := h(ctx, peerKey, pt); err != nil {
 			i.log.Debugw("handler error", "err", err)
 		}
 	}
@@ -588,13 +603,16 @@ func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelo
 		receiverID: sess.peerSessionID,
 	}
 
-	if err := i.socketStore.SendToPeer(peerKey, sess.peerAddr, encodeFrame(fr)); err != nil {
-		i.log.Debugw("send failed", "peer", peerKey.String()[:8], "addr", sess.peerAddr, "err", err)
+	addr := sess.peerAddrValue()
+	if err := i.socketStore.SendToPeer(peerKey, addr, encodeFrame(fr)); err != nil {
+		i.log.Debugw("send failed", "peer", peerKey.String()[:8], "addr", addr, "err", err)
 		logNetworkRestrictionWarning(i.log, err)
 		return fmt.Errorf("send: %w", err)
 	}
 
-	i.bumpPinger(ctx, sess.peerAddr)
+	if addr != "" {
+		i.bumpPinger(ctx, addr)
+	}
 
 	if shouldRekey {
 		i.rekeyMgr.resetIfExists(sess.peerSessionID, i.cfg.sessionRefreshInterval)
@@ -769,7 +787,7 @@ func (i *impl) GetActivePeerAddress(peerKey types.PeerKey) (string, bool) {
 		return "", false
 	}
 
-	return sess.peerAddr, true
+	return sess.peerAddrValue(), true
 }
 
 func (i *impl) addWaiter(k types.PeerKey) (chan struct{}, bool) {
