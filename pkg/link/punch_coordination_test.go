@@ -30,11 +30,11 @@ func TestPunchCoordination_ConnectsPeers(t *testing.T) {
 	addrB := "127.0.0.2:11002"
 	addrC := "127.0.0.3:11003"
 
-	trA, err := network.Bind(addrA)
+	storeA, err := network.Bind(addrA)
 	require.NoError(t, err)
-	trB, err := network.Bind(addrB)
+	storeB, err := network.Bind(addrB)
 	require.NoError(t, err)
-	trC, err := network.Bind(addrC)
+	storeC, err := network.Bind(addrC)
 	require.NoError(t, err)
 
 	cs := noise.NewCipherSuite(noise.DH25519, noise.CipherAESGCM, noise.HashSHA256)
@@ -54,19 +54,19 @@ func TestPunchCoordination_ConnectsPeers(t *testing.T) {
 	invitesA.AddInvite(inviteB)
 	invitesA.AddInvite(inviteC)
 
-	linkA, err := NewLinkWithTransport(trA, &cs, keyA, testCrypto{noisePub: keyA.Public, identityPub: pubA}, invitesA,
+	linkA, err := NewLink(storeA, &cs, keyA, testCrypto{noisePub: keyA.Public, identityPub: pubA}, invitesA,
 		WithEnsurePeerInterval(5*time.Millisecond),
 		WithEnsurePeerTimeout(250*time.Millisecond),
 		WithHolepunchAttempts(2),
 	)
 	require.NoError(t, err)
-	linkB, err := NewLinkWithTransport(trB, &cs, keyB, testCrypto{noisePub: keyB.Public, identityPub: pubB}, mustAdmission(t),
+	linkB, err := NewLink(storeB, &cs, keyB, testCrypto{noisePub: keyB.Public, identityPub: pubB}, mustAdmission(t),
 		WithEnsurePeerInterval(5*time.Millisecond),
 		WithEnsurePeerTimeout(250*time.Millisecond),
 		WithHolepunchAttempts(2),
 	)
 	require.NoError(t, err)
-	linkC, err := NewLinkWithTransport(trC, &cs, keyC, testCrypto{noisePub: keyC.Public, identityPub: pubC}, mustAdmission(t),
+	linkC, err := NewLink(storeC, &cs, keyC, testCrypto{noisePub: keyC.Public, identityPub: pubC}, mustAdmission(t),
 		WithEnsurePeerInterval(5*time.Millisecond),
 		WithEnsurePeerTimeout(250*time.Millisecond),
 		WithHolepunchAttempts(2),
@@ -89,9 +89,8 @@ func TestPunchCoordination_ConnectsPeers(t *testing.T) {
 	awaitConnects(t, linkC.Events(), peerA)
 
 	req := &peerv1.PunchCoordRequest{
-		PeerId:    peerC.Bytes(),
-		LocalPort: int32(portFromAddr(t, addrB)),
-		Mode:      peerv1.PunchMode_PUNCH_MODE_DIRECT,
+		PeerId: peerC.Bytes(),
+		Mode:   peerv1.PunchMode_PUNCH_MODE_DIRECT,
 	}
 	reqBytes, err := req.MarshalVT()
 	require.NoError(t, err)
