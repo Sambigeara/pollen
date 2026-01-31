@@ -198,13 +198,35 @@ func (s *socketStoreImpl) Events() <-chan SocketEvent {
 }
 
 func (s *socketStoreImpl) AssociatePeerSocket(peerKey types.PeerKey, sock Socket) {
+	var prev Socket
+	var closePrev bool
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	prev = s.peerSocket[peerKey]
 	s.peerSocket[peerKey] = sock
 
 	// O(1) removal from ephemeral set
 	if impl, ok := sock.(*socketImpl); ok {
 		delete(s.ephemeral, impl)
+	}
+
+	if prev != nil && prev != sock && prev != s.base {
+		shared := false
+		for k, v := range s.peerSocket {
+			if k == peerKey {
+				continue
+			}
+			if v == prev {
+				shared = true
+				break
+			}
+		}
+		closePrev = !shared
+	}
+	s.mu.Unlock()
+
+	if closePrev {
+		_ = prev.Close()
 	}
 }
 
