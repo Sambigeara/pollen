@@ -148,6 +148,7 @@ type session struct {
 	recvCipher     noise.Cipher
 	peerAddr       string
 	peerNoiseKey   []byte
+	peerAddrMu     sync.RWMutex
 	sendMu         sync.RWMutex
 	recvMu         sync.RWMutex
 	localSessionID uint32
@@ -155,6 +156,19 @@ type session struct {
 	isInitiator    bool // true if we initiated this handshake
 	sendNonce      uint64
 	recvWindow     nonceWindow
+}
+
+func (s *session) setPeerAddr(addr string) {
+	s.peerAddrMu.Lock()
+	s.peerAddr = addr
+	s.peerAddrMu.Unlock()
+}
+
+func (s *session) peerAddrValue() string {
+	s.peerAddrMu.RLock()
+	addr := s.peerAddr
+	s.peerAddrMu.RUnlock()
+	return addr
 }
 
 type nonceWindow struct {
