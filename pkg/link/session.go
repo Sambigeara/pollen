@@ -144,8 +144,8 @@ func (s *sessionStore) getAllPeers() []types.PeerKey {
 
 type session struct {
 	lastRecvTime   time.Time
-	send           noise.Cipher
-	recv           noise.Cipher
+	sendCipher     noise.Cipher
+	recvCipher     noise.Cipher
 	peerAddr       string
 	peerNoiseKey   []byte
 	sendMu         sync.RWMutex
@@ -167,8 +167,8 @@ func newSession(localSessionID uint32, noiseKey []byte, send, recv *noise.Cipher
 	return &session{
 		localSessionID: localSessionID,
 		peerNoiseKey:   noiseKey,
-		send:           send.Cipher(),
-		recv:           recv.Cipher(),
+		sendCipher:     send.Cipher(),
+		recvCipher:     recv.Cipher(),
 		lastRecvTime:   time.Now(),
 		isInitiator:    isInitiator,
 	}
@@ -189,7 +189,7 @@ func (s *session) isStale(now time.Time) bool {
 func (s *session) Encrypt(msg []byte) ([]byte, bool, error) {
 	s.sendMu.Lock()
 	nonce := s.sendNonce
-	enc := s.send.Encrypt(nil, nonce, nil, msg)
+	enc := s.sendCipher.Encrypt(nil, nonce, nil, msg)
 	s.sendNonce++
 	// Check shouldRekey while still holding the writer lock to pair with Nonce mutation
 	should := s.sendNonce >= uint64(maxNonce)
@@ -215,7 +215,7 @@ func (s *session) Decrypt(msg []byte) ([]byte, bool, error) {
 		s.recvMu.Unlock()
 		return nil, false, err
 	}
-	pt, err := s.recv.Decrypt(nil, nonce, nil, ciphertext)
+	pt, err := s.recvCipher.Decrypt(nil, nonce, nil, ciphertext)
 	s.recvMu.Unlock()
 	if err != nil {
 		return nil, false, err

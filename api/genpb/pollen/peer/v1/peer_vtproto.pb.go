@@ -271,11 +271,6 @@ func (m *PunchCoordRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.Mode != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Mode))
 		i--
-		dAtA[i] = 0x18
-	}
-	if m.LocalPort != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.LocalPort))
-		i--
 		dAtA[i] = 0x10
 	}
 	if len(m.PeerId) > 0 {
@@ -323,14 +318,12 @@ func (m *PunchCoordTrigger) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x20
 	}
-	if len(m.PeerAddrs) > 0 {
-		for iNdEx := len(m.PeerAddrs) - 1; iNdEx >= 0; iNdEx-- {
-			i -= len(m.PeerAddrs[iNdEx])
-			copy(dAtA[i:], m.PeerAddrs[iNdEx])
-			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.PeerAddrs[iNdEx])))
-			i--
-			dAtA[i] = 0x1a
-		}
+	if len(m.PeerAddr) > 0 {
+		i -= len(m.PeerAddr)
+		copy(dAtA[i:], m.PeerAddr)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.PeerAddr)))
+		i--
+		dAtA[i] = 0x1a
 	}
 	if len(m.SelfAddr) > 0 {
 		i -= len(m.SelfAddr)
@@ -451,9 +444,6 @@ func (m *PunchCoordRequest) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.LocalPort != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.LocalPort))
-	}
 	if m.Mode != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.Mode))
 	}
@@ -475,11 +465,9 @@ func (m *PunchCoordTrigger) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if len(m.PeerAddrs) > 0 {
-		for _, s := range m.PeerAddrs {
-			l = len(s)
-			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-		}
+	l = len(m.PeerAddr)
+	if l > 0 {
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	if m.Mode != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.Mode))
@@ -1213,25 +1201,6 @@ func (m *PunchCoordRequest) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field LocalPort", wireType)
-			}
-			m.LocalPort = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.LocalPort |= int32(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 3:
-			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Mode", wireType)
 			}
 			m.Mode = 0
@@ -1368,7 +1337,7 @@ func (m *PunchCoordTrigger) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 3:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field PeerAddrs", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field PeerAddr", wireType)
 			}
 			var stringLen uint64
 			for shift := uint(0); ; shift += 7 {
@@ -1396,7 +1365,7 @@ func (m *PunchCoordTrigger) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.PeerAddrs = append(m.PeerAddrs, string(dAtA[iNdEx:postIndex]))
+			m.PeerAddr = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
 		case 4:
 			if wireType != 0 {

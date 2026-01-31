@@ -365,7 +365,7 @@ func newNode(t *testing.T, dir string, port int, network *memtransport.Network, 
 		GossipInterval:   10 * time.Millisecond,
 		PeerTickInterval: 10 * time.Millisecond,
 		PollenDir:        dir,
-		Transport:        tr,
+		SocketStore:      tr,
 		PeerConfig: &peer.Config{
 			FirstBackoff:                  5 * time.Millisecond,
 			BaseBackoff:                   5 * time.Millisecond,

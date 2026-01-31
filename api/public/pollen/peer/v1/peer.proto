@@ -34,13 +34,12 @@ enum PunchMode {
 
 message PunchCoordRequest {
   bytes peer_id = 1;
-  int32 local_port = 2;
-  PunchMode mode = 3;
+  PunchMode mode = 2;
 }
 
 message PunchCoordTrigger {
   bytes peer_id = 1;
   string self_addr = 2;
-  repeated string peer_addrs = 3;
+  string peer_addr = 3;
   PunchMode mode = 4;
 }

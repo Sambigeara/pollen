@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,7 +15,6 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/peer"
-	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -21,47 +23,36 @@ import (
 var _ Link = (*impl)(nil)
 
 const (
-	defaultSessionRefreshInterval       = 120 * time.Second // new IK handshake every 2 mins
-	defaultHandshakeDedupTTL            = 5 * time.Second
-	defaultEnsurePeerTimeout            = 4 * time.Second
-	defaultEnsurePeerInterval           = 200 * time.Millisecond
-	defaultHolepunchAttempts            = 10
-	defaultStaleSessionCheckInterval    = 15 * time.Second // how often to check for stale sessions
-	defaultBirthdayPunchStartAttempt    = 1
-	defaultBirthdayPunchPortsPerAttempt = 256
-	defaultBirthdayPunchPortMin         = 49152
-	defaultBirthdayPunchPortMax         = 65535
+	defaultSessionRefreshInterval    = 120 * time.Second // new IK handshake every 2 mins
+	defaultHandshakeDedupTTL         = 5 * time.Second
+	defaultEnsurePeerTimeout         = 4 * time.Second
+	defaultEnsurePeerInterval        = 200 * time.Millisecond
+	defaultHolepunchAttempts         = 10
+	defaultStaleSessionCheckInterval = 15 * time.Second // how often to check for stale sessions
+	defaultBirthdayPunchSocketCount  = 256
 )
 
 type Option func(*config)
 
 type config struct {
-	sessionRefreshInterval       time.Duration
-	handshakeDedupTTL            time.Duration
-	ensurePeerTimeout            time.Duration
-	ensurePeerInterval           time.Duration
-	holepunchAttempts            int
-	staleSessionCheckInterval    time.Duration
-	birthdayPunchEnabled         bool
-	birthdayPunchPortsPerAttempt int
-	birthdayPunchPortMin         int
-	birthdayPunchPortMax         int
-	birthdayPunchSeed            uint64
-	birthdayPunchSeeded          bool
+	sessionRefreshInterval    time.Duration
+	handshakeDedupTTL         time.Duration
+	ensurePeerTimeout         time.Duration
+	ensurePeerInterval        time.Duration
+	holepunchAttempts         int
+	staleSessionCheckInterval time.Duration
+	birthdayPunchSocketCount  int
 }
 
 func defaultConfig() config {
 	return config{
-		sessionRefreshInterval:       defaultSessionRefreshInterval,
-		handshakeDedupTTL:            defaultHandshakeDedupTTL,
-		ensurePeerTimeout:            defaultEnsurePeerTimeout,
-		ensurePeerInterval:           defaultEnsurePeerInterval,
-		holepunchAttempts:            defaultHolepunchAttempts,
-		staleSessionCheckInterval:    defaultStaleSessionCheckInterval,
-		birthdayPunchEnabled:         true,
-		birthdayPunchPortsPerAttempt: defaultBirthdayPunchPortsPerAttempt,
-		birthdayPunchPortMin:         defaultBirthdayPunchPortMin,
-		birthdayPunchPortMax:         defaultBirthdayPunchPortMax,
+		sessionRefreshInterval:    defaultSessionRefreshInterval,
+		handshakeDedupTTL:         defaultHandshakeDedupTTL,
+		ensurePeerTimeout:         defaultEnsurePeerTimeout,
+		ensurePeerInterval:        defaultEnsurePeerInterval,
+		holepunchAttempts:         defaultHolepunchAttempts,
+		staleSessionCheckInterval: defaultStaleSessionCheckInterval,
+		birthdayPunchSocketCount:  defaultBirthdayPunchSocketCount,
 	}
 }
 
@@ -89,33 +80,11 @@ func WithHolepunchAttempts(n int) Option {
 	}
 }
 
-func WithBirthdayPunchEnabled(enabled bool) Option {
-	return func(c *config) {
-		c.birthdayPunchEnabled = enabled
-	}
-}
-
-func WithBirthdayPunchPortsPerAttempt(n int) Option {
+func WithBirthdayPunchSocketCount(n int) Option {
 	return func(c *config) {
 		if n > 0 {
-			c.birthdayPunchPortsPerAttempt = n
+			c.birthdayPunchSocketCount = n
 		}
-	}
-}
-
-func WithBirthdayPunchPortRange(minPort, maxPort int) Option {
-	return func(c *config) {
-		if minPort > 0 && maxPort >= minPort {
-			c.birthdayPunchPortMin = minPort
-			c.birthdayPunchPortMax = maxPort
-		}
-	}
-}
-
-func WithBirthdayPunchSeed(seed uint64) Option {
-	return func(c *config) {
-		c.birthdayPunchSeed = seed
-		c.birthdayPunchSeeded = true
 	}
 }
 
@@ -145,14 +114,42 @@ func WithHandshakeDedupTTL(d time.Duration) Option {
 
 var ErrNoSession = errors.New("no session for peer")
 
+var networkRestrictionWarningOnce sync.Once
+
+func logNetworkRestrictionWarning(log *zap.SugaredLogger, err error) {
+	if strings.Contains(err.Error(), "no route to host") || strings.Contains(err.Error(), "operation not permitted") {
+		networkRestrictionWarningOnce.Do(func() {
+			log.Warnw("network access may be restricted by OS security policy",
+				"hint", "on macOS, try running with sudo or signing the binary")
+		})
+	}
+}
+
 type HandlerFn func(ctx context.Context, from types.PeerKey, payload []byte) error
+
+type EnsurePeerOpts struct {
+	SendInterval time.Duration
+	Rounds       int
+
+	// BirthdayProbe enables birthday punch mode when set.
+	// In this mode:
+	//   - 'sockets' parameter contains ephemeral sockets (role 1: send to known address)
+	//   - BirthdayProbe configures the base socket probing (role 2: send to random ports)
+	BirthdayProbe *BirthdayProbeOpts
+}
+
+type BirthdayProbeOpts struct {
+	ProbeSocket Socket
+	ProbeHost   string
+	ProbeCount  int
+}
 
 type Link interface {
 	Start(ctx context.Context) error
 	Close() error
 
-	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error                               // XXpsk2 init
-	EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, nAttempts int) error // IK init
+	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error                                                       // XXpsk2 init
+	EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, sockets []Socket, opts EnsurePeerOpts) error // IK init
 	Events() <-chan peer.Input
 
 	Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error
@@ -160,6 +157,7 @@ type Link interface {
 
 	GetActivePeerAddress(peerKey types.PeerKey) (string, bool)
 	BroadcastDisconnect() // notify all connected peers we're shutting down
+	SocketStore() SocketStore
 }
 
 type LocalCrypto interface {
@@ -169,7 +167,7 @@ type LocalCrypto interface {
 }
 
 type impl struct {
-	transport      transport.Transport
+	socketStore    SocketStore
 	crypto         LocalCrypto
 	handlers       map[types.MsgType]HandlerFn
 	handshakeStore *handshakeStore
@@ -189,18 +187,9 @@ type impl struct {
 
 const eventBufSize = 64
 
-func NewLink(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission, opts ...Option) (Link, error) {
-	tr, err := transport.NewTransport(port)
-	if err != nil {
-		return nil, err
-	}
-
-	return NewLinkWithTransport(tr, cs, staticKey, crypto, admission, opts...)
-}
-
-func NewLinkWithTransport(tr transport.Transport, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission, opts ...Option) (Link, error) {
-	if tr == nil {
-		return nil, errors.New("transport is nil")
+func NewLink(socketStore SocketStore, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission, opts ...Option) (Link, error) {
+	if socketStore == nil {
+		return nil, errors.New("socketStore is nil")
 	}
 
 	cfg := defaultConfig()
@@ -211,7 +200,7 @@ func NewLinkWithTransport(tr transport.Transport, cs *noise.CipherSuite, staticK
 	return &impl{
 		log:            zap.S().Named("mesh"),
 		crypto:         crypto,
-		transport:      tr,
+		socketStore:    socketStore,
 		handshakeStore: newHandshakeStore(cs, admission, staticKey, crypto.IdentityPub()),
 		sessionStore:   newSessionStore(crypto.NoisePub()),
 		rekeyMgr:       newRekeyManager(),
@@ -221,6 +210,10 @@ func NewLinkWithTransport(tr transport.Transport, cs *noise.CipherSuite, staticK
 		waitPeer:       make(map[types.PeerKey]chan struct{}),
 		cfg:            cfg,
 	}, nil
+}
+
+func (i *impl) SocketStore() SocketStore {
+	return i.socketStore
 }
 
 func (i *impl) Start(ctx context.Context) error {
@@ -234,44 +227,47 @@ func (i *impl) Start(ctx context.Context) error {
 
 func (i *impl) loop(ctx context.Context) {
 	for {
-		src, b, err := i.transport.Recv()
-		if err != nil {
-			if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case evt, ok := <-i.socketStore.Events():
+			if !ok {
 				return
 			}
-			i.log.Debugw("recv failed", "err", err)
-			continue
-		}
 
-		fr, err := decodeFrame(b)
-		if err != nil {
-			i.log.Debugw("bad frame", "src", src, "err", err)
-			continue
-		}
+			fr, err := decodeFrame(evt.Payload)
+			if err != nil {
+				i.log.Debugw("bad frame", "src", evt.Src, "err", err)
+				continue
+			}
 
-		switch fr.typ { //nolint:exhaustive
-		case types.MsgTypePing:
-		case types.MsgTypeHandshakeIKInit, types.MsgTypeHandshakeIKResp, types.MsgTypeHandshakeXXPsk2Init, types.MsgTypeHandshakeXXPsk2Resp:
-			if err := i.handleHandshake(ctx, src, fr); err != nil {
-				i.log.Debugf("failed to handle handshake: %s", err)
+			switch fr.typ { //nolint:exhaustive
+			case types.MsgTypePing:
+			case types.MsgTypeHandshakeIKInit, types.MsgTypeHandshakeIKResp, types.MsgTypeHandshakeXXPsk2Init, types.MsgTypeHandshakeXXPsk2Resp:
+				if err := i.handleHandshake(ctx, evt.Src, evt.Socket, fr); err != nil {
+					i.log.Debugf("failed to handle handshake: %s", err)
+				}
+			case types.MsgTypeTransportData, types.MsgTypeTCPPunchRequest, types.MsgTypeTCPPunchTrigger,
+				types.MsgTypeTCPPunchReady, types.MsgTypeTCPPunchResponse, types.MsgTypeGossip, types.MsgTypeTest,
+				types.MsgTypeSessionRequest, types.MsgTypeSessionResponse,
+				types.MsgTypeTCPPunchProbeRequest, types.MsgTypeTCPPunchProbeOffer, types.MsgTypeTCPPunchProbeResult:
+				i.handleApp(ctx, fr)
+			case types.MsgTypeUDPPunchCoordRequest:
+				i.log.Debugw("received punch request", "src", evt.Src)
+				if err := i.handlePunchCoordRequest(ctx, evt.Src, fr); err != nil {
+					i.log.Debugf("failed to handle punch coord request: %s", err)
+				}
+			case types.MsgTypeUDPPunchCoordResponse:
+				i.log.Debugw("received punch trigger", "src", evt.Src)
+				// Run in goroutine so we don't block the main loop while punching
+				go func() {
+					if err := i.handlePunchCoordTrigger(ctx, fr); err != nil {
+						i.log.Debugf("failed to handle punch coord trigger: %s", err)
+					}
+				}()
+			case types.MsgTypeDisconnect:
+				i.handleDisconnect(fr)
 			}
-		case types.MsgTypeTransportData, types.MsgTypeTCPPunchRequest, types.MsgTypeTCPPunchTrigger,
-			types.MsgTypeTCPPunchReady, types.MsgTypeTCPPunchResponse, types.MsgTypeGossip, types.MsgTypeTest,
-			types.MsgTypeSessionRequest, types.MsgTypeSessionResponse,
-			types.MsgTypeTCPPunchProbeRequest, types.MsgTypeTCPPunchProbeOffer, types.MsgTypeTCPPunchProbeResult:
-			i.handleApp(ctx, fr)
-		case types.MsgTypeUDPPunchCoordRequest:
-			i.log.Debugw("received punch request", "src", src)
-			if err := i.handlePunchCoordRequest(ctx, src, fr); err != nil {
-				i.log.Debugf("failed to handle punch coord request: %s", err)
-			}
-		case types.MsgTypeUDPPunchCoordResponse:
-			i.log.Debugw("received punch trigger", "src", src)
-			if err := i.handlePunchCoordTrigger(ctx, fr); err != nil {
-				i.log.Debugf("failed to handle punch coord trigger: %s", err)
-			}
-		case types.MsgTypeDisconnect:
-			i.handleDisconnect(fr)
 		}
 	}
 }
@@ -302,24 +298,13 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 	recvPeer := types.PeerKeyFromBytes(req.PeerId)
 	initPeer := types.PeerKeyFromBytes(initSess.peerNoiseKey)
 
-	initiatorAddrs := []string{src}
-	if req.GetLocalPort() > 0 {
-		initiatorAddrWithLocalPort, err := net.ResolveUDPAddr("udp", src)
-		if err == nil {
-			initiatorAddrWithLocalPort.Port = int(req.GetLocalPort())
-			if addr := initiatorAddrWithLocalPort.String(); addr != src {
-				initiatorAddrs = append(initiatorAddrs, addr)
-			}
-		}
-	}
-
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		resp := &peerv1.PunchCoordTrigger{
-			PeerId:    req.PeerId,
-			SelfAddr:  src,
-			PeerAddrs: []string{recvSess.peerAddr},
-			Mode:      req.GetMode(),
+			PeerId:   req.PeerId,
+			SelfAddr: src,
+			PeerAddr: recvSess.peerAddr,
+			Mode:     req.GetMode(),
 		}
 
 		b, err := resp.MarshalVT()
@@ -335,10 +320,10 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 
 	g.Go(func() error {
 		resp := &peerv1.PunchCoordTrigger{
-			PeerId:    initSess.peerNoiseKey,
-			SelfAddr:  recvSess.peerAddr,
-			PeerAddrs: initiatorAddrs,
-			Mode:      req.GetMode(),
+			PeerId:   initSess.peerNoiseKey,
+			SelfAddr: recvSess.peerAddr,
+			PeerAddr: src,
+			Mode:     req.GetMode(),
 		}
 
 		b, err := resp.MarshalVT()
@@ -375,27 +360,64 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 
 	peerID := types.PeerKeyFromBytes(req.PeerId)
 
-	var ensureErr error
-	switch req.GetMode() {
-	case peerv1.PunchMode_PUNCH_MODE_BIRTHDAY:
-		if i.cfg.birthdayPunchEnabled {
-			ensureErr = i.ensurePeerBirthday(ensureCtx, peerID, req.PeerAddrs)
-		} else {
-			ensureErr = i.EnsurePeer(ensureCtx, peerID, req.PeerAddrs, i.cfg.holepunchAttempts)
-		}
-	default:
-		ensureErr = i.EnsurePeer(ensureCtx, peerID, req.PeerAddrs, i.cfg.holepunchAttempts)
+	// Early exit: already have a session with this peer
+	if _, ok := i.sessionStore.getByPeer(peerID); ok {
+		return nil
 	}
 
-	if ensureErr != nil && !errors.Is(ensureErr, context.DeadlineExceeded) && !errors.Is(ensureErr, context.Canceled) {
-		i.log.Debugw("ensure peer failed", "peer", peerID.String()[:8], "err", ensureErr)
-		return ensureErr
+	// Early exit: another punch is already in progress for this peer
+	if i.hasWaiter(peerID) {
+		i.log.Debugf("punch already in progress for peer: %s", peerID.String()[:8])
+		return nil
+	}
+
+	addrs := []string{req.PeerAddr}
+
+	var sockets []Socket
+	var opts EnsurePeerOpts
+
+	switch req.Mode { //nolint:exhaustive
+	case peerv1.PunchMode_PUNCH_MODE_BIRTHDAY:
+		i.log.Debugf("attempting birthday punch: %s", peerID.String()[:8])
+
+		host, _, err := net.SplitHostPort(req.PeerAddr)
+		if err != nil {
+			return fmt.Errorf("invalid peer address: %w", err)
+		}
+
+		birthdaySockets, err := i.socketStore.CreateBatch(i.cfg.birthdayPunchSocketCount)
+		if err != nil {
+			return fmt.Errorf("create birthday sockets: %w", err)
+		}
+		defer i.socketStore.CloseEphemeral()
+
+		sockets = birthdaySockets
+		opts = EnsurePeerOpts{
+			SendInterval: 10 * time.Millisecond,
+			BirthdayProbe: &BirthdayProbeOpts{
+				ProbeSocket: i.socketStore.Base(),
+				ProbeHost:   host,
+				ProbeCount:  i.cfg.birthdayPunchSocketCount,
+			},
+		}
+	case peerv1.PunchMode_PUNCH_MODE_DIRECT:
+		sockets = []Socket{i.socketStore.Base()}
+		opts = EnsurePeerOpts{
+			SendInterval: i.cfg.ensurePeerInterval,
+			Rounds:       i.cfg.holepunchAttempts,
+		}
+	}
+
+	err = i.EnsurePeer(ensureCtx, peerID, addrs, sockets, opts)
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		i.log.Debugw("ensure peer failed", "peer", peerID.String()[:8], "err", err)
+		return err
 	}
 
 	return nil
 }
 
-func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error {
+func (i *impl) handleHandshake(ctx context.Context, src string, sock Socket, fr frame) error {
 	hs, err := i.handshakeStore.getOrCreate(fr.senderID, fr.receiverID, fr.typ)
 	if err != nil {
 		return err
@@ -409,7 +431,7 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 		return err
 	}
 
-	if err := i.sendHandshakeResult(src, res, fr.senderID); err != nil {
+	if err := i.sendHandshakeResultViaSocket(src, res, fr.senderID, sock); err != nil {
 		i.log.Debugw("failed to send handshake reply", "err", err)
 	}
 
@@ -419,6 +441,10 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 
 		i.sessionStore.set(res.Session)
 
+		// Associate peer with the socket that successfully completed the handshake
+		peerKey := types.PeerKeyFromBytes(res.PeerStaticKey)
+		i.socketStore.AssociatePeerSocket(peerKey, sock)
+
 		// Clearing after a grace period gates against old handshakes from the same "batch" overriding
 		// successfully completed "quicker" ones (`handleHandshake.getOrCreate` returns handshakes with invalid
 		// stages, which are dropped).
@@ -427,13 +453,13 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 		// TODO(saml) probably need to clear on hard errors too
 		i.handshakeStore.clear(fr.senderID, i.cfg.handshakeDedupTTL)
 
-		i.removeWaiter(types.PeerKeyFromBytes(res.PeerStaticKey))
+		i.removeWaiter(peerKey)
 		// start only when we trust the peer
 		i.bumpPinger(ctx, res.Session.peerAddr)
 
 		select {
 		case i.events <- peer.ConnectPeer{
-			PeerKey:     types.PeerKeyFromBytes(res.PeerStaticKey),
+			PeerKey:     peerKey,
 			Addr:        res.Session.peerAddr,
 			IdentityPub: res.PeerIdentityPub,
 		}:
@@ -535,8 +561,9 @@ func (i *impl) BroadcastDisconnect() {
 }
 
 func (i *impl) Close() error {
+	i.log.Debug("closing Link")
 	i.cancel()
-	return i.transport.Close()
+	return i.socketStore.Close()
 }
 
 func (i *impl) Events() <-chan peer.Input { return i.events }
@@ -561,8 +588,9 @@ func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelo
 		receiverID: sess.peerSessionID,
 	}
 
-	if err := i.transport.Send(sess.peerAddr, encodeFrame(fr)); err != nil {
-		i.log.Errorf("send: %v", err)
+	if err := i.socketStore.SendToPeer(peerKey, sess.peerAddr, encodeFrame(fr)); err != nil {
+		i.log.Debugw("send failed", "peer", peerKey.String()[:8], "addr", sess.peerAddr, "err", err)
+		logNetworkRestrictionWarning(i.log, err)
 		return fmt.Errorf("send: %w", err)
 	}
 
@@ -589,10 +617,11 @@ func (i *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 
 	// Send the initial packet(s)
 	// For Init, receiverID is 0
+	baseSock := i.socketStore.Base()
 	g, _ := errgroup.WithContext(ctx)
 	for _, addr := range inv.Addr {
 		g.Go(func() error {
-			return i.sendHandshakeResult(addr, res, 0)
+			return i.sendHandshakeResultViaSocket(addr, res, 0, baseSock)
 		})
 	}
 	if err := g.Wait(); err != nil {
@@ -603,9 +632,12 @@ func (i *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 	return nil
 }
 
-func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, nAttempts int) error {
+func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, sockets []Socket, opts EnsurePeerOpts) error {
 	if len(addrs) == 0 {
 		return errors.New("no addresses provided")
+	}
+	if len(sockets) == 0 {
+		return errors.New("no sockets provided")
 	}
 
 	if _, ok := i.sessionStore.getByPeer(peerKey); ok {
@@ -634,109 +666,89 @@ func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []st
 		return err
 	}
 
-	// Happy Eyeballs
-	sendToAll := func() {
-		for _, addr := range addrs {
-			go func(target string) {
-				// Quick check to see if we should abandon sending
-				if ctx.Err() != nil {
-					return
+	payload := encodeHandshake(res)
+
+	// Birthday punch mode: dual-role sending
+	if opts.BirthdayProbe != nil {
+		b := opts.BirthdayProbe
+		probeAddrs := generateRandomPorts(b.ProbeHost, b.ProbeCount)
+		ephIdx, probeIdx := 0, 0
+
+		ticker := time.NewTicker(opts.SendInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-upCh:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+				// Role 1: ephemeral socket -> known address (opens our NAT)
+				if ephIdx < len(sockets) {
+					if err := sockets[ephIdx].Send(addrs[0], payload); err != nil {
+						i.log.Debugw("ephemeral send failed", "err", err)
+					}
+					ephIdx++
 				}
-				if err := i.sendHandshakeResult(target, res, 0); err != nil {
-					i.log.Debugw("handshake send failed", "addr", target, "err", err)
+				// Role 2: probe socket -> random port (probes peer's NAT)
+				if probeIdx < len(probeAddrs) {
+					if err := b.ProbeSocket.Send(probeAddrs[probeIdx], payload); err != nil {
+						i.log.Debugw("probe send failed", "addr", probeAddrs[probeIdx], "err", err)
+					}
+					probeIdx++
 				}
-			}(addr)
-		}
-	}
-
-	ticker := time.NewTicker(i.cfg.ensurePeerInterval)
-	defer ticker.Stop()
-
-	for attempt := 1; attempt <= nAttempts; attempt++ {
-		sendToAll()
-		select {
-		case <-upCh:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			continue
-		}
-	}
-
-	return fmt.Errorf("timed out waiting for peer %s after %d attempts", peerKey.String()[:8], nAttempts)
-}
-
-func (i *impl) ensurePeerBirthday(ctx context.Context, peerKey types.PeerKey, addrs []string) error {
-	i.log.Debugf("attempting birthday punch: %s", peerKey.String()[:8])
-
-	if len(addrs) == 0 {
-		return errors.New("no addresses provided")
-	}
-
-	if _, ok := i.sessionStore.getByPeer(peerKey); ok {
-		return nil
-	}
-
-	mu := i.peerLock(peerKey)
-	mu.Lock()
-	defer mu.Unlock()
-
-	// re-check under lock
-	if _, ok := i.sessionStore.getByPeer(peerKey); ok {
-		return nil
-	}
-
-	// register waiter *before* sending, so we can't miss the PeerUp
-	upCh, exists := i.addWaiter(peerKey)
-	if exists {
-		i.log.Debugf("waiter already pending for peer: %s", peerKey.String()[:8])
-		return nil
-	}
-	defer i.removeWaiter(peerKey)
-
-	res, err := i.handshakeStore.initIK(peerKey.Bytes())
-	if err != nil {
-		return err
-	}
-
-	birthday := newBirthdayPunchState(i.cfg, addrs)
-
-	// Sequential sends avoid goroutine fan-out for spray attempts.
-	sendTo := func(target string) {
-		if ctx.Err() != nil {
-			return
-		}
-		if err := i.sendHandshakeResult(target, res, 0); err != nil {
-			i.log.Debugw("handshake send failed", "addr", target, "err", err)
-		}
-	}
-
-	// Send to base addresses first
-	for _, addr := range addrs {
-		sendTo(addr)
-	}
-
-	// Main retry loop
-	ticker := time.NewTicker(i.cfg.ensurePeerInterval)
-	defer ticker.Stop()
-
-	for {
-		birthdayAddrs := birthday.nextAddrs(i.cfg.birthdayPunchPortsPerAttempt)
-		for j, addr := range birthdayAddrs {
-			sendTo(addr)
-			// Pacing to avoid dropping packets in local buffer
-			if j%10 == 0 {
-				time.Sleep(2 * time.Millisecond)
+				// Regenerate probes for next round
+				if ephIdx >= len(sockets) && probeIdx >= len(probeAddrs) {
+					probeIdx = 0
+					probeAddrs = generateRandomPorts(b.ProbeHost, b.ProbeCount)
+				}
 			}
 		}
+	}
 
+	// Standard mode: iterate sockets × addresses
+	pairsPerRound := len(sockets) * len(addrs)
+	totalSends := opts.Rounds * pairsPerRound
+
+	tickCh := make(chan struct{})
+	go func() {
+		defer close(tickCh)
+		for j := 0; j < totalSends; j++ {
+			select {
+			case tickCh <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			if opts.SendInterval > 0 && j < totalSends-1 {
+				select {
+				case <-time.After(opts.SendInterval):
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+
+	sent := 0
+	for {
 		select {
 		case <-upCh:
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
+		case _, ok := <-tickCh:
+			if !ok {
+				return fmt.Errorf("peer %s unreachable after %d sends", peerKey.String()[:8], sent)
+			}
+			pairIdx := sent % pairsPerRound
+			sockIdx := pairIdx / len(addrs)
+			addrIdx := pairIdx % len(addrs)
+			if err := sockets[sockIdx].Send(addrs[addrIdx], payload); err != nil {
+				i.log.Debugw("handshake send failed", "addr", addrs[addrIdx], "err", err)
+				logNetworkRestrictionWarning(i.log, err)
+			}
+			sent++
 		}
 	}
 }
@@ -782,12 +794,19 @@ func (i *impl) removeWaiter(k types.PeerKey) {
 	close(waiter)
 }
 
-func (i *impl) sendHandshakeResult(addr string, res HandshakeResult, remoteID uint32) error {
+func (i *impl) hasWaiter(k types.PeerKey) bool {
+	i.waitMu.Lock()
+	defer i.waitMu.Unlock()
+	_, ok := i.waitPeer[k]
+	return ok
+}
+
+func (i *impl) sendHandshakeResultViaSocket(addr string, res HandshakeResult, remoteID uint32, sock Socket) error {
 	if len(res.Msg) == 0 {
 		return ErrEmptyMsg
 	}
 
-	if err := i.transport.Send(addr, encodeFrame(&frame{
+	if err := sock.Send(addr, encodeFrame(&frame{
 		payload:    res.Msg,
 		typ:        res.MsgType,
 		senderID:   res.LocalSessionID,
@@ -798,4 +817,22 @@ func (i *impl) sendHandshakeResult(addr string, res HandshakeResult, remoteID ui
 	}
 
 	return nil
+}
+
+func encodeHandshake(res HandshakeResult) []byte {
+	return encodeFrame(&frame{
+		payload:    res.Msg,
+		typ:        res.MsgType,
+		senderID:   res.LocalSessionID,
+		receiverID: 0, // For init, receiverID is 0
+	})
+}
+
+func generateRandomPorts(host string, count int) []string {
+	addrs := make([]string, count)
+	for i := 0; i < count; i++ {
+		port := 1024 + rand.Intn(65535-1024+1)
+		addrs[i] = net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	return addrs
 }
