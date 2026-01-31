@@ -351,13 +351,35 @@ func (s *PublicSocketStore) Events() <-chan socket.SocketEvent {
 }
 
 func (s *PublicSocketStore) AssociatePeerSocket(peerKey types.PeerKey, sock socket.Socket) {
+	var prev socket.Socket
+	var closePrev bool
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	prev = s.peerSocket[peerKey]
 	s.peerSocket[peerKey] = sock
 
 	// O(1) removal from ephemeral set
 	if impl, ok := sock.(*PublicSocket); ok {
 		delete(s.ephemeral, impl)
+	}
+
+	if prev != nil && prev != sock && prev != s.base {
+		shared := false
+		for k, v := range s.peerSocket {
+			if k == peerKey {
+				continue
+			}
+			if v == prev {
+				shared = true
+				break
+			}
+		}
+		closePrev = !shared
+	}
+	s.mu.Unlock()
+
+	if closePrev {
+		_ = prev.Close()
 	}
 }
 
@@ -409,8 +431,8 @@ type NATSocketStore struct {
 	events       chan socket.SocketEvent
 	peerSocket   map[types.PeerKey]socket.Socket
 	mu           sync.Mutex
-	baseSockets  []*NATSocket                 // base sockets (one per destination)
-	ephemeral    map[*NATSocket]struct{}      // ephemeral sockets for birthday punch
+	baseSockets  []*NATSocket            // base sockets (one per destination)
+	ephemeral    map[*NATSocket]struct{} // ephemeral sockets for birthday punch
 	portPool     []int
 	nextPort     int
 	closeOnce    sync.Once
@@ -645,13 +667,37 @@ func (s *NATSocketStore) Events() <-chan socket.SocketEvent {
 }
 
 func (s *NATSocketStore) AssociatePeerSocket(peerKey types.PeerKey, sock socket.Socket) {
+	var prev socket.Socket
+	var closePrev bool
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	prev = s.peerSocket[peerKey]
 	s.peerSocket[peerKey] = sock
 
 	// O(1) removal from ephemeral set
 	if impl, ok := sock.(*NATSocket); ok {
 		delete(s.ephemeral, impl)
+	}
+
+	if prevImpl, ok := prev.(*NATSocket); ok {
+		if prev != sock && prevImpl.isEphemeral {
+			shared := false
+			for k, v := range s.peerSocket {
+				if k == peerKey {
+					continue
+				}
+				if v == prev {
+					shared = true
+					break
+				}
+			}
+			closePrev = !shared
+		}
+	}
+	s.mu.Unlock()
+
+	if closePrev {
+		_ = prev.Close()
 	}
 }
 
