@@ -84,44 +84,6 @@ func TestStore_ConnectPeerResetsStage(t *testing.T) {
 	require.Equal(t, []string{"10.0.0.1:2"}, peer.addrs)
 }
 
-func TestStore_UpdatePeerAddrsResetsBackoff(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.FirstBackoff = 5 * time.Millisecond
-	store := NewStoreWithConfig(cfg)
-	key := peerKey(3)
-	now := time.Unix(0, 0)
-
-	store.Step(now, DiscoverPeer{PeerKey: key, Addrs: []string{"10.0.0.1:1"}})
-	store.Step(now, Tick{})
-	store.Step(now, ConnectFailed{PeerKey: key})
-
-	store.Step(now.Add(1*time.Millisecond), UpdatePeerAddrs{PeerKey: key, Addrs: []string{"10.0.0.2:1"}})
-	peer := store.m[key]
-	require.Equal(t, PeerStateDiscovered, peer.state)
-	require.Equal(t, ConnectStageDirect, peer.stage)
-	require.Equal(t, 0, peer.stageAttempts)
-	require.Equal(t, now.Add(1*time.Millisecond), peer.nextActionAt)
-
-	outputs := store.Step(now.Add(1*time.Millisecond), Tick{})
-	require.Len(t, outputs, 1)
-	require.IsType(t, AttemptConnect{}, outputs[0])
-}
-
-func TestStore_DiscoverDoesNotOverrideConnectedAddrs(t *testing.T) {
-	store := NewStore()
-	key := peerKey(4)
-	now := time.Unix(0, 0)
-
-	store.Step(now, ConnectPeer{PeerKey: key, Addr: "10.0.0.1:1", IdentityPub: []byte("id")})
-	store.Step(now, DiscoverPeer{PeerKey: key, Addrs: []string{"10.0.0.2:2"}})
-	peer := store.m[key]
-	require.Equal(t, []string{"10.0.0.1:1"}, peer.addrs)
-
-	store.Step(now, UpdatePeerAddrs{PeerKey: key, Addrs: []string{"10.0.0.3:3"}})
-	peer = store.m[key]
-	require.Equal(t, []string{"10.0.0.3:3"}, peer.addrs)
-}
-
 func TestStore_DisconnectSchedulesRetry(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.DisconnectedRetryInterval = 15 * time.Millisecond

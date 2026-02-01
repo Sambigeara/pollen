@@ -21,7 +21,7 @@ const (
 	recvWindowWords = recvWindowSize / 64
 
 	rekeyGracePeriod    = time.Second * 3  // old sessions hang around for 3 seconds to allow inflight packets targeting the old sessionID to land
-	sessionStaleTimeout = time.Second * 60 // sessions with no received messages for this duration are considered stale
+	sessionStaleTimeout = time.Second * 30 // sessions with no received messages for this duration are considered stale
 )
 
 var (

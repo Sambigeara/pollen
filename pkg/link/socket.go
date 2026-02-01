@@ -16,11 +16,6 @@ const (
 	socketEventBufSize = 1024
 )
 
-// Re-export types from socket package for convenience
-type Socket = socket.Socket
-type SocketEvent = socket.SocketEvent
-type SocketStore = socket.SocketStore
-
 var _ socket.Socket = (*socketImpl)(nil)
 var _ socket.SocketStore = (*socketStoreImpl)(nil)
 
@@ -80,8 +75,8 @@ type socketStoreImpl struct {
 	log        *zap.SugaredLogger
 	base       *socketImpl
 	ephemeral  map[*socketImpl]struct{}
-	peerSocket map[types.PeerKey]Socket
-	events     chan SocketEvent
+	peerSocket map[types.PeerKey]socket.Socket
+	events     chan socket.SocketEvent
 	mu         sync.RWMutex
 	wg         sync.WaitGroup
 	closed     atomic.Bool
@@ -97,8 +92,8 @@ func NewSocketStore(port int) (socket.SocketStore, error) {
 		log:        zap.S().Named("socketstore"),
 		base:       base,
 		ephemeral:  make(map[*socketImpl]struct{}),
-		peerSocket: make(map[types.PeerKey]Socket),
-		events:     make(chan SocketEvent, socketEventBufSize),
+		peerSocket: make(map[types.PeerKey]socket.Socket),
+		events:     make(chan socket.SocketEvent, socketEventBufSize),
 	}
 
 	store.startRecvLoop(base)
@@ -106,11 +101,11 @@ func NewSocketStore(port int) (socket.SocketStore, error) {
 	return store, nil
 }
 
-func (s *socketStoreImpl) Base() Socket {
+func (s *socketStoreImpl) Base() socket.Socket {
 	return s.base
 }
 
-func (s *socketStoreImpl) CreateEphemeral() (Socket, error) {
+func (s *socketStoreImpl) CreateEphemeral() (socket.Socket, error) {
 	if s.closed.Load() {
 		return nil, net.ErrClosed
 	}
@@ -129,12 +124,12 @@ func (s *socketStoreImpl) CreateEphemeral() (Socket, error) {
 	return sock, nil
 }
 
-func (s *socketStoreImpl) CreateBatch(count int) ([]Socket, error) {
+func (s *socketStoreImpl) CreateBatch(count int) ([]socket.Socket, error) {
 	if s.closed.Load() {
 		return nil, net.ErrClosed
 	}
 
-	sockets := make([]Socket, 0, count)
+	sockets := make([]socket.Socket, 0, count)
 	for i := 0; i < count; i++ {
 		sock, err := s.CreateEphemeral()
 		if err != nil {
@@ -177,7 +172,7 @@ func (s *socketStoreImpl) Close() error {
 	for _, sock := range s.peerSocket {
 		sock.Close()
 	}
-	s.peerSocket = make(map[types.PeerKey]Socket)
+	s.peerSocket = make(map[types.PeerKey]socket.Socket)
 	s.mu.Unlock()
 
 	s.log.Debug("closing base socket")
@@ -193,12 +188,12 @@ func (s *socketStoreImpl) Close() error {
 	return err
 }
 
-func (s *socketStoreImpl) Events() <-chan SocketEvent {
+func (s *socketStoreImpl) Events() <-chan socket.SocketEvent {
 	return s.events
 }
 
-func (s *socketStoreImpl) AssociatePeerSocket(peerKey types.PeerKey, sock Socket) {
-	var prev Socket
+func (s *socketStoreImpl) AssociatePeerSocket(peerKey types.PeerKey, sock socket.Socket) {
+	var prev socket.Socket
 	var closePrev bool
 
 	s.mu.Lock()
@@ -230,7 +225,7 @@ func (s *socketStoreImpl) AssociatePeerSocket(peerKey types.PeerKey, sock Socket
 	}
 }
 
-func (s *socketStoreImpl) GetPeerSocket(peerKey types.PeerKey) (Socket, bool) {
+func (s *socketStoreImpl) GetPeerSocket(peerKey types.PeerKey) (socket.Socket, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sock, ok := s.peerSocket[peerKey]
@@ -252,9 +247,7 @@ func (s *socketStoreImpl) SendToPeer(peerKey types.PeerKey, dst string, b []byte
 }
 
 func (s *socketStoreImpl) startRecvLoop(sock *socketImpl) {
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		for {
 			src, payload, err := sock.Recv()
 			if err != nil {
@@ -264,15 +257,11 @@ func (s *socketStoreImpl) startRecvLoop(sock *socketImpl) {
 				continue
 			}
 
-			select {
-			case s.events <- SocketEvent{
+			s.events <- socket.SocketEvent{
 				Socket:  sock,
 				Src:     src,
 				Payload: payload,
-			}:
-			default:
-				// Event buffer full, drop packet
 			}
 		}
-	}()
+	})
 }

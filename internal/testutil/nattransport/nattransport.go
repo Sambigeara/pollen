@@ -299,7 +299,7 @@ func (s *PublicSocketStore) CreateEphemeral() (socket.Socket, error) {
 
 func (s *PublicSocketStore) CreateBatch(count int) ([]socket.Socket, error) {
 	sockets := make([]socket.Socket, 0, count)
-	for i := 0; i < count; i++ {
+	for range count {
 		sock, err := s.CreateEphemeral()
 		if err != nil {
 			for _, created := range sockets {
@@ -399,9 +399,7 @@ func (s *PublicSocketStore) SendToPeer(peerKey types.PeerKey, dst string, b []by
 }
 
 func (s *PublicSocketStore) startRecvLoop(sock *PublicSocket) {
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		for {
 			src, payload, err := sock.Recv()
 			if err != nil {
@@ -420,7 +418,7 @@ func (s *PublicSocketStore) startRecvLoop(sock *PublicSocket) {
 			default:
 			}
 		}
-	}()
+	})
 }
 
 // NATSocketStore implements socket.SocketStore for endpoints behind a symmetric NAT

@@ -108,15 +108,6 @@ type ConnectFailed struct {
 
 func (ConnectFailed) isInput() {}
 
-// UpdatePeerAddrs updates addresses for a peer, typically from gossip.
-// Resets backoff to allow immediate retry with new addresses.
-type UpdatePeerAddrs struct {
-	Addrs   []string
-	PeerKey types.PeerKey
-}
-
-func (UpdatePeerAddrs) isInput() {}
-
 // PeerDisconnected signals a peer's session has died (timeout or graceful disconnect).
 // Transitions from Connected back to Discovered for reconnection.
 type PeerDisconnected struct {
@@ -227,8 +218,6 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 		return s.connectPeer(now, e)
 	case ConnectFailed:
 		return s.connectFailed(now, e)
-	case UpdatePeerAddrs:
-		return s.updatePeerAddrs(now, e)
 	case PeerDisconnected:
 		return s.disconnectPeer(now, e)
 	}
@@ -264,8 +253,10 @@ func (s *Store) tick(now time.Time) []Output {
 		}
 
 		switch p.state { //nolint:exhaustive
-		case PeerStateConnected, PeerStateConnecting:
+		case PeerStateConnected:
 			continue
+		case PeerStateConnecting:
+			return s.connectFailed(now, ConnectFailed{p.id})
 		case PeerStateUnreachable:
 			// Retry unreachable peers after backoff expires
 			p.state = PeerStateDiscovered
@@ -362,28 +353,6 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) []Output {
 	p.stage = ConnectStageDirect
 	p.stageAttempts = 0
 	p.nextActionAt = now.Add(s.cfg.DisconnectedRetryInterval)
-	return nil
-}
-
-func (s *Store) updatePeerAddrs(now time.Time, e UpdatePeerAddrs) []Output {
-	p, exists := s.m[e.PeerKey]
-	if !exists {
-		// Treat as discovery
-		return s.discoverPeer(now, DiscoverPeer(e))
-	}
-
-	if p.state == PeerStateConnected {
-		// Still update addresses for future reconnection
-		p.addrs = e.Addrs
-		return nil
-	}
-
-	// Update addresses and reset to direct stage for immediate retry
-	p.addrs = e.Addrs
-	p.nextActionAt = now
-	p.stage = ConnectStageDirect
-	p.stageAttempts = 0
-	p.state = PeerStateDiscovered
 	return nil
 }
 
