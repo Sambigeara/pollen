@@ -355,17 +355,12 @@ func newNode(t *testing.T, dir string, port int, network *memtransport.Network, 
 		advertisedIPs = []string{"127.0.0.1"}
 	}
 
-	addr := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port))
-	tr, err := network.Bind(addr)
-	require.NoError(t, err)
-
 	conf := &Config{
 		Port:             port,
 		AdvertisedIPs:    advertisedIPs,
 		GossipInterval:   10 * time.Millisecond,
 		PeerTickInterval: 10 * time.Millisecond,
 		PollenDir:        dir,
-		SocketStore:      tr,
 		PeerConfig: &peer.Config{
 			FirstBackoff:                  5 * time.Millisecond,
 			BaseBackoff:                   5 * time.Millisecond,

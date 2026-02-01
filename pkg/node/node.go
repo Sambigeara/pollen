@@ -18,6 +18,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/link"
 	"github.com/sambigeara/pollen/pkg/peer"
+	"github.com/sambigeara/pollen/pkg/socket"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/tunnel"
@@ -46,7 +47,6 @@ const (
 )
 
 type Config struct {
-	SocketStore         link.SocketStore
 	PeerConfig          *peer.Config
 	PollenDir           string
 	AdvertisedIPs       []string
@@ -60,17 +60,16 @@ type Config struct {
 }
 
 type Node struct {
-	log            *zap.SugaredLogger
-	conf           *Config
-	Link           link.Link
-	Store          *state.Persistence
-	Peers          *peer.Store
-	AdmissionStore admission.Store
-	Tunnel         *tunnel.Manager
-	Directory      *Directory
-	crypto         *localCrypto
-	peerEvents     chan peer.Input
-	gossipNow      chan struct{}
+	log             *zap.SugaredLogger
+	conf            *Config
+	Link            link.Link
+	Store           *state.Persistence
+	Peers           *peer.Store
+	AdmissionStore  admission.Store
+	Tunnel          *tunnel.Manager
+	Directory       *Directory
+	crypto          *localCrypto
+	localPeerEvents chan peer.Input
 }
 
 func New(conf *Config) (*Node, error) {
@@ -119,14 +118,9 @@ func New(conf *Config) (*Node, error) {
 		identityPubKey: pubKey,
 	}
 
-	var socketStore link.SocketStore
-	if conf.SocketStore != nil {
-		socketStore = conf.SocketStore
-	} else {
-		socketStore, err = link.NewSocketStore(conf.Port)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create socket store: %w", err)
-		}
+	socketStore, err := link.NewSocketStore(conf.Port)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create socket store: %w", err)
 	}
 
 	mesh, err := link.NewLink(socketStore, &cs, noiseKey, crypto, invitesStore, conf.LinkOptions...)
@@ -158,23 +152,21 @@ func New(conf *Config) (*Node, error) {
 	})
 
 	return &Node{
-		log:            log,
-		Peers:          peerStore,
-		Store:          stateStore,
-		Link:           mesh,
-		AdmissionStore: invitesStore,
-		Tunnel:         tun,
-		Directory:      &Directory{cluster: cluster},
-		crypto:         crypto,
-		conf:           conf,
-		peerEvents:     make(chan peer.Input, peerEventBufSize),
-		gossipNow:      make(chan struct{}, 1),
+		log:             log,
+		Peers:           peerStore,
+		Store:           stateStore,
+		Link:            mesh,
+		AdmissionStore:  invitesStore,
+		Tunnel:          tun,
+		Directory:       &Directory{cluster: cluster},
+		crypto:          crypto,
+		conf:            conf,
+		localPeerEvents: make(chan peer.Input, peerEventBufSize),
 	}, nil
 }
 
 func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
-	tickCh := make(chan struct{}, 1)
-	n.registerHandlers(tickCh)
+	n.registerHandlers()
 
 	if err := n.Link.Start(ctx); err != nil {
 		return err
@@ -186,8 +178,6 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 			return fmt.Errorf("join with invite: %w", err)
 		}
 	}
-
-	trigger(tickCh)
 
 	gossipTicker := util.NewJitterTicker(ctx, n.conf.GossipInterval, n.gossipJitter())
 	defer gossipTicker.Stop()
@@ -201,21 +191,19 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 			return nil
 		case <-peerTicker.C:
 			n.tick()
-		case <-tickCh:
-			n.tick()
-		case <-n.gossipNow:
-			n.gossip(ctx)
 		case <-gossipTicker.C:
 			n.gossip(ctx)
+		// external origin events
 		case in := <-n.Link.Events():
 			n.handlePeerInput(in)
-		case in := <-n.peerEvents:
+		// internal origin events
+		case in := <-n.localPeerEvents:
 			n.handlePeerInput(in)
 		}
 	}
 }
 
-func (n *Node) registerHandlers(reconcileCh chan<- struct{}) {
+func (n *Node) registerHandlers() {
 	// Set peer provider for TCP punch coordination
 	n.Tunnel.SetPeerProvider(n)
 
@@ -239,9 +227,6 @@ func (n *Node) registerHandlers(reconcileCh chan<- struct{}) {
 		}
 
 		n.Store.Hydrate(delta)
-
-		trigger(reconcileCh)
-
 		return nil
 	})
 }
@@ -257,7 +242,7 @@ func (n *Node) gossip(ctx context.Context) {
 		return
 	}
 
-	for _, k := range n.Peers.GetAll(peer.PeerStateConnected) {
+	for _, k := range n.GetConnectedPeers() {
 		if k == n.Store.Cluster.LocalID {
 			continue
 		}
@@ -277,8 +262,8 @@ func (n *Node) handlePeerInput(in peer.Input) {
 }
 
 func (n *Node) tick() {
-	// First sync any new peers from gossip state
-	n.syncPeersFromGossip()
+	// First sync any new peers and connections from gossip state
+	n.syncPeersFromState()
 	n.reconcileConnections()
 
 	// Then tick the state machine to get pending actions
@@ -286,7 +271,7 @@ func (n *Node) tick() {
 	n.handleOutputs(outputs)
 }
 
-func (n *Node) syncPeersFromGossip() {
+func (n *Node) syncPeersFromState() {
 	for _, node := range n.Store.Cluster.Nodes.GetAll() {
 		if node.Id == n.Store.Cluster.LocalID.String() {
 			continue
@@ -307,16 +292,15 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 		switch e := out.(type) {
 		case peer.PeerConnected:
 			n.log.Infow("peer connected", "peer_id", e.PeerKey.String()[:8])
-			trigger(n.gossipNow)
+			// TODO(saml) update (currently non-existent) "connected" state
 		case peer.AttemptConnect:
 			go n.attemptDirectConnect(e)
 		case peer.RequestPunchCoordination:
 			// Select coordinator in main loop to avoid race on Peers.GetAll
 			// TODO(saml) coordinator selection strategy - currently just picks first connected peer
-			connected := n.Peers.GetAll(peer.PeerStateConnected)
+			connected := n.GetConnectedPeers()
 			if len(connected) == 0 {
 				n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.String()[:8])
-				n.peerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 				continue
 			}
 			go n.requestPunchCoordination(e, connected[0])
@@ -361,23 +345,28 @@ func hasServicePort(node *statev1.Node, port uint32) bool {
 	return false
 }
 
-func (n *Node) attemptDirectConnect(e peer.AttemptConnect) {
-	ctx, cancel := context.WithTimeout(context.Background(), n.punchAttemptDuration())
+func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
+	ctx, cancel := context.WithTimeout(context.Background(), n.conf.PunchAttemptTimeout)
 	defer cancel()
 
-	sockets := []link.Socket{n.Link.SocketStore().Base()}
+	sockets := []socket.Socket{n.Link.SocketStore().Base()}
 	opts := link.EnsurePeerOpts{
 		SendInterval: 200 * time.Millisecond,
-		Rounds:       1,
+		Rounds:       2, // 2 attempts just in case the first crossing is blocked (but makes way for the reciprocation)
 	}
 
 	if err := n.Link.EnsurePeer(ctx, e.PeerKey, e.Addrs, sockets, opts); err != nil {
 		n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "err", err)
-		n.peerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+		return err
 	}
+
+	return nil
 }
 
-func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordinator types.PeerKey) {
+func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordinator types.PeerKey) error {
+	ctx, cancel := context.WithTimeout(context.Background(), n.conf.PunchAttemptTimeout)
+	defer cancel()
+
 	mode := peerv1.PunchMode_PUNCH_MODE_DIRECT
 	if e.Mode == peer.PunchModeBirthday {
 		mode = peerv1.PunchMode_PUNCH_MODE_BIRTHDAY
@@ -389,26 +378,20 @@ func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordin
 	b, err := req.MarshalVT()
 	if err != nil {
 		n.log.Errorw("failed to marshal punch request", "err", err)
-		n.peerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
-		return
+		return err
 	}
 
 	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.String()[:8], "coordinator", coordinator.String()[:8])
 
-	if err := n.Link.Send(context.Background(), coordinator, types.Envelope{
+	if err := n.Link.Send(ctx, coordinator, types.Envelope{
 		Type:    types.MsgTypeUDPPunchCoordRequest,
 		Payload: b,
 	}); err != nil {
 		n.log.Debugw("punch coord request failed", "peer", e.PeerKey.String()[:8], "err", err)
-		n.peerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
-		return
+		return err
 	}
 
-	// Signal failure after timeout. If peer connected, ConnectPeer will be
-	// processed first (via Link.Events), and connectFailed will no-op.
-	time.AfterFunc(n.punchAttemptDuration(), func() {
-		n.peerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
-	})
+	return nil
 }
 
 func (n *Node) gossipJitter() float64 {
@@ -419,13 +402,6 @@ func (n *Node) gossipJitter() float64 {
 		return n.conf.GossipJitter
 	}
 	return loopIntervalJitter
-}
-
-func (n *Node) punchAttemptDuration() time.Duration {
-	if n.conf.PunchAttemptTimeout > 0 {
-		return n.conf.PunchAttemptTimeout
-	}
-	return punchAttemptDuration
 }
 
 func trigger(ch chan<- struct{}) {
