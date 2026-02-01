@@ -571,18 +571,14 @@ func (m *Manager) dialSession(ctx context.Context, peerID types.PeerKey) (net.Co
 	defer cancel()
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		conn, err := m.dialSessionDirect(ctx, peerID)
 		resCh <- dialResult{conn: conn, err: err, mode: "direct"}
-	}()
+	})
 
 	for _, coordinator := range coordinators {
 		coord := coordinator
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if punchDelay > 0 {
 				timer := time.NewTimer(punchDelay)
 				defer timer.Stop()
@@ -595,7 +591,7 @@ func (m *Manager) dialSession(ctx context.Context, peerID types.PeerKey) (net.Co
 			}
 			conn, err := m.dialSessionWithPunch(ctx, peerID, coord)
 			resCh <- dialResult{conn: conn, err: err, mode: "punch"}
-		}()
+		})
 	}
 
 	go func() {

@@ -48,6 +48,25 @@ func (m *NodeMap) Set(key types.PeerKey, node *statev1.Node) {
 	}
 }
 
+func (m *NodeMap) Update(key types.PeerKey, fn func(*statev1.Node)) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	rec, ok := m.Data[key]
+	if !ok || rec.Tombstone {
+		return false
+	}
+
+	fn(rec.Node)
+
+	m.Data[key] = Record{
+		Node:      rec.Node,
+		Timestamp: m.tick(),
+		Tombstone: false,
+	}
+	return true
+}
+
 func (m *NodeMap) Get(key types.PeerKey) (Record, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

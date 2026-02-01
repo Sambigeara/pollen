@@ -123,3 +123,9 @@ func (p *Persistence) Hydrate(delta *statev1.DeltaState) {
 	}
 	p.Cluster.Nodes.Merge(nodeRecords)
 }
+
+// TODO(saml) bring this into play once we're gossiping connection state
+func (p *Persistence) ConnectNode(key types.PeerKey) {
+	_ = p.Cluster.Nodes.Update(key, func(n *statev1.Node) {
+	})
+}

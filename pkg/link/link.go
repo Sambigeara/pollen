@@ -15,6 +15,7 @@ import (
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/peer"
+	"github.com/sambigeara/pollen/pkg/socket"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -139,7 +140,7 @@ type EnsurePeerOpts struct {
 }
 
 type BirthdayProbeOpts struct {
-	ProbeSocket Socket
+	ProbeSocket socket.Socket
 	ProbeHost   string
 	ProbeCount  int
 }
@@ -148,8 +149,8 @@ type Link interface {
 	Start(ctx context.Context) error
 	Close() error
 
-	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error                                                       // XXpsk2 init
-	EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, sockets []Socket, opts EnsurePeerOpts) error // IK init
+	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error                                                              // XXpsk2 init
+	EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, sockets []socket.Socket, opts EnsurePeerOpts) error // IK init
 	Events() <-chan peer.Input
 
 	Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error
@@ -157,7 +158,7 @@ type Link interface {
 
 	GetActivePeerAddress(peerKey types.PeerKey) (string, bool)
 	BroadcastDisconnect() // notify all connected peers we're shutting down
-	SocketStore() SocketStore
+	SocketStore() socket.SocketStore
 }
 
 type LocalCrypto interface {
@@ -167,7 +168,7 @@ type LocalCrypto interface {
 }
 
 type impl struct {
-	socketStore    SocketStore
+	socketStore    socket.SocketStore
 	crypto         LocalCrypto
 	handlers       map[types.MsgType]HandlerFn
 	handshakeStore *handshakeStore
@@ -187,11 +188,7 @@ type impl struct {
 
 const eventBufSize = 64
 
-func NewLink(socketStore SocketStore, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission, opts ...Option) (Link, error) {
-	if socketStore == nil {
-		return nil, errors.New("socketStore is nil")
-	}
-
+func NewLink(socketStore socket.SocketStore, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission, opts ...Option) (Link, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
 		opt(&cfg)
@@ -212,7 +209,7 @@ func NewLink(socketStore SocketStore, cs *noise.CipherSuite, staticKey noise.DHK
 	}, nil
 }
 
-func (i *impl) SocketStore() SocketStore {
+func (i *impl) SocketStore() socket.SocketStore {
 	return i.socketStore
 }
 
@@ -373,13 +370,12 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 
 	addrs := []string{req.PeerAddr}
 
-	var sockets []Socket
+	var sockets []socket.Socket
 	var opts EnsurePeerOpts
 
 	switch req.Mode { //nolint:exhaustive
 	case peerv1.PunchMode_PUNCH_MODE_BIRTHDAY:
 		i.log.Debugf("attempting birthday punch: %s", peerID.String()[:8])
-
 		host, _, err := net.SplitHostPort(req.PeerAddr)
 		if err != nil {
 			return fmt.Errorf("invalid peer address: %w", err)
@@ -401,7 +397,8 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 			},
 		}
 	case peerv1.PunchMode_PUNCH_MODE_DIRECT:
-		sockets = []Socket{i.socketStore.Base()}
+		i.log.Debugf("attempting direct punch: %s", peerID.String()[:8])
+		sockets = []socket.Socket{i.socketStore.Base()}
 		opts = EnsurePeerOpts{
 			SendInterval: i.cfg.ensurePeerInterval,
 			Rounds:       i.cfg.holepunchAttempts,
@@ -417,7 +414,7 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 	return nil
 }
 
-func (i *impl) handleHandshake(ctx context.Context, src string, sock Socket, fr frame) error {
+func (i *impl) handleHandshake(ctx context.Context, src string, sock socket.Socket, fr frame) error {
 	hs, err := i.handshakeStore.getOrCreate(fr.senderID, fr.receiverID, fr.typ)
 	if err != nil {
 		return err
@@ -431,7 +428,7 @@ func (i *impl) handleHandshake(ctx context.Context, src string, sock Socket, fr 
 		return err
 	}
 
-	if err := i.sendHandshakeResultViaSocket(src, res, fr.senderID, sock); err != nil {
+	if err := i.sendHandshakeResult(src, res, fr.senderID, sock); err != nil {
 		i.log.Debugw("failed to send handshake reply", "err", err)
 	}
 
@@ -476,7 +473,7 @@ func (i *impl) handleHandshake(ctx context.Context, src string, sock Socket, fr 
 	return nil
 }
 
-func (i *impl) handleApp(ctx context.Context, src string, sock Socket, fr frame) {
+func (i *impl) handleApp(ctx context.Context, src string, sock socket.Socket, fr frame) {
 	sess, ok := i.sessionStore.getByLocalID(fr.receiverID)
 	if !ok {
 		i.log.Debugw("handleApp: session not found",
@@ -639,7 +636,7 @@ func (i *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 	g, _ := errgroup.WithContext(ctx)
 	for _, addr := range inv.Addr {
 		g.Go(func() error {
-			return i.sendHandshakeResultViaSocket(addr, res, 0, baseSock)
+			return i.sendHandshakeResult(addr, res, 0, baseSock)
 		})
 	}
 	if err := g.Wait(); err != nil {
@@ -650,7 +647,7 @@ func (i *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 	return nil
 }
 
-func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, sockets []Socket, opts EnsurePeerOpts) error {
+func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, sockets []socket.Socket, opts EnsurePeerOpts) error {
 	if len(addrs) == 0 {
 		return errors.New("no addresses provided")
 	}
@@ -819,7 +816,7 @@ func (i *impl) hasWaiter(k types.PeerKey) bool {
 	return ok
 }
 
-func (i *impl) sendHandshakeResultViaSocket(addr string, res HandshakeResult, remoteID uint32, sock Socket) error {
+func (i *impl) sendHandshakeResult(addr string, res HandshakeResult, remoteID uint32, sock socket.Socket) error {
 	if len(res.Msg) == 0 {
 		return ErrEmptyMsg
 	}

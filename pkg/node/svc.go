@@ -211,7 +211,6 @@ func (s *NodeService) RegisterService(ctx context.Context, req *controlv1.Regist
 	node := cloneNode(rec.Node)
 	node.Services = upsertService(node.Services, req.Port, name)
 	s.node.Store.Cluster.Nodes.Set(localID, node)
-	trigger(s.node.gossipNow)
 
 	return &controlv1.RegisterServiceResponse{}, nil
 }
@@ -236,7 +235,6 @@ func (s *NodeService) UnregisterService(ctx context.Context, req *controlv1.Unre
 	node := cloneNode(rec.Node)
 	node.Services = updated
 	s.node.Store.Cluster.Nodes.Set(localID, node)
-	trigger(s.node.gossipNow)
 
 	return &controlv1.UnregisterServiceResponse{}, nil
 }
