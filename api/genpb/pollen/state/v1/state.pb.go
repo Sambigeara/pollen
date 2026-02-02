@@ -23,14 +23,65 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type NatType int32
+
+const (
+	NatType_NAT_TYPE_UNSPECIFIED NatType = 0
+	NatType_NAT_TYPE_GOOD        NatType = 1 // the port learned by the coordinator will allow other peers to reach the same node on the same port
+	NatType_NAT_TYPE_BAD         NatType = 2 // each new connection requires a differnt, randomly allocated port for access
+)
+
+// Enum value maps for NatType.
+var (
+	NatType_name = map[int32]string{
+		0: "NAT_TYPE_UNSPECIFIED",
+		1: "NAT_TYPE_GOOD",
+		2: "NAT_TYPE_BAD",
+	}
+	NatType_value = map[string]int32{
+		"NAT_TYPE_UNSPECIFIED": 0,
+		"NAT_TYPE_GOOD":        1,
+		"NAT_TYPE_BAD":         2,
+	}
+)
+
+func (x NatType) Enum() *NatType {
+	p := new(NatType)
+	*p = x
+	return p
+}
+
+func (x NatType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (NatType) Descriptor() protoreflect.EnumDescriptor {
+	return file_pollen_state_v1_state_proto_enumTypes[0].Descriptor()
+}
+
+func (NatType) Type() protoreflect.EnumType {
+	return &file_pollen_state_v1_state_proto_enumTypes[0]
+}
+
+func (x NatType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use NatType.Descriptor instead.
+func (NatType) EnumDescriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{0}
+}
+
 type Node struct {
 	state         protoimpl.MessageState    `protogen:"open.v1"`
 	Id            string                    `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Name          string                    `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Addresses     []string                  `protobuf:"bytes,3,rep,name=addresses,proto3" json:"addresses,omitempty"`
-	Keys          *Keys                     `protobuf:"bytes,4,opt,name=keys,proto3" json:"keys,omitempty"`
-	Services      []*Service                `protobuf:"bytes,5,rep,name=services,proto3" json:"services,omitempty"`
-	Connected     map[string]*emptypb.Empty `protobuf:"bytes,6,rep,name=connected,proto3" json:"connected,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Ips           []string                  `protobuf:"bytes,3,rep,name=ips,proto3" json:"ips,omitempty"`
+	LocalPort     uint32                    `protobuf:"varint,4,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
+	Keys          *Keys                     `protobuf:"bytes,5,opt,name=keys,proto3" json:"keys,omitempty"`
+	Services      []*Service                `protobuf:"bytes,6,rep,name=services,proto3" json:"services,omitempty"`
+	Connected     map[string]*emptypb.Empty `protobuf:"bytes,7,rep,name=connected,proto3" json:"connected,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	NatType       NatType                   `protobuf:"varint,8,opt,name=nat_type,json=natType,proto3,enum=pollen.state.v1.NatType" json:"nat_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -79,11 +130,18 @@ func (x *Node) GetName() string {
 	return ""
 }
 
-func (x *Node) GetAddresses() []string {
+func (x *Node) GetIps() []string {
 	if x != nil {
-		return x.Addresses
+		return x.Ips
 	}
 	return nil
+}
+
+func (x *Node) GetLocalPort() uint32 {
+	if x != nil {
+		return x.LocalPort
+	}
+	return 0
 }
 
 func (x *Node) GetKeys() *Keys {
@@ -105,6 +163,13 @@ func (x *Node) GetConnected() map[string]*emptypb.Empty {
 		return x.Connected
 	}
 	return nil
+}
+
+func (x *Node) GetNatType() NatType {
+	if x != nil {
+		return x.NatType
+	}
+	return NatType_NAT_TYPE_UNSPECIFIED
 }
 
 type Service struct {
@@ -223,14 +288,17 @@ var File_pollen_state_v1_state_proto protoreflect.FileDescriptor
 
 const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\n" +
-	"\x1bpollen/state/v1/state.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bgoogle/protobuf/empty.proto\"\xe0\x02\n" +
+	"\x1bpollen/state/v1/state.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bgoogle/protobuf/empty.proto\"\xb5\x03\n" +
 	"\x04Node\x12+\n" +
 	"\x02id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1c\n" +
-	"\taddresses\x18\x03 \x03(\tR\taddresses\x12)\n" +
-	"\x04keys\x18\x04 \x01(\v2\x15.pollen.state.v1.KeysR\x04keys\x124\n" +
-	"\bservices\x18\x05 \x03(\v2\x18.pollen.state.v1.ServiceR\bservices\x12B\n" +
-	"\tconnected\x18\x06 \x03(\v2$.pollen.state.v1.Node.ConnectedEntryR\tconnected\x1aT\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x10\n" +
+	"\x03ips\x18\x03 \x03(\tR\x03ips\x12*\n" +
+	"\n" +
+	"local_port\x18\x04 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\x12)\n" +
+	"\x04keys\x18\x05 \x01(\v2\x15.pollen.state.v1.KeysR\x04keys\x124\n" +
+	"\bservices\x18\x06 \x03(\v2\x18.pollen.state.v1.ServiceR\bservices\x12B\n" +
+	"\tconnected\x18\a \x03(\v2$.pollen.state.v1.Node.ConnectedEntryR\tconnected\x123\n" +
+	"\bnat_type\x18\b \x01(\x0e2\x18.pollen.state.v1.NatTypeR\anatType\x1aT\n" +
 	"\x0eConnectedEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
 	"\x05value\x18\x02 \x01(\v2\x16.google.protobuf.EmptyR\x05value:\x028\x01\">\n" +
@@ -242,7 +310,11 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\fidentity_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\videntityPub\x12)\n" +
 	"\tadmin_pub\x18\x03 \x01(\fB\a\xbaH\x04z\x02h H\x00R\badminPub\x88\x01\x01B\f\n" +
 	"\n" +
-	"_admin_pubB@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
+	"_admin_pub*H\n" +
+	"\aNatType\x12\x18\n" +
+	"\x14NAT_TYPE_UNSPECIFIED\x10\x00\x12\x11\n" +
+	"\rNAT_TYPE_GOOD\x10\x01\x12\x10\n" +
+	"\fNAT_TYPE_BAD\x10\x02B@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
 
 var (
 	file_pollen_state_v1_state_proto_rawDescOnce sync.Once
@@ -256,24 +328,27 @@ func file_pollen_state_v1_state_proto_rawDescGZIP() []byte {
 	return file_pollen_state_v1_state_proto_rawDescData
 }
 
+var file_pollen_state_v1_state_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_pollen_state_v1_state_proto_goTypes = []any{
-	(*Node)(nil),          // 0: pollen.state.v1.Node
-	(*Service)(nil),       // 1: pollen.state.v1.Service
-	(*Keys)(nil),          // 2: pollen.state.v1.Keys
-	nil,                   // 3: pollen.state.v1.Node.ConnectedEntry
-	(*emptypb.Empty)(nil), // 4: google.protobuf.Empty
+	(NatType)(0),          // 0: pollen.state.v1.NatType
+	(*Node)(nil),          // 1: pollen.state.v1.Node
+	(*Service)(nil),       // 2: pollen.state.v1.Service
+	(*Keys)(nil),          // 3: pollen.state.v1.Keys
+	nil,                   // 4: pollen.state.v1.Node.ConnectedEntry
+	(*emptypb.Empty)(nil), // 5: google.protobuf.Empty
 }
 var file_pollen_state_v1_state_proto_depIdxs = []int32{
-	2, // 0: pollen.state.v1.Node.keys:type_name -> pollen.state.v1.Keys
-	1, // 1: pollen.state.v1.Node.services:type_name -> pollen.state.v1.Service
-	3, // 2: pollen.state.v1.Node.connected:type_name -> pollen.state.v1.Node.ConnectedEntry
-	4, // 3: pollen.state.v1.Node.ConnectedEntry.value:type_name -> google.protobuf.Empty
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	3, // 0: pollen.state.v1.Node.keys:type_name -> pollen.state.v1.Keys
+	2, // 1: pollen.state.v1.Node.services:type_name -> pollen.state.v1.Service
+	4, // 2: pollen.state.v1.Node.connected:type_name -> pollen.state.v1.Node.ConnectedEntry
+	0, // 3: pollen.state.v1.Node.nat_type:type_name -> pollen.state.v1.NatType
+	5, // 4: pollen.state.v1.Node.ConnectedEntry.value:type_name -> google.protobuf.Empty
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_state_proto_init() }
@@ -287,13 +362,14 @@ func file_pollen_state_v1_state_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_state_v1_state_proto_rawDesc), len(file_pollen_state_v1_state_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_pollen_state_v1_state_proto_goTypes,
 		DependencyIndexes: file_pollen_state_v1_state_proto_depIdxs,
+		EnumInfos:         file_pollen_state_v1_state_proto_enumTypes,
 		MessageInfos:      file_pollen_state_v1_state_proto_msgTypes,
 	}.Build()
 	File_pollen_state_v1_state_proto = out.File

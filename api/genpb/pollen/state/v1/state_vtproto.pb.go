@@ -50,6 +50,11 @@ func (m *Node) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.NatType != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.NatType))
+		i--
+		dAtA[i] = 0x40
+	}
 	if len(m.Connected) > 0 {
 		for k := range m.Connected {
 			v := m.Connected[k]
@@ -69,7 +74,7 @@ func (m *Node) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			dAtA[i] = 0xa
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(baseI-i))
 			i--
-			dAtA[i] = 0x32
+			dAtA[i] = 0x3a
 		}
 	}
 	if len(m.Services) > 0 {
@@ -81,7 +86,7 @@ func (m *Node) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			i -= size
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 			i--
-			dAtA[i] = 0x2a
+			dAtA[i] = 0x32
 		}
 	}
 	if m.Keys != nil {
@@ -92,13 +97,18 @@ func (m *Node) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x22
+		dAtA[i] = 0x2a
 	}
-	if len(m.Addresses) > 0 {
-		for iNdEx := len(m.Addresses) - 1; iNdEx >= 0; iNdEx-- {
-			i -= len(m.Addresses[iNdEx])
-			copy(dAtA[i:], m.Addresses[iNdEx])
-			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Addresses[iNdEx])))
+	if m.LocalPort != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.LocalPort))
+		i--
+		dAtA[i] = 0x20
+	}
+	if len(m.Ips) > 0 {
+		for iNdEx := len(m.Ips) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.Ips[iNdEx])
+			copy(dAtA[i:], m.Ips[iNdEx])
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Ips[iNdEx])))
 			i--
 			dAtA[i] = 0x1a
 		}
@@ -233,11 +243,14 @@ func (m *Node) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if len(m.Addresses) > 0 {
-		for _, s := range m.Addresses {
+	if len(m.Ips) > 0 {
+		for _, s := range m.Ips {
 			l = len(s)
 			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 		}
+	}
+	if m.LocalPort != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.LocalPort))
 	}
 	if m.Keys != nil {
 		l = m.Keys.SizeVT()
@@ -261,6 +274,9 @@ func (m *Node) SizeVT() (n int) {
 			mapEntrySize := 1 + len(k) + protohelpers.SizeOfVarint(uint64(len(k))) + l
 			n += mapEntrySize + 1 + protohelpers.SizeOfVarint(uint64(mapEntrySize))
 		}
+	}
+	if m.NatType != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.NatType))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -400,7 +416,7 @@ func (m *Node) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 3:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Addresses", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field Ips", wireType)
 			}
 			var stringLen uint64
 			for shift := uint(0); ; shift += 7 {
@@ -428,9 +444,28 @@ func (m *Node) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Addresses = append(m.Addresses, string(dAtA[iNdEx:postIndex]))
+			m.Ips = append(m.Ips, string(dAtA[iNdEx:postIndex]))
 			iNdEx = postIndex
 		case 4:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field LocalPort", wireType)
+			}
+			m.LocalPort = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.LocalPort |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 5:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Keys", wireType)
 			}
@@ -466,7 +501,7 @@ func (m *Node) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
-		case 5:
+		case 6:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Services", wireType)
 			}
@@ -500,7 +535,7 @@ func (m *Node) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
-		case 6:
+		case 7:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Connected", wireType)
 			}
@@ -629,6 +664,25 @@ func (m *Node) UnmarshalVT(dAtA []byte) error {
 			}
 			m.Connected[mapkey] = mapvalue
 			iNdEx = postIndex
+		case 8:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field NatType", wireType)
+			}
+			m.NatType = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.NatType |= NatType(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

@@ -19,7 +19,7 @@ func TestStore_DirectToPunchBirthdayToUnreachable(t *testing.T) {
 	key := peerKey(1)
 	now := time.Unix(0, 0)
 
-	store.Step(now, DiscoverPeer{PeerKey: key, Addrs: []string{"10.0.0.1:1"}})
+	store.Step(now, DiscoverPeer{PeerKey: key, Ips: []string{"10.0.0.1"}, Port: 1})
 	outputs := store.Step(now, Tick{})
 	require.Len(t, outputs, 1)
 	require.IsType(t, AttemptConnect{}, outputs[0])
@@ -69,11 +69,11 @@ func TestStore_ConnectPeerResetsStage(t *testing.T) {
 	key := peerKey(2)
 	now := time.Unix(0, 0)
 
-	store.Step(now, DiscoverPeer{PeerKey: key, Addrs: []string{"10.0.0.1:1"}})
+	store.Step(now, DiscoverPeer{PeerKey: key, Ips: []string{"10.0.0.1"}, Port: 1})
 	store.Step(now, Tick{})
 	store.Step(now, ConnectFailed{PeerKey: key})
 
-	outputs := store.Step(now, ConnectPeer{PeerKey: key, Addr: "10.0.0.1:2", IdentityPub: []byte("id")})
+	outputs := store.Step(now, ConnectPeer{PeerKey: key, Ip: "10.0.0.1", ObservedPort: 2, IdentityPub: []byte("id")})
 	require.Len(t, outputs, 1)
 	require.IsType(t, PeerConnected{}, outputs[0])
 
@@ -81,7 +81,8 @@ func TestStore_ConnectPeerResetsStage(t *testing.T) {
 	require.Equal(t, PeerStateConnected, peer.state)
 	require.Equal(t, ConnectStageDirect, peer.stage)
 	require.Equal(t, 0, peer.stageAttempts)
-	require.Equal(t, []string{"10.0.0.1:2"}, peer.addrs)
+	require.Equal(t, []string{"10.0.0.1"}, peer.ips)
+	require.Equal(t, 2, peer.observedPort)
 }
 
 func TestStore_DisconnectSchedulesRetry(t *testing.T) {
@@ -91,7 +92,7 @@ func TestStore_DisconnectSchedulesRetry(t *testing.T) {
 	key := peerKey(5)
 	now := time.Unix(0, 0)
 
-	store.Step(now, ConnectPeer{PeerKey: key, Addr: "10.0.0.1:1", IdentityPub: []byte("id")})
+	store.Step(now, ConnectPeer{PeerKey: key, Ip: "10.0.0.1", ObservedPort: 1, IdentityPub: []byte("id")})
 	store.Step(now, PeerDisconnected{PeerKey: key})
 	peer := store.m[key]
 	require.Equal(t, PeerStateDiscovered, peer.state)
