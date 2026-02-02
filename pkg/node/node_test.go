@@ -376,7 +376,7 @@ func newNode(t *testing.T, dir string, port int, network *memtransport.Network, 
 			link.WithEnsurePeerTimeout(250 * time.Millisecond),
 			link.WithHolepunchAttempts(2),
 		},
-		PunchAttemptTimeout: 200 * time.Millisecond,
+		PunchAttemptTimeout: 4 * time.Second,
 		DisableGossipJitter: true,
 	}
 

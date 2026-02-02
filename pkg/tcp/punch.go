@@ -39,9 +39,7 @@ func SimultaneousOpen(ctx context.Context, ln net.Listener, peerAddr string, tim
 	var wg sync.WaitGroup
 
 	// Goroutine 1: Accept incoming connection
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		if dl, ok := ln.(interface{ SetDeadline(time.Time) error }); ok {
 			_ = dl.SetDeadline(time.Now().Add(timeout))
 		}
@@ -55,12 +53,10 @@ func SimultaneousOpen(ctx context.Context, ln net.Listener, peerAddr string, tim
 		default:
 			c.Close()
 		}
-	}()
+	})
 
 	// Goroutine 2: Dial repeatedly until success or timeout
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		dialer := &net.Dialer{
 			LocalAddr: laddr,
 			Control:   reusePortControl,
@@ -92,7 +88,7 @@ func SimultaneousOpen(ctx context.Context, ln net.Listener, peerAddr string, tim
 			case <-time.After(punchInterval):
 			}
 		}
-	}()
+	})
 
 	// Wait for result or timeout
 	go func() {

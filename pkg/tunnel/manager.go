@@ -887,10 +887,7 @@ func (m *Manager) findCoordinators(target types.PeerKey, limit int) []types.Peer
 		return nil
 	}
 
-	capHint := limit
-	if capHint > len(peers) {
-		capHint = len(peers)
-	}
+	capHint := min(limit, len(peers))
 	out := make([]types.PeerKey, 0, capHint)
 	for _, p := range peers {
 		// Don't use the target as coordinator
