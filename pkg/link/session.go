@@ -164,6 +164,7 @@ func (s *session) setPeerAddr(addr string) {
 	s.peerAddrMu.Unlock()
 }
 
+// TODO(saml) is this even necessary?
 func (s *session) peerAddrValue() string {
 	s.peerAddrMu.RLock()
 	addr := s.peerAddr

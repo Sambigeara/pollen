@@ -10,6 +10,7 @@ import (
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/types"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 const (
@@ -124,8 +125,20 @@ func (p *Persistence) Hydrate(delta *statev1.DeltaState) {
 	p.Cluster.Nodes.Merge(nodeRecords)
 }
 
-// TODO(saml) bring this into play once we're gossiping connection state
 func (p *Persistence) ConnectNode(key types.PeerKey) {
 	_ = p.Cluster.Nodes.Update(key, func(n *statev1.Node) {
+		if n.Connected == nil {
+			n.Connected = make(map[string]*emptypb.Empty)
+		}
+		n.Connected[key.String()] = &emptypb.Empty{}
+	})
+}
+
+// TODO(saml) not currently used. Should be.
+func (p *Persistence) DisconnectNode(key types.PeerKey) {
+	_ = p.Cluster.Nodes.Update(key, func(n *statev1.Node) {
+		if n.Connected != nil {
+			delete(n.Connected, key.String())
+		}
 	})
 }

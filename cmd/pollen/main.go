@@ -224,7 +224,7 @@ func runNode(cmd *cobra.Command, args []string) {
 		PeerTickInterval:    time.Second,
 		PollenDir:           pollenDir,
 		AdvertisedIPs:       addrs,
-		PunchAttemptTimeout: 200 * time.Millisecond,
+		PunchAttemptTimeout: 3 * time.Second,
 	}
 
 	n, err := node.New(conf)

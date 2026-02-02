@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -70,6 +71,7 @@ type Node struct {
 	Directory       *Directory
 	crypto          *localCrypto
 	localPeerEvents chan peer.Input
+	gossipTrigger   chan struct{}
 }
 
 func New(conf *Config) (*Node, error) {
@@ -108,11 +110,6 @@ func New(conf *Config) (*Node, error) {
 		}
 	}
 
-	addrs := make([]string, 0, len(ips))
-	for _, ip := range ips {
-		addrs = append(addrs, net.JoinHostPort(ip, fmt.Sprintf("%d", conf.Port)))
-	}
-
 	crypto := &localCrypto{
 		noisePubKey:    noiseKey.Public,
 		identityPubKey: pubKey,
@@ -144,7 +141,8 @@ func New(conf *Config) (*Node, error) {
 
 	cluster.Nodes.Set(nodeID, &statev1.Node{
 		Id:        nodeID.String(),
-		Addresses: addrs,
+		Ips:       ips,
+		LocalPort: uint32(conf.Port),
 		Keys: &statev1.Keys{
 			NoisePub:    noiseKey.Public,
 			IdentityPub: pubKey,
@@ -162,6 +160,7 @@ func New(conf *Config) (*Node, error) {
 		crypto:          crypto,
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
+		gossipTrigger:   make(chan struct{}),
 	}, nil
 }
 
@@ -193,6 +192,8 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 			n.tick()
 		case <-gossipTicker.C:
 			n.gossip(ctx)
+		case <-n.gossipTrigger:
+			n.gossip(ctx)
 		// external origin events
 		case in := <-n.Link.Events():
 			n.handlePeerInput(in)
@@ -200,6 +201,14 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 		case in := <-n.localPeerEvents:
 			n.handlePeerInput(in)
 		}
+	}
+}
+
+// TODO(saml) this is a result of an LLM scaffolded project and will definitely be removed.
+func (n *Node) triggerGossip() {
+	select {
+	case n.gossipTrigger <- struct{}{}:
+	default:
 	}
 }
 
@@ -276,13 +285,14 @@ func (n *Node) syncPeersFromState() {
 		if node.Id == n.Store.Cluster.LocalID.String() {
 			continue
 		}
-		if len(node.Keys.NoisePub) == 0 || len(node.Addresses) == 0 {
+		if len(node.Keys.NoisePub) == 0 || len(node.Ips) == 0 {
 			continue
 		}
 
 		n.Peers.Step(time.Now(), peer.DiscoverPeer{
 			PeerKey: types.PeerKeyFromBytes(node.Keys.NoisePub),
-			Addrs:   node.Addresses,
+			Ips:     node.Ips,
+			Port:    int(node.LocalPort),
 		})
 	}
 }
@@ -291,11 +301,16 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
-			n.log.Infow("peer connected", "peer_id", e.PeerKey.String()[:8])
-			// TODO(saml) update (currently non-existent) "connected" state
+			n.log.Infow("peer connected", "peer_id", e.PeerKey.String()[:8], "ip", e.Ip, "observedPort", e.ObservedPort)
+			n.Store.ConnectNode(e.PeerKey)
+			n.triggerGossip()
 		case peer.AttemptConnect:
 			go n.attemptDirectConnect(e)
 		case peer.RequestPunchCoordination:
+			// TODO(saml) centralise on single deterministic tie-breaker (PeerKey.Less()?)
+			if bytes.Compare(n.crypto.noisePubKey, e.PeerKey.Bytes()) < 0 {
+				continue
+			}
 			// Select coordinator in main loop to avoid race on Peers.GetAll
 			// TODO(saml) coordinator selection strategy - currently just picks first connected peer
 			connected := n.GetConnectedPeers()
@@ -304,6 +319,15 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 				continue
 			}
 			go n.requestPunchCoordination(e, connected[0])
+			// for _, key := range n.GetConnectedPeers() {
+			// 	if p, ok := n.Store.Cluster.Nodes.Get(key); ok {
+			// 		if _, ok := p.Node.Connected[e.PeerKey.String()]; ok {
+			// 			go n.requestPunchCoordination(e, key)
+			// 			continue
+			// 		}
+			// 	}
+			// }
+			// n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.String()[:8])
 		}
 	}
 }
@@ -349,14 +373,22 @@ func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
 	ctx, cancel := context.WithTimeout(context.Background(), n.conf.PunchAttemptTimeout)
 	defer cancel()
 
+	n.log.Debugw("attempting direct connection", "peer", e.PeerKey.String()[:8], "ips", e.Ips, "port", e.Port)
+
 	sockets := []socket.Socket{n.Link.SocketStore().Base()}
 	opts := link.EnsurePeerOpts{
 		SendInterval: 200 * time.Millisecond,
 		Rounds:       2, // 2 attempts just in case the first crossing is blocked (but makes way for the reciprocation)
 	}
 
-	if err := n.Link.EnsurePeer(ctx, e.PeerKey, e.Addrs, sockets, opts); err != nil {
-		n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "err", err)
+	// TODO(saml) not nice to do this on the fly
+	addrs := make([]string, len(e.Ips))
+	for _, ip := range e.Ips {
+		addrs = append(addrs, net.JoinHostPort(ip, fmt.Sprintf("%d", e.Port)))
+	}
+
+	if err := n.Link.EnsurePeer(ctx, e.PeerKey, addrs, sockets, opts); err != nil {
+		n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "ips", e.Ips, "port", e.Port)
 		return err
 	}
 
@@ -381,7 +413,7 @@ func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordin
 		return err
 	}
 
-	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.String()[:8], "coordinator", coordinator.String()[:8])
+	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.String()[:8], "coordinator", coordinator.String()[:8], "mode", e.Mode)
 
 	if err := n.Link.Send(ctx, coordinator, types.Envelope{
 		Type:    types.MsgTypeUDPPunchCoordRequest,

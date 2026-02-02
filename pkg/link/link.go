@@ -240,14 +240,25 @@ func (i *impl) loop(ctx context.Context) {
 
 			switch fr.typ { //nolint:exhaustive
 			case types.MsgTypePing:
-			case types.MsgTypeHandshakeIKInit, types.MsgTypeHandshakeIKResp, types.MsgTypeHandshakeXXPsk2Init, types.MsgTypeHandshakeXXPsk2Resp:
+			case types.MsgTypeHandshakeIKInit,
+				types.MsgTypeHandshakeIKResp,
+				types.MsgTypeHandshakeXXPsk2Init,
+				types.MsgTypeHandshakeXXPsk2Resp:
 				if err := i.handleHandshake(ctx, evt.Src, evt.Socket, fr); err != nil {
 					i.log.Debugf("failed to handle handshake: %s", err)
 				}
-			case types.MsgTypeTransportData, types.MsgTypeTCPPunchRequest, types.MsgTypeTCPPunchTrigger,
-				types.MsgTypeTCPPunchReady, types.MsgTypeTCPPunchResponse, types.MsgTypeGossip, types.MsgTypeTest,
-				types.MsgTypeSessionRequest, types.MsgTypeSessionResponse,
-				types.MsgTypeTCPPunchProbeRequest, types.MsgTypeTCPPunchProbeOffer, types.MsgTypeTCPPunchProbeResult:
+			case types.MsgTypeTransportData,
+				types.MsgTypeTCPPunchRequest,
+				types.MsgTypeTCPPunchTrigger,
+				types.MsgTypeTCPPunchReady,
+				types.MsgTypeTCPPunchResponse,
+				types.MsgTypeGossip,
+				types.MsgTypeTest,
+				types.MsgTypeSessionRequest,
+				types.MsgTypeSessionResponse,
+				types.MsgTypeTCPPunchProbeRequest,
+				types.MsgTypeTCPPunchProbeOffer,
+				types.MsgTypeTCPPunchProbeResult:
 				i.handleApp(ctx, evt.Src, evt.Socket, fr)
 			case types.MsgTypeUDPPunchCoordRequest:
 				i.log.Debugw("received punch request", "src", evt.Src)
@@ -256,9 +267,12 @@ func (i *impl) loop(ctx context.Context) {
 				}
 			case types.MsgTypeUDPPunchCoordResponse:
 				i.log.Debugw("received punch trigger", "src", evt.Src)
-				// Run in goroutine so we don't block the main loop while punching
+				// handlePunchCoordTrigger runs EnsurePeer, which blocks waiting for a handshake/up event that
+				// is processed on this same loop. Run it async so the loop can keep draining socket events and
+				// complete the handshake (AssociatePeerSocket/removeWaiter) that unblocks EnsurePeer.
+				frCopy := fr
 				go func() {
-					if err := i.handlePunchCoordTrigger(ctx, fr); err != nil {
+					if err := i.handlePunchCoordTrigger(ctx, frCopy); err != nil {
 						i.log.Debugf("failed to handle punch coord trigger: %s", err)
 					}
 				}()
@@ -357,23 +371,30 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 
 	peerID := types.PeerKeyFromBytes(req.PeerId)
 
+	// TODO(saml) I'm not even sure if these checks are necessary, we _should_ be in a place where there
+	// can only be one serialized attempt to get the connection
 	// Early exit: already have a session with this peer
 	if _, ok := i.sessionStore.getByPeer(peerID); ok {
+		i.log.Debugf("punch session already exists for peer: %s", peerID.String()[:8])
 		return nil
 	}
-
 	// Early exit: another punch is already in progress for this peer
 	if i.hasWaiter(peerID) {
 		i.log.Debugf("punch already in progress for peer: %s", peerID.String()[:8])
 		return nil
 	}
 
-	addrs := []string{req.PeerAddr}
-
 	var sockets []socket.Socket
 	var opts EnsurePeerOpts
 
 	switch req.Mode { //nolint:exhaustive
+	case peerv1.PunchMode_PUNCH_MODE_DIRECT:
+		i.log.Debugf("attempting direct punch: %s", peerID.String()[:8])
+		sockets = []socket.Socket{i.socketStore.Base()}
+		opts = EnsurePeerOpts{
+			SendInterval: i.cfg.ensurePeerInterval,
+			Rounds:       i.cfg.holepunchAttempts,
+		}
 	case peerv1.PunchMode_PUNCH_MODE_BIRTHDAY:
 		i.log.Debugf("attempting birthday punch: %s", peerID.String()[:8])
 		host, _, err := net.SplitHostPort(req.PeerAddr)
@@ -385,7 +406,10 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 		if err != nil {
 			return fmt.Errorf("create birthday sockets: %w", err)
 		}
-		defer i.socketStore.CloseEphemeral()
+		go func() {
+			<-ensureCtx.Done()
+			i.socketStore.CloseEphemeral()
+		}()
 
 		sockets = birthdaySockets
 		opts = EnsurePeerOpts{
@@ -396,16 +420,9 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 				ProbeCount:  i.cfg.birthdayPunchSocketCount,
 			},
 		}
-	case peerv1.PunchMode_PUNCH_MODE_DIRECT:
-		i.log.Debugf("attempting direct punch: %s", peerID.String()[:8])
-		sockets = []socket.Socket{i.socketStore.Base()}
-		opts = EnsurePeerOpts{
-			SendInterval: i.cfg.ensurePeerInterval,
-			Rounds:       i.cfg.holepunchAttempts,
-		}
 	}
 
-	err = i.EnsurePeer(ensureCtx, peerID, addrs, sockets, opts)
+	err = i.EnsurePeer(ensureCtx, peerID, []string{req.PeerAddr}, sockets, opts)
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		i.log.Debugw("ensure peer failed", "peer", peerID.String()[:8], "err", err)
 		return err
@@ -444,29 +461,35 @@ func (i *impl) handleHandshake(ctx context.Context, src string, sock socket.Sock
 		// Clearing after a grace period gates against old handshakes from the same "batch" overriding
 		// successfully completed "quicker" ones (`handleHandshake.getOrCreate` returns handshakes with invalid
 		// stages, which are dropped).
-		// TODO(saml) need to sync up the various durations/grace periods. This timeout needs to be less than the
-		// handshake request TTL.
-		// TODO(saml) probably need to clear on hard errors too
 		i.handshakeStore.clear(fr.senderID, i.cfg.handshakeDedupTTL)
 
 		active, ok := i.sessionStore.getByPeer(peerKey)
 		if !ok || active != res.Session {
+			i.log.Debugw("active session nonexistent or mismatching", "peer", types.PeerKeyFromBytes(res.PeerIdentityPub).String()[:8])
 			return nil
 		}
 
 		i.socketStore.AssociatePeerSocket(peerKey, sock)
 		i.removeWaiter(peerKey)
-		// start only when we trust the peer
-		addr := res.Session.peerAddrValue()
-		i.bumpPinger(ctx, addr)
 
-		select {
-		case i.events <- peer.ConnectPeer{
-			PeerKey:     peerKey,
-			Addr:        addr,
-			IdentityPub: res.PeerIdentityPub,
-		}:
-		default:
+		// start only when we trust the peer
+		i.bumpPinger(ctx, src)
+
+		host, portStr, err := net.SplitHostPort(src)
+		if err != nil {
+			return err
+		}
+
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			return err
+		}
+
+		i.events <- peer.ConnectPeer{
+			PeerKey:      peerKey,
+			Ip:           host,
+			ObservedPort: port,
+			IdentityPub:  res.PeerIdentityPub,
 		}
 	}
 
@@ -499,9 +522,7 @@ func (i *impl) handleApp(ctx context.Context, src string, sock socket.Socket, fr
 	if src != "" {
 		sess.setPeerAddr(src)
 	}
-	if sock != nil {
-		i.socketStore.AssociatePeerSocket(peerKey, sock)
-	}
+	i.socketStore.AssociatePeerSocket(peerKey, sock)
 	addr := sess.peerAddrValue()
 	if addr != "" {
 		i.bumpPinger(ctx, addr)
@@ -656,6 +677,7 @@ func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []st
 	}
 
 	if _, ok := i.sessionStore.getByPeer(peerKey); ok {
+		i.log.Debugf("session already exists for peer: %s", peerKey.String()[:8])
 		return nil
 	}
 
@@ -665,6 +687,7 @@ func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []st
 
 	// re-check under lock
 	if _, ok := i.sessionStore.getByPeer(peerKey); ok {
+		i.log.Debugf("session already exists for peer: %s", peerKey.String()[:8])
 		return nil
 	}
 
@@ -678,6 +701,7 @@ func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []st
 
 	res, err := i.handshakeStore.initIK(peerKey.Bytes())
 	if err != nil {
+		i.log.Errorf("unable to create IK handshake: %s", peerKey.String()[:8], "err", err)
 		return err
 	}
 
@@ -695,6 +719,7 @@ func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []st
 		for {
 			select {
 			case <-upCh:
+				i.log.Debugw("received birthday up event", "peer", peerKey.String()[:8])
 				return nil
 			case <-ctx.Done():
 				return ctx.Err()
@@ -729,7 +754,7 @@ func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []st
 	tickCh := make(chan struct{})
 	go func() {
 		defer close(tickCh)
-		for j := 0; j < totalSends; j++ {
+		for j := range totalSends {
 			select {
 			case tickCh <- struct{}{}:
 			case <-ctx.Done():
@@ -749,6 +774,7 @@ func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []st
 	for {
 		select {
 		case <-upCh:
+			i.log.Debugw("received direct up event", "peer", peerKey.String()[:8])
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
@@ -845,7 +871,7 @@ func encodeHandshake(res HandshakeResult) []byte {
 
 func generateRandomPorts(host string, count int) []string {
 	addrs := make([]string, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		port := 1024 + rand.Intn(65535-1024+1)
 		addrs[i] = net.JoinHostPort(host, strconv.Itoa(port))
 	}

@@ -56,11 +56,11 @@ func PeerKeyFromString(s string) (PeerKey, error) {
 	return PeerKeyFromBytes(b), nil
 }
 
-func (pk *PeerKey) Bytes() []byte {
+func (pk PeerKey) Bytes() []byte {
 	return pk[:]
 }
 
-func (pk *PeerKey) String() string {
+func (pk PeerKey) String() string {
 	return hex.EncodeToString(pk[:])
 }
 
