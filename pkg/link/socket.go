@@ -130,7 +130,7 @@ func (s *socketStoreImpl) CreateBatch(count int) ([]socket.Socket, error) {
 	}
 
 	sockets := make([]socket.Socket, 0, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		sock, err := s.CreateEphemeral()
 		if err != nil {
 			// Close any sockets we already created

@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -70,6 +71,7 @@ type Node struct {
 	Directory       *Directory
 	crypto          *localCrypto
 	localPeerEvents chan peer.Input
+	gossipTrigger   chan struct{}
 }
 
 func New(conf *Config) (*Node, error) {
@@ -162,6 +164,7 @@ func New(conf *Config) (*Node, error) {
 		crypto:          crypto,
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
+		gossipTrigger:   make(chan struct{}),
 	}, nil
 }
 
@@ -193,6 +196,8 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 			n.tick()
 		case <-gossipTicker.C:
 			n.gossip(ctx)
+		case <-n.gossipTrigger:
+			n.gossip(ctx)
 		// external origin events
 		case in := <-n.Link.Events():
 			n.handlePeerInput(in)
@@ -200,6 +205,14 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 		case in := <-n.localPeerEvents:
 			n.handlePeerInput(in)
 		}
+	}
+}
+
+// TODO(saml) this is a result of an LLM scaffolded project and will definitely be removed.
+func (n *Node) triggerGossip() {
+	select {
+	case n.gossipTrigger <- struct{}{}:
+	default:
 	}
 }
 
@@ -291,19 +304,21 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
-			n.log.Infow("peer connected", "peer_id", e.PeerKey.String()[:8])
-			// TODO(saml) update (currently non-existent) "connected" state
+			n.log.Infow("peer connected", "peer_id", e.PeerKey.String()[:8], "addr", e.Addr)
+			n.Store.ConnectNode(e.PeerKey)
+			n.triggerGossip()
 		case peer.AttemptConnect:
 			go n.attemptDirectConnect(e)
 		case peer.RequestPunchCoordination:
-			// Select coordinator in main loop to avoid race on Peers.GetAll
-			// TODO(saml) coordinator selection strategy - currently just picks first connected peer
-			connected := n.GetConnectedPeers()
-			if len(connected) == 0 {
-				n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.String()[:8])
-				continue
+			for _, key := range n.GetConnectedPeers() {
+				if p, ok := n.Store.Cluster.Nodes.Get(key); ok {
+					if _, ok := p.Node.Connected[e.PeerKey.String()]; ok {
+						go n.requestPunchCoordination(e, key)
+						continue
+					}
+				}
 			}
-			go n.requestPunchCoordination(e, connected[0])
+			n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.String()[:8])
 		}
 	}
 }
@@ -349,6 +364,8 @@ func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
 	ctx, cancel := context.WithTimeout(context.Background(), n.conf.PunchAttemptTimeout)
 	defer cancel()
 
+	n.log.Debugw("attempting direct connection", "peer", e.PeerKey.String()[:8], "addrs", e.Addrs)
+
 	sockets := []socket.Socket{n.Link.SocketStore().Base()}
 	opts := link.EnsurePeerOpts{
 		SendInterval: 200 * time.Millisecond,
@@ -356,7 +373,7 @@ func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
 	}
 
 	if err := n.Link.EnsurePeer(ctx, e.PeerKey, e.Addrs, sockets, opts); err != nil {
-		n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "err", err)
+		n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "addrs", e.Addrs, "err", err)
 		return err
 	}
 
@@ -381,7 +398,7 @@ func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordin
 		return err
 	}
 
-	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.String()[:8], "coordinator", coordinator.String()[:8])
+	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.String()[:8], "coordinator", coordinator.String()[:8], "mode", e.Mode)
 
 	if err := n.Link.Send(ctx, coordinator, types.Envelope{
 		Type:    types.MsgTypeUDPPunchCoordRequest,

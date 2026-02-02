@@ -613,7 +613,7 @@ func (s *NATSocketStore) CreateEphemeral() (socket.Socket, error) {
 
 func (s *NATSocketStore) CreateBatch(count int) ([]socket.Socket, error) {
 	sockets := make([]socket.Socket, 0, count)
-	for i := 0; i < count; i++ {
+	for range count {
 		sock, err := s.CreateEphemeral()
 		if err != nil {
 			for _, created := range sockets {
@@ -747,9 +747,7 @@ func (s *NATSocketStore) hasSentTo(addr string) bool {
 }
 
 func (s *NATSocketStore) startRecvLoop(sock *NATSocket) {
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	&{s wg}.Go(func() {
 		for {
 			pkt, ok := <-sock.ep.recvCh
 			if !ok {
@@ -789,5 +787,5 @@ func (s *NATSocketStore) startRecvLoop(sock *NATSocket) {
 			default:
 			}
 		}
-	}()
+	})
 }

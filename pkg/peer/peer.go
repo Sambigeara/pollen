@@ -122,6 +122,7 @@ type Output interface{ isOutput() }
 // PeerConnected signals a peer has transitioned to connected state.
 type PeerConnected struct {
 	PeerKey types.PeerKey
+	Addr    string
 }
 
 func (PeerConnected) isOutput() {}
@@ -303,7 +304,7 @@ func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 	p.stage = ConnectStageDirect // reset for next time
 	p.stageAttempts = 0
 
-	return []Output{PeerConnected{PeerKey: e.PeerKey}}
+	return []Output{PeerConnected{PeerKey: e.PeerKey, Addr: e.Addr}}
 }
 
 func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
