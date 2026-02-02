@@ -7,16 +7,27 @@ import "google/protobuf/empty.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1";
 
+enum NatType {
+  NAT_TYPE_UNSPECIFIED = 0;
+  NAT_TYPE_GOOD = 1; // the port learned by the coordinator will allow other peers to reach the same node on the same port
+  NAT_TYPE_BAD = 2; // each new connection requires a differnt, randomly allocated port for access
+}
+
 message Node {
   string id = 1 [(buf.validate.field).string = {
     pattern: "^[a-fA-F0-9]{64}$"
     len: 64
   }];
   string name = 2;
-  repeated string addresses = 3;
-  Keys keys = 4;
-  repeated Service services = 5;
-  map<string, google.protobuf.Empty> connected = 6;
+  repeated string ips = 3;
+  uint32 local_port = 4 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+  Keys keys = 5;
+  repeated Service services = 6;
+  map<string, google.protobuf.Empty> connected = 7;
+  NatType nat_type = 8;
 }
 
 message Service {

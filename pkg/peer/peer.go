@@ -28,18 +28,11 @@ const (
 	ConnectStageRelay
 )
 
-type PunchMode int
-
-const (
-	PunchModeUnspecified PunchMode = iota
-	PunchModeDirect
-	PunchModeBirthday
-)
-
 type Peer struct {
 	nextActionAt  time.Time
 	connectedAt   time.Time
-	addrs         []string
+	ips           []string
+	observedPort  int
 	identityPub   []byte
 	state         PeerState
 	stage         ConnectStage
@@ -81,7 +74,8 @@ type Input interface{ isInput() }
 // DiscoverPeer adds a new peer or updates known addresses for an existing peer.
 // Used on startup (from disk) or when learning about a peer from gossip.
 type DiscoverPeer struct {
-	Addrs   []string
+	Ips     []string
+	Port    int
 	PeerKey types.PeerKey
 }
 
@@ -94,9 +88,10 @@ func (Tick) isInput() {}
 
 // ConnectPeer signals a successful connection (handshake complete).
 type ConnectPeer struct {
-	Addr        string
-	IdentityPub []byte
-	PeerKey     types.PeerKey
+	Ip           string
+	ObservedPort int
+	IdentityPub  []byte
+	PeerKey      types.PeerKey
 }
 
 func (ConnectPeer) isInput() {}
@@ -121,23 +116,33 @@ type Output interface{ isOutput() }
 
 // PeerConnected signals a peer has transitioned to connected state.
 type PeerConnected struct {
-	PeerKey types.PeerKey
-	Addr    string
+	Ip           string
+	ObservedPort int
+	PeerKey      types.PeerKey
 }
 
 func (PeerConnected) isOutput() {}
 
 // AttemptConnect signals the caller should try a direct connection to this peer.
 type AttemptConnect struct {
-	Addrs   []string
+	Ips     []string
+	Port    int
 	PeerKey types.PeerKey
 }
 
 func (AttemptConnect) isOutput() {}
 
+type PunchMode int
+
+const (
+	PunchModeUnspecified PunchMode = iota
+	PunchModeDirect
+	PunchModeBirthday
+)
+
 // RequestPunchCoordination signals the caller should request NAT punch coordination.
 type RequestPunchCoordination struct {
-	Addrs   []string
+	Ips     []string
 	PeerKey types.PeerKey
 	Mode    PunchMode
 }
@@ -232,16 +237,19 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) []Output {
 			id:           e.PeerKey,
 			state:        PeerStateDiscovered,
 			stage:        ConnectStageDirect,
-			addrs:        e.Addrs,
-			nextActionAt: now, // eligible for connection immediately
+			ips:          e.Ips,
+			observedPort: e.Port, // we don't know if the port is observed at this point
+			nextActionAt: now,    // eligible for connection immediately
 		}
 		s.m[e.PeerKey] = p
 		return nil
 	}
 
+	// TODO(saml) LLM hangover--is this necessary?
 	// Update addresses if peer already exists but isn't connected
 	if p.state != PeerStateConnected {
-		p.addrs = e.Addrs
+		p.ips = e.Ips
+		p.observedPort = e.Port
 	}
 	return nil
 }
@@ -266,18 +274,18 @@ func (s *Store) tick(now time.Time) []Output {
 			// Fall through to connection logic
 		}
 
-		if len(p.addrs) == 0 {
+		if len(p.ips) == 0 {
 			continue
 		}
 
 		var out Output
 		switch p.stage {
 		case ConnectStageUnspecified, ConnectStageDirect:
-			out = AttemptConnect{PeerKey: p.id, Addrs: p.addrs}
+			out = AttemptConnect{PeerKey: p.id, Ips: p.ips, Port: p.observedPort}
 		case ConnectStagePunch:
-			out = RequestPunchCoordination{PeerKey: p.id, Addrs: p.addrs, Mode: PunchModeDirect}
+			out = RequestPunchCoordination{PeerKey: p.id, Ips: p.ips}
 		case ConnectStagePunchBirthday:
-			out = RequestPunchCoordination{PeerKey: p.id, Addrs: p.addrs, Mode: PunchModeBirthday}
+			out = RequestPunchCoordination{PeerKey: p.id, Ips: p.ips, Mode: PunchModeBirthday}
 		case ConnectStageRelay:
 			// TODO(saml): implement relay stage
 			continue
@@ -299,12 +307,13 @@ func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 	// Always update state, even if already connected (peer may have restarted)
 	p.state = PeerStateConnected
 	p.identityPub = e.IdentityPub
-	p.addrs = []string{e.Addr}
+	p.ips = []string{e.Ip}
+	p.observedPort = e.ObservedPort
 	p.connectedAt = now
 	p.stage = ConnectStageDirect // reset for next time
 	p.stageAttempts = 0
 
-	return []Output{PeerConnected{PeerKey: e.PeerKey, Addr: e.Addr}}
+	return []Output{PeerConnected{PeerKey: e.PeerKey, Ip: e.Ip, ObservedPort: e.ObservedPort}}
 }
 
 func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {

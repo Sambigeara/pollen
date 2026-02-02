@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sort"
 	"strconv"
@@ -44,24 +45,10 @@ func (s *NodeService) CreateInvite(_ context.Context, _ *controlv1.CreateInviteR
 		return &controlv1.CreateInviteResponse{}, nil
 	}
 
+	port := strconv.Itoa(int(rec.Node.LocalPort))
 	var ips []string
-	port := ""
-	for _, a := range rec.Node.Addresses {
-		host, p, err := splitHostPort(a)
-		if err != nil {
-			continue
-		}
-		if host != "" {
-			ips = append(ips, host)
-		}
-		if port == "" && p != "" {
-			port = p
-		}
-	}
-
-	if port == "" {
-		// defensive fallback (matches your defaultUDPPort)
-		port = "60611"
+	for _, ip := range rec.Node.Ips {
+		ips = append(ips, ip)
 	}
 
 	inv, err := NewInvite(ips, port)
@@ -90,8 +77,9 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 
 	selfAddr := ""
 	if rec, ok := s.node.Store.Cluster.Nodes.Get(localID); ok {
-		if rec.Node != nil && len(rec.Node.Addresses) > 0 {
-			selfAddr = rec.Node.Addresses[0]
+		if rec.Node != nil && len(rec.Node.Ips) > 0 {
+			selfAddr = rec.Node.Ips[0]
+			selfAddr = net.JoinHostPort(rec.Node.Ips[0], fmt.Sprintf("%d", rec.Node.LocalPort))
 		}
 	}
 
@@ -116,8 +104,8 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		if online {
 			status = controlv1.NodeStatus_NODE_STATUS_ONLINE
 		}
-		if !online && node != nil && len(node.Addresses) > 0 {
-			addr = node.Addresses[0]
+		if !online && node != nil && len(node.Ips) > 0 {
+			addr = net.JoinHostPort(node.Ips[0], fmt.Sprintf("%d", node.LocalPort))
 		}
 
 		out.Nodes = append(out.Nodes, &controlv1.NodeSummary{
@@ -246,7 +234,8 @@ func cloneNode(node *statev1.Node) *statev1.Node {
 	return &statev1.Node{
 		Id:        node.Id,
 		Name:      node.Name,
-		Addresses: append([]string(nil), node.Addresses...),
+		Ips:       append([]string(nil), node.Ips...),
+		LocalPort: node.LocalPort,
 		Keys:      node.Keys,
 		Services:  append([]*statev1.Service(nil), node.Services...),
 	}

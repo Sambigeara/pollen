@@ -110,11 +110,6 @@ func New(conf *Config) (*Node, error) {
 		}
 	}
 
-	addrs := make([]string, 0, len(ips))
-	for _, ip := range ips {
-		addrs = append(addrs, net.JoinHostPort(ip, fmt.Sprintf("%d", conf.Port)))
-	}
-
 	crypto := &localCrypto{
 		noisePubKey:    noiseKey.Public,
 		identityPubKey: pubKey,
@@ -146,7 +141,8 @@ func New(conf *Config) (*Node, error) {
 
 	cluster.Nodes.Set(nodeID, &statev1.Node{
 		Id:        nodeID.String(),
-		Addresses: addrs,
+		Ips:       ips,
+		LocalPort: uint32(conf.Port),
 		Keys: &statev1.Keys{
 			NoisePub:    noiseKey.Public,
 			IdentityPub: pubKey,
@@ -289,13 +285,14 @@ func (n *Node) syncPeersFromState() {
 		if node.Id == n.Store.Cluster.LocalID.String() {
 			continue
 		}
-		if len(node.Keys.NoisePub) == 0 || len(node.Addresses) == 0 {
+		if len(node.Keys.NoisePub) == 0 || len(node.Ips) == 0 {
 			continue
 		}
 
 		n.Peers.Step(time.Now(), peer.DiscoverPeer{
 			PeerKey: types.PeerKeyFromBytes(node.Keys.NoisePub),
-			Addrs:   node.Addresses,
+			Ips:     node.Ips,
+			Port:    int(node.LocalPort),
 		})
 	}
 }
@@ -304,21 +301,33 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
-			n.log.Infow("peer connected", "peer_id", e.PeerKey.String()[:8], "addr", e.Addr)
+			n.log.Infow("peer connected", "peer_id", e.PeerKey.String()[:8], "ip", e.Ip, "observedPort", e.ObservedPort)
 			n.Store.ConnectNode(e.PeerKey)
 			n.triggerGossip()
 		case peer.AttemptConnect:
 			go n.attemptDirectConnect(e)
 		case peer.RequestPunchCoordination:
-			for _, key := range n.GetConnectedPeers() {
-				if p, ok := n.Store.Cluster.Nodes.Get(key); ok {
-					if _, ok := p.Node.Connected[e.PeerKey.String()]; ok {
-						go n.requestPunchCoordination(e, key)
-						continue
-					}
-				}
+			// TODO(saml) centralise on single deterministic tie-breaker (PeerKey.Less()?)
+			if bytes.Compare(n.crypto.noisePubKey, e.PeerKey.Bytes()) < 0 {
+				continue
 			}
-			n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.String()[:8])
+			// Select coordinator in main loop to avoid race on Peers.GetAll
+			// TODO(saml) coordinator selection strategy - currently just picks first connected peer
+			connected := n.GetConnectedPeers()
+			if len(connected) == 0 {
+				n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.String()[:8])
+				continue
+			}
+			go n.requestPunchCoordination(e, connected[0])
+			// for _, key := range n.GetConnectedPeers() {
+			// 	if p, ok := n.Store.Cluster.Nodes.Get(key); ok {
+			// 		if _, ok := p.Node.Connected[e.PeerKey.String()]; ok {
+			// 			go n.requestPunchCoordination(e, key)
+			// 			continue
+			// 		}
+			// 	}
+			// }
+			// n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.String()[:8])
 		}
 	}
 }
@@ -364,7 +373,7 @@ func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
 	ctx, cancel := context.WithTimeout(context.Background(), n.conf.PunchAttemptTimeout)
 	defer cancel()
 
-	n.log.Debugw("attempting direct connection", "peer", e.PeerKey.String()[:8], "addrs", e.Addrs)
+	n.log.Debugw("attempting direct connection", "peer", e.PeerKey.String()[:8], "ips", e.Ips, "port", e.Port)
 
 	sockets := []socket.Socket{n.Link.SocketStore().Base()}
 	opts := link.EnsurePeerOpts{
@@ -372,8 +381,14 @@ func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
 		Rounds:       2, // 2 attempts just in case the first crossing is blocked (but makes way for the reciprocation)
 	}
 
-	if err := n.Link.EnsurePeer(ctx, e.PeerKey, e.Addrs, sockets, opts); err != nil {
-		n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "addrs", e.Addrs, "err", err)
+	// TODO(saml) not nice to do this on the fly
+	addrs := make([]string, len(e.Ips))
+	for _, ip := range e.Ips {
+		addrs = append(addrs, net.JoinHostPort(ip, fmt.Sprintf("%d", e.Port)))
+	}
+
+	if err := n.Link.EnsurePeer(ctx, e.PeerKey, addrs, sockets, opts); err != nil {
+		n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "ips", e.Ips, "port", e.Port)
 		return err
 	}
 

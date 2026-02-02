@@ -384,12 +384,17 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 		return nil
 	}
 
-	addrs := []string{req.PeerAddr}
-
 	var sockets []socket.Socket
 	var opts EnsurePeerOpts
 
 	switch req.Mode { //nolint:exhaustive
+	case peerv1.PunchMode_PUNCH_MODE_DIRECT:
+		i.log.Debugf("attempting direct punch: %s", peerID.String()[:8])
+		sockets = []socket.Socket{i.socketStore.Base()}
+		opts = EnsurePeerOpts{
+			SendInterval: i.cfg.ensurePeerInterval,
+			Rounds:       i.cfg.holepunchAttempts,
+		}
 	case peerv1.PunchMode_PUNCH_MODE_BIRTHDAY:
 		i.log.Debugf("attempting birthday punch: %s", peerID.String()[:8])
 		host, _, err := net.SplitHostPort(req.PeerAddr)
@@ -415,16 +420,9 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 				ProbeCount:  i.cfg.birthdayPunchSocketCount,
 			},
 		}
-	case peerv1.PunchMode_PUNCH_MODE_DIRECT:
-		i.log.Debugf("attempting direct punch: %s", peerID.String()[:8])
-		sockets = []socket.Socket{i.socketStore.Base()}
-		opts = EnsurePeerOpts{
-			SendInterval: i.cfg.ensurePeerInterval,
-			Rounds:       i.cfg.holepunchAttempts,
-		}
 	}
 
-	err = i.EnsurePeer(ensureCtx, peerID, addrs, sockets, opts)
+	err = i.EnsurePeer(ensureCtx, peerID, []string{req.PeerAddr}, sockets, opts)
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		i.log.Debugw("ensure peer failed", "peer", peerID.String()[:8], "err", err)
 		return err
@@ -473,17 +471,25 @@ func (i *impl) handleHandshake(ctx context.Context, src string, sock socket.Sock
 
 		i.socketStore.AssociatePeerSocket(peerKey, sock)
 		i.removeWaiter(peerKey)
-		// start only when we trust the peer
-		addr := res.Session.peerAddrValue()
-		i.bumpPinger(ctx, addr)
 
-		select {
-		case i.events <- peer.ConnectPeer{
-			PeerKey:     peerKey,
-			Addr:        addr,
-			IdentityPub: res.PeerIdentityPub,
-		}:
-		default:
+		// start only when we trust the peer
+		i.bumpPinger(ctx, src)
+
+		host, portStr, err := net.SplitHostPort(src)
+		if err != nil {
+			return err
+		}
+
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			return err
+		}
+
+		i.events <- peer.ConnectPeer{
+			PeerKey:      peerKey,
+			Ip:           host,
+			ObservedPort: port,
+			IdentityPub:  res.PeerIdentityPub,
 		}
 	}
 

@@ -126,17 +126,20 @@ func TestNode(t *testing.T) {
 
 			expectedA = &statev1.Node{
 				Id:        idA.String(),
-				Addresses: advertisedAddrs([]string{"127.0.0.1"}, portA),
+				Ips:       []string{"127.0.0.1"},
+				LocalPort: uint32(portA),
 				Keys:      nodeA.crypto.GetStateKeys(),
 			}
 			expectedB = &statev1.Node{
 				Id:        idB.String(),
-				Addresses: advertisedAddrs([]string{"127.0.0.1"}, portB),
+				Ips:       []string{"127.0.0.1"},
+				LocalPort: uint32(portB),
 				Keys:      nodeB.crypto.GetStateKeys(),
 			}
 			expectedC = &statev1.Node{
 				Id:        idC.String(),
-				Addresses: advertisedAddrs([]string{"127.0.0.1"}, portC),
+				Ips:       []string{"127.0.0.1"},
+				LocalPort: uint32(portC),
 				Keys:      nodeC.crypto.GetStateKeys(),
 			}
 
@@ -305,10 +308,18 @@ func TestNode(t *testing.T) {
 			assert.Equal(c, 3, len(storeC))
 
 			if nodeRec, ok := storeB[idC]; ok {
-				assert.Equal(c, advertisedAddrs([]string{"10.0.0.3"}, portC), nodeRec.Addresses)
+				expectedAddresses := []string{}
+				for _, ip := range nodeRec.Ips {
+					expectedAddresses = append(expectedAddresses, net.JoinHostPort(ip, fmt.Sprintf("%d", portC)))
+				}
+				assert.Equal(c, advertisedAddrs([]string{"10.0.0.3"}, portC), expectedAddresses)
 			}
 			if nodeRec, ok := storeC[idB]; ok {
-				assert.Equal(c, advertisedAddrs([]string{"10.0.0.2"}, portB), nodeRec.Addresses)
+				expectedAddresses := []string{}
+				for _, ip := range nodeRec.Ips {
+					expectedAddresses = append(expectedAddresses, net.JoinHostPort(ip, fmt.Sprintf("%d", portB)))
+				}
+				assert.Equal(c, advertisedAddrs([]string{"10.0.0.2"}, portB), expectedAddresses)
 			}
 		}, 2*time.Second, 50*time.Millisecond, "nodes failed to converge state")
 
