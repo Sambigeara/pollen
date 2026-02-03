@@ -24,7 +24,6 @@ const (
 	ConnectStageUnspecified ConnectStage = iota
 	ConnectStageDirect
 	ConnectStagePunch
-	ConnectStagePunchBirthday
 	ConnectStageRelay
 )
 
@@ -41,14 +40,13 @@ type Peer struct {
 }
 
 type Config struct {
-	FirstBackoff                  time.Duration
-	BaseBackoff                   time.Duration
-	MaxBackoff                    time.Duration
-	DirectAttemptThreshold        int
-	PunchAttemptThreshold         int
-	PunchBirthdayAttemptThreshold int
-	UnreachableRetryInterval      time.Duration
-	DisconnectedRetryInterval     time.Duration
+	FirstBackoff              time.Duration
+	BaseBackoff               time.Duration
+	MaxBackoff                time.Duration
+	DirectAttemptThreshold    int
+	PunchAttemptThreshold     int
+	UnreachableRetryInterval  time.Duration
+	DisconnectedRetryInterval time.Duration
 }
 
 type Store struct {
@@ -132,19 +130,10 @@ type AttemptConnect struct {
 
 func (AttemptConnect) isOutput() {}
 
-type PunchMode int
-
-const (
-	PunchModeUnspecified PunchMode = iota
-	PunchModeDirect
-	PunchModeBirthday
-)
-
 // RequestPunchCoordination signals the caller should request NAT punch coordination.
 type RequestPunchCoordination struct {
 	Ips     []string
 	PeerKey types.PeerKey
-	Mode    PunchMode
 }
 
 func (RequestPunchCoordination) isOutput() {}
@@ -155,9 +144,8 @@ const (
 	defaultMaxBackoff   = 60 * time.Second
 	defaultFirstBackoff = 500 * time.Millisecond
 
-	defaultDirectAttemptThreshold        = 1
-	defaultPunchAttemptThreshold         = 1
-	defaultPunchBirthdayAttemptThreshold = 1
+	defaultDirectAttemptThreshold = 1
+	defaultPunchAttemptThreshold  = 1
 
 	defaultUnreachableRetryInterval  = 60 * time.Second
 	defaultDisconnectedRetryInterval = 60 * time.Second
@@ -165,14 +153,13 @@ const (
 
 func DefaultConfig() Config {
 	return Config{
-		FirstBackoff:                  defaultFirstBackoff,
-		BaseBackoff:                   defaultBaseBackoff,
-		MaxBackoff:                    defaultMaxBackoff,
-		DirectAttemptThreshold:        defaultDirectAttemptThreshold,
-		PunchAttemptThreshold:         defaultPunchAttemptThreshold,
-		PunchBirthdayAttemptThreshold: defaultPunchBirthdayAttemptThreshold,
-		UnreachableRetryInterval:      defaultUnreachableRetryInterval,
-		DisconnectedRetryInterval:     defaultDisconnectedRetryInterval,
+		FirstBackoff:              defaultFirstBackoff,
+		BaseBackoff:               defaultBaseBackoff,
+		MaxBackoff:                defaultMaxBackoff,
+		DirectAttemptThreshold:    defaultDirectAttemptThreshold,
+		PunchAttemptThreshold:     defaultPunchAttemptThreshold,
+		UnreachableRetryInterval:  defaultUnreachableRetryInterval,
+		DisconnectedRetryInterval: defaultDisconnectedRetryInterval,
 	}
 }
 
@@ -192,9 +179,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.PunchAttemptThreshold <= 0 {
 		c.PunchAttemptThreshold = def.PunchAttemptThreshold
-	}
-	if c.PunchBirthdayAttemptThreshold <= 0 {
-		c.PunchBirthdayAttemptThreshold = def.PunchBirthdayAttemptThreshold
 	}
 	if c.UnreachableRetryInterval <= 0 {
 		c.UnreachableRetryInterval = def.UnreachableRetryInterval
@@ -284,8 +268,6 @@ func (s *Store) tick(now time.Time) []Output {
 			out = AttemptConnect{PeerKey: p.id, Ips: p.ips, Port: p.observedPort}
 		case ConnectStagePunch:
 			out = RequestPunchCoordination{PeerKey: p.id, Ips: p.ips}
-		case ConnectStagePunchBirthday:
-			out = RequestPunchCoordination{PeerKey: p.id, Ips: p.ips, Mode: PunchModeBirthday}
 		case ConnectStageRelay:
 			// TODO(saml): implement relay stage
 			continue
@@ -333,12 +315,7 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
 		}
 	case ConnectStagePunch:
 		if p.stageAttempts >= s.cfg.PunchAttemptThreshold {
-			p.stage = ConnectStagePunchBirthday
-			p.stageAttempts = 0
-		}
-	case ConnectStagePunchBirthday:
-		if p.stageAttempts >= s.cfg.PunchBirthdayAttemptThreshold {
-			// All connection methods exhausted, retry after long backoff
+			// All connection methods exhausted, fall back to relay (currently unreachable)
 			p.state = PeerStateUnreachable
 			p.nextActionAt = now.Add(s.cfg.UnreachableRetryInterval)
 			return nil

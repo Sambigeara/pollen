@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestStore_DirectToPunchBirthdayToUnreachable(t *testing.T) {
+func TestStore_DirectToPunchToUnreachable(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.FirstBackoff = 10 * time.Millisecond
 	cfg.BaseBackoff = 10 * time.Millisecond
@@ -37,29 +37,15 @@ func TestStore_DirectToPunchBirthdayToUnreachable(t *testing.T) {
 	attemptTime := now.Add(cfg.FirstBackoff)
 	outputs = store.Step(attemptTime, Tick{})
 	require.Len(t, outputs, 1)
-	req, ok := outputs[0].(RequestPunchCoordination)
+	_, ok := outputs[0].(RequestPunchCoordination)
 	require.True(t, ok)
-	require.Equal(t, PunchModeDirect, req.Mode)
 
 	store.Step(attemptTime, ConnectFailed{PeerKey: key})
 	peer = store.m[key]
-	require.Equal(t, PeerStateDiscovered, peer.state)
-	require.Equal(t, ConnectStagePunchBirthday, peer.stage)
-	require.Equal(t, attemptTime.Add(cfg.FirstBackoff), peer.nextActionAt)
-
-	birthdayTime := attemptTime.Add(cfg.FirstBackoff)
-	outputs = store.Step(birthdayTime, Tick{})
-	require.Len(t, outputs, 1)
-	req, ok = outputs[0].(RequestPunchCoordination)
-	require.True(t, ok)
-	require.Equal(t, PunchModeBirthday, req.Mode)
-
-	store.Step(birthdayTime, ConnectFailed{PeerKey: key})
-	peer = store.m[key]
 	require.Equal(t, PeerStateUnreachable, peer.state)
-	require.Equal(t, birthdayTime.Add(cfg.UnreachableRetryInterval), peer.nextActionAt)
+	require.Equal(t, attemptTime.Add(cfg.UnreachableRetryInterval), peer.nextActionAt)
 
-	outputs = store.Step(birthdayTime.Add(cfg.UnreachableRetryInterval), Tick{})
+	outputs = store.Step(attemptTime.Add(cfg.UnreachableRetryInterval), Tick{})
 	require.Len(t, outputs, 1)
 	require.IsType(t, AttemptConnect{}, outputs[0])
 }
