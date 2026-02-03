@@ -454,9 +454,9 @@ func (m *Manager) HandleSessionRequest(ctx context.Context, peerKey types.PeerKe
 		return fmt.Errorf("split listener addr: %w", err)
 	}
 
-	addrs := make([]string, 0, len(m.ips))
-	for _, ip := range m.ips {
-		addrs = append(addrs, net.JoinHostPort(ip, port))
+	addrs := make([]string, len(m.ips))
+	for i, ip := range m.ips {
+		addrs[i] = net.JoinHostPort(ip, port)
 	}
 
 	resp := &tcpv1.SessionHandshake{

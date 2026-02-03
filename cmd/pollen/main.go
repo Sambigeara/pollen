@@ -219,12 +219,11 @@ func runNode(cmd *cobra.Command, args []string) {
 	}
 
 	conf := &node.Config{
-		Port:                port,
-		GossipInterval:      defaultTimeout,
-		PeerTickInterval:    time.Second,
-		PollenDir:           pollenDir,
-		AdvertisedIPs:       addrs,
-		PunchAttemptTimeout: 3 * time.Second,
+		Port:             port,
+		GossipInterval:   defaultTimeout,
+		PeerTickInterval: time.Second,
+		PollenDir:        pollenDir,
+		AdvertisedIPs:    addrs,
 	}
 
 	n, err := node.New(conf)

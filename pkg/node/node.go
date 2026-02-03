@@ -19,7 +19,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/link"
 	"github.com/sambigeara/pollen/pkg/peer"
-	"github.com/sambigeara/pollen/pkg/socket"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/tunnel"
@@ -55,7 +54,6 @@ type Config struct {
 	Port                int
 	GossipInterval      time.Duration
 	PeerTickInterval    time.Duration
-	PunchAttemptTimeout time.Duration
 	GossipJitter        float64
 	DisableGossipJitter bool
 }
@@ -115,12 +113,12 @@ func New(conf *Config) (*Node, error) {
 		identityPubKey: pubKey,
 	}
 
-	socketStore, err := link.NewSocketStore(conf.Port)
+	tr, err := transport.NewTransport(conf.Port)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create socket store: %w", err)
+		return nil, fmt.Errorf("failed to create transport: %w", err)
 	}
 
-	mesh, err := link.NewLink(socketStore, &cs, noiseKey, crypto, invitesStore, conf.LinkOptions...)
+	mesh, err := link.NewLink(tr, &cs, noiseKey, crypto, invitesStore, conf.LinkOptions...)
 	if err != nil {
 		return nil, err
 	}
@@ -370,24 +368,18 @@ func hasServicePort(node *statev1.Node, port uint32) bool {
 }
 
 func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
-	ctx, cancel := context.WithTimeout(context.Background(), n.conf.PunchAttemptTimeout)
-	defer cancel()
-
-	n.log.Debugw("attempting direct connection", "peer", e.PeerKey.String()[:8], "ips", e.Ips, "port", e.Port)
-
-	sockets := []socket.Socket{n.Link.SocketStore().Base()}
-	opts := link.EnsurePeerOpts{
-		SendInterval: 200 * time.Millisecond,
-		Rounds:       2, // 2 attempts just in case the first crossing is blocked (but makes way for the reciprocation)
-	}
-
 	// TODO(saml) not nice to do this on the fly
 	addrs := make([]string, len(e.Ips))
-	for _, ip := range e.Ips {
-		addrs = append(addrs, net.JoinHostPort(ip, fmt.Sprintf("%d", e.Port)))
+	for i, ip := range e.Ips {
+		addrs[i] = net.JoinHostPort(ip, fmt.Sprintf("%d", e.Port))
 	}
 
-	if err := n.Link.EnsurePeer(ctx, e.PeerKey, addrs, sockets, opts); err != nil {
+	n.log.Debugw("attempting direct connection", "peer", e.PeerKey.String()[:8], "addrs", addrs)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := n.Link.EnsurePeer(ctx, e.PeerKey, addrs, 1); err != nil {
 		n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "ips", e.Ips, "port", e.Port)
 		return err
 	}
@@ -396,16 +388,11 @@ func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
 }
 
 func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordinator types.PeerKey) error {
-	ctx, cancel := context.WithTimeout(context.Background(), n.conf.PunchAttemptTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	mode := peerv1.PunchMode_PUNCH_MODE_DIRECT
-	if e.Mode == peer.PunchModeBirthday {
-		mode = peerv1.PunchMode_PUNCH_MODE_BIRTHDAY
-	}
 	req := &peerv1.PunchCoordRequest{
 		PeerId: e.PeerKey.Bytes(),
-		Mode:   mode,
 	}
 	b, err := req.MarshalVT()
 	if err != nil {
@@ -413,7 +400,7 @@ func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordin
 		return err
 	}
 
-	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.String()[:8], "coordinator", coordinator.String()[:8], "mode", e.Mode)
+	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.String()[:8], "coordinator", coordinator.String()[:8])
 
 	if err := n.Link.Send(ctx, coordinator, types.Envelope{
 		Type:    types.MsgTypeUDPPunchCoordRequest,

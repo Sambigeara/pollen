@@ -26,20 +26,12 @@ message InviteStore {
   map<string, Invite> invites = 1;
 }
 
-enum PunchMode {
-  PUNCH_MODE_UNSPECIFIED = 0;
-  PUNCH_MODE_DIRECT = 1;
-  PUNCH_MODE_BIRTHDAY = 2;
-}
-
 message PunchCoordRequest {
   bytes peer_id = 1;
-  PunchMode mode = 2;
 }
 
 message PunchCoordTrigger {
   bytes peer_id = 1;
   string self_addr = 2;
   string peer_addr = 3;
-  PunchMode mode = 4;
 }

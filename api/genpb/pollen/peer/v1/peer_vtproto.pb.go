@@ -268,11 +268,6 @@ func (m *PunchCoordRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.Mode != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Mode))
-		i--
-		dAtA[i] = 0x10
-	}
 	if len(m.PeerId) > 0 {
 		i -= len(m.PeerId)
 		copy(dAtA[i:], m.PeerId)
@@ -312,11 +307,6 @@ func (m *PunchCoordTrigger) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
-	}
-	if m.Mode != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Mode))
-		i--
-		dAtA[i] = 0x20
 	}
 	if len(m.PeerAddr) > 0 {
 		i -= len(m.PeerAddr)
@@ -444,9 +434,6 @@ func (m *PunchCoordRequest) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.Mode != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.Mode))
-	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -468,9 +455,6 @@ func (m *PunchCoordTrigger) SizeVT() (n int) {
 	l = len(m.PeerAddr)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	if m.Mode != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.Mode))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -1199,25 +1183,6 @@ func (m *PunchCoordRequest) UnmarshalVT(dAtA []byte) error {
 				m.PeerId = []byte{}
 			}
 			iNdEx = postIndex
-		case 2:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Mode", wireType)
-			}
-			m.Mode = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.Mode |= PunchMode(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -1367,25 +1332,6 @@ func (m *PunchCoordTrigger) UnmarshalVT(dAtA []byte) error {
 			}
 			m.PeerAddr = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
-		case 4:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Mode", wireType)
-			}
-			m.Mode = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.Mode |= PunchMode(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
