@@ -11,7 +11,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/internal/testutil/memtransport"
-	"github.com/sambigeara/pollen/pkg/link"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/assert"
@@ -381,10 +380,6 @@ func newNode(t *testing.T, dir string, port int, network *memtransport.Network, 
 			PunchAttemptThreshold:     1,
 			UnreachableRetryInterval:  20 * time.Millisecond,
 			DisconnectedRetryInterval: 20 * time.Millisecond,
-		},
-		LinkOptions: []link.Option{
-			link.WithPunchSendInterval(5 * time.Millisecond),
-			link.WithPunchProbeCount(16),
 		},
 		DisableGossipJitter: true,
 	}

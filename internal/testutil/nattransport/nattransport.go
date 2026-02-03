@@ -159,7 +159,7 @@ func (t *publicTransport) Recv() (string, []byte, error) {
 	return pkt.src, pkt.payload, nil
 }
 
-func (t *publicTransport) Send(dst string, b []byte) error {
+func (t *publicTransport) Send(dst string, b []byte, _ bool) error {
 	if t.ep.closed.Load() {
 		return ErrTransportClosed
 	}
@@ -244,7 +244,7 @@ func (t *natTransport) Recv() (string, []byte, error) {
 	return pkt.src, pkt.payload, nil
 }
 
-func (t *natTransport) Send(dst string, b []byte) error {
+func (t *natTransport) Send(dst string, b []byte, _ bool) error {
 	if t.closed.Load() {
 		return ErrTransportClosed
 	}

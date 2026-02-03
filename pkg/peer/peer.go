@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/types"
+	"go.uber.org/zap"
 )
 
 type PeerState int
@@ -50,6 +51,7 @@ type Config struct {
 }
 
 type Store struct {
+	log *zap.SugaredLogger
 	m   map[types.PeerKey]*Peer
 	cfg Config
 }
@@ -61,6 +63,7 @@ func NewStore() *Store {
 func NewStoreWithConfig(cfg Config) *Store {
 	cfg = cfg.withDefaults()
 	return &Store{
+		log: zap.S().Named("peers"),
 		m:   make(map[types.PeerKey]*Peer),
 		cfg: cfg,
 	}
@@ -198,6 +201,8 @@ func (s *Store) backoff(attempts int) time.Duration {
 	return d
 }
 
+// Step progresses the state machine according to the input. It must only
+// be called from a single thread.
 func (s *Store) Step(now time.Time, in Input) []Output {
 	switch e := in.(type) {
 	case Tick:
@@ -229,12 +234,12 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) []Output {
 		return nil
 	}
 
-	// TODO(saml) LLM hangover--is this necessary?
-	// Update addresses if peer already exists but isn't connected
-	if p.state != PeerStateConnected {
-		p.ips = e.Ips
-		p.observedPort = e.Port
-	}
+	// TODO(saml) confirm that this happens eagerly elsewhere
+	// // Update addresses if peer already exists but isn't connected
+	// if p.state != PeerStateConnected {
+	// 	p.ips = e.Ips
+	// 	p.observedPort = e.Port
+	// }
 	return nil
 }
 
@@ -246,20 +251,13 @@ func (s *Store) tick(now time.Time) []Output {
 		}
 
 		switch p.state { //nolint:exhaustive
-		case PeerStateConnected:
+		case PeerStateConnected, PeerStateConnecting:
 			continue
-		case PeerStateConnecting:
-			return s.connectFailed(now, ConnectFailed{p.id})
 		case PeerStateUnreachable:
 			// Retry unreachable peers after backoff expires
 			p.state = PeerStateDiscovered
 			p.stage = ConnectStageDirect
 			p.stageAttempts = 0
-			// Fall through to connection logic
-		}
-
-		if len(p.ips) == 0 {
-			continue
 		}
 
 		var out Output
@@ -305,6 +303,7 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
 	}
 
 	p.stageAttempts++
+	s.log.Debugw("connectFailed", "peer", e.PeerKey.String()[:8], "stageAttempts", p.stageAttempts, "threshold", s.cfg.DirectAttemptThreshold)
 
 	// Check if we should escalate to next stage
 	switch p.stage {

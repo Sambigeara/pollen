@@ -30,7 +30,7 @@ func (i *impl) newPingMgr(ctx context.Context, peerAddr string) *pingMgr {
 				logger.Debugf("closing pinger: %s", peerAddr)
 				return
 			case <-ticker.C:
-				if err := i.transport.Send(peerAddr, encodeFrame(&frame{typ: types.MsgTypePing})); err != nil {
+				if err := i.transport.Send(peerAddr, encodeFrame(&frame{typ: types.MsgTypePing}), false); err != nil {
 					logger.Debugw("ping send failed", "addr", peerAddr, "err", err)
 				}
 			case <-bumpCh:
