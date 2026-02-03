@@ -33,17 +33,17 @@ var _ link.LocalCrypto = (*localCrypto)(nil)
 const (
 	localKeysDir = "keys"
 
-	noiseKeyName         = "noise.key"
-	noisePubKeyName      = "noise.pub"
-	signingKeyName       = "ed25519.key"
-	signingPubKeyName    = "ed25519.pub"
-	pemTypePriv          = "ED25519 PRIVATE KEY"
-	pemTypePub           = "ED25519 PUBLIC KEY"
-	keyDirPerm           = 0o700
-	keyFilePerm          = 0o600
-	punchAttemptDuration = 3 * time.Second
-	loopIntervalJitter   = 0.1
-	peerEventBufSize     = 64
+	noiseKeyName          = "noise.key"
+	noisePubKeyName       = "noise.pub"
+	signingKeyName        = "ed25519.key"
+	signingPubKeyName     = "ed25519.pub"
+	pemTypePriv           = "ED25519 PRIVATE KEY"
+	pemTypePub            = "ED25519 PUBLIC KEY"
+	keyDirPerm            = 0o700
+	keyFilePerm           = 0o600
+	directAttemptDuration = 2 * time.Second
+	loopIntervalJitter    = 0.1
+	peerEventBufSize      = 64
 )
 
 type Config struct {
@@ -163,12 +163,13 @@ func New(conf *Config) (*Node, error) {
 }
 
 func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
+	defer n.shutdown()
+
 	n.registerHandlers()
 
 	if err := n.Link.Start(ctx); err != nil {
 		return err
 	}
-	defer n.shutdown()
 
 	if token != nil {
 		if err := n.Link.JoinWithInvite(ctx, token); err != nil {
@@ -268,6 +269,10 @@ func (n *Node) handlePeerInput(in peer.Input) {
 	n.handleOutputs(outputs)
 }
 
+func (n *Node) publishLocalEvent(i peer.Input) {
+	n.localPeerEvents <- i
+}
+
 func (n *Node) tick() {
 	// First sync any new peers and connections from gossip state
 	n.syncPeersFromState()
@@ -303,7 +308,12 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			n.Store.ConnectNode(e.PeerKey)
 			n.triggerGossip()
 		case peer.AttemptConnect:
-			go n.attemptDirectConnect(e)
+			go func() {
+				if err := n.attemptDirectConnect(e); err != nil {
+					n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "ips", e.Ips, "port", e.Port, "err", err)
+					n.publishLocalEvent(peer.ConnectFailed{PeerKey: e.PeerKey})
+				}
+			}()
 		case peer.RequestPunchCoordination:
 			// TODO(saml) centralise on single deterministic tie-breaker (PeerKey.Less()?)
 			if bytes.Compare(n.crypto.noisePubKey, e.PeerKey.Bytes()) < 0 {
@@ -316,7 +326,11 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 				n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.String()[:8])
 				continue
 			}
-			go n.requestPunchCoordination(e, connected[0])
+			go func() {
+				if err := n.requestPunchCoordination(e, connected[0]); err != nil {
+					n.publishLocalEvent(peer.ConnectFailed{PeerKey: e.PeerKey})
+				}
+			}()
 			// for _, key := range n.GetConnectedPeers() {
 			// 	if p, ok := n.Store.Cluster.Nodes.Get(key); ok {
 			// 		if _, ok := p.Node.Connected[e.PeerKey.String()]; ok {
@@ -376,18 +390,13 @@ func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
 
 	n.log.Debugw("attempting direct connection", "peer", e.PeerKey.String()[:8], "addrs", addrs)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), directAttemptDuration)
 	defer cancel()
 
-	if err := n.Link.EnsurePeer(ctx, e.PeerKey, addrs, 1); err != nil {
-		n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "ips", e.Ips, "port", e.Port)
-		return err
-	}
-
-	return nil
+	return n.Link.EnsurePeer(ctx, e.PeerKey, addrs, false)
 }
 
-func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordinator types.PeerKey) error {
+func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordinator types.PeerKey) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 

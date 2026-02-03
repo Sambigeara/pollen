@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/flynn/noise"
@@ -26,9 +27,9 @@ var _ Link = (*impl)(nil)
 const (
 	defaultSessionRefreshInterval    = 120 * time.Second // new IK handshake every 2 mins
 	defaultHandshakeDedupTTL         = 5 * time.Second
-	defaultPunchProbeCount           = 256
-	defaultPunchSendInterval         = 10 * time.Millisecond
 	defaultStaleSessionCheckInterval = 15 * time.Second // how often to check for stale sessions
+	punchAttemptDuration             = 5 * time.Second
+	ensurePeerResendInterval         = 100 * time.Millisecond
 )
 
 type Option func(*config)
@@ -36,8 +37,6 @@ type Option func(*config)
 type config struct {
 	sessionRefreshInterval    time.Duration
 	handshakeDedupTTL         time.Duration
-	punchProbeCount           int
-	punchSendInterval         time.Duration
 	staleSessionCheckInterval time.Duration
 }
 
@@ -45,25 +44,7 @@ func defaultConfig() config {
 	return config{
 		sessionRefreshInterval:    defaultSessionRefreshInterval,
 		handshakeDedupTTL:         defaultHandshakeDedupTTL,
-		punchProbeCount:           defaultPunchProbeCount,
-		punchSendInterval:         defaultPunchSendInterval,
 		staleSessionCheckInterval: defaultStaleSessionCheckInterval,
-	}
-}
-
-func WithPunchProbeCount(n int) Option {
-	return func(c *config) {
-		if n > 0 {
-			c.punchProbeCount = n
-		}
-	}
-}
-
-func WithPunchSendInterval(d time.Duration) Option {
-	return func(c *config) {
-		if d > 0 {
-			c.punchSendInterval = d
-		}
 	}
 }
 
@@ -106,12 +87,14 @@ func logNetworkRestrictionWarning(log *zap.SugaredLogger, err error) {
 
 type HandlerFn func(ctx context.Context, from types.PeerKey, payload []byte) error
 
+type sendFn func(dst string, b []byte, isPunch bool) error
+
 type Link interface {
 	Start(ctx context.Context) error
 	Close() error
 
-	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error                            // XXpsk2 init
-	EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, rounds int) error // IK init
+	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error                               // XXpsk2 init
+	EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, withPeer bool) error // IK init
 	Events() <-chan peer.Input
 
 	Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error
@@ -174,6 +157,7 @@ func (i *impl) Start(ctx context.Context) error {
 	i.cancel = cancel
 
 	go i.loop(ctx)
+	// TODO(saml) Why TF is this in a separate goroutine? #LLMs
 	go i.staleSessionChecker(ctx)
 	return nil
 }
@@ -232,6 +216,7 @@ func (i *impl) loop(ctx context.Context) {
 				if err := i.handlePunchCoordTrigger(ctx, frCopy); err != nil {
 					i.log.Debugf("failed to handle punch coord trigger: %s", err)
 				}
+				// TODO(saml) gets stuck in connecting state here as we're not publishing to the peer state in Node
 			}()
 		case types.MsgTypeDisconnect:
 			i.handleDisconnect(fr)
@@ -304,7 +289,7 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 	return g.Wait()
 }
 
-func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
+func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) (err error) {
 	sess, ok := i.sessionStore.getByLocalID(fr.receiverID)
 	if !ok {
 		return errors.New("coord trigger session not found")
@@ -322,38 +307,22 @@ func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) error {
 
 	peerID := types.PeerKeyFromBytes(req.PeerId)
 
-	// host, _, err := net.SplitHostPort(req.PeerAddr)
-	// if err != nil {
-	// 	return fmt.Errorf("invalid peer address: %w", err)
-	// }
+	// TODO(saml) this shouldn't be here, ideally a central loop will publish events like this
+	defer func() {
+		if err != nil {
+			i.events <- peer.ConnectFailed{PeerKey: peerID}
+		}
+	}()
 
-	// Generate probe addresses for the peer's host interleaved with the known address
-	// randoms := generateRandomPorts(host, i.cfg.punchProbeCount)
-	// addrs := make([]string, 0, len(randoms)*2)
-	// for _, r := range randoms {
-	// 	addrs = append(addrs, req.PeerAddr, r)
-	// }
-
-	// rounds := 2
-	// var addrs []string
-	// if _, ok := os.LookupEnv("GOOD_NAT"); ok {
-	// addrs = generateRandomPorts(host, i.cfg.punchProbeCount)
-	// } else {
-	// 	addrs = []string{req.PeerAddr}
-	// 	rounds *= i.cfg.punchProbeCount
-	// }
-	// addrs = append([]string{req.PeerAddr}, generateRandomPorts(host, i.cfg.punchProbeCount)...)
-
-	rounds := 2
-	addrs := append([]string{req.PeerAddr})
+	// trigger search for hole punch
+	addrs := []string{req.PeerAddr}
 
 	i.log.Debugw("attempting punch", "peer", peerID.String()[:8], "addrs", addrs)
 
-	ensureCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ensureCtx, cancel := context.WithTimeout(ctx, punchAttemptDuration)
 	defer cancel()
 
-	err = i.EnsurePeer(ensureCtx, peerID, addrs, rounds)
-	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+	if err = i.EnsurePeer(ensureCtx, peerID, addrs, true); err != nil {
 		i.log.Debugw("ensure peer failed", "peer", peerID.String()[:8], "err", err)
 		return err
 	}
@@ -532,7 +501,7 @@ func (i *impl) Events() <-chan peer.Input { return i.events }
 func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error {
 	sess, ok := i.sessionStore.getByPeer(peerKey)
 	if !ok {
-		i.log.Errorf("%v: %s", ErrNoSession, peerKey.String())
+		i.log.Debugf("%v: %s", ErrNoSession, peerKey.String())
 		return fmt.Errorf("%w: %s", ErrNoSession, peerKey.String())
 	}
 
@@ -550,7 +519,7 @@ func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelo
 	}
 
 	addr := sess.peerAddrValue()
-	if err := i.transport.Send(addr, encodeFrame(fr)); err != nil {
+	if err := i.transport.Send(addr, encodeFrame(fr), false); err != nil {
 		i.log.Debugw("send failed", "peer", peerKey.String()[:8], "addr", addr, "err", err)
 		logNetworkRestrictionWarning(i.log, err)
 		return fmt.Errorf("send: %w", err)
@@ -595,7 +564,7 @@ func (i *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 	return nil
 }
 
-func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, rounds int) error {
+func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []string, withPunch bool) error {
 	if len(addrs) == 0 {
 		return errors.New("no addresses provided")
 	}
@@ -631,30 +600,34 @@ func (i *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []st
 
 	payload := encodeHandshake(res)
 
-	ticker := time.NewTicker(i.cfg.punchSendInterval)
-	defer ticker.Stop()
+	for _, addr := range addrs {
+		go func(addr string) {
+			ticker := time.NewTicker(ensurePeerResendInterval)
+			defer ticker.Stop()
 
-	total := len(addrs) * rounds
-	sent := 0
-	addrIdx := 0
-	for {
-		select {
-		case <-upCh:
-			i.log.Debugw("received direct up event", "peer", peerKey.String()[:8])
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			if sent == total {
-				return fmt.Errorf("peer %s unreachable after %d sends", peerKey.String()[:8], sent)
+			for {
+				if err := i.transport.Send(addr, payload, withPunch); err != nil {
+					if !errors.Is(err, syscall.ENETUNREACH) && !errors.Is(err, syscall.EHOSTUNREACH) {
+						i.log.Debugw("EnsurePeer Send error", "err", err, "addr", addr)
+					}
+				}
+				select {
+				case <-upCh:
+					return
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
 			}
-			if err := i.transport.Send(addrs[addrIdx], payload); err != nil {
-				i.log.Errorw("EnsurePeer Send error", "err", err, "addr", addrs[addrIdx])
-				// logNetworkRestrictionWarning(i.log, err)
-			}
-			addrIdx = (addrIdx + 1) % len(addrs)
-			sent++
-		}
+		}(addr)
+	}
+
+	select {
+	case <-upCh:
+		i.log.Debugw("received direct up event", "peer", peerKey.String()[:8])
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -709,7 +682,7 @@ func (i *impl) sendHandshakeResult(addr string, res HandshakeResult, remoteID ui
 		typ:        res.MsgType,
 		senderID:   res.LocalSessionID,
 		receiverID: remoteID,
-	})); err != nil {
+	}), false); err != nil {
 		i.log.Debugf("failed to write to candidate %s: %v", addr, err)
 		return err
 	}
