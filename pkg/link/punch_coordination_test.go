@@ -54,20 +54,11 @@ func TestPunchCoordination_ConnectsPeers(t *testing.T) {
 	invitesA.AddInvite(inviteB)
 	invitesA.AddInvite(inviteC)
 
-	linkA, err := NewLink(storeA, &cs, keyA, testCrypto{noisePub: keyA.Public, identityPub: pubA}, invitesA,
-		WithPunchSendInterval(5*time.Millisecond),
-		WithPunchProbeCount(16),
-	)
+	linkA, err := NewLink(storeA, &cs, keyA, testCrypto{noisePub: keyA.Public, identityPub: pubA}, invitesA)
 	require.NoError(t, err)
-	linkB, err := NewLink(storeB, &cs, keyB, testCrypto{noisePub: keyB.Public, identityPub: pubB}, mustAdmission(t),
-		WithPunchSendInterval(5*time.Millisecond),
-		WithPunchProbeCount(16),
-	)
+	linkB, err := NewLink(storeB, &cs, keyB, testCrypto{noisePub: keyB.Public, identityPub: pubB}, mustAdmission(t))
 	require.NoError(t, err)
-	linkC, err := NewLink(storeC, &cs, keyC, testCrypto{noisePub: keyC.Public, identityPub: pubC}, mustAdmission(t),
-		WithPunchSendInterval(5*time.Millisecond),
-		WithPunchProbeCount(16),
-	)
+	linkC, err := NewLink(storeC, &cs, keyC, testCrypto{noisePub: keyC.Public, identityPub: pubC}, mustAdmission(t))
 	require.NoError(t, err)
 
 	require.NoError(t, linkA.Start(ctx))

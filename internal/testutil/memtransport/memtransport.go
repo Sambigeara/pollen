@@ -144,7 +144,7 @@ func (t *memTransport) Recv() (string, []byte, error) {
 	return pkt.src, pkt.payload, nil
 }
 
-func (t *memTransport) Send(dst string, b []byte) error {
+func (t *memTransport) Send(dst string, b []byte, _ bool) error {
 	if t.ep.closed.Load() {
 		return ErrTransportClosed
 	}

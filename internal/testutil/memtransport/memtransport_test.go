@@ -16,7 +16,7 @@ func TestNetworkSendRecv(t *testing.T) {
 	require.NoError(t, err)
 
 	msg := []byte("ping")
-	require.NoError(t, a.Send("127.0.0.1:10002", msg))
+	require.NoError(t, a.Send("127.0.0.1:10002", msg, false))
 
 	src, got, err := b.Recv()
 	require.NoError(t, err)
@@ -30,7 +30,7 @@ func TestNetworkUnknownDestination(t *testing.T) {
 	a, err := net.Bind("127.0.0.1:10001")
 	require.NoError(t, err)
 
-	err = a.Send("127.0.0.1:10099", []byte("ping"))
+	err = a.Send("127.0.0.1:10099", []byte("ping"), false)
 	require.ErrorIs(t, err, ErrUnknownDestination)
 }
 
