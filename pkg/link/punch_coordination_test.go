@@ -55,21 +55,18 @@ func TestPunchCoordination_ConnectsPeers(t *testing.T) {
 	invitesA.AddInvite(inviteC)
 
 	linkA, err := NewLink(storeA, &cs, keyA, testCrypto{noisePub: keyA.Public, identityPub: pubA}, invitesA,
-		WithEnsurePeerInterval(5*time.Millisecond),
-		WithEnsurePeerTimeout(250*time.Millisecond),
-		WithHolepunchAttempts(2),
+		WithPunchSendInterval(5*time.Millisecond),
+		WithPunchProbeCount(16),
 	)
 	require.NoError(t, err)
 	linkB, err := NewLink(storeB, &cs, keyB, testCrypto{noisePub: keyB.Public, identityPub: pubB}, mustAdmission(t),
-		WithEnsurePeerInterval(5*time.Millisecond),
-		WithEnsurePeerTimeout(250*time.Millisecond),
-		WithHolepunchAttempts(2),
+		WithPunchSendInterval(5*time.Millisecond),
+		WithPunchProbeCount(16),
 	)
 	require.NoError(t, err)
 	linkC, err := NewLink(storeC, &cs, keyC, testCrypto{noisePub: keyC.Public, identityPub: pubC}, mustAdmission(t),
-		WithEnsurePeerInterval(5*time.Millisecond),
-		WithEnsurePeerTimeout(250*time.Millisecond),
-		WithHolepunchAttempts(2),
+		WithPunchSendInterval(5*time.Millisecond),
+		WithPunchProbeCount(16),
 	)
 	require.NoError(t, err)
 
@@ -90,7 +87,6 @@ func TestPunchCoordination_ConnectsPeers(t *testing.T) {
 
 	req := &peerv1.PunchCoordRequest{
 		PeerId: peerC.Bytes(),
-		Mode:   peerv1.PunchMode_PUNCH_MODE_DIRECT,
 	}
 	reqBytes, err := req.MarshalVT()
 	require.NoError(t, err)

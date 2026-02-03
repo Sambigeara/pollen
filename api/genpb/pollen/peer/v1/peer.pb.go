@@ -22,55 +22,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type PunchMode int32
-
-const (
-	PunchMode_PUNCH_MODE_UNSPECIFIED PunchMode = 0
-	PunchMode_PUNCH_MODE_DIRECT      PunchMode = 1
-	PunchMode_PUNCH_MODE_BIRTHDAY    PunchMode = 2
-)
-
-// Enum value maps for PunchMode.
-var (
-	PunchMode_name = map[int32]string{
-		0: "PUNCH_MODE_UNSPECIFIED",
-		1: "PUNCH_MODE_DIRECT",
-		2: "PUNCH_MODE_BIRTHDAY",
-	}
-	PunchMode_value = map[string]int32{
-		"PUNCH_MODE_UNSPECIFIED": 0,
-		"PUNCH_MODE_DIRECT":      1,
-		"PUNCH_MODE_BIRTHDAY":    2,
-	}
-)
-
-func (x PunchMode) Enum() *PunchMode {
-	p := new(PunchMode)
-	*p = x
-	return p
-}
-
-func (x PunchMode) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (PunchMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_pollen_peer_v1_peer_proto_enumTypes[0].Descriptor()
-}
-
-func (PunchMode) Type() protoreflect.EnumType {
-	return &file_pollen_peer_v1_peer_proto_enumTypes[0]
-}
-
-func (x PunchMode) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use PunchMode.Descriptor instead.
-func (PunchMode) EnumDescriptor() ([]byte, []int) {
-	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{0}
-}
-
 type Known struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	NoisePub      []byte                 `protobuf:"bytes,1,opt,name=noise_pub,json=noisePub,proto3" json:"noise_pub,omitempty"`
@@ -282,7 +233,6 @@ func (x *InviteStore) GetInvites() map[string]*Invite {
 type PunchCoordRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
-	Mode          PunchMode              `protobuf:"varint,2,opt,name=mode,proto3,enum=pollen.peer.v1.PunchMode" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -324,19 +274,11 @@ func (x *PunchCoordRequest) GetPeerId() []byte {
 	return nil
 }
 
-func (x *PunchCoordRequest) GetMode() PunchMode {
-	if x != nil {
-		return x.Mode
-	}
-	return PunchMode_PUNCH_MODE_UNSPECIFIED
-}
-
 type PunchCoordTrigger struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
 	SelfAddr      string                 `protobuf:"bytes,2,opt,name=self_addr,json=selfAddr,proto3" json:"self_addr,omitempty"`
 	PeerAddr      string                 `protobuf:"bytes,3,opt,name=peer_addr,json=peerAddr,proto3" json:"peer_addr,omitempty"`
-	Mode          PunchMode              `protobuf:"varint,4,opt,name=mode,proto3,enum=pollen.peer.v1.PunchMode" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -392,13 +334,6 @@ func (x *PunchCoordTrigger) GetPeerAddr() string {
 	return ""
 }
 
-func (x *PunchCoordTrigger) GetMode() PunchMode {
-	if x != nil {
-		return x.Mode
-	}
-	return PunchMode_PUNCH_MODE_UNSPECIFIED
-}
-
 var File_pollen_peer_v1_peer_proto protoreflect.FileDescriptor
 
 const file_pollen_peer_v1_peer_proto_rawDesc = "" +
@@ -422,19 +357,13 @@ const file_pollen_peer_v1_peer_proto_rawDesc = "" +
 	"\ainvites\x18\x01 \x03(\v2(.pollen.peer.v1.InviteStore.InvitesEntryR\ainvites\x1aR\n" +
 	"\fInvitesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
-	"\x05value\x18\x02 \x01(\v2\x16.pollen.peer.v1.InviteR\x05value:\x028\x01\"[\n" +
+	"\x05value\x18\x02 \x01(\v2\x16.pollen.peer.v1.InviteR\x05value:\x028\x01\",\n" +
 	"\x11PunchCoordRequest\x12\x17\n" +
-	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12-\n" +
-	"\x04mode\x18\x02 \x01(\x0e2\x19.pollen.peer.v1.PunchModeR\x04mode\"\x95\x01\n" +
+	"\apeer_id\x18\x01 \x01(\fR\x06peerId\"f\n" +
 	"\x11PunchCoordTrigger\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1b\n" +
 	"\tself_addr\x18\x02 \x01(\tR\bselfAddr\x12\x1b\n" +
-	"\tpeer_addr\x18\x03 \x01(\tR\bpeerAddr\x12-\n" +
-	"\x04mode\x18\x04 \x01(\x0e2\x19.pollen.peer.v1.PunchModeR\x04mode*W\n" +
-	"\tPunchMode\x12\x1a\n" +
-	"\x16PUNCH_MODE_UNSPECIFIED\x10\x00\x12\x15\n" +
-	"\x11PUNCH_MODE_DIRECT\x10\x01\x12\x17\n" +
-	"\x13PUNCH_MODE_BIRTHDAY\x10\x02B>Z<github.com/sambigeara/pollen/api/genpb/pollen/peer/v1;peerv1b\x06proto3"
+	"\tpeer_addr\x18\x03 \x01(\tR\bpeerAddrB>Z<github.com/sambigeara/pollen/api/genpb/pollen/peer/v1;peerv1b\x06proto3"
 
 var (
 	file_pollen_peer_v1_peer_proto_rawDescOnce sync.Once
@@ -448,31 +377,27 @@ func file_pollen_peer_v1_peer_proto_rawDescGZIP() []byte {
 	return file_pollen_peer_v1_peer_proto_rawDescData
 }
 
-var file_pollen_peer_v1_peer_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_pollen_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_pollen_peer_v1_peer_proto_goTypes = []any{
-	(PunchMode)(0),            // 0: pollen.peer.v1.PunchMode
-	(*Known)(nil),             // 1: pollen.peer.v1.Known
-	(*Invite)(nil),            // 2: pollen.peer.v1.Invite
-	(*PeerStore)(nil),         // 3: pollen.peer.v1.PeerStore
-	(*InviteStore)(nil),       // 4: pollen.peer.v1.InviteStore
-	(*PunchCoordRequest)(nil), // 5: pollen.peer.v1.PunchCoordRequest
-	(*PunchCoordTrigger)(nil), // 6: pollen.peer.v1.PunchCoordTrigger
-	nil,                       // 7: pollen.peer.v1.PeerStore.PeersEntry
-	nil,                       // 8: pollen.peer.v1.InviteStore.InvitesEntry
+	(*Known)(nil),             // 0: pollen.peer.v1.Known
+	(*Invite)(nil),            // 1: pollen.peer.v1.Invite
+	(*PeerStore)(nil),         // 2: pollen.peer.v1.PeerStore
+	(*InviteStore)(nil),       // 3: pollen.peer.v1.InviteStore
+	(*PunchCoordRequest)(nil), // 4: pollen.peer.v1.PunchCoordRequest
+	(*PunchCoordTrigger)(nil), // 5: pollen.peer.v1.PunchCoordTrigger
+	nil,                       // 6: pollen.peer.v1.PeerStore.PeersEntry
+	nil,                       // 7: pollen.peer.v1.InviteStore.InvitesEntry
 }
 var file_pollen_peer_v1_peer_proto_depIdxs = []int32{
-	7, // 0: pollen.peer.v1.PeerStore.peers:type_name -> pollen.peer.v1.PeerStore.PeersEntry
-	8, // 1: pollen.peer.v1.InviteStore.invites:type_name -> pollen.peer.v1.InviteStore.InvitesEntry
-	0, // 2: pollen.peer.v1.PunchCoordRequest.mode:type_name -> pollen.peer.v1.PunchMode
-	0, // 3: pollen.peer.v1.PunchCoordTrigger.mode:type_name -> pollen.peer.v1.PunchMode
-	1, // 4: pollen.peer.v1.PeerStore.PeersEntry.value:type_name -> pollen.peer.v1.Known
-	2, // 5: pollen.peer.v1.InviteStore.InvitesEntry.value:type_name -> pollen.peer.v1.Invite
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	6, // 0: pollen.peer.v1.PeerStore.peers:type_name -> pollen.peer.v1.PeerStore.PeersEntry
+	7, // 1: pollen.peer.v1.InviteStore.invites:type_name -> pollen.peer.v1.InviteStore.InvitesEntry
+	0, // 2: pollen.peer.v1.PeerStore.PeersEntry.value:type_name -> pollen.peer.v1.Known
+	1, // 3: pollen.peer.v1.InviteStore.InvitesEntry.value:type_name -> pollen.peer.v1.Invite
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_pollen_peer_v1_peer_proto_init() }
@@ -485,14 +410,13 @@ func file_pollen_peer_v1_peer_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_peer_v1_peer_proto_rawDesc), len(file_pollen_peer_v1_peer_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      0,
 			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_pollen_peer_v1_peer_proto_goTypes,
 		DependencyIndexes: file_pollen_peer_v1_peer_proto_depIdxs,
-		EnumInfos:         file_pollen_peer_v1_peer_proto_enumTypes,
 		MessageInfos:      file_pollen_peer_v1_peer_proto_msgTypes,
 	}.Build()
 	File_pollen_peer_v1_peer_proto = out.File

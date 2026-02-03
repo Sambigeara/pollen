@@ -12,8 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sambigeara/pollen/pkg/socket"
-	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/transport"
 )
 
 var debug = os.Getenv("NAT_DEBUG") == "1"
@@ -101,7 +100,7 @@ func (n *Network) unbind(ep *endpoint) {
 func (n *Network) send(src string, dst string, b []byte) error {
 	dest, ok := n.lookup(dst)
 	if !ok {
-		return nil
+		return nil // silently drop packets to unknown destinations (simulates real network)
 	}
 
 	dest.mu.RLock()
@@ -130,321 +129,80 @@ func (e *endpoint) close() {
 	})
 }
 
-// PublicSocket implements socket.Socket for endpoints with a public address
-type PublicSocket struct {
+// publicTransport implements transport.Transport for public endpoints
+type publicTransport struct {
 	net  *Network
 	ep   *endpoint
 	addr string
 }
 
-var _ socket.Socket = (*PublicSocket)(nil)
+var _ transport.Transport = (*publicTransport)(nil)
 
-func (s *PublicSocket) LocalAddr() net.Addr {
-	addr, _ := net.ResolveUDPAddr("udp", s.addr)
-	return addr
-}
-
-func (s *PublicSocket) Send(dst string, b []byte) error {
-	if s.ep.closed.Load() {
-		return ErrTransportClosed
-	}
-	return s.net.send(s.ep.addr, dst, b)
-}
-
-func (s *PublicSocket) Recv() (string, []byte, error) {
-	pkt, ok := <-s.ep.recvCh
-	if !ok {
-		return "", nil, ErrTransportClosed
-	}
-	return pkt.src, pkt.payload, nil
-}
-
-func (s *PublicSocket) Close() error {
-	if s.ep == nil || s.ep.closed.Load() {
-		return nil
-	}
-	s.ep.close()
-	s.net.unbind(s.ep)
-	return nil
-}
-
-func (s *PublicSocket) IsClosed() bool {
-	return s.ep.closed.Load()
-}
-
-// NATSocket implements socket.Socket for endpoints behind a NAT
-type NATSocket struct {
-	store       *NATSocketStore
-	extAddr     string // external address (public IP:port)
-	destAddr    string // destination this mapping is for (symmetric NAT)
-	ep          *endpoint
-	isEphemeral bool // true if this is an ephemeral socket for birthday punch
-}
-
-var _ socket.Socket = (*NATSocket)(nil)
-
-func (s *NATSocket) LocalAddr() net.Addr {
-	addr, _ := net.ResolveUDPAddr("udp", s.extAddr)
-	return addr
-}
-
-func (s *NATSocket) Send(dst string, b []byte) error {
-	if s.ep.closed.Load() {
-		return ErrTransportClosed
-	}
-	if debug {
-		log.Printf("[NAT %s] send from %s to %s (ephemeral=%v)", s.store.publicIP, s.extAddr, dst, s.isEphemeral)
-	}
-	// Track that we've sent to this destination (both exact and IP-only)
-	s.store.mu.Lock()
-	s.store.sentTo[dst] = true
-	if host, _, err := net.SplitHostPort(dst); err == nil {
-		s.store.sentToIP[host] = true
-	}
-	s.store.mu.Unlock()
-	return s.store.net.send(s.extAddr, dst, b)
-}
-
-func (s *NATSocket) Recv() (string, []byte, error) {
-	pkt, ok := <-s.ep.recvCh
-	if !ok {
-		return "", nil, ErrTransportClosed
-	}
-	return pkt.src, pkt.payload, nil
-}
-
-func (s *NATSocket) Close() error {
-	if s.ep == nil || s.ep.closed.Load() {
-		return nil
-	}
-	s.ep.close()
-	s.store.net.unbind(s.ep)
-	return nil
-}
-
-func (s *NATSocket) IsClosed() bool {
-	return s.ep.closed.Load()
-}
-
-// PublicSocketStore implements socket.SocketStore for public endpoints
-type PublicSocketStore struct {
-	net        *Network
-	base       *PublicSocket
-	ephemeral  map[*PublicSocket]struct{}
-	peerSocket map[types.PeerKey]socket.Socket
-	events     chan socket.SocketEvent
-	mu         sync.RWMutex
-	wg         sync.WaitGroup
-	closed     atomic.Bool
-	addr       string
-	nextPort   int
-}
-
-var _ socket.SocketStore = (*PublicSocketStore)(nil)
-
-func (n *Network) Bind(addr string) (socket.SocketStore, error) {
+func (n *Network) Bind(addr string) (transport.Transport, error) {
 	ep, err := n.bindEndpoint(addr)
 	if err != nil {
 		return nil, err
 	}
 
-	host, portStr, _ := net.SplitHostPort(addr)
-	port, _ := strconv.Atoi(portStr)
-
-	store := &PublicSocketStore{
-		net:        n,
-		base:       &PublicSocket{net: n, ep: ep, addr: addr},
-		ephemeral:  make(map[*PublicSocket]struct{}),
-		peerSocket: make(map[types.PeerKey]socket.Socket),
-		events:     make(chan socket.SocketEvent, defaultQueueSize),
-		addr:       host,
-		nextPort:   port + 1,
-	}
-
-	store.startRecvLoop(store.base)
-
-	return store, nil
+	return &publicTransport{
+		net:  n,
+		ep:   ep,
+		addr: addr,
+	}, nil
 }
 
-func (s *PublicSocketStore) Base() socket.Socket {
-	return s.base
+func (t *publicTransport) Recv() (string, []byte, error) {
+	pkt, ok := <-t.ep.recvCh
+	if !ok {
+		return "", nil, ErrTransportClosed
+	}
+	return pkt.src, pkt.payload, nil
 }
 
-func (s *PublicSocketStore) CreateEphemeral() (socket.Socket, error) {
-	if s.closed.Load() {
-		return nil, net.ErrClosed
+func (t *publicTransport) Send(dst string, b []byte) error {
+	if t.ep.closed.Load() {
+		return ErrTransportClosed
 	}
-
-	s.mu.Lock()
-	port := s.nextPort
-	s.nextPort++
-	s.mu.Unlock()
-
-	addr := net.JoinHostPort(s.addr, strconv.Itoa(port))
-	ep, err := s.net.bindEndpoint(addr)
-	if err != nil {
-		return nil, err
-	}
-
-	sock := &PublicSocket{net: s.net, ep: ep, addr: addr}
-
-	s.mu.Lock()
-	s.ephemeral[sock] = struct{}{}
-	s.mu.Unlock()
-
-	s.startRecvLoop(sock)
-
-	return sock, nil
+	return t.net.send(t.ep.addr, dst, b)
 }
 
-func (s *PublicSocketStore) CreateBatch(count int) ([]socket.Socket, error) {
-	sockets := make([]socket.Socket, 0, count)
-	for range count {
-		sock, err := s.CreateEphemeral()
-		if err != nil {
-			for _, created := range sockets {
-				created.Close()
-			}
-			return nil, err
-		}
-		sockets = append(sockets, sock)
-	}
-	return sockets, nil
-}
-
-func (s *PublicSocketStore) CloseEphemeral() {
-	s.mu.Lock()
-	ephemeral := s.ephemeral
-	s.ephemeral = make(map[*PublicSocket]struct{})
-	s.mu.Unlock()
-
-	for sock := range ephemeral {
-		sock.Close()
-	}
-}
-
-func (s *PublicSocketStore) Close() error {
-	if s.closed.Swap(true) {
+func (t *publicTransport) Close() error {
+	if t.ep == nil || t.ep.closed.Load() {
 		return nil
 	}
-
-	s.CloseEphemeral()
-
-	// Close peer sockets so their recv loops can exit
-	s.mu.Lock()
-	for _, sock := range s.peerSocket {
-		sock.Close()
-	}
-	s.peerSocket = make(map[types.PeerKey]socket.Socket)
-	s.mu.Unlock()
-
-	err := s.base.Close()
-
-	s.wg.Wait()
-	close(s.events)
-
-	return err
+	t.ep.close()
+	t.net.unbind(t.ep)
+	return nil
 }
 
-func (s *PublicSocketStore) Events() <-chan socket.SocketEvent {
-	return s.events
-}
-
-func (s *PublicSocketStore) AssociatePeerSocket(peerKey types.PeerKey, sock socket.Socket) {
-	var prev socket.Socket
-	var closePrev bool
-
-	s.mu.Lock()
-	prev = s.peerSocket[peerKey]
-	s.peerSocket[peerKey] = sock
-
-	// O(1) removal from ephemeral set
-	if impl, ok := sock.(*PublicSocket); ok {
-		delete(s.ephemeral, impl)
-	}
-
-	if prev != nil && prev != sock && prev != s.base {
-		shared := false
-		for k, v := range s.peerSocket {
-			if k == peerKey {
-				continue
-			}
-			if v == prev {
-				shared = true
-				break
-			}
-		}
-		closePrev = !shared
-	}
-	s.mu.Unlock()
-
-	if closePrev {
-		_ = prev.Close()
-	}
-}
-
-func (s *PublicSocketStore) GetPeerSocket(peerKey types.PeerKey) (socket.Socket, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	sock, ok := s.peerSocket[peerKey]
-	return sock, ok
-}
-
-func (s *PublicSocketStore) SendToPeer(peerKey types.PeerKey, dst string, b []byte) error {
-	sock, ok := s.GetPeerSocket(peerKey)
-	if !ok || sock.IsClosed() {
-		sock = s.base
-	}
-	return sock.Send(dst, b)
-}
-
-func (s *PublicSocketStore) startRecvLoop(sock *PublicSocket) {
-	s.wg.Go(func() {
-		for {
-			src, payload, err := sock.Recv()
-			if err != nil {
-				if sock.IsClosed() || s.closed.Load() {
-					return
-				}
-				continue
-			}
-
-			select {
-			case s.events <- socket.SocketEvent{
-				Socket:  sock,
-				Src:     src,
-				Payload: payload,
-			}:
-			default:
-			}
-		}
-	})
-}
-
-// NATSocketStore implements socket.SocketStore for endpoints behind a symmetric NAT
-type NATSocketStore struct {
+// natTransport implements transport.Transport for endpoints behind a symmetric NAT
+type natTransport struct {
 	net          *Network
 	internalAddr string
 	publicIP     string
-	events       chan socket.SocketEvent
-	peerSocket   map[types.PeerKey]socket.Socket
-	mu           sync.Mutex
-	baseSockets  []*NATSocket            // base sockets (one per destination)
-	ephemeral    map[*NATSocket]struct{} // ephemeral sockets for birthday punch
 	portPool     []int
 	nextPort     int
+	events       chan packet
+	mappings     []*natMapping // per-destination mappings
+	mu           sync.Mutex
 	closeOnce    sync.Once
 	closed       atomic.Bool
 	wg           sync.WaitGroup
 	// Track all destinations we've sent to, for accepting responses
 	sentTo map[string]bool
-	// Track IPs we've sent to (for birthday punch - accept from any port at that IP)
+	// Track IPs we've sent to (for accepting responses from any port at that IP)
 	sentToIP map[string]bool
 }
 
-var _ socket.SocketStore = (*NATSocketStore)(nil)
+type natMapping struct {
+	extAddr  string // external address (public IP:port)
+	destAddr string // destination this mapping is for (symmetric NAT)
+	ep       *endpoint
+}
 
-func (n *Network) BindNAT(internalAddr string, cfg NATConfig) (socket.SocketStore, error) {
+var _ transport.Transport = (*natTransport)(nil)
+
+func (n *Network) BindNAT(internalAddr string, cfg NATConfig) (transport.Transport, error) {
 	if cfg.PublicIP == "" {
 		return nil, errors.New("public IP required")
 	}
@@ -466,265 +224,113 @@ func (n *Network) BindNAT(internalAddr string, cfg NATConfig) (socket.SocketStor
 		portPool[i], portPool[j] = portPool[j], portPool[i]
 	})
 
-	return &NATSocketStore{
+	return &natTransport{
 		net:          n,
 		internalAddr: internalAddr,
 		publicIP:     cfg.PublicIP,
-		events:       make(chan socket.SocketEvent, defaultQueueSize),
-		peerSocket:   make(map[types.PeerKey]socket.Socket),
-		baseSockets:  make([]*NATSocket, 0),
-		ephemeral:    make(map[*NATSocket]struct{}),
+		events:       make(chan packet, defaultQueueSize),
+		mappings:     make([]*natMapping, 0),
 		portPool:     portPool,
 		sentTo:       make(map[string]bool),
 		sentToIP:     make(map[string]bool),
 	}, nil
 }
 
-// Base returns a "virtual" base socket for the NAT. Since symmetric NATs create
-// different mappings per destination, we return a wrapper that creates mappings on demand.
-func (s *NATSocketStore) Base() socket.Socket {
-	return &natBaseSocket{store: s}
+func (t *natTransport) Recv() (string, []byte, error) {
+	pkt, ok := <-t.events
+	if !ok {
+		return "", nil, ErrTransportClosed
+	}
+	return pkt.src, pkt.payload, nil
 }
 
-// natBaseSocket is a wrapper that creates per-destination NAT mappings
-type natBaseSocket struct {
-	store *NATSocketStore
-}
-
-var _ socket.Socket = (*natBaseSocket)(nil)
-
-func (b *natBaseSocket) LocalAddr() net.Addr {
-	addr, _ := net.ResolveUDPAddr("udp", b.store.internalAddr)
-	return addr
-}
-
-func (b *natBaseSocket) Send(dst string, data []byte) error {
-	if b.store.closed.Load() {
+func (t *natTransport) Send(dst string, b []byte) error {
+	if t.closed.Load() {
 		return ErrTransportClosed
 	}
 
-	sock, err := b.store.ensureMappingForDest(dst, false)
+	mapping, err := t.ensureMappingForDest(dst)
 	if err != nil {
 		return err
 	}
-	return sock.Send(dst, data)
-}
 
-func (b *natBaseSocket) Recv() (string, []byte, error) {
-	// This should not be called directly - events come through the store
-	return "", nil, errors.New("use SocketStore.Events() instead")
-}
-
-func (b *natBaseSocket) Close() error {
-	return nil // Don't close the store from the base socket
-}
-
-func (b *natBaseSocket) IsClosed() bool {
-	return b.store.closed.Load()
-}
-
-func (s *NATSocketStore) ensureMappingForDest(dst string, isEphemeral bool) (*NATSocket, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed.Load() {
-		return nil, ErrTransportClosed
+	if debug {
+		log.Printf("[NAT %s] send from %s to %s", t.publicIP, mapping.extAddr, dst)
 	}
 
-	// Track that we've sent to this destination (both exact and IP-only)
-	s.sentTo[dst] = true
+	// Track that we've sent to this destination
+	t.mu.Lock()
+	t.sentTo[dst] = true
 	if host, _, err := net.SplitHostPort(dst); err == nil {
-		s.sentToIP[host] = true
+		t.sentToIP[host] = true
 	}
+	t.mu.Unlock()
 
-	// For base sockets, check if we already have a mapping for this destination
-	if !isEphemeral {
-		for _, sock := range s.baseSockets {
-			if sock.destAddr == dst {
-				return sock, nil
-			}
-		}
-	}
-
-	port, err := s.nextPortLocked()
-	if err != nil {
-		return nil, err
-	}
-
-	extAddr := net.JoinHostPort(s.publicIP, strconv.Itoa(port))
-	ep, err := s.net.bindEndpoint(extAddr)
-	if err != nil {
-		return nil, err
-	}
-
-	sock := &NATSocket{
-		store:       s,
-		extAddr:     extAddr,
-		destAddr:    dst,
-		ep:          ep,
-		isEphemeral: isEphemeral,
-	}
-
-	if isEphemeral {
-		s.ephemeral[sock] = struct{}{}
-	} else {
-		s.baseSockets = append(s.baseSockets, sock)
-	}
-
-	s.startRecvLoop(sock)
-
-	return sock, nil
+	return t.net.send(mapping.extAddr, dst, b)
 }
 
-func (s *NATSocketStore) CreateEphemeral() (socket.Socket, error) {
-	if s.closed.Load() {
-		return nil, net.ErrClosed
-	}
+func (t *natTransport) Close() error {
+	t.closeOnce.Do(func() {
+		t.closed.Store(true)
 
-	// For ephemeral sockets, we create a socket without a specific destination
-	// It will get a unique external port from the NAT
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	port, err := s.nextPortLocked()
-	if err != nil {
-		return nil, err
-	}
-
-	extAddr := net.JoinHostPort(s.publicIP, strconv.Itoa(port))
-	ep, err := s.net.bindEndpoint(extAddr)
-	if err != nil {
-		return nil, err
-	}
-
-	sock := &NATSocket{
-		store:       s,
-		extAddr:     extAddr,
-		destAddr:    "", // No specific destination - accept from anywhere
-		ep:          ep,
-		isEphemeral: true,
-	}
-
-	s.ephemeral[sock] = struct{}{}
-	s.startRecvLoop(sock)
-
-	return sock, nil
-}
-
-func (s *NATSocketStore) CreateBatch(count int) ([]socket.Socket, error) {
-	sockets := make([]socket.Socket, 0, count)
-	for range count {
-		sock, err := s.CreateEphemeral()
-		if err != nil {
-			for _, created := range sockets {
-				created.Close()
-			}
-			return nil, err
+		t.mu.Lock()
+		for _, m := range t.mappings {
+			m.ep.close()
+			t.net.unbind(m.ep)
 		}
-		sockets = append(sockets, sock)
-	}
-	return sockets, nil
-}
+		t.mu.Unlock()
 
-func (s *NATSocketStore) CloseEphemeral() {
-	s.mu.Lock()
-	ephemeral := s.ephemeral
-	s.ephemeral = make(map[*NATSocket]struct{})
-	s.mu.Unlock()
-
-	for sock := range ephemeral {
-		sock.Close()
-	}
-}
-
-func (s *NATSocketStore) Close() error {
-	s.closeOnce.Do(func() {
-		s.closed.Store(true)
-
-		s.mu.Lock()
-		for _, sock := range s.baseSockets {
-			sock.Close()
-		}
-		for sock := range s.ephemeral {
-			sock.Close()
-		}
-		// Close peer sockets so their recv loops can exit
-		for _, sock := range s.peerSocket {
-			sock.Close()
-		}
-		s.mu.Unlock()
-
-		s.wg.Wait()
-		close(s.events)
+		t.wg.Wait()
+		close(t.events)
 	})
 	return nil
 }
 
-func (s *NATSocketStore) Events() <-chan socket.SocketEvent {
-	return s.events
-}
+func (t *natTransport) ensureMappingForDest(dst string) (*natMapping, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
-func (s *NATSocketStore) AssociatePeerSocket(peerKey types.PeerKey, sock socket.Socket) {
-	var prev socket.Socket
-	var closePrev bool
-
-	s.mu.Lock()
-	prev = s.peerSocket[peerKey]
-	s.peerSocket[peerKey] = sock
-
-	// O(1) removal from ephemeral set
-	if impl, ok := sock.(*NATSocket); ok {
-		delete(s.ephemeral, impl)
+	if t.closed.Load() {
+		return nil, ErrTransportClosed
 	}
 
-	if prevImpl, ok := prev.(*NATSocket); ok {
-		if prev != sock && prevImpl.isEphemeral {
-			shared := false
-			for k, v := range s.peerSocket {
-				if k == peerKey {
-					continue
-				}
-				if v == prev {
-					shared = true
-					break
-				}
-			}
-			closePrev = !shared
+	// Check if we already have a mapping for this destination
+	for _, m := range t.mappings {
+		if m.destAddr == dst {
+			return m, nil
 		}
 	}
-	s.mu.Unlock()
 
-	if closePrev {
-		_ = prev.Close()
+	// Create a new mapping
+	port, err := t.nextPortLocked()
+	if err != nil {
+		return nil, err
 	}
-}
 
-func (s *NATSocketStore) GetPeerSocket(peerKey types.PeerKey) (socket.Socket, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sock, ok := s.peerSocket[peerKey]
-	return sock, ok
-}
-
-func (s *NATSocketStore) SendToPeer(peerKey types.PeerKey, dst string, b []byte) error {
-	sock, ok := s.GetPeerSocket(peerKey)
-	if !ok || sock.IsClosed() {
-		// Create a new mapping for this destination
-		var err error
-		sock, err = s.ensureMappingForDest(dst, false)
-		if err != nil {
-			return err
-		}
+	extAddr := net.JoinHostPort(t.publicIP, strconv.Itoa(port))
+	ep, err := t.net.bindEndpoint(extAddr)
+	if err != nil {
+		return nil, err
 	}
-	return sock.Send(dst, b)
+
+	mapping := &natMapping{
+		extAddr:  extAddr,
+		destAddr: dst,
+		ep:       ep,
+	}
+
+	t.mappings = append(t.mappings, mapping)
+	t.startRecvLoop(mapping)
+
+	return mapping, nil
 }
 
-func (s *NATSocketStore) nextPortLocked() (int, error) {
-	for s.nextPort < len(s.portPool) {
-		port := s.portPool[s.nextPort]
-		s.nextPort++
-		extAddr := net.JoinHostPort(s.publicIP, strconv.Itoa(port))
-		if _, ok := s.net.lookup(extAddr); ok {
+func (t *natTransport) nextPortLocked() (int, error) {
+	for t.nextPort < len(t.portPool) {
+		port := t.portPool[t.nextPort]
+		t.nextPort++
+		extAddr := net.JoinHostPort(t.publicIP, strconv.Itoa(port))
+		if _, ok := t.net.lookup(extAddr); ok {
 			continue
 		}
 		return port, nil
@@ -732,46 +338,41 @@ func (s *NATSocketStore) nextPortLocked() (int, error) {
 	return 0, ErrNoAvailablePort
 }
 
-func (s *NATSocketStore) hasSentTo(addr string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (t *natTransport) hasSentTo(addr string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	// Check exact address match first
-	if s.sentTo[addr] {
+	if t.sentTo[addr] {
 		return true
 	}
-	// Check if we've sent to any port at this IP (for birthday punch)
+	// Check if we've sent to any port at this IP
 	if host, _, err := net.SplitHostPort(addr); err == nil {
-		return s.sentToIP[host]
+		return t.sentToIP[host]
 	}
 	return false
 }
 
-func (s *NATSocketStore) startRecvLoop(sock *NATSocket) {
-	&{s wg}.Go(func() {
+func (t *natTransport) startRecvLoop(m *natMapping) {
+	t.wg.Go(func() {
 		for {
-			pkt, ok := <-sock.ep.recvCh
+			pkt, ok := <-m.ep.recvCh
 			if !ok {
 				return
 			}
 
-			// For NAT filtering:
-			// Accept if either:
-			// 1. This is the socket's designated destination (for base sockets)
-			// 2. We've sent to this source from ANY socket (hole punching effect)
-			// This simulates "endpoint-independent filtering" NAT behavior where
-			// outbound packets create holes that accept responses from those destinations
+			// NAT filtering: accept if we've sent to this source
 			accepted := false
-			if sock.destAddr != "" && pkt.src == sock.destAddr {
-				// Exact match for base socket
+			if pkt.src == m.destAddr {
+				// Exact match for this mapping's destination
 				accepted = true
-			} else if s.hasSentTo(pkt.src) {
+			} else if t.hasSentTo(pkt.src) {
 				// Have a hole for this source
 				accepted = true
 			}
 
 			if debug {
 				log.Printf("[NAT %s] recv on %s from %s, destAddr=%s, hasSentTo=%v, accepted=%v",
-					s.publicIP, sock.extAddr, pkt.src, sock.destAddr, s.hasSentTo(pkt.src), accepted)
+					t.publicIP, m.extAddr, pkt.src, m.destAddr, t.hasSentTo(pkt.src), accepted)
 			}
 
 			if !accepted {
@@ -779,11 +380,7 @@ func (s *NATSocketStore) startRecvLoop(sock *NATSocket) {
 			}
 
 			select {
-			case s.events <- socket.SocketEvent{
-				Socket:  sock,
-				Src:     pkt.src,
-				Payload: pkt.payload,
-			}:
+			case t.events <- pkt:
 			default:
 			}
 		}
