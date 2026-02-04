@@ -64,6 +64,10 @@ func (pk PeerKey) String() string {
 	return hex.EncodeToString(pk[:])
 }
 
+func (pk PeerKey) Short() string {
+	return pk.String()[:8]
+}
+
 func (pk PeerKey) Less(other PeerKey) bool {
 	return bytes.Compare(pk[:], other[:]) < 0
 }

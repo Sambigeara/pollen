@@ -126,11 +126,17 @@ func (p *Persistence) Hydrate(delta *statev1.DeltaState) {
 }
 
 func (p *Persistence) ConnectNode(key types.PeerKey) {
+	_ = p.Cluster.Nodes.Update(p.Cluster.LocalID, func(n *statev1.Node) {
+		if n.Connected == nil {
+			n.Connected = make(map[string]*emptypb.Empty)
+		}
+		n.Connected[key.Short()] = &emptypb.Empty{}
+	})
 	_ = p.Cluster.Nodes.Update(key, func(n *statev1.Node) {
 		if n.Connected == nil {
 			n.Connected = make(map[string]*emptypb.Empty)
 		}
-		n.Connected[key.String()] = &emptypb.Empty{}
+		n.Connected[p.Cluster.LocalID.Short()] = &emptypb.Empty{}
 	})
 }
 

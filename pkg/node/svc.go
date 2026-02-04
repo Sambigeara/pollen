@@ -78,7 +78,6 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 	selfAddr := ""
 	if rec, ok := s.node.Store.Cluster.Nodes.Get(localID); ok {
 		if rec.Node != nil && len(rec.Node.Ips) > 0 {
-			selfAddr = rec.Node.Ips[0]
 			selfAddr = net.JoinHostPort(rec.Node.Ips[0], fmt.Sprintf("%d", rec.Node.LocalPort))
 		}
 	}

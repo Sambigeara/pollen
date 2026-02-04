@@ -59,7 +59,7 @@ func TestStore_ConnectPeerResetsStage(t *testing.T) {
 	store.Step(now, Tick{})
 	store.Step(now, ConnectFailed{PeerKey: key})
 
-	outputs := store.Step(now, ConnectPeer{PeerKey: key, Ip: "10.0.0.1", ObservedPort: 2, IdentityPub: []byte("id")})
+	outputs := store.Step(now, ConnectPeer{PeerKey: key, Ip: "10.0.0.1", ObservedPort: 2})
 	require.Len(t, outputs, 1)
 	require.IsType(t, PeerConnected{}, outputs[0])
 
@@ -78,7 +78,7 @@ func TestStore_DisconnectSchedulesRetry(t *testing.T) {
 	key := peerKey(5)
 	now := time.Unix(0, 0)
 
-	store.Step(now, ConnectPeer{PeerKey: key, Ip: "10.0.0.1", ObservedPort: 1, IdentityPub: []byte("id")})
+	store.Step(now, ConnectPeer{PeerKey: key, Ip: "10.0.0.1", ObservedPort: 1})
 	store.Step(now, PeerDisconnected{PeerKey: key})
 	peer := store.m[key]
 	require.Equal(t, PeerStateDiscovered, peer.state)

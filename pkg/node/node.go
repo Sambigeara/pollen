@@ -103,6 +103,7 @@ func New(conf *Config) (*Node, error) {
 	if len(ips) == 0 {
 		var err error
 		ips, err = transport.GetAdvertisableAddrs()
+		log.Debugw("ADVERTISABLE ADDRESSES", "ips", ips)
 		if err != nil {
 			return nil, err
 		}
@@ -228,7 +229,7 @@ func (n *Node) registerHandlers() {
 	n.Link.Handle(types.MsgTypeTCPPunchProbeOffer, n.Tunnel.HandlePunchProbeOffer)
 	n.Link.Handle(types.MsgTypeTCPPunchProbeResult, n.Tunnel.HandlePunchProbeResult)
 
-	n.Link.Handle(types.MsgTypeGossip, func(_ context.Context, _ types.PeerKey, plaintext []byte) error {
+	n.Link.Handle(types.MsgTypeGossip, func(_ context.Context, peer types.PeerKey, plaintext []byte) error {
 		delta := &statev1.DeltaState{}
 		if err := delta.UnmarshalVT(plaintext); err != nil {
 			return fmt.Errorf("malformed gossip payload: %w", err)
@@ -259,7 +260,7 @@ func (n *Node) gossip(ctx context.Context) {
 			Type:    types.MsgTypeGossip,
 			Payload: payload,
 		}); err != nil {
-			n.log.Debugw("gossip send failed", "peer", k.String(), "err", err)
+			n.log.Debugw("gossip send failed", "peer", k.Short(), "err", err)
 		}
 	}
 }
@@ -304,9 +305,12 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
-			n.log.Infow("peer connected", "peer_id", e.PeerKey.String()[:8], "ip", e.Ip, "observedPort", e.ObservedPort)
+			n.log.Infow("peer connected", "peer_id", e.PeerKey.Short(), "ip", e.Ip, "observedPort", e.ObservedPort)
 			n.Store.ConnectNode(e.PeerKey)
 			n.triggerGossip()
+		// TODO(saml) I chucked PeerConnecting in in a panic, requires more thought (is it even needed?)
+		// case peer.PeerConnecting:
+		// 	n.log.Infow("peer connecting", "peer_id", e.PeerKey.Short(), "ip", e.Ip, "observedPort", e.ObservedPort)
 		case peer.AttemptConnect:
 			go func() {
 				if err := n.attemptDirectConnect(e); err != nil {

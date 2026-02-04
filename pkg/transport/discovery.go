@@ -50,10 +50,10 @@ func GetAdvertisableAddrs() ([]string, error) {
 		}
 	}
 
-	if prefIP, err := getPreferredOutboundIP(ctx); err == nil {
+	if prefIP, err := getPreferredOutboundIP(ctx); err == nil && isValidIP(prefIP) {
 		str := prefIP.String()
 		if !seen[str] {
-			results = append(results, prefIP.String())
+			results = append(results, str)
 			seen[str] = true
 		}
 	}
