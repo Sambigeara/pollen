@@ -129,8 +129,6 @@ type impl struct {
 	cfg            config
 }
 
-const eventBufSize = 64
-
 func NewLink(tr transport.Transport, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission, opts ...Option) (Link, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -145,7 +143,7 @@ func NewLink(tr transport.Transport, cs *noise.CipherSuite, staticKey noise.DHKe
 		sessionStore:   newSessionStore(crypto.NoisePub()),
 		rekeyMgr:       newRekeyManager(),
 		handlers:       make(map[types.MsgType]HandlerFn),
-		events:         make(chan peer.Input, eventBufSize),
+		events:         make(chan peer.Input),
 		pingMgrs:       make(map[string]*pingMgr),
 		waitPeer:       make(map[types.PeerKey]chan struct{}),
 		cfg:            cfg,
@@ -211,12 +209,36 @@ func (i *impl) loop(ctx context.Context) {
 			// handlePunchCoordTrigger runs EnsurePeer, which blocks waiting for a handshake/up event that
 			// is processed on this same loop. Run it async so the loop can keep draining socket events and
 			// complete the handshake (AssociatePeerSocket/removeWaiter) that unblocks EnsurePeer.
-			frCopy := fr
+			sess, ok := i.sessionStore.getByLocalID(fr.receiverID)
+			if !ok {
+				i.log.Debug("coord trigger session not found")
+			}
+			b, _, err := sess.Decrypt(fr.payload)
+			if err != nil {
+				i.log.Debugf("decrypt trigger payload: %w", err)
+			}
+			req := &peerv1.PunchCoordTrigger{}
+			if err := req.UnmarshalVT(b); err != nil {
+				i.log.Errorf("malformed trigger payload: %w", err)
+			}
+			// host, portStr, err := net.SplitHostPort(src)
+			// if err != nil {
+			// 	i.log.Errorf("failed to split src: %w", err)
+			// }
+			// port, err := strconv.Atoi(portStr)
+			// if err != nil {
+			// 	i.log.Errorf("failed to get port: %w", err)
+			// }
+			// i.events <- peer.ConnectingPeer{
+			// 	Ip:           host,
+			// 	ObservedPort: port,
+			// 	PeerKey:      types.PeerKeyFromBytes(req.PeerId),
+			// 	IsPunch:      true,
+			// }
 			go func() {
-				if err := i.handlePunchCoordTrigger(ctx, frCopy); err != nil {
+				if err := i.handlePunchCoordTrigger(ctx, req); err != nil {
 					i.log.Debugf("failed to handle punch coord trigger: %s", err)
 				}
-				// TODO(saml) gets stuck in connecting state here as we're not publishing to the peer state in Node
 			}()
 		case types.MsgTypeDisconnect:
 			i.handleDisconnect(fr)
@@ -289,22 +311,7 @@ func (i *impl) handlePunchCoordRequest(ctx context.Context, src string, fr frame
 	return g.Wait()
 }
 
-func (i *impl) handlePunchCoordTrigger(ctx context.Context, fr frame) (err error) {
-	sess, ok := i.sessionStore.getByLocalID(fr.receiverID)
-	if !ok {
-		return errors.New("coord trigger session not found")
-	}
-
-	b, _, err := sess.Decrypt(fr.payload)
-	if err != nil {
-		return fmt.Errorf("decrypt trigger payload: %w", err)
-	}
-
-	req := &peerv1.PunchCoordTrigger{}
-	if err := req.UnmarshalVT(b); err != nil {
-		return fmt.Errorf("malformed trigger payload: %w", err)
-	}
-
+func (i *impl) handlePunchCoordTrigger(ctx context.Context, req *peerv1.PunchCoordTrigger) (err error) {
 	peerID := types.PeerKeyFromBytes(req.PeerId)
 
 	// TODO(saml) this shouldn't be here, ideally a central loop will publish events like this
@@ -349,6 +356,7 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 	}
 
 	if res.Session != nil {
+		i.log.Debugw("session created", "src", src, "senderID", fr.senderID, "receiverID", fr.receiverID)
 		res.Session.setPeerAddr(src)
 		res.Session.peerSessionID = fr.senderID
 
@@ -387,7 +395,6 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 			PeerKey:      peerKey,
 			Ip:           host,
 			ObservedPort: port,
-			IdentityPub:  res.PeerIdentityPub,
 		}
 	}
 
@@ -395,34 +402,30 @@ func (i *impl) handleHandshake(ctx context.Context, src string, fr frame) error 
 }
 
 func (i *impl) handleApp(ctx context.Context, src string, fr frame) {
+	log := i.log.Named("handleApp").With("src", src, "msgType", fr.typ, "senderID", fr.senderID, "receiverID", fr.receiverID)
+	log.Debug("message received")
 	sess, ok := i.sessionStore.getByLocalID(fr.receiverID)
 	if !ok {
-		i.log.Debugw("handleApp: session not found",
-			"receiverID", fr.receiverID,
-			"msgType", fr.typ)
+		log.Debug("session not found")
 		return
 	}
 	peerKey := types.PeerKeyFromBytes(sess.peerNoiseKey)
+	log.With("peerKey", peerKey.Short())
 
 	pt, shouldRekey, err := sess.Decrypt(fr.payload)
 	if err != nil {
 		if errors.Is(err, ErrReplay) || errors.Is(err, ErrTooOld) || errors.Is(err, ErrShortCiphertext) {
+			log.Debugf("nonce error: %w", err)
 			return
 		}
-		i.log.Debugw("handleApp: decrypt failed",
-			"peer", peerKey.String()[:8],
-			"msgType", fr.typ,
-			"err", err)
+		log.Debugf("decrypt failed: %w", err)
 		return
 	}
 
 	sess.touchRecv()
 	if src != "" {
 		sess.setPeerAddr(src)
-	}
-	addr := sess.peerAddrValue()
-	if addr != "" {
-		i.bumpPinger(ctx, addr)
+		i.bumpPinger(ctx, src)
 	}
 
 	if shouldRekey {
@@ -434,7 +437,7 @@ func (i *impl) handleApp(ctx context.Context, src string, fr frame) {
 	i.handlersMu.RUnlock()
 	if h != nil {
 		if err := h(ctx, peerKey, pt); err != nil {
-			i.log.Debugw("handler error", "err", err)
+			log.Debugf("handler error: %w", err)
 		}
 	}
 }
@@ -499,15 +502,16 @@ func (i *impl) Close() error {
 func (i *impl) Events() <-chan peer.Input { return i.events }
 
 func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error {
+	log := i.log.Named("link.Send").With("peerKey", peerKey.Short(), "msg.Type", msg.Type)
 	sess, ok := i.sessionStore.getByPeer(peerKey)
 	if !ok {
-		i.log.Debugf("%v: %s", ErrNoSession, peerKey.String())
+		log.Debugw("%v", ErrNoSession)
 		return fmt.Errorf("%w: %s", ErrNoSession, peerKey.String())
 	}
 
 	ct, shouldRekey, err := sess.Encrypt(msg.Payload)
 	if err != nil {
-		i.log.Errorf("encrypt: %v", err)
+		log.Errorf("encrypt: %v", err)
 		return fmt.Errorf("encrypt: %w", err)
 	}
 
@@ -519,9 +523,10 @@ func (i *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelo
 	}
 
 	addr := sess.peerAddrValue()
+	log.Debugw("attempting Send", "addr", addr)
 	if err := i.transport.Send(addr, encodeFrame(fr), false); err != nil {
-		i.log.Debugw("send failed", "peer", peerKey.String()[:8], "addr", addr, "err", err)
-		logNetworkRestrictionWarning(i.log, err)
+		log.Debugw("send failed", "peer", peerKey.String()[:8], "addr", addr, "err", err)
+		logNetworkRestrictionWarning(log, err)
 		return fmt.Errorf("send: %w", err)
 	}
 

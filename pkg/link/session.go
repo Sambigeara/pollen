@@ -10,6 +10,7 @@ import (
 
 	"github.com/flynn/noise"
 	"github.com/sambigeara/pollen/pkg/types"
+	"go.uber.org/zap"
 )
 
 const (
@@ -54,13 +55,16 @@ func (s *sessionStore) set(sess *session) {
 	defer s.mu.Unlock()
 
 	k := types.PeerKeyFromBytes(sess.peerNoiseKey)
+	log := zap.S().Named("sessionStore").With("localSessionID", sess.localSessionID, "sess.isInitiator", sess.isInitiator, "peer", k.Short())
 
 	if prev, ok := s.byPeer[k]; ok && prev.localSessionID != sess.localSessionID {
 		// Deterministic tie-breaking: smaller key = initiator wins
 		shouldBeInitiator := bytes.Compare(s.localNoiseKey, sess.peerNoiseKey) < 0
+		log.Debugw("tie breaker", "shouldBeInitiator", shouldBeInitiator)
 
 		// If prev matches expected role and new doesn't, keep prev
 		if prev.isInitiator == shouldBeInitiator && sess.isInitiator != shouldBeInitiator {
+			log.Debugw("tie breaker override")
 			// Register new session by localID for incoming messages during transition
 			s.byLocalID[sess.localSessionID] = sess
 			newID := sess.localSessionID
