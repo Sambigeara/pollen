@@ -33,7 +33,6 @@ type Peer struct {
 	connectedAt   time.Time
 	ips           []string
 	observedPort  int
-	identityPub   []byte
 	state         PeerState
 	stage         ConnectStage
 	stageAttempts int
@@ -91,11 +90,21 @@ func (Tick) isInput() {}
 type ConnectPeer struct {
 	Ip           string
 	ObservedPort int
-	IdentityPub  []byte
 	PeerKey      types.PeerKey
 }
 
 func (ConnectPeer) isInput() {}
+
+// // ConnectingPeer signals that a peer has entered connecting state from an
+// // external trigger (primarily from remote punch coord attempts)
+// type ConnectingPeer struct {
+// 	Ip           string
+// 	ObservedPort int
+// 	PeerKey      types.PeerKey
+// 	IsPunch      bool // TODO(saml) probably use enum
+// }
+
+// func (ConnectingPeer) isInput() {}
 
 // ConnectFailed signals a failed connection attempt.
 type ConnectFailed struct {
@@ -123,6 +132,14 @@ type PeerConnected struct {
 }
 
 func (PeerConnected) isOutput() {}
+
+// type PeerConnecting struct {
+// 	Ip           string
+// 	ObservedPort int
+// 	PeerKey      types.PeerKey
+// }
+
+// func (PeerConnecting) isOutput() {}
 
 // AttemptConnect signals the caller should try a direct connection to this peer.
 type AttemptConnect struct {
@@ -211,6 +228,8 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 		return s.discoverPeer(now, e)
 	case ConnectPeer:
 		return s.connectPeer(now, e)
+	// case ConnectingPeer:
+	// 	return s.peerConnecting(now, e)
 	case ConnectFailed:
 		return s.connectFailed(now, e)
 	case PeerDisconnected:
@@ -286,15 +305,33 @@ func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 
 	// Always update state, even if already connected (peer may have restarted)
 	p.state = PeerStateConnected
-	p.identityPub = e.IdentityPub
 	p.ips = []string{e.Ip}
 	p.observedPort = e.ObservedPort
 	p.connectedAt = now
 	p.stage = ConnectStageDirect // reset for next time
 	p.stageAttempts = 0
+	s.log.Debugw("connectPeer", "observedPort", e.ObservedPort)
 
 	return []Output{PeerConnected{PeerKey: e.PeerKey, Ip: e.Ip, ObservedPort: e.ObservedPort}}
 }
+
+// func (s *Store) peerConnecting(now time.Time, e ConnectingPeer) []Output {
+// 	p, exists := s.m[e.PeerKey]
+// 	if !exists {
+// 		p = &Peer{id: e.PeerKey}
+// 		s.m[e.PeerKey] = p
+// 	}
+
+// 	// Always update state, even if already connected (peer may have restarted)
+// 	p.state = PeerStateConnecting
+// 	p.ips = []string{e.Ip}
+// 	p.observedPort = e.ObservedPort
+// 	p.connectedAt = now
+// 	p.stage = ConnectStagePunch
+// 	p.stageAttempts = 0
+
+// 	return []Output{PeerConnecting{PeerKey: e.PeerKey, Ip: e.Ip, ObservedPort: e.ObservedPort}}
+// }
 
 func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
 	p, exists := s.m[e.PeerKey]

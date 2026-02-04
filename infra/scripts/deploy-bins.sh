@@ -36,6 +36,20 @@ if [[ -z "$tellybox_ip" ]]; then
   exit 1
 fi
 
+pi_ip="$("$TS_BIN" status --json \
+  | jq -r '
+      [
+        (.Peer[]? | select(.HostName=="pi") | .TailscaleIPs[]?),
+        (.Peers[]? | select(.HostName=="pi") | .TailscaleIPs[]?)
+      ]
+      | map(select(startswith("100.")))[0] // .[0] // empty
+    ')"
+
+if [[ -z "$pi_ip" ]]; then
+  echo "pi not found on Tailscale" >&2
+  exit 1
+fi
+
 # 4. Resolve AWS IP (Tofu)
 aws_ip="$(cd infra && tofu output -raw ip)"
 
@@ -68,6 +82,11 @@ rsync -az -e "ssh $SSH_OPTS" \
   dist/pollen_linux_amd64_v1/pollen "sambigeara@${tellybox_ip}:~/pollen" &
 pids+=("$!")
 
+echo "Syncing to pi (${pi_ip})..." >&2
+rsync -az -e "ssh $SSH_OPTS" \
+  dist/pollen_linux_arm64_v8.0/pollen "sambigeara@${pi_ip}:~/pollen" &
+pids+=("$!")
+
 echo "Syncing to relay (${aws_ip})..." >&2
 rsync -az -e "ssh $SSH_OPTS" \
   dist/pollen_linux_arm64_v8.0/pollen "ubuntu@${aws_ip}:~/pollen" &
@@ -87,4 +106,5 @@ if [[ "$fail" -ne 0 ]]; then
 fi
 
 echo "Successfully deployed to tellybox!" >&2
+echo "Successfully deployed to pi!" >&2
 echo "Successfully deployed to relay!" >&2
