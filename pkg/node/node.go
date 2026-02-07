@@ -102,7 +102,6 @@ func New(conf *Config) (*Node, error) {
 	if len(ips) == 0 {
 		var err error
 		ips, err = sock.GetAdvertisableAddrs()
-		log.Debugw("ADVERTISABLE ADDRESSES", "ips", ips)
 		if err != nil {
 			return nil, err
 		}
@@ -113,10 +112,7 @@ func New(conf *Config) (*Node, error) {
 		identityPubKey: pubKey,
 	}
 
-	mesh, err := link.NewLink(&cs, conf.Port, noiseKey, crypto, invitesStore)
-	if err != nil {
-		return nil, err
-	}
+	mesh := link.NewLink(&cs, conf.Port, noiseKey, crypto, invitesStore)
 
 	peerStore := peer.NewStore()
 	if conf.PeerConfig != nil {
