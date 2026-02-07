@@ -19,7 +19,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var _ Socket = (*megaSock)(nil)
+var _ SuperSock = (*megaSock)(nil)
 
 var ErrHandshakeIncomplete = errors.New("handshake incomplete")
 var ErrNoSession = errors.New("no session for peer")
@@ -38,6 +38,8 @@ const (
 	staleSessionCheckInterval = 30 * time.Second
 )
 
+var _ SuperSock = (*megaSock)(nil)
+
 type Packet struct {
 	Peer    types.PeerKey
 	Payload []byte
@@ -45,8 +47,9 @@ type Packet struct {
 	Typ     types.MsgType
 }
 
-type Socket interface {
-	Recv() (Packet, error)
+type SuperSock interface {
+	Start(ctx context.Context) error
+	Recv(ctx context.Context) (Packet, error)
 	Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error
 	EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr, withPeer bool) error // IK init
 	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error                                     // XXpsk2 init
@@ -73,7 +76,9 @@ type pendingProbe struct {
 type megaSock struct {
 	log *zap.SugaredLogger
 
+	port    int
 	primary *net.UDPConn
+	ctx     context.Context
 
 	// address -> working route
 	sessions map[string]route
@@ -83,9 +88,10 @@ type megaSock struct {
 	pending map[uint64]pendingProbe
 	pendMu  sync.Mutex
 
-	recvChan    chan Packet
-	closeCtx    context.Context
-	closeCancel context.CancelFunc
+	recvChan chan Packet
+	// closeCtx    context.Context
+	// closeCancel context.CancelFunc
+	cancel context.CancelFunc
 
 	crypto         LocalCrypto
 	handshakeStore *handshakeStore
@@ -97,16 +103,11 @@ type megaSock struct {
 	events         chan peer.Input
 }
 
-func NewTransport(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission, inputCh chan peer.Input) (Socket, error) {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: port})
-	if err != nil {
-		return nil, fmt.Errorf("failed to listen UDP: %w", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	ms := &megaSock{
-		log:            zap.S().Named("magicsock"),
-		primary:        conn,
+func NewTransport(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission, inputCh chan peer.Input) SuperSock {
+	return &megaSock{
+		log: zap.S().Named("magicsock"),
+		// primary:        conn,
+		port:           port,
 		sessions:       make(map[string]route),
 		pending:        make(map[uint64]pendingProbe),
 		recvChan:       make(chan Packet, 1024),
@@ -116,20 +117,31 @@ func NewTransport(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto
 		rekeyMgr:       newRekeyManager(),
 		waitPeer:       make(map[types.PeerKey]chan route),
 		events:         inputCh,
-		closeCtx:       ctx,
-		closeCancel:    cancel,
 	}
-
-	go ms.readLoop(conn)
-	go ms.staleSessionChecker(ctx)
-	return ms, nil
 }
 
-func (m *megaSock) Recv() (Packet, error) {
+func (m *megaSock) Start(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	m.ctx = ctx
+	m.cancel = cancel
+
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: m.port})
+	if err != nil {
+		return fmt.Errorf("failed to listen UDP: %w", err)
+	}
+
+	m.primary = conn
+
+	go m.readLoop(ctx, conn)
+	go m.staleSessionChecker(ctx)
+	return nil
+}
+
+func (m *megaSock) Recv(ctx context.Context) (Packet, error) {
 	select {
 	case p := <-m.recvChan:
 		return p, nil
-	case <-m.closeCtx.Done():
+	case <-ctx.Done():
 		return Packet{}, fmt.Errorf("transport closed")
 	}
 }
@@ -186,7 +198,7 @@ func (m *megaSock) send(ctx context.Context, addr *net.UDPAddr, payload []byte) 
 }
 
 func (m *megaSock) Close() error {
-	m.closeCancel()
+	m.cancel()
 
 	err := m.primary.Close()
 
@@ -197,17 +209,15 @@ func (m *megaSock) Close() error {
 			r.conn.Close()
 		}
 	}
-	// Clear maps to aid GC
-	m.sessions = make(map[string]route)
 
 	return err
 }
 
-func (m *megaSock) readLoop(conn *net.UDPConn) {
+func (m *megaSock) readLoop(ctx context.Context, conn *net.UDPConn) {
 	buf := make([]byte, udpReadBufferSize)
 	for {
 		select {
-		case <-m.closeCtx.Done():
+		case <-ctx.Done():
 			return
 		default:
 		}
@@ -228,8 +238,7 @@ func (m *megaSock) readLoop(conn *net.UDPConn) {
 			continue
 		}
 
-		ctx := context.Background() // TODO(saml) pass up
-		switch fr.Typ {             //nolint:exhaustive
+		switch fr.Typ { //nolint:exhaustive
 		case types.MsgTypePing:
 			continue
 		case types.MsgTypeHandshakeIKInit,
@@ -257,31 +266,18 @@ func (m *megaSock) readLoop(conn *net.UDPConn) {
 			sess, ok := m.sessionStore.getByLocalID(fr.ReceiverID)
 			if !ok {
 				m.log.Debug("coord trigger session not found")
+				continue
 			}
 			b, _, err := sess.Decrypt(fr.Payload)
 			if err != nil {
 				m.log.Debugf("decrypt trigger payload: %w", err)
+				continue
 			}
 			req := &peerv1.PunchCoordTrigger{}
 			if err := req.UnmarshalVT(b); err != nil {
 				m.log.Errorf("malformed trigger payload: %w", err)
+				continue
 			}
-			// TODO(saml) this `ConnectingPeer` event I added during other work might not even be necessary
-			//
-			// host, portStr, err := net.SplitHostPort(src)
-			// if err != nil {
-			// 	i.log.Errorf("failed to split src: %w", err)
-			// }
-			// port, err := strconv.Atoi(portStr)
-			// if err != nil {
-			// 	i.log.Errorf("failed to get port: %w", err)
-			// }
-			// i.events <- peer.ConnectingPeer{
-			// 	Ip:           host,
-			// 	ObservedPort: port,
-			// 	PeerKey:      types.PeerKeyFromBytes(req.PeerId),
-			// 	IsPunch:      true,
-			// }
 			go func() {
 				if err := m.handlePunchCoordTrigger(ctx, req); err != nil {
 					m.log.Debugf("failed to handle punch coord trigger: %s", err)
@@ -335,14 +331,14 @@ func (m *megaSock) readLoop(conn *net.UDPConn) {
 		}
 
 		select {
+		case <-ctx.Done():
+			return
 		case m.recvChan <- Packet{
 			Peer:    peerKey,
 			Payload: pt,
 			Src:     fr.Src,
 			Typ:     fr.Typ,
 		}:
-		case <-m.closeCtx.Done():
-			return
 		}
 	}
 }
@@ -500,8 +496,17 @@ func (m *megaSock) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs 
 
 	// TODO(saml) close early if a direct connection is found via ctx!
 	if withPunch {
+		if len(addrs) == 0 {
+			return errors.New("no addresses available for punch")
+		}
+
+		readCtx := m.ctx
+		if readCtx == nil {
+			readCtx = ctx
+		}
+
 		go func() {
-			if err := m.fanOut(ctx, addrs[0], payload); err != nil {
+			if err := m.fanOut(ctx, readCtx, addrs[0], payload); err != nil {
 				m.log.Error(err)
 			}
 		}()
@@ -509,21 +514,24 @@ func (m *megaSock) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs 
 
 	select {
 	case <-upCh:
-		m.log.Debugw("received direct up event", "peer", peerKey.String()[:8])
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-func (m *megaSock) fanOut(ctx context.Context, target *net.UDPAddr, payload []byte) error {
+func (m *megaSock) fanOut(ctx context.Context, readCtx context.Context, target *net.UDPAddr, payload []byte) error {
 	sockets := make([]*net.UDPConn, 0, ephemeralSocketCount)
 	for range ephemeralSocketCount {
 		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: nil, Port: 0})
 		if err == nil {
 			sockets = append(sockets, c)
-			go m.readLoop(c)
+			go m.readLoop(readCtx, c)
 		}
+	}
+
+	if len(sockets) == 0 {
+		return errors.New("failed to create fanout sockets")
 	}
 
 	ticker := time.NewTicker(searchTickerInterval)
@@ -556,22 +564,61 @@ search:
 		}
 	}
 
-	for _, c := range sockets {
-		keep := false
-		m.sessMu.RLock()
-		for _, r := range m.sessions {
-			if r.conn == c {
-				keep = true
-				break
-			}
+	m.cleanupFanOutSockets(sockets)
+
+	return nil
+}
+
+func (m *megaSock) cleanupFanOutSockets(sockets []*net.UDPConn) {
+	if len(sockets) == 0 {
+		return
+	}
+
+	activeAddrs := make(map[string]struct{})
+	for _, peerKey := range m.sessionStore.getAllPeers() {
+		sess, ok := m.sessionStore.getByPeer(peerKey)
+		if !ok {
+			continue
 		}
-		m.sessMu.RUnlock()
-		if !keep {
-			c.Close()
+
+		addr := sess.peerAddrValue()
+		if addr == nil {
+			continue
+		}
+
+		activeAddrs[addr.String()] = struct{}{}
+	}
+
+	keep := make(map[*net.UDPConn]struct{})
+
+	m.sessMu.Lock()
+	defer m.sessMu.Unlock()
+
+	for addr, r := range m.sessions {
+		if _, ok := activeAddrs[addr]; ok {
+			keep[r.conn] = struct{}{}
 		}
 	}
 
-	return nil
+	for _, conn := range sockets {
+		if conn == nil || conn == m.primary {
+			continue
+		}
+
+		if _, ok := keep[conn]; ok {
+			continue
+		}
+
+		for addr, r := range m.sessions {
+			if r.conn == conn {
+				delete(m.sessions, addr)
+			}
+		}
+
+		if err := conn.Close(); err != nil {
+			m.log.Debugw("failed closing fanout socket", "local", conn.LocalAddr(), "err", err)
+		}
+	}
 }
 
 func (m *megaSock) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
@@ -654,7 +701,6 @@ func encodeHandshake(res HandshakeResult) []byte {
 }
 
 func (m *megaSock) handleHandshake(ctx context.Context, conn *net.UDPConn, src string, fr Frame) error {
-	m.log.Debugw("handleHandshake", "src", src, "senderID", fr.SenderID, "receiverID", fr.ReceiverID)
 	hs, err := m.handshakeStore.getOrCreate(fr.SenderID, fr.ReceiverID, fr.Typ)
 	if err != nil {
 		return err
@@ -693,6 +739,7 @@ func (m *megaSock) handleHandshake(ctx context.Context, conn *net.UDPConn, src s
 
 	m.sessMu.Lock()
 	m.sessions[addr.String()] = route{conn: conn, remoteAddr: addr}
+	m.log.Debugw("sock session added", "addrl", addr)
 	m.sessMu.Unlock()
 
 	// Associate peer with the socket that successfully completed the handshake
@@ -774,16 +821,11 @@ func (m *megaSock) sendHandshakeResult(conn *net.UDPConn, addr string, res Hands
 		ReceiverID: remoteID,
 	})
 
-	// m.sessMu.RLock()
-	// r, ok := m.sessions[addr]
-	// m.sessMu.RUnlock()
-	m.log.Debugw("retrieved session lock", "addr", addr)
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		m.log.Errorf("Error resolving address:", err)
 		return nil
 	}
-	m.log.Debugw("WriteToUDP", "addr", addr)
 	_, err = conn.WriteToUDP(payload, udpAddr)
 	// if !errors.Is(err, syscall.ENETUNREACH) && !errors.Is(err, syscall.EHOSTUNREACH) {
 	if err != nil {
