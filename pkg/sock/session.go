@@ -1,10 +1,11 @@
-package link
+package sock
 
 import (
 	"bytes"
 	"encoding/binary"
 	"errors"
 	"math"
+	"net"
 	"sync"
 	"time"
 
@@ -150,7 +151,7 @@ type session struct {
 	lastRecvTime   time.Time
 	sendCipher     noise.Cipher
 	recvCipher     noise.Cipher
-	peerAddr       string
+	peerAddr       *net.UDPAddr
 	peerNoiseKey   []byte
 	peerAddrMu     sync.RWMutex
 	sendMu         sync.RWMutex
@@ -162,14 +163,14 @@ type session struct {
 	recvWindow     nonceWindow
 }
 
-func (s *session) setPeerAddr(addr string) {
+func (s *session) setPeerAddr(addr *net.UDPAddr) {
 	s.peerAddrMu.Lock()
 	s.peerAddr = addr
 	s.peerAddrMu.Unlock()
 }
 
 // TODO(saml) is this even necessary?
-func (s *session) peerAddrValue() string {
+func (s *session) peerAddrValue() *net.UDPAddr {
 	s.peerAddrMu.RLock()
 	addr := s.peerAddr
 	s.peerAddrMu.RUnlock()

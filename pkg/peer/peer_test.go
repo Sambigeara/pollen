@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"net"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ func TestStore_DirectToPunchToUnreachable(t *testing.T) {
 	key := peerKey(1)
 	now := time.Unix(0, 0)
 
-	store.Step(now, DiscoverPeer{PeerKey: key, Ips: []string{"10.0.0.1"}, Port: 1})
+	store.Step(now, DiscoverPeer{PeerKey: key, Ips: []net.IP{{127, 0, 0, 1}}, Port: 1})
 	outputs := store.Step(now, Tick{})
 	require.Len(t, outputs, 1)
 	require.IsType(t, AttemptConnect{}, outputs[0])
@@ -55,11 +56,11 @@ func TestStore_ConnectPeerResetsStage(t *testing.T) {
 	key := peerKey(2)
 	now := time.Unix(0, 0)
 
-	store.Step(now, DiscoverPeer{PeerKey: key, Ips: []string{"10.0.0.1"}, Port: 1})
+	store.Step(now, DiscoverPeer{PeerKey: key, Ips: []net.IP{{10, 0, 0, 1}}, Port: 1})
 	store.Step(now, Tick{})
 	store.Step(now, ConnectFailed{PeerKey: key})
 
-	outputs := store.Step(now, ConnectPeer{PeerKey: key, Ip: "10.0.0.1", ObservedPort: 2})
+	outputs := store.Step(now, ConnectPeer{PeerKey: key, Ip: net.IP{10, 0, 0, 1}, ObservedPort: 2})
 	require.Len(t, outputs, 1)
 	require.IsType(t, PeerConnected{}, outputs[0])
 
@@ -78,7 +79,7 @@ func TestStore_DisconnectSchedulesRetry(t *testing.T) {
 	key := peerKey(5)
 	now := time.Unix(0, 0)
 
-	store.Step(now, ConnectPeer{PeerKey: key, Ip: "10.0.0.1", ObservedPort: 1})
+	store.Step(now, ConnectPeer{PeerKey: key, Ip: net.IP{10, 0, 0, 1}, ObservedPort: 1})
 	store.Step(now, PeerDisconnected{PeerKey: key})
 	peer := store.m[key]
 	require.Equal(t, PeerStateDiscovered, peer.state)

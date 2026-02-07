@@ -27,7 +27,7 @@ const (
 // ConnectedPeersProvider is used to find connected peers that can act as coordinators.
 type ConnectedPeersProvider interface {
 	GetConnectedPeers() []types.PeerKey
-	GetActivePeerAddress(peerKey types.PeerKey) (string, bool)
+	GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool)
 }
 
 // punchInflight tracks an in-progress punch dial from the initiator's perspective.
@@ -120,7 +120,7 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 	}
 	m.pendingPunch[reqID] = pendingPunchReq{
 		initiator:    fromPeer,
-		initiatorSrc: net.JoinHostPort(extractIP(initiatorAddr), strconv.FormatUint(uint64(initiatorPort), 10)),
+		initiatorSrc: net.JoinHostPort(initiatorAddr.IP.String(), strconv.FormatUint(uint64(initiatorPort), 10)),
 		localPort:    req.LocalPort,
 		certDer:      req.CertDer,
 		sig:          req.Sig,
@@ -139,7 +139,7 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 	// Send trigger to target
 	trigger := &tcpv1.TcpPunchTrigger{
 		PeerId:      fromPeer.Bytes(),
-		PeerAddr:    net.JoinHostPort(extractIP(initiatorAddr), strconv.FormatUint(uint64(initiatorPort), 10)),
+		PeerAddr:    net.JoinHostPort(initiatorAddr.IP.String(), strconv.FormatUint(uint64(initiatorPort), 10)),
 		ServicePort: req.ServicePort,
 		PeerCertDer: req.CertDer,
 		PeerSig:     req.Sig,
@@ -321,7 +321,7 @@ func (m *Manager) HandlePunchReady(ctx context.Context, fromPeer types.PeerKey, 
 
 	// Send response to initiator with target's address and cert
 	resp := &tcpv1.TcpPunchResponse{
-		PeerAddr:    net.JoinHostPort(extractIP(targetAddr), strconv.FormatUint(uint64(targetPort), 10)),
+		PeerAddr:    net.JoinHostPort(targetAddr.IP.String(), strconv.FormatUint(uint64(targetPort), 10)),
 		PeerCertDer: ready.CertDer,
 		PeerSig:     ready.Sig,
 		RequestId:   ready.RequestId,
@@ -537,7 +537,7 @@ func (m *Manager) discoverExternalPort(ctx context.Context, coordinator types.Pe
 		return 0
 	}
 
-	probeAddr := net.JoinHostPort(extractIP(coordAddr), strconv.FormatUint(uint64(offer.ProbePort), 10))
+	probeAddr := net.JoinHostPort(coordAddr.IP.String(), strconv.FormatUint(uint64(offer.ProbePort), 10))
 	dialer := tcp.NewReusePortDialer(int(localPort), probeDialTimeout)
 	dialCtx, dialCancel := context.WithTimeout(ctx, probeDialTimeout)
 	conn, err := dialer.DialContext(dialCtx, "tcp", probeAddr)
@@ -572,15 +572,6 @@ func (m *Manager) sendProbeResult(ctx context.Context, peer types.PeerKey, reqID
 		Type:    types.MsgTypeTCPPunchProbeResult,
 		Payload: resBytes,
 	})
-}
-
-// extractIP extracts the IP part from an "ip:port" address string.
-func extractIP(addr string) string {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
-	}
-	return host
 }
 
 func (m *Manager) sendPunchReject(ctx context.Context, initiator types.PeerKey, reqID uint64, reason string) {
