@@ -19,8 +19,8 @@ import (
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/link"
 	"github.com/sambigeara/pollen/pkg/peer"
+	"github.com/sambigeara/pollen/pkg/sock"
 	"github.com/sambigeara/pollen/pkg/state"
-	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/tunnel"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/util"
@@ -28,7 +28,7 @@ import (
 	"golang.org/x/crypto/ed25519"
 )
 
-var _ link.LocalCrypto = (*localCrypto)(nil)
+var _ sock.LocalCrypto = (*localCrypto)(nil)
 
 const (
 	localKeysDir = "keys"
@@ -50,7 +50,6 @@ type Config struct {
 	PeerConfig          *peer.Config
 	PollenDir           string
 	AdvertisedIPs       []string
-	LinkOptions         []link.Option
 	Port                int
 	GossipInterval      time.Duration
 	PeerTickInterval    time.Duration
@@ -102,7 +101,7 @@ func New(conf *Config) (*Node, error) {
 	ips := conf.AdvertisedIPs
 	if len(ips) == 0 {
 		var err error
-		ips, err = transport.GetAdvertisableAddrs()
+		ips, err = sock.GetAdvertisableAddrs()
 		log.Debugw("ADVERTISABLE ADDRESSES", "ips", ips)
 		if err != nil {
 			return nil, err
@@ -114,12 +113,7 @@ func New(conf *Config) (*Node, error) {
 		identityPubKey: pubKey,
 	}
 
-	tr, err := transport.NewTransport(conf.Port)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create transport: %w", err)
-	}
-
-	mesh, err := link.NewLink(tr, &cs, noiseKey, crypto, invitesStore, conf.LinkOptions...)
+	mesh, err := link.NewLink(&cs, conf.Port, noiseKey, crypto, invitesStore)
 	if err != nil {
 		return nil, err
 	}
@@ -293,9 +287,19 @@ func (n *Node) syncPeersFromState() {
 			continue
 		}
 
+		ips := make([]net.IP, len(node.Ips))
+		for i, ipStr := range node.Ips {
+			ip := net.ParseIP(ipStr)
+			if ip == nil {
+				n.log.Error("unable to parse IP")
+				continue
+			}
+			ips[i] = ip
+		}
+
 		n.Peers.Step(time.Now(), peer.DiscoverPeer{
 			PeerKey: types.PeerKeyFromBytes(node.Keys.NoisePub),
-			Ips:     node.Ips,
+			Ips:     ips,
 			Port:    int(node.LocalPort),
 		})
 	}
@@ -387,9 +391,12 @@ func hasServicePort(node *statev1.Node, port uint32) bool {
 
 func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
 	// TODO(saml) not nice to do this on the fly
-	addrs := make([]string, len(e.Ips))
+	addrs := make([]*net.UDPAddr, len(e.Ips))
 	for i, ip := range e.Ips {
-		addrs[i] = net.JoinHostPort(ip, fmt.Sprintf("%d", e.Port))
+		addrs[i] = &net.UDPAddr{
+			IP:   ip,
+			Port: e.Port,
+		}
 	}
 
 	n.log.Debugw("attempting direct connection", "peer", e.PeerKey.String()[:8], "addrs", addrs)
@@ -470,7 +477,7 @@ func (n *Node) GetConnectedPeers() []types.PeerKey {
 
 // GetActivePeerAddress returns the active address for a connected peer.
 // Implements tunnel.ConnectedPeersProvider.
-func (n *Node) GetActivePeerAddress(peerKey types.PeerKey) (string, bool) {
+func (n *Node) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) {
 	return n.Link.GetActivePeerAddress(peerKey)
 }
 
