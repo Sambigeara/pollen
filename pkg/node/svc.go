@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -104,13 +105,20 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			status = controlv1.NodeStatus_NODE_STATUS_ONLINE
 		}
 		if !online && node != nil && len(node.Ips) > 0 {
-			addr = net.JoinHostPort(node.Ips[0], fmt.Sprintf("%d", node.LocalPort))
+			ip := net.ParseIP(node.Ips[0])
+			if ip == nil {
+				return nil, errors.New("invalid IP address")
+			}
+			addr = &net.UDPAddr{
+				IP:   ip,
+				Port: int(node.LocalPort),
+			}
 		}
 
 		out.Nodes = append(out.Nodes, &controlv1.NodeSummary{
 			Node:   &controlv1.NodeRef{PeerId: key.Bytes()},
 			Status: status,
-			Addr:   addr,
+			Addr:   addr.String(),
 		})
 	}
 

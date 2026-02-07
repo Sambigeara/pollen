@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"net"
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/types"
@@ -31,7 +32,7 @@ const (
 type Peer struct {
 	nextActionAt  time.Time
 	connectedAt   time.Time
-	ips           []string
+	ips           []net.IP
 	observedPort  int
 	state         PeerState
 	stage         ConnectStage
@@ -74,7 +75,7 @@ type Input interface{ isInput() }
 // DiscoverPeer adds a new peer or updates known addresses for an existing peer.
 // Used on startup (from disk) or when learning about a peer from gossip.
 type DiscoverPeer struct {
-	Ips     []string
+	Ips     []net.IP
 	Port    int
 	PeerKey types.PeerKey
 }
@@ -88,7 +89,7 @@ func (Tick) isInput() {}
 
 // ConnectPeer signals a successful connection (handshake complete).
 type ConnectPeer struct {
-	Ip           string
+	Ip           net.IP
 	ObservedPort int
 	PeerKey      types.PeerKey
 }
@@ -126,7 +127,7 @@ type Output interface{ isOutput() }
 
 // PeerConnected signals a peer has transitioned to connected state.
 type PeerConnected struct {
-	Ip           string
+	Ip           net.IP
 	ObservedPort int
 	PeerKey      types.PeerKey
 }
@@ -143,7 +144,7 @@ func (PeerConnected) isOutput() {}
 
 // AttemptConnect signals the caller should try a direct connection to this peer.
 type AttemptConnect struct {
-	Ips     []string
+	Ips     []net.IP
 	Port    int
 	PeerKey types.PeerKey
 }
@@ -152,7 +153,7 @@ func (AttemptConnect) isOutput() {}
 
 // RequestPunchCoordination signals the caller should request NAT punch coordination.
 type RequestPunchCoordination struct {
-	Ips     []string
+	Ips     []net.IP
 	PeerKey types.PeerKey
 }
 
@@ -305,7 +306,7 @@ func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 
 	// Always update state, even if already connected (peer may have restarted)
 	p.state = PeerStateConnected
-	p.ips = []string{e.Ip}
+	p.ips = []net.IP{e.Ip}
 	p.observedPort = e.ObservedPort
 	p.connectedAt = now
 	p.stage = ConnectStageDirect // reset for next time

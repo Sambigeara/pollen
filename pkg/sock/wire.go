@@ -1,4 +1,4 @@
-package link
+package sock
 
 import (
 	"encoding/binary"
@@ -7,15 +7,16 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-type frame struct {
-	payload    []byte
-	typ        types.MsgType
-	senderID   uint32
-	receiverID uint32
+type Frame struct {
+	Src        string
+	Payload    []byte
+	Typ        types.MsgType
+	SenderID   uint32
+	ReceiverID uint32
 }
 
 //nolint:mnd
-func decodeFrame(buf []byte) (fr frame, _ error) {
+func decodeFrame(buf []byte, src string) (fr Frame, _ error) {
 	n := len(buf)
 	if n < 4 {
 		return fr, fmt.Errorf("handshake frame too short: %d", n)
@@ -51,44 +52,45 @@ func decodeFrame(buf []byte) (fr frame, _ error) {
 		payloadOffset = 8
 	}
 
-	return frame{
-		typ:        tp,
-		senderID:   senderID,
-		receiverID: receiverID,
-		payload:    buf[payloadOffset:n],
+	return Frame{
+		Src:        src,
+		Typ:        tp,
+		SenderID:   senderID,
+		ReceiverID: receiverID,
+		Payload:    buf[payloadOffset:n],
 		// TODO(saml) If we ever start reusing buffers...
 		// payload: append([]byte(nil), buf[payloadOffset:n]...),
 	}, nil
 }
 
 //nolint:mnd
-func encodeFrame(fr *frame) []byte {
+func encodeFrame(fr *Frame) []byte {
 	var buf []byte
 
-	switch fr.typ {
+	switch fr.Typ {
 	case types.MsgTypePing:
 		buf = make([]byte, 4)
-		binary.BigEndian.PutUint32(buf[:4], uint32(fr.typ))
+		binary.BigEndian.PutUint32(buf[:4], uint32(fr.Typ))
 	case types.MsgTypeHandshakeIKInit, types.MsgTypeHandshakeXXPsk2Init:
-		buf = make([]byte, 8+len(fr.payload))
-		binary.BigEndian.PutUint32(buf[:4], uint32(fr.typ))
-		binary.BigEndian.PutUint32(buf[4:8], fr.senderID)
-		copy(buf[8:], fr.payload)
+		buf = make([]byte, 8+len(fr.Payload))
+		binary.BigEndian.PutUint32(buf[:4], uint32(fr.Typ))
+		binary.BigEndian.PutUint32(buf[4:8], fr.SenderID)
+		copy(buf[8:], fr.Payload)
 	case types.MsgTypeHandshakeIKResp, types.MsgTypeHandshakeXXPsk2Resp:
-		buf = make([]byte, 12+len(fr.payload))
-		binary.BigEndian.PutUint32(buf[:4], uint32(fr.typ))
-		binary.BigEndian.PutUint32(buf[4:8], fr.senderID)
-		binary.BigEndian.PutUint32(buf[8:12], fr.receiverID)
-		copy(buf[12:], fr.payload)
+		buf = make([]byte, 12+len(fr.Payload))
+		binary.BigEndian.PutUint32(buf[:4], uint32(fr.Typ))
+		binary.BigEndian.PutUint32(buf[4:8], fr.SenderID)
+		binary.BigEndian.PutUint32(buf[8:12], fr.ReceiverID)
+		copy(buf[12:], fr.Payload)
 	case types.MsgTypeTransportData, types.MsgTypeTCPPunchRequest, types.MsgTypeTCPPunchTrigger,
 		types.MsgTypeTCPPunchReady, types.MsgTypeTCPPunchResponse, types.MsgTypeGossip,
 		types.MsgTypeUDPPunchCoordRequest, types.MsgTypeUDPPunchCoordResponse, types.MsgTypeDisconnect,
 		types.MsgTypeTest, types.MsgTypeSessionRequest, types.MsgTypeSessionResponse,
 		types.MsgTypeTCPPunchProbeRequest, types.MsgTypeTCPPunchProbeOffer, types.MsgTypeTCPPunchProbeResult:
-		buf = make([]byte, 8+len(fr.payload))
-		binary.BigEndian.PutUint32(buf[:4], uint32(fr.typ))
-		binary.BigEndian.PutUint32(buf[4:8], fr.receiverID)
-		copy(buf[8:], fr.payload)
+		buf = make([]byte, 8+len(fr.Payload))
+		binary.BigEndian.PutUint32(buf[:4], uint32(fr.Typ))
+		binary.BigEndian.PutUint32(buf[4:8], fr.ReceiverID)
+		copy(buf[8:], fr.Payload)
 	}
 
 	return buf
