@@ -476,6 +476,21 @@ func (m *megaSock) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs 
 	ctx, cancel := context.WithTimeout(ctx, searchTimeout)
 	defer cancel()
 
+	// we can respond to the same success, and gaurantee that the signal
+	// that needs to route receives it.
+	succ := make(chan struct{})
+	proxyCh := make(chan route, 1)
+	go func() {
+		select {
+		case <-ctx.Done():
+		case r := <-upCh:
+			if withPunch {
+				proxyCh <- r
+			}
+			close(succ)
+		}
+	}()
+
 	// attempt direct dials
 	for _, addr := range addrs {
 		go func() {
@@ -484,7 +499,7 @@ func (m *megaSock) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs 
 			for {
 				m.send(ctx, addr, payload)
 				select {
-				case <-upCh:
+				case <-succ:
 					return
 				case <-ctx.Done():
 					return
@@ -500,33 +515,35 @@ func (m *megaSock) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs 
 			return errors.New("no addresses available for punch")
 		}
 
-		readCtx := m.ctx
-		if readCtx == nil {
-			readCtx = ctx
-		}
-
 		go func() {
-			if err := m.fanOut(ctx, readCtx, addrs[0], payload); err != nil {
+			if err := m.fanOut(ctx, addrs[0], payload, proxyCh); err != nil {
 				m.log.Error(err)
 			}
 		}()
 	}
 
 	select {
-	case <-upCh:
+	case <-succ:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-func (m *megaSock) fanOut(ctx context.Context, readCtx context.Context, target *net.UDPAddr, payload []byte) error {
-	sockets := make([]*net.UDPConn, 0, ephemeralSocketCount)
+func (m *megaSock) fanOut(ctx context.Context, target *net.UDPAddr, payload []byte, winnerCh chan route) error {
+	type fanOutSocket struct {
+		conn   *net.UDPConn
+		cancel context.CancelFunc
+	}
+
+	sockets := make([]fanOutSocket, 0, ephemeralSocketCount)
 	for range ephemeralSocketCount {
 		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: nil, Port: 0})
 		if err == nil {
-			sockets = append(sockets, c)
-			go m.readLoop(readCtx, c)
+			loopCtx, loopCancel := context.WithCancel(m.ctx)
+			sockets = append(sockets, fanOutSocket{conn: c, cancel: loopCancel})
+
+			go m.readLoop(loopCtx, c)
 		}
 	}
 
@@ -558,67 +575,31 @@ search:
 			// Hard-side behaviour: vary source port by cycling ephemeral sockets
 			// while sending to a fixed destination (the peer’s known ip:port) to
 			// create many NAT mappings on our side.
-			sockets[tickCount%len(sockets)].WriteToUDP(payload, target)
+			sockets[tickCount%len(sockets)].conn.WriteToUDP(payload, target)
 
 			tickCount++
 		}
 	}
 
-	m.cleanupFanOutSockets(sockets)
+	var winnerConn *net.UDPConn
+	select {
+	case r := <-winnerCh:
+		winnerConn = r.conn
+	default:
+	}
+
+	for _, s := range sockets {
+		if s.conn == winnerConn {
+			continue
+		}
+
+		s.cancel()
+		if err := s.conn.Close(); err != nil {
+			m.log.Debugw("failed closing fanout socket", "local", s.conn.LocalAddr(), "err", err)
+		}
+	}
 
 	return nil
-}
-
-func (m *megaSock) cleanupFanOutSockets(sockets []*net.UDPConn) {
-	if len(sockets) == 0 {
-		return
-	}
-
-	activeAddrs := make(map[string]struct{})
-	for _, peerKey := range m.sessionStore.getAllPeers() {
-		sess, ok := m.sessionStore.getByPeer(peerKey)
-		if !ok {
-			continue
-		}
-
-		addr := sess.peerAddrValue()
-		if addr == nil {
-			continue
-		}
-
-		activeAddrs[addr.String()] = struct{}{}
-	}
-
-	keep := make(map[*net.UDPConn]struct{})
-
-	m.sessMu.Lock()
-	defer m.sessMu.Unlock()
-
-	for addr, r := range m.sessions {
-		if _, ok := activeAddrs[addr]; ok {
-			keep[r.conn] = struct{}{}
-		}
-	}
-
-	for _, conn := range sockets {
-		if conn == nil || conn == m.primary {
-			continue
-		}
-
-		if _, ok := keep[conn]; ok {
-			continue
-		}
-
-		for addr, r := range m.sessions {
-			if r.conn == conn {
-				delete(m.sessions, addr)
-			}
-		}
-
-		if err := conn.Close(); err != nil {
-			m.log.Debugw("failed closing fanout socket", "local", conn.LocalAddr(), "err", err)
-		}
-	}
 }
 
 func (m *megaSock) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
@@ -668,7 +649,7 @@ func (m *megaSock) addWaiter(k types.PeerKey) (chan route, bool) {
 	if _, ok := m.waitPeer[k]; ok {
 		return nil, true
 	}
-	ch := make(chan route)
+	ch := make(chan route, 1)
 	m.waitPeer[k] = ch
 	return ch, false
 }
@@ -757,12 +738,11 @@ func (m *megaSock) handleHandshake(ctx context.Context, conn *net.UDPConn, src s
 	}
 
 	if upCh, ok := m.getWaiter(peerKey); ok {
-		upCh <- route{
-			conn:       conn,
-			remoteAddr: addr,
+		select {
+		case upCh <- route{conn: conn, remoteAddr: addr}:
+		default:
 		}
 	}
-	m.removeWaiter(peerKey)
 
 	udpAddr, err := net.ResolveUDPAddr("udp", src)
 	if err != nil {
