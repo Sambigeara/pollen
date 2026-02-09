@@ -19,15 +19,17 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var _ SuperSock = (*megaSock)(nil)
+var _ SuperSock = (*impl)(nil)
 
-var ErrHandshakeIncomplete = errors.New("handshake incomplete")
-var ErrNoSession = errors.New("no session for peer")
+var (
+	ErrHandshakeIncomplete = errors.New("handshake incomplete")
+	ErrNoSession           = errors.New("no session for peer")
+)
 
 const (
 	udpReadBufferSize = 64 * 1024
 
-	// Resource limits
+	// Resource limits.
 	ephemeralSocketCount      = 256
 	searchTickerInterval      = 10 * time.Millisecond
 	searchTimeout             = 3 * time.Second
@@ -36,21 +38,26 @@ const (
 	punchAttemptDuration      = 5 * time.Second
 	ensurePeerResendInterval  = 100 * time.Millisecond
 	staleSessionCheckInterval = 30 * time.Second
+	recvChanSize              = 1024
+	readDeadlineTimeout       = 500 * time.Millisecond
+	minEphemeralPort          = 1024
+	maxEphemeralPort          = 64511 // 65535 - minEphemeralPort
 )
 
-var _ SuperSock = (*megaSock)(nil)
+var _ SuperSock = (*impl)(nil)
 
 type Packet struct {
-	Peer    types.PeerKey
-	Payload []byte
 	Src     string
+	Payload []byte
 	Typ     types.MsgType
+	Peer    types.PeerKey
 }
 
 type SuperSock interface {
 	Start(ctx context.Context) error
 	Recv(ctx context.Context) (Packet, error)
 	Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error
+	Events() <-chan peer.Input
 	EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr, withPeer bool) error // IK init
 	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error                                     // XXpsk2 init
 	GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool)
@@ -68,59 +75,46 @@ type route struct {
 	remoteAddr *net.UDPAddr
 }
 
-type pendingProbe struct {
-	expectedIP net.IP
-	result     chan route
-}
+type pendingProbe struct{}
 
-type megaSock struct {
-	log *zap.SugaredLogger
-
-	port    int
-	primary *net.UDPConn
-	ctx     context.Context
-
-	// address -> working route
-	sessions map[string]route
-	sessMu   sync.RWMutex
-
-	// nonce -> probe context
-	pending map[uint64]pendingProbe
-	pendMu  sync.Mutex
-
-	recvChan chan Packet
-	// closeCtx    context.Context
-	// closeCancel context.CancelFunc
-	cancel context.CancelFunc
-
+type impl struct {
+	ctx            context.Context
 	crypto         LocalCrypto
+	recvChan       chan Packet
+	cancel         context.CancelFunc
+	sessions       map[string]route
+	events         chan peer.Input
+	pending        map[uint64]pendingProbe
+	waitPeer       map[types.PeerKey]chan route
+	log            *zap.SugaredLogger
+	primary        *net.UDPConn
+	rekeyMgr       *rekeyManager
 	handshakeStore *handshakeStore
 	sessionStore   *sessionStore
-	rekeyMgr       *rekeyManager
 	peerLocks      sync.Map
+	port           int
+	sessMu         sync.RWMutex
 	waitMu         sync.Mutex
-	waitPeer       map[types.PeerKey]chan route
-	events         chan peer.Input
 }
 
-func NewTransport(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission, inputCh chan peer.Input) SuperSock {
-	return &megaSock{
+func NewTransport(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission) SuperSock {
+	return &impl{
 		log: zap.S().Named("magicsock"),
 		// primary:        conn,
 		port:           port,
 		sessions:       make(map[string]route),
 		pending:        make(map[uint64]pendingProbe),
-		recvChan:       make(chan Packet, 1024),
+		recvChan:       make(chan Packet, recvChanSize),
 		crypto:         crypto,
 		handshakeStore: newHandshakeStore(cs, admission, staticKey, crypto.IdentityPub()),
 		sessionStore:   newSessionStore(crypto.NoisePub()),
 		rekeyMgr:       newRekeyManager(),
 		waitPeer:       make(map[types.PeerKey]chan route),
-		events:         inputCh,
+		events:         make(chan peer.Input),
 	}
 }
 
-func (m *megaSock) Start(ctx context.Context) error {
+func (m *impl) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	m.ctx = ctx
 	m.cancel = cancel
@@ -137,7 +131,7 @@ func (m *megaSock) Start(ctx context.Context) error {
 	return nil
 }
 
-func (m *megaSock) Recv(ctx context.Context) (Packet, error) {
+func (m *impl) Recv(ctx context.Context) (Packet, error) {
 	select {
 	case p := <-m.recvChan:
 		return p, nil
@@ -146,7 +140,7 @@ func (m *megaSock) Recv(ctx context.Context) (Packet, error) {
 	}
 }
 
-func (m *megaSock) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error {
+func (m *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error {
 	log := m.log.Named("link.Send").With("peerKey", peerKey.Short(), "msg.Type", msg.Type)
 
 	sess, ok := m.sessionStore.getByPeer(peerKey)
@@ -168,7 +162,7 @@ func (m *megaSock) Send(ctx context.Context, peerKey types.PeerKey, msg types.En
 		ReceiverID: sess.peerSessionID,
 	}
 
-	if err := m.send(ctx, sess.peerAddrValue(), encodeFrame(fr)); err != nil {
+	if err := m.send(sess.peerAddrValue(), encodeFrame(fr)); err != nil {
 		return err
 	}
 
@@ -179,7 +173,11 @@ func (m *megaSock) Send(ctx context.Context, peerKey types.PeerKey, msg types.En
 	return nil
 }
 
-func (m *megaSock) send(ctx context.Context, addr *net.UDPAddr, payload []byte) error {
+func (m *impl) send(addr *net.UDPAddr, payload []byte) error {
+	if addr == nil {
+		return errors.New("send called with nil address")
+	}
+
 	m.sessMu.RLock()
 	r, ok := m.sessions[addr.String()]
 	m.sessMu.RUnlock()
@@ -197,7 +195,11 @@ func (m *megaSock) send(ctx context.Context, addr *net.UDPAddr, payload []byte) 
 	return nil
 }
 
-func (m *megaSock) Close() error {
+func (m *impl) Events() <-chan peer.Input {
+	return m.events
+}
+
+func (m *impl) Close() error {
 	m.cancel()
 
 	err := m.primary.Close()
@@ -213,7 +215,7 @@ func (m *megaSock) Close() error {
 	return err
 }
 
-func (m *megaSock) readLoop(ctx context.Context, conn *net.UDPConn) {
+func (m *impl) readLoop(ctx context.Context, conn *net.UDPConn) {
 	buf := make([]byte, udpReadBufferSize)
 	for {
 		select {
@@ -222,19 +224,22 @@ func (m *megaSock) readLoop(ctx context.Context, conn *net.UDPConn) {
 		default:
 		}
 
-		if err := conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(readDeadlineTimeout)); err != nil {
 			return
 		}
 		n, src, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			var netErr net.Error
+			if errors.As(err, &netErr) {
 				continue
 			}
+			m.log.Debugw("ReadFromUDP error", "error", err)
 			return
 		}
 
 		fr, err := decodeFrame(buf[:n], src.String())
 		if err != nil {
+			m.log.Debugw("failed to decodeFrame", "src", src, "err", err)
 			continue
 		}
 
@@ -245,11 +250,11 @@ func (m *megaSock) readLoop(ctx context.Context, conn *net.UDPConn) {
 			types.MsgTypeHandshakeIKResp,
 			types.MsgTypeHandshakeXXPsk2Init,
 			types.MsgTypeHandshakeXXPsk2Resp:
-			if err := m.handleHandshake(ctx, conn, src.String(), fr); err != nil {
-				if errors.Is(err, ErrHandshakeIncomplete) {
-					continue
-				}
-				m.log.Debugf("failed to handle handshake: %s", err)
+			if err := m.handleHandshake(conn, src.String(), fr); err != nil {
+				_ = err
+				// if !errors.Is(err, ErrHandshakeIncomplete) {
+				// 	m.log.Debugf("failed to handle handshake: %s", err)
+				// }
 			}
 			continue
 		case types.MsgTypeUDPPunchCoordRequest:
@@ -263,23 +268,11 @@ func (m *megaSock) readLoop(ctx context.Context, conn *net.UDPConn) {
 			// handlePunchCoordTrigger runs EnsurePeer, which blocks waiting for a handshake/up event that
 			// is processed on this same loop. Run it async so the loop can keep draining socket events and
 			// complete the handshake (AssociatePeerSocket/removeWaiter) that unblocks EnsurePeer.
-			sess, ok := m.sessionStore.getByLocalID(fr.ReceiverID)
-			if !ok {
-				m.log.Debug("coord trigger session not found")
-				continue
-			}
-			b, _, err := sess.Decrypt(fr.Payload)
-			if err != nil {
-				m.log.Debugf("decrypt trigger payload: %w", err)
-				continue
-			}
-			req := &peerv1.PunchCoordTrigger{}
-			if err := req.UnmarshalVT(b); err != nil {
-				m.log.Errorf("malformed trigger payload: %w", err)
-				continue
-			}
+			// Copy payload before dispatching — buf is reused by the next ReadFromUDP.
+			frCopy := fr
+			frCopy.Payload = append([]byte(nil), fr.Payload...)
 			go func() {
-				if err := m.handlePunchCoordTrigger(ctx, req); err != nil {
+				if err := m.handlePunchCoordTrigger(ctx, frCopy); err != nil {
 					m.log.Debugf("failed to handle punch coord trigger: %s", err)
 				}
 			}()
@@ -290,30 +283,15 @@ func (m *megaSock) readLoop(ctx context.Context, conn *net.UDPConn) {
 		default:
 		}
 
-		// TODO(saml) there's a chance that this causes problems if a peer previously resided in the same network and is now offline.
-		// When we randomly open sockets for future punches, then other nodes outside of the network might land on those sockets.
-		// I think here in particular is problematic, as we're establishing connections for any inbound message
-		r := route{conn: conn, remoteAddr: src}
-		m.sessMu.Lock()
-		if _, ok := m.sessions[src.String()]; !ok {
-			m.sessions[src.String()] = r
-		}
-		m.sessMu.Unlock()
-
 		sess, ok := m.sessionStore.getByLocalID(fr.ReceiverID)
 		if !ok {
-			m.log.Debugw("session not found", "recieverID", fr.ReceiverID)
 			continue
 		}
 		peerKey := types.PeerKeyFromBytes(sess.peerNoiseKey)
 
 		pt, shouldRekey, err := sess.Decrypt(fr.Payload)
 		if err != nil {
-			if errors.Is(err, ErrReplay) || errors.Is(err, ErrTooOld) || errors.Is(err, ErrShortCiphertext) {
-				m.log.Debugf("nonce error: %w", err)
-				continue
-			}
-			m.log.Debugw("decrypt failed", "err", err, "src", "")
+			m.log.Debugw("decrypt failed", "err", err, "msgType", fr.Typ, "src", fr.Src, "receiverID", fr.ReceiverID, "peer", peerKey.Short(), "localSessionID", sess.localSessionID, "peerSessionID", sess.peerSessionID, "payloadBytes", len(fr.Payload))
 			continue
 		}
 
@@ -343,7 +321,7 @@ func (m *megaSock) readLoop(ctx context.Context, conn *net.UDPConn) {
 	}
 }
 
-func (m *megaSock) handlePunchCoordRequest(ctx context.Context, fr Frame) error {
+func (m *impl) handlePunchCoordRequest(ctx context.Context, fr Frame) error {
 	initSess, ok := m.sessionStore.getByLocalID(fr.ReceiverID)
 	if !ok {
 		// TODO(saml)
@@ -354,6 +332,7 @@ func (m *megaSock) handlePunchCoordRequest(ctx context.Context, fr Frame) error 
 	if err != nil {
 		return fmt.Errorf("decrypt request payload: %w", err)
 	}
+	initSess.touchRecv()
 
 	req := &peerv1.PunchCoordRequest{}
 	if err := req.UnmarshalVT(pt); err != nil {
@@ -408,7 +387,23 @@ func (m *megaSock) handlePunchCoordRequest(ctx context.Context, fr Frame) error 
 	return g.Wait()
 }
 
-func (m *megaSock) handlePunchCoordTrigger(ctx context.Context, req *peerv1.PunchCoordTrigger) (err error) {
+func (m *impl) handlePunchCoordTrigger(ctx context.Context, fr Frame) (err error) {
+	sess, ok := m.sessionStore.getByLocalID(fr.ReceiverID)
+	if !ok {
+		return errors.New("coord trigger session not found")
+	}
+
+	b, _, err := sess.Decrypt(fr.Payload)
+	if err != nil {
+		return fmt.Errorf("decrypt trigger payload: %w", err)
+	}
+	sess.touchRecv()
+
+	req := &peerv1.PunchCoordTrigger{}
+	if err := req.UnmarshalVT(b); err != nil {
+		return fmt.Errorf("malformed trigger payload: %w", err)
+	}
+
 	peerID := types.PeerKeyFromBytes(req.PeerId)
 
 	// TODO(saml) this shouldn't be here, ideally a central loop will publish events like this
@@ -439,7 +434,7 @@ func (m *megaSock) handlePunchCoordTrigger(ctx context.Context, req *peerv1.Punc
 	return nil
 }
 
-func (m *megaSock) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr, withPunch bool) error {
+func (m *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr, withPunch bool) error {
 	log := m.log.With("peer", peerKey.Short())
 
 	if _, ok := m.sessionStore.getByPeer(peerKey); ok {
@@ -460,7 +455,7 @@ func (m *megaSock) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs 
 	// register waiter *before* sending, so we can't miss the PeerUp
 	upCh, exists := m.addWaiter(peerKey)
 	if exists {
-		log.Debug("session already exists")
+		log.Debug("handshake already in progress")
 		return nil
 	}
 	defer m.removeWaiter(peerKey)
@@ -476,7 +471,7 @@ func (m *megaSock) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs 
 	ctx, cancel := context.WithTimeout(ctx, searchTimeout)
 	defer cancel()
 
-	// we can respond to the same success, and gaurantee that the signal
+	// we can respond to the same success, and guarantee that the signal
 	// that needs to route receives it.
 	succ := make(chan struct{})
 	proxyCh := make(chan route, 1)
@@ -497,7 +492,7 @@ func (m *megaSock) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs 
 			ticker := time.NewTicker(ensurePeerResendInterval)
 			defer ticker.Stop()
 			for {
-				m.send(ctx, addr, payload)
+				_ = m.send(addr, payload)
 				select {
 				case <-succ:
 					return
@@ -530,7 +525,7 @@ func (m *megaSock) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs 
 	}
 }
 
-func (m *megaSock) fanOut(ctx context.Context, target *net.UDPAddr, payload []byte, winnerCh chan route) error {
+func (m *impl) fanOut(ctx context.Context, target *net.UDPAddr, payload []byte, winnerCh chan route) error {
 	type fanOutSocket struct {
 		conn   *net.UDPConn
 		cancel context.CancelFunc
@@ -540,6 +535,7 @@ func (m *megaSock) fanOut(ctx context.Context, target *net.UDPAddr, payload []by
 	for range ephemeralSocketCount {
 		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: nil, Port: 0})
 		if err == nil {
+			m.log.Debugw("created ephemeral socket", "localAddr", c.LocalAddr())
 			loopCtx, loopCancel := context.WithCancel(m.ctx)
 			sockets = append(sockets, fanOutSocket{conn: c, cancel: loopCancel})
 
@@ -566,16 +562,16 @@ search:
 			{
 				var b [2]byte
 				if _, err := rand.Read(b[:]); err == nil {
-					port := 1024 + int(binary.BigEndian.Uint16(b[:])%64511)
+					port := minEphemeralPort + int(binary.BigEndian.Uint16(b[:])%maxEphemeralPort)
 					dst := &net.UDPAddr{IP: target.IP, Port: port}
-					m.primary.WriteToUDP(payload, dst)
+					_, _ = m.primary.WriteToUDP(payload, dst)
 				}
 			}
 
 			// Hard-side behaviour: vary source port by cycling ephemeral sockets
-			// while sending to a fixed destination (the peer’s known ip:port) to
+			// while sending to a fixed destination (the peer's known ip:port) to
 			// create many NAT mappings on our side.
-			sockets[tickCount%len(sockets)].conn.WriteToUDP(payload, target)
+			_, _ = sockets[tickCount%len(sockets)].conn.WriteToUDP(payload, target)
 
 			tickCount++
 		}
@@ -602,7 +598,7 @@ search:
 	return nil
 }
 
-func (m *megaSock) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
+func (m *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 	res, err := m.handshakeStore.initXXPsk2(inv, m.crypto.IdentityPub())
 	if err != nil {
 		return fmt.Errorf("failed to create XXpsk2 handshake: %w", err)
@@ -624,7 +620,7 @@ func (m *megaSock) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error
 	return nil
 }
 
-func (m *megaSock) peerLock(p types.PeerKey) *sync.Mutex {
+func (m *impl) peerLock(p types.PeerKey) *sync.Mutex {
 	v, _ := m.peerLocks.LoadOrStore(p, &sync.Mutex{})
 	if m, ok := v.(*sync.Mutex); ok {
 		return m
@@ -634,7 +630,7 @@ func (m *megaSock) peerLock(p types.PeerKey) *sync.Mutex {
 	return mu
 }
 
-func (m *megaSock) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) {
+func (m *impl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) {
 	sess, ok := m.sessionStore.getByPeer(peerKey)
 	if !ok {
 		return nil, false
@@ -643,7 +639,7 @@ func (m *megaSock) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bo
 	return sess.peerAddrValue(), true
 }
 
-func (m *megaSock) addWaiter(k types.PeerKey) (chan route, bool) {
+func (m *impl) addWaiter(k types.PeerKey) (chan route, bool) {
 	m.waitMu.Lock()
 	defer m.waitMu.Unlock()
 	if _, ok := m.waitPeer[k]; ok {
@@ -654,14 +650,14 @@ func (m *megaSock) addWaiter(k types.PeerKey) (chan route, bool) {
 	return ch, false
 }
 
-func (m *megaSock) getWaiter(k types.PeerKey) (chan route, bool) {
+func (m *impl) getWaiter(k types.PeerKey) (chan route, bool) {
 	m.waitMu.Lock()
 	defer m.waitMu.Unlock()
 	waiter, ok := m.waitPeer[k]
 	return waiter, ok
 }
 
-func (m *megaSock) removeWaiter(k types.PeerKey) {
+func (m *impl) removeWaiter(k types.PeerKey) {
 	m.waitMu.Lock()
 	defer m.waitMu.Unlock()
 	waiter := m.waitPeer[k]
@@ -681,7 +677,7 @@ func encodeHandshake(res HandshakeResult) []byte {
 	})
 }
 
-func (m *megaSock) handleHandshake(ctx context.Context, conn *net.UDPConn, src string, fr Frame) error {
+func (m *impl) handleHandshake(conn *net.UDPConn, src string, fr Frame) error {
 	hs, err := m.handshakeStore.getOrCreate(fr.SenderID, fr.ReceiverID, fr.Typ)
 	if err != nil {
 		return err
@@ -693,14 +689,12 @@ func (m *megaSock) handleHandshake(ctx context.Context, conn *net.UDPConn, src s
 
 	res, err := hs.Step(fr.Payload)
 	if err != nil {
-		m.log.Debugw("step failed", "src", src, "senderID", fr.SenderID, "receiverID", fr.ReceiverID)
 		return err
 	}
 
 	if err := m.sendHandshakeResult(conn, src, res, fr.SenderID); err != nil {
 		m.log.Debugw("failed to send handshake reply", "err", err)
 	}
-	m.log.Debugw("sent handshake reply", "src", src)
 
 	if res.Session == nil {
 		return ErrHandshakeIncomplete
@@ -708,7 +702,7 @@ func (m *megaSock) handleHandshake(ctx context.Context, conn *net.UDPConn, src s
 
 	addr, err := net.ResolveUDPAddr("udp", src)
 	if err != nil {
-		fmt.Println("Error resolving address:", err)
+		m.log.Errorw("error resolving address", "err", err)
 		return err
 	}
 
@@ -720,7 +714,6 @@ func (m *megaSock) handleHandshake(ctx context.Context, conn *net.UDPConn, src s
 
 	m.sessMu.Lock()
 	m.sessions[addr.String()] = route{conn: conn, remoteAddr: addr}
-	m.log.Debugw("sock session added", "addrl", addr)
 	m.sessMu.Unlock()
 
 	// Associate peer with the socket that successfully completed the handshake
@@ -751,32 +744,40 @@ func (m *megaSock) handleHandshake(ctx context.Context, conn *net.UDPConn, src s
 
 	m.events <- peer.ConnectPeer{
 		PeerKey:      peerKey,
-		Ip:           udpAddr.IP,
+		IP:           udpAddr.IP,
 		ObservedPort: udpAddr.Port,
 	}
 
 	return nil
 }
 
-func (m *megaSock) handleDisconnect(fr Frame) {
+func (m *impl) handleDisconnect(fr Frame) {
 	sess, ok := m.sessionStore.getByLocalID(fr.ReceiverID)
 	if !ok {
 		return
 	}
 
 	peerKey := types.PeerKeyFromBytes(sess.peerNoiseKey)
-	m.log.Infow("received disconnect from peer", "peer", peerKey.String()[:8])
 
 	m.sessionStore.removeByPeerKey(peerKey)
 
-	// Emit PeerDisconnected to state machine
-	select {
-	case m.events <- peer.PeerDisconnected{PeerKey: peerKey}:
-	default:
+	m.sessMu.Lock()
+	if r, ok := m.sessions[fr.Src]; ok {
+		m.log.Infow("closing and removing disconnected session", "peer", peerKey.String()[:8])
+		if r.conn != m.primary {
+			r.conn.Close()
+		}
+		delete(m.sessions, fr.Src)
 	}
+	m.sessMu.Unlock()
+
+	m.log.Infow("received disconnect from peer", "peer", peerKey.String()[:8])
+
+	// Emit PeerDisconnected to state machine
+	m.events <- peer.PeerDisconnected{PeerKey: peerKey}
 }
 
-func (m *megaSock) BroadcastDisconnect() {
+func (m *impl) BroadcastDisconnect() {
 	peers := m.sessionStore.getAllPeers()
 	for _, peerKey := range peers {
 		if err := m.Send(context.Background(), peerKey, types.Envelope{
@@ -788,9 +789,8 @@ func (m *megaSock) BroadcastDisconnect() {
 	}
 }
 
-func (m *megaSock) sendHandshakeResult(conn *net.UDPConn, addr string, res HandshakeResult, remoteID uint32) error {
+func (m *impl) sendHandshakeResult(conn *net.UDPConn, addr string, res HandshakeResult, remoteID uint32) error {
 	if len(res.Msg) == 0 {
-		m.log.Debug("empty message")
 		return ErrEmptyMsg
 	}
 
@@ -816,7 +816,7 @@ func (m *megaSock) sendHandshakeResult(conn *net.UDPConn, addr string, res Hands
 	return nil
 }
 
-func (m *megaSock) staleSessionChecker(ctx context.Context) {
+func (m *impl) staleSessionChecker(ctx context.Context) {
 	ticker := time.NewTicker(staleSessionCheckInterval)
 	defer ticker.Stop()
 
@@ -828,10 +828,7 @@ func (m *megaSock) staleSessionChecker(ctx context.Context) {
 			stale := m.sessionStore.getStaleAndRemove(time.Now())
 			for _, peerKey := range stale {
 				m.log.Infow("session timed out", "peer", peerKey.String()[:8])
-				select {
-				case m.events <- peer.PeerDisconnected{PeerKey: peerKey}:
-				default:
-				}
+				m.events <- peer.PeerDisconnected{PeerKey: peerKey}
 			}
 		}
 	}

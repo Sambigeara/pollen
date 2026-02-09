@@ -96,6 +96,10 @@ func (p *Persistence) Hydrate(delta *statev1.DeltaState) {
 	// This ensures our internal Logic Clock respects the persisted state.
 	nodeRecords := make(map[types.PeerKey]Record, len(delta.Nodes))
 	for k, v := range delta.Nodes {
+		// if v.Value.Id[:8] == "9de92c4d" {
+		// if v.Value.Id[:8] == "4c55621d" {
+		// 	continue
+		// }
 		keyBytes, err := hex.DecodeString(k)
 		if err != nil {
 			continue

@@ -1,6 +1,7 @@
 package tcp
 
 import (
+	"context"
 	"io"
 	"net"
 	"testing"
@@ -10,11 +11,14 @@ import (
 )
 
 func TestBridge_HalfClosePreservesOppositeDirection(t *testing.T) {
-	ln1, err := net.Listen("tcp", "127.0.0.1:0")
+	ctx := context.Background()
+	lc := net.ListenConfig{}
+
+	ln1, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer ln1.Close()
 
-	ln2, err := net.Listen("tcp", "127.0.0.1:0")
+	ln2, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer ln2.Close()
 
@@ -29,11 +33,13 @@ func TestBridge_HalfClosePreservesOppositeDirection(t *testing.T) {
 		server2Ch <- conn
 	}()
 
-	client1, err := net.Dial("tcp", ln1.Addr().String())
+	d := net.Dialer{}
+
+	client1, err := d.DialContext(ctx, "tcp", ln1.Addr().String())
 	require.NoError(t, err)
 	defer client1.Close()
 
-	client2, err := net.Dial("tcp", ln2.Addr().String())
+	client2, err := d.DialContext(ctx, "tcp", ln2.Addr().String())
 	require.NoError(t, err)
 	defer client2.Close()
 

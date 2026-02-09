@@ -1,7 +1,6 @@
 package node
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -11,13 +10,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/flynn/noise"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
-	"github.com/sambigeara/pollen/pkg/link"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/sock"
 	"github.com/sambigeara/pollen/pkg/state"
@@ -33,21 +33,23 @@ var _ sock.LocalCrypto = (*localCrypto)(nil)
 const (
 	localKeysDir = "keys"
 
-	noiseKeyName          = "noise.key"
-	noisePubKeyName       = "noise.pub"
-	signingKeyName        = "ed25519.key"
-	signingPubKeyName     = "ed25519.pub"
-	pemTypePriv           = "ED25519 PRIVATE KEY"
-	pemTypePub            = "ED25519 PUBLIC KEY"
-	keyDirPerm            = 0o700
-	keyFilePerm           = 0o600
-	directAttemptDuration = 2 * time.Second
-	loopIntervalJitter    = 0.1
-	peerEventBufSize      = 64
+	noiseKeyName      = "noise.key"
+	noisePubKeyName   = "noise.pub"
+	signingKeyName    = "ed25519.key"
+	signingPubKeyName = "ed25519.pub"
+	pemTypePriv       = "ED25519 PRIVATE KEY"
+	pemTypePub        = "ED25519 PUBLIC KEY"
+	keyDirPerm        = 0o700
+	keyFilePerm       = 0o600
+
+	directAttemptDuration    = 2 * time.Second
+	punchCoordRequestTimeout = 3 * time.Second
+
+	loopIntervalJitter = 0.1
+	peerEventBufSize   = 64
 )
 
 type Config struct {
-	PeerConfig          *peer.Config
 	PollenDir           string
 	AdvertisedIPs       []string
 	Port                int
@@ -57,18 +59,23 @@ type Config struct {
 	DisableGossipJitter bool
 }
 
+type HandlerFn func(ctx context.Context, from types.PeerKey, payload []byte) error
+
 type Node struct {
-	log             *zap.SugaredLogger
-	conf            *Config
-	Link            link.Link
-	Store           *state.Persistence
-	Peers           *peer.Store
-	AdmissionStore  admission.Store
-	Tunnel          *tunnel.Manager
-	Directory       *Directory
-	crypto          *localCrypto
+	log  *zap.SugaredLogger
+	conf *Config
+
+	crypto  *localCrypto
+	invites admission.Store
+	peers   *peer.Store
+	sock    sock.SuperSock
+	storage *state.Persistence
+	tun     *tunnel.Manager
+
 	localPeerEvents chan peer.Input
 	gossipTrigger   chan struct{}
+	handlers        map[types.MsgType]HandlerFn
+	handlersMu      sync.RWMutex
 }
 
 func New(conf *Config) (*Node, error) {
@@ -112,17 +119,12 @@ func New(conf *Config) (*Node, error) {
 		identityPubKey: pubKey,
 	}
 
-	mesh := link.NewLink(&cs, conf.Port, noiseKey, crypto, invitesStore)
-
-	peerStore := peer.NewStore()
-	if conf.PeerConfig != nil {
-		peerStore = peer.NewStoreWithConfig(*conf.PeerConfig)
-	}
+	s := sock.NewTransport(conf.Port, &cs, noiseKey, crypto, invitesStore)
 
 	cluster := stateStore.Cluster
 
 	tun := tunnel.New(
-		mesh.Send,
+		s.Send,
 		&Directory{cluster: cluster},
 		privKey,
 		ips,
@@ -140,12 +142,12 @@ func New(conf *Config) (*Node, error) {
 
 	return &Node{
 		log:             log,
-		Peers:           peerStore,
-		Store:           stateStore,
-		Link:            mesh,
-		AdmissionStore:  invitesStore,
-		Tunnel:          tun,
-		Directory:       &Directory{cluster: cluster},
+		sock:            s,
+		handlers:        make(map[types.MsgType]HandlerFn),
+		peers:           peer.NewStore(),
+		storage:         stateStore,
+		invites:         invitesStore,
+		tun:             tun,
 		crypto:          crypto,
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
@@ -158,12 +160,17 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 
 	n.registerHandlers()
 
-	if err := n.Link.Start(ctx); err != nil {
+	// for _, node := range n.storage.Cluster.Nodes.GetAll() {
+	// 	n.log.Debugw("Initial node state", "isSelf", node.Id == n.storage.Cluster.LocalID.String(), "node", node)
+	// }
+
+	if err := n.sock.Start(ctx); err != nil {
 		return err
 	}
+	go n.recvLoop(ctx)
 
 	if token != nil {
-		if err := n.Link.JoinWithInvite(ctx, token); err != nil {
+		if err := n.sock.JoinWithInvite(ctx, token); err != nil {
 			return fmt.Errorf("join with invite: %w", err)
 		}
 	}
@@ -185,7 +192,7 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 		case <-n.gossipTrigger:
 			n.gossip(ctx)
 		// external origin events
-		case in := <-n.Link.Events():
+		case in := <-n.sock.Events():
 			n.handlePeerInput(in)
 		// internal origin events
 		case in := <-n.localPeerEvents:
@@ -202,66 +209,112 @@ func (n *Node) triggerGossip() {
 	}
 }
 
+func (n *Node) Handle(t types.MsgType, h HandlerFn) {
+	n.handlersMu.Lock()
+	defer n.handlersMu.Unlock()
+	n.handlers[t] = h
+}
+
+func (n *Node) recvLoop(ctx context.Context) {
+	for {
+		p, err := n.sock.Recv(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			n.log.Debugw("recv failed", "err", err)
+			continue
+		}
+		n.handleApp(ctx, p)
+	}
+}
+
+func (n *Node) handleApp(ctx context.Context, p sock.Packet) {
+	n.handlersMu.RLock()
+	h := n.handlers[p.Typ]
+	n.handlersMu.RUnlock()
+	if h != nil {
+		if err := h(ctx, p.Peer, p.Payload); err != nil {
+			n.log.Debugf("handler error: %w", err)
+		}
+	}
+}
+
 func (n *Node) registerHandlers() {
 	// Set peer provider for TCP punch coordination
-	n.Tunnel.SetPeerProvider(n)
+	n.tun.SetPeerProvider(n)
 
 	// Session handlers (multiplexed tunnels)
-	n.Link.Handle(types.MsgTypeSessionRequest, n.Tunnel.HandleSessionRequest)
-	n.Link.Handle(types.MsgTypeSessionResponse, n.Tunnel.HandleSessionResponse)
+	n.Handle(types.MsgTypeSessionRequest, n.tun.HandleSessionRequest)
+	n.Handle(types.MsgTypeSessionResponse, n.tun.HandleSessionResponse)
 
 	// TCP punch handlers
-	n.Link.Handle(types.MsgTypeTCPPunchRequest, n.Tunnel.HandlePunchRequest)
-	n.Link.Handle(types.MsgTypeTCPPunchTrigger, n.Tunnel.HandlePunchTrigger)
-	n.Link.Handle(types.MsgTypeTCPPunchReady, n.Tunnel.HandlePunchReady)
-	n.Link.Handle(types.MsgTypeTCPPunchResponse, n.Tunnel.HandlePunchResponse)
-	n.Link.Handle(types.MsgTypeTCPPunchProbeRequest, n.Tunnel.HandlePunchProbeRequest)
-	n.Link.Handle(types.MsgTypeTCPPunchProbeOffer, n.Tunnel.HandlePunchProbeOffer)
-	n.Link.Handle(types.MsgTypeTCPPunchProbeResult, n.Tunnel.HandlePunchProbeResult)
+	n.Handle(types.MsgTypeTCPPunchRequest, n.tun.HandlePunchRequest)
+	n.Handle(types.MsgTypeTCPPunchTrigger, n.tun.HandlePunchTrigger)
+	n.Handle(types.MsgTypeTCPPunchReady, n.tun.HandlePunchReady)
+	n.Handle(types.MsgTypeTCPPunchResponse, n.tun.HandlePunchResponse)
+	n.Handle(types.MsgTypeTCPPunchProbeRequest, n.tun.HandlePunchProbeRequest)
+	n.Handle(types.MsgTypeTCPPunchProbeOffer, n.tun.HandlePunchProbeOffer)
+	n.Handle(types.MsgTypeTCPPunchProbeResult, n.tun.HandlePunchProbeResult)
 
-	n.Link.Handle(types.MsgTypeGossip, func(_ context.Context, peer types.PeerKey, plaintext []byte) error {
+	n.Handle(types.MsgTypeGossip, func(_ context.Context, peer types.PeerKey, plaintext []byte) error {
 		delta := &statev1.DeltaState{}
 		if err := delta.UnmarshalVT(plaintext); err != nil {
 			return fmt.Errorf("malformed gossip payload: %w", err)
 		}
 
-		n.Store.Hydrate(delta)
+		n.log.Debugw("received gossip", "from", peer.Short(), "nodeRecords", len(delta.Nodes))
+
+		n.storage.Hydrate(delta)
 		return nil
 	})
 }
 
 func (n *Node) gossip(ctx context.Context) {
-	delta := &statev1.DeltaState{
-		Nodes: state.ToNodeDelta(n.Store.Cluster.Nodes),
-	}
-
-	payload, err := delta.MarshalVT()
-	if err != nil {
-		n.log.Errorf("failed to marshal gossip: %v", err)
-		return
-	}
-
-	for _, k := range n.GetConnectedPeers() {
-		if k == n.Store.Cluster.LocalID {
-			continue
+	// TODO(saml) this is a hack because I've realised that I was exceeding MTU and packets were being dropped on CGNAT (mobile)
+	for k, v := range state.ToNodeDelta(n.storage.Cluster.Nodes) {
+		delta := &statev1.DeltaState{
+			Nodes: map[string]*statev1.NodeRecord{k: v},
 		}
 
-		if err := n.Link.Send(ctx, k, types.Envelope{
-			Type:    types.MsgTypeGossip,
-			Payload: payload,
-		}); err != nil {
-			n.log.Debugw("gossip send failed", "peer", k.Short(), "err", err)
+		payload, err := delta.MarshalVT()
+		if err != nil {
+			n.log.Errorf("failed to marshal gossip: %v", err)
+			return
+		}
+
+		connectedPeers := n.GetConnectedPeers()
+		connectedPeerKeys := make([]string, 0, len(connectedPeers))
+		for _, peerKey := range connectedPeers {
+			connectedPeerKeys = append(connectedPeerKeys, peerKey.Short())
+		}
+		sort.Strings(connectedPeerKeys)
+
+		stateNodes := n.storage.Cluster.Nodes.GetAll()
+		stateEntries := make([]string, 0, len(stateNodes))
+		for key, node := range stateNodes {
+			stateEntries = append(stateEntries, fmt.Sprintf("k=%s id=%s noise=%s", key.Short(), shortNodeID(node.GetId()), shortNodeKey(node.GetKeys())))
+		}
+		sort.Strings(stateEntries)
+
+		for _, k := range connectedPeers {
+			if k == n.storage.Cluster.LocalID {
+				continue
+			}
+
+			if err := n.sock.Send(ctx, k, types.Envelope{
+				Type:    types.MsgTypeGossip,
+				Payload: payload,
+			}); err != nil {
+				n.log.Debugw("gossip send failed", "peer", k.Short(), "err", err)
+			}
 		}
 	}
 }
 
 func (n *Node) handlePeerInput(in peer.Input) {
-	outputs := n.Peers.Step(time.Now(), in)
+	outputs := n.peers.Step(time.Now(), in)
 	n.handleOutputs(outputs)
-}
-
-func (n *Node) publishLocalEvent(i peer.Input) {
-	n.localPeerEvents <- i
 }
 
 func (n *Node) tick() {
@@ -270,15 +323,18 @@ func (n *Node) tick() {
 	n.reconcileConnections()
 
 	// Then tick the state machine to get pending actions
-	outputs := n.Peers.Step(time.Now(), peer.Tick{})
+	outputs := n.peers.Step(time.Now(), peer.Tick{})
 	n.handleOutputs(outputs)
 }
 
 func (n *Node) syncPeersFromState() {
-	for _, node := range n.Store.Cluster.Nodes.GetAll() {
-		if node.Id == n.Store.Cluster.LocalID.String() {
+	for _, node := range n.storage.Cluster.Nodes.GetAll() {
+		if node.Id == n.storage.Cluster.LocalID.String() {
 			continue
 		}
+		// if node.Id[:8] != "5d9019cc" && node.Id[:8] != "e916928b" {
+		// 	continue
+		// }
 		if len(node.Keys.NoisePub) == 0 || len(node.Ips) == 0 {
 			continue
 		}
@@ -293,8 +349,13 @@ func (n *Node) syncPeersFromState() {
 			ips[i] = ip
 		}
 
-		n.Peers.Step(time.Now(), peer.DiscoverPeer{
-			PeerKey: types.PeerKeyFromBytes(node.Keys.NoisePub),
+		peerKey := types.PeerKeyFromBytes(node.Keys.NoisePub)
+		if node.Id != "" && node.Id != peerKey.String() {
+			n.log.Debugw("state identity mismatch", "nodeId", shortNodeID(node.Id), "noiseKey", peerKey.Short(), "ips", node.Ips, "localPort", node.LocalPort)
+		}
+
+		n.peers.Step(time.Now(), peer.DiscoverPeer{
+			PeerKey: peerKey,
 			Ips:     ips,
 			Port:    int(node.LocalPort),
 		})
@@ -305,24 +366,17 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
-			n.log.Infow("peer connected", "peer_id", e.PeerKey.Short(), "ip", e.Ip, "observedPort", e.ObservedPort)
-			n.Store.ConnectNode(e.PeerKey)
+			n.storage.ConnectNode(e.PeerKey)
 			n.triggerGossip()
-		// TODO(saml) I chucked PeerConnecting in in a panic, requires more thought (is it even needed?)
-		// case peer.PeerConnecting:
-		// 	n.log.Infow("peer connecting", "peer_id", e.PeerKey.Short(), "ip", e.Ip, "observedPort", e.ObservedPort)
+			n.log.Infow("peer connected", "peer_id", e.PeerKey.Short(), "ip", e.IP, "observedPort", e.ObservedPort)
 		case peer.AttemptConnect:
 			go func() {
 				if err := n.attemptDirectConnect(e); err != nil {
 					n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "ips", e.Ips, "port", e.Port, "err", err)
-					n.publishLocalEvent(peer.ConnectFailed{PeerKey: e.PeerKey})
+					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 				}
 			}()
 		case peer.RequestPunchCoordination:
-			// TODO(saml) centralise on single deterministic tie-breaker (PeerKey.Less()?)
-			if bytes.Compare(n.crypto.noisePubKey, e.PeerKey.Bytes()) < 0 {
-				continue
-			}
 			// Select coordinator in main loop to avoid race on Peers.GetAll
 			// TODO(saml) coordinator selection strategy - currently just picks first connected peer
 			connected := n.GetConnectedPeers()
@@ -332,7 +386,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			}
 			go func() {
 				if err := n.requestPunchCoordination(e, connected[0]); err != nil {
-					n.publishLocalEvent(peer.ConnectFailed{PeerKey: e.PeerKey})
+					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 				}
 			}()
 			// for _, key := range n.GetConnectedPeers() {
@@ -349,12 +403,12 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 }
 
 func (n *Node) reconcileConnections() {
-	connections := n.Tunnel.ListConnections()
+	connections := n.tun.ListConnections()
 	if len(connections) == 0 {
 		return
 	}
 
-	nodes := n.Store.Cluster.Nodes.GetAll()
+	nodes := n.storage.Cluster.Nodes.GetAll()
 	missing := make(map[types.PeerKey]map[uint32]struct{}, len(connections))
 	for _, conn := range connections {
 		node := nodes[conn.PeerID]
@@ -371,7 +425,7 @@ func (n *Node) reconcileConnections() {
 	for peerID, ports := range missing {
 		for port := range ports {
 			n.log.Infow("removing stale forward", "peer", peerID.String()[:8], "port", port)
-			n.Tunnel.DisconnectRemoteService(peerID, port)
+			n.tun.DisconnectRemoteService(peerID, port)
 		}
 	}
 }
@@ -386,7 +440,6 @@ func hasServicePort(node *statev1.Node, port uint32) bool {
 }
 
 func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
-	// TODO(saml) not nice to do this on the fly
 	addrs := make([]*net.UDPAddr, len(e.Ips))
 	for i, ip := range e.Ips {
 		addrs[i] = &net.UDPAddr{
@@ -395,16 +448,16 @@ func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
 		}
 	}
 
-	n.log.Debugw("attempting direct connection", "peer", e.PeerKey.String()[:8], "addrs", addrs)
+	n.log.Debugw("attempting direct connection", "peer", e.PeerKey.Short())
 
 	ctx, cancel := context.WithTimeout(context.Background(), directAttemptDuration)
 	defer cancel()
 
-	return n.Link.EnsurePeer(ctx, e.PeerKey, addrs, false)
+	return n.sock.EnsurePeer(ctx, e.PeerKey, addrs, false)
 }
 
 func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordinator types.PeerKey) (err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), punchCoordRequestTimeout)
 	defer cancel()
 
 	req := &peerv1.PunchCoordRequest{
@@ -416,9 +469,9 @@ func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordin
 		return err
 	}
 
-	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.String()[:8], "coordinator", coordinator.String()[:8])
+	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.Short(), "coordinator", coordinator.String()[:8])
 
-	if err := n.Link.Send(ctx, coordinator, types.Envelope{
+	if err := n.sock.Send(ctx, coordinator, types.Envelope{
 		Type:    types.MsgTypeUDPPunchCoordRequest,
 		Payload: b,
 	}); err != nil {
@@ -439,25 +492,18 @@ func (n *Node) gossipJitter() float64 {
 	return loopIntervalJitter
 }
 
-func trigger(ch chan<- struct{}) {
-	select {
-	case ch <- struct{}{}:
-	default:
-	}
-}
-
 func (n *Node) shutdown() {
-	if err := n.Store.Save(); err != nil {
+	if err := n.storage.Save(); err != nil {
 		n.log.Errorf("failed to save state: %v", err)
 	} else {
 		n.log.Info("state saved to disk")
 	}
 
 	// Notify peers we're shutting down (fire-and-forget)
-	n.Link.BroadcastDisconnect()
+	n.sock.BroadcastDisconnect()
 
-	if err := n.Link.Close(); err != nil {
-		n.log.Errorf("failed to shut down link: %v", err)
+	if err := n.sock.Close(); err != nil {
+		n.log.Errorf("failed to shut down sock: %v", err)
 	} else {
 		n.log.Info("successfully shut down mesh")
 	}
@@ -468,13 +514,13 @@ func (n *Node) shutdown() {
 // GetConnectedPeers returns all currently connected peer keys.
 // Implements tunnel.ConnectedPeersProvider.
 func (n *Node) GetConnectedPeers() []types.PeerKey {
-	return n.Peers.GetAll(peer.PeerStateConnected)
+	return n.peers.GetAll(peer.PeerStateConnected)
 }
 
 // GetActivePeerAddress returns the active address for a connected peer.
 // Implements tunnel.ConnectedPeersProvider.
 func (n *Node) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) {
-	return n.Link.GetActivePeerAddress(peerKey)
+	return n.sock.GetActivePeerAddress(peerKey)
 }
 
 func genNoiseKey(cs noise.CipherSuite, pollenDir string) (noise.DHKey, error) {
@@ -638,4 +684,18 @@ func (c *localCrypto) NoisePub() []byte {
 
 func (c *localCrypto) IdentityPub() []byte {
 	return c.identityPubKey
+}
+
+func shortNodeID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
+func shortNodeKey(keys *statev1.Keys) string {
+	if keys == nil || len(keys.NoisePub) == 0 {
+		return "<missing>"
+	}
+	return types.PeerKeyFromBytes(keys.NoisePub).Short()
 }

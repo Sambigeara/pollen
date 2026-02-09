@@ -386,7 +386,8 @@ func (m *Manager) HandlePunchProbeRequest(ctx context.Context, fromPeer types.Pe
 		return errors.New("punch probe request missing request_id")
 	}
 
-	ln, err := net.Listen("tcp", ":0")
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(ctx, "tcp", ":0")
 	if err != nil {
 		return fmt.Errorf("listen probe: %w", err)
 	}
