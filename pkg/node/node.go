@@ -363,6 +363,7 @@ func (n *Node) syncPeersFromState() {
 }
 
 func (n *Node) handleOutputs(outputs []peer.Output) {
+outer:
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
@@ -378,26 +379,26 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			}()
 		case peer.RequestPunchCoordination:
 			// Select coordinator in main loop to avoid race on Peers.GetAll
-			// TODO(saml) coordinator selection strategy - currently just picks first connected peer
-			connected := n.GetConnectedPeers()
-			if len(connected) == 0 {
-				n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.String()[:8])
-				continue
+			var localIPs []string
+			if local, ok := n.storage.Cluster.Nodes.Get(n.storage.Cluster.LocalID); ok {
+				localIPs = local.Node.Ips
 			}
-			go func() {
-				if err := n.requestPunchCoordination(e, connected[0]); err != nil {
-					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+			for _, key := range n.GetConnectedPeers() {
+				if p, ok := n.storage.Cluster.Nodes.Get(key); ok {
+					if sharesLAN(localIPs, p.Node.Ips) {
+						continue
+					}
+					if _, ok := p.Node.Connected[e.PeerKey.String()]; ok {
+						go func() {
+							if err := n.requestPunchCoordination(e, key); err != nil {
+								n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+							}
+						}()
+						continue outer
+					}
 				}
-			}()
-			// for _, key := range n.GetConnectedPeers() {
-			// 	if p, ok := n.Store.Cluster.Nodes.Get(key); ok {
-			// 		if _, ok := p.Node.Connected[e.PeerKey.String()]; ok {
-			// 			go n.requestPunchCoordination(e, key)
-			// 			continue
-			// 		}
-			// 	}
-			// }
-			// n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.String()[:8])
+			}
+			n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.Short())
 		}
 	}
 }
@@ -509,6 +510,33 @@ func (n *Node) shutdown() {
 	}
 
 	n.log.Debug("successfully shutdown Node")
+}
+
+// sharesLAN reports whether two nodes likely share a LAN by checking
+// if any of their private IPs fall in the same /24 (v4) or /64 (v6) subnet.
+func sharesLAN(aIPs, bIPs []string) bool {
+	for _, aStr := range aIPs {
+		a := net.ParseIP(aStr)
+		if a == nil || !a.IsPrivate() {
+			continue
+		}
+		for _, bStr := range bIPs {
+			b := net.ParseIP(bStr)
+			if b == nil || !b.IsPrivate() {
+				continue
+			}
+			if a4, b4 := a.To4(), b.To4(); a4 != nil && b4 != nil {
+				if a4[0] == b4[0] && a4[1] == b4[1] && a4[2] == b4[2] {
+					return true
+				}
+			} else if a16, b16 := a.To16(), b.To16(); a16 != nil && b16 != nil {
+				if string(a16[:8]) == string(b16[:8]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // GetConnectedPeers returns all currently connected peer keys.
