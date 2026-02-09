@@ -160,10 +160,6 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 
 	n.registerHandlers()
 
-	// for _, node := range n.storage.Cluster.Nodes.GetAll() {
-	// 	n.log.Debugw("Initial node state", "isSelf", node.Id == n.storage.Cluster.LocalID.String(), "node", node)
-	// }
-
 	if err := n.sock.Start(ctx); err != nil {
 		return err
 	}
@@ -180,6 +176,11 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 
 	peerTicker := time.NewTicker(n.conf.PeerTickInterval)
 	defer peerTicker.Stop()
+
+	// insta tick for insta connects
+	// TODO(saml) still lots of work to be done on optimising startup handlers
+	// threads in general
+	n.tick()
 
 	for {
 		select {
