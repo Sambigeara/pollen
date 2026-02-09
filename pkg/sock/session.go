@@ -1,7 +1,6 @@
 package sock
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"math"
@@ -20,7 +19,8 @@ const (
 
 	noncePrefixSize = 8
 	recvWindowSize  = 1024
-	recvWindowWords = recvWindowSize / 64
+	bitsPerWord     = 64
+	recvWindowWords = recvWindowSize / bitsPerWord
 
 	rekeyGracePeriod    = time.Second * 3  // old sessions hang around for 3 seconds to allow inflight packets targeting the old sessionID to land
 	sessionStaleTimeout = time.Second * 30 // sessions with no received messages for this duration are considered stale
@@ -60,7 +60,7 @@ func (s *sessionStore) set(sess *session) {
 
 	if prev, ok := s.byPeer[k]; ok && prev.localSessionID != sess.localSessionID {
 		// Deterministic tie-breaking: smaller key = initiator wins
-		shouldBeInitiator := bytes.Compare(s.localNoiseKey, sess.peerNoiseKey) < 0
+		shouldBeInitiator := types.PeerKeyFromBytes(s.localNoiseKey).Less(types.PeerKeyFromBytes(sess.peerNoiseKey))
 		log.Debugw("tie breaker", "shouldBeInitiator", shouldBeInitiator)
 
 		// If prev matches expected role and new doesn't, keep prev
@@ -299,8 +299,8 @@ func (w *nonceWindow) shift(delta uint64) {
 	}
 
 	var next [recvWindowWords]uint64
-	wordShift := int(delta / 64)
-	bitShift := uint(delta % 64)
+	wordShift := int(delta / bitsPerWord)
+	bitShift := uint(delta % bitsPerWord)
 	for i := recvWindowWords - 1; i >= 0; i-- {
 		src := i - wordShift
 		if src < 0 {
@@ -309,7 +309,7 @@ func (w *nonceWindow) shift(delta uint64) {
 		}
 		val := w.seen[src] << bitShift
 		if bitShift > 0 && src > 0 {
-			val |= w.seen[src-1] >> (64 - bitShift)
+			val |= w.seen[src-1] >> (bitsPerWord - bitShift)
 		}
 		next[i] = val
 	}
@@ -317,13 +317,13 @@ func (w *nonceWindow) shift(delta uint64) {
 }
 
 func (w *nonceWindow) setBit(offset uint64) {
-	idx := int(offset / 64)
-	shift := uint(offset % 64)
+	idx := int(offset / bitsPerWord)
+	shift := uint(offset % bitsPerWord)
 	w.seen[idx] |= uint64(1) << shift
 }
 
 func (w *nonceWindow) hasBit(offset uint64) bool {
-	idx := int(offset / 64)
-	shift := uint(offset % 64)
+	idx := int(offset / bitsPerWord)
+	shift := uint(offset % bitsPerWord)
 	return w.seen[idx]&(uint64(1)<<shift) != 0
 }

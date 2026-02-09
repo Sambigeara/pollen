@@ -40,32 +40,15 @@ type Peer struct {
 	id            types.PeerKey
 }
 
-type Config struct {
-	FirstBackoff              time.Duration
-	BaseBackoff               time.Duration
-	MaxBackoff                time.Duration
-	DirectAttemptThreshold    int
-	PunchAttemptThreshold     int
-	UnreachableRetryInterval  time.Duration
-	DisconnectedRetryInterval time.Duration
-}
-
 type Store struct {
 	log *zap.SugaredLogger
 	m   map[types.PeerKey]*Peer
-	cfg Config
 }
 
 func NewStore() *Store {
-	return NewStoreWithConfig(DefaultConfig())
-}
-
-func NewStoreWithConfig(cfg Config) *Store {
-	cfg = cfg.withDefaults()
 	return &Store{
 		log: zap.S().Named("peers"),
 		m:   make(map[types.PeerKey]*Peer),
-		cfg: cfg,
 	}
 }
 
@@ -89,23 +72,12 @@ func (Tick) isInput() {}
 
 // ConnectPeer signals a successful connection (handshake complete).
 type ConnectPeer struct {
-	Ip           net.IP
+	IP           net.IP
 	ObservedPort int
 	PeerKey      types.PeerKey
 }
 
 func (ConnectPeer) isInput() {}
-
-// // ConnectingPeer signals that a peer has entered connecting state from an
-// // external trigger (primarily from remote punch coord attempts)
-// type ConnectingPeer struct {
-// 	Ip           string
-// 	ObservedPort int
-// 	PeerKey      types.PeerKey
-// 	IsPunch      bool // TODO(saml) probably use enum
-// }
-
-// func (ConnectingPeer) isInput() {}
 
 // ConnectFailed signals a failed connection attempt.
 type ConnectFailed struct {
@@ -127,20 +99,12 @@ type Output interface{ isOutput() }
 
 // PeerConnected signals a peer has transitioned to connected state.
 type PeerConnected struct {
-	Ip           net.IP
+	IP           net.IP
 	ObservedPort int
 	PeerKey      types.PeerKey
 }
 
 func (PeerConnected) isOutput() {}
-
-// type PeerConnecting struct {
-// 	Ip           string
-// 	ObservedPort int
-// 	PeerKey      types.PeerKey
-// }
-
-// func (PeerConnecting) isOutput() {}
 
 // AttemptConnect signals the caller should try a direct connection to this peer.
 type AttemptConnect struct {
@@ -161,61 +125,23 @@ func (RequestPunchCoordination) isOutput() {}
 
 // Configuration.
 const (
-	defaultBaseBackoff  = 1 * time.Second
-	defaultMaxBackoff   = 60 * time.Second
-	defaultFirstBackoff = 500 * time.Millisecond
+	baseBackoff  = 1 * time.Second
+	maxBackoff   = 60 * time.Second
+	firstBackoff = 500 * time.Millisecond
 
-	defaultDirectAttemptThreshold = 1
-	defaultPunchAttemptThreshold  = 1
+	directAttemptThreshold = 1
+	punchAttemptThreshold  = 1
 
-	defaultUnreachableRetryInterval  = 60 * time.Second
-	defaultDisconnectedRetryInterval = 60 * time.Second
+	unreachableRetryInterval  = 60 * time.Second
+	disconnectedRetryInterval = 60 * time.Second
 )
-
-func DefaultConfig() Config {
-	return Config{
-		FirstBackoff:              defaultFirstBackoff,
-		BaseBackoff:               defaultBaseBackoff,
-		MaxBackoff:                defaultMaxBackoff,
-		DirectAttemptThreshold:    defaultDirectAttemptThreshold,
-		PunchAttemptThreshold:     defaultPunchAttemptThreshold,
-		UnreachableRetryInterval:  defaultUnreachableRetryInterval,
-		DisconnectedRetryInterval: defaultDisconnectedRetryInterval,
-	}
-}
-
-func (c Config) withDefaults() Config {
-	def := DefaultConfig()
-	if c.FirstBackoff <= 0 {
-		c.FirstBackoff = def.FirstBackoff
-	}
-	if c.BaseBackoff <= 0 {
-		c.BaseBackoff = def.BaseBackoff
-	}
-	if c.MaxBackoff <= 0 {
-		c.MaxBackoff = def.MaxBackoff
-	}
-	if c.DirectAttemptThreshold <= 0 {
-		c.DirectAttemptThreshold = def.DirectAttemptThreshold
-	}
-	if c.PunchAttemptThreshold <= 0 {
-		c.PunchAttemptThreshold = def.PunchAttemptThreshold
-	}
-	if c.UnreachableRetryInterval <= 0 {
-		c.UnreachableRetryInterval = def.UnreachableRetryInterval
-	}
-	if c.DisconnectedRetryInterval <= 0 {
-		c.DisconnectedRetryInterval = def.DisconnectedRetryInterval
-	}
-	return c
-}
 
 func (s *Store) backoff(attempts int) time.Duration {
 	if attempts == 0 {
-		return s.cfg.FirstBackoff
+		return firstBackoff
 	}
 	// exponential: 1s, 2s, 4s, 8s, ...
-	d := min(s.cfg.BaseBackoff*(1<<(attempts-1)), s.cfg.MaxBackoff)
+	d := min(baseBackoff*(1<<(attempts-1)), maxBackoff)
 	return d
 }
 
@@ -229,8 +155,6 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 		return s.discoverPeer(now, e)
 	case ConnectPeer:
 		return s.connectPeer(now, e)
-	// case ConnectingPeer:
-	// 	return s.peerConnecting(now, e)
 	case ConnectFailed:
 		return s.connectFailed(now, e)
 	case PeerDisconnected:
@@ -240,9 +164,9 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 }
 
 func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) []Output {
-	p, exists := s.m[e.PeerKey]
+	_, exists := s.m[e.PeerKey]
 	if !exists {
-		p = &Peer{
+		s.m[e.PeerKey] = &Peer{
 			id:           e.PeerKey,
 			state:        PeerStateDiscovered,
 			stage:        ConnectStageDirect,
@@ -250,16 +174,9 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) []Output {
 			observedPort: e.Port, // we don't know if the port is observed at this point
 			nextActionAt: now,    // eligible for connection immediately
 		}
-		s.m[e.PeerKey] = p
 		return nil
 	}
 
-	// TODO(saml) confirm that this happens eagerly elsewhere
-	// // Update addresses if peer already exists but isn't connected
-	// if p.state != PeerStateConnected {
-	// 	p.ips = e.Ips
-	// 	p.observedPort = e.Port
-	// }
 	return nil
 }
 
@@ -306,33 +223,15 @@ func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 
 	// Always update state, even if already connected (peer may have restarted)
 	p.state = PeerStateConnected
-	p.ips = []net.IP{e.Ip}
+	p.ips = []net.IP{e.IP}
 	p.observedPort = e.ObservedPort
 	p.connectedAt = now
 	p.stage = ConnectStageDirect // reset for next time
 	p.stageAttempts = 0
-	s.log.Debugw("connectPeer", "observedPort", e.ObservedPort)
+	s.log.Debugw("connectPeer", "ip", e.IP, "observedPort", e.ObservedPort)
 
-	return []Output{PeerConnected{PeerKey: e.PeerKey, Ip: e.Ip, ObservedPort: e.ObservedPort}}
+	return []Output{PeerConnected(e)}
 }
-
-// func (s *Store) peerConnecting(now time.Time, e ConnectingPeer) []Output {
-// 	p, exists := s.m[e.PeerKey]
-// 	if !exists {
-// 		p = &Peer{id: e.PeerKey}
-// 		s.m[e.PeerKey] = p
-// 	}
-
-// 	// Always update state, even if already connected (peer may have restarted)
-// 	p.state = PeerStateConnecting
-// 	p.ips = []string{e.Ip}
-// 	p.observedPort = e.ObservedPort
-// 	p.connectedAt = now
-// 	p.stage = ConnectStagePunch
-// 	p.stageAttempts = 0
-
-// 	return []Output{PeerConnecting{PeerKey: e.PeerKey, Ip: e.Ip, ObservedPort: e.ObservedPort}}
-// }
 
 func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
 	p, exists := s.m[e.PeerKey]
@@ -341,20 +240,19 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
 	}
 
 	p.stageAttempts++
-	s.log.Debugw("connectFailed", "peer", e.PeerKey.String()[:8], "stageAttempts", p.stageAttempts, "threshold", s.cfg.DirectAttemptThreshold)
 
 	// Check if we should escalate to next stage
 	switch p.stage {
 	case ConnectStageDirect, ConnectStageUnspecified:
-		if p.stageAttempts >= s.cfg.DirectAttemptThreshold {
+		if p.stageAttempts >= directAttemptThreshold {
 			p.stage = ConnectStagePunch
 			p.stageAttempts = 0
 		}
 	case ConnectStagePunch:
-		if p.stageAttempts >= s.cfg.PunchAttemptThreshold {
+		if p.stageAttempts >= punchAttemptThreshold {
 			// All connection methods exhausted, fall back to relay (currently unreachable)
 			p.state = PeerStateUnreachable
-			p.nextActionAt = now.Add(s.cfg.UnreachableRetryInterval)
+			p.nextActionAt = now.Add(unreachableRetryInterval)
 			return nil
 		}
 	case ConnectStageRelay:
@@ -376,7 +274,7 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) []Output {
 	p.state = PeerStateDiscovered
 	p.stage = ConnectStageDirect
 	p.stageAttempts = 0
-	p.nextActionAt = now.Add(s.cfg.DisconnectedRetryInterval)
+	p.nextActionAt = now.Add(disconnectedRetryInterval)
 	return nil
 }
 
