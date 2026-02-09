@@ -263,8 +263,6 @@ func (n *Node) registerHandlers() {
 			return fmt.Errorf("malformed gossip payload: %w", err)
 		}
 
-		n.log.Debugw("received gossip", "from", peer.Short(), "nodeRecords", len(delta.Nodes))
-
 		n.storage.Hydrate(delta)
 		return nil
 	})
@@ -385,6 +383,7 @@ outer:
 			}
 			for _, key := range n.GetConnectedPeers() {
 				if p, ok := n.storage.Cluster.Nodes.Get(key); ok {
+					// TODO(saml) I've just realised that this isn't enough: BOTH sides can't be in the same LAN as the coordinator
 					if sharesLAN(localIPs, p.Node.Ips) {
 						continue
 					}
@@ -399,6 +398,9 @@ outer:
 				}
 			}
 			n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.Short())
+			go func() {
+				n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+			}()
 		}
 	}
 }
