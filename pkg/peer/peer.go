@@ -228,7 +228,6 @@ func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 	p.connectedAt = now
 	p.stage = ConnectStageDirect // reset for next time
 	p.stageAttempts = 0
-	s.log.Debugw("connectPeer", "ip", e.IP, "observedPort", e.ObservedPort)
 
 	return []Output{PeerConnected(e)}
 }
