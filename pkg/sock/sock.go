@@ -535,7 +535,6 @@ func (m *impl) fanOut(ctx context.Context, target *net.UDPAddr, payload []byte, 
 	for range ephemeralSocketCount {
 		c, err := net.ListenUDP("udp", &net.UDPAddr{IP: nil, Port: 0})
 		if err == nil {
-			m.log.Debugw("created ephemeral socket", "localAddr", c.LocalAddr())
 			loopCtx, loopCancel := context.WithCancel(m.ctx)
 			sockets = append(sockets, fanOutSocket{conn: c, cancel: loopCancel})
 
@@ -551,11 +550,12 @@ func (m *impl) fanOut(ctx context.Context, target *net.UDPAddr, payload []byte, 
 	defer ticker.Stop()
 
 	tickCount := 0
-search:
+
+outer:
 	for {
 		select {
 		case <-ctx.Done():
-			break search
+			break outer
 		case <-ticker.C:
 			// Easy-side behaviour: keep source port fixed (primary socket) and
 			// probe random destination ports on the peer to discover an open mapping.

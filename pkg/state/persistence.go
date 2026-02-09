@@ -134,13 +134,13 @@ func (p *Persistence) ConnectNode(key types.PeerKey) {
 		if n.Connected == nil {
 			n.Connected = make(map[string]*emptypb.Empty)
 		}
-		n.Connected[key.Short()] = &emptypb.Empty{}
+		n.Connected[key.String()] = &emptypb.Empty{}
 	})
 	_ = p.Cluster.Nodes.Update(key, func(n *statev1.Node) {
 		if n.Connected == nil {
 			n.Connected = make(map[string]*emptypb.Empty)
 		}
-		n.Connected[p.Cluster.LocalID.Short()] = &emptypb.Empty{}
+		n.Connected[p.Cluster.LocalID.String()] = &emptypb.Empty{}
 	})
 }
 
