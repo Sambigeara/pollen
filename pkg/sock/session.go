@@ -55,12 +55,11 @@ func (s *sessionStore) set(sess *session) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	k := types.PeerKeyFromBytes(sess.peerNoiseKey)
-	log := zap.S().Named("sessionStore").With("localSessionID", sess.localSessionID, "sess.isInitiator", sess.isInitiator, "peer", k.Short())
+	log := zap.S().Named("sessionStore").With("localSessionID", sess.localSessionID, "sess.isInitiator", sess.isInitiator, "peer", sess.peerKey.Short())
 
-	if prev, ok := s.byPeer[k]; ok && prev.localSessionID != sess.localSessionID {
+	if prev, ok := s.byPeer[sess.peerKey]; ok && prev.localSessionID != sess.localSessionID {
 		// Deterministic tie-breaking: smaller key = initiator wins
-		shouldBeInitiator := types.PeerKeyFromBytes(s.localNoiseKey).Less(types.PeerKeyFromBytes(sess.peerNoiseKey))
+		shouldBeInitiator := types.PeerKeyFromBytes(s.localNoiseKey).Less(sess.peerKey)
 		log.Debugw("tie breaker", "shouldBeInitiator", shouldBeInitiator)
 
 		// If prev matches expected role and new doesn't, keep prev
@@ -87,7 +86,7 @@ func (s *sessionStore) set(sess *session) {
 		})
 	}
 
-	s.byPeer[k] = sess
+	s.byPeer[sess.peerKey] = sess
 	s.byLocalID[sess.localSessionID] = sess
 }
 
@@ -103,20 +102,20 @@ func (s *sessionStore) getByLocalID(localID uint32) (*session, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	id, ok := s.byLocalID[localID]
-	return id, ok
+	sess, ok := s.byLocalID[localID]
+	return sess, ok
 }
 
 // getStaleAndRemove finds sessions that haven't received messages recently,
 // removes them from the store, and returns their peer keys.
-func (s *sessionStore) getStaleAndRemove(now time.Time) []types.PeerKey {
+func (s *sessionStore) getStaleAndRemove(now time.Time) []*session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var stale []types.PeerKey
+	var stale []*session
 	for peerKey, sess := range s.byPeer {
 		if sess.isStale(now) {
-			stale = append(stale, peerKey)
+			stale = append(stale, sess)
 			delete(s.byPeer, peerKey)
 			delete(s.byLocalID, sess.localSessionID)
 		}
@@ -124,15 +123,30 @@ func (s *sessionStore) getStaleAndRemove(now time.Time) []types.PeerKey {
 	return stale
 }
 
-func (s *sessionStore) removeByPeerKey(k types.PeerKey) {
+func (s *sessionStore) removeByLocalID(localID uint32) *session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sess, ok := s.byPeer[k]
+
+	sess, ok := s.byLocalID[localID]
 	if !ok {
-		return
+		return nil
 	}
-	delete(s.byPeer, k)
+
+	delete(s.byPeer, sess.peerKey)
 	delete(s.byLocalID, sess.localSessionID)
+	return sess
+}
+
+func (s *sessionStore) drain() []*session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sessions := make([]*session, 0, len(s.byPeer))
+	for _, sess := range s.byPeer {
+		sessions = append(sessions, sess)
+	}
+	s.byPeer = make(map[types.PeerKey]*session)
+	s.byLocalID = make(map[uint32]*session)
+	return sessions
 }
 
 // getAllPeers returns all peer keys with active sessions.
@@ -151,30 +165,16 @@ type session struct {
 	lastRecvTime   time.Time
 	sendCipher     noise.Cipher
 	recvCipher     noise.Cipher
-	peerAddr       *net.UDPAddr
-	peerNoiseKey   []byte
-	peerAddrMu     sync.RWMutex
-	sendMu         sync.RWMutex
+	peerAddr *net.UDPAddr
+	conn     *net.UDPConn
+	peerKey  types.PeerKey
+	sendMu   sync.RWMutex
 	recvMu         sync.RWMutex
 	localSessionID uint32
 	peerSessionID  uint32
 	isInitiator    bool // true if we initiated this handshake
 	sendNonce      uint64
 	recvWindow     nonceWindow
-}
-
-func (s *session) setPeerAddr(addr *net.UDPAddr) {
-	s.peerAddrMu.Lock()
-	s.peerAddr = addr
-	s.peerAddrMu.Unlock()
-}
-
-// TODO(saml) is this even necessary?
-func (s *session) peerAddrValue() *net.UDPAddr {
-	s.peerAddrMu.RLock()
-	addr := s.peerAddr
-	s.peerAddrMu.RUnlock()
-	return addr
 }
 
 type nonceWindow struct {
@@ -186,7 +186,7 @@ type nonceWindow struct {
 func newSession(localSessionID uint32, noiseKey []byte, send, recv *noise.CipherState, isInitiator bool) *session {
 	return &session{
 		localSessionID: localSessionID,
-		peerNoiseKey:   noiseKey,
+		peerKey:        types.PeerKeyFromBytes(noiseKey),
 		sendCipher:     send.Cipher(),
 		recvCipher:     recv.Cipher(),
 		lastRecvTime:   time.Now(),
