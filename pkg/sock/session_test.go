@@ -21,7 +21,7 @@ func makeTestKey(fill byte) []byte {
 func makeTestSession(localSessionID uint32, peerNoiseKey []byte, isInitiator bool) *session {
 	return &session{
 		localSessionID: localSessionID,
-		peerNoiseKey:   peerNoiseKey,
+		peerKey:        types.PeerKeyFromBytes(peerNoiseKey),
 		isInitiator:    isInitiator,
 	}
 }

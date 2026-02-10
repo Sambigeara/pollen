@@ -44,8 +44,6 @@ const (
 	maxEphemeralPort          = 64511 // 65535 - minEphemeralPort
 )
 
-var _ SuperSock = (*impl)(nil)
-
 type Packet struct {
 	Src     string
 	Payload []byte
@@ -75,36 +73,32 @@ type route struct {
 	remoteAddr *net.UDPAddr
 }
 
-type pendingProbe struct{}
-
 type impl struct {
-	ctx            context.Context
-	crypto         LocalCrypto
-	recvChan       chan Packet
-	cancel         context.CancelFunc
-	sessions       map[string]route
-	events         chan peer.Input
-	pending        map[uint64]pendingProbe
-	waitPeer       map[types.PeerKey]chan route
-	log            *zap.SugaredLogger
-	primary        *net.UDPConn
+	log *zap.SugaredLogger
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	crypto   LocalCrypto
+	recvChan chan Packet
+	events   chan peer.Input
+	primary  *net.UDPConn
+
 	rekeyMgr       *rekeyManager
 	handshakeStore *handshakeStore
 	sessionStore   *sessionStore
 	peerLocks      sync.Map
 	port           int
-	sessMu         sync.RWMutex
-	waitMu         sync.Mutex
+
+	waitPeer map[types.PeerKey]chan route
+	waitMu   sync.Mutex
 }
 
 func NewTransport(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission) SuperSock {
 	return &impl{
-		log: zap.S().Named("magicsock"),
-		// primary:        conn,
-		port:           port,
-		sessions:       make(map[string]route),
-		pending:        make(map[uint64]pendingProbe),
-		recvChan:       make(chan Packet, recvChanSize),
+		log:      zap.S().Named("sock"),
+		port:     port,
+		recvChan: make(chan Packet, recvChanSize),
 		crypto:         crypto,
 		handshakeStore: newHandshakeStore(cs, admission, staticKey, crypto.IdentityPub()),
 		sessionStore:   newSessionStore(crypto.NoisePub()),
@@ -141,7 +135,7 @@ func (m *impl) Recv(ctx context.Context) (Packet, error) {
 }
 
 func (m *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelope) error {
-	log := m.log.Named("link.Send").With("peerKey", peerKey.Short(), "msg.Type", msg.Type)
+	log := m.log.With("peerKey", peerKey.Short(), "msg.Type", msg.Type)
 
 	sess, ok := m.sessionStore.getByPeer(peerKey)
 	if !ok {
@@ -162,7 +156,7 @@ func (m *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelo
 		ReceiverID: sess.peerSessionID,
 	}
 
-	if err := m.send(sess.peerAddrValue(), encodeFrame(fr)); err != nil {
+	if err := m.send(sess.conn, sess.peerAddr, encodeFrame(fr)); err != nil {
 		return err
 	}
 
@@ -173,26 +167,9 @@ func (m *impl) Send(ctx context.Context, peerKey types.PeerKey, msg types.Envelo
 	return nil
 }
 
-func (m *impl) send(addr *net.UDPAddr, payload []byte) error {
-	if addr == nil {
-		return errors.New("send called with nil address")
-	}
-
-	m.sessMu.RLock()
-	r, ok := m.sessions[addr.String()]
-	m.sessMu.RUnlock()
-	if ok {
-		_, err := r.conn.WriteToUDP(payload, r.remoteAddr)
-		return err
-	}
-
-	// Try send on primary (same network, or port-preserving remote)
-	// TODO(saml) can probably make smart decisions based on locality (if a commonly known local IP address)
-	if _, err := m.primary.WriteToUDP(payload, addr); err != nil {
-		return err
-	}
-
-	return nil
+func (m *impl) send(conn *net.UDPConn, addr *net.UDPAddr, payload []byte) error {
+	_, err := conn.WriteToUDP(payload, addr)
+	return err
 }
 
 func (m *impl) Events() <-chan peer.Input {
@@ -201,17 +178,12 @@ func (m *impl) Events() <-chan peer.Input {
 
 func (m *impl) Close() error {
 	m.cancel()
-
 	err := m.primary.Close()
-
-	m.sessMu.Lock()
-	defer m.sessMu.Unlock()
-	for _, r := range m.sessions {
-		if r.conn != m.primary {
-			r.conn.Close()
+	for _, sess := range m.sessionStore.drain() {
+		if sess.conn != m.primary {
+			sess.conn.Close()
 		}
 	}
-
 	return err
 }
 
@@ -287,22 +259,14 @@ func (m *impl) readLoop(ctx context.Context, conn *net.UDPConn) {
 		if !ok {
 			continue
 		}
-		peerKey := types.PeerKeyFromBytes(sess.peerNoiseKey)
 
 		pt, shouldRekey, err := sess.Decrypt(fr.Payload)
 		if err != nil {
-			m.log.Debugw("decrypt failed", "err", err, "msgType", fr.Typ, "src", fr.Src, "receiverID", fr.ReceiverID, "peer", peerKey.Short(), "localSessionID", sess.localSessionID, "peerSessionID", sess.peerSessionID, "payloadBytes", len(fr.Payload))
+			m.log.Debugw("decrypt failed", "err", err, "msgType", fr.Typ, "src", fr.Src, "receiverID", fr.ReceiverID, "peer", sess.peerKey.Short(), "localSessionID", sess.localSessionID, "peerSessionID", sess.peerSessionID, "payloadBytes", len(fr.Payload))
 			continue
 		}
 
 		sess.touchRecv()
-		if fr.Src != "" {
-			addr, err := net.ResolveUDPAddr("udp", fr.Src)
-			if err != nil {
-				m.log.Errorw("error resolving address", "err", err)
-			}
-			sess.setPeerAddr(addr)
-		}
 
 		if shouldRekey {
 			m.rekeyMgr.resetIfExists(sess.peerSessionID, sessionRefreshInterval)
@@ -312,7 +276,7 @@ func (m *impl) readLoop(ctx context.Context, conn *net.UDPConn) {
 		case <-ctx.Done():
 			return
 		case m.recvChan <- Packet{
-			Peer:    peerKey,
+			Peer:    sess.peerKey,
 			Payload: pt,
 			Src:     fr.Src,
 			Typ:     fr.Typ,
@@ -346,14 +310,14 @@ func (m *impl) handlePunchCoordRequest(ctx context.Context, fr Frame) error {
 	}
 
 	recvPeer := types.PeerKeyFromBytes(req.PeerId)
-	initPeer := types.PeerKeyFromBytes(initSess.peerNoiseKey)
+	initPeer := initSess.peerKey
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		resp := &peerv1.PunchCoordTrigger{
 			PeerId:   req.PeerId,
 			SelfAddr: fr.Src,
-			PeerAddr: recvSess.peerAddrValue().String(),
+			PeerAddr: recvSess.peerAddr.String(),
 		}
 
 		b, err := resp.MarshalVT()
@@ -369,8 +333,8 @@ func (m *impl) handlePunchCoordRequest(ctx context.Context, fr Frame) error {
 
 	g.Go(func() error {
 		resp := &peerv1.PunchCoordTrigger{
-			PeerId:   initSess.peerNoiseKey,
-			SelfAddr: recvSess.peerAddrValue().String(),
+			PeerId:   initPeer.Bytes(),
+			SelfAddr: recvSess.peerAddr.String(),
 			PeerAddr: fr.Src,
 		}
 
@@ -492,7 +456,7 @@ func (m *impl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []*n
 			ticker := time.NewTicker(ensurePeerResendInterval)
 			defer ticker.Stop()
 			for {
-				_ = m.send(addr, payload)
+				_ = m.send(m.primary, addr, payload)
 				select {
 				case <-succ:
 					return
@@ -636,7 +600,7 @@ func (m *impl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) 
 		return nil, false
 	}
 
-	return sess.peerAddrValue(), true
+	return sess.peerAddr, true
 }
 
 func (m *impl) addWaiter(k types.PeerKey) (chan route, bool) {
@@ -706,15 +670,12 @@ func (m *impl) handleHandshake(conn *net.UDPConn, src string, fr Frame) error {
 		return err
 	}
 
-	res.Session.setPeerAddr(addr)
+	res.Session.peerAddr = addr
 	res.Session.peerSessionID = fr.SenderID
+	res.Session.conn = conn
 
 	m.sessionStore.set(res.Session)
 	m.log.Debugw("session created", "src", src, "localSessionID", res.Session.localSessionID, "peerSessionID", res.Session.peerSessionID)
-
-	m.sessMu.Lock()
-	m.sessions[addr.String()] = route{conn: conn, remoteAddr: addr}
-	m.sessMu.Unlock()
 
 	// Associate peer with the socket that successfully completed the handshake
 	peerKey := types.PeerKeyFromBytes(res.PeerStaticKey)
@@ -752,29 +713,19 @@ func (m *impl) handleHandshake(conn *net.UDPConn, src string, fr Frame) error {
 }
 
 func (m *impl) handleDisconnect(fr Frame) {
-	sess, ok := m.sessionStore.getByLocalID(fr.ReceiverID)
-	if !ok {
+	sess := m.sessionStore.removeByLocalID(fr.ReceiverID)
+	if sess == nil {
 		return
 	}
 
-	peerKey := types.PeerKeyFromBytes(sess.peerNoiseKey)
-
-	m.sessionStore.removeByPeerKey(peerKey)
-
-	m.sessMu.Lock()
-	if r, ok := m.sessions[fr.Src]; ok {
-		m.log.Infow("closing and removing disconnected session", "peer", peerKey.String()[:8])
-		if r.conn != m.primary {
-			r.conn.Close()
+	if sess.conn != m.primary {
+		if err := sess.conn.Close(); err != nil {
+			m.log.Debugw("error closing disconnected session conn", "peer", sess.peerKey.Short(), "err", err)
 		}
-		delete(m.sessions, fr.Src)
 	}
-	m.sessMu.Unlock()
 
-	m.log.Infow("received disconnect from peer", "peer", peerKey.String()[:8])
-
-	// Emit PeerDisconnected to state machine
-	m.events <- peer.PeerDisconnected{PeerKey: peerKey}
+	m.log.Infow("received disconnect from peer", "peer", sess.peerKey.Short())
+	m.events <- peer.PeerDisconnected{PeerKey: sess.peerKey}
 }
 
 func (m *impl) BroadcastDisconnect() {
@@ -826,9 +777,14 @@ func (m *impl) staleSessionChecker(ctx context.Context) {
 			return
 		case <-ticker.C:
 			stale := m.sessionStore.getStaleAndRemove(time.Now())
-			for _, peerKey := range stale {
-				m.log.Infow("session timed out", "peer", peerKey.String()[:8])
-				m.events <- peer.PeerDisconnected{PeerKey: peerKey}
+			for _, sess := range stale {
+				if sess.conn != m.primary {
+					if err := sess.conn.Close(); err != nil {
+						m.log.Infow("error closing stale connection", "peer", sess.peerKey.String()[:8])
+					}
+				}
+				m.log.Infow("session timed out", "peer", sess.peerKey.String()[:8])
+				m.events <- peer.PeerDisconnected{PeerKey: sess.peerKey}
 			}
 		}
 	}
