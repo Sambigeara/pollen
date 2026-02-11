@@ -254,12 +254,6 @@ func (sm *SessionManager) Accept(conn net.Conn, peerID types.PeerKey) (*Session,
 func (sm *SessionManager) register(conn net.Conn, peerID types.PeerKey, outbound bool) (*Session, error) {
 	sm.mu.Lock()
 
-	if existing, ok := sm.sessions[peerID]; ok {
-		sm.logger.Warnw("replacing existing session", "peer", peerID.String()[:8])
-		existing.Close()
-		delete(sm.sessions, peerID)
-	}
-
 	var (
 		session *Session
 		err     error
@@ -272,6 +266,12 @@ func (sm *SessionManager) register(conn net.Conn, peerID types.PeerKey, outbound
 	if err != nil {
 		sm.mu.Unlock()
 		return nil, err
+	}
+
+	if existing, ok := sm.sessions[peerID]; ok {
+		sm.logger.Warnw("replacing existing session", "peer", peerID.String()[:8])
+		existing.Close()
+		delete(sm.sessions, peerID)
 	}
 
 	sm.sessions[peerID] = session
