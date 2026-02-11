@@ -234,7 +234,7 @@ func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 
 func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
 	p, exists := s.m[e.PeerKey]
-	if !exists || p.state == PeerStateConnected {
+	if !exists || p.state != PeerStateConnecting {
 		return nil
 	}
 
