@@ -257,6 +257,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 				stream, err := session.OpenStream(portNum)
 				if err != nil {
 					logger.Warnw("open stream failed", "peer", peerID.String()[:8], "port", remotePort, "err", err)
+					m.sessions.Remove(peerID)
 					_ = clientConn.Close()
 					return
 				}

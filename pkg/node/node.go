@@ -161,13 +161,8 @@ func New(conf *Config) (*Node, error) {
 		gossipTrigger:   make(chan struct{}),
 	}
 
-	// Wire session disconnect callback.
 	tun.Sessions().SetOnDisconnect(func(peerKey types.PeerKey) {
-		select {
-		case n.tcpPeerEvents <- peer.PeerDisconnected{PeerKey: peerKey}:
-		default:
-			n.log.Warnw("tcpPeerEvents full, dropping PeerDisconnected", "peer", peerKey.Short())
-		}
+		n.tcpPeerEvents <- peer.PeerDisconnected{PeerKey: peerKey}
 	})
 
 	return n, nil
@@ -329,6 +324,11 @@ func (n *Node) gossip(ctx context.Context) {
 }
 
 func (n *Node) handleUDPPeerInput(in peer.Input) {
+	if d, ok := in.(peer.PeerDisconnected); ok {
+		n.storage.DisconnectNode(d.PeerKey)
+		n.triggerGossip()
+	}
+
 	outputs := n.udpPeers.Step(time.Now(), in)
 	n.handleUDPOutputs(outputs)
 }
@@ -626,12 +626,7 @@ func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32
 		return 0, err
 	}
 
-	// Feed the peer into the TCP FSM for eager dial.
-	select {
-	case n.tcpPeerEvents <- peer.DiscoverPeer{PeerKey: peerID}:
-	default:
-		n.log.Warnw("tcpPeerEvents full, dropping DiscoverPeer", "peer", peerID.Short())
-	}
+	n.tcpPeerEvents <- peer.RetryPeer{PeerKey: peerID}
 
 	return port, nil
 }
