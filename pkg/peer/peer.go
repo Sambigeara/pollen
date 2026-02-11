@@ -94,6 +94,14 @@ type PeerDisconnected struct {
 
 func (PeerDisconnected) isInput() {}
 
+// RemovePeer stops tracking a peer entirely. Used by the TCP FSM when no
+// tunnels to a peer remain.
+type RemovePeer struct {
+	PeerKey types.PeerKey
+}
+
+func (RemovePeer) isInput() {}
+
 // Output effects.
 type Output interface{ isOutput() }
 
@@ -159,6 +167,8 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 		return s.connectFailed(now, e)
 	case PeerDisconnected:
 		return s.disconnectPeer(now, e)
+	case RemovePeer:
+		return s.removePeer(e)
 	}
 	return nil
 }
@@ -274,6 +284,11 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) []Output {
 	p.stage = ConnectStageDirect
 	p.stageAttempts = 0
 	p.nextActionAt = now.Add(disconnectedRetryInterval)
+	return nil
+}
+
+func (s *Store) removePeer(e RemovePeer) []Output {
+	delete(s.m, e.PeerKey)
 	return nil
 }
 

@@ -24,9 +24,8 @@ const (
 	probeDialTimeout   = 1 * time.Second
 )
 
-// ConnectedPeersProvider is used to find connected peers that can act as coordinators.
+// ConnectedPeersProvider resolves active UDP addresses for known peers.
 type ConnectedPeersProvider interface {
-	GetConnectedPeers() []types.PeerKey
 	GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool)
 }
 
@@ -76,13 +75,10 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 	// Use the initiator's request ID for correlation through the entire flow
 	reqID := req.RequestId
 
-	initiatorPort := req.LocalPort
-	if req.ObservedExternalPort != 0 {
-		initiatorPort = req.ObservedExternalPort
-	}
+	initiatorPort := preferredExternalPort(req.LocalPort, req.ObservedExternalPort)
 
 	// Verify we have a session to the target
-	targetAddr, ok := m.peerProvider.GetActivePeerAddress(targetPeer)
+	targetAddr, ok := m.activePeerAddress(targetPeer)
 	if !ok {
 		logger.Warnw("no session to target peer", "target", targetPeer.String()[:8])
 		m.sendPunchReject(ctx, fromPeer, reqID, "no session to target")
@@ -90,11 +86,12 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 	}
 
 	// Get initiator's external address
-	initiatorAddr, ok := m.peerProvider.GetActivePeerAddress(fromPeer)
+	initiatorAddr, ok := m.activePeerAddress(fromPeer)
 	if !ok {
 		m.sendPunchReject(ctx, fromPeer, reqID, "no session to initiator")
 		return fmt.Errorf("no session to initiator peer %s", fromPeer.String()[:8])
 	}
+	initiatorSrc := peerHostPort(initiatorAddr, initiatorPort)
 
 	// Store pending request so we can complete it when target responds
 	//
@@ -120,7 +117,7 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 	}
 	m.pendingPunch[reqID] = pendingPunchReq{
 		initiator:    fromPeer,
-		initiatorSrc: net.JoinHostPort(initiatorAddr.IP.String(), strconv.FormatUint(uint64(initiatorPort), 10)),
+		initiatorSrc: initiatorSrc,
 		localPort:    req.LocalPort,
 		certDer:      req.CertDer,
 		sig:          req.Sig,
@@ -139,7 +136,7 @@ func (m *Manager) HandlePunchRequest(ctx context.Context, fromPeer types.PeerKey
 	// Send trigger to target
 	trigger := &tcpv1.TcpPunchTrigger{
 		PeerId:      fromPeer.Bytes(),
-		PeerAddr:    net.JoinHostPort(initiatorAddr.IP.String(), strconv.FormatUint(uint64(initiatorPort), 10)),
+		PeerAddr:    initiatorSrc,
 		ServicePort: req.ServicePort,
 		PeerCertDer: req.CertDer,
 		PeerSig:     req.Sig,
@@ -309,19 +306,16 @@ func (m *Manager) HandlePunchReady(ctx context.Context, fromPeer types.PeerKey, 
 	}
 
 	// Get target's external address
-	targetAddr, ok := m.peerProvider.GetActivePeerAddress(fromPeer)
+	targetAddr, ok := m.activePeerAddress(fromPeer)
 	if !ok {
 		return fmt.Errorf("no session to target peer %s", fromPeer.String()[:8])
 	}
 
-	targetPort := ready.LocalPort
-	if ready.ObservedExternalPort != 0 {
-		targetPort = ready.ObservedExternalPort
-	}
+	targetPort := preferredExternalPort(ready.LocalPort, ready.ObservedExternalPort)
 
 	// Send response to initiator with target's address and cert
 	resp := &tcpv1.TcpPunchResponse{
-		PeerAddr:    net.JoinHostPort(targetAddr.IP.String(), strconv.FormatUint(uint64(targetPort), 10)),
+		PeerAddr:    peerHostPort(targetAddr, targetPort),
 		PeerCertDer: ready.CertDer,
 		PeerSig:     ready.Sig,
 		RequestId:   ready.RequestId,
@@ -488,10 +482,7 @@ func (m *Manager) HandlePunchProbeResult(_ context.Context, _ types.PeerKey, pay
 func (m *Manager) discoverExternalPort(ctx context.Context, coordinator types.PeerKey, localPort uint32) uint32 {
 	logger := zap.S().Named("tunnel.punch")
 
-	if m.peerProvider == nil {
-		return 0
-	}
-	coordAddr, ok := m.peerProvider.GetActivePeerAddress(coordinator)
+	coordAddr, ok := m.activePeerAddress(coordinator)
 	if !ok {
 		return 0
 	}
@@ -538,7 +529,7 @@ func (m *Manager) discoverExternalPort(ctx context.Context, coordinator types.Pe
 		return 0
 	}
 
-	probeAddr := net.JoinHostPort(coordAddr.IP.String(), strconv.FormatUint(uint64(offer.ProbePort), 10))
+	probeAddr := peerHostPort(coordAddr, offer.ProbePort)
 	dialer := tcp.NewReusePortDialer(int(localPort), probeDialTimeout)
 	dialCtx, dialCancel := context.WithTimeout(ctx, probeDialTimeout)
 	conn, err := dialer.DialContext(dialCtx, "tcp", probeAddr)
@@ -561,6 +552,24 @@ func (m *Manager) discoverExternalPort(ctx context.Context, coordinator types.Pe
 		return 0
 	}
 	return result.ObservedPort
+}
+
+func preferredExternalPort(localPort, observedExternalPort uint32) uint32 {
+	if observedExternalPort != 0 {
+		return observedExternalPort
+	}
+	return localPort
+}
+
+func peerHostPort(addr *net.UDPAddr, port uint32) string {
+	return net.JoinHostPort(addr.IP.String(), strconv.FormatUint(uint64(port), 10))
+}
+
+func (m *Manager) activePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool) {
+	if m.peerProvider == nil {
+		return nil, false
+	}
+	return m.peerProvider.GetActivePeerAddress(peer)
 }
 
 func (m *Manager) sendProbeResult(ctx context.Context, peer types.PeerKey, reqID uint64, port uint32) {

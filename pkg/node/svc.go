@@ -297,7 +297,7 @@ func serviceNameForPort(port uint32) string {
 }
 
 func (s *NodeService) ConnectService(ctx context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
-	localPort, err := s.node.tun.ConnectService(types.PeerKeyFromBytes(req.Node.PeerId), req.RemotePort, req.LocalPort)
+	localPort, err := s.node.ConnectService(types.PeerKeyFromBytes(req.Node.PeerId), req.RemotePort, req.LocalPort)
 	if err != nil {
 		return nil, err
 	}

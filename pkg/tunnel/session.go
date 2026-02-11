@@ -152,59 +152,46 @@ func (s *Session) PeerID() types.PeerKey {
 	return s.peerID
 }
 
-// DialFunc is called by SessionManager to establish the underlying connection.
-type DialFunc func(ctx context.Context, peerID types.PeerKey) (net.Conn, error)
-
 // StreamHandler is called for each incoming stream on a session.
 type StreamHandler func(stream net.Conn, servicePort uint16)
 
-type sessionDial struct {
-	done    chan struct{}
-	session *Session
-	err     error
-	cancel  context.CancelFunc
-	once    sync.Once
-}
-
-func newSessionDial(cancel context.CancelFunc) *sessionDial {
-	return &sessionDial{done: make(chan struct{}), cancel: cancel}
-}
-
-func (d *sessionDial) resolve(session *Session, err error) {
-	d.once.Do(func() {
-		d.session = session
-		d.err = err
-		close(d.done)
-	})
-}
-
 // SessionManager manages per-peer sessions.
 type SessionManager struct {
-	dial     DialFunc
-	sessions map[types.PeerKey]*Session
-	inflight map[types.PeerKey]*sessionDial
-	handler  StreamHandler
-	logger   *zap.SugaredLogger
-	mu       sync.RWMutex
+	sessions     map[types.PeerKey]*Session
+	waiters      map[types.PeerKey][]chan struct{}
+	handler      StreamHandler
+	onDisconnect func(types.PeerKey)
+	logger       *zap.SugaredLogger
+	mu           sync.RWMutex
 }
 
 // NewSessionManager creates a new session manager.
-// dial is called when a new session needs to be established.
 // handler is called for each incoming stream on any session.
-func NewSessionManager(dial DialFunc, handler StreamHandler) *SessionManager {
+func NewSessionManager(handler StreamHandler) *SessionManager {
 	return &SessionManager{
-		dial:     dial,
 		sessions: make(map[types.PeerKey]*Session),
-		inflight: make(map[types.PeerKey]*sessionDial),
+		waiters:  make(map[types.PeerKey][]chan struct{}),
 		handler:  handler,
 		logger:   zap.S().Named("sessions"),
 	}
 }
 
-// GetOrCreate returns an existing session or creates a new one.
-// If the session doesn't exist, it uses the dial function to establish one.
+// SetOnDisconnect sets a callback invoked when a session is removed.
+func (sm *SessionManager) SetOnDisconnect(fn func(types.PeerKey)) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.onDisconnect = fn
+}
+
+// RegisterOutbound registers a session initiated locally.
+func (sm *SessionManager) RegisterOutbound(conn net.Conn, peerID types.PeerKey) (*Session, error) {
+	return sm.register(conn, peerID, true)
+}
+
+// GetOrCreate returns an existing session or waits for one to appear.
+// It blocks until RegisterOutbound/Accept delivers a session, or ctx expires.
 func (sm *SessionManager) GetOrCreate(ctx context.Context, peerID types.PeerKey) (*Session, error) {
-	// Fast path: check for existing session
+	// Fast path: check for existing session.
 	sm.mu.RLock()
 	session, ok := sm.sessions[peerID]
 	sm.mu.RUnlock()
@@ -213,109 +200,98 @@ func (sm *SessionManager) GetOrCreate(ctx context.Context, peerID types.PeerKey)
 		return session, nil
 	}
 
-	// Slow path: need to establish new session
-	sm.mu.Lock()
-	// Double-check after acquiring write lock
-	if session, ok := sm.sessions[peerID]; ok && !session.IsClosed() {
-		sm.mu.Unlock()
-		return session, nil
-	}
+	return sm.waitForSession(ctx, peerID)
+}
 
-	if dial, ok := sm.inflight[peerID]; ok {
+// waitForSession blocks until an active session for peerID exists or ctx expires.
+func (sm *SessionManager) waitForSession(ctx context.Context, peerID types.PeerKey) (*Session, error) {
+	for {
+		sm.mu.Lock()
+		if session, ok := sm.sessions[peerID]; ok && !session.IsClosed() {
+			sm.mu.Unlock()
+			return session, nil
+		}
+		ch := make(chan struct{}, 1)
+		sm.waiters[peerID] = append(sm.waiters[peerID], ch)
 		sm.mu.Unlock()
+
 		select {
-		case <-dial.done:
-			if dial.session != nil && !dial.session.IsClosed() {
-				return dial.session, nil
-			}
-			if dial.err != nil {
-				return nil, dial.err
-			}
-			return nil, ErrSessionClosed
+		case <-ch:
 		case <-ctx.Done():
+			sm.removeWaiter(peerID, ch)
 			return nil, ctx.Err()
 		}
 	}
+}
 
-	// Clean up any closed session
-	if session, ok := sm.sessions[peerID]; ok {
-		delete(sm.sessions, peerID)
-		session.Close() // Ensure cleanup
-	}
-
-	dialCtx, cancel := context.WithCancel(ctx)
-	dial := newSessionDial(cancel)
-	sm.inflight[peerID] = dial
-	sm.mu.Unlock()
-
-	sm.logger.Infow("establishing new session", "peer", peerID.String()[:8])
-
-	conn, err := sm.dial(dialCtx, peerID)
-	cancel()
-
-	var newSess *Session
-	if err == nil {
-		newSess, err = newClientSession(conn, peerID)
-	}
-
+func (sm *SessionManager) removeWaiter(peerID types.PeerKey, ch chan struct{}) {
 	sm.mu.Lock()
-	if existing, ok := sm.sessions[peerID]; ok && !existing.IsClosed() {
-		if newSess != nil {
-			newSess.Close()
-		}
-		dial.resolve(existing, nil)
-		if cur, ok := sm.inflight[peerID]; ok && cur == dial {
-			delete(sm.inflight, peerID)
-		}
-		sm.mu.Unlock()
-		return existing, nil
-	}
-	if existing, ok := sm.sessions[peerID]; ok {
-		delete(sm.sessions, peerID)
-		existing.Close()
-	}
-	if err == nil && newSess != nil {
-		sm.sessions[peerID] = newSess
-		sm.logger.Infow("session established", "peer", peerID.String()[:8])
-	}
-	dial.resolve(newSess, err)
-	if cur, ok := sm.inflight[peerID]; ok && cur == dial {
-		delete(sm.inflight, peerID)
-	}
-	sm.mu.Unlock()
+	defer sm.mu.Unlock()
 
-	return newSess, err
+	waiters := sm.waiters[peerID]
+	for i := range waiters {
+		if waiters[i] != ch {
+			continue
+		}
+		waiters[i] = waiters[len(waiters)-1]
+		waiters = waiters[:len(waiters)-1]
+		break
+	}
+
+	if len(waiters) == 0 {
+		delete(sm.waiters, peerID)
+		return
+	}
+	sm.waiters[peerID] = waiters
 }
 
 // Accept registers a session initiated by a remote peer.
 // The connection should already be authenticated.
 func (sm *SessionManager) Accept(conn net.Conn, peerID types.PeerKey) (*Session, error) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	return sm.register(conn, peerID, false)
+}
 
-	// If we already have a session to this peer, close the old one
+func (sm *SessionManager) register(conn net.Conn, peerID types.PeerKey, outbound bool) (*Session, error) {
+	sm.mu.Lock()
+
 	if existing, ok := sm.sessions[peerID]; ok {
 		sm.logger.Warnw("replacing existing session", "peer", peerID.String()[:8])
 		existing.Close()
 		delete(sm.sessions, peerID)
 	}
 
-	session, err := newServerSession(conn, peerID)
+	var (
+		session *Session
+		err     error
+	)
+	if outbound {
+		session, err = newClientSession(conn, peerID)
+	} else {
+		session, err = newServerSession(conn, peerID)
+	}
 	if err != nil {
+		sm.mu.Unlock()
 		return nil, err
 	}
 
 	sm.sessions[peerID] = session
-	sm.logger.Infow("accepted session", "peer", peerID.String()[:8])
-	if dial, ok := sm.inflight[peerID]; ok {
-		if dial.cancel != nil {
-			dial.cancel()
+	waiters := sm.waiters[peerID]
+	delete(sm.waiters, peerID)
+	sm.mu.Unlock()
+
+	for _, ch := range waiters {
+		select {
+		case ch <- struct{}{}:
+		default:
 		}
-		dial.resolve(session, nil)
-		delete(sm.inflight, peerID)
 	}
 
-	// Start accepting streams in background
+	if outbound {
+		sm.logger.Infow("registered outbound session", "peer", peerID.String()[:8])
+	} else {
+		sm.logger.Infow("accepted session", "peer", peerID.String()[:8])
+	}
+
 	go sm.acceptStreams(session)
 
 	return session, nil
@@ -344,25 +320,20 @@ func (sm *SessionManager) acceptStreams(session *Session) {
 // Remove closes and removes a session.
 func (sm *SessionManager) Remove(peerID types.PeerKey) {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	if session, ok := sm.sessions[peerID]; ok {
+	session, ok := sm.sessions[peerID]
+	cb := sm.onDisconnect
+	if ok {
 		session.Close()
 		delete(sm.sessions, peerID)
+	}
+	sm.mu.Unlock()
+
+	if ok {
 		sm.logger.Infow("removed session", "peer", peerID.String()[:8])
+		if cb != nil {
+			cb(peerID)
+		}
 	}
-}
-
-// Get returns a session if it exists and is open.
-func (sm *SessionManager) Get(peerID types.PeerKey) (*Session, bool) {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	session, ok := sm.sessions[peerID]
-	if !ok || session.IsClosed() {
-		return nil, false
-	}
-	return session, true
 }
 
 // Close closes all sessions.
@@ -373,13 +344,6 @@ func (sm *SessionManager) Close() {
 	for peerID, session := range sm.sessions {
 		session.Close()
 		delete(sm.sessions, peerID)
-	}
-	for peerID, dial := range sm.inflight {
-		if dial.cancel != nil {
-			dial.cancel()
-		}
-		dial.resolve(nil, ErrSessionClosed)
-		delete(sm.inflight, peerID)
 	}
 	sm.logger.Info("all sessions closed")
 }

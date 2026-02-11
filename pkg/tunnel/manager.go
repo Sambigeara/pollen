@@ -23,10 +23,7 @@ import (
 )
 
 const (
-	dialTimeout          = 6 * time.Second
-	acceptTimeout        = 10 * time.Second
-	punchDelay           = 200 * time.Millisecond
-	maxPunchCoordinators = 2
+	acceptTimeout = 10 * time.Second
 )
 
 type Send func(ctx context.Context, peer types.PeerKey, msg types.Envelope) error
@@ -50,7 +47,6 @@ type Manager struct {
 	ips               []string
 	signPriv          ed25519.PrivateKey
 	acceptTimeout     time.Duration
-	dialTimeout       time.Duration
 	connectionMu      sync.RWMutex
 	serviceMu         sync.RWMutex
 	streamMu          sync.Mutex
@@ -93,12 +89,6 @@ type ConnectionInfo struct {
 	LocalPort  uint32
 }
 
-type dialResult struct {
-	conn net.Conn
-	err  error
-	mode string
-}
-
 func connectionKey(peerID, port string) string {
 	return peerID + ":" + port
 }
@@ -117,8 +107,9 @@ var (
 	ErrServiceNotRegistered  = errors.New("service not registered")
 )
 
-func New(sender Send, dir PeerDirectory, signPriv ed25519.PrivateKey, advertisableIPs []string) *Manager {
+func New(sender Send, dir PeerDirectory, peerProvider ConnectedPeersProvider, signPriv ed25519.PrivateKey, advertisableIPs []string) *Manager {
 	m := &Manager{
+		peerProvider:    peerProvider,
 		dir:             dir,
 		sender:          sender,
 		services:        make(map[string]serviceHandler),
@@ -126,7 +117,6 @@ func New(sender Send, dir PeerDirectory, signPriv ed25519.PrivateKey, advertisab
 		activeStreams:   make(map[uint32]map[net.Conn]struct{}),
 		signPriv:        signPriv,
 		ips:             advertisableIPs,
-		dialTimeout:     dialTimeout,
 		acceptTimeout:   acceptTimeout,
 		sessionInflight: make(map[uint64]sessionInflight),
 		punchInflight:   make(map[uint64]punchInflight),
@@ -134,16 +124,10 @@ func New(sender Send, dir PeerDirectory, signPriv ed25519.PrivateKey, advertisab
 		probeInflight:   make(map[uint64]probeInflight),
 	}
 
-	// Initialize session manager with dial function and stream handler
-	m.sessions = NewSessionManager(m.dialSession, m.handleIncomingStream)
+	// Initialize session manager — the FSM drives session establishment.
+	m.sessions = NewSessionManager(m.handleIncomingStream)
 
 	return m
-}
-
-// SetPeerProvider sets the connected peers provider for TCP punch coordination.
-// This should be called after the Link is created.
-func (m *Manager) SetPeerProvider(p ConnectedPeersProvider) {
-	m.peerProvider = p
 }
 
 // handleIncomingStream routes incoming streams to the appropriate service handler.
@@ -558,68 +542,9 @@ func (m *Manager) HandleSessionResponse(_ context.Context, _ types.PeerKey, payl
 	return nil
 }
 
-// dialSession establishes the underlying TCP+TLS connection for a session.
-// This is called by SessionManager.GetOrCreate when no session exists.
-func (m *Manager) dialSession(ctx context.Context, peerID types.PeerKey) (net.Conn, error) {
-	logger := zap.S().Named("tunnel.session")
-
-	coordinators := m.findCoordinators(peerID, maxPunchCoordinators)
-	attempts := 1 + len(coordinators)
-	resCh := make(chan dialResult, attempts)
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		conn, err := m.dialSessionDirect(ctx, peerID)
-		resCh <- dialResult{conn: conn, err: err, mode: "direct"}
-	})
-
-	for _, coordinator := range coordinators {
-		coord := coordinator
-		wg.Go(func() {
-			if punchDelay > 0 {
-				timer := time.NewTimer(punchDelay)
-				defer timer.Stop()
-				select {
-				case <-ctx.Done():
-					resCh <- dialResult{err: ctx.Err(), mode: "punch"}
-					return
-				case <-timer.C:
-				}
-			}
-			conn, err := m.dialSessionWithPunch(ctx, peerID, coord)
-			resCh <- dialResult{conn: conn, err: err, mode: "punch"}
-		})
-	}
-
-	go func() {
-		wg.Wait()
-		close(resCh)
-	}()
-
-	var lastErr error
-	for res := range resCh {
-		if res.err == nil && res.conn != nil {
-			cancel()
-			return res.conn, nil
-		}
-		if res.err != nil {
-			lastErr = res.err
-			logger.Debugw("session dial attempt failed", "peer", peerID.String()[:8], "mode", res.mode, "err", res.err)
-		}
-	}
-
-	if lastErr != nil {
-		logger.Debugw("session dial failed", "peer", peerID.String()[:8], "err", lastErr)
-	}
-	return nil, ErrNoDialableAddress
-}
-
-// dialSessionDirect attempts a direct TCP+TLS connection for session establishment.
-func (m *Manager) dialSessionDirect(ctx context.Context, peerNoisePub types.PeerKey) (net.Conn, error) {
-	peerIDPub, ok := m.dir.IdentityPub(peerNoisePub)
+// DialSessionDirect attempts a direct TCP+TLS connection for session establishment.
+func (m *Manager) DialSessionDirect(ctx context.Context, peerKey types.PeerKey) (net.Conn, error) {
+	peerIDPub, ok := m.dir.IdentityPub(peerKey)
 	if !ok {
 		return nil, ErrUnknownPeerIdentity
 	}
@@ -646,7 +571,7 @@ func (m *Manager) dialSessionDirect(ctx context.Context, peerNoisePub types.Peer
 
 	ch := make(chan *tcpv1.SessionHandshake, 1)
 	m.sessionInflightMu.Lock()
-	m.sessionInflight[reqID] = sessionInflight{peerKey: peerNoisePub, ch: ch}
+	m.sessionInflight[reqID] = sessionInflight{peerKey: peerKey, ch: ch}
 	m.sessionInflightMu.Unlock()
 	defer func() {
 		m.sessionInflightMu.Lock()
@@ -654,23 +579,19 @@ func (m *Manager) dialSessionDirect(ctx context.Context, peerNoisePub types.Peer
 		m.sessionInflightMu.Unlock()
 	}()
 
-	zap.S().Debugw("sending session request", "peer", peerNoisePub.String()[:8])
+	zap.S().Debugw("sending session request", "peer", peerKey.String()[:8])
 	env := types.Envelope{
 		Type:    types.MsgTypeSessionRequest,
 		Payload: reqBytes,
 	}
-	if err := m.sender(ctx, peerNoisePub, env); err != nil {
+	if err := m.sender(ctx, peerKey, env); err != nil {
 		return nil, fmt.Errorf("session request failed: %w", err)
 	}
-
-	// Wait for response
-	waitCtx, cancel := context.WithTimeout(ctx, m.dialTimeout)
-	defer cancel()
 
 	var resp *tcpv1.SessionHandshake
 	select {
 	case resp = <-ch:
-	case <-waitCtx.Done():
+	case <-ctx.Done():
 		return nil, ErrHandshakeResponseMiss
 	}
 
@@ -687,7 +608,7 @@ func (m *Manager) dialSessionDirect(ctx context.Context, peerNoisePub types.Peer
 		return nil, ErrNoDialableAddress
 	}
 
-	attemptCtx, attemptCancel := context.WithTimeout(ctx, m.dialTimeout)
+	attemptCtx, attemptCancel := context.WithCancel(ctx)
 	defer attemptCancel()
 
 	resCh := make(chan net.Conn, 1)
@@ -697,7 +618,7 @@ func (m *Manager) dialSessionDirect(ctx context.Context, peerNoisePub types.Peer
 		wg.Add(1)
 		go func(addr string) {
 			defer wg.Done()
-			dialer := &net.Dialer{Timeout: m.dialTimeout}
+			dialer := &net.Dialer{}
 			rawConn, err := dialer.DialContext(attemptCtx, "tcp", addr)
 			if err != nil {
 				return
@@ -732,8 +653,8 @@ func (m *Manager) dialSessionDirect(ctx context.Context, peerNoisePub types.Peer
 	return nil, ErrNoDialableAddress
 }
 
-// dialSessionWithPunch attempts session establishment via TCP hole punching.
-func (m *Manager) dialSessionWithPunch(ctx context.Context, peerKey, coordinator types.PeerKey) (net.Conn, error) {
+// DialSessionWithPunch attempts session establishment via TCP hole punching.
+func (m *Manager) DialSessionWithPunch(ctx context.Context, peerKey, coordinator types.PeerKey) (net.Conn, error) {
 	logger := zap.S().Named("tunnel.session")
 	logger.Infow("attempting punch session dial",
 		"target", peerKey.String()[:8],
@@ -876,30 +797,9 @@ func (m *Manager) dialSessionWithPunch(ctx context.Context, peerKey, coordinator
 	return tlsConn, nil
 }
 
-// findCoordinators finds connected peers that can act as coordinators for punch.
-func (m *Manager) findCoordinators(target types.PeerKey, limit int) []types.PeerKey {
-	if m.peerProvider == nil || limit <= 0 {
-		return nil
-	}
-
-	peers := m.peerProvider.GetConnectedPeers()
-	if len(peers) == 0 {
-		return nil
-	}
-
-	capHint := min(limit, len(peers))
-	out := make([]types.PeerKey, 0, capHint)
-	for _, p := range peers {
-		// Don't use the target as coordinator
-		if p == target {
-			continue
-		}
-		out = append(out, p)
-		if len(out) >= limit {
-			break
-		}
-	}
-	return out
+// Sessions returns the session manager (used by the Node for FSM-driven session registration).
+func (m *Manager) Sessions() *SessionManager {
+	return m.sessions
 }
 
 // Close shuts down the manager and all sessions.
