@@ -22,17 +22,17 @@ else
   exit 1
 fi
 
-tellybox_ip="$("$TS_BIN" status --json \
+gamer_ip="$("$TS_BIN" status --json \
   | jq -r '
       [
-        (.Peer[]? | select(.HostName=="tellybox" or .HostName=="samflix") | .TailscaleIPs[]?),
-        (.Peers[]? | select(.HostName=="tellybox" or .HostName=="samflix") | .TailscaleIPs[]?)
+        (.Peer[]? | select(.HostName=="gamer" or .HostName=="samflix") | .TailscaleIPs[]?),
+        (.Peers[]? | select(.HostName=="gamer" or .HostName=="samflix") | .TailscaleIPs[]?)
       ]
       | map(select(startswith("100.")))[0] // .[0] // empty
     ')"
 
-if [[ -z "$tellybox_ip" ]]; then
-  echo "tellybox/samflix not found on Tailscale" >&2
+if [[ -z "$gamer_ip" ]]; then
+  echo "gamer/samflix not found on Tailscale" >&2
   exit 1
 fi
 
@@ -74,12 +74,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Syncing to tellybox (${tellybox_ip})..." >&2
+echo "Syncing to gamer (${gamer_ip})..." >&2
 # -a: Archive (preserve permissions/exec bit)
 # -z: Compress
 # -e: Specific ssh options
 rsync -az -e "ssh $SSH_OPTS" \
-  dist/pollen_linux_amd64_v1/pollen "sambigeara@${tellybox_ip}:~/pollen" &
+  dist/pollen_linux_amd64_v1/pollen "sambigeara@${gamer_ip}:~/pollen" &
 pids+=("$!")
 
 echo "Syncing to pi (${pi_ip})..." >&2
@@ -105,6 +105,6 @@ if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi
 
-echo "Successfully deployed to tellybox!" >&2
+echo "Successfully deployed to gamer!" >&2
 echo "Successfully deployed to pi!" >&2
 echo "Successfully deployed to relay!" >&2
