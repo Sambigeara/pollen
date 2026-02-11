@@ -42,8 +42,10 @@ const (
 	keyDirPerm        = 0o700
 	keyFilePerm       = 0o600
 
-	directAttemptDuration    = 2 * time.Second
-	punchCoordRequestTimeout = 3 * time.Second
+	udpDirectTimeout = 2 * time.Second
+	udpPunchTimeout  = 3 * time.Second
+	tcpDirectTimeout = 2 * time.Second
+	tcpPunchTimeout  = 5 * time.Second
 
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
@@ -67,12 +69,14 @@ type Node struct {
 
 	crypto  *localCrypto
 	invites admission.Store
-	peers   *peer.Store
 	sock    sock.SuperSock
 	storage *state.Persistence
 	tun     *tunnel.Manager
 
+	udpPeers        *peer.Store
+	tcpPeers        *peer.Store
 	localPeerEvents chan peer.Input
+	tcpPeerEvents   chan peer.Input
 	gossipTrigger   chan struct{}
 	handlers        map[types.MsgType]HandlerFn
 	handlersMu      sync.RWMutex
@@ -126,6 +130,7 @@ func New(conf *Config) (*Node, error) {
 	tun := tunnel.New(
 		s.Send,
 		&Directory{cluster: cluster},
+		s,
 		privKey,
 		ips,
 	)
@@ -140,19 +145,27 @@ func New(conf *Config) (*Node, error) {
 		},
 	})
 
-	return &Node{
+	n := &Node{
 		log:             log,
 		sock:            s,
 		handlers:        make(map[types.MsgType]HandlerFn),
-		peers:           peer.NewStore(),
+		udpPeers:        peer.NewStore(),
+		tcpPeers:        peer.NewStore(),
 		storage:         stateStore,
 		invites:         invitesStore,
 		tun:             tun,
 		crypto:          crypto,
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
+		tcpPeerEvents:   make(chan peer.Input, peerEventBufSize),
 		gossipTrigger:   make(chan struct{}),
-	}, nil
+	}
+
+	tun.Sessions().SetOnDisconnect(func(peerKey types.PeerKey) {
+		n.tcpPeerEvents <- peer.PeerDisconnected{PeerKey: peerKey}
+	})
+
+	return n, nil
 }
 
 func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
@@ -192,12 +205,14 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 			n.gossip(ctx)
 		case <-n.gossipTrigger:
 			n.gossip(ctx)
-		// external origin events
+		// UDP FSM events
 		case in := <-n.sock.Events():
-			n.handlePeerInput(in)
-		// internal origin events
+			n.handleUDPPeerInput(in)
 		case in := <-n.localPeerEvents:
-			n.handlePeerInput(in)
+			n.handleUDPPeerInput(in)
+		// TCP FSM events
+		case in := <-n.tcpPeerEvents:
+			n.handleTCPPeerInput(in)
 		}
 	}
 }
@@ -242,9 +257,6 @@ func (n *Node) handleApp(ctx context.Context, p sock.Packet) {
 }
 
 func (n *Node) registerHandlers() {
-	// Set peer provider for TCP punch coordination
-	n.tun.SetPeerProvider(n)
-
 	// Session handlers (multiplexed tunnels)
 	n.Handle(types.MsgTypeSessionRequest, n.tun.HandleSessionRequest)
 	n.Handle(types.MsgTypeSessionResponse, n.tun.HandleSessionResponse)
@@ -311,9 +323,19 @@ func (n *Node) gossip(ctx context.Context) {
 	}
 }
 
-func (n *Node) handlePeerInput(in peer.Input) {
-	outputs := n.peers.Step(time.Now(), in)
-	n.handleOutputs(outputs)
+func (n *Node) handleUDPPeerInput(in peer.Input) {
+	if d, ok := in.(peer.PeerDisconnected); ok {
+		n.storage.DisconnectNode(d.PeerKey)
+		n.triggerGossip()
+	}
+
+	outputs := n.udpPeers.Step(time.Now(), in)
+	n.handleUDPOutputs(outputs)
+}
+
+func (n *Node) handleTCPPeerInput(in peer.Input) {
+	outputs := n.tcpPeers.Step(time.Now(), in)
+	n.handleTCPOutputs(outputs)
 }
 
 func (n *Node) tick() {
@@ -321,9 +343,14 @@ func (n *Node) tick() {
 	n.syncPeersFromState()
 	n.reconcileConnections()
 
-	// Then tick the state machine to get pending actions
-	outputs := n.peers.Step(time.Now(), peer.Tick{})
-	n.handleOutputs(outputs)
+	// Tick both FSMs
+	now := time.Now()
+	udpOutputs := n.udpPeers.Step(now, peer.Tick{})
+	n.handleUDPOutputs(udpOutputs)
+
+	now = time.Now()
+	tcpOutputs := n.tcpPeers.Step(now, peer.Tick{})
+	n.handleTCPOutputs(tcpOutputs)
 }
 
 func (n *Node) syncPeersFromState() {
@@ -331,9 +358,7 @@ func (n *Node) syncPeersFromState() {
 		if node.Id == n.storage.Cluster.LocalID.String() {
 			continue
 		}
-		// if node.Id[:8] != "5d9019cc" && node.Id[:8] != "e916928b" {
-		// 	continue
-		// }
+
 		if len(node.Keys.NoisePub) == 0 || len(node.Ips) == 0 {
 			continue
 		}
@@ -353,7 +378,7 @@ func (n *Node) syncPeersFromState() {
 			n.log.Debugw("state identity mismatch", "nodeId", shortNodeID(node.Id), "noiseKey", peerKey.Short(), "ips", node.Ips, "localPort", node.LocalPort)
 		}
 
-		n.peers.Step(time.Now(), peer.DiscoverPeer{
+		n.udpPeers.Step(time.Now(), peer.DiscoverPeer{
 			PeerKey: peerKey,
 			Ips:     ips,
 			Port:    int(node.LocalPort),
@@ -361,56 +386,107 @@ func (n *Node) syncPeersFromState() {
 	}
 }
 
-func (n *Node) handleOutputs(outputs []peer.Output) {
-outer:
+func (n *Node) handleUDPOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
 			n.storage.ConnectNode(e.PeerKey)
 			n.triggerGossip()
-			n.log.Infow("peer connected", "peer_id", e.PeerKey.Short(), "ip", e.IP, "observedPort", e.ObservedPort)
+			n.log.Infow("udp peer connected", "peer_id", e.PeerKey.Short(), "ip", e.IP, "observedPort", e.ObservedPort)
 		case peer.AttemptConnect:
 			go func() {
-				if err := n.attemptDirectConnect(e); err != nil {
-					n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "ips", e.Ips, "port", e.Port, "err", err)
+				if err := n.udpDirectConnect(e); err != nil {
+					n.log.Debugw("udp direct connect failed", "peer", e.PeerKey.String()[:8], "ips", e.Ips, "port", e.Port, "err", err)
 					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 				}
 			}()
 		case peer.RequestPunchCoordination:
-			// Select coordinator in main loop to avoid race on Peers.GetAll
-			var localIPs []string
-			if local, ok := n.storage.Cluster.Nodes.Get(n.storage.Cluster.LocalID); ok {
-				localIPs = local.Node.Ips
+			coordinator, ok := n.FindCoordinator(e.PeerKey)
+			if !ok {
+				n.log.Debugw("no coordinator available for udp punch", "peer", e.PeerKey.Short())
+				go func() {
+					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+				}()
+				continue
 			}
-			for _, key := range n.GetConnectedPeers() {
-				if p, ok := n.storage.Cluster.Nodes.Get(key); ok {
-					// TODO(saml) I've just realised that this isn't enough: BOTH sides can't be in the same LAN as the coordinator
-					if sharesLAN(localIPs, p.Node.Ips) {
-						continue
-					}
-					if _, ok := p.Node.Connected[e.PeerKey.String()]; ok {
-						go func() {
-							if err := n.requestPunchCoordination(e, key); err != nil {
-								n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
-							}
-						}()
-						continue outer
-					}
-				}
-			}
-			n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.Short())
 			go func() {
-				n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+				if err := n.udpPunchCoordination(e, coordinator); err != nil {
+					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+				}
+			}()
+			continue
+		}
+	}
+}
+
+func (n *Node) handleTCPOutputs(outputs []peer.Output) {
+	for _, out := range outputs {
+		switch e := out.(type) {
+		case peer.PeerConnected:
+			n.log.Infow("tcp peer connected", "peer_id", e.PeerKey.Short())
+		case peer.AttemptConnect:
+			go func() {
+				if err := n.tcpDirectConnect(e); err != nil {
+					n.log.Debugw("tcp direct connect failed", "peer", e.PeerKey.Short(), "err", err)
+					n.tcpPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+					return
+				}
+				n.tcpPeerEvents <- peer.ConnectPeer{PeerKey: e.PeerKey}
+			}()
+		case peer.RequestPunchCoordination:
+			coordinator, ok := n.FindCoordinator(e.PeerKey)
+			if !ok {
+				n.log.Debugw("no coordinator available for tcp punch", "peer", e.PeerKey.Short())
+				go func() {
+					n.tcpPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+				}()
+				continue
+			}
+			go func() {
+				if err := n.tcpPunchCoordination(e, coordinator); err != nil {
+					n.log.Debugw("tcp punch failed", "peer", e.PeerKey.Short(), "err", err)
+					n.tcpPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+					return
+				}
+				n.tcpPeerEvents <- peer.ConnectPeer{PeerKey: e.PeerKey}
 			}()
 		}
 	}
 }
 
+// FindCoordinator returns a connected UDP peer that can coordinate a punch
+// to the given target. Skips LAN peers and verifies the coordinator is
+// connected to the target via gossip state.
+func (n *Node) FindCoordinator(target types.PeerKey) (types.PeerKey, bool) {
+	var localIPs []string
+	if local, ok := n.storage.Cluster.Nodes.Get(n.storage.Cluster.LocalID); ok {
+		if local.Node != nil {
+			localIPs = local.Node.Ips
+		}
+	}
+
+	for _, key := range n.GetConnectedPeers() {
+		if key == target {
+			continue
+		}
+		p, ok := n.storage.Cluster.Nodes.Get(key)
+		if !ok || p.Node == nil {
+			continue
+		}
+		if sharesLAN(localIPs, p.Node.Ips) {
+			continue
+		}
+		if _, ok := p.Node.Connected[target.String()]; !ok {
+			continue
+		}
+		return key, true
+	}
+
+	return types.PeerKey{}, false
+}
+
 func (n *Node) reconcileConnections() {
 	connections := n.tun.ListConnections()
-	if len(connections) == 0 {
-		return
-	}
 
 	nodes := n.storage.Cluster.Nodes.GetAll()
 	missing := make(map[types.PeerKey]map[uint32]struct{}, len(connections))
@@ -432,6 +508,26 @@ func (n *Node) reconcileConnections() {
 			n.tun.DisconnectRemoteService(peerID, port)
 		}
 	}
+
+	// After removing stale forwards, check which peers still have active
+	// connections. Remove any TCP FSM peers that have no remaining tunnels.
+	remaining := n.tun.ListConnections()
+	activePeers := make(map[types.PeerKey]bool, len(remaining))
+	for _, conn := range remaining {
+		activePeers[conn.PeerID] = true
+	}
+	for _, st := range []peer.PeerState{
+		peer.PeerStateConnected,
+		peer.PeerStateDiscovered,
+		peer.PeerStateConnecting,
+		peer.PeerStateUnreachable,
+	} {
+		for _, peerKey := range n.tcpPeers.GetAll(st) {
+			if !activePeers[peerKey] {
+				n.tcpPeers.Step(time.Now(), peer.RemovePeer{PeerKey: peerKey})
+			}
+		}
+	}
 }
 
 func hasServicePort(node *statev1.Node, port uint32) bool {
@@ -443,7 +539,7 @@ func hasServicePort(node *statev1.Node, port uint32) bool {
 	return false
 }
 
-func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
+func (n *Node) udpDirectConnect(e peer.AttemptConnect) error {
 	addrs := make([]*net.UDPAddr, len(e.Ips))
 	for i, ip := range e.Ips {
 		addrs[i] = &net.UDPAddr{
@@ -454,14 +550,32 @@ func (n *Node) attemptDirectConnect(e peer.AttemptConnect) error {
 
 	n.log.Debugw("attempting direct connection", "peer", e.PeerKey.Short())
 
-	ctx, cancel := context.WithTimeout(context.Background(), directAttemptDuration)
+	ctx, cancel := context.WithTimeout(context.Background(), udpDirectTimeout)
 	defer cancel()
 
 	return n.sock.EnsurePeer(ctx, e.PeerKey, addrs, false)
 }
 
-func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordinator types.PeerKey) (err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), punchCoordRequestTimeout)
+func (n *Node) tcpDirectConnect(e peer.AttemptConnect) error {
+	ctx, cancel := context.WithTimeout(context.Background(), tcpDirectTimeout)
+	defer cancel()
+
+	conn, err := n.tun.DialSessionDirect(ctx, e.PeerKey)
+	if err != nil {
+		return err
+	}
+
+	if _, err := n.tun.Sessions().RegisterOutbound(conn, e.PeerKey); err != nil {
+		n.log.Warnw("tcp session register failed", "peer", e.PeerKey.Short(), "err", err)
+		_ = conn.Close()
+		return err
+	}
+
+	return nil
+}
+
+func (n *Node) udpPunchCoordination(e peer.RequestPunchCoordination, coordinator types.PeerKey) (err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), udpPunchTimeout)
 	defer cancel()
 
 	req := &peerv1.PunchCoordRequest{
@@ -484,6 +598,37 @@ func (n *Node) requestPunchCoordination(e peer.RequestPunchCoordination, coordin
 	}
 
 	return nil
+}
+
+func (n *Node) tcpPunchCoordination(e peer.RequestPunchCoordination, coordinator types.PeerKey) error {
+	ctx, cancel := context.WithTimeout(context.Background(), tcpPunchTimeout)
+	defer cancel()
+
+	conn, err := n.tun.DialSessionWithPunch(ctx, e.PeerKey, coordinator)
+	if err != nil {
+		return err
+	}
+
+	if _, err := n.tun.Sessions().RegisterOutbound(conn, e.PeerKey); err != nil {
+		n.log.Warnw("tcp session register failed", "peer", e.PeerKey.Short(), "err", err)
+		_ = conn.Close()
+		return err
+	}
+
+	return nil
+}
+
+// ConnectService wraps tunnel.Manager.ConnectService and injects the peer
+// into the TCP FSM for proactive session establishment.
+func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
+	port, err := n.tun.ConnectService(peerID, remotePort, localPort)
+	if err != nil {
+		return 0, err
+	}
+
+	n.tcpPeerEvents <- peer.RetryPeer{PeerKey: peerID}
+
+	return port, nil
 }
 
 func (n *Node) gossipJitter() float64 {
@@ -543,15 +688,8 @@ func sharesLAN(aIPs, bIPs []string) bool {
 }
 
 // GetConnectedPeers returns all currently connected peer keys.
-// Implements tunnel.ConnectedPeersProvider.
 func (n *Node) GetConnectedPeers() []types.PeerKey {
-	return n.peers.GetAll(peer.PeerStateConnected)
-}
-
-// GetActivePeerAddress returns the active address for a connected peer.
-// Implements tunnel.ConnectedPeersProvider.
-func (n *Node) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) {
-	return n.sock.GetActivePeerAddress(peerKey)
+	return n.udpPeers.GetAll(peer.PeerStateConnected)
 }
 
 func genNoiseKey(cs noise.CipherSuite, pollenDir string) (noise.DHKey, error) {

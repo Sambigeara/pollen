@@ -96,9 +96,9 @@ type impl struct {
 
 func NewTransport(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission) SuperSock {
 	return &impl{
-		log:      zap.S().Named("sock"),
-		port:     port,
-		recvChan: make(chan Packet, recvChanSize),
+		log:            zap.S().Named("sock"),
+		port:           port,
+		recvChan:       make(chan Packet, recvChanSize),
 		crypto:         crypto,
 		handshakeStore: newHandshakeStore(cs, admission, staticKey, crypto.IdentityPub()),
 		sessionStore:   newSessionStore(crypto.NoisePub()),
@@ -312,43 +312,36 @@ func (m *impl) handlePunchCoordRequest(ctx context.Context, fr Frame) error {
 	recvPeer := types.PeerKeyFromBytes(req.PeerId)
 	initPeer := initSess.peerKey
 
+	return m.coordinateUDPPunch(ctx, initPeer, recvPeer, fr.Src, recvSess.peerAddr.String())
+}
+
+func (m *impl) coordinateUDPPunch(ctx context.Context, initiatorPeer, targetPeer types.PeerKey, initiatorAddr, targetAddr string) error {
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		resp := &peerv1.PunchCoordTrigger{
-			PeerId:   req.PeerId,
-			SelfAddr: fr.Src,
-			PeerAddr: recvSess.peerAddr.String(),
-		}
-
-		b, err := resp.MarshalVT()
-		if err != nil {
-			return err
-		}
-
-		return m.Send(ctx, initPeer, types.Envelope{
-			Payload: b,
-			Type:    types.MsgTypeUDPPunchCoordResponse,
-		})
+		return m.sendUDPPunchTrigger(ctx, initiatorPeer, targetPeer, initiatorAddr, targetAddr)
 	})
-
 	g.Go(func() error {
-		resp := &peerv1.PunchCoordTrigger{
-			PeerId:   initPeer.Bytes(),
-			SelfAddr: recvSess.peerAddr.String(),
-			PeerAddr: fr.Src,
-		}
-
-		b, err := resp.MarshalVT()
-		if err != nil {
-			return err
-		}
-
-		return m.Send(ctx, recvPeer, types.Envelope{
-			Payload: b,
-			Type:    types.MsgTypeUDPPunchCoordResponse,
-		})
+		return m.sendUDPPunchTrigger(ctx, targetPeer, initiatorPeer, targetAddr, initiatorAddr)
 	})
 	return g.Wait()
+}
+
+func (m *impl) sendUDPPunchTrigger(ctx context.Context, to, peerID types.PeerKey, selfAddr, peerAddr string) error {
+	resp := &peerv1.PunchCoordTrigger{
+		PeerId:   peerID.Bytes(),
+		SelfAddr: selfAddr,
+		PeerAddr: peerAddr,
+	}
+
+	b, err := resp.MarshalVT()
+	if err != nil {
+		return err
+	}
+
+	return m.Send(ctx, to, types.Envelope{
+		Payload: b,
+		Type:    types.MsgTypeUDPPunchCoordResponse,
+	})
 }
 
 func (m *impl) handlePunchCoordTrigger(ctx context.Context, fr Frame) (err error) {

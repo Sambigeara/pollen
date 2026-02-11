@@ -144,11 +144,18 @@ func (p *Persistence) ConnectNode(key types.PeerKey) {
 	})
 }
 
-// TODO(saml) not currently used. Should be.
 func (p *Persistence) DisconnectNode(key types.PeerKey) {
-	_ = p.Cluster.Nodes.Update(key, func(n *statev1.Node) {
+	localID := p.Cluster.LocalID
+
+	_ = p.Cluster.Nodes.Update(localID, func(n *statev1.Node) {
 		if n.Connected != nil {
 			delete(n.Connected, key.String())
+		}
+	})
+
+	_ = p.Cluster.Nodes.Update(key, func(n *statev1.Node) {
+		if n.Connected != nil {
+			delete(n.Connected, localID.String())
 		}
 	})
 }
