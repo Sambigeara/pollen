@@ -238,15 +238,17 @@ func (n *Node) recvLoop(ctx context.Context) {
 	}
 }
 
-func (n *Node) handleApp(ctx context.Context, p sock.Packet) {
+func (n *Node) handleApp(ctx context.Context, p sock.Packet) error {
 	n.handlersMu.RLock()
 	h := n.handlers[p.Typ]
 	n.handlersMu.RUnlock()
 	if h != nil {
 		if err := h(ctx, p.Peer, p.Payload); err != nil {
 			n.log.Debugf("handler error: %w", err)
+			return err
 		}
 	}
+	return nil
 }
 
 func (n *Node) registerHandlers() {
@@ -262,6 +264,7 @@ func (n *Node) registerHandlers() {
 	n.Handle(types.MsgTypeTCPPunchProbeRequest, n.tun.HandlePunchProbeRequest)
 	n.Handle(types.MsgTypeTCPPunchProbeOffer, n.tun.HandlePunchProbeOffer)
 	n.Handle(types.MsgTypeTCPPunchProbeResult, n.tun.HandlePunchProbeResult)
+
 	n.Handle(types.MsgTypeUDPRelay, n.handleUDPRelay)
 	n.Handle(types.MsgTypeGossip, n.handleGossip)
 }

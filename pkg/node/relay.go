@@ -65,12 +65,11 @@ func (n *Node) handleUDPRelay(ctx context.Context, from types.PeerKey, plaintext
 	src := types.PeerKeyFromBytes(env.SrcPeerId)
 	dst := types.PeerKeyFromBytes(env.DstPeerId)
 	if dst == n.store.LocalID {
-		n.handleApp(ctx, sock.Packet{
+		return n.handleApp(ctx, sock.Packet{
 			Peer:    src,
 			Typ:     innerType,
 			Payload: env.Payload,
 		})
-		return nil
 	}
 
 	if src != from {
