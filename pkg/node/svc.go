@@ -9,9 +9,7 @@ import (
 	"strconv"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
-	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/types"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 var _ controlv1.ControlServiceServer = (*NodeService)(nil)
@@ -36,20 +34,19 @@ func (s *NodeService) JoinCluster(ctx context.Context, req *controlv1.JoinCluste
 	}
 
 	return &controlv1.JoinClusterResponse{
-		Self: &controlv1.NodeRef{PeerId: s.node.storage.Cluster.LocalID.Bytes()},
+		Self: &controlv1.NodeRef{PeerId: s.node.store.LocalID.Bytes()},
 	}, nil
 }
 
 func (s *NodeService) CreateInvite(_ context.Context, _ *controlv1.CreateInviteRequest) (*controlv1.CreateInviteResponse, error) {
-	local := s.node.storage.Cluster.LocalID
-	rec, ok := s.node.storage.Cluster.Nodes.Get(local)
-	if !ok || rec.Tombstone {
+	local := s.node.store.LocalID
+	rec, ok := s.node.store.Get(local)
+	if !ok {
 		return &controlv1.CreateInviteResponse{}, nil
 	}
 
-	port := strconv.Itoa(int(rec.Node.LocalPort))
-	ips := make([]string, 0, len(rec.Node.Ips))
-	ips = append(ips, rec.Node.Ips...)
+	port := strconv.Itoa(int(rec.LocalPort))
+	ips := append([]string(nil), rec.IPs...)
 
 	inv, err := NewInvite(ips, port)
 	if err != nil {
@@ -72,13 +69,13 @@ func (s *NodeService) CreateInvite(_ context.Context, _ *controlv1.CreateInviteR
 }
 
 func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
-	nodes := s.node.storage.Cluster.Nodes.GetAll()
-	localID := s.node.storage.Cluster.LocalID
+	nodes := s.node.store.Nodes()
+	localID := s.node.store.LocalID
 
 	selfAddr := ""
-	if rec, ok := s.node.storage.Cluster.Nodes.Get(localID); ok {
-		if len(rec.Node.Ips) > 0 {
-			selfAddr = net.JoinHostPort(rec.Node.Ips[0], fmt.Sprintf("%d", rec.Node.LocalPort))
+	if rec, ok := s.node.store.Get(localID); ok {
+		if len(rec.IPs) > 0 {
+			selfAddr = net.JoinHostPort(rec.IPs[0], fmt.Sprintf("%d", rec.LocalPort))
 		}
 	}
 
@@ -110,8 +107,8 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		if addr != nil {
 			addrStr = addr.String()
 		}
-		if addrStr == "" && len(node.Ips) > 0 {
-			ip := net.ParseIP(node.Ips[0])
+		if addrStr == "" && len(node.IPs) > 0 {
+			ip := net.ParseIP(node.IPs[0])
 			if ip == nil {
 				return nil, errors.New("invalid IP address")
 			}
@@ -208,113 +205,31 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 	return out, nil
 }
 
-func (s *NodeService) RegisterService(ctx context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
+func (s *NodeService) RegisterService(_ context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
 	s.node.tun.RegisterService(req.Port)
 
 	name := req.GetName()
 	if name == "" {
 		name = serviceNameForPort(req.Port)
 	}
-
-	localID := s.node.storage.Cluster.LocalID
-	rec, ok := s.node.storage.Cluster.Nodes.Get(localID)
-	if !ok {
-		return &controlv1.RegisterServiceResponse{}, nil
-	}
-
-	node := cloneNode(rec.Node)
-	node.Services = upsertService(node.Services, req.Port, name)
-	s.node.storage.Cluster.Nodes.Set(localID, node)
+	s.node.queueGossipNode(s.node.store.UpsertLocalService(req.Port, name))
 
 	return &controlv1.RegisterServiceResponse{}, nil
 }
 
-func (s *NodeService) UnregisterService(ctx context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
-	localID := s.node.storage.Cluster.LocalID
-	rec, ok := s.node.storage.Cluster.Nodes.Get(localID)
-	if !ok {
-		return &controlv1.UnregisterServiceResponse{}, nil
-	}
-
+func (s *NodeService) UnregisterService(_ context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
 	port := req.GetPort()
 	name := req.GetName()
-	updated, removed := removeServices(rec.Node.Services, port, name)
+	removed, update := s.node.store.RemoveLocalServices(port, name)
 	if len(removed) == 0 {
 		return &controlv1.UnregisterServiceResponse{}, nil
 	}
 	for _, p := range removed {
 		s.node.tun.UnregisterService(p)
 	}
-
-	node := cloneNode(rec.Node)
-	node.Services = updated
-	s.node.storage.Cluster.Nodes.Set(localID, node)
+	s.node.queueGossipNode(update)
 
 	return &controlv1.UnregisterServiceResponse{}, nil
-}
-
-func cloneNode(node *statev1.Node) *statev1.Node {
-	connected := make(map[string]*emptypb.Empty, len(node.Connected))
-	for peerID := range node.Connected {
-		connected[peerID] = &emptypb.Empty{}
-	}
-
-	return &statev1.Node{
-		Id:        node.Id,
-		Name:      node.Name,
-		Ips:       append([]string(nil), node.Ips...),
-		LocalPort: node.LocalPort,
-		Keys:      node.Keys,
-		Services:  append([]*statev1.Service(nil), node.Services...),
-		Connected: connected,
-		NatType:   node.NatType,
-	}
-}
-
-func upsertService(services []*statev1.Service, port uint32, name string) []*statev1.Service {
-	updated := make([]*statev1.Service, 0, len(services)+1)
-	seen := false
-	for _, svc := range services {
-		if svc.GetPort() == port {
-			updated = append(updated, &statev1.Service{Name: name, Port: port})
-			seen = true
-			continue
-		}
-		updated = append(updated, svc)
-	}
-	if !seen {
-		updated = append(updated, &statev1.Service{Name: name, Port: port})
-	}
-	return updated
-}
-
-func removeServices(services []*statev1.Service, port uint32, name string) ([]*statev1.Service, []uint32) {
-	updated := make([]*statev1.Service, 0, len(services))
-	removed := make([]uint32, 0, len(services))
-	for _, svc := range services {
-		if matchesService(svc, port, name) {
-			removed = append(removed, svc.GetPort())
-			continue
-		}
-		updated = append(updated, svc)
-	}
-	return updated, removed
-}
-
-func matchesService(svc *statev1.Service, port uint32, name string) bool {
-	if svc == nil {
-		return false
-	}
-	if port != 0 && svc.GetPort() == port {
-		return true
-	}
-	if name == "" {
-		return false
-	}
-	if svc.GetName() == name {
-		return true
-	}
-	return svc.GetName() == "" && serviceNameForPort(svc.GetPort()) == name
 }
 
 func serviceNameForPort(port uint32) string {

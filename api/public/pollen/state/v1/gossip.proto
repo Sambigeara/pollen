@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package pollen.state.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1";
+
+message Service {
+  string name = 1;
+  uint32 port = 2 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+}
+
+message GossipVectorClock {
+  map<string, uint64> counters = 1;
+}
+
+message GossipNode {
+  string peer_id = 1 [(buf.validate.field).string = {
+    pattern: "^[a-fA-F0-9]{64}$"
+    len: 64
+  }];
+  uint64 counter = 2;
+  bytes identity_pub = 3 [(buf.validate.field).bytes = {len: 32}];
+  repeated string ips = 4;
+  uint32 local_port = 5 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+  repeated Service services = 6;
+  repeated string reachable_peers = 7;
+}
+
+message GossipEnvelope {
+  oneof body {
+    GossipVectorClock clock = 1;
+    GossipNode node = 2;
+  }
+}

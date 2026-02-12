@@ -3,27 +3,23 @@ package node
 import (
 	"crypto/ed25519"
 
-	"github.com/sambigeara/pollen/pkg/state"
+	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
 type Directory struct {
-	cluster *state.Cluster
+	store *store.Store
 }
 
 // IdentityPub maps a peer's Noise static public key to their Ed25519 identity public key.
 func (d *Directory) IdentityPub(key types.PeerKey) (ed25519.PublicKey, bool) {
-	rec, ok := d.cluster.Nodes.Get(key)
-	if !ok || rec.Tombstone || rec.Node == nil || rec.Node.Keys == nil {
+	pub, ok := d.store.IdentityPub(key)
+	if !ok {
 		return nil, false
 	}
-
-	pub := rec.Node.Keys.IdentityPub
 	if len(pub) != ed25519.PublicKeySize {
 		return nil, false
 	}
 
-	return pub, true
-	// defensive copy
-	// return ed25519.PublicKey(append([]byte(nil), pub...)), true
+	return ed25519.PublicKey(pub), true
 }
