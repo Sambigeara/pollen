@@ -37,6 +37,9 @@ const (
 	MsgTypeTCPPunchProbeRequest
 	MsgTypeTCPPunchProbeOffer
 	MsgTypeTCPPunchProbeResult
+
+	// UDP relay envelope.
+	MsgTypeUDPRelay
 )
 
 type PeerKey [32]byte // Noise static pub

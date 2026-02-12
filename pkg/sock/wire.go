@@ -44,7 +44,8 @@ func decodeFrame(buf []byte, src string) (fr Frame, _ error) {
 		types.MsgTypeTCPPunchReady, types.MsgTypeTCPPunchResponse, types.MsgTypeGossip,
 		types.MsgTypeUDPPunchCoordRequest, types.MsgTypeUDPPunchCoordResponse, types.MsgTypeDisconnect,
 		types.MsgTypeTest, types.MsgTypeSessionRequest, types.MsgTypeSessionResponse,
-		types.MsgTypeTCPPunchProbeRequest, types.MsgTypeTCPPunchProbeOffer, types.MsgTypeTCPPunchProbeResult:
+		types.MsgTypeTCPPunchProbeRequest, types.MsgTypeTCPPunchProbeOffer, types.MsgTypeTCPPunchProbeResult,
+		types.MsgTypeUDPRelay:
 		if n < 8 {
 			return fr, fmt.Errorf("handshake frame too short: %d", n)
 		}
@@ -86,7 +87,8 @@ func encodeFrame(fr *Frame) []byte {
 		types.MsgTypeTCPPunchReady, types.MsgTypeTCPPunchResponse, types.MsgTypeGossip,
 		types.MsgTypeUDPPunchCoordRequest, types.MsgTypeUDPPunchCoordResponse, types.MsgTypeDisconnect,
 		types.MsgTypeTest, types.MsgTypeSessionRequest, types.MsgTypeSessionResponse,
-		types.MsgTypeTCPPunchProbeRequest, types.MsgTypeTCPPunchProbeOffer, types.MsgTypeTCPPunchProbeResult:
+		types.MsgTypeTCPPunchProbeRequest, types.MsgTypeTCPPunchProbeOffer, types.MsgTypeTCPPunchProbeResult,
+		types.MsgTypeUDPRelay:
 		buf = make([]byte, 8+len(fr.Payload))
 		binary.BigEndian.PutUint32(buf[:4], uint32(fr.Typ))
 		binary.BigEndian.PutUint32(buf[4:8], fr.ReceiverID)

@@ -74,24 +74,20 @@ type route struct {
 }
 
 type impl struct {
-	log *zap.SugaredLogger
-
-	ctx    context.Context
-	cancel context.CancelFunc
-
-	crypto   LocalCrypto
-	recvChan chan Packet
-	events   chan peer.Input
-	primary  *net.UDPConn
-
+	crypto         LocalCrypto
+	ctx            context.Context
+	primary        *net.UDPConn
+	cancel         context.CancelFunc
+	recvChan       chan Packet
+	events         chan peer.Input
+	log            *zap.SugaredLogger
 	rekeyMgr       *rekeyManager
 	handshakeStore *handshakeStore
 	sessionStore   *sessionStore
+	waitPeer       map[types.PeerKey]chan route
 	peerLocks      sync.Map
 	port           int
-
-	waitPeer map[types.PeerKey]chan route
-	waitMu   sync.Mutex
+	waitMu         sync.Mutex
 }
 
 func NewTransport(port int, cs *noise.CipherSuite, staticKey noise.DHKey, crypto LocalCrypto, admission admission.Admission) SuperSock {

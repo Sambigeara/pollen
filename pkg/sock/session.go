@@ -165,10 +165,10 @@ type session struct {
 	lastRecvTime   time.Time
 	sendCipher     noise.Cipher
 	recvCipher     noise.Cipher
-	peerAddr *net.UDPAddr
-	conn     *net.UDPConn
-	peerKey  types.PeerKey
-	sendMu   sync.RWMutex
+	peerAddr       *net.UDPAddr
+	conn           *net.UDPConn
+	peerKey        types.PeerKey
+	sendMu         sync.RWMutex
 	recvMu         sync.RWMutex
 	localSessionID uint32
 	peerSessionID  uint32

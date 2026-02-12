@@ -64,18 +64,16 @@ type Config struct {
 type HandlerFn func(ctx context.Context, from types.PeerKey, payload []byte) error
 
 type Node struct {
-	log  *zap.SugaredLogger
-	conf *Config
-
-	crypto  *localCrypto
-	invites admission.Store
-	sock    sock.SuperSock
-	storage *state.Persistence
-	tun     *tunnel.Manager
-
-	udpPeers        *peer.Store
+	invites         admission.Store
+	sock            sock.SuperSock
 	tcpPeers        *peer.Store
 	localPeerEvents chan peer.Input
+	conf            *Config
+	storage         *state.Persistence
+	tun             *tunnel.Manager
+	udpPeers        *peer.Store
+	log             *zap.SugaredLogger
+	crypto          *localCrypto
 	tcpPeerEvents   chan peer.Input
 	gossipTrigger   chan struct{}
 	handlers        map[types.MsgType]HandlerFn
@@ -127,14 +125,6 @@ func New(conf *Config) (*Node, error) {
 
 	cluster := stateStore.Cluster
 
-	tun := tunnel.New(
-		s.Send,
-		&Directory{cluster: cluster},
-		s,
-		privKey,
-		ips,
-	)
-
 	cluster.Nodes.Set(nodeID, &statev1.Node{
 		Id:        nodeID.String(),
 		Ips:       ips,
@@ -153,7 +143,6 @@ func New(conf *Config) (*Node, error) {
 		tcpPeers:        peer.NewStore(),
 		storage:         stateStore,
 		invites:         invitesStore,
-		tun:             tun,
 		crypto:          crypto,
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
@@ -161,7 +150,15 @@ func New(conf *Config) (*Node, error) {
 		gossipTrigger:   make(chan struct{}),
 	}
 
-	tun.Sessions().SetOnDisconnect(func(peerKey types.PeerKey) {
+	n.tun = tunnel.New(
+		n.sendEnvelope,
+		&Directory{cluster: cluster},
+		s,
+		privKey,
+		ips,
+	)
+
+	n.tun.Sessions().SetOnDisconnect(func(peerKey types.PeerKey) {
 		n.tcpPeerEvents <- peer.PeerDisconnected{PeerKey: peerKey}
 	})
 
@@ -269,8 +266,9 @@ func (n *Node) registerHandlers() {
 	n.Handle(types.MsgTypeTCPPunchProbeRequest, n.tun.HandlePunchProbeRequest)
 	n.Handle(types.MsgTypeTCPPunchProbeOffer, n.tun.HandlePunchProbeOffer)
 	n.Handle(types.MsgTypeTCPPunchProbeResult, n.tun.HandlePunchProbeResult)
+	n.Handle(types.MsgTypeUDPRelay, n.handleUDPRelay)
 
-	n.Handle(types.MsgTypeGossip, func(_ context.Context, peer types.PeerKey, plaintext []byte) error {
+	n.Handle(types.MsgTypeGossip, func(_ context.Context, _ types.PeerKey, plaintext []byte) error {
 		delta := &statev1.DeltaState{}
 		if err := delta.UnmarshalVT(plaintext); err != nil {
 			return fmt.Errorf("malformed gossip payload: %w", err)
@@ -295,25 +293,13 @@ func (n *Node) gossip(ctx context.Context) {
 		}
 
 		connectedPeers := n.GetConnectedPeers()
-		connectedPeerKeys := make([]string, 0, len(connectedPeers))
-		for _, peerKey := range connectedPeers {
-			connectedPeerKeys = append(connectedPeerKeys, peerKey.Short())
-		}
-		sort.Strings(connectedPeerKeys)
-
-		stateNodes := n.storage.Cluster.Nodes.GetAll()
-		stateEntries := make([]string, 0, len(stateNodes))
-		for key, node := range stateNodes {
-			stateEntries = append(stateEntries, fmt.Sprintf("k=%s id=%s noise=%s", key.Short(), shortNodeID(node.GetId()), shortNodeKey(node.GetKeys())))
-		}
-		sort.Strings(stateEntries)
 
 		for _, k := range connectedPeers {
 			if k == n.storage.Cluster.LocalID {
 				continue
 			}
 
-			if err := n.sock.Send(ctx, k, types.Envelope{
+			if err := n.sendEnvelope(ctx, k, types.Envelope{
 				Type:    types.MsgTypeGossip,
 				Payload: payload,
 			}); err != nil {
@@ -375,7 +361,7 @@ func (n *Node) syncPeersFromState() {
 
 		peerKey := types.PeerKeyFromBytes(node.Keys.NoisePub)
 		if node.Id != "" && node.Id != peerKey.String() {
-			n.log.Debugw("state identity mismatch", "nodeId", shortNodeID(node.Id), "noiseKey", peerKey.Short(), "ips", node.Ips, "localPort", node.LocalPort)
+			n.log.Debugw("state identity mismatch", "peer", peerKey.Short(), "ips", node.Ips, "localPort", node.LocalPort)
 		}
 
 		n.udpPeers.Step(time.Now(), peer.DiscoverPeer{
@@ -458,25 +444,25 @@ func (n *Node) handleTCPOutputs(outputs []peer.Output) {
 // to the given target. Skips LAN peers and verifies the coordinator is
 // connected to the target via gossip state.
 func (n *Node) FindCoordinator(target types.PeerKey) (types.PeerKey, bool) {
-	var localIPs []string
-	if local, ok := n.storage.Cluster.Nodes.Get(n.storage.Cluster.LocalID); ok {
-		if local.Node != nil {
-			localIPs = local.Node.Ips
-		}
-	}
+	localIPs := n.storage.Cluster.Nodes.NodeIPs(n.storage.Cluster.LocalID)
+	connectedPeers := n.GetConnectedPeers()
+	sort.Slice(connectedPeers, func(i, j int) bool {
+		return connectedPeers[i].Less(connectedPeers[j])
+	})
 
-	for _, key := range n.GetConnectedPeers() {
+	for _, key := range connectedPeers {
 		if key == target {
 			continue
 		}
-		p, ok := n.storage.Cluster.Nodes.Get(key)
-		if !ok || p.Node == nil {
+
+		candidateIPs := n.storage.Cluster.Nodes.NodeIPs(key)
+		if len(candidateIPs) == 0 {
 			continue
 		}
-		if sharesLAN(localIPs, p.Node.Ips) {
+		if sharesLAN(localIPs, candidateIPs) {
 			continue
 		}
-		if _, ok := p.Node.Connected[target.String()]; !ok {
+		if !n.storage.Cluster.Nodes.IsConnected(key, target) {
 			continue
 		}
 		return key, true
@@ -589,7 +575,7 @@ func (n *Node) udpPunchCoordination(e peer.RequestPunchCoordination, coordinator
 
 	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.Short(), "coordinator", coordinator.String()[:8])
 
-	if err := n.sock.Send(ctx, coordinator, types.Envelope{
+	if err := n.sendEnvelope(ctx, coordinator, types.Envelope{
 		Type:    types.MsgTypeUDPPunchCoordRequest,
 		Payload: b,
 	}); err != nil {
@@ -853,18 +839,4 @@ func (c *localCrypto) NoisePub() []byte {
 
 func (c *localCrypto) IdentityPub() []byte {
 	return c.identityPubKey
-}
-
-func shortNodeID(id string) string {
-	if len(id) <= 8 {
-		return id
-	}
-	return id[:8]
-}
-
-func shortNodeKey(keys *statev1.Keys) string {
-	if keys == nil || len(keys.NoisePub) == 0 {
-		return "<missing>"
-	}
-	return types.PeerKeyFromBytes(keys.NoisePub).Short()
 }
