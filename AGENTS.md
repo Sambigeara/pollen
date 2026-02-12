@@ -128,7 +128,7 @@ Follow the conventions below when making changes or writing tests.
 
 ## State & Peer Notes
 
-- Peer discovery happens via gossiped `statev1.Node` entries
+- Peer discovery happens via gossiped `statev1.GossipNode` snapshots
 - `peer.Store.Step` is pure and accepts an explicit `now` for deterministic tests
 - Use `peer.ConnectFailed` to force stage escalation (direct -> punch)
 - `PeerDisconnected` transitions back to discovery with a retry interval

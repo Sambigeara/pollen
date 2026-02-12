@@ -21,82 +21,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type Handshake struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RequestId     uint64                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	CertDer       []byte                 `protobuf:"bytes,2,opt,name=cert_der,json=certDer,proto3" json:"cert_der,omitempty"`
-	Sig           []byte                 `protobuf:"bytes,3,opt,name=sig,proto3" json:"sig,omitempty"`
-	Addr          []string               `protobuf:"bytes,4,rep,name=addr,proto3" json:"addr,omitempty"`
-	ServicePort   string                 `protobuf:"bytes,5,opt,name=service_port,json=servicePort,proto3" json:"service_port,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *Handshake) Reset() {
-	*x = Handshake{}
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Handshake) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Handshake) ProtoMessage() {}
-
-func (x *Handshake) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Handshake.ProtoReflect.Descriptor instead.
-func (*Handshake) Descriptor() ([]byte, []int) {
-	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *Handshake) GetRequestId() uint64 {
-	if x != nil {
-		return x.RequestId
-	}
-	return 0
-}
-
-func (x *Handshake) GetCertDer() []byte {
-	if x != nil {
-		return x.CertDer
-	}
-	return nil
-}
-
-func (x *Handshake) GetSig() []byte {
-	if x != nil {
-		return x.Sig
-	}
-	return nil
-}
-
-func (x *Handshake) GetAddr() []string {
-	if x != nil {
-		return x.Addr
-	}
-	return nil
-}
-
-func (x *Handshake) GetServicePort() string {
-	if x != nil {
-		return x.ServicePort
-	}
-	return ""
-}
-
 // Initiator → Coordinator: request TCP punch to target peer
 type TcpPunchRequest struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
@@ -113,7 +37,7 @@ type TcpPunchRequest struct {
 
 func (x *TcpPunchRequest) Reset() {
 	*x = TcpPunchRequest{}
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[1]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -125,7 +49,7 @@ func (x *TcpPunchRequest) String() string {
 func (*TcpPunchRequest) ProtoMessage() {}
 
 func (x *TcpPunchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[1]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -138,7 +62,7 @@ func (x *TcpPunchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpPunchRequest.ProtoReflect.Descriptor instead.
 func (*TcpPunchRequest) Descriptor() ([]byte, []int) {
-	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{1}
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *TcpPunchRequest) GetPeerId() []byte {
@@ -205,7 +129,7 @@ type TcpPunchTrigger struct {
 
 func (x *TcpPunchTrigger) Reset() {
 	*x = TcpPunchTrigger{}
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[2]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -217,7 +141,7 @@ func (x *TcpPunchTrigger) String() string {
 func (*TcpPunchTrigger) ProtoMessage() {}
 
 func (x *TcpPunchTrigger) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[2]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -230,7 +154,7 @@ func (x *TcpPunchTrigger) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpPunchTrigger.ProtoReflect.Descriptor instead.
 func (*TcpPunchTrigger) Descriptor() ([]byte, []int) {
-	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{2}
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *TcpPunchTrigger) GetPeerId() []byte {
@@ -289,7 +213,7 @@ type TcpPunchReady struct {
 
 func (x *TcpPunchReady) Reset() {
 	*x = TcpPunchReady{}
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[3]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -301,7 +225,7 @@ func (x *TcpPunchReady) String() string {
 func (*TcpPunchReady) ProtoMessage() {}
 
 func (x *TcpPunchReady) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[3]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -314,7 +238,7 @@ func (x *TcpPunchReady) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpPunchReady.ProtoReflect.Descriptor instead.
 func (*TcpPunchReady) Descriptor() ([]byte, []int) {
-	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{3}
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *TcpPunchReady) GetRequestId() uint64 {
@@ -365,7 +289,7 @@ type TcpPunchResponse struct {
 
 func (x *TcpPunchResponse) Reset() {
 	*x = TcpPunchResponse{}
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[4]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -377,7 +301,7 @@ func (x *TcpPunchResponse) String() string {
 func (*TcpPunchResponse) ProtoMessage() {}
 
 func (x *TcpPunchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[4]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -390,7 +314,7 @@ func (x *TcpPunchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpPunchResponse.ProtoReflect.Descriptor instead.
 func (*TcpPunchResponse) Descriptor() ([]byte, []int) {
-	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{4}
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *TcpPunchResponse) GetPeerAddr() string {
@@ -431,7 +355,7 @@ type TcpPunchProbeRequest struct {
 
 func (x *TcpPunchProbeRequest) Reset() {
 	*x = TcpPunchProbeRequest{}
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[5]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -443,7 +367,7 @@ func (x *TcpPunchProbeRequest) String() string {
 func (*TcpPunchProbeRequest) ProtoMessage() {}
 
 func (x *TcpPunchProbeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[5]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -456,7 +380,7 @@ func (x *TcpPunchProbeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpPunchProbeRequest.ProtoReflect.Descriptor instead.
 func (*TcpPunchProbeRequest) Descriptor() ([]byte, []int) {
-	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{5}
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *TcpPunchProbeRequest) GetRequestId() uint64 {
@@ -477,7 +401,7 @@ type TcpPunchProbeOffer struct {
 
 func (x *TcpPunchProbeOffer) Reset() {
 	*x = TcpPunchProbeOffer{}
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[6]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -489,7 +413,7 @@ func (x *TcpPunchProbeOffer) String() string {
 func (*TcpPunchProbeOffer) ProtoMessage() {}
 
 func (x *TcpPunchProbeOffer) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[6]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -502,7 +426,7 @@ func (x *TcpPunchProbeOffer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpPunchProbeOffer.ProtoReflect.Descriptor instead.
 func (*TcpPunchProbeOffer) Descriptor() ([]byte, []int) {
-	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{6}
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *TcpPunchProbeOffer) GetRequestId() uint64 {
@@ -530,7 +454,7 @@ type TcpPunchProbeResult struct {
 
 func (x *TcpPunchProbeResult) Reset() {
 	*x = TcpPunchProbeResult{}
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[7]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -542,7 +466,7 @@ func (x *TcpPunchProbeResult) String() string {
 func (*TcpPunchProbeResult) ProtoMessage() {}
 
 func (x *TcpPunchProbeResult) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[7]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -555,7 +479,7 @@ func (x *TcpPunchProbeResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TcpPunchProbeResult.ProtoReflect.Descriptor instead.
 func (*TcpPunchProbeResult) Descriptor() ([]byte, []int) {
-	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{7}
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *TcpPunchProbeResult) GetRequestId() uint64 {
@@ -586,7 +510,7 @@ type SessionHandshake struct {
 
 func (x *SessionHandshake) Reset() {
 	*x = SessionHandshake{}
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[8]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -598,7 +522,7 @@ func (x *SessionHandshake) String() string {
 func (*SessionHandshake) ProtoMessage() {}
 
 func (x *SessionHandshake) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[8]
+	mi := &file_pollen_tcp_v1_tcp_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -611,7 +535,7 @@ func (x *SessionHandshake) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionHandshake.ProtoReflect.Descriptor instead.
 func (*SessionHandshake) Descriptor() ([]byte, []int) {
-	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{8}
+	return file_pollen_tcp_v1_tcp_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SessionHandshake) GetRequestId() uint64 {
@@ -646,14 +570,7 @@ var File_pollen_tcp_v1_tcp_proto protoreflect.FileDescriptor
 
 const file_pollen_tcp_v1_tcp_proto_rawDesc = "" +
 	"\n" +
-	"\x17pollen/tcp/v1/tcp.proto\x12\rpollen.tcp.v1\"\x8e\x01\n" +
-	"\tHandshake\x12\x1d\n" +
-	"\n" +
-	"request_id\x18\x01 \x01(\x04R\trequestId\x12\x19\n" +
-	"\bcert_der\x18\x02 \x01(\fR\acertDer\x12\x10\n" +
-	"\x03sig\x18\x03 \x01(\fR\x03sig\x12\x12\n" +
-	"\x04addr\x18\x04 \x03(\tR\x04addr\x12!\n" +
-	"\fservice_port\x18\x05 \x01(\tR\vservicePort\"\xee\x01\n" +
+	"\x17pollen/tcp/v1/tcp.proto\x12\rpollen.tcp.v1\"\xee\x01\n" +
 	"\x0fTcpPunchRequest\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1d\n" +
 	"\n" +
@@ -717,17 +634,16 @@ func file_pollen_tcp_v1_tcp_proto_rawDescGZIP() []byte {
 	return file_pollen_tcp_v1_tcp_proto_rawDescData
 }
 
-var file_pollen_tcp_v1_tcp_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_pollen_tcp_v1_tcp_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_pollen_tcp_v1_tcp_proto_goTypes = []any{
-	(*Handshake)(nil),            // 0: pollen.tcp.v1.Handshake
-	(*TcpPunchRequest)(nil),      // 1: pollen.tcp.v1.TcpPunchRequest
-	(*TcpPunchTrigger)(nil),      // 2: pollen.tcp.v1.TcpPunchTrigger
-	(*TcpPunchReady)(nil),        // 3: pollen.tcp.v1.TcpPunchReady
-	(*TcpPunchResponse)(nil),     // 4: pollen.tcp.v1.TcpPunchResponse
-	(*TcpPunchProbeRequest)(nil), // 5: pollen.tcp.v1.TcpPunchProbeRequest
-	(*TcpPunchProbeOffer)(nil),   // 6: pollen.tcp.v1.TcpPunchProbeOffer
-	(*TcpPunchProbeResult)(nil),  // 7: pollen.tcp.v1.TcpPunchProbeResult
-	(*SessionHandshake)(nil),     // 8: pollen.tcp.v1.SessionHandshake
+	(*TcpPunchRequest)(nil),      // 0: pollen.tcp.v1.TcpPunchRequest
+	(*TcpPunchTrigger)(nil),      // 1: pollen.tcp.v1.TcpPunchTrigger
+	(*TcpPunchReady)(nil),        // 2: pollen.tcp.v1.TcpPunchReady
+	(*TcpPunchResponse)(nil),     // 3: pollen.tcp.v1.TcpPunchResponse
+	(*TcpPunchProbeRequest)(nil), // 4: pollen.tcp.v1.TcpPunchProbeRequest
+	(*TcpPunchProbeOffer)(nil),   // 5: pollen.tcp.v1.TcpPunchProbeOffer
+	(*TcpPunchProbeResult)(nil),  // 6: pollen.tcp.v1.TcpPunchProbeResult
+	(*SessionHandshake)(nil),     // 7: pollen.tcp.v1.SessionHandshake
 }
 var file_pollen_tcp_v1_tcp_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -748,7 +664,7 @@ func file_pollen_tcp_v1_tcp_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_tcp_v1_tcp_proto_rawDesc), len(file_pollen_tcp_v1_tcp_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

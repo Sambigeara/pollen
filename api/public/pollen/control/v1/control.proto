@@ -3,7 +3,6 @@ syntax = "proto3";
 package pollen.control.v1;
 
 import "buf/validate/validate.proto";
-import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1";
 
@@ -31,7 +30,6 @@ message NodeSummary {
   NodeRef node = 1;
   NodeStatus status = 2;
   string addr = 3;
-  google.protobuf.Timestamp last_seen = 4;
 }
 
 message ServiceSummary {

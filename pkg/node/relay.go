@@ -26,7 +26,7 @@ func (n *Node) sendEnvelope(ctx context.Context, peerKey types.PeerKey, msg type
 	}
 
 	relayEnv := &peerv1.UdpRelayEnvelope{
-		SrcPeerId: n.storage.Cluster.LocalID.Bytes(),
+		SrcPeerId: n.store.LocalID.Bytes(),
 		DstPeerId: peerKey.Bytes(),
 		MsgType:   uint32(msg.Type),
 		Payload:   msg.Payload,
@@ -64,7 +64,7 @@ func (n *Node) handleUDPRelay(ctx context.Context, from types.PeerKey, plaintext
 
 	src := types.PeerKeyFromBytes(env.SrcPeerId)
 	dst := types.PeerKeyFromBytes(env.DstPeerId)
-	if dst == n.storage.Cluster.LocalID {
+	if dst == n.store.LocalID {
 		n.handleApp(ctx, sock.Packet{
 			Peer:    src,
 			Typ:     innerType,
@@ -92,7 +92,7 @@ func (n *Node) handleUDPRelay(ctx context.Context, from types.PeerKey, plaintext
 }
 
 func (n *Node) selectRelayPeer(target types.PeerKey) (types.PeerKey, bool) {
-	candidates := n.storage.Cluster.Nodes.ConnectedPeers(n.storage.Cluster.LocalID)
+	candidates := n.GetConnectedPeers()
 	if len(candidates) == 0 {
 		return types.PeerKey{}, false
 	}
@@ -102,13 +102,13 @@ func (n *Node) selectRelayPeer(target types.PeerKey) (types.PeerKey, bool) {
 	})
 
 	for _, candidate := range candidates {
-		if candidate == target || candidate == n.storage.Cluster.LocalID {
+		if candidate == target || candidate == n.store.LocalID {
 			continue
 		}
 		if _, ok := n.sock.GetActivePeerAddress(candidate); !ok {
 			continue
 		}
-		if !n.storage.Cluster.Nodes.IsConnected(candidate, target) {
+		if !n.store.IsConnected(candidate, target) {
 			continue
 		}
 		return candidate, true
