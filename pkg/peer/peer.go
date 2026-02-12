@@ -26,7 +26,6 @@ const (
 	ConnectStageUnspecified ConnectStage = iota
 	ConnectStageDirect
 	ConnectStagePunch
-	ConnectStageRelay
 )
 
 type Peer struct {
@@ -146,7 +145,7 @@ const (
 	directAttemptThreshold = 1
 	punchAttemptThreshold  = 1
 
-	unreachableRetryInterval  = 60 * time.Second
+	unreachableRetryInterval  = 20 * time.Second
 	disconnectedRetryInterval = 60 * time.Second
 )
 
@@ -221,9 +220,6 @@ func (s *Store) tick(now time.Time) []Output {
 			out = AttemptConnect{PeerKey: p.id, Ips: p.ips, Port: p.observedPort}
 		case ConnectStagePunch:
 			out = RequestPunchCoordination{PeerKey: p.id, Ips: p.ips}
-		case ConnectStageRelay:
-			// TODO(saml): implement relay stage
-			continue
 		}
 
 		outputs = append(outputs, out)
@@ -267,13 +263,11 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
 		}
 	case ConnectStagePunch:
 		if p.stageAttempts >= punchAttemptThreshold {
-			// All connection methods exhausted, fall back to relay (currently unreachable)
+			p.stageAttempts = 0
 			p.state = PeerStateUnreachable
 			p.nextActionAt = now.Add(unreachableRetryInterval)
 			return nil
 		}
-	case ConnectStageRelay:
-		// TODO(saml) implement relay stage
 	}
 
 	p.nextActionAt = now.Add(s.backoff(p.stageAttempts))

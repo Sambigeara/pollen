@@ -29,6 +29,7 @@ const (
 	NodeStatus_NODE_STATUS_UNSPECIFIED NodeStatus = 0
 	NodeStatus_NODE_STATUS_ONLINE      NodeStatus = 1
 	NodeStatus_NODE_STATUS_OFFLINE     NodeStatus = 2
+	NodeStatus_NODE_STATUS_RELAY       NodeStatus = 3
 )
 
 // Enum value maps for NodeStatus.
@@ -37,11 +38,13 @@ var (
 		0: "NODE_STATUS_UNSPECIFIED",
 		1: "NODE_STATUS_ONLINE",
 		2: "NODE_STATUS_OFFLINE",
+		3: "NODE_STATUS_RELAY",
 	}
 	NodeStatus_value = map[string]int32{
 		"NODE_STATUS_UNSPECIFIED": 0,
 		"NODE_STATUS_ONLINE":      1,
 		"NODE_STATUS_OFFLINE":     2,
+		"NODE_STATUS_RELAY":       3,
 	}
 )
 
@@ -918,12 +921,13 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"local_port\x18\x03 \x01(\rB\t\xbaH\x06*\x04\x18\xff\xff\x03R\tlocalPort\"D\n" +
 	"\x16ConnectServiceResponse\x12*\n" +
 	"\n" +
-	"local_port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort*Z\n" +
+	"local_port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort*q\n" +
 	"\n" +
 	"NodeStatus\x12\x1b\n" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12NODE_STATUS_ONLINE\x10\x01\x12\x17\n" +
-	"\x13NODE_STATUS_OFFLINE\x10\x022\xe8\x04\n" +
+	"\x13NODE_STATUS_OFFLINE\x10\x02\x12\x15\n" +
+	"\x11NODE_STATUS_RELAY\x10\x032\xe8\x04\n" +
 	"\x0eControlService\x12\\\n" +
 	"\vJoinCluster\x12%.pollen.control.v1.JoinClusterRequest\x1a&.pollen.control.v1.JoinClusterResponse\x12_\n" +
 	"\fCreateInvite\x12&.pollen.control.v1.CreateInviteRequest\x1a'.pollen.control.v1.CreateInviteResponse\x12V\n" +

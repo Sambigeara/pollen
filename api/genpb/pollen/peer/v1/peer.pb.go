@@ -334,6 +334,74 @@ func (x *PunchCoordTrigger) GetPeerAddr() string {
 	return ""
 }
 
+type UdpRelayEnvelope struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SrcPeerId     []byte                 `protobuf:"bytes,1,opt,name=src_peer_id,json=srcPeerId,proto3" json:"src_peer_id,omitempty"`
+	DstPeerId     []byte                 `protobuf:"bytes,2,opt,name=dst_peer_id,json=dstPeerId,proto3" json:"dst_peer_id,omitempty"`
+	MsgType       uint32                 `protobuf:"varint,3,opt,name=msg_type,json=msgType,proto3" json:"msg_type,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UdpRelayEnvelope) Reset() {
+	*x = UdpRelayEnvelope{}
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UdpRelayEnvelope) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UdpRelayEnvelope) ProtoMessage() {}
+
+func (x *UdpRelayEnvelope) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UdpRelayEnvelope.ProtoReflect.Descriptor instead.
+func (*UdpRelayEnvelope) Descriptor() ([]byte, []int) {
+	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *UdpRelayEnvelope) GetSrcPeerId() []byte {
+	if x != nil {
+		return x.SrcPeerId
+	}
+	return nil
+}
+
+func (x *UdpRelayEnvelope) GetDstPeerId() []byte {
+	if x != nil {
+		return x.DstPeerId
+	}
+	return nil
+}
+
+func (x *UdpRelayEnvelope) GetMsgType() uint32 {
+	if x != nil {
+		return x.MsgType
+	}
+	return 0
+}
+
+func (x *UdpRelayEnvelope) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
 var File_pollen_peer_v1_peer_proto protoreflect.FileDescriptor
 
 const file_pollen_peer_v1_peer_proto_rawDesc = "" +
@@ -363,7 +431,12 @@ const file_pollen_peer_v1_peer_proto_rawDesc = "" +
 	"\x11PunchCoordTrigger\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1b\n" +
 	"\tself_addr\x18\x02 \x01(\tR\bselfAddr\x12\x1b\n" +
-	"\tpeer_addr\x18\x03 \x01(\tR\bpeerAddrB>Z<github.com/sambigeara/pollen/api/genpb/pollen/peer/v1;peerv1b\x06proto3"
+	"\tpeer_addr\x18\x03 \x01(\tR\bpeerAddr\"\x87\x01\n" +
+	"\x10UdpRelayEnvelope\x12\x1e\n" +
+	"\vsrc_peer_id\x18\x01 \x01(\fR\tsrcPeerId\x12\x1e\n" +
+	"\vdst_peer_id\x18\x02 \x01(\fR\tdstPeerId\x12\x19\n" +
+	"\bmsg_type\x18\x03 \x01(\rR\amsgType\x12\x18\n" +
+	"\apayload\x18\x04 \x01(\fR\apayloadB>Z<github.com/sambigeara/pollen/api/genpb/pollen/peer/v1;peerv1b\x06proto3"
 
 var (
 	file_pollen_peer_v1_peer_proto_rawDescOnce sync.Once
@@ -377,7 +450,7 @@ func file_pollen_peer_v1_peer_proto_rawDescGZIP() []byte {
 	return file_pollen_peer_v1_peer_proto_rawDescData
 }
 
-var file_pollen_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_pollen_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_pollen_peer_v1_peer_proto_goTypes = []any{
 	(*Known)(nil),             // 0: pollen.peer.v1.Known
 	(*Invite)(nil),            // 1: pollen.peer.v1.Invite
@@ -385,12 +458,13 @@ var file_pollen_peer_v1_peer_proto_goTypes = []any{
 	(*InviteStore)(nil),       // 3: pollen.peer.v1.InviteStore
 	(*PunchCoordRequest)(nil), // 4: pollen.peer.v1.PunchCoordRequest
 	(*PunchCoordTrigger)(nil), // 5: pollen.peer.v1.PunchCoordTrigger
-	nil,                       // 6: pollen.peer.v1.PeerStore.PeersEntry
-	nil,                       // 7: pollen.peer.v1.InviteStore.InvitesEntry
+	(*UdpRelayEnvelope)(nil),  // 6: pollen.peer.v1.UdpRelayEnvelope
+	nil,                       // 7: pollen.peer.v1.PeerStore.PeersEntry
+	nil,                       // 8: pollen.peer.v1.InviteStore.InvitesEntry
 }
 var file_pollen_peer_v1_peer_proto_depIdxs = []int32{
-	6, // 0: pollen.peer.v1.PeerStore.peers:type_name -> pollen.peer.v1.PeerStore.PeersEntry
-	7, // 1: pollen.peer.v1.InviteStore.invites:type_name -> pollen.peer.v1.InviteStore.InvitesEntry
+	7, // 0: pollen.peer.v1.PeerStore.peers:type_name -> pollen.peer.v1.PeerStore.PeersEntry
+	8, // 1: pollen.peer.v1.InviteStore.invites:type_name -> pollen.peer.v1.InviteStore.InvitesEntry
 	0, // 2: pollen.peer.v1.PeerStore.PeersEntry.value:type_name -> pollen.peer.v1.Known
 	1, // 3: pollen.peer.v1.InviteStore.InvitesEntry.value:type_name -> pollen.peer.v1.Invite
 	4, // [4:4] is the sub-list for method output_type
@@ -411,7 +485,7 @@ func file_pollen_peer_v1_peer_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_peer_v1_peer_proto_rawDesc), len(file_pollen_peer_v1_peer_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

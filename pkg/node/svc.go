@@ -11,6 +11,7 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/types"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 var _ controlv1.ControlServiceServer = (*NodeService)(nil)
@@ -42,7 +43,7 @@ func (s *NodeService) JoinCluster(ctx context.Context, req *controlv1.JoinCluste
 func (s *NodeService) CreateInvite(_ context.Context, _ *controlv1.CreateInviteRequest) (*controlv1.CreateInviteResponse, error) {
 	local := s.node.storage.Cluster.LocalID
 	rec, ok := s.node.storage.Cluster.Nodes.Get(local)
-	if !ok || rec.Tombstone || rec.Node == nil {
+	if !ok || rec.Tombstone {
 		return &controlv1.CreateInviteResponse{}, nil
 	}
 
@@ -76,7 +77,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 
 	selfAddr := ""
 	if rec, ok := s.node.storage.Cluster.Nodes.Get(localID); ok {
-		if rec.Node != nil && len(rec.Node.Ips) > 0 {
+		if len(rec.Node.Ips) > 0 {
 			selfAddr = net.JoinHostPort(rec.Node.Ips[0], fmt.Sprintf("%d", rec.Node.LocalPort))
 		}
 	}
@@ -101,29 +102,33 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		status := controlv1.NodeStatus_NODE_STATUS_OFFLINE
 		if online {
 			status = controlv1.NodeStatus_NODE_STATUS_ONLINE
+		} else if s.node.relayReachable(key) {
+			status = controlv1.NodeStatus_NODE_STATUS_RELAY
 		}
-		if !online && node != nil && len(node.Ips) > 0 {
+
+		addrStr := ""
+		if addr != nil {
+			addrStr = addr.String()
+		}
+		if addrStr == "" && len(node.Ips) > 0 {
 			ip := net.ParseIP(node.Ips[0])
 			if ip == nil {
 				return nil, errors.New("invalid IP address")
 			}
-			addr = &net.UDPAddr{
+			addrStr = (&net.UDPAddr{
 				IP:   ip,
 				Port: int(node.LocalPort),
-			}
+			}).String()
 		}
 
 		out.Nodes = append(out.Nodes, &controlv1.NodeSummary{
 			Node:   &controlv1.NodeRef{PeerId: key.Bytes()},
 			Status: status,
-			Addr:   addr.String(),
+			Addr:   addrStr,
 		})
 	}
 
 	for key, node := range nodes {
-		if node == nil {
-			continue
-		}
 		for _, svc := range node.Services {
 			name := svc.GetName()
 			if name == "" {
@@ -140,7 +145,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 	connections := s.node.tun.ListConnections()
 	for _, c := range connections {
 		name := ""
-		if node, ok := nodes[c.PeerID]; ok && node != nil {
+		if node, ok := nodes[c.PeerID]; ok {
 			for _, svc := range node.Services {
 				if svc.GetPort() == c.RemotePort {
 					name = svc.GetName()
@@ -157,10 +162,26 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 	}
 
 	sort.Slice(out.Nodes, func(i, j int) bool {
-		li := out.Nodes[i].Status == controlv1.NodeStatus_NODE_STATUS_ONLINE
-		lj := out.Nodes[j].Status == controlv1.NodeStatus_NODE_STATUS_ONLINE
-		if li != lj {
-			return li
+		const (
+			nodeStatusRankOnline = iota
+			nodeStatusRankRelay
+			nodeStatusRankOffline
+		)
+
+		rank := func(status controlv1.NodeStatus) int {
+			switch status {
+			case controlv1.NodeStatus_NODE_STATUS_ONLINE:
+				return nodeStatusRankOnline
+			case controlv1.NodeStatus_NODE_STATUS_RELAY:
+				return nodeStatusRankRelay
+			default:
+				return nodeStatusRankOffline
+			}
+		}
+		ri := rank(out.Nodes[i].Status)
+		rj := rank(out.Nodes[j].Status)
+		if ri != rj {
+			return ri < rj
 		}
 		return types.PeerKeyFromBytes(out.Nodes[i].Node.PeerId).Less(types.PeerKeyFromBytes(out.Nodes[j].Node.PeerId))
 	})
@@ -197,7 +218,7 @@ func (s *NodeService) RegisterService(ctx context.Context, req *controlv1.Regist
 
 	localID := s.node.storage.Cluster.LocalID
 	rec, ok := s.node.storage.Cluster.Nodes.Get(localID)
-	if !ok || rec.Node == nil {
+	if !ok {
 		return &controlv1.RegisterServiceResponse{}, nil
 	}
 
@@ -211,7 +232,7 @@ func (s *NodeService) RegisterService(ctx context.Context, req *controlv1.Regist
 func (s *NodeService) UnregisterService(ctx context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
 	localID := s.node.storage.Cluster.LocalID
 	rec, ok := s.node.storage.Cluster.Nodes.Get(localID)
-	if !ok || rec.Node == nil {
+	if !ok {
 		return &controlv1.UnregisterServiceResponse{}, nil
 	}
 
@@ -233,9 +254,11 @@ func (s *NodeService) UnregisterService(ctx context.Context, req *controlv1.Unre
 }
 
 func cloneNode(node *statev1.Node) *statev1.Node {
-	if node == nil {
-		return &statev1.Node{}
+	connected := make(map[string]*emptypb.Empty, len(node.Connected))
+	for peerID := range node.Connected {
+		connected[peerID] = &emptypb.Empty{}
 	}
+
 	return &statev1.Node{
 		Id:        node.Id,
 		Name:      node.Name,
@@ -243,6 +266,8 @@ func cloneNode(node *statev1.Node) *statev1.Node {
 		LocalPort: node.LocalPort,
 		Keys:      node.Keys,
 		Services:  append([]*statev1.Service(nil), node.Services...),
+		Connected: connected,
+		NatType:   node.NatType,
 	}
 }
 
