@@ -10,7 +10,6 @@ import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -124,7 +123,6 @@ type NodeSummary struct {
 	Node          *NodeRef               `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
 	Status        NodeStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=pollen.control.v1.NodeStatus" json:"status,omitempty"`
 	Addr          string                 `protobuf:"bytes,3,opt,name=addr,proto3" json:"addr,omitempty"`
-	LastSeen      *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=last_seen,json=lastSeen,proto3" json:"last_seen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -178,13 +176,6 @@ func (x *NodeSummary) GetAddr() string {
 		return x.Addr
 	}
 	return ""
-}
-
-func (x *NodeSummary) GetLastSeen() *timestamppb.Timestamp {
-	if x != nil {
-		return x.LastSeen
-	}
-	return nil
 }
 
 type ServiceSummary struct {
@@ -871,14 +862,13 @@ var File_pollen_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\n" +
-	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\"\n" +
+	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\x1a\x1bbuf/validate/validate.proto\"\"\n" +
 	"\aNodeRef\x12\x17\n" +
-	"\apeer_id\x18\x01 \x01(\fR\x06peerId\"\xc1\x01\n" +
+	"\apeer_id\x18\x01 \x01(\fR\x06peerId\"\x88\x01\n" +
 	"\vNodeSummary\x12.\n" +
 	"\x04node\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04node\x125\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1d.pollen.control.v1.NodeStatusR\x06status\x12\x12\n" +
-	"\x04addr\x18\x03 \x01(\tR\x04addr\x127\n" +
-	"\tlast_seen\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\blastSeen\"\x88\x01\n" +
+	"\x04addr\x18\x03 \x01(\tR\x04addr\"\x88\x01\n" +
 	"\x0eServiceSummary\x12\x1d\n" +
 	"\x04name\x18\x01 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@R\x04name\x126\n" +
 	"\bprovider\x18\x02 \x01(\v2\x1a.pollen.control.v1.NodeRefR\bprovider\x12\x1f\n" +
@@ -968,37 +958,35 @@ var file_pollen_control_v1_control_proto_goTypes = []any{
 	(*UnregisterServiceResponse)(nil), // 14: pollen.control.v1.UnregisterServiceResponse
 	(*ConnectServiceRequest)(nil),     // 15: pollen.control.v1.ConnectServiceRequest
 	(*ConnectServiceResponse)(nil),    // 16: pollen.control.v1.ConnectServiceResponse
-	(*timestamppb.Timestamp)(nil),     // 17: google.protobuf.Timestamp
 }
 var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	1,  // 0: pollen.control.v1.NodeSummary.node:type_name -> pollen.control.v1.NodeRef
 	0,  // 1: pollen.control.v1.NodeSummary.status:type_name -> pollen.control.v1.NodeStatus
-	17, // 2: pollen.control.v1.NodeSummary.last_seen:type_name -> google.protobuf.Timestamp
-	1,  // 3: pollen.control.v1.ServiceSummary.provider:type_name -> pollen.control.v1.NodeRef
-	1,  // 4: pollen.control.v1.JoinClusterResponse.self:type_name -> pollen.control.v1.NodeRef
-	2,  // 5: pollen.control.v1.GetStatusResponse.self:type_name -> pollen.control.v1.NodeSummary
-	2,  // 6: pollen.control.v1.GetStatusResponse.nodes:type_name -> pollen.control.v1.NodeSummary
-	3,  // 7: pollen.control.v1.GetStatusResponse.services:type_name -> pollen.control.v1.ServiceSummary
-	10, // 8: pollen.control.v1.GetStatusResponse.connections:type_name -> pollen.control.v1.ConnectionSummary
-	1,  // 9: pollen.control.v1.ConnectionSummary.peer:type_name -> pollen.control.v1.NodeRef
-	1,  // 10: pollen.control.v1.ConnectServiceRequest.node:type_name -> pollen.control.v1.NodeRef
-	4,  // 11: pollen.control.v1.ControlService.JoinCluster:input_type -> pollen.control.v1.JoinClusterRequest
-	6,  // 12: pollen.control.v1.ControlService.CreateInvite:input_type -> pollen.control.v1.CreateInviteRequest
-	8,  // 13: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
-	11, // 14: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
-	13, // 15: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
-	15, // 16: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
-	5,  // 17: pollen.control.v1.ControlService.JoinCluster:output_type -> pollen.control.v1.JoinClusterResponse
-	7,  // 18: pollen.control.v1.ControlService.CreateInvite:output_type -> pollen.control.v1.CreateInviteResponse
-	9,  // 19: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
-	12, // 20: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
-	14, // 21: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
-	16, // 22: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
-	17, // [17:23] is the sub-list for method output_type
-	11, // [11:17] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	1,  // 2: pollen.control.v1.ServiceSummary.provider:type_name -> pollen.control.v1.NodeRef
+	1,  // 3: pollen.control.v1.JoinClusterResponse.self:type_name -> pollen.control.v1.NodeRef
+	2,  // 4: pollen.control.v1.GetStatusResponse.self:type_name -> pollen.control.v1.NodeSummary
+	2,  // 5: pollen.control.v1.GetStatusResponse.nodes:type_name -> pollen.control.v1.NodeSummary
+	3,  // 6: pollen.control.v1.GetStatusResponse.services:type_name -> pollen.control.v1.ServiceSummary
+	10, // 7: pollen.control.v1.GetStatusResponse.connections:type_name -> pollen.control.v1.ConnectionSummary
+	1,  // 8: pollen.control.v1.ConnectionSummary.peer:type_name -> pollen.control.v1.NodeRef
+	1,  // 9: pollen.control.v1.ConnectServiceRequest.node:type_name -> pollen.control.v1.NodeRef
+	4,  // 10: pollen.control.v1.ControlService.JoinCluster:input_type -> pollen.control.v1.JoinClusterRequest
+	6,  // 11: pollen.control.v1.ControlService.CreateInvite:input_type -> pollen.control.v1.CreateInviteRequest
+	8,  // 12: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
+	11, // 13: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
+	13, // 14: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
+	15, // 15: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
+	5,  // 16: pollen.control.v1.ControlService.JoinCluster:output_type -> pollen.control.v1.JoinClusterResponse
+	7,  // 17: pollen.control.v1.ControlService.CreateInvite:output_type -> pollen.control.v1.CreateInviteResponse
+	9,  // 18: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
+	12, // 19: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
+	14, // 20: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
+	16, // 21: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
+	16, // [16:22] is the sub-list for method output_type
+	10, // [10:16] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_pollen_control_v1_control_proto_init() }

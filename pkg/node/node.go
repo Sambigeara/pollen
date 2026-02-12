@@ -20,7 +20,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/sock"
-	"github.com/sambigeara/pollen/pkg/state"
+	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/tunnel"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/util"
@@ -49,6 +49,7 @@ const (
 
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
+	gossipEventBufSize = 64
 )
 
 type Config struct {
@@ -67,17 +68,18 @@ type Node struct {
 	invites         admission.Store
 	sock            sock.SuperSock
 	tcpPeers        *peer.Store
+	store           *store.Store
 	localPeerEvents chan peer.Input
 	conf            *Config
-	storage         *state.Persistence
 	tun             *tunnel.Manager
 	udpPeers        *peer.Store
 	log             *zap.SugaredLogger
 	crypto          *localCrypto
 	tcpPeerEvents   chan peer.Input
-	gossipTrigger   chan struct{}
+	gossipEvents    chan *statev1.GossipNode
 	handlers        map[types.MsgType]HandlerFn
 	handlersMu      sync.RWMutex
+	requestFullOnce sync.Once
 }
 
 func New(conf *Config) (*Node, error) {
@@ -96,7 +98,7 @@ func New(conf *Config) (*Node, error) {
 		return nil, fmt.Errorf("failed to load signing keys: %w", err)
 	}
 
-	stateStore, err := state.Load(conf.PollenDir, nodeID)
+	stateStore, err := store.Load(conf.PollenDir, nodeID, pubKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load state: %w", err)
 	}
@@ -123,17 +125,7 @@ func New(conf *Config) (*Node, error) {
 
 	s := sock.NewTransport(conf.Port, &cs, noiseKey, crypto, invitesStore)
 
-	cluster := stateStore.Cluster
-
-	cluster.Nodes.Set(nodeID, &statev1.Node{
-		Id:        nodeID.String(),
-		Ips:       ips,
-		LocalPort: uint32(conf.Port),
-		Keys: &statev1.Keys{
-			NoisePub:    noiseKey.Public,
-			IdentityPub: pubKey,
-		},
-	})
+	stateStore.SetLocalNetwork(ips, uint32(conf.Port))
 
 	n := &Node{
 		log:             log,
@@ -141,22 +133,26 @@ func New(conf *Config) (*Node, error) {
 		handlers:        make(map[types.MsgType]HandlerFn),
 		udpPeers:        peer.NewStore(),
 		tcpPeers:        peer.NewStore(),
-		storage:         stateStore,
+		store:           stateStore,
 		invites:         invitesStore,
 		crypto:          crypto,
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
 		tcpPeerEvents:   make(chan peer.Input, peerEventBufSize),
-		gossipTrigger:   make(chan struct{}),
+		gossipEvents:    make(chan *statev1.GossipNode, gossipEventBufSize),
 	}
 
 	n.tun = tunnel.New(
 		n.sendEnvelope,
-		&Directory{cluster: cluster},
+		&Directory{store: stateStore},
 		s,
 		privKey,
 		ips,
 	)
+
+	for _, svc := range stateStore.LocalServices() {
+		n.tun.RegisterService(svc.GetPort())
+	}
 
 	n.tun.Sessions().SetOnDisconnect(func(peerKey types.PeerKey) {
 		n.tcpPeerEvents <- peer.PeerDisconnected{PeerKey: peerKey}
@@ -187,9 +183,6 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 	peerTicker := time.NewTicker(n.conf.PeerTickInterval)
 	defer peerTicker.Stop()
 
-	// insta tick for insta connects
-	// TODO(saml) still lots of work to be done on optimising startup handlers
-	// threads in general
 	n.tick()
 
 	for {
@@ -200,8 +193,8 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 			n.tick()
 		case <-gossipTicker.C:
 			n.gossip(ctx)
-		case <-n.gossipTrigger:
-			n.gossip(ctx)
+		case node := <-n.gossipEvents:
+			n.broadcastNode(ctx, node)
 		// UDP FSM events
 		case in := <-n.sock.Events():
 			n.handleUDPPeerInput(in)
@@ -214,10 +207,13 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 	}
 }
 
-// TODO(saml) this is a result of an LLM scaffolded project and will definitely be removed.
-func (n *Node) triggerGossip() {
+func (n *Node) queueGossipNode(node *statev1.GossipNode) {
+	if node == nil {
+		return
+	}
+
 	select {
-	case n.gossipTrigger <- struct{}{}:
+	case n.gossipEvents <- node:
 	default:
 	}
 }
@@ -267,52 +263,88 @@ func (n *Node) registerHandlers() {
 	n.Handle(types.MsgTypeTCPPunchProbeOffer, n.tun.HandlePunchProbeOffer)
 	n.Handle(types.MsgTypeTCPPunchProbeResult, n.tun.HandlePunchProbeResult)
 	n.Handle(types.MsgTypeUDPRelay, n.handleUDPRelay)
+	n.Handle(types.MsgTypeGossip, n.handleGossip)
+}
 
-	n.Handle(types.MsgTypeGossip, func(_ context.Context, _ types.PeerKey, plaintext []byte) error {
-		delta := &statev1.DeltaState{}
-		if err := delta.UnmarshalVT(plaintext); err != nil {
-			return fmt.Errorf("malformed gossip payload: %w", err)
+func (n *Node) handleGossip(ctx context.Context, from types.PeerKey, plaintext []byte) error {
+	env := &statev1.GossipEnvelope{}
+	if err := env.UnmarshalVT(plaintext); err != nil {
+		return fmt.Errorf("malformed gossip payload: %w", err)
+	}
+
+	switch body := env.GetBody().(type) {
+	case *statev1.GossipEnvelope_Clock:
+		for _, node := range n.store.MissingFor(body.Clock) {
+			if err := n.sendNode(ctx, from, node); err != nil {
+				n.log.Debugw("failed sending gossip node", "to", from.Short(), "err", err)
+			}
 		}
+	case *statev1.GossipEnvelope_Node:
+		result := n.store.ApplyNode(body.Node)
+		if result.Rebroadcast != nil {
+			n.queueGossipNode(result.Rebroadcast)
+		}
+	}
 
-		n.storage.Hydrate(delta)
-		return nil
-	})
+	return nil
+}
+
+func (n *Node) sendClock(ctx context.Context, to types.PeerKey, clock *statev1.GossipVectorClock) error {
+	env := &statev1.GossipEnvelope{
+		Body: &statev1.GossipEnvelope_Clock{Clock: clock},
+	}
+	b, err := env.MarshalVT()
+	if err != nil {
+		return err
+	}
+
+	return n.sendEnvelope(ctx, to, types.Envelope{Type: types.MsgTypeGossip, Payload: b})
+}
+
+func (n *Node) sendNode(ctx context.Context, to types.PeerKey, node *statev1.GossipNode) error {
+	env := &statev1.GossipEnvelope{
+		Body: &statev1.GossipEnvelope_Node{Node: node},
+	}
+	b, err := env.MarshalVT()
+	if err != nil {
+		return err
+	}
+
+	return n.sendEnvelope(ctx, to, types.Envelope{Type: types.MsgTypeGossip, Payload: b})
+}
+
+func (n *Node) broadcastNode(ctx context.Context, node *statev1.GossipNode) {
+	if node == nil {
+		return
+	}
+
+	connectedPeers := n.GetConnectedPeers()
+	for _, peerID := range connectedPeers {
+		if peerID == n.store.LocalID {
+			continue
+		}
+		if err := n.sendNode(ctx, peerID, node); err != nil {
+			n.log.Debugw("node gossip send failed", "peer", peerID.Short(), "err", err)
+		}
+	}
 }
 
 func (n *Node) gossip(ctx context.Context) {
-	// TODO(saml) this is a hack because I've realised that I was exceeding MTU and packets were being dropped on CGNAT (mobile)
-	for k, v := range state.ToNodeDelta(n.storage.Cluster.Nodes) {
-		delta := &statev1.DeltaState{
-			Nodes: map[string]*statev1.NodeRecord{k: v},
+	clock := n.store.Clock()
+	connectedPeers := n.GetConnectedPeers()
+	for _, peerID := range connectedPeers {
+		if peerID == n.store.LocalID {
+			continue
 		}
-
-		payload, err := delta.MarshalVT()
-		if err != nil {
-			n.log.Errorf("failed to marshal gossip: %v", err)
-			return
-		}
-
-		connectedPeers := n.GetConnectedPeers()
-
-		for _, k := range connectedPeers {
-			if k == n.storage.Cluster.LocalID {
-				continue
-			}
-
-			if err := n.sendEnvelope(ctx, k, types.Envelope{
-				Type:    types.MsgTypeGossip,
-				Payload: payload,
-			}); err != nil {
-				n.log.Debugw("gossip send failed", "peer", k.Short(), "err", err)
-			}
+		if err := n.sendClock(ctx, peerID, clock); err != nil {
+			n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
 		}
 	}
 }
 
 func (n *Node) handleUDPPeerInput(in peer.Input) {
 	if d, ok := in.(peer.PeerDisconnected); ok {
-		n.storage.DisconnectNode(d.PeerKey)
-		n.triggerGossip()
+		n.queueGossipNode(n.store.SetLocalConnected(d.PeerKey, false))
 	}
 
 	outputs := n.udpPeers.Step(time.Now(), in)
@@ -328,6 +360,7 @@ func (n *Node) tick() {
 	// First sync any new peers and connections from gossip state
 	n.syncPeersFromState()
 	n.reconcileConnections()
+	n.reconcileDesiredConnections()
 
 	// Tick both FSMs
 	now := time.Now()
@@ -340,34 +373,33 @@ func (n *Node) tick() {
 }
 
 func (n *Node) syncPeersFromState() {
-	for _, node := range n.storage.Cluster.Nodes.GetAll() {
-		if node.Id == n.storage.Cluster.LocalID.String() {
+	for _, kp := range n.store.KnownPeers() {
+		if kp.PeerID == n.store.LocalID {
 			continue
 		}
 
-		if len(node.Keys.NoisePub) == 0 || len(node.Ips) == 0 {
+		if len(kp.IPs) == 0 {
 			continue
 		}
 
-		ips := make([]net.IP, len(node.Ips))
-		for i, ipStr := range node.Ips {
+		ips := make([]net.IP, 0, len(kp.IPs))
+		for _, ipStr := range kp.IPs {
 			ip := net.ParseIP(ipStr)
 			if ip == nil {
 				n.log.Error("unable to parse IP")
 				continue
 			}
-			ips[i] = ip
+			ips = append(ips, ip)
 		}
 
-		peerKey := types.PeerKeyFromBytes(node.Keys.NoisePub)
-		if node.Id != "" && node.Id != peerKey.String() {
-			n.log.Debugw("state identity mismatch", "peer", peerKey.Short(), "ips", node.Ips, "localPort", node.LocalPort)
+		if len(ips) == 0 {
+			continue
 		}
 
 		n.udpPeers.Step(time.Now(), peer.DiscoverPeer{
-			PeerKey: peerKey,
+			PeerKey: kp.PeerID,
 			Ips:     ips,
-			Port:    int(node.LocalPort),
+			Port:    int(kp.LocalPort),
 		})
 	}
 }
@@ -376,8 +408,12 @@ func (n *Node) handleUDPOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
-			n.storage.ConnectNode(e.PeerKey)
-			n.triggerGossip()
+			n.queueGossipNode(n.store.SetLocalConnected(e.PeerKey, true))
+			n.requestFullOnce.Do(func() {
+				if err := n.sendClock(context.Background(), e.PeerKey, n.store.ZeroClock()); err != nil {
+					n.log.Debugw("failed requesting full state", "peer", e.PeerKey.Short(), "err", err)
+				}
+			})
 			n.log.Infow("udp peer connected", "peer_id", e.PeerKey.Short(), "ip", e.IP, "observedPort", e.ObservedPort)
 		case peer.AttemptConnect:
 			go func() {
@@ -444,7 +480,7 @@ func (n *Node) handleTCPOutputs(outputs []peer.Output) {
 // to the given target. Skips LAN peers and verifies the coordinator is
 // connected to the target via gossip state.
 func (n *Node) FindCoordinator(target types.PeerKey) (types.PeerKey, bool) {
-	localIPs := n.storage.Cluster.Nodes.NodeIPs(n.storage.Cluster.LocalID)
+	localIPs := n.store.NodeIPs(n.store.LocalID)
 	connectedPeers := n.GetConnectedPeers()
 	sort.Slice(connectedPeers, func(i, j int) bool {
 		return connectedPeers[i].Less(connectedPeers[j])
@@ -455,14 +491,14 @@ func (n *Node) FindCoordinator(target types.PeerKey) (types.PeerKey, bool) {
 			continue
 		}
 
-		candidateIPs := n.storage.Cluster.Nodes.NodeIPs(key)
+		candidateIPs := n.store.NodeIPs(key)
 		if len(candidateIPs) == 0 {
 			continue
 		}
 		if sharesLAN(localIPs, candidateIPs) {
 			continue
 		}
-		if !n.storage.Cluster.Nodes.IsConnected(key, target) {
+		if !n.store.IsConnected(key, target) {
 			continue
 		}
 		return key, true
@@ -474,11 +510,11 @@ func (n *Node) FindCoordinator(target types.PeerKey) (types.PeerKey, bool) {
 func (n *Node) reconcileConnections() {
 	connections := n.tun.ListConnections()
 
-	nodes := n.storage.Cluster.Nodes.GetAll()
+	nodes := n.store.Nodes()
 	missing := make(map[types.PeerKey]map[uint32]struct{}, len(connections))
 	for _, conn := range connections {
 		node := nodes[conn.PeerID]
-		if node == nil || !hasServicePort(node, conn.RemotePort) {
+		if !hasServicePort(node.Services, conn.RemotePort) {
 			ports, ok := missing[conn.PeerID]
 			if !ok {
 				ports = make(map[uint32]struct{})
@@ -492,6 +528,7 @@ func (n *Node) reconcileConnections() {
 		for port := range ports {
 			n.log.Infow("removing stale forward", "peer", peerID.String()[:8], "port", port)
 			n.tun.DisconnectRemoteService(peerID, port)
+			n.store.RemoveDesiredConnection(peerID, port, 0)
 		}
 	}
 
@@ -516,13 +553,45 @@ func (n *Node) reconcileConnections() {
 	}
 }
 
-func hasServicePort(node *statev1.Node, port uint32) bool {
-	for _, svc := range node.Services {
+func (n *Node) reconcileDesiredConnections() {
+	desired := n.store.DesiredConnections()
+	if len(desired) == 0 {
+		return
+	}
+
+	existing := make(map[string]struct{})
+	for _, conn := range n.tun.ListConnections() {
+		existing[desiredConnectionKey(conn.PeerID, conn.RemotePort, conn.LocalPort)] = struct{}{}
+	}
+
+	nodes := n.store.Nodes()
+	for _, desiredConn := range desired {
+		if _, ok := existing[desiredConnectionKey(desiredConn.PeerID, desiredConn.RemotePort, desiredConn.LocalPort)]; ok {
+			continue
+		}
+
+		node, ok := nodes[desiredConn.PeerID]
+		if !ok || !hasServicePort(node.Services, desiredConn.RemotePort) {
+			continue
+		}
+
+		if _, err := n.ConnectService(desiredConn.PeerID, desiredConn.RemotePort, desiredConn.LocalPort); err != nil {
+			n.log.Debugw("failed restoring desired connection", "peer", desiredConn.PeerID.Short(), "remotePort", desiredConn.RemotePort, "localPort", desiredConn.LocalPort, "err", err)
+		}
+	}
+}
+
+func hasServicePort(services []*statev1.Service, port uint32) bool {
+	for _, svc := range services {
 		if svc.GetPort() == port {
 			return true
 		}
 	}
 	return false
+}
+
+func desiredConnectionKey(peerID types.PeerKey, remotePort, localPort uint32) string {
+	return fmt.Sprintf("%s:%d:%d", peerID.String(), remotePort, localPort)
 }
 
 func (n *Node) udpDirectConnect(e peer.AttemptConnect) error {
@@ -611,6 +680,7 @@ func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32
 	if err != nil {
 		return 0, err
 	}
+	n.store.AddDesiredConnection(peerID, remotePort, port)
 
 	n.tcpPeerEvents <- peer.RetryPeer{PeerKey: peerID}
 
@@ -628,10 +698,24 @@ func (n *Node) gossipJitter() float64 {
 }
 
 func (n *Node) shutdown() {
-	if err := n.storage.Save(); err != nil {
+	activeConns := n.tun.ListConnections()
+	desired := make([]store.Connection, 0, len(activeConns))
+	for _, conn := range activeConns {
+		desired = append(desired, store.Connection{
+			PeerID:     conn.PeerID,
+			RemotePort: conn.RemotePort,
+			LocalPort:  conn.LocalPort,
+		})
+	}
+	n.store.ReplaceDesiredConnections(desired)
+
+	if err := n.store.Save(); err != nil {
 		n.log.Errorf("failed to save state: %v", err)
 	} else {
 		n.log.Info("state saved to disk")
+	}
+	if err := n.store.Close(); err != nil {
+		n.log.Errorf("failed to close state store: %v", err)
 	}
 
 	// Notify peers we're shutting down (fire-and-forget)
@@ -824,13 +908,6 @@ func genIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 type localCrypto struct {
 	identityPubKey ed25519.PublicKey
 	noisePubKey    []byte
-}
-
-func (c *localCrypto) GetStateKeys() *statev1.Keys {
-	return &statev1.Keys{
-		NoisePub:    c.noisePubKey,
-		IdentityPub: c.identityPubKey,
-	}
 }
 
 func (c *localCrypto) NoisePub() []byte {

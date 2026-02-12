@@ -22,66 +22,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type Known struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	NoisePub      []byte                 `protobuf:"bytes,1,opt,name=noise_pub,json=noisePub,proto3" json:"noise_pub,omitempty"`
-	IdentityPub   []byte                 `protobuf:"bytes,2,opt,name=identity_pub,json=identityPub,proto3" json:"identity_pub,omitempty"`
-	Addr          string                 `protobuf:"bytes,3,opt,name=addr,proto3" json:"addr,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *Known) Reset() {
-	*x = Known{}
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Known) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Known) ProtoMessage() {}
-
-func (x *Known) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Known.ProtoReflect.Descriptor instead.
-func (*Known) Descriptor() ([]byte, []int) {
-	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *Known) GetNoisePub() []byte {
-	if x != nil {
-		return x.NoisePub
-	}
-	return nil
-}
-
-func (x *Known) GetIdentityPub() []byte {
-	if x != nil {
-		return x.IdentityPub
-	}
-	return nil
-}
-
-func (x *Known) GetAddr() string {
-	if x != nil {
-		return x.Addr
-	}
-	return ""
-}
-
 type Invite struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -93,7 +33,7 @@ type Invite struct {
 
 func (x *Invite) Reset() {
 	*x = Invite{}
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[1]
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -105,7 +45,7 @@ func (x *Invite) String() string {
 func (*Invite) ProtoMessage() {}
 
 func (x *Invite) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[1]
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -118,7 +58,7 @@ func (x *Invite) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Invite.ProtoReflect.Descriptor instead.
 func (*Invite) Descriptor() ([]byte, []int) {
-	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{1}
+	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Invite) GetId() string {
@@ -142,50 +82,6 @@ func (x *Invite) GetAddr() []string {
 	return nil
 }
 
-type PeerStore struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Peers         map[string]*Known      `protobuf:"bytes,1,rep,name=peers,proto3" json:"peers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *PeerStore) Reset() {
-	*x = PeerStore{}
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *PeerStore) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PeerStore) ProtoMessage() {}
-
-func (x *PeerStore) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PeerStore.ProtoReflect.Descriptor instead.
-func (*PeerStore) Descriptor() ([]byte, []int) {
-	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *PeerStore) GetPeers() map[string]*Known {
-	if x != nil {
-		return x.Peers
-	}
-	return nil
-}
-
 type InviteStore struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Invites       map[string]*Invite     `protobuf:"bytes,1,rep,name=invites,proto3" json:"invites,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
@@ -195,7 +91,7 @@ type InviteStore struct {
 
 func (x *InviteStore) Reset() {
 	*x = InviteStore{}
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[3]
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -207,7 +103,7 @@ func (x *InviteStore) String() string {
 func (*InviteStore) ProtoMessage() {}
 
 func (x *InviteStore) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[3]
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -220,7 +116,7 @@ func (x *InviteStore) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InviteStore.ProtoReflect.Descriptor instead.
 func (*InviteStore) Descriptor() ([]byte, []int) {
-	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{3}
+	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *InviteStore) GetInvites() map[string]*Invite {
@@ -239,7 +135,7 @@ type PunchCoordRequest struct {
 
 func (x *PunchCoordRequest) Reset() {
 	*x = PunchCoordRequest{}
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[4]
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -251,7 +147,7 @@ func (x *PunchCoordRequest) String() string {
 func (*PunchCoordRequest) ProtoMessage() {}
 
 func (x *PunchCoordRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[4]
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -264,7 +160,7 @@ func (x *PunchCoordRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PunchCoordRequest.ProtoReflect.Descriptor instead.
 func (*PunchCoordRequest) Descriptor() ([]byte, []int) {
-	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{4}
+	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *PunchCoordRequest) GetPeerId() []byte {
@@ -285,7 +181,7 @@ type PunchCoordTrigger struct {
 
 func (x *PunchCoordTrigger) Reset() {
 	*x = PunchCoordTrigger{}
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[5]
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -297,7 +193,7 @@ func (x *PunchCoordTrigger) String() string {
 func (*PunchCoordTrigger) ProtoMessage() {}
 
 func (x *PunchCoordTrigger) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[5]
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -310,7 +206,7 @@ func (x *PunchCoordTrigger) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PunchCoordTrigger.ProtoReflect.Descriptor instead.
 func (*PunchCoordTrigger) Descriptor() ([]byte, []int) {
-	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{5}
+	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *PunchCoordTrigger) GetPeerId() []byte {
@@ -346,7 +242,7 @@ type UdpRelayEnvelope struct {
 
 func (x *UdpRelayEnvelope) Reset() {
 	*x = UdpRelayEnvelope{}
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[6]
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -358,7 +254,7 @@ func (x *UdpRelayEnvelope) String() string {
 func (*UdpRelayEnvelope) ProtoMessage() {}
 
 func (x *UdpRelayEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[6]
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -371,7 +267,7 @@ func (x *UdpRelayEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UdpRelayEnvelope.ProtoReflect.Descriptor instead.
 func (*UdpRelayEnvelope) Descriptor() ([]byte, []int) {
-	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{6}
+	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *UdpRelayEnvelope) GetSrcPeerId() []byte {
@@ -406,21 +302,11 @@ var File_pollen_peer_v1_peer_proto protoreflect.FileDescriptor
 
 const file_pollen_peer_v1_peer_proto_rawDesc = "" +
 	"\n" +
-	"\x19pollen/peer/v1/peer.proto\x12\x0epollen.peer.v1\x1a\x1bbuf/validate/validate.proto\"[\n" +
-	"\x05Known\x12\x1b\n" +
-	"\tnoise_pub\x18\x01 \x01(\fR\bnoisePub\x12!\n" +
-	"\fidentity_pub\x18\x02 \x01(\fR\videntityPub\x12\x12\n" +
-	"\x04addr\x18\x03 \x01(\tR\x04addr\"Q\n" +
+	"\x19pollen/peer/v1/peer.proto\x12\x0epollen.peer.v1\x1a\x1bbuf/validate/validate.proto\"Q\n" +
 	"\x06Invite\x12\x18\n" +
 	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x02id\x12\x19\n" +
 	"\x03psk\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x03psk\x12\x12\n" +
-	"\x04addr\x18\x03 \x03(\tR\x04addr\"\x98\x01\n" +
-	"\tPeerStore\x12:\n" +
-	"\x05peers\x18\x01 \x03(\v2$.pollen.peer.v1.PeerStore.PeersEntryR\x05peers\x1aO\n" +
-	"\n" +
-	"PeersEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12+\n" +
-	"\x05value\x18\x02 \x01(\v2\x15.pollen.peer.v1.KnownR\x05value:\x028\x01\"\xa5\x01\n" +
+	"\x04addr\x18\x03 \x03(\tR\x04addr\"\xa5\x01\n" +
 	"\vInviteStore\x12B\n" +
 	"\ainvites\x18\x01 \x03(\v2(.pollen.peer.v1.InviteStore.InvitesEntryR\ainvites\x1aR\n" +
 	"\fInvitesEntry\x12\x10\n" +
@@ -450,28 +336,23 @@ func file_pollen_peer_v1_peer_proto_rawDescGZIP() []byte {
 	return file_pollen_peer_v1_peer_proto_rawDescData
 }
 
-var file_pollen_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_pollen_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_pollen_peer_v1_peer_proto_goTypes = []any{
-	(*Known)(nil),             // 0: pollen.peer.v1.Known
-	(*Invite)(nil),            // 1: pollen.peer.v1.Invite
-	(*PeerStore)(nil),         // 2: pollen.peer.v1.PeerStore
-	(*InviteStore)(nil),       // 3: pollen.peer.v1.InviteStore
-	(*PunchCoordRequest)(nil), // 4: pollen.peer.v1.PunchCoordRequest
-	(*PunchCoordTrigger)(nil), // 5: pollen.peer.v1.PunchCoordTrigger
-	(*UdpRelayEnvelope)(nil),  // 6: pollen.peer.v1.UdpRelayEnvelope
-	nil,                       // 7: pollen.peer.v1.PeerStore.PeersEntry
-	nil,                       // 8: pollen.peer.v1.InviteStore.InvitesEntry
+	(*Invite)(nil),            // 0: pollen.peer.v1.Invite
+	(*InviteStore)(nil),       // 1: pollen.peer.v1.InviteStore
+	(*PunchCoordRequest)(nil), // 2: pollen.peer.v1.PunchCoordRequest
+	(*PunchCoordTrigger)(nil), // 3: pollen.peer.v1.PunchCoordTrigger
+	(*UdpRelayEnvelope)(nil),  // 4: pollen.peer.v1.UdpRelayEnvelope
+	nil,                       // 5: pollen.peer.v1.InviteStore.InvitesEntry
 }
 var file_pollen_peer_v1_peer_proto_depIdxs = []int32{
-	7, // 0: pollen.peer.v1.PeerStore.peers:type_name -> pollen.peer.v1.PeerStore.PeersEntry
-	8, // 1: pollen.peer.v1.InviteStore.invites:type_name -> pollen.peer.v1.InviteStore.InvitesEntry
-	0, // 2: pollen.peer.v1.PeerStore.PeersEntry.value:type_name -> pollen.peer.v1.Known
-	1, // 3: pollen.peer.v1.InviteStore.InvitesEntry.value:type_name -> pollen.peer.v1.Invite
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	5, // 0: pollen.peer.v1.InviteStore.invites:type_name -> pollen.peer.v1.InviteStore.InvitesEntry
+	0, // 1: pollen.peer.v1.InviteStore.InvitesEntry.value:type_name -> pollen.peer.v1.Invite
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_pollen_peer_v1_peer_proto_init() }
@@ -485,7 +366,7 @@ func file_pollen_peer_v1_peer_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_peer_v1_peer_proto_rawDesc), len(file_pollen_peer_v1_peer_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

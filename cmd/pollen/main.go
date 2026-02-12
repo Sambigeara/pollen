@@ -38,7 +38,8 @@ const (
 	socketName     = "pollen.sock"
 	defaultUDPPort = 60611
 
-	defaultTimeout = 5 * time.Second
+	controlClientTimeout  = 10 * time.Second
+	passiveGossipInterval = 10 * time.Second
 
 	serviceExposeArgsMin = 1
 	serviceExposeArgsMax = 2
@@ -220,7 +221,7 @@ func runNode(cmd *cobra.Command, args []string) {
 
 	conf := &node.Config{
 		Port:             port,
-		GossipInterval:   defaultTimeout,
+		GossipInterval:   passiveGossipInterval,
 		PeerTickInterval: time.Second,
 		PollenDir:        pollenDir,
 		AdvertisedIPs:    addrs,
@@ -674,7 +675,7 @@ func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient 
 	}
 
 	httpClient := &http.Client{
-		Timeout:   defaultTimeout,
+		Timeout:   controlClientTimeout,
 		Transport: tr,
 	}
 
