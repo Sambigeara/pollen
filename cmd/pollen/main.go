@@ -343,7 +343,7 @@ func printNodesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse, opts s
 	fmt.Fprintln(w, "NODE\tSTATUS\tADDR")
 
 	for _, n := range st.Nodes {
-		if !opts.includeAll && n.GetStatus() != controlv1.NodeStatus_NODE_STATUS_ONLINE {
+		if !opts.includeAll && !isReachableStatus(n.GetStatus()) {
 			filtered++
 			continue
 		}
@@ -367,15 +367,15 @@ func printServicesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse, opt
 	if len(st.Services) == 0 {
 		return
 	}
-	onlineProviders := map[string]bool{}
+	reachableProviders := map[string]bool{}
 	if st.GetSelf() != nil && st.GetSelf().GetNode() != nil {
 		selfID := peerKeyString(st.GetSelf().GetNode().GetPeerId())
-		onlineProviders[selfID] = true
+		reachableProviders[selfID] = true
 	}
 	for _, n := range st.Nodes {
-		if n.GetStatus() == controlv1.NodeStatus_NODE_STATUS_ONLINE {
+		if isReachableStatus(n.GetStatus()) {
 			id := peerKeyString(n.GetNode().GetPeerId())
-			onlineProviders[id] = true
+			reachableProviders[id] = true
 		}
 	}
 
@@ -385,7 +385,7 @@ func printServicesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse, opt
 
 	for _, s := range st.Services {
 		providerID := peerKeyString(s.GetProvider().GetPeerId())
-		if !opts.includeAll && !onlineProviders[providerID] {
+		if !opts.includeAll && !reachableProviders[providerID] {
 			filtered++
 			continue
 		}
@@ -554,14 +554,14 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg str
 		return nil, errors.New("no status available")
 	}
 
-	onlineProviders := map[string]bool{}
+	reachableProviders := map[string]bool{}
 	if st.GetSelf() != nil && st.GetSelf().GetNode() != nil {
 		selfID := peerKeyString(st.GetSelf().GetNode().GetPeerId())
-		onlineProviders[selfID] = true
+		reachableProviders[selfID] = true
 	}
 	for _, n := range st.Nodes {
-		if n.GetStatus() == controlv1.NodeStatus_NODE_STATUS_ONLINE {
-			onlineProviders[peerKeyString(n.GetNode().GetPeerId())] = true
+		if isReachableStatus(n.GetStatus()) {
+			reachableProviders[peerKeyString(n.GetNode().GetPeerId())] = true
 		}
 	}
 
@@ -581,7 +581,7 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg str
 		}
 
 		providerID := peerKeyString(svc.GetProvider().GetPeerId())
-		if !onlineProviders[providerID] {
+		if !reachableProviders[providerID] {
 			continue
 		}
 		if providerArg != "" && !peerIDHasPrefix(svc.GetProvider().GetPeerId(), providerArg) {
@@ -592,9 +592,9 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg str
 
 	if len(matches) == 0 {
 		if providerArg != "" {
-			return nil, fmt.Errorf("no online provider for %q on %q", serviceArg, providerArg)
+			return nil, fmt.Errorf("no reachable provider for %q on %q", serviceArg, providerArg)
 		}
-		return nil, fmt.Errorf("no online service match for %q", serviceArg)
+		return nil, fmt.Errorf("no reachable service match for %q", serviceArg)
 	}
 	if len(matches) > 1 {
 		var b strings.Builder
@@ -632,11 +632,17 @@ func formatStatus(s controlv1.NodeStatus) string {
 	switch s {
 	case controlv1.NodeStatus_NODE_STATUS_ONLINE:
 		return "online"
+	case controlv1.NodeStatus_NODE_STATUS_RELAY:
+		return "relay"
 	case controlv1.NodeStatus_NODE_STATUS_OFFLINE:
 		return "offline"
 	default:
 		return "offline"
 	}
+}
+
+func isReachableStatus(s controlv1.NodeStatus) bool {
+	return s == controlv1.NodeStatus_NODE_STATUS_ONLINE || s == controlv1.NodeStatus_NODE_STATUS_RELAY
 }
 
 func peerIDHasPrefix(peerID []byte, prefix string) bool {

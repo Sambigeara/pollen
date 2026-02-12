@@ -75,6 +75,52 @@ func (m *NodeMap) Get(key types.PeerKey) (Record, bool) {
 	return v, ok
 }
 
+func (m *NodeMap) ConnectedPeers(key types.PeerKey) []types.PeerKey {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	rec, ok := m.Data[key]
+	if !ok || rec.Tombstone || len(rec.Node.Connected) == 0 {
+		return nil
+	}
+
+	out := make([]types.PeerKey, 0, len(rec.Node.Connected))
+	for peerID := range rec.Node.Connected {
+		peerKey, err := types.PeerKeyFromString(peerID)
+		if err != nil {
+			continue
+		}
+		out = append(out, peerKey)
+	}
+
+	return out
+}
+
+func (m *NodeMap) IsConnected(source, target types.PeerKey) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	rec, ok := m.Data[source]
+	if !ok || rec.Tombstone || len(rec.Node.Connected) == 0 {
+		return false
+	}
+
+	_, ok = rec.Node.Connected[target.String()]
+	return ok
+}
+
+func (m *NodeMap) NodeIPs(key types.PeerKey) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	rec, ok := m.Data[key]
+	if !ok || rec.Tombstone || len(rec.Node.Ips) == 0 {
+		return nil
+	}
+
+	return append([]string(nil), rec.Node.Ips...)
+}
+
 func (m *NodeMap) GetAll() map[types.PeerKey]*statev1.Node {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

@@ -35,3 +35,10 @@ message PunchCoordTrigger {
   string self_addr = 2;
   string peer_addr = 3;
 }
+
+message UdpRelayEnvelope {
+  bytes src_peer_id = 1;
+  bytes dst_peer_id = 2;
+  uint32 msg_type = 3;
+  bytes payload = 4;
+}

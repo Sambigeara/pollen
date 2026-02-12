@@ -24,6 +24,7 @@ enum NodeStatus {
   NODE_STATUS_UNSPECIFIED = 0;
   NODE_STATUS_ONLINE = 1;
   NODE_STATUS_OFFLINE = 2;
+  NODE_STATUS_RELAY = 3;
 }
 
 message NodeSummary {
