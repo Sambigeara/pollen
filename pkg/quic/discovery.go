@@ -187,9 +187,7 @@ func isValidIP(ip net.IP) bool {
 		return false
 	}
 
-	// TODO(saml) remove
-	// Ignore Tailscale IPs
-	// if _, ignoreTailscale := os.LookupEnv("IP_IGNORE_TAILSCALE"); ignoreTailscale {
+	// Ignore Tailscale IPs (CGNAT range 100.64.0.0/10 and ULA fd7a:115c:a1e0::/48).
 	if ip4 := ip.To4(); ip4 != nil {
 		if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
 			return false
@@ -199,12 +197,9 @@ func isValidIP(ip net.IP) bool {
 	if ip16 == nil {
 		return false
 	}
-	// Tailscale IPv6 ULA (common): fd7a:115c:a1e0::/48
-	// fd 7a : 11 5c : a1 e0
 	if ip16[0] == 0xfd && ip16[1] == 0x7a && ip16[2] == 0x11 && ip16[3] == 0x5c && ip16[4] == 0xa1 && ip16[5] == 0xe0 {
 		return false
 	}
-	// }
 
 	//nolint:mnd
 	if _, ignoreLocal := os.LookupEnv("IP_IGNORE_LOCAL"); ignoreLocal { //nolint:nestif

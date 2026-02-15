@@ -39,10 +39,6 @@ func encodeFragmentedDatagrams(msgType types.MsgType, payload []byte, maxDatagra
 	}
 
 	chunkSize := maxDatagramPayload - fragmentHeaderSize
-	if chunkSize <= 0 {
-		return nil, fmt.Errorf("invalid chunk size: %d", chunkSize)
-	}
-
 	total := (len(payload) + chunkSize - 1) / chunkSize
 	if total <= 0 {
 		total = 1
