@@ -10,7 +10,7 @@ import (
 
 func TestApplyNode_RebroadcastsOnSelfConflict(t *testing.T) {
 	localID := peerKey(1)
-	s := newTestStore(t, localID)
+	s := newTestStore(t)
 
 	initial := s.SetLocalNetwork([]string{"10.0.0.1"}, 60611)
 	require.NotNil(t, initial)
@@ -33,7 +33,7 @@ func TestMissingFor_ReturnsOnlyNewerRecords(t *testing.T) {
 	localID := peerKey(1)
 	remoteID := peerKey(2)
 
-	s := newTestStore(t, localID)
+	s := newTestStore(t)
 	local := s.SetLocalNetwork([]string{"10.0.0.1"}, 60611)
 	require.NotNil(t, local)
 
@@ -57,10 +57,10 @@ func TestMissingFor_ReturnsOnlyNewerRecords(t *testing.T) {
 	require.Equal(t, uint64(3), updates[0].GetCounter())
 }
 
-func newTestStore(t *testing.T, localID types.PeerKey) *Store {
+func newTestStore(t *testing.T) *Store {
 	t.Helper()
 
-	s, err := Load(t.TempDir(), localID, bytesOf(32, 7))
+	s, err := Load(t.TempDir(), bytesOf(32, 7))
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, s.Close())

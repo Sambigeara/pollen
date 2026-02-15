@@ -1,4 +1,4 @@
-package sock
+package quic
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const publicIPQueryTimeout = time.Second * 5
+const publicIPQueryTimeout = time.Second * 3
 
 var (
 	ipv4Providers = []string{
