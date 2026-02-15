@@ -3,13 +3,9 @@ package quic
 import (
 	"context"
 	"crypto/ed25519"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/quic-go/quic-go"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
@@ -24,17 +20,6 @@ const (
 
 	errCodeNormal     quic.ApplicationErrorCode = 0
 	errCodeDisconnect quic.ApplicationErrorCode = 1
-
-	streamTypeInvite byte = 0x02
-
-	inviteTokenMaxLen = 255
-	inviteHeaderLen   = 2
-
-	handshakeTimeout = 5 * time.Second
-
-	maxReassemblyFragments = 4096
-	maxReassemblyBytes     = 8 * 1024 * 1024
-	fragmentReassemblyTTL  = 30 * time.Second
 )
 
 type PeerDirectory interface {
@@ -44,29 +29,23 @@ type PeerDirectory interface {
 type SuperSockImpl struct {
 	ctx       context.Context
 	dir       PeerDirectory
-	invites   admission.Store
 	log       *zap.SugaredLogger
 	conns     map[types.PeerKey]*Conn
 	recvChan  chan Packet
 	events    chan peer.Input
+	store     *SocketStore
 	transport *Transport
 	cancel    context.CancelFunc
 	signPriv  ed25519.PrivateKey
+	invites   admission.Store
 	port      int
 	connsMu   sync.RWMutex
-	fragSeq   uint32
 }
 
 type Packet struct {
 	Payload []byte
 	Typ     types.MsgType
 	Peer    types.PeerKey
-}
-
-type dialResult struct {
-	qc        *quic.Conn
-	addr      *net.UDPAddr
-	transport *Transport
 }
 
 func NewSuperSock(port int, signPriv ed25519.PrivateKey, dir PeerDirectory, invites admission.Store) *SuperSockImpl {
@@ -85,19 +64,27 @@ func NewSuperSock(port int, signPriv ed25519.PrivateKey, dir PeerDirectory, invi
 func (s *SuperSockImpl) Start(ctx context.Context) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)
 
-	t, err := newQUICTransport(s.port, s.signPriv)
+	localID := types.PeerKeyFromBytes(s.signPriv.Public().(ed25519.PublicKey))
+
+	ss, err := NewSocketStore(s.port, localID)
 	if err != nil {
-		return fmt.Errorf("create QUIC transport: %w", err)
+		return fmt.Errorf("create socket store: %w", err)
+	}
+	s.store = ss
+
+	t, err := NewTransport(s.signPriv, s.invites)
+	if err != nil {
+		_ = ss.Close()
+		return fmt.Errorf("create transport: %w", err)
 	}
 	s.transport = t
 
-	if err := t.listen(); err != nil {
-		_ = t.close()
+	if err := t.Listen(ss.MainPacketConn()); err != nil {
+		_ = ss.Close()
 		return fmt.Errorf("QUIC listen: %w", err)
 	}
 
 	go s.acceptLoop(s.ctx)
-
 	return nil
 }
 
@@ -120,28 +107,10 @@ func (s *SuperSockImpl) Send(ctx context.Context, peerKey types.PeerKey, msg typ
 	}
 
 	data := encodeDatagram(msg.Type, msg.Payload)
-	if err := conn.SendDatagram(data); err == nil {
-		return nil
-	} else {
-		var tooLarge *quic.DatagramTooLargeError
-		if !errors.As(err, &tooLarge) {
-			s.log.Debugw("send datagram failed", "peer", peerKey.Short(), "type", msg.Type, "err", err)
-			return err
-		}
-
-		frames, fragErr := encodeFragmentedDatagrams(msg.Type, msg.Payload, int(tooLarge.MaxDatagramPayloadSize), atomic.AddUint32(&s.fragSeq, 1))
-		if fragErr != nil {
-			return fmt.Errorf("fragment oversized datagram: %w", fragErr)
-		}
-
-		for _, frame := range frames {
-			if sendErr := conn.SendDatagram(frame); sendErr != nil {
-				s.log.Debugw("send fragmented datagram failed", "peer", peerKey.Short(), "type", msg.Type, "err", sendErr)
-				return sendErr
-			}
-		}
+	if err := conn.SendDatagram(data); err != nil {
+		s.log.Debugw("send datagram failed", "peer", peerKey.Short(), "type", msg.Type, "err", err)
+		return err
 	}
-
 	return nil
 }
 
@@ -149,7 +118,7 @@ func (s *SuperSockImpl) Events() <-chan peer.Input {
 	return s.events
 }
 
-func (s *SuperSockImpl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr) error {
+func (s *SuperSockImpl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr, opts *GetOrCreateOpts) error {
 	if s.hasActiveConn(peerKey) {
 		return nil
 	}
@@ -158,218 +127,63 @@ func (s *SuperSockImpl) EnsurePeer(ctx context.Context, peerKey types.PeerKey, a
 		return fmt.Errorf("no identity pub for peer %s", peerKey.Short())
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	sock, err := s.store.GetOrCreate(ctx, peerKey, addrs, opts)
+	if err != nil {
+		return err
+	}
 
-	resultCh := make(chan dialResult, 1)
-	var wg sync.WaitGroup
+	qc, cleanup, dialErr := s.transport.Dial(ctx, sock, peerKey)
+	if dialErr != nil {
+		sock.Close()
+		return fmt.Errorf("dial peer %s: %w", peerKey.Short(), dialErr)
+	}
 
-	for _, addr := range addrs {
-		if addr == nil {
-			continue
+	// Build onClose hook: clean up ephemeral QUIC transport + socket store entry.
+	var onClose func()
+	if cleanup != nil || !sock.IsMain() {
+		capturedCleanup := cleanup
+		capturedSock := sock
+		onClose = func() {
+			if capturedCleanup != nil {
+				capturedCleanup()
+			}
+			capturedSock.Close()
 		}
-
-		wg.Add(1)
-		go func(addr *net.UDPAddr) {
-			defer wg.Done()
-
-			qc, err := s.transport.dialExpectedPeer(ctx, addr, peerKey)
-			if err != nil {
-				s.log.Debugw("dial failed", "peer", peerKey.Short(), "addr", addr, "err", err)
-				return
-			}
-
-			select {
-			case resultCh <- dialResult{qc: qc, addr: addr}:
-				cancel()
-			default:
-				_ = qc.CloseWithError(errCodeNormal, "duplicate connection")
-			}
-		}(addr)
 	}
 
-	go func() {
-		wg.Wait()
-		close(resultCh)
-	}()
+	addr := sock.RemoteAddr()
+	conn := NewConnWithClose(qc, peerKey, onClose)
+	s.registerConn(peerKey, conn)
+	s.store.NoteAddress(peerKey, addr)
+	go s.datagramReadLoop(s.ctx, conn)
 
-	res, ok := <-resultCh
-	if !ok {
-		if s.hasActiveConn(peerKey) {
-			return nil
-		}
-
-		return fmt.Errorf("failed to connect to peer %s at any address", peerKey.Short())
+	s.events <- peer.ConnectPeer{
+		PeerKey:      peerKey,
+		IP:           addr.IP,
+		ObservedPort: addr.Port,
 	}
 
-	s.registerDialResult(peerKey, res)
-	return nil
-}
-
-func (s *SuperSockImpl) EnsurePeerPunch(ctx context.Context, peerKey types.PeerKey, targetAddr *net.UDPAddr) error {
-	if targetAddr == nil {
-		return errors.New("missing target address for punch")
-	}
-
-	if s.hasActiveConn(peerKey) {
-		return nil
-	}
-
-	if _, ok := s.dir.IdentityPub(peerKey); !ok {
-		return fmt.Errorf("no identity pub for peer %s", peerKey.Short())
-	}
-
-	candidates := buildPunchCandidates(targetAddr, punchRemoteRandomPortAttempts)
-	if len(candidates) == 0 {
-		return fmt.Errorf("failed to derive punch candidates for peer %s", peerKey.Short())
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	resultCh := make(chan dialResult, 1)
-	var wg sync.WaitGroup
-
-	launchDial := func(t *Transport, addr *net.UDPAddr, ownedTransport bool) {
-		if t == nil || addr == nil {
-			if ownedTransport && t != nil {
-				_ = t.close()
-			}
-			return
-		}
-
-		wg.Go(func() {
-			qc, err := t.dialExpectedPeer(ctx, addr, peerKey)
-			if err != nil {
-				if ownedTransport {
-					_ = t.close()
-				}
-				return
-			}
-
-			result := dialResult{qc: qc, addr: addr}
-			if ownedTransport {
-				result.transport = t
-			}
-
-			select {
-			case resultCh <- result:
-				cancel()
-			default:
-				_ = qc.CloseWithError(errCodeNormal, "duplicate connection")
-				if ownedTransport {
-					_ = t.close()
-				}
-			}
-		})
-	}
-
-	for _, candidate := range candidates {
-		launchDial(s.transport, candidate, false)
-	}
-
-	for range punchLocalSocketAttempts {
-		t, err := newQUICTransport(0, s.signPriv)
-		if err != nil {
-			s.log.Debugw("fanout transport setup failed", "peer", peerKey.Short(), "err", err)
-			continue
-		}
-		launchDial(t, targetAddr, true)
-	}
-
-	go func() {
-		wg.Wait()
-		close(resultCh)
-	}()
-
-	res, ok := <-resultCh
-	if !ok {
-		if s.hasActiveConn(peerKey) {
-			return nil
-		}
-
-		return fmt.Errorf("failed to punch-connect to peer %s", peerKey.Short())
-	}
-
-	s.registerDialResult(peerKey, res)
 	return nil
 }
 
 func (s *SuperSockImpl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
-	if len(inv.Fingerprint) != ed25519.PublicKeySize {
-		return fmt.Errorf("invalid fingerprint length in invite")
+	qc, peerKey, addr, err := s.transport.JoinWithInvite(ctx, inv)
+	if err != nil {
+		return err
 	}
 
-	if len(inv.Id) == 0 {
-		return fmt.Errorf("missing invite id")
+	conn := NewConn(qc, peerKey)
+	s.registerConn(peerKey, conn)
+	s.store.NoteAddress(peerKey, addr)
+	go s.datagramReadLoop(s.ctx, conn)
+
+	s.events <- peer.ConnectPeer{
+		PeerKey:      peerKey,
+		IP:           addr.IP,
+		ObservedPort: addr.Port,
 	}
 
-	token := []byte(inv.Id)
-	if len(token) > inviteTokenMaxLen {
-		return fmt.Errorf("invite id too long")
-	}
-
-	peerKey := types.PeerKeyFromBytes(inv.Fingerprint)
-
-	for _, addrStr := range inv.Addr {
-		addr, err := net.ResolveUDPAddr("udp", addrStr)
-		if err != nil {
-			s.log.Debugw("resolve invite addr failed", "addr", addrStr, "err", err)
-			continue
-		}
-
-		qc, err := s.transport.dialExpectedPeer(ctx, addr, peerKey)
-		if err != nil {
-			s.log.Debugw("invite dial failed", "addr", addrStr, "err", err)
-			continue
-		}
-
-		stream, err := qc.OpenStreamSync(ctx)
-		if err != nil {
-			s.log.Debugw("open invite stream failed", "addr", addrStr, "err", err)
-			_ = qc.CloseWithError(errCodeNormal, "stream open failed")
-			continue
-		}
-
-		_ = stream.SetDeadline(time.Now().Add(handshakeTimeout))
-
-		req := make([]byte, 0, inviteHeaderLen+len(token))
-		req = append(req, streamTypeInvite, byte(len(token)))
-		req = append(req, token...)
-		if _, err := stream.Write(req); err != nil {
-			_ = stream.Close()
-			_ = qc.CloseWithError(errCodeNormal, "invite write failed")
-			continue
-		}
-
-		var resp [1]byte
-		if _, err := io.ReadFull(stream, resp[:]); err != nil {
-			_ = stream.Close()
-			_ = qc.CloseWithError(errCodeNormal, "invite read failed")
-			continue
-		}
-
-		_ = stream.Close()
-
-		if resp[0] != 0 {
-			_ = qc.CloseWithError(errCodeNormal, "invite rejected")
-			continue
-		}
-
-		conn := NewConn(qc, peerKey)
-		s.registerConn(peerKey, conn)
-		go s.datagramReadLoop(s.ctx, conn)
-
-		s.events <- peer.ConnectPeer{
-			PeerKey:      peerKey,
-			IP:           addr.IP,
-			ObservedPort: addr.Port,
-		}
-
-		return nil
-	}
-
-	return fmt.Errorf("failed to join via invite at any address")
+	return nil
 }
 
 func (s *SuperSockImpl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) {
@@ -381,8 +195,7 @@ func (s *SuperSockImpl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAdd
 		return nil, false
 	}
 
-	addr, ok := conn.qc.RemoteAddr().(*net.UDPAddr)
-	return addr, ok
+	return conn.RemoteAddr(), conn.RemoteAddr() != nil
 }
 
 func (s *SuperSockImpl) BroadcastDisconnect() {
@@ -410,11 +223,14 @@ func (s *SuperSockImpl) Close() error {
 	}
 	s.connsMu.Unlock()
 
-	if s.transport == nil {
-		return nil
+	if s.transport != nil {
+		_ = s.transport.Close()
 	}
 
-	return s.transport.close()
+	if s.store != nil {
+		return s.store.Close()
+	}
+	return nil
 }
 
 func (s *SuperSockImpl) GetConn(peerKey types.PeerKey) (*Conn, bool) {
@@ -425,7 +241,6 @@ func (s *SuperSockImpl) GetConn(peerKey types.PeerKey) (*Conn, bool) {
 	if ok && conn.IsClosed() {
 		return nil, false
 	}
-
 	return conn, ok
 }
 
@@ -436,31 +251,6 @@ func (s *SuperSockImpl) hasActiveConn(peerKey types.PeerKey) bool {
 	return ok && !conn.IsClosed()
 }
 
-func (s *SuperSockImpl) registerDialResult(peerKey types.PeerKey, res dialResult) {
-	if res.qc == nil || res.addr == nil {
-		return
-	}
-
-	conn := NewConn(res.qc, peerKey)
-	if res.transport != nil {
-		ownedTransport := res.transport
-		conn = NewConnWithClose(res.qc, peerKey, func() {
-			if err := ownedTransport.close(); err != nil {
-				s.log.Debugw("failed closing owned transport", "peer", peerKey.Short(), "err", err)
-			}
-		})
-	}
-
-	s.registerConn(peerKey, conn)
-	go s.datagramReadLoop(s.ctx, conn)
-
-	s.events <- peer.ConnectPeer{
-		PeerKey:      peerKey,
-		IP:           res.addr.IP,
-		ObservedPort: res.addr.Port,
-	}
-}
-
 func (s *SuperSockImpl) registerConn(peerKey types.PeerKey, conn *Conn) {
 	s.connsMu.Lock()
 	defer s.connsMu.Unlock()
@@ -468,7 +258,6 @@ func (s *SuperSockImpl) registerConn(peerKey types.PeerKey, conn *Conn) {
 	if old, ok := s.conns[peerKey]; ok {
 		_ = old.Close()
 	}
-
 	s.conns[peerKey] = conn
 }
 
@@ -481,22 +270,19 @@ func (s *SuperSockImpl) removeConnIfSame(peerKey types.PeerKey, conn *Conn) bool
 		delete(s.conns, peerKey)
 		return true
 	}
-
 	return false
 }
 
 func (s *SuperSockImpl) acceptLoop(ctx context.Context) {
 	for {
-		qc, err := s.transport.accept(ctx)
+		qc, err := s.transport.Accept(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-
 			s.log.Debugw("accept failed", "err", err)
 			continue
 		}
-
 		go s.handleIncomingConnection(ctx, qc)
 	}
 }
@@ -510,7 +296,7 @@ func (s *SuperSockImpl) handleIncomingConnection(ctx context.Context, qc *quic.C
 	}
 
 	if _, known := s.dir.IdentityPub(peerKey); !known {
-		if err := s.acceptInviteStream(ctx, qc); err != nil {
+		if err := s.transport.AcceptInviteStream(ctx, qc); err != nil {
 			s.log.Debugw("invite handshake failed", "remote", qc.RemoteAddr(), "peer", peerKey.Short(), "err", err)
 			_ = qc.CloseWithError(errCodeNormal, "invite required")
 			return
@@ -522,6 +308,7 @@ func (s *SuperSockImpl) handleIncomingConnection(ctx context.Context, qc *quic.C
 	go s.datagramReadLoop(s.ctx, conn)
 
 	if addr, ok := qc.RemoteAddr().(*net.UDPAddr); ok {
+		s.store.NoteAddress(peerKey, addr)
 		s.events <- peer.ConnectPeer{
 			PeerKey:      peerKey,
 			IP:           addr.IP,
@@ -535,66 +322,11 @@ func peerKeyFromConnection(qc *quic.Conn) (types.PeerKey, error) {
 	if len(peerCerts) == 0 {
 		return types.PeerKey{}, fmt.Errorf("no peer certificate")
 	}
-
 	return peerKeyFromRawCert(peerCerts[0].Raw)
-}
-
-func (s *SuperSockImpl) acceptInviteStream(ctx context.Context, qc *quic.Conn) error {
-	acceptCtx, acceptCancel := context.WithTimeout(ctx, handshakeTimeout)
-	defer acceptCancel()
-
-	stream, err := qc.AcceptStream(acceptCtx)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = stream.Close()
-	}()
-
-	_ = stream.SetDeadline(time.Now().Add(handshakeTimeout))
-
-	var header [2]byte
-	if _, err := io.ReadFull(stream, header[:]); err != nil {
-		return fmt.Errorf("read invite header: %w", err)
-	}
-
-	if header[0] != streamTypeInvite {
-		return fmt.Errorf("unexpected stream type: %d", header[0])
-	}
-
-	tokenLen := int(header[1])
-	if tokenLen == 0 {
-		_, _ = stream.Write([]byte{1})
-		return fmt.Errorf("empty invite token")
-	}
-
-	tokenBuf := make([]byte, tokenLen)
-	if _, err := io.ReadFull(stream, tokenBuf); err != nil {
-		_, _ = stream.Write([]byte{1})
-		return fmt.Errorf("read invite token: %w", err)
-	}
-
-	ok, err := s.invites.ConsumeToken(string(tokenBuf))
-	if err != nil {
-		_, _ = stream.Write([]byte{1})
-		return fmt.Errorf("consume invite token: %w", err)
-	}
-	if !ok {
-		_, _ = stream.Write([]byte{1})
-		return fmt.Errorf("invalid invite token")
-	}
-
-	if _, err := stream.Write([]byte{0}); err != nil {
-		return fmt.Errorf("write invite response: %w", err)
-	}
-
-	return nil
 }
 
 func (s *SuperSockImpl) datagramReadLoop(ctx context.Context, conn *Conn) {
 	peerKey := conn.PeerID()
-	fragments := make(map[uint32]*fragmentAccumulator)
-	lastPrune := time.Now()
 
 	for {
 		data, err := conn.ReceiveDatagram(ctx)
@@ -611,30 +343,10 @@ func (s *SuperSockImpl) datagramReadLoop(ctx context.Context, conn *Conn) {
 			return
 		}
 
-		now := time.Now()
-		if now.Sub(lastPrune) >= fragmentReassemblyTTL {
-			pruneFragmentAccumulators(fragments, now)
-			lastPrune = now
-		}
-
-		msgType, payload, frag, err := decodeDatagram(data)
-		//nolint:nestif
+		msgType, payload, err := decodeDatagram(data)
 		if err != nil {
-			if errors.Is(err, errFragmentedDatagram) && frag != nil {
-				assembledType, assembledPayload, complete, asmErr := addFragment(fragments, frag, now)
-				if asmErr != nil {
-					s.log.Debugw("fragment assembly error", "peer", peerKey.Short(), "err", asmErr)
-					continue
-				}
-				if !complete {
-					continue
-				}
-				msgType = assembledType
-				payload = assembledPayload
-			} else {
-				s.log.Debugw("datagram decode error", "peer", peerKey.Short(), "err", err)
-				continue
-			}
+			s.log.Debugw("datagram decode error", "peer", peerKey.Short(), "err", err)
+			continue
 		}
 
 		select {
@@ -645,78 +357,6 @@ func (s *SuperSockImpl) datagramReadLoop(ctx context.Context, conn *Conn) {
 			Payload: payload,
 			Typ:     msgType,
 		}:
-		}
-	}
-}
-
-type fragmentAccumulator struct {
-	updated  time.Time
-	parts    [][]byte
-	size     int
-	msgType  types.MsgType
-	total    uint16
-	received uint16
-}
-
-func addFragment(acc map[uint32]*fragmentAccumulator, frag *datagramFragment, now time.Time) (types.MsgType, []byte, bool, error) {
-	if frag.total == 0 {
-		return 0, nil, false, fmt.Errorf("fragment total is zero")
-	}
-	if frag.total > maxReassemblyFragments {
-		return 0, nil, false, fmt.Errorf("too many fragments: %d", frag.total)
-	}
-
-	entry, ok := acc[frag.msgID]
-	if !ok {
-		entry = &fragmentAccumulator{
-			msgType: frag.msgType,
-			total:   frag.total,
-			parts:   make([][]byte, frag.total),
-		}
-		acc[frag.msgID] = entry
-	}
-
-	if entry.msgType != frag.msgType || entry.total != frag.total {
-		delete(acc, frag.msgID)
-		return 0, nil, false, fmt.Errorf("fragment header mismatch")
-	}
-
-	entry.updated = now
-
-	if entry.parts[frag.index] != nil {
-		return 0, nil, false, nil
-	}
-
-	chunk := append([]byte(nil), frag.payload...)
-	entry.parts[frag.index] = chunk
-	entry.received++
-	entry.size += len(chunk)
-
-	if entry.size > maxReassemblyBytes {
-		delete(acc, frag.msgID)
-		return 0, nil, false, fmt.Errorf("reassembled payload too large: %d bytes", entry.size)
-	}
-
-	if entry.received != entry.total {
-		return 0, nil, false, nil
-	}
-
-	out := make([]byte, 0, entry.size)
-	for _, part := range entry.parts {
-		if part == nil {
-			return 0, nil, false, fmt.Errorf("missing fragment in completed message")
-		}
-		out = append(out, part...)
-	}
-
-	delete(acc, frag.msgID)
-	return entry.msgType, out, true, nil
-}
-
-func pruneFragmentAccumulators(acc map[uint32]*fragmentAccumulator, now time.Time) {
-	for msgID, entry := range acc {
-		if now.Sub(entry.updated) > fragmentReassemblyTTL {
-			delete(acc, msgID)
 		}
 	}
 }
