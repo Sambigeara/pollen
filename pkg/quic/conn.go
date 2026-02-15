@@ -2,6 +2,7 @@ package quic
 
 import (
 	"context"
+	"net"
 	"sync"
 
 	"github.com/quic-go/quic-go"
@@ -69,6 +70,12 @@ func (c *Conn) AcceptStream(ctx context.Context) (*quic.Stream, error) {
 // PeerID returns the remote peer's identity key.
 func (c *Conn) PeerID() types.PeerKey {
 	return c.peerID
+}
+
+// RemoteAddr returns the remote peer's UDP address.
+func (c *Conn) RemoteAddr() *net.UDPAddr {
+	addr, _ := c.qc.RemoteAddr().(*net.UDPAddr)
+	return addr
 }
 
 // Close terminates the connection with an application error.

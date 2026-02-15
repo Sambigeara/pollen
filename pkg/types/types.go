@@ -9,8 +9,6 @@ type MsgType uint32
 
 const (
 	MsgTypeGossip MsgType = iota
-	MsgTypeUDPPunchCoordRequest
-	MsgTypeUDPPunchCoordResponse
 	MsgTypeUDPRelay
 )
 
