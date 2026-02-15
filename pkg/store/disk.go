@@ -10,7 +10,6 @@ import (
 	"sync"
 	"syscall"
 
-	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/types"
 	"gopkg.in/yaml.v3"
 )
@@ -32,12 +31,10 @@ type diskState struct {
 }
 
 type diskLocal struct {
-	NoisePublic    string `yaml:"noisePublic"`
 	IdentityPublic string `yaml:"identityPublic"`
 }
 
 type diskPeer struct {
-	NoisePublic    string   `yaml:"noisePublic"`
 	IdentityPublic string   `yaml:"identityPublic"`
 	Addresses      []string `yaml:"addresses,omitempty"`
 	Port           uint32   `yaml:"port,omitempty"`
@@ -203,23 +200,4 @@ func toDiskServices(nodes map[types.PeerKey]nodeRecord) []diskService {
 	})
 
 	return services
-}
-
-func cloneServices(in []*statev1.Service) []*statev1.Service {
-	out := make([]*statev1.Service, 0, len(in))
-	for _, svc := range in {
-		if svc == nil {
-			continue
-		}
-		out = append(out, &statev1.Service{Name: svc.GetName(), Port: svc.GetPort()})
-	}
-
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].GetPort() != out[j].GetPort() {
-			return out[i].GetPort() < out[j].GetPort()
-		}
-		return out[i].GetName() < out[j].GetName()
-	})
-
-	return out
 }

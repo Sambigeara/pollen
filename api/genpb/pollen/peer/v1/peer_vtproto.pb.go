@@ -48,21 +48,21 @@ func (m *Invite) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if len(m.Fingerprint) > 0 {
+		i -= len(m.Fingerprint)
+		copy(dAtA[i:], m.Fingerprint)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Fingerprint)))
+		i--
+		dAtA[i] = 0x1a
+	}
 	if len(m.Addr) > 0 {
 		for iNdEx := len(m.Addr) - 1; iNdEx >= 0; iNdEx-- {
 			i -= len(m.Addr[iNdEx])
 			copy(dAtA[i:], m.Addr[iNdEx])
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Addr[iNdEx])))
 			i--
-			dAtA[i] = 0x1a
+			dAtA[i] = 0x12
 		}
-	}
-	if len(m.Psk) > 0 {
-		i -= len(m.Psk)
-		copy(dAtA[i:], m.Psk)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Psk)))
-		i--
-		dAtA[i] = 0x12
 	}
 	if len(m.Id) > 0 {
 		i -= len(m.Id)
@@ -292,15 +292,15 @@ func (m *Invite) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	l = len(m.Psk)
-	if l > 0 {
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
 	if len(m.Addr) > 0 {
 		for _, s := range m.Addr {
 			l = len(s)
 			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 		}
+	}
+	l = len(m.Fingerprint)
+	if l > 0 {
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -453,40 +453,6 @@ func (m *Invite) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Psk", wireType)
-			}
-			var byteLen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				byteLen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if byteLen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + byteLen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.Psk = append(m.Psk[:0], dAtA[iNdEx:postIndex]...)
-			if m.Psk == nil {
-				m.Psk = []byte{}
-			}
-			iNdEx = postIndex
-		case 3:
-			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Addr", wireType)
 			}
 			var stringLen uint64
@@ -516,6 +482,40 @@ func (m *Invite) UnmarshalVT(dAtA []byte) error {
 				return io.ErrUnexpectedEOF
 			}
 			m.Addr = append(m.Addr, string(dAtA[iNdEx:postIndex]))
+			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Fingerprint", wireType)
+			}
+			var byteLen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				byteLen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if byteLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + byteLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Fingerprint = append(m.Fingerprint[:0], dAtA[iNdEx:postIndex]...)
+			if m.Fingerprint == nil {
+				m.Fingerprint = []byte{}
+			}
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex

@@ -8,41 +8,13 @@ import (
 type MsgType uint32
 
 const (
-	MsgTypeHandshakeXXPsk2Init MsgType = iota
-	MsgTypeHandshakeXXPsk2Resp
-	MsgTypeHandshakeIKInit
-	MsgTypeHandshakeIKResp
-
-	MsgTypeTransportData
-	MsgTypePing
-
+	MsgTypeGossip MsgType = iota
 	MsgTypeUDPPunchCoordRequest
 	MsgTypeUDPPunchCoordResponse
-
-	MsgTypeGossip
-	MsgTypeDisconnect
-	MsgTypeTest
-
-	// TCP punch coordination (NAT traversal for tunnels).
-	MsgTypeTCPPunchRequest
-	MsgTypeTCPPunchTrigger
-	MsgTypeTCPPunchReady
-	MsgTypeTCPPunchResponse
-
-	// Session establishment (multiplexed tunnels).
-	MsgTypeSessionRequest
-	MsgTypeSessionResponse
-
-	// TCP punch probe (port discovery).
-	MsgTypeTCPPunchProbeRequest
-	MsgTypeTCPPunchProbeOffer
-	MsgTypeTCPPunchProbeResult
-
-	// UDP relay envelope.
 	MsgTypeUDPRelay
 )
 
-type PeerKey [32]byte // Noise static pub
+type PeerKey [32]byte // ed25519 public key
 
 func PeerKeyFromBytes(b []byte) PeerKey {
 	var id PeerKey

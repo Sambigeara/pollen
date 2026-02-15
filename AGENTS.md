@@ -28,13 +28,11 @@ Follow the conventions below when making changes or writing tests.
 
 ### Tooling Notes
 - `just` will install required tools into `${HOME}/.cache/pollen/bin`
-- `buf`, `golangci-lint`, and `modernize` are pinned via the `tools/` module
 
 ## Repository Layout
 
 - `cmd/pollen`: CLI entry point
 - `pkg/`: core libraries (node/link/peer/state/tunnel/transport)
-- `internal/testutil/`: in-repo test harnesses (e.g. memtransport)
 - `api/public/`: protobuf definitions
 - `api/genpb/`: generated protobuf Go code
 - `tools/`: tooling module for codegen/lint helpers
@@ -53,24 +51,12 @@ Follow the conventions below when making changes or writing tests.
 
 ## Test Harness Notes
 
-- Prefer the in-memory transport for deterministic tests:
-  - `internal/testutil/memtransport` implements `transport.Transport`
-  - Use `memtransport.NewNetwork()` + `network.Bind("ip:port")`
-- Use distinct bind addresses per node/link (avoid accidental self-routing)
-- Create a fresh memtransport `Network` per test for isolation
-- For node/link tests, use explicit timing knobs to reduce waits:
-  - `peer.Config` via `peer.NewStoreWithConfig`
-  - `link` options (`WithEnsurePeerInterval`, `WithEnsurePeerTimeout`, etc.)
-  - `node.Config` fields: `PeerConfig`, `LinkOptions`, `PunchAttemptTimeout`,
-    `DisableGossipJitter`
-- Stop goroutines cleanly by canceling contexts and waiting on done channels
+- For now, keep tests minimal, integration heavy, and just at the main component boundaries.
 
 ## Code Style
 
 ### Imports
-- Standard library first, then third-party, then local imports
-- Use gofmt formatting (no manual alignment)
-- Avoid adding new dependency groups unless necessary
+- `just lint` takes care of import ordering
 
 ### Naming
 - Use idiomatic Go names: short receiver names (`n`, `i`, `m`) consistent
@@ -80,8 +66,6 @@ Follow the conventions below when making changes or writing tests.
 
 ### Types and APIs
 - `context.Context` is the first parameter when used
-- Prefer explicit config structs/options over hidden globals
-- Keep interfaces small and behavior-focused (see `link.Link`, `transport.Transport`)
 - Avoid exporting fields unless needed by tests or other packages
 
 ### Error Handling
@@ -119,31 +103,6 @@ Follow the conventions below when making changes or writing tests.
 - When restarting nodes in tests, reuse the same `PollenDir` to preserve keys
 - When tests fail, prefer asserting on local state (peer store, session store)
 
-## Networking Test Patterns
-
-- Distinguish "advertised" addresses from bind addresses in tests
-- For punch-coordination tests, ensure coordinator is a different peer than target
-- Avoid large timeouts; shrink intervals via config instead
-- Use `MsgTypeTest` handlers for simple reachability checks
-
-## State & Peer Notes
-
-- Peer discovery happens via gossiped `statev1.GossipNode` snapshots
-- `peer.Store.Step` is pure and accepts an explicit `now` for deterministic tests
-- Use `peer.ConnectFailed` to force stage escalation (direct -> punch)
-- `PeerDisconnected` transitions back to discovery with a retry interval
-
-## Project-Specific Notes
-
-- Go version: see `go.mod` (`go 1.25.1`)
-- The node startup path uses:
-  - Invite-based XXpsk2 handshake
-  - Gossip for state propagation
-  - IK for reconnection
-- The test framework supports graceful restart scenarios; use memtransport
-  for stable cross-node tests.
-- The project prefers deterministic unit tests over sleep-heavy integration tests
-
 ## CLI Status/Service Notes
 
 - `pollen status` uses live link sessions for `online/offline` and gossiped node services for service listings.
@@ -153,3 +112,31 @@ Follow the conventions below when making changes or writing tests.
 ## Cursor/Copilot Rules
 
 - None found in `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md`.
+
+## Long term goal for auth
+
+```
+**Pollen QUIC Identity & Membership — Implementation Summary**
+
+---
+
+**Identity model:** Every node has a long-lived Ed25519 keypair. This *is* the node's identity. The TLS certificate is a self-signed X.509 wrapper around this key, existing only to satisfy QUIC's TLS requirement.
+
+**Transport authentication:** QUIC's `tls.Config` uses a custom `VerifyPeerCertificate` (or `VerifyConnection`) callback. It extracts the Ed25519 public key from the peer's presented certificate and checks it against the membership CRDT. The handshake fails if the peer isn't a member. `InsecureSkipVerify: true` is set to disable X.509 chain validation — your callback is the real verification, and it runs during the handshake, not after. Both sides present certificates (`ClientAuth: RequireAnyClientCert`), giving you mutual authentication. Set ALPN via `NextProtos` or QUIC handshakes fail silently.
+
+**Membership CRDT:** The membership set contains signed facts, not raw entries. Every `Add(pubkey, meta, issuedAt)` and `Revoke(pubkey, reason, issuedAt)` is signed by an authority key rooted in `genesis.pub`. Nodes verify these signatures before merging. This prevents a compromised node from injecting itself into the membership set via gossip. Revocation checks take precedence over additions — a revoked key cannot be resurrected by replaying an old `Add`.
+
+**Join flow:**
+
+1. `pollen invite` produces a single join string containing: bootstrap addresses, a short-lived invite secret (signed by an admin/genesis delegate), and the genesis public key fingerprint.
+
+2. `pollen join <token>` connects to a bootstrap node via QUIC. The TLS verifier for this connection is in **enrol mode** — it pins the bootstrap's presented public key against the genesis fingerprint from the invite token. No blind trust.
+
+3. Over this authenticated channel, the joining node sends the invite secret and its own public key.
+
+4. The bootstrap validates the invite, creates a signed `Add` fact for the new node, and merges it into the membership CRDT. It returns the current membership snapshot.
+
+5. The new node stores `genesis.pub`, its own keypair, and the membership snapshot. All future connections use **normal mode** — verifying peers against the membership CRDT.
+
+**What to defer:** Key rotation, 0-RTT, and proactive connection teardown on revocation. These are real concerns but not v1 blockers. Eventual consistency on revocation is fine initially. 0-RTT should stay disabled until after the join flow is proven solid.
+```

@@ -1,7 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"sync"
 
@@ -13,16 +16,7 @@ type nodeRecord struct {
 	Reachable   map[types.PeerKey]struct{}
 	IdentityPub []byte
 	IPs         []string
-	Services    []*statev1.Service
-	Counter     uint64
-	LocalPort   uint32
-}
-
-type NodeSnapshot struct {
-	IdentityPub []byte
-	IPs         []string
-	Services    []*statev1.Service
-	Reachable   []types.PeerKey
+	Services    map[string]*statev1.Service
 	Counter     uint64
 	LocalPort   uint32
 }
@@ -53,7 +47,7 @@ type Store struct {
 	LocalID            types.PeerKey
 }
 
-func Load(pollenDir string, localID types.PeerKey, identityPub []byte) (*Store, error) {
+func Load(pollenDir string, identityPub []byte) (*Store, error) {
 	d, err := openDisk(pollenDir)
 	if err != nil {
 		return nil, err
@@ -65,22 +59,24 @@ func Load(pollenDir string, localID types.PeerKey, identityPub []byte) (*Store, 
 		return nil, err
 	}
 
+	localID := types.PeerKeyFromBytes(identityPub)
+
 	s := &Store{
-		LocalID:            localID,
-		disk:               d,
-		nodes:              make(map[types.PeerKey]nodeRecord),
+		LocalID: localID,
+		disk:    d,
+		nodes: map[types.PeerKey]nodeRecord{
+			localID: {
+				Counter:     0,
+				IdentityPub: append([]byte(nil), identityPub...),
+				Reachable:   make(map[types.PeerKey]struct{}),
+				Services:    make(map[string]*statev1.Service),
+			},
+		},
 		desiredConnections: make(map[string]Connection),
 	}
 
-	local := nodeRecord{
-		Counter:     0,
-		IdentityPub: append([]byte(nil), identityPub...),
-		Reachable:   make(map[types.PeerKey]struct{}),
-	}
-	s.nodes[localID] = local
-
 	for _, p := range onDisk.Peers {
-		peerID, err := types.PeerKeyFromString(p.NoisePublic)
+		peerID, err := types.PeerKeyFromString(p.IdentityPublic)
 		if err != nil {
 			continue
 		}
@@ -93,14 +89,13 @@ func Load(pollenDir string, localID types.PeerKey, identityPub []byte) (*Store, 
 			identityPub = nil
 		}
 
-		rec := s.nodes[peerID]
-		rec.IdentityPub = append([]byte(nil), identityPub...)
-		rec.IPs = append([]string(nil), p.Addresses...)
-		rec.LocalPort = p.Port
-		if rec.Reachable == nil {
-			rec.Reachable = make(map[types.PeerKey]struct{})
+		s.nodes[peerID] = nodeRecord{
+			IdentityPub: append([]byte(nil), identityPub...),
+			IPs:         append([]string(nil), p.Addresses...),
+			LocalPort:   p.Port,
+			Reachable:   make(map[types.PeerKey]struct{}),
+			Services:    make(map[string]*statev1.Service),
 		}
-		s.nodes[peerID] = rec
 	}
 
 	for _, svc := range onDisk.Services {
@@ -113,7 +108,10 @@ func Load(pollenDir string, localID types.PeerKey, identityPub []byte) (*Store, 
 		if rec.Reachable == nil {
 			rec.Reachable = make(map[types.PeerKey]struct{})
 		}
-		rec.Services = upsertService(rec.Services, svc.Port, svc.Name)
+		rec.Services[svc.Name] = &statev1.Service{
+			Name: svc.Name,
+			Port: svc.Port,
+		}
 		s.nodes[provider] = rec
 	}
 
@@ -122,11 +120,11 @@ func Load(pollenDir string, localID types.PeerKey, identityPub []byte) (*Store, 
 		if err != nil {
 			continue
 		}
-		s.addDesiredConnectionLocked(Connection{
+		s.desiredConnections[connectionKey(peerID, conn.RemotePort, conn.LocalPort)] = Connection{
 			PeerID:     peerID,
 			RemotePort: conn.RemotePort,
 			LocalPort:  conn.LocalPort,
-		})
+		}
 	}
 
 	return s, nil
@@ -157,7 +155,6 @@ func (s *Store) Save() error {
 			continue
 		}
 		peers = append(peers, diskPeer{
-			NoisePublic:    peerID.String(),
 			IdentityPublic: encodeHex(rec.IdentityPub),
 			Addresses:      append([]string(nil), rec.IPs...),
 			Port:           rec.LocalPort,
@@ -165,7 +162,7 @@ func (s *Store) Save() error {
 	}
 
 	sort.Slice(peers, func(i, j int) bool {
-		return peers[i].NoisePublic < peers[j].NoisePublic
+		return peers[i].IdentityPublic < peers[j].IdentityPublic
 	})
 
 	services := toDiskServices(nodes)
@@ -194,7 +191,6 @@ func (s *Store) Save() error {
 	localRec := nodes[s.LocalID]
 	st := diskState{
 		Local: diskLocal{
-			NoisePublic:    s.LocalID.String(),
 			IdentityPublic: encodeHex(localRec.IdentityPub),
 		},
 		Peers:       peers,
@@ -302,17 +298,14 @@ func (s *Store) SetLocalNetwork(ips []string, port uint32) *statev1.GossipNode {
 	defer s.mu.Unlock()
 
 	local := s.nodes[s.LocalID]
-	if local.Reachable == nil {
-		local.Reachable = make(map[types.PeerKey]struct{})
-	}
 
-	changed := !sameStrings(local.IPs, ips) || local.LocalPort != port
-	if !changed {
+	if slices.Compare(local.IPs, ips) == 0 && local.LocalPort == port {
 		return nil
 	}
 
-	local.IPs = append([]string(nil), ips...)
+	local.IPs = ips
 	local.LocalPort = port
+
 	s.nodes[s.LocalID] = local
 	return s.bumpLocalLocked()
 }
@@ -353,17 +346,14 @@ func (s *Store) UpsertLocalService(port uint32, name string) *statev1.GossipNode
 		local.Reachable = make(map[types.PeerKey]struct{})
 	}
 
-	updated := upsertService(local.Services, port, name)
-	if sameServices(local.Services, updated) {
-		return nil
+	s.nodes[s.LocalID].Services[name] = &statev1.Service{
+		Name: name,
+		Port: port,
 	}
-
-	local.Services = updated
-	s.nodes[s.LocalID] = local
 	return s.bumpLocalLocked()
 }
 
-func (s *Store) RemoveLocalServices(port uint32, name string) ([]uint32, *statev1.GossipNode) {
+func (s *Store) RemoveLocalServices(port uint32, name string) *statev1.GossipNode {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -372,76 +362,33 @@ func (s *Store) RemoveLocalServices(port uint32, name string) ([]uint32, *statev
 		local.Reachable = make(map[types.PeerKey]struct{})
 	}
 
-	updated, removed := removeServices(local.Services, port, name)
-	if len(removed) == 0 {
-		return nil, nil
-	}
+	delete(local.Services, name)
 
-	local.Services = updated
 	s.nodes[s.LocalID] = local
-	return removed, s.bumpLocalLocked()
+
+	return s.bumpLocalLocked()
 }
 
-func (s *Store) LocalServices() []*statev1.Service {
+func (s *Store) LocalServices() map[string]*statev1.Service {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	local := s.nodes[s.LocalID]
-	return cloneServices(local.Services)
+	return maps.Clone(local.Services)
 }
 
-func (s *Store) Nodes() map[types.PeerKey]NodeSnapshot {
+func (s *Store) CloneNodes() map[types.PeerKey]nodeRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	out := make(map[types.PeerKey]NodeSnapshot, len(s.nodes))
-	for peerID, rec := range s.nodes {
-		reachable := make([]types.PeerKey, 0, len(rec.Reachable))
-		for k := range rec.Reachable {
-			reachable = append(reachable, k)
-		}
-		sort.Slice(reachable, func(i, j int) bool {
-			return reachable[i].Less(reachable[j])
-		})
-
-		out[peerID] = NodeSnapshot{
-			Counter:     rec.Counter,
-			LocalPort:   rec.LocalPort,
-			IdentityPub: append([]byte(nil), rec.IdentityPub...),
-			IPs:         append([]string(nil), rec.IPs...),
-			Services:    cloneServices(rec.Services),
-			Reachable:   reachable,
-		}
-	}
-
-	return out
+	return maps.Clone(s.nodes)
 }
 
-func (s *Store) Get(peerID types.PeerKey) (NodeSnapshot, bool) {
+func (s *Store) Get(peerID types.PeerKey) (nodeRecord, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	rec, ok := s.nodes[peerID]
-	if !ok {
-		return NodeSnapshot{}, false
-	}
-
-	reachable := make([]types.PeerKey, 0, len(rec.Reachable))
-	for k := range rec.Reachable {
-		reachable = append(reachable, k)
-	}
-	sort.Slice(reachable, func(i, j int) bool {
-		return reachable[i].Less(reachable[j])
-	})
-
-	return NodeSnapshot{
-		Counter:     rec.Counter,
-		LocalPort:   rec.LocalPort,
-		IdentityPub: append([]byte(nil), rec.IdentityPub...),
-		IPs:         append([]string(nil), rec.IPs...),
-		Services:    cloneServices(rec.Services),
-		Reachable:   reachable,
-	}, true
+	return rec, ok
 }
 
 func (s *Store) NodeIPs(peerID types.PeerKey) []string {
@@ -533,18 +480,11 @@ func (s *Store) AddDesiredConnection(peerID types.PeerKey, remotePort, localPort
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.addDesiredConnectionLocked(Connection{
+	s.desiredConnections[connectionKey(peerID, remotePort, localPort)] = Connection{
 		PeerID:     peerID,
 		RemotePort: remotePort,
 		LocalPort:  localPort,
-	})
-}
-
-func (s *Store) addDesiredConnectionLocked(conn Connection) {
-	if conn.PeerID == (types.PeerKey{}) || conn.RemotePort == 0 || conn.LocalPort == 0 {
-		return
 	}
-	s.desiredConnections[connectionKey(conn.PeerID, conn.RemotePort, conn.LocalPort)] = conn
 }
 
 func (s *Store) RemoveDesiredConnection(peerID types.PeerKey, remotePort, localPort uint32) {
@@ -618,13 +558,17 @@ func toGossipNode(peerID types.PeerKey, rec nodeRecord) *statev1.GossipNode {
 	}
 	sort.Strings(reachable)
 
+	services := make([]*statev1.Service, 0, len(rec.Services))
+	for v := range maps.Values(rec.Services) {
+		services = append(services, v)
+	}
 	return &statev1.GossipNode{
 		PeerId:         peerID.String(),
 		Counter:        rec.Counter,
 		IdentityPub:    append([]byte(nil), rec.IdentityPub...),
 		Ips:            append([]string(nil), rec.IPs...),
 		LocalPort:      rec.LocalPort,
-		Services:       cloneServices(rec.Services),
+		Services:       services,
 		ReachablePeers: reachable,
 	}
 }
@@ -639,23 +583,31 @@ func fromGossipNode(update *statev1.GossipNode) nodeRecord {
 		reachable[id] = struct{}{}
 	}
 
+	services := make(map[string]*statev1.Service)
+	for _, s := range update.Services {
+		services[s.Name] = s
+	}
 	return nodeRecord{
 		Counter:     update.GetCounter(),
 		IdentityPub: append([]byte(nil), update.GetIdentityPub()...),
 		IPs:         append([]string(nil), update.GetIps()...),
 		LocalPort:   update.GetLocalPort(),
-		Services:    cloneServices(update.GetServices()),
+		Services:    services,
 		Reachable:   reachable,
 	}
 }
 
 func cloneRecord(rec nodeRecord) nodeRecord {
+	services := make(map[string]*statev1.Service)
+	for _, s := range rec.Services {
+		services[s.Name] = s
+	}
 	cloned := nodeRecord{
 		Counter:     rec.Counter,
 		IdentityPub: append([]byte(nil), rec.IdentityPub...),
 		IPs:         append([]string(nil), rec.IPs...),
 		LocalPort:   rec.LocalPort,
-		Services:    cloneServices(rec.Services),
+		Services:    services,
 		Reachable:   make(map[types.PeerKey]struct{}, len(rec.Reachable)),
 	}
 	for peer := range rec.Reachable {
@@ -675,40 +627,16 @@ func samePayload(a, b *statev1.GossipNode) bool {
 	if a.GetLocalPort() != b.GetLocalPort() {
 		return false
 	}
-	if !sameBytes(a.GetIdentityPub(), b.GetIdentityPub()) {
+	if bytes.Compare(a.GetIdentityPub(), b.GetIdentityPub()) != 0 {
 		return false
 	}
-	if !sameStrings(a.GetIps(), b.GetIps()) {
+	if slices.Compare(a.GetIps(), b.GetIps()) != 0 {
 		return false
 	}
-	if !sameStrings(a.GetReachablePeers(), b.GetReachablePeers()) {
+	if slices.Compare(a.GetReachablePeers(), b.GetReachablePeers()) != 0 {
 		return false
 	}
 	return sameServices(a.GetServices(), b.GetServices())
-}
-
-func sameBytes(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func sameStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func sameServices(a, b []*statev1.Service) bool {
@@ -731,68 +659,6 @@ func sameServices(a, b []*statev1.Service) bool {
 
 func connectionKey(peerID types.PeerKey, remotePort, localPort uint32) string {
 	return fmt.Sprintf("%s:%d:%d", peerID.String(), remotePort, localPort)
-}
-
-func upsertService(services []*statev1.Service, port uint32, name string) []*statev1.Service {
-	updated := make([]*statev1.Service, 0, len(services)+1)
-	seen := false
-	for _, svc := range services {
-		if svc.GetPort() == port {
-			updated = append(updated, &statev1.Service{Name: name, Port: port})
-			seen = true
-			continue
-		}
-		updated = append(updated, &statev1.Service{Name: svc.GetName(), Port: svc.GetPort()})
-	}
-	if !seen {
-		updated = append(updated, &statev1.Service{Name: name, Port: port})
-	}
-
-	sort.Slice(updated, func(i, j int) bool {
-		if updated[i].GetPort() != updated[j].GetPort() {
-			return updated[i].GetPort() < updated[j].GetPort()
-		}
-		return updated[i].GetName() < updated[j].GetName()
-	})
-
-	return updated
-}
-
-func removeServices(services []*statev1.Service, port uint32, name string) ([]*statev1.Service, []uint32) {
-	updated := make([]*statev1.Service, 0, len(services))
-	removed := make([]uint32, 0, len(services))
-	for _, svc := range services {
-		if matchesService(svc, port, name) {
-			removed = append(removed, svc.GetPort())
-			continue
-		}
-		updated = append(updated, &statev1.Service{Name: svc.GetName(), Port: svc.GetPort()})
-	}
-
-	sort.Slice(updated, func(i, j int) bool {
-		if updated[i].GetPort() != updated[j].GetPort() {
-			return updated[i].GetPort() < updated[j].GetPort()
-		}
-		return updated[i].GetName() < updated[j].GetName()
-	})
-
-	return updated, removed
-}
-
-func matchesService(svc *statev1.Service, port uint32, name string) bool {
-	if svc == nil {
-		return false
-	}
-	if port != 0 && svc.GetPort() == port {
-		return true
-	}
-	if name == "" {
-		return false
-	}
-	if svc.GetName() == name {
-		return true
-	}
-	return svc.GetName() == "" && serviceNameForPort(svc.GetPort()) == name
 }
 
 func serviceNameForPort(port uint32) string {
