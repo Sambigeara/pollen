@@ -2,57 +2,44 @@ package tunnel
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/binary"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"sync"
-	"time"
 
 	"go.uber.org/zap"
-	"golang.org/x/crypto/ed25519"
 
-	"github.com/sambigeara/pollen/pkg/tcp"
+	"github.com/sambigeara/pollen/pkg/quic"
 	"github.com/sambigeara/pollen/pkg/types"
-
-	tcpv1 "github.com/sambigeara/pollen/api/genpb/pollen/tcp/v1"
 )
 
-const (
-	acceptTimeout = 10 * time.Second
-)
-
-type Send func(ctx context.Context, peer types.PeerKey, msg types.Envelope) error
-
-type PeerDirectory interface {
-	IdentityPub(peerNoisePub types.PeerKey) (ed25519.PublicKey, bool)
+// ConnProvider resolves the active QUIC connection for a given peer.
+type ConnProvider interface {
+	GetConn(peerKey types.PeerKey) (*quic.Conn, bool)
+	GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool)
 }
 
+// PeerDirectory maps peer keys to identity public keys.
+type PeerDirectory interface {
+	IdentityPub(peerKey types.PeerKey) (ed25519.PublicKey, bool)
+}
+
+// Manager manages service tunneling over QUIC streams. Once two peers have a
+// QUIC connection (established by the supersock layer), tunneling is simply
+// opening streams on that connection. No separate TCP setup, TLS wrapping,
+// or yamux multiplexing needed.
 type Manager struct {
-	peerProvider      ConnectedPeersProvider
-	dir               PeerDirectory
-	sessionInflight   map[uint64]sessionInflight
-	sessions          *SessionManager
-	connections       map[string]connectionHandler
-	pendingPunch      map[uint64]pendingPunchReq
-	services          map[string]serviceHandler
-	activeStreams     map[uint32]map[net.Conn]struct{}
-	punchInflight     map[uint64]punchInflight
-	probeInflight     map[uint64]probeInflight
-	sender            Send
-	ips               []string
-	signPriv          ed25519.PrivateKey
-	acceptTimeout     time.Duration
-	connectionMu      sync.RWMutex
-	serviceMu         sync.RWMutex
-	streamMu          sync.Mutex
-	sessionInflightMu sync.Mutex
-	punchMu           sync.Mutex
-	probeMu           sync.Mutex
+	connProvider  ConnProvider
+	dir           PeerDirectory
+	sessions      *SessionManager
+	connections   map[string]connectionHandler
+	services      map[uint32]serviceHandler
+	activeStreams map[uint32]map[net.Conn]struct{}
+	connectionMu  sync.RWMutex
+	serviceMu     sync.RWMutex
+	streamMu      sync.Mutex
 }
 
 type serviceHandler struct {
@@ -93,46 +80,25 @@ func connectionKey(peerID, port string) string {
 	return peerID + ":" + port
 }
 
-// sessionInflight tracks an in-progress session establishment.
-type sessionInflight struct {
-	ch      chan *tcpv1.SessionHandshake
-	peerKey types.PeerKey
-}
-
 var (
-	ErrNoHandler             = errors.New("no incoming tunnel handler registered")
-	ErrUnknownPeerIdentity   = errors.New("peer identity key unknown")
-	ErrHandshakeResponseMiss = errors.New("timed out waiting for session handshake response")
-	ErrNoDialableAddress     = errors.New("no dialable tunnel address")
-	ErrServiceNotRegistered  = errors.New("service not registered")
+	ErrNoHandler            = errors.New("no incoming tunnel handler registered")
+	ErrUnknownPeerIdentity  = errors.New("peer identity key unknown")
+	ErrServiceNotRegistered = errors.New("service not registered")
 )
 
-func New(sender Send, dir PeerDirectory, peerProvider ConnectedPeersProvider, signPriv ed25519.PrivateKey, advertisableIPs []string) *Manager {
+func New(connProvider ConnProvider, dir PeerDirectory) *Manager {
 	m := &Manager{
-		peerProvider:    peerProvider,
-		dir:             dir,
-		sender:          sender,
-		services:        make(map[string]serviceHandler),
-		connections:     make(map[string]connectionHandler),
-		activeStreams:   make(map[uint32]map[net.Conn]struct{}),
-		signPriv:        signPriv,
-		ips:             advertisableIPs,
-		acceptTimeout:   acceptTimeout,
-		sessionInflight: make(map[uint64]sessionInflight),
-		punchInflight:   make(map[uint64]punchInflight),
-		pendingPunch:    make(map[uint64]pendingPunchReq),
-		probeInflight:   make(map[uint64]probeInflight),
+		connProvider:  connProvider,
+		dir:           dir,
+		connections:   make(map[string]connectionHandler),
+		services:      make(map[uint32]serviceHandler),
+		activeStreams: make(map[uint32]map[net.Conn]struct{}),
 	}
-
-	// Initialize session manager — the FSM drives session establishment.
 	m.sessions = NewSessionManager(m.handleIncomingStream)
-
 	return m
 }
 
-// handleIncomingStream routes incoming streams to the appropriate service handler.
 func (m *Manager) handleIncomingStream(stream net.Conn, servicePort uint16) {
-	portStr := strconv.FormatUint(uint64(servicePort), 10)
 	port := uint32(servicePort)
 
 	tracked := &trackedConn{}
@@ -144,7 +110,7 @@ func (m *Manager) handleIncomingStream(stream net.Conn, servicePort uint16) {
 	m.addActiveStream(port, tracked)
 
 	m.serviceMu.RLock()
-	h, ok := m.services[portStr]
+	h, ok := m.services[port]
 	m.serviceMu.RUnlock()
 
 	if !ok {
@@ -161,24 +127,22 @@ func (m *Manager) RegisterService(port uint32) {
 	m.serviceMu.Lock()
 	defer m.serviceMu.Unlock()
 
-	portStr := strconv.FormatUint(uint64(port), 10)
-
-	curr, ok := m.services[portStr]
+	curr, ok := m.services[port]
 	if ok {
 		curr.cancel()
 	}
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 
-	m.services[portStr] = serviceHandler{
+	m.services[port] = serviceHandler{
 		fn: func(tunnelConn net.Conn) {
-			conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", "localhost:"+portStr)
+			conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", fmt.Sprintf("localhost:%d", port))
 			if err != nil {
-				zap.S().Warnw("failed to dial local service", "port", portStr, "err", err)
+				zap.S().Warnw("failed to dial local service", "port", port, "err", err)
 				_ = tunnelConn.Close()
 				return
 			}
-			tcp.Bridge(tunnelConn, conn)
+			bridge(tunnelConn, conn)
 		},
 		cancel: cancelFn,
 	}
@@ -187,9 +151,6 @@ func (m *Manager) RegisterService(port uint32) {
 }
 
 // ConnectService establishes a tunnel to a remote service and listens locally.
-// Local connections to the port are forwarded to the remote peer's service.
-// If localPort is zero, it will attempt to bind to remotePort first, then fall
-// back to an ephemeral port if that fails.
 func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
 	if _, ok := m.dir.IdentityPub(peerID); !ok {
 		return 0, errors.New("peerID not recognised")
@@ -245,7 +206,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 				return
 			}
 			go func() {
-				// Get or create session to peer
+				// Get or create session to peer (backed by QUIC connection).
 				session, err := m.sessions.GetOrCreate(ctx, peerID)
 				if err != nil {
 					logger.Warnw("session failed", "peer", peerID.String()[:8], "err", err)
@@ -253,7 +214,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 					return
 				}
 
-				// Open stream to remote service
+				// Open QUIC stream to remote service.
 				stream, err := session.OpenStream(portNum)
 				if err != nil {
 					logger.Warnw("open stream failed", "peer", peerID.String()[:8], "port", remotePort, "err", err)
@@ -262,7 +223,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 					return
 				}
 
-				tcp.Bridge(clientConn, stream)
+				bridge(clientConn, stream)
 			}()
 		}
 	}()
@@ -343,14 +304,12 @@ func (m *Manager) DisconnectRemoteService(peerID types.PeerKey, remotePort uint3
 }
 
 func (m *Manager) UnregisterService(port uint32) bool {
-	portStr := strconv.FormatUint(uint64(port), 10)
-
 	m.serviceMu.Lock()
 	defer m.serviceMu.Unlock()
 
-	if h, ok := m.services[portStr]; ok {
+	if h, ok := m.services[port]; ok {
 		h.cancel()
-		delete(m.services, portStr)
+		delete(m.services, port)
 		m.closeServiceStreams(port)
 		return true
 	}
@@ -393,412 +352,7 @@ func (m *Manager) removeActiveStream(port uint32, stream net.Conn) {
 	}
 }
 
-// HandleSessionRequest handles incoming session establishment requests.
-// This is called when a remote peer wants to establish a multiplexed session to us.
-func (m *Manager) HandleSessionRequest(ctx context.Context, peerKey types.PeerKey, payload []byte) error {
-	logger := zap.S().Named("tunnel.session")
-	logger.Infow("handling session request", "peer", peerKey.String()[:8])
-
-	req := &tcpv1.SessionHandshake{}
-	if err := req.UnmarshalVT(payload); err != nil {
-		return fmt.Errorf("unmarshal session request: %w", err)
-	}
-	if req.GetRequestId() == 0 {
-		return errors.New("session request missing request_id")
-	}
-
-	peerIDPub, ok := m.dir.IdentityPub(peerKey)
-	if !ok {
-		logger.Warnw("unknown peer", "peerID", peerKey.String())
-		return ErrUnknownPeerIdentity
-	}
-
-	peerCert, err := tcp.VerifyPeerAttestation(peerIDPub, req.GetCertDer(), req.GetSig())
-	if err != nil {
-		logger.Errorf("peer attestation failed: %v", err)
-		return fmt.Errorf("peer attestation failed: %w", err)
-	}
-
-	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", ":0")
-	if err != nil {
-		logger.Errorw("listen tcp :0", "err", err)
-		return fmt.Errorf("listen tcp :0: %w", err)
-	}
-
-	ownCert, ownSig, err := tcp.GenerateEphemeralCert(m.signPriv)
-	if err != nil {
-		ln.Close()
-		logger.Errorf("generate ephemeral cert: %v", err)
-		return fmt.Errorf("generate ephemeral cert: %w", err)
-	}
-
-	_, port, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		ln.Close()
-		logger.Errorf("split listener addr: %v", err)
-		return fmt.Errorf("split listener addr: %w", err)
-	}
-
-	addrs := make([]string, len(m.ips))
-	for i, ip := range m.ips {
-		addrs[i] = net.JoinHostPort(ip, port)
-	}
-
-	resp := &tcpv1.SessionHandshake{
-		RequestId: req.GetRequestId(),
-		CertDer:   ownCert.Certificate[0],
-		Sig:       ownSig,
-		Addr:      addrs,
-	}
-
-	respBytes, err := resp.MarshalVT()
-	if err != nil {
-		ln.Close()
-		logger.Errorf("marshal session response: %v", err)
-		return fmt.Errorf("marshal session response: %w", err)
-	}
-
-	env := types.Envelope{
-		Type:    types.MsgTypeSessionResponse,
-		Payload: respBytes,
-	}
-	if err := m.sender(ctx, peerKey, env); err != nil {
-		ln.Close()
-		logger.Errorf("send session response: %v", err)
-		return fmt.Errorf("send session response: %w", err)
-	}
-
-	// Accept incoming connection and wrap with session
-	go m.acceptSession(peerKey, ln, ownCert, peerCert)
-	return nil
-}
-
-// acceptSession waits for the incoming TCP connection and wraps it as a session.
-func (m *Manager) acceptSession(peerKey types.PeerKey, ln net.Listener, ourCert tls.Certificate, peerCert *x509.Certificate) {
-	defer ln.Close()
-
-	logger := zap.S().Named("tunnel.session")
-
-	cfg := tcp.NewPinnedTLSConfig(true, ourCert, peerCert)
-
-	// Avoid goroutine leaks: set an accept deadline if possible.
-	if tl, ok := ln.(*net.TCPListener); ok {
-		_ = tl.SetDeadline(time.Now().Add(m.acceptTimeout))
-	}
-
-	rawConn, err := ln.Accept()
-	if err != nil {
-		logger.Warnw("error accepting session connection", "err", err)
-		return
-	}
-
-	tuneTCPConn(rawConn)
-
-	tlsConn := tls.Server(rawConn, cfg)
-	handshakeCtx, cancel := context.WithTimeout(context.Background(), m.acceptTimeout)
-	defer cancel()
-	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
-		logger.Warnw("tls handshake failed", "err", err)
-		_ = tlsConn.Close()
-		return
-	}
-
-	// Register the session
-	_, err = m.sessions.Accept(tlsConn, peerKey)
-	if err != nil {
-		logger.Warnw("failed to accept session", "peer", peerKey.String()[:8], "err", err)
-		_ = tlsConn.Close()
-		return
-	}
-
-	logger.Infow("accepted session", "peer", peerKey.String()[:8])
-}
-
-// HandleSessionResponse handles session establishment responses.
-func (m *Manager) HandleSessionResponse(_ context.Context, _ types.PeerKey, payload []byte) error {
-	resp := &tcpv1.SessionHandshake{}
-	if err := resp.UnmarshalVT(payload); err != nil {
-		return fmt.Errorf("unmarshal session response: %w", err)
-	}
-	rid := resp.GetRequestId()
-	if rid == 0 {
-		return errors.New("session response missing request_id")
-	}
-
-	m.sessionInflightMu.Lock()
-	inf, ok := m.sessionInflight[rid]
-	if ok {
-		delete(m.sessionInflight, rid)
-	}
-	m.sessionInflightMu.Unlock()
-
-	if !ok {
-		return nil
-	}
-
-	select {
-	case inf.ch <- resp:
-	default:
-	}
-	return nil
-}
-
-// DialSessionDirect attempts a direct TCP+TLS connection for session establishment.
-func (m *Manager) DialSessionDirect(ctx context.Context, peerKey types.PeerKey) (net.Conn, error) {
-	peerIDPub, ok := m.dir.IdentityPub(peerKey)
-	if !ok {
-		return nil, ErrUnknownPeerIdentity
-	}
-
-	reqID, err := randUint64()
-	if err != nil {
-		return nil, err
-	}
-
-	ownCert, ownSig, err := tcp.GenerateEphemeralCert(m.signPriv)
-	if err != nil {
-		return nil, fmt.Errorf("generate ephemeral cert: %w", err)
-	}
-
-	req := &tcpv1.SessionHandshake{
-		RequestId: reqID,
-		CertDer:   ownCert.Certificate[0],
-		Sig:       ownSig,
-	}
-	reqBytes, err := req.MarshalVT()
-	if err != nil {
-		return nil, fmt.Errorf("marshal session request: %w", err)
-	}
-
-	ch := make(chan *tcpv1.SessionHandshake, 1)
-	m.sessionInflightMu.Lock()
-	m.sessionInflight[reqID] = sessionInflight{peerKey: peerKey, ch: ch}
-	m.sessionInflightMu.Unlock()
-	defer func() {
-		m.sessionInflightMu.Lock()
-		delete(m.sessionInflight, reqID)
-		m.sessionInflightMu.Unlock()
-	}()
-
-	zap.S().Debugw("sending session request", "peer", peerKey.String()[:8])
-	env := types.Envelope{
-		Type:    types.MsgTypeSessionRequest,
-		Payload: reqBytes,
-	}
-	if err := m.sender(ctx, peerKey, env); err != nil {
-		return nil, fmt.Errorf("session request failed: %w", err)
-	}
-
-	var resp *tcpv1.SessionHandshake
-	select {
-	case resp = <-ch:
-	case <-ctx.Done():
-		return nil, ErrHandshakeResponseMiss
-	}
-
-	peerCert, err := tcp.VerifyPeerAttestation(peerIDPub, resp.GetCertDer(), resp.GetSig())
-	if err != nil {
-		return nil, fmt.Errorf("peer attestation failed: %w", err)
-	}
-
-	cfg := tcp.NewPinnedTLSConfig(false, ownCert, peerCert)
-
-	// Dial all candidates concurrently; first success wins.
-	addrs := resp.GetAddr()
-	if len(addrs) == 0 {
-		return nil, ErrNoDialableAddress
-	}
-
-	attemptCtx, attemptCancel := context.WithCancel(ctx)
-	defer attemptCancel()
-
-	resCh := make(chan net.Conn, 1)
-	var wg sync.WaitGroup
-
-	for _, a := range addrs {
-		wg.Add(1)
-		go func(addr string) {
-			defer wg.Done()
-			dialer := &net.Dialer{}
-			rawConn, err := dialer.DialContext(attemptCtx, "tcp", addr)
-			if err != nil {
-				return
-			}
-			tuneTCPConn(rawConn)
-			tlsConn := tls.Client(rawConn, cfg)
-			if err := tlsConn.HandshakeContext(attemptCtx); err != nil {
-				_ = tlsConn.Close()
-				return
-			}
-			select {
-			case resCh <- tlsConn:
-				// We won; cancel remaining dials.
-				attemptCancel()
-			default:
-				// Another goroutine already won.
-				_ = tlsConn.Close()
-			}
-		}(a)
-	}
-
-	// Close resCh when all attempts finish.
-	go func() {
-		wg.Wait()
-		close(resCh)
-	}()
-
-	if conn, ok := <-resCh; ok && conn != nil {
-		return conn, nil
-	}
-
-	return nil, ErrNoDialableAddress
-}
-
-// DialSessionWithPunch attempts session establishment via TCP hole punching.
-func (m *Manager) DialSessionWithPunch(ctx context.Context, peerKey, coordinator types.PeerKey) (net.Conn, error) {
-	logger := zap.S().Named("tunnel.session")
-	logger.Infow("attempting punch session dial",
-		"target", peerKey.String()[:8],
-		"coordinator", coordinator.String()[:8])
-
-	peerIDPub, ok := m.dir.IdentityPub(peerKey)
-	if !ok {
-		return nil, ErrUnknownPeerIdentity
-	}
-
-	// Generate ephemeral cert
-	ownCert, ownSig, err := tcp.GenerateEphemeralCert(m.signPriv)
-	if err != nil {
-		return nil, fmt.Errorf("generate ephemeral cert: %w", err)
-	}
-
-	// Bind TCP listener with SO_REUSEPORT
-	ln, err := tcp.ListenReusePort(ctx, ":0")
-	if err != nil {
-		return nil, fmt.Errorf("listen reuseport: %w", err)
-	}
-
-	_, portStr, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		ln.Close()
-		return nil, fmt.Errorf("split listener addr: %w", err)
-	}
-	localPort, _ := strconv.ParseUint(portStr, 10, 32)
-
-	// Generate request ID
-	reqID, err := randUint64()
-	if err != nil {
-		ln.Close()
-		return nil, fmt.Errorf("generate request id: %w", err)
-	}
-
-	observedPort := m.discoverExternalPort(ctx, coordinator, uint32(localPort))
-
-	// Register inflight
-	ch := make(chan *tcpv1.TcpPunchResponse, 1)
-	m.punchMu.Lock()
-	m.punchInflight[reqID] = punchInflight{
-		ch:       ch,
-		peerKey:  peerKey,
-		listener: ln,
-		cert:     ownCert,
-	}
-	m.punchMu.Unlock()
-
-	defer func() {
-		m.punchMu.Lock()
-		delete(m.punchInflight, reqID)
-		m.punchMu.Unlock()
-	}()
-
-	// Send punch request to coordinator (with empty service port - session establishment)
-	req := &tcpv1.TcpPunchRequest{
-		PeerId:               peerKey.Bytes(),
-		LocalPort:            uint32(localPort),
-		ObservedExternalPort: observedPort,
-		ServicePort:          "", // Empty for session establishment
-		CertDer:              ownCert.Certificate[0],
-		Sig:                  ownSig,
-		RequestId:            reqID,
-	}
-
-	reqBytes, err := req.MarshalVT()
-	if err != nil {
-		ln.Close()
-		return nil, fmt.Errorf("marshal punch request: %w", err)
-	}
-
-	logger.Infow("sending session punch request to coordinator",
-		"coordinator", coordinator.String()[:8],
-		"localPort", localPort)
-
-	if err := m.sender(ctx, coordinator, types.Envelope{
-		Type:    types.MsgTypeTCPPunchRequest,
-		Payload: reqBytes,
-	}); err != nil {
-		ln.Close()
-		return nil, fmt.Errorf("send punch request: %w", err)
-	}
-
-	// Wait for response
-	waitCtx, cancel := context.WithTimeout(ctx, punchTimeout)
-	defer cancel()
-
-	var resp *tcpv1.TcpPunchResponse
-	select {
-	case resp = <-ch:
-	case <-waitCtx.Done():
-		ln.Close()
-		return nil, fmt.Errorf("timed out waiting for punch response")
-	}
-	if resp.PeerAddr == "" {
-		ln.Close()
-		return nil, fmt.Errorf("coordinator rejected punch request")
-	}
-	if len(resp.PeerCertDer) == 0 || len(resp.PeerSig) == 0 {
-		ln.Close()
-		return nil, fmt.Errorf("coordinator returned empty peer attestation")
-	}
-
-	// Verify peer cert attestation
-	peerCert, err := tcp.VerifyPeerAttestation(peerIDPub, resp.PeerCertDer, resp.PeerSig)
-	if err != nil {
-		ln.Close()
-		return nil, fmt.Errorf("peer attestation failed: %w", err)
-	}
-
-	logger.Infow("starting TCP simultaneous open for session",
-		"peerAddr", resp.PeerAddr,
-		"localPort", localPort)
-
-	// Start TCP simultaneous open
-	rawConn, err := tcp.SimultaneousOpen(ctx, ln, resp.PeerAddr, punchTimeout)
-	ln.Close() // Close listener after simultaneous open completes
-	if err != nil {
-		return nil, fmt.Errorf("tcp simultaneous open failed: %w", err)
-	}
-
-	// Tune socket before TLS wrap
-	tuneTCPConn(rawConn)
-
-	// Wrap with TLS (we're the client in TLS terms)
-	cfg := tcp.NewPinnedTLSConfig(false, ownCert, peerCert)
-	tlsConn := tls.Client(rawConn, cfg)
-
-	handshakeCtx, cancel := context.WithTimeout(ctx, punchTimeout)
-	defer cancel()
-	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
-		_ = tlsConn.Close()
-		return nil, fmt.Errorf("tls handshake failed: %w", err)
-	}
-
-	logger.Infow("punch session established (initiator side)",
-		"target", peerKey.String()[:8])
-
-	return tlsConn, nil
-}
-
-// Sessions returns the session manager (used by the Node for FSM-driven session registration).
+// Sessions returns the session manager.
 func (m *Manager) Sessions() *SessionManager {
 	return m.sessions
 }
@@ -818,12 +372,4 @@ func (m *Manager) Close() {
 		h.cancel()
 	}
 	m.connectionMu.Unlock()
-}
-
-func randUint64() (uint64, error) {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return 0, err
-	}
-	return binary.BigEndian.Uint64(b[:]), nil
 }

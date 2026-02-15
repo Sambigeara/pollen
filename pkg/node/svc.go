@@ -48,7 +48,7 @@ func (s *NodeService) CreateInvite(_ context.Context, _ *controlv1.CreateInviteR
 	port := strconv.Itoa(int(rec.LocalPort))
 	ips := append([]string(nil), rec.IPs...)
 
-	inv, err := NewInvite(ips, port)
+	inv, err := NewInvite(ips, port, s.node.identityPub)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func (s *NodeService) CreateInvite(_ context.Context, _ *controlv1.CreateInviteR
 }
 
 func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
-	nodes := s.node.store.Nodes()
+	nodes := s.node.store.CloneNodes()
 	localID := s.node.store.LocalID
 
 	selfAddr := ""
@@ -220,13 +220,8 @@ func (s *NodeService) RegisterService(_ context.Context, req *controlv1.Register
 func (s *NodeService) UnregisterService(_ context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
 	port := req.GetPort()
 	name := req.GetName()
-	removed, update := s.node.store.RemoveLocalServices(port, name)
-	if len(removed) == 0 {
-		return &controlv1.UnregisterServiceResponse{}, nil
-	}
-	for _, p := range removed {
-		s.node.tun.UnregisterService(p)
-	}
+	update := s.node.store.RemoveLocalServices(port, name)
+	s.node.tun.UnregisterService(port)
 	s.node.queueGossipNode(update)
 
 	return &controlv1.UnregisterServiceResponse{}, nil

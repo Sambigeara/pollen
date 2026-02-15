@@ -25,8 +25,8 @@ const (
 type Invite struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Psk           []byte                 `protobuf:"bytes,2,opt,name=psk,proto3" json:"psk,omitempty"`
-	Addr          []string               `protobuf:"bytes,3,rep,name=addr,proto3" json:"addr,omitempty"`
+	Addr          []string               `protobuf:"bytes,2,rep,name=addr,proto3" json:"addr,omitempty"`
+	Fingerprint   []byte                 `protobuf:"bytes,3,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"` // Bootstrap peer's ed25519 public key (32 bytes).
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -68,16 +68,16 @@ func (x *Invite) GetId() string {
 	return ""
 }
 
-func (x *Invite) GetPsk() []byte {
+func (x *Invite) GetAddr() []string {
 	if x != nil {
-		return x.Psk
+		return x.Addr
 	}
 	return nil
 }
 
-func (x *Invite) GetAddr() []string {
+func (x *Invite) GetFingerprint() []byte {
 	if x != nil {
-		return x.Addr
+		return x.Fingerprint
 	}
 	return nil
 }
@@ -302,11 +302,11 @@ var File_pollen_peer_v1_peer_proto protoreflect.FileDescriptor
 
 const file_pollen_peer_v1_peer_proto_rawDesc = "" +
 	"\n" +
-	"\x19pollen/peer/v1/peer.proto\x12\x0epollen.peer.v1\x1a\x1bbuf/validate/validate.proto\"Q\n" +
+	"\x19pollen/peer/v1/peer.proto\x12\x0epollen.peer.v1\x1a\x1bbuf/validate/validate.proto\"X\n" +
 	"\x06Invite\x12\x18\n" +
-	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x02id\x12\x19\n" +
-	"\x03psk\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x03psk\x12\x12\n" +
-	"\x04addr\x18\x03 \x03(\tR\x04addr\"\xa5\x01\n" +
+	"\x02id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\x02id\x12\x12\n" +
+	"\x04addr\x18\x02 \x03(\tR\x04addr\x12 \n" +
+	"\vfingerprint\x18\x03 \x01(\fR\vfingerprint\"\xa5\x01\n" +
 	"\vInviteStore\x12B\n" +
 	"\ainvites\x18\x01 \x03(\v2(.pollen.peer.v1.InviteStore.InvitesEntryR\ainvites\x1aR\n" +
 	"\fInvitesEntry\x12\x10\n" +

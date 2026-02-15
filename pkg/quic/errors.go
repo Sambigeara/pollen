@@ -1,0 +1,10 @@
+package quic
+
+import "errors"
+
+var (
+	ErrConnClosed  = errors.New("connection closed")
+	ErrNoPeer      = errors.New("no connection to peer")
+	ErrNoSession   = errors.New("no session for peer")
+	ErrInviteInuse = errors.New("invite already consumed")
+)

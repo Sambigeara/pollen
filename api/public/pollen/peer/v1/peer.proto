@@ -8,8 +8,8 @@ option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1;peerv
 
 message Invite {
   string id = 1 [(buf.validate.field).string = {uuid: true}];
-  bytes psk = 2 [(buf.validate.field).bytes = {len: 32}];
-  repeated string addr = 3;
+  repeated string addr = 2;
+  bytes fingerprint = 3; // Bootstrap peer's ed25519 public key (32 bytes).
 }
 
 message InviteStore {

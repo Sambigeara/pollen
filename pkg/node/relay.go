@@ -7,7 +7,7 @@ import (
 	"sort"
 
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
-	"github.com/sambigeara/pollen/pkg/sock"
+	"github.com/sambigeara/pollen/pkg/quic"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -16,7 +16,7 @@ func (n *Node) sendEnvelope(ctx context.Context, peerKey types.PeerKey, msg type
 	if err == nil {
 		return nil
 	}
-	if !errors.Is(err, sock.ErrNoSession) || msg.Type == types.MsgTypeUDPRelay {
+	if (!errors.Is(err, quic.ErrNoSession) && !errors.Is(err, quic.ErrNoPeer)) || msg.Type == types.MsgTypeUDPRelay {
 		return err
 	}
 
@@ -65,7 +65,7 @@ func (n *Node) handleUDPRelay(ctx context.Context, from types.PeerKey, plaintext
 	src := types.PeerKeyFromBytes(env.SrcPeerId)
 	dst := types.PeerKeyFromBytes(env.DstPeerId)
 	if dst == n.store.LocalID {
-		return n.handleApp(ctx, sock.Packet{
+		return n.handleApp(ctx, quic.Packet{
 			Peer:    src,
 			Typ:     innerType,
 			Payload: env.Payload,
@@ -81,7 +81,7 @@ func (n *Node) handleUDPRelay(ctx context.Context, from types.PeerKey, plaintext
 		Type:    types.MsgTypeUDPRelay,
 		Payload: plaintext,
 	}); err != nil {
-		if errors.Is(err, sock.ErrNoSession) {
+		if errors.Is(err, quic.ErrNoSession) || errors.Is(err, quic.ErrNoPeer) {
 			return nil
 		}
 		return err

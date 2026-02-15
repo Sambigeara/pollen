@@ -8,9 +8,10 @@ import (
 	"net"
 	"sync"
 
-	"github.com/hashicorp/yamux"
+	libquic "github.com/quic-go/quic-go"
 	"go.uber.org/zap"
 
+	"github.com/sambigeara/pollen/pkg/quic"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -21,61 +22,26 @@ var (
 	ErrNoServicePort  = errors.New("no service port in stream header")
 )
 
-// Session wraps a long-lived multiplexed connection to a peer.
-// All streams over this session share the same underlying TCP+TLS connection.
+// Session wraps a QUIC connection to a peer for multiplexed stream tunneling.
+// Each stream carries a 2-byte service port header followed by bidirectional data.
 type Session struct {
-	conn      net.Conn
-	mux       *yamux.Session
+	conn      *quic.Conn
 	closeCh   chan struct{}
 	logger    *zap.SugaredLogger
 	closeOnce sync.Once
 	peerID    types.PeerKey
-	isClient  bool
 }
 
-// newClientSession creates a session as the initiator (client side of yamux).
-func newClientSession(conn net.Conn, peerID types.PeerKey) (*Session, error) {
-	cfg := yamux.DefaultConfig()
-	cfg.LogOutput = io.Discard // Use zap instead
-
-	mux, err := yamux.Client(conn, cfg)
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-
+func newSession(conn *quic.Conn, peerID types.PeerKey) *Session {
 	return &Session{
-		peerID:   peerID,
-		conn:     conn,
-		mux:      mux,
-		isClient: true,
-		closeCh:  make(chan struct{}),
-		logger:   zap.S().Named("session").With("peer", peerID.String()[:8]),
-	}, nil
-}
-
-// newServerSession creates a session as the responder (server side of yamux).
-func newServerSession(conn net.Conn, peerID types.PeerKey) (*Session, error) {
-	cfg := yamux.DefaultConfig()
-	cfg.LogOutput = io.Discard
-
-	mux, err := yamux.Server(conn, cfg)
-	if err != nil {
-		conn.Close()
-		return nil, err
+		conn:    conn,
+		peerID:  peerID,
+		closeCh: make(chan struct{}),
+		logger:  zap.S().Named("session").With("peer", peerID.String()[:8]),
 	}
-
-	return &Session{
-		peerID:   peerID,
-		conn:     conn,
-		mux:      mux,
-		isClient: false,
-		closeCh:  make(chan struct{}),
-		logger:   zap.S().Named("session").With("peer", peerID.String()[:8]),
-	}, nil
 }
 
-// OpenStream opens a new multiplexed stream to the given service port.
+// OpenStream opens a new QUIC stream to the given service port.
 // The port is sent as the first 2 bytes (big-endian uint16) on the stream.
 func (s *Session) OpenStream(servicePort uint16) (net.Conn, error) {
 	select {
@@ -84,12 +50,12 @@ func (s *Session) OpenStream(servicePort uint16) (net.Conn, error) {
 	default:
 	}
 
-	stream, err := s.mux.OpenStream()
+	stream, err := s.conn.OpenStreamSync(context.Background())
 	if err != nil {
 		return nil, err
 	}
 
-	// Write the service port as header
+	// Write the service port as header.
 	var header [2]byte
 	binary.BigEndian.PutUint16(header[:], servicePort)
 	if _, err := stream.Write(header[:]); err != nil {
@@ -98,17 +64,17 @@ func (s *Session) OpenStream(servicePort uint16) (net.Conn, error) {
 	}
 
 	s.logger.Debugw("opened stream", "port", servicePort)
-	return stream, nil
+	return &streamConn{Stream: stream}, nil
 }
 
-// AcceptStream accepts an incoming stream and returns the target service port.
-func (s *Session) AcceptStream() (net.Conn, uint16, error) {
-	stream, err := s.mux.AcceptStream()
+// AcceptStream accepts an incoming QUIC stream and returns the target service port.
+func (s *Session) AcceptStream(ctx context.Context) (net.Conn, uint16, error) {
+	stream, err := s.conn.AcceptStream(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Read the service port header
+	// Read the service port header.
 	var header [2]byte
 	if _, err := io.ReadFull(stream, header[:]); err != nil {
 		stream.Close()
@@ -122,16 +88,15 @@ func (s *Session) AcceptStream() (net.Conn, uint16, error) {
 	}
 
 	s.logger.Debugw("accepted stream", "port", port)
-	return stream, port, nil
+	return &streamConn{Stream: stream}, port, nil
 }
 
-// Close tears down the session and underlying connection.
+// Close tears down the session and underlying QUIC connection.
 func (s *Session) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
 		close(s.closeCh)
-		err = s.mux.Close()
-		s.conn.Close()
+		err = s.conn.Close()
 		s.logger.Info("session closed")
 	})
 	return err
@@ -152,10 +117,32 @@ func (s *Session) PeerID() types.PeerKey {
 	return s.peerID
 }
 
+// streamConn wraps a quic.Stream to implement net.Conn for compatibility with Bridge().
+type streamConn struct {
+	*libquic.Stream
+}
+
+func (s *streamConn) LocalAddr() net.Addr  { return stubAddr{} }
+func (s *streamConn) RemoteAddr() net.Addr { return stubAddr{} }
+
+func (s *streamConn) CloseWrite() error {
+	return s.Close()
+}
+
+func (s *streamConn) CloseRead() error {
+	s.CancelRead(0)
+	return nil
+}
+
+type stubAddr struct{}
+
+func (stubAddr) Network() string { return "quic" }
+func (stubAddr) String() string  { return "quic-stream" }
+
 // StreamHandler is called for each incoming stream on a session.
 type StreamHandler func(stream net.Conn, servicePort uint16)
 
-// SessionManager manages per-peer sessions.
+// SessionManager manages per-peer sessions backed by QUIC connections.
 type SessionManager struct {
 	sessions     map[types.PeerKey]*Session
 	waiters      map[types.PeerKey][]chan struct{}
@@ -166,7 +153,6 @@ type SessionManager struct {
 }
 
 // NewSessionManager creates a new session manager.
-// handler is called for each incoming stream on any session.
 func NewSessionManager(handler StreamHandler) *SessionManager {
 	return &SessionManager{
 		sessions: make(map[types.PeerKey]*Session),
@@ -183,15 +169,42 @@ func (sm *SessionManager) SetOnDisconnect(fn func(types.PeerKey)) {
 	sm.onDisconnect = fn
 }
 
-// RegisterOutbound registers a session initiated locally.
-func (sm *SessionManager) RegisterOutbound(conn net.Conn, peerID types.PeerKey) (*Session, error) {
-	return sm.register(conn, peerID, true)
+// Register registers a session from a QUIC connection.
+func (sm *SessionManager) Register(conn *quic.Conn, peerID types.PeerKey) (*Session, error) {
+	sm.mu.Lock()
+
+	session := newSession(conn, peerID)
+
+	if existing, ok := sm.sessions[peerID]; ok {
+		sm.logger.Warnw("replacing existing session", "peer", peerID.String()[:8])
+		existing.Close()
+		delete(sm.sessions, peerID)
+	}
+
+	sm.sessions[peerID] = session
+	waiters := sm.waiters[peerID]
+	delete(sm.waiters, peerID)
+	sm.mu.Unlock()
+
+	for _, ch := range waiters {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+
+	sm.logger.Infow("registered session", "peer", peerID.String()[:8])
+	go sm.acceptStreams(session)
+	return session, nil
+}
+
+// RegisterOutbound is an alias for Register (no client/server distinction in QUIC).
+func (sm *SessionManager) RegisterOutbound(conn *quic.Conn, peerID types.PeerKey) (*Session, error) {
+	return sm.Register(conn, peerID)
 }
 
 // GetOrCreate returns an existing session or waits for one to appear.
-// It blocks until RegisterOutbound/Accept delivers a session, or ctx expires.
 func (sm *SessionManager) GetOrCreate(ctx context.Context, peerID types.PeerKey) (*Session, error) {
-	// Fast path: check for existing session.
 	sm.mu.RLock()
 	session, ok := sm.sessions[peerID]
 	sm.mu.RUnlock()
@@ -203,7 +216,6 @@ func (sm *SessionManager) GetOrCreate(ctx context.Context, peerID types.PeerKey)
 	return sm.waitForSession(ctx, peerID)
 }
 
-// waitForSession blocks until an active session for peerID exists or ctx expires.
 func (sm *SessionManager) waitForSession(ctx context.Context, peerID types.PeerKey) (*Session, error) {
 	for {
 		sm.mu.Lock()
@@ -245,67 +257,15 @@ func (sm *SessionManager) removeWaiter(peerID types.PeerKey, ch chan struct{}) {
 	sm.waiters[peerID] = waiters
 }
 
-// Accept registers a session initiated by a remote peer.
-// The connection should already be authenticated.
-func (sm *SessionManager) Accept(conn net.Conn, peerID types.PeerKey) (*Session, error) {
-	return sm.register(conn, peerID, false)
-}
-
-func (sm *SessionManager) register(conn net.Conn, peerID types.PeerKey, outbound bool) (*Session, error) {
-	sm.mu.Lock()
-
-	var (
-		session *Session
-		err     error
-	)
-	if outbound {
-		session, err = newClientSession(conn, peerID)
-	} else {
-		session, err = newServerSession(conn, peerID)
-	}
-	if err != nil {
-		sm.mu.Unlock()
-		return nil, err
-	}
-
-	if existing, ok := sm.sessions[peerID]; ok {
-		sm.logger.Warnw("replacing existing session", "peer", peerID.String()[:8])
-		existing.Close()
-		delete(sm.sessions, peerID)
-	}
-
-	sm.sessions[peerID] = session
-	waiters := sm.waiters[peerID]
-	delete(sm.waiters, peerID)
-	sm.mu.Unlock()
-
-	for _, ch := range waiters {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-
-	if outbound {
-		sm.logger.Infow("registered outbound session", "peer", peerID.String()[:8])
-	} else {
-		sm.logger.Infow("accepted session", "peer", peerID.String()[:8])
-	}
-
-	go sm.acceptStreams(session)
-
-	return session, nil
-}
-
-// acceptStreams runs the stream accept loop for a session.
 func (sm *SessionManager) acceptStreams(session *Session) {
+	ctx := context.Background()
 	for {
-		stream, port, err := session.AcceptStream()
+		stream, port, err := session.AcceptStream(ctx)
 		if err != nil {
 			if !session.IsClosed() {
 				sm.logger.Warnw("accept stream error", "peer", session.peerID.String()[:8], "err", err)
 			}
-			sm.Remove(session.peerID)
+			sm.removeIfSame(session)
 			return
 		}
 
@@ -315,6 +275,27 @@ func (sm *SessionManager) acceptStreams(session *Session) {
 			stream.Close()
 		}
 	}
+}
+
+func (sm *SessionManager) removeIfSame(session *Session) bool {
+	sm.mu.Lock()
+	current, ok := sm.sessions[session.peerID]
+	if !ok || current != session {
+		sm.mu.Unlock()
+		return false
+	}
+
+	delete(sm.sessions, session.peerID)
+	cb := sm.onDisconnect
+	sm.mu.Unlock()
+
+	_ = session.Close()
+	sm.logger.Infow("removed session", "peer", session.peerID.String()[:8])
+	if cb != nil {
+		cb(session.peerID)
+	}
+
+	return true
 }
 
 // Remove closes and removes a session.
