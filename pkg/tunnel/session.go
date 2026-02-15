@@ -16,10 +16,8 @@ import (
 )
 
 var (
-	ErrSessionClosed  = errors.New("session closed")
-	ErrSessionExists  = errors.New("session already exists for peer")
-	ErrInvalidPortLen = errors.New("invalid port length in stream header")
-	ErrNoServicePort  = errors.New("no service port in stream header")
+	ErrSessionClosed = errors.New("session closed")
+	ErrNoServicePort = errors.New("no service port in stream header")
 )
 
 // Session wraps a QUIC connection to a peer for multiplexed stream tunneling.
@@ -144,12 +142,11 @@ type StreamHandler func(stream net.Conn, servicePort uint16)
 
 // SessionManager manages per-peer sessions backed by QUIC connections.
 type SessionManager struct {
-	sessions     map[types.PeerKey]*Session
-	waiters      map[types.PeerKey][]chan struct{}
-	handler      StreamHandler
-	onDisconnect func(types.PeerKey)
-	logger       *zap.SugaredLogger
-	mu           sync.RWMutex
+	sessions map[types.PeerKey]*Session
+	waiters  map[types.PeerKey][]chan struct{}
+	handler  StreamHandler
+	logger   *zap.SugaredLogger
+	mu       sync.RWMutex
 }
 
 // NewSessionManager creates a new session manager.
@@ -160,13 +157,6 @@ func NewSessionManager(handler StreamHandler) *SessionManager {
 		handler:  handler,
 		logger:   zap.S().Named("sessions"),
 	}
-}
-
-// SetOnDisconnect sets a callback invoked when a session is removed.
-func (sm *SessionManager) SetOnDisconnect(fn func(types.PeerKey)) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	sm.onDisconnect = fn
 }
 
 // Register registers a session from a QUIC connection.
@@ -196,11 +186,6 @@ func (sm *SessionManager) Register(conn *quic.Conn, peerID types.PeerKey) (*Sess
 	sm.logger.Infow("registered session", "peer", peerID.String()[:8])
 	go sm.acceptStreams(session)
 	return session, nil
-}
-
-// RegisterOutbound is an alias for Register (no client/server distinction in QUIC).
-func (sm *SessionManager) RegisterOutbound(conn *quic.Conn, peerID types.PeerKey) (*Session, error) {
-	return sm.Register(conn, peerID)
 }
 
 // GetOrCreate returns an existing session or waits for one to appear.
@@ -286,15 +271,10 @@ func (sm *SessionManager) removeIfSame(session *Session) bool {
 	}
 
 	delete(sm.sessions, session.peerID)
-	cb := sm.onDisconnect
 	sm.mu.Unlock()
 
 	_ = session.Close()
 	sm.logger.Infow("removed session", "peer", session.peerID.String()[:8])
-	if cb != nil {
-		cb(session.peerID)
-	}
-
 	return true
 }
 
@@ -302,7 +282,6 @@ func (sm *SessionManager) removeIfSame(session *Session) bool {
 func (sm *SessionManager) Remove(peerID types.PeerKey) {
 	sm.mu.Lock()
 	session, ok := sm.sessions[peerID]
-	cb := sm.onDisconnect
 	if ok {
 		session.Close()
 		delete(sm.sessions, peerID)
@@ -311,9 +290,6 @@ func (sm *SessionManager) Remove(peerID types.PeerKey) {
 
 	if ok {
 		sm.logger.Infow("removed session", "peer", peerID.String()[:8])
-		if cb != nil {
-			cb(peerID)
-		}
 	}
 }
 

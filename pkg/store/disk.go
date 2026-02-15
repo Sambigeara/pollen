@@ -77,7 +77,7 @@ func openDisk(pollenDir string) (*disk, error) {
 	configPath := filepath.Join(pollenDir, configFileName)
 	if _, err := os.Stat(configPath); err != nil {
 		if os.IsNotExist(err) {
-			if err := os.WriteFile(configPath, []byte("local:\n  noisePublic: \"\"\n  identityPublic: \"\"\n"), stateFilePerm); err != nil {
+			if err := os.WriteFile(configPath, []byte("local:\n  identityPublic: \"\"\n"), stateFilePerm); err != nil {
 				_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
 				_ = lf.Close()
 				return nil, fmt.Errorf("create config: %w", err)

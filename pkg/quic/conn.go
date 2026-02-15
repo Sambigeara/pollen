@@ -2,8 +2,6 @@ package quic
 
 import (
 	"context"
-	"errors"
-	"io"
 	"sync"
 
 	"github.com/quic-go/quic-go"
@@ -52,16 +50,6 @@ func (c *Conn) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return c.qc.ReceiveDatagram(ctx)
 }
 
-// OpenStream opens a new bidirectional QUIC stream to the peer.
-func (c *Conn) OpenStream() (*quic.Stream, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.closed {
-		return nil, ErrConnClosed
-	}
-	return c.qc.OpenStream()
-}
-
 // OpenStreamSync opens a new bidirectional stream, blocking until a stream
 // slot is available or the context expires.
 func (c *Conn) OpenStreamSync(ctx context.Context) (*quic.Stream, error) {
@@ -81,11 +69,6 @@ func (c *Conn) AcceptStream(ctx context.Context) (*quic.Stream, error) {
 // PeerID returns the remote peer's identity key.
 func (c *Conn) PeerID() types.PeerKey {
 	return c.peerID
-}
-
-// QUICConn returns the underlying quic.Conn.
-func (c *Conn) QUICConn() *quic.Conn {
-	return c.qc
 }
 
 // Close terminates the connection with an application error.
@@ -128,22 +111,4 @@ func (c *Conn) runCloseHookLocked() {
 	onClose := c.onClose
 	c.onClose = nil
 	onClose()
-}
-
-// StreamConn adapts a quic.Stream to work with Bridge() by mapping
-// QUIC stream errors to io.EOF for clean shutdown.
-type StreamConn struct {
-	*quic.Stream
-}
-
-// Read implements io.Reader, mapping QUIC stream reset to io.EOF.
-func (s *StreamConn) Read(p []byte) (int, error) {
-	n, err := s.Stream.Read(p)
-	if err != nil {
-		var streamErr *quic.StreamError
-		if errors.As(err, &streamErr) {
-			return n, io.EOF
-		}
-	}
-	return n, err
 }

@@ -16,7 +16,7 @@ func (n *Node) sendEnvelope(ctx context.Context, peerKey types.PeerKey, msg type
 	if err == nil {
 		return nil
 	}
-	if (!errors.Is(err, quic.ErrNoSession) && !errors.Is(err, quic.ErrNoPeer)) || msg.Type == types.MsgTypeUDPRelay {
+	if !errors.Is(err, quic.ErrNoPeer) || msg.Type == types.MsgTypeUDPRelay {
 		return err
 	}
 
@@ -81,7 +81,7 @@ func (n *Node) handleUDPRelay(ctx context.Context, from types.PeerKey, plaintext
 		Type:    types.MsgTypeUDPRelay,
 		Payload: plaintext,
 	}); err != nil {
-		if errors.Is(err, quic.ErrNoSession) || errors.Is(err, quic.ErrNoPeer) {
+		if errors.Is(err, quic.ErrNoPeer) {
 			return nil
 		}
 		return err

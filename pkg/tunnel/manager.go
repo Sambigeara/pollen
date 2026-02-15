@@ -2,7 +2,6 @@ package tunnel
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net"
@@ -15,31 +14,19 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// ConnProvider resolves the active QUIC connection for a given peer.
-type ConnProvider interface {
-	GetConn(peerKey types.PeerKey) (*quic.Conn, bool)
-	GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool)
-}
-
-// PeerDirectory maps peer keys to identity public keys.
-type PeerDirectory interface {
-	IdentityPub(peerKey types.PeerKey) (ed25519.PublicKey, bool)
-}
-
 // Manager manages service tunneling over QUIC streams. Once two peers have a
 // QUIC connection (established by the supersock layer), tunneling is simply
 // opening streams on that connection. No separate TCP setup, TLS wrapping,
 // or yamux multiplexing needed.
 type Manager struct {
-	connProvider  ConnProvider
-	dir           PeerDirectory
+	dir           quic.PeerDirectory
 	sessions      *SessionManager
 	connections   map[string]connectionHandler
 	services      map[uint32]serviceHandler
 	activeStreams map[uint32]map[net.Conn]struct{}
-	connectionMu  sync.RWMutex
-	serviceMu     sync.RWMutex
-	streamMu      sync.Mutex
+	connectionMu sync.RWMutex
+	serviceMu    sync.RWMutex
+	streamMu     sync.Mutex
 }
 
 type serviceHandler struct {
@@ -80,18 +67,11 @@ func connectionKey(peerID, port string) string {
 	return peerID + ":" + port
 }
 
-var (
-	ErrNoHandler            = errors.New("no incoming tunnel handler registered")
-	ErrUnknownPeerIdentity  = errors.New("peer identity key unknown")
-	ErrServiceNotRegistered = errors.New("service not registered")
-)
-
-func New(connProvider ConnProvider, dir PeerDirectory) *Manager {
+func New(dir quic.PeerDirectory) *Manager {
 	m := &Manager{
-		connProvider:  connProvider,
-		dir:           dir,
-		connections:   make(map[string]connectionHandler),
-		services:      make(map[uint32]serviceHandler),
+		dir:          dir,
+		connections:  make(map[string]connectionHandler),
+		services:     make(map[uint32]serviceHandler),
 		activeStreams: make(map[uint32]map[net.Conn]struct{}),
 	}
 	m.sessions = NewSessionManager(m.handleIncomingStream)
@@ -122,7 +102,6 @@ func (m *Manager) handleIncomingStream(stream net.Conn, servicePort uint16) {
 	h.fn(stream)
 }
 
-// RegisterService registers a local service that can be accessed by remote peers.
 func (m *Manager) RegisterService(port uint32) {
 	m.serviceMu.Lock()
 	defer m.serviceMu.Unlock()
@@ -150,7 +129,6 @@ func (m *Manager) RegisterService(port uint32) {
 	zap.S().Infow("registered service", "port", port)
 }
 
-// ConnectService establishes a tunnel to a remote service and listens locally.
 func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
 	if _, ok := m.dir.IdentityPub(peerID); !ok {
 		return 0, errors.New("peerID not recognised")

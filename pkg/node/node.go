@@ -114,7 +114,7 @@ func New(conf *Config) (*Node, error) {
 		gossipEvents:    make(chan *statev1.GossipNode, gossipEventBufSize),
 	}
 
-	n.tun = tunnel.New(s, dir)
+	n.tun = tunnel.New(dir)
 
 	for _, svc := range stateStore.LocalServices() {
 		n.tun.RegisterService(svc.GetPort())
