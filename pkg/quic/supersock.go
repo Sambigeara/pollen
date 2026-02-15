@@ -58,7 +58,6 @@ type SuperSockImpl struct {
 }
 
 type Packet struct {
-	Src     string
 	Payload []byte
 	Typ     types.MsgType
 	Peer    types.PeerKey
@@ -644,7 +643,6 @@ func (s *SuperSockImpl) datagramReadLoop(ctx context.Context, conn *Conn) {
 		case s.recvChan <- Packet{
 			Peer:    peerKey,
 			Payload: payload,
-			Src:     conn.qc.RemoteAddr().String(),
 			Typ:     msgType,
 		}:
 		}
