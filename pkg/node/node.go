@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
@@ -197,10 +196,8 @@ func (n *Node) handleApp(ctx context.Context, p quic.Packet) error {
 		fn = n.handleUDPRelay
 	case types.MsgTypeGossip:
 		fn = n.handleGossip
-	case types.MsgTypeUDPPunchCoordRequest:
-		fn = n.handlePunchCoordRequest
-	case types.MsgTypeUDPPunchCoordResponse:
-		fn = n.handlePunchCoordTrigger
+	default:
+		return nil
 	}
 	return fn(ctx, p.Peer, p.Payload)
 }
@@ -353,55 +350,20 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			n.log.Infow("peer connected", "peer_id", e.PeerKey.Short(), "ip", e.IP, "observedPort", e.ObservedPort)
 		case peer.AttemptConnect:
 			go func() {
-				if err := n.directConnect(e); err != nil {
-					n.log.Debugw("direct connect failed", "peer", e.PeerKey.String()[:8], "ips", e.Ips, "port", e.Port, "err", err)
+				if err := n.connectPeer(e.PeerKey, e.Ips, e.Port, false); err != nil {
+					n.log.Debugw("connect failed", "peer", e.PeerKey.Short(), "err", err)
 					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 				}
 			}()
 		case peer.RequestPunchCoordination:
-			coordinator, ok := n.FindCoordinator(e.PeerKey)
-			if !ok {
-				n.log.Debugw("no coordinator available for punch", "peer", e.PeerKey.Short())
-				go func() {
-					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
-				}()
-				continue
-			}
 			go func() {
-				if err := n.punchCoordination(e, coordinator); err != nil {
+				if err := n.connectPeer(e.PeerKey, e.Ips, 0, true); err != nil {
+					n.log.Debugw("punch connect failed", "peer", e.PeerKey.Short(), "err", err)
 					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 				}
 			}()
 		}
 	}
-}
-
-func (n *Node) FindCoordinator(target types.PeerKey) (types.PeerKey, bool) {
-	localIPs := n.store.NodeIPs(n.store.LocalID)
-	connectedPeers := n.GetConnectedPeers()
-	sort.Slice(connectedPeers, func(i, j int) bool {
-		return connectedPeers[i].Less(connectedPeers[j])
-	})
-
-	for _, key := range connectedPeers {
-		if key == target {
-			continue
-		}
-
-		candidateIPs := n.store.NodeIPs(key)
-		if len(candidateIPs) == 0 {
-			continue
-		}
-		if sharesLAN(localIPs, candidateIPs) {
-			continue
-		}
-		if !n.store.IsConnected(key, target) {
-			continue
-		}
-		return key, true
-	}
-
-	return types.PeerKey{}, false
 }
 
 func (n *Node) reconcileConnections() {
@@ -472,123 +434,54 @@ func desiredConnectionKey(peerID types.PeerKey, remotePort, localPort uint32) st
 	return fmt.Sprintf("%s:%d:%d", peerID.String(), remotePort, localPort)
 }
 
-func (n *Node) directConnect(e peer.AttemptConnect) error {
-	addrs := make([]*net.UDPAddr, len(e.Ips))
-	for i, ip := range e.Ips {
-		addrs[i] = &net.UDPAddr{
-			IP:   ip,
-			Port: e.Port,
+func (n *Node) connectPeer(peerKey types.PeerKey, ips []net.IP, port int, withPunch bool) error {
+	addrs := make([]*net.UDPAddr, 0, len(ips))
+	for _, ip := range ips {
+		if ip != nil {
+			addrs = append(addrs, &net.UDPAddr{IP: ip, Port: port})
 		}
 	}
 
-	n.log.Debugw("attempting direct connection", "peer", e.PeerKey.Short())
-
-	ctx, cancel := context.WithTimeout(context.Background(), directTimeout)
-	defer cancel()
-
-	return n.sock.EnsurePeer(ctx, e.PeerKey, addrs)
-}
-
-func (n *Node) punchCoordination(e peer.RequestPunchCoordination, coordinator types.PeerKey) error {
-	ctx, cancel := context.WithTimeout(context.Background(), punchTimeout)
-	defer cancel()
-
-	req := &peerv1.PunchCoordRequest{
-		PeerId: e.PeerKey.Bytes(),
-	}
-	b, err := req.MarshalVT()
-	if err != nil {
-		n.log.Errorw("failed to marshal punch request", "err", err)
-		return err
-	}
-
-	n.log.Infow("requesting punch coordination", "peer", e.PeerKey.Short(), "coordinator", coordinator.String()[:8])
-
-	if err := n.sendEnvelope(ctx, coordinator, types.Envelope{
-		Type:    types.MsgTypeUDPPunchCoordRequest,
-		Payload: b,
-	}); err != nil {
-		n.log.Debugw("punch coord request failed", "peer", e.PeerKey.String()[:8], "err", err)
-		return err
-	}
-
-	return nil
-}
-
-// handlePunchCoordRequest is called on the coordinator. It tells both peers to
-// dial each other by sending PunchCoordTrigger to each.
-func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, payload []byte) error {
-	req := &peerv1.PunchCoordRequest{}
-	if err := req.UnmarshalVT(payload); err != nil {
-		return fmt.Errorf("malformed punch coord request: %w", err)
-	}
-
-	targetKey := types.PeerKeyFromBytes(req.PeerId)
-
-	// Look up observed addresses for both peers.
-	fromAddr, fromOK := n.sock.GetActivePeerAddress(from)
-	targetAddr, targetOK := n.sock.GetActivePeerAddress(targetKey)
-	if !fromOK || !targetOK {
-		n.log.Debugw("punch coord: missing peer address", "from_ok", fromOK, "target_ok", targetOK)
-		return nil
-	}
-
-	// Tell the requester about the target's address.
-	triggerA := &peerv1.PunchCoordTrigger{
-		PeerId:   targetKey.Bytes(),
-		PeerAddr: targetAddr.String(),
-		SelfAddr: fromAddr.String(),
-	}
-	if b, err := triggerA.MarshalVT(); err == nil {
-		_ = n.sendEnvelope(ctx, from, types.Envelope{
-			Type:    types.MsgTypeUDPPunchCoordResponse,
-			Payload: b,
-		})
-	}
-
-	// Tell the target about the requester's address.
-	triggerB := &peerv1.PunchCoordTrigger{
-		PeerId:   from.Bytes(),
-		PeerAddr: fromAddr.String(),
-		SelfAddr: targetAddr.String(),
-	}
-	if b, err := triggerB.MarshalVT(); err == nil {
-		_ = n.sendEnvelope(ctx, targetKey, types.Envelope{
-			Type:    types.MsgTypeUDPPunchCoordResponse,
-			Payload: b,
-		})
-	}
-
-	n.log.Infow("coordinated punch", "from", from.Short(), "target", targetKey.Short())
-	return nil
-}
-
-// handlePunchCoordTrigger is called on a peer told to initiate a simultaneous dial.
-func (n *Node) handlePunchCoordTrigger(ctx context.Context, _ types.PeerKey, payload []byte) error {
-	trigger := &peerv1.PunchCoordTrigger{}
-	if err := trigger.UnmarshalVT(payload); err != nil {
-		return fmt.Errorf("malformed punch coord trigger: %w", err)
-	}
-
-	peerKey := types.PeerKeyFromBytes(trigger.PeerId)
-	peerAddr, err := net.ResolveUDPAddr("udp", trigger.PeerAddr)
-	if err != nil {
-		return fmt.Errorf("invalid peer addr in punch trigger: %w", err)
-	}
-
-	n.log.Infow("received punch trigger, attempting dial", "peer", peerKey.Short(), "addr", peerAddr)
-
-	go func() {
-		dialCtx, cancel := context.WithTimeout(context.Background(), punchTimeout)
-		defer cancel()
-
-		if err := n.sock.EnsurePeerPunch(dialCtx, peerKey, peerAddr); err != nil {
-			n.log.Debugw("punch dial failed", "peer", peerKey.Short(), "err", err)
-			n.localPeerEvents <- peer.ConnectFailed{PeerKey: peerKey}
+	var opts *quic.GetOrCreateOpts
+	if withPunch {
+		coords := n.coordinatorAddrs(peerKey)
+		if len(coords) > 0 {
+			opts = &quic.GetOrCreateOpts{Coordinators: coords}
 		}
-	}()
+	}
 
-	return nil
+	timeout := directTimeout
+	if withPunch {
+		timeout = punchTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	return n.sock.EnsurePeer(ctx, peerKey, addrs, opts)
+}
+
+func (n *Node) coordinatorAddrs(target types.PeerKey) []*net.UDPAddr {
+	localIPs := n.store.NodeIPs(n.store.LocalID)
+	var addrs []*net.UDPAddr
+
+	for _, key := range n.GetConnectedPeers() {
+		if key == target {
+			continue
+		}
+		candidateIPs := n.store.NodeIPs(key)
+		if len(candidateIPs) == 0 || sharesLAN(localIPs, candidateIPs) {
+			continue
+		}
+		if !n.store.IsConnected(key, target) {
+			continue
+		}
+		addr, ok := n.sock.GetActivePeerAddress(key)
+		if !ok {
+			continue
+		}
+		addrs = append(addrs, addr)
+	}
+	return addrs
 }
 
 // ConnectService wraps tunnel.Manager.ConnectService.
