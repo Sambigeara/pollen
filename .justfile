@@ -42,6 +42,9 @@ lint-modernize: _modernize
 test PKG='./...' TEST='.*':
     @ go test -v -failfast -cover -count=1 -run='{{ TEST }}' '{{ PKG }}'
 
+deploy-bins:
+    @ infra/scripts/deploy-bins.sh
+
 # Executables
 
 _buf: (_install "buf" "github.com/bufbuild/buf" "cmd/buf")

@@ -2,13 +2,119 @@ syntax = "proto3";
 
 package pollen.control.v1;
 
+import "buf/validate/validate.proto";
+
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1";
 
 service ControlService {
-  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
+  rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
+  rpc CreateInvite(CreateInviteRequest) returns (CreateInviteResponse);
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc RegisterService(RegisterServiceRequest) returns (RegisterServiceResponse);
+  rpc UnregisterService(UnregisterServiceRequest) returns (UnregisterServiceResponse);
+  rpc ConnectService(ConnectServiceRequest) returns (ConnectServiceResponse);
 }
 
-message ListPeersRequest {}
-message ListPeersResponse {
-  repeated bytes keys = 1;
+message NodeRef {
+  bytes peer_id = 1;
+}
+
+enum NodeStatus {
+  NODE_STATUS_UNSPECIFIED = 0;
+  NODE_STATUS_ONLINE = 1;
+  NODE_STATUS_OFFLINE = 2;
+  NODE_STATUS_RELAY = 3;
+}
+
+message NodeSummary {
+  NodeRef node = 1;
+  NodeStatus status = 2;
+  string addr = 3;
+}
+
+message ServiceSummary {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  NodeRef provider = 2;
+  uint32 port = 3 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+}
+
+message JoinClusterRequest {
+  string token = 1 [(buf.validate.field).string = {min_len: 1}];
+}
+
+message JoinClusterResponse {
+  NodeRef self = 1;
+}
+
+message CreateInviteRequest {}
+
+message CreateInviteResponse {
+  string token = 1 [(buf.validate.field).string = {min_len: 1}];
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  NodeSummary self = 1;
+  repeated NodeSummary nodes = 2;
+  repeated ServiceSummary services = 3;
+  repeated ConnectionSummary connections = 4;
+}
+
+message ConnectionSummary {
+  NodeRef peer = 1;
+  uint32 remote_port = 2 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+  uint32 local_port = 3 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+  string service_name = 4;
+}
+
+message RegisterServiceRequest {
+  uint32 port = 1 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+  optional string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+}
+
+message RegisterServiceResponse {}
+
+message UnregisterServiceRequest {
+  uint32 port = 1 [(buf.validate.field).uint32 = {lte: 65535}];
+  optional string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+}
+
+message UnregisterServiceResponse {}
+
+message ConnectServiceRequest {
+  NodeRef node = 1;
+  uint32 remote_port = 2 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+  uint32 local_port = 3 [(buf.validate.field).uint32 = {lte: 65535}];
+}
+
+message ConnectServiceResponse {
+  uint32 local_port = 1 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
 }

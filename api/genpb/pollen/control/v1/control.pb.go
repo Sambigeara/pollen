@@ -7,6 +7,7 @@
 package controlv1
 
 import (
+	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -21,63 +22,125 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type ListPeersRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
+type NodeStatus int32
 
-func (x *ListPeersRequest) Reset() {
-	*x = ListPeersRequest{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
+const (
+	NodeStatus_NODE_STATUS_UNSPECIFIED NodeStatus = 0
+	NodeStatus_NODE_STATUS_ONLINE      NodeStatus = 1
+	NodeStatus_NODE_STATUS_OFFLINE     NodeStatus = 2
+	NodeStatus_NODE_STATUS_RELAY       NodeStatus = 3
+)
 
-func (x *ListPeersRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListPeersRequest) ProtoMessage() {}
-
-func (x *ListPeersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
+// Enum value maps for NodeStatus.
+var (
+	NodeStatus_name = map[int32]string{
+		0: "NODE_STATUS_UNSPECIFIED",
+		1: "NODE_STATUS_ONLINE",
+		2: "NODE_STATUS_OFFLINE",
+		3: "NODE_STATUS_RELAY",
 	}
-	return mi.MessageOf(x)
+	NodeStatus_value = map[string]int32{
+		"NODE_STATUS_UNSPECIFIED": 0,
+		"NODE_STATUS_ONLINE":      1,
+		"NODE_STATUS_OFFLINE":     2,
+		"NODE_STATUS_RELAY":       3,
+	}
+)
+
+func (x NodeStatus) Enum() *NodeStatus {
+	p := new(NodeStatus)
+	*p = x
+	return p
 }
 
-// Deprecated: Use ListPeersRequest.ProtoReflect.Descriptor instead.
-func (*ListPeersRequest) Descriptor() ([]byte, []int) {
+func (x NodeStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (NodeStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_pollen_control_v1_control_proto_enumTypes[0].Descriptor()
+}
+
+func (NodeStatus) Type() protoreflect.EnumType {
+	return &file_pollen_control_v1_control_proto_enumTypes[0]
+}
+
+func (x NodeStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use NodeStatus.Descriptor instead.
+func (NodeStatus) EnumDescriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{0}
 }
 
-type ListPeersResponse struct {
+type NodeRef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Keys          [][]byte               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ListPeersResponse) Reset() {
-	*x = ListPeersResponse{}
+func (x *NodeRef) Reset() {
+	*x = NodeRef{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeRef) ProtoMessage() {}
+
+func (x *NodeRef) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeRef.ProtoReflect.Descriptor instead.
+func (*NodeRef) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *NodeRef) GetPeerId() []byte {
+	if x != nil {
+		return x.PeerId
+	}
+	return nil
+}
+
+type NodeSummary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          *NodeRef               `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	Status        NodeStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=pollen.control.v1.NodeStatus" json:"status,omitempty"`
+	Addr          string                 `protobuf:"bytes,3,opt,name=addr,proto3" json:"addr,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeSummary) Reset() {
+	*x = NodeSummary{}
 	mi := &file_pollen_control_v1_control_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ListPeersResponse) String() string {
+func (x *NodeSummary) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ListPeersResponse) ProtoMessage() {}
+func (*NodeSummary) ProtoMessage() {}
 
-func (x *ListPeersResponse) ProtoReflect() protoreflect.Message {
+func (x *NodeSummary) ProtoReflect() protoreflect.Message {
 	mi := &file_pollen_control_v1_control_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -89,28 +152,779 @@ func (x *ListPeersResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ListPeersResponse.ProtoReflect.Descriptor instead.
-func (*ListPeersResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use NodeSummary.ProtoReflect.Descriptor instead.
+func (*NodeSummary) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *ListPeersResponse) GetKeys() [][]byte {
+func (x *NodeSummary) GetNode() *NodeRef {
 	if x != nil {
-		return x.Keys
+		return x.Node
 	}
 	return nil
+}
+
+func (x *NodeSummary) GetStatus() NodeStatus {
+	if x != nil {
+		return x.Status
+	}
+	return NodeStatus_NODE_STATUS_UNSPECIFIED
+}
+
+func (x *NodeSummary) GetAddr() string {
+	if x != nil {
+		return x.Addr
+	}
+	return ""
+}
+
+type ServiceSummary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Provider      *NodeRef               `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
+	Port          uint32                 `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServiceSummary) Reset() {
+	*x = ServiceSummary{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServiceSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServiceSummary) ProtoMessage() {}
+
+func (x *ServiceSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServiceSummary.ProtoReflect.Descriptor instead.
+func (*ServiceSummary) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ServiceSummary) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ServiceSummary) GetProvider() *NodeRef {
+	if x != nil {
+		return x.Provider
+	}
+	return nil
+}
+
+func (x *ServiceSummary) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+type JoinClusterRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JoinClusterRequest) Reset() {
+	*x = JoinClusterRequest{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JoinClusterRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JoinClusterRequest) ProtoMessage() {}
+
+func (x *JoinClusterRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JoinClusterRequest.ProtoReflect.Descriptor instead.
+func (*JoinClusterRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *JoinClusterRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+type JoinClusterResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Self          *NodeRef               `protobuf:"bytes,1,opt,name=self,proto3" json:"self,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JoinClusterResponse) Reset() {
+	*x = JoinClusterResponse{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JoinClusterResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JoinClusterResponse) ProtoMessage() {}
+
+func (x *JoinClusterResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JoinClusterResponse.ProtoReflect.Descriptor instead.
+func (*JoinClusterResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *JoinClusterResponse) GetSelf() *NodeRef {
+	if x != nil {
+		return x.Self
+	}
+	return nil
+}
+
+type CreateInviteRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateInviteRequest) Reset() {
+	*x = CreateInviteRequest{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateInviteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateInviteRequest) ProtoMessage() {}
+
+func (x *CreateInviteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateInviteRequest.ProtoReflect.Descriptor instead.
+func (*CreateInviteRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{5}
+}
+
+type CreateInviteResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateInviteResponse) Reset() {
+	*x = CreateInviteResponse{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateInviteResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateInviteResponse) ProtoMessage() {}
+
+func (x *CreateInviteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateInviteResponse.ProtoReflect.Descriptor instead.
+func (*CreateInviteResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CreateInviteResponse) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+type GetStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetStatusRequest) Reset() {
+	*x = GetStatusRequest{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetStatusRequest) ProtoMessage() {}
+
+func (x *GetStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetStatusRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{7}
+}
+
+type GetStatusResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Self          *NodeSummary           `protobuf:"bytes,1,opt,name=self,proto3" json:"self,omitempty"`
+	Nodes         []*NodeSummary         `protobuf:"bytes,2,rep,name=nodes,proto3" json:"nodes,omitempty"`
+	Services      []*ServiceSummary      `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty"`
+	Connections   []*ConnectionSummary   `protobuf:"bytes,4,rep,name=connections,proto3" json:"connections,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetStatusResponse) Reset() {
+	*x = GetStatusResponse{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetStatusResponse) ProtoMessage() {}
+
+func (x *GetStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetStatusResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GetStatusResponse) GetSelf() *NodeSummary {
+	if x != nil {
+		return x.Self
+	}
+	return nil
+}
+
+func (x *GetStatusResponse) GetNodes() []*NodeSummary {
+	if x != nil {
+		return x.Nodes
+	}
+	return nil
+}
+
+func (x *GetStatusResponse) GetServices() []*ServiceSummary {
+	if x != nil {
+		return x.Services
+	}
+	return nil
+}
+
+func (x *GetStatusResponse) GetConnections() []*ConnectionSummary {
+	if x != nil {
+		return x.Connections
+	}
+	return nil
+}
+
+type ConnectionSummary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Peer          *NodeRef               `protobuf:"bytes,1,opt,name=peer,proto3" json:"peer,omitempty"`
+	RemotePort    uint32                 `protobuf:"varint,2,opt,name=remote_port,json=remotePort,proto3" json:"remote_port,omitempty"`
+	LocalPort     uint32                 `protobuf:"varint,3,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
+	ServiceName   string                 `protobuf:"bytes,4,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConnectionSummary) Reset() {
+	*x = ConnectionSummary{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectionSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectionSummary) ProtoMessage() {}
+
+func (x *ConnectionSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectionSummary.ProtoReflect.Descriptor instead.
+func (*ConnectionSummary) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ConnectionSummary) GetPeer() *NodeRef {
+	if x != nil {
+		return x.Peer
+	}
+	return nil
+}
+
+func (x *ConnectionSummary) GetRemotePort() uint32 {
+	if x != nil {
+		return x.RemotePort
+	}
+	return 0
+}
+
+func (x *ConnectionSummary) GetLocalPort() uint32 {
+	if x != nil {
+		return x.LocalPort
+	}
+	return 0
+}
+
+func (x *ConnectionSummary) GetServiceName() string {
+	if x != nil {
+		return x.ServiceName
+	}
+	return ""
+}
+
+type RegisterServiceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Port          uint32                 `protobuf:"varint,1,opt,name=port,proto3" json:"port,omitempty"`
+	Name          *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterServiceRequest) Reset() {
+	*x = RegisterServiceRequest{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterServiceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterServiceRequest) ProtoMessage() {}
+
+func (x *RegisterServiceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterServiceRequest.ProtoReflect.Descriptor instead.
+func (*RegisterServiceRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *RegisterServiceRequest) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *RegisterServiceRequest) GetName() string {
+	if x != nil && x.Name != nil {
+		return *x.Name
+	}
+	return ""
+}
+
+type RegisterServiceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterServiceResponse) Reset() {
+	*x = RegisterServiceResponse{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterServiceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterServiceResponse) ProtoMessage() {}
+
+func (x *RegisterServiceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterServiceResponse.ProtoReflect.Descriptor instead.
+func (*RegisterServiceResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{11}
+}
+
+type UnregisterServiceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Port          uint32                 `protobuf:"varint,1,opt,name=port,proto3" json:"port,omitempty"`
+	Name          *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnregisterServiceRequest) Reset() {
+	*x = UnregisterServiceRequest{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnregisterServiceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnregisterServiceRequest) ProtoMessage() {}
+
+func (x *UnregisterServiceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnregisterServiceRequest.ProtoReflect.Descriptor instead.
+func (*UnregisterServiceRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *UnregisterServiceRequest) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *UnregisterServiceRequest) GetName() string {
+	if x != nil && x.Name != nil {
+		return *x.Name
+	}
+	return ""
+}
+
+type UnregisterServiceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnregisterServiceResponse) Reset() {
+	*x = UnregisterServiceResponse{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnregisterServiceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnregisterServiceResponse) ProtoMessage() {}
+
+func (x *UnregisterServiceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnregisterServiceResponse.ProtoReflect.Descriptor instead.
+func (*UnregisterServiceResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{13}
+}
+
+type ConnectServiceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Node          *NodeRef               `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	RemotePort    uint32                 `protobuf:"varint,2,opt,name=remote_port,json=remotePort,proto3" json:"remote_port,omitempty"`
+	LocalPort     uint32                 `protobuf:"varint,3,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConnectServiceRequest) Reset() {
+	*x = ConnectServiceRequest{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectServiceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectServiceRequest) ProtoMessage() {}
+
+func (x *ConnectServiceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectServiceRequest.ProtoReflect.Descriptor instead.
+func (*ConnectServiceRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ConnectServiceRequest) GetNode() *NodeRef {
+	if x != nil {
+		return x.Node
+	}
+	return nil
+}
+
+func (x *ConnectServiceRequest) GetRemotePort() uint32 {
+	if x != nil {
+		return x.RemotePort
+	}
+	return 0
+}
+
+func (x *ConnectServiceRequest) GetLocalPort() uint32 {
+	if x != nil {
+		return x.LocalPort
+	}
+	return 0
+}
+
+type ConnectServiceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LocalPort     uint32                 `protobuf:"varint,1,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConnectServiceResponse) Reset() {
+	*x = ConnectServiceResponse{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectServiceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectServiceResponse) ProtoMessage() {}
+
+func (x *ConnectServiceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectServiceResponse.ProtoReflect.Descriptor instead.
+func (*ConnectServiceResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ConnectServiceResponse) GetLocalPort() uint32 {
+	if x != nil {
+		return x.LocalPort
+	}
+	return 0
 }
 
 var File_pollen_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\n" +
-	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\"\x12\n" +
-	"\x10ListPeersRequest\"'\n" +
-	"\x11ListPeersResponse\x12\x12\n" +
-	"\x04keys\x18\x01 \x03(\fR\x04keys2h\n" +
-	"\x0eControlService\x12V\n" +
-	"\tListPeers\x12#.pollen.control.v1.ListPeersRequest\x1a$.pollen.control.v1.ListPeersResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
+	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\x1a\x1bbuf/validate/validate.proto\"\"\n" +
+	"\aNodeRef\x12\x17\n" +
+	"\apeer_id\x18\x01 \x01(\fR\x06peerId\"\x88\x01\n" +
+	"\vNodeSummary\x12.\n" +
+	"\x04node\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04node\x125\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x1d.pollen.control.v1.NodeStatusR\x06status\x12\x12\n" +
+	"\x04addr\x18\x03 \x01(\tR\x04addr\"\x88\x01\n" +
+	"\x0eServiceSummary\x12\x1d\n" +
+	"\x04name\x18\x01 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@R\x04name\x126\n" +
+	"\bprovider\x18\x02 \x01(\v2\x1a.pollen.control.v1.NodeRefR\bprovider\x12\x1f\n" +
+	"\x04port\x18\x03 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\x04port\"3\n" +
+	"\x12JoinClusterRequest\x12\x1d\n" +
+	"\x05token\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\x05token\"E\n" +
+	"\x13JoinClusterResponse\x12.\n" +
+	"\x04self\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04self\"\x15\n" +
+	"\x13CreateInviteRequest\"5\n" +
+	"\x14CreateInviteResponse\x12\x1d\n" +
+	"\x05token\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\x05token\"\x12\n" +
+	"\x10GetStatusRequest\"\x84\x02\n" +
+	"\x11GetStatusResponse\x122\n" +
+	"\x04self\x18\x01 \x01(\v2\x1e.pollen.control.v1.NodeSummaryR\x04self\x124\n" +
+	"\x05nodes\x18\x02 \x03(\v2\x1e.pollen.control.v1.NodeSummaryR\x05nodes\x12=\n" +
+	"\bservices\x18\x03 \x03(\v2!.pollen.control.v1.ServiceSummaryR\bservices\x12F\n" +
+	"\vconnections\x18\x04 \x03(\v2$.pollen.control.v1.ConnectionSummaryR\vconnections\"\xc0\x01\n" +
+	"\x11ConnectionSummary\x12.\n" +
+	"\x04peer\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04peer\x12,\n" +
+	"\vremote_port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\n" +
+	"remotePort\x12*\n" +
+	"\n" +
+	"local_port\x18\x03 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\x12!\n" +
+	"\fservice_name\x18\x04 \x01(\tR\vserviceName\"f\n" +
+	"\x16RegisterServiceRequest\x12\x1f\n" +
+	"\x04port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\x04port\x12\"\n" +
+	"\x04name\x18\x02 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@H\x00R\x04name\x88\x01\x01B\a\n" +
+	"\x05_name\"\x19\n" +
+	"\x17RegisterServiceResponse\"f\n" +
+	"\x18UnregisterServiceRequest\x12\x1d\n" +
+	"\x04port\x18\x01 \x01(\rB\t\xbaH\x06*\x04\x18\xff\xff\x03R\x04port\x12\"\n" +
+	"\x04name\x18\x02 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@H\x00R\x04name\x88\x01\x01B\a\n" +
+	"\x05_name\"\x1b\n" +
+	"\x19UnregisterServiceResponse\"\x9f\x01\n" +
+	"\x15ConnectServiceRequest\x12.\n" +
+	"\x04node\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04node\x12,\n" +
+	"\vremote_port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\n" +
+	"remotePort\x12(\n" +
+	"\n" +
+	"local_port\x18\x03 \x01(\rB\t\xbaH\x06*\x04\x18\xff\xff\x03R\tlocalPort\"D\n" +
+	"\x16ConnectServiceResponse\x12*\n" +
+	"\n" +
+	"local_port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort*q\n" +
+	"\n" +
+	"NodeStatus\x12\x1b\n" +
+	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12NODE_STATUS_ONLINE\x10\x01\x12\x17\n" +
+	"\x13NODE_STATUS_OFFLINE\x10\x02\x12\x15\n" +
+	"\x11NODE_STATUS_RELAY\x10\x032\xe8\x04\n" +
+	"\x0eControlService\x12\\\n" +
+	"\vJoinCluster\x12%.pollen.control.v1.JoinClusterRequest\x1a&.pollen.control.v1.JoinClusterResponse\x12_\n" +
+	"\fCreateInvite\x12&.pollen.control.v1.CreateInviteRequest\x1a'.pollen.control.v1.CreateInviteResponse\x12V\n" +
+	"\tGetStatus\x12#.pollen.control.v1.GetStatusRequest\x1a$.pollen.control.v1.GetStatusResponse\x12h\n" +
+	"\x0fRegisterService\x12).pollen.control.v1.RegisterServiceRequest\x1a*.pollen.control.v1.RegisterServiceResponse\x12n\n" +
+	"\x11UnregisterService\x12+.pollen.control.v1.UnregisterServiceRequest\x1a,.pollen.control.v1.UnregisterServiceResponse\x12e\n" +
+	"\x0eConnectService\x12(.pollen.control.v1.ConnectServiceRequest\x1a).pollen.control.v1.ConnectServiceResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
 
 var (
 	file_pollen_control_v1_control_proto_rawDescOnce sync.Once
@@ -124,19 +938,55 @@ func file_pollen_control_v1_control_proto_rawDescGZIP() []byte {
 	return file_pollen_control_v1_control_proto_rawDescData
 }
 
-var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_pollen_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_pollen_control_v1_control_proto_goTypes = []any{
-	(*ListPeersRequest)(nil),  // 0: pollen.control.v1.ListPeersRequest
-	(*ListPeersResponse)(nil), // 1: pollen.control.v1.ListPeersResponse
+	(NodeStatus)(0),                   // 0: pollen.control.v1.NodeStatus
+	(*NodeRef)(nil),                   // 1: pollen.control.v1.NodeRef
+	(*NodeSummary)(nil),               // 2: pollen.control.v1.NodeSummary
+	(*ServiceSummary)(nil),            // 3: pollen.control.v1.ServiceSummary
+	(*JoinClusterRequest)(nil),        // 4: pollen.control.v1.JoinClusterRequest
+	(*JoinClusterResponse)(nil),       // 5: pollen.control.v1.JoinClusterResponse
+	(*CreateInviteRequest)(nil),       // 6: pollen.control.v1.CreateInviteRequest
+	(*CreateInviteResponse)(nil),      // 7: pollen.control.v1.CreateInviteResponse
+	(*GetStatusRequest)(nil),          // 8: pollen.control.v1.GetStatusRequest
+	(*GetStatusResponse)(nil),         // 9: pollen.control.v1.GetStatusResponse
+	(*ConnectionSummary)(nil),         // 10: pollen.control.v1.ConnectionSummary
+	(*RegisterServiceRequest)(nil),    // 11: pollen.control.v1.RegisterServiceRequest
+	(*RegisterServiceResponse)(nil),   // 12: pollen.control.v1.RegisterServiceResponse
+	(*UnregisterServiceRequest)(nil),  // 13: pollen.control.v1.UnregisterServiceRequest
+	(*UnregisterServiceResponse)(nil), // 14: pollen.control.v1.UnregisterServiceResponse
+	(*ConnectServiceRequest)(nil),     // 15: pollen.control.v1.ConnectServiceRequest
+	(*ConnectServiceResponse)(nil),    // 16: pollen.control.v1.ConnectServiceResponse
 }
 var file_pollen_control_v1_control_proto_depIdxs = []int32{
-	0, // 0: pollen.control.v1.ControlService.ListPeers:input_type -> pollen.control.v1.ListPeersRequest
-	1, // 1: pollen.control.v1.ControlService.ListPeers:output_type -> pollen.control.v1.ListPeersResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	1,  // 0: pollen.control.v1.NodeSummary.node:type_name -> pollen.control.v1.NodeRef
+	0,  // 1: pollen.control.v1.NodeSummary.status:type_name -> pollen.control.v1.NodeStatus
+	1,  // 2: pollen.control.v1.ServiceSummary.provider:type_name -> pollen.control.v1.NodeRef
+	1,  // 3: pollen.control.v1.JoinClusterResponse.self:type_name -> pollen.control.v1.NodeRef
+	2,  // 4: pollen.control.v1.GetStatusResponse.self:type_name -> pollen.control.v1.NodeSummary
+	2,  // 5: pollen.control.v1.GetStatusResponse.nodes:type_name -> pollen.control.v1.NodeSummary
+	3,  // 6: pollen.control.v1.GetStatusResponse.services:type_name -> pollen.control.v1.ServiceSummary
+	10, // 7: pollen.control.v1.GetStatusResponse.connections:type_name -> pollen.control.v1.ConnectionSummary
+	1,  // 8: pollen.control.v1.ConnectionSummary.peer:type_name -> pollen.control.v1.NodeRef
+	1,  // 9: pollen.control.v1.ConnectServiceRequest.node:type_name -> pollen.control.v1.NodeRef
+	4,  // 10: pollen.control.v1.ControlService.JoinCluster:input_type -> pollen.control.v1.JoinClusterRequest
+	6,  // 11: pollen.control.v1.ControlService.CreateInvite:input_type -> pollen.control.v1.CreateInviteRequest
+	8,  // 12: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
+	11, // 13: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
+	13, // 14: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
+	15, // 15: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
+	5,  // 16: pollen.control.v1.ControlService.JoinCluster:output_type -> pollen.control.v1.JoinClusterResponse
+	7,  // 17: pollen.control.v1.ControlService.CreateInvite:output_type -> pollen.control.v1.CreateInviteResponse
+	9,  // 18: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
+	12, // 19: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
+	14, // 20: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
+	16, // 21: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
+	16, // [16:22] is the sub-list for method output_type
+	10, // [10:16] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_pollen_control_v1_control_proto_init() }
@@ -144,18 +994,21 @@ func file_pollen_control_v1_control_proto_init() {
 	if File_pollen_control_v1_control_proto != nil {
 		return
 	}
+	file_pollen_control_v1_control_proto_msgTypes[10].OneofWrappers = []any{}
+	file_pollen_control_v1_control_proto_msgTypes[12].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_control_v1_control_proto_rawDesc), len(file_pollen_control_v1_control_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   2,
+			NumEnums:      1,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_pollen_control_v1_control_proto_goTypes,
 		DependencyIndexes: file_pollen_control_v1_control_proto_depIdxs,
+		EnumInfos:         file_pollen_control_v1_control_proto_enumTypes,
 		MessageInfos:      file_pollen_control_v1_control_proto_msgTypes,
 	}.Build()
 	File_pollen_control_v1_control_proto = out.File

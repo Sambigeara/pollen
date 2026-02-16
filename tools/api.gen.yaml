@@ -26,11 +26,11 @@ plugins:
       - github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway
     out: api/genpb
     opt: paths=source_relative
-  - local:
-      - go
-      - run
-      - github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2
-    out: schema/openapiv2
+  # - local:
+  #     - go
+  #     - run
+  #     - github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2
+  #   out: schema/openapiv2
   - local:
       - go
       - run

@@ -1,7 +1,6 @@
 package node
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"net"
 
@@ -9,17 +8,12 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
-	"github.com/sambigeara/pollen/pkg/admission"
 )
 
-func NewInvite(ips []string, port string) (*peerv1.Invite, error) {
+// NewInvite creates a new invite token containing the bootstrap node's ed25519
+// public key (fingerprint). The joiner uses this to verify the bootstrap peer.
+func NewInvite(ips []string, port string, fingerprint []byte) (*peerv1.Invite, error) {
 	id := uuid.NewString()
-
-	// TODO(saml) PSK should have expiry
-	psk, err := generatePSK()
-	if err != nil {
-		return nil, err
-	}
 
 	addrs := make([]string, len(ips))
 	for i, ip := range ips {
@@ -27,18 +21,10 @@ func NewInvite(ips []string, port string) (*peerv1.Invite, error) {
 	}
 
 	return &peerv1.Invite{
-		Id:   id,
-		Psk:  psk,
-		Addr: addrs,
+		Id:          id,
+		Addr:        addrs,
+		Fingerprint: fingerprint,
 	}, nil
-}
-
-func generatePSK() ([]byte, error) {
-	buf := make([]byte, admission.PSKLength)
-	if _, err := rand.Read(buf); err != nil {
-		return nil, err
-	}
-	return buf, nil
 }
 
 func EncodeToken(token *peerv1.Invite) (string, error) {

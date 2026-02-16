@@ -8,22 +8,11 @@ import (
 type MsgType uint32
 
 const (
-	MsgTypeHandshakeXXPsk2Init MsgType = iota
-	MsgTypeHandshakeXXPsk2Resp
-	MsgTypeHandshakeIKInit
-	MsgTypeHandshakeIKResp
-
-	MsgTypeTransportData
-	MsgTypePing
-
-	MsgTypeTCPTunnelRequest
-	MsgTypeTCPTunnelResponse
-
-	MsgTypeGossip
-	MsgTypeTest
+	MsgTypeGossip MsgType = iota
+	MsgTypeUDPRelay
 )
 
-type PeerKey [32]byte // Noise static pub
+type PeerKey [32]byte // ed25519 public key
 
 func PeerKeyFromBytes(b []byte) PeerKey {
 	var id PeerKey
@@ -31,32 +20,29 @@ func PeerKeyFromBytes(b []byte) PeerKey {
 	return id
 }
 
-func (pk *PeerKey) Bytes() []byte {
+func PeerKeyFromString(s string) (PeerKey, error) {
+	var id PeerKey
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return id, err
+	}
+	return PeerKeyFromBytes(b), nil
+}
+
+func (pk PeerKey) Bytes() []byte {
 	return pk[:]
 }
 
-func (pk *PeerKey) String() string {
+func (pk PeerKey) String() string {
 	return hex.EncodeToString(pk[:])
+}
+
+func (pk PeerKey) Short() string {
+	return pk.String()[:8]
 }
 
 func (pk PeerKey) Less(other PeerKey) bool {
 	return bytes.Compare(pk[:], other[:]) < 0
-}
-
-type PeerEventKind int
-
-const (
-	PeerEventKindUp PeerEventKind = iota
-	PeerEventKindDown
-	// PeerEventKindRotated
-	// PeerEventKindRekeyed.
-)
-
-type PeerEvent struct {
-	Addr        string
-	IdentityPub []byte
-	Kind        PeerEventKind
-	Peer        PeerKey
 }
 
 type Envelope struct {

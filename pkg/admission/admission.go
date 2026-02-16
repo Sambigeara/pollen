@@ -15,13 +15,14 @@ var _ Store = (*impl)(nil)
 
 const (
 	invitesDir  = "invites"
-	PSKLength   = 32
 	keyFilePerm = 0o600
 	keyDirPerm  = 0o700
 )
 
 type Admission interface {
-	ConsumePSK(tokenID string) (psk [PSKLength]byte, ok bool)
+	// ConsumeToken validates and consumes a one-time invite token by ID.
+	// Returns true if the token was valid and consumed and persisted.
+	ConsumeToken(tokenID string) (ok bool, err error)
 }
 
 type Store interface {
@@ -74,21 +75,47 @@ func Load(pollenDir string) (Store, error) {
 func (s *impl) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.saveLocked()
+}
 
-	f, err := os.Create(s.path)
+func (s *impl) saveLocked() error {
+	tmpPath := s.path + ".tmp"
+
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, keyFilePerm)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 
 	b, err := proto.Marshal(s.InviteStore)
 	if err != nil {
+		_ = os.Remove(tmpPath)
 		return err
 	}
 
-	_, err = f.Write(b)
+	if _, err := f.Write(b); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
 
-	return err
+	if err := f.Sync(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	return nil
 }
 
 func (s *impl) AddInvite(inv *peerv1.Invite) {
@@ -98,18 +125,22 @@ func (s *impl) AddInvite(inv *peerv1.Invite) {
 	s.Invites[inv.Id] = inv
 }
 
-func (s *impl) ConsumePSK(id string) ([PSKLength]byte, bool) {
+// ConsumeToken validates and consumes a one-time invite by ID.
+func (s *impl) ConsumeToken(id string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	inv, ok := s.Invites[id]
-	if !ok || inv == nil || len(inv.Psk) != PSKLength {
-		return [PSKLength]byte{}, false
+	if !ok {
+		return false, nil
 	}
 
 	delete(s.Invites, id)
 
-	var psk [PSKLength]byte
-	copy(psk[:], inv.Psk)
-	return psk, true
+	if err := s.saveLocked(); err != nil {
+		s.Invites[id] = inv
+		return false, err
+	}
+
+	return true, nil
 }

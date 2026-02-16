@@ -6,22 +6,29 @@ import "buf/validate/validate.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1;peerv1";
 
-message Known {
-  bytes noise_pub = 1;
-  bytes identity_pub = 2;
-  string addr = 3;
-}
-
 message Invite {
   string id = 1 [(buf.validate.field).string = {uuid: true}];
-  bytes psk = 2 [(buf.validate.field).bytes = {len: 32}];
-  repeated string addr = 3;
-}
-
-message PeerStore {
-  map<string, Known> peers = 1;
+  repeated string addr = 2;
+  bytes fingerprint = 3; // Bootstrap peer's ed25519 public key (32 bytes).
 }
 
 message InviteStore {
   map<string, Invite> invites = 1;
+}
+
+message PunchCoordRequest {
+  bytes peer_id = 1;
+}
+
+message PunchCoordTrigger {
+  bytes peer_id = 1;
+  string self_addr = 2;
+  string peer_addr = 3;
+}
+
+message UdpRelayEnvelope {
+  bytes src_peer_id = 1;
+  bytes dst_peer_id = 2;
+  uint32 msg_type = 3;
+  bytes payload = 4;
 }
