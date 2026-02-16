@@ -20,13 +20,15 @@ import (
 // or yamux multiplexing needed.
 type Manager struct {
 	dir           quic.PeerDirectory
-	sessions      *SessionManager
+	sessions      map[types.PeerKey]*Session
+	waiters       map[types.PeerKey][]chan struct{}
 	connections   map[string]connectionHandler
 	services      map[uint32]serviceHandler
 	activeStreams map[uint32]map[net.Conn]struct{}
-	connectionMu sync.RWMutex
-	serviceMu    sync.RWMutex
-	streamMu     sync.Mutex
+	sessionMu     sync.RWMutex
+	connectionMu  sync.RWMutex
+	serviceMu     sync.RWMutex
+	streamMu      sync.Mutex
 }
 
 type serviceHandler struct {
@@ -68,14 +70,14 @@ func connectionKey(peerID, port string) string {
 }
 
 func New(dir quic.PeerDirectory) *Manager {
-	m := &Manager{
-		dir:          dir,
-		connections:  make(map[string]connectionHandler),
-		services:     make(map[uint32]serviceHandler),
+	return &Manager{
+		dir:           dir,
+		sessions:      make(map[types.PeerKey]*Session),
+		waiters:       make(map[types.PeerKey][]chan struct{}),
+		connections:   make(map[string]connectionHandler),
+		services:      make(map[uint32]serviceHandler),
 		activeStreams: make(map[uint32]map[net.Conn]struct{}),
 	}
-	m.sessions = NewSessionManager(m.handleIncomingStream)
-	return m
 }
 
 func (m *Manager) handleIncomingStream(stream net.Conn, servicePort uint16) {
@@ -100,6 +102,134 @@ func (m *Manager) handleIncomingStream(stream net.Conn, servicePort uint16) {
 	}
 
 	h.fn(stream)
+}
+
+// Register registers a session from a QUIC connection.
+func (m *Manager) Register(conn *quic.Conn, peerID types.PeerKey) (*Session, error) {
+	m.sessionMu.Lock()
+
+	session := newSession(conn, peerID)
+
+	if existing, ok := m.sessions[peerID]; ok {
+		zap.S().Warnw("replacing existing session", "peer", peerID.String()[:8])
+		existing.Close()
+		delete(m.sessions, peerID)
+	}
+
+	m.sessions[peerID] = session
+	waiters := m.waiters[peerID]
+	delete(m.waiters, peerID)
+	m.sessionMu.Unlock()
+
+	for _, ch := range waiters {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+
+	zap.S().Infow("registered session", "peer", peerID.String()[:8])
+	go m.acceptStreams(session)
+	return session, nil
+}
+
+func (m *Manager) getOrCreateSession(ctx context.Context, peerID types.PeerKey) (*Session, error) {
+	m.sessionMu.RLock()
+	session, ok := m.sessions[peerID]
+	m.sessionMu.RUnlock()
+
+	if ok && !session.IsClosed() {
+		return session, nil
+	}
+
+	return m.waitForSession(ctx, peerID)
+}
+
+func (m *Manager) waitForSession(ctx context.Context, peerID types.PeerKey) (*Session, error) {
+	for {
+		m.sessionMu.Lock()
+		if session, ok := m.sessions[peerID]; ok && !session.IsClosed() {
+			m.sessionMu.Unlock()
+			return session, nil
+		}
+		ch := make(chan struct{}, 1)
+		m.waiters[peerID] = append(m.waiters[peerID], ch)
+		m.sessionMu.Unlock()
+
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			m.removeWaiter(peerID, ch)
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (m *Manager) removeWaiter(peerID types.PeerKey, ch chan struct{}) {
+	m.sessionMu.Lock()
+	defer m.sessionMu.Unlock()
+
+	waiters := m.waiters[peerID]
+	for i := range waiters {
+		if waiters[i] != ch {
+			continue
+		}
+		waiters[i] = waiters[len(waiters)-1]
+		waiters = waiters[:len(waiters)-1]
+		break
+	}
+
+	if len(waiters) == 0 {
+		delete(m.waiters, peerID)
+		return
+	}
+	m.waiters[peerID] = waiters
+}
+
+func (m *Manager) acceptStreams(session *Session) {
+	ctx := context.Background()
+	for {
+		stream, port, err := session.AcceptStream(ctx)
+		if err != nil {
+			if !session.IsClosed() {
+				zap.S().Warnw("accept stream error", "peer", session.peerID.String()[:8], "err", err)
+			}
+			m.removeSessionIfSame(session)
+			return
+		}
+
+		go m.handleIncomingStream(stream, port)
+	}
+}
+
+func (m *Manager) removeSessionIfSame(session *Session) bool {
+	m.sessionMu.Lock()
+	current, ok := m.sessions[session.peerID]
+	if !ok || current != session {
+		m.sessionMu.Unlock()
+		return false
+	}
+
+	delete(m.sessions, session.peerID)
+	m.sessionMu.Unlock()
+
+	_ = session.Close()
+	zap.S().Infow("removed session", "peer", session.peerID.String()[:8])
+	return true
+}
+
+func (m *Manager) removeSession(peerID types.PeerKey) {
+	m.sessionMu.Lock()
+	session, ok := m.sessions[peerID]
+	if ok {
+		session.Close()
+		delete(m.sessions, peerID)
+	}
+	m.sessionMu.Unlock()
+
+	if ok {
+		zap.S().Infow("removed session", "peer", peerID.String()[:8])
+	}
 }
 
 func (m *Manager) RegisterService(port uint32) {
@@ -185,7 +315,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 			}
 			go func() {
 				// Get or create session to peer (backed by QUIC connection).
-				session, err := m.sessions.GetOrCreate(ctx, peerID)
+				session, err := m.getOrCreateSession(ctx, peerID)
 				if err != nil {
 					logger.Warnw("session failed", "peer", peerID.String()[:8], "err", err)
 					_ = clientConn.Close()
@@ -196,7 +326,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 				stream, err := session.OpenStream(portNum)
 				if err != nil {
 					logger.Warnw("open stream failed", "peer", peerID.String()[:8], "port", remotePort, "err", err)
-					m.sessions.Remove(peerID)
+					m.removeSession(peerID)
 					_ = clientConn.Close()
 					return
 				}
@@ -330,14 +460,14 @@ func (m *Manager) removeActiveStream(port uint32, stream net.Conn) {
 	}
 }
 
-// Sessions returns the session manager.
-func (m *Manager) Sessions() *SessionManager {
-	return m.sessions
-}
-
 // Close shuts down the manager and all sessions.
 func (m *Manager) Close() {
-	m.sessions.Close()
+	m.sessionMu.Lock()
+	for peerID, session := range m.sessions {
+		session.Close()
+		delete(m.sessions, peerID)
+	}
+	m.sessionMu.Unlock()
 
 	m.serviceMu.Lock()
 	for _, h := range m.services {
