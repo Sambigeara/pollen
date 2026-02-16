@@ -114,7 +114,6 @@ func New(conf *Config) (*Node, error) {
 	}
 
 	n.tun = tunnel.New(dir)
-
 	for _, svc := range stateStore.LocalServices() {
 		n.tun.RegisterService(svc.GetPort())
 	}
@@ -342,7 +341,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 
 			// Register QUIC connection as a tunnel session.
 			if conn, ok := n.sock.GetConn(e.PeerKey); ok {
-				if _, err := n.tun.Sessions().Register(conn, e.PeerKey); err != nil {
+				if _, err := n.tun.Register(conn, e.PeerKey); err != nil {
 					n.log.Warnw("session register failed", "peer", e.PeerKey.Short(), "err", err)
 				}
 			}
@@ -508,17 +507,6 @@ func (n *Node) gossipJitter() float64 {
 }
 
 func (n *Node) shutdown() {
-	activeConns := n.tun.ListConnections()
-	desired := make([]store.Connection, 0, len(activeConns))
-	for _, conn := range activeConns {
-		desired = append(desired, store.Connection{
-			PeerID:     conn.PeerID,
-			RemotePort: conn.RemotePort,
-			LocalPort:  conn.LocalPort,
-		})
-	}
-	n.store.ReplaceDesiredConnections(desired)
-
 	if err := n.store.Save(); err != nil {
 		n.log.Errorf("failed to save state: %v", err)
 	} else {

@@ -529,21 +529,6 @@ func (s *Store) DesiredConnections() []Connection {
 	return connections
 }
 
-func (s *Store) ReplaceDesiredConnections(connections []Connection) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	next := make(map[string]Connection, len(connections))
-	for _, conn := range connections {
-		if conn.PeerID == (types.PeerKey{}) || conn.RemotePort == 0 || conn.LocalPort == 0 {
-			continue
-		}
-		next[connectionKey(conn.PeerID, conn.RemotePort, conn.LocalPort)] = conn
-	}
-
-	s.desiredConnections = next
-}
-
 func (s *Store) bumpLocalLocked() *statev1.GossipNode {
 	local := s.nodes[s.LocalID]
 	local.Counter++
