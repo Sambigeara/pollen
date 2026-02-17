@@ -26,9 +26,12 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/api/genpb/pollen/control/v1/controlv1connect"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
+	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/server"
+	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/workspace"
 )
@@ -219,15 +222,29 @@ func runNode(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	privKey, pubKey, err := node.GenIdentityKey(pollenDir)
+	if err != nil {
+		logger.Fatal("failed to load signing keys: ", err)
+	}
+
+	stateStore, err := store.Load(pollenDir, pubKey)
+	if err != nil {
+		logger.Fatal("failed to load state: ", err)
+	}
+
+	invitesStore, err := admission.Load(pollenDir)
+	if err != nil {
+		logger.Fatal("failed to load invites: ", err)
+	}
+
 	conf := &node.Config{
 		Port:             port,
 		GossipInterval:   passiveGossipInterval,
 		PeerTickInterval: time.Second,
-		PollenDir:        pollenDir,
 		AdvertisedIPs:    addrs,
 	}
 
-	n, err := node.New(conf)
+	n, err := node.New(conf, privKey, stateStore, peer.NewStore(), invitesStore)
 	if err != nil {
 		logger.Fatal(err)
 	}

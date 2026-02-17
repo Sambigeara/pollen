@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"fmt"
+	"encoding/binary"
 	"net"
 	"time"
 )
@@ -15,57 +15,30 @@ const (
 	probeReqByte   = 0x01
 	probeRespByte  = 0x02
 	probeNonceSize = 16
+
+	minEphemeralPort = 1024
+	maxEphemeralPort = 65535
 )
 
-// punch brute-forces NAT connectivity by opening many ephemeral sockets,
-// sending probes to addr from each, and returning the first that gets a response.
-func punch(ctx context.Context, addr *net.UDPAddr) (*net.UDPConn, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	ch := make(chan *net.UDPConn, 1)
-
-	for range punchAttempts {
-		go func() {
-			c, err := punchOne(ctx, addr)
-			if err != nil {
-				return
-			}
-			select {
-			case ch <- c:
-			default:
-				c.Close()
-			}
-		}()
-	}
-
-	select {
-	case c := <-ch:
-		return c, nil
-	case <-ctx.Done():
-		return nil, fmt.Errorf("punch %s: %w", addr, ErrUnreachable)
-	}
+// probe sends a probe on a socket and waits for the matching response.
+// It also echoes any incoming probe requests so that simultaneous punches
+// from both sides can discover each other.
+func probe(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) error {
+	_, err := probeAddr(ctx, conn, addr)
+	return err
 }
 
-// punchOne opens a single ephemeral socket, sends a probe, and waits for a matching response.
-func punchOne(ctx context.Context, addr *net.UDPAddr) (*net.UDPConn, error) {
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{})
-	if err != nil {
-		return nil, err
-	}
-
+func probeAddr(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) (*net.UDPAddr, error) {
 	nonce := make([]byte, probeNonceSize)
 	if _, err := rand.Read(nonce); err != nil {
-		udpConn.Close()
 		return nil, err
 	}
 
-	probe := make([]byte, 1+probeNonceSize)
-	probe[0] = probeReqByte
-	copy(probe[1:], nonce)
+	req := make([]byte, 1+probeNonceSize)
+	req[0] = probeReqByte
+	copy(req[1:], nonce)
 
-	if _, err := udpConn.WriteToUDP(probe, addr); err != nil {
-		udpConn.Close()
+	if _, err := conn.WriteToUDP(req, addr); err != nil {
 		return nil, err
 	}
 
@@ -74,23 +47,95 @@ func punchOne(ctx context.Context, addr *net.UDPAddr) (*net.UDPConn, error) {
 	copy(expect[1:], nonce)
 
 	buf := make([]byte, 1+probeNonceSize)
-	deadline := time.Now().Add(probeTimeout)
-	udpConn.SetReadDeadline(deadline)
+	conn.SetReadDeadline(time.Now().Add(probeTimeout))
+	defer conn.SetReadDeadline(time.Time{})
 
 	for {
 		if ctx.Err() != nil {
-			udpConn.Close()
 			return nil, ctx.Err()
 		}
-
-		n, _, err := udpConn.ReadFromUDP(buf)
+		n, sender, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			udpConn.Close()
 			return nil, err
 		}
-		if n == len(expect) && bytes.Equal(buf[:n], expect) {
-			udpConn.SetReadDeadline(time.Time{}) // clear deadline
-			return udpConn, nil
+		if n != 1+probeNonceSize {
+			continue
+		}
+		if buf[0] == probeReqByte {
+			resp := make([]byte, 1+probeNonceSize)
+			resp[0] = probeRespByte
+			copy(resp[1:], buf[1:n])
+			_, _ = conn.WriteToUDP(resp, sender)
+			continue
+		}
+		if bytes.Equal(buf[:n], expect) {
+			return sender, nil
 		}
 	}
+}
+
+// scatterProbe sends probes from a single socket to random ports on the
+// target IP. It returns the address of the first peer that responds.
+// This implements the "easy-side" of a NAT punch: fixed source port,
+// varying destination port.
+func scatterProbe(ctx context.Context, conn *net.UDPConn, target *net.UDPAddr, count int) (*net.UDPAddr, error) {
+	nonce := make([]byte, probeNonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+
+	req := make([]byte, 1+probeNonceSize)
+	req[0] = probeReqByte
+	copy(req[1:], nonce)
+
+	expect := make([]byte, 1+probeNonceSize)
+	expect[0] = probeRespByte
+	copy(expect[1:], nonce)
+
+	// Include the target address first, then spray random ports.
+	_, _ = conn.WriteToUDP(req, target)
+	for i := 1; i < count; i++ {
+		port, err := randomEphemeralPort()
+		if err != nil {
+			continue
+		}
+		dst := &net.UDPAddr{IP: target.IP, Port: port, Zone: target.Zone}
+		_, _ = conn.WriteToUDP(req, dst)
+	}
+
+	// Wait for any matching response.
+	buf := make([]byte, 1+probeNonceSize)
+	conn.SetReadDeadline(time.Now().Add(probeTimeout))
+	defer conn.SetReadDeadline(time.Time{})
+
+	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		n, sender, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			return nil, err
+		}
+		if n != 1+probeNonceSize {
+			continue
+		}
+		if buf[0] == probeReqByte {
+			resp := make([]byte, 1+probeNonceSize)
+			resp[0] = probeRespByte
+			copy(resp[1:], buf[1:n])
+			_, _ = conn.WriteToUDP(resp, sender)
+			continue
+		}
+		if bytes.Equal(buf[:n], expect) {
+			return sender, nil
+		}
+	}
+}
+
+func randomEphemeralPort() (int, error) {
+	var b [2]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0, err
+	}
+	return minEphemeralPort + int(binary.BigEndian.Uint16(b[:]))%(maxEphemeralPort-minEphemeralPort+1), nil
 }

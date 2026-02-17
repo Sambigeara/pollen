@@ -26,6 +26,14 @@ message PunchCoordTrigger {
   string peer_addr = 3;
 }
 
+message InviteRequest {
+  string token = 1;
+}
+
+message InviteResponse {
+  bool accepted = 1;
+}
+
 message UdpRelayEnvelope {
   bytes src_peer_id = 1;
   bytes dst_peer_id = 2;

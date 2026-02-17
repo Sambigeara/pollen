@@ -8,10 +8,9 @@ import (
 	"net"
 	"sync"
 
-	libquic "github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go"
 	"go.uber.org/zap"
 
-	"github.com/sambigeara/pollen/pkg/quic"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -94,7 +93,7 @@ func (s *Session) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
 		close(s.closeCh)
-		err = s.conn.Close()
+		err = s.conn.CloseWithError(0, "session closed")
 		s.logger.Info("session closed")
 	})
 	return err
@@ -117,7 +116,7 @@ func (s *Session) PeerID() types.PeerKey {
 
 // streamConn wraps a quic.Stream to implement net.Conn for compatibility with Bridge().
 type streamConn struct {
-	*libquic.Stream
+	*quic.Stream
 }
 
 func (s *streamConn) LocalAddr() net.Addr  { return stubAddr{} }

@@ -1,4 +1,4 @@
-package quic
+package mesh
 
 import (
 	"crypto/ed25519"
@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -18,6 +19,10 @@ const (
 	certSerialBits = 128
 	certValidity   = 10 * 365 * 24 * time.Hour
 )
+
+type PeerDirectory interface {
+	IdentityPub(peerKey types.PeerKey) (ed25519.PublicKey, bool)
+}
 
 func generateIdentityCert(signPriv ed25519.PrivateKey) (tls.Certificate, error) {
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), certSerialBits))
@@ -83,6 +88,18 @@ func newServerTLSConfig(ourCert tls.Certificate) *tls.Config {
 			return err
 		},
 	}
+}
+
+func peerKeyFromConn(qc *quic.Conn) (types.PeerKey, error) {
+	certs := qc.ConnectionState().TLS.PeerCertificates
+	if len(certs) == 0 {
+		return types.PeerKey{}, errors.New("no peer certificate")
+	}
+	pub, ok := certs[0].PublicKey.(ed25519.PublicKey)
+	if !ok {
+		return types.PeerKey{}, errors.New("peer cert is not ed25519")
+	}
+	return types.PeerKeyFromBytes(pub), nil
 }
 
 func newExpectedPeerTLSConfig(ourCert tls.Certificate, expectedPeer types.PeerKey) *tls.Config {

@@ -8,6 +8,7 @@ package statev1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
+	v1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -210,31 +211,33 @@ func (x *GossipNode) GetReachablePeers() []string {
 	return nil
 }
 
-type GossipEnvelope struct {
+type DatagramEnvelope struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Body:
 	//
-	//	*GossipEnvelope_Clock
-	//	*GossipEnvelope_Node
-	Body          isGossipEnvelope_Body `protobuf_oneof:"body"`
+	//	*DatagramEnvelope_Clock
+	//	*DatagramEnvelope_Node
+	//	*DatagramEnvelope_PunchCoordRequest
+	//	*DatagramEnvelope_PunchCoordTrigger
+	Body          isDatagramEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *GossipEnvelope) Reset() {
-	*x = GossipEnvelope{}
+func (x *DatagramEnvelope) Reset() {
+	*x = DatagramEnvelope{}
 	mi := &file_pollen_state_v1_gossip_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *GossipEnvelope) String() string {
+func (x *DatagramEnvelope) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*GossipEnvelope) ProtoMessage() {}
+func (*DatagramEnvelope) ProtoMessage() {}
 
-func (x *GossipEnvelope) ProtoReflect() protoreflect.Message {
+func (x *DatagramEnvelope) ProtoReflect() protoreflect.Message {
 	mi := &file_pollen_state_v1_gossip_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -246,57 +249,87 @@ func (x *GossipEnvelope) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GossipEnvelope.ProtoReflect.Descriptor instead.
-func (*GossipEnvelope) Descriptor() ([]byte, []int) {
+// Deprecated: Use DatagramEnvelope.ProtoReflect.Descriptor instead.
+func (*DatagramEnvelope) Descriptor() ([]byte, []int) {
 	return file_pollen_state_v1_gossip_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *GossipEnvelope) GetBody() isGossipEnvelope_Body {
+func (x *DatagramEnvelope) GetBody() isDatagramEnvelope_Body {
 	if x != nil {
 		return x.Body
 	}
 	return nil
 }
 
-func (x *GossipEnvelope) GetClock() *GossipVectorClock {
+func (x *DatagramEnvelope) GetClock() *GossipVectorClock {
 	if x != nil {
-		if x, ok := x.Body.(*GossipEnvelope_Clock); ok {
+		if x, ok := x.Body.(*DatagramEnvelope_Clock); ok {
 			return x.Clock
 		}
 	}
 	return nil
 }
 
-func (x *GossipEnvelope) GetNode() *GossipNode {
+func (x *DatagramEnvelope) GetNode() *GossipNode {
 	if x != nil {
-		if x, ok := x.Body.(*GossipEnvelope_Node); ok {
+		if x, ok := x.Body.(*DatagramEnvelope_Node); ok {
 			return x.Node
 		}
 	}
 	return nil
 }
 
-type isGossipEnvelope_Body interface {
-	isGossipEnvelope_Body()
+func (x *DatagramEnvelope) GetPunchCoordRequest() *v1.PunchCoordRequest {
+	if x != nil {
+		if x, ok := x.Body.(*DatagramEnvelope_PunchCoordRequest); ok {
+			return x.PunchCoordRequest
+		}
+	}
+	return nil
 }
 
-type GossipEnvelope_Clock struct {
+func (x *DatagramEnvelope) GetPunchCoordTrigger() *v1.PunchCoordTrigger {
+	if x != nil {
+		if x, ok := x.Body.(*DatagramEnvelope_PunchCoordTrigger); ok {
+			return x.PunchCoordTrigger
+		}
+	}
+	return nil
+}
+
+type isDatagramEnvelope_Body interface {
+	isDatagramEnvelope_Body()
+}
+
+type DatagramEnvelope_Clock struct {
 	Clock *GossipVectorClock `protobuf:"bytes,1,opt,name=clock,proto3,oneof"`
 }
 
-type GossipEnvelope_Node struct {
+type DatagramEnvelope_Node struct {
 	Node *GossipNode `protobuf:"bytes,2,opt,name=node,proto3,oneof"`
 }
 
-func (*GossipEnvelope_Clock) isGossipEnvelope_Body() {}
+type DatagramEnvelope_PunchCoordRequest struct {
+	PunchCoordRequest *v1.PunchCoordRequest `protobuf:"bytes,3,opt,name=punch_coord_request,json=punchCoordRequest,proto3,oneof"`
+}
 
-func (*GossipEnvelope_Node) isGossipEnvelope_Body() {}
+type DatagramEnvelope_PunchCoordTrigger struct {
+	PunchCoordTrigger *v1.PunchCoordTrigger `protobuf:"bytes,4,opt,name=punch_coord_trigger,json=punchCoordTrigger,proto3,oneof"`
+}
+
+func (*DatagramEnvelope_Clock) isDatagramEnvelope_Body() {}
+
+func (*DatagramEnvelope_Node) isDatagramEnvelope_Body() {}
+
+func (*DatagramEnvelope_PunchCoordRequest) isDatagramEnvelope_Body() {}
+
+func (*DatagramEnvelope_PunchCoordTrigger) isDatagramEnvelope_Body() {}
 
 var File_pollen_state_v1_gossip_proto protoreflect.FileDescriptor
 
 const file_pollen_state_v1_gossip_proto_rawDesc = "" +
 	"\n" +
-	"\x1cpollen/state/v1/gossip.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\">\n" +
+	"\x1cpollen/state/v1/gossip.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19pollen/peer/v1/peer.proto\">\n" +
 	"\aService\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\x04port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\x04port\"\x9e\x01\n" +
@@ -314,10 +347,12 @@ const file_pollen_state_v1_gossip_proto_rawDesc = "" +
 	"\n" +
 	"local_port\x18\x05 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\x124\n" +
 	"\bservices\x18\x06 \x03(\v2\x18.pollen.state.v1.ServiceR\bservices\x12'\n" +
-	"\x0freachable_peers\x18\a \x03(\tR\x0ereachablePeers\"\x87\x01\n" +
-	"\x0eGossipEnvelope\x12:\n" +
+	"\x0freachable_peers\x18\a \x03(\tR\x0ereachablePeers\"\xb3\x02\n" +
+	"\x10DatagramEnvelope\x12:\n" +
 	"\x05clock\x18\x01 \x01(\v2\".pollen.state.v1.GossipVectorClockH\x00R\x05clock\x121\n" +
-	"\x04node\x18\x02 \x01(\v2\x1b.pollen.state.v1.GossipNodeH\x00R\x04nodeB\x06\n" +
+	"\x04node\x18\x02 \x01(\v2\x1b.pollen.state.v1.GossipNodeH\x00R\x04node\x12S\n" +
+	"\x13punch_coord_request\x18\x03 \x01(\v2!.pollen.peer.v1.PunchCoordRequestH\x00R\x11punchCoordRequest\x12S\n" +
+	"\x13punch_coord_trigger\x18\x04 \x01(\v2!.pollen.peer.v1.PunchCoordTriggerH\x00R\x11punchCoordTriggerB\x06\n" +
 	"\x04bodyB@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
 
 var (
@@ -334,22 +369,26 @@ func file_pollen_state_v1_gossip_proto_rawDescGZIP() []byte {
 
 var file_pollen_state_v1_gossip_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_pollen_state_v1_gossip_proto_goTypes = []any{
-	(*Service)(nil),           // 0: pollen.state.v1.Service
-	(*GossipVectorClock)(nil), // 1: pollen.state.v1.GossipVectorClock
-	(*GossipNode)(nil),        // 2: pollen.state.v1.GossipNode
-	(*GossipEnvelope)(nil),    // 3: pollen.state.v1.GossipEnvelope
-	nil,                       // 4: pollen.state.v1.GossipVectorClock.CountersEntry
+	(*Service)(nil),              // 0: pollen.state.v1.Service
+	(*GossipVectorClock)(nil),    // 1: pollen.state.v1.GossipVectorClock
+	(*GossipNode)(nil),           // 2: pollen.state.v1.GossipNode
+	(*DatagramEnvelope)(nil),     // 3: pollen.state.v1.DatagramEnvelope
+	nil,                          // 4: pollen.state.v1.GossipVectorClock.CountersEntry
+	(*v1.PunchCoordRequest)(nil), // 5: pollen.peer.v1.PunchCoordRequest
+	(*v1.PunchCoordTrigger)(nil), // 6: pollen.peer.v1.PunchCoordTrigger
 }
 var file_pollen_state_v1_gossip_proto_depIdxs = []int32{
 	4, // 0: pollen.state.v1.GossipVectorClock.counters:type_name -> pollen.state.v1.GossipVectorClock.CountersEntry
 	0, // 1: pollen.state.v1.GossipNode.services:type_name -> pollen.state.v1.Service
-	1, // 2: pollen.state.v1.GossipEnvelope.clock:type_name -> pollen.state.v1.GossipVectorClock
-	2, // 3: pollen.state.v1.GossipEnvelope.node:type_name -> pollen.state.v1.GossipNode
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	1, // 2: pollen.state.v1.DatagramEnvelope.clock:type_name -> pollen.state.v1.GossipVectorClock
+	2, // 3: pollen.state.v1.DatagramEnvelope.node:type_name -> pollen.state.v1.GossipNode
+	5, // 4: pollen.state.v1.DatagramEnvelope.punch_coord_request:type_name -> pollen.peer.v1.PunchCoordRequest
+	6, // 5: pollen.state.v1.DatagramEnvelope.punch_coord_trigger:type_name -> pollen.peer.v1.PunchCoordTrigger
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_gossip_proto_init() }
@@ -358,8 +397,10 @@ func file_pollen_state_v1_gossip_proto_init() {
 		return
 	}
 	file_pollen_state_v1_gossip_proto_msgTypes[3].OneofWrappers = []any{
-		(*GossipEnvelope_Clock)(nil),
-		(*GossipEnvelope_Node)(nil),
+		(*DatagramEnvelope_Clock)(nil),
+		(*DatagramEnvelope_Node)(nil),
+		(*DatagramEnvelope_PunchCoordRequest)(nil),
+		(*DatagramEnvelope_PunchCoordTrigger)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

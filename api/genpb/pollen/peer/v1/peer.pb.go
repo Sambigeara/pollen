@@ -230,6 +230,94 @@ func (x *PunchCoordTrigger) GetPeerAddr() string {
 	return ""
 }
 
+type InviteRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InviteRequest) Reset() {
+	*x = InviteRequest{}
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InviteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InviteRequest) ProtoMessage() {}
+
+func (x *InviteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InviteRequest.ProtoReflect.Descriptor instead.
+func (*InviteRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *InviteRequest) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+type InviteResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InviteResponse) Reset() {
+	*x = InviteResponse{}
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InviteResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InviteResponse) ProtoMessage() {}
+
+func (x *InviteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InviteResponse.ProtoReflect.Descriptor instead.
+func (*InviteResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *InviteResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
 type UdpRelayEnvelope struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SrcPeerId     []byte                 `protobuf:"bytes,1,opt,name=src_peer_id,json=srcPeerId,proto3" json:"src_peer_id,omitempty"`
@@ -242,7 +330,7 @@ type UdpRelayEnvelope struct {
 
 func (x *UdpRelayEnvelope) Reset() {
 	*x = UdpRelayEnvelope{}
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[4]
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -254,7 +342,7 @@ func (x *UdpRelayEnvelope) String() string {
 func (*UdpRelayEnvelope) ProtoMessage() {}
 
 func (x *UdpRelayEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_peer_v1_peer_proto_msgTypes[4]
+	mi := &file_pollen_peer_v1_peer_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -267,7 +355,7 @@ func (x *UdpRelayEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UdpRelayEnvelope.ProtoReflect.Descriptor instead.
 func (*UdpRelayEnvelope) Descriptor() ([]byte, []int) {
-	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{4}
+	return file_pollen_peer_v1_peer_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *UdpRelayEnvelope) GetSrcPeerId() []byte {
@@ -317,7 +405,11 @@ const file_pollen_peer_v1_peer_proto_rawDesc = "" +
 	"\x11PunchCoordTrigger\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1b\n" +
 	"\tself_addr\x18\x02 \x01(\tR\bselfAddr\x12\x1b\n" +
-	"\tpeer_addr\x18\x03 \x01(\tR\bpeerAddr\"\x87\x01\n" +
+	"\tpeer_addr\x18\x03 \x01(\tR\bpeerAddr\"%\n" +
+	"\rInviteRequest\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\",\n" +
+	"\x0eInviteResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\"\x87\x01\n" +
 	"\x10UdpRelayEnvelope\x12\x1e\n" +
 	"\vsrc_peer_id\x18\x01 \x01(\fR\tsrcPeerId\x12\x1e\n" +
 	"\vdst_peer_id\x18\x02 \x01(\fR\tdstPeerId\x12\x19\n" +
@@ -336,17 +428,19 @@ func file_pollen_peer_v1_peer_proto_rawDescGZIP() []byte {
 	return file_pollen_peer_v1_peer_proto_rawDescData
 }
 
-var file_pollen_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_pollen_peer_v1_peer_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_pollen_peer_v1_peer_proto_goTypes = []any{
 	(*Invite)(nil),            // 0: pollen.peer.v1.Invite
 	(*InviteStore)(nil),       // 1: pollen.peer.v1.InviteStore
 	(*PunchCoordRequest)(nil), // 2: pollen.peer.v1.PunchCoordRequest
 	(*PunchCoordTrigger)(nil), // 3: pollen.peer.v1.PunchCoordTrigger
-	(*UdpRelayEnvelope)(nil),  // 4: pollen.peer.v1.UdpRelayEnvelope
-	nil,                       // 5: pollen.peer.v1.InviteStore.InvitesEntry
+	(*InviteRequest)(nil),     // 4: pollen.peer.v1.InviteRequest
+	(*InviteResponse)(nil),    // 5: pollen.peer.v1.InviteResponse
+	(*UdpRelayEnvelope)(nil),  // 6: pollen.peer.v1.UdpRelayEnvelope
+	nil,                       // 7: pollen.peer.v1.InviteStore.InvitesEntry
 }
 var file_pollen_peer_v1_peer_proto_depIdxs = []int32{
-	5, // 0: pollen.peer.v1.InviteStore.invites:type_name -> pollen.peer.v1.InviteStore.InvitesEntry
+	7, // 0: pollen.peer.v1.InviteStore.invites:type_name -> pollen.peer.v1.InviteStore.InvitesEntry
 	0, // 1: pollen.peer.v1.InviteStore.InvitesEntry.value:type_name -> pollen.peer.v1.Invite
 	2, // [2:2] is the sub-list for method output_type
 	2, // [2:2] is the sub-list for method input_type
@@ -366,7 +460,7 @@ func file_pollen_peer_v1_peer_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_peer_v1_peer_proto_rawDesc), len(file_pollen_peer_v1_peer_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
