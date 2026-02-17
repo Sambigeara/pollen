@@ -75,7 +75,7 @@ func TestScatterProbeMainUsesFixedSourcePort(t *testing.T) {
 	require.Equal(t, mainAddr.Port, <-sourcePortCh)
 }
 
-func TestGetOrCreatePunchUsesMainSocketForEasySide(t *testing.T) {
+func TestPunchUsesMainSocketForEasySide(t *testing.T) {
 	store := NewSockStore().(*sockStore)
 
 	mainConn := configureMainProbeIO(t, store)
@@ -107,21 +107,10 @@ func TestGetOrCreatePunchUsesMainSocketForEasySide(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c, err := store.GetOrCreate(ctx, responderAddr, true)
+	c, err := store.Punch(ctx, responderAddr)
 	require.NoError(t, err)
-	require.True(t, c.Shared())
+	require.Nil(t, c.UDPConn)
 	require.Equal(t, responderAddr.String(), c.Peer().String())
-}
-
-func TestGetOrCreatePunchRequiresMainProbeWriter(t *testing.T) {
-	store := NewSockStore().(*sockStore)
-	responder := listenLoopback(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	_, err := store.GetOrCreate(ctx, responder.LocalAddr().(*net.UDPAddr), true)
-	require.ErrorIs(t, err, ErrMainProbeIOUnconfigured)
 }
 
 func configureMainProbeIO(t *testing.T, store *sockStore) *net.UDPConn {
