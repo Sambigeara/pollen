@@ -29,7 +29,7 @@ func (s *NodeService) JoinCluster(ctx context.Context, req *controlv1.JoinCluste
 		return nil, err
 	}
 
-	if err := s.node.sock.JoinWithInvite(ctx, token); err != nil {
+	if err := s.node.mesh.JoinWithInvite(ctx, token); err != nil {
 		return nil, err
 	}
 
@@ -95,12 +95,10 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			continue
 		}
 
-		addr, online := s.node.sock.GetActivePeerAddress(key)
+		addr, online := s.node.mesh.GetActivePeerAddress(key)
 		status := controlv1.NodeStatus_NODE_STATUS_OFFLINE
 		if online {
 			status = controlv1.NodeStatus_NODE_STATUS_ONLINE
-		} else if s.node.relayReachable(key) {
-			status = controlv1.NodeStatus_NODE_STATUS_RELAY
 		}
 
 		addrStr := ""

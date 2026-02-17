@@ -68,6 +68,12 @@ Follow the conventions below when making changes or writing tests.
 - `context.Context` is the first parameter when used
 - Avoid exporting fields unless needed by tests or other packages
 
+### Invariants and Checks
+- Avoid superfluous defensive checks that cannot occur under established lifecycle invariants.
+- Prefer enforcing invariants at startup/construction boundaries and failing fast there.
+- Only keep nil/state checks that correspond to a real runtime path; remove misleading "just in case" guards.
+- Keep hot paths lean: do not re-check state that was already guaranteed in the same control flow.
+
 ### Error Handling
 - Wrap errors with context using `fmt.Errorf("...: %w", err)`
 - Avoid swallowing errors; log only when useful and still return errors
