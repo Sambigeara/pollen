@@ -329,6 +329,9 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 		case peer.AttemptConnect:
 			go func() {
 				if err := n.connectPeer(e.PeerKey, e.Ips, e.Port); err != nil {
+					if !n.isPeerConnecting(e.PeerKey) {
+						return
+					}
 					n.log.Debugw("connect failed", "peer", e.PeerKey.Short(), "err", err)
 					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 				}
@@ -520,6 +523,10 @@ func (n *Node) sendPunchCoordTrigger(ctx context.Context, to types.PeerKey, trig
 
 func (n *Node) handlePunchCoordTrigger(trigger *peerv1.PunchCoordTrigger) {
 	peerKey := types.PeerKeyFromBytes(trigger.PeerId)
+	if n.isPeerConnected(peerKey) {
+		return
+	}
+
 	peerAddr, err := net.ResolveUDPAddr("udp", trigger.PeerAddr)
 	if err != nil {
 		n.log.Debugw("punch coord trigger: bad peer addr", "addr", trigger.PeerAddr, "err", err)
@@ -529,9 +536,22 @@ func (n *Node) handlePunchCoordTrigger(trigger *peerv1.PunchCoordTrigger) {
 	n.log.Infow("punch coord trigger received", "peer", peerKey.Short(), "peerAddr", peerAddr.String())
 
 	if err := n.punchPeer(peerKey, peerAddr.IP, peerAddr.Port); err != nil {
+		if !n.isPeerConnecting(peerKey) {
+			return
+		}
 		n.log.Debugw("punch failed after coord trigger", "peer", peerKey.Short(), "err", err)
 		n.localPeerEvents <- peer.ConnectFailed{PeerKey: peerKey}
 	}
+}
+
+func (n *Node) isPeerConnected(peerKey types.PeerKey) bool {
+	p, ok := n.peers.Get(peerKey)
+	return ok && p.State == peer.PeerStateConnected
+}
+
+func (n *Node) isPeerConnecting(peerKey types.PeerKey) bool {
+	p, ok := n.peers.Get(peerKey)
+	return ok && p.State == peer.PeerStateConnecting
 }
 
 // ConnectService wraps tunnel.Manager.ConnectService.
