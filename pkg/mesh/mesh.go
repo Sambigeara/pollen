@@ -80,33 +80,26 @@ func (m *impl) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen udp:%d: %w", m.port, err)
 	}
-	if err := m.listen(conn); err != nil {
-		_ = conn.Close()
-		return err
-	}
-
-	m.socks.SetMainProbeWriter(func(payload []byte, addr *net.UDPAddr) error {
-		_, err := m.mainQT.WriteTo(payload, addr)
-		return err
-	})
-	go m.runMainProbeLoop(ctx, m.mainQT)
-	go m.acceptLoop(ctx)
-	return nil
-}
-
-// listen starts accepting QUIC connections on the given PacketConn.
-func (m *impl) listen(conn net.PacketConn) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	qt := &quic.Transport{Conn: conn}
 	ln, err := qt.Listen(newServerTLSConfig(m.cert), &quic.Config{EnableDatagrams: true})
 	if err != nil {
+		_ = conn.Close()
 		return fmt.Errorf("quic listen: %w", err)
 	}
+
+	m.mu.Lock()
 	m.mainQT = qt
 	m.transports = append(m.transports, qt)
 	m.listener = ln
+	m.mu.Unlock()
+
+	m.socks.SetMainProbeWriter(func(payload []byte, addr *net.UDPAddr) error {
+		_, err := qt.WriteTo(payload, addr)
+		return err
+	})
+	go m.runMainProbeLoop(ctx, qt)
+	go m.acceptLoop(ctx)
 	return nil
 }
 
@@ -123,29 +116,34 @@ func (m *impl) Events() <-chan peer.Input {
 	return m.inCh
 }
 
-// dial establishes a QUIC connection to addr. It first tries all existing
-// transports in the pool. If none succeed, it requests a new socket from the
-// sock store, creates a new QUIC transport, and dials on that.
-func (m *impl) dial(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey, withPunch bool) (*quic.Conn, error) {
+func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*quic.Conn, error) {
 	tlsCfg := newExpectedPeerTLSConfig(m.cert, expectedPeer)
 	qCfg := &quic.Config{EnableDatagrams: true}
 
-	// TODO(saml)
-	if !withPunch {
-		m.mu.RLock()
-		existing := make([]*quic.Transport, len(m.transports))
-		copy(existing, m.transports)
-		m.mu.RUnlock()
+	m.mu.RLock()
+	existing := make([]*quic.Transport, len(m.transports))
+	copy(existing, m.transports)
+	m.mu.RUnlock()
 
-		for _, qt := range existing {
-			qc, err := qt.Dial(ctx, addr, tlsCfg, qCfg)
-			if err == nil {
-				return qc, nil
-			}
+	var lastErr error
+	for _, qt := range existing {
+		qc, err := qt.Dial(ctx, addr, tlsCfg, qCfg)
+		if err == nil {
+			return qc, nil
 		}
+		lastErr = err
 	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("quic dial %s: %w", addr, lastErr)
+	}
+	return nil, fmt.Errorf("quic dial %s: %w", addr, sock.ErrUnreachable)
+}
 
-	conn, err := m.socks.GetOrCreate(ctx, addr, withPunch)
+func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*quic.Conn, error) {
+	tlsCfg := newExpectedPeerTLSConfig(m.cert, expectedPeer)
+	qCfg := &quic.Config{EnableDatagrams: true}
+
+	conn, err := m.socks.Punch(ctx, addr)
 	if err != nil {
 		return nil, fmt.Errorf("quic dial %s: sock store: %w", addr, err)
 	}
@@ -155,13 +153,18 @@ func (m *impl) dial(ctx context.Context, addr *net.UDPAddr, expectedPeer types.P
 		dialAddr = peerAddr
 	}
 
-	if conn.Shared() {
+	if conn.UDPConn == nil {
 		qc, err := m.mainQT.Dial(ctx, dialAddr, tlsCfg, qCfg)
 		if err != nil {
 			return nil, fmt.Errorf("quic dial %s: %w", dialAddr, err)
 		}
 		return qc, nil
 	}
+
+	return m.dialOnSocket(ctx, conn, dialAddr, tlsCfg, qCfg)
+}
+
+func (m *impl) dialOnSocket(ctx context.Context, conn *sock.Conn, dialAddr *net.UDPAddr, tlsCfg *tls.Config, qCfg *quic.Config) (*quic.Conn, error) {
 
 	qt := &quic.Transport{Conn: conn.UDPConn}
 	m.mu.Lock()
@@ -179,61 +182,110 @@ func (m *impl) dial(ctx context.Context, addr *net.UDPAddr, expectedPeer types.P
 
 func (m *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 	peerKey := types.PeerKeyFromBytes(inv.Fingerprint)
-
-	// TODO(saml) parallelise requests?
-	for _, addr := range inv.Addr {
-		addr, err := net.ResolveUDPAddr("udp", addr)
-		if err != nil {
-			continue
-		}
-
-		qc, err := m.dial(ctx, addr, peerKey, false)
-		if err != nil {
-			continue
-		}
-
-		stream, err := qc.OpenStreamSync(ctx)
-		if err != nil {
-			_ = qc.CloseWithError(0, "stream open failed")
-			continue
-		}
-
-		_ = stream.SetDeadline(time.Now().Add(handshakeTimeout))
-
-		reqData, err := (&peerv1.InviteRequest{Token: inv.Id}).MarshalVT()
-		if err != nil {
-			_ = stream.Close()
-			_ = qc.CloseWithError(0, "invite marshal failed")
-			continue
-		}
-		if _, err := stream.Write(reqData); err != nil {
-			_ = stream.Close()
-			_ = qc.CloseWithError(0, "invite write failed")
-			continue
-		}
-		_ = stream.Close() // FIN write side; read side stays open for response
-
-		respBuf, err := io.ReadAll(stream)
-		if err != nil {
-			_ = qc.CloseWithError(0, "invite read failed")
-			continue
-		}
-		resp := &peerv1.InviteResponse{}
-		if err := resp.UnmarshalVT(respBuf); err != nil {
-			_ = qc.CloseWithError(0, "invite read failed")
-			continue
-		}
-
-		if !resp.Accepted {
-			_ = qc.CloseWithError(0, "invite rejected")
-			continue
-		}
-
-		m.addPeer(qc, peerKey)
-		return nil
+	if len(inv.Addr) == 0 {
+		return fmt.Errorf("failed to join via invite at any address")
 	}
 
+	resolved := make([]*net.UDPAddr, 0, len(inv.Addr))
+	for _, addr := range inv.Addr {
+		udpAddr, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			continue
+		}
+		resolved = append(resolved, udpAddr)
+	}
+	if len(resolved) == 0 {
+		return fmt.Errorf("failed to join via invite at any address")
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type result struct {
+		qc  *quic.Conn
+		err error
+	}
+	ch := make(chan result, len(resolved))
+
+	for _, addr := range resolved {
+		go func(a *net.UDPAddr) {
+			qc, err := m.dialDirect(ctx, a, peerKey)
+			if err != nil {
+				ch <- result{err: err}
+				return
+			}
+
+			accepted, err := m.exchangeInvite(ctx, qc, inv.Id)
+			if err != nil {
+				_ = qc.CloseWithError(0, "invite exchange failed")
+				ch <- result{err: err}
+				return
+			}
+			if !accepted {
+				_ = qc.CloseWithError(0, "invite rejected")
+				ch <- result{err: fmt.Errorf("invite rejected")}
+				return
+			}
+
+			ch <- result{qc: qc}
+		}(addr)
+	}
+
+	var (
+		winner  *quic.Conn
+		lastErr error
+	)
+	for range resolved {
+		r := <-ch
+		if r.err != nil {
+			lastErr = r.err
+			continue
+		}
+		if winner == nil {
+			winner = r.qc
+			cancel()
+		} else {
+			_ = r.qc.CloseWithError(0, "replaced")
+		}
+	}
+	if winner != nil {
+		m.addPeer(winner, peerKey)
+		return nil
+	}
+	if lastErr != nil {
+		return fmt.Errorf("failed to join via invite at any address: %w", lastErr)
+	}
 	return fmt.Errorf("failed to join via invite at any address")
+}
+
+func (m *impl) exchangeInvite(ctx context.Context, qc *quic.Conn, token string) (bool, error) {
+	stream, err := qc.OpenStreamSync(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	_ = stream.SetDeadline(time.Now().Add(handshakeTimeout))
+
+	reqData, err := (&peerv1.InviteRequest{Token: token}).MarshalVT()
+	if err != nil {
+		_ = stream.Close()
+		return false, err
+	}
+	if _, err := stream.Write(reqData); err != nil {
+		_ = stream.Close()
+		return false, err
+	}
+	_ = stream.Close()
+
+	respBuf, err := io.ReadAll(stream)
+	if err != nil {
+		return false, err
+	}
+	resp := &peerv1.InviteResponse{}
+	if err := resp.UnmarshalVT(respBuf); err != nil {
+		return false, err
+	}
+	return resp.Accepted, nil
 }
 
 func (m *impl) Send(ctx context.Context, peerKey types.PeerKey, payload []byte) error {
@@ -262,7 +314,7 @@ func (m *impl) Connect(ctx context.Context, peerKey types.PeerKey, addrs []*net.
 
 	for _, addr := range addrs {
 		go func(a *net.UDPAddr) {
-			qc, err := m.dial(ctx, a, peerKey, false)
+			qc, err := m.dialDirect(ctx, a, peerKey)
 			ch <- result{qc, err}
 		}(addr)
 	}
@@ -292,7 +344,7 @@ func (m *impl) Connect(ctx context.Context, peerKey types.PeerKey, addrs []*net.
 }
 
 func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAddr) error {
-	qc, err := m.dial(ctx, addr, peerKey, true)
+	qc, err := m.dialPunch(ctx, addr, peerKey)
 	if err != nil {
 		return err
 	}
