@@ -7,6 +7,8 @@ package statev1
 import (
 	fmt "fmt"
 	protohelpers "github.com/planetscale/vtprotobuf/protohelpers"
+	v1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	proto "google.golang.org/protobuf/proto"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	io "io"
 )
@@ -200,7 +202,7 @@ func (m *GossipNode) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *GossipEnvelope) MarshalVT() (dAtA []byte, err error) {
+func (m *DatagramEnvelope) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -213,12 +215,12 @@ func (m *GossipEnvelope) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *GossipEnvelope) MarshalToVT(dAtA []byte) (int, error) {
+func (m *DatagramEnvelope) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *GossipEnvelope) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *DatagramEnvelope) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -242,12 +244,12 @@ func (m *GossipEnvelope) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *GossipEnvelope_Clock) MarshalToVT(dAtA []byte) (int, error) {
+func (m *DatagramEnvelope_Clock) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *GossipEnvelope_Clock) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *DatagramEnvelope_Clock) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	i := len(dAtA)
 	if m.Clock != nil {
 		size, err := m.Clock.MarshalToSizedBufferVT(dAtA[:i])
@@ -265,12 +267,12 @@ func (m *GossipEnvelope_Clock) MarshalToSizedBufferVT(dAtA []byte) (int, error) 
 	}
 	return len(dAtA) - i, nil
 }
-func (m *GossipEnvelope_Node) MarshalToVT(dAtA []byte) (int, error) {
+func (m *DatagramEnvelope_Node) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *GossipEnvelope_Node) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *DatagramEnvelope_Node) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	i := len(dAtA)
 	if m.Node != nil {
 		size, err := m.Node.MarshalToSizedBufferVT(dAtA[:i])
@@ -285,6 +287,76 @@ func (m *GossipEnvelope_Node) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i = protohelpers.EncodeVarint(dAtA, i, 0)
 		i--
 		dAtA[i] = 0x12
+	}
+	return len(dAtA) - i, nil
+}
+func (m *DatagramEnvelope_PunchCoordRequest) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *DatagramEnvelope_PunchCoordRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.PunchCoordRequest != nil {
+		if vtmsg, ok := interface{}(m.PunchCoordRequest).(interface {
+			MarshalToSizedBufferVT([]byte) (int, error)
+		}); ok {
+			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		} else {
+			encoded, err := proto.Marshal(m.PunchCoordRequest)
+			if err != nil {
+				return 0, err
+			}
+			i -= len(encoded)
+			copy(dAtA[i:], encoded)
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(encoded)))
+		}
+		i--
+		dAtA[i] = 0x1a
+	} else {
+		i = protohelpers.EncodeVarint(dAtA, i, 0)
+		i--
+		dAtA[i] = 0x1a
+	}
+	return len(dAtA) - i, nil
+}
+func (m *DatagramEnvelope_PunchCoordTrigger) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *DatagramEnvelope_PunchCoordTrigger) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.PunchCoordTrigger != nil {
+		if vtmsg, ok := interface{}(m.PunchCoordTrigger).(interface {
+			MarshalToSizedBufferVT([]byte) (int, error)
+		}); ok {
+			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		} else {
+			encoded, err := proto.Marshal(m.PunchCoordTrigger)
+			if err != nil {
+				return 0, err
+			}
+			i -= len(encoded)
+			copy(dAtA[i:], encoded)
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(encoded)))
+		}
+		i--
+		dAtA[i] = 0x22
+	} else {
+		i = protohelpers.EncodeVarint(dAtA, i, 0)
+		i--
+		dAtA[i] = 0x22
 	}
 	return len(dAtA) - i, nil
 }
@@ -365,7 +437,7 @@ func (m *GossipNode) SizeVT() (n int) {
 	return n
 }
 
-func (m *GossipEnvelope) SizeVT() (n int) {
+func (m *DatagramEnvelope) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -378,7 +450,7 @@ func (m *GossipEnvelope) SizeVT() (n int) {
 	return n
 }
 
-func (m *GossipEnvelope_Clock) SizeVT() (n int) {
+func (m *DatagramEnvelope_Clock) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -392,7 +464,7 @@ func (m *GossipEnvelope_Clock) SizeVT() (n int) {
 	}
 	return n
 }
-func (m *GossipEnvelope_Node) SizeVT() (n int) {
+func (m *DatagramEnvelope_Node) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -400,6 +472,46 @@ func (m *GossipEnvelope_Node) SizeVT() (n int) {
 	_ = l
 	if m.Node != nil {
 		l = m.Node.SizeVT()
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	} else {
+		n += 2
+	}
+	return n
+}
+func (m *DatagramEnvelope_PunchCoordRequest) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.PunchCoordRequest != nil {
+		if size, ok := interface{}(m.PunchCoordRequest).(interface {
+			SizeVT() int
+		}); ok {
+			l = size.SizeVT()
+		} else {
+			l = proto.Size(m.PunchCoordRequest)
+		}
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	} else {
+		n += 2
+	}
+	return n
+}
+func (m *DatagramEnvelope_PunchCoordTrigger) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.PunchCoordTrigger != nil {
+		if size, ok := interface{}(m.PunchCoordTrigger).(interface {
+			SizeVT() int
+		}); ok {
+			l = size.SizeVT()
+		} else {
+			l = proto.Size(m.PunchCoordTrigger)
+		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	} else {
 		n += 2
@@ -925,7 +1037,7 @@ func (m *GossipNode) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *GossipEnvelope) UnmarshalVT(dAtA []byte) error {
+func (m *DatagramEnvelope) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -948,10 +1060,10 @@ func (m *GossipEnvelope) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: GossipEnvelope: wiretype end group for non-group")
+			return fmt.Errorf("proto: DatagramEnvelope: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: GossipEnvelope: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: DatagramEnvelope: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
@@ -983,7 +1095,7 @@ func (m *GossipEnvelope) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if oneof, ok := m.Body.(*GossipEnvelope_Clock); ok {
+			if oneof, ok := m.Body.(*DatagramEnvelope_Clock); ok {
 				if err := oneof.Clock.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
@@ -992,7 +1104,7 @@ func (m *GossipEnvelope) UnmarshalVT(dAtA []byte) error {
 				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
-				m.Body = &GossipEnvelope_Clock{Clock: v}
+				m.Body = &DatagramEnvelope_Clock{Clock: v}
 			}
 			iNdEx = postIndex
 		case 2:
@@ -1024,7 +1136,7 @@ func (m *GossipEnvelope) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if oneof, ok := m.Body.(*GossipEnvelope_Node); ok {
+			if oneof, ok := m.Body.(*DatagramEnvelope_Node); ok {
 				if err := oneof.Node.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
@@ -1033,7 +1145,121 @@ func (m *GossipEnvelope) UnmarshalVT(dAtA []byte) error {
 				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
-				m.Body = &GossipEnvelope_Node{Node: v}
+				m.Body = &DatagramEnvelope_Node{Node: v}
+			}
+			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field PunchCoordRequest", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if oneof, ok := m.Body.(*DatagramEnvelope_PunchCoordRequest); ok {
+				if unmarshal, ok := interface{}(oneof.PunchCoordRequest).(interface {
+					UnmarshalVT([]byte) error
+				}); ok {
+					if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+						return err
+					}
+				} else {
+					if err := proto.Unmarshal(dAtA[iNdEx:postIndex], oneof.PunchCoordRequest); err != nil {
+						return err
+					}
+				}
+			} else {
+				v := &v1.PunchCoordRequest{}
+				if unmarshal, ok := interface{}(v).(interface {
+					UnmarshalVT([]byte) error
+				}); ok {
+					if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+						return err
+					}
+				} else {
+					if err := proto.Unmarshal(dAtA[iNdEx:postIndex], v); err != nil {
+						return err
+					}
+				}
+				m.Body = &DatagramEnvelope_PunchCoordRequest{PunchCoordRequest: v}
+			}
+			iNdEx = postIndex
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field PunchCoordTrigger", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if oneof, ok := m.Body.(*DatagramEnvelope_PunchCoordTrigger); ok {
+				if unmarshal, ok := interface{}(oneof.PunchCoordTrigger).(interface {
+					UnmarshalVT([]byte) error
+				}); ok {
+					if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+						return err
+					}
+				} else {
+					if err := proto.Unmarshal(dAtA[iNdEx:postIndex], oneof.PunchCoordTrigger); err != nil {
+						return err
+					}
+				}
+			} else {
+				v := &v1.PunchCoordTrigger{}
+				if unmarshal, ok := interface{}(v).(interface {
+					UnmarshalVT([]byte) error
+				}); ok {
+					if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+						return err
+					}
+				} else {
+					if err := proto.Unmarshal(dAtA[iNdEx:postIndex], v); err != nil {
+						return err
+					}
+				}
+				m.Body = &DatagramEnvelope_PunchCoordTrigger{PunchCoordTrigger: v}
 			}
 			iNdEx = postIndex
 		default:

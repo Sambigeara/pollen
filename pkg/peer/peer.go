@@ -2,6 +2,7 @@ package peer
 
 import (
 	"net"
+	"sync"
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/types"
@@ -27,17 +28,18 @@ const (
 )
 
 type Peer struct {
-	nextActionAt  time.Time
-	connectedAt   time.Time
-	ips           []net.IP
-	observedPort  int
-	state         PeerState
-	stage         ConnectStage
-	stageAttempts int
-	id            types.PeerKey
+	NextActionAt  time.Time
+	ConnectedAt   time.Time
+	Ips           []net.IP
+	ObservedPort  int
+	State         PeerState
+	Stage         ConnectStage
+	StageAttempts int
+	ID            types.PeerKey
 }
 
 type Store struct {
+	mu  sync.RWMutex
 	log *zap.SugaredLogger
 	m   map[types.PeerKey]*Peer
 }
@@ -126,7 +128,6 @@ type RequestPunchCoordination struct {
 
 func (RequestPunchCoordination) isOutput() {}
 
-// Configuration.
 const (
 	baseBackoff  = 1 * time.Second
 	maxBackoff   = 60 * time.Second
@@ -143,14 +144,13 @@ func (s *Store) backoff(attempts int) time.Duration {
 	if attempts == 0 {
 		return firstBackoff
 	}
-	// exponential: 1s, 2s, 4s, 8s, ...
 	d := min(baseBackoff*(1<<(attempts-1)), maxBackoff)
 	return d
 }
 
-// Step progresses the state machine according to the input. It must only
-// be called from a single thread.
 func (s *Store) Step(now time.Time, in Input) []Output {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	switch e := in.(type) {
 	case Tick:
 		return s.tick(now)
@@ -169,49 +169,54 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 }
 
 func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) []Output {
-	_, exists := s.m[e.PeerKey]
+	p, exists := s.m[e.PeerKey]
 	if !exists {
 		s.m[e.PeerKey] = &Peer{
-			id:           e.PeerKey,
-			state:        PeerStateDiscovered,
-			stage:        ConnectStageDirect,
-			ips:          e.Ips,
-			observedPort: e.Port, // we don't know if the port is observed at this point
-			nextActionAt: now,    // eligible for connection immediately
+			ID:           e.PeerKey,
+			State:        PeerStateDiscovered,
+			Stage:        ConnectStageDirect,
+			Ips:          e.Ips,
+			ObservedPort: e.Port, // we don't know if the port is observed at this point
+			NextActionAt: now,    // eligible for connection immediately
 		}
 		return nil
 	}
 
+	// Always update addresses — gossip may provide fresher IPs.
+	p.Ips = e.Ips
+	if e.Port != 0 {
+		p.ObservedPort = e.Port
+	}
 	return nil
 }
 
 func (s *Store) tick(now time.Time) []Output {
 	var outputs []Output //nolint:prealloc
 	for _, p := range s.m {
-		if now.Before(p.nextActionAt) {
+		if now.Before(p.NextActionAt) {
 			continue
 		}
 
-		switch p.state { //nolint:exhaustive
+		switch p.State { //nolint:exhaustive
 		case PeerStateConnected, PeerStateConnecting:
 			continue
 		case PeerStateUnreachable:
 			// Retry unreachable peers after backoff expires
-			p.state = PeerStateDiscovered
-			p.stage = ConnectStageDirect
-			p.stageAttempts = 0
+			p.State = PeerStateDiscovered
+			p.Stage = ConnectStageDirect
+			p.StageAttempts = 0
 		}
 
 		var out Output
-		switch p.stage {
+		switch p.Stage {
 		case ConnectStageUnspecified, ConnectStageDirect:
-			out = AttemptConnect{PeerKey: p.id, Ips: p.ips, Port: p.observedPort}
+			out = AttemptConnect{PeerKey: p.ID, Ips: p.Ips, Port: p.ObservedPort}
 		case ConnectStagePunch:
-			out = RequestPunchCoordination{PeerKey: p.id, Ips: p.ips}
+			out = RequestPunchCoordination{PeerKey: p.ID, Ips: p.Ips}
 		}
 
 		outputs = append(outputs, out)
-		p.state = PeerStateConnecting
+		p.State = PeerStateConnecting
 	}
 	return outputs
 }
@@ -219,61 +224,61 @@ func (s *Store) tick(now time.Time) []Output {
 func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 	p, exists := s.m[e.PeerKey]
 	if !exists {
-		p = &Peer{id: e.PeerKey}
+		p = &Peer{ID: e.PeerKey}
 		s.m[e.PeerKey] = p
 	}
 
 	// Always update state, even if already connected (peer may have restarted)
-	p.state = PeerStateConnected
-	p.ips = []net.IP{e.IP}
-	p.observedPort = e.ObservedPort
-	p.connectedAt = now
-	p.stage = ConnectStageDirect // reset for next time
-	p.stageAttempts = 0
+	p.State = PeerStateConnected
+	p.Ips = []net.IP{e.IP}
+	p.ObservedPort = e.ObservedPort
+	p.ConnectedAt = now
+	p.Stage = ConnectStageDirect // reset for next time
+	p.StageAttempts = 0
 
 	return []Output{PeerConnected(e)}
 }
 
 func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
 	p, exists := s.m[e.PeerKey]
-	if !exists || p.state != PeerStateConnecting {
+	if !exists || p.State != PeerStateConnecting {
 		return nil
 	}
 
-	p.stageAttempts++
+	p.StageAttempts++
 
 	// Check if we should escalate to next stage
-	switch p.stage {
+	switch p.Stage {
 	case ConnectStageDirect, ConnectStageUnspecified:
-		if p.stageAttempts >= directAttemptThreshold {
-			p.stage = ConnectStagePunch
-			p.stageAttempts = 0
+		if p.StageAttempts >= directAttemptThreshold {
+			p.Stage = ConnectStagePunch
+			p.StageAttempts = 0
 		}
 	case ConnectStagePunch:
-		if p.stageAttempts >= punchAttemptThreshold {
-			p.stageAttempts = 0
-			p.state = PeerStateUnreachable
-			p.nextActionAt = now.Add(unreachableRetryInterval)
+		if p.StageAttempts >= punchAttemptThreshold {
+			p.StageAttempts = 0
+			p.State = PeerStateUnreachable
+			p.NextActionAt = now.Add(unreachableRetryInterval)
 			return nil
 		}
 	}
 
-	p.nextActionAt = now.Add(s.backoff(p.stageAttempts))
-	p.state = PeerStateDiscovered // eligible for retry after backoff
+	p.NextActionAt = now.Add(s.backoff(p.StageAttempts))
+	p.State = PeerStateDiscovered // eligible for retry after backoff
 	return nil
 }
 
 func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) []Output {
 	p, exists := s.m[e.PeerKey]
-	if !exists || (p.state != PeerStateConnected && p.state != PeerStateConnecting) {
+	if !exists || (p.State != PeerStateConnected && p.State != PeerStateConnecting) {
 		return nil
 	}
 
 	// Transition back to Discovered for immediate reconnection attempt
-	p.state = PeerStateDiscovered
-	p.stage = ConnectStageDirect
-	p.stageAttempts = 0
-	p.nextActionAt = now.Add(disconnectedRetryInterval)
+	p.State = PeerStateDiscovered
+	p.Stage = ConnectStageDirect
+	p.StageAttempts = 0
+	p.NextActionAt = now.Add(disconnectedRetryInterval)
 	return nil
 }
 
@@ -281,30 +286,41 @@ func (s *Store) retryPeer(now time.Time, e RetryPeer) []Output {
 	p, exists := s.m[e.PeerKey]
 	if !exists {
 		s.m[e.PeerKey] = &Peer{
-			id:           e.PeerKey,
-			state:        PeerStateDiscovered,
-			stage:        ConnectStageDirect,
-			nextActionAt: now,
+			ID:           e.PeerKey,
+			State:        PeerStateDiscovered,
+			Stage:        ConnectStageDirect,
+			NextActionAt: now,
 		}
 		return nil
 	}
 
-	if p.state == PeerStateConnected || p.state == PeerStateConnecting {
+	if p.State == PeerStateConnected || p.State == PeerStateConnecting {
 		return nil
 	}
 
-	p.state = PeerStateDiscovered
-	p.stage = ConnectStageDirect
-	p.stageAttempts = 0
-	p.nextActionAt = now
+	p.State = PeerStateDiscovered
+	p.Stage = ConnectStageDirect
+	p.StageAttempts = 0
+	p.NextActionAt = now
 	return nil
 }
 
-// GetAll returns all peers in the given state.
+func (s *Store) Get(peer types.PeerKey) (Peer, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, ok := s.m[peer]
+	if !ok {
+		return Peer{}, false
+	}
+	return *p, ok
+}
+
 func (s *Store) GetAll(state PeerState) []types.PeerKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var out []types.PeerKey
 	for k, p := range s.m {
-		if p.state == state {
+		if p.State == state {
 			out = append(out, k)
 		}
 	}

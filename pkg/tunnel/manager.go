@@ -10,7 +10,9 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/sambigeara/pollen/pkg/quic"
+	"github.com/quic-go/quic-go"
+
+	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -19,7 +21,7 @@ import (
 // opening streams on that connection. No separate TCP setup, TLS wrapping,
 // or yamux multiplexing needed.
 type Manager struct {
-	dir           quic.PeerDirectory
+	dir           mesh.PeerDirectory
 	sessions      map[types.PeerKey]*Session
 	waiters       map[types.PeerKey][]chan struct{}
 	connections   map[string]connectionHandler
@@ -69,7 +71,7 @@ func connectionKey(peerID, port string) string {
 	return peerID + ":" + port
 }
 
-func New(dir quic.PeerDirectory) *Manager {
+func New(dir mesh.PeerDirectory) *Manager {
 	return &Manager{
 		dir:           dir,
 		sessions:      make(map[types.PeerKey]*Session),

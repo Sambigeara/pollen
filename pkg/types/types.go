@@ -5,13 +5,6 @@ import (
 	"encoding/hex"
 )
 
-type MsgType uint32
-
-const (
-	MsgTypeGossip MsgType = iota
-	MsgTypeUDPRelay
-)
-
 type PeerKey [32]byte // ed25519 public key
 
 func PeerKeyFromBytes(b []byte) PeerKey {
@@ -47,5 +40,4 @@ func (pk PeerKey) Less(other PeerKey) bool {
 
 type Envelope struct {
 	Payload []byte
-	Type    MsgType
 }
