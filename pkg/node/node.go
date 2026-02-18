@@ -495,7 +495,6 @@ func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, 
 			SelfAddr: fromAddr.String(),
 			PeerAddr: targetAddr.String(),
 		})
-
 	}()
 	go func() {
 		n.sendPunchCoordTrigger(ctx, targetKey, &peerv1.PunchCoordTrigger{

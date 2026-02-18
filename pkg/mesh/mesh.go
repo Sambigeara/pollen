@@ -5,13 +5,13 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
 	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/sock"
@@ -23,8 +23,8 @@ const (
 )
 
 type Packet struct {
-	Peer    types.PeerKey
 	Payload []byte
+	Peer    types.PeerKey
 }
 
 type Mesh interface {
@@ -43,17 +43,16 @@ type Mesh interface {
 
 type impl struct {
 	cert     tls.Certificate
-	localKey types.PeerKey
 	invites  admission.Store
 	socks    sock.SockStore
-
-	mu       sync.RWMutex
 	mainQT   *quic.Transport
 	listener *quic.Listener
 	peers    map[types.PeerKey]*peerSession
 	inCh     chan peer.Input
 	recvCh   chan Packet
 	port     int
+	mu       sync.RWMutex
+	localKey types.PeerKey
 }
 
 type peerSession struct {
@@ -255,33 +254,34 @@ func (m *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 }
 
 func (m *impl) exchangeInvite(ctx context.Context, qc *quic.Conn, token string) (bool, error) {
-	stream, err := qc.OpenStreamSync(ctx)
+	reqData, err := (&statev1.DatagramEnvelope{
+		Body: &statev1.DatagramEnvelope_InviteRequest{
+			InviteRequest: &peerv1.InviteRequest{Token: token},
+		},
+	}).MarshalVT()
 	if err != nil {
 		return false, err
 	}
+	if err := qc.SendDatagram(reqData); err != nil {
+		return false, err
+	}
 
-	_ = stream.SetDeadline(time.Now().Add(handshakeTimeout))
+	waitCtx, waitCancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer waitCancel()
 
-	reqData, err := (&peerv1.InviteRequest{Token: token}).MarshalVT()
-	if err != nil {
-		_ = stream.Close()
-		return false, err
+	for {
+		payload, err := qc.ReceiveDatagram(waitCtx)
+		if err != nil {
+			return false, err
+		}
+		env := &statev1.DatagramEnvelope{}
+		if err := env.UnmarshalVT(payload); err != nil {
+			continue
+		}
+		if body, ok := env.GetBody().(*statev1.DatagramEnvelope_InviteResponse); ok {
+			return body.InviteResponse.GetAccepted(), nil
+		}
 	}
-	if _, err := stream.Write(reqData); err != nil {
-		_ = stream.Close()
-		return false, err
-	}
-	_ = stream.Close()
-
-	respBuf, err := io.ReadAll(stream)
-	if err != nil {
-		return false, err
-	}
-	resp := &peerv1.InviteResponse{}
-	if err := resp.UnmarshalVT(respBuf); err != nil {
-		return false, err
-	}
-	return resp.Accepted, nil
 }
 
 func (m *impl) Send(ctx context.Context, peerKey types.PeerKey, payload []byte) error {
@@ -442,6 +442,9 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 			}
 			return
 		}
+		if m.handleInviteControlDatagram(s, payload) {
+			continue
+		}
 		select {
 		case m.recvCh <- Packet{Peer: peerKey, Payload: payload}:
 		case <-ctx.Done():
@@ -487,59 +490,37 @@ func (m *impl) acceptLoop(ctx context.Context) {
 		}
 
 		m.addPeer(&peerSession{conn: qc, transport: m.mainQT}, peerKey)
-		go m.acceptInviteStream(ctx, qc)
 	}
 }
 
-func (m *impl) acceptInviteStream(ctx context.Context, qc *quic.Conn) error {
-	acceptCtx, acceptCancel := context.WithTimeout(ctx, handshakeTimeout)
-	defer acceptCancel()
-
-	stream, err := qc.AcceptStream(acceptCtx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = stream.Close() }()
-
-	_ = stream.SetDeadline(time.Now().Add(handshakeTimeout))
-
-	reqBuf, err := io.ReadAll(stream)
-	if err != nil {
-		return fmt.Errorf("read invite request: %w", err)
-	}
-	req := &peerv1.InviteRequest{}
-	if err := req.UnmarshalVT(reqBuf); err != nil {
-		return fmt.Errorf("read invite request: %w", err)
+func (m *impl) handleInviteControlDatagram(s *peerSession, payload []byte) bool {
+	env := &statev1.DatagramEnvelope{}
+	if err := env.UnmarshalVT(payload); err != nil {
+		return false
 	}
 
-	sendResponse := func(accepted bool) error {
-		data, err := (&peerv1.InviteResponse{Accepted: accepted}).MarshalVT()
-		if err != nil {
-			return err
+	switch body := env.GetBody().(type) {
+	case *statev1.DatagramEnvelope_InviteRequest:
+		accepted := false
+		if req := body.InviteRequest; req != nil && req.Token != "" {
+			ok, err := m.invites.ConsumeToken(req.Token)
+			accepted = err == nil && ok
 		}
-		_, err = stream.Write(data)
-		return err
-	}
 
-	if req.Token == "" {
-		_ = sendResponse(false)
-		return fmt.Errorf("empty invite token")
+		respData, err := (&statev1.DatagramEnvelope{
+			Body: &statev1.DatagramEnvelope_InviteResponse{
+				InviteResponse: &peerv1.InviteResponse{Accepted: accepted},
+			},
+		}).MarshalVT()
+		if err == nil {
+			_ = s.conn.SendDatagram(respData)
+		}
+		return true
+	case *statev1.DatagramEnvelope_InviteResponse:
+		return true
+	default:
+		return false
 	}
-
-	ok, err := m.invites.ConsumeToken(req.Token)
-	if err != nil {
-		_ = sendResponse(false)
-		return fmt.Errorf("consume invite token: %w", err)
-	}
-	if !ok {
-		_ = sendResponse(false)
-		return fmt.Errorf("invalid invite token")
-	}
-
-	if err := sendResponse(true); err != nil {
-		return fmt.Errorf("write invite response: %w", err)
-	}
-	return nil
 }
 
 func (m *impl) Close() error {

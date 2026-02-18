@@ -6,10 +6,10 @@ import (
 )
 
 type ConnList struct {
-	mu    sync.RWMutex
-	order []*Conn // index 0 = highest priority
 	byKey map[string]*Conn
 	index map[*Conn]int
+	order []*Conn
+	mu    sync.RWMutex
 }
 
 func newConnList() *ConnList {

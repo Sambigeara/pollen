@@ -14,9 +14,9 @@ import (
 
 type nodeRecord struct {
 	Reachable   map[types.PeerKey]struct{}
+	Services    map[string]*statev1.Service
 	IdentityPub []byte
 	IPs         []string
-	Services    map[string]*statev1.Service
 	Counter     uint64
 	LocalPort   uint32
 }
@@ -612,7 +612,7 @@ func samePayload(a, b *statev1.GossipNode) bool {
 	if a.GetLocalPort() != b.GetLocalPort() {
 		return false
 	}
-	if bytes.Compare(a.GetIdentityPub(), b.GetIdentityPub()) != 0 {
+	if !bytes.Equal(a.GetIdentityPub(), b.GetIdentityPub()) {
 		return false
 	}
 	if slices.Compare(a.GetIps(), b.GetIps()) != 0 {

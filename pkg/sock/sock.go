@@ -12,9 +12,7 @@ import (
 	"go.uber.org/zap"
 )
 
-var (
-	ErrUnreachable = errors.New("peer unreachable")
-)
+var ErrUnreachable = errors.New("peer unreachable")
 
 var _ SockStore = (*sockStore)(nil)
 
@@ -26,13 +24,13 @@ type SockStore interface {
 	HandleMainProbePacket(data []byte, sender *net.UDPAddr)
 }
 
-// Conn is a thin wrapper around a UDPConn with a reference counter for determining closures etc
+// Conn is a thin wrapper around a UDPConn with a reference counter for determining closures etc.
 type Conn struct {
 	*net.UDPConn
 	peer      *net.UDPAddr
+	onClose   func()
 	refs      atomic.Int64
 	closeOnce sync.Once
-	onClose   func() // called once when refs hit zero, before closing the UDPConn
 }
 
 func (c *Conn) Peer() *net.UDPAddr { return c.peer }
@@ -54,12 +52,11 @@ func (c *Conn) Close() error {
 }
 
 type sockStore struct {
-	log   *zap.SugaredLogger
-	socks *ConnList
-
+	log        *zap.SugaredLogger
+	socks      *ConnList
 	mainWrite  ProbeWriter
-	probeMu    sync.Mutex
 	mainProbes map[[probeNonceSize]byte]chan *net.UDPAddr
+	probeMu    sync.Mutex
 }
 
 func NewSockStore() SockStore {

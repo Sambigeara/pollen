@@ -41,5 +41,7 @@ message DatagramEnvelope {
     GossipNode node = 2;
     pollen.peer.v1.PunchCoordRequest punch_coord_request = 3;
     pollen.peer.v1.PunchCoordTrigger punch_coord_trigger = 4;
+    pollen.peer.v1.InviteRequest invite_request = 5;
+    pollen.peer.v1.InviteResponse invite_response = 6;
   }
 }

@@ -39,9 +39,9 @@ type Peer struct {
 }
 
 type Store struct {
-	mu  sync.RWMutex
 	log *zap.SugaredLogger
 	m   map[types.PeerKey]*Peer
+	mu  sync.RWMutex
 }
 
 func NewStore() *Store {
@@ -133,8 +133,8 @@ const (
 	maxBackoff   = 60 * time.Second
 	firstBackoff = 500 * time.Millisecond
 
-	directAttemptThreshold = 1
-	punchAttemptThreshold  = 1
+	directAttemptThreshold = 2
+	punchAttemptThreshold  = 2
 
 	unreachableRetryInterval  = 20 * time.Second
 	disconnectedRetryInterval = 60 * time.Second
