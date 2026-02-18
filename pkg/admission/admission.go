@@ -8,7 +8,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 )
 
 var _ Store = (*impl)(nil)
@@ -28,11 +28,11 @@ type Admission interface {
 type Store interface {
 	Admission
 	Save() error
-	AddInvite(inv *peerv1.Invite)
+	AddInvite(inv *admissionv1.Invite)
 }
 
 type impl struct {
-	*peerv1.InviteStore
+	*admissionv1.InviteStore
 	path string
 	mu   sync.RWMutex
 }
@@ -57,13 +57,13 @@ func Load(pollenDir string) (Store, error) {
 		return nil, err
 	}
 
-	is := &peerv1.InviteStore{}
+	is := &admissionv1.InviteStore{}
 	if err := proto.Unmarshal(b, is); err != nil {
 		return nil, err
 	}
 
 	if is.Invites == nil {
-		is.Invites = make(map[string]*peerv1.Invite)
+		is.Invites = make(map[string]*admissionv1.Invite)
 	}
 
 	return &impl{
@@ -118,7 +118,7 @@ func (s *impl) saveLocked() error {
 	return nil
 }
 
-func (s *impl) AddInvite(inv *peerv1.Invite) {
+func (s *impl) AddInvite(inv *admissionv1.Invite) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

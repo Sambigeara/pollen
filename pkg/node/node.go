@@ -13,7 +13,8 @@ import (
 	"sync"
 	"time"
 
-	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/mesh"
@@ -109,7 +110,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, stateStore *store.Store, peer
 	return n, nil
 }
 
-func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
+func (n *Node) Start(ctx context.Context, token *admissionv1.Invite) error {
 	defer n.shutdown()
 
 	if err := n.mesh.Start(ctx); err != nil {
@@ -176,28 +177,28 @@ func (n *Node) recvLoop(ctx context.Context) {
 	}
 }
 
-func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *statev1.DatagramEnvelope) error {
+func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *meshv1.Envelope) error {
 	if env == nil {
 		return nil
 	}
 
 	switch body := env.GetBody().(type) {
-	case *statev1.DatagramEnvelope_Clock:
+	case *meshv1.Envelope_Clock:
 		for _, node := range n.store.MissingFor(body.Clock) {
-			if err := n.mesh.Send(ctx, from, &statev1.DatagramEnvelope{
-				Body: &statev1.DatagramEnvelope_Node{Node: node},
+			if err := n.mesh.Send(ctx, from, &meshv1.Envelope{
+				Body: &meshv1.Envelope_Node{Node: node},
 			}); err != nil {
 				n.log.Debugw("failed sending gossip node", "to", from.Short(), "err", err)
 			}
 		}
-	case *statev1.DatagramEnvelope_Node:
+	case *meshv1.Envelope_Node:
 		result := n.store.ApplyNode(body.Node)
 		if result.Rebroadcast != nil {
 			n.queueGossipNode(result.Rebroadcast)
 		}
-	case *statev1.DatagramEnvelope_PunchCoordRequest:
+	case *meshv1.Envelope_PunchCoordRequest:
 		n.handlePunchCoordRequest(ctx, from, body.PunchCoordRequest)
-	case *statev1.DatagramEnvelope_PunchCoordTrigger:
+	case *meshv1.Envelope_PunchCoordTrigger:
 		go n.handlePunchCoordTrigger(body.PunchCoordTrigger)
 	}
 
@@ -214,8 +215,8 @@ func (n *Node) broadcastNode(ctx context.Context, node *statev1.GossipNode) {
 		if peerID == n.store.LocalID {
 			continue
 		}
-		if err := n.mesh.Send(ctx, peerID, &statev1.DatagramEnvelope{
-			Body: &statev1.DatagramEnvelope_Node{Node: node},
+		if err := n.mesh.Send(ctx, peerID, &meshv1.Envelope{
+			Body: &meshv1.Envelope_Node{Node: node},
 		}); err != nil {
 			n.log.Debugw("node gossip send failed", "peer", peerID.Short(), "err", err)
 		}
@@ -229,8 +230,8 @@ func (n *Node) gossip(ctx context.Context) {
 		if peerID == n.store.LocalID {
 			continue
 		}
-		if err := n.mesh.Send(ctx, peerID, &statev1.DatagramEnvelope{
-			Body: &statev1.DatagramEnvelope_Clock{Clock: clock},
+		if err := n.mesh.Send(ctx, peerID, &meshv1.Envelope{
+			Body: &meshv1.Envelope_Clock{Clock: clock},
 		}); err != nil {
 			n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
 		}
@@ -294,8 +295,8 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 		case peer.PeerConnected:
 			n.queueGossipNode(n.store.SetLocalConnected(e.PeerKey, true))
 			n.requestFullOnce.Do(func() {
-				if err := n.mesh.Send(context.Background(), e.PeerKey, &statev1.DatagramEnvelope{
-					Body: &statev1.DatagramEnvelope_Clock{Clock: n.store.ZeroClock()},
+				if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
+					Body: &meshv1.Envelope_Clock{Clock: n.store.ZeroClock()},
 				}); err != nil {
 					n.log.Debugw("failed requesting full state", "peer", e.PeerKey.Short(), "err", err)
 				}
@@ -423,6 +424,8 @@ func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
 			continue
 		}
 		candidateIPs := n.store.NodeIPs(key)
+		// TODO(saml) we shouldn't skip if coordinators share the same LAN, but we need to communicate with
+		// the punching peer outside of the shared LAN that the IP is the same as the coordinator, somehow
 		if len(candidateIPs) == 0 || sharesLAN(localIPs, candidateIPs) {
 			continue
 		}
@@ -442,9 +445,9 @@ func (n *Node) requestPunchCoordination(target types.PeerKey) {
 		return
 	}
 
-	req := &peerv1.PunchCoordRequest{PeerId: target.Bytes()}
-	env := &statev1.DatagramEnvelope{
-		Body: &statev1.DatagramEnvelope_PunchCoordRequest{PunchCoordRequest: req},
+	req := &meshv1.PunchCoordRequest{PeerId: target.Bytes()}
+	env := &meshv1.Envelope{
+		Body: &meshv1.Envelope_PunchCoordRequest{PunchCoordRequest: req},
 	}
 
 	// TODO(saml) down the line, we should probably cycle through potential coordinators per request
@@ -455,7 +458,7 @@ func (n *Node) requestPunchCoordination(target types.PeerKey) {
 	}
 }
 
-func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, req *peerv1.PunchCoordRequest) {
+func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, req *meshv1.PunchCoordRequest) {
 	targetKey := types.PeerKeyFromBytes(req.PeerId)
 
 	fromAddr, fromOk := n.mesh.GetActivePeerAddress(from)
@@ -468,7 +471,7 @@ func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, 
 	}
 
 	go func() {
-		if err := n.mesh.Send(ctx, from, &statev1.DatagramEnvelope{Body: &statev1.DatagramEnvelope_PunchCoordTrigger{PunchCoordTrigger: &peerv1.PunchCoordTrigger{
+		if err := n.mesh.Send(ctx, from, &meshv1.Envelope{Body: &meshv1.Envelope_PunchCoordTrigger{PunchCoordTrigger: &meshv1.PunchCoordTrigger{
 			PeerId:   req.PeerId,
 			SelfAddr: fromAddr.String(),
 			PeerAddr: targetAddr.String(),
@@ -477,7 +480,7 @@ func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, 
 		}
 	}()
 	go func() {
-		if err := n.mesh.Send(ctx, targetKey, &statev1.DatagramEnvelope{Body: &statev1.DatagramEnvelope_PunchCoordTrigger{PunchCoordTrigger: &peerv1.PunchCoordTrigger{
+		if err := n.mesh.Send(ctx, targetKey, &meshv1.Envelope{Body: &meshv1.Envelope_PunchCoordTrigger{PunchCoordTrigger: &meshv1.PunchCoordTrigger{
 			PeerId:   from.Bytes(),
 			SelfAddr: targetAddr.String(),
 			PeerAddr: fromAddr.String(),
@@ -487,7 +490,7 @@ func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, 
 	}()
 }
 
-func (n *Node) handlePunchCoordTrigger(trigger *peerv1.PunchCoordTrigger) {
+func (n *Node) handlePunchCoordTrigger(trigger *meshv1.PunchCoordTrigger) {
 	peerKey := types.PeerKeyFromBytes(trigger.PeerId)
 	if n.peers.InState(peerKey, peer.PeerStateConnected) {
 		return

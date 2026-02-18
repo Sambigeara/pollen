@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
-	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/peer"
@@ -86,7 +86,7 @@ func (tn *testNode) start(t *testing.T, token ...string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 
-	var invite *peerv1.Invite
+	var invite *admissionv1.Invite
 	if len(token) > 0 && token[0] != "" {
 		invite, err = node.DecodeToken(token[0])
 		require.NoError(t, err)

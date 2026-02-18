@@ -23,9 +23,9 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/net/http2"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/api/genpb/pollen/control/v1/controlv1connect"
-	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
@@ -206,7 +206,7 @@ func runNode(cmd *cobra.Command, args []string) {
 		logger.Fatal(err)
 	}
 
-	var tkn *peerv1.Invite
+	var tkn *admissionv1.Invite
 	if joinToken != "" {
 		tkn, err = node.DecodeToken(joinToken)
 		if err != nil {
