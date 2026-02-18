@@ -49,6 +49,11 @@ Follow the conventions below when making changes or writing tests.
 - Tooling installs may set `GOWORK=off` during codegen
 - Prefer `just` targets for repo-wide operations
 
+## Git Commit Conventions
+
+- Sign commits with `git commit -s`.
+- Keep commit subjects concise (about 50 chars or less) and wrap commit body lines at 72 chars.
+
 ## Test Harness Notes
 
 - For now, keep tests minimal, integration heavy, and just at the main component boundaries.
