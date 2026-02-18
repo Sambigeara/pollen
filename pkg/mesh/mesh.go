@@ -20,6 +20,8 @@ import (
 
 const (
 	handshakeTimeout = 3 * time.Second
+	queueBufSize     = 64
+	probeBufSize     = 2048
 )
 
 type Packet struct {
@@ -72,15 +74,20 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, invites admission.Sto
 		return nil, fmt.Errorf("generate identity cert: %w", err)
 	}
 
+	pub, ok := signPriv.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("identity private key is not ed25519")
+	}
+
 	return &impl{
 		cert:     cert,
-		localKey: types.PeerKeyFromBytes(signPriv.Public().(ed25519.PublicKey)),
+		localKey: types.PeerKeyFromBytes(pub),
 		invites:  invites,
 		socks:    sock.NewSockStore(),
 		port:     defaultPort,
 		peers:    make(map[types.PeerKey]*peerSession),
-		recvCh:   make(chan Packet, 64),
-		inCh:     make(chan peer.Input, 64),
+		recvCh:   make(chan Packet, queueBufSize),
+		inCh:     make(chan peer.Input, queueBufSize),
 	}, nil
 }
 
@@ -342,8 +349,11 @@ func (m *impl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) 
 	if !ok {
 		return nil, false
 	}
-	addr, ok := s.conn.RemoteAddr().(*net.UDPAddr)
-	return addr, ok
+	addr, err := net.ResolveUDPAddr("udp", s.conn.RemoteAddr().String())
+	if err != nil {
+		return nil, false
+	}
+	return addr, true
 }
 
 func (m *impl) BroadcastDisconnect() error {
@@ -386,7 +396,10 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 	// the QUIC connection, not as long as the (potentially short-lived) dial ctx.
 	go m.recvDatagrams(s, peerKey)
 
-	addr := s.conn.RemoteAddr().(*net.UDPAddr)
+	addr, err := net.ResolveUDPAddr("udp", s.conn.RemoteAddr().String())
+	if err != nil {
+		return
+	}
 	select {
 	case m.inCh <- peer.ConnectPeer{
 		PeerKey:      peerKey,
@@ -440,7 +453,7 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 }
 
 func (m *impl) runMainProbeLoop(ctx context.Context, qt *quic.Transport) {
-	buf := make([]byte, 2048)
+	buf := make([]byte, probeBufSize)
 	for {
 		n, sender, err := qt.ReadNonQUICPacket(ctx, buf)
 		if err != nil {
@@ -480,22 +493,24 @@ func (m *impl) acceptLoop(ctx context.Context) {
 }
 
 func (m *impl) handleInviteControlDatagram(s *peerSession, env *meshv1.Envelope) {
-	switch body := env.GetBody().(type) {
-	case *meshv1.Envelope_InviteRequest:
-		accepted := false
-		if req := body.InviteRequest; req != nil && req.Token != "" {
-			ok, err := m.invites.ConsumeToken(req.Token)
-			accepted = err == nil && ok
-		}
+	body, ok := env.GetBody().(*meshv1.Envelope_InviteRequest)
+	if !ok {
+		return
+	}
 
-		respData, err := (&meshv1.Envelope{
-			Body: &meshv1.Envelope_InviteResponse{
-				InviteResponse: &meshv1.InviteResponse{Accepted: accepted},
-			},
-		}).MarshalVT()
-		if err == nil {
-			_ = s.conn.SendDatagram(respData)
-		}
+	accepted := false
+	if req := body.InviteRequest; req != nil && req.Token != "" {
+		ok, err := m.invites.ConsumeToken(req.Token)
+		accepted = err == nil && ok
+	}
+
+	respData, err := (&meshv1.Envelope{
+		Body: &meshv1.Envelope_InviteResponse{
+			InviteResponse: &meshv1.InviteResponse{Accepted: accepted},
+		},
+	}).MarshalVT()
+	if err == nil {
+		_ = s.conn.SendDatagram(respData)
 	}
 }
 

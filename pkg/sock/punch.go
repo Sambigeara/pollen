@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"net"
 	"time"
 )
@@ -28,7 +29,7 @@ func probe(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) error {
 	return err
 }
 
-func probeAddr(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) (*net.UDPAddr, error) {
+func probeAddr(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) (_ *net.UDPAddr, retErr error) {
 	nonce := make([]byte, probeNonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
@@ -47,8 +48,18 @@ func probeAddr(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) (*net.
 	copy(expect[1:], nonce)
 
 	buf := make([]byte, 1+probeNonceSize)
-	conn.SetReadDeadline(time.Now().Add(probeTimeout))
-	defer conn.SetReadDeadline(time.Time{})
+	if err := conn.SetReadDeadline(time.Now().Add(probeTimeout)); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			if retErr != nil {
+				retErr = errors.Join(retErr, err)
+				return
+			}
+			retErr = err
+		}
+	}()
 
 	for {
 		if ctx.Err() != nil {
