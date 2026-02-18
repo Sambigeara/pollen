@@ -84,11 +84,8 @@ func getPublicIP(ctx context.Context, providers []string) (net.IP, error) {
 	var wg sync.WaitGroup
 
 	for _, url := range providers {
-		wg.Add(1)
-		go func(providerURL string) {
-			defer wg.Done()
-
-			req, err := http.NewRequestWithContext(ctx, "GET", providerURL, nil)
+		wg.Go(func() {
+			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 			if err != nil {
 				return
 			}
@@ -114,7 +111,7 @@ func getPublicIP(ctx context.Context, providers []string) (net.IP, error) {
 				case <-ctx.Done():
 				}
 			}
-		}(url)
+		})
 	}
 
 	select {

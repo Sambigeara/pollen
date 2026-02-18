@@ -329,11 +329,10 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 		case peer.AttemptConnect:
 			go func() {
 				if err := n.connectPeer(e.PeerKey, e.Ips, e.Port); err != nil {
-					if !n.isPeerConnecting(e.PeerKey) {
-						return
+					if n.peers.InState(e.PeerKey, peer.PeerStateConnecting) {
+						n.log.Debugw("connect failed", "peer", e.PeerKey.Short(), "err", err)
+						n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 					}
-					n.log.Debugw("connect failed", "peer", e.PeerKey.Short(), "err", err)
-					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 				}
 			}()
 		case peer.RequestPunchCoordination:
@@ -523,7 +522,7 @@ func (n *Node) sendPunchCoordTrigger(ctx context.Context, to types.PeerKey, trig
 
 func (n *Node) handlePunchCoordTrigger(trigger *peerv1.PunchCoordTrigger) {
 	peerKey := types.PeerKeyFromBytes(trigger.PeerId)
-	if n.isPeerConnected(peerKey) {
+	if n.peers.InState(peerKey, peer.PeerStateConnected) {
 		return
 	}
 
@@ -536,25 +535,13 @@ func (n *Node) handlePunchCoordTrigger(trigger *peerv1.PunchCoordTrigger) {
 	n.log.Infow("punch coord trigger received", "peer", peerKey.Short(), "peerAddr", peerAddr.String())
 
 	if err := n.punchPeer(peerKey, peerAddr.IP, peerAddr.Port); err != nil {
-		if !n.isPeerConnecting(peerKey) {
-			return
+		if n.peers.InState(peerKey, peer.PeerStateConnecting) {
+			n.log.Debugw("punch failed after coord trigger", "peer", peerKey.Short(), "err", err)
+			n.localPeerEvents <- peer.ConnectFailed{PeerKey: peerKey}
 		}
-		n.log.Debugw("punch failed after coord trigger", "peer", peerKey.Short(), "err", err)
-		n.localPeerEvents <- peer.ConnectFailed{PeerKey: peerKey}
 	}
 }
 
-func (n *Node) isPeerConnected(peerKey types.PeerKey) bool {
-	p, ok := n.peers.Get(peerKey)
-	return ok && p.State == peer.PeerStateConnected
-}
-
-func (n *Node) isPeerConnecting(peerKey types.PeerKey) bool {
-	p, ok := n.peers.Get(peerKey)
-	return ok && p.State == peer.PeerStateConnecting
-}
-
-// ConnectService wraps tunnel.Manager.ConnectService.
 func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
 	port, err := n.tun.ConnectService(peerID, remotePort, localPort)
 	if err != nil {
