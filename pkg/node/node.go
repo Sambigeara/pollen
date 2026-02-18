@@ -59,9 +59,9 @@ type Node struct {
 	peers           *peer.Store
 	store           *store.Store
 	mesh            mesh.Mesh
+	tun             *tunnel.Manager
 	localPeerEvents chan peer.Input
 	conf            *Config
-	tun             *tunnel.Manager
 	log             *zap.SugaredLogger
 	gossipEvents    chan *statev1.GossipNode
 	identityPub     ed25519.PublicKey
@@ -79,7 +79,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, stateStore *store.Store, peer
 	ips := conf.AdvertisedIPs
 	if len(ips) == 0 {
 		var err error
-		ips, err = mesh.GetAdvertisableAddrs()
+		ips, err = mesh.GetAdvertisableAddrs(mesh.DefaultExclusions)
 		if err != nil {
 			return nil, err
 		}
@@ -93,21 +93,22 @@ func New(conf *Config, privKey ed25519.PrivateKey, stateStore *store.Store, peer
 		return nil, err
 	}
 
+	tun := tunnel.New(m)
+	for _, svc := range stateStore.LocalServices() {
+		tun.RegisterService(svc.GetPort())
+	}
+
 	n := &Node{
 		log:             log,
-		mesh:            m,
 		peers:           peerStore,
 		store:           stateStore,
+		mesh:            m,
+		tun:             tun,
 		invites:         invitesStore,
 		identityPub:     pubKey,
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
 		gossipEvents:    make(chan *statev1.GossipNode, gossipEventBufSize),
-	}
-
-	n.tun = tunnel.New(NewDirectory(stateStore))
-	for _, svc := range stateStore.LocalServices() {
-		n.tun.RegisterService(svc.GetPort())
 	}
 
 	return n, nil
@@ -119,6 +120,7 @@ func (n *Node) Start(ctx context.Context, token *admissionv1.Invite) error {
 	if err := n.mesh.Start(ctx); err != nil {
 		return err
 	}
+	n.tun.Start(ctx)
 	go n.recvLoop(ctx)
 
 	if token != nil {
@@ -300,13 +302,6 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 					n.log.Debugw("failed requesting full state", "peer", e.PeerKey.Short(), "err", err)
 				}
 			})
-
-			// Register QUIC connection as a tunnel session.
-			if conn, ok := n.mesh.GetConn(e.PeerKey); ok {
-				if _, err := n.tun.Register(conn, e.PeerKey); err != nil {
-					n.log.Warnw("session register failed", "peer", e.PeerKey.Short(), "err", err)
-				}
-			}
 
 			n.log.Infow("peer connected", "peer_id", e.PeerKey.Short(), "ip", e.IP, "observedPort", e.ObservedPort)
 		case peer.AttemptConnect:
@@ -513,6 +508,10 @@ func (n *Node) handlePunchCoordTrigger(trigger *meshv1.PunchCoordTrigger) {
 }
 
 func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
+	if _, ok := n.store.IdentityPub(peerID); !ok {
+		return 0, errors.New("peerID not recognised")
+	}
+
 	port, err := n.tun.ConnectService(peerID, remotePort, localPort)
 	if err != nil {
 		return 0, err

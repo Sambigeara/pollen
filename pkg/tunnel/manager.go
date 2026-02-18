@@ -2,39 +2,42 @@ package tunnel
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"sync"
 
 	"go.uber.org/zap"
 
-	"github.com/quic-go/quic-go"
-
-	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// Manager manages service tunneling over QUIC streams. Once two peers have a
-// QUIC connection (established by the supersock layer), tunneling is simply
-// opening streams on that connection. No separate TCP setup, TLS wrapping,
-// or yamux multiplexing needed.
+var errNoServicePort = errors.New("no service port in stream header")
+
+// StreamTransport abstracts peer stream transport lifecycle.
+// mesh owns QUIC connection/session management and provides this seam.
+type StreamTransport interface {
+	OpenStream(ctx context.Context, peerID types.PeerKey) (io.ReadWriteCloser, error)
+	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
+}
+
+// Manager manages service tunneling over peer streams.
 type Manager struct {
-	dir           mesh.PeerDirectory
-	sessions      map[types.PeerKey]*Session
-	waiters       map[types.PeerKey][]chan struct{}
+	log           *zap.SugaredLogger
+	transport     StreamTransport
 	connections   map[string]connectionHandler
 	services      map[uint32]serviceHandler
-	activeStreams map[uint32]map[net.Conn]struct{}
-	sessionMu     sync.RWMutex
+	activeStreams map[uint32]map[io.ReadWriteCloser]struct{}
 	connectionMu  sync.RWMutex
 	serviceMu     sync.RWMutex
 	streamMu      sync.Mutex
 }
 
 type serviceHandler struct {
-	fn     func(net.Conn)
+	fn     func(io.ReadWriteCloser)
 	cancel context.CancelFunc
 }
 
@@ -46,19 +49,19 @@ type connectionHandler struct {
 	peerID types.PeerKey
 }
 
-type trackedConn struct {
-	net.Conn
+type trackedStream struct {
+	io.ReadWriteCloser
 	onClose   func()
 	closeOnce sync.Once
 }
 
-func (c *trackedConn) Close() error {
+func (c *trackedStream) Close() error {
 	c.closeOnce.Do(func() {
 		if c.onClose != nil {
 			c.onClose()
 		}
 	})
-	return c.Conn.Close()
+	return c.ReadWriteCloser.Close()
 }
 
 type ConnectionInfo struct {
@@ -71,22 +74,48 @@ func connectionKey(peerID, port string) string {
 	return peerID + ":" + port
 }
 
-func New(dir mesh.PeerDirectory) *Manager {
+func New(transport StreamTransport) *Manager {
 	return &Manager{
-		dir:           dir,
-		sessions:      make(map[types.PeerKey]*Session),
-		waiters:       make(map[types.PeerKey][]chan struct{}),
+		log:           zap.S().Named("tun"),
+		transport:     transport,
 		connections:   make(map[string]connectionHandler),
 		services:      make(map[uint32]serviceHandler),
-		activeStreams: make(map[uint32]map[net.Conn]struct{}),
+		activeStreams: make(map[uint32]map[io.ReadWriteCloser]struct{}),
 	}
 }
 
-func (m *Manager) handleIncomingStream(stream net.Conn, servicePort uint16) {
-	port := uint32(servicePort)
+func (m *Manager) Start(ctx context.Context) {
+	go func() {
+		if err := m.acceptStreams(ctx); err != nil {
+			m.log.Debugw("tunnel stream loop stopped", "err", err)
+		}
+	}()
+}
 
-	tracked := &trackedConn{}
-	tracked.Conn = stream
+func (m *Manager) acceptStreams(ctx context.Context) error {
+	for {
+		peerID, stream, err := m.transport.AcceptStream(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+
+		go m.handleIncomingStream(peerID, stream)
+	}
+}
+
+func (m *Manager) handleIncomingStream(peerID types.PeerKey, stream io.ReadWriteCloser) {
+	port, err := readServicePort(stream)
+	if err != nil {
+		m.log.Warnw("failed reading service port from stream", "peer", peerID.Short(), "err", err)
+		_ = stream.Close()
+		return
+	}
+
+	tracked := &trackedStream{}
+	tracked.ReadWriteCloser = stream
 	tracked.onClose = func() {
 		m.removeActiveStream(port, tracked)
 	}
@@ -98,7 +127,7 @@ func (m *Manager) handleIncomingStream(stream net.Conn, servicePort uint16) {
 	m.serviceMu.RUnlock()
 
 	if !ok {
-		zap.S().Warnw("no handler for incoming stream", "port", servicePort)
+		m.log.Warnw("no handler for incoming stream", "peer", peerID.Short(), "port", port)
 		_ = stream.Close()
 		return
 	}
@@ -106,132 +135,29 @@ func (m *Manager) handleIncomingStream(stream net.Conn, servicePort uint16) {
 	h.fn(stream)
 }
 
-// Register registers a session from a QUIC connection.
-func (m *Manager) Register(conn *quic.Conn, peerID types.PeerKey) (*Session, error) {
-	m.sessionMu.Lock()
-
-	session := newSession(conn, peerID)
-
-	if existing, ok := m.sessions[peerID]; ok {
-		zap.S().Warnw("replacing existing session", "peer", peerID.String()[:8])
-		existing.Close()
-		delete(m.sessions, peerID)
+func readServicePort(r io.Reader) (uint32, error) {
+	var header [2]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return 0, err
 	}
 
-	m.sessions[peerID] = session
-	waiters := m.waiters[peerID]
-	delete(m.waiters, peerID)
-	m.sessionMu.Unlock()
-
-	for _, ch := range waiters {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
+	port := binary.BigEndian.Uint16(header[:])
+	if port == 0 {
+		return 0, errNoServicePort
 	}
 
-	zap.S().Infow("registered session", "peer", peerID.String()[:8])
-	go m.acceptStreams(session)
-	return session, nil
+	return uint32(port), nil
 }
 
-func (m *Manager) getOrCreateSession(ctx context.Context, peerID types.PeerKey) (*Session, error) {
-	m.sessionMu.RLock()
-	session, ok := m.sessions[peerID]
-	m.sessionMu.RUnlock()
-
-	if ok && !session.IsClosed() {
-		return session, nil
+func writeServicePort(w io.Writer, port uint32) error {
+	if port == 0 || port > 0xffff {
+		return errors.New("remote port missing")
 	}
 
-	return m.waitForSession(ctx, peerID)
-}
-
-func (m *Manager) waitForSession(ctx context.Context, peerID types.PeerKey) (*Session, error) {
-	for {
-		m.sessionMu.Lock()
-		if session, ok := m.sessions[peerID]; ok && !session.IsClosed() {
-			m.sessionMu.Unlock()
-			return session, nil
-		}
-		ch := make(chan struct{}, 1)
-		m.waiters[peerID] = append(m.waiters[peerID], ch)
-		m.sessionMu.Unlock()
-
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			m.removeWaiter(peerID, ch)
-			return nil, ctx.Err()
-		}
-	}
-}
-
-func (m *Manager) removeWaiter(peerID types.PeerKey, ch chan struct{}) {
-	m.sessionMu.Lock()
-	defer m.sessionMu.Unlock()
-
-	waiters := m.waiters[peerID]
-	for i := range waiters {
-		if waiters[i] != ch {
-			continue
-		}
-		waiters[i] = waiters[len(waiters)-1]
-		waiters = waiters[:len(waiters)-1]
-		break
-	}
-
-	if len(waiters) == 0 {
-		delete(m.waiters, peerID)
-		return
-	}
-	m.waiters[peerID] = waiters
-}
-
-func (m *Manager) acceptStreams(session *Session) {
-	ctx := context.Background()
-	for {
-		stream, port, err := session.AcceptStream(ctx)
-		if err != nil {
-			if !session.IsClosed() {
-				zap.S().Warnw("accept stream error", "peer", session.peerID.String()[:8], "err", err)
-			}
-			m.removeSessionIfSame(session)
-			return
-		}
-
-		go m.handleIncomingStream(stream, port)
-	}
-}
-
-func (m *Manager) removeSessionIfSame(session *Session) bool {
-	m.sessionMu.Lock()
-	current, ok := m.sessions[session.peerID]
-	if !ok || current != session {
-		m.sessionMu.Unlock()
-		return false
-	}
-
-	delete(m.sessions, session.peerID)
-	m.sessionMu.Unlock()
-
-	_ = session.Close()
-	zap.S().Infow("removed session", "peer", session.peerID.String()[:8])
-	return true
-}
-
-func (m *Manager) removeSession(peerID types.PeerKey) {
-	m.sessionMu.Lock()
-	session, ok := m.sessions[peerID]
-	if ok {
-		session.Close()
-		delete(m.sessions, peerID)
-	}
-	m.sessionMu.Unlock()
-
-	if ok {
-		zap.S().Infow("removed session", "peer", peerID.String()[:8])
-	}
+	var header [2]byte
+	binary.BigEndian.PutUint16(header[:], uint16(port))
+	_, err := w.Write(header[:])
+	return err
 }
 
 func (m *Manager) RegisterService(port uint32) {
@@ -246,10 +172,10 @@ func (m *Manager) RegisterService(port uint32) {
 	ctx, cancelFn := context.WithCancel(context.Background())
 
 	m.services[port] = serviceHandler{
-		fn: func(tunnelConn net.Conn) {
+		fn: func(tunnelConn io.ReadWriteCloser) {
 			conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", fmt.Sprintf("localhost:%d", port))
 			if err != nil {
-				zap.S().Warnw("failed to dial local service", "port", port, "err", err)
+				m.log.Warnw("failed to dial local service", "port", port, "err", err)
 				_ = tunnelConn.Close()
 				return
 			}
@@ -258,14 +184,14 @@ func (m *Manager) RegisterService(port uint32) {
 		cancel: cancelFn,
 	}
 
-	zap.S().Infow("registered service", "port", port)
+	m.log.Infow("registered service", "port", port)
 }
 
 func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
-	if _, ok := m.dir.IdentityPub(peerID); !ok {
-		return 0, errors.New("peerID not recognised")
+	if m.transport == nil {
+		return 0, errors.New("stream transport unavailable")
 	}
-	if remotePort == 0 {
+	if remotePort == 0 || remotePort > 0xffff {
 		return 0, errors.New("remote port missing")
 	}
 
@@ -306,29 +232,24 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 		return 0, err
 	}
 
-	portNum := uint16(remotePort)
-
 	go func() {
-		logger := zap.S().Named("tunnel")
+		logger := m.log.Named("tunnel")
 		for {
 			clientConn, err := ln.Accept()
 			if err != nil {
 				return
 			}
 			go func() {
-				// Get or create session to peer (backed by QUIC connection).
-				session, err := m.getOrCreateSession(ctx, peerID)
+				stream, err := m.transport.OpenStream(ctx, peerID)
 				if err != nil {
-					logger.Warnw("session failed", "peer", peerID.String()[:8], "err", err)
+					logger.Warnw("open stream failed", "peer", peerID.String()[:8], "port", remotePort, "err", err)
 					_ = clientConn.Close()
 					return
 				}
 
-				// Open QUIC stream to remote service.
-				stream, err := session.OpenStream(portNum)
-				if err != nil {
-					logger.Warnw("open stream failed", "peer", peerID.String()[:8], "port", remotePort, "err", err)
-					m.removeSession(peerID)
+				if err := writeServicePort(stream, remotePort); err != nil {
+					logger.Warnw("write stream header failed", "peer", peerID.String()[:8], "port", remotePort, "err", err)
+					_ = stream.Close()
 					_ = clientConn.Close()
 					return
 				}
@@ -346,7 +267,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 		ln:     ln,
 	}
 
-	zap.S().Infow("connected to service", "peer", peerID.String()[:8], "port", remotePort, "local_port", boundPort)
+	m.log.Infow("connected to service", "peer", peerID.String()[:8], "port", remotePort, "local_port", boundPort)
 	return uint32(boundPort), nil
 }
 
@@ -438,18 +359,18 @@ func (m *Manager) closeServiceStreams(port uint32) {
 	}
 }
 
-func (m *Manager) addActiveStream(port uint32, stream net.Conn) {
+func (m *Manager) addActiveStream(port uint32, stream io.ReadWriteCloser) {
 	m.streamMu.Lock()
 	defer m.streamMu.Unlock()
 	streams, ok := m.activeStreams[port]
 	if !ok {
-		streams = make(map[net.Conn]struct{})
+		streams = make(map[io.ReadWriteCloser]struct{})
 		m.activeStreams[port] = streams
 	}
 	streams[stream] = struct{}{}
 }
 
-func (m *Manager) removeActiveStream(port uint32, stream net.Conn) {
+func (m *Manager) removeActiveStream(port uint32, stream io.ReadWriteCloser) {
 	m.streamMu.Lock()
 	defer m.streamMu.Unlock()
 	streams, ok := m.activeStreams[port]
@@ -462,15 +383,7 @@ func (m *Manager) removeActiveStream(port uint32, stream net.Conn) {
 	}
 }
 
-// Close shuts down the manager and all sessions.
 func (m *Manager) Close() {
-	m.sessionMu.Lock()
-	for peerID, session := range m.sessions {
-		session.Close()
-		delete(m.sessions, peerID)
-	}
-	m.sessionMu.Unlock()
-
 	m.serviceMu.Lock()
 	for _, h := range m.services {
 		h.cancel()
@@ -479,7 +392,21 @@ func (m *Manager) Close() {
 
 	m.connectionMu.Lock()
 	for _, h := range m.connections {
+		if h.ln != nil {
+			_ = h.ln.Close()
+		}
 		h.cancel()
 	}
 	m.connectionMu.Unlock()
+
+	m.streamMu.Lock()
+	portStreams := m.activeStreams
+	m.activeStreams = make(map[uint32]map[io.ReadWriteCloser]struct{})
+	m.streamMu.Unlock()
+
+	for _, streams := range portStreams {
+		for stream := range streams {
+			_ = stream.Close()
+		}
+	}
 }

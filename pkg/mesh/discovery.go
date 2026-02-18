@@ -6,13 +6,24 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
 )
 
-const publicIPQueryTimeout = time.Second * 3
+const publicIPQueryTimeout = 3 * time.Second
+
+var (
+	TailscaleCGNAT = netip.MustParsePrefix("100.64.0.0/10") // RFC 6598 CGNAT
+	TailscaleULA   = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+
+	Private10  = netip.MustParsePrefix("10.0.0.0/8")     // RFC 1918
+	Private172 = netip.MustParsePrefix("172.16.0.0/12")  // RFC 1918
+	Private192 = netip.MustParsePrefix("192.168.0.0/16") // RFC 1918
+
+	DefaultExclusions = []netip.Prefix{TailscaleCGNAT, TailscaleULA}
+)
 
 var (
 	ipv4Providers = []string{
@@ -27,60 +38,97 @@ var (
 	}
 )
 
-func GetAdvertisableAddrs() ([]string, error) {
-	var results []string
-	seen := make(map[string]bool)
+func GetAdvertisableAddrs(exclusions []netip.Prefix) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), publicIPQueryTimeout)
+	defer cancel()
 
-	ctx, cancelFn := context.WithTimeout(context.Background(), publicIPQueryTimeout)
-	defer cancelFn()
+	var all []netip.Addr
+	all = append(all, getPublicIPs(ctx)...)
+	all = append(all, getLocalIPs(ctx)...)
 
-	if pubIP, err := getPublicIP(ctx, ipv4Providers); err == nil {
-		str := pubIP.String()
-		results = append(results, str)
-		seen[str] = true
-	}
-
-	// Try resolving IPv6 independently. Even if IPv4 already worked we still want IPv6 addresses
-	// to be advertised for dual-stack peers, but we keep IPv4 earlier in the list to favour it.
-	if pubIPv6, err := getPublicIP(ctx, ipv6Providers); err == nil {
-		str := pubIPv6.String()
-		if !seen[str] {
-			results = append(results, str)
-			seen[str] = true
+	seen := make(map[netip.Addr]bool, len(all))
+	results := make([]string, 0, len(all))
+	for _, ip := range all {
+		if seen[ip] {
+			continue
 		}
-	}
-
-	if prefIP, err := getPreferredOutboundIP(ctx); err == nil && isValidIP(prefIP) {
-		str := prefIP.String()
-		if !seen[str] {
-			results = append(results, str)
-			seen[str] = true
+		if !isRoutable(ip) || isExcluded(ip, exclusions) {
+			continue
 		}
-	}
-
-	others, err := getOtherLocalIPs()
-	if err == nil {
-		for _, ip := range others {
-			if !seen[ip.String()] {
-				results = append(results, ip.String())
-				seen[ip.String()] = true
-			}
-		}
+		seen[ip] = true
+		results = append(results, ip.String())
 	}
 
 	if len(results) == 0 {
 		return nil, errors.New("could not determine any advertisable IP addresses")
 	}
-
 	return results, nil
 }
 
-// getPublicIP races multiple providers to return the first valid response.
-func getPublicIP(ctx context.Context, providers []string) (net.IP, error) {
+func getPublicIPs(ctx context.Context) []netip.Addr {
+	var out []netip.Addr
+	if ip, err := raceProviders(ctx, ipv4Providers); err == nil {
+		out = append(out, ip)
+	}
+	if ip, err := raceProviders(ctx, ipv6Providers); err == nil {
+		out = append(out, ip)
+	}
+	return out
+}
+
+func getLocalIPs(ctx context.Context) []netip.Addr {
+	var out []netip.Addr
+
+	if ip, err := preferredOutboundIP(ctx); err == nil {
+		out = append(out, ip)
+	}
+
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || isVirtualInterface(iface.Name) {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			if ipNet, ok := a.(*net.IPNet); ok {
+				if addr, ok := netip.AddrFromSlice(ipNet.IP); ok {
+					out = append(out, addr.Unmap())
+				}
+			}
+		}
+	}
+	return out
+}
+
+func isRoutable(ip netip.Addr) bool {
+	return ip.IsValid() &&
+		!ip.IsLoopback() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast() &&
+		!ip.IsMulticast() &&
+		!ip.IsUnspecified()
+}
+
+func isExcluded(ip netip.Addr, ranges []netip.Prefix) bool {
+	for _, r := range ranges {
+		if r.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func raceProviders(ctx context.Context, providers []string) (netip.Addr, error) {
 	ctx, cancel := context.WithTimeout(ctx, publicIPQueryTimeout)
 	defer cancel()
 
-	ipCh := make(chan net.IP, 1)
+	ch := make(chan netip.Addr, 1)
 	var wg sync.WaitGroup
 
 	for _, url := range providers {
@@ -89,9 +137,7 @@ func getPublicIP(ctx context.Context, providers []string) (net.IP, error) {
 			if err != nil {
 				return
 			}
-
-			client := &http.Client{Timeout: publicIPQueryTimeout}
-			resp, err := client.Do(req)
+			resp, err := (&http.Client{Timeout: publicIPQueryTimeout}).Do(req)
 			if err != nil {
 				return
 			}
@@ -102,127 +148,42 @@ func getPublicIP(ctx context.Context, providers []string) (net.IP, error) {
 				return
 			}
 
-			ipStr := strings.TrimSpace(string(body))
-			ip := net.ParseIP(ipStr)
-
-			if isValidIP(ip) {
-				select {
-				case ipCh <- ip:
-				case <-ctx.Done():
-				}
+			addr, err := netip.ParseAddr(strings.TrimSpace(string(body)))
+			if err != nil || !addr.IsValid() {
+				return
+			}
+			select {
+			case ch <- addr.Unmap():
+			case <-ctx.Done():
 			}
 		})
 	}
 
 	select {
-	case ip := <-ipCh:
+	case ip := <-ch:
 		return ip, nil
 	case <-ctx.Done():
-		return nil, errors.New("timed out resolving public IP")
+		return netip.Addr{}, errors.New("timed out resolving public IP")
 	}
 }
 
-// getPreferredOutboundIP determines the local IP used to route to the internet.
-// This does not actually establish a connection.
-func getPreferredOutboundIP(ctx context.Context) (net.IP, error) {
-	// 8.8.8.8 is used as a reference to determine the default route.
-	d := &net.Dialer{
-		Timeout: publicIPQueryTimeout,
-	}
-	conn, err := d.DialContext(ctx, "udp", "8.8.8.8:80")
+// Dials a UDP socket to a public address without sending any data.
+func preferredOutboundIP(ctx context.Context) (netip.Addr, error) {
+	conn, err := (&net.Dialer{Timeout: publicIPQueryTimeout}).DialContext(ctx, "udp", "8.8.8.8:80")
 	if err != nil {
-		return nil, err
+		return netip.Addr{}, err
 	}
 	defer conn.Close()
 
-	localAddr := conn.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
-	return localAddr.IP, nil
+	udpAddr := conn.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
+	addr, ok := netip.AddrFromSlice(udpAddr.IP)
+	if !ok {
+		return netip.Addr{}, errors.New("invalid local address")
+	}
+	return addr.Unmap(), nil
 }
 
-// getOtherLocalIPs iterates all network interfaces for valid addresses.
-func getOtherLocalIPs() ([]net.IP, error) {
-	var ips []net.IP
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return nil, err
-	}
-
-	for _, i := range interfaces {
-		if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagLoopback != 0 || isDockerInterface(i.Name) {
-			continue
-		}
-
-		addrs, err := i.Addrs()
-		if err != nil {
-			continue
-		}
-
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-
-			if isValidIP(ip) {
-				ips = append(ips, ip)
-			}
-		}
-	}
-	return ips, nil
-}
-
-// isValidIP filters out Loopback, Multicast, Unspecified, and Link-Local (fe80::) addresses.
-func isValidIP(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-
-	if ip.IsLoopback() || ip.IsMulticast() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
-		return false
-	}
-
-	if ip4 := ip.To4(); ip4 != nil {
-		// Ignore Tailscale IPs (CGNAT range 100.64.0.0/10).
-		if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
-			return false
-		}
-	}
-
-	ip16 := ip.To16()
-	if ip16 == nil {
-		return false
-	}
-	// Ignore Tailscale ULA fd7a:115c:a1e0::/48.
-	if ip16[0] == 0xfd && ip16[1] == 0x7a && ip16[2] == 0x11 && ip16[3] == 0x5c && ip16[4] == 0xa1 && ip16[5] == 0xe0 {
-		return false
-	}
-
-	//nolint:mnd
-	if _, ignoreLocal := os.LookupEnv("IP_IGNORE_LOCAL"); ignoreLocal { //nolint:nestif
-		if ip4 := ip.To4(); ip4 != nil {
-			// 10.0.0.0/8
-			if ip4[0] == 10 {
-				return false
-			}
-			// 172.16.0.0/12
-			if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
-				return false
-			}
-			// 192.168.0.0/16
-			if ip4[0] == 192 && ip4[1] == 168 {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// isDockerInterface returns true for interfaces commonly created by Docker
-// (docker0, br-, veth).
-func isDockerInterface(name string) bool {
+func isVirtualInterface(name string) bool {
 	return name == "docker0" ||
 		strings.HasPrefix(name, "br-") ||
 		strings.HasPrefix(name, "veth")
