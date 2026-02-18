@@ -415,9 +415,18 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 			}
 			return
 		}
-		if m.handleInviteControlDatagram(s, payload) {
+		env := &statev1.DatagramEnvelope{}
+		if err := env.UnmarshalVT(payload); err != nil {
 			continue
 		}
+
+		switch env.GetBody().(type) {
+		case *statev1.DatagramEnvelope_InviteRequest, *statev1.DatagramEnvelope_InviteResponse:
+			m.handleInviteControlDatagram(s, env)
+			continue
+		default:
+		}
+
 		select {
 		case m.recvCh <- Packet{Peer: peerKey, Payload: payload}:
 		case <-ctx.Done():
@@ -466,12 +475,7 @@ func (m *impl) acceptLoop(ctx context.Context) {
 	}
 }
 
-func (m *impl) handleInviteControlDatagram(s *peerSession, payload []byte) bool {
-	env := &statev1.DatagramEnvelope{}
-	if err := env.UnmarshalVT(payload); err != nil {
-		return false
-	}
-
+func (m *impl) handleInviteControlDatagram(s *peerSession, env *statev1.DatagramEnvelope) {
 	switch body := env.GetBody().(type) {
 	case *statev1.DatagramEnvelope_InviteRequest:
 		accepted := false
@@ -488,11 +492,6 @@ func (m *impl) handleInviteControlDatagram(s *peerSession, payload []byte) bool 
 		if err == nil {
 			_ = s.conn.SendDatagram(respData)
 		}
-		return true
-	case *statev1.DatagramEnvelope_InviteResponse:
-		return true
-	default:
-		return false
 	}
 }
 
