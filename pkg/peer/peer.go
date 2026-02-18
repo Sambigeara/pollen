@@ -315,6 +315,13 @@ func (s *Store) Get(peer types.PeerKey) (Peer, bool) {
 	return *p, ok
 }
 
+func (s *Store) InState(peer types.PeerKey, state PeerState) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p, ok := s.m[peer]
+	return ok && p.State == state
+}
+
 func (s *Store) GetAll(state PeerState) []types.PeerKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
