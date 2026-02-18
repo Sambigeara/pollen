@@ -23,13 +23,13 @@ const (
 )
 
 type Packet struct {
-	Payload []byte
-	Peer    types.PeerKey
+	Peer     types.PeerKey
+	Envelope *statev1.DatagramEnvelope
 }
 
 type Mesh interface {
 	Start(ctx context.Context) error
-	Send(ctx context.Context, peerKey types.PeerKey, payload []byte) error
+	Send(ctx context.Context, peerKey types.PeerKey, env *statev1.DatagramEnvelope) error
 	Recv(ctx context.Context) (Packet, error)
 	Events() <-chan peer.Input
 	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error
@@ -302,14 +302,18 @@ func (m *impl) Connect(ctx context.Context, peerKey types.PeerKey, addrs []*net.
 	return nil
 }
 
-func (m *impl) Send(ctx context.Context, peerKey types.PeerKey, payload []byte) error {
+func (m *impl) Send(_ context.Context, peerKey types.PeerKey, env *statev1.DatagramEnvelope) error {
 	m.mu.RLock()
 	s, ok := m.peers[peerKey]
 	m.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("no connection to peer %s", peerKey.Short())
 	}
-	return s.conn.SendDatagram(payload)
+	b, err := env.MarshalVT()
+	if err != nil {
+		return err
+	}
+	return s.conn.SendDatagram(b)
 }
 
 func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAddr) error {
@@ -428,7 +432,7 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 		}
 
 		select {
-		case m.recvCh <- Packet{Peer: peerKey, Payload: payload}:
+		case m.recvCh <- Packet{Peer: peerKey, Envelope: env}:
 		case <-ctx.Done():
 			return
 		}
