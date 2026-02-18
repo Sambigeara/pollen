@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
-	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/sock"
@@ -23,16 +23,16 @@ const (
 )
 
 type Packet struct {
+	Envelope *meshv1.Envelope
 	Peer     types.PeerKey
-	Envelope *statev1.DatagramEnvelope
 }
 
 type Mesh interface {
 	Start(ctx context.Context) error
-	Send(ctx context.Context, peerKey types.PeerKey, env *statev1.DatagramEnvelope) error
+	Send(ctx context.Context, peerKey types.PeerKey, env *meshv1.Envelope) error
 	Recv(ctx context.Context) (Packet, error)
 	Events() <-chan peer.Input
-	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error
+	JoinWithInvite(ctx context.Context, inv *admissionv1.Invite) error
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
 	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr) error
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
@@ -180,7 +180,7 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 	}, nil
 }
 
-func (m *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
+func (m *impl) JoinWithInvite(ctx context.Context, inv *admissionv1.Invite) error {
 	peerKey := types.PeerKeyFromBytes(inv.Fingerprint)
 	if len(inv.Addr) == 0 {
 		return fmt.Errorf("failed to join via invite at any address")
@@ -258,9 +258,9 @@ func (m *impl) raceDirectDial(ctx context.Context, peerKey types.PeerKey, addrs 
 }
 
 func (m *impl) exchangeInvite(ctx context.Context, qc *quic.Conn, token string) (bool, error) {
-	reqData, err := (&statev1.DatagramEnvelope{
-		Body: &statev1.DatagramEnvelope_InviteRequest{
-			InviteRequest: &peerv1.InviteRequest{Token: token},
+	reqData, err := (&meshv1.Envelope{
+		Body: &meshv1.Envelope_InviteRequest{
+			InviteRequest: &meshv1.InviteRequest{Token: token},
 		},
 	}).MarshalVT()
 	if err != nil {
@@ -278,11 +278,11 @@ func (m *impl) exchangeInvite(ctx context.Context, qc *quic.Conn, token string) 
 		if err != nil {
 			return false, err
 		}
-		env := &statev1.DatagramEnvelope{}
+		env := &meshv1.Envelope{}
 		if err := env.UnmarshalVT(payload); err != nil {
 			continue
 		}
-		if body, ok := env.GetBody().(*statev1.DatagramEnvelope_InviteResponse); ok {
+		if body, ok := env.GetBody().(*meshv1.Envelope_InviteResponse); ok {
 			return body.InviteResponse.GetAccepted(), nil
 		}
 	}
@@ -302,7 +302,7 @@ func (m *impl) Connect(ctx context.Context, peerKey types.PeerKey, addrs []*net.
 	return nil
 }
 
-func (m *impl) Send(_ context.Context, peerKey types.PeerKey, env *statev1.DatagramEnvelope) error {
+func (m *impl) Send(_ context.Context, peerKey types.PeerKey, env *meshv1.Envelope) error {
 	m.mu.RLock()
 	s, ok := m.peers[peerKey]
 	m.mu.RUnlock()
@@ -419,13 +419,13 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 			}
 			return
 		}
-		env := &statev1.DatagramEnvelope{}
+		env := &meshv1.Envelope{}
 		if err := env.UnmarshalVT(payload); err != nil {
 			continue
 		}
 
 		switch env.GetBody().(type) {
-		case *statev1.DatagramEnvelope_InviteRequest, *statev1.DatagramEnvelope_InviteResponse:
+		case *meshv1.Envelope_InviteRequest, *meshv1.Envelope_InviteResponse:
 			m.handleInviteControlDatagram(s, env)
 			continue
 		default:
@@ -479,18 +479,18 @@ func (m *impl) acceptLoop(ctx context.Context) {
 	}
 }
 
-func (m *impl) handleInviteControlDatagram(s *peerSession, env *statev1.DatagramEnvelope) {
+func (m *impl) handleInviteControlDatagram(s *peerSession, env *meshv1.Envelope) {
 	switch body := env.GetBody().(type) {
-	case *statev1.DatagramEnvelope_InviteRequest:
+	case *meshv1.Envelope_InviteRequest:
 		accepted := false
 		if req := body.InviteRequest; req != nil && req.Token != "" {
 			ok, err := m.invites.ConsumeToken(req.Token)
 			accepted = err == nil && ok
 		}
 
-		respData, err := (&statev1.DatagramEnvelope{
-			Body: &statev1.DatagramEnvelope_InviteResponse{
-				InviteResponse: &peerv1.InviteResponse{Accepted: accepted},
+		respData, err := (&meshv1.Envelope{
+			Body: &meshv1.Envelope_InviteResponse{
+				InviteResponse: &meshv1.InviteResponse{Accepted: accepted},
 			},
 		}).MarshalVT()
 		if err == nil {

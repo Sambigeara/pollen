@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -29,9 +29,9 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 	joiner := startMeshHarness(t, freeUDPPort(t))
 
 	inviteToken := "invite-happy-path"
-	bootstrap.invites.AddInvite(&peerv1.Invite{Id: inviteToken})
+	bootstrap.invites.AddInvite(&admissionv1.Invite{Id: inviteToken})
 
-	invite := &peerv1.Invite{
+	invite := &admissionv1.Invite{
 		Id:          inviteToken,
 		Addr:        []string{fmt.Sprintf("127.0.0.1:%d", bootstrap.port)},
 		Fingerprint: bootstrap.peerKey.Bytes(),
