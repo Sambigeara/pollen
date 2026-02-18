@@ -61,6 +61,11 @@ type peerSession struct {
 	sockConn  *sock.Conn
 }
 
+type directDialResult struct {
+	session *peerSession
+	err     error
+}
+
 func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, invites admission.Store) (Mesh, error) {
 	cert, err := generateIdentityCert(signPriv)
 	if err != nil {
@@ -193,64 +198,63 @@ func (m *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 		return fmt.Errorf("failed to join via invite at any address")
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	type result struct {
-		session *peerSession
-		err     error
+	winner, err := m.raceDirectDial(ctx, peerKey, resolved)
+	if err != nil {
+		return fmt.Errorf("failed to join via invite at any address: %w", err)
 	}
-	ch := make(chan result, len(resolved))
 
-	for _, addr := range resolved {
+	accepted, err := m.exchangeInvite(ctx, winner.conn, inv.Id)
+	if err != nil {
+		m.closeSession(winner, "invite exchange failed")
+		return fmt.Errorf("failed to join via invite at any address: %w", err)
+	}
+	if !accepted {
+		m.closeSession(winner, "invite rejected")
+		return fmt.Errorf("failed to join via invite at any address: invite rejected")
+	}
+
+	m.addPeer(winner, peerKey)
+	return nil
+}
+
+func (m *impl) raceDirectDial(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr) (*peerSession, error) {
+	dialCtx, cancelDial := context.WithCancel(ctx)
+	defer cancelDial()
+
+	ch := make(chan directDialResult, len(addrs))
+	for _, addr := range addrs {
 		go func() {
-			s, err := m.dialDirect(ctx, addr, peerKey)
-			if err != nil {
-				ch <- result{err: err}
-				return
-			}
-
-			accepted, err := m.exchangeInvite(ctx, s.conn, inv.Id)
-			if err != nil {
-				m.closeSession(s, "invite exchange failed")
-				ch <- result{err: err}
-				return
-			}
-			if !accepted {
-				m.closeSession(s, "invite rejected")
-				ch <- result{err: fmt.Errorf("invite rejected")}
-				return
-			}
-
-			ch <- result{session: s}
+			s, err := m.dialDirect(dialCtx, addr, peerKey)
+			ch <- directDialResult{session: s, err: err}
 		}()
 	}
 
-	var (
-		winner  *peerSession
-		lastErr error
-	)
-	for range resolved {
+	var lastErr error
+	remaining := len(addrs)
+	for remaining > 0 {
 		r := <-ch
+		remaining--
 		if r.err != nil {
 			lastErr = r.err
 			continue
 		}
-		if winner == nil {
-			winner = r.session
-			cancel()
-		} else {
-			m.closeSession(r.session, "replaced")
-		}
+
+		cancelDial()
+		go func(remaining int) {
+			for range remaining {
+				r := <-ch
+				if r.err == nil {
+					m.closeSession(r.session, "replaced")
+				}
+			}
+		}(remaining)
+		return r.session, nil
 	}
-	if winner != nil {
-		m.addPeer(winner, peerKey)
-		return nil
-	}
+
 	if lastErr != nil {
-		return fmt.Errorf("failed to join via invite at any address: %w", lastErr)
+		return nil, lastErr
 	}
-	return fmt.Errorf("failed to join via invite at any address")
+	return nil, fmt.Errorf("failed all dial attempts")
 }
 
 func (m *impl) exchangeInvite(ctx context.Context, qc *quic.Conn, token string) (bool, error) {
@@ -284,6 +288,20 @@ func (m *impl) exchangeInvite(ctx context.Context, qc *quic.Conn, token string) 
 	}
 }
 
+func (m *impl) Connect(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr) error {
+	if len(addrs) == 0 {
+		return fmt.Errorf("connect to %s: no addresses", peerKey.Short())
+	}
+
+	winner, err := m.raceDirectDial(ctx, peerKey, addrs)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", peerKey.Short(), err)
+	}
+
+	m.addPeer(winner, peerKey)
+	return nil
+}
+
 func (m *impl) Send(ctx context.Context, peerKey types.PeerKey, payload []byte) error {
 	m.mu.RLock()
 	s, ok := m.peers[peerKey]
@@ -292,51 +310,6 @@ func (m *impl) Send(ctx context.Context, peerKey types.PeerKey, payload []byte) 
 		return fmt.Errorf("no connection to peer %s", peerKey.Short())
 	}
 	return s.conn.SendDatagram(payload)
-}
-
-func (m *impl) Connect(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr) error {
-	if len(addrs) == 0 {
-		return fmt.Errorf("connect to %s: no addresses", peerKey.Short())
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	type result struct {
-		session *peerSession
-		err     error
-	}
-	ch := make(chan result, len(addrs))
-
-	for _, addr := range addrs {
-		go func() {
-			s, err := m.dialDirect(ctx, addr, peerKey)
-			ch <- result{session: s, err: err}
-		}()
-	}
-
-	var (
-		winner  *peerSession
-		lastErr error
-	)
-	for range addrs {
-		r := <-ch
-		if r.err != nil {
-			lastErr = r.err
-			continue
-		}
-		if winner == nil {
-			winner = r.session
-			cancel() // cancel remaining dials
-		} else {
-			m.closeSession(r.session, "replaced")
-		}
-	}
-	if winner != nil {
-		m.addPeer(winner, peerKey)
-		return nil
-	}
-	return fmt.Errorf("connect to %s: %w", peerKey.Short(), lastErr)
 }
 
 func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAddr) error {
@@ -348,6 +321,16 @@ func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAd
 	return nil
 }
 
+func (m *impl) GetConn(peerKey types.PeerKey) (*quic.Conn, bool) {
+	m.mu.RLock()
+	s, ok := m.peers[peerKey]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	return s.conn, true
+}
+
 func (m *impl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) {
 	m.mu.RLock()
 	s, ok := m.peers[peerKey]
@@ -357,16 +340,6 @@ func (m *impl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) 
 	}
 	addr, ok := s.conn.RemoteAddr().(*net.UDPAddr)
 	return addr, ok
-}
-
-func (m *impl) GetConn(peerKey types.PeerKey) (*quic.Conn, bool) {
-	m.mu.RLock()
-	s, ok := m.peers[peerKey]
-	m.mu.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	return s.conn, true
 }
 
 func (m *impl) BroadcastDisconnect() error {
