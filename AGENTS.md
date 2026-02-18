@@ -90,6 +90,8 @@ Follow the conventions below when making changes or writing tests.
 - Prefer channels for non-blocking event notifications
 - When using `select`, include `default` only when truly non-blocking is required
 - Ensure goroutines have a clear shutdown path (`context.Context` or close channels)
+- This repo targets modern Go (1.22+): for `range` loops, close over loop vars directly in goroutines; do not use parameterized goroutine wrappers purely for loop-var capture.
+- Use `WaitGroup.Go` instead of manual `Add`/`Done` for launching goroutines under a waitgroup.
 
 ### Protobuf / VTProto
 - Use `MarshalVT` / `UnmarshalVT` for vtproto-generated messages

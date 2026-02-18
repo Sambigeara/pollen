@@ -49,12 +49,45 @@ type impl struct {
 
 	mu         sync.RWMutex
 	mainQT     *quic.Transport
-	transports []*quic.Transport
+	transports *transportPool
 	listener   *quic.Listener
 	peers      map[types.PeerKey]*quic.Conn
 	inCh       chan peer.Input
 	recvCh     chan Packet
 	port       int
+}
+
+type transportPool struct {
+	mu   sync.RWMutex
+	list []*quic.Transport
+}
+
+func newTransportPool() *transportPool {
+	return &transportPool{}
+}
+
+func (p *transportPool) Add(qt *quic.Transport) {
+	p.mu.Lock()
+	p.list = append(p.list, qt)
+	p.mu.Unlock()
+}
+
+func (p *transportPool) Snapshot() []*quic.Transport {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]*quic.Transport, len(p.list))
+	copy(out, p.list)
+	return out
+}
+
+func (p *transportPool) CloseAll() {
+	p.mu.Lock()
+	list := p.list
+	p.list = nil
+	p.mu.Unlock()
+	for _, qt := range list {
+		_ = qt.Close()
+	}
 }
 
 func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, invites admission.Store) (Mesh, error) {
@@ -64,14 +97,15 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, invites admission.Sto
 	}
 
 	return &impl{
-		cert:     cert,
-		localKey: types.PeerKeyFromBytes(signPriv.Public().(ed25519.PublicKey)),
-		invites:  invites,
-		socks:    sock.NewSockStore(),
-		port:     defaultPort,
-		peers:    make(map[types.PeerKey]*quic.Conn),
-		recvCh:   make(chan Packet, 64),
-		inCh:     make(chan peer.Input, 64),
+		cert:       cert,
+		localKey:   types.PeerKeyFromBytes(signPriv.Public().(ed25519.PublicKey)),
+		invites:    invites,
+		socks:      sock.NewSockStore(),
+		transports: newTransportPool(),
+		port:       defaultPort,
+		peers:      make(map[types.PeerKey]*quic.Conn),
+		recvCh:     make(chan Packet, 64),
+		inCh:       make(chan peer.Input, 64),
 	}, nil
 }
 
@@ -90,9 +124,9 @@ func (m *impl) Start(ctx context.Context) error {
 
 	m.mu.Lock()
 	m.mainQT = qt
-	m.transports = append(m.transports, qt)
 	m.listener = ln
 	m.mu.Unlock()
+	m.transports.Add(qt)
 
 	m.socks.SetMainProbeWriter(func(payload []byte, addr *net.UDPAddr) error {
 		_, err := qt.WriteTo(payload, addr)
@@ -120,13 +154,8 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 	tlsCfg := newExpectedPeerTLSConfig(m.cert, expectedPeer)
 	qCfg := &quic.Config{EnableDatagrams: true}
 
-	m.mu.RLock()
-	existing := make([]*quic.Transport, len(m.transports))
-	copy(existing, m.transports)
-	m.mu.RUnlock()
-
 	var lastErr error
-	for _, qt := range existing {
+	for _, qt := range m.transports.Snapshot() {
 		qc, err := qt.Dial(ctx, addr, tlsCfg, qCfg)
 		if err == nil {
 			return qc, nil
@@ -153,6 +182,7 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 		dialAddr = peerAddr
 	}
 
+	// Easy-side punch winners reuse the main transport and don't carry a UDPConn.
 	if conn.UDPConn == nil {
 		qc, err := m.mainQT.Dial(ctx, dialAddr, tlsCfg, qCfg)
 		if err != nil {
@@ -160,16 +190,8 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 		}
 		return qc, nil
 	}
-
-	return m.dialOnSocket(ctx, conn, dialAddr, tlsCfg, qCfg)
-}
-
-func (m *impl) dialOnSocket(ctx context.Context, conn *sock.Conn, dialAddr *net.UDPAddr, tlsCfg *tls.Config, qCfg *quic.Config) (*quic.Conn, error) {
-
 	qt := &quic.Transport{Conn: conn.UDPConn}
-	m.mu.Lock()
-	m.transports = append(m.transports, qt)
-	m.mu.Unlock()
+	m.transports.Add(qt)
 
 	qc, err := qt.Dial(ctx, dialAddr, tlsCfg, qCfg)
 	if err != nil {
@@ -208,8 +230,8 @@ func (m *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 	ch := make(chan result, len(resolved))
 
 	for _, addr := range resolved {
-		go func(a *net.UDPAddr) {
-			qc, err := m.dialDirect(ctx, a, peerKey)
+		go func() {
+			qc, err := m.dialDirect(ctx, addr, peerKey)
 			if err != nil {
 				ch <- result{err: err}
 				return
@@ -228,7 +250,7 @@ func (m *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 			}
 
 			ch <- result{qc: qc}
-		}(addr)
+		}()
 	}
 
 	var (
@@ -313,10 +335,10 @@ func (m *impl) Connect(ctx context.Context, peerKey types.PeerKey, addrs []*net.
 	ch := make(chan result, len(addrs))
 
 	for _, addr := range addrs {
-		go func(a *net.UDPAddr) {
-			qc, err := m.dialDirect(ctx, a, peerKey)
+		go func() {
+			qc, err := m.dialDirect(ctx, addr, peerKey)
 			ch <- result{qc, err}
-		}(addr)
+		}()
 	}
 
 	var (
@@ -543,10 +565,7 @@ func (m *impl) Close() error {
 	if m.listener != nil {
 		_ = m.listener.Close()
 	}
-	for _, qt := range m.transports {
-		_ = qt.Close()
-	}
-	m.transports = nil
+	m.transports.CloseAll()
 	_ = m.mainQT.Conn.Close()
 	return nil
 }
