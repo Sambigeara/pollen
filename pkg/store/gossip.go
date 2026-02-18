@@ -645,7 +645,3 @@ func sameServices(a, b []*statev1.Service) bool {
 func connectionKey(peerID types.PeerKey, remotePort, localPort uint32) string {
 	return fmt.Sprintf("%s:%d:%d", peerID.String(), remotePort, localPort)
 }
-
-func serviceNameForPort(port uint32) string {
-	return fmt.Sprintf("%d", port)
-}

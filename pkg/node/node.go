@@ -71,7 +71,10 @@ type Node struct {
 func New(conf *Config, privKey ed25519.PrivateKey, stateStore *store.Store, peerStore *peer.Store, invitesStore admission.Store) (*Node, error) {
 	log := zap.S().Named("node")
 
-	pubKey := privKey.Public().(ed25519.PublicKey)
+	pubKey, ok := privKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, errors.New("identity private key is not ed25519")
+	}
 
 	ips := conf.AdvertisedIPs
 	if len(ips) == 0 {
@@ -171,15 +174,13 @@ func (n *Node) recvLoop(ctx context.Context) {
 			n.log.Debugw("recv failed", "err", err)
 			continue
 		}
-		if err := n.handleDatagram(ctx, p.Peer, p.Envelope); err != nil {
-			n.log.Debugw("handle datagram failed", "err", err)
-		}
+		n.handleDatagram(ctx, p.Peer, p.Envelope)
 	}
 }
 
-func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *meshv1.Envelope) error {
+func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *meshv1.Envelope) {
 	if env == nil {
-		return nil
+		return
 	}
 
 	switch body := env.GetBody().(type) {
@@ -201,8 +202,6 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 	case *meshv1.Envelope_PunchCoordTrigger:
 		go n.handlePunchCoordTrigger(body.PunchCoordTrigger)
 	}
-
-	return nil
 }
 
 func (n *Node) broadcastNode(ctx context.Context, node *statev1.GossipNode) {
@@ -417,9 +416,10 @@ func (n *Node) punchPeer(peerKey types.PeerKey, ip net.IP, port int) error {
 
 func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
 	localIPs := n.store.NodeIPs(n.store.LocalID)
-	var peers []types.PeerKey
+	connectedPeers := n.GetConnectedPeers()
+	peers := make([]types.PeerKey, 0, len(connectedPeers))
 
-	for _, key := range n.GetConnectedPeers() {
+	for _, key := range connectedPeers {
 		if key == target {
 			continue
 		}
@@ -546,7 +546,9 @@ func (n *Node) shutdown() {
 
 	n.tun.Close()
 
-	n.mesh.BroadcastDisconnect()
+	if err := n.mesh.BroadcastDisconnect(); err != nil {
+		n.log.Errorf("failed to broadcast disconnect: %v", err)
+	}
 
 	if err := n.mesh.Close(); err != nil {
 		n.log.Errorf("failed to shut down sock: %v", err)

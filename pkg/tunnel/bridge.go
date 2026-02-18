@@ -23,8 +23,16 @@ func bridge(c1, c2 net.Conn) {
 	var closeOnce sync.Once
 
 	transfer := func(dst, src net.Conn, direction string) {
-		bufPtr := bufPool.Get().(*[]byte)
-		defer bufPool.Put(bufPtr)
+		pooled := bufPool.Get()
+		bufPtr, ok := pooled.(*[]byte)
+		if !ok || bufPtr == nil {
+			b := make([]byte, bufSize)
+			bufPtr = &b
+			pooled = nil
+		}
+		if pooled != nil {
+			defer bufPool.Put(bufPtr)
+		}
 
 		_, err := io.CopyBuffer(dst, src, *bufPtr)
 
