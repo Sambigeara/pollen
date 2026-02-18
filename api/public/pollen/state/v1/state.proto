@@ -3,7 +3,6 @@ syntax = "proto3";
 package pollen.state.v1;
 
 import "buf/validate/validate.proto";
-import "pollen/peer/v1/peer.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1";
 
@@ -33,13 +32,4 @@ message GossipNode {
   }];
   repeated Service services = 6;
   repeated string reachable_peers = 7;
-}
-
-message DatagramEnvelope {
-  oneof body {
-    GossipVectorClock clock = 1;
-    GossipNode node = 2;
-    pollen.peer.v1.PunchCoordRequest punch_coord_request = 3;
-    pollen.peer.v1.PunchCoordTrigger punch_coord_trigger = 4;
-  }
 }

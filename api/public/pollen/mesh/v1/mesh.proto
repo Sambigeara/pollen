@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package pollen.mesh.v1;
+
+import "pollen/state/v1/state.proto";
+
+option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1;meshv1";
+
+message PunchCoordRequest {
+  bytes peer_id = 1;
+}
+
+message PunchCoordTrigger {
+  bytes peer_id = 1;
+  string self_addr = 2;
+  string peer_addr = 3;
+}
+
+message InviteRequest {
+  string token = 1;
+}
+
+message InviteResponse {
+  bool accepted = 1;
+}
+
+message Envelope {
+  oneof body {
+    pollen.state.v1.GossipVectorClock clock = 1;
+    pollen.state.v1.GossipNode node = 2;
+    PunchCoordRequest punch_coord_request = 3;
+    PunchCoordTrigger punch_coord_trigger = 4;
+    InviteRequest invite_request = 5;
+    InviteResponse invite_response = 6;
+  }
+}

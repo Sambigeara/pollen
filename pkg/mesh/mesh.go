@@ -11,7 +11,8 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/sock"
@@ -20,19 +21,23 @@ import (
 
 const (
 	handshakeTimeout = 3 * time.Second
+	queueBufSize     = 64
+	probeBufSize     = 2048
 )
 
 type Packet struct {
-	Peer    types.PeerKey
-	Payload []byte
+	Envelope *meshv1.Envelope
+	Peer     types.PeerKey
 }
 
 type Mesh interface {
 	Start(ctx context.Context) error
-	Send(ctx context.Context, peerKey types.PeerKey, payload []byte) error
+	Send(ctx context.Context, peerKey types.PeerKey, env *meshv1.Envelope) error
 	Recv(ctx context.Context) (Packet, error)
 	Events() <-chan peer.Input
-	JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error
+	OpenStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
+	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
+	JoinWithInvite(ctx context.Context, inv *admissionv1.Invite) error
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
 	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr) error
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
@@ -43,17 +48,23 @@ type Mesh interface {
 
 type impl struct {
 	cert     tls.Certificate
-	localKey types.PeerKey
 	invites  admission.Store
 	socks    sock.SockStore
-
-	mu       sync.RWMutex
-	mainQT   *quic.Transport
-	listener *quic.Listener
-	peers    map[types.PeerKey]*peerSession
 	inCh     chan peer.Input
+	listener *quic.Listener
+	sessions *sessionRegistry
+	mainQT   *quic.Transport
 	recvCh   chan Packet
+	streamCh chan incomingStream
+	acceptWG sync.WaitGroup
 	port     int
+	mu       sync.RWMutex
+	localKey types.PeerKey
+}
+
+type incomingStream struct {
+	stream  io.ReadWriteCloser
+	peerKey types.PeerKey
 }
 
 type peerSession struct {
@@ -62,21 +73,32 @@ type peerSession struct {
 	sockConn  *sock.Conn
 }
 
+type directDialResult struct {
+	session *peerSession
+	err     error
+}
+
 func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, invites admission.Store) (Mesh, error) {
 	cert, err := generateIdentityCert(signPriv)
 	if err != nil {
 		return nil, fmt.Errorf("generate identity cert: %w", err)
 	}
 
+	pub, ok := signPriv.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("identity private key is not ed25519")
+	}
+
 	return &impl{
 		cert:     cert,
-		localKey: types.PeerKeyFromBytes(signPriv.Public().(ed25519.PublicKey)),
+		localKey: types.PeerKeyFromBytes(pub),
 		invites:  invites,
 		socks:    sock.NewSockStore(),
 		port:     defaultPort,
-		peers:    make(map[types.PeerKey]*peerSession),
-		recvCh:   make(chan Packet, 64),
-		inCh:     make(chan peer.Input, 64),
+		sessions: newSessionRegistry(),
+		recvCh:   make(chan Packet, queueBufSize),
+		inCh:     make(chan peer.Input, queueBufSize),
+		streamCh: make(chan incomingStream, queueBufSize),
 	}, nil
 }
 
@@ -118,6 +140,32 @@ func (m *impl) Recv(ctx context.Context) (Packet, error) {
 
 func (m *impl) Events() <-chan peer.Input {
 	return m.inCh
+}
+
+func (m *impl) OpenStream(ctx context.Context, peerKey types.PeerKey) (io.ReadWriteCloser, error) {
+	s, err := m.sessions.waitFor(ctx, peerKey)
+	if err != nil {
+		return nil, err
+	}
+
+	stream, err := s.conn.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return stream, nil
+}
+
+func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {
+	select {
+	case incoming, ok := <-m.streamCh:
+		if !ok {
+			return types.PeerKey{}, nil, net.ErrClosed
+		}
+		return incoming.peerKey, incoming.stream, nil
+	case <-ctx.Done():
+		return types.PeerKey{}, nil, ctx.Err()
+	}
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
@@ -176,7 +224,7 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 	}, nil
 }
 
-func (m *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
+func (m *impl) JoinWithInvite(ctx context.Context, inv *admissionv1.Invite) error {
 	peerKey := types.PeerKeyFromBytes(inv.Fingerprint)
 	if len(inv.Addr) == 0 {
 		return fmt.Errorf("failed to join via invite at any address")
@@ -194,104 +242,94 @@ func (m *impl) JoinWithInvite(ctx context.Context, inv *peerv1.Invite) error {
 		return fmt.Errorf("failed to join via invite at any address")
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	type result struct {
-		session *peerSession
-		err     error
+	winner, err := m.raceDirectDial(ctx, peerKey, resolved)
+	if err != nil {
+		return fmt.Errorf("failed to join via invite at any address: %w", err)
 	}
-	ch := make(chan result, len(resolved))
 
-	for _, addr := range resolved {
+	accepted, err := m.exchangeInvite(ctx, winner.conn, inv.Id)
+	if err != nil {
+		m.closeSession(winner, "invite exchange failed")
+		return fmt.Errorf("failed to join via invite at any address: %w", err)
+	}
+	if !accepted {
+		m.closeSession(winner, "invite rejected")
+		return fmt.Errorf("failed to join via invite at any address: invite rejected")
+	}
+
+	m.addPeer(winner, peerKey)
+	return nil
+}
+
+func (m *impl) raceDirectDial(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr) (*peerSession, error) {
+	dialCtx, cancelDial := context.WithCancel(ctx)
+	defer cancelDial()
+
+	ch := make(chan directDialResult, len(addrs))
+	for _, addr := range addrs {
 		go func() {
-			s, err := m.dialDirect(ctx, addr, peerKey)
-			if err != nil {
-				ch <- result{err: err}
-				return
-			}
-
-			accepted, err := m.exchangeInvite(ctx, s.conn, inv.Id)
-			if err != nil {
-				m.closeSession(s, "invite exchange failed")
-				ch <- result{err: err}
-				return
-			}
-			if !accepted {
-				m.closeSession(s, "invite rejected")
-				ch <- result{err: fmt.Errorf("invite rejected")}
-				return
-			}
-
-			ch <- result{session: s}
+			s, err := m.dialDirect(dialCtx, addr, peerKey)
+			ch <- directDialResult{session: s, err: err}
 		}()
 	}
 
-	var (
-		winner  *peerSession
-		lastErr error
-	)
-	for range resolved {
+	var lastErr error
+	remaining := len(addrs)
+	for remaining > 0 {
 		r := <-ch
+		remaining--
 		if r.err != nil {
 			lastErr = r.err
 			continue
 		}
-		if winner == nil {
-			winner = r.session
-			cancel()
-		} else {
-			m.closeSession(r.session, "replaced")
-		}
+
+		cancelDial()
+		go func(remaining int) {
+			for range remaining {
+				r := <-ch
+				if r.err == nil {
+					m.closeSession(r.session, "replaced")
+				}
+			}
+		}(remaining)
+		return r.session, nil
 	}
-	if winner != nil {
-		m.addPeer(winner, peerKey)
-		return nil
-	}
+
 	if lastErr != nil {
-		return fmt.Errorf("failed to join via invite at any address: %w", lastErr)
+		return nil, lastErr
 	}
-	return fmt.Errorf("failed to join via invite at any address")
+	return nil, fmt.Errorf("failed all dial attempts")
 }
 
 func (m *impl) exchangeInvite(ctx context.Context, qc *quic.Conn, token string) (bool, error) {
-	stream, err := qc.OpenStreamSync(ctx)
+	reqData, err := (&meshv1.Envelope{
+		Body: &meshv1.Envelope_InviteRequest{
+			InviteRequest: &meshv1.InviteRequest{Token: token},
+		},
+	}).MarshalVT()
 	if err != nil {
 		return false, err
 	}
-
-	_ = stream.SetDeadline(time.Now().Add(handshakeTimeout))
-
-	reqData, err := (&peerv1.InviteRequest{Token: token}).MarshalVT()
-	if err != nil {
-		_ = stream.Close()
+	if err := qc.SendDatagram(reqData); err != nil {
 		return false, err
 	}
-	if _, err := stream.Write(reqData); err != nil {
-		_ = stream.Close()
-		return false, err
-	}
-	_ = stream.Close()
 
-	respBuf, err := io.ReadAll(stream)
-	if err != nil {
-		return false, err
-	}
-	resp := &peerv1.InviteResponse{}
-	if err := resp.UnmarshalVT(respBuf); err != nil {
-		return false, err
-	}
-	return resp.Accepted, nil
-}
+	waitCtx, waitCancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer waitCancel()
 
-func (m *impl) Send(ctx context.Context, peerKey types.PeerKey, payload []byte) error {
-	m.mu.RLock()
-	s, ok := m.peers[peerKey]
-	m.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("no connection to peer %s", peerKey.Short())
+	for {
+		payload, err := qc.ReceiveDatagram(waitCtx)
+		if err != nil {
+			return false, err
+		}
+		env := &meshv1.Envelope{}
+		if err := env.UnmarshalVT(payload); err != nil {
+			continue
+		}
+		if body, ok := env.GetBody().(*meshv1.Envelope_InviteResponse); ok {
+			return body.InviteResponse.GetAccepted(), nil
+		}
 	}
-	return s.conn.SendDatagram(payload)
 }
 
 func (m *impl) Connect(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr) error {
@@ -299,44 +337,25 @@ func (m *impl) Connect(ctx context.Context, peerKey types.PeerKey, addrs []*net.
 		return fmt.Errorf("connect to %s: no addresses", peerKey.Short())
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	type result struct {
-		session *peerSession
-		err     error
-	}
-	ch := make(chan result, len(addrs))
-
-	for _, addr := range addrs {
-		go func() {
-			s, err := m.dialDirect(ctx, addr, peerKey)
-			ch <- result{session: s, err: err}
-		}()
+	winner, err := m.raceDirectDial(ctx, peerKey, addrs)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", peerKey.Short(), err)
 	}
 
-	var (
-		winner  *peerSession
-		lastErr error
-	)
-	for range addrs {
-		r := <-ch
-		if r.err != nil {
-			lastErr = r.err
-			continue
-		}
-		if winner == nil {
-			winner = r.session
-			cancel() // cancel remaining dials
-		} else {
-			m.closeSession(r.session, "replaced")
-		}
+	m.addPeer(winner, peerKey)
+	return nil
+}
+
+func (m *impl) Send(_ context.Context, peerKey types.PeerKey, env *meshv1.Envelope) error {
+	s, ok := m.sessions.get(peerKey)
+	if !ok {
+		return fmt.Errorf("no connection to peer %s", peerKey.Short())
 	}
-	if winner != nil {
-		m.addPeer(winner, peerKey)
-		return nil
+	b, err := env.MarshalVT()
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("connect to %s: %w", peerKey.Short(), lastErr)
+	return s.conn.SendDatagram(b)
 }
 
 func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAddr) error {
@@ -348,32 +367,28 @@ func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAd
 	return nil
 }
 
-func (m *impl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) {
-	m.mu.RLock()
-	s, ok := m.peers[peerKey]
-	m.mu.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	addr, ok := s.conn.RemoteAddr().(*net.UDPAddr)
-	return addr, ok
-}
-
 func (m *impl) GetConn(peerKey types.PeerKey) (*quic.Conn, bool) {
-	m.mu.RLock()
-	s, ok := m.peers[peerKey]
-	m.mu.RUnlock()
+	s, ok := m.sessions.get(peerKey)
 	if !ok {
 		return nil, false
 	}
 	return s.conn, true
 }
 
+func (m *impl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) {
+	s, ok := m.sessions.get(peerKey)
+	if !ok {
+		return nil, false
+	}
+	addr, err := net.ResolveUDPAddr("udp", s.conn.RemoteAddr().String())
+	if err != nil {
+		return nil, false
+	}
+	return addr, true
+}
+
 func (m *impl) BroadcastDisconnect() error {
-	m.mu.Lock()
-	peers := m.peers
-	m.peers = make(map[types.PeerKey]*peerSession)
-	m.mu.Unlock()
+	peers := m.sessions.drainPeers()
 	for _, s := range peers {
 		m.closeSession(s, "disconnect")
 	}
@@ -381,25 +396,25 @@ func (m *impl) BroadcastDisconnect() error {
 }
 
 func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
-	var replace *peerSession
-
-	m.mu.Lock()
-	if old, ok := m.peers[peerKey]; ok {
-		if old.conn.Context().Err() == nil {
-			// Both connections are live — deterministic tie-break:
-			// the peer with the smaller key keeps its connection.
-			// If we're the smaller key, keep ours (close the new one).
-			// If they're the smaller key, replace ours with theirs.
-			if m.localKey.Less(peerKey) {
-				m.mu.Unlock()
-				m.closeSession(s, "duplicate")
-				return
-			}
+	replace, ok := m.sessions.add(peerKey, s, func(current *peerSession) bool {
+		if current == nil {
+			return true
 		}
-		replace = old
+
+		if current.conn.Context().Err() != nil {
+			return true
+		}
+
+		// Both connections are live — deterministic tie-break:
+		// the peer with the smaller key keeps its connection.
+		// If we're the smaller key, keep ours (close the new one).
+		// If they're the smaller key, replace ours with theirs.
+		return !m.localKey.Less(peerKey)
+	})
+	if !ok {
+		m.closeSession(s, "duplicate")
+		return
 	}
-	m.peers[peerKey] = s
-	m.mu.Unlock()
 
 	if replace != nil {
 		m.closeSession(replace, "replaced")
@@ -408,8 +423,14 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 	// Use the connection's own context so the recv goroutine lives as long as
 	// the QUIC connection, not as long as the (potentially short-lived) dial ctx.
 	go m.recvDatagrams(s, peerKey)
+	m.acceptWG.Go(func() {
+		m.acceptStreams(s, peerKey)
+	})
 
-	addr := s.conn.RemoteAddr().(*net.UDPAddr)
+	addr, err := net.ResolveUDPAddr("udp", s.conn.RemoteAddr().String())
+	if err != nil {
+		return
+	}
 	select {
 	case m.inCh <- peer.ConnectPeer{
 		PeerKey:      peerKey,
@@ -420,18 +441,29 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 	}
 }
 
+func (m *impl) acceptStreams(s *peerSession, peerKey types.PeerKey) {
+	ctx := s.conn.Context()
+	for {
+		stream, err := s.conn.AcceptStream(ctx)
+		if err != nil {
+			return
+		}
+
+		select {
+		case m.streamCh <- incomingStream{peerKey: peerKey, stream: stream}:
+		case <-ctx.Done():
+			_ = stream.Close()
+			return
+		}
+	}
+}
+
 func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
-	ctx := s.conn.Context() // cancelled when the connection closes
+	ctx := s.conn.Context()
 	for {
 		payload, err := s.conn.ReceiveDatagram(ctx)
 		if err != nil {
-			m.mu.Lock()
-			isCurrent := false
-			if current, ok := m.peers[peerKey]; ok && current == s {
-				delete(m.peers, peerKey)
-				isCurrent = true
-			}
-			m.mu.Unlock()
+			isCurrent := m.sessions.removeIfCurrent(peerKey, s)
 
 			if isCurrent {
 				select {
@@ -442,8 +474,20 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 			}
 			return
 		}
+		env := &meshv1.Envelope{}
+		if err := env.UnmarshalVT(payload); err != nil {
+			continue
+		}
+
+		switch env.GetBody().(type) {
+		case *meshv1.Envelope_InviteRequest, *meshv1.Envelope_InviteResponse:
+			m.handleInviteControlDatagram(s, env)
+			continue
+		default:
+		}
+
 		select {
-		case m.recvCh <- Packet{Peer: peerKey, Payload: payload}:
+		case m.recvCh <- Packet{Peer: peerKey, Envelope: env}:
 		case <-ctx.Done():
 			return
 		}
@@ -451,7 +495,7 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 }
 
 func (m *impl) runMainProbeLoop(ctx context.Context, qt *quic.Transport) {
-	buf := make([]byte, 2048)
+	buf := make([]byte, probeBufSize)
 	for {
 		n, sender, err := qt.ReadNonQUICPacket(ctx, buf)
 		if err != nil {
@@ -487,65 +531,35 @@ func (m *impl) acceptLoop(ctx context.Context) {
 		}
 
 		m.addPeer(&peerSession{conn: qc, transport: m.mainQT}, peerKey)
-		go m.acceptInviteStream(ctx, qc)
 	}
 }
 
-func (m *impl) acceptInviteStream(ctx context.Context, qc *quic.Conn) error {
-	acceptCtx, acceptCancel := context.WithTimeout(ctx, handshakeTimeout)
-	defer acceptCancel()
-
-	stream, err := qc.AcceptStream(acceptCtx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = stream.Close() }()
-
-	_ = stream.SetDeadline(time.Now().Add(handshakeTimeout))
-
-	reqBuf, err := io.ReadAll(stream)
-	if err != nil {
-		return fmt.Errorf("read invite request: %w", err)
-	}
-	req := &peerv1.InviteRequest{}
-	if err := req.UnmarshalVT(reqBuf); err != nil {
-		return fmt.Errorf("read invite request: %w", err)
-	}
-
-	sendResponse := func(accepted bool) error {
-		data, err := (&peerv1.InviteResponse{Accepted: accepted}).MarshalVT()
-		if err != nil {
-			return err
-		}
-		_, err = stream.Write(data)
-		return err
-	}
-
-	if req.Token == "" {
-		_ = sendResponse(false)
-		return fmt.Errorf("empty invite token")
-	}
-
-	ok, err := m.invites.ConsumeToken(req.Token)
-	if err != nil {
-		_ = sendResponse(false)
-		return fmt.Errorf("consume invite token: %w", err)
-	}
+func (m *impl) handleInviteControlDatagram(s *peerSession, env *meshv1.Envelope) {
+	body, ok := env.GetBody().(*meshv1.Envelope_InviteRequest)
 	if !ok {
-		_ = sendResponse(false)
-		return fmt.Errorf("invalid invite token")
+		return
 	}
 
-	if err := sendResponse(true); err != nil {
-		return fmt.Errorf("write invite response: %w", err)
+	accepted := false
+	if req := body.InviteRequest; req != nil && req.Token != "" {
+		ok, err := m.invites.ConsumeToken(req.Token)
+		accepted = err == nil && ok
 	}
-	return nil
+
+	respData, err := (&meshv1.Envelope{
+		Body: &meshv1.Envelope_InviteResponse{
+			InviteResponse: &meshv1.InviteResponse{Accepted: accepted},
+		},
+	}).MarshalVT()
+	if err == nil {
+		_ = s.conn.SendDatagram(respData)
+	}
 }
 
 func (m *impl) Close() error {
+	peers := m.sessions.drainPeers()
+
 	m.mu.Lock()
-	peers := m.peers
-	m.peers = make(map[types.PeerKey]*peerSession)
 	listener := m.listener
 	mainQT := m.mainQT
 	m.mu.Unlock()
@@ -553,6 +567,9 @@ func (m *impl) Close() error {
 	for _, s := range peers {
 		m.closeSession(s, "shutdown")
 	}
+
+	m.acceptWG.Wait()
+	close(m.streamCh)
 
 	close(m.recvCh)
 	if listener != nil {

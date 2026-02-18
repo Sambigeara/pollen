@@ -18,13 +18,21 @@ var bufPool = sync.Pool{
 	},
 }
 
-func bridge(c1, c2 net.Conn) {
+func bridge(c1, c2 io.ReadWriteCloser) {
 	var wg sync.WaitGroup
 	var closeOnce sync.Once
 
-	transfer := func(dst, src net.Conn, direction string) {
-		bufPtr := bufPool.Get().(*[]byte)
-		defer bufPool.Put(bufPtr)
+	transfer := func(dst, src io.ReadWriteCloser, direction string) {
+		pooled := bufPool.Get()
+		bufPtr, ok := pooled.(*[]byte)
+		if !ok || bufPtr == nil {
+			b := make([]byte, bufSize)
+			bufPtr = &b
+			pooled = nil
+		}
+		if pooled != nil {
+			defer bufPool.Put(bufPtr)
+		}
 
 		_, err := io.CopyBuffer(dst, src, *bufPtr)
 
@@ -36,9 +44,7 @@ func bridge(c1, c2 net.Conn) {
 			})
 		}
 
-		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		}
+		closeWrite(dst)
 	}
 
 	wg.Go(func() { transfer(c1, c2, "c1->c2") })
@@ -48,4 +54,13 @@ func bridge(c1, c2 net.Conn) {
 
 	_ = c1.Close()
 	_ = c2.Close()
+}
+
+func closeWrite(conn io.Closer) {
+	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+
+	_ = conn.Close()
 }

@@ -39,9 +39,9 @@ type Peer struct {
 }
 
 type Store struct {
-	mu  sync.RWMutex
 	log *zap.SugaredLogger
 	m   map[types.PeerKey]*Peer
+	mu  sync.RWMutex
 }
 
 func NewStore() *Store {
@@ -133,8 +133,8 @@ const (
 	maxBackoff   = 60 * time.Second
 	firstBackoff = 500 * time.Millisecond
 
-	directAttemptThreshold = 1
-	punchAttemptThreshold  = 1
+	directAttemptThreshold = 2
+	punchAttemptThreshold  = 2
 
 	unreachableRetryInterval  = 20 * time.Second
 	disconnectedRetryInterval = 60 * time.Second
@@ -155,20 +155,24 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 	case Tick:
 		return s.tick(now)
 	case DiscoverPeer:
-		return s.discoverPeer(now, e)
+		s.discoverPeer(now, e)
+		return nil
 	case ConnectPeer:
 		return s.connectPeer(now, e)
 	case ConnectFailed:
-		return s.connectFailed(now, e)
+		s.connectFailed(now, e)
+		return nil
 	case PeerDisconnected:
-		return s.disconnectPeer(now, e)
+		s.disconnectPeer(now, e)
+		return nil
 	case RetryPeer:
-		return s.retryPeer(now, e)
+		s.retryPeer(now, e)
+		return nil
 	}
 	return nil
 }
 
-func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) []Output {
+func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
 	p, exists := s.m[e.PeerKey]
 	if !exists {
 		s.m[e.PeerKey] = &Peer{
@@ -179,7 +183,7 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) []Output {
 			ObservedPort: e.Port, // we don't know if the port is observed at this point
 			NextActionAt: now,    // eligible for connection immediately
 		}
-		return nil
+		return
 	}
 
 	// Always update addresses — gossip may provide fresher IPs.
@@ -187,7 +191,6 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) []Output {
 	if e.Port != 0 {
 		p.ObservedPort = e.Port
 	}
-	return nil
 }
 
 func (s *Store) tick(now time.Time) []Output {
@@ -239,10 +242,10 @@ func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 	return []Output{PeerConnected(e)}
 }
 
-func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
+func (s *Store) connectFailed(now time.Time, e ConnectFailed) {
 	p, exists := s.m[e.PeerKey]
 	if !exists || p.State != PeerStateConnecting {
-		return nil
+		return
 	}
 
 	p.StageAttempts++
@@ -259,30 +262,28 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) []Output {
 			p.StageAttempts = 0
 			p.State = PeerStateUnreachable
 			p.NextActionAt = now.Add(unreachableRetryInterval)
-			return nil
+			return
 		}
 	}
 
 	p.NextActionAt = now.Add(s.backoff(p.StageAttempts))
 	p.State = PeerStateDiscovered // eligible for retry after backoff
-	return nil
 }
 
-func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) []Output {
+func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 	p, exists := s.m[e.PeerKey]
 	if !exists || (p.State != PeerStateConnected && p.State != PeerStateConnecting) {
-		return nil
+		return
 	}
 
-	// Transition back to Discovered for immediate reconnection attempt
+	// Transition back to Discovered and retry after disconnect interval.
 	p.State = PeerStateDiscovered
 	p.Stage = ConnectStageDirect
 	p.StageAttempts = 0
 	p.NextActionAt = now.Add(disconnectedRetryInterval)
-	return nil
 }
 
-func (s *Store) retryPeer(now time.Time, e RetryPeer) []Output {
+func (s *Store) retryPeer(now time.Time, e RetryPeer) {
 	p, exists := s.m[e.PeerKey]
 	if !exists {
 		s.m[e.PeerKey] = &Peer{
@@ -291,18 +292,17 @@ func (s *Store) retryPeer(now time.Time, e RetryPeer) []Output {
 			Stage:        ConnectStageDirect,
 			NextActionAt: now,
 		}
-		return nil
+		return
 	}
 
 	if p.State == PeerStateConnected || p.State == PeerStateConnecting {
-		return nil
+		return
 	}
 
 	p.State = PeerStateDiscovered
 	p.Stage = ConnectStageDirect
 	p.StageAttempts = 0
 	p.NextActionAt = now
-	return nil
 }
 
 func (s *Store) Get(peer types.PeerKey) (Peer, bool) {

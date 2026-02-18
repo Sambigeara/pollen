@@ -20,11 +20,12 @@ const (
 	certValidity   = 10 * 365 * 24 * time.Hour
 )
 
-type PeerDirectory interface {
-	IdentityPub(peerKey types.PeerKey) (ed25519.PublicKey, bool)
-}
-
 func generateIdentityCert(signPriv ed25519.PrivateKey) (tls.Certificate, error) {
+	pub, ok := signPriv.Public().(ed25519.PublicKey)
+	if !ok {
+		return tls.Certificate{}, errors.New("identity private key is not ed25519")
+	}
+
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), certSerialBits))
 	if err != nil {
 		return tls.Certificate{}, err
@@ -42,7 +43,7 @@ func generateIdentityCert(signPriv ed25519.PrivateKey) (tls.Certificate, error) 
 		BasicConstraintsValid: true,
 	}
 
-	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, signPriv.Public().(ed25519.PublicKey), signPriv)
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, signPriv)
 	if err != nil {
 		return tls.Certificate{}, err
 	}

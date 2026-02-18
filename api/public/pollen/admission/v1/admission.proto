@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package pollen.admission.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1;admissionv1";
+
+message Invite {
+  string id = 1 [(buf.validate.field).string = {uuid: true}];
+  repeated string addr = 2;
+  bytes fingerprint = 3;
+}
+
+message InviteStore {
+  map<string, Invite> invites = 1;
+}
