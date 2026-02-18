@@ -20,10 +20,6 @@ const (
 	certValidity   = 10 * 365 * 24 * time.Hour
 )
 
-type PeerDirectory interface {
-	IdentityPub(peerKey types.PeerKey) (ed25519.PublicKey, bool)
-}
-
 func generateIdentityCert(signPriv ed25519.PrivateKey) (tls.Certificate, error) {
 	pub, ok := signPriv.Public().(ed25519.PublicKey)
 	if !ok {

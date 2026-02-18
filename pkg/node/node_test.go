@@ -152,6 +152,7 @@ func TestInviteFlow(t *testing.T) {
 	// Restart both nodes and assert the same state is reached without an invite.
 	a.restart(t)
 	// TODO(saml): remove this delay once restart ordering is deterministic.
+	// this still doesn't work 100% of the time.
 	time.Sleep(150 * time.Millisecond)
 	b.restart(t)
 

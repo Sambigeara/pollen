@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -34,6 +35,8 @@ type Mesh interface {
 	Send(ctx context.Context, peerKey types.PeerKey, env *meshv1.Envelope) error
 	Recv(ctx context.Context) (Packet, error)
 	Events() <-chan peer.Input
+	OpenStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
+	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
 	JoinWithInvite(ctx context.Context, inv *admissionv1.Invite) error
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
 	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr) error
@@ -47,14 +50,21 @@ type impl struct {
 	cert     tls.Certificate
 	invites  admission.Store
 	socks    sock.SockStore
-	mainQT   *quic.Transport
-	listener *quic.Listener
-	peers    map[types.PeerKey]*peerSession
 	inCh     chan peer.Input
+	listener *quic.Listener
+	sessions *sessionRegistry
+	mainQT   *quic.Transport
 	recvCh   chan Packet
+	streamCh chan incomingStream
+	acceptWG sync.WaitGroup
 	port     int
 	mu       sync.RWMutex
 	localKey types.PeerKey
+}
+
+type incomingStream struct {
+	stream  io.ReadWriteCloser
+	peerKey types.PeerKey
 }
 
 type peerSession struct {
@@ -85,9 +95,10 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, invites admission.Sto
 		invites:  invites,
 		socks:    sock.NewSockStore(),
 		port:     defaultPort,
-		peers:    make(map[types.PeerKey]*peerSession),
+		sessions: newSessionRegistry(),
 		recvCh:   make(chan Packet, queueBufSize),
 		inCh:     make(chan peer.Input, queueBufSize),
+		streamCh: make(chan incomingStream, queueBufSize),
 	}, nil
 }
 
@@ -129,6 +140,32 @@ func (m *impl) Recv(ctx context.Context) (Packet, error) {
 
 func (m *impl) Events() <-chan peer.Input {
 	return m.inCh
+}
+
+func (m *impl) OpenStream(ctx context.Context, peerKey types.PeerKey) (io.ReadWriteCloser, error) {
+	s, err := m.sessions.waitFor(ctx, peerKey)
+	if err != nil {
+		return nil, err
+	}
+
+	stream, err := s.conn.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return stream, nil
+}
+
+func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {
+	select {
+	case incoming, ok := <-m.streamCh:
+		if !ok {
+			return types.PeerKey{}, nil, net.ErrClosed
+		}
+		return incoming.peerKey, incoming.stream, nil
+	case <-ctx.Done():
+		return types.PeerKey{}, nil, ctx.Err()
+	}
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
@@ -310,9 +347,7 @@ func (m *impl) Connect(ctx context.Context, peerKey types.PeerKey, addrs []*net.
 }
 
 func (m *impl) Send(_ context.Context, peerKey types.PeerKey, env *meshv1.Envelope) error {
-	m.mu.RLock()
-	s, ok := m.peers[peerKey]
-	m.mu.RUnlock()
+	s, ok := m.sessions.get(peerKey)
 	if !ok {
 		return fmt.Errorf("no connection to peer %s", peerKey.Short())
 	}
@@ -333,9 +368,7 @@ func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAd
 }
 
 func (m *impl) GetConn(peerKey types.PeerKey) (*quic.Conn, bool) {
-	m.mu.RLock()
-	s, ok := m.peers[peerKey]
-	m.mu.RUnlock()
+	s, ok := m.sessions.get(peerKey)
 	if !ok {
 		return nil, false
 	}
@@ -343,9 +376,7 @@ func (m *impl) GetConn(peerKey types.PeerKey) (*quic.Conn, bool) {
 }
 
 func (m *impl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) {
-	m.mu.RLock()
-	s, ok := m.peers[peerKey]
-	m.mu.RUnlock()
+	s, ok := m.sessions.get(peerKey)
 	if !ok {
 		return nil, false
 	}
@@ -357,10 +388,7 @@ func (m *impl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) 
 }
 
 func (m *impl) BroadcastDisconnect() error {
-	m.mu.Lock()
-	peers := m.peers
-	m.peers = make(map[types.PeerKey]*peerSession)
-	m.mu.Unlock()
+	peers := m.sessions.drainPeers()
 	for _, s := range peers {
 		m.closeSession(s, "disconnect")
 	}
@@ -368,25 +396,25 @@ func (m *impl) BroadcastDisconnect() error {
 }
 
 func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
-	var replace *peerSession
-
-	m.mu.Lock()
-	if old, ok := m.peers[peerKey]; ok {
-		if old.conn.Context().Err() == nil {
-			// Both connections are live — deterministic tie-break:
-			// the peer with the smaller key keeps its connection.
-			// If we're the smaller key, keep ours (close the new one).
-			// If they're the smaller key, replace ours with theirs.
-			if m.localKey.Less(peerKey) {
-				m.mu.Unlock()
-				m.closeSession(s, "duplicate")
-				return
-			}
+	replace, ok := m.sessions.add(peerKey, s, func(current *peerSession) bool {
+		if current == nil {
+			return true
 		}
-		replace = old
+
+		if current.conn.Context().Err() != nil {
+			return true
+		}
+
+		// Both connections are live — deterministic tie-break:
+		// the peer with the smaller key keeps its connection.
+		// If we're the smaller key, keep ours (close the new one).
+		// If they're the smaller key, replace ours with theirs.
+		return !m.localKey.Less(peerKey)
+	})
+	if !ok {
+		m.closeSession(s, "duplicate")
+		return
 	}
-	m.peers[peerKey] = s
-	m.mu.Unlock()
 
 	if replace != nil {
 		m.closeSession(replace, "replaced")
@@ -395,6 +423,9 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 	// Use the connection's own context so the recv goroutine lives as long as
 	// the QUIC connection, not as long as the (potentially short-lived) dial ctx.
 	go m.recvDatagrams(s, peerKey)
+	m.acceptWG.Go(func() {
+		m.acceptStreams(s, peerKey)
+	})
 
 	addr, err := net.ResolveUDPAddr("udp", s.conn.RemoteAddr().String())
 	if err != nil {
@@ -410,18 +441,29 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 	}
 }
 
+func (m *impl) acceptStreams(s *peerSession, peerKey types.PeerKey) {
+	ctx := s.conn.Context()
+	for {
+		stream, err := s.conn.AcceptStream(ctx)
+		if err != nil {
+			return
+		}
+
+		select {
+		case m.streamCh <- incomingStream{peerKey: peerKey, stream: stream}:
+		case <-ctx.Done():
+			_ = stream.Close()
+			return
+		}
+	}
+}
+
 func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
-	ctx := s.conn.Context() // cancelled when the connection closes
+	ctx := s.conn.Context()
 	for {
 		payload, err := s.conn.ReceiveDatagram(ctx)
 		if err != nil {
-			m.mu.Lock()
-			isCurrent := false
-			if current, ok := m.peers[peerKey]; ok && current == s {
-				delete(m.peers, peerKey)
-				isCurrent = true
-			}
-			m.mu.Unlock()
+			isCurrent := m.sessions.removeIfCurrent(peerKey, s)
 
 			if isCurrent {
 				select {
@@ -515,9 +557,9 @@ func (m *impl) handleInviteControlDatagram(s *peerSession, env *meshv1.Envelope)
 }
 
 func (m *impl) Close() error {
+	peers := m.sessions.drainPeers()
+
 	m.mu.Lock()
-	peers := m.peers
-	m.peers = make(map[types.PeerKey]*peerSession)
 	listener := m.listener
 	mainQT := m.mainQT
 	m.mu.Unlock()
@@ -525,6 +567,9 @@ func (m *impl) Close() error {
 	for _, s := range peers {
 		m.closeSession(s, "shutdown")
 	}
+
+	m.acceptWG.Wait()
+	close(m.streamCh)
 
 	close(m.recvCh)
 	if listener != nil {
