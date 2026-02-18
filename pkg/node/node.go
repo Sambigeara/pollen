@@ -170,22 +170,23 @@ func (n *Node) recvLoop(ctx context.Context) {
 			n.log.Debugw("recv failed", "err", err)
 			continue
 		}
-		if err := n.handleDatagram(ctx, p.Peer, p.Payload); err != nil {
+		if err := n.handleDatagram(ctx, p.Peer, p.Envelope); err != nil {
 			n.log.Debugw("handle datagram failed", "err", err)
 		}
 	}
 }
 
-func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, plaintext []byte) error {
-	env := &statev1.DatagramEnvelope{}
-	if err := env.UnmarshalVT(plaintext); err != nil {
-		return fmt.Errorf("malformed datagram payload: %w", err)
+func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *statev1.DatagramEnvelope) error {
+	if env == nil {
+		return nil
 	}
 
 	switch body := env.GetBody().(type) {
 	case *statev1.DatagramEnvelope_Clock:
 		for _, node := range n.store.MissingFor(body.Clock) {
-			if err := n.sendNode(ctx, from, node); err != nil {
+			if err := n.mesh.Send(ctx, from, &statev1.DatagramEnvelope{
+				Body: &statev1.DatagramEnvelope_Node{Node: node},
+			}); err != nil {
 				n.log.Debugw("failed sending gossip node", "to", from.Short(), "err", err)
 			}
 		}
@@ -203,30 +204,6 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, plaintext
 	return nil
 }
 
-func (n *Node) sendClock(ctx context.Context, to types.PeerKey, clock *statev1.GossipVectorClock) error {
-	env := &statev1.DatagramEnvelope{
-		Body: &statev1.DatagramEnvelope_Clock{Clock: clock},
-	}
-	b, err := env.MarshalVT()
-	if err != nil {
-		return err
-	}
-
-	return n.mesh.Send(ctx, to, b)
-}
-
-func (n *Node) sendNode(ctx context.Context, to types.PeerKey, node *statev1.GossipNode) error {
-	env := &statev1.DatagramEnvelope{
-		Body: &statev1.DatagramEnvelope_Node{Node: node},
-	}
-	b, err := env.MarshalVT()
-	if err != nil {
-		return err
-	}
-
-	return n.mesh.Send(ctx, to, b)
-}
-
 func (n *Node) broadcastNode(ctx context.Context, node *statev1.GossipNode) {
 	if node == nil {
 		return
@@ -237,7 +214,9 @@ func (n *Node) broadcastNode(ctx context.Context, node *statev1.GossipNode) {
 		if peerID == n.store.LocalID {
 			continue
 		}
-		if err := n.sendNode(ctx, peerID, node); err != nil {
+		if err := n.mesh.Send(ctx, peerID, &statev1.DatagramEnvelope{
+			Body: &statev1.DatagramEnvelope_Node{Node: node},
+		}); err != nil {
 			n.log.Debugw("node gossip send failed", "peer", peerID.Short(), "err", err)
 		}
 	}
@@ -250,7 +229,9 @@ func (n *Node) gossip(ctx context.Context) {
 		if peerID == n.store.LocalID {
 			continue
 		}
-		if err := n.sendClock(ctx, peerID, clock); err != nil {
+		if err := n.mesh.Send(ctx, peerID, &statev1.DatagramEnvelope{
+			Body: &statev1.DatagramEnvelope_Clock{Clock: clock},
+		}); err != nil {
 			n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
 		}
 	}
@@ -313,7 +294,9 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 		case peer.PeerConnected:
 			n.queueGossipNode(n.store.SetLocalConnected(e.PeerKey, true))
 			n.requestFullOnce.Do(func() {
-				if err := n.sendClock(context.Background(), e.PeerKey, n.store.ZeroClock()); err != nil {
+				if err := n.mesh.Send(context.Background(), e.PeerKey, &statev1.DatagramEnvelope{
+					Body: &statev1.DatagramEnvelope_Clock{Clock: n.store.ZeroClock()},
+				}); err != nil {
 					n.log.Debugw("failed requesting full state", "peer", e.PeerKey.Short(), "err", err)
 				}
 			})
@@ -463,15 +446,10 @@ func (n *Node) requestPunchCoordination(target types.PeerKey) {
 	env := &statev1.DatagramEnvelope{
 		Body: &statev1.DatagramEnvelope_PunchCoordRequest{PunchCoordRequest: req},
 	}
-	b, err := env.MarshalVT()
-	if err != nil {
-		n.localPeerEvents <- peer.ConnectFailed{PeerKey: target}
-		return
-	}
 
 	// TODO(saml) down the line, we should probably cycle through potential coordinators per request
 	coord := coordinators[0]
-	if err := n.mesh.Send(context.Background(), coord, b); err != nil {
+	if err := n.mesh.Send(context.Background(), coord, env); err != nil {
 		n.log.Debugw("punch coord request send failed", "coordinator", coord.Short(), "err", err)
 		n.localPeerEvents <- peer.ConnectFailed{PeerKey: target}
 	}
@@ -490,33 +468,23 @@ func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, 
 	}
 
 	go func() {
-		n.sendPunchCoordTrigger(ctx, from, &peerv1.PunchCoordTrigger{
+		if err := n.mesh.Send(ctx, from, &statev1.DatagramEnvelope{Body: &statev1.DatagramEnvelope_PunchCoordTrigger{PunchCoordTrigger: &peerv1.PunchCoordTrigger{
 			PeerId:   req.PeerId,
 			SelfAddr: fromAddr.String(),
 			PeerAddr: targetAddr.String(),
-		})
+		}}}); err != nil {
+			n.log.Debugw("punch coord trigger send failed", "to", from.Short(), "err", err)
+		}
 	}()
 	go func() {
-		n.sendPunchCoordTrigger(ctx, targetKey, &peerv1.PunchCoordTrigger{
+		if err := n.mesh.Send(ctx, targetKey, &statev1.DatagramEnvelope{Body: &statev1.DatagramEnvelope_PunchCoordTrigger{PunchCoordTrigger: &peerv1.PunchCoordTrigger{
 			PeerId:   from.Bytes(),
 			SelfAddr: targetAddr.String(),
 			PeerAddr: fromAddr.String(),
-		})
+		}}}); err != nil {
+			n.log.Debugw("punch coord trigger send failed", "to", targetKey.Short(), "err", err)
+		}
 	}()
-}
-
-func (n *Node) sendPunchCoordTrigger(ctx context.Context, to types.PeerKey, trigger *peerv1.PunchCoordTrigger) {
-	env := &statev1.DatagramEnvelope{
-		Body: &statev1.DatagramEnvelope_PunchCoordTrigger{PunchCoordTrigger: trigger},
-	}
-	b, err := env.MarshalVT()
-	if err != nil {
-		n.log.Debugw("marshal punch coord trigger failed", "err", err)
-		return
-	}
-	if err := n.mesh.Send(ctx, to, b); err != nil {
-		n.log.Debugw("punch coord trigger send failed", "to", to.Short(), "err", err)
-	}
 }
 
 func (n *Node) handlePunchCoordTrigger(trigger *peerv1.PunchCoordTrigger) {
