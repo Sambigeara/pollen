@@ -219,6 +219,8 @@ type DatagramEnvelope struct {
 	//	*DatagramEnvelope_Node
 	//	*DatagramEnvelope_PunchCoordRequest
 	//	*DatagramEnvelope_PunchCoordTrigger
+	//	*DatagramEnvelope_InviteRequest
+	//	*DatagramEnvelope_InviteResponse
 	Body          isDatagramEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -297,6 +299,24 @@ func (x *DatagramEnvelope) GetPunchCoordTrigger() *v1.PunchCoordTrigger {
 	return nil
 }
 
+func (x *DatagramEnvelope) GetInviteRequest() *v1.InviteRequest {
+	if x != nil {
+		if x, ok := x.Body.(*DatagramEnvelope_InviteRequest); ok {
+			return x.InviteRequest
+		}
+	}
+	return nil
+}
+
+func (x *DatagramEnvelope) GetInviteResponse() *v1.InviteResponse {
+	if x != nil {
+		if x, ok := x.Body.(*DatagramEnvelope_InviteResponse); ok {
+			return x.InviteResponse
+		}
+	}
+	return nil
+}
+
 type isDatagramEnvelope_Body interface {
 	isDatagramEnvelope_Body()
 }
@@ -317,6 +337,14 @@ type DatagramEnvelope_PunchCoordTrigger struct {
 	PunchCoordTrigger *v1.PunchCoordTrigger `protobuf:"bytes,4,opt,name=punch_coord_trigger,json=punchCoordTrigger,proto3,oneof"`
 }
 
+type DatagramEnvelope_InviteRequest struct {
+	InviteRequest *v1.InviteRequest `protobuf:"bytes,5,opt,name=invite_request,json=inviteRequest,proto3,oneof"`
+}
+
+type DatagramEnvelope_InviteResponse struct {
+	InviteResponse *v1.InviteResponse `protobuf:"bytes,6,opt,name=invite_response,json=inviteResponse,proto3,oneof"`
+}
+
 func (*DatagramEnvelope_Clock) isDatagramEnvelope_Body() {}
 
 func (*DatagramEnvelope_Node) isDatagramEnvelope_Body() {}
@@ -324,6 +352,10 @@ func (*DatagramEnvelope_Node) isDatagramEnvelope_Body() {}
 func (*DatagramEnvelope_PunchCoordRequest) isDatagramEnvelope_Body() {}
 
 func (*DatagramEnvelope_PunchCoordTrigger) isDatagramEnvelope_Body() {}
+
+func (*DatagramEnvelope_InviteRequest) isDatagramEnvelope_Body() {}
+
+func (*DatagramEnvelope_InviteResponse) isDatagramEnvelope_Body() {}
 
 var File_pollen_state_v1_gossip_proto protoreflect.FileDescriptor
 
@@ -347,12 +379,14 @@ const file_pollen_state_v1_gossip_proto_rawDesc = "" +
 	"\n" +
 	"local_port\x18\x05 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\x124\n" +
 	"\bservices\x18\x06 \x03(\v2\x18.pollen.state.v1.ServiceR\bservices\x12'\n" +
-	"\x0freachable_peers\x18\a \x03(\tR\x0ereachablePeers\"\xb3\x02\n" +
+	"\x0freachable_peers\x18\a \x03(\tR\x0ereachablePeers\"\xc6\x03\n" +
 	"\x10DatagramEnvelope\x12:\n" +
 	"\x05clock\x18\x01 \x01(\v2\".pollen.state.v1.GossipVectorClockH\x00R\x05clock\x121\n" +
 	"\x04node\x18\x02 \x01(\v2\x1b.pollen.state.v1.GossipNodeH\x00R\x04node\x12S\n" +
 	"\x13punch_coord_request\x18\x03 \x01(\v2!.pollen.peer.v1.PunchCoordRequestH\x00R\x11punchCoordRequest\x12S\n" +
-	"\x13punch_coord_trigger\x18\x04 \x01(\v2!.pollen.peer.v1.PunchCoordTriggerH\x00R\x11punchCoordTriggerB\x06\n" +
+	"\x13punch_coord_trigger\x18\x04 \x01(\v2!.pollen.peer.v1.PunchCoordTriggerH\x00R\x11punchCoordTrigger\x12F\n" +
+	"\x0einvite_request\x18\x05 \x01(\v2\x1d.pollen.peer.v1.InviteRequestH\x00R\rinviteRequest\x12I\n" +
+	"\x0finvite_response\x18\x06 \x01(\v2\x1e.pollen.peer.v1.InviteResponseH\x00R\x0einviteResponseB\x06\n" +
 	"\x04bodyB@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
 
 var (
@@ -376,6 +410,8 @@ var file_pollen_state_v1_gossip_proto_goTypes = []any{
 	nil,                          // 4: pollen.state.v1.GossipVectorClock.CountersEntry
 	(*v1.PunchCoordRequest)(nil), // 5: pollen.peer.v1.PunchCoordRequest
 	(*v1.PunchCoordTrigger)(nil), // 6: pollen.peer.v1.PunchCoordTrigger
+	(*v1.InviteRequest)(nil),     // 7: pollen.peer.v1.InviteRequest
+	(*v1.InviteResponse)(nil),    // 8: pollen.peer.v1.InviteResponse
 }
 var file_pollen_state_v1_gossip_proto_depIdxs = []int32{
 	4, // 0: pollen.state.v1.GossipVectorClock.counters:type_name -> pollen.state.v1.GossipVectorClock.CountersEntry
@@ -384,11 +420,13 @@ var file_pollen_state_v1_gossip_proto_depIdxs = []int32{
 	2, // 3: pollen.state.v1.DatagramEnvelope.node:type_name -> pollen.state.v1.GossipNode
 	5, // 4: pollen.state.v1.DatagramEnvelope.punch_coord_request:type_name -> pollen.peer.v1.PunchCoordRequest
 	6, // 5: pollen.state.v1.DatagramEnvelope.punch_coord_trigger:type_name -> pollen.peer.v1.PunchCoordTrigger
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	7, // 6: pollen.state.v1.DatagramEnvelope.invite_request:type_name -> pollen.peer.v1.InviteRequest
+	8, // 7: pollen.state.v1.DatagramEnvelope.invite_response:type_name -> pollen.peer.v1.InviteResponse
+	8, // [8:8] is the sub-list for method output_type
+	8, // [8:8] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_gossip_proto_init() }
@@ -401,6 +439,8 @@ func file_pollen_state_v1_gossip_proto_init() {
 		(*DatagramEnvelope_Node)(nil),
 		(*DatagramEnvelope_PunchCoordRequest)(nil),
 		(*DatagramEnvelope_PunchCoordTrigger)(nil),
+		(*DatagramEnvelope_InviteRequest)(nil),
+		(*DatagramEnvelope_InviteResponse)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
