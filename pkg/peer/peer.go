@@ -85,10 +85,31 @@ type ConnectFailed struct {
 
 func (ConnectFailed) isInput() {}
 
-// PeerDisconnected signals a peer's session has died (timeout or graceful disconnect).
-// Transitions from Connected back to Discovered for reconnection.
+type DisconnectReason int
+
+const (
+	DisconnectUnknown     DisconnectReason = iota
+	DisconnectIdleTimeout                  // peer likely still alive, transient loss
+	DisconnectReset                        // peer rebooted (stateless reset)
+	DisconnectGraceful                     // clean app-level close
+)
+
+func (r DisconnectReason) String() string {
+	switch r {
+	case DisconnectIdleTimeout:
+		return "idle_timeout"
+	case DisconnectReset:
+		return "stateless_reset"
+	case DisconnectGraceful:
+		return "graceful"
+	default:
+		return "unknown"
+	}
+}
+
 type PeerDisconnected struct {
 	PeerKey types.PeerKey
+	Reason  DisconnectReason
 }
 
 func (PeerDisconnected) isInput() {}
@@ -136,8 +157,11 @@ const (
 	directAttemptThreshold = 2
 	punchAttemptThreshold  = 2
 
-	unreachableRetryInterval  = 20 * time.Second
-	disconnectedRetryInterval = 60 * time.Second
+	unreachableRetryInterval        = 20 * time.Second
+	idleTimeoutRetryInterval        = 1 * time.Second
+	resetRetryInterval              = 5 * time.Second
+	gracefulDisconnectRetryInterval = 3 * time.Second
+	unknownDisconnectRetryInterval  = 3 * time.Second
 )
 
 func (s *Store) backoff(attempts int) time.Duration {
@@ -254,11 +278,13 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) {
 	switch p.Stage {
 	case ConnectStageDirect, ConnectStageUnspecified:
 		if p.StageAttempts >= directAttemptThreshold {
+			s.log.Debugw("escalating to punch", "peer", e.PeerKey.Short())
 			p.Stage = ConnectStagePunch
 			p.StageAttempts = 0
 		}
 	case ConnectStagePunch:
 		if p.StageAttempts >= punchAttemptThreshold {
+			s.log.Debugw("marking unreachable", "peer", e.PeerKey.Short())
 			p.StageAttempts = 0
 			p.State = PeerStateUnreachable
 			p.NextActionAt = now.Add(unreachableRetryInterval)
@@ -276,11 +302,25 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 		return
 	}
 
-	// Transition back to Discovered and retry after disconnect interval.
+	delay := unknownDisconnectRetryInterval
+	switch e.Reason { //nolint:exhaustive
+	case DisconnectIdleTimeout:
+		delay = idleTimeoutRetryInterval
+	case DisconnectReset:
+		delay = resetRetryInterval
+	case DisconnectGraceful:
+		delay = gracefulDisconnectRetryInterval
+	}
+
+	s.log.Debugw("scheduling reconnect",
+		"peer", e.PeerKey.Short(),
+		"retry_delay", delay,
+	)
+
 	p.State = PeerStateDiscovered
 	p.Stage = ConnectStageDirect
 	p.StageAttempts = 0
-	p.NextActionAt = now.Add(disconnectedRetryInterval)
+	p.NextActionAt = now.Add(delay)
 }
 
 func (s *Store) retryPeer(now time.Time, e RetryPeer) {
