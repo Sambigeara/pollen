@@ -41,6 +41,7 @@ const (
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
 	gossipEventBufSize = 64
+	ipRefreshInterval  = 5 * time.Minute
 )
 
 type Config struct {
@@ -135,6 +136,13 @@ func (n *Node) Start(ctx context.Context, token *admissionv1.Invite) error {
 	peerTicker := time.NewTicker(n.conf.PeerTickInterval)
 	defer peerTicker.Stop()
 
+	var ipRefreshCh <-chan time.Time
+	if len(n.conf.AdvertisedIPs) == 0 {
+		ipRefreshTicker := time.NewTicker(ipRefreshInterval)
+		defer ipRefreshTicker.Stop()
+		ipRefreshCh = ipRefreshTicker.C
+	}
+
 	n.tick()
 
 	for {
@@ -145,6 +153,8 @@ func (n *Node) Start(ctx context.Context, token *admissionv1.Invite) error {
 			n.tick()
 		case <-gossipTicker.C:
 			n.gossip(ctx)
+		case <-ipRefreshCh:
+			n.refreshIPs()
 		case node := <-n.gossipEvents:
 			n.broadcastNode(ctx, node)
 		case in := <-n.mesh.Events():
@@ -236,6 +246,20 @@ func (n *Node) gossip(ctx context.Context) {
 		}); err != nil {
 			n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
 		}
+	}
+}
+
+func (n *Node) refreshIPs() {
+	newIPs, err := mesh.GetAdvertisableAddrs(mesh.DefaultExclusions)
+	if err != nil {
+		n.log.Debugw("ip refresh failed", "err", err)
+		return
+	}
+
+	gossipNode := n.store.SetLocalNetwork(newIPs, uint32(n.conf.Port))
+	if gossipNode != nil {
+		n.log.Infow("advertised IPs changed", "ips", newIPs)
+		n.queueGossipNode(gossipNode)
 	}
 }
 
