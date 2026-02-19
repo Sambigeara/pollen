@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,13 +18,25 @@ import (
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/sock"
 	"github.com/sambigeara/pollen/pkg/types"
+	"go.uber.org/zap"
 )
 
 const (
-	handshakeTimeout = 3 * time.Second
-	queueBufSize     = 64
-	probeBufSize     = 2048
+	handshakeTimeout    = 3 * time.Second
+	quicIdleTimeout     = 30 * time.Second
+	quicKeepAlivePeriod = 10 * time.Second
+	eventSendTimeout    = 5 * time.Second
+	queueBufSize        = 64
+	probeBufSize        = 2048
 )
+
+func quicConfig() *quic.Config {
+	return &quic.Config{
+		MaxIdleTimeout:  quicIdleTimeout,
+		KeepAlivePeriod: quicKeepAlivePeriod,
+		EnableDatagrams: true,
+	}
+}
 
 type Packet struct {
 	Envelope *meshv1.Envelope
@@ -47,6 +60,7 @@ type Mesh interface {
 }
 
 type impl struct {
+	log      *zap.SugaredLogger
 	cert     tls.Certificate
 	invites  admission.Store
 	socks    sock.SockStore
@@ -90,6 +104,7 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, invites admission.Sto
 	}
 
 	return &impl{
+		log:      zap.S().Named("mesh"),
 		cert:     cert,
 		localKey: types.PeerKeyFromBytes(pub),
 		invites:  invites,
@@ -109,7 +124,7 @@ func (m *impl) Start(ctx context.Context) error {
 	}
 
 	qt := &quic.Transport{Conn: conn}
-	ln, err := qt.Listen(newServerTLSConfig(m.cert), &quic.Config{EnableDatagrams: true})
+	ln, err := qt.Listen(newServerTLSConfig(m.cert), quicConfig())
 	if err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("quic listen: %w", err)
@@ -170,7 +185,7 @@ func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteClo
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
 	tlsCfg := newExpectedPeerTLSConfig(m.cert, expectedPeer)
-	qCfg := &quic.Config{EnableDatagrams: true}
+	qCfg := quicConfig()
 
 	qc, err := m.mainQT.Dial(ctx, addr, tlsCfg, qCfg)
 	if err != nil {
@@ -184,7 +199,7 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 
 func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
 	tlsCfg := newExpectedPeerTLSConfig(m.cert, expectedPeer)
-	qCfg := &quic.Config{EnableDatagrams: true}
+	qCfg := quicConfig()
 
 	conn, err := m.socks.Punch(ctx, addr)
 	if err != nil {
@@ -437,7 +452,11 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		IP:           addr.IP,
 		ObservedPort: addr.Port,
 	}:
-	default:
+	case <-time.After(eventSendTimeout):
+		m.log.Warnw("dropped connect event, consumer lagging",
+			"peer", peerKey.Short(),
+		)
+	case <-s.conn.Context().Done():
 	}
 }
 
@@ -466,9 +485,21 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 			isCurrent := m.sessions.removeIfCurrent(peerKey, s)
 
 			if isCurrent {
+				reason := classifyQUICError(err)
+				m.log.Debugw("peer session died",
+					"peer", peerKey.Short(),
+					"reason", reason,
+					"err", err,
+				)
 				select {
-				case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey}:
-				default:
+				case m.inCh <- peer.PeerDisconnected{
+					PeerKey: peerKey,
+					Reason:  reason,
+				}:
+				case <-time.After(eventSendTimeout):
+					m.log.Warnw("dropped disconnect event, consumer lagging",
+						"peer", peerKey.Short(),
+					)
 				}
 				m.closeSession(s, "disconnected")
 			}
@@ -492,6 +523,22 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 			return
 		}
 	}
+}
+
+func classifyQUICError(err error) peer.DisconnectReason {
+	var idleErr *quic.IdleTimeoutError
+	if errors.As(err, &idleErr) {
+		return peer.DisconnectIdleTimeout
+	}
+	var resetErr *quic.StatelessResetError
+	if errors.As(err, &resetErr) {
+		return peer.DisconnectReset
+	}
+	var appErr *quic.ApplicationError
+	if errors.As(err, &appErr) {
+		return peer.DisconnectGraceful
+	}
+	return peer.DisconnectUnknown
 }
 
 func (m *impl) runMainProbeLoop(ctx context.Context, qt *quic.Transport) {

@@ -38,6 +38,7 @@ Follow these conventions when changing code or tests.
 - Keep imports gofmt/goimports-compatible (enforced by lint)
 - Put `context.Context` first when present
 - Prefer clear APIs over extra exported fields
+- Only add comments when they explain something not obvious from reading the code
 
 ## Invariants and Checks
 
