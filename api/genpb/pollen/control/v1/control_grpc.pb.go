@@ -19,8 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ControlService_JoinCluster_FullMethodName       = "/pollen.control.v1.ControlService/JoinCluster"
-	ControlService_CreateInvite_FullMethodName      = "/pollen.control.v1.ControlService/CreateInvite"
+	ControlService_Shutdown_FullMethodName          = "/pollen.control.v1.ControlService/Shutdown"
+	ControlService_GetBootstrapInfo_FullMethodName  = "/pollen.control.v1.ControlService/GetBootstrapInfo"
 	ControlService_GetStatus_FullMethodName         = "/pollen.control.v1.ControlService/GetStatus"
 	ControlService_RegisterService_FullMethodName   = "/pollen.control.v1.ControlService/RegisterService"
 	ControlService_UnregisterService_FullMethodName = "/pollen.control.v1.ControlService/UnregisterService"
@@ -31,8 +31,8 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ControlServiceClient interface {
-	JoinCluster(ctx context.Context, in *JoinClusterRequest, opts ...grpc.CallOption) (*JoinClusterResponse, error)
-	CreateInvite(ctx context.Context, in *CreateInviteRequest, opts ...grpc.CallOption) (*CreateInviteResponse, error)
+	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error)
+	GetBootstrapInfo(ctx context.Context, in *GetBootstrapInfoRequest, opts ...grpc.CallOption) (*GetBootstrapInfoResponse, error)
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
 	RegisterService(ctx context.Context, in *RegisterServiceRequest, opts ...grpc.CallOption) (*RegisterServiceResponse, error)
 	UnregisterService(ctx context.Context, in *UnregisterServiceRequest, opts ...grpc.CallOption) (*UnregisterServiceResponse, error)
@@ -47,20 +47,20 @@ func NewControlServiceClient(cc grpc.ClientConnInterface) ControlServiceClient {
 	return &controlServiceClient{cc}
 }
 
-func (c *controlServiceClient) JoinCluster(ctx context.Context, in *JoinClusterRequest, opts ...grpc.CallOption) (*JoinClusterResponse, error) {
+func (c *controlServiceClient) Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(JoinClusterResponse)
-	err := c.cc.Invoke(ctx, ControlService_JoinCluster_FullMethodName, in, out, cOpts...)
+	out := new(ShutdownResponse)
+	err := c.cc.Invoke(ctx, ControlService_Shutdown_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *controlServiceClient) CreateInvite(ctx context.Context, in *CreateInviteRequest, opts ...grpc.CallOption) (*CreateInviteResponse, error) {
+func (c *controlServiceClient) GetBootstrapInfo(ctx context.Context, in *GetBootstrapInfoRequest, opts ...grpc.CallOption) (*GetBootstrapInfoResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CreateInviteResponse)
-	err := c.cc.Invoke(ctx, ControlService_CreateInvite_FullMethodName, in, out, cOpts...)
+	out := new(GetBootstrapInfoResponse)
+	err := c.cc.Invoke(ctx, ControlService_GetBootstrapInfo_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -111,8 +111,8 @@ func (c *controlServiceClient) ConnectService(ctx context.Context, in *ConnectSe
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
 type ControlServiceServer interface {
-	JoinCluster(context.Context, *JoinClusterRequest) (*JoinClusterResponse, error)
-	CreateInvite(context.Context, *CreateInviteRequest) (*CreateInviteResponse, error)
+	Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error)
+	GetBootstrapInfo(context.Context, *GetBootstrapInfoRequest) (*GetBootstrapInfoResponse, error)
 	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
 	RegisterService(context.Context, *RegisterServiceRequest) (*RegisterServiceResponse, error)
 	UnregisterService(context.Context, *UnregisterServiceRequest) (*UnregisterServiceResponse, error)
@@ -127,11 +127,11 @@ type ControlServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedControlServiceServer struct{}
 
-func (UnimplementedControlServiceServer) JoinCluster(context.Context, *JoinClusterRequest) (*JoinClusterResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method JoinCluster not implemented")
+func (UnimplementedControlServiceServer) Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Shutdown not implemented")
 }
-func (UnimplementedControlServiceServer) CreateInvite(context.Context, *CreateInviteRequest) (*CreateInviteResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method CreateInvite not implemented")
+func (UnimplementedControlServiceServer) GetBootstrapInfo(context.Context, *GetBootstrapInfoRequest) (*GetBootstrapInfoResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetBootstrapInfo not implemented")
 }
 func (UnimplementedControlServiceServer) GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetStatus not implemented")
@@ -166,38 +166,38 @@ func RegisterControlServiceServer(s grpc.ServiceRegistrar, srv ControlServiceSer
 	s.RegisterService(&ControlService_ServiceDesc, srv)
 }
 
-func _ControlService_JoinCluster_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(JoinClusterRequest)
+func _ControlService_Shutdown_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ShutdownRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ControlServiceServer).JoinCluster(ctx, in)
+		return srv.(ControlServiceServer).Shutdown(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ControlService_JoinCluster_FullMethodName,
+		FullMethod: ControlService_Shutdown_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlServiceServer).JoinCluster(ctx, req.(*JoinClusterRequest))
+		return srv.(ControlServiceServer).Shutdown(ctx, req.(*ShutdownRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ControlService_CreateInvite_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CreateInviteRequest)
+func _ControlService_GetBootstrapInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBootstrapInfoRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ControlServiceServer).CreateInvite(ctx, in)
+		return srv.(ControlServiceServer).GetBootstrapInfo(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ControlService_CreateInvite_FullMethodName,
+		FullMethod: ControlService_GetBootstrapInfo_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlServiceServer).CreateInvite(ctx, req.(*CreateInviteRequest))
+		return srv.(ControlServiceServer).GetBootstrapInfo(ctx, req.(*GetBootstrapInfoRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -282,12 +282,12 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*ControlServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "JoinCluster",
-			Handler:    _ControlService_JoinCluster_Handler,
+			MethodName: "Shutdown",
+			Handler:    _ControlService_Shutdown_Handler,
 		},
 		{
-			MethodName: "CreateInvite",
-			Handler:    _ControlService_CreateInvite_Handler,
+			MethodName: "GetBootstrapInfo",
+			Handler:    _ControlService_GetBootstrapInfo_Handler,
 		},
 		{
 			MethodName: "GetStatus",

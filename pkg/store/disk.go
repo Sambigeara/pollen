@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	configFileName = "config.yaml"
-	lockFileName   = ".config.lock"
+	stateFileName = "state.yaml"
+	lockFileName  = ".state.lock"
 
 	keyDirPerm    = 0o700
 	filePerm      = 0o600
@@ -53,9 +53,9 @@ type diskConnection struct {
 }
 
 type disk struct {
-	lockFile   *os.File
-	configPath string
-	mu         sync.Mutex
+	lockFile  *os.File
+	statePath string
+	mu        sync.Mutex
 }
 
 func openDisk(pollenDir string) (*disk, error) {
@@ -66,30 +66,30 @@ func openDisk(pollenDir string) (*disk, error) {
 	lockPath := filepath.Join(pollenDir, lockFileName)
 	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, filePerm)
 	if err != nil {
-		return nil, fmt.Errorf("open config lock: %w", err)
+		return nil, fmt.Errorf("open state lock: %w", err)
 	}
 
 	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = lf.Close()
-		return nil, fmt.Errorf("lock config: %w", err)
+		return nil, fmt.Errorf("lock state: %w", err)
 	}
 
-	configPath := filepath.Join(pollenDir, configFileName)
-	if _, err := os.Stat(configPath); err != nil {
+	statePath := filepath.Join(pollenDir, stateFileName)
+	if _, err := os.Stat(statePath); err != nil {
 		if os.IsNotExist(err) {
-			if err := os.WriteFile(configPath, []byte("local:\n  identityPublic: \"\"\n"), stateFilePerm); err != nil {
+			if err := os.WriteFile(statePath, []byte("local:\n  identityPublic: \"\"\n"), stateFilePerm); err != nil {
 				_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
 				_ = lf.Close()
-				return nil, fmt.Errorf("create config: %w", err)
+				return nil, fmt.Errorf("create state: %w", err)
 			}
 		} else {
 			_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
 			_ = lf.Close()
-			return nil, fmt.Errorf("stat config: %w", err)
+			return nil, fmt.Errorf("stat state: %w", err)
 		}
 	}
 
-	return &disk{configPath: configPath, lockFile: lf}, nil
+	return &disk{statePath: statePath, lockFile: lf}, nil
 }
 
 func (d *disk) close() error {
@@ -104,9 +104,9 @@ func (d *disk) close() error {
 }
 
 func (d *disk) load() (diskState, error) {
-	b, err := os.ReadFile(d.configPath)
+	b, err := os.ReadFile(d.statePath)
 	if err != nil {
-		return diskState{}, fmt.Errorf("read config: %w", err)
+		return diskState{}, fmt.Errorf("read state: %w", err)
 	}
 
 	st := diskState{}
@@ -115,7 +115,7 @@ func (d *disk) load() (diskState, error) {
 	}
 
 	if err := yaml.Unmarshal(b, &st); err != nil {
-		return diskState{}, fmt.Errorf("unmarshal config: %w", err)
+		return diskState{}, fmt.Errorf("unmarshal state: %w", err)
 	}
 
 	return st, nil
@@ -127,28 +127,28 @@ func (d *disk) save(st diskState) error {
 
 	b, err := yaml.Marshal(st)
 	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
+		return fmt.Errorf("marshal state: %w", err)
 	}
 
-	tmp := d.configPath + ".tmp"
+	tmp := d.statePath + ".tmp"
 	if err := os.WriteFile(tmp, b, stateFilePerm); err != nil {
-		return fmt.Errorf("write temp config: %w", err)
+		return fmt.Errorf("write temp state: %w", err)
 	}
 
 	f, err := os.Open(tmp)
 	if err != nil {
-		return fmt.Errorf("open temp config: %w", err)
+		return fmt.Errorf("open temp state: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("sync temp config: %w", err)
+		return fmt.Errorf("sync temp state: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("close temp config: %w", err)
+		return fmt.Errorf("close temp state: %w", err)
 	}
 
-	if err := os.Rename(tmp, d.configPath); err != nil {
-		return fmt.Errorf("replace config: %w", err)
+	if err := os.Rename(tmp, d.statePath); err != nil {
+		return fmt.Errorf("replace state: %w", err)
 	}
 
 	return nil

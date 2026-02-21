@@ -33,12 +33,11 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// ControlServiceJoinClusterProcedure is the fully-qualified name of the ControlService's
-	// JoinCluster RPC.
-	ControlServiceJoinClusterProcedure = "/pollen.control.v1.ControlService/JoinCluster"
-	// ControlServiceCreateInviteProcedure is the fully-qualified name of the ControlService's
-	// CreateInvite RPC.
-	ControlServiceCreateInviteProcedure = "/pollen.control.v1.ControlService/CreateInvite"
+	// ControlServiceShutdownProcedure is the fully-qualified name of the ControlService's Shutdown RPC.
+	ControlServiceShutdownProcedure = "/pollen.control.v1.ControlService/Shutdown"
+	// ControlServiceGetBootstrapInfoProcedure is the fully-qualified name of the ControlService's
+	// GetBootstrapInfo RPC.
+	ControlServiceGetBootstrapInfoProcedure = "/pollen.control.v1.ControlService/GetBootstrapInfo"
 	// ControlServiceGetStatusProcedure is the fully-qualified name of the ControlService's GetStatus
 	// RPC.
 	ControlServiceGetStatusProcedure = "/pollen.control.v1.ControlService/GetStatus"
@@ -55,8 +54,8 @@ const (
 
 // ControlServiceClient is a client for the pollen.control.v1.ControlService service.
 type ControlServiceClient interface {
-	JoinCluster(context.Context, *connect.Request[v1.JoinClusterRequest]) (*connect.Response[v1.JoinClusterResponse], error)
-	CreateInvite(context.Context, *connect.Request[v1.CreateInviteRequest]) (*connect.Response[v1.CreateInviteResponse], error)
+	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
+	GetBootstrapInfo(context.Context, *connect.Request[v1.GetBootstrapInfoRequest]) (*connect.Response[v1.GetBootstrapInfoResponse], error)
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
 	RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error)
 	UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error)
@@ -74,16 +73,16 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 	baseURL = strings.TrimRight(baseURL, "/")
 	controlServiceMethods := v1.File_pollen_control_v1_control_proto.Services().ByName("ControlService").Methods()
 	return &controlServiceClient{
-		joinCluster: connect.NewClient[v1.JoinClusterRequest, v1.JoinClusterResponse](
+		shutdown: connect.NewClient[v1.ShutdownRequest, v1.ShutdownResponse](
 			httpClient,
-			baseURL+ControlServiceJoinClusterProcedure,
-			connect.WithSchema(controlServiceMethods.ByName("JoinCluster")),
+			baseURL+ControlServiceShutdownProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("Shutdown")),
 			connect.WithClientOptions(opts...),
 		),
-		createInvite: connect.NewClient[v1.CreateInviteRequest, v1.CreateInviteResponse](
+		getBootstrapInfo: connect.NewClient[v1.GetBootstrapInfoRequest, v1.GetBootstrapInfoResponse](
 			httpClient,
-			baseURL+ControlServiceCreateInviteProcedure,
-			connect.WithSchema(controlServiceMethods.ByName("CreateInvite")),
+			baseURL+ControlServiceGetBootstrapInfoProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("GetBootstrapInfo")),
 			connect.WithClientOptions(opts...),
 		),
 		getStatus: connect.NewClient[v1.GetStatusRequest, v1.GetStatusResponse](
@@ -115,22 +114,22 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 
 // controlServiceClient implements ControlServiceClient.
 type controlServiceClient struct {
-	joinCluster       *connect.Client[v1.JoinClusterRequest, v1.JoinClusterResponse]
-	createInvite      *connect.Client[v1.CreateInviteRequest, v1.CreateInviteResponse]
+	shutdown          *connect.Client[v1.ShutdownRequest, v1.ShutdownResponse]
+	getBootstrapInfo  *connect.Client[v1.GetBootstrapInfoRequest, v1.GetBootstrapInfoResponse]
 	getStatus         *connect.Client[v1.GetStatusRequest, v1.GetStatusResponse]
 	registerService   *connect.Client[v1.RegisterServiceRequest, v1.RegisterServiceResponse]
 	unregisterService *connect.Client[v1.UnregisterServiceRequest, v1.UnregisterServiceResponse]
 	connectService    *connect.Client[v1.ConnectServiceRequest, v1.ConnectServiceResponse]
 }
 
-// JoinCluster calls pollen.control.v1.ControlService.JoinCluster.
-func (c *controlServiceClient) JoinCluster(ctx context.Context, req *connect.Request[v1.JoinClusterRequest]) (*connect.Response[v1.JoinClusterResponse], error) {
-	return c.joinCluster.CallUnary(ctx, req)
+// Shutdown calls pollen.control.v1.ControlService.Shutdown.
+func (c *controlServiceClient) Shutdown(ctx context.Context, req *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error) {
+	return c.shutdown.CallUnary(ctx, req)
 }
 
-// CreateInvite calls pollen.control.v1.ControlService.CreateInvite.
-func (c *controlServiceClient) CreateInvite(ctx context.Context, req *connect.Request[v1.CreateInviteRequest]) (*connect.Response[v1.CreateInviteResponse], error) {
-	return c.createInvite.CallUnary(ctx, req)
+// GetBootstrapInfo calls pollen.control.v1.ControlService.GetBootstrapInfo.
+func (c *controlServiceClient) GetBootstrapInfo(ctx context.Context, req *connect.Request[v1.GetBootstrapInfoRequest]) (*connect.Response[v1.GetBootstrapInfoResponse], error) {
+	return c.getBootstrapInfo.CallUnary(ctx, req)
 }
 
 // GetStatus calls pollen.control.v1.ControlService.GetStatus.
@@ -155,8 +154,8 @@ func (c *controlServiceClient) ConnectService(ctx context.Context, req *connect.
 
 // ControlServiceHandler is an implementation of the pollen.control.v1.ControlService service.
 type ControlServiceHandler interface {
-	JoinCluster(context.Context, *connect.Request[v1.JoinClusterRequest]) (*connect.Response[v1.JoinClusterResponse], error)
-	CreateInvite(context.Context, *connect.Request[v1.CreateInviteRequest]) (*connect.Response[v1.CreateInviteResponse], error)
+	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
+	GetBootstrapInfo(context.Context, *connect.Request[v1.GetBootstrapInfoRequest]) (*connect.Response[v1.GetBootstrapInfoResponse], error)
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
 	RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error)
 	UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error)
@@ -170,16 +169,16 @@ type ControlServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	controlServiceMethods := v1.File_pollen_control_v1_control_proto.Services().ByName("ControlService").Methods()
-	controlServiceJoinClusterHandler := connect.NewUnaryHandler(
-		ControlServiceJoinClusterProcedure,
-		svc.JoinCluster,
-		connect.WithSchema(controlServiceMethods.ByName("JoinCluster")),
+	controlServiceShutdownHandler := connect.NewUnaryHandler(
+		ControlServiceShutdownProcedure,
+		svc.Shutdown,
+		connect.WithSchema(controlServiceMethods.ByName("Shutdown")),
 		connect.WithHandlerOptions(opts...),
 	)
-	controlServiceCreateInviteHandler := connect.NewUnaryHandler(
-		ControlServiceCreateInviteProcedure,
-		svc.CreateInvite,
-		connect.WithSchema(controlServiceMethods.ByName("CreateInvite")),
+	controlServiceGetBootstrapInfoHandler := connect.NewUnaryHandler(
+		ControlServiceGetBootstrapInfoProcedure,
+		svc.GetBootstrapInfo,
+		connect.WithSchema(controlServiceMethods.ByName("GetBootstrapInfo")),
 		connect.WithHandlerOptions(opts...),
 	)
 	controlServiceGetStatusHandler := connect.NewUnaryHandler(
@@ -208,10 +207,10 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 	)
 	return "/pollen.control.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case ControlServiceJoinClusterProcedure:
-			controlServiceJoinClusterHandler.ServeHTTP(w, r)
-		case ControlServiceCreateInviteProcedure:
-			controlServiceCreateInviteHandler.ServeHTTP(w, r)
+		case ControlServiceShutdownProcedure:
+			controlServiceShutdownHandler.ServeHTTP(w, r)
+		case ControlServiceGetBootstrapInfoProcedure:
+			controlServiceGetBootstrapInfoHandler.ServeHTTP(w, r)
 		case ControlServiceGetStatusProcedure:
 			controlServiceGetStatusHandler.ServeHTTP(w, r)
 		case ControlServiceRegisterServiceProcedure:
@@ -229,12 +228,12 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 // UnimplementedControlServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedControlServiceHandler struct{}
 
-func (UnimplementedControlServiceHandler) JoinCluster(context.Context, *connect.Request[v1.JoinClusterRequest]) (*connect.Response[v1.JoinClusterResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.JoinCluster is not implemented"))
+func (UnimplementedControlServiceHandler) Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.Shutdown is not implemented"))
 }
 
-func (UnimplementedControlServiceHandler) CreateInvite(context.Context, *connect.Request[v1.CreateInviteRequest]) (*connect.Response[v1.CreateInviteResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.CreateInvite is not implemented"))
+func (UnimplementedControlServiceHandler) GetBootstrapInfo(context.Context, *connect.Request[v1.GetBootstrapInfoRequest]) (*connect.Response[v1.GetBootstrapInfoResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.GetBootstrapInfo is not implemented"))
 }
 
 func (UnimplementedControlServiceHandler) GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error) {

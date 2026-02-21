@@ -7,8 +7,8 @@ import "buf/validate/validate.proto";
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1";
 
 service ControlService {
-  rpc JoinCluster(JoinClusterRequest) returns (JoinClusterResponse);
-  rpc CreateInvite(CreateInviteRequest) returns (CreateInviteResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+  rpc GetBootstrapInfo(GetBootstrapInfoRequest) returns (GetBootstrapInfoResponse);
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
   rpc RegisterService(RegisterServiceRequest) returns (RegisterServiceResponse);
   rpc UnregisterService(UnregisterServiceRequest) returns (UnregisterServiceResponse);
@@ -44,18 +44,19 @@ message ServiceSummary {
   }];
 }
 
-message JoinClusterRequest {
-  string token = 1 [(buf.validate.field).string = {min_len: 1}];
+message ShutdownRequest {}
+
+message ShutdownResponse {}
+
+message GetBootstrapInfoRequest {}
+
+message BootstrapPeerInfo {
+  NodeRef peer = 1;
+  repeated string addrs = 2;
 }
 
-message JoinClusterResponse {
-  NodeRef self = 1;
-}
-
-message CreateInviteRequest {}
-
-message CreateInviteResponse {
-  string token = 1 [(buf.validate.field).string = {min_len: 1}];
+message GetBootstrapInfoResponse {
+  BootstrapPeerInfo self = 1;
 }
 
 message GetStatusRequest {}

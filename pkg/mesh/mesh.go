@@ -14,7 +14,7 @@ import (
 	"github.com/quic-go/quic-go"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
-	"github.com/sambigeara/pollen/pkg/admission"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/sock"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -28,6 +28,7 @@ const (
 	eventSendTimeout    = 5 * time.Second
 	queueBufSize        = 64
 	probeBufSize        = 2048
+	inviteRedeemTTL     = 5 * time.Minute
 )
 
 func quicConfig() *quic.Config {
@@ -50,7 +51,8 @@ type Mesh interface {
 	Events() <-chan peer.Input
 	OpenStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
 	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
-	JoinWithInvite(ctx context.Context, inv *admissionv1.Invite) error
+	JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error
+	JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
 	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr) error
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
@@ -60,20 +62,22 @@ type Mesh interface {
 }
 
 type impl struct {
-	log      *zap.SugaredLogger
-	cert     tls.Certificate
-	invites  admission.Store
-	socks    sock.SockStore
-	inCh     chan peer.Input
-	listener *quic.Listener
-	sessions *sessionRegistry
-	mainQT   *quic.Transport
-	recvCh   chan Packet
-	streamCh chan incomingStream
-	acceptWG sync.WaitGroup
-	port     int
-	mu       sync.RWMutex
-	localKey types.PeerKey
+	meshCert     tls.Certificate
+	bareCert     tls.Certificate
+	socks        sock.SockStore
+	inCh         chan peer.Input
+	recvCh       chan Packet
+	inviteSigner *auth.AdminSigner
+	streamCh     chan incomingStream
+	trustBundle  *admissionv1.TrustBundle
+	log          *zap.SugaredLogger
+	listener     *quic.Listener
+	sessions     *sessionRegistry
+	mainQT       *quic.Transport
+	acceptWG     sync.WaitGroup
+	port         int
+	mu           sync.RWMutex
+	localKey     types.PeerKey
 }
 
 type incomingStream struct {
@@ -92,10 +96,15 @@ type directDialResult struct {
 	err     error
 }
 
-func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, invites admission.Store) (Mesh, error) {
-	cert, err := generateIdentityCert(signPriv)
+func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials) (Mesh, error) {
+	meshCert, err := generateIdentityCert(signPriv, creds.Cert)
 	if err != nil {
-		return nil, fmt.Errorf("generate identity cert: %w", err)
+		return nil, fmt.Errorf("generate mesh cert: %w", err)
+	}
+
+	bareCert, err := generateIdentityCert(signPriv, nil)
+	if err != nil {
+		return nil, fmt.Errorf("generate bare cert: %w", err)
 	}
 
 	pub, ok := signPriv.Public().(ed25519.PublicKey)
@@ -104,16 +113,18 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, invites admission.Sto
 	}
 
 	return &impl{
-		log:      zap.S().Named("mesh"),
-		cert:     cert,
-		localKey: types.PeerKeyFromBytes(pub),
-		invites:  invites,
-		socks:    sock.NewSockStore(),
-		port:     defaultPort,
-		sessions: newSessionRegistry(),
-		recvCh:   make(chan Packet, queueBufSize),
-		inCh:     make(chan peer.Input, queueBufSize),
-		streamCh: make(chan incomingStream, queueBufSize),
+		log:          zap.S().Named("mesh"),
+		meshCert:     meshCert,
+		bareCert:     bareCert,
+		trustBundle:  creds.Trust,
+		inviteSigner: creds.InviteSigner,
+		localKey:     types.PeerKeyFromBytes(pub),
+		socks:        sock.NewSockStore(),
+		port:         defaultPort,
+		sessions:     newSessionRegistry(),
+		recvCh:       make(chan Packet, queueBufSize),
+		inCh:         make(chan peer.Input, queueBufSize),
+		streamCh:     make(chan incomingStream, queueBufSize),
 	}, nil
 }
 
@@ -124,7 +135,12 @@ func (m *impl) Start(ctx context.Context) error {
 	}
 
 	qt := &quic.Transport{Conn: conn}
-	ln, err := qt.Listen(newServerTLSConfig(m.cert), quicConfig())
+	ln, err := qt.Listen(newServerTLSConfig(serverTLSParams{
+		meshCert:      m.meshCert,
+		inviteCert:    m.bareCert,
+		trustBundle:   m.trustBundle,
+		inviteEnabled: m.inviteSigner != nil,
+	}), quicConfig())
 	if err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("quic listen: %w", err)
@@ -184,13 +200,14 @@ func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteClo
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(m.cert, expectedPeer)
+	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle)
 	qCfg := quicConfig()
 
 	qc, err := m.mainQT.Dial(ctx, addr, tlsCfg, qCfg)
 	if err != nil {
 		return nil, fmt.Errorf("quic dial %s: %w", addr, err)
 	}
+
 	return &peerSession{
 		conn:      qc,
 		transport: m.mainQT,
@@ -198,7 +215,7 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 }
 
 func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(m.cert, expectedPeer)
+	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle)
 	qCfg := quicConfig()
 
 	conn, err := m.socks.Punch(ctx, addr)
@@ -239,41 +256,62 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 	}, nil
 }
 
-func (m *impl) JoinWithInvite(ctx context.Context, inv *admissionv1.Invite) error {
-	peerKey := types.PeerKeyFromBytes(inv.Fingerprint)
-	if len(inv.Addr) == 0 {
-		return fmt.Errorf("failed to join via invite at any address")
+func (m *impl) JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error {
+	claims := token.GetClaims()
+	if claims == nil {
+		return fmt.Errorf("join token missing claims")
 	}
 
-	resolved := make([]*net.UDPAddr, 0, len(inv.Addr))
-	for _, addr := range inv.Addr {
-		udpAddr, err := net.ResolveUDPAddr("udp", addr)
-		if err != nil {
+	bootstraps := claims.GetBootstrap()
+	if len(bootstraps) == 0 {
+		return fmt.Errorf("join token contains no bootstrap peers")
+	}
+
+	var lastErr error
+	for _, bootstrap := range bootstraps {
+		peerKey := types.PeerKeyFromBytes(bootstrap.GetPeerPub())
+		resolved := make([]*net.UDPAddr, 0, len(bootstrap.GetAddrs()))
+		for _, addr := range bootstrap.GetAddrs() {
+			udpAddr, err := net.ResolveUDPAddr("udp", addr)
+			if err != nil {
+				continue
+			}
+			resolved = append(resolved, udpAddr)
+		}
+		if len(resolved) == 0 {
 			continue
 		}
-		resolved = append(resolved, udpAddr)
-	}
-	if len(resolved) == 0 {
-		return fmt.Errorf("failed to join via invite at any address")
+
+		winner, err := m.raceDirectDial(ctx, peerKey, resolved)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		m.addPeer(winner, peerKey)
+		return nil
 	}
 
-	winner, err := m.raceDirectDial(ctx, peerKey, resolved)
+	if lastErr != nil {
+		return fmt.Errorf("failed to join via token bootstrap peers: %w", lastErr)
+	}
+
+	return fmt.Errorf("failed to join via token bootstrap peers")
+}
+
+func (m *impl) JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
+	joinToken, err := redeemInviteWithDial(ctx, token, ed25519.PublicKey(m.localKey.Bytes()), func(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*quic.Conn, error) {
+		return m.mainQT.Dial(ctx, addr, newInviteDialerTLSConfig(m.bareCert, expectedPeer), quicConfig())
+	})
 	if err != nil {
-		return fmt.Errorf("failed to join via invite at any address: %w", err)
+		return nil, err
 	}
 
-	accepted, err := m.exchangeInvite(ctx, winner.conn, inv.Id)
-	if err != nil {
-		m.closeSession(winner, "invite exchange failed")
-		return fmt.Errorf("failed to join via invite at any address: %w", err)
-	}
-	if !accepted {
-		m.closeSession(winner, "invite rejected")
-		return fmt.Errorf("failed to join via invite at any address: invite rejected")
+	if err := m.JoinWithToken(ctx, joinToken); err != nil {
+		return nil, err
 	}
 
-	m.addPeer(winner, peerKey)
-	return nil
+	return joinToken, nil
 }
 
 func (m *impl) raceDirectDial(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr) (*peerSession, error) {
@@ -314,37 +352,6 @@ func (m *impl) raceDirectDial(ctx context.Context, peerKey types.PeerKey, addrs 
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("failed all dial attempts")
-}
-
-func (m *impl) exchangeInvite(ctx context.Context, qc *quic.Conn, token string) (bool, error) {
-	reqData, err := (&meshv1.Envelope{
-		Body: &meshv1.Envelope_InviteRequest{
-			InviteRequest: &meshv1.InviteRequest{Token: token},
-		},
-	}).MarshalVT()
-	if err != nil {
-		return false, err
-	}
-	if err := qc.SendDatagram(reqData); err != nil {
-		return false, err
-	}
-
-	waitCtx, waitCancel := context.WithTimeout(ctx, handshakeTimeout)
-	defer waitCancel()
-
-	for {
-		payload, err := qc.ReceiveDatagram(waitCtx)
-		if err != nil {
-			return false, err
-		}
-		env := &meshv1.Envelope{}
-		if err := env.UnmarshalVT(payload); err != nil {
-			continue
-		}
-		if body, ok := env.GetBody().(*meshv1.Envelope_InviteResponse); ok {
-			return body.InviteResponse.GetAccepted(), nil
-		}
-	}
 }
 
 func (m *impl) Connect(ctx context.Context, peerKey types.PeerKey, addrs []*net.UDPAddr) error {
@@ -510,13 +517,6 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 			continue
 		}
 
-		switch env.GetBody().(type) {
-		case *meshv1.Envelope_InviteRequest, *meshv1.Envelope_InviteResponse:
-			m.handleInviteControlDatagram(s, env)
-			continue
-		default:
-		}
-
 		select {
 		case m.recvCh <- Packet{Peer: peerKey, Envelope: env}:
 		case <-ctx.Done():
@@ -577,29 +577,36 @@ func (m *impl) acceptLoop(ctx context.Context) {
 			continue
 		}
 
-		m.addPeer(&peerSession{conn: qc, transport: m.mainQT}, peerKey)
+		switch qc.ConnectionState().TLS.NegotiatedProtocol {
+		case alpnMesh:
+			m.addPeer(&peerSession{conn: qc, transport: m.mainQT}, peerKey)
+		case alpnInvite:
+			go m.handleInviteConnection(ctx, qc, peerKey)
+		default:
+			_ = qc.CloseWithError(0, "unknown protocol")
+		}
 	}
 }
 
-func (m *impl) handleInviteControlDatagram(s *peerSession, env *meshv1.Envelope) {
-	body, ok := env.GetBody().(*meshv1.Envelope_InviteRequest)
-	if !ok {
+func (m *impl) handleInviteConnection(ctx context.Context, qc *quic.Conn, peerKey types.PeerKey) {
+	waitCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancel()
+
+	first, err := recvEnvelope(waitCtx, qc)
+	if err != nil {
+		_ = qc.CloseWithError(0, "recv failed")
 		return
 	}
 
-	accepted := false
-	if req := body.InviteRequest; req != nil && req.Token != "" {
-		ok, err := m.invites.ConsumeToken(req.Token)
-		accepted = err == nil && ok
+	body, ok := first.GetBody().(*meshv1.Envelope_InviteRedeemRequest)
+	if !ok {
+		_ = qc.CloseWithError(0, "unexpected message on invite connection")
+		return
 	}
 
-	respData, err := (&meshv1.Envelope{
-		Body: &meshv1.Envelope_InviteResponse{
-			InviteResponse: &meshv1.InviteResponse{Accepted: accepted},
-		},
-	}).MarshalVT()
-	if err == nil {
-		_ = s.conn.SendDatagram(respData)
+	if err := m.handleInviteRedeem(qc, peerKey, body.InviteRedeemRequest); err != nil {
+		m.log.Debugw("rejected invite", "peer", peerKey.Short(), "err", err)
+		_ = qc.CloseWithError(0, "invite failed")
 	}
 }
 
@@ -642,4 +649,139 @@ func (m *impl) closeSession(s *peerSession, reason string) {
 	if s.sockConn != nil {
 		_ = s.sockConn.Close()
 	}
+}
+
+func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) error {
+	signer := m.inviteSigner
+	now := time.Now()
+	verified, err := auth.VerifyInviteToken(req.GetToken(), ed25519.PublicKey(peerKey.Bytes()), now)
+	if err != nil {
+		_ = sendInviteRedeemResponse(qc, nil, err)
+		return err
+	}
+
+	ttl := inviteRedeemTTL
+	if remaining := time.Unix(verified.Claims.GetExpiresAtUnix(), 0).Sub(now); remaining < ttl {
+		ttl = remaining
+	}
+	if ttl <= 0 {
+		err := errors.New("invite token expired")
+		_ = sendInviteRedeemResponse(qc, nil, err)
+		return err
+	}
+
+	consumed, err := signer.Consumed.TryConsume(req.GetToken(), now)
+	if err != nil {
+		_ = sendInviteRedeemResponse(qc, nil, err)
+		return err
+	}
+	if !consumed {
+		err := errors.New("invite token already consumed")
+		_ = sendInviteRedeemResponse(qc, nil, err)
+		return err
+	}
+
+	joinToken, err := auth.IssueJoinTokenWithIssuer(
+		signer.Priv,
+		signer.Trust,
+		signer.Issuer,
+		ed25519.PublicKey(peerKey.Bytes()),
+		verified.Claims.GetBootstrap(),
+		now,
+		ttl,
+	)
+	if err != nil {
+		_ = sendInviteRedeemResponse(qc, nil, err)
+		return err
+	}
+	if err := sendInviteRedeemResponse(qc, joinToken, nil); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func sendInviteRedeemResponse(qc *quic.Conn, joinToken *admissionv1.JoinToken, redeemErr error) error {
+	reason := ""
+	accepted := redeemErr == nil
+	if redeemErr != nil {
+		reason = redeemErr.Error()
+	}
+	return sendEnvelope(qc, &meshv1.Envelope{
+		Body: &meshv1.Envelope_InviteRedeemResponse{
+			InviteRedeemResponse: &meshv1.InviteRedeemResponse{
+				Accepted:  accepted,
+				Reason:    reason,
+				JoinToken: joinToken,
+			},
+		},
+	})
+}
+
+func redeemInviteOnConn(
+	ctx context.Context,
+	qc *quic.Conn,
+	token *admissionv1.InviteToken,
+	subject ed25519.PublicKey,
+) (*admissionv1.JoinToken, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancel()
+
+	if err := sendEnvelope(qc, &meshv1.Envelope{
+		Body: &meshv1.Envelope_InviteRedeemRequest{
+			InviteRedeemRequest: &meshv1.InviteRedeemRequest{
+				Token:      token,
+				SubjectPub: append([]byte(nil), subject...),
+			},
+		},
+	}); err != nil {
+		return nil, err
+	}
+
+	resp, err := recvInviteRedeemResponse(waitCtx, qc)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.GetAccepted() {
+		if resp.GetReason() == "" {
+			return nil, errors.New("invite token rejected")
+		}
+		return nil, errors.New(resp.GetReason())
+	}
+
+	return resp.GetJoinToken(), nil
+}
+
+func recvInviteRedeemResponse(ctx context.Context, qc *quic.Conn) (*meshv1.InviteRedeemResponse, error) {
+	for {
+		env, err := recvEnvelope(ctx, qc)
+		if err != nil {
+			return nil, err
+		}
+		if body, ok := env.GetBody().(*meshv1.Envelope_InviteRedeemResponse); ok {
+			return body.InviteRedeemResponse, nil
+		}
+	}
+}
+
+func recvEnvelope(ctx context.Context, qc *quic.Conn) (*meshv1.Envelope, error) {
+	for {
+		payload, err := qc.ReceiveDatagram(ctx)
+		if err != nil {
+			return nil, err
+		}
+		env := &meshv1.Envelope{}
+		if err := env.UnmarshalVT(payload); err != nil {
+			continue
+		}
+		return env, nil
+	}
+}
+
+func sendEnvelope(qc *quic.Conn, env *meshv1.Envelope) error {
+	b, err := env.MarshalVT()
+	if err != nil {
+		return err
+	}
+	return qc.SendDatagram(b)
 }
