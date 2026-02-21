@@ -52,17 +52,8 @@ const (
 	passiveGossipInterval = 10 * time.Second
 	defaultJoinTokenTTL   = 5 * time.Minute
 	bootstrapStatusWait   = 20 * time.Second
-
-	connectArgsMin       = 1
-	connectArgsMax       = 3
-	connectArgsProvider  = 2
-	connectArgsLocalPort = 3
-	argIndexProvider     = 1
-	argIndexLocalPort    = 2
-	bootstrapSpecParts   = 2
-	minPort              = 1
-	maxPort              = 65535
-	inviteSubjectArgs    = 1
+	minPort               = 1
+	maxPort               = 65535
 )
 
 func main() {
@@ -190,7 +181,7 @@ func newInviteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "invite [subject-pub]",
 		Short: "Generate an invite token (open or subject-bound)",
-		Args:  cobra.RangeArgs(0, inviteSubjectArgs),
+		Args:  cobra.RangeArgs(0, 1), //nolint:mnd
 		Run:   runInvite,
 	}
 	cmd.Flags().String("subject", "", "Optional hex node public key to bind invite")
@@ -213,12 +204,11 @@ func newStatusCmd() *cobra.Command {
 
 func newServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "serve [port]",
+		Use:   "serve [port] [name]",
 		Short: "Expose a local port to the mesh",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.RangeArgs(1, 2), //nolint:mnd
 		Run:   runServe,
 	}
-	cmd.Flags().String("name", "", "Service name")
 	return cmd
 }
 
@@ -235,7 +225,7 @@ func newConnectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "connect <service> [provider] [local-port]",
 		Short: "Tunnel a local port to a service",
-		Args:  cobra.RangeArgs(connectArgsMin, connectArgsMax),
+		Args:  cobra.RangeArgs(1, 3), //nolint:mnd
 		Run:   runConnect,
 	}
 	return cmd
@@ -939,7 +929,7 @@ func loadBootstrapPeers(pollenDir string) ([]*admissionv1.BootstrapPeer, error) 
 }
 
 func resolveInviteSubject(subjectFlag string, args []string) (ed25519.PublicKey, error) {
-	hasArg := len(args) == inviteSubjectArgs
+	hasArg := len(args) == 1
 	hasFlag := strings.TrimSpace(subjectFlag) != ""
 
 	if hasArg && hasFlag {
@@ -1000,8 +990,8 @@ func parseBootstrapSpecs(specs []string) ([]*admissionv1.BootstrapPeer, error) {
 
 func parseBootstrapSpec(spec string) (bootstrapInfo, error) {
 	spec = strings.TrimSpace(spec)
-	parts := strings.SplitN(spec, "@", bootstrapSpecParts)
-	if len(parts) != bootstrapSpecParts {
+	parts := strings.SplitN(spec, "@", 2) //nolint:mnd
+	if len(parts) != 2 {                  //nolint:mnd
 		return bootstrapInfo{}, errors.New("invalid bootstrap format, expected <peer-pub-hex>@<host:port>")
 	}
 
@@ -1358,8 +1348,8 @@ func printConnectionsTable(cmd *cobra.Command, st *controlv1.GetStatusResponse, 
 
 func runServe(cmd *cobra.Command, args []string) {
 	portStr := args[0]
-	name, _ := cmd.Flags().GetString("name")
-	if name == "" && len(args) > 1 {
+	name := ""
+	if len(args) > 1 {
 		name = args[1]
 	}
 
@@ -1424,15 +1414,15 @@ func runConnect(cmd *cobra.Command, args []string) {
 	serviceArg := args[0]
 	providerArg := ""
 	localPortArg := ""
-	if len(args) >= connectArgsProvider {
-		if len(args) == connectArgsProvider && isPortArg(args[argIndexProvider]) {
-			localPortArg = args[argIndexProvider]
+	if len(args) >= 2 { //nolint:mnd
+		if len(args) == 2 && isPortArg(args[1]) { //nolint:mnd
+			localPortArg = args[1]
 		} else {
-			providerArg = args[argIndexProvider]
+			providerArg = args[1]
 		}
 	}
-	if len(args) == connectArgsLocalPort {
-		localPortArg = args[argIndexLocalPort]
+	if len(args) == 3 { //nolint:mnd
+		localPortArg = args[2] //nolint:mnd
 	}
 
 	localPort := uint32(0)
