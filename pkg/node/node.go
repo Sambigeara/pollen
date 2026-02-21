@@ -16,7 +16,7 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/admission"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/store"
@@ -56,7 +56,6 @@ type Config struct {
 type HandlerFn func(ctx context.Context, from types.PeerKey, payload []byte) error
 
 type Node struct {
-	invites         admission.Store
 	peers           *peer.Store
 	store           *store.Store
 	mesh            mesh.Mesh
@@ -65,17 +64,11 @@ type Node struct {
 	conf            *Config
 	log             *zap.SugaredLogger
 	gossipEvents    chan *statev1.GossipNode
-	identityPub     ed25519.PublicKey
 	requestFullOnce sync.Once
 }
 
-func New(conf *Config, privKey ed25519.PrivateKey, stateStore *store.Store, peerStore *peer.Store, invitesStore admission.Store) (*Node, error) {
+func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, stateStore *store.Store, peerStore *peer.Store) (*Node, error) {
 	log := zap.S().Named("node")
-
-	pubKey, ok := privKey.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("identity private key is not ed25519")
-	}
 
 	ips := conf.AdvertisedIPs
 	if len(ips) == 0 {
@@ -88,7 +81,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, stateStore *store.Store, peer
 
 	stateStore.SetLocalNetwork(ips, uint32(conf.Port))
 
-	m, err := mesh.NewMesh(conf.Port, privKey, invitesStore)
+	m, err := mesh.NewMesh(conf.Port, privKey, creds)
 	if err != nil {
 		log.Error("failed to load mesh", zap.Error(err))
 		return nil, err
@@ -105,8 +98,6 @@ func New(conf *Config, privKey ed25519.PrivateKey, stateStore *store.Store, peer
 		store:           stateStore,
 		mesh:            m,
 		tun:             tun,
-		invites:         invitesStore,
-		identityPub:     pubKey,
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
 		gossipEvents:    make(chan *statev1.GossipNode, gossipEventBufSize),
@@ -115,7 +106,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, stateStore *store.Store, peer
 	return n, nil
 }
 
-func (n *Node) Start(ctx context.Context, token *admissionv1.Invite) error {
+func (n *Node) Start(ctx context.Context, token *admissionv1.JoinToken) error {
 	defer n.shutdown()
 
 	if err := n.mesh.Start(ctx); err != nil {
@@ -125,8 +116,12 @@ func (n *Node) Start(ctx context.Context, token *admissionv1.Invite) error {
 	go n.recvLoop(ctx)
 
 	if token != nil {
-		if err := n.mesh.JoinWithInvite(ctx, token); err != nil {
-			return fmt.Errorf("join with invite: %w", err)
+		if len(token.GetClaims().GetBootstrap()) > 0 {
+			if err := n.mesh.JoinWithToken(ctx, token); err != nil {
+				return fmt.Errorf("join with token: %w", err)
+			}
+		} else {
+			n.log.Infow("join token has no bootstrap peers; starting node as relay seed")
 		}
 	}
 

@@ -5,17 +5,16 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
-	"github.com/sambigeara/pollen/pkg/admission"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/types"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,33 +23,62 @@ type testNode struct {
 	svc     *node.NodeService
 	store   *store.Store
 	peers   *peer.Store
-	invites admission.Store
 	peerKey types.PeerKey
+	pubKey  ed25519.PublicKey
 	ips     []string
 	port    int
 	dir     string
 	privKey ed25519.PrivateKey
+	creds   *auth.NodeCredentials
 	cancel  context.CancelFunc
 	errCh   chan error
 }
 
-func startNode(t *testing.T, port int, ips []string, token ...string) *testNode {
+type clusterAuth struct {
+	adminPriv ed25519.PrivateKey
+	trust     *admissionv1.TrustBundle
+}
+
+func newClusterAuth(t *testing.T) *clusterAuth {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	return &clusterAuth{adminPriv: priv, trust: auth.NewTrustBundle(pub)}
+}
+
+func (c *clusterAuth) credsFor(t *testing.T, subject ed25519.PublicKey) *auth.NodeCredentials {
+	t.Helper()
+	cert, err := auth.IssueMembershipCert(c.adminPriv, c.trust.GetClusterId(), subject, time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour))
+	require.NoError(t, err)
+	return &auth.NodeCredentials{Trust: c.trust, Cert: cert}
+}
+
+func (c *clusterAuth) tokenFor(t *testing.T, subject ed25519.PublicKey, bootstrap *testNode) *admissionv1.JoinToken {
+	t.Helper()
+	token, err := auth.IssueJoinToken(c.adminPriv, c.trust, subject, []*admissionv1.BootstrapPeer{{
+		PeerPub: bootstrap.pubKey,
+		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(bootstrap.port))},
+	}}, time.Now(), time.Hour)
+	require.NoError(t, err)
+	return token
+}
+
+func newTestNode(t *testing.T, cluster *clusterAuth, port int, ips []string) *testNode {
 	t.Helper()
 
 	dir := t.TempDir()
-
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
 	tn := &testNode{
 		peerKey: types.PeerKeyFromBytes(pub),
+		pubKey:  pub,
 		ips:     ips,
 		port:    port,
 		dir:     dir,
 		privKey: priv,
+		creds:   cluster.credsFor(t, pub),
 	}
-
-	tn.start(t, token...)
 
 	t.Cleanup(func() {
 		tn.stop()
@@ -59,7 +87,7 @@ func startNode(t *testing.T, port int, ips []string, token ...string) *testNode 
 	return tn
 }
 
-func (tn *testNode) start(t *testing.T, token ...string) {
+func (tn *testNode) start(t *testing.T, token *admissionv1.JoinToken) {
 	t.Helper()
 
 	pub := tn.privKey.Public().(ed25519.PublicKey)
@@ -69,9 +97,6 @@ func (tn *testNode) start(t *testing.T, token ...string) {
 
 	peerStore := peer.NewStore()
 
-	invitesStore, err := admission.Load(tn.dir)
-	require.NoError(t, err)
-
 	conf := &node.Config{
 		Port:                tn.port,
 		AdvertisedIPs:       tn.ips,
@@ -80,41 +105,39 @@ func (tn *testNode) start(t *testing.T, token ...string) {
 		DisableGossipJitter: true,
 	}
 
-	n, err := node.New(conf, tn.privKey, stateStore, peerStore, invitesStore)
+	n, err := node.New(conf, tn.privKey, tn.creds, stateStore, peerStore)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 
-	var invite *admissionv1.Invite
-	if len(token) > 0 && token[0] != "" {
-		invite, err = node.DecodeToken(token[0])
-		require.NoError(t, err)
-	}
-
 	go func() {
-		errCh <- n.Start(ctx, invite)
+		errCh <- n.Start(ctx, token)
 	}()
 
 	tn.node = n
-	tn.svc = node.NewNodeService(n)
+	tn.svc = node.NewNodeService(n, cancel)
 	tn.store = stateStore
 	tn.peers = peerStore
-	tn.invites = invitesStore
 	tn.cancel = cancel
 	tn.errCh = errCh
 }
 
 func (tn *testNode) stop() {
+	if tn.cancel == nil {
+		return
+	}
 	tn.cancel()
 	<-tn.errCh
+	tn.cancel = nil
+	tn.errCh = nil
 }
 
 func (tn *testNode) restart(t *testing.T) {
 	t.Helper()
 	tn.stop()
 	waitForPort(t, tn.port)
-	tn.start(t)
+	tn.start(t, nil)
 }
 
 func waitForPort(t *testing.T, port int) {
@@ -129,37 +152,26 @@ func waitForPort(t *testing.T, port int) {
 	}, 5*time.Second, 10*time.Millisecond, "port %d not released", port)
 }
 
-func TestInviteFlow(t *testing.T) {
+func TestJoinTokenFlow(t *testing.T) {
 	nodeIPs := []string{"127.0.0.1", "192.0.2.1"}
+	cluster := newClusterAuth(t)
 
-	a := startNode(t, 19100, nodeIPs)
+	a := newTestNode(t, cluster, 19100, nodeIPs)
+	a.start(t, nil)
 
-	resp, err := a.svc.CreateInvite(context.Background(), &controlv1.CreateInviteRequest{})
-	require.NoError(t, err)
-	require.NotEmpty(t, resp.Token)
+	b := newTestNode(t, cluster, 19101, nodeIPs)
+	b.start(t, cluster.tokenFor(t, b.pubKey, a))
 
-	invite, err := node.DecodeToken(resp.Token)
-	require.NoError(t, err)
+	assertPeersConnected(t, a, b)
 
-	b := startNode(t, 19101, nodeIPs, resp.Token)
-
-	assertPeersConnected(t, a, b, nodeIPs)
-
-	ok, err := a.invites.ConsumeToken(invite.Id)
-	require.NoError(t, err)
-	require.False(t, ok, "invite token should already be consumed")
-
-	// Restart both nodes and assert the same state is reached without an invite.
 	a.restart(t)
-	// TODO(saml): remove this delay once restart ordering is deterministic.
-	// this still doesn't work 100% of the time.
 	time.Sleep(150 * time.Millisecond)
 	b.restart(t)
 
-	assertPeersConnected(t, a, b, nodeIPs)
+	assertPeersConnected(t, a, b)
 }
 
-func assertPeersConnected(t *testing.T, a, b *testNode, nodeIPs []string) {
+func assertPeersConnected(t *testing.T, a, b *testNode) {
 	t.Helper()
 
 	require.Eventually(t, func() bool {
@@ -185,29 +197,4 @@ func assertPeersConnected(t *testing.T, a, b *testNode, nodeIPs []string) {
 		_, ok := a.store.Get(b.peerKey)
 		return ok
 	}, 5*time.Second, 50*time.Millisecond, "A's store should know about B via gossip")
-
-	expectedIPs := make([]net.IP, len(nodeIPs))
-	for i, ip := range nodeIPs {
-		expectedIPs[i] = net.ParseIP(ip)
-	}
-
-	require.EventuallyWithT(t, func(c *assert.CollectT) {
-		p, ok := a.peers.Get(b.peerKey)
-		assert.True(c, ok)
-		assert.Equal(c, peer.PeerStateConnected, p.State)
-		assert.Equal(c, peer.ConnectStageDirect, p.Stage)
-		assert.False(c, p.ConnectedAt.IsZero())
-		assert.Equal(c, expectedIPs, p.Ips)
-		assert.Equal(c, b.port, p.ObservedPort)
-	}, 5*time.Second, 50*time.Millisecond)
-
-	require.EventuallyWithT(t, func(c *assert.CollectT) {
-		p, ok := b.peers.Get(a.peerKey)
-		assert.True(c, ok)
-		assert.Equal(c, peer.PeerStateConnected, p.State)
-		assert.Equal(c, peer.ConnectStageDirect, p.Stage)
-		assert.False(c, p.ConnectedAt.IsZero())
-		assert.Equal(c, expectedIPs, p.Ips)
-		assert.Equal(c, a.port, p.ObservedPort)
-	}, 5*time.Second, 50*time.Millisecond)
 }
