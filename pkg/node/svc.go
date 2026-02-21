@@ -16,55 +16,41 @@ var _ controlv1.ControlServiceServer = (*NodeService)(nil)
 
 type NodeService struct {
 	controlv1.UnimplementedControlServiceServer
-	node *Node
+	node     *Node
+	shutdown func()
 }
 
-func NewNodeService(n *Node) *NodeService {
-	return &NodeService{node: n}
+func NewNodeService(n *Node, shutdown func()) *NodeService {
+	return &NodeService{node: n, shutdown: shutdown}
 }
 
-func (s *NodeService) JoinCluster(ctx context.Context, req *controlv1.JoinClusterRequest) (*controlv1.JoinClusterResponse, error) {
-	token, err := DecodeToken(req.Token)
-	if err != nil {
-		return nil, err
+func (s *NodeService) Shutdown(_ context.Context, _ *controlv1.ShutdownRequest) (*controlv1.ShutdownResponse, error) {
+	if s.shutdown == nil {
+		return &controlv1.ShutdownResponse{}, errors.New("shutdown callback not configured")
 	}
 
-	if err := s.node.mesh.JoinWithInvite(ctx, token); err != nil {
-		return nil, err
-	}
+	go s.shutdown()
 
-	return &controlv1.JoinClusterResponse{
-		Self: &controlv1.NodeRef{PeerId: s.node.store.LocalID.Bytes()},
-	}, nil
+	return &controlv1.ShutdownResponse{}, nil
 }
 
-func (s *NodeService) CreateInvite(_ context.Context, _ *controlv1.CreateInviteRequest) (*controlv1.CreateInviteResponse, error) {
+func (s *NodeService) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootstrapInfoRequest) (*controlv1.GetBootstrapInfoResponse, error) {
 	local := s.node.store.LocalID
 	rec, ok := s.node.store.Get(local)
 	if !ok {
-		return &controlv1.CreateInviteResponse{}, nil
+		return &controlv1.GetBootstrapInfoResponse{}, nil
 	}
 
-	port := strconv.Itoa(int(rec.LocalPort))
-	ips := append([]string(nil), rec.IPs...)
-
-	inv, err := NewInvite(ips, port, s.node.identityPub)
-	if err != nil {
-		return nil, err
+	addrs := make([]string, 0, len(rec.IPs))
+	for _, ip := range rec.IPs {
+		addrs = append(addrs, net.JoinHostPort(ip, strconv.Itoa(int(rec.LocalPort))))
 	}
 
-	enc, err := EncodeToken(inv)
-	if err != nil {
-		return nil, err
-	}
-
-	s.node.invites.AddInvite(inv)
-	if err := s.node.invites.Save(); err != nil {
-		return nil, err
-	}
-
-	return &controlv1.CreateInviteResponse{
-		Token: enc,
+	return &controlv1.GetBootstrapInfoResponse{
+		Self: &controlv1.BootstrapPeerInfo{
+			Peer:  &controlv1.NodeRef{PeerId: local.Bytes()},
+			Addrs: addrs,
+		},
 	}, nil
 }
 

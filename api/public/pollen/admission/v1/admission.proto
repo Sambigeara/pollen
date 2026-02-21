@@ -6,12 +6,78 @@ import "buf/validate/validate.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1;admissionv1";
 
-message Invite {
-  string id = 1 [(buf.validate.field).string = {uuid: true}];
-  repeated string addr = 2;
-  bytes fingerprint = 3;
+message TrustBundle {
+  bytes cluster_id = 1 [(buf.validate.field).bytes = {len: 32}];
+  bytes genesis_pub = 2 [(buf.validate.field).bytes = {len: 32}];
 }
 
-message InviteStore {
-  map<string, Invite> invites = 1;
+message AdminCertClaims {
+  bytes cluster_id = 1 [(buf.validate.field).bytes = {len: 32}];
+  bytes admin_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+  int64 not_before_unix = 3;
+  int64 not_after_unix = 4;
+  uint64 serial = 5;
+}
+
+message AdminCert {
+  AdminCertClaims claims = 1 [(buf.validate.field).required = true];
+  bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
+}
+
+message MembershipCertClaims {
+  bytes cluster_id = 1 [(buf.validate.field).bytes = {len: 32}];
+  bytes subject_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+  bytes issuer_admin_pub = 3 [(buf.validate.field).bytes = {len: 32}];
+  int64 not_before_unix = 4;
+  int64 not_after_unix = 5;
+  uint64 serial = 6;
+}
+
+message MembershipCert {
+  MembershipCertClaims claims = 1 [(buf.validate.field).required = true];
+  AdminCert issuer = 2 [(buf.validate.field).required = true];
+  bytes signature = 3 [(buf.validate.field).bytes = {len: 64}];
+}
+
+message BootstrapPeer {
+  bytes peer_pub = 1 [(buf.validate.field).bytes = {len: 32}];
+  repeated string addrs = 2 [(buf.validate.field).repeated = {
+    min_items: 1
+    items: {
+      string: {min_len: 1}
+    }
+  }];
+}
+
+message JoinTokenClaims {
+  string token_id = 1 [(buf.validate.field).string = {uuid: true}];
+  TrustBundle trust = 2 [(buf.validate.field).required = true];
+  AdminCert issuer = 3 [(buf.validate.field).required = true];
+  MembershipCert member_cert = 4 [(buf.validate.field).required = true];
+  repeated BootstrapPeer bootstrap = 5;
+  int64 issued_at_unix = 6;
+  int64 expires_at_unix = 7;
+}
+
+message JoinToken {
+  JoinTokenClaims claims = 1 [(buf.validate.field).required = true];
+  bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
+}
+
+message InviteTokenClaims {
+  string token_id = 1 [(buf.validate.field).string = {uuid: true}];
+  TrustBundle trust = 2 [(buf.validate.field).required = true];
+  AdminCert issuer = 3 [(buf.validate.field).required = true];
+  repeated BootstrapPeer bootstrap = 4 [(buf.validate.field).repeated.min_items = 1];
+  bytes subject_pub = 5 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).bytes = {len: 32}
+  ];
+  int64 issued_at_unix = 6;
+  int64 expires_at_unix = 7;
+}
+
+message InviteToken {
+  InviteTokenClaims claims = 1 [(buf.validate.field).required = true];
+  bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
 }

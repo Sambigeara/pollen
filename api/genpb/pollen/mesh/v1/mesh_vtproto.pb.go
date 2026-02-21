@@ -7,7 +7,8 @@ package meshv1
 import (
 	fmt "fmt"
 	protohelpers "github.com/planetscale/vtprotobuf/protohelpers"
-	v1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	v1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	v11 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	proto "google.golang.org/protobuf/proto"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	io "io"
@@ -114,7 +115,7 @@ func (m *PunchCoordTrigger) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *InviteRequest) MarshalVT() (dAtA []byte, err error) {
+func (m *InviteRedeemRequest) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -127,12 +128,12 @@ func (m *InviteRequest) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *InviteRequest) MarshalToVT(dAtA []byte) (int, error) {
+func (m *InviteRedeemRequest) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *InviteRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *InviteRedeemRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -144,17 +145,39 @@ func (m *InviteRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if len(m.Token) > 0 {
-		i -= len(m.Token)
-		copy(dAtA[i:], m.Token)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Token)))
+	if len(m.SubjectPub) > 0 {
+		i -= len(m.SubjectPub)
+		copy(dAtA[i:], m.SubjectPub)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.SubjectPub)))
+		i--
+		dAtA[i] = 0x12
+	}
+	if m.Token != nil {
+		if vtmsg, ok := interface{}(m.Token).(interface {
+			MarshalToSizedBufferVT([]byte) (int, error)
+		}); ok {
+			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		} else {
+			encoded, err := proto.Marshal(m.Token)
+			if err != nil {
+				return 0, err
+			}
+			i -= len(encoded)
+			copy(dAtA[i:], encoded)
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(encoded)))
+		}
 		i--
 		dAtA[i] = 0xa
 	}
 	return len(dAtA) - i, nil
 }
 
-func (m *InviteResponse) MarshalVT() (dAtA []byte, err error) {
+func (m *InviteRedeemResponse) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -167,12 +190,12 @@ func (m *InviteResponse) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *InviteResponse) MarshalToVT(dAtA []byte) (int, error) {
+func (m *InviteRedeemResponse) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *InviteResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *InviteRedeemResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -183,6 +206,35 @@ func (m *InviteResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.JoinToken != nil {
+		if vtmsg, ok := interface{}(m.JoinToken).(interface {
+			MarshalToSizedBufferVT([]byte) (int, error)
+		}); ok {
+			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		} else {
+			encoded, err := proto.Marshal(m.JoinToken)
+			if err != nil {
+				return 0, err
+			}
+			i -= len(encoded)
+			copy(dAtA[i:], encoded)
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(encoded)))
+		}
+		i--
+		dAtA[i] = 0x1a
+	}
+	if len(m.Reason) > 0 {
+		i -= len(m.Reason)
+		copy(dAtA[i:], m.Reason)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Reason)))
+		i--
+		dAtA[i] = 0x12
 	}
 	if m.Accepted {
 		i--
@@ -355,49 +407,49 @@ func (m *Envelope_PunchCoordTrigger) MarshalToSizedBufferVT(dAtA []byte) (int, e
 	}
 	return len(dAtA) - i, nil
 }
-func (m *Envelope_InviteRequest) MarshalToVT(dAtA []byte) (int, error) {
+func (m *Envelope_InviteRedeemRequest) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *Envelope_InviteRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *Envelope_InviteRedeemRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	i := len(dAtA)
-	if m.InviteRequest != nil {
-		size, err := m.InviteRequest.MarshalToSizedBufferVT(dAtA[:i])
+	if m.InviteRedeemRequest != nil {
+		size, err := m.InviteRedeemRequest.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x2a
+		dAtA[i] = 0x32
 	} else {
 		i = protohelpers.EncodeVarint(dAtA, i, 0)
 		i--
-		dAtA[i] = 0x2a
+		dAtA[i] = 0x32
 	}
 	return len(dAtA) - i, nil
 }
-func (m *Envelope_InviteResponse) MarshalToVT(dAtA []byte) (int, error) {
+func (m *Envelope_InviteRedeemResponse) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *Envelope_InviteResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *Envelope_InviteRedeemResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	i := len(dAtA)
-	if m.InviteResponse != nil {
-		size, err := m.InviteResponse.MarshalToSizedBufferVT(dAtA[:i])
+	if m.InviteRedeemResponse != nil {
+		size, err := m.InviteRedeemResponse.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x32
+		dAtA[i] = 0x3a
 	} else {
 		i = protohelpers.EncodeVarint(dAtA, i, 0)
 		i--
-		dAtA[i] = 0x32
+		dAtA[i] = 0x3a
 	}
 	return len(dAtA) - i, nil
 }
@@ -437,13 +489,23 @@ func (m *PunchCoordTrigger) SizeVT() (n int) {
 	return n
 }
 
-func (m *InviteRequest) SizeVT() (n int) {
+func (m *InviteRedeemRequest) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	l = len(m.Token)
+	if m.Token != nil {
+		if size, ok := interface{}(m.Token).(interface {
+			SizeVT() int
+		}); ok {
+			l = size.SizeVT()
+		} else {
+			l = proto.Size(m.Token)
+		}
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	l = len(m.SubjectPub)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -451,7 +513,7 @@ func (m *InviteRequest) SizeVT() (n int) {
 	return n
 }
 
-func (m *InviteResponse) SizeVT() (n int) {
+func (m *InviteRedeemResponse) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -459,6 +521,20 @@ func (m *InviteResponse) SizeVT() (n int) {
 	_ = l
 	if m.Accepted {
 		n += 2
+	}
+	l = len(m.Reason)
+	if l > 0 {
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.JoinToken != nil {
+		if size, ok := interface{}(m.JoinToken).(interface {
+			SizeVT() int
+		}); ok {
+			l = size.SizeVT()
+		} else {
+			l = proto.Size(m.JoinToken)
+		}
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -545,28 +621,28 @@ func (m *Envelope_PunchCoordTrigger) SizeVT() (n int) {
 	}
 	return n
 }
-func (m *Envelope_InviteRequest) SizeVT() (n int) {
+func (m *Envelope_InviteRedeemRequest) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.InviteRequest != nil {
-		l = m.InviteRequest.SizeVT()
+	if m.InviteRedeemRequest != nil {
+		l = m.InviteRedeemRequest.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	} else {
 		n += 2
 	}
 	return n
 }
-func (m *Envelope_InviteResponse) SizeVT() (n int) {
+func (m *Envelope_InviteRedeemResponse) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.InviteResponse != nil {
-		l = m.InviteResponse.SizeVT()
+	if m.InviteRedeemResponse != nil {
+		l = m.InviteRedeemResponse.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	} else {
 		n += 2
@@ -807,7 +883,7 @@ func (m *PunchCoordTrigger) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *InviteRequest) UnmarshalVT(dAtA []byte) error {
+func (m *InviteRedeemRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -830,15 +906,164 @@ func (m *InviteRequest) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: InviteRequest: wiretype end group for non-group")
+			return fmt.Errorf("proto: InviteRedeemRequest: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: InviteRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: InviteRedeemRequest: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Token", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Token == nil {
+				m.Token = &v1.InviteToken{}
+			}
+			if unmarshal, ok := interface{}(m.Token).(interface {
+				UnmarshalVT([]byte) error
+			}); ok {
+				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+			} else {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.Token); err != nil {
+					return err
+				}
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field SubjectPub", wireType)
+			}
+			var byteLen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				byteLen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if byteLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + byteLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.SubjectPub = append(m.SubjectPub[:0], dAtA[iNdEx:postIndex]...)
+			if m.SubjectPub == nil {
+				m.SubjectPub = []byte{}
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *InviteRedeemResponse) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: InviteRedeemResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: InviteRedeemResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Accepted", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Accepted = bool(v != 0)
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Reason", wireType)
 			}
 			var stringLen uint64
 			for shift := uint(0); ; shift += 7 {
@@ -866,64 +1091,13 @@ func (m *InviteRequest) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Token = string(dAtA[iNdEx:postIndex])
+			m.Reason = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
-		default:
-			iNdEx = preIndex
-			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
-			if err != nil {
-				return err
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field JoinToken", wireType)
 			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *InviteResponse) UnmarshalVT(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return protohelpers.ErrIntOverflow
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: InviteResponse: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: InviteResponse: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Accepted", wireType)
-			}
-			var v int
+			var msglen int
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return protohelpers.ErrIntOverflow
@@ -933,12 +1107,36 @@ func (m *InviteResponse) UnmarshalVT(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				v |= int(b&0x7F) << shift
+				msglen |= int(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
 			}
-			m.Accepted = bool(v != 0)
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.JoinToken == nil {
+				m.JoinToken = &v1.JoinToken{}
+			}
+			if unmarshal, ok := interface{}(m.JoinToken).(interface {
+				UnmarshalVT([]byte) error
+			}); ok {
+				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+			} else {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.JoinToken); err != nil {
+					return err
+				}
+			}
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -1032,7 +1230,7 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 					}
 				}
 			} else {
-				v := &v1.GossipVectorClock{}
+				v := &v11.GossipVectorClock{}
 				if unmarshal, ok := interface{}(v).(interface {
 					UnmarshalVT([]byte) error
 				}); ok {
@@ -1089,7 +1287,7 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 					}
 				}
 			} else {
-				v := &v1.GossipNode{}
+				v := &v11.GossipNode{}
 				if unmarshal, ok := interface{}(v).(interface {
 					UnmarshalVT([]byte) error
 				}); ok {
@@ -1186,50 +1384,9 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 				m.Body = &Envelope_PunchCoordTrigger{PunchCoordTrigger: v}
 			}
 			iNdEx = postIndex
-		case 5:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field InviteRequest", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if oneof, ok := m.Body.(*Envelope_InviteRequest); ok {
-				if err := oneof.InviteRequest.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-					return err
-				}
-			} else {
-				v := &InviteRequest{}
-				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-					return err
-				}
-				m.Body = &Envelope_InviteRequest{InviteRequest: v}
-			}
-			iNdEx = postIndex
 		case 6:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field InviteResponse", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field InviteRedeemRequest", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -1256,16 +1413,57 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if oneof, ok := m.Body.(*Envelope_InviteResponse); ok {
-				if err := oneof.InviteResponse.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+			if oneof, ok := m.Body.(*Envelope_InviteRedeemRequest); ok {
+				if err := oneof.InviteRedeemRequest.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				v := &InviteResponse{}
+				v := &InviteRedeemRequest{}
 				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
-				m.Body = &Envelope_InviteResponse{InviteResponse: v}
+				m.Body = &Envelope_InviteRedeemRequest{InviteRedeemRequest: v}
+			}
+			iNdEx = postIndex
+		case 7:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field InviteRedeemResponse", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if oneof, ok := m.Body.(*Envelope_InviteRedeemResponse); ok {
+				if err := oneof.InviteRedeemResponse.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+			} else {
+				v := &InviteRedeemResponse{}
+				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+				m.Body = &Envelope_InviteRedeemResponse{InviteRedeemResponse: v}
 			}
 			iNdEx = postIndex
 		default:
