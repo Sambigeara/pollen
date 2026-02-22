@@ -176,81 +176,40 @@ func collectConnectionsSection(st *controlv1.GetStatusResponse, opts statusViewO
 	return sec
 }
 
-const (
-	statusRowSection = iota
-	statusRowHeader
-	statusRowData
-	statusRowSpacer
-)
-
 func renderStatusSections(w io.Writer, sections []statusSection) {
-	maxCols := 0
-	for _, sec := range sections {
-		if len(sec.headers) > maxCols {
-			maxCols = len(sec.headers)
-		}
-		for _, row := range sec.rows {
-			if len(row) > maxCols {
-				maxCols = len(row)
-			}
-		}
-	}
-	if maxCols == 0 {
-		return
-	}
-
-	var rowKinds []int //nolint:prealloc
-	padRow := func(src []string) []string {
-		row := make([]string, maxCols)
-		copy(row, src)
-		return row
-	}
-
-	t := table.New().
-		Border(lipgloss.HiddenBorder()).
-		BorderTop(false).
-		BorderBottom(false).
-		BorderLeft(false).
-		BorderRight(false).
-		BorderHeader(false).
-		BorderColumn(false)
+	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")) //nolint:mnd
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).PaddingRight(2) //nolint:mnd
+	dataStyle := lipgloss.NewStyle().PaddingRight(2)                                     //nolint:mnd
 
 	for i, sec := range sections {
 		if i > 0 {
-			t.Row(padRow(nil)...)
-			rowKinds = append(rowKinds, statusRowSpacer)
+			fmt.Fprintln(w)
 		}
-		t.Row(padRow([]string{sec.title})...)
-		rowKinds = append(rowKinds, statusRowSection)
-		t.Row(padRow(sec.headers)...)
-		rowKinds = append(rowKinds, statusRowHeader)
+		fmt.Fprintln(w, sectionStyle.Render(sec.title))
+
+		t := table.New().
+			Border(lipgloss.HiddenBorder()).
+			BorderTop(false).
+			BorderBottom(false).
+			BorderLeft(false).
+			BorderRight(false).
+			BorderHeader(false).
+			BorderColumn(false).
+			Headers(sec.headers...)
+
 		for _, dataRow := range sec.rows {
-			t.Row(padRow(dataRow)...)
-			rowKinds = append(rowKinds, statusRowData)
+			t.Row(dataRow...)
 		}
-	}
 
-	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).PaddingRight(2) //nolint:mnd
-	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).PaddingRight(2)           //nolint:mnd
-	dataStyle := lipgloss.NewStyle().PaddingRight(2)                                               //nolint:mnd
-
-	t.StyleFunc(func(row, col int) lipgloss.Style {
-		if row < 0 || row >= len(rowKinds) {
+		t.StyleFunc(func(row, _ int) lipgloss.Style {
+			if row == table.HeaderRow {
+				return headerStyle
+			}
 			return dataStyle
-		}
-		switch rowKinds[row] {
-		case statusRowSection:
-			return sectionStyle
-		case statusRowHeader:
-			return headerStyle
-		default:
-			return dataStyle
-		}
-	})
+		})
 
-	fmt.Fprintln(w, t)
+		fmt.Fprintln(w, t)
 
-	for _, sec := range sections {
 		if sec.footer != "" {
 			fmt.Fprintln(w)
 			fmt.Fprintln(w, sec.footer)
