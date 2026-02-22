@@ -6,9 +6,9 @@ import (
 	"io"
 	"strconv"
 
+	"connectrpc.com/connect"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
-	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
@@ -81,9 +81,9 @@ type statusViewOpts struct {
 
 type statusSection struct {
 	title   string
+	footer  string
 	headers []string
 	rows    [][]string
-	footer  string
 }
 
 func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
