@@ -84,6 +84,7 @@ func main() {
 		newUnserveCmd(),
 		newConnectCmd(),
 		newDaemonCmd(),
+		newLogsCmd(),
 		newUpgradeCmd(),
 	)
 
