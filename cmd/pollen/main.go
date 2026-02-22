@@ -1418,6 +1418,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
 	}
 
 	client := newControlClient(cmd)
