@@ -194,12 +194,43 @@ func newUpCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "up",
 		Short: "Start a Pollen node",
-		Run:   runNode,
+		Run:   runUp,
 	}
+	cmd.Flags().BoolP("daemon", "d", false, "Start as a background service")
 	cmd.Flags().Int("port", config.DefaultBootstrapPort, "Listening port")
 	cmd.Flags().IPSlice("ips", []net.IP{}, "Advertised IPs")
 	cmd.Flags().String("join", "", "Optional join or invite token for one-shot enrollment")
 	return cmd
+}
+
+func runUp(cmd *cobra.Command, args []string) {
+	daemon, _ := cmd.Flags().GetBool("daemon")
+
+	if daemon {
+		// -d is incompatible with foreground-only flags.
+		for _, name := range []string{"port", "ips", "join"} {
+			if cmd.Flags().Changed(name) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "-d/--daemon cannot be combined with --%s; configure the service via `pollen daemon install`\n", name)
+				return
+			}
+		}
+		runUpDaemon(cmd)
+		return
+	}
+
+	// Foreground mode: warn if a daemon instance already owns the socket.
+	pollenDir, err := pollenPath(cmd)
+	if err == nil {
+		sockPath := filepath.Join(pollenDir, socketName)
+		if active, _ := nodeSocketActive(sockPath); active {
+			if daemonServiceInstalled() {
+				fmt.Fprintln(cmd.ErrOrStderr(), "a daemon instance is already running; use `pollen down` to stop it or `pollen up -d` to manage it")
+				return
+			}
+		}
+	}
+
+	runNode(cmd, args)
 }
 
 func newDownCmd() *cobra.Command {
