@@ -840,6 +840,23 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 		return fmt.Errorf("save relay bootstrap details: %w", err)
 	}
 
+	sockPath := filepath.Join(pollenDir, socketName)
+	if active, _ := nodeSocketActive(sockPath); active {
+		client := newControlClient(cmd)
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if _, err := client.ConnectPeer(ctx, connect.NewRequest(&controlv1.ConnectPeerRequest{
+			PeerId: relayPub,
+			Addrs:  relayAddrs,
+		})); err != nil {
+			return fmt.Errorf("connect running node to relay: %w", err)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "relay is ready; connected to running node")
+		return nil
+	}
+
 	_, localPub, err := node.GenIdentityKey(pollenDir)
 	if err != nil {
 		return err

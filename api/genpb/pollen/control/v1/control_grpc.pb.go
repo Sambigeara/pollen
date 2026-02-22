@@ -25,6 +25,7 @@ const (
 	ControlService_RegisterService_FullMethodName   = "/pollen.control.v1.ControlService/RegisterService"
 	ControlService_UnregisterService_FullMethodName = "/pollen.control.v1.ControlService/UnregisterService"
 	ControlService_ConnectService_FullMethodName    = "/pollen.control.v1.ControlService/ConnectService"
+	ControlService_ConnectPeer_FullMethodName       = "/pollen.control.v1.ControlService/ConnectPeer"
 )
 
 // ControlServiceClient is the client API for ControlService service.
@@ -37,6 +38,7 @@ type ControlServiceClient interface {
 	RegisterService(ctx context.Context, in *RegisterServiceRequest, opts ...grpc.CallOption) (*RegisterServiceResponse, error)
 	UnregisterService(ctx context.Context, in *UnregisterServiceRequest, opts ...grpc.CallOption) (*UnregisterServiceResponse, error)
 	ConnectService(ctx context.Context, in *ConnectServiceRequest, opts ...grpc.CallOption) (*ConnectServiceResponse, error)
+	ConnectPeer(ctx context.Context, in *ConnectPeerRequest, opts ...grpc.CallOption) (*ConnectPeerResponse, error)
 }
 
 type controlServiceClient struct {
@@ -107,6 +109,16 @@ func (c *controlServiceClient) ConnectService(ctx context.Context, in *ConnectSe
 	return out, nil
 }
 
+func (c *controlServiceClient) ConnectPeer(ctx context.Context, in *ConnectPeerRequest, opts ...grpc.CallOption) (*ConnectPeerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConnectPeerResponse)
+	err := c.cc.Invoke(ctx, ControlService_ConnectPeer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ControlServiceServer is the server API for ControlService service.
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
@@ -117,6 +129,7 @@ type ControlServiceServer interface {
 	RegisterService(context.Context, *RegisterServiceRequest) (*RegisterServiceResponse, error)
 	UnregisterService(context.Context, *UnregisterServiceRequest) (*UnregisterServiceResponse, error)
 	ConnectService(context.Context, *ConnectServiceRequest) (*ConnectServiceResponse, error)
+	ConnectPeer(context.Context, *ConnectPeerRequest) (*ConnectPeerResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
 
@@ -144,6 +157,9 @@ func (UnimplementedControlServiceServer) UnregisterService(context.Context, *Unr
 }
 func (UnimplementedControlServiceServer) ConnectService(context.Context, *ConnectServiceRequest) (*ConnectServiceResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ConnectService not implemented")
+}
+func (UnimplementedControlServiceServer) ConnectPeer(context.Context, *ConnectPeerRequest) (*ConnectPeerResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ConnectPeer not implemented")
 }
 func (UnimplementedControlServiceServer) mustEmbedUnimplementedControlServiceServer() {}
 func (UnimplementedControlServiceServer) testEmbeddedByValue()                        {}
@@ -274,6 +290,24 @@ func _ControlService_ConnectService_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_ConnectPeer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConnectPeerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).ConnectPeer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_ConnectPeer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).ConnectPeer(ctx, req.(*ConnectPeerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ControlService_ServiceDesc is the grpc.ServiceDesc for ControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -304,6 +338,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ConnectService",
 			Handler:    _ControlService_ConnectService_Handler,
+		},
+		{
+			MethodName: "ConnectPeer",
+			Handler:    _ControlService_ConnectPeer_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

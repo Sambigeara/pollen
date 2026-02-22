@@ -13,6 +13,7 @@ service ControlService {
   rpc RegisterService(RegisterServiceRequest) returns (RegisterServiceResponse);
   rpc UnregisterService(UnregisterServiceRequest) returns (UnregisterServiceResponse);
   rpc ConnectService(ConnectServiceRequest) returns (ConnectServiceResponse);
+  rpc ConnectPeer(ConnectPeerRequest) returns (ConnectPeerResponse);
 }
 
 message NodeRef {
@@ -103,6 +104,13 @@ message UnregisterServiceRequest {
 }
 
 message UnregisterServiceResponse {}
+
+message ConnectPeerRequest {
+  bytes peer_id = 1;
+  repeated string addrs = 2;
+}
+
+message ConnectPeerResponse {}
 
 message ConnectServiceRequest {
   NodeRef node = 1;
