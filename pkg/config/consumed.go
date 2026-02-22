@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
@@ -29,6 +30,7 @@ type consumedInviteState struct {
 }
 
 type ConsumedInvites struct {
+	mu      sync.Mutex
 	entries map[string]consumedInviteRecord
 	path    string
 }
@@ -57,6 +59,9 @@ func (c *ConsumedInvites) TryConsume(token *admissionv1.InviteToken, now time.Ti
 	if tokenID == "" {
 		return false, errors.New("invite token missing token id")
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	c.dropExpired(now)
 
