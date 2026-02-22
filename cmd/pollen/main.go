@@ -189,7 +189,6 @@ func newInviteCmd() *cobra.Command {
 	return cmd
 }
 
-
 func newServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "serve [port] [name]",
@@ -722,11 +721,12 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	relayPub, err := parsePublicKeyHex(strings.TrimSpace(string(out)))
+	relayPeerKey, err := types.PeerKeyFromString(strings.TrimSpace(string(out)))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
+	relayPub := ed25519.PublicKey(relayPeerKey.Bytes())
 
 	if err := bootstrapAccept(cmd, relayPub, relayAddrs, host); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
@@ -937,12 +937,12 @@ func resolveInviteSubject(subjectFlag string, args []string) (ed25519.PublicKey,
 		return nil, nil
 	}
 
-	pub, err := parsePublicKeyHex(subject)
+	pk, err := types.PeerKeyFromString(subject)
 	if err != nil {
 		return nil, err
 	}
 
-	return pub, nil
+	return ed25519.PublicKey(pk.Bytes()), nil
 }
 
 func parseBootstrapSpecs(specs []string) ([]*admissionv1.BootstrapPeer, error) {
@@ -983,10 +983,11 @@ func parseBootstrapSpec(spec string) (bootstrapInfo, error) {
 		return bootstrapInfo{}, errors.New("invalid bootstrap format, expected <peer-pub-hex>@<host:port>")
 	}
 
-	pub, err := parsePublicKeyHex(parts[0])
+	pk, err := types.PeerKeyFromString(parts[0])
 	if err != nil {
 		return bootstrapInfo{}, fmt.Errorf("parse bootstrap peer key: %w", err)
 	}
+	pub := ed25519.PublicKey(pk.Bytes())
 
 	addr, err := config.NormalizeRelayAddr(parts[1])
 	if err != nil {
@@ -1123,10 +1124,6 @@ func waitForRelayReady(cmd *cobra.Command, sshTarget string) error {
 }
 
 func inferRelayAddrFromSSHTarget(target string, relayPort int) (string, error) {
-	if relayPort < minPort || relayPort > maxPort {
-		return "", errors.New("relay port is out of range")
-	}
-
 	host := strings.TrimSpace(target)
 	if host == "" {
 		return "", errors.New("ssh target is empty")
@@ -1154,7 +1151,11 @@ func parseAdminPubFromInitOutput(out string) (ed25519.PublicKey, error) {
 		if !strings.HasPrefix(line, "admin_pub:") {
 			continue
 		}
-		return parsePublicKeyHex(strings.TrimSpace(strings.TrimPrefix(line, "admin_pub:")))
+		pk, err := types.PeerKeyFromString(strings.TrimSpace(strings.TrimPrefix(line, "admin_pub:")))
+		if err != nil {
+			return nil, err
+		}
+		return ed25519.PublicKey(pk.Bytes()), nil
 	}
 
 	return nil, errors.New("failed to parse relay admin public key")
@@ -1180,18 +1181,6 @@ func localBootstrapPeer(cmd *cobra.Command) (*admissionv1.BootstrapPeer, error) 
 		Addrs:   append([]string(nil), self.GetAddrs()...),
 	}, nil
 }
-
-func parsePublicKeyHex(v string) (ed25519.PublicKey, error) {
-	b, err := hex.DecodeString(strings.TrimSpace(v))
-	if err != nil {
-		return nil, fmt.Errorf("invalid public key encoding: %w", err)
-	}
-	if len(b) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("invalid public key length: expected %d bytes", ed25519.PublicKeySize)
-	}
-	return ed25519.PublicKey(b), nil
-}
-
 
 func runServe(cmd *cobra.Command, args []string) {
 	portStr := args[0]

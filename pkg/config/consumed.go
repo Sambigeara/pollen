@@ -30,9 +30,9 @@ type consumedInviteState struct {
 }
 
 type ConsumedInvites struct {
-	mu      sync.Mutex
 	entries map[string]consumedInviteRecord
 	path    string
+	mu      sync.Mutex
 }
 
 func LoadConsumedInvites(pollenDir string, now time.Time) (*ConsumedInvites, error) {
