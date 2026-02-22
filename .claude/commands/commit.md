@@ -1,12 +1,12 @@
-Inspect the currently staged changes and commit them.
+Stage changes relevant to the current task and commit them.
 
 ## Steps
 
-1. Run `git diff --cached` to see what is staged. If nothing is staged, tell the user and stop.
-2. Run `git diff --cached --stat` to get a high-level summary of files changed.
-3. Analyze the staged diff carefully and draft a commit message following the style rules below.
-4. Show the user the proposed commit message and a brief rationale. Ask them to approve, edit, or reject it before committing.
-5. Once approved, run `git commit -m "<message>"` (no Co-Authored-By trailer).
+1. Review the conversation context to understand which files were changed as part of the current task.
+2. Run `git status` to see all modified and untracked files. Stage only the files relevant to the current task using `git add <file>...`. Do not use `git add -A` or `git add .`.
+3. Run `git diff --cached` and `git diff --cached --stat` to confirm what is staged.
+4. Analyze the staged diff carefully and draft a commit message following the style rules below.
+5. Run `git commit -s -m "<message>"` immediately — do not ask for confirmation.
 
 ## Commit message style rules
 
