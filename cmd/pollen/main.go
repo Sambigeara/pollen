@@ -791,6 +791,12 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 		ctx = context.Background()
 	}
 
+	fmt.Fprintln(cmd.OutOrStdout(), "ensuring pollen is installed on remote host...")
+	if err := ensureRemotePollen(ctx, host); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
 	out, err := exec.CommandContext(ctx, "ssh", host, "pollen", "id").CombinedOutput()
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "failed to fetch remote node identity: %v\n%s\n", err, strings.TrimSpace(string(out)))
@@ -1069,6 +1075,27 @@ type bootstrapInfo struct {
 	pub  ed25519.PublicKey
 }
 
+func ensureRemotePollen(ctx context.Context, sshTarget string) error {
+	script, err := fetchInstallScript()
+	if err != nil {
+		return err
+	}
+
+	args := []string{sshTarget, "bash", "-s", "--"}
+	if version != "dev" {
+		args = append(args, "--version", version)
+	}
+
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.Stdin = bytes.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to install pollen on remote host: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+
+	return nil
+}
+
 func startRelayOverSSH(cmd *cobra.Command, sshTarget, token string) error {
 	remoteStart := fmt.Sprintf("nohup pollen up --join %q >/tmp/pollen.log 2>&1 < /dev/null &", token)
 	startOut, err := exec.CommandContext(cmd.Context(), "ssh", sshTarget, remoteStart).CombinedOutput()
@@ -1104,7 +1131,7 @@ func restartRelayOverSSH(cmd *cobra.Command, sshTarget string) error {
 		ctx = context.Background()
 	}
 
-	restartCmd := "pollen down >/dev/null 2>&1 || true; nohup pollen up >/tmp/pollen.log 2>&1 < /dev/null &"
+	restartCmd := "pollen down >/dev/null 2>&1 || true; pollen up -d"
 	out, err := exec.CommandContext(ctx, "ssh", sshTarget, restartCmd).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -1181,7 +1208,8 @@ func waitForRelayReady(cmd *cobra.Command, sshTarget string) error {
 		return nil
 	}
 
-	logOut, _ := exec.CommandContext(ctx, "ssh", sshTarget, "tail -n 120 /tmp/pollen.log 2>/dev/null || true").CombinedOutput()
+	logCmd := "tail -n 120 ~/Library/Logs/pollen.log 2>/dev/null || journalctl --user -u pollen -n 120 --no-pager 2>/dev/null || tail -n 120 /tmp/pollen.log 2>/dev/null || true"
+	logOut, _ := exec.CommandContext(ctx, "ssh", sshTarget, logCmd).CombinedOutput()
 	return fmt.Errorf("relay failed to become ready\nstatus output: %s\nrelay log:\n%s", strings.TrimSpace(string(out)), strings.TrimSpace(string(logOut)))
 }
 
@@ -1509,7 +1537,7 @@ func newUpgradeCmd() *cobra.Command {
 	return cmd
 }
 
-func runUpgrade(cmd *cobra.Command, _ []string) {
+func fetchInstallScript() ([]byte, error) {
 	repo := os.Getenv("POLLEN_REPO")
 	if repo == "" {
 		repo = defaultRepo
@@ -1518,19 +1546,26 @@ func runUpgrade(cmd *cobra.Command, _ []string) {
 
 	resp, err := (&http.Client{Timeout: scriptFetchTimeout}).Get(scriptURL) //nolint:noctx
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to fetch install script: %v\n", err)
-		return
+		return nil, fmt.Errorf("failed to fetch install script: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to fetch install script: HTTP %d\n", resp.StatusCode)
-		return
+		return nil, fmt.Errorf("failed to fetch install script: HTTP %d", resp.StatusCode)
 	}
 
 	script, err := io.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to read install script: %v\n", err)
+		return nil, fmt.Errorf("failed to read install script: %w", err)
+	}
+
+	return script, nil
+}
+
+func runUpgrade(cmd *cobra.Command, _ []string) {
+	script, err := fetchInstallScript()
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
 
