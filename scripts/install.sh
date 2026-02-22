@@ -217,6 +217,11 @@ default_install_dir() {
 		return 0
 	fi
 
+	if command -v sudo >/dev/null 2>&1; then
+		printf '%s\n' "/usr/local/bin"
+		return 0
+	fi
+
 	printf '%s\n' "${HOME}/.local/bin"
 }
 
