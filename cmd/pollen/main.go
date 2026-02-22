@@ -247,12 +247,14 @@ func newDownCmd() *cobra.Command {
 }
 
 func newJoinCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "join <token>",
 		Short: "Join a cluster using a join or invite token",
 		Args:  cobra.ExactArgs(1),
 		Run:   runJoin,
 	}
+	cmd.Flags().Bool("no-start", false, "Enroll credentials without starting the daemon")
+	return cmd
 }
 
 func runJoin(cmd *cobra.Command, args []string) {
@@ -323,7 +325,14 @@ func runJoin(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pollen up -d` to start the node")
+	noStart, _ := cmd.Flags().GetBool("no-start")
+	if noStart {
+		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pollen up -d` to start the node")
+		return
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; starting daemon")
+	runUpDaemon(cmd)
 }
 
 func newInviteCmd() *cobra.Command {
@@ -1203,7 +1212,8 @@ func startRelayOverSSH(cmd *cobra.Command, sshTarget, token string) error {
 	}
 
 	// Enroll the relay into the cluster, then start the daemon.
-	remoteJoin := fmt.Sprintf("pollen join %q && pollen up -d", token)
+	// Use --no-start because bootstrap needs to provision admin delegation before the final start.
+	remoteJoin := fmt.Sprintf("pollen join --no-start %q && pollen up -d", token)
 	out, err := exec.CommandContext(ctx, "ssh", sshTarget, remoteJoin).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
