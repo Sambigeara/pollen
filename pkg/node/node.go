@@ -43,6 +43,11 @@ const (
 	ipRefreshInterval  = 5 * time.Minute
 )
 
+type BootstrapPeer struct {
+	PeerKey types.PeerKey
+	Addrs   []string
+}
+
 type Config struct {
 	AdvertisedIPs       []string
 	Port                int
@@ -50,6 +55,7 @@ type Config struct {
 	PeerTickInterval    time.Duration
 	GossipJitter        float64
 	DisableGossipJitter bool
+	BootstrapPeers      []BootstrapPeer
 }
 
 type HandlerFn func(ctx context.Context, from types.PeerKey, payload []byte) error
@@ -111,6 +117,7 @@ func (n *Node) Start(ctx context.Context) error {
 	if err := n.mesh.Start(ctx); err != nil {
 		return err
 	}
+	n.connectBootstrapPeers(ctx)
 	n.tun.Start(ctx)
 	go n.recvLoop(ctx)
 
@@ -145,6 +152,26 @@ func (n *Node) Start(ctx context.Context) error {
 			n.handlePeerInput(in)
 		case in := <-n.localPeerEvents:
 			n.handlePeerInput(in)
+		}
+	}
+}
+
+func (n *Node) connectBootstrapPeers(ctx context.Context) {
+	for _, bp := range n.conf.BootstrapPeers {
+		addrs := make([]*net.UDPAddr, 0, len(bp.Addrs))
+		for _, a := range bp.Addrs {
+			addr, err := net.ResolveUDPAddr("udp", a)
+			if err != nil {
+				n.log.Warnw("bootstrap peer: resolve address failed", "addr", a, "err", err)
+				continue
+			}
+			addrs = append(addrs, addr)
+		}
+		if len(addrs) == 0 {
+			continue
+		}
+		if err := n.mesh.Connect(ctx, bp.PeerKey, addrs); err != nil {
+			n.log.Warnw("bootstrap peer: connect failed", "peer", bp.PeerKey.Short(), "err", err)
 		}
 	}
 }
