@@ -547,6 +547,12 @@ func toGossipNode(peerID types.PeerKey, rec nodeRecord) *statev1.GossipNode {
 	for v := range maps.Values(rec.Services) {
 		services = append(services, v)
 	}
+	sort.Slice(services, func(i, j int) bool {
+		if services[i].GetName() != services[j].GetName() {
+			return services[i].GetName() < services[j].GetName()
+		}
+		return services[i].GetPort() < services[j].GetPort()
+	})
 	return &statev1.GossipNode{
 		PeerId:         peerID.String(),
 		Counter:        rec.Counter,
@@ -628,14 +634,22 @@ func sameServices(a, b []*statev1.Service) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if a[i] == nil && b[i] == nil {
+	type key struct {
+		name string
+		port uint32
+	}
+	set := make(map[key]struct{}, len(a))
+	for _, s := range a {
+		if s == nil {
 			continue
 		}
-		if a[i] == nil || b[i] == nil {
-			return false
+		set[key{s.GetName(), s.GetPort()}] = struct{}{}
+	}
+	for _, s := range b {
+		if s == nil {
+			continue
 		}
-		if a[i].GetName() != b[i].GetName() || a[i].GetPort() != b[i].GetPort() {
+		if _, ok := set[key{s.GetName(), s.GetPort()}]; !ok {
 			return false
 		}
 	}
