@@ -56,11 +56,18 @@ const (
 	maxPort                      = 65535
 )
 
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 func main() {
 	rootCmd := &cobra.Command{Use: "pollen"}
 	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted")
 
 	rootCmd.AddCommand(
+		newVersionCmd(),
 		newInitCmd(),
 		newPurgeCmd(),
 		newAdminCmd(),
@@ -109,6 +116,31 @@ func newAdminCmd() *cobra.Command {
 		Hidden: true,
 	})
 
+	return cmd
+}
+
+func newVersionCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "version",
+		Short: "Show Pollen version information",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			short, err := cmd.Flags().GetBool("short")
+			if err != nil {
+				fmt.Fprintln(cmd.ErrOrStderr(), err)
+				return
+			}
+
+			if short {
+				fmt.Fprintln(cmd.OutOrStdout(), version)
+				return
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "version: %s\ncommit: %s\ndate: %s\n", version, commit, date)
+		},
+	}
+
+	cmd.Flags().Bool("short", false, "Print version only")
 	return cmd
 }
 
@@ -232,7 +264,7 @@ func runNode(cmd *cobra.Command, args []string) {
 	defer func() { _ = zap.S().Sync() }()
 
 	logger := zap.S()
-	logger.Infow("starting pollen...", "version", "0.1.0")
+	logger.Infow("starting pollen...", "version", version)
 
 	port, _ := cmd.Flags().GetInt("port")
 	joinToken, _ := cmd.Flags().GetString("join")

@@ -13,6 +13,35 @@ This README is intentionally short and focused on day-to-day commands.
 - `pollen purge [--all]` reset local cluster state (`--all` also removes node keys)
 - `pollen status` show nodes/services
 - `pollen invite [--subject <node-pub>]` create an open or subject-bound invite token
+- `pollen version [--short]` show CLI version/build metadata
+
+## Install (linux + macOS)
+
+Install latest release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash
+```
+
+Install a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash -s -- --version v0.2.0
+```
+
+Configure a per-user service runner (optional):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash -s -- --with-service --start
+```
+
+Defaults and behavior:
+
+- Installer supports `linux` and `darwin` on `amd64` and `arm64`
+- Installs to `/usr/local/bin` when writable; otherwise `~/.local/bin`
+- Checks release checksums before install
+- Updates are semver-gated; potentially breaking upgrades require `--allow-breaking`
+- Use `--dir <path>` to set the Pollen state directory used by service setup
 
 ## Quick start: laptop + public relay
 
