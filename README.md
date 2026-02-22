@@ -12,7 +12,7 @@ This README is intentionally short and focused on day-to-day commands.
 ## Core commands
 
 - `pollen init` initialize local root cluster state
-- `pollen up [--join <token>]` start/resume a node (`--join` does one-shot enroll+start)
+- `pollen up [--join <token>]` start/resume a node (`--join` does one-shot enroll+start; `-d` starts as a background service)
 - `pollen down` gracefully stop a running local node
 - `pollen purge [--all]` reset local cluster state (`--all` also removes node keys)
 - `pollen status` show nodes/services
@@ -39,6 +39,12 @@ Configure autostart (optional):
 
 ```bash
 pollen daemon install --start
+```
+
+After `pollen down`, restart the background node with:
+
+```bash
+pollen up -d
 ```
 
 Defaults and behavior:

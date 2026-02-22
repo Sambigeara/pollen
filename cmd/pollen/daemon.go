@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -154,42 +155,28 @@ func runDaemonStatus(cmd *cobra.Command, _ []string) {
 
 // --- launchd (macOS) ---
 
-func daemonInstallLaunchd(cmd *cobra.Command) {
-	force, _ := cmd.Flags().GetBool("force")
-	start, _ := cmd.Flags().GetBool("start")
-
-	plistPath := launchdPlistPath()
-
-	if !force {
-		if _, err := os.Stat(plistPath); err == nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "service file already exists: %s\nuse --force to overwrite\n", plistPath)
-			return
-		}
-	}
-
+// writeLaunchdPlist writes (or overwrites) the launchd plist file.
+func writeLaunchdPlist(cmd *cobra.Command) error {
 	binary, err := resolveExecutable()
 	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		return err
 	}
 
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		return err
 	}
 
+	plistPath := launchdPlistPath()
 	logPath := filepath.Join(os.Getenv("HOME"), "Library", "Logs", "pollen.log")
 
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil { //nolint:mnd
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		return err
 	}
 
 	f, err := os.Create(plistPath)
 	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		return err
 	}
 	defer f.Close()
 
@@ -206,11 +193,29 @@ func daemonInstallLaunchd(cmd *cobra.Command) {
 	}
 
 	if err := launchdPlistTmpl.Execute(f, data); err != nil {
+		return err
+	}
+	// Close the file before launchctl reads it.
+	return f.Close()
+}
+
+func daemonInstallLaunchd(cmd *cobra.Command) {
+	force, _ := cmd.Flags().GetBool("force")
+	start, _ := cmd.Flags().GetBool("start")
+
+	plistPath := launchdPlistPath()
+
+	if !force {
+		if _, err := os.Stat(plistPath); err == nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "service file already exists: %s\nuse --force to overwrite\n", plistPath)
+			return
+		}
+	}
+
+	if err := writeLaunchdPlist(cmd); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
-	// Close the file before launchctl reads it.
-	f.Close()
 
 	fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", plistPath)
 
@@ -287,6 +292,44 @@ func daemonStatusLaunchd(cmd *cobra.Command) {
 
 // --- systemd (Linux) ---
 
+// writeSystemdUnit writes (or overwrites) the systemd user unit file.
+func writeSystemdUnit(cmd *cobra.Command) error {
+	binary, err := resolveExecutable()
+	if err != nil {
+		return err
+	}
+
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		return err
+	}
+
+	unitPath := systemdUnitPath()
+
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil { //nolint:mnd
+		return err
+	}
+
+	f, err := os.Create(unitPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	data := struct {
+		Binary    string
+		PollenDir string
+	}{
+		Binary:    binary,
+		PollenDir: pollenDir,
+	}
+
+	if err := systemdUnitTmpl.Execute(f, data); err != nil {
+		return err
+	}
+	return f.Close()
+}
+
 func daemonInstallSystemd(cmd *cobra.Command) {
 	force, _ := cmd.Flags().GetBool("force")
 	start, _ := cmd.Flags().GetBool("start")
@@ -300,39 +343,7 @@ func daemonInstallSystemd(cmd *cobra.Command) {
 		}
 	}
 
-	binary, err := resolveExecutable()
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
-	}
-
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
-	}
-
-	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil { //nolint:mnd
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
-	}
-
-	f, err := os.Create(unitPath)
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
-	}
-	defer f.Close()
-
-	data := struct {
-		Binary    string
-		PollenDir string
-	}{
-		Binary:    binary,
-		PollenDir: pollenDir,
-	}
-
-	if err := systemdUnitTmpl.Execute(f, data); err != nil {
+	if err := writeSystemdUnit(cmd); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
@@ -390,5 +401,152 @@ func daemonStatusSystemd(cmd *cobra.Command) {
 		fmt.Fprintln(cmd.OutOrStdout(), "running: yes")
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "running: no")
+	}
+}
+
+// --- pollen up -d ---
+
+const daemonStartTimeout = 5 * time.Second
+
+// daemonServiceInstalled returns true if the platform service file exists.
+func daemonServiceInstalled() bool {
+	switch runtime.GOOS {
+	case osDarwin:
+		_, err := os.Stat(launchdPlistPath())
+		return err == nil
+	case osLinux:
+		_, err := os.Stat(systemdUnitPath())
+		return err == nil
+	default:
+		return false
+	}
+}
+
+// waitForSocket polls nodeSocketActive until the socket responds or timeout elapses.
+func waitForSocket(sockPath string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if active, _ := nodeSocketActive(sockPath); active {
+			return true
+		}
+		time.Sleep(250 * time.Millisecond) //nolint:mnd
+	}
+	return false
+}
+
+// runUpDaemon dispatches pollen up -d to the platform-specific daemon start flow.
+func runUpDaemon(cmd *cobra.Command) {
+	switch runtime.GOOS {
+	case osDarwin:
+		upDaemonLaunchd(cmd)
+	case osLinux:
+		upDaemonSystemd(cmd)
+	default:
+		fmt.Fprintf(cmd.ErrOrStderr(), "unsupported platform: %s (supported: darwin, linux)\n", runtime.GOOS)
+	}
+}
+
+func upDaemonLaunchd(cmd *cobra.Command) {
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	sockPath := filepath.Join(pollenDir, socketName)
+
+	// Already running?
+	if active, _ := nodeSocketActive(sockPath); active {
+		fmt.Fprintln(cmd.OutOrStdout(), "node is already running")
+		return
+	}
+
+	plistPath := launchdPlistPath()
+
+	// Auto-install if plist doesn't exist.
+	if _, err := os.Stat(plistPath); err != nil {
+		fmt.Fprintln(cmd.OutOrStdout(), "service not installed; installing now")
+		if writeErr := writeLaunchdPlist(cmd); writeErr != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), writeErr)
+			return
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", plistPath)
+	}
+
+	ctx := cmd.Context()
+	uid := os.Getuid()
+	guiDomain := fmt.Sprintf("gui/%d", uid)
+	guiTarget := fmt.Sprintf("gui/%d/%s", uid, launchdLabel)
+	userDomain := fmt.Sprintf("user/%d", uid)
+	userTarget := fmt.Sprintf("user/%d/%s", uid, launchdLabel)
+
+	// Try kickstart first (works for loaded-but-stopped jobs).
+	if err := exec.CommandContext(ctx, "launchctl", "kickstart", guiTarget).Run(); err != nil { //nolint:gosec
+		if err2 := exec.CommandContext(ctx, "launchctl", "kickstart", userTarget).Run(); err2 != nil { //nolint:gosec
+			// Fallback: enable + bootstrap (for unloaded jobs).
+			_ = exec.CommandContext(ctx, "launchctl", "enable", guiTarget).Run()  //nolint:errcheck,gosec
+			_ = exec.CommandContext(ctx, "launchctl", "enable", userTarget).Run() //nolint:errcheck,gosec
+
+			if err3 := exec.CommandContext(ctx, "launchctl", "bootstrap", guiDomain, plistPath).Run(); err3 != nil { //nolint:gosec
+				if err4 := exec.CommandContext(ctx, "launchctl", "bootstrap", userDomain, plistPath).Run(); err4 != nil { //nolint:gosec
+					fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\n", err4)
+					return
+				}
+			}
+		}
+	}
+
+	if waitForSocket(sockPath, daemonStartTimeout) {
+		fmt.Fprintln(cmd.OutOrStdout(), "node started (background)")
+	} else {
+		fmt.Fprintln(cmd.ErrOrStderr(), "service was started but node did not become ready; check logs with: cat ~/Library/Logs/pollen.log")
+	}
+}
+
+func upDaemonSystemd(cmd *cobra.Command) {
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	sockPath := filepath.Join(pollenDir, socketName)
+
+	// Already running?
+	if active, _ := nodeSocketActive(sockPath); active {
+		fmt.Fprintln(cmd.OutOrStdout(), "node is already running")
+		return
+	}
+
+	unitPath := systemdUnitPath()
+
+	// Auto-install if unit doesn't exist.
+	if _, err := os.Stat(unitPath); err != nil {
+		fmt.Fprintln(cmd.OutOrStdout(), "service not installed; installing now")
+		if writeErr := writeSystemdUnit(cmd); writeErr != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), writeErr)
+			return
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", unitPath)
+
+		ctx := cmd.Context()
+		if reloadErr := exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run(); reloadErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: systemctl daemon-reload failed: %v\n", reloadErr)
+		}
+		if enableErr := exec.CommandContext(ctx, "systemctl", "--user", "enable", systemdUnitName).Run(); enableErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: systemctl enable failed: %v\n", enableErr)
+		}
+	}
+
+	ctx := cmd.Context()
+	if err := exec.CommandContext(ctx, "systemctl", "--user", "start", systemdUnitName).Run(); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\n", err)
+		return
+	}
+
+	if waitForSocket(sockPath, daemonStartTimeout) {
+		fmt.Fprintln(cmd.OutOrStdout(), "node started (background)")
+	} else {
+		fmt.Fprintln(cmd.ErrOrStderr(), "service was started but node did not become ready; check logs with: journalctl --user -u pollen.service")
 	}
 }
