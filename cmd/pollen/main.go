@@ -78,6 +78,7 @@ func main() {
 		newBootstrapCmd(),
 		newUpCmd(),
 		newDownCmd(),
+		newJoinCmd(),
 		newInviteCmd(),
 		newStatusCmd(),
 		newServeCmd(),
@@ -204,7 +205,6 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().BoolP("daemon", "d", false, "Start as a background service")
 	cmd.Flags().Int("port", config.DefaultBootstrapPort, "Listening port")
 	cmd.Flags().IPSlice("ips", []net.IP{}, "Advertised IPs")
-	cmd.Flags().String("join", "", "Optional join or invite token for one-shot enrollment")
 	return cmd
 }
 
@@ -213,7 +213,7 @@ func runUp(cmd *cobra.Command, args []string) {
 
 	if daemon {
 		// -d is incompatible with foreground-only flags.
-		for _, name := range []string{"port", "ips", "join"} {
+		for _, name := range []string{"port", "ips"} {
 			if cmd.Flags().Changed(name) {
 				fmt.Fprintf(cmd.ErrOrStderr(), "-d/--daemon cannot be combined with --%s; configure the service via `pollen daemon install`\n", name)
 				return
@@ -235,7 +235,7 @@ func runUp(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	runNode(cmd, args)
+	runNode(cmd)
 }
 
 func newDownCmd() *cobra.Command {
@@ -244,6 +244,86 @@ func newDownCmd() *cobra.Command {
 		Short: "Gracefully stop the local running node",
 		Run:   runDown,
 	}
+}
+
+func newJoinCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "join <token>",
+		Short: "Join a cluster using a join or invite token",
+		Args:  cobra.ExactArgs(1),
+		Run:   runJoin,
+	}
+}
+
+func runJoin(cmd *cobra.Command, args []string) {
+	rawToken := args[0]
+
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	privKey, pubKey, err := node.GenIdentityKey(pollenDir)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	tkn, err := resolveJoinToken(ctx, privKey, rawToken)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to resolve token: %v\n", err)
+		return
+	}
+
+	creds, credErr := auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, tkn, time.Now())
+	if credErr != nil {
+		if errors.Is(credErr, auth.ErrDifferentCluster) {
+			// Purge old cluster credentials and retry.
+			for _, name := range []string{"cluster.trust.pb", "membership.cert.pb"} {
+				_ = os.Remove(filepath.Join(pollenDir, "keys", name))
+			}
+			creds, credErr = auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, tkn, time.Now())
+		}
+		if credErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "failed to enroll credentials: %v\n", credErr)
+			return
+		}
+	}
+	_ = creds // credentials are persisted to disk; we don't need them here
+
+	// Save bootstrap peers from the token to config.yaml.
+	for _, bp := range tkn.GetClaims().GetBootstrap() {
+		if saveErr := saveBootstrapPeer(pollenDir, bp); saveErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "failed to save bootstrap peer: %v\n", saveErr)
+			return
+		}
+	}
+
+	sockPath := filepath.Join(pollenDir, socketName)
+	if active, _ := nodeSocketActive(sockPath); active {
+		// Daemon is running — shut it down so it restarts with the new credentials.
+		client := newControlClient(cmd)
+		if _, shutErr := client.Shutdown(ctx, connect.NewRequest(&controlv1.ShutdownRequest{})); shutErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "failed to stop running daemon: %v\n", shutErr)
+			return
+		}
+
+		// Wait for the daemon to come back.
+		if waitForSocket(sockPath, bootstrapStatusWait) {
+			fmt.Fprintln(cmd.OutOrStdout(), "joined cluster; daemon restarted")
+		} else {
+			fmt.Fprintln(cmd.OutOrStdout(), "joined cluster; daemon stopped but did not restart — run `pollen up -d`")
+		}
+		return
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pollen up -d` to start the node")
 }
 
 func newInviteCmd() *cobra.Command {
@@ -296,7 +376,7 @@ func pollenPath(cmd *cobra.Command) (string, error) {
 	return workspace.EnsurePollenDir(dir)
 }
 
-func runNode(cmd *cobra.Command, args []string) {
+func runNode(cmd *cobra.Command) {
 	logging.Init()
 	defer func() { _ = zap.S().Sync() }()
 
@@ -304,7 +384,6 @@ func runNode(cmd *cobra.Command, args []string) {
 	logger.Infow("starting pollen...", "version", version)
 
 	port, _ := cmd.Flags().GetInt("port")
-	joinToken, _ := cmd.Flags().GetString("join")
 	ips, _ := cmd.Flags().GetIPSlice("ips")
 
 	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -328,25 +407,15 @@ func runNode(cmd *cobra.Command, args []string) {
 		logger.Fatal("failed to load signing keys: ", err)
 	}
 
-	var tkn *admissionv1.JoinToken
-	if joinToken != "" {
-		tkn, err = resolveJoinToken(ctx, privKey, joinToken)
-		if err != nil {
-			logger.Fatal("failed to resolve join token: ", err)
-		}
-	}
-
-	creds, credErr := auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, tkn, time.Now())
+	creds, credErr := auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, nil, time.Now())
 	if credErr != nil {
 		switch {
-		case errors.Is(credErr, auth.ErrCredentialsNotFound) && joinToken == "":
+		case errors.Is(credErr, auth.ErrCredentialsNotFound):
 			logger.Info("node is not initialized; auto-initializing root cluster")
 			creds, credErr = auth.EnsureLocalRootCredentials(pollenDir, pubKey, time.Now())
 			if credErr != nil {
 				logger.Fatal("auto-init failed: ", credErr)
 			}
-		case errors.Is(credErr, auth.ErrCredentialsNotFound):
-			logger.Fatal("node is not initialized; run `pollen init` or `pollen up --join <token>`")
 		case errors.Is(credErr, auth.ErrDifferentCluster):
 			logger.Fatal("node is already enrolled in a different cluster; run `pollen purge` before joining a new cluster")
 		default:
@@ -387,7 +456,24 @@ func runNode(cmd *cobra.Command, args []string) {
 	})
 
 	p.Go(func(ctx context.Context) error {
-		return n.Start(ctx, tkn)
+		return n.Start(ctx)
+	})
+
+	p.Go(func(ctx context.Context) error {
+		bootstrapPeers, loadErr := loadBootstrapPeers(pollenDir)
+		if loadErr != nil {
+			logger.Warnw("failed to load bootstrap peers", "err", loadErr)
+			return nil
+		}
+		for _, bp := range bootstrapPeers {
+			if _, connectErr := nodeSrv.ConnectPeer(ctx, &controlv1.ConnectPeerRequest{
+				PeerId: bp.GetPeerPub(),
+				Addrs:  bp.GetAddrs(),
+			}); connectErr != nil {
+				logger.Warnw("failed to connect to bootstrap peer", "err", connectErr)
+			}
+		}
+		return nil
 	})
 
 	if err := p.Wait(); err != nil {
@@ -680,7 +766,7 @@ func runAdminSetCert(cmd *cobra.Command, args []string) {
 	creds, err := auth.LoadExistingNodeCredentials(pollenDir, nodePub, time.Now())
 	if err != nil {
 		if errors.Is(err, auth.ErrCredentialsNotFound) {
-			fmt.Fprintln(cmd.ErrOrStderr(), "node credentials not initialized; run `pollen init` or `pollen up --join <token>` first")
+			fmt.Fprintln(cmd.ErrOrStderr(), "node credentials not initialized; run `pollen init` or `pollen join <token>` first")
 		} else {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 		}
@@ -1115,10 +1201,16 @@ func ensureRemotePollen(ctx context.Context, sshTarget string) error {
 }
 
 func startRelayOverSSH(cmd *cobra.Command, sshTarget, token string) error {
-	remoteStart := fmt.Sprintf("nohup pollen up --join %q >/tmp/pollen.log 2>&1 < /dev/null &", token)
-	startOut, err := exec.CommandContext(cmd.Context(), "ssh", sshTarget, remoteStart).CombinedOutput()
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Enroll the relay into the cluster, then start the daemon.
+	remoteJoin := fmt.Sprintf("pollen join %q && pollen up -d", token)
+	out, err := exec.CommandContext(ctx, "ssh", sshTarget, remoteJoin).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(startOut)))
+		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 
 	return nil
@@ -1130,12 +1222,32 @@ func execLocalUpWithJoin(cmd *cobra.Command, joinToken string) error {
 		return err
 	}
 
+	// Enroll credentials before starting the node.
+	privKey, pubKey, err := node.GenIdentityKey(pollenDir)
+	if err != nil {
+		return err
+	}
+
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	tkn, err := resolveJoinToken(ctx, privKey, joinToken)
+	if err != nil {
+		return fmt.Errorf("resolve join token: %w", err)
+	}
+
+	if _, credErr := auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, tkn, time.Now()); credErr != nil {
+		return fmt.Errorf("enroll credentials: %w", credErr)
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve local executable: %w", err)
 	}
 
-	args := []string{exe, "--dir", pollenDir, "up", "--join", joinToken}
+	args := []string{exe, "--dir", pollenDir, "up"}
 	if err := syscall.Exec(exe, args, os.Environ()); err != nil {
 		return fmt.Errorf("exec local node startup: %w", err)
 	}

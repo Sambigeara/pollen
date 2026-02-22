@@ -10,6 +10,7 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/peer"
@@ -53,16 +54,6 @@ func (c *clusterAuth) credsFor(t *testing.T, subject ed25519.PublicKey) *auth.No
 	return &auth.NodeCredentials{Trust: c.trust, Cert: cert}
 }
 
-func (c *clusterAuth) tokenFor(t *testing.T, subject ed25519.PublicKey, bootstrap *testNode) *admissionv1.JoinToken {
-	t.Helper()
-	token, err := auth.IssueJoinToken(c.adminPriv, c.trust, subject, []*admissionv1.BootstrapPeer{{
-		PeerPub: bootstrap.pubKey,
-		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(bootstrap.port))},
-	}}, time.Now(), time.Hour)
-	require.NoError(t, err)
-	return token
-}
-
 func newTestNode(t *testing.T, cluster *clusterAuth, port int, ips []string) *testNode {
 	t.Helper()
 
@@ -87,7 +78,7 @@ func newTestNode(t *testing.T, cluster *clusterAuth, port int, ips []string) *te
 	return tn
 }
 
-func (tn *testNode) start(t *testing.T, token *admissionv1.JoinToken) {
+func (tn *testNode) start(t *testing.T) {
 	t.Helper()
 
 	pub := tn.privKey.Public().(ed25519.PublicKey)
@@ -112,7 +103,7 @@ func (tn *testNode) start(t *testing.T, token *admissionv1.JoinToken) {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- n.Start(ctx, token)
+		errCh <- n.Start(ctx)
 	}()
 
 	tn.node = n
@@ -137,7 +128,7 @@ func (tn *testNode) restart(t *testing.T) {
 	t.Helper()
 	tn.stop()
 	waitForPort(t, tn.port)
-	tn.start(t, nil)
+	tn.start(t)
 }
 
 func waitForPort(t *testing.T, port int) {
@@ -152,23 +143,87 @@ func waitForPort(t *testing.T, port int) {
 	}, 5*time.Second, 10*time.Millisecond, "port %d not released", port)
 }
 
-func TestJoinTokenFlow(t *testing.T) {
-	nodeIPs := []string{"127.0.0.1", "192.0.2.1"}
+func TestConnectPeerFlow(t *testing.T) {
+	nodeIPs := []string{"127.0.0.1"}
 	cluster := newClusterAuth(t)
 
-	a := newTestNode(t, cluster, 19100, nodeIPs)
-	a.start(t, nil)
+	a := newTestNode(t, cluster, 19200, nodeIPs)
+	a.start(t)
 
-	b := newTestNode(t, cluster, 19101, nodeIPs)
-	b.start(t, cluster.tokenFor(t, b.pubKey, a))
+	b := newTestNode(t, cluster, 19201, nodeIPs)
+	b.start(t)
+
+	// Simulate `pollen bootstrap ssh` with running daemon: call ConnectPeer RPC on A → B.
+	req := &controlv1.ConnectPeerRequest{
+		PeerId: b.pubKey,
+		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
+	}
+	_, err := a.svc.ConnectPeer(context.Background(), req)
+	require.NoError(t, err)
 
 	assertPeersConnected(t, a, b)
 
-	a.restart(t)
-	time.Sleep(150 * time.Millisecond)
-	b.restart(t)
+	// Verify GetStatus returns the remote peer (this is what `pollen status` uses).
+	statusResp, err := a.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, statusResp.Self)
+	require.Len(t, statusResp.Nodes, 1, "GetStatus should list the remote peer")
+	require.Equal(t, b.peerKey.Bytes(), statusResp.Nodes[0].Node.PeerId)
+	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_ONLINE, statusResp.Nodes[0].Status)
+}
+
+// TestConnectPeerAfterPriorConnection simulates the production scenario where
+// the daemon previously connected to a peer (consuming requestFullOnce), then
+// later ConnectPeer is called for a new relay. This is the common case when
+// running `pollen bootstrap ssh` against a daemon that has had previous connections.
+func TestConnectPeerAfterPriorConnection(t *testing.T) {
+	nodeIPs := []string{"127.0.0.1"}
+	cluster := newClusterAuth(t)
+
+	a := newTestNode(t, cluster, 19300, nodeIPs)
+	a.start(t)
+
+	// First connection: A connects to C via ConnectPeer RPC (consumes requestFullOnce on A).
+	c := newTestNode(t, cluster, 19301, nodeIPs)
+	c.start(t)
+	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+		PeerId: c.pubKey,
+		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(c.port))},
+	})
+	require.NoError(t, err)
+	assertPeersConnected(t, a, c)
+
+	// C disconnects.
+	c.stop()
+	require.Eventually(t, func() bool {
+		return len(a.node.GetConnectedPeers()) == 0
+	}, 5*time.Second, 50*time.Millisecond, "A should see C disconnect")
+
+	// Now simulate `pollen bootstrap ssh`: ConnectPeer to new node B.
+	b := newTestNode(t, cluster, 19302, nodeIPs)
+	b.start(t)
+
+	req := &controlv1.ConnectPeerRequest{
+		PeerId: b.pubKey,
+		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
+	}
+	_, err = a.svc.ConnectPeer(context.Background(), req)
+	require.NoError(t, err)
 
 	assertPeersConnected(t, a, b)
+
+	// Verify GetStatus returns B as online.
+	statusResp, err := a.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+
+	foundB := false
+	for _, n := range statusResp.Nodes {
+		if types.PeerKeyFromBytes(n.Node.PeerId) == b.peerKey {
+			require.Equal(t, controlv1.NodeStatus_NODE_STATUS_ONLINE, n.Status)
+			foundB = true
+		}
+	}
+	require.True(t, foundB, "GetStatus should include node B")
 }
 
 func assertPeersConnected(t *testing.T, a, b *testNode) {

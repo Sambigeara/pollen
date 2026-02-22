@@ -17,7 +17,8 @@ Follow these conventions when changing code or tests.
   - You can bring up a cluster with a minimal set of commands.
   - Commands are predictable and clean, for example:
     - `pollen invite [node-pub]`
-    - `pollen up [--join <token>]`
+    - `pollen up`
+    - `pollen join <token>`
     - `pollen down`
     - `pollen status`
     - `pollen serve 8080 foo`

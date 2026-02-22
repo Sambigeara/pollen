@@ -369,7 +369,7 @@ main() {
 
 	log "done"
 	log ""
-	log "run 'pollen daemon install --start' to configure autostart"
+	log "run 'pollen up -d' to configure autostart"
 }
 
 main "$@"
