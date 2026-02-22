@@ -511,6 +511,9 @@ func VerifyMembershipCert(cert *admissionv1.MembershipCert, trust *admissionv1.T
 	if err := VerifyAdminCert(issuer, trust, now); err != nil {
 		return fmt.Errorf("membership cert issuer invalid: %w", err)
 	}
+	if !bytes.Equal(issuer.GetClaims().GetAdminPub(), cert.GetClaims().GetIssuerAdminPub()) {
+		return errors.New("membership cert issuer key mismatch")
+	}
 	msg, err := signaturePayload(cert.GetClaims())
 	if err != nil {
 		return err
