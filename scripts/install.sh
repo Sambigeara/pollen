@@ -8,6 +8,7 @@ BASE_URL="https://github.com/${REPO}/releases"
 VERSION=""
 INSTALL_DIR=""
 ALLOW_BREAKING=false
+FORCE=false
 
 usage() {
 	cat <<'EOF'
@@ -20,6 +21,7 @@ Options:
   --version <vX.Y.Z>   Install a specific release (default: latest)
   --install-dir <dir>  Install directory (default: /usr/local/bin or ~/.local/bin)
   --allow-breaking     Allow semver-breaking upgrades
+  --force              Reinstall even if the same version is already installed
   -h, --help           Show help
 
 Examples:
@@ -285,6 +287,10 @@ parse_args() {
 			ALLOW_BREAKING=true
 			shift
 			;;
+		--force)
+			FORCE=true
+			shift
+			;;
 		-h | --help)
 			usage
 			exit 0
@@ -328,7 +334,7 @@ main() {
 	local target_bin current_ver
 	target_bin="${INSTALL_DIR}/${APP}"
 	if current_ver="$(current_installed_version "$target_bin")"; then
-		if compare_versions_equal "$current_ver" "$VERSION"; then
+		if compare_versions_equal "$current_ver" "$VERSION" && [ "$FORCE" != true ]; then
 			log "${APP} ${VERSION} is already installed at ${target_bin}"
 			exit 0
 		fi
