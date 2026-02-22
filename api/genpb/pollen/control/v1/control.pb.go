@@ -790,6 +790,94 @@ func (*UnregisterServiceResponse) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{14}
 }
 
+type ConnectPeerRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	Addrs         []string               `protobuf:"bytes,2,rep,name=addrs,proto3" json:"addrs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConnectPeerRequest) Reset() {
+	*x = ConnectPeerRequest{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectPeerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectPeerRequest) ProtoMessage() {}
+
+func (x *ConnectPeerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectPeerRequest.ProtoReflect.Descriptor instead.
+func (*ConnectPeerRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ConnectPeerRequest) GetPeerId() []byte {
+	if x != nil {
+		return x.PeerId
+	}
+	return nil
+}
+
+func (x *ConnectPeerRequest) GetAddrs() []string {
+	if x != nil {
+		return x.Addrs
+	}
+	return nil
+}
+
+type ConnectPeerResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConnectPeerResponse) Reset() {
+	*x = ConnectPeerResponse{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectPeerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectPeerResponse) ProtoMessage() {}
+
+func (x *ConnectPeerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectPeerResponse.ProtoReflect.Descriptor instead.
+func (*ConnectPeerResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{16}
+}
+
 type ConnectServiceRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Node          *NodeRef               `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
@@ -801,7 +889,7 @@ type ConnectServiceRequest struct {
 
 func (x *ConnectServiceRequest) Reset() {
 	*x = ConnectServiceRequest{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[15]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -813,7 +901,7 @@ func (x *ConnectServiceRequest) String() string {
 func (*ConnectServiceRequest) ProtoMessage() {}
 
 func (x *ConnectServiceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[15]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -826,7 +914,7 @@ func (x *ConnectServiceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectServiceRequest.ProtoReflect.Descriptor instead.
 func (*ConnectServiceRequest) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{15}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ConnectServiceRequest) GetNode() *NodeRef {
@@ -859,7 +947,7 @@ type ConnectServiceResponse struct {
 
 func (x *ConnectServiceResponse) Reset() {
 	*x = ConnectServiceResponse{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[16]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -871,7 +959,7 @@ func (x *ConnectServiceResponse) String() string {
 func (*ConnectServiceResponse) ProtoMessage() {}
 
 func (x *ConnectServiceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[16]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -884,7 +972,7 @@ func (x *ConnectServiceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConnectServiceResponse.ProtoReflect.Descriptor instead.
 func (*ConnectServiceResponse) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{16}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ConnectServiceResponse) GetLocalPort() uint32 {
@@ -939,7 +1027,11 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x04port\x18\x01 \x01(\rB\t\xbaH\x06*\x04\x18\xff\xff\x03R\x04port\x12\"\n" +
 	"\x04name\x18\x02 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@H\x00R\x04name\x88\x01\x01B\a\n" +
 	"\x05_name\"\x1b\n" +
-	"\x19UnregisterServiceResponse\"\x9f\x01\n" +
+	"\x19UnregisterServiceResponse\"C\n" +
+	"\x12ConnectPeerRequest\x12\x17\n" +
+	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x14\n" +
+	"\x05addrs\x18\x02 \x03(\tR\x05addrs\"\x15\n" +
+	"\x13ConnectPeerResponse\"\x9f\x01\n" +
 	"\x15ConnectServiceRequest\x12.\n" +
 	"\x04node\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04node\x12,\n" +
 	"\vremote_port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\n" +
@@ -954,14 +1046,15 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12NODE_STATUS_ONLINE\x10\x01\x12\x17\n" +
 	"\x13NODE_STATUS_OFFLINE\x10\x02\x12\x15\n" +
-	"\x11NODE_STATUS_RELAY\x10\x032\xeb\x04\n" +
+	"\x11NODE_STATUS_RELAY\x10\x032\xc9\x05\n" +
 	"\x0eControlService\x12S\n" +
 	"\bShutdown\x12\".pollen.control.v1.ShutdownRequest\x1a#.pollen.control.v1.ShutdownResponse\x12k\n" +
 	"\x10GetBootstrapInfo\x12*.pollen.control.v1.GetBootstrapInfoRequest\x1a+.pollen.control.v1.GetBootstrapInfoResponse\x12V\n" +
 	"\tGetStatus\x12#.pollen.control.v1.GetStatusRequest\x1a$.pollen.control.v1.GetStatusResponse\x12h\n" +
 	"\x0fRegisterService\x12).pollen.control.v1.RegisterServiceRequest\x1a*.pollen.control.v1.RegisterServiceResponse\x12n\n" +
 	"\x11UnregisterService\x12+.pollen.control.v1.UnregisterServiceRequest\x1a,.pollen.control.v1.UnregisterServiceResponse\x12e\n" +
-	"\x0eConnectService\x12(.pollen.control.v1.ConnectServiceRequest\x1a).pollen.control.v1.ConnectServiceResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
+	"\x0eConnectService\x12(.pollen.control.v1.ConnectServiceRequest\x1a).pollen.control.v1.ConnectServiceResponse\x12\\\n" +
+	"\vConnectPeer\x12%.pollen.control.v1.ConnectPeerRequest\x1a&.pollen.control.v1.ConnectPeerResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
 
 var (
 	file_pollen_control_v1_control_proto_rawDescOnce sync.Once
@@ -976,7 +1069,7 @@ func file_pollen_control_v1_control_proto_rawDescGZIP() []byte {
 }
 
 var file_pollen_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_pollen_control_v1_control_proto_goTypes = []any{
 	(NodeStatus)(0),                   // 0: pollen.control.v1.NodeStatus
 	(*NodeRef)(nil),                   // 1: pollen.control.v1.NodeRef
@@ -994,8 +1087,10 @@ var file_pollen_control_v1_control_proto_goTypes = []any{
 	(*RegisterServiceResponse)(nil),   // 13: pollen.control.v1.RegisterServiceResponse
 	(*UnregisterServiceRequest)(nil),  // 14: pollen.control.v1.UnregisterServiceRequest
 	(*UnregisterServiceResponse)(nil), // 15: pollen.control.v1.UnregisterServiceResponse
-	(*ConnectServiceRequest)(nil),     // 16: pollen.control.v1.ConnectServiceRequest
-	(*ConnectServiceResponse)(nil),    // 17: pollen.control.v1.ConnectServiceResponse
+	(*ConnectPeerRequest)(nil),        // 16: pollen.control.v1.ConnectPeerRequest
+	(*ConnectPeerResponse)(nil),       // 17: pollen.control.v1.ConnectPeerResponse
+	(*ConnectServiceRequest)(nil),     // 18: pollen.control.v1.ConnectServiceRequest
+	(*ConnectServiceResponse)(nil),    // 19: pollen.control.v1.ConnectServiceResponse
 }
 var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	1,  // 0: pollen.control.v1.NodeSummary.node:type_name -> pollen.control.v1.NodeRef
@@ -1014,15 +1109,17 @@ var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	9,  // 13: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
 	12, // 14: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
 	14, // 15: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
-	16, // 16: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
-	5,  // 17: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
-	8,  // 18: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
-	10, // 19: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
-	13, // 20: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
-	15, // 21: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
-	17, // 22: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
-	17, // [17:23] is the sub-list for method output_type
-	11, // [11:17] is the sub-list for method input_type
+	18, // 16: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
+	16, // 17: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
+	5,  // 18: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
+	8,  // 19: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
+	10, // 20: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
+	13, // 21: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
+	15, // 22: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
+	19, // 23: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
+	17, // 24: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
+	18, // [18:25] is the sub-list for method output_type
+	11, // [11:18] is the sub-list for method input_type
 	11, // [11:11] is the sub-list for extension type_name
 	11, // [11:11] is the sub-list for extension extendee
 	0,  // [0:11] is the sub-list for field type_name
@@ -1041,7 +1138,7 @@ func file_pollen_control_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_control_v1_control_proto_rawDesc), len(file_pollen_control_v1_control_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
