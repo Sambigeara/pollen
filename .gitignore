@@ -32,6 +32,5 @@ override.tf.json
 .terraformrc
 terraform.rc
 
-infra/ubuntu*
-# infra/scripts*
+infra/
 dist*
