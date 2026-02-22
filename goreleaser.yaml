@@ -2,6 +2,8 @@ version: 2
 project_name: pollen
 builds:
   - main: ./cmd/pollen
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
     env:
       - CGO_ENABLED=0
     goos:
@@ -10,9 +12,6 @@ builds:
     goarch:
       - amd64
       - arm64
-    ignore:
-      - goos: darwin
-        goarch: amd64 # only Apple Silicon for now
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
