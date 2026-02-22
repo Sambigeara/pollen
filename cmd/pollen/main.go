@@ -433,11 +433,24 @@ func runNode(cmd *cobra.Command) {
 		logger.Fatal("failed to load state: ", err)
 	}
 
+	var bootstrapPeers []node.BootstrapPeer
+	if bps, loadErr := loadBootstrapPeers(pollenDir); loadErr != nil {
+		logger.Warnw("failed to load bootstrap peers", "err", loadErr)
+	} else {
+		for _, bp := range bps {
+			bootstrapPeers = append(bootstrapPeers, node.BootstrapPeer{
+				PeerKey: types.PeerKeyFromBytes(bp.GetPeerPub()),
+				Addrs:   bp.GetAddrs(),
+			})
+		}
+	}
+
 	conf := &node.Config{
 		Port:             port,
 		GossipInterval:   passiveGossipInterval,
 		PeerTickInterval: time.Second,
 		AdvertisedIPs:    addrs,
+		BootstrapPeers:   bootstrapPeers,
 	}
 
 	n, err := node.New(conf, privKey, creds, stateStore, peer.NewStore())
@@ -457,34 +470,6 @@ func runNode(cmd *cobra.Command) {
 
 	p.Go(func(ctx context.Context) error {
 		return n.Start(ctx)
-	})
-
-	p.Go(func(ctx context.Context) error {
-		bootstrapPeers, loadErr := loadBootstrapPeers(pollenDir)
-		if loadErr != nil {
-			logger.Warnw("failed to load bootstrap peers", "err", loadErr)
-			return nil
-		}
-		if len(bootstrapPeers) == 0 {
-			return nil
-		}
-
-		// Wait for the node to be fully started before connecting.
-		sockPath := filepath.Join(pollenDir, socketName)
-		if !waitForSocket(sockPath, bootstrapStatusWait) {
-			logger.Warn("timed out waiting for node socket; skipping bootstrap peer connections")
-			return nil
-		}
-
-		for _, bp := range bootstrapPeers {
-			if _, connectErr := nodeSrv.ConnectPeer(ctx, &controlv1.ConnectPeerRequest{
-				PeerId: bp.GetPeerPub(),
-				Addrs:  bp.GetAddrs(),
-			}); connectErr != nil {
-				logger.Warnw("failed to connect to bootstrap peer", "err", connectErr)
-			}
-		}
-		return nil
 	})
 
 	if err := p.Wait(); err != nil {
