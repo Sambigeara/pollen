@@ -199,7 +199,7 @@ func renderStatusSections(w io.Writer, sections []statusSection) {
 		return
 	}
 
-	var rowKinds []int
+	var rowKinds []int //nolint:prealloc
 	padRow := func(src []string) []string {
 		row := make([]string, maxCols)
 		copy(row, src)
@@ -230,9 +230,9 @@ func renderStatusSections(w io.Writer, sections []statusSection) {
 		}
 	}
 
-	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).PaddingRight(2)
-	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).PaddingRight(2)
-	dataStyle := lipgloss.NewStyle().PaddingRight(2)
+	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).PaddingRight(2) //nolint:mnd
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).PaddingRight(2)           //nolint:mnd
+	dataStyle := lipgloss.NewStyle().PaddingRight(2)                                               //nolint:mnd
 
 	t.StyleFunc(func(row, col int) lipgloss.Style {
 		if row < 0 || row >= len(rowKinds) {
