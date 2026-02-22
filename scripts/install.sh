@@ -219,7 +219,9 @@ default_install_dir() {
 		return 0
 	fi
 
-	if command -v sudo >/dev/null 2>&1; then
+	# Only default to /usr/local/bin if sudo won't prompt for a password
+	# (e.g. NOPASSWD on EC2 Ubuntu). Otherwise fall through to ~/.local/bin.
+	if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
 		printf '%s\n' "/usr/local/bin"
 		return 0
 	fi
