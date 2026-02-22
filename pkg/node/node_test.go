@@ -20,19 +20,20 @@ import (
 )
 
 type testNode struct {
-	node    *node.Node
-	svc     *node.NodeService
-	store   *store.Store
-	peers   *peer.Store
-	peerKey types.PeerKey
-	pubKey  ed25519.PublicKey
-	ips     []string
-	port    int
-	dir     string
-	privKey ed25519.PrivateKey
-	creds   *auth.NodeCredentials
-	cancel  context.CancelFunc
-	errCh   chan error
+	node           *node.Node
+	svc            *node.NodeService
+	store          *store.Store
+	peers          *peer.Store
+	peerKey        types.PeerKey
+	pubKey         ed25519.PublicKey
+	ips            []string
+	port           int
+	dir            string
+	privKey        ed25519.PrivateKey
+	creds          *auth.NodeCredentials
+	cancel         context.CancelFunc
+	errCh          chan error
+	bootstrapPeers []node.BootstrapPeer
 }
 
 type clusterAuth struct {
@@ -94,6 +95,7 @@ func (tn *testNode) start(t *testing.T) {
 		GossipInterval:      100 * time.Millisecond,
 		PeerTickInterval:    100 * time.Millisecond,
 		DisableGossipJitter: true,
+		BootstrapPeers:      tn.bootstrapPeers,
 	}
 
 	n, err := node.New(conf, tn.privKey, tn.creds, stateStore, peerStore)
@@ -252,4 +254,23 @@ func assertPeersConnected(t *testing.T, a, b *testNode) {
 		_, ok := a.store.Get(b.peerKey)
 		return ok
 	}, 5*time.Second, 50*time.Millisecond, "A's store should know about B via gossip")
+}
+
+func TestBootstrapPeerConnectsAtStartup(t *testing.T) {
+	nodeIPs := []string{"127.0.0.1"}
+	cluster := newClusterAuth(t)
+
+	// Start B first so it's listening.
+	b := newTestNode(t, cluster, 19400, nodeIPs)
+	b.start(t)
+
+	// Start A with B as a bootstrap peer.
+	a := newTestNode(t, cluster, 19401, nodeIPs)
+	a.bootstrapPeers = []node.BootstrapPeer{{
+		PeerKey: b.peerKey,
+		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
+	}}
+	a.start(t)
+
+	assertPeersConnected(t, a, b)
 }
