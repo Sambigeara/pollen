@@ -68,6 +68,7 @@ Wants=network-online.target
 Type=simple
 ExecStart="{{ .Binary }}" --dir "{{ .PollenDir }}" up
 ExecStop="{{ .Binary }}" --dir "{{ .PollenDir }}" down
+SyslogIdentifier=pollen
 Restart=on-failure
 RestartSec=3
 
@@ -555,6 +556,6 @@ func upDaemonSystemd(cmd *cobra.Command) {
 	if waitForSocket(sockPath, daemonStartTimeout) {
 		fmt.Fprintln(cmd.OutOrStdout(), "node started (background)")
 	} else {
-		fmt.Fprintln(cmd.ErrOrStderr(), "service was started but node did not become ready; check logs with: journalctl --user -u pollen.service")
+		fmt.Fprintln(cmd.ErrOrStderr(), "service was started but node did not become ready; check logs with: pollen logs")
 	}
 }

@@ -198,6 +198,13 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 	m.connectionMu.Lock()
 	defer m.connectionMu.Unlock()
 
+	// TODO(saml): use a map keyed by peerID:remotePort instead of iterating all connections
+	for _, h := range m.connections {
+		if h.peerID == peerID && h.remote == remotePort {
+			return 0, fmt.Errorf("already connected to port %d on peer %s (local port %d)", remotePort, peerID.String()[:8], h.local)
+		}
+	}
+
 	ctx, cancelFn := context.WithCancel(context.Background())
 	var ln net.Listener
 	var err error
