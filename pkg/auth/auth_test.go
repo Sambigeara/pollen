@@ -139,6 +139,61 @@ func TestInviteTokenSubjectBoundMismatch(t *testing.T) {
 	require.ErrorContains(t, err, "subject mismatch")
 }
 
+func TestVerifyMembershipCertRejectsIssuerKeyMismatch(t *testing.T) {
+	// An attacker steals a valid admin cert and attaches it to a membership
+	// cert signed by a different key. VerifyMembershipCert must reject
+	// the mismatch between issuer.claims.admin_pub and cert.claims.issuer_admin_pub.
+
+	genesisPub, genesisPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(genesisPub)
+
+	now := time.Now()
+
+	// Legitimate admin cert (signed by genesis).
+	legitimateAdminPub, _ := newKeyPair(t)
+	legitimateIssuer, err := auth.IssueAdminCert(
+		genesisPriv,
+		trust.GetClusterId(),
+		legitimateAdminPub,
+		now.Add(-time.Minute),
+		now.Add(10*365*24*time.Hour),
+	)
+	require.NoError(t, err)
+
+	// Attacker issues a membership cert signed by their own key
+	// but attaches the legitimate admin cert as issuer.
+	attackerPub, attackerPriv := newKeyPair(t)
+	subjectPub, _ := newKeyPair(t)
+
+	// Use the attacker's key to issue a membership cert. The attacker's
+	// own admin cert is created here just so IssueMembershipCertWithIssuer
+	// passes its internal checks — we swap the issuer afterward.
+	attackerIssuer, err := auth.IssueAdminCert(
+		genesisPriv,
+		trust.GetClusterId(),
+		attackerPub,
+		now.Add(-time.Minute),
+		now.Add(10*365*24*time.Hour),
+	)
+	require.NoError(t, err)
+
+	forgedCert, err := auth.IssueMembershipCertWithIssuer(
+		attackerPriv,
+		attackerIssuer,
+		trust.GetClusterId(),
+		subjectPub,
+		now.Add(-time.Minute),
+		now.Add(365*24*time.Hour),
+	)
+	require.NoError(t, err)
+
+	// Swap in the legitimate (but unrelated) issuer cert.
+	forgedCert.Issuer = legitimateIssuer
+
+	err = auth.VerifyMembershipCert(forgedCert, trust, now, subjectPub)
+	require.ErrorContains(t, err, "issuer key mismatch")
+}
+
 func newKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 
