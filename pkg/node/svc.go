@@ -215,6 +215,22 @@ func serviceNameForPort(port uint32) string {
 	return strconv.FormatUint(uint64(port), 10)
 }
 
+func (s *NodeService) ConnectPeer(ctx context.Context, req *controlv1.ConnectPeerRequest) (*controlv1.ConnectPeerResponse, error) {
+	peerKey := types.PeerKeyFromBytes(req.PeerId)
+	addrs := make([]*net.UDPAddr, 0, len(req.Addrs))
+	for _, a := range req.Addrs {
+		addr, err := net.ResolveUDPAddr("udp", a)
+		if err != nil {
+			return nil, fmt.Errorf("resolve address %q: %w", a, err)
+		}
+		addrs = append(addrs, addr)
+	}
+	if err := s.node.mesh.Connect(ctx, peerKey, addrs); err != nil {
+		return nil, err
+	}
+	return &controlv1.ConnectPeerResponse{}, nil
+}
+
 func (s *NodeService) ConnectService(ctx context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
 	localPort, err := s.node.ConnectService(types.PeerKeyFromBytes(req.Node.PeerId), req.RemotePort, req.LocalPort)
 	if err != nil {
