@@ -7,10 +7,7 @@ BASE_URL="https://github.com/${REPO}/releases"
 
 VERSION=""
 INSTALL_DIR=""
-WITH_SERVICE=false
-START_SERVICE=false
 ALLOW_BREAKING=false
-POLLEN_DIR="${HOME}/.pollen"
 
 usage() {
 	cat <<'EOF'
@@ -22,16 +19,12 @@ Usage:
 Options:
   --version <vX.Y.Z>   Install a specific release (default: latest)
   --install-dir <dir>  Install directory (default: /usr/local/bin or ~/.local/bin)
-  --dir <dir>          Pollen state directory for service setup (default: ~/.pollen)
-  --with-service       Configure per-user service runner
-  --start              Start service immediately (requires --with-service)
   --allow-breaking     Allow semver-breaking upgrades
   -h, --help           Show help
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash
   curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash -s -- --version v0.2.0
-  ./scripts/install.sh --with-service --start
 EOF
 }
 
@@ -270,122 +263,6 @@ current_installed_version() {
 	"$path" version --short 2>/dev/null || return 1
 }
 
-write_systemd_user_service() {
-	local unit_dir unit_path
-	unit_dir="${HOME}/.config/systemd/user"
-	unit_path="${unit_dir}/pollen.service"
-
-	mkdir -p "$unit_dir"
-	cat >"$unit_path" <<EOF
-[Unit]
-Description=Pollen node
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=${INSTALL_DIR}/${APP} --dir ${POLLEN_DIR} up
-ExecStop=${INSTALL_DIR}/${APP} --dir ${POLLEN_DIR} down
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=default.target
-EOF
-
-	if command -v systemctl >/dev/null 2>&1; then
-		systemctl --user daemon-reload
-		systemctl --user enable pollen.service >/dev/null
-		if [ "$START_SERVICE" = true ]; then
-			systemctl --user restart pollen.service
-		fi
-		log "configured systemd user service: ${unit_path}"
-		return 0
-	fi
-
-	warn "systemctl not found; wrote unit file but did not enable/start it"
-	if [ "$START_SERVICE" = true ]; then
-		warn "run: systemctl --user daemon-reload && systemctl --user enable --now pollen.service"
-	else
-		warn "run: systemctl --user daemon-reload && systemctl --user enable pollen.service"
-	fi
-}
-
-write_launchd_user_service() {
-	local launch_dir plist label uid
-	launch_dir="${HOME}/Library/LaunchAgents"
-	label="io.pollen.node"
-	plist="${launch_dir}/${label}.plist"
-	uid="$(id -u)"
-
-	mkdir -p "$launch_dir"
-	cat >"$plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${label}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${INSTALL_DIR}/${APP}</string>
-    <string>--dir</string>
-    <string>${POLLEN_DIR}</string>
-    <string>up</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>StandardOutPath</key>
-  <string>${HOME}/Library/Logs/pollen.log</string>
-  <key>StandardErrorPath</key>
-  <string>${HOME}/Library/Logs/pollen.log</string>
-</dict>
-</plist>
-EOF
-
-	if [ "$START_SERVICE" = true ]; then
-		if command -v launchctl >/dev/null 2>&1; then
-			launchctl bootout "gui/${uid}/${label}" >/dev/null 2>&1 || true
-			if launchctl bootstrap "gui/${uid}" "$plist" >/dev/null 2>&1; then
-				:
-			elif launchctl bootstrap "user/${uid}" "$plist" >/dev/null 2>&1; then
-				:
-			else
-				warn "launchctl bootstrap failed; wrote plist but did not start service"
-				warn "run manually: launchctl bootstrap gui/${uid} ${plist}"
-			fi
-		else
-			warn "launchctl not found; wrote plist but did not start service"
-		fi
-	fi
-
-	log "configured launchd agent: ${plist}"
-}
-
-configure_service() {
-	local os="$1"
-	if [ "$WITH_SERVICE" != true ]; then
-		return 0
-	fi
-
-	case "$os" in
-	linux)
-		write_systemd_user_service
-		;;
-	darwin)
-		write_launchd_user_service
-		;;
-	*)
-		fatal "service setup unsupported on OS: ${os}"
-		;;
-	esac
-}
-
 parse_args() {
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
@@ -398,19 +275,6 @@ parse_args() {
 			[ "$#" -ge 2 ] || fatal "--install-dir requires a value"
 			INSTALL_DIR="$2"
 			shift 2
-			;;
-		--dir)
-			[ "$#" -ge 2 ] || fatal "--dir requires a value"
-			POLLEN_DIR="$2"
-			shift 2
-			;;
-		--with-service)
-			WITH_SERVICE=true
-			shift
-			;;
-		--start)
-			START_SERVICE=true
-			shift
 			;;
 		--allow-breaking)
 			ALLOW_BREAKING=true
@@ -426,9 +290,6 @@ parse_args() {
 		esac
 	done
 
-	if [ "$START_SERVICE" = true ] && [ "$WITH_SERVICE" != true ]; then
-		fatal "--start requires --with-service"
-	fi
 }
 
 main() {
@@ -464,7 +325,6 @@ main() {
 	if current_ver="$(current_installed_version "$target_bin")"; then
 		if compare_versions_equal "$current_ver" "$VERSION"; then
 			log "${APP} ${VERSION} is already installed at ${target_bin}"
-			configure_service "$os"
 			exit 0
 		fi
 
@@ -491,14 +351,14 @@ main() {
 	mkdir -p "$INSTALL_DIR" 2>/dev/null || true
 	install_binary "$extracted_bin"
 
-	configure_service "$os"
-
 	if [ "$INSTALL_DIR" = "${HOME}/.local/bin" ] && ! printf '%s' ":${PATH}:" | grep -q ":${HOME}/.local/bin:"; then
 		warn "${INSTALL_DIR} is not on PATH"
 		warn "add this to your shell profile: export PATH=${INSTALL_DIR}:\$PATH"
 	fi
 
 	log "done"
+	log ""
+	log "run 'pollen daemon install --start' to configure autostart"
 }
 
 main "$@"

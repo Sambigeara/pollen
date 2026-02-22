@@ -4,7 +4,7 @@
 > changes, missing features, and rough edges. APIs and on-disk formats are not
 > yet stable.
 
-Pollen is an ergonomic peer-to-peer mesh runtime for workloads and service
+Pollen is a zero-trust, ergonomic peer-to-peer mesh runtime for workloads and service
 exposure.
 
 This README is intentionally short and focused on day-to-day commands.
@@ -17,6 +17,8 @@ This README is intentionally short and focused on day-to-day commands.
 - `pollen purge [--all]` reset local cluster state (`--all` also removes node keys)
 - `pollen status` show nodes/services
 - `pollen invite [--subject <node-pub>]` create an open or subject-bound invite token
+- `pollen daemon install [--start]` install and enable the background service
+- `pollen daemon uninstall` stop and remove the background service
 - `pollen version [--short]` show CLI version/build metadata
 
 ## Install (linux + macOS)
@@ -33,10 +35,10 @@ Install a specific version:
 curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash -s -- --version v0.2.0
 ```
 
-Configure a per-user service runner (optional):
+Configure autostart (optional):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash -s -- --with-service --start
+pollen daemon install --start
 ```
 
 Defaults and behavior:
@@ -45,7 +47,6 @@ Defaults and behavior:
 - Installs to `/usr/local/bin` when writable; otherwise `~/.local/bin`
 - Checks release checksums before install
 - Updates are semver-gated; potentially breaking upgrades require `--allow-breaking`
-- Use `--dir <path>` to set the Pollen state directory used by service setup
 
 ## Quick start: laptop + public relay
 
