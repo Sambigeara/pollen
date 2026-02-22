@@ -155,6 +155,40 @@ func runDaemonStatus(cmd *cobra.Command, _ []string) {
 
 // --- launchd (macOS) ---
 
+// launchdTargets returns the gui and user domain/target strings for launchctl.
+func launchdTargets(uid int) (guiDomain, guiTarget, userDomain, userTarget string) {
+	guiDomain = fmt.Sprintf("gui/%d", uid)
+	guiTarget = fmt.Sprintf("gui/%d/%s", uid, launchdLabel)
+	userDomain = fmt.Sprintf("user/%d", uid)
+	userTarget = fmt.Sprintf("user/%d/%s", uid, launchdLabel)
+	return
+}
+
+// launchdStart attempts to start the service via kickstart, falling back to
+// enable + bootstrap. It tries the gui domain first, then the user domain.
+func launchdStart(cmd *cobra.Command, plistPath string) error {
+	ctx := cmd.Context()
+	uid := os.Getuid()
+	guiDomain, guiTarget, userDomain, userTarget := launchdTargets(uid)
+
+	// Try kickstart first (works for loaded-but-stopped jobs).
+	if err := exec.CommandContext(ctx, "launchctl", "kickstart", guiTarget).Run(); err == nil { //nolint:gosec
+		return nil
+	}
+	if err := exec.CommandContext(ctx, "launchctl", "kickstart", userTarget).Run(); err == nil { //nolint:gosec
+		return nil
+	}
+
+	// Fallback: enable + bootstrap (for unloaded jobs).
+	_ = exec.CommandContext(ctx, "launchctl", "enable", guiTarget).Run()  //nolint:errcheck,gosec
+	_ = exec.CommandContext(ctx, "launchctl", "enable", userTarget).Run() //nolint:errcheck,gosec
+
+	if err := exec.CommandContext(ctx, "launchctl", "bootstrap", guiDomain, plistPath).Run(); err == nil { //nolint:gosec
+		return nil
+	}
+	return exec.CommandContext(ctx, "launchctl", "bootstrap", userDomain, plistPath).Run() //nolint:gosec
+}
+
 // writeLaunchdPlist writes (or overwrites) the launchd plist file.
 func writeLaunchdPlist(cmd *cobra.Command) error {
 	binary, err := resolveExecutable()
@@ -222,23 +256,15 @@ func daemonInstallLaunchd(cmd *cobra.Command) {
 	if start {
 		ctx := cmd.Context()
 		uid := os.Getuid()
-		guiDomain := fmt.Sprintf("gui/%d", uid)
-		guiTarget := fmt.Sprintf("gui/%d/%s", uid, launchdLabel)
-		userDomain := fmt.Sprintf("user/%d", uid)
-		userTarget := fmt.Sprintf("user/%d/%s", uid, launchdLabel)
+		_, guiTarget, _, userTarget := launchdTargets(uid)
 
 		// Remove any existing instance and clear disabled state.
 		_ = exec.CommandContext(ctx, "launchctl", "bootout", guiTarget).Run()  //nolint:errcheck,gosec
 		_ = exec.CommandContext(ctx, "launchctl", "bootout", userTarget).Run() //nolint:errcheck,gosec
-		_ = exec.CommandContext(ctx, "launchctl", "enable", guiTarget).Run()   //nolint:errcheck,gosec
-		_ = exec.CommandContext(ctx, "launchctl", "enable", userTarget).Run()  //nolint:errcheck,gosec
 
-		// Try gui domain first, fall back to user domain.
-		if err := exec.CommandContext(ctx, "launchctl", "bootstrap", guiDomain, plistPath).Run(); err != nil { //nolint:gosec
-			if err2 := exec.CommandContext(ctx, "launchctl", "bootstrap", userDomain, plistPath).Run(); err2 != nil { //nolint:gosec
-				fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\nrun manually: launchctl bootstrap gui/%d %s\n", err, uid, plistPath)
-				return
-			}
+		if err := launchdStart(cmd, plistPath); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\nrun manually: launchctl bootstrap gui/%d %s\n", err, uid, plistPath)
+			return
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "service started")
 	}
@@ -473,27 +499,9 @@ func upDaemonLaunchd(cmd *cobra.Command) {
 		fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", plistPath)
 	}
 
-	ctx := cmd.Context()
-	uid := os.Getuid()
-	guiDomain := fmt.Sprintf("gui/%d", uid)
-	guiTarget := fmt.Sprintf("gui/%d/%s", uid, launchdLabel)
-	userDomain := fmt.Sprintf("user/%d", uid)
-	userTarget := fmt.Sprintf("user/%d/%s", uid, launchdLabel)
-
-	// Try kickstart first (works for loaded-but-stopped jobs).
-	if err := exec.CommandContext(ctx, "launchctl", "kickstart", guiTarget).Run(); err != nil { //nolint:gosec
-		if err2 := exec.CommandContext(ctx, "launchctl", "kickstart", userTarget).Run(); err2 != nil { //nolint:gosec
-			// Fallback: enable + bootstrap (for unloaded jobs).
-			_ = exec.CommandContext(ctx, "launchctl", "enable", guiTarget).Run()  //nolint:errcheck,gosec
-			_ = exec.CommandContext(ctx, "launchctl", "enable", userTarget).Run() //nolint:errcheck,gosec
-
-			if err3 := exec.CommandContext(ctx, "launchctl", "bootstrap", guiDomain, plistPath).Run(); err3 != nil { //nolint:gosec
-				if err4 := exec.CommandContext(ctx, "launchctl", "bootstrap", userDomain, plistPath).Run(); err4 != nil { //nolint:gosec
-					fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\n", err4)
-					return
-				}
-			}
-		}
+	if err := launchdStart(cmd, plistPath); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\n", err)
+		return
 	}
 
 	if waitForSocket(sockPath, daemonStartTimeout) {
