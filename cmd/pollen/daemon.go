@@ -14,6 +14,11 @@ import (
 )
 
 const (
+	osDarwin = "darwin"
+	osLinux  = "linux"
+)
+
+const (
 	launchdLabel    = "io.pollen.node"
 	systemdUnitName = "pollen.service"
 )
@@ -117,9 +122,9 @@ func resolveExecutable() (string, error) {
 
 func runDaemonInstall(cmd *cobra.Command, _ []string) {
 	switch runtime.GOOS {
-	case "darwin":
+	case osDarwin:
 		daemonInstallLaunchd(cmd)
-	case "linux":
+	case osLinux:
 		daemonInstallSystemd(cmd)
 	default:
 		fmt.Fprintf(cmd.ErrOrStderr(), "unsupported platform: %s (supported: darwin, linux)\n", runtime.GOOS)
@@ -128,9 +133,9 @@ func runDaemonInstall(cmd *cobra.Command, _ []string) {
 
 func runDaemonUninstall(cmd *cobra.Command, _ []string) {
 	switch runtime.GOOS {
-	case "darwin":
+	case osDarwin:
 		daemonUninstallLaunchd(cmd)
-	case "linux":
+	case osLinux:
 		daemonUninstallSystemd(cmd)
 	default:
 		fmt.Fprintf(cmd.ErrOrStderr(), "unsupported platform: %s (supported: darwin, linux)\n", runtime.GOOS)
@@ -139,9 +144,9 @@ func runDaemonUninstall(cmd *cobra.Command, _ []string) {
 
 func runDaemonStatus(cmd *cobra.Command, _ []string) {
 	switch runtime.GOOS {
-	case "darwin":
+	case osDarwin:
 		daemonStatusLaunchd(cmd)
-	case "linux":
+	case osLinux:
 		daemonStatusSystemd(cmd)
 	default:
 		fmt.Fprintf(cmd.ErrOrStderr(), "unsupported platform: %s (supported: darwin, linux)\n", runtime.GOOS)
@@ -177,7 +182,7 @@ func daemonInstallLaunchd(cmd *cobra.Command) {
 
 	logPath := filepath.Join(os.Getenv("HOME"), "Library", "Logs", "pollen.log")
 
-	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil { //nolint:mnd
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
@@ -209,12 +214,13 @@ func daemonInstallLaunchd(cmd *cobra.Command) {
 	fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", plistPath)
 
 	if start {
+		ctx := cmd.Context()
 		uid := os.Getuid()
 		// Try to bootout any existing instance first.
-		_ = exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d/%s", uid, launchdLabel)).Run() //nolint:errcheck
+		_ = exec.CommandContext(ctx, "launchctl", "bootout", fmt.Sprintf("gui/%d/%s", uid, launchdLabel)).Run() //nolint:errcheck,gosec
 		// Try gui domain first, fall back to user domain.
-		if err := exec.Command("launchctl", "bootstrap", fmt.Sprintf("gui/%d", uid), plistPath).Run(); err != nil {
-			if err2 := exec.Command("launchctl", "bootstrap", fmt.Sprintf("user/%d", uid), plistPath).Run(); err2 != nil {
+		if err := exec.CommandContext(ctx, "launchctl", "bootstrap", fmt.Sprintf("gui/%d", uid), plistPath).Run(); err != nil { //nolint:gosec
+			if err2 := exec.CommandContext(ctx, "launchctl", "bootstrap", fmt.Sprintf("user/%d", uid), plistPath).Run(); err2 != nil { //nolint:gosec
 				fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\nrun manually: launchctl bootstrap gui/%d %s\n", err, uid, plistPath)
 				return
 			}
@@ -227,9 +233,10 @@ func daemonUninstallLaunchd(cmd *cobra.Command) {
 	plistPath := launchdPlistPath()
 
 	// Stop service if running.
+	ctx := cmd.Context()
 	uid := os.Getuid()
-	_ = exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d/%s", uid, launchdLabel)).Run()  //nolint:errcheck
-	_ = exec.Command("launchctl", "bootout", fmt.Sprintf("user/%d/%s", uid, launchdLabel)).Run() //nolint:errcheck
+	_ = exec.CommandContext(ctx, "launchctl", "bootout", fmt.Sprintf("gui/%d/%s", uid, launchdLabel)).Run()  //nolint:errcheck,gosec
+	_ = exec.CommandContext(ctx, "launchctl", "bootout", fmt.Sprintf("user/%d/%s", uid, launchdLabel)).Run() //nolint:errcheck,gosec
 
 	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
@@ -249,10 +256,11 @@ func daemonStatusLaunchd(cmd *cobra.Command) {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "installed: yes (%s)\n", plistPath)
 
+	ctx := cmd.Context()
 	uid := os.Getuid()
-	out, err := exec.Command("launchctl", "print", fmt.Sprintf("gui/%d/%s", uid, launchdLabel)).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "launchctl", "print", fmt.Sprintf("gui/%d/%s", uid, launchdLabel)).CombinedOutput() //nolint:gosec
 	if err != nil {
-		out, err = exec.Command("launchctl", "print", fmt.Sprintf("user/%d/%s", uid, launchdLabel)).CombinedOutput()
+		out, err = exec.CommandContext(ctx, "launchctl", "print", fmt.Sprintf("user/%d/%s", uid, launchdLabel)).CombinedOutput() //nolint:gosec
 	}
 
 	if err != nil {
@@ -294,7 +302,7 @@ func daemonInstallSystemd(cmd *cobra.Command) {
 		return
 	}
 
-	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil { //nolint:mnd
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
@@ -322,15 +330,16 @@ func daemonInstallSystemd(cmd *cobra.Command) {
 	fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", unitPath)
 
 	// Reload and enable.
-	if err := exec.Command("systemctl", "--user", "daemon-reload").Run(); err != nil {
+	ctx := cmd.Context()
+	if err := exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run(); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: systemctl daemon-reload failed: %v\n", err)
 	}
-	if err := exec.Command("systemctl", "--user", "enable", systemdUnitName).Run(); err != nil {
+	if err := exec.CommandContext(ctx, "systemctl", "--user", "enable", systemdUnitName).Run(); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: systemctl enable failed: %v\n", err)
 	}
 
 	if start {
-		if err := exec.Command("systemctl", "--user", "restart", systemdUnitName).Run(); err != nil {
+		if err := exec.CommandContext(ctx, "systemctl", "--user", "restart", systemdUnitName).Run(); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\n", err)
 			return
 		}
@@ -342,15 +351,16 @@ func daemonUninstallSystemd(cmd *cobra.Command) {
 	unitPath := systemdUnitPath()
 
 	// Stop and disable.
-	_ = exec.Command("systemctl", "--user", "stop", systemdUnitName).Run()    //nolint:errcheck
-	_ = exec.Command("systemctl", "--user", "disable", systemdUnitName).Run() //nolint:errcheck
+	ctx := cmd.Context()
+	_ = exec.CommandContext(ctx, "systemctl", "--user", "stop", systemdUnitName).Run()    //nolint:errcheck
+	_ = exec.CommandContext(ctx, "systemctl", "--user", "disable", systemdUnitName).Run() //nolint:errcheck
 
 	if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
 
-	_ = exec.Command("systemctl", "--user", "daemon-reload").Run() //nolint:errcheck
+	_ = exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run() //nolint:errcheck
 
 	fmt.Fprintln(cmd.OutOrStdout(), "service uninstalled")
 }
@@ -365,7 +375,7 @@ func daemonStatusSystemd(cmd *cobra.Command) {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "installed: yes (%s)\n", unitPath)
 
-	out, err := exec.Command("systemctl", "--user", "is-active", systemdUnitName).CombinedOutput()
+	out, err := exec.CommandContext(cmd.Context(), "systemctl", "--user", "is-active", systemdUnitName).CombinedOutput()
 	if err == nil && strings.TrimSpace(string(out)) == "active" {
 		fmt.Fprintln(cmd.OutOrStdout(), "running: yes")
 	} else {
