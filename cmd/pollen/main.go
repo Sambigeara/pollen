@@ -20,7 +20,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"connectrpc.com/connect"
@@ -190,17 +189,6 @@ func newInviteCmd() *cobra.Command {
 	return cmd
 }
 
-func newStatusCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "status [nodes|services]",
-		Short: "Show status",
-		Args:  cobra.RangeArgs(0, 1),
-		Run:   runStatus,
-	}
-	cmd.Flags().Bool("wide", false, "Show full peer IDs and extra details")
-	cmd.Flags().Bool("all", false, "Include offline nodes and services")
-	return cmd
-}
 
 func newServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -1204,147 +1192,6 @@ func parsePublicKeyHex(v string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(b), nil
 }
 
-func runStatus(cmd *cobra.Command, args []string) {
-	mode := "all"
-	if len(args) == 1 {
-		mode = args[0]
-	}
-	wide, _ := cmd.Flags().GetBool("wide")
-	includeAll, _ := cmd.Flags().GetBool("all")
-	opts := statusViewOpts{wide: wide, includeAll: includeAll}
-
-	client := newControlClient(cmd)
-	resp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
-	}
-
-	switch mode {
-	case "all":
-		printSelfLine(cmd, resp.Msg, opts)
-		printNodesTable(cmd, resp.Msg, opts)
-		hasServices := len(resp.Msg.GetServices()) > 0
-		hasConnections := len(resp.Msg.GetConnections()) > 0
-		if hasServices {
-			fmt.Fprintln(cmd.OutOrStdout())
-			printServicesTable(cmd, resp.Msg, opts)
-		}
-		if hasConnections {
-			fmt.Fprintln(cmd.OutOrStdout())
-			printConnectionsTable(cmd, resp.Msg, opts)
-		}
-	case "nodes", "node":
-		printSelfLine(cmd, resp.Msg, opts)
-		printNodesTable(cmd, resp.Msg, opts)
-	case "services", "service", "serve":
-		printServicesTable(cmd, resp.Msg, opts)
-	default:
-		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services)\n", mode)
-	}
-}
-
-type statusViewOpts struct {
-	wide       bool
-	includeAll bool
-}
-
-func printSelfLine(cmd *cobra.Command, st *controlv1.GetStatusResponse, opts statusViewOpts) {
-	if st.GetSelf() == nil || st.GetSelf().GetNode() == nil {
-		return
-	}
-	peer := formatPeerID(st.GetSelf().GetNode().GetPeerId(), opts.wide)
-	addr := st.GetSelf().GetAddr()
-	if addr == "" {
-		addr = "-"
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "self  %s  online  %s\n\n", peer, addr)
-}
-
-//nolint:mnd
-func printNodesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse, opts statusViewOpts) {
-	if len(st.Nodes) == 0 {
-		return
-	}
-	filtered := 0
-	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "NODE\tSTATUS\tADDR")
-
-	for _, n := range st.Nodes {
-		if !opts.includeAll && !isReachableStatus(n.GetStatus()) {
-			filtered++
-			continue
-		}
-		peer := formatPeerID(n.GetNode().GetPeerId(), opts.wide)
-		status := formatStatus(n.GetStatus())
-		addr := n.GetAddr()
-		if addr == "" {
-			addr = "-"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", peer, status, addr)
-	}
-	_ = w.Flush()
-
-	if filtered > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "offline nodes: %d (use --all)\n", filtered)
-	}
-}
-
-//nolint:mnd
-func printServicesTable(cmd *cobra.Command, st *controlv1.GetStatusResponse, opts statusViewOpts) {
-	if len(st.Services) == 0 {
-		return
-	}
-	reachableProviders := map[string]bool{}
-	if st.GetSelf() != nil && st.GetSelf().GetNode() != nil {
-		selfID := peerKeyString(st.GetSelf().GetNode().GetPeerId())
-		reachableProviders[selfID] = true
-	}
-	for _, n := range st.Nodes {
-		if isReachableStatus(n.GetStatus()) {
-			id := peerKeyString(n.GetNode().GetPeerId())
-			reachableProviders[id] = true
-		}
-	}
-
-	filtered := 0
-	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "SERVICE\tPROVIDER\tPORT")
-
-	for _, s := range st.Services {
-		providerID := peerKeyString(s.GetProvider().GetPeerId())
-		if !opts.includeAll && !reachableProviders[providerID] {
-			filtered++
-			continue
-		}
-		provider := formatPeerID(s.GetProvider().GetPeerId(), opts.wide)
-		fmt.Fprintf(w, "%s\t%s\t%d\n", s.GetName(), provider, s.GetPort())
-	}
-	_ = w.Flush()
-
-	if filtered > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "offline services: %d (use --all)\n", filtered)
-	}
-}
-
-//nolint:mnd
-func printConnectionsTable(cmd *cobra.Command, st *controlv1.GetStatusResponse, opts statusViewOpts) {
-	if len(st.Connections) == 0 {
-		return
-	}
-	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "LOCAL\tSERVICE\tPROVIDER\tREMOTE")
-
-	for _, c := range st.Connections {
-		service := c.GetServiceName()
-		if service == "" {
-			service = strconv.FormatUint(uint64(c.GetRemotePort()), 10)
-		}
-		provider := formatPeerID(c.GetPeer().GetPeerId(), opts.wide)
-		fmt.Fprintf(w, "%d\t%s\t%s\t%d\n", c.GetLocalPort(), service, provider, c.GetRemotePort())
-	}
-	_ = w.Flush()
-}
 
 func runServe(cmd *cobra.Command, args []string) {
 	portStr := args[0]
