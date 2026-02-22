@@ -71,6 +71,8 @@ If the bootstrap command prints a local join command, run it:
 pollen join "<LOCAL_JOIN_TOKEN>"
 ```
 
+The node starts automatically after joining.
+
 ## Add another node
 
 Create an invite on admin:
@@ -84,6 +86,9 @@ Join from the other node:
 ```bash
 pollen join "<INVITE_TOKEN>"
 ```
+
+This enrolls credentials and starts the daemon automatically. Use `--no-start`
+to enroll without starting.
 
 Subject-bound invite flow (stricter):
 
