@@ -47,12 +47,13 @@ const (
 	pollenDir  = ".pollen"
 	socketName = "pollen.sock"
 
-	controlClientTimeout  = 10 * time.Second
-	passiveGossipInterval = 10 * time.Second
-	defaultJoinTokenTTL   = 5 * time.Minute
-	bootstrapStatusWait   = 20 * time.Second
-	minPort               = 1
-	maxPort               = 65535
+	controlClientTimeout         = 10 * time.Second
+	passiveGossipInterval        = 10 * time.Second
+	defaultJoinTokenTTL          = 5 * time.Minute
+	defaultBootstrapJoinTokenTTL = 1 * time.Minute
+	bootstrapStatusWait          = 20 * time.Second
+	minPort                      = 1
+	maxPort                      = 65535
 )
 
 func main() {
@@ -737,15 +738,12 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 }
 
 func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs []string, sshTarget string) error {
-	seedToken, err := createJoinToken(cmd, relayPub, defaultJoinTokenTTL, nil)
+	seedToken, err := createJoinToken(cmd, relayPub, defaultBootstrapJoinTokenTTL, nil)
 	if err != nil {
 		return fmt.Errorf("create relay seed token: %w", err)
 	}
 
-	if sshTarget == "" {
-		fmt.Fprintln(cmd.OutOrStdout(), "Start relay with:")
-		fmt.Fprintf(cmd.OutOrStdout(), "pollen up --join %q\n", seedToken)
-	} else if err := bootstrapRelayOverSSH(cmd, sshTarget, seedToken); err != nil {
+	if err := bootstrapRelayOverSSH(cmd, sshTarget, seedToken); err != nil {
 		return err
 	}
 
@@ -772,12 +770,6 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 	}})
 	if err != nil {
 		return fmt.Errorf("create local join token: %w", err)
-	}
-
-	if sshTarget == "" {
-		fmt.Fprintln(cmd.OutOrStdout(), "After relay is online, run on admin node:")
-		fmt.Fprintf(cmd.OutOrStdout(), "pollen up --join %q\n", joinToken)
-		return nil
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout(), "relay is ready; starting local node")
@@ -1003,13 +995,8 @@ type bootstrapInfo struct {
 }
 
 func startRelayOverSSH(cmd *cobra.Command, sshTarget, token string) error {
-	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
 	remoteStart := fmt.Sprintf("nohup pollen up --join %q >/tmp/pollen.log 2>&1 < /dev/null &", token)
-	startOut, err := exec.CommandContext(ctx, "ssh", sshTarget, remoteStart).CombinedOutput()
+	startOut, err := exec.CommandContext(cmd.Context(), "ssh", sshTarget, remoteStart).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(startOut)))
 	}
