@@ -465,6 +465,17 @@ func runNode(cmd *cobra.Command) {
 			logger.Warnw("failed to load bootstrap peers", "err", loadErr)
 			return nil
 		}
+		if len(bootstrapPeers) == 0 {
+			return nil
+		}
+
+		// Wait for the node to be fully started before connecting.
+		sockPath := filepath.Join(pollenDir, socketName)
+		if !waitForSocket(sockPath, bootstrapStatusWait) {
+			logger.Warn("timed out waiting for node socket; skipping bootstrap peer connections")
+			return nil
+		}
+
 		for _, bp := range bootstrapPeers {
 			if _, connectErr := nodeSrv.ConnectPeer(ctx, &controlv1.ConnectPeerRequest{
 				PeerId: bp.GetPeerPub(),
