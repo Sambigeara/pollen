@@ -12,7 +12,8 @@ This README is intentionally short and focused on day-to-day commands.
 ## Core commands
 
 - `pollen init` initialize local root cluster state
-- `pollen up [--join <token>]` start/resume a node (`--join` does one-shot enroll+start; `-d` starts as a background service)
+- `pollen up` start/resume a node (`-d` starts as a background service)
+- `pollen join <token>` enroll into a cluster using a join or invite token
 - `pollen down` gracefully stop a running local node
 - `pollen purge [--all]` reset local cluster state (`--all` also removes node keys)
 - `pollen status` show nodes/services
@@ -67,7 +68,7 @@ pollen bootstrap ssh ubuntu@<RELAY_PUBLIC_IP>
 If the bootstrap command prints a local join command, run it:
 
 ```bash
-pollen up --join "<LOCAL_JOIN_TOKEN>"
+pollen join "<LOCAL_JOIN_TOKEN>"
 ```
 
 ## Add another node
@@ -81,7 +82,7 @@ pollen invite
 Join from the other node:
 
 ```bash
-pollen up --join "<INVITE_TOKEN>"
+pollen join "<INVITE_TOKEN>"
 ```
 
 Subject-bound invite flow (stricter):

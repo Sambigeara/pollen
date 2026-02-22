@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
@@ -106,7 +105,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 	return n, nil
 }
 
-func (n *Node) Start(ctx context.Context, token *admissionv1.JoinToken) error {
+func (n *Node) Start(ctx context.Context) error {
 	defer n.shutdown()
 
 	if err := n.mesh.Start(ctx); err != nil {
@@ -114,16 +113,6 @@ func (n *Node) Start(ctx context.Context, token *admissionv1.JoinToken) error {
 	}
 	n.tun.Start(ctx)
 	go n.recvLoop(ctx)
-
-	if token != nil {
-		if len(token.GetClaims().GetBootstrap()) > 0 {
-			if err := n.mesh.JoinWithToken(ctx, token); err != nil {
-				return fmt.Errorf("join with token: %w", err)
-			}
-		} else {
-			n.log.Infow("join token has no bootstrap peers; starting node as relay seed")
-		}
-	}
 
 	gossipTicker := util.NewJitterTicker(ctx, n.conf.GossipInterval, n.gossipJitter())
 	defer gossipTicker.Stop()
