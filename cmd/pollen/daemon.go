@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	htmltemplate "html/template"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,7 +30,7 @@ func systemdUnitPath() string {
 	return filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user", systemdUnitName)
 }
 
-var launchdPlistTmpl = htmltemplate.Must(htmltemplate.New("plist").Parse(`<?xml version="1.0" encoding="UTF-8"?>
+var launchdPlistTmpl = template.Must(template.New("plist").Parse(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -210,17 +209,28 @@ func daemonInstallLaunchd(cmd *cobra.Command) {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
+	// Close the file before launchctl reads it.
+	f.Close()
 
 	fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", plistPath)
 
 	if start {
 		ctx := cmd.Context()
 		uid := os.Getuid()
-		// Try to bootout any existing instance first.
-		_ = exec.CommandContext(ctx, "launchctl", "bootout", fmt.Sprintf("gui/%d/%s", uid, launchdLabel)).Run() //nolint:errcheck,gosec
+		guiDomain := fmt.Sprintf("gui/%d", uid)
+		guiTarget := fmt.Sprintf("gui/%d/%s", uid, launchdLabel)
+		userDomain := fmt.Sprintf("user/%d", uid)
+		userTarget := fmt.Sprintf("user/%d/%s", uid, launchdLabel)
+
+		// Remove any existing instance and clear disabled state.
+		_ = exec.CommandContext(ctx, "launchctl", "bootout", guiTarget).Run()  //nolint:errcheck,gosec
+		_ = exec.CommandContext(ctx, "launchctl", "bootout", userTarget).Run() //nolint:errcheck,gosec
+		_ = exec.CommandContext(ctx, "launchctl", "enable", guiTarget).Run()   //nolint:errcheck,gosec
+		_ = exec.CommandContext(ctx, "launchctl", "enable", userTarget).Run()  //nolint:errcheck,gosec
+
 		// Try gui domain first, fall back to user domain.
-		if err := exec.CommandContext(ctx, "launchctl", "bootstrap", fmt.Sprintf("gui/%d", uid), plistPath).Run(); err != nil { //nolint:gosec
-			if err2 := exec.CommandContext(ctx, "launchctl", "bootstrap", fmt.Sprintf("user/%d", uid), plistPath).Run(); err2 != nil { //nolint:gosec
+		if err := exec.CommandContext(ctx, "launchctl", "bootstrap", guiDomain, plistPath).Run(); err != nil { //nolint:gosec
+			if err2 := exec.CommandContext(ctx, "launchctl", "bootstrap", userDomain, plistPath).Run(); err2 != nil { //nolint:gosec
 				fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\nrun manually: launchctl bootstrap gui/%d %s\n", err, uid, plistPath)
 				return
 			}
