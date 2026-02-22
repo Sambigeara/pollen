@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -54,6 +55,8 @@ const (
 	bootstrapStatusWait          = 20 * time.Second
 	minPort                      = 1
 	maxPort                      = 65535
+	defaultRepo                  = "sambigeara/pollen"
+	scriptFetchTimeout           = 30 * time.Second
 )
 
 var (
@@ -81,6 +84,7 @@ func main() {
 		newUnserveCmd(),
 		newConnectCmd(),
 		newDaemonCmd(),
+		newUpgradeCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -1491,4 +1495,60 @@ func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient 
 		"http://unix",
 		connect.WithGRPC(),
 	)
+}
+
+func newUpgradeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "upgrade",
+		Short: "Upgrade Pollen to the latest (or specified) version",
+		Args:  cobra.NoArgs,
+		Run:   runUpgrade,
+	}
+	cmd.Flags().String("version", "", "Install a specific release (e.g. v0.3.0)")
+	cmd.Flags().Bool("allow-breaking", false, "Allow semver-breaking upgrades")
+	return cmd
+}
+
+func runUpgrade(cmd *cobra.Command, _ []string) {
+	repo := os.Getenv("POLLEN_REPO")
+	if repo == "" {
+		repo = defaultRepo
+	}
+	scriptURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/scripts/install.sh", repo)
+
+	resp, err := (&http.Client{Timeout: scriptFetchTimeout}).Get(scriptURL) //nolint:noctx
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to fetch install script: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to fetch install script: HTTP %d\n", resp.StatusCode)
+		return
+	}
+
+	script, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to read install script: %v\n", err)
+		return
+	}
+
+	args := []string{"-s", "--"}
+
+	if v, _ := cmd.Flags().GetString("version"); v != "" {
+		args = append(args, "--version", v)
+	}
+	if ab, _ := cmd.Flags().GetBool("allow-breaking"); ab {
+		args = append(args, "--allow-breaking")
+	}
+
+	bash := exec.Command("bash", args...)
+	bash.Stdin = bytes.NewReader(script)
+	bash.Stdout = cmd.OutOrStdout()
+	bash.Stderr = cmd.ErrOrStderr()
+
+	if err := bash.Run(); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "upgrade failed: %v\n", err)
+	}
 }
