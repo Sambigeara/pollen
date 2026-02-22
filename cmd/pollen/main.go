@@ -301,13 +301,20 @@ func runNode(cmd *cobra.Command, args []string) {
 
 	creds, credErr := auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, tkn, time.Now())
 	if credErr != nil {
-		if errors.Is(credErr, auth.ErrCredentialsNotFound) {
+		switch {
+		case errors.Is(credErr, auth.ErrCredentialsNotFound) && joinToken == "":
+			logger.Info("node is not initialized; auto-initializing root cluster")
+			creds, credErr = auth.EnsureLocalRootCredentials(pollenDir, pubKey, time.Now())
+			if credErr != nil {
+				logger.Fatal("auto-init failed: ", credErr)
+			}
+		case errors.Is(credErr, auth.ErrCredentialsNotFound):
 			logger.Fatal("node is not initialized; run `pollen init` or `pollen up --join <token>`")
-		}
-		if errors.Is(credErr, auth.ErrDifferentCluster) {
+		case errors.Is(credErr, auth.ErrDifferentCluster):
 			logger.Fatal("node is already enrolled in a different cluster; run `pollen purge` before joining a new cluster")
+		default:
+			logger.Fatal(credErr)
 		}
-		logger.Fatal(credErr)
 	}
 
 	creds.InviteSigner, err = auth.LoadAdminSigner(pollenDir, time.Now())
