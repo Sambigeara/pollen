@@ -1,5 +1,9 @@
 # Pollen
 
+> **Work in progress.** This project is in early development — expect breaking
+> changes, missing features, and rough edges. APIs and on-disk formats are not
+> yet stable.
+
 Pollen is an ergonomic peer-to-peer mesh runtime for workloads and service
 exposure.
 
