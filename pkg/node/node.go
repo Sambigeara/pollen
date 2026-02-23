@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -24,6 +23,18 @@ import (
 	"github.com/sambigeara/pollen/pkg/util"
 	"go.uber.org/zap"
 )
+
+const (
+	// MaxDatagramPayload is the maximum safe payload size for a QUIC datagram.
+	MaxDatagramPayload = 1100
+)
+
+// envelopeOverhead is the serialized size of an empty Envelope wrapping an
+// empty GossipEventBatch — covers the oneof tag, length prefixes, and batch
+// wrapper framing.
+var envelopeOverhead = (&meshv1.Envelope{Body: &meshv1.Envelope_Events{
+	Events: &statev1.GossipEventBatch{},
+}}).SizeVT()
 
 const (
 	localKeysDir = "keys"
@@ -77,7 +88,7 @@ type Node struct {
 	punchCh         chan punchRequest
 	conf            *Config
 	log             *zap.SugaredLogger
-	gossipEvents    chan *statev1.GossipNode
+	gossipEvents    chan []*statev1.GossipEvent
 	requestFullOnce sync.Once
 }
 
@@ -115,7 +126,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
 		punchCh:         make(chan punchRequest, punchChBufSize),
-		gossipEvents:    make(chan *statev1.GossipNode, gossipEventBufSize),
+		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
 	}
 
 	return n, nil
@@ -159,8 +170,8 @@ func (n *Node) Start(ctx context.Context) error {
 			n.gossip(ctx)
 		case <-ipRefreshCh:
 			n.refreshIPs()
-		case node := <-n.gossipEvents:
-			n.broadcastNode(ctx, node)
+		case events := <-n.gossipEvents:
+			n.broadcastEvents(ctx, events)
 		case in := <-n.mesh.Events():
 			n.handlePeerInput(in)
 		case in := <-n.localPeerEvents:
@@ -189,13 +200,13 @@ func (n *Node) connectBootstrapPeers(ctx context.Context) {
 	}
 }
 
-func (n *Node) queueGossipNode(node *statev1.GossipNode) {
-	if node == nil {
+func (n *Node) queueGossipEvents(events []*statev1.GossipEvent) {
+	if len(events) == 0 {
 		return
 	}
 
 	select {
-	case n.gossipEvents <- node:
+	case n.gossipEvents <- events:
 	default:
 	}
 }
@@ -221,17 +232,20 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 
 	switch body := env.GetBody().(type) {
 	case *meshv1.Envelope_Clock:
-		for _, node := range n.store.MissingFor(body.Clock) {
-			if err := n.mesh.Send(ctx, from, &meshv1.Envelope{
-				Body: &meshv1.Envelope_Node{Node: node},
-			}); err != nil {
-				n.log.Debugw("failed sending gossip node", "to", from.Short(), "err", err)
+		events := n.store.MissingFor(body.Clock)
+		batches := batchEvents(events, MaxDatagramPayload)
+		for _, batch := range batches {
+			env := &meshv1.Envelope{Body: &meshv1.Envelope_Events{
+				Events: &statev1.GossipEventBatch{Events: batch},
+			}}
+			if err := n.mesh.Send(ctx, from, env); err != nil {
+				n.log.Debugw("failed sending gossip events", "to", from.Short(), "err", err)
 			}
 		}
-	case *meshv1.Envelope_Node:
-		result := n.store.ApplyNode(body.Node)
-		if result.Rebroadcast != nil {
-			n.queueGossipNode(result.Rebroadcast)
+	case *meshv1.Envelope_Events:
+		result := n.store.ApplyEvents(body.Events.GetEvents())
+		if len(result.Rebroadcast) > 0 {
+			n.queueGossipEvents(result.Rebroadcast)
 		}
 	case *meshv1.Envelope_PunchCoordRequest:
 		n.handlePunchCoordRequest(ctx, from, body.PunchCoordRequest)
@@ -242,22 +256,66 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 	}
 }
 
-func (n *Node) broadcastNode(ctx context.Context, node *statev1.GossipNode) {
-	if node == nil {
+func (n *Node) broadcastEvents(ctx context.Context, events []*statev1.GossipEvent) {
+	if len(events) == 0 {
 		return
 	}
 
 	connectedPeers := n.GetConnectedPeers()
-	for _, peerID := range connectedPeers {
-		if peerID == n.store.LocalID {
-			continue
-		}
-		if err := n.mesh.Send(ctx, peerID, &meshv1.Envelope{
-			Body: &meshv1.Envelope_Node{Node: node},
-		}); err != nil {
-			n.log.Debugw("node gossip send failed", "peer", peerID.Short(), "err", err)
+	batches := batchEvents(events, MaxDatagramPayload)
+	for _, batch := range batches {
+		env := &meshv1.Envelope{Body: &meshv1.Envelope_Events{
+			Events: &statev1.GossipEventBatch{Events: batch},
+		}}
+		for _, peerID := range connectedPeers {
+			if peerID == n.store.LocalID {
+				continue
+			}
+			if err := n.mesh.Send(ctx, peerID, env); err != nil {
+				n.log.Debugw("event gossip send failed", "peer", peerID.Short(), "err", err)
+			}
 		}
 	}
+}
+
+// eventWireSize returns the on-wire size of a single event inside the
+// repeated field: the varint-encoded length prefix plus the message bytes.
+func eventWireSize(event *statev1.GossipEvent) int {
+	n := event.SizeVT()
+	// Tag for repeated field (1 byte) + varint-encoded length.
+	overhead := 1
+	for v := uint(n); v >= 0x80; v >>= 7 {
+		overhead++
+	}
+	return overhead + n
+}
+
+// batchEvents packs events into groups that each fit within maxSize when
+// serialized as an Envelope. Events that individually exceed maxSize are
+// placed in their own batch.
+func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.GossipEvent {
+	if len(events) == 0 {
+		return nil
+	}
+
+	var batches [][]*statev1.GossipEvent
+	var current []*statev1.GossipEvent
+	currentSize := envelopeOverhead
+
+	for _, event := range events {
+		eventSize := eventWireSize(event)
+		if len(current) > 0 && currentSize+eventSize > maxSize {
+			batches = append(batches, current)
+			current = nil
+			currentSize = envelopeOverhead
+		}
+		current = append(current, event)
+		currentSize += eventSize
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
 }
 
 func (n *Node) gossip(ctx context.Context) {
@@ -282,16 +340,16 @@ func (n *Node) refreshIPs() {
 		return
 	}
 
-	gossipNode := n.store.SetLocalNetwork(newIPs, uint32(n.conf.Port))
-	if gossipNode != nil {
+	events := n.store.SetLocalNetwork(newIPs, uint32(n.conf.Port))
+	if len(events) > 0 {
 		n.log.Infow("advertised IPs changed", "ips", newIPs)
-		n.queueGossipNode(gossipNode)
+		n.queueGossipEvents(events)
 	}
 }
 
 func (n *Node) handlePeerInput(in peer.Input) {
 	if d, ok := in.(peer.PeerDisconnected); ok {
-		n.queueGossipNode(n.store.SetLocalConnected(d.PeerKey, false))
+		n.queueGossipEvents(n.store.SetLocalConnected(d.PeerKey, false))
 	}
 
 	outputs := n.peers.Step(time.Now(), in)
@@ -310,14 +368,6 @@ func (n *Node) tick() {
 
 func (n *Node) syncPeersFromState() {
 	for _, kp := range n.store.KnownPeers() {
-		if kp.PeerID == n.store.LocalID {
-			continue
-		}
-
-		if len(kp.IPs) == 0 {
-			continue
-		}
-
 		ips := make([]net.IP, 0, len(kp.IPs))
 		for _, ipStr := range kp.IPs {
 			ip := net.ParseIP(ipStr)
@@ -344,7 +394,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
-			n.queueGossipNode(n.store.SetLocalConnected(e.PeerKey, true))
+			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			n.requestFullOnce.Do(func() {
 				if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
 					Body: &meshv1.Envelope_Clock{Clock: n.store.ZeroClock()},
@@ -383,11 +433,7 @@ func (n *Node) reconcileConnections() {
 
 	missing := make(map[types.PeerKey]map[uint32]struct{}, len(connections))
 	for _, conn := range connections {
-		node, ok := n.store.Get(conn.PeerID)
-		if !ok {
-			continue
-		}
-		if !hasServicePort(node.Services, conn.RemotePort) {
+		if !n.store.HasServicePort(conn.PeerID, conn.RemotePort) {
 			ports, ok := missing[conn.PeerID]
 			if !ok {
 				ports = make(map[uint32]struct{})
@@ -414,16 +460,15 @@ func (n *Node) reconcileDesiredConnections() {
 
 	existing := make(map[string]struct{})
 	for _, conn := range n.tun.ListConnections() {
-		existing[desiredConnectionKey(conn.PeerID, conn.RemotePort, conn.LocalPort)] = struct{}{}
+		existing[store.Connection{PeerID: conn.PeerID, RemotePort: conn.RemotePort, LocalPort: conn.LocalPort}.Key()] = struct{}{}
 	}
 
 	for _, desiredConn := range desired {
-		if _, ok := existing[desiredConnectionKey(desiredConn.PeerID, desiredConn.RemotePort, desiredConn.LocalPort)]; ok {
+		if _, ok := existing[desiredConn.Key()]; ok {
 			continue
 		}
 
-		node, ok := n.store.Get(desiredConn.PeerID)
-		if !ok || !hasServicePort(node.Services, desiredConn.RemotePort) {
+		if !n.store.HasServicePort(desiredConn.PeerID, desiredConn.RemotePort) {
 			continue
 		}
 
@@ -431,19 +476,6 @@ func (n *Node) reconcileDesiredConnections() {
 			n.log.Debugw("failed restoring desired connection", "peer", desiredConn.PeerID.Short(), "remotePort", desiredConn.RemotePort, "localPort", desiredConn.LocalPort, "err", err)
 		}
 	}
-}
-
-func hasServicePort(services map[string]*statev1.Service, port uint32) bool {
-	for _, svc := range services {
-		if svc.GetPort() == port {
-			return true
-		}
-	}
-	return false
-}
-
-func desiredConnectionKey(peerID types.PeerKey, remotePort, localPort uint32) string {
-	return fmt.Sprintf("%s:%d:%d", peerID.String(), remotePort, localPort)
 }
 
 func (n *Node) connectPeer(peerKey types.PeerKey, ips []net.IP, port int) error {
@@ -608,8 +640,7 @@ func (n *Node) handleObservedAddress(oa *meshv1.ObservedAddress) {
 	}
 
 	n.log.Infow("observed address received", "addr", addr.String())
-	gossipNode := n.store.SetExternalPort(uint32(addr.Port))
-	n.queueGossipNode(gossipNode)
+	n.queueGossipEvents(n.store.SetExternalPort(uint32(addr.Port)))
 }
 
 func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {

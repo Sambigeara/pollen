@@ -42,9 +42,11 @@ func GetAdvertisableAddrs(exclusions []netip.Prefix) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), publicIPQueryTimeout)
 	defer cancel()
 
-	var all []netip.Addr
-	all = append(all, getPublicIPs(ctx)...)
-	all = append(all, getLocalIPs(ctx)...)
+	publicIPs := getPublicIPs(ctx)
+	localIPs := getLocalIPs(ctx)
+	all := make([]netip.Addr, 0, len(publicIPs)+len(localIPs))
+	all = append(all, publicIPs...)
+	all = append(all, localIPs...)
 
 	seen := make(map[netip.Addr]bool, len(all))
 	results := make([]string, 0, len(all))
