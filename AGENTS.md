@@ -1,142 +1,185 @@
 # Pollen Agent Guide
 
 This repository is Go-based and uses `just` as the primary task runner.
-Follow the conventions below when making changes or writing tests.
+Follow these conventions when changing code or tests.
+
+## Pre-release Compatibility
+
+- Pollen is pre-release and unreleased.
+- Prioritize clear ergonomics and correctness over backward compatibility.
+- It is acceptable to remove or change existing flows/protos when improving the model.
+
+## What Pollen Is
+
+- Pollen is an ergonomic peer-to-peer mesh and WASM workload orchestration
+  layer and runtime.
+- Ergonomics come first:
+  - You can bring up a cluster with a minimal set of commands.
+  - Commands are predictable and clean, for example:
+    - `pollen invite [node-pub]`
+    - `pollen up`
+    - `pollen join <token>`
+    - `pollen down`
+    - `pollen status`
+    - `pollen serve 8080 foo`
+    - `pollen connect foo`
+  - Opinionated defaults should cover most use cases, with configuration
+    available when needed.
+- Pollen is self-governing:
+  - Every node is a first-class citizen; there is no central control plane.
+  - Decisions are made locally and deterministically from each node's view of
+    the world, including topology, workload orchestration, and routing.
 
 ## Commands
 
-### Build
-- `just build` (runs `just generate` + `just lint`)
-- `just compile` (fast sanity build + no-op test run)
-- `just bin` (builds `pollen` binary)
-- `just --list` (show available tasks)
-
-### Lint / Format
-- `just lint` (golangci-lint + buf lint + buf format check)
-- `just lint-modernize` (go modernize fixer)
-- Go formatting: `gofmt -w <files>`
-
-### Test
-- `just test` (default: all packages)
-- Single package: `just test PKG=./pkg/node`
-- Single test: `just test PKG=./pkg/node TEST=Graceful`
-- Direct go test: `go test ./pkg/node -run Graceful -count=1 -v`
-
-### Protobufs
-- `just generate` after editing any proto definitions
-- Generated Go code lives in `api/genpb`
-
-### Tooling Notes
-- `just` will install required tools into `${HOME}/.cache/pollen/bin`
+- Build: `just build`, `just compile`, `just bin`, `just --list`
+- Lint: `just lint`, `just lint-modernize`
+- Test: `just test`, `just test PKG=./pkg/node`, `just test PKG=./pkg/node TEST=Graceful`
+- Proto generation: `just generate` after editing files under `api/public/`
+- Tooling binaries are installed into `${HOME}/.cache/pollen/bin`
 
 ## Repository Layout
 
 - `cmd/pollen`: CLI entry point
-- `pkg/`: core libraries (node/link/peer/state/tunnel/transport)
+- `pkg/`: core runtime packages
+- `pkg/config`: local admin/runtime metadata persisted under the pollen dir
 - `api/public/`: protobuf definitions
-- `api/genpb/`: generated protobuf Go code
+- `api/genpb/`: generated protobuf Go code (do not hand-edit)
 - `tools/`: tooling module for codegen/lint helpers
 
-## Generated Code & Files
+## Local State Files
 
-- Do not hand-edit files under `api/genpb/`
-- After changing protos in `api/public/`, run `just generate`
-- Keep generated code in sync before running lint (buf format/lint will fail)
+- `config.yaml`: admin-owned local config (for example bootstrap peers)
+- `state.yaml`: node-owned runtime gossip snapshot persisted by `pkg/store`
+- `consumed_invites.json`: signer-owned invite redemption state
 
-## Workspace Notes
+## Protobuf / Generated Code
 
-- This repo uses Go workspaces (`go.work`)
-- Tooling installs may set `GOWORK=off` during codegen
-- Prefer `just` targets for repo-wide operations
+- Do not manually edit files in `api/genpb/`
+- Run `just generate` after protobuf changes
+- Keep generated code in sync before linting
+- Prefer vtproto methods (`MarshalVT` / `UnmarshalVT`) where available
+- Use `MarshalVT` / `UnmarshalVT` instead of `proto.Marshal` /
+  `proto.Unmarshal` by default; only use `proto.MarshalOptions` when specific
+  options (for example deterministic encoding) are required
+- Prefer schema-level validation rules in proto (`buf.validate`) and run
+  protovalidate in Go for structural checks (lengths, UUID shape, required
+  fields) instead of duplicating those checks by hand in business logic
 
-## Test Harness Notes
+## Git Commit Conventions
 
-- For now, keep tests minimal, integration heavy, and just at the main component boundaries.
+- Sign commits with `git commit -s`
+- Keep subject lines concise (~50 chars)
+- Wrap commit body lines at 72 chars
 
 ## Code Style
 
-### Imports
-- `just lint` takes care of import ordering
+- Follow idiomatic Go naming and receiver style used in surrounding code
+- Keep imports gofmt/goimports-compatible (enforced by lint)
+- Put `context.Context` first when present
+- Prefer clear APIs over extra exported fields
+- Only add comments when they explain something not obvious from reading the code
+- Inline single-callsite helper functions; avoid wrappers that only delegate
+- Co-locate state with the type that owns it (methods over free functions
+  that thread context like directory paths)
 
-### Naming
-- Use idiomatic Go names: short receiver names (`n`, `i`, `m`) consistent
-  with surrounding code
-- Prefer clear, intention-revealing names for exported types and functions
-- For tests, use descriptive `TestX_Y` names for scenario-based behavior
+## Invariants and Checks
 
-### Types and APIs
-- `context.Context` is the first parameter when used
-- Avoid exporting fields unless needed by tests or other packages
+- Avoid superfluous defensive checks that cannot happen under established lifecycle invariants
+- Enforce invariants at construction/startup boundaries and fail fast there
+- Keep nil/state checks only for real runtime paths
+- Keep hot paths lean; do not re-check already-guaranteed state
+- Prefer minimal but complete code: keep checks that enforce real security or
+  consistency invariants, and remove duplicate checks once those guarantees are
+  already established upstream
+- Trust cryptographic guarantees: if a signature covers a field, do not
+  separately validate that field against the same source of truth
+- Lean on protovalidate: if a constraint is enforced in the proto schema
+  (`buf.validate`) and protovalidate runs upstream, do not duplicate the
+  check in business logic
+- Assume well-formed messages from trusted peers; do not defensively guard
+  against malformed data that proto validation or the issuance path already
+  prevents
+- Do not add speculative code paths (lazy-loading, fallback logic) for
+  scenarios that no supported control flow can trigger
+- Validate trust bundles at controlled ingest boundaries (disk/token/network)
+  and avoid re-validating the same trust bundle repeatedly along internal
+  call paths
 
-### Error Handling
+## Error Handling and Logging
+
 - Wrap errors with context using `fmt.Errorf("...: %w", err)`
-- Avoid swallowing errors; log only when useful and still return errors
-- Use sentinel errors only where they are already used
-- In tests, use `require.NoError` for setup steps that must succeed
+- Do not silently swallow errors
+- Use `zap.S()` / `zap.S().Named()` and structured logging (`Infow`, `Debugw`)
+- Avoid noisy logs in tight loops unless they are debug-level and useful
 
-### Logging
-- Use `zap.S()` or `zap.S().Named()` as in existing code
-- Avoid noisy logs inside tight loops unless debug-only
-- Prefer structured fields (`logger.Infow`) over formatted strings
+## Concurrency
 
-### Concurrency
-- Avoid data races; use locks/channels consistently
-- Prefer channels for non-blocking event notifications
-- When using `select`, include `default` only when truly non-blocking is required
-- Ensure goroutines have a clear shutdown path (`context.Context` or close channels)
+- Ensure goroutines have a clear shutdown path (`context.Context`, channel close, or both)
+- Use channels for non-blocking notifications when appropriate
+- Use `WaitGroup.Go` instead of manual `Add`/`Done`
+- This repo targets modern Go (1.22+):
+  - close over `range` loop vars directly in goroutines
+  - prefer `for i := range n` over C-style counted loops for fixed-count iteration
 
-### Protobuf / VTProto
-- Use `MarshalVT` / `UnmarshalVT` for vtproto-generated messages
-- Keep payloads consistent with `types.MsgType` enums
-- Regenerate after proto edits: `just generate`
+## Testing
 
-### Comments
-- Avoid adding comments. Code should be self-documenting through clear naming and structure.
-- Only add comments for truly complex logic that cannot be made clear through refactoring.
-- Do not add explanatory comments like "// 1 round = try all addresses" - the variable name should convey intent.
+- Prefer integration-style tests at component boundaries
+- Use `require` for hard setup/assertion failures and `assert` for softer checks
+- For async behavior, use bounded `require.Eventually` / `require.EventuallyWithT`
+- Prefer deterministic timing via config over sleeps
+- Restart tests should reuse the same data directory when persistence is part of behavior
 
-## Testing Conventions
+## Product Behavior Notes
 
-- Use `testify/require` for hard failures, `testify/assert` for expectations
-- For async behavior, use `require.EventuallyWithT` with bounded timeouts
-- Prefer deterministic time control via config rather than long sleeps
-- When restarting nodes in tests, reuse the same `PollenDir` to preserve keys
-- When tests fail, prefer asserting on local state (peer store, session store)
+- `pollen status` reports online/offline from live sessions and services from gossip
+- Service removal should revoke active streams; remote forwards are removed after gossip convergence
 
-## CLI Status/Service Notes
+## Auth Model
 
-- `pollen status` uses live link sessions for `online/offline` and gossiped node services for service listings.
-- `pollen service rm` only removes services exposed by the local node; do not attempt to delete remote services.
-- Service removal now hard-revokes active streams and other nodes auto-remove forwards once gossip reflects the service removal.
-
-## Cursor/Copilot Rules
-
-- None found in `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md`.
-
-## Long term goal for auth
-
-```
-**Pollen QUIC Identity & Membership — Implementation Summary**
-
----
-
-**Identity model:** Every node has a long-lived Ed25519 keypair. This *is* the node's identity. The TLS certificate is a self-signed X.509 wrapper around this key, existing only to satisfy QUIC's TLS requirement.
-
-**Transport authentication:** QUIC's `tls.Config` uses a custom `VerifyPeerCertificate` (or `VerifyConnection`) callback. It extracts the Ed25519 public key from the peer's presented certificate and checks it against the membership CRDT. The handshake fails if the peer isn't a member. `InsecureSkipVerify: true` is set to disable X.509 chain validation — your callback is the real verification, and it runs during the handshake, not after. Both sides present certificates (`ClientAuth: RequireAnyClientCert`), giving you mutual authentication. Set ALPN via `NextProtos` or QUIC handshakes fail silently.
-
-**Membership CRDT:** The membership set contains signed facts, not raw entries. Every `Add(pubkey, meta, issuedAt)` and `Revoke(pubkey, reason, issuedAt)` is signed by an authority key rooted in `genesis.pub`. Nodes verify these signatures before merging. This prevents a compromised node from injecting itself into the membership set via gossip. Revocation checks take precedence over additions — a revoked key cannot be resurrected by replaying an old `Add`.
-
-**Join flow:**
-
-1. `pollen invite` produces a single join string containing: bootstrap addresses, a short-lived invite secret (signed by an admin/genesis delegate), and the genesis public key fingerprint.
-
-2. `pollen join <token>` connects to a bootstrap node via QUIC. The TLS verifier for this connection is in **enrol mode** — it pins the bootstrap's presented public key against the genesis fingerprint from the invite token. No blind trust.
-
-3. Over this authenticated channel, the joining node sends the invite secret and its own public key.
-
-4. The bootstrap validates the invite, creates a signed `Add` fact for the new node, and merges it into the membership CRDT. It returns the current membership snapshot.
-
-5. The new node stores `genesis.pub`, its own keypair, and the membership snapshot. All future connections use **normal mode** — verifying peers against the membership CRDT.
-
-**What to defer:** Key rotation, 0-RTT, and proactive connection teardown on revocation. These are real concerns but not v1 blockers. Eventual consistency on revocation is fine initially. 0-RTT should stay disabled until after the join flow is proven solid.
-```
+- Pollen uses two Ed25519 key roles:
+  - Node key: each node's transport/TLS identity (`keys/ed25519.key`)
+  - Admin key: local signing key used for invite/join issuance when paired with
+    valid admin authority (`keys/admin_ed25519.key`)
+- Cluster trust is rooted in a genesis admin public key stored in the trust
+  bundle (`keys/cluster.trust.pb`):
+  - `cluster_id = sha256(genesis_pub)`
+  - all admin and membership authority chains to `genesis_pub`
+- Admin authority model:
+  - Genesis admin self-issues an `AdminCert` when signing.
+  - Delegated admins use a genesis-signed `AdminCert`
+    (`keys/admin.cert.pb`).
+  - Delegated admin certs are intentionally longer-lived than join/invite
+    tokens.
+  - Membership and signing authority are separate: a node can be a valid
+    cluster member without being an admin signer.
+  - Only genesis admin may delegate admin authority. Delegated admins issue
+    invites/join tokens but do not mint further admin delegation.
+- Enrollment uses two token types:
+  - `InviteToken`: signed by an admin cert, includes trust + issuer + bootstrap
+    peers, with optional subject binding (`pollen invite` open,
+    `pollen invite <node-pub>` strict).
+  - `JoinToken`: signed by an admin cert, includes trust + issuer +
+    subject-bound membership cert + bootstrap peers.
+- Invite redemption is one-shot:
+  - bootstrap verifies invite signature/TTL/cluster/issuer and optional subject
+    binding against peer TLS key
+  - token IDs are consumed locally in `consumed_invites.json`
+  - bootstrap returns a short-lived `JoinToken`
+  - invite ALPN is enabled only on signer-capable nodes; non-signer nodes do
+    not advertise/accept invite redemption handshakes
+- Steady-state mesh auth:
+  - every QUIC session does post-TLS bidirectional `AuthProof` exchange
+  - membership cert subject must match TLS peer key
+  - peers from other clusters or with invalid/expired certs are
+    rejected before session admission
+- Gossip scope:
+  - gossip carries topology/service/reachability state
+  - trust bundles, admin certs, and tokens are not gossiped
+- Bootstrap ergonomics:
+  - `pollen bootstrap ssh <host>` seeds relay, delegates relay admin cert,
+    and joins local admin node
+  - admin stores bootstrap peers in `config.yaml` so future invites can omit
+    explicit `--bootstrap`
+  - `pollen admin keygen` and `pollen admin set-cert` are internal bootstrap
+    plumbing (hidden), not primary user-facing onboarding commands

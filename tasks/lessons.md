@@ -1,0 +1,16 @@
+# Lessons
+
+- Don't add comments that restate what the code already says (e.g. `// host:port` on a `[]string` field). Only comment where logic isn't self-evident.
+- Use `just generate` to regenerate protobuf code, not raw `buf generate` commands.
+- **Use typed representations over string conventions.** Don't encode structured data (kind + identifier) into string keys with prefix parsing (`"s/http"`, `"r/<pk>"`). Use typed structs with enums from the start. String conventions require parsing, are fragile, and create implicit coupling between producers and consumers.
+- **Unify parallel patterns immediately.** When multiple attributes need the same concept (e.g., deletion), use one consistent mechanism everywhere — don't let 3 different patterns emerge (separate oneof variant, bool on wrapper, inverted semantic bool). Stop after each step, review the full picture, and ask: "have I introduced a second way of expressing the same idea?"
+- **Review own work for consistency before presenting.** After implementing a multi-part design, audit the entire change as a whole. Check for duplicated ideas, inconsistent abstractions, or unnecessary indirection. A staff engineer would catch these in review — catch them first.
+- **Never build a shadow type system alongside a proto oneof.** If the proto already has a discriminator (oneof, enum), use it directly. Don't create a parallel Go enum (`attrKind`) that must stay in sync — every new variant becomes N switch statements that must all update in lockstep. Derive map keys from the proto oneof itself.
+- **Put shared semantics at the shared level.** If every variant of a oneof carries the same field (e.g., `deleted`), that field belongs on the parent message, not duplicated across each variant. Duplication across proto messages = duplication across every switch that reads them.
+- **Don't nest proto messages without a reason.** `NetworkChange { NetworkInfo network = 1; }` forces `v.Network.GetNetwork().GetIps()` for no benefit. If the wrapper adds nothing beyond what the inner message has, inline the fields or use the inner message directly.
+- **Deduplicate before shipping.** If two functions build the same output from the same data (e.g., `bumpAndBroadcastAllLocked` vs `buildEventsAbove`), one should call the other. Inline duplication rots faster than shared code.
+- **Don't leave dead code paths.** If a function is only called when `deleted == false`, don't add a `deleted == true` branch inside it. Dead branches erode reader trust and signal the author didn't track the invariants.
+- **Don't add struct fields that no production code reads.** `ApplyResult.Updated` was only consumed by tests. If the caller doesn't need it, don't ship it.
+- **Don't accept parameters you don't use.** `RemoveLocalServices(port, name)` never reads `port`. Function signatures are contracts — they must not lie.
+- **Don't hand-calculate serialization sizes.** Use the serialization library's own `Size()` methods to compute framing overhead. Hand-counted varint bytes silently break when field numbers change.
+- **Batch lock acquisition on the receive side too.** If you batch on send (`batchEvents`), the receive path should also take the lock once for the batch, not N times for N events.

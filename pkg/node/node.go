@@ -6,24 +6,35 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	peerv1 "github.com/sambigeara/pollen/api/genpb/pollen/peer/v1"
+	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/admission"
+	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/peer"
-	"github.com/sambigeara/pollen/pkg/quic"
 	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/tunnel"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/util"
 	"go.uber.org/zap"
 )
+
+const (
+	// MaxDatagramPayload is the maximum safe payload size for a QUIC datagram.
+	MaxDatagramPayload = 1100
+)
+
+// envelopeOverhead is the serialized size of an empty Envelope wrapping an
+// empty GossipEventBatch — covers the oneof tag, length prefixes, and batch
+// wrapper framing.
+var envelopeOverhead = (&meshv1.Envelope{Body: &meshv1.Envelope_Events{
+	Events: &statev1.GossipEventBatch{},
+}}).SizeVT()
 
 const (
 	localKeysDir = "keys"
@@ -40,11 +51,19 @@ const (
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
 	gossipEventBufSize = 64
+	punchChBufSize     = 16
+	punchWorkers       = 3 // max concurrent punches; bounds socket usage to N×256
+	ipRefreshInterval  = 5 * time.Minute
 )
 
+type BootstrapPeer struct {
+	Addrs   []string
+	PeerKey types.PeerKey
+}
+
 type Config struct {
-	PollenDir           string
 	AdvertisedIPs       []string
+	BootstrapPeers      []BootstrapPeer
 	Port                int
 	GossipInterval      time.Duration
 	PeerTickInterval    time.Duration
@@ -54,85 +73,76 @@ type Config struct {
 
 type HandlerFn func(ctx context.Context, from types.PeerKey, payload []byte) error
 
+type punchRequest struct {
+	ip      net.IP
+	port    int
+	peerKey types.PeerKey
+}
+
 type Node struct {
-	invites         admission.Store
 	peers           *peer.Store
 	store           *store.Store
-	localPeerEvents chan peer.Input
-	conf            *Config
+	mesh            mesh.Mesh
 	tun             *tunnel.Manager
-	sock            *quic.SuperSockImpl
+	localPeerEvents chan peer.Input
+	punchCh         chan punchRequest
+	conf            *Config
 	log             *zap.SugaredLogger
-	gossipEvents    chan *statev1.GossipNode
-	identityPub     ed25519.PublicKey
+	gossipEvents    chan []*statev1.GossipEvent
 	requestFullOnce sync.Once
 }
 
-func New(conf *Config) (*Node, error) {
+func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, stateStore *store.Store, peerStore *peer.Store) (*Node, error) {
 	log := zap.S().Named("node")
-
-	privKey, pubKey, err := genIdentityKey(conf.PollenDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load signing keys: %w", err)
-	}
-
-	stateStore, err := store.Load(conf.PollenDir, pubKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load state: %w", err)
-	}
-
-	invitesStore, err := admission.Load(conf.PollenDir)
-	if err != nil {
-		log.Error("failed to load peers", zap.Error(err))
-		return nil, err
-	}
 
 	ips := conf.AdvertisedIPs
 	if len(ips) == 0 {
 		var err error
-		ips, err = quic.GetAdvertisableAddrs()
+		ips, err = mesh.GetAdvertisableAddrs(mesh.DefaultExclusions)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	dir := NewDirectory(stateStore)
-	s := quic.NewSuperSock(conf.Port, privKey, dir, invitesStore)
-
 	stateStore.SetLocalNetwork(ips, uint32(conf.Port))
+
+	m, err := mesh.NewMesh(conf.Port, privKey, creds)
+	if err != nil {
+		log.Error("failed to load mesh", zap.Error(err))
+		return nil, err
+	}
+
+	tun := tunnel.New(m)
+	for _, svc := range stateStore.LocalServices() {
+		tun.RegisterService(svc.GetPort())
+	}
 
 	n := &Node{
 		log:             log,
-		sock:            s,
-		peers:           peer.NewStore(),
+		peers:           peerStore,
 		store:           stateStore,
-		invites:         invitesStore,
-		identityPub:     pubKey,
+		mesh:            m,
+		tun:             tun,
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
-		gossipEvents:    make(chan *statev1.GossipNode, gossipEventBufSize),
-	}
-
-	n.tun = tunnel.New(dir)
-	for _, svc := range stateStore.LocalServices() {
-		n.tun.RegisterService(svc.GetPort())
+		punchCh:         make(chan punchRequest, punchChBufSize),
+		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
 	}
 
 	return n, nil
 }
 
-func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
+func (n *Node) Start(ctx context.Context) error {
 	defer n.shutdown()
 
-	if err := n.sock.Start(ctx); err != nil {
+	if err := n.mesh.Start(ctx); err != nil {
 		return err
 	}
+	n.connectBootstrapPeers(ctx)
+	n.tun.Start(ctx)
 	go n.recvLoop(ctx)
-
-	if token != nil {
-		if err := n.sock.JoinWithInvite(ctx, token); err != nil {
-			return fmt.Errorf("join with invite: %w", err)
-		}
+	for range punchWorkers {
+		go n.punchLoop(ctx)
 	}
 
 	gossipTicker := util.NewJitterTicker(ctx, n.conf.GossipInterval, n.gossipJitter())
@@ -140,6 +150,13 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 
 	peerTicker := time.NewTicker(n.conf.PeerTickInterval)
 	defer peerTicker.Stop()
+
+	var ipRefreshCh <-chan time.Time
+	if len(n.conf.AdvertisedIPs) == 0 {
+		ipRefreshTicker := time.NewTicker(ipRefreshInterval)
+		defer ipRefreshTicker.Stop()
+		ipRefreshCh = ipRefreshTicker.C
+	}
 
 	n.tick()
 
@@ -151,9 +168,11 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 			n.tick()
 		case <-gossipTicker.C:
 			n.gossip(ctx)
-		case node := <-n.gossipEvents:
-			n.broadcastNode(ctx, node)
-		case in := <-n.sock.Events():
+		case <-ipRefreshCh:
+			n.refreshIPs()
+		case events := <-n.gossipEvents:
+			n.broadcastEvents(ctx, events)
+		case in := <-n.mesh.Events():
 			n.handlePeerInput(in)
 		case in := <-n.localPeerEvents:
 			n.handlePeerInput(in)
@@ -161,20 +180,40 @@ func (n *Node) Start(ctx context.Context, token *peerv1.Invite) error {
 	}
 }
 
-func (n *Node) queueGossipNode(node *statev1.GossipNode) {
-	if node == nil {
+func (n *Node) connectBootstrapPeers(ctx context.Context) {
+	for _, bp := range n.conf.BootstrapPeers {
+		addrs := make([]*net.UDPAddr, 0, len(bp.Addrs))
+		for _, a := range bp.Addrs {
+			addr, err := net.ResolveUDPAddr("udp", a)
+			if err != nil {
+				n.log.Warnw("bootstrap peer: resolve address failed", "addr", a, "err", err)
+				continue
+			}
+			addrs = append(addrs, addr)
+		}
+		if len(addrs) == 0 {
+			continue
+		}
+		if err := n.mesh.Connect(ctx, bp.PeerKey, addrs); err != nil {
+			n.log.Warnw("bootstrap peer: connect failed", "peer", bp.PeerKey.Short(), "err", err)
+		}
+	}
+}
+
+func (n *Node) queueGossipEvents(events []*statev1.GossipEvent) {
+	if len(events) == 0 {
 		return
 	}
 
 	select {
-	case n.gossipEvents <- node:
+	case n.gossipEvents <- events:
 	default:
 	}
 }
 
 func (n *Node) recvLoop(ctx context.Context) {
 	for {
-		p, err := n.sock.Recv(ctx)
+		p, err := n.mesh.Recv(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -182,86 +221,101 @@ func (n *Node) recvLoop(ctx context.Context) {
 			n.log.Debugw("recv failed", "err", err)
 			continue
 		}
-		if err := n.handleApp(ctx, p); err != nil {
-			n.log.Debugw("handle app failed", "err", err)
-		}
+		n.handleDatagram(ctx, p.Peer, p.Envelope)
 	}
 }
 
-func (n *Node) handleApp(ctx context.Context, p quic.Packet) error {
-	var fn HandlerFn
-	switch p.Typ {
-	case types.MsgTypeUDPRelay:
-		fn = n.handleUDPRelay
-	case types.MsgTypeGossip:
-		fn = n.handleGossip
-	default:
-		return nil
-	}
-	return fn(ctx, p.Peer, p.Payload)
-}
-
-func (n *Node) handleGossip(ctx context.Context, from types.PeerKey, plaintext []byte) error {
-	env := &statev1.GossipEnvelope{}
-	if err := env.UnmarshalVT(plaintext); err != nil {
-		return fmt.Errorf("malformed gossip payload: %w", err)
+func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *meshv1.Envelope) {
+	if env == nil {
+		return
 	}
 
 	switch body := env.GetBody().(type) {
-	case *statev1.GossipEnvelope_Clock:
-		for _, node := range n.store.MissingFor(body.Clock) {
-			if err := n.sendNode(ctx, from, node); err != nil {
-				n.log.Debugw("failed sending gossip node", "to", from.Short(), "err", err)
+	case *meshv1.Envelope_Clock:
+		events := n.store.MissingFor(body.Clock)
+		batches := batchEvents(events, MaxDatagramPayload)
+		for _, batch := range batches {
+			env := &meshv1.Envelope{Body: &meshv1.Envelope_Events{
+				Events: &statev1.GossipEventBatch{Events: batch},
+			}}
+			if err := n.mesh.Send(ctx, from, env); err != nil {
+				n.log.Debugw("failed sending gossip events", "to", from.Short(), "err", err)
 			}
 		}
-	case *statev1.GossipEnvelope_Node:
-		result := n.store.ApplyNode(body.Node)
-		if result.Rebroadcast != nil {
-			n.queueGossipNode(result.Rebroadcast)
+	case *meshv1.Envelope_Events:
+		result := n.store.ApplyEvents(body.Events.GetEvents())
+		if len(result.Rebroadcast) > 0 {
+			n.queueGossipEvents(result.Rebroadcast)
 		}
+	case *meshv1.Envelope_PunchCoordRequest:
+		n.handlePunchCoordRequest(ctx, from, body.PunchCoordRequest)
+	case *meshv1.Envelope_PunchCoordTrigger:
+		n.handlePunchCoordTrigger(body.PunchCoordTrigger)
+	case *meshv1.Envelope_ObservedAddress:
+		n.handleObservedAddress(body.ObservedAddress)
 	}
-
-	return nil
 }
 
-func (n *Node) sendClock(ctx context.Context, to types.PeerKey, clock *statev1.GossipVectorClock) error {
-	env := &statev1.GossipEnvelope{
-		Body: &statev1.GossipEnvelope_Clock{Clock: clock},
-	}
-	b, err := env.MarshalVT()
-	if err != nil {
-		return err
-	}
-
-	return n.sendEnvelope(ctx, to, types.Envelope{Type: types.MsgTypeGossip, Payload: b})
-}
-
-func (n *Node) sendNode(ctx context.Context, to types.PeerKey, node *statev1.GossipNode) error {
-	env := &statev1.GossipEnvelope{
-		Body: &statev1.GossipEnvelope_Node{Node: node},
-	}
-	b, err := env.MarshalVT()
-	if err != nil {
-		return err
-	}
-
-	return n.sendEnvelope(ctx, to, types.Envelope{Type: types.MsgTypeGossip, Payload: b})
-}
-
-func (n *Node) broadcastNode(ctx context.Context, node *statev1.GossipNode) {
-	if node == nil {
+func (n *Node) broadcastEvents(ctx context.Context, events []*statev1.GossipEvent) {
+	if len(events) == 0 {
 		return
 	}
 
 	connectedPeers := n.GetConnectedPeers()
-	for _, peerID := range connectedPeers {
-		if peerID == n.store.LocalID {
-			continue
-		}
-		if err := n.sendNode(ctx, peerID, node); err != nil {
-			n.log.Debugw("node gossip send failed", "peer", peerID.Short(), "err", err)
+	batches := batchEvents(events, MaxDatagramPayload)
+	for _, batch := range batches {
+		env := &meshv1.Envelope{Body: &meshv1.Envelope_Events{
+			Events: &statev1.GossipEventBatch{Events: batch},
+		}}
+		for _, peerID := range connectedPeers {
+			if peerID == n.store.LocalID {
+				continue
+			}
+			if err := n.mesh.Send(ctx, peerID, env); err != nil {
+				n.log.Debugw("event gossip send failed", "peer", peerID.Short(), "err", err)
+			}
 		}
 	}
+}
+
+// eventWireSize returns the on-wire size of a single event inside the
+// repeated field: the varint-encoded length prefix plus the message bytes.
+func eventWireSize(event *statev1.GossipEvent) int {
+	n := event.SizeVT()
+	// Tag for repeated field (1 byte) + varint-encoded length.
+	overhead := 1
+	for v := uint(n); v >= 0x80; v >>= 7 {
+		overhead++
+	}
+	return overhead + n
+}
+
+// batchEvents packs events into groups that each fit within maxSize when
+// serialized as an Envelope. Events that individually exceed maxSize are
+// placed in their own batch.
+func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.GossipEvent {
+	if len(events) == 0 {
+		return nil
+	}
+
+	var batches [][]*statev1.GossipEvent
+	var current []*statev1.GossipEvent
+	currentSize := envelopeOverhead
+
+	for _, event := range events {
+		eventSize := eventWireSize(event)
+		if len(current) > 0 && currentSize+eventSize > maxSize {
+			batches = append(batches, current)
+			current = nil
+			currentSize = envelopeOverhead
+		}
+		current = append(current, event)
+		currentSize += eventSize
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
 }
 
 func (n *Node) gossip(ctx context.Context) {
@@ -271,15 +325,31 @@ func (n *Node) gossip(ctx context.Context) {
 		if peerID == n.store.LocalID {
 			continue
 		}
-		if err := n.sendClock(ctx, peerID, clock); err != nil {
+		if err := n.mesh.Send(ctx, peerID, &meshv1.Envelope{
+			Body: &meshv1.Envelope_Clock{Clock: clock},
+		}); err != nil {
 			n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
 		}
 	}
 }
 
+func (n *Node) refreshIPs() {
+	newIPs, err := mesh.GetAdvertisableAddrs(mesh.DefaultExclusions)
+	if err != nil {
+		n.log.Debugw("ip refresh failed", "err", err)
+		return
+	}
+
+	events := n.store.SetLocalNetwork(newIPs, uint32(n.conf.Port))
+	if len(events) > 0 {
+		n.log.Infow("advertised IPs changed", "ips", newIPs)
+		n.queueGossipEvents(events)
+	}
+}
+
 func (n *Node) handlePeerInput(in peer.Input) {
 	if d, ok := in.(peer.PeerDisconnected); ok {
-		n.queueGossipNode(n.store.SetLocalConnected(d.PeerKey, false))
+		n.queueGossipEvents(n.store.SetLocalConnected(d.PeerKey, false))
 	}
 
 	outputs := n.peers.Step(time.Now(), in)
@@ -298,14 +368,6 @@ func (n *Node) tick() {
 
 func (n *Node) syncPeersFromState() {
 	for _, kp := range n.store.KnownPeers() {
-		if kp.PeerID == n.store.LocalID {
-			continue
-		}
-
-		if len(kp.IPs) == 0 {
-			continue
-		}
-
 		ips := make([]net.IP, 0, len(kp.IPs))
 		for _, ipStr := range kp.IPs {
 			ip := net.ParseIP(ipStr)
@@ -332,35 +394,36 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
-			n.queueGossipNode(n.store.SetLocalConnected(e.PeerKey, true))
+			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			n.requestFullOnce.Do(func() {
-				if err := n.sendClock(context.Background(), e.PeerKey, n.store.ZeroClock()); err != nil {
+				if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
+					Body: &meshv1.Envelope_Clock{Clock: n.store.ZeroClock()},
+				}); err != nil {
 					n.log.Debugw("failed requesting full state", "peer", e.PeerKey.Short(), "err", err)
 				}
 			})
 
-			// Register QUIC connection as a tunnel session.
-			if conn, ok := n.sock.GetConn(e.PeerKey); ok {
-				if _, err := n.tun.Register(conn, e.PeerKey); err != nil {
-					n.log.Warnw("session register failed", "peer", e.PeerKey.Short(), "err", err)
-				}
+			addr := &net.UDPAddr{IP: e.IP, Port: e.ObservedPort}
+			if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
+				Body: &meshv1.Envelope_ObservedAddress{
+					ObservedAddress: &meshv1.ObservedAddress{Addr: addr.String()},
+				},
+			}); err != nil {
+				n.log.Debugw("failed sending observed address", "peer", e.PeerKey.Short(), "err", err)
 			}
 
 			n.log.Infow("peer connected", "peer_id", e.PeerKey.Short(), "ip", e.IP, "observedPort", e.ObservedPort)
 		case peer.AttemptConnect:
 			go func() {
-				if err := n.connectPeer(e.PeerKey, e.Ips, e.Port, false); err != nil {
-					n.log.Debugw("connect failed", "peer", e.PeerKey.Short(), "err", err)
-					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+				if err := n.connectPeer(e.PeerKey, e.Ips, e.Port); err != nil {
+					if n.peers.InState(e.PeerKey, peer.PeerStateConnecting) {
+						n.log.Debugw("connect failed", "peer", e.PeerKey.Short(), "err", err)
+						n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+					}
 				}
 			}()
 		case peer.RequestPunchCoordination:
-			go func() {
-				if err := n.connectPeer(e.PeerKey, e.Ips, 0, true); err != nil {
-					n.log.Debugw("punch connect failed", "peer", e.PeerKey.Short(), "err", err)
-					n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
-				}
-			}()
+			go n.requestPunchCoordination(e.PeerKey)
 		}
 	}
 }
@@ -370,11 +433,7 @@ func (n *Node) reconcileConnections() {
 
 	missing := make(map[types.PeerKey]map[uint32]struct{}, len(connections))
 	for _, conn := range connections {
-		node, ok := n.store.Get(conn.PeerID)
-		if !ok {
-			continue
-		}
-		if !hasServicePort(node.Services, conn.RemotePort) {
+		if !n.store.HasServicePort(conn.PeerID, conn.RemotePort) {
 			ports, ok := missing[conn.PeerID]
 			if !ok {
 				ports = make(map[uint32]struct{})
@@ -401,16 +460,15 @@ func (n *Node) reconcileDesiredConnections() {
 
 	existing := make(map[string]struct{})
 	for _, conn := range n.tun.ListConnections() {
-		existing[desiredConnectionKey(conn.PeerID, conn.RemotePort, conn.LocalPort)] = struct{}{}
+		existing[store.Connection{PeerID: conn.PeerID, RemotePort: conn.RemotePort, LocalPort: conn.LocalPort}.Key()] = struct{}{}
 	}
 
 	for _, desiredConn := range desired {
-		if _, ok := existing[desiredConnectionKey(desiredConn.PeerID, desiredConn.RemotePort, desiredConn.LocalPort)]; ok {
+		if _, ok := existing[desiredConn.Key()]; ok {
 			continue
 		}
 
-		node, ok := n.store.Get(desiredConn.PeerID)
-		if !ok || !hasServicePort(node.Services, desiredConn.RemotePort) {
+		if !n.store.HasServicePort(desiredConn.PeerID, desiredConn.RemotePort) {
 			continue
 		}
 
@@ -420,71 +478,176 @@ func (n *Node) reconcileDesiredConnections() {
 	}
 }
 
-func hasServicePort(services map[string]*statev1.Service, port uint32) bool {
-	for _, svc := range services {
-		if svc.GetPort() == port {
-			return true
-		}
+func (n *Node) connectPeer(peerKey types.PeerKey, ips []net.IP, port int) error {
+	var extPort int
+	if rec, ok := n.store.Get(peerKey); ok && rec.ExternalPort != 0 {
+		extPort = int(rec.ExternalPort)
 	}
-	return false
-}
 
-func desiredConnectionKey(peerID types.PeerKey, remotePort, localPort uint32) string {
-	return fmt.Sprintf("%s:%d:%d", peerID.String(), remotePort, localPort)
-}
-
-func (n *Node) connectPeer(peerKey types.PeerKey, ips []net.IP, port int, withPunch bool) error {
 	addrs := make([]*net.UDPAddr, 0, len(ips))
 	for _, ip := range ips {
-		if ip != nil {
-			addrs = append(addrs, &net.UDPAddr{IP: ip, Port: port})
+		if ip == nil {
+			continue
 		}
+		p := port
+		if extPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+			p = extPort
+		}
+		addrs = append(addrs, &net.UDPAddr{IP: ip, Port: p})
 	}
 
-	var opts *quic.GetOrCreateOpts
-	if withPunch {
-		coords := n.coordinatorAddrs(peerKey)
-		if len(coords) > 0 {
-			opts = &quic.GetOrCreateOpts{Coordinators: coords}
-		}
-	}
-
-	timeout := directTimeout
-	if withPunch {
-		timeout = punchTimeout
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), directTimeout)
 	defer cancel()
 
-	return n.sock.EnsurePeer(ctx, peerKey, addrs, opts)
+	return n.mesh.Connect(ctx, peerKey, addrs)
 }
 
-func (n *Node) coordinatorAddrs(target types.PeerKey) []*net.UDPAddr {
-	localIPs := n.store.NodeIPs(n.store.LocalID)
-	var addrs []*net.UDPAddr
+func (n *Node) punchPeer(peerKey types.PeerKey, ip net.IP, port int) error {
+	addr := &net.UDPAddr{IP: ip, Port: port}
 
-	for _, key := range n.GetConnectedPeers() {
+	ctx, cancel := context.WithTimeout(context.Background(), punchTimeout)
+	defer cancel()
+	return n.mesh.Punch(ctx, peerKey, addr)
+}
+
+func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
+	localIPs := n.store.NodeIPs(n.store.LocalID)
+	connectedPeers := n.GetConnectedPeers()
+	peers := make([]types.PeerKey, 0, len(connectedPeers))
+
+	for _, key := range connectedPeers {
 		if key == target {
 			continue
 		}
 		candidateIPs := n.store.NodeIPs(key)
+		// TODO(saml) we shouldn't skip if coordinators share the same LAN, but we need to communicate with
+		// the punching peer outside of the shared LAN that the IP is the same as the coordinator, somehow
 		if len(candidateIPs) == 0 || sharesLAN(localIPs, candidateIPs) {
 			continue
 		}
 		if !n.store.IsConnected(key, target) {
 			continue
 		}
-		addr, ok := n.sock.GetActivePeerAddress(key)
-		if !ok {
-			continue
-		}
-		addrs = append(addrs, addr)
+		peers = append(peers, key)
 	}
-	return addrs
+	return peers
 }
 
-// ConnectService wraps tunnel.Manager.ConnectService.
+func (n *Node) requestPunchCoordination(target types.PeerKey) {
+	coordinators := n.coordinatorPeers(target)
+	if len(coordinators) == 0 {
+		n.log.Debugw("no coordinators available for punch", "peer", target.Short())
+		n.localPeerEvents <- peer.ConnectFailed{PeerKey: target}
+		return
+	}
+
+	req := &meshv1.PunchCoordRequest{PeerId: target.Bytes()}
+	env := &meshv1.Envelope{
+		Body: &meshv1.Envelope_PunchCoordRequest{PunchCoordRequest: req},
+	}
+
+	// TODO(saml) down the line, we should probably cycle through potential coordinators per request
+	coord := coordinators[0]
+	if err := n.mesh.Send(context.Background(), coord, env); err != nil {
+		n.log.Debugw("punch coord request send failed", "coordinator", coord.Short(), "err", err)
+		n.localPeerEvents <- peer.ConnectFailed{PeerKey: target}
+	}
+}
+
+func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, req *meshv1.PunchCoordRequest) {
+	targetKey := types.PeerKeyFromBytes(req.PeerId)
+
+	fromAddr, fromOk := n.mesh.GetActivePeerAddress(from)
+	targetAddr, targetOk := n.mesh.GetActivePeerAddress(targetKey)
+	if !fromOk || !targetOk {
+		n.log.Debugw("punch coord: missing address",
+			"from", from.Short(), "fromOk", fromOk,
+			"target", targetKey.Short(), "targetOk", targetOk)
+		return
+	}
+
+	go func() {
+		if err := n.mesh.Send(ctx, from, &meshv1.Envelope{Body: &meshv1.Envelope_PunchCoordTrigger{PunchCoordTrigger: &meshv1.PunchCoordTrigger{
+			PeerId:   req.PeerId,
+			SelfAddr: fromAddr.String(),
+			PeerAddr: targetAddr.String(),
+		}}}); err != nil {
+			n.log.Debugw("punch coord trigger send failed", "to", from.Short(), "err", err)
+		}
+	}()
+	go func() {
+		if err := n.mesh.Send(ctx, targetKey, &meshv1.Envelope{Body: &meshv1.Envelope_PunchCoordTrigger{PunchCoordTrigger: &meshv1.PunchCoordTrigger{
+			PeerId:   from.Bytes(),
+			SelfAddr: targetAddr.String(),
+			PeerAddr: fromAddr.String(),
+		}}}); err != nil {
+			n.log.Debugw("punch coord trigger send failed", "to", targetKey.Short(), "err", err)
+		}
+	}()
+}
+
+func (n *Node) punchLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case req := <-n.punchCh:
+			// Skip if peer connected while queued.
+			if n.peers.InState(req.peerKey, peer.PeerStateConnected) {
+				continue
+			}
+			if err := n.punchPeer(req.peerKey, req.ip, req.port); err != nil {
+				if n.peers.InState(req.peerKey, peer.PeerStateConnecting) {
+					n.log.Debugw("punch failed", "peer", req.peerKey.Short(), "err", err)
+					n.localPeerEvents <- peer.ConnectFailed{PeerKey: req.peerKey}
+				}
+			}
+		}
+	}
+}
+
+func (n *Node) handlePunchCoordTrigger(trigger *meshv1.PunchCoordTrigger) {
+	peerKey := types.PeerKeyFromBytes(trigger.PeerId)
+	if n.peers.InState(peerKey, peer.PeerStateConnected) {
+		return
+	}
+
+	peerAddr, err := net.ResolveUDPAddr("udp", trigger.PeerAddr)
+	if err != nil {
+		n.log.Debugw("punch coord trigger: bad peer addr", "addr", trigger.PeerAddr, "err", err)
+		return
+	}
+
+	n.log.Infow("punch coord trigger received", "peer", peerKey.Short(), "peerAddr", peerAddr.String())
+
+	select {
+	case n.punchCh <- punchRequest{peerKey: peerKey, ip: peerAddr.IP, port: peerAddr.Port}:
+	default:
+		n.log.Debugw("punch queue full, dropping", "peer", peerKey.Short())
+		n.localPeerEvents <- peer.ConnectFailed{PeerKey: peerKey}
+	}
+}
+
+func (n *Node) handleObservedAddress(oa *meshv1.ObservedAddress) {
+	addr, err := net.ResolveUDPAddr("udp", oa.GetAddr())
+	if err != nil {
+		n.log.Debugw("observed address: parse failed", "addr", oa.GetAddr(), "err", err)
+		return
+	}
+
+	if addr.IP.IsPrivate() || addr.IP.IsLoopback() || addr.IP.IsLinkLocalUnicast() {
+		return
+	}
+
+	n.log.Infow("observed address received", "addr", addr.String())
+	n.queueGossipEvents(n.store.SetExternalPort(uint32(addr.Port)))
+}
+
 func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
+	if _, ok := n.store.IdentityPub(peerID); !ok {
+		return 0, errors.New("peerID not recognised")
+	}
+
 	port, err := n.tun.ConnectService(peerID, remotePort, localPort)
 	if err != nil {
 		return 0, err
@@ -518,9 +681,11 @@ func (n *Node) shutdown() {
 
 	n.tun.Close()
 
-	n.sock.BroadcastDisconnect()
+	if err := n.mesh.BroadcastDisconnect(); err != nil {
+		n.log.Errorf("failed to broadcast disconnect: %v", err)
+	}
 
-	if err := n.sock.Close(); err != nil {
+	if err := n.mesh.Close(); err != nil {
 		n.log.Errorf("failed to shut down sock: %v", err)
 	} else {
 		n.log.Info("successfully shut down mesh")
@@ -559,7 +724,7 @@ func (n *Node) GetConnectedPeers() []types.PeerKey {
 	return n.peers.GetAll(peer.PeerStateConnected)
 }
 
-func genIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
+func GenIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
 	dir := filepath.Join(pollenDir, localKeysDir)
 
 	privPath := filepath.Join(dir, signingKeyName)

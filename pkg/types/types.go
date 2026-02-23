@@ -2,14 +2,9 @@ package types
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/hex"
-)
-
-type MsgType uint32
-
-const (
-	MsgTypeGossip MsgType = iota
-	MsgTypeUDPRelay
+	"fmt"
 )
 
 type PeerKey [32]byte // ed25519 public key
@@ -25,6 +20,9 @@ func PeerKeyFromString(s string) (PeerKey, error) {
 	b, err := hex.DecodeString(s)
 	if err != nil {
 		return id, err
+	}
+	if len(b) != ed25519.PublicKeySize {
+		return id, fmt.Errorf("invalid public key length: expected %d bytes, got %d", ed25519.PublicKeySize, len(b))
 	}
 	return PeerKeyFromBytes(b), nil
 }
@@ -47,5 +45,4 @@ func (pk PeerKey) Less(other PeerKey) bool {
 
 type Envelope struct {
 	Payload []byte
-	Type    MsgType
 }

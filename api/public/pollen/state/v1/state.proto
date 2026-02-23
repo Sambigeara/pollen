@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package pollen.state.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1";
+
+message Service {
+  string name = 1;
+  uint32 port = 2 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+}
+
+message GossipVectorClock {
+  map<string, uint64> counters = 1;
+}
+
+message ServiceChange {
+  string name = 1;
+  uint32 port = 2;
+}
+
+message ReachabilityChange {
+  string peer_id = 1 [(buf.validate.field).string = {
+    pattern: "^[a-fA-F0-9]{64}$"
+    len: 64
+  }];
+}
+
+message NetworkChange {
+  repeated string ips = 1;
+  uint32 local_port = 2;
+}
+
+message ExternalPortChange {
+  uint32 external_port = 1;
+}
+
+message IdentityChange {
+  bytes identity_pub = 1 [(buf.validate.field).bytes = {len: 32}];
+}
+
+message GossipEvent {
+  string peer_id = 1 [(buf.validate.field).string = {
+    pattern: "^[a-fA-F0-9]{64}$"
+    len: 64
+  }];
+  uint64 counter = 2;
+  oneof change {
+    NetworkChange network = 3;
+    ExternalPortChange external_port = 4;
+    IdentityChange identity_pub = 5;
+    ServiceChange service = 6;
+    ReachabilityChange reachability = 7;
+  }
+  bool deleted = 8;
+}
+
+message GossipEventBatch {
+  repeated GossipEvent events = 1;
+}

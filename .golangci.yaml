@@ -53,6 +53,9 @@ linters:
     gosec:
       excludes:
         - G115 # integer overflow conversion
+        - G702 # command injection via taint — false positive for CLI tools
+        - G703 # path traversal via taint — false positive for $HOME-based paths
+        - G704 # SSRF via taint — false positive for intentional HTTP fetches
 
     govet:
       disable:

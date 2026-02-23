@@ -16,66 +16,57 @@ var _ controlv1.ControlServiceServer = (*NodeService)(nil)
 
 type NodeService struct {
 	controlv1.UnimplementedControlServiceServer
-	node *Node
+	node     *Node
+	shutdown func()
 }
 
-func NewNodeService(n *Node) *NodeService {
-	return &NodeService{node: n}
+func NewNodeService(n *Node, shutdown func()) *NodeService {
+	return &NodeService{node: n, shutdown: shutdown}
 }
 
-func (s *NodeService) JoinCluster(ctx context.Context, req *controlv1.JoinClusterRequest) (*controlv1.JoinClusterResponse, error) {
-	token, err := DecodeToken(req.Token)
-	if err != nil {
-		return nil, err
+func (s *NodeService) Shutdown(_ context.Context, _ *controlv1.ShutdownRequest) (*controlv1.ShutdownResponse, error) {
+	if s.shutdown == nil {
+		return &controlv1.ShutdownResponse{}, errors.New("shutdown callback not configured")
 	}
 
-	if err := s.node.sock.JoinWithInvite(ctx, token); err != nil {
-		return nil, err
-	}
+	go s.shutdown()
 
-	return &controlv1.JoinClusterResponse{
-		Self: &controlv1.NodeRef{PeerId: s.node.store.LocalID.Bytes()},
-	}, nil
+	return &controlv1.ShutdownResponse{}, nil
 }
 
-func (s *NodeService) CreateInvite(_ context.Context, _ *controlv1.CreateInviteRequest) (*controlv1.CreateInviteResponse, error) {
+func (s *NodeService) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootstrapInfoRequest) (*controlv1.GetBootstrapInfoResponse, error) {
 	local := s.node.store.LocalID
 	rec, ok := s.node.store.Get(local)
 	if !ok {
-		return &controlv1.CreateInviteResponse{}, nil
+		return &controlv1.GetBootstrapInfoResponse{}, nil
 	}
 
-	port := strconv.Itoa(int(rec.LocalPort))
-	ips := append([]string(nil), rec.IPs...)
-
-	inv, err := NewInvite(ips, port, s.node.identityPub)
-	if err != nil {
-		return nil, err
+	addrs := make([]string, 0, len(rec.IPs))
+	for _, ip := range rec.IPs {
+		addrs = append(addrs, net.JoinHostPort(ip, strconv.Itoa(int(rec.LocalPort))))
 	}
 
-	enc, err := EncodeToken(inv)
-	if err != nil {
-		return nil, err
-	}
-
-	s.node.invites.AddInvite(inv)
-	if err := s.node.invites.Save(); err != nil {
-		return nil, err
-	}
-
-	return &controlv1.CreateInviteResponse{
-		Token: enc,
+	return &controlv1.GetBootstrapInfoResponse{
+		Self: &controlv1.BootstrapPeerInfo{
+			Peer:  &controlv1.NodeRef{PeerId: local.Bytes()},
+			Addrs: addrs,
+		},
 	}, nil
 }
 
 func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
-	nodes := s.node.store.CloneNodes()
+	nodes := s.node.store.AllNodes()
 	localID := s.node.store.LocalID
 
 	selfAddr := ""
 	if rec, ok := s.node.store.Get(localID); ok {
 		if len(rec.IPs) > 0 {
-			selfAddr = net.JoinHostPort(rec.IPs[0], fmt.Sprintf("%d", rec.LocalPort))
+			port := rec.LocalPort
+			ip := net.ParseIP(rec.IPs[0])
+			if ip != nil && rec.ExternalPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+				port = rec.ExternalPort
+			}
+			selfAddr = net.JoinHostPort(rec.IPs[0], fmt.Sprintf("%d", port))
 		}
 	}
 
@@ -95,12 +86,10 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			continue
 		}
 
-		addr, online := s.node.sock.GetActivePeerAddress(key)
+		addr, online := s.node.mesh.GetActivePeerAddress(key)
 		status := controlv1.NodeStatus_NODE_STATUS_OFFLINE
 		if online {
 			status = controlv1.NodeStatus_NODE_STATUS_ONLINE
-		} else if s.node.relayReachable(key) {
-			status = controlv1.NodeStatus_NODE_STATUS_RELAY
 		}
 
 		addrStr := ""
@@ -112,9 +101,13 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			if ip == nil {
 				return nil, errors.New("invalid IP address")
 			}
+			port := int(node.LocalPort)
+			if node.ExternalPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+				port = int(node.ExternalPort)
+			}
 			addrStr = (&net.UDPAddr{
 				IP:   ip,
-				Port: int(node.LocalPort),
+				Port: port,
 			}).String()
 		}
 
@@ -212,23 +205,38 @@ func (s *NodeService) RegisterService(_ context.Context, req *controlv1.Register
 	if name == "" {
 		name = serviceNameForPort(req.Port)
 	}
-	s.node.queueGossipNode(s.node.store.UpsertLocalService(req.Port, name))
+	s.node.queueGossipEvents(s.node.store.UpsertLocalService(req.Port, name))
 
 	return &controlv1.RegisterServiceResponse{}, nil
 }
 
 func (s *NodeService) UnregisterService(_ context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
-	port := req.GetPort()
 	name := req.GetName()
-	update := s.node.store.RemoveLocalServices(port, name)
-	s.node.tun.UnregisterService(port)
-	s.node.queueGossipNode(update)
+	events := s.node.store.RemoveLocalServices(name)
+	s.node.tun.UnregisterService(req.GetPort())
+	s.node.queueGossipEvents(events)
 
 	return &controlv1.UnregisterServiceResponse{}, nil
 }
 
 func serviceNameForPort(port uint32) string {
 	return strconv.FormatUint(uint64(port), 10)
+}
+
+func (s *NodeService) ConnectPeer(ctx context.Context, req *controlv1.ConnectPeerRequest) (*controlv1.ConnectPeerResponse, error) {
+	peerKey := types.PeerKeyFromBytes(req.PeerId)
+	addrs := make([]*net.UDPAddr, 0, len(req.Addrs))
+	for _, a := range req.Addrs {
+		addr, err := net.ResolveUDPAddr("udp", a)
+		if err != nil {
+			return nil, fmt.Errorf("resolve address %q: %w", a, err)
+		}
+		addrs = append(addrs, addr)
+	}
+	if err := s.node.mesh.Connect(ctx, peerKey, addrs); err != nil {
+		return nil, err
+	}
+	return &controlv1.ConnectPeerResponse{}, nil
 }
 
 func (s *NodeService) ConnectService(ctx context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {

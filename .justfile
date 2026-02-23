@@ -12,7 +12,7 @@ build: generate lint
 
 bin os='' arch='':
     @ CGO_ENABLED=0 GOOS={{os}} GOARCH={{arch}} \
-      go build -o pollen cmd/pollen/main.go
+      go build -o pollen ./cmd/pollen
 
 compile:
     @ CGO_ENABLED=0 go build ./... && CGO_ENABLED=0 go test -run=ignore  ./... > /dev/null
@@ -41,9 +41,6 @@ lint-modernize: _modernize
 
 test PKG='./...' TEST='.*':
     @ go test -v -failfast -cover -count=1 -run='{{ TEST }}' '{{ PKG }}'
-
-deploy-bins:
-    @ infra/scripts/deploy-bins.sh
 
 # Executables
 
