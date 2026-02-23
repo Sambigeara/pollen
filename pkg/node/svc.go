@@ -61,7 +61,12 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 	selfAddr := ""
 	if rec, ok := s.node.store.Get(localID); ok {
 		if len(rec.IPs) > 0 {
-			selfAddr = net.JoinHostPort(rec.IPs[0], fmt.Sprintf("%d", rec.LocalPort))
+			port := rec.LocalPort
+			ip := net.ParseIP(rec.IPs[0])
+			if ip != nil && rec.ExternalPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+				port = rec.ExternalPort
+			}
+			selfAddr = net.JoinHostPort(rec.IPs[0], fmt.Sprintf("%d", port))
 		}
 	}
 
@@ -96,9 +101,13 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			if ip == nil {
 				return nil, errors.New("invalid IP address")
 			}
+			port := int(node.LocalPort)
+			if node.ExternalPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+				port = int(node.ExternalPort)
+			}
 			addrStr = (&net.UDPAddr{
 				IP:   ip,
-				Port: int(node.LocalPort),
+				Port: port,
 			}).String()
 		}
 

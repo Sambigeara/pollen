@@ -143,6 +143,11 @@ func (m *GossipNode) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.ExternalPort != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.ExternalPort))
+		i--
+		dAtA[i] = 0x40
+	}
 	if len(m.ReachablePeers) > 0 {
 		for iNdEx := len(m.ReachablePeers) - 1; iNdEx >= 0; iNdEx-- {
 			i -= len(m.ReachablePeers[iNdEx])
@@ -272,6 +277,9 @@ func (m *GossipNode) SizeVT() (n int) {
 			l = len(s)
 			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 		}
+	}
+	if m.ExternalPort != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.ExternalPort))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -774,6 +782,25 @@ func (m *GossipNode) UnmarshalVT(dAtA []byte) error {
 			}
 			m.ReachablePeers = append(m.ReachablePeers, string(dAtA[iNdEx:postIndex]))
 			iNdEx = postIndex
+		case 8:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ExternalPort", wireType)
+			}
+			m.ExternalPort = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.ExternalPort |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

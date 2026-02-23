@@ -19,7 +19,7 @@ func newLogsCmd() *cobra.Command {
 		Run:   runLogs,
 	}
 	cmd.Flags().BoolP("follow", "f", false, "Stream logs in real time")
-	cmd.Flags().IntP("lines", "n", 50, "Number of lines to show")
+	cmd.Flags().IntP("lines", "n", 50, "Number of lines to show") //nolint:mnd
 	return cmd
 }
 

@@ -28,6 +28,10 @@ message InviteRedeemResponse {
   pollen.admission.v1.JoinToken join_token = 3;
 }
 
+message ObservedAddress {
+  string addr = 1;
+}
+
 message Envelope {
   oneof body {
     pollen.state.v1.GossipVectorClock clock = 1;
@@ -36,5 +40,6 @@ message Envelope {
     PunchCoordTrigger punch_coord_trigger = 4;
     InviteRedeemRequest invite_redeem_request = 6;
     InviteRedeemResponse invite_redeem_response = 7;
+    ObservedAddress observed_address = 8;
   }
 }

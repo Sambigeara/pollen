@@ -239,6 +239,50 @@ func (x *InviteRedeemResponse) GetJoinToken() *v1.JoinToken {
 	return nil
 }
 
+type ObservedAddress struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Addr          string                 `protobuf:"bytes,1,opt,name=addr,proto3" json:"addr,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ObservedAddress) Reset() {
+	*x = ObservedAddress{}
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ObservedAddress) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ObservedAddress) ProtoMessage() {}
+
+func (x *ObservedAddress) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ObservedAddress.ProtoReflect.Descriptor instead.
+func (*ObservedAddress) Descriptor() ([]byte, []int) {
+	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ObservedAddress) GetAddr() string {
+	if x != nil {
+		return x.Addr
+	}
+	return ""
+}
+
 type Envelope struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Body:
@@ -249,6 +293,7 @@ type Envelope struct {
 	//	*Envelope_PunchCoordTrigger
 	//	*Envelope_InviteRedeemRequest
 	//	*Envelope_InviteRedeemResponse
+	//	*Envelope_ObservedAddress
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -256,7 +301,7 @@ type Envelope struct {
 
 func (x *Envelope) Reset() {
 	*x = Envelope{}
-	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[4]
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -268,7 +313,7 @@ func (x *Envelope) String() string {
 func (*Envelope) ProtoMessage() {}
 
 func (x *Envelope) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[4]
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -281,7 +326,7 @@ func (x *Envelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Envelope.ProtoReflect.Descriptor instead.
 func (*Envelope) Descriptor() ([]byte, []int) {
-	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{4}
+	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Envelope) GetBody() isEnvelope_Body {
@@ -345,6 +390,15 @@ func (x *Envelope) GetInviteRedeemResponse() *InviteRedeemResponse {
 	return nil
 }
 
+func (x *Envelope) GetObservedAddress() *ObservedAddress {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_ObservedAddress); ok {
+			return x.ObservedAddress
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Body interface {
 	isEnvelope_Body()
 }
@@ -373,6 +427,10 @@ type Envelope_InviteRedeemResponse struct {
 	InviteRedeemResponse *InviteRedeemResponse `protobuf:"bytes,7,opt,name=invite_redeem_response,json=inviteRedeemResponse,proto3,oneof"`
 }
 
+type Envelope_ObservedAddress struct {
+	ObservedAddress *ObservedAddress `protobuf:"bytes,8,opt,name=observed_address,json=observedAddress,proto3,oneof"`
+}
+
 func (*Envelope_Clock) isEnvelope_Body() {}
 
 func (*Envelope_Node) isEnvelope_Body() {}
@@ -384,6 +442,8 @@ func (*Envelope_PunchCoordTrigger) isEnvelope_Body() {}
 func (*Envelope_InviteRedeemRequest) isEnvelope_Body() {}
 
 func (*Envelope_InviteRedeemResponse) isEnvelope_Body() {}
+
+func (*Envelope_ObservedAddress) isEnvelope_Body() {}
 
 var File_pollen_mesh_v1_mesh_proto protoreflect.FileDescriptor
 
@@ -404,14 +464,17 @@ const file_pollen_mesh_v1_mesh_proto_rawDesc = "" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12=\n" +
 	"\n" +
-	"join_token\x18\x03 \x01(\v2\x1e.pollen.admission.v1.JoinTokenR\tjoinToken\"\xe4\x03\n" +
+	"join_token\x18\x03 \x01(\v2\x1e.pollen.admission.v1.JoinTokenR\tjoinToken\"%\n" +
+	"\x0fObservedAddress\x12\x12\n" +
+	"\x04addr\x18\x01 \x01(\tR\x04addr\"\xb2\x04\n" +
 	"\bEnvelope\x12:\n" +
 	"\x05clock\x18\x01 \x01(\v2\".pollen.state.v1.GossipVectorClockH\x00R\x05clock\x121\n" +
 	"\x04node\x18\x02 \x01(\v2\x1b.pollen.state.v1.GossipNodeH\x00R\x04node\x12S\n" +
 	"\x13punch_coord_request\x18\x03 \x01(\v2!.pollen.mesh.v1.PunchCoordRequestH\x00R\x11punchCoordRequest\x12S\n" +
 	"\x13punch_coord_trigger\x18\x04 \x01(\v2!.pollen.mesh.v1.PunchCoordTriggerH\x00R\x11punchCoordTrigger\x12Y\n" +
 	"\x15invite_redeem_request\x18\x06 \x01(\v2#.pollen.mesh.v1.InviteRedeemRequestH\x00R\x13inviteRedeemRequest\x12\\\n" +
-	"\x16invite_redeem_response\x18\a \x01(\v2$.pollen.mesh.v1.InviteRedeemResponseH\x00R\x14inviteRedeemResponseB\x06\n" +
+	"\x16invite_redeem_response\x18\a \x01(\v2$.pollen.mesh.v1.InviteRedeemResponseH\x00R\x14inviteRedeemResponse\x12L\n" +
+	"\x10observed_address\x18\b \x01(\v2\x1f.pollen.mesh.v1.ObservedAddressH\x00R\x0fobservedAddressB\x06\n" +
 	"\x04bodyB>Z<github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1;meshv1b\x06proto3"
 
 var (
@@ -426,32 +489,34 @@ func file_pollen_mesh_v1_mesh_proto_rawDescGZIP() []byte {
 	return file_pollen_mesh_v1_mesh_proto_rawDescData
 }
 
-var file_pollen_mesh_v1_mesh_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_pollen_mesh_v1_mesh_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_pollen_mesh_v1_mesh_proto_goTypes = []any{
 	(*PunchCoordRequest)(nil),     // 0: pollen.mesh.v1.PunchCoordRequest
 	(*PunchCoordTrigger)(nil),     // 1: pollen.mesh.v1.PunchCoordTrigger
 	(*InviteRedeemRequest)(nil),   // 2: pollen.mesh.v1.InviteRedeemRequest
 	(*InviteRedeemResponse)(nil),  // 3: pollen.mesh.v1.InviteRedeemResponse
-	(*Envelope)(nil),              // 4: pollen.mesh.v1.Envelope
-	(*v1.InviteToken)(nil),        // 5: pollen.admission.v1.InviteToken
-	(*v1.JoinToken)(nil),          // 6: pollen.admission.v1.JoinToken
-	(*v11.GossipVectorClock)(nil), // 7: pollen.state.v1.GossipVectorClock
-	(*v11.GossipNode)(nil),        // 8: pollen.state.v1.GossipNode
+	(*ObservedAddress)(nil),       // 4: pollen.mesh.v1.ObservedAddress
+	(*Envelope)(nil),              // 5: pollen.mesh.v1.Envelope
+	(*v1.InviteToken)(nil),        // 6: pollen.admission.v1.InviteToken
+	(*v1.JoinToken)(nil),          // 7: pollen.admission.v1.JoinToken
+	(*v11.GossipVectorClock)(nil), // 8: pollen.state.v1.GossipVectorClock
+	(*v11.GossipNode)(nil),        // 9: pollen.state.v1.GossipNode
 }
 var file_pollen_mesh_v1_mesh_proto_depIdxs = []int32{
-	5, // 0: pollen.mesh.v1.InviteRedeemRequest.token:type_name -> pollen.admission.v1.InviteToken
-	6, // 1: pollen.mesh.v1.InviteRedeemResponse.join_token:type_name -> pollen.admission.v1.JoinToken
-	7, // 2: pollen.mesh.v1.Envelope.clock:type_name -> pollen.state.v1.GossipVectorClock
-	8, // 3: pollen.mesh.v1.Envelope.node:type_name -> pollen.state.v1.GossipNode
+	6, // 0: pollen.mesh.v1.InviteRedeemRequest.token:type_name -> pollen.admission.v1.InviteToken
+	7, // 1: pollen.mesh.v1.InviteRedeemResponse.join_token:type_name -> pollen.admission.v1.JoinToken
+	8, // 2: pollen.mesh.v1.Envelope.clock:type_name -> pollen.state.v1.GossipVectorClock
+	9, // 3: pollen.mesh.v1.Envelope.node:type_name -> pollen.state.v1.GossipNode
 	0, // 4: pollen.mesh.v1.Envelope.punch_coord_request:type_name -> pollen.mesh.v1.PunchCoordRequest
 	1, // 5: pollen.mesh.v1.Envelope.punch_coord_trigger:type_name -> pollen.mesh.v1.PunchCoordTrigger
 	2, // 6: pollen.mesh.v1.Envelope.invite_redeem_request:type_name -> pollen.mesh.v1.InviteRedeemRequest
 	3, // 7: pollen.mesh.v1.Envelope.invite_redeem_response:type_name -> pollen.mesh.v1.InviteRedeemResponse
-	8, // [8:8] is the sub-list for method output_type
-	8, // [8:8] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	4, // 8: pollen.mesh.v1.Envelope.observed_address:type_name -> pollen.mesh.v1.ObservedAddress
+	9, // [9:9] is the sub-list for method output_type
+	9, // [9:9] is the sub-list for method input_type
+	9, // [9:9] is the sub-list for extension type_name
+	9, // [9:9] is the sub-list for extension extendee
+	0, // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_pollen_mesh_v1_mesh_proto_init() }
@@ -459,13 +524,14 @@ func file_pollen_mesh_v1_mesh_proto_init() {
 	if File_pollen_mesh_v1_mesh_proto != nil {
 		return
 	}
-	file_pollen_mesh_v1_mesh_proto_msgTypes[4].OneofWrappers = []any{
+	file_pollen_mesh_v1_mesh_proto_msgTypes[5].OneofWrappers = []any{
 		(*Envelope_Clock)(nil),
 		(*Envelope_Node)(nil),
 		(*Envelope_PunchCoordRequest)(nil),
 		(*Envelope_PunchCoordTrigger)(nil),
 		(*Envelope_InviteRedeemRequest)(nil),
 		(*Envelope_InviteRedeemResponse)(nil),
+		(*Envelope_ObservedAddress)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -473,7 +539,7 @@ func file_pollen_mesh_v1_mesh_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_mesh_v1_mesh_proto_rawDesc), len(file_pollen_mesh_v1_mesh_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
