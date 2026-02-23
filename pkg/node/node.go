@@ -40,6 +40,8 @@ const (
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
 	gossipEventBufSize = 64
+	punchChBufSize     = 16
+	punchWorkers       = 3 // max concurrent punches; bounds socket usage to N×256
 	ipRefreshInterval  = 5 * time.Minute
 )
 
@@ -60,12 +62,19 @@ type Config struct {
 
 type HandlerFn func(ctx context.Context, from types.PeerKey, payload []byte) error
 
+type punchRequest struct {
+	peerKey types.PeerKey
+	ip      net.IP
+	port    int
+}
+
 type Node struct {
 	peers           *peer.Store
 	store           *store.Store
 	mesh            mesh.Mesh
 	tun             *tunnel.Manager
 	localPeerEvents chan peer.Input
+	punchCh         chan punchRequest
 	conf            *Config
 	log             *zap.SugaredLogger
 	gossipEvents    chan *statev1.GossipNode
@@ -105,6 +114,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		tun:             tun,
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
+		punchCh:         make(chan punchRequest, punchChBufSize),
 		gossipEvents:    make(chan *statev1.GossipNode, gossipEventBufSize),
 	}
 
@@ -120,6 +130,9 @@ func (n *Node) Start(ctx context.Context) error {
 	n.connectBootstrapPeers(ctx)
 	n.tun.Start(ctx)
 	go n.recvLoop(ctx)
+	for range punchWorkers {
+		go n.punchLoop(ctx)
+	}
 
 	gossipTicker := util.NewJitterTicker(ctx, n.conf.GossipInterval, n.gossipJitter())
 	defer gossipTicker.Stop()
@@ -223,7 +236,7 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 	case *meshv1.Envelope_PunchCoordRequest:
 		n.handlePunchCoordRequest(ctx, from, body.PunchCoordRequest)
 	case *meshv1.Envelope_PunchCoordTrigger:
-		go n.handlePunchCoordTrigger(body.PunchCoordTrigger)
+		n.handlePunchCoordTrigger(body.PunchCoordTrigger)
 	}
 }
 
@@ -520,6 +533,26 @@ func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, 
 	}()
 }
 
+func (n *Node) punchLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case req := <-n.punchCh:
+			// Skip if peer connected while queued.
+			if n.peers.InState(req.peerKey, peer.PeerStateConnected) {
+				continue
+			}
+			if err := n.punchPeer(req.peerKey, req.ip, req.port); err != nil {
+				if n.peers.InState(req.peerKey, peer.PeerStateConnecting) {
+					n.log.Debugw("punch failed", "peer", req.peerKey.Short(), "err", err)
+					n.localPeerEvents <- peer.ConnectFailed{PeerKey: req.peerKey}
+				}
+			}
+		}
+	}
+}
+
 func (n *Node) handlePunchCoordTrigger(trigger *meshv1.PunchCoordTrigger) {
 	peerKey := types.PeerKeyFromBytes(trigger.PeerId)
 	if n.peers.InState(peerKey, peer.PeerStateConnected) {
@@ -534,11 +567,11 @@ func (n *Node) handlePunchCoordTrigger(trigger *meshv1.PunchCoordTrigger) {
 
 	n.log.Infow("punch coord trigger received", "peer", peerKey.Short(), "peerAddr", peerAddr.String())
 
-	if err := n.punchPeer(peerKey, peerAddr.IP, peerAddr.Port); err != nil {
-		if n.peers.InState(peerKey, peer.PeerStateConnecting) {
-			n.log.Debugw("punch failed after coord trigger", "peer", peerKey.Short(), "err", err)
-			n.localPeerEvents <- peer.ConnectFailed{PeerKey: peerKey}
-		}
+	select {
+	case n.punchCh <- punchRequest{peerKey: peerKey, ip: peerAddr.IP, port: peerAddr.Port}:
+	default:
+		n.log.Debugw("punch queue full, dropping", "peer", peerKey.Short())
+		n.localPeerEvents <- peer.ConnectFailed{PeerKey: peerKey}
 	}
 }
 
