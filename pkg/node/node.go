@@ -40,6 +40,8 @@ const (
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
 	gossipEventBufSize = 64
+	punchChBufSize     = 16
+	punchWorkers       = 3 // max concurrent punches; bounds socket usage to N×256
 	ipRefreshInterval  = 5 * time.Minute
 )
 
@@ -112,7 +114,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		tun:             tun,
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
-		punchCh:         make(chan punchRequest, 16),
+		punchCh:         make(chan punchRequest, punchChBufSize),
 		gossipEvents:    make(chan *statev1.GossipNode, gossipEventBufSize),
 	}
 
@@ -128,7 +130,9 @@ func (n *Node) Start(ctx context.Context) error {
 	n.connectBootstrapPeers(ctx)
 	n.tun.Start(ctx)
 	go n.recvLoop(ctx)
-	go n.punchLoop(ctx)
+	for range punchWorkers {
+		go n.punchLoop(ctx)
+	}
 
 	gossipTicker := util.NewJitterTicker(ctx, n.conf.GossipInterval, n.gossipJitter())
 	defer gossipTicker.Stop()
@@ -535,6 +539,7 @@ func (n *Node) punchLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case req := <-n.punchCh:
+			// Skip if peer connected while queued.
 			if n.peers.InState(req.peerKey, peer.PeerStateConnected) {
 				continue
 			}
