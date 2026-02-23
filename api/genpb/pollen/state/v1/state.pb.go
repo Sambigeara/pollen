@@ -127,6 +127,7 @@ type GossipNode struct {
 	LocalPort      uint32                 `protobuf:"varint,5,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
 	Services       []*Service             `protobuf:"bytes,6,rep,name=services,proto3" json:"services,omitempty"`
 	ReachablePeers []string               `protobuf:"bytes,7,rep,name=reachable_peers,json=reachablePeers,proto3" json:"reachable_peers,omitempty"`
+	ExternalPort   uint32                 `protobuf:"varint,8,opt,name=external_port,json=externalPort,proto3" json:"external_port,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -210,6 +211,13 @@ func (x *GossipNode) GetReachablePeers() []string {
 	return nil
 }
 
+func (x *GossipNode) GetExternalPort() uint32 {
+	if x != nil {
+		return x.ExternalPort
+	}
+	return 0
+}
+
 var File_pollen_state_v1_state_proto protoreflect.FileDescriptor
 
 const file_pollen_state_v1_state_proto_rawDesc = "" +
@@ -222,7 +230,7 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\bcounters\x18\x01 \x03(\v20.pollen.state.v1.GossipVectorClock.CountersEntryR\bcounters\x1a;\n" +
 	"\rCountersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xa5\x02\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xca\x02\n" +
 	"\n" +
 	"GossipNode\x124\n" +
 	"\apeer_id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x06peerId\x12\x18\n" +
@@ -232,7 +240,8 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\n" +
 	"local_port\x18\x05 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\x124\n" +
 	"\bservices\x18\x06 \x03(\v2\x18.pollen.state.v1.ServiceR\bservices\x12'\n" +
-	"\x0freachable_peers\x18\a \x03(\tR\x0ereachablePeersB@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
+	"\x0freachable_peers\x18\a \x03(\tR\x0ereachablePeers\x12#\n" +
+	"\rexternal_port\x18\b \x01(\rR\fexternalPortB@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
 
 var (
 	file_pollen_state_v1_state_proto_rawDescOnce sync.Once

@@ -46,26 +46,26 @@ const (
 )
 
 type BootstrapPeer struct {
-	PeerKey types.PeerKey
 	Addrs   []string
+	PeerKey types.PeerKey
 }
 
 type Config struct {
 	AdvertisedIPs       []string
+	BootstrapPeers      []BootstrapPeer
 	Port                int
 	GossipInterval      time.Duration
 	PeerTickInterval    time.Duration
 	GossipJitter        float64
 	DisableGossipJitter bool
-	BootstrapPeers      []BootstrapPeer
 }
 
 type HandlerFn func(ctx context.Context, from types.PeerKey, payload []byte) error
 
 type punchRequest struct {
-	peerKey types.PeerKey
 	ip      net.IP
 	port    int
+	peerKey types.PeerKey
 }
 
 type Node struct {
@@ -237,6 +237,8 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 		n.handlePunchCoordRequest(ctx, from, body.PunchCoordRequest)
 	case *meshv1.Envelope_PunchCoordTrigger:
 		n.handlePunchCoordTrigger(body.PunchCoordTrigger)
+	case *meshv1.Envelope_ObservedAddress:
+		n.handleObservedAddress(body.ObservedAddress)
 	}
 }
 
@@ -351,6 +353,15 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 				}
 			})
 
+			addr := &net.UDPAddr{IP: e.IP, Port: e.ObservedPort}
+			if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
+				Body: &meshv1.Envelope_ObservedAddress{
+					ObservedAddress: &meshv1.ObservedAddress{Addr: addr.String()},
+				},
+			}); err != nil {
+				n.log.Debugw("failed sending observed address", "peer", e.PeerKey.Short(), "err", err)
+			}
+
 			n.log.Infow("peer connected", "peer_id", e.PeerKey.Short(), "ip", e.IP, "observedPort", e.ObservedPort)
 		case peer.AttemptConnect:
 			go func() {
@@ -436,11 +447,21 @@ func desiredConnectionKey(peerID types.PeerKey, remotePort, localPort uint32) st
 }
 
 func (n *Node) connectPeer(peerKey types.PeerKey, ips []net.IP, port int) error {
+	var extPort int
+	if rec, ok := n.store.Get(peerKey); ok && rec.ExternalPort != 0 {
+		extPort = int(rec.ExternalPort)
+	}
+
 	addrs := make([]*net.UDPAddr, 0, len(ips))
 	for _, ip := range ips {
-		if ip != nil {
-			addrs = append(addrs, &net.UDPAddr{IP: ip, Port: port})
+		if ip == nil {
+			continue
 		}
+		p := port
+		if extPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+			p = extPort
+		}
+		addrs = append(addrs, &net.UDPAddr{IP: ip, Port: p})
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), directTimeout)
@@ -573,6 +594,22 @@ func (n *Node) handlePunchCoordTrigger(trigger *meshv1.PunchCoordTrigger) {
 		n.log.Debugw("punch queue full, dropping", "peer", peerKey.Short())
 		n.localPeerEvents <- peer.ConnectFailed{PeerKey: peerKey}
 	}
+}
+
+func (n *Node) handleObservedAddress(oa *meshv1.ObservedAddress) {
+	addr, err := net.ResolveUDPAddr("udp", oa.GetAddr())
+	if err != nil {
+		n.log.Debugw("observed address: parse failed", "addr", oa.GetAddr(), "err", err)
+		return
+	}
+
+	if addr.IP.IsPrivate() || addr.IP.IsLoopback() || addr.IP.IsLinkLocalUnicast() {
+		return
+	}
+
+	n.log.Infow("observed address received", "addr", addr.String())
+	gossipNode := n.store.SetExternalPort(uint32(addr.Port))
+	n.queueGossipNode(gossipNode)
 }
 
 func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {

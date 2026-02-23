@@ -13,19 +13,21 @@ import (
 )
 
 type nodeRecord struct {
-	Reachable   map[types.PeerKey]struct{}
-	Services    map[string]*statev1.Service
-	IdentityPub []byte
-	IPs         []string
-	Counter     uint64
-	LocalPort   uint32
+	Reachable    map[types.PeerKey]struct{}
+	Services     map[string]*statev1.Service
+	IdentityPub  []byte
+	IPs          []string
+	Counter      uint64
+	LocalPort    uint32
+	ExternalPort uint32
 }
 
 type KnownPeer struct {
-	IdentityPub []byte
-	IPs         []string
-	LocalPort   uint32
-	PeerID      types.PeerKey
+	IdentityPub  []byte
+	IPs          []string
+	LocalPort    uint32
+	ExternalPort uint32
+	PeerID       types.PeerKey
 }
 
 type Connection struct {
@@ -90,11 +92,12 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 		}
 
 		s.nodes[peerID] = nodeRecord{
-			IdentityPub: append([]byte(nil), identityPub...),
-			IPs:         append([]string(nil), p.Addresses...),
-			LocalPort:   p.Port,
-			Reachable:   make(map[types.PeerKey]struct{}),
-			Services:    make(map[string]*statev1.Service),
+			IdentityPub:  append([]byte(nil), identityPub...),
+			IPs:          append([]string(nil), p.Addresses...),
+			LocalPort:    p.Port,
+			ExternalPort: p.ExternalPort,
+			Reachable:    make(map[types.PeerKey]struct{}),
+			Services:     make(map[string]*statev1.Service),
 		}
 	}
 
@@ -158,6 +161,7 @@ func (s *Store) Save() error {
 			IdentityPublic: encodeHex(rec.IdentityPub),
 			Addresses:      append([]string(nil), rec.IPs...),
 			Port:           rec.LocalPort,
+			ExternalPort:   rec.ExternalPort,
 		})
 	}
 
@@ -310,6 +314,20 @@ func (s *Store) SetLocalNetwork(ips []string, port uint32) *statev1.GossipNode {
 	return s.bumpLocalLocked()
 }
 
+func (s *Store) SetExternalPort(port uint32) *statev1.GossipNode {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	local := s.nodes[s.LocalID]
+	if local.ExternalPort == port {
+		return nil
+	}
+
+	local.ExternalPort = port
+	s.nodes[s.LocalID] = local
+	return s.bumpLocalLocked()
+}
+
 func (s *Store) SetLocalConnected(peerID types.PeerKey, connected bool) *statev1.GossipNode {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -450,10 +468,11 @@ func (s *Store) KnownPeers() []KnownPeer {
 			continue
 		}
 		known = append(known, KnownPeer{
-			PeerID:      peerID,
-			LocalPort:   rec.LocalPort,
-			IdentityPub: append([]byte(nil), rec.IdentityPub...),
-			IPs:         append([]string(nil), rec.IPs...),
+			PeerID:       peerID,
+			LocalPort:    rec.LocalPort,
+			ExternalPort: rec.ExternalPort,
+			IdentityPub:  append([]byte(nil), rec.IdentityPub...),
+			IPs:          append([]string(nil), rec.IPs...),
 		})
 	}
 
@@ -561,6 +580,7 @@ func toGossipNode(peerID types.PeerKey, rec nodeRecord) *statev1.GossipNode {
 		LocalPort:      rec.LocalPort,
 		Services:       services,
 		ReachablePeers: reachable,
+		ExternalPort:   rec.ExternalPort,
 	}
 }
 
@@ -579,12 +599,13 @@ func fromGossipNode(update *statev1.GossipNode) nodeRecord {
 		services[s.Name] = s
 	}
 	return nodeRecord{
-		Counter:     update.GetCounter(),
-		IdentityPub: append([]byte(nil), update.GetIdentityPub()...),
-		IPs:         append([]string(nil), update.GetIps()...),
-		LocalPort:   update.GetLocalPort(),
-		Services:    services,
-		Reachable:   reachable,
+		Counter:      update.GetCounter(),
+		IdentityPub:  append([]byte(nil), update.GetIdentityPub()...),
+		IPs:          append([]string(nil), update.GetIps()...),
+		LocalPort:    update.GetLocalPort(),
+		ExternalPort: update.GetExternalPort(),
+		Services:     services,
+		Reachable:    reachable,
 	}
 }
 
@@ -594,12 +615,13 @@ func cloneRecord(rec nodeRecord) nodeRecord {
 		services[s.Name] = s
 	}
 	cloned := nodeRecord{
-		Counter:     rec.Counter,
-		IdentityPub: append([]byte(nil), rec.IdentityPub...),
-		IPs:         append([]string(nil), rec.IPs...),
-		LocalPort:   rec.LocalPort,
-		Services:    services,
-		Reachable:   make(map[types.PeerKey]struct{}, len(rec.Reachable)),
+		Counter:      rec.Counter,
+		IdentityPub:  append([]byte(nil), rec.IdentityPub...),
+		IPs:          append([]string(nil), rec.IPs...),
+		LocalPort:    rec.LocalPort,
+		ExternalPort: rec.ExternalPort,
+		Services:     services,
+		Reachable:    make(map[types.PeerKey]struct{}, len(rec.Reachable)),
 	}
 	for peer := range rec.Reachable {
 		cloned.Reachable[peer] = struct{}{}
@@ -616,6 +638,9 @@ func samePayload(a, b *statev1.GossipNode) bool {
 		return false
 	}
 	if a.GetLocalPort() != b.GetLocalPort() {
+		return false
+	}
+	if a.GetExternalPort() != b.GetExternalPort() {
 		return false
 	}
 	if !bytes.Equal(a.GetIdentityPub(), b.GetIdentityPub()) {
