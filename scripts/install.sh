@@ -170,6 +170,14 @@ detect_platform() {
 	*) fatal "unsupported architecture: ${uname_arch}" ;;
 	esac
 
+	# Detect Rosetta 2: if running as x86_64 under translation on Apple Silicon,
+	# prefer the native arm64 binary
+	if [ "$os" = "darwin" ] && [ "$arch" = "amd64" ]; then
+		if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ]; then
+			arch="arm64"
+		fi
+	fi
+
 	printf '%s %s\n' "$os" "$arch"
 }
 
@@ -196,6 +204,11 @@ verify_checksum() {
 	line="$(checksum_line_for_file "$checksums_file" "$target_file")"
 	[ -n "$line" ] || fatal "checksum not found for ${target_file}"
 	expected="${line%% *}"
+
+	# Validate checksum format (SHA256 = 64 hex characters)
+	if [[ ! "$expected" =~ ^[a-f0-9]{64}$ ]]; then
+		fatal "invalid checksum format in checksums file for ${target_file}"
+	fi
 
 	if command -v sha256sum >/dev/null 2>&1; then
 		actual="$(sha256sum "$archive_path" | awk '{print $1}')"
