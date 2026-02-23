@@ -222,6 +222,14 @@ verify_checksum() {
 }
 
 default_install_dir() {
+	# If pollen is already installed somewhere on PATH, upgrade in-place to
+	# avoid ending up with stale copies in two different directories.
+	local existing
+	if existing="$(command -v "$APP" 2>/dev/null)"; then
+		printf '%s\n' "$(dirname "$existing")"
+		return 0
+	fi
+
 	if [ -w /usr/local/bin ]; then
 		printf '%s\n' "/usr/local/bin"
 		return 0

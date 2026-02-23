@@ -1708,6 +1708,12 @@ func runUpgrade(cmd *cobra.Command, _ []string) {
 
 	args := []string{"-s", "--"}
 
+	// Always install to the same directory as the running binary so we
+	// don't end up with stale copies in two locations.
+	if exe, err := os.Executable(); err == nil {
+		args = append(args, "--install-dir", filepath.Dir(exe))
+	}
+
 	if v, _ := cmd.Flags().GetString("version"); v != "" {
 		args = append(args, "--version", v)
 	}
