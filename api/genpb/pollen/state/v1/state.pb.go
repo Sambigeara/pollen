@@ -118,34 +118,28 @@ func (x *GossipVectorClock) GetCounters() map[string]uint64 {
 	return nil
 }
 
-type GossipNode struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	PeerId         string                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
-	Counter        uint64                 `protobuf:"varint,2,opt,name=counter,proto3" json:"counter,omitempty"`
-	IdentityPub    []byte                 `protobuf:"bytes,3,opt,name=identity_pub,json=identityPub,proto3" json:"identity_pub,omitempty"`
-	Ips            []string               `protobuf:"bytes,4,rep,name=ips,proto3" json:"ips,omitempty"`
-	LocalPort      uint32                 `protobuf:"varint,5,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
-	Services       []*Service             `protobuf:"bytes,6,rep,name=services,proto3" json:"services,omitempty"`
-	ReachablePeers []string               `protobuf:"bytes,7,rep,name=reachable_peers,json=reachablePeers,proto3" json:"reachable_peers,omitempty"`
-	ExternalPort   uint32                 `protobuf:"varint,8,opt,name=external_port,json=externalPort,proto3" json:"external_port,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+type ServiceChange struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Port          uint32                 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
-func (x *GossipNode) Reset() {
-	*x = GossipNode{}
+func (x *ServiceChange) Reset() {
+	*x = ServiceChange{}
 	mi := &file_pollen_state_v1_state_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *GossipNode) String() string {
+func (x *ServiceChange) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*GossipNode) ProtoMessage() {}
+func (*ServiceChange) ProtoMessage() {}
 
-func (x *GossipNode) ProtoReflect() protoreflect.Message {
+func (x *ServiceChange) ProtoReflect() protoreflect.Message {
 	mi := &file_pollen_state_v1_state_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -157,65 +151,405 @@ func (x *GossipNode) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GossipNode.ProtoReflect.Descriptor instead.
-func (*GossipNode) Descriptor() ([]byte, []int) {
+// Deprecated: Use ServiceChange.ProtoReflect.Descriptor instead.
+func (*ServiceChange) Descriptor() ([]byte, []int) {
 	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *GossipNode) GetPeerId() string {
+func (x *ServiceChange) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ServiceChange) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+type ReachabilityChange struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerId        string                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReachabilityChange) Reset() {
+	*x = ReachabilityChange{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReachabilityChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReachabilityChange) ProtoMessage() {}
+
+func (x *ReachabilityChange) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReachabilityChange.ProtoReflect.Descriptor instead.
+func (*ReachabilityChange) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ReachabilityChange) GetPeerId() string {
 	if x != nil {
 		return x.PeerId
 	}
 	return ""
 }
 
-func (x *GossipNode) GetCounter() uint64 {
-	if x != nil {
-		return x.Counter
-	}
-	return 0
+type NetworkChange struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ips           []string               `protobuf:"bytes,1,rep,name=ips,proto3" json:"ips,omitempty"`
+	LocalPort     uint32                 `protobuf:"varint,2,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
-func (x *GossipNode) GetIdentityPub() []byte {
-	if x != nil {
-		return x.IdentityPub
-	}
-	return nil
+func (x *NetworkChange) Reset() {
+	*x = NetworkChange{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
 }
 
-func (x *GossipNode) GetIps() []string {
+func (x *NetworkChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NetworkChange) ProtoMessage() {}
+
+func (x *NetworkChange) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NetworkChange.ProtoReflect.Descriptor instead.
+func (*NetworkChange) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *NetworkChange) GetIps() []string {
 	if x != nil {
 		return x.Ips
 	}
 	return nil
 }
 
-func (x *GossipNode) GetLocalPort() uint32 {
+func (x *NetworkChange) GetLocalPort() uint32 {
 	if x != nil {
 		return x.LocalPort
 	}
 	return 0
 }
 
-func (x *GossipNode) GetServices() []*Service {
-	if x != nil {
-		return x.Services
-	}
-	return nil
+type ExternalPortChange struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ExternalPort  uint32                 `protobuf:"varint,1,opt,name=external_port,json=externalPort,proto3" json:"external_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
-func (x *GossipNode) GetReachablePeers() []string {
-	if x != nil {
-		return x.ReachablePeers
-	}
-	return nil
+func (x *ExternalPortChange) Reset() {
+	*x = ExternalPortChange{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
 }
 
-func (x *GossipNode) GetExternalPort() uint32 {
+func (x *ExternalPortChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExternalPortChange) ProtoMessage() {}
+
+func (x *ExternalPortChange) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExternalPortChange.ProtoReflect.Descriptor instead.
+func (*ExternalPortChange) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ExternalPortChange) GetExternalPort() uint32 {
 	if x != nil {
 		return x.ExternalPort
 	}
 	return 0
+}
+
+type IdentityChange struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	IdentityPub   []byte                 `protobuf:"bytes,1,opt,name=identity_pub,json=identityPub,proto3" json:"identity_pub,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IdentityChange) Reset() {
+	*x = IdentityChange{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IdentityChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IdentityChange) ProtoMessage() {}
+
+func (x *IdentityChange) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IdentityChange.ProtoReflect.Descriptor instead.
+func (*IdentityChange) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *IdentityChange) GetIdentityPub() []byte {
+	if x != nil {
+		return x.IdentityPub
+	}
+	return nil
+}
+
+type GossipEvent struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	PeerId  string                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	Counter uint64                 `protobuf:"varint,2,opt,name=counter,proto3" json:"counter,omitempty"`
+	// Types that are valid to be assigned to Change:
+	//
+	//	*GossipEvent_Network
+	//	*GossipEvent_ExternalPort
+	//	*GossipEvent_IdentityPub
+	//	*GossipEvent_Service
+	//	*GossipEvent_Reachability
+	Change        isGossipEvent_Change `protobuf_oneof:"change"`
+	Deleted       bool                 `protobuf:"varint,8,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GossipEvent) Reset() {
+	*x = GossipEvent{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GossipEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GossipEvent) ProtoMessage() {}
+
+func (x *GossipEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GossipEvent.ProtoReflect.Descriptor instead.
+func (*GossipEvent) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *GossipEvent) GetPeerId() string {
+	if x != nil {
+		return x.PeerId
+	}
+	return ""
+}
+
+func (x *GossipEvent) GetCounter() uint64 {
+	if x != nil {
+		return x.Counter
+	}
+	return 0
+}
+
+func (x *GossipEvent) GetChange() isGossipEvent_Change {
+	if x != nil {
+		return x.Change
+	}
+	return nil
+}
+
+func (x *GossipEvent) GetNetwork() *NetworkChange {
+	if x != nil {
+		if x, ok := x.Change.(*GossipEvent_Network); ok {
+			return x.Network
+		}
+	}
+	return nil
+}
+
+func (x *GossipEvent) GetExternalPort() *ExternalPortChange {
+	if x != nil {
+		if x, ok := x.Change.(*GossipEvent_ExternalPort); ok {
+			return x.ExternalPort
+		}
+	}
+	return nil
+}
+
+func (x *GossipEvent) GetIdentityPub() *IdentityChange {
+	if x != nil {
+		if x, ok := x.Change.(*GossipEvent_IdentityPub); ok {
+			return x.IdentityPub
+		}
+	}
+	return nil
+}
+
+func (x *GossipEvent) GetService() *ServiceChange {
+	if x != nil {
+		if x, ok := x.Change.(*GossipEvent_Service); ok {
+			return x.Service
+		}
+	}
+	return nil
+}
+
+func (x *GossipEvent) GetReachability() *ReachabilityChange {
+	if x != nil {
+		if x, ok := x.Change.(*GossipEvent_Reachability); ok {
+			return x.Reachability
+		}
+	}
+	return nil
+}
+
+func (x *GossipEvent) GetDeleted() bool {
+	if x != nil {
+		return x.Deleted
+	}
+	return false
+}
+
+type isGossipEvent_Change interface {
+	isGossipEvent_Change()
+}
+
+type GossipEvent_Network struct {
+	Network *NetworkChange `protobuf:"bytes,3,opt,name=network,proto3,oneof"`
+}
+
+type GossipEvent_ExternalPort struct {
+	ExternalPort *ExternalPortChange `protobuf:"bytes,4,opt,name=external_port,json=externalPort,proto3,oneof"`
+}
+
+type GossipEvent_IdentityPub struct {
+	IdentityPub *IdentityChange `protobuf:"bytes,5,opt,name=identity_pub,json=identityPub,proto3,oneof"`
+}
+
+type GossipEvent_Service struct {
+	Service *ServiceChange `protobuf:"bytes,6,opt,name=service,proto3,oneof"`
+}
+
+type GossipEvent_Reachability struct {
+	Reachability *ReachabilityChange `protobuf:"bytes,7,opt,name=reachability,proto3,oneof"`
+}
+
+func (*GossipEvent_Network) isGossipEvent_Change() {}
+
+func (*GossipEvent_ExternalPort) isGossipEvent_Change() {}
+
+func (*GossipEvent_IdentityPub) isGossipEvent_Change() {}
+
+func (*GossipEvent_Service) isGossipEvent_Change() {}
+
+func (*GossipEvent_Reachability) isGossipEvent_Change() {}
+
+type GossipEventBatch struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Events        []*GossipEvent         `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GossipEventBatch) Reset() {
+	*x = GossipEventBatch{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GossipEventBatch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GossipEventBatch) ProtoMessage() {}
+
+func (x *GossipEventBatch) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GossipEventBatch.ProtoReflect.Descriptor instead.
+func (*GossipEventBatch) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GossipEventBatch) GetEvents() []*GossipEvent {
+	if x != nil {
+		return x.Events
+	}
+	return nil
 }
 
 var File_pollen_state_v1_state_proto protoreflect.FileDescriptor
@@ -230,18 +564,32 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\bcounters\x18\x01 \x03(\v20.pollen.state.v1.GossipVectorClock.CountersEntryR\bcounters\x1a;\n" +
 	"\rCountersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xca\x02\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"7\n" +
+	"\rServiceChange\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04port\x18\x02 \x01(\rR\x04port\"J\n" +
+	"\x12ReachabilityChange\x124\n" +
+	"\apeer_id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x06peerId\"@\n" +
+	"\rNetworkChange\x12\x10\n" +
+	"\x03ips\x18\x01 \x03(\tR\x03ips\x12\x1d\n" +
 	"\n" +
-	"GossipNode\x124\n" +
+	"local_port\x18\x02 \x01(\rR\tlocalPort\"9\n" +
+	"\x12ExternalPortChange\x12#\n" +
+	"\rexternal_port\x18\x01 \x01(\rR\fexternalPort\"<\n" +
+	"\x0eIdentityChange\x12*\n" +
+	"\fidentity_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\videntityPub\"\xd6\x03\n" +
+	"\vGossipEvent\x124\n" +
 	"\apeer_id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x06peerId\x12\x18\n" +
-	"\acounter\x18\x02 \x01(\x04R\acounter\x12*\n" +
-	"\fidentity_pub\x18\x03 \x01(\fB\a\xbaH\x04z\x02h R\videntityPub\x12\x10\n" +
-	"\x03ips\x18\x04 \x03(\tR\x03ips\x12*\n" +
-	"\n" +
-	"local_port\x18\x05 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\x124\n" +
-	"\bservices\x18\x06 \x03(\v2\x18.pollen.state.v1.ServiceR\bservices\x12'\n" +
-	"\x0freachable_peers\x18\a \x03(\tR\x0ereachablePeers\x12#\n" +
-	"\rexternal_port\x18\b \x01(\rR\fexternalPortB@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
+	"\acounter\x18\x02 \x01(\x04R\acounter\x12:\n" +
+	"\anetwork\x18\x03 \x01(\v2\x1e.pollen.state.v1.NetworkChangeH\x00R\anetwork\x12J\n" +
+	"\rexternal_port\x18\x04 \x01(\v2#.pollen.state.v1.ExternalPortChangeH\x00R\fexternalPort\x12D\n" +
+	"\fidentity_pub\x18\x05 \x01(\v2\x1f.pollen.state.v1.IdentityChangeH\x00R\videntityPub\x12:\n" +
+	"\aservice\x18\x06 \x01(\v2\x1e.pollen.state.v1.ServiceChangeH\x00R\aservice\x12I\n" +
+	"\freachability\x18\a \x01(\v2#.pollen.state.v1.ReachabilityChangeH\x00R\freachability\x12\x18\n" +
+	"\adeleted\x18\b \x01(\bR\adeletedB\b\n" +
+	"\x06change\"H\n" +
+	"\x10GossipEventBatch\x124\n" +
+	"\x06events\x18\x01 \x03(\v2\x1c.pollen.state.v1.GossipEventR\x06eventsB@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
 
 var (
 	file_pollen_state_v1_state_proto_rawDescOnce sync.Once
@@ -255,21 +603,32 @@ func file_pollen_state_v1_state_proto_rawDescGZIP() []byte {
 	return file_pollen_state_v1_state_proto_rawDescData
 }
 
-var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_pollen_state_v1_state_proto_goTypes = []any{
-	(*Service)(nil),           // 0: pollen.state.v1.Service
-	(*GossipVectorClock)(nil), // 1: pollen.state.v1.GossipVectorClock
-	(*GossipNode)(nil),        // 2: pollen.state.v1.GossipNode
-	nil,                       // 3: pollen.state.v1.GossipVectorClock.CountersEntry
+	(*Service)(nil),            // 0: pollen.state.v1.Service
+	(*GossipVectorClock)(nil),  // 1: pollen.state.v1.GossipVectorClock
+	(*ServiceChange)(nil),      // 2: pollen.state.v1.ServiceChange
+	(*ReachabilityChange)(nil), // 3: pollen.state.v1.ReachabilityChange
+	(*NetworkChange)(nil),      // 4: pollen.state.v1.NetworkChange
+	(*ExternalPortChange)(nil), // 5: pollen.state.v1.ExternalPortChange
+	(*IdentityChange)(nil),     // 6: pollen.state.v1.IdentityChange
+	(*GossipEvent)(nil),        // 7: pollen.state.v1.GossipEvent
+	(*GossipEventBatch)(nil),   // 8: pollen.state.v1.GossipEventBatch
+	nil,                        // 9: pollen.state.v1.GossipVectorClock.CountersEntry
 }
 var file_pollen_state_v1_state_proto_depIdxs = []int32{
-	3, // 0: pollen.state.v1.GossipVectorClock.counters:type_name -> pollen.state.v1.GossipVectorClock.CountersEntry
-	0, // 1: pollen.state.v1.GossipNode.services:type_name -> pollen.state.v1.Service
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	9, // 0: pollen.state.v1.GossipVectorClock.counters:type_name -> pollen.state.v1.GossipVectorClock.CountersEntry
+	4, // 1: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
+	5, // 2: pollen.state.v1.GossipEvent.external_port:type_name -> pollen.state.v1.ExternalPortChange
+	6, // 3: pollen.state.v1.GossipEvent.identity_pub:type_name -> pollen.state.v1.IdentityChange
+	2, // 4: pollen.state.v1.GossipEvent.service:type_name -> pollen.state.v1.ServiceChange
+	3, // 5: pollen.state.v1.GossipEvent.reachability:type_name -> pollen.state.v1.ReachabilityChange
+	7, // 6: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_state_proto_init() }
@@ -277,13 +636,20 @@ func file_pollen_state_v1_state_proto_init() {
 	if File_pollen_state_v1_state_proto != nil {
 		return
 	}
+	file_pollen_state_v1_state_proto_msgTypes[7].OneofWrappers = []any{
+		(*GossipEvent_Network)(nil),
+		(*GossipEvent_ExternalPort)(nil),
+		(*GossipEvent_IdentityPub)(nil),
+		(*GossipEvent_Service)(nil),
+		(*GossipEvent_Reachability)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_state_v1_state_proto_rawDesc), len(file_pollen_state_v1_state_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

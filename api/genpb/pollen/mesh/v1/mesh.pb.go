@@ -288,12 +288,12 @@ type Envelope struct {
 	// Types that are valid to be assigned to Body:
 	//
 	//	*Envelope_Clock
-	//	*Envelope_Node
 	//	*Envelope_PunchCoordRequest
 	//	*Envelope_PunchCoordTrigger
 	//	*Envelope_InviteRedeemRequest
 	//	*Envelope_InviteRedeemResponse
 	//	*Envelope_ObservedAddress
+	//	*Envelope_Events
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -345,15 +345,6 @@ func (x *Envelope) GetClock() *v11.GossipVectorClock {
 	return nil
 }
 
-func (x *Envelope) GetNode() *v11.GossipNode {
-	if x != nil {
-		if x, ok := x.Body.(*Envelope_Node); ok {
-			return x.Node
-		}
-	}
-	return nil
-}
-
 func (x *Envelope) GetPunchCoordRequest() *PunchCoordRequest {
 	if x != nil {
 		if x, ok := x.Body.(*Envelope_PunchCoordRequest); ok {
@@ -399,16 +390,21 @@ func (x *Envelope) GetObservedAddress() *ObservedAddress {
 	return nil
 }
 
+func (x *Envelope) GetEvents() *v11.GossipEventBatch {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_Events); ok {
+			return x.Events
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Body interface {
 	isEnvelope_Body()
 }
 
 type Envelope_Clock struct {
 	Clock *v11.GossipVectorClock `protobuf:"bytes,1,opt,name=clock,proto3,oneof"`
-}
-
-type Envelope_Node struct {
-	Node *v11.GossipNode `protobuf:"bytes,2,opt,name=node,proto3,oneof"`
 }
 
 type Envelope_PunchCoordRequest struct {
@@ -431,9 +427,11 @@ type Envelope_ObservedAddress struct {
 	ObservedAddress *ObservedAddress `protobuf:"bytes,8,opt,name=observed_address,json=observedAddress,proto3,oneof"`
 }
 
-func (*Envelope_Clock) isEnvelope_Body() {}
+type Envelope_Events struct {
+	Events *v11.GossipEventBatch `protobuf:"bytes,9,opt,name=events,proto3,oneof"`
+}
 
-func (*Envelope_Node) isEnvelope_Body() {}
+func (*Envelope_Clock) isEnvelope_Body() {}
 
 func (*Envelope_PunchCoordRequest) isEnvelope_Body() {}
 
@@ -444,6 +442,8 @@ func (*Envelope_InviteRedeemRequest) isEnvelope_Body() {}
 func (*Envelope_InviteRedeemResponse) isEnvelope_Body() {}
 
 func (*Envelope_ObservedAddress) isEnvelope_Body() {}
+
+func (*Envelope_Events) isEnvelope_Body() {}
 
 var File_pollen_mesh_v1_mesh_proto protoreflect.FileDescriptor
 
@@ -466,15 +466,15 @@ const file_pollen_mesh_v1_mesh_proto_rawDesc = "" +
 	"\n" +
 	"join_token\x18\x03 \x01(\v2\x1e.pollen.admission.v1.JoinTokenR\tjoinToken\"%\n" +
 	"\x0fObservedAddress\x12\x12\n" +
-	"\x04addr\x18\x01 \x01(\tR\x04addr\"\xb2\x04\n" +
+	"\x04addr\x18\x01 \x01(\tR\x04addr\"\xbc\x04\n" +
 	"\bEnvelope\x12:\n" +
-	"\x05clock\x18\x01 \x01(\v2\".pollen.state.v1.GossipVectorClockH\x00R\x05clock\x121\n" +
-	"\x04node\x18\x02 \x01(\v2\x1b.pollen.state.v1.GossipNodeH\x00R\x04node\x12S\n" +
+	"\x05clock\x18\x01 \x01(\v2\".pollen.state.v1.GossipVectorClockH\x00R\x05clock\x12S\n" +
 	"\x13punch_coord_request\x18\x03 \x01(\v2!.pollen.mesh.v1.PunchCoordRequestH\x00R\x11punchCoordRequest\x12S\n" +
 	"\x13punch_coord_trigger\x18\x04 \x01(\v2!.pollen.mesh.v1.PunchCoordTriggerH\x00R\x11punchCoordTrigger\x12Y\n" +
 	"\x15invite_redeem_request\x18\x06 \x01(\v2#.pollen.mesh.v1.InviteRedeemRequestH\x00R\x13inviteRedeemRequest\x12\\\n" +
 	"\x16invite_redeem_response\x18\a \x01(\v2$.pollen.mesh.v1.InviteRedeemResponseH\x00R\x14inviteRedeemResponse\x12L\n" +
-	"\x10observed_address\x18\b \x01(\v2\x1f.pollen.mesh.v1.ObservedAddressH\x00R\x0fobservedAddressB\x06\n" +
+	"\x10observed_address\x18\b \x01(\v2\x1f.pollen.mesh.v1.ObservedAddressH\x00R\x0fobservedAddress\x12;\n" +
+	"\x06events\x18\t \x01(\v2!.pollen.state.v1.GossipEventBatchH\x00R\x06eventsB\x06\n" +
 	"\x04bodyB>Z<github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1;meshv1b\x06proto3"
 
 var (
@@ -500,18 +500,18 @@ var file_pollen_mesh_v1_mesh_proto_goTypes = []any{
 	(*v1.InviteToken)(nil),        // 6: pollen.admission.v1.InviteToken
 	(*v1.JoinToken)(nil),          // 7: pollen.admission.v1.JoinToken
 	(*v11.GossipVectorClock)(nil), // 8: pollen.state.v1.GossipVectorClock
-	(*v11.GossipNode)(nil),        // 9: pollen.state.v1.GossipNode
+	(*v11.GossipEventBatch)(nil),  // 9: pollen.state.v1.GossipEventBatch
 }
 var file_pollen_mesh_v1_mesh_proto_depIdxs = []int32{
 	6, // 0: pollen.mesh.v1.InviteRedeemRequest.token:type_name -> pollen.admission.v1.InviteToken
 	7, // 1: pollen.mesh.v1.InviteRedeemResponse.join_token:type_name -> pollen.admission.v1.JoinToken
 	8, // 2: pollen.mesh.v1.Envelope.clock:type_name -> pollen.state.v1.GossipVectorClock
-	9, // 3: pollen.mesh.v1.Envelope.node:type_name -> pollen.state.v1.GossipNode
-	0, // 4: pollen.mesh.v1.Envelope.punch_coord_request:type_name -> pollen.mesh.v1.PunchCoordRequest
-	1, // 5: pollen.mesh.v1.Envelope.punch_coord_trigger:type_name -> pollen.mesh.v1.PunchCoordTrigger
-	2, // 6: pollen.mesh.v1.Envelope.invite_redeem_request:type_name -> pollen.mesh.v1.InviteRedeemRequest
-	3, // 7: pollen.mesh.v1.Envelope.invite_redeem_response:type_name -> pollen.mesh.v1.InviteRedeemResponse
-	4, // 8: pollen.mesh.v1.Envelope.observed_address:type_name -> pollen.mesh.v1.ObservedAddress
+	0, // 3: pollen.mesh.v1.Envelope.punch_coord_request:type_name -> pollen.mesh.v1.PunchCoordRequest
+	1, // 4: pollen.mesh.v1.Envelope.punch_coord_trigger:type_name -> pollen.mesh.v1.PunchCoordTrigger
+	2, // 5: pollen.mesh.v1.Envelope.invite_redeem_request:type_name -> pollen.mesh.v1.InviteRedeemRequest
+	3, // 6: pollen.mesh.v1.Envelope.invite_redeem_response:type_name -> pollen.mesh.v1.InviteRedeemResponse
+	4, // 7: pollen.mesh.v1.Envelope.observed_address:type_name -> pollen.mesh.v1.ObservedAddress
+	9, // 8: pollen.mesh.v1.Envelope.events:type_name -> pollen.state.v1.GossipEventBatch
 	9, // [9:9] is the sub-list for method output_type
 	9, // [9:9] is the sub-list for method input_type
 	9, // [9:9] is the sub-list for extension type_name
@@ -526,12 +526,12 @@ func file_pollen_mesh_v1_mesh_proto_init() {
 	}
 	file_pollen_mesh_v1_mesh_proto_msgTypes[5].OneofWrappers = []any{
 		(*Envelope_Clock)(nil),
-		(*Envelope_Node)(nil),
 		(*Envelope_PunchCoordRequest)(nil),
 		(*Envelope_PunchCoordTrigger)(nil),
 		(*Envelope_InviteRedeemRequest)(nil),
 		(*Envelope_InviteRedeemResponse)(nil),
 		(*Envelope_ObservedAddress)(nil),
+		(*Envelope_Events)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

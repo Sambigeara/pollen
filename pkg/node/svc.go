@@ -55,7 +55,7 @@ func (s *NodeService) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootst
 }
 
 func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
-	nodes := s.node.store.CloneNodes()
+	nodes := s.node.store.AllNodes()
 	localID := s.node.store.LocalID
 
 	selfAddr := ""
@@ -205,17 +205,16 @@ func (s *NodeService) RegisterService(_ context.Context, req *controlv1.Register
 	if name == "" {
 		name = serviceNameForPort(req.Port)
 	}
-	s.node.queueGossipNode(s.node.store.UpsertLocalService(req.Port, name))
+	s.node.queueGossipEvents(s.node.store.UpsertLocalService(req.Port, name))
 
 	return &controlv1.RegisterServiceResponse{}, nil
 }
 
 func (s *NodeService) UnregisterService(_ context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
-	port := req.GetPort()
 	name := req.GetName()
-	update := s.node.store.RemoveLocalServices(port, name)
-	s.node.tun.UnregisterService(port)
-	s.node.queueGossipNode(update)
+	events := s.node.store.RemoveLocalServices(name)
+	s.node.tun.UnregisterService(req.GetPort())
+	s.node.queueGossipEvents(events)
 
 	return &controlv1.UnregisterServiceResponse{}, nil
 }
