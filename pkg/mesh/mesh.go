@@ -419,10 +419,6 @@ func (m *impl) BroadcastDisconnect() error {
 
 func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 	replace, ok := m.sessions.add(peerKey, s, func(current *peerSession) bool {
-		if current == nil {
-			return true
-		}
-
 		if current.conn.Context().Err() != nil {
 			return true
 		}
@@ -546,9 +542,6 @@ func (m *impl) runMainProbeLoop(ctx context.Context, qt *quic.Transport) {
 	for {
 		n, sender, err := qt.ReadNonQUICPacket(ctx, buf)
 		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
 			return
 		}
 		udpSender, ok := sender.(*net.UDPAddr)
@@ -639,9 +632,6 @@ func (m *impl) Close() error {
 }
 
 func (m *impl) closeSession(s *peerSession, reason string) {
-	if s == nil {
-		return
-	}
 	_ = s.conn.CloseWithError(0, reason)
 	if s.transport != nil && s.transport != m.mainQT {
 		_ = s.transport.Close()
@@ -694,11 +684,7 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 		_ = sendInviteRedeemResponse(qc, nil, err)
 		return err
 	}
-	if err := sendInviteRedeemResponse(qc, joinToken, nil); err != nil {
-		return err
-	}
-
-	return nil
+	return sendInviteRedeemResponse(qc, joinToken, nil)
 }
 
 func sendInviteRedeemResponse(qc *quic.Conn, joinToken *admissionv1.JoinToken, redeemErr error) error {
