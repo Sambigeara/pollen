@@ -35,11 +35,11 @@ message ObservedAddress {
 message Envelope {
   oneof body {
     pollen.state.v1.GossipVectorClock clock = 1;
-    pollen.state.v1.GossipNode node = 2;
     PunchCoordRequest punch_coord_request = 3;
     PunchCoordTrigger punch_coord_trigger = 4;
     InviteRedeemRequest invite_redeem_request = 6;
     InviteRedeemResponse invite_redeem_response = 7;
     ObservedAddress observed_address = 8;
+    pollen.state.v1.GossipEventBatch events = 9;
   }
 }
