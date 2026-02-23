@@ -55,7 +55,7 @@ Defaults and behavior:
 - Checks release checksums before install
 - Updates are semver-gated; potentially breaking upgrades require `--allow-breaking`
 
-## Quick start: laptop + public relay
+## Quick start: local (root) + public relay
 
 On your laptop (admin):
 
