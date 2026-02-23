@@ -32,4 +32,5 @@ message GossipNode {
   }];
   repeated Service services = 6;
   repeated string reachable_peers = 7;
+  uint32 external_port = 8;
 }

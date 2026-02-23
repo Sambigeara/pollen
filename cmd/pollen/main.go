@@ -1715,7 +1715,7 @@ func runUpgrade(cmd *cobra.Command, _ []string) {
 		args = append(args, "--allow-breaking")
 	}
 
-	bash := exec.Command("bash", args...)
+	bash := exec.CommandContext(cmd.Context(), "bash", args...)
 	bash.Stdin = bytes.NewReader(script)
 	bash.Stdout = cmd.OutOrStdout()
 	bash.Stderr = cmd.ErrOrStderr()

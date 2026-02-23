@@ -126,25 +126,6 @@ func (tn *testNode) stop() {
 	tn.errCh = nil
 }
 
-func (tn *testNode) restart(t *testing.T) {
-	t.Helper()
-	tn.stop()
-	waitForPort(t, tn.port)
-	tn.start(t)
-}
-
-func waitForPort(t *testing.T, port int) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: port})
-		if err != nil {
-			return false
-		}
-		conn.Close()
-		return true
-	}, 5*time.Second, 10*time.Millisecond, "port %d not released", port)
-}
-
 func TestConnectPeerFlow(t *testing.T) {
 	nodeIPs := []string{"127.0.0.1"}
 	cluster := newClusterAuth(t)
