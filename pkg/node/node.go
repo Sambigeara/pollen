@@ -26,6 +26,15 @@ import (
 )
 
 const (
+	// MaxDatagramPayload is the maximum safe payload size for a QUIC datagram.
+	MaxDatagramPayload = 1100
+
+	// Overhead estimates for envelope and batch wrappers (protobuf framing).
+	envelopeOverhead = 6  // Envelope oneof tag + length prefix + batch wrapper
+	perEventOverhead = 2  // per-event length prefix in repeated field
+)
+
+const (
 	localKeysDir = "keys"
 
 	signingKeyName    = "ed25519.key"
@@ -77,7 +86,7 @@ type Node struct {
 	punchCh         chan punchRequest
 	conf            *Config
 	log             *zap.SugaredLogger
-	gossipEvents    chan *statev1.GossipNode
+	gossipEvents    chan []*statev1.GossipEvent
 	requestFullOnce sync.Once
 }
 
@@ -115,7 +124,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
 		punchCh:         make(chan punchRequest, punchChBufSize),
-		gossipEvents:    make(chan *statev1.GossipNode, gossipEventBufSize),
+		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
 	}
 
 	return n, nil
@@ -159,8 +168,8 @@ func (n *Node) Start(ctx context.Context) error {
 			n.gossip(ctx)
 		case <-ipRefreshCh:
 			n.refreshIPs()
-		case node := <-n.gossipEvents:
-			n.broadcastNode(ctx, node)
+		case events := <-n.gossipEvents:
+			n.broadcastEvents(ctx, events)
 		case in := <-n.mesh.Events():
 			n.handlePeerInput(in)
 		case in := <-n.localPeerEvents:
@@ -189,13 +198,13 @@ func (n *Node) connectBootstrapPeers(ctx context.Context) {
 	}
 }
 
-func (n *Node) queueGossipNode(node *statev1.GossipNode) {
-	if node == nil {
+func (n *Node) queueGossipEvents(events []*statev1.GossipEvent) {
+	if len(events) == 0 {
 		return
 	}
 
 	select {
-	case n.gossipEvents <- node:
+	case n.gossipEvents <- events:
 	default:
 	}
 }
@@ -221,17 +230,22 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 
 	switch body := env.GetBody().(type) {
 	case *meshv1.Envelope_Clock:
-		for _, node := range n.store.MissingFor(body.Clock) {
-			if err := n.mesh.Send(ctx, from, &meshv1.Envelope{
-				Body: &meshv1.Envelope_Node{Node: node},
-			}); err != nil {
-				n.log.Debugw("failed sending gossip node", "to", from.Short(), "err", err)
+		events := n.store.MissingFor(body.Clock)
+		batches := batchEvents(events, MaxDatagramPayload)
+		for _, batch := range batches {
+			env := &meshv1.Envelope{Body: &meshv1.Envelope_Events{
+				Events: &statev1.GossipEventBatch{Events: batch},
+			}}
+			if err := n.mesh.Send(ctx, from, env); err != nil {
+				n.log.Debugw("failed sending gossip events", "to", from.Short(), "err", err)
 			}
 		}
-	case *meshv1.Envelope_Node:
-		result := n.store.ApplyNode(body.Node)
-		if result.Rebroadcast != nil {
-			n.queueGossipNode(result.Rebroadcast)
+	case *meshv1.Envelope_Events:
+		for _, event := range body.Events.GetEvents() {
+			result := n.store.ApplyEvent(event)
+			if len(result.Rebroadcast) > 0 {
+				n.queueGossipEvents(result.Rebroadcast)
+			}
 		}
 	case *meshv1.Envelope_PunchCoordRequest:
 		n.handlePunchCoordRequest(ctx, from, body.PunchCoordRequest)
@@ -242,22 +256,54 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 	}
 }
 
-func (n *Node) broadcastNode(ctx context.Context, node *statev1.GossipNode) {
-	if node == nil {
+func (n *Node) broadcastEvents(ctx context.Context, events []*statev1.GossipEvent) {
+	if len(events) == 0 {
 		return
 	}
 
 	connectedPeers := n.GetConnectedPeers()
-	for _, peerID := range connectedPeers {
-		if peerID == n.store.LocalID {
-			continue
-		}
-		if err := n.mesh.Send(ctx, peerID, &meshv1.Envelope{
-			Body: &meshv1.Envelope_Node{Node: node},
-		}); err != nil {
-			n.log.Debugw("node gossip send failed", "peer", peerID.Short(), "err", err)
+	batches := batchEvents(events, MaxDatagramPayload)
+	for _, batch := range batches {
+		env := &meshv1.Envelope{Body: &meshv1.Envelope_Events{
+			Events: &statev1.GossipEventBatch{Events: batch},
+		}}
+		for _, peerID := range connectedPeers {
+			if peerID == n.store.LocalID {
+				continue
+			}
+			if err := n.mesh.Send(ctx, peerID, env); err != nil {
+				n.log.Debugw("event gossip send failed", "peer", peerID.Short(), "err", err)
+			}
 		}
 	}
+}
+
+// batchEvents packs events into groups that each fit within maxSize when
+// serialized as an Envelope. Events that individually exceed maxSize are
+// placed in their own batch.
+func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.GossipEvent {
+	if len(events) == 0 {
+		return nil
+	}
+
+	var batches [][]*statev1.GossipEvent
+	var current []*statev1.GossipEvent
+	currentSize := envelopeOverhead
+
+	for _, event := range events {
+		eventSize := event.SizeVT() + perEventOverhead
+		if len(current) > 0 && currentSize+eventSize > maxSize {
+			batches = append(batches, current)
+			current = nil
+			currentSize = envelopeOverhead
+		}
+		current = append(current, event)
+		currentSize += eventSize
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
 }
 
 func (n *Node) gossip(ctx context.Context) {
@@ -282,16 +328,16 @@ func (n *Node) refreshIPs() {
 		return
 	}
 
-	gossipNode := n.store.SetLocalNetwork(newIPs, uint32(n.conf.Port))
-	if gossipNode != nil {
+	events := n.store.SetLocalNetwork(newIPs, uint32(n.conf.Port))
+	if len(events) > 0 {
 		n.log.Infow("advertised IPs changed", "ips", newIPs)
-		n.queueGossipNode(gossipNode)
+		n.queueGossipEvents(events)
 	}
 }
 
 func (n *Node) handlePeerInput(in peer.Input) {
 	if d, ok := in.(peer.PeerDisconnected); ok {
-		n.queueGossipNode(n.store.SetLocalConnected(d.PeerKey, false))
+		n.queueGossipEvents(n.store.SetLocalConnected(d.PeerKey, false))
 	}
 
 	outputs := n.peers.Step(time.Now(), in)
@@ -344,7 +390,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
-			n.queueGossipNode(n.store.SetLocalConnected(e.PeerKey, true))
+			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			n.requestFullOnce.Do(func() {
 				if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
 					Body: &meshv1.Envelope_Clock{Clock: n.store.ZeroClock()},
@@ -608,8 +654,7 @@ func (n *Node) handleObservedAddress(oa *meshv1.ObservedAddress) {
 	}
 
 	n.log.Infow("observed address received", "addr", addr.String())
-	gossipNode := n.store.SetExternalPort(uint32(addr.Port))
-	n.queueGossipNode(gossipNode)
+	n.queueGossipEvents(n.store.SetExternalPort(uint32(addr.Port)))
 }
 
 func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {

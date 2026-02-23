@@ -205,7 +205,7 @@ func (s *NodeService) RegisterService(_ context.Context, req *controlv1.Register
 	if name == "" {
 		name = serviceNameForPort(req.Port)
 	}
-	s.node.queueGossipNode(s.node.store.UpsertLocalService(req.Port, name))
+	s.node.queueGossipEvents(s.node.store.UpsertLocalService(req.Port, name))
 
 	return &controlv1.RegisterServiceResponse{}, nil
 }
@@ -213,9 +213,9 @@ func (s *NodeService) RegisterService(_ context.Context, req *controlv1.Register
 func (s *NodeService) UnregisterService(_ context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
 	port := req.GetPort()
 	name := req.GetName()
-	update := s.node.store.RemoveLocalServices(port, name)
+	events := s.node.store.RemoveLocalServices(port, name)
 	s.node.tun.UnregisterService(port)
-	s.node.queueGossipNode(update)
+	s.node.queueGossipEvents(events)
 
 	return &controlv1.UnregisterServiceResponse{}, nil
 }

@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"fmt"
 	"maps"
 	"slices"
@@ -12,14 +11,51 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
+// Attribute key constants and helpers.
+const (
+	attrNet = "net"
+	attrExt = "ext"
+	attrID  = "id"
+
+	prefixService   = "s/"
+	prefixReachable = "r/"
+)
+
+func serviceKey(name string) string        { return prefixService + name }
+func reachableKey(pk types.PeerKey) string  { return prefixReachable + pk.String() }
+
+func isServiceKey(key string) (name string, ok bool) {
+	if len(key) > len(prefixService) && key[:len(prefixService)] == prefixService {
+		return key[len(prefixService):], true
+	}
+	return "", false
+}
+
+func isReachableKey(key string) (suffix string, ok bool) {
+	if len(key) > len(prefixReachable) && key[:len(prefixReachable)] == prefixReachable {
+		return key[len(prefixReachable):], true
+	}
+	return "", false
+}
+
+// logEntry tracks the counter (and deletion state) of a single attribute.
+type logEntry struct {
+	Counter uint64
+	Deleted bool
+}
+
 type nodeRecord struct {
+	// Materialized view — used by consumers (svc.go, peer logic, etc.)
 	Reachable    map[types.PeerKey]struct{}
 	Services     map[string]*statev1.Service
 	IdentityPub  []byte
 	IPs          []string
-	Counter      uint64
 	LocalPort    uint32
 	ExternalPort uint32
+
+	// Event log metadata.
+	MaxCounter uint64
+	Log        map[string]logEntry // attr key → latest logEntry
 }
 
 type KnownPeer struct {
@@ -37,7 +73,7 @@ type Connection struct {
 }
 
 type ApplyResult struct {
-	Rebroadcast *statev1.GossipNode
+	Rebroadcast []*statev1.GossipEvent
 	Updated     bool
 }
 
@@ -68,10 +104,11 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 		disk:    d,
 		nodes: map[types.PeerKey]nodeRecord{
 			localID: {
-				Counter:     0,
+				MaxCounter:  0,
 				IdentityPub: append([]byte(nil), identityPub...),
 				Reachable:   make(map[types.PeerKey]struct{}),
 				Services:    make(map[string]*statev1.Service),
+				Log:         make(map[string]logEntry),
 			},
 		},
 		desiredConnections: make(map[string]Connection),
@@ -98,6 +135,7 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 			ExternalPort: p.ExternalPort,
 			Reachable:    make(map[types.PeerKey]struct{}),
 			Services:     make(map[string]*statev1.Service),
+			Log:          make(map[string]logEntry),
 		}
 	}
 
@@ -215,13 +253,15 @@ func (s *Store) Clock() *statev1.GossipVectorClock {
 
 	clock := make(map[string]uint64, len(s.nodes))
 	for peerID, rec := range s.nodes {
-		clock[peerID.String()] = rec.Counter
+		clock[peerID.String()] = rec.MaxCounter
 	}
 
 	return &statev1.GossipVectorClock{Counters: clock}
 }
 
-func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipNode {
+// MissingFor returns the individual events that the remote peer is missing,
+// based on the provided vector clock.
+func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipEvent {
 	requested := map[string]uint64{}
 	if clock != nil {
 		requested = clock.GetCounters()
@@ -230,91 +270,169 @@ func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipNo
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	updates := make([]*statev1.GossipNode, 0, len(s.nodes))
+	var events []*statev1.GossipEvent
 	for peerID, rec := range s.nodes {
-		if rec.Counter == 0 {
+		if rec.MaxCounter == 0 {
 			continue
 		}
-		if rec.Counter <= requested[peerID.String()] {
+		remoteCounter := requested[peerID.String()]
+		if rec.MaxCounter <= remoteCounter {
 			continue
 		}
-		updates = append(updates, toGossipNode(peerID, rec))
+		events = append(events, s.buildEventsAbove(peerID, rec, remoteCounter)...)
 	}
 
-	sort.Slice(updates, func(i, j int) bool {
-		return updates[i].GetPeerId() < updates[j].GetPeerId()
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].GetPeerId() != events[j].GetPeerId() {
+			return events[i].GetPeerId() < events[j].GetPeerId()
+		}
+		return events[i].GetCounter() < events[j].GetCounter()
 	})
 
-	return updates
+	return events
 }
 
-func (s *Store) ApplyNode(update *statev1.GossipNode) ApplyResult {
-	if update == nil {
+// ApplyEvent applies a single incoming gossip event.
+func (s *Store) ApplyEvent(event *statev1.GossipEvent) ApplyResult {
+	if event == nil {
 		return ApplyResult{}
 	}
 
-	peerID, err := types.PeerKeyFromString(update.GetPeerId())
+	peerID, err := types.PeerKeyFromString(event.GetPeerId())
 	if err != nil {
 		return ApplyResult{}
 	}
 
-	incoming := fromGossipNode(update)
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	current := s.nodes[peerID]
-	if current.Reachable == nil {
-		current.Reachable = make(map[types.PeerKey]struct{})
+	rec := s.nodes[peerID]
+	if rec.Reachable == nil {
+		rec.Reachable = make(map[types.PeerKey]struct{})
+	}
+	if rec.Services == nil {
+		rec.Services = make(map[string]*statev1.Service)
+	}
+	if rec.Log == nil {
+		rec.Log = make(map[string]logEntry)
 	}
 
+	key := event.GetKey()
+
+	// Self-state conflict handling: receiving our own events from peers.
+	// Only the higher-counter check is needed here. The old full-node model
+	// also compared payloads at the same counter, but with per-attribute
+	// events our own events regularly bounce back via gossip — triggering on
+	// same-counter would cause a rebroadcast storm. The higher-counter check
+	// catches the real split-brain case (another instance ran longer).
 	if peerID == s.LocalID {
-		if incoming.Counter > current.Counter {
-			current.Counter = incoming.Counter
-			s.nodes[peerID] = current
-			return ApplyResult{Rebroadcast: s.bumpLocalLocked()}
+		if event.GetCounter() > rec.MaxCounter {
+			rec.MaxCounter = event.GetCounter()
+			s.nodes[peerID] = rec
+			return ApplyResult{Rebroadcast: s.bumpAndBroadcastAllLocked()}
 		}
-
-		if incoming.Counter == current.Counter {
-			localPayload := toGossipNode(peerID, current)
-			if !samePayload(localPayload, update) {
-				return ApplyResult{Rebroadcast: s.bumpLocalLocked()}
-			}
-		}
-
 		return ApplyResult{}
 	}
 
-	if incoming.Counter <= current.Counter {
+	// Per-key stale check: only accept if this event is newer for this key.
+	if existing, ok := rec.Log[key]; ok && event.GetCounter() <= existing.Counter {
 		return ApplyResult{}
 	}
 
-	if len(incoming.IdentityPub) == 0 && len(current.IdentityPub) > 0 {
-		incoming.IdentityPub = append([]byte(nil), current.IdentityPub...)
+	// Update materialized view.
+	if event.GetDeleted() {
+		s.applyDeleteLocked(&rec, key)
+	} else {
+		s.applyValueLocked(&rec, event)
 	}
 
-	s.nodes[peerID] = incoming
+	// Update log entry.
+	rec.Log[key] = logEntry{Counter: event.GetCounter(), Deleted: event.GetDeleted()}
+
+	// Update MaxCounter.
+	if event.GetCounter() > rec.MaxCounter {
+		rec.MaxCounter = event.GetCounter()
+	}
+
+	s.nodes[peerID] = rec
 	return ApplyResult{Updated: true}
 }
 
-func (s *Store) SetLocalNetwork(ips []string, port uint32) *statev1.GossipNode {
+// applyDeleteLocked removes the attribute from the materialized view.
+func (s *Store) applyDeleteLocked(rec *nodeRecord, key string) {
+	if name, ok := isServiceKey(key); ok {
+		delete(rec.Services, name)
+	} else if suffix, ok := isReachableKey(key); ok {
+		pk, err := types.PeerKeyFromString(suffix)
+		if err == nil {
+			delete(rec.Reachable, pk)
+		}
+	}
+}
+
+// applyValueLocked updates the materialized view from an event's value.
+func (s *Store) applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent) {
+	switch v := event.GetValue().(type) {
+	case *statev1.GossipEvent_Network:
+		if v.Network != nil {
+			rec.IPs = append([]string(nil), v.Network.GetIps()...)
+			rec.LocalPort = v.Network.GetLocalPort()
+		}
+	case *statev1.GossipEvent_ExternalPort:
+		rec.ExternalPort = v.ExternalPort
+	case *statev1.GossipEvent_IdentityPub:
+		rec.IdentityPub = append([]byte(nil), v.IdentityPub...)
+	case *statev1.GossipEvent_Service:
+		if v.Service != nil {
+			rec.Services[v.Service.GetName()] = v.Service
+		}
+	case *statev1.GossipEvent_Reachable:
+		if suffix, ok := isReachableKey(event.GetKey()); ok {
+			pk, err := types.PeerKeyFromString(suffix)
+			if err == nil {
+				if v.Reachable {
+					rec.Reachable[pk] = struct{}{}
+				} else {
+					delete(rec.Reachable, pk)
+				}
+			}
+		}
+	}
+}
+
+// --- Local mutation methods (return events for broadcasting) ---
+
+func (s *Store) SetLocalNetwork(ips []string, port uint32) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	local := s.nodes[s.LocalID]
 
-	if slices.Compare(local.IPs, ips) == 0 && local.LocalPort == port {
+	if slices.Equal(local.IPs, ips) && local.LocalPort == port {
 		return nil
 	}
 
 	local.IPs = ips
 	local.LocalPort = port
 
+	counter := s.bumpCounterLocked(&local)
+	local.Log[attrNet] = logEntry{Counter: counter}
 	s.nodes[s.LocalID] = local
-	return s.bumpLocalLocked()
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Key:     attrNet,
+		Value: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkInfo{
+				Ips:       append([]string(nil), ips...),
+				LocalPort: port,
+			},
+		},
+	}}
 }
 
-func (s *Store) SetExternalPort(port uint32) *statev1.GossipNode {
+func (s *Store) SetExternalPort(port uint32) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -324,11 +442,20 @@ func (s *Store) SetExternalPort(port uint32) *statev1.GossipNode {
 	}
 
 	local.ExternalPort = port
+
+	counter := s.bumpCounterLocked(&local)
+	local.Log[attrExt] = logEntry{Counter: counter}
 	s.nodes[s.LocalID] = local
-	return s.bumpLocalLocked()
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Key:     attrExt,
+		Value:   &statev1.GossipEvent_ExternalPort{ExternalPort: port},
+	}}
 }
 
-func (s *Store) SetLocalConnected(peerID types.PeerKey, connected bool) *statev1.GossipNode {
+func (s *Store) SetLocalConnected(peerID types.PeerKey, connected bool) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -351,40 +478,77 @@ func (s *Store) SetLocalConnected(peerID types.PeerKey, connected bool) *statev1
 		delete(local.Reachable, peerID)
 	}
 
+	key := reachableKey(peerID)
+	counter := s.bumpCounterLocked(&local)
+	local.Log[key] = logEntry{Counter: counter, Deleted: !connected}
 	s.nodes[s.LocalID] = local
-	return s.bumpLocalLocked()
+
+	event := &statev1.GossipEvent{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Key:     key,
+		Deleted: !connected,
+	}
+	if connected {
+		event.Value = &statev1.GossipEvent_Reachable{Reachable: true}
+	}
+
+	return []*statev1.GossipEvent{event}
 }
 
-func (s *Store) UpsertLocalService(port uint32, name string) *statev1.GossipNode {
+func (s *Store) UpsertLocalService(port uint32, name string) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	local := s.nodes[s.LocalID]
-	if local.Reachable == nil {
-		local.Reachable = make(map[types.PeerKey]struct{})
+
+	if existing, ok := local.Services[name]; ok && existing.GetPort() == port {
+		return nil
 	}
 
-	s.nodes[s.LocalID].Services[name] = &statev1.Service{
+	local.Services[name] = &statev1.Service{
 		Name: name,
 		Port: port,
 	}
-	return s.bumpLocalLocked()
+
+	key := serviceKey(name)
+	counter := s.bumpCounterLocked(&local)
+	local.Log[key] = logEntry{Counter: counter}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Key:     key,
+		Value: &statev1.GossipEvent_Service{
+			Service: &statev1.Service{Name: name, Port: port},
+		},
+	}}
 }
 
-func (s *Store) RemoveLocalServices(port uint32, name string) *statev1.GossipNode {
+func (s *Store) RemoveLocalServices(port uint32, name string) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	local := s.nodes[s.LocalID]
-	if local.Reachable == nil {
-		local.Reachable = make(map[types.PeerKey]struct{})
+
+	if _, ok := local.Services[name]; !ok {
+		return nil
 	}
 
 	delete(local.Services, name)
 
+	key := serviceKey(name)
+	counter := s.bumpCounterLocked(&local)
+	local.Log[key] = logEntry{Counter: counter, Deleted: true}
 	s.nodes[s.LocalID] = local
 
-	return s.bumpLocalLocked()
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Key:     key,
+		Deleted: true,
+	}}
 }
 
 func (s *Store) LocalServices() map[string]*statev1.Service {
@@ -548,65 +712,162 @@ func (s *Store) DesiredConnections() []Connection {
 	return connections
 }
 
-func (s *Store) bumpLocalLocked() *statev1.GossipNode {
+// --- Internal helpers ---
+
+// bumpCounterLocked increments the MaxCounter on a local record and returns the new value.
+// Caller must hold s.mu.
+func (s *Store) bumpCounterLocked(rec *nodeRecord) uint64 {
+	rec.MaxCounter++
+	return rec.MaxCounter
+}
+
+// bumpAndBroadcastAllLocked returns events for ALL current local attributes,
+// each with its own incremented counter. Used on self-state conflict (restart
+// recovery). Caller must hold s.mu.
+func (s *Store) bumpAndBroadcastAllLocked() []*statev1.GossipEvent {
 	local := s.nodes[s.LocalID]
-	local.Counter++
+
+	var events []*statev1.GossipEvent
+	peerIDStr := s.LocalID.String()
+
+	nextCounter := func() uint64 {
+		local.MaxCounter++
+		return local.MaxCounter
+	}
+
+	// net
+	if len(local.IPs) > 0 || local.LocalPort != 0 {
+		c := nextCounter()
+		local.Log[attrNet] = logEntry{Counter: c}
+		events = append(events, &statev1.GossipEvent{
+			PeerId:  peerIDStr,
+			Counter: c,
+			Key:     attrNet,
+			Value: &statev1.GossipEvent_Network{
+				Network: &statev1.NetworkInfo{
+					Ips:       append([]string(nil), local.IPs...),
+					LocalPort: local.LocalPort,
+				},
+			},
+		})
+	}
+
+	// ext
+	if local.ExternalPort != 0 {
+		c := nextCounter()
+		local.Log[attrExt] = logEntry{Counter: c}
+		events = append(events, &statev1.GossipEvent{
+			PeerId:  peerIDStr,
+			Counter: c,
+			Key:     attrExt,
+			Value:   &statev1.GossipEvent_ExternalPort{ExternalPort: local.ExternalPort},
+		})
+	}
+
+	// id
+	if len(local.IdentityPub) > 0 {
+		c := nextCounter()
+		local.Log[attrID] = logEntry{Counter: c}
+		events = append(events, &statev1.GossipEvent{
+			PeerId:  peerIDStr,
+			Counter: c,
+			Key:     attrID,
+			Value:   &statev1.GossipEvent_IdentityPub{IdentityPub: append([]byte(nil), local.IdentityPub...)},
+		})
+	}
+
+	// services
+	for name, svc := range local.Services {
+		key := serviceKey(name)
+		c := nextCounter()
+		local.Log[key] = logEntry{Counter: c}
+		events = append(events, &statev1.GossipEvent{
+			PeerId:  peerIDStr,
+			Counter: c,
+			Key:     key,
+			Value: &statev1.GossipEvent_Service{
+				Service: &statev1.Service{Name: svc.GetName(), Port: svc.GetPort()},
+			},
+		})
+	}
+
+	// reachable peers
+	for pk := range local.Reachable {
+		key := reachableKey(pk)
+		c := nextCounter()
+		local.Log[key] = logEntry{Counter: c}
+		events = append(events, &statev1.GossipEvent{
+			PeerId:  peerIDStr,
+			Counter: c,
+			Key:     key,
+			Value:   &statev1.GossipEvent_Reachable{Reachable: true},
+		})
+	}
+
 	s.nodes[s.LocalID] = local
-	return toGossipNode(s.LocalID, local)
+	return events
 }
 
-func toGossipNode(peerID types.PeerKey, rec nodeRecord) *statev1.GossipNode {
-	reachable := make([]string, 0, len(rec.Reachable))
-	for peer := range rec.Reachable {
-		reachable = append(reachable, peer.String())
-	}
-	sort.Strings(reachable)
+// buildEventsAbove constructs GossipEvent messages for all log entries with
+// counter > minCounter. Caller must hold s.mu (at least RLock).
+func (s *Store) buildEventsAbove(peerID types.PeerKey, rec nodeRecord, minCounter uint64) []*statev1.GossipEvent {
+	var events []*statev1.GossipEvent
+	peerIDStr := peerID.String()
 
-	services := make([]*statev1.Service, 0, len(rec.Services))
-	for v := range maps.Values(rec.Services) {
-		services = append(services, v)
-	}
-	sort.Slice(services, func(i, j int) bool {
-		if services[i].GetName() != services[j].GetName() {
-			return services[i].GetName() < services[j].GetName()
-		}
-		return services[i].GetPort() < services[j].GetPort()
-	})
-	return &statev1.GossipNode{
-		PeerId:         peerID.String(),
-		Counter:        rec.Counter,
-		IdentityPub:    append([]byte(nil), rec.IdentityPub...),
-		Ips:            append([]string(nil), rec.IPs...),
-		LocalPort:      rec.LocalPort,
-		Services:       services,
-		ReachablePeers: reachable,
-		ExternalPort:   rec.ExternalPort,
-	}
-}
-
-func fromGossipNode(update *statev1.GossipNode) nodeRecord {
-	reachable := make(map[types.PeerKey]struct{}, len(update.GetReachablePeers()))
-	for _, peer := range update.GetReachablePeers() {
-		id, err := types.PeerKeyFromString(peer)
-		if err != nil {
+	for key, entry := range rec.Log {
+		if entry.Counter <= minCounter {
 			continue
 		}
-		reachable[id] = struct{}{}
+		event := s.buildEventFromLog(peerIDStr, key, entry, rec)
+		if event != nil {
+			events = append(events, event)
+		}
 	}
 
-	services := make(map[string]*statev1.Service)
-	for _, s := range update.Services {
-		services[s.Name] = s
+	return events
+}
+
+// buildEventFromLog constructs a single GossipEvent from a log entry and the
+// materialized view. Caller must hold s.mu (at least RLock).
+func (s *Store) buildEventFromLog(peerIDStr, key string, entry logEntry, rec nodeRecord) *statev1.GossipEvent {
+	event := &statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: entry.Counter,
+		Key:     key,
+		Deleted: entry.Deleted,
 	}
-	return nodeRecord{
-		Counter:      update.GetCounter(),
-		IdentityPub:  append([]byte(nil), update.GetIdentityPub()...),
-		IPs:          append([]string(nil), update.GetIps()...),
-		LocalPort:    update.GetLocalPort(),
-		ExternalPort: update.GetExternalPort(),
-		Services:     services,
-		Reachable:    reachable,
+
+	if entry.Deleted {
+		return event
 	}
+
+	switch key {
+	case attrNet:
+		event.Value = &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkInfo{
+				Ips:       append([]string(nil), rec.IPs...),
+				LocalPort: rec.LocalPort,
+			},
+		}
+	case attrExt:
+		event.Value = &statev1.GossipEvent_ExternalPort{ExternalPort: rec.ExternalPort}
+	case attrID:
+		event.Value = &statev1.GossipEvent_IdentityPub{IdentityPub: append([]byte(nil), rec.IdentityPub...)}
+	default:
+		if name, ok := isServiceKey(key); ok {
+			svc, exists := rec.Services[name]
+			if !exists {
+				return nil
+			}
+			event.Value = &statev1.GossipEvent_Service{
+				Service: &statev1.Service{Name: svc.GetName(), Port: svc.GetPort()},
+			}
+		} else if _, ok := isReachableKey(key); ok {
+			event.Value = &statev1.GossipEvent_Reachable{Reachable: true}
+		}
+	}
+
+	return event
 }
 
 func cloneRecord(rec nodeRecord) nodeRecord {
@@ -614,14 +875,19 @@ func cloneRecord(rec nodeRecord) nodeRecord {
 	for _, s := range rec.Services {
 		services[s.Name] = s
 	}
+	log := make(map[string]logEntry, len(rec.Log))
+	for k, v := range rec.Log {
+		log[k] = v
+	}
 	cloned := nodeRecord{
-		Counter:      rec.Counter,
+		MaxCounter:   rec.MaxCounter,
 		IdentityPub:  append([]byte(nil), rec.IdentityPub...),
 		IPs:          append([]string(nil), rec.IPs...),
 		LocalPort:    rec.LocalPort,
 		ExternalPort: rec.ExternalPort,
 		Services:     services,
 		Reachable:    make(map[types.PeerKey]struct{}, len(rec.Reachable)),
+		Log:          log,
 	}
 	for peer := range rec.Reachable {
 		cloned.Reachable[peer] = struct{}{}
@@ -629,58 +895,7 @@ func cloneRecord(rec nodeRecord) nodeRecord {
 	return cloned
 }
 
-func samePayload(a, b *statev1.GossipNode) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-
-	if a.GetPeerId() != b.GetPeerId() {
-		return false
-	}
-	if a.GetLocalPort() != b.GetLocalPort() {
-		return false
-	}
-	if a.GetExternalPort() != b.GetExternalPort() {
-		return false
-	}
-	if !bytes.Equal(a.GetIdentityPub(), b.GetIdentityPub()) {
-		return false
-	}
-	if slices.Compare(a.GetIps(), b.GetIps()) != 0 {
-		return false
-	}
-	if slices.Compare(a.GetReachablePeers(), b.GetReachablePeers()) != 0 {
-		return false
-	}
-	return sameServices(a.GetServices(), b.GetServices())
-}
-
-func sameServices(a, b []*statev1.Service) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	type key struct {
-		name string
-		port uint32
-	}
-	set := make(map[key]struct{}, len(a))
-	for _, s := range a {
-		if s == nil {
-			continue
-		}
-		set[key{s.GetName(), s.GetPort()}] = struct{}{}
-	}
-	for _, s := range b {
-		if s == nil {
-			continue
-		}
-		if _, ok := set[key{s.GetName(), s.GetPort()}]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
 func connectionKey(peerID types.PeerKey, remotePort, localPort uint32) string {
 	return fmt.Sprintf("%s:%d:%d", peerID.String(), remotePort, localPort)
 }
+

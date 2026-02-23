@@ -18,19 +18,32 @@ message GossipVectorClock {
   map<string, uint64> counters = 1;
 }
 
-message GossipNode {
+message NetworkInfo {
+  repeated string ips = 1;
+  uint32 local_port = 2 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+}
+
+message GossipEvent {
   string peer_id = 1 [(buf.validate.field).string = {
     pattern: "^[a-fA-F0-9]{64}$"
     len: 64
   }];
   uint64 counter = 2;
-  bytes identity_pub = 3 [(buf.validate.field).bytes = {len: 32}];
-  repeated string ips = 4;
-  uint32 local_port = 5 [(buf.validate.field).uint32 = {
-    gt: 0
-    lte: 65535
-  }];
-  repeated Service services = 6;
-  repeated string reachable_peers = 7;
-  uint32 external_port = 8;
+  string key = 3;
+  bool deleted = 9;
+
+  oneof value {
+    NetworkInfo network = 4;
+    uint32 external_port = 5;
+    bytes identity_pub = 6 [(buf.validate.field).bytes = {len: 32}];
+    Service service = 7;
+    bool reachable = 8;
+  }
+}
+
+message GossipEventBatch {
+  repeated GossipEvent events = 1;
 }
