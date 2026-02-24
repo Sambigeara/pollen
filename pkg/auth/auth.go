@@ -335,16 +335,16 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 	return priv, pub, nil
 }
 
-func NewTrustBundle(genesisPub ed25519.PublicKey) *admissionv1.TrustBundle {
-	clusterID := sha256.Sum256(genesisPub)
+func NewTrustBundle(rootPub ed25519.PublicKey) *admissionv1.TrustBundle {
+	clusterID := sha256.Sum256(rootPub)
 	return &admissionv1.TrustBundle{
-		ClusterId:  clusterID[:],
-		GenesisPub: genesisPub,
+		ClusterId: clusterID[:],
+		RootPub:   rootPub,
 	}
 }
 
 func IssueAdminCert(
-	genesisPriv ed25519.PrivateKey,
+	rootPriv ed25519.PrivateKey,
 	clusterID []byte,
 	adminPub ed25519.PublicKey,
 	notBefore time.Time,
@@ -368,7 +368,7 @@ func IssueAdminCert(
 		return nil, err
 	}
 
-	sig, err := signPayload(genesisPriv, msg, sigContextAdminCert)
+	sig, err := signPayload(rootPriv, msg, sigContextAdminCert)
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +391,7 @@ func VerifyAdminCert(
 	if err != nil {
 		return err
 	}
-	if err := verifyPayload(ed25519.PublicKey(trust.GetGenesisPub()), msg, cert.GetSignature(), sigContextAdminCert); err != nil {
+	if err := verifyPayload(ed25519.PublicKey(trust.GetRootPub()), msg, cert.GetSignature(), sigContextAdminCert); err != nil {
 		return errors.New("admin cert signature invalid")
 	}
 
@@ -496,7 +496,7 @@ func IssueMembershipCertWithIssuer(
 
 func VerifyMembershipCert(cert *admissionv1.MembershipCert, trust *admissionv1.TrustBundle, now time.Time, expectedSubject []byte) error {
 	// trust is the verification root, not extra metadata: it anchors issuer
-	// verification at genesis_pub and binds the cert to this cluster_id.
+	// verification at root_pub and binds the cert to this cluster_id.
 	if cert == nil {
 		return errors.New("membership cert missing claims")
 	}
@@ -552,8 +552,8 @@ func IssueJoinToken(
 		return nil, errors.New("admin private key is not ed25519")
 	}
 
-	if !bytes.Equal(adminPub, trust.GetGenesisPub()) {
-		return nil, errors.New("issuer admin certificate required for non-genesis admin key")
+	if !bytes.Equal(adminPub, trust.GetRootPub()) {
+		return nil, errors.New("issuer admin certificate required for non-root admin key")
 	}
 
 	issuer, err := IssueAdminCert(
@@ -701,7 +701,7 @@ func validateTrustBundle(trust *admissionv1.TrustBundle) error {
 		return fmt.Errorf("trust bundle invalid: %w", err)
 	}
 
-	expectedClusterID := sha256.Sum256(trust.GetGenesisPub())
+	expectedClusterID := sha256.Sum256(trust.GetRootPub())
 	if !bytes.Equal(expectedClusterID[:], trust.GetClusterId()) {
 		return errors.New("trust bundle cluster id mismatch")
 	}

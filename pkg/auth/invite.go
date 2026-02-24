@@ -93,7 +93,7 @@ func LoadAdminSigner(pollenDir string, now time.Time) (*AdminSigner, error) {
 }
 
 func resolveAdminIssuer(pollenDir string, adminPriv ed25519.PrivateKey, adminPub ed25519.PublicKey, trust *admissionv1.TrustBundle, now time.Time) (*admissionv1.AdminCert, error) {
-	if bytes.Equal(adminPub, trust.GetGenesisPub()) {
+	if bytes.Equal(adminPub, trust.GetRootPub()) {
 		return IssueAdminCert(
 			adminPriv,
 			trust.GetClusterId(),

@@ -89,6 +89,7 @@ type Node struct {
 	conf            *Config
 	log             *zap.SugaredLogger
 	gossipEvents    chan []*statev1.GossipEvent
+	ready           chan struct{}
 	requestFullOnce sync.Once
 }
 
@@ -127,6 +128,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
 		punchCh:         make(chan punchRequest, punchChBufSize),
 		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
+		ready:           make(chan struct{}),
 	}
 
 	return n, nil
@@ -138,6 +140,7 @@ func (n *Node) Start(ctx context.Context) error {
 	if err := n.mesh.Start(ctx); err != nil {
 		return err
 	}
+	close(n.ready)
 	n.connectBootstrapPeers(ctx)
 	n.tun.Start(ctx)
 	go n.recvLoop(ctx)
@@ -378,14 +381,24 @@ func (n *Node) syncPeersFromState() {
 			ips = append(ips, ip)
 		}
 
-		if len(ips) == 0 {
+		var lastAddr *net.UDPAddr
+		if kp.LastAddr != "" {
+			var err error
+			lastAddr, err = net.ResolveUDPAddr("udp", kp.LastAddr)
+			if err != nil {
+				n.log.Debugw("invalid last addr", "peer", kp.PeerID.Short(), "addr", kp.LastAddr, "err", err)
+			}
+		}
+
+		if len(ips) == 0 && lastAddr == nil {
 			continue
 		}
 
 		n.peers.Step(time.Now(), peer.DiscoverPeer{
-			PeerKey: kp.PeerID,
-			Ips:     ips,
-			Port:    int(kp.LocalPort),
+			PeerKey:  kp.PeerID,
+			Ips:      ips,
+			Port:     int(kp.LocalPort),
+			LastAddr: lastAddr,
 		})
 	}
 }
@@ -394,6 +407,8 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
+			addr := &net.UDPAddr{IP: e.IP, Port: e.ObservedPort}
+			n.store.SetLastAddr(e.PeerKey, addr.String())
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			n.requestFullOnce.Do(func() {
 				if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
@@ -403,7 +418,6 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 				}
 			})
 
-			addr := &net.UDPAddr{IP: e.IP, Port: e.ObservedPort}
 			if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
 				Body: &meshv1.Envelope_ObservedAddress{
 					ObservedAddress: &meshv1.ObservedAddress{Addr: addr.String()},
@@ -413,15 +427,10 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			}
 
 			n.log.Infow("peer connected", "peer_id", e.PeerKey.Short(), "ip", e.IP, "observedPort", e.ObservedPort)
+		case peer.AttemptEagerConnect:
+			go n.doConnect(e.PeerKey, []*net.UDPAddr{e.Addr})
 		case peer.AttemptConnect:
-			go func() {
-				if err := n.connectPeer(e.PeerKey, e.Ips, e.Port); err != nil {
-					if n.peers.InState(e.PeerKey, peer.PeerStateConnecting) {
-						n.log.Debugw("connect failed", "peer", e.PeerKey.Short(), "err", err)
-						n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
-					}
-				}
-			}()
+			go n.doConnect(e.PeerKey, n.buildPeerAddrs(e.PeerKey, e.Ips, e.Port))
 		case peer.RequestPunchCoordination:
 			go n.requestPunchCoordination(e.PeerKey)
 		}
@@ -478,7 +487,26 @@ func (n *Node) reconcileDesiredConnections() {
 	}
 }
 
-func (n *Node) connectPeer(peerKey types.PeerKey, ips []net.IP, port int) error {
+func (n *Node) doConnect(peerKey types.PeerKey, addrs []*net.UDPAddr) {
+	if err := n.connectPeer(peerKey, addrs); err != nil {
+		if n.peers.InState(peerKey, peer.PeerStateConnecting) {
+			if errors.Is(err, mesh.ErrIdentityMismatch) {
+				n.log.Warnw("connect failed: peer identity mismatch", "peer", peerKey.Short(), "err", err)
+			} else {
+				n.log.Debugw("connect failed", "peer", peerKey.Short(), "err", err)
+			}
+			n.localPeerEvents <- peer.ConnectFailed{PeerKey: peerKey}
+		}
+	}
+}
+
+func (n *Node) connectPeer(peerKey types.PeerKey, addrs []*net.UDPAddr) error {
+	ctx, cancel := context.WithTimeout(context.Background(), directTimeout)
+	defer cancel()
+	return n.mesh.Connect(ctx, peerKey, addrs)
+}
+
+func (n *Node) buildPeerAddrs(peerKey types.PeerKey, ips []net.IP, port int) []*net.UDPAddr {
 	var extPort int
 	if rec, ok := n.store.Get(peerKey); ok && rec.ExternalPort != 0 {
 		extPort = int(rec.ExternalPort)
@@ -495,11 +523,7 @@ func (n *Node) connectPeer(peerKey types.PeerKey, ips []net.IP, port int) error 
 		}
 		addrs = append(addrs, &net.UDPAddr{IP: ip, Port: p})
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), directTimeout)
-	defer cancel()
-
-	return n.mesh.Connect(ctx, peerKey, addrs)
+	return addrs
 }
 
 func (n *Node) punchPeer(peerKey types.PeerKey, ip net.IP, port int) error {
@@ -598,7 +622,11 @@ func (n *Node) punchLoop(ctx context.Context) {
 			}
 			if err := n.punchPeer(req.peerKey, req.ip, req.port); err != nil {
 				if n.peers.InState(req.peerKey, peer.PeerStateConnecting) {
-					n.log.Debugw("punch failed", "peer", req.peerKey.Short(), "err", err)
+					if errors.Is(err, mesh.ErrIdentityMismatch) {
+						n.log.Warnw("punch failed: peer identity mismatch", "peer", req.peerKey.Short(), "err", err)
+					} else {
+						n.log.Debugw("punch failed", "peer", req.peerKey.Short(), "err", err)
+					}
 					n.localPeerEvents <- peer.ConnectFailed{PeerKey: req.peerKey}
 				}
 			}
@@ -717,6 +745,14 @@ func sharesLAN(aIPs, bIPs []string) bool {
 		}
 	}
 	return false
+}
+
+func (n *Node) Ready() <-chan struct{} {
+	return n.ready
+}
+
+func (n *Node) ListenPort() int {
+	return n.mesh.ListenPort()
 }
 
 // GetConnectedPeers returns all currently connected peer keys.

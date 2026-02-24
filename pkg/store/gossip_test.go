@@ -563,3 +563,135 @@ func TestApplyEventReachablePeer(t *testing.T) {
 		t.Fatal("expected target to be removed from reachable")
 	}
 }
+
+func TestSetLastAddr(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	peerPK, peerIDStr := peerKey(2)
+
+	// Add the peer via a gossip event so it exists in the store.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+		},
+	})
+
+	s.SetLastAddr(peerPK, "203.0.113.5:41234")
+
+	peers := s.KnownPeers()
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 known peer, got %d", len(peers))
+	}
+	if peers[0].LastAddr != "203.0.113.5:41234" {
+		t.Fatalf("expected LastAddr=203.0.113.5:41234, got %q", peers[0].LastAddr)
+	}
+}
+
+func TestSetLastAddrIgnoresUnknownPeer(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	unknownPK, _ := peerKey(99)
+	s.SetLastAddr(unknownPK, "1.2.3.4:5678")
+
+	peers := s.KnownPeers()
+	if len(peers) != 0 {
+		t.Fatalf("expected 0 known peers, got %d", len(peers))
+	}
+}
+
+func TestKnownPeersIncludesPeerWithLastAddrOnly(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	peerPK, peerIDStr := peerKey(2)
+	idPub := make([]byte, 32)
+	idPub[0] = 2
+
+	// Create peer record without network fields.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{IdentityPub: idPub},
+		},
+	})
+
+	s.SetLastAddr(peerPK, "203.0.113.5:41234")
+
+	peers := s.KnownPeers()
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 known peer, got %d", len(peers))
+	}
+	if peers[0].PeerID != peerPK {
+		t.Fatalf("expected peer %q, got %q", peerPK.String(), peers[0].PeerID.String())
+	}
+	if peers[0].LastAddr != "203.0.113.5:41234" {
+		t.Fatalf("expected LastAddr=203.0.113.5:41234, got %q", peers[0].LastAddr)
+	}
+}
+
+func TestSaveLoadPersistsLastAddr(t *testing.T) {
+	dir := t.TempDir()
+
+	localPub := make([]byte, 32)
+	localPub[0] = 1
+
+	s, err := Load(dir, localPub)
+	if err != nil {
+		t.Fatalf("load store: %v", err)
+	}
+
+	peerPK, peerIDStr := peerKey(2)
+	idPub := make([]byte, 32)
+	idPub[0] = 2
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{IdentityPub: idPub},
+		},
+	})
+
+	s.SetLastAddr(peerPK, "203.0.113.5:41234")
+
+	if err := s.Save(); err != nil {
+		t.Fatalf("save store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	s2, err := Load(dir, localPub)
+	if err != nil {
+		t.Fatalf("reload store: %v", err)
+	}
+	defer func() {
+		if err := s2.Close(); err != nil {
+			t.Fatalf("close reloaded store: %v", err)
+		}
+	}()
+
+	rec, ok := s2.Get(peerPK)
+	if !ok {
+		t.Fatal("expected peer record after reload")
+	}
+	if rec.LastAddr != "203.0.113.5:41234" {
+		t.Fatalf("expected LastAddr=203.0.113.5:41234, got %q", rec.LastAddr)
+	}
+
+	peers := s2.KnownPeers()
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 known peer, got %d", len(peers))
+	}
+	if peers[0].LastAddr != "203.0.113.5:41234" {
+		t.Fatalf("expected LastAddr=203.0.113.5:41234, got %q", peers[0].LastAddr)
+	}
+}

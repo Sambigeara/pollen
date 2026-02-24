@@ -19,6 +19,10 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
+// ErrIdentityMismatch is returned when a peer presents a different public key
+// than the one we expected (e.g., IP reuse after instance replacement).
+var ErrIdentityMismatch = errors.New("peer identity mismatch")
+
 const (
 	certSerialBits = 128
 	certValidity   = 10 * 365 * 24 * time.Hour
@@ -160,7 +164,7 @@ func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certif
 		}
 
 		if opts.expectedPeer != nil && peerKey != *opts.expectedPeer {
-			return fmt.Errorf("peer identity mismatch: expected %s got %s", opts.expectedPeer.Short(), peerKey.Short())
+			return fmt.Errorf("%w: expected %s got %s", ErrIdentityMismatch, opts.expectedPeer.Short(), peerKey.Short())
 		}
 
 		mc, err := parseMembershipExtension(rawCerts[0])
@@ -191,7 +195,7 @@ func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Ce
 		}
 
 		if expectedPeer != nil && peerKey != *expectedPeer {
-			return fmt.Errorf("peer identity mismatch: expected %s got %s", expectedPeer.Short(), peerKey.Short())
+			return fmt.Errorf("%w: expected %s got %s", ErrIdentityMismatch, expectedPeer.Short(), peerKey.Short())
 		}
 
 		return nil

@@ -39,6 +39,7 @@ type diskPeer struct {
 	Addresses      []string `yaml:"addresses,omitempty"`
 	Port           uint32   `yaml:"port,omitempty"`
 	ExternalPort   uint32   `yaml:"externalPort,omitempty"`
+	LastAddr       string   `yaml:"lastAddr,omitempty"`
 }
 
 type diskService struct {

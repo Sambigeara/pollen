@@ -13,15 +13,15 @@ import (
 )
 
 func TestIssueJoinTokenWithDelegatedAdmin(t *testing.T) {
-	genesisPub, genesisPriv := newKeyPair(t)
-	trust := auth.NewTrustBundle(genesisPub)
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
 
 	delegatedPub, delegatedPriv := newKeyPair(t)
 	subjectPub, _ := newKeyPair(t)
 
 	now := time.Now()
 	issuer, err := auth.IssueAdminCert(
-		genesisPriv,
+		rootPriv,
 		trust.GetClusterId(),
 		delegatedPub,
 		now.Add(-time.Minute),
@@ -46,8 +46,8 @@ func TestIssueJoinTokenWithDelegatedAdmin(t *testing.T) {
 }
 
 func TestIssueJoinTokenRejectsUnsignedDelegatedAdmin(t *testing.T) {
-	genesisPub, _ := newKeyPair(t)
-	trust := auth.NewTrustBundle(genesisPub)
+	rootPub, _ := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
 
 	_, delegatedPriv := newKeyPair(t)
 
@@ -144,15 +144,15 @@ func TestVerifyMembershipCertRejectsIssuerKeyMismatch(t *testing.T) {
 	// cert signed by a different key. VerifyMembershipCert must reject
 	// the mismatch between issuer.claims.admin_pub and cert.claims.issuer_admin_pub.
 
-	genesisPub, genesisPriv := newKeyPair(t)
-	trust := auth.NewTrustBundle(genesisPub)
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
 
 	now := time.Now()
 
-	// Legitimate admin cert (signed by genesis).
+	// Legitimate admin cert (signed by root).
 	legitimateAdminPub, _ := newKeyPair(t)
 	legitimateIssuer, err := auth.IssueAdminCert(
-		genesisPriv,
+		rootPriv,
 		trust.GetClusterId(),
 		legitimateAdminPub,
 		now.Add(-time.Minute),
@@ -169,7 +169,7 @@ func TestVerifyMembershipCertRejectsIssuerKeyMismatch(t *testing.T) {
 	// own admin cert is created here just so IssueMembershipCertWithIssuer
 	// passes its internal checks — we swap the issuer afterward.
 	attackerIssuer, err := auth.IssueAdminCert(
-		genesisPriv,
+		rootPriv,
 		trust.GetClusterId(),
 		attackerPub,
 		now.Add(-time.Minute),
