@@ -18,8 +18,8 @@ This README is intentionally short and focused on day-to-day commands.
 - `pollen purge [--all]` reset local cluster state (`--all` also removes node keys)
 - `pollen status` show nodes/services
 - `pollen invite [--subject <node-pub>]` create an open or subject-bound invite token
-- `pollen daemon install [--start]` install and enable the background service
-- `pollen daemon uninstall` stop and remove the background service
+- `pollen daemon install [--start]` install and enable the background service (Linux: prefix with `sudo`)
+- `pollen daemon uninstall` stop and remove the background service (Linux: prefix with `sudo`)
 - `pollen version [--short]` show CLI version/build metadata
 
 ## Install (linux + macOS)
@@ -39,13 +39,13 @@ curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/inst
 Configure autostart (optional):
 
 ```bash
-pollen daemon install --start
+pollen daemon install --start    # Linux: prefix with sudo
 ```
 
 After `pollen down`, restart the background node with:
 
 ```bash
-pollen up -d
+pollen up -d    # Linux: prefix with sudo
 ```
 
 Defaults and behavior:

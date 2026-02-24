@@ -50,17 +50,12 @@ func requireRoot(cmd *cobra.Command) bool {
 }
 
 func launchdPlistPath() string {
-	return filepath.Join("/Library", "LaunchDaemons", launchdLabel+".plist")
+	_, homeDir, _ := effectiveUser()
+	return filepath.Join(homeDir, "Library", "LaunchAgents", launchdLabel+".plist")
 }
 
 func systemdUnitPath() string {
 	return filepath.Join("/etc", "systemd", "system", systemdUnitName)
-}
-
-// Legacy user-level service paths for migration.
-func legacyLaunchdPlistPath() string {
-	_, homeDir, _ := effectiveUser()
-	return filepath.Join(homeDir, "Library", "LaunchAgents", launchdLabel+".plist")
 }
 
 func legacySystemdUnitPath() string {
@@ -70,7 +65,7 @@ func legacySystemdUnitPath() string {
 
 type serviceTemplateData struct {
 	Label     string // launchd only
-	Username  string
+	Username  string // systemd only
 	Binary    string
 	PollenDir string
 	LogPath   string // launchd only
@@ -82,8 +77,6 @@ var launchdPlistTmpl = template.Must(template.New("plist").Parse(`<?xml version=
 <dict>
   <key>Label</key>
   <string>{{ .Label }}</string>
-  <key>UserName</key>
-  <string>{{ .Username }}</string>
   <key>ProgramArguments</key>
   <array>
     <string>{{ .Binary }}</string>
@@ -170,13 +163,13 @@ func resolveExecutable() (string, error) {
 }
 
 func runDaemonInstall(cmd *cobra.Command, _ []string) {
-	if !requireRoot(cmd) {
-		return
-	}
 	switch runtime.GOOS {
 	case osDarwin:
 		daemonInstallLaunchd(cmd)
 	case osLinux:
+		if !requireRoot(cmd) {
+			return
+		}
 		daemonInstallSystemd(cmd)
 	default:
 		fmt.Fprintf(cmd.ErrOrStderr(), "unsupported platform: %s (supported: darwin, linux)\n", runtime.GOOS)
@@ -184,13 +177,13 @@ func runDaemonInstall(cmd *cobra.Command, _ []string) {
 }
 
 func runDaemonUninstall(cmd *cobra.Command, _ []string) {
-	if !requireRoot(cmd) {
-		return
-	}
 	switch runtime.GOOS {
 	case osDarwin:
 		daemonUninstallLaunchd(cmd)
 	case osLinux:
+		if !requireRoot(cmd) {
+			return
+		}
 		daemonUninstallSystemd(cmd)
 	default:
 		fmt.Fprintf(cmd.ErrOrStderr(), "unsupported platform: %s (supported: darwin, linux)\n", runtime.GOOS)
@@ -220,10 +213,10 @@ func codesignValid(ctx context.Context, binaryPath string) bool {
 }
 
 // ensureLaunchdSafe verifies the binary has a valid code signature. macOS tags
-// downloaded binaries with com.apple.provenance (SIP-protected); in the system
-// launchd domain there's no user session for Gatekeeper prompts, so xpcproxy
-// rejects unsigned/invalidly-signed binaries with EX_CONFIG (78). An ad-hoc
-// re-sign produces a fresh local signature that satisfies launch constraints.
+// downloaded binaries with com.apple.provenance (SIP-protected); even in the
+// user (gui) launchd domain, xpcproxy may reject unsigned/invalidly-signed
+// binaries with EX_CONFIG (78). An ad-hoc re-sign produces a fresh local
+// signature that satisfies launch constraints.
 // Defense-in-depth: install.sh also signs at install time.
 func ensureLaunchdSafe(ctx context.Context, binaryPath string, w io.Writer) {
 	if codesignValid(ctx, binaryPath) {
@@ -253,20 +246,28 @@ func ensureBinarySigned(cmd *cobra.Command) bool {
 	return true
 }
 
-const launchdSystemTarget = "system/" + launchdLabel
+func launchdDomain() string {
+	_, _, uid := effectiveUser()
+	return fmt.Sprintf("gui/%s", uid)
+}
 
-// launchdStart loads and starts the service in the system domain.
+func launchdTarget() string {
+	return launchdDomain() + "/" + launchdLabel
+}
+
+// launchdStart loads and starts the service in the user (gui) domain.
 func launchdStart(cmd *cobra.Command, plistPath string) error {
 	ctx := cmd.Context()
+	target := launchdTarget()
 
 	// Try kickstart first (works for loaded-but-stopped jobs).
-	if err := exec.CommandContext(ctx, "launchctl", "kickstart", launchdSystemTarget).Run(); err == nil {
+	if err := exec.CommandContext(ctx, "launchctl", "kickstart", target).Run(); err == nil {
 		return nil
 	}
 
 	// Fallback: enable + bootstrap (for unloaded jobs).
-	_ = exec.CommandContext(ctx, "launchctl", "enable", launchdSystemTarget).Run() //nolint:errcheck
-	return exec.CommandContext(ctx, "launchctl", "bootstrap", "system", plistPath).Run()
+	_ = exec.CommandContext(ctx, "launchctl", "enable", target).Run() //nolint:errcheck
+	return exec.CommandContext(ctx, "launchctl", "bootstrap", launchdDomain(), plistPath).Run()
 }
 
 // writeLaunchdPlist writes (or overwrites) the launchd plist file.
@@ -281,13 +282,10 @@ func writeLaunchdPlist(cmd *cobra.Command) error {
 		return err
 	}
 
-	username, _, _ := effectiveUser()
-	if username == "" {
-		return fmt.Errorf("cannot determine username for service file")
-	}
+	_, homeDir, _ := effectiveUser()
 
 	plistPath := launchdPlistPath()
-	logPath := filepath.Join("/Library", "Logs", "pollen.log")
+	logPath := filepath.Join(homeDir, "Library", "Logs", "pollen.log")
 
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil { //nolint:mnd
 		return err
@@ -300,7 +298,6 @@ func writeLaunchdPlist(cmd *cobra.Command) error {
 
 	data := serviceTemplateData{
 		Label:     launchdLabel,
-		Username:  username,
 		Binary:    binary,
 		PollenDir: pollenDir,
 		LogPath:   logPath,
@@ -316,8 +313,6 @@ func writeLaunchdPlist(cmd *cobra.Command) error {
 func daemonInstallLaunchd(cmd *cobra.Command) {
 	force, _ := cmd.Flags().GetBool("force")
 	start, _ := cmd.Flags().GetBool("start")
-
-	migrateLegacyLaunchd(cmd)
 
 	plistPath := launchdPlistPath()
 
@@ -343,10 +338,10 @@ func daemonInstallLaunchd(cmd *cobra.Command) {
 		ctx := cmd.Context()
 
 		// Remove any existing instance and clear disabled state.
-		_ = exec.CommandContext(ctx, "launchctl", "bootout", launchdSystemTarget).Run() //nolint:errcheck
+		_ = exec.CommandContext(ctx, "launchctl", "bootout", launchdTarget()).Run() //nolint:errcheck
 
 		if err := launchdStart(cmd, plistPath); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\nrun manually: sudo launchctl bootstrap system %s\n", err, plistPath)
+			fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\nrun manually: launchctl bootstrap %s %s\n", err, launchdDomain(), plistPath)
 			return
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "service started")
@@ -358,7 +353,7 @@ func daemonUninstallLaunchd(cmd *cobra.Command) {
 
 	// Stop service if running.
 	ctx := cmd.Context()
-	_ = exec.CommandContext(ctx, "launchctl", "bootout", launchdSystemTarget).Run() //nolint:errcheck
+	_ = exec.CommandContext(ctx, "launchctl", "bootout", launchdTarget()).Run() //nolint:errcheck
 
 	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
@@ -378,7 +373,7 @@ func daemonStatusLaunchd(cmd *cobra.Command) {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "installed: yes (%s)\n", plistPath)
 
-	out, err := exec.CommandContext(cmd.Context(), "launchctl", "print", launchdSystemTarget).CombinedOutput()
+	out, err := exec.CommandContext(cmd.Context(), "launchctl", "print", launchdTarget()).CombinedOutput()
 	if err != nil {
 		fmt.Fprintln(cmd.OutOrStdout(), "running: no")
 	} else if strings.Contains(string(out), "state = running") {
@@ -391,7 +386,7 @@ func daemonStatusLaunchd(cmd *cobra.Command) {
 		if codesignValid(cmd.Context(), binary) {
 			fmt.Fprintln(cmd.OutOrStdout(), "signature: valid")
 		} else if _, err := exec.LookPath("codesign"); err == nil {
-			fmt.Fprintf(cmd.OutOrStdout(), "signature: invalid (run: sudo codesign -s - --force %s)\n", binary)
+			fmt.Fprintf(cmd.OutOrStdout(), "signature: invalid (run: codesign -s - --force %s)\n", binary)
 		}
 	}
 }
@@ -520,19 +515,6 @@ func daemonStatusSystemd(cmd *cobra.Command) {
 
 // --- legacy migration ---
 
-func migrateLegacyLaunchd(cmd *cobra.Command) {
-	legacyPath := legacyLaunchdPlistPath()
-	if _, err := os.Stat(legacyPath); err != nil {
-		return
-	}
-	fmt.Fprintln(cmd.OutOrStdout(), "migrating from user-level to system-level service")
-	_, _, uid := effectiveUser()
-	ctx := cmd.Context()
-	_ = exec.CommandContext(ctx, "launchctl", "bootout", fmt.Sprintf("gui/%s/%s", uid, launchdLabel)).Run()  //nolint:errcheck
-	_ = exec.CommandContext(ctx, "launchctl", "bootout", fmt.Sprintf("user/%s/%s", uid, launchdLabel)).Run() //nolint:errcheck
-	_ = os.Remove(legacyPath)                                                                                //nolint:errcheck
-}
-
 func migrateLegacySystemd(cmd *cobra.Command) {
 	legacyPath := legacySystemdUnitPath()
 	if _, err := os.Stat(legacyPath); err != nil {
@@ -590,14 +572,14 @@ func waitForSocket(sockPath string, timeout time.Duration) bool {
 
 // runUpDaemon dispatches pollen up -d to the platform-specific daemon start flow.
 func runUpDaemon(cmd *cobra.Command) {
-	if os.Getuid() != 0 {
-		fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root; run: sudo %s -d\n", cmd.CommandPath())
-		return
-	}
 	switch runtime.GOOS {
 	case osDarwin:
 		upDaemonLaunchd(cmd)
 	case osLinux:
+		if os.Getuid() != 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root; run: sudo %s -d\n", cmd.CommandPath())
+			return
+		}
 		upDaemonSystemd(cmd)
 	default:
 		fmt.Fprintf(cmd.ErrOrStderr(), "unsupported platform: %s (supported: darwin, linux)\n", runtime.GOOS)
@@ -624,7 +606,6 @@ func upDaemonLaunchd(cmd *cobra.Command) {
 	// Auto-install if plist doesn't exist.
 	if _, err := os.Stat(plistPath); err != nil {
 		fmt.Fprintln(cmd.OutOrStdout(), "service not installed; installing now")
-		migrateLegacyLaunchd(cmd)
 		if writeErr := writeLaunchdPlist(cmd); writeErr != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), writeErr)
 			return
@@ -645,7 +626,7 @@ func upDaemonLaunchd(cmd *cobra.Command) {
 		fmt.Fprintln(cmd.OutOrStdout(), "node started (background)")
 	} else {
 		fmt.Fprintln(cmd.ErrOrStderr(), "service was started but node did not become ready; check logs with: pollen logs")
-		fmt.Fprintln(cmd.ErrOrStderr(), "or check launchd status with: sudo launchctl print system/io.pollen.node")
+		fmt.Fprintf(cmd.ErrOrStderr(), "or check launchd status with: launchctl print %s\n", launchdTarget())
 	}
 }
 

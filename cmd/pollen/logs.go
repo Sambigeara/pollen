@@ -38,7 +38,8 @@ func runLogs(cmd *cobra.Command, _ []string) {
 }
 
 func logsDarwin(cmd *cobra.Command, follow bool, lines int) {
-	logPath := filepath.Join(os.Getenv("HOME"), "Library", "Logs", "pollen.log")
+	_, homeDir, _ := effectiveUser()
+	logPath := filepath.Join(homeDir, "Library", "Logs", "pollen.log")
 
 	if _, err := os.Stat(logPath); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "log file not found: %s\nis the daemon installed? try: pollen up -d\n", logPath)
@@ -64,11 +65,11 @@ func logsDarwin(cmd *cobra.Command, follow bool, lines int) {
 func logsLinux(cmd *cobra.Command, follow bool, lines int) {
 	unitPath := systemdUnitPath()
 	if _, err := os.Stat(unitPath); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "service not installed: %s\nis the daemon installed? try: pollen up -d\n", unitPath)
+		fmt.Fprintf(cmd.ErrOrStderr(), "service not installed: %s\nis the daemon installed? try: sudo pollen up -d\n", unitPath)
 		return
 	}
 
-	args := []string{"--user", "-u", systemdUnitName, "-n", strconv.Itoa(lines), "--no-pager"}
+	args := []string{"-u", systemdUnitName, "-n", strconv.Itoa(lines), "--no-pager"}
 	if follow {
 		args = append(args, "-f")
 	}
