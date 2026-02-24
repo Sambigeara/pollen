@@ -385,10 +385,16 @@ func (n *Node) syncPeersFromState() {
 			continue
 		}
 
+		var lastAddr *net.UDPAddr
+		if kp.LastAddr != "" {
+			lastAddr, _ = net.ResolveUDPAddr("udp", kp.LastAddr)
+		}
+
 		n.peers.Step(time.Now(), peer.DiscoverPeer{
-			PeerKey: kp.PeerID,
-			Ips:     ips,
-			Port:    int(kp.LocalPort),
+			PeerKey:  kp.PeerID,
+			Ips:      ips,
+			Port:     int(kp.LocalPort),
+			LastAddr: lastAddr,
 		})
 	}
 }
@@ -397,6 +403,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
+			n.store.SetLastAddr(e.PeerKey, (&net.UDPAddr{IP: e.IP, Port: e.ObservedPort}).String())
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			n.requestFullOnce.Do(func() {
 				if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
@@ -416,9 +423,18 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			}
 
 			n.log.Infow("peer connected", "peer_id", e.PeerKey.Short(), "ip", e.IP, "observedPort", e.ObservedPort)
+		case peer.AttemptEagerConnect:
+			go func() {
+				if err := n.connectPeer(e.PeerKey, []*net.UDPAddr{e.Addr}); err != nil {
+					if n.peers.InState(e.PeerKey, peer.PeerStateConnecting) {
+						n.log.Debugw("eager connect failed", "peer", e.PeerKey.Short(), "addr", e.Addr, "err", err)
+						n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
+					}
+				}
+			}()
 		case peer.AttemptConnect:
 			go func() {
-				if err := n.connectPeer(e.PeerKey, e.Ips, e.Port); err != nil {
+				if err := n.connectPeer(e.PeerKey, n.buildPeerAddrs(e.PeerKey, e.Ips, e.Port)); err != nil {
 					if n.peers.InState(e.PeerKey, peer.PeerStateConnecting) {
 						if errors.Is(err, mesh.ErrIdentityMismatch) {
 							n.log.Warnw("connect failed: peer identity mismatch", "peer", e.PeerKey.Short(), "err", err)
@@ -485,7 +501,13 @@ func (n *Node) reconcileDesiredConnections() {
 	}
 }
 
-func (n *Node) connectPeer(peerKey types.PeerKey, ips []net.IP, port int) error {
+func (n *Node) connectPeer(peerKey types.PeerKey, addrs []*net.UDPAddr) error {
+	ctx, cancel := context.WithTimeout(context.Background(), directTimeout)
+	defer cancel()
+	return n.mesh.Connect(ctx, peerKey, addrs)
+}
+
+func (n *Node) buildPeerAddrs(peerKey types.PeerKey, ips []net.IP, port int) []*net.UDPAddr {
 	var extPort int
 	if rec, ok := n.store.Get(peerKey); ok && rec.ExternalPort != 0 {
 		extPort = int(rec.ExternalPort)
@@ -502,11 +524,7 @@ func (n *Node) connectPeer(peerKey types.PeerKey, ips []net.IP, port int) error 
 		}
 		addrs = append(addrs, &net.UDPAddr{IP: ip, Port: p})
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), directTimeout)
-	defer cancel()
-
-	return n.mesh.Connect(ctx, peerKey, addrs)
+	return addrs
 }
 
 func (n *Node) punchPeer(peerKey types.PeerKey, ip net.IP, port int) error {

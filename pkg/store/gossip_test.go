@@ -563,3 +563,44 @@ func TestApplyEventReachablePeer(t *testing.T) {
 		t.Fatal("expected target to be removed from reachable")
 	}
 }
+
+func TestSetLastAddr(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	peerPK, peerIDStr := peerKey(2)
+
+	// Add the peer via a gossip event so it exists in the store.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+		},
+	})
+
+	s.SetLastAddr(peerPK, "203.0.113.5:41234")
+
+	peers := s.KnownPeers()
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 known peer, got %d", len(peers))
+	}
+	if peers[0].LastAddr != "203.0.113.5:41234" {
+		t.Fatalf("expected LastAddr=203.0.113.5:41234, got %q", peers[0].LastAddr)
+	}
+}
+
+func TestSetLastAddrIgnoresUnknownPeer(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	unknownPK, _ := peerKey(99)
+	s.SetLastAddr(unknownPK, "1.2.3.4:5678")
+
+	peers := s.KnownPeers()
+	if len(peers) != 0 {
+		t.Fatalf("expected 0 known peers, got %d", len(peers))
+	}
+}

@@ -59,6 +59,7 @@ type nodeRecord struct {
 	log          map[attrKey]logEntry
 	IdentityPub  []byte
 	IPs          []string
+	LastAddr     string
 	maxCounter   uint64
 	LocalPort    uint32
 	ExternalPort uint32
@@ -67,6 +68,7 @@ type nodeRecord struct {
 type KnownPeer struct {
 	IdentityPub  []byte
 	IPs          []string
+	LastAddr     string
 	LocalPort    uint32
 	ExternalPort uint32
 	PeerID       types.PeerKey
@@ -142,6 +144,7 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 		s.nodes[peerID] = nodeRecord{
 			IdentityPub:  append([]byte(nil), identityPub...),
 			IPs:          append([]string(nil), p.Addresses...),
+			LastAddr:     p.LastAddr,
 			LocalPort:    p.Port,
 			ExternalPort: p.ExternalPort,
 			Reachable:    make(map[types.PeerKey]struct{}),
@@ -210,6 +213,7 @@ func (s *Store) Save() error {
 			Addresses:      rec.IPs,
 			Port:           rec.LocalPort,
 			ExternalPort:   rec.ExternalPort,
+			LastAddr:       rec.LastAddr,
 		})
 	}
 
@@ -683,6 +687,7 @@ func (s *Store) KnownPeers() []KnownPeer {
 			ExternalPort: rec.ExternalPort,
 			IdentityPub:  rec.IdentityPub,
 			IPs:          rec.IPs,
+			LastAddr:     rec.LastAddr,
 		})
 	}
 
@@ -691,6 +696,18 @@ func (s *Store) KnownPeers() []KnownPeer {
 	})
 
 	return known
+}
+
+func (s *Store) SetLastAddr(peerID types.PeerKey, addr string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.nodes[peerID]
+	if !ok {
+		return
+	}
+	rec.LastAddr = addr
+	s.nodes[peerID] = rec
 }
 
 func (s *Store) IdentityPub(peerID types.PeerKey) ([]byte, bool) {
