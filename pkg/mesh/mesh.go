@@ -159,9 +159,6 @@ func (m *impl) Start(ctx context.Context) error {
 }
 
 func (m *impl) ListenPort() int {
-	if m.mainQT == nil || m.mainQT.Conn == nil {
-		return 0
-	}
 	return m.mainQT.Conn.LocalAddr().(*net.UDPAddr).Port
 }
 
