@@ -57,6 +57,7 @@ type Mesh interface {
 	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr) error
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
+	ListenPort() int
 	BroadcastDisconnect() error
 	Close() error
 }
@@ -76,7 +77,6 @@ type impl struct {
 	mainQT       *quic.Transport
 	acceptWG     sync.WaitGroup
 	port         int
-	mu           sync.RWMutex
 	localKey     types.PeerKey
 }
 
@@ -146,10 +146,8 @@ func (m *impl) Start(ctx context.Context) error {
 		return fmt.Errorf("quic listen: %w", err)
 	}
 
-	m.mu.Lock()
 	m.mainQT = qt
 	m.listener = ln
-	m.mu.Unlock()
 
 	m.socks.SetMainProbeWriter(func(payload []byte, addr *net.UDPAddr) error {
 		_, err := qt.WriteTo(payload, addr)
@@ -158,6 +156,10 @@ func (m *impl) Start(ctx context.Context) error {
 	go m.runMainProbeLoop(ctx, qt)
 	go m.acceptLoop(ctx)
 	return nil
+}
+
+func (m *impl) ListenPort() int {
+	return m.mainQT.Conn.LocalAddr().(*net.UDPAddr).Port
 }
 
 func (m *impl) Recv(ctx context.Context) (Packet, error) {
@@ -606,10 +608,8 @@ func (m *impl) handleInviteConnection(ctx context.Context, qc *quic.Conn, peerKe
 func (m *impl) Close() error {
 	peers := m.sessions.drainPeers()
 
-	m.mu.Lock()
 	listener := m.listener
 	mainQT := m.mainQT
-	m.mu.Unlock()
 
 	for _, s := range peers {
 		m.closeSession(s, "shutdown")

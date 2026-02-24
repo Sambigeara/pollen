@@ -89,6 +89,7 @@ type Node struct {
 	conf            *Config
 	log             *zap.SugaredLogger
 	gossipEvents    chan []*statev1.GossipEvent
+	ready           chan struct{}
 	requestFullOnce sync.Once
 }
 
@@ -127,6 +128,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
 		punchCh:         make(chan punchRequest, punchChBufSize),
 		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
+		ready:           make(chan struct{}),
 	}
 
 	return n, nil
@@ -138,6 +140,7 @@ func (n *Node) Start(ctx context.Context) error {
 	if err := n.mesh.Start(ctx); err != nil {
 		return err
 	}
+	close(n.ready)
 	n.connectBootstrapPeers(ctx)
 	n.tun.Start(ctx)
 	go n.recvLoop(ctx)
@@ -717,6 +720,14 @@ func sharesLAN(aIPs, bIPs []string) bool {
 		}
 	}
 	return false
+}
+
+func (n *Node) Ready() <-chan struct{} {
+	return n.ready
+}
+
+func (n *Node) ListenPort() int {
+	return n.mesh.ListenPort()
 }
 
 // GetConnectedPeers returns all currently connected peer keys.

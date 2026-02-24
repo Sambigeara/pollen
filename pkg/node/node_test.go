@@ -108,6 +108,15 @@ func (tn *testNode) start(t *testing.T) {
 		errCh <- n.Start(ctx)
 	}()
 
+	select {
+	case <-n.Ready():
+	case err := <-errCh:
+		t.Fatalf("node.Start failed: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for node.Ready()")
+	}
+
+	tn.port = n.ListenPort()
 	tn.node = n
 	tn.svc = node.NewNodeService(n, cancel)
 	tn.store = stateStore
@@ -130,10 +139,10 @@ func TestConnectPeerFlow(t *testing.T) {
 	nodeIPs := []string{"127.0.0.1"}
 	cluster := newClusterAuth(t)
 
-	a := newTestNode(t, cluster, 19200, nodeIPs)
+	a := newTestNode(t, cluster, 0, nodeIPs)
 	a.start(t)
 
-	b := newTestNode(t, cluster, 19201, nodeIPs)
+	b := newTestNode(t, cluster, 0, nodeIPs)
 	b.start(t)
 
 	// Simulate `pollen bootstrap ssh` with running daemon: call ConnectPeer RPC on A → B.
@@ -163,11 +172,11 @@ func TestConnectPeerAfterPriorConnection(t *testing.T) {
 	nodeIPs := []string{"127.0.0.1"}
 	cluster := newClusterAuth(t)
 
-	a := newTestNode(t, cluster, 19300, nodeIPs)
+	a := newTestNode(t, cluster, 0, nodeIPs)
 	a.start(t)
 
 	// First connection: A connects to C via ConnectPeer RPC (consumes requestFullOnce on A).
-	c := newTestNode(t, cluster, 19301, nodeIPs)
+	c := newTestNode(t, cluster, 0, nodeIPs)
 	c.start(t)
 	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
 		PeerId: c.pubKey,
@@ -183,7 +192,7 @@ func TestConnectPeerAfterPriorConnection(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond, "A should see C disconnect")
 
 	// Now simulate `pollen bootstrap ssh`: ConnectPeer to new node B.
-	b := newTestNode(t, cluster, 19302, nodeIPs)
+	b := newTestNode(t, cluster, 0, nodeIPs)
 	b.start(t)
 
 	req := &controlv1.ConnectPeerRequest{
@@ -242,11 +251,11 @@ func TestBootstrapPeerConnectsAtStartup(t *testing.T) {
 	cluster := newClusterAuth(t)
 
 	// Start B first so it's listening.
-	b := newTestNode(t, cluster, 19400, nodeIPs)
+	b := newTestNode(t, cluster, 0, nodeIPs)
 	b.start(t)
 
 	// Start A with B as a bootstrap peer.
-	a := newTestNode(t, cluster, 19401, nodeIPs)
+	a := newTestNode(t, cluster, 0, nodeIPs)
 	a.bootstrapPeers = []node.BootstrapPeer{{
 		PeerKey: b.peerKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
