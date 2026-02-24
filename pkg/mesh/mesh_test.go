@@ -81,8 +81,8 @@ func (c *clusterAuth) signer(t *testing.T) *auth.AdminSigner {
 
 func TestJoinWithTokenHappyPath(t *testing.T) {
 	cluster := newClusterAuth(t)
-	bootstrap := startMeshHarness(t, freeUDPPort(t), cluster)
-	joiner := startMeshHarness(t, freeUDPPort(t), cluster)
+	bootstrap := startMeshHarness(t, 0, cluster)
+	joiner := startMeshHarness(t, 0, cluster)
 
 	token := cluster.tokenFor(t, joiner.pubKey, bootstrap)
 
@@ -105,8 +105,8 @@ func TestConnectRejectsCrossClusterPeer(t *testing.T) {
 	clusterA := newClusterAuth(t)
 	clusterB := newClusterAuth(t)
 
-	a := startMeshHarness(t, freeUDPPort(t), clusterA)
-	b := startMeshHarness(t, freeUDPPort(t), clusterB)
+	a := startMeshHarness(t, 0, clusterA)
+	b := startMeshHarness(t, 0, clusterB)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -127,9 +127,9 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 	bootstrapCreds := cluster.credsFor(t, bootstrapPub)
 	signer := cluster.signer(t)
 	bootstrapCreds.InviteSigner = signer
-	bootstrap := startMeshHarnessWithCreds(t, freeUDPPort(t), bootstrapPriv, bootstrapPub, bootstrapCreds)
+	bootstrap := startMeshHarnessWithCreds(t, 0, bootstrapPriv, bootstrapPub, bootstrapCreds)
 
-	joiner := startMeshHarness(t, freeUDPPort(t), cluster)
+	joiner := startMeshHarness(t, 0, cluster)
 
 	invite, err := auth.IssueInviteTokenWithSigner(
 		cluster.signer(t),
@@ -171,9 +171,9 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 	bootstrapCreds := cluster.credsFor(t, bootstrapPub)
 	signer := cluster.signer(t)
 	bootstrapCreds.InviteSigner = signer
-	bootstrap := startMeshHarnessWithCreds(t, freeUDPPort(t), bootstrapPriv, bootstrapPub, bootstrapCreds)
+	bootstrap := startMeshHarnessWithCreds(t, 0, bootstrapPriv, bootstrapPub, bootstrapCreds)
 
-	joiner := startMeshHarness(t, freeUDPPort(t), cluster)
+	joiner := startMeshHarness(t, 0, cluster)
 
 	invite, err := auth.IssueInviteTokenWithSigner(
 		cluster.signer(t),
@@ -222,7 +222,7 @@ func startMeshHarnessWithCreds(
 		mesh:    m,
 		peerKey: types.PeerKeyFromBytes(pub),
 		pubKey:  pub,
-		port:    port,
+		port:    m.ListenPort(),
 		cancel:  cancel,
 	}
 
@@ -232,14 +232,4 @@ func startMeshHarnessWithCreds(
 	})
 
 	return h
-}
-
-func freeUDPPort(t *testing.T) int {
-	t.Helper()
-
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	require.NoError(t, err)
-	defer conn.Close()
-
-	return conn.LocalAddr().(*net.UDPAddr).Port
 }

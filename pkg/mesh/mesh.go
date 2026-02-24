@@ -57,6 +57,7 @@ type Mesh interface {
 	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr) error
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
+	ListenPort() int
 	BroadcastDisconnect() error
 	Close() error
 }
@@ -73,10 +74,10 @@ type impl struct {
 	log          *zap.SugaredLogger
 	listener     *quic.Listener
 	sessions     *sessionRegistry
-	mainQT       *quic.Transport
-	acceptWG     sync.WaitGroup
-	port         int
-	mu           sync.RWMutex
+	mainQT   *quic.Transport
+	acceptWG sync.WaitGroup
+	port     int
+	mu       sync.RWMutex
 	localKey     types.PeerKey
 }
 
@@ -160,6 +161,26 @@ func (m *impl) Start(ctx context.Context) error {
 	return nil
 }
 
+func (m *impl) transport() (*quic.Transport, error) {
+	m.mu.RLock()
+	qt := m.mainQT
+	m.mu.RUnlock()
+	if qt == nil {
+		return nil, net.ErrClosed
+	}
+	return qt, nil
+}
+
+func (m *impl) ListenPort() int {
+	m.mu.RLock()
+	qt := m.mainQT
+	m.mu.RUnlock()
+	if qt == nil || qt.Conn == nil {
+		return 0
+	}
+	return qt.Conn.LocalAddr().(*net.UDPAddr).Port
+}
+
 func (m *impl) Recv(ctx context.Context) (Packet, error) {
 	select {
 	case p := <-m.recvCh:
@@ -200,17 +221,22 @@ func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteClo
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
+	qt, err := m.transport()
+	if err != nil {
+		return nil, err
+	}
+
 	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle)
 	qCfg := quicConfig()
 
-	qc, err := m.mainQT.Dial(ctx, addr, tlsCfg, qCfg)
+	qc, err := qt.Dial(ctx, addr, tlsCfg, qCfg)
 	if err != nil {
 		return nil, fmt.Errorf("quic dial %s: %w", addr, err)
 	}
 
 	return &peerSession{
 		conn:      qc,
-		transport: m.mainQT,
+		transport: qt,
 	}, nil
 }
 
@@ -230,13 +256,17 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 
 	// Easy-side punch winners reuse the main transport and don't carry a UDPConn.
 	if conn.UDPConn == nil {
-		qc, err := m.mainQT.Dial(ctx, dialAddr, tlsCfg, qCfg)
+		qt, err := m.transport()
+		if err != nil {
+			return nil, err
+		}
+		qc, err := qt.Dial(ctx, dialAddr, tlsCfg, qCfg)
 		if err != nil {
 			return nil, fmt.Errorf("quic dial %s: %w", dialAddr, err)
 		}
 		return &peerSession{
 			conn:      qc,
-			transport: m.mainQT,
+			transport: qt,
 		}, nil
 	}
 
@@ -300,8 +330,13 @@ func (m *impl) JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) 
 }
 
 func (m *impl) JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
+	qt, err := m.transport()
+	if err != nil {
+		return nil, err
+	}
+
 	joinToken, err := redeemInviteWithDial(ctx, token, ed25519.PublicKey(m.localKey.Bytes()), func(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*quic.Conn, error) {
-		return m.mainQT.Dial(ctx, addr, newInviteDialerTLSConfig(m.bareCert, expectedPeer), quicConfig())
+		return qt.Dial(ctx, addr, newInviteDialerTLSConfig(m.bareCert, expectedPeer), quicConfig())
 	})
 	if err != nil {
 		return nil, err
@@ -570,9 +605,14 @@ func (m *impl) acceptLoop(ctx context.Context) {
 			continue
 		}
 
+		qt, err := m.transport()
+		if err != nil {
+			_ = qc.CloseWithError(0, "shutting down")
+			continue
+		}
 		switch qc.ConnectionState().TLS.NegotiatedProtocol {
 		case alpnMesh:
-			m.addPeer(&peerSession{conn: qc, transport: m.mainQT}, peerKey)
+			m.addPeer(&peerSession{conn: qc, transport: qt}, peerKey)
 		case alpnInvite:
 			go m.handleInviteConnection(ctx, qc, peerKey)
 		default:
@@ -633,7 +673,10 @@ func (m *impl) Close() error {
 
 func (m *impl) closeSession(s *peerSession, reason string) {
 	_ = s.conn.CloseWithError(0, reason)
-	if s.transport != nil && s.transport != m.mainQT {
+	m.mu.RLock()
+	isMain := s.transport == m.mainQT
+	m.mu.RUnlock()
+	if s.transport != nil && !isMain {
 		_ = s.transport.Close()
 	}
 	if s.sockConn != nil {
