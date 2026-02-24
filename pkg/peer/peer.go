@@ -40,6 +40,14 @@ type Peer struct {
 	ID            types.PeerKey
 }
 
+func (p *Peer) resetStage() {
+	if p.LastAddr != nil {
+		p.Stage = ConnectStageEagerRetry
+	} else {
+		p.Stage = ConnectStageDirect
+	}
+}
+
 type Store struct {
 	log *zap.SugaredLogger
 	m   map[types.PeerKey]*Peer
@@ -211,19 +219,16 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
 	p, exists := s.m[e.PeerKey]
 	if !exists {
-		stage := ConnectStageDirect
-		if e.LastAddr != nil {
-			stage = ConnectStageEagerRetry
-		}
-		s.m[e.PeerKey] = &Peer{
+		p := &Peer{
 			ID:           e.PeerKey,
 			State:        PeerStateDiscovered,
-			Stage:        stage,
 			LastAddr:     e.LastAddr,
 			Ips:          e.Ips,
 			ObservedPort: e.Port, // we don't know if the port is observed at this point
 			NextActionAt: now,    // eligible for connection immediately
 		}
+		p.resetStage()
+		s.m[e.PeerKey] = p
 		return
 	}
 
@@ -248,13 +253,8 @@ func (s *Store) tick(now time.Time) []Output {
 		case PeerStateConnected, PeerStateConnecting:
 			continue
 		case PeerStateUnreachable:
-			// Retry unreachable peers after backoff expires
 			p.State = PeerStateDiscovered
-			if p.LastAddr != nil {
-				p.Stage = ConnectStageEagerRetry
-			} else {
-				p.Stage = ConnectStageDirect
-			}
+			p.resetStage()
 			p.StageAttempts = 0
 		}
 
@@ -351,11 +351,7 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 	)
 
 	p.State = PeerStateDiscovered
-	if p.LastAddr != nil {
-		p.Stage = ConnectStageEagerRetry
-	} else {
-		p.Stage = ConnectStageDirect
-	}
+	p.resetStage()
 	p.StageAttempts = 0
 	p.NextActionAt = now.Add(delay)
 }
@@ -363,12 +359,13 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 func (s *Store) retryPeer(now time.Time, e RetryPeer) {
 	p, exists := s.m[e.PeerKey]
 	if !exists {
-		s.m[e.PeerKey] = &Peer{
+		p := &Peer{
 			ID:           e.PeerKey,
 			State:        PeerStateDiscovered,
-			Stage:        ConnectStageDirect,
 			NextActionAt: now,
 		}
+		p.resetStage()
+		s.m[e.PeerKey] = p
 		return
 	}
 
@@ -377,7 +374,7 @@ func (s *Store) retryPeer(now time.Time, e RetryPeer) {
 	}
 
 	p.State = PeerStateDiscovered
-	p.Stage = ConnectStageDirect
+	p.resetStage()
 	p.StageAttempts = 0
 	p.NextActionAt = now
 }
