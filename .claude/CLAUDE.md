@@ -13,7 +13,7 @@
 - One tack per subagent for focused execution
 
 ### 3. Self-Improvement Loop
-- After ANY correction from the user: update `tasks/lessons.md` with the pattern.
+- After ANY correction from the user: add the lesson to the **Lessons** section at the bottom of this file.
 - If any of these lessons are useful for future review, please update the `/defluff` command also so that becomes more effective.
 - Write rules for yourself that prevent the same mistake
 - Ruthlessly iterate on these lessons until mistake rate drops
@@ -29,7 +29,7 @@
 - For non-trivial changes: pause and ask "is there a more elegant way?"
 - If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
 - Skip this for simple, obvious fixes - don't over-engineer
-- Challenge your own work before presenting it
+- Before presenting: audit the entire change as a whole for duplicated ideas, inconsistent abstractions, or unnecessary indirection
 
 ### 6. Autonomous Bug Fixing
 - When given a bug report: just fix it. Don't ask for hand-holding
@@ -44,10 +44,32 @@
 3. **Track Progress**: Mark items complete as you go
 4. **Explain Changes**: High-level summary at each step
 5. **Document Results**: Add review section to `tasks/todo.md`
-6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
+6. **Capture Lessons**: Add to the **Lessons** section at the bottom of this file after corrections
 
 ## Core Principles
 
-- **Simplicity First**: Make every change as simple as possible. Impact minimal code.
+- **Simplicity First**: Make every change as simple as possible. Only touch what's necessary. Avoid introducing bugs.
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
-- **Minimat Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
+
+## Lessons
+
+### Tooling
+- Use `just generate` to regenerate protobuf code, not raw `buf generate` commands.
+
+### Code Quality
+- Don't add comments that restate what the code already says. Only comment where logic isn't self-evident.
+- Don't ship dead or unused code — no dead branches for impossible conditions, no struct fields only tests read, no parameters the function ignores. Signatures and types are contracts.
+- Deduplicate before shipping. If two functions build the same output from the same data, one should call the other.
+
+### Design Patterns
+- **Use typed representations over string conventions.** Don't encode structured data into string keys with prefix parsing (`"s/http"`, `"r/<pk>"`). Use typed structs with enums from the start — string conventions are fragile and create implicit coupling.
+- **Unify parallel patterns immediately.** When multiple attributes need the same concept (e.g., deletion), use one consistent mechanism everywhere. After each step, ask: "have I introduced a second way of expressing the same idea?"
+
+### Proto Message Design
+- **Never build a shadow type system alongside a proto oneof.** If the proto already has a discriminator (oneof, enum), use it directly. Don't create a parallel Go enum that must stay in sync.
+- **Put shared semantics at the shared level.** If every variant of a oneof carries the same field (e.g., `deleted`), that field belongs on the parent message, not duplicated across each variant.
+- **Don't nest proto messages without a reason.** If the wrapper adds nothing beyond what the inner message has, inline the fields or use the inner message directly.
+
+### Performance
+- Don't hand-calculate serialization sizes. Use the serialization library's own `Size()` methods — hand-counted varint bytes silently break when field numbers change.
+- Batch lock acquisition on the receive side too. If you batch on send, the receive path should also take the lock once for the batch, not N times for N events.
