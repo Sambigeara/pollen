@@ -95,11 +95,8 @@ func main() {
 }
 
 func defaultRootDir() string {
-	base, err := os.UserHomeDir()
-	if err != nil {
-		log.Fatalf("unable to retrieve user config dir: %v", err)
-	}
-	return filepath.Join(base, pollenDir)
+	_, homeDir, _ := effectiveUser()
+	return filepath.Join(homeDir, pollenDir)
 }
 
 func newAdminCmd() *cobra.Command {
