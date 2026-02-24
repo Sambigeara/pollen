@@ -281,6 +281,27 @@ install_binary() {
 		run_as_root mv -f "$tmp_bin" "$dst_bin"
 	fi
 
+	# macOS: ad-hoc re-sign so launchd doesn't reject the binary with
+	# EX_CONFIG (78). Downloaded binaries carry com.apple.provenance which
+	# is SIP-protected; codesign -s - --force replaces the signature and
+	# clears the launch-constraint failure.
+	# Also checked at runtime by ensureLaunchdSafe in daemon.go.
+	if [ "$(uname -s)" = "Darwin" ]; then
+		# Best-effort: strip quarantine xattr (helps pre-Ventura).
+		if command -v xattr >/dev/null 2>&1; then
+			xattr -d com.apple.quarantine "$dst_bin" 2>/dev/null || true
+		fi
+		if command -v codesign >/dev/null 2>&1; then
+			if [ -w "$INSTALL_DIR" ]; then
+				codesign -s - --force "$dst_bin" 2>/dev/null || warn "codesign failed; launchd may reject the binary"
+			else
+				run_as_root codesign -s - --force "$dst_bin" 2>/dev/null || warn "codesign failed; launchd may reject the binary"
+			fi
+		else
+			warn "codesign not found; launchd may reject the binary"
+		fi
+	fi
+
 	log "installed ${APP} to ${dst_bin}"
 }
 

@@ -210,6 +210,49 @@ func runDaemonStatus(cmd *cobra.Command, _ []string) {
 
 // --- launchd (macOS) ---
 
+// codesignValid returns true if codesign is available and the binary has a
+// valid code signature.
+func codesignValid(ctx context.Context, binaryPath string) bool {
+	if _, err := exec.LookPath("codesign"); err != nil {
+		return false
+	}
+	return exec.CommandContext(ctx, "codesign", "--verify", "--strict", binaryPath).Run() == nil
+}
+
+// ensureLaunchdSafe verifies the binary has a valid code signature. macOS tags
+// downloaded binaries with com.apple.provenance (SIP-protected); in the system
+// launchd domain there's no user session for Gatekeeper prompts, so xpcproxy
+// rejects unsigned/invalidly-signed binaries with EX_CONFIG (78). An ad-hoc
+// re-sign produces a fresh local signature that satisfies launch constraints.
+// Defense-in-depth: install.sh also signs at install time.
+func ensureLaunchdSafe(ctx context.Context, binaryPath string, w io.Writer) {
+	if codesignValid(ctx, binaryPath) {
+		return
+	}
+
+	if _, err := exec.LookPath("codesign"); err != nil {
+		fmt.Fprintln(w, "warning: codesign not found; cannot verify binary signature")
+		return
+	}
+
+	fmt.Fprintln(w, "binary signature invalid; re-signing with ad-hoc signature")
+	if err := exec.CommandContext(ctx, "codesign", "-s", "-", "--force", binaryPath).Run(); err != nil {
+		fmt.Fprintf(w, "warning: codesign failed: %v\nlaunchd may reject the binary with exit code 78\n", err)
+	}
+}
+
+// ensureBinarySigned resolves the current executable and ensures it has a valid
+// code signature. Returns false (after printing the error) if resolution fails.
+func ensureBinarySigned(cmd *cobra.Command) bool {
+	binary, err := resolveExecutable()
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return false
+	}
+	ensureLaunchdSafe(cmd.Context(), binary, cmd.ErrOrStderr())
+	return true
+}
+
 const launchdSystemTarget = "system/" + launchdLabel
 
 // launchdStart loads and starts the service in the system domain.
@@ -293,6 +336,10 @@ func daemonInstallLaunchd(cmd *cobra.Command) {
 	fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", plistPath)
 
 	if start {
+		if !ensureBinarySigned(cmd) {
+			return
+		}
+
 		ctx := cmd.Context()
 
 		// Remove any existing instance and clear disabled state.
@@ -334,13 +381,18 @@ func daemonStatusLaunchd(cmd *cobra.Command) {
 	out, err := exec.CommandContext(cmd.Context(), "launchctl", "print", launchdSystemTarget).CombinedOutput()
 	if err != nil {
 		fmt.Fprintln(cmd.OutOrStdout(), "running: no")
-		return
-	}
-
-	if strings.Contains(string(out), "state = running") {
+	} else if strings.Contains(string(out), "state = running") {
 		fmt.Fprintln(cmd.OutOrStdout(), "running: yes")
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "running: no")
+	}
+
+	if binary, err := resolveExecutable(); err == nil {
+		if codesignValid(cmd.Context(), binary) {
+			fmt.Fprintln(cmd.OutOrStdout(), "signature: valid")
+		} else if _, err := exec.LookPath("codesign"); err == nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "signature: invalid (run: sudo codesign -s - --force %s)\n", binary)
+		}
 	}
 }
 
@@ -538,7 +590,8 @@ func waitForSocket(sockPath string, timeout time.Duration) bool {
 
 // runUpDaemon dispatches pollen up -d to the platform-specific daemon start flow.
 func runUpDaemon(cmd *cobra.Command) {
-	if !requireRoot(cmd) {
+	if os.Getuid() != 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root; run: sudo %s -d\n", cmd.CommandPath())
 		return
 	}
 	switch runtime.GOOS {
@@ -579,6 +632,10 @@ func upDaemonLaunchd(cmd *cobra.Command) {
 		fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", plistPath)
 	}
 
+	if !ensureBinarySigned(cmd) {
+		return
+	}
+
 	if err := launchdStart(cmd, plistPath); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\n", err)
 		return
@@ -587,7 +644,8 @@ func upDaemonLaunchd(cmd *cobra.Command) {
 	if waitForSocket(sockPath, daemonStartTimeout) {
 		fmt.Fprintln(cmd.OutOrStdout(), "node started (background)")
 	} else {
-		fmt.Fprintln(cmd.ErrOrStderr(), "service was started but node did not become ready; check logs with: cat /Library/Logs/pollen.log")
+		fmt.Fprintln(cmd.ErrOrStderr(), "service was started but node did not become ready; check logs with: pollen logs")
+		fmt.Fprintln(cmd.ErrOrStderr(), "or check launchd status with: sudo launchctl print system/io.pollen.node")
 	}
 }
 
