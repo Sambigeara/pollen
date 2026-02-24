@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -197,8 +198,9 @@ func collectCertificatesSection(st *controlv1.GetStatusResponse) statusSection {
 		} else if remaining < certExpiryWarningDays*24*time.Hour { //nolint:mnd
 			status = fmt.Sprintf("expires in %d days", int(remaining.Hours())/24) //nolint:mnd
 		}
+		certType := strings.TrimPrefix(strings.ToLower(cert.GetCertType().String()), "cert_type_")
 		sec.rows = append(sec.rows, []string{
-			cert.GetCertType(),
+			certType,
 			expires.Format(time.DateOnly),
 			status,
 		})

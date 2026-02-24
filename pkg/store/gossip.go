@@ -1,6 +1,8 @@
 package store
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
 	"maps"
 	"slices"
@@ -64,18 +66,18 @@ type nodeRecord struct {
 	Reachable    map[types.PeerKey]struct{}
 	Services     map[string]*statev1.Service
 	log          map[attrKey]logEntry
-	LastAddr     string
 	IdentityPub  []byte
 	IPs          []string
+	LastAddr     string
 	maxCounter   uint64
 	LocalPort    uint32
 	ExternalPort uint32
 }
 
 type KnownPeer struct {
-	LastAddr     string
 	IdentityPub  []byte
 	IPs          []string
+	LastAddr     string
 	LocalPort    uint32
 	ExternalPort uint32
 	PeerID       types.PeerKey
@@ -194,6 +196,27 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 		s.desiredConnections[c.Key()] = c
 	}
 
+	for _, dr := range onDisk.Revocations {
+		raw, err := base64.StdEncoding.DecodeString(dr.Data)
+		if err != nil {
+			continue
+		}
+		rev := &admissionv1.SignedRevocation{}
+		if err := rev.UnmarshalVT(raw); err != nil {
+			continue
+		}
+		if trustBundle != nil {
+			if err := auth.VerifyRevocation(rev, trustBundle); err != nil {
+				continue
+			}
+		}
+		pk, err := types.PeerKeyFromString(dr.SubjectPub)
+		if err != nil {
+			continue
+		}
+		s.revocations[pk] = rev
+	}
+
 	return s, nil
 }
 
@@ -212,6 +235,7 @@ func (s *Store) Save() error {
 	for _, conn := range s.desiredConnections {
 		connections = append(connections, conn)
 	}
+	revocations := maps.Clone(s.revocations)
 	s.mu.RUnlock()
 
 	peers := make([]diskPeer, 0, len(nodes))
@@ -245,6 +269,21 @@ func (s *Store) Save() error {
 		})
 	}
 
+	diskRevs := make([]diskRevocation, 0, len(revocations))
+	for pk, rev := range revocations {
+		raw, err := rev.MarshalVT()
+		if err != nil {
+			continue
+		}
+		diskRevs = append(diskRevs, diskRevocation{
+			SubjectPub: pk.String(),
+			Data:       base64.StdEncoding.EncodeToString(raw),
+		})
+	}
+	sort.Slice(diskRevs, func(i, j int) bool {
+		return diskRevs[i].SubjectPub < diskRevs[j].SubjectPub
+	})
+
 	localRec := nodes[s.LocalID]
 	st := diskState{
 		Local: diskLocal{
@@ -253,6 +292,7 @@ func (s *Store) Save() error {
 		Peers:       peers,
 		Services:    services,
 		Connections: diskConns,
+		Revocations: diskRevs,
 	}
 
 	return s.disk.save(st)
@@ -401,6 +441,9 @@ func (s *Store) applyRevocationIfValid(event *statev1.GossipEvent, key attrKey) 
 	}
 	rev := revChange.Revocation.GetRevocation()
 	if rev == nil || s.trustBundle == nil {
+		return
+	}
+	if !bytes.Equal(key.peer.Bytes(), rev.GetClaims().GetSubjectPub()) {
 		return
 	}
 	if err := auth.VerifyRevocation(rev, s.trustBundle); err == nil {

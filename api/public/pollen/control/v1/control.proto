@@ -63,10 +63,15 @@ message GetBootstrapInfoResponse {
 
 message GetStatusRequest {}
 
+enum CertType {
+  CERT_TYPE_UNSPECIFIED = 0;
+  CERT_TYPE_MEMBERSHIP = 1;
+}
+
 message CertificateInfo {
   int64 not_before_unix = 1;
   int64 not_after_unix = 2;
-  string cert_type = 3;
+  CertType cert_type = 3;
 }
 
 message GetStatusResponse {

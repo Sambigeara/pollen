@@ -28,6 +28,12 @@ type diskState struct {
 	Peers       []diskPeer       `yaml:"peers,omitempty"`
 	Services    []diskService    `yaml:"services,omitempty"`
 	Connections []diskConnection `yaml:"connections,omitempty"`
+	Revocations []diskRevocation `yaml:"revocations,omitempty"`
+}
+
+type diskRevocation struct {
+	SubjectPub string `yaml:"subjectPub"`
+	Data       string `yaml:"data"`
 }
 
 type diskLocal struct {
@@ -36,10 +42,10 @@ type diskLocal struct {
 
 type diskPeer struct {
 	IdentityPublic string   `yaml:"identityPublic"`
-	LastAddr       string   `yaml:"lastAddr,omitempty"`
 	Addresses      []string `yaml:"addresses,omitempty"`
 	Port           uint32   `yaml:"port,omitempty"`
 	ExternalPort   uint32   `yaml:"externalPort,omitempty"`
+	LastAddr       string   `yaml:"lastAddr,omitempty"`
 }
 
 type diskService struct {

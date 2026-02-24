@@ -14,7 +14,7 @@ func TestNodeServiceShutdownInvokesCallback(t *testing.T) {
 	done := make(chan struct{})
 	svc := node.NewNodeService(nil, func() {
 		close(done)
-	}, nil, nil)
+	}, nil)
 
 	_, err := svc.Shutdown(context.Background(), &controlv1.ShutdownRequest{})
 	require.NoError(t, err)

@@ -7,6 +7,7 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"time"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
@@ -17,14 +18,13 @@ var _ controlv1.ControlServiceServer = (*NodeService)(nil)
 
 type NodeService struct {
 	controlv1.UnimplementedControlServiceServer
-	node        *Node
-	shutdown    func()
-	adminSigner *auth.AdminSigner
-	creds       *auth.NodeCredentials
+	node     *Node
+	shutdown func()
+	creds    *auth.NodeCredentials
 }
 
-func NewNodeService(n *Node, shutdown func(), adminSigner *auth.AdminSigner, creds *auth.NodeCredentials) *NodeService {
-	return &NodeService{node: n, shutdown: shutdown, adminSigner: adminSigner, creds: creds}
+func NewNodeService(n *Node, shutdown func(), creds *auth.NodeCredentials) *NodeService {
+	return &NodeService{node: n, shutdown: shutdown, creds: creds}
 }
 
 func (s *NodeService) Shutdown(_ context.Context, _ *controlv1.ShutdownRequest) (*controlv1.ShutdownResponse, error) {
@@ -79,7 +79,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		certs = append(certs, &controlv1.CertificateInfo{
 			NotBeforeUnix: claims.GetNotBeforeUnix(),
 			NotAfterUnix:  claims.GetNotAfterUnix(),
-			CertType:      "membership",
+			CertType:      controlv1.CertType_CERT_TYPE_MEMBERSHIP,
 		})
 	}
 
@@ -263,11 +263,12 @@ func (s *NodeService) ConnectService(ctx context.Context, req *controlv1.Connect
 }
 
 func (s *NodeService) RevokePeer(_ context.Context, req *controlv1.RevokePeerRequest) (*controlv1.RevokePeerResponse, error) {
-	if s.adminSigner == nil {
+	if s.creds == nil || s.creds.InviteSigner == nil {
 		return nil, errors.New("admin key not available on this node")
 	}
 
-	rev, err := auth.SignRevocation(s.adminSigner.Priv, s.adminSigner.Trust.GetClusterId(), req.GetPeerId())
+	signer := s.creds.InviteSigner
+	rev, err := auth.SignRevocation(signer.Priv, signer.Trust.GetClusterId(), req.GetPeerId(), time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("sign revocation: %w", err)
 	}

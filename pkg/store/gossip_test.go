@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"testing"
+	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
@@ -719,7 +720,7 @@ func TestAddRevocationProducesGossipEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rev, err := auth.SignRevocation(adminPriv, trust.GetClusterId(), subjectPub)
+	rev, err := auth.SignRevocation(adminPriv, trust.GetClusterId(), subjectPub, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -764,7 +765,7 @@ func TestApplyRevocationFromGossip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rev, err := auth.SignRevocation(adminPriv, trust.GetClusterId(), subjectPub)
+	rev, err := auth.SignRevocation(adminPriv, trust.GetClusterId(), subjectPub, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -810,7 +811,7 @@ func TestForgedRevocationRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forgedRev, err := auth.SignRevocation(attackerPriv, trust.GetClusterId(), subjectPub)
+	forgedRev, err := auth.SignRevocation(attackerPriv, trust.GetClusterId(), subjectPub, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

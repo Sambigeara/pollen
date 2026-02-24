@@ -16,6 +16,7 @@ import (
 	"github.com/quic-go/quic-go"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -25,7 +26,6 @@ var ErrIdentityMismatch = errors.New("peer identity mismatch")
 
 const (
 	certSerialBits = 128
-	certValidity   = 10 * 365 * 24 * time.Hour
 
 	alpnMesh   = "pollen/1"
 	alpnInvite = "pollen-invite/1"
@@ -80,7 +80,7 @@ func generateIdentityCert(signPriv ed25519.PrivateKey, membershipCert *admission
 	}
 
 	if validity <= 0 {
-		validity = certValidity
+		validity = time.Duration(config.DefaultTLSIdentityDays) * 24 * time.Hour
 	}
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), certSerialBits))

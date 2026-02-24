@@ -17,6 +17,7 @@ import (
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/config"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -36,9 +37,7 @@ const (
 	keyDirPerm  = 0o700
 	keyFilePerm = 0o600
 
-	bootstrapMembershipTTL = 365 * 24 * time.Hour
-	defaultAdminCertTTL    = 5 * 365 * 24 * time.Hour
-	timeSkewAllowance      = time.Minute
+	timeSkewAllowance = time.Minute
 
 	sigContextAdminCert  = "pollen.admin.v1"
 	sigContextMembership = "pollen.membership.v1"
@@ -95,7 +94,7 @@ func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now
 	}
 
 	if membershipTTL <= 0 {
-		membershipTTL = bootstrapMembershipTTL
+		membershipTTL = time.Duration(config.DefaultMembershipDays) * 24 * time.Hour
 	}
 
 	adminPriv, adminPub, err := LoadOrCreateAdminKey(pollenDir)
@@ -422,12 +421,13 @@ func IssueMembershipCert(
 	}
 
 	now := time.Now()
+	adminTTL := time.Duration(config.DefaultAdminDays) * 24 * time.Hour
 	issuer, err := IssueAdminCert(
 		adminPriv,
 		clusterID,
 		adminPub,
 		now.Add(-timeSkewAllowance),
-		now.Add(defaultAdminCertTTL),
+		now.Add(adminTTL),
 	)
 	if err != nil {
 		return nil, err
@@ -561,12 +561,13 @@ func IssueJoinToken(
 		return nil, errors.New("issuer admin certificate required for non-root admin key")
 	}
 
+	adminTTL := time.Duration(config.DefaultAdminDays) * 24 * time.Hour
 	issuer, err := IssueAdminCert(
 		adminPriv,
 		trust.GetClusterId(),
 		adminPub,
 		now.Add(-timeSkewAllowance),
-		now.Add(defaultAdminCertTTL),
+		now.Add(adminTTL),
 	)
 	if err != nil {
 		return nil, err
@@ -601,7 +602,7 @@ func IssueJoinTokenWithIssuer(
 		trust.GetClusterId(),
 		subject,
 		now.Add(-timeSkewAllowance),
-		now.Add(bootstrapMembershipTTL),
+		now.Add(time.Duration(config.DefaultMembershipDays)*24*time.Hour),
 	)
 	if err != nil {
 		return nil, err
@@ -698,7 +699,7 @@ func DecodeJoinToken(s string) (*admissionv1.JoinToken, error) {
 	return token, nil
 }
 
-func SignRevocation(adminPriv ed25519.PrivateKey, clusterID, subjectPub []byte) (*admissionv1.SignedRevocation, error) {
+func SignRevocation(adminPriv ed25519.PrivateKey, clusterID, subjectPub []byte, now time.Time) (*admissionv1.SignedRevocation, error) {
 	adminPub, ok := adminPriv.Public().(ed25519.PublicKey)
 	if !ok {
 		return nil, errors.New("admin private key is not ed25519")
@@ -708,7 +709,7 @@ func SignRevocation(adminPriv ed25519.PrivateKey, clusterID, subjectPub []byte) 
 		ClusterId:     append([]byte(nil), clusterID...),
 		SubjectPub:    append([]byte(nil), subjectPub...),
 		AdminPub:      append([]byte(nil), adminPub...),
-		RevokedAtUnix: time.Now().Unix(),
+		RevokedAtUnix: now.Unix(),
 	}
 
 	msg, err := signaturePayload(claims)

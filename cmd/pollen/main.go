@@ -524,7 +524,7 @@ func runNode(cmd *cobra.Command) {
 		logger.Fatal(err)
 	}
 
-	nodeSrv := node.NewNodeService(n, stopFunc, creds.InviteSigner, creds)
+	nodeSrv := node.NewNodeService(n, stopFunc, creds)
 
 	logger.Info("successfully started node")
 

@@ -425,12 +425,10 @@ func (m *CertificateInfo) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if len(m.CertType) > 0 {
-		i -= len(m.CertType)
-		copy(dAtA[i:], m.CertType)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.CertType)))
+	if m.CertType != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.CertType))
 		i--
-		dAtA[i] = 0x1a
+		dAtA[i] = 0x18
 	}
 	if m.NotAfterUnix != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.NotAfterUnix))
@@ -1140,9 +1138,8 @@ func (m *CertificateInfo) SizeVT() (n int) {
 	if m.NotAfterUnix != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.NotAfterUnix))
 	}
-	l = len(m.CertType)
-	if l > 0 {
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	if m.CertType != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.CertType))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -2190,10 +2187,10 @@ func (m *CertificateInfo) UnmarshalVT(dAtA []byte) error {
 				}
 			}
 		case 3:
-			if wireType != 2 {
+			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field CertType", wireType)
 			}
-			var stringLen uint64
+			m.CertType = 0
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return protohelpers.ErrIntOverflow
@@ -2203,24 +2200,11 @@ func (m *CertificateInfo) UnmarshalVT(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				stringLen |= uint64(b&0x7F) << shift
+				m.CertType |= CertType(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
 			}
-			intStringLen := int(stringLen)
-			if intStringLen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + intStringLen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.CertType = string(dAtA[iNdEx:postIndex])
-			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

@@ -562,6 +562,7 @@ type GossipEvent_Reachability struct {
 }
 
 type GossipEvent_Revocation struct {
+	// 8 is deleted (outside oneof)
 	Revocation *RevocationChange `protobuf:"bytes,9,opt,name=revocation,proto3,oneof"`
 }
 

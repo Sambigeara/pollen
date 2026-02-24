@@ -43,29 +43,40 @@ type CertTTLs struct { //nolint:tagliatelle
 }
 
 type Config struct {
-	CertTTLs       *CertTTLs       `yaml:"certTTLs,omitempty"` //nolint:tagliatelle
+	CertTTLs       *CertTTLs       `yaml:"certTTLs,omitempty"`
 	BootstrapPeers []BootstrapPeer `yaml:"bootstrapPeers,omitempty"`
 }
 
 func (c *Config) MembershipTTL() time.Duration {
-	if c != nil && c.CertTTLs != nil && c.CertTTLs.MembershipDays > 0 {
-		return time.Duration(c.CertTTLs.MembershipDays) * hoursPerDay * time.Hour
+	configured := 0
+	if c != nil && c.CertTTLs != nil {
+		configured = c.CertTTLs.MembershipDays
 	}
-	return DefaultMembershipDays * hoursPerDay * time.Hour
+	return certTTL(configured, DefaultMembershipDays)
 }
 
 func (c *Config) AdminCertTTL() time.Duration {
-	if c != nil && c.CertTTLs != nil && c.CertTTLs.AdminDays > 0 {
-		return time.Duration(c.CertTTLs.AdminDays) * hoursPerDay * time.Hour
+	configured := 0
+	if c != nil && c.CertTTLs != nil {
+		configured = c.CertTTLs.AdminDays
 	}
-	return DefaultAdminDays * hoursPerDay * time.Hour
+	return certTTL(configured, DefaultAdminDays)
 }
 
 func (c *Config) TLSIdentityTTL() time.Duration {
-	if c != nil && c.CertTTLs != nil && c.CertTTLs.TLSIdentityDays > 0 {
-		return time.Duration(c.CertTTLs.TLSIdentityDays) * hoursPerDay * time.Hour
+	configured := 0
+	if c != nil && c.CertTTLs != nil {
+		configured = c.CertTTLs.TLSIdentityDays
 	}
-	return DefaultTLSIdentityDays * hoursPerDay * time.Hour
+	return certTTL(configured, DefaultTLSIdentityDays)
+}
+
+func certTTL(configured, defaultDays int) time.Duration {
+	days := defaultDays
+	if configured > 0 {
+		days = configured
+	}
+	return time.Duration(days) * hoursPerDay * time.Hour
 }
 
 func Load(pollenDir string) (*Config, error) {

@@ -96,7 +96,7 @@ func resolveAdminIssuer(pollenDir string, adminPriv ed25519.PrivateKey, adminPub
 	if bytes.Equal(adminPub, trust.GetRootPub()) {
 		ttl := adminCertTTL
 		if ttl <= 0 {
-			ttl = defaultAdminCertTTL
+			ttl = time.Duration(config.DefaultAdminDays) * 24 * time.Hour
 		}
 		return IssueAdminCert(
 			adminPriv,

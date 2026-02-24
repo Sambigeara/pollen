@@ -199,7 +199,7 @@ func TestSignAndVerifyRevocation(t *testing.T) {
 	trust := auth.NewTrustBundle(adminPub)
 
 	subjectPub, _ := newKeyPair(t)
-	rev, err := auth.SignRevocation(adminPriv, trust.GetClusterId(), subjectPub)
+	rev, err := auth.SignRevocation(adminPriv, trust.GetClusterId(), subjectPub, time.Now())
 	require.NoError(t, err)
 	require.Equal(t, subjectPub, ed25519.PublicKey(rev.GetClaims().GetSubjectPub()))
 
@@ -213,7 +213,7 @@ func TestVerifyRevocationWrongKey(t *testing.T) {
 
 	_, attackerPriv := newKeyPair(t)
 	subjectPub, _ := newKeyPair(t)
-	rev, err := auth.SignRevocation(attackerPriv, trust.GetClusterId(), subjectPub)
+	rev, err := auth.SignRevocation(attackerPriv, trust.GetClusterId(), subjectPub, time.Now())
 	require.NoError(t, err)
 
 	err = auth.VerifyRevocation(rev, trust)
@@ -228,7 +228,7 @@ func TestVerifyRevocationWrongCluster(t *testing.T) {
 	otherTrust := auth.NewTrustBundle(otherPub)
 
 	subjectPub, _ := newKeyPair(t)
-	rev, err := auth.SignRevocation(adminPriv, trust.GetClusterId(), subjectPub)
+	rev, err := auth.SignRevocation(adminPriv, trust.GetClusterId(), subjectPub, time.Now())
 	require.NoError(t, err)
 
 	err = auth.VerifyRevocation(rev, otherTrust)
