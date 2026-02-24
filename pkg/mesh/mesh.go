@@ -74,10 +74,9 @@ type impl struct {
 	log          *zap.SugaredLogger
 	listener     *quic.Listener
 	sessions     *sessionRegistry
-	mainQT   *quic.Transport
-	acceptWG sync.WaitGroup
-	port     int
-	mu       sync.RWMutex
+	mainQT       *quic.Transport
+	acceptWG     sync.WaitGroup
+	port         int
 	localKey     types.PeerKey
 }
 
@@ -147,10 +146,8 @@ func (m *impl) Start(ctx context.Context) error {
 		return fmt.Errorf("quic listen: %w", err)
 	}
 
-	m.mu.Lock()
 	m.mainQT = qt
 	m.listener = ln
-	m.mu.Unlock()
 
 	m.socks.SetMainProbeWriter(func(payload []byte, addr *net.UDPAddr) error {
 		_, err := qt.WriteTo(payload, addr)
@@ -161,24 +158,11 @@ func (m *impl) Start(ctx context.Context) error {
 	return nil
 }
 
-func (m *impl) transport() (*quic.Transport, error) {
-	m.mu.RLock()
-	qt := m.mainQT
-	m.mu.RUnlock()
-	if qt == nil {
-		return nil, net.ErrClosed
-	}
-	return qt, nil
-}
-
 func (m *impl) ListenPort() int {
-	m.mu.RLock()
-	qt := m.mainQT
-	m.mu.RUnlock()
-	if qt == nil || qt.Conn == nil {
+	if m.mainQT == nil || m.mainQT.Conn == nil {
 		return 0
 	}
-	return qt.Conn.LocalAddr().(*net.UDPAddr).Port
+	return m.mainQT.Conn.LocalAddr().(*net.UDPAddr).Port
 }
 
 func (m *impl) Recv(ctx context.Context) (Packet, error) {
@@ -221,22 +205,17 @@ func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteClo
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	qt, err := m.transport()
-	if err != nil {
-		return nil, err
-	}
-
 	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle)
 	qCfg := quicConfig()
 
-	qc, err := qt.Dial(ctx, addr, tlsCfg, qCfg)
+	qc, err := m.mainQT.Dial(ctx, addr, tlsCfg, qCfg)
 	if err != nil {
 		return nil, fmt.Errorf("quic dial %s: %w", addr, err)
 	}
 
 	return &peerSession{
 		conn:      qc,
-		transport: qt,
+		transport: m.mainQT,
 	}, nil
 }
 
@@ -256,17 +235,13 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 
 	// Easy-side punch winners reuse the main transport and don't carry a UDPConn.
 	if conn.UDPConn == nil {
-		qt, err := m.transport()
-		if err != nil {
-			return nil, err
-		}
-		qc, err := qt.Dial(ctx, dialAddr, tlsCfg, qCfg)
+		qc, err := m.mainQT.Dial(ctx, dialAddr, tlsCfg, qCfg)
 		if err != nil {
 			return nil, fmt.Errorf("quic dial %s: %w", dialAddr, err)
 		}
 		return &peerSession{
 			conn:      qc,
-			transport: qt,
+			transport: m.mainQT,
 		}, nil
 	}
 
@@ -330,13 +305,8 @@ func (m *impl) JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) 
 }
 
 func (m *impl) JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
-	qt, err := m.transport()
-	if err != nil {
-		return nil, err
-	}
-
 	joinToken, err := redeemInviteWithDial(ctx, token, ed25519.PublicKey(m.localKey.Bytes()), func(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*quic.Conn, error) {
-		return qt.Dial(ctx, addr, newInviteDialerTLSConfig(m.bareCert, expectedPeer), quicConfig())
+		return m.mainQT.Dial(ctx, addr, newInviteDialerTLSConfig(m.bareCert, expectedPeer), quicConfig())
 	})
 	if err != nil {
 		return nil, err
@@ -605,14 +575,9 @@ func (m *impl) acceptLoop(ctx context.Context) {
 			continue
 		}
 
-		qt, err := m.transport()
-		if err != nil {
-			_ = qc.CloseWithError(0, "shutting down")
-			continue
-		}
 		switch qc.ConnectionState().TLS.NegotiatedProtocol {
 		case alpnMesh:
-			m.addPeer(&peerSession{conn: qc, transport: qt}, peerKey)
+			m.addPeer(&peerSession{conn: qc, transport: m.mainQT}, peerKey)
 		case alpnInvite:
 			go m.handleInviteConnection(ctx, qc, peerKey)
 		default:
@@ -646,10 +611,8 @@ func (m *impl) handleInviteConnection(ctx context.Context, qc *quic.Conn, peerKe
 func (m *impl) Close() error {
 	peers := m.sessions.drainPeers()
 
-	m.mu.Lock()
 	listener := m.listener
 	mainQT := m.mainQT
-	m.mu.Unlock()
 
 	for _, s := range peers {
 		m.closeSession(s, "shutdown")
@@ -673,10 +636,7 @@ func (m *impl) Close() error {
 
 func (m *impl) closeSession(s *peerSession, reason string) {
 	_ = s.conn.CloseWithError(0, reason)
-	m.mu.RLock()
-	isMain := s.transport == m.mainQT
-	m.mu.RUnlock()
-	if s.transport != nil && !isMain {
+	if s.transport != nil && s.transport != m.mainQT {
 		_ = s.transport.Close()
 	}
 	if s.sockConn != nil {

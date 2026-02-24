@@ -177,7 +177,7 @@ func collectConnectionsSection(st *controlv1.GetStatusResponse, opts statusViewO
 }
 
 func renderStatusSections(w io.Writer, sections []statusSection) {
-	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")) //nolint:mnd
+	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))       //nolint:mnd
 	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).PaddingRight(2) //nolint:mnd
 	dataStyle := lipgloss.NewStyle().PaddingRight(2)                                     //nolint:mnd
 
