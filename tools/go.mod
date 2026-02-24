@@ -9,7 +9,7 @@ require (
 	github.com/golangci/golangci-lint/v2 v2.10.1
 	github.com/planetscale/vtprotobuf v0.6.1-0.20250313105119-ba97887b0a25
 	golang.org/x/tools/gopls v0.21.1
-	google.golang.org/protobuf v1.36.10
+	google.golang.org/protobuf v1.36.11
 	gotest.tools/gotestsum v1.13.0
 )
 

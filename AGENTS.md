@@ -141,19 +141,19 @@ Follow these conventions when changing code or tests.
   - Node key: each node's transport/TLS identity (`keys/ed25519.key`)
   - Admin key: local signing key used for invite/join issuance when paired with
     valid admin authority (`keys/admin_ed25519.key`)
-- Cluster trust is rooted in a genesis admin public key stored in the trust
+- Cluster trust is rooted in a root admin public key stored in the trust
   bundle (`keys/cluster.trust.pb`):
-  - `cluster_id = sha256(genesis_pub)`
-  - all admin and membership authority chains to `genesis_pub`
+  - `cluster_id = sha256(root_pub)`
+  - all admin and membership authority chains to `root_pub`
 - Admin authority model:
-  - Genesis admin self-issues an `AdminCert` when signing.
-  - Delegated admins use a genesis-signed `AdminCert`
+  - Root admin self-issues an `AdminCert` when signing.
+  - Delegated admins use a root-signed `AdminCert`
     (`keys/admin.cert.pb`).
   - Delegated admin certs are intentionally longer-lived than join/invite
     tokens.
   - Membership and signing authority are separate: a node can be a valid
     cluster member without being an admin signer.
-  - Only genesis admin may delegate admin authority. Delegated admins issue
+  - Only root admin may delegate admin authority. Delegated admins issue
     invites/join tokens but do not mint further admin delegation.
 - Enrollment uses two token types:
   - `InviteToken`: signed by an admin cert, includes trust + issuer + bootstrap
