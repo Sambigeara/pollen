@@ -1341,7 +1341,7 @@ func waitForRelayReady(cmd *cobra.Command, sshTarget string) error {
 		return nil
 	}
 
-	logCmd := "tail -n 120 ~/Library/Logs/pollen.log 2>/dev/null || journalctl --user -u pollen -n 120 --no-pager 2>/dev/null || tail -n 120 /tmp/pollen.log 2>/dev/null || true"
+	logCmd := "tail -n 120 ~/Library/Logs/pollen.log 2>/dev/null || journalctl -u pollen -n 120 --no-pager 2>/dev/null || tail -n 120 /tmp/pollen.log 2>/dev/null || true"
 	logOut, _ := exec.CommandContext(ctx, "ssh", sshTarget, logCmd).CombinedOutput()
 	return fmt.Errorf("relay failed to become ready\nstatus output: %s\nrelay log:\n%s", strings.TrimSpace(string(out)), strings.TrimSpace(string(logOut)))
 }
