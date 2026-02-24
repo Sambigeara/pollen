@@ -70,6 +70,10 @@
 - **Put shared semantics at the shared level.** If every variant of a oneof carries the same field (e.g., `deleted`), that field belongs on the parent message, not duplicated across each variant.
 - **Don't nest proto messages without a reason.** If the wrapper adds nothing beyond what the inner message has, inline the fields or use the inner message directly.
 
+### Concurrency
+- Don't add mutexes around write-once fields. If a field is set once before goroutines are spawned, the goroutine-spawn itself establishes happens-before — a mutex adds noise and implies the field is mutable when it isn't.
+- Don't wrap simple field access in a getter that only adds a nil check for conditions that can't happen. If the field is guaranteed set by the time callers run, just use it directly.
+
 ### Performance
 - Don't hand-calculate serialization sizes. Use the serialization library's own `Size()` methods — hand-counted varint bytes silently break when field numbers change.
 - Batch lock acquisition on the receive side too. If you batch on send, the receive path should also take the lock once for the batch, not N times for N events.
