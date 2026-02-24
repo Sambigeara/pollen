@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -12,6 +15,21 @@ import (
 
 	"github.com/spf13/cobra"
 )
+
+// effectiveUser returns the real (non-root) username, home directory, and UID.
+// Under sudo, os.UserHomeDir() returns /root; this resolves SUDO_USER instead.
+// homeDir never returns empty — it falls back to $HOME.
+func effectiveUser() (username, homeDir, uid string) {
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		if u, err := user.Lookup(sudoUser); err == nil {
+			return u.Username, u.HomeDir, u.Uid
+		}
+	}
+	if u, err := user.Current(); err == nil {
+		return u.Username, u.HomeDir, u.Uid
+	}
+	return "", os.Getenv("HOME"), fmt.Sprintf("%d", os.Getuid())
+}
 
 const (
 	osDarwin = "darwin"
@@ -23,12 +41,39 @@ const (
 	systemdUnitName = "pollen.service"
 )
 
+func requireRoot(cmd *cobra.Command) bool {
+	if os.Getuid() != 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root; run: sudo %s\n", cmd.CommandPath())
+		return false
+	}
+	return true
+}
+
 func launchdPlistPath() string {
-	return filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents", launchdLabel+".plist")
+	return filepath.Join("/Library", "LaunchDaemons", launchdLabel+".plist")
 }
 
 func systemdUnitPath() string {
-	return filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user", systemdUnitName)
+	return filepath.Join("/etc", "systemd", "system", systemdUnitName)
+}
+
+// Legacy user-level service paths for migration.
+func legacyLaunchdPlistPath() string {
+	_, homeDir, _ := effectiveUser()
+	return filepath.Join(homeDir, "Library", "LaunchAgents", launchdLabel+".plist")
+}
+
+func legacySystemdUnitPath() string {
+	_, homeDir, _ := effectiveUser()
+	return filepath.Join(homeDir, ".config", "systemd", "user", systemdUnitName)
+}
+
+type serviceTemplateData struct {
+	Label     string // launchd only
+	Username  string
+	Binary    string
+	PollenDir string
+	LogPath   string // launchd only
 }
 
 var launchdPlistTmpl = template.Must(template.New("plist").Parse(`<?xml version="1.0" encoding="UTF-8"?>
@@ -37,6 +82,8 @@ var launchdPlistTmpl = template.Must(template.New("plist").Parse(`<?xml version=
 <dict>
   <key>Label</key>
   <string>{{ .Label }}</string>
+  <key>UserName</key>
+  <string>{{ .Username }}</string>
   <key>ProgramArguments</key>
   <array>
     <string>{{ .Binary }}</string>
@@ -66,6 +113,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User={{ .Username }}
 ExecStart="{{ .Binary }}" --dir "{{ .PollenDir }}" up
 ExecStop="{{ .Binary }}" --dir "{{ .PollenDir }}" down
 SyslogIdentifier=pollen
@@ -73,7 +121,7 @@ Restart=on-failure
 RestartSec=3
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
 `))
 
 func newDaemonCmd() *cobra.Command {
@@ -122,6 +170,9 @@ func resolveExecutable() (string, error) {
 }
 
 func runDaemonInstall(cmd *cobra.Command, _ []string) {
+	if !requireRoot(cmd) {
+		return
+	}
 	switch runtime.GOOS {
 	case osDarwin:
 		daemonInstallLaunchd(cmd)
@@ -133,6 +184,9 @@ func runDaemonInstall(cmd *cobra.Command, _ []string) {
 }
 
 func runDaemonUninstall(cmd *cobra.Command, _ []string) {
+	if !requireRoot(cmd) {
+		return
+	}
 	switch runtime.GOOS {
 	case osDarwin:
 		daemonUninstallLaunchd(cmd)
@@ -156,38 +210,20 @@ func runDaemonStatus(cmd *cobra.Command, _ []string) {
 
 // --- launchd (macOS) ---
 
-// launchdTargets returns the gui and user domain/target strings for launchctl.
-func launchdTargets(uid int) (guiDomain, guiTarget, userDomain, userTarget string) {
-	guiDomain = fmt.Sprintf("gui/%d", uid)
-	guiTarget = fmt.Sprintf("gui/%d/%s", uid, launchdLabel)
-	userDomain = fmt.Sprintf("user/%d", uid)
-	userTarget = fmt.Sprintf("user/%d/%s", uid, launchdLabel)
-	return
-}
+const launchdSystemTarget = "system/" + launchdLabel
 
-// launchdStart attempts to start the service via kickstart, falling back to
-// enable + bootstrap. It tries the gui domain first, then the user domain.
+// launchdStart loads and starts the service in the system domain.
 func launchdStart(cmd *cobra.Command, plistPath string) error {
 	ctx := cmd.Context()
-	uid := os.Getuid()
-	guiDomain, guiTarget, userDomain, userTarget := launchdTargets(uid)
 
 	// Try kickstart first (works for loaded-but-stopped jobs).
-	if err := exec.CommandContext(ctx, "launchctl", "kickstart", guiTarget).Run(); err == nil { //nolint:gosec
-		return nil
-	}
-	if err := exec.CommandContext(ctx, "launchctl", "kickstart", userTarget).Run(); err == nil { //nolint:gosec
+	if err := exec.CommandContext(ctx, "launchctl", "kickstart", launchdSystemTarget).Run(); err == nil {
 		return nil
 	}
 
 	// Fallback: enable + bootstrap (for unloaded jobs).
-	_ = exec.CommandContext(ctx, "launchctl", "enable", guiTarget).Run()  //nolint:errcheck,gosec
-	_ = exec.CommandContext(ctx, "launchctl", "enable", userTarget).Run() //nolint:errcheck,gosec
-
-	if err := exec.CommandContext(ctx, "launchctl", "bootstrap", guiDomain, plistPath).Run(); err == nil { //nolint:gosec
-		return nil
-	}
-	return exec.CommandContext(ctx, "launchctl", "bootstrap", userDomain, plistPath).Run() //nolint:gosec
+	_ = exec.CommandContext(ctx, "launchctl", "enable", launchdSystemTarget).Run() //nolint:errcheck
+	return exec.CommandContext(ctx, "launchctl", "bootstrap", "system", plistPath).Run()
 }
 
 // writeLaunchdPlist writes (or overwrites) the launchd plist file.
@@ -202,8 +238,13 @@ func writeLaunchdPlist(cmd *cobra.Command) error {
 		return err
 	}
 
+	username, _, _ := effectiveUser()
+	if username == "" {
+		return fmt.Errorf("cannot determine username for service file")
+	}
+
 	plistPath := launchdPlistPath()
-	logPath := filepath.Join(os.Getenv("HOME"), "Library", "Logs", "pollen.log")
+	logPath := filepath.Join("/Library", "Logs", "pollen.log")
 
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil { //nolint:mnd
 		return err
@@ -213,30 +254,27 @@ func writeLaunchdPlist(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
-	data := struct {
-		Label     string
-		Binary    string
-		PollenDir string
-		LogPath   string
-	}{
+	data := serviceTemplateData{
 		Label:     launchdLabel,
+		Username:  username,
 		Binary:    binary,
 		PollenDir: pollenDir,
 		LogPath:   logPath,
 	}
 
 	if err := launchdPlistTmpl.Execute(f, data); err != nil {
+		f.Close()
 		return err
 	}
-	// Close the file before launchctl reads it.
 	return f.Close()
 }
 
 func daemonInstallLaunchd(cmd *cobra.Command) {
 	force, _ := cmd.Flags().GetBool("force")
 	start, _ := cmd.Flags().GetBool("start")
+
+	migrateLegacyLaunchd(cmd)
 
 	plistPath := launchdPlistPath()
 
@@ -256,15 +294,12 @@ func daemonInstallLaunchd(cmd *cobra.Command) {
 
 	if start {
 		ctx := cmd.Context()
-		uid := os.Getuid()
-		_, guiTarget, _, userTarget := launchdTargets(uid)
 
 		// Remove any existing instance and clear disabled state.
-		_ = exec.CommandContext(ctx, "launchctl", "bootout", guiTarget).Run()  //nolint:errcheck,gosec
-		_ = exec.CommandContext(ctx, "launchctl", "bootout", userTarget).Run() //nolint:errcheck,gosec
+		_ = exec.CommandContext(ctx, "launchctl", "bootout", launchdSystemTarget).Run() //nolint:errcheck
 
 		if err := launchdStart(cmd, plistPath); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\nrun manually: launchctl bootstrap gui/%d %s\n", err, uid, plistPath)
+			fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\nrun manually: sudo launchctl bootstrap system %s\n", err, plistPath)
 			return
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "service started")
@@ -276,9 +311,7 @@ func daemonUninstallLaunchd(cmd *cobra.Command) {
 
 	// Stop service if running.
 	ctx := cmd.Context()
-	uid := os.Getuid()
-	_ = exec.CommandContext(ctx, "launchctl", "bootout", fmt.Sprintf("gui/%d/%s", uid, launchdLabel)).Run()  //nolint:errcheck,gosec
-	_ = exec.CommandContext(ctx, "launchctl", "bootout", fmt.Sprintf("user/%d/%s", uid, launchdLabel)).Run() //nolint:errcheck,gosec
+	_ = exec.CommandContext(ctx, "launchctl", "bootout", launchdSystemTarget).Run() //nolint:errcheck
 
 	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
@@ -298,13 +331,7 @@ func daemonStatusLaunchd(cmd *cobra.Command) {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "installed: yes (%s)\n", plistPath)
 
-	ctx := cmd.Context()
-	uid := os.Getuid()
-	out, err := exec.CommandContext(ctx, "launchctl", "print", fmt.Sprintf("gui/%d/%s", uid, launchdLabel)).CombinedOutput() //nolint:gosec
-	if err != nil {
-		out, err = exec.CommandContext(ctx, "launchctl", "print", fmt.Sprintf("user/%d/%s", uid, launchdLabel)).CombinedOutput() //nolint:gosec
-	}
-
+	out, err := exec.CommandContext(cmd.Context(), "launchctl", "print", launchdSystemTarget).CombinedOutput()
 	if err != nil {
 		fmt.Fprintln(cmd.OutOrStdout(), "running: no")
 		return
@@ -319,7 +346,16 @@ func daemonStatusLaunchd(cmd *cobra.Command) {
 
 // --- systemd (Linux) ---
 
-// writeSystemdUnit writes (or overwrites) the systemd user unit file.
+func systemdReloadAndEnable(ctx context.Context, w io.Writer) {
+	if err := exec.CommandContext(ctx, "systemctl", "daemon-reload").Run(); err != nil {
+		fmt.Fprintf(w, "warning: systemctl daemon-reload failed: %v\n", err)
+	}
+	if err := exec.CommandContext(ctx, "systemctl", "enable", systemdUnitName).Run(); err != nil {
+		fmt.Fprintf(w, "warning: systemctl enable failed: %v\n", err)
+	}
+}
+
+// writeSystemdUnit writes (or overwrites) the systemd unit file.
 func writeSystemdUnit(cmd *cobra.Command) error {
 	binary, err := resolveExecutable()
 	if err != nil {
@@ -329,6 +365,11 @@ func writeSystemdUnit(cmd *cobra.Command) error {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		return err
+	}
+
+	username, _, _ := effectiveUser()
+	if username == "" {
+		return fmt.Errorf("cannot determine username for service file")
 	}
 
 	unitPath := systemdUnitPath()
@@ -341,17 +382,15 @@ func writeSystemdUnit(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
-	data := struct {
-		Binary    string
-		PollenDir string
-	}{
+	data := serviceTemplateData{
+		Username:  username,
 		Binary:    binary,
 		PollenDir: pollenDir,
 	}
 
 	if err := systemdUnitTmpl.Execute(f, data); err != nil {
+		f.Close()
 		return err
 	}
 	return f.Close()
@@ -360,6 +399,8 @@ func writeSystemdUnit(cmd *cobra.Command) error {
 func daemonInstallSystemd(cmd *cobra.Command) {
 	force, _ := cmd.Flags().GetBool("force")
 	start, _ := cmd.Flags().GetBool("start")
+
+	migrateLegacySystemd(cmd)
 
 	unitPath := systemdUnitPath()
 
@@ -377,17 +418,11 @@ func daemonInstallSystemd(cmd *cobra.Command) {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", unitPath)
 
-	// Reload and enable.
 	ctx := cmd.Context()
-	if err := exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run(); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: systemctl daemon-reload failed: %v\n", err)
-	}
-	if err := exec.CommandContext(ctx, "systemctl", "--user", "enable", systemdUnitName).Run(); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: systemctl enable failed: %v\n", err)
-	}
+	systemdReloadAndEnable(ctx, cmd.ErrOrStderr())
 
 	if start {
-		if err := exec.CommandContext(ctx, "systemctl", "--user", "restart", systemdUnitName).Run(); err != nil {
+		if err := exec.CommandContext(ctx, "systemctl", "restart", systemdUnitName).Run(); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\n", err)
 			return
 		}
@@ -400,15 +435,15 @@ func daemonUninstallSystemd(cmd *cobra.Command) {
 
 	// Stop and disable.
 	ctx := cmd.Context()
-	_ = exec.CommandContext(ctx, "systemctl", "--user", "stop", systemdUnitName).Run()    //nolint:errcheck
-	_ = exec.CommandContext(ctx, "systemctl", "--user", "disable", systemdUnitName).Run() //nolint:errcheck
+	_ = exec.CommandContext(ctx, "systemctl", "stop", systemdUnitName).Run()    //nolint:errcheck
+	_ = exec.CommandContext(ctx, "systemctl", "disable", systemdUnitName).Run() //nolint:errcheck
 
 	if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
 
-	_ = exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run() //nolint:errcheck
+	_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run() //nolint:errcheck
 
 	fmt.Fprintln(cmd.OutOrStdout(), "service uninstalled")
 }
@@ -423,12 +458,52 @@ func daemonStatusSystemd(cmd *cobra.Command) {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "installed: yes (%s)\n", unitPath)
 
-	out, err := exec.CommandContext(cmd.Context(), "systemctl", "--user", "is-active", systemdUnitName).CombinedOutput()
+	out, err := exec.CommandContext(cmd.Context(), "systemctl", "is-active", systemdUnitName).CombinedOutput()
 	if err == nil && strings.TrimSpace(string(out)) == "active" {
 		fmt.Fprintln(cmd.OutOrStdout(), "running: yes")
 	} else {
 		fmt.Fprintln(cmd.OutOrStdout(), "running: no")
 	}
+}
+
+// --- legacy migration ---
+
+func migrateLegacyLaunchd(cmd *cobra.Command) {
+	legacyPath := legacyLaunchdPlistPath()
+	if _, err := os.Stat(legacyPath); err != nil {
+		return
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "migrating from user-level to system-level service")
+	_, _, uid := effectiveUser()
+	ctx := cmd.Context()
+	_ = exec.CommandContext(ctx, "launchctl", "bootout", fmt.Sprintf("gui/%s/%s", uid, launchdLabel)).Run()  //nolint:errcheck
+	_ = exec.CommandContext(ctx, "launchctl", "bootout", fmt.Sprintf("user/%s/%s", uid, launchdLabel)).Run() //nolint:errcheck
+	_ = os.Remove(legacyPath)                                                                                //nolint:errcheck
+}
+
+func migrateLegacySystemd(cmd *cobra.Command) {
+	legacyPath := legacySystemdUnitPath()
+	if _, err := os.Stat(legacyPath); err != nil {
+		return
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "migrating from user-level to system-level service")
+	username, _, uid := effectiveUser()
+	ctx := cmd.Context()
+	env := append(os.Environ(), "XDG_RUNTIME_DIR=/run/user/"+uid)
+
+	stopCmd := exec.CommandContext(ctx, "sudo", "-u", username, "systemctl", "--user", "stop", systemdUnitName)
+	stopCmd.Env = env
+	_ = stopCmd.Run() //nolint:errcheck
+
+	disableCmd := exec.CommandContext(ctx, "sudo", "-u", username, "systemctl", "--user", "disable", systemdUnitName)
+	disableCmd.Env = env
+	_ = disableCmd.Run() //nolint:errcheck
+
+	_ = os.Remove(legacyPath) //nolint:errcheck
+
+	reloadCmd := exec.CommandContext(ctx, "sudo", "-u", username, "systemctl", "--user", "daemon-reload")
+	reloadCmd.Env = env
+	_ = reloadCmd.Run() //nolint:errcheck
 }
 
 // --- pollen up -d ---
@@ -463,6 +538,9 @@ func waitForSocket(sockPath string, timeout time.Duration) bool {
 
 // runUpDaemon dispatches pollen up -d to the platform-specific daemon start flow.
 func runUpDaemon(cmd *cobra.Command) {
+	if !requireRoot(cmd) {
+		return
+	}
 	switch runtime.GOOS {
 	case osDarwin:
 		upDaemonLaunchd(cmd)
@@ -493,6 +571,7 @@ func upDaemonLaunchd(cmd *cobra.Command) {
 	// Auto-install if plist doesn't exist.
 	if _, err := os.Stat(plistPath); err != nil {
 		fmt.Fprintln(cmd.OutOrStdout(), "service not installed; installing now")
+		migrateLegacyLaunchd(cmd)
 		if writeErr := writeLaunchdPlist(cmd); writeErr != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), writeErr)
 			return
@@ -508,7 +587,7 @@ func upDaemonLaunchd(cmd *cobra.Command) {
 	if waitForSocket(sockPath, daemonStartTimeout) {
 		fmt.Fprintln(cmd.OutOrStdout(), "node started (background)")
 	} else {
-		fmt.Fprintln(cmd.ErrOrStderr(), "service was started but node did not become ready; check logs with: cat ~/Library/Logs/pollen.log")
+		fmt.Fprintln(cmd.ErrOrStderr(), "service was started but node did not become ready; check logs with: cat /Library/Logs/pollen.log")
 	}
 }
 
@@ -532,23 +611,17 @@ func upDaemonSystemd(cmd *cobra.Command) {
 	// Auto-install if unit doesn't exist.
 	if _, err := os.Stat(unitPath); err != nil {
 		fmt.Fprintln(cmd.OutOrStdout(), "service not installed; installing now")
+		migrateLegacySystemd(cmd)
 		if writeErr := writeSystemdUnit(cmd); writeErr != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), writeErr)
 			return
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", unitPath)
-
-		ctx := cmd.Context()
-		if reloadErr := exec.CommandContext(ctx, "systemctl", "--user", "daemon-reload").Run(); reloadErr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: systemctl daemon-reload failed: %v\n", reloadErr)
-		}
-		if enableErr := exec.CommandContext(ctx, "systemctl", "--user", "enable", systemdUnitName).Run(); enableErr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: systemctl enable failed: %v\n", enableErr)
-		}
+		systemdReloadAndEnable(cmd.Context(), cmd.ErrOrStderr())
 	}
 
 	ctx := cmd.Context()
-	if err := exec.CommandContext(ctx, "systemctl", "--user", "start", systemdUnitName).Run(); err != nil {
+	if err := exec.CommandContext(ctx, "systemctl", "start", systemdUnitName).Run(); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\n", err)
 		return
 	}
