@@ -48,10 +48,10 @@ func (m *TrustBundle) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if len(m.GenesisPub) > 0 {
-		i -= len(m.GenesisPub)
-		copy(dAtA[i:], m.GenesisPub)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.GenesisPub)))
+	if len(m.RootPub) > 0 {
+		i -= len(m.RootPub)
+		copy(dAtA[i:], m.RootPub)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.RootPub)))
 		i--
 		dAtA[i] = 0x12
 	}
@@ -646,7 +646,7 @@ func (m *TrustBundle) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	l = len(m.GenesisPub)
+	l = len(m.RootPub)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -949,7 +949,7 @@ func (m *TrustBundle) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field GenesisPub", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field RootPub", wireType)
 			}
 			var byteLen int
 			for shift := uint(0); ; shift += 7 {
@@ -976,9 +976,9 @@ func (m *TrustBundle) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.GenesisPub = append(m.GenesisPub[:0], dAtA[iNdEx:postIndex]...)
-			if m.GenesisPub == nil {
-				m.GenesisPub = []byte{}
+			m.RootPub = append(m.RootPub[:0], dAtA[iNdEx:postIndex]...)
+			if m.RootPub == nil {
+				m.RootPub = []byte{}
 			}
 			iNdEx = postIndex
 		default:

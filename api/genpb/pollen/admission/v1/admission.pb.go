@@ -25,7 +25,7 @@ const (
 type TrustBundle struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ClusterId     []byte                 `protobuf:"bytes,1,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
-	GenesisPub    []byte                 `protobuf:"bytes,2,opt,name=genesis_pub,json=genesisPub,proto3" json:"genesis_pub,omitempty"`
+	RootPub       []byte                 `protobuf:"bytes,2,opt,name=root_pub,json=rootPub,proto3" json:"root_pub,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -67,9 +67,9 @@ func (x *TrustBundle) GetClusterId() []byte {
 	return nil
 }
 
-func (x *TrustBundle) GetGenesisPub() []byte {
+func (x *TrustBundle) GetRootPub() []byte {
 	if x != nil {
-		return x.GenesisPub
+		return x.RootPub
 	}
 	return nil
 }
@@ -690,12 +690,11 @@ var File_pollen_admission_v1_admission_proto protoreflect.FileDescriptor
 
 const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\n" +
-	"#pollen/admission/v1/admission.proto\x12\x13pollen.admission.v1\x1a\x1bbuf/validate/validate.proto\"_\n" +
+	"#pollen/admission/v1/admission.proto\x12\x13pollen.admission.v1\x1a\x1bbuf/validate/validate.proto\"Y\n" +
 	"\vTrustBundle\x12&\n" +
 	"\n" +
-	"cluster_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\tclusterId\x12(\n" +
-	"\vgenesis_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\n" +
-	"genesisPub\"\xc5\x01\n" +
+	"cluster_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\tclusterId\x12\"\n" +
+	"\broot_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\arootPub\"\xc5\x01\n" +
 	"\x0fAdminCertClaims\x12&\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\tclusterId\x12$\n" +

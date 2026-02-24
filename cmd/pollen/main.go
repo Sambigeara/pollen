@@ -517,7 +517,7 @@ func runInit(cmd *cobra.Command, _ []string) {
 			return
 		}
 
-		if adminErr == nil && slices.Equal(adminPub, existing.Trust.GetGenesisPub()) {
+		if adminErr == nil && slices.Equal(adminPub, existing.Trust.GetRootPub()) {
 			fmt.Fprintf(cmd.OutOrStdout(), "already initialized as root cluster\nroot_pub: %s\ncluster_id: %s\n",
 				hex.EncodeToString(adminPub),
 				hex.EncodeToString(existing.Trust.GetClusterId()),
@@ -1298,8 +1298,8 @@ func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 	if err != nil {
 		return err
 	}
-	if !slices.Equal(signer.Trust.GetGenesisPub(), signer.Issuer.GetClaims().GetAdminPub()) {
-		return errors.New("only genesis admin can delegate relay admin certs")
+	if !slices.Equal(signer.Trust.GetRootPub(), signer.Issuer.GetClaims().GetAdminPub()) {
+		return errors.New("only root admin can delegate relay admin certs")
 	}
 
 	cert, err := auth.IssueAdminCert(
