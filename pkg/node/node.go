@@ -420,7 +420,11 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			go func() {
 				if err := n.connectPeer(e.PeerKey, e.Ips, e.Port); err != nil {
 					if n.peers.InState(e.PeerKey, peer.PeerStateConnecting) {
-						n.log.Debugw("connect failed", "peer", e.PeerKey.Short(), "err", err)
+						if errors.Is(err, mesh.ErrIdentityMismatch) {
+							n.log.Warnw("connect failed: peer identity mismatch", "peer", e.PeerKey.Short(), "err", err)
+						} else {
+							n.log.Debugw("connect failed", "peer", e.PeerKey.Short(), "err", err)
+						}
 						n.localPeerEvents <- peer.ConnectFailed{PeerKey: e.PeerKey}
 					}
 				}
@@ -601,7 +605,11 @@ func (n *Node) punchLoop(ctx context.Context) {
 			}
 			if err := n.punchPeer(req.peerKey, req.ip, req.port); err != nil {
 				if n.peers.InState(req.peerKey, peer.PeerStateConnecting) {
-					n.log.Debugw("punch failed", "peer", req.peerKey.Short(), "err", err)
+					if errors.Is(err, mesh.ErrIdentityMismatch) {
+						n.log.Warnw("punch failed: peer identity mismatch", "peer", req.peerKey.Short(), "err", err)
+					} else {
+						n.log.Debugw("punch failed", "peer", req.peerKey.Short(), "err", err)
+					}
 					n.localPeerEvents <- peer.ConnectFailed{PeerKey: req.peerKey}
 				}
 			}

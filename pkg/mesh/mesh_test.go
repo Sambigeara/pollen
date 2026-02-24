@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"net"
 	"strconv"
 	"testing"
@@ -192,6 +193,26 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 
 	_, err = joiner.mesh.JoinWithInvite(joinCtx, invite)
 	require.Error(t, err)
+}
+
+func TestConnectReturnsErrIdentityMismatch(t *testing.T) {
+	cluster := newClusterAuth(t)
+
+	a := startMeshHarness(t, 0, cluster)
+	b := startMeshHarness(t, 0, cluster)
+
+	// Generate a random key that differs from b's actual key.
+	wrongPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	wrongKey := types.PeerKeyFromBytes(wrongPub)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Dial b's address but expect the wrong key.
+	err = a.mesh.Connect(ctx, wrongKey, []*net.UDPAddr{{IP: net.IPv4(127, 0, 0, 1), Port: b.port}})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, mesh.ErrIdentityMismatch), "expected ErrIdentityMismatch, got: %v", err)
 }
 
 func startMeshHarness(t *testing.T, port int, cluster *clusterAuth) *meshHarness {
