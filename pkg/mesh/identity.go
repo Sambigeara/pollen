@@ -73,10 +73,14 @@ func parseMembershipExtension(certDER []byte) (*admissionv1.MembershipCert, erro
 	return nil, nil
 }
 
-func generateIdentityCert(signPriv ed25519.PrivateKey, membershipCert *admissionv1.MembershipCert) (tls.Certificate, error) {
+func generateIdentityCert(signPriv ed25519.PrivateKey, membershipCert *admissionv1.MembershipCert, validity time.Duration) (tls.Certificate, error) {
 	pub, ok := signPriv.Public().(ed25519.PublicKey)
 	if !ok {
 		return tls.Certificate{}, errors.New("identity private key is not ed25519")
+	}
+
+	if validity <= 0 {
+		validity = certValidity
 	}
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), certSerialBits))
@@ -89,7 +93,7 @@ func generateIdentityCert(signPriv ed25519.PrivateKey, membershipCert *admission
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "pollen-peer"},
 		NotBefore:    now.Add(-time.Hour),
-		NotAfter:     now.Add(certValidity),
+		NotAfter:     now.Add(validity),
 
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
@@ -148,8 +152,9 @@ func peerKeyFromConn(qc *quic.Conn) (types.PeerKey, error) {
 }
 
 type verifyMeshPeerOpts struct {
-	trustBundle  *admissionv1.TrustBundle
-	expectedPeer *types.PeerKey
+	trustBundle      *admissionv1.TrustBundle
+	expectedPeer     *types.PeerKey
+	isSubjectRevoked func([]byte) bool
 }
 
 func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certificate) error {
@@ -179,6 +184,10 @@ func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certif
 			return err
 		}
 
+		if opts.isSubjectRevoked != nil && opts.isSubjectRevoked(peerKey.Bytes()) {
+			return errors.New("peer certificate revoked")
+		}
+
 		return nil
 	}
 }
@@ -203,10 +212,11 @@ func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Ce
 }
 
 type serverTLSParams struct {
-	meshCert      tls.Certificate
-	inviteCert    tls.Certificate
-	trustBundle   *admissionv1.TrustBundle
-	inviteEnabled bool
+	meshCert         tls.Certificate
+	inviteCert       tls.Certificate
+	trustBundle      *admissionv1.TrustBundle
+	isSubjectRevoked func([]byte) bool
+	inviteEnabled    bool
 }
 
 func newServerTLSConfig(p serverTLSParams) *tls.Config {
@@ -216,7 +226,8 @@ func newServerTLSConfig(p serverTLSParams) *tls.Config {
 		ClientAuth:   tls.RequireAnyClientCert,
 		NextProtos:   []string{alpnMesh},
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{
-			trustBundle: p.trustBundle,
+			trustBundle:      p.trustBundle,
+			isSubjectRevoked: p.isSubjectRevoked,
 		}),
 	}
 
@@ -245,15 +256,16 @@ func newServerTLSConfig(p serverTLSParams) *tls.Config {
 	}
 }
 
-func newExpectedPeerTLSConfig(ourCert tls.Certificate, expectedPeer types.PeerKey, trustBundle *admissionv1.TrustBundle) *tls.Config {
+func newExpectedPeerTLSConfig(ourCert tls.Certificate, expectedPeer types.PeerKey, trustBundle *admissionv1.TrustBundle, isSubjectRevoked func([]byte) bool) *tls.Config {
 	return &tls.Config{
 		MinVersion:         tls.VersionTLS13,
 		Certificates:       []tls.Certificate{ourCert},
 		InsecureSkipVerify: true, //nolint:gosec
 		NextProtos:         []string{alpnMesh},
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{
-			trustBundle:  trustBundle,
-			expectedPeer: &expectedPeer,
+			trustBundle:      trustBundle,
+			expectedPeer:     &expectedPeer,
+			isSubjectRevoked: isSubjectRevoked,
 		}),
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -16,12 +17,14 @@ var _ controlv1.ControlServiceServer = (*NodeService)(nil)
 
 type NodeService struct {
 	controlv1.UnimplementedControlServiceServer
-	node     *Node
-	shutdown func()
+	node        *Node
+	shutdown    func()
+	adminSigner *auth.AdminSigner
+	creds       *auth.NodeCredentials
 }
 
-func NewNodeService(n *Node, shutdown func()) *NodeService {
-	return &NodeService{node: n, shutdown: shutdown}
+func NewNodeService(n *Node, shutdown func(), adminSigner *auth.AdminSigner, creds *auth.NodeCredentials) *NodeService {
+	return &NodeService{node: n, shutdown: shutdown, adminSigner: adminSigner, creds: creds}
 }
 
 func (s *NodeService) Shutdown(_ context.Context, _ *controlv1.ShutdownRequest) (*controlv1.ShutdownResponse, error) {
@@ -70,15 +73,26 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		}
 	}
 
+	var certs []*controlv1.CertificateInfo
+	if s.creds != nil && s.creds.Cert != nil && s.creds.Cert.GetClaims() != nil {
+		claims := s.creds.Cert.GetClaims()
+		certs = append(certs, &controlv1.CertificateInfo{
+			NotBeforeUnix: claims.GetNotBeforeUnix(),
+			NotAfterUnix:  claims.GetNotAfterUnix(),
+			CertType:      "membership",
+		})
+	}
+
 	out := &controlv1.GetStatusResponse{
 		Self: &controlv1.NodeSummary{
 			Node:   &controlv1.NodeRef{PeerId: localID.Bytes()},
 			Status: controlv1.NodeStatus_NODE_STATUS_ONLINE,
 			Addr:   selfAddr,
 		},
-		Services:    []*controlv1.ServiceSummary{},
-		Nodes:       make([]*controlv1.NodeSummary, 0, len(nodes)),
-		Connections: []*controlv1.ConnectionSummary{},
+		Services:     []*controlv1.ServiceSummary{},
+		Nodes:        make([]*controlv1.NodeSummary, 0, len(nodes)),
+		Connections:  []*controlv1.ConnectionSummary{},
+		Certificates: certs,
 	}
 
 	for key, node := range nodes {
@@ -246,4 +260,20 @@ func (s *NodeService) ConnectService(ctx context.Context, req *controlv1.Connect
 	}
 
 	return &controlv1.ConnectServiceResponse{LocalPort: localPort}, nil
+}
+
+func (s *NodeService) RevokePeer(_ context.Context, req *controlv1.RevokePeerRequest) (*controlv1.RevokePeerResponse, error) {
+	if s.adminSigner == nil {
+		return nil, errors.New("admin key not available on this node")
+	}
+
+	rev, err := auth.SignRevocation(s.adminSigner.Priv, s.adminSigner.Trust.GetClusterId(), req.GetPeerId())
+	if err != nil {
+		return nil, fmt.Errorf("sign revocation: %w", err)
+	}
+
+	events := s.node.store.AddRevocation(rev)
+	s.node.queueGossipEvents(events)
+
+	return &controlv1.RevokePeerResponse{}, nil
 }

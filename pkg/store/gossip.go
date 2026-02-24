@@ -7,7 +7,9 @@ import (
 	"sort"
 	"sync"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -19,6 +21,7 @@ const (
 	attrIdentity
 	attrService
 	attrReachability
+	attrRevocation
 )
 
 type attrKey struct {
@@ -47,6 +50,10 @@ func reachabilityAttrKey(peerID types.PeerKey) attrKey {
 	return attrKey{kind: attrReachability, peer: peerID}
 }
 
+func revocationAttrKey(subject types.PeerKey) attrKey {
+	return attrKey{kind: attrRevocation, peer: subject}
+}
+
 // logEntry tracks the counter (and deletion state) of a single attribute.
 type logEntry struct {
 	Counter uint64
@@ -57,18 +64,18 @@ type nodeRecord struct {
 	Reachable    map[types.PeerKey]struct{}
 	Services     map[string]*statev1.Service
 	log          map[attrKey]logEntry
+	LastAddr     string
 	IdentityPub  []byte
 	IPs          []string
-	LastAddr     string
 	maxCounter   uint64
 	LocalPort    uint32
 	ExternalPort uint32
 }
 
 type KnownPeer struct {
+	LastAddr     string
 	IdentityPub  []byte
 	IPs          []string
-	LastAddr     string
 	LocalPort    uint32
 	ExternalPort uint32
 	PeerID       types.PeerKey
@@ -91,12 +98,14 @@ type ApplyResult struct {
 type Store struct {
 	disk               *disk
 	nodes              map[types.PeerKey]nodeRecord
+	revocations        map[types.PeerKey]*admissionv1.SignedRevocation
 	desiredConnections map[string]Connection
+	trustBundle        *admissionv1.TrustBundle
 	mu                 sync.RWMutex
 	LocalID            types.PeerKey
 }
 
-func Load(pollenDir string, identityPub []byte) (*Store, error) {
+func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBundle) (*Store, error) {
 	d, err := openDisk(pollenDir)
 	if err != nil {
 		return nil, err
@@ -111,8 +120,9 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 	localID := types.PeerKeyFromBytes(identityPub)
 
 	s := &Store{
-		LocalID: localID,
-		disk:    d,
+		LocalID:     localID,
+		disk:        d,
+		trustBundle: trustBundle,
 		nodes: map[types.PeerKey]nodeRecord{
 			localID: {
 				maxCounter:  1,
@@ -124,6 +134,7 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 				},
 			},
 		},
+		revocations:        make(map[types.PeerKey]*admissionv1.SignedRevocation),
 		desiredConnections: make(map[string]Connection),
 	}
 
@@ -358,8 +369,12 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 
 	if deleted {
 		applyDeleteLocked(&rec, key)
+		if key.kind == attrRevocation {
+			delete(s.revocations, key.peer)
+		}
 	} else {
 		applyValueLocked(&rec, event, key)
+		s.applyRevocationIfValid(event, key)
 	}
 
 	rec.log[key] = logEntry{Counter: event.GetCounter(), Deleted: deleted}
@@ -371,6 +386,26 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 
 	s.nodes[peerID] = rec
 	return ApplyResult{}
+}
+
+// applyRevocationIfValid checks whether the event carries a revocation change
+// and, if the signature is valid against the trust bundle, records it.
+// Caller must hold s.mu.
+func (s *Store) applyRevocationIfValid(event *statev1.GossipEvent, key attrKey) {
+	if key.kind != attrRevocation {
+		return
+	}
+	revChange, ok := event.GetChange().(*statev1.GossipEvent_Revocation)
+	if !ok {
+		return
+	}
+	rev := revChange.Revocation.GetRevocation()
+	if rev == nil || s.trustBundle == nil {
+		return
+	}
+	if err := auth.VerifyRevocation(rev, s.trustBundle); err == nil {
+		s.revocations[key.peer] = rev
+	}
 }
 
 func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
@@ -392,6 +427,11 @@ func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
 			return attrKey{}, false
 		}
 		return reachabilityAttrKey(pk), true
+	case *statev1.GossipEvent_Revocation:
+		if v.Revocation == nil || len(v.Revocation.GetSubjectPub()) == 0 {
+			return attrKey{}, false
+		}
+		return revocationAttrKey(types.PeerKeyFromBytes(v.Revocation.GetSubjectPub())), true
 	default:
 		return attrKey{}, false
 	}
@@ -416,6 +456,9 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 		rec.Services = m
 	case attrReachability:
 		delete(rec.Reachable, key.peer)
+	case attrRevocation:
+		// Revocation deletion is a no-op at the nodeRecord level;
+		// the Store-level revocations map is handled in applyEventLocked.
 	}
 }
 
@@ -445,6 +488,8 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 		}
 	case *statev1.GossipEvent_Reachability:
 		rec.Reachable[key.peer] = struct{}{}
+	case *statev1.GossipEvent_Revocation:
+		// Revocation values are handled in applyEventLocked at the Store level.
 	}
 }
 
@@ -710,6 +755,45 @@ func (s *Store) SetLastAddr(peerID types.PeerKey, addr string) {
 	s.nodes[peerID] = rec
 }
 
+func (s *Store) IsSubjectRevoked(subjectPub []byte) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	pk := types.PeerKeyFromBytes(subjectPub)
+	_, ok := s.revocations[pk]
+	return ok
+}
+
+func (s *Store) AddRevocation(rev *admissionv1.SignedRevocation) []*statev1.GossipEvent {
+	if rev == nil || rev.GetClaims() == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	subject := types.PeerKeyFromBytes(rev.GetClaims().GetSubjectPub())
+	s.revocations[subject] = rev
+
+	local := s.nodes[s.LocalID]
+	key := revocationAttrKey(subject)
+	local.maxCounter++
+	counter := local.maxCounter
+	local.log[key] = logEntry{Counter: counter}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Change: &statev1.GossipEvent_Revocation{
+			Revocation: &statev1.RevocationChange{
+				SubjectPub: rev.GetClaims().GetSubjectPub(),
+				Revocation: rev,
+			},
+		},
+	}}
+}
+
 func (s *Store) IdentityPub(peerID types.PeerKey) ([]byte, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -802,7 +886,7 @@ func (s *Store) buildEventsAbove(peerID types.PeerKey, rec nodeRecord, minCounte
 		if entry.Counter <= minCounter {
 			continue
 		}
-		event := buildEventFromLog(peerIDStr, key, entry, rec)
+		event := buildEventFromLog(peerIDStr, key, entry, rec, s.revocations)
 		if event != nil {
 			events = append(events, event)
 		}
@@ -813,7 +897,7 @@ func (s *Store) buildEventsAbove(peerID types.PeerKey, rec nodeRecord, minCounte
 
 // buildEventFromLog constructs a single GossipEvent from a log entry and the
 // materialized view. Caller must hold the store's mu (at least RLock).
-func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRecord) *statev1.GossipEvent {
+func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRecord, revocations map[types.PeerKey]*admissionv1.SignedRevocation) *statev1.GossipEvent {
 	event := &statev1.GossipEvent{
 		PeerId:  peerIDStr,
 		Counter: entry.Counter,
@@ -854,6 +938,16 @@ func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRe
 		event.Change = &statev1.GossipEvent_Reachability{
 			Reachability: &statev1.ReachabilityChange{PeerId: key.peer.String()},
 		}
+	case attrRevocation:
+		change := &statev1.RevocationChange{SubjectPub: key.peer.Bytes()}
+		if !entry.Deleted {
+			if rev, ok := revocations[key.peer]; ok {
+				change.Revocation = rev
+			} else {
+				return nil
+			}
+		}
+		event.Change = &statev1.GossipEvent_Revocation{Revocation: change}
 	default:
 		return nil
 	}

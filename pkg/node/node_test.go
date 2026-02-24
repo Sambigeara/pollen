@@ -84,7 +84,7 @@ func (tn *testNode) start(t *testing.T) {
 
 	pub := tn.privKey.Public().(ed25519.PublicKey)
 
-	stateStore, err := store.Load(tn.dir, pub)
+	stateStore, err := store.Load(tn.dir, pub, tn.creds.Trust)
 	require.NoError(t, err)
 
 	peerStore := peer.NewStore()
@@ -118,7 +118,7 @@ func (tn *testNode) start(t *testing.T) {
 
 	tn.port = n.ListenPort()
 	tn.node = n
-	tn.svc = node.NewNodeService(n, cancel)
+	tn.svc = node.NewNodeService(n, cancel, nil, nil)
 	tn.store = stateStore
 	tn.peers = peerStore
 	tn.cancel = cancel

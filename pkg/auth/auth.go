@@ -44,6 +44,7 @@ const (
 	sigContextMembership = "pollen.membership.v1"
 	sigContextJoinClaims = "pollen.join.v1"
 	sigContextInvite     = "pollen.invite.v1"
+	sigContextRevocation = "pollen.revocation.v1"
 )
 
 var (
@@ -80,7 +81,7 @@ func LoadOrEnrollNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, to
 	return EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
 }
 
-func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now time.Time) (*NodeCredentials, error) {
+func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now time.Time, membershipTTL time.Duration) (*NodeCredentials, error) {
 	existing, err := loadNodeCredentialsIfPresent(pollenDir)
 	if err != nil {
 		return nil, err
@@ -93,13 +94,17 @@ func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now
 		return existing, nil
 	}
 
+	if membershipTTL <= 0 {
+		membershipTTL = bootstrapMembershipTTL
+	}
+
 	adminPriv, adminPub, err := LoadOrCreateAdminKey(pollenDir)
 	if err != nil {
 		return nil, err
 	}
 
 	trust := NewTrustBundle(adminPub)
-	cert, err := IssueMembershipCert(adminPriv, trust.GetClusterId(), nodePub, now.Add(-timeSkewAllowance), now.Add(bootstrapMembershipTTL))
+	cert, err := IssueMembershipCert(adminPriv, trust.GetClusterId(), nodePub, now.Add(-timeSkewAllowance), now.Add(membershipTTL))
 	if err != nil {
 		return nil, err
 	}
@@ -691,6 +696,54 @@ func DecodeJoinToken(s string) (*admissionv1.JoinToken, error) {
 	}
 
 	return token, nil
+}
+
+func SignRevocation(adminPriv ed25519.PrivateKey, clusterID, subjectPub []byte) (*admissionv1.SignedRevocation, error) {
+	adminPub, ok := adminPriv.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, errors.New("admin private key is not ed25519")
+	}
+
+	claims := &admissionv1.RevocationClaims{
+		ClusterId:     append([]byte(nil), clusterID...),
+		SubjectPub:    append([]byte(nil), subjectPub...),
+		AdminPub:      append([]byte(nil), adminPub...),
+		RevokedAtUnix: time.Now().Unix(),
+	}
+
+	msg, err := signaturePayload(claims)
+	if err != nil {
+		return nil, err
+	}
+
+	sig, err := signPayload(adminPriv, msg, sigContextRevocation)
+	if err != nil {
+		return nil, err
+	}
+
+	return &admissionv1.SignedRevocation{Claims: claims, Signature: sig}, nil
+}
+
+func VerifyRevocation(rev *admissionv1.SignedRevocation, trust *admissionv1.TrustBundle) error {
+	if rev == nil || rev.GetClaims() == nil {
+		return errors.New("revocation missing claims")
+	}
+
+	claims := rev.GetClaims()
+	if !bytes.Equal(claims.GetClusterId(), trust.GetClusterId()) {
+		return errors.New("revocation cluster id mismatch")
+	}
+
+	if !bytes.Equal(claims.GetAdminPub(), trust.GetRootPub()) {
+		return errors.New("revocation not signed by cluster root key")
+	}
+
+	msg, err := signaturePayload(claims)
+	if err != nil {
+		return err
+	}
+
+	return verifyPayload(ed25519.PublicKey(claims.GetAdminPub()), msg, rev.GetSignature(), sigContextRevocation)
 }
 
 func validateTrustBundle(trust *admissionv1.TrustBundle) error {

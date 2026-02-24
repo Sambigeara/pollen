@@ -233,7 +233,7 @@ func startMeshHarnessWithCreds(
 ) *meshHarness {
 	t.Helper()
 
-	m, err := mesh.NewMesh(port, priv, creds)
+	m, err := mesh.NewMesh(port, priv, creds, 0, nil)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())

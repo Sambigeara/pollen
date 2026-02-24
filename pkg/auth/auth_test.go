@@ -194,6 +194,47 @@ func TestVerifyMembershipCertRejectsIssuerKeyMismatch(t *testing.T) {
 	require.ErrorContains(t, err, "issuer key mismatch")
 }
 
+func TestSignAndVerifyRevocation(t *testing.T) {
+	adminPub, adminPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(adminPub)
+
+	subjectPub, _ := newKeyPair(t)
+	rev, err := auth.SignRevocation(adminPriv, trust.GetClusterId(), subjectPub)
+	require.NoError(t, err)
+	require.Equal(t, subjectPub, ed25519.PublicKey(rev.GetClaims().GetSubjectPub()))
+
+	err = auth.VerifyRevocation(rev, trust)
+	require.NoError(t, err)
+}
+
+func TestVerifyRevocationWrongKey(t *testing.T) {
+	adminPub, _ := newKeyPair(t)
+	trust := auth.NewTrustBundle(adminPub)
+
+	_, attackerPriv := newKeyPair(t)
+	subjectPub, _ := newKeyPair(t)
+	rev, err := auth.SignRevocation(attackerPriv, trust.GetClusterId(), subjectPub)
+	require.NoError(t, err)
+
+	err = auth.VerifyRevocation(rev, trust)
+	require.Error(t, err)
+}
+
+func TestVerifyRevocationWrongCluster(t *testing.T) {
+	adminPub, adminPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(adminPub)
+
+	otherPub, _ := newKeyPair(t)
+	otherTrust := auth.NewTrustBundle(otherPub)
+
+	subjectPub, _ := newKeyPair(t)
+	rev, err := auth.SignRevocation(adminPriv, trust.GetClusterId(), subjectPub)
+	require.NoError(t, err)
+
+	err = auth.VerifyRevocation(rev, otherTrust)
+	require.ErrorContains(t, err, "cluster id mismatch")
+}
+
 func newKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 

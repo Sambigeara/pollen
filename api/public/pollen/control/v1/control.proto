@@ -14,6 +14,7 @@ service ControlService {
   rpc UnregisterService(UnregisterServiceRequest) returns (UnregisterServiceResponse);
   rpc ConnectService(ConnectServiceRequest) returns (ConnectServiceResponse);
   rpc ConnectPeer(ConnectPeerRequest) returns (ConnectPeerResponse);
+  rpc RevokePeer(RevokePeerRequest) returns (RevokePeerResponse);
 }
 
 message NodeRef {
@@ -62,11 +63,18 @@ message GetBootstrapInfoResponse {
 
 message GetStatusRequest {}
 
+message CertificateInfo {
+  int64 not_before_unix = 1;
+  int64 not_after_unix = 2;
+  string cert_type = 3;
+}
+
 message GetStatusResponse {
   NodeSummary self = 1;
   repeated NodeSummary nodes = 2;
   repeated ServiceSummary services = 3;
   repeated ConnectionSummary connections = 4;
+  repeated CertificateInfo certificates = 5;
 }
 
 message ConnectionSummary {
@@ -127,3 +135,9 @@ message ConnectServiceResponse {
     lte: 65535
   }];
 }
+
+message RevokePeerRequest {
+  bytes peer_id = 1 [(buf.validate.field).bytes = {len: 32}];
+}
+
+message RevokePeerResponse {}

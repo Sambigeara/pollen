@@ -63,7 +63,7 @@ func SaveAdminCert(pollenDir string, cert *admissionv1.AdminCert) error {
 	return os.WriteFile(path, raw, keyFilePerm)
 }
 
-func LoadAdminSigner(pollenDir string, now time.Time) (*AdminSigner, error) {
+func LoadAdminSigner(pollenDir string, now time.Time, adminCertTTL time.Duration) (*AdminSigner, error) {
 	adminPriv, adminPub, err := LoadAdminKey(pollenDir)
 	if err != nil {
 		return nil, err
@@ -74,7 +74,7 @@ func LoadAdminSigner(pollenDir string, now time.Time) (*AdminSigner, error) {
 		return nil, err
 	}
 
-	issuer, err := resolveAdminIssuer(pollenDir, adminPriv, adminPub, trust, now)
+	issuer, err := resolveAdminIssuer(pollenDir, adminPriv, adminPub, trust, now, adminCertTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -92,14 +92,18 @@ func LoadAdminSigner(pollenDir string, now time.Time) (*AdminSigner, error) {
 	}, nil
 }
 
-func resolveAdminIssuer(pollenDir string, adminPriv ed25519.PrivateKey, adminPub ed25519.PublicKey, trust *admissionv1.TrustBundle, now time.Time) (*admissionv1.AdminCert, error) {
+func resolveAdminIssuer(pollenDir string, adminPriv ed25519.PrivateKey, adminPub ed25519.PublicKey, trust *admissionv1.TrustBundle, now time.Time, adminCertTTL time.Duration) (*admissionv1.AdminCert, error) {
 	if bytes.Equal(adminPub, trust.GetRootPub()) {
+		ttl := adminCertTTL
+		if ttl <= 0 {
+			ttl = defaultAdminCertTTL
+		}
 		return IssueAdminCert(
 			adminPriv,
 			trust.GetClusterId(),
 			adminPub,
 			now.Add(-timeSkewAllowance),
-			now.Add(defaultAdminCertTTL),
+			now.Add(ttl),
 		)
 	}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/charmbracelet/lipgloss"
@@ -53,6 +54,9 @@ func runStatus(cmd *cobra.Command, args []string) {
 			sections = append(sections, s)
 		}
 		if s := collectConnectionsSection(st, opts); len(s.rows) > 0 {
+			sections = append(sections, s)
+		}
+		if s := collectCertificatesSection(st); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
 	case "nodes", "node":
@@ -171,6 +175,32 @@ func collectConnectionsSection(st *controlv1.GetStatusResponse, opts statusViewO
 		provider := formatPeerID(c.GetPeer().GetPeerId(), opts.wide)
 		sec.rows = append(sec.rows, []string{
 			fmt.Sprintf("%d", c.GetLocalPort()), service, provider, fmt.Sprintf("%d", c.GetRemotePort()),
+		})
+	}
+	return sec
+}
+
+const certExpiryWarningDays = 30
+
+func collectCertificatesSection(st *controlv1.GetStatusResponse) statusSection {
+	sec := statusSection{
+		title:   "CERTIFICATES",
+		headers: []string{"TYPE", "EXPIRES", "STATUS"},
+	}
+
+	for _, cert := range st.GetCertificates() {
+		expires := time.Unix(cert.GetNotAfterUnix(), 0)
+		remaining := time.Until(expires)
+		status := "valid"
+		if remaining <= 0 {
+			status = "EXPIRED"
+		} else if remaining < certExpiryWarningDays*24*time.Hour { //nolint:mnd
+			status = fmt.Sprintf("expires in %d days", int(remaining.Hours())/24) //nolint:mnd
+		}
+		sec.rows = append(sec.rows, []string{
+			cert.GetCertType(),
+			expires.Format(time.DateOnly),
+			status,
 		})
 	}
 	return sec

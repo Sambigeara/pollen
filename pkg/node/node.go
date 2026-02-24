@@ -67,6 +67,7 @@ type Config struct {
 	Port                int
 	GossipInterval      time.Duration
 	PeerTickInterval    time.Duration
+	TLSCertTTL          time.Duration
 	GossipJitter        float64
 	DisableGossipJitter bool
 }
@@ -107,7 +108,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 
 	stateStore.SetLocalNetwork(ips, uint32(conf.Port))
 
-	m, err := mesh.NewMesh(conf.Port, privKey, creds)
+	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSCertTTL, stateStore.IsSubjectRevoked)
 	if err != nil {
 		log.Error("failed to load mesh", zap.Error(err))
 		return nil, err

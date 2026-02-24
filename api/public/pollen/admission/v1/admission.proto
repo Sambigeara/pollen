@@ -81,3 +81,15 @@ message InviteToken {
   InviteTokenClaims claims = 1 [(buf.validate.field).required = true];
   bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
 }
+
+message RevocationClaims {
+  bytes cluster_id = 1 [(buf.validate.field).bytes = {len: 32}];
+  bytes subject_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+  bytes admin_pub = 3 [(buf.validate.field).bytes = {len: 32}];
+  int64 revoked_at_unix = 4;
+}
+
+message SignedRevocation {
+  RevocationClaims claims = 1 [(buf.validate.field).required = true];
+  bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
+}

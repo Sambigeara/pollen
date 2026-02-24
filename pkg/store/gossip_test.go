@@ -1,9 +1,13 @@
 package store
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"testing"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -22,6 +26,7 @@ func newTestStore(pub []byte) *Store {
 				},
 			},
 		},
+		revocations:        make(map[types.PeerKey]*admissionv1.SignedRevocation),
 		desiredConnections: make(map[string]Connection),
 	}
 }
@@ -643,7 +648,7 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 	localPub := make([]byte, 32)
 	localPub[0] = 1
 
-	s, err := Load(dir, localPub)
+	s, err := Load(dir, localPub, nil)
 	if err != nil {
 		t.Fatalf("load store: %v", err)
 	}
@@ -669,7 +674,7 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 		t.Fatalf("close store: %v", err)
 	}
 
-	s2, err := Load(dir, localPub)
+	s2, err := Load(dir, localPub, nil)
 	if err != nil {
 		t.Fatalf("reload store: %v", err)
 	}
@@ -693,5 +698,142 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 	}
 	if peers[0].LastAddr != "203.0.113.5:41234" {
 		t.Fatalf("expected LastAddr=203.0.113.5:41234, got %q", peers[0].LastAddr)
+	}
+}
+
+func TestAddRevocationProducesGossipEvents(t *testing.T) {
+	adminPub, adminPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := auth.NewTrustBundle(adminPub)
+
+	localPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newTestStore(localPub)
+	s.trustBundle = trust
+
+	subjectPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err := auth.SignRevocation(adminPriv, trust.GetClusterId(), subjectPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events := s.AddRevocation(rev)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	revChange, ok := events[0].GetChange().(*statev1.GossipEvent_Revocation)
+	if !ok {
+		t.Fatal("expected RevocationChange event")
+	}
+	if string(revChange.Revocation.GetSubjectPub()) != string(subjectPub) {
+		t.Fatal("subject pub mismatch")
+	}
+
+	if !s.IsSubjectRevoked(subjectPub) {
+		t.Fatal("expected subject to be revoked")
+	}
+}
+
+func TestApplyRevocationFromGossip(t *testing.T) {
+	adminPub, adminPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := auth.NewTrustBundle(adminPub)
+
+	localPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newTestStore(localPub)
+	s.trustBundle = trust
+
+	remotePub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subjectPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err := auth.SignRevocation(adminPriv, trust.GetClusterId(), subjectPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	remotePeerID := types.PeerKeyFromBytes(remotePub)
+	event := &statev1.GossipEvent{
+		PeerId:  remotePeerID.String(),
+		Counter: 1,
+		Change: &statev1.GossipEvent_Revocation{
+			Revocation: &statev1.RevocationChange{
+				SubjectPub: subjectPub,
+				Revocation: rev,
+			},
+		},
+	}
+
+	s.ApplyEvents([]*statev1.GossipEvent{event})
+
+	if !s.IsSubjectRevoked(subjectPub) {
+		t.Fatal("expected subject to be revoked after gossip")
+	}
+}
+
+func TestForgedRevocationRejected(t *testing.T) {
+	adminPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := auth.NewTrustBundle(adminPub)
+
+	localPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newTestStore(localPub)
+	s.trustBundle = trust
+
+	_, attackerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subjectPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgedRev, err := auth.SignRevocation(attackerPriv, trust.GetClusterId(), subjectPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	remotePub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remotePeerID := types.PeerKeyFromBytes(remotePub)
+	event := &statev1.GossipEvent{
+		PeerId:  remotePeerID.String(),
+		Counter: 1,
+		Change: &statev1.GossipEvent_Revocation{
+			Revocation: &statev1.RevocationChange{
+				SubjectPub: subjectPub,
+				Revocation: forgedRev,
+			},
+		},
+	}
+
+	s.ApplyEvents([]*statev1.GossipEvent{event})
+
+	if s.IsSubjectRevoked(subjectPub) {
+		t.Fatal("forged revocation should not be accepted")
 	}
 }

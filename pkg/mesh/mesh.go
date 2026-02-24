@@ -63,21 +63,22 @@ type Mesh interface {
 }
 
 type impl struct {
-	meshCert     tls.Certificate
-	bareCert     tls.Certificate
-	socks        sock.SockStore
-	inCh         chan peer.Input
-	recvCh       chan Packet
-	inviteSigner *auth.AdminSigner
-	streamCh     chan incomingStream
-	trustBundle  *admissionv1.TrustBundle
-	log          *zap.SugaredLogger
-	listener     *quic.Listener
-	sessions     *sessionRegistry
-	mainQT       *quic.Transport
-	acceptWG     sync.WaitGroup
-	port         int
-	localKey     types.PeerKey
+	meshCert         tls.Certificate
+	bareCert         tls.Certificate
+	socks            sock.SockStore
+	inCh             chan peer.Input
+	recvCh           chan Packet
+	inviteSigner     *auth.AdminSigner
+	streamCh         chan incomingStream
+	trustBundle      *admissionv1.TrustBundle
+	isSubjectRevoked func([]byte) bool
+	log              *zap.SugaredLogger
+	listener         *quic.Listener
+	sessions         *sessionRegistry
+	mainQT           *quic.Transport
+	acceptWG         sync.WaitGroup
+	port             int
+	localKey         types.PeerKey
 }
 
 type incomingStream struct {
@@ -96,13 +97,13 @@ type directDialResult struct {
 	err     error
 }
 
-func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials) (Mesh, error) {
-	meshCert, err := generateIdentityCert(signPriv, creds.Cert)
+func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsCertTTL time.Duration, isSubjectRevoked func([]byte) bool) (Mesh, error) {
+	meshCert, err := generateIdentityCert(signPriv, creds.Cert, tlsCertTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate mesh cert: %w", err)
 	}
 
-	bareCert, err := generateIdentityCert(signPriv, nil)
+	bareCert, err := generateIdentityCert(signPriv, nil, tlsCertTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate bare cert: %w", err)
 	}
@@ -113,18 +114,19 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 	}
 
 	return &impl{
-		log:          zap.S().Named("mesh"),
-		meshCert:     meshCert,
-		bareCert:     bareCert,
-		trustBundle:  creds.Trust,
-		inviteSigner: creds.InviteSigner,
-		localKey:     types.PeerKeyFromBytes(pub),
-		socks:        sock.NewSockStore(),
-		port:         defaultPort,
-		sessions:     newSessionRegistry(),
-		recvCh:       make(chan Packet, queueBufSize),
-		inCh:         make(chan peer.Input, queueBufSize),
-		streamCh:     make(chan incomingStream, queueBufSize),
+		log:              zap.S().Named("mesh"),
+		meshCert:         meshCert,
+		bareCert:         bareCert,
+		trustBundle:      creds.Trust,
+		inviteSigner:     creds.InviteSigner,
+		isSubjectRevoked: isSubjectRevoked,
+		localKey:         types.PeerKeyFromBytes(pub),
+		socks:            sock.NewSockStore(),
+		port:             defaultPort,
+		sessions:         newSessionRegistry(),
+		recvCh:           make(chan Packet, queueBufSize),
+		inCh:             make(chan peer.Input, queueBufSize),
+		streamCh:         make(chan incomingStream, queueBufSize),
 	}, nil
 }
 
@@ -136,10 +138,11 @@ func (m *impl) Start(ctx context.Context) error {
 
 	qt := &quic.Transport{Conn: conn}
 	ln, err := qt.Listen(newServerTLSConfig(serverTLSParams{
-		meshCert:      m.meshCert,
-		inviteCert:    m.bareCert,
-		trustBundle:   m.trustBundle,
-		inviteEnabled: m.inviteSigner != nil,
+		meshCert:         m.meshCert,
+		inviteCert:       m.bareCert,
+		trustBundle:      m.trustBundle,
+		inviteEnabled:    m.inviteSigner != nil,
+		isSubjectRevoked: m.isSubjectRevoked,
 	}), quicConfig())
 	if err != nil {
 		_ = conn.Close()
@@ -202,7 +205,7 @@ func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteClo
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle)
+	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
 	qCfg := quicConfig()
 
 	qc, err := m.mainQT.Dial(ctx, addr, tlsCfg, qCfg)
@@ -217,7 +220,7 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 }
 
 func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle)
+	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
 	qCfg := quicConfig()
 
 	conn, err := m.socks.Punch(ctx, addr)

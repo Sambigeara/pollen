@@ -26,6 +26,7 @@ const (
 	ControlService_UnregisterService_FullMethodName = "/pollen.control.v1.ControlService/UnregisterService"
 	ControlService_ConnectService_FullMethodName    = "/pollen.control.v1.ControlService/ConnectService"
 	ControlService_ConnectPeer_FullMethodName       = "/pollen.control.v1.ControlService/ConnectPeer"
+	ControlService_RevokePeer_FullMethodName        = "/pollen.control.v1.ControlService/RevokePeer"
 )
 
 // ControlServiceClient is the client API for ControlService service.
@@ -39,6 +40,7 @@ type ControlServiceClient interface {
 	UnregisterService(ctx context.Context, in *UnregisterServiceRequest, opts ...grpc.CallOption) (*UnregisterServiceResponse, error)
 	ConnectService(ctx context.Context, in *ConnectServiceRequest, opts ...grpc.CallOption) (*ConnectServiceResponse, error)
 	ConnectPeer(ctx context.Context, in *ConnectPeerRequest, opts ...grpc.CallOption) (*ConnectPeerResponse, error)
+	RevokePeer(ctx context.Context, in *RevokePeerRequest, opts ...grpc.CallOption) (*RevokePeerResponse, error)
 }
 
 type controlServiceClient struct {
@@ -119,6 +121,16 @@ func (c *controlServiceClient) ConnectPeer(ctx context.Context, in *ConnectPeerR
 	return out, nil
 }
 
+func (c *controlServiceClient) RevokePeer(ctx context.Context, in *RevokePeerRequest, opts ...grpc.CallOption) (*RevokePeerResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RevokePeerResponse)
+	err := c.cc.Invoke(ctx, ControlService_RevokePeer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ControlServiceServer is the server API for ControlService service.
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
@@ -130,6 +142,7 @@ type ControlServiceServer interface {
 	UnregisterService(context.Context, *UnregisterServiceRequest) (*UnregisterServiceResponse, error)
 	ConnectService(context.Context, *ConnectServiceRequest) (*ConnectServiceResponse, error)
 	ConnectPeer(context.Context, *ConnectPeerRequest) (*ConnectPeerResponse, error)
+	RevokePeer(context.Context, *RevokePeerRequest) (*RevokePeerResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
 
@@ -160,6 +173,9 @@ func (UnimplementedControlServiceServer) ConnectService(context.Context, *Connec
 }
 func (UnimplementedControlServiceServer) ConnectPeer(context.Context, *ConnectPeerRequest) (*ConnectPeerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ConnectPeer not implemented")
+}
+func (UnimplementedControlServiceServer) RevokePeer(context.Context, *RevokePeerRequest) (*RevokePeerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokePeer not implemented")
 }
 func (UnimplementedControlServiceServer) mustEmbedUnimplementedControlServiceServer() {}
 func (UnimplementedControlServiceServer) testEmbeddedByValue()                        {}
@@ -308,6 +324,24 @@ func _ControlService_ConnectPeer_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_RevokePeer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokePeerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).RevokePeer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_RevokePeer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).RevokePeer(ctx, req.(*RevokePeerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ControlService_ServiceDesc is the grpc.ServiceDesc for ControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -342,6 +376,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ConnectPeer",
 			Handler:    _ControlService_ConnectPeer_Handler,
+		},
+		{
+			MethodName: "RevokePeer",
+			Handler:    _ControlService_RevokePeer_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

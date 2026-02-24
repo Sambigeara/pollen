@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"gopkg.in/yaml.v3"
@@ -23,6 +24,11 @@ const (
 	directoryPerm         = 0o700
 	configFilePerm        = 0o600
 	ed25519PublicKeyBytes = 32
+
+	DefaultMembershipDays  = 365
+	DefaultAdminDays       = 1825 // 5 * 365
+	DefaultTLSIdentityDays = 3650 // 10 * 365
+	hoursPerDay            = 24
 )
 
 type BootstrapPeer struct {
@@ -30,8 +36,36 @@ type BootstrapPeer struct {
 	Addrs   []string `yaml:"addrs,omitempty"`
 }
 
+type CertTTLs struct { //nolint:tagliatelle
+	MembershipDays  int `yaml:"membershipDays,omitempty"`
+	AdminDays       int `yaml:"adminDays,omitempty"`
+	TLSIdentityDays int `yaml:"tlsIdentityDays,omitempty"`
+}
+
 type Config struct {
+	CertTTLs       *CertTTLs       `yaml:"certTTLs,omitempty"` //nolint:tagliatelle
 	BootstrapPeers []BootstrapPeer `yaml:"bootstrapPeers,omitempty"`
+}
+
+func (c *Config) MembershipTTL() time.Duration {
+	if c != nil && c.CertTTLs != nil && c.CertTTLs.MembershipDays > 0 {
+		return time.Duration(c.CertTTLs.MembershipDays) * hoursPerDay * time.Hour
+	}
+	return DefaultMembershipDays * hoursPerDay * time.Hour
+}
+
+func (c *Config) AdminCertTTL() time.Duration {
+	if c != nil && c.CertTTLs != nil && c.CertTTLs.AdminDays > 0 {
+		return time.Duration(c.CertTTLs.AdminDays) * hoursPerDay * time.Hour
+	}
+	return DefaultAdminDays * hoursPerDay * time.Hour
+}
+
+func (c *Config) TLSIdentityTTL() time.Duration {
+	if c != nil && c.CertTTLs != nil && c.CertTTLs.TLSIdentityDays > 0 {
+		return time.Duration(c.CertTTLs.TLSIdentityDays) * hoursPerDay * time.Hour
+	}
+	return DefaultTLSIdentityDays * hoursPerDay * time.Hour
 }
 
 func Load(pollenDir string) (*Config, error) {
