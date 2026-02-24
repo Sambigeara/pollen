@@ -678,7 +678,7 @@ func (s *Store) KnownPeers() []KnownPeer {
 		if peerID == s.LocalID {
 			continue
 		}
-		if len(rec.IPs) == 0 || rec.LocalPort == 0 {
+		if rec.LastAddr == "" && (len(rec.IPs) == 0 || rec.LocalPort == 0) {
 			continue
 		}
 		known = append(known, KnownPeer{

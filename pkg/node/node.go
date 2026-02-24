@@ -381,13 +381,13 @@ func (n *Node) syncPeersFromState() {
 			ips = append(ips, ip)
 		}
 
-		if len(ips) == 0 {
-			continue
-		}
-
 		var lastAddr *net.UDPAddr
 		if kp.LastAddr != "" {
 			lastAddr, _ = net.ResolveUDPAddr("udp", kp.LastAddr)
+		}
+
+		if len(ips) == 0 && lastAddr == nil {
+			continue
 		}
 
 		n.peers.Step(time.Now(), peer.DiscoverPeer{

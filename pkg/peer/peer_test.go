@@ -204,3 +204,66 @@ func TestEagerRetrySkippedWhenNoLastAddr(t *testing.T) {
 	_, isAttempt := outputs[0].(AttemptConnect)
 	require.True(t, isAttempt)
 }
+
+func TestEagerRetryWithOnlyLastAddr(t *testing.T) {
+	s := NewStore()
+	key := testPeerKey(1)
+	now := time.Now()
+
+	lastAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.8"), Port: 41000}
+	s.Step(now, DiscoverPeer{PeerKey: key, LastAddr: lastAddr})
+
+	p, ok := s.Get(key)
+	require.True(t, ok)
+	assert.Equal(t, ConnectStageEagerRetry, p.Stage)
+
+	outputs := s.Step(now, Tick{})
+	require.Len(t, outputs, 1)
+	ec, ok := outputs[0].(AttemptEagerConnect)
+	require.True(t, ok)
+	assert.Equal(t, key, ec.PeerKey)
+	assert.Equal(t, lastAddr, ec.Addr)
+}
+
+func TestUnreachableRetryReturnsToEagerWithLastAddr(t *testing.T) {
+	s := NewStore()
+	key := testPeerKey(1)
+	now := time.Now()
+
+	lastAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.9"), Port: 42000}
+	s.Step(now, DiscoverPeer{
+		PeerKey:  key,
+		Ips:      []net.IP{net.ParseIP("10.0.0.1")},
+		Port:     9000,
+		LastAddr: lastAddr,
+	})
+
+	// Eager attempt fails, then direct fails twice to punch.
+	s.Step(now, Tick{})
+	s.Step(now, ConnectFailed{PeerKey: key})
+	s.Step(now.Add(2*time.Second), Tick{})
+	s.Step(now.Add(2*time.Second), ConnectFailed{PeerKey: key})
+	s.Step(now.Add(4*time.Second), Tick{})
+	s.Step(now.Add(4*time.Second), ConnectFailed{PeerKey: key})
+
+	// Punch fails twice -> unreachable.
+	s.Step(now.Add(6*time.Second), Tick{})
+	s.Step(now.Add(6*time.Second), ConnectFailed{PeerKey: key})
+	outputs := s.Step(now.Add(8*time.Second), Tick{})
+	require.Len(t, outputs, 1)
+	_, isPunch := outputs[0].(RequestPunchCoordination)
+	require.True(t, isPunch)
+	s.Step(now.Add(8*time.Second), ConnectFailed{PeerKey: key})
+
+	p, ok := s.Get(key)
+	require.True(t, ok)
+	assert.Equal(t, PeerStateUnreachable, p.State)
+
+	// After unreachable retry interval, stage should return to eager retry.
+	outputs = s.Step(now.Add(8*time.Second).Add(unreachableRetryInterval), Tick{})
+	require.Len(t, outputs, 1)
+	ec, ok := outputs[0].(AttemptEagerConnect)
+	require.True(t, ok)
+	assert.Equal(t, key, ec.PeerKey)
+	assert.Equal(t, lastAddr, ec.Addr)
+}

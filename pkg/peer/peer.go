@@ -250,7 +250,11 @@ func (s *Store) tick(now time.Time) []Output {
 		case PeerStateUnreachable:
 			// Retry unreachable peers after backoff expires
 			p.State = PeerStateDiscovered
-			p.Stage = ConnectStageDirect
+			if p.LastAddr != nil {
+				p.Stage = ConnectStageEagerRetry
+			} else {
+				p.Stage = ConnectStageDirect
+			}
 			p.StageAttempts = 0
 		}
 
