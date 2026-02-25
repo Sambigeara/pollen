@@ -543,16 +543,17 @@ func (x *JoinToken) GetSignature() []byte {
 }
 
 type InviteTokenClaims struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TokenId       string                 `protobuf:"bytes,1,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
-	Trust         *TrustBundle           `protobuf:"bytes,2,opt,name=trust,proto3" json:"trust,omitempty"`
-	Issuer        *AdminCert             `protobuf:"bytes,3,opt,name=issuer,proto3" json:"issuer,omitempty"`
-	Bootstrap     []*BootstrapPeer       `protobuf:"bytes,4,rep,name=bootstrap,proto3" json:"bootstrap,omitempty"`
-	SubjectPub    []byte                 `protobuf:"bytes,5,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
-	IssuedAtUnix  int64                  `protobuf:"varint,6,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
-	ExpiresAtUnix int64                  `protobuf:"varint,7,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	TokenId              string                 `protobuf:"bytes,1,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
+	Trust                *TrustBundle           `protobuf:"bytes,2,opt,name=trust,proto3" json:"trust,omitempty"`
+	Issuer               *AdminCert             `protobuf:"bytes,3,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	Bootstrap            []*BootstrapPeer       `protobuf:"bytes,4,rep,name=bootstrap,proto3" json:"bootstrap,omitempty"`
+	SubjectPub           []byte                 `protobuf:"bytes,5,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
+	IssuedAtUnix         int64                  `protobuf:"varint,6,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
+	ExpiresAtUnix        int64                  `protobuf:"varint,7,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
+	MembershipTtlSeconds int64                  `protobuf:"varint,8,opt,name=membership_ttl_seconds,json=membershipTtlSeconds,proto3" json:"membership_ttl_seconds,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *InviteTokenClaims) Reset() {
@@ -634,6 +635,13 @@ func (x *InviteTokenClaims) GetExpiresAtUnix() int64 {
 	return 0
 }
 
+func (x *InviteTokenClaims) GetMembershipTtlSeconds() int64 {
+	if x != nil {
+		return x.MembershipTtlSeconds
+	}
+	return 0
+}
+
 type InviteToken struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Claims        *InviteTokenClaims     `protobuf:"bytes,1,opt,name=claims,proto3" json:"claims,omitempty"`
@@ -686,6 +694,126 @@ func (x *InviteToken) GetSignature() []byte {
 	return nil
 }
 
+type RevocationEntry struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ClusterId      []byte                 `protobuf:"bytes,1,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	SubjectPub     []byte                 `protobuf:"bytes,2,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
+	RevokedAtUnix  int64                  `protobuf:"varint,3,opt,name=revoked_at_unix,json=revokedAtUnix,proto3" json:"revoked_at_unix,omitempty"`
+	IssuerAdminPub []byte                 `protobuf:"bytes,4,opt,name=issuer_admin_pub,json=issuerAdminPub,proto3" json:"issuer_admin_pub,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RevocationEntry) Reset() {
+	*x = RevocationEntry{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevocationEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevocationEntry) ProtoMessage() {}
+
+func (x *RevocationEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevocationEntry.ProtoReflect.Descriptor instead.
+func (*RevocationEntry) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *RevocationEntry) GetClusterId() []byte {
+	if x != nil {
+		return x.ClusterId
+	}
+	return nil
+}
+
+func (x *RevocationEntry) GetSubjectPub() []byte {
+	if x != nil {
+		return x.SubjectPub
+	}
+	return nil
+}
+
+func (x *RevocationEntry) GetRevokedAtUnix() int64 {
+	if x != nil {
+		return x.RevokedAtUnix
+	}
+	return 0
+}
+
+func (x *RevocationEntry) GetIssuerAdminPub() []byte {
+	if x != nil {
+		return x.IssuerAdminPub
+	}
+	return nil
+}
+
+type SignedRevocation struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Entry         *RevocationEntry       `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
+	Signature     []byte                 `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignedRevocation) Reset() {
+	*x = SignedRevocation{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignedRevocation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignedRevocation) ProtoMessage() {}
+
+func (x *SignedRevocation) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignedRevocation.ProtoReflect.Descriptor instead.
+func (*SignedRevocation) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *SignedRevocation) GetEntry() *RevocationEntry {
+	if x != nil {
+		return x.Entry
+	}
+	return nil
+}
+
+func (x *SignedRevocation) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
 var File_pollen_admission_v1_admission_proto protoreflect.FileDescriptor
 
 const file_pollen_admission_v1_admission_proto_rawDesc = "" +
@@ -732,7 +860,7 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\x0fexpires_at_unix\x18\a \x01(\x03R\rexpiresAtUnix\"x\n" +
 	"\tJoinToken\x12D\n" +
 	"\x06claims\x18\x01 \x01(\v2$.pollen.admission.v1.JoinTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
-	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xff\x02\n" +
+	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xb5\x03\n" +
 	"\x11InviteTokenClaims\x12#\n" +
 	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12>\n" +
 	"\x05trust\x18\x02 \x01(\v2 .pollen.admission.v1.TrustBundleB\x06\xbaH\x03\xc8\x01\x01R\x05trust\x12>\n" +
@@ -742,9 +870,20 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\xbaH\a\xd8\x01\x01z\x02h R\n" +
 	"subjectPub\x12$\n" +
 	"\x0eissued_at_unix\x18\x06 \x01(\x03R\fissuedAtUnix\x12&\n" +
-	"\x0fexpires_at_unix\x18\a \x01(\x03R\rexpiresAtUnix\"|\n" +
+	"\x0fexpires_at_unix\x18\a \x01(\x03R\rexpiresAtUnix\x124\n" +
+	"\x16membership_ttl_seconds\x18\b \x01(\x03R\x14membershipTtlSeconds\"|\n" +
 	"\vInviteToken\x12F\n" +
 	"\x06claims\x18\x01 \x01(\v2&.pollen.admission.v1.InviteTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
+	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xbe\x01\n" +
+	"\x0fRevocationEntry\x12&\n" +
+	"\n" +
+	"cluster_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\tclusterId\x12(\n" +
+	"\vsubject_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\n" +
+	"subjectPub\x12&\n" +
+	"\x0frevoked_at_unix\x18\x03 \x01(\x03R\rrevokedAtUnix\x121\n" +
+	"\x10issuer_admin_pub\x18\x04 \x01(\fB\a\xbaH\x04z\x02h R\x0eissuerAdminPub\"}\n" +
+	"\x10SignedRevocation\x12B\n" +
+	"\x05entry\x18\x01 \x01(\v2$.pollen.admission.v1.RevocationEntryB\x06\xbaH\x03\xc8\x01\x01R\x05entry\x12%\n" +
 	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignatureBHZFgithub.com/sambigeara/pollen/api/genpb/pollen/admission/v1;admissionv1b\x06proto3"
 
 var (
@@ -759,7 +898,7 @@ func file_pollen_admission_v1_admission_proto_rawDescGZIP() []byte {
 	return file_pollen_admission_v1_admission_proto_rawDescData
 }
 
-var file_pollen_admission_v1_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_pollen_admission_v1_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_pollen_admission_v1_admission_proto_goTypes = []any{
 	(*TrustBundle)(nil),          // 0: pollen.admission.v1.TrustBundle
 	(*AdminCertClaims)(nil),      // 1: pollen.admission.v1.AdminCertClaims
@@ -771,6 +910,8 @@ var file_pollen_admission_v1_admission_proto_goTypes = []any{
 	(*JoinToken)(nil),            // 7: pollen.admission.v1.JoinToken
 	(*InviteTokenClaims)(nil),    // 8: pollen.admission.v1.InviteTokenClaims
 	(*InviteToken)(nil),          // 9: pollen.admission.v1.InviteToken
+	(*RevocationEntry)(nil),      // 10: pollen.admission.v1.RevocationEntry
+	(*SignedRevocation)(nil),     // 11: pollen.admission.v1.SignedRevocation
 }
 var file_pollen_admission_v1_admission_proto_depIdxs = []int32{
 	1,  // 0: pollen.admission.v1.AdminCert.claims:type_name -> pollen.admission.v1.AdminCertClaims
@@ -785,11 +926,12 @@ var file_pollen_admission_v1_admission_proto_depIdxs = []int32{
 	2,  // 9: pollen.admission.v1.InviteTokenClaims.issuer:type_name -> pollen.admission.v1.AdminCert
 	5,  // 10: pollen.admission.v1.InviteTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
 	8,  // 11: pollen.admission.v1.InviteToken.claims:type_name -> pollen.admission.v1.InviteTokenClaims
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	10, // 12: pollen.admission.v1.SignedRevocation.entry:type_name -> pollen.admission.v1.RevocationEntry
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_pollen_admission_v1_admission_proto_init() }
@@ -803,7 +945,7 @@ func file_pollen_admission_v1_admission_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_admission_v1_admission_proto_rawDesc), len(file_pollen_admission_v1_admission_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

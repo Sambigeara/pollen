@@ -40,7 +40,7 @@ func newClusterAuth(t *testing.T) *clusterAuth {
 
 func (c *clusterAuth) credsFor(t *testing.T, subject ed25519.PublicKey) *auth.NodeCredentials {
 	t.Helper()
-	cert, err := auth.IssueMembershipCert(c.adminPriv, c.trust.GetClusterId(), subject, time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour))
+	cert, err := auth.IssueMembershipCert(c.adminPriv, c.trust.GetClusterId(), subject, time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), config.CertTTLs{}.AdminTTL())
 	require.NoError(t, err)
 	return &auth.NodeCredentials{Trust: c.trust, Cert: cert}
 }
@@ -50,7 +50,7 @@ func (c *clusterAuth) tokenFor(t *testing.T, subject ed25519.PublicKey, bootstra
 	token, err := auth.IssueJoinToken(c.adminPriv, c.trust, subject, []*admissionv1.BootstrapPeer{{
 		PeerPub: bootstrap.pubKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(bootstrap.port))},
-	}}, time.Now(), time.Hour)
+	}}, time.Now(), time.Hour, config.CertTTLs{}.MembershipTTL(), config.CertTTLs{}.AdminTTL())
 	require.NoError(t, err)
 	return token
 }
@@ -82,8 +82,8 @@ func (c *clusterAuth) signer(t *testing.T) *auth.AdminSigner {
 
 func TestJoinWithTokenHappyPath(t *testing.T) {
 	cluster := newClusterAuth(t)
-	bootstrap := startMeshHarness(t, 0, cluster)
-	joiner := startMeshHarness(t, 0, cluster)
+	bootstrap := startMeshHarness(t, cluster)
+	joiner := startMeshHarness(t, cluster)
 
 	token := cluster.tokenFor(t, joiner.pubKey, bootstrap)
 
@@ -106,8 +106,8 @@ func TestConnectRejectsCrossClusterPeer(t *testing.T) {
 	clusterA := newClusterAuth(t)
 	clusterB := newClusterAuth(t)
 
-	a := startMeshHarness(t, 0, clusterA)
-	b := startMeshHarness(t, 0, clusterB)
+	a := startMeshHarness(t, clusterA)
+	b := startMeshHarness(t, clusterB)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -128,9 +128,9 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 	bootstrapCreds := cluster.credsFor(t, bootstrapPub)
 	signer := cluster.signer(t)
 	bootstrapCreds.InviteSigner = signer
-	bootstrap := startMeshHarnessWithCreds(t, 0, bootstrapPriv, bootstrapPub, bootstrapCreds)
+	bootstrap := startMeshHarnessWithCreds(t, bootstrapPriv, bootstrapPub, bootstrapCreds)
 
-	joiner := startMeshHarness(t, 0, cluster)
+	joiner := startMeshHarness(t, cluster)
 
 	invite, err := auth.IssueInviteTokenWithSigner(
 		cluster.signer(t),
@@ -141,6 +141,7 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 		}},
 		time.Now(),
 		time.Hour,
+		0,
 	)
 	require.NoError(t, err)
 
@@ -172,9 +173,9 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 	bootstrapCreds := cluster.credsFor(t, bootstrapPub)
 	signer := cluster.signer(t)
 	bootstrapCreds.InviteSigner = signer
-	bootstrap := startMeshHarnessWithCreds(t, 0, bootstrapPriv, bootstrapPub, bootstrapCreds)
+	bootstrap := startMeshHarnessWithCreds(t, bootstrapPriv, bootstrapPub, bootstrapCreds)
 
-	joiner := startMeshHarness(t, 0, cluster)
+	joiner := startMeshHarness(t, cluster)
 
 	invite, err := auth.IssueInviteTokenWithSigner(
 		cluster.signer(t),
@@ -185,6 +186,7 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 		}},
 		time.Now().Add(-2*time.Second),
 		time.Second,
+		0,
 	)
 	require.NoError(t, err)
 
@@ -198,8 +200,8 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 func TestConnectReturnsErrIdentityMismatch(t *testing.T) {
 	cluster := newClusterAuth(t)
 
-	a := startMeshHarness(t, 0, cluster)
-	b := startMeshHarness(t, 0, cluster)
+	a := startMeshHarness(t, cluster)
+	b := startMeshHarness(t, cluster)
 
 	// Generate a random key that differs from b's actual key.
 	wrongPub, _, err := ed25519.GenerateKey(rand.Reader)
@@ -215,25 +217,24 @@ func TestConnectReturnsErrIdentityMismatch(t *testing.T) {
 	require.True(t, errors.Is(err, mesh.ErrIdentityMismatch), "expected ErrIdentityMismatch, got: %v", err)
 }
 
-func startMeshHarness(t *testing.T, port int, cluster *clusterAuth) *meshHarness {
+func startMeshHarness(t *testing.T, cluster *clusterAuth) *meshHarness {
 	t.Helper()
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	return startMeshHarnessWithCreds(t, port, priv, pub, cluster.credsFor(t, pub))
+	return startMeshHarnessWithCreds(t, priv, pub, cluster.credsFor(t, pub))
 }
 
 func startMeshHarnessWithCreds(
 	t *testing.T,
-	port int,
 	priv ed25519.PrivateKey,
 	pub ed25519.PublicKey,
 	creds *auth.NodeCredentials,
 ) *meshHarness {
 	t.Helper()
 
-	m, err := mesh.NewMesh(port, priv, creds)
+	m, err := mesh.NewMesh(0, priv, creds, config.CertTTLs{}.TLSIdentityTTL(), config.CertTTLs{}.MembershipTTL(), nil)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())

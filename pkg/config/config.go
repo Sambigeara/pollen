@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"gopkg.in/yaml.v3"
@@ -30,8 +31,36 @@ type BootstrapPeer struct {
 	Addrs   []string `yaml:"addrs,omitempty"`
 }
 
+type CertTTLs struct {
+	Membership  time.Duration `yaml:"membership,omitempty"`
+	Admin       time.Duration `yaml:"admin,omitempty"`
+	TLSIdentity time.Duration `yaml:"tlsIdentity,omitempty"`
+}
+
+const (
+	DefaultMembershipTTL  = 365 * 24 * time.Hour
+	DefaultAdminTTL       = 5 * 365 * 24 * time.Hour
+	DefaultTLSIdentityTTL = 10 * 365 * 24 * time.Hour //nolint:mnd
+)
+
+func ttlOrDefault(ttl, fallback time.Duration) time.Duration {
+	if ttl == 0 {
+		return fallback
+	}
+	return ttl
+}
+
+func (c CertTTLs) MembershipTTL() time.Duration {
+	return ttlOrDefault(c.Membership, DefaultMembershipTTL)
+}
+func (c CertTTLs) AdminTTL() time.Duration { return ttlOrDefault(c.Admin, DefaultAdminTTL) }
+func (c CertTTLs) TLSIdentityTTL() time.Duration {
+	return ttlOrDefault(c.TLSIdentity, DefaultTLSIdentityTTL)
+}
+
 type Config struct {
 	BootstrapPeers []BootstrapPeer `yaml:"bootstrapPeers,omitempty"`
+	CertTTLs       CertTTLs        `yaml:"certTTLs,omitempty"` //nolint:tagliatelle
 }
 
 func Load(pollenDir string) (*Config, error) {
@@ -52,6 +81,9 @@ func Load(pollenDir string) (*Config, error) {
 	if err := yaml.Unmarshal(raw, cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
+	if err := validateCertTTLs(cfg.CertTTLs); err != nil {
+		return nil, err
+	}
 
 	canonical, err := canonicalizeBootstrapPeers(cfg.BootstrapPeers)
 	if err != nil {
@@ -64,6 +96,10 @@ func Load(pollenDir string) (*Config, error) {
 func Save(pollenDir string, cfg *Config) error {
 	if cfg == nil {
 		cfg = &Config{}
+	}
+
+	if err := validateCertTTLs(cfg.CertTTLs); err != nil {
+		return err
 	}
 
 	canonical, err := canonicalizeBootstrapPeers(cfg.BootstrapPeers)
@@ -90,6 +126,19 @@ func Save(pollenDir string, cfg *Config) error {
 		return fmt.Errorf("replace config: %w", err)
 	}
 
+	return nil
+}
+
+func validateCertTTLs(ttls CertTTLs) error {
+	if ttls.Membership < 0 {
+		return errors.New("certTTLs.membership must be >= 0")
+	}
+	if ttls.Admin < 0 {
+		return errors.New("certTTLs.admin must be >= 0")
+	}
+	if ttls.TLSIdentity < 0 {
+		return errors.New("certTTLs.tlsIdentity must be >= 0")
+	}
 	return nil
 }
 

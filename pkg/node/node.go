@@ -68,6 +68,8 @@ type Config struct {
 	GossipInterval      time.Duration
 	PeerTickInterval    time.Duration
 	GossipJitter        float64
+	TLSIdentityTTL      time.Duration
+	MembershipTTL       time.Duration
 	DisableGossipJitter bool
 }
 
@@ -107,11 +109,15 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 
 	stateStore.SetLocalNetwork(ips, uint32(conf.Port))
 
-	m, err := mesh.NewMesh(conf.Port, privKey, creds)
+	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSIdentityTTL, conf.MembershipTTL, stateStore.IsSubjectRevoked)
 	if err != nil {
 		log.Error("failed to load mesh", zap.Error(err))
 		return nil, err
 	}
+
+	stateStore.OnRevocation(func(subject types.PeerKey) {
+		go m.ClosePeerSession(subject)
+	})
 
 	tun := tunnel.New(m)
 	for _, svc := range stateStore.LocalServices() {

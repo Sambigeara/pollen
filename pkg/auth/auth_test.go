@@ -37,6 +37,7 @@ func TestIssueJoinTokenWithDelegatedAdmin(t *testing.T) {
 		nil,
 		now,
 		time.Hour,
+		config.CertTTLs{}.MembershipTTL(),
 	)
 	require.NoError(t, err)
 
@@ -60,6 +61,8 @@ func TestIssueJoinTokenRejectsUnsignedDelegatedAdmin(t *testing.T) {
 		nil,
 		time.Now(),
 		time.Hour,
+		config.CertTTLs{}.MembershipTTL(),
+		config.CertTTLs{}.AdminTTL(),
 	)
 	require.ErrorContains(t, err, "issuer admin certificate required")
 }
@@ -89,6 +92,7 @@ func TestInviteTokenOpenSubjectAndSingleUse(t *testing.T) {
 		[]*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}},
 		now,
 		time.Hour,
+		0,
 	)
 	require.NoError(t, err)
 
@@ -131,6 +135,7 @@ func TestInviteTokenSubjectBoundMismatch(t *testing.T) {
 		[]*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}},
 		now,
 		time.Hour,
+		0,
 	)
 	require.NoError(t, err)
 
@@ -192,6 +197,78 @@ func TestVerifyMembershipCertRejectsIssuerKeyMismatch(t *testing.T) {
 
 	err = auth.VerifyMembershipCert(forgedCert, trust, now, subjectPub)
 	require.ErrorContains(t, err, "issuer key mismatch")
+}
+
+func TestIssueAndVerifyRevocation(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+
+	subjectPub, _ := newKeyPair(t)
+	now := time.Now()
+
+	rev, err := auth.IssueRevocation(rootPriv, trust.GetClusterId(), subjectPub, now)
+	require.NoError(t, err)
+	require.EqualValues(t, subjectPub, rev.GetEntry().GetSubjectPub())
+
+	err = auth.VerifyRevocation(rev, trust)
+	require.NoError(t, err)
+}
+
+func TestVerifyRevocationRejectsNonRootSigner(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+
+	_, delegatedPriv := newKeyPair(t)
+	subjectPub, _ := newKeyPair(t)
+	now := time.Now()
+
+	// Issue an admin cert for the delegated admin.
+	delegatedPub := delegatedPriv.Public().(ed25519.PublicKey)
+	_, err := auth.IssueAdminCert(rootPriv, trust.GetClusterId(), delegatedPub, now.Add(-time.Minute), now.Add(time.Hour))
+	require.NoError(t, err)
+
+	// Delegated admin issues a revocation -- should be rejected because
+	// only the root admin can revoke.
+	rev, err := auth.IssueRevocation(delegatedPriv, trust.GetClusterId(), subjectPub, now)
+	require.NoError(t, err)
+
+	err = auth.VerifyRevocation(rev, trust)
+	require.ErrorContains(t, err, "not signed by cluster root admin")
+}
+
+func TestVerifyRevocationRejectsCrossCluster(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+
+	otherPub, _ := newKeyPair(t)
+	otherTrust := auth.NewTrustBundle(otherPub)
+
+	subjectPub, _ := newKeyPair(t)
+	now := time.Now()
+
+	// Issue revocation scoped to the other cluster.
+	rev, err := auth.IssueRevocation(rootPriv, otherTrust.GetClusterId(), subjectPub, now)
+	require.NoError(t, err)
+
+	// Verify against our trust bundle -- should be rejected.
+	err = auth.VerifyRevocation(rev, trust)
+	require.ErrorContains(t, err, "not scoped to cluster")
+}
+
+func TestVerifyRevocationRejectsMissingEntry(t *testing.T) {
+	rootPub, _ := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+
+	err := auth.VerifyRevocation(&admissionv1.SignedRevocation{}, trust)
+	require.ErrorContains(t, err, "revocation invalid")
+}
+
+func TestVerifyRevocationRejectsNilRevocation(t *testing.T) {
+	rootPub, _ := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+
+	err := auth.VerifyRevocation(nil, trust)
+	require.ErrorContains(t, err, "revocation is nil")
 }
 
 func newKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
