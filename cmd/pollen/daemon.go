@@ -392,6 +392,13 @@ func daemonStatusLaunchd(cmd *cobra.Command) {
 	}
 }
 
+// pollenDirFlag returns the --dir flag value without creating the directory.
+// Use this in sudo paths where only the path string is needed (e.g. writing
+// service files); the daemon itself creates the directory as the correct user.
+func pollenDirFlag(cmd *cobra.Command) (string, error) {
+	return cmd.Flags().GetString("dir")
+}
+
 // --- systemd (Linux) ---
 
 func systemdReloadAndEnable(ctx context.Context, w io.Writer) {
@@ -410,7 +417,7 @@ func writeSystemdUnit(cmd *cobra.Command) error {
 		return err
 	}
 
-	pollenDir, err := pollenPath(cmd)
+	pollenDir, err := pollenDirFlag(cmd)
 	if err != nil {
 		return err
 	}
@@ -632,7 +639,7 @@ func upDaemonLaunchd(cmd *cobra.Command) {
 }
 
 func upDaemonSystemd(cmd *cobra.Command) {
-	pollenDir, err := pollenPath(cmd)
+	pollenDir, err := pollenDirFlag(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
