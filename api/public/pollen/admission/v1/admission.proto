@@ -75,9 +75,22 @@ message InviteTokenClaims {
   ];
   int64 issued_at_unix = 6;
   int64 expires_at_unix = 7;
+  int64 membership_ttl_seconds = 8;
 }
 
 message InviteToken {
   InviteTokenClaims claims = 1 [(buf.validate.field).required = true];
+  bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
+}
+
+message RevocationEntry {
+  bytes cluster_id = 1 [(buf.validate.field).bytes = {len: 32}];
+  bytes subject_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+  int64 revoked_at_unix = 3;
+  bytes issuer_admin_pub = 4 [(buf.validate.field).bytes = {len: 32}];
+}
+
+message SignedRevocation {
+  RevocationEntry entry = 1 [(buf.validate.field).required = true];
   bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
 }

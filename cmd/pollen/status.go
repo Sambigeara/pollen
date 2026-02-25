@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/charmbracelet/lipgloss"
@@ -16,7 +17,7 @@ import (
 
 func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "status [nodes|services|connections]",
+		Use:   "status [nodes|services|connections|certificates]",
 		Short: "Show status",
 		Args:  cobra.RangeArgs(0, 1),
 		Run:   runStatus,
@@ -55,6 +56,9 @@ func runStatus(cmd *cobra.Command, args []string) {
 		if s := collectConnectionsSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
+		if s := collectCertificatesSection(st); len(s.rows) > 0 {
+			sections = append(sections, s)
+		}
 	case "nodes", "node":
 		if s := collectPeersSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
@@ -67,8 +71,12 @@ func runStatus(cmd *cobra.Command, args []string) {
 		if s := collectConnectionsSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
+	case "certificates", "certs":
+		if s := collectCertificatesSection(st); len(s.rows) > 0 {
+			sections = append(sections, s)
+		}
 	default:
-		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services|connections)\n", mode)
+		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services|connections|certificates)\n", mode)
 		return
 	}
 	renderStatusSections(cmd.OutOrStdout(), sections)
@@ -173,6 +181,29 @@ func collectConnectionsSection(st *controlv1.GetStatusResponse, opts statusViewO
 			fmt.Sprintf("%d", c.GetLocalPort()), service, provider, fmt.Sprintf("%d", c.GetRemotePort()),
 		})
 	}
+	return sec
+}
+
+func collectCertificatesSection(st *controlv1.GetStatusResponse) statusSection {
+	sec := statusSection{
+		title:   "CERTIFICATES",
+		headers: []string{"SERIAL", "EXPIRES", "REMAINING"},
+	}
+
+	for _, c := range st.GetCertificates() {
+		expires := time.Unix(c.GetNotAfterUnix(), 0)
+		remaining := time.Until(expires).Truncate(time.Hour)
+		remainingStr := remaining.String()
+		if remaining <= 0 {
+			remainingStr = "EXPIRED"
+		}
+		sec.rows = append(sec.rows, []string{
+			strconv.FormatUint(c.GetSerial(), 10),
+			expires.Format(time.DateOnly),
+			remainingStr,
+		})
+	}
+
 	return sec
 }
 
