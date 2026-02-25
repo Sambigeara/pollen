@@ -709,7 +709,13 @@ func (s *Store) LocalServices() map[string]*statev1.Service {
 func (s *Store) AllNodes() map[types.PeerKey]nodeRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return maps.Clone(s.nodes)
+	out := make(map[types.PeerKey]nodeRecord, len(s.nodes))
+	for k, v := range s.nodes {
+		if _, revoked := s.revocations[k]; !revoked {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func (s *Store) Get(peerID types.PeerKey) (nodeRecord, bool) {
@@ -869,9 +875,7 @@ func sortConnections(cs []Connection) {
 func (s *Store) IsSubjectRevoked(subjectPub []byte) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	subjectKey := types.PeerKeyFromBytes(subjectPub)
-	_, ok := s.revocations[subjectKey]
+	_, ok := s.revocations[types.PeerKeyFromBytes(subjectPub)]
 	return ok
 }
 

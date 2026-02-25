@@ -294,49 +294,33 @@ func (m *Manager) ListConnections() []ConnectionInfo {
 }
 
 func (m *Manager) DisconnectLocalPort(port uint32) bool {
-	m.connectionMu.Lock()
-	defer m.connectionMu.Unlock()
+	return m.disconnectWhere(func(h connectionHandler) bool { return h.local == port }) > 0
+}
 
-	var key string
-	var handler connectionHandler
-	found := false
-	for k, h := range m.connections {
-		if h.local == port {
-			key = k
-			handler = h
-			found = true
-			break
-		}
-	}
-	if !found {
-		return false
-	}
-	delete(m.connections, key)
-	if handler.ln != nil {
-		_ = handler.ln.Close()
-	}
-	handler.cancel()
-	return true
+func (m *Manager) DisconnectPeer(peerID types.PeerKey) int {
+	return m.disconnectWhere(func(h connectionHandler) bool { return h.peerID == peerID })
 }
 
 func (m *Manager) DisconnectRemoteService(peerID types.PeerKey, remotePort uint32) int {
+	return m.disconnectWhere(func(h connectionHandler) bool {
+		return h.peerID == peerID && h.remote == remotePort
+	})
+}
+
+func (m *Manager) disconnectWhere(match func(connectionHandler) bool) int {
 	m.connectionMu.Lock()
 	defer m.connectionMu.Unlock()
 
 	removed := 0
-	keys := make([]string, 0, len(m.connections))
-	for key, handler := range m.connections {
-		if handler.peerID == peerID && handler.remote == remotePort {
-			if handler.ln != nil {
-				_ = handler.ln.Close()
+	for key, h := range m.connections {
+		if match(h) {
+			if h.ln != nil {
+				_ = h.ln.Close()
 			}
-			handler.cancel()
-			keys = append(keys, key)
+			h.cancel()
+			delete(m.connections, key)
 			removed++
 		}
-	}
-	for _, key := range keys {
-		delete(m.connections, key)
 	}
 	return removed
 }

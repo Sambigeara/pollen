@@ -115,11 +115,13 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		return nil, err
 	}
 
+	tun := tunnel.New(m)
+
 	stateStore.OnRevocation(func(subject types.PeerKey) {
+		tun.DisconnectPeer(subject)
+		stateStore.RemoveDesiredConnection(subject, 0, 0)
 		go m.ClosePeerSession(subject)
 	})
-
-	tun := tunnel.New(m)
 	for _, svc := range stateStore.LocalServices() {
 		tun.RegisterService(svc.GetPort())
 	}
