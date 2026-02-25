@@ -57,27 +57,30 @@ type Mesh interface {
 	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr) error
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
+	ClosePeerSession(peerKey types.PeerKey)
 	ListenPort() int
 	BroadcastDisconnect() error
 	Close() error
 }
 
 type impl struct {
-	meshCert     tls.Certificate
-	bareCert     tls.Certificate
-	socks        sock.SockStore
-	inCh         chan peer.Input
-	recvCh       chan Packet
-	inviteSigner *auth.AdminSigner
-	streamCh     chan incomingStream
-	trustBundle  *admissionv1.TrustBundle
-	log          *zap.SugaredLogger
-	listener     *quic.Listener
-	sessions     *sessionRegistry
-	mainQT       *quic.Transport
-	acceptWG     sync.WaitGroup
-	port         int
-	localKey     types.PeerKey
+	meshCert         tls.Certificate
+	bareCert         tls.Certificate
+	socks            sock.SockStore
+	inCh             chan peer.Input
+	recvCh           chan Packet
+	inviteSigner     *auth.AdminSigner
+	isSubjectRevoked func([]byte) bool
+	streamCh         chan incomingStream
+	trustBundle      *admissionv1.TrustBundle
+	log              *zap.SugaredLogger
+	listener         *quic.Listener
+	sessions         *sessionRegistry
+	mainQT           *quic.Transport
+	acceptWG         sync.WaitGroup
+	port             int
+	localKey         types.PeerKey
+	membershipTTL    time.Duration
 }
 
 type incomingStream struct {
@@ -96,13 +99,13 @@ type directDialResult struct {
 	err     error
 }
 
-func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials) (Mesh, error) {
-	meshCert, err := generateIdentityCert(signPriv, creds.Cert)
+func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsIdentityTTL, membershipTTL time.Duration, isSubjectRevoked func([]byte) bool) (Mesh, error) {
+	meshCert, err := generateIdentityCert(signPriv, creds.Cert, tlsIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate mesh cert: %w", err)
 	}
 
-	bareCert, err := generateIdentityCert(signPriv, nil)
+	bareCert, err := generateIdentityCert(signPriv, nil, tlsIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate bare cert: %w", err)
 	}
@@ -113,18 +116,20 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 	}
 
 	return &impl{
-		log:          zap.S().Named("mesh"),
-		meshCert:     meshCert,
-		bareCert:     bareCert,
-		trustBundle:  creds.Trust,
-		inviteSigner: creds.InviteSigner,
-		localKey:     types.PeerKeyFromBytes(pub),
-		socks:        sock.NewSockStore(),
-		port:         defaultPort,
-		sessions:     newSessionRegistry(),
-		recvCh:       make(chan Packet, queueBufSize),
-		inCh:         make(chan peer.Input, queueBufSize),
-		streamCh:     make(chan incomingStream, queueBufSize),
+		log:              zap.S().Named("mesh"),
+		meshCert:         meshCert,
+		bareCert:         bareCert,
+		trustBundle:      creds.Trust,
+		inviteSigner:     creds.InviteSigner,
+		isSubjectRevoked: isSubjectRevoked,
+		localKey:         types.PeerKeyFromBytes(pub),
+		socks:            sock.NewSockStore(),
+		port:             defaultPort,
+		membershipTTL:    membershipTTL,
+		sessions:         newSessionRegistry(),
+		recvCh:           make(chan Packet, queueBufSize),
+		inCh:             make(chan peer.Input, queueBufSize),
+		streamCh:         make(chan incomingStream, queueBufSize),
 	}, nil
 }
 
@@ -136,10 +141,11 @@ func (m *impl) Start(ctx context.Context) error {
 
 	qt := &quic.Transport{Conn: conn}
 	ln, err := qt.Listen(newServerTLSConfig(serverTLSParams{
-		meshCert:      m.meshCert,
-		inviteCert:    m.bareCert,
-		trustBundle:   m.trustBundle,
-		inviteEnabled: m.inviteSigner != nil,
+		meshCert:         m.meshCert,
+		inviteCert:       m.bareCert,
+		trustBundle:      m.trustBundle,
+		isSubjectRevoked: m.isSubjectRevoked,
+		inviteEnabled:    m.inviteSigner != nil,
 	}), quicConfig())
 	if err != nil {
 		_ = conn.Close()
@@ -159,7 +165,7 @@ func (m *impl) Start(ctx context.Context) error {
 }
 
 func (m *impl) ListenPort() int {
-	return m.mainQT.Conn.LocalAddr().(*net.UDPAddr).Port
+	return m.mainQT.Conn.LocalAddr().(*net.UDPAddr).Port //nolint:forcetypeassert
 }
 
 func (m *impl) Recv(ctx context.Context) (Packet, error) {
@@ -202,7 +208,7 @@ func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteClo
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle)
+	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
 	qCfg := quicConfig()
 
 	qc, err := m.mainQT.Dial(ctx, addr, tlsCfg, qCfg)
@@ -217,7 +223,7 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 }
 
 func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle)
+	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
 	qCfg := quicConfig()
 
 	conn, err := m.socks.Punch(ctx, addr)
@@ -409,6 +415,16 @@ func (m *impl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) 
 		return nil, false
 	}
 	return addr, true
+}
+
+func (m *impl) ClosePeerSession(peerKey types.PeerKey) {
+	s, ok := m.sessions.get(peerKey)
+	if !ok {
+		return
+	}
+	if m.sessions.removeIfCurrent(peerKey, s) {
+		m.closeSession(s, "revoked")
+	}
 }
 
 func (m *impl) BroadcastDisconnect() error {
@@ -671,6 +687,11 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 		return err
 	}
 
+	membershipTTL := m.membershipTTL
+	if s := verified.Claims.GetMembershipTtlSeconds(); s > 0 {
+		membershipTTL = time.Duration(s) * time.Second
+	}
+
 	joinToken, err := auth.IssueJoinTokenWithIssuer(
 		signer.Priv,
 		signer.Trust,
@@ -679,6 +700,7 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 		verified.Claims.GetBootstrap(),
 		now,
 		ttl,
+		membershipTTL,
 	)
 	if err != nil {
 		_ = sendInviteRedeemResponse(qc, nil, err)

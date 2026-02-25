@@ -65,6 +65,25 @@ var (
 	date    = "unknown"
 )
 
+func loadConfigOrDefault(pollenDir string) *config.Config {
+	cfg, err := config.Load(pollenDir)
+	if err != nil {
+		cfg = &config.Config{}
+	}
+	return cfg
+}
+
+func getCertTTLFlag(cmd *cobra.Command) (time.Duration, error) {
+	certTTL, err := cmd.Flags().GetDuration("cert-ttl")
+	if err != nil {
+		return 0, err
+	}
+	if certTTL < 0 {
+		return 0, errors.New("cert-ttl must be >= 0")
+	}
+	return certTTL, nil
+}
+
 func main() {
 	rootCmd := &cobra.Command{Use: "pollen"}
 	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted")
@@ -84,6 +103,7 @@ func main() {
 		newServeCmd(),
 		newUnserveCmd(),
 		newConnectCmd(),
+		newRevokeCmd(),
 		newDaemonCmd(),
 		newLogsCmd(),
 		newUpgradeCmd(),
@@ -188,6 +208,7 @@ func newBootstrapCmd() *cobra.Command {
 		Run:   runBootstrapSSH,
 	}
 	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
+	sshCmd.Flags().Duration("cert-ttl", 0, "Certificate TTL for the relay peer (0 = use node default)")
 
 	cmd.AddCommand(sshCmd)
 	return cmd
@@ -341,6 +362,7 @@ func newInviteCmd() *cobra.Command {
 	}
 	cmd.Flags().String("subject", "", "Optional hex node public key to bind invite")
 	cmd.Flags().Duration("ttl", defaultJoinTokenTTL, "Invite token validity duration")
+	cmd.Flags().Duration("cert-ttl", 0, "Certificate TTL for the invited peer (0 = use node default)")
 	cmd.Flags().StringArray("bootstrap", nil, "Bootstrap peer as <peer-pub-hex>@<host:port> (repeatable)")
 	return cmd
 }
@@ -413,12 +435,15 @@ func runNode(cmd *cobra.Command) {
 		logger.Fatal("failed to load signing keys: ", err)
 	}
 
+	cfg := loadConfigOrDefault(pollenDir)
+	certTTLs := cfg.CertTTLs
+
 	creds, credErr := auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, nil, time.Now())
 	if credErr != nil {
 		switch {
 		case errors.Is(credErr, auth.ErrCredentialsNotFound):
 			logger.Info("node is not initialized; auto-initializing root cluster")
-			creds, credErr = auth.EnsureLocalRootCredentials(pollenDir, pubKey, time.Now())
+			creds, credErr = auth.EnsureLocalRootCredentials(pollenDir, pubKey, time.Now(), certTTLs.MembershipTTL(), certTTLs.AdminTTL())
 			if credErr != nil {
 				logger.Fatal("auto-init failed: ", credErr)
 			}
@@ -429,12 +454,12 @@ func runNode(cmd *cobra.Command) {
 		}
 	}
 
-	creds.InviteSigner, err = auth.LoadAdminSigner(pollenDir, time.Now())
+	creds.InviteSigner, err = auth.LoadAdminSigner(pollenDir, time.Now(), certTTLs.AdminTTL())
 	if err != nil {
 		logger.Infow("invite redemption disabled", "err", err)
 	}
 
-	stateStore, err := store.Load(pollenDir, pubKey)
+	stateStore, err := store.Load(pollenDir, pubKey, creds.Trust)
 	if err != nil {
 		logger.Fatal("failed to load state: ", err)
 	}
@@ -457,6 +482,8 @@ func runNode(cmd *cobra.Command) {
 		PeerTickInterval: time.Second,
 		AdvertisedIPs:    addrs,
 		BootstrapPeers:   bootstrapPeers,
+		TLSIdentityTTL:   certTTLs.TLSIdentityTTL(),
+		MembershipTTL:    certTTLs.MembershipTTL(),
 	}
 
 	n, err := node.New(conf, privKey, creds, stateStore, peer.NewStore())
@@ -464,7 +491,7 @@ func runNode(cmd *cobra.Command) {
 		logger.Fatal(err)
 	}
 
-	nodeSrv := node.NewNodeService(n, stopFunc)
+	nodeSrv := node.NewNodeService(n, stopFunc, creds)
 
 	logger.Info("successfully started node")
 
@@ -534,7 +561,10 @@ func runInit(cmd *cobra.Command, _ []string) {
 		return
 	}
 
-	creds, err := auth.EnsureLocalRootCredentials(pollenDir, pub, time.Now())
+	cfg := loadConfigOrDefault(pollenDir)
+	certTTLs := cfg.CertTTLs
+
+	creds, err := auth.EnsureLocalRootCredentials(pollenDir, pub, time.Now(), certTTLs.MembershipTTL(), certTTLs.AdminTTL())
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
@@ -839,13 +869,19 @@ func runInvite(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	certTTL, err := getCertTTLFlag(cmd)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
 	bootstraps, err := resolveBootstrapPeers(cmd, bootstrapSpecs)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
 
-	encoded, err := createInviteToken(cmd, subjectPub, ttl, bootstraps)
+	encoded, err := createInviteToken(cmd, subjectPub, ttl, certTTL, bootstraps)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
@@ -899,7 +935,13 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 	}
 	relayPub := ed25519.PublicKey(relayPeerKey.Bytes())
 
-	if err := bootstrapAccept(cmd, relayPub, relayAddrs, host); err != nil {
+	certTTL, err := getCertTTLFlag(cmd)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	if err := bootstrapAccept(cmd, relayPub, relayAddrs, host, certTTL); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
@@ -907,8 +949,16 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 	fmt.Fprintf(cmd.OutOrStdout(), "relay bootstrapped: %s\n", host)
 }
 
-func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs []string, sshTarget string) error {
-	seedToken, err := createJoinToken(cmd, relayPub, defaultBootstrapJoinTokenTTL, nil)
+func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs []string, sshTarget string, certTTL time.Duration) error {
+	issuerCtx, err := loadTokenIssuerContext(cmd)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("this node cannot issue join tokens; only delegated admins can sign enrollment tokens")
+		}
+		return err
+	}
+
+	seedToken, err := createJoinTokenWithSigner(issuerCtx.signer, issuerCtx.cfg.CertTTLs.MembershipTTL(), relayPub, defaultBootstrapJoinTokenTTL, certTTL, nil)
 	if err != nil {
 		return fmt.Errorf("create relay seed token: %w", err)
 	}
@@ -917,19 +967,14 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 		return err
 	}
 
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		return err
-	}
-
-	if err := saveBootstrapPeer(pollenDir, &admissionv1.BootstrapPeer{
+	if err := saveBootstrapPeer(issuerCtx.pollenDir, &admissionv1.BootstrapPeer{
 		PeerPub: append([]byte(nil), relayPub...),
 		Addrs:   append([]string(nil), relayAddrs...),
 	}); err != nil {
 		return fmt.Errorf("save relay bootstrap details: %w", err)
 	}
 
-	sockPath := filepath.Join(pollenDir, socketName)
+	sockPath := filepath.Join(issuerCtx.pollenDir, socketName)
 	if active, _ := nodeSocketActive(sockPath); active {
 		client := newControlClient(cmd)
 		ctx := cmd.Context()
@@ -946,12 +991,12 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 		return nil
 	}
 
-	_, localPub, err := node.GenIdentityKey(pollenDir)
+	_, localPub, err := node.GenIdentityKey(issuerCtx.pollenDir)
 	if err != nil {
 		return err
 	}
 
-	joinToken, err := createJoinToken(cmd, localPub, defaultJoinTokenTTL, []*admissionv1.BootstrapPeer{{
+	joinToken, err := createJoinTokenWithSigner(issuerCtx.signer, issuerCtx.cfg.CertTTLs.MembershipTTL(), localPub, defaultJoinTokenTTL, certTTL, []*admissionv1.BootstrapPeer{{
 		PeerPub: append([]byte(nil), relayPub...),
 		Addrs:   append([]string(nil), relayAddrs...),
 	}})
@@ -961,6 +1006,32 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 
 	fmt.Fprintln(cmd.OutOrStdout(), "relay is ready; starting local node")
 	return execLocalUpWithJoin(cmd, joinToken)
+}
+
+type tokenIssuerContext struct {
+	cfg       *config.Config
+	signer    *auth.AdminSigner
+	pollenDir string
+}
+
+func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := loadConfigOrDefault(pollenDir)
+
+	signer, err := auth.LoadAdminSigner(pollenDir, time.Now(), cfg.CertTTLs.AdminTTL())
+	if err != nil {
+		return nil, err
+	}
+
+	return &tokenIssuerContext{
+		pollenDir: pollenDir,
+		cfg:       cfg,
+		signer:    signer,
+	}, nil
 }
 
 func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) error {
@@ -979,22 +1050,14 @@ func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) erro
 	return waitForRelayReady(cmd, sshTarget)
 }
 
-func createJoinToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
+func createJoinTokenWithSigner(signer *auth.AdminSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, certTTL time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
 	if ttl <= 0 {
 		return "", errors.New("token ttl must be positive")
 	}
 
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		return "", err
-	}
-
-	signer, err := auth.LoadAdminSigner(pollenDir, time.Now())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", errors.New("this node cannot issue join tokens; only delegated admins can sign enrollment tokens")
-		}
-		return "", err
+	membershipTTL := defaultMembershipTTL
+	if certTTL > 0 {
+		membershipTTL = certTTL
 	}
 
 	token, err := auth.IssueJoinTokenWithIssuer(
@@ -1005,6 +1068,7 @@ func createJoinToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl time.
 		bootstrap,
 		time.Now(),
 		ttl,
+		membershipTTL,
 	)
 	if err != nil {
 		return "", err
@@ -1018,17 +1082,12 @@ func createJoinToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl time.
 	return encoded, nil
 }
 
-func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
+func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, certTTL time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
 	if ttl <= 0 {
 		return "", errors.New("token ttl must be positive")
 	}
 
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		return "", err
-	}
-
-	signer, err := auth.LoadAdminSigner(pollenDir, time.Now())
+	issuerCtx, err := loadTokenIssuerContext(cmd)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", errors.New("this node cannot issue invites; only delegated admins can sign invite tokens")
@@ -1036,7 +1095,7 @@ func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl tim
 		return "", err
 	}
 
-	token, err := auth.IssueInviteTokenWithSigner(signer, subjectPub, bootstrap, time.Now(), ttl)
+	token, err := auth.IssueInviteTokenWithSigner(issuerCtx.signer, subjectPub, bootstrap, time.Now(), ttl, certTTL)
 	if err != nil {
 		return "", err
 	}
@@ -1294,7 +1353,9 @@ func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 		return err
 	}
 
-	signer, err := auth.LoadAdminSigner(pollenDir, time.Now())
+	cfg := loadConfigOrDefault(pollenDir)
+
+	signer, err := auth.LoadAdminSigner(pollenDir, time.Now(), cfg.CertTTLs.AdminTTL())
 	if err != nil {
 		return err
 	}
@@ -1307,7 +1368,7 @@ func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 		signer.Trust.GetClusterId(),
 		relayAdminPub,
 		time.Now().Add(-time.Minute),
-		time.Now().Add(10*365*24*time.Hour),
+		time.Now().Add(cfg.CertTTLs.AdminTTL()),
 	)
 	if err != nil {
 		return err
@@ -1630,6 +1691,54 @@ func peerIDHasPrefix(peerID []byte, prefix string) bool {
 func isPortArg(s string) bool {
 	p, err := strconv.Atoi(s)
 	return err == nil && p > 0 && p <= 65535
+}
+
+func newRevokeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "revoke <peer-id>",
+		Short: "Revoke a peer's membership",
+		Args:  cobra.ExactArgs(1),
+		Run:   runRevoke,
+	}
+}
+
+func runRevoke(cmd *cobra.Command, args []string) {
+	prefix := strings.ToLower(args[0])
+
+	client := newControlClient(cmd)
+	statusResp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	// Resolve the peer ID prefix to a full peer ID.
+	var matches [][]byte
+	for _, n := range statusResp.Msg.GetNodes() {
+		if peerIDHasPrefix(n.GetNode().GetPeerId(), prefix) {
+			matches = append(matches, n.GetNode().GetPeerId())
+		}
+	}
+
+	if len(matches) == 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "no peer matching %q\n", prefix)
+		return
+	}
+	if len(matches) > 1 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "ambiguous peer prefix %q matches %d peers\n", prefix, len(matches))
+		return
+	}
+
+	peerID := matches[0]
+	_, err = client.RevokePeer(context.Background(), connect.NewRequest(&controlv1.RevokePeerRequest{
+		PeerId: peerID,
+	}))
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "revoked peer %s\n", formatPeerID(peerID, false))
 }
 
 func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient {

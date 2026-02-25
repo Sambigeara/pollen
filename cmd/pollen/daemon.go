@@ -266,8 +266,8 @@ func launchdStart(cmd *cobra.Command, plistPath string) error {
 	}
 
 	// Fallback: enable + bootstrap (for unloaded jobs).
-	_ = exec.CommandContext(ctx, "launchctl", "enable", target).Run() //nolint:errcheck
-	return exec.CommandContext(ctx, "launchctl", "bootstrap", launchdDomain(), plistPath).Run()
+	_ = exec.CommandContext(ctx, "launchctl", "enable", target).Run()                           //nolint:errcheck
+	return exec.CommandContext(ctx, "launchctl", "bootstrap", launchdDomain(), plistPath).Run() //nolint:gosec
 }
 
 // writeLaunchdPlist writes (or overwrites) the launchd plist file.
@@ -338,7 +338,7 @@ func daemonInstallLaunchd(cmd *cobra.Command) {
 		ctx := cmd.Context()
 
 		// Remove any existing instance and clear disabled state.
-		_ = exec.CommandContext(ctx, "launchctl", "bootout", launchdTarget()).Run() //nolint:errcheck
+		_ = exec.CommandContext(ctx, "launchctl", "bootout", launchdTarget()).Run() //nolint:errcheck,gosec
 
 		if err := launchdStart(cmd, plistPath); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\nrun manually: launchctl bootstrap %s %s\n", err, launchdDomain(), plistPath)
@@ -353,7 +353,7 @@ func daemonUninstallLaunchd(cmd *cobra.Command) {
 
 	// Stop service if running.
 	ctx := cmd.Context()
-	_ = exec.CommandContext(ctx, "launchctl", "bootout", launchdTarget()).Run() //nolint:errcheck
+	_ = exec.CommandContext(ctx, "launchctl", "bootout", launchdTarget()).Run() //nolint:errcheck,gosec
 
 	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
@@ -373,12 +373,13 @@ func daemonStatusLaunchd(cmd *cobra.Command) {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "installed: yes (%s)\n", plistPath)
 
-	out, err := exec.CommandContext(cmd.Context(), "launchctl", "print", launchdTarget()).CombinedOutput()
-	if err != nil {
+	out, err := exec.CommandContext(cmd.Context(), "launchctl", "print", launchdTarget()).CombinedOutput() //nolint:gosec
+	switch {
+	case err != nil:
 		fmt.Fprintln(cmd.OutOrStdout(), "running: no")
-	} else if strings.Contains(string(out), "state = running") {
+	case strings.Contains(string(out), "state = running"):
 		fmt.Fprintln(cmd.OutOrStdout(), "running: yes")
-	} else {
+	default:
 		fmt.Fprintln(cmd.OutOrStdout(), "running: no")
 	}
 

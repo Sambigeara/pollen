@@ -63,7 +63,7 @@ func SaveAdminCert(pollenDir string, cert *admissionv1.AdminCert) error {
 	return os.WriteFile(path, raw, keyFilePerm)
 }
 
-func LoadAdminSigner(pollenDir string, now time.Time) (*AdminSigner, error) {
+func LoadAdminSigner(pollenDir string, now time.Time, adminCertTTL time.Duration) (*AdminSigner, error) {
 	adminPriv, adminPub, err := LoadAdminKey(pollenDir)
 	if err != nil {
 		return nil, err
@@ -74,7 +74,7 @@ func LoadAdminSigner(pollenDir string, now time.Time) (*AdminSigner, error) {
 		return nil, err
 	}
 
-	issuer, err := resolveAdminIssuer(pollenDir, adminPriv, adminPub, trust, now)
+	issuer, err := resolveAdminIssuer(pollenDir, adminPriv, adminPub, trust, now, adminCertTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -92,14 +92,14 @@ func LoadAdminSigner(pollenDir string, now time.Time) (*AdminSigner, error) {
 	}, nil
 }
 
-func resolveAdminIssuer(pollenDir string, adminPriv ed25519.PrivateKey, adminPub ed25519.PublicKey, trust *admissionv1.TrustBundle, now time.Time) (*admissionv1.AdminCert, error) {
+func resolveAdminIssuer(pollenDir string, adminPriv ed25519.PrivateKey, adminPub ed25519.PublicKey, trust *admissionv1.TrustBundle, now time.Time, adminCertTTL time.Duration) (*admissionv1.AdminCert, error) {
 	if bytes.Equal(adminPub, trust.GetRootPub()) {
 		return IssueAdminCert(
 			adminPriv,
 			trust.GetClusterId(),
 			adminPub,
 			now.Add(-timeSkewAllowance),
-			now.Add(defaultAdminCertTTL),
+			now.Add(adminCertTTL),
 		)
 	}
 
@@ -123,6 +123,7 @@ func IssueInviteTokenWithSigner(
 	bootstrap []*admissionv1.BootstrapPeer,
 	now time.Time,
 	tokenTTL time.Duration,
+	membershipTTL time.Duration,
 ) (*admissionv1.InviteToken, error) {
 	if signer == nil {
 		return nil, errors.New("missing admin signer")
@@ -144,14 +145,20 @@ func IssueInviteTokenWithSigner(
 		return nil, errors.New("invite signer key does not match issuer cert")
 	}
 
+	var membershipTTLSeconds int64
+	if membershipTTL > 0 {
+		membershipTTLSeconds = int64(membershipTTL / time.Second)
+	}
+
 	claims := &admissionv1.InviteTokenClaims{
-		TokenId:       uuid.NewString(),
-		Trust:         signer.Trust,
-		Issuer:        signer.Issuer,
-		Bootstrap:     bootstrap,
-		SubjectPub:    append([]byte(nil), subject...),
-		IssuedAtUnix:  now.Unix(),
-		ExpiresAtUnix: now.Add(tokenTTL).Unix(),
+		TokenId:              uuid.NewString(),
+		Trust:                signer.Trust,
+		Issuer:               signer.Issuer,
+		Bootstrap:            bootstrap,
+		SubjectPub:           append([]byte(nil), subject...),
+		IssuedAtUnix:         now.Unix(),
+		ExpiresAtUnix:        now.Add(tokenTTL).Unix(),
+		MembershipTtlSeconds: membershipTTLSeconds,
 	}
 	if err := protovalidate.Validate(claims); err != nil {
 		return nil, fmt.Errorf("invite token claims invalid: %w", err)

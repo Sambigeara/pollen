@@ -2,14 +2,18 @@ package store
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"sync"
 	"syscall"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/types"
 	"gopkg.in/yaml.v3"
 )
@@ -28,6 +32,12 @@ type diskState struct {
 	Peers       []diskPeer       `yaml:"peers,omitempty"`
 	Services    []diskService    `yaml:"services,omitempty"`
 	Connections []diskConnection `yaml:"connections,omitempty"`
+	Revocations []diskRevocation `yaml:"revocations,omitempty"`
+}
+
+type diskRevocation struct {
+	SubjectPub string `yaml:"subjectPub"`
+	Data       string `yaml:"data"`
 }
 
 type diskLocal struct {
@@ -36,10 +46,10 @@ type diskLocal struct {
 
 type diskPeer struct {
 	IdentityPublic string   `yaml:"identityPublic"`
+	LastAddr       string   `yaml:"lastAddr,omitempty"`
 	Addresses      []string `yaml:"addresses,omitempty"`
 	Port           uint32   `yaml:"port,omitempty"`
 	ExternalPort   uint32   `yaml:"externalPort,omitempty"`
-	LastAddr       string   `yaml:"lastAddr,omitempty"`
 }
 
 type diskService struct {
@@ -172,6 +182,60 @@ func decodeHex(s string) ([]byte, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+func marshalDiskRevocations(revocations map[types.PeerKey]*admissionv1.SignedRevocation) []diskRevocation {
+	if len(revocations) == 0 {
+		return nil
+	}
+
+	revs := make([]diskRevocation, 0, len(revocations))
+	for subjectKey, rev := range revocations {
+		raw, err := rev.MarshalVT()
+		if err != nil {
+			slog.Warn("failed to marshal revocation for disk", "subject", subjectKey.String(), "err", err)
+			continue
+		}
+		revs = append(revs, diskRevocation{
+			SubjectPub: subjectKey.String(),
+			Data:       base64.StdEncoding.EncodeToString(raw),
+		})
+	}
+
+	sort.Slice(revs, func(i, j int) bool {
+		return revs[i].SubjectPub < revs[j].SubjectPub
+	})
+
+	return revs
+}
+
+func unmarshalDiskRevocations(diskRevs []diskRevocation, trustBundle *admissionv1.TrustBundle) map[types.PeerKey]*admissionv1.SignedRevocation {
+	revocations := make(map[types.PeerKey]*admissionv1.SignedRevocation, len(diskRevs))
+	for _, dr := range diskRevs {
+		subjectKey, err := types.PeerKeyFromString(dr.SubjectPub)
+		if err != nil {
+			slog.Warn("failed to parse revocation subject key from disk", "subject", dr.SubjectPub, "err", err)
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(dr.Data)
+		if err != nil {
+			slog.Warn("failed to decode revocation data from disk", "subject", dr.SubjectPub, "err", err)
+			continue
+		}
+		rev := &admissionv1.SignedRevocation{}
+		if err := rev.UnmarshalVT(raw); err != nil {
+			slog.Warn("failed to unmarshal revocation from disk", "subject", dr.SubjectPub, "err", err)
+			continue
+		}
+		if trustBundle != nil {
+			if err := auth.VerifyRevocation(rev, trustBundle); err != nil {
+				slog.Warn("failed to verify revocation from disk", "subject", dr.SubjectPub, "err", err)
+				continue
+			}
+		}
+		revocations[subjectKey] = rev
+	}
+	return revocations
 }
 
 func toDiskServices(nodes map[types.PeerKey]nodeRecord) []diskService {

@@ -12,6 +12,7 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/store"
@@ -50,12 +51,12 @@ func newClusterAuth(t *testing.T) *clusterAuth {
 
 func (c *clusterAuth) credsFor(t *testing.T, subject ed25519.PublicKey) *auth.NodeCredentials {
 	t.Helper()
-	cert, err := auth.IssueMembershipCert(c.adminPriv, c.trust.GetClusterId(), subject, time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour))
+	cert, err := auth.IssueMembershipCert(c.adminPriv, c.trust.GetClusterId(), subject, time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), config.CertTTLs{}.AdminTTL())
 	require.NoError(t, err)
 	return &auth.NodeCredentials{Trust: c.trust, Cert: cert}
 }
 
-func newTestNode(t *testing.T, cluster *clusterAuth, port int, ips []string) *testNode {
+func newTestNode(t *testing.T, cluster *clusterAuth, ips []string) *testNode {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -66,7 +67,7 @@ func newTestNode(t *testing.T, cluster *clusterAuth, port int, ips []string) *te
 		peerKey: types.PeerKeyFromBytes(pub),
 		pubKey:  pub,
 		ips:     ips,
-		port:    port,
+		port:    0,
 		dir:     dir,
 		privKey: priv,
 		creds:   cluster.credsFor(t, pub),
@@ -84,7 +85,7 @@ func (tn *testNode) start(t *testing.T) {
 
 	pub := tn.privKey.Public().(ed25519.PublicKey)
 
-	stateStore, err := store.Load(tn.dir, pub)
+	stateStore, err := store.Load(tn.dir, pub, tn.creds.Trust)
 	require.NoError(t, err)
 
 	peerStore := peer.NewStore()
@@ -96,6 +97,8 @@ func (tn *testNode) start(t *testing.T) {
 		PeerTickInterval:    100 * time.Millisecond,
 		DisableGossipJitter: true,
 		BootstrapPeers:      tn.bootstrapPeers,
+		TLSIdentityTTL:      config.CertTTLs{}.TLSIdentityTTL(),
+		MembershipTTL:       config.CertTTLs{}.MembershipTTL(),
 	}
 
 	n, err := node.New(conf, tn.privKey, tn.creds, stateStore, peerStore)
@@ -118,7 +121,7 @@ func (tn *testNode) start(t *testing.T) {
 
 	tn.port = n.ListenPort()
 	tn.node = n
-	tn.svc = node.NewNodeService(n, cancel)
+	tn.svc = node.NewNodeService(n, cancel, tn.creds)
 	tn.store = stateStore
 	tn.peers = peerStore
 	tn.cancel = cancel
@@ -139,10 +142,10 @@ func TestConnectPeerFlow(t *testing.T) {
 	nodeIPs := []string{"127.0.0.1"}
 	cluster := newClusterAuth(t)
 
-	a := newTestNode(t, cluster, 0, nodeIPs)
+	a := newTestNode(t, cluster, nodeIPs)
 	a.start(t)
 
-	b := newTestNode(t, cluster, 0, nodeIPs)
+	b := newTestNode(t, cluster, nodeIPs)
 	b.start(t)
 
 	// Simulate `pollen bootstrap ssh` with running daemon: call ConnectPeer RPC on A → B.
@@ -172,11 +175,11 @@ func TestConnectPeerAfterPriorConnection(t *testing.T) {
 	nodeIPs := []string{"127.0.0.1"}
 	cluster := newClusterAuth(t)
 
-	a := newTestNode(t, cluster, 0, nodeIPs)
+	a := newTestNode(t, cluster, nodeIPs)
 	a.start(t)
 
 	// First connection: A connects to C via ConnectPeer RPC (consumes requestFullOnce on A).
-	c := newTestNode(t, cluster, 0, nodeIPs)
+	c := newTestNode(t, cluster, nodeIPs)
 	c.start(t)
 	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
 		PeerId: c.pubKey,
@@ -192,7 +195,7 @@ func TestConnectPeerAfterPriorConnection(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond, "A should see C disconnect")
 
 	// Now simulate `pollen bootstrap ssh`: ConnectPeer to new node B.
-	b := newTestNode(t, cluster, 0, nodeIPs)
+	b := newTestNode(t, cluster, nodeIPs)
 	b.start(t)
 
 	req := &controlv1.ConnectPeerRequest{
@@ -251,11 +254,11 @@ func TestBootstrapPeerConnectsAtStartup(t *testing.T) {
 	cluster := newClusterAuth(t)
 
 	// Start B first so it's listening.
-	b := newTestNode(t, cluster, 0, nodeIPs)
+	b := newTestNode(t, cluster, nodeIPs)
 	b.start(t)
 
 	// Start A with B as a bootstrap peer.
-	a := newTestNode(t, cluster, 0, nodeIPs)
+	a := newTestNode(t, cluster, nodeIPs)
 	a.bootstrapPeers = []node.BootstrapPeer{{
 		PeerKey: b.peerKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
