@@ -3,7 +3,6 @@ package store
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -164,24 +163,6 @@ func (d *disk) save(st diskState) error {
 	}
 
 	return nil
-}
-
-func encodeHex(b []byte) string {
-	if len(b) == 0 {
-		return ""
-	}
-	return hex.EncodeToString(b)
-}
-
-func decodeHex(s string) ([]byte, error) {
-	if s == "" {
-		return nil, nil
-	}
-	b, err := hex.DecodeString(s)
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
 }
 
 func marshalDiskRevocations(revocations map[types.PeerKey]*admissionv1.SignedRevocation) []diskRevocation {
