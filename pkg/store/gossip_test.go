@@ -703,6 +703,87 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 	}
 }
 
+func TestLoadServiceWithOrphanedProvider(t *testing.T) {
+	dir := t.TempDir()
+
+	localPub := make([]byte, 32)
+	localPub[0] = 1
+
+	// Bootstrap an empty store to create the state file.
+	s, err := Load(dir, localPub, nil)
+	if err != nil {
+		t.Fatalf("initial load: %v", err)
+	}
+
+	// Add a peer with a service, then save.
+	peerPK, peerIDStr := peerKey(2)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.5"}, LocalPort: 7000},
+		},
+	})
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_Service{
+			Service: &statev1.ServiceChange{Name: "http", Port: 8080},
+		},
+	})
+
+	if err := s.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Tamper with disk state: remove the peer entry but keep the service.
+	// This simulates the bug where IdentityPub was empty and got skipped on load.
+	d, err := openDisk(dir)
+	if err != nil {
+		t.Fatalf("open disk: %v", err)
+	}
+	st, err := d.load()
+	if err != nil {
+		t.Fatalf("load disk: %v", err)
+	}
+	st.Peers = nil // remove all peers, keep services
+	if err := d.save(st); err != nil {
+		t.Fatalf("save tampered state: %v", err)
+	}
+	if err := d.close(); err != nil {
+		t.Fatalf("close disk: %v", err)
+	}
+
+	// Load should not panic even though the service references an unknown provider.
+	s2, err := Load(dir, localPub, nil)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+
+	rec, ok := s2.Get(peerPK)
+	if !ok {
+		t.Fatal("expected peer record to be created from orphaned service")
+	}
+	if _, exists := rec.Services["http"]; !exists {
+		t.Fatal("expected service 'http' on orphaned provider")
+	}
+	if len(rec.IdentityPub) == 0 {
+		t.Fatal("expected IdentityPub to be set from peer key")
+	}
+
+	idPub, found := s2.IdentityPub(peerPK)
+	if !found {
+		t.Fatal("IdentityPub should return true for orphaned provider")
+	}
+	if len(idPub) != 32 {
+		t.Fatalf("expected 32-byte IdentityPub, got %d bytes", len(idPub))
+	}
+}
+
 func newTestClusterAuth(t *testing.T) (ed25519.PrivateKey, *admissionv1.TrustBundle) {
 	t.Helper()
 	adminPub, adminPriv, err := ed25519.GenerateKey(rand.Reader)

@@ -160,13 +160,8 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 			continue
 		}
 
-		identityPub, err := decodeHex(p.IdentityPublic)
-		if err != nil {
-			identityPub = nil
-		}
-
 		s.nodes[peerID] = nodeRecord{
-			IdentityPub:  append([]byte(nil), identityPub...),
+			IdentityPub:  append([]byte(nil), peerID[:]...),
 			IPs:          append([]string(nil), p.Addresses...),
 			LastAddr:     p.LastAddr,
 			LocalPort:    p.Port,
@@ -184,9 +179,7 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 		}
 
 		rec := s.nodes[provider]
-		if rec.Reachable == nil {
-			rec.Reachable = make(map[types.PeerKey]struct{})
-		}
+		ensureNodeInit(&rec, provider)
 		rec.Services[svc.Name] = &statev1.Service{
 			Name: svc.Name,
 			Port: svc.Port,
@@ -238,7 +231,7 @@ func (s *Store) Save() error {
 			continue
 		}
 		peers = append(peers, diskPeer{
-			IdentityPublic: encodeHex(rec.IdentityPub),
+			IdentityPublic: peerID.String(),
 			Addresses:      rec.IPs,
 			Port:           rec.LocalPort,
 			ExternalPort:   rec.ExternalPort,
@@ -265,10 +258,9 @@ func (s *Store) Save() error {
 
 	diskRevs := marshalDiskRevocations(revocations)
 
-	localRec := nodes[s.LocalID]
 	st := diskState{
 		Local: diskLocal{
-			IdentityPublic: encodeHex(localRec.IdentityPub),
+			IdentityPublic: s.LocalID.String(),
 		},
 		Peers:       peers,
 		Services:    services,
@@ -361,15 +353,7 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	}
 
 	rec := s.nodes[peerID]
-	if rec.Reachable == nil {
-		rec.Reachable = make(map[types.PeerKey]struct{})
-	}
-	if rec.Services == nil {
-		rec.Services = make(map[string]*statev1.Service)
-	}
-	if rec.log == nil {
-		rec.log = make(map[attrKey]logEntry)
-	}
+	ensureNodeInit(&rec, peerID)
 
 	key, ok := eventAttrKey(event)
 	if !ok {
@@ -905,6 +889,21 @@ func (s *Store) PublishRevocation(rev *admissionv1.SignedRevocation) []*statev1.
 			Revocation: &statev1.RevocationChange{Revocation: rev},
 		},
 	}}
+}
+
+func ensureNodeInit(rec *nodeRecord, peerID types.PeerKey) {
+	if rec.Reachable == nil {
+		rec.Reachable = make(map[types.PeerKey]struct{})
+	}
+	if rec.Services == nil {
+		rec.Services = make(map[string]*statev1.Service)
+	}
+	if rec.log == nil {
+		rec.log = make(map[attrKey]logEntry)
+	}
+	if len(rec.IdentityPub) == 0 {
+		rec.IdentityPub = append([]byte(nil), peerID[:]...)
+	}
 }
 
 // --- Internal helpers ---
