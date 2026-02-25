@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
@@ -47,6 +46,9 @@ const (
 
 	directTimeout = 2 * time.Second
 	punchTimeout  = 3 * time.Second
+
+	// eagerSyncCooldown should be >= GossipInterval to avoid redundant sends.
+	eagerSyncCooldown = 5 * time.Second
 
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
@@ -92,7 +94,7 @@ type Node struct {
 	log             *zap.SugaredLogger
 	gossipEvents    chan []*statev1.GossipEvent
 	ready           chan struct{}
-	requestFullOnce sync.Once
+	lastEagerSync   map[types.PeerKey]time.Time
 }
 
 func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, stateStore *store.Store, peerStore *peer.Store) (*Node, error) {
@@ -137,6 +139,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		punchCh:         make(chan punchRequest, punchChBufSize),
 		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
 		ready:           make(chan struct{}),
+		lastEagerSync:   make(map[types.PeerKey]time.Time),
 	}
 
 	return n, nil
@@ -361,6 +364,7 @@ func (n *Node) refreshIPs() {
 func (n *Node) handlePeerInput(in peer.Input) {
 	if d, ok := in.(peer.PeerDisconnected); ok {
 		n.queueGossipEvents(n.store.SetLocalConnected(d.PeerKey, false))
+		delete(n.lastEagerSync, d.PeerKey)
 	}
 
 	outputs := n.peers.Step(time.Now(), in)
@@ -418,13 +422,15 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			addr := &net.UDPAddr{IP: e.IP, Port: e.ObservedPort}
 			n.store.SetLastAddr(e.PeerKey, addr.String())
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
-			n.requestFullOnce.Do(func() {
+			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
+				clock := n.store.EagerSyncClock()
 				if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
-					Body: &meshv1.Envelope_Clock{Clock: n.store.ZeroClock()},
+					Body: &meshv1.Envelope_Clock{Clock: clock},
 				}); err != nil {
-					n.log.Debugw("failed requesting full state", "peer", e.PeerKey.Short(), "err", err)
+					n.log.Debugw("eager sync failed", "peer", e.PeerKey.Short(), "err", err)
 				}
-			})
+				n.lastEagerSync[e.PeerKey] = time.Now()
+			}
 
 			if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
 				Body: &meshv1.Envelope_ObservedAddress{
