@@ -1269,7 +1269,7 @@ func startRelayOverSSH(cmd *cobra.Command, sshTarget, token string) error {
 
 	// Enroll the relay into the cluster, then start the daemon.
 	// Use --no-start because bootstrap needs to provision admin delegation before the final start.
-	remoteJoin := fmt.Sprintf("pollen join --no-start %q && pollen up -d", token)
+	remoteJoin := fmt.Sprintf("pollen join --no-start %q && sudo pollen up -d", token)
 	out, err := exec.CommandContext(ctx, "ssh", sshTarget, remoteJoin).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -1323,7 +1323,7 @@ func restartRelayOverSSH(cmd *cobra.Command, sshTarget string) error {
 		ctx = context.Background()
 	}
 
-	restartCmd := "pollen down >/dev/null 2>&1 || true; pollen up -d"
+	restartCmd := "sudo pollen down >/dev/null 2>&1 || true; sudo pollen up -d"
 	out, err := exec.CommandContext(ctx, "ssh", sshTarget, restartCmd).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))

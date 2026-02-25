@@ -586,7 +586,7 @@ func runUpDaemon(cmd *cobra.Command) {
 	case osLinux:
 		if os.Getuid() != 0 {
 			fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root; run: sudo %s -d\n", cmd.CommandPath())
-			return
+			os.Exit(1)
 		}
 		upDaemonSystemd(cmd)
 	default:
