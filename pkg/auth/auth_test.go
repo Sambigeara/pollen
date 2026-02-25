@@ -10,6 +10,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestIssueJoinTokenWithDelegatedAdmin(t *testing.T) {
@@ -65,6 +66,50 @@ func TestIssueJoinTokenRejectsUnsignedDelegatedAdmin(t *testing.T) {
 		config.CertTTLs{}.AdminTTL(),
 	)
 	require.ErrorContains(t, err, "issuer admin certificate required")
+}
+
+func TestEnsureNodeCredentialsFromTokenReplacesExistingCert(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	nodePub, _ := newKeyPair(t)
+
+	now := time.Now()
+	oldCert, err := auth.IssueMembershipCert(
+		rootPriv,
+		trust.GetClusterId(),
+		nodePub,
+		now.Add(-time.Minute),
+		now.Add(24*time.Hour),
+		config.CertTTLs{}.AdminTTL(),
+	)
+	require.NoError(t, err)
+
+	pollenDir := t.TempDir()
+	require.NoError(t, auth.SaveNodeCredentials(pollenDir, &auth.NodeCredentials{Trust: trust, Cert: oldCert}))
+
+	token, err := auth.IssueJoinToken(
+		rootPriv,
+		trust,
+		nodePub,
+		nil,
+		now,
+		time.Hour,
+		48*time.Hour,
+		config.CertTTLs{}.AdminTTL(),
+	)
+	require.NoError(t, err)
+
+	verified, err := auth.VerifyJoinToken(token, nodePub, now)
+	require.NoError(t, err)
+
+	creds, err := auth.EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(verified.Cert, creds.Cert))
+	require.NotEqual(t, oldCert.GetClaims().GetNotAfterUnix(), creds.Cert.GetClaims().GetNotAfterUnix())
+
+	loaded, err := auth.LoadExistingNodeCredentials(pollenDir, nodePub, now)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(verified.Cert, loaded.Cert))
 }
 
 func TestInviteTokenOpenSubjectAndSingleUse(t *testing.T) {

@@ -181,6 +181,8 @@ func collectConnectionsSection(st *controlv1.GetStatusResponse, opts statusViewO
 }
 
 func certExpiryFooter(st *controlv1.GetStatusResponse) string {
+	const certExpirySkew = time.Minute
+
 	var latest time.Time
 	for _, c := range st.GetCertificates() {
 		t := time.Unix(c.GetNotAfterUnix(), 0)
@@ -191,7 +193,7 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 	if latest.IsZero() {
 		return ""
 	}
-	remaining := time.Until(latest)
+	remaining := time.Until(latest.Add(certExpirySkew))
 	if remaining <= 0 {
 		return "membership expired"
 	}
