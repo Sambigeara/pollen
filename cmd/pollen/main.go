@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -349,6 +350,12 @@ func runJoin(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	noStart, _ := cmd.Flags().GetBool("no-start")
+	if runtime.GOOS == osLinux && !noStart && os.Getuid() != 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root to manage the daemon; run: sudo %s\n", cmd.CommandPath())
+		return
+	}
+
 	if err := enrollToken(cmd.Context(), pollenDir, args[0]); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
@@ -377,7 +384,6 @@ func runJoin(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	noStart, _ := cmd.Flags().GetBool("no-start")
 	if noStart {
 		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pollen up -d` to start the node")
 		return
