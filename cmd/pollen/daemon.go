@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -16,19 +17,64 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// sudoUser returns the real (non-root) user when running under sudo, or nil.
+func sudoUser() (*user.User, error) {
+	name := os.Getenv("SUDO_USER")
+	if name == "" {
+		return nil, nil
+	}
+	u, err := user.Lookup(name)
+	if err != nil {
+		return nil, fmt.Errorf("lookup SUDO_USER %q: %w", name, err)
+	}
+	return u, nil
+}
+
 // effectiveUser returns the real (non-root) username, home directory, and UID.
 // Under sudo, os.UserHomeDir() returns /root; this resolves SUDO_USER instead.
 // homeDir never returns empty — it falls back to $HOME.
 func effectiveUser() (username, homeDir, uid string) {
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-		if u, err := user.Lookup(sudoUser); err == nil {
-			return u.Username, u.HomeDir, u.Uid
-		}
+	if u, err := sudoUser(); err == nil && u != nil {
+		return u.Username, u.HomeDir, u.Uid
 	}
 	if u, err := user.Current(); err == nil {
 		return u.Username, u.HomeDir, u.Uid
 	}
 	return "", os.Getenv("HOME"), fmt.Sprintf("%d", os.Getuid())
+}
+
+// chownToRealUser recursively chowns dir to the real (non-root) user when
+// running under sudo. This is needed because `sudo pollen join` creates key
+// and credential files as root, but the systemd service runs as the real user.
+// No-op when not running under sudo or on non-Linux platforms.
+func chownToRealUser(dir string) error {
+	if runtime.GOOS != osLinux {
+		return nil
+	}
+	u, err := sudoUser()
+	if err != nil {
+		return fmt.Errorf("resolve real user: %w", err)
+	}
+	if u == nil {
+		return nil
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return fmt.Errorf("parse uid %q: %w", u.Uid, err)
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return fmt.Errorf("parse gid %q: %w", u.Gid, err)
+	}
+	return filepath.WalkDir(dir, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if chErr := os.Lchown(path, uid, gid); chErr != nil {
+			return fmt.Errorf("chown %s: %w", path, chErr)
+		}
+		return nil
+	})
 }
 
 const (
@@ -579,26 +625,24 @@ func waitForSocket(sockPath string, timeout time.Duration) bool {
 }
 
 // runUpDaemon dispatches pollen up -d to the platform-specific daemon start flow.
-func runUpDaemon(cmd *cobra.Command) {
+func runUpDaemon(cmd *cobra.Command) error {
 	switch runtime.GOOS {
 	case osDarwin:
-		upDaemonLaunchd(cmd)
+		return upDaemonLaunchd(cmd)
 	case osLinux:
 		if os.Getuid() != 0 {
-			fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root; run: sudo %s -d\n", cmd.CommandPath())
-			os.Exit(1)
+			return fmt.Errorf("this command requires root; run: sudo %s -d", cmd.CommandPath())
 		}
-		upDaemonSystemd(cmd)
+		return upDaemonSystemd(cmd)
 	default:
-		fmt.Fprintf(cmd.ErrOrStderr(), "unsupported platform: %s (supported: darwin, linux)\n", runtime.GOOS)
+		return fmt.Errorf("unsupported platform: %s (supported: darwin, linux)", runtime.GOOS)
 	}
 }
 
-func upDaemonLaunchd(cmd *cobra.Command) {
+func upDaemonLaunchd(cmd *cobra.Command) error {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		return err
 	}
 
 	sockPath := filepath.Join(pollenDir, socketName)
@@ -606,7 +650,7 @@ func upDaemonLaunchd(cmd *cobra.Command) {
 	// Already running?
 	if active, _ := nodeSocketActive(sockPath); active {
 		fmt.Fprintln(cmd.OutOrStdout(), "node is already running")
-		return
+		return nil
 	}
 
 	plistPath := launchdPlistPath()
@@ -615,19 +659,17 @@ func upDaemonLaunchd(cmd *cobra.Command) {
 	if _, err := os.Stat(plistPath); err != nil {
 		fmt.Fprintln(cmd.OutOrStdout(), "service not installed; installing now")
 		if writeErr := writeLaunchdPlist(cmd); writeErr != nil {
-			fmt.Fprintln(cmd.ErrOrStderr(), writeErr)
-			return
+			return writeErr
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", plistPath)
 	}
 
 	if !ensureBinarySigned(cmd) {
-		return
+		return fmt.Errorf("binary signature validation failed")
 	}
 
 	if err := launchdStart(cmd, plistPath); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\n", err)
-		return
+		return fmt.Errorf("failed to start service: %w", err)
 	}
 
 	if waitForSocket(sockPath, daemonStartTimeout) {
@@ -636,13 +678,13 @@ func upDaemonLaunchd(cmd *cobra.Command) {
 		fmt.Fprintln(cmd.ErrOrStderr(), "service was started but node did not become ready; check logs with: pollen logs")
 		fmt.Fprintf(cmd.ErrOrStderr(), "or check launchd status with: launchctl print %s\n", launchdTarget())
 	}
+	return nil
 }
 
-func upDaemonSystemd(cmd *cobra.Command) {
+func upDaemonSystemd(cmd *cobra.Command) error {
 	pollenDir, err := pollenDirFlag(cmd)
 	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		return err
 	}
 
 	sockPath := filepath.Join(pollenDir, socketName)
@@ -650,7 +692,7 @@ func upDaemonSystemd(cmd *cobra.Command) {
 	// Already running?
 	if active, _ := nodeSocketActive(sockPath); active {
 		fmt.Fprintln(cmd.OutOrStdout(), "node is already running")
-		return
+		return nil
 	}
 
 	unitPath := systemdUnitPath()
@@ -660,17 +702,14 @@ func upDaemonSystemd(cmd *cobra.Command) {
 		fmt.Fprintln(cmd.OutOrStdout(), "service not installed; installing now")
 		migrateLegacySystemd(cmd)
 		if writeErr := writeSystemdUnit(cmd); writeErr != nil {
-			fmt.Fprintln(cmd.ErrOrStderr(), writeErr)
-			return
+			return writeErr
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "service installed: %s\n", unitPath)
 		systemdReloadAndEnable(cmd.Context(), cmd.ErrOrStderr())
 	}
 
-	ctx := cmd.Context()
-	if err := exec.CommandContext(ctx, "systemctl", "start", systemdUnitName).Run(); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to start service: %v\n", err)
-		return
+	if err := exec.CommandContext(cmd.Context(), "systemctl", "start", systemdUnitName).Run(); err != nil {
+		return fmt.Errorf("failed to start service: %w", err)
 	}
 
 	if waitForSocket(sockPath, daemonStartTimeout) {
@@ -678,4 +717,5 @@ func upDaemonSystemd(cmd *cobra.Command) {
 	} else {
 		fmt.Fprintln(cmd.ErrOrStderr(), "service was started but node did not become ready; check logs with: pollen logs")
 	}
+	return nil
 }

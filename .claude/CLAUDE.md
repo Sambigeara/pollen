@@ -24,6 +24,7 @@
 - Diff behavior between main and your changes when relevant
 - Ask yourself: "Would a staff engineer approve this?"
 - Run tests, check logs, demonstrate correctness
+- A change is only complete when `just lint` passes. Use `//nolint` on false hits (no trailing comment needed if the reason is obvious from the directive), and fix legitimate lint errors
 
 ### 5. Demand Elegance (Balanced)
 - For non-trivial changes: pause and ask "is there a more elegant way?"
