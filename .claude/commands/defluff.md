@@ -2,7 +2,7 @@ Run the defluff review in a sub-agent, then plan fixes based on its findings.
 
 ## Step 1: Sub-agent review
 
-Use the Task tool to launch a sub-agent (subagent_type: "general-purpose") with the following prompt. Do NOT pass any conversation context — the sub-agent should start fresh.
+Use the Task tool to launch a sub-agent (subagent_type: "general-purpose") with the following prompt. If available, pass ONLY the plan document that was used for the task. Do NOT pass any conversation context — the sub-agent should start fresh.
 
 ---
 

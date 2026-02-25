@@ -17,7 +17,7 @@ import (
 
 func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "status [nodes|services|connections|certificates]",
+		Use:   "status [nodes|services|connections]",
 		Short: "Show status",
 		Args:  cobra.RangeArgs(0, 1),
 		Run:   runStatus,
@@ -56,9 +56,6 @@ func runStatus(cmd *cobra.Command, args []string) {
 		if s := collectConnectionsSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
-		if s := collectCertificatesSection(st); len(s.rows) > 0 {
-			sections = append(sections, s)
-		}
 	case "nodes", "node":
 		if s := collectPeersSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
@@ -71,15 +68,14 @@ func runStatus(cmd *cobra.Command, args []string) {
 		if s := collectConnectionsSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
-	case "certificates", "certs":
-		if s := collectCertificatesSection(st); len(s.rows) > 0 {
-			sections = append(sections, s)
-		}
 	default:
-		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services|connections|certificates)\n", mode)
+		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services|connections)\n", mode)
 		return
 	}
 	renderStatusSections(cmd.OutOrStdout(), sections)
+	if footer := certExpiryFooter(st); footer != "" {
+		fmt.Fprintln(cmd.OutOrStdout(), footer)
+	}
 }
 
 type statusViewOpts struct {
@@ -184,27 +180,55 @@ func collectConnectionsSection(st *controlv1.GetStatusResponse, opts statusViewO
 	return sec
 }
 
-func collectCertificatesSection(st *controlv1.GetStatusResponse) statusSection {
-	sec := statusSection{
-		title:   "CERTIFICATES",
-		headers: []string{"SERIAL", "EXPIRES", "REMAINING"},
-	}
-
+func certExpiryFooter(st *controlv1.GetStatusResponse) string {
+	var latest time.Time
 	for _, c := range st.GetCertificates() {
-		expires := time.Unix(c.GetNotAfterUnix(), 0)
-		remaining := time.Until(expires).Truncate(time.Hour)
-		remainingStr := remaining.String()
-		if remaining <= 0 {
-			remainingStr = "EXPIRED"
+		t := time.Unix(c.GetNotAfterUnix(), 0)
+		if t.After(latest) {
+			latest = t
 		}
-		sec.rows = append(sec.rows, []string{
-			strconv.FormatUint(c.GetSerial(), 10),
-			expires.Format(time.DateOnly),
-			remainingStr,
-		})
 	}
+	if latest.IsZero() {
+		return ""
+	}
+	remaining := time.Until(latest)
+	if remaining <= 0 {
+		return "membership expired"
+	}
+	return "membership expires in " + humanDuration(remaining)
+}
 
-	return sec
+func humanDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "<1m"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		m := int(d.Minutes()) % 60 //nolint:mnd
+		if m == 0 {
+			return fmt.Sprintf("%dh", h)
+		}
+		return fmt.Sprintf("%dh %dm", h, m)
+	case d < 7*24*time.Hour:
+		days := int(d.Hours()) / 24  //nolint:mnd
+		hours := int(d.Hours()) % 24 //nolint:mnd
+		if hours == 0 {
+			return fmt.Sprintf("%dd", days)
+		}
+		return fmt.Sprintf("%dd %dh", days, hours)
+	case d < 365*24*time.Hour:
+		return fmt.Sprintf("%dd", int(d.Hours())/24) //nolint:mnd
+	default:
+		days := int(d.Hours()) / 24 //nolint:mnd
+		y := days / 365             //nolint:mnd
+		rem := days % 365           //nolint:mnd
+		if rem == 0 {
+			return fmt.Sprintf("%dy", y)
+		}
+		return fmt.Sprintf("%dy %dd", y, rem)
+	}
 }
 
 func renderStatusSections(w io.Writer, sections []statusSection) {
