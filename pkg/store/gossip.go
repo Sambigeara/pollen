@@ -275,6 +275,20 @@ func (s *Store) ZeroClock() *statev1.GossipVectorClock {
 	return &statev1.GossipVectorClock{Counters: map[string]uint64{}}
 }
 
+// HasRemoteState returns true if the store has received state from any remote
+// peer (i.e. any node besides LocalID has maxCounter > 0).
+func (s *Store) HasRemoteState() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for peerID, rec := range s.nodes {
+		if peerID != s.LocalID && rec.maxCounter > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) Clock() *statev1.GossipVectorClock {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

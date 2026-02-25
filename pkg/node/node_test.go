@@ -168,9 +168,8 @@ func TestConnectPeerFlow(t *testing.T) {
 }
 
 // TestConnectPeerAfterPriorConnection simulates the production scenario where
-// the daemon previously connected to a peer (consuming requestFullOnce), then
-// later ConnectPeer is called for a new relay. This is the common case when
-// running `pollen bootstrap ssh` against a daemon that has had previous connections.
+// the daemon previously connected to a peer, then later ConnectPeer is called
+// for a new relay. Verifies that state propagates to the new peer.
 func TestConnectPeerAfterPriorConnection(t *testing.T) {
 	nodeIPs := []string{"127.0.0.1"}
 	cluster := newClusterAuth(t)
@@ -178,7 +177,7 @@ func TestConnectPeerAfterPriorConnection(t *testing.T) {
 	a := newTestNode(t, cluster, nodeIPs)
 	a.start(t)
 
-	// First connection: A connects to C via ConnectPeer RPC (consumes requestFullOnce on A).
+	// First connection: A connects to C via ConnectPeer RPC.
 	c := newTestNode(t, cluster, nodeIPs)
 	c.start(t)
 	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
