@@ -9,7 +9,9 @@ Check if you're on a branch other than `main`:
 - If on a PR branch:
   1. Run `git branch --show-current` to confirm
   2. Run `gh pr list --head <branch> --json number,title,state` to find the associated PR
-  3. If a PR exists and is open, merge it with `gh pr merge <number> --squash --delete-branch`
+  3. If a PR exists and is open:
+     1. Fetch the PR title and body: `gh pr view <number> --json title,body`
+     2. Merge with the PR title as subject and body as description: `gh pr merge <number> --squash --delete-branch --subject "<title>" --body "<body>"`
   4. Run `git checkout main && git pull` to switch to main with the merged changes
 - If already on `main`, continue to the next step
 
