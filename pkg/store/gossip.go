@@ -271,33 +271,33 @@ func (s *Store) Save() error {
 	return s.disk.save(st)
 }
 
-func (s *Store) ZeroClock() *statev1.GossipVectorClock {
-	return &statev1.GossipVectorClock{Counters: map[string]uint64{}}
-}
-
-// HasRemoteState returns true if the store has received state from any remote
-// peer (i.e. any node besides LocalID has maxCounter > 0).
-func (s *Store) HasRemoteState() bool {
+// EagerSyncClock returns a zero clock when no remote peer has state yet (so
+// the responder sends everything), or the real vector clock otherwise. Both
+// the remote-state check and clock construction happen under a single RLock to
+// avoid a TOCTOU race with concurrent ApplyEvents calls.
+func (s *Store) EagerSyncClock() *statev1.GossipVectorClock {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	for peerID, rec := range s.nodes {
 		if peerID != s.LocalID && rec.maxCounter > 0 {
-			return true
+			return s.clockLocked()
 		}
 	}
-	return false
+	return &statev1.GossipVectorClock{Counters: map[string]uint64{}}
 }
 
 func (s *Store) Clock() *statev1.GossipVectorClock {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.clockLocked()
+}
 
+func (s *Store) clockLocked() *statev1.GossipVectorClock {
 	clock := make(map[string]uint64, len(s.nodes))
 	for peerID, rec := range s.nodes {
 		clock[peerID.String()] = rec.maxCounter
 	}
-
 	return &statev1.GossipVectorClock{Counters: clock}
 }
 

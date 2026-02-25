@@ -45,6 +45,41 @@ func peerKey(b byte) (types.PeerKey, string) {
 	return pk, pk.String()
 }
 
+func TestEagerSyncClock(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	// Fresh store with only local state → zero clock.
+	clock := s.EagerSyncClock()
+	if len(clock.GetCounters()) != 0 {
+		t.Fatalf("expected empty counters for fresh store, got %v", clock.GetCounters())
+	}
+
+	// Apply a remote event → real clock.
+	_, peerIDStr := peerKey(2)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 5,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+		},
+	})
+
+	clock = s.EagerSyncClock()
+	counters := clock.GetCounters()
+	if len(counters) != 2 {
+		t.Fatalf("expected 2 entries in clock, got %d", len(counters))
+	}
+	if counters[s.LocalID.String()] != 1 {
+		t.Fatalf("expected local counter=1, got %d", counters[s.LocalID.String()])
+	}
+	peerPK, _ := peerKey(2)
+	if counters[peerPK.String()] != 5 {
+		t.Fatalf("expected remote counter=5, got %d", counters[peerPK.String()])
+	}
+}
+
 func TestSetLocalNetworkReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
@@ -1029,7 +1064,7 @@ func TestLoadRestoresRevocationsFromDisk(t *testing.T) {
 	}
 
 	// The revocation should appear in MissingFor output for a new joiner.
-	events := s2.MissingFor(s2.ZeroClock())
+	events := s2.MissingFor(nil)
 	var found bool
 	for _, ev := range events {
 		if ev.GetRevocation() != nil {

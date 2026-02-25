@@ -47,6 +47,7 @@ const (
 	directTimeout = 2 * time.Second
 	punchTimeout  = 3 * time.Second
 
+	// eagerSyncCooldown should be >= GossipInterval to avoid redundant sends.
 	eagerSyncCooldown = 5 * time.Second
 
 	loopIntervalJitter = 0.1
@@ -422,10 +423,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			n.store.SetLastAddr(e.PeerKey, addr.String())
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
-				clock := n.store.Clock()
-				if !n.store.HasRemoteState() {
-					clock = n.store.ZeroClock()
-				}
+				clock := n.store.EagerSyncClock()
 				if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
 					Body: &meshv1.Envelope_Clock{Clock: clock},
 				}); err != nil {
