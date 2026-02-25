@@ -144,10 +144,6 @@ func ensureNodeCredentialsFromToken(
 		if !proto.Equal(existing.Trust, creds.Trust) {
 			return nil, ErrDifferentCluster
 		}
-
-		if err := VerifyMembershipCert(existing.Cert, existing.Trust, now, nodePub); err == nil {
-			return existing, nil
-		}
 	}
 
 	if err := SaveNodeCredentials(pollenDir, creds); err != nil {
