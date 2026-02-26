@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strconv"
 	"time"
 
 	"connectrpc.com/connect"
@@ -17,7 +16,7 @@ import (
 
 func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "status [nodes|services|connections]",
+		Use:   "status [nodes|services]",
 		Short: "Show status",
 		Args:  cobra.RangeArgs(0, 1),
 		Run:   runStatus,
@@ -39,7 +38,11 @@ func runStatus(cmd *cobra.Command, args []string) {
 	client := newControlClient(cmd)
 	resp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		if connect.CodeOf(err) == connect.CodeUnavailable {
+			fmt.Fprintln(cmd.OutOrStdout(), "daemon is not running")
+		} else {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+		}
 		return
 	}
 
@@ -53,9 +56,6 @@ func runStatus(cmd *cobra.Command, args []string) {
 		if s := collectServicesSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
-		if s := collectConnectionsSection(st, opts); len(s.rows) > 0 {
-			sections = append(sections, s)
-		}
 	case "nodes", "node":
 		if s := collectPeersSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
@@ -64,12 +64,8 @@ func runStatus(cmd *cobra.Command, args []string) {
 		if s := collectServicesSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
-	case "connections", "connection", "connected":
-		if s := collectConnectionsSection(st, opts); len(s.rows) > 0 {
-			sections = append(sections, s)
-		}
 	default:
-		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services|connections)\n", mode)
+		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services)\n", mode)
 		return
 	}
 	renderStatusSections(cmd.OutOrStdout(), sections)
@@ -129,7 +125,7 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
 	sec := statusSection{
 		title:   "SERVICES",
-		headers: []string{"SERVICE", "PROVIDER", "PORT"},
+		headers: []string{"SERVICE", "PROVIDER", "PORT", "LOCAL"},
 	}
 
 	reachableProviders := map[string]bool{}
@@ -144,6 +140,19 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 		}
 	}
 
+	type connKey struct {
+		service  string
+		provider string
+	}
+	connLocal := map[connKey]uint32{}
+	for _, c := range st.Connections {
+		k := connKey{
+			service:  c.GetServiceName(),
+			provider: peerKeyString(c.GetPeer().GetPeerId()),
+		}
+		connLocal[k] = c.GetLocalPort()
+	}
+
 	filtered := 0
 	for _, s := range st.Services {
 		providerID := peerKeyString(s.GetProvider().GetPeerId())
@@ -152,30 +161,15 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 			continue
 		}
 		provider := formatPeerID(s.GetProvider().GetPeerId(), opts.wide)
-		sec.rows = append(sec.rows, []string{s.GetName(), provider, fmt.Sprintf("%d", s.GetPort())})
+		local := "-"
+		if lp, ok := connLocal[connKey{service: s.GetName(), provider: providerID}]; ok {
+			local = fmt.Sprintf("%d", lp)
+		}
+		sec.rows = append(sec.rows, []string{s.GetName(), provider, fmt.Sprintf("%d", s.GetPort()), local})
 	}
 
 	if filtered > 0 {
 		sec.footer = fmt.Sprintf("offline services: %d (use --all)", filtered)
-	}
-	return sec
-}
-
-func collectConnectionsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
-	sec := statusSection{
-		title:   "CONNECTED",
-		headers: []string{"LOCAL", "SERVICE", "PROVIDER", "REMOTE"},
-	}
-
-	for _, c := range st.Connections {
-		service := c.GetServiceName()
-		if service == "" {
-			service = strconv.FormatUint(uint64(c.GetRemotePort()), 10)
-		}
-		provider := formatPeerID(c.GetPeer().GetPeerId(), opts.wide)
-		sec.rows = append(sec.rows, []string{
-			fmt.Sprintf("%d", c.GetLocalPort()), service, provider, fmt.Sprintf("%d", c.GetRemotePort()),
-		})
 	}
 	return sec
 }
