@@ -17,6 +17,7 @@ import (
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/perm"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -213,6 +214,9 @@ func SaveNodeCredentials(pollenDir string, creds *NodeCredentials) error {
 	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
 		return err
 	}
+	if err := perm.SetGroupDir(dir); err != nil {
+		return err
+	}
 
 	trustRaw, err := creds.Trust.MarshalVT()
 	if err != nil {
@@ -230,8 +234,14 @@ func SaveNodeCredentials(pollenDir string, creds *NodeCredentials) error {
 	if err := os.WriteFile(trustPath, trustRaw, keyFilePerm); err != nil {
 		return err
 	}
+	if err := perm.SetGroupReadable(trustPath); err != nil {
+		return err
+	}
 
 	if err := os.WriteFile(certPath, certRaw, keyFilePerm); err != nil {
+		return err
+	}
+	if err := perm.SetGroupReadable(certPath); err != nil {
 		return err
 	}
 
@@ -294,6 +304,9 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
 		return nil, nil, err
 	}
+	if err := perm.SetGroupDir(dir); err != nil {
+		return nil, nil, err
+	}
 
 	pub, priv, err = ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -328,6 +341,10 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 	}
 
 	if err := pubFile.Close(); err != nil {
+		return nil, nil, err
+	}
+
+	if err := perm.SetGroupReadable(pubPath); err != nil {
 		return nil, nil, err
 	}
 
