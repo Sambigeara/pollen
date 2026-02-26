@@ -961,6 +961,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "relay bootstrapped: %s\n", host)
+	fmt.Fprintln(cmd.OutOrStdout(), "hint: reconnect SSH to use `pollen` without sudo (new group membership requires a fresh login)")
 }
 
 func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs []string, sshTarget string, certTTL time.Duration) error {
