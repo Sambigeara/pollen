@@ -10,15 +10,18 @@ import (
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sourcegraph/conc/pool"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
 	"github.com/sambigeara/pollen/pkg/node"
 )
 
-type GrpcServer struct{}
+type GrpcServer struct {
+	log *zap.SugaredLogger
+}
 
 func NewGRPCServer() *GrpcServer {
-	return &GrpcServer{}
+	return &GrpcServer{log: zap.S().Named("grpc")}
 }
 
 func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path string) error {
@@ -48,6 +51,10 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 	defer os.Remove(path)
+
+	if err := setSocketGroupPermissions(path); err != nil {
+		s.log.Warnw("socket group permissions", "err", err)
+	}
 
 	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
 	p.Go(func(_ context.Context) error {
