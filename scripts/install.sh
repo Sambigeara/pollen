@@ -46,12 +46,14 @@ if [ "$OS" = "linux" ]; then
         DEB_URL="https://github.com/$REPO/releases/download/${VERSION}/pollen_${PKG_VER}_linux_${ARCH}.deb"
         curl -sL "$DEB_URL" -o /tmp/pollen.deb
         sudo NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/pollen.deb
+        sudo usermod -aG pollen "$(whoami)" 2>/dev/null || true
         log "Done! Run 'sudo pollen join <token>' to enroll this node."
         exit 0
     elif command -v yum >/dev/null 2>&1; then
         log "RHEL/Fedora detected. Installing .rpm..."
         RPM_URL="https://github.com/$REPO/releases/download/${VERSION}/pollen_${PKG_VER}_linux_${ARCH}.rpm"
         sudo yum install -y "$RPM_URL"
+        sudo usermod -aG pollen "$(whoami)" 2>/dev/null || true
         log "Done! Run 'sudo pollen join <token>' to enroll this node."
         exit 0
     else

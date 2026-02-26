@@ -1,7 +1,8 @@
 #!/bin/sh
 set -e
 getent group pollen >/dev/null 2>&1 || groupadd --system pollen
-install -d -m 0750 -g pollen /var/lib/pollen
+# Group-writable so pollen group members can generate identity keys.
+install -d -m 0770 -g pollen /var/lib/pollen
 systemctl daemon-reload
 systemctl enable pollen
 # On upgrade, restart to pick up the new binary.
