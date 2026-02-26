@@ -107,7 +107,6 @@ func main() {
 		newRevokeCmd(),
 		newDaemonCmd(),
 		newLogsCmd(),
-		newUpgradeCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -116,8 +115,12 @@ func main() {
 }
 
 func defaultRootDir() string {
-	_, homeDir, _ := effectiveUser()
-	return filepath.Join(homeDir, pollenDir)
+	if runtime.GOOS == osLinux {
+		if stat, err := os.Stat("/var/lib/pollen"); err == nil && stat.IsDir() {
+			return "/var/lib/pollen"
+		}
+	}
+	return filepath.Join(effectiveHomeDir(), pollenDir)
 }
 
 func newAdminCmd() *cobra.Command {
@@ -218,41 +221,22 @@ func newBootstrapCmd() *cobra.Command {
 func newUpCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "up",
-		Short: "Start a Pollen node",
+		Short: "Start a Pollen node in the foreground",
 		Run:   runUp,
 	}
-	cmd.Flags().BoolP("daemon", "d", false, "Start as a background service")
 	cmd.Flags().Int("port", config.DefaultBootstrapPort, "Listening port")
 	cmd.Flags().IPSlice("ips", []net.IP{}, "Advertised IPs")
 	return cmd
 }
 
-func runUp(cmd *cobra.Command, args []string) {
-	daemon, _ := cmd.Flags().GetBool("daemon")
-
-	if daemon {
-		// -d is incompatible with foreground-only flags.
-		for _, name := range []string{"port", "ips"} {
-			if cmd.Flags().Changed(name) {
-				fmt.Fprintf(cmd.ErrOrStderr(), "-d/--daemon cannot be combined with --%s; configure the service via `pollen daemon install`\n", name)
-				return
-			}
-		}
-		if err := runUpDaemon(cmd); err != nil {
-			fmt.Fprintln(cmd.ErrOrStderr(), err)
-		}
-		return
-	}
-
-	// Foreground mode: warn if a daemon instance already owns the socket.
+func runUp(cmd *cobra.Command, _ []string) {
 	pollenDir, err := pollenPath(cmd)
 	if err == nil {
 		sockPath := filepath.Join(pollenDir, socketName)
 		if active, _ := nodeSocketActive(sockPath); active {
-			if daemonServiceInstalled() {
-				fmt.Fprintln(cmd.ErrOrStderr(), "a daemon instance is already running; use `pollen down` to stop it or `pollen up -d` to manage it")
-				return
-			}
+			fmt.Fprintln(cmd.ErrOrStderr(),
+				"a node is already running; use `pollen daemon stop` to stop the background service, or `pollen down` to stop a foreground instance")
+			return
 		}
 	}
 
@@ -336,10 +320,6 @@ func enrollToken(ctx context.Context, pollenDir, rawToken string) error {
 		}
 	}
 
-	if err := chownToRealUser(pollenDir); err != nil {
-		return fmt.Errorf("fix file ownership: %w", err)
-	}
-
 	return nil
 }
 
@@ -363,21 +343,8 @@ func runJoin(cmd *cobra.Command, args []string) {
 
 	sockPath := filepath.Join(pollenDir, socketName)
 	if active, _ := nodeSocketActive(sockPath); active {
-		// Daemon is running — shut it down so it restarts with the new credentials.
-		client := newControlClient(cmd)
-		if _, shutErr := client.Shutdown(cmd.Context(), connect.NewRequest(&controlv1.ShutdownRequest{})); shutErr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "failed to stop running daemon: %v\n", shutErr)
-			return
-		}
-
-		if waitForSocket(sockPath, bootstrapStatusWait) {
-			fmt.Fprintln(cmd.OutOrStdout(), "joined cluster; daemon restarted")
-			return
-		}
-
-		// Service manager didn't restart it — start explicitly.
-		if err := runUpDaemon(cmd); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "joined cluster; daemon stopped but failed to restart: %v — run `pollen up -d`\n", err)
+		if err := servicectl("restart", cmd); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "joined cluster but failed to restart daemon: %v\n", err)
 			return
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "joined cluster; daemon restarted")
@@ -385,12 +352,12 @@ func runJoin(cmd *cobra.Command, args []string) {
 	}
 
 	if noStart {
-		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pollen up -d` to start the node")
+		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pollen daemon start` to start the node")
 		return
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; starting daemon")
-	if err := runUpDaemon(cmd); err != nil {
+	if err := servicectl("start", cmd); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 	}
 }
@@ -1290,7 +1257,7 @@ func startRelayOverSSH(cmd *cobra.Command, sshTarget, token string) error {
 
 	// Enroll the relay into the cluster, then start the daemon.
 	// Use --no-start because bootstrap needs to provision admin delegation before the final start.
-	remoteJoin := fmt.Sprintf("pollen join --no-start %q && sudo pollen up -d", token)
+	remoteJoin := fmt.Sprintf("sudo pollen join --no-start %q && sudo pollen daemon start", token)
 	out, err := exec.CommandContext(ctx, "ssh", sshTarget, remoteJoin).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -1303,13 +1270,13 @@ func enrollAndStartDaemon(cmd *cobra.Command, pollenDir, joinToken string) error
 	if err := enrollToken(cmd.Context(), pollenDir, joinToken); err != nil {
 		return err
 	}
-	return runUpDaemon(cmd)
+	return servicectl("start", cmd)
 }
 
 func restartRelayOverSSH(cmd *cobra.Command, sshTarget string) error {
 	ctx := cmd.Context()
 
-	restartCmd := "sudo pollen down >/dev/null 2>&1 || true; sudo pollen up -d"
+	restartCmd := "sudo pollen daemon stop >/dev/null 2>&1 || true; sudo pollen daemon start"
 	out, err := exec.CommandContext(ctx, "ssh", sshTarget, restartCmd).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -1376,13 +1343,13 @@ func waitForRelayReady(cmd *cobra.Command, sshTarget string) error {
 	readyCtx, cancel := context.WithTimeout(ctx, bootstrapStatusWait)
 	defer cancel()
 
-	checkCmd := "for i in $(seq 1 20); do if [ -S \"$HOME/.pollen/pollen.sock\" ] && pollen status --all >/dev/null 2>&1; then exit 0; fi; sleep 1; done; exit 1"
+	checkCmd := "for i in $(seq 1 20); do if { sudo test -S /var/lib/pollen/pollen.sock || [ -S \"$HOME/.pollen/pollen.sock\" ]; } && sudo pollen status --all >/dev/null 2>&1; then exit 0; fi; sleep 1; done; exit 1"
 	out, err := exec.CommandContext(readyCtx, "ssh", sshTarget, checkCmd).CombinedOutput()
 	if err == nil {
 		return nil
 	}
 
-	logCmd := "tail -n 120 ~/Library/Logs/pollen.log 2>/dev/null || journalctl -u pollen -n 120 --no-pager 2>/dev/null || tail -n 120 /tmp/pollen.log 2>/dev/null || true"
+	logCmd := "journalctl -u pollen -n 120 --no-pager 2>/dev/null || tail -n 120 /opt/homebrew/var/log/pollen.log 2>/dev/null || tail -n 120 /usr/local/var/log/pollen.log 2>/dev/null || true"
 	logOut, _ := exec.CommandContext(ctx, "ssh", sshTarget, logCmd).CombinedOutput()
 	return fmt.Errorf("relay failed to become ready\nstatus output: %s\nrelay log:\n%s", strings.TrimSpace(string(out)), strings.TrimSpace(string(logOut)))
 }
@@ -1748,18 +1715,6 @@ func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient 
 	)
 }
 
-func newUpgradeCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "upgrade",
-		Short: "Upgrade Pollen to the latest (or specified) version",
-		Args:  cobra.NoArgs,
-		Run:   runUpgrade,
-	}
-	cmd.Flags().String("version", "", "Install a specific release (e.g. v0.3.0)")
-	cmd.Flags().Bool("allow-breaking", false, "Allow semver-breaking upgrades")
-	return cmd
-}
-
 func fetchInstallScript() ([]byte, error) {
 	repo := os.Getenv("POLLEN_REPO")
 	if repo == "" {
@@ -1783,36 +1738,4 @@ func fetchInstallScript() ([]byte, error) {
 	}
 
 	return script, nil
-}
-
-func runUpgrade(cmd *cobra.Command, _ []string) {
-	script, err := fetchInstallScript()
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
-	}
-
-	args := []string{"-s", "--"}
-
-	// Always install to the same directory as the running binary so we
-	// don't end up with stale copies in two locations.
-	if exe, err := os.Executable(); err == nil {
-		args = append(args, "--install-dir", filepath.Dir(exe))
-	}
-
-	if v, _ := cmd.Flags().GetString("version"); v != "" {
-		args = append(args, "--version", v)
-	}
-	if ab, _ := cmd.Flags().GetBool("allow-breaking"); ab {
-		args = append(args, "--allow-breaking")
-	}
-
-	bash := exec.CommandContext(cmd.Context(), "bash", args...)
-	bash.Stdin = bytes.NewReader(script)
-	bash.Stdout = cmd.OutOrStdout()
-	bash.Stderr = cmd.ErrOrStderr()
-
-	if err := bash.Run(); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "upgrade failed: %v\n", err)
-	}
 }

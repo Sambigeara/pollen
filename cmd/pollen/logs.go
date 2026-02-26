@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -38,13 +39,13 @@ func runLogs(cmd *cobra.Command, _ []string) {
 }
 
 func logsDarwin(cmd *cobra.Command, follow bool, lines int) {
-	_, homeDir, _ := effectiveUser()
-	logPath := filepath.Join(homeDir, "Library", "Logs", "pollen.log")
-
-	if _, err := os.Stat(logPath); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "log file not found: %s\nis the daemon installed? try: pollen up -d\n", logPath)
-		return
+	prefix := "/usr/local"
+	if out, err := exec.CommandContext(cmd.Context(), "brew", "--prefix").Output(); err == nil {
+		prefix = strings.TrimSpace(string(out))
+	} else if _, err := os.Stat("/opt/homebrew"); err == nil {
+		prefix = "/opt/homebrew"
 	}
+	logPath := filepath.Join(prefix, "var", "log", "pollen.log")
 
 	args := []string{"-n", strconv.Itoa(lines)}
 	if follow {
@@ -53,33 +54,19 @@ func logsDarwin(cmd *cobra.Command, follow bool, lines int) {
 	args = append(args, logPath)
 
 	c := exec.CommandContext(cmd.Context(), "tail", args...)
-	c.Stdin = cmd.InOrStdin()
 	c.Stdout = cmd.OutOrStdout()
 	c.Stderr = cmd.ErrOrStderr()
-
-	if err := c.Run(); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to read logs: %v\n", err)
-	}
+	_ = c.Run()
 }
 
 func logsLinux(cmd *cobra.Command, follow bool, lines int) {
-	unitPath := systemdUnitPath()
-	if _, err := os.Stat(unitPath); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "service not installed: %s\nis the daemon installed? try: sudo pollen up -d\n", unitPath)
-		return
-	}
-
-	args := []string{"-u", systemdUnitName, "-n", strconv.Itoa(lines), "--no-pager"}
+	args := []string{"-u", "pollen", "-n", strconv.Itoa(lines), "--no-pager"}
 	if follow {
 		args = append(args, "-f")
 	}
 
 	c := exec.CommandContext(cmd.Context(), "journalctl", args...)
-	c.Stdin = cmd.InOrStdin()
 	c.Stdout = cmd.OutOrStdout()
 	c.Stderr = cmd.ErrOrStderr()
-
-	if err := c.Run(); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to read logs: %v\n", err)
-	}
+	_ = c.Run()
 }
