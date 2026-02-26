@@ -346,7 +346,7 @@ func runJoin(cmd *cobra.Command, args []string) {
 			if err := exec.CommandContext(cmd.Context(), "usermod", "-aG", "pollen", sudoUser).Run(); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not add %s to pollen group: %v\n", sudoUser, err)
 			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "added %s to the pollen group — log out and back in for CLI access without sudo\n", sudoUser)
+				fmt.Fprintf(cmd.OutOrStdout(), "added %s to the pollen group -- log out and back in for CLI access without sudo\n", sudoUser)
 			}
 		}
 	}
