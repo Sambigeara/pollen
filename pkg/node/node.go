@@ -16,6 +16,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/peer"
+	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/tunnel"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -43,6 +44,8 @@ const (
 	pemTypePriv       = "ED25519 PRIVATE KEY"
 	pemTypePub        = "ED25519 PUBLIC KEY"
 	keyDirPerm        = 0o700
+	privKeyPerm       = 0o600
+	pubKeyPerm        = 0o640
 
 	directTimeout = 2 * time.Second
 	punchTimeout  = 3 * time.Second
@@ -804,11 +807,10 @@ func GenIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 			}
 			priv := ed25519.NewKeyFromSeed(block.Bytes)
 
-			block, _ = pem.Decode(pubEnc)
-			if block == nil || block.Type != pemTypePub {
-				return nil, nil, errors.New("invalid public key PEM")
+			pub, err := decodePubKeyPEM(pubEnc)
+			if err != nil {
+				return nil, nil, err
 			}
-			pub := ed25519.PublicKey(block.Bytes)
 
 			return priv, pub, nil
 		}
@@ -817,13 +819,16 @@ func GenIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
 		return nil, nil, err
 	}
+	if err := perm.SetGroupDir(dir); err != nil {
+		return nil, nil, err
+	}
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	privFile, err := os.Create(privPath)
+	privFile, err := os.OpenFile(privPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, privKeyPerm)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -836,7 +841,7 @@ func GenIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 		return nil, nil, err
 	}
 
-	pubFile, err := os.Create(pubPath)
+	pubFile, err := os.OpenFile(pubPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, pubKeyPerm)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -849,5 +854,27 @@ func GenIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 		return nil, nil, err
 	}
 
-	return priv, pub, err
+	if err := perm.SetGroupReadable(pubPath); err != nil {
+		return nil, nil, err
+	}
+
+	return priv, pub, nil
+}
+
+// ReadIdentityPub reads the public key from disk without requiring private key access.
+func ReadIdentityPub(pollenDir string) (ed25519.PublicKey, error) {
+	pubPath := filepath.Join(pollenDir, localKeysDir, signingPubKeyName)
+	pubEnc, err := os.ReadFile(pubPath)
+	if err != nil {
+		return nil, err
+	}
+	return decodePubKeyPEM(pubEnc)
+}
+
+func decodePubKeyPEM(data []byte) (ed25519.PublicKey, error) {
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != pemTypePub {
+		return nil, errors.New("invalid public key PEM")
+	}
+	return ed25519.PublicKey(block.Bytes), nil
 }

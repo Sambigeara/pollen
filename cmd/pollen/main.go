@@ -842,10 +842,17 @@ func runID(cmd *cobra.Command, _ []string) {
 		return
 	}
 
-	_, pub, err := node.GenIdentityKey(pollenDir)
+	pub, err := node.ReadIdentityPub(pollenDir)
 	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			return
+		}
+		_, pub, err = node.GenIdentityKey(pollenDir)
+		if err != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			return
+		}
 	}
 
 	fmt.Fprint(cmd.OutOrStdout(), hex.EncodeToString(pub))
@@ -926,13 +933,16 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	out, err := exec.CommandContext(ctx, "ssh", host, "pollen", "id").CombinedOutput()
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to fetch remote node identity: %v\n%s\n", err, strings.TrimSpace(string(out)))
+	idCmd := exec.CommandContext(ctx, "ssh", host, "pollen", "id")
+	var idStdout, idStderr bytes.Buffer
+	idCmd.Stdout = &idStdout
+	idCmd.Stderr = &idStderr
+	if err := idCmd.Run(); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to fetch remote node identity: %v\n%s\n", err, strings.TrimSpace(idStderr.String()))
 		return
 	}
 
-	relayPeerKey, err := types.PeerKeyFromString(strings.TrimSpace(string(out)))
+	relayPeerKey, err := types.PeerKeyFromString(strings.TrimSpace(idStdout.String()))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
@@ -1298,12 +1308,15 @@ func restartRelayOverSSH(cmd *cobra.Command, sshTarget string) error {
 func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 	ctx := cmd.Context()
 
-	initOut, err := exec.CommandContext(ctx, "ssh", sshTarget, "pollen", "admin", "keygen").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to initialize relay admin key: %w\n%s", err, strings.TrimSpace(string(initOut)))
+	keygenCmd := exec.CommandContext(ctx, "ssh", sshTarget, "pollen", "admin", "keygen")
+	var keygenStdout, keygenStderr bytes.Buffer
+	keygenCmd.Stdout = &keygenStdout
+	keygenCmd.Stderr = &keygenStderr
+	if err := keygenCmd.Run(); err != nil {
+		return fmt.Errorf("failed to initialize relay admin key: %w\n%s", err, strings.TrimSpace(keygenStderr.String()))
 	}
 
-	relayAdminPub, err := parseAdminPubFromInitOutput(string(initOut))
+	relayAdminPub, err := parseAdminPubFromInitOutput(keygenStdout.String())
 	if err != nil {
 		return err
 	}

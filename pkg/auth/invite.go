@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/perm"
 )
 
 type AdminSigner struct {
@@ -58,9 +59,15 @@ func SaveAdminCert(pollenDir string, cert *admissionv1.AdminCert) error {
 	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
 		return err
 	}
+	if err := perm.SetGroupDir(dir); err != nil {
+		return err
+	}
 
 	path := filepath.Join(dir, adminCertName)
-	return os.WriteFile(path, raw, keyFilePerm)
+	if err := os.WriteFile(path, raw, keyFilePerm); err != nil {
+		return err
+	}
+	return perm.SetGroupReadable(path)
 }
 
 func LoadAdminSigner(pollenDir string, now time.Time, adminCertTTL time.Duration) (*AdminSigner, error) {

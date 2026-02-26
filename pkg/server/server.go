@@ -9,11 +9,11 @@ import (
 	"time"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	"github.com/sambigeara/pollen/pkg/node"
+	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sourcegraph/conc/pool"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
-
-	"github.com/sambigeara/pollen/pkg/node"
 )
 
 type GrpcServer struct {
@@ -52,7 +52,7 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 	}
 	defer os.Remove(path)
 
-	if err := setSocketGroupPermissions(path); err != nil {
+	if err := perm.SetGroupSocket(path); err != nil {
 		s.log.Warnw("socket group permissions", "err", err)
 	}
 
