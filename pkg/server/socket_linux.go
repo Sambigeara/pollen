@@ -3,6 +3,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -12,7 +13,11 @@ import (
 func setSocketGroupPermissions(path string) error {
 	grp, err := user.LookupGroup("pollen")
 	if err != nil {
-		return nil
+		var unknownGroup user.UnknownGroupError
+		if errors.As(err, &unknownGroup) {
+			return nil
+		}
+		return fmt.Errorf("lookup pollen group: %w", err)
 	}
 	gid, err := strconv.Atoi(grp.Gid)
 	if err != nil {

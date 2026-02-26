@@ -57,13 +57,7 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 	}
 
 	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
-	p.Go(func(_ context.Context) error {
-		if err := server.Serve(l); err != nil {
-			return err
-		}
-
-		return nil
-	})
+	p.Go(func(_ context.Context) error { return server.Serve(l) })
 
 	p.Go(func(ctx context.Context) error {
 		<-ctx.Done()
@@ -71,9 +65,5 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 		return nil
 	})
 
-	if err := p.Wait(); err != nil {
-		return err
-	}
-
-	return nil
+	return p.Wait()
 }
