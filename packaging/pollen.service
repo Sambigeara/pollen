@@ -1,0 +1,17 @@
+[Unit]
+Description=Pollen Mesh Node
+Documentation=https://github.com/sambigeara/pollen
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+StateDirectory=pollen
+ExecStart=/usr/bin/pollen --dir /var/lib/pollen up
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

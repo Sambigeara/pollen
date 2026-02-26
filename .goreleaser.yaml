@@ -17,3 +17,31 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 checksum:
   name_template: checksums.txt
+nfpms:
+  - vendor: "Sambigeara"
+    homepage: "https://github.com/sambigeara/pollen"
+    maintainer: "Sambigeara"
+    description: "Mesh network daemon"
+    # license: "MIT"
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    contents:
+      - src: packaging/pollen.service
+        dst: /lib/systemd/system/pollen.service
+    scripts:
+      postinstall: packaging/postinstall.sh
+      preremove: packaging/preremove.sh
+      postremove: packaging/postremove.sh
+brews:
+  - repository:
+      owner: sambigeara
+      name: homebrew-pollen
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    description: "Mesh network daemon"
+    install: |
+      bin.install "pollen"
+    service: |
+      run opt_bin/"pollen", "up"
+      keep_alive true
+      log_path var/"log/pollen.log"
+      error_log_path var/"log/pollen.log"
