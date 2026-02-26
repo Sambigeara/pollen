@@ -62,7 +62,7 @@ On the joining node, install and join:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash
-pollen join "<INVITE_TOKEN>"  # use sudo on Linux
+sudo pollen join "<INVITE_TOKEN>"  # Linux only; adds your user to the pollen group
 ```
 
 `pollen join` enrolls credentials and starts the daemon automatically. Use
@@ -90,4 +90,5 @@ pollen unserve api
 
 - On macOS, state defaults to `~/.pollen`
 - On Linux, the package installs a systemd service and defaults state to `/var/lib/pollen` when that directory exists
+- On Linux, `pollen join` automatically adds your user to the `pollen` group so CLI commands (`pollen status`, `pollen peers`, etc.) work without `sudo`. Log out and back in after joining for group membership to take effect.
 - Use `--dir` to run isolated test clusters

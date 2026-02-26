@@ -341,6 +341,16 @@ func runJoin(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	if runtime.GOOS == osLinux {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+			if err := exec.CommandContext(cmd.Context(), "usermod", "-aG", "pollen", sudoUser).Run(); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not add %s to pollen group: %v\n", sudoUser, err)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "added %s to the pollen group — log out and back in for CLI access without sudo\n", sudoUser)
+			}
+		}
+	}
+
 	sockPath := filepath.Join(pollenDir, socketName)
 	if active, _ := nodeSocketActive(sockPath); active {
 		if err := servicectl("restart", cmd); err != nil {

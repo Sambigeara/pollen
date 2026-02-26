@@ -1,6 +1,7 @@
 #!/bin/sh
 set -e
-install -d -m 0700 /var/lib/pollen
+getent group pollen >/dev/null 2>&1 || groupadd --system pollen
+install -d -m 0750 -g pollen /var/lib/pollen
 systemctl daemon-reload
 systemctl enable pollen
 # On upgrade, restart to pick up the new binary.
