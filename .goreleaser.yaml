@@ -41,7 +41,7 @@ brews:
     install: |
       bin.install "pollen"
     service: |
-      run opt_bin/"pollen", "up"
+      run [opt_bin/"pollen", "up"]
       keep_alive true
       log_path var/"log/pollen.log"
       error_log_path var/"log/pollen.log"
