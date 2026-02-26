@@ -29,28 +29,17 @@ const (
 	osLinux  = "linux"
 )
 
-func newDaemonCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "daemon",
-		Short: "Manage the Pollen background service",
+func newServiceCmd(action, short string) *cobra.Command {
+	return &cobra.Command{
+		Use:   action,
+		Short: short,
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			if err := servicectl(action, cmd); err != nil {
+				os.Exit(1)
+			}
+		},
 	}
-	for _, sub := range []struct{ use, short string }{
-		{"start", "Start the service"},
-		{"stop", "Stop the service"},
-		{"restart", "Restart the service"},
-		{"status", "Check service status"},
-	} {
-		action := sub.use
-		cmd.AddCommand(&cobra.Command{
-			Use: sub.use, Short: sub.short, Args: cobra.NoArgs,
-			Run: func(cmd *cobra.Command, _ []string) {
-				if err := servicectl(action, cmd); err != nil {
-					os.Exit(1)
-				}
-			},
-		})
-	}
-	return cmd
 }
 
 func servicectl(action string, cmd *cobra.Command) error {
@@ -58,18 +47,11 @@ func servicectl(action string, cmd *cobra.Command) error {
 	var c *exec.Cmd
 	switch runtime.GOOS {
 	case osDarwin:
-		brewAction := action
-		if brewAction == "status" {
-			brewAction = "info"
-		}
-		c = exec.CommandContext(ctx, "brew", "services", brewAction, "pollen")
+		c = exec.CommandContext(ctx, "brew", "services", action, "pollen")
 	case osLinux:
-		switch {
-		case action == "status":
-			c = exec.CommandContext(ctx, "systemctl", "status", "pollen", "--no-pager")
-		case os.Getuid() == 0:
+		if os.Getuid() == 0 {
 			c = exec.CommandContext(ctx, "systemctl", action, "pollen")
-		default:
+		} else {
 			c = exec.CommandContext(ctx, "sudo", "systemctl", action, "pollen")
 		}
 	default:

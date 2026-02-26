@@ -97,7 +97,9 @@ func main() {
 		newIDCmd(),
 		newBootstrapCmd(),
 		newUpCmd(),
-		newDownCmd(),
+		newServiceCmd("start", "Start the background service"),
+		newServiceCmd("stop", "Stop the background service"),
+		newServiceCmd("restart", "Restart the background service"),
 		newJoinCmd(),
 		newInviteCmd(),
 		newStatusCmd(),
@@ -105,7 +107,6 @@ func main() {
 		newUnserveCmd(),
 		newConnectCmd(),
 		newRevokeCmd(),
-		newDaemonCmd(),
 		newLogsCmd(),
 	)
 
@@ -235,20 +236,12 @@ func runUp(cmd *cobra.Command, _ []string) {
 		sockPath := filepath.Join(pollenDir, socketName)
 		if active, _ := nodeSocketActive(sockPath); active {
 			fmt.Fprintln(cmd.ErrOrStderr(),
-				"a node is already running; use `pollen daemon stop` to stop the background service, or `pollen down` to stop a foreground instance")
+				"a node is already running; use `pollen stop` to stop the background service")
 			return
 		}
 	}
 
 	runNode(cmd)
-}
-
-func newDownCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "down",
-		Short: "Gracefully stop the local running node",
-		Run:   runDown,
-	}
 }
 
 func newJoinCmd() *cobra.Command {
@@ -362,7 +355,7 @@ func runJoin(cmd *cobra.Command, args []string) {
 	}
 
 	if noStart {
-		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pollen daemon start` to start the node")
+		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pollen start` to start the node")
 		return
 	}
 
@@ -545,7 +538,7 @@ func runInit(cmd *cobra.Command, _ []string) {
 		return
 	}
 	if running {
-		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pollen down` before initializing")
+		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pollen stop` before initializing")
 		return
 	}
 
@@ -626,7 +619,7 @@ func runPurge(cmd *cobra.Command, _ []string) {
 		return
 	}
 	if running {
-		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pollen down` before purging state")
+		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pollen stop` before purging state")
 		return
 	}
 
@@ -741,16 +734,6 @@ func removeDirIfEmpty(path string) error {
 		return nil
 	}
 	return os.Remove(path)
-}
-
-func runDown(cmd *cobra.Command, _ []string) {
-	client := newControlClient(cmd)
-	if _, err := client.Shutdown(context.Background(), connect.NewRequest(&controlv1.ShutdownRequest{})); err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
-	}
-
-	fmt.Fprintln(cmd.OutOrStdout(), "node stopped")
 }
 
 func runAdminKeygen(cmd *cobra.Command, _ []string) {
@@ -1278,7 +1261,7 @@ func startRelayOverSSH(cmd *cobra.Command, sshTarget, token string) error {
 
 	// Enroll the relay into the cluster, then start the daemon.
 	// Use --no-start because bootstrap needs to provision admin delegation before the final start.
-	remoteJoin := fmt.Sprintf("sudo pollen join --no-start %q && sudo pollen daemon start", token)
+	remoteJoin := fmt.Sprintf("sudo pollen join --no-start %q && sudo pollen start", token)
 	out, err := exec.CommandContext(ctx, "ssh", sshTarget, remoteJoin).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -1297,7 +1280,7 @@ func enrollAndStartDaemon(cmd *cobra.Command, pollenDir, joinToken string) error
 func restartRelayOverSSH(cmd *cobra.Command, sshTarget string) error {
 	ctx := cmd.Context()
 
-	restartCmd := "sudo pollen daemon stop >/dev/null 2>&1 || true; sudo pollen daemon start"
+	restartCmd := "sudo pollen restart"
 	out, err := exec.CommandContext(ctx, "ssh", sshTarget, restartCmd).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))

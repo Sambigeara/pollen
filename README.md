@@ -13,9 +13,8 @@ This README is intentionally short and focused on day-to-day commands.
 
 - `pollen init` — initialize local root cluster state
 - `pollen up` — start a node in the foreground
-- `pollen down` — gracefully stop a running local node
+- `pollen start|stop|restart` — manage the background service
 - `pollen join <token>` — enroll into a cluster and start the daemon (`--no-start` to enroll only)
-- `pollen daemon start|stop|restart|status` — manage the background service
 - `pollen logs [-f]` — show daemon logs
 - `pollen purge [--all]` — reset local cluster state (`--all` also removes node keys)
 - `pollen status` — show nodes/services

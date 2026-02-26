@@ -19,7 +19,7 @@ Follow these conventions when changing code or tests.
     - `pollen invite [node-pub]`
     - `pollen up`
     - `pollen join <token>`
-    - `pollen down`
+    - `pollen stop`
     - `pollen status`
     - `pollen serve 8080 foo`
     - `pollen connect foo`
