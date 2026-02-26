@@ -33,8 +33,9 @@ fi
 if [ "$OS" = "linux" ]; then
     if [ -z "$VERSION" ]; then
         log "Linux detected. Finding latest release..."
-        VERSION=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-        [ -z "$VERSION" ] && fatal "Could not determine latest version."
+        API_RESP=$(curl -sS "https://api.github.com/repos/$REPO/releases/latest" 2>&1) || fatal "Could not reach GitHub API."
+        VERSION=$(echo "$API_RESP" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        [ -z "$VERSION" ] && fatal "Could not determine latest version. GitHub response:\n$API_RESP"
     else
         log "Linux detected. Installing version ${VERSION}..."
     fi
