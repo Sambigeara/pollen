@@ -92,6 +92,7 @@ type peerSession struct {
 	conn      *quic.Conn
 	transport *quic.Transport
 	sockConn  *sock.Conn
+	inbound   bool
 }
 
 type directDialResult struct {
@@ -472,6 +473,7 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		PeerKey:      peerKey,
 		IP:           addr.IP,
 		ObservedPort: addr.Port,
+		Inbound:      s.inbound,
 	}:
 	case <-time.After(eventSendTimeout):
 		m.log.Warnw("dropped connect event, consumer lagging",
@@ -590,7 +592,7 @@ func (m *impl) acceptLoop(ctx context.Context) {
 
 		switch qc.ConnectionState().TLS.NegotiatedProtocol {
 		case alpnMesh:
-			m.addPeer(&peerSession{conn: qc, transport: m.mainQT}, peerKey)
+			m.addPeer(&peerSession{conn: qc, transport: m.mainQT, inbound: true}, peerKey)
 		case alpnInvite:
 			go m.handleInviteConnection(ctx, qc, peerKey)
 		default:
