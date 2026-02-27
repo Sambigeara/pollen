@@ -32,6 +32,7 @@ message NodeSummary {
   NodeRef node = 1;
   NodeStatus status = 2;
   string addr = 3;
+  bool publicly_accessible = 4;
 }
 
 message ServiceSummary {
@@ -59,6 +60,7 @@ message BootstrapPeerInfo {
 
 message GetBootstrapInfoResponse {
   BootstrapPeerInfo self = 1;
+  BootstrapPeerInfo recommended = 2;
 }
 
 message GetStatusRequest {}

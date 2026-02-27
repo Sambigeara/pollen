@@ -46,17 +46,54 @@ func (s *NodeService) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootst
 		return &controlv1.GetBootstrapInfoResponse{}, nil
 	}
 
-	addrs := make([]string, 0, len(rec.IPs))
-	for _, ip := range rec.IPs {
-		addrs = append(addrs, net.JoinHostPort(ip, strconv.Itoa(int(rec.LocalPort))))
+	resp := &controlv1.GetBootstrapInfoResponse{
+		Self: nodeBootstrapInfo(local, rec.IPs, rec.LocalPort),
 	}
 
-	return &controlv1.GetBootstrapInfoResponse{
-		Self: &controlv1.BootstrapPeerInfo{
-			Peer:  &controlv1.NodeRef{PeerId: local.Bytes()},
-			Addrs: addrs,
-		},
-	}, nil
+	resp.Recommended = s.pickRecommendedPeer(local)
+
+	return resp, nil
+}
+
+func (s *NodeService) pickRecommendedPeer(localID types.PeerKey) *controlv1.BootstrapPeerInfo {
+	nodes := s.node.store.AllNodes()
+
+	var candidates []types.PeerKey
+	for peerID, rec := range nodes {
+		if peerID == localID || !rec.PubliclyAccessible {
+			continue
+		}
+		if len(rec.IPs) == 0 || rec.LocalPort == 0 {
+			continue
+		}
+		candidates = append(candidates, peerID)
+	}
+
+	if len(candidates) > 0 {
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].Less(candidates[j])
+		})
+		best := candidates[0]
+		rec := nodes[best]
+		return nodeBootstrapInfo(best, rec.IPs, rec.LocalPort)
+	}
+
+	localRec, ok := nodes[localID]
+	if !ok || len(localRec.IPs) == 0 || localRec.LocalPort == 0 {
+		return nil
+	}
+	return nodeBootstrapInfo(localID, localRec.IPs, localRec.LocalPort)
+}
+
+func nodeBootstrapInfo(peerID types.PeerKey, ips []string, port uint32) *controlv1.BootstrapPeerInfo {
+	addrs := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		addrs = append(addrs, net.JoinHostPort(ip, strconv.Itoa(int(port))))
+	}
+	return &controlv1.BootstrapPeerInfo{
+		Peer:  &controlv1.NodeRef{PeerId: peerID.Bytes()},
+		Addrs: addrs,
+	}
 }
 
 func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
@@ -64,7 +101,9 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 	localID := s.node.store.LocalID
 
 	selfAddr := ""
+	selfPubliclyAccessible := false
 	if rec, ok := s.node.store.Get(localID); ok {
+		selfPubliclyAccessible = rec.PubliclyAccessible
 		if len(rec.IPs) > 0 {
 			port := rec.LocalPort
 			ip := net.ParseIP(rec.IPs[0])
@@ -77,9 +116,10 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 
 	out := &controlv1.GetStatusResponse{
 		Self: &controlv1.NodeSummary{
-			Node:   &controlv1.NodeRef{PeerId: localID.Bytes()},
-			Status: controlv1.NodeStatus_NODE_STATUS_ONLINE,
-			Addr:   selfAddr,
+			Node:               &controlv1.NodeRef{PeerId: localID.Bytes()},
+			Status:             controlv1.NodeStatus_NODE_STATUS_ONLINE,
+			Addr:               selfAddr,
+			PubliclyAccessible: selfPubliclyAccessible,
 		},
 		Services:    []*controlv1.ServiceSummary{},
 		Nodes:       make([]*controlv1.NodeSummary, 0, len(nodes)),
@@ -126,9 +166,10 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		}
 
 		out.Nodes = append(out.Nodes, &controlv1.NodeSummary{
-			Node:   &controlv1.NodeRef{PeerId: key.Bytes()},
-			Status: status,
-			Addr:   addrStr,
+			Node:               &controlv1.NodeRef{PeerId: key.Bytes()},
+			Status:             status,
+			Addr:               addrStr,
+			PubliclyAccessible: node.PubliclyAccessible,
 		})
 	}
 
