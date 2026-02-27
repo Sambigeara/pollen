@@ -819,6 +819,149 @@ func TestLoadServiceWithOrphanedProvider(t *testing.T) {
 	}
 }
 
+func TestSetLocalPubliclyAccessibleReturnsEvent(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	events := s.SetLocalPubliclyAccessible(true)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	ev := events[0]
+	if ev.GetDeleted() {
+		t.Fatal("expected deleted=false for setting accessible")
+	}
+	if ev.GetPubliclyAccessible() == nil {
+		t.Fatal("expected publicly_accessible change")
+	}
+}
+
+func TestSetLocalPubliclyAccessibleNoOpWhenUnchanged(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	s.SetLocalPubliclyAccessible(true)
+	events := s.SetLocalPubliclyAccessible(true)
+	if events != nil {
+		t.Fatal("expected nil for no-op, got events")
+	}
+}
+
+func TestSetLocalPubliclyAccessibleClear(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	s.SetLocalPubliclyAccessible(true)
+	events := s.SetLocalPubliclyAccessible(false)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	ev := events[0]
+	if !ev.GetDeleted() {
+		t.Fatal("expected deleted=true for clearing accessible")
+	}
+
+	if s.IsPubliclyAccessible(s.LocalID) {
+		t.Fatal("expected PubliclyAccessible=false after clearing")
+	}
+}
+
+func TestApplyPubliclyAccessibleFromPeer(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	peerPK, peerIDStr := peerKey(2)
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_PubliclyAccessible{
+			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
+		},
+	})
+
+	if !s.IsPubliclyAccessible(peerPK) {
+		t.Fatal("expected peer to be publicly accessible")
+	}
+
+	// Delete it.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 2,
+		Deleted: true,
+		Change: &statev1.GossipEvent_PubliclyAccessible{
+			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
+		},
+	})
+
+	if s.IsPubliclyAccessible(peerPK) {
+		t.Fatal("expected peer to no longer be publicly accessible")
+	}
+}
+
+func TestPubliclyAccessibleRoundTrip(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	events := s.SetLocalPubliclyAccessible(true)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	missing := s.MissingFor(&statev1.GossipVectorClock{
+		Counters: map[string]uint64{s.LocalID.String(): 0},
+	})
+
+	var found bool
+	for _, ev := range missing {
+		if ev.GetPubliclyAccessible() != nil && !ev.GetDeleted() {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected publicly_accessible event in MissingFor output")
+	}
+}
+
+func TestPubliclyAccessibleConflictRecovery(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	s.SetLocalPubliclyAccessible(true)
+
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  s.LocalID.String(),
+		Counter: 100,
+		Change: &statev1.GossipEvent_PubliclyAccessible{
+			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
+		},
+	})
+
+	if len(result.Rebroadcast) == 0 {
+		t.Fatal("self-state conflict should trigger rebroadcast")
+	}
+
+	var found bool
+	for _, ev := range result.Rebroadcast {
+		if ev.GetPubliclyAccessible() != nil {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("rebroadcast should include publicly_accessible event")
+	}
+}
+
 func newTestClusterAuth(t *testing.T) (ed25519.PrivateKey, *admissionv1.TrustBundle) {
 	t.Helper()
 	adminPub, adminPriv, err := ed25519.GenerateKey(rand.Reader)

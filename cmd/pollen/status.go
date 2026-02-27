@@ -93,12 +93,16 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 	}
 
 	if self := st.GetSelf(); self != nil && self.GetNode() != nil {
-		peer := formatPeerID(self.GetNode().GetPeerId(), opts.wide) + " (self)"
+		label := formatPeerID(self.GetNode().GetPeerId(), opts.wide) + " (self)"
 		addr := self.GetAddr()
 		if addr == "" {
 			addr = "-"
 		}
-		sec.rows = append(sec.rows, []string{peer, "online", addr})
+		status := "online"
+		if self.GetPubliclyAccessible() {
+			status = "online (public)"
+		}
+		sec.rows = append(sec.rows, []string{label, status, addr})
 	}
 
 	filtered := 0
@@ -107,13 +111,16 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			filtered++
 			continue
 		}
-		peer := formatPeerID(n.GetNode().GetPeerId(), opts.wide)
+		label := formatPeerID(n.GetNode().GetPeerId(), opts.wide)
 		status := formatStatus(n.GetStatus())
+		if n.GetPubliclyAccessible() && isReachableStatus(n.GetStatus()) {
+			status += " (public)"
+		}
 		addr := n.GetAddr()
 		if addr == "" {
 			addr = "-"
 		}
-		sec.rows = append(sec.rows, []string{peer, status, addr})
+		sec.rows = append(sec.rows, []string{label, status, addr})
 	}
 
 	if filtered > 0 {

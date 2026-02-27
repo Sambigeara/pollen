@@ -22,6 +22,7 @@ const (
 	attrService
 	attrReachability
 	attrRevocation
+	attrPubliclyAccessible
 )
 
 type attrKey struct {
@@ -54,6 +55,10 @@ func revocationAttrKey(subjectPubHex string) attrKey {
 	return attrKey{kind: attrRevocation, name: subjectPubHex}
 }
 
+func publiclyAccessibleAttrKey() attrKey {
+	return attrKey{kind: attrPubliclyAccessible}
+}
+
 // logEntry tracks the counter (and deletion state) of a single attribute.
 type logEntry struct {
 	Counter uint64
@@ -61,24 +66,26 @@ type logEntry struct {
 }
 
 type nodeRecord struct {
-	Reachable    map[types.PeerKey]struct{}
-	Services     map[string]*statev1.Service
-	log          map[attrKey]logEntry
-	LastAddr     string
-	IdentityPub  []byte
-	IPs          []string
-	maxCounter   uint64
-	LocalPort    uint32
-	ExternalPort uint32
+	Reachable          map[types.PeerKey]struct{}
+	Services           map[string]*statev1.Service
+	log                map[attrKey]logEntry
+	LastAddr           string
+	IdentityPub        []byte
+	IPs                []string
+	maxCounter         uint64
+	LocalPort          uint32
+	ExternalPort       uint32
+	PubliclyAccessible bool
 }
 
 type KnownPeer struct {
-	LastAddr     string
-	IdentityPub  []byte
-	IPs          []string
-	LocalPort    uint32
-	ExternalPort uint32
-	PeerID       types.PeerKey
+	LastAddr           string
+	IdentityPub        []byte
+	IPs                []string
+	LocalPort          uint32
+	ExternalPort       uint32
+	PeerID             types.PeerKey
+	PubliclyAccessible bool
 }
 
 type Connection struct {
@@ -460,6 +467,8 @@ func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
 	case *statev1.GossipEvent_Revocation:
 		subjectKey := types.PeerKeyFromBytes(v.Revocation.GetRevocation().GetEntry().GetSubjectPub())
 		return revocationAttrKey(subjectKey.String()), true
+	case *statev1.GossipEvent_PubliclyAccessible:
+		return publiclyAccessibleAttrKey(), true
 	default:
 		return attrKey{}, false
 	}
@@ -504,6 +513,8 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 		delete(rec.Reachable, key.peer)
 	case attrRevocation:
 		// Revocations are cluster-wide, not per-node; deletion is a no-op.
+	case attrPubliclyAccessible:
+		rec.PubliclyAccessible = false
 	default:
 		panic("unknown attr kind")
 	}
@@ -535,6 +546,8 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 		}
 	case *statev1.GossipEvent_Reachability:
 		rec.Reachable[key.peer] = struct{}{}
+	case *statev1.GossipEvent_PubliclyAccessible:
+		rec.PubliclyAccessible = true
 	}
 }
 
@@ -636,6 +649,44 @@ func (s *Store) SetLocalConnected(peerID types.PeerKey, connected bool) []*state
 	}
 
 	return []*statev1.GossipEvent{event}
+}
+
+func (s *Store) SetLocalPubliclyAccessible(accessible bool) []*statev1.GossipEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	local := s.nodes[s.LocalID]
+	if local.PubliclyAccessible == accessible {
+		return nil
+	}
+
+	local.PubliclyAccessible = accessible
+
+	key := publiclyAccessibleAttrKey()
+	local.maxCounter++
+	counter := local.maxCounter
+	local.log[key] = logEntry{Counter: counter, Deleted: !accessible}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Deleted: !accessible,
+		Change: &statev1.GossipEvent_PubliclyAccessible{
+			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
+		},
+	}}
+}
+
+func (s *Store) IsPubliclyAccessible(peerID types.PeerKey) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rec, ok := s.nodes[peerID]
+	if !ok {
+		return false
+	}
+	return rec.PubliclyAccessible
 }
 
 func (s *Store) UpsertLocalService(port uint32, name string) []*statev1.GossipEvent {
@@ -778,12 +829,13 @@ func (s *Store) KnownPeers() []KnownPeer {
 			continue
 		}
 		known = append(known, KnownPeer{
-			PeerID:       peerID,
-			LocalPort:    rec.LocalPort,
-			ExternalPort: rec.ExternalPort,
-			IdentityPub:  rec.IdentityPub,
-			IPs:          rec.IPs,
-			LastAddr:     rec.LastAddr,
+			PeerID:             peerID,
+			LocalPort:          rec.LocalPort,
+			ExternalPort:       rec.ExternalPort,
+			IdentityPub:        rec.IdentityPub,
+			IPs:                rec.IPs,
+			LastAddr:           rec.LastAddr,
+			PubliclyAccessible: rec.PubliclyAccessible,
 		})
 	}
 
@@ -1019,6 +1071,10 @@ func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRe
 	case attrReachability:
 		event.Change = &statev1.GossipEvent_Reachability{
 			Reachability: &statev1.ReachabilityChange{PeerId: key.peer.String()},
+		}
+	case attrPubliclyAccessible:
+		event.Change = &statev1.GossipEvent_PubliclyAccessible{
+			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
 		}
 	case attrRevocation:
 		panic("buildEventFromLog must not be called for revocation events")

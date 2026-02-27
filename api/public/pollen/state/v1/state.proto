@@ -40,6 +40,8 @@ message ExternalPortChange {
   uint32 external_port = 1;
 }
 
+message PubliclyAccessibleChange {}
+
 message IdentityChange {
   bytes identity_pub = 1 [(buf.validate.field).bytes = {len: 32}];
 }
@@ -61,6 +63,7 @@ message GossipEvent {
     ServiceChange service = 6;
     ReachabilityChange reachability = 7;
     RevocationChange revocation = 9;
+    PubliclyAccessibleChange publicly_accessible = 10;
   }
   bool deleted = 8;
 }
