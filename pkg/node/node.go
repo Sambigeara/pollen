@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"time"
@@ -425,6 +426,9 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			addr := &net.UDPAddr{IP: e.IP, Port: e.ObservedPort}
 			n.store.SetLastAddr(e.PeerKey, addr.String())
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
+			if e.Inbound && !e.IP.IsPrivate() && !e.IP.IsLoopback() && !e.IP.IsLinkLocalUnicast() && !isExcludedIP(e.IP) {
+				n.queueGossipEvents(n.store.SetLocalPubliclyAccessible(true))
+			}
 			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
 				clock := n.store.EagerSyncClock()
 				if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
@@ -452,6 +456,20 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			go n.requestPunchCoordination(e.PeerKey)
 		}
 	}
+}
+
+func isExcludedIP(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, r := range mesh.DefaultExclusions {
+		if r.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func (n *Node) reconcileConnections() {

@@ -1406,6 +1406,13 @@ func localBootstrapPeer(cmd *cobra.Command) (*admissionv1.BootstrapPeer, error) 
 		return nil, err
 	}
 
+	if rec := resp.Msg.GetRecommended(); rec != nil && rec.GetPeer() != nil && len(rec.GetAddrs()) > 0 {
+		return &admissionv1.BootstrapPeer{
+			PeerPub: append([]byte(nil), rec.GetPeer().GetPeerId()...),
+			Addrs:   append([]string(nil), rec.GetAddrs()...),
+		}, nil
+	}
+
 	self := resp.Msg.GetSelf()
 	if self == nil || self.GetPeer() == nil {
 		return nil, errors.New("missing bootstrap peer information")

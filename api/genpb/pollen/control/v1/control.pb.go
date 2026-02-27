@@ -119,12 +119,13 @@ func (x *NodeRef) GetPeerId() []byte {
 }
 
 type NodeSummary struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Node          *NodeRef               `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
-	Status        NodeStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=pollen.control.v1.NodeStatus" json:"status,omitempty"`
-	Addr          string                 `protobuf:"bytes,3,opt,name=addr,proto3" json:"addr,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Node               *NodeRef               `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	Status             NodeStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=pollen.control.v1.NodeStatus" json:"status,omitempty"`
+	Addr               string                 `protobuf:"bytes,3,opt,name=addr,proto3" json:"addr,omitempty"`
+	PubliclyAccessible bool                   `protobuf:"varint,4,opt,name=publicly_accessible,json=publiclyAccessible,proto3" json:"publicly_accessible,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *NodeSummary) Reset() {
@@ -176,6 +177,13 @@ func (x *NodeSummary) GetAddr() string {
 		return x.Addr
 	}
 	return ""
+}
+
+func (x *NodeSummary) GetPubliclyAccessible() bool {
+	if x != nil {
+		return x.PubliclyAccessible
+	}
+	return false
 }
 
 type ServiceSummary struct {
@@ -401,6 +409,7 @@ func (x *BootstrapPeerInfo) GetAddrs() []string {
 type GetBootstrapInfoResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Self          *BootstrapPeerInfo     `protobuf:"bytes,1,opt,name=self,proto3" json:"self,omitempty"`
+	Recommended   *BootstrapPeerInfo     `protobuf:"bytes,2,opt,name=recommended,proto3" json:"recommended,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -438,6 +447,13 @@ func (*GetBootstrapInfoResponse) Descriptor() ([]byte, []int) {
 func (x *GetBootstrapInfoResponse) GetSelf() *BootstrapPeerInfo {
 	if x != nil {
 		return x.Self
+	}
+	return nil
+}
+
+func (x *GetBootstrapInfoResponse) GetRecommended() *BootstrapPeerInfo {
+	if x != nil {
+		return x.Recommended
 	}
 	return nil
 }
@@ -1136,11 +1152,12 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\x1a\x1bbuf/validate/validate.proto\"\"\n" +
 	"\aNodeRef\x12\x17\n" +
-	"\apeer_id\x18\x01 \x01(\fR\x06peerId\"\x88\x01\n" +
+	"\apeer_id\x18\x01 \x01(\fR\x06peerId\"\xb9\x01\n" +
 	"\vNodeSummary\x12.\n" +
 	"\x04node\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04node\x125\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1d.pollen.control.v1.NodeStatusR\x06status\x12\x12\n" +
-	"\x04addr\x18\x03 \x01(\tR\x04addr\"\x88\x01\n" +
+	"\x04addr\x18\x03 \x01(\tR\x04addr\x12/\n" +
+	"\x13publicly_accessible\x18\x04 \x01(\bR\x12publiclyAccessible\"\x88\x01\n" +
 	"\x0eServiceSummary\x12\x1d\n" +
 	"\x04name\x18\x01 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@R\x04name\x126\n" +
 	"\bprovider\x18\x02 \x01(\v2\x1a.pollen.control.v1.NodeRefR\bprovider\x12\x1f\n" +
@@ -1150,9 +1167,10 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x17GetBootstrapInfoRequest\"Y\n" +
 	"\x11BootstrapPeerInfo\x12.\n" +
 	"\x04peer\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04peer\x12\x14\n" +
-	"\x05addrs\x18\x02 \x03(\tR\x05addrs\"T\n" +
+	"\x05addrs\x18\x02 \x03(\tR\x05addrs\"\x9c\x01\n" +
 	"\x18GetBootstrapInfoResponse\x128\n" +
-	"\x04self\x18\x01 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\x04self\"\x12\n" +
+	"\x04self\x18\x01 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\x04self\x12F\n" +
+	"\vrecommended\x18\x02 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\vrecommended\"\x12\n" +
 	"\x10GetStatusRequest\"p\n" +
 	"\bCertInfo\x12&\n" +
 	"\x0fnot_before_unix\x18\x01 \x01(\x03R\rnotBeforeUnix\x12$\n" +
@@ -1259,34 +1277,35 @@ var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	1,  // 2: pollen.control.v1.ServiceSummary.provider:type_name -> pollen.control.v1.NodeRef
 	1,  // 3: pollen.control.v1.BootstrapPeerInfo.peer:type_name -> pollen.control.v1.NodeRef
 	7,  // 4: pollen.control.v1.GetBootstrapInfoResponse.self:type_name -> pollen.control.v1.BootstrapPeerInfo
-	2,  // 5: pollen.control.v1.GetStatusResponse.self:type_name -> pollen.control.v1.NodeSummary
-	2,  // 6: pollen.control.v1.GetStatusResponse.nodes:type_name -> pollen.control.v1.NodeSummary
-	3,  // 7: pollen.control.v1.GetStatusResponse.services:type_name -> pollen.control.v1.ServiceSummary
-	12, // 8: pollen.control.v1.GetStatusResponse.connections:type_name -> pollen.control.v1.ConnectionSummary
-	10, // 9: pollen.control.v1.GetStatusResponse.certificates:type_name -> pollen.control.v1.CertInfo
-	1,  // 10: pollen.control.v1.ConnectionSummary.peer:type_name -> pollen.control.v1.NodeRef
-	1,  // 11: pollen.control.v1.ConnectServiceRequest.node:type_name -> pollen.control.v1.NodeRef
-	4,  // 12: pollen.control.v1.ControlService.Shutdown:input_type -> pollen.control.v1.ShutdownRequest
-	6,  // 13: pollen.control.v1.ControlService.GetBootstrapInfo:input_type -> pollen.control.v1.GetBootstrapInfoRequest
-	9,  // 14: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
-	13, // 15: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
-	15, // 16: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
-	19, // 17: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
-	17, // 18: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
-	21, // 19: pollen.control.v1.ControlService.RevokePeer:input_type -> pollen.control.v1.RevokePeerRequest
-	5,  // 20: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
-	8,  // 21: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
-	11, // 22: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
-	14, // 23: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
-	16, // 24: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
-	20, // 25: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
-	18, // 26: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
-	22, // 27: pollen.control.v1.ControlService.RevokePeer:output_type -> pollen.control.v1.RevokePeerResponse
-	20, // [20:28] is the sub-list for method output_type
-	12, // [12:20] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	7,  // 5: pollen.control.v1.GetBootstrapInfoResponse.recommended:type_name -> pollen.control.v1.BootstrapPeerInfo
+	2,  // 6: pollen.control.v1.GetStatusResponse.self:type_name -> pollen.control.v1.NodeSummary
+	2,  // 7: pollen.control.v1.GetStatusResponse.nodes:type_name -> pollen.control.v1.NodeSummary
+	3,  // 8: pollen.control.v1.GetStatusResponse.services:type_name -> pollen.control.v1.ServiceSummary
+	12, // 9: pollen.control.v1.GetStatusResponse.connections:type_name -> pollen.control.v1.ConnectionSummary
+	10, // 10: pollen.control.v1.GetStatusResponse.certificates:type_name -> pollen.control.v1.CertInfo
+	1,  // 11: pollen.control.v1.ConnectionSummary.peer:type_name -> pollen.control.v1.NodeRef
+	1,  // 12: pollen.control.v1.ConnectServiceRequest.node:type_name -> pollen.control.v1.NodeRef
+	4,  // 13: pollen.control.v1.ControlService.Shutdown:input_type -> pollen.control.v1.ShutdownRequest
+	6,  // 14: pollen.control.v1.ControlService.GetBootstrapInfo:input_type -> pollen.control.v1.GetBootstrapInfoRequest
+	9,  // 15: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
+	13, // 16: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
+	15, // 17: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
+	19, // 18: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
+	17, // 19: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
+	21, // 20: pollen.control.v1.ControlService.RevokePeer:input_type -> pollen.control.v1.RevokePeerRequest
+	5,  // 21: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
+	8,  // 22: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
+	11, // 23: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
+	14, // 24: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
+	16, // 25: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
+	20, // 26: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
+	18, // 27: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
+	22, // 28: pollen.control.v1.ControlService.RevokePeer:output_type -> pollen.control.v1.RevokePeerResponse
+	21, // [21:29] is the sub-list for method output_type
+	13, // [13:21] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_pollen_control_v1_control_proto_init() }

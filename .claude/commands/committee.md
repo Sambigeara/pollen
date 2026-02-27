@@ -96,7 +96,7 @@ If after 3 rounds any request is still `reject` or unresolved `counter`, escalat
 
 Synthesize all persona plans (internal plans + negotiated cross-boundary agreements) into a single unified implementation plan.
 
-Write the plan to `tasks/todo.md` using this format:
+Write the plan to `tasks/committee_todo.md` using this format:
 
 ```markdown
 # Committee Plan: <task title>
@@ -203,9 +203,10 @@ FINDINGS:
 
 Collect all 6 reviews. If ANY persona returns `findings`:
 
-1. Compile all findings into a single fix list
-2. Send to the implementation subagent (resume it or launch a new one) with instructions to address each finding
-3. After fixes, re-run the persona review cycle
+1. Triage findings into "must-fix" (correctness, dead code, dedup) and "deferred" (nice-to-have, future work). Present both lists to the user and get approval on which to fix now.
+2. Send must-fix findings to the implementation subagent (resume it or launch a new one) with instructions to address each finding.
+3. **MANDATORY**: After fixes are applied, re-run the FULL persona review cycle (all 6 personas, same prompts). This is not optional — every fix round MUST be followed by a review round. Do NOT skip to the final presentation after fixes.
+4. Repeat fix → review cycles until all personas return `pass` or only deferred findings remain.
 
 Maximum 3 review-fix rounds. If findings persist after 3 rounds, present the remaining issues to the user and ask how to proceed.
 

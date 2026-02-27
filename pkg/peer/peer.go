@@ -85,6 +85,7 @@ type ConnectPeer struct {
 	IP           net.IP
 	ObservedPort int
 	PeerKey      types.PeerKey
+	Inbound      bool
 }
 
 func (ConnectPeer) isInput() {}
@@ -139,6 +140,7 @@ type PeerConnected struct {
 	IP           net.IP
 	ObservedPort int
 	PeerKey      types.PeerKey
+	Inbound      bool
 }
 
 func (PeerConnected) isOutput() {}
