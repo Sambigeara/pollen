@@ -51,6 +51,18 @@ var (
 	ErrDifferentCluster    = errors.New("node already has membership credentials for a different cluster")
 )
 
+func CertExpiresAt(cert *admissionv1.MembershipCert) time.Time {
+	return time.Unix(cert.GetClaims().GetNotAfterUnix(), 0)
+}
+
+func IsCertExpiredAt(expiresAt, now time.Time) bool {
+	return now.After(expiresAt.Add(timeSkewAllowance))
+}
+
+func IsMembershipCertExpired(cert *admissionv1.MembershipCert, now time.Time) bool {
+	return IsCertExpiredAt(CertExpiresAt(cert), now)
+}
+
 type NodeCredentials struct {
 	Trust        *admissionv1.TrustBundle
 	Cert         *admissionv1.MembershipCert
@@ -280,11 +292,7 @@ func LoadAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, erro
 	}
 	pub := ed25519.PublicKey(pubBlock.Bytes)
 
-	derivedPub, ok := priv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, nil, errors.New("admin private key is not ed25519")
-	}
-	if !bytes.Equal(derivedPub, pub) {
+	if !bytes.Equal(priv.Public().(ed25519.PublicKey), pub) { //nolint:forcetypeassert
 		return nil, nil, errors.New("admin keypair mismatch")
 	}
 
@@ -428,10 +436,7 @@ func IssueMembershipCert(
 	notAfter time.Time,
 	adminCertTTL time.Duration,
 ) (*admissionv1.MembershipCert, error) {
-	adminPub, ok := adminPriv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("admin private key is not ed25519")
-	}
+	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	now := time.Now()
 	issuer, err := IssueAdminCert(
@@ -466,10 +471,7 @@ func IssueMembershipCertWithIssuer(
 		return nil, errors.New("invalid membership certificate validity window")
 	}
 
-	adminPub, ok := adminPriv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("admin private key is not ed25519")
-	}
+	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	if issuer == nil || issuer.GetClaims() == nil {
 		return nil, errors.New("missing issuer admin cert")
@@ -566,10 +568,7 @@ func IssueJoinToken(
 		return nil, errors.New("missing trust bundle")
 	}
 
-	adminPub, ok := adminPriv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("admin private key is not ed25519")
-	}
+	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	if !bytes.Equal(adminPub, trust.GetRootPub()) {
 		return nil, errors.New("issuer admin certificate required for non-root admin key")
@@ -603,9 +602,6 @@ func IssueJoinTokenWithIssuer(
 		return nil, errors.New("token ttl must be positive")
 	}
 
-	if _, ok := adminPriv.Public().(ed25519.PublicKey); !ok {
-		return nil, errors.New("admin private key is not ed25519")
-	}
 	if err := VerifyAdminCert(issuer, trust, now); err != nil {
 		return nil, fmt.Errorf("issuer admin cert invalid: %w", err)
 	}
@@ -719,10 +715,7 @@ func IssueRevocation(
 	subjectPub ed25519.PublicKey,
 	now time.Time,
 ) (*admissionv1.SignedRevocation, error) {
-	adminPub, ok := adminPriv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("admin private key is not ed25519")
-	}
+	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	entry := &admissionv1.RevocationEntry{
 		ClusterId:      clusterID,
@@ -804,11 +797,7 @@ func randomSerial() (uint64, error) {
 }
 
 func signaturePayload(msg proto.Message) ([]byte, error) {
-	b, err := (proto.MarshalOptions{Deterministic: true}).Marshal(msg)
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
+	return (proto.MarshalOptions{Deterministic: true}).Marshal(msg)
 }
 
 func signPayload(privateKey ed25519.PrivateKey, payload []byte, context string) ([]byte, error) {

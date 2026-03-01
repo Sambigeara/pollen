@@ -58,6 +58,7 @@ const (
 	maxPort                      = 65535
 	defaultRepo                  = "sambigeara/pollen"
 	scriptFetchTimeout           = 30 * time.Second
+	defaultMaxConnectionAge      = 24 * time.Hour
 )
 
 var (
@@ -255,7 +256,6 @@ func newJoinCmd() *cobra.Command {
 	return cmd
 }
 
-// purgeClusterState removes all cluster-specific state while preserving identity keys.
 func clusterStatePaths(pollenDir string) []string {
 	return []string{
 		filepath.Join(pollenDir, "keys", "cluster.trust.pb"),
@@ -269,15 +269,6 @@ func clusterStatePaths(pollenDir string) []string {
 		filepath.Join(pollenDir, "consumed_invites.json"),
 		filepath.Join(pollenDir, "invites"),
 	}
-}
-
-func purgeClusterState(pollenDir string) error {
-	for _, p := range clusterStatePaths(pollenDir) {
-		if err := os.RemoveAll(p); err != nil {
-			return fmt.Errorf("remove %s: %w", p, err)
-		}
-	}
-	return nil
 }
 
 // enrollToken resolves a join/invite token, enrolls node credentials (purging
@@ -297,8 +288,10 @@ func enrollToken(ctx context.Context, pollenDir, rawToken string) error {
 	_, credErr := auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, tkn, time.Now())
 	if credErr != nil {
 		if errors.Is(credErr, auth.ErrDifferentCluster) {
-			if purgeErr := purgeClusterState(pollenDir); purgeErr != nil {
-				return fmt.Errorf("purge old cluster state: %w", purgeErr)
+			for _, p := range clusterStatePaths(pollenDir) {
+				if purgeErr := os.RemoveAll(p); purgeErr != nil {
+					return fmt.Errorf("purge old cluster state: remove %s: %w", p, purgeErr)
+				}
 			}
 			_, credErr = auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, tkn, time.Now())
 		}
@@ -380,13 +373,12 @@ func newInviteCmd() *cobra.Command {
 }
 
 func newServeCmd() *cobra.Command {
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "serve [port] [name]",
 		Short: "Expose a local port to the mesh",
 		Args:  cobra.RangeArgs(1, 2), //nolint:mnd
 		Run:   runServe,
 	}
-	return cmd
 }
 
 func newUnserveCmd() *cobra.Command {
@@ -399,13 +391,12 @@ func newUnserveCmd() *cobra.Command {
 }
 
 func newConnectCmd() *cobra.Command {
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "connect <service> [provider] [local-port]",
 		Short: "Tunnel a local port to a service",
 		Args:  cobra.RangeArgs(1, 3), //nolint:mnd
 		Run:   runConnect,
 	}
-	return cmd
 }
 
 func pollenPath(cmd *cobra.Command) (string, error) {
@@ -496,6 +487,7 @@ func runNode(cmd *cobra.Command) {
 		BootstrapPeers:   bootstrapPeers,
 		TLSIdentityTTL:   certTTLs.TLSIdentityTTL(),
 		MembershipTTL:    certTTLs.MembershipTTL(),
+		MaxConnectionAge: defaultMaxConnectionAge,
 	}
 
 	n, err := node.New(conf, privKey, creds, stateStore, peer.NewStore())
@@ -1000,7 +992,10 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout(), "relay is ready; starting local node")
-	return enrollAndStartDaemon(cmd, issuerCtx.pollenDir, joinToken)
+	if err := enrollToken(cmd.Context(), issuerCtx.pollenDir, joinToken); err != nil {
+		return err
+	}
+	return servicectl("start", cmd)
 }
 
 type tokenIssuerContext struct {
@@ -1030,8 +1025,13 @@ func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
 }
 
 func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) error {
-	if err := startRelayOverSSH(cmd, sshTarget, seedToken); err != nil {
-		return err
+	ctx := cmd.Context()
+
+	// Enroll the relay into the cluster, then start the daemon.
+	// Use --no-start because bootstrap needs to provision admin delegation before the final start.
+	remoteJoin := fmt.Sprintf("sudo pln join --no-start %q && sudo pln start", seedToken)
+	if out, err := exec.CommandContext(ctx, "ssh", sshTarget, remoteJoin).CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	if err := waitForRelayReady(cmd, sshTarget); err != nil {
 		return err
@@ -1039,8 +1039,8 @@ func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) erro
 	if err := provisionRelayAdminDelegation(cmd, sshTarget); err != nil {
 		return err
 	}
-	if err := restartRelayOverSSH(cmd, sshTarget); err != nil {
-		return err
+	if out, err := exec.CommandContext(ctx, "ssh", sshTarget, "sudo pln restart").CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	return waitForRelayReady(cmd, sshTarget)
 }
@@ -1151,22 +1151,19 @@ func loadBootstrapPeers(pollenDir string) ([]*admissionv1.BootstrapPeer, error) 
 
 func resolveInviteSubject(subjectFlag string, args []string) (ed25519.PublicKey, error) {
 	hasArg := len(args) == 1
-	hasFlag := strings.TrimSpace(subjectFlag) != ""
+	flagVal := strings.TrimSpace(subjectFlag)
 
-	if hasArg && hasFlag {
+	if hasArg && flagVal != "" {
 		return nil, errors.New("provide subject as positional argument or --subject, not both")
 	}
 
-	subject := ""
-	if hasArg {
+	var subject string
+	switch {
+	case hasArg:
 		subject = strings.TrimSpace(args[0])
-	}
-
-	if subject == "" && hasFlag {
-		subject = strings.TrimSpace(subjectFlag)
-	}
-
-	if subject == "" {
+	case flagVal != "":
+		subject = flagVal
+	default:
 		return nil, nil
 	}
 
@@ -1174,13 +1171,12 @@ func resolveInviteSubject(subjectFlag string, args []string) (ed25519.PublicKey,
 	if err != nil {
 		return nil, err
 	}
-
 	return ed25519.PublicKey(pk.Bytes()), nil
 }
 
 func parseBootstrapSpecs(specs []string) ([]*admissionv1.BootstrapPeer, error) {
-	byPeer := make(map[string]*admissionv1.BootstrapPeer)
-	order := make([]string, 0)
+	byPeer := map[string]*admissionv1.BootstrapPeer{}
+	var order []string
 
 	for _, spec := range specs {
 		parsed, err := parseBootstrapSpec(spec)
@@ -1236,9 +1232,20 @@ type bootstrapInfo struct {
 }
 
 func ensureRemotePollen(ctx context.Context, sshTarget string) error {
-	script, err := fetchInstallScript()
+	scriptURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/scripts/install.sh", defaultRepo)
+	resp, err := (&http.Client{Timeout: scriptFetchTimeout}).Get(scriptURL) //nolint:noctx
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to fetch install script: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to fetch install script: HTTP %d", resp.StatusCode)
+	}
+
+	script, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read install script: %w", err)
 	}
 
 	args := []string{sshTarget, "bash", "-s", "--"}
@@ -1251,39 +1258,6 @@ func ensureRemotePollen(ctx context.Context, sshTarget string) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to install pln on remote host: %w\n%s", err, strings.TrimSpace(string(out)))
-	}
-
-	return nil
-}
-
-func startRelayOverSSH(cmd *cobra.Command, sshTarget, token string) error {
-	ctx := cmd.Context()
-
-	// Enroll the relay into the cluster, then start the daemon.
-	// Use --no-start because bootstrap needs to provision admin delegation before the final start.
-	remoteJoin := fmt.Sprintf("sudo pln join --no-start %q && sudo pln start", token)
-	out, err := exec.CommandContext(ctx, "ssh", sshTarget, remoteJoin).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
-	}
-
-	return nil
-}
-
-func enrollAndStartDaemon(cmd *cobra.Command, pollenDir, joinToken string) error {
-	if err := enrollToken(cmd.Context(), pollenDir, joinToken); err != nil {
-		return err
-	}
-	return servicectl("start", cmd)
-}
-
-func restartRelayOverSSH(cmd *cobra.Command, sshTarget string) error {
-	ctx := cmd.Context()
-
-	restartCmd := "sudo pln restart"
-	out, err := exec.CommandContext(ctx, "ssh", sshTarget, restartCmd).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 
 	return nil
@@ -1545,21 +1519,21 @@ func runConnect(cmd *cobra.Command, args []string) {
 	fmt.Fprintf(cmd.OutOrStdout(), "forwarding localhost:%d -> %s (%s:%d)\n", local, svc.GetName(), provider, svc.GetPort())
 }
 
-func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg string) (*controlv1.ServiceSummary, error) {
-	if st == nil {
-		return nil, errors.New("no status available")
-	}
-
-	reachableProviders := map[string]bool{}
+func reachableProviderSet(st *controlv1.GetStatusResponse) map[string]bool {
+	m := map[string]bool{}
 	if st.GetSelf() != nil && st.GetSelf().GetNode() != nil {
-		selfID := peerKeyString(st.GetSelf().GetNode().GetPeerId())
-		reachableProviders[selfID] = true
+		m[peerKeyString(st.GetSelf().GetNode().GetPeerId())] = true
 	}
 	for _, n := range st.Nodes {
 		if isReachableStatus(n.GetStatus()) {
-			reachableProviders[peerKeyString(n.GetNode().GetPeerId())] = true
+			m[peerKeyString(n.GetNode().GetPeerId())] = true
 		}
 	}
+	return m
+}
+
+func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg string) (*controlv1.ServiceSummary, error) {
+	reachableProviders := reachableProviderSet(st)
 
 	portFilter := uint32(0)
 	if p, err := strconv.Atoi(serviceArg); err == nil && p > 0 && p <= 65535 {
@@ -1610,7 +1584,7 @@ func peerKeyString(peerID []byte) string {
 		return ""
 	}
 	key := types.PeerKeyFromBytes(peerID)
-	return (&key).String()
+	return key.String()
 }
 
 func formatPeerID(peerID []byte, wide bool) string {
@@ -1727,25 +1701,4 @@ func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient 
 		"http://unix",
 		connect.WithGRPC(),
 	)
-}
-
-func fetchInstallScript() ([]byte, error) {
-	scriptURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/scripts/install.sh", defaultRepo)
-
-	resp, err := (&http.Client{Timeout: scriptFetchTimeout}).Get(scriptURL) //nolint:noctx
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch install script: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch install script: HTTP %d", resp.StatusCode)
-	}
-
-	script, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read install script: %w", err)
-	}
-
-	return script, nil
 }

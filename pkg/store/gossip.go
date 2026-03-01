@@ -311,10 +311,7 @@ func (s *Store) clockLocked() *statev1.GossipVectorClock {
 // MissingFor returns the individual events that the remote peer is missing,
 // based on the provided vector clock.
 func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipEvent {
-	requested := map[string]uint64{}
-	if clock != nil {
-		requested = clock.GetCounters()
-	}
+	requested := clock.GetCounters()
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -346,20 +343,19 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent) ApplyResult {
 	s.mu.Lock()
 
 	var result ApplyResult
-	var revokedSubjects []types.PeerKey
 	for _, event := range events {
 		if event == nil {
 			continue
 		}
 		r := s.applyEventLocked(event)
 		result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
-		revokedSubjects = append(revokedSubjects, r.revokedSubjects...)
+		result.revokedSubjects = append(result.revokedSubjects, r.revokedSubjects...)
 	}
 
 	s.mu.Unlock()
 
 	if s.onRevocation != nil {
-		for _, subject := range revokedSubjects {
+		for _, subject := range result.revokedSubjects {
 			s.onRevocation(subject)
 		}
 	}
@@ -613,9 +609,6 @@ func (s *Store) SetLocalConnected(peerID types.PeerKey, connected bool) []*state
 	defer s.mu.Unlock()
 
 	local := s.nodes[s.LocalID]
-	if local.Reachable == nil {
-		local.Reachable = make(map[types.PeerKey]struct{})
-	}
 
 	_, exists := local.Reachable[peerID]
 	if connected && exists {

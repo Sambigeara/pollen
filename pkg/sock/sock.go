@@ -53,7 +53,7 @@ func (c *Conn) Close() error {
 
 type sockStore struct {
 	log        *zap.SugaredLogger
-	socks      *ConnList
+	socks      *connList
 	mainWrite  ProbeWriter
 	mainProbes map[[probeNonceSize]byte]chan *net.UDPAddr
 	probeMu    sync.Mutex

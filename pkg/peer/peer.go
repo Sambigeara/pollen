@@ -100,10 +100,12 @@ func (ConnectFailed) isInput() {}
 type DisconnectReason int
 
 const (
-	DisconnectUnknown     DisconnectReason = iota
-	DisconnectIdleTimeout                  // peer likely still alive, transient loss
-	DisconnectReset                        // peer rebooted (stateless reset)
-	DisconnectGraceful                     // clean app-level close
+	DisconnectUnknown      DisconnectReason = iota
+	DisconnectIdleTimeout                   // peer likely still alive, transient loss
+	DisconnectReset                         // peer rebooted (stateless reset)
+	DisconnectGraceful                      // clean app-level close
+	DisconnectCertRotation                  // forced reconnection for cert rotation
+	DisconnectCertExpired                   // peer membership cert expired
 )
 
 func (r DisconnectReason) String() string {
@@ -114,6 +116,10 @@ func (r DisconnectReason) String() string {
 		return "stateless_reset"
 	case DisconnectGraceful:
 		return "graceful"
+	case DisconnectCertRotation:
+		return "cert_rotation"
+	case DisconnectCertExpired:
+		return "cert_expired"
 	default:
 		return "unknown"
 	}
@@ -186,12 +192,11 @@ const (
 	unknownDisconnectRetryInterval  = 3 * time.Second
 )
 
-func (s *Store) backoff(attempts int) time.Duration {
+func backoff(attempts int) time.Duration {
 	if attempts == 0 {
 		return firstBackoff
 	}
-	d := min(baseBackoff*(1<<(attempts-1)), maxBackoff)
-	return d
+	return min(baseBackoff*(1<<(attempts-1)), maxBackoff)
 }
 
 func (s *Store) Step(now time.Time, in Input) []Output {
@@ -327,7 +332,7 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) {
 		}
 	}
 
-	p.NextActionAt = now.Add(s.backoff(p.StageAttempts))
+	p.NextActionAt = now.Add(backoff(p.StageAttempts))
 	p.State = PeerStateDiscovered // eligible for retry after backoff
 }
 
@@ -345,6 +350,10 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 		delay = resetRetryInterval
 	case DisconnectGraceful:
 		delay = gracefulDisconnectRetryInterval
+	case DisconnectCertRotation:
+		delay = idleTimeoutRetryInterval
+	case DisconnectCertExpired:
+		delay = unknownDisconnectRetryInterval
 	}
 
 	s.log.Debugw("scheduling reconnect",

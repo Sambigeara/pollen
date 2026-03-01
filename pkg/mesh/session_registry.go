@@ -124,6 +124,17 @@ func (r *sessionRegistry) removeIfCurrent(peerKey types.PeerKey, current *peerSe
 	return true
 }
 
+func (r *sessionRegistry) connectedPeers() []types.PeerKey {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	keys := make([]types.PeerKey, 0, len(r.peers))
+	for k := range r.peers {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func (r *sessionRegistry) drainPeers() map[types.PeerKey]*peerSession {
 	r.mu.Lock()
 	peers := r.peers

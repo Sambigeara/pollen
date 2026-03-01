@@ -65,10 +65,18 @@ message GetBootstrapInfoResponse {
 
 message GetStatusRequest {}
 
+enum CertHealth {
+  CERT_HEALTH_UNSPECIFIED = 0;
+  CERT_HEALTH_OK = 1;
+  CERT_HEALTH_EXPIRING_SOON = 2;
+  CERT_HEALTH_EXPIRED = 3;
+}
+
 message CertInfo {
   int64 not_before_unix = 1;
   int64 not_after_unix = 2;
   uint64 serial = 3;
+  CertHealth health = 4;
 }
 
 message GetStatusResponse {
