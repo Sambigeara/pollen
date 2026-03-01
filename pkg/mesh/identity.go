@@ -73,10 +73,7 @@ func parseMembershipExtension(certDER []byte) (*admissionv1.MembershipCert, erro
 }
 
 func generateIdentityCert(signPriv ed25519.PrivateKey, membershipCert *admissionv1.MembershipCert, validity time.Duration) (tls.Certificate, error) {
-	pub, ok := signPriv.Public().(ed25519.PublicKey)
-	if !ok {
-		return tls.Certificate{}, errors.New("identity private key is not ed25519")
-	}
+	pub := signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), certSerialBits))
 	if err != nil {

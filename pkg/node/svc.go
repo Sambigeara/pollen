@@ -2,12 +2,13 @@ package node
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net"
-	"sort"
+	"slices"
 	"strconv"
 	"time"
 
@@ -70,9 +71,7 @@ func (s *NodeService) pickRecommendedPeer(localID types.PeerKey) *controlv1.Boot
 	}
 
 	if len(candidates) > 0 {
-		sort.Slice(candidates, func(i, j int) bool {
-			return candidates[i].Less(candidates[j])
-		})
+		slices.SortFunc(candidates, comparePeerKey)
 		best := candidates[0]
 		rec := nodes[best]
 		return nodeBootstrapInfo(best, rec.IPs, rec.LocalPort)
@@ -110,7 +109,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			if ip != nil && rec.ExternalPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
 				port = rec.ExternalPort
 			}
-			selfAddr = net.JoinHostPort(rec.IPs[0], fmt.Sprintf("%d", port))
+			selfAddr = net.JoinHostPort(rec.IPs[0], strconv.Itoa(int(port)))
 		}
 	}
 
@@ -215,48 +214,28 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		})
 	}
 
-	sort.Slice(out.Nodes, func(i, j int) bool {
-		const (
-			nodeStatusRankOnline = iota
-			nodeStatusRankRelay
-			nodeStatusRankOffline
-		)
-
-		rank := func(status controlv1.NodeStatus) int {
-			switch status {
-			case controlv1.NodeStatus_NODE_STATUS_ONLINE:
-				return nodeStatusRankOnline
-			case controlv1.NodeStatus_NODE_STATUS_RELAY:
-				return nodeStatusRankRelay
-			default:
-				return nodeStatusRankOffline
-			}
+	slices.SortFunc(out.Nodes, func(a, b *controlv1.NodeSummary) int {
+		if ra, rb := nodeStatusRank(a.Status), nodeStatusRank(b.Status); ra != rb {
+			return ra - rb
 		}
-		ri := rank(out.Nodes[i].Status)
-		rj := rank(out.Nodes[j].Status)
-		if ri != rj {
-			return ri < rj
-		}
-		return types.PeerKeyFromBytes(out.Nodes[i].Node.PeerId).Less(types.PeerKeyFromBytes(out.Nodes[j].Node.PeerId))
+		return comparePeerKey(types.PeerKeyFromBytes(a.Node.PeerId), types.PeerKeyFromBytes(b.Node.PeerId))
 	})
 
-	sort.Slice(out.Services, func(i, j int) bool {
-		a := out.Services[i]
-		b := out.Services[j]
+	slices.SortFunc(out.Services, func(a, b *controlv1.ServiceSummary) int {
 		if a.Name != b.Name {
-			return a.Name < b.Name
+			return cmp.Compare(a.Name, b.Name)
 		}
 		if a.Port != b.Port {
-			return a.Port < b.Port
+			return cmp.Compare(a.Port, b.Port)
 		}
-		return types.PeerKeyFromBytes(a.Provider.PeerId).Less(types.PeerKeyFromBytes(b.Provider.PeerId))
+		return comparePeerKey(types.PeerKeyFromBytes(a.Provider.PeerId), types.PeerKeyFromBytes(b.Provider.PeerId))
 	})
 
-	sort.Slice(out.Connections, func(i, j int) bool {
-		if out.Connections[i].LocalPort != out.Connections[j].LocalPort {
-			return out.Connections[i].LocalPort < out.Connections[j].LocalPort
+	slices.SortFunc(out.Connections, func(a, b *controlv1.ConnectionSummary) int {
+		if a.LocalPort != b.LocalPort {
+			return cmp.Compare(a.LocalPort, b.LocalPort)
 		}
-		return types.PeerKeyFromBytes(out.Connections[i].Peer.PeerId).Less(types.PeerKeyFromBytes(out.Connections[j].Peer.PeerId))
+		return comparePeerKey(types.PeerKeyFromBytes(a.Peer.PeerId), types.PeerKeyFromBytes(b.Peer.PeerId))
 	})
 
 	return out, nil
@@ -335,4 +314,21 @@ func (s *NodeService) RevokePeer(_ context.Context, req *controlv1.RevokePeerReq
 	s.node.queueGossipEvents(events)
 
 	return &controlv1.RevokePeerResponse{}, nil
+}
+
+func comparePeerKey(a, b types.PeerKey) int {
+	return bytes.Compare(a[:], b[:])
+}
+
+const offlineRank = 2
+
+func nodeStatusRank(status controlv1.NodeStatus) int {
+	switch status {
+	case controlv1.NodeStatus_NODE_STATUS_ONLINE:
+		return 0
+	case controlv1.NodeStatus_NODE_STATUS_RELAY:
+		return 1
+	default:
+		return offlineRank
+	}
 }

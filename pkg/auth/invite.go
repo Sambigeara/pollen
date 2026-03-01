@@ -66,7 +66,7 @@ func LoadAdminSigner(pollenDir string, now time.Time, adminCertTTL time.Duration
 		return nil, err
 	}
 
-	issuer, err := resolveAdminIssuer(pollenDir, adminPriv, adminPub, trust, now, adminCertTTL)
+	issuer, err := loadOrIssueAdminCert(adminPriv, trust, pollenDir, now, adminCertTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -82,36 +82,6 @@ func LoadAdminSigner(pollenDir string, now time.Time, adminCertTTL time.Duration
 		Issuer:   issuer,
 		Consumed: consumed,
 	}, nil
-}
-
-func resolveAdminIssuer(pollenDir string, adminPriv ed25519.PrivateKey, adminPub ed25519.PublicKey, trust *admissionv1.TrustBundle, now time.Time, adminCertTTL time.Duration) (*admissionv1.AdminCert, error) {
-	if bytes.Equal(adminPub, trust.GetRootPub()) {
-		return IssueAdminCert(
-			adminPriv,
-			trust.GetClusterId(),
-			adminPub,
-			now.Add(-timeSkewAllowance),
-			now.Add(adminCertTTL),
-		)
-	}
-
-	raw, err := os.ReadFile(filepath.Join(pollenDir, keysDir, adminCertName))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, errors.New("delegated admin cert not installed")
-		}
-		return nil, err
-	}
-
-	issuer := &admissionv1.AdminCert{}
-	if err := issuer.UnmarshalVT(raw); err != nil {
-		return nil, err
-	}
-
-	if err := VerifyAdminCert(issuer, trust, now); err != nil {
-		return nil, fmt.Errorf("delegated admin cert invalid: %w", err)
-	}
-	return issuer, nil
 }
 
 func IssueInviteTokenWithSigner(
@@ -137,11 +107,6 @@ func IssueInviteTokenWithSigner(
 		return nil, errors.New("invite signer key does not match issuer cert")
 	}
 
-	var membershipTTLSeconds int64
-	if membershipTTL > 0 {
-		membershipTTLSeconds = int64(membershipTTL / time.Second)
-	}
-
 	claims := &admissionv1.InviteTokenClaims{
 		TokenId:              uuid.NewString(),
 		Trust:                signer.Trust,
@@ -150,7 +115,7 @@ func IssueInviteTokenWithSigner(
 		SubjectPub:           append([]byte(nil), subject...),
 		IssuedAtUnix:         now.Unix(),
 		ExpiresAtUnix:        now.Add(tokenTTL).Unix(),
-		MembershipTtlSeconds: membershipTTLSeconds,
+		MembershipTtlSeconds: int64(membershipTTL / time.Second),
 	}
 	if err := protovalidate.Validate(claims); err != nil {
 		return nil, fmt.Errorf("invite token claims invalid: %w", err)
@@ -238,6 +203,43 @@ func DecodeInviteToken(s string) (*admissionv1.InviteToken, error) {
 	return token, nil
 }
 
+func loadOrIssueAdminCert(
+	adminPriv ed25519.PrivateKey,
+	trust *admissionv1.TrustBundle,
+	pollenDir string,
+	now time.Time,
+	adminCertTTL time.Duration,
+) (*admissionv1.AdminCert, error) {
+	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
+	if bytes.Equal(adminPub, trust.GetRootPub()) {
+		return IssueAdminCert(
+			adminPriv,
+			trust.GetClusterId(),
+			adminPub,
+			now.Add(-timeSkewAllowance),
+			now.Add(adminCertTTL),
+		)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(pollenDir, keysDir, adminCertName))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, errors.New("delegated admin cert not installed")
+		}
+		return nil, err
+	}
+
+	cert := &admissionv1.AdminCert{}
+	if err := cert.UnmarshalVT(raw); err != nil {
+		return nil, err
+	}
+
+	if err := VerifyAdminCert(cert, trust, now); err != nil {
+		return nil, fmt.Errorf("delegated admin cert invalid: %w", err)
+	}
+	return cert, nil
+}
+
 func loadTrustBundleForSigner(pollenDir string, adminPub ed25519.PublicKey) (*admissionv1.TrustBundle, error) {
 	creds, err := loadNodeCredentials(pollenDir)
 	if err == nil {
@@ -247,20 +249,19 @@ func loadTrustBundleForSigner(pollenDir string, adminPub ed25519.PublicKey) (*ad
 		return nil, err
 	}
 
-	path := filepath.Join(pollenDir, keysDir, trustBundleName)
-	raw, readErr := os.ReadFile(path)
-	if readErr == nil {
+	raw, err := os.ReadFile(filepath.Join(pollenDir, keysDir, trustBundleName))
+	if err == nil {
 		trust := &admissionv1.TrustBundle{}
-		if unmarshalErr := trust.UnmarshalVT(raw); unmarshalErr != nil {
-			return nil, unmarshalErr
+		if err := trust.UnmarshalVT(raw); err != nil {
+			return nil, err
 		}
-		if validateErr := validateTrustBundle(trust); validateErr != nil {
-			return nil, validateErr
+		if err := validateTrustBundle(trust); err != nil {
+			return nil, err
 		}
 		return trust, nil
 	}
-	if !errors.Is(readErr, os.ErrNotExist) {
-		return nil, readErr
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
 
 	return NewTrustBundle(adminPub), nil

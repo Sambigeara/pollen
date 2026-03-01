@@ -155,17 +155,11 @@ func newVersionCmd() *cobra.Command {
 		Short: "Show Pollen version information",
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
-			short, err := cmd.Flags().GetBool("short")
-			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
-				return
-			}
-
+			short, _ := cmd.Flags().GetBool("short")
 			if short {
 				fmt.Fprintln(cmd.OutOrStdout(), version)
 				return
 			}
-
 			fmt.Fprintf(cmd.OutOrStdout(), "version: %s\ncommit: %s\ndate: %s\n", version, commit, date)
 		},
 	}
@@ -425,12 +419,9 @@ func runNode(cmd *cobra.Command) {
 		logger.Fatal(err)
 	}
 
-	var addrs []string
-	if len(ips) > 0 {
-		addrs = make([]string, len(ips))
-		for i, ip := range ips {
-			addrs[i] = ip.String()
-		}
+	addrs := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		addrs = append(addrs, ip.String())
 	}
 
 	privKey, pubKey, err := node.GenIdentityKey(pollenDir)
@@ -593,17 +584,8 @@ func runPurge(cmd *cobra.Command, _ []string) {
 		return
 	}
 
-	all, err := cmd.Flags().GetBool("all")
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
-	}
-
-	confirmed, err := cmd.Flags().GetBool("yes")
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
-	}
+	all, _ := cmd.Flags().GetBool("all")
+	confirmed, _ := cmd.Flags().GetBool("yes")
 
 	running, err := nodeSocketActive(filepath.Join(pollenDir, socketName))
 	if err != nil {
@@ -634,9 +616,12 @@ func runPurge(cmd *cobra.Command, _ []string) {
 		}
 	}
 
-	if err := removeDirIfEmpty(filepath.Join(pollenDir, "keys")); err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+	keysDir := filepath.Join(pollenDir, "keys")
+	if entries, err := os.ReadDir(keysDir); err == nil && len(entries) == 0 {
+		if err := os.Remove(keysDir); err != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			return
+		}
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout(), "local state purged")
@@ -663,12 +648,7 @@ func resolveJoinToken(ctx context.Context, priv ed25519.PrivateKey, encoded stri
 		return nil, fmt.Errorf("failed to decode invite token (%w)", inviteErr)
 	}
 
-	redeemed, err := mesh.RedeemInvite(ctx, priv, inviteToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to redeem invite token: %w", err)
-	}
-
-	return redeemed, nil
+	return mesh.RedeemInvite(ctx, priv, inviteToken)
 }
 
 func confirmPurge(cmd *cobra.Command, all bool) bool {
@@ -714,20 +694,6 @@ func nodeSocketActive(sockPath string) (bool, error) {
 	return true, nil
 }
 
-func removeDirIfEmpty(path string) error {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if len(entries) > 0 {
-		return nil
-	}
-	return os.Remove(path)
-}
-
 func runAdminKeygen(cmd *cobra.Command, _ []string) {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
@@ -736,24 +702,20 @@ func runAdminKeygen(cmd *cobra.Command, _ []string) {
 	}
 
 	_, pub, err := auth.LoadAdminKey(pollenDir)
-	created := false
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			_, pub, err = auth.LoadOrCreateAdminKey(pollenDir)
-			created = true
+	switch {
+	case err == nil:
+		fmt.Fprintf(cmd.OutOrStdout(), "admin key already present\nadmin_pub: %s\n", hex.EncodeToString(pub))
+	case errors.Is(err, os.ErrNotExist):
+		_, pub, err = auth.LoadOrCreateAdminKey(pollenDir)
+		if err != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			return
 		}
-	}
-	if err != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "generated local admin key\nadmin_pub: %s\n", hex.EncodeToString(pub))
+	default:
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
-
-	state := "admin key already present"
-	if created {
-		state = "generated local admin key"
-	}
-
-	fmt.Fprintf(cmd.OutOrStdout(), "%s\nadmin_pub: %s\n", state, hex.EncodeToString(pub))
 	fmt.Fprintln(cmd.OutOrStdout(), "note: this does not grant signing authority")
 	fmt.Fprintln(cmd.OutOrStdout(), "install a delegated admin cert with `pln admin set-cert <admin-cert-b64>`")
 }
@@ -1069,12 +1031,7 @@ func createJoinTokenWithSigner(signer *auth.AdminSigner, defaultMembershipTTL ti
 		return "", err
 	}
 
-	encoded, err := auth.EncodeJoinToken(token)
-	if err != nil {
-		return "", err
-	}
-
-	return encoded, nil
+	return auth.EncodeJoinToken(token)
 }
 
 func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, certTTL time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
@@ -1095,12 +1052,7 @@ func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, ce
 		return "", err
 	}
 
-	encoded, err := auth.EncodeInviteToken(token)
-	if err != nil {
-		return "", err
-	}
-
-	return encoded, nil
+	return auth.EncodeInviteToken(token)
 }
 
 func resolveBootstrapPeers(cmd *cobra.Command, specs []string) ([]*admissionv1.BootstrapPeer, error) {
@@ -1150,16 +1102,15 @@ func loadBootstrapPeers(pollenDir string) ([]*admissionv1.BootstrapPeer, error) 
 }
 
 func resolveInviteSubject(subjectFlag string, args []string) (ed25519.PublicKey, error) {
-	hasArg := len(args) == 1
 	flagVal := strings.TrimSpace(subjectFlag)
 
-	if hasArg && flagVal != "" {
+	if len(args) == 1 && flagVal != "" {
 		return nil, errors.New("provide subject as positional argument or --subject, not both")
 	}
 
 	var subject string
 	switch {
-	case hasArg:
+	case len(args) == 1:
 		subject = strings.TrimSpace(args[0])
 	case flagVal != "":
 		subject = flagVal
@@ -1279,27 +1230,20 @@ func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 		return err
 	}
 
-	pollenDir, err := pollenPath(cmd)
+	issuerCtx, err := loadTokenIssuerContext(cmd)
 	if err != nil {
 		return err
 	}
-
-	cfg := loadConfigOrDefault(pollenDir)
-
-	signer, err := auth.LoadAdminSigner(pollenDir, time.Now(), cfg.CertTTLs.AdminTTL())
-	if err != nil {
-		return err
-	}
-	if !slices.Equal(signer.Trust.GetRootPub(), signer.Issuer.GetClaims().GetAdminPub()) {
+	if !slices.Equal(issuerCtx.signer.Trust.GetRootPub(), issuerCtx.signer.Issuer.GetClaims().GetAdminPub()) {
 		return errors.New("only root admin can delegate relay admin certs")
 	}
 
 	cert, err := auth.IssueAdminCert(
-		signer.Priv,
-		signer.Trust.GetClusterId(),
+		issuerCtx.signer.Priv,
+		issuerCtx.signer.Trust.GetClusterId(),
 		relayAdminPub,
 		time.Now().Add(-time.Minute),
-		time.Now().Add(cfg.CertTTLs.AdminTTL()),
+		time.Now().Add(issuerCtx.cfg.CertTTLs.AdminTTL()),
 	)
 	if err != nil {
 		return err
@@ -1415,14 +1359,11 @@ func runServe(cmd *cobra.Command, args []string) {
 	}
 
 	client := newControlClient(cmd)
-	var namePtr *string
+	req := &controlv1.RegisterServiceRequest{Port: uint32(port)}
 	if name != "" {
-		namePtr = &name
+		req.Name = &name
 	}
-	if _, err = client.RegisterService(context.Background(), connect.NewRequest(&controlv1.RegisterServiceRequest{
-		Port: uint32(port),
-		Name: namePtr,
-	})); err != nil {
+	if _, err = client.RegisterService(context.Background(), connect.NewRequest(req)); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
@@ -1436,8 +1377,8 @@ func runServe(cmd *cobra.Command, args []string) {
 
 func runUnserve(cmd *cobra.Command, args []string) {
 	arg := args[0]
-	port := uint32(0)
-	name := ""
+	var port uint32
+	var name string
 	if isPortArg(arg) {
 		p, _ := strconv.Atoi(arg)
 		port = uint32(p)
@@ -1445,16 +1386,12 @@ func runUnserve(cmd *cobra.Command, args []string) {
 		name = arg
 	}
 
-	var namePtr *string
-	if name != "" {
-		namePtr = &name
-	}
-
 	client := newControlClient(cmd)
-	if _, err := client.UnregisterService(context.Background(), connect.NewRequest(&controlv1.UnregisterServiceRequest{
-		Port: port,
-		Name: namePtr,
-	})); err != nil {
+	req := &controlv1.UnregisterServiceRequest{Port: port}
+	if name != "" {
+		req.Name = &name
+	}
+	if _, err := client.UnregisterService(context.Background(), connect.NewRequest(req)); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
@@ -1468,23 +1405,22 @@ func runUnserve(cmd *cobra.Command, args []string) {
 
 func runConnect(cmd *cobra.Command, args []string) {
 	serviceArg := args[0]
-	providerArg := ""
-	localPortArg := ""
-	if len(args) >= 2 { //nolint:mnd
-		if len(args) == 2 && isPortArg(args[1]) { //nolint:mnd
+	var providerArg, localPortArg string
+	switch len(args) {
+	case 3: //nolint:mnd
+		providerArg, localPortArg = args[1], args[2]
+	case 2: //nolint:mnd
+		if isPortArg(args[1]) {
 			localPortArg = args[1]
 		} else {
 			providerArg = args[1]
 		}
 	}
-	if len(args) == 3 { //nolint:mnd
-		localPortArg = args[2] //nolint:mnd
-	}
 
-	localPort := uint32(0)
+	var localPort uint32
 	if localPortArg != "" {
 		p, err := strconv.Atoi(localPortArg)
-		if err != nil || p <= 0 || p > 65535 {
+		if err != nil || p < minPort || p > maxPort {
 			fmt.Fprintln(cmd.ErrOrStderr(), "invalid local port")
 			return
 		}
@@ -1536,7 +1472,7 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg str
 	reachableProviders := reachableProviderSet(st)
 
 	portFilter := uint32(0)
-	if p, err := strconv.Atoi(serviceArg); err == nil && p > 0 && p <= 65535 {
+	if p, err := strconv.Atoi(serviceArg); err == nil && p >= minPort && p <= maxPort {
 		portFilter = uint32(p)
 	}
 
@@ -1583,8 +1519,7 @@ func peerKeyString(peerID []byte) string {
 	if len(peerID) == 0 {
 		return ""
 	}
-	key := types.PeerKeyFromBytes(peerID)
-	return key.String()
+	return types.PeerKeyFromBytes(peerID).String()
 }
 
 func formatPeerID(peerID []byte, wide bool) string {
@@ -1604,8 +1539,6 @@ func formatStatus(s controlv1.NodeStatus) string {
 		return "online"
 	case controlv1.NodeStatus_NODE_STATUS_RELAY:
 		return "relay"
-	case controlv1.NodeStatus_NODE_STATUS_OFFLINE:
-		return "offline"
 	default:
 		return "offline"
 	}
@@ -1616,16 +1549,12 @@ func isReachableStatus(s controlv1.NodeStatus) bool {
 }
 
 func peerIDHasPrefix(peerID []byte, prefix string) bool {
-	if prefix == "" {
-		return true
-	}
-	full := peerKeyString(peerID)
-	return strings.HasPrefix(full, strings.ToLower(prefix))
+	return strings.HasPrefix(peerKeyString(peerID), strings.ToLower(prefix))
 }
 
 func isPortArg(s string) bool {
 	p, err := strconv.Atoi(s)
-	return err == nil && p > 0 && p <= 65535
+	return err == nil && p >= minPort && p <= maxPort
 }
 
 func newRevokeCmd() *cobra.Command {

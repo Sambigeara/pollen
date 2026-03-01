@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"os/exec"
 	"os/user"
@@ -55,7 +55,7 @@ func servicectl(action string, cmd *cobra.Command) error {
 			c = exec.CommandContext(ctx, "sudo", "systemctl", action, "pln")
 		}
 	default:
-		return fmt.Errorf("daemon management is only supported on macOS and Linux")
+		return errors.New("daemon management is only supported on macOS and Linux")
 	}
 	c.Stdout = cmd.OutOrStdout()
 	c.Stderr = cmd.ErrOrStderr()

@@ -3,7 +3,6 @@ package mesh
 import (
 	"context"
 	"crypto/ed25519"
-	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -21,10 +20,7 @@ func RedeemInvite(ctx context.Context, signPriv ed25519.PrivateKey, token *admis
 		return nil, err
 	}
 
-	subjectPub, ok := signPriv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("identity private key is not ed25519")
-	}
+	subjectPub := signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	conn, err := net.ListenUDP("udp", nil)
 	if err != nil {

@@ -33,6 +33,26 @@ Your task: review ALL code within your ownership boundaries and tidy it up. Read
 
 6. **Simplify overly verbose code.** Reduce line count without losing clarity.
 
+7. **Prefer `var zero T` or named returns over manual zero-value construction.** If a function returns `MyStruct{}` or `""` on error paths, use a named return or a `var` declaration — it stays correct when the type changes.
+
+8. **Use early returns to flatten nesting.** If a block is `if err != nil { ... } else { long body }`, flip the condition and return/continue early. The happy path should be at the top indentation level.
+
+9. **Collapse `if-init` assignments.** If a variable is only used inside the `if` block, use `if x := expr; x ... {` rather than declaring it on a separate line.
+
+10. **Replace `for i := 0; i < len(s); i++` with `for i, v := range s`.** Use range loops wherever the index/element pattern applies. For maps, prefer `for k, v := range m` over manual lookup after iterating keys.
+
+11. **Use `slices`, `maps`, and `cmp` stdlib packages.** Replace hand-rolled `contains`, `keys`, `sort` helpers with `slices.Contains`, `maps.Keys`, `slices.SortFunc`, etc. These landed in Go 1.21+ and are now idiomatic.
+
+12. **Prefer `fmt.Errorf("...: %w", err)` for wrapping.** If code uses `fmt.Errorf("...: %s", err)` or `errors.New(msg + err.Error())`, switch to `%w` so callers can `errors.Is`/`errors.As` the chain.
+
+13. **Use `errors.Join` for multi-error aggregation.** If code manually concatenates error strings or maintains `[]error` with a custom join, replace with `errors.Join` (Go 1.20+).
+
+14. **Replace `sync.Mutex` + map with `sync.Map` only where appropriate, and vice versa.** If a `sync.Map` is used but the key/value types are always the same and access patterns are simple read/write, a plain `sync.Mutex` + typed map is clearer. Conversely, if there's a lock purely protecting a concurrent-read-rare-write map, note whether `sync.Map` would be better.
+
+15. **Tighten variable scope.** If a variable is declared at function scope but only used inside one branch or loop body, move the declaration into that block.
+
+16. **Remove stutter from names.** `config.ConfigLoad()` → `config.Load()`, `peer.PeerState` → `peer.State`. Go package names already qualify the type/function; don't repeat the package name in the identifier.
+
 ## Rules
 
 - ONLY modify files within your persona's ownership. Do NOT touch files owned by other personas.

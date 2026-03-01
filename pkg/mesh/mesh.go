@@ -117,11 +117,6 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 		return nil, fmt.Errorf("generate bare cert: %w", err)
 	}
 
-	pub, ok := signPriv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, fmt.Errorf("identity private key is not ed25519")
-	}
-
 	return &impl{
 		log:              zap.S().Named("mesh"),
 		meshCert:         meshCert,
@@ -129,7 +124,7 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 		trustBundle:      creds.Trust,
 		inviteSigner:     creds.InviteSigner,
 		isSubjectRevoked: isSubjectRevoked,
-		localKey:         types.PeerKeyFromBytes(pub),
+		localKey:         types.PeerKeyFromBytes(signPriv.Public().(ed25519.PublicKey)), //nolint:forcetypeassert
 		socks:            sock.NewSockStore(),
 		port:             defaultPort,
 		membershipTTL:    membershipTTL,
@@ -418,8 +413,7 @@ func (m *impl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) 
 	if !ok {
 		return nil, false
 	}
-	addr, ok := s.conn.RemoteAddr().(*net.UDPAddr)
-	return addr, ok
+	return s.conn.RemoteAddr().(*net.UDPAddr), true //nolint:forcetypeassert
 }
 
 func (m *impl) PeerCertExpiresAt(peerKey types.PeerKey) (time.Time, bool) {
@@ -512,10 +506,7 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		m.acceptStreams(s, peerKey)
 	})
 
-	addr, ok := s.conn.RemoteAddr().(*net.UDPAddr)
-	if !ok {
-		return
-	}
+	addr := s.conn.RemoteAddr().(*net.UDPAddr) //nolint:forcetypeassert
 	select {
 	case m.inCh <- peer.ConnectPeer{
 		PeerKey:      peerKey,
@@ -553,9 +544,7 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 	for {
 		payload, err := s.conn.ReceiveDatagram(ctx)
 		if err != nil {
-			isCurrent := m.sessions.removeIfCurrent(peerKey, s)
-
-			if isCurrent {
+			if m.sessions.removeIfCurrent(peerKey, s) {
 				reason := classifyQUICError(err)
 				m.log.Debugw("peer session died",
 					"peer", peerKey.Short(),
@@ -672,26 +661,21 @@ func (m *impl) handleInviteConnection(ctx context.Context, qc *quic.Conn, peerKe
 }
 
 func (m *impl) Close() error {
-	peers := m.sessions.drainPeers()
-
-	listener := m.listener
-	mainQT := m.mainQT
-
-	for _, s := range peers {
+	for _, s := range m.sessions.drainPeers() {
 		m.closeSession(s, "shutdown")
 	}
 
 	m.acceptWG.Wait()
 	close(m.streamCh)
-
 	close(m.recvCh)
-	if listener != nil {
-		_ = listener.Close()
+
+	if m.listener != nil {
+		_ = m.listener.Close()
 	}
-	if mainQT != nil {
-		_ = mainQT.Close()
-		if mainQT.Conn != nil {
-			_ = mainQT.Conn.Close()
+	if m.mainQT != nil {
+		_ = m.mainQT.Close()
+		if m.mainQT.Conn != nil {
+			_ = m.mainQT.Conn.Close()
 		}
 	}
 	return nil
@@ -699,7 +683,7 @@ func (m *impl) Close() error {
 
 func (m *impl) closeSession(s *peerSession, reason string) {
 	_ = s.conn.CloseWithError(0, reason)
-	if s.transport != nil && s.transport != m.mainQT {
+	if s.transport != m.mainQT {
 		_ = s.transport.Close()
 	}
 	if s.sockConn != nil {
@@ -707,12 +691,17 @@ func (m *impl) closeSession(s *peerSession, reason string) {
 	}
 }
 
-func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) error {
+func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			_ = sendInviteRedeemResponse(qc, nil, retErr)
+		}
+	}()
+
 	signer := m.inviteSigner
 	now := time.Now()
 	verified, err := auth.VerifyInviteToken(req.GetToken(), ed25519.PublicKey(peerKey.Bytes()), now)
 	if err != nil {
-		_ = sendInviteRedeemResponse(qc, nil, err)
 		return err
 	}
 
@@ -721,20 +710,15 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 		ttl = remaining
 	}
 	if ttl <= 0 {
-		err := errors.New("invite token expired")
-		_ = sendInviteRedeemResponse(qc, nil, err)
-		return err
+		return errors.New("invite token expired")
 	}
 
 	consumed, err := signer.Consumed.TryConsume(req.GetToken(), now)
 	if err != nil {
-		_ = sendInviteRedeemResponse(qc, nil, err)
 		return err
 	}
 	if !consumed {
-		err := errors.New("invite token already consumed")
-		_ = sendInviteRedeemResponse(qc, nil, err)
-		return err
+		return errors.New("invite token already consumed")
 	}
 
 	membershipTTL := m.membershipTTL
@@ -753,7 +737,6 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 		membershipTTL,
 	)
 	if err != nil {
-		_ = sendInviteRedeemResponse(qc, nil, err)
 		return err
 	}
 	return sendInviteRedeemResponse(qc, joinToken, nil)

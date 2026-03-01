@@ -2,6 +2,8 @@ package mesh
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"sync"
 
 	"github.com/sambigeara/pollen/pkg/types"
@@ -67,21 +69,12 @@ func (r *sessionRegistry) removeWaiter(peerKey types.PeerKey, ch chan struct{}) 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	waiters := r.waiters[peerKey]
-	for i := range waiters {
-		if waiters[i] != ch {
-			continue
-		}
-		waiters[i] = waiters[len(waiters)-1]
-		waiters = waiters[:len(waiters)-1]
-		break
-	}
-
+	waiters := slices.DeleteFunc(r.waiters[peerKey], func(c chan struct{}) bool { return c == ch })
 	if len(waiters) == 0 {
 		delete(r.waiters, peerKey)
-		return
+	} else {
+		r.waiters[peerKey] = waiters
 	}
-	r.waiters[peerKey] = waiters
 }
 
 func (r *sessionRegistry) add(peerKey types.PeerKey, next *peerSession, shouldReplace func(current *peerSession) bool) (*peerSession, bool) {
@@ -127,12 +120,7 @@ func (r *sessionRegistry) removeIfCurrent(peerKey types.PeerKey, current *peerSe
 func (r *sessionRegistry) connectedPeers() []types.PeerKey {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
-	keys := make([]types.PeerKey, 0, len(r.peers))
-	for k := range r.peers {
-		keys = append(keys, k)
-	}
-	return keys
+	return slices.Collect(maps.Keys(r.peers))
 }
 
 func (r *sessionRegistry) drainPeers() map[types.PeerKey]*peerSession {

@@ -1,10 +1,11 @@
 package store
 
 import (
+	"bytes"
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
-	"sort"
 	"sync"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
@@ -142,12 +143,10 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 				},
 			},
 		},
-		revocations:        make(map[types.PeerKey]*admissionv1.SignedRevocation),
+		revocations:        unmarshalDiskRevocations(onDisk.Revocations, trustBundle),
 		trustBundle:        trustBundle,
 		desiredConnections: make(map[string]Connection),
 	}
-
-	s.revocations = unmarshalDiskRevocations(onDisk.Revocations, trustBundle)
 
 	// Inject disk-loaded revocations into the local log so that
 	// bumpAndBroadcastAllLocked can re-publish them after restart.
@@ -225,10 +224,7 @@ func (s *Store) Save() error {
 	s.mu.RLock()
 	nodes := make(map[types.PeerKey]nodeRecord, len(s.nodes))
 	maps.Copy(nodes, s.nodes)
-	connections := make([]Connection, 0, len(s.desiredConnections))
-	for _, conn := range s.desiredConnections {
-		connections = append(connections, conn)
-	}
+	connections := slices.Collect(maps.Values(s.desiredConnections))
 	revocations := maps.Clone(s.revocations)
 	s.mu.RUnlock()
 
@@ -246,8 +242,8 @@ func (s *Store) Save() error {
 		})
 	}
 
-	sort.Slice(peers, func(i, j int) bool {
-		return peers[i].IdentityPublic < peers[j].IdentityPublic
+	slices.SortFunc(peers, func(a, b diskPeer) int {
+		return cmp.Compare(a.IdentityPublic, b.IdentityPublic)
 	})
 
 	services := toDiskServices(nodes)
@@ -328,11 +324,11 @@ func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipEv
 		events = append(events, s.buildEventsAbove(peerID, rec, remoteCounter)...)
 	}
 
-	sort.Slice(events, func(i, j int) bool {
-		if events[i].GetPeerId() != events[j].GetPeerId() {
-			return events[i].GetPeerId() < events[j].GetPeerId()
+	slices.SortFunc(events, func(a, b *statev1.GossipEvent) int {
+		if c := cmp.Compare(a.GetPeerId(), b.GetPeerId()); c != 0 {
+			return c
 		}
-		return events[i].GetCounter() < events[j].GetCounter()
+		return cmp.Compare(a.GetCounter(), b.GetCounter())
 	})
 
 	return events
@@ -399,31 +395,21 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 
 	deleted := event.GetDeleted()
 
+	var result ApplyResult
 	switch {
 	case key.kind == attrRevocation:
 		if deleted {
 			return ApplyResult{}
 		}
 		v := event.GetChange().(*statev1.GossipEvent_Revocation) //nolint:forcetypeassert
-		var rev *admissionv1.SignedRevocation
-		if v.Revocation != nil {
-			rev = v.Revocation.GetRevocation()
-		}
+		rev := v.Revocation.GetRevocation()
 		applied, subject := s.applyRevocationLocked(rev)
 		if !applied {
 			return ApplyResult{}
 		}
-		var revoked []types.PeerKey
 		if (subject != types.PeerKey{}) {
-			revoked = []types.PeerKey{subject}
+			result.revokedSubjects = []types.PeerKey{subject}
 		}
-
-		rec.log[key] = logEntry{Counter: event.GetCounter(), Deleted: deleted}
-		if event.GetCounter() > rec.maxCounter {
-			rec.maxCounter = event.GetCounter()
-		}
-		s.nodes[peerID] = rec
-		return ApplyResult{revokedSubjects: revoked}
 	case deleted:
 		applyDeleteLocked(&rec, key)
 	default:
@@ -431,14 +417,11 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	}
 
 	rec.log[key] = logEntry{Counter: event.GetCounter(), Deleted: deleted}
-
-	// Update maxCounter.
 	if event.GetCounter() > rec.maxCounter {
 		rec.maxCounter = event.GetCounter()
 	}
-
 	s.nodes[peerID] = rec
-	return ApplyResult{}
+	return result
 }
 
 func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
@@ -498,13 +481,7 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 	case attrIdentity:
 		rec.IdentityPub = nil
 	case attrService:
-		m := make(map[string]*statev1.Service, len(rec.Services))
-		for k, v := range rec.Services {
-			if k != key.name {
-				m[k] = v
-			}
-		}
-		rec.Services = m
+		delete(rec.Services, key.name)
 	case attrReachability:
 		delete(rec.Reachable, key.peer)
 	case attrRevocation:
@@ -611,10 +588,7 @@ func (s *Store) SetLocalConnected(peerID types.PeerKey, connected bool) []*state
 	local := s.nodes[s.LocalID]
 
 	_, exists := local.Reachable[peerID]
-	if connected && exists {
-		return nil
-	}
-	if !connected && !exists {
+	if connected == exists {
 		return nil
 	}
 
@@ -832,8 +806,8 @@ func (s *Store) KnownPeers() []KnownPeer {
 		})
 	}
 
-	sort.Slice(known, func(i, j int) bool {
-		return known[i].PeerID.Less(known[j].PeerID)
+	slices.SortFunc(known, func(a, b KnownPeer) int {
+		return comparePeerKey(a.PeerID, b.PeerID)
 	})
 
 	return known
@@ -893,26 +867,26 @@ func (s *Store) DesiredConnections() []Connection {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	connections := make([]Connection, 0, len(s.desiredConnections))
-	for _, conn := range s.desiredConnections {
-		connections = append(connections, conn)
-	}
-
+	connections := slices.Collect(maps.Values(s.desiredConnections))
 	sortConnections(connections)
 
 	return connections
 }
 
 func sortConnections(cs []Connection) {
-	sort.Slice(cs, func(i, j int) bool {
-		if cs[i].PeerID != cs[j].PeerID {
-			return cs[i].PeerID.Less(cs[j].PeerID)
+	slices.SortFunc(cs, func(a, b Connection) int {
+		if c := comparePeerKey(a.PeerID, b.PeerID); c != 0 {
+			return c
 		}
-		if cs[i].RemotePort != cs[j].RemotePort {
-			return cs[i].RemotePort < cs[j].RemotePort
+		if c := cmp.Compare(a.RemotePort, b.RemotePort); c != 0 {
+			return c
 		}
-		return cs[i].LocalPort < cs[j].LocalPort
+		return cmp.Compare(a.LocalPort, b.LocalPort)
 	})
+}
+
+func comparePeerKey(a, b types.PeerKey) int {
+	return bytes.Compare(a[:], b[:])
 }
 
 func (s *Store) IsSubjectRevoked(subjectPub []byte) bool {

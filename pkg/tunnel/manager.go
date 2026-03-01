@@ -186,7 +186,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 	// TODO(saml): use a map keyed by peerID:remotePort instead of iterating all connections
 	for _, h := range m.connections {
 		if h.peerID == peerID && h.remote == remotePort {
-			return 0, fmt.Errorf("already connected to port %d on peer %s (local port %d)", remotePort, peerID.String()[:8], h.local)
+			return 0, fmt.Errorf("already connected to port %d on peer %s (local port %d)", remotePort, peerID.Short(), h.local)
 		}
 	}
 
@@ -230,13 +230,13 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 			go func() {
 				stream, err := m.transport.OpenStream(ctx, peerID)
 				if err != nil {
-					logger.Warnw("open stream failed", "peer", peerID.String()[:8], "port", remotePort, "err", err)
+					logger.Warnw("open stream failed", "peer", peerID.Short(), "port", remotePort, "err", err)
 					_ = clientConn.Close()
 					return
 				}
 
 				if err := writeServicePort(stream, remotePort); err != nil {
-					logger.Warnw("write stream header failed", "peer", peerID.String()[:8], "port", remotePort, "err", err)
+					logger.Warnw("write stream header failed", "peer", peerID.Short(), "port", remotePort, "err", err)
 					_ = stream.Close()
 					_ = clientConn.Close()
 					return
@@ -255,7 +255,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 		ln:     ln,
 	}
 
-	m.log.Infow("connected to service", "peer", peerID.String()[:8], "port", remotePort, "local_port", boundPort)
+	m.log.Infow("connected to service", "peer", peerID.Short(), "port", remotePort, "local_port", boundPort)
 	return uint32(boundPort), nil
 }
 
@@ -308,14 +308,13 @@ func (m *Manager) UnregisterService(port uint32) bool {
 	m.serviceMu.Lock()
 	defer m.serviceMu.Unlock()
 
-	if h, ok := m.services[port]; ok {
+	h, ok := m.services[port]
+	if ok {
 		h.cancel()
 		delete(m.services, port)
-		m.closeServiceStreams(port)
-		return true
 	}
 	m.closeServiceStreams(port)
-	return false
+	return ok
 }
 
 func (m *Manager) closeServiceStreams(port uint32) {

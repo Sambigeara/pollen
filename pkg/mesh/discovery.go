@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -118,12 +119,9 @@ func isRoutable(ip netip.Addr) bool {
 }
 
 func isExcluded(ip netip.Addr, ranges []netip.Prefix) bool {
-	for _, r := range ranges {
-		if r.Contains(ip) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(ranges, func(r netip.Prefix) bool {
+		return r.Contains(ip)
+	})
 }
 
 func raceProviders(ctx context.Context, providers []string) (netip.Addr, error) {

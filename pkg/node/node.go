@@ -87,8 +87,6 @@ type Config struct {
 	DisableGossipJitter bool
 }
 
-type HandlerFn func(ctx context.Context, from types.PeerKey, payload []byte) error
-
 type punchRequest struct {
 	ip      net.IP
 	port    int
@@ -272,10 +270,6 @@ func (n *Node) recvLoop(ctx context.Context) {
 }
 
 func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *meshv1.Envelope) {
-	if env == nil {
-		return
-	}
-
 	switch body := env.GetBody().(type) {
 	case *meshv1.Envelope_Clock:
 		events := n.store.MissingFor(body.Clock)
@@ -505,26 +499,13 @@ func isExcludedIP(ip net.IP) bool {
 }
 
 func (n *Node) reconcileConnections() {
-	connections := n.tun.ListConnections()
-
-	missing := make(map[types.PeerKey]map[uint32]struct{}, len(connections))
-	for _, conn := range connections {
-		if !n.store.HasServicePort(conn.PeerID, conn.RemotePort) {
-			ports, ok := missing[conn.PeerID]
-			if !ok {
-				ports = make(map[uint32]struct{})
-				missing[conn.PeerID] = ports
-			}
-			ports[conn.RemotePort] = struct{}{}
+	for _, conn := range n.tun.ListConnections() {
+		if n.store.HasServicePort(conn.PeerID, conn.RemotePort) {
+			continue
 		}
-	}
-
-	for peerID, ports := range missing {
-		for port := range ports {
-			n.log.Infow("removing stale forward", "peer", peerID.String()[:8], "port", port)
-			n.tun.DisconnectRemoteService(peerID, port)
-			n.store.RemoveDesiredConnection(peerID, port, 0)
-		}
+		n.log.Infow("removing stale forward", "peer", conn.PeerID.Short(), "port", conn.RemotePort)
+		n.tun.DisconnectRemoteService(conn.PeerID, conn.RemotePort)
+		n.store.RemoveDesiredConnection(conn.PeerID, conn.RemotePort, 0)
 	}
 }
 
@@ -848,41 +829,13 @@ func (n *Node) GetConnectedPeers() []types.PeerKey {
 
 func GenIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
 	dir := filepath.Join(pollenDir, localKeysDir)
-
 	privPath := filepath.Join(dir, signingKeyName)
 	pubPath := filepath.Join(dir, signingPubKeyName)
 
-	requireRegen := false
-	keyEnc, err := os.ReadFile(privPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			requireRegen = true
-		} else {
-			return nil, nil, err
-		}
-	}
-
-	var pubEnc []byte
-	if !requireRegen { //nolint:nestif
-		pubEnc, err = os.ReadFile(pubPath)
-		if err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				return nil, nil, err
-			}
-		} else {
-			block, _ := pem.Decode(keyEnc)
-			if block == nil || block.Type != pemTypePriv {
-				return nil, nil, errors.New("invalid private key PEM")
-			}
-			priv := ed25519.NewKeyFromSeed(block.Bytes)
-
-			pub, err := decodePubKeyPEM(pubEnc)
-			if err != nil {
-				return nil, nil, err
-			}
-
-			return priv, pub, nil
-		}
+	if priv, pub, err := loadIdentityKey(privPath, pubPath); err == nil {
+		return priv, pub, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
 	}
 
 	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
@@ -938,6 +891,26 @@ func ReadIdentityPub(pollenDir string) (ed25519.PublicKey, error) {
 		return nil, err
 	}
 	return decodePubKeyPEM(pubEnc)
+}
+
+func loadIdentityKey(privPath, pubPath string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
+	keyEnc, err := os.ReadFile(privPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	pubEnc, err := os.ReadFile(pubPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	block, _ := pem.Decode(keyEnc)
+	if block == nil || block.Type != pemTypePriv {
+		return nil, nil, errors.New("invalid private key PEM")
+	}
+	pub, err := decodePubKeyPEM(pubEnc)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ed25519.NewKeyFromSeed(block.Bytes), pub, nil
 }
 
 func decodePubKeyPEM(data []byte) (ed25519.PublicKey, error) {

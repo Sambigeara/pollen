@@ -2,12 +2,14 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -129,13 +131,11 @@ func readConsumedEntries(path string, now time.Time) (map[string]consumedInviteR
 }
 
 func writeConsumedEntries(path string, entries map[string]consumedInviteRecord) error {
-	state := consumedInviteState{Invites: make([]consumedInviteRecord, 0, len(entries))}
-	for _, rec := range entries {
-		state.Invites = append(state.Invites, rec)
-	}
-	sort.Slice(state.Invites, func(i, j int) bool {
-		return state.Invites[i].TokenID < state.Invites[j].TokenID
+	invites := slices.Collect(maps.Values(entries))
+	slices.SortFunc(invites, func(a, b consumedInviteRecord) int {
+		return cmp.Compare(a.TokenID, b.TokenID)
 	})
+	state := consumedInviteState{Invites: invites}
 
 	if err := os.MkdirAll(filepath.Dir(path), directoryPerm); err != nil {
 		return fmt.Errorf("create consumed invites directory: %w", err)
