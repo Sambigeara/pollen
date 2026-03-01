@@ -3,7 +3,7 @@ set dotenv-load := true
 genpb_dir := join(justfile_directory(), "api", "genpb")
 tools_mod_dir := join(justfile_directory(), "tools")
 
-export TOOLS_BIN_DIR := join(env_var_or_default("XDG_CACHE_HOME", join(env_var("HOME"), ".cache")), "pollen/bin")
+export TOOLS_BIN_DIR := join(env_var_or_default("XDG_CACHE_HOME", join(env_var("HOME"), ".cache")), "pln/bin")
 
 default:
     @just --list
@@ -12,7 +12,7 @@ build: generate lint
 
 bin os='' arch='':
     @ CGO_ENABLED=0 GOOS={{os}} GOARCH={{arch}} \
-      go build -o pollen ./cmd/pollen
+      go build -o pln ./cmd/pln
 
 compile:
     @ CGO_ENABLED=0 go build ./... && CGO_ENABLED=0 go test -run=ignore  ./... > /dev/null

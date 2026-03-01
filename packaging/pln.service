@@ -1,5 +1,5 @@
 [Unit]
-Description=Pollen Mesh Node
+Description=PLN Mesh Node
 Documentation=https://github.com/sambigeara/pollen
 After=network-online.target
 Wants=network-online.target
@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/bin/pollen --dir /var/lib/pollen up
+ExecStart=/usr/bin/pln --dir /var/lib/pln up
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=1048576

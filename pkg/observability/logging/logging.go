@@ -20,5 +20,5 @@ func Init() {
 		panic(err)
 	}
 
-	zap.ReplaceGlobals(logger.Named("pollen"))
+	zap.ReplaceGlobals(logger.Named("pln"))
 }

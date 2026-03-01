@@ -47,12 +47,12 @@ func servicectl(action string, cmd *cobra.Command) error {
 	var c *exec.Cmd
 	switch runtime.GOOS {
 	case osDarwin:
-		c = exec.CommandContext(ctx, "brew", "services", action, "pollen")
+		c = exec.CommandContext(ctx, "brew", "services", action, "pln")
 	case osLinux:
 		if os.Getuid() == 0 {
-			c = exec.CommandContext(ctx, "systemctl", action, "pollen")
+			c = exec.CommandContext(ctx, "systemctl", action, "pln")
 		} else {
-			c = exec.CommandContext(ctx, "sudo", "systemctl", action, "pollen")
+			c = exec.CommandContext(ctx, "sudo", "systemctl", action, "pln")
 		}
 	default:
 		return fmt.Errorf("daemon management is only supported on macOS and Linux")

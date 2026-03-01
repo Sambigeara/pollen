@@ -46,8 +46,8 @@ import (
 )
 
 const (
-	pollenDir  = ".pollen"
-	socketName = "pollen.sock"
+	plnDir     = ".pln"
+	socketName = "pln.sock"
 
 	controlClientTimeout         = 10 * time.Second
 	passiveGossipInterval        = 10 * time.Second
@@ -86,7 +86,7 @@ func getCertTTLFlag(cmd *cobra.Command) (time.Duration, error) {
 }
 
 func main() {
-	rootCmd := &cobra.Command{Use: "pollen"}
+	rootCmd := &cobra.Command{Use: "pln"}
 	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted")
 
 	rootCmd.AddCommand(
@@ -117,11 +117,11 @@ func main() {
 
 func defaultRootDir() string {
 	if runtime.GOOS == osLinux {
-		if stat, err := os.Stat("/var/lib/pollen"); err == nil && stat.IsDir() {
-			return "/var/lib/pollen"
+		if stat, err := os.Stat("/var/lib/pln"); err == nil && stat.IsDir() {
+			return "/var/lib/pln"
 		}
 	}
-	return filepath.Join(effectiveHomeDir(), pollenDir)
+	return filepath.Join(effectiveHomeDir(), plnDir)
 }
 
 func newAdminCmd() *cobra.Command {
@@ -236,7 +236,7 @@ func runUp(cmd *cobra.Command, _ []string) {
 		sockPath := filepath.Join(pollenDir, socketName)
 		if active, _ := nodeSocketActive(sockPath); active {
 			fmt.Fprintln(cmd.ErrOrStderr(),
-				"a node is already running; use `pollen stop` to stop the background service")
+				"a node is already running; use `pln stop` to stop the background service")
 			return
 		}
 	}
@@ -336,10 +336,10 @@ func runJoin(cmd *cobra.Command, args []string) {
 
 	if runtime.GOOS == osLinux {
 		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-			if err := exec.CommandContext(cmd.Context(), "usermod", "-aG", "pollen", sudoUser).Run(); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not add %s to pollen group: %v\n", sudoUser, err)
+			if err := exec.CommandContext(cmd.Context(), "usermod", "-aG", "pln", sudoUser).Run(); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not add %s to pln group: %v\n", sudoUser, err)
 			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "added %s to the pollen group -- log out and back in for CLI access without sudo\n", sudoUser)
+				fmt.Fprintf(cmd.OutOrStdout(), "added %s to the pln group -- log out and back in for CLI access without sudo\n", sudoUser)
 			}
 		}
 	}
@@ -355,7 +355,7 @@ func runJoin(cmd *cobra.Command, args []string) {
 	}
 
 	if noStart {
-		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pollen start` to start the node")
+		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pln start` to start the node")
 		return
 	}
 
@@ -421,7 +421,7 @@ func runNode(cmd *cobra.Command) {
 	defer func() { _ = zap.S().Sync() }()
 
 	logger := zap.S()
-	logger.Infow("starting pollen...", "version", version)
+	logger.Infow("starting pln...", "version", version)
 
 	port, _ := cmd.Flags().GetInt("port")
 	ips, _ := cmd.Flags().GetIPSlice("ips")
@@ -460,7 +460,7 @@ func runNode(cmd *cobra.Command) {
 				logger.Fatal("auto-init failed: ", credErr)
 			}
 		case errors.Is(credErr, auth.ErrDifferentCluster):
-			logger.Fatal("node is already enrolled in a different cluster; run `pollen purge` before joining a new cluster")
+			logger.Fatal("node is already enrolled in a different cluster; run `pln purge` before joining a new cluster")
 		default:
 			logger.Fatal(credErr)
 		}
@@ -538,7 +538,7 @@ func runInit(cmd *cobra.Command, _ []string) {
 		return
 	}
 	if running {
-		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pollen stop` before initializing")
+		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pln stop` before initializing")
 		return
 	}
 
@@ -564,12 +564,12 @@ func runInit(cmd *cobra.Command, _ []string) {
 			return
 		}
 
-		fmt.Fprintln(cmd.ErrOrStderr(), "node is already enrolled in a cluster; run `pollen purge` before initializing a new root cluster")
+		fmt.Fprintln(cmd.ErrOrStderr(), "node is already enrolled in a cluster; run `pln purge` before initializing a new root cluster")
 		return
 	}
 	if !errors.Is(err, auth.ErrCredentialsNotFound) {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		fmt.Fprintln(cmd.ErrOrStderr(), "run `pollen purge` to reset local state")
+		fmt.Fprintln(cmd.ErrOrStderr(), "run `pln purge` to reset local state")
 		return
 	}
 
@@ -619,7 +619,7 @@ func runPurge(cmd *cobra.Command, _ []string) {
 		return
 	}
 	if running {
-		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pollen stop` before purging state")
+		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pln stop` before purging state")
 		return
 	}
 
@@ -763,7 +763,7 @@ func runAdminKeygen(cmd *cobra.Command, _ []string) {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "%s\nadmin_pub: %s\n", state, hex.EncodeToString(pub))
 	fmt.Fprintln(cmd.OutOrStdout(), "note: this does not grant signing authority")
-	fmt.Fprintln(cmd.OutOrStdout(), "install a delegated admin cert with `pollen admin set-cert <admin-cert-b64>`")
+	fmt.Fprintln(cmd.OutOrStdout(), "install a delegated admin cert with `pln admin set-cert <admin-cert-b64>`")
 }
 
 func runAdminSetCert(cmd *cobra.Command, args []string) {
@@ -788,7 +788,7 @@ func runAdminSetCert(cmd *cobra.Command, args []string) {
 	creds, err := auth.LoadExistingNodeCredentials(pollenDir, nodePub, time.Now())
 	if err != nil {
 		if errors.Is(err, auth.ErrCredentialsNotFound) {
-			fmt.Fprintln(cmd.ErrOrStderr(), "node credentials not initialized; run `pollen init` or `pollen join <token>` first")
+			fmt.Fprintln(cmd.ErrOrStderr(), "node credentials not initialized; run `pln init` or `pln join <token>` first")
 		} else {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 		}
@@ -910,13 +910,13 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 
 	ctx := cmd.Context()
 
-	fmt.Fprintln(cmd.OutOrStdout(), "ensuring pollen is installed on remote host...")
+	fmt.Fprintln(cmd.OutOrStdout(), "ensuring pln is installed on remote host...")
 	if err := ensureRemotePollen(ctx, host); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
 
-	idCmd := exec.CommandContext(ctx, "ssh", host, "pollen", "id")
+	idCmd := exec.CommandContext(ctx, "ssh", host, "pln", "id")
 	var idStdout, idStderr bytes.Buffer
 	idCmd.Stdout = &idStdout
 	idCmd.Stderr = &idStderr
@@ -944,7 +944,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "relay bootstrapped: %s\n", host)
-	fmt.Fprintln(cmd.OutOrStdout(), "hint: reconnect SSH to use `pollen` without sudo (new group membership requires a fresh login)")
+	fmt.Fprintln(cmd.OutOrStdout(), "hint: reconnect SSH to use `pln` without sudo (new group membership requires a fresh login)")
 }
 
 func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs []string, sshTarget string, certTTL time.Duration) error {
@@ -1250,7 +1250,7 @@ func ensureRemotePollen(ctx context.Context, sshTarget string) error {
 	cmd.Stdin = bytes.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to install pollen on remote host: %w\n%s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("failed to install pln on remote host: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 
 	return nil
@@ -1261,7 +1261,7 @@ func startRelayOverSSH(cmd *cobra.Command, sshTarget, token string) error {
 
 	// Enroll the relay into the cluster, then start the daemon.
 	// Use --no-start because bootstrap needs to provision admin delegation before the final start.
-	remoteJoin := fmt.Sprintf("sudo pollen join --no-start %q && sudo pollen start", token)
+	remoteJoin := fmt.Sprintf("sudo pln join --no-start %q && sudo pln start", token)
 	out, err := exec.CommandContext(ctx, "ssh", sshTarget, remoteJoin).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -1280,7 +1280,7 @@ func enrollAndStartDaemon(cmd *cobra.Command, pollenDir, joinToken string) error
 func restartRelayOverSSH(cmd *cobra.Command, sshTarget string) error {
 	ctx := cmd.Context()
 
-	restartCmd := "sudo pollen restart"
+	restartCmd := "sudo pln restart"
 	out, err := exec.CommandContext(ctx, "ssh", sshTarget, restartCmd).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -1292,7 +1292,7 @@ func restartRelayOverSSH(cmd *cobra.Command, sshTarget string) error {
 func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 	ctx := cmd.Context()
 
-	keygenCmd := exec.CommandContext(ctx, "ssh", sshTarget, "pollen", "admin", "keygen")
+	keygenCmd := exec.CommandContext(ctx, "ssh", sshTarget, "pln", "admin", "keygen")
 	var keygenStdout, keygenStderr bytes.Buffer
 	keygenCmd.Stdout = &keygenStdout
 	keygenCmd.Stderr = &keygenStderr
@@ -1336,7 +1336,7 @@ func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 		return err
 	}
 
-	setCertOut, err := exec.CommandContext(ctx, "ssh", sshTarget, "pollen", "admin", "set-cert", encoded).CombinedOutput()
+	setCertOut, err := exec.CommandContext(ctx, "ssh", sshTarget, "pln", "admin", "set-cert", encoded).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to install relay admin cert: %w\n%s", err, strings.TrimSpace(string(setCertOut)))
 	}
@@ -1350,13 +1350,13 @@ func waitForRelayReady(cmd *cobra.Command, sshTarget string) error {
 	readyCtx, cancel := context.WithTimeout(ctx, bootstrapStatusWait)
 	defer cancel()
 
-	checkCmd := "for i in $(seq 1 20); do if { sudo test -S /var/lib/pollen/pollen.sock || [ -S \"$HOME/.pollen/pollen.sock\" ]; } && sudo pollen status --all >/dev/null 2>&1; then exit 0; fi; sleep 1; done; exit 1"
+	checkCmd := "for i in $(seq 1 20); do if { sudo test -S /var/lib/pln/pln.sock || [ -S \"$HOME/.pln/pln.sock\" ]; } && sudo pln status --all >/dev/null 2>&1; then exit 0; fi; sleep 1; done; exit 1"
 	out, err := exec.CommandContext(readyCtx, "ssh", sshTarget, checkCmd).CombinedOutput()
 	if err == nil {
 		return nil
 	}
 
-	logCmd := "journalctl -u pollen -n 120 --no-pager 2>/dev/null || tail -n 120 /opt/homebrew/var/log/pollen.log 2>/dev/null || tail -n 120 /usr/local/var/log/pollen.log 2>/dev/null || true"
+	logCmd := "journalctl -u pln -n 120 --no-pager 2>/dev/null || tail -n 120 /opt/homebrew/var/log/pln.log 2>/dev/null || tail -n 120 /usr/local/var/log/pln.log 2>/dev/null || true"
 	logOut, _ := exec.CommandContext(ctx, "ssh", sshTarget, logCmd).CombinedOutput()
 	return fmt.Errorf("relay failed to become ready\nstatus output: %s\nrelay log:\n%s", strings.TrimSpace(string(out)), strings.TrimSpace(string(logOut)))
 }
@@ -1594,7 +1594,7 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg str
 	}
 	if len(matches) > 1 {
 		var b strings.Builder
-		fmt.Fprintf(&b, "service %q has multiple providers; use: pollen connect %s <provider>\n", serviceArg, serviceArg)
+		fmt.Fprintf(&b, "service %q has multiple providers; use: pln connect %s <provider>\n", serviceArg, serviceArg)
 		for _, svc := range matches {
 			provider := formatPeerID(svc.GetProvider().GetPeerId(), false)
 			fmt.Fprintf(&b, "- %s (%s:%d)\n", svc.GetName(), provider, svc.GetPort())
@@ -1705,7 +1705,7 @@ func runRevoke(cmd *cobra.Command, args []string) {
 func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
-		log.Fatalf("failed to prepare pollen dir: %v", err)
+		log.Fatalf("failed to prepare pln dir: %v", err)
 	}
 
 	socket := filepath.Join(pollenDir, socketName)
@@ -1730,11 +1730,7 @@ func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient 
 }
 
 func fetchInstallScript() ([]byte, error) {
-	repo := os.Getenv("POLLEN_REPO")
-	if repo == "" {
-		repo = defaultRepo
-	}
-	scriptURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/scripts/install.sh", repo)
+	scriptURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/scripts/install.sh", defaultRepo)
 
 	resp, err := (&http.Client{Timeout: scriptFetchTimeout}).Get(scriptURL) //nolint:noctx
 	if err != nil {

@@ -25,8 +25,8 @@ esac
 if [ "$OS" = "darwin" ]; then
     log "macOS detected. Installing via Homebrew..."
     command -v brew >/dev/null 2>&1 || fatal "Homebrew is required but not installed."
-    brew install sambigeara/homebrew-pollen/pollen
-    log "Done! Run 'brew services start pollen' to run in the background."
+    brew install sambigeara/homebrew-pln/pln
+    log "Done! Run 'brew services start pln' to run in the background."
     exit 0
 fi
 
@@ -44,20 +44,20 @@ if [ "$OS" = "linux" ]; then
 
     if command -v apt-get >/dev/null 2>&1; then
         log "Installing .deb via apt..."
-        DEB_URL="https://github.com/$REPO/releases/download/${VERSION}/pollen_${PKG_VER}_linux_${ARCH}.deb"
-        curl -sL "$DEB_URL" -o /tmp/pollen.deb
-        sudo NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/pollen.deb
+        DEB_URL="https://github.com/$REPO/releases/download/${VERSION}/pln_${PKG_VER}_linux_${ARCH}.deb"
+        curl -sL "$DEB_URL" -o /tmp/pln.deb
+        sudo NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/pln.deb
     elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
         RPM_MGR=$(command -v dnf >/dev/null 2>&1 && echo dnf || echo yum)
         log "Installing .rpm via $RPM_MGR..."
-        RPM_URL="https://github.com/$REPO/releases/download/${VERSION}/pollen_${PKG_VER}_linux_${ARCH}.rpm"
+        RPM_URL="https://github.com/$REPO/releases/download/${VERSION}/pln_${PKG_VER}_linux_${ARCH}.rpm"
         sudo "$RPM_MGR" install -y "$RPM_URL"
     else
         fatal "No supported package manager found (apt, dnf, or yum)."
     fi
 
-    sudo usermod -aG pollen "$(whoami)" 2>/dev/null || true
-    log "Done! Run 'sudo pollen join <token>' to enroll this node."
+    sudo usermod -aG pln "$(whoami)" 2>/dev/null || true
+    log "Done! Run 'sudo pln join <token>' to enroll this node."
     exit 0
 fi
 
