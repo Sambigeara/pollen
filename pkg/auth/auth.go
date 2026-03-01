@@ -81,7 +81,31 @@ func EnsureNodeCredentialsFromToken(pollenDir string, nodePub ed25519.PublicKey,
 		return nil, err
 	}
 
-	return ensureNodeCredentialsFromToken(pollenDir, nodePub, token, now, existing)
+	verified, err := VerifyJoinToken(token, nodePub, now)
+	if err != nil {
+		return nil, err
+	}
+
+	creds := &NodeCredentials{
+		Trust: verified.Trust,
+		Cert:  verified.Cert,
+	}
+
+	if existing != nil {
+		if !proto.Equal(existing.Trust, creds.Trust) {
+			return nil, ErrDifferentCluster
+		}
+		if VerifyMembershipCert(existing.Cert, existing.Trust, now, nodePub) == nil &&
+			existing.Cert.GetClaims().GetNotAfterUnix() >= creds.Cert.GetClaims().GetNotAfterUnix() {
+			return existing, nil
+		}
+	}
+
+	if err := SaveNodeCredentials(pollenDir, creds); err != nil {
+		return nil, err
+	}
+
+	return creds, nil
 }
 
 func LoadOrEnrollNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, token *admissionv1.JoinToken, now time.Time) (*NodeCredentials, error) {
@@ -130,40 +154,6 @@ func loadNodeCredentialsIfPresent(pollenDir string) (*NodeCredentials, error) {
 		if errors.Is(err, ErrCredentialsNotFound) {
 			return nil, nil
 		}
-		return nil, err
-	}
-
-	return creds, nil
-}
-
-func ensureNodeCredentialsFromToken(
-	pollenDir string,
-	nodePub ed25519.PublicKey,
-	token *admissionv1.JoinToken,
-	now time.Time,
-	existing *NodeCredentials,
-) (*NodeCredentials, error) {
-	verified, err := VerifyJoinToken(token, nodePub, now)
-	if err != nil {
-		return nil, err
-	}
-
-	creds := &NodeCredentials{
-		Trust: verified.Trust,
-		Cert:  verified.Cert,
-	}
-
-	if existing != nil {
-		if !proto.Equal(existing.Trust, creds.Trust) {
-			return nil, ErrDifferentCluster
-		}
-		if VerifyMembershipCert(existing.Cert, existing.Trust, now, nodePub) == nil &&
-			existing.Cert.GetClaims().GetNotAfterUnix() >= creds.Cert.GetClaims().GetNotAfterUnix() {
-			return existing, nil
-		}
-	}
-
-	if err := SaveNodeCredentials(pollenDir, creds); err != nil {
 		return nil, err
 	}
 
@@ -405,7 +395,7 @@ func VerifyAdminCert(
 	now time.Time,
 ) error {
 	if cert == nil {
-		return errors.New("admin cert missing claims")
+		return errors.New("admin cert is nil")
 	}
 	if err := protovalidate.Validate(cert); err != nil {
 		return fmt.Errorf("admin cert invalid: %w", err)
@@ -517,7 +507,7 @@ func VerifyMembershipCert(cert *admissionv1.MembershipCert, trust *admissionv1.T
 	// trust is the verification root, not extra metadata: it anchors issuer
 	// verification at root_pub and binds the cert to this cluster_id.
 	if cert == nil {
-		return errors.New("membership cert missing claims")
+		return errors.New("membership cert is nil")
 	}
 	if err := protovalidate.Validate(cert); err != nil {
 		return fmt.Errorf("membership cert invalid: %w", err)

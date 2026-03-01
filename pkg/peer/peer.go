@@ -231,8 +231,8 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
 			State:        PeerStateDiscovered,
 			LastAddr:     e.LastAddr,
 			Ips:          e.Ips,
-			ObservedPort: e.Port, // we don't know if the port is observed at this point
-			NextActionAt: now,    // eligible for connection immediately
+			ObservedPort: e.Port,
+			NextActionAt: now, // eligible for connection immediately
 		}
 		p.resetStage()
 		s.m[e.PeerKey] = p

@@ -2,12 +2,14 @@ package store
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"sync"
 	"syscall"
 
@@ -86,18 +88,16 @@ func openDisk(pollenDir string) (*disk, error) {
 	}
 
 	statePath := filepath.Join(pollenDir, stateFileName)
-	if _, err := os.Stat(statePath); err != nil {
-		if os.IsNotExist(err) {
-			if err := os.WriteFile(statePath, []byte("local:\n  identityPublic: \"\"\n"), stateFilePerm); err != nil {
-				_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
-				_ = lf.Close()
-				return nil, fmt.Errorf("create state: %w", err)
-			}
-		} else {
+	if _, err := os.Stat(statePath); errors.Is(err, os.ErrNotExist) {
+		if err := os.WriteFile(statePath, []byte("local:\n  identityPublic: \"\"\n"), stateFilePerm); err != nil {
 			_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
 			_ = lf.Close()
-			return nil, fmt.Errorf("stat state: %w", err)
+			return nil, fmt.Errorf("create state: %w", err)
 		}
+	} else if err != nil {
+		_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+		_ = lf.Close()
+		return nil, fmt.Errorf("stat state: %w", err)
 	}
 
 	return &disk{statePath: statePath, lockFile: lf}, nil
@@ -120,15 +120,13 @@ func (d *disk) load() (diskState, error) {
 		return diskState{}, fmt.Errorf("read state: %w", err)
 	}
 
-	st := diskState{}
+	var st diskState
 	if len(bytes.TrimSpace(b)) == 0 {
 		return st, nil
 	}
-
 	if err := yaml.Unmarshal(b, &st); err != nil {
-		return diskState{}, fmt.Errorf("unmarshal state: %w", err)
+		return st, fmt.Errorf("unmarshal state: %w", err)
 	}
-
 	return st, nil
 }
 
@@ -183,8 +181,8 @@ func marshalDiskRevocations(revocations map[types.PeerKey]*admissionv1.SignedRev
 		})
 	}
 
-	sort.Slice(revs, func(i, j int) bool {
-		return revs[i].SubjectPub < revs[j].SubjectPub
+	slices.SortFunc(revs, func(a, b diskRevocation) int {
+		return cmp.Compare(a.SubjectPub, b.SubjectPub)
 	})
 
 	return revs
@@ -220,7 +218,7 @@ func unmarshalDiskRevocations(diskRevs []diskRevocation, trustBundle *admissionv
 }
 
 func toDiskServices(nodes map[types.PeerKey]nodeRecord) []diskService {
-	services := make([]diskService, 0)
+	var services []diskService
 	for peerID, rec := range nodes {
 		for _, svc := range rec.Services {
 			if svc == nil {
@@ -234,16 +232,14 @@ func toDiskServices(nodes map[types.PeerKey]nodeRecord) []diskService {
 		}
 	}
 
-	sort.Slice(services, func(i, j int) bool {
-		a := services[i]
-		b := services[j]
-		if a.Name != b.Name {
-			return a.Name < b.Name
+	slices.SortFunc(services, func(a, b diskService) int {
+		if c := cmp.Compare(a.Name, b.Name); c != 0 {
+			return c
 		}
-		if a.Provider != b.Provider {
-			return a.Provider < b.Provider
+		if c := cmp.Compare(a.Provider, b.Provider); c != 0 {
+			return c
 		}
-		return a.Port < b.Port
+		return cmp.Compare(a.Port, b.Port)
 	})
 
 	return services

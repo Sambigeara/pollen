@@ -5,11 +5,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -222,25 +222,14 @@ func canonicalizeBootstrapPeers(peers []BootstrapPeer) ([]BootstrapPeer, error) 
 		}
 	}
 
-	peerHexes := make([]string, 0, len(byPeer))
-	for peerHex := range byPeer {
-		peerHexes = append(peerHexes, peerHex)
-	}
-	sort.Strings(peerHexes)
+	peerHexes := slices.Sorted(maps.Keys(byPeer))
 
 	out := make([]BootstrapPeer, 0, len(peerHexes))
 	for _, peerHex := range peerHexes {
-		addrsSet := byPeer[peerHex]
-		if len(addrsSet) == 0 {
+		addrs := slices.Sorted(maps.Keys(byPeer[peerHex]))
+		if len(addrs) == 0 {
 			return nil, fmt.Errorf("bootstrap peer %s has no addresses", peerHex)
 		}
-
-		addrs := make([]string, 0, len(addrsSet))
-		for addr := range addrsSet {
-			addrs = append(addrs, addr)
-		}
-		sort.Strings(addrs)
-
 		out = append(out, BootstrapPeer{
 			PeerPub: peerHex,
 			Addrs:   addrs,
