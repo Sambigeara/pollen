@@ -146,25 +146,46 @@ func peerKeyFromConn(qc *quic.Conn) (types.PeerKey, error) {
 	return types.PeerKeyFromBytes(pub), nil
 }
 
+func membershipExpiryFromConn(qc *quic.Conn) time.Time {
+	tlsState := qc.ConnectionState().TLS
+	if len(tlsState.PeerCertificates) == 0 {
+		return time.Time{}
+	}
+	mc, err := parseMembershipExtension(tlsState.PeerCertificates[0].Raw)
+	if err != nil || mc == nil {
+		return time.Time{}
+	}
+	return auth.CertExpiresAt(mc)
+}
+
 type verifyMeshPeerOpts struct {
 	trustBundle      *admissionv1.TrustBundle
 	expectedPeer     *types.PeerKey
 	isSubjectRevoked func(subjectPub []byte) bool
 }
 
+func verifyPeerIdentity(rawCerts [][]byte, expectedPeer *types.PeerKey) (types.PeerKey, error) {
+	if len(rawCerts) == 0 {
+		return types.PeerKey{}, errors.New("no peer certificate presented")
+	}
+
+	peerKey, err := peerKeyFromRawCert(rawCerts[0])
+	if err != nil {
+		return types.PeerKey{}, err
+	}
+
+	if expectedPeer != nil && peerKey != *expectedPeer {
+		return types.PeerKey{}, fmt.Errorf("%w: expected %s got %s", ErrIdentityMismatch, expectedPeer.Short(), peerKey.Short())
+	}
+
+	return peerKey, nil
+}
+
 func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		if len(rawCerts) == 0 {
-			return errors.New("no peer certificate presented")
-		}
-
-		peerKey, err := peerKeyFromRawCert(rawCerts[0])
+		peerKey, err := verifyPeerIdentity(rawCerts, opts.expectedPeer)
 		if err != nil {
 			return err
-		}
-
-		if opts.expectedPeer != nil && peerKey != *opts.expectedPeer {
-			return fmt.Errorf("%w: expected %s got %s", ErrIdentityMismatch, opts.expectedPeer.Short(), peerKey.Short())
 		}
 
 		mc, err := parseMembershipExtension(rawCerts[0])
@@ -191,20 +212,8 @@ func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certif
 
 func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		if len(rawCerts) == 0 {
-			return errors.New("no peer certificate presented")
-		}
-
-		peerKey, err := peerKeyFromRawCert(rawCerts[0])
-		if err != nil {
-			return err
-		}
-
-		if expectedPeer != nil && peerKey != *expectedPeer {
-			return fmt.Errorf("%w: expected %s got %s", ErrIdentityMismatch, expectedPeer.Short(), peerKey.Short())
-		}
-
-		return nil
+		_, err := verifyPeerIdentity(rawCerts, expectedPeer)
+		return err
 	}
 }
 

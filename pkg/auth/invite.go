@@ -30,21 +30,6 @@ type VerifiedInviteToken struct {
 	Issuer *admissionv1.AdminCert
 }
 
-func loadAdminCert(pollenDir string) (*admissionv1.AdminCert, error) {
-	path := filepath.Join(pollenDir, keysDir, adminCertName)
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	cert := &admissionv1.AdminCert{}
-	if err := cert.UnmarshalVT(raw); err != nil {
-		return nil, err
-	}
-
-	return cert, nil
-}
-
 func SaveAdminCert(pollenDir string, cert *admissionv1.AdminCert) error {
 	if cert == nil || cert.GetClaims() == nil {
 		return errors.New("admin cert missing claims")
@@ -110,11 +95,16 @@ func resolveAdminIssuer(pollenDir string, adminPriv ed25519.PrivateKey, adminPub
 		)
 	}
 
-	issuer, err := loadAdminCert(pollenDir)
+	raw, err := os.ReadFile(filepath.Join(pollenDir, keysDir, adminCertName))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, errors.New("delegated admin cert not installed")
 		}
+		return nil, err
+	}
+
+	issuer := &admissionv1.AdminCert{}
+	if err := issuer.UnmarshalVT(raw); err != nil {
 		return nil, err
 	}
 
@@ -143,12 +133,7 @@ func IssueInviteTokenWithSigner(
 	}
 
 	issuerPub := signer.Issuer.GetClaims().GetAdminPub()
-
-	privPub, ok := signer.Priv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("admin private key is not ed25519")
-	}
-	if !bytes.Equal(privPub, issuerPub) {
+	if !bytes.Equal(signer.Priv.Public().(ed25519.PublicKey), issuerPub) { //nolint:forcetypeassert
 		return nil, errors.New("invite signer key does not match issuer cert")
 	}
 
@@ -255,10 +240,10 @@ func DecodeInviteToken(s string) (*admissionv1.InviteToken, error) {
 
 func loadTrustBundleForSigner(pollenDir string, adminPub ed25519.PublicKey) (*admissionv1.TrustBundle, error) {
 	creds, err := loadNodeCredentials(pollenDir)
-	if err == nil && creds != nil && creds.Trust != nil {
+	if err == nil {
 		return creds.Trust, nil
 	}
-	if err != nil && !errors.Is(err, ErrCredentialsNotFound) {
+	if !errors.Is(err, ErrCredentialsNotFound) {
 		return nil, err
 	}
 

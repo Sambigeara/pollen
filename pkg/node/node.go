@@ -30,6 +30,8 @@ const (
 	MaxDatagramPayload = 1100
 )
 
+var ErrCertExpired = errors.New("membership certificate has expired")
+
 // envelopeOverhead is the serialized size of an empty Envelope wrapping an
 // empty GossipEventBatch — covers the oneof tag, length prefixes, and batch
 // wrapper framing.
@@ -38,6 +40,11 @@ var envelopeOverhead = (&meshv1.Envelope{Body: &meshv1.Envelope_Events{
 }}).SizeVT()
 
 const (
+	certCheckInterval     = 1 * time.Hour
+	certWarnThreshold     = 30 * 24 * time.Hour
+	certCriticalThreshold = 7 * 24 * time.Hour
+	peerCertSweepInterval = 1 * time.Hour
+
 	localKeysDir = "keys"
 
 	signingKeyName    = "ed25519.key"
@@ -76,6 +83,7 @@ type Config struct {
 	GossipJitter        float64
 	TLSIdentityTTL      time.Duration
 	MembershipTTL       time.Duration
+	MaxConnectionAge    time.Duration
 	DisableGossipJitter bool
 }
 
@@ -92,6 +100,7 @@ type Node struct {
 	store           *store.Store
 	mesh            mesh.Mesh
 	tun             *tunnel.Manager
+	creds           *auth.NodeCredentials
 	localPeerEvents chan peer.Input
 	punchCh         chan punchRequest
 	conf            *Config
@@ -115,7 +124,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 
 	stateStore.SetLocalNetwork(ips, uint32(conf.Port))
 
-	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSIdentityTTL, conf.MembershipTTL, stateStore.IsSubjectRevoked)
+	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSIdentityTTL, conf.MembershipTTL, conf.MaxConnectionAge, stateStore.IsSubjectRevoked)
 	if err != nil {
 		log.Error("failed to load mesh", zap.Error(err))
 		return nil, err
@@ -138,6 +147,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		store:           stateStore,
 		mesh:            m,
 		tun:             tun,
+		creds:           creds,
 		conf:            conf,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
 		punchCh:         make(chan punchRequest, punchChBufSize),
@@ -163,7 +173,13 @@ func (n *Node) Start(ctx context.Context) error {
 		go n.punchLoop(ctx)
 	}
 
-	gossipTicker := util.NewJitterTicker(ctx, n.conf.GossipInterval, n.gossipJitter())
+	jitter := loopIntervalJitter
+	if n.conf.DisableGossipJitter {
+		jitter = 0
+	} else if n.conf.GossipJitter > 0 {
+		jitter = n.conf.GossipJitter
+	}
+	gossipTicker := util.NewJitterTicker(ctx, n.conf.GossipInterval, jitter)
 	defer gossipTicker.Stop()
 
 	peerTicker := time.NewTicker(n.conf.PeerTickInterval)
@@ -175,6 +191,12 @@ func (n *Node) Start(ctx context.Context) error {
 		defer ipRefreshTicker.Stop()
 		ipRefreshCh = ipRefreshTicker.C
 	}
+
+	certCheckTicker := time.NewTicker(certCheckInterval)
+	defer certCheckTicker.Stop()
+
+	peerCertSweepTicker := time.NewTicker(peerCertSweepInterval)
+	defer peerCertSweepTicker.Stop()
 
 	n.tick()
 
@@ -188,6 +210,12 @@ func (n *Node) Start(ctx context.Context) error {
 			n.gossip(ctx)
 		case <-ipRefreshCh:
 			n.refreshIPs()
+		case <-certCheckTicker.C:
+			if n.checkCertExpiry() {
+				return ErrCertExpired
+			}
+		case <-peerCertSweepTicker.C:
+			n.sweepExpiredPeerCerts()
 		case events := <-n.gossipEvents:
 			n.broadcastEvents(ctx, events)
 		case in := <-n.mesh.Events():
@@ -261,6 +289,10 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 			}
 		}
 	case *meshv1.Envelope_Events:
+		if expiry, ok := n.mesh.PeerCertExpiresAt(from); ok && auth.IsCertExpiredAt(expiry, time.Now()) {
+			n.log.Warnw("dropping gossip events from peer with expired cert", "peer", from.Short())
+			return
+		}
 		result := n.store.ApplyEvents(body.Events.GetEvents())
 		if len(result.Rebroadcast) > 0 {
 			n.queueGossipEvents(result.Rebroadcast)
@@ -523,7 +555,10 @@ func (n *Node) reconcileDesiredConnections() {
 }
 
 func (n *Node) doConnect(peerKey types.PeerKey, addrs []*net.UDPAddr) {
-	if err := n.connectPeer(peerKey, addrs); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), directTimeout)
+	defer cancel()
+
+	if err := n.mesh.Connect(ctx, peerKey, addrs); err != nil {
 		if n.peers.InState(peerKey, peer.PeerStateConnecting) {
 			if errors.Is(err, mesh.ErrIdentityMismatch) {
 				n.log.Warnw("connect failed: peer identity mismatch", "peer", peerKey.Short(), "err", err)
@@ -533,12 +568,6 @@ func (n *Node) doConnect(peerKey types.PeerKey, addrs []*net.UDPAddr) {
 			n.localPeerEvents <- peer.ConnectFailed{PeerKey: peerKey}
 		}
 	}
-}
-
-func (n *Node) connectPeer(peerKey types.PeerKey, addrs []*net.UDPAddr) error {
-	ctx, cancel := context.WithTimeout(context.Background(), directTimeout)
-	defer cancel()
-	return n.mesh.Connect(ctx, peerKey, addrs)
 }
 
 func (n *Node) buildPeerAddrs(peerKey types.PeerKey, ips []net.IP, port int) []*net.UDPAddr {
@@ -559,14 +588,6 @@ func (n *Node) buildPeerAddrs(peerKey types.PeerKey, ips []net.IP, port int) []*
 		addrs = append(addrs, &net.UDPAddr{IP: ip, Port: p})
 	}
 	return addrs
-}
-
-func (n *Node) punchPeer(peerKey types.PeerKey, ip net.IP, port int) error {
-	addr := &net.UDPAddr{IP: ip, Port: port}
-
-	ctx, cancel := context.WithTimeout(context.Background(), punchTimeout)
-	defer cancel()
-	return n.mesh.Punch(ctx, peerKey, addr)
 }
 
 func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
@@ -651,19 +672,21 @@ func (n *Node) punchLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case req := <-n.punchCh:
-			// Skip if peer connected while queued.
 			if n.peers.InState(req.peerKey, peer.PeerStateConnected) {
 				continue
 			}
-			if err := n.punchPeer(req.peerKey, req.ip, req.port); err != nil {
-				if n.peers.InState(req.peerKey, peer.PeerStateConnecting) {
-					if errors.Is(err, mesh.ErrIdentityMismatch) {
-						n.log.Warnw("punch failed: peer identity mismatch", "peer", req.peerKey.Short(), "err", err)
-					} else {
-						n.log.Debugw("punch failed", "peer", req.peerKey.Short(), "err", err)
-					}
-					n.localPeerEvents <- peer.ConnectFailed{PeerKey: req.peerKey}
+
+			ctx, cancel := context.WithTimeout(context.Background(), punchTimeout)
+			err := n.mesh.Punch(ctx, req.peerKey, &net.UDPAddr{IP: req.ip, Port: req.port})
+			cancel()
+
+			if err != nil && n.peers.InState(req.peerKey, peer.PeerStateConnecting) {
+				if errors.Is(err, mesh.ErrIdentityMismatch) {
+					n.log.Warnw("punch failed: peer identity mismatch", "peer", req.peerKey.Short(), "err", err)
+				} else {
+					n.log.Debugw("punch failed", "peer", req.peerKey.Short(), "err", err)
 				}
+				n.localPeerEvents <- peer.ConnectFailed{PeerKey: req.peerKey}
 			}
 		}
 	}
@@ -722,14 +745,42 @@ func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32
 	return port, nil
 }
 
-func (n *Node) gossipJitter() float64 {
-	if n.conf.DisableGossipJitter {
-		return 0
+// checkCertExpiry checks the local node's membership cert and logs warnings.
+// Returns true if the cert has expired and the node should shut down.
+func (n *Node) checkCertExpiry() bool {
+	now := time.Now()
+	if auth.IsMembershipCertExpired(n.creds.Cert, now) {
+		n.log.Errorw("membership certificate has expired, shutting down — rejoin the cluster or contact a cluster admin",
+			"expired_at", auth.CertExpiresAt(n.creds.Cert))
+		return true
 	}
-	if n.conf.GossipJitter > 0 {
-		return n.conf.GossipJitter
+	remaining := time.Until(auth.CertExpiresAt(n.creds.Cert))
+	switch {
+	case remaining <= certCriticalThreshold:
+		n.log.Warnw("membership certificate expiring soon — rejoin the cluster or contact a cluster admin",
+			"expires_in", remaining.Truncate(time.Minute))
+	case remaining <= certWarnThreshold:
+		n.log.Infow("membership certificate approaching expiry — rejoin the cluster or contact a cluster admin before it expires",
+			"expires_in", remaining.Truncate(time.Minute))
 	}
-	return loopIntervalJitter
+	return false
+}
+
+func (n *Node) sweepExpiredPeerCerts() {
+	now := time.Now()
+	for _, peerKey := range n.mesh.ConnectedPeers() {
+		expiry, ok := n.mesh.PeerCertExpiresAt(peerKey)
+		if !ok || expiry.IsZero() {
+			continue
+		}
+		if auth.IsCertExpiredAt(expiry, now) {
+			n.log.Warnw("disconnecting peer with expired membership cert",
+				"peer", peerKey.Short(), "expired_at", expiry)
+			n.tun.DisconnectPeer(peerKey)
+			n.mesh.ClosePeerSession(peerKey)
+			n.handlePeerInput(peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertExpired})
+		}
+	}
 }
 
 func (n *Node) shutdown() {

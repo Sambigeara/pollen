@@ -237,7 +237,7 @@ func canonicalizeBootstrapPeers(peers []BootstrapPeer) ([]BootstrapPeer, error) 
 
 		addrs := make([]string, 0, len(addrsSet))
 		for addr := range addrsSet {
-			addrs = append(addrs, strings.TrimSpace(addr))
+			addrs = append(addrs, addr)
 		}
 		sort.Strings(addrs)
 

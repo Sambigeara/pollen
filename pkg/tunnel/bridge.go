@@ -23,16 +23,8 @@ func bridge(c1, c2 io.ReadWriteCloser) {
 	var closeOnce sync.Once
 
 	transfer := func(dst, src io.ReadWriteCloser, direction string) {
-		pooled := bufPool.Get()
-		bufPtr, ok := pooled.(*[]byte)
-		if !ok || bufPtr == nil {
-			b := make([]byte, bufSize)
-			bufPtr = &b
-			pooled = nil
-		}
-		if pooled != nil {
-			defer bufPool.Put(bufPtr)
-		}
+		bufPtr := bufPool.Get().(*[]byte) //nolint:forcetypeassert
+		defer bufPool.Put(bufPtr)
 
 		_, err := io.CopyBuffer(dst, src, *bufPtr)
 

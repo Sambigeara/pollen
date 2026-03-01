@@ -128,10 +128,19 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 
 	if s.creds != nil && s.creds.Cert != nil {
 		claims := s.creds.Cert.GetClaims()
+		health := controlv1.CertHealth_CERT_HEALTH_OK
+		remaining := time.Until(auth.CertExpiresAt(s.creds.Cert))
+		switch {
+		case remaining <= 0:
+			health = controlv1.CertHealth_CERT_HEALTH_EXPIRED
+		case remaining <= certWarnThreshold:
+			health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
+		}
 		out.Certificates = append(out.Certificates, &controlv1.CertInfo{
 			NotBeforeUnix: claims.GetNotBeforeUnix(),
 			NotAfterUnix:  claims.GetNotAfterUnix(),
 			Serial:        claims.GetSerial(),
+			Health:        health,
 		})
 	}
 
@@ -258,7 +267,7 @@ func (s *NodeService) RegisterService(_ context.Context, req *controlv1.Register
 
 	name := req.GetName()
 	if name == "" {
-		name = serviceNameForPort(req.Port)
+		name = strconv.FormatUint(uint64(req.Port), 10)
 	}
 	s.node.queueGossipEvents(s.node.store.UpsertLocalService(req.Port, name))
 
@@ -272,10 +281,6 @@ func (s *NodeService) UnregisterService(_ context.Context, req *controlv1.Unregi
 	s.node.queueGossipEvents(events)
 
 	return &controlv1.UnregisterServiceResponse{}, nil
-}
-
-func serviceNameForPort(port uint32) string {
-	return strconv.FormatUint(uint64(port), 10)
 }
 
 func (s *NodeService) ConnectPeer(ctx context.Context, req *controlv1.ConnectPeerRequest) (*controlv1.ConnectPeerResponse, error) {

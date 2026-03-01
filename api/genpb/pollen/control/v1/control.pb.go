@@ -74,6 +74,58 @@ func (NodeStatus) EnumDescriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{0}
 }
 
+type CertHealth int32
+
+const (
+	CertHealth_CERT_HEALTH_UNSPECIFIED   CertHealth = 0
+	CertHealth_CERT_HEALTH_OK            CertHealth = 1
+	CertHealth_CERT_HEALTH_EXPIRING_SOON CertHealth = 2
+	CertHealth_CERT_HEALTH_EXPIRED       CertHealth = 3
+)
+
+// Enum value maps for CertHealth.
+var (
+	CertHealth_name = map[int32]string{
+		0: "CERT_HEALTH_UNSPECIFIED",
+		1: "CERT_HEALTH_OK",
+		2: "CERT_HEALTH_EXPIRING_SOON",
+		3: "CERT_HEALTH_EXPIRED",
+	}
+	CertHealth_value = map[string]int32{
+		"CERT_HEALTH_UNSPECIFIED":   0,
+		"CERT_HEALTH_OK":            1,
+		"CERT_HEALTH_EXPIRING_SOON": 2,
+		"CERT_HEALTH_EXPIRED":       3,
+	}
+)
+
+func (x CertHealth) Enum() *CertHealth {
+	p := new(CertHealth)
+	*p = x
+	return p
+}
+
+func (x CertHealth) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CertHealth) Descriptor() protoreflect.EnumDescriptor {
+	return file_pollen_control_v1_control_proto_enumTypes[1].Descriptor()
+}
+
+func (CertHealth) Type() protoreflect.EnumType {
+	return &file_pollen_control_v1_control_proto_enumTypes[1]
+}
+
+func (x CertHealth) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CertHealth.Descriptor instead.
+func (CertHealth) EnumDescriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{1}
+}
+
 type NodeRef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
@@ -499,6 +551,7 @@ type CertInfo struct {
 	NotBeforeUnix int64                  `protobuf:"varint,1,opt,name=not_before_unix,json=notBeforeUnix,proto3" json:"not_before_unix,omitempty"`
 	NotAfterUnix  int64                  `protobuf:"varint,2,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
 	Serial        uint64                 `protobuf:"varint,3,opt,name=serial,proto3" json:"serial,omitempty"`
+	Health        CertHealth             `protobuf:"varint,4,opt,name=health,proto3,enum=pollen.control.v1.CertHealth" json:"health,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -552,6 +605,13 @@ func (x *CertInfo) GetSerial() uint64 {
 		return x.Serial
 	}
 	return 0
+}
+
+func (x *CertInfo) GetHealth() CertHealth {
+	if x != nil {
+		return x.Health
+	}
+	return CertHealth_CERT_HEALTH_UNSPECIFIED
 }
 
 type GetStatusResponse struct {
@@ -1171,11 +1231,12 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x18GetBootstrapInfoResponse\x128\n" +
 	"\x04self\x18\x01 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\x04self\x12F\n" +
 	"\vrecommended\x18\x02 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\vrecommended\"\x12\n" +
-	"\x10GetStatusRequest\"p\n" +
+	"\x10GetStatusRequest\"\xa7\x01\n" +
 	"\bCertInfo\x12&\n" +
 	"\x0fnot_before_unix\x18\x01 \x01(\x03R\rnotBeforeUnix\x12$\n" +
 	"\x0enot_after_unix\x18\x02 \x01(\x03R\fnotAfterUnix\x12\x16\n" +
-	"\x06serial\x18\x03 \x01(\x04R\x06serial\"\xc5\x02\n" +
+	"\x06serial\x18\x03 \x01(\x04R\x06serial\x125\n" +
+	"\x06health\x18\x04 \x01(\x0e2\x1d.pollen.control.v1.CertHealthR\x06health\"\xc5\x02\n" +
 	"\x11GetStatusResponse\x122\n" +
 	"\x04self\x18\x01 \x01(\v2\x1e.pollen.control.v1.NodeSummaryR\x04self\x124\n" +
 	"\x05nodes\x18\x02 \x03(\v2\x1e.pollen.control.v1.NodeSummaryR\x05nodes\x12=\n" +
@@ -1220,7 +1281,13 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12NODE_STATUS_ONLINE\x10\x01\x12\x17\n" +
 	"\x13NODE_STATUS_OFFLINE\x10\x02\x12\x15\n" +
-	"\x11NODE_STATUS_RELAY\x10\x032\xa4\x06\n" +
+	"\x11NODE_STATUS_RELAY\x10\x03*u\n" +
+	"\n" +
+	"CertHealth\x12\x1b\n" +
+	"\x17CERT_HEALTH_UNSPECIFIED\x10\x00\x12\x12\n" +
+	"\x0eCERT_HEALTH_OK\x10\x01\x12\x1d\n" +
+	"\x19CERT_HEALTH_EXPIRING_SOON\x10\x02\x12\x17\n" +
+	"\x13CERT_HEALTH_EXPIRED\x10\x032\xa4\x06\n" +
 	"\x0eControlService\x12S\n" +
 	"\bShutdown\x12\".pollen.control.v1.ShutdownRequest\x1a#.pollen.control.v1.ShutdownResponse\x12k\n" +
 	"\x10GetBootstrapInfo\x12*.pollen.control.v1.GetBootstrapInfoRequest\x1a+.pollen.control.v1.GetBootstrapInfoResponse\x12V\n" +
@@ -1244,68 +1311,70 @@ func file_pollen_control_v1_control_proto_rawDescGZIP() []byte {
 	return file_pollen_control_v1_control_proto_rawDescData
 }
 
-var file_pollen_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_pollen_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_pollen_control_v1_control_proto_goTypes = []any{
 	(NodeStatus)(0),                   // 0: pollen.control.v1.NodeStatus
-	(*NodeRef)(nil),                   // 1: pollen.control.v1.NodeRef
-	(*NodeSummary)(nil),               // 2: pollen.control.v1.NodeSummary
-	(*ServiceSummary)(nil),            // 3: pollen.control.v1.ServiceSummary
-	(*ShutdownRequest)(nil),           // 4: pollen.control.v1.ShutdownRequest
-	(*ShutdownResponse)(nil),          // 5: pollen.control.v1.ShutdownResponse
-	(*GetBootstrapInfoRequest)(nil),   // 6: pollen.control.v1.GetBootstrapInfoRequest
-	(*BootstrapPeerInfo)(nil),         // 7: pollen.control.v1.BootstrapPeerInfo
-	(*GetBootstrapInfoResponse)(nil),  // 8: pollen.control.v1.GetBootstrapInfoResponse
-	(*GetStatusRequest)(nil),          // 9: pollen.control.v1.GetStatusRequest
-	(*CertInfo)(nil),                  // 10: pollen.control.v1.CertInfo
-	(*GetStatusResponse)(nil),         // 11: pollen.control.v1.GetStatusResponse
-	(*ConnectionSummary)(nil),         // 12: pollen.control.v1.ConnectionSummary
-	(*RegisterServiceRequest)(nil),    // 13: pollen.control.v1.RegisterServiceRequest
-	(*RegisterServiceResponse)(nil),   // 14: pollen.control.v1.RegisterServiceResponse
-	(*UnregisterServiceRequest)(nil),  // 15: pollen.control.v1.UnregisterServiceRequest
-	(*UnregisterServiceResponse)(nil), // 16: pollen.control.v1.UnregisterServiceResponse
-	(*ConnectPeerRequest)(nil),        // 17: pollen.control.v1.ConnectPeerRequest
-	(*ConnectPeerResponse)(nil),       // 18: pollen.control.v1.ConnectPeerResponse
-	(*ConnectServiceRequest)(nil),     // 19: pollen.control.v1.ConnectServiceRequest
-	(*ConnectServiceResponse)(nil),    // 20: pollen.control.v1.ConnectServiceResponse
-	(*RevokePeerRequest)(nil),         // 21: pollen.control.v1.RevokePeerRequest
-	(*RevokePeerResponse)(nil),        // 22: pollen.control.v1.RevokePeerResponse
+	(CertHealth)(0),                   // 1: pollen.control.v1.CertHealth
+	(*NodeRef)(nil),                   // 2: pollen.control.v1.NodeRef
+	(*NodeSummary)(nil),               // 3: pollen.control.v1.NodeSummary
+	(*ServiceSummary)(nil),            // 4: pollen.control.v1.ServiceSummary
+	(*ShutdownRequest)(nil),           // 5: pollen.control.v1.ShutdownRequest
+	(*ShutdownResponse)(nil),          // 6: pollen.control.v1.ShutdownResponse
+	(*GetBootstrapInfoRequest)(nil),   // 7: pollen.control.v1.GetBootstrapInfoRequest
+	(*BootstrapPeerInfo)(nil),         // 8: pollen.control.v1.BootstrapPeerInfo
+	(*GetBootstrapInfoResponse)(nil),  // 9: pollen.control.v1.GetBootstrapInfoResponse
+	(*GetStatusRequest)(nil),          // 10: pollen.control.v1.GetStatusRequest
+	(*CertInfo)(nil),                  // 11: pollen.control.v1.CertInfo
+	(*GetStatusResponse)(nil),         // 12: pollen.control.v1.GetStatusResponse
+	(*ConnectionSummary)(nil),         // 13: pollen.control.v1.ConnectionSummary
+	(*RegisterServiceRequest)(nil),    // 14: pollen.control.v1.RegisterServiceRequest
+	(*RegisterServiceResponse)(nil),   // 15: pollen.control.v1.RegisterServiceResponse
+	(*UnregisterServiceRequest)(nil),  // 16: pollen.control.v1.UnregisterServiceRequest
+	(*UnregisterServiceResponse)(nil), // 17: pollen.control.v1.UnregisterServiceResponse
+	(*ConnectPeerRequest)(nil),        // 18: pollen.control.v1.ConnectPeerRequest
+	(*ConnectPeerResponse)(nil),       // 19: pollen.control.v1.ConnectPeerResponse
+	(*ConnectServiceRequest)(nil),     // 20: pollen.control.v1.ConnectServiceRequest
+	(*ConnectServiceResponse)(nil),    // 21: pollen.control.v1.ConnectServiceResponse
+	(*RevokePeerRequest)(nil),         // 22: pollen.control.v1.RevokePeerRequest
+	(*RevokePeerResponse)(nil),        // 23: pollen.control.v1.RevokePeerResponse
 }
 var file_pollen_control_v1_control_proto_depIdxs = []int32{
-	1,  // 0: pollen.control.v1.NodeSummary.node:type_name -> pollen.control.v1.NodeRef
+	2,  // 0: pollen.control.v1.NodeSummary.node:type_name -> pollen.control.v1.NodeRef
 	0,  // 1: pollen.control.v1.NodeSummary.status:type_name -> pollen.control.v1.NodeStatus
-	1,  // 2: pollen.control.v1.ServiceSummary.provider:type_name -> pollen.control.v1.NodeRef
-	1,  // 3: pollen.control.v1.BootstrapPeerInfo.peer:type_name -> pollen.control.v1.NodeRef
-	7,  // 4: pollen.control.v1.GetBootstrapInfoResponse.self:type_name -> pollen.control.v1.BootstrapPeerInfo
-	7,  // 5: pollen.control.v1.GetBootstrapInfoResponse.recommended:type_name -> pollen.control.v1.BootstrapPeerInfo
-	2,  // 6: pollen.control.v1.GetStatusResponse.self:type_name -> pollen.control.v1.NodeSummary
-	2,  // 7: pollen.control.v1.GetStatusResponse.nodes:type_name -> pollen.control.v1.NodeSummary
-	3,  // 8: pollen.control.v1.GetStatusResponse.services:type_name -> pollen.control.v1.ServiceSummary
-	12, // 9: pollen.control.v1.GetStatusResponse.connections:type_name -> pollen.control.v1.ConnectionSummary
-	10, // 10: pollen.control.v1.GetStatusResponse.certificates:type_name -> pollen.control.v1.CertInfo
-	1,  // 11: pollen.control.v1.ConnectionSummary.peer:type_name -> pollen.control.v1.NodeRef
-	1,  // 12: pollen.control.v1.ConnectServiceRequest.node:type_name -> pollen.control.v1.NodeRef
-	4,  // 13: pollen.control.v1.ControlService.Shutdown:input_type -> pollen.control.v1.ShutdownRequest
-	6,  // 14: pollen.control.v1.ControlService.GetBootstrapInfo:input_type -> pollen.control.v1.GetBootstrapInfoRequest
-	9,  // 15: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
-	13, // 16: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
-	15, // 17: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
-	19, // 18: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
-	17, // 19: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
-	21, // 20: pollen.control.v1.ControlService.RevokePeer:input_type -> pollen.control.v1.RevokePeerRequest
-	5,  // 21: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
-	8,  // 22: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
-	11, // 23: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
-	14, // 24: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
-	16, // 25: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
-	20, // 26: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
-	18, // 27: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
-	22, // 28: pollen.control.v1.ControlService.RevokePeer:output_type -> pollen.control.v1.RevokePeerResponse
-	21, // [21:29] is the sub-list for method output_type
-	13, // [13:21] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	2,  // 2: pollen.control.v1.ServiceSummary.provider:type_name -> pollen.control.v1.NodeRef
+	2,  // 3: pollen.control.v1.BootstrapPeerInfo.peer:type_name -> pollen.control.v1.NodeRef
+	8,  // 4: pollen.control.v1.GetBootstrapInfoResponse.self:type_name -> pollen.control.v1.BootstrapPeerInfo
+	8,  // 5: pollen.control.v1.GetBootstrapInfoResponse.recommended:type_name -> pollen.control.v1.BootstrapPeerInfo
+	1,  // 6: pollen.control.v1.CertInfo.health:type_name -> pollen.control.v1.CertHealth
+	3,  // 7: pollen.control.v1.GetStatusResponse.self:type_name -> pollen.control.v1.NodeSummary
+	3,  // 8: pollen.control.v1.GetStatusResponse.nodes:type_name -> pollen.control.v1.NodeSummary
+	4,  // 9: pollen.control.v1.GetStatusResponse.services:type_name -> pollen.control.v1.ServiceSummary
+	13, // 10: pollen.control.v1.GetStatusResponse.connections:type_name -> pollen.control.v1.ConnectionSummary
+	11, // 11: pollen.control.v1.GetStatusResponse.certificates:type_name -> pollen.control.v1.CertInfo
+	2,  // 12: pollen.control.v1.ConnectionSummary.peer:type_name -> pollen.control.v1.NodeRef
+	2,  // 13: pollen.control.v1.ConnectServiceRequest.node:type_name -> pollen.control.v1.NodeRef
+	5,  // 14: pollen.control.v1.ControlService.Shutdown:input_type -> pollen.control.v1.ShutdownRequest
+	7,  // 15: pollen.control.v1.ControlService.GetBootstrapInfo:input_type -> pollen.control.v1.GetBootstrapInfoRequest
+	10, // 16: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
+	14, // 17: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
+	16, // 18: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
+	20, // 19: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
+	18, // 20: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
+	22, // 21: pollen.control.v1.ControlService.RevokePeer:input_type -> pollen.control.v1.RevokePeerRequest
+	6,  // 22: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
+	9,  // 23: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
+	12, // 24: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
+	15, // 25: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
+	17, // 26: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
+	21, // 27: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
+	19, // 28: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
+	23, // 29: pollen.control.v1.ControlService.RevokePeer:output_type -> pollen.control.v1.RevokePeerResponse
+	22, // [22:30] is the sub-list for method output_type
+	14, // [14:22] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_pollen_control_v1_control_proto_init() }
@@ -1320,7 +1389,7 @@ func file_pollen_control_v1_control_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_control_v1_control_proto_rawDesc), len(file_pollen_control_v1_control_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,

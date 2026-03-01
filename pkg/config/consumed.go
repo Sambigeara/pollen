@@ -82,10 +82,14 @@ func (c *ConsumedInvites) TryConsume(token *admissionv1.InviteToken, now time.Ti
 	return true, nil
 }
 
+func isConsumedExpired(rec consumedInviteRecord, nowUnix int64) bool {
+	return rec.ExpiresAtUnix > 0 && rec.ExpiresAtUnix+int64(consumedExpirySkew/time.Second) < nowUnix
+}
+
 func (c *ConsumedInvites) dropExpired(now time.Time) {
 	nowUnix := now.Unix()
 	for tokenID, rec := range c.entries {
-		if rec.ExpiresAtUnix > 0 && rec.ExpiresAtUnix+int64(consumedExpirySkew/time.Second) < nowUnix {
+		if isConsumedExpired(rec, nowUnix) {
 			delete(c.entries, tokenID)
 		}
 	}
@@ -115,7 +119,7 @@ func readConsumedEntries(path string, now time.Time) (map[string]consumedInviteR
 		if rec.TokenID == "" {
 			continue
 		}
-		if rec.ExpiresAtUnix > 0 && rec.ExpiresAtUnix+int64(consumedExpirySkew/time.Second) < nowUnix {
+		if isConsumedExpired(rec, nowUnix) {
 			continue
 		}
 		entries[rec.TokenID] = rec
@@ -130,12 +134,7 @@ func writeConsumedEntries(path string, entries map[string]consumedInviteRecord) 
 		state.Invites = append(state.Invites, rec)
 	}
 	sort.Slice(state.Invites, func(i, j int) bool {
-		a := state.Invites[i]
-		b := state.Invites[j]
-		if a.TokenID != b.TokenID {
-			return a.TokenID < b.TokenID
-		}
-		return a.ConsumedAtUnix < b.ConsumedAtUnix
+		return state.Invites[i].TokenID < state.Invites[j].TokenID
 	})
 
 	if err := os.MkdirAll(filepath.Dir(path), directoryPerm); err != nil {

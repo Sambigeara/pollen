@@ -28,16 +28,6 @@ func pollenGID() (int, bool, error) {
 	return gid, true, nil
 }
 
-func chownGroup(path string, gid int) error {
-	if err := os.Chown(path, -1, gid); err != nil {
-		if errors.Is(err, syscall.EPERM) {
-			return nil
-		}
-		return fmt.Errorf("chown %s: %w", path, err)
-	}
-	return nil
-}
-
 func setGroupPerm(path string, mode os.FileMode) error {
 	gid, ok, err := pollenGID()
 	if err != nil {
@@ -46,8 +36,10 @@ func setGroupPerm(path string, mode os.FileMode) error {
 	if !ok {
 		return nil
 	}
-	if err := chownGroup(path, gid); err != nil {
-		return err
+	if err := os.Chown(path, -1, gid); err != nil {
+		if !errors.Is(err, syscall.EPERM) {
+			return fmt.Errorf("chown %s: %w", path, err)
+		}
 	}
 	if err := os.Chmod(path, mode); err != nil {
 		return fmt.Errorf("chmod %s: %w", path, err)

@@ -135,17 +135,7 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 		headers: []string{"SERVICE", "PROVIDER", "PORT", "LOCAL"},
 	}
 
-	reachableProviders := map[string]bool{}
-	if st.GetSelf() != nil && st.GetSelf().GetNode() != nil {
-		selfID := peerKeyString(st.GetSelf().GetNode().GetPeerId())
-		reachableProviders[selfID] = true
-	}
-	for _, n := range st.Nodes {
-		if isReachableStatus(n.GetStatus()) {
-			id := peerKeyString(n.GetNode().GetPeerId())
-			reachableProviders[id] = true
-		}
-	}
+	reachableProviders := reachableProviderSet(st)
 
 	type connKey struct {
 		service  string
@@ -185,20 +175,35 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 	const certExpirySkew = time.Minute
 
 	var latest time.Time
+	var health controlv1.CertHealth
 	for _, c := range st.GetCertificates() {
 		t := time.Unix(c.GetNotAfterUnix(), 0)
 		if t.After(latest) {
 			latest = t
+			health = c.GetHealth()
 		}
 	}
 	if latest.IsZero() {
 		return ""
 	}
+
 	remaining := time.Until(latest.Add(certExpirySkew))
-	if remaining <= 0 {
-		return "membership expired"
+
+	expiredStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1")) //nolint:mnd
+	warningStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3")) //nolint:mnd
+	okStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))      //nolint:mnd
+
+	if remaining <= 0 || health == controlv1.CertHealth_CERT_HEALTH_EXPIRED {
+		return expiredStyle.Render("membership expired — node has stopped; rejoin the cluster or contact a cluster admin")
 	}
-	return "membership expires in " + humanDuration(remaining)
+
+	msg := "membership expires in " + humanDuration(remaining)
+	switch health {
+	case controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON:
+		return warningStyle.Render(msg + " — rejoin the cluster or contact a cluster admin")
+	default:
+		return okStyle.Render(msg)
+	}
 }
 
 func humanDuration(d time.Duration) string {

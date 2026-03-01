@@ -399,6 +399,38 @@ func TestVerifyRevocationRejectsNilRevocation(t *testing.T) {
 	require.ErrorContains(t, err, "revocation is nil")
 }
 
+func TestCertExpiresAt(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now()
+	expiry := now.Add(24 * time.Hour)
+	cert, err := auth.IssueMembershipCert(
+		rootPriv, trust.GetClusterId(), subjectPub,
+		now.Add(-time.Minute), expiry, config.CertTTLs{}.AdminTTL(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, expiry.Unix(), auth.CertExpiresAt(cert).Unix())
+}
+
+func TestIsMembershipCertExpired(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now()
+	cert, err := auth.IssueMembershipCert(
+		rootPriv, trust.GetClusterId(), subjectPub,
+		now.Add(-time.Minute), now.Add(24*time.Hour), config.CertTTLs{}.AdminTTL(),
+	)
+	require.NoError(t, err)
+
+	require.False(t, auth.IsMembershipCertExpired(cert, now))
+	require.False(t, auth.IsMembershipCertExpired(cert, now.Add(24*time.Hour+30*time.Second)))
+	require.True(t, auth.IsMembershipCertExpired(cert, now.Add(24*time.Hour+2*time.Minute)))
+}
+
 func newKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 
