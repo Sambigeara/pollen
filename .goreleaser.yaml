@@ -1,7 +1,7 @@
 version: 2
-project_name: pollen
+project_name: pln
 builds:
-  - main: ./cmd/pollen
+  - main: ./cmd/pln
     ldflags:
       - -s -w -X main.version={{ .Tag }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}
     env:
@@ -26,8 +26,8 @@ nfpms:
     formats: [deb, rpm]
     bindir: /usr/bin
     contents:
-      - src: packaging/pollen.service
-        dst: /lib/systemd/system/pollen.service
+      - src: packaging/pln.service
+        dst: /lib/systemd/system/pln.service
     scripts:
       postinstall: packaging/postinstall.sh
       preremove: packaging/preremove.sh
@@ -35,13 +35,13 @@ nfpms:
 brews:
   - repository:
       owner: sambigeara
-      name: homebrew-pollen
+      name: homebrew-pln
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     description: "Mesh network daemon"
     install: |
-      bin.install "pollen"
+      bin.install "pln"
     service: |
-      run [opt_bin/"pollen", "up"]
+      run [opt_bin/"pln", "up"]
       keep_alive true
-      log_path var/"log/pollen.log"
-      error_log_path var/"log/pollen.log"
+      log_path var/"log/pln.log"
+      error_log_path var/"log/pln.log"

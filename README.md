@@ -11,17 +11,17 @@ This README is intentionally short and focused on day-to-day commands.
 
 ## Core commands
 
-- `pollen init` — initialize local root cluster state
-- `pollen up` — start a node in the foreground
-- `pollen start|stop|restart` — manage the background service
-- `pollen join <token>` — enroll into a cluster and start the daemon (`--no-start` to enroll only)
-- `pollen logs [-f]` — show daemon logs
-- `pollen purge [--all]` — reset local cluster state (`--all` also removes node keys)
-- `pollen status` — show nodes/services
-- `pollen invite [--subject <node-pub>]` — create an invite token
-- `pollen serve <port> [name]` / `pollen unserve <port|name>` — expose/unexpose services
-- `pollen connect <service> [provider]` — tunnel to a service
-- `pollen version [--short]` — show CLI version
+- `pln init` — initialize local root cluster state
+- `pln up` — start a node in the foreground
+- `pln start|stop|restart` — manage the background service
+- `pln join <token>` — enroll into a cluster and start the daemon (`--no-start` to enroll only)
+- `pln logs [-f]` — show daemon logs
+- `pln purge [--all]` — reset local cluster state (`--all` also removes node keys)
+- `pln status` — show nodes/services
+- `pln invite [--subject <node-pub>]` — create an invite token
+- `pln serve <port> [name]` / `pln unserve <port|name>` — expose/unexpose services
+- `pln connect <service> [provider]` — tunnel to a service
+- `pln version [--short]` — show CLI version
 
 ## Install (Linux + macOS)
 
@@ -38,15 +38,15 @@ managed by your platform's package tooling.
 On your laptop (admin):
 
 ```bash
-pollen init
-pollen up
-pollen bootstrap ssh ubuntu@<RELAY_PUBLIC_IP>
+pln init
+pln up
+pln bootstrap ssh ubuntu@<RELAY_PUBLIC_IP>
 ```
 
 If the bootstrap command prints a local join command, run it:
 
 ```bash
-pollen join "<LOCAL_JOIN_TOKEN>"
+pln join "<LOCAL_JOIN_TOKEN>"
 ```
 
 ## Add another node
@@ -54,40 +54,40 @@ pollen join "<LOCAL_JOIN_TOKEN>"
 On the admin node, create an invite:
 
 ```bash
-pollen invite
+pln invite
 ```
 
 On the joining node, install and join:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash
-sudo pollen join "<INVITE_TOKEN>"  # Linux only; adds your user to the pollen group
+sudo pln join "<INVITE_TOKEN>"  # Linux only; adds your user to the pln group
 ```
 
-`pollen join` enrolls credentials and starts the daemon automatically. Use
+`pln join` enrolls credentials and starts the daemon automatically. Use
 `--no-start` to enroll without starting.
 
 Subject-bound invite flow (stricter):
 
 ```bash
 # on joining node
-pollen id
+pln id
 
 # on admin node
-pollen invite <NODE_PUB>
+pln invite <NODE_PUB>
 ```
 
 ## Service ergonomics
 
 ```bash
-pollen serve 8080 api
-pollen connect api
-pollen unserve api
+pln serve 8080 api
+pln connect api
+pln unserve api
 ```
 
 ## Notes
 
-- On macOS, state defaults to `~/.pollen`
-- On Linux, the package installs a systemd service and defaults state to `/var/lib/pollen` when that directory exists
-- On Linux, `pollen join` automatically adds your user to the `pollen` group so CLI commands (`pollen status`, `pollen peers`, etc.) work without `sudo`. Log out and back in after joining for group membership to take effect.
+- On macOS, state defaults to `~/.pln`
+- On Linux, the package installs a systemd service and defaults state to `/var/lib/pln` when that directory exists
+- On Linux, `pln join` automatically adds your user to the `pln` group so CLI commands (`pln status`, `pln peers`, etc.) work without `sudo`. Log out and back in after joining for group membership to take effect.
 - Use `--dir` to run isolated test clusters

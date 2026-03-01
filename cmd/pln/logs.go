@@ -45,7 +45,7 @@ func logsDarwin(cmd *cobra.Command, follow bool, lines int) {
 	} else if _, err := os.Stat("/opt/homebrew"); err == nil {
 		prefix = "/opt/homebrew"
 	}
-	logPath := filepath.Join(prefix, "var", "log", "pollen.log")
+	logPath := filepath.Join(prefix, "var", "log", "pln.log")
 
 	args := []string{"-n", strconv.Itoa(lines)}
 	if follow {
@@ -60,7 +60,7 @@ func logsDarwin(cmd *cobra.Command, follow bool, lines int) {
 }
 
 func logsLinux(cmd *cobra.Command, follow bool, lines int) {
-	args := []string{"-u", "pollen", "-n", strconv.Itoa(lines), "--no-pager"}
+	args := []string{"-u", "pln", "-n", strconv.Itoa(lines), "--no-pager"}
 	if follow {
 		args = append(args, "-f")
 	}

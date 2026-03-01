@@ -11,7 +11,7 @@ import (
 	"syscall"
 )
 
-const groupName = "pollen"
+const groupName = "pln"
 
 func pollenGID() (int, bool, error) {
 	grp, err := user.LookupGroup(groupName)
@@ -55,11 +55,11 @@ func setGroupPerm(path string, mode os.FileMode) error {
 	return nil
 }
 
-// SetGroupDir makes a directory traversable by the pollen group (0770).
+// SetGroupDir makes a directory traversable by the pln group (0770).
 func SetGroupDir(path string) error { return setGroupPerm(path, 0o770) }
 
-// SetGroupReadable makes a file readable by the pollen group (0640).
+// SetGroupReadable makes a file readable by the pln group (0640).
 func SetGroupReadable(path string) error { return setGroupPerm(path, 0o640) }
 
-// SetGroupSocket makes a socket read-writable by the pollen group (0660).
+// SetGroupSocket makes a socket read-writable by the pln group (0660).
 func SetGroupSocket(path string) error { return setGroupPerm(path, 0o660) }
