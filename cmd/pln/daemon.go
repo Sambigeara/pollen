@@ -10,12 +10,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// effectiveHomeDir returns the home directory of the real (non-root) user.
-// Under sudo, os.UserHomeDir() returns /root; this resolves SUDO_USER instead.
+// effectiveHomeDir returns the home directory of the calling user.
+// When running as root, resolves SUDO_USER to return the real user's home
+// (os.UserHomeDir returns /root under sudo). Non-root processes use their
+// own identity.
 func effectiveHomeDir() string {
-	if name := os.Getenv("SUDO_USER"); name != "" {
-		if u, err := user.Lookup(name); err == nil {
-			return u.HomeDir
+	if os.Getuid() == 0 {
+		if name := os.Getenv("SUDO_USER"); name != "" {
+			if u, err := user.Lookup(name); err == nil {
+				return u.HomeDir
+			}
 		}
 	}
 	if u, err := user.Current(); err == nil {
