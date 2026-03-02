@@ -870,7 +870,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	idCmd := exec.CommandContext(ctx, "ssh", host, "pln", "id")
+	idCmd := sshPln(ctx, host, "id")
 	var idStdout, idStderr bytes.Buffer
 	idCmd.Stdout = &idStdout
 	idCmd.Stderr = &idStderr
@@ -986,13 +986,30 @@ func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
 	}, nil
 }
 
+// sshPln runs a pln subcommand on the remote host as the pln system user.
+// All data-plane operations (key generation, enrollment, admin cert management)
+// must go through this so files are created with correct ownership.
+func sshPln(ctx context.Context, sshTarget string, args ...string) *exec.Cmd {
+	sshArgs := []string{sshTarget, "sudo", "-u", "pln", "pln"}
+	sshArgs = append(sshArgs, args...)
+	return exec.CommandContext(ctx, "ssh", sshArgs...)
+}
+
+// sshRoot runs a command on the remote host as root via sudo.
+// Use for service management (start, stop, restart, status).
+func sshRoot(ctx context.Context, sshTarget string, shellCmd string) *exec.Cmd {
+	return exec.CommandContext(ctx, "ssh", sshTarget, shellCmd)
+}
+
 func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) error {
 	ctx := cmd.Context()
 
-	// Enroll the relay into the cluster, then start the daemon.
-	// Use --no-start because bootstrap needs to provision admin delegation before the final start.
-	remoteJoin := fmt.Sprintf("sudo -u pln pln join --no-start %q && sudo pln start", seedToken)
-	if out, err := exec.CommandContext(ctx, "ssh", sshTarget, remoteJoin).CombinedOutput(); err != nil {
+	// Enroll the relay into the cluster (as pln user for correct file ownership),
+	// then start the daemon (as root for systemctl).
+	if out, err := sshPln(ctx, sshTarget, "join", "--no-start", seedToken).CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to enroll relay node: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := sshRoot(ctx, sshTarget, "sudo pln start").CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	if err := waitForRelayReady(cmd, sshTarget); err != nil {
@@ -1001,7 +1018,7 @@ func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) erro
 	if err := provisionRelayAdminDelegation(cmd, sshTarget); err != nil {
 		return err
 	}
-	if out, err := exec.CommandContext(ctx, "ssh", sshTarget, "sudo pln restart").CombinedOutput(); err != nil {
+	if out, err := sshRoot(ctx, sshTarget, "sudo pln restart").CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	return waitForRelayReady(cmd, sshTarget)
@@ -1217,7 +1234,7 @@ func ensureRemotePollen(ctx context.Context, sshTarget string) error {
 func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 	ctx := cmd.Context()
 
-	keygenCmd := exec.CommandContext(ctx, "ssh", sshTarget, "sudo", "-u", "pln", "pln", "admin", "keygen")
+	keygenCmd := sshPln(ctx, sshTarget, "admin", "keygen")
 	var keygenStdout, keygenStderr bytes.Buffer
 	keygenCmd.Stdout = &keygenStdout
 	keygenCmd.Stderr = &keygenStderr
@@ -1254,7 +1271,7 @@ func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 		return err
 	}
 
-	setCertOut, err := exec.CommandContext(ctx, "ssh", sshTarget, "sudo", "-u", "pln", "pln", "admin", "set-cert", encoded).CombinedOutput()
+	setCertOut, err := sshPln(ctx, sshTarget, "admin", "set-cert", encoded).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to install relay admin cert: %w\n%s", err, strings.TrimSpace(string(setCertOut)))
 	}
@@ -1269,13 +1286,13 @@ func waitForRelayReady(cmd *cobra.Command, sshTarget string) error {
 	defer cancel()
 
 	checkCmd := "for i in $(seq 1 20); do if { sudo test -S /var/lib/pln/pln.sock || [ -S \"$HOME/.pln/pln.sock\" ]; } && sudo pln status --all >/dev/null 2>&1; then exit 0; fi; sleep 1; done; exit 1"
-	out, err := exec.CommandContext(readyCtx, "ssh", sshTarget, checkCmd).CombinedOutput()
+	out, err := sshRoot(readyCtx, sshTarget, checkCmd).CombinedOutput()
 	if err == nil {
 		return nil
 	}
 
 	logCmd := "journalctl -u pln -n 120 --no-pager 2>/dev/null || tail -n 120 /opt/homebrew/var/log/pln.log 2>/dev/null || tail -n 120 /usr/local/var/log/pln.log 2>/dev/null || true"
-	logOut, _ := exec.CommandContext(ctx, "ssh", sshTarget, logCmd).CombinedOutput()
+	logOut, _ := sshRoot(ctx, sshTarget, logCmd).CombinedOutput()
 	return fmt.Errorf("relay failed to become ready\nstatus output: %s\nrelay log:\n%s", strings.TrimSpace(string(out)), strings.TrimSpace(string(logOut)))
 }
 
