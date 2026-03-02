@@ -13,6 +13,7 @@ No packages directly. Cross-cutting review authority over all user-facing output
 3. Evaluate `pollen status` output for information density, scannability, and progressive disclosure (`--all`, `--wide`)
 4. Review `install.sh` and packaging scripts for first-run UX: clear progress indicators, actionable errors, no silent failures
 5. Challenge unnecessary jargon — terms like "mesh", "gossip", "CRDT" should never appear in user-facing output unless essential
+6. Commands that produce machine-readable output (tokens, keys, IDs) must print **only** that output to stdout — no banners, no confirmation lines, no decoration. Informational context belongs in `--help` or `--verbose`, not in default output
 
 ## API contract
 
