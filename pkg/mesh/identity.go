@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -72,7 +73,7 @@ func parseMembershipExtension(certDER []byte) (*admissionv1.MembershipCert, erro
 	return nil, nil
 }
 
-func generateIdentityCert(signPriv ed25519.PrivateKey, membershipCert *admissionv1.MembershipCert, validity time.Duration) (tls.Certificate, error) {
+func GenerateIdentityCert(signPriv ed25519.PrivateKey, membershipCert *admissionv1.MembershipCert, validity time.Duration) (tls.Certificate, error) {
 	pub := signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), certSerialBits))
@@ -215,7 +216,7 @@ func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Ce
 }
 
 type serverTLSParams struct {
-	meshCert         tls.Certificate
+	meshCertPtr      *atomic.Pointer[tls.Certificate]
 	inviteCert       tls.Certificate
 	trustBundle      *admissionv1.TrustBundle
 	isSubjectRevoked func([]byte) bool
@@ -224,10 +225,12 @@ type serverTLSParams struct {
 
 func newServerTLSConfig(p serverTLSParams) *tls.Config {
 	meshConfig := &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		Certificates: []tls.Certificate{p.meshCert},
-		ClientAuth:   tls.RequireAnyClientCert,
-		NextProtos:   []string{alpnMesh},
+		MinVersion: tls.VersionTLS13,
+		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return p.meshCertPtr.Load(), nil
+		},
+		ClientAuth: tls.RequireAnyClientCert,
+		NextProtos: []string{alpnMesh},
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{
 			trustBundle:      p.trustBundle,
 			isSubjectRevoked: p.isSubjectRevoked,
@@ -259,10 +262,15 @@ func newServerTLSConfig(p serverTLSParams) *tls.Config {
 	}
 }
 
-func newExpectedPeerTLSConfig(ourCert tls.Certificate, expectedPeer types.PeerKey, trustBundle *admissionv1.TrustBundle, isSubjectRevoked func([]byte) bool) *tls.Config {
+func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expectedPeer types.PeerKey, trustBundle *admissionv1.TrustBundle, isSubjectRevoked func([]byte) bool) *tls.Config {
 	return &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		Certificates:       []tls.Certificate{ourCert},
+		MinVersion: tls.VersionTLS13,
+		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return certPtr.Load(), nil
+		},
+		GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return certPtr.Load(), nil
+		},
 		InsecureSkipVerify: true, //nolint:gosec
 		NextProtos:         []string{alpnMesh},
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{

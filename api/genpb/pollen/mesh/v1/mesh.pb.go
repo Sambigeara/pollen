@@ -283,6 +283,118 @@ func (x *ObservedAddress) GetAddr() string {
 	return ""
 }
 
+type CertRenewalRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SubjectPub    []byte                 `protobuf:"bytes,1,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
+	CurrentCert   []byte                 `protobuf:"bytes,2,opt,name=current_cert,json=currentCert,proto3" json:"current_cert,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CertRenewalRequest) Reset() {
+	*x = CertRenewalRequest{}
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CertRenewalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CertRenewalRequest) ProtoMessage() {}
+
+func (x *CertRenewalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CertRenewalRequest.ProtoReflect.Descriptor instead.
+func (*CertRenewalRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CertRenewalRequest) GetSubjectPub() []byte {
+	if x != nil {
+		return x.SubjectPub
+	}
+	return nil
+}
+
+func (x *CertRenewalRequest) GetCurrentCert() []byte {
+	if x != nil {
+		return x.CurrentCert
+	}
+	return nil
+}
+
+type CertRenewalResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Cert          *v1.MembershipCert     `protobuf:"bytes,3,opt,name=cert,proto3" json:"cert,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CertRenewalResponse) Reset() {
+	*x = CertRenewalResponse{}
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CertRenewalResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CertRenewalResponse) ProtoMessage() {}
+
+func (x *CertRenewalResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CertRenewalResponse.ProtoReflect.Descriptor instead.
+func (*CertRenewalResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CertRenewalResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *CertRenewalResponse) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *CertRenewalResponse) GetCert() *v1.MembershipCert {
+	if x != nil {
+		return x.Cert
+	}
+	return nil
+}
+
 type Envelope struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Body:
@@ -294,6 +406,8 @@ type Envelope struct {
 	//	*Envelope_InviteRedeemResponse
 	//	*Envelope_ObservedAddress
 	//	*Envelope_Events
+	//	*Envelope_CertRenewalRequest
+	//	*Envelope_CertRenewalResponse
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -301,7 +415,7 @@ type Envelope struct {
 
 func (x *Envelope) Reset() {
 	*x = Envelope{}
-	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[5]
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -313,7 +427,7 @@ func (x *Envelope) String() string {
 func (*Envelope) ProtoMessage() {}
 
 func (x *Envelope) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[5]
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -326,7 +440,7 @@ func (x *Envelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Envelope.ProtoReflect.Descriptor instead.
 func (*Envelope) Descriptor() ([]byte, []int) {
-	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{5}
+	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Envelope) GetBody() isEnvelope_Body {
@@ -399,6 +513,24 @@ func (x *Envelope) GetEvents() *v11.GossipEventBatch {
 	return nil
 }
 
+func (x *Envelope) GetCertRenewalRequest() *CertRenewalRequest {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_CertRenewalRequest); ok {
+			return x.CertRenewalRequest
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetCertRenewalResponse() *CertRenewalResponse {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_CertRenewalResponse); ok {
+			return x.CertRenewalResponse
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Body interface {
 	isEnvelope_Body()
 }
@@ -431,6 +563,14 @@ type Envelope_Events struct {
 	Events *v11.GossipEventBatch `protobuf:"bytes,9,opt,name=events,proto3,oneof"`
 }
 
+type Envelope_CertRenewalRequest struct {
+	CertRenewalRequest *CertRenewalRequest `protobuf:"bytes,10,opt,name=cert_renewal_request,json=certRenewalRequest,proto3,oneof"`
+}
+
+type Envelope_CertRenewalResponse struct {
+	CertRenewalResponse *CertRenewalResponse `protobuf:"bytes,11,opt,name=cert_renewal_response,json=certRenewalResponse,proto3,oneof"`
+}
+
 func (*Envelope_Clock) isEnvelope_Body() {}
 
 func (*Envelope_PunchCoordRequest) isEnvelope_Body() {}
@@ -444,6 +584,10 @@ func (*Envelope_InviteRedeemResponse) isEnvelope_Body() {}
 func (*Envelope_ObservedAddress) isEnvelope_Body() {}
 
 func (*Envelope_Events) isEnvelope_Body() {}
+
+func (*Envelope_CertRenewalRequest) isEnvelope_Body() {}
+
+func (*Envelope_CertRenewalResponse) isEnvelope_Body() {}
 
 var File_pollen_mesh_v1_mesh_proto protoreflect.FileDescriptor
 
@@ -466,7 +610,15 @@ const file_pollen_mesh_v1_mesh_proto_rawDesc = "" +
 	"\n" +
 	"join_token\x18\x03 \x01(\v2\x1e.pollen.admission.v1.JoinTokenR\tjoinToken\"%\n" +
 	"\x0fObservedAddress\x12\x12\n" +
-	"\x04addr\x18\x01 \x01(\tR\x04addr\"\xbc\x04\n" +
+	"\x04addr\x18\x01 \x01(\tR\x04addr\"X\n" +
+	"\x12CertRenewalRequest\x12\x1f\n" +
+	"\vsubject_pub\x18\x01 \x01(\fR\n" +
+	"subjectPub\x12!\n" +
+	"\fcurrent_cert\x18\x02 \x01(\fR\vcurrentCert\"\x82\x01\n" +
+	"\x13CertRenewalResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x127\n" +
+	"\x04cert\x18\x03 \x01(\v2#.pollen.admission.v1.MembershipCertR\x04cert\"\xef\x05\n" +
 	"\bEnvelope\x12:\n" +
 	"\x05clock\x18\x01 \x01(\v2\".pollen.state.v1.GossipVectorClockH\x00R\x05clock\x12S\n" +
 	"\x13punch_coord_request\x18\x03 \x01(\v2!.pollen.mesh.v1.PunchCoordRequestH\x00R\x11punchCoordRequest\x12S\n" +
@@ -474,7 +626,10 @@ const file_pollen_mesh_v1_mesh_proto_rawDesc = "" +
 	"\x15invite_redeem_request\x18\x06 \x01(\v2#.pollen.mesh.v1.InviteRedeemRequestH\x00R\x13inviteRedeemRequest\x12\\\n" +
 	"\x16invite_redeem_response\x18\a \x01(\v2$.pollen.mesh.v1.InviteRedeemResponseH\x00R\x14inviteRedeemResponse\x12L\n" +
 	"\x10observed_address\x18\b \x01(\v2\x1f.pollen.mesh.v1.ObservedAddressH\x00R\x0fobservedAddress\x12;\n" +
-	"\x06events\x18\t \x01(\v2!.pollen.state.v1.GossipEventBatchH\x00R\x06eventsB\x06\n" +
+	"\x06events\x18\t \x01(\v2!.pollen.state.v1.GossipEventBatchH\x00R\x06events\x12V\n" +
+	"\x14cert_renewal_request\x18\n" +
+	" \x01(\v2\".pollen.mesh.v1.CertRenewalRequestH\x00R\x12certRenewalRequest\x12Y\n" +
+	"\x15cert_renewal_response\x18\v \x01(\v2#.pollen.mesh.v1.CertRenewalResponseH\x00R\x13certRenewalResponseB\x06\n" +
 	"\x04bodyB>Z<github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1;meshv1b\x06proto3"
 
 var (
@@ -489,34 +644,40 @@ func file_pollen_mesh_v1_mesh_proto_rawDescGZIP() []byte {
 	return file_pollen_mesh_v1_mesh_proto_rawDescData
 }
 
-var file_pollen_mesh_v1_mesh_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_pollen_mesh_v1_mesh_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_pollen_mesh_v1_mesh_proto_goTypes = []any{
 	(*PunchCoordRequest)(nil),     // 0: pollen.mesh.v1.PunchCoordRequest
 	(*PunchCoordTrigger)(nil),     // 1: pollen.mesh.v1.PunchCoordTrigger
 	(*InviteRedeemRequest)(nil),   // 2: pollen.mesh.v1.InviteRedeemRequest
 	(*InviteRedeemResponse)(nil),  // 3: pollen.mesh.v1.InviteRedeemResponse
 	(*ObservedAddress)(nil),       // 4: pollen.mesh.v1.ObservedAddress
-	(*Envelope)(nil),              // 5: pollen.mesh.v1.Envelope
-	(*v1.InviteToken)(nil),        // 6: pollen.admission.v1.InviteToken
-	(*v1.JoinToken)(nil),          // 7: pollen.admission.v1.JoinToken
-	(*v11.GossipVectorClock)(nil), // 8: pollen.state.v1.GossipVectorClock
-	(*v11.GossipEventBatch)(nil),  // 9: pollen.state.v1.GossipEventBatch
+	(*CertRenewalRequest)(nil),    // 5: pollen.mesh.v1.CertRenewalRequest
+	(*CertRenewalResponse)(nil),   // 6: pollen.mesh.v1.CertRenewalResponse
+	(*Envelope)(nil),              // 7: pollen.mesh.v1.Envelope
+	(*v1.InviteToken)(nil),        // 8: pollen.admission.v1.InviteToken
+	(*v1.JoinToken)(nil),          // 9: pollen.admission.v1.JoinToken
+	(*v1.MembershipCert)(nil),     // 10: pollen.admission.v1.MembershipCert
+	(*v11.GossipVectorClock)(nil), // 11: pollen.state.v1.GossipVectorClock
+	(*v11.GossipEventBatch)(nil),  // 12: pollen.state.v1.GossipEventBatch
 }
 var file_pollen_mesh_v1_mesh_proto_depIdxs = []int32{
-	6, // 0: pollen.mesh.v1.InviteRedeemRequest.token:type_name -> pollen.admission.v1.InviteToken
-	7, // 1: pollen.mesh.v1.InviteRedeemResponse.join_token:type_name -> pollen.admission.v1.JoinToken
-	8, // 2: pollen.mesh.v1.Envelope.clock:type_name -> pollen.state.v1.GossipVectorClock
-	0, // 3: pollen.mesh.v1.Envelope.punch_coord_request:type_name -> pollen.mesh.v1.PunchCoordRequest
-	1, // 4: pollen.mesh.v1.Envelope.punch_coord_trigger:type_name -> pollen.mesh.v1.PunchCoordTrigger
-	2, // 5: pollen.mesh.v1.Envelope.invite_redeem_request:type_name -> pollen.mesh.v1.InviteRedeemRequest
-	3, // 6: pollen.mesh.v1.Envelope.invite_redeem_response:type_name -> pollen.mesh.v1.InviteRedeemResponse
-	4, // 7: pollen.mesh.v1.Envelope.observed_address:type_name -> pollen.mesh.v1.ObservedAddress
-	9, // 8: pollen.mesh.v1.Envelope.events:type_name -> pollen.state.v1.GossipEventBatch
-	9, // [9:9] is the sub-list for method output_type
-	9, // [9:9] is the sub-list for method input_type
-	9, // [9:9] is the sub-list for extension type_name
-	9, // [9:9] is the sub-list for extension extendee
-	0, // [0:9] is the sub-list for field type_name
+	8,  // 0: pollen.mesh.v1.InviteRedeemRequest.token:type_name -> pollen.admission.v1.InviteToken
+	9,  // 1: pollen.mesh.v1.InviteRedeemResponse.join_token:type_name -> pollen.admission.v1.JoinToken
+	10, // 2: pollen.mesh.v1.CertRenewalResponse.cert:type_name -> pollen.admission.v1.MembershipCert
+	11, // 3: pollen.mesh.v1.Envelope.clock:type_name -> pollen.state.v1.GossipVectorClock
+	0,  // 4: pollen.mesh.v1.Envelope.punch_coord_request:type_name -> pollen.mesh.v1.PunchCoordRequest
+	1,  // 5: pollen.mesh.v1.Envelope.punch_coord_trigger:type_name -> pollen.mesh.v1.PunchCoordTrigger
+	2,  // 6: pollen.mesh.v1.Envelope.invite_redeem_request:type_name -> pollen.mesh.v1.InviteRedeemRequest
+	3,  // 7: pollen.mesh.v1.Envelope.invite_redeem_response:type_name -> pollen.mesh.v1.InviteRedeemResponse
+	4,  // 8: pollen.mesh.v1.Envelope.observed_address:type_name -> pollen.mesh.v1.ObservedAddress
+	12, // 9: pollen.mesh.v1.Envelope.events:type_name -> pollen.state.v1.GossipEventBatch
+	5,  // 10: pollen.mesh.v1.Envelope.cert_renewal_request:type_name -> pollen.mesh.v1.CertRenewalRequest
+	6,  // 11: pollen.mesh.v1.Envelope.cert_renewal_response:type_name -> pollen.mesh.v1.CertRenewalResponse
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_pollen_mesh_v1_mesh_proto_init() }
@@ -524,7 +685,7 @@ func file_pollen_mesh_v1_mesh_proto_init() {
 	if File_pollen_mesh_v1_mesh_proto != nil {
 		return
 	}
-	file_pollen_mesh_v1_mesh_proto_msgTypes[5].OneofWrappers = []any{
+	file_pollen_mesh_v1_mesh_proto_msgTypes[7].OneofWrappers = []any{
 		(*Envelope_Clock)(nil),
 		(*Envelope_PunchCoordRequest)(nil),
 		(*Envelope_PunchCoordTrigger)(nil),
@@ -532,6 +693,8 @@ func file_pollen_mesh_v1_mesh_proto_init() {
 		(*Envelope_InviteRedeemResponse)(nil),
 		(*Envelope_ObservedAddress)(nil),
 		(*Envelope_Events)(nil),
+		(*Envelope_CertRenewalRequest)(nil),
+		(*Envelope_CertRenewalResponse)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -539,7 +702,7 @@ func file_pollen_mesh_v1_mesh_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_mesh_v1_mesh_proto_rawDesc), len(file_pollen_mesh_v1_mesh_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

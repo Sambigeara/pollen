@@ -101,7 +101,7 @@ func (tn *testNode) start(t *testing.T) {
 		MembershipTTL:       config.CertTTLs{}.MembershipTTL(),
 	}
 
-	n, err := node.New(conf, tn.privKey, tn.creds, stateStore, peerStore)
+	n, err := node.New(conf, tn.privKey, tn.creds, stateStore, peerStore, tn.dir)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())

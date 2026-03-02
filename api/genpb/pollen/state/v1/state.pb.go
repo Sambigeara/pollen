@@ -348,10 +348,11 @@ func (*PubliclyAccessibleChange) Descriptor() ([]byte, []int) {
 }
 
 type IdentityChange struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	IdentityPub   []byte                 `protobuf:"bytes,1,opt,name=identity_pub,json=identityPub,proto3" json:"identity_pub,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	IdentityPub    []byte                 `protobuf:"bytes,1,opt,name=identity_pub,json=identityPub,proto3" json:"identity_pub,omitempty"`
+	CertExpiryUnix int64                  `protobuf:"varint,2,opt,name=cert_expiry_unix,json=certExpiryUnix,proto3" json:"cert_expiry_unix,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *IdentityChange) Reset() {
@@ -389,6 +390,13 @@ func (x *IdentityChange) GetIdentityPub() []byte {
 		return x.IdentityPub
 	}
 	return nil
+}
+
+func (x *IdentityChange) GetCertExpiryUnix() int64 {
+	if x != nil {
+		return x.CertExpiryUnix
+	}
+	return 0
 }
 
 type RevocationChange struct {
@@ -689,9 +697,10 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"local_port\x18\x02 \x01(\rR\tlocalPort\"9\n" +
 	"\x12ExternalPortChange\x12#\n" +
 	"\rexternal_port\x18\x01 \x01(\rR\fexternalPort\"\x1a\n" +
-	"\x18PubliclyAccessibleChange\"<\n" +
+	"\x18PubliclyAccessibleChange\"f\n" +
 	"\x0eIdentityChange\x12*\n" +
-	"\fidentity_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\videntityPub\"a\n" +
+	"\fidentity_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\videntityPub\x12(\n" +
+	"\x10cert_expiry_unix\x18\x02 \x01(\x03R\x0ecertExpiryUnix\"a\n" +
 	"\x10RevocationChange\x12M\n" +
 	"\n" +
 	"revocation\x18\x01 \x01(\v2%.pollen.admission.v1.SignedRevocationB\x06\xbaH\x03\xc8\x01\x01R\n" +

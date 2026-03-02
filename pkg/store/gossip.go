@@ -74,6 +74,7 @@ type nodeRecord struct {
 	IdentityPub        []byte
 	IPs                []string
 	maxCounter         uint64
+	CertExpiry         int64
 	LocalPort          uint32
 	ExternalPort       uint32
 	PubliclyAccessible bool
@@ -480,6 +481,7 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 		rec.ExternalPort = 0
 	case attrIdentity:
 		rec.IdentityPub = nil
+		rec.CertExpiry = 0
 	case attrService:
 		delete(rec.Services, key.name)
 	case attrReachability:
@@ -509,6 +511,7 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 	case *statev1.GossipEvent_IdentityPub:
 		if v.IdentityPub != nil {
 			rec.IdentityPub = append([]byte(nil), v.IdentityPub.GetIdentityPub()...)
+			rec.CertExpiry = v.IdentityPub.GetCertExpiryUnix()
 		}
 	case *statev1.GossipEvent_Service:
 		if v.Service != nil {
@@ -641,6 +644,34 @@ func (s *Store) SetLocalPubliclyAccessible(accessible bool) []*statev1.GossipEve
 		Deleted: !accessible,
 		Change: &statev1.GossipEvent_PubliclyAccessible{
 			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
+		},
+	}}
+}
+
+func (s *Store) SetLocalCertExpiry(expiry int64) []*statev1.GossipEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	local := s.nodes[s.LocalID]
+	if local.CertExpiry == expiry {
+		return nil
+	}
+
+	local.CertExpiry = expiry
+
+	local.maxCounter++
+	counter := local.maxCounter
+	local.log[identityAttrKey()] = logEntry{Counter: counter}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{
+				IdentityPub:    append([]byte(nil), local.IdentityPub...),
+				CertExpiryUnix: expiry,
+			},
 		},
 	}}
 }
@@ -1023,6 +1054,7 @@ func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRe
 		change := &statev1.IdentityChange{}
 		if !entry.Deleted {
 			change.IdentityPub = append([]byte(nil), rec.IdentityPub...)
+			change.CertExpiryUnix = rec.CertExpiry
 		}
 		event.Change = &statev1.GossipEvent_IdentityPub{IdentityPub: change}
 	case attrService:

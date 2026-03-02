@@ -81,6 +81,7 @@ const (
 	CertHealth_CERT_HEALTH_OK            CertHealth = 1
 	CertHealth_CERT_HEALTH_EXPIRING_SOON CertHealth = 2
 	CertHealth_CERT_HEALTH_EXPIRED       CertHealth = 3
+	CertHealth_CERT_HEALTH_RENEWING      CertHealth = 4
 )
 
 // Enum value maps for CertHealth.
@@ -90,12 +91,14 @@ var (
 		1: "CERT_HEALTH_OK",
 		2: "CERT_HEALTH_EXPIRING_SOON",
 		3: "CERT_HEALTH_EXPIRED",
+		4: "CERT_HEALTH_RENEWING",
 	}
 	CertHealth_value = map[string]int32{
 		"CERT_HEALTH_UNSPECIFIED":   0,
 		"CERT_HEALTH_OK":            1,
 		"CERT_HEALTH_EXPIRING_SOON": 2,
 		"CERT_HEALTH_EXPIRED":       3,
+		"CERT_HEALTH_RENEWING":      4,
 	}
 )
 
@@ -1281,13 +1284,14 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12NODE_STATUS_ONLINE\x10\x01\x12\x17\n" +
 	"\x13NODE_STATUS_OFFLINE\x10\x02\x12\x15\n" +
-	"\x11NODE_STATUS_RELAY\x10\x03*u\n" +
+	"\x11NODE_STATUS_RELAY\x10\x03*\x8f\x01\n" +
 	"\n" +
 	"CertHealth\x12\x1b\n" +
 	"\x17CERT_HEALTH_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eCERT_HEALTH_OK\x10\x01\x12\x1d\n" +
 	"\x19CERT_HEALTH_EXPIRING_SOON\x10\x02\x12\x17\n" +
-	"\x13CERT_HEALTH_EXPIRED\x10\x032\xa4\x06\n" +
+	"\x13CERT_HEALTH_EXPIRED\x10\x03\x12\x18\n" +
+	"\x14CERT_HEALTH_RENEWING\x10\x042\xa4\x06\n" +
 	"\x0eControlService\x12S\n" +
 	"\bShutdown\x12\".pollen.control.v1.ShutdownRequest\x1a#.pollen.control.v1.ShutdownResponse\x12k\n" +
 	"\x10GetBootstrapInfo\x12*.pollen.control.v1.GetBootstrapInfoRequest\x1a+.pollen.control.v1.GetBootstrapInfoResponse\x12V\n" +

@@ -15,7 +15,7 @@ import (
 )
 
 func RedeemInvite(ctx context.Context, signPriv ed25519.PrivateKey, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
-	bareCert, err := generateIdentityCert(signPriv, nil, config.CertTTLs{}.TLSIdentityTTL())
+	bareCert, err := GenerateIdentityCert(signPriv, nil, config.CertTTLs{}.TLSIdentityTTL())
 	if err != nil {
 		return nil, err
 	}

@@ -70,6 +70,7 @@ enum CertHealth {
   CERT_HEALTH_OK = 1;
   CERT_HEALTH_EXPIRING_SOON = 2;
   CERT_HEALTH_EXPIRED = 3;
+  CERT_HEALTH_RENEWING = 4;
 }
 
 message CertInfo {

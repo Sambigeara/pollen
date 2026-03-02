@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -10,8 +11,10 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
@@ -44,6 +47,7 @@ const (
 	certWarnThreshold     = 30 * 24 * time.Hour
 	certCriticalThreshold = 7 * 24 * time.Hour
 	peerCertSweepInterval = 1 * time.Hour
+	certRenewalTimeout    = 10 * time.Second
 
 	localKeysDir = "keys"
 
@@ -94,21 +98,24 @@ type punchRequest struct {
 }
 
 type Node struct {
-	peers           *peer.Store
-	store           *store.Store
 	mesh            mesh.Mesh
+	punchCh         chan punchRequest
+	store           *store.Store
 	tun             *tunnel.Manager
 	creds           *auth.NodeCredentials
 	localPeerEvents chan peer.Input
-	punchCh         chan punchRequest
+	peers           *peer.Store
 	conf            *Config
 	log             *zap.SugaredLogger
 	gossipEvents    chan []*statev1.GossipEvent
 	ready           chan struct{}
 	lastEagerSync   map[types.PeerKey]time.Time
+	pollenDir       string
+	signPriv        ed25519.PrivateKey
+	renewalFailed   atomic.Bool
 }
 
-func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, stateStore *store.Store, peerStore *peer.Store) (*Node, error) {
+func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, stateStore *store.Store, peerStore *peer.Store, pollenDir string) (*Node, error) {
 	log := zap.S().Named("node")
 
 	ips := conf.AdvertisedIPs
@@ -147,6 +154,8 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		tun:             tun,
 		creds:           creds,
 		conf:            conf,
+		signPriv:        privKey,
+		pollenDir:       pollenDir,
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
 		punchCh:         make(chan punchRequest, punchChBufSize),
 		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
@@ -159,6 +168,10 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 
 func (n *Node) Start(ctx context.Context) error {
 	defer n.shutdown()
+
+	if n.creds.Cert != nil {
+		n.store.SetLocalCertExpiry(n.creds.Cert.GetClaims().GetNotAfterUnix())
+	}
 
 	if err := n.mesh.Start(ctx); err != nil {
 		return err
@@ -297,6 +310,8 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 		n.handlePunchCoordTrigger(body.PunchCoordTrigger)
 	case *meshv1.Envelope_ObservedAddress:
 		n.handleObservedAddress(body.ObservedAddress)
+	case *meshv1.Envelope_CertRenewalRequest:
+		n.handleCertRenewalRequest(ctx, from, body.CertRenewalRequest)
 	}
 }
 
@@ -735,16 +750,128 @@ func (n *Node) checkCertExpiry() bool {
 			"expired_at", auth.CertExpiresAt(n.creds.Cert))
 		return true
 	}
+
 	remaining := time.Until(auth.CertExpiresAt(n.creds.Cert))
+	if remaining <= certWarnThreshold {
+		failed := !n.attemptCertRenewal()
+		n.renewalFailed.Store(failed)
+		if !failed {
+			return false
+		}
+	}
+
 	switch {
 	case remaining <= certCriticalThreshold:
-		n.log.Warnw("membership certificate expiring soon — rejoin the cluster or contact a cluster admin",
+		n.log.Warnw("membership certificate expiring soon — auto-renewal failed — rejoin the cluster or contact a cluster admin",
 			"expires_in", remaining.Truncate(time.Minute))
 	case remaining <= certWarnThreshold:
-		n.log.Infow("membership certificate approaching expiry — rejoin the cluster or contact a cluster admin before it expires",
+		n.log.Infow("membership certificate approaching expiry — auto-renewal attempted but failed, will retry",
 			"expires_in", remaining.Truncate(time.Minute))
 	}
 	return false
+}
+
+func (n *Node) attemptCertRenewal() bool {
+	connectedPeers := n.GetConnectedPeers()
+	if len(connectedPeers) == 0 {
+		n.log.Warnw("membership certificate renewal failed: no connected peers")
+		return false
+	}
+
+	n.log.Infow("renewing membership certificate")
+
+	ctx, cancel := context.WithTimeout(context.Background(), certRenewalTimeout)
+	defer cancel()
+
+	for _, peerKey := range connectedPeers {
+		newCert, err := n.mesh.RequestCertRenewal(ctx, peerKey)
+		if err != nil {
+			n.log.Debugw("membership certificate renewal failed", "peer", peerKey.Short(), "err", err)
+			continue
+		}
+
+		if err := n.applyCertRenewal(newCert); err != nil {
+			n.log.Warnw("membership certificate renewal failed: invalid cert", "peer", peerKey.Short(), "err", err)
+			continue
+		}
+
+		n.log.Infow("membership certificate renewed",
+			"expires_at", auth.CertExpiresAt(newCert))
+		return true
+	}
+
+	n.log.Warnw("membership certificate renewal failed: all peers refused or returned errors")
+	return false
+}
+
+func (n *Node) applyCertRenewal(newCert *admissionv1.MembershipCert) error {
+	now := time.Now()
+	pubKey := n.signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
+	if err := auth.VerifyMembershipCert(newCert, n.creds.Trust, now, pubKey); err != nil {
+		return err
+	}
+
+	tlsCert, err := mesh.GenerateIdentityCert(n.signPriv, newCert, n.conf.TLSIdentityTTL)
+	if err != nil {
+		return err
+	}
+
+	n.mesh.UpdateMeshCert(tlsCert)
+	n.creds.Cert = newCert
+
+	if err := auth.SaveNodeCredentials(n.pollenDir, n.creds); err != nil {
+		n.log.Warnw("failed to persist renewed credentials", "err", err)
+	}
+
+	n.queueGossipEvents(n.store.SetLocalCertExpiry(newCert.GetClaims().GetNotAfterUnix()))
+	return nil
+}
+
+func (n *Node) handleCertRenewalRequest(ctx context.Context, from types.PeerKey, req *meshv1.CertRenewalRequest) {
+	sendReject := func(reason string) {
+		_ = n.mesh.Send(ctx, from, &meshv1.Envelope{
+			Body: &meshv1.Envelope_CertRenewalResponse{
+				CertRenewalResponse: &meshv1.CertRenewalResponse{Reason: reason},
+			},
+		})
+	}
+
+	if !bytes.Equal(req.GetSubjectPub(), from.Bytes()) {
+		sendReject("subject_pub does not match sender")
+		return
+	}
+
+	signer := n.creds.InviteSigner
+	if signer == nil {
+		sendReject("this node is not an admin")
+		return
+	}
+
+	if n.store.IsSubjectRevoked(req.GetSubjectPub()) {
+		sendReject("subject has been revoked")
+		return
+	}
+
+	now := time.Now()
+	newCert, err := auth.IssueMembershipCertWithIssuer(
+		signer.Priv,
+		signer.Issuer,
+		signer.Trust.GetClusterId(),
+		req.GetSubjectPub(),
+		now.Add(-time.Minute),
+		now.Add(n.conf.MembershipTTL),
+	)
+	if err != nil {
+		sendReject(err.Error())
+		return
+	}
+
+	_ = n.mesh.Send(ctx, from, &meshv1.Envelope{
+		Body: &meshv1.Envelope_CertRenewalResponse{CertRenewalResponse: &meshv1.CertRenewalResponse{
+			Accepted: true,
+			Cert:     newCert,
+		}},
+	})
 }
 
 func (n *Node) sweepExpiredPeerCerts() {
@@ -860,6 +987,10 @@ func GenIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 		Type:  pemTypePriv,
 		Bytes: priv.Seed(),
 	}); err != nil {
+		return nil, nil, err
+	}
+
+	if err := perm.SetPrivate(privPath); err != nil {
 		return nil, nil, err
 	}
 
