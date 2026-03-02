@@ -991,7 +991,7 @@ func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) erro
 
 	// Enroll the relay into the cluster, then start the daemon.
 	// Use --no-start because bootstrap needs to provision admin delegation before the final start.
-	remoteJoin := fmt.Sprintf("sudo pln join --no-start %q && sudo pln start", seedToken)
+	remoteJoin := fmt.Sprintf("sudo -u pln pln join --no-start %q && sudo pln start", seedToken)
 	if out, err := exec.CommandContext(ctx, "ssh", sshTarget, remoteJoin).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
@@ -1217,7 +1217,7 @@ func ensureRemotePollen(ctx context.Context, sshTarget string) error {
 func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 	ctx := cmd.Context()
 
-	keygenCmd := exec.CommandContext(ctx, "ssh", sshTarget, "pln", "admin", "keygen")
+	keygenCmd := exec.CommandContext(ctx, "ssh", sshTarget, "sudo", "-u", "pln", "pln", "admin", "keygen")
 	var keygenStdout, keygenStderr bytes.Buffer
 	keygenCmd.Stdout = &keygenStdout
 	keygenCmd.Stderr = &keygenStderr
@@ -1254,7 +1254,7 @@ func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 		return err
 	}
 
-	setCertOut, err := exec.CommandContext(ctx, "ssh", sshTarget, "pln", "admin", "set-cert", encoded).CombinedOutput()
+	setCertOut, err := exec.CommandContext(ctx, "ssh", sshTarget, "sudo", "-u", "pln", "pln", "admin", "set-cert", encoded).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to install relay admin cert: %w\n%s", err, strings.TrimSpace(string(setCertOut)))
 	}
