@@ -138,6 +138,14 @@ type RetryPeer struct {
 
 func (RetryPeer) isInput() {}
 
+// ForgetPeer removes a peer from the state machine entirely, preventing
+// further dial attempts (e.g. after revocation or cert expiry).
+type ForgetPeer struct {
+	PeerKey types.PeerKey
+}
+
+func (ForgetPeer) isInput() {}
+
 // Output effects.
 type Output interface{ isOutput() }
 
@@ -218,6 +226,9 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 		return nil
 	case RetryPeer:
 		s.retryPeer(now, e)
+		return nil
+	case ForgetPeer:
+		delete(s.m, e.PeerKey)
 		return nil
 	}
 	return nil
