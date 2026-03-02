@@ -15,14 +15,13 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/perm"
 	"gopkg.in/yaml.v3"
 )
 
 const (
 	configFileName        = "config.yaml"
 	DefaultBootstrapPort  = 60611
-	directoryPerm         = 0o700
-	configFilePerm        = 0o600
 	ed25519PublicKeyBytes = 32
 )
 
@@ -108,7 +107,7 @@ func Save(pollenDir string, cfg *Config) error {
 	}
 	cfg.BootstrapPeers = canonical
 
-	if err := os.MkdirAll(pollenDir, directoryPerm); err != nil {
+	if err := perm.EnsureDir(pollenDir); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
@@ -117,16 +116,7 @@ func Save(pollenDir string, cfg *Config) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	path := filepath.Join(pollenDir, configFileName)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, encoded, configFilePerm); err != nil {
-		return fmt.Errorf("write temp config: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("replace config: %w", err)
-	}
-
-	return nil
+	return perm.WritePrivate(filepath.Join(pollenDir, configFileName), encoded)
 }
 
 func validateCertTTLs(ttls CertTTLs) error {

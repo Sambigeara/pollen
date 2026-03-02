@@ -55,7 +55,6 @@ const (
 	signingPubKeyName = "ed25519.pub"
 	pemTypePriv       = "ED25519 PRIVATE KEY"
 	pemTypePub        = "ED25519 PUBLIC KEY"
-	keyDirPerm        = 0o700
 	privKeyPerm       = 0o600
 	pubKeyPerm        = 0o640
 
@@ -965,10 +964,7 @@ func GenIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 		return nil, nil, err
 	}
 
-	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
-		return nil, nil, err
-	}
-	if err := perm.SetGroupDir(dir); err != nil {
+	if err := perm.EnsureDir(dir); err != nil {
 		return nil, nil, err
 	}
 

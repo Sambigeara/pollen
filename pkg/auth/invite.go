@@ -41,18 +41,11 @@ func SaveAdminCert(pollenDir string, cert *admissionv1.AdminCert) error {
 	}
 
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
-		return err
-	}
-	if err := perm.SetGroupDir(dir); err != nil {
+	if err := perm.EnsureDir(dir); err != nil {
 		return err
 	}
 
-	path := filepath.Join(dir, adminCertName)
-	if err := os.WriteFile(path, raw, keyFilePerm); err != nil {
-		return err
-	}
-	return perm.SetGroupReadable(path)
+	return perm.WriteGroupReadable(filepath.Join(dir, adminCertName), raw)
 }
 
 func LoadAdminSigner(pollenDir string, now time.Time, adminCertTTL time.Duration) (*AdminSigner, error) {
