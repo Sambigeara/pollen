@@ -8,7 +8,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"net"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -64,6 +63,9 @@ const (
 	// eagerSyncCooldown should be >= GossipInterval to avoid redundant sends.
 	eagerSyncCooldown = 5 * time.Second
 
+	publicConfirmThreshold = 2
+	publicConfirmTTL       = 10 * time.Minute
+
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
 	gossipEventBufSize = 64
@@ -88,6 +90,7 @@ type Config struct {
 	MembershipTTL       time.Duration
 	MaxConnectionAge    time.Duration
 	DisableGossipJitter bool
+	BootstrapPublic     bool
 }
 
 type punchRequest struct {
@@ -96,22 +99,28 @@ type punchRequest struct {
 	peerKey types.PeerKey
 }
 
+type publicConfirmation struct {
+	at   time.Time
+	addr string
+}
+
 type Node struct {
-	mesh            mesh.Mesh
-	punchCh         chan punchRequest
-	store           *store.Store
-	tun             *tunnel.Manager
-	creds           *auth.NodeCredentials
-	localPeerEvents chan peer.Input
-	peers           *peer.Store
-	conf            *Config
-	log             *zap.SugaredLogger
-	gossipEvents    chan []*statev1.GossipEvent
-	ready           chan struct{}
-	lastEagerSync   map[types.PeerKey]time.Time
-	pollenDir       string
-	signPriv        ed25519.PrivateKey
-	renewalFailed   atomic.Bool
+	mesh                mesh.Mesh
+	punchCh             chan punchRequest
+	store               *store.Store
+	tun                 *tunnel.Manager
+	creds               *auth.NodeCredentials
+	localPeerEvents     chan peer.Input
+	peers               *peer.Store
+	conf                *Config
+	log                 *zap.SugaredLogger
+	gossipEvents        chan []*statev1.GossipEvent
+	ready               chan struct{}
+	lastEagerSync       map[types.PeerKey]time.Time
+	publicConfirmations map[types.PeerKey]publicConfirmation
+	pollenDir           string
+	signPriv            ed25519.PrivateKey
+	renewalFailed       atomic.Bool
 }
 
 func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, stateStore *store.Store, peerStore *peer.Store, pollenDir string) (*Node, error) {
@@ -146,20 +155,25 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 	}
 
 	n := &Node{
-		log:             log,
-		peers:           peerStore,
-		store:           stateStore,
-		mesh:            m,
-		tun:             tun,
-		creds:           creds,
-		conf:            conf,
-		signPriv:        privKey,
-		pollenDir:       pollenDir,
-		localPeerEvents: make(chan peer.Input, peerEventBufSize),
-		punchCh:         make(chan punchRequest, punchChBufSize),
-		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
-		ready:           make(chan struct{}),
-		lastEagerSync:   make(map[types.PeerKey]time.Time),
+		log:                 log,
+		peers:               peerStore,
+		store:               stateStore,
+		mesh:                m,
+		tun:                 tun,
+		creds:               creds,
+		conf:                conf,
+		signPriv:            privKey,
+		pollenDir:           pollenDir,
+		localPeerEvents:     make(chan peer.Input, peerEventBufSize),
+		punchCh:             make(chan punchRequest, punchChBufSize),
+		gossipEvents:        make(chan []*statev1.GossipEvent, gossipEventBufSize),
+		ready:               make(chan struct{}),
+		lastEagerSync:       make(map[types.PeerKey]time.Time),
+		publicConfirmations: make(map[types.PeerKey]publicConfirmation),
+	}
+
+	if conf.BootstrapPublic {
+		stateStore.SetLocalPubliclyAccessible(true)
 	}
 
 	return n, nil
@@ -308,7 +322,7 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 	case *meshv1.Envelope_PunchCoordTrigger:
 		n.handlePunchCoordTrigger(body.PunchCoordTrigger)
 	case *meshv1.Envelope_ObservedAddress:
-		n.handleObservedAddress(body.ObservedAddress)
+		n.handleObservedAddress(from, body.ObservedAddress)
 	case *meshv1.Envelope_CertRenewalRequest:
 		n.handleCertRenewalRequest(ctx, from, body.CertRenewalRequest)
 	}
@@ -419,6 +433,7 @@ func (n *Node) tick() {
 	n.syncPeersFromState()
 	n.reconcileConnections()
 	n.reconcileDesiredConnections()
+	n.evaluatePublicAccessibility()
 
 	now := time.Now()
 	outputs := n.peers.Step(now, peer.Tick{})
@@ -466,9 +481,6 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			addr := &net.UDPAddr{IP: e.IP, Port: e.ObservedPort}
 			n.store.SetLastAddr(e.PeerKey, addr.String())
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
-			if e.Inbound && !e.IP.IsPrivate() && !e.IP.IsLoopback() && !e.IP.IsLinkLocalUnicast() && !isExcludedIP(e.IP) {
-				n.queueGossipEvents(n.store.SetLocalPubliclyAccessible(true))
-			}
 			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
 				clock := n.store.EagerSyncClock()
 				if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
@@ -496,20 +508,6 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			go n.requestPunchCoordination(e.PeerKey)
 		}
 	}
-}
-
-func isExcludedIP(ip net.IP) bool {
-	addr, ok := netip.AddrFromSlice(ip)
-	if !ok {
-		return false
-	}
-	addr = addr.Unmap()
-	for _, r := range mesh.DefaultExclusions {
-		if r.Contains(addr) {
-			return true
-		}
-	}
-	return false
 }
 
 func (n *Node) reconcileConnections() {
@@ -709,7 +707,7 @@ func (n *Node) handlePunchCoordTrigger(trigger *meshv1.PunchCoordTrigger) {
 	}
 }
 
-func (n *Node) handleObservedAddress(oa *meshv1.ObservedAddress) {
+func (n *Node) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedAddress) {
 	addr, err := net.ResolveUDPAddr("udp", oa.GetAddr())
 	if err != nil {
 		n.log.Debugw("observed address: parse failed", "addr", oa.GetAddr(), "err", err)
@@ -720,8 +718,38 @@ func (n *Node) handleObservedAddress(oa *meshv1.ObservedAddress) {
 		return
 	}
 
-	n.log.Infow("observed address received", "addr", addr.String())
+	n.log.Infow("observed address received", "addr", addr.String(), "from", from.Short())
 	n.queueGossipEvents(n.store.SetExternalPort(uint32(addr.Port)))
+
+	n.publicConfirmations[from] = publicConfirmation{
+		addr: addr.String(),
+		at:   time.Now(),
+	}
+	n.evaluatePublicAccessibility()
+}
+
+func (n *Node) evaluatePublicAccessibility() {
+	if n.conf.BootstrapPublic {
+		return
+	}
+
+	now := time.Now()
+	counts := make(map[string]int)
+	for peer, c := range n.publicConfirmations {
+		if now.Sub(c.at) > publicConfirmTTL {
+			delete(n.publicConfirmations, peer)
+			continue
+		}
+		counts[c.addr]++
+	}
+
+	for _, count := range counts {
+		if count >= publicConfirmThreshold {
+			n.queueGossipEvents(n.store.SetLocalPubliclyAccessible(true))
+			return
+		}
+	}
+	n.queueGossipEvents(n.store.SetLocalPubliclyAccessible(false))
 }
 
 func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
