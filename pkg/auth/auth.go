@@ -34,7 +34,6 @@ const (
 	pemTypeAdminPriv = "POLLEN ADMIN ED25519 PRIVATE KEY"
 	pemTypeAdminPub  = "POLLEN ADMIN ED25519 PUBLIC KEY"
 
-	keyDirPerm  = 0o700
 	keyFilePerm = 0o600
 
 	timeSkewAllowance = time.Minute
@@ -211,12 +210,8 @@ func loadNodeCredentials(pollenDir string) (*NodeCredentials, error) {
 }
 
 func SaveNodeCredentials(pollenDir string, creds *NodeCredentials) error {
-	// TODO(saml) state refactor
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
-		return err
-	}
-	if err := perm.SetGroupDir(dir); err != nil {
+	if err := perm.EnsureDir(dir); err != nil {
 		return err
 	}
 
@@ -230,24 +225,11 @@ func SaveNodeCredentials(pollenDir string, creds *NodeCredentials) error {
 		return err
 	}
 
-	trustPath := filepath.Join(dir, trustBundleName)
-	certPath := filepath.Join(dir, membershipCertName)
-
-	if err := os.WriteFile(trustPath, trustRaw, keyFilePerm); err != nil {
-		return err
-	}
-	if err := perm.SetGroupReadable(trustPath); err != nil {
+	if err := perm.WriteGroupReadable(filepath.Join(dir, trustBundleName), trustRaw); err != nil {
 		return err
 	}
 
-	if err := os.WriteFile(certPath, certRaw, keyFilePerm); err != nil {
-		return err
-	}
-	if err := perm.SetGroupReadable(certPath); err != nil {
-		return err
-	}
-
-	return nil
+	return perm.WriteGroupReadable(filepath.Join(dir, membershipCertName), certRaw)
 }
 
 func LoadAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
@@ -299,10 +281,7 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 	}
 
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
-		return nil, nil, err
-	}
-	if err := perm.SetGroupDir(dir); err != nil {
+	if err := perm.EnsureDir(dir); err != nil {
 		return nil, nil, err
 	}
 

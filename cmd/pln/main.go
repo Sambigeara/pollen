@@ -990,14 +990,15 @@ func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
 // All data-plane operations (key generation, enrollment, admin cert management)
 // must go through this so files are created with correct ownership.
 func sshPln(ctx context.Context, sshTarget string, args ...string) *exec.Cmd {
-	sshArgs := []string{sshTarget, "sudo", "-u", "pln", "pln"}
+	sshArgs := make([]string, 0, 5+len(args)) //nolint:mnd
+	sshArgs = append(sshArgs, sshTarget, "sudo", "-u", "pln", "pln")
 	sshArgs = append(sshArgs, args...)
 	return exec.CommandContext(ctx, "ssh", sshArgs...)
 }
 
 // sshRoot runs a command on the remote host as root via sudo.
 // Use for service management (start, stop, restart, status).
-func sshRoot(ctx context.Context, sshTarget string, shellCmd string) *exec.Cmd {
+func sshRoot(ctx context.Context, sshTarget, shellCmd string) *exec.Cmd {
 	return exec.CommandContext(ctx, "ssh", sshTarget, shellCmd)
 }
 

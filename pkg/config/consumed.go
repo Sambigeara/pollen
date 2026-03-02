@@ -14,6 +14,7 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/perm"
 )
 
 const (
@@ -137,7 +138,7 @@ func writeConsumedEntries(path string, entries map[string]consumedInviteRecord) 
 	})
 	state := consumedInviteState{Invites: invites}
 
-	if err := os.MkdirAll(filepath.Dir(path), directoryPerm); err != nil {
+	if err := perm.EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("create consumed invites directory: %w", err)
 	}
 
@@ -147,13 +148,5 @@ func writeConsumedEntries(path string, entries map[string]consumedInviteRecord) 
 	}
 	encoded = append(encoded, '\n')
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, encoded, configFilePerm); err != nil {
-		return fmt.Errorf("write consumed invites: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("replace consumed invites: %w", err)
-	}
-
-	return nil
+	return perm.WritePrivate(path, encoded)
 }

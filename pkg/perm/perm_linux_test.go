@@ -4,79 +4,14 @@ package perm
 
 import (
 	"os"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"syscall"
 	"testing"
 )
 
-func TestPollenGIDGroupAbsent(t *testing.T) {
-	// If the pollen group doesn't exist on this machine, pollenGID
-	// must return (0, false, nil) — a clean no-op, not an error.
-	_, err := user.Lookup(userName)
-	if err == nil {
-		t.Skip("pln user exists on this host; skipping absent-user test")
-	}
-
-	_, _, ok, lookupErr := pollenIDs()
-	if lookupErr != nil {
-		t.Fatalf("pollenIDs returned error for absent user: %v", lookupErr)
-	}
-	if ok {
-		t.Fatalf("pollenIDs returned ok=true for absent user")
-	}
-}
-
-func TestSetGroupPermNoOpWhenGroupAbsent(t *testing.T) {
-	_, err := user.Lookup(userName)
-	if err == nil {
-		t.Skip("pln user exists on this host; skipping no-op test")
-	}
-
-	dir := t.TempDir()
-	f := filepath.Join(dir, "testfile")
-	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// All three functions should silently no-op.
-	for _, fn := range []struct {
-		name string
-		call func(string) error
-	}{
-		{"SetGroupReadable", SetGroupReadable},
-		{"SetGroupSocket", SetGroupSocket},
-		{"SetGroupDir", SetGroupDir},
-	} {
-		if err := fn.call(f); err != nil {
-			t.Errorf("%s returned error when group absent: %v", fn.name, err)
-		}
-	}
-
-	// Mode should be unchanged (still 0600).
-	info, err := os.Stat(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0o600 {
-		t.Errorf("mode changed to %04o; want 0600", got)
-	}
-}
-
-func TestSetGroupPermAppliedWhenGroupPresent(t *testing.T) {
-	u, err := user.Lookup(userName)
-	if err != nil {
-		t.Skip("pln user not found; skipping applied-permission test")
-	}
-	expectedGID, err := strconv.Atoi(u.Gid)
-	if err != nil {
-		t.Fatalf("bad gid %q: %v", u.Gid, err)
-	}
-
+func TestSetPermAppliesMode(t *testing.T) {
 	dir := t.TempDir()
 
-	// Test each function's expected mode and group ownership.
 	for _, tc := range []struct {
 		name     string
 		call     func(string) error
@@ -85,9 +20,10 @@ func TestSetGroupPermAppliedWhenGroupPresent(t *testing.T) {
 		{"SetGroupDir", SetGroupDir, 0o770},
 		{"SetGroupReadable", SetGroupReadable, 0o640},
 		{"SetGroupSocket", SetGroupSocket, 0o660},
+		{"SetPrivate", SetPrivate, 0o600},
 	} {
 		p := filepath.Join(dir, tc.name)
-		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 
@@ -104,10 +40,37 @@ func TestSetGroupPermAppliedWhenGroupPresent(t *testing.T) {
 		if got := info.Mode().Perm(); got != tc.wantMode {
 			t.Errorf("%s: mode = %04o; want %04o", tc.name, got, tc.wantMode)
 		}
+	}
+}
 
-		stat := info.Sys().(*syscall.Stat_t) //nolint:forcetypeassert
-		if int(stat.Gid) != expectedGID {
-			t.Errorf("%s: gid = %d; want %d", tc.name, stat.Gid, expectedGID)
+// TestWriteOverridesUmask verifies that WritePrivate and WriteGroupReadable
+// produce exact modes even under a restrictive umask (e.g. 0077).
+func TestWriteOverridesUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+
+	dir := t.TempDir()
+
+	for _, tc := range []struct {
+		name     string
+		write    func(string, []byte) error
+		wantMode os.FileMode
+	}{
+		{"WritePrivate", WritePrivate, 0o600},
+		{"WriteGroupReadable", WriteGroupReadable, 0o640},
+	} {
+		p := filepath.Join(dir, tc.name)
+		if err := tc.write(p, []byte("data")); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got := info.Mode().Perm(); got != tc.wantMode {
+			t.Errorf("%s under umask 0077: mode = %04o; want %04o", tc.name, got, tc.wantMode)
 		}
 	}
 }

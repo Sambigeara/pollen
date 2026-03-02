@@ -15,6 +15,7 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/types"
 	"gopkg.in/yaml.v3"
 )
@@ -23,9 +24,7 @@ const (
 	stateFileName = "state.yaml"
 	lockFileName  = ".state.lock"
 
-	keyDirPerm    = 0o700
-	filePerm      = 0o600
-	stateFilePerm = 0o644
+	filePerm = 0o600
 )
 
 type diskState struct {
@@ -72,7 +71,7 @@ type disk struct {
 }
 
 func openDisk(pollenDir string) (*disk, error) {
-	if err := os.MkdirAll(pollenDir, keyDirPerm); err != nil {
+	if err := perm.EnsureDir(pollenDir); err != nil {
 		return nil, fmt.Errorf("create pollen dir: %w", err)
 	}
 
@@ -80,6 +79,10 @@ func openDisk(pollenDir string) (*disk, error) {
 	lf, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, filePerm)
 	if err != nil {
 		return nil, fmt.Errorf("open state lock: %w", err)
+	}
+	if err := perm.SetPrivate(lockPath); err != nil {
+		_ = lf.Close()
+		return nil, fmt.Errorf("set lock permissions: %w", err)
 	}
 
 	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
@@ -89,7 +92,7 @@ func openDisk(pollenDir string) (*disk, error) {
 
 	statePath := filepath.Join(pollenDir, stateFileName)
 	if _, err := os.Stat(statePath); errors.Is(err, os.ErrNotExist) {
-		if err := os.WriteFile(statePath, []byte("local:\n  identityPublic: \"\"\n"), stateFilePerm); err != nil {
+		if err := perm.WriteGroupReadable(statePath, []byte("local:\n  identityPublic: \"\"\n")); err != nil {
 			_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
 			_ = lf.Close()
 			return nil, fmt.Errorf("create state: %w", err)
@@ -139,28 +142,7 @@ func (d *disk) save(st diskState) error {
 		return fmt.Errorf("marshal state: %w", err)
 	}
 
-	tmp := d.statePath + ".tmp"
-	if err := os.WriteFile(tmp, b, stateFilePerm); err != nil {
-		return fmt.Errorf("write temp state: %w", err)
-	}
-
-	f, err := os.Open(tmp)
-	if err != nil {
-		return fmt.Errorf("open temp state: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("sync temp state: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close temp state: %w", err)
-	}
-
-	if err := os.Rename(tmp, d.statePath); err != nil {
-		return fmt.Errorf("replace state: %w", err)
-	}
-
-	return nil
+	return perm.WriteGroupReadable(d.statePath, b)
 }
 
 func marshalDiskRevocations(revocations map[types.PeerKey]*admissionv1.SignedRevocation) []diskRevocation {
