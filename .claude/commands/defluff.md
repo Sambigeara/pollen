@@ -40,6 +40,10 @@ Apply these checks ruthlessly. Every violation gets called out with file, line, 
 #### Constants and magic numbers
 - **No magic constants.** Hardcoded sizes, overheads, and offsets must be computed or derived from the source of truth (e.g. proto serialization).
 
+#### Testing
+- **Use testify assertions.** Tests must use `require.Equal`, `require.Len`, `require.NoError`, etc. from `github.com/stretchr/testify/require` — not manual `t.Fatalf` with format strings.
+- **Test helpers must match production constructors.** If a test helper builds a struct that a production constructor also builds, they must produce equivalent state. Divergence means tests exercise impossible configurations.
+
 #### Style
 - **No naked returns** in functions with named return values unless the function is trivially short.
 - **No cosmetic noise** in diffs (reformatting, reordering imports, renaming things that don't need renaming).

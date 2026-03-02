@@ -78,3 +78,6 @@
 ### Performance
 - Don't hand-calculate serialization sizes. Use the serialization library's own `Size()` methods — hand-counted varint bytes silently break when field numbers change.
 - Batch lock acquisition on the receive side too. If you batch on send, the receive path should also take the lock once for the batch, not N times for N events.
+
+### Testing
+- Use `require.Equal`, `require.Len`, `require.NoError`, etc. from `github.com/stretchr/testify/require` instead of manual `t.Fatalf` with format strings. Testify assertions are more readable and give better failure output.

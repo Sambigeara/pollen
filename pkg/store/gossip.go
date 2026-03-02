@@ -150,9 +150,13 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 		desiredConnections: make(map[string]Connection),
 	}
 
+	// Correct stale "public" state held by peers from a prior session.
+	local := s.nodes[localID]
+	local.maxCounter++
+	local.log[publiclyAccessibleAttrKey()] = logEntry{Counter: local.maxCounter, Deleted: true}
+
 	// Inject disk-loaded revocations into the local log so that
 	// bumpAndBroadcastAllLocked can re-publish them after restart.
-	local := s.nodes[localID]
 	for subjectKey := range s.revocations {
 		local.maxCounter++
 		local.log[revocationAttrKey(subjectKey.String())] = logEntry{Counter: local.maxCounter}
