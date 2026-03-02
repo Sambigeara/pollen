@@ -59,6 +59,7 @@ const (
 	defaultRepo                  = "sambigeara/pollen"
 	scriptFetchTimeout           = 30 * time.Second
 	defaultMaxConnectionAge      = 24 * time.Hour
+	defaultGuestCertTTL          = 24 * time.Hour
 )
 
 var (
@@ -372,6 +373,7 @@ func newInviteCmd() *cobra.Command {
 	cmd.Flags().Duration("ttl", defaultJoinTokenTTL, "Invite token validity duration")
 	cmd.Flags().Duration("cert-ttl", 0, "Certificate TTL for the invited peer (0 = use node default)")
 	cmd.Flags().StringArray("bootstrap", nil, "Bootstrap peer as <peer-pub-hex>@<host:port> (repeatable)")
+	cmd.Flags().Bool("guest", false, "Issue a guest invite with a non-renewable certificate (default TTL: 24h, override with --cert-ttl)")
 	return cmd
 }
 
@@ -847,18 +849,26 @@ func runInvite(cmd *cobra.Command, args []string) {
 		return
 	}
 
+	guest, _ := cmd.Flags().GetBool("guest")
+	if guest && certTTL == 0 {
+		certTTL = defaultGuestCertTTL
+	}
+
 	bootstraps, err := resolveBootstrapPeers(cmd, bootstrapSpecs)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
 
-	encoded, err := createInviteToken(cmd, subjectPub, ttl, certTTL, bootstraps)
+	encoded, err := createInviteToken(cmd, subjectPub, ttl, certTTL, bootstraps, guest)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		return
 	}
 
+	if guest {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Guest invite (non-renewable, expires in %s)\n", humanDuration(certTTL))
+	}
 	fmt.Fprint(cmd.OutOrStdout(), encoded)
 }
 
@@ -1088,6 +1098,7 @@ func createJoinTokenWithSigner(signer *auth.AdminSigner, defaultMembershipTTL ti
 		time.Now(),
 		ttl,
 		membershipTTL,
+		false,
 	)
 	if err != nil {
 		return "", err
@@ -1096,7 +1107,7 @@ func createJoinTokenWithSigner(signer *auth.AdminSigner, defaultMembershipTTL ti
 	return auth.EncodeJoinToken(token)
 }
 
-func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, certTTL time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
+func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, certTTL time.Duration, bootstrap []*admissionv1.BootstrapPeer, nonRenewable bool) (string, error) {
 	if ttl <= 0 {
 		return "", errors.New("token ttl must be positive")
 	}
@@ -1109,7 +1120,7 @@ func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, ce
 		return "", err
 	}
 
-	token, err := auth.IssueInviteTokenWithSigner(issuerCtx.signer, subjectPub, bootstrap, time.Now(), ttl, certTTL)
+	token, err := auth.IssueInviteTokenWithSigner(issuerCtx.signer, subjectPub, bootstrap, time.Now(), ttl, certTTL, nonRenewable)
 	if err != nil {
 		return "", err
 	}

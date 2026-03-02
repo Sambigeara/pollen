@@ -210,6 +210,7 @@ type MembershipCertClaims struct {
 	NotBeforeUnix  int64                  `protobuf:"varint,4,opt,name=not_before_unix,json=notBeforeUnix,proto3" json:"not_before_unix,omitempty"`
 	NotAfterUnix   int64                  `protobuf:"varint,5,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
 	Serial         uint64                 `protobuf:"varint,6,opt,name=serial,proto3" json:"serial,omitempty"`
+	NonRenewable   bool                   `protobuf:"varint,7,opt,name=non_renewable,json=nonRenewable,proto3" json:"non_renewable,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -284,6 +285,13 @@ func (x *MembershipCertClaims) GetSerial() uint64 {
 		return x.Serial
 	}
 	return 0
+}
+
+func (x *MembershipCertClaims) GetNonRenewable() bool {
+	if x != nil {
+		return x.NonRenewable
+	}
+	return false
 }
 
 type MembershipCert struct {
@@ -552,6 +560,7 @@ type InviteTokenClaims struct {
 	IssuedAtUnix         int64                  `protobuf:"varint,6,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
 	ExpiresAtUnix        int64                  `protobuf:"varint,7,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
 	MembershipTtlSeconds int64                  `protobuf:"varint,8,opt,name=membership_ttl_seconds,json=membershipTtlSeconds,proto3" json:"membership_ttl_seconds,omitempty"`
+	NonRenewable         bool                   `protobuf:"varint,9,opt,name=non_renewable,json=nonRenewable,proto3" json:"non_renewable,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -640,6 +649,13 @@ func (x *InviteTokenClaims) GetMembershipTtlSeconds() int64 {
 		return x.MembershipTtlSeconds
 	}
 	return 0
+}
+
+func (x *InviteTokenClaims) GetNonRenewable() bool {
+	if x != nil {
+		return x.NonRenewable
+	}
+	return false
 }
 
 type InviteToken struct {
@@ -832,7 +848,7 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\x06serial\x18\x05 \x01(\x04R\x06serial\"x\n" +
 	"\tAdminCert\x12D\n" +
 	"\x06claims\x18\x01 \x01(\v2$.pollen.admission.v1.AdminCertClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
-	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\x81\x02\n" +
+	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xa6\x02\n" +
 	"\x14MembershipCertClaims\x12&\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\tclusterId\x12(\n" +
@@ -841,7 +857,8 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\x10issuer_admin_pub\x18\x03 \x01(\fB\a\xbaH\x04z\x02h R\x0eissuerAdminPub\x12&\n" +
 	"\x0fnot_before_unix\x18\x04 \x01(\x03R\rnotBeforeUnix\x12$\n" +
 	"\x0enot_after_unix\x18\x05 \x01(\x03R\fnotAfterUnix\x12\x16\n" +
-	"\x06serial\x18\x06 \x01(\x04R\x06serial\"\xc2\x01\n" +
+	"\x06serial\x18\x06 \x01(\x04R\x06serial\x12#\n" +
+	"\rnon_renewable\x18\a \x01(\bR\fnonRenewable\"\xc2\x01\n" +
 	"\x0eMembershipCert\x12I\n" +
 	"\x06claims\x18\x01 \x01(\v2).pollen.admission.v1.MembershipCertClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12>\n" +
 	"\x06issuer\x18\x02 \x01(\v2\x1e.pollen.admission.v1.AdminCertB\x06\xbaH\x03\xc8\x01\x01R\x06issuer\x12%\n" +
@@ -860,7 +877,7 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\x0fexpires_at_unix\x18\a \x01(\x03R\rexpiresAtUnix\"x\n" +
 	"\tJoinToken\x12D\n" +
 	"\x06claims\x18\x01 \x01(\v2$.pollen.admission.v1.JoinTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
-	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xb5\x03\n" +
+	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xda\x03\n" +
 	"\x11InviteTokenClaims\x12#\n" +
 	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12>\n" +
 	"\x05trust\x18\x02 \x01(\v2 .pollen.admission.v1.TrustBundleB\x06\xbaH\x03\xc8\x01\x01R\x05trust\x12>\n" +
@@ -871,7 +888,8 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"subjectPub\x12$\n" +
 	"\x0eissued_at_unix\x18\x06 \x01(\x03R\fissuedAtUnix\x12&\n" +
 	"\x0fexpires_at_unix\x18\a \x01(\x03R\rexpiresAtUnix\x124\n" +
-	"\x16membership_ttl_seconds\x18\b \x01(\x03R\x14membershipTtlSeconds\"|\n" +
+	"\x16membership_ttl_seconds\x18\b \x01(\x03R\x14membershipTtlSeconds\x12#\n" +
+	"\rnon_renewable\x18\t \x01(\bR\fnonRenewable\"|\n" +
 	"\vInviteToken\x12F\n" +
 	"\x06claims\x18\x01 \x01(\v2&.pollen.admission.v1.InviteTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
 	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xbe\x01\n" +

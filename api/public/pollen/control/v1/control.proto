@@ -78,6 +78,7 @@ message CertInfo {
   int64 not_after_unix = 2;
   uint64 serial = 3;
   CertHealth health = 4;
+  bool non_renewable = 5;
 }
 
 message GetStatusResponse {

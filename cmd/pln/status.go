@@ -176,11 +176,13 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 
 	var latest time.Time
 	var health controlv1.CertHealth
+	var nonRenewable bool
 	for _, c := range st.GetCertificates() {
 		t := time.Unix(c.GetNotAfterUnix(), 0)
 		if t.After(latest) {
 			latest = t
 			health = c.GetHealth()
+			nonRenewable = c.GetNonRenewable()
 		}
 	}
 	if latest.IsZero() {
@@ -190,8 +192,19 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 	remaining := time.Until(latest.Add(certExpirySkew))
 
 	if remaining <= 0 || health == controlv1.CertHealth_CERT_HEALTH_EXPIRED {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render( //nolint:mnd
-			"membership expired — node has stopped; rejoin the cluster or contact a cluster admin")
+		msg := "membership expired — node has stopped; rejoin the cluster or contact a cluster admin"
+		if nonRenewable {
+			msg = "guest membership expired — node has stopped; request a new invite from a cluster admin"
+		}
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render(msg) //nolint:mnd
+	}
+
+	if nonRenewable {
+		msg := "guest membership expires in " + humanDuration(remaining)
+		if health == controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON {
+			return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + " — request a new invite to continue") //nolint:mnd
+		}
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg) //nolint:mnd
 	}
 
 	msg := "membership expires in " + humanDuration(remaining)

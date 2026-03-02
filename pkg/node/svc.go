@@ -134,16 +134,19 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			health = controlv1.CertHealth_CERT_HEALTH_EXPIRED
 		case remaining <= certCriticalThreshold:
 			health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
-		case remaining <= certWarnThreshold && !s.node.renewalFailed.Load():
-			health = controlv1.CertHealth_CERT_HEALTH_RENEWING
 		case remaining <= certWarnThreshold:
-			health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
+			if claims.GetNonRenewable() || s.node.renewalFailed.Load() {
+				health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
+			} else {
+				health = controlv1.CertHealth_CERT_HEALTH_RENEWING
+			}
 		}
 		out.Certificates = append(out.Certificates, &controlv1.CertInfo{
 			NotBeforeUnix: claims.GetNotBeforeUnix(),
 			NotAfterUnix:  claims.GetNotAfterUnix(),
 			Serial:        claims.GetSerial(),
 			Health:        health,
+			NonRenewable:  claims.GetNonRenewable(),
 		})
 	}
 

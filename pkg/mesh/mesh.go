@@ -60,6 +60,7 @@ type Mesh interface {
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
 	PeerCertExpiresAt(peer types.PeerKey) (time.Time, bool)
+	PeerMembershipCert(peer types.PeerKey) (*admissionv1.MembershipCert, bool)
 	ConnectedPeers() []types.PeerKey
 	ClosePeerSession(peerKey types.PeerKey)
 	ListenPort() int
@@ -97,12 +98,13 @@ type incomingStream struct {
 }
 
 type peerSession struct {
-	conn          *quic.Conn
-	transport     *quic.Transport
-	sockConn      *sock.Conn
-	createdAt     time.Time
-	certExpiresAt time.Time
-	inbound       bool
+	conn           *quic.Conn
+	transport      *quic.Transport
+	sockConn       *sock.Conn
+	membershipCert *admissionv1.MembershipCert
+	createdAt      time.Time
+	certExpiresAt  time.Time
+	inbound        bool
 }
 
 type directDialResult struct {
@@ -223,11 +225,13 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 		return nil, fmt.Errorf("quic dial %s: %w", addr, err)
 	}
 
+	mc := membershipCertFromConn(qc)
 	return &peerSession{
-		conn:          qc,
-		transport:     m.mainQT,
-		createdAt:     time.Now(),
-		certExpiresAt: membershipExpiryFromConn(qc),
+		conn:           qc,
+		transport:      m.mainQT,
+		membershipCert: mc,
+		createdAt:      time.Now(),
+		certExpiresAt:  auth.CertExpiresAt(mc),
 	}, nil
 }
 
@@ -251,11 +255,13 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 		if err != nil {
 			return nil, fmt.Errorf("quic dial %s: %w", dialAddr, err)
 		}
+		mc := membershipCertFromConn(qc)
 		return &peerSession{
-			conn:          qc,
-			transport:     m.mainQT,
-			createdAt:     time.Now(),
-			certExpiresAt: membershipExpiryFromConn(qc),
+			conn:           qc,
+			transport:      m.mainQT,
+			membershipCert: mc,
+			createdAt:      time.Now(),
+			certExpiresAt:  auth.CertExpiresAt(mc),
 		}, nil
 	}
 
@@ -268,12 +274,14 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 		return nil, fmt.Errorf("quic dial %s: %w", dialAddr, err)
 	}
 
+	mc := membershipCertFromConn(qc)
 	return &peerSession{
-		conn:          qc,
-		transport:     qt,
-		sockConn:      conn,
-		createdAt:     time.Now(),
-		certExpiresAt: membershipExpiryFromConn(qc),
+		conn:           qc,
+		transport:      qt,
+		sockConn:       conn,
+		membershipCert: mc,
+		createdAt:      time.Now(),
+		certExpiresAt:  auth.CertExpiresAt(mc),
 	}, nil
 }
 
@@ -429,6 +437,14 @@ func (m *impl) PeerCertExpiresAt(peerKey types.PeerKey) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return s.certExpiresAt, true
+}
+
+func (m *impl) PeerMembershipCert(peerKey types.PeerKey) (*admissionv1.MembershipCert, bool) {
+	s, ok := m.sessions.get(peerKey)
+	if !ok {
+		return nil, false
+	}
+	return s.membershipCert, s.membershipCert != nil
 }
 
 func (m *impl) ConnectedPeers() []types.PeerKey {
@@ -644,7 +660,8 @@ func (m *impl) acceptLoop(ctx context.Context) {
 
 		switch qc.ConnectionState().TLS.NegotiatedProtocol {
 		case alpnMesh:
-			m.addPeer(&peerSession{conn: qc, transport: m.mainQT, inbound: true, createdAt: time.Now(), certExpiresAt: membershipExpiryFromConn(qc)}, peerKey)
+			mc := membershipCertFromConn(qc)
+			m.addPeer(&peerSession{conn: qc, transport: m.mainQT, membershipCert: mc, inbound: true, createdAt: time.Now(), certExpiresAt: auth.CertExpiresAt(mc)}, peerKey)
 		case alpnInvite:
 			go m.handleInviteConnection(ctx, qc, peerKey)
 		default:
@@ -795,6 +812,7 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 		now,
 		ttl,
 		membershipTTL,
+		verified.Claims.GetNonRenewable(),
 	)
 	if err != nil {
 		return err

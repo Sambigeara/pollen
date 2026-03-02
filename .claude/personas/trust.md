@@ -39,7 +39,10 @@ You are the cryptography and admission authority for Pollen. You think in terms 
 - `auth.IssueJoinToken(adminPriv, trust, subject, bootstrap, now, tokenTTL, membershipTTL, adminCertTTL) (*admissionv1.JoinToken, error)`
 - `auth.VerifyJoinToken(token, expectedSubject, now) (*VerifiedToken, error)`
 - `auth.EncodeJoinToken(token) (string, error)` / `auth.DecodeJoinToken(s) (*admissionv1.JoinToken, error)`
-- `auth.IssueInviteTokenWithSigner(signer, subject, bootstrap, now, tokenTTL, membershipTTL) (*admissionv1.InviteToken, error)`
+- `auth.IsCertNonRenewable(cert) bool`
+- `auth.IssueMembershipCertWithIssuer(adminPriv, issuer, clusterID, subject, notBefore, notAfter, nonRenewable) (*admissionv1.MembershipCert, error)`
+- `auth.IssueJoinTokenWithIssuer(adminPriv, trust, issuer, subject, bootstrap, now, tokenTTL, membershipTTL, nonRenewable) (*admissionv1.JoinToken, error)`
+- `auth.IssueInviteTokenWithSigner(signer, subject, bootstrap, now, tokenTTL, membershipTTL, nonRenewable) (*admissionv1.InviteToken, error)`
 - `auth.VerifyInviteToken(token, expectedSubject, now) (*VerifiedInviteToken, error)`
 - `auth.EncodeInviteToken(token) (string, error)` / `auth.DecodeInviteToken(s) (*admissionv1.InviteToken, error)`
 - `auth.LoadAdminSigner(pollenDir, now, adminCertTTL) (*AdminSigner, error)`

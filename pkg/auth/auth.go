@@ -62,6 +62,10 @@ func IsMembershipCertExpired(cert *admissionv1.MembershipCert, now time.Time) bo
 	return IsCertExpiredAt(CertExpiresAt(cert), now)
 }
 
+func IsCertNonRenewable(cert *admissionv1.MembershipCert) bool {
+	return cert.GetClaims().GetNonRenewable()
+}
+
 type NodeCredentials struct {
 	Trust        *admissionv1.TrustBundle
 	Cert         *admissionv1.MembershipCert
@@ -423,7 +427,7 @@ func IssueMembershipCert(
 		return nil, err
 	}
 
-	return IssueMembershipCertWithIssuer(adminPriv, issuer, clusterID, subject, notBefore, notAfter)
+	return IssueMembershipCertWithIssuer(adminPriv, issuer, clusterID, subject, notBefore, notAfter, false)
 }
 
 func IssueMembershipCertWithIssuer(
@@ -433,6 +437,7 @@ func IssueMembershipCertWithIssuer(
 	subject ed25519.PublicKey,
 	notBefore time.Time,
 	notAfter time.Time,
+	nonRenewable bool,
 ) (*admissionv1.MembershipCert, error) {
 	if len(clusterID) != sha256.Size {
 		return nil, errors.New("invalid cluster id length")
@@ -468,6 +473,7 @@ func IssueMembershipCertWithIssuer(
 		NotBeforeUnix:  notBefore.Unix(),
 		NotAfterUnix:   notAfter.Unix(),
 		Serial:         serial,
+		NonRenewable:   nonRenewable,
 	}
 
 	msg, err := signaturePayload(claims)
@@ -558,7 +564,7 @@ func IssueJoinToken(
 		return nil, err
 	}
 
-	return IssueJoinTokenWithIssuer(adminPriv, trust, issuer, subject, bootstrap, now, tokenTTL, membershipTTL)
+	return IssueJoinTokenWithIssuer(adminPriv, trust, issuer, subject, bootstrap, now, tokenTTL, membershipTTL, false)
 }
 
 func IssueJoinTokenWithIssuer(
@@ -570,6 +576,7 @@ func IssueJoinTokenWithIssuer(
 	now time.Time,
 	tokenTTL time.Duration,
 	membershipTTL time.Duration,
+	nonRenewable bool,
 ) (*admissionv1.JoinToken, error) {
 	if tokenTTL <= 0 {
 		return nil, errors.New("token ttl must be positive")
@@ -586,6 +593,7 @@ func IssueJoinTokenWithIssuer(
 		subject,
 		now.Add(-timeSkewAllowance),
 		now.Add(membershipTTL),
+		nonRenewable,
 	)
 	if err != nil {
 		return nil, err

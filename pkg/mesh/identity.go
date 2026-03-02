@@ -144,16 +144,16 @@ func peerKeyFromConn(qc *quic.Conn) (types.PeerKey, error) {
 	return types.PeerKeyFromBytes(pub), nil
 }
 
-func membershipExpiryFromConn(qc *quic.Conn) time.Time {
+func membershipCertFromConn(qc *quic.Conn) *admissionv1.MembershipCert {
 	tlsState := qc.ConnectionState().TLS
 	if len(tlsState.PeerCertificates) == 0 {
-		return time.Time{}
+		return nil
 	}
 	mc, err := parseMembershipExtension(tlsState.PeerCertificates[0].Raw)
 	if err != nil || mc == nil {
-		return time.Time{}
+		return nil
 	}
-	return auth.CertExpiresAt(mc)
+	return mc
 }
 
 type verifyMeshPeerOpts struct {
