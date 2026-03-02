@@ -309,21 +309,21 @@ func runJoin(cmd *cobra.Command, args []string) {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	noStart, _ := cmd.Flags().GetBool("no-start")
 	public, _ := cmd.Flags().GetBool("public")
 	if runtime.GOOS == osLinux && !noStart && os.Getuid() != 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root to manage the daemon; run: sudo %s\n", cmd.CommandPath())
-		return
+		os.Exit(1)
 	}
 
 	// No early-return: post-enrollment usermod and servicectl must run as root.
 	// Discard child stdout; parent prints its own status messages.
 	if err := enrollJoin(cmd, pollenDir, args[0], public); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	if runtime.GOOS == osLinux && os.Getuid() == 0 {
@@ -340,7 +340,7 @@ func runJoin(cmd *cobra.Command, args []string) {
 	if active, _ := nodeSocketActive(sockPath); active {
 		if err := servicectl("restart", cmd); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "joined cluster but failed to restart daemon: %v\n", err)
-			return
+			os.Exit(1)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "joined cluster; daemon restarted")
 		return
@@ -519,17 +519,22 @@ func runInit(cmd *cobra.Command, _ []string) {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	if runtime.GOOS == osLinux && os.Getuid() != 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root on Linux; run: sudo %s\n", cmd.CommandPath())
-		return
+		os.Exit(1)
 	}
 
 	if runtime.GOOS == osLinux && os.Getuid() == 0 {
-		if err := execAsPln(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), pollenDir, "init"); err != nil {
+		childArgs := []string{"init"}
+		if cmd.Flags().Changed("dir") {
+			childArgs = append([]string{"--dir", pollenDir}, childArgs...)
+		}
+		if err := execAsPln(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), childArgs...); err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			os.Exit(1)
 		}
 		return
 	}
@@ -537,17 +542,17 @@ func runInit(cmd *cobra.Command, _ []string) {
 	running, err := nodeSocketActive(filepath.Join(pollenDir, socketName))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 	if running {
 		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pln stop` before initializing")
-		return
+		os.Exit(1)
 	}
 
 	_, pub, err := node.GenIdentityKey(pollenDir)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	existing, err := auth.LoadExistingNodeCredentials(pollenDir, pub, time.Now())
@@ -555,7 +560,7 @@ func runInit(cmd *cobra.Command, _ []string) {
 		_, adminPub, adminErr := auth.LoadAdminKey(pollenDir)
 		if adminErr != nil && !errors.Is(adminErr, os.ErrNotExist) {
 			fmt.Fprintln(cmd.ErrOrStderr(), adminErr)
-			return
+			os.Exit(1)
 		}
 
 		if adminErr == nil && slices.Equal(adminPub, existing.Trust.GetRootPub()) {
@@ -567,12 +572,12 @@ func runInit(cmd *cobra.Command, _ []string) {
 		}
 
 		fmt.Fprintln(cmd.ErrOrStderr(), "node is already enrolled in a cluster; run `pln purge` before initializing a new root cluster")
-		return
+		os.Exit(1)
 	}
 	if !errors.Is(err, auth.ErrCredentialsNotFound) {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		fmt.Fprintln(cmd.ErrOrStderr(), "run `pln purge` to reset local state")
-		return
+		os.Exit(1)
 	}
 
 	cfg := loadConfigOrDefault(pollenDir)
@@ -581,13 +586,13 @@ func runInit(cmd *cobra.Command, _ []string) {
 	creds, err := auth.EnsureLocalRootCredentials(pollenDir, pub, time.Now(), certTTLs.MembershipTTL(), certTTLs.AdminTTL())
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	_, adminPub, err := auth.LoadAdminKey(pollenDir)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "initialized root cluster\nroot_pub: %s\ncluster_id: %s\n",
@@ -1019,13 +1024,13 @@ func userInGroup(ctx context.Context, user, group string) bool {
 }
 
 // execAsPln re-execs a pln subcommand locally as the pln system user.
-func execAsPln(ctx context.Context, stdout, stderr io.Writer, pollenDir string, args ...string) error {
+func execAsPln(ctx context.Context, stdout, stderr io.Writer, args ...string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve executable path: %w", err)
 	}
-	sudoArgs := make([]string, 0, 5+len(args)) //nolint:mnd
-	sudoArgs = append(sudoArgs, "-u", "pln", self, "--dir", pollenDir)
+	sudoArgs := make([]string, 0, 2+len(args)) //nolint:mnd
+	sudoArgs = append(sudoArgs, "-u", "pln", self)
 	sudoArgs = append(sudoArgs, args...)
 	c := exec.CommandContext(ctx, "sudo", sudoArgs...)
 	c.Stdout = stdout
@@ -1154,7 +1159,10 @@ func enrollJoin(cmd *cobra.Command, pollenDir, rawToken string, public bool) err
 	joinArgs = append(joinArgs, rawToken)
 
 	if runtime.GOOS == osLinux && os.Getuid() == 0 {
-		return execAsPln(cmd.Context(), io.Discard, cmd.ErrOrStderr(), pollenDir, joinArgs...)
+		if cmd.Flags().Changed("dir") {
+			joinArgs = append([]string{"--dir", pollenDir}, joinArgs...)
+		}
+		return execAsPln(cmd.Context(), io.Discard, cmd.ErrOrStderr(), joinArgs...)
 	}
 
 	if err := enrollToken(cmd.Context(), pollenDir, rawToken); err != nil {
