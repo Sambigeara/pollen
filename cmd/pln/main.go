@@ -317,8 +317,9 @@ func runJoin(cmd *cobra.Command, args []string) {
 	}
 
 	// No early-return: post-enrollment usermod and servicectl must run as root.
+	// Discard child stdout; parent prints its own status messages.
 	if runtime.GOOS == osLinux && os.Getuid() == 0 {
-		if err := execAsPln(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), pollenDir, "join", "--no-start", args[0]); err != nil {
+		if err := execAsPln(cmd.Context(), io.Discard, cmd.ErrOrStderr(), pollenDir, "join", "--no-start", args[0]); err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 			return
 		}
@@ -329,8 +330,8 @@ func runJoin(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	if runtime.GOOS == osLinux {
-		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+	if runtime.GOOS == osLinux && os.Getuid() == 0 {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && !userInGroup(cmd.Context(), sudoUser, "pln") {
 			if err := exec.CommandContext(cmd.Context(), "usermod", "-aG", "pln", sudoUser).Run(); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not add %s to pln group: %v\n", sudoUser, err)
 			} else {
@@ -1004,6 +1005,14 @@ func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
 		cfg:       cfg,
 		signer:    signer,
 	}, nil
+}
+
+func userInGroup(ctx context.Context, user, group string) bool {
+	out, err := exec.CommandContext(ctx, "id", "-nG", user).Output()
+	if err != nil {
+		return false
+	}
+	return slices.Contains(strings.Fields(string(out)), group)
 }
 
 // execAsPln re-execs a pln subcommand locally as the pln system user.
