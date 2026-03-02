@@ -248,6 +248,7 @@ func newJoinCmd() *cobra.Command {
 		Run:   runJoin,
 	}
 	cmd.Flags().Bool("no-start", false, "Enroll credentials without starting the daemon")
+	cmd.Flags().Bool("public", false, "Mark this node as publicly accessible (relay)")
 	return cmd
 }
 
@@ -312,6 +313,7 @@ func runJoin(cmd *cobra.Command, args []string) {
 	}
 
 	noStart, _ := cmd.Flags().GetBool("no-start")
+	public, _ := cmd.Flags().GetBool("public")
 	if runtime.GOOS == osLinux && !noStart && os.Getuid() != 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root to manage the daemon; run: sudo %s\n", cmd.CommandPath())
 		return
@@ -319,16 +321,9 @@ func runJoin(cmd *cobra.Command, args []string) {
 
 	// No early-return: post-enrollment usermod and servicectl must run as root.
 	// Discard child stdout; parent prints its own status messages.
-	if runtime.GOOS == osLinux && os.Getuid() == 0 {
-		if err := execAsPln(cmd.Context(), io.Discard, cmd.ErrOrStderr(), pollenDir, "join", "--no-start", args[0]); err != nil {
-			fmt.Fprintln(cmd.ErrOrStderr(), err)
-			return
-		}
-	} else {
-		if err := enrollToken(cmd.Context(), pollenDir, args[0]); err != nil {
-			fmt.Fprintln(cmd.ErrOrStderr(), err)
-			return
-		}
+	if err := enrollJoin(cmd, pollenDir, args[0], public); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
 	}
 
 	if runtime.GOOS == osLinux && os.Getuid() == 0 {
@@ -490,6 +485,7 @@ func runNode(cmd *cobra.Command) {
 		TLSIdentityTTL:   certTTLs.TLSIdentityTTL(),
 		MembershipTTL:    certTTLs.MembershipTTL(),
 		MaxConnectionAge: defaultMaxConnectionAge,
+		BootstrapPublic:  cfg.Public,
 	}
 
 	n, err := node.New(conf, privKey, creds, stateStore, peer.NewStore(), pollenDir)
@@ -1061,7 +1057,7 @@ func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) erro
 
 	// Enroll the relay into the cluster (as pln user for correct file ownership),
 	// then start the daemon (as root for systemctl).
-	if out, err := sshPln(ctx, sshTarget, "join", "--no-start", seedToken).CombinedOutput(); err != nil {
+	if out, err := sshPln(ctx, sshTarget, "join", "--no-start", "--public", seedToken).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to enroll relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	if out, err := sshRoot(ctx, sshTarget, "sudo pln start").CombinedOutput(); err != nil {
@@ -1151,6 +1147,37 @@ func resolveBootstrapPeers(cmd *cobra.Command, specs []string) ([]*admissionv1.B
 	}
 
 	return parseBootstrapSpecs(specs)
+}
+
+func enrollJoin(cmd *cobra.Command, pollenDir, rawToken string, public bool) error {
+	joinArgs := []string{"join", "--no-start"}
+	if public {
+		joinArgs = append(joinArgs, "--public")
+	}
+	joinArgs = append(joinArgs, rawToken)
+
+	if runtime.GOOS == osLinux && os.Getuid() == 0 {
+		return execAsPln(cmd.Context(), io.Discard, cmd.ErrOrStderr(), pollenDir, joinArgs...)
+	}
+
+	if err := enrollToken(cmd.Context(), pollenDir, rawToken); err != nil {
+		return err
+	}
+	if public {
+		if err := setConfigPublic(pollenDir, true); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to set public flag in config: %v\n", err)
+		}
+	}
+	return nil
+}
+
+func setConfigPublic(pollenDir string, public bool) error {
+	cfg, err := config.Load(pollenDir)
+	if err != nil {
+		return err
+	}
+	cfg.Public = public
+	return config.Save(pollenDir, cfg)
 }
 
 func saveBootstrapPeer(pollenDir string, peer *admissionv1.BootstrapPeer) error {

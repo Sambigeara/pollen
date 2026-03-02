@@ -60,6 +60,7 @@ func (c CertTTLs) TLSIdentityTTL() time.Duration {
 type Config struct {
 	BootstrapPeers []BootstrapPeer `yaml:"bootstrapPeers,omitempty"`
 	CertTTLs       CertTTLs        `yaml:"certTTLs,omitempty"` //nolint:tagliatelle
+	Public         bool            `yaml:"public,omitempty"`
 }
 
 func Load(pollenDir string) (*Config, error) {
