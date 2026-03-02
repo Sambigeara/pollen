@@ -336,6 +336,11 @@ func runJoin(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	if noStart {
+		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pln start` to start the node")
+		return
+	}
+
 	sockPath := filepath.Join(pollenDir, socketName)
 	if active, _ := nodeSocketActive(sockPath); active {
 		if err := servicectl("restart", cmd); err != nil {
@@ -343,11 +348,6 @@ func runJoin(cmd *cobra.Command, args []string) {
 			os.Exit(1)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "joined cluster; daemon restarted")
-		return
-	}
-
-	if noStart {
-		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pln start` to start the node")
 		return
 	}
 
