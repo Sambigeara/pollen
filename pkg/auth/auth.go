@@ -328,6 +328,10 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 		return nil, nil, err
 	}
 
+	if err := perm.SetPrivate(privPath); err != nil {
+		return nil, nil, err
+	}
+
 	pubFile, err := os.OpenFile(pubPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, keyFilePerm)
 	if err != nil {
 		return nil, nil, err
