@@ -316,9 +316,17 @@ func runJoin(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	if err := enrollToken(cmd.Context(), pollenDir, args[0]); err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+	// No early-return: post-enrollment usermod and servicectl must run as root.
+	if runtime.GOOS == osLinux && os.Getuid() == 0 {
+		if err := execAsPln(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), pollenDir, "join", "--no-start", args[0]); err != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			return
+		}
+	} else {
+		if err := enrollToken(cmd.Context(), pollenDir, args[0]); err != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			return
+		}
 	}
 
 	if runtime.GOOS == osLinux {
@@ -512,6 +520,18 @@ func runInit(cmd *cobra.Command, _ []string) {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	if runtime.GOOS == osLinux && os.Getuid() != 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root on Linux; run: sudo %s\n", cmd.CommandPath())
+		return
+	}
+
+	if runtime.GOOS == osLinux && os.Getuid() == 0 {
+		if err := execAsPln(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), pollenDir, "init"); err != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+		}
 		return
 	}
 
@@ -984,6 +1004,21 @@ func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
 		cfg:       cfg,
 		signer:    signer,
 	}, nil
+}
+
+// execAsPln re-execs a pln subcommand locally as the pln system user.
+func execAsPln(ctx context.Context, stdout, stderr io.Writer, pollenDir string, args ...string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+	sudoArgs := make([]string, 0, 5+len(args)) //nolint:mnd
+	sudoArgs = append(sudoArgs, "-u", "pln", self, "--dir", pollenDir)
+	sudoArgs = append(sudoArgs, args...)
+	c := exec.CommandContext(ctx, "sudo", sudoArgs...)
+	c.Stdout = stdout
+	c.Stderr = stderr
+	return c.Run()
 }
 
 // sshPln runs a pln subcommand on the remote host as the pln system user.
