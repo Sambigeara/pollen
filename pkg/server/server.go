@@ -9,16 +9,19 @@ import (
 	"time"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
-	"github.com/sourcegraph/conc/pool"
-	"google.golang.org/grpc"
-
 	"github.com/sambigeara/pollen/pkg/node"
+	"github.com/sambigeara/pollen/pkg/perm"
+	"github.com/sourcegraph/conc/pool"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
 )
 
-type GrpcServer struct{}
+type GrpcServer struct {
+	log *zap.SugaredLogger
+}
 
 func NewGRPCServer() *GrpcServer {
-	return &GrpcServer{}
+	return &GrpcServer{log: zap.S().Named("grpc")}
 }
 
 func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path string) error {
@@ -49,14 +52,12 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 	}
 	defer os.Remove(path)
 
-	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
-	p.Go(func(_ context.Context) error {
-		if err := server.Serve(l); err != nil {
-			return err
-		}
+	if err := perm.SetGroupSocket(path); err != nil {
+		s.log.Warnw("socket group permissions", "err", err)
+	}
 
-		return nil
-	})
+	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
+	p.Go(func(_ context.Context) error { return server.Serve(l) })
 
 	p.Go(func(ctx context.Context) error {
 		<-ctx.Done()
@@ -64,9 +65,5 @@ func (s *GrpcServer) Start(ctx context.Context, nodeServ *node.NodeService, path
 		return nil
 	})
 
-	if err := p.Wait(); err != nil {
-		return err
-	}
-
-	return nil
+	return p.Wait()
 }

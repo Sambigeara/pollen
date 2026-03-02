@@ -1,13 +1,18 @@
 package store
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"testing"
+	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-func newTestStore(pub []byte) *Store {
+func newTestStore(pub []byte, trustBundle *admissionv1.TrustBundle) *Store {
 	localID := types.PeerKeyFromBytes(pub)
 	return &Store{
 		LocalID: localID,
@@ -22,6 +27,8 @@ func newTestStore(pub []byte) *Store {
 				},
 			},
 		},
+		revocations:        make(map[types.PeerKey]*admissionv1.SignedRevocation),
+		trustBundle:        trustBundle,
 		desiredConnections: make(map[string]Connection),
 	}
 }
@@ -38,10 +45,45 @@ func peerKey(b byte) (types.PeerKey, string) {
 	return pk, pk.String()
 }
 
+func TestEagerSyncClock(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	// Fresh store with only local state → zero clock.
+	clock := s.EagerSyncClock()
+	if len(clock.GetCounters()) != 0 {
+		t.Fatalf("expected empty counters for fresh store, got %v", clock.GetCounters())
+	}
+
+	// Apply a remote event → real clock.
+	_, peerIDStr := peerKey(2)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 5,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+		},
+	})
+
+	clock = s.EagerSyncClock()
+	counters := clock.GetCounters()
+	if len(counters) != 2 {
+		t.Fatalf("expected 2 entries in clock, got %d", len(counters))
+	}
+	if counters[s.LocalID.String()] != 1 {
+		t.Fatalf("expected local counter=1, got %d", counters[s.LocalID.String()])
+	}
+	peerPK, _ := peerKey(2)
+	if counters[peerPK.String()] != 5 {
+		t.Fatalf("expected remote counter=5, got %d", counters[peerPK.String()])
+	}
+}
+
 func TestSetLocalNetworkReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	events := s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	if len(events) != 1 {
@@ -67,7 +109,7 @@ func TestSetLocalNetworkReturnsEvent(t *testing.T) {
 func TestSetLocalNetworkNoOpWhenUnchanged(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	events := s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
@@ -79,7 +121,7 @@ func TestSetLocalNetworkNoOpWhenUnchanged(t *testing.T) {
 func TestSetExternalPortReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	events := s.SetExternalPort(45000)
 	if len(events) != 1 {
@@ -93,7 +135,7 @@ func TestSetExternalPortReturnsEvent(t *testing.T) {
 func TestSetLocalConnectedConnect(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	peerPub := make([]byte, 32)
 	peerPub[0] = 2
@@ -116,7 +158,7 @@ func TestSetLocalConnectedConnect(t *testing.T) {
 func TestSetLocalConnectedDisconnect(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	peerPub := make([]byte, 32)
 	peerPub[0] = 2
@@ -138,7 +180,7 @@ func TestSetLocalConnectedDisconnect(t *testing.T) {
 func TestApplyEventSingleAttribute(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -165,7 +207,7 @@ func TestApplyEventSingleAttribute(t *testing.T) {
 func TestApplyEventPerKeyCounter(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	_, peerIDStr := peerKey(2)
 
@@ -197,7 +239,7 @@ func TestApplyEventPerKeyCounter(t *testing.T) {
 func TestApplyEventDifferentKeys(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	_, peerIDStr := peerKey(2)
 
@@ -232,7 +274,7 @@ func TestApplyEventDifferentKeys(t *testing.T) {
 func TestApplyEventDeletion(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	_, peerIDStr := peerKey(2)
 
@@ -265,7 +307,7 @@ func TestApplyEventDeletion(t *testing.T) {
 func TestApplyEventTombstonePreventResurrection(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	_, peerIDStr := peerKey(2)
 
@@ -298,7 +340,7 @@ func TestApplyEventTombstonePreventResurrection(t *testing.T) {
 func TestApplyEventSelfStateConflict(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 	localID := s.LocalID
 
 	// Set some local state.
@@ -327,7 +369,7 @@ func TestApplyEventSelfStateConflict(t *testing.T) {
 func TestApplyEventSelfStateNoConflict(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 
@@ -348,7 +390,7 @@ func TestApplyEventSelfStateNoConflict(t *testing.T) {
 func TestMissingForReturnsEvents(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=2
 	s.SetExternalPort(45000)                      // counter=3
@@ -368,7 +410,7 @@ func TestMissingForReturnsEvents(t *testing.T) {
 func TestMissingForRespectsClock(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=2
 	s.SetExternalPort(45000)                      // counter=3
@@ -391,7 +433,7 @@ func TestMissingForRespectsClock(t *testing.T) {
 func TestMissingForReturnsNilForUpToDate(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=2
 
@@ -409,7 +451,7 @@ func TestMissingForReturnsNilForUpToDate(t *testing.T) {
 func TestClockUsesMaxCounter(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=2
 	s.SetExternalPort(45000)                      // counter=3
@@ -424,7 +466,7 @@ func TestClockUsesMaxCounter(t *testing.T) {
 func TestUpsertLocalServiceReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	events := s.UpsertLocalService(8080, "http")
 	if len(events) != 1 {
@@ -441,7 +483,7 @@ func TestUpsertLocalServiceReturnsEvent(t *testing.T) {
 func TestRemoveLocalServicesReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	s.UpsertLocalService(8080, "http")
 	events := s.RemoveLocalServices("http")
@@ -462,7 +504,7 @@ func TestRemoveLocalServicesReturnsEvent(t *testing.T) {
 func TestRemoveLocalServicesNoOpWhenMissing(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	events := s.RemoveLocalServices("http")
 	if events != nil {
@@ -473,7 +515,7 @@ func TestRemoveLocalServicesNoOpWhenMissing(t *testing.T) {
 func TestApplyEventNetworkUpdate(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -503,7 +545,7 @@ func TestApplyEventNetworkUpdate(t *testing.T) {
 func TestApplyEventIdentityPub(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	peerPK, peerIDStr := peerKey(2)
 	idPub := make([]byte, 32)
@@ -529,7 +571,7 @@ func TestApplyEventIdentityPub(t *testing.T) {
 func TestApplyEventReachablePeer(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub)
+	s := newTestStore(pub, nil)
 
 	peerPK, peerIDStr := peerKey(2)
 	targetPK, _ := peerKey(3)
@@ -561,5 +603,619 @@ func TestApplyEventReachablePeer(t *testing.T) {
 	rec, _ = s.Get(peerPK)
 	if _, ok := rec.Reachable[targetPK]; ok {
 		t.Fatal("expected target to be removed from reachable")
+	}
+}
+
+func TestSetLastAddr(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	peerPK, peerIDStr := peerKey(2)
+
+	// Add the peer via a gossip event so it exists in the store.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+		},
+	})
+
+	s.SetLastAddr(peerPK, "203.0.113.5:41234")
+
+	peers := s.KnownPeers()
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 known peer, got %d", len(peers))
+	}
+	if peers[0].LastAddr != "203.0.113.5:41234" {
+		t.Fatalf("expected LastAddr=203.0.113.5:41234, got %q", peers[0].LastAddr)
+	}
+}
+
+func TestSetLastAddrIgnoresUnknownPeer(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	unknownPK, _ := peerKey(99)
+	s.SetLastAddr(unknownPK, "1.2.3.4:5678")
+
+	peers := s.KnownPeers()
+	if len(peers) != 0 {
+		t.Fatalf("expected 0 known peers, got %d", len(peers))
+	}
+}
+
+func TestKnownPeersIncludesPeerWithLastAddrOnly(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	peerPK, peerIDStr := peerKey(2)
+	idPub := make([]byte, 32)
+	idPub[0] = 2
+
+	// Create peer record without network fields.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{IdentityPub: idPub},
+		},
+	})
+
+	s.SetLastAddr(peerPK, "203.0.113.5:41234")
+
+	peers := s.KnownPeers()
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 known peer, got %d", len(peers))
+	}
+	if peers[0].PeerID != peerPK {
+		t.Fatalf("expected peer %q, got %q", peerPK.String(), peers[0].PeerID.String())
+	}
+	if peers[0].LastAddr != "203.0.113.5:41234" {
+		t.Fatalf("expected LastAddr=203.0.113.5:41234, got %q", peers[0].LastAddr)
+	}
+}
+
+func TestSaveLoadPersistsLastAddr(t *testing.T) {
+	dir := t.TempDir()
+
+	localPub := make([]byte, 32)
+	localPub[0] = 1
+
+	s, err := Load(dir, localPub, nil)
+	if err != nil {
+		t.Fatalf("load store: %v", err)
+	}
+
+	peerPK, peerIDStr := peerKey(2)
+	idPub := make([]byte, 32)
+	idPub[0] = 2
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{IdentityPub: idPub},
+		},
+	})
+
+	s.SetLastAddr(peerPK, "203.0.113.5:41234")
+
+	if err := s.Save(); err != nil {
+		t.Fatalf("save store: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	s2, err := Load(dir, localPub, nil)
+	if err != nil {
+		t.Fatalf("reload store: %v", err)
+	}
+	defer func() {
+		if err := s2.Close(); err != nil {
+			t.Fatalf("close reloaded store: %v", err)
+		}
+	}()
+
+	rec, ok := s2.Get(peerPK)
+	if !ok {
+		t.Fatal("expected peer record after reload")
+	}
+	if rec.LastAddr != "203.0.113.5:41234" {
+		t.Fatalf("expected LastAddr=203.0.113.5:41234, got %q", rec.LastAddr)
+	}
+
+	peers := s2.KnownPeers()
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 known peer, got %d", len(peers))
+	}
+	if peers[0].LastAddr != "203.0.113.5:41234" {
+		t.Fatalf("expected LastAddr=203.0.113.5:41234, got %q", peers[0].LastAddr)
+	}
+}
+
+func TestLoadServiceWithOrphanedProvider(t *testing.T) {
+	dir := t.TempDir()
+
+	localPub := make([]byte, 32)
+	localPub[0] = 1
+
+	// Bootstrap an empty store to create the state file.
+	s, err := Load(dir, localPub, nil)
+	if err != nil {
+		t.Fatalf("initial load: %v", err)
+	}
+
+	// Add a peer with a service, then save.
+	peerPK, peerIDStr := peerKey(2)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.5"}, LocalPort: 7000},
+		},
+	})
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_Service{
+			Service: &statev1.ServiceChange{Name: "http", Port: 8080},
+		},
+	})
+
+	if err := s.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Tamper with disk state: remove the peer entry but keep the service.
+	// This simulates the bug where IdentityPub was empty and got skipped on load.
+	d, err := openDisk(dir)
+	if err != nil {
+		t.Fatalf("open disk: %v", err)
+	}
+	st, err := d.load()
+	if err != nil {
+		t.Fatalf("load disk: %v", err)
+	}
+	st.Peers = nil // remove all peers, keep services
+	if err := d.save(st); err != nil {
+		t.Fatalf("save tampered state: %v", err)
+	}
+	if err := d.close(); err != nil {
+		t.Fatalf("close disk: %v", err)
+	}
+
+	// Load should not panic even though the service references an unknown provider.
+	s2, err := Load(dir, localPub, nil)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+
+	rec, ok := s2.Get(peerPK)
+	if !ok {
+		t.Fatal("expected peer record to be created from orphaned service")
+	}
+	if _, exists := rec.Services["http"]; !exists {
+		t.Fatal("expected service 'http' on orphaned provider")
+	}
+	if len(rec.IdentityPub) == 0 {
+		t.Fatal("expected IdentityPub to be set from peer key")
+	}
+
+	idPub, found := s2.IdentityPub(peerPK)
+	if !found {
+		t.Fatal("IdentityPub should return true for orphaned provider")
+	}
+	if len(idPub) != 32 {
+		t.Fatalf("expected 32-byte IdentityPub, got %d bytes", len(idPub))
+	}
+}
+
+func TestSetLocalPubliclyAccessibleReturnsEvent(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	events := s.SetLocalPubliclyAccessible(true)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	ev := events[0]
+	if ev.GetDeleted() {
+		t.Fatal("expected deleted=false for setting accessible")
+	}
+	if ev.GetPubliclyAccessible() == nil {
+		t.Fatal("expected publicly_accessible change")
+	}
+}
+
+func TestSetLocalPubliclyAccessibleNoOpWhenUnchanged(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	s.SetLocalPubliclyAccessible(true)
+	events := s.SetLocalPubliclyAccessible(true)
+	if events != nil {
+		t.Fatal("expected nil for no-op, got events")
+	}
+}
+
+func TestSetLocalPubliclyAccessibleClear(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	s.SetLocalPubliclyAccessible(true)
+	events := s.SetLocalPubliclyAccessible(false)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	ev := events[0]
+	if !ev.GetDeleted() {
+		t.Fatal("expected deleted=true for clearing accessible")
+	}
+
+	if s.IsPubliclyAccessible(s.LocalID) {
+		t.Fatal("expected PubliclyAccessible=false after clearing")
+	}
+}
+
+func TestApplyPubliclyAccessibleFromPeer(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	peerPK, peerIDStr := peerKey(2)
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_PubliclyAccessible{
+			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
+		},
+	})
+
+	if !s.IsPubliclyAccessible(peerPK) {
+		t.Fatal("expected peer to be publicly accessible")
+	}
+
+	// Delete it.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 2,
+		Deleted: true,
+		Change: &statev1.GossipEvent_PubliclyAccessible{
+			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
+		},
+	})
+
+	if s.IsPubliclyAccessible(peerPK) {
+		t.Fatal("expected peer to no longer be publicly accessible")
+	}
+}
+
+func TestPubliclyAccessibleRoundTrip(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	events := s.SetLocalPubliclyAccessible(true)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	missing := s.MissingFor(&statev1.GossipVectorClock{
+		Counters: map[string]uint64{s.LocalID.String(): 0},
+	})
+
+	var found bool
+	for _, ev := range missing {
+		if ev.GetPubliclyAccessible() != nil && !ev.GetDeleted() {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected publicly_accessible event in MissingFor output")
+	}
+}
+
+func TestPubliclyAccessibleConflictRecovery(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	s.SetLocalPubliclyAccessible(true)
+
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  s.LocalID.String(),
+		Counter: 100,
+		Change: &statev1.GossipEvent_PubliclyAccessible{
+			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
+		},
+	})
+
+	if len(result.Rebroadcast) == 0 {
+		t.Fatal("self-state conflict should trigger rebroadcast")
+	}
+
+	var found bool
+	for _, ev := range result.Rebroadcast {
+		if ev.GetPubliclyAccessible() != nil {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("rebroadcast should include publicly_accessible event")
+	}
+}
+
+func newTestClusterAuth(t *testing.T) (ed25519.PrivateKey, *admissionv1.TrustBundle) {
+	t.Helper()
+	adminPub, adminPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	return adminPriv, auth.NewTrustBundle(adminPub)
+}
+
+func issueTestRevocation(t *testing.T, adminPriv ed25519.PrivateKey, trust *admissionv1.TrustBundle, subjectPub []byte) *admissionv1.SignedRevocation {
+	t.Helper()
+	rev, err := auth.IssueRevocation(adminPriv, trust.GetClusterId(), subjectPub, time.Now())
+	if err != nil {
+		t.Fatalf("issue revocation: %v", err)
+	}
+	return rev
+}
+
+func TestPublishRevocationAndIsRevoked(t *testing.T) {
+	adminPriv, trust := newTestClusterAuth(t)
+
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, trust)
+
+	subjectPub := make([]byte, 32)
+	subjectPub[0] = 2
+
+	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
+
+	events := s.PublishRevocation(rev)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	if !s.IsSubjectRevoked(subjectPub) {
+		t.Fatal("expected subject pub to be revoked")
+	}
+
+	otherPub := make([]byte, 32)
+	otherPub[0] = 3
+	if s.IsSubjectRevoked(otherPub) {
+		t.Fatal("expected other pub to NOT be revoked")
+	}
+}
+
+func TestPublishRevocationDuplicateIsNoop(t *testing.T) {
+	adminPriv, trust := newTestClusterAuth(t)
+
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, trust)
+
+	rev := issueTestRevocation(t, adminPriv, trust, make([]byte, 32))
+
+	events := s.PublishRevocation(rev)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+
+	events = s.PublishRevocation(rev)
+	if events != nil {
+		t.Fatal("expected nil for duplicate revocation")
+	}
+}
+
+func TestApplyRevocationEventFromPeer(t *testing.T) {
+	adminPriv, trust := newTestClusterAuth(t)
+
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, trust)
+
+	peerPub := make([]byte, 32)
+	peerPub[0] = 2
+	peerID := types.PeerKeyFromBytes(peerPub)
+
+	subjectPub := make([]byte, 32)
+	subjectPub[0] = 3
+
+	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
+
+	event := &statev1.GossipEvent{
+		PeerId:  peerID.String(),
+		Counter: 1,
+		Change: &statev1.GossipEvent_Revocation{
+			Revocation: &statev1.RevocationChange{Revocation: rev},
+		},
+	}
+
+	s.applyEvent(event)
+
+	if !s.IsSubjectRevoked(subjectPub) {
+		t.Fatal("expected subject pub to be revoked after applying peer event")
+	}
+}
+
+func TestApplyRevocationEventRejectsWithoutTrustBundle(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	peerPub := make([]byte, 32)
+	peerPub[0] = 2
+	peerID := types.PeerKeyFromBytes(peerPub)
+
+	subjectPub := make([]byte, 32)
+	subjectPub[0] = 3
+
+	rev := &admissionv1.SignedRevocation{
+		Entry: &admissionv1.RevocationEntry{
+			SubjectPub: subjectPub,
+		},
+		Signature: make([]byte, 64),
+	}
+
+	event := &statev1.GossipEvent{
+		PeerId:  peerID.String(),
+		Counter: 1,
+		Change: &statev1.GossipEvent_Revocation{
+			Revocation: &statev1.RevocationChange{Revocation: rev},
+		},
+	}
+
+	s.applyEvent(event)
+
+	if s.IsSubjectRevoked(subjectPub) {
+		t.Fatal("expected revocation to be rejected when trust bundle is nil")
+	}
+}
+
+func TestApplyRevocationDeletedEventRejected(t *testing.T) {
+	adminPriv, trust := newTestClusterAuth(t)
+
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, trust)
+
+	_, peerIDStr := peerKey(2)
+
+	subjectPub := make([]byte, 32)
+	subjectPub[0] = 3
+	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
+
+	event := &statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Deleted: true,
+		Change: &statev1.GossipEvent_Revocation{
+			Revocation: &statev1.RevocationChange{Revocation: rev},
+		},
+	}
+
+	s.applyEvent(event)
+
+	if s.IsSubjectRevoked(subjectPub) {
+		t.Fatal("deleted revocation event should be silently dropped")
+	}
+
+	peerPK, _ := peerKey(2)
+	rec, ok := s.Get(peerPK)
+	if ok && rec.maxCounter > 0 {
+		t.Fatal("deleted revocation should not advance the log")
+	}
+}
+
+func TestApplyRevocationDuplicateDoesNotFireCallback(t *testing.T) {
+	adminPriv, trust := newTestClusterAuth(t)
+
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, trust)
+
+	var callCount int
+	s.OnRevocation(func(types.PeerKey) { callCount++ })
+
+	subjectPub := make([]byte, 32)
+	subjectPub[0] = 3
+	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
+
+	// First peer sends revocation.
+	_, peer1Str := peerKey(2)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peer1Str,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Revocation{
+			Revocation: &statev1.RevocationChange{Revocation: rev},
+		},
+	})
+
+	// Second peer sends the same revocation.
+	_, peer2Str := peerKey(4)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peer2Str,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Revocation{
+			Revocation: &statev1.RevocationChange{Revocation: rev},
+		},
+	})
+
+	if callCount != 1 {
+		t.Fatalf("expected onRevocation to fire exactly once, got %d", callCount)
+	}
+
+	if !s.IsSubjectRevoked(subjectPub) {
+		t.Fatal("subject should still be revoked")
+	}
+}
+
+func TestLoadRestoresRevocationsFromDisk(t *testing.T) {
+	adminPriv, trust := newTestClusterAuth(t)
+	dir := t.TempDir()
+
+	localPub := make([]byte, 32)
+	localPub[0] = 1
+
+	s, err := Load(dir, localPub, trust)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	subjectPub := make([]byte, 32)
+	subjectPub[0] = 2
+	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
+
+	s.PublishRevocation(rev)
+
+	if err := s.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	s2, err := Load(dir, localPub, trust)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+
+	if !s2.IsSubjectRevoked(subjectPub) {
+		t.Fatal("revocation should survive save/load round-trip")
+	}
+
+	// The revocation should appear in MissingFor output for a new joiner.
+	events := s2.MissingFor(nil)
+	var found bool
+	for _, ev := range events {
+		if ev.GetRevocation() != nil {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected revocation event in MissingFor output after reload")
 	}
 }

@@ -10,18 +10,19 @@ import (
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestIssueJoinTokenWithDelegatedAdmin(t *testing.T) {
-	genesisPub, genesisPriv := newKeyPair(t)
-	trust := auth.NewTrustBundle(genesisPub)
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
 
 	delegatedPub, delegatedPriv := newKeyPair(t)
 	subjectPub, _ := newKeyPair(t)
 
 	now := time.Now()
 	issuer, err := auth.IssueAdminCert(
-		genesisPriv,
+		rootPriv,
 		trust.GetClusterId(),
 		delegatedPub,
 		now.Add(-time.Minute),
@@ -37,6 +38,8 @@ func TestIssueJoinTokenWithDelegatedAdmin(t *testing.T) {
 		nil,
 		now,
 		time.Hour,
+		config.CertTTLs{}.MembershipTTL(),
+		false,
 	)
 	require.NoError(t, err)
 
@@ -46,8 +49,8 @@ func TestIssueJoinTokenWithDelegatedAdmin(t *testing.T) {
 }
 
 func TestIssueJoinTokenRejectsUnsignedDelegatedAdmin(t *testing.T) {
-	genesisPub, _ := newKeyPair(t)
-	trust := auth.NewTrustBundle(genesisPub)
+	rootPub, _ := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
 
 	_, delegatedPriv := newKeyPair(t)
 
@@ -60,8 +63,137 @@ func TestIssueJoinTokenRejectsUnsignedDelegatedAdmin(t *testing.T) {
 		nil,
 		time.Now(),
 		time.Hour,
+		config.CertTTLs{}.MembershipTTL(),
+		config.CertTTLs{}.AdminTTL(),
 	)
 	require.ErrorContains(t, err, "issuer admin certificate required")
+}
+
+func TestEnsureNodeCredentialsFromTokenReplacesExistingCert(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	nodePub, _ := newKeyPair(t)
+
+	now := time.Now()
+	oldCert, err := auth.IssueMembershipCert(
+		rootPriv,
+		trust.GetClusterId(),
+		nodePub,
+		now.Add(-time.Minute),
+		now.Add(24*time.Hour),
+		config.CertTTLs{}.AdminTTL(),
+	)
+	require.NoError(t, err)
+
+	pollenDir := t.TempDir()
+	require.NoError(t, auth.SaveNodeCredentials(pollenDir, &auth.NodeCredentials{Trust: trust, Cert: oldCert}))
+
+	token, err := auth.IssueJoinToken(
+		rootPriv,
+		trust,
+		nodePub,
+		nil,
+		now,
+		time.Hour,
+		48*time.Hour,
+		config.CertTTLs{}.AdminTTL(),
+	)
+	require.NoError(t, err)
+
+	verified, err := auth.VerifyJoinToken(token, nodePub, now)
+	require.NoError(t, err)
+
+	creds, err := auth.EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(verified.Cert, creds.Cert))
+	require.NotEqual(t, oldCert.GetClaims().GetNotAfterUnix(), creds.Cert.GetClaims().GetNotAfterUnix())
+
+	loaded, err := auth.LoadExistingNodeCredentials(pollenDir, nodePub, now)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(verified.Cert, loaded.Cert))
+}
+
+func TestEnsureNodeCredentialsFromTokenKeepsLongerTTLCert(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	nodePub, _ := newKeyPair(t)
+
+	now := time.Now()
+	oldCert, err := auth.IssueMembershipCert(
+		rootPriv,
+		trust.GetClusterId(),
+		nodePub,
+		now.Add(-time.Minute),
+		now.Add(48*time.Hour),
+		config.CertTTLs{}.AdminTTL(),
+	)
+	require.NoError(t, err)
+
+	pollenDir := t.TempDir()
+	require.NoError(t, auth.SaveNodeCredentials(pollenDir, &auth.NodeCredentials{Trust: trust, Cert: oldCert}))
+
+	token, err := auth.IssueJoinToken(
+		rootPriv,
+		trust,
+		nodePub,
+		nil,
+		now,
+		time.Hour,
+		24*time.Hour,
+		config.CertTTLs{}.AdminTTL(),
+	)
+	require.NoError(t, err)
+
+	creds, err := auth.EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(oldCert, creds.Cert), "existing longer-TTL cert should be kept")
+
+	loaded, err := auth.LoadExistingNodeCredentials(pollenDir, nodePub, now)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(oldCert, loaded.Cert), "disk should still have the old cert")
+}
+
+func TestEnsureNodeCredentialsFromTokenReplacesExpiredCert(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	nodePub, _ := newKeyPair(t)
+
+	now := time.Now()
+	expiredCert, err := auth.IssueMembershipCert(
+		rootPriv,
+		trust.GetClusterId(),
+		nodePub,
+		now.Add(-48*time.Hour),
+		now.Add(-24*time.Hour),
+		config.CertTTLs{}.AdminTTL(),
+	)
+	require.NoError(t, err)
+
+	pollenDir := t.TempDir()
+	require.NoError(t, auth.SaveNodeCredentials(pollenDir, &auth.NodeCredentials{Trust: trust, Cert: expiredCert}))
+
+	token, err := auth.IssueJoinToken(
+		rootPriv,
+		trust,
+		nodePub,
+		nil,
+		now,
+		time.Hour,
+		24*time.Hour,
+		config.CertTTLs{}.AdminTTL(),
+	)
+	require.NoError(t, err)
+
+	verified, err := auth.VerifyJoinToken(token, nodePub, now)
+	require.NoError(t, err)
+
+	creds, err := auth.EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(verified.Cert, creds.Cert), "expired cert should be replaced")
+
+	loaded, err := auth.LoadExistingNodeCredentials(pollenDir, nodePub, now)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(verified.Cert, loaded.Cert), "disk should have the new cert")
 }
 
 func TestInviteTokenOpenSubjectAndSingleUse(t *testing.T) {
@@ -89,6 +221,8 @@ func TestInviteTokenOpenSubjectAndSingleUse(t *testing.T) {
 		[]*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}},
 		now,
 		time.Hour,
+		0,
+		false,
 	)
 	require.NoError(t, err)
 
@@ -131,6 +265,8 @@ func TestInviteTokenSubjectBoundMismatch(t *testing.T) {
 		[]*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}},
 		now,
 		time.Hour,
+		0,
+		false,
 	)
 	require.NoError(t, err)
 
@@ -144,15 +280,15 @@ func TestVerifyMembershipCertRejectsIssuerKeyMismatch(t *testing.T) {
 	// cert signed by a different key. VerifyMembershipCert must reject
 	// the mismatch between issuer.claims.admin_pub and cert.claims.issuer_admin_pub.
 
-	genesisPub, genesisPriv := newKeyPair(t)
-	trust := auth.NewTrustBundle(genesisPub)
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
 
 	now := time.Now()
 
-	// Legitimate admin cert (signed by genesis).
+	// Legitimate admin cert (signed by root).
 	legitimateAdminPub, _ := newKeyPair(t)
 	legitimateIssuer, err := auth.IssueAdminCert(
-		genesisPriv,
+		rootPriv,
 		trust.GetClusterId(),
 		legitimateAdminPub,
 		now.Add(-time.Minute),
@@ -169,7 +305,7 @@ func TestVerifyMembershipCertRejectsIssuerKeyMismatch(t *testing.T) {
 	// own admin cert is created here just so IssueMembershipCertWithIssuer
 	// passes its internal checks — we swap the issuer afterward.
 	attackerIssuer, err := auth.IssueAdminCert(
-		genesisPriv,
+		rootPriv,
 		trust.GetClusterId(),
 		attackerPub,
 		now.Add(-time.Minute),
@@ -184,6 +320,7 @@ func TestVerifyMembershipCertRejectsIssuerKeyMismatch(t *testing.T) {
 		subjectPub,
 		now.Add(-time.Minute),
 		now.Add(365*24*time.Hour),
+		false,
 	)
 	require.NoError(t, err)
 
@@ -192,6 +329,186 @@ func TestVerifyMembershipCertRejectsIssuerKeyMismatch(t *testing.T) {
 
 	err = auth.VerifyMembershipCert(forgedCert, trust, now, subjectPub)
 	require.ErrorContains(t, err, "issuer key mismatch")
+}
+
+func TestIssueAndVerifyRevocation(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+
+	subjectPub, _ := newKeyPair(t)
+	now := time.Now()
+
+	rev, err := auth.IssueRevocation(rootPriv, trust.GetClusterId(), subjectPub, now)
+	require.NoError(t, err)
+	require.EqualValues(t, subjectPub, rev.GetEntry().GetSubjectPub())
+
+	err = auth.VerifyRevocation(rev, trust)
+	require.NoError(t, err)
+}
+
+func TestVerifyRevocationRejectsNonRootSigner(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+
+	_, delegatedPriv := newKeyPair(t)
+	subjectPub, _ := newKeyPair(t)
+	now := time.Now()
+
+	// Issue an admin cert for the delegated admin.
+	delegatedPub := delegatedPriv.Public().(ed25519.PublicKey)
+	_, err := auth.IssueAdminCert(rootPriv, trust.GetClusterId(), delegatedPub, now.Add(-time.Minute), now.Add(time.Hour))
+	require.NoError(t, err)
+
+	// Delegated admin issues a revocation -- should be rejected because
+	// only the root admin can revoke.
+	rev, err := auth.IssueRevocation(delegatedPriv, trust.GetClusterId(), subjectPub, now)
+	require.NoError(t, err)
+
+	err = auth.VerifyRevocation(rev, trust)
+	require.ErrorContains(t, err, "not signed by cluster root admin")
+}
+
+func TestVerifyRevocationRejectsCrossCluster(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+
+	otherPub, _ := newKeyPair(t)
+	otherTrust := auth.NewTrustBundle(otherPub)
+
+	subjectPub, _ := newKeyPair(t)
+	now := time.Now()
+
+	// Issue revocation scoped to the other cluster.
+	rev, err := auth.IssueRevocation(rootPriv, otherTrust.GetClusterId(), subjectPub, now)
+	require.NoError(t, err)
+
+	// Verify against our trust bundle -- should be rejected.
+	err = auth.VerifyRevocation(rev, trust)
+	require.ErrorContains(t, err, "not scoped to cluster")
+}
+
+func TestVerifyRevocationRejectsMissingEntry(t *testing.T) {
+	rootPub, _ := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+
+	err := auth.VerifyRevocation(&admissionv1.SignedRevocation{}, trust)
+	require.ErrorContains(t, err, "revocation invalid")
+}
+
+func TestVerifyRevocationRejectsNilRevocation(t *testing.T) {
+	rootPub, _ := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+
+	err := auth.VerifyRevocation(nil, trust)
+	require.ErrorContains(t, err, "revocation is nil")
+}
+
+func TestCertExpiresAt(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now()
+	expiry := now.Add(24 * time.Hour)
+	cert, err := auth.IssueMembershipCert(
+		rootPriv, trust.GetClusterId(), subjectPub,
+		now.Add(-time.Minute), expiry, config.CertTTLs{}.AdminTTL(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, expiry.Unix(), auth.CertExpiresAt(cert).Unix())
+}
+
+func TestIsMembershipCertExpired(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now()
+	cert, err := auth.IssueMembershipCert(
+		rootPriv, trust.GetClusterId(), subjectPub,
+		now.Add(-time.Minute), now.Add(24*time.Hour), config.CertTTLs{}.AdminTTL(),
+	)
+	require.NoError(t, err)
+
+	require.False(t, auth.IsMembershipCertExpired(cert, now))
+	require.False(t, auth.IsMembershipCertExpired(cert, now.Add(24*time.Hour+30*time.Second)))
+	require.True(t, auth.IsMembershipCertExpired(cert, now.Add(24*time.Hour+2*time.Minute)))
+}
+
+func TestIssueMembershipCertWithIssuerNonRenewable(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now()
+	issuer, err := auth.IssueAdminCert(
+		rootPriv, trust.GetClusterId(), rootPub,
+		now.Add(-time.Minute), now.Add(time.Hour),
+	)
+	require.NoError(t, err)
+
+	cert, err := auth.IssueMembershipCertWithIssuer(
+		rootPriv, issuer, trust.GetClusterId(), subjectPub,
+		now.Add(-time.Minute), now.Add(24*time.Hour), true,
+	)
+	require.NoError(t, err)
+	require.True(t, cert.GetClaims().GetNonRenewable())
+
+	err = auth.VerifyMembershipCert(cert, trust, now, subjectPub)
+	require.NoError(t, err)
+}
+
+func TestIssueInviteTokenWithSignerNonRenewable(t *testing.T) {
+	adminPub, adminPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(adminPub)
+
+	now := time.Now()
+	issuer, err := auth.IssueAdminCert(
+		adminPriv, trust.GetClusterId(), adminPub,
+		now.Add(-time.Minute), now.Add(5*365*24*time.Hour),
+	)
+	require.NoError(t, err)
+
+	consumed, err := config.LoadConsumedInvites(t.TempDir(), now)
+	require.NoError(t, err)
+	signer := &auth.AdminSigner{Priv: adminPriv, Trust: trust, Issuer: issuer, Consumed: consumed}
+
+	bootstrapPub, _ := newKeyPair(t)
+	invite, err := auth.IssueInviteTokenWithSigner(
+		signer, nil,
+		[]*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}},
+		now, time.Hour, 24*time.Hour, true,
+	)
+	require.NoError(t, err)
+	require.True(t, invite.GetClaims().GetNonRenewable())
+
+	subjectPub, _ := newKeyPair(t)
+	verified, err := auth.VerifyInviteToken(invite, subjectPub, now)
+	require.NoError(t, err)
+	require.True(t, verified.Claims.GetNonRenewable())
+}
+
+func TestIssueJoinTokenWithIssuerPropagatesNonRenewable(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now()
+	issuer, err := auth.IssueAdminCert(
+		rootPriv, trust.GetClusterId(), rootPub,
+		now.Add(-time.Minute), now.Add(time.Hour),
+	)
+	require.NoError(t, err)
+
+	token, err := auth.IssueJoinTokenWithIssuer(
+		rootPriv, trust, issuer, subjectPub, nil,
+		now, time.Hour, 24*time.Hour, true,
+	)
+	require.NoError(t, err)
+
+	verified, err := auth.VerifyJoinToken(token, subjectPub, now)
+	require.NoError(t, err)
+	require.True(t, verified.Cert.GetClaims().GetNonRenewable())
 }
 
 func newKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {

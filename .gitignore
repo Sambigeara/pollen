@@ -18,3 +18,5 @@ go.work.sum
 
 infra/
 dist*
+
+tasks/

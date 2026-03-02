@@ -56,11 +56,7 @@ type trackedStream struct {
 }
 
 func (c *trackedStream) Close() error {
-	c.closeOnce.Do(func() {
-		if c.onClose != nil {
-			c.onClose()
-		}
-	})
+	c.closeOnce.Do(c.onClose)
 	return c.ReadWriteCloser.Close()
 }
 
@@ -68,10 +64,6 @@ type ConnectionInfo struct {
 	PeerID     types.PeerKey
 	RemotePort uint32
 	LocalPort  uint32
-}
-
-func connectionKey(peerID, port string) string {
-	return peerID + ":" + port
 }
 
 func New(transport StreamTransport) *Manager {
@@ -114,12 +106,8 @@ func (m *Manager) handleIncomingStream(peerID types.PeerKey, stream io.ReadWrite
 		return
 	}
 
-	tracked := &trackedStream{}
-	tracked.ReadWriteCloser = stream
-	tracked.onClose = func() {
-		m.removeActiveStream(port, tracked)
-	}
-	stream = tracked
+	tracked := &trackedStream{ReadWriteCloser: stream}
+	tracked.onClose = func() { m.removeActiveStream(port, tracked) }
 	m.addActiveStream(port, tracked)
 
 	m.serviceMu.RLock()
@@ -128,11 +116,11 @@ func (m *Manager) handleIncomingStream(peerID types.PeerKey, stream io.ReadWrite
 
 	if !ok {
 		m.log.Warnw("no handler for incoming stream", "peer", peerID.Short(), "port", port)
-		_ = stream.Close()
+		_ = tracked.Close()
 		return
 	}
 
-	h.fn(stream)
+	h.fn(tracked)
 }
 
 func readServicePort(r io.Reader) (uint32, error) {
@@ -188,9 +176,6 @@ func (m *Manager) RegisterService(port uint32) {
 }
 
 func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
-	if m.transport == nil {
-		return 0, errors.New("stream transport unavailable")
-	}
 	if remotePort == 0 || remotePort > 0xffff {
 		return 0, errors.New("remote port missing")
 	}
@@ -201,22 +186,18 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 	// TODO(saml): use a map keyed by peerID:remotePort instead of iterating all connections
 	for _, h := range m.connections {
 		if h.peerID == peerID && h.remote == remotePort {
-			return 0, fmt.Errorf("already connected to port %d on peer %s (local port %d)", remotePort, peerID.String()[:8], h.local)
+			return 0, fmt.Errorf("already connected to port %d on peer %s (local port %d)", remotePort, peerID.Short(), h.local)
 		}
 	}
 
 	ctx, cancelFn := context.WithCancel(context.Background())
-	var ln net.Listener
-	var err error
-	var requestedLocal uint32
 
-	if localPort > 0 {
-		requestedLocal = localPort
-	} else {
-		requestedLocal = remotePort
+	listenPort := localPort
+	if listenPort == 0 {
+		listenPort = remotePort
 	}
 
-	ln, err = (&net.ListenConfig{}).Listen(ctx, "tcp", ":"+strconv.FormatUint(uint64(requestedLocal), 10))
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", ":"+strconv.FormatUint(uint64(listenPort), 10))
 	if err != nil && localPort == 0 {
 		ln, err = (&net.ListenConfig{}).Listen(ctx, "tcp", ":0")
 	}
@@ -249,13 +230,13 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 			go func() {
 				stream, err := m.transport.OpenStream(ctx, peerID)
 				if err != nil {
-					logger.Warnw("open stream failed", "peer", peerID.String()[:8], "port", remotePort, "err", err)
+					logger.Warnw("open stream failed", "peer", peerID.Short(), "port", remotePort, "err", err)
 					_ = clientConn.Close()
 					return
 				}
 
 				if err := writeServicePort(stream, remotePort); err != nil {
-					logger.Warnw("write stream header failed", "peer", peerID.String()[:8], "port", remotePort, "err", err)
+					logger.Warnw("write stream header failed", "peer", peerID.Short(), "port", remotePort, "err", err)
 					_ = stream.Close()
 					_ = clientConn.Close()
 					return
@@ -266,7 +247,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 		}
 	}()
 
-	m.connections[connectionKey(peerID.String(), boundPortStr)] = connectionHandler{
+	m.connections[peerID.String()+":"+boundPortStr] = connectionHandler{
 		cancel: cancelFn,
 		peerID: peerID,
 		remote: remotePort,
@@ -274,7 +255,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 		ln:     ln,
 	}
 
-	m.log.Infow("connected to service", "peer", peerID.String()[:8], "port", remotePort, "local_port", boundPort)
+	m.log.Infow("connected to service", "peer", peerID.Short(), "port", remotePort, "local_port", boundPort)
 	return uint32(boundPort), nil
 }
 
@@ -294,49 +275,31 @@ func (m *Manager) ListConnections() []ConnectionInfo {
 }
 
 func (m *Manager) DisconnectLocalPort(port uint32) bool {
-	m.connectionMu.Lock()
-	defer m.connectionMu.Unlock()
+	return m.disconnectWhere(func(h connectionHandler) bool { return h.local == port }) > 0
+}
 
-	var key string
-	var handler connectionHandler
-	found := false
-	for k, h := range m.connections {
-		if h.local == port {
-			key = k
-			handler = h
-			found = true
-			break
-		}
-	}
-	if !found {
-		return false
-	}
-	delete(m.connections, key)
-	if handler.ln != nil {
-		_ = handler.ln.Close()
-	}
-	handler.cancel()
-	return true
+func (m *Manager) DisconnectPeer(peerID types.PeerKey) int {
+	return m.disconnectWhere(func(h connectionHandler) bool { return h.peerID == peerID })
 }
 
 func (m *Manager) DisconnectRemoteService(peerID types.PeerKey, remotePort uint32) int {
+	return m.disconnectWhere(func(h connectionHandler) bool {
+		return h.peerID == peerID && h.remote == remotePort
+	})
+}
+
+func (m *Manager) disconnectWhere(match func(connectionHandler) bool) int {
 	m.connectionMu.Lock()
 	defer m.connectionMu.Unlock()
 
 	removed := 0
-	keys := make([]string, 0, len(m.connections))
-	for key, handler := range m.connections {
-		if handler.peerID == peerID && handler.remote == remotePort {
-			if handler.ln != nil {
-				_ = handler.ln.Close()
-			}
-			handler.cancel()
-			keys = append(keys, key)
+	for key, h := range m.connections {
+		if match(h) {
+			_ = h.ln.Close()
+			h.cancel()
+			delete(m.connections, key)
 			removed++
 		}
-	}
-	for _, key := range keys {
-		delete(m.connections, key)
 	}
 	return removed
 }
@@ -345,14 +308,13 @@ func (m *Manager) UnregisterService(port uint32) bool {
 	m.serviceMu.Lock()
 	defer m.serviceMu.Unlock()
 
-	if h, ok := m.services[port]; ok {
+	h, ok := m.services[port]
+	if ok {
 		h.cancel()
 		delete(m.services, port)
-		m.closeServiceStreams(port)
-		return true
 	}
 	m.closeServiceStreams(port)
-	return false
+	return ok
 }
 
 func (m *Manager) closeServiceStreams(port uint32) {
@@ -399,9 +361,7 @@ func (m *Manager) Close() {
 
 	m.connectionMu.Lock()
 	for _, h := range m.connections {
-		if h.ln != nil {
-			_ = h.ln.Close()
-		}
+		_ = h.ln.Close()
 		h.cancel()
 	}
 	m.connectionMu.Unlock()

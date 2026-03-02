@@ -53,6 +53,9 @@ const (
 	// ControlServiceConnectPeerProcedure is the fully-qualified name of the ControlService's
 	// ConnectPeer RPC.
 	ControlServiceConnectPeerProcedure = "/pollen.control.v1.ControlService/ConnectPeer"
+	// ControlServiceRevokePeerProcedure is the fully-qualified name of the ControlService's RevokePeer
+	// RPC.
+	ControlServiceRevokePeerProcedure = "/pollen.control.v1.ControlService/RevokePeer"
 )
 
 // ControlServiceClient is a client for the pollen.control.v1.ControlService service.
@@ -64,6 +67,7 @@ type ControlServiceClient interface {
 	UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error)
 	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
 	ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error)
+	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
 }
 
 // NewControlServiceClient constructs a client for the pollen.control.v1.ControlService service. By
@@ -119,6 +123,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("ConnectPeer")),
 			connect.WithClientOptions(opts...),
 		),
+		revokePeer: connect.NewClient[v1.RevokePeerRequest, v1.RevokePeerResponse](
+			httpClient,
+			baseURL+ControlServiceRevokePeerProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("RevokePeer")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -131,6 +141,7 @@ type controlServiceClient struct {
 	unregisterService *connect.Client[v1.UnregisterServiceRequest, v1.UnregisterServiceResponse]
 	connectService    *connect.Client[v1.ConnectServiceRequest, v1.ConnectServiceResponse]
 	connectPeer       *connect.Client[v1.ConnectPeerRequest, v1.ConnectPeerResponse]
+	revokePeer        *connect.Client[v1.RevokePeerRequest, v1.RevokePeerResponse]
 }
 
 // Shutdown calls pollen.control.v1.ControlService.Shutdown.
@@ -168,6 +179,11 @@ func (c *controlServiceClient) ConnectPeer(ctx context.Context, req *connect.Req
 	return c.connectPeer.CallUnary(ctx, req)
 }
 
+// RevokePeer calls pollen.control.v1.ControlService.RevokePeer.
+func (c *controlServiceClient) RevokePeer(ctx context.Context, req *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error) {
+	return c.revokePeer.CallUnary(ctx, req)
+}
+
 // ControlServiceHandler is an implementation of the pollen.control.v1.ControlService service.
 type ControlServiceHandler interface {
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
@@ -177,6 +193,7 @@ type ControlServiceHandler interface {
 	UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error)
 	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
 	ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error)
+	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
 }
 
 // NewControlServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -228,6 +245,12 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("ConnectPeer")),
 		connect.WithHandlerOptions(opts...),
 	)
+	controlServiceRevokePeerHandler := connect.NewUnaryHandler(
+		ControlServiceRevokePeerProcedure,
+		svc.RevokePeer,
+		connect.WithSchema(controlServiceMethods.ByName("RevokePeer")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/pollen.control.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ControlServiceShutdownProcedure:
@@ -244,6 +267,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceConnectServiceHandler.ServeHTTP(w, r)
 		case ControlServiceConnectPeerProcedure:
 			controlServiceConnectPeerHandler.ServeHTTP(w, r)
+		case ControlServiceRevokePeerProcedure:
+			controlServiceRevokePeerHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -279,4 +304,8 @@ func (UnimplementedControlServiceHandler) ConnectService(context.Context, *conne
 
 func (UnimplementedControlServiceHandler) ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.ConnectPeer is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.RevokePeer is not implemented"))
 }

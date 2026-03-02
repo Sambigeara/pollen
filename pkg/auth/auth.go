@@ -17,6 +17,7 @@ import (
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/perm"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -33,23 +34,37 @@ const (
 	pemTypeAdminPriv = "POLLEN ADMIN ED25519 PRIVATE KEY"
 	pemTypeAdminPub  = "POLLEN ADMIN ED25519 PUBLIC KEY"
 
-	keyDirPerm  = 0o700
 	keyFilePerm = 0o600
 
-	bootstrapMembershipTTL = 365 * 24 * time.Hour
-	defaultAdminCertTTL    = 5 * 365 * 24 * time.Hour
-	timeSkewAllowance      = time.Minute
+	timeSkewAllowance = time.Minute
 
 	sigContextAdminCert  = "pollen.admin.v1"
 	sigContextMembership = "pollen.membership.v1"
 	sigContextJoinClaims = "pollen.join.v1"
 	sigContextInvite     = "pollen.invite.v1"
+	sigContextRevocation = "pollen.revocation.v1"
 )
 
 var (
 	ErrCredentialsNotFound = errors.New("node membership credentials not found")
 	ErrDifferentCluster    = errors.New("node already has membership credentials for a different cluster")
 )
+
+func CertExpiresAt(cert *admissionv1.MembershipCert) time.Time {
+	return time.Unix(cert.GetClaims().GetNotAfterUnix(), 0)
+}
+
+func IsCertExpiredAt(expiresAt, now time.Time) bool {
+	return now.After(expiresAt.Add(timeSkewAllowance))
+}
+
+func IsMembershipCertExpired(cert *admissionv1.MembershipCert, now time.Time) bool {
+	return IsCertExpiredAt(CertExpiresAt(cert), now)
+}
+
+func IsCertNonRenewable(cert *admissionv1.MembershipCert) bool {
+	return cert.GetClaims().GetNonRenewable()
+}
 
 type NodeCredentials struct {
 	Trust        *admissionv1.TrustBundle
@@ -69,7 +84,31 @@ func EnsureNodeCredentialsFromToken(pollenDir string, nodePub ed25519.PublicKey,
 		return nil, err
 	}
 
-	return ensureNodeCredentialsFromToken(pollenDir, nodePub, token, now, existing)
+	verified, err := VerifyJoinToken(token, nodePub, now)
+	if err != nil {
+		return nil, err
+	}
+
+	creds := &NodeCredentials{
+		Trust: verified.Trust,
+		Cert:  verified.Cert,
+	}
+
+	if existing != nil {
+		if !proto.Equal(existing.Trust, creds.Trust) {
+			return nil, ErrDifferentCluster
+		}
+		if VerifyMembershipCert(existing.Cert, existing.Trust, now, nodePub) == nil &&
+			existing.Cert.GetClaims().GetNotAfterUnix() >= creds.Cert.GetClaims().GetNotAfterUnix() {
+			return existing, nil
+		}
+	}
+
+	if err := SaveNodeCredentials(pollenDir, creds); err != nil {
+		return nil, err
+	}
+
+	return creds, nil
 }
 
 func LoadOrEnrollNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, token *admissionv1.JoinToken, now time.Time) (*NodeCredentials, error) {
@@ -80,7 +119,7 @@ func LoadOrEnrollNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, to
 	return EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
 }
 
-func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now time.Time) (*NodeCredentials, error) {
+func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now time.Time, membershipTTL, adminCertTTL time.Duration) (*NodeCredentials, error) {
 	existing, err := loadNodeCredentialsIfPresent(pollenDir)
 	if err != nil {
 		return nil, err
@@ -99,7 +138,7 @@ func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now
 	}
 
 	trust := NewTrustBundle(adminPub)
-	cert, err := IssueMembershipCert(adminPriv, trust.GetClusterId(), nodePub, now.Add(-timeSkewAllowance), now.Add(bootstrapMembershipTTL))
+	cert, err := IssueMembershipCert(adminPriv, trust.GetClusterId(), nodePub, now.Add(-timeSkewAllowance), now.Add(membershipTTL), adminCertTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -118,40 +157,6 @@ func loadNodeCredentialsIfPresent(pollenDir string) (*NodeCredentials, error) {
 		if errors.Is(err, ErrCredentialsNotFound) {
 			return nil, nil
 		}
-		return nil, err
-	}
-
-	return creds, nil
-}
-
-func ensureNodeCredentialsFromToken(
-	pollenDir string,
-	nodePub ed25519.PublicKey,
-	token *admissionv1.JoinToken,
-	now time.Time,
-	existing *NodeCredentials,
-) (*NodeCredentials, error) {
-	verified, err := VerifyJoinToken(token, nodePub, now)
-	if err != nil {
-		return nil, err
-	}
-
-	creds := &NodeCredentials{
-		Trust: verified.Trust,
-		Cert:  verified.Cert,
-	}
-
-	if existing != nil {
-		if !proto.Equal(existing.Trust, creds.Trust) {
-			return nil, ErrDifferentCluster
-		}
-
-		if err := VerifyMembershipCert(existing.Cert, existing.Trust, now, nodePub); err == nil {
-			return existing, nil
-		}
-	}
-
-	if err := SaveNodeCredentials(pollenDir, creds); err != nil {
 		return nil, err
 	}
 
@@ -209,9 +214,8 @@ func loadNodeCredentials(pollenDir string) (*NodeCredentials, error) {
 }
 
 func SaveNodeCredentials(pollenDir string, creds *NodeCredentials) error {
-	// TODO(saml) state refactor
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
+	if err := perm.EnsureDir(dir); err != nil {
 		return err
 	}
 
@@ -225,18 +229,11 @@ func SaveNodeCredentials(pollenDir string, creds *NodeCredentials) error {
 		return err
 	}
 
-	trustPath := filepath.Join(dir, trustBundleName)
-	certPath := filepath.Join(dir, membershipCertName)
-
-	if err := os.WriteFile(trustPath, trustRaw, keyFilePerm); err != nil {
+	if err := perm.WriteGroupReadable(filepath.Join(dir, trustBundleName), trustRaw); err != nil {
 		return err
 	}
 
-	if err := os.WriteFile(certPath, certRaw, keyFilePerm); err != nil {
-		return err
-	}
-
-	return nil
+	return perm.WriteGroupReadable(filepath.Join(dir, membershipCertName), certRaw)
 }
 
 func LoadAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
@@ -271,11 +268,7 @@ func LoadAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, erro
 	}
 	pub := ed25519.PublicKey(pubBlock.Bytes)
 
-	derivedPub, ok := priv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, nil, errors.New("admin private key is not ed25519")
-	}
-	if !bytes.Equal(derivedPub, pub) {
+	if !bytes.Equal(priv.Public().(ed25519.PublicKey), pub) { //nolint:forcetypeassert
 		return nil, nil, errors.New("admin keypair mismatch")
 	}
 
@@ -292,7 +285,7 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 	}
 
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := os.MkdirAll(dir, keyDirPerm); err != nil {
+	if err := perm.EnsureDir(dir); err != nil {
 		return nil, nil, err
 	}
 
@@ -318,6 +311,10 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 		return nil, nil, err
 	}
 
+	if err := perm.SetPrivate(privPath); err != nil {
+		return nil, nil, err
+	}
+
 	pubFile, err := os.OpenFile(pubPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, keyFilePerm)
 	if err != nil {
 		return nil, nil, err
@@ -332,19 +329,23 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 		return nil, nil, err
 	}
 
+	if err := perm.SetGroupReadable(pubPath); err != nil {
+		return nil, nil, err
+	}
+
 	return priv, pub, nil
 }
 
-func NewTrustBundle(genesisPub ed25519.PublicKey) *admissionv1.TrustBundle {
-	clusterID := sha256.Sum256(genesisPub)
+func NewTrustBundle(rootPub ed25519.PublicKey) *admissionv1.TrustBundle {
+	clusterID := sha256.Sum256(rootPub)
 	return &admissionv1.TrustBundle{
-		ClusterId:  clusterID[:],
-		GenesisPub: genesisPub,
+		ClusterId: clusterID[:],
+		RootPub:   rootPub,
 	}
 }
 
 func IssueAdminCert(
-	genesisPriv ed25519.PrivateKey,
+	rootPriv ed25519.PrivateKey,
 	clusterID []byte,
 	adminPub ed25519.PublicKey,
 	notBefore time.Time,
@@ -368,7 +369,7 @@ func IssueAdminCert(
 		return nil, err
 	}
 
-	sig, err := signPayload(genesisPriv, msg, sigContextAdminCert)
+	sig, err := signPayload(rootPriv, msg, sigContextAdminCert)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +382,7 @@ func VerifyAdminCert(
 	now time.Time,
 ) error {
 	if cert == nil {
-		return errors.New("admin cert missing claims")
+		return errors.New("admin cert is nil")
 	}
 	if err := protovalidate.Validate(cert); err != nil {
 		return fmt.Errorf("admin cert invalid: %w", err)
@@ -391,7 +392,7 @@ func VerifyAdminCert(
 	if err != nil {
 		return err
 	}
-	if err := verifyPayload(ed25519.PublicKey(trust.GetGenesisPub()), msg, cert.GetSignature(), sigContextAdminCert); err != nil {
+	if err := verifyPayload(ed25519.PublicKey(trust.GetRootPub()), msg, cert.GetSignature(), sigContextAdminCert); err != nil {
 		return errors.New("admin cert signature invalid")
 	}
 
@@ -410,11 +411,9 @@ func IssueMembershipCert(
 	subject ed25519.PublicKey,
 	notBefore time.Time,
 	notAfter time.Time,
+	adminCertTTL time.Duration,
 ) (*admissionv1.MembershipCert, error) {
-	adminPub, ok := adminPriv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("admin private key is not ed25519")
-	}
+	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	now := time.Now()
 	issuer, err := IssueAdminCert(
@@ -422,13 +421,13 @@ func IssueMembershipCert(
 		clusterID,
 		adminPub,
 		now.Add(-timeSkewAllowance),
-		now.Add(defaultAdminCertTTL),
+		now.Add(adminCertTTL),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	return IssueMembershipCertWithIssuer(adminPriv, issuer, clusterID, subject, notBefore, notAfter)
+	return IssueMembershipCertWithIssuer(adminPriv, issuer, clusterID, subject, notBefore, notAfter, false)
 }
 
 func IssueMembershipCertWithIssuer(
@@ -438,6 +437,7 @@ func IssueMembershipCertWithIssuer(
 	subject ed25519.PublicKey,
 	notBefore time.Time,
 	notAfter time.Time,
+	nonRenewable bool,
 ) (*admissionv1.MembershipCert, error) {
 	if len(clusterID) != sha256.Size {
 		return nil, errors.New("invalid cluster id length")
@@ -449,10 +449,7 @@ func IssueMembershipCertWithIssuer(
 		return nil, errors.New("invalid membership certificate validity window")
 	}
 
-	adminPub, ok := adminPriv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("admin private key is not ed25519")
-	}
+	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	if issuer == nil || issuer.GetClaims() == nil {
 		return nil, errors.New("missing issuer admin cert")
@@ -476,6 +473,7 @@ func IssueMembershipCertWithIssuer(
 		NotBeforeUnix:  notBefore.Unix(),
 		NotAfterUnix:   notAfter.Unix(),
 		Serial:         serial,
+		NonRenewable:   nonRenewable,
 	}
 
 	msg, err := signaturePayload(claims)
@@ -496,9 +494,9 @@ func IssueMembershipCertWithIssuer(
 
 func VerifyMembershipCert(cert *admissionv1.MembershipCert, trust *admissionv1.TrustBundle, now time.Time, expectedSubject []byte) error {
 	// trust is the verification root, not extra metadata: it anchors issuer
-	// verification at genesis_pub and binds the cert to this cluster_id.
+	// verification at root_pub and binds the cert to this cluster_id.
 	if cert == nil {
-		return errors.New("membership cert missing claims")
+		return errors.New("membership cert is nil")
 	}
 	if err := protovalidate.Validate(cert); err != nil {
 		return fmt.Errorf("membership cert invalid: %w", err)
@@ -542,18 +540,17 @@ func IssueJoinToken(
 	bootstrap []*admissionv1.BootstrapPeer,
 	now time.Time,
 	tokenTTL time.Duration,
+	membershipTTL time.Duration,
+	adminCertTTL time.Duration,
 ) (*admissionv1.JoinToken, error) {
 	if trust == nil {
 		return nil, errors.New("missing trust bundle")
 	}
 
-	adminPub, ok := adminPriv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("admin private key is not ed25519")
-	}
+	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
-	if !bytes.Equal(adminPub, trust.GetGenesisPub()) {
-		return nil, errors.New("issuer admin certificate required for non-genesis admin key")
+	if !bytes.Equal(adminPub, trust.GetRootPub()) {
+		return nil, errors.New("issuer admin certificate required for non-root admin key")
 	}
 
 	issuer, err := IssueAdminCert(
@@ -561,13 +558,13 @@ func IssueJoinToken(
 		trust.GetClusterId(),
 		adminPub,
 		now.Add(-timeSkewAllowance),
-		now.Add(defaultAdminCertTTL),
+		now.Add(adminCertTTL),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	return IssueJoinTokenWithIssuer(adminPriv, trust, issuer, subject, bootstrap, now, tokenTTL)
+	return IssueJoinTokenWithIssuer(adminPriv, trust, issuer, subject, bootstrap, now, tokenTTL, membershipTTL, false)
 }
 
 func IssueJoinTokenWithIssuer(
@@ -578,14 +575,13 @@ func IssueJoinTokenWithIssuer(
 	bootstrap []*admissionv1.BootstrapPeer,
 	now time.Time,
 	tokenTTL time.Duration,
+	membershipTTL time.Duration,
+	nonRenewable bool,
 ) (*admissionv1.JoinToken, error) {
 	if tokenTTL <= 0 {
 		return nil, errors.New("token ttl must be positive")
 	}
 
-	if _, ok := adminPriv.Public().(ed25519.PublicKey); !ok {
-		return nil, errors.New("admin private key is not ed25519")
-	}
 	if err := VerifyAdminCert(issuer, trust, now); err != nil {
 		return nil, fmt.Errorf("issuer admin cert invalid: %w", err)
 	}
@@ -596,7 +592,8 @@ func IssueJoinTokenWithIssuer(
 		trust.GetClusterId(),
 		subject,
 		now.Add(-timeSkewAllowance),
-		now.Add(bootstrapMembershipTTL),
+		now.Add(membershipTTL),
+		nonRenewable,
 	)
 	if err != nil {
 		return nil, err
@@ -693,6 +690,65 @@ func DecodeJoinToken(s string) (*admissionv1.JoinToken, error) {
 	return token, nil
 }
 
+func IssueRevocation(
+	adminPriv ed25519.PrivateKey,
+	clusterID []byte,
+	subjectPub ed25519.PublicKey,
+	now time.Time,
+) (*admissionv1.SignedRevocation, error) {
+	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
+
+	entry := &admissionv1.RevocationEntry{
+		ClusterId:      clusterID,
+		SubjectPub:     subjectPub,
+		RevokedAtUnix:  now.Unix(),
+		IssuerAdminPub: adminPub,
+	}
+
+	msg, err := signaturePayload(entry)
+	if err != nil {
+		return nil, err
+	}
+
+	sig, err := signPayload(adminPriv, msg, sigContextRevocation)
+	if err != nil {
+		return nil, err
+	}
+
+	return &admissionv1.SignedRevocation{Entry: entry, Signature: sig}, nil
+}
+
+func VerifyRevocation(rev *admissionv1.SignedRevocation, trust *admissionv1.TrustBundle) error {
+	if rev == nil {
+		return errors.New("revocation is nil")
+	}
+	if err := protovalidate.Validate(rev); err != nil {
+		return fmt.Errorf("revocation invalid: %w", err)
+	}
+
+	entry := rev.GetEntry()
+	if !bytes.Equal(entry.GetClusterId(), trust.GetClusterId()) {
+		return errors.New("revocation not scoped to cluster")
+	}
+
+	issuerPub := entry.GetIssuerAdminPub()
+	// The issuer must be the cluster root admin (revocations are a root-level operation).
+	if !bytes.Equal(issuerPub, trust.GetRootPub()) {
+		return errors.New("revocation not signed by cluster root admin")
+	}
+
+	msg, err := signaturePayload(entry)
+	if err != nil {
+		return err
+	}
+
+	if err := verifyPayload(ed25519.PublicKey(issuerPub), msg, rev.GetSignature(), sigContextRevocation); err != nil {
+		return errors.New("revocation signature invalid")
+	}
+
+	return nil
+}
+
 func validateTrustBundle(trust *admissionv1.TrustBundle) error {
 	if trust == nil {
 		return errors.New("missing trust bundle")
@@ -701,7 +757,7 @@ func validateTrustBundle(trust *admissionv1.TrustBundle) error {
 		return fmt.Errorf("trust bundle invalid: %w", err)
 	}
 
-	expectedClusterID := sha256.Sum256(trust.GetGenesisPub())
+	expectedClusterID := sha256.Sum256(trust.GetRootPub())
 	if !bytes.Equal(expectedClusterID[:], trust.GetClusterId()) {
 		return errors.New("trust bundle cluster id mismatch")
 	}
@@ -722,11 +778,7 @@ func randomSerial() (uint64, error) {
 }
 
 func signaturePayload(msg proto.Message) ([]byte, error) {
-	b, err := (proto.MarshalOptions{Deterministic: true}).Marshal(msg)
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
+	return (proto.MarshalOptions{Deterministic: true}).Marshal(msg)
 }
 
 func signPayload(privateKey ed25519.PrivateKey, payload []byte, context string) ([]byte, error) {

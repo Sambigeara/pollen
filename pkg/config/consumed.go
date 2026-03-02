@@ -2,16 +2,19 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/perm"
 )
 
 const (
@@ -82,10 +85,14 @@ func (c *ConsumedInvites) TryConsume(token *admissionv1.InviteToken, now time.Ti
 	return true, nil
 }
 
+func isConsumedExpired(rec consumedInviteRecord, nowUnix int64) bool {
+	return rec.ExpiresAtUnix > 0 && rec.ExpiresAtUnix+int64(consumedExpirySkew/time.Second) < nowUnix
+}
+
 func (c *ConsumedInvites) dropExpired(now time.Time) {
 	nowUnix := now.Unix()
 	for tokenID, rec := range c.entries {
-		if rec.ExpiresAtUnix > 0 && rec.ExpiresAtUnix+int64(consumedExpirySkew/time.Second) < nowUnix {
+		if isConsumedExpired(rec, nowUnix) {
 			delete(c.entries, tokenID)
 		}
 	}
@@ -115,7 +122,7 @@ func readConsumedEntries(path string, now time.Time) (map[string]consumedInviteR
 		if rec.TokenID == "" {
 			continue
 		}
-		if rec.ExpiresAtUnix > 0 && rec.ExpiresAtUnix+int64(consumedExpirySkew/time.Second) < nowUnix {
+		if isConsumedExpired(rec, nowUnix) {
 			continue
 		}
 		entries[rec.TokenID] = rec
@@ -125,20 +132,13 @@ func readConsumedEntries(path string, now time.Time) (map[string]consumedInviteR
 }
 
 func writeConsumedEntries(path string, entries map[string]consumedInviteRecord) error {
-	state := consumedInviteState{Invites: make([]consumedInviteRecord, 0, len(entries))}
-	for _, rec := range entries {
-		state.Invites = append(state.Invites, rec)
-	}
-	sort.Slice(state.Invites, func(i, j int) bool {
-		a := state.Invites[i]
-		b := state.Invites[j]
-		if a.TokenID != b.TokenID {
-			return a.TokenID < b.TokenID
-		}
-		return a.ConsumedAtUnix < b.ConsumedAtUnix
+	invites := slices.Collect(maps.Values(entries))
+	slices.SortFunc(invites, func(a, b consumedInviteRecord) int {
+		return cmp.Compare(a.TokenID, b.TokenID)
 	})
+	state := consumedInviteState{Invites: invites}
 
-	if err := os.MkdirAll(filepath.Dir(path), directoryPerm); err != nil {
+	if err := perm.EnsureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("create consumed invites directory: %w", err)
 	}
 
@@ -148,13 +148,5 @@ func writeConsumedEntries(path string, entries map[string]consumedInviteRecord) 
 	}
 	encoded = append(encoded, '\n')
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, encoded, configFilePerm); err != nil {
-		return fmt.Errorf("write consumed invites: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("replace consumed invites: %w", err)
-	}
-
-	return nil
+	return perm.WritePrivate(path, encoded)
 }

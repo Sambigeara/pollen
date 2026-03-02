@@ -5,23 +5,23 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/perm"
 	"gopkg.in/yaml.v3"
 )
 
 const (
 	configFileName        = "config.yaml"
 	DefaultBootstrapPort  = 60611
-	directoryPerm         = 0o700
-	configFilePerm        = 0o600
 	ed25519PublicKeyBytes = 32
 )
 
@@ -30,8 +30,37 @@ type BootstrapPeer struct {
 	Addrs   []string `yaml:"addrs,omitempty"`
 }
 
+type CertTTLs struct {
+	Membership  time.Duration `yaml:"membership,omitempty"`
+	Admin       time.Duration `yaml:"admin,omitempty"`
+	TLSIdentity time.Duration `yaml:"tlsIdentity,omitempty"`
+}
+
+const (
+	DefaultMembershipTTL  = 365 * 24 * time.Hour
+	DefaultAdminTTL       = 5 * 365 * 24 * time.Hour
+	DefaultTLSIdentityTTL = 10 * 365 * 24 * time.Hour //nolint:mnd
+)
+
+func ttlOrDefault(ttl, fallback time.Duration) time.Duration {
+	if ttl == 0 {
+		return fallback
+	}
+	return ttl
+}
+
+func (c CertTTLs) MembershipTTL() time.Duration {
+	return ttlOrDefault(c.Membership, DefaultMembershipTTL)
+}
+func (c CertTTLs) AdminTTL() time.Duration { return ttlOrDefault(c.Admin, DefaultAdminTTL) }
+func (c CertTTLs) TLSIdentityTTL() time.Duration {
+	return ttlOrDefault(c.TLSIdentity, DefaultTLSIdentityTTL)
+}
+
 type Config struct {
 	BootstrapPeers []BootstrapPeer `yaml:"bootstrapPeers,omitempty"`
+	CertTTLs       CertTTLs        `yaml:"certTTLs,omitempty"` //nolint:tagliatelle
+	Public         bool            `yaml:"public,omitempty"`
 }
 
 func Load(pollenDir string) (*Config, error) {
@@ -52,6 +81,9 @@ func Load(pollenDir string) (*Config, error) {
 	if err := yaml.Unmarshal(raw, cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
+	if err := validateCertTTLs(cfg.CertTTLs); err != nil {
+		return nil, err
+	}
 
 	canonical, err := canonicalizeBootstrapPeers(cfg.BootstrapPeers)
 	if err != nil {
@@ -66,13 +98,17 @@ func Save(pollenDir string, cfg *Config) error {
 		cfg = &Config{}
 	}
 
+	if err := validateCertTTLs(cfg.CertTTLs); err != nil {
+		return err
+	}
+
 	canonical, err := canonicalizeBootstrapPeers(cfg.BootstrapPeers)
 	if err != nil {
 		return err
 	}
 	cfg.BootstrapPeers = canonical
 
-	if err := os.MkdirAll(pollenDir, directoryPerm); err != nil {
+	if err := perm.EnsureDir(pollenDir); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
@@ -81,15 +117,19 @@ func Save(pollenDir string, cfg *Config) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	path := filepath.Join(pollenDir, configFileName)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, encoded, configFilePerm); err != nil {
-		return fmt.Errorf("write temp config: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("replace config: %w", err)
-	}
+	return perm.WritePrivate(filepath.Join(pollenDir, configFileName), encoded)
+}
 
+func validateCertTTLs(ttls CertTTLs) error {
+	if ttls.Membership < 0 {
+		return errors.New("certTTLs.membership must be >= 0")
+	}
+	if ttls.Admin < 0 {
+		return errors.New("certTTLs.admin must be >= 0")
+	}
+	if ttls.TLSIdentity < 0 {
+		return errors.New("certTTLs.tlsIdentity must be >= 0")
+	}
 	return nil
 }
 
@@ -173,25 +213,14 @@ func canonicalizeBootstrapPeers(peers []BootstrapPeer) ([]BootstrapPeer, error) 
 		}
 	}
 
-	peerHexes := make([]string, 0, len(byPeer))
-	for peerHex := range byPeer {
-		peerHexes = append(peerHexes, peerHex)
-	}
-	sort.Strings(peerHexes)
+	peerHexes := slices.Sorted(maps.Keys(byPeer))
 
 	out := make([]BootstrapPeer, 0, len(peerHexes))
 	for _, peerHex := range peerHexes {
-		addrsSet := byPeer[peerHex]
-		if len(addrsSet) == 0 {
+		addrs := slices.Sorted(maps.Keys(byPeer[peerHex]))
+		if len(addrs) == 0 {
 			return nil, fmt.Errorf("bootstrap peer %s has no addresses", peerHex)
 		}
-
-		addrs := make([]string, 0, len(addrsSet))
-		for addr := range addrsSet {
-			addrs = append(addrs, strings.TrimSpace(addr))
-		}
-		sort.Strings(addrs)
-
 		out = append(out, BootstrapPeer{
 			PeerPub: peerHex,
 			Addrs:   addrs,

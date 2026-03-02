@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -19,9 +20,12 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
+// ErrIdentityMismatch is returned when a peer presents a different public key
+// than the one we expected (e.g., IP reuse after instance replacement).
+var ErrIdentityMismatch = errors.New("peer identity mismatch")
+
 const (
 	certSerialBits = 128
-	certValidity   = 10 * 365 * 24 * time.Hour
 
 	alpnMesh   = "pollen/1"
 	alpnInvite = "pollen-invite/1"
@@ -69,11 +73,8 @@ func parseMembershipExtension(certDER []byte) (*admissionv1.MembershipCert, erro
 	return nil, nil
 }
 
-func generateIdentityCert(signPriv ed25519.PrivateKey, membershipCert *admissionv1.MembershipCert) (tls.Certificate, error) {
-	pub, ok := signPriv.Public().(ed25519.PublicKey)
-	if !ok {
-		return tls.Certificate{}, errors.New("identity private key is not ed25519")
-	}
+func GenerateIdentityCert(signPriv ed25519.PrivateKey, membershipCert *admissionv1.MembershipCert, validity time.Duration) (tls.Certificate, error) {
+	pub := signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), certSerialBits))
 	if err != nil {
@@ -85,7 +86,7 @@ func generateIdentityCert(signPriv ed25519.PrivateKey, membershipCert *admission
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: "pollen-peer"},
 		NotBefore:    now.Add(-time.Hour),
-		NotAfter:     now.Add(certValidity),
+		NotAfter:     now.Add(validity),
 
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
@@ -143,24 +144,46 @@ func peerKeyFromConn(qc *quic.Conn) (types.PeerKey, error) {
 	return types.PeerKeyFromBytes(pub), nil
 }
 
+func membershipCertFromConn(qc *quic.Conn) *admissionv1.MembershipCert {
+	tlsState := qc.ConnectionState().TLS
+	if len(tlsState.PeerCertificates) == 0 {
+		return nil
+	}
+	mc, err := parseMembershipExtension(tlsState.PeerCertificates[0].Raw)
+	if err != nil || mc == nil {
+		return nil
+	}
+	return mc
+}
+
 type verifyMeshPeerOpts struct {
-	trustBundle  *admissionv1.TrustBundle
-	expectedPeer *types.PeerKey
+	trustBundle      *admissionv1.TrustBundle
+	expectedPeer     *types.PeerKey
+	isSubjectRevoked func(subjectPub []byte) bool
+}
+
+func verifyPeerIdentity(rawCerts [][]byte, expectedPeer *types.PeerKey) (types.PeerKey, error) {
+	if len(rawCerts) == 0 {
+		return types.PeerKey{}, errors.New("no peer certificate presented")
+	}
+
+	peerKey, err := peerKeyFromRawCert(rawCerts[0])
+	if err != nil {
+		return types.PeerKey{}, err
+	}
+
+	if expectedPeer != nil && peerKey != *expectedPeer {
+		return types.PeerKey{}, fmt.Errorf("%w: expected %s got %s", ErrIdentityMismatch, expectedPeer.Short(), peerKey.Short())
+	}
+
+	return peerKey, nil
 }
 
 func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		if len(rawCerts) == 0 {
-			return errors.New("no peer certificate presented")
-		}
-
-		peerKey, err := peerKeyFromRawCert(rawCerts[0])
+		peerKey, err := verifyPeerIdentity(rawCerts, opts.expectedPeer)
 		if err != nil {
 			return err
-		}
-
-		if opts.expectedPeer != nil && peerKey != *opts.expectedPeer {
-			return fmt.Errorf("peer identity mismatch: expected %s got %s", opts.expectedPeer.Short(), peerKey.Short())
 		}
 
 		mc, err := parseMembershipExtension(rawCerts[0])
@@ -175,44 +198,42 @@ func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certif
 			return err
 		}
 
+		if mc.GetClaims() != nil && opts.isSubjectRevoked != nil {
+			if opts.isSubjectRevoked(mc.GetClaims().GetSubjectPub()) {
+				return errors.New("peer membership certificate has been revoked")
+			}
+		}
+
 		return nil
 	}
 }
 
 func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		if len(rawCerts) == 0 {
-			return errors.New("no peer certificate presented")
-		}
-
-		peerKey, err := peerKeyFromRawCert(rawCerts[0])
-		if err != nil {
-			return err
-		}
-
-		if expectedPeer != nil && peerKey != *expectedPeer {
-			return fmt.Errorf("peer identity mismatch: expected %s got %s", expectedPeer.Short(), peerKey.Short())
-		}
-
-		return nil
+		_, err := verifyPeerIdentity(rawCerts, expectedPeer)
+		return err
 	}
 }
 
 type serverTLSParams struct {
-	meshCert      tls.Certificate
-	inviteCert    tls.Certificate
-	trustBundle   *admissionv1.TrustBundle
-	inviteEnabled bool
+	meshCertPtr      *atomic.Pointer[tls.Certificate]
+	inviteCert       tls.Certificate
+	trustBundle      *admissionv1.TrustBundle
+	isSubjectRevoked func([]byte) bool
+	inviteEnabled    bool
 }
 
 func newServerTLSConfig(p serverTLSParams) *tls.Config {
 	meshConfig := &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		Certificates: []tls.Certificate{p.meshCert},
-		ClientAuth:   tls.RequireAnyClientCert,
-		NextProtos:   []string{alpnMesh},
+		MinVersion: tls.VersionTLS13,
+		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return p.meshCertPtr.Load(), nil
+		},
+		ClientAuth: tls.RequireAnyClientCert,
+		NextProtos: []string{alpnMesh},
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{
-			trustBundle: p.trustBundle,
+			trustBundle:      p.trustBundle,
+			isSubjectRevoked: p.isSubjectRevoked,
 		}),
 	}
 
@@ -241,15 +262,21 @@ func newServerTLSConfig(p serverTLSParams) *tls.Config {
 	}
 }
 
-func newExpectedPeerTLSConfig(ourCert tls.Certificate, expectedPeer types.PeerKey, trustBundle *admissionv1.TrustBundle) *tls.Config {
+func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expectedPeer types.PeerKey, trustBundle *admissionv1.TrustBundle, isSubjectRevoked func([]byte) bool) *tls.Config {
 	return &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		Certificates:       []tls.Certificate{ourCert},
+		MinVersion: tls.VersionTLS13,
+		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return certPtr.Load(), nil
+		},
+		GetClientCertificate: func(_ *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return certPtr.Load(), nil
+		},
 		InsecureSkipVerify: true, //nolint:gosec
 		NextProtos:         []string{alpnMesh},
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{
-			trustBundle:  trustBundle,
-			expectedPeer: &expectedPeer,
+			trustBundle:      trustBundle,
+			expectedPeer:     &expectedPeer,
+			isSubjectRevoked: isSubjectRevoked,
 		}),
 	}
 }

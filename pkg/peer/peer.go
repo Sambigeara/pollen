@@ -23,6 +23,7 @@ type ConnectStage int
 
 const (
 	ConnectStageUnspecified ConnectStage = iota
+	ConnectStageEagerRetry
 	ConnectStageDirect
 	ConnectStagePunch
 )
@@ -30,12 +31,21 @@ const (
 type Peer struct {
 	NextActionAt  time.Time
 	ConnectedAt   time.Time
+	LastAddr      *net.UDPAddr
 	Ips           []net.IP
 	ObservedPort  int
 	State         PeerState
 	Stage         ConnectStage
 	StageAttempts int
 	ID            types.PeerKey
+}
+
+func (p *Peer) resetStage() {
+	if p.LastAddr != nil {
+		p.Stage = ConnectStageEagerRetry
+	} else {
+		p.Stage = ConnectStageDirect
+	}
 }
 
 type Store struct {
@@ -57,9 +67,10 @@ type Input interface{ isInput() }
 // DiscoverPeer adds a new peer or updates known addresses for an existing peer.
 // Used on startup (from disk) or when learning about a peer from gossip.
 type DiscoverPeer struct {
-	Ips     []net.IP
-	Port    int
-	PeerKey types.PeerKey
+	LastAddr *net.UDPAddr
+	Ips      []net.IP
+	Port     int
+	PeerKey  types.PeerKey
 }
 
 func (DiscoverPeer) isInput() {}
@@ -74,6 +85,7 @@ type ConnectPeer struct {
 	IP           net.IP
 	ObservedPort int
 	PeerKey      types.PeerKey
+	Inbound      bool
 }
 
 func (ConnectPeer) isInput() {}
@@ -88,10 +100,12 @@ func (ConnectFailed) isInput() {}
 type DisconnectReason int
 
 const (
-	DisconnectUnknown     DisconnectReason = iota
-	DisconnectIdleTimeout                  // peer likely still alive, transient loss
-	DisconnectReset                        // peer rebooted (stateless reset)
-	DisconnectGraceful                     // clean app-level close
+	DisconnectUnknown      DisconnectReason = iota
+	DisconnectIdleTimeout                   // peer likely still alive, transient loss
+	DisconnectReset                         // peer rebooted (stateless reset)
+	DisconnectGraceful                      // clean app-level close
+	DisconnectCertRotation                  // forced reconnection for cert rotation
+	DisconnectCertExpired                   // peer membership cert expired
 )
 
 func (r DisconnectReason) String() string {
@@ -102,6 +116,10 @@ func (r DisconnectReason) String() string {
 		return "stateless_reset"
 	case DisconnectGraceful:
 		return "graceful"
+	case DisconnectCertRotation:
+		return "cert_rotation"
+	case DisconnectCertExpired:
+		return "cert_expired"
 	default:
 		return "unknown"
 	}
@@ -128,6 +146,7 @@ type PeerConnected struct {
 	IP           net.IP
 	ObservedPort int
 	PeerKey      types.PeerKey
+	Inbound      bool
 }
 
 func (PeerConnected) isOutput() {}
@@ -140,6 +159,14 @@ type AttemptConnect struct {
 }
 
 func (AttemptConnect) isOutput() {}
+
+// AttemptEagerConnect signals the caller should try connecting to a previously-known address.
+type AttemptEagerConnect struct {
+	Addr    *net.UDPAddr
+	PeerKey types.PeerKey
+}
+
+func (AttemptEagerConnect) isOutput() {}
 
 // RequestPunchCoordination signals the caller should request NAT punch coordination.
 type RequestPunchCoordination struct {
@@ -154,8 +181,9 @@ const (
 	maxBackoff   = 60 * time.Second
 	firstBackoff = 500 * time.Millisecond
 
-	directAttemptThreshold = 2
-	punchAttemptThreshold  = 2
+	eagerRetryAttemptThreshold = 1
+	directAttemptThreshold     = 2
+	punchAttemptThreshold      = 2
 
 	unreachableRetryInterval        = 20 * time.Second
 	idleTimeoutRetryInterval        = 1 * time.Second
@@ -164,12 +192,11 @@ const (
 	unknownDisconnectRetryInterval  = 3 * time.Second
 )
 
-func (s *Store) backoff(attempts int) time.Duration {
+func backoff(attempts int) time.Duration {
 	if attempts == 0 {
 		return firstBackoff
 	}
-	d := min(baseBackoff*(1<<(attempts-1)), maxBackoff)
-	return d
+	return min(baseBackoff*(1<<(attempts-1)), maxBackoff)
 }
 
 func (s *Store) Step(now time.Time, in Input) []Output {
@@ -199,14 +226,16 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
 	p, exists := s.m[e.PeerKey]
 	if !exists {
-		s.m[e.PeerKey] = &Peer{
+		p := &Peer{
 			ID:           e.PeerKey,
 			State:        PeerStateDiscovered,
-			Stage:        ConnectStageDirect,
+			LastAddr:     e.LastAddr,
 			Ips:          e.Ips,
-			ObservedPort: e.Port, // we don't know if the port is observed at this point
-			NextActionAt: now,    // eligible for connection immediately
+			ObservedPort: e.Port,
+			NextActionAt: now, // eligible for connection immediately
 		}
+		p.resetStage()
+		s.m[e.PeerKey] = p
 		return
 	}
 
@@ -214,6 +243,9 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
 	p.Ips = e.Ips
 	if e.Port != 0 {
 		p.ObservedPort = e.Port
+	}
+	if e.LastAddr != nil {
+		p.LastAddr = e.LastAddr
 	}
 }
 
@@ -228,14 +260,15 @@ func (s *Store) tick(now time.Time) []Output {
 		case PeerStateConnected, PeerStateConnecting:
 			continue
 		case PeerStateUnreachable:
-			// Retry unreachable peers after backoff expires
 			p.State = PeerStateDiscovered
-			p.Stage = ConnectStageDirect
+			p.resetStage()
 			p.StageAttempts = 0
 		}
 
 		var out Output
 		switch p.Stage {
+		case ConnectStageEagerRetry:
+			out = AttemptEagerConnect{PeerKey: p.ID, Addr: p.LastAddr}
 		case ConnectStageUnspecified, ConnectStageDirect:
 			out = AttemptConnect{PeerKey: p.ID, Ips: p.Ips, Port: p.ObservedPort}
 		case ConnectStagePunch:
@@ -259,6 +292,7 @@ func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 	p.State = PeerStateConnected
 	p.Ips = []net.IP{e.IP}
 	p.ObservedPort = e.ObservedPort
+	p.LastAddr = &net.UDPAddr{IP: e.IP, Port: e.ObservedPort}
 	p.ConnectedAt = now
 	p.Stage = ConnectStageDirect // reset for next time
 	p.StageAttempts = 0
@@ -276,6 +310,12 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) {
 
 	// Check if we should escalate to next stage
 	switch p.Stage {
+	case ConnectStageEagerRetry:
+		if p.StageAttempts >= eagerRetryAttemptThreshold {
+			s.log.Debugw("eager retry failed, falling back to direct", "peer", e.PeerKey.Short())
+			p.Stage = ConnectStageDirect
+			p.StageAttempts = 0
+		}
 	case ConnectStageDirect, ConnectStageUnspecified:
 		if p.StageAttempts >= directAttemptThreshold {
 			s.log.Debugw("escalating to punch", "peer", e.PeerKey.Short())
@@ -292,7 +332,7 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) {
 		}
 	}
 
-	p.NextActionAt = now.Add(s.backoff(p.StageAttempts))
+	p.NextActionAt = now.Add(backoff(p.StageAttempts))
 	p.State = PeerStateDiscovered // eligible for retry after backoff
 }
 
@@ -310,6 +350,10 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 		delay = resetRetryInterval
 	case DisconnectGraceful:
 		delay = gracefulDisconnectRetryInterval
+	case DisconnectCertRotation:
+		delay = idleTimeoutRetryInterval
+	case DisconnectCertExpired:
+		delay = unknownDisconnectRetryInterval
 	}
 
 	s.log.Debugw("scheduling reconnect",
@@ -318,7 +362,7 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 	)
 
 	p.State = PeerStateDiscovered
-	p.Stage = ConnectStageDirect
+	p.resetStage()
 	p.StageAttempts = 0
 	p.NextActionAt = now.Add(delay)
 }
@@ -326,12 +370,13 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 func (s *Store) retryPeer(now time.Time, e RetryPeer) {
 	p, exists := s.m[e.PeerKey]
 	if !exists {
-		s.m[e.PeerKey] = &Peer{
+		p := &Peer{
 			ID:           e.PeerKey,
 			State:        PeerStateDiscovered,
-			Stage:        ConnectStageDirect,
 			NextActionAt: now,
 		}
+		p.resetStage()
+		s.m[e.PeerKey] = p
 		return
 	}
 
@@ -340,7 +385,7 @@ func (s *Store) retryPeer(now time.Time, e RetryPeer) {
 	}
 
 	p.State = PeerStateDiscovered
-	p.Stage = ConnectStageDirect
+	p.resetStage()
 	p.StageAttempts = 0
 	p.NextActionAt = now
 }

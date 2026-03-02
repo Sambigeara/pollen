@@ -3,7 +3,6 @@ package mesh
 import (
 	"context"
 	"crypto/ed25519"
-	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -11,19 +10,17 @@ import (
 	"github.com/quic-go/quic-go"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
 func RedeemInvite(ctx context.Context, signPriv ed25519.PrivateKey, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
-	bareCert, err := generateIdentityCert(signPriv, nil)
+	bareCert, err := GenerateIdentityCert(signPriv, nil, config.CertTTLs{}.TLSIdentityTTL())
 	if err != nil {
 		return nil, err
 	}
 
-	subjectPub, ok := signPriv.Public().(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("identity private key is not ed25519")
-	}
+	subjectPub := signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	conn, err := net.ListenUDP("udp", nil)
 	if err != nil {

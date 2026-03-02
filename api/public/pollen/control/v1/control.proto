@@ -14,6 +14,7 @@ service ControlService {
   rpc UnregisterService(UnregisterServiceRequest) returns (UnregisterServiceResponse);
   rpc ConnectService(ConnectServiceRequest) returns (ConnectServiceResponse);
   rpc ConnectPeer(ConnectPeerRequest) returns (ConnectPeerResponse);
+  rpc RevokePeer(RevokePeerRequest) returns (RevokePeerResponse);
 }
 
 message NodeRef {
@@ -31,6 +32,7 @@ message NodeSummary {
   NodeRef node = 1;
   NodeStatus status = 2;
   string addr = 3;
+  bool publicly_accessible = 4;
 }
 
 message ServiceSummary {
@@ -58,15 +60,33 @@ message BootstrapPeerInfo {
 
 message GetBootstrapInfoResponse {
   BootstrapPeerInfo self = 1;
+  BootstrapPeerInfo recommended = 2;
 }
 
 message GetStatusRequest {}
+
+enum CertHealth {
+  CERT_HEALTH_UNSPECIFIED = 0;
+  CERT_HEALTH_OK = 1;
+  CERT_HEALTH_EXPIRING_SOON = 2;
+  CERT_HEALTH_EXPIRED = 3;
+  CERT_HEALTH_RENEWING = 4;
+}
+
+message CertInfo {
+  int64 not_before_unix = 1;
+  int64 not_after_unix = 2;
+  uint64 serial = 3;
+  CertHealth health = 4;
+  bool non_renewable = 5;
+}
 
 message GetStatusResponse {
   NodeSummary self = 1;
   repeated NodeSummary nodes = 2;
   repeated ServiceSummary services = 3;
   repeated ConnectionSummary connections = 4;
+  repeated CertInfo certificates = 5;
 }
 
 message ConnectionSummary {
@@ -127,3 +147,9 @@ message ConnectServiceResponse {
     lte: 65535
   }];
 }
+
+message RevokePeerRequest {
+  bytes peer_id = 1 [(buf.validate.field).bytes = {len: 32}];
+}
+
+message RevokePeerResponse {}

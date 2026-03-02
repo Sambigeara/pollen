@@ -3,6 +3,7 @@ syntax = "proto3";
 package pollen.state.v1;
 
 import "buf/validate/validate.proto";
+import "pollen/admission/v1/admission.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1";
 
@@ -39,8 +40,15 @@ message ExternalPortChange {
   uint32 external_port = 1;
 }
 
+message PubliclyAccessibleChange {}
+
 message IdentityChange {
   bytes identity_pub = 1 [(buf.validate.field).bytes = {len: 32}];
+  int64 cert_expiry_unix = 2;
+}
+
+message RevocationChange {
+  pollen.admission.v1.SignedRevocation revocation = 1 [(buf.validate.field).required = true];
 }
 
 message GossipEvent {
@@ -55,6 +63,8 @@ message GossipEvent {
     IdentityChange identity_pub = 5;
     ServiceChange service = 6;
     ReachabilityChange reachability = 7;
+    RevocationChange revocation = 9;
+    PubliclyAccessibleChange publicly_accessible = 10;
   }
   bool deleted = 8;
 }
