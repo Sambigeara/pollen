@@ -195,9 +195,13 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 	}
 
 	msg := "membership expires in " + humanDuration(remaining)
+	if health == controlv1.CertHealth_CERT_HEALTH_RENEWING {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render( //nolint:mnd
+			msg + " — auto-renewal in progress")
+	}
 	if health == controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render( //nolint:mnd
-			msg + " — rejoin the cluster or contact a cluster admin")
+			msg + " — auto-renewal failed — rejoin the cluster or contact a cluster admin")
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg) //nolint:mnd
 }

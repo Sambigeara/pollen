@@ -481,7 +481,7 @@ func runNode(cmd *cobra.Command) {
 		MaxConnectionAge: defaultMaxConnectionAge,
 	}
 
-	n, err := node.New(conf, privKey, creds, stateStore, peer.NewStore())
+	n, err := node.New(conf, privKey, creds, stateStore, peer.NewStore(), pollenDir)
 	if err != nil {
 		logger.Fatal(err)
 	}

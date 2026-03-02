@@ -132,6 +132,10 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		switch {
 		case remaining <= 0:
 			health = controlv1.CertHealth_CERT_HEALTH_EXPIRED
+		case remaining <= certCriticalThreshold:
+			health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
+		case remaining <= certWarnThreshold && !s.node.renewalFailed.Load():
+			health = controlv1.CertHealth_CERT_HEALTH_RENEWING
 		case remaining <= certWarnThreshold:
 			health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
 		}

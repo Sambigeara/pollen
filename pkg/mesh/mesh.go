@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -63,15 +64,18 @@ type Mesh interface {
 	ClosePeerSession(peerKey types.PeerKey)
 	ListenPort() int
 	BroadcastDisconnect() error
+	UpdateMeshCert(cert tls.Certificate)
+	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.MembershipCert, error)
 	Close() error
 }
 
 type impl struct {
-	meshCert         tls.Certificate
+	meshCert         atomic.Pointer[tls.Certificate]
 	bareCert         tls.Certificate
 	socks            sock.SockStore
 	inCh             chan peer.Input
 	recvCh           chan Packet
+	renewalCh        chan *meshv1.CertRenewalResponse
 	inviteSigner     *auth.AdminSigner
 	isSubjectRevoked func([]byte) bool
 	streamCh         chan incomingStream
@@ -107,33 +111,36 @@ type directDialResult struct {
 }
 
 func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsIdentityTTL, membershipTTL, maxConnectionAge time.Duration, isSubjectRevoked func([]byte) bool) (Mesh, error) {
-	meshCert, err := generateIdentityCert(signPriv, creds.Cert, tlsIdentityTTL)
+	meshCert, err := GenerateIdentityCert(signPriv, creds.Cert, tlsIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate mesh cert: %w", err)
 	}
 
-	bareCert, err := generateIdentityCert(signPriv, nil, tlsIdentityTTL)
+	bareCert, err := GenerateIdentityCert(signPriv, nil, tlsIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate bare cert: %w", err)
 	}
 
-	return &impl{
+	localKey := types.PeerKeyFromBytes(signPriv.Public().(ed25519.PublicKey)) //nolint:forcetypeassert
+	m := &impl{
 		log:              zap.S().Named("mesh"),
-		meshCert:         meshCert,
 		bareCert:         bareCert,
 		trustBundle:      creds.Trust,
 		inviteSigner:     creds.InviteSigner,
 		isSubjectRevoked: isSubjectRevoked,
-		localKey:         types.PeerKeyFromBytes(signPriv.Public().(ed25519.PublicKey)), //nolint:forcetypeassert
+		localKey:         localKey,
 		socks:            sock.NewSockStore(),
 		port:             defaultPort,
 		membershipTTL:    membershipTTL,
 		maxConnectionAge: maxConnectionAge,
 		sessions:         newSessionRegistry(),
 		recvCh:           make(chan Packet, queueBufSize),
+		renewalCh:        make(chan *meshv1.CertRenewalResponse, 1),
 		inCh:             make(chan peer.Input, queueBufSize),
 		streamCh:         make(chan incomingStream, queueBufSize),
-	}, nil
+	}
+	m.meshCert.Store(&meshCert)
+	return m, nil
 }
 
 func (m *impl) Start(ctx context.Context) error {
@@ -144,7 +151,7 @@ func (m *impl) Start(ctx context.Context) error {
 
 	qt := &quic.Transport{Conn: conn}
 	ln, err := qt.Listen(newServerTLSConfig(serverTLSParams{
-		meshCert:         m.meshCert,
+		meshCertPtr:      &m.meshCert,
 		inviteCert:       m.bareCert,
 		trustBundle:      m.trustBundle,
 		isSubjectRevoked: m.isSubjectRevoked,
@@ -208,7 +215,7 @@ func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteClo
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
+	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
 	qCfg := quicConfig()
 
 	qc, err := m.mainQT.Dial(ctx, addr, tlsCfg, qCfg)
@@ -225,7 +232,7 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 }
 
 func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
+	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
 	qCfg := quicConfig()
 
 	conn, err := m.socks.Punch(ctx, addr)
@@ -570,6 +577,14 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 			continue
 		}
 
+		if resp, ok := env.GetBody().(*meshv1.Envelope_CertRenewalResponse); ok {
+			select {
+			case m.renewalCh <- resp.CertRenewalResponse:
+			default:
+			}
+			continue
+		}
+
 		select {
 		case m.recvCh <- Packet{Peer: peerKey, Envelope: env}:
 		case <-ctx.Done():
@@ -657,6 +672,51 @@ func (m *impl) handleInviteConnection(ctx context.Context, qc *quic.Conn, peerKe
 	if err := m.handleInviteRedeem(qc, peerKey, body.InviteRedeemRequest); err != nil {
 		m.log.Debugw("rejected invite", "peer", peerKey.Short(), "err", err)
 		_ = qc.CloseWithError(0, "invite failed")
+	}
+}
+
+func (m *impl) UpdateMeshCert(cert tls.Certificate) {
+	m.meshCert.Store(&cert)
+}
+
+func (m *impl) RequestCertRenewal(ctx context.Context, peerKey types.PeerKey) (*admissionv1.MembershipCert, error) {
+	s, ok := m.sessions.get(peerKey)
+	if !ok {
+		return nil, fmt.Errorf("no connection to peer %s", peerKey.Short())
+	}
+
+	currentCert := m.meshCert.Load()
+	var currentCertRaw []byte
+	if len(currentCert.Certificate) > 0 {
+		currentCertRaw = currentCert.Certificate[0]
+	}
+
+	if err := sendEnvelope(s.conn, &meshv1.Envelope{
+		Body: &meshv1.Envelope_CertRenewalRequest{
+			CertRenewalRequest: &meshv1.CertRenewalRequest{
+				SubjectPub:  m.localKey.Bytes(),
+				CurrentCert: currentCertRaw,
+			},
+		},
+	}); err != nil {
+		return nil, fmt.Errorf("send renewal request: %w", err)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancel()
+
+	select {
+	case resp := <-m.renewalCh:
+		if !resp.GetAccepted() {
+			reason := resp.GetReason()
+			if reason == "" {
+				reason = "renewal rejected"
+			}
+			return nil, errors.New(reason)
+		}
+		return resp.GetCert(), nil
+	case <-waitCtx.Done():
+		return nil, fmt.Errorf("recv renewal response: %w", waitCtx.Err())
 	}
 }
 

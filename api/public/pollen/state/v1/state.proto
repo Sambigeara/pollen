@@ -44,6 +44,7 @@ message PubliclyAccessibleChange {}
 
 message IdentityChange {
   bytes identity_pub = 1 [(buf.validate.field).bytes = {len: 32}];
+  int64 cert_expiry_unix = 2;
 }
 
 message RevocationChange {

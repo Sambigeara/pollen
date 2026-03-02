@@ -32,6 +32,17 @@ message ObservedAddress {
   string addr = 1;
 }
 
+message CertRenewalRequest {
+  bytes subject_pub = 1;
+  bytes current_cert = 2;
+}
+
+message CertRenewalResponse {
+  bool accepted = 1;
+  string reason = 2;
+  pollen.admission.v1.MembershipCert cert = 3;
+}
+
 message Envelope {
   oneof body {
     pollen.state.v1.GossipVectorClock clock = 1;
@@ -41,5 +52,7 @@ message Envelope {
     InviteRedeemResponse invite_redeem_response = 7;
     ObservedAddress observed_address = 8;
     pollen.state.v1.GossipEventBatch events = 9;
+    CertRenewalRequest cert_renewal_request = 10;
+    CertRenewalResponse cert_renewal_response = 11;
   }
 }
