@@ -10,11 +10,12 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestStore(pub []byte, trustBundle *admissionv1.TrustBundle) *Store {
 	localID := types.PeerKeyFromBytes(pub)
-	return &Store{
+	s := &Store{
 		LocalID: localID,
 		nodes: map[types.PeerKey]nodeRecord{
 			localID: {
@@ -31,6 +32,11 @@ func newTestStore(pub []byte, trustBundle *admissionv1.TrustBundle) *Store {
 		trustBundle:        trustBundle,
 		desiredConnections: make(map[string]Connection),
 	}
+	local := s.nodes[localID]
+	local.maxCounter++
+	local.log[publiclyAccessibleAttrKey()] = logEntry{Counter: local.maxCounter, Deleted: true}
+	s.nodes[localID] = local
+	return s
 }
 
 // applyEvent is a test convenience for applying a single gossip event.
@@ -68,16 +74,10 @@ func TestEagerSyncClock(t *testing.T) {
 
 	clock = s.EagerSyncClock()
 	counters := clock.GetCounters()
-	if len(counters) != 2 {
-		t.Fatalf("expected 2 entries in clock, got %d", len(counters))
-	}
-	if counters[s.LocalID.String()] != 1 {
-		t.Fatalf("expected local counter=1, got %d", counters[s.LocalID.String()])
-	}
+	require.Len(t, counters, 2)
+	require.Equal(t, uint64(2), counters[s.LocalID.String()])
 	peerPK, _ := peerKey(2)
-	if counters[peerPK.String()] != 5 {
-		t.Fatalf("expected remote counter=5, got %d", counters[peerPK.String()])
-	}
+	require.Equal(t, uint64(5), counters[peerPK.String()])
 }
 
 func TestSetLocalNetworkReturnsEvent(t *testing.T) {
@@ -86,24 +86,14 @@ func TestSetLocalNetworkReturnsEvent(t *testing.T) {
 	s := newTestStore(pub, nil)
 
 	events := s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
+	require.Len(t, events, 1)
 
 	ev := events[0]
-	if ev.GetCounter() != 2 {
-		t.Fatalf("expected counter=2, got %d", ev.GetCounter())
-	}
+	require.Equal(t, uint64(3), ev.GetCounter())
 	network := ev.GetNetwork()
-	if network == nil {
-		t.Fatal("expected network value, got nil")
-	}
-	if len(network.GetIps()) != 1 || network.GetIps()[0] != "10.0.0.1" {
-		t.Fatalf("unexpected IPs: %v", network.GetIps())
-	}
-	if network.GetLocalPort() != 9000 {
-		t.Fatalf("expected port 9000, got %d", network.GetLocalPort())
-	}
+	require.NotNil(t, network)
+	require.Equal(t, []string{"10.0.0.1"}, network.GetIps())
+	require.Equal(t, uint32(9000), network.GetLocalPort())
 }
 
 func TestSetLocalNetworkNoOpWhenUnchanged(t *testing.T) {
@@ -360,10 +350,8 @@ func TestApplyEventSelfStateConflict(t *testing.T) {
 	}
 
 	rec := s.nodes[localID]
-	// Adopted 10, then bumped once per attribute: net(11) + id(12) = MaxCounter 12.
-	if rec.maxCounter != 12 {
-		t.Fatalf("expected MaxCounter=12 (adopted 10 + 2 attributes), got %d", rec.maxCounter)
-	}
+	// Adopted 10, then bumped once per attribute: net(11) + id(12) + pa(13) = MaxCounter 13.
+	require.Equal(t, uint64(13), rec.maxCounter)
 }
 
 func TestApplyEventSelfStateNoConflict(t *testing.T) {
@@ -402,9 +390,7 @@ func TestMissingForReturnsEvents(t *testing.T) {
 		},
 	})
 
-	if len(events) != 3 {
-		t.Fatalf("expected 3 events, got %d", len(events))
-	}
+	require.Len(t, events, 4)
 }
 
 func TestMissingForRespectsClock(t *testing.T) {
@@ -412,22 +398,18 @@ func TestMissingForRespectsClock(t *testing.T) {
 	pub[0] = 1
 	s := newTestStore(pub, nil)
 
-	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=2
-	s.SetExternalPort(45000)                      // counter=3
+	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=3
+	s.SetExternalPort(45000)                      // counter=4
 
-	// Remote has counter=2 — should only get events with counter > 2.
+	// Remote has counter=3 — should only get events with counter > 3.
 	events := s.MissingFor(&statev1.GossipVectorClock{
 		Counters: map[string]uint64{
-			s.LocalID.String(): 2,
+			s.LocalID.String(): 3,
 		},
 	})
 
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].GetExternalPort().GetExternalPort() != 45000 {
-		t.Fatalf("expected ext event with port 45000, got %v", events[0].GetExternalPort())
-	}
+	require.Len(t, events, 1)
+	require.Equal(t, uint32(45000), events[0].GetExternalPort().GetExternalPort())
 }
 
 func TestMissingForReturnsNilForUpToDate(t *testing.T) {
@@ -435,17 +417,15 @@ func TestMissingForReturnsNilForUpToDate(t *testing.T) {
 	pub[0] = 1
 	s := newTestStore(pub, nil)
 
-	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=2
+	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=3
 
 	events := s.MissingFor(&statev1.GossipVectorClock{
 		Counters: map[string]uint64{
-			s.LocalID.String(): 2,
+			s.LocalID.String(): 3,
 		},
 	})
 
-	if len(events) != 0 {
-		t.Fatalf("expected 0 events for up-to-date peer, got %d", len(events))
-	}
+	require.Empty(t, events)
 }
 
 func TestClockUsesMaxCounter(t *testing.T) {
@@ -453,14 +433,11 @@ func TestClockUsesMaxCounter(t *testing.T) {
 	pub[0] = 1
 	s := newTestStore(pub, nil)
 
-	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=2
-	s.SetExternalPort(45000)                      // counter=3
+	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=3
+	s.SetExternalPort(45000)                      // counter=4
 
 	clock := s.Clock()
-	c := clock.GetCounters()[s.LocalID.String()]
-	if c != 3 {
-		t.Fatalf("expected clock counter=3, got %d", c)
-	}
+	require.Equal(t, uint64(4), clock.GetCounters()[s.LocalID.String()])
 }
 
 func TestUpsertLocalServiceReturnsEvent(t *testing.T) {
@@ -960,6 +937,31 @@ func TestPubliclyAccessibleConflictRecovery(t *testing.T) {
 	if !found {
 		t.Fatal("rebroadcast should include publicly_accessible event")
 	}
+}
+
+func TestFreshStoreGossipsPubliclyAccessibleDeletion(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	s, err := Load(t.TempDir(), pub, nil)
+	require.NoError(t, err)
+	defer s.Close()
+
+	// A peer that knows nothing about us (counter 0) should receive
+	// the seeded PubliclyAccessible deletion event on the first sync.
+	missing := s.MissingFor(&statev1.GossipVectorClock{
+		Counters: map[string]uint64{s.LocalID.String(): 0},
+	})
+
+	var found bool
+	for _, ev := range missing {
+		if ev.GetPubliclyAccessible() != nil && ev.GetDeleted() {
+			require.Equal(t, uint64(2), ev.GetCounter())
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "fresh store should gossip a PubliclyAccessible deletion to peers with stale state")
 }
 
 func newTestClusterAuth(t *testing.T) (ed25519.PrivateKey, *admissionv1.TrustBundle) {
