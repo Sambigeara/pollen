@@ -15,6 +15,9 @@ builds:
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - src: packaging/pln.newsyslog.conf
+        dst: .
 checksum:
   name_template: checksums.txt
 nfpms:
@@ -40,6 +43,7 @@ brews:
     description: "Mesh network daemon"
     install: |
       bin.install "pln"
+      (etc/"newsyslog.d").install "pln.newsyslog.conf"
     service: |
       run [opt_bin/"pln", "up"]
       keep_alive true

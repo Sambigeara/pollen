@@ -53,7 +53,12 @@ if [ "$OS" = "linux" ]; then
         RPM_URL="https://github.com/$REPO/releases/download/${VERSION}/pln_${PKG_VER}_linux_${ARCH}.rpm"
         sudo "$RPM_MGR" install -y "$RPM_URL"
     else
-        fatal "No supported package manager found (apt, dnf, or yum)."
+        log "No supported package manager found. Installing from tarball..."
+        TAR_URL="https://github.com/$REPO/releases/download/${VERSION}/pln_${PKG_VER}_linux_${ARCH}.tar.gz"
+        curl -sL "$TAR_URL" -o /tmp/pln.tar.gz
+        sudo tar -xzf /tmp/pln.tar.gz -C /usr/local/bin pln
+        rm -f /tmp/pln.tar.gz
+        log "WARNING: No systemd service installed. You must manage the pln process manually."
     fi
 
     sudo usermod -aG pln "$(whoami)" 2>/dev/null || true

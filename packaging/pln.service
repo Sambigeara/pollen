@@ -6,11 +6,46 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=pln
+Group=pln
 ExecStart=/usr/bin/pln --dir /var/lib/pln up
 Restart=on-failure
 RestartSec=5
+
+# systemd creates /var/lib/pln owned by pln:pln (belt-and-suspenders with postinstall)
+StateDirectory=pln
+StateDirectoryMode=0770
+
+# Mesh daemon may maintain many peer connections.
 LimitNOFILE=1048576
+
+# Filesystem
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+
+# Privilege
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+
+# Network
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Syscall
+SystemCallArchitectures=native
+RestrictNamespaces=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
 
 [Install]
 WantedBy=multi-user.target
