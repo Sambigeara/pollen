@@ -862,9 +862,6 @@ func runInvite(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	if guest {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Guest invite (non-renewable, expires in %s)\n", humanDuration(certTTL))
-	}
 	fmt.Fprint(cmd.OutOrStdout(), encoded)
 }
 
