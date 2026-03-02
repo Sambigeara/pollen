@@ -113,7 +113,7 @@ func main() {
 	)
 
 	if err := rootCmd.Execute(); err != nil {
-		log.Fatalf("failed to execute command: %q", err)
+		os.Exit(1)
 	}
 }
 
