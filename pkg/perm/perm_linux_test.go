@@ -14,24 +14,24 @@ import (
 func TestPollenGIDGroupAbsent(t *testing.T) {
 	// If the pollen group doesn't exist on this machine, pollenGID
 	// must return (0, false, nil) — a clean no-op, not an error.
-	_, err := user.LookupGroup(groupName)
+	_, err := user.Lookup(userName)
 	if err == nil {
-		t.Skip("pln group exists on this host; skipping absent-group test")
+		t.Skip("pln user exists on this host; skipping absent-user test")
 	}
 
-	gid, ok, lookupErr := pollenGID()
+	_, _, ok, lookupErr := pollenIDs()
 	if lookupErr != nil {
-		t.Fatalf("pollenGID returned error for absent group: %v", lookupErr)
+		t.Fatalf("pollenIDs returned error for absent user: %v", lookupErr)
 	}
 	if ok {
-		t.Fatalf("pollenGID returned ok=true for absent group (gid=%d)", gid)
+		t.Fatalf("pollenIDs returned ok=true for absent user")
 	}
 }
 
 func TestSetGroupPermNoOpWhenGroupAbsent(t *testing.T) {
-	_, err := user.LookupGroup(groupName)
+	_, err := user.Lookup(userName)
 	if err == nil {
-		t.Skip("pln group exists on this host; skipping no-op test")
+		t.Skip("pln user exists on this host; skipping no-op test")
 	}
 
 	dir := t.TempDir()
@@ -65,13 +65,13 @@ func TestSetGroupPermNoOpWhenGroupAbsent(t *testing.T) {
 }
 
 func TestSetGroupPermAppliedWhenGroupPresent(t *testing.T) {
-	grp, err := user.LookupGroup(groupName)
+	u, err := user.Lookup(userName)
 	if err != nil {
-		t.Skip("pln group not found; skipping applied-permission test")
+		t.Skip("pln user not found; skipping applied-permission test")
 	}
-	expectedGID, err := strconv.Atoi(grp.Gid)
+	expectedGID, err := strconv.Atoi(u.Gid)
 	if err != nil {
-		t.Fatalf("bad gid %q: %v", grp.Gid, err)
+		t.Fatalf("bad gid %q: %v", u.Gid, err)
 	}
 
 	dir := t.TempDir()
