@@ -84,6 +84,7 @@ func IssueInviteTokenWithSigner(
 	now time.Time,
 	tokenTTL time.Duration,
 	membershipTTL time.Duration,
+	nonRenewable bool,
 ) (*admissionv1.InviteToken, error) {
 	if signer == nil {
 		return nil, errors.New("missing admin signer")
@@ -109,6 +110,7 @@ func IssueInviteTokenWithSigner(
 		IssuedAtUnix:         now.Unix(),
 		ExpiresAtUnix:        now.Add(tokenTTL).Unix(),
 		MembershipTtlSeconds: int64(membershipTTL / time.Second),
+		NonRenewable:         nonRenewable,
 	}
 	if err := protovalidate.Validate(claims); err != nil {
 		return nil, fmt.Errorf("invite token claims invalid: %w", err)

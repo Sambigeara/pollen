@@ -745,12 +745,24 @@ func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32
 func (n *Node) checkCertExpiry() bool {
 	now := time.Now()
 	if auth.IsMembershipCertExpired(n.creds.Cert, now) {
-		n.log.Errorw("membership certificate has expired, shutting down — rejoin the cluster or contact a cluster admin",
-			"expired_at", auth.CertExpiresAt(n.creds.Cert))
+		msg := "membership certificate has expired, shutting down — rejoin the cluster or contact a cluster admin"
+		if auth.IsCertNonRenewable(n.creds.Cert) {
+			msg = "guest membership certificate has expired, shutting down — request a new invite from a cluster admin"
+		}
+		n.log.Errorw(msg, "expired_at", auth.CertExpiresAt(n.creds.Cert))
 		return true
 	}
 
 	remaining := time.Until(auth.CertExpiresAt(n.creds.Cert))
+
+	if auth.IsCertNonRenewable(n.creds.Cert) {
+		if remaining <= certWarnThreshold {
+			n.log.Warnw("non-renewable guest certificate approaching expiry — request a new invite to continue",
+				"expires_in", remaining.Truncate(time.Minute))
+		}
+		return false
+	}
+
 	if remaining <= certWarnThreshold {
 		failed := !n.attemptCertRenewal()
 		n.renewalFailed.Store(failed)
@@ -851,6 +863,11 @@ func (n *Node) handleCertRenewalRequest(ctx context.Context, from types.PeerKey,
 		return
 	}
 
+	if mc, ok := n.mesh.PeerMembershipCert(from); ok && auth.IsCertNonRenewable(mc) {
+		sendReject("certificate is non-renewable — request a new invite from a cluster admin")
+		return
+	}
+
 	now := time.Now()
 	newCert, err := auth.IssueMembershipCertWithIssuer(
 		signer.Priv,
@@ -859,6 +876,7 @@ func (n *Node) handleCertRenewalRequest(ctx context.Context, from types.PeerKey,
 		req.GetSubjectPub(),
 		now.Add(-time.Minute),
 		now.Add(n.conf.MembershipTTL),
+		false,
 	)
 	if err != nil {
 		sendReject(err.Error())

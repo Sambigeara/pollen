@@ -142,6 +142,7 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 		time.Now(),
 		time.Hour,
 		0,
+		false,
 	)
 	require.NoError(t, err)
 
@@ -187,6 +188,7 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 		time.Now().Add(-2*time.Second),
 		time.Second,
 		0,
+		false,
 	)
 	require.NoError(t, err)
 

@@ -555,6 +555,7 @@ type CertInfo struct {
 	NotAfterUnix  int64                  `protobuf:"varint,2,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
 	Serial        uint64                 `protobuf:"varint,3,opt,name=serial,proto3" json:"serial,omitempty"`
 	Health        CertHealth             `protobuf:"varint,4,opt,name=health,proto3,enum=pollen.control.v1.CertHealth" json:"health,omitempty"`
+	NonRenewable  bool                   `protobuf:"varint,5,opt,name=non_renewable,json=nonRenewable,proto3" json:"non_renewable,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -615,6 +616,13 @@ func (x *CertInfo) GetHealth() CertHealth {
 		return x.Health
 	}
 	return CertHealth_CERT_HEALTH_UNSPECIFIED
+}
+
+func (x *CertInfo) GetNonRenewable() bool {
+	if x != nil {
+		return x.NonRenewable
+	}
+	return false
 }
 
 type GetStatusResponse struct {
@@ -1234,12 +1242,13 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x18GetBootstrapInfoResponse\x128\n" +
 	"\x04self\x18\x01 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\x04self\x12F\n" +
 	"\vrecommended\x18\x02 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\vrecommended\"\x12\n" +
-	"\x10GetStatusRequest\"\xa7\x01\n" +
+	"\x10GetStatusRequest\"\xcc\x01\n" +
 	"\bCertInfo\x12&\n" +
 	"\x0fnot_before_unix\x18\x01 \x01(\x03R\rnotBeforeUnix\x12$\n" +
 	"\x0enot_after_unix\x18\x02 \x01(\x03R\fnotAfterUnix\x12\x16\n" +
 	"\x06serial\x18\x03 \x01(\x04R\x06serial\x125\n" +
-	"\x06health\x18\x04 \x01(\x0e2\x1d.pollen.control.v1.CertHealthR\x06health\"\xc5\x02\n" +
+	"\x06health\x18\x04 \x01(\x0e2\x1d.pollen.control.v1.CertHealthR\x06health\x12#\n" +
+	"\rnon_renewable\x18\x05 \x01(\bR\fnonRenewable\"\xc5\x02\n" +
 	"\x11GetStatusResponse\x122\n" +
 	"\x04self\x18\x01 \x01(\v2\x1e.pollen.control.v1.NodeSummaryR\x04self\x124\n" +
 	"\x05nodes\x18\x02 \x03(\v2\x1e.pollen.control.v1.NodeSummaryR\x05nodes\x12=\n" +
