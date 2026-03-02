@@ -45,8 +45,8 @@ const (
 	certCheckInterval     = 1 * time.Hour
 	certWarnThreshold     = 30 * 24 * time.Hour
 	certCriticalThreshold = 7 * 24 * time.Hour
-	peerCertSweepInterval = 1 * time.Hour
 	certRenewalTimeout    = 10 * time.Second
+	expirySweepInterval   = 30 * time.Second
 
 	localKeysDir = "keys"
 
@@ -105,19 +105,20 @@ type publicConfirmation struct {
 }
 
 type Node struct {
+	lastExpirySweep     time.Time
 	mesh                mesh.Mesh
-	punchCh             chan punchRequest
-	store               *store.Store
-	tun                 *tunnel.Manager
+	log                 *zap.SugaredLogger
+	gossipEvents        chan []*statev1.GossipEvent
 	creds               *auth.NodeCredentials
 	localPeerEvents     chan peer.Input
 	peers               *peer.Store
 	conf                *Config
-	log                 *zap.SugaredLogger
-	gossipEvents        chan []*statev1.GossipEvent
+	store               *store.Store
+	tun                 *tunnel.Manager
 	ready               chan struct{}
 	lastEagerSync       map[types.PeerKey]time.Time
 	publicConfirmations map[types.PeerKey]publicConfirmation
+	punchCh             chan punchRequest
 	pollenDir           string
 	signPriv            ed25519.PrivateKey
 	renewalFailed       atomic.Bool
@@ -145,11 +146,6 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 
 	tun := tunnel.New(m)
 
-	stateStore.OnRevocation(func(subject types.PeerKey) {
-		tun.DisconnectPeer(subject)
-		stateStore.RemoveDesiredConnection(subject, 0, 0)
-		go m.ClosePeerSession(subject)
-	})
 	for _, svc := range stateStore.LocalServices() {
 		tun.RegisterService(svc.GetPort())
 	}
@@ -171,6 +167,16 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		lastEagerSync:       make(map[types.PeerKey]time.Time),
 		publicConfirmations: make(map[types.PeerKey]publicConfirmation),
 	}
+
+	stateStore.OnRevocation(func(subject types.PeerKey) {
+		n.tun.DisconnectPeer(subject)
+		stateStore.RemoveDesiredConnection(subject, 0, 0)
+		go n.mesh.ClosePeerSession(subject)
+		select {
+		case n.localPeerEvents <- peer.ForgetPeer{PeerKey: subject}:
+		default:
+		}
+	})
 
 	if conf.BootstrapPublic {
 		stateStore.SetLocalPubliclyAccessible(true)
@@ -219,9 +225,6 @@ func (n *Node) Start(ctx context.Context) error {
 	certCheckTicker := time.NewTicker(certCheckInterval)
 	defer certCheckTicker.Stop()
 
-	peerCertSweepTicker := time.NewTicker(peerCertSweepInterval)
-	defer peerCertSweepTicker.Stop()
-
 	n.tick()
 
 	for {
@@ -238,8 +241,6 @@ func (n *Node) Start(ctx context.Context) error {
 			if n.checkCertExpiry() {
 				return ErrCertExpired
 			}
-		case <-peerCertSweepTicker.C:
-			n.sweepExpiredPeerCerts()
 		case events := <-n.gossipEvents:
 			n.broadcastEvents(ctx, events)
 		case in := <-n.mesh.Events():
@@ -309,10 +310,6 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 			}
 		}
 	case *meshv1.Envelope_Events:
-		if expiry, ok := n.mesh.PeerCertExpiresAt(from); ok && auth.IsCertExpiredAt(expiry, time.Now()) {
-			n.log.Warnw("dropping gossip events from peer with expired cert", "peer", from.Short())
-			return
-		}
 		result := n.store.ApplyEvents(body.Events.GetEvents())
 		if len(result.Rebroadcast) > 0 {
 			n.queueGossipEvents(result.Rebroadcast)
@@ -420,8 +417,11 @@ func (n *Node) refreshIPs() {
 }
 
 func (n *Node) handlePeerInput(in peer.Input) {
-	if d, ok := in.(peer.PeerDisconnected); ok {
+	switch d := in.(type) {
+	case peer.PeerDisconnected:
 		n.queueGossipEvents(n.store.SetLocalConnected(d.PeerKey, false))
+		delete(n.lastEagerSync, d.PeerKey)
+	case peer.ForgetPeer:
 		delete(n.lastEagerSync, d.PeerKey)
 	}
 
@@ -431,6 +431,10 @@ func (n *Node) handlePeerInput(in peer.Input) {
 
 func (n *Node) tick() {
 	n.syncPeersFromState()
+	if time.Since(n.lastExpirySweep) >= expirySweepInterval {
+		n.disconnectExpiredPeers()
+		n.lastExpirySweep = time.Now()
+	}
 	n.reconcileConnections()
 	n.reconcileDesiredConnections()
 	n.evaluatePublicAccessibility()
@@ -919,7 +923,7 @@ func (n *Node) handleCertRenewalRequest(ctx context.Context, from types.PeerKey,
 	})
 }
 
-func (n *Node) sweepExpiredPeerCerts() {
+func (n *Node) disconnectExpiredPeers() {
 	now := time.Now()
 	for _, peerKey := range n.mesh.ConnectedPeers() {
 		expiry, ok := n.mesh.PeerCertExpiresAt(peerKey)
@@ -932,6 +936,7 @@ func (n *Node) sweepExpiredPeerCerts() {
 			n.tun.DisconnectPeer(peerKey)
 			n.mesh.ClosePeerSession(peerKey)
 			n.handlePeerInput(peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertExpired})
+			n.handlePeerInput(peer.ForgetPeer{PeerKey: peerKey})
 		}
 	}
 }

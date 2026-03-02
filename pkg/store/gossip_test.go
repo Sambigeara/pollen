@@ -1171,6 +1171,119 @@ func TestApplyRevocationDuplicateDoesNotFireCallback(t *testing.T) {
 	}
 }
 
+func TestKnownPeersExcludesRevoked(t *testing.T) {
+	adminPriv, trust := newTestClusterAuth(t)
+
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, trust)
+
+	peerPK, peerIDStr := peerKey(2)
+
+	// Add peer with network info so it appears in KnownPeers.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.5"}, LocalPort: 7000},
+		},
+	})
+
+	peers := s.KnownPeers()
+	if len(peers) != 1 || peers[0].PeerID != peerPK {
+		t.Fatalf("expected 1 known peer before revocation, got %d", len(peers))
+	}
+
+	// Revoke the peer.
+	subjectPub := make([]byte, 32)
+	copy(subjectPub, peerPK[:])
+	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
+	s.PublishRevocation(rev)
+
+	peers = s.KnownPeers()
+	if len(peers) != 0 {
+		t.Fatalf("expected 0 known peers after revocation, got %d", len(peers))
+	}
+}
+
+func TestKnownPeersExcludesExpired(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	_, peerIDStr := peerKey(2)
+	_, peer3IDStr := peerKey(3)
+	_, peer4IDStr := peerKey(4)
+
+	// Peer with past CertExpiry — should be excluded.
+	pastExpiry := time.Now().Add(-2 * time.Hour).Unix()
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+		},
+	})
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{
+				IdentityPub:    make([]byte, 32),
+				CertExpiryUnix: pastExpiry,
+			},
+		},
+	})
+
+	// Peer with future CertExpiry — should be included.
+	futureExpiry := time.Now().Add(24 * time.Hour).Unix()
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peer3IDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001},
+		},
+	})
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peer3IDStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{
+				IdentityPub:    make([]byte, 32),
+				CertExpiryUnix: futureExpiry,
+			},
+		},
+	})
+
+	// Peer with CertExpiry == 0 (legacy) — should be included.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peer4IDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.3"}, LocalPort: 9002},
+		},
+	})
+
+	peers := s.KnownPeers()
+	if len(peers) != 2 {
+		t.Fatalf("expected 2 known peers (future + legacy), got %d", len(peers))
+	}
+
+	peerIDs := make(map[types.PeerKey]bool)
+	for _, p := range peers {
+		peerIDs[p.PeerID] = true
+	}
+
+	pk3, _ := peerKey(3)
+	pk4, _ := peerKey(4)
+	if !peerIDs[pk3] {
+		t.Fatal("expected peer with future expiry to be included")
+	}
+	if !peerIDs[pk4] {
+		t.Fatal("expected peer with zero expiry (legacy) to be included")
+	}
+}
+
 func TestLoadRestoresRevocationsFromDisk(t *testing.T) {
 	adminPriv, trust := newTestClusterAuth(t)
 	dir := t.TempDir()

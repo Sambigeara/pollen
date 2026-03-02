@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
@@ -753,16 +754,28 @@ func (s *Store) LocalServices() map[string]*statev1.Service {
 	return maps.Clone(local.Services)
 }
 
+// validNodesLocked returns nodes that are neither revoked nor expired.
+// CertExpiry == 0 (unset/legacy peers) are NOT filtered.
+// Caller must hold s.mu (at least RLock).
+func (s *Store) validNodesLocked() map[types.PeerKey]nodeRecord {
+	now := time.Now()
+	out := make(map[types.PeerKey]nodeRecord, len(s.nodes))
+	for k, v := range s.nodes {
+		if _, revoked := s.revocations[k]; revoked {
+			continue
+		}
+		if v.CertExpiry != 0 && auth.IsCertExpiredAt(time.Unix(v.CertExpiry, 0), now) {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 func (s *Store) AllNodes() map[types.PeerKey]nodeRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make(map[types.PeerKey]nodeRecord, len(s.nodes))
-	for k, v := range s.nodes {
-		if _, revoked := s.revocations[k]; !revoked {
-			out[k] = v
-		}
-	}
-	return out
+	return s.validNodesLocked()
 }
 
 func (s *Store) Get(peerID types.PeerKey) (nodeRecord, bool) {
@@ -818,8 +831,9 @@ func (s *Store) KnownPeers() []KnownPeer {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	known := make([]KnownPeer, 0, len(s.nodes))
-	for peerID, rec := range s.nodes {
+	valid := s.validNodesLocked()
+	known := make([]KnownPeer, 0, len(valid))
+	for peerID, rec := range valid {
 		if peerID == s.LocalID {
 			continue
 		}

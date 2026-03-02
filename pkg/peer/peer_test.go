@@ -225,6 +225,29 @@ func TestEagerRetryWithOnlyLastAddr(t *testing.T) {
 	assert.Equal(t, lastAddr, ec.Addr)
 }
 
+func TestForgetPeer(t *testing.T) {
+	s := NewStore()
+	key := testPeerKey(1)
+	now := time.Now()
+
+	setupConnectedPeer(t, s, key, now)
+
+	p, ok := s.Get(key)
+	require.True(t, ok)
+	assert.Equal(t, PeerStateConnected, p.State)
+
+	// Disconnect, then forget.
+	s.Step(now, PeerDisconnected{PeerKey: key, Reason: DisconnectCertExpired})
+	s.Step(now, ForgetPeer{PeerKey: key})
+
+	_, ok = s.Get(key)
+	assert.False(t, ok, "peer should be removed from store after ForgetPeer")
+
+	// Tick should produce no outputs for the forgotten peer.
+	outputs := s.Step(now.Add(time.Minute), Tick{})
+	assert.Empty(t, outputs)
+}
+
 func TestUnreachableRetryReturnsToEagerWithLastAddr(t *testing.T) {
 	s := NewStore()
 	key := testPeerKey(1)
