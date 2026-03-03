@@ -108,6 +108,7 @@ func main() {
 		newServeCmd(),
 		newUnserveCmd(),
 		newConnectCmd(),
+		newDisconnectCmd(),
 		newRevokeCmd(),
 		newLogsCmd(),
 	)
@@ -433,6 +434,19 @@ func newConnectCmd() *cobra.Command {
 		Short: "Tunnel a local port to a service",
 		Args:  cobra.RangeArgs(1, 3), //nolint:mnd
 		Run:   runConnect,
+	}
+}
+
+func newDisconnectCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "disconnect <service|local-port> [provider]",
+		Short: "Close a tunnel to a service",
+		Long: `Close a tunnel to a service.
+
+When the argument is a number it matches by local port. Otherwise it matches
+by service name, and an optional provider argument filters by provider.`,
+		Args: cobra.RangeArgs(1, 2), //nolint:mnd
+		Run:  runDisconnect,
 	}
 }
 
@@ -1606,6 +1620,86 @@ func runConnect(cmd *cobra.Command, args []string) {
 	local := connectResp.Msg.GetLocalPort()
 	provider := formatPeerID(svc.GetProvider().GetPeerId(), false)
 	fmt.Fprintf(cmd.OutOrStdout(), "forwarding localhost:%d -> %s (%s:%d)\n", local, svc.GetName(), provider, svc.GetPort())
+}
+
+func runDisconnect(cmd *cobra.Command, args []string) {
+	arg := args[0]
+	var providerArg string
+	if len(args) > 1 {
+		providerArg = args[1]
+	}
+
+	client := newControlClient(cmd)
+	statusResp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	conn, err := resolveConnection(statusResp.Msg, arg, providerArg)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	if _, err := client.DisconnectService(context.Background(), connect.NewRequest(&controlv1.DisconnectServiceRequest{
+		LocalPort: conn.GetLocalPort(),
+	})); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return
+	}
+
+	provider := formatPeerID(conn.GetPeer().GetPeerId(), false)
+	name := conn.GetServiceName()
+	if name == "" {
+		name = strconv.FormatUint(uint64(conn.GetRemotePort()), 10)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "disconnected localhost:%d from %s (%s:%d)\n",
+		conn.GetLocalPort(), name, provider, conn.GetRemotePort())
+}
+
+func resolveConnection(st *controlv1.GetStatusResponse, arg, providerArg string) (*controlv1.ConnectionSummary, error) {
+	var matches []*controlv1.ConnectionSummary
+
+	if providerArg == "" && isPortArg(arg) {
+		p, _ := strconv.Atoi(arg)
+		localPort := uint32(p)
+		for _, c := range st.GetConnections() {
+			if c.GetLocalPort() == localPort {
+				matches = append(matches, c)
+			}
+		}
+	}
+
+	if len(matches) == 0 {
+		for _, c := range st.GetConnections() {
+			if c.GetServiceName() == arg {
+				if providerArg != "" && !peerIDHasPrefix(c.GetPeer().GetPeerId(), providerArg) {
+					continue
+				}
+				matches = append(matches, c)
+			}
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no active connection matching %q — run \"pln status\" to see active connections", arg)
+	case 1:
+		return matches[0], nil
+	default:
+		var b strings.Builder
+		fmt.Fprintf(&b, "multiple connections match %q; use: pln disconnect %s <provider>\n", arg, arg)
+		for _, c := range matches {
+			provider := formatPeerID(c.GetPeer().GetPeerId(), false)
+			name := c.GetServiceName()
+			if name == "" {
+				name = strconv.FormatUint(uint64(c.GetRemotePort()), 10)
+			}
+			fmt.Fprintf(&b, "- %s (%s:%d)\n", name, provider, c.GetRemotePort())
+		}
+		return nil, errors.New(strings.TrimSpace(b.String()))
+	}
 }
 
 func reachableProviderSet(st *controlv1.GetStatusResponse) map[string]bool {

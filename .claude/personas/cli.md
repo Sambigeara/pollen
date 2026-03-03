@@ -36,6 +36,7 @@ No Go API — the CLI is a leaf binary. Its interface is the command-line surfac
 - `pollen serve <port> [name]` — expose local port to mesh
 - `pollen unserve <port|name>` — stop exposing
 - `pollen connect <service> [provider] [port]` — tunnel to remote service
+- `pollen disconnect <service|local-port> [provider]` — close a tunnel to a service
 
 **Observability:**
 - `pollen status [nodes|services]` — display cluster state

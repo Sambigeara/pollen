@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -733,6 +734,17 @@ func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32
 	n.localPeerEvents <- peer.RetryPeer{PeerKey: peerID}
 
 	return port, nil
+}
+
+func (n *Node) DisconnectService(localPort uint32) error {
+	for _, conn := range n.store.DesiredConnections() {
+		if conn.LocalPort == localPort {
+			n.tun.DisconnectLocalPort(localPort)
+			n.store.RemoveDesiredConnection(conn.PeerID, conn.RemotePort, conn.LocalPort)
+			return nil
+		}
+	}
+	return fmt.Errorf("no connection on local port %d", localPort)
 }
 
 // checkCertExpiry checks the local node's membership cert and logs warnings.

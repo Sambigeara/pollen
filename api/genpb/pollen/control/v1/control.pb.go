@@ -1137,6 +1137,86 @@ func (x *ConnectServiceResponse) GetLocalPort() uint32 {
 	return 0
 }
 
+type DisconnectServiceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LocalPort     uint32                 `protobuf:"varint,1,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DisconnectServiceRequest) Reset() {
+	*x = DisconnectServiceRequest{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DisconnectServiceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DisconnectServiceRequest) ProtoMessage() {}
+
+func (x *DisconnectServiceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DisconnectServiceRequest.ProtoReflect.Descriptor instead.
+func (*DisconnectServiceRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *DisconnectServiceRequest) GetLocalPort() uint32 {
+	if x != nil {
+		return x.LocalPort
+	}
+	return 0
+}
+
+type DisconnectServiceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DisconnectServiceResponse) Reset() {
+	*x = DisconnectServiceResponse{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DisconnectServiceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DisconnectServiceResponse) ProtoMessage() {}
+
+func (x *DisconnectServiceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DisconnectServiceResponse.ProtoReflect.Descriptor instead.
+func (*DisconnectServiceResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{21}
+}
+
 type RevokePeerRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
@@ -1146,7 +1226,7 @@ type RevokePeerRequest struct {
 
 func (x *RevokePeerRequest) Reset() {
 	*x = RevokePeerRequest{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[20]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1158,7 +1238,7 @@ func (x *RevokePeerRequest) String() string {
 func (*RevokePeerRequest) ProtoMessage() {}
 
 func (x *RevokePeerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[20]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1171,7 +1251,7 @@ func (x *RevokePeerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokePeerRequest.ProtoReflect.Descriptor instead.
 func (*RevokePeerRequest) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{20}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *RevokePeerRequest) GetPeerId() []byte {
@@ -1189,7 +1269,7 @@ type RevokePeerResponse struct {
 
 func (x *RevokePeerResponse) Reset() {
 	*x = RevokePeerResponse{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[21]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1201,7 +1281,7 @@ func (x *RevokePeerResponse) String() string {
 func (*RevokePeerResponse) ProtoMessage() {}
 
 func (x *RevokePeerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[21]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1214,7 +1294,7 @@ func (x *RevokePeerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokePeerResponse.ProtoReflect.Descriptor instead.
 func (*RevokePeerResponse) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{21}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{23}
 }
 
 var File_pollen_control_v1_control_proto protoreflect.FileDescriptor
@@ -1284,7 +1364,11 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"local_port\x18\x03 \x01(\rB\t\xbaH\x06*\x04\x18\xff\xff\x03R\tlocalPort\"D\n" +
 	"\x16ConnectServiceResponse\x12*\n" +
 	"\n" +
-	"local_port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\"5\n" +
+	"local_port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\"F\n" +
+	"\x18DisconnectServiceRequest\x12*\n" +
+	"\n" +
+	"local_port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\"\x1b\n" +
+	"\x19DisconnectServiceResponse\"5\n" +
 	"\x11RevokePeerRequest\x12 \n" +
 	"\apeer_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\x06peerId\"\x14\n" +
 	"\x12RevokePeerResponse*q\n" +
@@ -1300,7 +1384,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x0eCERT_HEALTH_OK\x10\x01\x12\x1d\n" +
 	"\x19CERT_HEALTH_EXPIRING_SOON\x10\x02\x12\x17\n" +
 	"\x13CERT_HEALTH_EXPIRED\x10\x03\x12\x18\n" +
-	"\x14CERT_HEALTH_RENEWING\x10\x042\xa4\x06\n" +
+	"\x14CERT_HEALTH_RENEWING\x10\x042\x94\a\n" +
 	"\x0eControlService\x12S\n" +
 	"\bShutdown\x12\".pollen.control.v1.ShutdownRequest\x1a#.pollen.control.v1.ShutdownResponse\x12k\n" +
 	"\x10GetBootstrapInfo\x12*.pollen.control.v1.GetBootstrapInfoRequest\x1a+.pollen.control.v1.GetBootstrapInfoResponse\x12V\n" +
@@ -1308,7 +1392,8 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x0fRegisterService\x12).pollen.control.v1.RegisterServiceRequest\x1a*.pollen.control.v1.RegisterServiceResponse\x12n\n" +
 	"\x11UnregisterService\x12+.pollen.control.v1.UnregisterServiceRequest\x1a,.pollen.control.v1.UnregisterServiceResponse\x12e\n" +
 	"\x0eConnectService\x12(.pollen.control.v1.ConnectServiceRequest\x1a).pollen.control.v1.ConnectServiceResponse\x12\\\n" +
-	"\vConnectPeer\x12%.pollen.control.v1.ConnectPeerRequest\x1a&.pollen.control.v1.ConnectPeerResponse\x12Y\n" +
+	"\vConnectPeer\x12%.pollen.control.v1.ConnectPeerRequest\x1a&.pollen.control.v1.ConnectPeerResponse\x12n\n" +
+	"\x11DisconnectService\x12+.pollen.control.v1.DisconnectServiceRequest\x1a,.pollen.control.v1.DisconnectServiceResponse\x12Y\n" +
 	"\n" +
 	"RevokePeer\x12$.pollen.control.v1.RevokePeerRequest\x1a%.pollen.control.v1.RevokePeerResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
 
@@ -1325,7 +1410,7 @@ func file_pollen_control_v1_control_proto_rawDescGZIP() []byte {
 }
 
 var file_pollen_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_pollen_control_v1_control_proto_goTypes = []any{
 	(NodeStatus)(0),                   // 0: pollen.control.v1.NodeStatus
 	(CertHealth)(0),                   // 1: pollen.control.v1.CertHealth
@@ -1349,8 +1434,10 @@ var file_pollen_control_v1_control_proto_goTypes = []any{
 	(*ConnectPeerResponse)(nil),       // 19: pollen.control.v1.ConnectPeerResponse
 	(*ConnectServiceRequest)(nil),     // 20: pollen.control.v1.ConnectServiceRequest
 	(*ConnectServiceResponse)(nil),    // 21: pollen.control.v1.ConnectServiceResponse
-	(*RevokePeerRequest)(nil),         // 22: pollen.control.v1.RevokePeerRequest
-	(*RevokePeerResponse)(nil),        // 23: pollen.control.v1.RevokePeerResponse
+	(*DisconnectServiceRequest)(nil),  // 22: pollen.control.v1.DisconnectServiceRequest
+	(*DisconnectServiceResponse)(nil), // 23: pollen.control.v1.DisconnectServiceResponse
+	(*RevokePeerRequest)(nil),         // 24: pollen.control.v1.RevokePeerRequest
+	(*RevokePeerResponse)(nil),        // 25: pollen.control.v1.RevokePeerResponse
 }
 var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	2,  // 0: pollen.control.v1.NodeSummary.node:type_name -> pollen.control.v1.NodeRef
@@ -1374,17 +1461,19 @@ var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	16, // 18: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
 	20, // 19: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
 	18, // 20: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
-	22, // 21: pollen.control.v1.ControlService.RevokePeer:input_type -> pollen.control.v1.RevokePeerRequest
-	6,  // 22: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
-	9,  // 23: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
-	12, // 24: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
-	15, // 25: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
-	17, // 26: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
-	21, // 27: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
-	19, // 28: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
-	23, // 29: pollen.control.v1.ControlService.RevokePeer:output_type -> pollen.control.v1.RevokePeerResponse
-	22, // [22:30] is the sub-list for method output_type
-	14, // [14:22] is the sub-list for method input_type
+	22, // 21: pollen.control.v1.ControlService.DisconnectService:input_type -> pollen.control.v1.DisconnectServiceRequest
+	24, // 22: pollen.control.v1.ControlService.RevokePeer:input_type -> pollen.control.v1.RevokePeerRequest
+	6,  // 23: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
+	9,  // 24: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
+	12, // 25: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
+	15, // 26: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
+	17, // 27: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
+	21, // 28: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
+	19, // 29: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
+	23, // 30: pollen.control.v1.ControlService.DisconnectService:output_type -> pollen.control.v1.DisconnectServiceResponse
+	25, // 31: pollen.control.v1.ControlService.RevokePeer:output_type -> pollen.control.v1.RevokePeerResponse
+	23, // [23:32] is the sub-list for method output_type
+	14, // [14:23] is the sub-list for method input_type
 	14, // [14:14] is the sub-list for extension type_name
 	14, // [14:14] is the sub-list for extension extendee
 	0,  // [0:14] is the sub-list for field type_name
@@ -1403,7 +1492,7 @@ func file_pollen_control_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_control_v1_control_proto_rawDesc), len(file_pollen_control_v1_control_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   22,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
