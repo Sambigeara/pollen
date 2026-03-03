@@ -118,6 +118,28 @@ func TestEvaluatePublicAccessibilityClearsWhenConfirmationsExpire(t *testing.T) 
 	n.publicConfirmations[peerB] = publicConfirmation{addr: addr, at: time.Now().Add(-publicConfirmTTL - time.Minute)}
 	n.evaluatePublicAccessibility()
 	require.False(t, n.store.IsPubliclyAccessible(n.store.LocalID))
+	require.Empty(t, n.publicConfirmations)
+}
+
+func TestHalfTTLConfirmationsStillValid(t *testing.T) {
+	n := newMinimalNode(t, false)
+
+	peerA := fakePeerKey(t)
+	peerB := fakePeerKey(t)
+	addr := "1.2.3.4:60611"
+
+	// Two fresh confirmations → public.
+	n.publicConfirmations[peerA] = publicConfirmation{addr: addr, at: time.Now()}
+	n.publicConfirmations[peerB] = publicConfirmation{addr: addr, at: time.Now()}
+	n.evaluatePublicAccessibility()
+	require.True(t, n.store.IsPubliclyAccessible(n.store.LocalID))
+
+	// Simulate a refresh arriving halfway through the TTL — timestamps reset.
+	halfTTL := time.Now().Add(-publicConfirmTTL / 2)
+	n.publicConfirmations[peerA] = publicConfirmation{addr: addr, at: halfTTL}
+	n.publicConfirmations[peerB] = publicConfirmation{addr: addr, at: halfTTL}
+	n.evaluatePublicAccessibility()
+	require.True(t, n.store.IsPubliclyAccessible(n.store.LocalID))
 }
 
 func TestBootstrapPublicSetsAccessibleImmediately(t *testing.T) {

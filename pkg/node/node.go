@@ -66,6 +66,9 @@ const (
 	publicConfirmThreshold = 2
 	publicConfirmTTL       = 10 * time.Minute
 
+	observedAddrRefreshInterval = 5 * time.Minute
+	publicEvalInterval          = 1 * time.Minute
+
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
 	gossipEventBufSize = 64
@@ -106,6 +109,8 @@ type publicConfirmation struct {
 
 type Node struct {
 	lastExpirySweep     time.Time
+	lastObsAddrRefresh  time.Time
+	lastPublicEval      time.Time
 	mesh                mesh.Mesh
 	log                 *zap.SugaredLogger
 	gossipEvents        chan []*statev1.GossipEvent
@@ -160,6 +165,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		conf:                conf,
 		signPriv:            privKey,
 		pollenDir:           pollenDir,
+		lastObsAddrRefresh:  time.Now(),
 		localPeerEvents:     make(chan peer.Input, peerEventBufSize),
 		punchCh:             make(chan punchRequest, punchChBufSize),
 		gossipEvents:        make(chan []*statev1.GossipEvent, gossipEventBufSize),
@@ -437,7 +443,14 @@ func (n *Node) tick() {
 	}
 	n.reconcileConnections()
 	n.reconcileDesiredConnections()
-	n.evaluatePublicAccessibility()
+	if time.Since(n.lastObsAddrRefresh) >= observedAddrRefreshInterval {
+		n.refreshObservedAddresses()
+		n.lastObsAddrRefresh = time.Now()
+	}
+	if time.Since(n.lastPublicEval) >= publicEvalInterval {
+		n.evaluatePublicAccessibility()
+		n.lastPublicEval = time.Now()
+	}
 
 	now := time.Now()
 	outputs := n.peers.Step(now, peer.Tick{})
@@ -495,13 +508,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 				n.lastEagerSync[e.PeerKey] = time.Now()
 			}
 
-			if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
-				Body: &meshv1.Envelope_ObservedAddress{
-					ObservedAddress: &meshv1.ObservedAddress{Addr: addr.String()},
-				},
-			}); err != nil {
-				n.log.Debugw("failed sending observed address", "peer", e.PeerKey.Short(), "err", err)
-			}
+			n.sendObservedAddress(e.PeerKey, addr)
 
 			n.log.Infow("peer connected", "peer_id", e.PeerKey.Short(), "ip", e.IP, "observedPort", e.ObservedPort)
 		case peer.AttemptEagerConnect:
@@ -711,6 +718,26 @@ func (n *Node) handlePunchCoordTrigger(trigger *meshv1.PunchCoordTrigger) {
 	}
 }
 
+func (n *Node) sendObservedAddress(pk types.PeerKey, addr *net.UDPAddr) {
+	if err := n.mesh.Send(context.Background(), pk, &meshv1.Envelope{
+		Body: &meshv1.Envelope_ObservedAddress{
+			ObservedAddress: &meshv1.ObservedAddress{Addr: addr.String()},
+		},
+	}); err != nil {
+		n.log.Debugw("failed sending observed address", "peer", pk.Short(), "err", err)
+	}
+}
+
+func (n *Node) refreshObservedAddresses() {
+	for _, pk := range n.mesh.ConnectedPeers() {
+		addr, ok := n.mesh.GetActivePeerAddress(pk)
+		if !ok {
+			continue
+		}
+		n.sendObservedAddress(pk, addr)
+	}
+}
+
 func (n *Node) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedAddress) {
 	addr, err := net.ResolveUDPAddr("udp", oa.GetAddr())
 	if err != nil {
@@ -722,7 +749,7 @@ func (n *Node) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedAddr
 		return
 	}
 
-	n.log.Infow("observed address received", "addr", addr.String(), "from", from.Short())
+	n.log.Debugw("observed address received", "addr", addr.String(), "from", from.Short())
 	n.queueGossipEvents(n.store.SetExternalPort(uint32(addr.Port)))
 
 	n.publicConfirmations[from] = publicConfirmation{
