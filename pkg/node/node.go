@@ -22,6 +22,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/store"
+	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/tunnel"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/util"
@@ -113,6 +114,8 @@ type Node struct {
 	punchCh         chan punchRequest
 	pollenDir       string
 	signPriv        ed25519.PrivateKey
+	localCoord      topology.Coord
+	localCoordErr   float64
 	renewalFailed   atomic.Bool
 }
 
@@ -157,6 +160,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
 		ready:           make(chan struct{}),
 		lastEagerSync:   make(map[types.PeerKey]time.Time),
+		localCoordErr:   1.0,
 	}
 
 	stateStore.OnRevocation(func(subject types.PeerKey) {
@@ -186,6 +190,13 @@ func (n *Node) Start(ctx context.Context) error {
 	if err := n.mesh.Start(ctx); err != nil {
 		return err
 	}
+
+	// Persist a startup coordinate so fresh clusters can bootstrap Vivaldi state
+	// without waiting for pre-existing peer coordinates. We intentionally do not
+	// queue the returned events here; peers will pull this state via clock gossip
+	// (or eager sync) once sessions are established.
+	n.store.SetLocalVivaldiCoord(n.localCoord)
+
 	close(n.ready)
 	n.connectBootstrapPeers(ctx)
 	n.tun.Start(ctx)
@@ -421,6 +432,7 @@ func (n *Node) handlePeerInput(in peer.Input) {
 }
 
 func (n *Node) tick() {
+	n.updateVivaldiCoords()
 	n.syncPeersFromState()
 	if time.Since(n.lastExpirySweep) >= expirySweepInterval {
 		n.disconnectExpiredPeers()
@@ -434,8 +446,64 @@ func (n *Node) tick() {
 	n.handleOutputs(outputs)
 }
 
+func (n *Node) updateVivaldiCoords() {
+	updated := false
+	for _, peerKey := range n.GetConnectedPeers() {
+		conn, ok := n.mesh.GetConn(peerKey)
+		if !ok {
+			continue
+		}
+		rtt := conn.ConnectionStats().SmoothedRTT
+		if rtt <= 0 {
+			continue
+		}
+		peerCoord, ok := n.store.PeerVivaldiCoord(peerKey)
+		if !ok || peerCoord == nil {
+			continue
+		}
+		n.localCoord, n.localCoordErr = topology.Update(
+			n.localCoord, n.localCoordErr,
+			topology.Sample{RTT: rtt, PeerCoord: *peerCoord},
+		)
+		updated = true
+	}
+	if updated {
+		n.queueGossipEvents(n.store.SetLocalVivaldiCoord(n.localCoord))
+	}
+}
+
 func (n *Node) syncPeersFromState() {
-	for _, kp := range n.store.KnownPeers() {
+	knownPeers := n.store.KnownPeers()
+
+	// Build topology peer infos for target selection.
+	peerInfos := make([]topology.PeerInfo, 0, len(knownPeers))
+	peerMap := make(map[types.PeerKey]store.KnownPeer, len(knownPeers))
+	for _, kp := range knownPeers {
+		peerMap[kp.PeerID] = kp
+		peerInfos = append(peerInfos, topology.PeerInfo{
+			Key:                kp.PeerID,
+			Coord:              kp.VivaldiCoord,
+			IPs:                kp.IPs,
+			PubliclyAccessible: kp.PubliclyAccessible,
+		})
+	}
+
+	epoch := time.Now().Unix() / topology.EpochSeconds
+	targets := topology.ComputeTargetPeers(
+		n.store.LocalID, n.localCoord, peerInfos,
+		topology.DefaultParams(epoch),
+	)
+
+	targetSet := buildTargetPeerSet(targets, n.store.DesiredConnections())
+
+	// Discover peers that are topology targets or needed by local service
+	// forwards.
+	for pk := range targetSet {
+		kp, ok := peerMap[pk]
+		if !ok {
+			continue
+		}
+
 		ips := make([]net.IP, 0, len(kp.IPs))
 		for _, ipStr := range kp.IPs {
 			ip := net.ParseIP(ipStr)
@@ -466,6 +534,30 @@ func (n *Node) syncPeersFromState() {
 			LastAddr: lastAddr,
 		})
 	}
+
+	// Prune non-targeted peers that aren't connected. Connected non-targeted
+	// peers (inbound) are left alone — when they disconnect naturally they
+	// won't be re-added since they're not in the target set.
+	for _, kp := range knownPeers {
+		if _, targeted := targetSet[kp.PeerID]; targeted {
+			continue
+		}
+		if n.peers.InState(kp.PeerID, peer.PeerStateConnected) {
+			continue
+		}
+		n.handlePeerInput(peer.ForgetPeer{PeerKey: kp.PeerID})
+	}
+}
+
+func buildTargetPeerSet(targets []types.PeerKey, desired []store.Connection) map[types.PeerKey]struct{} {
+	out := make(map[types.PeerKey]struct{}, len(targets)+len(desired))
+	for _, pk := range targets {
+		out[pk] = struct{}{}
+	}
+	for _, conn := range desired {
+		out[conn.PeerID] = struct{}{}
+	}
+	return out
 }
 
 func (n *Node) handleOutputs(outputs []peer.Output) {

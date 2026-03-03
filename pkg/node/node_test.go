@@ -167,6 +167,35 @@ func TestConnectPeerFlow(t *testing.T) {
 	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_ONLINE, statusResp.Nodes[0].Status)
 }
 
+func TestInitialVivaldiCoordPropagatesAfterConnect(t *testing.T) {
+	nodeIPs := []string{"127.0.0.1"}
+	cluster := newClusterAuth(t)
+
+	a := newTestNode(t, cluster, nodeIPs)
+	a.start(t)
+
+	b := newTestNode(t, cluster, nodeIPs)
+	b.start(t)
+
+	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+		PeerId: b.pubKey,
+		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
+	})
+	require.NoError(t, err)
+
+	assertPeersConnected(t, a, b)
+
+	require.Eventually(t, func() bool {
+		coord, ok := a.store.PeerVivaldiCoord(b.peerKey)
+		return ok && coord != nil
+	}, 5*time.Second, 50*time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		coord, ok := b.store.PeerVivaldiCoord(a.peerKey)
+		return ok && coord != nil
+	}, 5*time.Second, 50*time.Millisecond)
+}
+
 // TestConnectPeerAfterPriorConnection simulates the production scenario where
 // the daemon previously connected to a peer, then later ConnectPeer is called
 // for a new relay. Verifies that state propagates to the new peer.
