@@ -12,9 +12,9 @@ This README is intentionally short and focused on day-to-day commands.
 ## Core commands
 
 - `pln init` — initialize local root cluster state
-- `pln up` — start a node in the foreground
-- `pln start|stop|restart` — manage the background service
-- `pln join <token>` — enroll into a cluster and start the daemon (`--no-start` to enroll only)
+- `pln up` — start a node in the foreground (`-d` for background service)
+- `pln down` — stop the background service
+- `pln join <token>` — enroll into a cluster and start the daemon (`--no-up` to enroll only)
 - `pln logs [-f]` — show daemon logs
 - `pln purge [--all]` — reset local cluster state (`--all` also removes node keys)
 - `pln status` — show nodes/services
@@ -65,7 +65,7 @@ sudo pln join "<INVITE_TOKEN>"  # Linux only; adds your user to the pln group
 ```
 
 `pln join` enrolls credentials and starts the daemon automatically. Use
-`--no-start` to enroll without starting.
+`--no-up` to enroll without starting.
 
 Subject-bound invite flow (stricter):
 
