@@ -21,20 +21,21 @@ import (
 )
 
 type testNode struct {
-	node           *node.Node
-	svc            *node.NodeService
-	store          *store.Store
-	peers          *peer.Store
-	peerKey        types.PeerKey
-	pubKey         ed25519.PublicKey
-	ips            []string
-	port           int
-	dir            string
-	privKey        ed25519.PrivateKey
-	creds          *auth.NodeCredentials
-	cancel         context.CancelFunc
-	errCh          chan error
-	bootstrapPeers []node.BootstrapPeer
+	node             *node.Node
+	svc              *node.NodeService
+	store            *store.Store
+	peers            *peer.Store
+	peerKey          types.PeerKey
+	pubKey           ed25519.PublicKey
+	ips              []string
+	port             int
+	dir              string
+	privKey          ed25519.PrivateKey
+	creds            *auth.NodeCredentials
+	cancel           context.CancelFunc
+	errCh            chan error
+	bootstrapPeers   []node.BootstrapPeer
+	peerTickInterval time.Duration
 }
 
 type clusterAuth struct {
@@ -90,11 +91,16 @@ func (tn *testNode) start(t *testing.T) {
 
 	peerStore := peer.NewStore()
 
+	peerTick := tn.peerTickInterval
+	if peerTick == 0 {
+		peerTick = 100 * time.Millisecond
+	}
+
 	conf := &node.Config{
 		Port:                tn.port,
 		AdvertisedIPs:       tn.ips,
 		GossipInterval:      100 * time.Millisecond,
-		PeerTickInterval:    100 * time.Millisecond,
+		PeerTickInterval:    peerTick,
 		DisableGossipJitter: true,
 		BootstrapPeers:      tn.bootstrapPeers,
 		TLSIdentityTTL:      config.CertTTLs{}.TLSIdentityTTL(),
@@ -300,6 +306,112 @@ func TestGenIdentityKeyAndReadIdentityPub(t *testing.T) {
 func TestReadIdentityPubMissingFile(t *testing.T) {
 	_, err := node.ReadIdentityPub(t.TempDir())
 	require.Error(t, err)
+}
+
+func getNodeStatus(t *testing.T, observer, target *testNode) controlv1.NodeStatus {
+	t.Helper()
+	resp, err := observer.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+	for _, n := range resp.Nodes {
+		if types.PeerKeyFromBytes(n.Node.PeerId) == target.peerKey {
+			return n.Status
+		}
+	}
+	t.Fatalf("target peer %x not found in GetStatus response", target.peerKey)
+	return 0
+}
+
+func TestGetStatusDisconnectedPeerIsOffline(t *testing.T) {
+	nodeIPs := []string{"127.0.0.1"}
+	cluster := newClusterAuth(t)
+
+	a := newTestNode(t, cluster, nodeIPs)
+	a.start(t)
+
+	b := newTestNode(t, cluster, nodeIPs)
+	b.start(t)
+
+	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+		PeerId: b.pubKey,
+		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
+	})
+	require.NoError(t, err)
+	assertPeersConnected(t, a, b)
+	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_ONLINE, getNodeStatus(t, a, b))
+
+	// B disconnects.
+	b.stop()
+	require.Eventually(t, func() bool {
+		return len(a.node.GetConnectedPeers()) == 0
+	}, 5*time.Second, 50*time.Millisecond)
+
+	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_OFFLINE, getNodeStatus(t, a, b))
+}
+
+// setupThreeNodeChain creates three nodes A↔B↔C with peerTickInterval=time.Hour
+// (to prevent auto-topology from connecting A↔C), connects A↔B and B↔C, and
+// waits for A to learn about B→C reachability via gossip.
+func setupThreeNodeChain(t *testing.T) (a, b, c *testNode) {
+	t.Helper()
+	nodeIPs := []string{"127.0.0.1"}
+	cluster := newClusterAuth(t)
+
+	a = newTestNode(t, cluster, nodeIPs)
+	a.peerTickInterval = time.Hour
+	a.start(t)
+
+	b = newTestNode(t, cluster, nodeIPs)
+	b.peerTickInterval = time.Hour
+	b.start(t)
+
+	c = newTestNode(t, cluster, nodeIPs)
+	c.peerTickInterval = time.Hour
+	c.start(t)
+
+	// A↔B
+	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+		PeerId: b.pubKey,
+		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
+	})
+	require.NoError(t, err)
+	assertPeersConnected(t, a, b)
+
+	// B↔C
+	_, err = b.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+		PeerId: c.pubKey,
+		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(c.port))},
+	})
+	require.NoError(t, err)
+	assertPeersConnected(t, b, c)
+
+	// Wait for A to learn about C via B's gossip reachability.
+	require.Eventually(t, func() bool {
+		return a.store.IsConnected(b.peerKey, c.peerKey)
+	}, 5*time.Second, 50*time.Millisecond, "A should learn B→C reachability via gossip")
+
+	return a, b, c
+}
+
+func TestGetStatusIndirectPeerViaDirectPeer(t *testing.T) {
+	a, b, c := setupThreeNodeChain(t)
+
+	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_ONLINE, getNodeStatus(t, a, b))
+	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_INDIRECT, getNodeStatus(t, a, c))
+}
+
+func TestGetStatusStaleReachabilityNotIndirect(t *testing.T) {
+	a, b, c := setupThreeNodeChain(t)
+
+	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_INDIRECT, getNodeStatus(t, a, c))
+
+	// B disconnects — its stale reachability claim about C should not keep C as indirect.
+	b.stop()
+	require.Eventually(t, func() bool {
+		return len(a.node.GetConnectedPeers()) == 0
+	}, 5*time.Second, 50*time.Millisecond, "A should see B disconnect")
+
+	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_OFFLINE, getNodeStatus(t, a, b))
+	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_OFFLINE, getNodeStatus(t, a, c))
 }
 
 func TestBootstrapPeerConnectsAtStartup(t *testing.T) {
