@@ -63,9 +63,6 @@ const (
 	// eagerSyncCooldown should be >= GossipInterval to avoid redundant sends.
 	eagerSyncCooldown = 5 * time.Second
 
-	publicConfirmThreshold = 2
-	publicEvalInterval     = 1 * time.Minute
-
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
 	gossipEventBufSize = 64
@@ -99,29 +96,23 @@ type punchRequest struct {
 	peerKey types.PeerKey
 }
 
-type publicConfirmation struct {
-	addr string
-}
-
 type Node struct {
-	lastExpirySweep     time.Time
-	lastPublicEval      time.Time
-	mesh                mesh.Mesh
-	log                 *zap.SugaredLogger
-	gossipEvents        chan []*statev1.GossipEvent
-	creds               *auth.NodeCredentials
-	localPeerEvents     chan peer.Input
-	peers               *peer.Store
-	conf                *Config
-	store               *store.Store
-	tun                 *tunnel.Manager
-	ready               chan struct{}
-	lastEagerSync       map[types.PeerKey]time.Time
-	publicConfirmations map[types.PeerKey]publicConfirmation
-	punchCh             chan punchRequest
-	pollenDir           string
-	signPriv            ed25519.PrivateKey
-	renewalFailed       atomic.Bool
+	lastExpirySweep time.Time
+	mesh            mesh.Mesh
+	log             *zap.SugaredLogger
+	gossipEvents    chan []*statev1.GossipEvent
+	creds           *auth.NodeCredentials
+	localPeerEvents chan peer.Input
+	peers           *peer.Store
+	conf            *Config
+	store           *store.Store
+	tun             *tunnel.Manager
+	ready           chan struct{}
+	lastEagerSync   map[types.PeerKey]time.Time
+	punchCh         chan punchRequest
+	pollenDir       string
+	signPriv        ed25519.PrivateKey
+	renewalFailed   atomic.Bool
 }
 
 func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, stateStore *store.Store, peerStore *peer.Store, pollenDir string) (*Node, error) {
@@ -151,21 +142,20 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 	}
 
 	n := &Node{
-		log:                 log,
-		peers:               peerStore,
-		store:               stateStore,
-		mesh:                m,
-		tun:                 tun,
-		creds:               creds,
-		conf:                conf,
-		signPriv:            privKey,
-		pollenDir:           pollenDir,
-		localPeerEvents:     make(chan peer.Input, peerEventBufSize),
-		punchCh:             make(chan punchRequest, punchChBufSize),
-		gossipEvents:        make(chan []*statev1.GossipEvent, gossipEventBufSize),
-		ready:               make(chan struct{}),
-		lastEagerSync:       make(map[types.PeerKey]time.Time),
-		publicConfirmations: make(map[types.PeerKey]publicConfirmation),
+		log:             log,
+		peers:           peerStore,
+		store:           stateStore,
+		mesh:            m,
+		tun:             tun,
+		creds:           creds,
+		conf:            conf,
+		signPriv:        privKey,
+		pollenDir:       pollenDir,
+		localPeerEvents: make(chan peer.Input, peerEventBufSize),
+		punchCh:         make(chan punchRequest, punchChBufSize),
+		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
+		ready:           make(chan struct{}),
+		lastEagerSync:   make(map[types.PeerKey]time.Time),
 	}
 
 	stateStore.OnRevocation(func(subject types.PeerKey) {
@@ -421,10 +411,8 @@ func (n *Node) handlePeerInput(in peer.Input) {
 	case peer.PeerDisconnected:
 		n.queueGossipEvents(n.store.SetLocalConnected(d.PeerKey, false))
 		delete(n.lastEagerSync, d.PeerKey)
-		delete(n.publicConfirmations, d.PeerKey)
 	case peer.ForgetPeer:
 		delete(n.lastEagerSync, d.PeerKey)
-		delete(n.publicConfirmations, d.PeerKey)
 	}
 
 	outputs := n.peers.Step(time.Now(), in)
@@ -439,10 +427,6 @@ func (n *Node) tick() {
 	}
 	n.reconcileConnections()
 	n.reconcileDesiredConnections()
-	if time.Since(n.lastPublicEval) >= publicEvalInterval {
-		n.evaluatePublicAccessibility()
-		n.lastPublicEval = time.Now()
-	}
 
 	now := time.Now()
 	outputs := n.peers.Step(now, peer.Tick{})
@@ -733,32 +717,6 @@ func (n *Node) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedAddr
 
 	n.log.Debugw("observed address received", "addr", addr.String(), "from", from.Short())
 	n.queueGossipEvents(n.store.SetExternalPort(uint32(addr.Port)))
-
-	if !n.mesh.IsInboundConnection(from) {
-		return
-	}
-
-	n.publicConfirmations[from] = publicConfirmation{addr: addr.String()}
-	n.evaluatePublicAccessibility()
-}
-
-func (n *Node) evaluatePublicAccessibility() {
-	if n.conf.BootstrapPublic {
-		return
-	}
-
-	counts := make(map[string]int)
-	for _, c := range n.publicConfirmations {
-		counts[c.addr]++
-	}
-
-	for _, count := range counts {
-		if count >= publicConfirmThreshold {
-			n.queueGossipEvents(n.store.SetLocalPubliclyAccessible(true))
-			return
-		}
-	}
-	n.queueGossipEvents(n.store.SetLocalPubliclyAccessible(false))
 }
 
 func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {

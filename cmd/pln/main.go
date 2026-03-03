@@ -99,7 +99,7 @@ func main() {
 		newIDCmd(),
 		newBootstrapCmd(),
 		newUpCmd(),
-		newServiceCmd("start", "Start the background service"),
+		newStartCmd(),
 		newServiceCmd("stop", "Stop the background service"),
 		newServiceCmd("restart", "Restart the background service"),
 		newJoinCmd(),
@@ -120,7 +120,7 @@ func main() {
 func defaultRootDir() string {
 	if runtime.GOOS == osLinux {
 		const sysDir = "/var/lib/pln"
-		if syscall.Access(sysDir, 0x2 /* W_OK */) == nil {
+		if syscall.Access(sysDir, 0x2) == nil { //nolint:mnd
 			return sysDir
 		}
 	}
@@ -224,6 +224,7 @@ func newUpCmd() *cobra.Command {
 	}
 	cmd.Flags().Int("port", config.DefaultBootstrapPort, "Listening port")
 	cmd.Flags().IPSlice("ips", []net.IP{}, "Advertised IPs")
+	cmd.Flags().Bool("public", false, "Mark this node as publicly accessible (relay)")
 	return cmd
 }
 
@@ -235,6 +236,13 @@ func runUp(cmd *cobra.Command, _ []string) {
 			fmt.Fprintln(cmd.ErrOrStderr(),
 				"a node is already running; use `pln stop` to stop the background service")
 			return
+		}
+	}
+
+	if public, _ := cmd.Flags().GetBool("public"); public {
+		if err := applyPublicFlag(cmd); err != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			os.Exit(1)
 		}
 	}
 
@@ -1171,7 +1179,7 @@ func enrollJoin(cmd *cobra.Command, pollenDir, rawToken string, public bool) err
 	}
 	if public {
 		if err := setConfigPublic(pollenDir, true); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to set public flag in config: %v\n", err)
+			return fmt.Errorf("set public flag: %w", err)
 		}
 	}
 	return nil
@@ -1184,6 +1192,17 @@ func setConfigPublic(pollenDir string, public bool) error {
 	}
 	cfg.Public = public
 	return config.Save(pollenDir, cfg)
+}
+
+func applyPublicFlag(cmd *cobra.Command) error {
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		return err
+	}
+	if _, _, err := auth.LoadAdminKey(pollenDir); err != nil {
+		return fmt.Errorf("--public requires admin keys; run `pln init` to create a root cluster, or join with an admin token")
+	}
+	return setConfigPublic(pollenDir, true)
 }
 
 func saveBootstrapPeer(pollenDir string, peer *admissionv1.BootstrapPeer) error {
