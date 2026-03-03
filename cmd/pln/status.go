@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -137,6 +138,10 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 
 	reachableProviders := reachableProviderSet(st)
 
+	suffixes := serviceNameSuffixes(st.Services, func(pk string) bool {
+		return opts.includeAll || reachableProviders[pk]
+	})
+
 	type connKey struct {
 		service  string
 		provider string
@@ -151,6 +156,7 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 	}
 
 	filtered := 0
+	hasCollisions := len(suffixes) > 0
 	for _, s := range st.Services {
 		providerID := peerKeyString(s.GetProvider().GetPeerId())
 		if !opts.includeAll && !reachableProviders[providerID] {
@@ -162,12 +168,21 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 		if lp, ok := connLocal[connKey{service: s.GetName(), provider: providerID}]; ok {
 			local = fmt.Sprintf("%d", lp)
 		}
-		sec.rows = append(sec.rows, []string{s.GetName(), provider, fmt.Sprintf("%d", s.GetPort()), local})
+		displayName := s.GetName()
+		if sfx := suffixes[serviceProviderKey{s.GetName(), providerID}]; sfx != "" {
+			displayName += "-" + sfx
+		}
+		sec.rows = append(sec.rows, []string{displayName, provider, fmt.Sprintf("%d", s.GetPort()), local})
 	}
 
-	if filtered > 0 {
-		sec.footer = fmt.Sprintf("offline services: %d (use --all)", filtered)
+	var footerParts []string
+	if hasCollisions {
+		footerParts = append(footerParts, "service suffixes match the start of the provider ID")
 	}
+	if filtered > 0 {
+		footerParts = append(footerParts, fmt.Sprintf("offline services: %d (use --all)", filtered))
+	}
+	sec.footer = strings.Join(footerParts, "\n")
 	return sec
 }
 

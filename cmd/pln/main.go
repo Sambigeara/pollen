@@ -451,8 +451,12 @@ func newConnectCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "connect <service> [provider] [local-port]",
 		Short: "Tunnel a local port to a service",
-		Args:  cobra.RangeArgs(1, 3), //nolint:mnd
-		Run:   runConnect,
+		Long: `Tunnel a local port to a service.
+
+If multiple providers serve the same name, use the suffixed form shown by
+"pln status" (e.g. "pln connect http-a").`,
+		Args: cobra.RangeArgs(1, 3), //nolint:mnd
+		Run:  runConnect,
 	}
 }
 
@@ -463,7 +467,10 @@ func newDisconnectCmd() *cobra.Command {
 		Long: `Close a tunnel to a service.
 
 When the argument is a number it matches by local port. Otherwise it matches
-by service name, and an optional provider argument filters by provider.`,
+by service name, and an optional provider argument filters by provider.
+
+If multiple providers serve the same name, use the suffixed form shown by
+"pln status" (e.g. "pln disconnect http-a").`,
 		Args: cobra.RangeArgs(1, 2), //nolint:mnd
 		Run:  runDisconnect,
 	}
@@ -1677,6 +1684,11 @@ func runDisconnect(cmd *cobra.Command, args []string) {
 		conn.GetLocalPort(), name, provider, conn.GetRemotePort())
 }
 
+// errNoSuffixMatch is returned by suffix-fallback resolvers when no service
+// name prefix matches the argument. Callers use it to distinguish "no match"
+// from a collision error that should be propagated to the user.
+var errNoSuffixMatch = errors.New("no suffix match")
+
 func resolveConnection(st *controlv1.GetStatusResponse, arg, providerArg string) (*controlv1.ConnectionSummary, error) {
 	var matches []*controlv1.ConnectionSummary
 
@@ -1701,24 +1713,73 @@ func resolveConnection(st *controlv1.GetStatusResponse, arg, providerArg string)
 		}
 	}
 
-	switch len(matches) {
-	case 0:
-		return nil, fmt.Errorf("no active connection matching %q — run \"pln status\" to see active connections", arg)
-	case 1:
+	if len(matches) == 1 {
 		return matches[0], nil
-	default:
-		var b strings.Builder
-		fmt.Fprintf(&b, "multiple connections match %q; use: pln disconnect %s <provider>\n", arg, arg)
-		for _, c := range matches {
-			provider := formatPeerID(c.GetPeer().GetPeerId(), false)
-			name := c.GetServiceName()
-			if name == "" {
-				name = strconv.FormatUint(uint64(c.GetRemotePort()), 10)
-			}
-			fmt.Fprintf(&b, "- %s (%s:%d)\n", name, provider, c.GetRemotePort())
-		}
-		return nil, errors.New(strings.TrimSpace(b.String()))
 	}
+
+	if len(matches) > 1 {
+		return nil, connectionCollisionError(arg, matches)
+	}
+
+	// No exact match — try suffix fallback (e.g. "http-ab" → name "http", prefix "ab").
+	if providerArg == "" && !isPortArg(arg) {
+		if c, err := resolveConnectionBySuffix(st, arg); !errors.Is(err, errNoSuffixMatch) {
+			return c, err
+		}
+	}
+
+	return nil, fmt.Errorf("no active connection matching %q — run \"pln status\" to see active connections", arg)
+}
+
+func resolveConnectionBySuffix(st *controlv1.GetStatusResponse, arg string) (*controlv1.ConnectionSummary, error) {
+	names := map[string]bool{}
+	items := make([]suffixCandidate, 0, len(st.GetConnections()))
+	for _, c := range st.GetConnections() {
+		n := c.GetServiceName()
+		if n != "" {
+			names[n] = true
+		}
+		items = append(items, suffixCandidate{
+			name:    n,
+			peerKey: peerKeyString(c.GetPeer().GetPeerId()),
+			include: true,
+		})
+	}
+
+	indices, name, err := matchSuffixCandidates(arg, names, items)
+	if err != nil {
+		return nil, err
+	}
+
+	matches := make([]*controlv1.ConnectionSummary, len(indices))
+	for i, idx := range indices {
+		matches[i] = st.GetConnections()[idx]
+	}
+	if len(matches) > 1 {
+		return nil, connectionCollisionError(name, matches)
+	}
+	return matches[0], nil
+}
+
+func connectionCollisionError(name string, matches []*controlv1.ConnectionSummary) error {
+	ids := make([]string, len(matches))
+	for i, c := range matches {
+		ids[i] = peerKeyString(c.GetPeer().GetPeerId())
+	}
+	prefixes := minUniquePrefixes(ids)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "multiple connections match %q — pick one:\n", name)
+	for i, c := range matches {
+		provider := formatPeerID(c.GetPeer().GetPeerId(), false)
+		connName := c.GetServiceName()
+		if connName == "" {
+			connName = strconv.FormatUint(uint64(c.GetRemotePort()), 10)
+		}
+		fmt.Fprintf(&b, "  pln disconnect %s-%s    (localhost:%d -> %s:%d)\n",
+			connName, prefixes[i], c.GetLocalPort(), provider, c.GetRemotePort())
+	}
+	return errors.New(strings.TrimSpace(b.String()))
 }
 
 func reachableProviderSet(st *controlv1.GetStatusResponse) map[string]bool {
@@ -1762,23 +1823,122 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg str
 		matches = append(matches, svc)
 	}
 
-	if len(matches) == 0 {
-		if providerArg != "" {
-			return nil, fmt.Errorf("no reachable provider for %q on %q", serviceArg, providerArg)
-		}
-		return nil, fmt.Errorf("no reachable service match for %q", serviceArg)
-	}
-	if len(matches) > 1 {
-		var b strings.Builder
-		fmt.Fprintf(&b, "service %q has multiple providers; use: pln connect %s <provider>\n", serviceArg, serviceArg)
-		for _, svc := range matches {
-			provider := formatPeerID(svc.GetProvider().GetPeerId(), false)
-			fmt.Fprintf(&b, "- %s (%s:%d)\n", svc.GetName(), provider, svc.GetPort())
-		}
-		return nil, errors.New(strings.TrimSpace(b.String()))
+	if len(matches) == 1 {
+		return matches[0], nil
 	}
 
+	if len(matches) > 1 {
+		return nil, serviceCollisionError(serviceArg, matches)
+	}
+
+	// No exact match — try suffix fallback (e.g. "http-ab" → name "http", prefix "ab").
+	if providerArg == "" && portFilter == 0 {
+		if svc, err := resolveServiceBySuffix(st, serviceArg, reachableProviders); !errors.Is(err, errNoSuffixMatch) {
+			return svc, err
+		}
+	}
+
+	if providerArg != "" {
+		return nil, fmt.Errorf("no reachable provider for %q on %q — run \"pln status\" to see available services", serviceArg, providerArg)
+	}
+	return nil, fmt.Errorf("no reachable service matching %q — run \"pln status\" to see available services", serviceArg)
+}
+
+func resolveServiceBySuffix(st *controlv1.GetStatusResponse, arg string, reachable map[string]bool) (*controlv1.ServiceSummary, error) {
+	names := map[string]bool{}
+	items := make([]suffixCandidate, 0, len(st.Services))
+	for _, svc := range st.Services {
+		pk := peerKeyString(svc.GetProvider().GetPeerId())
+		names[svc.GetName()] = true
+		items = append(items, suffixCandidate{
+			name:    svc.GetName(),
+			peerKey: pk,
+			include: reachable[pk],
+		})
+	}
+
+	indices, name, err := matchSuffixCandidates(arg, names, items)
+	if err != nil {
+		return nil, err
+	}
+
+	matches := make([]*controlv1.ServiceSummary, len(indices))
+	for i, idx := range indices {
+		matches[i] = st.Services[idx]
+	}
+	if len(matches) > 1 {
+		return nil, serviceCollisionError(name, matches)
+	}
 	return matches[0], nil
+}
+
+func serviceCollisionError(name string, matches []*controlv1.ServiceSummary) error {
+	ids := make([]string, len(matches))
+	for i, svc := range matches {
+		ids[i] = peerKeyString(svc.GetProvider().GetPeerId())
+	}
+	prefixes := minUniquePrefixes(ids)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "multiple services match %q — pick one:\n", name)
+	for i, svc := range matches {
+		provider := formatPeerID(svc.GetProvider().GetPeerId(), false)
+		fmt.Fprintf(&b, "  pln connect %s-%s    (%s:%d)\n", name, prefixes[i], provider, svc.GetPort())
+	}
+	return errors.New(strings.TrimSpace(b.String()))
+}
+
+type suffixCandidate struct {
+	name    string
+	peerKey string
+	include bool // false → skip (e.g. unreachable); connections set this to true
+}
+
+// matchSuffixCandidates parses a "name-prefix" arg, then returns the indices
+// of candidates that match. Returns errNoSuffixMatch when no name matches or
+// no candidates match the prefix.
+func matchSuffixCandidates(arg string, knownNames map[string]bool, items []suffixCandidate) ([]int, string, error) {
+	name, prefix, ok := parseSuffixedArg(arg, knownNames)
+	if !ok {
+		return nil, "", errNoSuffixMatch
+	}
+
+	var indices []int
+	for i, item := range items {
+		if item.name != name {
+			continue
+		}
+		if !item.include {
+			continue
+		}
+		if strings.HasPrefix(item.peerKey, prefix) {
+			indices = append(indices, i)
+		}
+	}
+	if len(indices) == 0 {
+		return nil, name, errNoSuffixMatch
+	}
+	return indices, name, nil
+}
+
+// parseSuffixedArg parses "name-prefix" against known service names,
+// returning the longest matching name and the provider prefix after the dash.
+func parseSuffixedArg(arg string, knownNames map[string]bool) (name, prefix string, ok bool) {
+	for n := range knownNames {
+		if !strings.HasPrefix(arg, n+"-") {
+			continue
+		}
+		p := arg[len(n)+1:]
+		if p == "" {
+			continue
+		}
+		if len(n) > len(name) {
+			name = n
+			prefix = p
+			ok = true
+		}
+	}
+	return name, prefix, ok
 }
 
 func peerKeyString(peerID []byte) string {
@@ -1816,6 +1976,70 @@ func isReachableStatus(s controlv1.NodeStatus) bool {
 
 func peerIDHasPrefix(peerID []byte, prefix string) bool {
 	return strings.HasPrefix(peerKeyString(peerID), strings.ToLower(prefix))
+}
+
+// minUniquePrefixes returns the shortest prefix of each string that
+// distinguishes it from all other strings in the set.
+func minUniquePrefixes(ids []string) []string {
+	n := len(ids)
+	out := make([]string, n)
+	for i, id := range ids {
+		prefixLen := 1
+		for j, other := range ids {
+			if i == j {
+				continue
+			}
+			common := 0
+			for common < len(id) && common < len(other) && id[common] == other[common] {
+				common++
+			}
+			if common+1 > prefixLen {
+				prefixLen = common + 1
+			}
+		}
+		if prefixLen > len(id) {
+			prefixLen = len(id)
+		}
+		out[i] = id[:prefixLen]
+	}
+	return out
+}
+
+type serviceProviderKey struct {
+	name     string
+	provider string
+}
+
+// serviceNameSuffixes computes minimal unique suffixes for services with
+// colliding names. Non-colliding names have no entry.
+func serviceNameSuffixes(services []*controlv1.ServiceSummary, include func(string) bool) map[serviceProviderKey]string {
+	type entry struct {
+		providerKey string
+	}
+	groups := map[string][]entry{}
+	for _, svc := range services {
+		pk := peerKeyString(svc.GetProvider().GetPeerId())
+		if !include(pk) {
+			continue
+		}
+		groups[svc.GetName()] = append(groups[svc.GetName()], entry{pk})
+	}
+
+	result := map[serviceProviderKey]string{}
+	for name, entries := range groups {
+		if len(entries) < 2 { //nolint:mnd
+			continue
+		}
+		ids := make([]string, len(entries))
+		for i, e := range entries {
+			ids[i] = e.providerKey
+		}
+		prefixes := minUniquePrefixes(ids)
+		for i, e := range entries {
+			result[serviceProviderKey{name, e.providerKey}] = prefixes[i]
+		}
+	}
+	return result
 }
 
 func isPortArg(s string) bool {
