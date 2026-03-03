@@ -100,6 +100,7 @@ func main() {
 		newBootstrapCmd(),
 		newUpCmd(),
 		newDownCmd(),
+		newUpgradeCmd(),
 		newJoinCmd(),
 		newInviteCmd(),
 		newStatusCmd(),
@@ -1375,21 +1376,29 @@ type bootstrapInfo struct {
 	pub  ed25519.PublicKey
 }
 
-func ensureRemotePollen(ctx context.Context, sshTarget string) error {
+func fetchInstallScript() ([]byte, error) {
 	scriptURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/scripts/install.sh", defaultRepo)
 	resp, err := (&http.Client{Timeout: scriptFetchTimeout}).Get(scriptURL) //nolint:noctx
 	if err != nil {
-		return fmt.Errorf("failed to fetch install script: %w", err)
+		return nil, fmt.Errorf("failed to fetch install script: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to fetch install script: HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("failed to fetch install script: HTTP %d", resp.StatusCode)
 	}
 
 	script, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read install script: %w", err)
+		return nil, fmt.Errorf("failed to read install script: %w", err)
+	}
+	return script, nil
+}
+
+func ensureRemotePollen(ctx context.Context, sshTarget string) error {
+	script, err := fetchInstallScript()
+	if err != nil {
+		return err
 	}
 
 	args := []string{sshTarget, "bash", "-s", "--"}
