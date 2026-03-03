@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -e
+{
 
 REPO="sambigeara/pollen"
 VERSION=""
@@ -67,3 +68,4 @@ if [ "$OS" = "linux" ]; then
 fi
 
 fatal "Unsupported OS: $OS"
+}
