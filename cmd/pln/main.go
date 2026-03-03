@@ -89,7 +89,7 @@ func getCertTTLFlag(cmd *cobra.Command) (time.Duration, error) {
 
 func main() {
 	rootCmd := &cobra.Command{Use: "pln"}
-	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted")
+	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted (env: PLN_DIR)")
 
 	rootCmd.AddCommand(
 		newVersionCmd(),
@@ -118,13 +118,41 @@ func main() {
 }
 
 func defaultRootDir() string {
-	if runtime.GOOS == osLinux {
-		const sysDir = "/var/lib/pln"
-		if syscall.Access(sysDir, 0x2) == nil { //nolint:mnd
+	if d := os.Getenv("PLN_DIR"); d != "" {
+		return d
+	}
+	home := filepath.Join(effectiveHomeDir(), plnDir)
+	if runtime.GOOS != osLinux {
+		return home
+	}
+	const sysDir = "/var/lib/pln"
+	sysState := hasState(sysDir)
+	homeState := hasState(home)
+	switch {
+	case sysState && homeState:
+		fmt.Fprintf(os.Stderr,
+			"warning: pollen state found in both %s and %s; using %s\n"+
+				"  the state in %s will be ignored\n"+
+				"  to change this, set PLN_DIR=%s\n",
+			sysDir, home, sysDir, home, home)
+		return sysDir
+	case sysState:
+		return sysDir
+	case homeState:
+		return home
+	default:
+		// Neither has state. Prefer sysDir if the package created it.
+		fi, err := os.Stat(sysDir)
+		if err == nil && fi.IsDir() {
 			return sysDir
 		}
+		return home
 	}
-	return filepath.Join(effectiveHomeDir(), plnDir)
+}
+
+func hasState(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "keys", "ed25519.pub"))
+	return err == nil
 }
 
 func newAdminCmd() *cobra.Command {
