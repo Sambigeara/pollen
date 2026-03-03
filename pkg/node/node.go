@@ -64,10 +64,7 @@ const (
 	eagerSyncCooldown = 5 * time.Second
 
 	publicConfirmThreshold = 2
-	publicConfirmTTL       = 10 * time.Minute
-
-	observedAddrRefreshInterval = 5 * time.Minute
-	publicEvalInterval          = 1 * time.Minute
+	publicEvalInterval     = 1 * time.Minute
 
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
@@ -103,13 +100,11 @@ type punchRequest struct {
 }
 
 type publicConfirmation struct {
-	at   time.Time
 	addr string
 }
 
 type Node struct {
 	lastExpirySweep     time.Time
-	lastObsAddrRefresh  time.Time
 	lastPublicEval      time.Time
 	mesh                mesh.Mesh
 	log                 *zap.SugaredLogger
@@ -165,7 +160,6 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		conf:                conf,
 		signPriv:            privKey,
 		pollenDir:           pollenDir,
-		lastObsAddrRefresh:  time.Now(),
 		localPeerEvents:     make(chan peer.Input, peerEventBufSize),
 		punchCh:             make(chan punchRequest, punchChBufSize),
 		gossipEvents:        make(chan []*statev1.GossipEvent, gossipEventBufSize),
@@ -427,8 +421,10 @@ func (n *Node) handlePeerInput(in peer.Input) {
 	case peer.PeerDisconnected:
 		n.queueGossipEvents(n.store.SetLocalConnected(d.PeerKey, false))
 		delete(n.lastEagerSync, d.PeerKey)
+		delete(n.publicConfirmations, d.PeerKey)
 	case peer.ForgetPeer:
 		delete(n.lastEagerSync, d.PeerKey)
+		delete(n.publicConfirmations, d.PeerKey)
 	}
 
 	outputs := n.peers.Step(time.Now(), in)
@@ -443,10 +439,6 @@ func (n *Node) tick() {
 	}
 	n.reconcileConnections()
 	n.reconcileDesiredConnections()
-	if time.Since(n.lastObsAddrRefresh) >= observedAddrRefreshInterval {
-		n.refreshObservedAddresses()
-		n.lastObsAddrRefresh = time.Now()
-	}
 	if time.Since(n.lastPublicEval) >= publicEvalInterval {
 		n.evaluatePublicAccessibility()
 		n.lastPublicEval = time.Now()
@@ -728,16 +720,6 @@ func (n *Node) sendObservedAddress(pk types.PeerKey, addr *net.UDPAddr) {
 	}
 }
 
-func (n *Node) refreshObservedAddresses() {
-	for _, pk := range n.mesh.ConnectedPeers() {
-		addr, ok := n.mesh.GetActivePeerAddress(pk)
-		if !ok {
-			continue
-		}
-		n.sendObservedAddress(pk, addr)
-	}
-}
-
 func (n *Node) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedAddress) {
 	addr, err := net.ResolveUDPAddr("udp", oa.GetAddr())
 	if err != nil {
@@ -752,10 +734,11 @@ func (n *Node) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedAddr
 	n.log.Debugw("observed address received", "addr", addr.String(), "from", from.Short())
 	n.queueGossipEvents(n.store.SetExternalPort(uint32(addr.Port)))
 
-	n.publicConfirmations[from] = publicConfirmation{
-		addr: addr.String(),
-		at:   time.Now(),
+	if !n.mesh.IsInboundConnection(from) {
+		return
 	}
+
+	n.publicConfirmations[from] = publicConfirmation{addr: addr.String()}
 	n.evaluatePublicAccessibility()
 }
 
@@ -764,13 +747,8 @@ func (n *Node) evaluatePublicAccessibility() {
 		return
 	}
 
-	now := time.Now()
 	counts := make(map[string]int)
-	for peer, c := range n.publicConfirmations {
-		if now.Sub(c.at) > publicConfirmTTL {
-			delete(n.publicConfirmations, peer)
-			continue
-		}
+	for _, c := range n.publicConfirmations {
 		counts[c.addr]++
 	}
 
