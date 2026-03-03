@@ -58,7 +58,6 @@ type Mesh interface {
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
 	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr) error
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
-	IsInboundConnection(peer types.PeerKey) bool
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
 	PeerCertExpiresAt(peer types.PeerKey) (time.Time, bool)
 	PeerMembershipCert(peer types.PeerKey) (*admissionv1.MembershipCert, bool)
@@ -105,7 +104,6 @@ type peerSession struct {
 	membershipCert *admissionv1.MembershipCert
 	createdAt      time.Time
 	certExpiresAt  time.Time
-	inbound        bool
 }
 
 type directDialResult struct {
@@ -416,11 +414,6 @@ func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAd
 	return nil
 }
 
-func (m *impl) IsInboundConnection(peerKey types.PeerKey) bool {
-	s, ok := m.sessions.get(peerKey)
-	return ok && s.inbound
-}
-
 func (m *impl) GetConn(peerKey types.PeerKey) (*quic.Conn, bool) {
 	s, ok := m.sessions.get(peerKey)
 	if !ok {
@@ -541,7 +534,6 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		PeerKey:      peerKey,
 		IP:           addr.IP,
 		ObservedPort: addr.Port,
-		Inbound:      s.inbound,
 	}:
 	case <-time.After(eventSendTimeout):
 		m.log.Warnw("dropped connect event, consumer lagging",
@@ -667,7 +659,7 @@ func (m *impl) acceptLoop(ctx context.Context) {
 		switch qc.ConnectionState().TLS.NegotiatedProtocol {
 		case alpnMesh:
 			mc := membershipCertFromConn(qc)
-			m.addPeer(&peerSession{conn: qc, transport: m.mainQT, membershipCert: mc, inbound: true, createdAt: time.Now(), certExpiresAt: auth.CertExpiresAt(mc)}, peerKey)
+			m.addPeer(&peerSession{conn: qc, transport: m.mainQT, membershipCert: mc, createdAt: time.Now(), certExpiresAt: auth.CertExpiresAt(mc)}, peerKey)
 		case alpnInvite:
 			go m.handleInviteConnection(ctx, qc, peerKey)
 		default:

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
@@ -44,6 +45,27 @@ func newServiceCmd(action, short string) *cobra.Command {
 			}
 		},
 	}
+}
+
+func newStartCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "start",
+		Short: "Start the background service",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			if public, _ := cmd.Flags().GetBool("public"); public {
+				if err := applyPublicFlag(cmd); err != nil {
+					fmt.Fprintln(cmd.ErrOrStderr(), err)
+					os.Exit(1)
+				}
+			}
+			if err := servicectl("start", cmd); err != nil {
+				os.Exit(1)
+			}
+		},
+	}
+	cmd.Flags().Bool("public", false, "Mark this node as publicly accessible (relay)")
+	return cmd
 }
 
 func servicectl(action string, cmd *cobra.Command) error {
