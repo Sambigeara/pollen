@@ -42,6 +42,12 @@ message ExternalPortChange {
 
 message PubliclyAccessibleChange {}
 
+message VivaldiCoordinateChange {
+  double x = 1;
+  double y = 2;
+  double height = 3;
+}
+
 message IdentityChange {
   bytes identity_pub = 1 [(buf.validate.field).bytes = {len: 32}];
   int64 cert_expiry_unix = 2;
@@ -65,6 +71,7 @@ message GossipEvent {
     ReachabilityChange reachability = 7;
     RevocationChange revocation = 9;
     PubliclyAccessibleChange publicly_accessible = 10;
+    VivaldiCoordinateChange vivaldi = 11;
   }
   bool deleted = 8;
 }

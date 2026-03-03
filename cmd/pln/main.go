@@ -1962,7 +1962,9 @@ func formatPeerID(peerID []byte, wide bool) string {
 func formatStatus(s controlv1.NodeStatus) string {
 	switch s {
 	case controlv1.NodeStatus_NODE_STATUS_ONLINE:
-		return "online"
+		return "direct"
+	case controlv1.NodeStatus_NODE_STATUS_INDIRECT:
+		return "indirect"
 	case controlv1.NodeStatus_NODE_STATUS_RELAY:
 		return "relay"
 	default:
@@ -1971,7 +1973,9 @@ func formatStatus(s controlv1.NodeStatus) string {
 }
 
 func isReachableStatus(s controlv1.NodeStatus) bool {
-	return s == controlv1.NodeStatus_NODE_STATUS_ONLINE || s == controlv1.NodeStatus_NODE_STATUS_RELAY
+	return s == controlv1.NodeStatus_NODE_STATUS_ONLINE ||
+		s == controlv1.NodeStatus_NODE_STATUS_RELAY ||
+		s == controlv1.NodeStatus_NODE_STATUS_INDIRECT
 }
 
 func peerIDHasPrefix(peerID []byte, prefix string) bool {

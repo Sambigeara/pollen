@@ -155,9 +155,9 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			continue
 		}
 
-		addr, online := s.node.mesh.GetActivePeerAddress(key)
-		status := controlv1.NodeStatus_NODE_STATUS_OFFLINE
-		if online {
+		addr, hasSession := s.node.mesh.GetActivePeerAddress(key)
+		status := controlv1.NodeStatus_NODE_STATUS_INDIRECT
+		if hasSession {
 			status = controlv1.NodeStatus_NODE_STATUS_ONLINE
 		}
 
@@ -334,14 +334,16 @@ func comparePeerKey(a, b types.PeerKey) int {
 	return bytes.Compare(a[:], b[:])
 }
 
-const offlineRank = 2
+const offlineRank = 3
 
 func nodeStatusRank(status controlv1.NodeStatus) int {
 	switch status {
 	case controlv1.NodeStatus_NODE_STATUS_ONLINE:
 		return 0
-	case controlv1.NodeStatus_NODE_STATUS_RELAY:
+	case controlv1.NodeStatus_NODE_STATUS_INDIRECT:
 		return 1
+	case controlv1.NodeStatus_NODE_STATUS_RELAY:
+		return 2 //nolint:mnd
 	default:
 		return offlineRank
 	}

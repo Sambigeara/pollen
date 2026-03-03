@@ -9,6 +9,7 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
@@ -380,10 +381,10 @@ func TestMissingForReturnsEvents(t *testing.T) {
 	pub[0] = 1
 	s := newTestStore(pub, nil)
 
-	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=2
-	s.SetExternalPort(45000)                      // counter=3
+	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
+	s.SetExternalPort(45000)
 
-	// Remote has counter=0 for us — should get all events (id + net + ext).
+	// Remote has counter=0 for us — should get all events (id + pa + net + ext).
 	events := s.MissingFor(&statev1.GossipVectorClock{
 		Counters: map[string]uint64{
 			s.LocalID.String(): 0,
@@ -398,8 +399,8 @@ func TestMissingForRespectsClock(t *testing.T) {
 	pub[0] = 1
 	s := newTestStore(pub, nil)
 
-	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=3
-	s.SetExternalPort(45000)                      // counter=4
+	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
+	s.SetExternalPort(45000)
 
 	// Remote has counter=3 — should only get events with counter > 3.
 	events := s.MissingFor(&statev1.GossipVectorClock{
@@ -417,11 +418,11 @@ func TestMissingForReturnsNilForUpToDate(t *testing.T) {
 	pub[0] = 1
 	s := newTestStore(pub, nil)
 
-	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=3
+	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 
 	events := s.MissingFor(&statev1.GossipVectorClock{
 		Counters: map[string]uint64{
-			s.LocalID.String(): 3,
+			s.LocalID.String(): 4,
 		},
 	})
 
@@ -433,8 +434,8 @@ func TestClockUsesMaxCounter(t *testing.T) {
 	pub[0] = 1
 	s := newTestStore(pub, nil)
 
-	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000) // counter=3
-	s.SetExternalPort(45000)                      // counter=4
+	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
+	s.SetExternalPort(45000)
 
 	clock := s.Clock()
 	require.Equal(t, uint64(4), clock.GetCounters()[s.LocalID.String()])
@@ -1333,4 +1334,202 @@ func TestLoadRestoresRevocationsFromDisk(t *testing.T) {
 	if !found {
 		t.Fatal("expected revocation event in MissingFor output after reload")
 	}
+}
+
+func TestSetLocalVivaldiCoordReturnsEvent(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	coord := topology.Coord{X: 10.5, Y: -3.2, Height: 0.001}
+	events := s.SetLocalVivaldiCoord(coord)
+	require.Len(t, events, 1)
+
+	ev := events[0]
+	require.False(t, ev.GetDeleted())
+	v := ev.GetVivaldi()
+	require.NotNil(t, v)
+	require.Equal(t, 10.5, v.GetX())
+	require.Equal(t, -3.2, v.GetY())
+	require.Equal(t, 0.001, v.GetHeight())
+}
+
+func TestSetLocalVivaldiCoordEpsilonSuppression(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	coord := topology.Coord{X: 10.5, Y: -3.2, Height: 0.001}
+	s.SetLocalVivaldiCoord(coord)
+
+	// Tiny change within epsilon — should be suppressed.
+	events := s.SetLocalVivaldiCoord(topology.Coord{X: 10.5001, Y: -3.2, Height: 0.001})
+	require.Nil(t, events)
+
+	// Large change beyond epsilon — should publish.
+	events = s.SetLocalVivaldiCoord(topology.Coord{X: 20.0, Y: -3.2, Height: 0.001})
+	require.Len(t, events, 1)
+}
+
+func TestSetLocalVivaldiCoordUnchangedSuppressedAtHighHeight(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	coord := topology.Coord{X: 1.0, Y: 2.0, Height: 3.0}
+	s.SetLocalVivaldiCoord(coord)
+
+	events := s.SetLocalVivaldiCoord(coord)
+	require.Nil(t, events)
+}
+
+func TestApplyVivaldiFromPeer(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	peerPK, peerIDStr := peerKey(2)
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Vivaldi{
+			Vivaldi: &statev1.VivaldiCoordinateChange{X: 5.0, Y: 7.0, Height: 0.1},
+		},
+	})
+
+	coord, ok := s.PeerVivaldiCoord(peerPK)
+	require.True(t, ok)
+	require.Equal(t, 5.0, coord.X)
+	require.Equal(t, 7.0, coord.Y)
+	require.Equal(t, 0.1, coord.Height)
+}
+
+func TestApplyVivaldiDeletionClearsToNil(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	_, peerIDStr := peerKey(2)
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Vivaldi{
+			Vivaldi: &statev1.VivaldiCoordinateChange{X: 5.0, Y: 7.0, Height: 0.1},
+		},
+	})
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 2,
+		Deleted: true,
+		Change: &statev1.GossipEvent_Vivaldi{
+			Vivaldi: &statev1.VivaldiCoordinateChange{},
+		},
+	})
+
+	peerPK, _ := peerKey(2)
+	coord, ok := s.PeerVivaldiCoord(peerPK)
+	require.False(t, ok)
+	require.Nil(t, coord)
+}
+
+func TestVivaldiRoundTrip(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	s.SetLocalVivaldiCoord(topology.Coord{X: 10.5, Y: -3.2, Height: 0.001})
+
+	missing := s.MissingFor(&statev1.GossipVectorClock{
+		Counters: map[string]uint64{s.LocalID.String(): 0},
+	})
+
+	var found bool
+	for _, ev := range missing {
+		if ev.GetVivaldi() != nil && !ev.GetDeleted() {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "expected vivaldi event in MissingFor output")
+}
+
+func TestVivaldiConflictRecovery(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	s.SetLocalVivaldiCoord(topology.Coord{X: 10.5, Y: -3.2, Height: 0.001})
+
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  s.LocalID.String(),
+		Counter: 100,
+		Change: &statev1.GossipEvent_Vivaldi{
+			Vivaldi: &statev1.VivaldiCoordinateChange{X: 1, Y: 2, Height: 3},
+		},
+	})
+
+	require.NotEmpty(t, result.Rebroadcast)
+
+	var found bool
+	for _, ev := range result.Rebroadcast {
+		if ev.GetVivaldi() != nil {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "rebroadcast should include vivaldi event")
+}
+
+func TestFreshStoreDoesNotGossipVivaldi(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	s, err := Load(t.TempDir(), pub, nil)
+	require.NoError(t, err)
+	defer s.Close()
+
+	missing := s.MissingFor(&statev1.GossipVectorClock{
+		Counters: map[string]uint64{s.LocalID.String(): 0},
+	})
+
+	var found bool
+	for _, ev := range missing {
+		if ev.GetVivaldi() != nil {
+			found = true
+			break
+		}
+	}
+	require.False(t, found, "fresh store should not gossip vivaldi before node startup publish")
+}
+
+func TestKnownPeersIncludesVivaldiCoord(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	_, peerIDStr := peerKey(2)
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+		},
+	})
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_Vivaldi{
+			Vivaldi: &statev1.VivaldiCoordinateChange{X: 5.0, Y: 7.0, Height: 0.1},
+		},
+	})
+
+	peers := s.KnownPeers()
+	require.Len(t, peers, 1)
+	require.NotNil(t, peers[0].VivaldiCoord)
+	require.Equal(t, 5.0, peers[0].VivaldiCoord.X)
 }

@@ -12,6 +12,7 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -25,6 +26,7 @@ const (
 	attrReachability
 	attrRevocation
 	attrPubliclyAccessible
+	attrVivaldi
 )
 
 type attrKey struct {
@@ -61,6 +63,10 @@ func publiclyAccessibleAttrKey() attrKey {
 	return attrKey{kind: attrPubliclyAccessible}
 }
 
+func vivaldiAttrKey() attrKey {
+	return attrKey{kind: attrVivaldi}
+}
+
 // logEntry tracks the counter (and deletion state) of a single attribute.
 type logEntry struct {
 	Counter uint64
@@ -71,6 +77,7 @@ type nodeRecord struct {
 	Reachable          map[types.PeerKey]struct{}
 	Services           map[string]*statev1.Service
 	log                map[attrKey]logEntry
+	VivaldiCoord       *topology.Coord
 	LastAddr           string
 	IdentityPub        []byte
 	IPs                []string
@@ -82,6 +89,7 @@ type nodeRecord struct {
 }
 
 type KnownPeer struct {
+	VivaldiCoord       *topology.Coord
 	LastAddr           string
 	IdentityPub        []byte
 	IPs                []string
@@ -150,7 +158,9 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 		desiredConnections: make(map[string]Connection),
 	}
 
-	// Correct stale "public" state held by peers from a prior session.
+	// Correct stale state held by peers from a prior session.
+	// Vivaldi state is not tombstoned here because node startup immediately
+	// publishes the current local coordinate.
 	local := s.nodes[localID]
 	local.maxCounter++
 	local.log[publiclyAccessibleAttrKey()] = logEntry{Counter: local.maxCounter, Deleted: true}
@@ -454,6 +464,8 @@ func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
 		return revocationAttrKey(subjectKey.String()), true
 	case *statev1.GossipEvent_PubliclyAccessible:
 		return publiclyAccessibleAttrKey(), true
+	case *statev1.GossipEvent_Vivaldi:
+		return vivaldiAttrKey(), true
 	default:
 		return attrKey{}, false
 	}
@@ -495,6 +507,8 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 		// Revocations are cluster-wide, not per-node; deletion is a no-op.
 	case attrPubliclyAccessible:
 		rec.PubliclyAccessible = false
+	case attrVivaldi:
+		rec.VivaldiCoord = nil
 	default:
 		panic("unknown attr kind")
 	}
@@ -529,6 +543,14 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 		rec.Reachable[key.peer] = struct{}{}
 	case *statev1.GossipEvent_PubliclyAccessible:
 		rec.PubliclyAccessible = true
+	case *statev1.GossipEvent_Vivaldi:
+		if v.Vivaldi != nil {
+			rec.VivaldiCoord = &topology.Coord{
+				X:      v.Vivaldi.GetX(),
+				Y:      v.Vivaldi.GetY(),
+				Height: v.Vivaldi.GetHeight(),
+			}
+		}
 	}
 }
 
@@ -692,6 +714,47 @@ func (s *Store) IsPubliclyAccessible(peerID types.PeerKey) bool {
 	return rec.PubliclyAccessible
 }
 
+func (s *Store) SetLocalVivaldiCoord(coord topology.Coord) []*statev1.GossipEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	local := s.nodes[s.LocalID]
+	if local.VivaldiCoord != nil && topology.MovementDistance(*local.VivaldiCoord, coord) <= topology.PublishEpsilon {
+		return nil
+	}
+
+	local.VivaldiCoord = &coord
+
+	key := vivaldiAttrKey()
+	local.maxCounter++
+	counter := local.maxCounter
+	local.log[key] = logEntry{Counter: counter}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Change: &statev1.GossipEvent_Vivaldi{
+			Vivaldi: &statev1.VivaldiCoordinateChange{
+				X:      coord.X,
+				Y:      coord.Y,
+				Height: coord.Height,
+			},
+		},
+	}}
+}
+
+func (s *Store) PeerVivaldiCoord(peerID types.PeerKey) (*topology.Coord, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rec, ok := s.nodes[peerID]
+	if !ok {
+		return nil, false
+	}
+	return rec.VivaldiCoord, rec.VivaldiCoord != nil
+}
+
 func (s *Store) UpsertLocalService(port uint32, name string) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -852,6 +915,7 @@ func (s *Store) KnownPeers() []KnownPeer {
 			IPs:                rec.IPs,
 			LastAddr:           rec.LastAddr,
 			PubliclyAccessible: rec.PubliclyAccessible,
+			VivaldiCoord:       rec.VivaldiCoord,
 		})
 	}
 
@@ -1093,6 +1157,14 @@ func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRe
 		event.Change = &statev1.GossipEvent_PubliclyAccessible{
 			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
 		}
+	case attrVivaldi:
+		change := &statev1.VivaldiCoordinateChange{}
+		if !entry.Deleted && rec.VivaldiCoord != nil {
+			change.X = rec.VivaldiCoord.X
+			change.Y = rec.VivaldiCoord.Y
+			change.Height = rec.VivaldiCoord.Height
+		}
+		event.Change = &statev1.GossipEvent_Vivaldi{Vivaldi: change}
 	case attrRevocation:
 		panic("buildEventFromLog must not be called for revocation events")
 	default:
