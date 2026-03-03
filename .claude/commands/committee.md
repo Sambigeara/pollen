@@ -16,13 +16,32 @@ Store the result as a `requirements` string for distribution to personas. Format
 <full description, acceptance criteria, and any relevant context>
 ```
 
-## Phase 2 — Persona Assessment (parallel)
+## Phase 2 — Persona Triage + Assessment
 
-Launch all 6 persona subagents in parallel using the Task tool (`subagent_type: "general-purpose"`). Do NOT pass conversation context. Each subagent receives the same prompt template with only its persona name substituted:
+Read all 6 persona files directly:
+
+- `.claude/personas/cli.md`
+- `.claude/personas/orchestrator.md`
+- `.claude/personas/state.md`
+- `.claude/personas/transport.md`
+- `.claude/personas/trust.md`
+- `.claude/personas/ergonomics.md`
+
+Evaluate the requirements against each persona's **Owns**, **Responsibilities**, and **Needs** sections. A persona is relevant if:
+
+1. The task directly touches packages it owns, OR
+2. The task requires capabilities it exposes (from its API contract), OR
+3. The task impacts guarantees it defends
+
+For the **ergonomics** persona specifically: only mark relevant if the task affects user-facing surfaces (CLI commands, error messages, help text, install scripts, status output).
+
+Record the relevance decision and a one-sentence reason for each persona.
+
+Then launch assessment subagents **only for relevant personas** (typically 2-3) in parallel using the Agent tool (`subagent_type: "general-purpose"`). Do NOT pass conversation context. Each subagent receives:
 
 ---
 
-**Subagent prompt template** (substitute `{PERSONA}` and `{REQUIREMENTS}`):
+**Assessment subagent prompt template** (substitute `{PERSONA}` and `{REQUIREMENTS}`):
 
 ```
 You are the {PERSONA} persona for the Pollen project.
@@ -35,49 +54,58 @@ Then evaluate the following requirements:
 
 Return your assessment in EXACTLY this format (no other output):
 
-RELEVANT: yes | no
-REASON: <one sentence why relevant or not>
+RELEVANT: yes
+REASON: <one sentence why relevant>
 
 INTERNAL_PLAN:
-<if relevant: numbered list of concrete implementation steps within your owned packages>
-<if not relevant: "n/a">
+<numbered list of concrete implementation steps within your owned packages>
 
 CROSS_BOUNDARY:
-<if relevant: list each dependency as "NEEDS <persona>: <what you need from them>">
-<if not relevant: "none">
+<list each dependency as "NEEDS <persona>: <what you need from them>">
 ```
 
 ---
 
-Collect all 6 responses. Parse each into: persona name, relevant (bool), reason, internal plan, and cross-boundary dependencies.
+Collect responses and parse each into: persona name, internal plan, and cross-boundary dependencies.
 
 ## Phase 3 — Cross-Persona Negotiation
 
-Identify all cross-boundary requests from Phase 2. For each unique `NEEDS <target>: <ask>`, send the ask to the target persona for evaluation.
+Collect all cross-boundary requests from Phase 2. The orchestrator already knows each persona's API contract and guarantees from reading the persona files in Phase 2. Use this knowledge to resolve requests efficiently:
 
-Launch one subagent per affected target persona (`subagent_type: "general-purpose"`, no conversation context):
+**Orchestrator-mediated resolution** (no subagent needed): If a request maps directly to a documented API in the target persona's contract (e.g., "NEEDS state: `store.Store.UpsertLocalService`"), accept it immediately — the persona files document exactly what each persona exposes and guarantees.
+
+**Subagent-required resolution**: Launch a negotiation subagent only when:
+
+1. The request asks the target persona to **change or extend** its API contract
+2. The request could **conflict** with the target persona's documented guarantees
+3. There's genuine **ambiguity** about whether the request is compatible
+
+When multiple requesting personas need something from the **same target persona**, batch all requests into a single subagent call:
 
 ---
 
-**Negotiation subagent prompt template**:
+**Negotiation subagent prompt template** (batched):
 
 ```
 You are the {TARGET_PERSONA} persona for the Pollen project.
 
 Read your persona definition: .claude/personas/{TARGET_PERSONA}.md
 
-Another persona has requested the following from you:
+The following personas have requests for you:
 
+{FOR_EACH_REQUEST}
 FROM: {REQUESTING_PERSONA}
 REQUEST: {REQUEST_DESCRIPTION}
+{END_FOR_EACH}
 
 CONTEXT (the overall task requirements):
 {REQUIREMENTS}
 
-Evaluate whether this request is compatible with your ownership, API contracts, and guarantees.
+Evaluate whether each request is compatible with your ownership, API contracts, and guarantees.
 
-Return your response in EXACTLY this format:
+Return your response in EXACTLY this format (one block per request):
 
+REQUEST_FROM: {REQUESTING_PERSONA}
 VERDICT: accept | counter | reject
 REASON: <one sentence>
 COUNTER_PROPOSAL: <if verdict is "counter", describe your alternative; otherwise "n/a">
@@ -151,9 +179,24 @@ Implement every step in the plan. Follow these rules:
 
 Collect the implementation report.
 
-## Phase 6 — Persona Review (parallel)
+## Phase 6 — Persona Review (diff-gated)
 
-Launch ALL 6 persona subagents in parallel (`subagent_type: "general-purpose"`, no conversation context). Relevant personas do a full review; irrelevant personas do a sanity check.
+Run `git diff --stat HEAD~1` and map changed files to persona ownership using these boundaries:
+
+| Persona | Owned paths |
+|---|---|
+| cli | `cmd/pollen/` |
+| orchestrator | `pkg/node/`, `pkg/tunnel/`, `pkg/server/` |
+| state | `pkg/store/`, `pkg/config/` |
+| transport | `pkg/mesh/`, `pkg/sock/`, `pkg/peer/` |
+| trust | `pkg/auth/`, `pkg/perm/` |
+| ergonomics | `cmd/pollen/`, `scripts/`, `packaging/` |
+
+Also map proto files: `api/public/pollen/control/` → orchestrator, `api/public/pollen/state/` → state, `api/public/pollen/mesh/` → transport, `api/public/pollen/admission/` → trust.
+
+Launch review subagents **only for personas whose owned files were touched** in parallel (`subagent_type: "general-purpose"`, no conversation context). The **ergonomics** persona is only included if user-facing files changed (`cmd/pollen/`, `scripts/`, `packaging/`, or files containing error messages).
+
+For personas that were relevant in Phase 2 but whose files were NOT touched by the implementation: skip review — their requirements were satisfied through cross-boundary APIs and no code in their domain changed.
 
 ---
 
@@ -164,7 +207,8 @@ You are the {PERSONA} persona for the Pollen project.
 
 Read your persona definition: .claude/personas/{PERSONA}.md
 
-A task has just been implemented. Your relevance to this task: {RELEVANT_OR_NOT}.
+A task has just been implemented. Files changed in your domain:
+{CHANGED_FILES_FOR_THIS_PERSONA}
 
 ## Original Requirements
 {REQUIREMENTS}
@@ -172,7 +216,7 @@ A task has just been implemented. Your relevance to this task: {RELEVANT_OR_NOT}
 ## Implementation Summary
 {IMPLEMENTATION_REPORT}
 
-{IF_RELEVANT}
+{IF_WAS_RELEVANT_IN_PHASE_2}
 Your approved plan was:
 {PERSONA_INTERNAL_PLAN}
 
@@ -182,14 +226,14 @@ Review the implementation against your plan. Check:
 3. No regressions in your owned packages
 {END_IF}
 
-{IF_NOT_RELEVANT}
-Do a sanity check for unexpected cross-cutting impacts on your owned packages. Check:
+{IF_NOT_RELEVANT_IN_PHASE_2}
+Check for unexpected cross-cutting impacts on your owned packages:
 1. No unexpected changes to files you own
 2. No new dependencies on your packages that bypass your API contracts
 3. No changes that violate your guarantees
 {END_IF}
 
-Run `git diff HEAD~1` or inspect changed files to see what was modified.
+Run `git diff HEAD~1 -- {OWNED_PATHS}` to inspect changes to your files.
 
 Return your review in EXACTLY this format:
 
@@ -201,12 +245,13 @@ FINDINGS:
 
 ---
 
-Collect all 6 reviews. If ANY persona returns `findings`:
+Collect reviews. If ANY persona returns `findings`:
 
 1. Triage findings into "must-fix" (correctness, dead code, dedup) and "deferred" (nice-to-have, future work). Present both lists to the user and get approval on which to fix now.
 2. Send must-fix findings to the implementation subagent (resume it or launch a new one) with instructions to address each finding.
-3. **MANDATORY**: After fixes are applied, re-run the FULL persona review cycle (all 6 personas, same prompts). This is not optional — every fix round MUST be followed by a review round. Do NOT skip to the final presentation after fixes.
-4. Repeat fix → review cycles until all personas return `pass` or only deferred findings remain.
+3. **MANDATORY**: After fixes are applied, re-run review **only with personas that reported findings** (not all personas). This is targeted re-review — if a persona passed, it doesn't need to review again unless fixes touched its files.
+4. If fixes touched files owned by a persona that previously passed, add that persona to the re-review round.
+5. Repeat fix → targeted review cycles until all reviewing personas return `pass` or only deferred findings remain.
 
 Maximum 3 review-fix rounds. If findings persist after 3 rounds, present the remaining issues to the user and ask how to proceed.
 
