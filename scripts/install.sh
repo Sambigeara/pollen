@@ -27,7 +27,7 @@ if [ "$OS" = "darwin" ]; then
     log "macOS detected. Installing via Homebrew..."
     command -v brew >/dev/null 2>&1 || fatal "Homebrew is required but not installed."
     brew install sambigeara/homebrew-pln/pln
-    log "Done! Run 'brew services start pln' to run in the background."
+    log "Done! Run 'pln up -d' to start the background service."
     exit 0
 fi
 

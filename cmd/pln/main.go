@@ -99,9 +99,7 @@ func main() {
 		newIDCmd(),
 		newBootstrapCmd(),
 		newUpCmd(),
-		newStartCmd(),
-		newServiceCmd("stop", "Stop the background service"),
-		newServiceCmd("restart", "Restart the background service"),
+		newDownCmd(),
 		newJoinCmd(),
 		newInviteCmd(),
 		newStatusCmd(),
@@ -248,30 +246,51 @@ func newBootstrapCmd() *cobra.Command {
 func newUpCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "up",
-		Short: "Start a Pollen node in the foreground",
+		Short: "Start a Pollen node (foreground by default, -d for background service)",
 		Run:   runUp,
 	}
 	cmd.Flags().Int("port", config.DefaultBootstrapPort, "Listening port")
 	cmd.Flags().IPSlice("ips", []net.IP{}, "Advertised IPs")
 	cmd.Flags().Bool("public", false, "Mark this node as publicly accessible (relay)")
+	cmd.Flags().BoolP("detach", "d", false, "Run as a background service")
+	cmd.Flags().Bool("restart", false, "Restart the background service (requires -d)")
 	return cmd
 }
 
 func runUp(cmd *cobra.Command, _ []string) {
-	pollenDir, err := pollenPath(cmd)
-	if err == nil {
-		sockPath := filepath.Join(pollenDir, socketName)
-		if active, _ := nodeSocketActive(sockPath); active {
-			fmt.Fprintln(cmd.ErrOrStderr(),
-				"a node is already running; use `pln stop` to stop the background service")
-			return
-		}
+	detach, _ := cmd.Flags().GetBool("detach")
+	restart, _ := cmd.Flags().GetBool("restart")
+
+	if restart && !detach {
+		fmt.Fprintln(cmd.ErrOrStderr(), "--restart requires --detach (-d)")
+		os.Exit(1)
 	}
 
 	if public, _ := cmd.Flags().GetBool("public"); public {
 		if err := applyPublicFlag(cmd); err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 			os.Exit(1)
+		}
+	}
+
+	if detach {
+		action := "start"
+		if restart {
+			action = "restart"
+		}
+		if err := servicectl(action, cmd); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+
+	pollenDir, err := pollenPath(cmd)
+	if err == nil {
+		sockPath := filepath.Join(pollenDir, socketName)
+		if active, _ := nodeSocketActive(sockPath); active {
+			fmt.Fprintln(cmd.ErrOrStderr(),
+				"a node is already running; use `pln down` to stop the background service")
+			return
 		}
 	}
 
@@ -285,7 +304,7 @@ func newJoinCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		Run:   runJoin,
 	}
-	cmd.Flags().Bool("no-start", false, "Enroll credentials without starting the daemon")
+	cmd.Flags().Bool("no-up", false, "Enroll credentials without starting the daemon")
 	cmd.Flags().Bool("public", false, "Mark this node as publicly accessible (relay)")
 	return cmd
 }
@@ -350,9 +369,9 @@ func runJoin(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	noStart, _ := cmd.Flags().GetBool("no-start")
+	noUp, _ := cmd.Flags().GetBool("no-up")
 	public, _ := cmd.Flags().GetBool("public")
-	if runtime.GOOS == osLinux && !noStart && os.Getuid() != 0 {
+	if runtime.GOOS == osLinux && !noUp && os.Getuid() != 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root to manage the daemon; run: sudo %s\n", cmd.CommandPath())
 		os.Exit(1)
 	}
@@ -374,8 +393,8 @@ func runJoin(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	if noStart {
-		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pln start` to start the node")
+	if noUp {
+		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pln up -d` to start the node")
 		return
 	}
 
@@ -596,7 +615,7 @@ func runInit(cmd *cobra.Command, _ []string) {
 		os.Exit(1)
 	}
 	if running {
-		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pln stop` before initializing")
+		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pln down` before initializing")
 		os.Exit(1)
 	}
 
@@ -668,7 +687,7 @@ func runPurge(cmd *cobra.Command, _ []string) {
 		return
 	}
 	if running {
-		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pln stop` before purging state")
+		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pln down` before purging state")
 		return
 	}
 
@@ -1100,7 +1119,7 @@ func sshPln(ctx context.Context, sshTarget string, args ...string) *exec.Cmd {
 }
 
 // sshRoot runs a command on the remote host as root via sudo.
-// Use for service management (start, stop, restart, status).
+// Use for service management (up, down).
 func sshRoot(ctx context.Context, sshTarget, shellCmd string) *exec.Cmd {
 	return exec.CommandContext(ctx, "ssh", sshTarget, shellCmd)
 }
@@ -1110,10 +1129,10 @@ func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) erro
 
 	// Enroll the relay into the cluster (as pln user for correct file ownership),
 	// then start the daemon (as root for systemctl).
-	if out, err := sshPln(ctx, sshTarget, "join", "--no-start", "--public", seedToken).CombinedOutput(); err != nil {
+	if out, err := sshPln(ctx, sshTarget, "join", "--no-up", "--public", seedToken).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to enroll relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
-	if out, err := sshRoot(ctx, sshTarget, "sudo pln start").CombinedOutput(); err != nil {
+	if out, err := sshRoot(ctx, sshTarget, "sudo pln up -d").CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	if err := waitForRelayReady(cmd, sshTarget); err != nil {
@@ -1122,7 +1141,7 @@ func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) erro
 	if err := provisionRelayAdminDelegation(cmd, sshTarget); err != nil {
 		return err
 	}
-	if out, err := sshRoot(ctx, sshTarget, "sudo pln restart").CombinedOutput(); err != nil {
+	if out, err := sshRoot(ctx, sshTarget, "sudo pln up -d --restart").CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	return waitForRelayReady(cmd, sshTarget)
@@ -1203,7 +1222,7 @@ func resolveBootstrapPeers(cmd *cobra.Command, specs []string) ([]*admissionv1.B
 }
 
 func enrollJoin(cmd *cobra.Command, pollenDir, rawToken string, public bool) error {
-	joinArgs := []string{"join", "--no-start"}
+	joinArgs := []string{"join", "--no-up"}
 	if public {
 		joinArgs = append(joinArgs, "--public")
 	}
