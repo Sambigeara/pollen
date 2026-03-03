@@ -119,8 +119,9 @@ func main() {
 
 func defaultRootDir() string {
 	if runtime.GOOS == osLinux {
-		if stat, err := os.Stat("/var/lib/pln"); err == nil && stat.IsDir() {
-			return "/var/lib/pln"
+		const sysDir = "/var/lib/pln"
+		if syscall.Access(sysDir, 0x2 /* W_OK */) == nil {
+			return sysDir
 		}
 	}
 	return filepath.Join(effectiveHomeDir(), plnDir)
