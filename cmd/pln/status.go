@@ -99,9 +99,9 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		if addr == "" {
 			addr = "-"
 		}
-		status := "online"
+		status := "-"
 		if self.GetPubliclyAccessible() {
-			status = "online (public)"
+			status = "- (public)"
 		}
 		sec.rows = append(sec.rows, []string{label, status, addr})
 	}
@@ -114,7 +114,7 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		}
 		label := formatPeerID(n.GetNode().GetPeerId(), opts.wide)
 		status := formatStatus(n.GetStatus())
-		if n.GetPubliclyAccessible() && isReachableStatus(n.GetStatus()) {
+		if n.GetPubliclyAccessible() {
 			status += " (public)"
 		}
 		addr := n.GetAddr()

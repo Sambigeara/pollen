@@ -29,6 +29,7 @@ const (
 	NodeStatus_NODE_STATUS_ONLINE      NodeStatus = 1
 	NodeStatus_NODE_STATUS_OFFLINE     NodeStatus = 2
 	NodeStatus_NODE_STATUS_RELAY       NodeStatus = 3
+	NodeStatus_NODE_STATUS_INDIRECT    NodeStatus = 4
 )
 
 // Enum value maps for NodeStatus.
@@ -38,12 +39,14 @@ var (
 		1: "NODE_STATUS_ONLINE",
 		2: "NODE_STATUS_OFFLINE",
 		3: "NODE_STATUS_RELAY",
+		4: "NODE_STATUS_INDIRECT",
 	}
 	NodeStatus_value = map[string]int32{
 		"NODE_STATUS_UNSPECIFIED": 0,
 		"NODE_STATUS_ONLINE":      1,
 		"NODE_STATUS_OFFLINE":     2,
 		"NODE_STATUS_RELAY":       3,
+		"NODE_STATUS_INDIRECT":    4,
 	}
 )
 
@@ -1371,13 +1374,14 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x19DisconnectServiceResponse\"5\n" +
 	"\x11RevokePeerRequest\x12 \n" +
 	"\apeer_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\x06peerId\"\x14\n" +
-	"\x12RevokePeerResponse*q\n" +
+	"\x12RevokePeerResponse*\x8b\x01\n" +
 	"\n" +
 	"NodeStatus\x12\x1b\n" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12NODE_STATUS_ONLINE\x10\x01\x12\x17\n" +
 	"\x13NODE_STATUS_OFFLINE\x10\x02\x12\x15\n" +
-	"\x11NODE_STATUS_RELAY\x10\x03*\x8f\x01\n" +
+	"\x11NODE_STATUS_RELAY\x10\x03\x12\x18\n" +
+	"\x14NODE_STATUS_INDIRECT\x10\x04*\x8f\x01\n" +
 	"\n" +
 	"CertHealth\x12\x1b\n" +
 	"\x17CERT_HEALTH_UNSPECIFIED\x10\x00\x12\x12\n" +
