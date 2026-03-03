@@ -294,6 +294,13 @@ func (s *NodeService) ConnectService(ctx context.Context, req *controlv1.Connect
 	return &controlv1.ConnectServiceResponse{LocalPort: localPort}, nil
 }
 
+func (s *NodeService) DisconnectService(_ context.Context, req *controlv1.DisconnectServiceRequest) (*controlv1.DisconnectServiceResponse, error) {
+	if err := s.node.DisconnectService(req.GetLocalPort()); err != nil {
+		return nil, err
+	}
+	return &controlv1.DisconnectServiceResponse{}, nil
+}
+
 func (s *NodeService) RevokePeer(_ context.Context, req *controlv1.RevokePeerRequest) (*controlv1.RevokePeerResponse, error) {
 	if s.creds.InviteSigner == nil {
 		return nil, errors.New("admin signer not available; this node cannot revoke peers")

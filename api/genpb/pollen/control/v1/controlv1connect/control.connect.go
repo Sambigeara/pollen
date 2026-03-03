@@ -53,6 +53,9 @@ const (
 	// ControlServiceConnectPeerProcedure is the fully-qualified name of the ControlService's
 	// ConnectPeer RPC.
 	ControlServiceConnectPeerProcedure = "/pollen.control.v1.ControlService/ConnectPeer"
+	// ControlServiceDisconnectServiceProcedure is the fully-qualified name of the ControlService's
+	// DisconnectService RPC.
+	ControlServiceDisconnectServiceProcedure = "/pollen.control.v1.ControlService/DisconnectService"
 	// ControlServiceRevokePeerProcedure is the fully-qualified name of the ControlService's RevokePeer
 	// RPC.
 	ControlServiceRevokePeerProcedure = "/pollen.control.v1.ControlService/RevokePeer"
@@ -67,6 +70,7 @@ type ControlServiceClient interface {
 	UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error)
 	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
 	ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error)
+	DisconnectService(context.Context, *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error)
 	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
 }
 
@@ -123,6 +127,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("ConnectPeer")),
 			connect.WithClientOptions(opts...),
 		),
+		disconnectService: connect.NewClient[v1.DisconnectServiceRequest, v1.DisconnectServiceResponse](
+			httpClient,
+			baseURL+ControlServiceDisconnectServiceProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("DisconnectService")),
+			connect.WithClientOptions(opts...),
+		),
 		revokePeer: connect.NewClient[v1.RevokePeerRequest, v1.RevokePeerResponse](
 			httpClient,
 			baseURL+ControlServiceRevokePeerProcedure,
@@ -141,6 +151,7 @@ type controlServiceClient struct {
 	unregisterService *connect.Client[v1.UnregisterServiceRequest, v1.UnregisterServiceResponse]
 	connectService    *connect.Client[v1.ConnectServiceRequest, v1.ConnectServiceResponse]
 	connectPeer       *connect.Client[v1.ConnectPeerRequest, v1.ConnectPeerResponse]
+	disconnectService *connect.Client[v1.DisconnectServiceRequest, v1.DisconnectServiceResponse]
 	revokePeer        *connect.Client[v1.RevokePeerRequest, v1.RevokePeerResponse]
 }
 
@@ -179,6 +190,11 @@ func (c *controlServiceClient) ConnectPeer(ctx context.Context, req *connect.Req
 	return c.connectPeer.CallUnary(ctx, req)
 }
 
+// DisconnectService calls pollen.control.v1.ControlService.DisconnectService.
+func (c *controlServiceClient) DisconnectService(ctx context.Context, req *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error) {
+	return c.disconnectService.CallUnary(ctx, req)
+}
+
 // RevokePeer calls pollen.control.v1.ControlService.RevokePeer.
 func (c *controlServiceClient) RevokePeer(ctx context.Context, req *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error) {
 	return c.revokePeer.CallUnary(ctx, req)
@@ -193,6 +209,7 @@ type ControlServiceHandler interface {
 	UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error)
 	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
 	ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error)
+	DisconnectService(context.Context, *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error)
 	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
 }
 
@@ -245,6 +262,12 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("ConnectPeer")),
 		connect.WithHandlerOptions(opts...),
 	)
+	controlServiceDisconnectServiceHandler := connect.NewUnaryHandler(
+		ControlServiceDisconnectServiceProcedure,
+		svc.DisconnectService,
+		connect.WithSchema(controlServiceMethods.ByName("DisconnectService")),
+		connect.WithHandlerOptions(opts...),
+	)
 	controlServiceRevokePeerHandler := connect.NewUnaryHandler(
 		ControlServiceRevokePeerProcedure,
 		svc.RevokePeer,
@@ -267,6 +290,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceConnectServiceHandler.ServeHTTP(w, r)
 		case ControlServiceConnectPeerProcedure:
 			controlServiceConnectPeerHandler.ServeHTTP(w, r)
+		case ControlServiceDisconnectServiceProcedure:
+			controlServiceDisconnectServiceHandler.ServeHTTP(w, r)
 		case ControlServiceRevokePeerProcedure:
 			controlServiceRevokePeerHandler.ServeHTTP(w, r)
 		default:
@@ -304,6 +329,10 @@ func (UnimplementedControlServiceHandler) ConnectService(context.Context, *conne
 
 func (UnimplementedControlServiceHandler) ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.ConnectPeer is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) DisconnectService(context.Context, *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.DisconnectService is not implemented"))
 }
 
 func (UnimplementedControlServiceHandler) RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error) {

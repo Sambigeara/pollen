@@ -25,12 +25,13 @@ You are the node lifecycle and service tunneling specialist for Pollen. You thin
 - `node.Node.Ready() <-chan struct{}` — closed when mesh is listening
 - `node.Node.ListenPort() int` — UDP port the mesh bound to
 - `node.Node.ConnectService(peerID, remotePort, localPort) (uint32, error)` — establish tunnel, return bound port
+- `node.Node.DisconnectService(localPort) error` — tear down tunnel and remove desired connection
 - `node.Node.GetConnectedPeers() []types.PeerKey` — currently connected peers
 - `node.GenIdentityKey(pollenDir) (priv, pub, error)` — generate or load Ed25519 identity
 - `node.ReadIdentityPub(pollenDir) (pub, error)` — read public key only
 - `node.Config` — `{AdvertisedIPs, BootstrapPeers, Port, GossipInterval, PeerTickInterval, GossipJitter, TLSIdentityTTL, MembershipTTL, DisableGossipJitter}`
 - `node.BootstrapPeer` — `{Addrs []string, PeerKey types.PeerKey}`
-- `node.NodeService` — implements `controlv1.ControlServiceServer` (8 RPCs)
+- `node.NodeService` — implements `controlv1.ControlServiceServer` (9 RPCs)
 - `node.NewNodeService(n, shutdown, creds) *NodeService`
 - `tunnel.StreamTransport` — interface: `OpenStream(ctx, peerID) (io.ReadWriteCloser, error)`, `AcceptStream(ctx) (types.PeerKey, io.ReadWriteCloser, error)`
 - `tunnel.Manager` — stream-based tunnel manager
@@ -64,4 +65,4 @@ You are the node lifecycle and service tunneling specialist for Pollen. You thin
 
 ## Proto ownership
 
-- `api/public/pollen/control/v1/control.proto` — `ControlService` (8 RPCs: `Shutdown`, `GetBootstrapInfo`, `GetStatus`, `RegisterService`, `UnregisterService`, `ConnectService`, `ConnectPeer`, `RevokePeer`), `NodeRef`, `NodeStatus` enum, `NodeSummary`, `ServiceSummary`, `ConnectionSummary`, `CertInfo`, `BootstrapPeerInfo`, and all request/response messages
+- `api/public/pollen/control/v1/control.proto` — `ControlService` (9 RPCs: `Shutdown`, `GetBootstrapInfo`, `GetStatus`, `RegisterService`, `UnregisterService`, `ConnectService`, `DisconnectService`, `ConnectPeer`, `RevokePeer`), `NodeRef`, `NodeStatus` enum, `NodeSummary`, `ServiceSummary`, `ConnectionSummary`, `CertInfo`, `BootstrapPeerInfo`, and all request/response messages

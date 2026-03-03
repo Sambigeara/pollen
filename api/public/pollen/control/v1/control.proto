@@ -14,6 +14,7 @@ service ControlService {
   rpc UnregisterService(UnregisterServiceRequest) returns (UnregisterServiceResponse);
   rpc ConnectService(ConnectServiceRequest) returns (ConnectServiceResponse);
   rpc ConnectPeer(ConnectPeerRequest) returns (ConnectPeerResponse);
+  rpc DisconnectService(DisconnectServiceRequest) returns (DisconnectServiceResponse);
   rpc RevokePeer(RevokePeerRequest) returns (RevokePeerResponse);
 }
 
@@ -147,6 +148,15 @@ message ConnectServiceResponse {
     lte: 65535
   }];
 }
+
+message DisconnectServiceRequest {
+  uint32 local_port = 1 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+}
+
+message DisconnectServiceResponse {}
 
 message RevokePeerRequest {
   bytes peer_id = 1 [(buf.validate.field).bytes = {len: 32}];
