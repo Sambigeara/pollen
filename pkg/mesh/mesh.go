@@ -58,6 +58,7 @@ type Mesh interface {
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
 	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr) error
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
+	IsInboundConnection(peer types.PeerKey) bool
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
 	PeerCertExpiresAt(peer types.PeerKey) (time.Time, bool)
 	PeerMembershipCert(peer types.PeerKey) (*admissionv1.MembershipCert, bool)
@@ -413,6 +414,11 @@ func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAd
 	}
 	m.addPeer(s, peerKey)
 	return nil
+}
+
+func (m *impl) IsInboundConnection(peerKey types.PeerKey) bool {
+	s, ok := m.sessions.get(peerKey)
+	return ok && s.inbound
 }
 
 func (m *impl) GetConn(peerKey types.PeerKey) (*quic.Conn, bool) {

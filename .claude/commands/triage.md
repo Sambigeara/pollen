@@ -57,6 +57,9 @@ Include the issue number and a short rationale in each option label.
 
 If the user picks an issue:
 
-1. Invoke the `/fix` skill with the selected issue number.
+1. Enter plan mode (`EnterPlanMode`) and plan the fix for the selected issue.
+2. Fetch the full issue body (`gh issue view <number>`) and use it as context for your plan.
+3. Carry forward any context gathered during triage (relevant files, code paths, effort estimates, architectural notes) — do not re-research what the triage sub-agent already discovered.
+4. Explore further as needed, then write a concrete implementation plan.
 
 If the user picks "Skip", end the conversation naturally.
