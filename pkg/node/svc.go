@@ -150,15 +150,61 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		})
 	}
 
+	// Determine which peers have direct QUIC sessions (ONLINE).
+	// Store the address so we don't call GetActivePeerAddress again per peer
+	// (avoids a TOCTOU race where a session appears/disappears between calls).
+	directPeers := make(map[types.PeerKey]*net.UDPAddr)
+	for key := range nodes {
+		if key == localID {
+			continue
+		}
+		if addr, ok := s.node.mesh.GetActivePeerAddress(key); ok {
+			directPeers[key] = addr
+		}
+	}
+
+	// BFS from directly-connected peers through gossip Reachable edges to
+	// find the indirectly-reachable component. Only trust edges from nodes
+	// that are themselves proven reachable (direct or already discovered
+	// via traversal), so stale edges from partitioned nodes are ignored.
+	indirectPeers := make(map[types.PeerKey]struct{})
+	queue := make([]types.PeerKey, 0, len(directPeers))
+	for p := range directPeers {
+		queue = append(queue, p)
+	}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		rec, ok := nodes[cur]
+		if !ok {
+			continue
+		}
+		for peer := range rec.Reachable {
+			if peer == localID {
+				continue
+			}
+			if _, ok := directPeers[peer]; ok {
+				continue
+			}
+			if _, ok := indirectPeers[peer]; ok {
+				continue
+			}
+			indirectPeers[peer] = struct{}{}
+			queue = append(queue, peer)
+		}
+	}
+
 	for key, node := range nodes {
 		if key == localID {
 			continue
 		}
 
-		addr, hasSession := s.node.mesh.GetActivePeerAddress(key)
-		status := controlv1.NodeStatus_NODE_STATUS_INDIRECT
-		if hasSession {
+		addr, isDirect := directPeers[key]
+		status := controlv1.NodeStatus_NODE_STATUS_OFFLINE
+		if isDirect {
 			status = controlv1.NodeStatus_NODE_STATUS_ONLINE
+		} else if _, ok := indirectPeers[key]; ok {
+			status = controlv1.NodeStatus_NODE_STATUS_INDIRECT
 		}
 
 		addrStr := ""
