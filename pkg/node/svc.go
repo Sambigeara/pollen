@@ -344,9 +344,6 @@ func nodeStatusRank(status controlv1.NodeStatus) int {
 		return 1
 	case controlv1.NodeStatus_NODE_STATUS_RELAY:
 		return 2 //nolint:mnd
-	case controlv1.NodeStatus_NODE_STATUS_OFFLINE,
-		controlv1.NodeStatus_NODE_STATUS_UNSPECIFIED:
-		return offlineRank
 	default:
 		return offlineRank
 	}
