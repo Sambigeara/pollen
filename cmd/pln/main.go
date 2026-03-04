@@ -122,7 +122,21 @@ func defaultRootDir() string {
 	if d := os.Getenv("PLN_DIR"); d != "" {
 		return d
 	}
-	home := filepath.Join(effectiveHomeDir(), plnDir)
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = os.Getenv("HOME")
+	}
+	// Under sudo, os.UserHomeDir returns /root. Resolve SUDO_USER to
+	// find the invoking user's home so the fallback path doesn't land
+	// in /root/.pln.
+	if os.Getuid() == 0 {
+		if name := os.Getenv("SUDO_USER"); name != "" {
+			if u, err := user.Lookup(name); err == nil {
+				homeDir = u.HomeDir
+			}
+		}
+	}
+	home := filepath.Join(homeDir, plnDir)
 	if runtime.GOOS != osLinux {
 		return home
 	}
@@ -373,13 +387,7 @@ func runJoin(cmd *cobra.Command, args []string) {
 
 	noUp, _ := cmd.Flags().GetBool("no-up")
 	public, _ := cmd.Flags().GetBool("public")
-	if runtime.GOOS == osLinux && !noUp && os.Getuid() != 0 {
-		fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root to manage the daemon; run: sudo %s\n", cmd.CommandPath())
-		os.Exit(1)
-	}
 
-	// No early-return: post-enrollment usermod and servicectl must run as root.
-	// Discard child stdout; parent prints its own status messages.
 	if err := enrollJoin(cmd, pollenDir, args[0], public); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
@@ -599,30 +607,6 @@ func runInit(cmd *cobra.Command, _ []string) {
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
-	}
-
-	if runtime.GOOS == osLinux && os.Getuid() == 0 {
-		childArgs := []string{"init"}
-		if cmd.Flags().Changed("dir") {
-			childArgs = append([]string{"--dir", pollenDir}, childArgs...)
-		}
-		if err := execAsPln(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), childArgs...); err != nil {
-			fmt.Fprintln(cmd.ErrOrStderr(), err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	if runtime.GOOS == osLinux {
-		u, err := user.Current()
-		if err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "could not determine current user: %v\n", err)
-			os.Exit(1)
-		}
-		if u.Username != "pln" {
-			fmt.Fprintf(cmd.ErrOrStderr(), "must run as root (or the pln user) on Linux; run: sudo %s\n", cmd.CommandPath())
-			os.Exit(1)
-		}
 	}
 
 	running, err := nodeSocketActive(filepath.Join(pollenDir, socketName))
@@ -1109,21 +1093,6 @@ func userInGroup(ctx context.Context, user, group string) bool {
 	return slices.Contains(strings.Fields(string(out)), group)
 }
 
-// execAsPln re-execs a pln subcommand locally as the pln system user.
-func execAsPln(ctx context.Context, stdout, stderr io.Writer, args ...string) error {
-	self, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve executable path: %w", err)
-	}
-	sudoArgs := make([]string, 0, 2+len(args)) //nolint:mnd
-	sudoArgs = append(sudoArgs, "-u", "pln", self)
-	sudoArgs = append(sudoArgs, args...)
-	c := exec.CommandContext(ctx, "sudo", sudoArgs...)
-	c.Stdout = stdout
-	c.Stderr = stderr
-	return c.Run()
-}
-
 // sshPln runs a pln subcommand on the remote host as the pln system user.
 // All data-plane operations (key generation, enrollment, admin cert management)
 // must go through this so files are created with correct ownership.
@@ -1238,19 +1207,6 @@ func resolveBootstrapPeers(cmd *cobra.Command, specs []string) ([]*admissionv1.B
 }
 
 func enrollJoin(cmd *cobra.Command, pollenDir, rawToken string, public bool) error {
-	joinArgs := []string{"join", "--no-up"}
-	if public {
-		joinArgs = append(joinArgs, "--public")
-	}
-	joinArgs = append(joinArgs, rawToken)
-
-	if runtime.GOOS == osLinux && os.Getuid() == 0 {
-		if cmd.Flags().Changed("dir") {
-			joinArgs = append([]string{"--dir", pollenDir}, joinArgs...)
-		}
-		return execAsPln(cmd.Context(), io.Discard, cmd.ErrOrStderr(), joinArgs...)
-	}
-
 	if err := enrollToken(cmd.Context(), pollenDir, rawToken); err != nil {
 		return err
 	}
