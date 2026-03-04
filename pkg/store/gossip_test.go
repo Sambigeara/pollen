@@ -1505,6 +1505,79 @@ func TestFreshStoreDoesNotGossipVivaldi(t *testing.T) {
 	require.False(t, found, "fresh store should not gossip vivaldi before node startup publish")
 }
 
+func TestMissingForPartialClockIncludesUnknownPeers(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	pkA, strA := peerKey(2)
+	pkB, strB := peerKey(3)
+	pkC, strC := peerKey(4)
+
+	// Populate three remote peers with network events.
+	for _, p := range []struct {
+		str string
+		ip  string
+	}{
+		{strA, "10.0.0.1"},
+		{strB, "10.0.0.2"},
+		{strC, "10.0.0.3"},
+	} {
+		s.applyEvent(&statev1.GossipEvent{
+			PeerId:  p.str,
+			Counter: 1,
+			Change: &statev1.GossipEvent_Network{
+				Network: &statev1.NetworkChange{Ips: []string{p.ip}, LocalPort: 9000},
+			},
+		})
+	}
+
+	// Clock that only mentions A — B and C are "unknown" to the sender.
+	// MissingFor must still return events for B and C so the sender
+	// can discover quiet peers it has never seen.
+	events := s.MissingFor(&statev1.GossipVectorClock{
+		Counters: map[string]uint64{pkA.String(): 0},
+	})
+
+	peerIDs := make(map[string]struct{})
+	for _, ev := range events {
+		peerIDs[ev.GetPeerId()] = struct{}{}
+	}
+	require.Contains(t, peerIDs, pkA.String())
+	require.Contains(t, peerIDs, pkB.String())
+	require.Contains(t, peerIDs, pkC.String())
+}
+
+func TestMissingForNilClockSendsEverything(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	_, strA := peerKey(2)
+	_, strB := peerKey(3)
+
+	for _, p := range []string{strA, strB} {
+		s.applyEvent(&statev1.GossipEvent{
+			PeerId:  p,
+			Counter: 1,
+			Change: &statev1.GossipEvent_Network{
+				Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+			},
+		})
+	}
+
+	events := s.MissingFor(nil)
+
+	// Should include events from local, peerA, and peerB.
+	peerIDs := make(map[string]struct{})
+	for _, ev := range events {
+		peerIDs[ev.GetPeerId()] = struct{}{}
+	}
+	require.Contains(t, peerIDs, s.LocalID.String())
+	require.Contains(t, peerIDs, strA)
+	require.Contains(t, peerIDs, strB)
+}
+
 func TestKnownPeersIncludesVivaldiCoord(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
