@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
@@ -27,9 +28,10 @@ type Params struct {
 	Epoch    int64 // current epoch (time.Now().Unix() / EpochSeconds)
 }
 
+// Budget: 2 infra + 4 nearest + 2 random = 8 max targets.
 const (
-	DefaultInfraMax = 3
-	DefaultNearestK = 5
+	DefaultInfraMax = 2
+	DefaultNearestK = 4
 	DefaultRandomR  = 2
 	EpochSeconds    = 300 // 5 minutes
 )
@@ -55,7 +57,7 @@ func ComputeTargetPeers(localKey types.PeerKey, localCoord Coord, peers []PeerIn
 	selected := make(map[types.PeerKey]struct{})
 
 	// Layer 1: Infrastructure backbone.
-	infra := selectInfra(peers, params.InfraMax)
+	infra := selectInfra(localKey, peers, params.InfraMax)
 	for _, pk := range infra {
 		selected[pk] = struct{}{}
 	}
@@ -80,23 +82,53 @@ func ComputeTargetPeers(localKey types.PeerKey, localCoord Coord, peers []PeerIn
 	return result
 }
 
-// selectInfra picks up to max PubliclyAccessible peers, sorted by PeerKey.
-func selectInfra(peers []PeerInfo, limit int) []types.PeerKey {
-	var infra []PeerInfo
-	for _, p := range peers {
-		if p.PubliclyAccessible {
-			infra = append(infra, p)
+type scored struct {
+	key   types.PeerKey
+	score [32]byte
+}
+
+func hmacScore(localKey types.PeerKey, parts ...[]byte) [32]byte {
+	h := hmac.New(sha256.New, localKey.Bytes())
+	for _, p := range parts {
+		h.Write(p)
+	}
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out
+}
+
+func topByScore(candidates []scored, limit int) []types.PeerKey {
+	sort.Slice(candidates, func(i, j int) bool {
+		ci, cj := candidates[i].score, candidates[j].score
+		if ci != cj {
+			return bytes.Compare(ci[:], cj[:]) < 0
 		}
+		return candidates[i].key.Less(candidates[j].key)
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
 	}
-	sort.Slice(infra, func(i, j int) bool { return infra[i].Key.Less(infra[j].Key) })
-	if len(infra) > limit {
-		infra = infra[:limit]
-	}
-	result := make([]types.PeerKey, len(infra))
-	for i, p := range infra {
-		result[i] = p.Key
+	result := make([]types.PeerKey, len(candidates))
+	for i, c := range candidates {
+		result[i] = c.key
 	}
 	return result
+}
+
+// selectInfra picks up to limit PubliclyAccessible peers, scored by
+// HMAC(localKey, relayKey) so different nodes spread across relays.
+func selectInfra(localKey types.PeerKey, peers []PeerInfo, limit int) []types.PeerKey {
+	var candidates []scored
+	for _, p := range peers {
+		if !p.PubliclyAccessible {
+			continue
+		}
+		candidates = append(candidates, scored{
+			key:   p.Key,
+			score: hmacScore(localKey, []byte("infra"), p.Key.Bytes()),
+		})
+	}
+	return topByScore(candidates, limit)
 }
 
 // selectNearest picks k closest peers by Vivaldi distance, excluding already
@@ -151,10 +183,8 @@ func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey
 
 // selectLongLinks picks r peers via deterministic HMAC-SHA256 permutation.
 func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types.PeerKey]struct{}, r int, epoch int64) []types.PeerKey {
-	type scored struct {
-		key   types.PeerKey
-		score [32]byte
-	}
+	var epochBuf [8]byte
+	binary.BigEndian.PutUint64(epochBuf[:], uint64(epoch))
 
 	var candidates []scored
 	for _, p := range peers {
@@ -163,37 +193,10 @@ func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types
 		}
 		candidates = append(candidates, scored{
 			key:   p.Key,
-			score: longLinkScore(localKey, p.Key, epoch),
+			score: hmacScore(localKey, []byte("long"), epochBuf[:], p.Key.Bytes()),
 		})
 	}
-
-	sort.Slice(candidates, func(i, j int) bool {
-		ci, cj := candidates[i].score, candidates[j].score
-		if ci != cj {
-			return string(ci[:]) < string(cj[:])
-		}
-		return candidates[i].key.Less(candidates[j].key)
-	})
-
-	if len(candidates) > r {
-		candidates = candidates[:r]
-	}
-	result := make([]types.PeerKey, len(candidates))
-	for i, c := range candidates {
-		result[i] = c.key
-	}
-	return result
-}
-
-func longLinkScore(localKey, candidateKey types.PeerKey, epoch int64) [32]byte {
-	h := hmac.New(sha256.New, localKey.Bytes())
-	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], uint64(epoch))
-	h.Write(buf[:])
-	h.Write(candidateKey.Bytes())
-	var out [32]byte
-	copy(out[:], h.Sum(nil))
-	return out
+	return topByScore(candidates, r)
 }
 
 // lanPrefix returns a grouping key for the peer's subnet. It uses the first
