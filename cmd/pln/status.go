@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -39,11 +42,17 @@ func runStatus(cmd *cobra.Command, args []string) {
 	client := newControlClient(cmd)
 	resp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
-		if connect.CodeOf(err) == connect.CodeUnavailable {
-			fmt.Fprintln(cmd.OutOrStdout(), "daemon is not running")
-		} else {
+		if connect.CodeOf(err) != connect.CodeUnavailable {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			return
 		}
+		if socketPermissionDenied(cmd) {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"cannot reach daemon — are you in the pln group?\n"+
+					"  fix: sudo usermod -aG pln $(whoami) && newgrp pln\n")
+			return
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "daemon is not running")
 		return
 	}
 
@@ -307,4 +316,13 @@ func renderStatusSections(w io.Writer, sections []statusSection) {
 		}
 	}
 	fmt.Fprintln(w)
+}
+
+func socketPermissionDenied(cmd *cobra.Command) bool {
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		return false
+	}
+	_, statErr := os.Stat(filepath.Join(pollenDir, socketName))
+	return errors.Is(statErr, os.ErrPermission)
 }

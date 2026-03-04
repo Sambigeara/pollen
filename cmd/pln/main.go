@@ -393,15 +393,7 @@ func runJoin(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	if runtime.GOOS == osLinux && os.Getuid() == 0 {
-		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && !userInGroup(cmd.Context(), sudoUser, "pln") {
-			if err := exec.CommandContext(cmd.Context(), "usermod", "-aG", "pln", sudoUser).Run(); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not add %s to pln group: %v\n", sudoUser, err)
-			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "added %s to the pln group -- log out and back in for CLI access without sudo\n", sudoUser)
-			}
-		}
-	}
+	ensureSudoUserInPlnGroup(cmd)
 
 	if noUp {
 		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pln up -d` to start the node")
@@ -669,6 +661,8 @@ func runInit(cmd *cobra.Command, _ []string) {
 		hex.EncodeToString(adminPub),
 		hex.EncodeToString(creds.Trust.GetClusterId()),
 	)
+
+	ensureSudoUserInPlnGroup(cmd)
 }
 
 func runPurge(cmd *cobra.Command, _ []string) {
@@ -1083,6 +1077,21 @@ func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
 		cfg:       cfg,
 		signer:    signer,
 	}, nil
+}
+
+func ensureSudoUserInPlnGroup(cmd *cobra.Command) {
+	if runtime.GOOS != osLinux || os.Getuid() != 0 {
+		return
+	}
+	sudoUser := os.Getenv("SUDO_USER")
+	if sudoUser == "" || userInGroup(cmd.Context(), sudoUser, "pln") {
+		return
+	}
+	if err := exec.CommandContext(cmd.Context(), "usermod", "-aG", "pln", sudoUser).Run(); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not add %s to pln group: %v\n", sudoUser, err)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "added %s to the pln group -- log out and back in for CLI access without sudo\n", sudoUser)
+	}
 }
 
 func userInGroup(ctx context.Context, user, group string) bool {
