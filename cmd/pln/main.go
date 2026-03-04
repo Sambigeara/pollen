@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -600,11 +601,6 @@ func runInit(cmd *cobra.Command, _ []string) {
 		os.Exit(1)
 	}
 
-	if runtime.GOOS == osLinux && os.Getuid() != 0 {
-		fmt.Fprintf(cmd.ErrOrStderr(), "this command requires root on Linux; run: sudo %s\n", cmd.CommandPath())
-		os.Exit(1)
-	}
-
 	if runtime.GOOS == osLinux && os.Getuid() == 0 {
 		childArgs := []string{"init"}
 		if cmd.Flags().Changed("dir") {
@@ -615,6 +611,18 @@ func runInit(cmd *cobra.Command, _ []string) {
 			os.Exit(1)
 		}
 		return
+	}
+
+	if runtime.GOOS == osLinux {
+		u, err := user.Current()
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "could not determine current user: %v\n", err)
+			os.Exit(1)
+		}
+		if u.Username != "pln" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "must run as root (or the pln user) on Linux; run: sudo %s\n", cmd.CommandPath())
+			os.Exit(1)
+		}
 	}
 
 	running, err := nodeSocketActive(filepath.Join(pollenDir, socketName))
