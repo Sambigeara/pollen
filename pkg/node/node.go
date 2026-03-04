@@ -582,15 +582,19 @@ func (n *Node) syncPeersFromState() {
 		})
 	}
 
-	// Prune non-targeted peers that aren't connected. Connected non-targeted
-	// peers (inbound) are left alone — when they disconnect naturally they
-	// won't be re-added since they're not in the target set.
+	// Prune non-targeted peers. Inbound connections are left alone — they'll
+	// expire naturally. Outbound connections to former targets are closed.
 	for _, kp := range knownPeers {
 		if _, targeted := targetSet[kp.PeerID]; targeted {
 			continue
 		}
-		if n.peers.InState(kp.PeerID, peer.PeerStateConnected) {
+		connected := n.peers.InState(kp.PeerID, peer.PeerStateConnected)
+		if connected && !n.mesh.IsOutbound(kp.PeerID) {
 			continue
+		}
+		if connected {
+			n.mesh.ClosePeerSession(kp.PeerID)
+			n.handlePeerInput(peer.PeerDisconnected{PeerKey: kp.PeerID, Reason: peer.DisconnectGraceful})
 		}
 		n.handlePeerInput(peer.ForgetPeer{PeerKey: kp.PeerID})
 	}

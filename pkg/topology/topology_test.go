@@ -36,6 +36,7 @@ func TestComputeTargetPeersTwoPeers(t *testing.T) {
 }
 
 func TestInfraSelection(t *testing.T) {
+	local := peerKey(0)
 	peers := []PeerInfo{
 		{Key: peerKey(1), PubliclyAccessible: true},
 		{Key: peerKey(2), PubliclyAccessible: true},
@@ -43,21 +44,44 @@ func TestInfraSelection(t *testing.T) {
 		{Key: peerKey(4), PubliclyAccessible: true},
 		{Key: peerKey(5)},
 	}
-	result := selectInfra(peers, 3)
-	require.Len(t, result, 3)
-	// Should be sorted by PeerKey, so the three smallest.
-	require.Equal(t, peerKey(1), result[0])
-	require.Equal(t, peerKey(2), result[1])
-	require.Equal(t, peerKey(3), result[2])
+	result := selectInfra(local, peers, 3)
+	// HMAC(peerKey(0), "infra", _) deterministic order: 3, 4, 2, 1.
+	require.Equal(t, []types.PeerKey{peerKey(3), peerKey(4), peerKey(2)}, result)
 }
 
 func TestInfraCapRespected(t *testing.T) {
+	local := peerKey(0)
 	peers := []PeerInfo{
 		{Key: peerKey(1), PubliclyAccessible: true},
 		{Key: peerKey(2), PubliclyAccessible: true},
 	}
-	result := selectInfra(peers, 3)
+	result := selectInfra(local, peers, 3)
 	require.Len(t, result, 2)
+}
+
+func TestInfraDistribution(t *testing.T) {
+	relays := []PeerInfo{
+		{Key: peerKey(101), PubliclyAccessible: true},
+		{Key: peerKey(102), PubliclyAccessible: true},
+		{Key: peerKey(103), PubliclyAccessible: true},
+		{Key: peerKey(104), PubliclyAccessible: true},
+	}
+
+	selectionCount := make(map[types.PeerKey]int)
+	for i := byte(1); i <= 20; i++ {
+		local := peerKey(i)
+		result := selectInfra(local, relays, 2)
+		for _, pk := range result {
+			selectionCount[pk]++
+		}
+	}
+
+	for _, relay := range relays {
+		require.Less(t, selectionCount[relay.Key], 20,
+			"relay %v selected by all 20 nodes — no distribution", relay.Key)
+		require.Greater(t, selectionCount[relay.Key], 2,
+			"relay %v selected by too few nodes — poor distribution", relay.Key)
+	}
 }
 
 func TestNearestByDistance(t *testing.T) {
