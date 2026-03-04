@@ -61,6 +61,7 @@ type Mesh interface {
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
 	PeerCertExpiresAt(peer types.PeerKey) (time.Time, bool)
 	PeerMembershipCert(peer types.PeerKey) (*admissionv1.MembershipCert, bool)
+	IsOutbound(types.PeerKey) bool
 	ConnectedPeers() []types.PeerKey
 	ClosePeerSession(peerKey types.PeerKey)
 	ListenPort() int
@@ -104,6 +105,19 @@ type peerSession struct {
 	membershipCert *admissionv1.MembershipCert
 	createdAt      time.Time
 	certExpiresAt  time.Time
+	outbound       bool
+}
+
+func newPeerSession(conn *quic.Conn, transport *quic.Transport, outbound bool) *peerSession {
+	mc := membershipCertFromConn(conn)
+	return &peerSession{
+		conn:           conn,
+		transport:      transport,
+		membershipCert: mc,
+		createdAt:      time.Now(),
+		certExpiresAt:  auth.CertExpiresAt(mc),
+		outbound:       outbound,
+	}
 }
 
 type directDialResult struct {
@@ -224,14 +238,7 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 		return nil, fmt.Errorf("quic dial %s: %w", addr, err)
 	}
 
-	mc := membershipCertFromConn(qc)
-	return &peerSession{
-		conn:           qc,
-		transport:      m.mainQT,
-		membershipCert: mc,
-		createdAt:      time.Now(),
-		certExpiresAt:  auth.CertExpiresAt(mc),
-	}, nil
+	return newPeerSession(qc, m.mainQT, true), nil
 }
 
 func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
@@ -254,14 +261,7 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 		if err != nil {
 			return nil, fmt.Errorf("quic dial %s: %w", dialAddr, err)
 		}
-		mc := membershipCertFromConn(qc)
-		return &peerSession{
-			conn:           qc,
-			transport:      m.mainQT,
-			membershipCert: mc,
-			createdAt:      time.Now(),
-			certExpiresAt:  auth.CertExpiresAt(mc),
-		}, nil
+		return newPeerSession(qc, m.mainQT, true), nil
 	}
 
 	qt := &quic.Transport{Conn: conn.UDPConn}
@@ -273,15 +273,9 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 		return nil, fmt.Errorf("quic dial %s: %w", dialAddr, err)
 	}
 
-	mc := membershipCertFromConn(qc)
-	return &peerSession{
-		conn:           qc,
-		transport:      qt,
-		sockConn:       conn,
-		membershipCert: mc,
-		createdAt:      time.Now(),
-		certExpiresAt:  auth.CertExpiresAt(mc),
-	}, nil
+	s := newPeerSession(qc, qt, true)
+	s.sockConn = conn
+	return s, nil
 }
 
 func (m *impl) JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error {
@@ -444,6 +438,14 @@ func (m *impl) PeerMembershipCert(peerKey types.PeerKey) (*admissionv1.Membershi
 		return nil, false
 	}
 	return s.membershipCert, s.membershipCert != nil
+}
+
+func (m *impl) IsOutbound(peerKey types.PeerKey) bool {
+	s, ok := m.sessions.get(peerKey)
+	if !ok {
+		return false
+	}
+	return s.outbound
 }
 
 func (m *impl) ConnectedPeers() []types.PeerKey {
@@ -658,8 +660,7 @@ func (m *impl) acceptLoop(ctx context.Context) {
 
 		switch qc.ConnectionState().TLS.NegotiatedProtocol {
 		case alpnMesh:
-			mc := membershipCertFromConn(qc)
-			m.addPeer(&peerSession{conn: qc, transport: m.mainQT, membershipCert: mc, createdAt: time.Now(), certExpiresAt: auth.CertExpiresAt(mc)}, peerKey)
+			m.addPeer(newPeerSession(qc, m.mainQT, false), peerKey)
 		case alpnInvite:
 			go m.handleInviteConnection(ctx, qc, peerKey)
 		default:
