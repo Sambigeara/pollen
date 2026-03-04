@@ -389,17 +389,64 @@ func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.Gossip
 	return batches
 }
 
+// clockEnvelopeSize returns the exact serialized size of an Envelope wrapping
+// a GossipVectorClock with the given counters.
+func clockEnvelopeSize(counters map[string]uint64) int {
+	return (&meshv1.Envelope{Body: &meshv1.Envelope_Clock{
+		Clock: &statev1.GossipVectorClock{Counters: counters},
+	}}).SizeVT()
+}
+
+// batchClocks splits a GossipVectorClock into multiple clocks that each fit
+// within maxSize when serialized as an Envelope. Clock entries are idempotent
+// (receiver takes max per peer), so partial clocks need no reassembly.
+func batchClocks(clock *statev1.GossipVectorClock, maxSize int) []*statev1.GossipVectorClock {
+	if clock == nil {
+		return nil
+	}
+	counters := clock.GetCounters()
+	if len(counters) == 0 {
+		return []*statev1.GossipVectorClock{clock}
+	}
+
+	var batches []*statev1.GossipVectorClock
+	current := make(map[string]uint64)
+
+	for key, val := range counters {
+		current[key] = val
+		if clockEnvelopeSize(current) > maxSize {
+			if len(current) > 1 {
+				delete(current, key)
+				batches = append(batches, &statev1.GossipVectorClock{Counters: current})
+				current = map[string]uint64{key: val}
+			}
+			// current now has exactly one entry; if it still exceeds
+			// maxSize the entry is individually too large to send.
+			if clockEnvelopeSize(current) > maxSize {
+				zap.S().Warnw("clock entry exceeds max datagram size, skipping", "peer", key)
+				current = make(map[string]uint64)
+			}
+		}
+	}
+	if len(current) > 0 {
+		batches = append(batches, &statev1.GossipVectorClock{Counters: current})
+	}
+	return batches
+}
+
 func (n *Node) gossip(ctx context.Context) {
-	clock := n.store.Clock()
+	batches := batchClocks(n.store.Clock(), MaxDatagramPayload)
 	connectedPeers := n.GetConnectedPeers()
 	for _, peerID := range connectedPeers {
 		if peerID == n.store.LocalID {
 			continue
 		}
-		if err := n.mesh.Send(ctx, peerID, &meshv1.Envelope{
-			Body: &meshv1.Envelope_Clock{Clock: clock},
-		}); err != nil {
-			n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
+		for _, batch := range batches {
+			if err := n.mesh.Send(ctx, peerID, &meshv1.Envelope{
+				Body: &meshv1.Envelope_Clock{Clock: batch},
+			}); err != nil {
+				n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
+			}
 		}
 	}
 }
@@ -568,11 +615,12 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			n.store.SetLastAddr(e.PeerKey, addr.String())
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
-				clock := n.store.EagerSyncClock()
-				if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
-					Body: &meshv1.Envelope_Clock{Clock: clock},
-				}); err != nil {
-					n.log.Debugw("eager sync failed", "peer", e.PeerKey.Short(), "err", err)
+				for _, batch := range batchClocks(n.store.EagerSyncClock(), MaxDatagramPayload) {
+					if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
+						Body: &meshv1.Envelope_Clock{Clock: batch},
+					}); err != nil {
+						n.log.Debugw("eager sync failed", "peer", e.PeerKey.Short(), "err", err)
+					}
 				}
 				n.lastEagerSync[e.PeerKey] = time.Now()
 			}
