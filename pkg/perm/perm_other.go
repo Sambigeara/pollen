@@ -6,3 +6,4 @@ func SetGroupDir(_ string) error      { return nil }
 func SetGroupReadable(_ string) error { return nil }
 func SetGroupSocket(_ string) error   { return nil }
 func SetPrivate(_ string) error       { return nil }
+func chownIfRoot(_ string) error      { return nil }

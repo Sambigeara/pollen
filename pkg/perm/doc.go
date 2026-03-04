@@ -2,10 +2,10 @@
 // directory on Linux. On non-Linux platforms all operations are no-ops.
 //
 // On Linux, the daemon runs as the "pln" system user. The postinstall
-// script pre-creates directories with pln:pln ownership. All data-plane
-// code runs as pln (service via systemd, bootstrap via sshPln), so files
-// inherit correct ownership from the running process. Set* functions
-// apply chmod only — no chown.
+// script pre-creates directories with pln:pln ownership. When running as
+// root (e.g. sudo pln init), atomicWrite and EnsureDir chown files to
+// pln:pln automatically. When the pln user doesn't exist (e.g. macOS,
+// dev machines), chown is a no-op.
 //
 // Expected permission matrix for /var/lib/pln (Linux):
 //
