@@ -101,7 +101,7 @@ func TestNearestByDistance(t *testing.T) {
 
 func TestNearestHysteresisKeepsIncumbent(t *testing.T) {
 	// Incumbent at distance 50, challenger at 45 (only 10% closer).
-	// With 20% hysteresis, incumbent ranks as 50*0.8=40, beating the challenger.
+	// Discount = max(50*0.2, 5) = 10, so incumbent ranks as 40 — beats challenger.
 	local := Coord{X: 0, Y: 0}
 	incumbent := peerKey(1)
 	challenger := peerKey(2)
@@ -117,7 +117,7 @@ func TestNearestHysteresisKeepsIncumbent(t *testing.T) {
 
 func TestNearestHysteresisAllowsDisplacement(t *testing.T) {
 	// Incumbent at distance 50, challenger at 35 (30% closer).
-	// With 20% hysteresis, incumbent ranks as 50*0.8=40, challenger at 35 wins.
+	// Discount = max(50*0.2, 5) = 10, so incumbent ranks as 40 — challenger at 35 wins.
 	local := Coord{X: 0, Y: 0}
 	incumbent := peerKey(1)
 	challenger := peerKey(2)
@@ -129,6 +129,23 @@ func TestNearestHysteresisAllowsDisplacement(t *testing.T) {
 	result := selectNearest(local, peers, nil, 1, outbound)
 	require.Len(t, result, 1)
 	require.Equal(t, challenger, result[0])
+}
+
+func TestNearestHysteresisFloorForClosePeers(t *testing.T) {
+	// Two peers very close: incumbent at distance 3, challenger at 2.
+	// Without floor: discount = 3*0.2 = 0.6, incumbent ranks as 2.4 — challenger wins (bad, causes churn).
+	// With floor:    discount = max(0.6, 5) = 5, incumbent ranks as 0 — incumbent kept.
+	local := Coord{X: 0, Y: 0}
+	incumbent := peerKey(1)
+	challenger := peerKey(2)
+	peers := []PeerInfo{
+		{Key: incumbent, Coord: &Coord{X: 3, Y: 0}},
+		{Key: challenger, Coord: &Coord{X: 2, Y: 0}},
+	}
+	outbound := map[types.PeerKey]struct{}{incumbent: {}}
+	result := selectNearest(local, peers, nil, 1, outbound)
+	require.Len(t, result, 1)
+	require.Equal(t, incumbent, result[0])
 }
 
 func TestNearestNilCoordFallback(t *testing.T) {
