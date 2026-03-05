@@ -323,29 +323,29 @@ func TestNilVsZeroCoord(t *testing.T) {
 	}())
 }
 
-func TestNearestSkipsNonEasyWhenLocalHard(t *testing.T) {
+func TestNearestSkipsHardHardRemote(t *testing.T) {
 	local := Coord{X: 0, Y: 0}
 	localIPs := []string{"10.0.1.5"}
 	peers := []PeerInfo{
 		{Key: peerKey(1), Coord: &Coord{X: 1}, IPs: []string{"10.0.2.10"}, NatType: nat.Hard},
 		{Key: peerKey(2), Coord: &Coord{X: 2}, IPs: []string{"10.0.2.20"}, NatType: nat.Unknown},
 	}
-	// Local is Hard — both Hard and Unknown remotes are filtered (conservative).
-	result := selectNearest(local, peers, nil, Params{NearestK: 2, LocalNATType: nat.Hard, LocalIPs: localIPs})
-	require.Empty(t, result)
-}
-
-func TestNearestSkipsHardUnknownKeepsEasy(t *testing.T) {
-	local := Coord{X: 0, Y: 0}
-	localIPs := []string{"10.0.1.5"}
-	peers := []PeerInfo{
-		{Key: peerKey(1), Coord: &Coord{X: 1}, IPs: []string{"10.0.2.10"}, NatType: nat.Unknown},
-		{Key: peerKey(2), Coord: &Coord{X: 2}, IPs: []string{"10.0.2.20"}, NatType: nat.Easy},
-	}
-	// Local is Hard: Unknown remote filtered, Easy remote kept.
+	// Local is Hard — Hard remote skipped, Unknown remote kept.
 	result := selectNearest(local, peers, nil, Params{NearestK: 2, LocalNATType: nat.Hard, LocalIPs: localIPs})
 	require.Len(t, result, 1)
 	require.Equal(t, peerKey(2), result[0])
+}
+
+func TestNearestKeepsUnknownAndEasyWhenLocalHard(t *testing.T) {
+	local := Coord{X: 0, Y: 0}
+	localIPs := []string{"10.0.1.5"}
+	peers := []PeerInfo{
+		{Key: peerKey(1), Coord: &Coord{X: 1}, IPs: []string{"172.16.0.10"}, NatType: nat.Unknown},
+		{Key: peerKey(2), Coord: &Coord{X: 2}, IPs: []string{"172.17.0.20"}, NatType: nat.Easy},
+	}
+	// Local is Hard: both Unknown and Easy remotes kept.
+	result := selectNearest(local, peers, nil, Params{NearestK: 2, LocalNATType: nat.Hard, LocalIPs: localIPs})
+	require.Len(t, result, 2)
 }
 
 func TestNearestKeepsHardHardLAN(t *testing.T) {
@@ -371,7 +371,7 @@ func TestNearestUnknownNATUnaffected(t *testing.T) {
 	require.Len(t, result, 2)
 }
 
-func TestLongLinksSkipsNonEasyWhenLocalHard(t *testing.T) {
+func TestLongLinksSkipsHardHardRemote(t *testing.T) {
 	local := peerKey(0)
 	localIPs := []string{"10.0.1.5"}
 	peers := make([]PeerInfo, 5)
@@ -396,15 +396,14 @@ func TestLongLinksKeepsEasyPeers(t *testing.T) {
 	require.Equal(t, peerKey(1), result[0])
 }
 
-func TestLongLinksSkipsHardUnknownKeepsEasy(t *testing.T) {
+func TestLongLinksKeepsUnknownAndEasyWhenLocalHard(t *testing.T) {
 	local := peerKey(0)
 	localIPs := []string{"10.0.1.5"}
 	peers := []PeerInfo{
 		{Key: peerKey(1), IPs: []string{"10.0.2.10"}, NatType: nat.Unknown},
 		{Key: peerKey(2), IPs: []string{"10.0.2.20"}, NatType: nat.Easy},
 	}
-	// Local is Hard: Unknown remote filtered, Easy remote kept.
+	// Local is Hard: both Unknown and Easy remotes kept.
 	result := selectLongLinks(local, peers, nil, Params{RandomR: 2, Epoch: 1, LocalNATType: nat.Hard, LocalIPs: localIPs})
-	require.Len(t, result, 1)
-	require.Equal(t, peerKey(2), result[0])
+	require.Len(t, result, 2)
 }
