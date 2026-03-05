@@ -1131,7 +1131,7 @@ func sharesLAN(aIPs, bIPs []string) bool {
 				continue
 			}
 			if a4, b4 := a.To4(), b.To4(); a4 != nil && b4 != nil {
-				if a4[0] == b4[0] && a4[1] == b4[1] && a4[2] == b4[2] {
+				if a4[0] == b4[0] && a4[1] == b4[1] {
 					return true
 				}
 			} else if a16, b16 := a.To16(), b.To16(); a16 != nil && b16 != nil {
