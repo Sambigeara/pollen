@@ -139,7 +139,7 @@ resource "null_resource" "wait_for_install" {
       # Public nodes (direct SSH)
       for IP in ${join(" ", local.all_public_ips)}; do
         (
-          for i in $(seq 1 30); do
+          for i in $(seq 1 90); do
             if ssh_to "$IP" "" "which pln" &>/dev/null; then
               echo "$IP: pln ready"
               exit 0
@@ -157,7 +157,7 @@ resource "null_resource" "wait_for_install" {
         TARGET=$(echo "$entry" | cut -d: -f1)
         BASTION=$(echo "$entry" | cut -d: -f2)
         (
-          for i in $(seq 1 30); do
+          for i in $(seq 1 90); do
             if ssh_to "$TARGET" "$BASTION" "which pln" &>/dev/null; then
               echo "$TARGET (via $BASTION): pln ready"
               exit 0
