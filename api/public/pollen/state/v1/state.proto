@@ -57,6 +57,10 @@ message RevocationChange {
   pollen.admission.v1.SignedRevocation revocation = 1 [(buf.validate.field).required = true];
 }
 
+message NatTypeChange {
+  uint32 nat_type = 1;
+}
+
 message GossipEvent {
   string peer_id = 1 [(buf.validate.field).string = {
     pattern: "^[a-fA-F0-9]{64}$"
@@ -72,6 +76,7 @@ message GossipEvent {
     RevocationChange revocation = 9;
     PubliclyAccessibleChange publicly_accessible = 10;
     VivaldiCoordinateChange vivaldi = 11;
+    NatTypeChange nat_type = 12;
   }
   bool deleted = 8;
 }

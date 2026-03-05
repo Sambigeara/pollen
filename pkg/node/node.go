@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/mesh"
+	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/store"
@@ -101,17 +103,18 @@ type punchRequest struct {
 type Node struct {
 	lastExpirySweep time.Time
 	mesh            mesh.Mesh
-	log             *zap.SugaredLogger
-	gossipEvents    chan []*statev1.GossipEvent
+	store           *store.Store
+	lastEagerSync   map[types.PeerKey]time.Time
 	creds           *auth.NodeCredentials
 	localPeerEvents chan peer.Input
 	peers           *peer.Store
 	conf            *Config
-	store           *store.Store
+	log             *zap.SugaredLogger
 	tun             *tunnel.Manager
 	ready           chan struct{}
-	lastEagerSync   map[types.PeerKey]time.Time
+	gossipEvents    chan []*statev1.GossipEvent
 	punchCh         chan punchRequest
+	natDetector     *nat.Detector
 	pollenDir       string
 	signPriv        ed25519.PrivateKey
 	localCoord      topology.Coord
@@ -160,6 +163,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
 		ready:           make(chan struct{}),
 		lastEagerSync:   make(map[types.PeerKey]time.Time),
+		natDetector:     nat.NewDetector(),
 		localCoordErr:   1.0,
 	}
 
@@ -531,6 +535,7 @@ func (n *Node) syncPeersFromState() {
 			Key:                kp.PeerID,
 			Coord:              kp.VivaldiCoord,
 			IPs:                kp.IPs,
+			NatType:            kp.NatType,
 			PubliclyAccessible: kp.PubliclyAccessible,
 		})
 	}
@@ -548,6 +553,8 @@ func (n *Node) syncPeersFromState() {
 	epoch := time.Now().Unix() / topology.EpochSeconds
 	params := topology.DefaultParams(epoch)
 	params.CurrentOutbound = currentOutbound
+	params.LocalNATType = n.natDetector.Type()
+	params.LocalIPs = n.store.NodeIPs(n.store.LocalID)
 	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
 
 	targetSet := buildTargetPeerSet(targets, n.store.DesiredConnections())
@@ -810,8 +817,11 @@ func (n *Node) punchLoop(ctx context.Context) {
 				continue
 			}
 
+			localNAT := n.natDetector.Type()
+			remoteNAT := n.store.NatType(req.peerKey)
+
 			ctx, cancel := context.WithTimeout(context.Background(), punchTimeout)
-			err := n.mesh.Punch(ctx, req.peerKey, &net.UDPAddr{IP: req.ip, Port: req.port})
+			err := n.mesh.Punch(ctx, req.peerKey, &net.UDPAddr{IP: req.ip, Port: req.port}, localNAT, remoteNAT)
 			cancel()
 
 			if err != nil && n.peers.InState(req.peerKey, peer.PeerStateConnecting) {
@@ -871,6 +881,16 @@ func (n *Node) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedAddr
 
 	n.log.Debugw("observed address received", "addr", addr.String(), "from", from.Short())
 	n.queueGossipEvents(n.store.SetExternalPort(uint32(addr.Port)))
+
+	if peerAddr, ok := n.mesh.GetActivePeerAddress(from); ok {
+		if observerIP, ok := netip.AddrFromSlice(peerAddr.IP); ok {
+			observerIP = observerIP.Unmap()
+			if natType, changed := n.natDetector.AddObservation(observerIP, addr.Port); changed {
+				n.log.Infow("NAT type detected", "type", natType)
+				n.queueGossipEvents(n.store.SetLocalNatType(natType))
+			}
+		}
+	}
 }
 
 func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {

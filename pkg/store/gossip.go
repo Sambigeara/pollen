@@ -12,6 +12,7 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -27,6 +28,7 @@ const (
 	attrRevocation
 	attrPubliclyAccessible
 	attrVivaldi
+	attrNatType
 )
 
 type attrKey struct {
@@ -67,6 +69,10 @@ func vivaldiAttrKey() attrKey {
 	return attrKey{kind: attrVivaldi}
 }
 
+func natTypeAttrKey() attrKey {
+	return attrKey{kind: attrNatType}
+}
+
 // logEntry tracks the counter (and deletion state) of a single attribute.
 type logEntry struct {
 	Counter uint64
@@ -85,6 +91,7 @@ type nodeRecord struct {
 	CertExpiry         int64
 	LocalPort          uint32
 	ExternalPort       uint32
+	NatType            nat.Type
 	PubliclyAccessible bool
 }
 
@@ -95,6 +102,7 @@ type KnownPeer struct {
 	IPs                []string
 	LocalPort          uint32
 	ExternalPort       uint32
+	NatType            nat.Type
 	PeerID             types.PeerKey
 	PubliclyAccessible bool
 }
@@ -164,6 +172,8 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 	local := s.nodes[localID]
 	local.maxCounter++
 	local.log[publiclyAccessibleAttrKey()] = logEntry{Counter: local.maxCounter, Deleted: true}
+	local.maxCounter++
+	local.log[natTypeAttrKey()] = logEntry{Counter: local.maxCounter, Deleted: true}
 
 	// Inject disk-loaded revocations into the local log so that
 	// bumpAndBroadcastAllLocked can re-publish them after restart.
@@ -477,6 +487,8 @@ func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
 		return publiclyAccessibleAttrKey(), true
 	case *statev1.GossipEvent_Vivaldi:
 		return vivaldiAttrKey(), true
+	case *statev1.GossipEvent_NatType:
+		return natTypeAttrKey(), true
 	default:
 		return attrKey{}, false
 	}
@@ -520,6 +532,8 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 		rec.PubliclyAccessible = false
 	case attrVivaldi:
 		rec.VivaldiCoord = nil
+	case attrNatType:
+		rec.NatType = nat.Unknown
 	default:
 		panic("unknown attr kind")
 	}
@@ -561,6 +575,10 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 				Y:      v.Vivaldi.GetY(),
 				Height: v.Vivaldi.GetHeight(),
 			}
+		}
+	case *statev1.GossipEvent_NatType:
+		if v.NatType != nil {
+			rec.NatType = nat.TypeFromUint32(v.NatType.GetNatType())
 		}
 	}
 }
@@ -684,6 +702,45 @@ func (s *Store) SetLocalPubliclyAccessible(accessible bool) []*statev1.GossipEve
 			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
 		},
 	}}
+}
+
+func (s *Store) SetLocalNatType(natType nat.Type) []*statev1.GossipEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	local := s.nodes[s.LocalID]
+	if local.NatType == natType {
+		return nil
+	}
+
+	local.NatType = natType
+
+	key := natTypeAttrKey()
+	local.maxCounter++
+	counter := local.maxCounter
+	deleted := natType == nat.Unknown
+	local.log[key] = logEntry{Counter: counter, Deleted: deleted}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Deleted: deleted,
+		Change: &statev1.GossipEvent_NatType{
+			NatType: &statev1.NatTypeChange{NatType: natType.ToUint32()},
+		},
+	}}
+}
+
+func (s *Store) NatType(peerID types.PeerKey) nat.Type {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rec, ok := s.nodes[peerID]
+	if !ok {
+		return nat.Unknown
+	}
+	return rec.NatType
 }
 
 func (s *Store) SetLocalCertExpiry(expiry int64) []*statev1.GossipEvent {
@@ -922,6 +979,7 @@ func (s *Store) KnownPeers() []KnownPeer {
 			PeerID:             peerID,
 			LocalPort:          rec.LocalPort,
 			ExternalPort:       rec.ExternalPort,
+			NatType:            rec.NatType,
 			IdentityPub:        rec.IdentityPub,
 			IPs:                rec.IPs,
 			LastAddr:           rec.LastAddr,
@@ -1176,6 +1234,12 @@ func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRe
 			change.Height = rec.VivaldiCoord.Height
 		}
 		event.Change = &statev1.GossipEvent_Vivaldi{Vivaldi: change}
+	case attrNatType:
+		change := &statev1.NatTypeChange{}
+		if !entry.Deleted {
+			change.NatType = rec.NatType.ToUint32()
+		}
+		event.Change = &statev1.GossipEvent_NatType{NatType: change}
 	case attrRevocation:
 		panic("buildEventFromLog must not be called for revocation events")
 	default:

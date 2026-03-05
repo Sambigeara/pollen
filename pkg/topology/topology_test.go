@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
@@ -93,7 +94,7 @@ func TestNearestByDistance(t *testing.T) {
 		{Key: peerKey(4), Coord: &Coord{X: 1, Y: 0}},   // dist ~1
 	}
 	exclude := map[types.PeerKey]struct{}{}
-	result := selectNearest(local, peers, exclude, 2, nil)
+	result := selectNearest(local, peers, exclude, Params{NearestK: 2})
 	require.Len(t, result, 2)
 	require.Equal(t, peerKey(4), result[0])
 	require.Equal(t, peerKey(2), result[1])
@@ -110,7 +111,7 @@ func TestNearestHysteresisKeepsIncumbent(t *testing.T) {
 		{Key: challenger, Coord: &Coord{X: 45, Y: 0}},
 	}
 	outbound := map[types.PeerKey]struct{}{incumbent: {}}
-	result := selectNearest(local, peers, nil, 1, outbound)
+	result := selectNearest(local, peers, nil, Params{NearestK: 1, CurrentOutbound: outbound})
 	require.Len(t, result, 1)
 	require.Equal(t, incumbent, result[0])
 }
@@ -126,7 +127,7 @@ func TestNearestHysteresisAllowsDisplacement(t *testing.T) {
 		{Key: challenger, Coord: &Coord{X: 35, Y: 0}},
 	}
 	outbound := map[types.PeerKey]struct{}{incumbent: {}}
-	result := selectNearest(local, peers, nil, 1, outbound)
+	result := selectNearest(local, peers, nil, Params{NearestK: 1, CurrentOutbound: outbound})
 	require.Len(t, result, 1)
 	require.Equal(t, challenger, result[0])
 }
@@ -143,7 +144,7 @@ func TestNearestHysteresisFloorForClosePeers(t *testing.T) {
 		{Key: challenger, Coord: &Coord{X: 2, Y: 0}},
 	}
 	outbound := map[types.PeerKey]struct{}{incumbent: {}}
-	result := selectNearest(local, peers, nil, 1, outbound)
+	result := selectNearest(local, peers, nil, Params{NearestK: 1, CurrentOutbound: outbound})
 	require.Len(t, result, 1)
 	require.Equal(t, incumbent, result[0])
 }
@@ -156,7 +157,7 @@ func TestNearestNilCoordFallback(t *testing.T) {
 		{Key: peerKey(3), Coord: nil},                 // max distance
 	}
 	exclude := map[types.PeerKey]struct{}{}
-	result := selectNearest(local, peers, exclude, 3, nil)
+	result := selectNearest(local, peers, exclude, Params{NearestK: 3})
 	require.Len(t, result, 3)
 	require.Equal(t, peerKey(2), result[0])
 }
@@ -176,7 +177,7 @@ func TestNearestLANDiversityCap(t *testing.T) {
 		{Key: peerKey(7), Coord: &Coord{X: 7}, IPs: lanB},
 	}
 	exclude := map[types.PeerKey]struct{}{}
-	result := selectNearest(local, peers, exclude, 4, nil)
+	result := selectNearest(local, peers, exclude, Params{NearestK: 4})
 	require.Len(t, result, 4)
 
 	lanACount := 0
@@ -199,8 +200,8 @@ func TestLongLinksDeterministic(t *testing.T) {
 	}
 	exclude := map[types.PeerKey]struct{}{}
 
-	r1 := selectLongLinks(local, peers, exclude, 2, 1)
-	r2 := selectLongLinks(local, peers, exclude, 2, 1)
+	r1 := selectLongLinks(local, peers, exclude, Params{RandomR: 2, Epoch: 1})
+	r2 := selectLongLinks(local, peers, exclude, Params{RandomR: 2, Epoch: 1})
 	require.Equal(t, r1, r2)
 }
 
@@ -212,8 +213,8 @@ func TestLongLinksEpochRotation(t *testing.T) {
 	}
 	exclude := map[types.PeerKey]struct{}{}
 
-	r1 := selectLongLinks(local, peers, exclude, 2, 1)
-	r2 := selectLongLinks(local, peers, exclude, 2, 2)
+	r1 := selectLongLinks(local, peers, exclude, Params{RandomR: 2, Epoch: 1})
+	r2 := selectLongLinks(local, peers, exclude, Params{RandomR: 2, Epoch: 2})
 	// With 20 candidates and 2 selections, different epochs should usually
 	// produce different selections.
 	require.NotEqual(t, r1, r2, "long-links should change across epochs")
@@ -246,7 +247,7 @@ func TestAllNilCoordsMigration(t *testing.T) {
 	}
 	local := Coord{}
 	exclude := map[types.PeerKey]struct{}{}
-	result := selectNearest(local, peers, exclude, 3, nil)
+	result := selectNearest(local, peers, exclude, Params{NearestK: 3})
 	require.Len(t, result, 3)
 	// All have distance MaxFloat64, so sorted by PeerKey.
 	require.Equal(t, peerKey(1), result[0])
@@ -320,4 +321,65 @@ func TestNilVsZeroCoord(t *testing.T) {
 		}
 		return math.MaxFloat64
 	}())
+}
+
+func TestNearestSkipsHardHardRemote(t *testing.T) {
+	local := Coord{X: 0, Y: 0}
+	localIPs := []string{"10.0.1.5"}
+	peers := []PeerInfo{
+		{Key: peerKey(1), Coord: &Coord{X: 1}, IPs: []string{"10.0.2.10"}, NatType: nat.Hard},
+		{Key: peerKey(2), Coord: &Coord{X: 2}, IPs: []string{"10.0.2.20"}, NatType: nat.Unknown},
+	}
+	// Local is Hard, peer 1 is Hard+remote → skipped. Peer 2 is Unknown → kept.
+	result := selectNearest(local, peers, nil, Params{NearestK: 2, LocalNATType: nat.Hard, LocalIPs: localIPs})
+	require.Len(t, result, 1)
+	require.Equal(t, peerKey(2), result[0])
+}
+
+func TestNearestKeepsHardHardLAN(t *testing.T) {
+	local := Coord{X: 0, Y: 0}
+	localIPs := []string{"192.168.1.5"}
+	peers := []PeerInfo{
+		{Key: peerKey(1), Coord: &Coord{X: 1}, IPs: []string{"192.168.1.10"}, NatType: nat.Hard},
+	}
+	// Both Hard but same LAN prefix → NOT skipped.
+	result := selectNearest(local, peers, nil, Params{NearestK: 1, LocalNATType: nat.Hard, LocalIPs: localIPs})
+	require.Len(t, result, 1)
+	require.Equal(t, peerKey(1), result[0])
+}
+
+func TestNearestUnknownNATUnaffected(t *testing.T) {
+	local := Coord{X: 0, Y: 0}
+	peers := []PeerInfo{
+		{Key: peerKey(1), Coord: &Coord{X: 1}, NatType: nat.Hard},
+		{Key: peerKey(2), Coord: &Coord{X: 2}, NatType: nat.Hard},
+	}
+	// Local NAT is Unknown → no hard↔hard skip.
+	result := selectNearest(local, peers, nil, Params{NearestK: 2})
+	require.Len(t, result, 2)
+}
+
+func TestLongLinksSkipsHardHardRemote(t *testing.T) {
+	local := peerKey(0)
+	localIPs := []string{"10.0.1.5"}
+	peers := make([]PeerInfo, 5)
+	for i := range peers {
+		peers[i] = PeerInfo{Key: peerKey(byte(i + 1)), IPs: []string{"10.0.2.10"}, NatType: nat.Hard}
+	}
+	// All peers are Hard+remote, local is Hard → all skipped.
+	result := selectLongLinks(local, peers, nil, Params{RandomR: 2, Epoch: 1, LocalNATType: nat.Hard, LocalIPs: localIPs})
+	require.Empty(t, result)
+}
+
+func TestLongLinksKeepsEasyPeers(t *testing.T) {
+	local := peerKey(0)
+	localIPs := []string{"10.0.1.5"}
+	peers := []PeerInfo{
+		{Key: peerKey(1), IPs: []string{"10.0.2.10"}, NatType: nat.Easy},
+		{Key: peerKey(2), IPs: []string{"10.0.2.20"}, NatType: nat.Hard},
+	}
+	// Local is Hard. Peer 1 is Easy → kept. Peer 2 is Hard+remote → skipped.
+	result := selectLongLinks(local, peers, nil, Params{RandomR: 2, Epoch: 1, LocalNATType: nat.Hard, LocalIPs: localIPs})
+	require.Len(t, result, 1)
+	require.Equal(t, peerKey(1), result[0])
 }

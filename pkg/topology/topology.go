@@ -9,6 +9,7 @@ import (
 	"net"
 	"sort"
 
+	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -17,23 +18,26 @@ type PeerInfo struct {
 	Coord              *Coord
 	IPs                []string
 	Key                types.PeerKey
+	NatType            nat.Type
 	PubliclyAccessible bool
 }
 
 // Params controls the topology budget.
 type Params struct {
 	CurrentOutbound map[types.PeerKey]struct{} // currently-connected outbound peers
+	LocalIPs        []string                   // local node's IPs (for LAN detection)
 	InfraMax        int                        // max infrastructure backbone peers
 	NearestK        int                        // Vivaldi k-nearest neighbors
 	RandomR         int                        // deterministic random long-links
 	Epoch           int64                      // current epoch (time.Now().Unix() / EpochSeconds)
+	LocalNATType    nat.Type                   // local node's NAT type
 }
 
 // Budget: 2 infra + 4 nearest + 2 random = 8 max targets.
 const (
-	DefaultInfraMax   = 2
-	DefaultNearestK   = 4
-	DefaultRandomR    = 2
+	DefaultInfraMax       = 2
+	DefaultNearestK       = 4
+	DefaultRandomR        = 2
 	EpochSeconds          = 300  // 5 minutes
 	NearestHysteresis     = 0.20 // incumbent distance discount (20%)
 	MinHysteresisDistance = 5.0  // minimum absolute discount (ms) for close peers
@@ -66,13 +70,13 @@ func ComputeTargetPeers(localKey types.PeerKey, localCoord Coord, peers []PeerIn
 	}
 
 	// Layer 2: K-nearest by Vivaldi distance with LAN diversity cap.
-	nearest := selectNearest(localCoord, peers, selected, params.NearestK, params.CurrentOutbound)
+	nearest := selectNearest(localCoord, peers, selected, params)
 	for _, pk := range nearest {
 		selected[pk] = struct{}{}
 	}
 
 	// Layer 3: Deterministic random long-links.
-	longLinks := selectLongLinks(localKey, peers, selected, params.RandomR, params.Epoch)
+	longLinks := selectLongLinks(localKey, peers, selected, params)
 	for _, pk := range longLinks {
 		selected[pk] = struct{}{}
 	}
@@ -138,12 +142,19 @@ func selectInfra(localKey types.PeerKey, peers []PeerInfo, limit int) []types.Pe
 // selected peers. Applies a LAN diversity cap: at most ceil(k/2) peers from
 // any single LAN prefix. Currently-connected outbound peers get a distance
 // discount of NearestHysteresis to reduce connection churn.
-func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey]struct{}, k int, currentOutbound map[types.PeerKey]struct{}) []types.PeerKey {
+// Hard↔hard remote pairs are skipped (near-zero punch success rate); LAN
+// peers are always eligible regardless of NAT type.
+func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey]struct{}, params Params) []types.PeerKey {
 	type candidate struct {
-		ips  []string
-		dist float64
-		key  types.PeerKey
+		ips     []string
+		dist    float64
+		key     types.PeerKey
+		natType nat.Type
+		lan     bool // true if peer shares a LAN prefix with local node
 	}
+
+	localPrefix := lanPrefix(params.LocalIPs)
+	hardHard := params.LocalNATType == nat.Hard
 
 	var candidates []candidate
 	for _, p := range peers {
@@ -154,10 +165,11 @@ func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey
 		if p.Coord != nil {
 			d = Distance(localCoord, *p.Coord)
 		}
-		if _, incumbent := currentOutbound[p.Key]; incumbent {
+		if _, incumbent := params.CurrentOutbound[p.Key]; incumbent {
 			d = math.Max(0, d-math.Max(d*NearestHysteresis, MinHysteresisDistance))
 		}
-		candidates = append(candidates, candidate{key: p.Key, dist: d, ips: p.IPs})
+		isLAN := localPrefix != "" && lanPrefix(p.IPs) == localPrefix
+		candidates = append(candidates, candidate{key: p.Key, dist: d, ips: p.IPs, natType: p.NatType, lan: isLAN})
 	}
 
 	// Stable sort: distance first, then PeerKey for deterministic tie-breaking.
@@ -168,6 +180,7 @@ func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey
 		return candidates[i].key.Less(candidates[j].key)
 	})
 
+	k := params.NearestK
 	lanCap := (k + 1) / 2 //nolint:mnd
 	lanCount := make(map[string]int)
 	var result []types.PeerKey
@@ -175,6 +188,9 @@ func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey
 	for _, c := range candidates {
 		if len(result) >= k {
 			break
+		}
+		if !c.lan && hardHard && c.natType == nat.Hard {
+			continue
 		}
 		prefix := lanPrefix(c.ips)
 		if prefix != "" && lanCount[prefix] >= lanCap {
@@ -189,13 +205,21 @@ func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey
 }
 
 // selectLongLinks picks r peers via deterministic HMAC-SHA256 permutation.
-func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types.PeerKey]struct{}, r int, epoch int64) []types.PeerKey {
+// Hard↔hard remote pairs are skipped.
+func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types.PeerKey]struct{}, params Params) []types.PeerKey {
 	var epochBuf [8]byte
-	binary.BigEndian.PutUint64(epochBuf[:], uint64(epoch))
+	binary.BigEndian.PutUint64(epochBuf[:], uint64(params.Epoch))
+
+	localPrefix := lanPrefix(params.LocalIPs)
+	hardHard := params.LocalNATType == nat.Hard
 
 	var candidates []scored
 	for _, p := range peers {
 		if _, ok := exclude[p.Key]; ok {
+			continue
+		}
+		isLAN := localPrefix != "" && lanPrefix(p.IPs) == localPrefix
+		if !isLAN && hardHard && p.NatType == nat.Hard {
 			continue
 		}
 		candidates = append(candidates, scored{
@@ -203,7 +227,7 @@ func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types
 			score: hmacScore(localKey, []byte("long"), epochBuf[:], p.Key.Bytes()),
 		})
 	}
-	return topByScore(candidates, r)
+	return topByScore(candidates, params.RandomR)
 }
 
 // lanPrefix returns a grouping key for the peer's subnet. It uses the first
