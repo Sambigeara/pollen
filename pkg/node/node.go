@@ -823,10 +823,9 @@ func (n *Node) punchLoop(ctx context.Context) {
 			}
 
 			localNAT := n.natDetector.Type()
-			remoteNAT := n.store.NatType(req.peerKey)
 
 			ctx, cancel := context.WithTimeout(context.Background(), punchTimeout)
-			err := n.mesh.Punch(ctx, req.peerKey, &net.UDPAddr{IP: req.ip, Port: req.port}, localNAT, remoteNAT)
+			err := n.mesh.Punch(ctx, req.peerKey, &net.UDPAddr{IP: req.ip, Port: req.port}, localNAT)
 			cancel()
 
 			if err != nil && n.peers.InState(req.peerKey, peer.PeerStateConnecting) {

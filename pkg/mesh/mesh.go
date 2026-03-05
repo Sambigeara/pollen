@@ -57,7 +57,7 @@ type Mesh interface {
 	JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error
 	JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
-	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr, localNAT, remoteNAT nat.Type) error
+	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr, localNAT nat.Type) error
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
 	PeerCertExpiresAt(peer types.PeerKey) (time.Time, bool)
@@ -242,11 +242,11 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 	return newPeerSession(qc, m.mainQT, true), nil
 }
 
-func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey, localNAT, remoteNAT nat.Type) (*peerSession, error) {
+func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey, localNAT nat.Type) (*peerSession, error) {
 	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
 	qCfg := quicConfig()
 
-	conn, err := m.socks.Punch(ctx, addr, localNAT, remoteNAT)
+	conn, err := m.socks.Punch(ctx, addr, localNAT)
 	if err != nil {
 		return nil, fmt.Errorf("quic dial %s: sock store: %w", addr, err)
 	}
@@ -400,8 +400,8 @@ func (m *impl) Send(_ context.Context, peerKey types.PeerKey, env *meshv1.Envelo
 	return s.conn.SendDatagram(b)
 }
 
-func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAddr, localNAT, remoteNAT nat.Type) error {
-	s, err := m.dialPunch(ctx, addr, peerKey, localNAT, remoteNAT)
+func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAddr, localNAT nat.Type) error {
+	s, err := m.dialPunch(ctx, addr, peerKey, localNAT)
 	if err != nil {
 		return err
 	}

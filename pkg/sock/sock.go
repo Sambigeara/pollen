@@ -20,7 +20,7 @@ var _ SockStore = (*sockStore)(nil)
 type ProbeWriter func(payload []byte, addr *net.UDPAddr) error
 
 type SockStore interface {
-	Punch(ctx context.Context, addr *net.UDPAddr, localNAT, remoteNAT nat.Type) (*Conn, error)
+	Punch(ctx context.Context, addr *net.UDPAddr, localNAT nat.Type) (*Conn, error)
 	SetMainProbeWriter(write ProbeWriter)
 	HandleMainProbePacket(data []byte, sender *net.UDPAddr)
 }
@@ -72,7 +72,7 @@ func (s *sockStore) SetMainProbeWriter(write ProbeWriter) {
 	s.mainWrite = write
 }
 
-func (s *sockStore) Punch(ctx context.Context, addr *net.UDPAddr, localNAT, remoteNAT nat.Type) (*Conn, error) {
+func (s *sockStore) Punch(ctx context.Context, addr *net.UDPAddr, localNAT nat.Type) (*Conn, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -109,15 +109,11 @@ func (s *sockStore) Punch(ctx context.Context, addr *net.UDPAddr, localNAT, remo
 	}
 
 	// Easy-side: from one fixed source port, spray probes at random
-	// destination ports on the peer.
-	// When remote NAT is Easy, their known port is correct — just send
-	// 1 probe to the known address instead of scattering.
+	// destination ports on the peer. Always scatter fully — even when
+	// the remote has a stable port, outbound packets are needed to
+	// punch holes in our own NAT for the remote's probes to traverse.
 	go func() {
-		scatterCount := punchAttempts
-		if remoteNAT == nat.Easy {
-			scatterCount = 1
-		}
-		dst, err := s.scatterProbeMain(ctx, addr, scatterCount)
+		dst, err := s.scatterProbeMain(ctx, addr, punchAttempts)
 		if err != nil {
 			return
 		}
