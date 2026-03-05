@@ -22,18 +22,20 @@ type PeerInfo struct {
 
 // Params controls the topology budget.
 type Params struct {
-	InfraMax int   // max infrastructure backbone peers
-	NearestK int   // Vivaldi k-nearest neighbors
-	RandomR  int   // deterministic random long-links
-	Epoch    int64 // current epoch (time.Now().Unix() / EpochSeconds)
+	CurrentOutbound map[types.PeerKey]struct{} // currently-connected outbound peers
+	InfraMax        int                        // max infrastructure backbone peers
+	NearestK        int                        // Vivaldi k-nearest neighbors
+	RandomR         int                        // deterministic random long-links
+	Epoch           int64                      // current epoch (time.Now().Unix() / EpochSeconds)
 }
 
 // Budget: 2 infra + 4 nearest + 2 random = 8 max targets.
 const (
-	DefaultInfraMax = 2
-	DefaultNearestK = 4
-	DefaultRandomR  = 2
-	EpochSeconds    = 300 // 5 minutes
+	DefaultInfraMax   = 2
+	DefaultNearestK   = 4
+	DefaultRandomR    = 2
+	EpochSeconds      = 300  // 5 minutes
+	NearestHysteresis = 0.20 // incumbent distance discount (20%)
 )
 
 // DefaultParams returns Params with default budgets.
@@ -63,7 +65,7 @@ func ComputeTargetPeers(localKey types.PeerKey, localCoord Coord, peers []PeerIn
 	}
 
 	// Layer 2: K-nearest by Vivaldi distance with LAN diversity cap.
-	nearest := selectNearest(localCoord, peers, selected, params.NearestK)
+	nearest := selectNearest(localCoord, peers, selected, params.NearestK, params.CurrentOutbound)
 	for _, pk := range nearest {
 		selected[pk] = struct{}{}
 	}
@@ -133,8 +135,9 @@ func selectInfra(localKey types.PeerKey, peers []PeerInfo, limit int) []types.Pe
 
 // selectNearest picks k closest peers by Vivaldi distance, excluding already
 // selected peers. Applies a LAN diversity cap: at most ceil(k/2) peers from
-// any single LAN prefix.
-func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey]struct{}, k int) []types.PeerKey {
+// any single LAN prefix. Currently-connected outbound peers get a distance
+// discount of NearestHysteresis to reduce connection churn.
+func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey]struct{}, k int, currentOutbound map[types.PeerKey]struct{}) []types.PeerKey {
 	type candidate struct {
 		ips  []string
 		dist float64
@@ -149,6 +152,9 @@ func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey
 		d := math.MaxFloat64
 		if p.Coord != nil {
 			d = Distance(localCoord, *p.Coord)
+		}
+		if _, incumbent := currentOutbound[p.Key]; incumbent {
+			d *= (1 - NearestHysteresis)
 		}
 		candidates = append(candidates, candidate{key: p.Key, dist: d, ips: p.IPs})
 	}
