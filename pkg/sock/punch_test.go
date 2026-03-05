@@ -108,7 +108,7 @@ func TestPunchUsesMainSocket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	c, err := store.Punch(ctx, responderAddr, nat.Unknown, nat.Unknown)
+	c, err := store.Punch(ctx, responderAddr, nat.Unknown)
 	require.NoError(t, err)
 	require.Nil(t, c.UDPConn)
 	require.Equal(t, responderAddr.String(), c.Peer().String())
@@ -150,7 +150,7 @@ func TestPunchSkipsEphemeralSocketsForEasyNAT(t *testing.T) {
 	defer cancel()
 
 	// Local NAT is Easy → no ephemeral sockets should be spawned.
-	c, err := store.Punch(ctx, responderAddr, nat.Easy, nat.Unknown)
+	c, err := store.Punch(ctx, responderAddr, nat.Easy)
 	require.NoError(t, err)
 	require.Nil(t, c.UDPConn)
 	require.Equal(t, responderAddr.String(), c.Peer().String())
