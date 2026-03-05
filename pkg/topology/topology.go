@@ -34,8 +34,9 @@ const (
 	DefaultInfraMax   = 2
 	DefaultNearestK   = 4
 	DefaultRandomR    = 2
-	EpochSeconds      = 300  // 5 minutes
-	NearestHysteresis = 0.20 // incumbent distance discount (20%)
+	EpochSeconds          = 300  // 5 minutes
+	NearestHysteresis     = 0.20 // incumbent distance discount (20%)
+	MinHysteresisDistance = 5.0  // minimum absolute discount (ms) for close peers
 )
 
 // DefaultParams returns Params with default budgets.
@@ -154,7 +155,7 @@ func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey
 			d = Distance(localCoord, *p.Coord)
 		}
 		if _, incumbent := currentOutbound[p.Key]; incumbent {
-			d *= (1 - NearestHysteresis)
+			d = math.Max(0, d-math.Max(d*NearestHysteresis, MinHysteresisDistance))
 		}
 		candidates = append(candidates, candidate{key: p.Key, dist: d, ips: p.IPs})
 	}
