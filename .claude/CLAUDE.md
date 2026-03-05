@@ -51,6 +51,7 @@
 
 - **Simplicity First**: Make every change as simple as possible. Only touch what's necessary. Avoid introducing bugs.
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
+- **Boyscout Rule**: Always leave the code cleaner than you found it. When defluff or review surfaces nearby debt — even if it predates the current diff — fix it, unless it opens a large can of worms.
 
 ## Lessons
 

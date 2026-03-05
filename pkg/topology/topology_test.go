@@ -323,14 +323,26 @@ func TestNilVsZeroCoord(t *testing.T) {
 	}())
 }
 
-func TestNearestSkipsHardHardRemote(t *testing.T) {
+func TestNearestSkipsNonEasyWhenLocalHard(t *testing.T) {
 	local := Coord{X: 0, Y: 0}
 	localIPs := []string{"10.0.1.5"}
 	peers := []PeerInfo{
 		{Key: peerKey(1), Coord: &Coord{X: 1}, IPs: []string{"10.0.2.10"}, NatType: nat.Hard},
 		{Key: peerKey(2), Coord: &Coord{X: 2}, IPs: []string{"10.0.2.20"}, NatType: nat.Unknown},
 	}
-	// Local is Hard, peer 1 is Hard+remote → skipped. Peer 2 is Unknown → kept.
+	// Local is Hard — both Hard and Unknown remotes are filtered (conservative).
+	result := selectNearest(local, peers, nil, Params{NearestK: 2, LocalNATType: nat.Hard, LocalIPs: localIPs})
+	require.Empty(t, result)
+}
+
+func TestNearestSkipsHardUnknownKeepsEasy(t *testing.T) {
+	local := Coord{X: 0, Y: 0}
+	localIPs := []string{"10.0.1.5"}
+	peers := []PeerInfo{
+		{Key: peerKey(1), Coord: &Coord{X: 1}, IPs: []string{"10.0.2.10"}, NatType: nat.Unknown},
+		{Key: peerKey(2), Coord: &Coord{X: 2}, IPs: []string{"10.0.2.20"}, NatType: nat.Easy},
+	}
+	// Local is Hard: Unknown remote filtered, Easy remote kept.
 	result := selectNearest(local, peers, nil, Params{NearestK: 2, LocalNATType: nat.Hard, LocalIPs: localIPs})
 	require.Len(t, result, 1)
 	require.Equal(t, peerKey(2), result[0])
@@ -359,7 +371,7 @@ func TestNearestUnknownNATUnaffected(t *testing.T) {
 	require.Len(t, result, 2)
 }
 
-func TestLongLinksSkipsHardHardRemote(t *testing.T) {
+func TestLongLinksSkipsNonEasyWhenLocalHard(t *testing.T) {
 	local := peerKey(0)
 	localIPs := []string{"10.0.1.5"}
 	peers := make([]PeerInfo, 5)
@@ -382,4 +394,17 @@ func TestLongLinksKeepsEasyPeers(t *testing.T) {
 	result := selectLongLinks(local, peers, nil, Params{RandomR: 2, Epoch: 1, LocalNATType: nat.Hard, LocalIPs: localIPs})
 	require.Len(t, result, 1)
 	require.Equal(t, peerKey(1), result[0])
+}
+
+func TestLongLinksSkipsHardUnknownKeepsEasy(t *testing.T) {
+	local := peerKey(0)
+	localIPs := []string{"10.0.1.5"}
+	peers := []PeerInfo{
+		{Key: peerKey(1), IPs: []string{"10.0.2.10"}, NatType: nat.Unknown},
+		{Key: peerKey(2), IPs: []string{"10.0.2.20"}, NatType: nat.Easy},
+	}
+	// Local is Hard: Unknown remote filtered, Easy remote kept.
+	result := selectLongLinks(local, peers, nil, Params{RandomR: 2, Epoch: 1, LocalNATType: nat.Hard, LocalIPs: localIPs})
+	require.Len(t, result, 1)
+	require.Equal(t, peerKey(2), result[0])
 }

@@ -83,4 +83,5 @@ message GossipEvent {
 
 message GossipEventBatch {
   repeated GossipEvent events = 1;
+  bool is_response = 2;
 }

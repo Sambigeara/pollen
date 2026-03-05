@@ -38,11 +38,11 @@ const (
 
 var ErrCertExpired = errors.New("membership certificate has expired")
 
-// envelopeOverhead is the serialized size of an empty Envelope wrapping an
-// empty GossipEventBatch — covers the oneof tag, length prefixes, and batch
-// wrapper framing.
+// envelopeOverhead is the worst-case serialized size of an Envelope wrapping
+// a GossipEventBatch — covers the oneof tag, length prefixes, batch wrapper
+// framing, and the IsResponse tag.
 var envelopeOverhead = (&meshv1.Envelope{Body: &meshv1.Envelope_Events{
-	Events: &statev1.GossipEventBatch{},
+	Events: &statev1.GossipEventBatch{IsResponse: true},
 }}).SizeVT()
 
 const (
@@ -309,7 +309,7 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 		batches := batchEvents(events, MaxDatagramPayload)
 		for _, batch := range batches {
 			env := &meshv1.Envelope{Body: &meshv1.Envelope_Events{
-				Events: &statev1.GossipEventBatch{Events: batch},
+				Events: &statev1.GossipEventBatch{Events: batch, IsResponse: true},
 			}}
 			if err := n.mesh.Send(ctx, from, env); err != nil {
 				n.log.Debugw("failed sending gossip events", "to", from.Short(), "err", err)
@@ -317,7 +317,7 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 		}
 	case *meshv1.Envelope_Events:
 		result := n.store.ApplyEvents(body.Events.GetEvents())
-		if len(result.Rebroadcast) > 0 {
+		if len(result.Rebroadcast) > 0 && !body.Events.GetIsResponse() {
 			n.queueGossipEvents(result.Rebroadcast)
 		}
 	case *meshv1.Envelope_PunchCoordRequest:
