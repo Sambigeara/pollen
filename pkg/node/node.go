@@ -535,11 +535,20 @@ func (n *Node) syncPeersFromState() {
 		})
 	}
 
+	// Collect current outbound peer keys so the topology layer can apply
+	// hysteresis, keeping incumbents unless a challenger is meaningfully closer.
+	connectedPeers := n.GetConnectedPeers()
+	currentOutbound := make(map[types.PeerKey]struct{}, len(connectedPeers))
+	for _, pk := range connectedPeers {
+		if n.mesh.IsOutbound(pk) {
+			currentOutbound[pk] = struct{}{}
+		}
+	}
+
 	epoch := time.Now().Unix() / topology.EpochSeconds
-	targets := topology.ComputeTargetPeers(
-		n.store.LocalID, n.localCoord, peerInfos,
-		topology.DefaultParams(epoch),
-	)
+	params := topology.DefaultParams(epoch)
+	params.CurrentOutbound = currentOutbound
+	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
 
 	targetSet := buildTargetPeerSet(targets, n.store.DesiredConnections())
 

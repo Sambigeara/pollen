@@ -93,10 +93,42 @@ func TestNearestByDistance(t *testing.T) {
 		{Key: peerKey(4), Coord: &Coord{X: 1, Y: 0}},   // dist ~1
 	}
 	exclude := map[types.PeerKey]struct{}{}
-	result := selectNearest(local, peers, exclude, 2)
+	result := selectNearest(local, peers, exclude, 2, nil)
 	require.Len(t, result, 2)
 	require.Equal(t, peerKey(4), result[0])
 	require.Equal(t, peerKey(2), result[1])
+}
+
+func TestNearestHysteresisKeepsIncumbent(t *testing.T) {
+	// Incumbent at distance 50, challenger at 45 (only 10% closer).
+	// With 20% hysteresis, incumbent ranks as 50*0.8=40, beating the challenger.
+	local := Coord{X: 0, Y: 0}
+	incumbent := peerKey(1)
+	challenger := peerKey(2)
+	peers := []PeerInfo{
+		{Key: incumbent, Coord: &Coord{X: 50, Y: 0}},
+		{Key: challenger, Coord: &Coord{X: 45, Y: 0}},
+	}
+	outbound := map[types.PeerKey]struct{}{incumbent: {}}
+	result := selectNearest(local, peers, nil, 1, outbound)
+	require.Len(t, result, 1)
+	require.Equal(t, incumbent, result[0])
+}
+
+func TestNearestHysteresisAllowsDisplacement(t *testing.T) {
+	// Incumbent at distance 50, challenger at 35 (30% closer).
+	// With 20% hysteresis, incumbent ranks as 50*0.8=40, challenger at 35 wins.
+	local := Coord{X: 0, Y: 0}
+	incumbent := peerKey(1)
+	challenger := peerKey(2)
+	peers := []PeerInfo{
+		{Key: incumbent, Coord: &Coord{X: 50, Y: 0}},
+		{Key: challenger, Coord: &Coord{X: 35, Y: 0}},
+	}
+	outbound := map[types.PeerKey]struct{}{incumbent: {}}
+	result := selectNearest(local, peers, nil, 1, outbound)
+	require.Len(t, result, 1)
+	require.Equal(t, challenger, result[0])
 }
 
 func TestNearestNilCoordFallback(t *testing.T) {
@@ -107,7 +139,7 @@ func TestNearestNilCoordFallback(t *testing.T) {
 		{Key: peerKey(3), Coord: nil},                 // max distance
 	}
 	exclude := map[types.PeerKey]struct{}{}
-	result := selectNearest(local, peers, exclude, 3)
+	result := selectNearest(local, peers, exclude, 3, nil)
 	require.Len(t, result, 3)
 	require.Equal(t, peerKey(2), result[0])
 }
@@ -127,7 +159,7 @@ func TestNearestLANDiversityCap(t *testing.T) {
 		{Key: peerKey(7), Coord: &Coord{X: 7}, IPs: lanB},
 	}
 	exclude := map[types.PeerKey]struct{}{}
-	result := selectNearest(local, peers, exclude, 4)
+	result := selectNearest(local, peers, exclude, 4, nil)
 	require.Len(t, result, 4)
 
 	lanACount := 0
@@ -197,7 +229,7 @@ func TestAllNilCoordsMigration(t *testing.T) {
 	}
 	local := Coord{}
 	exclude := map[types.PeerKey]struct{}{}
-	result := selectNearest(local, peers, exclude, 3)
+	result := selectNearest(local, peers, exclude, 3, nil)
 	require.Len(t, result, 3)
 	// All have distance MaxFloat64, so sorted by PeerKey.
 	require.Equal(t, peerKey(1), result[0])
