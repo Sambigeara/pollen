@@ -20,3 +20,8 @@ variable "pln_version" {
   description = "Pollen release tag to install"
   type        = string
 }
+
+variable "vpc_cidr_prefix" {
+  description = "First two octets of the VPC CIDR (e.g. '10.1' gives 10.1.0.0/16)"
+  type        = string
+}

@@ -6,26 +6,35 @@ locals {
   ssh_public_key = file(var.ssh_public_key_path)
   ssh_opts       = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 
-  # Flat list of all IPs for the wait step (count is known at plan time).
-  all_ips = concat(
-    module.eu_west_1.public_ips,
-    module.us_east_1.public_ips,
-    module.ap_southeast_1.public_ips,
-    module.sa_east_1.public_ips,
+  root_ip = module.eu_west_1.public_ip
+
+  all_public_ips = [
+    module.eu_west_1.public_ip,
+    module.us_east_1.public_ip,
+    module.ap_southeast_1.public_ip,
+    module.sa_east_1.public_ip,
+  ]
+
+  # Private nodes: "private_ip:bastion_public_ip" per region
+  all_private_nodes = concat(
+    [for ip in module.eu_west_1.private_ips : "${ip}:${module.eu_west_1.public_ip}"],
+    [for ip in module.us_east_1.private_ips : "${ip}:${module.us_east_1.public_ip}"],
+    [for ip in module.ap_southeast_1.private_ips : "${ip}:${module.ap_southeast_1.public_ip}"],
+    [for ip in module.sa_east_1.private_ips : "${ip}:${module.sa_east_1.public_ip}"],
   )
 
-  # Root node is the first node in eu-west-1.
-  root_ip = module.eu_west_1.public_ips[0]
-
-  # Build a flat list of all IPs with metadata for the join script.
-  # Format: "ip:is_relay" where is_relay=1 for the first node of each non-root region.
+  # Join nodes: "target_ip:bastion_ip:is_relay"
+  # bastion_ip is empty for public nodes (direct SSH), populated for private nodes
   all_join_nodes = concat(
-    # eu-west-1: skip index 0 (root), rest are regular nodes
-    [for i, ip in slice(module.eu_west_1.public_ips, 1, length(module.eu_west_1.public_ips)) : "${ip}:0"],
-    # Other regions: index 0 is relay, rest are regular
-    [for i, ip in module.us_east_1.public_ips : "${ip}:${i == 0 ? 1 : 0}"],
-    [for i, ip in module.ap_southeast_1.public_ips : "${ip}:${i == 0 ? 1 : 0}"],
-    [for i, ip in module.sa_east_1.public_ips : "${ip}:${i == 0 ? 1 : 0}"],
+    # eu-west-1: only private nodes (root handled separately via cluster_init)
+    [for ip in module.eu_west_1.private_ips : "${ip}:${module.eu_west_1.public_ip}:0"],
+    # Other regions: public node as relay + private nodes
+    ["${module.us_east_1.public_ip}::1"],
+    [for ip in module.us_east_1.private_ips : "${ip}:${module.us_east_1.public_ip}:0"],
+    ["${module.ap_southeast_1.public_ip}::1"],
+    [for ip in module.ap_southeast_1.private_ips : "${ip}:${module.ap_southeast_1.public_ip}:0"],
+    ["${module.sa_east_1.public_ip}::1"],
+    [for ip in module.sa_east_1.private_ips : "${ip}:${module.sa_east_1.public_ip}:0"],
   )
 }
 
@@ -58,6 +67,7 @@ module "us_east_1" {
   providers = { aws = aws.us_east_1 }
 
   region_name      = "us-east-1"
+  vpc_cidr_prefix  = "10.1"
   nodes_per_region = var.nodes_per_region
   instance_type    = var.instance_type
   ssh_public_key   = local.ssh_public_key
@@ -69,6 +79,7 @@ module "eu_west_1" {
   providers = { aws = aws.eu_west_1 }
 
   region_name      = "eu-west-1"
+  vpc_cidr_prefix  = "10.2"
   nodes_per_region = var.nodes_per_region
   instance_type    = var.instance_type
   ssh_public_key   = local.ssh_public_key
@@ -80,6 +91,7 @@ module "ap_southeast_1" {
   providers = { aws = aws.ap_southeast_1 }
 
   region_name      = "ap-southeast-1"
+  vpc_cidr_prefix  = "10.3"
   nodes_per_region = var.nodes_per_region
   instance_type    = var.instance_type
   ssh_public_key   = local.ssh_public_key
@@ -91,6 +103,7 @@ module "sa_east_1" {
   providers = { aws = aws.sa_east_1 }
 
   region_name      = "sa-east-1"
+  vpc_cidr_prefix  = "10.4"
   nodes_per_region = var.nodes_per_region
   instance_type    = var.instance_type
   ssh_public_key   = local.ssh_public_key
@@ -101,7 +114,8 @@ module "sa_east_1" {
 
 resource "null_resource" "wait_for_install" {
   triggers = {
-    ips = join(",", local.all_ips)
+    public_ips  = join(",", local.all_public_ips)
+    private_ids = join(",", local.all_private_nodes)
   }
 
   provisioner "local-exec" {
@@ -109,11 +123,24 @@ resource "null_resource" "wait_for_install" {
     command     = <<-SCRIPT
       set -euo pipefail
       SSH_OPTS="${local.ssh_opts}"
+
+      ssh_to() {
+        local TARGET="$1"; shift
+        local BASTION="$1"; shift
+        if [ -n "$BASTION" ]; then
+          ssh $SSH_OPTS -o "ProxyCommand=ssh $SSH_OPTS -W %h:%p ubuntu@$BASTION" ubuntu@$TARGET "$@"
+        else
+          ssh $SSH_OPTS ubuntu@$TARGET "$@"
+        fi
+      }
+
       PIDS=()
-      for IP in ${join(" ", local.all_ips)}; do
+
+      # Public nodes (direct SSH)
+      for IP in ${join(" ", local.all_public_ips)}; do
         (
           for i in $(seq 1 30); do
-            if ssh $SSH_OPTS -o ConnectTimeout=5 ubuntu@$IP "which pln" &>/dev/null; then
+            if ssh_to "$IP" "" "which pln" &>/dev/null; then
               echo "$IP: pln ready"
               exit 0
             fi
@@ -124,6 +151,25 @@ resource "null_resource" "wait_for_install" {
         ) &
         PIDS+=($!)
       done
+
+      # Private nodes (via bastion)
+      for entry in ${join(" ", local.all_private_nodes)}; do
+        TARGET=$(echo "$entry" | cut -d: -f1)
+        BASTION=$(echo "$entry" | cut -d: -f2)
+        (
+          for i in $(seq 1 30); do
+            if ssh_to "$TARGET" "$BASTION" "which pln" &>/dev/null; then
+              echo "$TARGET (via $BASTION): pln ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "$TARGET (via $BASTION): timed out waiting for pln"
+          exit 1
+        ) &
+        PIDS+=($!)
+      done
+
       FAILED=0
       for pid in "$${PIDS[@]}"; do
         if ! wait $pid; then FAILED=$((FAILED + 1)); fi
@@ -137,7 +183,7 @@ resource "null_resource" "wait_for_install" {
   }
 }
 
-# --- Step 2: Init root node (first node of eu-west-1) ---
+# --- Step 2: Init root node (public node of eu-west-1) ---
 
 resource "null_resource" "cluster_init" {
   depends_on = [null_resource.wait_for_install]
@@ -168,7 +214,17 @@ resource "null_resource" "cluster_join" {
       ROOT="${local.root_ip}"
       NODES="${join(" ", local.all_join_nodes)}"
 
-      # Phase A: generate invites sequentially on root (fast local signing)
+      ssh_to() {
+        local TARGET="$1"; shift
+        local BASTION="$1"; shift
+        if [ -n "$BASTION" ]; then
+          ssh $SSH_OPTS -o "ProxyCommand=ssh $SSH_OPTS -W %h:%p ubuntu@$BASTION" ubuntu@$TARGET "$@"
+        else
+          ssh $SSH_OPTS ubuntu@$TARGET "$@"
+        fi
+      }
+
+      # Phase A: generate invites sequentially on root
       declare -a TOKENS
       for entry in $NODES; do
         TOKEN=$(ssh $SSH_OPTS ubuntu@$ROOT "sudo pln invite --ttl 10m" 2>/dev/null)
@@ -179,25 +235,23 @@ resource "null_resource" "cluster_join" {
       PIDS=()
       IDX=0
       for entry in $NODES; do
-        IP=$(echo "$entry" | cut -d: -f1)
-        IS_RELAY=$(echo "$entry" | cut -d: -f2)
+        TARGET=$(echo "$entry" | cut -d: -f1)
+        BASTION=$(echo "$entry" | cut -d: -f2)
+        IS_RELAY=$(echo "$entry" | cut -d: -f3)
         TOKEN="$${TOKENS[$IDX]}"
 
         if [ "$IS_RELAY" = "1" ]; then
-          ssh $SSH_OPTS ubuntu@$IP "sudo pln join --public '$TOKEN'" &
+          ssh_to "$TARGET" "$BASTION" "sudo pln join --public '$TOKEN'" &
         else
-          ssh $SSH_OPTS ubuntu@$IP "sudo pln join '$TOKEN'" &
+          ssh_to "$TARGET" "$BASTION" "sudo pln join '$TOKEN'" &
         fi
         PIDS+=($!)
         IDX=$((IDX + 1))
       done
 
-      # Wait for all joins
       FAILED=0
       for pid in "$${PIDS[@]}"; do
-        if ! wait $pid; then
-          FAILED=$((FAILED + 1))
-        fi
+        if ! wait $pid; then FAILED=$((FAILED + 1)); fi
       done
 
       if [ $FAILED -gt 0 ]; then
@@ -214,10 +268,22 @@ resource "null_resource" "cluster_join" {
 
 output "ips_by_region" {
   value = {
-    us_east_1      = module.us_east_1.public_ips
-    eu_west_1      = module.eu_west_1.public_ips
-    ap_southeast_1 = module.ap_southeast_1.public_ips
-    sa_east_1      = module.sa_east_1.public_ips
+    eu_west_1 = {
+      public  = module.eu_west_1.public_ip
+      private = module.eu_west_1.private_ips
+    }
+    us_east_1 = {
+      public  = module.us_east_1.public_ip
+      private = module.us_east_1.private_ips
+    }
+    ap_southeast_1 = {
+      public  = module.ap_southeast_1.public_ip
+      private = module.ap_southeast_1.private_ips
+    }
+    sa_east_1 = {
+      public  = module.sa_east_1.public_ip
+      private = module.sa_east_1.private_ips
+    }
   }
 }
 
@@ -227,12 +293,15 @@ output "root_node_ip" {
 
 output "ssh_commands" {
   value = {
-    for region, ips in {
-      us_east_1      = module.us_east_1.public_ips
-      eu_west_1      = module.eu_west_1.public_ips
-      ap_southeast_1 = module.ap_southeast_1.public_ips
-      sa_east_1      = module.sa_east_1.public_ips
-    } : region => [for ip in ips : "ssh -o StrictHostKeyChecking=no ubuntu@${ip}"]
+    for region, info in {
+      eu_west_1      = { public_ip = module.eu_west_1.public_ip, private_ips = module.eu_west_1.private_ips }
+      us_east_1      = { public_ip = module.us_east_1.public_ip, private_ips = module.us_east_1.private_ips }
+      ap_southeast_1 = { public_ip = module.ap_southeast_1.public_ip, private_ips = module.ap_southeast_1.private_ips }
+      sa_east_1      = { public_ip = module.sa_east_1.public_ip, private_ips = module.sa_east_1.private_ips }
+    } : region => concat(
+      ["ssh -o StrictHostKeyChecking=no ubuntu@${info.public_ip}"],
+      [for ip in info.private_ips : "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o 'ProxyCommand=ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %h:%p ubuntu@${info.public_ip}' ubuntu@${ip}"],
+    )
   }
 }
 
