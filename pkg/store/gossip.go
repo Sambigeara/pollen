@@ -73,6 +73,13 @@ func natTypeAttrKey() attrKey {
 	return attrKey{kind: attrNatType}
 }
 
+func tombstoneStaleAttrs(rec *nodeRecord) {
+	for _, key := range []attrKey{publiclyAccessibleAttrKey(), natTypeAttrKey()} {
+		rec.maxCounter++
+		rec.log[key] = logEntry{Counter: rec.maxCounter, Deleted: true}
+	}
+}
+
 // logEntry tracks the counter (and deletion state) of a single attribute.
 type logEntry struct {
 	Counter uint64
@@ -170,10 +177,7 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 	// Vivaldi state is not tombstoned here because node startup immediately
 	// publishes the current local coordinate.
 	local := s.nodes[localID]
-	local.maxCounter++
-	local.log[publiclyAccessibleAttrKey()] = logEntry{Counter: local.maxCounter, Deleted: true}
-	local.maxCounter++
-	local.log[natTypeAttrKey()] = logEntry{Counter: local.maxCounter, Deleted: true}
+	tombstoneStaleAttrs(&local)
 
 	// Inject disk-loaded revocations into the local log so that
 	// bumpAndBroadcastAllLocked can re-publish them after restart.
@@ -458,6 +462,9 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 		rec.maxCounter = event.GetCounter()
 	}
 	s.nodes[peerID] = rec
+	if key.kind != attrRevocation || len(result.revokedSubjects) > 0 {
+		result.Rebroadcast = append(result.Rebroadcast, event)
+	}
 	return result
 }
 

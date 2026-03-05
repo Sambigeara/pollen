@@ -34,8 +34,7 @@ func newTestStore(pub []byte, trustBundle *admissionv1.TrustBundle) *Store {
 		desiredConnections: make(map[string]Connection),
 	}
 	local := s.nodes[localID]
-	local.maxCounter++
-	local.log[publiclyAccessibleAttrKey()] = logEntry{Counter: local.maxCounter, Deleted: true}
+	tombstoneStaleAttrs(&local)
 	s.nodes[localID] = local
 	return s
 }
@@ -76,7 +75,7 @@ func TestEagerSyncClock(t *testing.T) {
 	clock = s.EagerSyncClock()
 	counters := clock.GetCounters()
 	require.Len(t, counters, 2)
-	require.Equal(t, uint64(2), counters[s.LocalID.String()])
+	require.Equal(t, uint64(3), counters[s.LocalID.String()])
 	peerPK, _ := peerKey(2)
 	require.Equal(t, uint64(5), counters[peerPK.String()])
 }
@@ -90,7 +89,7 @@ func TestSetLocalNetworkReturnsEvent(t *testing.T) {
 	require.Len(t, events, 1)
 
 	ev := events[0]
-	require.Equal(t, uint64(3), ev.GetCounter())
+	require.Equal(t, uint64(4), ev.GetCounter())
 	network := ev.GetNetwork()
 	require.NotNil(t, network)
 	require.Equal(t, []string{"10.0.0.1"}, network.GetIps())
@@ -351,8 +350,8 @@ func TestApplyEventSelfStateConflict(t *testing.T) {
 	}
 
 	rec := s.nodes[localID]
-	// Adopted 10, then bumped once per attribute: net(11) + id(12) + pa(13) = MaxCounter 13.
-	require.Equal(t, uint64(13), rec.maxCounter)
+	// Adopted 10, then bumped once per attribute: net(11) + id(12) + pa(13) + nat(14) = MaxCounter 14.
+	require.Equal(t, uint64(14), rec.maxCounter)
 }
 
 func TestApplyEventSelfStateNoConflict(t *testing.T) {
@@ -384,14 +383,14 @@ func TestMissingForReturnsEvents(t *testing.T) {
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
 
-	// Remote has counter=0 for us — should get all events (id + pa + net + ext).
+	// Remote has counter=0 for us — should get all events (id + pa + nat + net + ext).
 	events := s.MissingFor(&statev1.GossipVectorClock{
 		Counters: map[string]uint64{
 			s.LocalID.String(): 0,
 		},
 	})
 
-	require.Len(t, events, 4)
+	require.Len(t, events, 5)
 }
 
 func TestMissingForRespectsClock(t *testing.T) {
@@ -402,10 +401,10 @@ func TestMissingForRespectsClock(t *testing.T) {
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
 
-	// Remote has counter=3 — should only get events with counter > 3.
+	// Remote has counter=4 — should only get events with counter > 4.
 	events := s.MissingFor(&statev1.GossipVectorClock{
 		Counters: map[string]uint64{
-			s.LocalID.String(): 3,
+			s.LocalID.String(): 4,
 		},
 	})
 
@@ -438,7 +437,7 @@ func TestClockUsesMaxCounter(t *testing.T) {
 	s.SetExternalPort(45000)
 
 	clock := s.Clock()
-	require.Equal(t, uint64(4), clock.GetCounters()[s.LocalID.String()])
+	require.Equal(t, uint64(5), clock.GetCounters()[s.LocalID.String()])
 }
 
 func TestUpsertLocalServiceReturnsEvent(t *testing.T) {
@@ -1605,4 +1604,47 @@ func TestKnownPeersIncludesVivaldiCoord(t *testing.T) {
 	require.Len(t, peers, 1)
 	require.NotNil(t, peers[0].VivaldiCoord)
 	require.Equal(t, 5.0, peers[0].VivaldiCoord.X)
+}
+
+func TestApplyRemoteEventRebroadcast(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	_, peerIDStr := peerKey(2)
+
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+		},
+	})
+	require.Len(t, result.Rebroadcast, 1)
+	require.Equal(t, peerIDStr, result.Rebroadcast[0].GetPeerId())
+}
+
+func TestApplyStaleRemoteEventNoRebroadcast(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	_, peerIDStr := peerKey(2)
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+		},
+	})
+
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001},
+		},
+	})
+	require.Empty(t, result.Rebroadcast)
 }

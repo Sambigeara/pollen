@@ -768,6 +768,7 @@ func (*GossipEvent_NatType) isGossipEvent_Change() {}
 type GossipEventBatch struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Events        []*GossipEvent         `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	IsResponse    bool                   `protobuf:"varint,2,opt,name=is_response,json=isResponse,proto3" json:"is_response,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -807,6 +808,13 @@ func (x *GossipEventBatch) GetEvents() []*GossipEvent {
 		return x.Events
 	}
 	return nil
+}
+
+func (x *GossipEventBatch) GetIsResponse() bool {
+	if x != nil {
+		return x.IsResponse
+	}
+	return false
 }
 
 var File_pollen_state_v1_state_proto protoreflect.FileDescriptor
@@ -863,9 +871,11 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\avivaldi\x18\v \x01(\v2(.pollen.state.v1.VivaldiCoordinateChangeH\x00R\avivaldi\x12;\n" +
 	"\bnat_type\x18\f \x01(\v2\x1e.pollen.state.v1.NatTypeChangeH\x00R\anatType\x12\x18\n" +
 	"\adeleted\x18\b \x01(\bR\adeletedB\b\n" +
-	"\x06change\"H\n" +
+	"\x06change\"i\n" +
 	"\x10GossipEventBatch\x124\n" +
-	"\x06events\x18\x01 \x03(\v2\x1c.pollen.state.v1.GossipEventR\x06eventsB@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
+	"\x06events\x18\x01 \x03(\v2\x1c.pollen.state.v1.GossipEventR\x06events\x12\x1f\n" +
+	"\vis_response\x18\x02 \x01(\bR\n" +
+	"isResponseB@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
 
 var (
 	file_pollen_state_v1_state_proto_rawDescOnce sync.Once

@@ -142,8 +142,8 @@ func selectInfra(localKey types.PeerKey, peers []PeerInfo, limit int) []types.Pe
 // selected peers. Applies a LAN diversity cap: at most ceil(k/2) peers from
 // any single LAN prefix. Currently-connected outbound peers get a distance
 // discount of NearestHysteresis to reduce connection churn.
-// Hard↔hard remote pairs are skipped (near-zero punch success rate); LAN
-// peers are always eligible regardless of NAT type.
+// Hard-NAT nodes only attempt non-LAN connections to peers that have
+// explicitly proven Easy NAT; LAN peers are always eligible.
 func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey]struct{}, params Params) []types.PeerKey {
 	type candidate struct {
 		ips     []string
@@ -154,7 +154,7 @@ func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey
 	}
 
 	localPrefix := lanPrefix(params.LocalIPs)
-	hardHard := params.LocalNATType == nat.Hard
+	localHard := params.LocalNATType == nat.Hard
 
 	var candidates []candidate
 	for _, p := range peers {
@@ -189,7 +189,7 @@ func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey
 		if len(result) >= k {
 			break
 		}
-		if !c.lan && hardHard && c.natType == nat.Hard {
+		if !c.lan && localHard && c.natType != nat.Easy {
 			continue
 		}
 		prefix := lanPrefix(c.ips)
@@ -205,13 +205,13 @@ func selectNearest(localCoord Coord, peers []PeerInfo, exclude map[types.PeerKey
 }
 
 // selectLongLinks picks r peers via deterministic HMAC-SHA256 permutation.
-// Hard↔hard remote pairs are skipped.
+// Hard-NAT nodes only connect to non-LAN peers that have proven Easy NAT.
 func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types.PeerKey]struct{}, params Params) []types.PeerKey {
 	var epochBuf [8]byte
 	binary.BigEndian.PutUint64(epochBuf[:], uint64(params.Epoch))
 
 	localPrefix := lanPrefix(params.LocalIPs)
-	hardHard := params.LocalNATType == nat.Hard
+	localHard := params.LocalNATType == nat.Hard
 
 	var candidates []scored
 	for _, p := range peers {
@@ -219,7 +219,7 @@ func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types
 			continue
 		}
 		isLAN := localPrefix != "" && lanPrefix(p.IPs) == localPrefix
-		if !isLAN && hardHard && p.NatType == nat.Hard {
+		if !isLAN && localHard && p.NatType != nat.Easy {
 			continue
 		}
 		candidates = append(candidates, scored{
