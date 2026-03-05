@@ -33,6 +33,7 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 .terraform.tfstate.lock.info
-.terraform.lock.hcl # commit for teams, but noisy for solo projects
+# commit .terraform.lock.hcl for teams, but noisy for solo projects
+.terraform.lock.hcl
 .terraformrc
 terraform.rc
