@@ -733,6 +733,7 @@ func (n *Node) buildPeerAddrs(peerKey types.PeerKey, ips []net.IP, port int) []*
 
 func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
 	localIPs := n.store.NodeIPs(n.store.LocalID)
+	targetIPs := n.store.NodeIPs(target)
 	connectedPeers := n.GetConnectedPeers()
 	peers := make([]types.PeerKey, 0, len(connectedPeers))
 
@@ -741,9 +742,13 @@ func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
 			continue
 		}
 		candidateIPs := n.store.NodeIPs(key)
-		// TODO(saml) we shouldn't skip if coordinators share the same LAN, but we need to communicate with
-		// the punching peer outside of the shared LAN that the IP is the same as the coordinator, somehow
-		if len(candidateIPs) == 0 || sharesLAN(localIPs, candidateIPs) {
+		// Skip coordinators that share a LAN with either peer: a same-LAN
+		// coordinator sees the private VPC IP via conn.RemoteAddr() instead
+		// of the NAT-mapped address, which is unreachable from the other side.
+		// TODO(saml): allow same-LAN coordinators by using the peer's gossiped
+		// public IP (from store.NodeIPs) instead of the active connection address
+		// when the coordinator detects it shares a LAN with one of the peers.
+		if len(candidateIPs) == 0 || sharesLAN(localIPs, candidateIPs) || sharesLAN(targetIPs, candidateIPs) {
 			continue
 		}
 		if !n.store.IsConnected(key, target) {

@@ -54,11 +54,35 @@ resource "aws_eip" "nat" {
   tags   = { Name = "pollen-vivaldi-${var.region_name}-nat-eip" }
 }
 
-resource "aws_nat_gateway" "main" {
+resource "aws_instance" "nat" {
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = "t4g.nano"
+  subnet_id                   = aws_subnet.public.id
+  vpc_security_group_ids      = [aws_security_group.nat.id]
+  key_name                    = aws_key_pair.pollen.key_name
+  associate_public_ip_address = true
+  source_dest_check           = false
+
+  user_data = <<-NATEOF
+    #!/bin/bash
+    set -e
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/90-nat.conf
+    sysctl -w net.ipv4.ip_forward=1
+    IFACE=$(ip -o route show default | awk '{print $5}' | head -1)
+    iptables -t nat -A POSTROUTING -o "$IFACE" -s ${var.vpc_cidr_prefix}.0.0/16 -j MASQUERADE
+    iptables -P FORWARD ACCEPT
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iptables-persistent
+    netfilter-persistent save
+  NATEOF
+
+  depends_on = [aws_internet_gateway.main]
+  tags       = { Name = "pollen-vivaldi-${var.region_name}-nat" }
+}
+
+resource "aws_eip_association" "nat" {
+  instance_id   = aws_instance.nat.id
   allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public.id
-  depends_on    = [aws_internet_gateway.main]
-  tags          = { Name = "pollen-vivaldi-${var.region_name}-nat" }
 }
 
 # --- Route Tables ---
@@ -75,8 +99,8 @@ resource "aws_route_table" "public" {
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
   route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main.id
+    cidr_block           = "0.0.0.0/0"
+    network_interface_id = aws_instance.nat.primary_network_interface_id
   }
   tags = { Name = "pollen-vivaldi-${var.region_name}-private-rt" }
 }
@@ -92,6 +116,37 @@ resource "aws_route_table_association" "private" {
 }
 
 # --- Security Groups ---
+
+resource "aws_security_group" "nat" {
+  name        = "pollen-vivaldi-${var.region_name}-nat"
+  description = "NAT instance - allows all UDP for hole punching"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [aws_vpc.main.cidr_block]
+  }
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
 
 resource "aws_security_group" "public" {
   name        = "pollen-vivaldi-${var.region_name}-public"
@@ -127,7 +182,7 @@ resource "aws_security_group" "private" {
     from_port   = 60611
     to_port     = 60611
     protocol    = "udp"
-    cidr_blocks = [aws_vpc.main.cidr_block]
+    cidr_blocks = ["0.0.0.0/0"]
   }
   ingress {
     from_port       = 22
