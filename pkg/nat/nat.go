@@ -81,12 +81,13 @@ func (d *Detector) Type() Type {
 }
 
 const (
-	minObservations = 2
-	maxObservations = 16
+	minObservationsHard = 2
+	minObservationsEasy = 3
+	maxObservations     = 16
 )
 
 func (d *Detector) evaluate() Type {
-	if len(d.observations) < minObservations {
+	if len(d.observations) < minObservationsHard {
 		return Unknown
 	}
 
@@ -101,6 +102,9 @@ func (d *Detector) evaluate() Type {
 		if port != firstPort {
 			return Hard
 		}
+	}
+	if len(d.observations) < minObservationsEasy {
+		return Unknown
 	}
 	return Easy
 }

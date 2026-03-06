@@ -71,7 +71,7 @@ const (
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
 	gossipEventBufSize = 64
-	punchChBufSize     = 16
+	punchChBufSize     = 32
 	punchWorkers       = 3 // max concurrent punches; bounds socket usage to N×256
 	ipRefreshInterval  = 5 * time.Minute
 )
@@ -567,6 +567,7 @@ func (n *Node) syncPeersFromState() {
 	params.CurrentOutbound = currentOutbound
 	params.LocalNATType = n.natDetector.Type()
 	params.LocalIPs = n.store.NodeIPs(n.store.LocalID)
+	params.LocalCoordErr = n.localCoordErr
 	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
 
 	targetSet := buildTargetPeerSet(targets, n.store.DesiredConnections())
@@ -603,10 +604,11 @@ func (n *Node) syncPeersFromState() {
 		}
 
 		n.peers.Step(time.Now(), peer.DiscoverPeer{
-			PeerKey:  kp.PeerID,
-			Ips:      ips,
-			Port:     int(kp.LocalPort),
-			LastAddr: lastAddr,
+			PeerKey:            kp.PeerID,
+			Ips:                ips,
+			Port:               int(kp.LocalPort),
+			LastAddr:           lastAddr,
+			PubliclyAccessible: kp.PubliclyAccessible,
 		})
 	}
 
