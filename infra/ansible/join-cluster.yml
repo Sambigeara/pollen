@@ -8,19 +8,17 @@
   gather_facts: false
 
   tasks:
-    - name: Count nodes to join
-      ansible.builtin.set_fact:
-        join_count: "{{ groups['relays'] | length + groups['private'] | length }}"
-
-    - name: Generate invite tokens
-      ansible.builtin.command: pln invite --ttl 10m
-      register: invite_results
-      loop: "{{ range(join_count | int) | list }}"
+    - name: Generate all invite tokens in one shot
+      ansible.builtin.shell: |
+        for i in $(seq {{ groups['relays'] | length + groups['private'] | length }}); do
+          pln invite --ttl 10m
+        done
+      register: invite_raw
       changed_when: true
 
     - name: Build token list
       ansible.builtin.set_fact:
-        invite_tokens: "{{ invite_results.results | map(attribute='stdout') | list }}"
+        invite_tokens: "{{ invite_raw.stdout_lines }}"
 
 - name: Join relay nodes
   hosts: relays
