@@ -16,12 +16,15 @@ func testPeerKey(b byte) types.PeerKey {
 	return k
 }
 
+// setupConnectedPeer discovers and connects a peer. PubliclyAccessible ensures
+// the peer starts at ConnectStageDirect (not Punch).
 func setupConnectedPeer(t *testing.T, s *Store, key types.PeerKey, now time.Time) {
 	t.Helper()
 	s.Step(now, DiscoverPeer{
-		PeerKey: key,
-		Ips:     []net.IP{net.ParseIP("10.0.0.1")},
-		Port:    9000,
+		PeerKey:            key,
+		Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+		Port:               9000,
+		PubliclyAccessible: true,
 	})
 	s.Step(now, ConnectPeer{
 		PeerKey:      key,
@@ -102,9 +105,10 @@ func TestStageEscalation(t *testing.T) {
 	now := time.Now()
 
 	s.Step(now, DiscoverPeer{
-		PeerKey: key,
-		Ips:     []net.IP{net.ParseIP("10.0.0.1")},
-		Port:    9000,
+		PeerKey:            key,
+		Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+		Port:               9000,
+		PubliclyAccessible: true,
 	})
 
 	// First tick: attempt direct connect.
@@ -190,9 +194,10 @@ func TestEagerRetrySkippedWhenNoLastAddr(t *testing.T) {
 	now := time.Now()
 
 	s.Step(now, DiscoverPeer{
-		PeerKey: key,
-		Ips:     []net.IP{net.ParseIP("10.0.0.1")},
-		Port:    9000,
+		PeerKey:            key,
+		Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+		Port:               9000,
+		PubliclyAccessible: true,
 	})
 
 	p, ok := s.Get(key)
@@ -289,4 +294,64 @@ func TestUnreachableRetryReturnsToEagerWithLastAddr(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, key, ec.PeerKey)
 	assert.Equal(t, lastAddr, ec.Addr)
+}
+
+func TestPrivatePeerSkipsDirectStage(t *testing.T) {
+	s := NewStore()
+	key := testPeerKey(1)
+	now := time.Now()
+
+	s.Step(now, DiscoverPeer{
+		PeerKey:            key,
+		Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+		Port:               9000,
+		PubliclyAccessible: false,
+	})
+
+	p, ok := s.Get(key)
+	require.True(t, ok)
+	require.Equal(t, ConnectStagePunch, p.Stage)
+
+	// Tick should emit RequestPunchCoordination directly.
+	outputs := s.Step(now, Tick{})
+	require.Len(t, outputs, 1)
+	_, isPunch := outputs[0].(RequestPunchCoordination)
+	require.True(t, isPunch)
+}
+
+func TestPublicPeerStartsAtDirect(t *testing.T) {
+	s := NewStore()
+	key := testPeerKey(1)
+	now := time.Now()
+
+	s.Step(now, DiscoverPeer{
+		PeerKey:            key,
+		Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+		Port:               9000,
+		PubliclyAccessible: true,
+	})
+
+	p, ok := s.Get(key)
+	require.True(t, ok)
+	require.Equal(t, ConnectStageDirect, p.Stage)
+}
+
+func TestPrivatePeerWithLastAddrStartsEager(t *testing.T) {
+	s := NewStore()
+	key := testPeerKey(1)
+	now := time.Now()
+
+	lastAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.5"), Port: 41234}
+	s.Step(now, DiscoverPeer{
+		PeerKey:            key,
+		Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+		Port:               9000,
+		LastAddr:           lastAddr,
+		PubliclyAccessible: false,
+	})
+
+	p, ok := s.Get(key)
+	require.True(t, ok)
+	// Has LastAddr → starts at EagerRetry even though not publicly accessible.
+	require.Equal(t, ConnectStageEagerRetry, p.Stage)
 }

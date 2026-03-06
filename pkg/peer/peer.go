@@ -67,10 +67,11 @@ type Input interface{ isInput() }
 // DiscoverPeer adds a new peer or updates known addresses for an existing peer.
 // Used on startup (from disk) or when learning about a peer from gossip.
 type DiscoverPeer struct {
-	LastAddr *net.UDPAddr
-	Ips      []net.IP
-	Port     int
-	PeerKey  types.PeerKey
+	LastAddr           *net.UDPAddr
+	Ips                []net.IP
+	Port               int
+	PeerKey            types.PeerKey
+	PubliclyAccessible bool
 }
 
 func (DiscoverPeer) isInput() {}
@@ -244,6 +245,9 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
 			NextActionAt: now, // eligible for connection immediately
 		}
 		p.resetStage()
+		if !e.PubliclyAccessible && p.LastAddr == nil {
+			p.Stage = ConnectStagePunch
+		}
 		s.m[e.PeerKey] = p
 		return
 	}
