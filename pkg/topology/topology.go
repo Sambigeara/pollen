@@ -16,22 +16,24 @@ import (
 // PeerInfo is a topology-relevant snapshot of a peer.
 type PeerInfo struct {
 	Coord              *Coord
+	ObservedExternalIP string
 	IPs                []string
-	Key                types.PeerKey
 	NatType            nat.Type
+	Key                types.PeerKey
 	PubliclyAccessible bool
 }
 
 // Params controls the topology budget.
 type Params struct {
-	CurrentOutbound map[types.PeerKey]struct{} // currently-connected outbound peers
-	LocalIPs        []string                   // local node's IPs (for LAN detection)
-	InfraMax        int                        // max infrastructure backbone peers
-	NearestK        int                        // Vivaldi k-nearest neighbors
-	RandomR         int                        // deterministic random long-links
-	Epoch           int64                      // current epoch (time.Now().Unix() / EpochSeconds)
-	LocalNATType    nat.Type                   // local node's NAT type
-	UseHMACNearest  bool                       // use HMAC-deterministic selection instead of Vivaldi distance
+	CurrentOutbound         map[types.PeerKey]struct{}
+	LocalObservedExternalIP string
+	LocalIPs                []string
+	InfraMax                int
+	NearestK                int
+	RandomR                 int
+	Epoch                   int64
+	LocalNATType            nat.Type
+	UseHMACNearest          bool
 }
 
 // Budget: 2 infra + 4 nearest + 2 random = 8 max targets.
@@ -42,6 +44,12 @@ const (
 	EpochSeconds          = 300  // 5 minutes
 	NearestHysteresis     = 0.20 // incumbent distance discount (20%)
 	MinHysteresisDistance = 5.0  // minimum absolute discount (ms) for close peers
+	privateIPv4Ten        = 10
+	privateIPv4One72      = 172
+	privateIPv4Two192     = 192
+	privateIPv4Two168     = 168
+	private172Min         = 16
+	private172Max         = 31
 )
 
 // DefaultParams returns Params with default budgets.
@@ -169,6 +177,9 @@ func selectNearest(localKey types.PeerKey, localCoord Coord, peers []PeerInfo, e
 		if _, ok := exclude[p.Key]; ok {
 			continue
 		}
+		if suppressProactivePrivate(params, p) {
+			continue
+		}
 		d := math.MaxFloat64
 		if p.Coord != nil {
 			d = Distance(localCoord, *p.Coord)
@@ -278,6 +289,9 @@ func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types
 		if _, ok := exclude[p.Key]; ok {
 			continue
 		}
+		if suppressProactivePrivate(params, p) {
+			continue
+		}
 		isLAN := localPrefix != "" && lanPrefix(p.IPs) == localPrefix
 		if natFiltered(isLAN, params.LocalNATType, p.NatType) {
 			continue
@@ -290,10 +304,76 @@ func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types
 	return topByScore(candidates, params.RandomR)
 }
 
+func suppressProactivePrivate(params Params, peer PeerInfo) bool {
+	if peer.PubliclyAccessible {
+		return false
+	}
+	if InferPrivatelyRoutable(params.LocalIPs, peer.IPs) {
+		return false
+	}
+	if params.LocalObservedExternalIP == "" || peer.ObservedExternalIP == "" {
+		return false
+	}
+	return !SameObservedEgress(params.LocalObservedExternalIP, peer.ObservedExternalIP)
+}
+
+func SameObservedEgress(a, b string) bool {
+	return a != "" && a == b
+}
+
 // natFiltered returns true when a non-LAN pair should be skipped because
 // neither side has Easy NAT (making direct connectivity unlikely).
 func natFiltered(isLAN bool, localNAT, remoteNAT nat.Type) bool {
 	return !isLAN && localNAT != nat.Easy && remoteNAT != nat.Easy
+}
+
+func InferPrivatelyRoutable(localIPs, peerIPs []string) bool {
+	localPrefixes := privateSitePrefixes(localIPs)
+	if len(localPrefixes) == 0 {
+		return false
+	}
+	for prefix := range privateSitePrefixes(peerIPs) {
+		if _, ok := localPrefixes[prefix]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func privateSitePrefixes(ips []string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, s := range ips {
+		ip := net.ParseIP(s)
+		if prefix, ok := privateSitePrefix(ip); ok {
+			out[prefix] = struct{}{}
+		}
+	}
+	return out
+}
+
+func privateSitePrefix(ip net.IP) (string, bool) {
+	if !isUsablePrivateIP(ip) {
+		return "", false
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		switch {
+		case ip4[0] == privateIPv4Ten:
+			return string(ip4[:2]), true
+		case ip4[0] == privateIPv4One72 && ip4[1] >= private172Min && ip4[1] <= private172Max:
+			return string(ip4[:2]), true
+		case ip4[0] == privateIPv4Two192 && ip4[1] == privateIPv4Two168:
+			return string(ip4[:3]), true
+		}
+		return "", false
+	}
+	if ip16 := ip.To16(); ip16 != nil {
+		return string(ip16[:6]), true
+	}
+	return "", false
+}
+
+func isUsablePrivateIP(ip net.IP) bool {
+	return ip != nil && ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified()
 }
 
 // lanPrefix returns a grouping key for the peer's subnet. It uses the first

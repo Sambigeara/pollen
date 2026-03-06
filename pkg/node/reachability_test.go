@@ -6,17 +6,18 @@ import (
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/store"
+	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
 
 func TestInferPrivatelyRoutable(t *testing.T) {
-	require.True(t, inferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"10.2.2.20"}))
-	require.False(t, inferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"10.3.2.20"}))
-	require.False(t, inferPrivatelyRoutable([]string{"192.168.1.10"}, []string{"192.168.200.20"}))
-	require.True(t, inferPrivatelyRoutable([]string{"172.16.1.10"}, []string{"172.16.200.20"}))
-	require.False(t, inferPrivatelyRoutable([]string{"172.16.1.10"}, []string{"172.17.200.20"}))
-	require.False(t, inferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"203.0.113.7"}))
+	require.True(t, topology.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"10.2.2.20"}))
+	require.False(t, topology.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"10.3.2.20"}))
+	require.False(t, topology.InferPrivatelyRoutable([]string{"192.168.1.10"}, []string{"192.168.200.20"}))
+	require.True(t, topology.InferPrivatelyRoutable([]string{"172.16.1.10"}, []string{"172.16.200.20"}))
+	require.False(t, topology.InferPrivatelyRoutable([]string{"172.16.1.10"}, []string{"172.17.200.20"}))
+	require.False(t, topology.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"203.0.113.7"}))
 }
 
 func TestInferReachability(t *testing.T) {

@@ -558,6 +558,7 @@ func (n *Node) syncPeersFromState() {
 			Coord:              kp.VivaldiCoord,
 			IPs:                kp.IPs,
 			NatType:            kp.NatType,
+			ObservedExternalIP: kp.ObservedExternalIP,
 			PubliclyAccessible: kp.PubliclyAccessible,
 		})
 	}
@@ -587,6 +588,9 @@ func (n *Node) syncPeersFromState() {
 	params.CurrentOutbound = currentOutbound
 	params.LocalNATType = n.natDetector.Type()
 	params.LocalIPs = n.store.NodeIPs(n.store.LocalID)
+	if localRec, ok := n.store.Get(n.store.LocalID); ok {
+		params.LocalObservedExternalIP = localRec.ObservedExternalIP
+	}
 	params.UseHMACNearest = n.useHMACNearest
 	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
 
