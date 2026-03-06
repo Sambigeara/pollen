@@ -68,6 +68,12 @@ const (
 	// eagerSyncCooldown should be >= GossipInterval to avoid redundant sends.
 	eagerSyncCooldown = 5 * time.Second
 
+	revokeStreakThreshold       = 3  // consecutive non-target ticks before revoking outbound
+	revokeStreakThresholdPublic = 30 // public peers are stickier (coordinator stability)
+
+	vivaldiEnterHMACThreshold = 0.6
+	vivaldiExitHMACThreshold  = 0.35
+
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
 	gossipEventBufSize = 64
@@ -106,6 +112,7 @@ type Node struct {
 	mesh            mesh.Mesh
 	store           *store.Store
 	lastEagerSync   map[types.PeerKey]time.Time
+	nonTargetStreak map[types.PeerKey]int
 	creds           *auth.NodeCredentials
 	localPeerEvents chan peer.Input
 	peers           *peer.Store
@@ -120,6 +127,7 @@ type Node struct {
 	signPriv        ed25519.PrivateKey
 	localCoord      topology.Coord
 	localCoordErr   float64
+	useHMACNearest  bool
 	renewalFailed   atomic.Bool
 }
 
@@ -164,8 +172,10 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
 		ready:           make(chan struct{}),
 		lastEagerSync:   make(map[types.PeerKey]time.Time),
+		nonTargetStreak: make(map[types.PeerKey]int),
 		natDetector:     nat.NewDetector(),
 		localCoordErr:   1.0,
+		useHMACNearest:  true,
 	}
 
 	stateStore.OnRevocation(func(subject types.PeerKey) {
@@ -562,12 +572,22 @@ func (n *Node) syncPeersFromState() {
 		}
 	}
 
+	if n.useHMACNearest {
+		if n.localCoordErr < vivaldiExitHMACThreshold {
+			n.useHMACNearest = false
+		}
+	} else {
+		if n.localCoordErr > vivaldiEnterHMACThreshold {
+			n.useHMACNearest = true
+		}
+	}
+
 	epoch := time.Now().Unix() / topology.EpochSeconds
 	params := topology.DefaultParams(epoch)
 	params.CurrentOutbound = currentOutbound
 	params.LocalNATType = n.natDetector.Type()
 	params.LocalIPs = n.store.NodeIPs(n.store.LocalID)
-	params.LocalCoordErr = n.localCoordErr
+	params.UseHMACNearest = n.useHMACNearest
 	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
 
 	targetSet := buildTargetPeerSet(targets, n.store.DesiredConnections())
@@ -612,8 +632,14 @@ func (n *Node) syncPeersFromState() {
 		})
 	}
 
+	// Reset streak counters for peers that are back in the target set.
+	for pk := range targetSet {
+		delete(n.nonTargetStreak, pk)
+	}
+
 	// Prune non-targeted peers. Inbound connections are left alone — they'll
-	// expire naturally. Outbound connections to former targets are closed.
+	// expire naturally. Outbound connections to former targets are delayed by
+	// a streak threshold to absorb Vivaldi coordinate jitter.
 	for _, kp := range knownPeers {
 		if _, targeted := targetSet[kp.PeerID]; targeted {
 			continue
@@ -623,9 +649,18 @@ func (n *Node) syncPeersFromState() {
 			continue
 		}
 		if connected {
+			n.nonTargetStreak[kp.PeerID]++
+			threshold := revokeStreakThreshold
+			if kp.PubliclyAccessible {
+				threshold = revokeStreakThresholdPublic
+			}
+			if n.nonTargetStreak[kp.PeerID] < threshold {
+				continue
+			}
 			n.mesh.ClosePeerSession(kp.PeerID)
 			n.handlePeerInput(peer.PeerDisconnected{PeerKey: kp.PeerID, Reason: peer.DisconnectGraceful})
 		}
+		delete(n.nonTargetStreak, kp.PeerID)
 		n.handlePeerInput(peer.ForgetPeer{PeerKey: kp.PeerID})
 	}
 }
@@ -777,7 +812,6 @@ func (n *Node) requestPunchCoordination(target types.PeerKey) {
 	coordinators := n.coordinatorPeers(target)
 	if len(coordinators) == 0 {
 		n.log.Debugw("no coordinators available for punch", "peer", target.Short())
-		n.localPeerEvents <- peer.ConnectFailed{PeerKey: target}
 		return
 	}
 
@@ -790,7 +824,6 @@ func (n *Node) requestPunchCoordination(target types.PeerKey) {
 	coord := coordinators[0]
 	if err := n.mesh.Send(context.Background(), coord, env); err != nil {
 		n.log.Debugw("punch coord request send failed", "coordinator", coord.Short(), "err", err)
-		n.localPeerEvents <- peer.ConnectFailed{PeerKey: target}
 	}
 }
 
@@ -872,7 +905,6 @@ func (n *Node) handlePunchCoordTrigger(trigger *meshv1.PunchCoordTrigger) {
 	case n.punchCh <- punchRequest{peerKey: peerKey, ip: peerAddr.IP, port: peerAddr.Port}:
 	default:
 		n.log.Debugw("punch queue full, dropping", "peer", peerKey.Short())
-		n.localPeerEvents <- peer.ConnectFailed{PeerKey: peerKey}
 	}
 }
 

@@ -2,10 +2,12 @@ package node
 
 import (
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/topology"
@@ -133,4 +135,282 @@ func addKnownPeerForTopology(t *testing.T, s *store.Store, peerID types.PeerKey,
 			},
 		},
 	})
+}
+
+func setPubliclyAccessible(s *store.Store, peerID types.PeerKey, counter uint64) {
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  peerID.String(),
+			Counter: counter,
+			Change: &statev1.GossipEvent_PubliclyAccessible{
+				PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
+			},
+		},
+	})
+}
+
+// testMeshWrapper embeds a real mesh but lets tests override IsOutbound.
+type testMeshWrapper struct {
+	mesh.Mesh
+	outbound map[types.PeerKey]bool
+}
+
+func (m *testMeshWrapper) IsOutbound(pk types.PeerKey) bool {
+	return m.outbound[pk]
+}
+
+// simulateConnectedOutbound makes a peer appear connected+outbound for
+// syncPeersFromState: marks it Connected in peer.Store, and registers it
+// as outbound in the test mesh wrapper.
+func simulateConnectedOutbound(n *Node, pk types.PeerKey, wrapper *testMeshWrapper) {
+	n.peers.Step(time.Now(), peer.ConnectPeer{
+		PeerKey:      pk,
+		IP:           net.ParseIP("10.0.0.1"),
+		ObservedPort: 9000,
+	})
+	wrapper.outbound[pk] = true
+}
+
+// drainLocalPeerEvents empties the buffered localPeerEvents channel so
+// repeated syncPeersFromState calls don't block.
+func drainLocalPeerEvents(n *Node) {
+	for {
+		select {
+		case <-n.localPeerEvents:
+		default:
+			return
+		}
+	}
+}
+
+// --- HMAC hysteresis tests ---
+
+func TestHysteresisStartsInHMACMode(t *testing.T) {
+	n := newMinimalNode(t, false)
+	require.True(t, n.useHMACNearest, "fresh node should start in HMAC mode (coords untrusted)")
+}
+
+func TestHysteresisExitsHMACWhenErrorDrops(t *testing.T) {
+	n := newMinimalNode(t, false)
+	for i := range 20 {
+		addKnownPeerForTopology(t, n.store, testPeerKey(byte(i+1)), i+1)
+	}
+
+	// localCoordErr starts at 1.0 → HMAC mode.
+	require.True(t, n.useHMACNearest)
+
+	// Drop error below exit threshold (0.35).
+	n.localCoordErr = 0.30
+	n.syncPeersFromState()
+	require.False(t, n.useHMACNearest, "should exit HMAC when error < 0.35")
+}
+
+func TestHysteresisStaysDistanceInDeadZone(t *testing.T) {
+	n := newMinimalNode(t, false)
+	for i := range 20 {
+		addKnownPeerForTopology(t, n.store, testPeerKey(byte(i+1)), i+1)
+	}
+
+	// Exit HMAC first.
+	n.localCoordErr = 0.30
+	n.syncPeersFromState()
+	require.False(t, n.useHMACNearest)
+
+	// Error rises into dead zone (0.35 < err < 0.6) — should stay distance-based.
+	n.localCoordErr = 0.50
+	n.syncPeersFromState()
+	require.False(t, n.useHMACNearest, "should stay distance-based in hysteresis dead zone")
+}
+
+func TestHysteresisReentersHMACAboveThreshold(t *testing.T) {
+	n := newMinimalNode(t, false)
+	for i := range 20 {
+		addKnownPeerForTopology(t, n.store, testPeerKey(byte(i+1)), i+1)
+	}
+
+	// Exit HMAC.
+	n.localCoordErr = 0.30
+	n.syncPeersFromState()
+	require.False(t, n.useHMACNearest)
+
+	// Error rises above enter threshold (0.6).
+	n.localCoordErr = 0.65
+	n.syncPeersFromState()
+	require.True(t, n.useHMACNearest, "should re-enter HMAC when error > 0.6")
+}
+
+// --- Revoke streak tests ---
+
+func TestRevokeStreakPrivatePeerRevokedAfterThreshold(t *testing.T) {
+	n := newMinimalNode(t, false)
+	wrapper := &testMeshWrapper{Mesh: n.mesh, outbound: make(map[types.PeerKey]bool)}
+	n.mesh = wrapper
+
+	// Add many peers so some fall outside the target set.
+	for i := range 20 {
+		addKnownPeerForTopology(t, n.store, testPeerKey(byte(i+1)), i+1)
+	}
+
+	// Find a non-targeted peer and simulate it being connected+outbound.
+	nonTarget := findNonTargetPeer(t, n)
+	simulateConnectedOutbound(n, nonTarget, wrapper)
+
+	// Tick 1 and 2: streak builds but peer stays connected.
+	for tick := range revokeStreakThreshold - 1 {
+		drainLocalPeerEvents(n)
+		n.syncPeersFromState()
+		_, ok := n.peers.Get(nonTarget)
+		require.True(t, ok, "peer should survive at streak tick %d", tick+1)
+		require.True(t, n.peers.InState(nonTarget, peer.PeerStateConnected),
+			"peer should still be Connected at streak tick %d", tick+1)
+	}
+
+	// Tick 3: threshold reached → revoked.
+	drainLocalPeerEvents(n)
+	n.syncPeersFromState()
+	_, ok := n.peers.Get(nonTarget)
+	require.False(t, ok, "peer should be forgotten after %d non-target ticks", revokeStreakThreshold)
+}
+
+func TestRevokeStreakResetsOnTargetReentry(t *testing.T) {
+	n := newMinimalNode(t, false)
+	wrapper := &testMeshWrapper{Mesh: n.mesh, outbound: make(map[types.PeerKey]bool)}
+	n.mesh = wrapper
+
+	for i := range 20 {
+		addKnownPeerForTopology(t, n.store, testPeerKey(byte(i+1)), i+1)
+	}
+
+	nonTarget := findNonTargetPeer(t, n)
+	simulateConnectedOutbound(n, nonTarget, wrapper)
+
+	// Build up streak to threshold - 1.
+	for range revokeStreakThreshold - 1 {
+		drainLocalPeerEvents(n)
+		n.syncPeersFromState()
+	}
+	require.Equal(t, revokeStreakThreshold-1, n.nonTargetStreak[nonTarget])
+
+	// Force peer back into target set via desired connection.
+	n.store.AddDesiredConnection(nonTarget, 8080, 18080)
+	drainLocalPeerEvents(n)
+	n.syncPeersFromState()
+
+	// Streak should be reset.
+	require.Zero(t, n.nonTargetStreak[nonTarget], "streak should reset when peer re-enters target set")
+
+	// Remove the desired connection — streak starts fresh.
+	n.store.RemoveDesiredConnection(nonTarget, 8080, 18080)
+	drainLocalPeerEvents(n)
+	n.syncPeersFromState()
+	require.Equal(t, 1, n.nonTargetStreak[nonTarget], "streak should start from 1 again after reset")
+}
+
+func TestRevokeStreakPublicPeerStickyLonger(t *testing.T) {
+	n := newMinimalNode(t, false)
+	wrapper := &testMeshWrapper{Mesh: n.mesh, outbound: make(map[types.PeerKey]bool)}
+	n.mesh = wrapper
+
+	// Create 20 peers, make several publicly accessible so infra slots (2)
+	// are saturated and at least one public peer remains non-targeted.
+	for i := range 20 {
+		pk := testPeerKey(byte(i + 1))
+		addKnownPeerForTopology(t, n.store, pk, i+1)
+		if i < 5 {
+			setPubliclyAccessible(n.store, pk, 10+uint64(i))
+		}
+	}
+
+	nonTarget := findNonTargetPublicPeer(t, n)
+	simulateConnectedOutbound(n, nonTarget, wrapper)
+
+	// Run revokeStreakThreshold ticks — should NOT be revoked (needs 30 for public).
+	for range revokeStreakThreshold {
+		drainLocalPeerEvents(n)
+		n.syncPeersFromState()
+	}
+	require.True(t, n.peers.InState(nonTarget, peer.PeerStateConnected),
+		"public peer should survive the private threshold")
+
+	// Run up to revokeStreakThresholdPublic - 1 total ticks.
+	for range revokeStreakThresholdPublic - revokeStreakThreshold - 1 {
+		drainLocalPeerEvents(n)
+		n.syncPeersFromState()
+	}
+	require.True(t, n.peers.InState(nonTarget, peer.PeerStateConnected),
+		"public peer should survive at tick %d", revokeStreakThresholdPublic-1)
+
+	// One more tick → threshold reached, revoked.
+	drainLocalPeerEvents(n)
+	n.syncPeersFromState()
+	_, ok := n.peers.Get(nonTarget)
+	require.False(t, ok, "public peer should be forgotten after %d non-target ticks", revokeStreakThresholdPublic)
+}
+
+// findNonTargetPublicPeer returns a publicly-accessible peer key that is known
+// in the store but NOT in the current topology target set.
+func findNonTargetPublicPeer(t *testing.T, n *Node) types.PeerKey {
+	t.Helper()
+
+	known := n.store.KnownPeers()
+	peerInfos := make([]topology.PeerInfo, 0, len(known))
+	for _, kp := range known {
+		peerInfos = append(peerInfos, topology.PeerInfo{
+			Key:                kp.PeerID,
+			Coord:              kp.VivaldiCoord,
+			IPs:                kp.IPs,
+			PubliclyAccessible: kp.PubliclyAccessible,
+		})
+	}
+
+	epoch := time.Now().Unix() / topology.EpochSeconds
+	params := topology.DefaultParams(epoch)
+	params.UseHMACNearest = n.useHMACNearest
+	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
+	targetSet := make(map[types.PeerKey]struct{}, len(targets))
+	for _, pk := range targets {
+		targetSet[pk] = struct{}{}
+	}
+
+	for _, kp := range known {
+		if _, targeted := targetSet[kp.PeerID]; !targeted && kp.PubliclyAccessible {
+			return kp.PeerID
+		}
+	}
+	t.Fatal("no non-targeted public peer found — add more public peers")
+	return types.PeerKey{}
+}
+
+// findNonTargetPeer returns a peer key that is known in the store but NOT in
+// the current topology target set.
+func findNonTargetPeer(t *testing.T, n *Node) types.PeerKey {
+	t.Helper()
+
+	known := n.store.KnownPeers()
+	peerInfos := make([]topology.PeerInfo, 0, len(known))
+	for _, kp := range known {
+		peerInfos = append(peerInfos, topology.PeerInfo{
+			Key:                kp.PeerID,
+			Coord:              kp.VivaldiCoord,
+			IPs:                kp.IPs,
+			PubliclyAccessible: kp.PubliclyAccessible,
+		})
+	}
+
+	epoch := time.Now().Unix() / topology.EpochSeconds
+	params := topology.DefaultParams(epoch)
+	params.UseHMACNearest = n.useHMACNearest
+	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
+	targetSet := make(map[types.PeerKey]struct{}, len(targets))
+	for _, pk := range targets {
+		targetSet[pk] = struct{}{}
+	}
+
+	for _, kp := range known {
+		if _, targeted := targetSet[kp.PeerID]; !targeted {
+			return kp.PeerID
+		}
+	}
+	t.Fatal("all known peers are targeted — need more peers to find a non-target")
+	return types.PeerKey{}
 }
