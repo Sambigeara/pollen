@@ -22,6 +22,7 @@ type attrKind uint8
 const (
 	attrNetwork attrKind = iota + 1
 	attrExternalPort
+	attrObservedExternalIP
 	attrIdentity
 	attrService
 	attrReachability
@@ -43,6 +44,10 @@ func networkAttrKey() attrKey {
 
 func externalPortAttrKey() attrKey {
 	return attrKey{kind: attrExternalPort}
+}
+
+func observedExternalIPAttrKey() attrKey {
+	return attrKey{kind: attrObservedExternalIP}
 }
 
 func identityAttrKey() attrKey {
@@ -74,7 +79,7 @@ func natTypeAttrKey() attrKey {
 }
 
 func tombstoneStaleAttrs(rec *nodeRecord) {
-	for _, key := range []attrKey{publiclyAccessibleAttrKey(), natTypeAttrKey()} {
+	for _, key := range []attrKey{publiclyAccessibleAttrKey(), natTypeAttrKey(), observedExternalIPAttrKey()} {
 		rec.maxCounter++
 		rec.log[key] = logEntry{Counter: rec.maxCounter, Deleted: true}
 	}
@@ -92,24 +97,26 @@ type nodeRecord struct {
 	log                map[attrKey]logEntry
 	VivaldiCoord       *topology.Coord
 	LastAddr           string
-	IdentityPub        []byte
+	ObservedExternalIP string
 	IPs                []string
+	IdentityPub        []byte
 	maxCounter         uint64
 	CertExpiry         int64
+	NatType            nat.Type
 	LocalPort          uint32
 	ExternalPort       uint32
-	NatType            nat.Type
 	PubliclyAccessible bool
 }
 
 type KnownPeer struct {
 	VivaldiCoord       *topology.Coord
 	LastAddr           string
+	ObservedExternalIP string
 	IdentityPub        []byte
 	IPs                []string
+	NatType            nat.Type
 	LocalPort          uint32
 	ExternalPort       uint32
-	NatType            nat.Type
 	PeerID             types.PeerKey
 	PubliclyAccessible bool
 }
@@ -197,14 +204,15 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 		}
 
 		s.nodes[peerID] = nodeRecord{
-			IdentityPub:  append([]byte(nil), peerID[:]...),
-			IPs:          append([]string(nil), p.Addresses...),
-			LastAddr:     p.LastAddr,
-			LocalPort:    p.Port,
-			ExternalPort: p.ExternalPort,
-			Reachable:    make(map[types.PeerKey]struct{}),
-			Services:     make(map[string]*statev1.Service),
-			log:          make(map[attrKey]logEntry),
+			IdentityPub:        append([]byte(nil), peerID[:]...),
+			IPs:                append([]string(nil), p.Addresses...),
+			LastAddr:           p.LastAddr,
+			LocalPort:          p.Port,
+			ExternalPort:       p.ExternalPort,
+			ObservedExternalIP: p.ExternalIP,
+			Reachable:          make(map[types.PeerKey]struct{}),
+			Services:           make(map[string]*statev1.Service),
+			log:                make(map[attrKey]logEntry),
 		}
 	}
 
@@ -268,6 +276,7 @@ func (s *Store) Save() error {
 			Addresses:      rec.IPs,
 			Port:           rec.LocalPort,
 			ExternalPort:   rec.ExternalPort,
+			ExternalIP:     rec.ObservedExternalIP,
 			LastAddr:       rec.LastAddr,
 		})
 	}
@@ -474,6 +483,8 @@ func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
 		return networkAttrKey(), true
 	case *statev1.GossipEvent_ExternalPort:
 		return externalPortAttrKey(), true
+	case *statev1.GossipEvent_ObservedExternalIp:
+		return observedExternalIPAttrKey(), true
 	case *statev1.GossipEvent_IdentityPub:
 		return identityAttrKey(), true
 	case *statev1.GossipEvent_Service:
@@ -526,6 +537,8 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 		rec.LocalPort = 0
 	case attrExternalPort:
 		rec.ExternalPort = 0
+	case attrObservedExternalIP:
+		rec.ObservedExternalIP = ""
 	case attrIdentity:
 		rec.IdentityPub = nil
 		rec.CertExpiry = 0
@@ -558,6 +571,10 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 	case *statev1.GossipEvent_ExternalPort:
 		if v.ExternalPort != nil {
 			rec.ExternalPort = v.ExternalPort.GetExternalPort()
+		}
+	case *statev1.GossipEvent_ObservedExternalIp:
+		if v.ObservedExternalIp != nil {
+			rec.ObservedExternalIP = v.ObservedExternalIp.GetIp()
 		}
 	case *statev1.GossipEvent_IdentityPub:
 		if v.IdentityPub != nil {
@@ -643,6 +660,33 @@ func (s *Store) SetExternalPort(port uint32) []*statev1.GossipEvent {
 		Counter: counter,
 		Change: &statev1.GossipEvent_ExternalPort{
 			ExternalPort: &statev1.ExternalPortChange{ExternalPort: port},
+		},
+	}}
+}
+
+func (s *Store) SetObservedExternalIP(ip string) []*statev1.GossipEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	local := s.nodes[s.LocalID]
+	if local.ObservedExternalIP == ip {
+		return nil
+	}
+
+	local.ObservedExternalIP = ip
+
+	local.maxCounter++
+	counter := local.maxCounter
+	deleted := ip == ""
+	local.log[observedExternalIPAttrKey()] = logEntry{Counter: counter, Deleted: deleted}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Deleted: deleted,
+		Change: &statev1.GossipEvent_ObservedExternalIp{
+			ObservedExternalIp: &statev1.ObservedExternalIPChange{Ip: ip},
 		},
 	}}
 }
@@ -986,6 +1030,7 @@ func (s *Store) KnownPeers() []KnownPeer {
 			PeerID:             peerID,
 			LocalPort:          rec.LocalPort,
 			ExternalPort:       rec.ExternalPort,
+			ObservedExternalIP: rec.ObservedExternalIP,
 			NatType:            rec.NatType,
 			IdentityPub:        rec.IdentityPub,
 			IPs:                rec.IPs,
@@ -1208,6 +1253,12 @@ func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRe
 			change.ExternalPort = rec.ExternalPort
 		}
 		event.Change = &statev1.GossipEvent_ExternalPort{ExternalPort: change}
+	case attrObservedExternalIP:
+		change := &statev1.ObservedExternalIPChange{}
+		if !entry.Deleted {
+			change.Ip = rec.ObservedExternalIP
+		}
+		event.Change = &statev1.GossipEvent_ObservedExternalIp{ObservedExternalIp: change}
 	case attrIdentity:
 		change := &statev1.IdentityChange{}
 		if !entry.Deleted {

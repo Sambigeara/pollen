@@ -62,6 +62,30 @@ func TestRankCoordinatorsPrefersPublicCandidates(t *testing.T) {
 	require.Equal(t, []types.PeerKey{testPeerKey(2), testPeerKey(3)}, ranked)
 }
 
+func TestRankCoordinatorsExcludesSharedObservedEgress(t *testing.T) {
+	n := newMinimalNode(t, false)
+	localIPs := []string{"10.1.2.10"}
+	targetIPs := []string{"10.2.2.10"}
+	target := testPeerKey(50)
+
+	n.store.SetObservedExternalIP("52.204.52.130")
+	addPeerWithIP(n.store, target, "10.2.2.10", 9050, 50)
+	setPeerObservedExternalIP(n.store, target, "18.240.0.10", 51)
+
+	addPeerWithIP(n.store, testPeerKey(1), "10.3.9.20", 9001, 1)
+	setPubliclyAccessible(n.store, testPeerKey(1), 100)
+	setPeerObservedExternalIP(n.store, testPeerKey(1), "52.204.52.130", 101)
+	markPeerConnectedToTarget(n.store, testPeerKey(1), target, 200)
+
+	addPeerWithIP(n.store, testPeerKey(2), "10.4.9.20", 9002, 2)
+	setPubliclyAccessible(n.store, testPeerKey(2), 102)
+	setPeerObservedExternalIP(n.store, testPeerKey(2), "18.240.0.11", 103)
+	markPeerConnectedToTarget(n.store, testPeerKey(2), target, 201)
+
+	ranked := rankCoordinators(localIPs, targetIPs, target, []types.PeerKey{testPeerKey(1), testPeerKey(2)}, n.store)
+	require.Equal(t, []types.PeerKey{testPeerKey(2)}, ranked)
+}
+
 func markPeerConnectedToTarget(s *store.Store, source, target types.PeerKey, counter uint64) {
 	s.ApplyEvents([]*statev1.GossipEvent{{
 		PeerId:  source.String(),
@@ -78,6 +102,16 @@ func addPeerWithIP(s *store.Store, peerID types.PeerKey, ip string, port uint32,
 		Counter: counter,
 		Change: &statev1.GossipEvent_Network{
 			Network: &statev1.NetworkChange{Ips: []string{ip}, LocalPort: port},
+		},
+	}})
+}
+
+func setPeerObservedExternalIP(s *store.Store, peerID types.PeerKey, ip string, counter uint64) {
+	s.ApplyEvents([]*statev1.GossipEvent{{
+		PeerId:  peerID.String(),
+		Counter: counter,
+		Change: &statev1.GossipEvent_ObservedExternalIp{
+			ObservedExternalIp: &statev1.ObservedExternalIPChange{Ip: ip},
 		},
 	}})
 }

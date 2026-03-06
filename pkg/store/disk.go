@@ -47,6 +47,7 @@ type diskLocal struct {
 type diskPeer struct {
 	IdentityPublic string   `yaml:"identityPublic"`
 	LastAddr       string   `yaml:"lastAddr,omitempty"`
+	ExternalIP     string   `yaml:"externalIP,omitempty"`
 	Addresses      []string `yaml:"addresses,omitempty"`
 	Port           uint32   `yaml:"port,omitempty"`
 	ExternalPort   uint32   `yaml:"externalPort,omitempty"`
