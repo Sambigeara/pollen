@@ -623,11 +623,14 @@ func (n *Node) syncPeersFromState() {
 			continue
 		}
 
+		reachability := inferReachability(params.LocalIPs, kp.IPs, kp.PubliclyAccessible)
+
 		n.peers.Step(time.Now(), peer.DiscoverPeer{
 			PeerKey:            kp.PeerID,
 			Ips:                ips,
 			Port:               int(kp.LocalPort),
 			LastAddr:           lastAddr,
+			PrivatelyRoutable:  reachability == reachabilitySameSitePrivate,
 			PubliclyAccessible: kp.PubliclyAccessible,
 		})
 	}
@@ -766,46 +769,21 @@ func (n *Node) buildPeerAddrs(peerKey types.PeerKey, ips []net.IP, port int) []*
 		extPort = int(rec.ExternalPort)
 	}
 
-	addrs := make([]*net.UDPAddr, 0, len(ips))
-	for _, ip := range ips {
-		if ip == nil {
-			continue
-		}
-		p := port
-		if extPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
-			p = extPort
-		}
-		addrs = append(addrs, &net.UDPAddr{IP: ip, Port: p})
-	}
-	return addrs
+	return orderPeerAddrs(n.store.NodeIPs(n.store.LocalID), ips, port, extPort)
 }
 
 func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
 	localIPs := n.store.NodeIPs(n.store.LocalID)
 	targetIPs := n.store.NodeIPs(target)
 	connectedPeers := n.GetConnectedPeers()
-	peers := make([]types.PeerKey, 0, len(connectedPeers))
-
+	filtered := make([]types.PeerKey, 0, len(connectedPeers))
 	for _, key := range connectedPeers {
 		if key == target {
 			continue
 		}
-		candidateIPs := n.store.NodeIPs(key)
-		// Skip coordinators that share a LAN with either peer: a same-LAN
-		// coordinator sees the private VPC IP via conn.RemoteAddr() instead
-		// of the NAT-mapped address, which is unreachable from the other side.
-		// TODO(saml): allow same-LAN coordinators by using the peer's gossiped
-		// public IP (from store.NodeIPs) instead of the active connection address
-		// when the coordinator detects it shares a LAN with one of the peers.
-		if len(candidateIPs) == 0 || sharesLAN(localIPs, candidateIPs) || sharesLAN(targetIPs, candidateIPs) {
-			continue
-		}
-		if !n.store.IsConnected(key, target) {
-			continue
-		}
-		peers = append(peers, key)
+		filtered = append(filtered, key)
 	}
-	return peers
+	return rankCoordinators(localIPs, targetIPs, target, filtered, n.store)
 }
 
 func (n *Node) requestPunchCoordination(target types.PeerKey) {
@@ -1162,31 +1140,6 @@ func (n *Node) shutdown() {
 	}
 
 	n.log.Debug("successfully shutdown Node")
-}
-
-func sharesLAN(aIPs, bIPs []string) bool {
-	for _, aStr := range aIPs {
-		a := net.ParseIP(aStr)
-		if a == nil || !a.IsPrivate() {
-			continue
-		}
-		for _, bStr := range bIPs {
-			b := net.ParseIP(bStr)
-			if b == nil || !b.IsPrivate() {
-				continue
-			}
-			if a4, b4 := a.To4(), b.To4(); a4 != nil && b4 != nil {
-				if a4[0] == b4[0] && a4[1] == b4[1] {
-					return true
-				}
-			} else if a16, b16 := a.To16(), b.To16(); a16 != nil && b16 != nil {
-				if string(a16[:8]) == string(b16[:8]) {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }
 
 func (n *Node) Ready() <-chan struct{} {

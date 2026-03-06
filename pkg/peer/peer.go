@@ -72,6 +72,7 @@ type DiscoverPeer struct {
 	Ips                []net.IP
 	Port               int
 	PeerKey            types.PeerKey
+	PrivatelyRoutable  bool
 	PubliclyAccessible bool
 }
 
@@ -248,7 +249,7 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
 			NextActionAt: now, // eligible for connection immediately
 		}
 		p.resetStage()
-		if !e.PubliclyAccessible && p.LastAddr == nil {
+		if !e.PubliclyAccessible && !e.PrivatelyRoutable && p.LastAddr == nil {
 			p.Stage = ConnectStagePunch
 		}
 		s.m[e.PeerKey] = p
@@ -262,6 +263,11 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
 	}
 	if e.LastAddr != nil {
 		p.LastAddr = e.LastAddr
+	}
+	if p.State == PeerStateDiscovered && p.Stage == ConnectStagePunch && e.PrivatelyRoutable && p.LastAddr == nil {
+		p.Stage = ConnectStageDirect
+		p.StageAttempts = 0
+		p.NextActionAt = now
 	}
 }
 
