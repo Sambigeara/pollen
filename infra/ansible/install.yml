@@ -36,7 +36,7 @@
         NEEDRESTART_SUSPEND: "1"
 
     - name: Verify pln is installed
-      ansible.builtin.command: pln --version
+      ansible.builtin.command: pln version
       changed_when: false
       register: pln_ver
 

@@ -32,7 +32,7 @@
         NEEDRESTART_SUSPEND: "1"
 
     - name: Verify version matches
-      ansible.builtin.command: pln --version
+      ansible.builtin.command: pln version
       changed_when: false
       register: pln_ver
 
