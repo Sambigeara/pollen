@@ -1,0 +1,18 @@
+---
+# Stop pln and purge all state on every node.
+# Usage: ansible-playbook purge.yml -i inventories/<env>.py
+
+- name: Purge pln
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Stop pln
+      ansible.builtin.command: pln down
+      changed_when: true
+      failed_when: false
+
+    - name: Purge all state
+      ansible.builtin.command: pln purge --all --yes
+      changed_when: true
