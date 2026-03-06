@@ -356,6 +356,54 @@ func TestPrivatePeerWithLastAddrStartsEager(t *testing.T) {
 	require.Equal(t, ConnectStageEagerRetry, p.Stage)
 }
 
+func TestPrivatelyRoutablePeerStartsDirect(t *testing.T) {
+	s := NewStore()
+	key := testPeerKey(1)
+	now := time.Now()
+
+	s.Step(now, DiscoverPeer{
+		PeerKey:            key,
+		Ips:                []net.IP{net.ParseIP("10.0.2.10")},
+		Port:               9000,
+		PrivatelyRoutable:  true,
+		PubliclyAccessible: false,
+	})
+
+	p, ok := s.Get(key)
+	require.True(t, ok)
+	require.Equal(t, ConnectStageDirect, p.Stage)
+}
+
+func TestRediscoveredPrivatelyRoutablePeerRestagesToDirect(t *testing.T) {
+	s := NewStore()
+	key := testPeerKey(1)
+	now := time.Now()
+
+	s.Step(now, DiscoverPeer{
+		PeerKey:            key,
+		Ips:                []net.IP{net.ParseIP("10.3.2.10")},
+		Port:               9000,
+		PubliclyAccessible: false,
+	})
+
+	p, ok := s.Get(key)
+	require.True(t, ok)
+	require.Equal(t, ConnectStagePunch, p.Stage)
+
+	s.Step(now.Add(time.Second), DiscoverPeer{
+		PeerKey:            key,
+		Ips:                []net.IP{net.ParseIP("10.3.2.10")},
+		Port:               9000,
+		PrivatelyRoutable:  true,
+		PubliclyAccessible: false,
+	})
+
+	p, ok = s.Get(key)
+	require.True(t, ok)
+	require.Equal(t, ConnectStageDirect, p.Stage)
+	require.Zero(t, p.StageAttempts)
+}
+
 func TestConnectingTimeout(t *testing.T) {
 	s := NewStore()
 	key := testPeerKey(1)
