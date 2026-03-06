@@ -31,7 +31,7 @@ type Params struct {
 	RandomR         int                        // deterministic random long-links
 	Epoch           int64                      // current epoch (time.Now().Unix() / EpochSeconds)
 	LocalNATType    nat.Type                   // local node's NAT type
-	LocalCoordErr   float64                    // Vivaldi local coordinate error estimate
+	UseHMACNearest  bool                       // use HMAC-deterministic selection instead of Vivaldi distance
 }
 
 // Budget: 2 infra + 4 nearest + 2 random = 8 max targets.
@@ -42,7 +42,6 @@ const (
 	EpochSeconds          = 300  // 5 minutes
 	NearestHysteresis     = 0.20 // incumbent distance discount (20%)
 	MinHysteresisDistance = 5.0  // minimum absolute discount (ms) for close peers
-	VivaldiTrustThreshold = 0.5  // coords with error above this are untrusted
 )
 
 // DefaultParams returns Params with default budgets.
@@ -153,10 +152,10 @@ type nearestCandidate struct {
 // any single LAN prefix. Currently-connected outbound peers get a distance
 // discount of NearestHysteresis to reduce connection churn.
 //
-// When LocalCoordErr > VivaldiTrustThreshold, coordinates are too noisy for
-// meaningful distance ordering. In that regime we fall back to HMAC-deterministic
-// selection (same mechanism as long-links) so targets are stable and well-spread
-// from T=0 until coordinates converge.
+// When UseHMACNearest is set, coordinates are too noisy for meaningful distance
+// ordering. In that regime we fall back to HMAC-deterministic selection (same
+// mechanism as long-links) so targets are stable and well-spread from T=0 until
+// coordinates converge. The caller applies hysteresis on the toggle.
 //
 // TODO(saml): peers behind the same NAT on different subnets (e.g., 10.2.2.x
 // and 10.2.3.x) can direct-dial but aren't detected as LAN by /24 prefix
@@ -183,7 +182,7 @@ func selectNearest(localKey types.PeerKey, localCoord Coord, peers []PeerInfo, e
 
 	k := params.NearestK
 	lanCap := (k + 1) / 2 //nolint:mnd
-	if params.LocalCoordErr > VivaldiTrustThreshold {
+	if params.UseHMACNearest {
 		return selectNearestHMAC(localKey, candidates, k, lanCap, params)
 	}
 	return selectNearestByDistance(candidates, k, lanCap, params)

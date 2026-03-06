@@ -261,8 +261,8 @@ func TestAllNilCoordsMigration(t *testing.T) {
 	require.Equal(t, peerKey(3), result[2])
 }
 
-func TestNearestHMACFallbackOnHighError(t *testing.T) {
-	// With high coord error, selectNearest should use HMAC scoring instead of
+func TestNearestHMACFallback(t *testing.T) {
+	// With UseHMACNearest, selectNearest should use HMAC scoring instead of
 	// distance, producing stable, spread-out selection.
 	peers := []PeerInfo{
 		{Key: peerKey(1), Coord: &Coord{X: 1}},
@@ -274,18 +274,18 @@ func TestNearestHMACFallbackOnHighError(t *testing.T) {
 	local := Coord{}
 	exclude := map[types.PeerKey]struct{}{}
 
-	// Low error → distance-based: peerKey(1) and peerKey(2) win.
-	distResult := selectNearest(peerKey(0), local, peers, exclude, Params{NearestK: 2, LocalCoordErr: 0.1, LocalNATType: nat.Easy})
+	// Distance-based: peerKey(1) and peerKey(2) win.
+	distResult := selectNearest(peerKey(0), local, peers, exclude, Params{NearestK: 2, LocalNATType: nat.Easy})
 	require.Len(t, distResult, 2)
 	require.Equal(t, peerKey(1), distResult[0])
 	require.Equal(t, peerKey(2), distResult[1])
 
-	// High error → HMAC: result is deterministic but not necessarily distance-ordered.
-	hmacResult := selectNearest(peerKey(0), local, peers, exclude, Params{NearestK: 2, LocalCoordErr: 0.9, Epoch: 1, LocalNATType: nat.Easy})
+	// HMAC mode: result is deterministic but not necessarily distance-ordered.
+	hmacResult := selectNearest(peerKey(0), local, peers, exclude, Params{NearestK: 2, UseHMACNearest: true, Epoch: 1, LocalNATType: nat.Easy})
 	require.Len(t, hmacResult, 2)
 
 	// Run again with same params — should be deterministic.
-	hmacResult2 := selectNearest(peerKey(0), local, peers, exclude, Params{NearestK: 2, LocalCoordErr: 0.9, Epoch: 1, LocalNATType: nat.Easy})
+	hmacResult2 := selectNearest(peerKey(0), local, peers, exclude, Params{NearestK: 2, UseHMACNearest: true, Epoch: 1, LocalNATType: nat.Easy})
 	require.Equal(t, hmacResult, hmacResult2)
 }
 

@@ -31,6 +31,7 @@ const (
 type Peer struct {
 	NextActionAt  time.Time
 	ConnectedAt   time.Time
+	ConnectingAt  time.Time
 	LastAddr      *net.UDPAddr
 	Ips           []net.IP
 	ObservedPort  int
@@ -192,6 +193,8 @@ const (
 	directAttemptThreshold     = 2
 	punchAttemptThreshold      = 2
 
+	connectingTimeout = 10 * time.Second
+
 	unreachableRetryInterval        = 20 * time.Second
 	idleTimeoutRetryInterval        = 1 * time.Second
 	resetRetryInterval              = 5 * time.Second
@@ -270,7 +273,13 @@ func (s *Store) tick(now time.Time) []Output {
 		}
 
 		switch p.State { //nolint:exhaustive
-		case PeerStateConnected, PeerStateConnecting:
+		case PeerStateConnected:
+			continue
+		case PeerStateConnecting:
+			if now.Sub(p.ConnectingAt) < connectingTimeout {
+				continue
+			}
+			s.connectTimedOut(now, p)
 			continue
 		case PeerStateUnreachable:
 			p.State = PeerStateDiscovered
@@ -290,6 +299,7 @@ func (s *Store) tick(now time.Time) []Output {
 
 		outputs = append(outputs, out)
 		p.State = PeerStateConnecting
+		p.ConnectingAt = now
 	}
 	return outputs
 }
@@ -347,6 +357,13 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) {
 
 	p.NextActionAt = now.Add(backoff(p.StageAttempts))
 	p.State = PeerStateDiscovered // eligible for retry after backoff
+}
+
+// connectTimedOut handles a peer that has been stuck in PeerStateConnecting
+// beyond connectingTimeout. It runs the same stage-escalation logic as
+// connectFailed so that punch-stage peers eventually reach Unreachable.
+func (s *Store) connectTimedOut(now time.Time, p *Peer) {
+	s.connectFailed(now, ConnectFailed{PeerKey: p.ID})
 }
 
 func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {

@@ -355,3 +355,107 @@ func TestPrivatePeerWithLastAddrStartsEager(t *testing.T) {
 	// Has LastAddr → starts at EagerRetry even though not publicly accessible.
 	require.Equal(t, ConnectStageEagerRetry, p.Stage)
 }
+
+func TestConnectingTimeout(t *testing.T) {
+	s := NewStore()
+	key := testPeerKey(1)
+	now := time.Now()
+
+	s.Step(now, DiscoverPeer{
+		PeerKey:            key,
+		Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+		Port:               9000,
+		PubliclyAccessible: true,
+	})
+
+	// Tick transitions to Connecting.
+	outputs := s.Step(now, Tick{})
+	require.Len(t, outputs, 1)
+	p, ok := s.Get(key)
+	require.True(t, ok)
+	require.Equal(t, PeerStateConnecting, p.State)
+
+	// Before timeout: peer stays Connecting, no outputs.
+	outputs = s.Step(now.Add(9*time.Second), Tick{})
+	require.Empty(t, outputs)
+	p, _ = s.Get(key)
+	require.Equal(t, PeerStateConnecting, p.State)
+
+	// After timeout: peer returns to Discovered, stage attempt incremented.
+	outputs = s.Step(now.Add(11*time.Second), Tick{})
+	require.Empty(t, outputs) // no output yet — NextActionAt is in the future
+	p, _ = s.Get(key)
+	require.Equal(t, PeerStateDiscovered, p.State)
+	require.Equal(t, 1, p.StageAttempts)
+
+	// After backoff from the timeout reset, peer retries.
+	outputs = s.Step(now.Add(12*time.Second), Tick{})
+	require.Len(t, outputs, 1)
+	_, isAttempt := outputs[0].(AttemptConnect)
+	require.True(t, isAttempt)
+}
+
+func TestConnectingTimeoutDoesNotFireEarly(t *testing.T) {
+	s := NewStore()
+	key := testPeerKey(1)
+	now := time.Now()
+
+	s.Step(now, DiscoverPeer{
+		PeerKey:            key,
+		Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+		Port:               9000,
+		PubliclyAccessible: true,
+	})
+
+	s.Step(now, Tick{})
+
+	// Connect succeeds before timeout — no timeout behavior.
+	s.Step(now.Add(5*time.Second), ConnectPeer{PeerKey: key, IP: net.ParseIP("10.0.0.1"), ObservedPort: 9000})
+	p, _ := s.Get(key)
+	require.Equal(t, PeerStateConnected, p.State)
+
+	// Tick after original timeout window — should remain connected.
+	outputs := s.Step(now.Add(15*time.Second), Tick{})
+	require.Empty(t, outputs)
+	p, _ = s.Get(key)
+	require.Equal(t, PeerStateConnected, p.State)
+}
+
+func TestConnectingTimeoutPunchReachesUnreachable(t *testing.T) {
+	s := NewStore()
+	key := testPeerKey(1)
+	now := time.Now()
+
+	// Private peer with no last addr → starts at ConnectStagePunch.
+	s.Step(now, DiscoverPeer{
+		PeerKey:            key,
+		Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+		Port:               9000,
+		PubliclyAccessible: false,
+	})
+	p, _ := s.Get(key)
+	require.Equal(t, ConnectStagePunch, p.Stage)
+
+	// Punch attempt 1: tick → Connecting, then timeout → StageAttempts=1.
+	s.Step(now, Tick{})
+	p, _ = s.Get(key)
+	require.Equal(t, PeerStateConnecting, p.State)
+
+	t1 := now.Add(11 * time.Second)
+	s.Step(t1, Tick{})
+	p, _ = s.Get(key)
+	require.Equal(t, PeerStateDiscovered, p.State)
+	require.Equal(t, ConnectStagePunch, p.Stage)
+	require.Equal(t, 1, p.StageAttempts)
+
+	// Punch attempt 2: tick → Connecting, then timeout → Unreachable.
+	t2 := t1.Add(2 * time.Second)
+	s.Step(t2, Tick{})
+	p, _ = s.Get(key)
+	require.Equal(t, PeerStateConnecting, p.State)
+
+	t3 := t2.Add(11 * time.Second)
+	s.Step(t3, Tick{})
+	p, _ = s.Get(key)
+	require.Equal(t, PeerStateUnreachable, p.State)
+}
