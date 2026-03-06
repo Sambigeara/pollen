@@ -19,6 +19,7 @@ import (
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	plnconfig "github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/peer"
@@ -175,6 +176,14 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		case n.localPeerEvents <- peer.ForgetPeer{PeerKey: subject}:
 		default:
 		}
+		if cfg, err := plnconfig.Load(n.pollenDir); err != nil {
+			n.log.Warnw("load config for bootstrap peer cleanup failed", "err", err)
+		} else {
+			cfg.ForgetBootstrapPeer(subject[:])
+			if err := plnconfig.Save(n.pollenDir, cfg); err != nil {
+				n.log.Warnw("persist bootstrap peer removal failed", "err", err)
+			}
+		}
 	})
 
 	if conf.BootstrapPublic {
@@ -259,6 +268,9 @@ func (n *Node) Start(ctx context.Context) error {
 
 func (n *Node) connectBootstrapPeers(ctx context.Context) {
 	for _, bp := range n.conf.BootstrapPeers {
+		if n.store.IsSubjectRevoked(bp.PeerKey[:]) {
+			continue
+		}
 		addrs := make([]*net.UDPAddr, 0, len(bp.Addrs))
 		for _, a := range bp.Addrs {
 			addr, err := net.ResolveUDPAddr("udp", a)
