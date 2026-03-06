@@ -160,6 +160,13 @@ func (c *Config) RememberBootstrapPeer(peer *admissionv1.BootstrapPeer) error {
 	return nil
 }
 
+func (c *Config) ForgetBootstrapPeer(pubKey []byte) {
+	hexKey := hex.EncodeToString(pubKey)
+	c.BootstrapPeers = slices.DeleteFunc(c.BootstrapPeers, func(bp BootstrapPeer) bool {
+		return bp.PeerPub == hexKey
+	})
+}
+
 func (c *Config) BootstrapProtoPeers() ([]*admissionv1.BootstrapPeer, error) {
 	if c == nil {
 		return nil, nil
