@@ -1,0 +1,12 @@
+---
+# Full vivaldi cluster setup: install → init → join.
+# Usage: ansible-playbook site.yml -i inventories/vivaldi.py -e pln_version=v0.1.0-alpha.36
+
+- name: Install pln on all nodes
+  ansible.builtin.import_playbook: install.yml
+
+- name: Initialize cluster root
+  ansible.builtin.import_playbook: init-cluster.yml
+
+- name: Join all nodes to cluster
+  ansible.builtin.import_playbook: join-cluster.yml

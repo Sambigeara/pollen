@@ -2,7 +2,7 @@ terraform {
   required_providers { aws = { source = "hashicorp/aws" } }
 }
 
-# --- Key Pair & AMI (unchanged) ---
+# --- Key Pair & AMI ---
 
 resource "aws_key_pair" "pollen" {
   key_name   = "pollen-vivaldi"
@@ -200,13 +200,6 @@ resource "aws_security_group" "private" {
 
 # --- Instances ---
 
-locals {
-  user_data = <<-EOF
-    #!/bin/bash
-    curl -sL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash -s -- --version ${var.pln_version}
-  EOF
-}
-
 resource "aws_instance" "public" {
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
@@ -214,7 +207,6 @@ resource "aws_instance" "public" {
   vpc_security_group_ids      = [aws_security_group.public.id]
   key_name                    = aws_key_pair.pollen.key_name
   associate_public_ip_address = true
-  user_data                   = local.user_data
 
   tags = { Name = "pollen-vivaldi-${var.region_name}-public-0" }
 }
@@ -227,7 +219,6 @@ resource "aws_instance" "private" {
   vpc_security_group_ids      = [aws_security_group.private.id]
   key_name                    = aws_key_pair.pollen.key_name
   associate_public_ip_address = false
-  user_data                   = local.user_data
 
   tags = { Name = "pollen-vivaldi-${var.region_name}-private-${count.index}" }
 }

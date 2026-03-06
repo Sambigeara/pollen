@@ -1,8 +1,3 @@
-variable "pln_version" {
-  description = "Pollen release tag to install (e.g. 'v0.1.0-alpha.36'). Required to avoid GitHub API rate limiting across 28 nodes."
-  type        = string
-}
-
 variable "nodes_per_region" {
   type    = number
   default = 7
