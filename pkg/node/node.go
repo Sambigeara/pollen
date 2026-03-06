@@ -908,6 +908,7 @@ func (n *Node) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedAddr
 	}
 
 	n.log.Debugw("observed address received", "addr", addr.String(), "from", from.Short())
+	n.queueGossipEvents(n.store.SetObservedExternalIP(addr.IP.String()))
 	n.queueGossipEvents(n.store.SetExternalPort(uint32(addr.Port)))
 
 	if peerAddr, ok := n.mesh.GetActivePeerAddress(from); ok {

@@ -125,12 +125,18 @@ func orderPeerAddrs(localIPs []string, peerIPs []net.IP, port, extPort int) []*n
 	return addrs
 }
 
+func sameObservedEgress(a, b string) bool {
+	return a != "" && a == b
+}
+
 type coordinatorCandidate struct {
 	key                types.PeerKey
 	publiclyAccessible bool
 }
 
 func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connectedPeers []types.PeerKey, state *store.Store) []types.PeerKey {
+	localRec, _ := state.Get(state.LocalID)
+	targetRec, _ := state.Get(target)
 	candidates := make([]coordinatorCandidate, 0, len(connectedPeers))
 	for _, key := range connectedPeers {
 		candidateIPs := state.NodeIPs(key)
@@ -142,6 +148,9 @@ func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connec
 		}
 		rec, ok := state.Get(key)
 		if !ok {
+			continue
+		}
+		if sameObservedEgress(localRec.ObservedExternalIP, rec.ObservedExternalIP) || sameObservedEgress(targetRec.ObservedExternalIP, rec.ObservedExternalIP) {
 			continue
 		}
 		candidates = append(candidates, coordinatorCandidate{

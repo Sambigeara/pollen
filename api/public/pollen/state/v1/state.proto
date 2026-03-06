@@ -40,6 +40,10 @@ message ExternalPortChange {
   uint32 external_port = 1;
 }
 
+message ObservedExternalIPChange {
+  string ip = 1;
+}
+
 message PubliclyAccessibleChange {}
 
 message VivaldiCoordinateChange {
@@ -70,6 +74,7 @@ message GossipEvent {
   oneof change {
     NetworkChange network = 3;
     ExternalPortChange external_port = 4;
+    ObservedExternalIPChange observed_external_ip = 13;
     IdentityChange identity_pub = 5;
     ServiceChange service = 6;
     ReachabilityChange reachability = 7;
