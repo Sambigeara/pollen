@@ -54,6 +54,7 @@ func TestSyncPeersFromStateKeepsDesiredNonTargets(t *testing.T) {
 			Key:                kp.PeerID,
 			Coord:              kp.VivaldiCoord,
 			IPs:                kp.IPs,
+			ObservedExternalIP: kp.ObservedExternalIP,
 			PubliclyAccessible: kp.PubliclyAccessible,
 		})
 	}
@@ -108,6 +109,30 @@ func TestSyncPeersFromStateKeepsDesiredNonTargets(t *testing.T) {
 	require.False(t, prunedKnown, "non-targeted peer without desired connection should be pruned")
 }
 
+func TestSyncPeersFromStateSuppressesRemotePrivateUnlessDesired(t *testing.T) {
+	n := newMinimalNode(t, false)
+	n.store.SetObservedExternalIP("52.204.52.130")
+
+	localGateway := testPeerKey(1)
+	remotePrivate := testPeerKey(2)
+
+	addCustomPeerForTopology(t, n.store, localGateway, []string{"10.1.1.234"}, 9001, 1, "", true)
+	addCustomPeerForTopology(t, n.store, remotePrivate, []string{"10.2.2.10"}, 9002, 2, "34.252.188.39", false)
+
+	n.syncPeersFromState()
+
+	_, gatewayKnown := n.peers.Get(localGateway)
+	require.True(t, gatewayKnown, "same-site gateway should be targeted")
+	_, remoteKnown := n.peers.Get(remotePrivate)
+	require.False(t, remoteKnown, "remote private peer should not be proactively targeted")
+
+	n.store.AddDesiredConnection(remotePrivate, 8080, 18080)
+	n.syncPeersFromState()
+
+	_, remoteKnown = n.peers.Get(remotePrivate)
+	require.True(t, remoteKnown, "desired connection should force remote private targeting")
+}
+
 func addKnownPeerForTopology(t *testing.T, s *store.Store, peerID types.PeerKey, ordinal int) {
 	t.Helper()
 
@@ -135,6 +160,49 @@ func addKnownPeerForTopology(t *testing.T, s *store.Store, peerID types.PeerKey,
 			},
 		},
 	})
+}
+
+func addCustomPeerForTopology(t *testing.T, s *store.Store, peerID types.PeerKey, ips []string, port uint32, ordinal int, observedExternalIP string, publiclyAccessible bool) {
+	t.Helper()
+
+	counter := uint64(1)
+	events := []*statev1.GossipEvent{
+		{
+			PeerId:  peerID.String(),
+			Counter: counter,
+			Change: &statev1.GossipEvent_Network{
+				Network: &statev1.NetworkChange{Ips: ips, LocalPort: port},
+			},
+		},
+		{
+			PeerId:  peerID.String(),
+			Counter: counter + 1,
+			Change: &statev1.GossipEvent_Vivaldi{
+				Vivaldi: &statev1.VivaldiCoordinateChange{X: float64(ordinal), Height: 0.1},
+			},
+		},
+	}
+	counter += 2
+	if observedExternalIP != "" {
+		events = append(events, &statev1.GossipEvent{
+			PeerId:  peerID.String(),
+			Counter: counter,
+			Change: &statev1.GossipEvent_ObservedExternalIp{
+				ObservedExternalIp: &statev1.ObservedExternalIPChange{Ip: observedExternalIP},
+			},
+		})
+		counter++
+	}
+	if publiclyAccessible {
+		events = append(events, &statev1.GossipEvent{
+			PeerId:  peerID.String(),
+			Counter: counter,
+			Change: &statev1.GossipEvent_PubliclyAccessible{
+				PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
+			},
+		})
+	}
+	s.ApplyEvents(events)
 }
 
 func setPubliclyAccessible(s *store.Store, peerID types.PeerKey, counter uint64) {
@@ -359,6 +427,7 @@ func findNonTargetPublicPeer(t *testing.T, n *Node) types.PeerKey {
 			Key:                kp.PeerID,
 			Coord:              kp.VivaldiCoord,
 			IPs:                kp.IPs,
+			ObservedExternalIP: kp.ObservedExternalIP,
 			PubliclyAccessible: kp.PubliclyAccessible,
 		})
 	}
@@ -393,6 +462,7 @@ func findNonTargetPeer(t *testing.T, n *Node) types.PeerKey {
 			Key:                kp.PeerID,
 			Coord:              kp.VivaldiCoord,
 			IPs:                kp.IPs,
+			ObservedExternalIP: kp.ObservedExternalIP,
 			PubliclyAccessible: kp.PubliclyAccessible,
 		})
 	}
