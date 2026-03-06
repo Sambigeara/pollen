@@ -50,6 +50,11 @@ ansible-playbook init-cluster.yml -i inventories/vivaldi.py
 
 # Join remaining nodes only
 ansible-playbook join-cluster.yml -i inventories/vivaldi.py
+
+# Purge all state and start fresh
+ansible-playbook purge.yml -i inventories/vivaldi.py
+ansible-playbook init-cluster.yml -i inventories/vivaldi.py
+ansible-playbook join-cluster.yml -i inventories/vivaldi.py
 ```
 
 ## Prerequisites
