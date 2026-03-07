@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"slices"
 	"strconv"
@@ -150,6 +151,18 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		})
 	}
 
+	connections := s.node.tun.ListConnections()
+	tunnelCounts := make(map[types.PeerKey]uint32, len(connections))
+	for _, c := range connections {
+		tunnelCounts[c.PeerID]++
+	}
+
+	if rec, ok := s.node.store.Get(localID); ok {
+		out.Self.CpuPercent = rec.CPUPercent
+		out.Self.MemPercent = rec.MemPercent
+	}
+	out.Self.TunnelCount = uint32(len(connections))
+
 	// Determine which peers have direct QUIC sessions (ONLINE).
 	// Store the address so we don't call GetActivePeerAddress again per peer
 	// (avoids a TOCTOU race where a session appears/disappears between calls).
@@ -226,12 +239,26 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			}).String()
 		}
 
-		out.Nodes = append(out.Nodes, &controlv1.NodeSummary{
+		ns := &controlv1.NodeSummary{
 			Node:               &controlv1.NodeRef{PeerId: key.Bytes()},
 			Status:             status,
 			Addr:               addrStr,
 			PubliclyAccessible: node.PubliclyAccessible,
-		})
+			TunnelCount:        tunnelCounts[key],
+			CpuPercent:         node.CPUPercent,
+			MemPercent:         node.MemPercent,
+		}
+
+		if isDirect {
+			if conn, ok := s.node.mesh.GetConn(key); ok {
+				rtt := conn.ConnectionStats().SmoothedRTT
+				if rtt > 0 {
+					ns.LatencyMs = float64(rtt.Microseconds()) / 1000 //nolint:mnd
+				}
+			}
+		}
+
+		out.Nodes = append(out.Nodes, ns)
 	}
 
 	for key, node := range nodes {
@@ -248,7 +275,6 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		}
 	}
 
-	connections := s.node.tun.ListConnections()
 	for _, c := range connections {
 		name := ""
 		if node, ok := nodes[c.PeerID]; ok {
@@ -375,6 +401,53 @@ func (s *NodeService) RevokePeer(_ context.Context, req *controlv1.RevokePeerReq
 
 	return &controlv1.RevokePeerResponse{}, nil
 }
+
+func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) (*controlv1.GetMetricsResponse, error) {
+	counts := s.node.peers.StateCounts()
+
+	nm := s.node.nodeMetrics
+	gossipApplied := uint64(s.node.store.GossipMetrics().EventsApplied.Value()) //nolint:gosec
+	gossipStale := uint64(s.node.store.GossipMetrics().EventsStale.Value())     //nolint:gosec
+
+	certExpiry := nm.CertExpirySeconds.Value()
+	certRenewals := uint64(nm.CertRenewals.Value())             //nolint:gosec
+	certRenewalsFailed := uint64(nm.CertRenewalsFailed.Value()) //nolint:gosec
+	punchAttempts := uint64(nm.PunchAttempts.Value())           //nolint:gosec
+	punchFailures := uint64(nm.PunchFailures.Value())           //nolint:gosec
+
+	health := controlv1.HealthStatus_HEALTH_STATUS_HEALTHY
+	switch {
+	case certExpiry <= 0 && s.creds != nil && s.creds.Cert != nil:
+		health = controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY
+	case counts.Connected == 0:
+		health = controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY
+	case math.Float64frombits(s.node.localCoordErr.Load()) > vivaldiDegradedThreshold:
+		health = controlv1.HealthStatus_HEALTH_STATUS_DEGRADED
+	case gossipApplied > 0 && float64(gossipStale)/float64(gossipApplied) > staleRatioDegradedThreshold:
+		health = controlv1.HealthStatus_HEALTH_STATUS_DEGRADED
+	}
+
+	return &controlv1.GetMetricsResponse{
+		PeersDiscovered:    counts.Discovered,
+		PeersConnecting:    counts.Connecting,
+		PeersConnected:     counts.Connected,
+		PeersUnreachable:   counts.Unreachable,
+		EventsApplied:      gossipApplied,
+		EventsStale:        gossipStale,
+		VivaldiError:       math.Float64frombits(s.node.localCoordErr.Load()),
+		CertExpirySeconds:  certExpiry,
+		CertRenewals:       certRenewals,
+		CertRenewalsFailed: certRenewalsFailed,
+		PunchAttempts:      punchAttempts,
+		PunchFailures:      punchFailures,
+		Health:             health,
+	}, nil
+}
+
+const (
+	vivaldiDegradedThreshold    = 0.6
+	staleRatioDegradedThreshold = 0.5
+)
 
 func comparePeerKey(a, b types.PeerKey) int {
 	return bytes.Compare(a[:], b[:])

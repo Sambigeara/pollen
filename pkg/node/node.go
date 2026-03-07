@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -23,9 +24,11 @@ import (
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
+	"github.com/sambigeara/pollen/pkg/observability/traces"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/store"
+	"github.com/sambigeara/pollen/pkg/sysinfo"
 	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/tunnel"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -75,12 +78,13 @@ const (
 	vivaldiEnterHMACThreshold = 0.6
 	vivaldiExitHMACThreshold  = 0.35
 
-	loopIntervalJitter = 0.1
-	peerEventBufSize   = 64
-	gossipEventBufSize = 64
-	punchChBufSize     = 32
-	punchWorkers       = 3 // max concurrent punches; bounds socket usage to N×256
-	ipRefreshInterval  = 5 * time.Minute
+	loopIntervalJitter        = 0.1
+	peerEventBufSize          = 64
+	gossipEventBufSize        = 64
+	punchChBufSize            = 32
+	punchWorkers              = 3 // max concurrent punches; bounds socket usage to N×256
+	ipRefreshInterval         = 5 * time.Minute
+	resourceTelemetryInterval = 10 * time.Second
 )
 
 type BootstrapPeer struct {
@@ -112,26 +116,27 @@ type punchRequest struct {
 type Node struct {
 	lastExpirySweep time.Time
 	mesh            mesh.Mesh
-	gossipEvents    chan []*statev1.GossipEvent
-	punchCh         chan punchRequest
+	lastEagerSync   map[types.PeerKey]time.Time
+	tun             *tunnel.Manager
 	nonTargetStreak map[types.PeerKey]int
 	creds           *auth.NodeCredentials
 	localPeerEvents chan peer.Input
 	peers           *peer.Store
 	conf            *Config
-	log             *zap.SugaredLogger
-	tun             *tunnel.Manager
-	natDetector     *nat.Detector
-	lastEagerSync   map[types.PeerKey]time.Time
-	store           *store.Store
 	ready           chan struct{}
+	store           *store.Store
+	natDetector     *nat.Detector
+	punchCh         chan punchRequest
+	gossipEvents    chan []*statev1.GossipEvent
+	log             *zap.SugaredLogger
 	nodeMetrics     *metrics.NodeMetrics
 	topoMetrics     *metrics.TopologyMetrics
 	metricsCol      *metrics.Collector
+	tracer          *traces.Tracer
 	pollenDir       string
 	signPriv        ed25519.PrivateKey
 	localCoord      topology.Coord
-	localCoordErr   float64
+	localCoordErr   atomic.Uint64 // float64 via Float64bits; accessed from event loop + gRPC
 	renewalFailed   atomic.Bool
 	useHMACNearest  bool
 }
@@ -151,9 +156,11 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 	stateStore.SetLocalNetwork(ips, uint32(conf.Port))
 
 	var col *metrics.Collector
+	var tracer *traces.Tracer
 	if conf.MetricsEnabled {
 		sink := metrics.NewLogSink(log.Named("metrics"))
 		col = metrics.New(sink, metrics.Config{})
+		tracer = traces.NewTracer(traces.NewLogSink(log.Named("traces")))
 	}
 
 	meshMetrics := metrics.NewMeshMetrics(col)
@@ -166,6 +173,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		return nil, err
 	}
 
+	m.SetTracer(tracer)
 	stateStore.SetGossipMetrics(gossipMetrics)
 	peerStore.SetPeerMetrics(peerMetrics)
 
@@ -192,12 +200,13 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		lastEagerSync:   make(map[types.PeerKey]time.Time),
 		nonTargetStreak: make(map[types.PeerKey]int),
 		natDetector:     nat.NewDetector(),
-		localCoordErr:   1.0,
 		useHMACNearest:  true,
 		metricsCol:      col,
 		topoMetrics:     metrics.NewTopologyMetrics(col),
 		nodeMetrics:     metrics.NewNodeMetrics(col),
+		tracer:          tracer,
 	}
+	n.localCoordErr.Store(math.Float64bits(1.0))
 
 	stateStore.OnRevocation(func(subject types.PeerKey) {
 		n.tun.DisconnectPeer(subject)
@@ -271,6 +280,9 @@ func (n *Node) Start(ctx context.Context) error {
 	certCheckTicker := time.NewTicker(certCheckInterval)
 	defer certCheckTicker.Stop()
 
+	resourceTelemetryTicker := time.NewTicker(resourceTelemetryInterval)
+	defer resourceTelemetryTicker.Stop()
+
 	n.tick()
 
 	for {
@@ -287,6 +299,8 @@ func (n *Node) Start(ctx context.Context) error {
 			if n.checkCertExpiry() {
 				return ErrCertExpired
 			}
+		case <-resourceTelemetryTicker.C:
+			n.sampleResourceTelemetry()
 		case events := <-n.gossipEvents:
 			n.broadcastEvents(ctx, events)
 		case in := <-n.mesh.Events():
@@ -348,17 +362,29 @@ func (n *Node) recvLoop(ctx context.Context) {
 func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *meshv1.Envelope) {
 	switch body := env.GetBody().(type) {
 	case *meshv1.Envelope_Clock:
+		span := n.tracer.StartFromRemote("gossip.handleClock", env.GetTraceId())
+		span.SetAttr("peer", from.Short())
 		events := n.store.MissingFor(body.Clock)
 		n.sendGossipBatchesToPeer(ctx, from, batchEvents(events, MaxDatagramPayload), true)
+		span.End()
 	case *meshv1.Envelope_Events:
+		span := n.tracer.StartFromRemote("gossip.applyEvents", env.GetTraceId())
+		span.SetAttr("peer", from.Short())
 		result := n.store.ApplyEvents(body.Events.GetEvents())
 		if len(result.Rebroadcast) > 0 && !body.Events.GetIsResponse() {
 			n.queueGossipEvents(result.Rebroadcast)
 		}
+		span.End()
 	case *meshv1.Envelope_PunchCoordRequest:
+		span := n.tracer.StartFromRemote("punch.coordRequest", env.GetTraceId())
+		span.SetAttr("peer", from.Short())
 		n.handlePunchCoordRequest(ctx, from, body.PunchCoordRequest)
+		span.End()
 	case *meshv1.Envelope_PunchCoordTrigger:
+		span := n.tracer.StartFromRemote("punch.coordTrigger", env.GetTraceId())
+		span.SetAttr("peer", from.Short())
 		n.handlePunchCoordTrigger(body.PunchCoordTrigger)
+		span.End()
 	case *meshv1.Envelope_ObservedAddress:
 		n.handleObservedAddress(from, body.ObservedAddress)
 	case *meshv1.Envelope_CertRenewalRequest:
@@ -520,6 +546,11 @@ func (n *Node) gossip(ctx context.Context) {
 	}
 }
 
+func (n *Node) sampleResourceTelemetry() {
+	cpuPct, memPct, memTotal := sysinfo.Sample()
+	n.queueGossipEvents(n.store.SetLocalResourceTelemetry(cpuPct, memPct, memTotal))
+}
+
 func (n *Node) refreshIPs() {
 	newIPs, err := mesh.GetAdvertisableAddrs(mesh.DefaultExclusions)
 	if err != nil {
@@ -577,10 +608,13 @@ func (n *Node) updateVivaldiCoords() {
 		if !ok || peerCoord == nil {
 			continue
 		}
-		n.localCoord, n.localCoordErr = topology.Update(
-			n.localCoord, n.localCoordErr,
+		coordErr := math.Float64frombits(n.localCoordErr.Load())
+		var newErr float64
+		n.localCoord, newErr = topology.Update(
+			n.localCoord, coordErr,
 			topology.Sample{RTT: rtt, PeerCoord: *peerCoord},
 		)
+		n.localCoordErr.Store(math.Float64bits(newErr))
 		updated = true
 	}
 	if updated {
@@ -616,12 +650,13 @@ func (n *Node) syncPeersFromState() {
 		}
 	}
 
+	coordErr := math.Float64frombits(n.localCoordErr.Load())
 	if n.useHMACNearest {
-		if n.localCoordErr < vivaldiExitHMACThreshold {
+		if coordErr < vivaldiExitHMACThreshold {
 			n.useHMACNearest = false
 		}
 	} else {
-		if n.localCoordErr > vivaldiEnterHMACThreshold {
+		if coordErr > vivaldiEnterHMACThreshold {
 			n.useHMACNearest = true
 		}
 	}
@@ -644,7 +679,7 @@ func (n *Node) syncPeersFromState() {
 	params.UseHMACNearest = n.useHMACNearest
 	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
 
-	n.topoMetrics.VivaldiError.Set(n.localCoordErr)
+	n.topoMetrics.VivaldiError.Set(coordErr)
 	if n.useHMACNearest {
 		n.topoMetrics.HMACNearestEnabled.Set(1.0)
 	} else {

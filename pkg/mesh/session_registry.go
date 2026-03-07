@@ -6,19 +6,22 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
 type sessionRegistry struct {
-	peers   map[types.PeerKey]*peerSession
-	waiters map[types.PeerKey][]chan struct{}
-	mu      sync.RWMutex
+	peers          map[types.PeerKey]*peerSession
+	waiters        map[types.PeerKey][]chan struct{}
+	sessionsActive *metrics.Gauge
+	mu             sync.RWMutex
 }
 
-func newSessionRegistry() *sessionRegistry {
+func newSessionRegistry(sessionsActive *metrics.Gauge) *sessionRegistry {
 	return &sessionRegistry{
-		peers:   make(map[types.PeerKey]*peerSession),
-		waiters: make(map[types.PeerKey][]chan struct{}),
+		peers:          make(map[types.PeerKey]*peerSession),
+		waiters:        make(map[types.PeerKey][]chan struct{}),
+		sessionsActive: sessionsActive,
 	}
 }
 
@@ -90,6 +93,7 @@ func (r *sessionRegistry) add(peerKey types.PeerKey, next *peerSession, shouldRe
 	}
 
 	r.peers[peerKey] = next
+	r.sessionsActive.Set(float64(len(r.peers)))
 	waiters := r.waiters[peerKey]
 	delete(r.waiters, peerKey)
 	r.mu.Unlock()
@@ -114,6 +118,7 @@ func (r *sessionRegistry) removeIfCurrent(peerKey types.PeerKey, current *peerSe
 	}
 
 	delete(r.peers, peerKey)
+	r.sessionsActive.Set(float64(len(r.peers)))
 	return true
 }
 
@@ -127,6 +132,7 @@ func (r *sessionRegistry) drainPeers() map[types.PeerKey]*peerSession {
 	r.mu.Lock()
 	peers := r.peers
 	r.peers = make(map[types.PeerKey]*peerSession)
+	r.sessionsActive.Set(0)
 	r.mu.Unlock()
 
 	return peers

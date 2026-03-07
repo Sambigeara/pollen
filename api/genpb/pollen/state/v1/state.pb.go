@@ -591,6 +591,66 @@ func (x *NatTypeChange) GetNatType() uint32 {
 	return 0
 }
 
+type ResourceTelemetryChange struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CpuPercent    uint32                 `protobuf:"varint,1,opt,name=cpu_percent,json=cpuPercent,proto3" json:"cpu_percent,omitempty"`
+	MemPercent    uint32                 `protobuf:"varint,2,opt,name=mem_percent,json=memPercent,proto3" json:"mem_percent,omitempty"`
+	MemTotalBytes uint64                 `protobuf:"varint,3,opt,name=mem_total_bytes,json=memTotalBytes,proto3" json:"mem_total_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResourceTelemetryChange) Reset() {
+	*x = ResourceTelemetryChange{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResourceTelemetryChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResourceTelemetryChange) ProtoMessage() {}
+
+func (x *ResourceTelemetryChange) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResourceTelemetryChange.ProtoReflect.Descriptor instead.
+func (*ResourceTelemetryChange) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ResourceTelemetryChange) GetCpuPercent() uint32 {
+	if x != nil {
+		return x.CpuPercent
+	}
+	return 0
+}
+
+func (x *ResourceTelemetryChange) GetMemPercent() uint32 {
+	if x != nil {
+		return x.MemPercent
+	}
+	return 0
+}
+
+func (x *ResourceTelemetryChange) GetMemTotalBytes() uint64 {
+	if x != nil {
+		return x.MemTotalBytes
+	}
+	return 0
+}
+
 type GossipEvent struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	PeerId  string                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
@@ -607,6 +667,7 @@ type GossipEvent struct {
 	//	*GossipEvent_PubliclyAccessible
 	//	*GossipEvent_Vivaldi
 	//	*GossipEvent_NatType
+	//	*GossipEvent_ResourceTelemetry
 	Change        isGossipEvent_Change `protobuf_oneof:"change"`
 	Deleted       bool                 `protobuf:"varint,8,opt,name=deleted,proto3" json:"deleted,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -615,7 +676,7 @@ type GossipEvent struct {
 
 func (x *GossipEvent) Reset() {
 	*x = GossipEvent{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[12]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -627,7 +688,7 @@ func (x *GossipEvent) String() string {
 func (*GossipEvent) ProtoMessage() {}
 
 func (x *GossipEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[12]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -640,7 +701,7 @@ func (x *GossipEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GossipEvent.ProtoReflect.Descriptor instead.
 func (*GossipEvent) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{12}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *GossipEvent) GetPeerId() string {
@@ -754,6 +815,15 @@ func (x *GossipEvent) GetNatType() *NatTypeChange {
 	return nil
 }
 
+func (x *GossipEvent) GetResourceTelemetry() *ResourceTelemetryChange {
+	if x != nil {
+		if x, ok := x.Change.(*GossipEvent_ResourceTelemetry); ok {
+			return x.ResourceTelemetry
+		}
+	}
+	return nil
+}
+
 func (x *GossipEvent) GetDeleted() bool {
 	if x != nil {
 		return x.Deleted
@@ -805,6 +875,10 @@ type GossipEvent_NatType struct {
 	NatType *NatTypeChange `protobuf:"bytes,12,opt,name=nat_type,json=natType,proto3,oneof"`
 }
 
+type GossipEvent_ResourceTelemetry struct {
+	ResourceTelemetry *ResourceTelemetryChange `protobuf:"bytes,14,opt,name=resource_telemetry,json=resourceTelemetry,proto3,oneof"`
+}
+
 func (*GossipEvent_Network) isGossipEvent_Change() {}
 
 func (*GossipEvent_ExternalPort) isGossipEvent_Change() {}
@@ -825,6 +899,8 @@ func (*GossipEvent_Vivaldi) isGossipEvent_Change() {}
 
 func (*GossipEvent_NatType) isGossipEvent_Change() {}
 
+func (*GossipEvent_ResourceTelemetry) isGossipEvent_Change() {}
+
 type GossipEventBatch struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Events        []*GossipEvent         `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
@@ -835,7 +911,7 @@ type GossipEventBatch struct {
 
 func (x *GossipEventBatch) Reset() {
 	*x = GossipEventBatch{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[13]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -847,7 +923,7 @@ func (x *GossipEventBatch) String() string {
 func (*GossipEventBatch) ProtoMessage() {}
 
 func (x *GossipEventBatch) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[13]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -860,7 +936,7 @@ func (x *GossipEventBatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GossipEventBatch.ProtoReflect.Descriptor instead.
 func (*GossipEventBatch) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{13}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *GossipEventBatch) GetEvents() []*GossipEvent {
@@ -916,7 +992,13 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"revocation\x18\x01 \x01(\v2%.pollen.admission.v1.SignedRevocationB\x06\xbaH\x03\xc8\x01\x01R\n" +
 	"revocation\"*\n" +
 	"\rNatTypeChange\x12\x19\n" +
-	"\bnat_type\x18\x01 \x01(\rR\anatType\"\xdb\x06\n" +
+	"\bnat_type\x18\x01 \x01(\rR\anatType\"\x83\x01\n" +
+	"\x17ResourceTelemetryChange\x12\x1f\n" +
+	"\vcpu_percent\x18\x01 \x01(\rR\n" +
+	"cpuPercent\x12\x1f\n" +
+	"\vmem_percent\x18\x02 \x01(\rR\n" +
+	"memPercent\x12&\n" +
+	"\x0fmem_total_bytes\x18\x03 \x01(\x04R\rmemTotalBytes\"\xb6\a\n" +
 	"\vGossipEvent\x124\n" +
 	"\apeer_id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x06peerId\x12\x18\n" +
 	"\acounter\x18\x02 \x01(\x04R\acounter\x12:\n" +
@@ -932,7 +1014,8 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x13publicly_accessible\x18\n" +
 	" \x01(\v2).pollen.state.v1.PubliclyAccessibleChangeH\x00R\x12publiclyAccessible\x12D\n" +
 	"\avivaldi\x18\v \x01(\v2(.pollen.state.v1.VivaldiCoordinateChangeH\x00R\avivaldi\x12;\n" +
-	"\bnat_type\x18\f \x01(\v2\x1e.pollen.state.v1.NatTypeChangeH\x00R\anatType\x12\x18\n" +
+	"\bnat_type\x18\f \x01(\v2\x1e.pollen.state.v1.NatTypeChangeH\x00R\anatType\x12Y\n" +
+	"\x12resource_telemetry\x18\x0e \x01(\v2(.pollen.state.v1.ResourceTelemetryChangeH\x00R\x11resourceTelemetry\x12\x18\n" +
 	"\adeleted\x18\b \x01(\bR\adeletedB\b\n" +
 	"\x06change\"i\n" +
 	"\x10GossipEventBatch\x124\n" +
@@ -952,7 +1035,7 @@ func file_pollen_state_v1_state_proto_rawDescGZIP() []byte {
 	return file_pollen_state_v1_state_proto_rawDescData
 }
 
-var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_pollen_state_v1_state_proto_goTypes = []any{
 	(*Service)(nil),                  // 0: pollen.state.v1.Service
 	(*GossipVectorClock)(nil),        // 1: pollen.state.v1.GossipVectorClock
@@ -966,14 +1049,15 @@ var file_pollen_state_v1_state_proto_goTypes = []any{
 	(*IdentityChange)(nil),           // 9: pollen.state.v1.IdentityChange
 	(*RevocationChange)(nil),         // 10: pollen.state.v1.RevocationChange
 	(*NatTypeChange)(nil),            // 11: pollen.state.v1.NatTypeChange
-	(*GossipEvent)(nil),              // 12: pollen.state.v1.GossipEvent
-	(*GossipEventBatch)(nil),         // 13: pollen.state.v1.GossipEventBatch
-	nil,                              // 14: pollen.state.v1.GossipVectorClock.CountersEntry
-	(*v1.SignedRevocation)(nil),      // 15: pollen.admission.v1.SignedRevocation
+	(*ResourceTelemetryChange)(nil),  // 12: pollen.state.v1.ResourceTelemetryChange
+	(*GossipEvent)(nil),              // 13: pollen.state.v1.GossipEvent
+	(*GossipEventBatch)(nil),         // 14: pollen.state.v1.GossipEventBatch
+	nil,                              // 15: pollen.state.v1.GossipVectorClock.CountersEntry
+	(*v1.SignedRevocation)(nil),      // 16: pollen.admission.v1.SignedRevocation
 }
 var file_pollen_state_v1_state_proto_depIdxs = []int32{
-	14, // 0: pollen.state.v1.GossipVectorClock.counters:type_name -> pollen.state.v1.GossipVectorClock.CountersEntry
-	15, // 1: pollen.state.v1.RevocationChange.revocation:type_name -> pollen.admission.v1.SignedRevocation
+	15, // 0: pollen.state.v1.GossipVectorClock.counters:type_name -> pollen.state.v1.GossipVectorClock.CountersEntry
+	16, // 1: pollen.state.v1.RevocationChange.revocation:type_name -> pollen.admission.v1.SignedRevocation
 	4,  // 2: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
 	5,  // 3: pollen.state.v1.GossipEvent.external_port:type_name -> pollen.state.v1.ExternalPortChange
 	6,  // 4: pollen.state.v1.GossipEvent.observed_external_ip:type_name -> pollen.state.v1.ObservedExternalIPChange
@@ -984,12 +1068,13 @@ var file_pollen_state_v1_state_proto_depIdxs = []int32{
 	7,  // 9: pollen.state.v1.GossipEvent.publicly_accessible:type_name -> pollen.state.v1.PubliclyAccessibleChange
 	8,  // 10: pollen.state.v1.GossipEvent.vivaldi:type_name -> pollen.state.v1.VivaldiCoordinateChange
 	11, // 11: pollen.state.v1.GossipEvent.nat_type:type_name -> pollen.state.v1.NatTypeChange
-	12, // 12: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
-	13, // [13:13] is the sub-list for method output_type
-	13, // [13:13] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	12, // 12: pollen.state.v1.GossipEvent.resource_telemetry:type_name -> pollen.state.v1.ResourceTelemetryChange
+	13, // 13: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_state_proto_init() }
@@ -997,7 +1082,7 @@ func file_pollen_state_v1_state_proto_init() {
 	if File_pollen_state_v1_state_proto != nil {
 		return
 	}
-	file_pollen_state_v1_state_proto_msgTypes[12].OneofWrappers = []any{
+	file_pollen_state_v1_state_proto_msgTypes[13].OneofWrappers = []any{
 		(*GossipEvent_Network)(nil),
 		(*GossipEvent_ExternalPort)(nil),
 		(*GossipEvent_ObservedExternalIp)(nil),
@@ -1008,6 +1093,7 @@ func file_pollen_state_v1_state_proto_init() {
 		(*GossipEvent_PubliclyAccessible)(nil),
 		(*GossipEvent_Vivaldi)(nil),
 		(*GossipEvent_NatType)(nil),
+		(*GossipEvent_ResourceTelemetry)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1015,7 +1101,7 @@ func file_pollen_state_v1_state_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_state_v1_state_proto_rawDesc), len(file_pollen_state_v1_state_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -5,10 +5,12 @@
 package controlv1
 
 import (
+	binary "encoding/binary"
 	fmt "fmt"
 	protohelpers "github.com/planetscale/vtprotobuf/protohelpers"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	io "io"
+	math "math"
 )
 
 const (
@@ -87,6 +89,27 @@ func (m *NodeSummary) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.MemPercent != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.MemPercent))
+		i--
+		dAtA[i] = 0x40
+	}
+	if m.CpuPercent != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.CpuPercent))
+		i--
+		dAtA[i] = 0x38
+	}
+	if m.LatencyMs != 0 {
+		i -= 8
+		binary.LittleEndian.PutUint64(dAtA[i:], uint64(math.Float64bits(float64(m.LatencyMs))))
+		i--
+		dAtA[i] = 0x31
+	}
+	if m.TunnelCount != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.TunnelCount))
+		i--
+		dAtA[i] = 0x28
 	}
 	if m.PubliclyAccessible {
 		i--
@@ -1102,6 +1125,139 @@ func (m *RevokePeerResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
+func (m *GetMetricsRequest) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *GetMetricsRequest) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *GetMetricsRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *GetMetricsResponse) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *GetMetricsResponse) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *GetMetricsResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.Health != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Health))
+		i--
+		dAtA[i] = 0x68
+	}
+	if m.PunchFailures != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.PunchFailures))
+		i--
+		dAtA[i] = 0x60
+	}
+	if m.PunchAttempts != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.PunchAttempts))
+		i--
+		dAtA[i] = 0x58
+	}
+	if m.CertRenewalsFailed != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.CertRenewalsFailed))
+		i--
+		dAtA[i] = 0x50
+	}
+	if m.CertRenewals != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.CertRenewals))
+		i--
+		dAtA[i] = 0x48
+	}
+	if m.CertExpirySeconds != 0 {
+		i -= 8
+		binary.LittleEndian.PutUint64(dAtA[i:], uint64(math.Float64bits(float64(m.CertExpirySeconds))))
+		i--
+		dAtA[i] = 0x41
+	}
+	if m.VivaldiError != 0 {
+		i -= 8
+		binary.LittleEndian.PutUint64(dAtA[i:], uint64(math.Float64bits(float64(m.VivaldiError))))
+		i--
+		dAtA[i] = 0x39
+	}
+	if m.EventsStale != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.EventsStale))
+		i--
+		dAtA[i] = 0x30
+	}
+	if m.EventsApplied != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.EventsApplied))
+		i--
+		dAtA[i] = 0x28
+	}
+	if m.PeersUnreachable != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.PeersUnreachable))
+		i--
+		dAtA[i] = 0x20
+	}
+	if m.PeersConnected != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.PeersConnected))
+		i--
+		dAtA[i] = 0x18
+	}
+	if m.PeersConnecting != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.PeersConnecting))
+		i--
+		dAtA[i] = 0x10
+	}
+	if m.PeersDiscovered != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.PeersDiscovered))
+		i--
+		dAtA[i] = 0x8
+	}
+	return len(dAtA) - i, nil
+}
+
 func (m *NodeRef) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -1135,6 +1291,18 @@ func (m *NodeSummary) SizeVT() (n int) {
 	}
 	if m.PubliclyAccessible {
 		n += 2
+	}
+	if m.TunnelCount != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.TunnelCount))
+	}
+	if m.LatencyMs != 0 {
+		n += 9
+	}
+	if m.CpuPercent != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.CpuPercent))
+	}
+	if m.MemPercent != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.MemPercent))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -1490,6 +1658,65 @@ func (m *RevokePeerResponse) SizeVT() (n int) {
 	return n
 }
 
+func (m *GetMetricsRequest) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	n += len(m.unknownFields)
+	return n
+}
+
+func (m *GetMetricsResponse) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.PeersDiscovered != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.PeersDiscovered))
+	}
+	if m.PeersConnecting != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.PeersConnecting))
+	}
+	if m.PeersConnected != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.PeersConnected))
+	}
+	if m.PeersUnreachable != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.PeersUnreachable))
+	}
+	if m.EventsApplied != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.EventsApplied))
+	}
+	if m.EventsStale != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.EventsStale))
+	}
+	if m.VivaldiError != 0 {
+		n += 9
+	}
+	if m.CertExpirySeconds != 0 {
+		n += 9
+	}
+	if m.CertRenewals != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.CertRenewals))
+	}
+	if m.CertRenewalsFailed != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.CertRenewalsFailed))
+	}
+	if m.PunchAttempts != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.PunchAttempts))
+	}
+	if m.PunchFailures != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.PunchFailures))
+	}
+	if m.Health != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.Health))
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
 func (m *NodeRef) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -1711,6 +1938,74 @@ func (m *NodeSummary) UnmarshalVT(dAtA []byte) error {
 				}
 			}
 			m.PubliclyAccessible = bool(v != 0)
+		case 5:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field TunnelCount", wireType)
+			}
+			m.TunnelCount = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.TunnelCount |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 6:
+			if wireType != 1 {
+				return fmt.Errorf("proto: wrong wireType = %d for field LatencyMs", wireType)
+			}
+			var v uint64
+			if (iNdEx + 8) > l {
+				return io.ErrUnexpectedEOF
+			}
+			v = uint64(binary.LittleEndian.Uint64(dAtA[iNdEx:]))
+			iNdEx += 8
+			m.LatencyMs = float64(math.Float64frombits(v))
+		case 7:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CpuPercent", wireType)
+			}
+			m.CpuPercent = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.CpuPercent |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 8:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field MemPercent", wireType)
+			}
+			m.MemPercent = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.MemPercent |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -3750,6 +4045,339 @@ func (m *RevokePeerResponse) UnmarshalVT(dAtA []byte) error {
 			return fmt.Errorf("proto: RevokePeerResponse: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *GetMetricsRequest) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: GetMetricsRequest: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: GetMetricsRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *GetMetricsResponse) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: GetMetricsResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: GetMetricsResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field PeersDiscovered", wireType)
+			}
+			m.PeersDiscovered = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.PeersDiscovered |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 2:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field PeersConnecting", wireType)
+			}
+			m.PeersConnecting = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.PeersConnecting |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 3:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field PeersConnected", wireType)
+			}
+			m.PeersConnected = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.PeersConnected |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 4:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field PeersUnreachable", wireType)
+			}
+			m.PeersUnreachable = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.PeersUnreachable |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 5:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field EventsApplied", wireType)
+			}
+			m.EventsApplied = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.EventsApplied |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 6:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field EventsStale", wireType)
+			}
+			m.EventsStale = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.EventsStale |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 7:
+			if wireType != 1 {
+				return fmt.Errorf("proto: wrong wireType = %d for field VivaldiError", wireType)
+			}
+			var v uint64
+			if (iNdEx + 8) > l {
+				return io.ErrUnexpectedEOF
+			}
+			v = uint64(binary.LittleEndian.Uint64(dAtA[iNdEx:]))
+			iNdEx += 8
+			m.VivaldiError = float64(math.Float64frombits(v))
+		case 8:
+			if wireType != 1 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CertExpirySeconds", wireType)
+			}
+			var v uint64
+			if (iNdEx + 8) > l {
+				return io.ErrUnexpectedEOF
+			}
+			v = uint64(binary.LittleEndian.Uint64(dAtA[iNdEx:]))
+			iNdEx += 8
+			m.CertExpirySeconds = float64(math.Float64frombits(v))
+		case 9:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CertRenewals", wireType)
+			}
+			m.CertRenewals = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.CertRenewals |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 10:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CertRenewalsFailed", wireType)
+			}
+			m.CertRenewalsFailed = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.CertRenewalsFailed |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 11:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field PunchAttempts", wireType)
+			}
+			m.PunchAttempts = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.PunchAttempts |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 12:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field PunchFailures", wireType)
+			}
+			m.PunchFailures = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.PunchFailures |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 13:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Health", wireType)
+			}
+			m.Health = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.Health |= HealthStatus(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

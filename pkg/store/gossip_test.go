@@ -77,7 +77,7 @@ func TestEagerSyncClock(t *testing.T) {
 	clock = s.EagerSyncClock()
 	counters := clock.GetCounters()
 	require.Len(t, counters, 2)
-	require.Equal(t, uint64(4), counters[s.LocalID.String()])
+	require.Equal(t, uint64(5), counters[s.LocalID.String()])
 	peerPK, _ := peerKey(2)
 	require.Equal(t, uint64(5), counters[peerPK.String()])
 }
@@ -91,7 +91,7 @@ func TestSetLocalNetworkReturnsEvent(t *testing.T) {
 	require.Len(t, events, 1)
 
 	ev := events[0]
-	require.Equal(t, uint64(5), ev.GetCounter())
+	require.Equal(t, uint64(6), ev.GetCounter())
 	network := ev.GetNetwork()
 	require.NotNil(t, network)
 	require.Equal(t, []string{"10.0.0.1"}, network.GetIps())
@@ -383,8 +383,8 @@ func TestApplyEventSelfStateConflict(t *testing.T) {
 	}
 
 	rec := s.nodes[localID]
-	// Adopted 10, then bumped once per attribute: net(11) + id(12) + pa(13) + nat(14) + observed_external_ip(15).
-	require.Equal(t, uint64(15), rec.maxCounter)
+	// Adopted 10, then bumped once per attribute: net(11) + id(12) + pa(13) + nat(14) + observed_external_ip(15) + resource_telemetry(16).
+	require.Equal(t, uint64(16), rec.maxCounter)
 }
 
 func TestApplyEventSelfStateNoConflict(t *testing.T) {
@@ -423,7 +423,7 @@ func TestMissingForReturnsEvents(t *testing.T) {
 		},
 	})
 
-	require.Len(t, events, 6)
+	require.Len(t, events, 7)
 }
 
 func TestMissingForRespectsClock(t *testing.T) {
@@ -434,10 +434,10 @@ func TestMissingForRespectsClock(t *testing.T) {
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
 
-	// Remote has counter=4 — should only get events with counter > 4.
+	// Remote has counter=5 — should only get events with counter > 5.
 	events := s.MissingFor(&statev1.GossipVectorClock{
 		Counters: map[string]uint64{
-			s.LocalID.String(): 4,
+			s.LocalID.String(): 5,
 		},
 	})
 
@@ -455,7 +455,7 @@ func TestMissingForReturnsNilForUpToDate(t *testing.T) {
 
 	events := s.MissingFor(&statev1.GossipVectorClock{
 		Counters: map[string]uint64{
-			s.LocalID.String(): 5,
+			s.LocalID.String(): 6,
 		},
 	})
 
@@ -471,7 +471,7 @@ func TestClockUsesMaxCounter(t *testing.T) {
 	s.SetExternalPort(45000)
 
 	clock := s.Clock()
-	require.Equal(t, uint64(6), clock.GetCounters()[s.LocalID.String()])
+	require.Equal(t, uint64(7), clock.GetCounters()[s.LocalID.String()])
 }
 
 func TestUpsertLocalServiceReturnsEvent(t *testing.T) {

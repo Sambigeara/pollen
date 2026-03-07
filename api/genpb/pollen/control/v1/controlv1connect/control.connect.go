@@ -41,6 +41,9 @@ const (
 	// ControlServiceGetStatusProcedure is the fully-qualified name of the ControlService's GetStatus
 	// RPC.
 	ControlServiceGetStatusProcedure = "/pollen.control.v1.ControlService/GetStatus"
+	// ControlServiceGetMetricsProcedure is the fully-qualified name of the ControlService's GetMetrics
+	// RPC.
+	ControlServiceGetMetricsProcedure = "/pollen.control.v1.ControlService/GetMetrics"
 	// ControlServiceRegisterServiceProcedure is the fully-qualified name of the ControlService's
 	// RegisterService RPC.
 	ControlServiceRegisterServiceProcedure = "/pollen.control.v1.ControlService/RegisterService"
@@ -66,6 +69,7 @@ type ControlServiceClient interface {
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
 	GetBootstrapInfo(context.Context, *connect.Request[v1.GetBootstrapInfoRequest]) (*connect.Response[v1.GetBootstrapInfoResponse], error)
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
+	GetMetrics(context.Context, *connect.Request[v1.GetMetricsRequest]) (*connect.Response[v1.GetMetricsResponse], error)
 	RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error)
 	UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error)
 	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
@@ -101,6 +105,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			httpClient,
 			baseURL+ControlServiceGetStatusProcedure,
 			connect.WithSchema(controlServiceMethods.ByName("GetStatus")),
+			connect.WithClientOptions(opts...),
+		),
+		getMetrics: connect.NewClient[v1.GetMetricsRequest, v1.GetMetricsResponse](
+			httpClient,
+			baseURL+ControlServiceGetMetricsProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("GetMetrics")),
 			connect.WithClientOptions(opts...),
 		),
 		registerService: connect.NewClient[v1.RegisterServiceRequest, v1.RegisterServiceResponse](
@@ -147,6 +157,7 @@ type controlServiceClient struct {
 	shutdown          *connect.Client[v1.ShutdownRequest, v1.ShutdownResponse]
 	getBootstrapInfo  *connect.Client[v1.GetBootstrapInfoRequest, v1.GetBootstrapInfoResponse]
 	getStatus         *connect.Client[v1.GetStatusRequest, v1.GetStatusResponse]
+	getMetrics        *connect.Client[v1.GetMetricsRequest, v1.GetMetricsResponse]
 	registerService   *connect.Client[v1.RegisterServiceRequest, v1.RegisterServiceResponse]
 	unregisterService *connect.Client[v1.UnregisterServiceRequest, v1.UnregisterServiceResponse]
 	connectService    *connect.Client[v1.ConnectServiceRequest, v1.ConnectServiceResponse]
@@ -168,6 +179,11 @@ func (c *controlServiceClient) GetBootstrapInfo(ctx context.Context, req *connec
 // GetStatus calls pollen.control.v1.ControlService.GetStatus.
 func (c *controlServiceClient) GetStatus(ctx context.Context, req *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error) {
 	return c.getStatus.CallUnary(ctx, req)
+}
+
+// GetMetrics calls pollen.control.v1.ControlService.GetMetrics.
+func (c *controlServiceClient) GetMetrics(ctx context.Context, req *connect.Request[v1.GetMetricsRequest]) (*connect.Response[v1.GetMetricsResponse], error) {
+	return c.getMetrics.CallUnary(ctx, req)
 }
 
 // RegisterService calls pollen.control.v1.ControlService.RegisterService.
@@ -205,6 +221,7 @@ type ControlServiceHandler interface {
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
 	GetBootstrapInfo(context.Context, *connect.Request[v1.GetBootstrapInfoRequest]) (*connect.Response[v1.GetBootstrapInfoResponse], error)
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
+	GetMetrics(context.Context, *connect.Request[v1.GetMetricsRequest]) (*connect.Response[v1.GetMetricsResponse], error)
 	RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error)
 	UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error)
 	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
@@ -236,6 +253,12 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		ControlServiceGetStatusProcedure,
 		svc.GetStatus,
 		connect.WithSchema(controlServiceMethods.ByName("GetStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
+	controlServiceGetMetricsHandler := connect.NewUnaryHandler(
+		ControlServiceGetMetricsProcedure,
+		svc.GetMetrics,
+		connect.WithSchema(controlServiceMethods.ByName("GetMetrics")),
 		connect.WithHandlerOptions(opts...),
 	)
 	controlServiceRegisterServiceHandler := connect.NewUnaryHandler(
@@ -282,6 +305,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceGetBootstrapInfoHandler.ServeHTTP(w, r)
 		case ControlServiceGetStatusProcedure:
 			controlServiceGetStatusHandler.ServeHTTP(w, r)
+		case ControlServiceGetMetricsProcedure:
+			controlServiceGetMetricsHandler.ServeHTTP(w, r)
 		case ControlServiceRegisterServiceProcedure:
 			controlServiceRegisterServiceHandler.ServeHTTP(w, r)
 		case ControlServiceUnregisterServiceProcedure:
@@ -313,6 +338,10 @@ func (UnimplementedControlServiceHandler) GetBootstrapInfo(context.Context, *con
 
 func (UnimplementedControlServiceHandler) GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.GetStatus is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) GetMetrics(context.Context, *connect.Request[v1.GetMetricsRequest]) (*connect.Response[v1.GetMetricsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.GetMetrics is not implemented"))
 }
 
 func (UnimplementedControlServiceHandler) RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error) {

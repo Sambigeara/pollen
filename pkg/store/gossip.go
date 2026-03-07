@@ -31,6 +31,7 @@ const (
 	attrPubliclyAccessible
 	attrVivaldi
 	attrNatType
+	attrResourceTelemetry
 )
 
 type attrKey struct {
@@ -79,8 +80,12 @@ func natTypeAttrKey() attrKey {
 	return attrKey{kind: attrNatType}
 }
 
+func resourceTelemetryAttrKey() attrKey {
+	return attrKey{kind: attrResourceTelemetry}
+}
+
 func tombstoneStaleAttrs(rec *nodeRecord) {
-	for _, key := range []attrKey{publiclyAccessibleAttrKey(), natTypeAttrKey(), observedExternalIPAttrKey()} {
+	for _, key := range []attrKey{publiclyAccessibleAttrKey(), natTypeAttrKey(), observedExternalIPAttrKey(), resourceTelemetryAttrKey()} {
 		rec.maxCounter++
 		rec.log[key] = logEntry{Counter: rec.maxCounter, Deleted: true}
 	}
@@ -103,9 +108,12 @@ type nodeRecord struct {
 	IdentityPub        []byte
 	maxCounter         uint64
 	CertExpiry         int64
+	MemTotalBytes      uint64
 	NatType            nat.Type
 	LocalPort          uint32
 	ExternalPort       uint32
+	CPUPercent         uint32
+	MemPercent         uint32
 	PubliclyAccessible bool
 }
 
@@ -266,6 +274,11 @@ func (s *Store) SetGossipMetrics(m *metrics.GossipMetrics) {
 	s.metrics = m
 }
 
+// GossipMetrics returns the store's gossip metrics for direct value reads.
+func (s *Store) GossipMetrics() *metrics.GossipMetrics {
+	return s.metrics
+}
+
 func (s *Store) Save() error {
 	s.mu.RLock()
 	nodes := make(map[types.PeerKey]nodeRecord, len(s.nodes))
@@ -396,6 +409,7 @@ func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipEv
 func (s *Store) ApplyEvents(events []*statev1.GossipEvent) ApplyResult {
 	s.mu.Lock()
 
+	s.metrics.BatchSize.Set(float64(len(events)))
 	s.metrics.EventsReceived.Add(int64(len(events)))
 
 	var result ApplyResult
@@ -519,6 +533,8 @@ func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
 		return vivaldiAttrKey(), true
 	case *statev1.GossipEvent_NatType:
 		return natTypeAttrKey(), true
+	case *statev1.GossipEvent_ResourceTelemetry:
+		return resourceTelemetryAttrKey(), true
 	default:
 		return attrKey{}, false
 	}
@@ -566,6 +582,10 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 		rec.VivaldiCoord = nil
 	case attrNatType:
 		rec.NatType = nat.Unknown
+	case attrResourceTelemetry:
+		rec.CPUPercent = 0
+		rec.MemPercent = 0
+		rec.MemTotalBytes = 0
 	default:
 		panic("unknown attr kind")
 	}
@@ -615,6 +635,12 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 	case *statev1.GossipEvent_NatType:
 		if v.NatType != nil {
 			rec.NatType = nat.TypeFromUint32(v.NatType.GetNatType())
+		}
+	case *statev1.GossipEvent_ResourceTelemetry:
+		if v.ResourceTelemetry != nil {
+			rec.CPUPercent = v.ResourceTelemetry.GetCpuPercent()
+			rec.MemPercent = v.ResourceTelemetry.GetMemPercent()
+			rec.MemTotalBytes = v.ResourceTelemetry.GetMemTotalBytes()
 		}
 	}
 }
@@ -793,6 +819,49 @@ func (s *Store) SetLocalNatType(natType nat.Type) []*statev1.GossipEvent {
 			NatType: &statev1.NatTypeChange{NatType: natType.ToUint32()},
 		},
 	}}
+}
+
+const resourceTelemetryDeadband = 5
+
+func (s *Store) SetLocalResourceTelemetry(cpuPercent, memPercent uint32, memTotalBytes uint64) []*statev1.GossipEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	local := s.nodes[s.LocalID]
+	cpuDelta := absDiff(local.CPUPercent, cpuPercent)
+	memDelta := absDiff(local.MemPercent, memPercent)
+	if cpuDelta < resourceTelemetryDeadband && memDelta < resourceTelemetryDeadband && local.MemTotalBytes == memTotalBytes {
+		return nil
+	}
+
+	local.CPUPercent = cpuPercent
+	local.MemPercent = memPercent
+	local.MemTotalBytes = memTotalBytes
+
+	key := resourceTelemetryAttrKey()
+	local.maxCounter++
+	counter := local.maxCounter
+	local.log[key] = logEntry{Counter: counter}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Change: &statev1.GossipEvent_ResourceTelemetry{
+			ResourceTelemetry: &statev1.ResourceTelemetryChange{
+				CpuPercent:    cpuPercent,
+				MemPercent:    memPercent,
+				MemTotalBytes: memTotalBytes,
+			},
+		},
+	}}
+}
+
+func absDiff(a, b uint32) uint32 {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }
 
 func (s *Store) NatType(peerID types.PeerKey) nat.Type {
@@ -1310,6 +1379,14 @@ func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRe
 			change.NatType = rec.NatType.ToUint32()
 		}
 		event.Change = &statev1.GossipEvent_NatType{NatType: change}
+	case attrResourceTelemetry:
+		change := &statev1.ResourceTelemetryChange{}
+		if !entry.Deleted {
+			change.CpuPercent = rec.CPUPercent
+			change.MemPercent = rec.MemPercent
+			change.MemTotalBytes = rec.MemTotalBytes
+		}
+		event.Change = &statev1.GossipEvent_ResourceTelemetry{ResourceTelemetry: change}
 	case attrRevocation:
 		panic("buildEventFromLog must not be called for revocation events")
 	default:

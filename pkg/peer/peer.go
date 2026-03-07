@@ -227,6 +227,12 @@ func backoff(attempts int) time.Duration {
 func (s *Store) Step(now time.Time, in Input) []Output {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	var before map[types.PeerKey]PeerState
+	if s.metrics.StateTransitions != nil {
+		before = s.stateSnapshot()
+	}
+
 	var out []Output
 	switch e := in.(type) {
 	case Tick:
@@ -244,8 +250,33 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 	case ForgetPeer:
 		delete(s.m, e.PeerKey)
 	}
+
+	if before != nil {
+		s.countTransitions(before)
+	}
 	s.updateGauges()
 	return out
+}
+
+func (s *Store) stateSnapshot() map[types.PeerKey]PeerState {
+	snap := make(map[types.PeerKey]PeerState, len(s.m))
+	for k, p := range s.m {
+		snap[k] = p.State
+	}
+	return snap
+}
+
+func (s *Store) countTransitions(before map[types.PeerKey]PeerState) {
+	var transitions int64
+	for k, p := range s.m {
+		prev, existed := before[k]
+		if !existed || prev != p.State {
+			transitions++
+		}
+	}
+	if transitions > 0 {
+		s.metrics.StateTransitions.Add(transitions)
+	}
 }
 
 func (s *Store) updateGauges() {
@@ -497,4 +528,31 @@ func (s *Store) GetAll(state PeerState) []types.PeerKey {
 		}
 	}
 	return out
+}
+
+// PeerStateCounts holds per-state peer counts.
+type PeerStateCounts struct {
+	Discovered  uint32
+	Connecting  uint32
+	Connected   uint32
+	Unreachable uint32
+}
+
+func (s *Store) StateCounts() PeerStateCounts {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var c PeerStateCounts
+	for _, p := range s.m {
+		switch p.State { //nolint:exhaustive
+		case PeerStateDiscovered:
+			c.Discovered++
+		case PeerStateConnecting:
+			c.Connecting++
+		case PeerStateConnected:
+			c.Connected++
+		case PeerStateUnreachable:
+			c.Unreachable++
+		}
+	}
+	return c
 }

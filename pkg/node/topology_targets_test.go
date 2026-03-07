@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -267,7 +268,7 @@ func TestHysteresisExitsHMACWhenErrorDrops(t *testing.T) {
 	require.True(t, n.useHMACNearest)
 
 	// Drop error below exit threshold (0.35).
-	n.localCoordErr = 0.30
+	n.localCoordErr.Store(math.Float64bits(0.30))
 	n.syncPeersFromState()
 	require.False(t, n.useHMACNearest, "should exit HMAC when error < 0.35")
 }
@@ -279,12 +280,12 @@ func TestHysteresisStaysDistanceInDeadZone(t *testing.T) {
 	}
 
 	// Exit HMAC first.
-	n.localCoordErr = 0.30
+	n.localCoordErr.Store(math.Float64bits(0.30))
 	n.syncPeersFromState()
 	require.False(t, n.useHMACNearest)
 
 	// Error rises into dead zone (0.35 < err < 0.6) — should stay distance-based.
-	n.localCoordErr = 0.50
+	n.localCoordErr.Store(math.Float64bits(0.50))
 	n.syncPeersFromState()
 	require.False(t, n.useHMACNearest, "should stay distance-based in hysteresis dead zone")
 }
@@ -296,12 +297,12 @@ func TestHysteresisReentersHMACAboveThreshold(t *testing.T) {
 	}
 
 	// Exit HMAC.
-	n.localCoordErr = 0.30
+	n.localCoordErr.Store(math.Float64bits(0.30))
 	n.syncPeersFromState()
 	require.False(t, n.useHMACNearest)
 
 	// Error rises above enter threshold (0.6).
-	n.localCoordErr = 0.65
+	n.localCoordErr.Store(math.Float64bits(0.65))
 	n.syncPeersFromState()
 	require.True(t, n.useHMACNearest, "should re-enter HMAC when error > 0.6")
 }

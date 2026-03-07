@@ -22,6 +22,7 @@ const (
 	ControlService_Shutdown_FullMethodName          = "/pollen.control.v1.ControlService/Shutdown"
 	ControlService_GetBootstrapInfo_FullMethodName  = "/pollen.control.v1.ControlService/GetBootstrapInfo"
 	ControlService_GetStatus_FullMethodName         = "/pollen.control.v1.ControlService/GetStatus"
+	ControlService_GetMetrics_FullMethodName        = "/pollen.control.v1.ControlService/GetMetrics"
 	ControlService_RegisterService_FullMethodName   = "/pollen.control.v1.ControlService/RegisterService"
 	ControlService_UnregisterService_FullMethodName = "/pollen.control.v1.ControlService/UnregisterService"
 	ControlService_ConnectService_FullMethodName    = "/pollen.control.v1.ControlService/ConnectService"
@@ -37,6 +38,7 @@ type ControlServiceClient interface {
 	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error)
 	GetBootstrapInfo(ctx context.Context, in *GetBootstrapInfoRequest, opts ...grpc.CallOption) (*GetBootstrapInfoResponse, error)
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
+	GetMetrics(ctx context.Context, in *GetMetricsRequest, opts ...grpc.CallOption) (*GetMetricsResponse, error)
 	RegisterService(ctx context.Context, in *RegisterServiceRequest, opts ...grpc.CallOption) (*RegisterServiceResponse, error)
 	UnregisterService(ctx context.Context, in *UnregisterServiceRequest, opts ...grpc.CallOption) (*UnregisterServiceResponse, error)
 	ConnectService(ctx context.Context, in *ConnectServiceRequest, opts ...grpc.CallOption) (*ConnectServiceResponse, error)
@@ -77,6 +79,16 @@ func (c *controlServiceClient) GetStatus(ctx context.Context, in *GetStatusReque
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetStatusResponse)
 	err := c.cc.Invoke(ctx, ControlService_GetStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlServiceClient) GetMetrics(ctx context.Context, in *GetMetricsRequest, opts ...grpc.CallOption) (*GetMetricsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMetricsResponse)
+	err := c.cc.Invoke(ctx, ControlService_GetMetrics_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +162,7 @@ type ControlServiceServer interface {
 	Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error)
 	GetBootstrapInfo(context.Context, *GetBootstrapInfoRequest) (*GetBootstrapInfoResponse, error)
 	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
+	GetMetrics(context.Context, *GetMetricsRequest) (*GetMetricsResponse, error)
 	RegisterService(context.Context, *RegisterServiceRequest) (*RegisterServiceResponse, error)
 	UnregisterService(context.Context, *UnregisterServiceRequest) (*UnregisterServiceResponse, error)
 	ConnectService(context.Context, *ConnectServiceRequest) (*ConnectServiceResponse, error)
@@ -174,6 +187,9 @@ func (UnimplementedControlServiceServer) GetBootstrapInfo(context.Context, *GetB
 }
 func (UnimplementedControlServiceServer) GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetStatus not implemented")
+}
+func (UnimplementedControlServiceServer) GetMetrics(context.Context, *GetMetricsRequest) (*GetMetricsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMetrics not implemented")
 }
 func (UnimplementedControlServiceServer) RegisterService(context.Context, *RegisterServiceRequest) (*RegisterServiceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RegisterService not implemented")
@@ -264,6 +280,24 @@ func _ControlService_GetStatus_Handler(srv interface{}, ctx context.Context, dec
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ControlServiceServer).GetStatus(ctx, req.(*GetStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ControlService_GetMetrics_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMetricsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).GetMetrics(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_GetMetrics_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).GetMetrics(ctx, req.(*GetMetricsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -394,6 +428,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetStatus",
 			Handler:    _ControlService_GetStatus_Handler,
+		},
+		{
+			MethodName: "GetMetrics",
+			Handler:    _ControlService_GetMetrics_Handler,
 		},
 		{
 			MethodName: "RegisterService",

@@ -55,4 +55,5 @@ message Envelope {
     CertRenewalRequest cert_renewal_request = 10;
     CertRenewalResponse cert_renewal_response = 11;
   }
+  bytes trace_id = 12;
 }

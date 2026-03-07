@@ -57,6 +57,12 @@ func runStatus(cmd *cobra.Command, args []string) {
 	}
 
 	st := resp.Msg
+
+	metricsResp, metricsErr := client.GetMetrics(context.Background(), connect.NewRequest(&controlv1.GetMetricsRequest{}))
+	if metricsErr == nil {
+		renderHealthLine(cmd.OutOrStdout(), metricsResp.Msg)
+	}
+
 	var sections []statusSection
 	switch mode {
 	case "all":
@@ -79,6 +85,11 @@ func runStatus(cmd *cobra.Command, args []string) {
 		return
 	}
 	renderStatusSections(cmd.OutOrStdout(), sections)
+
+	if wide && metricsErr == nil {
+		renderMetricsDetails(cmd.OutOrStdout(), metricsResp.Msg)
+	}
+
 	if footer := certExpiryFooter(st); footer != "" {
 		fmt.Fprintln(cmd.OutOrStdout(), footer)
 	}
@@ -99,7 +110,7 @@ type statusSection struct {
 func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
 	sec := statusSection{
 		title:   "PEERS",
-		headers: []string{"NODE", "STATUS", "ADDR"},
+		headers: []string{"NODE", "STATUS", "ADDR", "CPU", "MEM", "TUNNELS", "LATENCY"},
 	}
 
 	if self := st.GetSelf(); self != nil && self.GetNode() != nil {
@@ -112,7 +123,13 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		if self.GetPubliclyAccessible() {
 			status = "- (public)"
 		}
-		sec.rows = append(sec.rows, []string{label, status, addr})
+		sec.rows = append(sec.rows, []string{
+			label, status, addr,
+			formatPercent(self.GetCpuPercent()),
+			formatPercent(self.GetMemPercent()),
+			formatTunnelCount(self.GetTunnelCount()),
+			"-",
+		})
 	}
 
 	filtered := 0
@@ -130,13 +147,47 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		if addr == "" {
 			addr = "-"
 		}
-		sec.rows = append(sec.rows, []string{label, status, addr})
+
+		cpu := formatPercent(n.GetCpuPercent())
+		mem := formatPercent(n.GetMemPercent())
+		tunnels := formatTunnelCount(n.GetTunnelCount())
+		latency := formatLatency(n.GetLatencyMs())
+
+		if !isReachableStatus(n.GetStatus()) {
+			cpu = "-"
+			mem = "-"
+			tunnels = "-"
+			latency = "-"
+		}
+
+		sec.rows = append(sec.rows, []string{label, status, addr, cpu, mem, tunnels, latency})
 	}
 
 	if filtered > 0 {
 		sec.footer = fmt.Sprintf("offline peers: %d (use --all)", filtered)
 	}
 	return sec
+}
+
+func formatPercent(v uint32) string {
+	if v == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d%%", v)
+}
+
+func formatTunnelCount(v uint32) string {
+	if v == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d", v)
+}
+
+func formatLatency(ms float64) string {
+	if ms == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.1fms", ms)
 }
 
 func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
@@ -314,6 +365,42 @@ func renderStatusSections(w io.Writer, sections []statusSection) {
 			fmt.Fprintln(w)
 			fmt.Fprintln(w, sec.footer)
 		}
+	}
+	fmt.Fprintln(w)
+}
+
+func renderHealthLine(w io.Writer, m *controlv1.GetMetricsResponse) {
+	var label string
+	var color string
+	switch m.GetHealth() {
+	case controlv1.HealthStatus_HEALTH_STATUS_HEALTHY:
+		label = "HEALTHY"
+		color = "2" //nolint:mnd
+	case controlv1.HealthStatus_HEALTH_STATUS_DEGRADED:
+		label = "DEGRADED"
+		color = "3" //nolint:mnd
+	case controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY:
+		label = "UNHEALTHY"
+		color = "1"
+	default:
+		return
+	}
+	fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(label))
+	fmt.Fprintln(w)
+}
+
+func renderMetricsDetails(w io.Writer, m *controlv1.GetMetricsResponse) {
+	fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Render("DIAGNOSTICS")) //nolint:mnd
+	fmt.Fprintf(w, "  vivaldi error:  %.3f\n", m.GetVivaldiError())
+	if m.GetEventsApplied() > 0 {
+		ratio := float64(m.GetEventsStale()) / float64(m.GetEventsApplied())
+		fmt.Fprintf(w, "  gossip stale:   %d/%d (%.1f%%)\n", m.GetEventsStale(), m.GetEventsApplied(), ratio*100) //nolint:mnd
+	}
+	if m.GetPunchAttempts() > 0 {
+		fmt.Fprintf(w, "  punch success:  %d/%d\n", m.GetPunchAttempts()-m.GetPunchFailures(), m.GetPunchAttempts())
+	}
+	if m.GetCertRenewals() > 0 || m.GetCertRenewalsFailed() > 0 {
+		fmt.Fprintf(w, "  cert renewals:  %d ok, %d failed\n", m.GetCertRenewals(), m.GetCertRenewalsFailed())
 	}
 	fmt.Fprintln(w)
 }

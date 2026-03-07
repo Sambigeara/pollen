@@ -409,6 +409,7 @@ type Envelope struct {
 	//	*Envelope_CertRenewalRequest
 	//	*Envelope_CertRenewalResponse
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
+	TraceId       []byte          `protobuf:"bytes,12,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -531,6 +532,13 @@ func (x *Envelope) GetCertRenewalResponse() *CertRenewalResponse {
 	return nil
 }
 
+func (x *Envelope) GetTraceId() []byte {
+	if x != nil {
+		return x.TraceId
+	}
+	return nil
+}
+
 type isEnvelope_Body interface {
 	isEnvelope_Body()
 }
@@ -618,7 +626,7 @@ const file_pollen_mesh_v1_mesh_proto_rawDesc = "" +
 	"\x13CertRenewalResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x127\n" +
-	"\x04cert\x18\x03 \x01(\v2#.pollen.admission.v1.MembershipCertR\x04cert\"\xef\x05\n" +
+	"\x04cert\x18\x03 \x01(\v2#.pollen.admission.v1.MembershipCertR\x04cert\"\x8a\x06\n" +
 	"\bEnvelope\x12:\n" +
 	"\x05clock\x18\x01 \x01(\v2\".pollen.state.v1.GossipVectorClockH\x00R\x05clock\x12S\n" +
 	"\x13punch_coord_request\x18\x03 \x01(\v2!.pollen.mesh.v1.PunchCoordRequestH\x00R\x11punchCoordRequest\x12S\n" +
@@ -629,7 +637,8 @@ const file_pollen_mesh_v1_mesh_proto_rawDesc = "" +
 	"\x06events\x18\t \x01(\v2!.pollen.state.v1.GossipEventBatchH\x00R\x06events\x12V\n" +
 	"\x14cert_renewal_request\x18\n" +
 	" \x01(\v2\".pollen.mesh.v1.CertRenewalRequestH\x00R\x12certRenewalRequest\x12Y\n" +
-	"\x15cert_renewal_response\x18\v \x01(\v2#.pollen.mesh.v1.CertRenewalResponseH\x00R\x13certRenewalResponseB\x06\n" +
+	"\x15cert_renewal_response\x18\v \x01(\v2#.pollen.mesh.v1.CertRenewalResponseH\x00R\x13certRenewalResponse\x12\x19\n" +
+	"\btrace_id\x18\f \x01(\fR\atraceIdB\x06\n" +
 	"\x04bodyB>Z<github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1;meshv1b\x06proto3"
 
 var (

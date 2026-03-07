@@ -9,6 +9,7 @@ type MeshMetrics struct {
 	DatagramErrors     *Counter
 	SessionConnects    *Counter
 	SessionDisconnects *Counter
+	SessionsActive     *Gauge
 }
 
 // NewMeshMetrics registers all mesh instruments on c.
@@ -24,6 +25,7 @@ func NewMeshMetrics(c *Collector) *MeshMetrics {
 		DatagramErrors:     c.Counter("pollen_mesh_datagram_errors_total", Labels{}),
 		SessionConnects:    c.Counter("pollen_mesh_session_connects_total", Labels{}),
 		SessionDisconnects: c.Counter("pollen_mesh_session_disconnects_total", Labels{}),
+		SessionsActive:     c.Gauge("pollen_mesh_sessions_active", Labels{}),
 	}
 }
 
@@ -36,6 +38,7 @@ type PeerMetrics struct {
 	PeersConnected   *Gauge
 	PeersUnreachable *Gauge
 	StageEscalations *Counter
+	StateTransitions *Counter
 }
 
 // Enabled reports whether any gauge is wired (non-nil), so callers can skip
@@ -57,6 +60,7 @@ func NewPeerMetrics(c *Collector) *PeerMetrics {
 		PeersConnected:   c.Gauge("pollen_peers_connected", Labels{}),
 		PeersUnreachable: c.Gauge("pollen_peers_unreachable", Labels{}),
 		StageEscalations: c.Counter("pollen_peer_stage_escalations_total", Labels{}),
+		StateTransitions: c.Counter("pollen_peer_state_transitions_total", Labels{}),
 	}
 }
 
@@ -68,6 +72,7 @@ type GossipMetrics struct {
 	EventsRebroadcast *Counter
 	SelfConflicts     *Counter
 	Revocations       *Counter
+	BatchSize         *Gauge
 }
 
 // NewGossipMetrics registers all gossip instruments on c.
@@ -82,6 +87,7 @@ func NewGossipMetrics(c *Collector) *GossipMetrics {
 		EventsRebroadcast: c.Counter("pollen_gossip_events_rebroadcast_total", Labels{}),
 		SelfConflicts:     c.Counter("pollen_gossip_self_conflicts_total", Labels{}),
 		Revocations:       c.Counter("pollen_gossip_revocations_total", Labels{}),
+		BatchSize:         c.Gauge("pollen_gossip_batch_size", Labels{}),
 	}
 }
 

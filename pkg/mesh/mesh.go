@@ -18,6 +18,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
+	"github.com/sambigeara/pollen/pkg/observability/traces"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/sock"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -70,6 +71,7 @@ type Mesh interface {
 	BroadcastDisconnect() error
 	UpdateMeshCert(cert tls.Certificate)
 	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.MembershipCert, error)
+	SetTracer(t *traces.Tracer)
 	Close() error
 }
 
@@ -100,6 +102,7 @@ type impl struct {
 	trustBundle      *admissionv1.TrustBundle
 	log              *zap.SugaredLogger
 	metrics          *metrics.MeshMetrics
+	tracer           *traces.Tracer
 	listener         *quic.Listener
 	sessions         *sessionRegistry
 	mainQT           *quic.Transport
@@ -165,7 +168,7 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 		port:             defaultPort,
 		membershipTTL:    membershipTTL,
 		maxConnectionAge: maxConnectionAge,
-		sessions:         newSessionRegistry(),
+		sessions:         newSessionRegistry(mm.SessionsActive),
 		recvCh:           make(chan Packet, queueBufSize),
 		renewalCh:        make(chan *meshv1.CertRenewalResponse, 1),
 		inCh:             make(chan peer.Input, queueBufSize),
@@ -547,6 +550,9 @@ func (m *impl) BroadcastDisconnect() error {
 }
 
 func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
+	span := m.tracer.Start("mesh.addPeer")
+	span.SetAttr("peer", peerKey.Short())
+
 	replace, ok := m.sessions.add(peerKey, s, func(current *peerSession) bool {
 		if current.conn.Context().Err() != nil {
 			return true
@@ -559,6 +565,8 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		return !m.localKey.Less(peerKey)
 	})
 	if !ok {
+		span.SetAttr("result", "duplicate")
+		span.End()
 		m.closeSession(s, CloseReasonDuplicate)
 		return
 	}
@@ -567,6 +575,7 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		m.closeSession(replace, CloseReasonReplaced)
 	}
 
+	span.End()
 	m.metrics.SessionConnects.Inc()
 
 	// Use the connection's own context so the recv goroutine lives as long as
@@ -749,6 +758,10 @@ func (m *impl) handleInviteConnection(ctx context.Context, qc *quic.Conn, peerKe
 		m.log.Debugw("rejected invite", "peer", peerKey.Short(), "err", err)
 		_ = qc.CloseWithError(0, "invite failed")
 	}
+}
+
+func (m *impl) SetTracer(t *traces.Tracer) {
+	m.tracer = t
 }
 
 func (m *impl) UpdateMeshCert(cert tls.Certificate) {

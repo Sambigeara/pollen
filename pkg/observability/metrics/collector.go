@@ -134,7 +134,8 @@ func (c *Collector) flush() {
 
 // counter is the internal atomic accumulator.
 type counter struct {
-	val atomic.Int64
+	val        atomic.Int64
+	cumulative atomic.Int64
 }
 
 // gauge stores a float64 as atomic uint64 bits.
@@ -163,6 +164,7 @@ func (h *Counter) Add(delta int64) {
 		return
 	}
 	h.c.val.Add(delta)
+	h.c.cumulative.Add(delta)
 }
 
 // Inc increments the counter by 1.
@@ -171,6 +173,15 @@ func (h *Counter) Inc() {
 		return
 	}
 	h.c.val.Add(1)
+	h.c.cumulative.Add(1)
+}
+
+// Value returns the cumulative total of this counter. Returns 0 on a nil Counter.
+func (h *Counter) Value() int64 {
+	if h == nil {
+		return 0
+	}
+	return h.c.cumulative.Load()
 }
 
 // Gauge is a value that can go up and down. A nil Gauge is a no-op.
@@ -184,4 +195,12 @@ func (h *Gauge) Set(value float64) {
 		return
 	}
 	h.g.store(value)
+}
+
+// Value returns the current gauge value. Returns 0 on a nil Gauge.
+func (h *Gauge) Value() float64 {
+	if h == nil {
+		return 0
+	}
+	return h.g.load()
 }

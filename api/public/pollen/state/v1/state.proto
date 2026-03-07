@@ -65,6 +65,12 @@ message NatTypeChange {
   uint32 nat_type = 1;
 }
 
+message ResourceTelemetryChange {
+  uint32 cpu_percent = 1;
+  uint32 mem_percent = 2;
+  uint64 mem_total_bytes = 3;
+}
+
 message GossipEvent {
   string peer_id = 1 [(buf.validate.field).string = {
     pattern: "^[a-fA-F0-9]{64}$"
@@ -82,6 +88,7 @@ message GossipEvent {
     PubliclyAccessibleChange publicly_accessible = 10;
     VivaldiCoordinateChange vivaldi = 11;
     NatTypeChange nat_type = 12;
+    ResourceTelemetryChange resource_telemetry = 14;
   }
   bool deleted = 8;
 }
