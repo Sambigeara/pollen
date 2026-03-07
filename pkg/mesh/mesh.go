@@ -411,7 +411,27 @@ func (m *impl) Send(_ context.Context, peerKey types.PeerKey, env *meshv1.Envelo
 	if err != nil {
 		return err
 	}
-	return s.conn.SendDatagram(b)
+	if err := s.conn.SendDatagram(b); err != nil {
+		m.handleSendFailure(peerKey, s, err)
+		return err
+	}
+	return nil
+}
+
+func (m *impl) handleSendFailure(peerKey types.PeerKey, s *peerSession, err error) {
+	reason := classifyQUICError(err)
+	if reason == peer.DisconnectUnknown {
+		return
+	}
+	if !m.sessions.removeIfCurrent(peerKey, s) {
+		return
+	}
+	m.closeSession(s, CloseReasonDisconnect)
+	select {
+	case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: reason}:
+	default:
+		m.log.Debugw("dropping peer disconnect event after send failure", "peer", peerKey.Short(), "reason", reason)
+	}
 }
 
 func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAddr, localNAT nat.Type) error {
@@ -784,8 +804,10 @@ func (m *impl) Close() error {
 }
 
 func (m *impl) closeSession(s *peerSession, reason CloseReason) {
-	_ = s.conn.CloseWithError(0, string(reason))
-	if s.transport != m.mainQT {
+	if s.conn != nil {
+		_ = s.conn.CloseWithError(0, string(reason))
+	}
+	if s.transport != nil && s.transport != m.mainQT {
 		_ = s.transport.Close()
 	}
 	if s.sockConn != nil {
