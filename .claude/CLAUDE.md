@@ -14,7 +14,6 @@
 
 ### 3. Self-Improvement Loop
 - After ANY correction from the user: add the lesson to the **Lessons** section at the bottom of this file.
-- If any of these lessons are useful for future review, please update the `/defluff` command also so that becomes more effective.
 - Write rules for yourself that prevent the same mistake
 - Ruthlessly iterate on these lessons until mistake rate drops
 - Review lessons at session start for relevant project
@@ -62,10 +61,13 @@
 - Don't add comments that restate what the code already says. Only comment where logic isn't self-evident. This includes `nolint` directives — don't add a trailing comment that just restates the lint rule (e.g., `//nolint:forcetypeassert // always a UDPAddr`). The nolint directive is self-explanatory; only comment if the reason is genuinely non-obvious.
 - Don't ship dead or unused code — no dead branches for impossible conditions, no struct fields only tests read, no parameters the function ignores. Signatures and types are contracts.
 - Deduplicate before shipping. If two functions build the same output from the same data, one should call the other.
+- Every switch on a type or enum must be exhaustive. Dead default branches that can't fire are fluff — remove them.
+- No naked returns in functions with named return values unless the function is trivially short.
 
 ### Design Patterns
 - **Use typed representations over string conventions.** Don't encode structured data into string keys with prefix parsing (`"s/http"`, `"r/<pk>"`). Use typed structs with enums from the start — string conventions are fragile and create implicit coupling.
 - **Unify parallel patterns immediately.** When multiple attributes need the same concept (e.g., deletion), use one consistent mechanism everywhere. After each step, ask: "have I introduced a second way of expressing the same idea?"
+- **Clean package APIs.** Each package should expose a clean API. Internal struct types, lock details, and implementation choices must not leak across package boundaries.
 
 ### Proto Message Design
 - **Never build a shadow type system alongside a proto oneof.** If the proto already has a discriminator (oneof, enum), use it directly. Don't create a parallel Go enum that must stay in sync.
@@ -82,3 +84,4 @@
 
 ### Testing
 - Use `require.Equal`, `require.Len`, `require.NoError`, etc. from `github.com/stretchr/testify/require` instead of manual `t.Fatalf` with format strings. Testify assertions are more readable and give better failure output.
+- Test helpers must match production constructors. If a test helper builds a struct that a production constructor also builds, they must produce equivalent state. Divergence means tests exercise impossible configurations.
