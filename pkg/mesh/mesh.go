@@ -635,7 +635,18 @@ func classifyQUICError(err error) peer.DisconnectReason {
 	}
 	var appErr *quic.ApplicationError
 	if errors.As(err, &appErr) {
-		return peer.DisconnectGraceful
+		switch appErr.ErrorMessage {
+		case string(CloseReasonTopologyPrune):
+			return peer.DisconnectTopologyPrune
+		case string(CloseReasonRevoked):
+			return peer.DisconnectRevoked
+		case string(CloseReasonCertExpired):
+			return peer.DisconnectCertExpired
+		case string(CloseReasonCertRotation):
+			return peer.DisconnectCertRotation
+		default:
+			return peer.DisconnectGraceful
+		}
 	}
 	return peer.DisconnectUnknown
 }

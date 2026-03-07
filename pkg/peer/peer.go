@@ -102,12 +102,14 @@ func (ConnectFailed) isInput() {}
 type DisconnectReason int
 
 const (
-	DisconnectUnknown      DisconnectReason = iota
-	DisconnectIdleTimeout                   // peer likely still alive, transient loss
-	DisconnectReset                         // peer rebooted (stateless reset)
-	DisconnectGraceful                      // clean app-level close
-	DisconnectCertRotation                  // forced reconnection for cert rotation
-	DisconnectCertExpired                   // peer membership cert expired
+	DisconnectUnknown       DisconnectReason = iota
+	DisconnectIdleTimeout                    // peer likely still alive, transient loss
+	DisconnectReset                          // peer rebooted (stateless reset)
+	DisconnectGraceful                       // clean app-level close
+	DisconnectTopologyPrune                  // peer intentionally pruned this edge
+	DisconnectRevoked                        // peer revoked our session/membership
+	DisconnectCertRotation                   // forced reconnection for cert rotation
+	DisconnectCertExpired                    // peer membership cert expired
 )
 
 func (r DisconnectReason) String() string {
@@ -118,6 +120,10 @@ func (r DisconnectReason) String() string {
 		return "stateless_reset"
 	case DisconnectGraceful:
 		return "graceful"
+	case DisconnectTopologyPrune:
+		return "topology_prune"
+	case DisconnectRevoked:
+		return "revoked"
 	case DisconnectCertRotation:
 		return "cert_rotation"
 	case DisconnectCertExpired:
@@ -386,6 +392,10 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 		delay = resetRetryInterval
 	case DisconnectGraceful:
 		delay = gracefulDisconnectRetryInterval
+	case DisconnectTopologyPrune:
+		delay = unreachableRetryInterval
+	case DisconnectRevoked:
+		delay = unreachableRetryInterval
 	case DisconnectCertRotation:
 		delay = idleTimeoutRetryInterval
 	case DisconnectCertExpired:
