@@ -285,6 +285,7 @@ func (n *Node) Start(ctx context.Context) error {
 	defer resourceTelemetryTicker.Stop()
 
 	n.tick()
+	n.checkCertExpiry() // seed the cert-expiry gauge; the ticker only fires hourly
 
 	for {
 		select {
