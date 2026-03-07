@@ -181,7 +181,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 	stateStore.OnRevocation(func(subject types.PeerKey) {
 		n.tun.DisconnectPeer(subject)
 		stateStore.RemoveDesiredConnection(subject, 0, 0)
-		go n.mesh.ClosePeerSession(subject)
+		go n.mesh.ClosePeerSession(subject, mesh.CloseReasonRevoked)
 		select {
 		case n.localPeerEvents <- peer.ForgetPeer{PeerKey: subject}:
 		default:
@@ -664,7 +664,7 @@ func (n *Node) syncPeersFromState() {
 			if n.nonTargetStreak[kp.PeerID] < threshold {
 				continue
 			}
-			n.mesh.ClosePeerSession(kp.PeerID)
+			n.mesh.ClosePeerSession(kp.PeerID, mesh.CloseReasonTopologyPrune)
 			n.handlePeerInput(peer.PeerDisconnected{PeerKey: kp.PeerID, Reason: peer.DisconnectGraceful})
 		}
 		delete(n.nonTargetStreak, kp.PeerID)
@@ -1115,7 +1115,7 @@ func (n *Node) disconnectExpiredPeers() {
 			n.log.Warnw("disconnecting peer with expired membership cert",
 				"peer", peerKey.Short(), "expired_at", expiry)
 			n.tun.DisconnectPeer(peerKey)
-			n.mesh.ClosePeerSession(peerKey)
+			n.mesh.ClosePeerSession(peerKey, mesh.CloseReasonCertExpired)
 			n.handlePeerInput(peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertExpired})
 			n.handlePeerInput(peer.ForgetPeer{PeerKey: peerKey})
 		}
