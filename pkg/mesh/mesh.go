@@ -64,13 +64,27 @@ type Mesh interface {
 	PeerMembershipCert(peer types.PeerKey) (*admissionv1.MembershipCert, bool)
 	IsOutbound(types.PeerKey) bool
 	ConnectedPeers() []types.PeerKey
-	ClosePeerSession(peerKey types.PeerKey)
+	ClosePeerSession(peerKey types.PeerKey, reason CloseReason)
 	ListenPort() int
 	BroadcastDisconnect() error
 	UpdateMeshCert(cert tls.Certificate)
 	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.MembershipCert, error)
 	Close() error
 }
+
+type CloseReason string
+
+const (
+	CloseReasonRevoked       CloseReason = "revoked"
+	CloseReasonTopologyPrune CloseReason = "topology_prune"
+	CloseReasonCertExpired   CloseReason = "cert_expired"
+	CloseReasonCertRotation  CloseReason = "cert_rotation"
+	CloseReasonDisconnect    CloseReason = "disconnect"
+	CloseReasonDuplicate     CloseReason = "duplicate"
+	CloseReasonReplaced      CloseReason = "replaced"
+	CloseReasonDisconnected  CloseReason = "disconnected"
+	CloseReasonShutdown      CloseReason = "shutdown"
+)
 
 type impl struct {
 	meshCert         atomic.Pointer[tls.Certificate]
@@ -453,13 +467,13 @@ func (m *impl) ConnectedPeers() []types.PeerKey {
 	return m.sessions.connectedPeers()
 }
 
-func (m *impl) ClosePeerSession(peerKey types.PeerKey) {
+func (m *impl) ClosePeerSession(peerKey types.PeerKey, reason CloseReason) {
 	s, ok := m.sessions.get(peerKey)
 	if !ok {
 		return
 	}
 	if m.sessions.removeIfCurrent(peerKey, s) {
-		m.closeSession(s, "revoked")
+		m.closeSession(s, reason)
 	}
 }
 
@@ -483,7 +497,7 @@ func (m *impl) sessionReaper(ctx context.Context) {
 				}
 				m.log.Debugw("reconnecting peer to refresh certificates", "peer", peerKey.Short(), "age", now.Sub(s.createdAt))
 				if m.sessions.removeIfCurrent(peerKey, s) {
-					m.closeSession(s, "cert_rotation")
+					m.closeSession(s, CloseReasonCertRotation)
 					select {
 					case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertRotation}:
 					case <-time.After(eventSendTimeout):
@@ -498,7 +512,7 @@ func (m *impl) sessionReaper(ctx context.Context) {
 func (m *impl) BroadcastDisconnect() error {
 	peers := m.sessions.drainPeers()
 	for _, s := range peers {
-		m.closeSession(s, "disconnect")
+		m.closeSession(s, CloseReasonDisconnect)
 	}
 	return nil
 }
@@ -516,12 +530,12 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		return !m.localKey.Less(peerKey)
 	})
 	if !ok {
-		m.closeSession(s, "duplicate")
+		m.closeSession(s, CloseReasonDuplicate)
 		return
 	}
 
 	if replace != nil {
-		m.closeSession(replace, "replaced")
+		m.closeSession(replace, CloseReasonReplaced)
 	}
 
 	// Use the connection's own context so the recv goroutine lives as long as
@@ -585,7 +599,7 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 						"peer", peerKey.Short(),
 					)
 				}
-				m.closeSession(s, "disconnected")
+				m.closeSession(s, CloseReasonDisconnected)
 			}
 			return
 		}
@@ -739,7 +753,7 @@ func (m *impl) RequestCertRenewal(ctx context.Context, peerKey types.PeerKey) (*
 
 func (m *impl) Close() error {
 	for _, s := range m.sessions.drainPeers() {
-		m.closeSession(s, "shutdown")
+		m.closeSession(s, CloseReasonShutdown)
 	}
 
 	m.acceptWG.Wait()
@@ -758,8 +772,8 @@ func (m *impl) Close() error {
 	return nil
 }
 
-func (m *impl) closeSession(s *peerSession, reason string) {
-	_ = s.conn.CloseWithError(0, reason)
+func (m *impl) closeSession(s *peerSession, reason CloseReason) {
+	_ = s.conn.CloseWithError(0, string(reason))
 	if s.transport != m.mainQT {
 		_ = s.transport.Close()
 	}
