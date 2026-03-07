@@ -185,12 +185,12 @@ Run `git diff --stat HEAD~1` and map changed files to persona ownership using th
 
 | Persona | Owned paths |
 |---|---|
-| cli | `cmd/pollen/` |
-| orchestrator | `pkg/node/`, `pkg/tunnel/`, `pkg/server/` |
+| cli | `cmd/pln/`, `pkg/workspace/` |
+| orchestrator | `pkg/node/`, `pkg/tunnel/`, `pkg/server/`, `pkg/observability/` |
 | state | `pkg/store/`, `pkg/config/` |
-| transport | `pkg/mesh/`, `pkg/sock/`, `pkg/peer/` |
+| transport | `pkg/mesh/`, `pkg/sock/`, `pkg/peer/`, `pkg/topology/`, `pkg/nat/` |
 | trust | `pkg/auth/`, `pkg/perm/` |
-| ergonomics | `cmd/pollen/`, `scripts/`, `packaging/` |
+| ergonomics | `cmd/pln/`, `scripts/`, `packaging/` |
 
 Also map proto files: `api/public/pollen/control/` → orchestrator, `api/public/pollen/state/` → state, `api/public/pollen/mesh/` → transport, `api/public/pollen/admission/` → trust.
 

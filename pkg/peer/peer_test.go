@@ -48,7 +48,7 @@ func TestDisconnectReasonRetryDelays(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.reason.String(), func(t *testing.T) {
-			s := NewStore()
+			s := NewStore(nil)
 			key := testPeerKey(1)
 			now := time.Now()
 
@@ -67,7 +67,7 @@ func TestDisconnectReasonRetryDelays(t *testing.T) {
 }
 
 func TestDisconnectTickReconnectCycle(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -102,7 +102,7 @@ func TestDisconnectTickReconnectCycle(t *testing.T) {
 }
 
 func TestStageEscalation(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -153,7 +153,7 @@ func TestStageEscalation(t *testing.T) {
 }
 
 func TestEagerRetryStage(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -191,7 +191,7 @@ func TestEagerRetryStage(t *testing.T) {
 }
 
 func TestEagerRetrySkippedWhenNoLastAddr(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -213,7 +213,7 @@ func TestEagerRetrySkippedWhenNoLastAddr(t *testing.T) {
 }
 
 func TestEagerRetryWithOnlyLastAddr(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -233,7 +233,7 @@ func TestEagerRetryWithOnlyLastAddr(t *testing.T) {
 }
 
 func TestForgetPeer(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -256,7 +256,7 @@ func TestForgetPeer(t *testing.T) {
 }
 
 func TestUnreachableRetryReturnsToEagerWithLastAddr(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -299,7 +299,7 @@ func TestUnreachableRetryReturnsToEagerWithLastAddr(t *testing.T) {
 }
 
 func TestPrivatePeerSkipsDirectStage(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -322,7 +322,7 @@ func TestPrivatePeerSkipsDirectStage(t *testing.T) {
 }
 
 func TestPublicPeerStartsAtDirect(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -339,7 +339,7 @@ func TestPublicPeerStartsAtDirect(t *testing.T) {
 }
 
 func TestPrivatePeerWithLastAddrStartsEager(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -359,7 +359,7 @@ func TestPrivatePeerWithLastAddrStartsEager(t *testing.T) {
 }
 
 func TestPrivatelyRoutablePeerStartsDirect(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -377,7 +377,7 @@ func TestPrivatelyRoutablePeerStartsDirect(t *testing.T) {
 }
 
 func TestRediscoveredPrivatelyRoutablePeerRestagesToDirect(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -407,7 +407,7 @@ func TestRediscoveredPrivatelyRoutablePeerRestagesToDirect(t *testing.T) {
 }
 
 func TestConnectingTimeout(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -446,7 +446,7 @@ func TestConnectingTimeout(t *testing.T) {
 }
 
 func TestConnectingTimeoutDoesNotFireEarly(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 
@@ -472,7 +472,7 @@ func TestConnectingTimeoutDoesNotFireEarly(t *testing.T) {
 }
 
 func TestConnectingTimeoutPunchReachesUnreachable(t *testing.T) {
-	s := NewStore()
+	s := NewStore(nil)
 	key := testPeerKey(1)
 	now := time.Now()
 

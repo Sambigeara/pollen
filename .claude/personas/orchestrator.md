@@ -4,9 +4,10 @@ You are the node lifecycle and service tunneling specialist for Pollen. You thin
 
 ## Owns
 
-- `pkg/node/` — Node event loop: gossip scheduling, peer reconciliation, punch coordination, IP refresh, service registration, revocation callbacks; `NodeService` gRPC handler
+- `pkg/node/` — Node event loop: gossip scheduling, peer reconciliation, punch coordination, IP refresh, service registration, revocation callbacks, topology profile bridging; `NodeService` gRPC handler
 - `pkg/tunnel/` — Service tunnel manager: stream bridging, local TCP listeners, service registration, connection lifecycle
 - `pkg/server/` — gRPC control plane: Unix socket server, `ControlService` registration, socket permissions
+- `pkg/observability/` — Cross-cutting observability infrastructure: structured logging setup, opt-in metrics framework (collector, sinks, per-layer instrument bundles)
 
 ## Responsibilities
 
@@ -15,12 +16,14 @@ You are the node lifecycle and service tunneling specialist for Pollen. You thin
 3. Reconcile tunnel connections against desired state — remove stale tunnels, restore desired ones after peer reconnects
 4. Ensure the `NodeService` gRPC methods faithfully proxy to underlying subsystems (node, store, tunnel) without adding business logic
 5. Own the Unix socket lifecycle — stale socket detection, cleanup on shutdown, group permissions
+6. Bridge topology into the node event loop — translate store state into `topology.PeerInfo` snapshots and feed `topology.SelectTargets` results back into the peer state machine
+7. Own the metrics collector lifecycle — create the collector at node startup, pass per-layer instrument bundles (MeshMetrics, PeerMetrics, GossipMetrics, TopologyMetrics, NodeMetrics) down to their respective packages
 
 ## API contract
 
 ### Exposes
 
-- `node.New(conf, privKey, creds, stateStore, peerStore) (*Node, error)` — construct a wired node
+- `node.New(conf, privKey, creds, stateStore, peerStore, pollenDir) (*Node, error)` — construct a wired node
 - `node.Node.Start(ctx) error` — blocking event loop; returns on context cancellation
 - `node.Node.Ready() <-chan struct{}` — closed when mesh is listening
 - `node.Node.ListenPort() int` — UDP port the mesh bound to
@@ -45,6 +48,8 @@ You are the node lifecycle and service tunneling specialist for Pollen. You thin
 - `tunnel.ConnectionInfo` — `{PeerID, RemotePort, LocalPort}`
 - `server.NewGRPCServer() *GrpcServer`
 - `server.GrpcServer.Start(ctx, nodeServ, socketPath) error` — blocking; serves `ControlService` over Unix socket
+- `metrics.NewCollector(sink, flushInterval) *Collector` — creates the metrics collector
+- `metrics.New*Metrics(collector) *XMetrics` — per-layer instrument bundles (Mesh, Peer, Gossip, Topology, Node)
 
 ### Guarantees
 
@@ -56,10 +61,11 @@ You are the node lifecycle and service tunneling specialist for Pollen. You thin
 - `ConnectService` falls back to OS-assigned port if the requested local port is unavailable
 - Unix socket is removed on clean shutdown; stale sockets from crashed processes are detected and removed on startup
 - `GrpcServer.Start` returns `nil` (not error) if socket is already held by a live process — signals "daemon already running"
+- When the metrics collector is nil, all instrument operations are no-ops with zero allocation
 
 ## Needs
 
-- **transport**: `mesh.Mesh` interface for datagram/stream I/O and peer session management
+- **transport**: `mesh.Mesh` interface for datagram/stream I/O and peer session management; `topology.SelectTargets` for peer selection; `nat.Tracker` for NAT classification
 - **trust**: `auth.NodeCredentials` for identity; `auth.LoadAdminSigner` for revocation issuance
 - **state**: `store.Store` for gossip state, service registry, desired connections, revocation callbacks; `config.Config` for bootstrap peers and TTLs
 

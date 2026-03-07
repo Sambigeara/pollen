@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
 )
@@ -50,15 +51,20 @@ func (p *Peer) resetStage() {
 }
 
 type Store struct {
-	log *zap.SugaredLogger
-	m   map[types.PeerKey]*Peer
-	mu  sync.RWMutex
+	log     *zap.SugaredLogger
+	metrics *metrics.PeerMetrics
+	m       map[types.PeerKey]*Peer
+	mu      sync.RWMutex
 }
 
-func NewStore() *Store {
+func NewStore(m *metrics.PeerMetrics) *Store {
+	if m == nil {
+		m = &metrics.PeerMetrics{}
+	}
 	return &Store{
-		log: zap.S().Named("peers"),
-		m:   make(map[types.PeerKey]*Peer),
+		log:     zap.S().Named("peers"),
+		metrics: m,
+		m:       make(map[types.PeerKey]*Peer),
 	}
 }
 
@@ -219,28 +225,45 @@ func backoff(attempts int) time.Duration {
 func (s *Store) Step(now time.Time, in Input) []Output {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var out []Output
 	switch e := in.(type) {
 	case Tick:
-		return s.tick(now)
+		out = s.tick(now)
 	case DiscoverPeer:
 		s.discoverPeer(now, e)
-		return nil
 	case ConnectPeer:
-		return s.connectPeer(now, e)
+		out = s.connectPeer(now, e)
 	case ConnectFailed:
 		s.connectFailed(now, e)
-		return nil
 	case PeerDisconnected:
 		s.disconnectPeer(now, e)
-		return nil
 	case RetryPeer:
 		s.retryPeer(now, e)
-		return nil
 	case ForgetPeer:
 		delete(s.m, e.PeerKey)
-		return nil
 	}
-	return nil
+	s.updateGauges()
+	return out
+}
+
+func (s *Store) updateGauges() {
+	var discovered, connecting, connected, unreachable int
+	for _, p := range s.m {
+		switch p.State { //nolint:exhaustive
+		case PeerStateDiscovered:
+			discovered++
+		case PeerStateConnecting:
+			connecting++
+		case PeerStateConnected:
+			connected++
+		case PeerStateUnreachable:
+			unreachable++
+		}
+	}
+	s.metrics.PeersDiscovered.Set(float64(discovered))
+	s.metrics.PeersConnecting.Set(float64(connecting))
+	s.metrics.PeersConnected.Set(float64(connected))
+	s.metrics.PeersUnreachable.Set(float64(unreachable))
 }
 
 func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
@@ -332,6 +355,7 @@ func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 	p.Stage = ConnectStageDirect // reset for next time
 	p.StageAttempts = 0
 
+	s.metrics.Connections.Inc()
 	return []Output{PeerConnected(e)}
 }
 
@@ -350,12 +374,14 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) {
 			s.log.Debugw("eager retry failed, falling back to direct", "peer", e.PeerKey.Short())
 			p.Stage = ConnectStageDirect
 			p.StageAttempts = 0
+			s.metrics.StageEscalations.Inc()
 		}
 	case ConnectStageDirect, ConnectStageUnspecified:
 		if p.StageAttempts >= directAttemptThreshold {
 			s.log.Debugw("escalating to punch", "peer", e.PeerKey.Short())
 			p.Stage = ConnectStagePunch
 			p.StageAttempts = 0
+			s.metrics.StageEscalations.Inc()
 		}
 	case ConnectStagePunch:
 		if p.StageAttempts >= punchAttemptThreshold {
@@ -363,6 +389,7 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) {
 			p.StageAttempts = 0
 			p.State = PeerStateUnreachable
 			p.NextActionAt = now.Add(unreachableRetryInterval)
+			s.metrics.StageEscalations.Inc()
 			return
 		}
 	}
@@ -401,6 +428,8 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 	case DisconnectCertExpired:
 		delay = unknownDisconnectRetryInterval
 	}
+
+	s.metrics.Disconnects.Inc()
 
 	s.log.Debugw("scheduling reconnect",
 		"peer", e.PeerKey.Short(),

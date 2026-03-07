@@ -13,6 +13,7 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/nat"
+	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -143,11 +144,12 @@ type Store struct {
 	trustBundle        *admissionv1.TrustBundle
 	desiredConnections map[string]Connection
 	onRevocation       func(types.PeerKey)
+	metrics            *metrics.GossipMetrics
 	mu                 sync.RWMutex
 	LocalID            types.PeerKey
 }
 
-func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBundle) (*Store, error) {
+func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBundle, m *metrics.GossipMetrics) (*Store, error) {
 	d, err := openDisk(pollenDir)
 	if err != nil {
 		return nil, err
@@ -161,9 +163,13 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 
 	localID := types.PeerKeyFromBytes(identityPub)
 
+	if m == nil {
+		m = &metrics.GossipMetrics{}
+	}
 	s := &Store{
 		LocalID: localID,
 		disk:    d,
+		metrics: m,
 		nodes: map[types.PeerKey]nodeRecord{
 			localID: {
 				maxCounter:  1,
@@ -388,6 +394,8 @@ func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipEv
 func (s *Store) ApplyEvents(events []*statev1.GossipEvent) ApplyResult {
 	s.mu.Lock()
 
+	s.metrics.BatchSize.Set(float64(len(events)))
+
 	var result ApplyResult
 	for _, event := range events {
 		if event == nil {
@@ -424,15 +432,13 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	}
 
 	// Self-state conflict handling: receiving our own events from peers.
-	// Only the higher-counter check is needed here. The old full-node model
-	// also compared payloads at the same counter, but with per-attribute
-	// events our own events regularly bounce back via gossip — triggering on
-	// same-counter would cause a rebroadcast storm. The higher-counter check
-	// catches the real split-brain case (another instance ran longer).
+	// Only the higher-counter check matters — same-counter events bounce
+	// back routinely via gossip and would cause a rebroadcast storm.
 	if peerID == s.LocalID {
 		if event.GetCounter() > rec.maxCounter {
 			rec.maxCounter = event.GetCounter()
 			s.nodes[peerID] = rec
+			s.metrics.SelfConflicts.Inc()
 			return ApplyResult{Rebroadcast: s.bumpAndBroadcastAllLocked()}
 		}
 		return ApplyResult{}
@@ -440,6 +446,7 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 
 	// Per-key stale check: only accept if this event is newer for this key.
 	if existing, ok := rec.log[key]; ok && event.GetCounter() <= existing.Counter {
+		s.metrics.EventsStale.Inc()
 		return ApplyResult{}
 	}
 
@@ -459,6 +466,7 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 		}
 		if (subject != types.PeerKey{}) {
 			result.revokedSubjects = []types.PeerKey{subject}
+			s.metrics.Revocations.Inc()
 		}
 	case deleted:
 		applyDeleteLocked(&rec, key)
@@ -471,8 +479,10 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 		rec.maxCounter = event.GetCounter()
 	}
 	s.nodes[peerID] = rec
+	s.metrics.EventsApplied.Inc()
 	if key.kind != attrRevocation || len(result.revokedSubjects) > 0 {
 		result.Rebroadcast = append(result.Rebroadcast, event)
+		s.metrics.EventsRebroadcast.Inc()
 	}
 	return result
 }

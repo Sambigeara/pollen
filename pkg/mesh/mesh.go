@@ -17,6 +17,7 @@ import (
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/nat"
+	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/sock"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -98,6 +99,7 @@ type impl struct {
 	streamCh         chan incomingStream
 	trustBundle      *admissionv1.TrustBundle
 	log              *zap.SugaredLogger
+	metrics          *metrics.MeshMetrics
 	listener         *quic.Listener
 	sessions         *sessionRegistry
 	mainQT           *quic.Transport
@@ -140,7 +142,7 @@ type directDialResult struct {
 	err     error
 }
 
-func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsIdentityTTL, membershipTTL, maxConnectionAge time.Duration, isSubjectRevoked func([]byte) bool) (Mesh, error) {
+func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsIdentityTTL, membershipTTL, maxConnectionAge time.Duration, isSubjectRevoked func([]byte) bool, mm *metrics.MeshMetrics) (Mesh, error) {
 	meshCert, err := GenerateIdentityCert(signPriv, creds.Cert, tlsIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate mesh cert: %w", err)
@@ -152,6 +154,9 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 	}
 
 	localKey := types.PeerKeyFromBytes(signPriv.Public().(ed25519.PublicKey)) //nolint:forcetypeassert
+	if mm == nil {
+		mm = &metrics.MeshMetrics{}
+	}
 	m := &impl{
 		log:              zap.S().Named("mesh"),
 		bareCert:         bareCert,
@@ -168,6 +173,7 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 		renewalCh:        make(chan *meshv1.CertRenewalResponse, 1),
 		inCh:             make(chan peer.Input, queueBufSize),
 		streamCh:         make(chan incomingStream, queueBufSize),
+		metrics:          mm,
 	}
 	m.meshCert.Store(&meshCert)
 	return m, nil
@@ -413,8 +419,11 @@ func (m *impl) Send(_ context.Context, peerKey types.PeerKey, env *meshv1.Envelo
 	}
 	if err := s.conn.SendDatagram(b); err != nil {
 		m.handleSendFailure(peerKey, s, err)
+		m.metrics.DatagramErrors.Inc()
 		return err
 	}
+	m.metrics.DatagramsSent.Inc()
+	m.metrics.DatagramBytesSent.Add(int64(len(b)))
 	return nil
 }
 
@@ -426,6 +435,7 @@ func (m *impl) handleSendFailure(peerKey types.PeerKey, s *peerSession, err erro
 	if !m.sessions.removeIfCurrent(peerKey, s) {
 		return
 	}
+	m.metrics.SessionDisconnects.Inc()
 	m.closeSession(s, CloseReasonDisconnect)
 	select {
 	case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: reason}:
@@ -558,6 +568,8 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		m.closeSession(replace, CloseReasonReplaced)
 	}
 
+	m.metrics.SessionConnects.Inc()
+
 	// Use the connection's own context so the recv goroutine lives as long as
 	// the QUIC connection, not as long as the (potentially short-lived) dial ctx.
 	go m.recvDatagrams(s, peerKey)
@@ -603,6 +615,7 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 		payload, err := s.conn.ReceiveDatagram(ctx)
 		if err != nil {
 			if m.sessions.removeIfCurrent(peerKey, s) {
+				m.metrics.SessionDisconnects.Inc()
 				reason := classifyQUICError(err)
 				m.log.Debugw("peer session died",
 					"peer", peerKey.Short(),
@@ -623,6 +636,8 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 			}
 			return
 		}
+		m.metrics.DatagramsRecv.Inc()
+		m.metrics.DatagramBytesRecv.Add(int64(len(payload)))
 		env := &meshv1.Envelope{}
 		if err := env.UnmarshalVT(payload); err != nil {
 			continue

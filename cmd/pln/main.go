@@ -538,7 +538,7 @@ func runNode(cmd *cobra.Command) {
 		logger.Infow("invite redemption disabled", "err", err)
 	}
 
-	stateStore, err := store.Load(pollenDir, pubKey, creds.Trust)
+	stateStore, err := store.Load(pollenDir, pubKey, creds.Trust, nil)
 	if err != nil {
 		logger.Fatal("failed to load state: ", err)
 	}
@@ -567,7 +567,7 @@ func runNode(cmd *cobra.Command) {
 		BootstrapPublic:  cfg.Public,
 	}
 
-	n, err := node.New(conf, privKey, creds, stateStore, peer.NewStore(), pollenDir)
+	n, err := node.New(conf, privKey, creds, stateStore, peer.NewStore(nil), pollenDir)
 	if err != nil {
 		logger.Fatal(err)
 	}

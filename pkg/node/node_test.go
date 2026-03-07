@@ -86,10 +86,10 @@ func (tn *testNode) start(t *testing.T) {
 
 	pub := tn.privKey.Public().(ed25519.PublicKey)
 
-	stateStore, err := store.Load(tn.dir, pub, tn.creds.Trust)
+	stateStore, err := store.Load(tn.dir, pub, tn.creds.Trust, nil)
 	require.NoError(t, err)
 
-	peerStore := peer.NewStore()
+	peerStore := peer.NewStore(nil)
 
 	peerTick := tn.peerTickInterval
 	if peerTick == 0 {

@@ -22,6 +22,7 @@ import (
 	plnconfig "github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/nat"
+	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/store"
@@ -99,6 +100,7 @@ type Config struct {
 	MaxConnectionAge    time.Duration
 	DisableGossipJitter bool
 	BootstrapPublic     bool
+	MetricsEnabled      bool
 }
 
 type punchRequest struct {
@@ -110,8 +112,8 @@ type punchRequest struct {
 type Node struct {
 	lastExpirySweep time.Time
 	mesh            mesh.Mesh
-	store           *store.Store
-	lastEagerSync   map[types.PeerKey]time.Time
+	gossipEvents    chan []*statev1.GossipEvent
+	punchCh         chan punchRequest
 	nonTargetStreak map[types.PeerKey]int
 	creds           *auth.NodeCredentials
 	localPeerEvents chan peer.Input
@@ -119,16 +121,19 @@ type Node struct {
 	conf            *Config
 	log             *zap.SugaredLogger
 	tun             *tunnel.Manager
-	ready           chan struct{}
-	gossipEvents    chan []*statev1.GossipEvent
-	punchCh         chan punchRequest
 	natDetector     *nat.Detector
+	lastEagerSync   map[types.PeerKey]time.Time
+	store           *store.Store
+	ready           chan struct{}
+	nodeMetrics     *metrics.NodeMetrics
+	topoMetrics     *metrics.TopologyMetrics
+	metricsCol      *metrics.Collector
 	pollenDir       string
 	signPriv        ed25519.PrivateKey
 	localCoord      topology.Coord
 	localCoordErr   float64
-	useHMACNearest  bool
 	renewalFailed   atomic.Bool
+	useHMACNearest  bool
 }
 
 func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, stateStore *store.Store, peerStore *peer.Store, pollenDir string) (*Node, error) {
@@ -145,7 +150,13 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 
 	stateStore.SetLocalNetwork(ips, uint32(conf.Port))
 
-	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSIdentityTTL, conf.MembershipTTL, conf.MaxConnectionAge, stateStore.IsSubjectRevoked)
+	var col *metrics.Collector
+	if conf.MetricsEnabled {
+		sink := metrics.NewLogSink(log.Named("metrics"))
+		col = metrics.New(sink, metrics.Config{})
+	}
+
+	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSIdentityTTL, conf.MembershipTTL, conf.MaxConnectionAge, stateStore.IsSubjectRevoked, metrics.NewMeshMetrics(col))
 	if err != nil {
 		log.Error("failed to load mesh", zap.Error(err))
 		return nil, err
@@ -176,6 +187,9 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		natDetector:     nat.NewDetector(),
 		localCoordErr:   1.0,
 		useHMACNearest:  true,
+		metricsCol:      col,
+		topoMetrics:     metrics.NewTopologyMetrics(col),
+		nodeMetrics:     metrics.NewNodeMetrics(col),
 	}
 
 	stateStore.OnRevocation(func(subject types.PeerKey) {
@@ -623,6 +637,13 @@ func (n *Node) syncPeersFromState() {
 	params.UseHMACNearest = n.useHMACNearest
 	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
 
+	n.topoMetrics.VivaldiError.Set(n.localCoordErr)
+	if n.useHMACNearest {
+		n.topoMetrics.HMACMode.Set(1.0)
+	} else {
+		n.topoMetrics.HMACMode.Set(0.0)
+	}
+
 	targetSet := buildTargetPeerSet(targets, n.store.DesiredConnections())
 
 	// Discover peers that are topology targets or needed by local service
@@ -694,6 +715,7 @@ func (n *Node) syncPeersFromState() {
 				continue
 			}
 			n.mesh.ClosePeerSession(kp.PeerID, mesh.CloseReasonTopologyPrune)
+			n.topoMetrics.TopologyPrunes.Inc()
 			n.handlePeerInput(peer.PeerDisconnected{PeerKey: kp.PeerID, Reason: peer.DisconnectGraceful})
 		}
 		delete(n.nonTargetStreak, kp.PeerID)
@@ -875,6 +897,7 @@ func (n *Node) punchLoop(ctx context.Context) {
 			}
 
 			localNAT := n.natDetector.Type()
+			n.nodeMetrics.PunchAttempts.Inc()
 
 			ctx, cancel := context.WithTimeout(context.Background(), punchTimeout)
 			err := n.mesh.Punch(ctx, req.peerKey, &net.UDPAddr{IP: req.ip, Port: req.port}, localNAT)
@@ -886,6 +909,7 @@ func (n *Node) punchLoop(ctx context.Context) {
 				} else {
 					n.log.Debugw("punch failed", "peer", req.peerKey.Short(), "err", err)
 				}
+				n.nodeMetrics.PunchFailures.Inc()
 				n.localPeerEvents <- peer.ConnectFailed{PeerKey: req.peerKey}
 			}
 		}
@@ -990,6 +1014,7 @@ func (n *Node) checkCertExpiry() bool {
 	}
 
 	remaining := time.Until(auth.CertExpiresAt(n.creds.Cert))
+	n.nodeMetrics.CertExpirySeconds.Set(remaining.Seconds())
 
 	if auth.IsCertNonRenewable(n.creds.Cert) {
 		if remaining <= certWarnThreshold {
@@ -1044,10 +1069,12 @@ func (n *Node) attemptCertRenewal() bool {
 
 		n.log.Infow("membership certificate renewed",
 			"expires_at", auth.CertExpiresAt(newCert))
+		n.nodeMetrics.CertRenewals.Inc()
 		return true
 	}
 
 	n.log.Warnw("membership certificate renewal failed: all peers refused or returned errors")
+	n.nodeMetrics.CertRenewalsFailed.Inc()
 	return false
 }
 
@@ -1166,6 +1193,8 @@ func (n *Node) shutdown() {
 	} else {
 		n.log.Info("successfully shut down mesh")
 	}
+
+	n.metricsCol.Close()
 
 	n.log.Debug("successfully shutdown Node")
 }

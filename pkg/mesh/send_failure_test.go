@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/quic-go/quic-go"
+	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
@@ -18,6 +19,7 @@ func TestHandleSendFailureRemovesSessionAndEmitsDisconnect(t *testing.T) {
 		log:      zap.New(core).Sugar(),
 		sessions: newSessionRegistry(),
 		inCh:     make(chan peer.Input, 1),
+		metrics:  &metrics.MeshMetrics{},
 	}
 	peerKey := testMeshPeerKey(1)
 	session := &peerSession{}
@@ -45,6 +47,7 @@ func TestHandleSendFailureIgnoresUnknownErrors(t *testing.T) {
 		log:      zap.New(core).Sugar(),
 		sessions: newSessionRegistry(),
 		inCh:     make(chan peer.Input, 1),
+		metrics:  &metrics.MeshMetrics{},
 	}
 	peerKey := testMeshPeerKey(1)
 	session := &peerSession{}
