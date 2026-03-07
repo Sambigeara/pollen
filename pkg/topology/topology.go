@@ -33,6 +33,7 @@ type Params struct {
 	RandomR                 int
 	Epoch                   int64
 	LocalNATType            nat.Type
+	PreferFullMesh          bool
 	UseHMACNearest          bool
 }
 
@@ -69,6 +70,9 @@ func ComputeTargetPeers(localKey types.PeerKey, localCoord Coord, peers []PeerIn
 	if len(peers) == 0 {
 		return nil
 	}
+	if params.PreferFullMesh {
+		return selectFeasibleFullMesh(localKey, peers, params)
+	}
 
 	selected := make(map[types.PeerKey]struct{})
 
@@ -93,6 +97,30 @@ func ComputeTargetPeers(localKey types.PeerKey, localCoord Coord, peers []PeerIn
 	result := make([]types.PeerKey, 0, len(selected))
 	for pk := range selected {
 		result = append(result, pk)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Less(result[j]) })
+	return result
+}
+
+func selectFeasibleFullMesh(localKey types.PeerKey, peers []PeerInfo, params Params) []types.PeerKey {
+	localPrefix := lanPrefix(params.LocalIPs)
+	result := make([]types.PeerKey, 0, len(peers))
+	for _, p := range peers {
+		if p.Key == localKey {
+			continue
+		}
+		if p.PubliclyAccessible || InferPrivatelyRoutable(params.LocalIPs, p.IPs) {
+			result = append(result, p.Key)
+			continue
+		}
+		if suppressProactivePrivate(params, p) {
+			continue
+		}
+		isLAN := localPrefix != "" && lanPrefix(p.IPs) == localPrefix
+		if natFiltered(isLAN, params.LocalNATType, p.NatType) {
+			continue
+		}
+		result = append(result, p.Key)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Less(result[j]) })
 	return result

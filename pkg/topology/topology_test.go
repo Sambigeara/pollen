@@ -574,3 +574,38 @@ func TestLongLinksSuppressRemotePrivateByDefault(t *testing.T) {
 	result := selectLongLinks(local, peers, nil, params)
 	require.ElementsMatch(t, []types.PeerKey{peerKey(2), peerKey(3)}, result)
 }
+
+func TestComputeTargetPeersPreferFullMeshTargetsAllFeasiblePeers(t *testing.T) {
+	local := peerKey(0)
+	params := Params{
+		LocalIPs:                []string{"81.108.176.99", "192.168.0.203"},
+		LocalObservedExternalIP: "81.108.176.99",
+		LocalNATType:            nat.Unknown,
+		PreferFullMesh:          true,
+	}
+	peers := []PeerInfo{
+		{Key: peerKey(1), IPs: []string{"18.135.80.64"}, PubliclyAccessible: true},
+		{Key: peerKey(2), IPs: []string{"192.168.0.24"}},
+		{Key: peerKey(3), IPs: []string{"192.168.0.220"}},
+	}
+
+	result := ComputeTargetPeers(local, Coord{}, peers, params)
+	require.Equal(t, []types.PeerKey{peerKey(1), peerKey(2), peerKey(3)}, result)
+}
+
+func TestComputeTargetPeersPreferFullMeshSkipsInfeasibleRemotePrivate(t *testing.T) {
+	local := peerKey(0)
+	params := Params{
+		LocalIPs:                []string{"10.1.2.10"},
+		LocalObservedExternalIP: "52.204.52.130",
+		LocalNATType:            nat.Hard,
+		PreferFullMesh:          true,
+	}
+	peers := []PeerInfo{
+		{Key: peerKey(1), IPs: []string{"10.2.2.10"}, NatType: nat.Hard, ObservedExternalIP: "34.252.188.39"},
+		{Key: peerKey(2), IPs: []string{"3.250.216.148"}, PubliclyAccessible: true},
+	}
+
+	result := ComputeTargetPeers(local, Coord{}, peers, params)
+	require.Equal(t, []types.PeerKey{peerKey(2)}, result)
+}

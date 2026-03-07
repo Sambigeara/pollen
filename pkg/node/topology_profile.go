@@ -7,6 +7,7 @@ import (
 
 const (
 	adaptiveMinClusterSize     = 8
+	tinyClusterPeerThreshold   = 4
 	publicRatioSparseThreshold = 0.75
 	publicRatioMixedThreshold  = 0.5
 )

@@ -103,6 +103,13 @@ func TestSyncPeersFromStateKeepsDesiredNonTargets(t *testing.T) {
 
 func TestSyncPeersFromStateSuppressesRemotePrivateUnlessDesired(t *testing.T) {
 	n := newMinimalNode(t, false)
+	n.store.ApplyEvents([]*statev1.GossipEvent{{
+		PeerId:  n.store.LocalID.String(),
+		Counter: 2,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.1.1.20"}, LocalPort: 60611},
+		},
+	}})
 	n.store.SetObservedExternalIP("52.204.52.130")
 
 	localGateway := testPeerKey(1)
@@ -379,6 +386,17 @@ func TestRevokeStreakPublicPeerStickyLonger(t *testing.T) {
 		if i < 5 {
 			setPubliclyAccessible(n.store, pk, 10+uint64(i))
 		}
+	}
+
+	// Fake inbound peers push activePeerCount above tinyClusterPeerThreshold
+	// so PreferFullMesh stays off; without them the full-mesh path would
+	// target every peer and no public peer could be non-targeted.
+	for i := range tinyClusterPeerThreshold + 1 {
+		n.peers.Step(time.Now(), peer.ConnectPeer{
+			PeerKey:      testPeerKey(byte(100 + i)),
+			IP:           net.ParseIP("10.0.0.1"),
+			ObservedPort: 9000,
+		})
 	}
 
 	nonTarget := findNonTargetPublicPeer(t, n)

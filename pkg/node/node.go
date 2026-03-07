@@ -608,7 +608,12 @@ func (n *Node) syncPeersFromState() {
 	epoch := time.Now().Unix() / topology.EpochSeconds
 	localIPs := n.store.NodeIPs(n.store.LocalID)
 	shape := summarizeTopologyShape(localIPs, knownPeers)
+	activePeerCount := len(connectedPeers)
+	if activePeerCount == 0 {
+		activePeerCount = len(knownPeers)
+	}
 	params := adaptiveTopologyParams(epoch, shape)
+	params.PreferFullMesh = activePeerCount <= tinyClusterPeerThreshold
 	params.LocalIPs = localIPs
 	params.CurrentOutbound = currentOutbound
 	params.LocalNATType = n.natDetector.Type()
