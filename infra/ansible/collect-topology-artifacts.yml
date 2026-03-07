@@ -1,0 +1,64 @@
+---
+# Collect topology snapshots and recent logs from every node.
+# Usage:
+#   ansible-playbook collect-topology-artifacts.yml -i inventories/vivaldi.py -e artifact_dir=/tmp/pollen-artifacts
+#   ansible-playbook collect-topology-artifacts.yml -i inventories/vivaldi_public.py -e artifact_dir=/tmp/pollen-artifacts
+
+- name: Collect topology artifacts
+  hosts: all
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Validate artifact_dir is set
+      ansible.builtin.assert:
+        that: artifact_dir is defined and artifact_dir | length > 0
+        fail_msg: "artifact_dir must be set (e.g. -e artifact_dir=/tmp/pollen-artifacts)"
+
+  tasks:
+    - name: Capture status snapshot
+      ansible.builtin.command: pln status
+      register: pln_status
+      changed_when: false
+
+    - name: Capture recent logs
+      ansible.builtin.command: journalctl -u pln -n 300 --no-pager
+      register: pln_logs
+      changed_when: false
+
+    - name: Capture service health
+      ansible.builtin.command: systemctl is-active pln
+      register: pln_active
+      changed_when: false
+
+    - name: Ensure local artifact directory exists
+      delegate_to: localhost
+      become: false
+      ansible.builtin.file:
+        path: "{{ artifact_dir }}/{{ inventory_hostname }}"
+        state: directory
+        mode: "0755"
+
+    - name: Write status artifact
+      delegate_to: localhost
+      become: false
+      ansible.builtin.copy:
+        dest: "{{ artifact_dir }}/{{ inventory_hostname }}/status.txt"
+        content: "{{ pln_status.stdout }}\n"
+        mode: "0644"
+
+    - name: Write logs artifact
+      delegate_to: localhost
+      become: false
+      ansible.builtin.copy:
+        dest: "{{ artifact_dir }}/{{ inventory_hostname }}/journalctl-pln.txt"
+        content: "{{ pln_logs.stdout }}\n"
+        mode: "0644"
+
+    - name: Write health artifact
+      delegate_to: localhost
+      become: false
+      ansible.builtin.copy:
+        dest: "{{ artifact_dir }}/{{ inventory_hostname }}/service-state.txt"
+        content: "{{ pln_active.stdout }}\n"
+        mode: "0644"
