@@ -8,6 +8,7 @@ import (
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/mesh"
+	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/topology"
@@ -48,16 +49,7 @@ func TestSyncPeersFromStateKeepsDesiredNonTargets(t *testing.T) {
 	}
 
 	known := n.store.KnownPeers()
-	peerInfos := make([]topology.PeerInfo, 0, len(known))
-	for _, kp := range known {
-		peerInfos = append(peerInfos, topology.PeerInfo{
-			Key:                kp.PeerID,
-			Coord:              kp.VivaldiCoord,
-			IPs:                kp.IPs,
-			ObservedExternalIP: kp.ObservedExternalIP,
-			PubliclyAccessible: kp.PubliclyAccessible,
-		})
-	}
+	peerInfos := knownPeersToPeerInfos(known)
 
 	epoch := time.Now().Unix() / topology.EpochSeconds
 	targets := topology.ComputeTargetPeers(
@@ -415,22 +407,125 @@ func TestRevokeStreakPublicPeerStickyLonger(t *testing.T) {
 	require.False(t, ok, "public peer should be forgotten after %d non-target ticks", revokeStreakThresholdPublic)
 }
 
+// --- Adaptive topology profile integration tests ---
+
+func TestAllPublicClusterProducesFewerTargets(t *testing.T) {
+	n := newMinimalNode(t, false)
+
+	// Add 20 public peers.
+	for i := range 20 {
+		pk := testPeerKey(byte(i + 1))
+		addCustomPeerForTopology(t, n.store, pk,
+			[]string{fmt.Sprintf("203.0.113.%d", i+1)},
+			uint32(9000+i), i+1, "", true)
+	}
+
+	known := n.store.KnownPeers()
+	localIPs := n.store.NodeIPs(n.store.LocalID)
+	shape := summarizeTopologyShape(localIPs, known)
+	epoch := time.Now().Unix() / topology.EpochSeconds
+	params := adaptiveTopologyParams(epoch, shape)
+	params.LocalIPs = localIPs
+	params.UseHMACNearest = n.useHMACNearest
+	params.LocalNATType = nat.Easy
+
+	peerInfos := knownPeersToPeerInfos(known)
+	// Public peers are Easy NAT in production; set it here so NAT filtering
+	// doesn't mask the budget difference we're testing.
+	for i := range peerInfos {
+		peerInfos[i].NatType = nat.Easy
+	}
+	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
+
+	// With adaptive params (NearestK=2, RandomR=1, InfraMax=2) budget is 5.
+	// Default budget would be 8 (NearestK=4, RandomR=2, InfraMax=2).
+	defaultParams := topology.DefaultParams(epoch)
+	defaultParams.UseHMACNearest = n.useHMACNearest
+	defaultParams.LocalNATType = nat.Easy
+	defaultParams.LocalIPs = localIPs
+	defaultTargets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, defaultParams)
+
+	require.Less(t, len(targets), len(defaultTargets),
+		"all-public cluster should produce fewer targets with adaptive params")
+}
+
+func TestMixedClusterRetainsSameSiteAndPublicPeers(t *testing.T) {
+	n := newMinimalNode(t, false)
+
+	// Local node has 10.1.x.x IPs (set by newMinimalNode as 127.0.0.1, override via store).
+	// Use custom IPs for the local node.
+	n.store.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  n.store.LocalID.String(),
+			Counter: 1,
+			Change: &statev1.GossipEvent_Network{
+				Network: &statev1.NetworkChange{
+					Ips:       []string{"10.1.0.1"},
+					LocalPort: 9000,
+				},
+			},
+		},
+	})
+
+	// 2 public peers (infra backbone).
+	for i := range 2 {
+		pk := testPeerKey(byte(i + 1))
+		addCustomPeerForTopology(t, n.store, pk,
+			[]string{fmt.Sprintf("203.0.113.%d", i+1)},
+			uint32(9000+i), i+1, "", true)
+	}
+
+	// 6 same-site private peers (10.1.x.x).
+	for i := range 6 {
+		pk := testPeerKey(byte(i + 3))
+		addCustomPeerForTopology(t, n.store, pk,
+			[]string{fmt.Sprintf("10.1.0.%d", i+10)},
+			uint32(9010+i), i+3, "", false)
+	}
+
+	// 4 remote private peers (10.2.x.x).
+	for i := range 4 {
+		pk := testPeerKey(byte(i + 9))
+		addCustomPeerForTopology(t, n.store, pk,
+			[]string{fmt.Sprintf("10.2.0.%d", i+10)},
+			uint32(9020+i), i+9, "34.252.188.39", false)
+	}
+
+	known := n.store.KnownPeers()
+	localIPs := n.store.NodeIPs(n.store.LocalID)
+	shape := summarizeTopologyShape(localIPs, known)
+
+	// With 2/12 public (~17%), should keep default budgets.
+	require.Less(t, float64(shape.publicCount)/float64(shape.totalCount), 0.5)
+
+	epoch := time.Now().Unix() / topology.EpochSeconds
+	params := adaptiveTopologyParams(epoch, shape)
+	require.Equal(t, topology.DefaultNearestK, params.NearestK, "mixed cluster should keep default NearestK")
+	require.Equal(t, topology.DefaultRandomR, params.RandomR, "mixed cluster should keep default RandomR")
+}
+
+func knownPeersToPeerInfos(peers []store.KnownPeer) []topology.PeerInfo {
+	infos := make([]topology.PeerInfo, 0, len(peers))
+	for _, kp := range peers {
+		infos = append(infos, topology.PeerInfo{
+			Key:                kp.PeerID,
+			Coord:              kp.VivaldiCoord,
+			IPs:                kp.IPs,
+			NatType:            kp.NatType,
+			ObservedExternalIP: kp.ObservedExternalIP,
+			PubliclyAccessible: kp.PubliclyAccessible,
+		})
+	}
+	return infos
+}
+
 // findNonTargetPublicPeer returns a publicly-accessible peer key that is known
 // in the store but NOT in the current topology target set.
 func findNonTargetPublicPeer(t *testing.T, n *Node) types.PeerKey {
 	t.Helper()
 
 	known := n.store.KnownPeers()
-	peerInfos := make([]topology.PeerInfo, 0, len(known))
-	for _, kp := range known {
-		peerInfos = append(peerInfos, topology.PeerInfo{
-			Key:                kp.PeerID,
-			Coord:              kp.VivaldiCoord,
-			IPs:                kp.IPs,
-			ObservedExternalIP: kp.ObservedExternalIP,
-			PubliclyAccessible: kp.PubliclyAccessible,
-		})
-	}
+	peerInfos := knownPeersToPeerInfos(known)
 
 	epoch := time.Now().Unix() / topology.EpochSeconds
 	params := topology.DefaultParams(epoch)
@@ -456,16 +551,7 @@ func findNonTargetPeer(t *testing.T, n *Node) types.PeerKey {
 	t.Helper()
 
 	known := n.store.KnownPeers()
-	peerInfos := make([]topology.PeerInfo, 0, len(known))
-	for _, kp := range known {
-		peerInfos = append(peerInfos, topology.PeerInfo{
-			Key:                kp.PeerID,
-			Coord:              kp.VivaldiCoord,
-			IPs:                kp.IPs,
-			ObservedExternalIP: kp.ObservedExternalIP,
-			PubliclyAccessible: kp.PubliclyAccessible,
-		})
-	}
+	peerInfos := knownPeersToPeerInfos(known)
 
 	epoch := time.Now().Unix() / topology.EpochSeconds
 	params := topology.DefaultParams(epoch)

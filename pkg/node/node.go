@@ -584,10 +584,12 @@ func (n *Node) syncPeersFromState() {
 	}
 
 	epoch := time.Now().Unix() / topology.EpochSeconds
-	params := topology.DefaultParams(epoch)
+	localIPs := n.store.NodeIPs(n.store.LocalID)
+	shape := summarizeTopologyShape(localIPs, knownPeers)
+	params := adaptiveTopologyParams(epoch, shape)
+	params.LocalIPs = localIPs
 	params.CurrentOutbound = currentOutbound
 	params.LocalNATType = n.natDetector.Type()
-	params.LocalIPs = n.store.NodeIPs(n.store.LocalID)
 	if localRec, ok := n.store.Get(n.store.LocalID); ok {
 		params.LocalObservedExternalIP = localRec.ObservedExternalIP
 	}
