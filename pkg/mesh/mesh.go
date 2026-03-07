@@ -429,8 +429,8 @@ func (m *impl) handleSendFailure(peerKey types.PeerKey, s *peerSession, err erro
 	m.closeSession(s, CloseReasonDisconnect)
 	select {
 	case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: reason}:
-	default:
-		m.log.Debugw("dropping peer disconnect event after send failure", "peer", peerKey.Short(), "reason", reason)
+	case <-time.After(eventSendTimeout):
+		m.log.Warnw("dropped peer disconnect event after send failure", "peer", peerKey.Short(), "reason", reason)
 	}
 }
 
