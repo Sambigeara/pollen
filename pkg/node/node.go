@@ -328,15 +328,7 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 	switch body := env.GetBody().(type) {
 	case *meshv1.Envelope_Clock:
 		events := n.store.MissingFor(body.Clock)
-		batches := batchEvents(events, MaxDatagramPayload)
-		for _, batch := range batches {
-			env := &meshv1.Envelope{Body: &meshv1.Envelope_Events{
-				Events: &statev1.GossipEventBatch{Events: batch, IsResponse: true},
-			}}
-			if err := n.mesh.Send(ctx, from, env); err != nil {
-				n.log.Debugw("failed sending gossip events", "to", from.Short(), "err", err)
-			}
-		}
+		n.sendGossipBatchesToPeer(ctx, from, batchEvents(events, MaxDatagramPayload), true)
 	case *meshv1.Envelope_Events:
 		result := n.store.ApplyEvents(body.Events.GetEvents())
 		if len(result.Rebroadcast) > 0 && !body.Events.GetIsResponse() {
@@ -358,19 +350,49 @@ func (n *Node) broadcastEvents(ctx context.Context, events []*statev1.GossipEven
 		return
 	}
 
-	connectedPeers := n.GetConnectedPeers()
-	batches := batchEvents(events, MaxDatagramPayload)
+	n.broadcastGossipBatches(ctx, n.GetConnectedPeers(), batchEvents(events, MaxDatagramPayload))
+}
+
+func (n *Node) sendGossipBatchesToPeer(ctx context.Context, peerID types.PeerKey, batches [][]*statev1.GossipEvent, isResponse bool) {
+	for _, batch := range batches {
+		env := &meshv1.Envelope{Body: &meshv1.Envelope_Events{
+			Events: &statev1.GossipEventBatch{Events: batch, IsResponse: isResponse},
+		}}
+		if err := n.mesh.Send(ctx, peerID, env); err != nil {
+			n.log.Debugw("failed sending gossip events", "to", peerID.Short(), "err", err)
+			return
+		}
+	}
+}
+
+func (n *Node) broadcastGossipBatches(ctx context.Context, peerIDs []types.PeerKey, batches [][]*statev1.GossipEvent) {
+	failed := make(map[types.PeerKey]struct{})
 	for _, batch := range batches {
 		env := &meshv1.Envelope{Body: &meshv1.Envelope_Events{
 			Events: &statev1.GossipEventBatch{Events: batch},
 		}}
-		for _, peerID := range connectedPeers {
+		for _, peerID := range peerIDs {
 			if peerID == n.store.LocalID {
+				continue
+			}
+			if _, ok := failed[peerID]; ok {
 				continue
 			}
 			if err := n.mesh.Send(ctx, peerID, env); err != nil {
 				n.log.Debugw("event gossip send failed", "peer", peerID.Short(), "err", err)
+				failed[peerID] = struct{}{}
 			}
+		}
+	}
+}
+
+func (n *Node) sendClockBatchesToPeer(ctx context.Context, peerID types.PeerKey, batches []*statev1.GossipVectorClock) {
+	for _, batch := range batches {
+		if err := n.mesh.Send(ctx, peerID, &meshv1.Envelope{
+			Body: &meshv1.Envelope_Clock{Clock: batch},
+		}); err != nil {
+			n.log.Debugw("eager sync failed", "peer", peerID.Short(), "err", err)
+			return
 		}
 	}
 }
@@ -693,13 +715,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			n.store.SetLastAddr(e.PeerKey, addr.String())
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
-				for _, batch := range batchClocks(n.store.EagerSyncClock(), MaxDatagramPayload) {
-					if err := n.mesh.Send(context.Background(), e.PeerKey, &meshv1.Envelope{
-						Body: &meshv1.Envelope_Clock{Clock: batch},
-					}); err != nil {
-						n.log.Debugw("eager sync failed", "peer", e.PeerKey.Short(), "err", err)
-					}
-				}
+				n.sendClockBatchesToPeer(context.Background(), e.PeerKey, batchClocks(n.store.EagerSyncClock(), MaxDatagramPayload))
 				n.lastEagerSync[e.PeerKey] = time.Now()
 			}
 
