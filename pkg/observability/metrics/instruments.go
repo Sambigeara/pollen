@@ -38,6 +38,12 @@ type PeerMetrics struct {
 	StageEscalations *Counter
 }
 
+// Enabled reports whether any gauge is wired (non-nil), so callers can skip
+// iterating peers when metrics collection is disabled.
+func (m *PeerMetrics) Enabled() bool {
+	return m.PeersDiscovered != nil
+}
+
 // NewPeerMetrics registers all peer instruments on c.
 func NewPeerMetrics(c *Collector) *PeerMetrics {
 	if c == nil {
@@ -46,22 +52,22 @@ func NewPeerMetrics(c *Collector) *PeerMetrics {
 	return &PeerMetrics{
 		Connections:      c.Counter("pollen_peer_connections_total", Labels{}),
 		Disconnects:      c.Counter("pollen_peer_disconnects_total", Labels{}),
-		PeersDiscovered:  c.Gauge("pollen_peer_discovered", Labels{}),
-		PeersConnecting:  c.Gauge("pollen_peer_connecting", Labels{}),
-		PeersConnected:   c.Gauge("pollen_peer_connected", Labels{}),
-		PeersUnreachable: c.Gauge("pollen_peer_unreachable", Labels{}),
+		PeersDiscovered:  c.Gauge("pollen_peers_discovered", Labels{}),
+		PeersConnecting:  c.Gauge("pollen_peers_connecting", Labels{}),
+		PeersConnected:   c.Gauge("pollen_peers_connected", Labels{}),
+		PeersUnreachable: c.Gauge("pollen_peers_unreachable", Labels{}),
 		StageEscalations: c.Counter("pollen_peer_stage_escalations_total", Labels{}),
 	}
 }
 
 // GossipMetrics holds pre-registered instruments for the gossip/store layer.
 type GossipMetrics struct {
+	EventsReceived    *Counter
 	EventsApplied     *Counter
 	EventsStale       *Counter
 	EventsRebroadcast *Counter
 	SelfConflicts     *Counter
 	Revocations       *Counter
-	BatchSize         *Gauge
 }
 
 // NewGossipMetrics registers all gossip instruments on c.
@@ -70,20 +76,20 @@ func NewGossipMetrics(c *Collector) *GossipMetrics {
 		return &GossipMetrics{}
 	}
 	return &GossipMetrics{
+		EventsReceived:    c.Counter("pollen_gossip_events_received_total", Labels{}),
 		EventsApplied:     c.Counter("pollen_gossip_events_applied_total", Labels{}),
 		EventsStale:       c.Counter("pollen_gossip_events_stale_total", Labels{}),
 		EventsRebroadcast: c.Counter("pollen_gossip_events_rebroadcast_total", Labels{}),
 		SelfConflicts:     c.Counter("pollen_gossip_self_conflicts_total", Labels{}),
 		Revocations:       c.Counter("pollen_gossip_revocations_total", Labels{}),
-		BatchSize:         c.Gauge("pollen_gossip_batch_size", Labels{}),
 	}
 }
 
 // TopologyMetrics holds pre-registered instruments for topology selection.
 type TopologyMetrics struct {
-	VivaldiError   *Gauge
-	HMACMode       *Gauge
-	TopologyPrunes *Counter
+	VivaldiError       *Gauge
+	HMACNearestEnabled *Gauge
+	TopologyPrunes     *Counter
 }
 
 // NewTopologyMetrics registers all topology instruments on c.
@@ -92,9 +98,9 @@ func NewTopologyMetrics(c *Collector) *TopologyMetrics {
 		return &TopologyMetrics{}
 	}
 	return &TopologyMetrics{
-		VivaldiError:   c.Gauge("pollen_topology_vivaldi_error", Labels{}),
-		HMACMode:       c.Gauge("pollen_topology_hmac_mode", Labels{}),
-		TopologyPrunes: c.Counter("pollen_topology_prunes_total", Labels{}),
+		VivaldiError:       c.Gauge("pollen_topology_vivaldi_error", Labels{}),
+		HMACNearestEnabled: c.Gauge("pollen_topology_hmac_nearest_enabled", Labels{}),
+		TopologyPrunes:     c.Counter("pollen_topology_prunes_total", Labels{}),
 	}
 }
 

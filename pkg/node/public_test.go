@@ -29,7 +29,7 @@ func newMinimalNode(t *testing.T, bootstrapPublic bool) *Node {
 	require.NoError(t, err)
 
 	creds := &auth.NodeCredentials{Trust: trust, Cert: cert}
-	stateStore, err := store.Load(t.TempDir(), pub, trust, nil)
+	stateStore, err := store.Load(t.TempDir(), pub, trust)
 	require.NoError(t, err)
 
 	conf := &Config{
@@ -42,7 +42,7 @@ func newMinimalNode(t *testing.T, bootstrapPublic bool) *Node {
 		BootstrapPublic:  bootstrapPublic,
 	}
 
-	n, err := New(conf, priv, creds, stateStore, peer.NewStore(nil), t.TempDir())
+	n, err := New(conf, priv, creds, stateStore, peer.NewStore(), t.TempDir())
 	require.NoError(t, err)
 	return n
 }

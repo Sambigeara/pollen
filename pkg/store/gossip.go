@@ -149,7 +149,7 @@ type Store struct {
 	LocalID            types.PeerKey
 }
 
-func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBundle, m *metrics.GossipMetrics) (*Store, error) {
+func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBundle) (*Store, error) {
 	d, err := openDisk(pollenDir)
 	if err != nil {
 		return nil, err
@@ -163,13 +163,10 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 
 	localID := types.PeerKeyFromBytes(identityPub)
 
-	if m == nil {
-		m = &metrics.GossipMetrics{}
-	}
 	s := &Store{
 		LocalID: localID,
 		disk:    d,
-		metrics: m,
+		metrics: &metrics.GossipMetrics{},
 		nodes: map[types.PeerKey]nodeRecord{
 			localID: {
 				maxCounter:  1,
@@ -262,6 +259,11 @@ func (s *Store) Close() error {
 
 func (s *Store) OnRevocation(fn func(types.PeerKey)) {
 	s.onRevocation = fn
+}
+
+// SetGossipMetrics replaces the no-op metrics with wired instruments.
+func (s *Store) SetGossipMetrics(m *metrics.GossipMetrics) {
+	s.metrics = m
 }
 
 func (s *Store) Save() error {
@@ -394,7 +396,7 @@ func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipEv
 func (s *Store) ApplyEvents(events []*statev1.GossipEvent) ApplyResult {
 	s.mu.Lock()
 
-	s.metrics.BatchSize.Set(float64(len(events)))
+	s.metrics.EventsReceived.Add(int64(len(events)))
 
 	var result ApplyResult
 	for _, event := range events {
@@ -479,8 +481,8 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 		rec.maxCounter = event.GetCounter()
 	}
 	s.nodes[peerID] = rec
-	s.metrics.EventsApplied.Inc()
 	if key.kind != attrRevocation || len(result.revokedSubjects) > 0 {
+		s.metrics.EventsApplied.Inc()
 		result.Rebroadcast = append(result.Rebroadcast, event)
 		s.metrics.EventsRebroadcast.Inc()
 	}

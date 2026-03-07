@@ -696,7 +696,7 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 	localPub := make([]byte, 32)
 	localPub[0] = 1
 
-	s, err := Load(dir, localPub, nil, nil)
+	s, err := Load(dir, localPub, nil)
 	if err != nil {
 		t.Fatalf("load store: %v", err)
 	}
@@ -722,7 +722,7 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 		t.Fatalf("close store: %v", err)
 	}
 
-	s2, err := Load(dir, localPub, nil, nil)
+	s2, err := Load(dir, localPub, nil)
 	if err != nil {
 		t.Fatalf("reload store: %v", err)
 	}
@@ -756,7 +756,7 @@ func TestLoadServiceWithOrphanedProvider(t *testing.T) {
 	localPub[0] = 1
 
 	// Bootstrap an empty store to create the state file.
-	s, err := Load(dir, localPub, nil, nil)
+	s, err := Load(dir, localPub, nil)
 	if err != nil {
 		t.Fatalf("initial load: %v", err)
 	}
@@ -804,7 +804,7 @@ func TestLoadServiceWithOrphanedProvider(t *testing.T) {
 	}
 
 	// Load should not panic even though the service references an unknown provider.
-	s2, err := Load(dir, localPub, nil, nil)
+	s2, err := Load(dir, localPub, nil)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
@@ -977,7 +977,7 @@ func TestFreshStoreGossipsPubliclyAccessibleDeletion(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	s, err := Load(t.TempDir(), pub, nil, nil)
+	s, err := Load(t.TempDir(), pub, nil)
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -1327,7 +1327,7 @@ func TestLoadRestoresRevocationsFromDisk(t *testing.T) {
 	localPub := make([]byte, 32)
 	localPub[0] = 1
 
-	s, err := Load(dir, localPub, trust, nil)
+	s, err := Load(dir, localPub, trust)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -1345,7 +1345,7 @@ func TestLoadRestoresRevocationsFromDisk(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	s2, err := Load(dir, localPub, trust, nil)
+	s2, err := Load(dir, localPub, trust)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
@@ -1520,7 +1520,7 @@ func TestFreshStoreDoesNotGossipVivaldi(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	s, err := Load(t.TempDir(), pub, nil, nil)
+	s, err := Load(t.TempDir(), pub, nil)
 	require.NoError(t, err)
 	defer s.Close()
 

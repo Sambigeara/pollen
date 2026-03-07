@@ -115,6 +115,9 @@ func (c *Collector) flush() {
 		})
 	}
 	for k, g := range c.gauges {
+		if !g.dirty.Swap(false) {
+			continue
+		}
 		snaps = append(snaps, Snapshot{
 			Name:   k.name,
 			Labels: k.labels,
@@ -136,11 +139,13 @@ type counter struct {
 
 // gauge stores a float64 as atomic uint64 bits.
 type gauge struct {
-	bits atomic.Uint64
+	bits  atomic.Uint64
+	dirty atomic.Bool
 }
 
 func (g *gauge) store(v float64) {
 	g.bits.Store(math.Float64bits(v))
+	g.dirty.Store(true)
 }
 
 func (g *gauge) load() float64 {

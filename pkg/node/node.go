@@ -156,11 +156,18 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		col = metrics.New(sink, metrics.Config{})
 	}
 
-	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSIdentityTTL, conf.MembershipTTL, conf.MaxConnectionAge, stateStore.IsSubjectRevoked, metrics.NewMeshMetrics(col))
+	meshMetrics := metrics.NewMeshMetrics(col)
+	peerMetrics := metrics.NewPeerMetrics(col)
+	gossipMetrics := metrics.NewGossipMetrics(col)
+
+	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSIdentityTTL, conf.MembershipTTL, conf.MaxConnectionAge, stateStore.IsSubjectRevoked, meshMetrics)
 	if err != nil {
 		log.Error("failed to load mesh", zap.Error(err))
 		return nil, err
 	}
+
+	stateStore.SetGossipMetrics(gossipMetrics)
+	peerStore.SetPeerMetrics(peerMetrics)
 
 	tun := tunnel.New(m)
 
@@ -639,9 +646,9 @@ func (n *Node) syncPeersFromState() {
 
 	n.topoMetrics.VivaldiError.Set(n.localCoordErr)
 	if n.useHMACNearest {
-		n.topoMetrics.HMACMode.Set(1.0)
+		n.topoMetrics.HMACNearestEnabled.Set(1.0)
 	} else {
-		n.topoMetrics.HMACMode.Set(0.0)
+		n.topoMetrics.HMACNearestEnabled.Set(0.0)
 	}
 
 	targetSet := buildTargetPeerSet(targets, n.store.DesiredConnections())

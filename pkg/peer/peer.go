@@ -57,15 +57,17 @@ type Store struct {
 	mu      sync.RWMutex
 }
 
-func NewStore(m *metrics.PeerMetrics) *Store {
-	if m == nil {
-		m = &metrics.PeerMetrics{}
-	}
+func NewStore() *Store {
 	return &Store{
 		log:     zap.S().Named("peers"),
-		metrics: m,
+		metrics: &metrics.PeerMetrics{},
 		m:       make(map[types.PeerKey]*Peer),
 	}
+}
+
+// SetPeerMetrics replaces the no-op metrics with wired instruments.
+func (s *Store) SetPeerMetrics(m *metrics.PeerMetrics) {
+	s.metrics = m
 }
 
 // Input events.
@@ -247,6 +249,9 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 }
 
 func (s *Store) updateGauges() {
+	if !s.metrics.Enabled() {
+		return
+	}
 	var discovered, connecting, connected, unreachable int
 	for _, p := range s.m {
 		switch p.State { //nolint:exhaustive

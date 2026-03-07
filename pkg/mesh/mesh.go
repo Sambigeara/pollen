@@ -154,9 +154,6 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 	}
 
 	localKey := types.PeerKeyFromBytes(signPriv.Public().(ed25519.PublicKey)) //nolint:forcetypeassert
-	if mm == nil {
-		mm = &metrics.MeshMetrics{}
-	}
 	m := &impl{
 		log:              zap.S().Named("mesh"),
 		bareCert:         bareCert,
@@ -503,6 +500,7 @@ func (m *impl) ClosePeerSession(peerKey types.PeerKey, reason CloseReason) {
 		return
 	}
 	if m.sessions.removeIfCurrent(peerKey, s) {
+		m.metrics.SessionDisconnects.Inc()
 		m.closeSession(s, reason)
 	}
 }
@@ -527,6 +525,7 @@ func (m *impl) sessionReaper(ctx context.Context) {
 				}
 				m.log.Debugw("reconnecting peer to refresh certificates", "peer", peerKey.Short(), "age", now.Sub(s.createdAt))
 				if m.sessions.removeIfCurrent(peerKey, s) {
+					m.metrics.SessionDisconnects.Inc()
 					m.closeSession(s, CloseReasonCertRotation)
 					select {
 					case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertRotation}:
