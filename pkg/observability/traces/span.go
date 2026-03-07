@@ -8,11 +8,9 @@ type Tracer struct {
 	sink Sink
 }
 
-// NewTracer creates a Tracer that exports completed spans to sink.
+// NewTracer creates a Tracer that exports completed spans to sink. If sink is
+// nil the tracer still creates spans but never exports them.
 func NewTracer(sink Sink) *Tracer {
-	if sink == nil {
-		return nil
-	}
 	return &Tracer{sink: sink}
 }
 
@@ -85,7 +83,9 @@ func (s *Span) End() {
 		return
 	}
 	s.EndTime = time.Now()
-	s.tracer.sink.Export([]ReadOnlySpan{s.readOnly()})
+	if s.tracer.sink != nil {
+		s.tracer.sink.Export([]ReadOnlySpan{s.readOnly()})
+	}
 }
 
 // SetAttr appends a key-value attribute to the span.

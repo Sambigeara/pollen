@@ -24,11 +24,9 @@ type metricKey struct {
 	labels Labels
 }
 
-// New creates a Collector that pushes to sink. Pass nil to disable collection.
+// New creates a Collector that flushes to sink. If sink is nil the collector
+// still tracks metrics in memory but never flushes.
 func New(sink Sink, cfg Config) *Collector {
-	if sink == nil {
-		return nil
-	}
 	cfg = cfg.withDefaults()
 	c := &Collector{
 		sink:     sink,
@@ -127,7 +125,7 @@ func (c *Collector) flush() {
 	}
 	c.mu.Unlock()
 
-	if len(snaps) > 0 {
+	if len(snaps) > 0 && c.sink != nil {
 		c.sink.Flush(snaps)
 	}
 }

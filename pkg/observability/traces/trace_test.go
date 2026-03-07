@@ -115,7 +115,11 @@ func TestTraceIDFromBytesWrongLength(t *testing.T) {
 	require.True(t, id.IsZero())
 }
 
-func TestNewTracerNilSink(t *testing.T) {
+func TestNewTracerNilSinkTracesWithoutExport(t *testing.T) {
 	tr := NewTracer(nil)
-	require.Nil(t, tr)
+	require.NotNil(t, tr)
+	s := tr.Start("test")
+	require.NotNil(t, s)
+	s.SetAttr("k", "v")
+	s.End()
 }

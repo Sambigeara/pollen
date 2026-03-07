@@ -155,13 +155,14 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 
 	stateStore.SetLocalNetwork(ips, uint32(conf.Port))
 
-	var col *metrics.Collector
-	var tracer *traces.Tracer
+	var metricsSink metrics.Sink
+	var tracesSink traces.Sink
 	if conf.MetricsEnabled {
-		sink := metrics.NewLogSink(log.Named("metrics"))
-		col = metrics.New(sink, metrics.Config{})
-		tracer = traces.NewTracer(traces.NewLogSink(log.Named("traces")))
+		metricsSink = metrics.NewLogSink(log.Named("metrics"))
+		tracesSink = traces.NewLogSink(log.Named("traces"))
 	}
+	col := metrics.New(metricsSink, metrics.Config{})
+	tracer := traces.NewTracer(tracesSink)
 
 	meshMetrics := metrics.NewMeshMetrics(col)
 	peerMetrics := metrics.NewPeerMetrics(col)

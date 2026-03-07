@@ -270,6 +270,7 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().Bool("public", false, "Mark this node as publicly accessible (relay)")
 	cmd.Flags().BoolP("detach", "d", false, "Run as a background service")
 	cmd.Flags().Bool("restart", false, "Restart the background service (requires -d)")
+	cmd.Flags().Bool("metrics", false, "Log metrics and trace output at debug level")
 	return cmd
 }
 
@@ -555,6 +556,8 @@ func runNode(cmd *cobra.Command) {
 		}
 	}
 
+	metricsEnabled, _ := cmd.Flags().GetBool("metrics")
+
 	conf := &node.Config{
 		Port:             port,
 		GossipInterval:   passiveGossipInterval,
@@ -565,6 +568,7 @@ func runNode(cmd *cobra.Command) {
 		MembershipTTL:    certTTLs.MembershipTTL(),
 		MaxConnectionAge: defaultMaxConnectionAge,
 		BootstrapPublic:  cfg.Public,
+		MetricsEnabled:   metricsEnabled,
 	}
 
 	n, err := node.New(conf, privKey, creds, stateStore, peer.NewStore(), pollenDir)

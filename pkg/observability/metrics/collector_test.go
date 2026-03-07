@@ -150,9 +150,12 @@ func TestClosePerformsFinalFlush(t *testing.T) {
 	require.Equal(t, 7.0, snaps[0].Value)
 }
 
-func TestNilSinkReturnsNilCollector(t *testing.T) {
+func TestNilSinkCollectsWithoutFlush(t *testing.T) {
 	c := New(nil, Config{})
-	require.Nil(t, c)
+	require.NotNil(t, c)
+	c.Counter("x", Labels{}).Inc()
+	c.Gauge("y", Labels{}).Set(3.14)
+	c.Close()
 }
 
 func TestMakeLabels(t *testing.T) {
