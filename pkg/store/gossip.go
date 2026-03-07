@@ -221,6 +221,7 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 			LocalPort:          p.Port,
 			ExternalPort:       p.ExternalPort,
 			ObservedExternalIP: p.ExternalIP,
+			PubliclyAccessible: p.PubliclyAccessible,
 			Reachable:          make(map[types.PeerKey]struct{}),
 			Services:           make(map[string]*statev1.Service),
 			log:                make(map[attrKey]logEntry),
@@ -293,12 +294,13 @@ func (s *Store) Save() error {
 			continue
 		}
 		peers = append(peers, diskPeer{
-			IdentityPublic: peerID.String(),
-			Addresses:      rec.IPs,
-			Port:           rec.LocalPort,
-			ExternalPort:   rec.ExternalPort,
-			ExternalIP:     rec.ObservedExternalIP,
-			LastAddr:       rec.LastAddr,
+			IdentityPublic:     peerID.String(),
+			Addresses:          rec.IPs,
+			Port:               rec.LocalPort,
+			ExternalPort:       rec.ExternalPort,
+			ExternalIP:         rec.ObservedExternalIP,
+			LastAddr:           rec.LastAddr,
+			PubliclyAccessible: rec.PubliclyAccessible,
 		})
 	}
 

@@ -357,30 +357,31 @@ func TestNilVsZeroCoord(t *testing.T) {
 	}())
 }
 
-// --- Strict NAT filter tests ---
-// The NAT filter requires at least one side to be Easy for non-LAN pairs.
+// --- NAT filter tests ---
+// The NAT filter blocks only Hard+Hard for non-LAN pairs.
 
-func TestNearestSkipsNonEasyPairs(t *testing.T) {
+func TestNearestSkipsHardHardPairs(t *testing.T) {
 	local := Coord{X: 0, Y: 0}
 	localIPs := []string{"10.0.1.5"}
 	peers := []PeerInfo{
 		{Key: peerKey(1), Coord: &Coord{X: 1}, IPs: []string{"10.0.2.10"}, NatType: nat.Hard},
 		{Key: peerKey(2), Coord: &Coord{X: 2}, IPs: []string{"10.0.2.20"}, NatType: nat.Unknown},
 	}
-	// Local is Hard — both Hard and Unknown remote skipped (neither side Easy).
+	// Local is Hard — Hard+Hard skipped, but Hard+Unknown allowed (might work).
 	result := selectNearest(peerKey(0), local, peers, nil, Params{NearestK: 2, LocalNATType: nat.Hard, LocalIPs: localIPs})
-	require.Empty(t, result)
+	require.Len(t, result, 1)
+	require.Equal(t, peerKey(2), result[0])
 }
 
-func TestNearestUnknownLocalSkipsNonEasy(t *testing.T) {
+func TestNearestUnknownLocalAllowsAll(t *testing.T) {
 	local := Coord{X: 0, Y: 0}
 	peers := []PeerInfo{
 		{Key: peerKey(1), Coord: &Coord{X: 1}, NatType: nat.Hard},
 		{Key: peerKey(2), Coord: &Coord{X: 2}, NatType: nat.Unknown},
 	}
-	// Local is Unknown — Hard and Unknown remote skipped (neither side Easy).
+	// Local is Unknown — neither Unknown+Hard nor Unknown+Unknown is Hard+Hard, so both pass.
 	result := selectNearest(peerKey(0), local, peers, nil, Params{NearestK: 2})
-	require.Empty(t, result)
+	require.Len(t, result, 2)
 }
 
 func TestNearestEasyLocalKeepsAll(t *testing.T) {
@@ -396,17 +397,16 @@ func TestNearestEasyLocalKeepsAll(t *testing.T) {
 	require.Len(t, result, 3)
 }
 
-func TestNearestHardLocalKeepsOnlyEasy(t *testing.T) {
+func TestNearestHardLocalKeepsUnknownAndEasy(t *testing.T) {
 	local := Coord{X: 0, Y: 0}
 	localIPs := []string{"10.0.1.5"}
 	peers := []PeerInfo{
 		{Key: peerKey(1), Coord: &Coord{X: 1}, IPs: []string{"172.16.0.10"}, NatType: nat.Unknown},
 		{Key: peerKey(2), Coord: &Coord{X: 2}, IPs: []string{"172.17.0.20"}, NatType: nat.Easy},
 	}
-	// Local is Hard: only Easy remote kept.
+	// Local is Hard: Unknown and Easy remotes both kept (only Hard+Hard is blocked).
 	result := selectNearest(peerKey(0), local, peers, nil, Params{NearestK: 2, LocalNATType: nat.Hard, LocalIPs: localIPs})
-	require.Len(t, result, 1)
-	require.Equal(t, peerKey(2), result[0])
+	require.Len(t, result, 2)
 }
 
 func TestNearestKeepsHardHardLAN(t *testing.T) {
@@ -517,17 +517,16 @@ func TestLongLinksSkipsNonEasyPairs(t *testing.T) {
 	require.Empty(t, result)
 }
 
-func TestLongLinksSkipsUnknownWhenLocalHard(t *testing.T) {
+func TestLongLinksKeepsUnknownWhenLocalHard(t *testing.T) {
 	local := peerKey(0)
 	localIPs := []string{"10.0.1.5"}
 	peers := []PeerInfo{
 		{Key: peerKey(1), IPs: []string{"10.0.2.10"}, NatType: nat.Unknown},
 		{Key: peerKey(2), IPs: []string{"10.0.2.20"}, NatType: nat.Easy},
 	}
-	// Local is Hard: Unknown remote skipped, Easy remote kept.
+	// Local is Hard: Unknown and Easy remotes both kept (only Hard+Hard is blocked).
 	result := selectLongLinks(local, peers, nil, Params{RandomR: 2, Epoch: 1, LocalNATType: nat.Hard, LocalIPs: localIPs})
-	require.Len(t, result, 1)
-	require.Equal(t, peerKey(2), result[0])
+	require.Len(t, result, 2)
 }
 
 func TestLongLinksKeepsEasyPeers(t *testing.T) {
@@ -608,4 +607,19 @@ func TestComputeTargetPeersPreferFullMeshSkipsInfeasibleRemotePrivate(t *testing
 
 	result := ComputeTargetPeers(local, Coord{}, peers, params)
 	require.Equal(t, []types.PeerKey{peerKey(2)}, result)
+}
+
+func TestFullMeshAllowsUnknownUnknownNonLAN(t *testing.T) {
+	local := peerKey(0)
+	params := Params{
+		LocalIPs:       []string{"10.1.2.10"},
+		LocalNATType:   nat.Unknown,
+		PreferFullMesh: true,
+	}
+	peers := []PeerInfo{
+		{Key: peerKey(1), IPs: []string{"10.1.3.10"}, NatType: nat.Unknown},
+	}
+
+	result := ComputeTargetPeers(local, Coord{}, peers, params)
+	require.Equal(t, []types.PeerKey{peerKey(1)}, result)
 }

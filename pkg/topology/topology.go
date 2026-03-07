@@ -350,9 +350,10 @@ func SameObservedEgress(a, b string) bool {
 }
 
 // natFiltered returns true when a non-LAN pair should be skipped because
-// neither side has Easy NAT (making direct connectivity unlikely).
+// both sides have Hard NAT (making direct connectivity impossible).
+// Unknown NAT (not enough observations yet) is allowed through.
 func natFiltered(isLAN bool, localNAT, remoteNAT nat.Type) bool {
-	return !isLAN && localNAT != nat.Easy && remoteNAT != nat.Easy
+	return !isLAN && localNAT == nat.Hard && remoteNAT == nat.Hard
 }
 
 func InferPrivatelyRoutable(localIPs, peerIPs []string) bool {

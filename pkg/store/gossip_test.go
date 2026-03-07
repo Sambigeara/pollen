@@ -1682,3 +1682,42 @@ func TestApplyStaleRemoteEventNoRebroadcast(t *testing.T) {
 	})
 	require.Empty(t, result.Rebroadcast)
 }
+
+func TestSaveLoadPersistsPubliclyAccessible(t *testing.T) {
+	dir := t.TempDir()
+
+	localPub := make([]byte, 32)
+	localPub[0] = 1
+
+	s, err := Load(dir, localPub, nil)
+	require.NoError(t, err)
+
+	_, peerIDStr := peerKey(2)
+	idPub := make([]byte, 32)
+	idPub[0] = 2
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{IdentityPub: idPub},
+		},
+	})
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peerIDStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_PubliclyAccessible{
+			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
+		},
+	})
+
+	require.NoError(t, s.Save())
+	require.NoError(t, s.Close())
+
+	s2, err := Load(dir, localPub, nil)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, s2.Close()) }()
+
+	peerPK, _ := peerKey(2)
+	require.True(t, s2.IsPubliclyAccessible(peerPK))
+}

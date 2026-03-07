@@ -230,6 +230,18 @@ func (m *testMeshWrapper) IsOutbound(pk types.PeerKey) bool {
 // simulateConnectedOutbound makes a peer appear connected+outbound for
 // syncPeersFromState: marks it Connected in peer.Store, and registers it
 // as outbound in the test mesh wrapper.
+// disableFullMesh adds fake inbound peers so activePeerCount exceeds
+// tinyClusterPeerThreshold and PreferFullMesh stays off.
+func disableFullMesh(n *Node) {
+	for i := range tinyClusterPeerThreshold + 1 {
+		n.peers.Step(time.Now(), peer.ConnectPeer{
+			PeerKey:      testPeerKey(byte(100 + i)),
+			IP:           net.ParseIP("10.0.0.1"),
+			ObservedPort: 9000,
+		})
+	}
+}
+
 func simulateConnectedOutbound(n *Node, pk types.PeerKey, wrapper *testMeshWrapper) {
 	n.peers.Step(time.Now(), peer.ConnectPeer{
 		PeerKey:      pk,
@@ -319,6 +331,8 @@ func TestRevokeStreakPrivatePeerRevokedAfterThreshold(t *testing.T) {
 		addKnownPeerForTopology(t, n.store, testPeerKey(byte(i+1)), i+1)
 	}
 
+	disableFullMesh(n)
+
 	// Find a non-targeted peer and simulate it being connected+outbound.
 	nonTarget := findNonTargetPeer(t, n)
 	simulateConnectedOutbound(n, nonTarget, wrapper)
@@ -348,6 +362,8 @@ func TestRevokeStreakResetsOnTargetReentry(t *testing.T) {
 	for i := range 20 {
 		addKnownPeerForTopology(t, n.store, testPeerKey(byte(i+1)), i+1)
 	}
+
+	disableFullMesh(n)
 
 	nonTarget := findNonTargetPeer(t, n)
 	simulateConnectedOutbound(n, nonTarget, wrapper)
@@ -389,16 +405,7 @@ func TestRevokeStreakPublicPeerStickyLonger(t *testing.T) {
 		}
 	}
 
-	// Fake inbound peers push activePeerCount above tinyClusterPeerThreshold
-	// so PreferFullMesh stays off; without them the full-mesh path would
-	// target every peer and no public peer could be non-targeted.
-	for i := range tinyClusterPeerThreshold + 1 {
-		n.peers.Step(time.Now(), peer.ConnectPeer{
-			PeerKey:      testPeerKey(byte(100 + i)),
-			IP:           net.ParseIP("10.0.0.1"),
-			ObservedPort: 9000,
-		})
-	}
+	disableFullMesh(n)
 
 	nonTarget := findNonTargetPublicPeer(t, n)
 	simulateConnectedOutbound(n, nonTarget, wrapper)
