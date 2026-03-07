@@ -78,13 +78,12 @@ const (
 	vivaldiEnterHMACThreshold = 0.6
 	vivaldiExitHMACThreshold  = 0.35
 
-	loopIntervalJitter        = 0.1
-	peerEventBufSize          = 64
-	gossipEventBufSize        = 64
-	punchChBufSize            = 32
-	punchWorkers              = 3 // max concurrent punches; bounds socket usage to N×256
-	ipRefreshInterval         = 5 * time.Minute
-	resourceTelemetryInterval = 10 * time.Second
+	loopIntervalJitter = 0.1
+	peerEventBufSize   = 64
+	gossipEventBufSize = 64
+	punchChBufSize     = 32
+	punchWorkers       = 3 // max concurrent punches; bounds socket usage to N×256
+	ipRefreshInterval  = 5 * time.Minute
 )
 
 type BootstrapPeer struct {
@@ -281,11 +280,9 @@ func (n *Node) Start(ctx context.Context) error {
 	certCheckTicker := time.NewTicker(certCheckInterval)
 	defer certCheckTicker.Stop()
 
-	resourceTelemetryTicker := time.NewTicker(resourceTelemetryInterval)
-	defer resourceTelemetryTicker.Stop()
-
 	n.tick()
-	n.checkCertExpiry() // seed the cert-expiry gauge; the ticker only fires hourly
+	n.checkCertExpiry()         // seed the cert-expiry gauge; the ticker only fires hourly
+	n.sampleResourceTelemetry() // seed telemetry before first gossip round
 
 	for {
 		select {
@@ -294,6 +291,7 @@ func (n *Node) Start(ctx context.Context) error {
 		case <-peerTicker.C:
 			n.tick()
 		case <-gossipTicker.C:
+			n.sampleResourceTelemetry()
 			n.gossip(ctx)
 		case <-ipRefreshCh:
 			n.refreshIPs()
@@ -301,8 +299,6 @@ func (n *Node) Start(ctx context.Context) error {
 			if n.checkCertExpiry() {
 				return ErrCertExpired
 			}
-		case <-resourceTelemetryTicker.C:
-			n.sampleResourceTelemetry()
 		case events := <-n.gossipEvents:
 			n.broadcastEvents(ctx, events)
 		case in := <-n.mesh.Events():

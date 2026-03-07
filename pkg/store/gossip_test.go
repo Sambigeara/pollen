@@ -1721,3 +1721,33 @@ func TestSaveLoadPersistsPubliclyAccessible(t *testing.T) {
 	peerPK, _ := peerKey(2)
 	require.True(t, s2.IsPubliclyAccessible(peerPK))
 }
+
+func TestResourceTelemetryDeadband(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	s := newTestStore(pub, nil)
+
+	t.Run("first call emits", func(t *testing.T) {
+		events := s.SetLocalResourceTelemetry(10, 20, 1<<30)
+		require.Len(t, events, 1)
+	})
+
+	t.Run("below threshold suppressed", func(t *testing.T) {
+		events := s.SetLocalResourceTelemetry(11, 21, 1<<30)
+		require.Nil(t, events)
+	})
+
+	t.Run("cpu crosses threshold", func(t *testing.T) {
+		events := s.SetLocalResourceTelemetry(12, 20, 1<<30)
+		require.Len(t, events, 1)
+	})
+
+	t.Run("mem crosses threshold", func(t *testing.T) {
+		events := s.SetLocalResourceTelemetry(12, 22, 1<<30)
+		require.Len(t, events, 1)
+	})
+
+	t.Run("mem total change emits", func(t *testing.T) {
+		events := s.SetLocalResourceTelemetry(12, 22, 2<<30)
+		require.Len(t, events, 1)
+	})
+}

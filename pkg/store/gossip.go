@@ -823,7 +823,7 @@ func (s *Store) SetLocalNatType(natType nat.Type) []*statev1.GossipEvent {
 	}}
 }
 
-const resourceTelemetryDeadband = 5
+const resourceTelemetryDeadband = 2
 
 func (s *Store) SetLocalResourceTelemetry(cpuPercent, memPercent uint32, memTotalBytes uint64) []*statev1.GossipEvent {
 	s.mu.Lock()
