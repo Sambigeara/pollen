@@ -15,7 +15,6 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/types"
 	"gopkg.in/yaml.v3"
@@ -46,30 +45,12 @@ type diskLocal struct {
 }
 
 type diskPeer struct {
-	NATType        string   `yaml:"natType,omitempty"`
-	LastAddr       string   `yaml:"lastAddr,omitempty"`
 	IdentityPublic string   `yaml:"identityPublic"`
+	LastAddr       string   `yaml:"lastAddr,omitempty"`
 	ExternalIP     string   `yaml:"externalIP,omitempty"`
 	Addresses      []string `yaml:"addresses,omitempty"`
-	ExternalPortCt uint64   `yaml:"externalPortCounter,omitempty"`
-	NatTypeCt      uint64   `yaml:"natTypeCounter,omitempty"`
-	PublicCt       uint64   `yaml:"publiclyAccessibleCounter,omitempty"`
-	ExternalIPCt   uint64   `yaml:"externalIPCounter,omitempty"`
-	NetworkCounter uint64   `yaml:"networkCounter,omitempty"`
 	Port           uint32   `yaml:"port,omitempty"`
 	ExternalPort   uint32   `yaml:"externalPort,omitempty"`
-	Public         bool     `yaml:"publiclyAccessible,omitempty"`
-}
-
-func parseDiskNATType(v string) nat.Type {
-	switch v {
-	case nat.Easy.String():
-		return nat.Easy
-	case nat.Hard.String():
-		return nat.Hard
-	default:
-		return nat.Unknown
-	}
 }
 
 type diskService struct {

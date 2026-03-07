@@ -9,7 +9,6 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
@@ -746,80 +745,6 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 	if peers[0].LastAddr != "203.0.113.5:41234" {
 		t.Fatalf("expected LastAddr=203.0.113.5:41234, got %q", peers[0].LastAddr)
 	}
-}
-
-func TestSaveLoadPersistsPubliclyAccessibleAndNatType(t *testing.T) {
-	dir := t.TempDir()
-
-	localPub := make([]byte, 32)
-	localPub[0] = 1
-
-	s, err := Load(dir, localPub, nil)
-	if err != nil {
-		t.Fatalf("load store: %v", err)
-	}
-
-	peerPK, peerIDStr := peerKey(2)
-	idPub := make([]byte, 32)
-	idPub[0] = 2
-
-	s.applyEvent(&statev1.GossipEvent{
-		PeerId:  peerIDStr,
-		Counter: 1,
-		Change: &statev1.GossipEvent_IdentityPub{
-			IdentityPub: &statev1.IdentityChange{IdentityPub: idPub},
-		},
-	})
-	s.applyEvent(&statev1.GossipEvent{
-		PeerId:  peerIDStr,
-		Counter: 2,
-		Change: &statev1.GossipEvent_Network{
-			Network: &statev1.NetworkChange{Ips: []string{"203.0.113.2"}, LocalPort: 60611},
-		},
-	})
-	s.applyEvent(&statev1.GossipEvent{
-		PeerId:  peerIDStr,
-		Counter: 3,
-		Change: &statev1.GossipEvent_PubliclyAccessible{
-			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
-		},
-	})
-	s.applyEvent(&statev1.GossipEvent{
-		PeerId:  peerIDStr,
-		Counter: 4,
-		Change: &statev1.GossipEvent_NatType{
-			NatType: &statev1.NatTypeChange{NatType: nat.Hard.ToUint32()},
-		},
-	})
-
-	require.NoError(t, s.Save())
-	require.NoError(t, s.Close())
-
-	s2, err := Load(dir, localPub, nil)
-	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, s2.Close())
-	}()
-
-	rec, ok := s2.Get(peerPK)
-	require.True(t, ok)
-	require.True(t, rec.PubliclyAccessible)
-	require.Equal(t, nat.Hard, rec.NatType)
-
-	peers := s2.KnownPeers()
-	require.Len(t, peers, 1)
-	require.True(t, peers[0].PubliclyAccessible)
-	require.Equal(t, nat.Hard, peers[0].NatType)
-
-	missing := s2.MissingFor(&statev1.GossipVectorClock{})
-	require.NotEmpty(t, missing)
-	var sawPublic, sawNat bool
-	for _, ev := range missing {
-		sawPublic = sawPublic || ev.GetPubliclyAccessible() != nil
-		sawNat = sawNat || ev.GetNatType() != nil
-	}
-	require.True(t, sawPublic)
-	require.True(t, sawNat)
 }
 
 func TestLoadServiceWithOrphanedProvider(t *testing.T) {

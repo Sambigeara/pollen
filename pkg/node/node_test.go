@@ -13,7 +13,6 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
-	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/store"
@@ -413,23 +412,6 @@ func TestGetStatusStaleReachabilityNotIndirect(t *testing.T) {
 
 	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_OFFLINE, getNodeStatus(t, a, b))
 	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_OFFLINE, getNodeStatus(t, a, c))
-}
-
-func TestGossipPropagatesPeerMetadataViaIntermediatePeer(t *testing.T) {
-	a, b, c := setupThreeNodeChain(t)
-
-	c.store.SetLocalPubliclyAccessible(true)
-	c.store.SetLocalNatType(nat.Easy)
-
-	require.Eventually(t, func() bool {
-		rec, ok := b.store.Get(c.peerKey)
-		return ok && rec.PubliclyAccessible && rec.NatType == nat.Easy
-	}, 5*time.Second, 50*time.Millisecond, "B should learn C metadata")
-
-	require.Eventually(t, func() bool {
-		rec, ok := a.store.Get(c.peerKey)
-		return ok && rec.PubliclyAccessible && rec.NatType == nat.Easy
-	}, 5*time.Second, 50*time.Millisecond, "A should learn C metadata via B gossip")
 }
 
 func TestBootstrapPeerConnectsAtStartup(t *testing.T) {

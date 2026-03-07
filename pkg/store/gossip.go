@@ -202,29 +202,6 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 		if peerID == localID {
 			continue
 		}
-		log := make(map[attrKey]logEntry)
-		maxCounter := uint64(0)
-		if p.NetworkCounter != 0 && (len(p.Addresses) > 0 || p.Port != 0) {
-			log[networkAttrKey()] = logEntry{Counter: p.NetworkCounter}
-			maxCounter = max(maxCounter, p.NetworkCounter)
-		}
-		if p.ExternalPortCt != 0 && p.ExternalPort != 0 {
-			log[externalPortAttrKey()] = logEntry{Counter: p.ExternalPortCt}
-			maxCounter = max(maxCounter, p.ExternalPortCt)
-		}
-		if p.ExternalIPCt != 0 && p.ExternalIP != "" {
-			log[observedExternalIPAttrKey()] = logEntry{Counter: p.ExternalIPCt}
-			maxCounter = max(maxCounter, p.ExternalIPCt)
-		}
-		if p.PublicCt != 0 && p.Public {
-			log[publiclyAccessibleAttrKey()] = logEntry{Counter: p.PublicCt}
-			maxCounter = max(maxCounter, p.PublicCt)
-		}
-		natType := parseDiskNATType(p.NATType)
-		if p.NatTypeCt != 0 && natType != nat.Unknown {
-			log[natTypeAttrKey()] = logEntry{Counter: p.NatTypeCt}
-			maxCounter = max(maxCounter, p.NatTypeCt)
-		}
 
 		s.nodes[peerID] = nodeRecord{
 			IdentityPub:        append([]byte(nil), peerID[:]...),
@@ -232,13 +209,10 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 			LastAddr:           p.LastAddr,
 			LocalPort:          p.Port,
 			ExternalPort:       p.ExternalPort,
-			NatType:            natType,
 			ObservedExternalIP: p.ExternalIP,
-			PubliclyAccessible: p.Public,
 			Reachable:          make(map[types.PeerKey]struct{}),
 			Services:           make(map[string]*statev1.Service),
-			log:                log,
-			maxCounter:         maxCounter,
+			log:                make(map[attrKey]logEntry),
 		}
 	}
 
@@ -297,44 +271,13 @@ func (s *Store) Save() error {
 		if peerID == s.LocalID {
 			continue
 		}
-		natType := ""
-		if rec.NatType != nat.Unknown {
-			natType = rec.NatType.String()
-		}
-		networkCounter := uint64(0)
-		if entry, ok := rec.log[networkAttrKey()]; ok && !entry.Deleted {
-			networkCounter = entry.Counter
-		}
-		externalPortCounter := uint64(0)
-		if entry, ok := rec.log[externalPortAttrKey()]; ok && !entry.Deleted {
-			externalPortCounter = entry.Counter
-		}
-		externalIPCounter := uint64(0)
-		if entry, ok := rec.log[observedExternalIPAttrKey()]; ok && !entry.Deleted {
-			externalIPCounter = entry.Counter
-		}
-		publicCounter := uint64(0)
-		if entry, ok := rec.log[publiclyAccessibleAttrKey()]; ok && !entry.Deleted {
-			publicCounter = entry.Counter
-		}
-		natTypeCounter := uint64(0)
-		if entry, ok := rec.log[natTypeAttrKey()]; ok && !entry.Deleted {
-			natTypeCounter = entry.Counter
-		}
 		peers = append(peers, diskPeer{
 			IdentityPublic: peerID.String(),
 			Addresses:      rec.IPs,
 			Port:           rec.LocalPort,
-			NetworkCounter: networkCounter,
-			ExternalPortCt: externalPortCounter,
-			ExternalIPCt:   externalIPCounter,
-			PublicCt:       publicCounter,
-			NatTypeCt:      natTypeCounter,
 			ExternalPort:   rec.ExternalPort,
-			NATType:        natType,
 			ExternalIP:     rec.ObservedExternalIP,
 			LastAddr:       rec.LastAddr,
-			Public:         rec.PubliclyAccessible,
 		})
 	}
 
