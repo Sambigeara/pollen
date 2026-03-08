@@ -64,6 +64,8 @@ func NewPeerMetrics(c *Collector) *PeerMetrics {
 	}
 }
 
+const staleRatioAlpha = 0.01 // ~100-event EWMA window
+
 // GossipMetrics holds pre-registered instruments for the gossip/store layer.
 type GossipMetrics struct {
 	EventsReceived    *Counter
@@ -73,12 +75,13 @@ type GossipMetrics struct {
 	SelfConflicts     *Counter
 	Revocations       *Counter
 	BatchSize         *Gauge
+	StaleRatio        *EWMA
 }
 
 // NewGossipMetrics registers all gossip instruments on c.
 func NewGossipMetrics(c *Collector) *GossipMetrics {
 	if c == nil {
-		return &GossipMetrics{}
+		return &GossipMetrics{StaleRatio: NewEWMA(staleRatioAlpha)}
 	}
 	return &GossipMetrics{
 		EventsReceived:    c.Counter("pollen_gossip_events_received_total", Labels{}),
@@ -88,6 +91,7 @@ func NewGossipMetrics(c *Collector) *GossipMetrics {
 		SelfConflicts:     c.Counter("pollen_gossip_self_conflicts_total", Labels{}),
 		Revocations:       c.Counter("pollen_gossip_revocations_total", Labels{}),
 		BatchSize:         c.Gauge("pollen_gossip_batch_size", Labels{}),
+		StaleRatio:        NewEWMA(staleRatioAlpha),
 	}
 }
 

@@ -112,6 +112,43 @@ func TestHeightFloor(t *testing.T) {
 	require.GreaterOrEqual(t, newCoord.Height, MinHeight)
 }
 
+func TestLowLatencyConvergence(t *testing.T) {
+	// Simulate a 5-node LAN cluster with 2-3ms RTTs and ~0.5ms jitter.
+	// With the RTT floor, error should settle below the 0.6 degradation
+	// threshold despite the high relative jitter on fast links.
+	local := Coord{}
+	localErr := 1.0
+	peers := []Coord{
+		{X: 2, Y: 1, Height: MinHeight},
+		{X: -1, Y: 3, Height: MinHeight},
+		{X: 3, Y: -2, Height: MinHeight},
+		{X: -2, Y: -1, Height: MinHeight},
+	}
+	peerErrs := []float64{0.5, 0.5, 0.5, 0.5}
+
+	baseRTTs := []time.Duration{
+		2 * time.Millisecond,
+		3 * time.Millisecond,
+		1500 * time.Microsecond,
+		2500 * time.Microsecond,
+	}
+
+	for round := range 300 {
+		for i, p := range peers {
+			// Add ±0.5ms jitter.
+			jitter := time.Duration((round%5)-2) * 100 * time.Microsecond
+			rtt := baseRTTs[i] + jitter
+			if rtt <= 0 {
+				rtt = 100 * time.Microsecond
+			}
+			local, localErr = Update(local, localErr, Sample{RTT: rtt, PeerCoord: p})
+			peers[i], peerErrs[i] = Update(p, peerErrs[i], Sample{RTT: rtt, PeerCoord: local})
+		}
+	}
+
+	require.Less(t, localErr, 0.6, "error should converge below 0.6 for LAN latencies with RTT floor")
+}
+
 func TestErrorEstimateDecreases(t *testing.T) {
 	local := Coord{}
 	localErr := 1.0

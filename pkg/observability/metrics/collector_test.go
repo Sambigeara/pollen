@@ -167,6 +167,48 @@ func TestMakeLabels(t *testing.T) {
 	require.Equal(t, "", l[2].Key)
 }
 
+func TestEWMAConvergence(t *testing.T) {
+	e := NewEWMA(0.01)
+
+	// Simulate a burst of stale events driving the EWMA to 1.0.
+	for range 200 {
+		e.Update(1.0)
+	}
+	require.Greater(t, e.Value(), 0.8, "EWMA should be high after stale burst")
+
+	// Now simulate recovery: all events are applied (sample=0).
+	for range 500 {
+		e.Update(0.0)
+	}
+	require.Less(t, e.Value(), 0.05, "EWMA should recover after sustained applied events")
+}
+
+func TestEWMANilSafe(t *testing.T) {
+	var e *EWMA
+	e.Update(1.0)
+	require.Equal(t, 0.0, e.Value())
+}
+
+func TestEWMAConcurrent(t *testing.T) {
+	e := NewEWMA(0.01)
+	var wg sync.WaitGroup
+	const goroutines = 8
+	const iterations = 1000
+
+	for range goroutines {
+		wg.Go(func() {
+			for range iterations {
+				e.Update(0.5)
+			}
+		})
+	}
+	wg.Wait()
+
+	v := e.Value()
+	require.Greater(t, v, 0.0, "value should be positive after updates")
+	require.LessOrEqual(t, v, 1.0, "value should be <= 1.0")
+}
+
 func TestInstrumentBundles(t *testing.T) {
 	t.Run("nil collector returns zero-value bundles", func(t *testing.T) {
 		mm := NewMeshMetrics(nil)

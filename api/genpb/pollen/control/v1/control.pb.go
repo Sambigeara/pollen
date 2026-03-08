@@ -1435,6 +1435,7 @@ type GetMetricsResponse struct {
 	PunchAttempts      uint64                 `protobuf:"varint,11,opt,name=punch_attempts,json=punchAttempts,proto3" json:"punch_attempts,omitempty"`
 	PunchFailures      uint64                 `protobuf:"varint,12,opt,name=punch_failures,json=punchFailures,proto3" json:"punch_failures,omitempty"`
 	Health             HealthStatus           `protobuf:"varint,13,opt,name=health,proto3,enum=pollen.control.v1.HealthStatus" json:"health,omitempty"`
+	StaleRatio         float64                `protobuf:"fixed64,14,opt,name=stale_ratio,json=staleRatio,proto3" json:"stale_ratio,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -1560,6 +1561,13 @@ func (x *GetMetricsResponse) GetHealth() HealthStatus {
 	return HealthStatus_HEALTH_STATUS_UNSPECIFIED
 }
 
+func (x *GetMetricsResponse) GetStaleRatio() float64 {
+	if x != nil {
+		return x.StaleRatio
+	}
+	return 0
+}
+
 var File_pollen_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_pollen_control_v1_control_proto_rawDesc = "" +
@@ -1642,7 +1650,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x11RevokePeerRequest\x12 \n" +
 	"\apeer_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\x06peerId\"\x14\n" +
 	"\x12RevokePeerResponse\"\x13\n" +
-	"\x11GetMetricsRequest\"\xbd\x04\n" +
+	"\x11GetMetricsRequest\"\xde\x04\n" +
 	"\x12GetMetricsResponse\x12)\n" +
 	"\x10peers_discovered\x18\x01 \x01(\rR\x0fpeersDiscovered\x12)\n" +
 	"\x10peers_connecting\x18\x02 \x01(\rR\x0fpeersConnecting\x12'\n" +
@@ -1657,7 +1665,9 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	" \x01(\x04R\x12certRenewalsFailed\x12%\n" +
 	"\x0epunch_attempts\x18\v \x01(\x04R\rpunchAttempts\x12%\n" +
 	"\x0epunch_failures\x18\f \x01(\x04R\rpunchFailures\x127\n" +
-	"\x06health\x18\r \x01(\x0e2\x1f.pollen.control.v1.HealthStatusR\x06health*\x8b\x01\n" +
+	"\x06health\x18\r \x01(\x0e2\x1f.pollen.control.v1.HealthStatusR\x06health\x12\x1f\n" +
+	"\vstale_ratio\x18\x0e \x01(\x01R\n" +
+	"staleRatio*\x8b\x01\n" +
 	"\n" +
 	"NodeStatus\x12\x1b\n" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +

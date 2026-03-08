@@ -406,8 +406,9 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 	counts := s.node.peers.StateCounts()
 
 	nm := s.node.nodeMetrics
-	gossipApplied := uint64(s.node.store.GossipMetrics().EventsApplied.Value()) //nolint:gosec
-	gossipStale := uint64(s.node.store.GossipMetrics().EventsStale.Value())     //nolint:gosec
+	gm := s.node.store.GossipMetrics()
+	gossipApplied := uint64(gm.EventsApplied.Value()) //nolint:gosec
+	gossipStale := uint64(gm.EventsStale.Value())     //nolint:gosec
 
 	certExpiry := nm.CertExpirySeconds.Value()
 	certRenewals := uint64(nm.CertRenewals.Value())             //nolint:gosec
@@ -423,7 +424,7 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 		health = controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY
 	case math.Float64frombits(s.node.localCoordErr.Load()) > vivaldiDegradedThreshold:
 		health = controlv1.HealthStatus_HEALTH_STATUS_DEGRADED
-	case gossipApplied > staleRatioMinApplied && float64(gossipStale)/float64(gossipApplied) > staleRatioDegradedThreshold:
+	case gossipApplied > staleRatioMinApplied && gm.StaleRatio.Value() > staleRatioDegradedThreshold:
 		health = controlv1.HealthStatus_HEALTH_STATUS_DEGRADED
 	}
 
@@ -441,6 +442,7 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 		PunchAttempts:      punchAttempts,
 		PunchFailures:      punchFailures,
 		Health:             health,
+		StaleRatio:         gm.StaleRatio.Value(),
 	}, nil
 }
 

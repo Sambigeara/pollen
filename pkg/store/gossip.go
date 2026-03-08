@@ -465,6 +465,7 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	// Per-key stale check: only accept if this event is newer for this key.
 	if existing, ok := rec.log[key]; ok && event.GetCounter() <= existing.Counter {
 		s.metrics.EventsStale.Inc()
+		s.metrics.StaleRatio.Update(1.0)
 		return ApplyResult{}
 	}
 
@@ -499,6 +500,7 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	s.nodes[peerID] = rec
 	if key.kind != attrRevocation || len(result.revokedSubjects) > 0 {
 		s.metrics.EventsApplied.Inc()
+		s.metrics.StaleRatio.Update(0.0)
 		result.Rebroadcast = append(result.Rebroadcast, event)
 		s.metrics.EventsRebroadcast.Inc()
 	}

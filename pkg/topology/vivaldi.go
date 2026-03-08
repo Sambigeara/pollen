@@ -25,6 +25,14 @@ const (
 	MinHeight = 10e-6  // floor to keep height positive
 	MaxCoord  = 10_000 // clamp bound for coordinate components
 
+	// MinRTTFloor dampens the relative error calculation for low-latency links.
+	// Without it, sub-millisecond jitter on a 1-3ms LAN link produces 16-50%
+	// relative error, preventing the error estimate from settling below the
+	// health-check threshold. The floor dampens the relative error for low-RTT
+	// links, reducing both the error estimate and the weight given to coordinate
+	// adjustments.
+	MinRTTFloor = 2.0 // milliseconds
+
 	// PublishEpsilon is the minimum coordinate movement (in distance units)
 	// before a node should re-publish its coordinates via gossip.
 	PublishEpsilon = 0.5
@@ -63,7 +71,7 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 		dist = MinHeight
 	}
 
-	err := math.Abs(rtt-dist) / rtt
+	err := math.Abs(rtt-dist) / max(rtt, MinRTTFloor)
 	relWeight := localErr / (localErr + CeDefault)
 
 	// Update error estimate.

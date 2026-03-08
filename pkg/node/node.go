@@ -77,6 +77,7 @@ const (
 
 	vivaldiEnterHMACThreshold = 0.6
 	vivaldiExitHMACThreshold  = 0.35
+	vivaldiWarmupDuration     = 5 * time.Second
 
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
@@ -116,6 +117,7 @@ type Node struct {
 	lastExpirySweep time.Time
 	mesh            mesh.Mesh
 	lastEagerSync   map[types.PeerKey]time.Time
+	peerConnectTime map[types.PeerKey]time.Time
 	tun             *tunnel.Manager
 	nonTargetStreak map[types.PeerKey]int
 	creds           *auth.NodeCredentials
@@ -198,6 +200,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
 		ready:           make(chan struct{}),
 		lastEagerSync:   make(map[types.PeerKey]time.Time),
+		peerConnectTime: make(map[types.PeerKey]time.Time),
 		nonTargetStreak: make(map[types.PeerKey]int),
 		natDetector:     nat.NewDetector(),
 		useHMACNearest:  true,
@@ -568,8 +571,10 @@ func (n *Node) handlePeerInput(in peer.Input) {
 	case peer.PeerDisconnected:
 		n.queueGossipEvents(n.store.SetLocalConnected(d.PeerKey, false))
 		delete(n.lastEagerSync, d.PeerKey)
+		delete(n.peerConnectTime, d.PeerKey)
 	case peer.ForgetPeer:
 		delete(n.lastEagerSync, d.PeerKey)
+		delete(n.peerConnectTime, d.PeerKey)
 	}
 
 	outputs := n.peers.Step(time.Now(), in)
@@ -593,7 +598,11 @@ func (n *Node) tick() {
 
 func (n *Node) updateVivaldiCoords() {
 	updated := false
+	now := time.Now()
 	for _, peerKey := range n.GetConnectedPeers() {
+		if ct, ok := n.peerConnectTime[peerKey]; ok && now.Sub(ct) < vivaldiWarmupDuration {
+			continue
+		}
 		conn, ok := n.mesh.GetConn(peerKey)
 		if !ok {
 			continue
@@ -780,6 +789,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 		case peer.PeerConnected:
 			addr := &net.UDPAddr{IP: e.IP, Port: e.ObservedPort}
 			n.store.SetLastAddr(e.PeerKey, addr.String())
+			n.peerConnectTime[e.PeerKey] = time.Now()
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
 				n.sendClockBatchesToPeer(context.Background(), e.PeerKey, batchClocks(n.store.EagerSyncClock(), MaxDatagramPayload))
