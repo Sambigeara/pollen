@@ -420,6 +420,12 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 	punchAttempts := uint64(nm.PunchAttempts.Value())           //nolint:gosec
 	punchFailures := uint64(nm.PunchFailures.Value())           //nolint:gosec
 
+	// When metrics are disabled the gauge stays at zero; compute expiry
+	// directly from the credential so the health check is always accurate.
+	if certExpiry == 0 && s.creds != nil && s.creds.Cert != nil {
+		certExpiry = time.Until(auth.CertExpiresAt(s.creds.Cert)).Seconds()
+	}
+
 	health := controlv1.HealthStatus_HEALTH_STATUS_HEALTHY
 	switch {
 	case certExpiry <= 0 && s.creds != nil && s.creds.Cert != nil:
