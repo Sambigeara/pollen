@@ -443,7 +443,7 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 	}, nil
 }
 
-const vivaldiDegradedThreshold = 0.6
+const vivaldiDegradedThreshold = 0.9
 
 func comparePeerKey(a, b types.PeerKey) int {
 	return bytes.Compare(a[:], b[:])
