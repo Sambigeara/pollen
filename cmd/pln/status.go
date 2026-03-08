@@ -44,16 +44,16 @@ func runStatus(cmd *cobra.Command, args []string) {
 	if err != nil {
 		if connect.CodeOf(err) != connect.CodeUnavailable {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
-			return
+			os.Exit(1)
 		}
 		if socketPermissionDenied(cmd) {
 			fmt.Fprintf(cmd.ErrOrStderr(),
 				"cannot reach daemon — are you in the pln group?\n"+
 					"  fix: sudo usermod -aG pln $(whoami) && newgrp pln\n")
-			return
+			os.Exit(1)
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "daemon is not running")
-		return
+		fmt.Fprintln(cmd.ErrOrStderr(), "daemon is not running")
+		os.Exit(1)
 	}
 
 	st := resp.Msg

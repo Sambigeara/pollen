@@ -414,6 +414,7 @@ func runJoin(cmd *cobra.Command, args []string) {
 	fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; starting daemon")
 	if err := servicectl("start", cmd); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		os.Exit(1)
 	}
 }
 
