@@ -408,9 +408,11 @@ func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipEv
 }
 
 // ApplyEvents applies a batch of incoming gossip events under a single lock
-// acquisition. When isPullResponse is true, stale/applied outcomes update the
+// acquisition. When isPullResponse is true, the batch outcome updates the
 // EWMA stale ratio used for health checks; push-rebroadcast events are
 // excluded because their inherently high staleness is normal gossip behavior.
+// The EWMA is updated once per batch (not per event) so that large batches
+// with a few fresh events aren't drowned out by individually-counted stale ones.
 func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) ApplyResult {
 	s.mu.Lock()
 
@@ -418,13 +420,27 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	s.metrics.EventsReceived.Add(int64(len(events)))
 
 	var result ApplyResult
+	anyApplied := false
 	for _, event := range events {
 		if event == nil {
 			continue
 		}
-		r := s.applyEventLocked(event, isPullResponse)
+		r := s.applyEventLocked(event)
+		if len(r.Rebroadcast) > 0 {
+			anyApplied = true
+		}
 		result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
 		result.revokedSubjects = append(result.revokedSubjects, r.revokedSubjects...)
+	}
+
+	// Update stale ratio once per pull-response batch: a batch with any
+	// fresh events is "useful" (0.0); a fully-stale batch is not (1.0).
+	if isPullResponse && len(events) > 0 {
+		if anyApplied {
+			s.metrics.StaleRatio.Update(0.0)
+		} else {
+			s.metrics.StaleRatio.Update(1.0)
+		}
 	}
 
 	s.mu.Unlock()
@@ -438,7 +454,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	return result
 }
 
-func (s *Store) applyEventLocked(event *statev1.GossipEvent, isPullResponse bool) ApplyResult {
+func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	peerID, err := types.PeerKeyFromString(event.GetPeerId())
 	if err != nil {
 		return ApplyResult{}
@@ -468,9 +484,6 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent, isPullResponse bool
 	// Per-key stale check: only accept if this event is newer for this key.
 	if existing, ok := rec.log[key]; ok && event.GetCounter() <= existing.Counter {
 		s.metrics.EventsStale.Inc()
-		if isPullResponse {
-			s.metrics.StaleRatio.Update(1.0)
-		}
 		return ApplyResult{}
 	}
 
@@ -505,9 +518,6 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent, isPullResponse bool
 	s.nodes[peerID] = rec
 	if key.kind != attrRevocation || len(result.revokedSubjects) > 0 {
 		s.metrics.EventsApplied.Inc()
-		if isPullResponse {
-			s.metrics.StaleRatio.Update(0.0)
-		}
 		result.Rebroadcast = append(result.Rebroadcast, event)
 		s.metrics.EventsRebroadcast.Inc()
 	}

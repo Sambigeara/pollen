@@ -1722,7 +1722,7 @@ func TestSaveLoadPersistsPubliclyAccessible(t *testing.T) {
 	require.True(t, s2.IsPubliclyAccessible(peerPK))
 }
 
-func TestStaleRatioOnlyUpdatesOnPullResponse(t *testing.T) {
+func TestStaleRatioBatchLevel(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	s := newTestStore(pub, nil)
 	gm := metrics.NewGossipMetrics(nil)
@@ -1730,7 +1730,7 @@ func TestStaleRatioOnlyUpdatesOnPullResponse(t *testing.T) {
 
 	_, peerStr := peerKey(2)
 
-	// Apply a fresh event with isPullResponse=false → EWMA should not move.
+	// Push events don't update EWMA.
 	s.ApplyEvents([]*statev1.GossipEvent{{
 		PeerId:  peerStr,
 		Counter: 1,
@@ -1740,17 +1740,7 @@ func TestStaleRatioOnlyUpdatesOnPullResponse(t *testing.T) {
 	}}, false)
 	require.Equal(t, 0.0, gm.StaleRatio.Value(), "EWMA should not move on push events")
 
-	// Apply same event again (stale) with isPullResponse=false → still no EWMA move.
-	s.ApplyEvents([]*statev1.GossipEvent{{
-		PeerId:  peerStr,
-		Counter: 1,
-		Change: &statev1.GossipEvent_Network{
-			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
-		},
-	}}, false)
-	require.Equal(t, 0.0, gm.StaleRatio.Value(), "EWMA should not move on push stale events")
-
-	// Apply a fresh event with isPullResponse=true → EWMA should move toward 0.
+	// Pull-response batch with a fresh event → batch is useful (0.0).
 	s.ApplyEvents([]*statev1.GossipEvent{{
 		PeerId:  peerStr,
 		Counter: 2,
@@ -1758,9 +1748,9 @@ func TestStaleRatioOnlyUpdatesOnPullResponse(t *testing.T) {
 			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001},
 		},
 	}}, true)
-	require.Equal(t, 0.0, gm.StaleRatio.Value(), "fresh event should record 0.0 stale ratio")
+	require.Equal(t, 0.0, gm.StaleRatio.Value(), "fresh batch should record 0.0")
 
-	// Apply a stale event with isPullResponse=true → EWMA should move toward 1.
+	// Pull-response batch where all events are stale → batch is stale (1.0).
 	prev := gm.StaleRatio.Value()
 	s.ApplyEvents([]*statev1.GossipEvent{{
 		PeerId:  peerStr,
@@ -1769,7 +1759,27 @@ func TestStaleRatioOnlyUpdatesOnPullResponse(t *testing.T) {
 			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001},
 		},
 	}}, true)
-	require.Greater(t, gm.StaleRatio.Value(), prev, "EWMA should increase on pull-response stale event")
+	require.Greater(t, gm.StaleRatio.Value(), prev, "fully stale batch should increase EWMA")
+
+	// Pull-response batch with mix of stale + fresh → batch is useful (0.0).
+	mixed := gm.StaleRatio.Value()
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  peerStr,
+			Counter: 2, // stale
+			Change: &statev1.GossipEvent_Network{
+				Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001},
+			},
+		},
+		{
+			PeerId:  peerStr,
+			Counter: 3, // fresh
+			Change: &statev1.GossipEvent_Network{
+				Network: &statev1.NetworkChange{Ips: []string{"10.0.0.3"}, LocalPort: 9002},
+			},
+		},
+	}, true)
+	require.Less(t, gm.StaleRatio.Value(), mixed, "mixed batch with fresh event should decrease EWMA")
 }
 
 func TestResourceTelemetryDeadband(t *testing.T) {
