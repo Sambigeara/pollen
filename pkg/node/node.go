@@ -612,10 +612,16 @@ func (n *Node) updateVivaldiCoords() {
 			continue
 		}
 		peerCoord, ok := n.store.PeerVivaldiCoord(peerKey)
-		if !ok || peerCoord == nil || peerCoord.IsZero() {
+		if !ok || peerCoord == nil {
 			continue
 		}
 		coordErr := math.Float64frombits(n.localCoordErr.Load())
+		// Skip zero-coord peers only once we've started converging ourselves.
+		// When unconverged (error ≥ 1.0), any sample bootstraps progress;
+		// once converging, zero-coord peers would drag error back toward 1.0.
+		if peerCoord.IsZero() && coordErr < 1.0 {
+			continue
+		}
 		var newErr float64
 		n.localCoord, newErr = topology.Update(
 			n.localCoord, coordErr,
