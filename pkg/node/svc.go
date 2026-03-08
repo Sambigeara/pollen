@@ -424,8 +424,6 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 		health = controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY
 	case math.Float64frombits(s.node.localCoordErr.Load()) > vivaldiDegradedThreshold:
 		health = controlv1.HealthStatus_HEALTH_STATUS_DEGRADED
-	case gossipApplied > staleRatioMinApplied && gm.StaleRatio.Value() > staleRatioDegradedThreshold:
-		health = controlv1.HealthStatus_HEALTH_STATUS_DEGRADED
 	}
 
 	return &controlv1.GetMetricsResponse{
@@ -446,11 +444,7 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 	}, nil
 }
 
-const (
-	vivaldiDegradedThreshold    = 0.6
-	staleRatioDegradedThreshold = 0.5
-	staleRatioMinApplied        = 500
-)
+const vivaldiDegradedThreshold = 0.6
 
 func comparePeerKey(a, b types.PeerKey) int {
 	return bytes.Compare(a[:], b[:])
