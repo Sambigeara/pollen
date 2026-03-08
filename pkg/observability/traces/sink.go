@@ -15,23 +15,21 @@ type ReadOnlySpan struct {
 	StartTime    time.Time
 	EndTime      time.Time
 	Attributes   []Attribute
-	Status       SpanStatus
 }
 
 func (s *Span) readOnly() ReadOnlySpan {
 	parentID := ""
-	if !s.ParentSpanID.IsZero() {
-		parentID = s.ParentSpanID.String()
+	if !s.parentSpanID.IsZero() {
+		parentID = s.parentSpanID.String()
 	}
 	return ReadOnlySpan{
-		TraceID:      s.TraceID.String(),
-		SpanID:       s.SpanID.String(),
+		TraceID:      s.traceID.String(),
+		SpanID:       s.spanID.String(),
 		ParentSpanID: parentID,
-		Name:         s.Name,
-		StartTime:    s.StartTime,
-		EndTime:      s.EndTime,
-		Attributes:   s.Attributes,
-		Status:       s.Status,
+		Name:         s.name,
+		StartTime:    s.startTime,
+		EndTime:      s.endTime,
+		Attributes:   s.attributes,
 	}
 }
 

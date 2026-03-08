@@ -283,23 +283,11 @@ func (s *Store) updateGauges() {
 	if !s.metrics.Enabled() {
 		return
 	}
-	var discovered, connecting, connected, unreachable int
-	for _, p := range s.m {
-		switch p.State { //nolint:exhaustive
-		case PeerStateDiscovered:
-			discovered++
-		case PeerStateConnecting:
-			connecting++
-		case PeerStateConnected:
-			connected++
-		case PeerStateUnreachable:
-			unreachable++
-		}
-	}
-	s.metrics.PeersDiscovered.Set(float64(discovered))
-	s.metrics.PeersConnecting.Set(float64(connecting))
-	s.metrics.PeersConnected.Set(float64(connected))
-	s.metrics.PeersUnreachable.Set(float64(unreachable))
+	c := s.stateCountsLocked()
+	s.metrics.PeersDiscovered.Set(float64(c.Discovered))
+	s.metrics.PeersConnecting.Set(float64(c.Connecting))
+	s.metrics.PeersConnected.Set(float64(c.Connected))
+	s.metrics.PeersUnreachable.Set(float64(c.Unreachable))
 }
 
 func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
@@ -541,6 +529,10 @@ type PeerStateCounts struct {
 func (s *Store) StateCounts() PeerStateCounts {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.stateCountsLocked()
+}
+
+func (s *Store) stateCountsLocked() PeerStateCounts {
 	var c PeerStateCounts
 	for _, p := range s.m {
 		switch p.State { //nolint:exhaustive

@@ -21,10 +21,10 @@ func (t *Tracer) Start(name string) *Span {
 	}
 	return &Span{
 		tracer:    t,
-		TraceID:   NewTraceID(),
-		SpanID:    NewSpanID(),
-		Name:      name,
-		StartTime: time.Now(),
+		traceID:   NewTraceID(),
+		spanID:    NewSpanID(),
+		name:      name,
+		startTime: time.Now(),
 	}
 }
 
@@ -40,10 +40,10 @@ func (t *Tracer) StartFromRemote(name string, traceID []byte) *Span {
 	}
 	return &Span{
 		tracer:    t,
-		TraceID:   tid,
-		SpanID:    NewSpanID(),
-		Name:      name,
-		StartTime: time.Now(),
+		traceID:   tid,
+		spanID:    NewSpanID(),
+		name:      name,
+		startTime: time.Now(),
 	}
 }
 
@@ -53,36 +53,26 @@ type Attribute struct {
 	Value string
 }
 
-// SpanStatus records the outcome of a span.
-type SpanStatus int
-
-const (
-	StatusUnset SpanStatus = iota
-	StatusOK
-	StatusError
-)
-
 // Span represents a unit of work within a trace. A nil *Span is safe to use;
 // all methods are no-ops.
 type Span struct {
-	StartTime    time.Time
-	EndTime      time.Time
+	startTime    time.Time
+	endTime      time.Time
 	tracer       *Tracer
-	Name         string
-	Attributes   []Attribute
-	Status       SpanStatus
-	TraceID      TraceID
-	SpanID       SpanID
-	ParentSpanID SpanID
+	name         string
+	attributes   []Attribute
+	traceID      TraceID
+	spanID       SpanID
+	parentSpanID SpanID
 }
 
 // End records the end time and exports the span. Calling End on a nil or
 // already-ended span is a no-op.
 func (s *Span) End() {
-	if s == nil || !s.EndTime.IsZero() {
+	if s == nil || !s.endTime.IsZero() {
 		return
 	}
-	s.EndTime = time.Now()
+	s.endTime = time.Now()
 	if s.tracer.sink != nil {
 		s.tracer.sink.Export([]ReadOnlySpan{s.readOnly()})
 	}
@@ -93,30 +83,7 @@ func (s *Span) SetAttr(key, value string) {
 	if s == nil {
 		return
 	}
-	s.Attributes = append(s.Attributes, Attribute{Key: key, Value: value})
-}
-
-// SetStatus sets the span status.
-func (s *Span) SetStatus(status SpanStatus) {
-	if s == nil {
-		return
-	}
-	s.Status = status
-}
-
-// Child creates a child span sharing the same TraceID.
-func (s *Span) Child(name string) *Span {
-	if s == nil {
-		return nil
-	}
-	return &Span{
-		tracer:       s.tracer,
-		TraceID:      s.TraceID,
-		SpanID:       NewSpanID(),
-		ParentSpanID: s.SpanID,
-		Name:         name,
-		StartTime:    time.Now(),
-	}
+	s.attributes = append(s.attributes, Attribute{Key: key, Value: value})
 }
 
 // TraceIDBytes returns the raw trace ID bytes for embedding in Envelope messages.
@@ -124,5 +91,5 @@ func (s *Span) TraceIDBytes() []byte {
 	if s == nil {
 		return nil
 	}
-	return s.TraceID.Bytes()
+	return s.traceID.Bytes()
 }

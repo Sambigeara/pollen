@@ -1188,12 +1188,6 @@ func (m *GetMetricsResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.StaleRatio != 0 {
-		i -= 8
-		binary.LittleEndian.PutUint64(dAtA[i:], uint64(math.Float64bits(float64(m.StaleRatio))))
-		i--
-		dAtA[i] = 0x71
-	}
 	if m.Health != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Health))
 		i--
@@ -1718,9 +1712,6 @@ func (m *GetMetricsResponse) SizeVT() (n int) {
 	}
 	if m.Health != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.Health))
-	}
-	if m.StaleRatio != 0 {
-		n += 9
 	}
 	n += len(m.unknownFields)
 	return n
@@ -4387,17 +4378,6 @@ func (m *GetMetricsResponse) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-		case 14:
-			if wireType != 1 {
-				return fmt.Errorf("proto: wrong wireType = %d for field StaleRatio", wireType)
-			}
-			var v uint64
-			if (iNdEx + 8) > l {
-				return io.ErrUnexpectedEOF
-			}
-			v = uint64(binary.LittleEndian.Uint64(dAtA[iNdEx:]))
-			iNdEx += 8
-			m.StaleRatio = float64(math.Float64frombits(v))
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

@@ -82,7 +82,7 @@ func runStatus(cmd *cobra.Command, args []string) {
 		}
 	default:
 		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services)\n", mode)
-		return
+		os.Exit(1)
 	}
 	renderStatusSections(cmd.OutOrStdout(), sections)
 
@@ -382,7 +382,7 @@ func renderHealthLine(w io.Writer, m *controlv1.GetMetricsResponse) {
 	case controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY:
 		label = "UNHEALTHY"
 		color = "1"
-	default:
+	case controlv1.HealthStatus_HEALTH_STATUS_UNSPECIFIED:
 		return
 	}
 	fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(label))

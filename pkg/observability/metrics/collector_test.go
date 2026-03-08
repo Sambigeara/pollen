@@ -126,8 +126,10 @@ func TestDifferentLabelsAreSeparate(t *testing.T) {
 	c := New(sink, Config{FlushInterval: time.Hour})
 	defer c.Close()
 
-	a := c.Counter("hits", MakeLabels("method", "GET"))
-	b := c.Counter("hits", MakeLabels("method", "POST"))
+	labelsA := Labels{{Key: "method", Value: "GET"}}
+	labelsB := Labels{{Key: "method", Value: "POST"}}
+	a := c.Counter("hits", labelsA)
+	b := c.Counter("hits", labelsB)
 
 	a.Add(5)
 	b.Add(3)
@@ -156,15 +158,6 @@ func TestNilSinkCollectsWithoutFlush(t *testing.T) {
 	c.Counter("x", Labels{}).Inc()
 	c.Gauge("y", Labels{}).Set(3.14)
 	c.Close()
-}
-
-func TestMakeLabels(t *testing.T) {
-	l := MakeLabels("a", "1", "b", "2")
-	require.Equal(t, "a", l[0].Key)
-	require.Equal(t, "1", l[0].Value)
-	require.Equal(t, "b", l[1].Key)
-	require.Equal(t, "2", l[1].Value)
-	require.Equal(t, "", l[2].Key)
 }
 
 func TestEWMAConvergence(t *testing.T) {

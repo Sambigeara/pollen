@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"cmp"
 	"fmt"
 	"maps"
@@ -174,7 +173,7 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 	s := &Store{
 		LocalID: localID,
 		disk:    d,
-		metrics: &metrics.GossipMetrics{},
+		metrics: metrics.NewGossipMetrics(nil),
 		nodes: map[types.PeerKey]nodeRecord{
 			localID: {
 				maxCounter:  1,
@@ -519,7 +518,6 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	if key.kind != attrRevocation || len(result.revokedSubjects) > 0 {
 		s.metrics.EventsApplied.Inc()
 		result.Rebroadcast = append(result.Rebroadcast, event)
-		s.metrics.EventsRebroadcast.Inc()
 	}
 	return result
 }
@@ -1143,7 +1141,7 @@ func (s *Store) KnownPeers() []KnownPeer {
 	}
 
 	slices.SortFunc(known, func(a, b KnownPeer) int {
-		return comparePeerKey(a.PeerID, b.PeerID)
+		return a.PeerID.Compare(b.PeerID)
 	})
 
 	return known
@@ -1211,7 +1209,7 @@ func (s *Store) DesiredConnections() []Connection {
 
 func sortConnections(cs []Connection) {
 	slices.SortFunc(cs, func(a, b Connection) int {
-		if c := comparePeerKey(a.PeerID, b.PeerID); c != 0 {
+		if c := a.PeerID.Compare(b.PeerID); c != 0 {
 			return c
 		}
 		if c := cmp.Compare(a.RemotePort, b.RemotePort); c != 0 {
@@ -1219,10 +1217,6 @@ func sortConnections(cs []Connection) {
 		}
 		return cmp.Compare(a.LocalPort, b.LocalPort)
 	})
-}
-
-func comparePeerKey(a, b types.PeerKey) int {
-	return bytes.Compare(a[:], b[:])
 }
 
 func (s *Store) IsSubjectRevoked(subjectPub []byte) bool {

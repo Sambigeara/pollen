@@ -8,7 +8,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -139,7 +138,7 @@ type Node struct {
 	pollenDir       string
 	signPriv        ed25519.PrivateKey
 	localCoord      topology.Coord
-	localCoordErr   atomic.Uint64
+	localCoordErr   float64
 	renewalFailed   atomic.Bool
 	useHMACNearest  bool
 }
@@ -158,14 +157,12 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 
 	stateStore.SetLocalNetwork(ips, uint32(conf.Port))
 
-	var metricsSink metrics.Sink
-	var tracesSink traces.Sink
+	var col *metrics.Collector
+	var tracer *traces.Tracer
 	if conf.MetricsEnabled {
-		metricsSink = metrics.NewLogSink(log.Named("metrics"))
-		tracesSink = traces.NewLogSink(log.Named("traces"))
+		col = metrics.New(metrics.NewLogSink(log.Named("metrics")), metrics.Config{})
+		tracer = traces.NewTracer(traces.NewLogSink(log.Named("traces")))
 	}
-	col := metrics.New(metricsSink, metrics.Config{})
-	tracer := traces.NewTracer(tracesSink)
 
 	meshMetrics := metrics.NewMeshMetrics(col)
 	peerMetrics := metrics.NewPeerMetrics(col)
@@ -212,7 +209,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		tracer:          tracer,
 		smoothedErr:     metrics.NewEWMAFrom(vivaldiErrAlpha, 1.0),
 	}
-	n.localCoordErr.Store(math.Float64bits(1.0))
+	n.localCoordErr = 1.0
 
 	stateStore.OnRevocation(func(subject types.PeerKey) {
 		n.tun.DisconnectPeer(subject)
@@ -618,7 +615,7 @@ func (n *Node) updateVivaldiCoords() {
 		if !ok || peerCoord == nil {
 			continue
 		}
-		coordErr := math.Float64frombits(n.localCoordErr.Load())
+		coordErr := n.localCoordErr
 		// Skip zero-coord peers only once we've started converging ourselves.
 		// When unconverged (error ≥ 1.0), any sample bootstraps progress;
 		// once converging, zero-coord peers would drag error back toward 1.0.
@@ -630,7 +627,7 @@ func (n *Node) updateVivaldiCoords() {
 			n.localCoord, coordErr,
 			topology.Sample{RTT: rtt, PeerCoord: *peerCoord},
 		)
-		n.localCoordErr.Store(math.Float64bits(newErr))
+		n.localCoordErr = newErr
 		n.smoothedErr.Update(newErr)
 		updated = true
 	}

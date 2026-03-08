@@ -31,22 +31,8 @@ const (
 	KindGauge
 )
 
-// Labels is an ordered set of key-value pairs attached to a metric.
-type Labels [maxLabels]Label
-
-// Label is a single key-value dimension.
-type Label struct{ Key, Value string }
-
-const maxLabels = 4
-
-// MakeLabels builds a Labels array from key-value pairs.
-func MakeLabels(kvs ...string) Labels {
-	var l Labels
-	for i := 0; i+1 < len(kvs) && i/2 < maxLabels; i += 2 {
-		l[i/2] = Label{Key: kvs[i], Value: kvs[i+1]}
-	}
-	return l
-}
+// Labels is a fixed-size array used as a map key for metric deduplication.
+type Labels [4]struct{ Key, Value string }
 
 // Config controls the collector's flush behavior.
 type Config struct {

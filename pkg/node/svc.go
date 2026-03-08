@@ -71,7 +71,7 @@ func (s *NodeService) pickRecommendedPeer(localID types.PeerKey) *controlv1.Boot
 	}
 
 	if len(candidates) > 0 {
-		slices.SortFunc(candidates, comparePeerKey)
+		slices.SortFunc(candidates, types.PeerKey.Compare)
 		best := candidates[0]
 		rec := nodes[best]
 		return nodeBootstrapInfo(best, rec.IPs, rec.LocalPort)
@@ -296,7 +296,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		if ra, rb := nodeStatusRank(a.Status), nodeStatusRank(b.Status); ra != rb {
 			return ra - rb
 		}
-		return comparePeerKey(types.PeerKeyFromBytes(a.Node.PeerId), types.PeerKeyFromBytes(b.Node.PeerId))
+		return types.PeerKeyFromBytes(a.Node.PeerId).Compare(types.PeerKeyFromBytes(b.Node.PeerId))
 	})
 
 	slices.SortFunc(out.Services, func(a, b *controlv1.ServiceSummary) int {
@@ -306,14 +306,14 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		if a.Port != b.Port {
 			return cmp.Compare(a.Port, b.Port)
 		}
-		return comparePeerKey(types.PeerKeyFromBytes(a.Provider.PeerId), types.PeerKeyFromBytes(b.Provider.PeerId))
+		return types.PeerKeyFromBytes(a.Provider.PeerId).Compare(types.PeerKeyFromBytes(b.Provider.PeerId))
 	})
 
 	slices.SortFunc(out.Connections, func(a, b *controlv1.ConnectionSummary) int {
 		if a.LocalPort != b.LocalPort {
 			return cmp.Compare(a.LocalPort, b.LocalPort)
 		}
-		return comparePeerKey(types.PeerKeyFromBytes(a.Peer.PeerId), types.PeerKeyFromBytes(b.Peer.PeerId))
+		return types.PeerKeyFromBytes(a.Peer.PeerId).Compare(types.PeerKeyFromBytes(b.Peer.PeerId))
 	})
 
 	return out, nil
@@ -439,15 +439,10 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 		PunchAttempts:      punchAttempts,
 		PunchFailures:      punchFailures,
 		Health:             health,
-		StaleRatio:         gm.StaleRatio.Value(),
 	}, nil
 }
 
 const vivaldiDegradedThreshold = 0.9
-
-func comparePeerKey(a, b types.PeerKey) int {
-	return bytes.Compare(a[:], b[:])
-}
 
 const offlineRank = 3
 

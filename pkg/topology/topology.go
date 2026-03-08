@@ -305,7 +305,7 @@ func selectNearestHMAC(localKey types.PeerKey, candidates []nearestCandidate, k,
 }
 
 // selectLongLinks picks r peers via deterministic HMAC-SHA256 permutation.
-// Non-LAN pairs require at least one side to be Easy.
+// Non-LAN Hard+Hard pairs are filtered out (both sides need direct connectivity).
 func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types.PeerKey]struct{}, params Params) []types.PeerKey {
 	var epochBuf [8]byte
 	binary.BigEndian.PutUint64(epochBuf[:], uint64(params.Epoch))

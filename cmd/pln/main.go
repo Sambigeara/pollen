@@ -1954,9 +1954,11 @@ func formatStatus(s controlv1.NodeStatus) string {
 		return "indirect"
 	case controlv1.NodeStatus_NODE_STATUS_RELAY:
 		return "relay"
-	default:
+	case controlv1.NodeStatus_NODE_STATUS_OFFLINE,
+		controlv1.NodeStatus_NODE_STATUS_UNSPECIFIED:
 		return "offline"
 	}
+	return "offline"
 }
 
 func isReachableStatus(s controlv1.NodeStatus) bool {

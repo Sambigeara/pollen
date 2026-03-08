@@ -33,8 +33,6 @@ func TestNilTracerIsNoOp(t *testing.T) {
 
 	span.End()
 	span.SetAttr("k", "v")
-	child := span.Child("child")
-	require.Nil(t, child)
 	require.Nil(t, span.TraceIDBytes())
 }
 
@@ -44,8 +42,8 @@ func TestSpanLifecycle(t *testing.T) {
 
 	span := tr.Start("root")
 	require.NotNil(t, span)
-	require.False(t, span.TraceID.IsZero())
-	require.False(t, span.SpanID.IsZero())
+	require.False(t, span.traceID.IsZero())
+	require.False(t, span.spanID.IsZero())
 
 	span.SetAttr("peer", "abc")
 	span.End()
@@ -58,30 +56,13 @@ func TestSpanLifecycle(t *testing.T) {
 	require.Equal(t, "peer", spans[0].Attributes[0].Key)
 }
 
-func TestChildSpanSharesTraceID(t *testing.T) {
-	sink := &recordingSink{}
-	tr := NewTracer(sink)
-
-	parent := tr.Start("parent")
-	child := parent.Child("child")
-	require.Equal(t, parent.TraceID, child.TraceID)
-	require.Equal(t, parent.SpanID, child.ParentSpanID)
-	require.NotEqual(t, parent.SpanID, child.SpanID)
-
-	child.End()
-	parent.End()
-
-	spans := sink.get()
-	require.Len(t, spans, 2)
-}
-
 func TestStartFromRemote(t *testing.T) {
 	sink := &recordingSink{}
 	tr := NewTracer(sink)
 
 	traceID := NewTraceID()
 	span := tr.StartFromRemote("remote-op", traceID.Bytes())
-	require.Equal(t, traceID, span.TraceID)
+	require.Equal(t, traceID, span.traceID)
 
 	span.End()
 	spans := sink.get()
@@ -94,7 +75,7 @@ func TestStartFromRemoteEmptyTraceID(t *testing.T) {
 	tr := NewTracer(sink)
 
 	span := tr.StartFromRemote("remote-op", nil)
-	require.False(t, span.TraceID.IsZero())
+	require.False(t, span.traceID.IsZero())
 
 	span.End()
 }

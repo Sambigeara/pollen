@@ -193,5 +193,4 @@ message GetMetricsResponse {
   uint64 punch_attempts = 11;
   uint64 punch_failures = 12;
   HealthStatus health = 13;
-  double stale_ratio = 14;
 }

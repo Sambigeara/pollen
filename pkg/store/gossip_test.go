@@ -33,7 +33,7 @@ func newTestStore(pub []byte, trustBundle *admissionv1.TrustBundle) *Store {
 		revocations:        make(map[types.PeerKey]*admissionv1.SignedRevocation),
 		trustBundle:        trustBundle,
 		desiredConnections: make(map[string]Connection),
-		metrics:            &metrics.GossipMetrics{},
+		metrics:            metrics.NewGossipMetrics(nil),
 	}
 	local := s.nodes[localID]
 	tombstoneStaleAttrs(&local)
