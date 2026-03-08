@@ -28,59 +28,30 @@ ansible-playbook upgrade.yml -i inventories/bootstrap.py -e pln_version=v0.1.0-a
 ## Vivaldi (28-node cluster)
 
 ```bash
-# Provision infrastructure
-cd infra/vivaldi
-terraform init && terraform apply
+cd infra
 
-# Full setup: install → init root → join all nodes
-cd ../ansible
-ansible-playbook site.yml -i inventories/vivaldi.py -e pln_version=v0.1.0-alpha.36
+# Provision, install, and form cluster (idempotent)
+just deploy-vivaldi v0.1.0-alpha.36
 
-# Upgrade pln across all 28 nodes (no teardown!)
-ansible-playbook upgrade.yml -i inventories/vivaldi.py -e pln_version=v0.1.0-alpha.37
+# Tear down all infrastructure
+just destroy-vivaldi
 ```
 
 ## Vivaldi Public (28-node all-public cluster)
 
 ```bash
-# Provision infrastructure
-cd infra/vivaldi-public
-terraform init && terraform apply
+cd infra
 
-# Install only
-cd ../ansible
-ansible-playbook install.yml -i inventories/vivaldi_public.py -e pln_version=v0.1.0-alpha.65
+# Provision, install, and form cluster (idempotent)
+just deploy-vivaldi-pub v0.1.0-alpha.65
 
-# Init root node only
-ansible-playbook init-cluster.yml -i inventories/vivaldi_public.py
-
-# Join remaining public nodes only
-ansible-playbook join-public-cluster.yml -i inventories/vivaldi_public.py
-
-# Collect status/log artifacts
-ansible-playbook collect-topology-artifacts.yml -i inventories/vivaldi_public.py -e artifact_dir=/tmp/pollen-vivaldi-public
-```
-
-### Individual steps
-
-```bash
-# Install only (no cluster formation)
-ansible-playbook install.yml -i inventories/vivaldi.py -e pln_version=v0.1.0-alpha.36
-
-# Init root node only
-ansible-playbook init-cluster.yml -i inventories/vivaldi.py
-
-# Join remaining nodes only
-ansible-playbook join-cluster.yml -i inventories/vivaldi.py
-
-# Purge all state and start fresh
-ansible-playbook purge.yml -i inventories/vivaldi.py
-ansible-playbook init-cluster.yml -i inventories/vivaldi.py
-ansible-playbook join-cluster.yml -i inventories/vivaldi.py
+# Tear down all infrastructure
+just destroy-vivaldi-pub
 ```
 
 ## Prerequisites
 
+- [just](https://github.com/casey/just) (`brew install just`)
 - Terraform / OpenTofu
 - Ansible (`brew install ansible`)
 - AWS credentials configured

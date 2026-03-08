@@ -43,7 +43,7 @@ func newTestStore(pub []byte, trustBundle *admissionv1.TrustBundle) *Store {
 
 // applyEvent is a test convenience for applying a single gossip event.
 func (s *Store) applyEvent(event *statev1.GossipEvent) ApplyResult {
-	return s.ApplyEvents([]*statev1.GossipEvent{event})
+	return s.ApplyEvents([]*statev1.GossipEvent{event}, false)
 }
 
 func peerKey(b byte) (types.PeerKey, string) {
@@ -1720,6 +1720,56 @@ func TestSaveLoadPersistsPubliclyAccessible(t *testing.T) {
 
 	peerPK, _ := peerKey(2)
 	require.True(t, s2.IsPubliclyAccessible(peerPK))
+}
+
+func TestStaleRatioOnlyUpdatesOnPullResponse(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	s := newTestStore(pub, nil)
+	gm := metrics.NewGossipMetrics(nil)
+	s.SetGossipMetrics(gm)
+
+	_, peerStr := peerKey(2)
+
+	// Apply a fresh event with isPullResponse=false → EWMA should not move.
+	s.ApplyEvents([]*statev1.GossipEvent{{
+		PeerId:  peerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+		},
+	}}, false)
+	require.Equal(t, 0.0, gm.StaleRatio.Value(), "EWMA should not move on push events")
+
+	// Apply same event again (stale) with isPullResponse=false → still no EWMA move.
+	s.ApplyEvents([]*statev1.GossipEvent{{
+		PeerId:  peerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+		},
+	}}, false)
+	require.Equal(t, 0.0, gm.StaleRatio.Value(), "EWMA should not move on push stale events")
+
+	// Apply a fresh event with isPullResponse=true → EWMA should move toward 0.
+	s.ApplyEvents([]*statev1.GossipEvent{{
+		PeerId:  peerStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001},
+		},
+	}}, true)
+	require.Equal(t, 0.0, gm.StaleRatio.Value(), "fresh event should record 0.0 stale ratio")
+
+	// Apply a stale event with isPullResponse=true → EWMA should move toward 1.
+	prev := gm.StaleRatio.Value()
+	s.ApplyEvents([]*statev1.GossipEvent{{
+		PeerId:  peerStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001},
+		},
+	}}, true)
+	require.Greater(t, gm.StaleRatio.Value(), prev, "EWMA should increase on pull-response stale event")
 }
 
 func TestResourceTelemetryDeadband(t *testing.T) {

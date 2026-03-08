@@ -371,7 +371,7 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 	case *meshv1.Envelope_Events:
 		span := n.tracer.StartFromRemote("gossip.applyEvents", env.GetTraceId())
 		span.SetAttr("peer", from.Short())
-		result := n.store.ApplyEvents(body.Events.GetEvents())
+		result := n.store.ApplyEvents(body.Events.GetEvents(), body.Events.GetIsResponse())
 		if len(result.Rebroadcast) > 0 && !body.Events.GetIsResponse() {
 			n.queueGossipEvents(result.Rebroadcast)
 		}
@@ -612,7 +612,7 @@ func (n *Node) updateVivaldiCoords() {
 			continue
 		}
 		peerCoord, ok := n.store.PeerVivaldiCoord(peerKey)
-		if !ok || peerCoord == nil {
+		if !ok || peerCoord == nil || peerCoord.IsZero() {
 			continue
 		}
 		coordErr := math.Float64frombits(n.localCoordErr.Load())

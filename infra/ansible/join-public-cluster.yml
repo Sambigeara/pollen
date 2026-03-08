@@ -27,11 +27,19 @@
   gather_facts: false
 
   tasks:
+    - name: Check if pln is already running
+      ansible.builtin.command: systemctl is-active pln
+      register: pln_check
+      failed_when: false
+      changed_when: false
+
     - name: Determine token index
       ansible.builtin.set_fact:
         token_index: "{{ groups['public'].index(inventory_hostname) }}"
+      when: pln_check.rc != 0
 
     - name: Join cluster as public node
       ansible.builtin.command: >
         pln join --public '{{ hostvars[groups["root"][0]].invite_tokens[token_index | int] }}'
+      when: pln_check.rc != 0
       changed_when: true

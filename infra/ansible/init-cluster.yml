@@ -8,12 +8,20 @@
   gather_facts: false
 
   tasks:
+    - name: Check if pln is already running
+      ansible.builtin.command: systemctl is-active pln
+      register: pln_check
+      failed_when: false
+      changed_when: false
+
     - name: Initialize pln
       ansible.builtin.command: pln init
+      when: pln_check.rc != 0
       changed_when: true
 
     - name: Start pln daemon (public relay)
       ansible.builtin.command: pln up --public -d
+      when: pln_check.rc != 0
       changed_when: true
 
     - name: Wait for daemon readiness

@@ -25,7 +25,7 @@ You are the CRDT state and persistence specialist for Pollen. You think in terms
 - `store.Store.Clock() *statev1.GossipVectorClock` — current vector clock for all peers
 - `store.Store.EagerSyncClock() *statev1.GossipVectorClock` — returns zero clock if no remote peers (triggers full sync on first contact)
 - `store.Store.MissingFor(clock) []*statev1.GossipEvent` — events the remote peer needs
-- `store.Store.ApplyEvents(events) ApplyResult` — apply batch atomically; returns rebroadcast events and revoked subjects
+- `store.Store.ApplyEvents(events, isPullResponse) ApplyResult` — apply batch atomically; returns rebroadcast events and revoked subjects
 - `store.Store.SetLocalNetwork(ips, port) []*statev1.GossipEvent` — update local network info, returns broadcast events
 - `store.Store.SetExternalPort(port) []*statev1.GossipEvent` — update external NAT port
 - `store.Store.SetLocalConnected(peerID, connected) []*statev1.GossipEvent` — publish reachability change

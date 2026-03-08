@@ -393,8 +393,7 @@ func renderMetricsDetails(w io.Writer, m *controlv1.GetMetricsResponse) {
 	fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Render("DIAGNOSTICS")) //nolint:mnd
 	fmt.Fprintf(w, "  vivaldi error:  %.3f\n", m.GetVivaldiError())
 	if m.GetEventsApplied() > 0 {
-		ratio := float64(m.GetEventsStale()) / float64(m.GetEventsApplied())
-		fmt.Fprintf(w, "  gossip stale:   %d/%d (%.1f%%)\n", m.GetEventsStale(), m.GetEventsApplied(), ratio*100) //nolint:mnd
+		fmt.Fprintf(w, "  gossip stale:   %.1f%% (%d/%d)\n", m.GetStaleRatio()*100, m.GetEventsStale(), m.GetEventsApplied()) //nolint:mnd
 	}
 	if m.GetPunchAttempts() > 0 {
 		fmt.Fprintf(w, "  punch success:  %d/%d\n", m.GetPunchAttempts()-m.GetPunchFailures(), m.GetPunchAttempts())

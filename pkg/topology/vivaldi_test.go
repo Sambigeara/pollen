@@ -20,6 +20,13 @@ func TestDistanceIncludesHeight(t *testing.T) {
 	require.InDelta(t, 3.0, Distance(a, b), 1e-12)
 }
 
+func TestCoordIsZero(t *testing.T) {
+	require.True(t, Coord{}.IsZero())
+	require.True(t, Coord{X: 0, Y: 0, Height: 0}.IsZero())
+	require.False(t, Coord{X: 1, Y: 0, Height: 0}.IsZero())
+	require.False(t, Coord{X: 0, Y: 0, Height: MinHeight}.IsZero())
+}
+
 func TestDistanceZeroCoords(t *testing.T) {
 	a := Coord{}
 	b := Coord{}

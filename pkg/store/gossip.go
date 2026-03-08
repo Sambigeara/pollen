@@ -407,8 +407,11 @@ func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipEv
 	return events
 }
 
-// ApplyEvents applies a batch of incoming gossip events under a single lock acquisition.
-func (s *Store) ApplyEvents(events []*statev1.GossipEvent) ApplyResult {
+// ApplyEvents applies a batch of incoming gossip events under a single lock
+// acquisition. When isPullResponse is true, stale/applied outcomes update the
+// EWMA stale ratio used for health checks; push-rebroadcast events are
+// excluded because their inherently high staleness is normal gossip behavior.
+func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) ApplyResult {
 	s.mu.Lock()
 
 	s.metrics.BatchSize.Set(float64(len(events)))
@@ -419,7 +422,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent) ApplyResult {
 		if event == nil {
 			continue
 		}
-		r := s.applyEventLocked(event)
+		r := s.applyEventLocked(event, isPullResponse)
 		result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
 		result.revokedSubjects = append(result.revokedSubjects, r.revokedSubjects...)
 	}
@@ -435,7 +438,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent) ApplyResult {
 	return result
 }
 
-func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
+func (s *Store) applyEventLocked(event *statev1.GossipEvent, isPullResponse bool) ApplyResult {
 	peerID, err := types.PeerKeyFromString(event.GetPeerId())
 	if err != nil {
 		return ApplyResult{}
@@ -465,7 +468,9 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	// Per-key stale check: only accept if this event is newer for this key.
 	if existing, ok := rec.log[key]; ok && event.GetCounter() <= existing.Counter {
 		s.metrics.EventsStale.Inc()
-		s.metrics.StaleRatio.Update(1.0)
+		if isPullResponse {
+			s.metrics.StaleRatio.Update(1.0)
+		}
 		return ApplyResult{}
 	}
 
@@ -500,7 +505,9 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	s.nodes[peerID] = rec
 	if key.kind != attrRevocation || len(result.revokedSubjects) > 0 {
 		s.metrics.EventsApplied.Inc()
-		s.metrics.StaleRatio.Update(0.0)
+		if isPullResponse {
+			s.metrics.StaleRatio.Update(0.0)
+		}
 		result.Rebroadcast = append(result.Rebroadcast, event)
 		s.metrics.EventsRebroadcast.Inc()
 	}

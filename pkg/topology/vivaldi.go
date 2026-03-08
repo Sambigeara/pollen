@@ -38,6 +38,13 @@ const (
 	PublishEpsilon = 0.5
 )
 
+// IsZero reports whether c is the zero-value coordinate, indicating that the
+// peer has not yet converged. Using a zero-coord peer in Vivaldi produces
+// dist≈0, which drives the local error toward 1.0.
+func (c Coord) IsZero() bool {
+	return c.X == 0 && c.Y == 0 && c.Height == 0
+}
+
 // Distance returns the Vivaldi distance between two coordinates:
 // ||a.pos − b.pos|| + a.Height + b.Height.
 func Distance(a, b Coord) float64 {

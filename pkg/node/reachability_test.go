@@ -94,7 +94,7 @@ func markPeerConnectedToTarget(s *store.Store, source, target types.PeerKey, cou
 		Change: &statev1.GossipEvent_Reachability{
 			Reachability: &statev1.ReachabilityChange{PeerId: target.String()},
 		},
-	}})
+	}}, false)
 }
 
 func addPeerWithIP(s *store.Store, peerID types.PeerKey, ip string, port uint32, counter uint64) {
@@ -104,7 +104,7 @@ func addPeerWithIP(s *store.Store, peerID types.PeerKey, ip string, port uint32,
 		Change: &statev1.GossipEvent_Network{
 			Network: &statev1.NetworkChange{Ips: []string{ip}, LocalPort: port},
 		},
-	}})
+	}}, false)
 }
 
 func setPeerObservedExternalIP(s *store.Store, peerID types.PeerKey, ip string, counter uint64) {
@@ -114,5 +114,5 @@ func setPeerObservedExternalIP(s *store.Store, peerID types.PeerKey, ip string, 
 		Change: &statev1.GossipEvent_ObservedExternalIp{
 			ObservedExternalIp: &statev1.ObservedExternalIPChange{Ip: ip},
 		},
-	}})
+	}}, false)
 }

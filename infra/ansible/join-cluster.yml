@@ -28,13 +28,21 @@
   serial: 1
 
   tasks:
+    - name: Check if pln is already running
+      ansible.builtin.command: systemctl is-active pln
+      register: pln_check
+      failed_when: false
+      changed_when: false
+
     - name: Determine token index
       ansible.builtin.set_fact:
         token_index: "{{ groups['relays'].index(inventory_hostname) }}"
+      when: pln_check.rc != 0
 
     - name: Join cluster as public relay
       ansible.builtin.command: >
         pln join --public '{{ hostvars[groups["root"][0]].invite_tokens[token_index | int] }}'
+      when: pln_check.rc != 0
       changed_when: true
 
 - name: Join private nodes
@@ -43,11 +51,19 @@
   gather_facts: false
 
   tasks:
+    - name: Check if pln is already running
+      ansible.builtin.command: systemctl is-active pln
+      register: pln_check
+      failed_when: false
+      changed_when: false
+
     - name: Determine token index
       ansible.builtin.set_fact:
         token_index: "{{ groups['relays'] | length + groups['private'].index(inventory_hostname) }}"
+      when: pln_check.rc != 0
 
     - name: Join cluster
       ansible.builtin.command: >
         pln join '{{ hostvars[groups["root"][0]].invite_tokens[token_index | int] }}'
+      when: pln_check.rc != 0
       changed_when: true
