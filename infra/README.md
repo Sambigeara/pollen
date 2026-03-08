@@ -49,7 +49,7 @@ terraform init && terraform apply
 
 # Install only
 cd ../ansible
-ansible-playbook install.yml -i inventories/vivaldi_public.py -e pln_version=v0.1.0-alpha.54
+ansible-playbook install.yml -i inventories/vivaldi_public.py -e pln_version=v0.1.0-alpha.65
 
 # Init root node only
 ansible-playbook init-cluster.yml -i inventories/vivaldi_public.py

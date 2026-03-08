@@ -25,7 +25,6 @@
   hosts: public
   become: true
   gather_facts: false
-  serial: 1
 
   tasks:
     - name: Determine token index

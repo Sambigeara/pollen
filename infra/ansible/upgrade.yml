@@ -23,10 +23,12 @@
         url: "https://github.com/sambigeara/pollen/releases/download/{{ pln_version }}/pln_{{ pkg_version }}_linux_arm64.deb"
         dest: /tmp/pln.deb
         mode: "0644"
+        force: true
 
     - name: Install .deb (triggers service restart via postinstall)
       ansible.builtin.apt:
         deb: /tmp/pln.deb
+        force: true
       environment:
         DEBIAN_FRONTEND: noninteractive
         NEEDRESTART_SUSPEND: "1"
