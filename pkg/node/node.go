@@ -78,6 +78,7 @@ const (
 	vivaldiEnterHMACThreshold = 0.6
 	vivaldiExitHMACThreshold  = 0.35
 	vivaldiWarmupDuration     = 5 * time.Second
+	vivaldiErrAlpha           = 0.04 // ~25-sample EWMA window for smoothed vivaldi error
 
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
@@ -116,8 +117,8 @@ type punchRequest struct {
 type Node struct {
 	lastExpirySweep time.Time
 	mesh            mesh.Mesh
-	lastEagerSync   map[types.PeerKey]time.Time
-	peerConnectTime map[types.PeerKey]time.Time
+	natDetector     *nat.Detector
+	store           *store.Store
 	tun             *tunnel.Manager
 	nonTargetStreak map[types.PeerKey]int
 	creds           *auth.NodeCredentials
@@ -125,19 +126,20 @@ type Node struct {
 	peers           *peer.Store
 	conf            *Config
 	ready           chan struct{}
-	store           *store.Store
-	natDetector     *nat.Detector
-	punchCh         chan punchRequest
-	gossipEvents    chan []*statev1.GossipEvent
 	log             *zap.SugaredLogger
-	nodeMetrics     *metrics.NodeMetrics
+	lastEagerSync   map[types.PeerKey]time.Time
+	punchCh         chan punchRequest
+	peerConnectTime map[types.PeerKey]time.Time
+	smoothedErr     *metrics.EWMA
+	gossipEvents    chan []*statev1.GossipEvent
 	topoMetrics     *metrics.TopologyMetrics
 	metricsCol      *metrics.Collector
 	tracer          *traces.Tracer
+	nodeMetrics     *metrics.NodeMetrics
 	pollenDir       string
 	signPriv        ed25519.PrivateKey
 	localCoord      topology.Coord
-	localCoordErr   atomic.Uint64 // float64 via Float64bits; accessed from event loop + gRPC
+	localCoordErr   atomic.Uint64
 	renewalFailed   atomic.Bool
 	useHMACNearest  bool
 }
@@ -208,6 +210,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		topoMetrics:     metrics.NewTopologyMetrics(col),
 		nodeMetrics:     metrics.NewNodeMetrics(col),
 		tracer:          tracer,
+		smoothedErr:     metrics.NewEWMAFrom(vivaldiErrAlpha, 1.0),
 	}
 	n.localCoordErr.Store(math.Float64bits(1.0))
 
@@ -628,6 +631,7 @@ func (n *Node) updateVivaldiCoords() {
 			topology.Sample{RTT: rtt, PeerCoord: *peerCoord},
 		)
 		n.localCoordErr.Store(math.Float64bits(newErr))
+		n.smoothedErr.Update(newErr)
 		updated = true
 	}
 	if updated {
@@ -663,13 +667,13 @@ func (n *Node) syncPeersFromState() {
 		}
 	}
 
-	coordErr := math.Float64frombits(n.localCoordErr.Load())
+	smoothed := n.smoothedErr.Value()
 	if n.useHMACNearest {
-		if coordErr < vivaldiExitHMACThreshold {
+		if smoothed < vivaldiExitHMACThreshold {
 			n.useHMACNearest = false
 		}
 	} else {
-		if coordErr > vivaldiEnterHMACThreshold {
+		if smoothed > vivaldiEnterHMACThreshold {
 			n.useHMACNearest = true
 		}
 	}
@@ -692,7 +696,7 @@ func (n *Node) syncPeersFromState() {
 	params.UseHMACNearest = n.useHMACNearest
 	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
 
-	n.topoMetrics.VivaldiError.Set(coordErr)
+	n.topoMetrics.VivaldiError.Set(smoothed)
 	if n.useHMACNearest {
 		n.topoMetrics.HMACNearestEnabled.Set(1.0)
 	} else {

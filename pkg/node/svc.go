@@ -7,7 +7,6 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"slices"
 	"strconv"
@@ -422,7 +421,7 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 		health = controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY
 	case counts.Connected == 0:
 		health = controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY
-	case math.Float64frombits(s.node.localCoordErr.Load()) > vivaldiDegradedThreshold:
+	case s.node.smoothedErr.Value() > vivaldiDegradedThreshold:
 		health = controlv1.HealthStatus_HEALTH_STATUS_DEGRADED
 	}
 
@@ -433,7 +432,7 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 		PeersUnreachable:   counts.Unreachable,
 		EventsApplied:      gossipApplied,
 		EventsStale:        gossipStale,
-		VivaldiError:       math.Float64frombits(s.node.localCoordErr.Load()),
+		VivaldiError:       s.node.smoothedErr.Value(),
 		CertExpirySeconds:  certExpiry,
 		CertRenewals:       certRenewals,
 		CertRenewalsFailed: certRenewalsFailed,

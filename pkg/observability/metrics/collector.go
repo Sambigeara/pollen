@@ -189,9 +189,16 @@ type EWMA struct {
 	alpha float64
 }
 
-// NewEWMA creates an EWMA with the given smoothing factor.
+// NewEWMA creates an EWMA with the given smoothing factor, starting at 0.
 func NewEWMA(alpha float64) *EWMA {
 	return &EWMA{alpha: alpha}
+}
+
+// NewEWMAFrom creates an EWMA with the given smoothing factor and initial value.
+func NewEWMAFrom(alpha, initial float64) *EWMA {
+	e := &EWMA{alpha: alpha}
+	e.bits.Store(math.Float64bits(initial))
+	return e
 }
 
 func (e *EWMA) Update(sample float64) {
