@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -40,7 +39,7 @@ func runStatus(cmd *cobra.Command, args []string) {
 	opts := statusViewOpts{wide: wide, includeAll: includeAll}
 
 	client := newControlClient(cmd)
-	resp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
+	resp, err := client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
 		if connect.CodeOf(err) != connect.CodeUnavailable {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
@@ -58,7 +57,7 @@ func runStatus(cmd *cobra.Command, args []string) {
 
 	st := resp.Msg
 
-	metricsResp, metricsErr := client.GetMetrics(context.Background(), connect.NewRequest(&controlv1.GetMetricsRequest{}))
+	metricsResp, metricsErr := client.GetMetrics(cmd.Context(), connect.NewRequest(&controlv1.GetMetricsRequest{}))
 	if metricsErr == nil {
 		renderHealthLine(cmd.OutOrStdout(), metricsResp.Msg)
 	}
@@ -274,22 +273,25 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render(msg) //nolint:mnd
 	}
 
+	msg := "membership expires in " + humanDuration(remaining)
 	if nonRenewable {
-		msg := "guest membership expires in " + humanDuration(remaining)
-		if health == controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON {
-			return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + " — request a new invite to continue") //nolint:mnd
-		}
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg) //nolint:mnd
+		msg = "guest " + msg
 	}
 
-	msg := "membership expires in " + humanDuration(remaining)
-	if health == controlv1.CertHealth_CERT_HEALTH_RENEWING {
+	switch health {
+	case controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON:
+		detail := " — auto-renewal failed — rejoin the cluster or contact a cluster admin"
+		if nonRenewable {
+			detail = " — request a new invite to continue"
+		}
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + detail) //nolint:mnd
+	case controlv1.CertHealth_CERT_HEALTH_RENEWING:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render( //nolint:mnd
 			msg + " — auto-renewal in progress")
-	}
-	if health == controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render( //nolint:mnd
-			msg + " — auto-renewal failed — rejoin the cluster or contact a cluster admin")
+	case controlv1.CertHealth_CERT_HEALTH_OK,
+		controlv1.CertHealth_CERT_HEALTH_UNSPECIFIED,
+		controlv1.CertHealth_CERT_HEALTH_EXPIRED:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg) //nolint:mnd
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg) //nolint:mnd
 }

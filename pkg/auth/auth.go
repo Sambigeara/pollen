@@ -297,8 +297,11 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 	privPath := filepath.Join(dir, adminPrivKeyName)
 	pubPath := filepath.Join(dir, adminPubKeyName)
 
-	privFile, err := os.OpenFile(privPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, keyFilePerm)
+	privFile, err := os.OpenFile(privPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, keyFilePerm)
 	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return LoadAdminKey(pollenDir)
+		}
 		return nil, nil, err
 	}
 
@@ -315,7 +318,7 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 		return nil, nil, err
 	}
 
-	pubFile, err := os.OpenFile(pubPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, keyFilePerm)
+	pubFile, err := os.OpenFile(pubPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, keyFilePerm)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -415,13 +418,12 @@ func IssueMembershipCert(
 ) (*admissionv1.MembershipCert, error) {
 	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
-	now := time.Now()
 	issuer, err := IssueAdminCert(
 		adminPriv,
 		clusterID,
 		adminPub,
-		now.Add(-timeSkewAllowance),
-		now.Add(adminCertTTL),
+		notBefore,
+		notBefore.Add(adminCertTTL),
 	)
 	if err != nil {
 		return nil, err

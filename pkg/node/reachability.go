@@ -1,8 +1,9 @@
 package node
 
 import (
+	"cmp"
 	"net"
-	"sort"
+	"slices"
 
 	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/topology"
@@ -54,11 +55,11 @@ func orderPeerAddrs(localIPs []string, peerIPs []net.IP, port, extPort int) []*n
 		scored = append(scored, scoredAddr{addr: &net.UDPAddr{IP: ip, Port: p}, score: score})
 	}
 
-	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].score != scored[j].score {
-			return scored[i].score < scored[j].score
+	slices.SortStableFunc(scored, func(a, b scoredAddr) int {
+		if c := cmp.Compare(a.score, b.score); c != 0 {
+			return c
 		}
-		return scored[i].addr.String() < scored[j].addr.String()
+		return cmp.Compare(a.addr.String(), b.addr.String())
 	})
 
 	addrs := make([]*net.UDPAddr, 0, len(scored))
@@ -98,11 +99,14 @@ func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connec
 		})
 	}
 
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].publiclyAccessible != candidates[j].publiclyAccessible {
-			return candidates[i].publiclyAccessible
+	slices.SortStableFunc(candidates, func(a, b coordinatorCandidate) int {
+		if a.publiclyAccessible != b.publiclyAccessible {
+			if a.publiclyAccessible {
+				return -1
+			}
+			return 1
 		}
-		return candidates[i].key.Less(candidates[j].key)
+		return a.key.Compare(b.key)
 	})
 
 	out := make([]types.PeerKey, 0, len(candidates))

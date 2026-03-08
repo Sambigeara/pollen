@@ -25,7 +25,6 @@ type SockStore interface {
 	HandleMainProbePacket(data []byte, sender *net.UDPAddr)
 }
 
-// Conn is a thin wrapper around a UDPConn with a reference counter for determining closures etc.
 type Conn struct {
 	*net.UDPConn
 	peer      *net.UDPAddr

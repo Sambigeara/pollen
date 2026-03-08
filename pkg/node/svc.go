@@ -5,8 +5,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/ed25519"
-	"errors"
-	"fmt"
 	"net"
 	"slices"
 	"strconv"
@@ -15,6 +13,8 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/types"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var _ controlv1.ControlServiceServer = (*NodeService)(nil)
@@ -32,7 +32,7 @@ func NewNodeService(n *Node, shutdown func(), creds *auth.NodeCredentials) *Node
 
 func (s *NodeService) Shutdown(_ context.Context, _ *controlv1.ShutdownRequest) (*controlv1.ShutdownResponse, error) {
 	if s.shutdown == nil {
-		return &controlv1.ShutdownResponse{}, errors.New("shutdown callback not configured")
+		return &controlv1.ShutdownResponse{}, status.Error(codes.FailedPrecondition, "shutdown callback not configured")
 	}
 
 	go s.shutdown()
@@ -226,16 +226,17 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		if addrStr == "" && len(node.IPs) > 0 {
 			ip := net.ParseIP(node.IPs[0])
 			if ip == nil {
-				return nil, errors.New("invalid IP address")
+				s.node.log.Warnw("skipping unparseable peer IP", "peer", key.Short(), "ip", node.IPs[0])
+			} else {
+				port := int(node.LocalPort)
+				if node.ExternalPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+					port = int(node.ExternalPort)
+				}
+				addrStr = (&net.UDPAddr{
+					IP:   ip,
+					Port: port,
+				}).String()
 			}
-			port := int(node.LocalPort)
-			if node.ExternalPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
-				port = int(node.ExternalPort)
-			}
-			addrStr = (&net.UDPAddr{
-				IP:   ip,
-				Port: port,
-			}).String()
 		}
 
 		ns := &controlv1.NodeSummary{
@@ -346,20 +347,22 @@ func (s *NodeService) ConnectPeer(ctx context.Context, req *controlv1.ConnectPee
 	for _, a := range req.Addrs {
 		addr, err := net.ResolveUDPAddr("udp", a)
 		if err != nil {
-			return nil, fmt.Errorf("resolve address %q: %w", a, err)
+			return nil, status.Errorf(codes.InvalidArgument, "invalid address %q", a)
 		}
 		addrs = append(addrs, addr)
 	}
 	if err := s.node.mesh.Connect(ctx, peerKey, addrs); err != nil {
-		return nil, err
+		s.node.log.Warnw("connect peer failed", "peer", peerKey.Short(), "err", err)
+		return nil, status.Error(codes.Internal, "failed to connect to peer")
 	}
 	return &controlv1.ConnectPeerResponse{}, nil
 }
 
-func (s *NodeService) ConnectService(ctx context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
+func (s *NodeService) ConnectService(_ context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
 	localPort, err := s.node.ConnectService(types.PeerKeyFromBytes(req.Node.PeerId), req.RemotePort, req.LocalPort)
 	if err != nil {
-		return nil, err
+		s.node.log.Warnw("connect service failed", "err", err)
+		return nil, status.Error(codes.Internal, "failed to connect service")
 	}
 
 	return &controlv1.ConnectServiceResponse{LocalPort: localPort}, nil
@@ -367,19 +370,20 @@ func (s *NodeService) ConnectService(ctx context.Context, req *controlv1.Connect
 
 func (s *NodeService) DisconnectService(_ context.Context, req *controlv1.DisconnectServiceRequest) (*controlv1.DisconnectServiceResponse, error) {
 	if err := s.node.DisconnectService(req.GetLocalPort()); err != nil {
-		return nil, err
+		s.node.log.Warnw("disconnect service failed", "err", err)
+		return nil, status.Error(codes.Internal, "failed to disconnect service")
 	}
 	return &controlv1.DisconnectServiceResponse{}, nil
 }
 
 func (s *NodeService) RevokePeer(_ context.Context, req *controlv1.RevokePeerRequest) (*controlv1.RevokePeerResponse, error) {
 	if s.creds.InviteSigner == nil {
-		return nil, errors.New("admin signer not available; this node cannot revoke peers")
+		return nil, status.Error(codes.FailedPrecondition, "admin signer not available; this node cannot revoke peers")
 	}
 
 	signerPub, ok := s.creds.InviteSigner.Priv.Public().(ed25519.PublicKey)
 	if !ok || !bytes.Equal(signerPub, s.creds.InviteSigner.Trust.GetRootPub()) {
-		return nil, errors.New("only the root admin can revoke peers")
+		return nil, status.Error(codes.PermissionDenied, "only the root admin can revoke peers")
 	}
 
 	peerKey := types.PeerKeyFromBytes(req.GetPeerId())
@@ -392,7 +396,8 @@ func (s *NodeService) RevokePeer(_ context.Context, req *controlv1.RevokePeerReq
 		now,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("issue revocation: %w", err)
+		s.node.log.Errorw("failed to issue revocation", "peer", peerKey.Short(), "err", err)
+		return nil, status.Error(codes.Internal, "failed to issue revocation")
 	}
 
 	events := s.node.store.PublishRevocation(rev)
@@ -454,7 +459,9 @@ func nodeStatusRank(status controlv1.NodeStatus) int {
 		return 1
 	case controlv1.NodeStatus_NODE_STATUS_RELAY:
 		return 2 //nolint:mnd
-	default:
+	case controlv1.NodeStatus_NODE_STATUS_OFFLINE,
+		controlv1.NodeStatus_NODE_STATUS_UNSPECIFIED:
 		return offlineRank
 	}
+	return offlineRank
 }

@@ -580,7 +580,7 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 
 	// Use the connection's own context so the recv goroutine lives as long as
 	// the QUIC connection, not as long as the (potentially short-lived) dial ctx.
-	go m.recvDatagrams(s, peerKey)
+	m.acceptWG.Go(func() { m.recvDatagrams(s, peerKey) })
 	m.acceptWG.Go(func() {
 		m.acceptStreams(s, peerKey)
 	})

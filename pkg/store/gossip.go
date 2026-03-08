@@ -90,7 +90,6 @@ func tombstoneStaleAttrs(rec *nodeRecord) {
 	}
 }
 
-// logEntry tracks the counter (and deletion state) of a single attribute.
 type logEntry struct {
 	Counter uint64
 	Deleted bool
@@ -114,6 +113,20 @@ type nodeRecord struct {
 	CPUPercent         uint32
 	MemPercent         uint32
 	PubliclyAccessible bool
+}
+
+func (r nodeRecord) clone() nodeRecord {
+	c := r
+	if r.Services != nil {
+		c.Services = make(map[string]*statev1.Service, len(r.Services))
+		maps.Copy(c.Services, r.Services)
+	}
+	if r.Reachable != nil {
+		c.Reachable = make(map[types.PeerKey]struct{}, len(r.Reachable))
+		maps.Copy(c.Reachable, r.Reachable)
+	}
+	c.IPs = append([]string(nil), r.IPs...)
+	return c
 }
 
 type KnownPeer struct {
@@ -282,7 +295,9 @@ func (s *Store) GossipMetrics() *metrics.GossipMetrics {
 func (s *Store) Save() error {
 	s.mu.RLock()
 	nodes := make(map[types.PeerKey]nodeRecord, len(s.nodes))
-	maps.Copy(nodes, s.nodes)
+	for k, v := range s.nodes {
+		nodes[k] = v.clone()
+	}
 	connections := slices.Collect(maps.Values(s.desiredConnections))
 	revocations := maps.Clone(s.revocations)
 	s.mu.RUnlock()
@@ -661,6 +676,8 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 			rec.MemPercent = v.ResourceTelemetry.GetMemPercent()
 			rec.MemTotalBytes = v.ResourceTelemetry.GetMemTotalBytes()
 		}
+	default:
+		return
 	}
 }
 
@@ -1053,7 +1070,7 @@ func (s *Store) validNodesLocked() map[types.PeerKey]nodeRecord {
 		if v.CertExpiry != 0 && auth.IsCertExpiredAt(time.Unix(v.CertExpiry, 0), now) {
 			continue
 		}
-		out[k] = v
+		out[k] = v.clone()
 	}
 	return out
 }
@@ -1069,7 +1086,10 @@ func (s *Store) Get(peerID types.PeerKey) (nodeRecord, bool) {
 	defer s.mu.RUnlock()
 
 	rec, ok := s.nodes[peerID]
-	return rec, ok
+	if !ok {
+		return nodeRecord{}, false
+	}
+	return rec.clone(), true
 }
 
 func (s *Store) NodeIPs(peerID types.PeerKey) []string {

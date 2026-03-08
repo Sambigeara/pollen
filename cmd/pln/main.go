@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -89,7 +88,7 @@ func getCertTTLFlag(cmd *cobra.Command) (time.Duration, error) {
 }
 
 func main() {
-	rootCmd := &cobra.Command{Use: "pln"}
+	rootCmd := &cobra.Command{Use: "pln", Short: "Peer-to-peer mesh networking"}
 	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted (env: PLN_DIR)")
 
 	rootCmd.AddCommand(
@@ -435,7 +434,7 @@ func newInviteCmd() *cobra.Command {
 
 func newServeCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "serve [port] [name]",
+		Use:   "serve <port> [name]",
 		Short: "Expose a local port to the mesh",
 		Args:  cobra.RangeArgs(1, 2), //nolint:mnd
 		Run:   runServe,
@@ -674,7 +673,7 @@ func runPurge(cmd *cobra.Command, _ []string) {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	all, _ := cmd.Flags().GetBool("all")
@@ -683,11 +682,11 @@ func runPurge(cmd *cobra.Command, _ []string) {
 	running, err := nodeSocketActive(filepath.Join(pollenDir, socketName))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 	if running {
 		fmt.Fprintln(cmd.ErrOrStderr(), "local node is running; run `pln down` before purging state")
-		return
+		os.Exit(1)
 	}
 
 	if !confirmed && !confirmPurge(cmd, all) {
@@ -705,7 +704,7 @@ func runPurge(cmd *cobra.Command, _ []string) {
 	for _, path := range paths {
 		if removeErr := os.RemoveAll(path); removeErr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "remove %s: %v\n", path, removeErr)
-			return
+			os.Exit(1)
 		}
 	}
 
@@ -713,7 +712,7 @@ func runPurge(cmd *cobra.Command, _ []string) {
 	if entries, err := os.ReadDir(keysDir); err == nil && len(entries) == 0 {
 		if err := os.Remove(keysDir); err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
-			return
+			os.Exit(1)
 		}
 	}
 
@@ -791,7 +790,7 @@ func runAdminKeygen(cmd *cobra.Command, _ []string) {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	_, pub, err := auth.LoadAdminKey(pollenDir)
@@ -802,12 +801,12 @@ func runAdminKeygen(cmd *cobra.Command, _ []string) {
 		_, pub, err = auth.LoadOrCreateAdminKey(pollenDir)
 		if err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
-			return
+			os.Exit(1)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "generated local admin key\nadmin_pub: %s\n", hex.EncodeToString(pub))
 	default:
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "note: this does not grant signing authority")
 	fmt.Fprintln(cmd.OutOrStdout(), "install a delegated admin cert with `pln admin set-cert <admin-cert-b64>`")
@@ -817,19 +816,19 @@ func runAdminSetCert(cmd *cobra.Command, args []string) {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	_, adminPub, err := auth.LoadAdminKey(pollenDir)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	_, nodePub, err := node.GenIdentityKey(pollenDir)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	creds, err := auth.LoadExistingNodeCredentials(pollenDir, nodePub, time.Now())
@@ -839,27 +838,27 @@ func runAdminSetCert(cmd *cobra.Command, args []string) {
 		} else {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 		}
-		return
+		os.Exit(1)
 	}
 
 	cert, err := auth.UnmarshalAdminCertBase64(strings.TrimSpace(args[0]))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	if err := auth.VerifyAdminCert(cert, creds.Trust, time.Now()); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 	if !bytes.Equal(cert.GetClaims().GetAdminPub(), adminPub) {
 		fmt.Fprintln(cmd.ErrOrStderr(), "admin cert subject mismatch")
-		return
+		os.Exit(1)
 	}
 
 	if err := auth.SaveAdminCert(pollenDir, cert); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout(), "delegated admin certificate installed")
@@ -869,19 +868,19 @@ func runID(cmd *cobra.Command, _ []string) {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	pub, err := node.ReadIdentityPub(pollenDir)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
-			return
+			os.Exit(1)
 		}
 		_, pub, err = node.GenIdentityKey(pollenDir)
 		if err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
-			return
+			os.Exit(1)
 		}
 	}
 
@@ -892,31 +891,31 @@ func runInvite(cmd *cobra.Command, args []string) {
 	subjectFlag, err := cmd.Flags().GetString("subject")
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	subjectPub, err := resolveInviteSubject(subjectFlag, args)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	ttl, err := cmd.Flags().GetDuration("ttl")
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	bootstrapSpecs, err := cmd.Flags().GetStringArray("bootstrap")
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	certTTL, err := getCertTTLFlag(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	guest, _ := cmd.Flags().GetBool("guest")
@@ -927,13 +926,13 @@ func runInvite(cmd *cobra.Command, args []string) {
 	bootstraps, err := resolveBootstrapPeers(cmd, bootstrapSpecs)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	encoded, err := createInviteToken(cmd, subjectPub, ttl, certTTL, bootstraps, guest)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	fmt.Fprint(cmd.OutOrStdout(), encoded)
@@ -945,18 +944,18 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 	relayPort, err := cmd.Flags().GetInt("relay-port")
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	if relayPort < minPort || relayPort > maxPort {
 		fmt.Fprintf(cmd.ErrOrStderr(), "invalid relay port %d\n", relayPort)
-		return
+		os.Exit(1)
 	}
 
 	inferredAddr, err := inferRelayAddrFromSSHTarget(host, relayPort)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 	relayAddrs := []string{inferredAddr}
 
@@ -965,7 +964,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 	fmt.Fprintln(cmd.OutOrStdout(), "ensuring pln is installed on remote host...")
 	if err := ensureRemotePollen(ctx, host); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	idCmd := sshPln(ctx, host, "id")
@@ -974,25 +973,25 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 	idCmd.Stderr = &idStderr
 	if err := idCmd.Run(); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "failed to fetch remote node identity: %v\n%s\n", err, strings.TrimSpace(idStderr.String()))
-		return
+		os.Exit(1)
 	}
 
 	relayPeerKey, err := types.PeerKeyFromString(strings.TrimSpace(idStdout.String()))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 	relayPub := ed25519.PublicKey(relayPeerKey.Bytes())
 
 	certTTL, err := getCertTTLFlag(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	if err := bootstrapAccept(cmd, relayPub, relayAddrs, host, certTTL); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "relay bootstrapped: %s\n", host)
@@ -1499,7 +1498,7 @@ func parseAdminPubFromInitOutput(out string) (ed25519.PublicKey, error) {
 
 func localBootstrapPeer(cmd *cobra.Command) (*admissionv1.BootstrapPeer, error) {
 	client := newControlClient(cmd)
-	resp, err := client.GetBootstrapInfo(context.Background(), connect.NewRequest(&controlv1.GetBootstrapInfoRequest{}))
+	resp, err := client.GetBootstrapInfo(cmd.Context(), connect.NewRequest(&controlv1.GetBootstrapInfoRequest{}))
 	if err != nil {
 		return nil, err
 	}
@@ -1535,7 +1534,7 @@ func runServe(cmd *cobra.Command, args []string) {
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	client := newControlClient(cmd)
@@ -1543,9 +1542,9 @@ func runServe(cmd *cobra.Command, args []string) {
 	if name != "" {
 		req.Name = &name
 	}
-	if _, err = client.RegisterService(context.Background(), connect.NewRequest(req)); err != nil {
+	if _, err = client.RegisterService(cmd.Context(), connect.NewRequest(req)); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	if name != "" {
@@ -1571,9 +1570,9 @@ func runUnserve(cmd *cobra.Command, args []string) {
 	if name != "" {
 		req.Name = &name
 	}
-	if _, err := client.UnregisterService(context.Background(), connect.NewRequest(req)); err != nil {
+	if _, err := client.UnregisterService(cmd.Context(), connect.NewRequest(req)); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	if name != "" {
@@ -1602,32 +1601,32 @@ func runConnect(cmd *cobra.Command, args []string) {
 		p, err := strconv.Atoi(localPortArg)
 		if err != nil || p < minPort || p > maxPort {
 			fmt.Fprintln(cmd.ErrOrStderr(), "invalid local port")
-			return
+			os.Exit(1)
 		}
 		localPort = uint32(p)
 	}
 
 	client := newControlClient(cmd)
-	statusResp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
+	statusResp, err := client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	svc, err := resolveService(statusResp.Msg, serviceArg, providerArg)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
-	connectResp, err := client.ConnectService(context.Background(), connect.NewRequest(&controlv1.ConnectServiceRequest{
+	connectResp, err := client.ConnectService(cmd.Context(), connect.NewRequest(&controlv1.ConnectServiceRequest{
 		Node:       &controlv1.NodeRef{PeerId: svc.GetProvider().GetPeerId()},
 		RemotePort: svc.GetPort(),
 		LocalPort:  localPort,
 	}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	local := connectResp.Msg.GetLocalPort()
@@ -1643,23 +1642,23 @@ func runDisconnect(cmd *cobra.Command, args []string) {
 	}
 
 	client := newControlClient(cmd)
-	statusResp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
+	statusResp, err := client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	conn, err := resolveConnection(statusResp.Msg, arg, providerArg)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
-	if _, err := client.DisconnectService(context.Background(), connect.NewRequest(&controlv1.DisconnectServiceRequest{
+	if _, err := client.DisconnectService(cmd.Context(), connect.NewRequest(&controlv1.DisconnectServiceRequest{
 		LocalPort: conn.GetLocalPort(),
 	})); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	provider := formatPeerID(conn.GetPeer().GetPeerId(), false)
@@ -1954,11 +1953,9 @@ func formatStatus(s controlv1.NodeStatus) string {
 		return "indirect"
 	case controlv1.NodeStatus_NODE_STATUS_RELAY:
 		return "relay"
-	case controlv1.NodeStatus_NODE_STATUS_OFFLINE,
-		controlv1.NodeStatus_NODE_STATUS_UNSPECIFIED:
+	default:
 		return "offline"
 	}
-	return "offline"
 }
 
 func isReachableStatus(s controlv1.NodeStatus) bool {
@@ -2006,30 +2003,23 @@ type serviceProviderKey struct {
 // serviceNameSuffixes computes minimal unique suffixes for services with
 // colliding names. Non-colliding names have no entry.
 func serviceNameSuffixes(services []*controlv1.ServiceSummary, include func(string) bool) map[serviceProviderKey]string {
-	type entry struct {
-		providerKey string
-	}
-	groups := map[string][]entry{}
+	groups := map[string][]string{}
 	for _, svc := range services {
 		pk := peerKeyString(svc.GetProvider().GetPeerId())
 		if !include(pk) {
 			continue
 		}
-		groups[svc.GetName()] = append(groups[svc.GetName()], entry{pk})
+		groups[svc.GetName()] = append(groups[svc.GetName()], pk)
 	}
 
 	result := map[serviceProviderKey]string{}
-	for name, entries := range groups {
-		if len(entries) < 2 { //nolint:mnd
+	for name, pks := range groups {
+		if len(pks) < 2 { //nolint:mnd
 			continue
 		}
-		ids := make([]string, len(entries))
-		for i, e := range entries {
-			ids[i] = e.providerKey
-		}
-		prefixes := minUniquePrefixes(ids)
-		for i, e := range entries {
-			result[serviceProviderKey{name, e.providerKey}] = prefixes[i]
+		prefixes := minUniquePrefixes(pks)
+		for i, pk := range pks {
+			result[serviceProviderKey{name, pk}] = prefixes[i]
 		}
 	}
 	return result
@@ -2053,10 +2043,10 @@ func runRevoke(cmd *cobra.Command, args []string) {
 	prefix := strings.ToLower(args[0])
 
 	client := newControlClient(cmd)
-	statusResp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
+	statusResp, err := client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	// Resolve the peer ID prefix to a full peer ID.
@@ -2069,20 +2059,20 @@ func runRevoke(cmd *cobra.Command, args []string) {
 
 	if len(matches) == 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "no peer matching %q\n", prefix)
-		return
+		os.Exit(1)
 	}
 	if len(matches) > 1 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "ambiguous peer prefix %q matches %d peers\n", prefix, len(matches))
-		return
+		os.Exit(1)
 	}
 
 	peerID := matches[0]
-	_, err = client.RevokePeer(context.Background(), connect.NewRequest(&controlv1.RevokePeerRequest{
+	_, err = client.RevokePeer(cmd.Context(), connect.NewRequest(&controlv1.RevokePeerRequest{
 		PeerId: peerID,
 	}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		return
+		os.Exit(1)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "revoked peer %s\n", formatPeerID(peerID, false))
@@ -2091,7 +2081,8 @@ func runRevoke(cmd *cobra.Command, args []string) {
 func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
-		log.Fatalf("failed to prepare pln dir: %v", err)
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
+		os.Exit(1)
 	}
 
 	socket := filepath.Join(pollenDir, socketName)

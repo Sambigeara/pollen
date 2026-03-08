@@ -390,6 +390,8 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 		n.handleObservedAddress(from, body.ObservedAddress)
 	case *meshv1.Envelope_CertRenewalRequest:
 		n.handleCertRenewalRequest(ctx, from, body.CertRenewalRequest)
+	default:
+		n.log.Debugw("unknown datagram type", "peer", from.Short())
 	}
 }
 
@@ -445,16 +447,13 @@ func (n *Node) sendClockBatchesToPeer(ctx context.Context, peerID types.PeerKey,
 	}
 }
 
-// eventWireSize returns the on-wire size of a single event inside the
-// repeated field: the varint-encoded length prefix plus the message bytes.
+// eventWireSize returns the on-wire size of a single event inside a
+// GossipEventBatch. Uses proto's own size calculation to avoid fragile
+// hand-computed varint arithmetic.
 func eventWireSize(event *statev1.GossipEvent) int {
-	n := event.SizeVT()
-	// Tag for repeated field (1 byte) + varint-encoded length.
-	overhead := 1
-	for v := uint(n); v >= 0x80; v >>= 7 {
-		overhead++
-	}
-	return overhead + n
+	single := &statev1.GossipEventBatch{Events: []*statev1.GossipEvent{event}}
+	empty := &statev1.GossipEventBatch{}
+	return single.SizeVT() - empty.SizeVT()
 }
 
 // batchEvents packs events into groups that each fit within maxSize when
@@ -1231,22 +1230,22 @@ func (n *Node) disconnectExpiredPeers() {
 
 func (n *Node) shutdown() {
 	if err := n.store.Save(); err != nil {
-		n.log.Errorf("failed to save state: %v", err)
+		n.log.Errorw("failed to save state", "err", err)
 	} else {
 		n.log.Info("state saved to disk")
 	}
 	if err := n.store.Close(); err != nil {
-		n.log.Errorf("failed to close state store: %v", err)
+		n.log.Errorw("failed to close state store", "err", err)
 	}
 
 	n.tun.Close()
 
 	if err := n.mesh.BroadcastDisconnect(); err != nil {
-		n.log.Errorf("failed to broadcast disconnect: %v", err)
+		n.log.Errorw("failed to broadcast disconnect", "err", err)
 	}
 
 	if err := n.mesh.Close(); err != nil {
-		n.log.Errorf("failed to shut down sock: %v", err)
+		n.log.Errorw("failed to shut down mesh", "err", err)
 	} else {
 		n.log.Info("successfully shut down mesh")
 	}

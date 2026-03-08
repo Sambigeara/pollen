@@ -13,7 +13,7 @@ import (
 type PeerState int
 
 const (
-	PeerStateUnspecified PeerState = iota
+	_ PeerState = iota
 	PeerStateDiscovered
 	PeerStateConnecting
 	PeerStateConnected
@@ -122,6 +122,8 @@ const (
 
 func (r DisconnectReason) String() string {
 	switch r {
+	case DisconnectUnknown:
+		return "unknown"
 	case DisconnectIdleTimeout:
 		return "idle_timeout"
 	case DisconnectReset:
@@ -136,9 +138,8 @@ func (r DisconnectReason) String() string {
 		return "cert_rotation"
 	case DisconnectCertExpired:
 		return "cert_expired"
-	default:
-		return "unknown"
 	}
+	return "unknown"
 }
 
 type PeerDisconnected struct {
@@ -331,7 +332,7 @@ func (s *Store) tick(now time.Time) []Output {
 			continue
 		}
 
-		switch p.State { //nolint:exhaustive
+		switch p.State {
 		case PeerStateConnected:
 			continue
 		case PeerStateConnecting:
@@ -344,6 +345,7 @@ func (s *Store) tick(now time.Time) []Output {
 			p.State = PeerStateDiscovered
 			p.resetStage()
 			p.StageAttempts = 0
+		case PeerStateDiscovered:
 		}
 
 		var out Output
@@ -436,7 +438,8 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 	}
 
 	delay := unknownDisconnectRetryInterval
-	switch e.Reason { //nolint:exhaustive
+	switch e.Reason {
+	case DisconnectUnknown:
 	case DisconnectIdleTimeout:
 		delay = idleTimeoutRetryInterval
 	case DisconnectReset:
@@ -535,7 +538,7 @@ func (s *Store) StateCounts() PeerStateCounts {
 func (s *Store) stateCountsLocked() PeerStateCounts {
 	var c PeerStateCounts
 	for _, p := range s.m {
-		switch p.State { //nolint:exhaustive
+		switch p.State {
 		case PeerStateDiscovered:
 			c.Discovered++
 		case PeerStateConnecting:
