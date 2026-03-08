@@ -1,0 +1,83 @@
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+ansible_dir := justfile_directory() / "ansible"
+ssh_args := "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+
+default:
+    @just --list
+
+# Deploy the vivaldi mixed (public + private) cluster.
+deploy-vivaldi version="": (_deploy "vivaldi" "vivaldi.py" "join-cluster.yml" version)
+
+# Deploy the vivaldi all-public cluster.
+deploy-vivaldi-pub version="": (_deploy "vivaldi-public" "vivaldi_public.py" "join-public-cluster.yml" version)
+
+# SSH into the bootstrap instance.
+ssh-bootstrap: (_ssh-direct "bootstrap" "ip")
+
+# SSH into a vivaldi node. N: round-robin index (1-4 = relays, 5+ = private).
+ssh-vivaldi n="1": (_ssh-vivaldi n)
+
+# SSH into a vivaldi-pub node. N: round-robin index across regions.
+ssh-vivaldi-pub n="1": (_ssh-direct-rr "vivaldi-public" "public_ips_by_region" n)
+
+# Tear down vivaldi infrastructure.
+destroy-vivaldi: (_destroy "vivaldi")
+
+# Tear down vivaldi-public infrastructure.
+destroy-vivaldi-pub: (_destroy "vivaldi-public")
+
+[private]
+_deploy tf_dir inventory join_playbook version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    VERSION="{{ version }}"
+    if [[ -z "$VERSION" ]]; then
+      VERSION=$(gh release view --repo sambigeara/pollen --json tagName --jq '.tagName')
+      echo "Resolved latest version: $VERSION"
+    fi
+    cd {{ justfile_directory() }}/{{ tf_dir }} && terraform init -input=false && terraform apply -auto-approve
+    cd {{ ansible_dir }} && ansible-playbook install.yml -i inventories/{{ inventory }} -e pln_version="$VERSION"
+    cd {{ ansible_dir }} && ansible-playbook init-cluster.yml -i inventories/{{ inventory }}
+    cd {{ ansible_dir }} && ansible-playbook {{ join_playbook }} -i inventories/{{ inventory }}
+
+[private]
+_destroy tf_dir:
+    cd {{ justfile_directory() }}/{{ tf_dir }} && terraform init -input=false && terraform destroy -auto-approve
+
+[private]
+_ssh-direct tf_dir output:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    IP=$(cd {{ justfile_directory() }}/{{ tf_dir }} && terraform output -raw {{ output }})
+    exec ssh {{ ssh_args }} ubuntu@"$IP"
+
+[private]
+_ssh-direct-rr tf_dir output n:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    REGIONS=(eu_west_1 us_east_1 ap_southeast_1 sa_east_1)
+    N={{ n }}
+    REGION=${REGIONS[$(( (N-1) % 4 ))]}
+    NODE=$(( (N-1) / 4 ))
+    TF=$(cd {{ justfile_directory() }}/{{ tf_dir }} && terraform output -json {{ output }})
+    IP=$(echo "$TF" | jq -r ".[\"$REGION\"][$NODE]")
+    exec ssh {{ ssh_args }} ubuntu@"$IP"
+
+[private]
+_ssh-vivaldi n:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    REGIONS=(eu_west_1 us_east_1 ap_southeast_1 sa_east_1)
+    N={{ n }}
+    REGION=${REGIONS[$(( (N-1) % 4 ))]}
+    NODE=$(( (N-1) / 4 ))
+    TF=$(cd {{ justfile_directory() }}/vivaldi && terraform output -json ips_by_region)
+    if [[ $NODE -eq 0 ]]; then
+      IP=$(echo "$TF" | jq -r ".[\"$REGION\"].public")
+      exec ssh {{ ssh_args }} ubuntu@"$IP"
+    else
+      BASTION=$(echo "$TF" | jq -r ".[\"$REGION\"].public")
+      IP=$(echo "$TF" | jq -r ".[\"$REGION\"].private[$((NODE - 1))]")
+      exec ssh {{ ssh_args }} -o "ProxyCommand=ssh {{ ssh_args }} -W %h:%p ubuntu@$BASTION" ubuntu@"$IP"
+    fi
