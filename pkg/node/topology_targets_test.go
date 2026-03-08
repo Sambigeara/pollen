@@ -279,10 +279,10 @@ func TestHysteresisExitsHMACWhenErrorDrops(t *testing.T) {
 	// localCoordErr starts at 1.0 → HMAC mode.
 	require.True(t, n.useHMACNearest)
 
-	// Drop error below exit threshold (0.35).
-	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.30)
+	// Drop error below exit threshold (0.50).
+	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.45)
 	n.syncPeersFromState()
-	require.False(t, n.useHMACNearest, "should exit HMAC when error < 0.35")
+	require.False(t, n.useHMACNearest, "should exit HMAC when error < 0.50")
 }
 
 func TestHysteresisStaysDistanceInDeadZone(t *testing.T) {
@@ -292,12 +292,12 @@ func TestHysteresisStaysDistanceInDeadZone(t *testing.T) {
 	}
 
 	// Exit HMAC first.
-	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.30)
+	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.45)
 	n.syncPeersFromState()
 	require.False(t, n.useHMACNearest)
 
-	// Error rises into dead zone (0.35 < err < 0.6) — should stay distance-based.
-	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.50)
+	// Error rises into dead zone (0.50 < err < 0.75) — should stay distance-based.
+	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.65)
 	n.syncPeersFromState()
 	require.False(t, n.useHMACNearest, "should stay distance-based in hysteresis dead zone")
 }
@@ -309,14 +309,14 @@ func TestHysteresisReentersHMACAboveThreshold(t *testing.T) {
 	}
 
 	// Exit HMAC.
-	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.30)
+	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.45)
 	n.syncPeersFromState()
 	require.False(t, n.useHMACNearest)
 
-	// Error rises above enter threshold (0.6).
-	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.65)
+	// Error rises above enter threshold (0.75).
+	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.80)
 	n.syncPeersFromState()
-	require.True(t, n.useHMACNearest, "should re-enter HMAC when error > 0.6")
+	require.True(t, n.useHMACNearest, "should re-enter HMAC when error > 0.75")
 }
 
 // --- Revoke streak tests ---

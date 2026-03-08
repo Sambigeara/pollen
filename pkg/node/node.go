@@ -74,8 +74,8 @@ const (
 	revokeStreakThreshold       = 3  // consecutive non-target ticks before revoking outbound
 	revokeStreakThresholdPublic = 30 // public peers are stickier (coordinator stability)
 
-	vivaldiEnterHMACThreshold = 0.6
-	vivaldiExitHMACThreshold  = 0.35
+	vivaldiEnterHMACThreshold = 0.75
+	vivaldiExitHMACThreshold  = 0.50
 	vivaldiWarmupDuration     = 5 * time.Second
 	vivaldiErrAlpha           = 0.04 // ~25-sample EWMA window for smoothed vivaldi error
 
