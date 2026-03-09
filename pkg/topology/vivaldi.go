@@ -34,14 +34,6 @@ const (
 	// adjustments.
 	MinRTTFloor = 2.0 // milliseconds
 
-	// MaxSampleErr caps per-sample relative error strictly below 1.0. Without
-	// this, when all peers produce relative error >= 1.0 (common during
-	// random-init convergence on LAN), the capped value equals localErr and
-	// the EMA update term is zero — a dead zone at the ceiling. A cap of 0.9
-	// provides a small but steady downward pull (~0.02/tick) that breaks the
-	// stall without materially affecting coordinate adjustment weights.
-	MaxSampleErr = 0.9
-
 	// PublishEpsilon is the minimum coordinate movement (in distance units)
 	// before a node should re-publish its coordinates via gossip.
 	PublishEpsilon = 0.5
@@ -82,8 +74,9 @@ func MovementDistance(a, b Coord) float64 {
 // Update applies a single RTT sample to the local coordinate using the Vivaldi
 // algorithm. It returns the updated coordinate and error estimate.
 //
-// localErr should be in [0, 1] and represents the node's confidence in its
-// current position (1 = no confidence, 0 = perfect confidence).
+// localErr represents the node's confidence in its current position
+// (higher = less confidence, 0 = perfect). It starts at 1.0 and may
+// temporarily exceed 1.0 during initial convergence before settling.
 func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 	rtt := s.RTT.Seconds() * 1000 //nolint:mnd
 	if rtt <= 0 {
@@ -95,12 +88,15 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 		dist = MinHeight
 	}
 
-	err := min(math.Abs(rtt-dist)/max(rtt, MinRTTFloor), MaxSampleErr)
+	err := math.Abs(rtt-dist) / max(rtt, MinRTTFloor)
 	relWeight := localErr / (localErr + CeDefault)
 
-	// Update error estimate.
+	// Update error estimate. No upper clamp — the estimate must be free to
+	// rise above 1.0 during initial convergence so that improving samples
+	// produce a large negative (err − localErr) that snaps it back down.
+	// Clamping at 1.0 creates a dead zone the EMA can never escape.
 	newErr := localErr + CcDefault*relWeight*(err-localErr)
-	newErr = clamp(newErr, 0, 1)
+	newErr = max(newErr, 0)
 
 	// Compute force: positive = push apart, negative = pull together.
 	delta := CcDefault * relWeight
