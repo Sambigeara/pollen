@@ -385,14 +385,7 @@ func (s *Store) clockLocked() *statev1.GossipVectorClock {
 //
 // All store nodes are iterated so that peers unknown to the sender (absent
 // from the clock) are still discovered — this is critical for convergence of
-// "quiet" peers that produce no new events to rebroadcast. When batchClocks
-// splits a large clock into N batches, peers in other batches appear absent
-// and their events are re-sent; this is wasteful but safe because
-// applyEventLocked deduplicates on the receive side.
-//
-// TODO(saml): to eliminate this amplification, the receiver should reassemble
-// partial clock batches before calling MissingFor, or use request semantics
-// that distinguish "peer in another batch" from "peer unknown to sender".
+// "quiet" peers that produce no new events to rebroadcast.
 func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipEvent {
 	requested := clock.GetCounters()
 

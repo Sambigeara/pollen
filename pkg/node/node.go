@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -70,6 +71,7 @@ const (
 
 	// eagerSyncCooldown should be >= GossipInterval to avoid redundant sends.
 	eagerSyncCooldown = 5 * time.Second
+	eagerSyncTimeout  = 5 * time.Second
 
 	revokeStreakThreshold       = 3  // consecutive non-target ticks before revoking outbound
 	revokeStreakThresholdPublic = 30 // public peers are stickier (coordinator stability)
@@ -257,6 +259,7 @@ func (n *Node) Start(ctx context.Context) error {
 	n.connectBootstrapPeers(ctx)
 	n.tun.Start(ctx)
 	go n.recvLoop(ctx)
+	go n.acceptUniStreamsLoop(ctx)
 	for range punchWorkers {
 		go n.punchLoop(ctx)
 	}
@@ -360,14 +363,49 @@ func (n *Node) recvLoop(ctx context.Context) {
 	}
 }
 
+func (n *Node) acceptUniStreamsLoop(ctx context.Context) {
+	for {
+		peerKey, stream, err := n.mesh.AcceptUniStream(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			n.log.Debugw("accept uni-stream failed", "err", err)
+			return
+		}
+		go n.handleClockStream(ctx, peerKey, stream)
+	}
+}
+
+func (n *Node) handleClockStream(ctx context.Context, from types.PeerKey, stream io.ReadCloser) {
+	defer stream.Close()
+	span := n.tracer.Start("gossip.handleClock")
+	span.SetAttr("peer", from.Short())
+	defer span.End()
+
+	const maxClockSize = 256 << 10 // 256 KB
+	b, err := io.ReadAll(io.LimitReader(stream, maxClockSize+1))
+	if err != nil {
+		n.log.Debugw("read clock stream failed", "peer", from.Short(), "err", err)
+		return
+	}
+	if len(b) > maxClockSize {
+		n.log.Warnw("clock stream exceeded size limit", "peer", from.Short(), "size", len(b))
+		return
+	}
+
+	clock := &statev1.GossipVectorClock{}
+	if err := clock.UnmarshalVT(b); err != nil {
+		n.log.Debugw("unmarshal clock stream failed", "peer", from.Short(), "err", err)
+		return
+	}
+
+	events := n.store.MissingFor(clock)
+	n.sendGossipBatchesToPeer(ctx, from, batchEvents(events, MaxDatagramPayload), true)
+}
+
 func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *meshv1.Envelope) {
 	switch body := env.GetBody().(type) {
-	case *meshv1.Envelope_Clock:
-		span := n.tracer.StartFromRemote("gossip.handleClock", env.GetTraceId())
-		span.SetAttr("peer", from.Short())
-		events := n.store.MissingFor(body.Clock)
-		n.sendGossipBatchesToPeer(ctx, from, batchEvents(events, MaxDatagramPayload), true)
-		span.End()
 	case *meshv1.Envelope_Events:
 		span := n.tracer.StartFromRemote("gossip.applyEvents", env.GetTraceId())
 		span.SetAttr("peer", from.Short())
@@ -436,15 +474,21 @@ func (n *Node) broadcastGossipBatches(ctx context.Context, peerIDs []types.PeerK
 	}
 }
 
-func (n *Node) sendClockBatchesToPeer(ctx context.Context, peerID types.PeerKey, batches []*statev1.GossipVectorClock) {
-	for _, batch := range batches {
-		if err := n.mesh.Send(ctx, peerID, &meshv1.Envelope{
-			Body: &meshv1.Envelope_Clock{Clock: batch},
-		}); err != nil {
-			n.log.Debugw("eager sync failed", "peer", peerID.Short(), "err", err)
-			return
-		}
+func (n *Node) sendClockViaStream(ctx context.Context, peerID types.PeerKey, clock *statev1.GossipVectorClock) error {
+	stream, err := n.mesh.OpenUniStream(ctx, peerID)
+	if err != nil {
+		return fmt.Errorf("open uni-stream to %s: %w", peerID.Short(), err)
 	}
+	defer stream.Close()
+
+	b, err := clock.MarshalVT()
+	if err != nil {
+		return fmt.Errorf("marshal clock: %w", err)
+	}
+	if _, err := stream.Write(b); err != nil {
+		return fmt.Errorf("write clock to %s: %w", peerID.Short(), err)
+	}
+	return nil
 }
 
 // eventWireSize returns the on-wire size of a single event inside a
@@ -484,62 +528,14 @@ func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.Gossip
 	return batches
 }
 
-// clockEnvelopeSize returns the exact serialized size of an Envelope wrapping
-// a GossipVectorClock with the given counters.
-func clockEnvelopeSize(counters map[string]uint64) int {
-	return (&meshv1.Envelope{Body: &meshv1.Envelope_Clock{
-		Clock: &statev1.GossipVectorClock{Counters: counters},
-	}}).SizeVT()
-}
-
-// batchClocks splits a GossipVectorClock into multiple clocks that each fit
-// within maxSize when serialized as an Envelope. Clock entries are idempotent
-// (receiver takes max per peer), so partial clocks need no reassembly.
-func batchClocks(clock *statev1.GossipVectorClock, maxSize int) []*statev1.GossipVectorClock {
-	counters := clock.GetCounters()
-	if len(counters) == 0 {
-		return []*statev1.GossipVectorClock{clock}
-	}
-
-	var batches []*statev1.GossipVectorClock
-	current := make(map[string]uint64)
-
-	for key, val := range counters {
-		current[key] = val
-		if clockEnvelopeSize(current) > maxSize {
-			// overflow recovery (we don't know it's too big 'til it's too big)
-			if len(current) > 1 {
-				delete(current, key)
-				batches = append(batches, &statev1.GossipVectorClock{Counters: current})
-				current = map[string]uint64{key: val}
-			}
-			// current now has exactly one entry; if it still exceeds
-			// maxSize the entry is individually too large to send.
-			if clockEnvelopeSize(current) > maxSize {
-				zap.S().Warnw("clock entry exceeds max datagram size, skipping", "peer", key)
-				current = make(map[string]uint64)
-			}
-		}
-	}
-	if len(current) > 0 {
-		batches = append(batches, &statev1.GossipVectorClock{Counters: current})
-	}
-	return batches
-}
-
 func (n *Node) gossip(ctx context.Context) {
-	batches := batchClocks(n.store.Clock(), MaxDatagramPayload)
-	connectedPeers := n.GetConnectedPeers()
-	for _, peerID := range connectedPeers {
+	clock := n.store.Clock()
+	for _, peerID := range n.GetConnectedPeers() {
 		if peerID == n.store.LocalID {
 			continue
 		}
-		for _, batch := range batches {
-			if err := n.mesh.Send(ctx, peerID, &meshv1.Envelope{
-				Body: &meshv1.Envelope_Clock{Clock: batch},
-			}); err != nil {
-				n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
-			}
+		if err := n.sendClockViaStream(ctx, peerID, clock); err != nil {
+			n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
 		}
 	}
 }
@@ -796,7 +792,11 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			n.peerConnectTime[e.PeerKey] = time.Now()
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
-				n.sendClockBatchesToPeer(context.Background(), e.PeerKey, batchClocks(n.store.EagerSyncClock(), MaxDatagramPayload))
+				eagerCtx, cancel := context.WithTimeout(context.Background(), eagerSyncTimeout)
+				if err := n.sendClockViaStream(eagerCtx, e.PeerKey, n.store.EagerSyncClock()); err != nil {
+					n.log.Debugw("eager sync failed", "peer", e.PeerKey.Short(), "err", err)
+				}
+				cancel()
 				n.lastEagerSync[e.PeerKey] = time.Now()
 			}
 

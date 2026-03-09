@@ -39,17 +39,6 @@ func TestBroadcastGossipBatchesStopsRetryingFailedPeer(t *testing.T) {
 	require.False(t, calledLocal)
 }
 
-func TestSendClockBatchesToPeerStopsAfterFailure(t *testing.T) {
-	n := newMinimalNode(t, false)
-	wrapper := &countingMesh{Mesh: n.mesh, failPeer: testPeerKey(1), failAfter: 1, err: errors.New("boom")}
-	n.mesh = wrapper
-
-	batches := []*statev1.GossipVectorClock{{}, {}}
-	n.sendClockBatchesToPeer(context.Background(), testPeerKey(1), batches)
-
-	require.Equal(t, 1, wrapper.calls[testPeerKey(1)])
-}
-
 type countingMesh struct {
 	mesh.Mesh
 	calls     map[types.PeerKey]int

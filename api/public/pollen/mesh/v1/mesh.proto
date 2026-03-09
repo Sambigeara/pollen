@@ -44,8 +44,8 @@ message CertRenewalResponse {
 }
 
 message Envelope {
+  reserved 1;
   oneof body {
-    pollen.state.v1.GossipVectorClock clock = 1;
     PunchCoordRequest punch_coord_request = 3;
     PunchCoordTrigger punch_coord_trigger = 4;
     InviteRedeemRequest invite_redeem_request = 6;
