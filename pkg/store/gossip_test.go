@@ -42,8 +42,6 @@ func newTestStore(pub []byte, trustBundle *admissionv1.TrustBundle) *Store {
 }
 
 // applyEvent is a test convenience for applying a single gossip event.
-// Uses isPullResponse=true so the watermark advances, matching production
-// anti-entropy behavior and keeping tests deterministic.
 func (s *Store) applyEvent(event *statev1.GossipEvent) ApplyResult {
 	return s.ApplyEvents([]*statev1.GossipEvent{event}, true)
 }
@@ -60,13 +58,11 @@ func TestEagerSyncClock(t *testing.T) {
 	pub[0] = 1
 	s := newTestStore(pub, nil)
 
-	// Fresh store with only local state → zero clock.
-	clock := s.EagerSyncClock()
-	if len(clock.GetCounters()) != 0 {
-		t.Fatalf("expected empty counters for fresh store, got %v", clock.GetCounters())
-	}
+	// Fresh store with only local state → empty digest.
+	digest := s.EagerSyncClock()
+	require.Empty(t, digest.GetPeers())
 
-	// Apply a remote event → real clock.
+	// Apply a remote event → real digest.
 	_, peerIDStr := peerKey(2)
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  peerIDStr,
@@ -76,12 +72,14 @@ func TestEagerSyncClock(t *testing.T) {
 		},
 	})
 
-	clock = s.EagerSyncClock()
-	counters := clock.GetCounters()
-	require.Len(t, counters, 2)
-	require.Equal(t, uint64(5), counters[s.LocalID.String()])
+	digest = s.EagerSyncClock()
+	peers := digest.GetPeers()
+	require.Len(t, peers, 2)
+	require.Equal(t, uint64(5), peers[s.LocalID.String()].GetMaxCounter())
+	require.NotZero(t, peers[s.LocalID.String()].GetStateHash())
 	peerPK, _ := peerKey(2)
-	require.Equal(t, uint64(5), counters[peerPK.String()])
+	require.Equal(t, uint64(5), peers[peerPK.String()].GetMaxCounter())
+	require.NotZero(t, peers[peerPK.String()].GetStateHash())
 }
 
 func TestSetLocalNetworkReturnsEvent(t *testing.T) {
@@ -418,10 +416,10 @@ func TestMissingForReturnsEvents(t *testing.T) {
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
 
-	// Remote has counter=0 for us — should get all events currently published for the local node.
-	events := s.MissingFor(&statev1.GossipVectorClock{
-		Counters: map[string]uint64{
-			s.LocalID.String(): 0,
+	// Remote knows about us but with mismatched hash → full dump.
+	events := s.MissingFor(&statev1.GossipStateDigest{
+		Peers: map[string]*statev1.PeerDigest{
+			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
 		},
 	})
 
@@ -436,10 +434,13 @@ func TestMissingForRespectsClock(t *testing.T) {
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
 
-	// Remote has counter=5 — should only get events with counter > 5.
-	events := s.MissingFor(&statev1.GossipVectorClock{
-		Counters: map[string]uint64{
-			s.LocalID.String(): 5,
+	// Get real digest, then lower MaxCounter to test delta path
+	// (hash match + counter behind).
+	digest := s.Clock()
+	localDigest := digest.GetPeers()[s.LocalID.String()]
+	events := s.MissingFor(&statev1.GossipStateDigest{
+		Peers: map[string]*statev1.PeerDigest{
+			s.LocalID.String(): {MaxCounter: 5, StateHash: localDigest.GetStateHash()},
 		},
 	})
 
@@ -455,11 +456,8 @@ func TestMissingForReturnsNilForUpToDate(t *testing.T) {
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 
-	events := s.MissingFor(&statev1.GossipVectorClock{
-		Counters: map[string]uint64{
-			s.LocalID.String(): 6,
-		},
-	})
+	// Use real digest — hash + counter match → skip.
+	events := s.MissingFor(s.Clock())
 
 	require.Empty(t, events)
 }
@@ -472,8 +470,8 @@ func TestClockUsesMaxCounter(t *testing.T) {
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
 
-	clock := s.Clock()
-	require.Equal(t, uint64(7), clock.GetCounters()[s.LocalID.String()])
+	digest := s.Clock()
+	require.Equal(t, uint64(7), digest.GetPeers()[s.LocalID.String()].GetMaxCounter())
 }
 
 func TestUpsertLocalServiceReturnsEvent(t *testing.T) {
@@ -928,8 +926,10 @@ func TestPubliclyAccessibleRoundTrip(t *testing.T) {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
 
-	missing := s.MissingFor(&statev1.GossipVectorClock{
-		Counters: map[string]uint64{s.LocalID.String(): 0},
+	missing := s.MissingFor(&statev1.GossipStateDigest{
+		Peers: map[string]*statev1.PeerDigest{
+			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
+		},
 	})
 
 	var found bool
@@ -983,10 +983,12 @@ func TestFreshStoreGossipsPubliclyAccessibleDeletion(t *testing.T) {
 	require.NoError(t, err)
 	defer s.Close()
 
-	// A peer that knows nothing about us (counter 0) should receive
+	// A peer that knows nothing about us (hash mismatch) should receive
 	// the seeded PubliclyAccessible deletion event on the first sync.
-	missing := s.MissingFor(&statev1.GossipVectorClock{
-		Counters: map[string]uint64{s.LocalID.String(): 0},
+	missing := s.MissingFor(&statev1.GossipStateDigest{
+		Peers: map[string]*statev1.PeerDigest{
+			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
+		},
 	})
 
 	var found bool
@@ -1477,8 +1479,10 @@ func TestVivaldiRoundTrip(t *testing.T) {
 
 	s.SetLocalVivaldiCoord(topology.Coord{X: 10.5, Y: -3.2, Height: 0.001})
 
-	missing := s.MissingFor(&statev1.GossipVectorClock{
-		Counters: map[string]uint64{s.LocalID.String(): 0},
+	missing := s.MissingFor(&statev1.GossipStateDigest{
+		Peers: map[string]*statev1.PeerDigest{
+			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
+		},
 	})
 
 	var found bool
@@ -1526,8 +1530,10 @@ func TestFreshStoreDoesNotGossipVivaldi(t *testing.T) {
 	require.NoError(t, err)
 	defer s.Close()
 
-	missing := s.MissingFor(&statev1.GossipVectorClock{
-		Counters: map[string]uint64{s.LocalID.String(): 0},
+	missing := s.MissingFor(&statev1.GossipStateDigest{
+		Peers: map[string]*statev1.PeerDigest{
+			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
+		},
 	})
 
 	var found bool
@@ -1567,11 +1573,13 @@ func TestMissingForPartialClockIncludesUnknownPeers(t *testing.T) {
 		})
 	}
 
-	// Clock that only mentions A — B and C are "unknown" to the sender.
-	// MissingFor must still return events for B and C so the sender
-	// can discover quiet peers it has never seen.
-	events := s.MissingFor(&statev1.GossipVectorClock{
-		Counters: map[string]uint64{pkA.String(): 0},
+	// Digest that only mentions A with mismatched hash — B and C are
+	// "unknown" to the sender. MissingFor must still return events for
+	// B and C so the sender can discover quiet peers it has never seen.
+	events := s.MissingFor(&statev1.GossipStateDigest{
+		Peers: map[string]*statev1.PeerDigest{
+			pkA.String(): {MaxCounter: 0, StateHash: 0},
+		},
 	})
 
 	peerIDs := make(map[string]struct{})
@@ -1814,7 +1822,7 @@ func TestResourceTelemetryDeadband(t *testing.T) {
 	})
 }
 
-func TestLazyWatermark(t *testing.T) {
+func TestWatermarkAlwaysAdvances(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub, nil)
@@ -1831,26 +1839,65 @@ func TestLazyWatermark(t *testing.T) {
 		}
 	}
 
-	t.Run("push does not advance maxCounter", func(t *testing.T) {
+	t.Run("push advances maxCounter", func(t *testing.T) {
 		s.ApplyEvents([]*statev1.GossipEvent{mkEvent(5)}, false)
-		counters := s.Clock().GetCounters()
-		require.Equal(t, uint64(0), counters[peerPK.String()])
+		require.Equal(t, uint64(5), s.Clock().GetPeers()[peerPK.String()].GetMaxCounter())
 	})
 
 	t.Run("pull advances maxCounter", func(t *testing.T) {
-		s.ApplyEvents([]*statev1.GossipEvent{mkEvent(5)}, true)
-		counters := s.Clock().GetCounters()
-		require.Equal(t, uint64(5), counters[peerPK.String()])
-	})
-
-	t.Run("stale pull still advances maxCounter", func(t *testing.T) {
-		// Event at counter 10 applied via push — watermark stays at 5.
-		s.ApplyEvents([]*statev1.GossipEvent{mkEvent(10)}, false)
-		require.Equal(t, uint64(5), s.Clock().GetCounters()[peerPK.String()])
-
-		// Same event via pull — watermark catches up even though
-		// the state itself is stale (already applied).
 		s.ApplyEvents([]*statev1.GossipEvent{mkEvent(10)}, true)
-		require.Equal(t, uint64(10), s.Clock().GetCounters()[peerPK.String()])
+		require.Equal(t, uint64(10), s.Clock().GetPeers()[peerPK.String()].GetMaxCounter())
 	})
+}
+
+func TestPeerHash(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
+
+	// Deterministic: calling twice yields the same hash.
+	d1 := s.Clock()
+	d2 := s.Clock()
+	h1 := d1.GetPeers()[s.LocalID.String()].GetStateHash()
+	h2 := d2.GetPeers()[s.LocalID.String()].GetStateHash()
+	require.Equal(t, h1, h2)
+	require.NotZero(t, h1)
+
+	// Hash changes when state changes.
+	s.SetExternalPort(45000)
+	d3 := s.Clock()
+	h3 := d3.GetPeers()[s.LocalID.String()].GetStateHash()
+	require.NotEqual(t, h1, h3)
+}
+
+func TestDigestHashMismatchSendsAll(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
+	s.SetExternalPort(45000)
+
+	// Mismatched hash with high counter → full dump from counter 0.
+	events := s.MissingFor(&statev1.GossipStateDigest{
+		Peers: map[string]*statev1.PeerDigest{
+			s.LocalID.String(): {MaxCounter: 100, StateHash: 12345},
+		},
+	})
+
+	require.Len(t, events, 7)
+}
+
+func TestDigestMatchSkips(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
+
+	// Pass own digest back — everything matches → empty result.
+	events := s.MissingFor(s.Clock())
+	require.Empty(t, events)
 }

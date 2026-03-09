@@ -60,7 +60,7 @@ You are the network transport specialist for Pollen. You think in terms of UDP d
 ## Needs
 
 - **trust**: `auth.NodeCredentials` for TLS certificate generation; `isSubjectRevoked` callback for rejecting revoked peers
-- **state**: `statev1.GossipVectorClock` and `statev1.GossipEventBatch` carried inside `meshv1.Envelope`
+- **state**: `statev1.GossipStateDigest` and `statev1.GossipEventBatch` carried inside `meshv1.Envelope`
 
 ## Proto ownership
 

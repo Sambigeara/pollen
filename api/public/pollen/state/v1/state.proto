@@ -15,8 +15,13 @@ message Service {
   }];
 }
 
-message GossipVectorClock {
-  map<string, uint64> counters = 1;
+message PeerDigest {
+  uint64 max_counter = 1;
+  fixed64 state_hash = 2;
+}
+
+message GossipStateDigest {
+  map<string, PeerDigest> peers = 1;
 }
 
 message ServiceChange {

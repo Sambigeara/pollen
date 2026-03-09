@@ -404,13 +404,13 @@ func (n *Node) handleClockStream(_ context.Context, from types.PeerKey, stream i
 		return
 	}
 
-	clock := &statev1.GossipVectorClock{}
-	if err := clock.UnmarshalVT(b); err != nil {
+	digest := &statev1.GossipStateDigest{}
+	if err := digest.UnmarshalVT(b); err != nil {
 		n.log.Debugw("unmarshal clock stream failed", "peer", from.Short(), "err", err)
 		return
 	}
 
-	events := n.store.MissingFor(clock)
+	events := n.store.MissingFor(digest)
 	if len(events) == 0 {
 		return
 	}
@@ -486,16 +486,16 @@ func (n *Node) broadcastGossipBatches(ctx context.Context, peerIDs []types.PeerK
 
 const maxResponseSize = 4 << 20 // 4 MB
 
-func (n *Node) sendClockViaStream(ctx context.Context, peerID types.PeerKey, clock *statev1.GossipVectorClock) error {
+func (n *Node) sendClockViaStream(ctx context.Context, peerID types.PeerKey, digest *statev1.GossipStateDigest) error {
 	stream, err := n.mesh.OpenClockStream(ctx, peerID)
 	if err != nil {
 		return fmt.Errorf("open clock stream to %s: %w", peerID.Short(), err)
 	}
 
-	b, err := clock.MarshalVT()
+	b, err := digest.MarshalVT()
 	if err != nil {
 		stream.Close()
-		return fmt.Errorf("marshal clock: %w", err)
+		return fmt.Errorf("marshal digest: %w", err)
 	}
 	if _, err := stream.Write(b); err != nil {
 		stream.Close()
@@ -567,12 +567,12 @@ func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.Gossip
 }
 
 func (n *Node) gossip(ctx context.Context) {
-	clock := n.store.Clock()
+	digest := n.store.Clock()
 	for _, peerID := range n.GetConnectedPeers() {
 		if peerID == n.store.LocalID {
 			continue
 		}
-		if err := n.sendClockViaStream(ctx, peerID, clock); err != nil {
+		if err := n.sendClockViaStream(ctx, peerID, digest); err != nil {
 			n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
 		}
 	}

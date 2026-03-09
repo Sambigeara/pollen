@@ -22,8 +22,8 @@ You are the CRDT state and persistence specialist for Pollen. You think in terms
 
 - `store.Store` — thread-safe CRDT state container (all methods acquire `sync.RWMutex`)
 - `store.Load(pollenDir, identityPub, trustBundle) (*Store, error)` — initialize from disk YAML
-- `store.Store.Clock() *statev1.GossipVectorClock` — current vector clock for all peers
-- `store.Store.EagerSyncClock() *statev1.GossipVectorClock` — returns zero clock if no remote peers (triggers full sync on first contact)
+- `store.Store.Clock() *statev1.GossipStateDigest` — current vector clock for all peers
+- `store.Store.EagerSyncClock() *statev1.GossipStateDigest` — returns zero clock if no remote peers (triggers full sync on first contact)
 - `store.Store.MissingFor(clock) []*statev1.GossipEvent` — events the remote peer needs
 - `store.Store.ApplyEvents(events, isPullResponse) ApplyResult` — apply batch atomically; returns rebroadcast events and revoked subjects
 - `store.Store.SetLocalNetwork(ips, port) []*statev1.GossipEvent` — update local network info, returns broadcast events
@@ -73,4 +73,4 @@ You are the CRDT state and persistence specialist for Pollen. You think in terms
 
 ## Proto ownership
 
-- `api/public/pollen/state/v1/state.proto` — `Service`, `GossipVectorClock`, `GossipEvent` (oneof: `NetworkChange`, `ExternalPortChange`, `IdentityChange`, `ServiceChange`, `ReachabilityChange`, `RevocationChange`), `GossipEventBatch`, and all `*Change` message types
+- `api/public/pollen/state/v1/state.proto` — `Service`, `GossipStateDigest`, `GossipEvent` (oneof: `NetworkChange`, `ExternalPortChange`, `IdentityChange`, `ServiceChange`, `ReachabilityChange`, `RevocationChange`), `GossipEventBatch`, and all `*Change` message types

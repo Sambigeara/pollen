@@ -2,6 +2,7 @@ package store
 
 import (
 	"cmp"
+	"encoding/binary"
 	"fmt"
 	"maps"
 	"slices"
@@ -350,44 +351,81 @@ func (s *Store) Save() error {
 	return s.disk.save(st)
 }
 
-// EagerSyncClock returns a zero clock when no remote peer has state yet (so
-// the responder sends everything), or the real vector clock otherwise. Both
-// the remote-state check and clock construction happen under a single RLock to
+const (
+	fnvOffset64 = 14695981039346656037
+	fnvPrime64  = 1099511628211
+)
+
+// computePeerHashLocked returns an order-independent XOR of FNV-1a hashes
+// over a peer's compacted log. Two peers with identical log contents produce
+// identical hashes regardless of iteration order.
+func computePeerHashLocked(rec nodeRecord) uint64 {
+	var digest uint64
+	for key, entry := range rec.log {
+		h := uint64(fnvOffset64)
+		mix := func(b []byte) {
+			for _, v := range b {
+				h ^= uint64(v)
+				h *= fnvPrime64
+			}
+		}
+		mix([]byte{byte(key.kind)})
+		mix([]byte(key.name))
+		mix(key.peer[:])
+		var buf [9]byte
+		binary.LittleEndian.PutUint64(buf[:8], entry.Counter)
+		if entry.Deleted {
+			buf[8] = 1
+		}
+		mix(buf[:])
+		digest ^= h
+	}
+	return digest
+}
+
+// EagerSyncClock returns an empty digest when no remote peer has state yet
+// (so the responder sends everything), or the real digest otherwise. Both the
+// remote-state check and digest construction happen under a single RLock to
 // avoid a TOCTOU race with concurrent ApplyEvents calls.
-func (s *Store) EagerSyncClock() *statev1.GossipVectorClock {
+func (s *Store) EagerSyncClock() *statev1.GossipStateDigest {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	for peerID, rec := range s.nodes {
 		if peerID != s.LocalID && rec.maxCounter > 0 {
-			return s.clockLocked()
+			return s.digestLocked()
 		}
 	}
-	return &statev1.GossipVectorClock{Counters: map[string]uint64{}}
+	return &statev1.GossipStateDigest{}
 }
 
-func (s *Store) Clock() *statev1.GossipVectorClock {
+func (s *Store) Clock() *statev1.GossipStateDigest {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.clockLocked()
+	return s.digestLocked()
 }
 
-func (s *Store) clockLocked() *statev1.GossipVectorClock {
-	clock := make(map[string]uint64, len(s.nodes))
+func (s *Store) digestLocked() *statev1.GossipStateDigest {
+	peers := make(map[string]*statev1.PeerDigest, len(s.nodes))
 	for peerID, rec := range s.nodes {
-		clock[peerID.String()] = rec.maxCounter
+		peers[peerID.String()] = &statev1.PeerDigest{
+			MaxCounter: rec.maxCounter,
+			StateHash:  computePeerHashLocked(rec),
+		}
 	}
-	return &statev1.GossipVectorClock{Counters: clock}
+	return &statev1.GossipStateDigest{Peers: peers}
 }
 
 // MissingFor returns the individual events that the remote peer is missing,
-// based on the provided vector clock.
+// based on the provided state digest.
 //
-// All store nodes are iterated so that peers unknown to the sender (absent
-// from the clock) are still discovered — this is critical for convergence of
-// "quiet" peers that produce no new events to rebroadcast.
-func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipEvent {
-	requested := clock.GetCounters()
+// For each local peer:
+//   - unknown to remote          → send all (full dump)
+//   - hash mismatch              → send all (full dump)
+//   - hash match, counter ahead  → send delta above remote counter
+//   - hash match, counter match  → skip (fully synced)
+func (s *Store) MissingFor(digest *statev1.GossipStateDigest) []*statev1.GossipEvent {
+	remotePeers := digest.GetPeers()
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -397,11 +435,19 @@ func (s *Store) MissingFor(clock *statev1.GossipVectorClock) []*statev1.GossipEv
 		if rec.maxCounter == 0 {
 			continue
 		}
-		remoteCounter := requested[peerID.String()]
-		if rec.maxCounter <= remoteCounter {
+		rd := remotePeers[peerID.String()]
+		if rd == nil {
+			events = append(events, s.buildEventsAbove(peerID, rec, 0)...)
 			continue
 		}
-		events = append(events, s.buildEventsAbove(peerID, rec, remoteCounter)...)
+		localHash := computePeerHashLocked(rec)
+		if localHash != rd.GetStateHash() {
+			events = append(events, s.buildEventsAbove(peerID, rec, 0)...)
+			continue
+		}
+		if rec.maxCounter > rd.GetMaxCounter() {
+			events = append(events, s.buildEventsAbove(peerID, rec, rd.GetMaxCounter())...)
+		}
 	}
 
 	slices.SortFunc(events, func(a, b *statev1.GossipEvent) int {
@@ -432,7 +478,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 		if event == nil {
 			continue
 		}
-		r := s.applyEventLocked(event, isPullResponse)
+		r := s.applyEventLocked(event)
 		if len(r.Rebroadcast) > 0 {
 			anyApplied = true
 		}
@@ -461,7 +507,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	return result
 }
 
-func (s *Store) applyEventLocked(event *statev1.GossipEvent, isPullResponse bool) ApplyResult {
+func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	peerID, err := types.PeerKeyFromString(event.GetPeerId())
 	if err != nil {
 		return ApplyResult{}
@@ -478,8 +524,6 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent, isPullResponse bool
 	// Self-state conflict handling: receiving our own events from peers.
 	// Only the higher-counter check matters — same-counter events bounce
 	// back routinely via gossip and would cause a rebroadcast storm.
-	// Exempt from the isPullResponse watermark guard because
-	// bump-and-rebroadcast guarantees no gaps in our own counter sequence.
 	if peerID == s.LocalID {
 		if event.GetCounter() > rec.maxCounter {
 			rec.maxCounter = event.GetCounter()
@@ -493,13 +537,7 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent, isPullResponse bool
 	// Per-key stale check: only accept if this event is newer for this key.
 	if existing, ok := rec.log[key]; ok && event.GetCounter() <= existing.Counter {
 		s.metrics.EventsStale.Inc()
-		// Stale heal: during pull-sync, advance the watermark past compacted
-		// gaps even when the state itself is already applied. Without this,
-		// a push-delivered event followed by log compaction leaves maxCounter
-		// stuck below the compacted range, causing endless re-fetches.
-		// (Mirrors the watermark advance at the end of applyEventLocked for
-		// fresh events — see "Lazy watermark" comment below.)
-		if isPullResponse && event.GetCounter() > rec.maxCounter {
+		if event.GetCounter() > rec.maxCounter {
 			rec.maxCounter = event.GetCounter()
 			s.nodes[peerID] = rec
 		}
@@ -531,11 +569,7 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent, isPullResponse bool
 	}
 
 	rec.log[key] = logEntry{Counter: event.GetCounter(), Deleted: deleted}
-	// Lazy watermark: only advance maxCounter on reliable pull-sync responses.
-	// Push-delivered events are unreliable (UDP drops); leaving the watermark
-	// untouched guarantees the background anti-entropy sync will eventually
-	// fetch any events dropped before this one.
-	if isPullResponse && event.GetCounter() > rec.maxCounter {
+	if event.GetCounter() > rec.maxCounter {
 		rec.maxCounter = event.GetCounter()
 	}
 	s.nodes[peerID] = rec
