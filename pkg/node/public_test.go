@@ -57,9 +57,7 @@ func TestBootstrapPublicFalseIsNotAccessible(t *testing.T) {
 	require.False(t, n.store.IsPubliclyAccessible(n.store.LocalID))
 }
 
-func TestBatchClocksNilAndEmpty(t *testing.T) {
-	require.Nil(t, batchClocks(nil, MaxDatagramPayload))
-
+func TestBatchClocksEmpty(t *testing.T) {
 	// An empty (non-nil) clock is semantically meaningful ("I know nothing,
 	// send me everything"), so it must produce exactly one batch.
 	empty := &statev1.GossipVectorClock{}

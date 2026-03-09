@@ -496,9 +496,6 @@ func clockEnvelopeSize(counters map[string]uint64) int {
 // within maxSize when serialized as an Envelope. Clock entries are idempotent
 // (receiver takes max per peer), so partial clocks need no reassembly.
 func batchClocks(clock *statev1.GossipVectorClock, maxSize int) []*statev1.GossipVectorClock {
-	if clock == nil {
-		return nil
-	}
 	counters := clock.GetCounters()
 	if len(counters) == 0 {
 		return []*statev1.GossipVectorClock{clock}
@@ -510,6 +507,7 @@ func batchClocks(clock *statev1.GossipVectorClock, maxSize int) []*statev1.Gossi
 	for key, val := range counters {
 		current[key] = val
 		if clockEnvelopeSize(current) > maxSize {
+			// overflow recovery (we don't know it's too big 'til it's too big)
 			if len(current) > 1 {
 				delete(current, key)
 				batches = append(batches, &statev1.GossipVectorClock{Counters: current})
