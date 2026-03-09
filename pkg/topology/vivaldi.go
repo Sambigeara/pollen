@@ -2,6 +2,7 @@ package topology
 
 import (
 	"math"
+	"math/rand/v2"
 	"time"
 )
 
@@ -94,9 +95,10 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 	dy := local.Y - s.PeerCoord.Y
 	mag := math.Sqrt(dx*dx + dy*dy)
 	if mag < MinHeight {
-		// Jitter to escape coincident points.
-		dx, dy = MinHeight, MinHeight
-		mag = math.Sqrt(dx*dx + dy*dy)
+		angle := rand.Float64() * 2 * math.Pi //nolint:gosec,mnd
+		dx = math.Cos(angle) * MinHeight
+		dy = math.Sin(angle) * MinHeight
+		mag = MinHeight
 	}
 	ux, uy := dx/mag, dy/mag
 
