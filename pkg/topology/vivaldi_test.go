@@ -172,3 +172,23 @@ func TestErrorEstimateDecreases(t *testing.T) {
 
 	require.Less(t, localErr, 0.5, "error estimate should decrease with consistent samples")
 }
+
+func TestRandomInitLANConvergence(t *testing.T) {
+	// Regression: random-init coords spread over 10ms radius produce predicted
+	// distances far exceeding LAN RTTs (2-3ms). Without capping per-sample
+	// relative error at 1.0, the error estimate stays pinned at 1.0 for
+	// hundreds of ticks because every uncapped sample (err >> 1) is an EMA
+	// input that can only push the average toward the ceiling.
+	a := Coord{X: -7, Y: 5, Height: MinHeight} // ~8.6ms from origin
+	b := Coord{X: 6, Y: -4, Height: MinHeight} // ~7.2ms from origin
+	aErr, bErr := 1.0, 1.0
+	rtt := 2 * time.Millisecond // LAN link
+
+	for range 60 {
+		a, aErr = Update(a, aErr, Sample{RTT: rtt, PeerCoord: b})
+		b, bErr = Update(b, bErr, Sample{RTT: rtt, PeerCoord: a})
+	}
+
+	require.Less(t, aErr, 0.9, "error should drop below degraded threshold within 60 ticks")
+	require.Less(t, bErr, 0.9, "error should drop below degraded threshold within 60 ticks")
+}

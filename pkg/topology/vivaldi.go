@@ -87,7 +87,7 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 		dist = MinHeight
 	}
 
-	err := math.Abs(rtt-dist) / max(rtt, MinRTTFloor)
+	err := min(math.Abs(rtt-dist)/max(rtt, MinRTTFloor), 1.0)
 	relWeight := localErr / (localErr + CeDefault)
 
 	// Update error estimate.
