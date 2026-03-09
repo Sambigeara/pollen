@@ -653,7 +653,7 @@ func (n *Node) updateVivaldiCoords() {
 			topology.Sample{RTT: rtt, PeerCoord: *peerCoord},
 		)
 		n.localCoordErr = newErr
-		n.smoothedErr.Update(min(newErr, 1.0))
+		n.smoothedErr.Update(newErr)
 		updated = true
 	}
 	if updated {

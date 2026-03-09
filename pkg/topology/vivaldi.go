@@ -34,6 +34,14 @@ const (
 	// adjustments.
 	MinRTTFloor = 2.0 // milliseconds
 
+	// MaxSampleErr caps per-sample relative error strictly below 1.0. Without
+	// this, when all peers produce relative error >= 1.0 (common during
+	// random-init convergence on LAN), the capped value equals localErr and
+	// the EMA update term is zero — a dead zone at the ceiling. A cap of 0.9
+	// provides a small but steady downward pull (~0.02/tick) that breaks the
+	// stall without materially affecting coordinate adjustment weights.
+	MaxSampleErr = 0.9
+
 	// PublishEpsilon is the minimum coordinate movement (in distance units)
 	// before a node should re-publish its coordinates via gossip.
 	PublishEpsilon = 0.5
@@ -87,16 +95,12 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 		dist = MinHeight
 	}
 
-	err := math.Abs(rtt-dist) / max(rtt, MinRTTFloor)
+	err := min(math.Abs(rtt-dist)/max(rtt, MinRTTFloor), MaxSampleErr)
 	relWeight := localErr / (localErr + CeDefault)
 
-	// Update error estimate. No upper clamp — the estimate must be free to
-	// rise above 1.0 during initial convergence so that improving samples
-	// (err < localErr) produce a large negative delta that rapidly pulls
-	// the estimate back down. Clamping at 1.0 creates a dead zone where
-	// the EMA stalls when all samples have relative error >= 1.0.
+	// Update error estimate.
 	newErr := localErr + CcDefault*relWeight*(err-localErr)
-	newErr = max(newErr, 0)
+	newErr = clamp(newErr, 0, 1)
 
 	// Compute force: positive = push apart, negative = pull together.
 	delta := CcDefault * relWeight
