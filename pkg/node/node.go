@@ -79,7 +79,7 @@ const (
 	vivaldiEnterHMACThreshold = 0.6
 	vivaldiExitHMACThreshold  = 0.35
 	vivaldiWarmupDuration     = 5 * time.Second
-	vivaldiErrAlpha           = 0.04 // ~25-sample EWMA window for smoothed vivaldi error
+	vivaldiErrAlpha           = 0.2 // ~5-sample EWMA window for smoothed vivaldi error
 
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
