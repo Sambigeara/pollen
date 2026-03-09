@@ -26,16 +26,18 @@ import (
 )
 
 const (
-	handshakeTimeout      = 3 * time.Second
-	quicIdleTimeout       = 30 * time.Second
-	quicKeepAlivePeriod   = 10 * time.Second
-	eventSendTimeout      = 5 * time.Second
-	queueBufSize          = 64
-	probeBufSize          = 2048
-	inviteRedeemTTL       = 5 * time.Minute
-	sessionReapInterval   = 5 * time.Minute
-	uniStreamReadTimeout  = 10 * time.Second
-	maxIncomingUniStreams = 8
+	handshakeTimeout    = 3 * time.Second
+	quicIdleTimeout     = 30 * time.Second
+	quicKeepAlivePeriod = 10 * time.Second
+	eventSendTimeout    = 5 * time.Second
+	queueBufSize        = 64
+	probeBufSize        = 2048
+	inviteRedeemTTL     = 5 * time.Minute
+	sessionReapInterval = 5 * time.Minute
+	streamTypeTimeout   = 5 * time.Second
+
+	streamTypeClock  byte = 1
+	streamTypeTunnel byte = 2
 )
 
 func quicConfig() *quic.Config {
@@ -43,7 +45,7 @@ func quicConfig() *quic.Config {
 		MaxIdleTimeout:        quicIdleTimeout,
 		KeepAlivePeriod:       quicKeepAlivePeriod,
 		EnableDatagrams:       true,
-		MaxIncomingUniStreams: maxIncomingUniStreams,
+		MaxIncomingUniStreams: -1,
 	}
 }
 
@@ -59,8 +61,8 @@ type Mesh interface {
 	Events() <-chan peer.Input
 	OpenStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
 	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
-	OpenUniStream(ctx context.Context, peer types.PeerKey) (io.WriteCloser, error)
-	AcceptUniStream(ctx context.Context) (types.PeerKey, io.ReadCloser, error)
+	OpenClockStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
+	AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
 	JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error
 	JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
@@ -104,7 +106,7 @@ type impl struct {
 	inviteSigner     *auth.AdminSigner
 	isSubjectRevoked func([]byte) bool
 	streamCh         chan incomingStream
-	uniStreamCh      chan incomingUniStream
+	clockStreamCh    chan incomingStream
 	trustBundle      *admissionv1.TrustBundle
 	log              *zap.SugaredLogger
 	metrics          *metrics.MeshMetrics
@@ -122,20 +124,6 @@ type impl struct {
 type incomingStream struct {
 	stream  io.ReadWriteCloser
 	peerKey types.PeerKey
-}
-
-type incomingUniStream struct {
-	stream  io.ReadCloser
-	peerKey types.PeerKey
-}
-
-type receiveStreamCloser struct {
-	*quic.ReceiveStream
-}
-
-func (r *receiveStreamCloser) Close() error {
-	r.CancelRead(0)
-	return nil
 }
 
 type peerSession struct {
@@ -193,7 +181,7 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 		renewalCh:        make(chan *meshv1.CertRenewalResponse, 1),
 		inCh:             make(chan peer.Input, queueBufSize),
 		streamCh:         make(chan incomingStream, queueBufSize),
-		uniStreamCh:      make(chan incomingUniStream, queueBufSize),
+		clockStreamCh:    make(chan incomingStream, queueBufSize),
 		metrics:          mm,
 	}
 	m.meshCert.Store(&meshCert)
@@ -252,61 +240,47 @@ func (m *impl) Events() <-chan peer.Input {
 }
 
 func (m *impl) OpenStream(ctx context.Context, peerKey types.PeerKey) (io.ReadWriteCloser, error) {
-	s, err := m.sessions.waitFor(ctx, peerKey)
-	if err != nil {
-		return nil, err
-	}
-	return s.conn.OpenStreamSync(ctx)
+	return m.openTypedStream(ctx, peerKey, streamTypeTunnel)
 }
 
 func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {
-	select {
-	case incoming, ok := <-m.streamCh:
-		if !ok {
-			return types.PeerKey{}, nil, net.ErrClosed
-		}
-		return incoming.peerKey, incoming.stream, nil
-	case <-ctx.Done():
-		return types.PeerKey{}, nil, ctx.Err()
-	}
+	return m.acceptFromCh(ctx, m.streamCh)
 }
 
-func (m *impl) OpenUniStream(ctx context.Context, peerKey types.PeerKey) (io.WriteCloser, error) {
+func (m *impl) OpenClockStream(ctx context.Context, peerKey types.PeerKey) (io.ReadWriteCloser, error) {
+	return m.openTypedStream(ctx, peerKey, streamTypeClock)
+}
+
+func (m *impl) AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {
+	return m.acceptFromCh(ctx, m.clockStreamCh)
+}
+
+func (m *impl) openTypedStream(ctx context.Context, peerKey types.PeerKey, streamType byte) (io.ReadWriteCloser, error) {
 	s, err := m.sessions.waitFor(ctx, peerKey)
 	if err != nil {
 		return nil, err
 	}
-	return s.conn.OpenUniStreamSync(ctx)
+	stream, err := s.conn.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := stream.Write([]byte{streamType}); err != nil {
+		stream.CancelWrite(0)
+		stream.CancelRead(0)
+		return nil, err
+	}
+	return stream, nil
 }
 
-func (m *impl) AcceptUniStream(ctx context.Context) (types.PeerKey, io.ReadCloser, error) {
+func (m *impl) acceptFromCh(ctx context.Context, ch <-chan incomingStream) (types.PeerKey, io.ReadWriteCloser, error) {
 	select {
-	case incoming, ok := <-m.uniStreamCh:
+	case incoming, ok := <-ch:
 		if !ok {
 			return types.PeerKey{}, nil, net.ErrClosed
 		}
 		return incoming.peerKey, incoming.stream, nil
 	case <-ctx.Done():
 		return types.PeerKey{}, nil, ctx.Err()
-	}
-}
-
-func (m *impl) acceptUniStreams(s *peerSession, peerKey types.PeerKey) {
-	ctx := s.conn.Context()
-	for {
-		stream, err := s.conn.AcceptUniStream(ctx)
-		if err != nil {
-			return
-		}
-
-		_ = stream.SetReadDeadline(time.Now().Add(uniStreamReadTimeout))
-		wrapped := &receiveStreamCloser{stream}
-		select {
-		case m.uniStreamCh <- incomingUniStream{peerKey: peerKey, stream: wrapped}:
-		case <-ctx.Done():
-			wrapped.Close()
-			return
-		}
 	}
 }
 
@@ -641,8 +615,7 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 	// Use the connection's own context so the recv goroutine lives as long as
 	// the QUIC connection, not as long as the (potentially short-lived) dial ctx.
 	m.acceptWG.Go(func() { m.recvDatagrams(s, peerKey) })
-	m.acceptWG.Go(func() { m.acceptStreams(s, peerKey) })
-	m.acceptWG.Go(func() { m.acceptUniStreams(s, peerKey) })
+	m.acceptWG.Go(func() { m.acceptBidiStreams(s, peerKey) })
 
 	addr := s.conn.RemoteAddr().(*net.UDPAddr) //nolint:forcetypeassert
 	select {
@@ -659,7 +632,7 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 	}
 }
 
-func (m *impl) acceptStreams(s *peerSession, peerKey types.PeerKey) {
+func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 	ctx := s.conn.Context()
 	for {
 		stream, err := s.conn.AcceptStream(ctx)
@@ -667,10 +640,32 @@ func (m *impl) acceptStreams(s *peerSession, peerKey types.PeerKey) {
 			return
 		}
 
+		_ = stream.SetReadDeadline(time.Now().Add(streamTypeTimeout))
+		var typeBuf [1]byte
+		if _, err := io.ReadFull(stream, typeBuf[:]); err != nil {
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+			continue
+		}
+		_ = stream.SetReadDeadline(time.Time{})
+
+		var ch chan incomingStream
+		switch typeBuf[0] {
+		case streamTypeClock:
+			ch = m.clockStreamCh
+		case streamTypeTunnel:
+			ch = m.streamCh
+		default:
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+			continue
+		}
+
 		select {
-		case m.streamCh <- incomingStream{peerKey: peerKey, stream: stream}:
+		case ch <- incomingStream{peerKey: peerKey, stream: stream}:
 		case <-ctx.Done():
-			_ = stream.Close()
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
 			return
 		}
 	}
@@ -875,7 +870,7 @@ func (m *impl) Close() error {
 
 	m.acceptWG.Wait()
 	close(m.streamCh)
-	close(m.uniStreamCh)
+	close(m.clockStreamCh)
 	close(m.recvCh)
 
 	if m.listener != nil {

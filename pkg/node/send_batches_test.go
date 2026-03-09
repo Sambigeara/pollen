@@ -12,17 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSendGossipBatchesToPeerStopsAfterFailure(t *testing.T) {
-	n := newMinimalNode(t, false)
-	wrapper := &countingMesh{Mesh: n.mesh, failPeer: testPeerKey(1), failAfter: 1, err: errors.New("boom")}
-	n.mesh = wrapper
-
-	batches := [][]*statev1.GossipEvent{{{}}, {{}}}
-	n.sendGossipBatchesToPeer(context.Background(), testPeerKey(1), batches, true)
-
-	require.Equal(t, 1, wrapper.calls[testPeerKey(1)])
-}
-
 func TestBroadcastGossipBatchesStopsRetryingFailedPeer(t *testing.T) {
 	n := newMinimalNode(t, false)
 	failPeer := testPeerKey(1)
@@ -47,7 +36,7 @@ type countingMesh struct {
 	err       error
 }
 
-func (m *countingMesh) Send(ctx context.Context, peerKey types.PeerKey, env *meshv1.Envelope) error {
+func (m *countingMesh) Send(_ context.Context, peerKey types.PeerKey, _ *meshv1.Envelope) error {
 	if m.calls == nil {
 		m.calls = make(map[types.PeerKey]int)
 	}

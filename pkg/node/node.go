@@ -43,11 +43,11 @@ const (
 
 var ErrCertExpired = errors.New("membership certificate has expired")
 
-// envelopeOverhead is the worst-case serialized size of an Envelope wrapping
-// a GossipEventBatch — covers the oneof tag, length prefixes, batch wrapper
-// framing, and the IsResponse tag.
+// envelopeOverhead is the serialized size of an empty Envelope wrapping
+// a GossipEventBatch — covers the oneof tag, length prefixes, and batch
+// wrapper framing.
 var envelopeOverhead = (&meshv1.Envelope{Body: &meshv1.Envelope_Events{
-	Events: &statev1.GossipEventBatch{IsResponse: true},
+	Events: &statev1.GossipEventBatch{},
 }}).SizeVT()
 
 const (
@@ -259,7 +259,7 @@ func (n *Node) Start(ctx context.Context) error {
 	n.connectBootstrapPeers(ctx)
 	n.tun.Start(ctx)
 	go n.recvLoop(ctx)
-	go n.acceptUniStreamsLoop(ctx)
+	go n.acceptClockStreamsLoop(ctx)
 	for range punchWorkers {
 		go n.punchLoop(ctx)
 	}
@@ -363,21 +363,21 @@ func (n *Node) recvLoop(ctx context.Context) {
 	}
 }
 
-func (n *Node) acceptUniStreamsLoop(ctx context.Context) {
+func (n *Node) acceptClockStreamsLoop(ctx context.Context) {
 	for {
-		peerKey, stream, err := n.mesh.AcceptUniStream(ctx)
+		peerKey, stream, err := n.mesh.AcceptClockStream(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			n.log.Debugw("accept uni-stream failed", "err", err)
+			n.log.Debugw("accept clock stream failed", "err", err)
 			return
 		}
 		go n.handleClockStream(ctx, peerKey, stream)
 	}
 }
 
-func (n *Node) handleClockStream(ctx context.Context, from types.PeerKey, stream io.ReadCloser) {
+func (n *Node) handleClockStream(_ context.Context, from types.PeerKey, stream io.ReadWriteCloser) {
 	defer stream.Close()
 	span := n.tracer.Start("gossip.handleClock")
 	span.SetAttr("peer", from.Short())
@@ -401,7 +401,19 @@ func (n *Node) handleClockStream(ctx context.Context, from types.PeerKey, stream
 	}
 
 	events := n.store.MissingFor(clock)
-	n.sendGossipBatchesToPeer(ctx, from, batchEvents(events, MaxDatagramPayload), true)
+	if len(events) == 0 {
+		return
+	}
+
+	batch := &statev1.GossipEventBatch{Events: events}
+	resp, err := batch.MarshalVT()
+	if err != nil {
+		n.log.Debugw("marshal clock response failed", "peer", from.Short(), "err", err)
+		return
+	}
+	if _, err := stream.Write(resp); err != nil {
+		n.log.Debugw("write clock response failed", "peer", from.Short(), "err", err)
+	}
 }
 
 func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *meshv1.Envelope) {
@@ -441,18 +453,6 @@ func (n *Node) broadcastEvents(ctx context.Context, events []*statev1.GossipEven
 	n.broadcastGossipBatches(ctx, n.GetConnectedPeers(), batchEvents(events, MaxDatagramPayload))
 }
 
-func (n *Node) sendGossipBatchesToPeer(ctx context.Context, peerID types.PeerKey, batches [][]*statev1.GossipEvent, isResponse bool) {
-	for _, batch := range batches {
-		env := &meshv1.Envelope{Body: &meshv1.Envelope_Events{
-			Events: &statev1.GossipEventBatch{Events: batch, IsResponse: isResponse},
-		}}
-		if err := n.mesh.Send(ctx, peerID, env); err != nil {
-			n.log.Debugw("failed sending gossip events", "to", peerID.Short(), "err", err)
-			return
-		}
-	}
-}
-
 func (n *Node) broadcastGossipBatches(ctx context.Context, peerIDs []types.PeerKey, batches [][]*statev1.GossipEvent) {
 	failed := make(map[types.PeerKey]struct{})
 	for _, batch := range batches {
@@ -474,20 +474,47 @@ func (n *Node) broadcastGossipBatches(ctx context.Context, peerIDs []types.PeerK
 	}
 }
 
+const maxResponseSize = 4 << 20 // 4 MB
+
 func (n *Node) sendClockViaStream(ctx context.Context, peerID types.PeerKey, clock *statev1.GossipVectorClock) error {
-	stream, err := n.mesh.OpenUniStream(ctx, peerID)
+	stream, err := n.mesh.OpenClockStream(ctx, peerID)
 	if err != nil {
-		return fmt.Errorf("open uni-stream to %s: %w", peerID.Short(), err)
+		return fmt.Errorf("open clock stream to %s: %w", peerID.Short(), err)
 	}
-	defer stream.Close()
 
 	b, err := clock.MarshalVT()
 	if err != nil {
+		stream.Close()
 		return fmt.Errorf("marshal clock: %w", err)
 	}
 	if _, err := stream.Write(b); err != nil {
+		stream.Close()
 		return fmt.Errorf("write clock to %s: %w", peerID.Short(), err)
 	}
+
+	// Half-close the write side so the responder sees EOF.
+	// quic.Stream.Close() is the write-side half-close; reading remains open.
+	if err := stream.Close(); err != nil {
+		return fmt.Errorf("half-close clock stream to %s: %w", peerID.Short(), err)
+	}
+
+	resp, err := io.ReadAll(io.LimitReader(stream, maxResponseSize+1))
+	if err != nil {
+		return fmt.Errorf("read clock response from %s: %w", peerID.Short(), err)
+	}
+	if len(resp) == 0 {
+		return nil
+	}
+	if len(resp) > maxResponseSize {
+		return fmt.Errorf("clock response from %s exceeded size limit (%d bytes)", peerID.Short(), len(resp))
+	}
+
+	batch := &statev1.GossipEventBatch{}
+	if err := batch.UnmarshalVT(resp); err != nil {
+		return fmt.Errorf("unmarshal clock response from %s: %w", peerID.Short(), err)
+	}
+
+	n.store.ApplyEvents(batch.GetEvents(), true)
 	return nil
 }
 
