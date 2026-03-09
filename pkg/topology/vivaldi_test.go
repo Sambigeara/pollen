@@ -121,7 +121,7 @@ func TestHeightFloor(t *testing.T) {
 
 func TestLowLatencyConvergence(t *testing.T) {
 	// Simulate a 5-node LAN cluster with 2-3ms RTTs and ~0.5ms jitter.
-	// With the RTT floor, error should settle below the 0.75 degradation
+	// With the RTT floor, error should settle below the 0.6 degradation
 	// threshold despite the high relative jitter on fast links.
 	local := Coord{}
 	localErr := 1.0
@@ -153,7 +153,7 @@ func TestLowLatencyConvergence(t *testing.T) {
 		}
 	}
 
-	require.Less(t, localErr, 0.75, "error should converge below 0.75 for LAN latencies with RTT floor")
+	require.Less(t, localErr, 0.6, "error should converge below 0.6 for LAN latencies with RTT floor")
 }
 
 func TestErrorEstimateDecreases(t *testing.T) {
