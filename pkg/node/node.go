@@ -630,26 +630,20 @@ func (n *Node) tick() {
 func (n *Node) updateVivaldiCoords() {
 	updated := false
 	now := time.Now()
-	var skipWarmup, skipConn, skipRTT, skipCoord, skipZero, total int
 	for _, peerKey := range n.GetConnectedPeers() {
-		total++
 		if ct, ok := n.peerConnectTime[peerKey]; ok && now.Sub(ct) < vivaldiWarmupDuration {
-			skipWarmup++
 			continue
 		}
 		conn, ok := n.mesh.GetConn(peerKey)
 		if !ok {
-			skipConn++
 			continue
 		}
 		rtt := conn.ConnectionStats().SmoothedRTT
 		if rtt <= 0 {
-			skipRTT++
 			continue
 		}
 		peerCoord, ok := n.store.PeerVivaldiCoord(peerKey)
 		if !ok || peerCoord == nil {
-			skipCoord++
 			continue
 		}
 		coordErr := n.localCoordErr
@@ -657,7 +651,6 @@ func (n *Node) updateVivaldiCoords() {
 		// When unconverged (error ≥ 1.0), any sample bootstraps progress;
 		// once converging, zero-coord peers would drag error back toward 1.0.
 		if peerCoord.IsZero() && coordErr < 1.0 {
-			skipZero++
 			continue
 		}
 		var newErr float64
@@ -668,16 +661,6 @@ func (n *Node) updateVivaldiCoords() {
 		n.localCoordErr = newErr
 		n.smoothedErr.Update(newErr)
 		updated = true
-	}
-	if !updated && total > 0 && n.smoothedErr.Value() >= 1.0 {
-		n.log.Debugw("vivaldi update found no usable peers",
-			"total", total,
-			"skipWarmup", skipWarmup,
-			"skipConn", skipConn,
-			"skipRTT", skipRTT,
-			"skipCoord", skipCoord,
-			"skipZero", skipZero,
-		)
 	}
 	if updated {
 		n.queueGossipEvents(n.store.SetLocalVivaldiCoord(n.localCoord))
@@ -848,11 +831,13 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
 				eagerCtx, cancel := context.WithTimeout(context.Background(), eagerSyncTimeout)
-				if err := n.sendClockViaStream(eagerCtx, e.PeerKey, n.store.EagerSyncClock()); err != nil {
-					n.log.Debugw("eager sync failed", "peer", e.PeerKey.Short(), "err", err)
-				}
+				err := n.sendClockViaStream(eagerCtx, e.PeerKey, n.store.EagerSyncClock())
 				cancel()
-				n.lastEagerSync[e.PeerKey] = time.Now()
+				if err != nil {
+					n.log.Debugw("eager sync failed", "peer", e.PeerKey.Short(), "err", err)
+				} else {
+					n.lastEagerSync[e.PeerKey] = time.Now()
+				}
 			}
 
 			n.sendObservedAddress(e.PeerKey, addr)
