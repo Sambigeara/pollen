@@ -175,10 +175,11 @@ func TestErrorEstimateDecreases(t *testing.T) {
 
 func TestRandomInitLANConvergence(t *testing.T) {
 	// Regression: random-init coords spread over 10ms radius produce predicted
-	// distances far exceeding LAN RTTs (2-3ms). Without capping per-sample
-	// relative error at 1.0, the error estimate stays pinned at 1.0 for
-	// hundreds of ticks because every uncapped sample (err >> 1) is an EMA
-	// input that can only push the average toward the ceiling.
+	// distances far exceeding LAN RTTs (2-3ms). With the error estimate
+	// clamped at 1.0, the EMA stalls in a dead zone because all samples
+	// have relative error >= 1.0 (capped to 1.0), making (err - localErr)
+	// exactly zero. Removing the upper clamp lets the estimate rise above
+	// 1.0 and then snap back down once coordinates converge.
 	a := Coord{X: -7, Y: 5, Height: MinHeight} // ~8.6ms from origin
 	b := Coord{X: 6, Y: -4, Height: MinHeight} // ~7.2ms from origin
 	aErr, bErr := 1.0, 1.0

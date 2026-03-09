@@ -87,12 +87,16 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 		dist = MinHeight
 	}
 
-	err := min(math.Abs(rtt-dist)/max(rtt, MinRTTFloor), 1.0)
+	err := math.Abs(rtt-dist) / max(rtt, MinRTTFloor)
 	relWeight := localErr / (localErr + CeDefault)
 
-	// Update error estimate.
+	// Update error estimate. No upper clamp — the estimate must be free to
+	// rise above 1.0 during initial convergence so that improving samples
+	// (err < localErr) produce a large negative delta that rapidly pulls
+	// the estimate back down. Clamping at 1.0 creates a dead zone where
+	// the EMA stalls when all samples have relative error >= 1.0.
 	newErr := localErr + CcDefault*relWeight*(err-localErr)
-	newErr = clamp(newErr, 0, 1)
+	newErr = max(newErr, 0)
 
 	// Compute force: positive = push apart, negative = pull together.
 	delta := CcDefault * relWeight
