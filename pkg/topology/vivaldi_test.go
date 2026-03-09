@@ -27,6 +27,13 @@ func TestCoordIsZero(t *testing.T) {
 	require.False(t, Coord{X: 0, Y: 0, Height: MinHeight}.IsZero())
 }
 
+func TestBootstrapCoord(t *testing.T) {
+	coord := BootstrapCoord()
+	require.Equal(t, Coord{Height: MinHeight}, coord)
+	require.True(t, coord.IsBootstrap())
+	require.False(t, coord.IsZero())
+}
+
 func TestDistanceZeroCoords(t *testing.T) {
 	a := Coord{}
 	b := Coord{}

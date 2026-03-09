@@ -39,11 +39,22 @@ const (
 	PublishEpsilon = 0.5
 )
 
-// IsZero reports whether c is the zero-value coordinate, indicating that the
-// peer has not yet converged. Using a zero-coord peer in Vivaldi produces
-// dist≈0, which drives the local error toward 1.0.
+// BootstrapCoord returns the startup coordinate used before a node has enough
+// samples to place itself meaningfully.
+func BootstrapCoord() Coord {
+	return Coord{Height: MinHeight}
+}
+
+// IsZero reports whether c is the all-zero coordinate. Startup bootstrapping
+// uses BootstrapCoord instead so zero remains a distinct "no coord yet"
+// sentinel for peers.
 func (c Coord) IsZero() bool {
 	return c.X == 0 && c.Y == 0 && c.Height == 0
+}
+
+// IsBootstrap reports whether c is the startup bootstrap coordinate.
+func (c Coord) IsBootstrap() bool {
+	return c == BootstrapCoord()
 }
 
 // Distance returns the Vivaldi distance between two coordinates:

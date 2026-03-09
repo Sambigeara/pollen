@@ -1420,6 +1420,23 @@ func TestSetLocalVivaldiCoordUnchangedSuppressedAtHighHeight(t *testing.T) {
 	require.Nil(t, events)
 }
 
+func TestForceSetLocalVivaldiCoordBypassesEpsilon(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	bootstrap := topology.BootstrapCoord()
+	s.SetLocalVivaldiCoord(bootstrap)
+
+	coord := topology.Coord{X: 0.1, Height: 0.2}
+	require.LessOrEqual(t, topology.MovementDistance(bootstrap, coord), topology.PublishEpsilon)
+
+	events := s.ForceSetLocalVivaldiCoord(coord)
+	require.Len(t, events, 1)
+	require.Equal(t, coord.X, events[0].GetVivaldi().GetX())
+	require.Equal(t, coord.Height, events[0].GetVivaldi().GetHeight())
+}
+
 func TestApplyVivaldiFromPeer(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
