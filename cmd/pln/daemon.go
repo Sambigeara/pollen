@@ -29,6 +29,19 @@ func newDownCmd() *cobra.Command {
 	}
 }
 
+func newRestartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restart",
+		Short: "Restart the background service",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			if err := servicectl("restart", cmd); err != nil {
+				os.Exit(1)
+			}
+		},
+	}
+}
+
 func newUpgradeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upgrade",

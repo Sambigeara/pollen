@@ -100,6 +100,7 @@ func main() {
 		newBootstrapCmd(),
 		newUpCmd(),
 		newDownCmd(),
+		newRestartCmd(),
 		newUpgradeCmd(),
 		newJoinCmd(),
 		newInviteCmd(),
@@ -268,19 +269,12 @@ func newUpCmd() *cobra.Command {
 	cmd.Flags().IPSlice("ips", []net.IP{}, "Advertised IPs")
 	cmd.Flags().Bool("public", false, "Mark this node as publicly accessible (relay)")
 	cmd.Flags().BoolP("detach", "d", false, "Run as a background service")
-	cmd.Flags().Bool("restart", false, "Restart the background service (requires -d)")
 	cmd.Flags().Bool("metrics", false, "Log metrics and trace output at debug level")
 	return cmd
 }
 
 func runUp(cmd *cobra.Command, _ []string) {
 	detach, _ := cmd.Flags().GetBool("detach")
-	restart, _ := cmd.Flags().GetBool("restart")
-
-	if restart && !detach {
-		fmt.Fprintln(cmd.ErrOrStderr(), "--restart requires --detach (-d)")
-		os.Exit(1)
-	}
 
 	if public, _ := cmd.Flags().GetBool("public"); public {
 		if err := applyPublicFlag(cmd); err != nil {
@@ -290,11 +284,7 @@ func runUp(cmd *cobra.Command, _ []string) {
 	}
 
 	if detach {
-		action := "start"
-		if restart {
-			action = "restart"
-		}
-		if err := servicectl(action, cmd); err != nil {
+		if err := servicectl("start", cmd); err != nil {
 			os.Exit(1)
 		}
 		return
