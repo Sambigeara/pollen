@@ -20,18 +20,13 @@ func TestDistanceIncludesHeight(t *testing.T) {
 	require.InDelta(t, 3.0, Distance(a, b), 1e-12)
 }
 
-func TestCoordIsZero(t *testing.T) {
-	require.True(t, Coord{}.IsZero())
-	require.True(t, Coord{X: 0, Y: 0, Height: 0}.IsZero())
-	require.False(t, Coord{X: 1, Y: 0, Height: 0}.IsZero())
-	require.False(t, Coord{X: 0, Y: 0, Height: MinHeight}.IsZero())
-}
+func TestRandomCoord(t *testing.T) {
+	c1 := RandomCoord()
+	require.Equal(t, MinHeight, c1.Height)
+	require.LessOrEqual(t, c1.X*c1.X+c1.Y*c1.Y, initRadius*initRadius+1e-9)
 
-func TestBootstrapCoord(t *testing.T) {
-	coord := BootstrapCoord()
-	require.Equal(t, Coord{Height: MinHeight}, coord)
-	require.True(t, coord.IsBootstrap())
-	require.False(t, coord.IsZero())
+	c2 := RandomCoord()
+	require.False(t, c1.X == c2.X && c1.Y == c2.Y, "two random coords should differ")
 }
 
 func TestDistanceZeroCoords(t *testing.T) {

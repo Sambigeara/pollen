@@ -994,19 +994,11 @@ func (s *Store) IsPubliclyAccessible(peerID types.PeerKey) bool {
 }
 
 func (s *Store) SetLocalVivaldiCoord(coord topology.Coord) []*statev1.GossipEvent {
-	return s.setLocalVivaldiCoord(coord, false)
-}
-
-func (s *Store) ForceSetLocalVivaldiCoord(coord topology.Coord) []*statev1.GossipEvent {
-	return s.setLocalVivaldiCoord(coord, true)
-}
-
-func (s *Store) setLocalVivaldiCoord(coord topology.Coord, force bool) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	local := s.nodes[s.LocalID]
-	if !force && local.VivaldiCoord != nil && topology.MovementDistance(*local.VivaldiCoord, coord) <= topology.PublishEpsilon {
+	if local.VivaldiCoord != nil && topology.MovementDistance(*local.VivaldiCoord, coord) <= topology.PublishEpsilon {
 		return nil
 	}
 

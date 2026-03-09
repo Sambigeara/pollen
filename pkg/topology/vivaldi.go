@@ -39,22 +39,19 @@ const (
 	PublishEpsilon = 0.5
 )
 
-// BootstrapCoord returns the startup coordinate used before a node has enough
-// samples to place itself meaningfully.
-func BootstrapCoord() Coord {
-	return Coord{Height: MinHeight}
-}
+const initRadius = 10.0 // ms-scale spread for initial coordinate diversity
 
-// IsZero reports whether c is the all-zero coordinate. Startup bootstrapping
-// uses BootstrapCoord instead so zero remains a distinct "no coord yet"
-// sentinel for peers.
-func (c Coord) IsZero() bool {
-	return c.X == 0 && c.Y == 0 && c.Height == 0
-}
-
-// IsBootstrap reports whether c is the startup bootstrap coordinate.
-func (c Coord) IsBootstrap() bool {
-	return c == BootstrapCoord()
+// RandomCoord returns a coordinate uniformly distributed within a circle of
+// radius initRadius. The non-trivial inter-node distances let Vivaldi error
+// begin dropping from tick 1, avoiding the stuck-at-1.0 cold-start problem.
+func RandomCoord() Coord {
+	angle := rand.Float64() * 2 * math.Pi       //nolint:gosec,mnd
+	r := math.Sqrt(rand.Float64()) * initRadius //nolint:gosec
+	return Coord{
+		X:      r * math.Cos(angle),
+		Y:      r * math.Sin(angle),
+		Height: MinHeight,
+	}
 }
 
 // Distance returns the Vivaldi distance between two coordinates:

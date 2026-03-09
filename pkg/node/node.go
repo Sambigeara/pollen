@@ -116,34 +116,33 @@ type punchRequest struct {
 }
 
 type Node struct {
-	lastExpirySweep        time.Time
-	mesh                   mesh.Mesh
-	natDetector            *nat.Detector
-	store                  *store.Store
-	tun                    *tunnel.Manager
-	nonTargetStreak        map[types.PeerKey]int
-	creds                  *auth.NodeCredentials
-	localPeerEvents        chan peer.Input
-	peers                  *peer.Store
-	conf                   *Config
-	ready                  chan struct{}
-	log                    *zap.SugaredLogger
-	lastEagerSync          map[types.PeerKey]time.Time
-	punchCh                chan punchRequest
-	peerConnectTime        map[types.PeerKey]time.Time
-	smoothedErr            *metrics.EWMA
-	gossipEvents           chan []*statev1.GossipEvent
-	topoMetrics            *metrics.TopologyMetrics
-	metricsCol             *metrics.Collector
-	tracer                 *traces.Tracer
-	nodeMetrics            *metrics.NodeMetrics
-	pollenDir              string
-	signPriv               ed25519.PrivateKey
-	localCoord             topology.Coord
-	localCoordErr          float64
-	renewalFailed          atomic.Bool
-	acceptBootstrapVivaldi bool
-	useHMACNearest         bool
+	lastExpirySweep time.Time
+	mesh            mesh.Mesh
+	natDetector     *nat.Detector
+	store           *store.Store
+	tun             *tunnel.Manager
+	nonTargetStreak map[types.PeerKey]int
+	creds           *auth.NodeCredentials
+	localPeerEvents chan peer.Input
+	peers           *peer.Store
+	conf            *Config
+	ready           chan struct{}
+	log             *zap.SugaredLogger
+	lastEagerSync   map[types.PeerKey]time.Time
+	punchCh         chan punchRequest
+	peerConnectTime map[types.PeerKey]time.Time
+	smoothedErr     *metrics.EWMA
+	gossipEvents    chan []*statev1.GossipEvent
+	topoMetrics     *metrics.TopologyMetrics
+	metricsCol      *metrics.Collector
+	tracer          *traces.Tracer
+	nodeMetrics     *metrics.NodeMetrics
+	pollenDir       string
+	signPriv        ed25519.PrivateKey
+	localCoord      topology.Coord
+	localCoordErr   float64
+	renewalFailed   atomic.Bool
+	useHMACNearest  bool
 }
 
 func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, stateStore *store.Store, peerStore *peer.Store, pollenDir string) (*Node, error) {
@@ -188,31 +187,30 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 	}
 
 	n := &Node{
-		log:                    log,
-		peers:                  peerStore,
-		store:                  stateStore,
-		mesh:                   m,
-		tun:                    tun,
-		creds:                  creds,
-		conf:                   conf,
-		signPriv:               privKey,
-		pollenDir:              pollenDir,
-		localPeerEvents:        make(chan peer.Input, peerEventBufSize),
-		punchCh:                make(chan punchRequest, punchChBufSize),
-		gossipEvents:           make(chan []*statev1.GossipEvent, gossipEventBufSize),
-		ready:                  make(chan struct{}),
-		lastEagerSync:          make(map[types.PeerKey]time.Time),
-		peerConnectTime:        make(map[types.PeerKey]time.Time),
-		nonTargetStreak:        make(map[types.PeerKey]int),
-		natDetector:            nat.NewDetector(),
-		localCoord:             topology.BootstrapCoord(),
-		acceptBootstrapVivaldi: true,
-		useHMACNearest:         true,
-		metricsCol:             col,
-		topoMetrics:            metrics.NewTopologyMetrics(col),
-		nodeMetrics:            metrics.NewNodeMetrics(col),
-		tracer:                 tracer,
-		smoothedErr:            metrics.NewEWMAFrom(vivaldiErrAlpha, 1.0),
+		log:             log,
+		peers:           peerStore,
+		store:           stateStore,
+		mesh:            m,
+		tun:             tun,
+		creds:           creds,
+		conf:            conf,
+		signPriv:        privKey,
+		pollenDir:       pollenDir,
+		localPeerEvents: make(chan peer.Input, peerEventBufSize),
+		punchCh:         make(chan punchRequest, punchChBufSize),
+		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
+		ready:           make(chan struct{}),
+		lastEagerSync:   make(map[types.PeerKey]time.Time),
+		peerConnectTime: make(map[types.PeerKey]time.Time),
+		nonTargetStreak: make(map[types.PeerKey]int),
+		natDetector:     nat.NewDetector(),
+		localCoord:      topology.RandomCoord(),
+		useHMACNearest:  true,
+		metricsCol:      col,
+		topoMetrics:     metrics.NewTopologyMetrics(col),
+		nodeMetrics:     metrics.NewNodeMetrics(col),
+		tracer:          tracer,
+		smoothedErr:     metrics.NewEWMAFrom(vivaldiErrAlpha, 1.0),
 	}
 	n.localCoordErr = 1.0
 
@@ -252,10 +250,10 @@ func (n *Node) Start(ctx context.Context) error {
 		return err
 	}
 
-	// Persist a startup bootstrap coordinate so fresh clusters can seed Vivaldi
-	// state without waiting for pre-existing peer coordinates. We intentionally
-	// do not queue the returned events here; peers will pull this state via clock
-	// gossip (or eager sync) once sessions are established.
+	// Publish the random startup coordinate so peers receive initial Vivaldi
+	// state via gossip. We intentionally do not queue the returned events here;
+	// peers will pull this state via clock gossip (or eager sync) once sessions
+	// are established.
 	n.store.SetLocalVivaldiCoord(n.localCoord)
 
 	close(n.ready)
@@ -632,7 +630,6 @@ func (n *Node) tick() {
 
 func (n *Node) updateVivaldiCoords() {
 	updated := false
-	forcePublish := false
 	now := time.Now()
 	for _, peerKey := range n.GetConnectedPeers() {
 		if ct, ok := n.peerConnectTime[peerKey]; ok && now.Sub(ct) < vivaldiWarmupDuration {
@@ -650,38 +647,18 @@ func (n *Node) updateVivaldiCoords() {
 		if !ok || peerCoord == nil {
 			continue
 		}
-		if peerCoord.IsZero() && !n.acceptBootstrapVivaldi {
-			continue
-		}
-		sampleUpdated, sampleForcePublish := n.applyVivaldiSample(rtt, *peerCoord)
-		updated = updated || sampleUpdated
-		forcePublish = forcePublish || sampleForcePublish
+		var newErr float64
+		n.localCoord, newErr = topology.Update(
+			n.localCoord, n.localCoordErr,
+			topology.Sample{RTT: rtt, PeerCoord: *peerCoord},
+		)
+		n.localCoordErr = newErr
+		n.smoothedErr.Update(newErr)
+		updated = true
 	}
 	if updated {
-		if forcePublish {
-			n.queueGossipEvents(n.store.ForceSetLocalVivaldiCoord(n.localCoord))
-			return
-		}
 		n.queueGossipEvents(n.store.SetLocalVivaldiCoord(n.localCoord))
 	}
-}
-
-func (n *Node) applyVivaldiSample(rtt time.Duration, peerCoord topology.Coord) (updated, forcePublish bool) {
-	prevLocal := n.localCoord
-	coordErr := n.localCoordErr
-	var newErr float64
-	n.localCoord, newErr = topology.Update(
-		n.localCoord, coordErr,
-		topology.Sample{RTT: rtt, PeerCoord: peerCoord},
-	)
-	n.localCoordErr = newErr
-	n.smoothedErr.Update(newErr)
-	if n.acceptBootstrapVivaldi &&
-		((prevLocal.IsBootstrap() && !n.localCoord.IsBootstrap()) ||
-			(!peerCoord.IsZero() && !peerCoord.IsBootstrap())) {
-		n.acceptBootstrapVivaldi = false
-	}
-	return true, prevLocal.IsBootstrap() && !n.localCoord.IsBootstrap()
 }
 
 func (n *Node) syncPeersFromState() {
