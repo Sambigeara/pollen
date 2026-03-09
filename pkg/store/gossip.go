@@ -1284,6 +1284,16 @@ func ensureNodeInit(rec *nodeRecord, peerID types.PeerKey) {
 
 // --- Internal helpers ---
 
+// LocalEvents returns all current local events without bumping counters.
+// Used at startup to broadcast the full local state so that peers receive
+// every event and maintain a correct maxCounter (no counter gaps).
+func (s *Store) LocalEvents() []*statev1.GossipEvent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	local := s.nodes[s.LocalID]
+	return s.buildEventsAbove(s.LocalID, local, 0)
+}
+
 // bumpAndBroadcastAllLocked returns events for ALL current local attributes,
 // each with its own incremented counter. Used on self-state conflict (restart
 // recovery). Caller must hold s.mu.

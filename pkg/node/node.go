@@ -287,8 +287,9 @@ func (n *Node) Start(ctx context.Context) error {
 	defer certCheckTicker.Stop()
 
 	n.tick()
-	n.checkCertExpiry()         // seed the cert-expiry gauge; the ticker only fires hourly
-	n.sampleResourceTelemetry() // seed telemetry before first gossip round
+	n.checkCertExpiry() // seed the cert-expiry gauge; the ticker only fires hourly
+	n.sampleResourceTelemetry()
+	n.queueGossipEvents(n.store.LocalEvents())
 
 	for {
 		select {
@@ -514,7 +515,8 @@ func (n *Node) sendClockViaStream(ctx context.Context, peerID types.PeerKey, clo
 		return fmt.Errorf("unmarshal clock response from %s: %w", peerID.Short(), err)
 	}
 
-	n.store.ApplyEvents(batch.GetEvents(), true)
+	result := n.store.ApplyEvents(batch.GetEvents(), true)
+	n.queueGossipEvents(result.Rebroadcast)
 	return nil
 }
 
