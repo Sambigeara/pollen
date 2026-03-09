@@ -307,6 +307,15 @@ func (n *Node) Start(ctx context.Context) error {
 				return ErrCertExpired
 			}
 		case events := <-n.gossipEvents:
+		drain:
+			for {
+				select {
+				case more := <-n.gossipEvents:
+					events = append(events, more...)
+				default:
+					break drain
+				}
+			}
 			n.broadcastEvents(ctx, events)
 		case in := <-n.mesh.Events():
 			n.handlePeerInput(in)

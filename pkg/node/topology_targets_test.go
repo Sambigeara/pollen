@@ -110,7 +110,7 @@ func TestSyncPeersFromStateSuppressesRemotePrivateUnlessDesired(t *testing.T) {
 		Change: &statev1.GossipEvent_Network{
 			Network: &statev1.NetworkChange{Ips: []string{"10.1.1.20"}, LocalPort: 60611},
 		},
-	}}, false)
+	}}, true)
 	n.store.SetObservedExternalIP("52.204.52.130")
 
 	localGateway := testPeerKey(1)
@@ -159,7 +159,7 @@ func addKnownPeerForTopology(t *testing.T, s *store.Store, peerID types.PeerKey,
 				},
 			},
 		},
-	}, false)
+	}, true)
 }
 
 func addCustomPeerForTopology(t *testing.T, s *store.Store, peerID types.PeerKey, ips []string, port uint32, ordinal int, observedExternalIP string, publiclyAccessible bool) {
@@ -202,7 +202,7 @@ func addCustomPeerForTopology(t *testing.T, s *store.Store, peerID types.PeerKey
 			},
 		})
 	}
-	s.ApplyEvents(events, false)
+	s.ApplyEvents(events, true)
 }
 
 func setPubliclyAccessible(s *store.Store, peerID types.PeerKey, counter uint64) {
@@ -214,7 +214,7 @@ func setPubliclyAccessible(s *store.Store, peerID types.PeerKey, counter uint64)
 				PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
 			},
 		},
-	}, false)
+	}, true)
 }
 
 // testMeshWrapper embeds a real mesh but lets tests override IsOutbound.
@@ -491,7 +491,7 @@ func TestMixedClusterRetainsSameSiteAndPublicPeers(t *testing.T) {
 				},
 			},
 		},
-	}, false)
+	}, true)
 
 	// 2 public peers (infra backbone).
 	for i := range 2 {

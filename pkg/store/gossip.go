@@ -432,7 +432,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 		if event == nil {
 			continue
 		}
-		r := s.applyEventLocked(event)
+		r := s.applyEventLocked(event, isPullResponse)
 		if len(r.Rebroadcast) > 0 {
 			anyApplied = true
 		}
@@ -461,7 +461,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	return result
 }
 
-func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
+func (s *Store) applyEventLocked(event *statev1.GossipEvent, isPullResponse bool) ApplyResult {
 	peerID, err := types.PeerKeyFromString(event.GetPeerId())
 	if err != nil {
 		return ApplyResult{}
@@ -478,6 +478,8 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	// Self-state conflict handling: receiving our own events from peers.
 	// Only the higher-counter check matters — same-counter events bounce
 	// back routinely via gossip and would cause a rebroadcast storm.
+	// Exempt from the isPullResponse watermark guard because
+	// bump-and-rebroadcast guarantees no gaps in our own counter sequence.
 	if peerID == s.LocalID {
 		if event.GetCounter() > rec.maxCounter {
 			rec.maxCounter = event.GetCounter()
@@ -491,6 +493,16 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	// Per-key stale check: only accept if this event is newer for this key.
 	if existing, ok := rec.log[key]; ok && event.GetCounter() <= existing.Counter {
 		s.metrics.EventsStale.Inc()
+		// Stale heal: during pull-sync, advance the watermark past compacted
+		// gaps even when the state itself is already applied. Without this,
+		// a push-delivered event followed by log compaction leaves maxCounter
+		// stuck below the compacted range, causing endless re-fetches.
+		// (Mirrors the watermark advance at the end of applyEventLocked for
+		// fresh events — see "Lazy watermark" comment below.)
+		if isPullResponse && event.GetCounter() > rec.maxCounter {
+			rec.maxCounter = event.GetCounter()
+			s.nodes[peerID] = rec
+		}
 		return ApplyResult{}
 	}
 
@@ -519,7 +531,11 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	}
 
 	rec.log[key] = logEntry{Counter: event.GetCounter(), Deleted: deleted}
-	if event.GetCounter() > rec.maxCounter {
+	// Lazy watermark: only advance maxCounter on reliable pull-sync responses.
+	// Push-delivered events are unreliable (UDP drops); leaving the watermark
+	// untouched guarantees the background anti-entropy sync will eventually
+	// fetch any events dropped before this one.
+	if isPullResponse && event.GetCounter() > rec.maxCounter {
 		rec.maxCounter = event.GetCounter()
 	}
 	s.nodes[peerID] = rec

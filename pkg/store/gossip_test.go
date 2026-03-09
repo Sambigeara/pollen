@@ -42,8 +42,10 @@ func newTestStore(pub []byte, trustBundle *admissionv1.TrustBundle) *Store {
 }
 
 // applyEvent is a test convenience for applying a single gossip event.
+// Uses isPullResponse=true so the watermark advances, matching production
+// anti-entropy behavior and keeping tests deterministic.
 func (s *Store) applyEvent(event *statev1.GossipEvent) ApplyResult {
-	return s.ApplyEvents([]*statev1.GossipEvent{event}, false)
+	return s.ApplyEvents([]*statev1.GossipEvent{event}, true)
 }
 
 func peerKey(b byte) (types.PeerKey, string) {
@@ -1809,5 +1811,46 @@ func TestResourceTelemetryDeadband(t *testing.T) {
 	t.Run("mem total change emits", func(t *testing.T) {
 		events := s.SetLocalResourceTelemetry(12, 22, 2<<30)
 		require.Len(t, events, 1)
+	})
+}
+
+func TestLazyWatermark(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub, nil)
+
+	peerPK, peerIDStr := peerKey(2)
+
+	mkEvent := func(counter uint64) *statev1.GossipEvent {
+		return &statev1.GossipEvent{
+			PeerId:  peerIDStr,
+			Counter: counter,
+			Change: &statev1.GossipEvent_Network{
+				Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
+			},
+		}
+	}
+
+	t.Run("push does not advance maxCounter", func(t *testing.T) {
+		s.ApplyEvents([]*statev1.GossipEvent{mkEvent(5)}, false)
+		counters := s.Clock().GetCounters()
+		require.Equal(t, uint64(0), counters[peerPK.String()])
+	})
+
+	t.Run("pull advances maxCounter", func(t *testing.T) {
+		s.ApplyEvents([]*statev1.GossipEvent{mkEvent(5)}, true)
+		counters := s.Clock().GetCounters()
+		require.Equal(t, uint64(5), counters[peerPK.String()])
+	})
+
+	t.Run("stale pull still advances maxCounter", func(t *testing.T) {
+		// Event at counter 10 applied via push — watermark stays at 5.
+		s.ApplyEvents([]*statev1.GossipEvent{mkEvent(10)}, false)
+		require.Equal(t, uint64(5), s.Clock().GetCounters()[peerPK.String()])
+
+		// Same event via pull — watermark catches up even though
+		// the state itself is stale (already applied).
+		s.ApplyEvents([]*statev1.GossipEvent{mkEvent(10)}, true)
+		require.Equal(t, uint64(10), s.Clock().GetCounters()[peerPK.String()])
 	})
 }
