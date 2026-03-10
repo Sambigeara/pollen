@@ -838,16 +838,19 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			n.peerConnectTime[e.PeerKey] = time.Now()
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
-				eagerCtx, cancel := context.WithTimeout(context.Background(), eagerSyncTimeout)
-				err := n.sendClockViaStream(eagerCtx, e.PeerKey, n.store.EagerSyncClock())
-				cancel()
-				if err != nil {
-					n.log.Debugw("eager sync failed", "peer", e.PeerKey.Short(), "err", err)
-					n.eagerSyncFailures.Add(1)
-				} else {
-					n.lastEagerSync[e.PeerKey] = time.Now()
-					n.eagerSyncs.Add(1)
-				}
+				n.lastEagerSync[e.PeerKey] = time.Now()
+				clock := n.store.EagerSyncClock()
+				pk := e.PeerKey
+				go func() {
+					eagerCtx, cancel := context.WithTimeout(context.Background(), eagerSyncTimeout)
+					defer cancel()
+					if err := n.sendClockViaStream(eagerCtx, pk, clock); err != nil {
+						n.log.Debugw("eager sync failed", "peer", pk.Short(), "err", err)
+						n.eagerSyncFailures.Add(1)
+					} else {
+						n.eagerSyncs.Add(1)
+					}
+				}()
 			}
 
 			n.sendObservedAddress(e.PeerKey, addr)

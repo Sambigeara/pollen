@@ -25,6 +25,7 @@ const (
 	CeDefault = 0.25   // error weight tuning constant
 	MinHeight = 10e-6  // floor to keep height positive
 	MaxCoord  = 10_000 // clamp bound for coordinate components
+	MaxError  = 1.5    // HashiCorp-style safety cap on error estimate
 
 	// MinRTTFloor dampens the relative error calculation for low-latency links.
 	// Without it, sub-millisecond jitter on a 1-3ms LAN link produces 16-50%
@@ -75,8 +76,8 @@ func MovementDistance(a, b Coord) float64 {
 // algorithm. It returns the updated coordinate and error estimate.
 //
 // localErr represents the node's confidence in its current position
-// (higher = less confidence, 0 = perfect). It starts at 1.0 and may
-// temporarily exceed 1.0 during initial convergence before settling.
+// (higher = less confidence, 0 = perfect). It starts at 1.0 and is
+// capped at MaxError to prevent divergence.
 func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 	rtt := s.RTT.Seconds() * 1000 //nolint:mnd
 	if rtt <= 0 {
@@ -88,15 +89,15 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 		dist = MinHeight
 	}
 
-	err := math.Abs(rtt-dist) / max(rtt, MinRTTFloor)
+	// Normalize by max(rtt, dist) so the per-sample relative error stays in
+	// [0, 1). Using just rtt as the denominator causes LAN peers with large
+	// predicted distances to produce errors of 100+, which drives the error
+	// estimate to extreme values and prevents convergence.
+	err := math.Abs(rtt-dist) / max(rtt, dist, MinRTTFloor)
 	relWeight := localErr / (localErr + CeDefault)
 
-	// Update error estimate. No upper clamp — the estimate must be free to
-	// rise above 1.0 during initial convergence so that improving samples
-	// produce a large negative (err − localErr) that snaps it back down.
-	// Clamping at 1.0 creates a dead zone the EMA can never escape.
 	newErr := localErr + CcDefault*relWeight*(err-localErr)
-	newErr = max(newErr, 0)
+	newErr = clamp(newErr, 0, MaxError)
 
 	// Compute force: positive = push apart, negative = pull together.
 	delta := CcDefault * relWeight
