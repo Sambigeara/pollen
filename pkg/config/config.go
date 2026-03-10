@@ -127,7 +127,7 @@ func Save(pollenDir string, cfg *Config) error {
 	}
 	cfg.BootstrapPeers = canonical
 
-	if err := perm.EnsureDir(pollenDir); err != nil {
+	if err := os.MkdirAll(pollenDir, 0o700); err != nil { //nolint:mnd
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
@@ -136,7 +136,7 @@ func Save(pollenDir string, cfg *Config) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	return perm.WritePrivate(filepath.Join(pollenDir, configFileName), append([]byte(configHeader), encoded...))
+	return perm.WriteGroupWritable(filepath.Join(pollenDir, configFileName), append([]byte(configHeader), encoded...))
 }
 
 func validateCertTTLs(ttls CertTTLs) error {

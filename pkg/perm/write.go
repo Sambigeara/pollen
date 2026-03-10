@@ -60,6 +60,11 @@ func WriteGroupReadable(path string, data []byte) error {
 	return atomicWrite(path, data, 0o640) //nolint:mnd
 }
 
+// WriteGroupWritable atomically writes data to path with mode 0660.
+func WriteGroupWritable(path string, data []byte) error {
+	return atomicWrite(path, data, 0o660) //nolint:mnd
+}
+
 // EnsureDir creates path (and parents) with mode 0700, then applies
 // SetGroupDir to the leaf directory to widen it to 0770 on Linux (no-op
 // elsewhere). Parent directories created by MkdirAll keep their
