@@ -1188,27 +1188,6 @@ func (m *GetMetricsResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.VivaldiSkipsNoRtt != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.VivaldiSkipsNoRtt))
-		i--
-		dAtA[i] = 0x1
-		i--
-		dAtA[i] = 0xa0
-	}
-	if m.VivaldiSkipsNoConn != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.VivaldiSkipsNoConn))
-		i--
-		dAtA[i] = 0x1
-		i--
-		dAtA[i] = 0x98
-	}
-	if m.VivaldiSkipsWarmup != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.VivaldiSkipsWarmup))
-		i--
-		dAtA[i] = 0x1
-		i--
-		dAtA[i] = 0x90
-	}
 	if m.EagerSyncFailures != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.EagerSyncFailures))
 		i--
@@ -1222,11 +1201,6 @@ func (m *GetMetricsResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		dAtA[i] = 0x1
 		i--
 		dAtA[i] = 0x80
-	}
-	if m.VivaldiMissingCoords != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.VivaldiMissingCoords))
-		i--
-		dAtA[i] = 0x78
 	}
 	if m.VivaldiSamples != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.VivaldiSamples))
@@ -1761,23 +1735,11 @@ func (m *GetMetricsResponse) SizeVT() (n int) {
 	if m.VivaldiSamples != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.VivaldiSamples))
 	}
-	if m.VivaldiMissingCoords != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.VivaldiMissingCoords))
-	}
 	if m.EagerSyncs != 0 {
 		n += 2 + protohelpers.SizeOfVarint(uint64(m.EagerSyncs))
 	}
 	if m.EagerSyncFailures != 0 {
 		n += 2 + protohelpers.SizeOfVarint(uint64(m.EagerSyncFailures))
-	}
-	if m.VivaldiSkipsWarmup != 0 {
-		n += 2 + protohelpers.SizeOfVarint(uint64(m.VivaldiSkipsWarmup))
-	}
-	if m.VivaldiSkipsNoConn != 0 {
-		n += 2 + protohelpers.SizeOfVarint(uint64(m.VivaldiSkipsNoConn))
-	}
-	if m.VivaldiSkipsNoRtt != 0 {
-		n += 2 + protohelpers.SizeOfVarint(uint64(m.VivaldiSkipsNoRtt))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -4463,25 +4425,6 @@ func (m *GetMetricsResponse) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-		case 15:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field VivaldiMissingCoords", wireType)
-			}
-			m.VivaldiMissingCoords = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.VivaldiMissingCoords |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
 		case 16:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field EagerSyncs", wireType)
@@ -4516,63 +4459,6 @@ func (m *GetMetricsResponse) UnmarshalVT(dAtA []byte) error {
 				b := dAtA[iNdEx]
 				iNdEx++
 				m.EagerSyncFailures |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 18:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field VivaldiSkipsWarmup", wireType)
-			}
-			m.VivaldiSkipsWarmup = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.VivaldiSkipsWarmup |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 19:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field VivaldiSkipsNoConn", wireType)
-			}
-			m.VivaldiSkipsNoConn = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.VivaldiSkipsNoConn |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 20:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field VivaldiSkipsNoRtt", wireType)
-			}
-			m.VivaldiSkipsNoRtt = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.VivaldiSkipsNoRtt |= uint64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}

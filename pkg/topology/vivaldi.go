@@ -25,7 +25,6 @@ const (
 	CeDefault = 0.25   // error weight tuning constant
 	MinHeight = 10e-6  // floor to keep height positive
 	MaxCoord  = 10_000 // clamp bound for coordinate components
-	MaxError  = 1.5    // HashiCorp-style safety cap on error estimate
 
 	// MinRTTFloor dampens the relative error calculation for low-latency links.
 	// Without it, sub-millisecond jitter on a 1-3ms LAN link produces 16-50%
@@ -76,8 +75,9 @@ func MovementDistance(a, b Coord) float64 {
 // algorithm. It returns the updated coordinate and error estimate.
 //
 // localErr represents the node's confidence in its current position
-// (higher = less confidence, 0 = perfect). It starts at 1.0 and is
-// capped at MaxError to prevent divergence.
+// (higher = less confidence, 0 = perfect). It should stay in [0, 1]
+// because the per-sample relative error is bounded to [0, 1) by the
+// max(rtt, dist, MinRTTFloor) denominator.
 func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 	rtt := s.RTT.Seconds() * 1000 //nolint:mnd
 	if rtt <= 0 {
@@ -97,7 +97,7 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 	relWeight := localErr / (localErr + CeDefault)
 
 	newErr := localErr + CcDefault*relWeight*(err-localErr)
-	newErr = clamp(newErr, 0, MaxError)
+	newErr = clamp(newErr, 0, 1)
 
 	// Compute force: positive = push apart, negative = pull together.
 	delta := CcDefault * relWeight

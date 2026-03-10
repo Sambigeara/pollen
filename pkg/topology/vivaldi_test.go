@@ -175,9 +175,9 @@ func TestErrorEstimateDecreases(t *testing.T) {
 
 func TestRandomInitLANConvergence(t *testing.T) {
 	// Regression: random-init coords spread over 10ms radius produce predicted
-	// distances far exceeding LAN RTTs (2-3ms). The error estimate must be free
-	// to rise above 1.0 so that improving samples snap it back down — clamping
-	// at 1.0 creates a dead zone the EMA can never escape.
+	// distances far exceeding LAN RTTs (2-3ms). The max(rtt, dist, MinRTTFloor)
+	// denominator keeps per-sample error < 1.0, so the EMA converges normally
+	// even when the initial distance/RTT mismatch is large.
 	a := Coord{X: -7, Y: 5, Height: MinHeight} // ~8.6ms from origin
 	b := Coord{X: 6, Y: -4, Height: MinHeight} // ~7.2ms from origin
 	aErr, bErr := 1.0, 1.0

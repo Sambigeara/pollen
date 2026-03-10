@@ -147,13 +147,9 @@ type Node struct {
 	useHMACNearest  bool
 
 	// Always-active vivaldi convergence diagnostics (independent of MetricsEnabled).
-	vivaldiSamples       atomic.Int64
-	vivaldiMissingCoords atomic.Int64
-	vivaldiSkipsWarmup   atomic.Int64
-	vivaldiSkipsNoConn   atomic.Int64
-	vivaldiSkipsNoRTT    atomic.Int64
-	eagerSyncs           atomic.Int64
-	eagerSyncFailures    atomic.Int64
+	vivaldiSamples    atomic.Int64
+	eagerSyncs        atomic.Int64
+	eagerSyncFailures atomic.Int64
 }
 
 func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, stateStore *store.Store, peerStore *peer.Store, pollenDir string) (*Node, error) {
@@ -651,22 +647,18 @@ func (n *Node) updateVivaldiCoords() {
 	now := time.Now()
 	for _, peerKey := range n.GetConnectedPeers() {
 		if ct, ok := n.peerConnectTime[peerKey]; ok && now.Sub(ct) < vivaldiWarmupDuration {
-			n.vivaldiSkipsWarmup.Add(1)
 			continue
 		}
 		conn, ok := n.mesh.GetConn(peerKey)
 		if !ok {
-			n.vivaldiSkipsNoConn.Add(1)
 			continue
 		}
 		rtt := conn.ConnectionStats().SmoothedRTT
 		if rtt <= 0 {
-			n.vivaldiSkipsNoRTT.Add(1)
 			continue
 		}
 		peerCoord, ok := n.store.PeerVivaldiCoord(peerKey)
 		if !ok || peerCoord == nil {
-			n.vivaldiMissingCoords.Add(1)
 			continue
 		}
 		var newErr float64

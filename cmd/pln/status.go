@@ -394,9 +394,7 @@ func renderHealthLine(w io.Writer, m *controlv1.GetMetricsResponse) {
 func renderMetricsDetails(w io.Writer, m *controlv1.GetMetricsResponse) {
 	fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Render("DIAGNOSTICS")) //nolint:mnd
 	fmt.Fprintf(w, "  vivaldi error:    %.3f\n", m.GetVivaldiError())
-	fmt.Fprintf(w, "  vivaldi samples:  %d (skips: %d warmup, %d no-conn, %d no-rtt, %d no-coord)\n",
-		m.GetVivaldiSamples(), m.GetVivaldiSkipsWarmup(), m.GetVivaldiSkipsNoConn(),
-		m.GetVivaldiSkipsNoRtt(), m.GetVivaldiMissingCoords())
+	fmt.Fprintf(w, "  vivaldi samples:  %d\n", m.GetVivaldiSamples())
 	fmt.Fprintf(w, "  eager syncs:      %d ok, %d failed\n", m.GetEagerSyncs(), m.GetEagerSyncFailures())
 	if m.GetPunchAttempts() > 0 {
 		fmt.Fprintf(w, "  punch success:    %d/%d\n", m.GetPunchAttempts()-m.GetPunchFailures(), m.GetPunchAttempts())

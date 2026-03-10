@@ -437,26 +437,22 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 	}
 
 	return &controlv1.GetMetricsResponse{
-		PeersDiscovered:      counts.Discovered,
-		PeersConnecting:      counts.Connecting,
-		PeersConnected:       counts.Connected,
-		PeersUnreachable:     counts.Unreachable,
-		EventsApplied:        gossipApplied,
-		EventsStale:          gossipStale,
-		VivaldiError:         s.node.smoothedErr.Value(),
-		CertExpirySeconds:    certExpiry,
-		CertRenewals:         certRenewals,
-		CertRenewalsFailed:   certRenewalsFailed,
-		PunchAttempts:        punchAttempts,
-		PunchFailures:        punchFailures,
-		Health:               health,
-		VivaldiSamples:       uint64(s.node.vivaldiSamples.Load()),       //nolint:gosec
-		VivaldiMissingCoords: uint64(s.node.vivaldiMissingCoords.Load()), //nolint:gosec
-		EagerSyncs:           uint64(s.node.eagerSyncs.Load()),           //nolint:gosec
-		EagerSyncFailures:    uint64(s.node.eagerSyncFailures.Load()),    //nolint:gosec
-		VivaldiSkipsWarmup:   uint64(s.node.vivaldiSkipsWarmup.Load()),   //nolint:gosec
-		VivaldiSkipsNoConn:   uint64(s.node.vivaldiSkipsNoConn.Load()),   //nolint:gosec
-		VivaldiSkipsNoRtt:    uint64(s.node.vivaldiSkipsNoRTT.Load()),    //nolint:gosec
+		PeersDiscovered:    counts.Discovered,
+		PeersConnecting:    counts.Connecting,
+		PeersConnected:     counts.Connected,
+		PeersUnreachable:   counts.Unreachable,
+		EventsApplied:      gossipApplied,
+		EventsStale:        gossipStale,
+		VivaldiError:       s.node.smoothedErr.Value(),
+		CertExpirySeconds:  certExpiry,
+		CertRenewals:       certRenewals,
+		CertRenewalsFailed: certRenewalsFailed,
+		PunchAttempts:      punchAttempts,
+		PunchFailures:      punchFailures,
+		Health:             health,
+		VivaldiSamples:     uint64(s.node.vivaldiSamples.Load()),    //nolint:gosec
+		EagerSyncs:         uint64(s.node.eagerSyncs.Load()),        //nolint:gosec
+		EagerSyncFailures:  uint64(s.node.eagerSyncFailures.Load()), //nolint:gosec
 	}, nil
 }
 
