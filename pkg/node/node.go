@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -70,8 +71,9 @@ const (
 	punchTimeout  = 3 * time.Second
 
 	// eagerSyncCooldown should be >= GossipInterval to avoid redundant sends.
-	eagerSyncCooldown = 5 * time.Second
-	eagerSyncTimeout  = 5 * time.Second
+	eagerSyncCooldown   = 5 * time.Second
+	eagerSyncTimeout    = 5 * time.Second
+	gossipStreamTimeout = 5 * time.Second
 
 	revokeStreakThreshold       = 3  // consecutive non-target ticks before revoking outbound
 	revokeStreakThresholdPublic = 30 // public peers are stickier (coordinator stability)
@@ -578,14 +580,21 @@ func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.Gossip
 
 func (n *Node) gossip(ctx context.Context) {
 	digest := n.store.Clock()
-	for _, peerID := range n.GetConnectedPeers() {
+	peers := n.GetConnectedPeers()
+	var wg sync.WaitGroup
+	for _, peerID := range peers {
 		if peerID == n.store.LocalID {
 			continue
 		}
-		if err := n.sendClockViaStream(ctx, peerID, digest); err != nil {
-			n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
-		}
+		wg.Go(func() {
+			gossipCtx, cancel := context.WithTimeout(ctx, gossipStreamTimeout)
+			defer cancel()
+			if err := n.sendClockViaStream(gossipCtx, peerID, digest); err != nil {
+				n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
+			}
+		})
 	}
+	wg.Wait()
 }
 
 func (n *Node) sampleResourceTelemetry() {
