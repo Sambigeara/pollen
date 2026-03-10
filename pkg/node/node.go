@@ -21,7 +21,6 @@ import (
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
-	plnconfig "github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
@@ -89,6 +88,7 @@ const (
 	punchChBufSize     = 32
 	punchWorkers       = 3 // max concurrent punches; bounds socket usage to N×256
 	ipRefreshInterval  = 5 * time.Minute
+	stateSaveInterval  = 30 * time.Second
 )
 
 type BootstrapPeer struct {
@@ -229,13 +229,8 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		case n.localPeerEvents <- peer.ForgetPeer{PeerKey: subject}:
 		default:
 		}
-		if cfg, err := plnconfig.Load(n.pollenDir); err != nil {
-			n.log.Warnw("load config for bootstrap peer cleanup failed", "err", err)
-		} else {
-			cfg.ForgetBootstrapPeer(subject[:])
-			if err := plnconfig.Save(n.pollenDir, cfg); err != nil {
-				n.log.Warnw("persist bootstrap peer removal failed", "err", err)
-			}
+		if err := stateStore.Save(); err != nil {
+			n.log.Warnw("save state after revocation failed", "err", err)
 		}
 	})
 
@@ -294,6 +289,9 @@ func (n *Node) Start(ctx context.Context) error {
 	certCheckTicker := time.NewTicker(certCheckInterval)
 	defer certCheckTicker.Stop()
 
+	stateSaveTicker := time.NewTicker(stateSaveInterval)
+	defer stateSaveTicker.Stop()
+
 	n.tick()
 	n.checkCertExpiry() // seed the cert-expiry gauge; the ticker only fires hourly
 	n.sampleResourceTelemetry()
@@ -313,6 +311,10 @@ func (n *Node) Start(ctx context.Context) error {
 		case <-certCheckTicker.C:
 			if n.checkCertExpiry() {
 				return ErrCertExpired
+			}
+		case <-stateSaveTicker.C:
+			if err := n.store.Save(); err != nil {
+				n.log.Warnw("periodic state save failed", "err", err)
 			}
 		case events := <-n.gossipEvents:
 		drain:

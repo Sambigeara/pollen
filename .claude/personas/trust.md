@@ -13,7 +13,7 @@ You are the cryptography and admission authority for Pollen. You think in terms 
 2. Maintain Ed25519 signature context strings (`"pollen.admin.v1"`, `"pollen.membership.v1"`, `"pollen.join.v1"`, `"pollen.invite.v1"`, `"pollen.revocation.v1"`) — these prevent cross-protocol signature reuse
 3. Enforce that revocations are root-only and permanent (no expiration, no undo)
 4. Ensure credential files are persisted with correct permissions (private keys 0600, public keys/certs 0640 with group)
-5. Own the single-use invite enforcement via `ConsumedInvites` tracking
+5. Own the single-use invite enforcement via `InviteConsumer` interface
 6. Guarantee 1-minute time skew tolerance on all certificate validity checks
 
 ## API contract
@@ -23,7 +23,7 @@ You are the cryptography and admission authority for Pollen. You think in terms 
 - `auth.NodeCredentials` — `{Trust *admissionv1.TrustBundle, Cert *admissionv1.MembershipCert, InviteSigner *AdminSigner}`
 - `auth.VerifiedToken` — `{Claims *admissionv1.JoinTokenClaims, Trust, Cert}`
 - `auth.VerifiedInviteToken` — `{Claims *admissionv1.InviteTokenClaims, Trust, Issuer}`
-- `auth.AdminSigner` — `{Trust, Issuer *admissionv1.AdminCert, Consumed *config.ConsumedInvites, Priv ed25519.PrivateKey}`
+- `auth.AdminSigner` — `{Trust, Issuer *admissionv1.AdminCert, Consumed InviteConsumer, Priv ed25519.PrivateKey}`
 - `auth.EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now) (*NodeCredentials, error)`
 - `auth.LoadOrEnrollNodeCredentials(pollenDir, nodePub, token, now) (*NodeCredentials, error)`
 - `auth.EnsureLocalRootCredentials(pollenDir, nodePub, now, membershipTTL, adminCertTTL) (*NodeCredentials, error)`
@@ -62,11 +62,11 @@ You are the cryptography and admission authority for Pollen. You think in terms 
 - Private keys never leave `0600`; public keys and certs are `0640` with pollen group on Linux
 - `perm` functions are safe no-ops on non-Linux platforms
 - Revocations are root-only (`issuer_admin_pub == trust.root_pub`), permanent, and idempotent
-- `ConsumedInvites.TryConsume` returns `(false, nil)` on replay — never errors on duplicate
+- `InviteConsumer.TryConsume` returns `(false, nil)` on replay — never errors on duplicate
 
 ## Needs
 
-- **state**: `config.ConsumedInvites` for invite single-use tracking (owned by state persona via `pkg/config/`)
+- **state**: `auth.InviteConsumer` interface for invite single-use tracking (implemented by `store.Store`)
 
 ## Proto ownership
 

@@ -1005,6 +1005,219 @@ func (x *GossipEventBatch) GetIsResponse() bool {
 	return false
 }
 
+// RuntimeState is the on-disk format for daemon-managed runtime state (state.pb).
+type RuntimeState struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Peers           []*PeerState           `protobuf:"bytes,1,rep,name=peers,proto3" json:"peers,omitempty"`
+	Revocations     []*v1.SignedRevocation `protobuf:"bytes,2,rep,name=revocations,proto3" json:"revocations,omitempty"`
+	ConsumedInvites []*ConsumedInvite      `protobuf:"bytes,3,rep,name=consumed_invites,json=consumedInvites,proto3" json:"consumed_invites,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *RuntimeState) Reset() {
+	*x = RuntimeState{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuntimeState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuntimeState) ProtoMessage() {}
+
+func (x *RuntimeState) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuntimeState.ProtoReflect.Descriptor instead.
+func (*RuntimeState) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *RuntimeState) GetPeers() []*PeerState {
+	if x != nil {
+		return x.Peers
+	}
+	return nil
+}
+
+func (x *RuntimeState) GetRevocations() []*v1.SignedRevocation {
+	if x != nil {
+		return x.Revocations
+	}
+	return nil
+}
+
+func (x *RuntimeState) GetConsumedInvites() []*ConsumedInvite {
+	if x != nil {
+		return x.ConsumedInvites
+	}
+	return nil
+}
+
+type PeerState struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	IdentityPub        []byte                 `protobuf:"bytes,1,opt,name=identity_pub,json=identityPub,proto3" json:"identity_pub,omitempty"`
+	Addresses          []string               `protobuf:"bytes,2,rep,name=addresses,proto3" json:"addresses,omitempty"`
+	Port               uint32                 `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`
+	ExternalPort       uint32                 `protobuf:"varint,4,opt,name=external_port,json=externalPort,proto3" json:"external_port,omitempty"`
+	LastAddr           string                 `protobuf:"bytes,5,opt,name=last_addr,json=lastAddr,proto3" json:"last_addr,omitempty"`
+	ExternalIp         string                 `protobuf:"bytes,6,opt,name=external_ip,json=externalIp,proto3" json:"external_ip,omitempty"`
+	PubliclyAccessible bool                   `protobuf:"varint,7,opt,name=publicly_accessible,json=publiclyAccessible,proto3" json:"publicly_accessible,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *PeerState) Reset() {
+	*x = PeerState{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PeerState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PeerState) ProtoMessage() {}
+
+func (x *PeerState) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PeerState.ProtoReflect.Descriptor instead.
+func (*PeerState) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *PeerState) GetIdentityPub() []byte {
+	if x != nil {
+		return x.IdentityPub
+	}
+	return nil
+}
+
+func (x *PeerState) GetAddresses() []string {
+	if x != nil {
+		return x.Addresses
+	}
+	return nil
+}
+
+func (x *PeerState) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *PeerState) GetExternalPort() uint32 {
+	if x != nil {
+		return x.ExternalPort
+	}
+	return 0
+}
+
+func (x *PeerState) GetLastAddr() string {
+	if x != nil {
+		return x.LastAddr
+	}
+	return ""
+}
+
+func (x *PeerState) GetExternalIp() string {
+	if x != nil {
+		return x.ExternalIp
+	}
+	return ""
+}
+
+func (x *PeerState) GetPubliclyAccessible() bool {
+	if x != nil {
+		return x.PubliclyAccessible
+	}
+	return false
+}
+
+type ConsumedInvite struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TokenId       string                 `protobuf:"bytes,1,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
+	ExpiryUnix    int64                  `protobuf:"varint,2,opt,name=expiry_unix,json=expiryUnix,proto3" json:"expiry_unix,omitempty"`
+	ConsumedUnix  int64                  `protobuf:"varint,3,opt,name=consumed_unix,json=consumedUnix,proto3" json:"consumed_unix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConsumedInvite) Reset() {
+	*x = ConsumedInvite{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConsumedInvite) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConsumedInvite) ProtoMessage() {}
+
+func (x *ConsumedInvite) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConsumedInvite.ProtoReflect.Descriptor instead.
+func (*ConsumedInvite) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ConsumedInvite) GetTokenId() string {
+	if x != nil {
+		return x.TokenId
+	}
+	return ""
+}
+
+func (x *ConsumedInvite) GetExpiryUnix() int64 {
+	if x != nil {
+		return x.ExpiryUnix
+	}
+	return 0
+}
+
+func (x *ConsumedInvite) GetConsumedUnix() int64 {
+	if x != nil {
+		return x.ConsumedUnix
+	}
+	return 0
+}
+
 var File_pollen_state_v1_state_proto protoreflect.FileDescriptor
 
 const file_pollen_state_v1_state_proto_rawDesc = "" +
@@ -1080,7 +1293,25 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x10GossipEventBatch\x124\n" +
 	"\x06events\x18\x01 \x03(\v2\x1c.pollen.state.v1.GossipEventR\x06events\x12\x1f\n" +
 	"\vis_response\x18\x02 \x01(\bR\n" +
-	"isResponseB@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
+	"isResponse\"\xd5\x01\n" +
+	"\fRuntimeState\x120\n" +
+	"\x05peers\x18\x01 \x03(\v2\x1a.pollen.state.v1.PeerStateR\x05peers\x12G\n" +
+	"\vrevocations\x18\x02 \x03(\v2%.pollen.admission.v1.SignedRevocationR\vrevocations\x12J\n" +
+	"\x10consumed_invites\x18\x03 \x03(\v2\x1f.pollen.state.v1.ConsumedInviteR\x0fconsumedInvites\"\xf4\x01\n" +
+	"\tPeerState\x12!\n" +
+	"\fidentity_pub\x18\x01 \x01(\fR\videntityPub\x12\x1c\n" +
+	"\taddresses\x18\x02 \x03(\tR\taddresses\x12\x12\n" +
+	"\x04port\x18\x03 \x01(\rR\x04port\x12#\n" +
+	"\rexternal_port\x18\x04 \x01(\rR\fexternalPort\x12\x1b\n" +
+	"\tlast_addr\x18\x05 \x01(\tR\blastAddr\x12\x1f\n" +
+	"\vexternal_ip\x18\x06 \x01(\tR\n" +
+	"externalIp\x12/\n" +
+	"\x13publicly_accessible\x18\a \x01(\bR\x12publiclyAccessible\"q\n" +
+	"\x0eConsumedInvite\x12\x19\n" +
+	"\btoken_id\x18\x01 \x01(\tR\atokenId\x12\x1f\n" +
+	"\vexpiry_unix\x18\x02 \x01(\x03R\n" +
+	"expiryUnix\x12#\n" +
+	"\rconsumed_unix\x18\x03 \x01(\x03R\fconsumedUnixB@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
 
 var (
 	file_pollen_state_v1_state_proto_rawDescOnce sync.Once
@@ -1094,7 +1325,7 @@ func file_pollen_state_v1_state_proto_rawDescGZIP() []byte {
 	return file_pollen_state_v1_state_proto_rawDescData
 }
 
-var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_pollen_state_v1_state_proto_goTypes = []any{
 	(*Service)(nil),                  // 0: pollen.state.v1.Service
 	(*PeerDigest)(nil),               // 1: pollen.state.v1.PeerDigest
@@ -1112,12 +1343,15 @@ var file_pollen_state_v1_state_proto_goTypes = []any{
 	(*ResourceTelemetryChange)(nil),  // 13: pollen.state.v1.ResourceTelemetryChange
 	(*GossipEvent)(nil),              // 14: pollen.state.v1.GossipEvent
 	(*GossipEventBatch)(nil),         // 15: pollen.state.v1.GossipEventBatch
-	nil,                              // 16: pollen.state.v1.GossipStateDigest.PeersEntry
-	(*v1.SignedRevocation)(nil),      // 17: pollen.admission.v1.SignedRevocation
+	(*RuntimeState)(nil),             // 16: pollen.state.v1.RuntimeState
+	(*PeerState)(nil),                // 17: pollen.state.v1.PeerState
+	(*ConsumedInvite)(nil),           // 18: pollen.state.v1.ConsumedInvite
+	nil,                              // 19: pollen.state.v1.GossipStateDigest.PeersEntry
+	(*v1.SignedRevocation)(nil),      // 20: pollen.admission.v1.SignedRevocation
 }
 var file_pollen_state_v1_state_proto_depIdxs = []int32{
-	16, // 0: pollen.state.v1.GossipStateDigest.peers:type_name -> pollen.state.v1.GossipStateDigest.PeersEntry
-	17, // 1: pollen.state.v1.RevocationChange.revocation:type_name -> pollen.admission.v1.SignedRevocation
+	19, // 0: pollen.state.v1.GossipStateDigest.peers:type_name -> pollen.state.v1.GossipStateDigest.PeersEntry
+	20, // 1: pollen.state.v1.RevocationChange.revocation:type_name -> pollen.admission.v1.SignedRevocation
 	5,  // 2: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
 	6,  // 3: pollen.state.v1.GossipEvent.external_port:type_name -> pollen.state.v1.ExternalPortChange
 	7,  // 4: pollen.state.v1.GossipEvent.observed_external_ip:type_name -> pollen.state.v1.ObservedExternalIPChange
@@ -1130,12 +1364,15 @@ var file_pollen_state_v1_state_proto_depIdxs = []int32{
 	12, // 11: pollen.state.v1.GossipEvent.nat_type:type_name -> pollen.state.v1.NatTypeChange
 	13, // 12: pollen.state.v1.GossipEvent.resource_telemetry:type_name -> pollen.state.v1.ResourceTelemetryChange
 	14, // 13: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
-	1,  // 14: pollen.state.v1.GossipStateDigest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	17, // 14: pollen.state.v1.RuntimeState.peers:type_name -> pollen.state.v1.PeerState
+	20, // 15: pollen.state.v1.RuntimeState.revocations:type_name -> pollen.admission.v1.SignedRevocation
+	18, // 16: pollen.state.v1.RuntimeState.consumed_invites:type_name -> pollen.state.v1.ConsumedInvite
+	1,  // 17: pollen.state.v1.GossipStateDigest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
+	18, // [18:18] is the sub-list for method output_type
+	18, // [18:18] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_state_proto_init() }
@@ -1162,7 +1399,7 @@ func file_pollen_state_v1_state_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_state_v1_state_proto_rawDesc), len(file_pollen_state_v1_state_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

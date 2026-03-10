@@ -1,8 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -17,6 +19,8 @@ import (
 	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/types"
 )
+
+var _ auth.InviteConsumer = (*Store)(nil)
 
 type attrKind uint8
 
@@ -158,10 +162,19 @@ type ApplyResult struct {
 	revokedSubjects []types.PeerKey
 }
 
+const consumedExpirySkew = time.Minute
+
+type consumedInviteEntry struct {
+	TokenID        string
+	ExpiresAtUnix  int64
+	ConsumedAtUnix int64
+}
+
 type Store struct {
 	disk               *disk
 	nodes              map[types.PeerKey]nodeRecord
 	revocations        map[types.PeerKey]*admissionv1.SignedRevocation
+	consumedInvites    map[string]consumedInviteEntry
 	trustBundle        *admissionv1.TrustBundle
 	desiredConnections map[string]Connection
 	onRevocation       func(types.PeerKey)
@@ -199,7 +212,8 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 				},
 			},
 		},
-		revocations:        unmarshalDiskRevocations(onDisk.Revocations, trustBundle),
+		revocations:        unmarshalRevocations(onDisk.GetRevocations(), trustBundle),
+		consumedInvites:    loadConsumedInvites(onDisk.GetConsumedInvites(), time.Now()),
 		trustBundle:        trustBundle,
 		desiredConnections: make(map[string]Connection),
 	}
@@ -218,55 +232,24 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 	}
 	s.nodes[localID] = local
 
-	for _, p := range onDisk.Peers {
-		peerID, err := types.PeerKeyFromString(p.IdentityPublic)
-		if err != nil {
-			continue
-		}
-		if peerID == localID {
+	for _, p := range onDisk.GetPeers() {
+		peerID := types.PeerKeyFromBytes(p.GetIdentityPub())
+		if peerID == localID || peerID == (types.PeerKey{}) {
 			continue
 		}
 
 		s.nodes[peerID] = nodeRecord{
-			IdentityPub:        append([]byte(nil), peerID[:]...),
-			IPs:                append([]string(nil), p.Addresses...),
-			LastAddr:           p.LastAddr,
-			LocalPort:          p.Port,
-			ExternalPort:       p.ExternalPort,
-			ObservedExternalIP: p.ExternalIP,
-			PubliclyAccessible: p.PubliclyAccessible,
+			IdentityPub:        append([]byte(nil), p.GetIdentityPub()...),
+			IPs:                append([]string(nil), p.GetAddresses()...),
+			LastAddr:           p.GetLastAddr(),
+			LocalPort:          p.GetPort(),
+			ExternalPort:       p.GetExternalPort(),
+			ObservedExternalIP: p.GetExternalIp(),
+			PubliclyAccessible: p.GetPubliclyAccessible(),
 			Reachable:          make(map[types.PeerKey]struct{}),
 			Services:           make(map[string]*statev1.Service),
 			log:                make(map[attrKey]logEntry),
 		}
-	}
-
-	for _, svc := range onDisk.Services {
-		provider, err := types.PeerKeyFromString(svc.Provider)
-		if err != nil {
-			continue
-		}
-
-		rec := s.nodes[provider]
-		ensureNodeInit(&rec, provider)
-		rec.Services[svc.Name] = &statev1.Service{
-			Name: svc.Name,
-			Port: svc.Port,
-		}
-		if provider == localID {
-			rec.maxCounter++
-			rec.log[serviceAttrKey(svc.Name)] = logEntry{Counter: rec.maxCounter}
-		}
-		s.nodes[provider] = rec
-	}
-
-	for _, conn := range onDisk.Connections {
-		peerID, err := types.PeerKeyFromString(conn.Peer)
-		if err != nil {
-			continue
-		}
-		c := Connection{PeerID: peerID, RemotePort: conn.RemotePort, LocalPort: conn.LocalPort}
-		s.desiredConnections[c.Key()] = c
 	}
 
 	return s, nil
@@ -277,6 +260,52 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.disk.close()
+}
+
+// TryConsume marks an invite token as consumed, returning true if it was
+// not previously consumed. Implements auth.InviteConsumer.
+func (s *Store) TryConsume(token *admissionv1.InviteToken, now time.Time) (bool, error) {
+	claims := token.GetClaims()
+	if claims == nil {
+		return false, errors.New("invite token missing claims")
+	}
+	tokenID := claims.GetTokenId()
+	if tokenID == "" {
+		return false, errors.New("invite token missing token id")
+	}
+
+	s.mu.Lock()
+
+	s.dropExpiredInvites(now)
+
+	if _, exists := s.consumedInvites[tokenID]; exists {
+		s.mu.Unlock()
+		return false, nil
+	}
+
+	s.consumedInvites[tokenID] = consumedInviteEntry{
+		TokenID:        tokenID,
+		ExpiresAtUnix:  claims.GetExpiresAtUnix(),
+		ConsumedAtUnix: now.Unix(),
+	}
+
+	snapshot := s.snapshotStateLocked()
+	s.mu.Unlock()
+
+	if err := s.disk.save(snapshot); err != nil {
+		return true, fmt.Errorf("persist consumed invite: %w", err)
+	}
+
+	return true, nil
+}
+
+func (s *Store) dropExpiredInvites(now time.Time) {
+	nowUnix := now.Unix()
+	for tokenID, entry := range s.consumedInvites {
+		if entry.ExpiresAtUnix > 0 && entry.ExpiresAtUnix+int64(consumedExpirySkew/time.Second) < nowUnix {
+			delete(s.consumedInvites, tokenID)
+		}
+	}
 }
 
 func (s *Store) OnRevocation(fn func(types.PeerKey)) {
@@ -295,60 +324,81 @@ func (s *Store) GossipMetrics() *metrics.GossipMetrics {
 
 func (s *Store) Save() error {
 	s.mu.RLock()
-	nodes := make(map[types.PeerKey]nodeRecord, len(s.nodes))
-	for k, v := range s.nodes {
-		nodes[k] = v.clone()
-	}
-	connections := slices.Collect(maps.Values(s.desiredConnections))
-	revocations := maps.Clone(s.revocations)
+	snapshot := s.snapshotStateLocked()
 	s.mu.RUnlock()
 
-	peers := make([]diskPeer, 0, len(nodes))
-	for peerID, rec := range nodes {
+	return s.disk.save(snapshot)
+}
+
+// snapshotStateLocked builds a RuntimeState from in-memory data.
+// The caller must hold s.mu (read or write).
+func (s *Store) snapshotStateLocked() *statev1.RuntimeState {
+	peers := make([]*statev1.PeerState, 0, len(s.nodes))
+	for peerID, rec := range s.nodes {
 		if peerID == s.LocalID {
 			continue
 		}
-		peers = append(peers, diskPeer{
-			IdentityPublic:     peerID.String(),
-			Addresses:          rec.IPs,
+		peers = append(peers, &statev1.PeerState{
+			IdentityPub:        append([]byte(nil), peerID[:]...),
+			Addresses:          append([]string(nil), rec.IPs...),
 			Port:               rec.LocalPort,
 			ExternalPort:       rec.ExternalPort,
-			ExternalIP:         rec.ObservedExternalIP,
+			ExternalIp:         rec.ObservedExternalIP,
 			LastAddr:           rec.LastAddr,
 			PubliclyAccessible: rec.PubliclyAccessible,
 		})
 	}
 
-	slices.SortFunc(peers, func(a, b diskPeer) int {
-		return cmp.Compare(a.IdentityPublic, b.IdentityPublic)
+	slices.SortFunc(peers, func(a, b *statev1.PeerState) int {
+		return bytes.Compare(a.GetIdentityPub(), b.GetIdentityPub())
 	})
 
-	services := toDiskServices(nodes)
+	revs := make([]*admissionv1.SignedRevocation, 0, len(s.revocations))
+	for _, rev := range s.revocations {
+		revs = append(revs, rev)
+	}
+	slices.SortFunc(revs, func(a, b *admissionv1.SignedRevocation) int {
+		return bytes.Compare(a.GetEntry().GetSubjectPub(), b.GetEntry().GetSubjectPub())
+	})
 
-	sortConnections(connections)
-
-	diskConns := make([]diskConnection, 0, len(connections))
-	for _, conn := range connections {
-		diskConns = append(diskConns, diskConnection{
-			Peer:       conn.PeerID.String(),
-			RemotePort: conn.RemotePort,
-			LocalPort:  conn.LocalPort,
+	invites := make([]*statev1.ConsumedInvite, 0, len(s.consumedInvites))
+	for _, entry := range s.consumedInvites {
+		invites = append(invites, &statev1.ConsumedInvite{
+			TokenId:      entry.TokenID,
+			ExpiryUnix:   entry.ExpiresAtUnix,
+			ConsumedUnix: entry.ConsumedAtUnix,
 		})
 	}
+	slices.SortFunc(invites, func(a, b *statev1.ConsumedInvite) int {
+		return cmp.Compare(a.GetTokenId(), b.GetTokenId())
+	})
 
-	diskRevs := marshalDiskRevocations(revocations)
-
-	st := diskState{
-		Local: diskLocal{
-			IdentityPublic: s.LocalID.String(),
-		},
-		Peers:       peers,
-		Services:    services,
-		Connections: diskConns,
-		Revocations: diskRevs,
+	return &statev1.RuntimeState{
+		Peers:           peers,
+		Revocations:     revs,
+		ConsumedInvites: invites,
 	}
+}
 
-	return s.disk.save(st)
+func loadConsumedInvites(protos []*statev1.ConsumedInvite, now time.Time) map[string]consumedInviteEntry {
+	nowUnix := now.Unix()
+	out := make(map[string]consumedInviteEntry, len(protos))
+	for _, p := range protos {
+		tokenID := p.GetTokenId()
+		if tokenID == "" {
+			continue
+		}
+		entry := consumedInviteEntry{
+			TokenID:        tokenID,
+			ExpiresAtUnix:  p.GetExpiryUnix(),
+			ConsumedAtUnix: p.GetConsumedUnix(),
+		}
+		if entry.ExpiresAtUnix > 0 && entry.ExpiresAtUnix+int64(consumedExpirySkew/time.Second) < nowUnix {
+			continue
+		}
+		out[tokenID] = entry
+	}
+	return out
 }
 
 const (

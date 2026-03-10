@@ -323,7 +323,9 @@ func clusterStatePaths(pollenDir string) []string {
 		filepath.Join(pollenDir, "keys", "admin_ed25519.key"),
 		filepath.Join(pollenDir, "keys", "admin_ed25519.pub"),
 		filepath.Join(pollenDir, "config.yaml"),
-		filepath.Join(pollenDir, "state.yaml"),
+		filepath.Join(pollenDir, "state.pb"),
+		filepath.Join(pollenDir, "state.yaml"),     // TODO(saml) these can go after a release or two
+		filepath.Join(pollenDir, "state.yaml.bak"), // TODO(saml) these can go after a release or two
 		filepath.Join(pollenDir, ".state.lock"),
 		filepath.Join(pollenDir, "consumed_invites.json"),
 		filepath.Join(pollenDir, "invites"),
@@ -484,20 +486,12 @@ func runNode(cmd *cobra.Command) {
 	logger := zap.S()
 	logger.Infow("starting pln...", "version", version)
 
-	port, _ := cmd.Flags().GetInt("port")
-	ips, _ := cmd.Flags().GetIPSlice("ips")
-
 	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopFunc()
 
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		logger.Fatal(err)
-	}
-
-	addrs := make([]string, 0, len(ips))
-	for _, ip := range ips {
-		addrs = append(addrs, ip.String())
 	}
 
 	privKey, pubKey, err := node.GenIdentityKey(pollenDir)
@@ -507,6 +501,22 @@ func runNode(cmd *cobra.Command) {
 
 	cfg := loadConfigOrDefault(pollenDir)
 	certTTLs := cfg.CertTTLs
+
+	port, _ := cmd.Flags().GetInt("port")
+	if !cmd.Flags().Changed("port") && cfg.Port != 0 {
+		port = int(cfg.Port)
+	}
+
+	var addrs []string
+	if cmd.Flags().Changed("ips") {
+		ips, _ := cmd.Flags().GetIPSlice("ips")
+		addrs = make([]string, 0, len(ips))
+		for _, ip := range ips {
+			addrs = append(addrs, ip.String())
+		}
+	} else if len(cfg.AdvertiseIPs) > 0 {
+		addrs = cfg.AdvertiseIPs
+	}
 
 	creds, credErr := auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, nil, time.Now())
 	if credErr != nil {
@@ -534,13 +544,36 @@ func runNode(cmd *cobra.Command) {
 		logger.Fatal("failed to load state: ", err)
 	}
 
+	if creds.InviteSigner != nil {
+		creds.InviteSigner.Consumed = stateStore
+	}
+
+	for _, svc := range cfg.Services {
+		stateStore.UpsertLocalService(svc.Port, svc.Name)
+	}
+
+	for _, conn := range cfg.Connections {
+		peerKey, parseErr := types.PeerKeyFromString(conn.Peer)
+		if parseErr != nil {
+			logger.Warnw("skipping invalid connection peer in config", "peer", conn.Peer, "err", parseErr)
+			continue
+		}
+		stateStore.AddDesiredConnection(peerKey, conn.RemotePort, conn.LocalPort)
+	}
+
 	var bootstrapPeers []node.BootstrapPeer
-	if bps, loadErr := loadBootstrapPeers(pollenDir); loadErr != nil {
-		logger.Warnw("failed to load bootstrap peers", "err", loadErr)
+	protoPeers, loadErr := cfg.BootstrapProtoPeers()
+	if loadErr != nil {
+		logger.Warnw("failed to parse bootstrap peers from config", "err", loadErr)
 	} else {
-		for _, bp := range bps {
+		for _, bp := range protoPeers {
+			pk := types.PeerKeyFromBytes(bp.GetPeerPub())
+			if stateStore.IsSubjectRevoked(bp.GetPeerPub()) {
+				logger.Warnw("bootstrap peer is revoked; skipping (remove from config.yaml)", "peer", pk.String())
+				continue
+			}
 			bootstrapPeers = append(bootstrapPeers, node.BootstrapPeer{
-				PeerKey: types.PeerKeyFromBytes(bp.GetPeerPub()),
+				PeerKey: pk,
 				Addrs:   bp.GetAddrs(),
 			})
 		}
@@ -1185,28 +1218,32 @@ func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, ce
 }
 
 func resolveBootstrapPeers(cmd *cobra.Command, specs []string) ([]*admissionv1.BootstrapPeer, error) {
-	if len(specs) == 0 {
-		pollenDir, err := pollenPath(cmd)
-		if err != nil {
-			return nil, err
-		}
-
-		registered, err := loadBootstrapPeers(pollenDir)
-		if err != nil {
-			return nil, err
-		}
-		if len(registered) > 0 {
-			return registered, nil
-		}
-
-		bootstrap, err := localBootstrapPeer(cmd)
-		if err != nil {
-			return nil, err
-		}
-		return []*admissionv1.BootstrapPeer{bootstrap}, nil
+	if len(specs) > 0 {
+		return parseBootstrapSpecs(specs)
 	}
 
-	return parseBootstrapSpecs(specs)
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg, err := config.Load(pollenDir)
+	if err != nil {
+		return nil, err
+	}
+	registered, err := cfg.BootstrapProtoPeers()
+	if err != nil {
+		return nil, err
+	}
+	if len(registered) > 0 {
+		return registered, nil
+	}
+
+	bootstrap, err := localBootstrapPeer(cmd)
+	if err != nil {
+		return nil, err
+	}
+	return []*admissionv1.BootstrapPeer{bootstrap}, nil
 }
 
 func enrollJoin(cmd *cobra.Command, pollenDir, rawToken string, public bool) error {
@@ -1251,15 +1288,6 @@ func saveBootstrapPeer(pollenDir string, peer *admissionv1.BootstrapPeer) error 
 	}
 
 	return config.Save(pollenDir, cfg)
-}
-
-func loadBootstrapPeers(pollenDir string) ([]*admissionv1.BootstrapPeer, error) {
-	cfg, err := config.Load(pollenDir)
-	if err != nil {
-		return nil, err
-	}
-
-	return cfg.BootstrapProtoPeers()
 }
 
 func resolveInviteSubject(subjectFlag string, args []string) (ed25519.PublicKey, error) {
@@ -1527,12 +1555,29 @@ func runServe(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	client := newControlClient(cmd)
-	req := &controlv1.RegisterServiceRequest{Port: uint32(port)}
-	if name != "" {
-		req.Name = &name
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		os.Exit(1)
 	}
-	if _, err = client.RegisterService(cmd.Context(), connect.NewRequest(req)); err != nil {
+
+	cfg := loadConfigOrDefault(pollenDir)
+	cfg.AddService(name, uint32(port))
+
+	sockPath := filepath.Join(pollenDir, socketName)
+	if running, _ := nodeSocketActive(sockPath); running {
+		client := newControlClient(cmd)
+		req := &controlv1.RegisterServiceRequest{Port: uint32(port)}
+		if name != "" {
+			req.Name = &name
+		}
+		if _, err = client.RegisterService(cmd.Context(), connect.NewRequest(req)); err != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			os.Exit(1)
+		}
+	}
+
+	if err := config.Save(pollenDir, cfg); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
@@ -1555,12 +1600,33 @@ func runUnserve(cmd *cobra.Command, args []string) {
 		name = arg
 	}
 
-	client := newControlClient(cmd)
-	req := &controlv1.UnregisterServiceRequest{Port: port}
-	if name != "" {
-		req.Name = &name
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		os.Exit(1)
 	}
-	if _, err := client.UnregisterService(cmd.Context(), connect.NewRequest(req)); err != nil {
+
+	cfg := loadConfigOrDefault(pollenDir)
+	if name != "" {
+		cfg.RemoveService(name)
+	} else {
+		cfg.RemoveServiceByPort(port)
+	}
+
+	sockPath := filepath.Join(pollenDir, socketName)
+	if running, _ := nodeSocketActive(sockPath); running {
+		client := newControlClient(cmd)
+		req := &controlv1.UnregisterServiceRequest{Port: port}
+		if name != "" {
+			req.Name = &name
+		}
+		if _, err := client.UnregisterService(cmd.Context(), connect.NewRequest(req)); err != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			os.Exit(1)
+		}
+	}
+
+	if err := config.Save(pollenDir, cfg); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
@@ -1619,9 +1685,22 @@ func runConnect(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	local := connectResp.Msg.GetLocalPort()
+	actualLocalPort := connectResp.Msg.GetLocalPort()
 	provider := formatPeerID(svc.GetProvider().GetPeerId(), false)
-	fmt.Fprintf(cmd.OutOrStdout(), "forwarding localhost:%d -> %s (%s:%d)\n", local, svc.GetName(), provider, svc.GetPort())
+	peerHex := peerKeyString(svc.GetProvider().GetPeerId())
+
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
+		os.Exit(1)
+	}
+	cfg := loadConfigOrDefault(pollenDir)
+	cfg.AddConnection(svc.GetName(), peerHex, svc.GetPort(), actualLocalPort)
+	if saveErr := config.Save(pollenDir, cfg); saveErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to persist connection to config: %v\n", saveErr)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "forwarding localhost:%d -> %s (%s:%d)\n", actualLocalPort, svc.GetName(), provider, svc.GetPort())
 }
 
 func runDisconnect(cmd *cobra.Command, args []string) {
@@ -1649,6 +1728,18 @@ func runDisconnect(cmd *cobra.Command, args []string) {
 	})); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
+	}
+
+	peerHex := peerKeyString(conn.GetPeer().GetPeerId())
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
+		os.Exit(1)
+	}
+	cfg := loadConfigOrDefault(pollenDir)
+	cfg.RemoveConnection(conn.GetServiceName(), peerHex, conn.GetLocalPort())
+	if saveErr := config.Save(pollenDir, cfg); saveErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to persist disconnection to config: %v\n", saveErr)
 	}
 
 	provider := formatPeerID(conn.GetPeer().GetPeerId(), false)
@@ -2063,6 +2154,17 @@ func runRevoke(cmd *cobra.Command, args []string) {
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
+	}
+
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
+		os.Exit(1)
+	}
+	cfg := loadConfigOrDefault(pollenDir)
+	cfg.ForgetBootstrapPeer(peerID)
+	if saveErr := config.Save(pollenDir, cfg); saveErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to persist revocation to config: %v\n", saveErr)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "revoked peer %s\n", formatPeerID(peerID, false))

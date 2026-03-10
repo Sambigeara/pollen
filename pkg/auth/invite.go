@@ -13,14 +13,18 @@ import (
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/perm"
 )
+
+// InviteConsumer tracks which invite tokens have been redeemed.
+type InviteConsumer interface {
+	TryConsume(token *admissionv1.InviteToken, now time.Time) (bool, error)
+}
 
 type AdminSigner struct {
 	Trust    *admissionv1.TrustBundle
 	Issuer   *admissionv1.AdminCert
-	Consumed *config.ConsumedInvites
+	Consumed InviteConsumer
 	Priv     ed25519.PrivateKey
 }
 
@@ -64,16 +68,10 @@ func LoadAdminSigner(pollenDir string, now time.Time, adminCertTTL time.Duration
 		return nil, err
 	}
 
-	consumed, err := config.LoadConsumedInvites(pollenDir, now)
-	if err != nil {
-		return nil, err
-	}
-
 	return &AdminSigner{
-		Priv:     adminPriv,
-		Trust:    trust,
-		Issuer:   issuer,
-		Consumed: consumed,
+		Priv:   adminPriv,
+		Trust:  trust,
+		Issuer: issuer,
 	}, nil
 }
 

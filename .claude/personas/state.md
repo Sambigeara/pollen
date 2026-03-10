@@ -52,8 +52,7 @@ You are the CRDT state and persistence specialist for Pollen. You think in terms
 - `config.Config.BootstrapProtoPeers() ([]*admissionv1.BootstrapPeer, error)` — convert to proto
 - `config.CertTTLs.MembershipTTL() / AdminTTL() / TLSIdentityTTL()` — with defaults (365d / 5y / 10y)
 - `config.NormalizeRelayAddr(spec) (string, error)` — canonicalize with default port 60611
-- `config.LoadConsumedInvites(pollenDir, now) (*ConsumedInvites, error)`
-- `config.ConsumedInvites.TryConsume(token, now) (bool, error)` — single-use enforcement
+- `store.Store.TryConsume(token, now) (bool, error)` — single-use invite enforcement (implements `auth.InviteConsumer`)
 
 ### Guarantees
 
@@ -65,7 +64,7 @@ You are the CRDT state and persistence specialist for Pollen. You think in terms
 - Revocations are immutable once published — deleted revocation events are rejected
 - Disk state uses exclusive `Flock` + atomic write-temp-rename — no partial writes
 - `Config.Save` uses the same write-temp-rename pattern
-- `ConsumedInvites` auto-expires old entries on load and before each consume check
+- `TryConsume` auto-expires old entries on load and before each consume check
 
 ## Needs
 

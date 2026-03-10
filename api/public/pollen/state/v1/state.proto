@@ -102,3 +102,26 @@ message GossipEventBatch {
   repeated GossipEvent events = 1;
   bool is_response = 2;
 }
+
+// RuntimeState is the on-disk format for daemon-managed runtime state (state.pb).
+message RuntimeState {
+  repeated PeerState peers = 1;
+  repeated pollen.admission.v1.SignedRevocation revocations = 2;
+  repeated ConsumedInvite consumed_invites = 3;
+}
+
+message PeerState {
+  bytes identity_pub = 1;
+  repeated string addresses = 2;
+  uint32 port = 3;
+  uint32 external_port = 4;
+  string last_addr = 5;
+  string external_ip = 6;
+  bool publicly_accessible = 7;
+}
+
+message ConsumedInvite {
+  string token_id = 1;
+  int64 expiry_unix = 2;
+  int64 consumed_unix = 3;
+}

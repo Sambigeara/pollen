@@ -57,6 +57,9 @@
 ### Tooling
 - Use `just generate` to regenerate protobuf code, not raw `buf generate` commands.
 
+### Config
+- `config.yaml` has a header with example CLI commands (`pln serve`, `pln connect`, `pln disconnect`). When renaming or adding CLI commands that affect services/connections, update the `configHeader` constant in `pkg/config/config.go` to match.
+
 ### Code Quality
 - Don't add comments that restate what the code already says. Only comment where logic isn't self-evident. This includes `nolint` directives — don't add a trailing comment that just restates the lint rule (e.g., `//nolint:forcetypeassert // always a UDPAddr`). The nolint directive is self-explanatory; only comment if the reason is genuinely non-obvious.
 - Don't ship dead or unused code — no dead branches for impossible conditions, no nil/zero guards on values that provably can't be nil/zero, no struct fields only tests read, no parameters the function ignores. These guards are actively misleading: they imply the guarded state is reachable when it isn't. Signatures and types are contracts.

@@ -19,6 +19,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type testConsumer struct {
+	seen map[string]struct{}
+}
+
+func (c *testConsumer) TryConsume(token *admissionv1.InviteToken, _ time.Time) (bool, error) {
+	id := token.GetClaims().GetTokenId()
+	if _, ok := c.seen[id]; ok {
+		return false, nil
+	}
+	c.seen[id] = struct{}{}
+	return true, nil
+}
+
 type meshHarness struct {
 	mesh    mesh.Mesh
 	peerKey types.PeerKey
@@ -70,14 +83,11 @@ func (c *clusterAuth) signer(t *testing.T) *auth.AdminSigner {
 	)
 	require.NoError(t, err)
 
-	consumed, err := config.LoadConsumedInvites(t.TempDir(), time.Now())
-	require.NoError(t, err)
-
 	return &auth.AdminSigner{
 		Priv:     c.adminPriv,
 		Trust:    c.trust,
 		Issuer:   issuer,
-		Consumed: consumed,
+		Consumed: &testConsumer{seen: make(map[string]struct{})},
 	}
 }
 

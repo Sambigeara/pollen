@@ -13,6 +13,19 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+type testConsumer struct {
+	seen map[string]struct{}
+}
+
+func (c *testConsumer) TryConsume(token *admissionv1.InviteToken, _ time.Time) (bool, error) {
+	id := token.GetClaims().GetTokenId()
+	if _, ok := c.seen[id]; ok {
+		return false, nil
+	}
+	c.seen[id] = struct{}{}
+	return true, nil
+}
+
 func TestIssueJoinTokenWithDelegatedAdmin(t *testing.T) {
 	rootPub, rootPriv := newKeyPair(t)
 	trust := auth.NewTrustBundle(rootPub)
@@ -210,9 +223,7 @@ func TestInviteTokenOpenSubjectAndSingleUse(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	consumed, err := config.LoadConsumedInvites(t.TempDir(), now)
-	require.NoError(t, err)
-	signer := &auth.AdminSigner{Priv: adminPriv, Trust: trust, Issuer: issuer, Consumed: consumed}
+	signer := &auth.AdminSigner{Priv: adminPriv, Trust: trust, Issuer: issuer, Consumed: &testConsumer{seen: make(map[string]struct{})}}
 
 	bootstrapPub, _ := newKeyPair(t)
 	invite, err := auth.IssueInviteTokenWithSigner(
@@ -253,9 +264,7 @@ func TestInviteTokenSubjectBoundMismatch(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	consumed, err := config.LoadConsumedInvites(t.TempDir(), now)
-	require.NoError(t, err)
-	signer := &auth.AdminSigner{Priv: adminPriv, Trust: trust, Issuer: issuer, Consumed: consumed}
+	signer := &auth.AdminSigner{Priv: adminPriv, Trust: trust, Issuer: issuer, Consumed: &testConsumer{seen: make(map[string]struct{})}}
 
 	bootstrapPub, _ := newKeyPair(t)
 	boundSubject, _ := newKeyPair(t)
@@ -469,9 +478,7 @@ func TestIssueInviteTokenWithSignerNonRenewable(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	consumed, err := config.LoadConsumedInvites(t.TempDir(), now)
-	require.NoError(t, err)
-	signer := &auth.AdminSigner{Priv: adminPriv, Trust: trust, Issuer: issuer, Consumed: consumed}
+	signer := &auth.AdminSigner{Priv: adminPriv, Trust: trust, Issuer: issuer, Consumed: &testConsumer{seen: make(map[string]struct{})}}
 
 	bootstrapPub, _ := newKeyPair(t)
 	invite, err := auth.IssueInviteTokenWithSigner(
