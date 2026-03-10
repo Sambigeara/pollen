@@ -1439,6 +1439,9 @@ type GetMetricsResponse struct {
 	VivaldiMissingCoords uint64                 `protobuf:"varint,15,opt,name=vivaldi_missing_coords,json=vivaldiMissingCoords,proto3" json:"vivaldi_missing_coords,omitempty"`
 	EagerSyncs           uint64                 `protobuf:"varint,16,opt,name=eager_syncs,json=eagerSyncs,proto3" json:"eager_syncs,omitempty"`
 	EagerSyncFailures    uint64                 `protobuf:"varint,17,opt,name=eager_sync_failures,json=eagerSyncFailures,proto3" json:"eager_sync_failures,omitempty"`
+	VivaldiSkipsWarmup   uint64                 `protobuf:"varint,18,opt,name=vivaldi_skips_warmup,json=vivaldiSkipsWarmup,proto3" json:"vivaldi_skips_warmup,omitempty"`
+	VivaldiSkipsNoConn   uint64                 `protobuf:"varint,19,opt,name=vivaldi_skips_no_conn,json=vivaldiSkipsNoConn,proto3" json:"vivaldi_skips_no_conn,omitempty"`
+	VivaldiSkipsNoRtt    uint64                 `protobuf:"varint,20,opt,name=vivaldi_skips_no_rtt,json=vivaldiSkipsNoRtt,proto3" json:"vivaldi_skips_no_rtt,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -1592,6 +1595,27 @@ func (x *GetMetricsResponse) GetEagerSyncFailures() uint64 {
 	return 0
 }
 
+func (x *GetMetricsResponse) GetVivaldiSkipsWarmup() uint64 {
+	if x != nil {
+		return x.VivaldiSkipsWarmup
+	}
+	return 0
+}
+
+func (x *GetMetricsResponse) GetVivaldiSkipsNoConn() uint64 {
+	if x != nil {
+		return x.VivaldiSkipsNoConn
+	}
+	return 0
+}
+
+func (x *GetMetricsResponse) GetVivaldiSkipsNoRtt() uint64 {
+	if x != nil {
+		return x.VivaldiSkipsNoRtt
+	}
+	return 0
+}
+
 var File_pollen_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_pollen_control_v1_control_proto_rawDesc = "" +
@@ -1674,7 +1698,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x11RevokePeerRequest\x12 \n" +
 	"\apeer_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\x06peerId\"\x14\n" +
 	"\x12RevokePeerResponse\"\x13\n" +
-	"\x11GetMetricsRequest\"\xed\x05\n" +
+	"\x11GetMetricsRequest\"\x83\a\n" +
 	"\x12GetMetricsResponse\x12)\n" +
 	"\x10peers_discovered\x18\x01 \x01(\rR\x0fpeersDiscovered\x12)\n" +
 	"\x10peers_connecting\x18\x02 \x01(\rR\x0fpeersConnecting\x12'\n" +
@@ -1694,7 +1718,10 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x16vivaldi_missing_coords\x18\x0f \x01(\x04R\x14vivaldiMissingCoords\x12\x1f\n" +
 	"\veager_syncs\x18\x10 \x01(\x04R\n" +
 	"eagerSyncs\x12.\n" +
-	"\x13eager_sync_failures\x18\x11 \x01(\x04R\x11eagerSyncFailures*\x8b\x01\n" +
+	"\x13eager_sync_failures\x18\x11 \x01(\x04R\x11eagerSyncFailures\x120\n" +
+	"\x14vivaldi_skips_warmup\x18\x12 \x01(\x04R\x12vivaldiSkipsWarmup\x121\n" +
+	"\x15vivaldi_skips_no_conn\x18\x13 \x01(\x04R\x12vivaldiSkipsNoConn\x12/\n" +
+	"\x14vivaldi_skips_no_rtt\x18\x14 \x01(\x04R\x11vivaldiSkipsNoRtt*\x8b\x01\n" +
 	"\n" +
 	"NodeStatus\x12\x1b\n" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +

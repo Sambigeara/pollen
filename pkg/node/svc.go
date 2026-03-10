@@ -454,6 +454,9 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 		VivaldiMissingCoords: uint64(s.node.vivaldiMissingCoords.Load()), //nolint:gosec
 		EagerSyncs:           uint64(s.node.eagerSyncs.Load()),           //nolint:gosec
 		EagerSyncFailures:    uint64(s.node.eagerSyncFailures.Load()),    //nolint:gosec
+		VivaldiSkipsWarmup:   uint64(s.node.vivaldiSkipsWarmup.Load()),   //nolint:gosec
+		VivaldiSkipsNoConn:   uint64(s.node.vivaldiSkipsNoConn.Load()),   //nolint:gosec
+		VivaldiSkipsNoRtt:    uint64(s.node.vivaldiSkipsNoRTT.Load()),    //nolint:gosec
 	}, nil
 }
 
