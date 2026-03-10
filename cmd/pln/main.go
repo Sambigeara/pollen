@@ -1790,42 +1790,21 @@ func resolveConnection(st *controlv1.GetStatusResponse, arg, providerArg string)
 
 	// No exact match — try suffix fallback (e.g. "http-ab" → name "http", prefix "ab").
 	if providerArg == "" && !isPortArg(arg) {
-		if c, err := resolveConnectionBySuffix(st, arg); !errors.Is(err, errNoSuffixMatch) {
+		if c, err := resolveBySuffix(arg, st.GetConnections(),
+			func(c *controlv1.ConnectionSummary) suffixCandidate {
+				return suffixCandidate{
+					name:    c.GetServiceName(),
+					peerKey: peerKeyString(c.GetPeer().GetPeerId()),
+					include: true,
+				}
+			},
+			connectionCollisionError,
+		); !errors.Is(err, errNoSuffixMatch) {
 			return c, err
 		}
 	}
 
 	return nil, fmt.Errorf("no active connection matching %q — run \"pln status\" to see active connections", arg)
-}
-
-func resolveConnectionBySuffix(st *controlv1.GetStatusResponse, arg string) (*controlv1.ConnectionSummary, error) {
-	names := map[string]bool{}
-	items := make([]suffixCandidate, 0, len(st.GetConnections()))
-	for _, c := range st.GetConnections() {
-		n := c.GetServiceName()
-		if n != "" {
-			names[n] = true
-		}
-		items = append(items, suffixCandidate{
-			name:    n,
-			peerKey: peerKeyString(c.GetPeer().GetPeerId()),
-			include: true,
-		})
-	}
-
-	indices, name, err := matchSuffixCandidates(arg, names, items)
-	if err != nil {
-		return nil, err
-	}
-
-	matches := make([]*controlv1.ConnectionSummary, len(indices))
-	for i, idx := range indices {
-		matches[i] = st.GetConnections()[idx]
-	}
-	if len(matches) > 1 {
-		return nil, connectionCollisionError(name, matches)
-	}
-	return matches[0], nil
 }
 
 func connectionCollisionError(name string, matches []*controlv1.ConnectionSummary) error {
@@ -1900,7 +1879,13 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg str
 
 	// No exact match — try suffix fallback (e.g. "http-ab" → name "http", prefix "ab").
 	if providerArg == "" && portFilter == 0 {
-		if svc, err := resolveServiceBySuffix(st, serviceArg, reachableProviders); !errors.Is(err, errNoSuffixMatch) {
+		if svc, err := resolveBySuffix(serviceArg, st.Services,
+			func(svc *controlv1.ServiceSummary) suffixCandidate {
+				pk := peerKeyString(svc.GetProvider().GetPeerId())
+				return suffixCandidate{name: svc.GetName(), peerKey: pk, include: reachableProviders[pk]}
+			},
+			serviceCollisionError,
+		); !errors.Is(err, errNoSuffixMatch) {
 			return svc, err
 		}
 	}
@@ -1909,34 +1894,6 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg str
 		return nil, fmt.Errorf("no reachable provider for %q on %q — run \"pln status\" to see available services", serviceArg, providerArg)
 	}
 	return nil, fmt.Errorf("no reachable service matching %q — run \"pln status\" to see available services", serviceArg)
-}
-
-func resolveServiceBySuffix(st *controlv1.GetStatusResponse, arg string, reachable map[string]bool) (*controlv1.ServiceSummary, error) {
-	names := map[string]bool{}
-	items := make([]suffixCandidate, 0, len(st.Services))
-	for _, svc := range st.Services {
-		pk := peerKeyString(svc.GetProvider().GetPeerId())
-		names[svc.GetName()] = true
-		items = append(items, suffixCandidate{
-			name:    svc.GetName(),
-			peerKey: pk,
-			include: reachable[pk],
-		})
-	}
-
-	indices, name, err := matchSuffixCandidates(arg, names, items)
-	if err != nil {
-		return nil, err
-	}
-
-	matches := make([]*controlv1.ServiceSummary, len(indices))
-	for i, idx := range indices {
-		matches[i] = st.Services[idx]
-	}
-	if len(matches) > 1 {
-		return nil, serviceCollisionError(name, matches)
-	}
-	return matches[0], nil
 }
 
 func serviceCollisionError(name string, matches []*controlv1.ServiceSummary) error {
@@ -1959,6 +1916,37 @@ type suffixCandidate struct {
 	name    string
 	peerKey string
 	include bool // false → skip (e.g. unreachable); connections set this to true
+}
+
+// resolveBySuffix attempts suffix-based resolution (e.g. "http-ab" → name
+// "http", provider prefix "ab") over a list of items. Returns errNoSuffixMatch
+// when no name matches the argument.
+func resolveBySuffix[T any](arg string, items []T, toCandidate func(T) suffixCandidate, collisionErr func(string, []T) error) (T, error) {
+	names := map[string]bool{}
+	candidates := make([]suffixCandidate, 0, len(items))
+	for _, item := range items {
+		c := toCandidate(item)
+		if c.name != "" {
+			names[c.name] = true
+		}
+		candidates = append(candidates, c)
+	}
+
+	indices, name, err := matchSuffixCandidates(arg, names, candidates)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+
+	matches := make([]T, len(indices))
+	for i, idx := range indices {
+		matches[i] = items[idx]
+	}
+	if len(matches) > 1 {
+		var zero T
+		return zero, collisionErr(name, matches)
+	}
+	return matches[0], nil
 }
 
 // matchSuffixCandidates parses a "name-prefix" arg, then returns the indices
