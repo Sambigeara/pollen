@@ -258,8 +258,6 @@ func selectNearestByDistance(candidates []nearestCandidate, k, lanCap int, param
 
 func selectNearestHMAC(localKey types.PeerKey, candidates []nearestCandidate, k, lanCap int, params Params) []types.PeerKey {
 	lanCount := make(map[string]int)
-	var epochBuf [8]byte
-	binary.BigEndian.PutUint64(epochBuf[:], uint64(params.Epoch))
 
 	type hmacCandidate struct {
 		ips   []string
@@ -267,6 +265,11 @@ func selectNearestHMAC(localKey types.PeerKey, candidates []nearestCandidate, k,
 		score [32]byte
 	}
 
+	// Epoch is intentionally excluded from the HMAC input. During HMAC mode
+	// (high vivaldi error) targets must remain stable so connections persist
+	// long enough for vivaldi to converge. Epoch-driven rotation caused a
+	// feedback loop: churn → no samples → error stays high → more churn.
+	// Long-links still rotate by epoch for graph diversity.
 	var scoredCandidates []hmacCandidate
 	for _, c := range candidates {
 		if natFiltered(c.lan, params.LocalNATType, c.natType) {
@@ -274,7 +277,7 @@ func selectNearestHMAC(localKey types.PeerKey, candidates []nearestCandidate, k,
 		}
 		scoredCandidates = append(scoredCandidates, hmacCandidate{
 			key:   c.key,
-			score: hmacScore(localKey, []byte("nearest"), epochBuf[:], c.key.Bytes()),
+			score: hmacScore(localKey, []byte("nearest"), c.key.Bytes()),
 			ips:   c.ips,
 		})
 	}
