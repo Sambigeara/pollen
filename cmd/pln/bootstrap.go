@@ -1,0 +1,356 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"connectrpc.com/connect"
+	"github.com/spf13/cobra"
+
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/node"
+	"github.com/sambigeara/pollen/pkg/types"
+)
+
+func newBootstrapCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "bootstrap",
+		Short: "Bootstrap relays and joiners",
+	}
+
+	sshCmd := &cobra.Command{
+		Use:   "ssh <host>",
+		Short: "Bootstrap a relay over SSH",
+		Args:  cobra.ExactArgs(1),
+		Run:   runBootstrapSSH,
+	}
+	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
+	sshCmd.Flags().Duration("cert-ttl", 0, "Certificate TTL for the relay peer (0 = use node default)")
+
+	cmd.AddCommand(sshCmd)
+	return cmd
+}
+
+func runBootstrapSSH(cmd *cobra.Command, args []string) {
+	host := args[0]
+
+	relayPort, err := cmd.Flags().GetInt("relay-port")
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		os.Exit(1)
+	}
+
+	if relayPort < minPort || relayPort > maxPort {
+		fmt.Fprintf(cmd.ErrOrStderr(), "invalid relay port %d\n", relayPort)
+		os.Exit(1)
+	}
+
+	inferredAddr, err := inferRelayAddrFromSSHTarget(host, relayPort)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		os.Exit(1)
+	}
+	relayAddrs := []string{inferredAddr}
+
+	ctx := cmd.Context()
+
+	fmt.Fprintln(cmd.OutOrStdout(), "ensuring pln is installed on remote host...")
+	if err := ensureRemotePollen(ctx, host); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		os.Exit(1)
+	}
+
+	idCmd := sshPln(ctx, host, "id")
+	var idStdout, idStderr bytes.Buffer
+	idCmd.Stdout = &idStdout
+	idCmd.Stderr = &idStderr
+	if err := idCmd.Run(); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to fetch remote node identity: %v\n%s\n", err, strings.TrimSpace(idStderr.String()))
+		os.Exit(1)
+	}
+
+	relayPeerKey, err := types.PeerKeyFromString(strings.TrimSpace(idStdout.String()))
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		os.Exit(1)
+	}
+	relayPub := ed25519.PublicKey(relayPeerKey.Bytes())
+
+	certTTL, err := getCertTTLFlag(cmd)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		os.Exit(1)
+	}
+
+	if err := bootstrapAccept(cmd, relayPub, relayAddrs, host, certTTL); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "relay bootstrapped: %s\n", host)
+	fmt.Fprintln(cmd.OutOrStdout(), "hint: reconnect SSH to use `pln` without sudo (new group membership requires a fresh login)")
+}
+
+func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs []string, sshTarget string, certTTL time.Duration) error {
+	issuerCtx, err := loadTokenIssuerContext(cmd)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("this node cannot issue join tokens; only delegated admins can sign enrollment tokens")
+		}
+		return err
+	}
+
+	seedToken, err := createJoinTokenWithSigner(issuerCtx.signer, issuerCtx.cfg.CertTTLs.MembershipTTL(), relayPub, defaultBootstrapJoinTokenTTL, certTTL, nil)
+	if err != nil {
+		return fmt.Errorf("create relay seed token: %w", err)
+	}
+
+	if err := bootstrapRelayOverSSH(cmd, sshTarget, seedToken); err != nil {
+		return err
+	}
+
+	if err := saveBootstrapPeer(issuerCtx.pollenDir, &admissionv1.BootstrapPeer{
+		PeerPub: append([]byte(nil), relayPub...),
+		Addrs:   append([]string(nil), relayAddrs...),
+	}); err != nil {
+		return fmt.Errorf("save relay bootstrap details: %w", err)
+	}
+
+	sockPath := filepath.Join(issuerCtx.pollenDir, socketName)
+	if active, _ := nodeSocketActive(sockPath); active {
+		client := newControlClient(cmd)
+		ctx := cmd.Context()
+		if _, err := client.ConnectPeer(ctx, connect.NewRequest(&controlv1.ConnectPeerRequest{
+			PeerId: relayPub,
+			Addrs:  relayAddrs,
+		})); err != nil {
+			return fmt.Errorf("connect running node to relay: %w", err)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "relay is ready; connected to running node")
+		return nil
+	}
+
+	_, localPub, err := node.GenIdentityKey(issuerCtx.pollenDir)
+	if err != nil {
+		return err
+	}
+
+	joinToken, err := createJoinTokenWithSigner(issuerCtx.signer, issuerCtx.cfg.CertTTLs.MembershipTTL(), localPub, defaultJoinTokenTTL, certTTL, []*admissionv1.BootstrapPeer{{
+		PeerPub: append([]byte(nil), relayPub...),
+		Addrs:   append([]string(nil), relayAddrs...),
+	}})
+	if err != nil {
+		return fmt.Errorf("create local join token: %w", err)
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout(), "relay is ready; starting local node")
+	if err := enrollToken(cmd.Context(), issuerCtx.pollenDir, joinToken); err != nil {
+		return err
+	}
+	return servicectl("start", cmd)
+}
+
+// sshPln runs a pln subcommand on the remote host as the pln system user.
+// All data-plane operations (key generation, enrollment, admin cert management)
+// must go through this so files are created with correct ownership.
+func sshPln(ctx context.Context, sshTarget string, args ...string) *exec.Cmd {
+	sshArgs := make([]string, 0, 5+len(args)) //nolint:mnd
+	sshArgs = append(sshArgs, sshTarget, "sudo", "-u", "pln", "pln")
+	sshArgs = append(sshArgs, args...)
+	return exec.CommandContext(ctx, "ssh", sshArgs...)
+}
+
+// sshRoot runs a command on the remote host as root via sudo.
+// Use for service management (up, down).
+func sshRoot(ctx context.Context, sshTarget, shellCmd string) *exec.Cmd {
+	return exec.CommandContext(ctx, "ssh", sshTarget, shellCmd)
+}
+
+func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) error {
+	ctx := cmd.Context()
+
+	// Enroll the relay into the cluster (as pln user for correct file ownership),
+	// then start the daemon (as root for systemctl).
+	if out, err := sshPln(ctx, sshTarget, "join", "--no-up", "--public", seedToken).CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to enroll relay node: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := sshRoot(ctx, sshTarget, "sudo pln up -d").CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	if err := waitForRelayReady(cmd, sshTarget); err != nil {
+		return err
+	}
+	if err := provisionRelayAdminDelegation(cmd, sshTarget); err != nil {
+		return err
+	}
+	if out, err := sshRoot(ctx, sshTarget, "sudo pln up -d --restart").CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return waitForRelayReady(cmd, sshTarget)
+}
+
+func createJoinTokenWithSigner(signer *auth.AdminSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, certTTL time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
+	if ttl <= 0 {
+		return "", errors.New("token ttl must be positive")
+	}
+
+	membershipTTL := defaultMembershipTTL
+	if certTTL > 0 {
+		membershipTTL = certTTL
+	}
+
+	token, err := auth.IssueJoinTokenWithIssuer(
+		signer.Priv,
+		signer.Trust,
+		signer.Issuer,
+		subjectPub,
+		bootstrap,
+		time.Now(),
+		ttl,
+		membershipTTL,
+		false,
+	)
+	if err != nil {
+		return "", err
+	}
+
+	return auth.EncodeJoinToken(token)
+}
+
+func ensureRemotePollen(ctx context.Context, sshTarget string) error {
+	script, err := fetchInstallScript()
+	if err != nil {
+		return err
+	}
+
+	args := []string{sshTarget, "bash", "-s", "--"}
+	if version != "dev" {
+		args = append(args, "--version", version)
+	}
+
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.Stdin = bytes.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to install pln on remote host: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+
+	return nil
+}
+
+func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
+	ctx := cmd.Context()
+
+	keygenCmd := sshPln(ctx, sshTarget, "admin", "keygen")
+	var keygenStdout, keygenStderr bytes.Buffer
+	keygenCmd.Stdout = &keygenStdout
+	keygenCmd.Stderr = &keygenStderr
+	if err := keygenCmd.Run(); err != nil {
+		return fmt.Errorf("failed to initialize relay admin key: %w\n%s", err, strings.TrimSpace(keygenStderr.String()))
+	}
+
+	relayAdminPub, err := parseAdminPubFromInitOutput(keygenStdout.String())
+	if err != nil {
+		return err
+	}
+
+	issuerCtx, err := loadTokenIssuerContext(cmd)
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(issuerCtx.signer.Trust.GetRootPub(), issuerCtx.signer.Issuer.GetClaims().GetAdminPub()) {
+		return errors.New("only root admin can delegate relay admin certs")
+	}
+
+	cert, err := auth.IssueAdminCert(
+		issuerCtx.signer.Priv,
+		issuerCtx.signer.Trust.GetClusterId(),
+		relayAdminPub,
+		time.Now().Add(-time.Minute),
+		time.Now().Add(issuerCtx.cfg.CertTTLs.AdminTTL()),
+	)
+	if err != nil {
+		return err
+	}
+
+	encoded, err := auth.MarshalAdminCertBase64(cert)
+	if err != nil {
+		return err
+	}
+
+	setCertOut, err := sshPln(ctx, sshTarget, "admin", "set-cert", encoded).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to install relay admin cert: %w\n%s", err, strings.TrimSpace(string(setCertOut)))
+	}
+
+	return nil
+}
+
+func waitForRelayReady(cmd *cobra.Command, sshTarget string) error {
+	ctx := cmd.Context()
+
+	readyCtx, cancel := context.WithTimeout(ctx, bootstrapStatusWait)
+	defer cancel()
+
+	checkCmd := "for i in $(seq 1 20); do if { sudo test -S /var/lib/pln/pln.sock || [ -S \"$HOME/.pln/pln.sock\" ]; } && sudo pln status --all >/dev/null 2>&1; then exit 0; fi; sleep 1; done; exit 1"
+	out, err := sshRoot(readyCtx, sshTarget, checkCmd).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+
+	logCmd := "journalctl -u pln -n 120 --no-pager 2>/dev/null || tail -n 120 /opt/homebrew/var/log/pln.log 2>/dev/null || tail -n 120 /usr/local/var/log/pln.log 2>/dev/null || true"
+	logOut, _ := sshRoot(ctx, sshTarget, logCmd).CombinedOutput()
+	return fmt.Errorf("relay failed to become ready\nstatus output: %s\nrelay log:\n%s", strings.TrimSpace(string(out)), strings.TrimSpace(string(logOut)))
+}
+
+func inferRelayAddrFromSSHTarget(target string, relayPort int) (string, error) {
+	host := strings.TrimSpace(target)
+	if host == "" {
+		return "", errors.New("ssh target is empty")
+	}
+
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+
+	if splitHost, _, err := net.SplitHostPort(host); err == nil {
+		host = splitHost
+	}
+
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return "", errors.New("ssh target host is empty")
+	}
+
+	return net.JoinHostPort(host, strconv.Itoa(relayPort)), nil
+}
+
+func parseAdminPubFromInitOutput(out string) (ed25519.PublicKey, error) {
+	for line := range strings.SplitSeq(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "admin_pub:") {
+			continue
+		}
+		pk, err := types.PeerKeyFromString(strings.TrimSpace(strings.TrimPrefix(line, "admin_pub:")))
+		if err != nil {
+			return nil, err
+		}
+		return ed25519.PublicKey(pk.Bytes()), nil
+	}
+
+	return nil, errors.New("failed to parse relay admin public key")
+}
