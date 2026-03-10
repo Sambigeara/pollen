@@ -95,9 +95,11 @@ func NewGossipMetrics(c *Collector) *GossipMetrics {
 
 // TopologyMetrics holds pre-registered instruments for topology selection.
 type TopologyMetrics struct {
-	VivaldiError       *Gauge
-	HMACNearestEnabled *Gauge
-	TopologyPrunes     *Counter
+	VivaldiError         *Gauge
+	VivaldiSamples       *Counter
+	VivaldiMissingCoords *Counter
+	HMACNearestEnabled   *Gauge
+	TopologyPrunes       *Counter
 }
 
 // NewTopologyMetrics registers all topology instruments on c.
@@ -106,9 +108,11 @@ func NewTopologyMetrics(c *Collector) *TopologyMetrics {
 		return &TopologyMetrics{}
 	}
 	return &TopologyMetrics{
-		VivaldiError:       c.Gauge("pollen_topology_vivaldi_error", Labels{}),
-		HMACNearestEnabled: c.Gauge("pollen_topology_hmac_nearest_enabled", Labels{}),
-		TopologyPrunes:     c.Counter("pollen_topology_prunes_total", Labels{}),
+		VivaldiError:         c.Gauge("pollen_topology_vivaldi_error", Labels{}),
+		VivaldiSamples:       c.Counter("pollen_topology_vivaldi_samples_total", Labels{}),
+		VivaldiMissingCoords: c.Counter("pollen_topology_vivaldi_missing_coords_total", Labels{}),
+		HMACNearestEnabled:   c.Gauge("pollen_topology_hmac_nearest_enabled", Labels{}),
+		TopologyPrunes:       c.Counter("pollen_topology_prunes_total", Labels{}),
 	}
 }
 
@@ -119,6 +123,8 @@ type NodeMetrics struct {
 	CertRenewalsFailed *Counter
 	PunchAttempts      *Counter
 	PunchFailures      *Counter
+	EagerSyncs         *Counter
+	EagerSyncFailures  *Counter
 }
 
 // NewNodeMetrics registers all node instruments on c.
@@ -132,5 +138,7 @@ func NewNodeMetrics(c *Collector) *NodeMetrics {
 		CertRenewalsFailed: c.Counter("pollen_node_cert_renewals_failed_total", Labels{}),
 		PunchAttempts:      c.Counter("pollen_node_punch_attempts_total", Labels{}),
 		PunchFailures:      c.Counter("pollen_node_punch_failures_total", Labels{}),
+		EagerSyncs:         c.Counter("pollen_node_eager_syncs_total", Labels{}),
+		EagerSyncFailures:  c.Counter("pollen_node_eager_sync_failures_total", Labels{}),
 	}
 }

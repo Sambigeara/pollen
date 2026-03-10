@@ -645,6 +645,7 @@ func (n *Node) updateVivaldiCoords() {
 		}
 		peerCoord, ok := n.store.PeerVivaldiCoord(peerKey)
 		if !ok || peerCoord == nil {
+			n.topoMetrics.VivaldiMissingCoords.Inc()
 			continue
 		}
 		var newErr float64
@@ -654,6 +655,7 @@ func (n *Node) updateVivaldiCoords() {
 		)
 		n.localCoordErr = newErr
 		n.smoothedErr.Update(newErr)
+		n.topoMetrics.VivaldiSamples.Inc()
 		updated = true
 	}
 	if updated {
@@ -829,8 +831,10 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 				cancel()
 				if err != nil {
 					n.log.Debugw("eager sync failed", "peer", e.PeerKey.Short(), "err", err)
+					n.nodeMetrics.EagerSyncFailures.Inc()
 				} else {
 					n.lastEagerSync[e.PeerKey] = time.Now()
+					n.nodeMetrics.EagerSyncs.Inc()
 				}
 			}
 

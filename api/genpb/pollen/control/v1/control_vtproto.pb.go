@@ -1188,6 +1188,30 @@ func (m *GetMetricsResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.EagerSyncFailures != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.EagerSyncFailures))
+		i--
+		dAtA[i] = 0x1
+		i--
+		dAtA[i] = 0x88
+	}
+	if m.EagerSyncs != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.EagerSyncs))
+		i--
+		dAtA[i] = 0x1
+		i--
+		dAtA[i] = 0x80
+	}
+	if m.VivaldiMissingCoords != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.VivaldiMissingCoords))
+		i--
+		dAtA[i] = 0x78
+	}
+	if m.VivaldiSamples != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.VivaldiSamples))
+		i--
+		dAtA[i] = 0x70
+	}
 	if m.Health != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Health))
 		i--
@@ -1712,6 +1736,18 @@ func (m *GetMetricsResponse) SizeVT() (n int) {
 	}
 	if m.Health != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.Health))
+	}
+	if m.VivaldiSamples != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.VivaldiSamples))
+	}
+	if m.VivaldiMissingCoords != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.VivaldiMissingCoords))
+	}
+	if m.EagerSyncs != 0 {
+		n += 2 + protohelpers.SizeOfVarint(uint64(m.EagerSyncs))
+	}
+	if m.EagerSyncFailures != 0 {
+		n += 2 + protohelpers.SizeOfVarint(uint64(m.EagerSyncFailures))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -4374,6 +4410,82 @@ func (m *GetMetricsResponse) UnmarshalVT(dAtA []byte) error {
 				b := dAtA[iNdEx]
 				iNdEx++
 				m.Health |= HealthStatus(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 14:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field VivaldiSamples", wireType)
+			}
+			m.VivaldiSamples = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.VivaldiSamples |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 15:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field VivaldiMissingCoords", wireType)
+			}
+			m.VivaldiMissingCoords = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.VivaldiMissingCoords |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 16:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field EagerSyncs", wireType)
+			}
+			m.EagerSyncs = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.EagerSyncs |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 17:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field EagerSyncFailures", wireType)
+			}
+			m.EagerSyncFailures = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.EagerSyncFailures |= uint64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}

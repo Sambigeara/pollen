@@ -410,6 +410,7 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 	counts := s.node.peers.StateCounts()
 
 	nm := s.node.nodeMetrics
+	tm := s.node.topoMetrics
 	gm := s.node.store.GossipMetrics()
 	gossipApplied := uint64(gm.EventsApplied.Value()) //nolint:gosec
 	gossipStale := uint64(gm.EventsStale.Value())     //nolint:gosec
@@ -419,6 +420,10 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 	certRenewalsFailed := uint64(nm.CertRenewalsFailed.Value()) //nolint:gosec
 	punchAttempts := uint64(nm.PunchAttempts.Value())           //nolint:gosec
 	punchFailures := uint64(nm.PunchFailures.Value())           //nolint:gosec
+	vivaldiSamples := uint64(tm.VivaldiSamples.Value())         //nolint:gosec
+	vivaldiMissing := uint64(tm.VivaldiMissingCoords.Value())   //nolint:gosec
+	eagerSyncs := uint64(nm.EagerSyncs.Value())                 //nolint:gosec
+	eagerSyncFailures := uint64(nm.EagerSyncFailures.Value())   //nolint:gosec
 
 	// When metrics are disabled the gauge stays at zero; compute expiry
 	// directly from the credential so the health check is always accurate.
@@ -437,19 +442,23 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 	}
 
 	return &controlv1.GetMetricsResponse{
-		PeersDiscovered:    counts.Discovered,
-		PeersConnecting:    counts.Connecting,
-		PeersConnected:     counts.Connected,
-		PeersUnreachable:   counts.Unreachable,
-		EventsApplied:      gossipApplied,
-		EventsStale:        gossipStale,
-		VivaldiError:       s.node.smoothedErr.Value(),
-		CertExpirySeconds:  certExpiry,
-		CertRenewals:       certRenewals,
-		CertRenewalsFailed: certRenewalsFailed,
-		PunchAttempts:      punchAttempts,
-		PunchFailures:      punchFailures,
-		Health:             health,
+		PeersDiscovered:      counts.Discovered,
+		PeersConnecting:      counts.Connecting,
+		PeersConnected:       counts.Connected,
+		PeersUnreachable:     counts.Unreachable,
+		EventsApplied:        gossipApplied,
+		EventsStale:          gossipStale,
+		VivaldiError:         s.node.smoothedErr.Value(),
+		CertExpirySeconds:    certExpiry,
+		CertRenewals:         certRenewals,
+		CertRenewalsFailed:   certRenewalsFailed,
+		PunchAttempts:        punchAttempts,
+		PunchFailures:        punchFailures,
+		Health:               health,
+		VivaldiSamples:       vivaldiSamples,
+		VivaldiMissingCoords: vivaldiMissing,
+		EagerSyncs:           eagerSyncs,
+		EagerSyncFailures:    eagerSyncFailures,
 	}, nil
 }
 

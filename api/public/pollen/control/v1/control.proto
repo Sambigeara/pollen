@@ -193,4 +193,8 @@ message GetMetricsResponse {
   uint64 punch_attempts = 11;
   uint64 punch_failures = 12;
   HealthStatus health = 13;
+  uint64 vivaldi_samples = 14;
+  uint64 vivaldi_missing_coords = 15;
+  uint64 eager_syncs = 16;
+  uint64 eager_sync_failures = 17;
 }
