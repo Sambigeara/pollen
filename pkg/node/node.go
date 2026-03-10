@@ -143,6 +143,12 @@ type Node struct {
 	localCoordErr   float64
 	renewalFailed   atomic.Bool
 	useHMACNearest  bool
+
+	// Always-active vivaldi convergence diagnostics (independent of MetricsEnabled).
+	vivaldiSamples       atomic.Int64
+	vivaldiMissingCoords atomic.Int64
+	eagerSyncs           atomic.Int64
+	eagerSyncFailures    atomic.Int64
 }
 
 func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, stateStore *store.Store, peerStore *peer.Store, pollenDir string) (*Node, error) {
@@ -645,7 +651,7 @@ func (n *Node) updateVivaldiCoords() {
 		}
 		peerCoord, ok := n.store.PeerVivaldiCoord(peerKey)
 		if !ok || peerCoord == nil {
-			n.topoMetrics.VivaldiMissingCoords.Inc()
+			n.vivaldiMissingCoords.Add(1)
 			continue
 		}
 		var newErr float64
@@ -655,7 +661,7 @@ func (n *Node) updateVivaldiCoords() {
 		)
 		n.localCoordErr = newErr
 		n.smoothedErr.Update(newErr)
-		n.topoMetrics.VivaldiSamples.Inc()
+		n.vivaldiSamples.Add(1)
 		updated = true
 	}
 	if updated {
@@ -831,10 +837,10 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 				cancel()
 				if err != nil {
 					n.log.Debugw("eager sync failed", "peer", e.PeerKey.Short(), "err", err)
-					n.nodeMetrics.EagerSyncFailures.Inc()
+					n.eagerSyncFailures.Add(1)
 				} else {
 					n.lastEagerSync[e.PeerKey] = time.Now()
-					n.nodeMetrics.EagerSyncs.Inc()
+					n.eagerSyncs.Add(1)
 				}
 			}
 
