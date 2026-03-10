@@ -1,0 +1,45 @@
+---
+# Generate invite tokens on root and join all other public nodes.
+# Usage: ansible-playbook join-public-cluster.yml -i inventories/vivaldi_public.py
+
+- name: Generate invite tokens
+  hosts: root
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Generate all invite tokens in one shot
+      ansible.builtin.shell: |
+        for i in $(seq {{ groups['public'] | length }}); do
+          token=$(pln invite --ttl 10m)
+          printf '%s\n' "$token"
+        done
+      register: invite_raw
+      changed_when: true
+
+    - name: Build token list
+      ansible.builtin.set_fact:
+        invite_tokens: "{{ invite_raw.stdout_lines }}"
+
+- name: Join public nodes
+  hosts: public
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Check if pln is already running
+      ansible.builtin.command: systemctl is-active pln
+      register: pln_check
+      failed_when: false
+      changed_when: false
+
+    - name: Determine token index
+      ansible.builtin.set_fact:
+        token_index: "{{ groups['public'].index(inventory_hostname) }}"
+      when: pln_check.rc != 0
+
+    - name: Join cluster as public node
+      ansible.builtin.command: >
+        pln join --public '{{ hostvars[groups["root"][0]].invite_tokens[token_index | int] }}'
+      when: pln_check.rc != 0
+      changed_when: true

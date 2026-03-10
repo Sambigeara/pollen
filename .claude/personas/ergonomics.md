@@ -10,9 +10,10 @@ No packages directly. Cross-cutting review authority over all user-facing output
 
 1. Review CLI command names, flag names, and help text for consistency and discoverability
 2. Audit error messages — every error should tell the user what happened, why, and what to do next
-3. Evaluate `pollen status` output for information density, scannability, and progressive disclosure (`--all`, `--wide`)
+3. Evaluate `pln status` output for information density, scannability, and progressive disclosure (`--all`, `--wide`)
 4. Review `install.sh` and packaging scripts for first-run UX: clear progress indicators, actionable errors, no silent failures
 5. Challenge unnecessary jargon — terms like "mesh", "gossip", "CRDT" should never appear in user-facing output unless essential
+6. Commands that produce machine-readable output (tokens, keys, IDs) must print **only** that output to stdout — no banners, no confirmation lines, no decoration. Informational context belongs in `--help` or `--verbose`, not in default output
 
 ## API contract
 
@@ -29,13 +30,13 @@ No code interfaces. Ergonomics operates through review comments and proposed cha
 
 ## Needs
 
-- **cli**: Access to `cmd/pollen/` source for reviewing command definitions, output formatting, and error handling
+- **cli**: Access to `cmd/pln/` source for reviewing command definitions, output formatting, and error handling
 - **orchestrator**: Access to `pkg/server/` for reviewing gRPC error responses that surface to users
 - **trust**: Awareness of error types (`ErrCredentialsNotFound`, `ErrDifferentCluster`) to ensure they produce helpful CLI messages
 
 ## Review authority
 
-- `cmd/pollen/` — all commands, flags, help text, output formatting
+- `cmd/pln/` — all commands, flags, help text, output formatting
 - `scripts/` — install scripts, packaging
 - `packaging/` — systemd units, launchd plists, postinstall scripts
 - Any user-facing string in any package (error messages, log messages at `Info` level or above)

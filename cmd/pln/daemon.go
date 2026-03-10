@@ -1,45 +1,101 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"runtime"
 
 	"github.com/spf13/cobra"
 )
-
-// effectiveHomeDir returns the home directory of the real (non-root) user.
-// Under sudo, os.UserHomeDir() returns /root; this resolves SUDO_USER instead.
-func effectiveHomeDir() string {
-	if name := os.Getenv("SUDO_USER"); name != "" {
-		if u, err := user.Lookup(name); err == nil {
-			return u.HomeDir
-		}
-	}
-	if u, err := user.Current(); err == nil {
-		return u.HomeDir
-	}
-	return os.Getenv("HOME")
-}
 
 const (
 	osDarwin = "darwin"
 	osLinux  = "linux"
 )
 
-func newServiceCmd(action, short string) *cobra.Command {
+func newDownCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   action,
-		Short: short,
+		Use:   "down",
+		Short: "Stop the background service",
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
-			if err := servicectl(action, cmd); err != nil {
+			if err := servicectl("stop", cmd); err != nil {
 				os.Exit(1)
 			}
 		},
 	}
+}
+
+func newRestartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restart",
+		Short: "Restart the background service",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			if err := servicectl("restart", cmd); err != nil {
+				os.Exit(1)
+			}
+		},
+	}
+}
+
+func newUpgradeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "upgrade",
+		Short: "Upgrade pln to the latest version",
+		Args:  cobra.NoArgs,
+		Run:   runUpgrade,
+	}
+	cmd.Flags().Bool("restart", false, "Restart the background service after upgrading")
+	return cmd
+}
+
+func runUpgrade(cmd *cobra.Command, _ []string) {
+	var err error
+	switch runtime.GOOS {
+	case osDarwin:
+		c := exec.CommandContext(cmd.Context(), "brew", "upgrade", "sambigeara/homebrew-pln/pln")
+		c.Stdout = cmd.OutOrStdout()
+		c.Stderr = cmd.ErrOrStderr()
+		err = c.Run()
+	case osLinux:
+		err = upgradeLinux(cmd)
+	default:
+		fmt.Fprintln(cmd.ErrOrStderr(), "upgrade is only supported on macOS and Linux")
+		os.Exit(1)
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		os.Exit(exitErr.ExitCode())
+	}
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "upgrade failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if restart, _ := cmd.Flags().GetBool("restart"); restart {
+		if err := servicectl("restart", cmd); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "upgraded but failed to restart daemon: %v\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+func upgradeLinux(cmd *cobra.Command) error {
+	script, err := fetchInstallScript()
+	if err != nil {
+		return err
+	}
+
+	c := exec.CommandContext(cmd.Context(), "bash", "-s", "--")
+	c.Stdin = bytes.NewReader(script)
+	c.Stdout = cmd.OutOrStdout()
+	c.Stderr = cmd.ErrOrStderr()
+	return c.Run()
 }
 
 func servicectl(action string, cmd *cobra.Command) error {

@@ -10,10 +10,12 @@ service ControlService {
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
   rpc GetBootstrapInfo(GetBootstrapInfoRequest) returns (GetBootstrapInfoResponse);
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc GetMetrics(GetMetricsRequest) returns (GetMetricsResponse);
   rpc RegisterService(RegisterServiceRequest) returns (RegisterServiceResponse);
   rpc UnregisterService(UnregisterServiceRequest) returns (UnregisterServiceResponse);
   rpc ConnectService(ConnectServiceRequest) returns (ConnectServiceResponse);
   rpc ConnectPeer(ConnectPeerRequest) returns (ConnectPeerResponse);
+  rpc DisconnectService(DisconnectServiceRequest) returns (DisconnectServiceResponse);
   rpc RevokePeer(RevokePeerRequest) returns (RevokePeerResponse);
 }
 
@@ -26,6 +28,7 @@ enum NodeStatus {
   NODE_STATUS_ONLINE = 1;
   NODE_STATUS_OFFLINE = 2;
   NODE_STATUS_RELAY = 3;
+  NODE_STATUS_INDIRECT = 4;
 }
 
 message NodeSummary {
@@ -33,6 +36,10 @@ message NodeSummary {
   NodeStatus status = 2;
   string addr = 3;
   bool publicly_accessible = 4;
+  uint32 tunnel_count = 5;
+  double latency_ms = 6;
+  uint32 cpu_percent = 7;
+  uint32 mem_percent = 8;
 }
 
 message ServiceSummary {
@@ -148,8 +155,46 @@ message ConnectServiceResponse {
   }];
 }
 
+message DisconnectServiceRequest {
+  uint32 local_port = 1 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 65535
+  }];
+}
+
+message DisconnectServiceResponse {}
+
 message RevokePeerRequest {
   bytes peer_id = 1 [(buf.validate.field).bytes = {len: 32}];
 }
 
 message RevokePeerResponse {}
+
+message GetMetricsRequest {}
+
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  HEALTH_STATUS_HEALTHY = 1;
+  HEALTH_STATUS_DEGRADED = 2;
+  HEALTH_STATUS_UNHEALTHY = 3;
+}
+
+message GetMetricsResponse {
+  uint32 peers_discovered = 1;
+  uint32 peers_connecting = 2;
+  uint32 peers_connected = 3;
+  uint32 peers_unreachable = 4;
+  uint64 events_applied = 5;
+  uint64 events_stale = 6;
+  double vivaldi_error = 7;
+  double cert_expiry_seconds = 8;
+  uint64 cert_renewals = 9;
+  uint64 cert_renewals_failed = 10;
+  uint64 punch_attempts = 11;
+  uint64 punch_failures = 12;
+  HealthStatus health = 13;
+  uint64 vivaldi_samples = 14;
+  uint64 eager_syncs = 16;
+  uint64 eager_sync_failures = 17;
+  reserved 15, 18, 19, 20;
+}

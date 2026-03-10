@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -e
+{
 
 REPO="sambigeara/pollen"
 VERSION=""
@@ -26,7 +27,7 @@ if [ "$OS" = "darwin" ]; then
     log "macOS detected. Installing via Homebrew..."
     command -v brew >/dev/null 2>&1 || fatal "Homebrew is required but not installed."
     brew install sambigeara/homebrew-pln/pln
-    log "Done! Run 'brew services start pln' to run in the background."
+    log "Done! Run 'pln up -d' to start the background service."
     exit 0
 fi
 
@@ -45,7 +46,7 @@ if [ "$OS" = "linux" ]; then
     if command -v apt-get >/dev/null 2>&1; then
         log "Installing .deb via apt..."
         DEB_URL="https://github.com/$REPO/releases/download/${VERSION}/pln_${PKG_VER}_linux_${ARCH}.deb"
-        curl -sL "$DEB_URL" -o /tmp/pln.deb
+        curl -fsSL "$DEB_URL" -o /tmp/pln.deb
         sudo NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/pln.deb
     elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
         RPM_MGR=$(command -v dnf >/dev/null 2>&1 && echo dnf || echo yum)
@@ -55,7 +56,7 @@ if [ "$OS" = "linux" ]; then
     else
         log "No supported package manager found. Installing from tarball..."
         TAR_URL="https://github.com/$REPO/releases/download/${VERSION}/pln_${PKG_VER}_linux_${ARCH}.tar.gz"
-        curl -sL "$TAR_URL" -o /tmp/pln.tar.gz
+        curl -fsSL "$TAR_URL" -o /tmp/pln.tar.gz
         sudo tar -xzf /tmp/pln.tar.gz -C /usr/local/bin pln
         rm -f /tmp/pln.tar.gz
         log "WARNING: No systemd service installed. You must manage the pln process manually."
@@ -67,3 +68,4 @@ if [ "$OS" = "linux" ]; then
 fi
 
 fatal "Unsupported OS: $OS"
+}

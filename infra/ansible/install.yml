@@ -1,0 +1,47 @@
+---
+# Install pln on all nodes.
+# Usage: ansible-playbook install.yml -i inventories/<env>.py -e pln_version=v0.1.0-alpha.36
+
+- name: Install pln
+  hosts: all
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Validate pln_version is set
+      ansible.builtin.assert:
+        that: pln_version is defined and pln_version | length > 0
+        fail_msg: "pln_version must be set (e.g. -e pln_version=v0.1.0-alpha.36)"
+
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+  tasks:
+    - name: Set package version
+      ansible.builtin.set_fact:
+        pkg_version: "{{ pln_version | regex_replace('^v', '') }}"
+
+    - name: Download .deb
+      ansible.builtin.get_url:
+        url: "https://github.com/sambigeara/pollen/releases/download/{{ pln_version }}/pln_{{ pkg_version }}_linux_arm64.deb"
+        dest: /tmp/pln.deb
+        mode: "0644"
+        force: true
+
+    - name: Install .deb
+      ansible.builtin.apt:
+        deb: /tmp/pln.deb
+        force: true
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        NEEDRESTART_SUSPEND: "1"
+
+    - name: Verify pln is installed
+      ansible.builtin.command: pln version
+      changed_when: false
+      register: pln_ver
+
+    - name: Show installed version
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: {{ pln_ver.stdout }}"

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/sambigeara/pollen/pkg/nat"
 	"go.uber.org/zap"
 )
 
@@ -19,12 +20,11 @@ var _ SockStore = (*sockStore)(nil)
 type ProbeWriter func(payload []byte, addr *net.UDPAddr) error
 
 type SockStore interface {
-	Punch(ctx context.Context, addr *net.UDPAddr) (*Conn, error)
+	Punch(ctx context.Context, addr *net.UDPAddr, localNAT nat.Type) (*Conn, error)
 	SetMainProbeWriter(write ProbeWriter)
 	HandleMainProbePacket(data []byte, sender *net.UDPAddr)
 }
 
-// Conn is a thin wrapper around a UDPConn with a reference counter for determining closures etc.
 type Conn struct {
 	*net.UDPConn
 	peer      *net.UDPAddr
@@ -71,7 +71,7 @@ func (s *sockStore) SetMainProbeWriter(write ProbeWriter) {
 	s.mainWrite = write
 }
 
-func (s *sockStore) Punch(ctx context.Context, addr *net.UDPAddr) (*Conn, error) {
+func (s *sockStore) Punch(ctx context.Context, addr *net.UDPAddr, localNAT nat.Type) (*Conn, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -79,33 +79,38 @@ func (s *sockStore) Punch(ctx context.Context, addr *net.UDPAddr) (*Conn, error)
 
 	// Hard-side: vary our source port by opening ephemeral sockets,
 	// each probing the peer's known address.
-	for range punchAttempts {
-		go func() {
-			udp, err := net.ListenUDP("udp", &net.UDPAddr{})
-			if err != nil {
-				return
-			}
-			dst, err := probeAddr(ctx, udp, addr)
-			if err != nil {
-				_ = udp.Close()
-				return
-			}
-			c := &Conn{
-				UDPConn: udp,
-				peer:    dst,
-				onClose: func() { s.socks.Remove(dst) },
-			}
-			c.refs.Store(1)
-			select {
-			case ch <- c:
-			default:
-				_ = udp.Close()
-			}
-		}()
+	// Skip when local NAT is Easy — our main socket port is stable.
+	if localNAT != nat.Easy {
+		for range punchAttempts {
+			go func() {
+				udp, err := net.ListenUDP("udp", &net.UDPAddr{})
+				if err != nil {
+					return
+				}
+				dst, err := probeAddr(ctx, udp, addr)
+				if err != nil {
+					_ = udp.Close()
+					return
+				}
+				c := &Conn{
+					UDPConn: udp,
+					peer:    dst,
+					onClose: func() { s.socks.Remove(dst) },
+				}
+				c.refs.Store(1)
+				select {
+				case ch <- c:
+				default:
+					_ = udp.Close()
+				}
+			}()
+		}
 	}
 
 	// Easy-side: from one fixed source port, spray probes at random
-	// destination ports on the peer.
+	// destination ports on the peer. Always scatter fully — even when
+	// the remote has a stable port, outbound packets are needed to
+	// punch holes in our own NAT for the remote's probes to traverse.
 	go func() {
 		dst, err := s.scatterProbeMain(ctx, addr, punchAttempts)
 		if err != nil {

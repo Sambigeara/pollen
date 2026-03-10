@@ -129,6 +129,9 @@ func IssueInviteTokenWithSigner(
 }
 
 func VerifyInviteToken(token *admissionv1.InviteToken, expectedSubject ed25519.PublicKey, now time.Time) (*VerifiedInviteToken, error) {
+	if token == nil {
+		return nil, errors.New("invite token is nil")
+	}
 	if err := protovalidate.Validate(token); err != nil {
 		return nil, fmt.Errorf("invite token invalid: %w", err)
 	}

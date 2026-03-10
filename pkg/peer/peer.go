@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
 )
@@ -12,7 +13,7 @@ import (
 type PeerState int
 
 const (
-	PeerStateUnspecified PeerState = iota
+	_ PeerState = iota
 	PeerStateDiscovered
 	PeerStateConnecting
 	PeerStateConnected
@@ -31,6 +32,7 @@ const (
 type Peer struct {
 	NextActionAt  time.Time
 	ConnectedAt   time.Time
+	ConnectingAt  time.Time
 	LastAddr      *net.UDPAddr
 	Ips           []net.IP
 	ObservedPort  int
@@ -49,16 +51,23 @@ func (p *Peer) resetStage() {
 }
 
 type Store struct {
-	log *zap.SugaredLogger
-	m   map[types.PeerKey]*Peer
-	mu  sync.RWMutex
+	log     *zap.SugaredLogger
+	metrics *metrics.PeerMetrics
+	m       map[types.PeerKey]*Peer
+	mu      sync.RWMutex
 }
 
 func NewStore() *Store {
 	return &Store{
-		log: zap.S().Named("peers"),
-		m:   make(map[types.PeerKey]*Peer),
+		log:     zap.S().Named("peers"),
+		metrics: &metrics.PeerMetrics{},
+		m:       make(map[types.PeerKey]*Peer),
 	}
+}
+
+// SetPeerMetrics replaces the no-op metrics with wired instruments.
+func (s *Store) SetPeerMetrics(m *metrics.PeerMetrics) {
+	s.metrics = m
 }
 
 // Input events.
@@ -67,10 +76,12 @@ type Input interface{ isInput() }
 // DiscoverPeer adds a new peer or updates known addresses for an existing peer.
 // Used on startup (from disk) or when learning about a peer from gossip.
 type DiscoverPeer struct {
-	LastAddr *net.UDPAddr
-	Ips      []net.IP
-	Port     int
-	PeerKey  types.PeerKey
+	LastAddr           *net.UDPAddr
+	Ips                []net.IP
+	Port               int
+	PeerKey            types.PeerKey
+	PrivatelyRoutable  bool
+	PubliclyAccessible bool
 }
 
 func (DiscoverPeer) isInput() {}
@@ -85,7 +96,6 @@ type ConnectPeer struct {
 	IP           net.IP
 	ObservedPort int
 	PeerKey      types.PeerKey
-	Inbound      bool
 }
 
 func (ConnectPeer) isInput() {}
@@ -100,29 +110,36 @@ func (ConnectFailed) isInput() {}
 type DisconnectReason int
 
 const (
-	DisconnectUnknown      DisconnectReason = iota
-	DisconnectIdleTimeout                   // peer likely still alive, transient loss
-	DisconnectReset                         // peer rebooted (stateless reset)
-	DisconnectGraceful                      // clean app-level close
-	DisconnectCertRotation                  // forced reconnection for cert rotation
-	DisconnectCertExpired                   // peer membership cert expired
+	DisconnectUnknown       DisconnectReason = iota
+	DisconnectIdleTimeout                    // peer likely still alive, transient loss
+	DisconnectReset                          // peer rebooted (stateless reset)
+	DisconnectGraceful                       // clean app-level close
+	DisconnectTopologyPrune                  // peer intentionally pruned this edge
+	DisconnectRevoked                        // peer revoked our session/membership
+	DisconnectCertRotation                   // forced reconnection for cert rotation
+	DisconnectCertExpired                    // peer membership cert expired
 )
 
 func (r DisconnectReason) String() string {
 	switch r {
+	case DisconnectUnknown:
+		return "unknown"
 	case DisconnectIdleTimeout:
 		return "idle_timeout"
 	case DisconnectReset:
 		return "stateless_reset"
 	case DisconnectGraceful:
 		return "graceful"
+	case DisconnectTopologyPrune:
+		return "topology_prune"
+	case DisconnectRevoked:
+		return "revoked"
 	case DisconnectCertRotation:
 		return "cert_rotation"
 	case DisconnectCertExpired:
 		return "cert_expired"
-	default:
-		return "unknown"
 	}
+	return "unknown"
 }
 
 type PeerDisconnected struct {
@@ -138,6 +155,14 @@ type RetryPeer struct {
 
 func (RetryPeer) isInput() {}
 
+// ForgetPeer removes a peer from the state machine entirely, preventing
+// further dial attempts (e.g. after revocation or cert expiry).
+type ForgetPeer struct {
+	PeerKey types.PeerKey
+}
+
+func (ForgetPeer) isInput() {}
+
 // Output effects.
 type Output interface{ isOutput() }
 
@@ -146,7 +171,6 @@ type PeerConnected struct {
 	IP           net.IP
 	ObservedPort int
 	PeerKey      types.PeerKey
-	Inbound      bool
 }
 
 func (PeerConnected) isOutput() {}
@@ -185,6 +209,8 @@ const (
 	directAttemptThreshold     = 2
 	punchAttemptThreshold      = 2
 
+	connectingTimeout = 10 * time.Second
+
 	unreachableRetryInterval        = 20 * time.Second
 	idleTimeoutRetryInterval        = 1 * time.Second
 	resetRetryInterval              = 5 * time.Second
@@ -202,25 +228,67 @@ func backoff(attempts int) time.Duration {
 func (s *Store) Step(now time.Time, in Input) []Output {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	var before map[types.PeerKey]PeerState
+	if s.metrics.StateTransitions != nil {
+		before = s.stateSnapshot()
+	}
+
+	var out []Output
 	switch e := in.(type) {
 	case Tick:
-		return s.tick(now)
+		out = s.tick(now)
 	case DiscoverPeer:
 		s.discoverPeer(now, e)
-		return nil
 	case ConnectPeer:
-		return s.connectPeer(now, e)
+		out = s.connectPeer(now, e)
 	case ConnectFailed:
 		s.connectFailed(now, e)
-		return nil
 	case PeerDisconnected:
 		s.disconnectPeer(now, e)
-		return nil
 	case RetryPeer:
 		s.retryPeer(now, e)
-		return nil
+	case ForgetPeer:
+		delete(s.m, e.PeerKey)
 	}
-	return nil
+
+	if before != nil {
+		s.countTransitions(before)
+	}
+	s.updateGauges()
+	return out
+}
+
+func (s *Store) stateSnapshot() map[types.PeerKey]PeerState {
+	snap := make(map[types.PeerKey]PeerState, len(s.m))
+	for k, p := range s.m {
+		snap[k] = p.State
+	}
+	return snap
+}
+
+func (s *Store) countTransitions(before map[types.PeerKey]PeerState) {
+	var transitions int64
+	for k, p := range s.m {
+		prev, existed := before[k]
+		if !existed || prev != p.State {
+			transitions++
+		}
+	}
+	if transitions > 0 {
+		s.metrics.StateTransitions.Add(transitions)
+	}
+}
+
+func (s *Store) updateGauges() {
+	if !s.metrics.Enabled() {
+		return
+	}
+	c := s.stateCountsLocked()
+	s.metrics.PeersDiscovered.Set(float64(c.Discovered))
+	s.metrics.PeersConnecting.Set(float64(c.Connecting))
+	s.metrics.PeersConnected.Set(float64(c.Connected))
+	s.metrics.PeersUnreachable.Set(float64(c.Unreachable))
 }
 
 func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
@@ -235,6 +303,9 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
 			NextActionAt: now, // eligible for connection immediately
 		}
 		p.resetStage()
+		if !e.PubliclyAccessible && !e.PrivatelyRoutable && p.LastAddr == nil {
+			p.Stage = ConnectStagePunch
+		}
 		s.m[e.PeerKey] = p
 		return
 	}
@@ -247,6 +318,11 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
 	if e.LastAddr != nil {
 		p.LastAddr = e.LastAddr
 	}
+	if p.State == PeerStateDiscovered && p.Stage == ConnectStagePunch && e.PrivatelyRoutable && p.LastAddr == nil {
+		p.Stage = ConnectStageDirect
+		p.StageAttempts = 0
+		p.NextActionAt = now
+	}
 }
 
 func (s *Store) tick(now time.Time) []Output {
@@ -256,13 +332,20 @@ func (s *Store) tick(now time.Time) []Output {
 			continue
 		}
 
-		switch p.State { //nolint:exhaustive
-		case PeerStateConnected, PeerStateConnecting:
+		switch p.State {
+		case PeerStateConnected:
+			continue
+		case PeerStateConnecting:
+			if now.Sub(p.ConnectingAt) < connectingTimeout {
+				continue
+			}
+			s.connectTimedOut(now, p)
 			continue
 		case PeerStateUnreachable:
 			p.State = PeerStateDiscovered
 			p.resetStage()
 			p.StageAttempts = 0
+		case PeerStateDiscovered:
 		}
 
 		var out Output
@@ -277,6 +360,7 @@ func (s *Store) tick(now time.Time) []Output {
 
 		outputs = append(outputs, out)
 		p.State = PeerStateConnecting
+		p.ConnectingAt = now
 	}
 	return outputs
 }
@@ -297,6 +381,7 @@ func (s *Store) connectPeer(now time.Time, e ConnectPeer) []Output {
 	p.Stage = ConnectStageDirect // reset for next time
 	p.StageAttempts = 0
 
+	s.metrics.Connections.Inc()
 	return []Output{PeerConnected(e)}
 }
 
@@ -315,12 +400,14 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) {
 			s.log.Debugw("eager retry failed, falling back to direct", "peer", e.PeerKey.Short())
 			p.Stage = ConnectStageDirect
 			p.StageAttempts = 0
+			s.metrics.StageEscalations.Inc()
 		}
 	case ConnectStageDirect, ConnectStageUnspecified:
 		if p.StageAttempts >= directAttemptThreshold {
 			s.log.Debugw("escalating to punch", "peer", e.PeerKey.Short())
 			p.Stage = ConnectStagePunch
 			p.StageAttempts = 0
+			s.metrics.StageEscalations.Inc()
 		}
 	case ConnectStagePunch:
 		if p.StageAttempts >= punchAttemptThreshold {
@@ -328,12 +415,20 @@ func (s *Store) connectFailed(now time.Time, e ConnectFailed) {
 			p.StageAttempts = 0
 			p.State = PeerStateUnreachable
 			p.NextActionAt = now.Add(unreachableRetryInterval)
+			s.metrics.StageEscalations.Inc()
 			return
 		}
 	}
 
 	p.NextActionAt = now.Add(backoff(p.StageAttempts))
 	p.State = PeerStateDiscovered // eligible for retry after backoff
+}
+
+// connectTimedOut handles a peer that has been stuck in PeerStateConnecting
+// beyond connectingTimeout. It runs the same stage-escalation logic as
+// connectFailed so that punch-stage peers eventually reach Unreachable.
+func (s *Store) connectTimedOut(now time.Time, p *Peer) {
+	s.connectFailed(now, ConnectFailed{PeerKey: p.ID})
 }
 
 func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
@@ -343,18 +438,25 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 	}
 
 	delay := unknownDisconnectRetryInterval
-	switch e.Reason { //nolint:exhaustive
+	switch e.Reason {
+	case DisconnectUnknown:
 	case DisconnectIdleTimeout:
 		delay = idleTimeoutRetryInterval
 	case DisconnectReset:
 		delay = resetRetryInterval
 	case DisconnectGraceful:
 		delay = gracefulDisconnectRetryInterval
+	case DisconnectTopologyPrune:
+		delay = unreachableRetryInterval
+	case DisconnectRevoked:
+		delay = unreachableRetryInterval
 	case DisconnectCertRotation:
 		delay = idleTimeoutRetryInterval
 	case DisconnectCertExpired:
 		delay = unknownDisconnectRetryInterval
 	}
+
+	s.metrics.Disconnects.Inc()
 
 	s.log.Debugw("scheduling reconnect",
 		"peer", e.PeerKey.Short(),
@@ -417,4 +519,35 @@ func (s *Store) GetAll(state PeerState) []types.PeerKey {
 		}
 	}
 	return out
+}
+
+// PeerStateCounts holds per-state peer counts.
+type PeerStateCounts struct {
+	Discovered  uint32
+	Connecting  uint32
+	Connected   uint32
+	Unreachable uint32
+}
+
+func (s *Store) StateCounts() PeerStateCounts {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stateCountsLocked()
+}
+
+func (s *Store) stateCountsLocked() PeerStateCounts {
+	var c PeerStateCounts
+	for _, p := range s.m {
+		switch p.State {
+		case PeerStateDiscovered:
+			c.Discovered++
+		case PeerStateConnecting:
+			c.Connecting++
+		case PeerStateConnected:
+			c.Connected++
+		case PeerStateUnreachable:
+			c.Unreachable++
+		}
+	}
+	return c
 }

@@ -7,6 +7,8 @@ You are the network transport specialist for Pollen. You think in terms of UDP d
 - `pkg/mesh/` — QUIC-based mesh networking: session lifecycle, datagram send/recv, stream multiplexing, invite redemption, punch coordination
 - `pkg/sock/` — UDP hole-punching: scattered/main probe protocol, ephemeral socket management, reference-counted connections
 - `pkg/peer/` — Peer connection state machine: state transitions, backoff strategy, connection stage escalation
+- `pkg/topology/` — Topology-aware peer selection: Vivaldi coordinate system, peer budget allocation (infra/nearest/long-link), NAT-aware filtering
+- `pkg/nat/` — NAT type classification: endpoint-independent (easy) vs endpoint-dependent (hard) detection
 
 ## Responsibilities
 
@@ -15,6 +17,8 @@ You are the network transport specialist for Pollen. You think in terms of UDP d
 3. Defend the probe protocol format (`0x01` request, `0x02` response, 16-byte nonce) and simultaneous-open hole-punch strategy
 4. Own the peer state machine transitions: Discovered → Connecting → Connected → Unreachable, with correct backoff at each stage
 5. Guarantee that `sessionRegistry` waiters are notified on new sessions and dead sessions are reaped
+6. Own the topology selection algorithm — Vivaldi coordinate convergence, peer budget allocation across infrastructure/nearest/long-link categories, and NAT-aware dial suppression
+7. Maintain NAT type classification and its integration with topology decisions
 
 ## API contract
 
@@ -33,6 +37,12 @@ You are the network transport specialist for Pollen. You think in terms of UDP d
 - `peer.ConnectStage` — enum: `EagerRetry`, `Direct`, `Punch`
 - Input events: `DiscoverPeer`, `Tick`, `ConnectPeer`, `ConnectFailed`, `PeerDisconnected`, `RetryPeer`
 - Output events: `PeerConnected`, `AttemptConnect`, `AttemptEagerConnect`, `RequestPunchCoordination`
+- `topology.SelectTargets(params Params, peers []PeerInfo) []types.PeerKey` — compute desired outbound connections
+- `topology.PeerInfo` — topology-relevant peer snapshot (coord, NAT type, IPs, public accessibility)
+- `topology.Params` — topology budget parameters (current outbound, local IPs, local external IP)
+- `topology.Coord` — Vivaldi coordinate with `DistanceTo(other)` for latency estimation
+- `nat.Type` — enum: `Unknown`, `Easy`, `Hard`
+- `nat.Tracker` — observes external address mappings to classify NAT behavior
 
 ### Guarantees
 
@@ -44,11 +54,13 @@ You are the network transport specialist for Pollen. You think in terms of UDP d
 - Reconnection delay after disconnect depends on reason: IdleTimeout 1s, Reset 5s, Graceful 3s, Unknown 3s
 - Stage escalation thresholds: 1 eager retry, 2 direct attempts, 2 punch attempts before next stage
 - Hole-punch probes use exactly 256 ephemeral sockets (hard-side) or random port spray (easy-side)
+- Vivaldi coordinates converge via per-RTT updates; coordinate error tracks estimation confidence
+- Topology selection respects NAT compatibility — hard-to-hard connections are suppressed
 
 ## Needs
 
 - **trust**: `auth.NodeCredentials` for TLS certificate generation; `isSubjectRevoked` callback for rejecting revoked peers
-- **state**: `statev1.GossipVectorClock` and `statev1.GossipEventBatch` carried inside `meshv1.Envelope`
+- **state**: `statev1.GossipStateDigest` and `statev1.GossipEventBatch` carried inside `meshv1.Envelope`
 
 ## Proto ownership
 

@@ -14,34 +14,8 @@ First, determine what to review:
 
 ### Review criteria
 
-Apply these checks ruthlessly. Every violation gets called out with file, line, and a concrete fix.
+Apply all lessons from `.claude/CLAUDE.md` (especially the Lessons section). In addition, apply this defluff-specific check:
 
-#### Type systems
-- **No parallel type systems.** If a proto already defines a oneof or enum, code must switch on the proto type directly. Handwritten type-tag enums that shadow proto types are instant flags.
-- **Finite/strict switches only.** Every switch on a type or enum must be exhaustive. Dead default branches are fluff.
-
-#### Deduplication
-- **No duplicated fields.** If the same semantic (e.g. `deleted`) appears in N messages when it belongs on a wrapper, flag it.
-- **No duplicated logic.** If two functions build the same data structure with different ceremony, one must delegate to the other.
-
-#### Indirection and nesting
-- **No pointless wrappers.** `A { B { fields } }` when `A { fields }` suffices is instant debt.
-- **No unnecessary guard clauses.** If a function is only called in a context where a condition is already true, don't re-check it.
-
-#### Dead code
-- **No dead fields.** Struct fields that no production code reads must be removed.
-- **No dead parameters.** Function parameters that are never used must be removed. Signatures are contracts; they must not lie.
-- **No dead branches.** Code paths that can never execute (e.g. an else branch in a function only called when `!deleted`) must be removed.
-
-#### Component boundaries
-- **No leaking internals.** Each package should expose a clean API. Internal struct types, lock details, and implementation choices must not leak.
-- **Batch where possible.** If callers always loop over a method that acquires a lock, provide a batch variant that acquires once.
-
-#### Constants and magic numbers
-- **No magic constants.** Hardcoded sizes, overheads, and offsets must be computed or derived from the source of truth (e.g. proto serialization).
-
-#### Style
-- **No naked returns** in functions with named return values unless the function is trivially short.
 - **No cosmetic noise** in diffs (reformatting, reordering imports, renaming things that don't need renaming).
 
 ### Output format

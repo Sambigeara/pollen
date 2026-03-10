@@ -56,7 +56,10 @@ func logsDarwin(cmd *cobra.Command, follow bool, lines int) {
 	c := exec.CommandContext(cmd.Context(), "tail", args...)
 	c.Stdout = cmd.OutOrStdout()
 	c.Stderr = cmd.ErrOrStderr()
-	_ = c.Run()
+	if err := c.Run(); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to read logs: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func logsLinux(cmd *cobra.Command, follow bool, lines int) {
@@ -68,5 +71,8 @@ func logsLinux(cmd *cobra.Command, follow bool, lines int) {
 	c := exec.CommandContext(cmd.Context(), "journalctl", args...)
 	c.Stdout = cmd.OutOrStdout()
 	c.Stderr = cmd.ErrOrStderr()
-	_ = c.Run()
+	if err := c.Run(); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to read logs: %v\n", err)
+		os.Exit(1)
+	}
 }

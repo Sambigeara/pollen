@@ -1,9 +1,12 @@
 package main
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -36,17 +39,29 @@ func runStatus(cmd *cobra.Command, args []string) {
 	opts := statusViewOpts{wide: wide, includeAll: includeAll}
 
 	client := newControlClient(cmd)
-	resp, err := client.GetStatus(context.Background(), connect.NewRequest(&controlv1.GetStatusRequest{}))
+	resp, err := client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
-		if connect.CodeOf(err) == connect.CodeUnavailable {
-			fmt.Fprintln(cmd.OutOrStdout(), "daemon is not running")
-		} else {
+		if connect.CodeOf(err) != connect.CodeUnavailable {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			os.Exit(1)
 		}
-		return
+		if socketPermissionDenied(cmd) {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"cannot reach daemon — are you in the pln group?\n"+
+					"  fix: sudo usermod -aG pln $(whoami) && newgrp pln\n")
+			os.Exit(1)
+		}
+		fmt.Fprintln(cmd.ErrOrStderr(), "daemon is not running")
+		os.Exit(1)
 	}
 
 	st := resp.Msg
+
+	metricsResp, metricsErr := client.GetMetrics(cmd.Context(), connect.NewRequest(&controlv1.GetMetricsRequest{}))
+	if metricsErr == nil {
+		renderHealthLine(cmd.OutOrStdout(), metricsResp.Msg)
+	}
+
 	var sections []statusSection
 	switch mode {
 	case "all":
@@ -66,9 +81,14 @@ func runStatus(cmd *cobra.Command, args []string) {
 		}
 	default:
 		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services)\n", mode)
-		return
+		os.Exit(1)
 	}
 	renderStatusSections(cmd.OutOrStdout(), sections)
+
+	if wide && metricsErr == nil {
+		renderMetricsDetails(cmd.OutOrStdout(), metricsResp.Msg)
+	}
+
 	if footer := certExpiryFooter(st); footer != "" {
 		fmt.Fprintln(cmd.OutOrStdout(), footer)
 	}
@@ -89,7 +109,7 @@ type statusSection struct {
 func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
 	sec := statusSection{
 		title:   "PEERS",
-		headers: []string{"NODE", "STATUS", "ADDR"},
+		headers: []string{"NODE", "STATUS", "ADDR", "CPU", "MEM", "TUNNELS", "LATENCY"},
 	}
 
 	if self := st.GetSelf(); self != nil && self.GetNode() != nil {
@@ -98,11 +118,17 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		if addr == "" {
 			addr = "-"
 		}
-		status := "online"
+		status := "-"
 		if self.GetPubliclyAccessible() {
-			status = "online (public)"
+			status = "- (public)"
 		}
-		sec.rows = append(sec.rows, []string{label, status, addr})
+		sec.rows = append(sec.rows, []string{
+			label, status, addr,
+			formatPercent(self.GetCpuPercent()),
+			formatPercent(self.GetMemPercent()),
+			formatTunnelCount(self.GetTunnelCount()),
+			"-",
+		})
 	}
 
 	filtered := 0
@@ -113,20 +139,54 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		}
 		label := formatPeerID(n.GetNode().GetPeerId(), opts.wide)
 		status := formatStatus(n.GetStatus())
-		if n.GetPubliclyAccessible() && isReachableStatus(n.GetStatus()) {
+		if n.GetPubliclyAccessible() {
 			status += " (public)"
 		}
 		addr := n.GetAddr()
 		if addr == "" {
 			addr = "-"
 		}
-		sec.rows = append(sec.rows, []string{label, status, addr})
+
+		cpu := formatPercent(n.GetCpuPercent())
+		mem := formatPercent(n.GetMemPercent())
+		tunnels := formatTunnelCount(n.GetTunnelCount())
+		latency := formatLatency(n.GetLatencyMs())
+
+		if !isReachableStatus(n.GetStatus()) {
+			cpu = "-"
+			mem = "-"
+			tunnels = "-"
+			latency = "-"
+		}
+
+		sec.rows = append(sec.rows, []string{label, status, addr, cpu, mem, tunnels, latency})
 	}
 
 	if filtered > 0 {
 		sec.footer = fmt.Sprintf("offline peers: %d (use --all)", filtered)
 	}
 	return sec
+}
+
+func formatPercent(v uint32) string {
+	if v == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d%%", v)
+}
+
+func formatTunnelCount(v uint32) string {
+	if v == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d", v)
+}
+
+func formatLatency(ms float64) string {
+	if ms == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.1fms", ms)
 }
 
 func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
@@ -136,6 +196,10 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 	}
 
 	reachableProviders := reachableProviderSet(st)
+
+	suffixes := serviceNameSuffixes(st.Services, func(pk string) bool {
+		return opts.includeAll || reachableProviders[pk]
+	})
 
 	type connKey struct {
 		service  string
@@ -151,6 +215,7 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 	}
 
 	filtered := 0
+	hasCollisions := len(suffixes) > 0
 	for _, s := range st.Services {
 		providerID := peerKeyString(s.GetProvider().GetPeerId())
 		if !opts.includeAll && !reachableProviders[providerID] {
@@ -162,12 +227,21 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 		if lp, ok := connLocal[connKey{service: s.GetName(), provider: providerID}]; ok {
 			local = fmt.Sprintf("%d", lp)
 		}
-		sec.rows = append(sec.rows, []string{s.GetName(), provider, fmt.Sprintf("%d", s.GetPort()), local})
+		displayName := s.GetName()
+		if sfx := suffixes[serviceProviderKey{s.GetName(), providerID}]; sfx != "" {
+			displayName += "-" + sfx
+		}
+		sec.rows = append(sec.rows, []string{displayName, provider, fmt.Sprintf("%d", s.GetPort()), local})
 	}
 
-	if filtered > 0 {
-		sec.footer = fmt.Sprintf("offline services: %d (use --all)", filtered)
+	var footerParts []string
+	if hasCollisions {
+		footerParts = append(footerParts, "service suffixes match the start of the provider ID")
 	}
+	if filtered > 0 {
+		footerParts = append(footerParts, fmt.Sprintf("offline services: %d (use --all)", filtered))
+	}
+	sec.footer = strings.Join(footerParts, "\n")
 	return sec
 }
 
@@ -199,22 +273,25 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render(msg) //nolint:mnd
 	}
 
+	msg := "membership expires in " + humanDuration(remaining)
 	if nonRenewable {
-		msg := "guest membership expires in " + humanDuration(remaining)
-		if health == controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON {
-			return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + " — request a new invite to continue") //nolint:mnd
-		}
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg) //nolint:mnd
+		msg = "guest " + msg
 	}
 
-	msg := "membership expires in " + humanDuration(remaining)
-	if health == controlv1.CertHealth_CERT_HEALTH_RENEWING {
+	switch health {
+	case controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON:
+		detail := " — auto-renewal failed — rejoin the cluster or contact a cluster admin"
+		if nonRenewable {
+			detail = " — request a new invite to continue"
+		}
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + detail) //nolint:mnd
+	case controlv1.CertHealth_CERT_HEALTH_RENEWING:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render( //nolint:mnd
 			msg + " — auto-renewal in progress")
-	}
-	if health == controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render( //nolint:mnd
-			msg + " — auto-renewal failed — rejoin the cluster or contact a cluster admin")
+	case controlv1.CertHealth_CERT_HEALTH_OK,
+		controlv1.CertHealth_CERT_HEALTH_UNSPECIFIED,
+		controlv1.CertHealth_CERT_HEALTH_EXPIRED:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg) //nolint:mnd
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg) //nolint:mnd
 }
@@ -292,4 +369,47 @@ func renderStatusSections(w io.Writer, sections []statusSection) {
 		}
 	}
 	fmt.Fprintln(w)
+}
+
+func renderHealthLine(w io.Writer, m *controlv1.GetMetricsResponse) {
+	var label string
+	var color string
+	switch m.GetHealth() {
+	case controlv1.HealthStatus_HEALTH_STATUS_HEALTHY:
+		label = "HEALTHY"
+		color = "2" //nolint:mnd
+	case controlv1.HealthStatus_HEALTH_STATUS_DEGRADED:
+		label = "DEGRADED"
+		color = "3" //nolint:mnd
+	case controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY:
+		label = "UNHEALTHY"
+		color = "1"
+	case controlv1.HealthStatus_HEALTH_STATUS_UNSPECIFIED:
+		return
+	}
+	fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(label))
+	fmt.Fprintln(w)
+}
+
+func renderMetricsDetails(w io.Writer, m *controlv1.GetMetricsResponse) {
+	fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Render("DIAGNOSTICS")) //nolint:mnd
+	fmt.Fprintf(w, "  vivaldi error:    %.3f\n", m.GetVivaldiError())
+	fmt.Fprintf(w, "  vivaldi samples:  %d\n", m.GetVivaldiSamples())
+	fmt.Fprintf(w, "  eager syncs:      %d ok, %d failed\n", m.GetEagerSyncs(), m.GetEagerSyncFailures())
+	if m.GetPunchAttempts() > 0 {
+		fmt.Fprintf(w, "  punch success:    %d/%d\n", m.GetPunchAttempts()-m.GetPunchFailures(), m.GetPunchAttempts())
+	}
+	if m.GetCertRenewals() > 0 || m.GetCertRenewalsFailed() > 0 {
+		fmt.Fprintf(w, "  cert renewals:    %d ok, %d failed\n", m.GetCertRenewals(), m.GetCertRenewalsFailed())
+	}
+	fmt.Fprintln(w)
+}
+
+func socketPermissionDenied(cmd *cobra.Command) bool {
+	pollenDir, err := pollenPath(cmd)
+	if err != nil {
+		return false
+	}
+	_, statErr := os.Stat(filepath.Join(pollenDir, socketName))
+	return errors.Is(statErr, os.ErrPermission)
 }

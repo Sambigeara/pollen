@@ -15,8 +15,13 @@ message Service {
   }];
 }
 
-message GossipVectorClock {
-  map<string, uint64> counters = 1;
+message PeerDigest {
+  uint64 max_counter = 1;
+  fixed64 state_hash = 2;
+}
+
+message GossipStateDigest {
+  map<string, PeerDigest> peers = 1;
 }
 
 message ServiceChange {
@@ -40,7 +45,17 @@ message ExternalPortChange {
   uint32 external_port = 1;
 }
 
+message ObservedExternalIPChange {
+  string ip = 1;
+}
+
 message PubliclyAccessibleChange {}
+
+message VivaldiCoordinateChange {
+  double x = 1;
+  double y = 2;
+  double height = 3;
+}
 
 message IdentityChange {
   bytes identity_pub = 1 [(buf.validate.field).bytes = {len: 32}];
@@ -49,6 +64,16 @@ message IdentityChange {
 
 message RevocationChange {
   pollen.admission.v1.SignedRevocation revocation = 1 [(buf.validate.field).required = true];
+}
+
+message NatTypeChange {
+  uint32 nat_type = 1;
+}
+
+message ResourceTelemetryChange {
+  uint32 cpu_percent = 1;
+  uint32 mem_percent = 2;
+  uint64 mem_total_bytes = 3;
 }
 
 message GossipEvent {
@@ -60,15 +85,20 @@ message GossipEvent {
   oneof change {
     NetworkChange network = 3;
     ExternalPortChange external_port = 4;
+    ObservedExternalIPChange observed_external_ip = 13;
     IdentityChange identity_pub = 5;
     ServiceChange service = 6;
     ReachabilityChange reachability = 7;
     RevocationChange revocation = 9;
     PubliclyAccessibleChange publicly_accessible = 10;
+    VivaldiCoordinateChange vivaldi = 11;
+    NatTypeChange nat_type = 12;
+    ResourceTelemetryChange resource_telemetry = 14;
   }
   bool deleted = 8;
 }
 
 message GossipEventBatch {
   repeated GossipEvent events = 1;
+  bool is_response = 2;
 }

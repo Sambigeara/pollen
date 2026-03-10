@@ -17,7 +17,6 @@ func Init() {
 	logger, err := cfg.Build()
 	if err != nil {
 		log.Fatalf("can't initialize zap logger: %v", err)
-		panic(err)
 	}
 
 	zap.ReplaceGlobals(logger.Named("pln"))

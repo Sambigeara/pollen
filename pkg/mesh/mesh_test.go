@@ -14,6 +14,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/mesh"
+	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
@@ -236,7 +237,7 @@ func startMeshHarnessWithCreds(
 ) *meshHarness {
 	t.Helper()
 
-	m, err := mesh.NewMesh(0, priv, creds, config.CertTTLs{}.TLSIdentityTTL(), config.CertTTLs{}.MembershipTTL(), 0, nil)
+	m, err := mesh.NewMesh(0, priv, creds, config.CertTTLs{}.TLSIdentityTTL(), config.CertTTLs{}.MembershipTTL(), 0, nil, metrics.NewMeshMetrics(nil))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())

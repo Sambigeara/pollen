@@ -19,10 +19,6 @@ var (
 	TailscaleCGNAT = netip.MustParsePrefix("100.64.0.0/10") // RFC 6598 CGNAT
 	TailscaleULA   = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
 
-	Private10  = netip.MustParsePrefix("10.0.0.0/8")     // RFC 1918
-	Private172 = netip.MustParsePrefix("172.16.0.0/12")  // RFC 1918
-	Private192 = netip.MustParsePrefix("192.168.0.0/16") // RFC 1918
-
 	DefaultExclusions = []netip.Prefix{TailscaleCGNAT, TailscaleULA}
 )
 

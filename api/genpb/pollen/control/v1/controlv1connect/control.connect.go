@@ -41,6 +41,9 @@ const (
 	// ControlServiceGetStatusProcedure is the fully-qualified name of the ControlService's GetStatus
 	// RPC.
 	ControlServiceGetStatusProcedure = "/pollen.control.v1.ControlService/GetStatus"
+	// ControlServiceGetMetricsProcedure is the fully-qualified name of the ControlService's GetMetrics
+	// RPC.
+	ControlServiceGetMetricsProcedure = "/pollen.control.v1.ControlService/GetMetrics"
 	// ControlServiceRegisterServiceProcedure is the fully-qualified name of the ControlService's
 	// RegisterService RPC.
 	ControlServiceRegisterServiceProcedure = "/pollen.control.v1.ControlService/RegisterService"
@@ -53,6 +56,9 @@ const (
 	// ControlServiceConnectPeerProcedure is the fully-qualified name of the ControlService's
 	// ConnectPeer RPC.
 	ControlServiceConnectPeerProcedure = "/pollen.control.v1.ControlService/ConnectPeer"
+	// ControlServiceDisconnectServiceProcedure is the fully-qualified name of the ControlService's
+	// DisconnectService RPC.
+	ControlServiceDisconnectServiceProcedure = "/pollen.control.v1.ControlService/DisconnectService"
 	// ControlServiceRevokePeerProcedure is the fully-qualified name of the ControlService's RevokePeer
 	// RPC.
 	ControlServiceRevokePeerProcedure = "/pollen.control.v1.ControlService/RevokePeer"
@@ -63,10 +69,12 @@ type ControlServiceClient interface {
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
 	GetBootstrapInfo(context.Context, *connect.Request[v1.GetBootstrapInfoRequest]) (*connect.Response[v1.GetBootstrapInfoResponse], error)
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
+	GetMetrics(context.Context, *connect.Request[v1.GetMetricsRequest]) (*connect.Response[v1.GetMetricsResponse], error)
 	RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error)
 	UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error)
 	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
 	ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error)
+	DisconnectService(context.Context, *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error)
 	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
 }
 
@@ -99,6 +107,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("GetStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		getMetrics: connect.NewClient[v1.GetMetricsRequest, v1.GetMetricsResponse](
+			httpClient,
+			baseURL+ControlServiceGetMetricsProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("GetMetrics")),
+			connect.WithClientOptions(opts...),
+		),
 		registerService: connect.NewClient[v1.RegisterServiceRequest, v1.RegisterServiceResponse](
 			httpClient,
 			baseURL+ControlServiceRegisterServiceProcedure,
@@ -123,6 +137,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("ConnectPeer")),
 			connect.WithClientOptions(opts...),
 		),
+		disconnectService: connect.NewClient[v1.DisconnectServiceRequest, v1.DisconnectServiceResponse](
+			httpClient,
+			baseURL+ControlServiceDisconnectServiceProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("DisconnectService")),
+			connect.WithClientOptions(opts...),
+		),
 		revokePeer: connect.NewClient[v1.RevokePeerRequest, v1.RevokePeerResponse](
 			httpClient,
 			baseURL+ControlServiceRevokePeerProcedure,
@@ -137,10 +157,12 @@ type controlServiceClient struct {
 	shutdown          *connect.Client[v1.ShutdownRequest, v1.ShutdownResponse]
 	getBootstrapInfo  *connect.Client[v1.GetBootstrapInfoRequest, v1.GetBootstrapInfoResponse]
 	getStatus         *connect.Client[v1.GetStatusRequest, v1.GetStatusResponse]
+	getMetrics        *connect.Client[v1.GetMetricsRequest, v1.GetMetricsResponse]
 	registerService   *connect.Client[v1.RegisterServiceRequest, v1.RegisterServiceResponse]
 	unregisterService *connect.Client[v1.UnregisterServiceRequest, v1.UnregisterServiceResponse]
 	connectService    *connect.Client[v1.ConnectServiceRequest, v1.ConnectServiceResponse]
 	connectPeer       *connect.Client[v1.ConnectPeerRequest, v1.ConnectPeerResponse]
+	disconnectService *connect.Client[v1.DisconnectServiceRequest, v1.DisconnectServiceResponse]
 	revokePeer        *connect.Client[v1.RevokePeerRequest, v1.RevokePeerResponse]
 }
 
@@ -157,6 +179,11 @@ func (c *controlServiceClient) GetBootstrapInfo(ctx context.Context, req *connec
 // GetStatus calls pollen.control.v1.ControlService.GetStatus.
 func (c *controlServiceClient) GetStatus(ctx context.Context, req *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error) {
 	return c.getStatus.CallUnary(ctx, req)
+}
+
+// GetMetrics calls pollen.control.v1.ControlService.GetMetrics.
+func (c *controlServiceClient) GetMetrics(ctx context.Context, req *connect.Request[v1.GetMetricsRequest]) (*connect.Response[v1.GetMetricsResponse], error) {
+	return c.getMetrics.CallUnary(ctx, req)
 }
 
 // RegisterService calls pollen.control.v1.ControlService.RegisterService.
@@ -179,6 +206,11 @@ func (c *controlServiceClient) ConnectPeer(ctx context.Context, req *connect.Req
 	return c.connectPeer.CallUnary(ctx, req)
 }
 
+// DisconnectService calls pollen.control.v1.ControlService.DisconnectService.
+func (c *controlServiceClient) DisconnectService(ctx context.Context, req *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error) {
+	return c.disconnectService.CallUnary(ctx, req)
+}
+
 // RevokePeer calls pollen.control.v1.ControlService.RevokePeer.
 func (c *controlServiceClient) RevokePeer(ctx context.Context, req *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error) {
 	return c.revokePeer.CallUnary(ctx, req)
@@ -189,10 +221,12 @@ type ControlServiceHandler interface {
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
 	GetBootstrapInfo(context.Context, *connect.Request[v1.GetBootstrapInfoRequest]) (*connect.Response[v1.GetBootstrapInfoResponse], error)
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
+	GetMetrics(context.Context, *connect.Request[v1.GetMetricsRequest]) (*connect.Response[v1.GetMetricsResponse], error)
 	RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error)
 	UnregisterService(context.Context, *connect.Request[v1.UnregisterServiceRequest]) (*connect.Response[v1.UnregisterServiceResponse], error)
 	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
 	ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error)
+	DisconnectService(context.Context, *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error)
 	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
 }
 
@@ -221,6 +255,12 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("GetStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	controlServiceGetMetricsHandler := connect.NewUnaryHandler(
+		ControlServiceGetMetricsProcedure,
+		svc.GetMetrics,
+		connect.WithSchema(controlServiceMethods.ByName("GetMetrics")),
+		connect.WithHandlerOptions(opts...),
+	)
 	controlServiceRegisterServiceHandler := connect.NewUnaryHandler(
 		ControlServiceRegisterServiceProcedure,
 		svc.RegisterService,
@@ -245,6 +285,12 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("ConnectPeer")),
 		connect.WithHandlerOptions(opts...),
 	)
+	controlServiceDisconnectServiceHandler := connect.NewUnaryHandler(
+		ControlServiceDisconnectServiceProcedure,
+		svc.DisconnectService,
+		connect.WithSchema(controlServiceMethods.ByName("DisconnectService")),
+		connect.WithHandlerOptions(opts...),
+	)
 	controlServiceRevokePeerHandler := connect.NewUnaryHandler(
 		ControlServiceRevokePeerProcedure,
 		svc.RevokePeer,
@@ -259,6 +305,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceGetBootstrapInfoHandler.ServeHTTP(w, r)
 		case ControlServiceGetStatusProcedure:
 			controlServiceGetStatusHandler.ServeHTTP(w, r)
+		case ControlServiceGetMetricsProcedure:
+			controlServiceGetMetricsHandler.ServeHTTP(w, r)
 		case ControlServiceRegisterServiceProcedure:
 			controlServiceRegisterServiceHandler.ServeHTTP(w, r)
 		case ControlServiceUnregisterServiceProcedure:
@@ -267,6 +315,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceConnectServiceHandler.ServeHTTP(w, r)
 		case ControlServiceConnectPeerProcedure:
 			controlServiceConnectPeerHandler.ServeHTTP(w, r)
+		case ControlServiceDisconnectServiceProcedure:
+			controlServiceDisconnectServiceHandler.ServeHTTP(w, r)
 		case ControlServiceRevokePeerProcedure:
 			controlServiceRevokePeerHandler.ServeHTTP(w, r)
 		default:
@@ -290,6 +340,10 @@ func (UnimplementedControlServiceHandler) GetStatus(context.Context, *connect.Re
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.GetStatus is not implemented"))
 }
 
+func (UnimplementedControlServiceHandler) GetMetrics(context.Context, *connect.Request[v1.GetMetricsRequest]) (*connect.Response[v1.GetMetricsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.GetMetrics is not implemented"))
+}
+
 func (UnimplementedControlServiceHandler) RegisterService(context.Context, *connect.Request[v1.RegisterServiceRequest]) (*connect.Response[v1.RegisterServiceResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.RegisterService is not implemented"))
 }
@@ -304,6 +358,10 @@ func (UnimplementedControlServiceHandler) ConnectService(context.Context, *conne
 
 func (UnimplementedControlServiceHandler) ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.ConnectPeer is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) DisconnectService(context.Context, *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.DisconnectService is not implemented"))
 }
 
 func (UnimplementedControlServiceHandler) RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error) {

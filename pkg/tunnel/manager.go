@@ -24,11 +24,16 @@ type StreamTransport interface {
 	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
 }
 
+type connectionKey struct {
+	peerID types.PeerKey
+	port   uint32
+}
+
 // Manager manages service tunneling over peer streams.
 type Manager struct {
 	log           *zap.SugaredLogger
 	transport     StreamTransport
-	connections   map[string]connectionHandler
+	connections   map[connectionKey]connectionHandler
 	services      map[uint32]serviceHandler
 	activeStreams map[uint32]map[io.ReadWriteCloser]struct{}
 	connectionMu  sync.RWMutex
@@ -70,7 +75,7 @@ func New(transport StreamTransport) *Manager {
 	return &Manager{
 		log:           zap.S().Named("tun"),
 		transport:     transport,
-		connections:   make(map[string]connectionHandler),
+		connections:   make(map[connectionKey]connectionHandler),
 		services:      make(map[uint32]serviceHandler),
 		activeStreams: make(map[uint32]map[io.ReadWriteCloser]struct{}),
 	}
@@ -247,7 +252,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 		}
 	}()
 
-	m.connections[peerID.String()+":"+boundPortStr] = connectionHandler{
+	m.connections[connectionKey{peerID: peerID, port: uint32(boundPort)}] = connectionHandler{
 		cancel: cancelFn,
 		peerID: peerID,
 		remote: remotePort,

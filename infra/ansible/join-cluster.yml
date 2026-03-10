@@ -1,0 +1,69 @@
+---
+# Generate invite tokens on root and join all other nodes.
+# Usage: ansible-playbook join-cluster.yml -i inventories/vivaldi.py
+
+- name: Generate invite tokens
+  hosts: root
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Generate all invite tokens in one shot
+      ansible.builtin.shell: |
+        for i in $(seq {{ groups['relays'] | length + groups['private'] | length }}); do
+          token=$(pln invite --ttl 10m)
+          printf '%s\n' "$token"
+        done
+      register: invite_raw
+      changed_when: true
+
+    - name: Build token list
+      ansible.builtin.set_fact:
+        invite_tokens: "{{ invite_raw.stdout_lines }}"
+
+- name: Join relay nodes
+  hosts: relays
+  become: true
+  gather_facts: false
+  serial: 1
+
+  tasks:
+    - name: Check if pln is already running
+      ansible.builtin.command: systemctl is-active pln
+      register: pln_check
+      failed_when: false
+      changed_when: false
+
+    - name: Determine token index
+      ansible.builtin.set_fact:
+        token_index: "{{ groups['relays'].index(inventory_hostname) }}"
+      when: pln_check.rc != 0
+
+    - name: Join cluster as public relay
+      ansible.builtin.command: >
+        pln join --public '{{ hostvars[groups["root"][0]].invite_tokens[token_index | int] }}'
+      when: pln_check.rc != 0
+      changed_when: true
+
+- name: Join private nodes
+  hosts: private
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Check if pln is already running
+      ansible.builtin.command: systemctl is-active pln
+      register: pln_check
+      failed_when: false
+      changed_when: false
+
+    - name: Determine token index
+      ansible.builtin.set_fact:
+        token_index: "{{ groups['relays'] | length + groups['private'].index(inventory_hostname) }}"
+      when: pln_check.rc != 0
+
+    - name: Join cluster
+      ansible.builtin.command: >
+        pln join '{{ hostvars[groups["root"][0]].invite_tokens[token_index | int] }}'
+      when: pln_check.rc != 0
+      changed_when: true

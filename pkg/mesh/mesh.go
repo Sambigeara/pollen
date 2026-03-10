@@ -16,6 +16,9 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/nat"
+	"github.com/sambigeara/pollen/pkg/observability/metrics"
+	"github.com/sambigeara/pollen/pkg/observability/traces"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/sock"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -31,13 +34,18 @@ const (
 	probeBufSize        = 2048
 	inviteRedeemTTL     = 5 * time.Minute
 	sessionReapInterval = 5 * time.Minute
+	streamTypeTimeout   = 5 * time.Second
+
+	streamTypeClock  byte = 1
+	streamTypeTunnel byte = 2
 )
 
 func quicConfig() *quic.Config {
 	return &quic.Config{
-		MaxIdleTimeout:  quicIdleTimeout,
-		KeepAlivePeriod: quicKeepAlivePeriod,
-		EnableDatagrams: true,
+		MaxIdleTimeout:        quicIdleTimeout,
+		KeepAlivePeriod:       quicKeepAlivePeriod,
+		EnableDatagrams:       true,
+		MaxIncomingUniStreams: -1,
 	}
 }
 
@@ -53,22 +61,40 @@ type Mesh interface {
 	Events() <-chan peer.Input
 	OpenStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
 	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
+	OpenClockStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
+	AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
 	JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error
 	JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
-	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr) error
+	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr, localNAT nat.Type) error
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
 	PeerCertExpiresAt(peer types.PeerKey) (time.Time, bool)
 	PeerMembershipCert(peer types.PeerKey) (*admissionv1.MembershipCert, bool)
+	IsOutbound(types.PeerKey) bool
 	ConnectedPeers() []types.PeerKey
-	ClosePeerSession(peerKey types.PeerKey)
+	ClosePeerSession(peerKey types.PeerKey, reason CloseReason)
 	ListenPort() int
 	BroadcastDisconnect() error
 	UpdateMeshCert(cert tls.Certificate)
 	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.MembershipCert, error)
+	SetTracer(t *traces.Tracer)
 	Close() error
 }
+
+type CloseReason string
+
+const (
+	CloseReasonRevoked       CloseReason = "revoked"
+	CloseReasonTopologyPrune CloseReason = "topology_prune"
+	CloseReasonCertExpired   CloseReason = "cert_expired"
+	CloseReasonCertRotation  CloseReason = "cert_rotation"
+	CloseReasonDisconnect    CloseReason = "disconnect"
+	CloseReasonDuplicate     CloseReason = "duplicate"
+	CloseReasonReplaced      CloseReason = "replaced"
+	CloseReasonDisconnected  CloseReason = "disconnected"
+	CloseReasonShutdown      CloseReason = "shutdown"
+)
 
 type impl struct {
 	meshCert         atomic.Pointer[tls.Certificate]
@@ -80,8 +106,11 @@ type impl struct {
 	inviteSigner     *auth.AdminSigner
 	isSubjectRevoked func([]byte) bool
 	streamCh         chan incomingStream
+	clockStreamCh    chan incomingStream
 	trustBundle      *admissionv1.TrustBundle
 	log              *zap.SugaredLogger
+	metrics          *metrics.MeshMetrics
+	tracer           *traces.Tracer
 	listener         *quic.Listener
 	sessions         *sessionRegistry
 	mainQT           *quic.Transport
@@ -104,7 +133,19 @@ type peerSession struct {
 	membershipCert *admissionv1.MembershipCert
 	createdAt      time.Time
 	certExpiresAt  time.Time
-	inbound        bool
+	outbound       bool
+}
+
+func newPeerSession(conn *quic.Conn, transport *quic.Transport, outbound bool) *peerSession {
+	mc := membershipCertFromConn(conn)
+	return &peerSession{
+		conn:           conn,
+		transport:      transport,
+		membershipCert: mc,
+		createdAt:      time.Now(),
+		certExpiresAt:  auth.CertExpiresAt(mc),
+		outbound:       outbound,
+	}
 }
 
 type directDialResult struct {
@@ -112,7 +153,7 @@ type directDialResult struct {
 	err     error
 }
 
-func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsIdentityTTL, membershipTTL, maxConnectionAge time.Duration, isSubjectRevoked func([]byte) bool) (Mesh, error) {
+func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsIdentityTTL, membershipTTL, maxConnectionAge time.Duration, isSubjectRevoked func([]byte) bool, mm *metrics.MeshMetrics) (Mesh, error) {
 	meshCert, err := GenerateIdentityCert(signPriv, creds.Cert, tlsIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate mesh cert: %w", err)
@@ -135,11 +176,13 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 		port:             defaultPort,
 		membershipTTL:    membershipTTL,
 		maxConnectionAge: maxConnectionAge,
-		sessions:         newSessionRegistry(),
+		sessions:         newSessionRegistry(mm.SessionsActive),
 		recvCh:           make(chan Packet, queueBufSize),
 		renewalCh:        make(chan *meshv1.CertRenewalResponse, 1),
 		inCh:             make(chan peer.Input, queueBufSize),
 		streamCh:         make(chan incomingStream, queueBufSize),
+		clockStreamCh:    make(chan incomingStream, queueBufSize),
+		metrics:          mm,
 	}
 	m.meshCert.Store(&meshCert)
 	return m, nil
@@ -197,16 +240,41 @@ func (m *impl) Events() <-chan peer.Input {
 }
 
 func (m *impl) OpenStream(ctx context.Context, peerKey types.PeerKey) (io.ReadWriteCloser, error) {
+	return m.openTypedStream(ctx, peerKey, streamTypeTunnel)
+}
+
+func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {
+	return m.acceptFromCh(ctx, m.streamCh)
+}
+
+func (m *impl) OpenClockStream(ctx context.Context, peerKey types.PeerKey) (io.ReadWriteCloser, error) {
+	return m.openTypedStream(ctx, peerKey, streamTypeClock)
+}
+
+func (m *impl) AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {
+	return m.acceptFromCh(ctx, m.clockStreamCh)
+}
+
+func (m *impl) openTypedStream(ctx context.Context, peerKey types.PeerKey, streamType byte) (io.ReadWriteCloser, error) {
 	s, err := m.sessions.waitFor(ctx, peerKey)
 	if err != nil {
 		return nil, err
 	}
-	return s.conn.OpenStreamSync(ctx)
+	stream, err := s.conn.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := stream.Write([]byte{streamType}); err != nil {
+		stream.CancelWrite(0)
+		stream.CancelRead(0)
+		return nil, err
+	}
+	return stream, nil
 }
 
-func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {
+func (m *impl) acceptFromCh(ctx context.Context, ch <-chan incomingStream) (types.PeerKey, io.ReadWriteCloser, error) {
 	select {
-	case incoming, ok := <-m.streamCh:
+	case incoming, ok := <-ch:
 		if !ok {
 			return types.PeerKey{}, nil, net.ErrClosed
 		}
@@ -225,21 +293,14 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 		return nil, fmt.Errorf("quic dial %s: %w", addr, err)
 	}
 
-	mc := membershipCertFromConn(qc)
-	return &peerSession{
-		conn:           qc,
-		transport:      m.mainQT,
-		membershipCert: mc,
-		createdAt:      time.Now(),
-		certExpiresAt:  auth.CertExpiresAt(mc),
-	}, nil
+	return newPeerSession(qc, m.mainQT, true), nil
 }
 
-func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
+func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey, localNAT nat.Type) (*peerSession, error) {
 	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
 	qCfg := quicConfig()
 
-	conn, err := m.socks.Punch(ctx, addr)
+	conn, err := m.socks.Punch(ctx, addr, localNAT)
 	if err != nil {
 		return nil, fmt.Errorf("quic dial %s: sock store: %w", addr, err)
 	}
@@ -255,14 +316,7 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 		if err != nil {
 			return nil, fmt.Errorf("quic dial %s: %w", dialAddr, err)
 		}
-		mc := membershipCertFromConn(qc)
-		return &peerSession{
-			conn:           qc,
-			transport:      m.mainQT,
-			membershipCert: mc,
-			createdAt:      time.Now(),
-			certExpiresAt:  auth.CertExpiresAt(mc),
-		}, nil
+		return newPeerSession(qc, m.mainQT, true), nil
 	}
 
 	qt := &quic.Transport{Conn: conn.UDPConn}
@@ -274,15 +328,9 @@ func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer ty
 		return nil, fmt.Errorf("quic dial %s: %w", dialAddr, err)
 	}
 
-	mc := membershipCertFromConn(qc)
-	return &peerSession{
-		conn:           qc,
-		transport:      qt,
-		sockConn:       conn,
-		membershipCert: mc,
-		createdAt:      time.Now(),
-		certExpiresAt:  auth.CertExpiresAt(mc),
-	}, nil
+	s := newPeerSession(qc, qt, true)
+	s.sockConn = conn
+	return s, nil
 }
 
 func (m *impl) JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error {
@@ -403,11 +451,35 @@ func (m *impl) Send(_ context.Context, peerKey types.PeerKey, env *meshv1.Envelo
 	if err != nil {
 		return err
 	}
-	return s.conn.SendDatagram(b)
+	if err := s.conn.SendDatagram(b); err != nil {
+		m.handleSendFailure(peerKey, s, err)
+		m.metrics.DatagramErrors.Inc()
+		return err
+	}
+	m.metrics.DatagramsSent.Inc()
+	m.metrics.DatagramBytesSent.Add(int64(len(b)))
+	return nil
 }
 
-func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAddr) error {
-	s, err := m.dialPunch(ctx, addr, peerKey)
+func (m *impl) handleSendFailure(peerKey types.PeerKey, s *peerSession, err error) {
+	reason := classifyQUICError(err)
+	if reason == peer.DisconnectUnknown {
+		return
+	}
+	if !m.sessions.removeIfCurrent(peerKey, s) {
+		return
+	}
+	m.metrics.SessionDisconnects.Inc()
+	m.closeSession(s, CloseReasonDisconnect)
+	select {
+	case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: reason}:
+	case <-time.After(eventSendTimeout):
+		m.log.Warnw("dropped peer disconnect event after send failure", "peer", peerKey.Short(), "reason", reason)
+	}
+}
+
+func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAddr, localNAT nat.Type) error {
+	s, err := m.dialPunch(ctx, addr, peerKey, localNAT)
 	if err != nil {
 		return err
 	}
@@ -447,17 +519,26 @@ func (m *impl) PeerMembershipCert(peerKey types.PeerKey) (*admissionv1.Membershi
 	return s.membershipCert, s.membershipCert != nil
 }
 
+func (m *impl) IsOutbound(peerKey types.PeerKey) bool {
+	s, ok := m.sessions.get(peerKey)
+	if !ok {
+		return false
+	}
+	return s.outbound
+}
+
 func (m *impl) ConnectedPeers() []types.PeerKey {
 	return m.sessions.connectedPeers()
 }
 
-func (m *impl) ClosePeerSession(peerKey types.PeerKey) {
+func (m *impl) ClosePeerSession(peerKey types.PeerKey, reason CloseReason) {
 	s, ok := m.sessions.get(peerKey)
 	if !ok {
 		return
 	}
 	if m.sessions.removeIfCurrent(peerKey, s) {
-		m.closeSession(s, "revoked")
+		m.metrics.SessionDisconnects.Inc()
+		m.closeSession(s, reason)
 	}
 }
 
@@ -481,7 +562,8 @@ func (m *impl) sessionReaper(ctx context.Context) {
 				}
 				m.log.Debugw("reconnecting peer to refresh certificates", "peer", peerKey.Short(), "age", now.Sub(s.createdAt))
 				if m.sessions.removeIfCurrent(peerKey, s) {
-					m.closeSession(s, "cert_rotation")
+					m.metrics.SessionDisconnects.Inc()
+					m.closeSession(s, CloseReasonCertRotation)
 					select {
 					case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertRotation}:
 					case <-time.After(eventSendTimeout):
@@ -496,12 +578,15 @@ func (m *impl) sessionReaper(ctx context.Context) {
 func (m *impl) BroadcastDisconnect() error {
 	peers := m.sessions.drainPeers()
 	for _, s := range peers {
-		m.closeSession(s, "disconnect")
+		m.closeSession(s, CloseReasonDisconnect)
 	}
 	return nil
 }
 
 func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
+	span := m.tracer.Start("mesh.addPeer")
+	span.SetAttr("peer", peerKey.Short())
+
 	replace, ok := m.sessions.add(peerKey, s, func(current *peerSession) bool {
 		if current.conn.Context().Err() != nil {
 			return true
@@ -514,20 +599,23 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		return !m.localKey.Less(peerKey)
 	})
 	if !ok {
-		m.closeSession(s, "duplicate")
+		span.SetAttr("result", "duplicate")
+		span.End()
+		m.closeSession(s, CloseReasonDuplicate)
 		return
 	}
 
 	if replace != nil {
-		m.closeSession(replace, "replaced")
+		m.closeSession(replace, CloseReasonReplaced)
 	}
+
+	span.End()
+	m.metrics.SessionConnects.Inc()
 
 	// Use the connection's own context so the recv goroutine lives as long as
 	// the QUIC connection, not as long as the (potentially short-lived) dial ctx.
-	go m.recvDatagrams(s, peerKey)
-	m.acceptWG.Go(func() {
-		m.acceptStreams(s, peerKey)
-	})
+	m.acceptWG.Go(func() { m.recvDatagrams(s, peerKey) })
+	m.acceptWG.Go(func() { m.acceptBidiStreams(s, peerKey) })
 
 	addr := s.conn.RemoteAddr().(*net.UDPAddr) //nolint:forcetypeassert
 	select {
@@ -535,7 +623,6 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		PeerKey:      peerKey,
 		IP:           addr.IP,
 		ObservedPort: addr.Port,
-		Inbound:      s.inbound,
 	}:
 	case <-time.After(eventSendTimeout):
 		m.log.Warnw("dropped connect event, consumer lagging",
@@ -545,7 +632,7 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 	}
 }
 
-func (m *impl) acceptStreams(s *peerSession, peerKey types.PeerKey) {
+func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 	ctx := s.conn.Context()
 	for {
 		stream, err := s.conn.AcceptStream(ctx)
@@ -553,10 +640,32 @@ func (m *impl) acceptStreams(s *peerSession, peerKey types.PeerKey) {
 			return
 		}
 
+		_ = stream.SetReadDeadline(time.Now().Add(streamTypeTimeout))
+		var typeBuf [1]byte
+		if _, err := io.ReadFull(stream, typeBuf[:]); err != nil {
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+			continue
+		}
+		_ = stream.SetReadDeadline(time.Time{})
+
+		var ch chan incomingStream
+		switch typeBuf[0] {
+		case streamTypeClock:
+			ch = m.clockStreamCh
+		case streamTypeTunnel:
+			ch = m.streamCh
+		default:
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+			continue
+		}
+
 		select {
-		case m.streamCh <- incomingStream{peerKey: peerKey, stream: stream}:
+		case ch <- incomingStream{peerKey: peerKey, stream: stream}:
 		case <-ctx.Done():
-			_ = stream.Close()
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
 			return
 		}
 	}
@@ -568,6 +677,7 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 		payload, err := s.conn.ReceiveDatagram(ctx)
 		if err != nil {
 			if m.sessions.removeIfCurrent(peerKey, s) {
+				m.metrics.SessionDisconnects.Inc()
 				reason := classifyQUICError(err)
 				m.log.Debugw("peer session died",
 					"peer", peerKey.Short(),
@@ -584,10 +694,12 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 						"peer", peerKey.Short(),
 					)
 				}
-				m.closeSession(s, "disconnected")
+				m.closeSession(s, CloseReasonDisconnected)
 			}
 			return
 		}
+		m.metrics.DatagramsRecv.Inc()
+		m.metrics.DatagramBytesRecv.Add(int64(len(payload)))
 		env := &meshv1.Envelope{}
 		if err := env.UnmarshalVT(payload); err != nil {
 			continue
@@ -620,7 +732,18 @@ func classifyQUICError(err error) peer.DisconnectReason {
 	}
 	var appErr *quic.ApplicationError
 	if errors.As(err, &appErr) {
-		return peer.DisconnectGraceful
+		switch appErr.ErrorMessage {
+		case string(CloseReasonTopologyPrune):
+			return peer.DisconnectTopologyPrune
+		case string(CloseReasonRevoked):
+			return peer.DisconnectRevoked
+		case string(CloseReasonCertExpired):
+			return peer.DisconnectCertExpired
+		case string(CloseReasonCertRotation):
+			return peer.DisconnectCertRotation
+		default:
+			return peer.DisconnectGraceful
+		}
 	}
 	return peer.DisconnectUnknown
 }
@@ -660,8 +783,7 @@ func (m *impl) acceptLoop(ctx context.Context) {
 
 		switch qc.ConnectionState().TLS.NegotiatedProtocol {
 		case alpnMesh:
-			mc := membershipCertFromConn(qc)
-			m.addPeer(&peerSession{conn: qc, transport: m.mainQT, membershipCert: mc, inbound: true, createdAt: time.Now(), certExpiresAt: auth.CertExpiresAt(mc)}, peerKey)
+			m.addPeer(newPeerSession(qc, m.mainQT, false), peerKey)
 		case alpnInvite:
 			go m.handleInviteConnection(ctx, qc, peerKey)
 		default:
@@ -690,6 +812,10 @@ func (m *impl) handleInviteConnection(ctx context.Context, qc *quic.Conn, peerKe
 		m.log.Debugw("rejected invite", "peer", peerKey.Short(), "err", err)
 		_ = qc.CloseWithError(0, "invite failed")
 	}
+}
+
+func (m *impl) SetTracer(t *traces.Tracer) {
+	m.tracer = t
 }
 
 func (m *impl) UpdateMeshCert(cert tls.Certificate) {
@@ -739,11 +865,12 @@ func (m *impl) RequestCertRenewal(ctx context.Context, peerKey types.PeerKey) (*
 
 func (m *impl) Close() error {
 	for _, s := range m.sessions.drainPeers() {
-		m.closeSession(s, "shutdown")
+		m.closeSession(s, CloseReasonShutdown)
 	}
 
 	m.acceptWG.Wait()
 	close(m.streamCh)
+	close(m.clockStreamCh)
 	close(m.recvCh)
 
 	if m.listener != nil {
@@ -758,9 +885,11 @@ func (m *impl) Close() error {
 	return nil
 }
 
-func (m *impl) closeSession(s *peerSession, reason string) {
-	_ = s.conn.CloseWithError(0, reason)
-	if s.transport != m.mainQT {
+func (m *impl) closeSession(s *peerSession, reason CloseReason) {
+	if s.conn != nil {
+		_ = s.conn.CloseWithError(0, string(reason))
+	}
+	if s.transport != nil && s.transport != m.mainQT {
 		_ = s.transport.Close()
 	}
 	if s.sockConn != nil {

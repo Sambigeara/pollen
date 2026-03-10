@@ -22,10 +22,12 @@ const (
 	ControlService_Shutdown_FullMethodName          = "/pollen.control.v1.ControlService/Shutdown"
 	ControlService_GetBootstrapInfo_FullMethodName  = "/pollen.control.v1.ControlService/GetBootstrapInfo"
 	ControlService_GetStatus_FullMethodName         = "/pollen.control.v1.ControlService/GetStatus"
+	ControlService_GetMetrics_FullMethodName        = "/pollen.control.v1.ControlService/GetMetrics"
 	ControlService_RegisterService_FullMethodName   = "/pollen.control.v1.ControlService/RegisterService"
 	ControlService_UnregisterService_FullMethodName = "/pollen.control.v1.ControlService/UnregisterService"
 	ControlService_ConnectService_FullMethodName    = "/pollen.control.v1.ControlService/ConnectService"
 	ControlService_ConnectPeer_FullMethodName       = "/pollen.control.v1.ControlService/ConnectPeer"
+	ControlService_DisconnectService_FullMethodName = "/pollen.control.v1.ControlService/DisconnectService"
 	ControlService_RevokePeer_FullMethodName        = "/pollen.control.v1.ControlService/RevokePeer"
 )
 
@@ -36,10 +38,12 @@ type ControlServiceClient interface {
 	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error)
 	GetBootstrapInfo(ctx context.Context, in *GetBootstrapInfoRequest, opts ...grpc.CallOption) (*GetBootstrapInfoResponse, error)
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
+	GetMetrics(ctx context.Context, in *GetMetricsRequest, opts ...grpc.CallOption) (*GetMetricsResponse, error)
 	RegisterService(ctx context.Context, in *RegisterServiceRequest, opts ...grpc.CallOption) (*RegisterServiceResponse, error)
 	UnregisterService(ctx context.Context, in *UnregisterServiceRequest, opts ...grpc.CallOption) (*UnregisterServiceResponse, error)
 	ConnectService(ctx context.Context, in *ConnectServiceRequest, opts ...grpc.CallOption) (*ConnectServiceResponse, error)
 	ConnectPeer(ctx context.Context, in *ConnectPeerRequest, opts ...grpc.CallOption) (*ConnectPeerResponse, error)
+	DisconnectService(ctx context.Context, in *DisconnectServiceRequest, opts ...grpc.CallOption) (*DisconnectServiceResponse, error)
 	RevokePeer(ctx context.Context, in *RevokePeerRequest, opts ...grpc.CallOption) (*RevokePeerResponse, error)
 }
 
@@ -75,6 +79,16 @@ func (c *controlServiceClient) GetStatus(ctx context.Context, in *GetStatusReque
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetStatusResponse)
 	err := c.cc.Invoke(ctx, ControlService_GetStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlServiceClient) GetMetrics(ctx context.Context, in *GetMetricsRequest, opts ...grpc.CallOption) (*GetMetricsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMetricsResponse)
+	err := c.cc.Invoke(ctx, ControlService_GetMetrics_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +135,16 @@ func (c *controlServiceClient) ConnectPeer(ctx context.Context, in *ConnectPeerR
 	return out, nil
 }
 
+func (c *controlServiceClient) DisconnectService(ctx context.Context, in *DisconnectServiceRequest, opts ...grpc.CallOption) (*DisconnectServiceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DisconnectServiceResponse)
+	err := c.cc.Invoke(ctx, ControlService_DisconnectService_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *controlServiceClient) RevokePeer(ctx context.Context, in *RevokePeerRequest, opts ...grpc.CallOption) (*RevokePeerResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RevokePeerResponse)
@@ -138,10 +162,12 @@ type ControlServiceServer interface {
 	Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error)
 	GetBootstrapInfo(context.Context, *GetBootstrapInfoRequest) (*GetBootstrapInfoResponse, error)
 	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
+	GetMetrics(context.Context, *GetMetricsRequest) (*GetMetricsResponse, error)
 	RegisterService(context.Context, *RegisterServiceRequest) (*RegisterServiceResponse, error)
 	UnregisterService(context.Context, *UnregisterServiceRequest) (*UnregisterServiceResponse, error)
 	ConnectService(context.Context, *ConnectServiceRequest) (*ConnectServiceResponse, error)
 	ConnectPeer(context.Context, *ConnectPeerRequest) (*ConnectPeerResponse, error)
+	DisconnectService(context.Context, *DisconnectServiceRequest) (*DisconnectServiceResponse, error)
 	RevokePeer(context.Context, *RevokePeerRequest) (*RevokePeerResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
@@ -162,6 +188,9 @@ func (UnimplementedControlServiceServer) GetBootstrapInfo(context.Context, *GetB
 func (UnimplementedControlServiceServer) GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetStatus not implemented")
 }
+func (UnimplementedControlServiceServer) GetMetrics(context.Context, *GetMetricsRequest) (*GetMetricsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMetrics not implemented")
+}
 func (UnimplementedControlServiceServer) RegisterService(context.Context, *RegisterServiceRequest) (*RegisterServiceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RegisterService not implemented")
 }
@@ -173,6 +202,9 @@ func (UnimplementedControlServiceServer) ConnectService(context.Context, *Connec
 }
 func (UnimplementedControlServiceServer) ConnectPeer(context.Context, *ConnectPeerRequest) (*ConnectPeerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ConnectPeer not implemented")
+}
+func (UnimplementedControlServiceServer) DisconnectService(context.Context, *DisconnectServiceRequest) (*DisconnectServiceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DisconnectService not implemented")
 }
 func (UnimplementedControlServiceServer) RevokePeer(context.Context, *RevokePeerRequest) (*RevokePeerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokePeer not implemented")
@@ -252,6 +284,24 @@ func _ControlService_GetStatus_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_GetMetrics_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMetricsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).GetMetrics(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_GetMetrics_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).GetMetrics(ctx, req.(*GetMetricsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ControlService_RegisterService_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RegisterServiceRequest)
 	if err := dec(in); err != nil {
@@ -324,6 +374,24 @@ func _ControlService_ConnectPeer_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_DisconnectService_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DisconnectServiceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).DisconnectService(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_DisconnectService_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).DisconnectService(ctx, req.(*DisconnectServiceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ControlService_RevokePeer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RevokePeerRequest)
 	if err := dec(in); err != nil {
@@ -362,6 +430,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ControlService_GetStatus_Handler,
 		},
 		{
+			MethodName: "GetMetrics",
+			Handler:    _ControlService_GetMetrics_Handler,
+		},
+		{
 			MethodName: "RegisterService",
 			Handler:    _ControlService_RegisterService_Handler,
 		},
@@ -376,6 +448,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ConnectPeer",
 			Handler:    _ControlService_ConnectPeer_Handler,
+		},
+		{
+			MethodName: "DisconnectService",
+			Handler:    _ControlService_DisconnectService_Handler,
 		},
 		{
 			MethodName: "RevokePeer",

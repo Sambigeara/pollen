@@ -43,6 +43,11 @@ func (pk PeerKey) Less(other PeerKey) bool {
 	return bytes.Compare(pk[:], other[:]) < 0
 }
 
+// Compare returns -1, 0, or +1 comparing two PeerKeys lexicographically.
+func (pk PeerKey) Compare(other PeerKey) int {
+	return bytes.Compare(pk[:], other[:])
+}
+
 type Envelope struct {
 	Payload []byte
 }
