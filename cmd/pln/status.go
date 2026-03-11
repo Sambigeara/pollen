@@ -263,20 +263,25 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 
 	remaining := time.Until(latest.Add(certExpirySkew))
 
-	if remaining <= 0 || health == controlv1.CertHealth_CERT_HEALTH_EXPIRED {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render( //nolint:mnd
-			"membership expired — entering degraded mode; will auto-recover when an admin peer is reachable")
-	}
-
-	msg := "membership expires in " + humanDuration(remaining)
-
 	var latestDeadline int64
 	for _, c := range st.GetCertificates() {
 		if dl := c.GetAccessDeadlineUnix(); dl > latestDeadline {
 			latestDeadline = dl
 		}
 	}
-	if latestDeadline > 0 {
+	hasDeadline := latestDeadline > 0
+
+	if remaining <= 0 || health == controlv1.CertHealth_CERT_HEALTH_EXPIRED {
+		if hasDeadline {
+			return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render( //nolint:mnd
+				"temporary access expired — rejoin the cluster or contact a cluster admin")
+		}
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render( //nolint:mnd
+			"membership expired — entering degraded mode; will auto-recover when an admin peer is reachable")
+	}
+
+	msg := "membership expires in " + humanDuration(remaining)
+	if hasDeadline {
 		msg = "temporary access expires in " + humanDuration(time.Until(time.Unix(latestDeadline, 0)))
 	}
 
