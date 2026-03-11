@@ -52,7 +52,7 @@ func newClusterAuth(t *testing.T) *clusterAuth {
 
 func (c *clusterAuth) credsFor(t *testing.T, subject ed25519.PublicKey) *auth.NodeCredentials {
 	t.Helper()
-	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, c.trust.GetClusterId(), subject, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour))
+	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, c.trust.GetClusterId(), subject, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
 	require.NoError(t, err)
 	return &auth.NodeCredentials{Trust: c.trust, Cert: cert}
 }

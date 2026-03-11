@@ -153,6 +153,11 @@ func (m *DelegationCertClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) 
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.AccessDeadlineUnix != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.AccessDeadlineUnix))
+		i--
+		dAtA[i] = 0x40
+	}
 	if m.Serial != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Serial))
 		i--
@@ -666,6 +671,9 @@ func (m *DelegationCertClaims) SizeVT() (n int) {
 	}
 	if m.Serial != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.Serial))
+	}
+	if m.AccessDeadlineUnix != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.AccessDeadlineUnix))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -1279,6 +1287,25 @@ func (m *DelegationCertClaims) UnmarshalVT(dAtA []byte) error {
 				b := dAtA[iNdEx]
 				iNdEx++
 				m.Serial |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 8:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field AccessDeadlineUnix", wireType)
+			}
+			m.AccessDeadlineUnix = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.AccessDeadlineUnix |= int64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}

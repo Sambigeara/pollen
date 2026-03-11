@@ -270,6 +270,16 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 
 	msg := "membership expires in " + humanDuration(remaining)
 
+	var latestDeadline int64
+	for _, c := range st.GetCertificates() {
+		if dl := c.GetAccessDeadlineUnix(); dl > latestDeadline {
+			latestDeadline = dl
+		}
+	}
+	if latestDeadline > 0 {
+		msg = "temporary access expires in " + humanDuration(time.Until(time.Unix(latestDeadline, 0)))
+	}
+
 	switch health {
 	case controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render( //nolint:mnd

@@ -1210,11 +1210,25 @@ func (n *Node) handleCertRenewalRequest(ctx context.Context, from types.PeerKey,
 	}
 
 	ttl := n.conf.MembershipTTL
+	var accessDeadline time.Time
 	if peerCert, ok := n.mesh.PeerDelegationCert(from); ok {
 		ttl = auth.CertTTL(peerCert)
+		if dl, hasDeadline := auth.CertAccessDeadline(peerCert); hasDeadline {
+			if time.Now().After(dl) {
+				sendReject("access deadline has passed")
+				return
+			}
+			accessDeadline = dl
+		}
 	}
 
 	now := time.Now()
+
+	notAfter := now.Add(ttl)
+	if !accessDeadline.IsZero() && notAfter.After(accessDeadline) {
+		notAfter = accessDeadline
+	}
+
 	parentChain := make([]*admissionv1.DelegationCert, 0, 1+len(signer.Issuer.GetChain()))
 	parentChain = append(parentChain, signer.Issuer)
 	parentChain = append(parentChain, signer.Issuer.GetChain()...)
@@ -1225,7 +1239,8 @@ func (n *Node) handleCertRenewalRequest(ctx context.Context, from types.PeerKey,
 		req.GetSubjectPub(),
 		auth.LeafCapabilities(),
 		now.Add(-time.Minute),
-		now.Add(ttl),
+		notAfter,
+		accessDeadline,
 	)
 	if err != nil {
 		sendReject(err.Error())

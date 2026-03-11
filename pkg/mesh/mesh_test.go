@@ -54,7 +54,7 @@ func newClusterAuth(t *testing.T) *clusterAuth {
 
 func (c *clusterAuth) credsFor(t *testing.T, subject ed25519.PublicKey) *auth.NodeCredentials {
 	t.Helper()
-	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, c.trust.GetClusterId(), subject, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour))
+	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, c.trust.GetClusterId(), subject, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
 	require.NoError(t, err)
 	return &auth.NodeCredentials{Trust: c.trust, Cert: cert}
 }
@@ -64,7 +64,7 @@ func (c *clusterAuth) tokenFor(t *testing.T, subject ed25519.PublicKey, bootstra
 	token, err := auth.IssueJoinToken(c.adminPriv, c.trust, subject, []*admissionv1.BootstrapPeer{{
 		PeerPub: bootstrap.pubKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(bootstrap.port))},
-	}}, time.Now(), time.Hour, config.CertTTLs{}.MembershipTTL())
+	}}, time.Now(), time.Hour, config.CertTTLs{}.MembershipTTL(), time.Time{})
 	require.NoError(t, err)
 	return token
 }
@@ -82,6 +82,7 @@ func (c *clusterAuth) signer(t *testing.T) *auth.DelegationSigner {
 		auth.FullCapabilities(),
 		time.Now().Add(-time.Minute),
 		time.Now().Add(365*24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 

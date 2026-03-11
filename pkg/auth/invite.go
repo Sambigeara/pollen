@@ -108,6 +108,7 @@ func loadRootDelegationSigner(pollenDir string, now time.Time, delegationTTL tim
 		FullCapabilities(),
 		now.Add(-timeSkewAllowance),
 		now.Add(delegationTTL),
+		time.Time{},
 	)
 	if err != nil {
 		return nil, err

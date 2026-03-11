@@ -25,6 +25,7 @@ message DelegationCertClaims {
   int64 not_before_unix = 5;
   int64 not_after_unix = 6;
   uint64 serial = 7;
+  int64 access_deadline_unix = 8;
 }
 
 message DelegationCert {

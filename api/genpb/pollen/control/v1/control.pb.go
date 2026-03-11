@@ -637,16 +637,17 @@ func (*GetStatusRequest) Descriptor() ([]byte, []int) {
 }
 
 type CertInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	NotBeforeUnix int64                  `protobuf:"varint,1,opt,name=not_before_unix,json=notBeforeUnix,proto3" json:"not_before_unix,omitempty"`
-	NotAfterUnix  int64                  `protobuf:"varint,2,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
-	Serial        uint64                 `protobuf:"varint,3,opt,name=serial,proto3" json:"serial,omitempty"`
-	Health        CertHealth             `protobuf:"varint,4,opt,name=health,proto3,enum=pollen.control.v1.CertHealth" json:"health,omitempty"`
-	CanDelegate   bool                   `protobuf:"varint,5,opt,name=can_delegate,json=canDelegate,proto3" json:"can_delegate,omitempty"`
-	CanAdmit      bool                   `protobuf:"varint,6,opt,name=can_admit,json=canAdmit,proto3" json:"can_admit,omitempty"`
-	MaxDepth      uint32                 `protobuf:"varint,7,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	NotBeforeUnix      int64                  `protobuf:"varint,1,opt,name=not_before_unix,json=notBeforeUnix,proto3" json:"not_before_unix,omitempty"`
+	NotAfterUnix       int64                  `protobuf:"varint,2,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
+	Serial             uint64                 `protobuf:"varint,3,opt,name=serial,proto3" json:"serial,omitempty"`
+	Health             CertHealth             `protobuf:"varint,4,opt,name=health,proto3,enum=pollen.control.v1.CertHealth" json:"health,omitempty"`
+	CanDelegate        bool                   `protobuf:"varint,5,opt,name=can_delegate,json=canDelegate,proto3" json:"can_delegate,omitempty"`
+	CanAdmit           bool                   `protobuf:"varint,6,opt,name=can_admit,json=canAdmit,proto3" json:"can_admit,omitempty"`
+	MaxDepth           uint32                 `protobuf:"varint,7,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
+	AccessDeadlineUnix int64                  `protobuf:"varint,8,opt,name=access_deadline_unix,json=accessDeadlineUnix,proto3" json:"access_deadline_unix,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *CertInfo) Reset() {
@@ -724,6 +725,13 @@ func (x *CertInfo) GetCanAdmit() bool {
 func (x *CertInfo) GetMaxDepth() uint32 {
 	if x != nil {
 		return x.MaxDepth
+	}
+	return 0
+}
+
+func (x *CertInfo) GetAccessDeadlineUnix() int64 {
+	if x != nil {
+		return x.AccessDeadlineUnix
 	}
 	return 0
 }
@@ -1640,7 +1648,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x18GetBootstrapInfoResponse\x128\n" +
 	"\x04self\x18\x01 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\x04self\x12F\n" +
 	"\vrecommended\x18\x02 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\vrecommended\"\x12\n" +
-	"\x10GetStatusRequest\"\x84\x02\n" +
+	"\x10GetStatusRequest\"\xb6\x02\n" +
 	"\bCertInfo\x12&\n" +
 	"\x0fnot_before_unix\x18\x01 \x01(\x03R\rnotBeforeUnix\x12$\n" +
 	"\x0enot_after_unix\x18\x02 \x01(\x03R\fnotAfterUnix\x12\x16\n" +
@@ -1648,7 +1656,8 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x06health\x18\x04 \x01(\x0e2\x1d.pollen.control.v1.CertHealthR\x06health\x12!\n" +
 	"\fcan_delegate\x18\x05 \x01(\bR\vcanDelegate\x12\x1b\n" +
 	"\tcan_admit\x18\x06 \x01(\bR\bcanAdmit\x12\x1b\n" +
-	"\tmax_depth\x18\a \x01(\rR\bmaxDepth\"\xe1\x02\n" +
+	"\tmax_depth\x18\a \x01(\rR\bmaxDepth\x120\n" +
+	"\x14access_deadline_unix\x18\b \x01(\x03R\x12accessDeadlineUnix\"\xe1\x02\n" +
 	"\x11GetStatusResponse\x122\n" +
 	"\x04self\x18\x01 \x01(\v2\x1e.pollen.control.v1.NodeSummaryR\x04self\x124\n" +
 	"\x05nodes\x18\x02 \x03(\v2\x1e.pollen.control.v1.NodeSummaryR\x05nodes\x12=\n" +

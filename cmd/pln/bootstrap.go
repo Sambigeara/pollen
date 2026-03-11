@@ -39,7 +39,7 @@ func newBootstrapCmd() *cobra.Command {
 		Run:   runBootstrapSSH,
 	}
 	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
-	sshCmd.Flags().Duration("cert-ttl", 0, "Certificate TTL for the relay peer (0 = use node default)")
+	sshCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the relay peer (e.g. 24h)")
 
 	cmd.AddCommand(sshCmd)
 	return cmd
@@ -90,13 +90,13 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 	}
 	relayPub := ed25519.PublicKey(relayPeerKey.Bytes())
 
-	certTTL, err := getCertTTLFlag(cmd)
+	expireAfter, err := getExpireAfterFlag(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
 
-	if err := bootstrapAccept(cmd, relayPub, relayAddrs, host, certTTL); err != nil {
+	if err := bootstrapAccept(cmd, relayPub, relayAddrs, host, expireAfter); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
@@ -105,7 +105,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 	fmt.Fprintln(cmd.OutOrStdout(), "hint: reconnect SSH to use `pln` without sudo (new group membership requires a fresh login)")
 }
 
-func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs []string, sshTarget string, certTTL time.Duration) error {
+func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs []string, sshTarget string, expireAfter time.Duration) error {
 	issuerCtx, err := loadTokenIssuerContext(cmd)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -114,7 +114,7 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 		return err
 	}
 
-	seedToken, err := createJoinTokenWithSigner(issuerCtx.signer, issuerCtx.cfg.CertTTLs.MembershipTTL(), relayPub, defaultBootstrapJoinTokenTTL, certTTL, nil)
+	seedToken, err := createJoinTokenWithSigner(issuerCtx.signer, issuerCtx.cfg.CertTTLs.MembershipTTL(), relayPub, defaultBootstrapJoinTokenTTL, expireAfter, nil)
 	if err != nil {
 		return fmt.Errorf("create relay seed token: %w", err)
 	}
@@ -149,7 +149,7 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 		return err
 	}
 
-	joinToken, err := createJoinTokenWithSigner(issuerCtx.signer, issuerCtx.cfg.CertTTLs.MembershipTTL(), localPub, defaultJoinTokenTTL, certTTL, []*admissionv1.BootstrapPeer{{
+	joinToken, err := createJoinTokenWithSigner(issuerCtx.signer, issuerCtx.cfg.CertTTLs.MembershipTTL(), localPub, defaultJoinTokenTTL, expireAfter, []*admissionv1.BootstrapPeer{{
 		PeerPub: append([]byte(nil), relayPub...),
 		Addrs:   append([]string(nil), relayAddrs...),
 	}})
@@ -203,14 +203,14 @@ func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string, rela
 	return waitForRelayReady(cmd, sshTarget)
 }
 
-func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, certTTL time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
+func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
 	if ttl <= 0 {
 		return "", errors.New("token ttl must be positive")
 	}
 
-	membershipTTL := defaultMembershipTTL
-	if certTTL > 0 {
-		membershipTTL = certTTL
+	var accessDeadline time.Time
+	if expireAfter > 0 {
+		accessDeadline = time.Now().Add(expireAfter)
 	}
 
 	token, err := auth.IssueJoinTokenWithIssuer(
@@ -221,7 +221,8 @@ func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipT
 		bootstrap,
 		time.Now(),
 		ttl,
-		membershipTTL,
+		defaultMembershipTTL,
+		accessDeadline,
 	)
 	if err != nil {
 		return "", err
@@ -270,6 +271,7 @@ func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string, relayPu
 		auth.FullCapabilities(),
 		time.Now().Add(-time.Minute),
 		time.Now().Add(issuerCtx.cfg.CertTTLs.DelegationTTL()),
+		time.Time{},
 	)
 	if err != nil {
 		return err

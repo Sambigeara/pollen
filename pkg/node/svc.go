@@ -143,13 +143,14 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			}
 		}
 		out.Certificates = append(out.Certificates, &controlv1.CertInfo{
-			NotBeforeUnix: claims.GetNotBeforeUnix(),
-			NotAfterUnix:  claims.GetNotAfterUnix(),
-			Serial:        claims.GetSerial(),
-			Health:        health,
-			CanDelegate:   caps.GetCanDelegate(),
-			CanAdmit:      caps.GetCanAdmit(),
-			MaxDepth:      caps.GetMaxDepth(),
+			NotBeforeUnix:      claims.GetNotBeforeUnix(),
+			NotAfterUnix:       claims.GetNotAfterUnix(),
+			Serial:             claims.GetSerial(),
+			Health:             health,
+			CanDelegate:        caps.GetCanDelegate(),
+			CanAdmit:           caps.GetCanAdmit(),
+			MaxDepth:           caps.GetMaxDepth(),
+			AccessDeadlineUnix: claims.GetAccessDeadlineUnix(),
 		})
 	}
 

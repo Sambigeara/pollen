@@ -83,6 +83,16 @@ func CertTTL(cert *admissionv1.DelegationCert) time.Duration {
 	return time.Duration(claims.GetNotAfterUnix()-claims.GetNotBeforeUnix()) * time.Second
 }
 
+// CertAccessDeadline returns the hard access deadline from a delegation cert.
+// Returns the zero time and false if no deadline is set.
+func CertAccessDeadline(cert *admissionv1.DelegationCert) (time.Time, bool) {
+	dl := cert.GetClaims().GetAccessDeadlineUnix()
+	if dl == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(dl, 0), true
+}
+
 // IsCapSubset returns true if child capabilities are a subset of parent's.
 func IsCapSubset(child, parent *admissionv1.Capabilities) bool {
 	if child.GetCanDelegate() && !parent.GetCanDelegate() {
@@ -180,6 +190,7 @@ func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now
 		FullCapabilities(),
 		now.Add(-timeSkewAllowance),
 		now.Add(delegationTTL),
+		time.Time{},
 	)
 	if err != nil {
 		return nil, err
@@ -429,6 +440,7 @@ func IssueDelegationCert(
 	subjectPub ed25519.PublicKey,
 	caps *admissionv1.Capabilities,
 	notBefore, notAfter time.Time,
+	accessDeadline time.Time,
 ) (*admissionv1.DelegationCert, error) {
 	if len(clusterID) != sha256.Size {
 		return nil, errors.New("invalid cluster id length")
@@ -465,6 +477,9 @@ func IssueDelegationCert(
 		NotBeforeUnix: notBefore.Unix(),
 		NotAfterUnix:  notAfter.Unix(),
 		Serial:        serial,
+	}
+	if !accessDeadline.IsZero() {
+		claims.AccessDeadlineUnix = accessDeadline.Unix()
 	}
 
 	msg, err := signaturePayload(claims)
@@ -551,6 +566,7 @@ func IssueJoinToken(
 	now time.Time,
 	tokenTTL time.Duration,
 	membershipTTL time.Duration,
+	accessDeadline time.Time,
 ) (*admissionv1.JoinToken, error) {
 	if trust == nil {
 		return nil, errors.New("missing trust bundle")
@@ -562,7 +578,7 @@ func IssueJoinToken(
 		return nil, errors.New("issuer delegation certificate required for non-root admin key")
 	}
 
-	// Root issues its own delegation cert as the issuer.
+	// Root issues its own delegation cert as the issuer (no deadline on the issuer cert).
 	issuerCert, err := IssueDelegationCert(
 		adminPriv,
 		nil, // root-issued
@@ -571,12 +587,13 @@ func IssueJoinToken(
 		FullCapabilities(),
 		now.Add(-timeSkewAllowance),
 		now.Add(membershipTTL),
+		time.Time{},
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	return IssueJoinTokenWithIssuer(adminPriv, trust, issuerCert, subject, bootstrap, now, tokenTTL, membershipTTL)
+	return IssueJoinTokenWithIssuer(adminPriv, trust, issuerCert, subject, bootstrap, now, tokenTTL, membershipTTL, accessDeadline)
 }
 
 func IssueJoinTokenWithIssuer(
@@ -588,6 +605,7 @@ func IssueJoinTokenWithIssuer(
 	now time.Time,
 	tokenTTL time.Duration,
 	membershipTTL time.Duration,
+	accessDeadline time.Time,
 ) (*admissionv1.JoinToken, error) {
 	if tokenTTL <= 0 {
 		return nil, errors.New("token ttl must be positive")
@@ -602,6 +620,11 @@ func IssueJoinTokenWithIssuer(
 	parentChain = append(parentChain, issuer)
 	parentChain = append(parentChain, issuer.GetChain()...)
 
+	notAfter := now.Add(membershipTTL)
+	if !accessDeadline.IsZero() && notAfter.After(accessDeadline) {
+		notAfter = accessDeadline
+	}
+
 	memberCert, err := IssueDelegationCert(
 		signerPriv,
 		parentChain,
@@ -609,7 +632,8 @@ func IssueJoinTokenWithIssuer(
 		subject,
 		LeafCapabilities(),
 		now.Add(-timeSkewAllowance),
-		now.Add(membershipTTL),
+		notAfter,
+		accessDeadline,
 	)
 	if err != nil {
 		return nil, err

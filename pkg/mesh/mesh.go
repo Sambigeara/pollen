@@ -925,8 +925,9 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 	}
 
 	membershipTTL := m.membershipTTL
+	var accessDeadline time.Time
 	if s := verified.Claims.GetMembershipTtlSeconds(); s > 0 {
-		membershipTTL = time.Duration(s) * time.Second
+		accessDeadline = now.Add(time.Duration(s) * time.Second)
 	}
 
 	joinToken, err := auth.IssueJoinTokenWithIssuer(
@@ -938,6 +939,7 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 		now,
 		ttl,
 		membershipTTL,
+		accessDeadline,
 	)
 	if err != nil {
 		return err

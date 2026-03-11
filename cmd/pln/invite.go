@@ -29,7 +29,7 @@ func newInviteCmd() *cobra.Command {
 	}
 	cmd.Flags().String("subject", "", "Optional hex node public key to bind invite")
 	cmd.Flags().Duration("ttl", defaultJoinTokenTTL, "Invite token validity duration")
-	cmd.Flags().Duration("cert-ttl", 0, "Certificate TTL for the invited peer (0 = use node default)")
+	cmd.Flags().Duration("expire-after", 0, "Hard access expiry for the invited peer (e.g. 24h)")
 	cmd.Flags().StringArray("bootstrap", nil, "Bootstrap peer as <peer-pub-hex>@<host:port> (repeatable)")
 	return cmd
 }
@@ -59,7 +59,7 @@ func runInvite(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	certTTL, err := getCertTTLFlag(cmd)
+	expireAfter, err := getExpireAfterFlag(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
@@ -71,7 +71,7 @@ func runInvite(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	encoded, err := createInviteToken(cmd, subjectPub, ttl, certTTL, bootstraps)
+	encoded, err := createInviteToken(cmd, subjectPub, ttl, expireAfter, bootstraps)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
@@ -80,7 +80,7 @@ func runInvite(cmd *cobra.Command, args []string) {
 	fmt.Fprint(cmd.OutOrStdout(), encoded)
 }
 
-func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, certTTL time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
+func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
 	if ttl <= 0 {
 		return "", errors.New("token ttl must be positive")
 	}
@@ -93,7 +93,7 @@ func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, ce
 		return "", err
 	}
 
-	token, err := auth.IssueInviteTokenWithSigner(issuerCtx.signer, subjectPub, bootstrap, time.Now(), ttl, certTTL)
+	token, err := auth.IssueInviteTokenWithSigner(issuerCtx.signer, subjectPub, bootstrap, time.Now(), ttl, expireAfter)
 	if err != nil {
 		return "", err
 	}

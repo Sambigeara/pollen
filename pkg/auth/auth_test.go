@@ -35,6 +35,7 @@ func TestIssueDelegationCert_RootIssued(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), subjectPub,
 		auth.FullCapabilities(),
 		now.Add(-time.Minute), now.Add(24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -55,6 +56,7 @@ func TestIssueDelegationCert_Delegated(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), delegatedPub,
 		auth.FullCapabilities(),
 		now.Add(-time.Minute), now.Add(10*365*24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -64,6 +66,7 @@ func TestIssueDelegationCert_Delegated(t *testing.T) {
 		delegatedPriv, parentChain, trust.GetClusterId(), subjectPub,
 		auth.LeafCapabilities(),
 		now.Add(-time.Minute), now.Add(24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -85,6 +88,7 @@ func TestIssueDelegationCert_AttenuationEnforced(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), delegatedPub,
 		auth.LeafCapabilities(),
 		now.Add(-time.Minute), now.Add(24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -94,6 +98,7 @@ func TestIssueDelegationCert_AttenuationEnforced(t *testing.T) {
 		delegatedPriv, parentChain, trust.GetClusterId(), subjectPub,
 		auth.LeafCapabilities(),
 		now.Add(-time.Minute), now.Add(24*time.Hour),
+		time.Time{},
 	)
 	require.ErrorContains(t, err, "parent cert lacks delegation capability")
 }
@@ -111,6 +116,7 @@ func TestIssueDelegationCert_MaxDepthEnforced(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), delegatedPub,
 		&admissionv1.Capabilities{CanDelegate: true, CanAdmit: true, MaxDepth: 1},
 		now.Add(-time.Minute), now.Add(24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -120,6 +126,7 @@ func TestIssueDelegationCert_MaxDepthEnforced(t *testing.T) {
 		delegatedPriv, parentChain, trust.GetClusterId(), subjectPub,
 		&admissionv1.Capabilities{CanDelegate: true, CanAdmit: true, MaxDepth: 1},
 		now.Add(-time.Minute), now.Add(24*time.Hour),
+		time.Time{},
 	)
 	require.ErrorContains(t, err, "child max_depth must be less than parent max_depth")
 
@@ -128,6 +135,7 @@ func TestIssueDelegationCert_MaxDepthEnforced(t *testing.T) {
 		delegatedPriv, parentChain, trust.GetClusterId(), subjectPub,
 		auth.LeafCapabilities(),
 		now.Add(-time.Minute), now.Add(24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 	require.NoError(t, auth.VerifyDelegationCert(leafCert, trust, now, subjectPub))
@@ -146,6 +154,7 @@ func TestVerifyDelegationCert_ChainWalk(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), adminPub,
 		auth.FullCapabilities(),
 		now.Add(-time.Minute), now.Add(10*365*24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -156,6 +165,7 @@ func TestVerifyDelegationCert_ChainWalk(t *testing.T) {
 		trust.GetClusterId(), subjectPub,
 		auth.LeafCapabilities(),
 		now.Add(-time.Minute), now.Add(24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -178,6 +188,7 @@ func TestVerifyDelegationCert_Expired(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), subjectPub,
 		auth.LeafCapabilities(),
 		now.Add(-48*time.Hour), now.Add(-24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -197,12 +208,13 @@ func TestIssueJoinTokenWithDelegatedAdmin(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), delegatedPub,
 		auth.FullCapabilities(),
 		now.Add(-time.Minute), now.Add(10*365*24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
 	token, err := auth.IssueJoinTokenWithIssuer(
 		delegatedPriv, trust, issuer, subjectPub, nil, now,
-		time.Hour, 4*time.Hour,
+		time.Hour, 4*time.Hour, time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -219,7 +231,7 @@ func TestIssueJoinTokenRejectsUnsignedDelegatedAdmin(t *testing.T) {
 
 	_, err := auth.IssueJoinToken(
 		delegatedPriv, trust, subjectPub, nil, time.Now(),
-		time.Hour, 4*time.Hour,
+		time.Hour, 4*time.Hour, time.Time{},
 	)
 	require.ErrorContains(t, err, "issuer delegation certificate required")
 }
@@ -234,6 +246,7 @@ func TestEnsureNodeCredentialsFromTokenReplacesExistingCert(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), nodePub,
 		auth.LeafCapabilities(),
 		now.Add(-time.Minute), now.Add(24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -242,7 +255,7 @@ func TestEnsureNodeCredentialsFromTokenReplacesExistingCert(t *testing.T) {
 
 	token, err := auth.IssueJoinToken(
 		rootPriv, trust, nodePub, nil, now,
-		time.Hour, 48*time.Hour,
+		time.Hour, 48*time.Hour, time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -269,6 +282,7 @@ func TestEnsureNodeCredentialsFromTokenKeepsLongerTTLCert(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), nodePub,
 		auth.LeafCapabilities(),
 		now.Add(-time.Minute), now.Add(48*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -277,7 +291,7 @@ func TestEnsureNodeCredentialsFromTokenKeepsLongerTTLCert(t *testing.T) {
 
 	token, err := auth.IssueJoinToken(
 		rootPriv, trust, nodePub, nil, now,
-		time.Hour, 24*time.Hour,
+		time.Hour, 24*time.Hour, time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -296,6 +310,7 @@ func TestEnsureNodeCredentialsFromTokenReplacesExpiredCert(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), nodePub,
 		auth.LeafCapabilities(),
 		now.Add(-48*time.Hour), now.Add(-24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -304,7 +319,7 @@ func TestEnsureNodeCredentialsFromTokenReplacesExpiredCert(t *testing.T) {
 
 	token, err := auth.IssueJoinToken(
 		rootPriv, trust, nodePub, nil, now,
-		time.Hour, 24*time.Hour,
+		time.Hour, 24*time.Hour, time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -327,6 +342,7 @@ func TestCertExpiresAt(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), subjectPub,
 		auth.LeafCapabilities(),
 		now.Add(-time.Minute), expiry,
+		time.Time{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, expiry.Unix(), auth.CertExpiresAt(cert).Unix())
@@ -342,6 +358,7 @@ func TestIsCertExpired(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), subjectPub,
 		auth.LeafCapabilities(),
 		now.Add(-time.Minute), now.Add(24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -359,6 +376,7 @@ func TestInviteTokenOpenSubjectAndSingleUse(t *testing.T) {
 		adminPriv, nil, trust.GetClusterId(), adminPub,
 		auth.FullCapabilities(),
 		now.Add(-time.Minute), now.Add(5*365*24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -394,6 +412,7 @@ func TestInviteTokenSubjectBoundMismatch(t *testing.T) {
 		adminPriv, nil, trust.GetClusterId(), adminPub,
 		auth.FullCapabilities(),
 		now.Add(-time.Minute), now.Add(5*365*24*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 
@@ -432,6 +451,7 @@ func TestCertTTL(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), subjectPub,
 		auth.LeafCapabilities(),
 		now, now.Add(4*time.Hour),
+		time.Time{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, 4*time.Hour, auth.CertTTL(cert))
@@ -449,6 +469,7 @@ func TestRenewalPreservesTTL(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), subjectPub,
 		auth.LeafCapabilities(),
 		now, now.Add(ttl),
+		time.Time{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, ttl, auth.CertTTL(cert))
@@ -461,9 +482,103 @@ func TestRenewalPreservesTTL(t *testing.T) {
 		rootPriv, nil, trust.GetClusterId(), subjectPub,
 		auth.LeafCapabilities(),
 		renewedNow, renewedNow.Add(extractedTTL),
+		time.Time{},
 	)
 	require.NoError(t, err)
 	require.Equal(t, ttl, auth.CertTTL(renewed))
+}
+
+func TestAccessDeadlineCert(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now().Truncate(time.Second)
+	deadline := now.Add(24 * time.Hour)
+
+	cert, err := auth.IssueDelegationCert(
+		rootPriv, nil, trust.GetClusterId(), subjectPub,
+		auth.LeafCapabilities(),
+		now.Add(-time.Minute), now.Add(4*time.Hour),
+		deadline,
+	)
+	require.NoError(t, err)
+
+	dl, ok := auth.CertAccessDeadline(cert)
+	require.True(t, ok)
+	require.Equal(t, deadline.Unix(), dl.Unix())
+}
+
+func TestAccessDeadlineCertNone(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now()
+
+	cert, err := auth.IssueDelegationCert(
+		rootPriv, nil, trust.GetClusterId(), subjectPub,
+		auth.LeafCapabilities(),
+		now.Add(-time.Minute), now.Add(4*time.Hour),
+		time.Time{},
+	)
+	require.NoError(t, err)
+
+	_, ok := auth.CertAccessDeadline(cert)
+	require.False(t, ok)
+}
+
+func TestAccessDeadlineJoinToken(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now().Truncate(time.Second)
+	deadline := now.Add(24 * time.Hour)
+
+	token, err := auth.IssueJoinToken(
+		rootPriv, trust, subjectPub, nil, now,
+		time.Hour, 4*time.Hour, deadline,
+	)
+	require.NoError(t, err)
+
+	verified, err := auth.VerifyJoinToken(token, subjectPub, now)
+	require.NoError(t, err)
+
+	// Member cert should have the deadline.
+	dl, ok := auth.CertAccessDeadline(verified.Cert)
+	require.True(t, ok)
+	require.Equal(t, deadline.Unix(), dl.Unix())
+
+	// notAfter should be clamped: min(now+4h, deadline). Since deadline=now+24h > now+4h,
+	// notAfter should be approximately now+4h.
+	require.InDelta(t, now.Add(4*time.Hour).Unix(), verified.Cert.GetClaims().GetNotAfterUnix(), 2)
+}
+
+func TestAccessDeadlineJoinTokenClamps(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now().Truncate(time.Second)
+	deadline := now.Add(2 * time.Hour)
+
+	token, err := auth.IssueJoinToken(
+		rootPriv, trust, subjectPub, nil, now,
+		time.Hour, 4*time.Hour, deadline,
+	)
+	require.NoError(t, err)
+
+	verified, err := auth.VerifyJoinToken(token, subjectPub, now)
+	require.NoError(t, err)
+
+	// notAfter should be clamped to deadline since deadline < now+4h.
+	require.Equal(t, deadline.Unix(), verified.Cert.GetClaims().GetNotAfterUnix())
+
+	// Deadline should be preserved.
+	dl, ok := auth.CertAccessDeadline(verified.Cert)
+	require.True(t, ok)
+	require.Equal(t, deadline.Unix(), dl.Unix())
 }
 
 func newKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {

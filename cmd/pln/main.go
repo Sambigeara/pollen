@@ -70,15 +70,15 @@ func loadConfigOrDefault(pollenDir string) *config.Config {
 	return cfg
 }
 
-func getCertTTLFlag(cmd *cobra.Command) (time.Duration, error) {
-	certTTL, err := cmd.Flags().GetDuration("cert-ttl")
+func getExpireAfterFlag(cmd *cobra.Command) (time.Duration, error) {
+	d, err := cmd.Flags().GetDuration("expire-after")
 	if err != nil {
 		return 0, err
 	}
-	if certTTL < 0 {
-		return 0, errors.New("cert-ttl must be >= 0")
+	if d < 0 {
+		return 0, errors.New("expire-after must be >= 0")
 	}
-	return certTTL, nil
+	return d, nil
 }
 
 func main() {

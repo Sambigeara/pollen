@@ -135,16 +135,17 @@ func (x *Capabilities) GetMaxDepth() uint32 {
 }
 
 type DelegationCertClaims struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ClusterId     []byte                 `protobuf:"bytes,1,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
-	SubjectPub    []byte                 `protobuf:"bytes,2,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
-	IssuerPub     []byte                 `protobuf:"bytes,3,opt,name=issuer_pub,json=issuerPub,proto3" json:"issuer_pub,omitempty"`
-	Capabilities  *Capabilities          `protobuf:"bytes,4,opt,name=capabilities,proto3" json:"capabilities,omitempty"`
-	NotBeforeUnix int64                  `protobuf:"varint,5,opt,name=not_before_unix,json=notBeforeUnix,proto3" json:"not_before_unix,omitempty"`
-	NotAfterUnix  int64                  `protobuf:"varint,6,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
-	Serial        uint64                 `protobuf:"varint,7,opt,name=serial,proto3" json:"serial,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	ClusterId          []byte                 `protobuf:"bytes,1,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
+	SubjectPub         []byte                 `protobuf:"bytes,2,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
+	IssuerPub          []byte                 `protobuf:"bytes,3,opt,name=issuer_pub,json=issuerPub,proto3" json:"issuer_pub,omitempty"`
+	Capabilities       *Capabilities          `protobuf:"bytes,4,opt,name=capabilities,proto3" json:"capabilities,omitempty"`
+	NotBeforeUnix      int64                  `protobuf:"varint,5,opt,name=not_before_unix,json=notBeforeUnix,proto3" json:"not_before_unix,omitempty"`
+	NotAfterUnix       int64                  `protobuf:"varint,6,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
+	Serial             uint64                 `protobuf:"varint,7,opt,name=serial,proto3" json:"serial,omitempty"`
+	AccessDeadlineUnix int64                  `protobuf:"varint,8,opt,name=access_deadline_unix,json=accessDeadlineUnix,proto3" json:"access_deadline_unix,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *DelegationCertClaims) Reset() {
@@ -222,6 +223,13 @@ func (x *DelegationCertClaims) GetNotAfterUnix() int64 {
 func (x *DelegationCertClaims) GetSerial() uint64 {
 	if x != nil {
 		return x.Serial
+	}
+	return 0
+}
+
+func (x *DelegationCertClaims) GetAccessDeadlineUnix() int64 {
+	if x != nil {
+		return x.AccessDeadlineUnix
 	}
 	return 0
 }
@@ -646,7 +654,7 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\fCapabilities\x12!\n" +
 	"\fcan_delegate\x18\x01 \x01(\bR\vcanDelegate\x12\x1b\n" +
 	"\tcan_admit\x18\x02 \x01(\bR\bcanAdmit\x12\x1b\n" +
-	"\tmax_depth\x18\x03 \x01(\rR\bmaxDepth\"\xc5\x02\n" +
+	"\tmax_depth\x18\x03 \x01(\rR\bmaxDepth\"\xf7\x02\n" +
 	"\x14DelegationCertClaims\x12&\n" +
 	"\n" +
 	"cluster_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\tclusterId\x12(\n" +
@@ -657,7 +665,8 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\fcapabilities\x18\x04 \x01(\v2!.pollen.admission.v1.CapabilitiesB\x06\xbaH\x03\xc8\x01\x01R\fcapabilities\x12&\n" +
 	"\x0fnot_before_unix\x18\x05 \x01(\x03R\rnotBeforeUnix\x12$\n" +
 	"\x0enot_after_unix\x18\x06 \x01(\x03R\fnotAfterUnix\x12\x16\n" +
-	"\x06serial\x18\a \x01(\x04R\x06serial\"\xbd\x01\n" +
+	"\x06serial\x18\a \x01(\x04R\x06serial\x120\n" +
+	"\x14access_deadline_unix\x18\b \x01(\x03R\x12accessDeadlineUnix\"\xbd\x01\n" +
 	"\x0eDelegationCert\x12I\n" +
 	"\x06claims\x18\x01 \x01(\v2).pollen.admission.v1.DelegationCertClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x129\n" +
 	"\x05chain\x18\x02 \x03(\v2#.pollen.admission.v1.DelegationCertR\x05chain\x12%\n" +
