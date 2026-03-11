@@ -18,8 +18,7 @@
 //	keys/admin_ed25519.key     pln:pln        0640   SetGroupReadable
 //	keys/admin_ed25519.pub     pln:pln        0640   SetGroupReadable
 //	keys/cluster.trust.pb      pln:pln        0640   WriteGroupReadable
-//	keys/membership.cert.pb    pln:pln        0640   WriteGroupReadable
-//	keys/admin.cert.pb         pln:pln        0640   WriteGroupReadable
+//	keys/delegation.cert.pb    pln:pln        0640   WriteGroupReadable
 //	config.yaml                pln:pln        0660   WriteGroupWritable
 //	state.pb                   pln:pln        0640   WriteGroupReadable
 //	.state.lock                pln:pln        0600   SetPrivate

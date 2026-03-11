@@ -150,9 +150,13 @@ func defaultRootDir() string {
 	case homeState:
 		return home
 	default:
-		// Neither has state. Prefer sysDir if the package created it.
-		fi, err := os.Stat(sysDir)
-		if err == nil && fi.IsDir() {
+		// Neither has state. Prefer sysDir if it exists, or if the
+		// home parent doesn't exist (system users like pln often
+		// have a nonexistent home directory).
+		if fi, err := os.Stat(sysDir); err == nil && fi.IsDir() {
+			return sysDir
+		}
+		if _, err := os.Stat(homeDir); errors.Is(err, os.ErrNotExist) {
 			return sysDir
 		}
 		return home
