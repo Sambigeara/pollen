@@ -34,7 +34,7 @@ const (
 	pemTypeAdminPriv = "POLLEN ADMIN ED25519 PRIVATE KEY"
 	pemTypeAdminPub  = "POLLEN ADMIN ED25519 PUBLIC KEY"
 
-	keyFilePerm = 0o600
+	keyFilePerm = 0o640
 
 	timeSkewAllowance = time.Minute
 
@@ -215,7 +215,7 @@ func loadNodeCredentials(pollenDir string) (*NodeCredentials, error) {
 
 func SaveNodeCredentials(pollenDir string, creds *NodeCredentials) error {
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:mnd
+	if err := perm.EnsureDir(dir); err != nil {
 		return err
 	}
 
@@ -285,7 +285,7 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 	}
 
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:mnd
+	if err := perm.EnsureDir(dir); err != nil {
 		return nil, nil, err
 	}
 
@@ -314,7 +314,7 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 		return nil, nil, err
 	}
 
-	if err := perm.SetPrivate(privPath); err != nil {
+	if err := perm.SetGroupReadable(privPath); err != nil {
 		return nil, nil, err
 	}
 

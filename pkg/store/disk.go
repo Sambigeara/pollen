@@ -35,7 +35,7 @@ type disk struct {
 }
 
 func openDisk(pollenDir string) (*disk, error) {
-	if err := os.MkdirAll(pollenDir, 0o700); err != nil { //nolint:mnd
+	if err := perm.EnsureDir(pollenDir); err != nil {
 		return nil, fmt.Errorf("create pollen dir: %w", err)
 	}
 

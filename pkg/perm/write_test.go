@@ -64,6 +64,33 @@ func TestWritePrivateAtomic(t *testing.T) {
 	}
 }
 
+func TestEnsureDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "a", "b")
+
+	if err := EnsureDir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() {
+		t.Fatal("expected directory")
+	}
+
+	if runtime.GOOS == "linux" {
+		if mode := info.Mode().Perm(); mode != 0o770 {
+			t.Errorf("mode = %04o; want 0770", mode)
+		}
+	}
+
+	// Idempotent: calling again on existing dir should not fail.
+	if err := EnsureDir(dir); err != nil {
+		t.Fatalf("idempotent call failed: %v", err)
+	}
+}
+
 func TestWriteGroupReadable(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state")

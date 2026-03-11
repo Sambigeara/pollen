@@ -127,7 +127,7 @@ func Save(pollenDir string, cfg *Config) error {
 	}
 	cfg.BootstrapPeers = canonical
 
-	if err := os.MkdirAll(pollenDir, 0o700); err != nil { //nolint:mnd
+	if err := perm.EnsureDir(pollenDir); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 

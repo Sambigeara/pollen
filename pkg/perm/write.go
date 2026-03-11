@@ -22,7 +22,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		return fmt.Errorf("chmod %s: %w", tmp, err)
 	}
 
-	if err := chownIfRoot(tmp); err != nil {
+	if err := setPlnGroup(tmp); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("chown %s: %w", tmp, err)
 	}

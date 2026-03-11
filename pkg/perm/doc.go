@@ -12,10 +12,10 @@
 //	Path                       Owner:Group    Mode   Set by
 //	─────────────────────────  ─────────────  ────   ───────────────────────
 //	/var/lib/pln/              pln:pln        0770   postinstall.sh
-//	keys/                      pln:pln        0770   postinstall.sh
-//	keys/ed25519.key           pln:pln        0600   SetPrivate
+//	keys/                      pln:pln        0770   EnsureDir
+//	keys/ed25519.key           pln:pln        0640   SetGroupReadable
 //	keys/ed25519.pub           pln:pln        0640   SetGroupReadable
-//	keys/admin_ed25519.key     pln:pln        0600   SetPrivate
+//	keys/admin_ed25519.key     pln:pln        0640   SetGroupReadable
 //	keys/admin_ed25519.pub     pln:pln        0640   SetGroupReadable
 //	keys/cluster.trust.pb      pln:pln        0640   WriteGroupReadable
 //	keys/membership.cert.pb    pln:pln        0640   WriteGroupReadable
