@@ -96,18 +96,13 @@ func ComputeTargetPeers(localKey types.PeerKey, localCoord Coord, peers []PeerIn
 	return result
 }
 
+// TODO(saml): cap full-mesh fan-out (e.g. 16 targets) to bound the burst
+// when a large cluster restarts with persisted state and 0 connections.
 func selectFeasibleFullMesh(localKey types.PeerKey, peers []PeerInfo, params Params) []types.PeerKey {
 	localPrefix := lanPrefix(params.LocalIPs)
 	result := make([]types.PeerKey, 0, len(peers))
 	for _, p := range peers {
 		if p.Key == localKey {
-			continue
-		}
-		if p.PubliclyAccessible || InferPrivatelyRoutable(params.LocalIPs, p.IPs) {
-			result = append(result, p.Key)
-			continue
-		}
-		if suppressProactivePrivate(params, p) {
 			continue
 		}
 		isLAN := localPrefix != "" && lanPrefix(p.IPs) == localPrefix

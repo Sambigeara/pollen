@@ -721,9 +721,6 @@ func (n *Node) syncPeersFromState() {
 	localIPs := n.store.NodeIPs(n.store.LocalID)
 	shape := summarizeTopologyShape(localIPs, knownPeers)
 	activePeerCount := len(connectedPeers)
-	if activePeerCount == 0 {
-		activePeerCount = len(knownPeers)
-	}
 	params := adaptiveTopologyParams(epoch, shape)
 	params.PreferFullMesh = activePeerCount <= tinyClusterPeerThreshold
 	params.LocalIPs = localIPs
