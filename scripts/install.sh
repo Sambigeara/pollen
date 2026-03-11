@@ -62,6 +62,11 @@ if [ "$OS" = "linux" ]; then
         log "WARNING: No systemd service installed. You must manage the pln process manually."
     fi
 
+    getent group pln >/dev/null 2>&1 || sudo groupadd --system pln
+    id -u pln >/dev/null 2>&1 || sudo useradd -r -d /var/lib/pln -s /usr/sbin/nologin -g pln pln
+    sudo install -d -m 0770 -o pln -g pln /var/lib/pln
+    sudo install -d -m 0770 -o pln -g pln /var/lib/pln/keys
+
     sudo usermod -aG pln "$(whoami)" 2>/dev/null || true
     log "Done! Run 'sudo pln join <token>' to enroll this node."
     exit 0

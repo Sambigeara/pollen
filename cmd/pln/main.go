@@ -325,7 +325,7 @@ func runNode(cmd *cobra.Command) {
 		}
 	}
 
-	creds.DelegationKey, err = auth.LoadDelegationSigner(pollenDir, time.Now(), certTTLs.DelegationTTL())
+	creds.DelegationKey, err = auth.LoadDelegationSigner(pollenDir, privKey, time.Now(), certTTLs.DelegationTTL())
 	if err != nil {
 		logger.Infow("invite redemption disabled", "err", err)
 	}
@@ -443,7 +443,12 @@ func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
 
 	cfg := loadConfigOrDefault(pollenDir)
 
-	signer, err := auth.LoadDelegationSigner(pollenDir, time.Now(), cfg.CertTTLs.DelegationTTL())
+	nodePriv, _, err := node.GenIdentityKey(pollenDir)
+	if err != nil {
+		return nil, err
+	}
+
+	signer, err := auth.LoadDelegationSigner(pollenDir, nodePriv, time.Now(), cfg.CertTTLs.DelegationTTL())
 	if err != nil {
 		return nil, err
 	}

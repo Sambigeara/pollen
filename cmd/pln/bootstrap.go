@@ -119,7 +119,7 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 		return fmt.Errorf("create relay seed token: %w", err)
 	}
 
-	if err := bootstrapRelayOverSSH(cmd, sshTarget, seedToken); err != nil {
+	if err := bootstrapRelayOverSSH(cmd, sshTarget, seedToken, relayPub); err != nil {
 		return err
 	}
 
@@ -180,7 +180,7 @@ func sshRoot(ctx context.Context, sshTarget, shellCmd string) *exec.Cmd {
 	return exec.CommandContext(ctx, "ssh", sshTarget, shellCmd)
 }
 
-func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) error {
+func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string, relayPub ed25519.PublicKey) error {
 	ctx := cmd.Context()
 
 	// Enroll the relay into the cluster (as pln user for correct file ownership),
@@ -194,7 +194,7 @@ func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) erro
 	if err := waitForRelayReady(cmd, sshTarget); err != nil {
 		return err
 	}
-	if err := provisionRelayAdminDelegation(cmd, sshTarget); err != nil {
+	if err := provisionRelayAdminDelegation(cmd, sshTarget, relayPub); err != nil {
 		return err
 	}
 	if out, err := sshRoot(ctx, sshTarget, "sudo pln restart").CombinedOutput(); err != nil {
@@ -251,21 +251,8 @@ func ensureRemotePollen(ctx context.Context, sshTarget string) error {
 	return nil
 }
 
-func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
+func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string, relayPub ed25519.PublicKey) error {
 	ctx := cmd.Context()
-
-	keygenCmd := sshPln(ctx, sshTarget, "admin", "keygen")
-	var keygenStdout, keygenStderr bytes.Buffer
-	keygenCmd.Stdout = &keygenStdout
-	keygenCmd.Stderr = &keygenStderr
-	if err := keygenCmd.Run(); err != nil {
-		return fmt.Errorf("failed to initialize relay admin key: %w\n%s", err, strings.TrimSpace(keygenStderr.String()))
-	}
-
-	relayAdminPub, err := parseAdminPubFromInitOutput(keygenStdout.String())
-	if err != nil {
-		return err
-	}
 
 	issuerCtx, err := loadTokenIssuerContext(cmd)
 	if err != nil {
@@ -279,7 +266,7 @@ func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 		issuerCtx.signer.Priv,
 		nil,
 		issuerCtx.signer.Trust.GetClusterId(),
-		relayAdminPub,
+		relayPub,
 		auth.FullCapabilities(),
 		time.Now().Add(-time.Minute),
 		time.Now().Add(issuerCtx.cfg.CertTTLs.DelegationTTL()),
@@ -338,20 +325,4 @@ func inferRelayAddrFromSSHTarget(target string, relayPort int) (string, error) {
 	}
 
 	return net.JoinHostPort(host, strconv.Itoa(relayPort)), nil
-}
-
-func parseAdminPubFromInitOutput(out string) (ed25519.PublicKey, error) {
-	for line := range strings.SplitSeq(out, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "admin_pub:") {
-			continue
-		}
-		pk, err := types.PeerKeyFromString(strings.TrimSpace(strings.TrimPrefix(line, "admin_pub:")))
-		if err != nil {
-			return nil, err
-		}
-		return ed25519.PublicKey(pk.Bytes()), nil
-	}
-
-	return nil, errors.New("failed to parse relay admin public key")
 }

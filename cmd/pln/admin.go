@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -72,12 +71,6 @@ func runAdminSetCert(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	_, adminPub, err := auth.LoadAdminKey(pollenDir)
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		os.Exit(1)
-	}
-
 	_, nodePub, err := node.GenIdentityKey(pollenDir)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
@@ -100,12 +93,8 @@ func runAdminSetCert(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	if err := auth.VerifyDelegationCert(cert, creds.Trust, time.Now(), nil); err != nil {
+	if err := auth.VerifyDelegationCert(cert, creds.Trust, time.Now(), nodePub); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		os.Exit(1)
-	}
-	if !bytes.Equal(cert.GetClaims().GetSubjectPub(), adminPub) {
-		fmt.Fprintln(cmd.ErrOrStderr(), "admin cert subject mismatch")
 		os.Exit(1)
 	}
 

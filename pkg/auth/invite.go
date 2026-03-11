@@ -52,8 +52,42 @@ func SaveDelegationCert(pollenDir string, cert *admissionv1.DelegationCert) erro
 	return perm.WriteGroupReadable(filepath.Join(dir, delegationCertName), raw)
 }
 
-func LoadDelegationSigner(pollenDir string, now time.Time, delegationTTL time.Duration) (*DelegationSigner, error) {
+func LoadDelegationSigner(pollenDir string, nodePriv ed25519.PrivateKey, now time.Time, delegationTTL time.Duration) (*DelegationSigner, error) {
+	// Root admin path: admin key exists and matches the cluster root.
+	if signer, err := loadRootDelegationSigner(pollenDir, now, delegationTTL); err != nil {
+		return nil, err
+	} else if signer != nil {
+		return signer, nil
+	}
+
+	// Delegated admin path: node credentials carry a delegation cert
+	// with CanDelegate, issued to the node identity key.
+	nodePub := nodePriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
+	creds, err := loadNodeCredentials(pollenDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := VerifyDelegationCert(creds.Cert, creds.Trust, now, nodePub); err != nil {
+		return nil, fmt.Errorf("delegated admin cert invalid: %w", err)
+	}
+	if !creds.Cert.GetClaims().GetCapabilities().GetCanDelegate() {
+		return nil, errors.New("node cert lacks delegation capability")
+	}
+
+	return &DelegationSigner{
+		Priv:   nodePriv,
+		Trust:  creds.Trust,
+		Issuer: creds.Cert,
+	}, nil
+}
+
+// loadRootDelegationSigner returns a signer if the local admin key is the
+// cluster root. Returns (nil, nil) when admin key is absent or non-root.
+func loadRootDelegationSigner(pollenDir string, now time.Time, delegationTTL time.Duration) (*DelegationSigner, error) {
 	adminPriv, adminPub, err := LoadAdminKey(pollenDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -62,12 +96,22 @@ func LoadDelegationSigner(pollenDir string, now time.Time, delegationTTL time.Du
 	if err != nil {
 		return nil, err
 	}
+	if !bytes.Equal(adminPub, trust.GetRootPub()) {
+		return nil, nil
+	}
 
-	issuer, err := loadOrIssueDelegationCert(adminPriv, trust, pollenDir, now, delegationTTL)
+	issuer, err := IssueDelegationCert(
+		adminPriv,
+		nil,
+		trust.GetClusterId(),
+		adminPub,
+		FullCapabilities(),
+		now.Add(-timeSkewAllowance),
+		now.Add(delegationTTL),
+	)
 	if err != nil {
 		return nil, err
 	}
-
 	return &DelegationSigner{
 		Priv:   adminPriv,
 		Trust:  trust,
@@ -195,45 +239,6 @@ func DecodeInviteToken(s string) (*admissionv1.InviteToken, error) {
 	}
 
 	return token, nil
-}
-
-func loadOrIssueDelegationCert(
-	adminPriv ed25519.PrivateKey,
-	trust *admissionv1.TrustBundle,
-	pollenDir string,
-	now time.Time,
-	delegationTTL time.Duration,
-) (*admissionv1.DelegationCert, error) {
-	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-	if bytes.Equal(adminPub, trust.GetRootPub()) {
-		return IssueDelegationCert(
-			adminPriv,
-			nil, // root-issued
-			trust.GetClusterId(),
-			adminPub,
-			FullCapabilities(),
-			now.Add(-timeSkewAllowance),
-			now.Add(delegationTTL),
-		)
-	}
-
-	raw, err := os.ReadFile(filepath.Join(pollenDir, keysDir, delegationCertName))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, errors.New("delegated admin cert not installed")
-		}
-		return nil, err
-	}
-
-	cert := &admissionv1.DelegationCert{}
-	if err := cert.UnmarshalVT(raw); err != nil {
-		return nil, err
-	}
-
-	if err := VerifyDelegationCert(cert, trust, now, nil); err != nil {
-		return nil, fmt.Errorf("delegated admin cert invalid: %w", err)
-	}
-	return cert, nil
 }
 
 func loadTrustBundleForSigner(pollenDir string, adminPub ed25519.PublicKey) (*admissionv1.TrustBundle, error) {
