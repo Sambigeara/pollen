@@ -56,6 +56,7 @@
 
 ### Tooling
 - Use `just generate` to regenerate protobuf code, not raw `buf generate` commands.
+- **After editing Go files, run `goimports -w <file>` to fix imports and formatting.** This is faster than manually searching for import paths and more correct than hand-editing indentation. Always prefer this over manual import manipulation or file searches for package paths.
 
 ### Config
 - `config.yaml` has a header with example CLI commands (`pln serve`, `pln connect`, `pln disconnect`). When renaming or adding CLI commands that affect services/connections, update the `configHeader` constant in `pkg/config/config.go` to match.
