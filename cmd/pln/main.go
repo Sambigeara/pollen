@@ -150,14 +150,16 @@ func defaultRootDir() string {
 	case homeState:
 		return home
 	default:
-		// Neither has state. Prefer sysDir if it exists, or if the
-		// home parent doesn't exist (system users like pln often
-		// have a nonexistent home directory).
-		if fi, err := os.Stat(sysDir); err == nil && fi.IsDir() {
-			return sysDir
-		}
+		// Neither has state. System users (nonexistent home) always
+		// use sysDir. Root/sudo uses sysDir when it exists (system
+		// service setup). Regular users default to ~/.pln.
 		if _, err := os.Stat(homeDir); errors.Is(err, os.ErrNotExist) {
 			return sysDir
+		}
+		if os.Getuid() == 0 {
+			if fi, err := os.Stat(sysDir); err == nil && fi.IsDir() {
+				return sysDir
+			}
 		}
 		return home
 	}
