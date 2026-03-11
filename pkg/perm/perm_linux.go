@@ -32,8 +32,7 @@ func SetGroupSocket(path string) error { return setPerm(path, 0o660) }
 func SetPrivate(path string) error { return setPerm(path, 0o600) }
 
 // EnsureDir creates a directory (and parents) with pln group ownership.
-// Root sets full pln:pln ownership; non-root sets the group to pln
-// (tolerating EPERM on pre-existing dirs owned by another user).
+// Root sets full pln:pln ownership; non-root sets the group to pln.
 func EnsureDir(path string) error {
 	if err := os.MkdirAll(path, 0o770); err != nil { //nolint:mnd
 		return fmt.Errorf("mkdir %s: %w", path, err)
@@ -41,10 +40,7 @@ func EnsureDir(path string) error {
 	if os.Getuid() == 0 {
 		return SetGroupDir(path)
 	}
-	if err := setPlnGroup(path); err != nil && !errors.Is(err, syscall.EPERM) {
-		return err
-	}
-	return nil
+	return setPlnGroup(path)
 }
 
 var (
@@ -73,7 +69,8 @@ func resolvePlnOwner() {
 }
 
 // setPlnGroup sets the group of path to the pln group. Root does full
-// chown(pln:pln); non-root does chgrp only (chown(-1, plnGID)).
+// chown(pln:pln); non-root does chgrp only, tolerating EPERM when the
+// caller isn't a member of the pln group.
 func setPlnGroup(path string) error {
 	plnOnce.Do(resolvePlnOwner)
 	if !plnResolved {
@@ -82,5 +79,8 @@ func setPlnGroup(path string) error {
 	if os.Getuid() == 0 {
 		return os.Chown(path, plnUID, plnGID)
 	}
-	return os.Chown(path, -1, plnGID)
+	if err := os.Chown(path, -1, plnGID); err != nil && !errors.Is(err, syscall.EPERM) {
+		return err
+	}
+	return nil
 }
