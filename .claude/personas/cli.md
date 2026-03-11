@@ -34,7 +34,7 @@ No Go API — the CLI is a leaf binary. Its interface is the command-line surfac
 **Daemon control:**
 - `pln up` — run node in foreground
 - `pln up -d` — start as background service
-- `pln up -d --restart` — restart background service
+- `pln restart` — restart the background service
 - `pln down` — stop the background service
 - `pln upgrade` — upgrade pln binary (optionally `--restart`)
 
