@@ -54,7 +54,7 @@ func newClusterAuth(t *testing.T) *clusterAuth {
 
 func (c *clusterAuth) credsFor(t *testing.T, subject ed25519.PublicKey) *auth.NodeCredentials {
 	t.Helper()
-	cert, err := auth.IssueMembershipCert(c.adminPriv, c.trust.GetClusterId(), subject, time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), config.CertTTLs{}.AdminTTL())
+	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, c.trust.GetClusterId(), subject, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour))
 	require.NoError(t, err)
 	return &auth.NodeCredentials{Trust: c.trust, Cert: cert}
 }
@@ -64,26 +64,28 @@ func (c *clusterAuth) tokenFor(t *testing.T, subject ed25519.PublicKey, bootstra
 	token, err := auth.IssueJoinToken(c.adminPriv, c.trust, subject, []*admissionv1.BootstrapPeer{{
 		PeerPub: bootstrap.pubKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(bootstrap.port))},
-	}}, time.Now(), time.Hour, config.CertTTLs{}.MembershipTTL(), config.CertTTLs{}.AdminTTL())
+	}}, time.Now(), time.Hour, config.CertTTLs{}.MembershipTTL())
 	require.NoError(t, err)
 	return token
 }
 
-func (c *clusterAuth) signer(t *testing.T) *auth.AdminSigner {
+func (c *clusterAuth) signer(t *testing.T) *auth.DelegationSigner {
 	t.Helper()
 	adminPub, ok := c.adminPriv.Public().(ed25519.PublicKey)
 	require.True(t, ok)
 
-	issuer, err := auth.IssueAdminCert(
+	issuer, err := auth.IssueDelegationCert(
 		c.adminPriv,
+		nil,
 		c.trust.GetClusterId(),
 		adminPub,
+		auth.FullCapabilities(),
 		time.Now().Add(-time.Minute),
 		time.Now().Add(365*24*time.Hour),
 	)
 	require.NoError(t, err)
 
-	return &auth.AdminSigner{
+	return &auth.DelegationSigner{
 		Priv:     c.adminPriv,
 		Trust:    c.trust,
 		Issuer:   issuer,
@@ -138,7 +140,7 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 
 	bootstrapCreds := cluster.credsFor(t, bootstrapPub)
 	signer := cluster.signer(t)
-	bootstrapCreds.InviteSigner = signer
+	bootstrapCreds.DelegationKey = signer
 	bootstrap := startMeshHarnessWithCreds(t, bootstrapPriv, bootstrapPub, bootstrapCreds)
 
 	joiner := startMeshHarness(t, cluster)
@@ -153,7 +155,6 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 		time.Now(),
 		time.Hour,
 		0,
-		false,
 	)
 	require.NoError(t, err)
 
@@ -184,7 +185,7 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 
 	bootstrapCreds := cluster.credsFor(t, bootstrapPub)
 	signer := cluster.signer(t)
-	bootstrapCreds.InviteSigner = signer
+	bootstrapCreds.DelegationKey = signer
 	bootstrap := startMeshHarnessWithCreds(t, bootstrapPriv, bootstrapPub, bootstrapCreds)
 
 	joiner := startMeshHarness(t, cluster)
@@ -199,7 +200,6 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 		time.Now().Add(-2*time.Second),
 		time.Second,
 		0,
-		false,
 	)
 	require.NoError(t, err)
 
@@ -247,7 +247,7 @@ func startMeshHarnessWithCreds(
 ) *meshHarness {
 	t.Helper()
 
-	m, err := mesh.NewMesh(0, priv, creds, config.CertTTLs{}.TLSIdentityTTL(), config.CertTTLs{}.MembershipTTL(), 0, nil, metrics.NewMeshMetrics(nil))
+	m, err := mesh.NewMesh(0, priv, creds, config.CertTTLs{}.TLSIdentityTTL(), config.CertTTLs{}.MembershipTTL(), 0, metrics.NewMeshMetrics(nil))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())

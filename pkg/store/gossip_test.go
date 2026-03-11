@@ -6,16 +6,14 @@ import (
 	"testing"
 	"time"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
 
-func newTestStore(pub []byte, trustBundle *admissionv1.TrustBundle) *Store {
+func newTestStore(pub []byte) *Store {
 	localID := types.PeerKeyFromBytes(pub)
 	s := &Store{
 		LocalID: localID,
@@ -30,8 +28,7 @@ func newTestStore(pub []byte, trustBundle *admissionv1.TrustBundle) *Store {
 				},
 			},
 		},
-		revocations:        make(map[types.PeerKey]*admissionv1.SignedRevocation),
-		trustBundle:        trustBundle,
+		denied:             make(map[types.PeerKey]struct{}),
 		desiredConnections: make(map[string]Connection),
 		metrics:            metrics.NewGossipMetrics(nil),
 	}
@@ -56,7 +53,7 @@ func peerKey(b byte) (types.PeerKey, string) {
 func TestEagerSyncClock(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	// Fresh store with only local state → empty digest.
 	digest := s.EagerSyncClock()
@@ -85,7 +82,7 @@ func TestEagerSyncClock(t *testing.T) {
 func TestSetLocalNetworkReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	require.Len(t, events, 1)
@@ -101,7 +98,7 @@ func TestSetLocalNetworkReturnsEvent(t *testing.T) {
 func TestSetLocalNetworkNoOpWhenUnchanged(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	events := s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
@@ -113,7 +110,7 @@ func TestSetLocalNetworkNoOpWhenUnchanged(t *testing.T) {
 func TestSetExternalPortReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.SetExternalPort(45000)
 	if len(events) != 1 {
@@ -127,7 +124,7 @@ func TestSetExternalPortReturnsEvent(t *testing.T) {
 func TestSetObservedExternalIPReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.SetObservedExternalIP("52.204.52.130")
 	require.Len(t, events, 1)
@@ -137,7 +134,7 @@ func TestSetObservedExternalIPReturnsEvent(t *testing.T) {
 func TestSetLocalConnectedConnect(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPub := make([]byte, 32)
 	peerPub[0] = 2
@@ -160,7 +157,7 @@ func TestSetLocalConnectedConnect(t *testing.T) {
 func TestSetLocalConnectedDisconnect(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPub := make([]byte, 32)
 	peerPub[0] = 2
@@ -182,7 +179,7 @@ func TestSetLocalConnectedDisconnect(t *testing.T) {
 func TestApplyEventSingleAttribute(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -209,7 +206,7 @@ func TestApplyEventSingleAttribute(t *testing.T) {
 func TestApplyEventObservedExternalIP(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -230,7 +227,7 @@ func TestApplyEventObservedExternalIP(t *testing.T) {
 func TestApplyEventPerKeyCounter(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -262,7 +259,7 @@ func TestApplyEventPerKeyCounter(t *testing.T) {
 func TestApplyEventDifferentKeys(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -297,7 +294,7 @@ func TestApplyEventDifferentKeys(t *testing.T) {
 func TestApplyEventDeletion(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -330,7 +327,7 @@ func TestApplyEventDeletion(t *testing.T) {
 func TestApplyEventTombstonePreventResurrection(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -363,7 +360,7 @@ func TestApplyEventTombstonePreventResurrection(t *testing.T) {
 func TestApplyEventSelfStateConflict(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 	localID := s.LocalID
 
 	// Set some local state.
@@ -390,7 +387,7 @@ func TestApplyEventSelfStateConflict(t *testing.T) {
 func TestApplyEventSelfStateNoConflict(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 
@@ -411,7 +408,7 @@ func TestApplyEventSelfStateNoConflict(t *testing.T) {
 func TestMissingForReturnsEvents(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
@@ -429,7 +426,7 @@ func TestMissingForReturnsEvents(t *testing.T) {
 func TestMissingForRespectsClock(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
@@ -452,7 +449,7 @@ func TestMissingForRespectsClock(t *testing.T) {
 func TestMissingForReturnsNilForUpToDate(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 
@@ -465,7 +462,7 @@ func TestMissingForReturnsNilForUpToDate(t *testing.T) {
 func TestClockUsesMaxCounter(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
@@ -477,7 +474,7 @@ func TestClockUsesMaxCounter(t *testing.T) {
 func TestUpsertLocalServiceReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.UpsertLocalService(8080, "http")
 	if len(events) != 1 {
@@ -494,7 +491,7 @@ func TestUpsertLocalServiceReturnsEvent(t *testing.T) {
 func TestRemoveLocalServicesReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.UpsertLocalService(8080, "http")
 	events := s.RemoveLocalServices("http")
@@ -515,7 +512,7 @@ func TestRemoveLocalServicesReturnsEvent(t *testing.T) {
 func TestRemoveLocalServicesNoOpWhenMissing(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.RemoveLocalServices("http")
 	if events != nil {
@@ -526,7 +523,7 @@ func TestRemoveLocalServicesNoOpWhenMissing(t *testing.T) {
 func TestApplyEventNetworkUpdate(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -556,7 +553,7 @@ func TestApplyEventNetworkUpdate(t *testing.T) {
 func TestApplyEventIdentityPub(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 	idPub := make([]byte, 32)
@@ -582,7 +579,7 @@ func TestApplyEventIdentityPub(t *testing.T) {
 func TestApplyEventReachablePeer(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 	targetPK, _ := peerKey(3)
@@ -620,7 +617,7 @@ func TestApplyEventReachablePeer(t *testing.T) {
 func TestSetLastAddr(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -647,7 +644,7 @@ func TestSetLastAddr(t *testing.T) {
 func TestSetLastAddrIgnoresUnknownPeer(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	unknownPK, _ := peerKey(99)
 	s.SetLastAddr(unknownPK, "1.2.3.4:5678")
@@ -661,7 +658,7 @@ func TestSetLastAddrIgnoresUnknownPeer(t *testing.T) {
 func TestKnownPeersIncludesPeerWithLastAddrOnly(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 	idPub := make([]byte, 32)
@@ -696,7 +693,7 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 	localPub := make([]byte, 32)
 	localPub[0] = 1
 
-	s, err := Load(dir, localPub, nil)
+	s, err := Load(dir, localPub)
 	if err != nil {
 		t.Fatalf("load store: %v", err)
 	}
@@ -722,7 +719,7 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 		t.Fatalf("close store: %v", err)
 	}
 
-	s2, err := Load(dir, localPub, nil)
+	s2, err := Load(dir, localPub)
 	if err != nil {
 		t.Fatalf("reload store: %v", err)
 	}
@@ -755,7 +752,7 @@ func TestSaveLoadDoesNotPersistServices(t *testing.T) {
 	localPub := make([]byte, 32)
 	localPub[0] = 1
 
-	s, err := Load(dir, localPub, nil)
+	s, err := Load(dir, localPub)
 	require.NoError(t, err)
 
 	_, peerIDStr := peerKey(2)
@@ -777,7 +774,7 @@ func TestSaveLoadDoesNotPersistServices(t *testing.T) {
 	require.NoError(t, s.Save())
 	require.NoError(t, s.Close())
 
-	s2, err := Load(dir, localPub, nil)
+	s2, err := Load(dir, localPub)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, s2.Close()) }()
 
@@ -790,7 +787,7 @@ func TestSaveLoadDoesNotPersistServices(t *testing.T) {
 func TestSetLocalPubliclyAccessibleReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.SetLocalPubliclyAccessible(true)
 	if len(events) != 1 {
@@ -809,7 +806,7 @@ func TestSetLocalPubliclyAccessibleReturnsEvent(t *testing.T) {
 func TestSetLocalPubliclyAccessibleNoOpWhenUnchanged(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalPubliclyAccessible(true)
 	events := s.SetLocalPubliclyAccessible(true)
@@ -821,7 +818,7 @@ func TestSetLocalPubliclyAccessibleNoOpWhenUnchanged(t *testing.T) {
 func TestSetLocalPubliclyAccessibleClear(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalPubliclyAccessible(true)
 	events := s.SetLocalPubliclyAccessible(false)
@@ -842,7 +839,7 @@ func TestSetLocalPubliclyAccessibleClear(t *testing.T) {
 func TestApplyPubliclyAccessibleFromPeer(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -876,7 +873,7 @@ func TestApplyPubliclyAccessibleFromPeer(t *testing.T) {
 func TestPubliclyAccessibleRoundTrip(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.SetLocalPubliclyAccessible(true)
 	if len(events) != 1 {
@@ -904,7 +901,7 @@ func TestPubliclyAccessibleRoundTrip(t *testing.T) {
 func TestPubliclyAccessibleConflictRecovery(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalPubliclyAccessible(true)
 
@@ -936,7 +933,7 @@ func TestFreshStoreGossipsPubliclyAccessibleDeletion(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	s, err := Load(t.TempDir(), pub, nil)
+	s, err := Load(t.TempDir(), pub)
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -959,254 +956,50 @@ func TestFreshStoreGossipsPubliclyAccessibleDeletion(t *testing.T) {
 	require.True(t, found, "fresh store should gossip a PubliclyAccessible deletion to peers with stale state")
 }
 
-func newTestClusterAuth(t *testing.T) (ed25519.PrivateKey, *admissionv1.TrustBundle) {
-	t.Helper()
-	adminPub, adminPriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-	return adminPriv, auth.NewTrustBundle(adminPub)
-}
-
-func issueTestRevocation(t *testing.T, adminPriv ed25519.PrivateKey, trust *admissionv1.TrustBundle, subjectPub []byte) *admissionv1.SignedRevocation {
-	t.Helper()
-	rev, err := auth.IssueRevocation(adminPriv, trust.GetClusterId(), subjectPub, time.Now())
-	if err != nil {
-		t.Fatalf("issue revocation: %v", err)
-	}
-	return rev
-}
-
-func TestPublishRevocationAndIsRevoked(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-
+func TestDenyPeerAndIsDenied(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, trust)
+	s := newTestStore(pub)
 
 	subjectPub := make([]byte, 32)
-	subjectPub[0] = 2
+	subjectPub[0] = 0x42
 
-	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
+	require.False(t, s.IsDenied(subjectPub))
 
-	events := s.PublishRevocation(rev)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
+	events := s.DenyPeer(subjectPub)
+	require.Len(t, events, 1)
 
-	if !s.IsSubjectRevoked(subjectPub) {
-		t.Fatal("expected subject pub to be revoked")
-	}
+	require.True(t, s.IsDenied(subjectPub))
 
-	otherPub := make([]byte, 32)
-	otherPub[0] = 3
-	if s.IsSubjectRevoked(otherPub) {
-		t.Fatal("expected other pub to NOT be revoked")
-	}
+	// Duplicate deny is a no-op
+	events = s.DenyPeer(subjectPub)
+	require.Nil(t, events)
 }
 
-func TestPublishRevocationDuplicateIsNoop(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-
+func TestKnownPeersExcludesDenied(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, trust)
-
-	rev := issueTestRevocation(t, adminPriv, trust, make([]byte, 32))
-
-	events := s.PublishRevocation(rev)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-
-	events = s.PublishRevocation(rev)
-	if events != nil {
-		t.Fatal("expected nil for duplicate revocation")
-	}
-}
-
-func TestApplyRevocationEventFromPeer(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub, trust)
+	s := newTestStore(pub)
 
 	peerPub := make([]byte, 32)
-	peerPub[0] = 2
-	peerID := types.PeerKeyFromBytes(peerPub)
+	peerPub[0] = 0x02
+	peerKey := types.PeerKeyFromBytes(peerPub)
 
-	subjectPub := make([]byte, 32)
-	subjectPub[0] = 3
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{PeerId: peerKey.String(), Counter: 1, Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 1234}}},
+		{PeerId: peerKey.String(), Counter: 2, Change: &statev1.GossipEvent_IdentityPub{IdentityPub: &statev1.IdentityChange{IdentityPub: peerPub, CertExpiryUnix: time.Now().Add(time.Hour).Unix()}}},
+	}, false)
 
-	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
+	require.Len(t, s.KnownPeers(), 1)
 
-	event := &statev1.GossipEvent{
-		PeerId:  peerID.String(),
-		Counter: 1,
-		Change: &statev1.GossipEvent_Revocation{
-			Revocation: &statev1.RevocationChange{Revocation: rev},
-		},
-	}
-
-	s.applyEvent(event)
-
-	if !s.IsSubjectRevoked(subjectPub) {
-		t.Fatal("expected subject pub to be revoked after applying peer event")
-	}
-}
-
-func TestApplyRevocationEventRejectsWithoutTrustBundle(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub, nil)
-
-	peerPub := make([]byte, 32)
-	peerPub[0] = 2
-	peerID := types.PeerKeyFromBytes(peerPub)
-
-	subjectPub := make([]byte, 32)
-	subjectPub[0] = 3
-
-	rev := &admissionv1.SignedRevocation{
-		Entry: &admissionv1.RevocationEntry{
-			SubjectPub: subjectPub,
-		},
-		Signature: make([]byte, 64),
-	}
-
-	event := &statev1.GossipEvent{
-		PeerId:  peerID.String(),
-		Counter: 1,
-		Change: &statev1.GossipEvent_Revocation{
-			Revocation: &statev1.RevocationChange{Revocation: rev},
-		},
-	}
-
-	s.applyEvent(event)
-
-	if s.IsSubjectRevoked(subjectPub) {
-		t.Fatal("expected revocation to be rejected when trust bundle is nil")
-	}
-}
-
-func TestApplyRevocationDeletedEventRejected(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub, trust)
-
-	_, peerIDStr := peerKey(2)
-
-	subjectPub := make([]byte, 32)
-	subjectPub[0] = 3
-	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
-
-	event := &statev1.GossipEvent{
-		PeerId:  peerIDStr,
-		Counter: 1,
-		Deleted: true,
-		Change: &statev1.GossipEvent_Revocation{
-			Revocation: &statev1.RevocationChange{Revocation: rev},
-		},
-	}
-
-	s.applyEvent(event)
-
-	if s.IsSubjectRevoked(subjectPub) {
-		t.Fatal("deleted revocation event should be silently dropped")
-	}
-
-	peerPK, _ := peerKey(2)
-	rec, ok := s.Get(peerPK)
-	if ok && rec.maxCounter > 0 {
-		t.Fatal("deleted revocation should not advance the log")
-	}
-}
-
-func TestApplyRevocationDuplicateDoesNotFireCallback(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub, trust)
-
-	var callCount int
-	s.OnRevocation(func(types.PeerKey) { callCount++ })
-
-	subjectPub := make([]byte, 32)
-	subjectPub[0] = 3
-	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
-
-	// First peer sends revocation.
-	_, peer1Str := peerKey(2)
-	s.applyEvent(&statev1.GossipEvent{
-		PeerId:  peer1Str,
-		Counter: 1,
-		Change: &statev1.GossipEvent_Revocation{
-			Revocation: &statev1.RevocationChange{Revocation: rev},
-		},
-	})
-
-	// Second peer sends the same revocation.
-	_, peer2Str := peerKey(4)
-	s.applyEvent(&statev1.GossipEvent{
-		PeerId:  peer2Str,
-		Counter: 1,
-		Change: &statev1.GossipEvent_Revocation{
-			Revocation: &statev1.RevocationChange{Revocation: rev},
-		},
-	})
-
-	if callCount != 1 {
-		t.Fatalf("expected onRevocation to fire exactly once, got %d", callCount)
-	}
-
-	if !s.IsSubjectRevoked(subjectPub) {
-		t.Fatal("subject should still be revoked")
-	}
-}
-
-func TestKnownPeersExcludesRevoked(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub, trust)
-
-	peerPK, peerIDStr := peerKey(2)
-
-	// Add peer with network info so it appears in KnownPeers.
-	s.applyEvent(&statev1.GossipEvent{
-		PeerId:  peerIDStr,
-		Counter: 1,
-		Change: &statev1.GossipEvent_Network{
-			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.5"}, LocalPort: 7000},
-		},
-	})
-
-	peers := s.KnownPeers()
-	if len(peers) != 1 || peers[0].PeerID != peerPK {
-		t.Fatalf("expected 1 known peer before revocation, got %d", len(peers))
-	}
-
-	// Revoke the peer.
-	subjectPub := make([]byte, 32)
-	copy(subjectPub, peerPK[:])
-	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
-	s.PublishRevocation(rev)
-
-	peers = s.KnownPeers()
-	if len(peers) != 0 {
-		t.Fatalf("expected 0 known peers after revocation, got %d", len(peers))
-	}
+	s.DenyPeer(peerPub)
+	require.Len(t, s.KnownPeers(), 0)
 }
 
 func TestKnownPeersExcludesExpired(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 	_, peer3IDStr := peerKey(3)
@@ -1281,59 +1074,10 @@ func TestKnownPeersExcludesExpired(t *testing.T) {
 	}
 }
 
-func TestLoadRestoresRevocationsFromDisk(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-	dir := t.TempDir()
-
-	localPub := make([]byte, 32)
-	localPub[0] = 1
-
-	s, err := Load(dir, localPub, trust)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-
-	subjectPub := make([]byte, 32)
-	subjectPub[0] = 2
-	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
-
-	s.PublishRevocation(rev)
-
-	if err := s.Save(); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-
-	s2, err := Load(dir, localPub, trust)
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	defer func() { _ = s2.Close() }()
-
-	if !s2.IsSubjectRevoked(subjectPub) {
-		t.Fatal("revocation should survive save/load round-trip")
-	}
-
-	// The revocation should appear in MissingFor output for a new joiner.
-	events := s2.MissingFor(nil)
-	var found bool
-	for _, ev := range events {
-		if ev.GetRevocation() != nil {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("expected revocation event in MissingFor output after reload")
-	}
-}
-
 func TestSetLocalVivaldiCoordReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	coord := topology.Coord{X: 10.5, Y: -3.2, Height: 0.001}
 	events := s.SetLocalVivaldiCoord(coord)
@@ -1351,7 +1095,7 @@ func TestSetLocalVivaldiCoordReturnsEvent(t *testing.T) {
 func TestSetLocalVivaldiCoordEpsilonSuppression(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	coord := topology.Coord{X: 10.5, Y: -3.2, Height: 0.001}
 	s.SetLocalVivaldiCoord(coord)
@@ -1368,7 +1112,7 @@ func TestSetLocalVivaldiCoordEpsilonSuppression(t *testing.T) {
 func TestSetLocalVivaldiCoordUnchangedSuppressedAtHighHeight(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	coord := topology.Coord{X: 1.0, Y: 2.0, Height: 3.0}
 	s.SetLocalVivaldiCoord(coord)
@@ -1380,7 +1124,7 @@ func TestSetLocalVivaldiCoordUnchangedSuppressedAtHighHeight(t *testing.T) {
 func TestFirstSetLocalVivaldiCoordAlwaysPublishes(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	coord := topology.Coord{X: 0.1, Height: 0.2}
 	events := s.SetLocalVivaldiCoord(coord)
@@ -1392,7 +1136,7 @@ func TestFirstSetLocalVivaldiCoordAlwaysPublishes(t *testing.T) {
 func TestApplyVivaldiFromPeer(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -1414,7 +1158,7 @@ func TestApplyVivaldiFromPeer(t *testing.T) {
 func TestApplyVivaldiDeletionClearsToNil(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -1444,7 +1188,7 @@ func TestApplyVivaldiDeletionClearsToNil(t *testing.T) {
 func TestVivaldiRoundTrip(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalVivaldiCoord(topology.Coord{X: 10.5, Y: -3.2, Height: 0.001})
 
@@ -1467,7 +1211,7 @@ func TestVivaldiRoundTrip(t *testing.T) {
 func TestVivaldiConflictRecovery(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalVivaldiCoord(topology.Coord{X: 10.5, Y: -3.2, Height: 0.001})
 
@@ -1495,7 +1239,7 @@ func TestFreshStoreDoesNotGossipVivaldi(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	s, err := Load(t.TempDir(), pub, nil)
+	s, err := Load(t.TempDir(), pub)
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -1518,7 +1262,7 @@ func TestFreshStoreDoesNotGossipVivaldi(t *testing.T) {
 func TestMissingForPartialClockIncludesUnknownPeers(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	pkA, strA := peerKey(2)
 	pkB, strB := peerKey(3)
@@ -1563,7 +1307,7 @@ func TestMissingForPartialClockIncludesUnknownPeers(t *testing.T) {
 func TestMissingForNilClockSendsEverything(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, strA := peerKey(2)
 	_, strB := peerKey(3)
@@ -1593,7 +1337,7 @@ func TestMissingForNilClockSendsEverything(t *testing.T) {
 func TestKnownPeersIncludesVivaldiCoord(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -1622,7 +1366,7 @@ func TestKnownPeersIncludesVivaldiCoord(t *testing.T) {
 func TestApplyRemoteEventRebroadcast(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -1640,7 +1384,7 @@ func TestApplyRemoteEventRebroadcast(t *testing.T) {
 func TestApplyStaleRemoteEventNoRebroadcast(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -1668,7 +1412,7 @@ func TestSaveLoadPersistsPubliclyAccessible(t *testing.T) {
 	localPub := make([]byte, 32)
 	localPub[0] = 1
 
-	s, err := Load(dir, localPub, nil)
+	s, err := Load(dir, localPub)
 	require.NoError(t, err)
 
 	_, peerIDStr := peerKey(2)
@@ -1693,7 +1437,7 @@ func TestSaveLoadPersistsPubliclyAccessible(t *testing.T) {
 	require.NoError(t, s.Save())
 	require.NoError(t, s.Close())
 
-	s2, err := Load(dir, localPub, nil)
+	s2, err := Load(dir, localPub)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, s2.Close()) }()
 
@@ -1703,7 +1447,7 @@ func TestSaveLoadPersistsPubliclyAccessible(t *testing.T) {
 
 func TestStaleRatioBatchLevel(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 	gm := metrics.NewGossipMetrics(nil)
 	s.SetGossipMetrics(gm)
 
@@ -1763,7 +1507,7 @@ func TestStaleRatioBatchLevel(t *testing.T) {
 
 func TestResourceTelemetryDeadband(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	t.Run("first call emits", func(t *testing.T) {
 		events := s.SetLocalResourceTelemetry(10, 20, 1<<30)
@@ -1794,7 +1538,7 @@ func TestResourceTelemetryDeadband(t *testing.T) {
 func TestWatermarkAlwaysAdvances(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -1822,7 +1566,7 @@ func TestWatermarkAlwaysAdvances(t *testing.T) {
 func TestPeerHash(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 
@@ -1844,7 +1588,7 @@ func TestPeerHash(t *testing.T) {
 func TestDigestHashMismatchSendsAll(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
@@ -1862,7 +1606,7 @@ func TestDigestHashMismatchSendsAll(t *testing.T) {
 func TestDigestMatchSkips(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 

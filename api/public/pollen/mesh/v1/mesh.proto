@@ -40,20 +40,19 @@ message CertRenewalRequest {
 message CertRenewalResponse {
   bool accepted = 1;
   string reason = 2;
-  pollen.admission.v1.MembershipCert cert = 3;
+  pollen.admission.v1.DelegationCert cert = 3;
 }
 
 message Envelope {
-  reserved 1;
   oneof body {
-    PunchCoordRequest punch_coord_request = 3;
-    PunchCoordTrigger punch_coord_trigger = 4;
-    InviteRedeemRequest invite_redeem_request = 6;
-    InviteRedeemResponse invite_redeem_response = 7;
-    ObservedAddress observed_address = 8;
-    pollen.state.v1.GossipEventBatch events = 9;
-    CertRenewalRequest cert_renewal_request = 10;
-    CertRenewalResponse cert_renewal_response = 11;
+    PunchCoordRequest punch_coord_request = 1;
+    PunchCoordTrigger punch_coord_trigger = 2;
+    InviteRedeemRequest invite_redeem_request = 3;
+    InviteRedeemResponse invite_redeem_response = 4;
+    ObservedAddress observed_address = 5;
+    pollen.state.v1.GossipEventBatch events = 6;
+    CertRenewalRequest cert_renewal_request = 7;
+    CertRenewalResponse cert_renewal_response = 8;
   }
-  bytes trace_id = 12;
+  bytes trace_id = 9;
 }

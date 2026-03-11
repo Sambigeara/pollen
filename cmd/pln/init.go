@@ -87,7 +87,7 @@ func runInit(cmd *cobra.Command, _ []string) {
 	cfg := loadConfigOrDefault(pollenDir)
 	certTTLs := cfg.CertTTLs
 
-	creds, err := auth.EnsureLocalRootCredentials(pollenDir, pub, time.Now(), certTTLs.MembershipTTL(), certTTLs.AdminTTL())
+	creds, err := auth.EnsureLocalRootCredentials(pollenDir, pub, time.Now(), certTTLs.MembershipTTL(), certTTLs.DelegationTTL())
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)

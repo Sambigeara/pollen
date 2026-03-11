@@ -16,7 +16,7 @@ service ControlService {
   rpc ConnectService(ConnectServiceRequest) returns (ConnectServiceResponse);
   rpc ConnectPeer(ConnectPeerRequest) returns (ConnectPeerResponse);
   rpc DisconnectService(DisconnectServiceRequest) returns (DisconnectServiceResponse);
-  rpc RevokePeer(RevokePeerRequest) returns (RevokePeerResponse);
+  rpc DenyPeer(DenyPeerRequest) returns (DenyPeerResponse);
 }
 
 message NodeRef {
@@ -85,7 +85,9 @@ message CertInfo {
   int64 not_after_unix = 2;
   uint64 serial = 3;
   CertHealth health = 4;
-  bool non_renewable = 5;
+  bool can_delegate = 5;
+  bool can_admit = 6;
+  uint32 max_depth = 7;
 }
 
 message GetStatusResponse {
@@ -94,6 +96,7 @@ message GetStatusResponse {
   repeated ServiceSummary services = 3;
   repeated ConnectionSummary connections = 4;
   repeated CertInfo certificates = 5;
+  bool degraded = 6;
 }
 
 message ConnectionSummary {
@@ -164,11 +167,11 @@ message DisconnectServiceRequest {
 
 message DisconnectServiceResponse {}
 
-message RevokePeerRequest {
+message DenyPeerRequest {
   bytes peer_id = 1 [(buf.validate.field).bytes = {len: 32}];
 }
 
-message RevokePeerResponse {}
+message DenyPeerResponse {}
 
 message GetMetricsRequest {}
 
@@ -194,7 +197,6 @@ message GetMetricsResponse {
   uint64 punch_failures = 12;
   HealthStatus health = 13;
   uint64 vivaldi_samples = 14;
-  uint64 eager_syncs = 16;
-  uint64 eager_sync_failures = 17;
-  reserved 15, 18, 19, 20;
+  uint64 eager_syncs = 15;
+  uint64 eager_sync_failures = 16;
 }

@@ -115,7 +115,7 @@ const (
 	DisconnectReset                          // peer rebooted (stateless reset)
 	DisconnectGraceful                       // clean app-level close
 	DisconnectTopologyPrune                  // peer intentionally pruned this edge
-	DisconnectRevoked                        // peer revoked our session/membership
+	DisconnectDenied                         // peer denied our session/membership
 	DisconnectCertRotation                   // forced reconnection for cert rotation
 	DisconnectCertExpired                    // peer membership cert expired
 )
@@ -132,8 +132,8 @@ func (r DisconnectReason) String() string {
 		return "graceful"
 	case DisconnectTopologyPrune:
 		return "topology_prune"
-	case DisconnectRevoked:
-		return "revoked"
+	case DisconnectDenied:
+		return "denied"
 	case DisconnectCertRotation:
 		return "cert_rotation"
 	case DisconnectCertExpired:
@@ -448,7 +448,7 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 		delay = gracefulDisconnectRetryInterval
 	case DisconnectTopologyPrune:
 		delay = unreachableRetryInterval
-	case DisconnectRevoked:
+	case DisconnectDenied:
 		delay = unreachableRetryInterval
 	case DisconnectCertRotation:
 		delay = idleTimeoutRetryInterval

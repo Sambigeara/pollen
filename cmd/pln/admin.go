@@ -94,22 +94,22 @@ func runAdminSetCert(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	cert, err := auth.UnmarshalAdminCertBase64(strings.TrimSpace(args[0]))
+	cert, err := auth.UnmarshalDelegationCertBase64(strings.TrimSpace(args[0]))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
 
-	if err := auth.VerifyAdminCert(cert, creds.Trust, time.Now()); err != nil {
+	if err := auth.VerifyDelegationCert(cert, creds.Trust, time.Now(), nil); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
-	if !bytes.Equal(cert.GetClaims().GetAdminPub(), adminPub) {
+	if !bytes.Equal(cert.GetClaims().GetSubjectPub(), adminPub) {
 		fmt.Fprintln(cmd.ErrOrStderr(), "admin cert subject mismatch")
 		os.Exit(1)
 	}
 
-	if err := auth.SaveAdminCert(pollenDir, cert); err != nil {
+	if err := auth.SaveDelegationCert(pollenDir, cert); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}

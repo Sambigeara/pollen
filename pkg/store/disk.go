@@ -2,7 +2,6 @@ package store
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +11,7 @@ import (
 	"sync"
 	"syscall"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/types"
 	"gopkg.in/yaml.v3"
@@ -140,26 +137,10 @@ func (d *disk) save(st *statev1.RuntimeState) error {
 	return perm.WriteGroupReadable(d.statePath, b)
 }
 
-func unmarshalRevocations(revs []*admissionv1.SignedRevocation, trustBundle *admissionv1.TrustBundle) map[types.PeerKey]*admissionv1.SignedRevocation {
-	out := make(map[types.PeerKey]*admissionv1.SignedRevocation, len(revs))
-	for _, rev := range revs {
-		subjectKey := types.PeerKeyFromBytes(rev.GetEntry().GetSubjectPub())
-		if trustBundle != nil {
-			if err := auth.VerifyRevocation(rev, trustBundle); err != nil {
-				slog.Warn("skipping invalid revocation from disk", "subject", subjectKey.String(), "err", err)
-				continue
-			}
-		}
-		out[subjectKey] = rev
-	}
-	return out
-}
-
 // --- YAML migration (state.yaml → state.pb) ---
 
 type yamlDiskState struct {
-	Peers       []yamlDiskPeer       `yaml:"peers,omitempty"`
-	Revocations []yamlDiskRevocation `yaml:"revocations,omitempty"`
+	Peers []yamlDiskPeer `yaml:"peers,omitempty"`
 }
 
 type yamlDiskPeer struct {
@@ -170,11 +151,6 @@ type yamlDiskPeer struct {
 	Port               uint32   `yaml:"port,omitempty"`
 	ExternalPort       uint32   `yaml:"externalPort,omitempty"`
 	PubliclyAccessible bool     `yaml:"publiclyAccessible,omitempty"`
-}
-
-type yamlDiskRevocation struct {
-	SubjectPub string `yaml:"subjectPub"`
-	Data       string `yaml:"data"`
 }
 
 func migrateYAMLToProto(yamlPath, protoPath string) (bool, error) {
@@ -208,20 +184,6 @@ func migrateYAMLToProto(yamlPath, protoPath string) (bool, error) {
 			ExternalIp:         p.ExternalIP,
 			PubliclyAccessible: p.PubliclyAccessible,
 		})
-	}
-
-	for _, dr := range ys.Revocations {
-		b, err := base64.StdEncoding.DecodeString(dr.Data)
-		if err != nil {
-			slog.Warn("skipping invalid revocation during migration", "subject", dr.SubjectPub, "err", err)
-			continue
-		}
-		rev := &admissionv1.SignedRevocation{}
-		if err := rev.UnmarshalVT(b); err != nil {
-			slog.Warn("skipping undecodable revocation during migration", "subject", dr.SubjectPub, "err", err)
-			continue
-		}
-		st.Revocations = append(st.Revocations, rev)
 	}
 
 	pb, err := st.MarshalVT()

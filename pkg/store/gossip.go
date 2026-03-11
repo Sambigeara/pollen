@@ -31,7 +31,7 @@ const (
 	attrIdentity
 	attrService
 	attrReachability
-	attrRevocation
+	attrDeny
 	attrPubliclyAccessible
 	attrVivaldi
 	attrNatType
@@ -68,8 +68,8 @@ func reachabilityAttrKey(peerID types.PeerKey) attrKey {
 	return attrKey{kind: attrReachability, peer: peerID}
 }
 
-func revocationAttrKey(subjectPubHex string) attrKey {
-	return attrKey{kind: attrRevocation, name: subjectPubHex}
+func denyAttrKey(subjectPubHex string) attrKey {
+	return attrKey{kind: attrDeny, name: subjectPubHex}
 }
 
 func publiclyAccessibleAttrKey() attrKey {
@@ -158,8 +158,7 @@ func (c Connection) Key() string {
 }
 
 type ApplyResult struct {
-	Rebroadcast     []*statev1.GossipEvent
-	revokedSubjects []types.PeerKey
+	Rebroadcast []*statev1.GossipEvent
 }
 
 const consumedExpirySkew = time.Minute
@@ -173,17 +172,15 @@ type consumedInviteEntry struct {
 type Store struct {
 	disk               *disk
 	nodes              map[types.PeerKey]nodeRecord
-	revocations        map[types.PeerKey]*admissionv1.SignedRevocation
+	denied             map[types.PeerKey]struct{}
 	consumedInvites    map[string]consumedInviteEntry
-	trustBundle        *admissionv1.TrustBundle
 	desiredConnections map[string]Connection
-	onRevocation       func(types.PeerKey)
 	metrics            *metrics.GossipMetrics
 	mu                 sync.RWMutex
 	LocalID            types.PeerKey
 }
 
-func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBundle) (*Store, error) {
+func Load(pollenDir string, identityPub []byte) (*Store, error) {
 	d, err := openDisk(pollenDir)
 	if err != nil {
 		return nil, err
@@ -196,6 +193,11 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 	}
 
 	localID := types.PeerKeyFromBytes(identityPub)
+
+	denied := make(map[types.PeerKey]struct{})
+	for _, pub := range onDisk.GetDeniedPeers() {
+		denied[types.PeerKeyFromBytes(pub)] = struct{}{}
+	}
 
 	s := &Store{
 		LocalID: localID,
@@ -212,9 +214,8 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 				},
 			},
 		},
-		revocations:        unmarshalRevocations(onDisk.GetRevocations(), trustBundle),
+		denied:             denied,
 		consumedInvites:    loadConsumedInvites(onDisk.GetConsumedInvites(), time.Now()),
-		trustBundle:        trustBundle,
 		desiredConnections: make(map[string]Connection),
 	}
 
@@ -224,11 +225,11 @@ func Load(pollenDir string, identityPub []byte, trustBundle *admissionv1.TrustBu
 	local := s.nodes[localID]
 	tombstoneStaleAttrs(&local)
 
-	// Inject disk-loaded revocations into the local log so that
+	// Inject disk-loaded denied peers into the local log so that
 	// bumpAndBroadcastAllLocked can re-publish them after restart.
-	for subjectKey := range s.revocations {
+	for subjectKey := range s.denied {
 		local.maxCounter++
-		local.log[revocationAttrKey(subjectKey.String())] = logEntry{Counter: local.maxCounter}
+		local.log[denyAttrKey(subjectKey.String())] = logEntry{Counter: local.maxCounter}
 	}
 	s.nodes[localID] = local
 
@@ -308,10 +309,6 @@ func (s *Store) dropExpiredInvites(now time.Time) {
 	}
 }
 
-func (s *Store) OnRevocation(fn func(types.PeerKey)) {
-	s.onRevocation = fn
-}
-
 // SetGossipMetrics replaces the no-op metrics with wired instruments.
 func (s *Store) SetGossipMetrics(m *metrics.GossipMetrics) {
 	s.metrics = m
@@ -353,13 +350,11 @@ func (s *Store) snapshotStateLocked() *statev1.RuntimeState {
 		return bytes.Compare(a.GetIdentityPub(), b.GetIdentityPub())
 	})
 
-	revs := make([]*admissionv1.SignedRevocation, 0, len(s.revocations))
-	for _, rev := range s.revocations {
-		revs = append(revs, rev)
+	deniedPeers := make([][]byte, 0, len(s.denied))
+	for pk := range s.denied {
+		deniedPeers = append(deniedPeers, append([]byte(nil), pk[:]...))
 	}
-	slices.SortFunc(revs, func(a, b *admissionv1.SignedRevocation) int {
-		return bytes.Compare(a.GetEntry().GetSubjectPub(), b.GetEntry().GetSubjectPub())
-	})
+	slices.SortFunc(deniedPeers, bytes.Compare)
 
 	invites := make([]*statev1.ConsumedInvite, 0, len(s.consumedInvites))
 	for _, entry := range s.consumedInvites {
@@ -375,7 +370,7 @@ func (s *Store) snapshotStateLocked() *statev1.RuntimeState {
 
 	return &statev1.RuntimeState{
 		Peers:           peers,
-		Revocations:     revs,
+		DeniedPeers:     deniedPeers,
 		ConsumedInvites: invites,
 	}
 }
@@ -533,7 +528,6 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 			anyApplied = true
 		}
 		result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
-		result.revokedSubjects = append(result.revokedSubjects, r.revokedSubjects...)
 	}
 
 	// Update stale ratio once per pull-response batch: a batch with any
@@ -547,12 +541,6 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	}
 
 	s.mu.Unlock()
-
-	if s.onRevocation != nil {
-		for _, subject := range result.revokedSubjects {
-			s.onRevocation(subject)
-		}
-	}
 
 	return result
 }
@@ -596,21 +584,17 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 
 	deleted := event.GetDeleted()
 
-	var result ApplyResult
 	switch {
-	case key.kind == attrRevocation:
+	case key.kind == attrDeny:
 		if deleted {
 			return ApplyResult{}
 		}
-		v := event.GetChange().(*statev1.GossipEvent_Revocation) //nolint:forcetypeassert
-		rev := v.Revocation.GetRevocation()
-		applied, subject := s.applyRevocationLocked(rev)
-		if !applied {
-			return ApplyResult{}
-		}
-		if (subject != types.PeerKey{}) {
-			result.revokedSubjects = []types.PeerKey{subject}
-			s.metrics.Revocations.Inc()
+		v := event.GetChange().(*statev1.GossipEvent_Deny) //nolint:forcetypeassert
+		subjectKey := types.PeerKeyFromBytes(v.Deny.GetSubjectPub())
+		if _, ok := s.denied[subjectKey]; ok {
+			// Already denied; still record the log entry so counters stay consistent.
+		} else {
+			s.denied[subjectKey] = struct{}{}
 		}
 	case deleted:
 		applyDeleteLocked(&rec, key)
@@ -623,11 +607,8 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 		rec.maxCounter = event.GetCounter()
 	}
 	s.nodes[peerID] = rec
-	if key.kind != attrRevocation || len(result.revokedSubjects) > 0 {
-		s.metrics.EventsApplied.Inc()
-		result.Rebroadcast = append(result.Rebroadcast, event)
-	}
-	return result
+	s.metrics.EventsApplied.Inc()
+	return ApplyResult{Rebroadcast: []*statev1.GossipEvent{event}}
 }
 
 func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
@@ -651,9 +632,9 @@ func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
 			return attrKey{}, false
 		}
 		return reachabilityAttrKey(pk), true
-	case *statev1.GossipEvent_Revocation:
-		subjectKey := types.PeerKeyFromBytes(v.Revocation.GetRevocation().GetEntry().GetSubjectPub())
-		return revocationAttrKey(subjectKey.String()), true
+	case *statev1.GossipEvent_Deny:
+		subjectKey := types.PeerKeyFromBytes(v.Deny.GetSubjectPub())
+		return denyAttrKey(subjectKey.String()), true
 	case *statev1.GossipEvent_PubliclyAccessible:
 		return publiclyAccessibleAttrKey(), true
 	case *statev1.GossipEvent_Vivaldi:
@@ -665,24 +646,6 @@ func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
 	default:
 		return attrKey{}, false
 	}
-}
-
-// applyRevocationLocked stores a verified revocation. Returns (true, subjectKey)
-// if the revocation was newly stored, (true, zero) if it was already known, or
-// (false, zero) if the event should be silently dropped (e.g. invalid signature).
-func (s *Store) applyRevocationLocked(rev *admissionv1.SignedRevocation) (applied bool, subject types.PeerKey) {
-	if s.trustBundle == nil {
-		return false, types.PeerKey{}
-	}
-	if err := auth.VerifyRevocation(rev, s.trustBundle); err != nil {
-		return false, types.PeerKey{}
-	}
-	subjectKey := types.PeerKeyFromBytes(rev.GetEntry().GetSubjectPub())
-	if _, exists := s.revocations[subjectKey]; exists {
-		return true, types.PeerKey{}
-	}
-	s.revocations[subjectKey] = rev
-	return true, subjectKey
 }
 
 func applyDeleteLocked(rec *nodeRecord, key attrKey) {
@@ -701,8 +664,8 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 		delete(rec.Services, key.name)
 	case attrReachability:
 		delete(rec.Reachable, key.peer)
-	case attrRevocation:
-		// Revocations are cluster-wide, not per-node; deletion is a no-op.
+	case attrDeny:
+		// Deny entries are cluster-wide, not per-node; deletion is a no-op.
 	case attrPubliclyAccessible:
 		rec.PubliclyAccessible = false
 	case attrVivaldi:
@@ -1150,14 +1113,14 @@ func (s *Store) LocalServices() map[string]*statev1.Service {
 	return maps.Clone(local.Services)
 }
 
-// validNodesLocked returns nodes that are neither revoked nor expired.
+// validNodesLocked returns nodes that are neither denied nor expired.
 // CertExpiry == 0 (unset/legacy peers) are NOT filtered.
 // Caller must hold s.mu (at least RLock).
 func (s *Store) validNodesLocked() map[types.PeerKey]nodeRecord {
 	now := time.Now()
 	out := make(map[types.PeerKey]nodeRecord, len(s.nodes))
 	for k, v := range s.nodes {
-		if _, revoked := s.revocations[k]; revoked {
+		if _, denied := s.denied[k]; denied {
 			continue
 		}
 		if v.CertExpiry != 0 && auth.IsCertExpiredAt(time.Unix(v.CertExpiry, 0), now) {
@@ -1332,27 +1295,20 @@ func sortConnections(cs []Connection) {
 	})
 }
 
-func (s *Store) IsSubjectRevoked(subjectPub []byte) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	_, ok := s.revocations[types.PeerKeyFromBytes(subjectPub)]
-	return ok
-}
-
-func (s *Store) PublishRevocation(rev *admissionv1.SignedRevocation) []*statev1.GossipEvent {
-	subjectKey := types.PeerKeyFromBytes(rev.GetEntry().GetSubjectPub())
+func (s *Store) DenyPeer(subjectPub []byte) []*statev1.GossipEvent {
+	subjectKey := types.PeerKeyFromBytes(subjectPub)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.revocations[subjectKey]; ok {
+	if _, ok := s.denied[subjectKey]; ok {
 		return nil
 	}
 
-	s.revocations[subjectKey] = rev
+	s.denied[subjectKey] = struct{}{}
 
 	local := s.nodes[s.LocalID]
-	key := revocationAttrKey(subjectKey.String())
+	key := denyAttrKey(subjectKey.String())
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter}
@@ -1361,10 +1317,17 @@ func (s *Store) PublishRevocation(rev *admissionv1.SignedRevocation) []*statev1.
 	return []*statev1.GossipEvent{{
 		PeerId:  s.LocalID.String(),
 		Counter: counter,
-		Change: &statev1.GossipEvent_Revocation{
-			Revocation: &statev1.RevocationChange{Revocation: rev},
+		Change: &statev1.GossipEvent_Deny{
+			Deny: &statev1.DenyChange{SubjectPub: append([]byte(nil), subjectPub...)},
 		},
 	}}
+}
+
+func (s *Store) IsDenied(subjectPub []byte) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.denied[types.PeerKeyFromBytes(subjectPub)]
+	return ok
 }
 
 func ensureNodeInit(rec *nodeRecord, peerID types.PeerKey) {
@@ -1420,38 +1383,15 @@ func (s *Store) buildEventsAbove(peerID types.PeerKey, rec nodeRecord, minCounte
 		if entry.Counter <= minCounter {
 			continue
 		}
-		if key.kind == attrRevocation {
-			events = append(events, s.buildRevocationEvent(peerIDStr, key, entry))
-			continue
-		}
-		events = append(events, buildEventFromLog(peerIDStr, key, entry, rec))
+		events = append(events, s.buildEventFromLog(peerIDStr, key, entry, rec))
 	}
 
 	return events
 }
 
-func (s *Store) buildRevocationEvent(peerIDStr string, key attrKey, entry logEntry) *statev1.GossipEvent {
-	subjectKey, err := types.PeerKeyFromString(key.name)
-	if err != nil {
-		panic("invalid revocation key in log")
-	}
-	rev, ok := s.revocations[subjectKey]
-	if !ok {
-		panic("revocation log entry missing revocation payload")
-	}
-	return &statev1.GossipEvent{
-		PeerId:  peerIDStr,
-		Counter: entry.Counter,
-		Deleted: entry.Deleted,
-		Change: &statev1.GossipEvent_Revocation{
-			Revocation: &statev1.RevocationChange{Revocation: rev},
-		},
-	}
-}
-
 // buildEventFromLog constructs a single GossipEvent from a log entry and the
 // materialized view. Caller must hold the store's mu (at least RLock).
-func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRecord) *statev1.GossipEvent {
+func (s *Store) buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRecord) *statev1.GossipEvent {
 	event := &statev1.GossipEvent{
 		PeerId:  peerIDStr,
 		Counter: entry.Counter,
@@ -1525,8 +1465,14 @@ func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRe
 			change.MemTotalBytes = rec.MemTotalBytes
 		}
 		event.Change = &statev1.GossipEvent_ResourceTelemetry{ResourceTelemetry: change}
-	case attrRevocation:
-		panic("buildEventFromLog must not be called for revocation events")
+	case attrDeny:
+		subjectKey, err := types.PeerKeyFromString(key.name)
+		if err != nil {
+			panic("invalid deny key in log")
+		}
+		event.Change = &statev1.GossipEvent_Deny{
+			Deny: &statev1.DenyChange{SubjectPub: append([]byte(nil), subjectKey[:]...)},
+		}
 	default:
 		panic("unknown attr kind in log")
 	}

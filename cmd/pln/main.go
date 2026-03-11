@@ -54,7 +54,6 @@ const (
 	defaultRepo                  = "sambigeara/pollen"
 	scriptFetchTimeout           = 30 * time.Second
 	defaultMaxConnectionAge      = 24 * time.Hour
-	defaultGuestCertTTL          = 24 * time.Hour
 )
 
 var (
@@ -104,7 +103,7 @@ func main() {
 		newUnserveCmd(),
 		newConnectCmd(),
 		newDisconnectCmd(),
-		newRevokeCmd(),
+		newDenyCmd(),
 		newLogsCmd(),
 	)
 
@@ -311,7 +310,7 @@ func runNode(cmd *cobra.Command) {
 		switch {
 		case errors.Is(credErr, auth.ErrCredentialsNotFound):
 			logger.Info("node is not initialized; auto-initializing root cluster")
-			creds, credErr = auth.EnsureLocalRootCredentials(pollenDir, pubKey, time.Now(), certTTLs.MembershipTTL(), certTTLs.AdminTTL())
+			creds, credErr = auth.EnsureLocalRootCredentials(pollenDir, pubKey, time.Now(), certTTLs.MembershipTTL(), certTTLs.DelegationTTL())
 			if credErr != nil {
 				logger.Fatal("auto-init failed: ", credErr)
 			}
@@ -322,18 +321,18 @@ func runNode(cmd *cobra.Command) {
 		}
 	}
 
-	creds.InviteSigner, err = auth.LoadAdminSigner(pollenDir, time.Now(), certTTLs.AdminTTL())
+	creds.DelegationKey, err = auth.LoadDelegationSigner(pollenDir, time.Now(), certTTLs.DelegationTTL())
 	if err != nil {
 		logger.Infow("invite redemption disabled", "err", err)
 	}
 
-	stateStore, err := store.Load(pollenDir, pubKey, creds.Trust)
+	stateStore, err := store.Load(pollenDir, pubKey)
 	if err != nil {
 		logger.Fatal("failed to load state: ", err)
 	}
 
-	if creds.InviteSigner != nil {
-		creds.InviteSigner.Consumed = stateStore
+	if creds.DelegationKey != nil {
+		creds.DelegationKey.Consumed = stateStore
 	}
 
 	for _, svc := range cfg.Services {
@@ -356,8 +355,8 @@ func runNode(cmd *cobra.Command) {
 	} else {
 		for _, bp := range protoPeers {
 			pk := types.PeerKeyFromBytes(bp.GetPeerPub())
-			if stateStore.IsSubjectRevoked(bp.GetPeerPub()) {
-				logger.Warnw("bootstrap peer is revoked; skipping (remove from config.yaml)", "peer", pk.String())
+			if stateStore.IsDenied(bp.GetPeerPub()) {
+				logger.Warnw("bootstrap peer is denied; skipping (remove from config.yaml)", "peer", pk.String())
 				continue
 			}
 			bootstrapPeers = append(bootstrapPeers, node.BootstrapPeer{
@@ -428,7 +427,7 @@ func nodeSocketActive(sockPath string) (bool, error) {
 
 type tokenIssuerContext struct {
 	cfg       *config.Config
-	signer    *auth.AdminSigner
+	signer    *auth.DelegationSigner
 	pollenDir string
 }
 
@@ -440,7 +439,7 @@ func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
 
 	cfg := loadConfigOrDefault(pollenDir)
 
-	signer, err := auth.LoadAdminSigner(pollenDir, time.Now(), cfg.CertTTLs.AdminTTL())
+	signer, err := auth.LoadDelegationSigner(pollenDir, time.Now(), cfg.CertTTLs.DelegationTTL())
 	if err != nil {
 		return nil, err
 	}
@@ -511,7 +510,7 @@ func clusterStatePaths(pollenDir string) []string {
 	return []string{
 		filepath.Join(pollenDir, "keys", "cluster.trust.pb"),
 		filepath.Join(pollenDir, "keys", "membership.cert.pb"),
-		filepath.Join(pollenDir, "keys", "admin.cert.pb"),
+		filepath.Join(pollenDir, "keys", "delegation.cert.pb"),
 		filepath.Join(pollenDir, "keys", "admin_ed25519.key"),
 		filepath.Join(pollenDir, "keys", "admin_ed25519.pub"),
 		filepath.Join(pollenDir, "config.yaml"),
@@ -543,16 +542,16 @@ func fetchInstallScript() ([]byte, error) {
 	return script, nil
 }
 
-func newRevokeCmd() *cobra.Command {
+func newDenyCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "revoke <peer-id>",
-		Short: "Revoke a peer's membership",
+		Use:   "deny <peer-id>",
+		Short: "Deny a peer's membership",
 		Args:  cobra.ExactArgs(1),
-		Run:   runRevoke,
+		Run:   runDeny,
 	}
 }
 
-func runRevoke(cmd *cobra.Command, args []string) {
+func runDeny(cmd *cobra.Command, args []string) {
 	prefix := strings.ToLower(args[0])
 
 	client := newControlClient(cmd)
@@ -580,7 +579,7 @@ func runRevoke(cmd *cobra.Command, args []string) {
 	}
 
 	peerID := matches[0]
-	_, err = client.RevokePeer(cmd.Context(), connect.NewRequest(&controlv1.RevokePeerRequest{
+	_, err = client.DenyPeer(cmd.Context(), connect.NewRequest(&controlv1.DenyPeerRequest{
 		PeerId: peerID,
 	}))
 	if err != nil {
@@ -596,10 +595,10 @@ func runRevoke(cmd *cobra.Command, args []string) {
 	cfg := loadConfigOrDefault(pollenDir)
 	cfg.ForgetBootstrapPeer(peerID)
 	if saveErr := config.Save(pollenDir, cfg); saveErr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to persist revocation to config: %v\n", saveErr)
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to persist denial to config: %v\n", saveErr)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "revoked peer %s\n", formatPeerID(peerID, false))
+	fmt.Fprintf(cmd.OutOrStdout(), "denied peer %s\n", formatPeerID(peerID, false))
 }
 
 func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient {

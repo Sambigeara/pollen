@@ -1,10 +1,8 @@
 package node
 
 import (
-	"bytes"
 	"cmp"
 	"context"
-	"crypto/ed25519"
 	"net"
 	"slices"
 	"strconv"
@@ -12,6 +10,8 @@ import (
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/mesh"
+	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/types"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -127,6 +127,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 
 	if s.creds != nil && s.creds.Cert != nil {
 		claims := s.creds.Cert.GetClaims()
+		caps := claims.GetCapabilities()
 		health := controlv1.CertHealth_CERT_HEALTH_OK
 		remaining := time.Until(auth.CertExpiresAt(s.creds.Cert))
 		switch {
@@ -135,7 +136,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		case remaining <= certCriticalThreshold:
 			health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
 		case remaining <= certWarnThreshold:
-			if claims.GetNonRenewable() || s.node.renewalFailed.Load() {
+			if s.node.renewalFailed.Load() {
 				health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
 			} else {
 				health = controlv1.CertHealth_CERT_HEALTH_RENEWING
@@ -146,7 +147,9 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			NotAfterUnix:  claims.GetNotAfterUnix(),
 			Serial:        claims.GetSerial(),
 			Health:        health,
-			NonRenewable:  claims.GetNonRenewable(),
+			CanDelegate:   caps.GetCanDelegate(),
+			CanAdmit:      caps.GetCanAdmit(),
+			MaxDepth:      caps.GetMaxDepth(),
 		})
 	}
 
@@ -376,34 +379,25 @@ func (s *NodeService) DisconnectService(_ context.Context, req *controlv1.Discon
 	return &controlv1.DisconnectServiceResponse{}, nil
 }
 
-func (s *NodeService) RevokePeer(_ context.Context, req *controlv1.RevokePeerRequest) (*controlv1.RevokePeerResponse, error) {
-	if s.creds.InviteSigner == nil {
-		return nil, status.Error(codes.FailedPrecondition, "admin signer not available; this node cannot revoke peers")
-	}
-
-	signerPub, ok := s.creds.InviteSigner.Priv.Public().(ed25519.PublicKey)
-	if !ok || !bytes.Equal(signerPub, s.creds.InviteSigner.Trust.GetRootPub()) {
-		return nil, status.Error(codes.PermissionDenied, "only the root admin can revoke peers")
+func (s *NodeService) DenyPeer(_ context.Context, req *controlv1.DenyPeerRequest) (*controlv1.DenyPeerResponse, error) {
+	if s.creds.DelegationKey == nil {
+		return nil, status.Error(codes.FailedPrecondition, "delegation key not available; this node cannot deny peers")
 	}
 
 	peerKey := types.PeerKeyFromBytes(req.GetPeerId())
-	now := time.Now()
 
-	rev, err := auth.IssueRevocation(
-		s.creds.InviteSigner.Priv,
-		s.creds.InviteSigner.Trust.GetClusterId(),
-		peerKey.Bytes(),
-		now,
-	)
-	if err != nil {
-		s.node.log.Errorw("failed to issue revocation", "peer", peerKey.Short(), "err", err)
-		return nil, status.Error(codes.Internal, "failed to issue revocation")
+	events := s.node.store.DenyPeer(req.GetPeerId())
+	s.node.queueGossipEvents(events)
+	s.node.tun.DisconnectPeer(peerKey)
+	s.node.store.RemoveDesiredConnection(peerKey, 0, 0)
+	s.node.mesh.ClosePeerSession(peerKey, mesh.CloseReasonDenied)
+	s.node.localPeerEvents <- peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectDenied}
+	s.node.localPeerEvents <- peer.ForgetPeer{PeerKey: peerKey}
+	if err := s.node.store.Save(); err != nil {
+		s.node.log.Warnw("failed to save state after deny", "err", err)
 	}
 
-	events := s.node.store.PublishRevocation(rev)
-	s.node.queueGossipEvents(events)
-
-	return &controlv1.RevokePeerResponse{}, nil
+	return &controlv1.DenyPeerResponse{}, nil
 }
 
 func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) (*controlv1.GetMetricsResponse, error) {

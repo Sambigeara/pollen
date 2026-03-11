@@ -59,9 +59,8 @@ const (
 	// ControlServiceDisconnectServiceProcedure is the fully-qualified name of the ControlService's
 	// DisconnectService RPC.
 	ControlServiceDisconnectServiceProcedure = "/pollen.control.v1.ControlService/DisconnectService"
-	// ControlServiceRevokePeerProcedure is the fully-qualified name of the ControlService's RevokePeer
-	// RPC.
-	ControlServiceRevokePeerProcedure = "/pollen.control.v1.ControlService/RevokePeer"
+	// ControlServiceDenyPeerProcedure is the fully-qualified name of the ControlService's DenyPeer RPC.
+	ControlServiceDenyPeerProcedure = "/pollen.control.v1.ControlService/DenyPeer"
 )
 
 // ControlServiceClient is a client for the pollen.control.v1.ControlService service.
@@ -75,7 +74,7 @@ type ControlServiceClient interface {
 	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
 	ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error)
 	DisconnectService(context.Context, *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error)
-	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
+	DenyPeer(context.Context, *connect.Request[v1.DenyPeerRequest]) (*connect.Response[v1.DenyPeerResponse], error)
 }
 
 // NewControlServiceClient constructs a client for the pollen.control.v1.ControlService service. By
@@ -143,10 +142,10 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("DisconnectService")),
 			connect.WithClientOptions(opts...),
 		),
-		revokePeer: connect.NewClient[v1.RevokePeerRequest, v1.RevokePeerResponse](
+		denyPeer: connect.NewClient[v1.DenyPeerRequest, v1.DenyPeerResponse](
 			httpClient,
-			baseURL+ControlServiceRevokePeerProcedure,
-			connect.WithSchema(controlServiceMethods.ByName("RevokePeer")),
+			baseURL+ControlServiceDenyPeerProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("DenyPeer")),
 			connect.WithClientOptions(opts...),
 		),
 	}
@@ -163,7 +162,7 @@ type controlServiceClient struct {
 	connectService    *connect.Client[v1.ConnectServiceRequest, v1.ConnectServiceResponse]
 	connectPeer       *connect.Client[v1.ConnectPeerRequest, v1.ConnectPeerResponse]
 	disconnectService *connect.Client[v1.DisconnectServiceRequest, v1.DisconnectServiceResponse]
-	revokePeer        *connect.Client[v1.RevokePeerRequest, v1.RevokePeerResponse]
+	denyPeer          *connect.Client[v1.DenyPeerRequest, v1.DenyPeerResponse]
 }
 
 // Shutdown calls pollen.control.v1.ControlService.Shutdown.
@@ -211,9 +210,9 @@ func (c *controlServiceClient) DisconnectService(ctx context.Context, req *conne
 	return c.disconnectService.CallUnary(ctx, req)
 }
 
-// RevokePeer calls pollen.control.v1.ControlService.RevokePeer.
-func (c *controlServiceClient) RevokePeer(ctx context.Context, req *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error) {
-	return c.revokePeer.CallUnary(ctx, req)
+// DenyPeer calls pollen.control.v1.ControlService.DenyPeer.
+func (c *controlServiceClient) DenyPeer(ctx context.Context, req *connect.Request[v1.DenyPeerRequest]) (*connect.Response[v1.DenyPeerResponse], error) {
+	return c.denyPeer.CallUnary(ctx, req)
 }
 
 // ControlServiceHandler is an implementation of the pollen.control.v1.ControlService service.
@@ -227,7 +226,7 @@ type ControlServiceHandler interface {
 	ConnectService(context.Context, *connect.Request[v1.ConnectServiceRequest]) (*connect.Response[v1.ConnectServiceResponse], error)
 	ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error)
 	DisconnectService(context.Context, *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error)
-	RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error)
+	DenyPeer(context.Context, *connect.Request[v1.DenyPeerRequest]) (*connect.Response[v1.DenyPeerResponse], error)
 }
 
 // NewControlServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -291,10 +290,10 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("DisconnectService")),
 		connect.WithHandlerOptions(opts...),
 	)
-	controlServiceRevokePeerHandler := connect.NewUnaryHandler(
-		ControlServiceRevokePeerProcedure,
-		svc.RevokePeer,
-		connect.WithSchema(controlServiceMethods.ByName("RevokePeer")),
+	controlServiceDenyPeerHandler := connect.NewUnaryHandler(
+		ControlServiceDenyPeerProcedure,
+		svc.DenyPeer,
+		connect.WithSchema(controlServiceMethods.ByName("DenyPeer")),
 		connect.WithHandlerOptions(opts...),
 	)
 	return "/pollen.control.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -317,8 +316,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceConnectPeerHandler.ServeHTTP(w, r)
 		case ControlServiceDisconnectServiceProcedure:
 			controlServiceDisconnectServiceHandler.ServeHTTP(w, r)
-		case ControlServiceRevokePeerProcedure:
-			controlServiceRevokePeerHandler.ServeHTTP(w, r)
+		case ControlServiceDenyPeerProcedure:
+			controlServiceDenyPeerHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -364,6 +363,6 @@ func (UnimplementedControlServiceHandler) DisconnectService(context.Context, *co
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.DisconnectService is not implemented"))
 }
 
-func (UnimplementedControlServiceHandler) RevokePeer(context.Context, *connect.Request[v1.RevokePeerRequest]) (*connect.Response[v1.RevokePeerResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.RevokePeer is not implemented"))
+func (UnimplementedControlServiceHandler) DenyPeer(context.Context, *connect.Request[v1.DenyPeerRequest]) (*connect.Response[v1.DenyPeerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.DenyPeer is not implemented"))
 }

@@ -41,7 +41,7 @@ func TestDisconnectReasonRetryDelays(t *testing.T) {
 		{DisconnectReset, resetRetryInterval},
 		{DisconnectGraceful, gracefulDisconnectRetryInterval},
 		{DisconnectTopologyPrune, unreachableRetryInterval},
-		{DisconnectRevoked, unreachableRetryInterval},
+		{DisconnectDenied, unreachableRetryInterval},
 		{DisconnectUnknown, unknownDisconnectRetryInterval},
 	}
 

@@ -70,14 +70,14 @@ type Mesh interface {
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
 	PeerCertExpiresAt(peer types.PeerKey) (time.Time, bool)
-	PeerMembershipCert(peer types.PeerKey) (*admissionv1.MembershipCert, bool)
+	PeerDelegationCert(peer types.PeerKey) (*admissionv1.DelegationCert, bool)
 	IsOutbound(types.PeerKey) bool
 	ConnectedPeers() []types.PeerKey
 	ClosePeerSession(peerKey types.PeerKey, reason CloseReason)
 	ListenPort() int
 	BroadcastDisconnect() error
 	UpdateMeshCert(cert tls.Certificate)
-	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.MembershipCert, error)
+	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.DelegationCert, error)
 	SetTracer(t *traces.Tracer)
 	Close() error
 }
@@ -85,7 +85,7 @@ type Mesh interface {
 type CloseReason string
 
 const (
-	CloseReasonRevoked       CloseReason = "revoked"
+	CloseReasonDenied        CloseReason = "denied"
 	CloseReasonTopologyPrune CloseReason = "topology_prune"
 	CloseReasonCertExpired   CloseReason = "cert_expired"
 	CloseReasonCertRotation  CloseReason = "cert_rotation"
@@ -103,8 +103,7 @@ type impl struct {
 	inCh             chan peer.Input
 	recvCh           chan Packet
 	renewalCh        chan *meshv1.CertRenewalResponse
-	inviteSigner     *auth.AdminSigner
-	isSubjectRevoked func([]byte) bool
+	inviteSigner     *auth.DelegationSigner
 	streamCh         chan incomingStream
 	clockStreamCh    chan incomingStream
 	trustBundle      *admissionv1.TrustBundle
@@ -130,20 +129,20 @@ type peerSession struct {
 	conn           *quic.Conn
 	transport      *quic.Transport
 	sockConn       *sock.Conn
-	membershipCert *admissionv1.MembershipCert
+	delegationCert *admissionv1.DelegationCert
 	createdAt      time.Time
 	certExpiresAt  time.Time
 	outbound       bool
 }
 
 func newPeerSession(conn *quic.Conn, transport *quic.Transport, outbound bool) *peerSession {
-	mc := membershipCertFromConn(conn)
+	dc := delegationCertFromConn(conn)
 	return &peerSession{
 		conn:           conn,
 		transport:      transport,
-		membershipCert: mc,
+		delegationCert: dc,
 		createdAt:      time.Now(),
-		certExpiresAt:  auth.CertExpiresAt(mc),
+		certExpiresAt:  auth.CertExpiresAt(dc),
 		outbound:       outbound,
 	}
 }
@@ -153,7 +152,7 @@ type directDialResult struct {
 	err     error
 }
 
-func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsIdentityTTL, membershipTTL, maxConnectionAge time.Duration, isSubjectRevoked func([]byte) bool, mm *metrics.MeshMetrics) (Mesh, error) {
+func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsIdentityTTL, membershipTTL, maxConnectionAge time.Duration, mm *metrics.MeshMetrics) (Mesh, error) {
 	meshCert, err := GenerateIdentityCert(signPriv, creds.Cert, tlsIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate mesh cert: %w", err)
@@ -169,8 +168,7 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 		log:              zap.S().Named("mesh"),
 		bareCert:         bareCert,
 		trustBundle:      creds.Trust,
-		inviteSigner:     creds.InviteSigner,
-		isSubjectRevoked: isSubjectRevoked,
+		inviteSigner:     creds.DelegationKey,
 		localKey:         localKey,
 		socks:            sock.NewSockStore(),
 		port:             defaultPort,
@@ -196,11 +194,10 @@ func (m *impl) Start(ctx context.Context) error {
 
 	qt := &quic.Transport{Conn: conn}
 	ln, err := qt.Listen(newServerTLSConfig(serverTLSParams{
-		meshCertPtr:      &m.meshCert,
-		inviteCert:       m.bareCert,
-		trustBundle:      m.trustBundle,
-		isSubjectRevoked: m.isSubjectRevoked,
-		inviteEnabled:    m.inviteSigner != nil,
+		meshCertPtr:   &m.meshCert,
+		inviteCert:    m.bareCert,
+		trustBundle:   m.trustBundle,
+		inviteEnabled: m.inviteSigner != nil,
 	}), quicConfig())
 	if err != nil {
 		_ = conn.Close()
@@ -285,7 +282,7 @@ func (m *impl) acceptFromCh(ctx context.Context, ch <-chan incomingStream) (type
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
+	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle)
 	qCfg := quicConfig()
 
 	qc, err := m.mainQT.Dial(ctx, addr, tlsCfg, qCfg)
@@ -297,7 +294,7 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 }
 
 func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey, localNAT nat.Type) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
+	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle)
 	qCfg := quicConfig()
 
 	conn, err := m.socks.Punch(ctx, addr, localNAT)
@@ -511,12 +508,12 @@ func (m *impl) PeerCertExpiresAt(peerKey types.PeerKey) (time.Time, bool) {
 	return s.certExpiresAt, true
 }
 
-func (m *impl) PeerMembershipCert(peerKey types.PeerKey) (*admissionv1.MembershipCert, bool) {
+func (m *impl) PeerDelegationCert(peerKey types.PeerKey) (*admissionv1.DelegationCert, bool) {
 	s, ok := m.sessions.get(peerKey)
 	if !ok {
 		return nil, false
 	}
-	return s.membershipCert, s.membershipCert != nil
+	return s.delegationCert, s.delegationCert != nil
 }
 
 func (m *impl) IsOutbound(peerKey types.PeerKey) bool {
@@ -735,8 +732,8 @@ func classifyQUICError(err error) peer.DisconnectReason {
 		switch appErr.ErrorMessage {
 		case string(CloseReasonTopologyPrune):
 			return peer.DisconnectTopologyPrune
-		case string(CloseReasonRevoked):
-			return peer.DisconnectRevoked
+		case string(CloseReasonDenied):
+			return peer.DisconnectDenied
 		case string(CloseReasonCertExpired):
 			return peer.DisconnectCertExpired
 		case string(CloseReasonCertRotation):
@@ -822,7 +819,7 @@ func (m *impl) UpdateMeshCert(cert tls.Certificate) {
 	m.meshCert.Store(&cert)
 }
 
-func (m *impl) RequestCertRenewal(ctx context.Context, peerKey types.PeerKey) (*admissionv1.MembershipCert, error) {
+func (m *impl) RequestCertRenewal(ctx context.Context, peerKey types.PeerKey) (*admissionv1.DelegationCert, error) {
 	s, ok := m.sessions.get(peerKey)
 	if !ok {
 		return nil, fmt.Errorf("no connection to peer %s", peerKey.Short())
@@ -941,7 +938,6 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 		now,
 		ttl,
 		membershipTTL,
-		verified.Claims.GetNonRenewable(),
 	)
 	if err != nil {
 		return err

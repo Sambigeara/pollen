@@ -35,14 +35,14 @@ type BootstrapPeer struct {
 
 type CertTTLs struct {
 	Membership  time.Duration `yaml:"membership,omitempty"`
-	Admin       time.Duration `yaml:"admin,omitempty"`
+	Delegation  time.Duration `yaml:"delegation,omitempty"`
 	TLSIdentity time.Duration `yaml:"tlsIdentity,omitempty"`
 }
 
 const (
-	DefaultMembershipTTL  = 365 * 24 * time.Hour
-	DefaultAdminTTL       = 5 * 365 * 24 * time.Hour
-	DefaultTLSIdentityTTL = 10 * 365 * 24 * time.Hour //nolint:mnd
+	DefaultMembershipTTL  = 4 * time.Hour
+	DefaultDelegationTTL  = 30 * 24 * time.Hour
+	DefaultTLSIdentityTTL = 4 * time.Hour
 )
 
 func ttlOrDefault(ttl, fallback time.Duration) time.Duration {
@@ -55,7 +55,11 @@ func ttlOrDefault(ttl, fallback time.Duration) time.Duration {
 func (c CertTTLs) MembershipTTL() time.Duration {
 	return ttlOrDefault(c.Membership, DefaultMembershipTTL)
 }
-func (c CertTTLs) AdminTTL() time.Duration { return ttlOrDefault(c.Admin, DefaultAdminTTL) }
+
+func (c CertTTLs) DelegationTTL() time.Duration {
+	return ttlOrDefault(c.Delegation, DefaultDelegationTTL)
+}
+
 func (c CertTTLs) TLSIdentityTTL() time.Duration {
 	return ttlOrDefault(c.TLSIdentity, DefaultTLSIdentityTTL)
 }
@@ -143,8 +147,8 @@ func validateCertTTLs(ttls CertTTLs) error {
 	if ttls.Membership < 0 {
 		return errors.New("certTTLs.membership must be >= 0")
 	}
-	if ttls.Admin < 0 {
-		return errors.New("certTTLs.admin must be >= 0")
+	if ttls.Delegation < 0 {
+		return errors.New("certTTLs.delegation must be >= 0")
 	}
 	if ttls.TLSIdentity < 0 {
 		return errors.New("certTTLs.tlsIdentity must be >= 0")

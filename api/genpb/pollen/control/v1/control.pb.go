@@ -642,7 +642,9 @@ type CertInfo struct {
 	NotAfterUnix  int64                  `protobuf:"varint,2,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
 	Serial        uint64                 `protobuf:"varint,3,opt,name=serial,proto3" json:"serial,omitempty"`
 	Health        CertHealth             `protobuf:"varint,4,opt,name=health,proto3,enum=pollen.control.v1.CertHealth" json:"health,omitempty"`
-	NonRenewable  bool                   `protobuf:"varint,5,opt,name=non_renewable,json=nonRenewable,proto3" json:"non_renewable,omitempty"`
+	CanDelegate   bool                   `protobuf:"varint,5,opt,name=can_delegate,json=canDelegate,proto3" json:"can_delegate,omitempty"`
+	CanAdmit      bool                   `protobuf:"varint,6,opt,name=can_admit,json=canAdmit,proto3" json:"can_admit,omitempty"`
+	MaxDepth      uint32                 `protobuf:"varint,7,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -705,11 +707,25 @@ func (x *CertInfo) GetHealth() CertHealth {
 	return CertHealth_CERT_HEALTH_UNSPECIFIED
 }
 
-func (x *CertInfo) GetNonRenewable() bool {
+func (x *CertInfo) GetCanDelegate() bool {
 	if x != nil {
-		return x.NonRenewable
+		return x.CanDelegate
 	}
 	return false
+}
+
+func (x *CertInfo) GetCanAdmit() bool {
+	if x != nil {
+		return x.CanAdmit
+	}
+	return false
+}
+
+func (x *CertInfo) GetMaxDepth() uint32 {
+	if x != nil {
+		return x.MaxDepth
+	}
+	return 0
 }
 
 type GetStatusResponse struct {
@@ -719,6 +735,7 @@ type GetStatusResponse struct {
 	Services      []*ServiceSummary      `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty"`
 	Connections   []*ConnectionSummary   `protobuf:"bytes,4,rep,name=connections,proto3" json:"connections,omitempty"`
 	Certificates  []*CertInfo            `protobuf:"bytes,5,rep,name=certificates,proto3" json:"certificates,omitempty"`
+	Degraded      bool                   `protobuf:"varint,6,opt,name=degraded,proto3" json:"degraded,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -786,6 +803,13 @@ func (x *GetStatusResponse) GetCertificates() []*CertInfo {
 		return x.Certificates
 	}
 	return nil
+}
+
+func (x *GetStatusResponse) GetDegraded() bool {
+	if x != nil {
+		return x.Degraded
+	}
+	return false
 }
 
 type ConnectionSummary struct {
@@ -1304,27 +1328,27 @@ func (*DisconnectServiceResponse) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{21}
 }
 
-type RevokePeerRequest struct {
+type DenyPeerRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RevokePeerRequest) Reset() {
-	*x = RevokePeerRequest{}
+func (x *DenyPeerRequest) Reset() {
+	*x = DenyPeerRequest{}
 	mi := &file_pollen_control_v1_control_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RevokePeerRequest) String() string {
+func (x *DenyPeerRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RevokePeerRequest) ProtoMessage() {}
+func (*DenyPeerRequest) ProtoMessage() {}
 
-func (x *RevokePeerRequest) ProtoReflect() protoreflect.Message {
+func (x *DenyPeerRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_pollen_control_v1_control_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1336,38 +1360,38 @@ func (x *RevokePeerRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RevokePeerRequest.ProtoReflect.Descriptor instead.
-func (*RevokePeerRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use DenyPeerRequest.ProtoReflect.Descriptor instead.
+func (*DenyPeerRequest) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{22}
 }
 
-func (x *RevokePeerRequest) GetPeerId() []byte {
+func (x *DenyPeerRequest) GetPeerId() []byte {
 	if x != nil {
 		return x.PeerId
 	}
 	return nil
 }
 
-type RevokePeerResponse struct {
+type DenyPeerResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RevokePeerResponse) Reset() {
-	*x = RevokePeerResponse{}
+func (x *DenyPeerResponse) Reset() {
+	*x = DenyPeerResponse{}
 	mi := &file_pollen_control_v1_control_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RevokePeerResponse) String() string {
+func (x *DenyPeerResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RevokePeerResponse) ProtoMessage() {}
+func (*DenyPeerResponse) ProtoMessage() {}
 
-func (x *RevokePeerResponse) ProtoReflect() protoreflect.Message {
+func (x *DenyPeerResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_pollen_control_v1_control_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1379,8 +1403,8 @@ func (x *RevokePeerResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RevokePeerResponse.ProtoReflect.Descriptor instead.
-func (*RevokePeerResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use DenyPeerResponse.ProtoReflect.Descriptor instead.
+func (*DenyPeerResponse) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{23}
 }
 
@@ -1436,8 +1460,8 @@ type GetMetricsResponse struct {
 	PunchFailures      uint64                 `protobuf:"varint,12,opt,name=punch_failures,json=punchFailures,proto3" json:"punch_failures,omitempty"`
 	Health             HealthStatus           `protobuf:"varint,13,opt,name=health,proto3,enum=pollen.control.v1.HealthStatus" json:"health,omitempty"`
 	VivaldiSamples     uint64                 `protobuf:"varint,14,opt,name=vivaldi_samples,json=vivaldiSamples,proto3" json:"vivaldi_samples,omitempty"`
-	EagerSyncs         uint64                 `protobuf:"varint,16,opt,name=eager_syncs,json=eagerSyncs,proto3" json:"eager_syncs,omitempty"`
-	EagerSyncFailures  uint64                 `protobuf:"varint,17,opt,name=eager_sync_failures,json=eagerSyncFailures,proto3" json:"eager_sync_failures,omitempty"`
+	EagerSyncs         uint64                 `protobuf:"varint,15,opt,name=eager_syncs,json=eagerSyncs,proto3" json:"eager_syncs,omitempty"`
+	EagerSyncFailures  uint64                 `protobuf:"varint,16,opt,name=eager_sync_failures,json=eagerSyncFailures,proto3" json:"eager_sync_failures,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -1616,19 +1640,22 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x18GetBootstrapInfoResponse\x128\n" +
 	"\x04self\x18\x01 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\x04self\x12F\n" +
 	"\vrecommended\x18\x02 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\vrecommended\"\x12\n" +
-	"\x10GetStatusRequest\"\xcc\x01\n" +
+	"\x10GetStatusRequest\"\x84\x02\n" +
 	"\bCertInfo\x12&\n" +
 	"\x0fnot_before_unix\x18\x01 \x01(\x03R\rnotBeforeUnix\x12$\n" +
 	"\x0enot_after_unix\x18\x02 \x01(\x03R\fnotAfterUnix\x12\x16\n" +
 	"\x06serial\x18\x03 \x01(\x04R\x06serial\x125\n" +
-	"\x06health\x18\x04 \x01(\x0e2\x1d.pollen.control.v1.CertHealthR\x06health\x12#\n" +
-	"\rnon_renewable\x18\x05 \x01(\bR\fnonRenewable\"\xc5\x02\n" +
+	"\x06health\x18\x04 \x01(\x0e2\x1d.pollen.control.v1.CertHealthR\x06health\x12!\n" +
+	"\fcan_delegate\x18\x05 \x01(\bR\vcanDelegate\x12\x1b\n" +
+	"\tcan_admit\x18\x06 \x01(\bR\bcanAdmit\x12\x1b\n" +
+	"\tmax_depth\x18\a \x01(\rR\bmaxDepth\"\xe1\x02\n" +
 	"\x11GetStatusResponse\x122\n" +
 	"\x04self\x18\x01 \x01(\v2\x1e.pollen.control.v1.NodeSummaryR\x04self\x124\n" +
 	"\x05nodes\x18\x02 \x03(\v2\x1e.pollen.control.v1.NodeSummaryR\x05nodes\x12=\n" +
 	"\bservices\x18\x03 \x03(\v2!.pollen.control.v1.ServiceSummaryR\bservices\x12F\n" +
 	"\vconnections\x18\x04 \x03(\v2$.pollen.control.v1.ConnectionSummaryR\vconnections\x12?\n" +
-	"\fcertificates\x18\x05 \x03(\v2\x1b.pollen.control.v1.CertInfoR\fcertificates\"\xc0\x01\n" +
+	"\fcertificates\x18\x05 \x03(\v2\x1b.pollen.control.v1.CertInfoR\fcertificates\x12\x1a\n" +
+	"\bdegraded\x18\x06 \x01(\bR\bdegraded\"\xc0\x01\n" +
 	"\x11ConnectionSummary\x12.\n" +
 	"\x04peer\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04peer\x12,\n" +
 	"\vremote_port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\n" +
@@ -1662,11 +1689,11 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x18DisconnectServiceRequest\x12*\n" +
 	"\n" +
 	"local_port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\"\x1b\n" +
-	"\x19DisconnectServiceResponse\"5\n" +
-	"\x11RevokePeerRequest\x12 \n" +
-	"\apeer_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\x06peerId\"\x14\n" +
-	"\x12RevokePeerResponse\"\x13\n" +
-	"\x11GetMetricsRequest\"\xcf\x05\n" +
+	"\x19DisconnectServiceResponse\"3\n" +
+	"\x0fDenyPeerRequest\x12 \n" +
+	"\apeer_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\x06peerId\"\x12\n" +
+	"\x10DenyPeerResponse\"\x13\n" +
+	"\x11GetMetricsRequest\"\xb7\x05\n" +
 	"\x12GetMetricsResponse\x12)\n" +
 	"\x10peers_discovered\x18\x01 \x01(\rR\x0fpeersDiscovered\x12)\n" +
 	"\x10peers_connecting\x18\x02 \x01(\rR\x0fpeersConnecting\x12'\n" +
@@ -1683,9 +1710,9 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x0epunch_failures\x18\f \x01(\x04R\rpunchFailures\x127\n" +
 	"\x06health\x18\r \x01(\x0e2\x1f.pollen.control.v1.HealthStatusR\x06health\x12'\n" +
 	"\x0fvivaldi_samples\x18\x0e \x01(\x04R\x0evivaldiSamples\x12\x1f\n" +
-	"\veager_syncs\x18\x10 \x01(\x04R\n" +
+	"\veager_syncs\x18\x0f \x01(\x04R\n" +
 	"eagerSyncs\x12.\n" +
-	"\x13eager_sync_failures\x18\x11 \x01(\x04R\x11eagerSyncFailuresJ\x04\b\x0f\x10\x10J\x04\b\x12\x10\x13J\x04\b\x13\x10\x14J\x04\b\x14\x10\x15*\x8b\x01\n" +
+	"\x13eager_sync_failures\x18\x10 \x01(\x04R\x11eagerSyncFailures*\x8b\x01\n" +
 	"\n" +
 	"NodeStatus\x12\x1b\n" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
@@ -1704,7 +1731,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x19HEALTH_STATUS_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15HEALTH_STATUS_HEALTHY\x10\x01\x12\x1a\n" +
 	"\x16HEALTH_STATUS_DEGRADED\x10\x02\x12\x1b\n" +
-	"\x17HEALTH_STATUS_UNHEALTHY\x10\x032\xef\a\n" +
+	"\x17HEALTH_STATUS_UNHEALTHY\x10\x032\xe9\a\n" +
 	"\x0eControlService\x12S\n" +
 	"\bShutdown\x12\".pollen.control.v1.ShutdownRequest\x1a#.pollen.control.v1.ShutdownResponse\x12k\n" +
 	"\x10GetBootstrapInfo\x12*.pollen.control.v1.GetBootstrapInfoRequest\x1a+.pollen.control.v1.GetBootstrapInfoResponse\x12V\n" +
@@ -1715,9 +1742,8 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x11UnregisterService\x12+.pollen.control.v1.UnregisterServiceRequest\x1a,.pollen.control.v1.UnregisterServiceResponse\x12e\n" +
 	"\x0eConnectService\x12(.pollen.control.v1.ConnectServiceRequest\x1a).pollen.control.v1.ConnectServiceResponse\x12\\\n" +
 	"\vConnectPeer\x12%.pollen.control.v1.ConnectPeerRequest\x1a&.pollen.control.v1.ConnectPeerResponse\x12n\n" +
-	"\x11DisconnectService\x12+.pollen.control.v1.DisconnectServiceRequest\x1a,.pollen.control.v1.DisconnectServiceResponse\x12Y\n" +
-	"\n" +
-	"RevokePeer\x12$.pollen.control.v1.RevokePeerRequest\x1a%.pollen.control.v1.RevokePeerResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
+	"\x11DisconnectService\x12+.pollen.control.v1.DisconnectServiceRequest\x1a,.pollen.control.v1.DisconnectServiceResponse\x12S\n" +
+	"\bDenyPeer\x12\".pollen.control.v1.DenyPeerRequest\x1a#.pollen.control.v1.DenyPeerResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
 
 var (
 	file_pollen_control_v1_control_proto_rawDescOnce sync.Once
@@ -1759,8 +1785,8 @@ var file_pollen_control_v1_control_proto_goTypes = []any{
 	(*ConnectServiceResponse)(nil),    // 22: pollen.control.v1.ConnectServiceResponse
 	(*DisconnectServiceRequest)(nil),  // 23: pollen.control.v1.DisconnectServiceRequest
 	(*DisconnectServiceResponse)(nil), // 24: pollen.control.v1.DisconnectServiceResponse
-	(*RevokePeerRequest)(nil),         // 25: pollen.control.v1.RevokePeerRequest
-	(*RevokePeerResponse)(nil),        // 26: pollen.control.v1.RevokePeerResponse
+	(*DenyPeerRequest)(nil),           // 25: pollen.control.v1.DenyPeerRequest
+	(*DenyPeerResponse)(nil),          // 26: pollen.control.v1.DenyPeerResponse
 	(*GetMetricsRequest)(nil),         // 27: pollen.control.v1.GetMetricsRequest
 	(*GetMetricsResponse)(nil),        // 28: pollen.control.v1.GetMetricsResponse
 }
@@ -1789,7 +1815,7 @@ var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	21, // 21: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
 	19, // 22: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
 	23, // 23: pollen.control.v1.ControlService.DisconnectService:input_type -> pollen.control.v1.DisconnectServiceRequest
-	25, // 24: pollen.control.v1.ControlService.RevokePeer:input_type -> pollen.control.v1.RevokePeerRequest
+	25, // 24: pollen.control.v1.ControlService.DenyPeer:input_type -> pollen.control.v1.DenyPeerRequest
 	7,  // 25: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
 	10, // 26: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
 	13, // 27: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
@@ -1799,7 +1825,7 @@ var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	22, // 31: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
 	20, // 32: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
 	24, // 33: pollen.control.v1.ControlService.DisconnectService:output_type -> pollen.control.v1.DisconnectServiceResponse
-	26, // 34: pollen.control.v1.ControlService.RevokePeer:output_type -> pollen.control.v1.RevokePeerResponse
+	26, // 34: pollen.control.v1.ControlService.DenyPeer:output_type -> pollen.control.v1.DenyPeerResponse
 	25, // [25:35] is the sub-list for method output_type
 	15, // [15:25] is the sub-list for method input_type
 	15, // [15:15] is the sub-list for extension type_name

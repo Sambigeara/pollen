@@ -8,7 +8,6 @@ package statev1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
-	v1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -555,27 +554,27 @@ func (x *IdentityChange) GetCertExpiryUnix() int64 {
 	return 0
 }
 
-type RevocationChange struct {
+type DenyChange struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Revocation    *v1.SignedRevocation   `protobuf:"bytes,1,opt,name=revocation,proto3" json:"revocation,omitempty"`
+	SubjectPub    []byte                 `protobuf:"bytes,1,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *RevocationChange) Reset() {
-	*x = RevocationChange{}
+func (x *DenyChange) Reset() {
+	*x = DenyChange{}
 	mi := &file_pollen_state_v1_state_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *RevocationChange) String() string {
+func (x *DenyChange) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*RevocationChange) ProtoMessage() {}
+func (*DenyChange) ProtoMessage() {}
 
-func (x *RevocationChange) ProtoReflect() protoreflect.Message {
+func (x *DenyChange) ProtoReflect() protoreflect.Message {
 	mi := &file_pollen_state_v1_state_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -587,14 +586,14 @@ func (x *RevocationChange) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use RevocationChange.ProtoReflect.Descriptor instead.
-func (*RevocationChange) Descriptor() ([]byte, []int) {
+// Deprecated: Use DenyChange.ProtoReflect.Descriptor instead.
+func (*DenyChange) Descriptor() ([]byte, []int) {
 	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{11}
 }
 
-func (x *RevocationChange) GetRevocation() *v1.SignedRevocation {
+func (x *DenyChange) GetSubjectPub() []byte {
 	if x != nil {
-		return x.Revocation
+		return x.SubjectPub
 	}
 	return nil
 }
@@ -711,17 +710,17 @@ type GossipEvent struct {
 	//
 	//	*GossipEvent_Network
 	//	*GossipEvent_ExternalPort
-	//	*GossipEvent_ObservedExternalIp
 	//	*GossipEvent_IdentityPub
 	//	*GossipEvent_Service
 	//	*GossipEvent_Reachability
-	//	*GossipEvent_Revocation
+	//	*GossipEvent_ObservedExternalIp
 	//	*GossipEvent_PubliclyAccessible
 	//	*GossipEvent_Vivaldi
 	//	*GossipEvent_NatType
 	//	*GossipEvent_ResourceTelemetry
+	//	*GossipEvent_Deny
 	Change        isGossipEvent_Change `protobuf_oneof:"change"`
-	Deleted       bool                 `protobuf:"varint,8,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	Deleted       bool                 `protobuf:"varint,14,opt,name=deleted,proto3" json:"deleted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -795,15 +794,6 @@ func (x *GossipEvent) GetExternalPort() *ExternalPortChange {
 	return nil
 }
 
-func (x *GossipEvent) GetObservedExternalIp() *ObservedExternalIPChange {
-	if x != nil {
-		if x, ok := x.Change.(*GossipEvent_ObservedExternalIp); ok {
-			return x.ObservedExternalIp
-		}
-	}
-	return nil
-}
-
 func (x *GossipEvent) GetIdentityPub() *IdentityChange {
 	if x != nil {
 		if x, ok := x.Change.(*GossipEvent_IdentityPub); ok {
@@ -831,10 +821,10 @@ func (x *GossipEvent) GetReachability() *ReachabilityChange {
 	return nil
 }
 
-func (x *GossipEvent) GetRevocation() *RevocationChange {
+func (x *GossipEvent) GetObservedExternalIp() *ObservedExternalIPChange {
 	if x != nil {
-		if x, ok := x.Change.(*GossipEvent_Revocation); ok {
-			return x.Revocation
+		if x, ok := x.Change.(*GossipEvent_ObservedExternalIp); ok {
+			return x.ObservedExternalIp
 		}
 	}
 	return nil
@@ -876,6 +866,15 @@ func (x *GossipEvent) GetResourceTelemetry() *ResourceTelemetryChange {
 	return nil
 }
 
+func (x *GossipEvent) GetDeny() *DenyChange {
+	if x != nil {
+		if x, ok := x.Change.(*GossipEvent_Deny); ok {
+			return x.Deny
+		}
+	}
+	return nil
+}
+
 func (x *GossipEvent) GetDeleted() bool {
 	if x != nil {
 		return x.Deleted
@@ -895,10 +894,6 @@ type GossipEvent_ExternalPort struct {
 	ExternalPort *ExternalPortChange `protobuf:"bytes,4,opt,name=external_port,json=externalPort,proto3,oneof"`
 }
 
-type GossipEvent_ObservedExternalIp struct {
-	ObservedExternalIp *ObservedExternalIPChange `protobuf:"bytes,13,opt,name=observed_external_ip,json=observedExternalIp,proto3,oneof"`
-}
-
 type GossipEvent_IdentityPub struct {
 	IdentityPub *IdentityChange `protobuf:"bytes,5,opt,name=identity_pub,json=identityPub,proto3,oneof"`
 }
@@ -911,31 +906,33 @@ type GossipEvent_Reachability struct {
 	Reachability *ReachabilityChange `protobuf:"bytes,7,opt,name=reachability,proto3,oneof"`
 }
 
-type GossipEvent_Revocation struct {
-	Revocation *RevocationChange `protobuf:"bytes,9,opt,name=revocation,proto3,oneof"`
+type GossipEvent_ObservedExternalIp struct {
+	ObservedExternalIp *ObservedExternalIPChange `protobuf:"bytes,8,opt,name=observed_external_ip,json=observedExternalIp,proto3,oneof"`
 }
 
 type GossipEvent_PubliclyAccessible struct {
-	PubliclyAccessible *PubliclyAccessibleChange `protobuf:"bytes,10,opt,name=publicly_accessible,json=publiclyAccessible,proto3,oneof"`
+	PubliclyAccessible *PubliclyAccessibleChange `protobuf:"bytes,9,opt,name=publicly_accessible,json=publiclyAccessible,proto3,oneof"`
 }
 
 type GossipEvent_Vivaldi struct {
-	Vivaldi *VivaldiCoordinateChange `protobuf:"bytes,11,opt,name=vivaldi,proto3,oneof"`
+	Vivaldi *VivaldiCoordinateChange `protobuf:"bytes,10,opt,name=vivaldi,proto3,oneof"`
 }
 
 type GossipEvent_NatType struct {
-	NatType *NatTypeChange `protobuf:"bytes,12,opt,name=nat_type,json=natType,proto3,oneof"`
+	NatType *NatTypeChange `protobuf:"bytes,11,opt,name=nat_type,json=natType,proto3,oneof"`
 }
 
 type GossipEvent_ResourceTelemetry struct {
-	ResourceTelemetry *ResourceTelemetryChange `protobuf:"bytes,14,opt,name=resource_telemetry,json=resourceTelemetry,proto3,oneof"`
+	ResourceTelemetry *ResourceTelemetryChange `protobuf:"bytes,12,opt,name=resource_telemetry,json=resourceTelemetry,proto3,oneof"`
+}
+
+type GossipEvent_Deny struct {
+	Deny *DenyChange `protobuf:"bytes,13,opt,name=deny,proto3,oneof"`
 }
 
 func (*GossipEvent_Network) isGossipEvent_Change() {}
 
 func (*GossipEvent_ExternalPort) isGossipEvent_Change() {}
-
-func (*GossipEvent_ObservedExternalIp) isGossipEvent_Change() {}
 
 func (*GossipEvent_IdentityPub) isGossipEvent_Change() {}
 
@@ -943,7 +940,7 @@ func (*GossipEvent_Service) isGossipEvent_Change() {}
 
 func (*GossipEvent_Reachability) isGossipEvent_Change() {}
 
-func (*GossipEvent_Revocation) isGossipEvent_Change() {}
+func (*GossipEvent_ObservedExternalIp) isGossipEvent_Change() {}
 
 func (*GossipEvent_PubliclyAccessible) isGossipEvent_Change() {}
 
@@ -952,6 +949,8 @@ func (*GossipEvent_Vivaldi) isGossipEvent_Change() {}
 func (*GossipEvent_NatType) isGossipEvent_Change() {}
 
 func (*GossipEvent_ResourceTelemetry) isGossipEvent_Change() {}
+
+func (*GossipEvent_Deny) isGossipEvent_Change() {}
 
 type GossipEventBatch struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1009,8 +1008,8 @@ func (x *GossipEventBatch) GetIsResponse() bool {
 type RuntimeState struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Peers           []*PeerState           `protobuf:"bytes,1,rep,name=peers,proto3" json:"peers,omitempty"`
-	Revocations     []*v1.SignedRevocation `protobuf:"bytes,2,rep,name=revocations,proto3" json:"revocations,omitempty"`
-	ConsumedInvites []*ConsumedInvite      `protobuf:"bytes,3,rep,name=consumed_invites,json=consumedInvites,proto3" json:"consumed_invites,omitempty"`
+	ConsumedInvites []*ConsumedInvite      `protobuf:"bytes,2,rep,name=consumed_invites,json=consumedInvites,proto3" json:"consumed_invites,omitempty"`
+	DeniedPeers     [][]byte               `protobuf:"bytes,3,rep,name=denied_peers,json=deniedPeers,proto3" json:"denied_peers,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1052,16 +1051,16 @@ func (x *RuntimeState) GetPeers() []*PeerState {
 	return nil
 }
 
-func (x *RuntimeState) GetRevocations() []*v1.SignedRevocation {
+func (x *RuntimeState) GetConsumedInvites() []*ConsumedInvite {
 	if x != nil {
-		return x.Revocations
+		return x.ConsumedInvites
 	}
 	return nil
 }
 
-func (x *RuntimeState) GetConsumedInvites() []*ConsumedInvite {
+func (x *RuntimeState) GetDeniedPeers() [][]byte {
 	if x != nil {
-		return x.ConsumedInvites
+		return x.DeniedPeers
 	}
 	return nil
 }
@@ -1222,7 +1221,7 @@ var File_pollen_state_v1_state_proto protoreflect.FileDescriptor
 
 const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\n" +
-	"\x1bpollen/state/v1/state.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\x1a#pollen/admission/v1/admission.proto\">\n" +
+	"\x1bpollen/state/v1/state.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\">\n" +
 	"\aService\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\x04port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\x04port\"L\n" +
@@ -1258,11 +1257,11 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x06height\x18\x03 \x01(\x01R\x06height\"f\n" +
 	"\x0eIdentityChange\x12*\n" +
 	"\fidentity_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\videntityPub\x12(\n" +
-	"\x10cert_expiry_unix\x18\x02 \x01(\x03R\x0ecertExpiryUnix\"a\n" +
-	"\x10RevocationChange\x12M\n" +
+	"\x10cert_expiry_unix\x18\x02 \x01(\x03R\x0ecertExpiryUnix\"6\n" +
 	"\n" +
-	"revocation\x18\x01 \x01(\v2%.pollen.admission.v1.SignedRevocationB\x06\xbaH\x03\xc8\x01\x01R\n" +
-	"revocation\"*\n" +
+	"DenyChange\x12(\n" +
+	"\vsubject_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\n" +
+	"subjectPub\"*\n" +
 	"\rNatTypeChange\x12\x19\n" +
 	"\bnat_type\x18\x01 \x01(\rR\anatType\"\x83\x01\n" +
 	"\x17ResourceTelemetryChange\x12\x1f\n" +
@@ -1270,34 +1269,32 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"cpuPercent\x12\x1f\n" +
 	"\vmem_percent\x18\x02 \x01(\rR\n" +
 	"memPercent\x12&\n" +
-	"\x0fmem_total_bytes\x18\x03 \x01(\x04R\rmemTotalBytes\"\xb6\a\n" +
+	"\x0fmem_total_bytes\x18\x03 \x01(\x04R\rmemTotalBytes\"\xa4\a\n" +
 	"\vGossipEvent\x124\n" +
 	"\apeer_id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x06peerId\x12\x18\n" +
 	"\acounter\x18\x02 \x01(\x04R\acounter\x12:\n" +
 	"\anetwork\x18\x03 \x01(\v2\x1e.pollen.state.v1.NetworkChangeH\x00R\anetwork\x12J\n" +
-	"\rexternal_port\x18\x04 \x01(\v2#.pollen.state.v1.ExternalPortChangeH\x00R\fexternalPort\x12]\n" +
-	"\x14observed_external_ip\x18\r \x01(\v2).pollen.state.v1.ObservedExternalIPChangeH\x00R\x12observedExternalIp\x12D\n" +
+	"\rexternal_port\x18\x04 \x01(\v2#.pollen.state.v1.ExternalPortChangeH\x00R\fexternalPort\x12D\n" +
 	"\fidentity_pub\x18\x05 \x01(\v2\x1f.pollen.state.v1.IdentityChangeH\x00R\videntityPub\x12:\n" +
 	"\aservice\x18\x06 \x01(\v2\x1e.pollen.state.v1.ServiceChangeH\x00R\aservice\x12I\n" +
-	"\freachability\x18\a \x01(\v2#.pollen.state.v1.ReachabilityChangeH\x00R\freachability\x12C\n" +
-	"\n" +
-	"revocation\x18\t \x01(\v2!.pollen.state.v1.RevocationChangeH\x00R\n" +
-	"revocation\x12\\\n" +
-	"\x13publicly_accessible\x18\n" +
-	" \x01(\v2).pollen.state.v1.PubliclyAccessibleChangeH\x00R\x12publiclyAccessible\x12D\n" +
-	"\avivaldi\x18\v \x01(\v2(.pollen.state.v1.VivaldiCoordinateChangeH\x00R\avivaldi\x12;\n" +
-	"\bnat_type\x18\f \x01(\v2\x1e.pollen.state.v1.NatTypeChangeH\x00R\anatType\x12Y\n" +
-	"\x12resource_telemetry\x18\x0e \x01(\v2(.pollen.state.v1.ResourceTelemetryChangeH\x00R\x11resourceTelemetry\x12\x18\n" +
-	"\adeleted\x18\b \x01(\bR\adeletedB\b\n" +
+	"\freachability\x18\a \x01(\v2#.pollen.state.v1.ReachabilityChangeH\x00R\freachability\x12]\n" +
+	"\x14observed_external_ip\x18\b \x01(\v2).pollen.state.v1.ObservedExternalIPChangeH\x00R\x12observedExternalIp\x12\\\n" +
+	"\x13publicly_accessible\x18\t \x01(\v2).pollen.state.v1.PubliclyAccessibleChangeH\x00R\x12publiclyAccessible\x12D\n" +
+	"\avivaldi\x18\n" +
+	" \x01(\v2(.pollen.state.v1.VivaldiCoordinateChangeH\x00R\avivaldi\x12;\n" +
+	"\bnat_type\x18\v \x01(\v2\x1e.pollen.state.v1.NatTypeChangeH\x00R\anatType\x12Y\n" +
+	"\x12resource_telemetry\x18\f \x01(\v2(.pollen.state.v1.ResourceTelemetryChangeH\x00R\x11resourceTelemetry\x121\n" +
+	"\x04deny\x18\r \x01(\v2\x1b.pollen.state.v1.DenyChangeH\x00R\x04deny\x12\x18\n" +
+	"\adeleted\x18\x0e \x01(\bR\adeletedB\b\n" +
 	"\x06change\"i\n" +
 	"\x10GossipEventBatch\x124\n" +
 	"\x06events\x18\x01 \x03(\v2\x1c.pollen.state.v1.GossipEventR\x06events\x12\x1f\n" +
 	"\vis_response\x18\x02 \x01(\bR\n" +
-	"isResponse\"\xd5\x01\n" +
+	"isResponse\"\xaf\x01\n" +
 	"\fRuntimeState\x120\n" +
-	"\x05peers\x18\x01 \x03(\v2\x1a.pollen.state.v1.PeerStateR\x05peers\x12G\n" +
-	"\vrevocations\x18\x02 \x03(\v2%.pollen.admission.v1.SignedRevocationR\vrevocations\x12J\n" +
-	"\x10consumed_invites\x18\x03 \x03(\v2\x1f.pollen.state.v1.ConsumedInviteR\x0fconsumedInvites\"\xf4\x01\n" +
+	"\x05peers\x18\x01 \x03(\v2\x1a.pollen.state.v1.PeerStateR\x05peers\x12J\n" +
+	"\x10consumed_invites\x18\x02 \x03(\v2\x1f.pollen.state.v1.ConsumedInviteR\x0fconsumedInvites\x12!\n" +
+	"\fdenied_peers\x18\x03 \x03(\fR\vdeniedPeers\"\xf4\x01\n" +
 	"\tPeerState\x12!\n" +
 	"\fidentity_pub\x18\x01 \x01(\fR\videntityPub\x12\x1c\n" +
 	"\taddresses\x18\x02 \x03(\tR\taddresses\x12\x12\n" +
@@ -1338,7 +1335,7 @@ var file_pollen_state_v1_state_proto_goTypes = []any{
 	(*PubliclyAccessibleChange)(nil), // 8: pollen.state.v1.PubliclyAccessibleChange
 	(*VivaldiCoordinateChange)(nil),  // 9: pollen.state.v1.VivaldiCoordinateChange
 	(*IdentityChange)(nil),           // 10: pollen.state.v1.IdentityChange
-	(*RevocationChange)(nil),         // 11: pollen.state.v1.RevocationChange
+	(*DenyChange)(nil),               // 11: pollen.state.v1.DenyChange
 	(*NatTypeChange)(nil),            // 12: pollen.state.v1.NatTypeChange
 	(*ResourceTelemetryChange)(nil),  // 13: pollen.state.v1.ResourceTelemetryChange
 	(*GossipEvent)(nil),              // 14: pollen.state.v1.GossipEvent
@@ -1347,32 +1344,29 @@ var file_pollen_state_v1_state_proto_goTypes = []any{
 	(*PeerState)(nil),                // 17: pollen.state.v1.PeerState
 	(*ConsumedInvite)(nil),           // 18: pollen.state.v1.ConsumedInvite
 	nil,                              // 19: pollen.state.v1.GossipStateDigest.PeersEntry
-	(*v1.SignedRevocation)(nil),      // 20: pollen.admission.v1.SignedRevocation
 }
 var file_pollen_state_v1_state_proto_depIdxs = []int32{
 	19, // 0: pollen.state.v1.GossipStateDigest.peers:type_name -> pollen.state.v1.GossipStateDigest.PeersEntry
-	20, // 1: pollen.state.v1.RevocationChange.revocation:type_name -> pollen.admission.v1.SignedRevocation
-	5,  // 2: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
-	6,  // 3: pollen.state.v1.GossipEvent.external_port:type_name -> pollen.state.v1.ExternalPortChange
-	7,  // 4: pollen.state.v1.GossipEvent.observed_external_ip:type_name -> pollen.state.v1.ObservedExternalIPChange
-	10, // 5: pollen.state.v1.GossipEvent.identity_pub:type_name -> pollen.state.v1.IdentityChange
-	3,  // 6: pollen.state.v1.GossipEvent.service:type_name -> pollen.state.v1.ServiceChange
-	4,  // 7: pollen.state.v1.GossipEvent.reachability:type_name -> pollen.state.v1.ReachabilityChange
-	11, // 8: pollen.state.v1.GossipEvent.revocation:type_name -> pollen.state.v1.RevocationChange
-	8,  // 9: pollen.state.v1.GossipEvent.publicly_accessible:type_name -> pollen.state.v1.PubliclyAccessibleChange
-	9,  // 10: pollen.state.v1.GossipEvent.vivaldi:type_name -> pollen.state.v1.VivaldiCoordinateChange
-	12, // 11: pollen.state.v1.GossipEvent.nat_type:type_name -> pollen.state.v1.NatTypeChange
-	13, // 12: pollen.state.v1.GossipEvent.resource_telemetry:type_name -> pollen.state.v1.ResourceTelemetryChange
-	14, // 13: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
-	17, // 14: pollen.state.v1.RuntimeState.peers:type_name -> pollen.state.v1.PeerState
-	20, // 15: pollen.state.v1.RuntimeState.revocations:type_name -> pollen.admission.v1.SignedRevocation
-	18, // 16: pollen.state.v1.RuntimeState.consumed_invites:type_name -> pollen.state.v1.ConsumedInvite
-	1,  // 17: pollen.state.v1.GossipStateDigest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	5,  // 1: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
+	6,  // 2: pollen.state.v1.GossipEvent.external_port:type_name -> pollen.state.v1.ExternalPortChange
+	10, // 3: pollen.state.v1.GossipEvent.identity_pub:type_name -> pollen.state.v1.IdentityChange
+	3,  // 4: pollen.state.v1.GossipEvent.service:type_name -> pollen.state.v1.ServiceChange
+	4,  // 5: pollen.state.v1.GossipEvent.reachability:type_name -> pollen.state.v1.ReachabilityChange
+	7,  // 6: pollen.state.v1.GossipEvent.observed_external_ip:type_name -> pollen.state.v1.ObservedExternalIPChange
+	8,  // 7: pollen.state.v1.GossipEvent.publicly_accessible:type_name -> pollen.state.v1.PubliclyAccessibleChange
+	9,  // 8: pollen.state.v1.GossipEvent.vivaldi:type_name -> pollen.state.v1.VivaldiCoordinateChange
+	12, // 9: pollen.state.v1.GossipEvent.nat_type:type_name -> pollen.state.v1.NatTypeChange
+	13, // 10: pollen.state.v1.GossipEvent.resource_telemetry:type_name -> pollen.state.v1.ResourceTelemetryChange
+	11, // 11: pollen.state.v1.GossipEvent.deny:type_name -> pollen.state.v1.DenyChange
+	14, // 12: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
+	17, // 13: pollen.state.v1.RuntimeState.peers:type_name -> pollen.state.v1.PeerState
+	18, // 14: pollen.state.v1.RuntimeState.consumed_invites:type_name -> pollen.state.v1.ConsumedInvite
+	1,  // 15: pollen.state.v1.GossipStateDigest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
+	16, // [16:16] is the sub-list for method output_type
+	16, // [16:16] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_state_proto_init() }
@@ -1383,15 +1377,15 @@ func file_pollen_state_v1_state_proto_init() {
 	file_pollen_state_v1_state_proto_msgTypes[14].OneofWrappers = []any{
 		(*GossipEvent_Network)(nil),
 		(*GossipEvent_ExternalPort)(nil),
-		(*GossipEvent_ObservedExternalIp)(nil),
 		(*GossipEvent_IdentityPub)(nil),
 		(*GossipEvent_Service)(nil),
 		(*GossipEvent_Reachability)(nil),
-		(*GossipEvent_Revocation)(nil),
+		(*GossipEvent_ObservedExternalIp)(nil),
 		(*GossipEvent_PubliclyAccessible)(nil),
 		(*GossipEvent_Vivaldi)(nil),
 		(*GossipEvent_NatType)(nil),
 		(*GossipEvent_ResourceTelemetry)(nil),
+		(*GossipEvent_Deny)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

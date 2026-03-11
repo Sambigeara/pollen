@@ -41,7 +41,7 @@ const (
 	MaxDatagramPayload = 1100
 )
 
-var ErrCertExpired = errors.New("membership certificate has expired")
+var ErrCertExpired = errors.New("delegation certificate has expired")
 
 // envelopeOverhead is the serialized size of an empty Envelope wrapping
 // a GossipEventBatch — covers the oneof tag, length prefixes, and batch
@@ -51,9 +51,9 @@ var envelopeOverhead = (&meshv1.Envelope{Body: &meshv1.Envelope_Events{
 }}).SizeVT()
 
 const (
-	certCheckInterval     = 1 * time.Hour
-	certWarnThreshold     = 30 * 24 * time.Hour
-	certCriticalThreshold = 7 * 24 * time.Hour
+	certCheckInterval     = 5 * time.Minute
+	certWarnThreshold     = 1 * time.Hour
+	certCriticalThreshold = 15 * time.Minute
 	certRenewalTimeout    = 10 * time.Second
 	expirySweepInterval   = 30 * time.Second
 
@@ -177,7 +177,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 	peerMetrics := metrics.NewPeerMetrics(col)
 	gossipMetrics := metrics.NewGossipMetrics(col)
 
-	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSIdentityTTL, conf.MembershipTTL, conf.MaxConnectionAge, stateStore.IsSubjectRevoked, meshMetrics)
+	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSIdentityTTL, conf.MembershipTTL, conf.MaxConnectionAge, meshMetrics)
 	if err != nil {
 		log.Error("failed to load mesh", zap.Error(err))
 		return nil, err
@@ -220,19 +220,6 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		smoothedErr:     metrics.NewEWMAFrom(vivaldiErrAlpha, 1.0),
 	}
 	n.localCoordErr = 1.0
-
-	stateStore.OnRevocation(func(subject types.PeerKey) {
-		n.tun.DisconnectPeer(subject)
-		stateStore.RemoveDesiredConnection(subject, 0, 0)
-		go n.mesh.ClosePeerSession(subject, mesh.CloseReasonRevoked)
-		select {
-		case n.localPeerEvents <- peer.ForgetPeer{PeerKey: subject}:
-		default:
-		}
-		if err := stateStore.Save(); err != nil {
-			n.log.Warnw("save state after revocation failed", "err", err)
-		}
-	})
 
 	if conf.BootstrapPublic {
 		stateStore.SetLocalPubliclyAccessible(true)
@@ -337,7 +324,7 @@ func (n *Node) Start(ctx context.Context) error {
 
 func (n *Node) connectBootstrapPeers(ctx context.Context) {
 	for _, bp := range n.conf.BootstrapPeers {
-		if n.store.IsSubjectRevoked(bp.PeerKey[:]) {
+		if n.store.IsDenied(bp.PeerKey[:]) {
 			continue
 		}
 		addrs := make([]*net.UDPAddr, 0, len(bp.Addrs))
@@ -1107,29 +1094,18 @@ func (n *Node) DisconnectService(localPort uint32) error {
 	return fmt.Errorf("no connection on local port %d", localPort)
 }
 
-// checkCertExpiry checks the local node's membership cert and logs warnings.
+// checkCertExpiry checks the local node's delegation cert and logs warnings.
 // Returns true if the cert has expired and the node should shut down.
 func (n *Node) checkCertExpiry() bool {
 	now := time.Now()
-	if auth.IsMembershipCertExpired(n.creds.Cert, now) {
-		msg := "membership certificate has expired, shutting down — rejoin the cluster or contact a cluster admin"
-		if auth.IsCertNonRenewable(n.creds.Cert) {
-			msg = "guest membership certificate has expired, shutting down — request a new invite from a cluster admin"
-		}
-		n.log.Errorw(msg, "expired_at", auth.CertExpiresAt(n.creds.Cert))
+	if auth.IsCertExpired(n.creds.Cert, now) {
+		n.log.Errorw("delegation certificate has expired, shutting down — rejoin the cluster or contact a cluster admin",
+			"expired_at", auth.CertExpiresAt(n.creds.Cert))
 		return true
 	}
 
 	remaining := time.Until(auth.CertExpiresAt(n.creds.Cert))
 	n.nodeMetrics.CertExpirySeconds.Set(remaining.Seconds())
-
-	if auth.IsCertNonRenewable(n.creds.Cert) {
-		if remaining <= certWarnThreshold {
-			n.log.Warnw("non-renewable guest certificate approaching expiry — request a new invite to continue",
-				"expires_in", remaining.Truncate(time.Minute))
-		}
-		return false
-	}
 
 	if remaining <= certWarnThreshold {
 		failed := !n.attemptCertRenewal()
@@ -1141,10 +1117,10 @@ func (n *Node) checkCertExpiry() bool {
 
 	switch {
 	case remaining <= certCriticalThreshold:
-		n.log.Warnw("membership certificate expiring soon — auto-renewal failed — rejoin the cluster or contact a cluster admin",
+		n.log.Warnw("delegation certificate expiring soon — auto-renewal failed — rejoin the cluster or contact a cluster admin",
 			"expires_in", remaining.Truncate(time.Minute))
 	case remaining <= certWarnThreshold:
-		n.log.Infow("membership certificate approaching expiry — auto-renewal attempted but failed, will retry",
+		n.log.Infow("delegation certificate approaching expiry — auto-renewal attempted but failed, will retry",
 			"expires_in", remaining.Truncate(time.Minute))
 	}
 	return false
@@ -1153,11 +1129,11 @@ func (n *Node) checkCertExpiry() bool {
 func (n *Node) attemptCertRenewal() bool {
 	connectedPeers := n.GetConnectedPeers()
 	if len(connectedPeers) == 0 {
-		n.log.Warnw("membership certificate renewal failed: no connected peers")
+		n.log.Warnw("delegation certificate renewal failed: no connected peers")
 		return false
 	}
 
-	n.log.Infow("renewing membership certificate")
+	n.log.Infow("renewing delegation certificate")
 
 	ctx, cancel := context.WithTimeout(context.Background(), certRenewalTimeout)
 	defer cancel()
@@ -1165,30 +1141,30 @@ func (n *Node) attemptCertRenewal() bool {
 	for _, peerKey := range connectedPeers {
 		newCert, err := n.mesh.RequestCertRenewal(ctx, peerKey)
 		if err != nil {
-			n.log.Debugw("membership certificate renewal failed", "peer", peerKey.Short(), "err", err)
+			n.log.Debugw("delegation certificate renewal failed", "peer", peerKey.Short(), "err", err)
 			continue
 		}
 
 		if err := n.applyCertRenewal(newCert); err != nil {
-			n.log.Warnw("membership certificate renewal failed: invalid cert", "peer", peerKey.Short(), "err", err)
+			n.log.Warnw("delegation certificate renewal failed: invalid cert", "peer", peerKey.Short(), "err", err)
 			continue
 		}
 
-		n.log.Infow("membership certificate renewed",
+		n.log.Infow("delegation certificate renewed",
 			"expires_at", auth.CertExpiresAt(newCert))
 		n.nodeMetrics.CertRenewals.Inc()
 		return true
 	}
 
-	n.log.Warnw("membership certificate renewal failed: all peers refused or returned errors")
+	n.log.Warnw("delegation certificate renewal failed: all peers refused or returned errors")
 	n.nodeMetrics.CertRenewalsFailed.Inc()
 	return false
 }
 
-func (n *Node) applyCertRenewal(newCert *admissionv1.MembershipCert) error {
+func (n *Node) applyCertRenewal(newCert *admissionv1.DelegationCert) error {
 	now := time.Now()
 	pubKey := n.signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-	if err := auth.VerifyMembershipCert(newCert, n.creds.Trust, now, pubKey); err != nil {
+	if err := auth.VerifyDelegationCert(newCert, n.creds.Trust, now, pubKey); err != nil {
 		return err
 	}
 
@@ -1222,31 +1198,34 @@ func (n *Node) handleCertRenewalRequest(ctx context.Context, from types.PeerKey,
 		return
 	}
 
-	signer := n.creds.InviteSigner
+	signer := n.creds.DelegationKey
 	if signer == nil {
 		sendReject("this node is not an admin")
 		return
 	}
 
-	if n.store.IsSubjectRevoked(req.GetSubjectPub()) {
-		sendReject("subject has been revoked")
+	if n.store.IsDenied(req.GetSubjectPub()) {
+		sendReject("subject has been denied")
 		return
 	}
 
-	if mc, ok := n.mesh.PeerMembershipCert(from); ok && auth.IsCertNonRenewable(mc) {
-		sendReject("certificate is non-renewable — request a new invite from a cluster admin")
-		return
+	ttl := n.conf.MembershipTTL
+	if peerCert, ok := n.mesh.PeerDelegationCert(from); ok {
+		ttl = auth.CertTTL(peerCert)
 	}
 
 	now := time.Now()
-	newCert, err := auth.IssueMembershipCertWithIssuer(
+	parentChain := make([]*admissionv1.DelegationCert, 0, 1+len(signer.Issuer.GetChain()))
+	parentChain = append(parentChain, signer.Issuer)
+	parentChain = append(parentChain, signer.Issuer.GetChain()...)
+	newCert, err := auth.IssueDelegationCert(
 		signer.Priv,
-		signer.Issuer,
+		parentChain,
 		signer.Trust.GetClusterId(),
 		req.GetSubjectPub(),
+		auth.LeafCapabilities(),
 		now.Add(-time.Minute),
-		now.Add(n.conf.MembershipTTL),
-		false,
+		now.Add(ttl),
 	)
 	if err != nil {
 		sendReject(err.Error())
@@ -1269,7 +1248,7 @@ func (n *Node) disconnectExpiredPeers() {
 			continue
 		}
 		if auth.IsCertExpiredAt(expiry, now) {
-			n.log.Warnw("disconnecting peer with expired membership cert",
+			n.log.Warnw("disconnecting peer with expired delegation cert",
 				"peer", peerKey.Short(), "expired_at", expiry)
 			n.tun.DisconnectPeer(peerKey)
 			n.mesh.ClosePeerSession(peerKey, mesh.CloseReasonCertExpired)

@@ -28,8 +28,7 @@ const (
 	adminPubKeyName  = "admin_ed25519.pub"
 
 	trustBundleName    = "cluster.trust.pb"
-	membershipCertName = "membership.cert.pb"
-	adminCertName      = "admin.cert.pb"
+	delegationCertName = "delegation.cert.pb"
 
 	pemTypeAdminPriv = "POLLEN ADMIN ED25519 PRIVATE KEY"
 	pemTypeAdminPub  = "POLLEN ADMIN ED25519 PUBLIC KEY"
@@ -38,11 +37,9 @@ const (
 
 	timeSkewAllowance = time.Minute
 
-	sigContextAdminCert  = "pollen.admin.v1"
-	sigContextMembership = "pollen.membership.v1"
+	sigContextDelegation = "pollen.delegation.v1"
 	sigContextJoinClaims = "pollen.join.v1"
 	sigContextInvite     = "pollen.invite.v1"
-	sigContextRevocation = "pollen.revocation.v1"
 )
 
 var (
@@ -50,7 +47,25 @@ var (
 	ErrDifferentCluster    = errors.New("node already has membership credentials for a different cluster")
 )
 
-func CertExpiresAt(cert *admissionv1.MembershipCert) time.Time {
+// FullCapabilities returns capabilities for root/admin certs.
+func FullCapabilities() *admissionv1.Capabilities {
+	return &admissionv1.Capabilities{
+		CanDelegate: true,
+		CanAdmit:    true,
+		MaxDepth:    255, //nolint:mnd
+	}
+}
+
+// LeafCapabilities returns capabilities for regular member certs.
+func LeafCapabilities() *admissionv1.Capabilities {
+	return &admissionv1.Capabilities{
+		CanDelegate: false,
+		CanAdmit:    false,
+		MaxDepth:    0,
+	}
+}
+
+func CertExpiresAt(cert *admissionv1.DelegationCert) time.Time {
 	return time.Unix(cert.GetClaims().GetNotAfterUnix(), 0)
 }
 
@@ -58,24 +73,40 @@ func IsCertExpiredAt(expiresAt, now time.Time) bool {
 	return now.After(expiresAt.Add(timeSkewAllowance))
 }
 
-func IsMembershipCertExpired(cert *admissionv1.MembershipCert, now time.Time) bool {
+func IsCertExpired(cert *admissionv1.DelegationCert, now time.Time) bool {
 	return IsCertExpiredAt(CertExpiresAt(cert), now)
 }
 
-func IsCertNonRenewable(cert *admissionv1.MembershipCert) bool {
-	return cert.GetClaims().GetNonRenewable()
+// CertTTL returns the original TTL of the cert (notAfter - notBefore).
+func CertTTL(cert *admissionv1.DelegationCert) time.Duration {
+	claims := cert.GetClaims()
+	return time.Duration(claims.GetNotAfterUnix()-claims.GetNotBeforeUnix()) * time.Second
+}
+
+// IsCapSubset returns true if child capabilities are a subset of parent's.
+func IsCapSubset(child, parent *admissionv1.Capabilities) bool {
+	if child.GetCanDelegate() && !parent.GetCanDelegate() {
+		return false
+	}
+	if child.GetCanAdmit() && !parent.GetCanAdmit() {
+		return false
+	}
+	if child.GetMaxDepth() > parent.GetMaxDepth() {
+		return false
+	}
+	return true
 }
 
 type NodeCredentials struct {
-	Trust        *admissionv1.TrustBundle
-	Cert         *admissionv1.MembershipCert
-	InviteSigner *AdminSigner
+	Trust         *admissionv1.TrustBundle
+	Cert          *admissionv1.DelegationCert
+	DelegationKey *DelegationSigner
 }
 
 type VerifiedToken struct {
 	Claims *admissionv1.JoinTokenClaims
 	Trust  *admissionv1.TrustBundle
-	Cert   *admissionv1.MembershipCert
+	Cert   *admissionv1.DelegationCert
 }
 
 func EnsureNodeCredentialsFromToken(pollenDir string, nodePub ed25519.PublicKey, token *admissionv1.JoinToken, now time.Time) (*NodeCredentials, error) {
@@ -98,7 +129,7 @@ func EnsureNodeCredentialsFromToken(pollenDir string, nodePub ed25519.PublicKey,
 		if !proto.Equal(existing.Trust, creds.Trust) {
 			return nil, ErrDifferentCluster
 		}
-		if VerifyMembershipCert(existing.Cert, existing.Trust, now, nodePub) == nil &&
+		if VerifyDelegationCert(existing.Cert, existing.Trust, now, nodePub) == nil &&
 			existing.Cert.GetClaims().GetNotAfterUnix() >= creds.Cert.GetClaims().GetNotAfterUnix() {
 			return existing, nil
 		}
@@ -119,26 +150,37 @@ func LoadOrEnrollNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, to
 	return EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
 }
 
-func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now time.Time, membershipTTL, adminCertTTL time.Duration) (*NodeCredentials, error) {
+func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now time.Time, membershipTTL, delegationTTL time.Duration) (*NodeCredentials, error) {
 	existing, err := loadNodeCredentialsIfPresent(pollenDir)
 	if err != nil {
 		return nil, err
 	}
 
 	if existing != nil {
-		if err := VerifyMembershipCert(existing.Cert, existing.Trust, now, nodePub); err != nil {
-			return nil, fmt.Errorf("invalid stored membership credentials: %w", err)
+		if err := VerifyDelegationCert(existing.Cert, existing.Trust, now, nodePub); err != nil {
+			return nil, fmt.Errorf("invalid stored delegation credentials: %w", err)
 		}
 		return existing, nil
 	}
 
-	adminPriv, adminPub, err := LoadOrCreateAdminKey(pollenDir)
+	adminPriv, _, err := LoadOrCreateAdminKey(pollenDir)
 	if err != nil {
 		return nil, err
 	}
 
+	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 	trust := NewTrustBundle(adminPub)
-	cert, err := IssueMembershipCert(adminPriv, trust.GetClusterId(), nodePub, now.Add(-timeSkewAllowance), now.Add(membershipTTL), adminCertTTL)
+
+	// Root issues a delegation cert for itself with full capabilities.
+	cert, err := IssueDelegationCert(
+		adminPriv,
+		nil, // no parent chain — root-issued
+		trust.GetClusterId(),
+		nodePub,
+		FullCapabilities(),
+		now.Add(-timeSkewAllowance),
+		now.Add(delegationTTL),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -169,8 +211,8 @@ func LoadExistingNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, no
 		return nil, err
 	}
 
-	if err := VerifyMembershipCert(creds.Cert, creds.Trust, now, nodePub); err != nil {
-		return nil, fmt.Errorf("invalid stored membership credentials: %w", err)
+	if err := VerifyDelegationCert(creds.Cert, creds.Trust, now, nodePub); err != nil {
+		return nil, fmt.Errorf("invalid stored delegation credentials: %w", err)
 	}
 
 	return creds, nil
@@ -179,7 +221,7 @@ func LoadExistingNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, no
 func loadNodeCredentials(pollenDir string) (*NodeCredentials, error) {
 	dir := filepath.Join(pollenDir, keysDir)
 	trustPath := filepath.Join(dir, trustBundleName)
-	certPath := filepath.Join(dir, membershipCertName)
+	certPath := filepath.Join(dir, delegationCertName)
 
 	trustRaw, err := os.ReadFile(trustPath)
 	if err != nil {
@@ -205,7 +247,7 @@ func loadNodeCredentials(pollenDir string) (*NodeCredentials, error) {
 		return nil, err
 	}
 
-	cert := &admissionv1.MembershipCert{}
+	cert := &admissionv1.DelegationCert{}
 	if err := cert.UnmarshalVT(certRaw); err != nil {
 		return nil, err
 	}
@@ -233,7 +275,7 @@ func SaveNodeCredentials(pollenDir string, creds *NodeCredentials) error {
 		return err
 	}
 
-	return perm.WriteGroupReadable(filepath.Join(dir, membershipCertName), certRaw)
+	return perm.WriteGroupReadable(filepath.Join(dir, delegationCertName), certRaw)
 }
 
 func LoadAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
@@ -347,21 +389,79 @@ func NewTrustBundle(rootPub ed25519.PublicKey) *admissionv1.TrustBundle {
 	}
 }
 
-func IssueAdminCert(
-	rootPriv ed25519.PrivateKey,
+func validateParentChain(
+	parentChain []*admissionv1.DelegationCert,
+	caps *admissionv1.Capabilities,
+	signerPub ed25519.PublicKey,
+	notAfter *time.Time,
+) error {
+	parent := parentChain[0]
+	parentCaps := parent.GetClaims().GetCapabilities()
+
+	if !parentCaps.GetCanDelegate() {
+		return errors.New("parent cert lacks delegation capability")
+	}
+	if !IsCapSubset(caps, parentCaps) {
+		return errors.New("child capabilities exceed parent capabilities")
+	}
+	if caps.GetMaxDepth() >= parentCaps.GetMaxDepth() {
+		return errors.New("child max_depth must be less than parent max_depth")
+	}
+
+	parentExpiry := time.Unix(parent.GetClaims().GetNotAfterUnix(), 0)
+	if notAfter.After(parentExpiry) {
+		*notAfter = parentExpiry
+	}
+
+	if !bytes.Equal(parent.GetClaims().GetSubjectPub(), signerPub) {
+		return errors.New("signer key does not match parent cert subject")
+	}
+	return nil
+}
+
+// IssueDelegationCert creates a new DelegationCert signed by signerPriv.
+// parentChain is nil for root-issued certs; otherwise it's the issuer's chain
+// (issuer's own cert + issuer's chain).
+func IssueDelegationCert(
+	signerPriv ed25519.PrivateKey,
+	parentChain []*admissionv1.DelegationCert,
 	clusterID []byte,
-	adminPub ed25519.PublicKey,
-	notBefore time.Time,
-	notAfter time.Time,
-) (*admissionv1.AdminCert, error) {
+	subjectPub ed25519.PublicKey,
+	caps *admissionv1.Capabilities,
+	notBefore, notAfter time.Time,
+) (*admissionv1.DelegationCert, error) {
+	if len(clusterID) != sha256.Size {
+		return nil, errors.New("invalid cluster id length")
+	}
+	if len(subjectPub) != ed25519.PublicKeySize {
+		return nil, errors.New("invalid subject key length")
+	}
+	if !notAfter.After(notBefore) {
+		return nil, errors.New("invalid delegation certificate validity window")
+	}
+	if caps == nil {
+		return nil, errors.New("capabilities required")
+	}
+
+	signerPub := signerPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
+
+	// Enforce attenuation against parent if not root-issued.
+	if len(parentChain) > 0 {
+		if err := validateParentChain(parentChain, caps, signerPub, &notAfter); err != nil {
+			return nil, err
+		}
+	}
+
 	serial, err := randomSerial()
 	if err != nil {
 		return nil, err
 	}
 
-	claims := &admissionv1.AdminCertClaims{
-		ClusterId:     clusterID,
-		AdminPub:      adminPub,
+	claims := &admissionv1.DelegationCertClaims{
+		ClusterId:     append([]byte(nil), clusterID...),
+		SubjectPub:    append([]byte(nil), subjectPub...),
+		IssuerPub:     append([]byte(nil), signerPub...),
+		Capabilities:  caps,
 		NotBeforeUnix: notBefore.Unix(),
 		NotAfterUnix:  notAfter.Unix(),
 		Serial:        serial,
@@ -372,164 +472,72 @@ func IssueAdminCert(
 		return nil, err
 	}
 
-	sig, err := signPayload(rootPriv, msg, sigContextAdminCert)
-	if err != nil {
-		return nil, err
-	}
-	return &admissionv1.AdminCert{Claims: claims, Signature: sig}, nil
-}
-
-func VerifyAdminCert(
-	cert *admissionv1.AdminCert,
-	trust *admissionv1.TrustBundle,
-	now time.Time,
-) error {
-	if cert == nil {
-		return errors.New("admin cert is nil")
-	}
-	if err := protovalidate.Validate(cert); err != nil {
-		return fmt.Errorf("admin cert invalid: %w", err)
-	}
-
-	msg, err := signaturePayload(cert.GetClaims())
-	if err != nil {
-		return err
-	}
-	if err := verifyPayload(ed25519.PublicKey(trust.GetRootPub()), msg, cert.GetSignature(), sigContextAdminCert); err != nil {
-		return errors.New("admin cert signature invalid")
-	}
-
-	notBefore := time.Unix(cert.GetClaims().GetNotBeforeUnix(), 0).Add(-timeSkewAllowance)
-	notAfter := time.Unix(cert.GetClaims().GetNotAfterUnix(), 0).Add(timeSkewAllowance)
-	if now.Before(notBefore) || now.After(notAfter) {
-		return errors.New("admin cert outside validity window")
-	}
-
-	return nil
-}
-
-func IssueMembershipCert(
-	adminPriv ed25519.PrivateKey,
-	clusterID []byte,
-	subject ed25519.PublicKey,
-	notBefore time.Time,
-	notAfter time.Time,
-	adminCertTTL time.Duration,
-) (*admissionv1.MembershipCert, error) {
-	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-
-	issuer, err := IssueAdminCert(
-		adminPriv,
-		clusterID,
-		adminPub,
-		notBefore,
-		notBefore.Add(adminCertTTL),
-	)
+	sig, err := signPayload(signerPriv, msg, sigContextDelegation)
 	if err != nil {
 		return nil, err
 	}
 
-	return IssueMembershipCertWithIssuer(adminPriv, issuer, clusterID, subject, notBefore, notAfter, false)
-}
-
-func IssueMembershipCertWithIssuer(
-	adminPriv ed25519.PrivateKey,
-	issuer *admissionv1.AdminCert,
-	clusterID []byte,
-	subject ed25519.PublicKey,
-	notBefore time.Time,
-	notAfter time.Time,
-	nonRenewable bool,
-) (*admissionv1.MembershipCert, error) {
-	if len(clusterID) != sha256.Size {
-		return nil, errors.New("invalid cluster id length")
-	}
-	if len(subject) != ed25519.PublicKeySize {
-		return nil, errors.New("invalid subject key length")
-	}
-	if !notAfter.After(notBefore) {
-		return nil, errors.New("invalid membership certificate validity window")
-	}
-
-	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-
-	if issuer == nil || issuer.GetClaims() == nil {
-		return nil, errors.New("missing issuer admin cert")
-	}
-	if !bytes.Equal(issuer.GetClaims().GetClusterId(), clusterID) {
-		return nil, errors.New("issuer admin cert cluster mismatch")
-	}
-	if !bytes.Equal(issuer.GetClaims().GetAdminPub(), adminPub) {
-		return nil, errors.New("issuer admin cert does not match signing admin key")
-	}
-
-	serial, err := randomSerial()
-	if err != nil {
-		return nil, err
-	}
-
-	claims := &admissionv1.MembershipCertClaims{
-		ClusterId:      append([]byte(nil), clusterID...),
-		SubjectPub:     append([]byte(nil), subject...),
-		IssuerAdminPub: append([]byte(nil), adminPub...),
-		NotBeforeUnix:  notBefore.Unix(),
-		NotAfterUnix:   notAfter.Unix(),
-		Serial:         serial,
-		NonRenewable:   nonRenewable,
-	}
-
-	msg, err := signaturePayload(claims)
-	if err != nil {
-		return nil, err
-	}
-
-	sig, err := signPayload(adminPriv, msg, sigContextMembership)
-	if err != nil {
-		return nil, err
-	}
-	return &admissionv1.MembershipCert{
+	return &admissionv1.DelegationCert{
 		Claims:    claims,
-		Issuer:    issuer,
+		Chain:     parentChain,
 		Signature: sig,
 	}, nil
 }
 
-func VerifyMembershipCert(cert *admissionv1.MembershipCert, trust *admissionv1.TrustBundle, now time.Time, expectedSubject []byte) error {
-	// trust is the verification root, not extra metadata: it anchors issuer
-	// verification at root_pub and binds the cert to this cluster_id.
+// VerifyDelegationCert verifies a DelegationCert chain against a TrustBundle.
+func VerifyDelegationCert(
+	cert *admissionv1.DelegationCert,
+	trust *admissionv1.TrustBundle,
+	now time.Time,
+	expectedSubject []byte,
+) error {
 	if cert == nil {
-		return errors.New("membership cert is nil")
+		return errors.New("delegation cert is nil")
 	}
 	if err := protovalidate.Validate(cert); err != nil {
-		return fmt.Errorf("membership cert invalid: %w", err)
+		return fmt.Errorf("delegation cert invalid: %w", err)
 	}
 	if !bytes.Equal(cert.GetClaims().GetClusterId(), trust.GetClusterId()) {
-		return errors.New("membership cert not scoped to cluster")
+		return errors.New("delegation cert not scoped to cluster")
 	}
 
-	issuer := cert.GetIssuer()
-	if err := VerifyAdminCert(issuer, trust, now); err != nil {
-		return fmt.Errorf("membership cert issuer invalid: %w", err)
-	}
-	if !bytes.Equal(issuer.GetClaims().GetAdminPub(), cert.GetClaims().GetIssuerAdminPub()) {
-		return errors.New("membership cert issuer key mismatch")
-	}
-	msg, err := signaturePayload(cert.GetClaims())
-	if err != nil {
-		return err
-	}
-	if err := verifyPayload(ed25519.PublicKey(cert.GetClaims().GetIssuerAdminPub()), msg, cert.GetSignature(), sigContextMembership); err != nil {
-		return errors.New("membership cert signature invalid")
-	}
-
+	// Check leaf cert time validity (sufficient because issuance clamps child.notAfter <= parent.notAfter).
 	notBefore := time.Unix(cert.GetClaims().GetNotBeforeUnix(), 0).Add(-timeSkewAllowance)
 	notAfter := time.Unix(cert.GetClaims().GetNotAfterUnix(), 0).Add(timeSkewAllowance)
 	if now.Before(notBefore) || now.After(notAfter) {
-		return errors.New("membership cert outside validity window")
+		return errors.New("delegation cert outside validity window")
 	}
 
-	if !bytes.Equal(cert.GetClaims().GetSubjectPub(), expectedSubject) {
-		return errors.New("membership cert subject mismatch")
+	// Walk chain from leaf to root verifying signatures.
+	current := cert
+	for _, parent := range cert.GetChain() {
+		if !bytes.Equal(current.GetClaims().GetIssuerPub(), parent.GetClaims().GetSubjectPub()) {
+			return errors.New("delegation cert chain issuer/subject mismatch")
+		}
+		msg, err := signaturePayload(current.GetClaims())
+		if err != nil {
+			return err
+		}
+		if err := verifyPayload(ed25519.PublicKey(current.GetClaims().GetIssuerPub()), msg, current.GetSignature(), sigContextDelegation); err != nil {
+			return errors.New("delegation cert signature invalid")
+		}
+		current = parent
+	}
+
+	// Final cert in chain must be signed by root_pub.
+	if !bytes.Equal(current.GetClaims().GetIssuerPub(), trust.GetRootPub()) {
+		return errors.New("delegation cert chain root mismatch")
+	}
+	msg, err := signaturePayload(current.GetClaims())
+	if err != nil {
+		return err
+	}
+	if err := verifyPayload(ed25519.PublicKey(trust.GetRootPub()), msg, current.GetSignature(), sigContextDelegation); err != nil {
+		return errors.New("delegation cert root signature invalid")
+	}
+
+	if len(expectedSubject) > 0 && !bytes.Equal(cert.GetClaims().GetSubjectPub(), expectedSubject) {
+		return errors.New("delegation cert subject mismatch")
 	}
 
 	return nil
@@ -543,7 +551,6 @@ func IssueJoinToken(
 	now time.Time,
 	tokenTTL time.Duration,
 	membershipTTL time.Duration,
-	adminCertTTL time.Duration,
 ) (*admissionv1.JoinToken, error) {
 	if trust == nil {
 		return nil, errors.New("missing trust bundle")
@@ -552,50 +559,57 @@ func IssueJoinToken(
 	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	if !bytes.Equal(adminPub, trust.GetRootPub()) {
-		return nil, errors.New("issuer admin certificate required for non-root admin key")
+		return nil, errors.New("issuer delegation certificate required for non-root admin key")
 	}
 
-	issuer, err := IssueAdminCert(
+	// Root issues its own delegation cert as the issuer.
+	issuerCert, err := IssueDelegationCert(
 		adminPriv,
+		nil, // root-issued
 		trust.GetClusterId(),
 		adminPub,
+		FullCapabilities(),
 		now.Add(-timeSkewAllowance),
-		now.Add(adminCertTTL),
+		now.Add(membershipTTL),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	return IssueJoinTokenWithIssuer(adminPriv, trust, issuer, subject, bootstrap, now, tokenTTL, membershipTTL, false)
+	return IssueJoinTokenWithIssuer(adminPriv, trust, issuerCert, subject, bootstrap, now, tokenTTL, membershipTTL)
 }
 
 func IssueJoinTokenWithIssuer(
-	adminPriv ed25519.PrivateKey,
+	signerPriv ed25519.PrivateKey,
 	trust *admissionv1.TrustBundle,
-	issuer *admissionv1.AdminCert,
+	issuer *admissionv1.DelegationCert,
 	subject ed25519.PublicKey,
 	bootstrap []*admissionv1.BootstrapPeer,
 	now time.Time,
 	tokenTTL time.Duration,
 	membershipTTL time.Duration,
-	nonRenewable bool,
 ) (*admissionv1.JoinToken, error) {
 	if tokenTTL <= 0 {
 		return nil, errors.New("token ttl must be positive")
 	}
 
-	if err := VerifyAdminCert(issuer, trust, now); err != nil {
-		return nil, fmt.Errorf("issuer admin cert invalid: %w", err)
+	if err := VerifyDelegationCert(issuer, trust, now, nil); err != nil {
+		return nil, fmt.Errorf("issuer delegation cert invalid: %w", err)
 	}
 
-	cert, err := IssueMembershipCertWithIssuer(
-		adminPriv,
-		issuer,
+	// Build parent chain for the new member cert: issuer's cert + issuer's chain.
+	parentChain := make([]*admissionv1.DelegationCert, 0, 1+len(issuer.GetChain()))
+	parentChain = append(parentChain, issuer)
+	parentChain = append(parentChain, issuer.GetChain()...)
+
+	memberCert, err := IssueDelegationCert(
+		signerPriv,
+		parentChain,
 		trust.GetClusterId(),
 		subject,
+		LeafCapabilities(),
 		now.Add(-timeSkewAllowance),
 		now.Add(membershipTTL),
-		nonRenewable,
 	)
 	if err != nil {
 		return nil, err
@@ -605,7 +619,7 @@ func IssueJoinTokenWithIssuer(
 		TokenId:       uuid.NewString(),
 		Trust:         trust,
 		Issuer:        issuer,
-		MemberCert:    cert,
+		MemberCert:    memberCert,
 		Bootstrap:     bootstrap,
 		IssuedAtUnix:  now.Unix(),
 		ExpiresAtUnix: now.Add(tokenTTL).Unix(),
@@ -616,7 +630,7 @@ func IssueJoinTokenWithIssuer(
 		return nil, err
 	}
 
-	sig, err := signPayload(adminPriv, msg, sigContextJoinClaims)
+	sig, err := signPayload(signerPriv, msg, sigContextJoinClaims)
 	if err != nil {
 		return nil, err
 	}
@@ -637,11 +651,11 @@ func VerifyJoinToken(token *admissionv1.JoinToken, expectedSubject ed25519.Publi
 		return nil, err
 	}
 
-	if err := VerifyAdminCert(claims.GetIssuer(), trust, now); err != nil {
-		return nil, fmt.Errorf("join token issuer admin cert invalid: %w", err)
+	if err := VerifyDelegationCert(claims.GetIssuer(), trust, now, nil); err != nil {
+		return nil, fmt.Errorf("join token issuer delegation cert invalid: %w", err)
 	}
 
-	issuerPub := claims.GetIssuer().GetClaims().GetAdminPub()
+	issuerPub := claims.GetIssuer().GetClaims().GetSubjectPub()
 	msg, err := signaturePayload(claims)
 	if err != nil {
 		return nil, err
@@ -659,7 +673,7 @@ func VerifyJoinToken(token *admissionv1.JoinToken, expectedSubject ed25519.Publi
 		return nil, errors.New("join token expired or not yet valid")
 	}
 
-	if err := VerifyMembershipCert(claims.GetMemberCert(), trust, now, expectedSubject); err != nil {
+	if err := VerifyDelegationCert(claims.GetMemberCert(), trust, now, expectedSubject); err != nil {
 		return nil, fmt.Errorf("join token membership cert invalid: %w", err)
 	}
 
@@ -690,65 +704,6 @@ func DecodeJoinToken(s string) (*admissionv1.JoinToken, error) {
 	}
 
 	return token, nil
-}
-
-func IssueRevocation(
-	adminPriv ed25519.PrivateKey,
-	clusterID []byte,
-	subjectPub ed25519.PublicKey,
-	now time.Time,
-) (*admissionv1.SignedRevocation, error) {
-	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-
-	entry := &admissionv1.RevocationEntry{
-		ClusterId:      clusterID,
-		SubjectPub:     subjectPub,
-		RevokedAtUnix:  now.Unix(),
-		IssuerAdminPub: adminPub,
-	}
-
-	msg, err := signaturePayload(entry)
-	if err != nil {
-		return nil, err
-	}
-
-	sig, err := signPayload(adminPriv, msg, sigContextRevocation)
-	if err != nil {
-		return nil, err
-	}
-
-	return &admissionv1.SignedRevocation{Entry: entry, Signature: sig}, nil
-}
-
-func VerifyRevocation(rev *admissionv1.SignedRevocation, trust *admissionv1.TrustBundle) error {
-	if rev == nil {
-		return errors.New("revocation is nil")
-	}
-	if err := protovalidate.Validate(rev); err != nil {
-		return fmt.Errorf("revocation invalid: %w", err)
-	}
-
-	entry := rev.GetEntry()
-	if !bytes.Equal(entry.GetClusterId(), trust.GetClusterId()) {
-		return errors.New("revocation not scoped to cluster")
-	}
-
-	issuerPub := entry.GetIssuerAdminPub()
-	// The issuer must be the cluster root admin (revocations are a root-level operation).
-	if !bytes.Equal(issuerPub, trust.GetRootPub()) {
-		return errors.New("revocation not signed by cluster root admin")
-	}
-
-	msg, err := signaturePayload(entry)
-	if err != nil {
-		return err
-	}
-
-	if err := verifyPayload(ed25519.PublicKey(issuerPub), msg, rev.GetSignature(), sigContextRevocation); err != nil {
-		return errors.New("revocation signature invalid")
-	}
-
-	return nil
 }
 
 func validateTrustBundle(trust *admissionv1.TrustBundle) error {

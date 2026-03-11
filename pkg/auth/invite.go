@@ -21,9 +21,9 @@ type InviteConsumer interface {
 	TryConsume(token *admissionv1.InviteToken, now time.Time) (bool, error)
 }
 
-type AdminSigner struct {
+type DelegationSigner struct {
 	Trust    *admissionv1.TrustBundle
-	Issuer   *admissionv1.AdminCert
+	Issuer   *admissionv1.DelegationCert
 	Consumed InviteConsumer
 	Priv     ed25519.PrivateKey
 }
@@ -31,12 +31,12 @@ type AdminSigner struct {
 type VerifiedInviteToken struct {
 	Claims *admissionv1.InviteTokenClaims
 	Trust  *admissionv1.TrustBundle
-	Issuer *admissionv1.AdminCert
+	Issuer *admissionv1.DelegationCert
 }
 
-func SaveAdminCert(pollenDir string, cert *admissionv1.AdminCert) error {
+func SaveDelegationCert(pollenDir string, cert *admissionv1.DelegationCert) error {
 	if cert == nil || cert.GetClaims() == nil {
-		return errors.New("admin cert missing claims")
+		return errors.New("delegation cert missing claims")
 	}
 
 	raw, err := cert.MarshalVT()
@@ -49,10 +49,10 @@ func SaveAdminCert(pollenDir string, cert *admissionv1.AdminCert) error {
 		return err
 	}
 
-	return perm.WriteGroupReadable(filepath.Join(dir, adminCertName), raw)
+	return perm.WriteGroupReadable(filepath.Join(dir, delegationCertName), raw)
 }
 
-func LoadAdminSigner(pollenDir string, now time.Time, adminCertTTL time.Duration) (*AdminSigner, error) {
+func LoadDelegationSigner(pollenDir string, now time.Time, delegationTTL time.Duration) (*DelegationSigner, error) {
 	adminPriv, adminPub, err := LoadAdminKey(pollenDir)
 	if err != nil {
 		return nil, err
@@ -63,12 +63,12 @@ func LoadAdminSigner(pollenDir string, now time.Time, adminCertTTL time.Duration
 		return nil, err
 	}
 
-	issuer, err := loadOrIssueAdminCert(adminPriv, trust, pollenDir, now, adminCertTTL)
+	issuer, err := loadOrIssueDelegationCert(adminPriv, trust, pollenDir, now, delegationTTL)
 	if err != nil {
 		return nil, err
 	}
 
-	return &AdminSigner{
+	return &DelegationSigner{
 		Priv:   adminPriv,
 		Trust:  trust,
 		Issuer: issuer,
@@ -76,25 +76,24 @@ func LoadAdminSigner(pollenDir string, now time.Time, adminCertTTL time.Duration
 }
 
 func IssueInviteTokenWithSigner(
-	signer *AdminSigner,
+	signer *DelegationSigner,
 	subject ed25519.PublicKey,
 	bootstrap []*admissionv1.BootstrapPeer,
 	now time.Time,
 	tokenTTL time.Duration,
 	membershipTTL time.Duration,
-	nonRenewable bool,
 ) (*admissionv1.InviteToken, error) {
 	if signer == nil {
-		return nil, errors.New("missing admin signer")
+		return nil, errors.New("missing delegation signer")
 	}
 	if tokenTTL <= 0 {
 		return nil, errors.New("token ttl must be positive")
 	}
 	if err := protovalidate.Validate(signer.Issuer); err != nil {
-		return nil, fmt.Errorf("invite issuer admin cert invalid: %w", err)
+		return nil, fmt.Errorf("invite issuer delegation cert invalid: %w", err)
 	}
 
-	issuerPub := signer.Issuer.GetClaims().GetAdminPub()
+	issuerPub := signer.Issuer.GetClaims().GetSubjectPub()
 	if !bytes.Equal(signer.Priv.Public().(ed25519.PublicKey), issuerPub) { //nolint:forcetypeassert
 		return nil, errors.New("invite signer key does not match issuer cert")
 	}
@@ -108,7 +107,6 @@ func IssueInviteTokenWithSigner(
 		IssuedAtUnix:         now.Unix(),
 		ExpiresAtUnix:        now.Add(tokenTTL).Unix(),
 		MembershipTtlSeconds: int64(membershipTTL / time.Second),
-		NonRenewable:         nonRenewable,
 	}
 	if err := protovalidate.Validate(claims); err != nil {
 		return nil, fmt.Errorf("invite token claims invalid: %w", err)
@@ -142,11 +140,11 @@ func VerifyInviteToken(token *admissionv1.InviteToken, expectedSubject ed25519.P
 	}
 
 	issuer := claims.GetIssuer()
-	if err := VerifyAdminCert(issuer, trust, now); err != nil {
+	if err := VerifyDelegationCert(issuer, trust, now, nil); err != nil {
 		return nil, fmt.Errorf("invite token issuer invalid: %w", err)
 	}
 
-	issuerPub := issuer.GetClaims().GetAdminPub()
+	issuerPub := issuer.GetClaims().GetSubjectPub()
 	msg, err := signaturePayload(claims)
 	if err != nil {
 		return nil, err
@@ -199,25 +197,27 @@ func DecodeInviteToken(s string) (*admissionv1.InviteToken, error) {
 	return token, nil
 }
 
-func loadOrIssueAdminCert(
+func loadOrIssueDelegationCert(
 	adminPriv ed25519.PrivateKey,
 	trust *admissionv1.TrustBundle,
 	pollenDir string,
 	now time.Time,
-	adminCertTTL time.Duration,
-) (*admissionv1.AdminCert, error) {
+	delegationTTL time.Duration,
+) (*admissionv1.DelegationCert, error) {
 	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 	if bytes.Equal(adminPub, trust.GetRootPub()) {
-		return IssueAdminCert(
+		return IssueDelegationCert(
 			adminPriv,
+			nil, // root-issued
 			trust.GetClusterId(),
 			adminPub,
+			FullCapabilities(),
 			now.Add(-timeSkewAllowance),
-			now.Add(adminCertTTL),
+			now.Add(delegationTTL),
 		)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(pollenDir, keysDir, adminCertName))
+	raw, err := os.ReadFile(filepath.Join(pollenDir, keysDir, delegationCertName))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, errors.New("delegated admin cert not installed")
@@ -225,12 +225,12 @@ func loadOrIssueAdminCert(
 		return nil, err
 	}
 
-	cert := &admissionv1.AdminCert{}
+	cert := &admissionv1.DelegationCert{}
 	if err := cert.UnmarshalVT(raw); err != nil {
 		return nil, err
 	}
 
-	if err := VerifyAdminCert(cert, trust, now); err != nil {
+	if err := VerifyDelegationCert(cert, trust, now, nil); err != nil {
 		return nil, fmt.Errorf("delegated admin cert invalid: %w", err)
 	}
 	return cert, nil
@@ -263,7 +263,7 @@ func loadTrustBundleForSigner(pollenDir string, adminPub ed25519.PublicKey) (*ad
 	return NewTrustBundle(adminPub), nil
 }
 
-func MarshalAdminCertBase64(cert *admissionv1.AdminCert) (string, error) {
+func MarshalDelegationCertBase64(cert *admissionv1.DelegationCert) (string, error) {
 	b, err := cert.MarshalVT()
 	if err != nil {
 		return "", err
@@ -271,12 +271,12 @@ func MarshalAdminCertBase64(cert *admissionv1.AdminCert) (string, error) {
 	return base64.StdEncoding.EncodeToString(b), nil
 }
 
-func UnmarshalAdminCertBase64(encoded string) (*admissionv1.AdminCert, error) {
+func UnmarshalDelegationCertBase64(encoded string) (*admissionv1.DelegationCert, error) {
 	b, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, err
 	}
-	cert := &admissionv1.AdminCert{}
+	cert := &admissionv1.DelegationCert{}
 	if err := cert.UnmarshalVT(b); err != nil {
 		return nil, err
 	}

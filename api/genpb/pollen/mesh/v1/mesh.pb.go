@@ -339,7 +339,7 @@ type CertRenewalResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
 	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
-	Cert          *v1.MembershipCert     `protobuf:"bytes,3,opt,name=cert,proto3" json:"cert,omitempty"`
+	Cert          *v1.DelegationCert     `protobuf:"bytes,3,opt,name=cert,proto3" json:"cert,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -388,7 +388,7 @@ func (x *CertRenewalResponse) GetReason() string {
 	return ""
 }
 
-func (x *CertRenewalResponse) GetCert() *v1.MembershipCert {
+func (x *CertRenewalResponse) GetCert() *v1.DelegationCert {
 	if x != nil {
 		return x.Cert
 	}
@@ -408,7 +408,7 @@ type Envelope struct {
 	//	*Envelope_CertRenewalRequest
 	//	*Envelope_CertRenewalResponse
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
-	TraceId       []byte          `protobuf:"bytes,12,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	TraceId       []byte          `protobuf:"bytes,9,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -534,35 +534,35 @@ type isEnvelope_Body interface {
 }
 
 type Envelope_PunchCoordRequest struct {
-	PunchCoordRequest *PunchCoordRequest `protobuf:"bytes,3,opt,name=punch_coord_request,json=punchCoordRequest,proto3,oneof"`
+	PunchCoordRequest *PunchCoordRequest `protobuf:"bytes,1,opt,name=punch_coord_request,json=punchCoordRequest,proto3,oneof"`
 }
 
 type Envelope_PunchCoordTrigger struct {
-	PunchCoordTrigger *PunchCoordTrigger `protobuf:"bytes,4,opt,name=punch_coord_trigger,json=punchCoordTrigger,proto3,oneof"`
+	PunchCoordTrigger *PunchCoordTrigger `protobuf:"bytes,2,opt,name=punch_coord_trigger,json=punchCoordTrigger,proto3,oneof"`
 }
 
 type Envelope_InviteRedeemRequest struct {
-	InviteRedeemRequest *InviteRedeemRequest `protobuf:"bytes,6,opt,name=invite_redeem_request,json=inviteRedeemRequest,proto3,oneof"`
+	InviteRedeemRequest *InviteRedeemRequest `protobuf:"bytes,3,opt,name=invite_redeem_request,json=inviteRedeemRequest,proto3,oneof"`
 }
 
 type Envelope_InviteRedeemResponse struct {
-	InviteRedeemResponse *InviteRedeemResponse `protobuf:"bytes,7,opt,name=invite_redeem_response,json=inviteRedeemResponse,proto3,oneof"`
+	InviteRedeemResponse *InviteRedeemResponse `protobuf:"bytes,4,opt,name=invite_redeem_response,json=inviteRedeemResponse,proto3,oneof"`
 }
 
 type Envelope_ObservedAddress struct {
-	ObservedAddress *ObservedAddress `protobuf:"bytes,8,opt,name=observed_address,json=observedAddress,proto3,oneof"`
+	ObservedAddress *ObservedAddress `protobuf:"bytes,5,opt,name=observed_address,json=observedAddress,proto3,oneof"`
 }
 
 type Envelope_Events struct {
-	Events *v11.GossipEventBatch `protobuf:"bytes,9,opt,name=events,proto3,oneof"`
+	Events *v11.GossipEventBatch `protobuf:"bytes,6,opt,name=events,proto3,oneof"`
 }
 
 type Envelope_CertRenewalRequest struct {
-	CertRenewalRequest *CertRenewalRequest `protobuf:"bytes,10,opt,name=cert_renewal_request,json=certRenewalRequest,proto3,oneof"`
+	CertRenewalRequest *CertRenewalRequest `protobuf:"bytes,7,opt,name=cert_renewal_request,json=certRenewalRequest,proto3,oneof"`
 }
 
 type Envelope_CertRenewalResponse struct {
-	CertRenewalResponse *CertRenewalResponse `protobuf:"bytes,11,opt,name=cert_renewal_response,json=certRenewalResponse,proto3,oneof"`
+	CertRenewalResponse *CertRenewalResponse `protobuf:"bytes,8,opt,name=cert_renewal_response,json=certRenewalResponse,proto3,oneof"`
 }
 
 func (*Envelope_PunchCoordRequest) isEnvelope_Body() {}
@@ -610,19 +610,18 @@ const file_pollen_mesh_v1_mesh_proto_rawDesc = "" +
 	"\x13CertRenewalResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x127\n" +
-	"\x04cert\x18\x03 \x01(\v2#.pollen.admission.v1.MembershipCertR\x04cert\"\xd4\x05\n" +
+	"\x04cert\x18\x03 \x01(\v2#.pollen.admission.v1.DelegationCertR\x04cert\"\xce\x05\n" +
 	"\bEnvelope\x12S\n" +
-	"\x13punch_coord_request\x18\x03 \x01(\v2!.pollen.mesh.v1.PunchCoordRequestH\x00R\x11punchCoordRequest\x12S\n" +
-	"\x13punch_coord_trigger\x18\x04 \x01(\v2!.pollen.mesh.v1.PunchCoordTriggerH\x00R\x11punchCoordTrigger\x12Y\n" +
-	"\x15invite_redeem_request\x18\x06 \x01(\v2#.pollen.mesh.v1.InviteRedeemRequestH\x00R\x13inviteRedeemRequest\x12\\\n" +
-	"\x16invite_redeem_response\x18\a \x01(\v2$.pollen.mesh.v1.InviteRedeemResponseH\x00R\x14inviteRedeemResponse\x12L\n" +
-	"\x10observed_address\x18\b \x01(\v2\x1f.pollen.mesh.v1.ObservedAddressH\x00R\x0fobservedAddress\x12;\n" +
-	"\x06events\x18\t \x01(\v2!.pollen.state.v1.GossipEventBatchH\x00R\x06events\x12V\n" +
-	"\x14cert_renewal_request\x18\n" +
-	" \x01(\v2\".pollen.mesh.v1.CertRenewalRequestH\x00R\x12certRenewalRequest\x12Y\n" +
-	"\x15cert_renewal_response\x18\v \x01(\v2#.pollen.mesh.v1.CertRenewalResponseH\x00R\x13certRenewalResponse\x12\x19\n" +
-	"\btrace_id\x18\f \x01(\fR\atraceIdB\x06\n" +
-	"\x04bodyJ\x04\b\x01\x10\x02B>Z<github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1;meshv1b\x06proto3"
+	"\x13punch_coord_request\x18\x01 \x01(\v2!.pollen.mesh.v1.PunchCoordRequestH\x00R\x11punchCoordRequest\x12S\n" +
+	"\x13punch_coord_trigger\x18\x02 \x01(\v2!.pollen.mesh.v1.PunchCoordTriggerH\x00R\x11punchCoordTrigger\x12Y\n" +
+	"\x15invite_redeem_request\x18\x03 \x01(\v2#.pollen.mesh.v1.InviteRedeemRequestH\x00R\x13inviteRedeemRequest\x12\\\n" +
+	"\x16invite_redeem_response\x18\x04 \x01(\v2$.pollen.mesh.v1.InviteRedeemResponseH\x00R\x14inviteRedeemResponse\x12L\n" +
+	"\x10observed_address\x18\x05 \x01(\v2\x1f.pollen.mesh.v1.ObservedAddressH\x00R\x0fobservedAddress\x12;\n" +
+	"\x06events\x18\x06 \x01(\v2!.pollen.state.v1.GossipEventBatchH\x00R\x06events\x12V\n" +
+	"\x14cert_renewal_request\x18\a \x01(\v2\".pollen.mesh.v1.CertRenewalRequestH\x00R\x12certRenewalRequest\x12Y\n" +
+	"\x15cert_renewal_response\x18\b \x01(\v2#.pollen.mesh.v1.CertRenewalResponseH\x00R\x13certRenewalResponse\x12\x19\n" +
+	"\btrace_id\x18\t \x01(\fR\atraceIdB\x06\n" +
+	"\x04bodyB>Z<github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1;meshv1b\x06proto3"
 
 var (
 	file_pollen_mesh_v1_mesh_proto_rawDescOnce sync.Once
@@ -648,13 +647,13 @@ var file_pollen_mesh_v1_mesh_proto_goTypes = []any{
 	(*Envelope)(nil),             // 7: pollen.mesh.v1.Envelope
 	(*v1.InviteToken)(nil),       // 8: pollen.admission.v1.InviteToken
 	(*v1.JoinToken)(nil),         // 9: pollen.admission.v1.JoinToken
-	(*v1.MembershipCert)(nil),    // 10: pollen.admission.v1.MembershipCert
+	(*v1.DelegationCert)(nil),    // 10: pollen.admission.v1.DelegationCert
 	(*v11.GossipEventBatch)(nil), // 11: pollen.state.v1.GossipEventBatch
 }
 var file_pollen_mesh_v1_mesh_proto_depIdxs = []int32{
 	8,  // 0: pollen.mesh.v1.InviteRedeemRequest.token:type_name -> pollen.admission.v1.InviteToken
 	9,  // 1: pollen.mesh.v1.InviteRedeemResponse.join_token:type_name -> pollen.admission.v1.JoinToken
-	10, // 2: pollen.mesh.v1.CertRenewalResponse.cert:type_name -> pollen.admission.v1.MembershipCert
+	10, // 2: pollen.mesh.v1.CertRenewalResponse.cert:type_name -> pollen.admission.v1.DelegationCert
 	0,  // 3: pollen.mesh.v1.Envelope.punch_coord_request:type_name -> pollen.mesh.v1.PunchCoordRequest
 	1,  // 4: pollen.mesh.v1.Envelope.punch_coord_trigger:type_name -> pollen.mesh.v1.PunchCoordTrigger
 	2,  // 5: pollen.mesh.v1.Envelope.invite_redeem_request:type_name -> pollen.mesh.v1.InviteRedeemRequest

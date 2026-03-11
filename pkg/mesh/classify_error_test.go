@@ -21,9 +21,9 @@ func TestClassifyQUICErrorMapsCloseReasons(t *testing.T) {
 			want: peer.DisconnectTopologyPrune,
 		},
 		{
-			name: "revoked",
-			err:  &quic.ApplicationError{ErrorMessage: string(CloseReasonRevoked)},
-			want: peer.DisconnectRevoked,
+			name: "denied",
+			err:  &quic.ApplicationError{ErrorMessage: string(CloseReasonDenied)},
+			want: peer.DisconnectDenied,
 		},
 		{
 			name: "cert expired",

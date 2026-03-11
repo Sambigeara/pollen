@@ -203,7 +203,7 @@ func bootstrapRelayOverSSH(cmd *cobra.Command, sshTarget, seedToken string) erro
 	return waitForRelayReady(cmd, sshTarget)
 }
 
-func createJoinTokenWithSigner(signer *auth.AdminSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, certTTL time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
+func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, certTTL time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
 	if ttl <= 0 {
 		return "", errors.New("token ttl must be positive")
 	}
@@ -222,7 +222,6 @@ func createJoinTokenWithSigner(signer *auth.AdminSigner, defaultMembershipTTL ti
 		time.Now(),
 		ttl,
 		membershipTTL,
-		false,
 	)
 	if err != nil {
 		return "", err
@@ -272,22 +271,24 @@ func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string) error {
 	if err != nil {
 		return err
 	}
-	if !slices.Equal(issuerCtx.signer.Trust.GetRootPub(), issuerCtx.signer.Issuer.GetClaims().GetAdminPub()) {
+	if !slices.Equal(issuerCtx.signer.Trust.GetRootPub(), issuerCtx.signer.Issuer.GetClaims().GetSubjectPub()) {
 		return errors.New("only root admin can delegate relay admin certs")
 	}
 
-	cert, err := auth.IssueAdminCert(
+	cert, err := auth.IssueDelegationCert(
 		issuerCtx.signer.Priv,
+		nil,
 		issuerCtx.signer.Trust.GetClusterId(),
 		relayAdminPub,
+		auth.FullCapabilities(),
 		time.Now().Add(-time.Minute),
-		time.Now().Add(issuerCtx.cfg.CertTTLs.AdminTTL()),
+		time.Now().Add(issuerCtx.cfg.CertTTLs.DelegationTTL()),
 	)
 	if err != nil {
 		return err
 	}
 
-	encoded, err := auth.MarshalAdminCertBase64(cert)
+	encoded, err := auth.MarshalDelegationCertBase64(cert)
 	if err != nil {
 		return err
 	}

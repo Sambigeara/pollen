@@ -28,7 +28,7 @@ const (
 	ControlService_ConnectService_FullMethodName    = "/pollen.control.v1.ControlService/ConnectService"
 	ControlService_ConnectPeer_FullMethodName       = "/pollen.control.v1.ControlService/ConnectPeer"
 	ControlService_DisconnectService_FullMethodName = "/pollen.control.v1.ControlService/DisconnectService"
-	ControlService_RevokePeer_FullMethodName        = "/pollen.control.v1.ControlService/RevokePeer"
+	ControlService_DenyPeer_FullMethodName          = "/pollen.control.v1.ControlService/DenyPeer"
 )
 
 // ControlServiceClient is the client API for ControlService service.
@@ -44,7 +44,7 @@ type ControlServiceClient interface {
 	ConnectService(ctx context.Context, in *ConnectServiceRequest, opts ...grpc.CallOption) (*ConnectServiceResponse, error)
 	ConnectPeer(ctx context.Context, in *ConnectPeerRequest, opts ...grpc.CallOption) (*ConnectPeerResponse, error)
 	DisconnectService(ctx context.Context, in *DisconnectServiceRequest, opts ...grpc.CallOption) (*DisconnectServiceResponse, error)
-	RevokePeer(ctx context.Context, in *RevokePeerRequest, opts ...grpc.CallOption) (*RevokePeerResponse, error)
+	DenyPeer(ctx context.Context, in *DenyPeerRequest, opts ...grpc.CallOption) (*DenyPeerResponse, error)
 }
 
 type controlServiceClient struct {
@@ -145,10 +145,10 @@ func (c *controlServiceClient) DisconnectService(ctx context.Context, in *Discon
 	return out, nil
 }
 
-func (c *controlServiceClient) RevokePeer(ctx context.Context, in *RevokePeerRequest, opts ...grpc.CallOption) (*RevokePeerResponse, error) {
+func (c *controlServiceClient) DenyPeer(ctx context.Context, in *DenyPeerRequest, opts ...grpc.CallOption) (*DenyPeerResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RevokePeerResponse)
-	err := c.cc.Invoke(ctx, ControlService_RevokePeer_FullMethodName, in, out, cOpts...)
+	out := new(DenyPeerResponse)
+	err := c.cc.Invoke(ctx, ControlService_DenyPeer_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +168,7 @@ type ControlServiceServer interface {
 	ConnectService(context.Context, *ConnectServiceRequest) (*ConnectServiceResponse, error)
 	ConnectPeer(context.Context, *ConnectPeerRequest) (*ConnectPeerResponse, error)
 	DisconnectService(context.Context, *DisconnectServiceRequest) (*DisconnectServiceResponse, error)
-	RevokePeer(context.Context, *RevokePeerRequest) (*RevokePeerResponse, error)
+	DenyPeer(context.Context, *DenyPeerRequest) (*DenyPeerResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
 
@@ -206,8 +206,8 @@ func (UnimplementedControlServiceServer) ConnectPeer(context.Context, *ConnectPe
 func (UnimplementedControlServiceServer) DisconnectService(context.Context, *DisconnectServiceRequest) (*DisconnectServiceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DisconnectService not implemented")
 }
-func (UnimplementedControlServiceServer) RevokePeer(context.Context, *RevokePeerRequest) (*RevokePeerResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method RevokePeer not implemented")
+func (UnimplementedControlServiceServer) DenyPeer(context.Context, *DenyPeerRequest) (*DenyPeerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DenyPeer not implemented")
 }
 func (UnimplementedControlServiceServer) mustEmbedUnimplementedControlServiceServer() {}
 func (UnimplementedControlServiceServer) testEmbeddedByValue()                        {}
@@ -392,20 +392,20 @@ func _ControlService_DisconnectService_Handler(srv interface{}, ctx context.Cont
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ControlService_RevokePeer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RevokePeerRequest)
+func _ControlService_DenyPeer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DenyPeerRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ControlServiceServer).RevokePeer(ctx, in)
+		return srv.(ControlServiceServer).DenyPeer(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ControlService_RevokePeer_FullMethodName,
+		FullMethod: ControlService_DenyPeer_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlServiceServer).RevokePeer(ctx, req.(*RevokePeerRequest))
+		return srv.(ControlServiceServer).DenyPeer(ctx, req.(*DenyPeerRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -454,8 +454,8 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ControlService_DisconnectService_Handler,
 		},
 		{
-			MethodName: "RevokePeer",
-			Handler:    _ControlService_RevokePeer_Handler,
+			MethodName: "DenyPeer",
+			Handler:    _ControlService_DenyPeer_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

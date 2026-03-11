@@ -468,9 +468,24 @@ func (m *CertInfo) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.NonRenewable {
+	if m.MaxDepth != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.MaxDepth))
 		i--
-		if m.NonRenewable {
+		dAtA[i] = 0x38
+	}
+	if m.CanAdmit {
+		i--
+		if m.CanAdmit {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x30
+	}
+	if m.CanDelegate {
+		i--
+		if m.CanDelegate {
 			dAtA[i] = 1
 		} else {
 			dAtA[i] = 0
@@ -530,6 +545,16 @@ func (m *GetStatusResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.Degraded {
+		i--
+		if m.Degraded {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x30
 	}
 	if len(m.Certificates) > 0 {
 		for iNdEx := len(m.Certificates) - 1; iNdEx >= 0; iNdEx-- {
@@ -1052,7 +1077,7 @@ func (m *DisconnectServiceResponse) MarshalToSizedBufferVT(dAtA []byte) (int, er
 	return len(dAtA) - i, nil
 }
 
-func (m *RevokePeerRequest) MarshalVT() (dAtA []byte, err error) {
+func (m *DenyPeerRequest) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -1065,12 +1090,12 @@ func (m *RevokePeerRequest) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *RevokePeerRequest) MarshalToVT(dAtA []byte) (int, error) {
+func (m *DenyPeerRequest) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *RevokePeerRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *DenyPeerRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -1092,7 +1117,7 @@ func (m *RevokePeerRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *RevokePeerResponse) MarshalVT() (dAtA []byte, err error) {
+func (m *DenyPeerResponse) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -1105,12 +1130,12 @@ func (m *RevokePeerResponse) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *RevokePeerResponse) MarshalToVT(dAtA []byte) (int, error) {
+func (m *DenyPeerResponse) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *RevokePeerResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *DenyPeerResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -1193,14 +1218,12 @@ func (m *GetMetricsResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x1
 		i--
-		dAtA[i] = 0x88
+		dAtA[i] = 0x80
 	}
 	if m.EagerSyncs != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.EagerSyncs))
 		i--
-		dAtA[i] = 0x1
-		i--
-		dAtA[i] = 0x80
+		dAtA[i] = 0x78
 	}
 	if m.VivaldiSamples != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.VivaldiSamples))
@@ -1444,8 +1467,14 @@ func (m *CertInfo) SizeVT() (n int) {
 	if m.Health != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.Health))
 	}
-	if m.NonRenewable {
+	if m.CanDelegate {
 		n += 2
+	}
+	if m.CanAdmit {
+		n += 2
+	}
+	if m.MaxDepth != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.MaxDepth))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -1484,6 +1513,9 @@ func (m *GetStatusResponse) SizeVT() (n int) {
 			l = e.SizeVT()
 			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 		}
+	}
+	if m.Degraded {
+		n += 2
 	}
 	n += len(m.unknownFields)
 	return n
@@ -1653,7 +1685,7 @@ func (m *DisconnectServiceResponse) SizeVT() (n int) {
 	return n
 }
 
-func (m *RevokePeerRequest) SizeVT() (n int) {
+func (m *DenyPeerRequest) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -1667,7 +1699,7 @@ func (m *RevokePeerRequest) SizeVT() (n int) {
 	return n
 }
 
-func (m *RevokePeerResponse) SizeVT() (n int) {
+func (m *DenyPeerResponse) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -1736,7 +1768,7 @@ func (m *GetMetricsResponse) SizeVT() (n int) {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.VivaldiSamples))
 	}
 	if m.EagerSyncs != 0 {
-		n += 2 + protohelpers.SizeOfVarint(uint64(m.EagerSyncs))
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.EagerSyncs))
 	}
 	if m.EagerSyncFailures != 0 {
 		n += 2 + protohelpers.SizeOfVarint(uint64(m.EagerSyncFailures))
@@ -2747,7 +2779,7 @@ func (m *CertInfo) UnmarshalVT(dAtA []byte) error {
 			}
 		case 5:
 			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field NonRenewable", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field CanDelegate", wireType)
 			}
 			var v int
 			for shift := uint(0); ; shift += 7 {
@@ -2764,7 +2796,46 @@ func (m *CertInfo) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-			m.NonRenewable = bool(v != 0)
+			m.CanDelegate = bool(v != 0)
+		case 6:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CanAdmit", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.CanAdmit = bool(v != 0)
+		case 7:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field MaxDepth", wireType)
+			}
+			m.MaxDepth = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.MaxDepth |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -2988,6 +3059,26 @@ func (m *GetStatusResponse) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 6:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Degraded", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Degraded = bool(v != 0)
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -3959,7 +4050,7 @@ func (m *DisconnectServiceResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *RevokePeerRequest) UnmarshalVT(dAtA []byte) error {
+func (m *DenyPeerRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -3982,10 +4073,10 @@ func (m *RevokePeerRequest) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: RevokePeerRequest: wiretype end group for non-group")
+			return fmt.Errorf("proto: DenyPeerRequest: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: RevokePeerRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: DenyPeerRequest: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
@@ -4044,7 +4135,7 @@ func (m *RevokePeerRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *RevokePeerResponse) UnmarshalVT(dAtA []byte) error {
+func (m *DenyPeerResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -4067,10 +4158,10 @@ func (m *RevokePeerResponse) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: RevokePeerResponse: wiretype end group for non-group")
+			return fmt.Errorf("proto: DenyPeerResponse: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: RevokePeerResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: DenyPeerResponse: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		default:
@@ -4425,7 +4516,7 @@ func (m *GetMetricsResponse) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-		case 16:
+		case 15:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field EagerSyncs", wireType)
 			}
@@ -4444,7 +4535,7 @@ func (m *GetMetricsResponse) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-		case 17:
+		case 16:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field EagerSyncFailures", wireType)
 			}
