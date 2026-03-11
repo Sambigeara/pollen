@@ -45,7 +45,7 @@ func SaveAdminCert(pollenDir string, cert *admissionv1.AdminCert) error {
 	}
 
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := perm.EnsureDir(dir); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:mnd
 		return err
 	}
 

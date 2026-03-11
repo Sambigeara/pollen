@@ -3,7 +3,7 @@
 //
 // On Linux, the daemon runs as the "pln" system user. The postinstall
 // script pre-creates directories with pln:pln ownership. When running as
-// root (e.g. sudo pln init), atomicWrite and EnsureDir chown files to
+// root (e.g. sudo pln init), atomicWrite chowns files to
 // pln:pln automatically. When the pln user doesn't exist (e.g. macOS,
 // dev machines), chown is a no-op.
 //
@@ -12,7 +12,7 @@
 //	Path                       Owner:Group    Mode   Set by
 //	─────────────────────────  ─────────────  ────   ───────────────────────
 //	/var/lib/pln/              pln:pln        0770   postinstall.sh
-//	keys/                      pln:pln        0770   EnsureDir
+//	keys/                      pln:pln        0770   postinstall.sh
 //	keys/ed25519.key           pln:pln        0600   SetPrivate
 //	keys/ed25519.pub           pln:pln        0640   SetGroupReadable
 //	keys/admin_ed25519.key     pln:pln        0600   SetPrivate

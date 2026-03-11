@@ -91,26 +91,3 @@ func TestWriteGroupReadable(t *testing.T) {
 		}
 	}
 }
-
-func TestEnsureDir(t *testing.T) {
-	dir := t.TempDir()
-	nested := filepath.Join(dir, "a", "b", "c")
-
-	if err := EnsureDir(nested); err != nil {
-		t.Fatal(err)
-	}
-
-	info, err := os.Stat(nested)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !info.IsDir() {
-		t.Error("expected directory")
-	}
-
-	if runtime.GOOS != "linux" {
-		if mode := info.Mode().Perm(); mode != 0o700 {
-			t.Errorf("mode = %04o; want 0700 (non-Linux)", mode)
-		}
-	}
-}

@@ -64,15 +64,3 @@ func WriteGroupReadable(path string, data []byte) error {
 func WriteGroupWritable(path string, data []byte) error {
 	return atomicWrite(path, data, 0o660) //nolint:mnd
 }
-
-// EnsureDir creates path (and parents) with mode 0700, then applies
-// SetGroupDir to the leaf directory to widen it to 0770 on Linux (no-op
-// elsewhere). Parent directories created by MkdirAll keep their
-// umask-applied mode; in practice the postinstall script pre-creates
-// the top-level /var/lib/pln with correct ownership and mode.
-func EnsureDir(path string) error {
-	if err := os.MkdirAll(path, 0o700); err != nil { //nolint:mnd
-		return fmt.Errorf("mkdir %s: %w", path, err)
-	}
-	return SetGroupDir(path)
-}

@@ -215,7 +215,7 @@ func loadNodeCredentials(pollenDir string) (*NodeCredentials, error) {
 
 func SaveNodeCredentials(pollenDir string, creds *NodeCredentials) error {
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := perm.EnsureDir(dir); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:mnd
 		return err
 	}
 
@@ -285,7 +285,7 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 	}
 
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := perm.EnsureDir(dir); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:mnd
 		return nil, nil, err
 	}
 

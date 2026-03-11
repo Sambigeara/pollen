@@ -1333,7 +1333,7 @@ func GenIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 		return nil, nil, err
 	}
 
-	if err := perm.EnsureDir(dir); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:mnd
 		return nil, nil, err
 	}
 
