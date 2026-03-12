@@ -20,7 +20,11 @@ var bufPool = sync.Pool{
 
 func bridge(c1, c2 io.ReadWriteCloser) {
 	var wg sync.WaitGroup
-	var closeOnce sync.Once
+	var once sync.Once
+	teardown := func() {
+		_ = c1.Close()
+		_ = c2.Close()
+	}
 
 	transfer := func(dst, src io.ReadWriteCloser, direction string) {
 		bufPtr := bufPool.Get().(*[]byte) //nolint:forcetypeassert
@@ -28,24 +32,18 @@ func bridge(c1, c2 io.ReadWriteCloser) {
 
 		_, err := io.CopyBuffer(dst, src, *bufPtr)
 
-		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-			closeOnce.Do(func() {
-				zap.S().Debugw("bridge copy failed", "direction", direction, "err", err)
-				_ = c1.Close()
-				_ = c2.Close()
-			})
-		}
-
 		closeWrite(dst)
+		once.Do(teardown)
+
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+			zap.S().Named("tun").Debugw("bridge copy failed", "direction", direction, "err", err)
+		}
 	}
 
 	wg.Go(func() { transfer(c1, c2, "c1->c2") })
 	wg.Go(func() { transfer(c2, c1, "c2->c1") })
 
 	wg.Wait()
-
-	_ = c1.Close()
-	_ = c2.Close()
 }
 
 func closeWrite(conn io.Closer) {

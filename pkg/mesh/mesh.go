@@ -36,8 +36,6 @@ const (
 	inviteRedeemTTL     = 5 * time.Minute
 	sessionReapInterval = 5 * time.Minute
 	streamTypeTimeout   = 5 * time.Second
-	initialStreamWin    = 2 << 20 // 2 MiB
-	initialConnWin      = 4 << 20 // 4 MiB
 
 	streamTypeClock  byte = 1
 	streamTypeTunnel byte = 2
@@ -45,14 +43,24 @@ const (
 
 func quicConfig() *quic.Config {
 	return &quic.Config{
-		MaxIdleTimeout:                 quicIdleTimeout,
-		KeepAlivePeriod:                quicKeepAlivePeriod,
-		EnableDatagrams:                true,
-		MaxIncomingUniStreams:          -1,
-		MaxIncomingStreams:             maxBidiStreams,
-		InitialStreamReceiveWindow:     initialStreamWin,
-		InitialConnectionReceiveWindow: initialConnWin,
+		MaxIdleTimeout:        quicIdleTimeout,
+		KeepAlivePeriod:       quicKeepAlivePeriod,
+		EnableDatagrams:       true,
+		MaxIncomingUniStreams: -1,
+		MaxIncomingStreams:    maxBidiStreams,
 	}
+}
+
+// streamCloser wraps a quic.Stream so that Close cancels reads (STOP_SENDING)
+// in addition to closing the write side. Without this, a blocked Read on the
+// remote side keeps the stream alive as a zombie.
+type streamCloser struct {
+	*quic.Stream
+}
+
+func (s streamCloser) Close() error {
+	s.CancelRead(0)
+	return s.Stream.Close()
 }
 
 type Packet struct {
@@ -277,7 +285,7 @@ func (m *impl) openTypedStream(ctx context.Context, peerKey types.PeerKey, strea
 		stream.CancelRead(0)
 		return nil, err
 	}
-	return stream, nil
+	return streamCloser{stream}, nil
 }
 
 func (m *impl) acceptFromCh(ctx context.Context, ch <-chan incomingStream) (types.PeerKey, io.ReadWriteCloser, error) {
@@ -670,7 +678,7 @@ func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 		}
 
 		select {
-		case ch <- incomingStream{peerKey: peerKey, stream: stream}:
+		case ch <- incomingStream{peerKey: peerKey, stream: streamCloser{stream}}:
 		case <-ctx.Done():
 			stream.CancelRead(0)
 			stream.CancelWrite(0)
