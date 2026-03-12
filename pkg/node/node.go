@@ -21,6 +21,7 @@ import (
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/cas"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
@@ -33,6 +34,8 @@ import (
 	"github.com/sambigeara/pollen/pkg/tunnel"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/util"
+	"github.com/sambigeara/pollen/pkg/wasm"
+	"github.com/sambigeara/pollen/pkg/workload"
 	"go.uber.org/zap"
 )
 
@@ -124,6 +127,8 @@ type Node struct {
 	natDetector     *nat.Detector
 	store           *store.Store
 	tun             *tunnel.Manager
+	workloads       *workload.Manager
+	casStore        *cas.Store
 	nonTargetStreak map[types.PeerKey]int
 	creds           *auth.NodeCredentials
 	localPeerEvents chan peer.Input
@@ -140,6 +145,7 @@ type Node struct {
 	metricsCol      *metrics.Collector
 	tracer          *traces.Tracer
 	nodeMetrics     *metrics.NodeMetrics
+	wasmRuntime     *wasm.Runtime
 	pollenDir       string
 	signPriv        ed25519.PrivateKey
 	localCoord      topology.Coord
@@ -197,12 +203,18 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		tun.RegisterService(svc.GetPort())
 	}
 
+	casStore, err := cas.New(pollenDir)
+	if err != nil {
+		return nil, fmt.Errorf("create CAS store: %w", err)
+	}
+
 	n := &Node{
 		log:             log,
 		peers:           peerStore,
 		store:           stateStore,
 		mesh:            m,
 		tun:             tun,
+		casStore:        casStore,
 		creds:           creds,
 		conf:            conf,
 		signPriv:        privKey,
@@ -234,6 +246,13 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 
 func (n *Node) Start(ctx context.Context) error {
 	defer n.shutdown()
+
+	wasmRT, err := wasm.NewRuntime(ctx, wasm.RuntimeConfig{})
+	if err != nil {
+		return fmt.Errorf("create wasm runtime: %w", err)
+	}
+	n.wasmRuntime = wasmRT
+	n.workloads = workload.New(ctx, n.casStore, wasmRT)
 
 	if n.creds.Cert != nil {
 		n.store.SetLocalCertExpiry(n.creds.Cert.GetClaims().GetNotAfterUnix())
@@ -1336,6 +1355,15 @@ func (n *Node) shutdown() {
 	}
 	if err := n.store.Close(); err != nil {
 		n.log.Errorw("failed to close state store", "err", err)
+	}
+
+	if n.workloads != nil {
+		n.workloads.Close()
+	}
+	if n.wasmRuntime != nil {
+		if err := n.wasmRuntime.Close(context.Background()); err != nil {
+			n.log.Errorw("failed to close wasm runtime", "err", err)
+		}
 	}
 
 	n.tun.Close()

@@ -105,6 +105,8 @@ func main() {
 		newDisconnectCmd(),
 		newDenyCmd(),
 		newLogsCmd(),
+		newSeedCmd(),
+		newUnseedCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {

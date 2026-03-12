@@ -17,6 +17,8 @@ service ControlService {
   rpc ConnectPeer(ConnectPeerRequest) returns (ConnectPeerResponse);
   rpc DisconnectService(DisconnectServiceRequest) returns (DisconnectServiceResponse);
   rpc DenyPeer(DenyPeerRequest) returns (DenyPeerResponse);
+  rpc SeedWorkload(SeedWorkloadRequest) returns (SeedWorkloadResponse);
+  rpc UnseedWorkload(UnseedWorkloadRequest) returns (UnseedWorkloadResponse);
 }
 
 message NodeRef {
@@ -98,6 +100,20 @@ message GetStatusResponse {
   repeated ConnectionSummary connections = 4;
   repeated CertInfo certificates = 5;
   bool degraded = 6;
+  repeated WorkloadSummary workloads = 7;
+}
+
+enum WorkloadStatus {
+  WORKLOAD_STATUS_UNSPECIFIED = 0;
+  WORKLOAD_STATUS_RUNNING = 1;
+  WORKLOAD_STATUS_STOPPED = 2;
+  WORKLOAD_STATUS_ERRORED = 3;
+}
+
+message WorkloadSummary {
+  string hash = 1;
+  WorkloadStatus status = 2;
+  int64 started_at_unix = 3;
 }
 
 message ConnectionSummary {
@@ -173,6 +189,20 @@ message DenyPeerRequest {
 }
 
 message DenyPeerResponse {}
+
+message SeedWorkloadRequest {
+  bytes wasm_bytes = 1 [(buf.validate.field).bytes = {min_len: 1}];
+}
+
+message SeedWorkloadResponse {
+  string hash = 1;
+}
+
+message UnseedWorkloadRequest {
+  string hash = 1 [(buf.validate.field).string = {min_len: 1}];
+}
+
+message UnseedWorkloadResponse {}
 
 message GetMetricsRequest {}
 

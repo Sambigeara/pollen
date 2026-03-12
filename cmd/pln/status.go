@@ -19,7 +19,7 @@ import (
 
 func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "status [nodes|services]",
+		Use:   "status [nodes|services|seeds]",
 		Short: "Show status",
 		Args:  cobra.RangeArgs(0, 1),
 		Run:   runStatus,
@@ -71,6 +71,9 @@ func runStatus(cmd *cobra.Command, args []string) {
 		if s := collectServicesSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
+		if s := collectSeedsSection(st, opts); len(s.rows) > 0 {
+			sections = append(sections, s)
+		}
 	case "nodes", "node":
 		if s := collectPeersSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
@@ -79,8 +82,12 @@ func runStatus(cmd *cobra.Command, args []string) {
 		if s := collectServicesSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
+	case "seeds", "seed":
+		if s := collectSeedsSection(st, opts); len(s.rows) > 0 {
+			sections = append(sections, s)
+		}
 	default:
-		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services)\n", mode)
+		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services|seeds)\n", mode)
 		os.Exit(1)
 	}
 	renderStatusSections(cmd.OutOrStdout(), sections)
@@ -243,6 +250,39 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 	}
 	sec.footer = strings.Join(footerParts, "\n")
 	return sec
+}
+
+func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
+	sec := statusSection{
+		title:   "SEEDS",
+		headers: []string{"HASH", "STATUS", "UPTIME"},
+	}
+
+	now := time.Now()
+	for _, w := range st.GetWorkloads() {
+		hash := w.GetHash()
+		if !opts.wide && len(hash) > 16 { //nolint:mnd
+			hash = hash[:16]
+		}
+		status := formatWorkloadStatus(w.GetStatus())
+		uptime := humanDuration(now.Sub(time.Unix(w.GetStartedAtUnix(), 0)))
+		sec.rows = append(sec.rows, []string{hash, status, uptime})
+	}
+	return sec
+}
+
+func formatWorkloadStatus(s controlv1.WorkloadStatus) string {
+	switch s {
+	case controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING:
+		return "running"
+	case controlv1.WorkloadStatus_WORKLOAD_STATUS_STOPPED:
+		return "stopped"
+	case controlv1.WorkloadStatus_WORKLOAD_STATUS_ERRORED:
+		return "errored"
+	case controlv1.WorkloadStatus_WORKLOAD_STATUS_UNSPECIFIED:
+		return "unknown"
+	}
+	return "unknown"
 }
 
 func certExpiryFooter(st *controlv1.GetStatusResponse) string {

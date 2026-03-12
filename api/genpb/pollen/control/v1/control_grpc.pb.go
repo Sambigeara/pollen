@@ -29,6 +29,8 @@ const (
 	ControlService_ConnectPeer_FullMethodName       = "/pollen.control.v1.ControlService/ConnectPeer"
 	ControlService_DisconnectService_FullMethodName = "/pollen.control.v1.ControlService/DisconnectService"
 	ControlService_DenyPeer_FullMethodName          = "/pollen.control.v1.ControlService/DenyPeer"
+	ControlService_SeedWorkload_FullMethodName      = "/pollen.control.v1.ControlService/SeedWorkload"
+	ControlService_UnseedWorkload_FullMethodName    = "/pollen.control.v1.ControlService/UnseedWorkload"
 )
 
 // ControlServiceClient is the client API for ControlService service.
@@ -45,6 +47,8 @@ type ControlServiceClient interface {
 	ConnectPeer(ctx context.Context, in *ConnectPeerRequest, opts ...grpc.CallOption) (*ConnectPeerResponse, error)
 	DisconnectService(ctx context.Context, in *DisconnectServiceRequest, opts ...grpc.CallOption) (*DisconnectServiceResponse, error)
 	DenyPeer(ctx context.Context, in *DenyPeerRequest, opts ...grpc.CallOption) (*DenyPeerResponse, error)
+	SeedWorkload(ctx context.Context, in *SeedWorkloadRequest, opts ...grpc.CallOption) (*SeedWorkloadResponse, error)
+	UnseedWorkload(ctx context.Context, in *UnseedWorkloadRequest, opts ...grpc.CallOption) (*UnseedWorkloadResponse, error)
 }
 
 type controlServiceClient struct {
@@ -155,6 +159,26 @@ func (c *controlServiceClient) DenyPeer(ctx context.Context, in *DenyPeerRequest
 	return out, nil
 }
 
+func (c *controlServiceClient) SeedWorkload(ctx context.Context, in *SeedWorkloadRequest, opts ...grpc.CallOption) (*SeedWorkloadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SeedWorkloadResponse)
+	err := c.cc.Invoke(ctx, ControlService_SeedWorkload_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlServiceClient) UnseedWorkload(ctx context.Context, in *UnseedWorkloadRequest, opts ...grpc.CallOption) (*UnseedWorkloadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnseedWorkloadResponse)
+	err := c.cc.Invoke(ctx, ControlService_UnseedWorkload_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ControlServiceServer is the server API for ControlService service.
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
@@ -169,6 +193,8 @@ type ControlServiceServer interface {
 	ConnectPeer(context.Context, *ConnectPeerRequest) (*ConnectPeerResponse, error)
 	DisconnectService(context.Context, *DisconnectServiceRequest) (*DisconnectServiceResponse, error)
 	DenyPeer(context.Context, *DenyPeerRequest) (*DenyPeerResponse, error)
+	SeedWorkload(context.Context, *SeedWorkloadRequest) (*SeedWorkloadResponse, error)
+	UnseedWorkload(context.Context, *UnseedWorkloadRequest) (*UnseedWorkloadResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
 
@@ -208,6 +234,12 @@ func (UnimplementedControlServiceServer) DisconnectService(context.Context, *Dis
 }
 func (UnimplementedControlServiceServer) DenyPeer(context.Context, *DenyPeerRequest) (*DenyPeerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DenyPeer not implemented")
+}
+func (UnimplementedControlServiceServer) SeedWorkload(context.Context, *SeedWorkloadRequest) (*SeedWorkloadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SeedWorkload not implemented")
+}
+func (UnimplementedControlServiceServer) UnseedWorkload(context.Context, *UnseedWorkloadRequest) (*UnseedWorkloadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnseedWorkload not implemented")
 }
 func (UnimplementedControlServiceServer) mustEmbedUnimplementedControlServiceServer() {}
 func (UnimplementedControlServiceServer) testEmbeddedByValue()                        {}
@@ -410,6 +442,42 @@ func _ControlService_DenyPeer_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_SeedWorkload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SeedWorkloadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).SeedWorkload(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_SeedWorkload_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).SeedWorkload(ctx, req.(*SeedWorkloadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ControlService_UnseedWorkload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnseedWorkloadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).UnseedWorkload(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_UnseedWorkload_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).UnseedWorkload(ctx, req.(*UnseedWorkloadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ControlService_ServiceDesc is the grpc.ServiceDesc for ControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -456,6 +524,14 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DenyPeer",
 			Handler:    _ControlService_DenyPeer_Handler,
+		},
+		{
+			MethodName: "SeedWorkload",
+			Handler:    _ControlService_SeedWorkload_Handler,
+		},
+		{
+			MethodName: "UnseedWorkload",
+			Handler:    _ControlService_UnseedWorkload_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

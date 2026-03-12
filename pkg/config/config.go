@@ -25,7 +25,7 @@ const (
 	DefaultBootstrapPort  = 60611
 	ed25519PublicKeyBytes = 32
 
-	configHeader = "# Manual edits while the daemon runs will be overwritten.\n# Use `pln serve`, `pln connect`, and `pln disconnect` to manage services.\n\n"
+	configHeader = "# Manual edits while the daemon runs will be overwritten.\n# Use `pln serve`, `pln connect`, `pln disconnect`, `pln seed`, and `pln unseed` to manage services.\n\n"
 )
 
 type BootstrapPeer struct {

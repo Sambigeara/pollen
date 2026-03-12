@@ -3,16 +3,20 @@ package node
 import (
 	"cmp"
 	"context"
+	"errors"
 	"net"
 	"slices"
 	"strconv"
 	"time"
+
+	"go.uber.org/zap"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/workload"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -332,6 +336,16 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		return types.PeerKeyFromBytes(a.Peer.PeerId).Compare(types.PeerKeyFromBytes(b.Peer.PeerId))
 	})
 
+	if s.node.workloads != nil {
+		for _, w := range s.node.workloads.List() {
+			out.Workloads = append(out.Workloads, &controlv1.WorkloadSummary{
+				Hash:          w.Hash,
+				Status:        workloadStatusProto(w.Status),
+				StartedAtUnix: w.StartedAt.Unix(),
+			})
+		}
+	}
+
 	return out, nil
 }
 
@@ -462,6 +476,47 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 	}, nil
 }
 
+func (s *NodeService) SeedWorkload(_ context.Context, req *controlv1.SeedWorkloadRequest) (*controlv1.SeedWorkloadResponse, error) {
+	if s.node.workloads == nil {
+		return nil, status.Error(codes.FailedPrecondition, "workload manager not initialized")
+	}
+	hash, err := s.node.workloads.Seed(req.GetWasmBytes())
+	if err != nil {
+		switch {
+		case errors.Is(err, workload.ErrAlreadyRunning):
+			return nil, status.Errorf(codes.AlreadyExists, "workload %s is already running", hash)
+		case errors.Is(err, workload.ErrCompile):
+			s.node.log.Warnw("seed workload failed", zap.Error(err))
+			return nil, status.Error(codes.InvalidArgument, "failed to compile workload")
+		default:
+			s.node.log.Errorw("seed workload failed", zap.Error(err))
+			return nil, status.Error(codes.Internal, "failed to seed workload")
+		}
+	}
+	return &controlv1.SeedWorkloadResponse{Hash: hash}, nil
+}
+
+func (s *NodeService) UnseedWorkload(_ context.Context, req *controlv1.UnseedWorkloadRequest) (*controlv1.UnseedWorkloadResponse, error) {
+	if s.node.workloads == nil {
+		return nil, status.Error(codes.FailedPrecondition, "workload manager not initialized")
+	}
+	hash, err := s.node.workloads.ResolvePrefix(req.GetHash())
+	if err != nil {
+		s.node.log.Warnw("resolve workload prefix failed", "prefix", req.GetHash(), zap.Error(err))
+		switch {
+		case errors.Is(err, workload.ErrAmbiguousPrefix):
+			return nil, status.Error(codes.InvalidArgument, "prefix matches multiple workloads; use a longer prefix")
+		default:
+			return nil, status.Error(codes.NotFound, "no running workload matches that prefix")
+		}
+	}
+	if err := s.node.workloads.Unseed(hash); err != nil {
+		s.node.log.Warnw("unseed workload failed", "hash", hash, zap.Error(err))
+		return nil, status.Error(codes.Internal, "failed to unseed workload")
+	}
+	return &controlv1.UnseedWorkloadResponse{}, nil
+}
+
 const vivaldiDegradedThreshold = 0.9
 
 const offlineRank = 3
@@ -479,4 +534,16 @@ func nodeStatusRank(status controlv1.NodeStatus) int {
 		return offlineRank
 	}
 	return offlineRank
+}
+
+func workloadStatusProto(s workload.Status) controlv1.WorkloadStatus {
+	switch s {
+	case workload.StatusRunning:
+		return controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING
+	case workload.StatusStopped:
+		return controlv1.WorkloadStatus_WORKLOAD_STATUS_STOPPED
+	case workload.StatusErrored:
+		return controlv1.WorkloadStatus_WORKLOAD_STATUS_ERRORED
+	}
+	return controlv1.WorkloadStatus_WORKLOAD_STATUS_UNSPECIFIED
 }

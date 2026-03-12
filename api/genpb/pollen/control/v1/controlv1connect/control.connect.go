@@ -61,6 +61,12 @@ const (
 	ControlServiceDisconnectServiceProcedure = "/pollen.control.v1.ControlService/DisconnectService"
 	// ControlServiceDenyPeerProcedure is the fully-qualified name of the ControlService's DenyPeer RPC.
 	ControlServiceDenyPeerProcedure = "/pollen.control.v1.ControlService/DenyPeer"
+	// ControlServiceSeedWorkloadProcedure is the fully-qualified name of the ControlService's
+	// SeedWorkload RPC.
+	ControlServiceSeedWorkloadProcedure = "/pollen.control.v1.ControlService/SeedWorkload"
+	// ControlServiceUnseedWorkloadProcedure is the fully-qualified name of the ControlService's
+	// UnseedWorkload RPC.
+	ControlServiceUnseedWorkloadProcedure = "/pollen.control.v1.ControlService/UnseedWorkload"
 )
 
 // ControlServiceClient is a client for the pollen.control.v1.ControlService service.
@@ -75,6 +81,8 @@ type ControlServiceClient interface {
 	ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error)
 	DisconnectService(context.Context, *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error)
 	DenyPeer(context.Context, *connect.Request[v1.DenyPeerRequest]) (*connect.Response[v1.DenyPeerResponse], error)
+	SeedWorkload(context.Context, *connect.Request[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error)
+	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 }
 
 // NewControlServiceClient constructs a client for the pollen.control.v1.ControlService service. By
@@ -148,6 +156,18 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("DenyPeer")),
 			connect.WithClientOptions(opts...),
 		),
+		seedWorkload: connect.NewClient[v1.SeedWorkloadRequest, v1.SeedWorkloadResponse](
+			httpClient,
+			baseURL+ControlServiceSeedWorkloadProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("SeedWorkload")),
+			connect.WithClientOptions(opts...),
+		),
+		unseedWorkload: connect.NewClient[v1.UnseedWorkloadRequest, v1.UnseedWorkloadResponse](
+			httpClient,
+			baseURL+ControlServiceUnseedWorkloadProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("UnseedWorkload")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -163,6 +183,8 @@ type controlServiceClient struct {
 	connectPeer       *connect.Client[v1.ConnectPeerRequest, v1.ConnectPeerResponse]
 	disconnectService *connect.Client[v1.DisconnectServiceRequest, v1.DisconnectServiceResponse]
 	denyPeer          *connect.Client[v1.DenyPeerRequest, v1.DenyPeerResponse]
+	seedWorkload      *connect.Client[v1.SeedWorkloadRequest, v1.SeedWorkloadResponse]
+	unseedWorkload    *connect.Client[v1.UnseedWorkloadRequest, v1.UnseedWorkloadResponse]
 }
 
 // Shutdown calls pollen.control.v1.ControlService.Shutdown.
@@ -215,6 +237,16 @@ func (c *controlServiceClient) DenyPeer(ctx context.Context, req *connect.Reques
 	return c.denyPeer.CallUnary(ctx, req)
 }
 
+// SeedWorkload calls pollen.control.v1.ControlService.SeedWorkload.
+func (c *controlServiceClient) SeedWorkload(ctx context.Context, req *connect.Request[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error) {
+	return c.seedWorkload.CallUnary(ctx, req)
+}
+
+// UnseedWorkload calls pollen.control.v1.ControlService.UnseedWorkload.
+func (c *controlServiceClient) UnseedWorkload(ctx context.Context, req *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error) {
+	return c.unseedWorkload.CallUnary(ctx, req)
+}
+
 // ControlServiceHandler is an implementation of the pollen.control.v1.ControlService service.
 type ControlServiceHandler interface {
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
@@ -227,6 +259,8 @@ type ControlServiceHandler interface {
 	ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error)
 	DisconnectService(context.Context, *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error)
 	DenyPeer(context.Context, *connect.Request[v1.DenyPeerRequest]) (*connect.Response[v1.DenyPeerResponse], error)
+	SeedWorkload(context.Context, *connect.Request[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error)
+	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 }
 
 // NewControlServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -296,6 +330,18 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("DenyPeer")),
 		connect.WithHandlerOptions(opts...),
 	)
+	controlServiceSeedWorkloadHandler := connect.NewUnaryHandler(
+		ControlServiceSeedWorkloadProcedure,
+		svc.SeedWorkload,
+		connect.WithSchema(controlServiceMethods.ByName("SeedWorkload")),
+		connect.WithHandlerOptions(opts...),
+	)
+	controlServiceUnseedWorkloadHandler := connect.NewUnaryHandler(
+		ControlServiceUnseedWorkloadProcedure,
+		svc.UnseedWorkload,
+		connect.WithSchema(controlServiceMethods.ByName("UnseedWorkload")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/pollen.control.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ControlServiceShutdownProcedure:
@@ -318,6 +364,10 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceDisconnectServiceHandler.ServeHTTP(w, r)
 		case ControlServiceDenyPeerProcedure:
 			controlServiceDenyPeerHandler.ServeHTTP(w, r)
+		case ControlServiceSeedWorkloadProcedure:
+			controlServiceSeedWorkloadHandler.ServeHTTP(w, r)
+		case ControlServiceUnseedWorkloadProcedure:
+			controlServiceUnseedWorkloadHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -365,4 +415,12 @@ func (UnimplementedControlServiceHandler) DisconnectService(context.Context, *co
 
 func (UnimplementedControlServiceHandler) DenyPeer(context.Context, *connect.Request[v1.DenyPeerRequest]) (*connect.Response[v1.DenyPeerResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.DenyPeer is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) SeedWorkload(context.Context, *connect.Request[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.SeedWorkload is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.UnseedWorkload is not implemented"))
 }

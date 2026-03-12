@@ -14,6 +14,7 @@ require (
 	github.com/sourcegraph/conc v0.3.0
 	github.com/spf13/cobra v1.10.1
 	github.com/stretchr/testify v1.11.1
+	github.com/tetratelabs/wazero v1.9.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/net v0.44.0
 	google.golang.org/grpc v1.75.1
