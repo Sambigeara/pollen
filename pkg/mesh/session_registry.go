@@ -13,6 +13,7 @@ import (
 type sessionRegistry struct {
 	peers          map[types.PeerKey]*peerSession
 	waiters        map[types.PeerKey][]chan struct{}
+	changeCh       chan struct{}
 	sessionsActive *metrics.Gauge
 	mu             sync.RWMutex
 }
@@ -21,8 +22,16 @@ func newSessionRegistry(sessionsActive *metrics.Gauge) *sessionRegistry {
 	return &sessionRegistry{
 		peers:          make(map[types.PeerKey]*peerSession),
 		waiters:        make(map[types.PeerKey][]chan struct{}),
+		changeCh:       make(chan struct{}),
 		sessionsActive: sessionsActive,
 	}
+}
+
+func (r *sessionRegistry) onChange() <-chan struct{} {
+	r.mu.RLock()
+	ch := r.changeCh
+	r.mu.RUnlock()
+	return ch
 }
 
 func (r *sessionRegistry) get(peerKey types.PeerKey) (*peerSession, bool) {
@@ -94,6 +103,8 @@ func (r *sessionRegistry) add(peerKey types.PeerKey, next *peerSession, shouldRe
 
 	r.peers[peerKey] = next
 	r.sessionsActive.Set(float64(len(r.peers)))
+	close(r.changeCh)
+	r.changeCh = make(chan struct{})
 	waiters := r.waiters[peerKey]
 	delete(r.waiters, peerKey)
 	r.mu.Unlock()

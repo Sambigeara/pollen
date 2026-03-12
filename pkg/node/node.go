@@ -28,6 +28,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/observability/traces"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/perm"
+	"github.com/sambigeara/pollen/pkg/route"
 	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/sysinfo"
 	"github.com/sambigeara/pollen/pkg/topology"
@@ -84,6 +85,9 @@ const (
 	vivaldiExitHMACThreshold  = 0.35
 	vivaldiWarmupDuration     = 5 * time.Second
 	vivaldiErrAlpha           = 0.2 // ~5-sample EWMA window for smoothed vivaldi error
+
+	routeDebounceInterval = 100 * time.Millisecond
+	maxRouteDelay         = time.Second
 
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
@@ -146,6 +150,8 @@ type Node struct {
 	tracer          *traces.Tracer
 	nodeMetrics     *metrics.NodeMetrics
 	wasmRuntime     *wasm.Runtime
+	routeTable      *route.Table
+	routeInvalidate chan struct{}
 	pollenDir       string
 	signPriv        ed25519.PrivateKey
 	localCoord      topology.Coord
@@ -234,6 +240,8 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		nodeMetrics:     metrics.NewNodeMetrics(col),
 		tracer:          tracer,
 		smoothedErr:     metrics.NewEWMAFrom(vivaldiErrAlpha, 1.0),
+		routeTable:      route.New(stateStore.LocalID),
+		routeInvalidate: make(chan struct{}, 1),
 	}
 	n.localCoordErr = 1.0
 
@@ -278,6 +286,11 @@ func (n *Node) Start(ctx context.Context) error {
 	if err := n.mesh.Start(ctx); err != nil {
 		return err
 	}
+	n.mesh.SetRouter(n.routeTable)
+
+	n.store.OnRouteInvalidate(func() {
+		n.signalRouteInvalidate()
+	})
 
 	// Publish the random startup coordinate so peers receive initial Vivaldi
 	// state via gossip. We intentionally do not queue the returned events here;
@@ -325,9 +338,26 @@ func (n *Node) Start(ctx context.Context) error {
 	defer stateSaveTicker.Stop()
 
 	n.tick()
+	n.recomputeRoutes()
 	n.checkCertExpiry()
 	n.sampleResourceTelemetry()
 	n.queueGossipEvents(n.store.LocalEvents())
+
+	// Debounced route recomputation state.
+	var (
+		routeDebounce          *time.Timer
+		routeDebounceC         <-chan time.Time
+		firstRouteInvalidation time.Time
+	)
+
+	stopDrainTimer := func(t *time.Timer) {
+		if !t.Stop() {
+			select {
+			case <-t.C:
+			default:
+			}
+		}
+	}
 
 	for {
 		select {
@@ -371,6 +401,32 @@ func (n *Node) Start(ctx context.Context) error {
 			n.handlePeerInput(in)
 		case in := <-n.localPeerEvents:
 			n.handlePeerInput(in)
+		case <-n.routeInvalidate:
+			now := time.Now()
+			if firstRouteInvalidation.IsZero() {
+				firstRouteInvalidation = now
+			}
+			if now.Sub(firstRouteInvalidation) >= maxRouteDelay {
+				n.recomputeRoutes()
+				firstRouteInvalidation = time.Time{}
+				if routeDebounce != nil {
+					stopDrainTimer(routeDebounce)
+					routeDebounce = nil
+					routeDebounceC = nil
+				}
+			} else {
+				if routeDebounce == nil {
+					routeDebounce = time.NewTimer(routeDebounceInterval)
+					routeDebounceC = routeDebounce.C
+				} else {
+					routeDebounce.Reset(routeDebounceInterval)
+				}
+			}
+		case <-routeDebounceC:
+			n.recomputeRoutes()
+			firstRouteInvalidation = time.Time{}
+			routeDebounceC = nil
+			routeDebounce = nil
 		}
 	}
 }
@@ -658,6 +714,7 @@ func (n *Node) handlePeerInput(in peer.Input) {
 	switch d := in.(type) {
 	case peer.PeerDisconnected:
 		n.queueGossipEvents(n.store.SetLocalConnected(d.PeerKey, false))
+		n.signalRouteInvalidate()
 		delete(n.lastEagerSync, d.PeerKey)
 		delete(n.peerConnectTime, d.PeerKey)
 	case peer.ForgetPeer:
@@ -716,7 +773,11 @@ func (n *Node) updateVivaldiCoords() {
 		updated = true
 	}
 	if updated {
-		n.queueGossipEvents(n.store.SetLocalVivaldiCoord(n.localCoord))
+		events := n.store.SetLocalVivaldiCoord(n.localCoord)
+		n.queueGossipEvents(events)
+		if len(events) > 0 {
+			n.signalRouteInvalidate()
+		}
 	}
 }
 
@@ -879,6 +940,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			n.store.SetLastAddr(e.PeerKey, addr.String())
 			n.peerConnectTime[e.PeerKey] = time.Now()
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
+			n.signalRouteInvalidate()
 			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
 				n.lastEagerSync[e.PeerKey] = time.Now()
 				clock := n.store.EagerSyncClock()
@@ -1383,6 +1445,32 @@ func (n *Node) shutdown() {
 	n.metricsCol.Close()
 
 	n.log.Debug("successfully shutdown Node")
+}
+
+func (n *Node) signalRouteInvalidate() {
+	select {
+	case n.routeInvalidate <- struct{}{}:
+	default:
+	}
+}
+
+func (n *Node) recomputeRoutes() {
+	nodes := n.store.AllNodes()
+	nodeInfos := make(map[types.PeerKey]route.NodeInfo, len(nodes))
+	for pk, rec := range nodes {
+		nodeInfos[pk] = route.NodeInfo{
+			Reachable: rec.Reachable,
+			Coord:     rec.VivaldiCoord,
+		}
+	}
+
+	directPeers := make(map[types.PeerKey]struct{})
+	for _, pk := range n.mesh.ConnectedPeers() {
+		directPeers[pk] = struct{}{}
+	}
+
+	routes := route.Recompute(n.store.LocalID, &n.localCoord, directPeers, nodeInfos)
+	n.routeTable.Update(routes)
 }
 
 func (n *Node) Ready() <-chan struct{} {

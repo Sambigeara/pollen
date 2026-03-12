@@ -176,6 +176,7 @@ type Store struct {
 	consumedInvites    map[string]consumedInviteEntry
 	desiredConnections map[string]Connection
 	onDeny             func(types.PeerKey)
+	onRouteInvalidate  func()
 	metrics            *metrics.GossipMetrics
 	mu                 sync.RWMutex
 	LocalID            types.PeerKey
@@ -314,6 +315,13 @@ func (s *Store) dropExpiredInvites(now time.Time) {
 // event is applied via gossip. Only one callback may be registered.
 func (s *Store) OnDenyPeer(fn func(types.PeerKey)) {
 	s.onDeny = fn
+}
+
+// OnRouteInvalidate registers a callback invoked (outside the lock) when a
+// reachability or Vivaldi event is applied via gossip. Only one callback may
+// be registered.
+func (s *Store) OnRouteInvalidate(fn func()) {
+	s.onRouteInvalidate = fn
 }
 
 // SetGossipMetrics replaces the no-op metrics with wired instruments.
@@ -527,6 +535,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	var result ApplyResult
 	var newlyDenied []types.PeerKey
 	anyApplied := false
+	routesDirty := false
 	for _, event := range events {
 		if event == nil {
 			continue
@@ -534,6 +543,10 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 		r, denied := s.applyEventLocked(event)
 		if len(r.Rebroadcast) > 0 {
 			anyApplied = true
+			switch event.GetChange().(type) {
+			case *statev1.GossipEvent_Reachability, *statev1.GossipEvent_Vivaldi:
+				routesDirty = true
+			}
 		}
 		result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
 		newlyDenied = append(newlyDenied, denied...)
@@ -550,12 +563,17 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	}
 
 	onDeny := s.onDeny
+	onRouteInvalidate := s.onRouteInvalidate
 	s.mu.Unlock()
 
 	if onDeny != nil {
 		for _, pk := range newlyDenied {
 			onDeny(pk)
 		}
+	}
+
+	if routesDirty && onRouteInvalidate != nil {
+		onRouteInvalidate()
 	}
 
 	return result
