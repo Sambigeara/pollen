@@ -285,7 +285,10 @@ func (m *impl) openTypedStream(ctx context.Context, peerKey types.PeerKey, strea
 		stream.CancelRead(0)
 		return nil, err
 	}
-	return streamCloser{stream}, nil
+	if streamType == streamTypeTunnel {
+		return streamCloser{stream}, nil
+	}
+	return stream, nil
 }
 
 func (m *impl) acceptFromCh(ctx context.Context, ch <-chan incomingStream) (types.PeerKey, io.ReadWriteCloser, error) {
@@ -677,8 +680,13 @@ func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 			continue
 		}
 
+		var wrapped io.ReadWriteCloser = stream
+		if typeBuf[0] == streamTypeTunnel {
+			wrapped = streamCloser{stream}
+		}
+
 		select {
-		case ch <- incomingStream{peerKey: peerKey, stream: streamCloser{stream}}:
+		case ch <- incomingStream{peerKey: peerKey, stream: wrapped}:
 		case <-ctx.Done():
 			stream.CancelRead(0)
 			stream.CancelWrite(0)
