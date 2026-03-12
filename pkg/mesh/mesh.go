@@ -668,10 +668,11 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		}
 
 		// Both connections are live — deterministic tie-break:
-		// the peer with the smaller key keeps its connection.
-		// If we're the smaller key, keep ours (close the new one).
-		// If they're the smaller key, replace ours with theirs.
-		return !m.localKey.Less(peerKey)
+		// both nodes agree to keep the connection dialed by the smaller key.
+		// This ensures convergence regardless of arrival order.
+		weAreSmaller := m.localKey.Less(peerKey)
+		currentPreferred := current.outbound == weAreSmaller
+		return !currentPreferred
 	})
 	if !ok {
 		span.SetAttr("result", "duplicate")

@@ -628,6 +628,51 @@ func TestRoutedDeliveryRejectsNonTunnel(t *testing.T) {
 	stream2.CancelWrite(0)
 }
 
+// TestSimultaneousDialConverges verifies that when two peers dial each other at
+// the same time (creating two QUIC connections), both nodes converge on the same
+// connection and neither peer gets kicked out. This is a regression test for a
+// bug where the tie-break logic didn't consider connection direction, causing
+// both nodes to hold different connections that the other side then closed.
+func TestSimultaneousDialConverges(t *testing.T) {
+	cluster := newClusterAuth(t)
+	a := startMeshHarness(t, cluster)
+	b := startMeshHarness(t, cluster)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Both sides dial simultaneously.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = a.mesh.Connect(ctx, b.peerKey, []*net.UDPAddr{
+			{IP: net.IPv4(127, 0, 0, 1), Port: b.port},
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		_ = b.mesh.Connect(ctx, a.peerKey, []*net.UDPAddr{
+			{IP: net.IPv4(127, 0, 0, 1), Port: a.port},
+		})
+	}()
+	wg.Wait()
+
+	// Both peers must see each other as connected and stay connected.
+	require.Eventually(t, func() bool {
+		_, aHasB := a.mesh.GetConn(b.peerKey)
+		_, bHasA := b.mesh.GetConn(a.peerKey)
+		return aHasB && bHasA
+	}, 5*time.Second, 25*time.Millisecond, "peers should see each other after simultaneous dial")
+
+	// Verify stability: the sessions should not die within a reasonable window.
+	time.Sleep(500 * time.Millisecond)
+	_, aHasB := a.mesh.GetConn(b.peerKey)
+	_, bHasA := b.mesh.GetConn(a.peerKey)
+	require.True(t, aHasB, "a lost connection to b after simultaneous dial")
+	require.True(t, bHasA, "b lost connection to a after simultaneous dial")
+}
+
 func startMeshHarness(t *testing.T, cluster *clusterAuth) *meshHarness {
 	t.Helper()
 
