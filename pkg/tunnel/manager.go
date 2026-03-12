@@ -9,11 +9,14 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/sambigeara/pollen/pkg/types"
 )
+
+const streamOpenTimeout = 5 * time.Second
 
 var errNoServicePort = errors.New("no service port in stream header")
 
@@ -39,6 +42,7 @@ type Manager struct {
 	connectionMu  sync.RWMutex
 	serviceMu     sync.RWMutex
 	streamMu      sync.Mutex
+	wg            sync.WaitGroup
 }
 
 type serviceHandler struct {
@@ -82,11 +86,11 @@ func New(transport StreamTransport) *Manager {
 }
 
 func (m *Manager) Start(ctx context.Context) {
-	go func() {
+	m.wg.Go(func() {
 		if err := m.acceptStreams(ctx); err != nil {
 			m.log.Debugw("tunnel stream loop stopped", "err", err)
 		}
-	}()
+	})
 }
 
 func (m *Manager) acceptStreams(ctx context.Context) error {
@@ -99,7 +103,7 @@ func (m *Manager) acceptStreams(ctx context.Context) error {
 			return err
 		}
 
-		go m.handleIncomingStream(peerID, stream)
+		m.wg.Go(func() { m.handleIncomingStream(peerID, stream) })
 	}
 }
 
@@ -225,7 +229,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 		return 0, err
 	}
 
-	go func() {
+	m.wg.Go(func() {
 		logger := m.log.Named("tunnel")
 		for {
 			clientConn, err := ln.Accept()
@@ -233,7 +237,9 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 				return
 			}
 			go func() {
-				stream, err := m.transport.OpenStream(ctx, peerID)
+				streamCtx, cancel := context.WithTimeout(ctx, streamOpenTimeout)
+				defer cancel()
+				stream, err := m.transport.OpenStream(streamCtx, peerID)
 				if err != nil {
 					logger.Warnw("open stream failed", "peer", peerID.Short(), "port", remotePort, "err", err)
 					_ = clientConn.Close()
@@ -250,7 +256,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 				bridge(clientConn, stream)
 			}()
 		}
-	}()
+	})
 
 	m.connections[connectionKey{peerID: peerID, port: uint32(boundPort)}] = connectionHandler{
 		cancel: cancelFn,
@@ -381,4 +387,6 @@ func (m *Manager) Close() {
 			_ = stream.Close()
 		}
 	}
+
+	m.wg.Wait()
 }

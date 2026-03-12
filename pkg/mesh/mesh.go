@@ -30,11 +30,14 @@ const (
 	quicIdleTimeout     = 30 * time.Second
 	quicKeepAlivePeriod = 10 * time.Second
 	eventSendTimeout    = 5 * time.Second
-	queueBufSize        = 64
+	maxBidiStreams      = 256
+	queueBufSize        = maxBidiStreams
 	probeBufSize        = 2048
 	inviteRedeemTTL     = 5 * time.Minute
 	sessionReapInterval = 5 * time.Minute
 	streamTypeTimeout   = 5 * time.Second
+	initialStreamWin    = 2 << 20 // 2 MiB
+	initialConnWin      = 4 << 20 // 4 MiB
 
 	streamTypeClock  byte = 1
 	streamTypeTunnel byte = 2
@@ -42,10 +45,13 @@ const (
 
 func quicConfig() *quic.Config {
 	return &quic.Config{
-		MaxIdleTimeout:        quicIdleTimeout,
-		KeepAlivePeriod:       quicKeepAlivePeriod,
-		EnableDatagrams:       true,
-		MaxIncomingUniStreams: -1,
+		MaxIdleTimeout:                 quicIdleTimeout,
+		KeepAlivePeriod:                quicKeepAlivePeriod,
+		EnableDatagrams:                true,
+		MaxIncomingUniStreams:          -1,
+		MaxIncomingStreams:             maxBidiStreams,
+		InitialStreamReceiveWindow:     initialStreamWin,
+		InitialConnectionReceiveWindow: initialConnWin,
 	}
 }
 
@@ -669,6 +675,9 @@ func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 			stream.CancelRead(0)
 			stream.CancelWrite(0)
 			return
+		default:
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
 		}
 	}
 }
