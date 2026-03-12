@@ -113,6 +113,16 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		}
 	}
 
+	// Report degraded when cert is expired but within the reconnect window.
+	degraded := false
+	if s.creds != nil && s.creds.Cert != nil {
+		now := time.Now()
+		if auth.IsCertExpired(s.creds.Cert, now) &&
+			auth.IsCertWithinReconnectWindow(s.creds.Cert, now, s.node.conf.ReconnectWindow) {
+			degraded = true
+		}
+	}
+
 	out := &controlv1.GetStatusResponse{
 		Self: &controlv1.NodeSummary{
 			Node:               &controlv1.NodeRef{PeerId: localID.Bytes()},
@@ -123,6 +133,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		Services:    []*controlv1.ServiceSummary{},
 		Nodes:       make([]*controlv1.NodeSummary, 0, len(nodes)),
 		Connections: []*controlv1.ConnectionSummary{},
+		Degraded:    degraded,
 	}
 
 	if s.creds != nil && s.creds.Cert != nil {

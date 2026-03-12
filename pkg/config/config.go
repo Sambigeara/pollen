@@ -34,15 +34,17 @@ type BootstrapPeer struct {
 }
 
 type CertTTLs struct {
-	Membership  time.Duration `yaml:"membership,omitempty"`
-	Delegation  time.Duration `yaml:"delegation,omitempty"`
-	TLSIdentity time.Duration `yaml:"tlsIdentity,omitempty"`
+	Membership      time.Duration `yaml:"membership,omitempty"`
+	Delegation      time.Duration `yaml:"delegation,omitempty"`
+	TLSIdentity     time.Duration `yaml:"tlsIdentity,omitempty"`
+	ReconnectWindow time.Duration `yaml:"reconnectWindow,omitempty"`
 }
 
 const (
-	DefaultMembershipTTL  = 4 * time.Hour
-	DefaultDelegationTTL  = 30 * 24 * time.Hour
-	DefaultTLSIdentityTTL = 4 * time.Hour
+	DefaultMembershipTTL   = 4 * time.Hour
+	DefaultDelegationTTL   = 30 * 24 * time.Hour
+	DefaultTLSIdentityTTL  = 4 * time.Hour
+	DefaultReconnectWindow = 7 * 24 * time.Hour
 )
 
 func ttlOrDefault(ttl, fallback time.Duration) time.Duration {
@@ -62,6 +64,10 @@ func (c CertTTLs) DelegationTTL() time.Duration {
 
 func (c CertTTLs) TLSIdentityTTL() time.Duration {
 	return ttlOrDefault(c.TLSIdentity, DefaultTLSIdentityTTL)
+}
+
+func (c CertTTLs) ReconnectWindowDuration() time.Duration {
+	return ttlOrDefault(c.ReconnectWindow, DefaultReconnectWindow)
 }
 
 type Service struct {
@@ -152,6 +158,9 @@ func validateCertTTLs(ttls CertTTLs) error {
 	}
 	if ttls.TLSIdentity < 0 {
 		return errors.New("certTTLs.tlsIdentity must be >= 0")
+	}
+	if ttls.ReconnectWindow < 0 {
+		return errors.New("certTTLs.reconnectWindow must be >= 0")
 	}
 	return nil
 }

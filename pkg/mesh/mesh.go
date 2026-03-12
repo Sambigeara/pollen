@@ -100,6 +100,7 @@ type impl struct {
 	meshCert         atomic.Pointer[tls.Certificate]
 	bareCert         tls.Certificate
 	socks            sock.SockStore
+	isDenied         func(types.PeerKey) bool
 	inCh             chan peer.Input
 	recvCh           chan Packet
 	renewalCh        chan *meshv1.CertRenewalResponse
@@ -117,6 +118,7 @@ type impl struct {
 	port             int
 	localKey         types.PeerKey
 	membershipTTL    time.Duration
+	reconnectWindow  time.Duration
 	maxConnectionAge time.Duration
 }
 
@@ -152,7 +154,7 @@ type directDialResult struct {
 	err     error
 }
 
-func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsIdentityTTL, membershipTTL, maxConnectionAge time.Duration, mm *metrics.MeshMetrics) (Mesh, error) {
+func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsIdentityTTL, membershipTTL, reconnectWindow, maxConnectionAge time.Duration, isDenied func(types.PeerKey) bool, mm *metrics.MeshMetrics) (Mesh, error) {
 	meshCert, err := GenerateIdentityCert(signPriv, creds.Cert, tlsIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate mesh cert: %w", err)
@@ -169,10 +171,12 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 		bareCert:         bareCert,
 		trustBundle:      creds.Trust,
 		inviteSigner:     creds.DelegationKey,
+		isDenied:         isDenied,
 		localKey:         localKey,
 		socks:            sock.NewSockStore(),
 		port:             defaultPort,
 		membershipTTL:    membershipTTL,
+		reconnectWindow:  reconnectWindow,
 		maxConnectionAge: maxConnectionAge,
 		sessions:         newSessionRegistry(mm.SessionsActive),
 		recvCh:           make(chan Packet, queueBufSize),
@@ -194,10 +198,11 @@ func (m *impl) Start(ctx context.Context) error {
 
 	qt := &quic.Transport{Conn: conn}
 	ln, err := qt.Listen(newServerTLSConfig(serverTLSParams{
-		meshCertPtr:   &m.meshCert,
-		inviteCert:    m.bareCert,
-		trustBundle:   m.trustBundle,
-		inviteEnabled: m.inviteSigner != nil,
+		meshCertPtr:     &m.meshCert,
+		inviteCert:      m.bareCert,
+		trustBundle:     m.trustBundle,
+		reconnectWindow: m.reconnectWindow,
+		inviteEnabled:   m.inviteSigner != nil,
 	}), quicConfig())
 	if err != nil {
 		_ = conn.Close()
@@ -282,7 +287,7 @@ func (m *impl) acceptFromCh(ctx context.Context, ch <-chan incomingStream) (type
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle)
+	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.reconnectWindow)
 	qCfg := quicConfig()
 
 	qc, err := m.mainQT.Dial(ctx, addr, tlsCfg, qCfg)
@@ -294,7 +299,7 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 }
 
 func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey, localNAT nat.Type) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle)
+	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.reconnectWindow)
 	qCfg := quicConfig()
 
 	conn, err := m.socks.Punch(ctx, addr, localNAT)
@@ -780,6 +785,10 @@ func (m *impl) acceptLoop(ctx context.Context) {
 
 		switch qc.ConnectionState().TLS.NegotiatedProtocol {
 		case alpnMesh:
+			if m.isDenied != nil && m.isDenied(peerKey) {
+				_ = qc.CloseWithError(0, string(CloseReasonDenied))
+				continue
+			}
 			m.addPeer(newPeerSession(qc, m.mainQT, false), peerKey)
 		case alpnInvite:
 			go m.handleInviteConnection(ctx, qc, peerKey)

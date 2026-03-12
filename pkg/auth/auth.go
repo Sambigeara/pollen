@@ -45,6 +45,7 @@ const (
 var (
 	ErrCredentialsNotFound = errors.New("node membership credentials not found")
 	ErrDifferentCluster    = errors.New("node already has membership credentials for a different cluster")
+	ErrCertExpired         = errors.New("delegation cert has expired")
 )
 
 // FullCapabilities returns capabilities for root/admin certs.
@@ -167,10 +168,11 @@ func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now
 	}
 
 	if existing != nil {
-		if err := VerifyDelegationCert(existing.Cert, existing.Trust, now, nodePub); err != nil {
-			return nil, fmt.Errorf("invalid stored delegation credentials: %w", err)
+		if err := VerifyDelegationCert(existing.Cert, existing.Trust, now, nodePub); err == nil {
+			return existing, nil
 		}
-		return existing, nil
+		// Root has admin key — fall through to re-issue a fresh cert
+		// when the stored one is expired but cryptographically valid.
 	}
 
 	adminPriv, _, err := LoadOrCreateAdminKey(pollenDir)
@@ -222,8 +224,15 @@ func LoadExistingNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, no
 		return nil, err
 	}
 
-	if err := VerifyDelegationCert(creds.Cert, creds.Trust, now, nodePub); err != nil {
+	// Always verify the cryptographic chain (signatures, cluster scope, subject).
+	if err := verifyDelegationCertChain(creds.Cert, creds.Trust, nodePub); err != nil {
 		return nil, fmt.Errorf("invalid stored delegation credentials: %w", err)
+	}
+
+	// Check time validity separately so callers can distinguish crypto-valid
+	// but expired certs from truly invalid ones.
+	if IsCertExpired(creds.Cert, now) {
+		return creds, fmt.Errorf("stored delegation credentials: %w", ErrCertExpired)
 	}
 
 	return creds, nil
@@ -499,11 +508,11 @@ func IssueDelegationCert(
 	}, nil
 }
 
-// VerifyDelegationCert verifies a DelegationCert chain against a TrustBundle.
-func VerifyDelegationCert(
+// verifyDelegationCertChain verifies proto validity, cluster scope, the
+// signature chain, and subject match — everything except the time check.
+func verifyDelegationCertChain(
 	cert *admissionv1.DelegationCert,
 	trust *admissionv1.TrustBundle,
-	now time.Time,
 	expectedSubject []byte,
 ) error {
 	if cert == nil {
@@ -514,13 +523,6 @@ func VerifyDelegationCert(
 	}
 	if !bytes.Equal(cert.GetClaims().GetClusterId(), trust.GetClusterId()) {
 		return errors.New("delegation cert not scoped to cluster")
-	}
-
-	// Check leaf cert time validity (sufficient because issuance clamps child.notAfter <= parent.notAfter).
-	notBefore := time.Unix(cert.GetClaims().GetNotBeforeUnix(), 0).Add(-timeSkewAllowance)
-	notAfter := time.Unix(cert.GetClaims().GetNotAfterUnix(), 0).Add(timeSkewAllowance)
-	if now.Before(notBefore) || now.After(notAfter) {
-		return errors.New("delegation cert outside validity window")
 	}
 
 	// Walk chain from leaf to root verifying signatures.
@@ -556,6 +558,49 @@ func VerifyDelegationCert(
 	}
 
 	return nil
+}
+
+// VerifyDelegationCertChain verifies a DelegationCert chain against a
+// TrustBundle without checking time validity. Exported for use in TLS
+// reconnect-window fallback paths.
+func VerifyDelegationCertChain(
+	cert *admissionv1.DelegationCert,
+	trust *admissionv1.TrustBundle,
+	expectedSubject []byte,
+) error {
+	return verifyDelegationCertChain(cert, trust, expectedSubject)
+}
+
+// VerifyDelegationCert verifies a DelegationCert chain against a TrustBundle,
+// including time validity.
+func VerifyDelegationCert(
+	cert *admissionv1.DelegationCert,
+	trust *admissionv1.TrustBundle,
+	now time.Time,
+	expectedSubject []byte,
+) error {
+	if err := verifyDelegationCertChain(cert, trust, expectedSubject); err != nil {
+		return err
+	}
+
+	// Check leaf cert time validity (sufficient because issuance clamps child.notAfter <= parent.notAfter).
+	notBefore := time.Unix(cert.GetClaims().GetNotBeforeUnix(), 0).Add(-timeSkewAllowance)
+	notAfter := time.Unix(cert.GetClaims().GetNotAfterUnix(), 0).Add(timeSkewAllowance)
+	if now.Before(notBefore) || now.After(notAfter) {
+		return fmt.Errorf("%w: delegation cert outside validity window", ErrCertExpired)
+	}
+
+	return nil
+}
+
+// IsCertWithinReconnectWindow returns true if the cert has expired but is
+// still within the grace period defined by reconnectWindow.
+func IsCertWithinReconnectWindow(cert *admissionv1.DelegationCert, now time.Time, reconnectWindow time.Duration) bool {
+	expiresAt := CertExpiresAt(cert)
+	if !IsCertExpiredAt(expiresAt, now) {
+		return true // not expired yet, trivially within window
+	}
+	return now.Before(expiresAt.Add(reconnectWindow))
 }
 
 func IssueJoinToken(

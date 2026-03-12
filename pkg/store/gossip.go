@@ -175,6 +175,7 @@ type Store struct {
 	denied             map[types.PeerKey]struct{}
 	consumedInvites    map[string]consumedInviteEntry
 	desiredConnections map[string]Connection
+	onDeny             func(types.PeerKey)
 	metrics            *metrics.GossipMetrics
 	mu                 sync.RWMutex
 	LocalID            types.PeerKey
@@ -307,6 +308,12 @@ func (s *Store) dropExpiredInvites(now time.Time) {
 			delete(s.consumedInvites, tokenID)
 		}
 	}
+}
+
+// OnDenyPeer registers a callback invoked (outside the lock) when a deny
+// event is applied via gossip. Only one callback may be registered.
+func (s *Store) OnDenyPeer(fn func(types.PeerKey)) {
+	s.onDeny = fn
 }
 
 // SetGossipMetrics replaces the no-op metrics with wired instruments.
@@ -518,16 +525,18 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	s.metrics.EventsReceived.Add(int64(len(events)))
 
 	var result ApplyResult
+	var newlyDenied []types.PeerKey
 	anyApplied := false
 	for _, event := range events {
 		if event == nil {
 			continue
 		}
-		r := s.applyEventLocked(event)
+		r, denied := s.applyEventLocked(event)
 		if len(r.Rebroadcast) > 0 {
 			anyApplied = true
 		}
 		result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
+		newlyDenied = append(newlyDenied, denied...)
 	}
 
 	// Update stale ratio once per pull-response batch: a batch with any
@@ -540,15 +549,25 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 		}
 	}
 
+	onDeny := s.onDeny
 	s.mu.Unlock()
+
+	if onDeny != nil {
+		for _, pk := range newlyDenied {
+			onDeny(pk)
+		}
+	}
 
 	return result
 }
 
-func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
+// applyEventLocked applies a single event. The second return value contains
+// any peer keys that were newly denied (so the caller can fire callbacks
+// outside the lock).
+func (s *Store) applyEventLocked(event *statev1.GossipEvent) (ApplyResult, []types.PeerKey) {
 	peerID, err := types.PeerKeyFromString(event.GetPeerId())
 	if err != nil {
-		return ApplyResult{}
+		return ApplyResult{}, nil
 	}
 
 	rec := s.nodes[peerID]
@@ -556,7 +575,7 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 
 	key, ok := eventAttrKey(event)
 	if !ok {
-		return ApplyResult{}
+		return ApplyResult{}, nil
 	}
 
 	// Self-state conflict handling: receiving our own events from peers.
@@ -567,9 +586,9 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 			rec.maxCounter = event.GetCounter()
 			s.nodes[peerID] = rec
 			s.metrics.SelfConflicts.Inc()
-			return ApplyResult{Rebroadcast: s.bumpAndBroadcastAllLocked()}
+			return ApplyResult{Rebroadcast: s.bumpAndBroadcastAllLocked()}, nil
 		}
-		return ApplyResult{}
+		return ApplyResult{}, nil
 	}
 
 	// Per-key stale check: only accept if this event is newer for this key.
@@ -579,15 +598,16 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 			rec.maxCounter = event.GetCounter()
 			s.nodes[peerID] = rec
 		}
-		return ApplyResult{}
+		return ApplyResult{}, nil
 	}
 
 	deleted := event.GetDeleted()
+	var newlyDenied []types.PeerKey
 
 	switch {
 	case key.kind == attrDeny:
 		if deleted {
-			return ApplyResult{}
+			return ApplyResult{}, nil
 		}
 		v := event.GetChange().(*statev1.GossipEvent_Deny) //nolint:forcetypeassert
 		subjectKey := types.PeerKeyFromBytes(v.Deny.GetSubjectPub())
@@ -595,6 +615,7 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 			// Already denied; still record the log entry so counters stay consistent.
 		} else {
 			s.denied[subjectKey] = struct{}{}
+			newlyDenied = append(newlyDenied, subjectKey)
 		}
 	case deleted:
 		applyDeleteLocked(&rec, key)
@@ -608,7 +629,7 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) ApplyResult {
 	}
 	s.nodes[peerID] = rec
 	s.metrics.EventsApplied.Inc()
-	return ApplyResult{Rebroadcast: []*statev1.GossipEvent{event}}
+	return ApplyResult{Rebroadcast: []*statev1.GossipEvent{event}}, newlyDenied
 }
 
 func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {

@@ -248,7 +248,7 @@ func startMeshHarnessWithCreds(
 ) *meshHarness {
 	t.Helper()
 
-	m, err := mesh.NewMesh(0, priv, creds, config.CertTTLs{}.TLSIdentityTTL(), config.CertTTLs{}.MembershipTTL(), 0, metrics.NewMeshMetrics(nil))
+	m, err := mesh.NewMesh(0, priv, creds, config.CertTTLs{}.TLSIdentityTTL(), config.CertTTLs{}.MembershipTTL(), config.CertTTLs{}.ReconnectWindowDuration(), 0, nil, metrics.NewMeshMetrics(nil))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())

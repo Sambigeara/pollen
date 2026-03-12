@@ -1614,3 +1614,57 @@ func TestDigestMatchSkips(t *testing.T) {
 	events := s.MissingFor(s.Clock())
 	require.Empty(t, events)
 }
+
+func TestOnDenyCallbackFiredOnGossipReceipt(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	var deniedPeers []types.PeerKey
+	s.OnDenyPeer(func(pk types.PeerKey) {
+		deniedPeers = append(deniedPeers, pk)
+	})
+
+	// Simulate a deny event from a remote peer.
+	senderPK, senderPKStr := peerKey(2)
+	subjectPK, _ := peerKey(3)
+	_ = senderPK
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  senderPKStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Deny{
+			Deny: &statev1.DenyChange{SubjectPub: subjectPK[:]},
+		},
+	})
+
+	require.Len(t, deniedPeers, 1)
+	require.Equal(t, subjectPK, deniedPeers[0])
+	require.True(t, s.IsDenied(subjectPK[:]))
+}
+
+func TestOnDenyCallbackNotFiredForAlreadyDenied(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	subjectPK, _ := peerKey(3)
+	s.DenyPeer(subjectPK[:])
+
+	var callCount int
+	s.OnDenyPeer(func(_ types.PeerKey) {
+		callCount++
+	})
+
+	// Deny via gossip from a different peer — already denied, callback should not fire.
+	_, senderPKStr := peerKey(2)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  senderPKStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Deny{
+			Deny: &statev1.DenyChange{SubjectPub: subjectPK[:]},
+		},
+	})
+
+	require.Equal(t, 0, callCount)
+}

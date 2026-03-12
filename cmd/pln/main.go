@@ -320,6 +320,9 @@ func runNode(cmd *cobra.Command) {
 			if credErr != nil {
 				logger.Fatal("auto-init failed: ", credErr)
 			}
+		case errors.Is(credErr, auth.ErrCertExpired):
+			logger.Warnw("delegation certificate has expired — starting in degraded mode, will attempt renewal",
+				"expired_at", auth.CertExpiresAt(creds.Cert))
 		case errors.Is(credErr, auth.ErrDifferentCluster):
 			logger.Fatal("node is already enrolled in a different cluster; run `pln purge` before joining a new cluster")
 		default:
@@ -382,6 +385,7 @@ func runNode(cmd *cobra.Command) {
 		BootstrapPeers:   bootstrapPeers,
 		TLSIdentityTTL:   certTTLs.TLSIdentityTTL(),
 		MembershipTTL:    certTTLs.MembershipTTL(),
+		ReconnectWindow:  certTTLs.ReconnectWindowDuration(),
 		MaxConnectionAge: defaultMaxConnectionAge,
 		BootstrapPublic:  cfg.Public,
 		MetricsEnabled:   metricsEnabled,

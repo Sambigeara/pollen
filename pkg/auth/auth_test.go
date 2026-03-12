@@ -581,6 +581,117 @@ func TestAccessDeadlineJoinTokenClamps(t *testing.T) {
 	require.Equal(t, deadline.Unix(), dl.Unix())
 }
 
+func TestVerifyDelegationCertChain_AcceptsExpiredCerts(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now()
+	cert, err := auth.IssueDelegationCert(
+		rootPriv, nil, trust.GetClusterId(), subjectPub,
+		auth.LeafCapabilities(),
+		now.Add(-48*time.Hour), now.Add(-24*time.Hour),
+		time.Time{},
+	)
+	require.NoError(t, err)
+
+	// Full verification should fail (expired).
+	err = auth.VerifyDelegationCert(cert, trust, now, subjectPub)
+	require.ErrorIs(t, err, auth.ErrCertExpired)
+
+	// Chain-only verification should pass (crypto-valid).
+	err = auth.VerifyDelegationCertChain(cert, trust, subjectPub)
+	require.NoError(t, err)
+}
+
+func TestVerifyDelegationCertChain_RejectsBadSignature(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now()
+	cert, err := auth.IssueDelegationCert(
+		rootPriv, nil, trust.GetClusterId(), subjectPub,
+		auth.LeafCapabilities(),
+		now.Add(-time.Minute), now.Add(24*time.Hour),
+		time.Time{},
+	)
+	require.NoError(t, err)
+
+	// Corrupt signature.
+	cert.Signature[0] ^= 0xff
+
+	err = auth.VerifyDelegationCertChain(cert, trust, subjectPub)
+	require.Error(t, err)
+}
+
+func TestLoadExistingNodeCredentials_ReturnsCredsAndErrCertExpired(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	nodePub, _ := newKeyPair(t)
+
+	now := time.Now()
+	expiredCert, err := auth.IssueDelegationCert(
+		rootPriv, nil, trust.GetClusterId(), nodePub,
+		auth.LeafCapabilities(),
+		now.Add(-48*time.Hour), now.Add(-24*time.Hour),
+		time.Time{},
+	)
+	require.NoError(t, err)
+
+	pollenDir := t.TempDir()
+	require.NoError(t, auth.SaveNodeCredentials(pollenDir, &auth.NodeCredentials{
+		Trust: trust,
+		Cert:  expiredCert,
+	}))
+
+	creds, err := auth.LoadExistingNodeCredentials(pollenDir, nodePub, now)
+	require.ErrorIs(t, err, auth.ErrCertExpired)
+	require.NotNil(t, creds, "creds should be returned even when expired")
+	require.Equal(t, expiredCert.GetClaims().GetNotAfterUnix(), creds.Cert.GetClaims().GetNotAfterUnix())
+}
+
+func TestIsCertWithinReconnectWindow(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now()
+	cert, err := auth.IssueDelegationCert(
+		rootPriv, nil, trust.GetClusterId(), subjectPub,
+		auth.LeafCapabilities(),
+		now.Add(-48*time.Hour), now.Add(-24*time.Hour),
+		time.Time{},
+	)
+	require.NoError(t, err)
+
+	reconnectWindow := 7 * 24 * time.Hour
+
+	// 24h expired, 7d window → within window.
+	require.True(t, auth.IsCertWithinReconnectWindow(cert, now, reconnectWindow))
+
+	// Move time to just past the window.
+	require.False(t, auth.IsCertWithinReconnectWindow(cert, now.Add(8*24*time.Hour), reconnectWindow))
+}
+
+func TestIsCertWithinReconnectWindow_NotYetExpired(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now()
+	cert, err := auth.IssueDelegationCert(
+		rootPriv, nil, trust.GetClusterId(), subjectPub,
+		auth.LeafCapabilities(),
+		now.Add(-time.Minute), now.Add(24*time.Hour),
+		time.Time{},
+	)
+	require.NoError(t, err)
+
+	// Not expired → always within window.
+	require.True(t, auth.IsCertWithinReconnectWindow(cert, now, time.Hour))
+}
+
 func newKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)

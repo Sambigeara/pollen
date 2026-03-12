@@ -105,6 +105,7 @@ type Config struct {
 	GossipJitter        float64
 	TLSIdentityTTL      time.Duration
 	MembershipTTL       time.Duration
+	ReconnectWindow     time.Duration
 	MaxConnectionAge    time.Duration
 	DisableGossipJitter bool
 	BootstrapPublic     bool
@@ -177,7 +178,10 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 	peerMetrics := metrics.NewPeerMetrics(col)
 	gossipMetrics := metrics.NewGossipMetrics(col)
 
-	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSIdentityTTL, conf.MembershipTTL, conf.MaxConnectionAge, meshMetrics)
+	isDenied := func(pk types.PeerKey) bool {
+		return stateStore.IsDenied(pk[:])
+	}
+	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSIdentityTTL, conf.MembershipTTL, conf.ReconnectWindow, conf.MaxConnectionAge, isDenied, meshMetrics)
 	if err != nil {
 		log.Error("failed to load mesh", zap.Error(err))
 		return nil, err
@@ -235,6 +239,23 @@ func (n *Node) Start(ctx context.Context) error {
 		n.store.SetLocalCertExpiry(n.creds.Cert.GetClaims().GetNotAfterUnix())
 	}
 
+	// Register deny callback: disconnect denied peers immediately when a
+	// deny event arrives via gossip from any cluster member.
+	n.store.OnDenyPeer(func(pk types.PeerKey) {
+		n.log.Infow("deny event received via gossip, disconnecting peer", "peer", pk.Short())
+		n.tun.DisconnectPeer(pk)
+		n.mesh.ClosePeerSession(pk, mesh.CloseReasonDenied)
+		n.store.RemoveDesiredConnection(pk, 0, 0)
+		select {
+		case n.localPeerEvents <- peer.PeerDisconnected{PeerKey: pk, Reason: peer.DisconnectDenied}:
+		default:
+		}
+		select {
+		case n.localPeerEvents <- peer.ForgetPeer{PeerKey: pk}:
+		default:
+		}
+	})
+
 	if err := n.mesh.Start(ctx); err != nil {
 		return err
 	}
@@ -273,14 +294,19 @@ func (n *Node) Start(ctx context.Context) error {
 		ipRefreshCh = ipRefreshTicker.C
 	}
 
-	certCheckTicker := time.NewTicker(certCheckInterval)
+	// Speed up cert checks when the cert is already expired at startup.
+	certInterval := certCheckInterval
+	if auth.IsCertExpired(n.creds.Cert, time.Now()) {
+		certInterval = expirySweepInterval // 30s for faster renewal attempts
+	}
+	certCheckTicker := time.NewTicker(certInterval)
 	defer certCheckTicker.Stop()
 
 	stateSaveTicker := time.NewTicker(stateSaveInterval)
 	defer stateSaveTicker.Stop()
 
 	n.tick()
-	n.checkCertExpiry() // seed the cert-expiry gauge; the ticker only fires hourly
+	n.checkCertExpiry()
 	n.sampleResourceTelemetry()
 	n.queueGossipEvents(n.store.LocalEvents())
 
@@ -298,6 +324,14 @@ func (n *Node) Start(ctx context.Context) error {
 		case <-certCheckTicker.C:
 			if n.checkCertExpiry() {
 				return ErrCertExpired
+			}
+			// Speed up checks while renewal is failing.
+			if n.renewalFailed.Load() && certInterval != expirySweepInterval {
+				certInterval = expirySweepInterval
+				certCheckTicker.Reset(certInterval)
+			} else if !n.renewalFailed.Load() && certInterval != certCheckInterval {
+				certInterval = certCheckInterval
+				certCheckTicker.Reset(certInterval)
 			}
 		case <-stateSaveTicker.C:
 			if err := n.store.Save(); err != nil {
@@ -1095,17 +1129,32 @@ func (n *Node) DisconnectService(localPort uint32) error {
 }
 
 // checkCertExpiry checks the local node's delegation cert and logs warnings.
-// Returns true if the cert has expired and the node should shut down.
+// Returns true if the cert has expired beyond the reconnect window and the
+// node should shut down.
 func (n *Node) checkCertExpiry() bool {
 	now := time.Now()
-	if auth.IsCertExpired(n.creds.Cert, now) {
-		n.log.Errorw("delegation certificate has expired, shutting down — rejoin the cluster or contact a cluster admin",
-			"expired_at", auth.CertExpiresAt(n.creds.Cert))
-		return true
-	}
-
+	expired := auth.IsCertExpired(n.creds.Cert, now)
 	remaining := time.Until(auth.CertExpiresAt(n.creds.Cert))
 	n.nodeMetrics.CertExpirySeconds.Set(remaining.Seconds())
+
+	if expired {
+		// Attempt renewal before giving up.
+		if n.attemptCertRenewal() {
+			n.renewalFailed.Store(false)
+			return false
+		}
+		n.renewalFailed.Store(true)
+
+		if !auth.IsCertWithinReconnectWindow(n.creds.Cert, now, n.conf.ReconnectWindow) {
+			n.log.Errorw("delegation certificate expired beyond reconnect window, shutting down — rejoin the cluster or contact a cluster admin",
+				"expired_at", auth.CertExpiresAt(n.creds.Cert))
+			return true
+		}
+		n.log.Warnw("delegation certificate expired — running in degraded mode, will keep retrying renewal",
+			"expired_at", auth.CertExpiresAt(n.creds.Cert),
+			"reconnect_window_remaining", auth.CertExpiresAt(n.creds.Cert).Add(n.conf.ReconnectWindow).Sub(now).Truncate(time.Minute))
+		return false
+	}
 
 	if remaining <= certWarnThreshold {
 		failed := !n.attemptCertRenewal()
@@ -1258,18 +1307,24 @@ func (n *Node) handleCertRenewalRequest(ctx context.Context, from types.PeerKey,
 func (n *Node) disconnectExpiredPeers() {
 	now := time.Now()
 	for _, peerKey := range n.mesh.ConnectedPeers() {
-		expiry, ok := n.mesh.PeerCertExpiresAt(peerKey)
-		if !ok || expiry.IsZero() {
+		dc, ok := n.mesh.PeerDelegationCert(peerKey)
+		if !ok || dc == nil {
 			continue
 		}
-		if auth.IsCertExpiredAt(expiry, now) {
-			n.log.Warnw("disconnecting peer with expired delegation cert",
-				"peer", peerKey.Short(), "expired_at", expiry)
-			n.tun.DisconnectPeer(peerKey)
-			n.mesh.ClosePeerSession(peerKey, mesh.CloseReasonCertExpired)
-			n.handlePeerInput(peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertExpired})
-			n.handlePeerInput(peer.ForgetPeer{PeerKey: peerKey})
+		if !auth.IsCertExpired(dc, now) {
+			continue
 		}
+		// Allow peers within the reconnect window to stay connected so
+		// they can renew their cert.
+		if auth.IsCertWithinReconnectWindow(dc, now, n.conf.ReconnectWindow) {
+			continue
+		}
+		n.log.Warnw("disconnecting peer with expired delegation cert beyond reconnect window",
+			"peer", peerKey.Short(), "expired_at", auth.CertExpiresAt(dc))
+		n.tun.DisconnectPeer(peerKey)
+		n.mesh.ClosePeerSession(peerKey, mesh.CloseReasonCertExpired)
+		n.handlePeerInput(peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertExpired})
+		n.handlePeerInput(peer.ForgetPeer{PeerKey: peerKey})
 	}
 }
 

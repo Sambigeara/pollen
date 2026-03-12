@@ -105,6 +105,7 @@ func (tn *testNode) start(t *testing.T) {
 		BootstrapPeers:      tn.bootstrapPeers,
 		TLSIdentityTTL:      config.CertTTLs{}.TLSIdentityTTL(),
 		MembershipTTL:       config.CertTTLs{}.MembershipTTL(),
+		ReconnectWindow:     config.CertTTLs{}.ReconnectWindowDuration(),
 	}
 
 	n, err := node.New(conf, tn.privKey, tn.creds, stateStore, peerStore, tn.dir)
