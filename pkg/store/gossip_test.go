@@ -74,7 +74,7 @@ func TestEagerSyncClock(t *testing.T) {
 	digest = s.EagerSyncClock()
 	peers := digest.GetPeers()
 	require.Len(t, peers, 2)
-	require.Equal(t, uint64(5), peers[s.LocalID.String()].GetMaxCounter())
+	require.Equal(t, uint64(6), peers[s.LocalID.String()].GetMaxCounter())
 	require.NotZero(t, peers[s.LocalID.String()].GetStateHash())
 	peerPK, _ := peerKey(2)
 	require.Equal(t, uint64(5), peers[peerPK.String()].GetMaxCounter())
@@ -90,7 +90,7 @@ func TestSetLocalNetworkReturnsEvent(t *testing.T) {
 	require.Len(t, events, 1)
 
 	ev := events[0]
-	require.Equal(t, uint64(6), ev.GetCounter())
+	require.Equal(t, uint64(7), ev.GetCounter())
 	network := ev.GetNetwork()
 	require.NotNil(t, network)
 	require.Equal(t, []string{"10.0.0.1"}, network.GetIps())
@@ -382,8 +382,8 @@ func TestApplyEventSelfStateConflict(t *testing.T) {
 	}
 
 	rec := s.nodes[localID]
-	// Adopted 10, then bumped once per attribute: net(11) + id(12) + pa(13) + nat(14) + observed_external_ip(15) + resource_telemetry(16).
-	require.Equal(t, uint64(16), rec.maxCounter)
+	// Adopted 10, then bumped once per attribute: net(11) + id(12) + pa(13) + nat(14) + observed_external_ip(15) + resource_telemetry(16) + traffic_heatmap(17).
+	require.Equal(t, uint64(17), rec.maxCounter)
 }
 
 func TestApplyEventSelfStateNoConflict(t *testing.T) {
@@ -422,7 +422,7 @@ func TestMissingForReturnsEvents(t *testing.T) {
 		},
 	})
 
-	require.Len(t, events, 7)
+	require.Len(t, events, 8)
 }
 
 func TestMissingForRespectsClock(t *testing.T) {
@@ -439,7 +439,7 @@ func TestMissingForRespectsClock(t *testing.T) {
 	localDigest := digest.GetPeers()[s.LocalID.String()]
 	events := s.MissingFor(&statev1.GossipStateDigest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 5, StateHash: localDigest.GetStateHash()},
+			s.LocalID.String(): {MaxCounter: 6, StateHash: localDigest.GetStateHash()},
 		},
 	})
 
@@ -470,7 +470,7 @@ func TestClockUsesMaxCounter(t *testing.T) {
 	s.SetExternalPort(45000)
 
 	digest := s.Clock()
-	require.Equal(t, uint64(7), digest.GetPeers()[s.LocalID.String()].GetMaxCounter())
+	require.Equal(t, uint64(8), digest.GetPeers()[s.LocalID.String()].GetMaxCounter())
 }
 
 func TestUpsertLocalServiceReturnsEvent(t *testing.T) {
@@ -1602,7 +1602,7 @@ func TestDigestHashMismatchSendsAll(t *testing.T) {
 		},
 	})
 
-	require.Len(t, events, 7)
+	require.Len(t, events, 8)
 }
 
 func TestDigestMatchSkips(t *testing.T) {
@@ -2099,4 +2099,151 @@ func TestWorkloadQueries_ExcludeDeniedNodes(t *testing.T) {
 	require.Empty(t, s.AllWorkloadClaims())
 	_, _, found = s.ResolveWorkloadPrefix("denied")
 	require.False(t, found)
+}
+
+func TestTrafficHeatmap_ApplyAndQuery(t *testing.T) {
+	localPK, localIDStr := peerKey(1)
+	remotePK, remotePKStr := peerKey(2)
+
+	s := newTestStore([]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	// Apply a traffic heatmap event from the remote peer.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePKStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_TrafficHeatmap{
+			TrafficHeatmap: &statev1.TrafficHeatmapChange{
+				Rates: []*statev1.TrafficRate{
+					{PeerId: localIDStr, BytesIn: 100, BytesOut: 200},
+				},
+			},
+		},
+	})
+
+	all := s.AllTrafficHeatmaps()
+	require.Contains(t, all, remotePK)
+	require.Equal(t, TrafficSnapshot{BytesIn: 100, BytesOut: 200}, all[remotePK][localPK])
+}
+
+func TestTrafficHeatmap_TombstoneOnRestart(t *testing.T) {
+	pub := []byte{3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	s := newTestStore(pub)
+
+	targetPK, _ := peerKey(4)
+	events := s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{
+		{4}: {BytesIn: 500, BytesOut: 600},
+	})
+	require.Len(t, events, 1)
+
+	// Verify it's stored.
+	all := s.AllTrafficHeatmaps()
+	localID := types.PeerKeyFromBytes(pub)
+	require.Contains(t, all, localID)
+	require.Equal(t, TrafficSnapshot{BytesIn: 500, BytesOut: 600}, all[localID][targetPK])
+
+	// Simulate restart by re-tombstoning stale attrs.
+	local := s.nodes[localID]
+	tombstoneStaleAttrs(&local)
+	s.nodes[localID] = local
+
+	// Traffic data should be tombstoned.
+	entry := local.log[trafficHeatmapAttrKey()]
+	require.True(t, entry.Deleted)
+}
+
+func TestTrafficHeatmap_ZeroSnapshotSkipped(t *testing.T) {
+	pub := []byte{5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	s := newTestStore(pub)
+
+	// Empty snapshot produces no gossip event when no prior data exists.
+	events := s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{})
+	require.Empty(t, events)
+
+	// All-zero snapshot also produces no gossip event.
+	events = s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{
+		{6}: {BytesIn: 0, BytesOut: 0},
+	})
+	require.Empty(t, events)
+}
+
+func TestTrafficHeatmap_StaleClearing(t *testing.T) {
+	pub := []byte{7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	s := newTestStore(pub)
+	localID := types.PeerKeyFromBytes(pub)
+
+	// Publish non-zero traffic.
+	events := s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{
+		{8}: {BytesIn: 100, BytesOut: 200},
+	})
+	require.Len(t, events, 1)
+	require.False(t, events[0].GetDeleted())
+
+	all := s.AllTrafficHeatmaps()
+	require.Contains(t, all, localID)
+
+	// Next tick: zero traffic. Should emit deletion event.
+	events = s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{})
+	require.Len(t, events, 1)
+	require.True(t, events[0].GetDeleted())
+
+	// Traffic data should be cleared.
+	all = s.AllTrafficHeatmaps()
+	require.NotContains(t, all, localID)
+
+	// Subsequent zero tick: no event (already cleared).
+	events = s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{})
+	require.Empty(t, events)
+}
+
+func TestMalformedTrafficHeatmapRejected(t *testing.T) {
+	_, remotePKStr := peerKey(2)
+	localPK, localIDStr := peerKey(1)
+
+	s := newTestStore([]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	remotePK := types.PeerKeyFromBytes([]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	// Apply a valid traffic heatmap from the remote peer.
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePKStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_TrafficHeatmap{
+			TrafficHeatmap: &statev1.TrafficHeatmapChange{
+				Rates: []*statev1.TrafficRate{
+					{PeerId: localIDStr, BytesIn: 100, BytesOut: 200},
+				},
+			},
+		},
+	})
+	require.Len(t, result.Rebroadcast, 1)
+
+	all := s.AllTrafficHeatmaps()
+	require.Equal(t, TrafficSnapshot{BytesIn: 100, BytesOut: 200}, all[remotePK][localPK])
+
+	// Capture the log entry and counter after the valid apply.
+	logBefore := s.nodes[remotePK].log[trafficHeatmapAttrKey()]
+
+	// Apply a second heatmap with one valid and one invalid peer_id.
+	result = s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePKStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_TrafficHeatmap{
+			TrafficHeatmap: &statev1.TrafficHeatmapChange{
+				Rates: []*statev1.TrafficRate{
+					{PeerId: localIDStr, BytesIn: 999, BytesOut: 999},
+					{PeerId: "not-a-valid-peer-key", BytesIn: 1, BytesOut: 1},
+				},
+			},
+		},
+	})
+
+	// The malformed heatmap must be rejected entirely — original data preserved.
+	all = s.AllTrafficHeatmaps()
+	require.Equal(t, TrafficSnapshot{BytesIn: 100, BytesOut: 200}, all[remotePK][localPK])
+
+	// The bad event must not advance the stored counter/log entry.
+	logAfter := s.nodes[remotePK].log[trafficHeatmapAttrKey()]
+	require.Equal(t, logBefore, logAfter)
+
+	// The bad event must not be rebroadcast.
+	require.Empty(t, result.Rebroadcast)
 }

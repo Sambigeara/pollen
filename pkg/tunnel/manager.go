@@ -13,6 +13,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/sambigeara/pollen/pkg/traffic"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -34,15 +35,16 @@ type connectionKey struct {
 
 // Manager manages service tunneling over peer streams.
 type Manager struct {
-	log           *zap.SugaredLogger
-	transport     StreamTransport
-	connections   map[connectionKey]connectionHandler
-	services      map[uint32]serviceHandler
-	activeStreams map[uint32]map[io.ReadWriteCloser]struct{}
-	connectionMu  sync.RWMutex
-	serviceMu     sync.RWMutex
-	streamMu      sync.Mutex
-	wg            sync.WaitGroup
+	log            *zap.SugaredLogger
+	transport      StreamTransport
+	trafficTracker traffic.Recorder
+	connections    map[connectionKey]connectionHandler
+	services       map[uint32]serviceHandler
+	activeStreams  map[uint32]map[io.ReadWriteCloser]struct{}
+	connectionMu   sync.RWMutex
+	serviceMu      sync.RWMutex
+	streamMu       sync.Mutex
+	wg             sync.WaitGroup
 }
 
 type serviceHandler struct {
@@ -85,6 +87,11 @@ func New(transport StreamTransport) *Manager {
 	}
 }
 
+// SetTrafficTracker sets the traffic tracker for recording per-peer byte counts.
+func (m *Manager) SetTrafficTracker(t traffic.Recorder) {
+	m.trafficTracker = t
+}
+
 func (m *Manager) Start(ctx context.Context) {
 	m.wg.Go(func() {
 		if err := m.acceptStreams(ctx); err != nil {
@@ -113,6 +120,10 @@ func (m *Manager) handleIncomingStream(peerID types.PeerKey, stream io.ReadWrite
 		m.log.Warnw("failed reading service port from stream", "peer", peerID.Short(), "err", err)
 		_ = stream.Close()
 		return
+	}
+
+	if m.trafficTracker != nil {
+		stream = traffic.WrapStream(stream, m.trafficTracker, peerID)
 	}
 
 	tracked := &trackedStream{ReadWriteCloser: stream}
@@ -251,6 +262,10 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 					_ = stream.Close()
 					_ = clientConn.Close()
 					return
+				}
+
+				if m.trafficTracker != nil {
+					stream = traffic.WrapStream(stream, m.trafficTracker, peerID)
 				}
 
 				bridge(clientConn, stream)

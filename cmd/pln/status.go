@@ -116,7 +116,7 @@ type statusSection struct {
 func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
 	sec := statusSection{
 		title:   "PEERS",
-		headers: []string{"NODE", "STATUS", "ADDR", "CPU", "MEM", "TUNNELS", "LATENCY"},
+		headers: []string{"NODE", "STATUS", "ADDR", "CPU", "MEM", "TUNNELS", "LATENCY", "TRAFFIC IN", "TRAFFIC OUT"},
 	}
 
 	if self := st.GetSelf(); self != nil && self.GetNode() != nil {
@@ -135,6 +135,7 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			formatPercent(self.GetMemPercent()),
 			formatTunnelCount(self.GetTunnelCount()),
 			"-",
+			"-", "-",
 		})
 	}
 
@@ -158,15 +159,19 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		mem := formatPercent(n.GetMemPercent())
 		tunnels := formatTunnelCount(n.GetTunnelCount())
 		latency := formatLatency(n.GetLatencyMs())
+		trafficIn := formatBytes(n.GetTrafficBytesIn())
+		trafficOut := formatBytes(n.GetTrafficBytesOut())
 
 		if !isReachableStatus(n.GetStatus()) {
 			cpu = "-"
 			mem = "-"
 			tunnels = "-"
 			latency = "-"
+			trafficIn = "-"
+			trafficOut = "-"
 		}
 
-		sec.rows = append(sec.rows, []string{label, status, addr, cpu, mem, tunnels, latency})
+		sec.rows = append(sec.rows, []string{label, status, addr, cpu, mem, tunnels, latency, trafficIn, trafficOut})
 	}
 
 	if filtered > 0 {
@@ -187,6 +192,27 @@ func formatTunnelCount(v uint32) string {
 		return "-"
 	}
 	return fmt.Sprintf("%d", v)
+}
+
+func formatBytes(b uint64) string {
+	if b == 0 {
+		return "-"
+	}
+	const (
+		kb = 1024
+		mb = 1024 * kb
+		gb = 1024 * mb
+	)
+	switch {
+	case b >= gb:
+		return fmt.Sprintf("%.1f GB", float64(b)/float64(gb))
+	case b >= mb:
+		return fmt.Sprintf("%.1f MB", float64(b)/float64(mb))
+	case b >= kb:
+		return fmt.Sprintf("%.1f KB", float64(b)/float64(kb))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
 
 func formatLatency(ms float64) string {

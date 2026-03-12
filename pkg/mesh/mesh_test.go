@@ -17,6 +17,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
+	"github.com/sambigeara/pollen/pkg/traffic"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
@@ -710,4 +711,88 @@ func startMeshHarnessWithCreds(
 	})
 
 	return h
+}
+
+func TestRoutedRelayTrafficAttribution(t *testing.T) {
+	cluster := newClusterAuth(t)
+	a := startMeshHarness(t, cluster)
+	b := startMeshHarness(t, cluster)
+	c := startMeshHarness(t, cluster)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Connect A↔B and B↔C (not A↔C).
+	require.NoError(t, a.mesh.Connect(ctx, b.peerKey, []*net.UDPAddr{
+		{IP: net.IPv4(127, 0, 0, 1), Port: b.port},
+	}))
+	require.NoError(t, b.mesh.Connect(ctx, c.peerKey, []*net.UDPAddr{
+		{IP: net.IPv4(127, 0, 0, 1), Port: c.port},
+	}))
+
+	// Wait for bidirectional sessions.
+	require.Eventually(t, func() bool {
+		_, ab := b.mesh.GetConn(a.peerKey)
+		_, bc := c.mesh.GetConn(b.peerKey)
+		return ab && bc
+	}, 5*time.Second, 25*time.Millisecond)
+
+	// Set up router on A: C→B.
+	routerA := newNotifyRouter(map[types.PeerKey]types.PeerKey{c.peerKey: b.peerKey})
+	a.mesh.SetRouter(routerA)
+
+	// Inject traffic tracker into B.
+	tracker := traffic.New()
+	b.mesh.SetTrafficTracker(tracker)
+
+	// A opens a routed stream to C.
+	streamA, err := a.mesh.OpenStream(ctx, c.peerKey)
+	require.NoError(t, err)
+
+	// C accepts the stream.
+	acceptCtx, acceptCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer acceptCancel()
+	peerKey, streamC, err := c.mesh.AcceptStream(acceptCtx)
+	require.NoError(t, err)
+	require.Equal(t, a.peerKey, peerKey)
+
+	// A→C: send payload.
+	payload := []byte("hello from A to C")
+	_, err = streamA.Write(payload)
+	require.NoError(t, err)
+
+	buf := make([]byte, 256)
+	n, err := streamC.Read(buf)
+	require.NoError(t, err)
+	require.Equal(t, payload, buf[:n])
+
+	// C→A: send response.
+	response := []byte("reply from C to A")
+	_, err = streamC.Write(response)
+	require.NoError(t, err)
+
+	n, err = streamA.Read(buf)
+	require.NoError(t, err)
+	require.Equal(t, response, buf[:n])
+
+	// Close streams.
+	_ = streamA.Close()
+	_ = streamC.Close()
+
+	// Rotate the tracker to get the window snapshot.
+	snap, changed := tracker.RotateAndSnapshot()
+	require.True(t, changed)
+
+	// Assert directionality on both legs.
+	// Bytes B read from A (A's outbound data forwarded through B).
+	require.Contains(t, snap, a.peerKey)
+	require.Greater(t, snap[a.peerKey].BytesIn, uint64(0))
+	// Bytes B wrote to A (C's response forwarded back through B).
+	require.Greater(t, snap[a.peerKey].BytesOut, uint64(0))
+
+	// Bytes B wrote to C (A's data forwarded to C).
+	require.Contains(t, snap, c.peerKey)
+	require.Greater(t, snap[c.peerKey].BytesOut, uint64(0))
+	// Bytes B read from C (C's response).
+	require.Greater(t, snap[c.peerKey].BytesIn, uint64(0))
 }

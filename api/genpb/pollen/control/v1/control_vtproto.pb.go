@@ -90,6 +90,16 @@ func (m *NodeSummary) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.TrafficBytesOut != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.TrafficBytesOut))
+		i--
+		dAtA[i] = 0x50
+	}
+	if m.TrafficBytesIn != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.TrafficBytesIn))
+		i--
+		dAtA[i] = 0x48
+	}
 	if m.MemPercent != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.MemPercent))
 		i--
@@ -1591,6 +1601,12 @@ func (m *NodeSummary) SizeVT() (n int) {
 	if m.MemPercent != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.MemPercent))
 	}
+	if m.TrafficBytesIn != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.TrafficBytesIn))
+	}
+	if m.TrafficBytesOut != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.TrafficBytesOut))
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -2400,6 +2416,44 @@ func (m *NodeSummary) UnmarshalVT(dAtA []byte) error {
 				b := dAtA[iNdEx]
 				iNdEx++
 				m.MemPercent |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 9:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field TrafficBytesIn", wireType)
+			}
+			m.TrafficBytesIn = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.TrafficBytesIn |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 10:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field TrafficBytesOut", wireType)
+			}
+			m.TrafficBytesOut = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.TrafficBytesOut |= uint64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}

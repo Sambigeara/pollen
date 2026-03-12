@@ -42,6 +42,8 @@ message NodeSummary {
   double latency_ms = 6;
   uint32 cpu_percent = 7;
   uint32 mem_percent = 8;
+  uint64 traffic_bytes_in = 9;
+  uint64 traffic_bytes_out = 10;
 }
 
 message ServiceSummary {

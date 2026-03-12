@@ -33,6 +33,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/sysinfo"
 	"github.com/sambigeara/pollen/pkg/topology"
+	"github.com/sambigeara/pollen/pkg/traffic"
 	"github.com/sambigeara/pollen/pkg/tunnel"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/util"
@@ -152,6 +153,7 @@ type Node struct {
 	nodeMetrics     *metrics.NodeMetrics
 	wasmRuntime     *wasm.Runtime
 	routeTable      *route.Table
+	trafficTracker  *traffic.Tracker
 	sched           *scheduler.Reconciler
 	routeInvalidate chan struct{}
 	pollenDir       string
@@ -243,6 +245,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		tracer:          tracer,
 		smoothedErr:     metrics.NewEWMAFrom(vivaldiErrAlpha, 1.0),
 		routeTable:      route.New(stateStore.LocalID),
+		trafficTracker:  traffic.New(),
 		routeInvalidate: make(chan struct{}, 1),
 	}
 	n.localCoordErr = 1.0
@@ -289,6 +292,8 @@ func (n *Node) Start(ctx context.Context) error {
 		return err
 	}
 	n.mesh.SetRouter(n.routeTable)
+	n.mesh.SetTrafficTracker(n.trafficTracker)
+	n.tun.SetTrafficTracker(n.trafficTracker)
 
 	n.store.OnRouteInvalidate(func() {
 		n.signalRouteInvalidate()
@@ -361,6 +366,7 @@ func (n *Node) Start(ctx context.Context) error {
 	n.recomputeRoutes()
 	n.checkCertExpiry()
 	n.sampleResourceTelemetry()
+	n.sampleTrafficHeatmap()
 	n.queueGossipEvents(n.store.LocalEvents())
 
 	// Debounced route recomputation state.
@@ -387,6 +393,7 @@ func (n *Node) Start(ctx context.Context) error {
 			n.tick()
 		case <-gossipTicker.C:
 			n.sampleResourceTelemetry()
+			n.sampleTrafficHeatmap()
 			n.gossip(ctx)
 		case <-ipRefreshCh:
 			n.refreshIPs()
@@ -714,6 +721,18 @@ func (n *Node) gossip(ctx context.Context) {
 func (n *Node) sampleResourceTelemetry() {
 	cpuPct, memPct, memTotal := sysinfo.Sample()
 	n.queueGossipEvents(n.store.SetLocalResourceTelemetry(cpuPct, memPct, memTotal))
+}
+
+func (n *Node) sampleTrafficHeatmap() {
+	snapshot, changed := n.trafficTracker.RotateAndSnapshot()
+	if !changed {
+		return
+	}
+	rates := make(map[types.PeerKey]store.TrafficSnapshot, len(snapshot))
+	for pk, pt := range snapshot {
+		rates[pk] = store.TrafficSnapshot{BytesIn: pt.BytesIn, BytesOut: pt.BytesOut}
+	}
+	n.queueGossipEvents(n.store.SetLocalTrafficHeatmap(rates))
 }
 
 func (n *Node) refreshIPs() {

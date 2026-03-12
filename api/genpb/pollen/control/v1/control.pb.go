@@ -290,6 +290,8 @@ type NodeSummary struct {
 	LatencyMs          float64                `protobuf:"fixed64,6,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"`
 	CpuPercent         uint32                 `protobuf:"varint,7,opt,name=cpu_percent,json=cpuPercent,proto3" json:"cpu_percent,omitempty"`
 	MemPercent         uint32                 `protobuf:"varint,8,opt,name=mem_percent,json=memPercent,proto3" json:"mem_percent,omitempty"`
+	TrafficBytesIn     uint64                 `protobuf:"varint,9,opt,name=traffic_bytes_in,json=trafficBytesIn,proto3" json:"traffic_bytes_in,omitempty"`
+	TrafficBytesOut    uint64                 `protobuf:"varint,10,opt,name=traffic_bytes_out,json=trafficBytesOut,proto3" json:"traffic_bytes_out,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -376,6 +378,20 @@ func (x *NodeSummary) GetCpuPercent() uint32 {
 func (x *NodeSummary) GetMemPercent() uint32 {
 	if x != nil {
 		return x.MemPercent
+	}
+	return 0
+}
+
+func (x *NodeSummary) GetTrafficBytesIn() uint64 {
+	if x != nil {
+		return x.TrafficBytesIn
+	}
+	return 0
+}
+
+func (x *NodeSummary) GetTrafficBytesOut() uint64 {
+	if x != nil {
+		return x.TrafficBytesOut
 	}
 	return 0
 }
@@ -1942,7 +1958,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\x1a\x1bbuf/validate/validate.proto\"\"\n" +
 	"\aNodeRef\x12\x17\n" +
-	"\apeer_id\x18\x01 \x01(\fR\x06peerId\"\xbd\x02\n" +
+	"\apeer_id\x18\x01 \x01(\fR\x06peerId\"\x93\x03\n" +
 	"\vNodeSummary\x12.\n" +
 	"\x04node\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04node\x125\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1d.pollen.control.v1.NodeStatusR\x06status\x12\x12\n" +
@@ -1954,7 +1970,10 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\vcpu_percent\x18\a \x01(\rR\n" +
 	"cpuPercent\x12\x1f\n" +
 	"\vmem_percent\x18\b \x01(\rR\n" +
-	"memPercent\"\x88\x01\n" +
+	"memPercent\x12(\n" +
+	"\x10traffic_bytes_in\x18\t \x01(\x04R\x0etrafficBytesIn\x12*\n" +
+	"\x11traffic_bytes_out\x18\n" +
+	" \x01(\x04R\x0ftrafficBytesOut\"\x88\x01\n" +
 	"\x0eServiceSummary\x12\x1d\n" +
 	"\x04name\x18\x01 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@R\x04name\x126\n" +
 	"\bprovider\x18\x02 \x01(\v2\x1a.pollen.control.v1.NodeRefR\bprovider\x12\x1f\n" +

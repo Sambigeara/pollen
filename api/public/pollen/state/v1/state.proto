@@ -85,6 +85,19 @@ message WorkloadClaimChange {
   string hash = 1;
 }
 
+message TrafficRate {
+  string peer_id = 1 [(buf.validate.field).string = {
+    pattern: "^[a-fA-F0-9]{64}$"
+    len: 64
+  }];
+  uint64 bytes_in = 2;
+  uint64 bytes_out = 3;
+}
+
+message TrafficHeatmapChange {
+  repeated TrafficRate rates = 1;
+}
+
 message GossipEvent {
   string peer_id = 1 [(buf.validate.field).string = {
     pattern: "^[a-fA-F0-9]{64}$"
@@ -105,6 +118,7 @@ message GossipEvent {
     DenyChange deny = 13;
     WorkloadSpecChange workload_spec = 15;
     WorkloadClaimChange workload_claim = 16;
+    TrafficHeatmapChange traffic_heatmap = 17;
   }
   bool deleted = 14;
 }

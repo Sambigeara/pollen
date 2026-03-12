@@ -21,6 +21,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/observability/traces"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/sock"
+	"github.com/sambigeara/pollen/pkg/traffic"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
 )
@@ -108,6 +109,7 @@ type Mesh interface {
 	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.DelegationCert, error)
 	SetTracer(t *traces.Tracer)
 	SetRouter(r Router)
+	SetTrafficTracker(t traffic.Recorder)
 	SetArtifactHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey))
 	OpenArtifactStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
 	Close() error
@@ -143,6 +145,7 @@ type impl struct {
 	metrics          *metrics.MeshMetrics
 	tracer           *traces.Tracer
 	router           Router
+	trafficTracker   traffic.Recorder
 	artifactHandler  func(stream io.ReadWriteCloser, peer types.PeerKey)
 	listener         *quic.Listener
 	sessions         *sessionRegistry
@@ -732,7 +735,7 @@ func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 		case streamTypeTunnel:
 			ch = m.streamCh
 		case streamTypeRouted:
-			go m.handleRoutedStream(ctx, stream)
+			go m.handleRoutedStream(ctx, stream, peerKey)
 			continue
 		case streamTypeArtifact:
 			if h := m.artifactHandler; h != nil {
@@ -921,6 +924,10 @@ func (m *impl) SetRouter(r Router) {
 	m.router = r
 }
 
+func (m *impl) SetTrafficTracker(t traffic.Recorder) {
+	m.trafficTracker = t
+}
+
 func (m *impl) SetArtifactHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey)) {
 	m.artifactHandler = fn
 }
@@ -977,7 +984,7 @@ func (m *impl) openRoutedStream(ctx context.Context, dest types.PeerKey, innerTy
 	return streamCloser{stream}, nil
 }
 
-func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream) {
+func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream, upstreamPeer types.PeerKey) {
 	var header [routeHeaderSize]byte
 	if _, err := io.ReadFull(stream, header[:]); err != nil {
 		stream.CancelRead(0)
@@ -1003,7 +1010,7 @@ func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream) {
 		return
 	}
 
-	m.forwardRoutedStream(ctx, stream, dest, source, ttl-1, innerType)
+	m.forwardRoutedStream(ctx, stream, dest, source, ttl-1, innerType, upstreamPeer)
 }
 
 // deliverRoutedStream dispatches a routed stream that has arrived at its final
@@ -1040,7 +1047,7 @@ func (m *impl) deliverRoutedStream(ctx context.Context, stream *quic.Stream, sou
 	}
 }
 
-func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, dest, source types.PeerKey, ttl, innerType byte) {
+func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, dest, source types.PeerKey, ttl, innerType byte, upstreamPeer types.PeerKey) {
 	// Find next hop: try direct session first, then router.
 	nextHop := dest
 	s, ok := m.sessions.get(dest)
@@ -1096,7 +1103,13 @@ func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, de
 		return
 	}
 
-	bridgeStreams(streamCloser{inbound}, streamCloser{outbound})
+	var in io.ReadWriteCloser = streamCloser{inbound}
+	var out io.ReadWriteCloser = streamCloser{outbound}
+	if m.trafficTracker != nil {
+		in = traffic.WrapStream(in, m.trafficTracker, upstreamPeer)
+		out = traffic.WrapStream(out, m.trafficTracker, nextHop)
+	}
+	bridgeStreams(in, out)
 }
 
 // --- Routed-stream bridge helpers ---

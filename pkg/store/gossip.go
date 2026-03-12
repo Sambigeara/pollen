@@ -42,6 +42,7 @@ const (
 	attrResourceTelemetry
 	attrWorkloadSpec
 	attrWorkloadClaim
+	attrTrafficHeatmap
 )
 
 type attrKey struct {
@@ -102,8 +103,17 @@ func workloadClaimAttrKey(hash string) attrKey {
 	return attrKey{kind: attrWorkloadClaim, name: hash}
 }
 
+func trafficHeatmapAttrKey() attrKey {
+	return attrKey{kind: attrTrafficHeatmap}
+}
+
+type trafficRate struct {
+	BytesIn  uint64
+	BytesOut uint64
+}
+
 func tombstoneStaleAttrs(rec *nodeRecord) {
-	for _, key := range []attrKey{publiclyAccessibleAttrKey(), natTypeAttrKey(), observedExternalIPAttrKey(), resourceTelemetryAttrKey()} {
+	for _, key := range []attrKey{publiclyAccessibleAttrKey(), natTypeAttrKey(), observedExternalIPAttrKey(), resourceTelemetryAttrKey(), trafficHeatmapAttrKey()} {
 		rec.maxCounter++
 		rec.log[key] = logEntry{Counter: rec.maxCounter, Deleted: true}
 	}
@@ -115,20 +125,21 @@ type logEntry struct {
 }
 
 type nodeRecord struct {
-	Reachable          map[types.PeerKey]struct{}
+	TrafficRates       map[types.PeerKey]trafficRate
 	Services           map[string]*statev1.Service
 	WorkloadSpecs      map[string]*statev1.WorkloadSpecChange
 	WorkloadClaims     map[string]struct{}
 	log                map[attrKey]logEntry
 	VivaldiCoord       *topology.Coord
+	Reachable          map[types.PeerKey]struct{}
 	LastAddr           string
 	ObservedExternalIP string
 	IPs                []string
 	IdentityPub        []byte
 	maxCounter         uint64
-	CertExpiry         int64
 	MemTotalBytes      uint64
 	NatType            nat.Type
+	CertExpiry         int64
 	LocalPort          uint32
 	ExternalPort       uint32
 	CPUPercent         uint32
@@ -153,6 +164,10 @@ func (r nodeRecord) clone() nodeRecord {
 	if r.WorkloadClaims != nil {
 		c.WorkloadClaims = make(map[string]struct{}, len(r.WorkloadClaims))
 		maps.Copy(c.WorkloadClaims, r.WorkloadClaims)
+	}
+	if r.TrafficRates != nil {
+		c.TrafficRates = make(map[types.PeerKey]trafficRate, len(r.TrafficRates))
+		maps.Copy(c.TrafficRates, r.TrafficRates)
 	}
 	c.IPs = append([]string(nil), r.IPs...)
 	return c
@@ -681,7 +696,9 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) (ApplyResult, []typ
 	case deleted:
 		applyDeleteLocked(&rec, key)
 	default:
-		applyValueLocked(&rec, event, key)
+		if !applyValueLocked(&rec, event, key) {
+			return ApplyResult{}, nil
+		}
 	}
 
 	rec.log[key] = logEntry{Counter: event.GetCounter(), Deleted: deleted}
@@ -747,6 +764,8 @@ func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
 			return attrKey{}, false
 		}
 		return workloadClaimAttrKey(v.WorkloadClaim.GetHash()), true
+	case *statev1.GossipEvent_TrafficHeatmap:
+		return trafficHeatmapAttrKey(), true
 	default:
 		return attrKey{}, false
 	}
@@ -784,17 +803,20 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 		delete(rec.WorkloadSpecs, key.name)
 	case attrWorkloadClaim:
 		delete(rec.WorkloadClaims, key.name)
+	case attrTrafficHeatmap:
+		rec.TrafficRates = nil
 	default:
 		panic("unknown attr kind")
 	}
 }
 
 // applyValueLocked updates the materialized view from an event's value.
-func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) {
+// Returns false if the event payload is malformed and must be rejected.
+func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) bool {
 	switch v := event.GetChange().(type) {
 	case *statev1.GossipEvent_Network:
 		if v.Network == nil {
-			return
+			return true
 		}
 		rec.IPs = append([]string(nil), v.Network.GetIps()...)
 		rec.LocalPort = v.Network.GetLocalPort()
@@ -854,9 +876,22 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 			m[v.WorkloadClaim.GetHash()] = struct{}{}
 			rec.WorkloadClaims = m
 		}
+	case *statev1.GossipEvent_TrafficHeatmap:
+		if v.TrafficHeatmap != nil {
+			m := make(map[types.PeerKey]trafficRate, len(v.TrafficHeatmap.GetRates()))
+			for _, r := range v.TrafficHeatmap.GetRates() {
+				pk, err := types.PeerKeyFromString(r.GetPeerId())
+				if err != nil {
+					return false
+				}
+				m[pk] = trafficRate{BytesIn: r.GetBytesIn(), BytesOut: r.GetBytesOut()}
+			}
+			rec.TrafficRates = m
+		}
 	default:
-		return
+		return true
 	}
+	return true
 }
 
 // --- Local mutation methods (return events for broadcasting) ---
@@ -1069,6 +1104,95 @@ func (s *Store) SetLocalResourceTelemetry(cpuPercent, memPercent uint32, memTota
 			},
 		},
 	}}
+}
+
+// SetLocalTrafficHeatmap publishes a traffic heatmap snapshot to gossip.
+// Entries with zero bytes are omitted. If the snapshot transitions from
+// non-empty to empty, a deletion event is emitted so stale data clears.
+func (s *Store) SetLocalTrafficHeatmap(rates map[types.PeerKey]TrafficSnapshot) []*statev1.GossipEvent {
+	// Filter zero entries.
+	filtered := make(map[types.PeerKey]trafficRate, len(rates))
+	for pk, r := range rates {
+		if r.BytesIn > 0 || r.BytesOut > 0 {
+			filtered[pk] = trafficRate(r)
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	local := s.nodes[s.LocalID]
+	key := trafficHeatmapAttrKey()
+
+	if len(filtered) == 0 {
+		// No traffic this tick. If we previously had data, emit a deletion.
+		if len(local.TrafficRates) == 0 {
+			return nil
+		}
+		local.TrafficRates = nil
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[key] = logEntry{Counter: counter, Deleted: true}
+		s.nodes[s.LocalID] = local
+		return []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Deleted: true,
+			Change: &statev1.GossipEvent_TrafficHeatmap{
+				TrafficHeatmap: &statev1.TrafficHeatmapChange{},
+			},
+		}}
+	}
+
+	local.TrafficRates = filtered
+
+	protoRates := make([]*statev1.TrafficRate, 0, len(filtered))
+	for pk, r := range filtered {
+		protoRates = append(protoRates, &statev1.TrafficRate{
+			PeerId:   pk.String(),
+			BytesIn:  r.BytesIn,
+			BytesOut: r.BytesOut,
+		})
+	}
+
+	local.maxCounter++
+	counter := local.maxCounter
+	local.log[key] = logEntry{Counter: counter}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Change: &statev1.GossipEvent_TrafficHeatmap{
+			TrafficHeatmap: &statev1.TrafficHeatmapChange{Rates: protoRates},
+		},
+	}}
+}
+
+// TrafficSnapshot holds a single peer's accumulated traffic counters.
+type TrafficSnapshot struct {
+	BytesIn  uint64
+	BytesOut uint64
+}
+
+// AllTrafficHeatmaps returns nodeID → peerID → TrafficSnapshot for valid nodes.
+func (s *Store) AllTrafficHeatmaps() map[types.PeerKey]map[types.PeerKey]TrafficSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	valid := s.validNodesLocked()
+	out := make(map[types.PeerKey]map[types.PeerKey]TrafficSnapshot, len(valid))
+	for pk, rec := range valid {
+		if len(rec.TrafficRates) == 0 {
+			continue
+		}
+		m := make(map[types.PeerKey]TrafficSnapshot, len(rec.TrafficRates))
+		for peer, rate := range rec.TrafficRates {
+			m[peer] = TrafficSnapshot(rate)
+		}
+		out[pk] = m
+	}
+	return out
 }
 
 func absDiff(a, b uint32) uint32 {
@@ -1863,6 +1987,18 @@ func (s *Store) buildEventFromLog(peerIDStr string, key attrKey, entry logEntry,
 		event.Change = &statev1.GossipEvent_WorkloadClaim{
 			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: key.name},
 		}
+	case attrTrafficHeatmap:
+		change := &statev1.TrafficHeatmapChange{}
+		if !entry.Deleted {
+			for pk, rate := range rec.TrafficRates {
+				change.Rates = append(change.Rates, &statev1.TrafficRate{
+					PeerId:   pk.String(),
+					BytesIn:  rate.BytesIn,
+					BytesOut: rate.BytesOut,
+				})
+			}
+		}
+		event.Change = &statev1.GossipEvent_TrafficHeatmap{TrafficHeatmap: change}
 	default:
 		panic("unknown attr kind in log")
 	}
