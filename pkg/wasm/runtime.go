@@ -3,11 +3,21 @@ package wasm
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
+)
+
+// runtimeFactory creates a wazero.Runtime with the given memory limit.
+type runtimeFactory func(ctx context.Context, memPages uint32) (wazero.Runtime, error)
+
+// Swappable constructors — tests inject fakes via export_test.go.
+var (
+	makeCompilerRuntime    runtimeFactory = compilerRuntime
+	makeInterpreterRuntime runtimeFactory = interpreterRuntime
 )
 
 const defaultMemoryLimitPages = 256 // 16 MiB
@@ -31,16 +41,23 @@ type Runtime struct {
 }
 
 // NewRuntime creates a wazero runtime with WASI support and memory limits.
+// It attempts to use the compiler engine first for better performance, but
+// falls back to the interpreter engine on systems that block mmap PROT_EXEC
+// (e.g., kernel hardening, restrictive seccomp profiles).
 func NewRuntime(ctx context.Context, cfg RuntimeConfig) (*Runtime, error) {
 	memPages := cfg.MemoryLimitPages
 	if memPages == 0 {
 		memPages = defaultMemoryLimitPages
 	}
 
-	rtCfg := wazero.NewRuntimeConfig().
-		WithMemoryLimitPages(memPages).
-		WithCloseOnContextDone(true)
-	rt := wazero.NewRuntimeWithConfig(ctx, rtCfg)
+	rt, err := tryCompilerRuntime(ctx, memPages)
+	if err != nil {
+		rt, err = makeInterpreterRuntime(ctx, memPages)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
 		rt.Close(ctx)
 		return nil, fmt.Errorf("wasm: instantiate WASI: %w", err)
@@ -49,6 +66,36 @@ func NewRuntime(ctx context.Context, cfg RuntimeConfig) (*Runtime, error) {
 		rt:       rt,
 		compiled: make(map[string]wazero.CompiledModule),
 	}, nil
+}
+
+// tryCompilerRuntime calls makeCompilerRuntime and recovers from the specific
+// panic wazero raises when mmap with PROT_EXEC is blocked ("operation not
+// permitted"). Unrelated panics are re-raised.
+func tryCompilerRuntime(ctx context.Context, memPages uint32) (rt wazero.Runtime, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if strings.Contains(fmt.Sprint(r), "operation not permitted") {
+				err = fmt.Errorf("wasm: compiler engine unavailable: %v", r)
+				return
+			}
+			panic(r)
+		}
+	}()
+	return makeCompilerRuntime(ctx, memPages)
+}
+
+func compilerRuntime(ctx context.Context, memPages uint32) (wazero.Runtime, error) {
+	rtCfg := wazero.NewRuntimeConfig().
+		WithMemoryLimitPages(memPages).
+		WithCloseOnContextDone(true)
+	return wazero.NewRuntimeWithConfig(ctx, rtCfg), nil
+}
+
+func interpreterRuntime(ctx context.Context, memPages uint32) (wazero.Runtime, error) {
+	rtCfg := wazero.NewRuntimeConfigInterpreter().
+		WithMemoryLimitPages(memPages).
+		WithCloseOnContextDone(true)
+	return wazero.NewRuntimeWithConfig(ctx, rtCfg), nil
 }
 
 // Instance represents a running WASM module.

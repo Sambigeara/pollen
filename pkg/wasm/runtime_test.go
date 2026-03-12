@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tetratelabs/wazero"
 
 	"github.com/sambigeara/pollen/pkg/wasm"
 )
@@ -153,6 +154,36 @@ func TestTimeoutCancelsBlockingModule(t *testing.T) {
 
 	// The module should have errored from context cancellation.
 	require.Error(t, inst.Err())
+}
+
+func TestFallbackToInterpreterOnMmapPanic(t *testing.T) {
+	restore := wasm.SetCompilerFactory(func(context.Context, uint32) (wazero.Runtime, error) {
+		panic("operation not permitted")
+	})
+	t.Cleanup(restore)
+
+	ctx := context.Background()
+	rt, err := wasm.NewRuntime(ctx, wasm.RuntimeConfig{})
+	require.NoError(t, err, "should fall back to interpreter")
+	t.Cleanup(func() { rt.Close(ctx) })
+
+	compiled, err := rt.Compile(ctx, minimalWASM, "fallback")
+	require.NoError(t, err)
+
+	inst := rt.Instantiate(ctx, compiled, "fallback", wasm.ModuleConfig{})
+	require.NoError(t, inst.Wait())
+}
+
+func TestUnrelatedCompilerPanicPropagates(t *testing.T) {
+	restore := wasm.SetCompilerFactory(func(context.Context, uint32) (wazero.Runtime, error) {
+		panic("some unrelated wazero bug")
+	})
+	t.Cleanup(restore)
+
+	ctx := context.Background()
+	require.Panics(t, func() {
+		wasm.NewRuntime(ctx, wasm.RuntimeConfig{}) //nolint:errcheck
+	})
 }
 
 func TestMemoryLimitRejectsLargeModule(t *testing.T) {
