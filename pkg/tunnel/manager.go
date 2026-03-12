@@ -236,7 +236,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 			if err != nil {
 				return
 			}
-			go func() {
+			m.wg.Go(func() {
 				streamCtx, cancel := context.WithTimeout(ctx, streamOpenTimeout)
 				defer cancel()
 				stream, err := m.transport.OpenStream(streamCtx, peerID)
@@ -254,7 +254,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 				}
 
 				bridge(clientConn, stream)
-			}()
+			})
 		}
 	})
 

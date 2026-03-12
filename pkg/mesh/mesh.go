@@ -58,6 +58,10 @@ type streamCloser struct {
 	*quic.Stream
 }
 
+func (s streamCloser) CloseWrite() error {
+	return s.Stream.Close()
+}
+
 func (s streamCloser) Close() error {
 	s.CancelRead(0)
 	return s.Stream.Close()
