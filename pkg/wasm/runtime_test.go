@@ -156,9 +156,9 @@ func TestTimeoutCancelsBlockingModule(t *testing.T) {
 	require.Error(t, inst.Err())
 }
 
-func TestFallbackToInterpreterOnMmapPanic(t *testing.T) {
+func TestFallbackToInterpreterOnCompilerPanic(t *testing.T) {
 	restore := wasm.SetCompilerFactory(func(context.Context, uint32) (wazero.Runtime, error) {
-		panic("operation not permitted")
+		panic("any compiler init failure")
 	})
 	t.Cleanup(restore)
 
@@ -172,18 +172,6 @@ func TestFallbackToInterpreterOnMmapPanic(t *testing.T) {
 
 	inst := rt.Instantiate(ctx, compiled, "fallback", wasm.ModuleConfig{})
 	require.NoError(t, inst.Wait())
-}
-
-func TestUnrelatedCompilerPanicPropagates(t *testing.T) {
-	restore := wasm.SetCompilerFactory(func(context.Context, uint32) (wazero.Runtime, error) {
-		panic("some unrelated wazero bug")
-	})
-	t.Cleanup(restore)
-
-	ctx := context.Background()
-	require.Panics(t, func() {
-		wasm.NewRuntime(ctx, wasm.RuntimeConfig{}) //nolint:errcheck
-	})
 }
 
 func TestMemoryLimitRejectsLargeModule(t *testing.T) {

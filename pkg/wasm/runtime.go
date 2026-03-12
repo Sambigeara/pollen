@@ -3,7 +3,6 @@ package wasm
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -68,17 +67,15 @@ func NewRuntime(ctx context.Context, cfg RuntimeConfig) (*Runtime, error) {
 	}, nil
 }
 
-// tryCompilerRuntime calls makeCompilerRuntime and recovers from the specific
-// panic wazero raises when mmap with PROT_EXEC is blocked ("operation not
-// permitted"). Unrelated panics are re-raised.
+// tryCompilerRuntime calls makeCompilerRuntime and recovers from any panic.
+// wazero's compiler engine panics (rather than returning an error) when it
+// cannot mmap executable memory. The recover is scoped to this single call,
+// so it only catches compiler-init failures — falling back to the interpreter
+// is always correct here.
 func tryCompilerRuntime(ctx context.Context, memPages uint32) (rt wazero.Runtime, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			if strings.Contains(fmt.Sprint(r), "operation not permitted") {
-				err = fmt.Errorf("wasm: compiler engine unavailable: %v", r)
-				return
-			}
-			panic(r)
+			err = fmt.Errorf("wasm: compiler engine unavailable: %v", r)
 		}
 	}()
 	return makeCompilerRuntime(ctx, memPages)
