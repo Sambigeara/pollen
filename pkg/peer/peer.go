@@ -202,7 +202,7 @@ func (RequestPunchCoordination) isOutput() {}
 
 const (
 	baseBackoff  = 1 * time.Second
-	maxBackoff   = 60 * time.Second
+	maxBackoff   = 10 * time.Minute
 	firstBackoff = 500 * time.Millisecond
 
 	eagerRetryAttemptThreshold = 1
@@ -214,7 +214,7 @@ const (
 	unreachableRetryInterval        = 20 * time.Second
 	idleTimeoutRetryInterval        = 1 * time.Second
 	resetRetryInterval              = 5 * time.Second
-	gracefulDisconnectRetryInterval = 3 * time.Second
+	gracefulDisconnectRetryInterval = 1 * time.Hour
 	unknownDisconnectRetryInterval  = 3 * time.Second
 )
 
