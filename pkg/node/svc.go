@@ -332,14 +332,37 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		return types.PeerKeyFromBytes(a.Peer.PeerId).Compare(types.PeerKeyFromBytes(b.Peer.PeerId))
 	})
 
+	// Merge local workload state with cluster-wide spec/claim data.
+	specs := s.node.store.AllWorkloadSpecs()
+	claims := s.node.store.AllWorkloadClaims()
+
+	seen := make(map[string]struct{})
 	if s.node.workloads != nil {
 		for _, w := range s.node.workloads.List() {
-			out.Workloads = append(out.Workloads, &controlv1.WorkloadSummary{
+			seen[w.Hash] = struct{}{}
+			ws := &controlv1.WorkloadSummary{
 				Hash:          w.Hash,
 				Status:        workloadStatusProto(w.Status),
 				StartedAtUnix: w.StartedAt.Unix(),
-			})
+				Local:         true,
+			}
+			if sv, ok := specs[w.Hash]; ok {
+				ws.DesiredReplicas = sv.Spec.GetReplicas()
+			}
+			ws.ActiveReplicas = uint32(len(claims[w.Hash]))
+			out.Workloads = append(out.Workloads, ws)
 		}
+	}
+	// Add remote-only workloads (specs we know about but aren't running locally).
+	for hash, sv := range specs {
+		if _, ok := seen[hash]; ok {
+			continue
+		}
+		out.Workloads = append(out.Workloads, &controlv1.WorkloadSummary{
+			Hash:            hash,
+			DesiredReplicas: sv.Spec.GetReplicas(),
+			ActiveReplicas:  uint32(len(claims[hash])),
+		})
 	}
 
 	return out, nil
@@ -489,6 +512,24 @@ func (s *NodeService) SeedWorkload(_ context.Context, req *controlv1.SeedWorkloa
 			return nil, status.Error(codes.Internal, "failed to seed workload")
 		}
 	}
+
+	replicas := req.GetReplicas()
+	if replicas == 0 {
+		replicas = 1
+	}
+
+	// Publish spec atomically — the store rejects under its lock if a remote
+	// node already owns this hash, closing the TOCTOU race.
+	n := s.node
+	specEvents, err := n.store.SetLocalWorkloadSpec(hash, replicas, 0)
+	if err != nil {
+		_ = s.node.workloads.Unseed(hash)
+		s.node.log.Infow("spec rejected", "hash", hash, zap.Error(err))
+		return nil, status.Error(codes.AlreadyExists, "workload already published by another node")
+	}
+	n.queueGossipEvents(specEvents)
+	n.queueGossipEvents(n.store.SetLocalWorkloadClaim(hash, true))
+
 	return &controlv1.SeedWorkloadResponse{Hash: hash}, nil
 }
 
@@ -496,20 +537,36 @@ func (s *NodeService) UnseedWorkload(_ context.Context, req *controlv1.UnseedWor
 	if s.node.workloads == nil {
 		return nil, status.Error(codes.FailedPrecondition, "workload manager not initialized")
 	}
-	hash, err := s.node.workloads.ResolvePrefix(req.GetHash())
-	if err != nil {
-		s.node.log.Warnw("resolve workload prefix failed", "prefix", req.GetHash(), zap.Error(err))
-		switch {
-		case errors.Is(err, workload.ErrAmbiguousPrefix):
-			return nil, status.Error(codes.InvalidArgument, "prefix matches multiple workloads; use a longer prefix")
-		default:
-			return nil, status.Error(codes.NotFound, "no running workload matches that prefix")
+
+	// Resolve prefix from cluster-wide specs, not just local workloads.
+	hash, ambiguous, found := s.node.store.ResolveWorkloadPrefix(req.GetHash())
+	if ambiguous {
+		return nil, status.Error(codes.InvalidArgument, "prefix matches multiple workloads; use a longer prefix")
+	}
+	if !found {
+		return nil, status.Error(codes.NotFound, "no workload matches that prefix")
+	}
+
+	// Only the spec owner can unseed — reject on non-owner nodes.
+	specs := s.node.store.AllWorkloadSpecs()
+	sv, ok := specs[hash]
+	if ok && sv.Publisher != s.node.store.LocalID {
+		return nil, status.Error(codes.PermissionDenied, "workload owned by another node; unseed from the publishing node")
+	}
+
+	// Stop the local runtime only if this node is running it.
+	if s.node.workloads.IsRunning(hash) {
+		if err := s.node.workloads.Unseed(hash); err != nil {
+			s.node.log.Warnw("unseed workload failed", "hash", hash, zap.Error(err))
+			return nil, status.Error(codes.Internal, "failed to unseed workload")
 		}
 	}
-	if err := s.node.workloads.Unseed(hash); err != nil {
-		s.node.log.Warnw("unseed workload failed", "hash", hash, zap.Error(err))
-		return nil, status.Error(codes.Internal, "failed to unseed workload")
-	}
+
+	// Remove spec + claim from local gossip record.
+	n := s.node
+	n.queueGossipEvents(n.store.RemoveLocalWorkloadSpec(hash))
+	n.queueGossipEvents(n.store.SetLocalWorkloadClaim(hash, false))
+
 	return &controlv1.UnseedWorkloadResponse{}, nil
 }
 

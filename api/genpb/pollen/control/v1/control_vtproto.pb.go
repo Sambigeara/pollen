@@ -664,6 +664,26 @@ func (m *WorkloadSummary) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.Local {
+		i--
+		if m.Local {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x30
+	}
+	if m.ActiveReplicas != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.ActiveReplicas))
+		i--
+		dAtA[i] = 0x28
+	}
+	if m.DesiredReplicas != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.DesiredReplicas))
+		i--
+		dAtA[i] = 0x20
+	}
 	if m.StartedAtUnix != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.StartedAtUnix))
 		i--
@@ -1247,6 +1267,11 @@ func (m *SeedWorkloadRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.Replicas != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Replicas))
+		i--
+		dAtA[i] = 0x10
+	}
 	if len(m.WasmBytes) > 0 {
 		i -= len(m.WasmBytes)
 		copy(dAtA[i:], m.WasmBytes)
@@ -1766,6 +1791,15 @@ func (m *WorkloadSummary) SizeVT() (n int) {
 	if m.StartedAtUnix != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.StartedAtUnix))
 	}
+	if m.DesiredReplicas != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.DesiredReplicas))
+	}
+	if m.ActiveReplicas != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.ActiveReplicas))
+	}
+	if m.Local {
+		n += 2
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -1967,6 +2001,9 @@ func (m *SeedWorkloadRequest) SizeVT() (n int) {
 	l = len(m.WasmBytes)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.Replicas != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.Replicas))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -3554,6 +3591,64 @@ func (m *WorkloadSummary) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
+		case 4:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field DesiredReplicas", wireType)
+			}
+			m.DesiredReplicas = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.DesiredReplicas |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 5:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ActiveReplicas", wireType)
+			}
+			m.ActiveReplicas = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.ActiveReplicas |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 6:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Local", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Local = bool(v != 0)
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -4724,6 +4819,25 @@ func (m *SeedWorkloadRequest) UnmarshalVT(dAtA []byte) error {
 				m.WasmBytes = []byte{}
 			}
 			iNdEx = postIndex
+		case 2:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Replicas", wireType)
+			}
+			m.Replicas = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.Replicas |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

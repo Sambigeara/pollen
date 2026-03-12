@@ -255,7 +255,7 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
 	sec := statusSection{
 		title:   "SEEDS",
-		headers: []string{"HASH", "STATUS", "UPTIME"},
+		headers: []string{"HASH", "STATUS", "REPLICAS", "LOCAL", "UPTIME"},
 	}
 
 	now := time.Now()
@@ -264,9 +264,19 @@ func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		if !opts.wide && len(hash) > 16 { //nolint:mnd
 			hash = hash[:16]
 		}
-		status := formatWorkloadStatus(w.GetStatus())
-		uptime := humanDuration(now.Sub(time.Unix(w.GetStartedAtUnix(), 0)))
-		sec.rows = append(sec.rows, []string{hash, status, uptime})
+		st := formatWorkloadStatus(w.GetStatus())
+		replicas := fmt.Sprintf("%d/%d", w.GetActiveReplicas(), w.GetDesiredReplicas())
+		local := ""
+		if w.GetLocal() {
+			local = "*"
+		}
+		var uptime string
+		if w.GetStartedAtUnix() > 0 {
+			uptime = humanDuration(now.Sub(time.Unix(w.GetStartedAtUnix(), 0)))
+		} else {
+			uptime = "-"
+		}
+		sec.rows = append(sec.rows, []string{hash, st, replicas, local, uptime})
 	}
 	return sec
 }

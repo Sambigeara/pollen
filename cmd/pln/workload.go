@@ -12,12 +12,14 @@ import (
 )
 
 func newSeedCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "seed <file.wasm>",
-		Short: "Deploy a WASM workload to this node",
+		Short: "Deploy a WASM workload to the cluster",
 		Args:  cobra.ExactArgs(1),
 		Run:   runSeed,
 	}
+	cmd.Flags().Uint32("replicas", 1, "number of replicas to run across the cluster")
+	return cmd
 }
 
 func newUnseedCmd() *cobra.Command {
@@ -37,9 +39,12 @@ func runSeed(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	replicas, _ := cmd.Flags().GetUint32("replicas")
+
 	client := newControlClient(cmd)
 	resp, err := client.SeedWorkload(cmd.Context(), connect.NewRequest(&controlv1.SeedWorkloadRequest{
 		WasmBytes: wasmBytes,
+		Replicas:  replicas,
 	}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)

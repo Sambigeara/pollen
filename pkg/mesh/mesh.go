@@ -37,9 +37,10 @@ const (
 	sessionReapInterval = 5 * time.Minute
 	streamTypeTimeout   = 5 * time.Second
 
-	streamTypeClock  byte = 1
-	streamTypeTunnel byte = 2
-	streamTypeRouted byte = 3
+	streamTypeClock    byte = 1
+	streamTypeTunnel   byte = 2
+	streamTypeRouted   byte = 3
+	streamTypeArtifact byte = 4
 
 	routeHeaderSize = 66 // 32 dest + 32 source + 1 TTL + 1 inner stream type (only tunnel=2 accepted at delivery)
 	defaultRouteTTL = 16
@@ -107,6 +108,8 @@ type Mesh interface {
 	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.DelegationCert, error)
 	SetTracer(t *traces.Tracer)
 	SetRouter(r Router)
+	SetArtifactHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey))
+	OpenArtifactStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
 	Close() error
 }
 
@@ -140,6 +143,7 @@ type impl struct {
 	metrics          *metrics.MeshMetrics
 	tracer           *traces.Tracer
 	router           Router
+	artifactHandler  func(stream io.ReadWriteCloser, peer types.PeerKey)
 	listener         *quic.Listener
 	sessions         *sessionRegistry
 	mainQT           *quic.Transport
@@ -729,6 +733,14 @@ func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 		case streamTypeRouted:
 			go m.handleRoutedStream(ctx, stream)
 			continue
+		case streamTypeArtifact:
+			if h := m.artifactHandler; h != nil {
+				go h(stream, peerKey)
+			} else {
+				stream.CancelRead(0)
+				stream.CancelWrite(0)
+			}
+			continue
 		default:
 			stream.CancelRead(0)
 			stream.CancelWrite(0)
@@ -908,6 +920,38 @@ func (m *impl) SetRouter(r Router) {
 	m.router = r
 }
 
+func (m *impl) SetArtifactHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey)) {
+	m.artifactHandler = fn
+}
+
+func (m *impl) OpenArtifactStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error) {
+	for {
+		sessionCh := m.sessions.onChange()
+		routeCh := routeChanged(m.router)
+
+		// Direct session.
+		if _, ok := m.sessions.get(peer); ok {
+			return m.openTypedStream(ctx, peer, streamTypeArtifact)
+		}
+
+		// Routed path.
+		if m.router != nil {
+			if nextHop, ok := m.router.Lookup(peer); ok {
+				if _, ok := m.sessions.get(nextHop); ok {
+					return m.openRoutedStream(ctx, peer, streamTypeArtifact, nextHop)
+				}
+			}
+		}
+
+		select {
+		case <-sessionCh:
+		case <-routeCh:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
 func (m *impl) openRoutedStream(ctx context.Context, dest types.PeerKey, innerType byte, nextHop types.PeerKey) (io.ReadWriteCloser, error) {
 	s, ok := m.sessions.get(nextHop)
 	if !ok {
@@ -971,17 +1015,24 @@ func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream) {
 // on AcceptStream's peerKey, routed streams must carry end-to-end proof of
 // origin (e.g., a signature over the stream header).
 func (m *impl) deliverRoutedStream(ctx context.Context, stream *quic.Stream, source types.PeerKey, innerType byte) {
-	if innerType != streamTypeTunnel {
-		stream.CancelRead(0)
-		stream.CancelWrite(0)
-		return
-	}
-
-	select {
-	case m.streamCh <- incomingStream{peerKey: source, stream: streamCloser{stream}}:
-	case <-ctx.Done():
-		stream.CancelRead(0)
-		stream.CancelWrite(0)
+	switch innerType {
+	case streamTypeTunnel:
+		select {
+		case m.streamCh <- incomingStream{peerKey: source, stream: streamCloser{stream}}:
+		case <-ctx.Done():
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+		default:
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+		}
+	case streamTypeArtifact:
+		if h := m.artifactHandler; h != nil {
+			go h(streamCloser{stream}, source)
+		} else {
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+		}
 	default:
 		stream.CancelRead(0)
 		stream.CancelWrite(0)

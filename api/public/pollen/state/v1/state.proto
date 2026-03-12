@@ -75,6 +75,16 @@ message ResourceTelemetryChange {
   uint64 mem_total_bytes = 3;
 }
 
+message WorkloadSpecChange {
+  string hash = 1;
+  uint32 replicas = 2;
+  uint32 memory_pages = 3;
+}
+
+message WorkloadClaimChange {
+  string hash = 1;
+}
+
 message GossipEvent {
   string peer_id = 1 [(buf.validate.field).string = {
     pattern: "^[a-fA-F0-9]{64}$"
@@ -93,6 +103,8 @@ message GossipEvent {
     NatTypeChange nat_type = 11;
     ResourceTelemetryChange resource_telemetry = 12;
     DenyChange deny = 13;
+    WorkloadSpecChange workload_spec = 15;
+    WorkloadClaimChange workload_claim = 16;
   }
   bool deleted = 14;
 }

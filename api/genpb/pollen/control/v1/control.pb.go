@@ -881,12 +881,15 @@ func (x *GetStatusResponse) GetWorkloads() []*WorkloadSummary {
 }
 
 type WorkloadSummary struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
-	Status        WorkloadStatus         `protobuf:"varint,2,opt,name=status,proto3,enum=pollen.control.v1.WorkloadStatus" json:"status,omitempty"`
-	StartedAtUnix int64                  `protobuf:"varint,3,opt,name=started_at_unix,json=startedAtUnix,proto3" json:"started_at_unix,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Hash            string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	Status          WorkloadStatus         `protobuf:"varint,2,opt,name=status,proto3,enum=pollen.control.v1.WorkloadStatus" json:"status,omitempty"`
+	StartedAtUnix   int64                  `protobuf:"varint,3,opt,name=started_at_unix,json=startedAtUnix,proto3" json:"started_at_unix,omitempty"`
+	DesiredReplicas uint32                 `protobuf:"varint,4,opt,name=desired_replicas,json=desiredReplicas,proto3" json:"desired_replicas,omitempty"`
+	ActiveReplicas  uint32                 `protobuf:"varint,5,opt,name=active_replicas,json=activeReplicas,proto3" json:"active_replicas,omitempty"`
+	Local           bool                   `protobuf:"varint,6,opt,name=local,proto3" json:"local,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *WorkloadSummary) Reset() {
@@ -938,6 +941,27 @@ func (x *WorkloadSummary) GetStartedAtUnix() int64 {
 		return x.StartedAtUnix
 	}
 	return 0
+}
+
+func (x *WorkloadSummary) GetDesiredReplicas() uint32 {
+	if x != nil {
+		return x.DesiredReplicas
+	}
+	return 0
+}
+
+func (x *WorkloadSummary) GetActiveReplicas() uint32 {
+	if x != nil {
+		return x.ActiveReplicas
+	}
+	return 0
+}
+
+func (x *WorkloadSummary) GetLocal() bool {
+	if x != nil {
+		return x.Local
+	}
+	return false
 }
 
 type ConnectionSummary struct {
@@ -1539,6 +1563,7 @@ func (*DenyPeerResponse) Descriptor() ([]byte, []int) {
 type SeedWorkloadRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	WasmBytes     []byte                 `protobuf:"bytes,1,opt,name=wasm_bytes,json=wasmBytes,proto3" json:"wasm_bytes,omitempty"`
+	Replicas      uint32                 `protobuf:"varint,2,opt,name=replicas,proto3" json:"replicas,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1578,6 +1603,13 @@ func (x *SeedWorkloadRequest) GetWasmBytes() []byte {
 		return x.WasmBytes
 	}
 	return nil
+}
+
+func (x *SeedWorkloadRequest) GetReplicas() uint32 {
+	if x != nil {
+		return x.Replicas
+	}
+	return 0
 }
 
 type SeedWorkloadResponse struct {
@@ -1953,11 +1985,14 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\vconnections\x18\x04 \x03(\v2$.pollen.control.v1.ConnectionSummaryR\vconnections\x12?\n" +
 	"\fcertificates\x18\x05 \x03(\v2\x1b.pollen.control.v1.CertInfoR\fcertificates\x12\x1a\n" +
 	"\bdegraded\x18\x06 \x01(\bR\bdegraded\x12@\n" +
-	"\tworkloads\x18\a \x03(\v2\".pollen.control.v1.WorkloadSummaryR\tworkloads\"\x88\x01\n" +
+	"\tworkloads\x18\a \x03(\v2\".pollen.control.v1.WorkloadSummaryR\tworkloads\"\xf2\x01\n" +
 	"\x0fWorkloadSummary\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x129\n" +
 	"\x06status\x18\x02 \x01(\x0e2!.pollen.control.v1.WorkloadStatusR\x06status\x12&\n" +
-	"\x0fstarted_at_unix\x18\x03 \x01(\x03R\rstartedAtUnix\"\xc0\x01\n" +
+	"\x0fstarted_at_unix\x18\x03 \x01(\x03R\rstartedAtUnix\x12)\n" +
+	"\x10desired_replicas\x18\x04 \x01(\rR\x0fdesiredReplicas\x12'\n" +
+	"\x0factive_replicas\x18\x05 \x01(\rR\x0eactiveReplicas\x12\x14\n" +
+	"\x05local\x18\x06 \x01(\bR\x05local\"\xc0\x01\n" +
 	"\x11ConnectionSummary\x12.\n" +
 	"\x04peer\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04peer\x12,\n" +
 	"\vremote_port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\n" +
@@ -1994,10 +2029,11 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x19DisconnectServiceResponse\"3\n" +
 	"\x0fDenyPeerRequest\x12 \n" +
 	"\apeer_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\x06peerId\"\x12\n" +
-	"\x10DenyPeerResponse\"=\n" +
+	"\x10DenyPeerResponse\"Y\n" +
 	"\x13SeedWorkloadRequest\x12&\n" +
 	"\n" +
-	"wasm_bytes\x18\x01 \x01(\fB\a\xbaH\x04z\x02\x10\x01R\twasmBytes\"*\n" +
+	"wasm_bytes\x18\x01 \x01(\fB\a\xbaH\x04z\x02\x10\x01R\twasmBytes\x12\x1a\n" +
+	"\breplicas\x18\x02 \x01(\rR\breplicas\"*\n" +
 	"\x14SeedWorkloadResponse\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\"4\n" +
 	"\x15UnseedWorkloadRequest\x12\x1b\n" +

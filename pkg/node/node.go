@@ -29,6 +29,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/route"
+	"github.com/sambigeara/pollen/pkg/scheduler"
 	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/sysinfo"
 	"github.com/sambigeara/pollen/pkg/topology"
@@ -151,6 +152,7 @@ type Node struct {
 	nodeMetrics     *metrics.NodeMetrics
 	wasmRuntime     *wasm.Runtime
 	routeTable      *route.Table
+	sched           *scheduler.Reconciler
 	routeInvalidate chan struct{}
 	pollenDir       string
 	signPriv        ed25519.PrivateKey
@@ -291,6 +293,24 @@ func (n *Node) Start(ctx context.Context) error {
 	n.store.OnRouteInvalidate(func() {
 		n.signalRouteInvalidate()
 	})
+
+	// Wire artifact fetch handler: serve WASM bytes from CAS to peers.
+	n.mesh.SetArtifactHandler(func(stream io.ReadWriteCloser, _ types.PeerKey) {
+		scheduler.HandleArtifactStream(stream, n.casStore)
+	})
+
+	// Start scheduler reconciler for distributed workload placement.
+	n.sched = scheduler.NewReconciler(
+		n.store.LocalID,
+		n.store,
+		n.workloads,
+		n.casStore,
+		scheduler.NewArtifactFetcher(n.mesh, n.casStore),
+		func(events []*statev1.GossipEvent) { n.queueGossipEvents(events) },
+		n.log.Named("scheduler"),
+	)
+	n.store.OnWorkloadChange(func() { n.sched.Signal() })
+	go n.sched.Run(ctx)
 
 	// Publish the random startup coordinate so peers receive initial Vivaldi
 	// state via gossip. We intentionally do not queue the returned events here;

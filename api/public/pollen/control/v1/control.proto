@@ -114,6 +114,9 @@ message WorkloadSummary {
   string hash = 1;
   WorkloadStatus status = 2;
   int64 started_at_unix = 3;
+  uint32 desired_replicas = 4;
+  uint32 active_replicas = 5;
+  bool local = 6;
 }
 
 message ConnectionSummary {
@@ -192,6 +195,7 @@ message DenyPeerResponse {}
 
 message SeedWorkloadRequest {
   bytes wasm_bytes = 1 [(buf.validate.field).bytes = {min_len: 1}];
+  uint32 replicas = 2;
 }
 
 message SeedWorkloadResponse {

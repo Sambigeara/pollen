@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -100,6 +101,51 @@ func (m *Manager) Seed(wasmBytes []byte) (string, error) {
 		startedAt: time.Now(),
 	}
 	return hash, nil
+}
+
+// SeedFromCAS reads WASM bytes from the CAS and starts the workload.
+// Unlike Seed, it does not write to the CAS (bytes are already there).
+func (m *Manager) SeedFromCAS(hash string) error {
+	rc, err := m.cas.Get(hash)
+	if err != nil {
+		return fmt.Errorf("workload: read CAS: %w", err)
+	}
+	wasmBytes, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		return fmt.Errorf("workload: read CAS bytes: %w", err)
+	}
+
+	compiled, err := m.runtime.Compile(m.ctx, wasmBytes, hash)
+	if err != nil {
+		return fmt.Errorf("workload: %w: %w", ErrCompile, err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.workloads[hash]; ok {
+		return ErrAlreadyRunning
+	}
+
+	inst := m.runtime.Instantiate(m.ctx, compiled, hash, wasm.ModuleConfig{})
+	m.workloads[hash] = &entry{
+		instance:  inst,
+		startedAt: time.Now(),
+	}
+	return nil
+}
+
+// IsRunning reports whether a workload with the given hash is currently running.
+func (m *Manager) IsRunning(hash string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	e, ok := m.workloads[hash]
+	if !ok || e.stopping {
+		return false
+	}
+	return workloadStatus(e) == StatusRunning
 }
 
 // Unseed stops a running workload, waits for it to exit, and removes it.

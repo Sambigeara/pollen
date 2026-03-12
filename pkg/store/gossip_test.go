@@ -19,10 +19,12 @@ func newTestStore(pub []byte) *Store {
 		LocalID: localID,
 		nodes: map[types.PeerKey]nodeRecord{
 			localID: {
-				maxCounter:  1,
-				IdentityPub: append([]byte(nil), pub...),
-				Reachable:   make(map[types.PeerKey]struct{}),
-				Services:    make(map[string]*statev1.Service),
+				maxCounter:     1,
+				IdentityPub:    append([]byte(nil), pub...),
+				Reachable:      make(map[types.PeerKey]struct{}),
+				Services:       make(map[string]*statev1.Service),
+				WorkloadSpecs:  make(map[string]*statev1.WorkloadSpecChange),
+				WorkloadClaims: make(map[string]struct{}),
 				log: map[attrKey]logEntry{
 					identityAttrKey(): {Counter: 1},
 				},
@@ -1667,4 +1669,434 @@ func TestOnDenyCallbackNotFiredForAlreadyDenied(t *testing.T) {
 	})
 
 	require.Equal(t, 0, callCount)
+}
+
+func TestWorkloadSpecRoundTrip(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	// Publish a workload spec.
+	events, err := s.SetLocalWorkloadSpec("abc123", 2, 16)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.False(t, events[0].GetDeleted())
+
+	// Query it back.
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	sv, ok := specs["abc123"]
+	require.True(t, ok)
+	require.Equal(t, uint32(2), sv.Spec.GetReplicas())
+	require.Equal(t, uint32(16), sv.Spec.GetMemoryPages())
+	require.Equal(t, s.LocalID, sv.Publisher)
+
+	// Idempotent — no event on identical call.
+	events2, err := s.SetLocalWorkloadSpec("abc123", 2, 16)
+	require.NoError(t, err)
+	require.Nil(t, events2)
+
+	// Remove it.
+	del := s.RemoveLocalWorkloadSpec("abc123")
+	require.Len(t, del, 1)
+	require.True(t, del[0].GetDeleted())
+
+	specs2 := s.AllWorkloadSpecs()
+	require.Empty(t, specs2)
+
+	// Idempotent removal.
+	del2 := s.RemoveLocalWorkloadSpec("abc123")
+	require.Nil(t, del2)
+}
+
+func TestWorkloadClaimRoundTrip(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	// Claim a workload.
+	events := s.SetLocalWorkloadClaim("abc123", true)
+	require.Len(t, events, 1)
+	require.False(t, events[0].GetDeleted())
+
+	claims := s.AllWorkloadClaims()
+	require.Len(t, claims, 1)
+	require.Contains(t, claims["abc123"], s.LocalID)
+
+	// Idempotent.
+	events2 := s.SetLocalWorkloadClaim("abc123", true)
+	require.Nil(t, events2)
+
+	// Release.
+	rel := s.SetLocalWorkloadClaim("abc123", false)
+	require.Len(t, rel, 1)
+	require.True(t, rel[0].GetDeleted())
+
+	claims2 := s.AllWorkloadClaims()
+	require.Empty(t, claims2)
+}
+
+func TestWorkloadGossipApply(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	_, remotePeerStr := peerKey(2)
+
+	// Apply a remote spec event.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{
+				Hash:     "deadbeef",
+				Replicas: 3,
+			},
+		},
+	})
+
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	require.Equal(t, uint32(3), specs["deadbeef"].Spec.GetReplicas())
+
+	// Apply a remote claim event.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "deadbeef"},
+		},
+	})
+
+	claims := s.AllWorkloadClaims()
+	require.Len(t, claims, 1)
+	remotePK, _ := peerKey(2)
+	require.Contains(t, claims["deadbeef"], remotePK)
+
+	// Delete remote spec.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 3,
+		Deleted: true,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "deadbeef"},
+		},
+	})
+
+	specs2 := s.AllWorkloadSpecs()
+	require.Empty(t, specs2)
+}
+
+func TestOnWorkloadChangeCallback(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	var callCount int
+	s.OnWorkloadChange(func() { callCount++ })
+
+	_, remotePeerStr := peerKey(2)
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "abc", Replicas: 1},
+		},
+	})
+	require.Equal(t, 1, callCount)
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "abc"},
+		},
+	})
+	require.Equal(t, 2, callCount)
+}
+
+func TestAllWorkloadSpecs_DuplicatePublishers_LowestPeerKeyWins(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 5 // local node has PeerKey starting with 5
+	s := newTestStore(pub)
+
+	// Local node publishes spec with replicas=1 (no remote peers yet, so accepted).
+	_, err := s.SetLocalWorkloadSpec("shared", 1, 0)
+	require.NoError(t, err)
+
+	// Two remote peers also publish specs for the same hash with different replicas.
+	peer2PK, peer2Str := peerKey(2) // lower PeerKey → should win
+	_, peer9Str := peerKey(9)       // higher PeerKey
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peer2Str,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "shared", Replicas: 3},
+		},
+	})
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peer9Str,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "shared", Replicas: 7},
+		},
+	})
+
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	sv := specs["shared"]
+	require.Equal(t, peer2PK, sv.Publisher, "lowest PeerKey should win")
+	require.Equal(t, uint32(3), sv.Spec.GetReplicas(), "should use winner's spec")
+}
+
+func TestSetLocalWorkloadSpec_RejectsWhenRemoteOwns(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	// Remote peer publishes a spec first via gossip.
+	_, remotePeerStr := peerKey(2)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "contested", Replicas: 1},
+		},
+	})
+
+	// Local attempt to publish the same hash should be rejected atomically.
+	events, err := s.SetLocalWorkloadSpec("contested", 2, 0)
+	require.ErrorIs(t, err, ErrSpecOwnedRemotely)
+	require.Nil(t, events)
+
+	// Only the remote spec should exist.
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	require.Equal(t, uint32(1), specs["contested"].Spec.GetReplicas())
+}
+
+func TestRemoteSpec_TombstonesLosingLocalSpec(t *testing.T) {
+	// Local node has PeerKey starting with 9 (high).
+	pub := make([]byte, 32)
+	pub[0] = 9
+	s := newTestStore(pub)
+
+	// Local node publishes a spec first (no remote competitors yet).
+	events, err := s.SetLocalWorkloadSpec("contested", 3, 0)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	require.Equal(t, s.LocalID, specs["contested"].Publisher)
+
+	// Remote peer with lower PeerKey publishes the same hash via gossip.
+	winnerPK, winnerStr := peerKey(1)
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  winnerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "contested", Replicas: 2},
+		},
+	})
+
+	// Rebroadcast should contain the original event AND the local tombstone.
+	require.Len(t, result.Rebroadcast, 2)
+	tombstone := result.Rebroadcast[1]
+	require.True(t, tombstone.GetDeleted())
+	require.Equal(t, s.LocalID.String(), tombstone.GetPeerId())
+
+	// Only the winner's spec should remain in the merged view.
+	specs = s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	require.Equal(t, winnerPK, specs["contested"].Publisher)
+	require.Equal(t, uint32(2), specs["contested"].Spec.GetReplicas())
+
+	// Local node's raw record should no longer have the spec.
+	local := s.nodes[s.LocalID]
+	require.NotContains(t, local.WorkloadSpecs, "contested")
+}
+
+func TestRemoteSpec_NoTombstoneWhenLocalWins(t *testing.T) {
+	// Local node has PeerKey starting with 1 (low — wins).
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	events, err := s.SetLocalWorkloadSpec("mine", 3, 0)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	// Remote peer with higher PeerKey publishes the same hash.
+	_, loserStr := peerKey(9)
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  loserStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "mine", Replicas: 5},
+		},
+	})
+
+	// Only the original event should be rebroadcast — no tombstone.
+	require.Len(t, result.Rebroadcast, 1)
+
+	// Local spec is still the winner.
+	specs := s.AllWorkloadSpecs()
+	require.Equal(t, s.LocalID, specs["mine"].Publisher)
+	require.Equal(t, uint32(3), specs["mine"].Spec.GetReplicas())
+}
+
+func TestRemoteSpec_NoTombstoneWhenRemoteDenied(t *testing.T) {
+	// Local node has high PeerKey — would normally lose to remote.
+	pub := make([]byte, 32)
+	pub[0] = 9
+	s := newTestStore(pub)
+
+	events, err := s.SetLocalWorkloadSpec("contested", 3, 0)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	// Remote peer with lower PeerKey — but denied.
+	deniedPK, deniedStr := peerKey(1)
+	s.denied[deniedPK] = struct{}{}
+
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  deniedStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "contested", Replicas: 2},
+		},
+	})
+
+	// No tombstone — denied peers cannot win ownership.
+	require.Len(t, result.Rebroadcast, 1)
+
+	// Local spec remains.
+	specs := s.AllWorkloadSpecs()
+	require.Equal(t, s.LocalID, specs["contested"].Publisher)
+	require.Equal(t, uint32(3), specs["contested"].Spec.GetReplicas())
+}
+
+func TestRemoteSpec_NoTombstoneWhenRemoteExpired(t *testing.T) {
+	// Local node has high PeerKey — would normally lose to remote.
+	pub := make([]byte, 32)
+	pub[0] = 9
+	s := newTestStore(pub)
+
+	events, err := s.SetLocalWorkloadSpec("contested", 3, 0)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	// Remote peer with lower PeerKey, but expired cert.
+	_, expiredStr := peerKey(1)
+	pastExpiry := time.Now().Add(-time.Hour).Unix()
+
+	// Set up the remote peer's identity with an expired cert.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  expiredStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{
+				IdentityPub:    make([]byte, 32),
+				CertExpiryUnix: pastExpiry,
+			},
+		},
+	})
+
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  expiredStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "contested", Replicas: 2},
+		},
+	})
+
+	// No tombstone — expired peers cannot win ownership.
+	require.Len(t, result.Rebroadcast, 1)
+
+	// Local spec remains.
+	specs := s.AllWorkloadSpecs()
+	require.Equal(t, s.LocalID, specs["contested"].Publisher)
+	require.Equal(t, uint32(3), specs["contested"].Spec.GetReplicas())
+}
+
+func TestResolveWorkloadPrefix_ClusterWide(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	// Only a remote peer has this spec — local node has nothing.
+	_, remotePeerStr := peerKey(2)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "abcdef1234567890", Replicas: 2},
+		},
+	})
+
+	// Resolve by prefix.
+	hash, ambiguous, found := s.ResolveWorkloadPrefix("abcdef")
+	require.True(t, found)
+	require.False(t, ambiguous)
+	require.Equal(t, "abcdef1234567890", hash)
+
+	// No match.
+	_, _, found = s.ResolveWorkloadPrefix("zzz")
+	require.False(t, found)
+
+	// Ambiguous: add another spec with overlapping prefix.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "abcdef9999999999", Replicas: 1},
+		},
+	})
+
+	_, ambiguous, found = s.ResolveWorkloadPrefix("abcdef")
+	require.True(t, ambiguous)
+	require.False(t, found)
+}
+
+func TestWorkloadQueries_ExcludeDeniedNodes(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	// Remote peer publishes a spec and a claim.
+	deniedPK, deniedStr := peerKey(2)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  deniedStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "deniedwl", Replicas: 1},
+		},
+	})
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  deniedStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "deniedwl"},
+		},
+	})
+
+	// Before denial, spec and claim are visible.
+	require.Len(t, s.AllWorkloadSpecs(), 1)
+	claims := s.AllWorkloadClaims()
+	require.Contains(t, claims["deniedwl"], deniedPK)
+	h, _, found := s.ResolveWorkloadPrefix("denied")
+	require.True(t, found)
+	require.Equal(t, "deniedwl", h)
+
+	// Deny the peer.
+	s.denied[deniedPK] = struct{}{}
+
+	// After denial, spec, claim, and prefix resolution all exclude the peer.
+	require.Empty(t, s.AllWorkloadSpecs())
+	require.Empty(t, s.AllWorkloadClaims())
+	_, _, found = s.ResolveWorkloadPrefix("denied")
+	require.False(t, found)
 }

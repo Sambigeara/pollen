@@ -22,6 +22,10 @@ import (
 
 var _ auth.InviteConsumer = (*Store)(nil)
 
+// ErrSpecOwnedRemotely is returned by SetLocalWorkloadSpec when a valid remote
+// node already publishes a spec for the same hash.
+var ErrSpecOwnedRemotely = errors.New("spec published by another node")
+
 type attrKind uint8
 
 const (
@@ -36,6 +40,8 @@ const (
 	attrVivaldi
 	attrNatType
 	attrResourceTelemetry
+	attrWorkloadSpec
+	attrWorkloadClaim
 )
 
 type attrKey struct {
@@ -88,6 +94,14 @@ func resourceTelemetryAttrKey() attrKey {
 	return attrKey{kind: attrResourceTelemetry}
 }
 
+func workloadSpecAttrKey(hash string) attrKey {
+	return attrKey{kind: attrWorkloadSpec, name: hash}
+}
+
+func workloadClaimAttrKey(hash string) attrKey {
+	return attrKey{kind: attrWorkloadClaim, name: hash}
+}
+
 func tombstoneStaleAttrs(rec *nodeRecord) {
 	for _, key := range []attrKey{publiclyAccessibleAttrKey(), natTypeAttrKey(), observedExternalIPAttrKey(), resourceTelemetryAttrKey()} {
 		rec.maxCounter++
@@ -103,6 +117,8 @@ type logEntry struct {
 type nodeRecord struct {
 	Reachable          map[types.PeerKey]struct{}
 	Services           map[string]*statev1.Service
+	WorkloadSpecs      map[string]*statev1.WorkloadSpecChange
+	WorkloadClaims     map[string]struct{}
 	log                map[attrKey]logEntry
 	VivaldiCoord       *topology.Coord
 	LastAddr           string
@@ -129,6 +145,14 @@ func (r nodeRecord) clone() nodeRecord {
 	if r.Reachable != nil {
 		c.Reachable = make(map[types.PeerKey]struct{}, len(r.Reachable))
 		maps.Copy(c.Reachable, r.Reachable)
+	}
+	if r.WorkloadSpecs != nil {
+		c.WorkloadSpecs = make(map[string]*statev1.WorkloadSpecChange, len(r.WorkloadSpecs))
+		maps.Copy(c.WorkloadSpecs, r.WorkloadSpecs)
+	}
+	if r.WorkloadClaims != nil {
+		c.WorkloadClaims = make(map[string]struct{}, len(r.WorkloadClaims))
+		maps.Copy(c.WorkloadClaims, r.WorkloadClaims)
 	}
 	c.IPs = append([]string(nil), r.IPs...)
 	return c
@@ -177,6 +201,7 @@ type Store struct {
 	desiredConnections map[string]Connection
 	onDeny             func(types.PeerKey)
 	onRouteInvalidate  func()
+	onWorkloadChange   func()
 	metrics            *metrics.GossipMetrics
 	mu                 sync.RWMutex
 	LocalID            types.PeerKey
@@ -207,10 +232,12 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 		metrics: metrics.NewGossipMetrics(nil),
 		nodes: map[types.PeerKey]nodeRecord{
 			localID: {
-				maxCounter:  1,
-				IdentityPub: append([]byte(nil), identityPub...),
-				Reachable:   make(map[types.PeerKey]struct{}),
-				Services:    make(map[string]*statev1.Service),
+				maxCounter:     1,
+				IdentityPub:    append([]byte(nil), identityPub...),
+				Reachable:      make(map[types.PeerKey]struct{}),
+				Services:       make(map[string]*statev1.Service),
+				WorkloadSpecs:  make(map[string]*statev1.WorkloadSpecChange),
+				WorkloadClaims: make(map[string]struct{}),
 				log: map[attrKey]logEntry{
 					identityAttrKey(): {Counter: 1},
 				},
@@ -251,6 +278,8 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 			PubliclyAccessible: p.GetPubliclyAccessible(),
 			Reachable:          make(map[types.PeerKey]struct{}),
 			Services:           make(map[string]*statev1.Service),
+			WorkloadSpecs:      make(map[string]*statev1.WorkloadSpecChange),
+			WorkloadClaims:     make(map[string]struct{}),
 			log:                make(map[attrKey]logEntry),
 		}
 	}
@@ -322,6 +351,12 @@ func (s *Store) OnDenyPeer(fn func(types.PeerKey)) {
 // be registered.
 func (s *Store) OnRouteInvalidate(fn func()) {
 	s.onRouteInvalidate = fn
+}
+
+// OnWorkloadChange registers a callback invoked (outside the lock) when a
+// workload spec or claim event is applied via gossip.
+func (s *Store) OnWorkloadChange(fn func()) {
+	s.onWorkloadChange = fn
 }
 
 // SetGossipMetrics replaces the no-op metrics with wired instruments.
@@ -536,6 +571,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	var newlyDenied []types.PeerKey
 	anyApplied := false
 	routesDirty := false
+	workloadsDirty := false
 	for _, event := range events {
 		if event == nil {
 			continue
@@ -546,6 +582,8 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 			switch event.GetChange().(type) {
 			case *statev1.GossipEvent_Reachability, *statev1.GossipEvent_Vivaldi:
 				routesDirty = true
+			case *statev1.GossipEvent_WorkloadSpec, *statev1.GossipEvent_WorkloadClaim:
+				workloadsDirty = true
 			}
 		}
 		result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
@@ -564,6 +602,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 
 	onDeny := s.onDeny
 	onRouteInvalidate := s.onRouteInvalidate
+	onWorkloadChange := s.onWorkloadChange
 	s.mu.Unlock()
 
 	if onDeny != nil {
@@ -574,6 +613,10 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 
 	if routesDirty && onRouteInvalidate != nil {
 		onRouteInvalidate()
+	}
+
+	if workloadsDirty && onWorkloadChange != nil {
+		onWorkloadChange()
 	}
 
 	return result
@@ -647,7 +690,19 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) (ApplyResult, []typ
 	}
 	s.nodes[peerID] = rec
 	s.metrics.EventsApplied.Inc()
-	return ApplyResult{Rebroadcast: []*statev1.GossipEvent{event}}, newlyDenied
+
+	rebroadcast := []*statev1.GossipEvent{event}
+
+	// When a remote workload spec arrives, check whether the local node holds
+	// a losing spec for the same hash. If the remote publisher has a lower
+	// PeerKey, tombstone the local spec so it cannot resurface.
+	if !deleted {
+		if v, ok := event.GetChange().(*statev1.GossipEvent_WorkloadSpec); ok && v.WorkloadSpec != nil {
+			rebroadcast = append(rebroadcast, s.tombstoneLosingLocalSpec(peerID, v.WorkloadSpec.GetHash())...)
+		}
+	}
+
+	return ApplyResult{Rebroadcast: rebroadcast}, newlyDenied
 }
 
 func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
@@ -682,6 +737,16 @@ func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
 		return natTypeAttrKey(), true
 	case *statev1.GossipEvent_ResourceTelemetry:
 		return resourceTelemetryAttrKey(), true
+	case *statev1.GossipEvent_WorkloadSpec:
+		if v.WorkloadSpec == nil || v.WorkloadSpec.GetHash() == "" {
+			return attrKey{}, false
+		}
+		return workloadSpecAttrKey(v.WorkloadSpec.GetHash()), true
+	case *statev1.GossipEvent_WorkloadClaim:
+		if v.WorkloadClaim == nil || v.WorkloadClaim.GetHash() == "" {
+			return attrKey{}, false
+		}
+		return workloadClaimAttrKey(v.WorkloadClaim.GetHash()), true
 	default:
 		return attrKey{}, false
 	}
@@ -715,6 +780,10 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 		rec.CPUPercent = 0
 		rec.MemPercent = 0
 		rec.MemTotalBytes = 0
+	case attrWorkloadSpec:
+		delete(rec.WorkloadSpecs, key.name)
+	case attrWorkloadClaim:
+		delete(rec.WorkloadClaims, key.name)
 	default:
 		panic("unknown attr kind")
 	}
@@ -770,6 +839,20 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 			rec.CPUPercent = v.ResourceTelemetry.GetCpuPercent()
 			rec.MemPercent = v.ResourceTelemetry.GetMemPercent()
 			rec.MemTotalBytes = v.ResourceTelemetry.GetMemTotalBytes()
+		}
+	case *statev1.GossipEvent_WorkloadSpec:
+		if v.WorkloadSpec != nil {
+			m := make(map[string]*statev1.WorkloadSpecChange, len(rec.WorkloadSpecs)+1)
+			maps.Copy(m, rec.WorkloadSpecs)
+			m[v.WorkloadSpec.GetHash()] = v.WorkloadSpec
+			rec.WorkloadSpecs = m
+		}
+	case *statev1.GossipEvent_WorkloadClaim:
+		if v.WorkloadClaim != nil {
+			m := make(map[string]struct{}, len(rec.WorkloadClaims)+1)
+			maps.Copy(m, rec.WorkloadClaims)
+			m[v.WorkloadClaim.GetHash()] = struct{}{}
+			rec.WorkloadClaims = m
 		}
 	default:
 		return
@@ -1176,6 +1259,19 @@ func (s *Store) AllNodes() map[types.PeerKey]nodeRecord {
 	return s.validNodesLocked()
 }
 
+// AllPeerKeys returns the PeerKey for every valid (non-denied, non-expired) node.
+func (s *Store) AllPeerKeys() []types.PeerKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	valid := s.validNodesLocked()
+	keys := make([]types.PeerKey, 0, len(valid))
+	for pk := range valid {
+		keys = append(keys, pk)
+	}
+	return keys
+}
+
 func (s *Store) Get(peerID types.PeerKey) (nodeRecord, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1369,12 +1465,254 @@ func (s *Store) IsDenied(subjectPub []byte) bool {
 	return ok
 }
 
+// isValidOwnerLocked reports whether a peer is a valid scheduling participant
+// (not denied, not expired). Caller must hold s.mu.
+func (s *Store) isValidOwnerLocked(peerID types.PeerKey) bool {
+	if _, denied := s.denied[peerID]; denied {
+		return false
+	}
+	rec, ok := s.nodes[peerID]
+	if !ok {
+		return false
+	}
+	if rec.CertExpiry != 0 && auth.IsCertExpiredAt(time.Unix(rec.CertExpiry, 0), time.Now()) {
+		return false
+	}
+	return true
+}
+
+func (s *Store) SetLocalWorkloadSpec(hash string, replicas, memoryPages uint32) ([]*statev1.GossipEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Reject if any valid remote node already publishes this hash.
+	for pk, rec := range s.nodes {
+		if pk == s.LocalID {
+			continue
+		}
+		if _, has := rec.WorkloadSpecs[hash]; !has {
+			continue
+		}
+		if s.isValidOwnerLocked(pk) {
+			return nil, ErrSpecOwnedRemotely
+		}
+	}
+
+	local := s.nodes[s.LocalID]
+
+	if existing, ok := local.WorkloadSpecs[hash]; ok &&
+		existing.GetReplicas() == replicas && existing.GetMemoryPages() == memoryPages {
+		return nil, nil
+	}
+
+	m := make(map[string]*statev1.WorkloadSpecChange, len(local.WorkloadSpecs)+1)
+	maps.Copy(m, local.WorkloadSpecs)
+	m[hash] = &statev1.WorkloadSpecChange{Hash: hash, Replicas: replicas, MemoryPages: memoryPages}
+	local.WorkloadSpecs = m
+
+	key := workloadSpecAttrKey(hash)
+	local.maxCounter++
+	counter := local.maxCounter
+	local.log[key] = logEntry{Counter: counter}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{
+				Hash:        hash,
+				Replicas:    replicas,
+				MemoryPages: memoryPages,
+			},
+		},
+	}}, nil
+}
+
+// tombstoneLosingLocalSpec checks whether the local node holds a spec for hash
+// that loses to the remote publisher (lower PeerKey wins). If so, it deletes
+// the local spec and returns the tombstone event for rebroadcast.
+// Caller must hold s.mu.
+func (s *Store) tombstoneLosingLocalSpec(remotePeer types.PeerKey, hash string) []*statev1.GossipEvent {
+	if remotePeer == s.LocalID {
+		return nil
+	}
+	// Ignore invalid peers — denied or expired nodes cannot win ownership.
+	if !s.isValidOwnerLocked(remotePeer) {
+		return nil
+	}
+	// Only tombstone if remote peer wins (lower PeerKey).
+	if s.LocalID.Compare(remotePeer) < 0 {
+		return nil
+	}
+	local := s.nodes[s.LocalID]
+	if _, has := local.WorkloadSpecs[hash]; !has {
+		return nil
+	}
+
+	delete(local.WorkloadSpecs, hash)
+
+	key := workloadSpecAttrKey(hash)
+	local.maxCounter++
+	counter := local.maxCounter
+	local.log[key] = logEntry{Counter: counter, Deleted: true}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Deleted: true,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: hash},
+		},
+	}}
+}
+
+func (s *Store) RemoveLocalWorkloadSpec(hash string) []*statev1.GossipEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	local := s.nodes[s.LocalID]
+
+	if _, ok := local.WorkloadSpecs[hash]; !ok {
+		return nil
+	}
+
+	delete(local.WorkloadSpecs, hash)
+
+	key := workloadSpecAttrKey(hash)
+	local.maxCounter++
+	counter := local.maxCounter
+	local.log[key] = logEntry{Counter: counter, Deleted: true}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Deleted: true,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: hash},
+		},
+	}}
+}
+
+func (s *Store) SetLocalWorkloadClaim(hash string, claimed bool) []*statev1.GossipEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	local := s.nodes[s.LocalID]
+
+	_, exists := local.WorkloadClaims[hash]
+	if claimed == exists {
+		return nil
+	}
+
+	if claimed {
+		m := make(map[string]struct{}, len(local.WorkloadClaims)+1)
+		maps.Copy(m, local.WorkloadClaims)
+		m[hash] = struct{}{}
+		local.WorkloadClaims = m
+	} else {
+		delete(local.WorkloadClaims, hash)
+	}
+
+	key := workloadClaimAttrKey(hash)
+	local.maxCounter++
+	counter := local.maxCounter
+	local.log[key] = logEntry{Counter: counter, Deleted: !claimed}
+	s.nodes[s.LocalID] = local
+
+	return []*statev1.GossipEvent{{
+		PeerId:  s.LocalID.String(),
+		Counter: counter,
+		Deleted: !claimed,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: hash},
+		},
+	}}
+}
+
+// WorkloadSpecView is a merged view of a workload spec and its publisher.
+type WorkloadSpecView struct {
+	Spec      *statev1.WorkloadSpecChange
+	Publisher types.PeerKey
+}
+
+// AllWorkloadSpecs returns hash → spec merged across valid (non-denied, non-expired) nodes.
+// When multiple peers publish a spec for the same hash, the lowest PeerKey
+// wins to ensure deterministic conflict resolution across all nodes.
+func (s *Store) AllWorkloadSpecs() map[string]WorkloadSpecView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	valid := s.validNodesLocked()
+	out := make(map[string]WorkloadSpecView)
+	for peerID, rec := range valid {
+		for hash, spec := range rec.WorkloadSpecs {
+			existing, ok := out[hash]
+			if !ok || peerID.Compare(existing.Publisher) < 0 {
+				out[hash] = WorkloadSpecView{Spec: spec, Publisher: peerID}
+			}
+		}
+	}
+	return out
+}
+
+// AllWorkloadClaims returns hash → set of claimant PeerKeys from valid nodes.
+func (s *Store) AllWorkloadClaims() map[string]map[types.PeerKey]struct{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	valid := s.validNodesLocked()
+	out := make(map[string]map[types.PeerKey]struct{})
+	for peerID, rec := range valid {
+		for hash := range rec.WorkloadClaims {
+			if out[hash] == nil {
+				out[hash] = make(map[types.PeerKey]struct{})
+			}
+			out[hash][peerID] = struct{}{}
+		}
+	}
+	return out
+}
+
+// ResolveWorkloadPrefix resolves a hash prefix to a full workload hash from
+// valid (non-denied, non-expired) nodes' specs. Returns ("", false) if no
+// match, or ("", true, false) if multiple specs match the prefix.
+func (s *Store) ResolveWorkloadPrefix(prefix string) (hash string, ambiguous, found bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	valid := s.validNodesLocked()
+	var match string
+	for _, rec := range valid {
+		for h := range rec.WorkloadSpecs {
+			if len(h) >= len(prefix) && h[:len(prefix)] == prefix {
+				if match != "" && match != h {
+					return "", true, false
+				}
+				match = h
+			}
+		}
+	}
+	if match == "" {
+		return "", false, false
+	}
+	return match, false, true
+}
+
 func ensureNodeInit(rec *nodeRecord, peerID types.PeerKey) {
 	if rec.Reachable == nil {
 		rec.Reachable = make(map[types.PeerKey]struct{})
 	}
 	if rec.Services == nil {
 		rec.Services = make(map[string]*statev1.Service)
+	}
+	if rec.WorkloadSpecs == nil {
+		rec.WorkloadSpecs = make(map[string]*statev1.WorkloadSpecChange)
+	}
+	if rec.WorkloadClaims == nil {
+		rec.WorkloadClaims = make(map[string]struct{})
 	}
 	if rec.log == nil {
 		rec.log = make(map[attrKey]logEntry)
@@ -1511,6 +1849,19 @@ func (s *Store) buildEventFromLog(peerIDStr string, key attrKey, entry logEntry,
 		}
 		event.Change = &statev1.GossipEvent_Deny{
 			Deny: &statev1.DenyChange{SubjectPub: append([]byte(nil), subjectKey[:]...)},
+		}
+	case attrWorkloadSpec:
+		change := &statev1.WorkloadSpecChange{Hash: key.name}
+		if !entry.Deleted {
+			if spec, ok := rec.WorkloadSpecs[key.name]; ok {
+				change.Replicas = spec.GetReplicas()
+				change.MemoryPages = spec.GetMemoryPages()
+			}
+		}
+		event.Change = &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: change}
+	case attrWorkloadClaim:
+		event.Change = &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: key.name},
 		}
 	default:
 		panic("unknown attr kind in log")
