@@ -680,7 +680,9 @@ func (n *Node) tick() {
 	n.reconcileDesiredConnections()
 
 	now := time.Now()
-	outputs := n.peers.Step(now, peer.Tick{})
+	outputs := n.peers.Step(now, peer.Tick{
+		MaxConnect: topology.DefaultInfraMax + topology.DefaultNearestK + topology.DefaultRandomR,
+	})
 	n.handleOutputs(outputs)
 }
 

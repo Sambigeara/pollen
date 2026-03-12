@@ -508,3 +508,104 @@ func TestConnectingTimeoutPunchReachesUnreachable(t *testing.T) {
 	p, _ = s.Get(key)
 	require.Equal(t, PeerStateUnreachable, p.State)
 }
+
+func TestTickCapsConnectionAttempts(t *testing.T) {
+	s := NewStore()
+	now := time.Now()
+
+	for i := range 20 {
+		s.Step(now, DiscoverPeer{
+			PeerKey:            testPeerKey(byte(i)),
+			Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+			Port:               9000,
+			PubliclyAccessible: true,
+		})
+	}
+
+	outputs := s.Step(now, Tick{MaxConnect: 8})
+	require.Len(t, outputs, 8)
+
+	var connecting, discovered int
+	for i := range 20 {
+		p, ok := s.Get(testPeerKey(byte(i)))
+		require.True(t, ok)
+		switch p.State {
+		case PeerStateConnecting:
+			connecting++
+		case PeerStateDiscovered:
+			discovered++
+		case PeerStateConnected, PeerStateUnreachable:
+			t.Fatalf("peer %d in unexpected state %d", i, p.State)
+		}
+	}
+	require.Equal(t, 8, connecting)
+	require.Equal(t, 12, discovered)
+}
+
+func TestTickCapDrainsAcrossTicks(t *testing.T) {
+	s := NewStore()
+	now := time.Now()
+
+	for i := range 20 {
+		s.Step(now, DiscoverPeer{
+			PeerKey:            testPeerKey(byte(i)),
+			Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+			Port:               9000,
+			PubliclyAccessible: true,
+		})
+	}
+
+	var total int
+	for tick := range 3 {
+		outputs := s.Step(now.Add(time.Duration(tick)*time.Second), Tick{MaxConnect: 8})
+		total += len(outputs)
+	}
+	require.Equal(t, 20, total)
+
+	for i := range 20 {
+		p, ok := s.Get(testPeerKey(byte(i)))
+		require.True(t, ok)
+		require.Equal(t, PeerStateConnecting, p.State)
+	}
+}
+
+func TestTickCapDoesNotBlockStateTransitions(t *testing.T) {
+	s := NewStore()
+	now := time.Now()
+
+	// Create 10 peers and connect them all.
+	for i := range 10 {
+		s.Step(now, DiscoverPeer{
+			PeerKey:            testPeerKey(byte(i)),
+			Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+			Port:               9000,
+			PubliclyAccessible: true,
+		})
+	}
+	s.Step(now, Tick{})
+	// All are now Connecting. Let them time out.
+	timedOut := now.Add(connectingTimeout + time.Second)
+
+	// Also add 5 fresh Discovered peers so the cap is under pressure.
+	for i := 10; i < 15; i++ {
+		s.Step(timedOut, DiscoverPeer{
+			PeerKey:            testPeerKey(byte(i)),
+			Ips:                []net.IP{net.ParseIP("10.0.0.1")},
+			Port:               9000,
+			PubliclyAccessible: true,
+		})
+	}
+
+	// Tick with a small cap — timeouts must still fire even when cap is hit.
+	outputs := s.Step(timedOut, Tick{MaxConnect: 2})
+	require.Len(t, outputs, 2)
+
+	// All 10 original peers should have transitioned out of Connecting
+	// (timeout processing is not gated by the cap).
+	for i := range 10 {
+		p, ok := s.Get(testPeerKey(byte(i)))
+		require.True(t, ok)
+		require.Equal(t, PeerStateDiscovered, p.State,
+			"peer %d should have timed out to Discovered", i)
+	}
+}

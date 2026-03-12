@@ -87,7 +87,11 @@ type DiscoverPeer struct {
 func (DiscoverPeer) isInput() {}
 
 // Tick triggers the state machine to evaluate all peers and emit pending actions.
-type Tick struct{}
+// MaxConnect caps the number of new connection attempts per tick to prevent
+// thundering-herd on cold start. Zero or negative disables the cap.
+type Tick struct {
+	MaxConnect int
+}
 
 func (Tick) isInput() {}
 
@@ -237,7 +241,7 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 	var out []Output
 	switch e := in.(type) {
 	case Tick:
-		out = s.tick(now)
+		out = s.tick(now, e.MaxConnect)
 	case DiscoverPeer:
 		s.discoverPeer(now, e)
 	case ConnectPeer:
@@ -325,7 +329,7 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
 	}
 }
 
-func (s *Store) tick(now time.Time) []Output {
+func (s *Store) tick(now time.Time, maxConnect int) []Output {
 	var outputs []Output //nolint:prealloc
 	for _, p := range s.m {
 		if now.Before(p.NextActionAt) {
@@ -346,6 +350,10 @@ func (s *Store) tick(now time.Time) []Output {
 			p.resetStage()
 			p.StageAttempts = 0
 		case PeerStateDiscovered:
+		}
+
+		if maxConnect > 0 && len(outputs) >= maxConnect {
+			continue
 		}
 
 		var out Output
