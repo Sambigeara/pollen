@@ -27,7 +27,8 @@ git add -A
 
 This establishes the baseline — Codex scopes its review to the staged diff.
 
-**For cycle 2+**: Do NOT stage before submitting. Fixes from the previous cycle must remain **unstaged** so Codex sees only the new minimal diff (via `git diff`) against its prior feedback. Codex can see both staged (`git diff --cached`, already reviewed) and unstaged (`git diff`, new fixes) changes.
+**For cycle 2+**:
+*IMPORTANT: Do NOT stage before submitting. Do NOT run `git add -A`.*. Fixes from the previous cycle must remain **unstaged** so Codex sees only the new minimal diff (via `git diff`) against its prior feedback. Codex can see both staged (`git diff --cached`, already reviewed) and unstaged (`git diff`, new fixes) changes.
 
 ## Step 2: Build the review prompt
 
@@ -46,9 +47,7 @@ Construct the Codex prompt from these parts:
    - Which findings were **disagreed with** (and why — include the reasoning so Codex can re-evaluate or accept).
    - Any standing disagreements carried forward from earlier cycles.
 
-4. **Verification status**: Append `` `just lint` `` and `` `just test` `` results (pass/fail) so Codex knows the current build state.
-
-5. **Closing instruction**: Always end with:
+4. **Closing instruction**: Always end with:
    > "For all points that you deem necessary to address, suggest fixes that I can then pass back to Claude to address."
 
 ## Step 3: Submit to Codex
@@ -61,6 +60,8 @@ sandbox: "read-only"
 ```
 
 ## Step 4: Triage findings and fix
+
+Now we have a response from Codex, stage the partial unstaged diff: `git add -A`, so we have a fresh unstaged set specific to the review we just received.
 
 For each finding Codex returns:
 
