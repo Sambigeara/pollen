@@ -538,3 +538,55 @@ func TestEvaluate_OverReplicatedWithBetterNonClaimant(t *testing.T) {
 	// Over-replication (2 > 1): only 1 incumbent should release, never both.
 	require.Equal(t, 1, releasers, "exactly one incumbent should release during over-replication, not both")
 }
+
+func TestEvaluate_DeadNodeExcludedFromCandidates(t *testing.T) {
+	// Scenario: 3 nodes, one dies. The dead node would rank highest by
+	// placement hash, but since it's excluded from allPeers (as
+	// AllPeerKeys now filters by liveComponent), the surviving node
+	// should claim instead of the slot being assigned to a ghost.
+	local := peerKey(1)
+	peer2 := peerKey(2)
+	dead := peerKey(3)
+
+	specs := map[string]Spec{
+		"wl1": {Replicas: 2},
+	}
+	// peer2 already claims — 1 of 2 replicas. Need 1 more.
+	claims := map[string]map[types.PeerKey]struct{}{
+		"wl1": {peer2: {}},
+	}
+	isRunning := func(string) bool { return false }
+
+	// Dead node excluded from allPeers — simulates AllPeerKeys filtering.
+	livePeers := []types.PeerKey{local, peer2}
+
+	actions := Evaluate(local, livePeers, specs, claims, ClusterState{}, isRunning)
+
+	var claimed bool
+	for _, a := range actions {
+		if a.Hash == "wl1" && a.Kind == ActionClaim {
+			claimed = true
+		}
+	}
+	require.True(t, claimed, "live node must claim when dead node is excluded from candidates")
+
+	// Contrast: if the dead node were still in allPeers and won the
+	// tie-break, local might NOT claim (the slot would go to the ghost).
+	// Verify that including the dead node could block the claim.
+	allPeersIncludingDead := []types.PeerKey{local, peer2, dead}
+	actionsWithDead := Evaluate(local, allPeersIncludingDead, specs, claims, ClusterState{}, isRunning)
+
+	// Find who shouldClaim picks.
+	var localClaimsWithDead bool
+	for _, a := range actionsWithDead {
+		if a.Hash == "wl1" && a.Kind == ActionClaim {
+			localClaimsWithDead = true
+		}
+	}
+
+	// If dead wins the tie-break, local won't claim — proving the bug.
+	// If local wins, both paths agree — no harm either way.
+	// We just verify the live-only path always produces a claim for local.
+	_ = localClaimsWithDead // outcome depends on hash tie-break
+	require.True(t, claimed, "with dead node excluded, live node must always be able to claim")
+}

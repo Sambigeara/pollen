@@ -1343,14 +1343,18 @@ type NodePlacementState struct {
 }
 
 // AllNodePlacementStates returns resource, coordinate, and traffic data for
-// every valid node, suitable for the scheduler's placement scoring function.
+// every valid, live node, suitable for the scheduler's placement scoring
+// function. Dead nodes are excluded to stay consistent with AllPeerKeys and
+// AllWorkloadClaims.
 func (s *Store) AllNodePlacementStates() map[types.PeerKey]NodePlacementState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	valid := s.validNodesLocked()
-	out := make(map[types.PeerKey]NodePlacementState, len(valid))
-	for pk, rec := range valid {
+	live := s.liveComponentLocked(valid)
+	out := make(map[types.PeerKey]NodePlacementState, len(live))
+	for pk := range live {
+		rec := valid[pk]
 		nps := NodePlacementState{
 			CPUPercent:    rec.CPUPercent,
 			MemPercent:    rec.MemPercent,
@@ -1560,14 +1564,16 @@ func (s *Store) AllNodes() map[types.PeerKey]nodeRecord {
 	return s.validNodesLocked()
 }
 
-// AllPeerKeys returns the PeerKey for every valid (non-denied, non-expired) node.
+// AllPeerKeys returns the PeerKey for every valid, live (reachable from the
+// local node) peer. Dead nodes are excluded so the scheduler never assigns
+// workload slots to peers that can't fulfil them.
 func (s *Store) AllPeerKeys() []types.PeerKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	valid := s.validNodesLocked()
-	keys := make([]types.PeerKey, 0, len(valid))
-	for pk := range valid {
+	live := s.liveComponentLocked(s.validNodesLocked())
+	keys := make([]types.PeerKey, 0, len(live))
+	for pk := range live {
 		keys = append(keys, pk)
 	}
 	return keys

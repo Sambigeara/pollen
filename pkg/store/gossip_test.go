@@ -2464,6 +2464,9 @@ func TestAllNodePlacementStates(t *testing.T) {
 		},
 	})
 
+	// Remote peer must be reachable to appear in placement states.
+	s.SetLocalConnected(remotePK, true)
+
 	states := s.AllNodePlacementStates()
 	require.Len(t, states, 2)
 
@@ -2726,4 +2729,62 @@ func TestBuildEventFromLogIncludesTimeoutMs(t *testing.T) {
 	}
 	require.NotNil(t, specEvent)
 	require.Equal(t, uint32(750), specEvent.GetChange().(*statev1.GossipEvent_WorkloadSpec).WorkloadSpec.GetTimeoutMs())
+}
+
+func TestAllPeerKeysExcludesUnreachable(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	remotePK, remoteStr := peerKey(2)
+
+	// Register the remote peer via identity event.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remoteStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{IdentityPub: []byte(remoteStr)},
+		},
+	})
+
+	// Connect remote peer — should appear in AllPeerKeys.
+	s.SetLocalConnected(remotePK, true)
+	keys := s.AllPeerKeys()
+	require.Contains(t, keys, remotePK, "reachable peer must appear in AllPeerKeys")
+	require.Contains(t, keys, s.LocalID, "local node must appear in AllPeerKeys")
+
+	// Disconnect — dead peer must be excluded.
+	s.SetLocalConnected(remotePK, false)
+	keys = s.AllPeerKeys()
+	require.NotContains(t, keys, remotePK, "unreachable peer must be excluded from AllPeerKeys")
+	require.Contains(t, keys, s.LocalID, "local node must always appear in AllPeerKeys")
+}
+
+func TestAllNodePlacementStatesExcludesUnreachable(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	remotePK, remoteStr := peerKey(2)
+
+	// Register the remote peer via identity event.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remoteStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{IdentityPub: []byte(remoteStr)},
+		},
+	})
+
+	// Connect remote peer — should appear in placement states.
+	s.SetLocalConnected(remotePK, true)
+	states := s.AllNodePlacementStates()
+	require.Contains(t, states, remotePK, "reachable peer must appear in AllNodePlacementStates")
+	require.Contains(t, states, s.LocalID, "local node must appear in AllNodePlacementStates")
+
+	// Disconnect — dead peer must be excluded.
+	s.SetLocalConnected(remotePK, false)
+	states = s.AllNodePlacementStates()
+	require.NotContains(t, states, remotePK, "unreachable peer must be excluded from AllNodePlacementStates")
+	require.Contains(t, states, s.LocalID, "local node must always appear in AllNodePlacementStates")
 }
