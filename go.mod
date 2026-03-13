@@ -15,6 +15,7 @@ require (
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
+	github.com/tetratelabs/wazero v1.9.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/net v0.50.0
 	google.golang.org/grpc v1.79.1
@@ -50,7 +51,6 @@ require (
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tetratelabs/wabin v0.0.0-20230304001439-f6f874872834 // indirect
-	github.com/tetratelabs/wazero v1.9.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect

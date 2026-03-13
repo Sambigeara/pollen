@@ -2479,3 +2479,206 @@ func TestOnTrafficChangeCallback(t *testing.T) {
 	})
 	require.Equal(t, 1, callCount)
 }
+
+func TestSelfConflictReAdoptsWorkloadSpecs(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	// Simulate a prior session that published a workload spec at counter 20.
+	result := s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 20,
+			Change: &statev1.GossipEvent_WorkloadSpec{
+				WorkloadSpec: &statev1.WorkloadSpecChange{
+					Hash: "abc123", Replicas: 3, MemoryPages: 16, TimeoutMs: 500,
+				},
+			},
+		},
+	}, true)
+
+	// Should trigger self-conflict + rebroadcast.
+	require.NotEmpty(t, result.Rebroadcast)
+
+	// The spec should be in the local materialized view.
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	sv, ok := specs["abc123"]
+	require.True(t, ok)
+	require.Equal(t, uint32(3), sv.Spec.GetReplicas())
+	require.Equal(t, uint32(16), sv.Spec.GetMemoryPages())
+	require.Equal(t, uint32(500), sv.Spec.GetTimeoutMs())
+	require.Equal(t, s.LocalID, sv.Publisher)
+
+	// maxCounter should be above the incoming 20.
+	rec := s.nodes[s.LocalID]
+	require.Greater(t, rec.maxCounter, uint64(20))
+}
+
+func TestSelfConflictSkipsDeletedSpecs(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 20,
+			Deleted: true,
+			Change: &statev1.GossipEvent_WorkloadSpec{
+				WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "abc123"},
+			},
+		},
+	}, true)
+
+	specs := s.AllWorkloadSpecs()
+	require.Empty(t, specs)
+}
+
+func TestSelfConflictDoesNotReAdoptClaims(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 20,
+			Change: &statev1.GossipEvent_WorkloadClaim{
+				WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "abc123"},
+			},
+		},
+	}, true)
+
+	claims := s.AllWorkloadClaims()
+	require.Empty(t, claims)
+}
+
+func TestSelfConflictMultiBatchSpecAdoption(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	// First batch: triggers conflict, adopts spec1.
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 20,
+			Change: &statev1.GossipEvent_WorkloadSpec{
+				WorkloadSpec: &statev1.WorkloadSpecChange{
+					Hash: "spec1", Replicas: 2, MemoryPages: 8,
+				},
+			},
+		},
+	}, true)
+
+	// Second batch: counter is below maxCounter but spec2 key is new.
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 15,
+			Change: &statev1.GossipEvent_WorkloadSpec{
+				WorkloadSpec: &statev1.WorkloadSpecChange{
+					Hash: "spec2", Replicas: 1, MemoryPages: 4,
+				},
+			},
+		},
+	}, true)
+
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 2)
+	require.Equal(t, uint32(2), specs["spec1"].Spec.GetReplicas())
+	require.Equal(t, uint32(1), specs["spec2"].Spec.GetReplicas())
+}
+
+func TestSelfConflictDoesNotReAdoptExistingSpec(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	// Set a local spec first.
+	_, err := s.SetLocalWorkloadSpec("abc123", 5, 32, 1000)
+	require.NoError(t, err)
+
+	// Receive an old self-event for the same hash with different values.
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 100,
+			Change: &statev1.GossipEvent_WorkloadSpec{
+				WorkloadSpec: &statev1.WorkloadSpecChange{
+					Hash: "abc123", Replicas: 2, MemoryPages: 16,
+				},
+			},
+		},
+	}, true)
+
+	// The local spec should NOT be overwritten — we already have a live entry.
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	require.Equal(t, uint32(5), specs["abc123"].Spec.GetReplicas())
+	require.Equal(t, uint32(32), specs["abc123"].Spec.GetMemoryPages())
+}
+
+func TestSaveLoadPersistsWorkloadSpecs(t *testing.T) {
+	dir := t.TempDir()
+	localPub := make([]byte, 32)
+	localPub[0] = 1
+
+	s, err := Load(dir, localPub)
+	require.NoError(t, err)
+
+	_, err = s.SetLocalWorkloadSpec("hash1", 2, 16, 500)
+	require.NoError(t, err)
+	_, err = s.SetLocalWorkloadSpec("hash2", 3, 32, 1000)
+	require.NoError(t, err)
+
+	require.NoError(t, s.Save())
+	require.NoError(t, s.Close())
+
+	s2, err := Load(dir, localPub)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, s2.Close()) })
+
+	specs := s2.AllWorkloadSpecs()
+	require.Len(t, specs, 2)
+	require.Equal(t, uint32(2), specs["hash1"].Spec.GetReplicas())
+	require.Equal(t, uint32(16), specs["hash1"].Spec.GetMemoryPages())
+	require.Equal(t, uint32(500), specs["hash1"].Spec.GetTimeoutMs())
+	require.Equal(t, uint32(3), specs["hash2"].Spec.GetReplicas())
+	require.Equal(t, uint32(32), specs["hash2"].Spec.GetMemoryPages())
+	require.Equal(t, uint32(1000), specs["hash2"].Spec.GetTimeoutMs())
+
+	// Verify specs are in the local log (will be rebroadcast on first gossip).
+	rec := s2.nodes[s2.LocalID]
+	_, ok := rec.log[workloadSpecAttrKey("hash1")]
+	require.True(t, ok)
+	_, ok = rec.log[workloadSpecAttrKey("hash2")]
+	require.True(t, ok)
+}
+
+func TestBuildEventFromLogIncludesTimeoutMs(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	_, err := s.SetLocalWorkloadSpec("abc123", 2, 16, 750)
+	require.NoError(t, err)
+
+	events := s.LocalEvents()
+	var specEvent *statev1.GossipEvent
+	for _, ev := range events {
+		if v, ok := ev.GetChange().(*statev1.GossipEvent_WorkloadSpec); ok && v.WorkloadSpec.GetHash() == "abc123" {
+			specEvent = ev
+			break
+		}
+	}
+	require.NotNil(t, specEvent)
+	require.Equal(t, uint32(750), specEvent.GetChange().(*statev1.GossipEvent_WorkloadSpec).WorkloadSpec.GetTimeoutMs())
+}

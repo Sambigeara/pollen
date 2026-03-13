@@ -135,6 +135,7 @@ message RuntimeState {
   repeated PeerState peers = 1;
   repeated ConsumedInvite consumed_invites = 2;
   repeated bytes denied_peers = 3;
+  repeated WorkloadSpecChange workload_specs = 4;
 }
 
 message PeerState {

@@ -277,6 +277,19 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 		local.maxCounter++
 		local.log[denyAttrKey(subjectKey.String())] = logEntry{Counter: local.maxCounter}
 	}
+
+	// Inject disk-loaded workload specs into the local log so that
+	// bumpAndBroadcastAllLocked can re-publish them after restart.
+	for _, spec := range onDisk.GetWorkloadSpecs() {
+		hash := spec.GetHash()
+		if hash == "" {
+			continue
+		}
+		local.WorkloadSpecs[hash] = spec
+		local.maxCounter++
+		local.log[workloadSpecAttrKey(hash)] = logEntry{Counter: local.maxCounter}
+	}
+
 	s.nodes[localID] = local
 
 	for _, p := range onDisk.GetPeers() {
@@ -441,10 +454,25 @@ func (s *Store) snapshotStateLocked() *statev1.RuntimeState {
 		return cmp.Compare(a.GetTokenId(), b.GetTokenId())
 	})
 
+	local := s.nodes[s.LocalID]
+	specs := make([]*statev1.WorkloadSpecChange, 0, len(local.WorkloadSpecs))
+	for _, spec := range local.WorkloadSpecs {
+		specs = append(specs, &statev1.WorkloadSpecChange{
+			Hash:        spec.GetHash(),
+			Replicas:    spec.GetReplicas(),
+			MemoryPages: spec.GetMemoryPages(),
+			TimeoutMs:   spec.GetTimeoutMs(),
+		})
+	}
+	slices.SortFunc(specs, func(a, b *statev1.WorkloadSpecChange) int {
+		return cmp.Compare(a.GetHash(), b.GetHash())
+	})
+
 	return &statev1.RuntimeState{
 		Peers:           peers,
 		DeniedPeers:     deniedPeers,
 		ConsumedInvites: invites,
+		WorkloadSpecs:   specs,
 	}
 }
 
@@ -590,16 +618,39 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	s.metrics.BatchSize.Set(float64(len(events)))
 	s.metrics.EventsReceived.Add(int64(len(events)))
 
-	var result ApplyResult
-	var newlyDenied []types.PeerKey
-	anyApplied := false
-	routesDirty := false
-	workloadsDirty := false
-	trafficDirty := false
+	// Partition self-events from remote events so self-conflict resolution
+	// can see the full batch of our own state before bumping counters.
+	var selfEvents, otherEvents []*statev1.GossipEvent
+	localIDStr := s.LocalID.String()
 	for _, event := range events {
 		if event == nil {
 			continue
 		}
+		if event.GetPeerId() == localIDStr {
+			selfEvents = append(selfEvents, event)
+		} else {
+			otherEvents = append(otherEvents, event)
+		}
+	}
+
+	var result ApplyResult
+	newlyDenied := make([]types.PeerKey, 0, len(otherEvents))
+	anyApplied := false
+	routesDirty := false
+	workloadsDirty := false
+	trafficDirty := false
+
+	// Handle self-events as a batch: re-adopt workload specs before bumping.
+	if len(selfEvents) > 0 {
+		r, wlDirty := s.handleSelfConflictLocked(selfEvents)
+		if len(r.Rebroadcast) > 0 {
+			anyApplied = true
+			workloadsDirty = workloadsDirty || wlDirty
+		}
+		result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
+	}
+
+	for _, event := range otherEvents {
 		r, denied := s.applyEventLocked(event)
 		if len(r.Rebroadcast) > 0 {
 			anyApplied = true
@@ -653,6 +704,71 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	return result
 }
 
+// handleSelfConflictLocked processes a batch of events addressed to the local
+// node (received back from peers). It detects self-conflicts (restart recovery)
+// and re-adopts workload specs that the local node published in a prior session
+// but lost on restart. Returns the rebroadcast events and whether any workload
+// state was adopted. Caller must hold s.mu.
+func (s *Store) handleSelfConflictLocked(selfEvents []*statev1.GossipEvent) (ApplyResult, bool) {
+	local := s.nodes[s.LocalID]
+	ensureNodeInit(&local, s.LocalID)
+
+	// Find the max counter across all incoming self-events.
+	var maxIncoming uint64
+	for _, ev := range selfEvents {
+		if ev.GetCounter() > maxIncoming {
+			maxIncoming = ev.GetCounter()
+		}
+	}
+
+	conflictDetected := maxIncoming > local.maxCounter
+	if conflictDetected {
+		local.maxCounter = maxIncoming
+		s.metrics.SelfConflicts.Inc()
+	}
+
+	// Collect the highest-counter non-deleted workload spec per hash.
+	// These represent user intent from a prior session that must survive.
+	bestSpec := make(map[string]*statev1.GossipEvent)
+	for _, ev := range selfEvents {
+		v, ok := ev.GetChange().(*statev1.GossipEvent_WorkloadSpec)
+		if !ok || v.WorkloadSpec == nil || v.WorkloadSpec.GetHash() == "" {
+			continue
+		}
+		hash := v.WorkloadSpec.GetHash()
+		if prev, exists := bestSpec[hash]; !exists || ev.GetCounter() > prev.GetCounter() {
+			bestSpec[hash] = ev
+		}
+	}
+
+	// Adopt non-deleted specs not already present in the local log.
+	adopted := false
+	for hash, ev := range bestSpec {
+		if ev.GetDeleted() {
+			continue
+		}
+		key := workloadSpecAttrKey(hash)
+		if existing, ok := local.log[key]; ok && !existing.Deleted {
+			continue
+		}
+		spec := ev.GetChange().(*statev1.GossipEvent_WorkloadSpec).WorkloadSpec //nolint:forcetypeassert
+		m := make(map[string]*statev1.WorkloadSpecChange, len(local.WorkloadSpecs)+1)
+		maps.Copy(m, local.WorkloadSpecs)
+		m[hash] = spec
+		local.WorkloadSpecs = m
+		local.log[key] = logEntry{} // placeholder; bumpAndBroadcastAllLocked assigns real counter
+		adopted = true
+	}
+
+	if !conflictDetected && !adopted {
+		s.nodes[s.LocalID] = local
+		return ApplyResult{}, false
+	}
+
+	s.nodes[s.LocalID] = local
+	return ApplyResult{Rebroadcast: s.bumpAndBroadcastAllLocked()}, adopted
+}
+
 // applyEventLocked applies a single event. The second return value contains
 // any peer keys that were newly denied (so the caller can fire callbacks
 // outside the lock).
@@ -670,16 +786,9 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) (ApplyResult, []typ
 		return ApplyResult{}, nil
 	}
 
-	// Self-state conflict handling: receiving our own events from peers.
-	// Only the higher-counter check matters — same-counter events bounce
-	// back routinely via gossip and would cause a rebroadcast storm.
+	// Self-events are handled in batch by handleSelfConflictLocked before
+	// this method is called. Reject any that slip through.
 	if peerID == s.LocalID {
-		if event.GetCounter() > rec.maxCounter {
-			rec.maxCounter = event.GetCounter()
-			s.nodes[peerID] = rec
-			s.metrics.SelfConflicts.Inc()
-			return ApplyResult{Rebroadcast: s.bumpAndBroadcastAllLocked()}, nil
-		}
 		return ApplyResult{}, nil
 	}
 
@@ -2080,6 +2189,7 @@ func (s *Store) buildEventFromLog(peerIDStr string, key attrKey, entry logEntry,
 			if spec, ok := rec.WorkloadSpecs[key.name]; ok {
 				change.Replicas = spec.GetReplicas()
 				change.MemoryPages = spec.GetMemoryPages()
+				change.TimeoutMs = spec.GetTimeoutMs()
 			}
 		}
 		event.Change = &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: change}

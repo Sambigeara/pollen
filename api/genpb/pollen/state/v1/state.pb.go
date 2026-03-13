@@ -1282,6 +1282,7 @@ type RuntimeState struct {
 	Peers           []*PeerState           `protobuf:"bytes,1,rep,name=peers,proto3" json:"peers,omitempty"`
 	ConsumedInvites []*ConsumedInvite      `protobuf:"bytes,2,rep,name=consumed_invites,json=consumedInvites,proto3" json:"consumed_invites,omitempty"`
 	DeniedPeers     [][]byte               `protobuf:"bytes,3,rep,name=denied_peers,json=deniedPeers,proto3" json:"denied_peers,omitempty"`
+	WorkloadSpecs   []*WorkloadSpecChange  `protobuf:"bytes,4,rep,name=workload_specs,json=workloadSpecs,proto3" json:"workload_specs,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1333,6 +1334,13 @@ func (x *RuntimeState) GetConsumedInvites() []*ConsumedInvite {
 func (x *RuntimeState) GetDeniedPeers() [][]byte {
 	if x != nil {
 		return x.DeniedPeers
+	}
+	return nil
+}
+
+func (x *RuntimeState) GetWorkloadSpecs() []*WorkloadSpecChange {
+	if x != nil {
+		return x.WorkloadSpecs
 	}
 	return nil
 }
@@ -1580,11 +1588,12 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x10GossipEventBatch\x124\n" +
 	"\x06events\x18\x01 \x03(\v2\x1c.pollen.state.v1.GossipEventR\x06events\x12\x1f\n" +
 	"\vis_response\x18\x02 \x01(\bR\n" +
-	"isResponse\"\xaf\x01\n" +
+	"isResponse\"\xfb\x01\n" +
 	"\fRuntimeState\x120\n" +
 	"\x05peers\x18\x01 \x03(\v2\x1a.pollen.state.v1.PeerStateR\x05peers\x12J\n" +
 	"\x10consumed_invites\x18\x02 \x03(\v2\x1f.pollen.state.v1.ConsumedInviteR\x0fconsumedInvites\x12!\n" +
-	"\fdenied_peers\x18\x03 \x03(\fR\vdeniedPeers\"\xf4\x01\n" +
+	"\fdenied_peers\x18\x03 \x03(\fR\vdeniedPeers\x12J\n" +
+	"\x0eworkload_specs\x18\x04 \x03(\v2#.pollen.state.v1.WorkloadSpecChangeR\rworkloadSpecs\"\xf4\x01\n" +
 	"\tPeerState\x12!\n" +
 	"\fidentity_pub\x18\x01 \x01(\fR\videntityPub\x12\x1c\n" +
 	"\taddresses\x18\x02 \x03(\tR\taddresses\x12\x12\n" +
@@ -1659,12 +1668,13 @@ var file_pollen_state_v1_state_proto_depIdxs = []int32{
 	18, // 16: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
 	21, // 17: pollen.state.v1.RuntimeState.peers:type_name -> pollen.state.v1.PeerState
 	22, // 18: pollen.state.v1.RuntimeState.consumed_invites:type_name -> pollen.state.v1.ConsumedInvite
-	1,  // 19: pollen.state.v1.GossipStateDigest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
-	20, // [20:20] is the sub-list for method output_type
-	20, // [20:20] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	14, // 19: pollen.state.v1.RuntimeState.workload_specs:type_name -> pollen.state.v1.WorkloadSpecChange
+	1,  // 20: pollen.state.v1.GossipStateDigest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
+	21, // [21:21] is the sub-list for method output_type
+	21, // [21:21] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_state_proto_init() }
