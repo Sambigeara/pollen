@@ -760,6 +760,9 @@ func (n *Node) handlePeerInput(in peer.Input) {
 	case peer.PeerDisconnected:
 		n.queueGossipEvents(n.store.SetLocalConnected(d.PeerKey, false))
 		n.signalRouteInvalidate()
+		if n.sched != nil {
+			n.sched.Signal() // reachability change affects workload claim visibility
+		}
 		delete(n.lastEagerSync, d.PeerKey)
 		delete(n.peerConnectTime, d.PeerKey)
 	case peer.ForgetPeer:
@@ -986,6 +989,9 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 			n.peerConnectTime[e.PeerKey] = time.Now()
 			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
 			n.signalRouteInvalidate()
+			if n.sched != nil {
+				n.sched.Signal() // reachability change affects workload claim visibility
+			}
 			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
 				n.lastEagerSync[e.PeerKey] = time.Now()
 				clock := n.store.EagerSyncClock()
