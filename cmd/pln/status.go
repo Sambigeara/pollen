@@ -116,7 +116,7 @@ type statusSection struct {
 func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
 	sec := statusSection{
 		title:   "PEERS",
-		headers: []string{"NODE", "STATUS", "ADDR", "CPU", "MEM", "TUNNELS", "LATENCY", "TRAFFIC IN", "TRAFFIC OUT"},
+		headers: []string{"NODE", "STATUS", "ADDR", "CPUs", "CPU", "MEM", "TUNNELS", "LATENCY", "TRAFFIC IN", "TRAFFIC OUT"},
 	}
 
 	if self := st.GetSelf(); self != nil && self.GetNode() != nil {
@@ -131,9 +131,10 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		}
 		sec.rows = append(sec.rows, []string{
 			label, status, addr,
+			formatCount(self.GetNumCpu()),
 			formatPercent(self.GetCpuPercent()),
 			formatPercent(self.GetMemPercent()),
-			formatTunnelCount(self.GetTunnelCount()),
+			formatCount(self.GetTunnelCount()),
 			"-",
 			"-", "-",
 		})
@@ -155,14 +156,16 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			addr = "-"
 		}
 
+		cpus := formatCount(n.GetNumCpu())
 		cpu := formatPercent(n.GetCpuPercent())
 		mem := formatPercent(n.GetMemPercent())
-		tunnels := formatTunnelCount(n.GetTunnelCount())
+		tunnels := formatCount(n.GetTunnelCount())
 		latency := formatLatency(n.GetLatencyMs())
 		trafficIn := formatBytes(n.GetTrafficBytesIn())
 		trafficOut := formatBytes(n.GetTrafficBytesOut())
 
 		if !isReachableStatus(n.GetStatus()) {
+			cpus = "-"
 			cpu = "-"
 			mem = "-"
 			tunnels = "-"
@@ -171,7 +174,7 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			trafficOut = "-"
 		}
 
-		sec.rows = append(sec.rows, []string{label, status, addr, cpu, mem, tunnels, latency, trafficIn, trafficOut})
+		sec.rows = append(sec.rows, []string{label, status, addr, cpus, cpu, mem, tunnels, latency, trafficIn, trafficOut})
 	}
 
 	if filtered > 0 {
@@ -180,18 +183,18 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 	return sec
 }
 
+func formatCount(v uint32) string {
+	if v == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d", v)
+}
+
 func formatPercent(v uint32) string {
 	if v == 0 {
 		return "-"
 	}
 	return fmt.Sprintf("%d%%", v)
-}
-
-func formatTunnelCount(v uint32) string {
-	if v == 0 {
-		return "-"
-	}
-	return fmt.Sprintf("%d", v)
 }
 
 func formatBytes(b uint64) string {
