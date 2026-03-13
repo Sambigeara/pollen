@@ -1764,6 +1764,10 @@ func TestWorkloadGossipApply(t *testing.T) {
 	require.Len(t, specs, 1)
 	require.Equal(t, uint32(3), specs["deadbeef"].Spec.GetReplicas())
 
+	// Mark the remote peer as reachable so its claims are visible.
+	remotePK, _ := peerKey(2)
+	s.SetLocalConnected(remotePK, true)
+
 	// Apply a remote claim event.
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  remotePeerStr,
@@ -1775,7 +1779,6 @@ func TestWorkloadGossipApply(t *testing.T) {
 
 	claims := s.AllWorkloadClaims()
 	require.Len(t, claims, 1)
-	remotePK, _ := peerKey(2)
 	require.Contains(t, claims["deadbeef"], remotePK)
 
 	// Delete remote spec.
@@ -2073,6 +2076,7 @@ func TestWorkloadQueries_ExcludeDeniedNodes(t *testing.T) {
 
 	// Remote peer publishes a spec and a claim.
 	deniedPK, deniedStr := peerKey(2)
+	s.SetLocalConnected(deniedPK, true)
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  deniedStr,
 		Counter: 1,
@@ -2104,6 +2108,129 @@ func TestWorkloadQueries_ExcludeDeniedNodes(t *testing.T) {
 	require.Empty(t, s.AllWorkloadClaims())
 	_, _, found = s.ResolveWorkloadPrefix("denied")
 	require.False(t, found)
+}
+
+func TestAllWorkloadClaims_ExcludesUnreachableNodes(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	remotePK, remoteStr := peerKey(2)
+
+	// Remote peer claims a workload while reachable.
+	s.SetLocalConnected(remotePK, true)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remoteStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "wl1"},
+		},
+	})
+
+	claims := s.AllWorkloadClaims()
+	require.Contains(t, claims["wl1"], remotePK, "reachable peer's claim should be visible")
+
+	// Peer becomes unreachable (simulates node death).
+	s.SetLocalConnected(remotePK, false)
+
+	claims = s.AllWorkloadClaims()
+	require.Empty(t, claims, "unreachable peer's claim should be filtered")
+
+	// Local claims are always visible regardless of reachability.
+	s.SetLocalWorkloadClaim("wl2", true)
+	claims = s.AllWorkloadClaims()
+	require.Contains(t, claims["wl2"], s.LocalID, "local claim must always be visible")
+}
+
+func TestAllWorkloadClaims_RackFailureIgnoresStaleObservers(t *testing.T) {
+	// Scenario: nodes B and C are in the same rack. Both die.
+	// B's stale reachability entry still claims C is reachable, but
+	// since the local node (A) can't reach B, B's observation is ignored.
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub) // local = A
+
+	pkB, strB := peerKey(2)
+	pkC, strC := peerKey(3)
+
+	// Both B and C are initially reachable.
+	s.SetLocalConnected(pkB, true)
+	s.SetLocalConnected(pkC, true)
+
+	// B reports C as reachable (via gossip).
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  strB,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Reachability{
+			Reachability: &statev1.ReachabilityChange{PeerId: strC},
+		},
+	})
+
+	// C claims a workload.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  strC,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "rackwl"},
+		},
+	})
+
+	claims := s.AllWorkloadClaims()
+	require.Contains(t, claims["rackwl"], pkC, "C reachable → claim visible")
+
+	// Rack failure: A loses connectivity to both B and C.
+	// B's stale gossip still says it can reach C.
+	s.SetLocalConnected(pkB, false)
+	s.SetLocalConnected(pkC, false)
+
+	claims = s.AllWorkloadClaims()
+	require.Empty(t, claims, "stale observer B must not keep C's claim alive")
+}
+
+func TestAllWorkloadClaims_MultiHopReachability(t *testing.T) {
+	// Topology: A(local) → B → C → D
+	// A can only directly reach B, but D is alive and reachable via the
+	// chain. D's claims must remain visible.
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub) // local = A
+
+	pkB, strB := peerKey(2)
+	_, strC := peerKey(3)
+	pkD, strD := peerKey(4)
+
+	// A → B
+	s.SetLocalConnected(pkB, true)
+
+	// B → C (via gossip)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  strB,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Reachability{
+			Reachability: &statev1.ReachabilityChange{PeerId: strC},
+		},
+	})
+
+	// C → D (via gossip)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  strC,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Reachability{
+			Reachability: &statev1.ReachabilityChange{PeerId: strD},
+		},
+	})
+
+	// D claims a workload.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  strD,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "multihop"},
+		},
+	})
+
+	claims := s.AllWorkloadClaims()
+	require.Contains(t, claims["multihop"], pkD, "multi-hop reachable peer's claim must be visible")
 }
 
 func TestTrafficHeatmap_ApplyAndQuery(t *testing.T) {

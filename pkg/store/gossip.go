@@ -1845,13 +1845,21 @@ func (s *Store) AllWorkloadSpecs() map[string]WorkloadSpecView {
 }
 
 // AllWorkloadClaims returns hash → set of claimant PeerKeys from valid nodes.
+// Claims from remote peers outside the local node's connected component in
+// the reachability graph are excluded so that dead-node claims don't block
+// under-replication recovery.
 func (s *Store) AllWorkloadClaims() map[string]map[types.PeerKey]struct{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	valid := s.validNodesLocked()
+	live := s.liveComponentLocked(valid)
+
 	out := make(map[string]map[types.PeerKey]struct{})
 	for peerID, rec := range valid {
+		if _, ok := live[peerID]; !ok {
+			continue
+		}
 		for hash := range rec.WorkloadClaims {
 			if out[hash] == nil {
 				out[hash] = make(map[types.PeerKey]struct{})
@@ -1860,6 +1868,35 @@ func (s *Store) AllWorkloadClaims() map[string]map[types.PeerKey]struct{} {
 		}
 	}
 	return out
+}
+
+// liveComponentLocked returns the set of valid peers reachable from the local
+// node via BFS over the reachability graph. This ensures that stale
+// reachability entries from dead peers (e.g. rack-level failure) cannot keep
+// other dead peers' claims alive, while still trusting multi-hop observations
+// through live intermediaries.
+func (s *Store) liveComponentLocked(valid map[types.PeerKey]nodeRecord) map[types.PeerKey]struct{} {
+	component := map[types.PeerKey]struct{}{s.LocalID: {}}
+	queue := []types.PeerKey{s.LocalID}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		rec, ok := valid[cur]
+		if !ok {
+			continue
+		}
+		for neighbor := range rec.Reachable {
+			if _, seen := component[neighbor]; seen {
+				continue
+			}
+			if _, isValid := valid[neighbor]; !isValid {
+				continue
+			}
+			component[neighbor] = struct{}{}
+			queue = append(queue, neighbor)
+		}
+	}
+	return component
 }
 
 // ResolveWorkloadPrefix resolves a hash prefix to a full workload hash from
