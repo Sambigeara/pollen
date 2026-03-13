@@ -37,3 +37,6 @@ override.tf.json
 .terraform.lock.hcl
 .terraformrc
 terraform.rc
+
+to_llm.sh
+pln
