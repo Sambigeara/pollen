@@ -178,8 +178,14 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 	}
 	out.Self.TunnelCount = uint32(len(connections))
 
-	// Fetch local node's traffic heatmap for per-peer traffic display.
-	localTraffic := s.node.store.AllTrafficHeatmaps()[localID]
+	// Fetch mesh-wide traffic heatmaps for aggregate traffic display.
+	// Each node's published heatmap is summed across all peers to give
+	// a total bytes-in / bytes-out for that node.
+	allTraffic := s.node.store.AllTrafficHeatmaps()
+	for _, snap := range allTraffic[localID] {
+		out.Self.TrafficBytesIn += snap.BytesIn
+		out.Self.TrafficBytesOut += snap.BytesOut
+	}
 
 	// Determine which peers have direct QUIC sessions (ONLINE).
 	// Store the address so we don't call GetActivePeerAddress again per peer
@@ -268,9 +274,9 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			MemPercent:         node.MemPercent,
 			NumCpu:             node.NumCPU,
 		}
-		if tr, ok := localTraffic[key]; ok {
-			ns.TrafficBytesIn = tr.BytesIn
-			ns.TrafficBytesOut = tr.BytesOut
+		for _, snap := range allTraffic[key] {
+			ns.TrafficBytesIn += snap.BytesIn
+			ns.TrafficBytesOut += snap.BytesOut
 		}
 
 		if isDirect {
