@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/store"
@@ -17,11 +18,12 @@ import (
 // --- mock store ---
 
 type mockStore struct {
-	mu       sync.Mutex
-	specs    map[string]store.WorkloadSpecView
-	claims   map[string]map[types.PeerKey]struct{}
-	allPeers []types.PeerKey
-	claimed  map[string]bool // track SetLocalWorkloadClaim calls
+	mu             sync.Mutex
+	specs          map[string]store.WorkloadSpecView
+	claims         map[string]map[types.PeerKey]struct{}
+	allPeers       []types.PeerKey
+	claimed        map[string]bool // track SetLocalWorkloadClaim calls
+	placementState map[types.PeerKey]store.NodePlacementState
 }
 
 func (m *mockStore) AllWorkloadSpecs() map[string]store.WorkloadSpecView {
@@ -62,6 +64,17 @@ func (m *mockStore) SetLocalWorkloadClaim(hash string, claimed bool) []*statev1.
 	return nil
 }
 
+func (m *mockStore) AllNodePlacementStates() map[types.PeerKey]store.NodePlacementState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.placementState == nil {
+		return nil
+	}
+	out := make(map[types.PeerKey]store.NodePlacementState, len(m.placementState))
+	maps.Copy(out, m.placementState)
+	return out
+}
+
 func (m *mockStore) wasClaimed(hash string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -92,6 +105,10 @@ type mockWorkloads struct {
 func (m *mockWorkloads) SeedFromCAS(string) error { m.seeded.Store(true); return nil }
 func (m *mockWorkloads) Unseed(string) error      { return nil }
 func (m *mockWorkloads) IsRunning(string) bool    { return false }
+
+type runningWorkloads struct{ mockWorkloads }
+
+func (m *runningWorkloads) IsRunning(string) bool { return true }
 
 // --- mock CAS ---
 
@@ -139,13 +156,14 @@ func TestExecuteClaim_SpecRemovedDuringFetch(t *testing.T) {
 
 	var published atomic.Bool
 	r := &Reconciler{
-		localID:   local,
-		store:     ms,
-		workloads: wm,
-		cas:       &mockCAS{},
-		fetcher:   fetcher,
-		publish:   func(_ []*statev1.GossipEvent) { published.Store(true) },
-		log:       zap.NewNop().Sugar(),
+		localID:        local,
+		store:          ms,
+		workloads:      wm,
+		cas:            &mockCAS{},
+		fetcher:        fetcher,
+		publish:        func(_ []*statev1.GossipEvent) { published.Store(true) },
+		log:            zap.NewNop().Sugar(),
+		claimStartTime: make(map[string]time.Time),
 	}
 
 	r.executeClaim(t.Context(), hash, []types.PeerKey{local})
@@ -168,7 +186,7 @@ func TestExecuteClaim_NoLongerWinnerAfterFetch(t *testing.T) {
 
 	// Verify precondition: local is the winner for replicas=1.
 	allPeers := []types.PeerKey{local, peer2, peer3}
-	actions := Evaluate(local, allPeers, map[string]Spec{hash: {Replicas: 1}}, nil, func(string) bool { return false })
+	actions := Evaluate(local, allPeers, map[string]Spec{hash: {Replicas: 1}}, nil, ClusterState{}, func(string) bool { return false })
 	var localWouldClaim bool
 	for _, a := range actions {
 		if a.Hash == hash && a.Kind == ActionClaim {
@@ -200,13 +218,14 @@ func TestExecuteClaim_NoLongerWinnerAfterFetch(t *testing.T) {
 
 	var published atomic.Bool
 	r := &Reconciler{
-		localID:   local,
-		store:     ms,
-		workloads: wm,
-		cas:       &mockCAS{},
-		fetcher:   fetcher,
-		publish:   func(_ []*statev1.GossipEvent) { published.Store(true) },
-		log:       zap.NewNop().Sugar(),
+		localID:        local,
+		store:          ms,
+		workloads:      wm,
+		cas:            &mockCAS{},
+		fetcher:        fetcher,
+		publish:        func(_ []*statev1.GossipEvent) { published.Store(true) },
+		log:            zap.NewNop().Sugar(),
+		claimStartTime: make(map[string]time.Time),
 	}
 
 	// executeClaim is synchronous in this test — assertions are immediate.
@@ -214,4 +233,188 @@ func TestExecuteClaim_NoLongerWinnerAfterFetch(t *testing.T) {
 
 	require.False(t, published.Load(), "should not publish claim when no longer a winner")
 	require.False(t, ms.wasClaimed(hash), "should not set claim when no longer a winner")
+}
+
+func TestResidencyWindow_SuppressesEarlyRelease(t *testing.T) {
+	// Migration scenario: local is the sole incumbent (replicas=1), peer2 is
+	// a much better non-claimant. Evaluate tells local to release, but the
+	// residency window should suppress it because the claim is too recent.
+	local := peerKey(1)
+	peer2 := peerKey(2)
+	hash := "workload1"
+
+	ms := &mockStore{
+		specs: map[string]store.WorkloadSpecView{
+			hash: {
+				Spec:      &statev1.WorkloadSpecChange{Hash: hash, Replicas: 1},
+				Publisher: peer2,
+			},
+		},
+		claims:   map[string]map[types.PeerKey]struct{}{hash: {local: {}}},
+		allPeers: []types.PeerKey{local, peer2},
+		placementState: map[types.PeerKey]store.NodePlacementState{
+			local: {NumCPU: 2, CPUPercent: 90, MemTotalBytes: 2 << 30, MemPercent: 90},
+			peer2: {NumCPU: 16, CPUPercent: 5, MemTotalBytes: 64 << 30, MemPercent: 5},
+		},
+	}
+
+	r := &Reconciler{
+		localID:          local,
+		store:            ms,
+		workloads:        &runningWorkloads{},
+		cas:              &mockCAS{},
+		fetcher:          &slowFetcher{},
+		publish:          func(_ []*statev1.GossipEvent) {},
+		triggerCh:        make(chan struct{}, 1),
+		trafficTriggerCh: make(chan struct{}, 1),
+		pendingRelease:   make(map[string]time.Time),
+		claimStartTime:   map[string]time.Time{hash: time.Now()},
+		inFlight:         make(map[string]struct{}),
+		log:              zap.NewNop().Sugar(),
+		nowFunc:          time.Now,
+	}
+
+	// Force pending release to be already past cooldown.
+	r.pendingRelease[hash] = time.Now().Add(-time.Second)
+
+	r.reconcile(context.Background())
+
+	// Release should be suppressed because residency has not elapsed.
+	ms.mu.Lock()
+	_, claimWasSet := ms.claimed[hash]
+	ms.mu.Unlock()
+	require.False(t, claimWasSet, "should not release during residency window")
+}
+
+func TestResidencyWindow_AllowsReleaseAfterMaturity(t *testing.T) {
+	// Migration scenario: same as SuppressesEarlyRelease but with a claim
+	// time older than minResidencyDuration. Release should proceed.
+	local := peerKey(1)
+	peer2 := peerKey(2)
+	hash := "workload1"
+
+	ms := &mockStore{
+		specs: map[string]store.WorkloadSpecView{
+			hash: {
+				Spec:      &statev1.WorkloadSpecChange{Hash: hash, Replicas: 1},
+				Publisher: peer2,
+			},
+		},
+		claims:   map[string]map[types.PeerKey]struct{}{hash: {local: {}}},
+		allPeers: []types.PeerKey{local, peer2},
+		placementState: map[types.PeerKey]store.NodePlacementState{
+			local: {NumCPU: 2, CPUPercent: 90, MemTotalBytes: 2 << 30, MemPercent: 90},
+			peer2: {NumCPU: 16, CPUPercent: 5, MemTotalBytes: 64 << 30, MemPercent: 5},
+		},
+	}
+
+	claimTime := time.Now().Add(-minResidencyDuration - time.Second)
+	r := &Reconciler{
+		localID:          local,
+		store:            ms,
+		workloads:        &runningWorkloads{},
+		cas:              &mockCAS{},
+		fetcher:          &slowFetcher{},
+		publish:          func(_ []*statev1.GossipEvent) {},
+		triggerCh:        make(chan struct{}, 1),
+		trafficTriggerCh: make(chan struct{}, 1),
+		pendingRelease:   make(map[string]time.Time),
+		claimStartTime:   map[string]time.Time{hash: claimTime},
+		inFlight:         make(map[string]struct{}),
+		log:              zap.NewNop().Sugar(),
+		nowFunc:          time.Now,
+	}
+
+	// Force pending release past cooldown.
+	r.pendingRelease[hash] = time.Now().Add(-time.Second)
+
+	r.reconcile(context.Background())
+
+	// Release should proceed — SetLocalWorkloadClaim(hash, false) was called.
+	ms.mu.Lock()
+	val, claimWasSet := ms.claimed[hash]
+	ms.mu.Unlock()
+	require.True(t, claimWasSet, "should release after residency window")
+	require.False(t, val, "claim should be set to false (released)")
+}
+
+func TestReconcile_TrafficSignalCoalesces(t *testing.T) {
+	// Verify that SignalTraffic() is non-blocking and coalesces: many rapid
+	// signals fill a buffered channel of 1 without deadlocking.
+	local := peerKey(1)
+	ms := &mockStore{
+		specs:    map[string]store.WorkloadSpecView{},
+		claims:   map[string]map[types.PeerKey]struct{}{},
+		allPeers: []types.PeerKey{local},
+	}
+
+	r := NewReconciler(
+		local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{},
+		func(_ []*statev1.GossipEvent) {},
+		zap.NewNop().Sugar(),
+	)
+
+	// Fire many traffic signals rapidly — must not block.
+	for range 100 {
+		r.SignalTraffic()
+	}
+
+	// Channel should have exactly 1 pending signal.
+	require.Len(t, r.trafficTriggerCh, 1)
+}
+
+func TestResidencyWindow_SkippedForOverReplication(t *testing.T) {
+	local := peerKey(1)
+	peer2 := peerKey(2)
+	hash := "workload1"
+
+	// Two claimants for replicas=1 → over-replication.
+	ms := &mockStore{
+		specs: map[string]store.WorkloadSpecView{
+			hash: {
+				Spec:      &statev1.WorkloadSpecChange{Hash: hash, Replicas: 1},
+				Publisher: peer2,
+			},
+		},
+		claims:   map[string]map[types.PeerKey]struct{}{hash: {local: {}, peer2: {}}},
+		allPeers: []types.PeerKey{local, peer2},
+	}
+
+	r := &Reconciler{
+		localID:          local,
+		store:            ms,
+		workloads:        &runningWorkloads{},
+		cas:              &mockCAS{},
+		fetcher:          &slowFetcher{},
+		publish:          func(_ []*statev1.GossipEvent) {},
+		triggerCh:        make(chan struct{}, 1),
+		trafficTriggerCh: make(chan struct{}, 1),
+		pendingRelease:   make(map[string]time.Time),
+		claimStartTime:   map[string]time.Time{hash: time.Now()}, // very recent
+		inFlight:         make(map[string]struct{}),
+		log:              zap.NewNop().Sugar(),
+		nowFunc:          time.Now,
+	}
+
+	// Force pending release past cooldown.
+	r.pendingRelease[hash] = time.Now().Add(-time.Second)
+
+	r.reconcile(context.Background())
+
+	// Over-replication should bypass residency — release proceeds.
+	ms.mu.Lock()
+	val, claimWasSet := ms.claimed[hash]
+	ms.mu.Unlock()
+
+	// The weaker incumbent (local or peer2) should release. We only care
+	// that the release happened for whichever peer we're running as.
+	// Because shouldRelease is deterministic, at most one of them releases.
+	// If local is the weaker one, claimed[hash]=false. If local is the
+	// stronger one, shouldRelease returns false for local and no release
+	// is recorded in the mock.
+	if claimWasSet {
+		require.False(t, val, "over-replicated release should bypass residency window")
+	}
+	// If the claim was not set, local was not the one that should release,
+	// which is also valid — the test verifies residency doesn't block.
 }

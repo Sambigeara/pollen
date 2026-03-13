@@ -611,6 +611,11 @@ func (m *ResourceTelemetryChange) MarshalToSizedBufferVT(dAtA []byte) (int, erro
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.NumCpu != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.NumCpu))
+		i--
+		dAtA[i] = 0x20
+	}
 	if m.MemTotalBytes != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.MemTotalBytes))
 		i--
@@ -1682,6 +1687,9 @@ func (m *ResourceTelemetryChange) SizeVT() (n int) {
 	}
 	if m.MemTotalBytes != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.MemTotalBytes))
+	}
+	if m.NumCpu != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.NumCpu))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -3358,6 +3366,25 @@ func (m *ResourceTelemetryChange) UnmarshalVT(dAtA []byte) error {
 				b := dAtA[iNdEx]
 				iNdEx++
 				m.MemTotalBytes |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 4:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field NumCpu", wireType)
+			}
+			m.NumCpu = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.NumCpu |= uint32(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}

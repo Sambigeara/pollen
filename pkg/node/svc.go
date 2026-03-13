@@ -174,6 +174,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 	if rec, ok := s.node.store.Get(localID); ok {
 		out.Self.CpuPercent = rec.CPUPercent
 		out.Self.MemPercent = rec.MemPercent
+		out.Self.NumCpu = rec.NumCPU
 	}
 	out.Self.TunnelCount = uint32(len(connections))
 
@@ -265,6 +266,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			TunnelCount:        tunnelCounts[key],
 			CpuPercent:         node.CPUPercent,
 			MemPercent:         node.MemPercent,
+			NumCpu:             node.NumCPU,
 		}
 		if tr, ok := localTraffic[key]; ok {
 			ns.TrafficBytesIn = tr.BytesIn

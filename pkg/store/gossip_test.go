@@ -1512,27 +1512,32 @@ func TestResourceTelemetryDeadband(t *testing.T) {
 	s := newTestStore(pub)
 
 	t.Run("first call emits", func(t *testing.T) {
-		events := s.SetLocalResourceTelemetry(10, 20, 1<<30)
+		events := s.SetLocalResourceTelemetry(10, 20, 1<<30, 4)
 		require.Len(t, events, 1)
 	})
 
 	t.Run("below threshold suppressed", func(t *testing.T) {
-		events := s.SetLocalResourceTelemetry(11, 21, 1<<30)
+		events := s.SetLocalResourceTelemetry(11, 21, 1<<30, 4)
 		require.Nil(t, events)
 	})
 
 	t.Run("cpu crosses threshold", func(t *testing.T) {
-		events := s.SetLocalResourceTelemetry(12, 20, 1<<30)
+		events := s.SetLocalResourceTelemetry(12, 20, 1<<30, 4)
 		require.Len(t, events, 1)
 	})
 
 	t.Run("mem crosses threshold", func(t *testing.T) {
-		events := s.SetLocalResourceTelemetry(12, 22, 1<<30)
+		events := s.SetLocalResourceTelemetry(12, 22, 1<<30, 4)
 		require.Len(t, events, 1)
 	})
 
 	t.Run("mem total change emits", func(t *testing.T) {
-		events := s.SetLocalResourceTelemetry(12, 22, 2<<30)
+		events := s.SetLocalResourceTelemetry(12, 22, 2<<30, 4)
+		require.Len(t, events, 1)
+	})
+
+	t.Run("num cpu change emits", func(t *testing.T) {
+		events := s.SetLocalResourceTelemetry(12, 22, 2<<30, 8)
 		require.Len(t, events, 1)
 	})
 }
@@ -2246,4 +2251,104 @@ func TestMalformedTrafficHeatmapRejected(t *testing.T) {
 
 	// The bad event must not be rebroadcast.
 	require.Empty(t, result.Rebroadcast)
+}
+
+func TestAllNodePlacementStates(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localPK := s.LocalID
+
+	// Set local resource telemetry.
+	s.SetLocalResourceTelemetry(50, 60, 8<<30, 4)
+
+	// Set local Vivaldi coordinate.
+	s.SetLocalVivaldiCoord(topology.Coord{X: 1.0, Y: 2.0, Height: 0.5})
+
+	// Set local traffic heatmap.
+	remotePK, remotePKStr := peerKey(2)
+	s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{
+		remotePK: {BytesIn: 100, BytesOut: 200},
+	})
+
+	// Apply remote peer identity + resource telemetry via gossip.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePKStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{IdentityPub: remotePK.Bytes()},
+		},
+	})
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePKStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_ResourceTelemetry{
+			ResourceTelemetry: &statev1.ResourceTelemetryChange{
+				CpuPercent:    30,
+				MemPercent:    40,
+				MemTotalBytes: 16 << 30,
+				NumCpu:        8,
+			},
+		},
+	})
+
+	states := s.AllNodePlacementStates()
+	require.Len(t, states, 2)
+
+	// Local node.
+	local := states[localPK]
+	require.Equal(t, uint32(50), local.CPUPercent)
+	require.Equal(t, uint32(60), local.MemPercent)
+	require.Equal(t, uint64(8<<30), local.MemTotalBytes)
+	require.Equal(t, uint32(4), local.NumCPU)
+	require.NotNil(t, local.Coord)
+	require.InDelta(t, 1.0, local.Coord.X, 1e-12)
+	require.Len(t, local.TrafficTo, 1)
+	require.Equal(t, uint64(300), local.TrafficTo[remotePK])
+
+	// Remote node.
+	remote := states[remotePK]
+	require.Equal(t, uint32(30), remote.CPUPercent)
+	require.Equal(t, uint32(8), remote.NumCPU)
+	require.Nil(t, remote.Coord)
+	require.Nil(t, remote.TrafficTo)
+}
+
+func TestOnTrafficChangeCallback(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	var callCount int
+	s.OnTrafficChange(func() { callCount++ })
+
+	_, remotePeerStr := peerKey(2)
+	localPK := s.LocalID
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_TrafficHeatmap{
+			TrafficHeatmap: &statev1.TrafficHeatmapChange{
+				Rates: []*statev1.TrafficRate{
+					{PeerId: localPK.String(), BytesIn: 100, BytesOut: 200},
+				},
+			},
+		},
+	})
+	require.Equal(t, 1, callCount)
+
+	// Stale event should not fire callback.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_TrafficHeatmap{
+			TrafficHeatmap: &statev1.TrafficHeatmapChange{
+				Rates: []*statev1.TrafficRate{
+					{PeerId: localPK.String(), BytesIn: 999, BytesOut: 999},
+				},
+			},
+		},
+	})
+	require.Equal(t, 1, callCount)
 }

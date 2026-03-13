@@ -73,6 +73,7 @@ message ResourceTelemetryChange {
   uint32 cpu_percent = 1;
   uint32 mem_percent = 2;
   uint64 mem_total_bytes = 3;
+  uint32 num_cpu = 4;
 }
 
 message WorkloadSpecChange {

@@ -15,6 +15,10 @@ const (
 	debounceInterval = 200 * time.Millisecond
 	maxDebounceDelay = 2 * time.Second
 	evictionCooldown = 30 * time.Second
+
+	trafficDebounceInterval = 10 * time.Second
+	maxTrafficDebounceDelay = 30 * time.Second
+	minResidencyDuration    = 10 * time.Second
 )
 
 // SchedulerStore abstracts the gossip store query methods needed by the reconciler.
@@ -23,6 +27,7 @@ type SchedulerStore interface {
 	AllWorkloadClaims() map[string]map[types.PeerKey]struct{}
 	AllPeerKeys() []types.PeerKey
 	SetLocalWorkloadClaim(hash string, claimed bool) []*statev1.GossipEvent
+	AllNodePlacementStates() map[types.PeerKey]store.NodePlacementState
 }
 
 // WorkloadManager abstracts the workload manager.
@@ -47,18 +52,21 @@ type GossipPublisher func([]*statev1.GossipEvent)
 
 // Reconciler runs the debounced scheduling loop.
 type Reconciler struct {
-	store          SchedulerStore
-	workloads      WorkloadManager
-	cas            ArtifactStore
-	fetcher        ArtifactFetcher
-	publish        GossipPublisher
-	triggerCh      chan struct{}
-	pendingRelease map[string]time.Time
-	log            *zap.SugaredLogger
-	inFlight       map[string]struct{}
-	inFlightMu     sync.Mutex
-	localID        types.PeerKey
-	firstRun       bool
+	store            SchedulerStore
+	workloads        WorkloadManager
+	cas              ArtifactStore
+	fetcher          ArtifactFetcher
+	trafficTriggerCh chan struct{}
+	triggerCh        chan struct{}
+	publish          GossipPublisher
+	pendingRelease   map[string]time.Time
+	claimStartTime   map[string]time.Time
+	log              *zap.SugaredLogger
+	inFlight         map[string]struct{}
+	nowFunc          func() time.Time
+	inFlightMu       sync.Mutex
+	localID          types.PeerKey
+	firstRun         bool
 }
 
 // NewReconciler creates a new reconciler.
@@ -72,17 +80,20 @@ func NewReconciler(
 	log *zap.SugaredLogger,
 ) *Reconciler {
 	return &Reconciler{
-		localID:        localID,
-		store:          store,
-		workloads:      workloads,
-		cas:            cas,
-		fetcher:        fetcher,
-		publish:        publish,
-		triggerCh:      make(chan struct{}, 1),
-		pendingRelease: make(map[string]time.Time),
-		inFlight:       make(map[string]struct{}),
-		log:            log,
-		firstRun:       true,
+		localID:          localID,
+		store:            store,
+		workloads:        workloads,
+		cas:              cas,
+		fetcher:          fetcher,
+		publish:          publish,
+		triggerCh:        make(chan struct{}, 1),
+		trafficTriggerCh: make(chan struct{}, 1),
+		pendingRelease:   make(map[string]time.Time),
+		claimStartTime:   make(map[string]time.Time),
+		inFlight:         make(map[string]struct{}),
+		log:              log,
+		firstRun:         true,
+		nowFunc:          time.Now,
 	}
 }
 
@@ -94,17 +105,29 @@ func (r *Reconciler) Signal() {
 	}
 }
 
+// SignalTraffic triggers a traffic-driven reconciliation cycle (non-blocking).
+func (r *Reconciler) SignalTraffic() {
+	select {
+	case r.trafficTriggerCh <- struct{}{}:
+	default:
+	}
+}
+
 // Run is the main reconciliation loop. Blocks until ctx is cancelled.
 func (r *Reconciler) Run(ctx context.Context) {
 	var (
 		debounce       *time.Timer
 		debounceC      <-chan time.Time
 		firstTriggerAt time.Time
+
+		trafficDebounce       *time.Timer
+		trafficDebounceC      <-chan time.Time
+		firstTrafficTriggerAt time.Time
 	)
-	drainTimer := func() {
-		if debounce != nil && !debounce.Stop() {
+	drainTimer := func(t *time.Timer) {
+		if t != nil && !t.Stop() {
 			select {
-			case <-debounce.C:
+			case <-t.C:
 			default:
 			}
 		}
@@ -113,7 +136,8 @@ func (r *Reconciler) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			drainTimer()
+			drainTimer(debounce)
+			drainTimer(trafficDebounce)
 			return
 		case <-r.triggerCh:
 			now := time.Now()
@@ -122,11 +146,11 @@ func (r *Reconciler) Run(ctx context.Context) {
 			}
 			if now.Sub(firstTriggerAt) >= maxDebounceDelay {
 				r.reconcile(ctx)
-				drainTimer()
+				drainTimer(debounce)
 				debounceC = nil
 				firstTriggerAt = time.Time{}
 			} else {
-				drainTimer()
+				drainTimer(debounce)
 				debounce = time.NewTimer(debounceInterval)
 				debounceC = debounce.C
 			}
@@ -134,8 +158,43 @@ func (r *Reconciler) Run(ctx context.Context) {
 			r.reconcile(ctx)
 			debounceC = nil
 			firstTriggerAt = time.Time{}
+		case <-r.trafficTriggerCh:
+			now := time.Now()
+			if firstTrafficTriggerAt.IsZero() {
+				firstTrafficTriggerAt = now
+			}
+			if now.Sub(firstTrafficTriggerAt) >= maxTrafficDebounceDelay {
+				r.reconcile(ctx)
+				drainTimer(trafficDebounce)
+				trafficDebounceC = nil
+				firstTrafficTriggerAt = time.Time{}
+			} else {
+				drainTimer(trafficDebounce)
+				trafficDebounce = time.NewTimer(trafficDebounceInterval)
+				trafficDebounceC = trafficDebounce.C
+			}
+		case <-trafficDebounceC:
+			r.reconcile(ctx)
+			trafficDebounceC = nil
+			firstTrafficTriggerAt = time.Time{}
 		}
 	}
+}
+
+func (r *Reconciler) buildClusterState() ClusterState {
+	nodePlacement := r.store.AllNodePlacementStates()
+	cluster := ClusterState{Nodes: make(map[types.PeerKey]NodeState, len(nodePlacement))}
+	for pk, nps := range nodePlacement {
+		cluster.Nodes[pk] = NodeState{
+			CPUPercent:    nps.CPUPercent,
+			MemPercent:    nps.MemPercent,
+			MemTotalBytes: nps.MemTotalBytes,
+			NumCPU:        nps.NumCPU,
+			Coord:         nps.Coord,
+			TrafficTo:     nps.TrafficTo,
+		}
+	}
+	return cluster
 }
 
 func (r *Reconciler) reconcile(ctx context.Context) {
@@ -148,6 +207,7 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	specViews := r.store.AllWorkloadSpecs()
 	claimMap := r.store.AllWorkloadClaims()
 	allPeers := r.store.AllPeerKeys()
+	cluster := r.buildClusterState()
 
 	specs := make(map[string]Spec, len(specViews))
 	for hash, sv := range specViews {
@@ -156,12 +216,12 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		}
 	}
 
-	actions := Evaluate(r.localID, allPeers, specs, claimMap, r.workloads.IsRunning)
+	actions := Evaluate(r.localID, allPeers, specs, claimMap, cluster, r.workloads.IsRunning)
 
 	// Track which hashes Evaluate wants released this cycle.
 	wantRelease := make(map[string]struct{})
 
-	now := time.Now()
+	now := r.now()
 	for _, a := range actions {
 		switch a.Kind {
 		case ActionClaim:
@@ -183,6 +243,17 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		}
 		if now.Before(deadline) {
 			continue
+		}
+		// Residency window: suppress release if claim is too recent.
+		// Only applies to migration (exact replica count). Spec deletions
+		// and over-replication proceed immediately after cooldown.
+		r.inFlightMu.Lock()
+		claimTime, hasClaimTime := r.claimStartTime[hash]
+		r.inFlightMu.Unlock()
+		if hasClaimTime && now.Sub(claimTime) < minResidencyDuration {
+			if sv, specExists := specViews[hash]; specExists && uint32(len(claimMap[hash])) <= sv.Spec.GetReplicas() {
+				continue
+			}
 		}
 		r.executeRelease(hash)
 		delete(r.pendingRelease, hash)
@@ -242,7 +313,8 @@ func (r *Reconciler) executeClaim(ctx context.Context, hash string, peers []type
 	allPeers := r.store.AllPeerKeys()
 	claimants := claimMap[hash]
 	if _, alreadyClaimed := claimants[r.localID]; !alreadyClaimed {
-		if !shouldClaim(r.localID, hash, sv.Spec.GetReplicas(), claimants, allPeers) {
+		cluster := r.buildClusterState()
+		if !shouldClaim(r.localID, hash, sv.Spec.GetReplicas(), claimants, allPeers, cluster) {
 			r.log.Infow("no longer a winner after fetch, skipping claim", "hash", hash)
 			return
 		}
@@ -257,6 +329,9 @@ func (r *Reconciler) executeClaim(ctx context.Context, hash string, peers []type
 	if len(events) > 0 {
 		r.publish(events)
 	}
+	r.inFlightMu.Lock()
+	r.claimStartTime[hash] = r.now()
+	r.inFlightMu.Unlock()
 	r.log.Infow("claimed workload", "hash", hash)
 }
 
@@ -268,10 +343,14 @@ func (r *Reconciler) executeRelease(hash string) {
 	if len(events) > 0 {
 		r.publish(events)
 	}
+	r.inFlightMu.Lock()
+	delete(r.claimStartTime, hash)
+	r.inFlightMu.Unlock()
 	r.log.Infow("released workload", "hash", hash)
 }
 
 func (r *Reconciler) cleanupStaleClaims() {
+	now := r.now()
 	claimMap := r.store.AllWorkloadClaims()
 	for hash, claimants := range claimMap {
 		if _, mine := claimants[r.localID]; !mine {
@@ -283,6 +362,19 @@ func (r *Reconciler) cleanupStaleClaims() {
 				r.publish(events)
 			}
 			r.log.Infow("cleaned up stale claim", "hash", hash)
+		} else {
+			// Seed residency window for claims surviving from a prior session
+			// so the dwell-time guard persists across restarts.
+			r.inFlightMu.Lock()
+			r.claimStartTime[hash] = now
+			r.inFlightMu.Unlock()
 		}
 	}
+}
+
+func (r *Reconciler) now() time.Time {
+	if r.nowFunc != nil {
+		return r.nowFunc()
+	}
+	return time.Now()
 }

@@ -44,6 +44,7 @@ message NodeSummary {
   uint32 mem_percent = 8;
   uint64 traffic_bytes_in = 9;
   uint64 traffic_bytes_out = 10;
+  uint32 num_cpu = 11;
 }
 
 message ServiceSummary {

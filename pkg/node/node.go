@@ -315,6 +315,7 @@ func (n *Node) Start(ctx context.Context) error {
 		n.log.Named("scheduler"),
 	)
 	n.store.OnWorkloadChange(func() { n.sched.Signal() })
+	n.store.OnTrafficChange(func() { n.sched.SignalTraffic() })
 	go n.sched.Run(ctx)
 
 	// Publish the random startup coordinate so peers receive initial Vivaldi
@@ -719,8 +720,8 @@ func (n *Node) gossip(ctx context.Context) {
 }
 
 func (n *Node) sampleResourceTelemetry() {
-	cpuPct, memPct, memTotal := sysinfo.Sample()
-	n.queueGossipEvents(n.store.SetLocalResourceTelemetry(cpuPct, memPct, memTotal))
+	cpuPct, memPct, memTotal, numCPU := sysinfo.Sample()
+	n.queueGossipEvents(n.store.SetLocalResourceTelemetry(cpuPct, memPct, memTotal, numCPU))
 }
 
 func (n *Node) sampleTrafficHeatmap() {
@@ -733,6 +734,7 @@ func (n *Node) sampleTrafficHeatmap() {
 		rates[pk] = store.TrafficSnapshot{BytesIn: pt.BytesIn, BytesOut: pt.BytesOut}
 	}
 	n.queueGossipEvents(n.store.SetLocalTrafficHeatmap(rates))
+	n.sched.SignalTraffic()
 }
 
 func (n *Node) refreshIPs() {

@@ -647,6 +647,7 @@ type ResourceTelemetryChange struct {
 	CpuPercent    uint32                 `protobuf:"varint,1,opt,name=cpu_percent,json=cpuPercent,proto3" json:"cpu_percent,omitempty"`
 	MemPercent    uint32                 `protobuf:"varint,2,opt,name=mem_percent,json=memPercent,proto3" json:"mem_percent,omitempty"`
 	MemTotalBytes uint64                 `protobuf:"varint,3,opt,name=mem_total_bytes,json=memTotalBytes,proto3" json:"mem_total_bytes,omitempty"`
+	NumCpu        uint32                 `protobuf:"varint,4,opt,name=num_cpu,json=numCpu,proto3" json:"num_cpu,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -698,6 +699,13 @@ func (x *ResourceTelemetryChange) GetMemPercent() uint32 {
 func (x *ResourceTelemetryChange) GetMemTotalBytes() uint64 {
 	if x != nil {
 		return x.MemTotalBytes
+	}
+	return 0
+}
+
+func (x *ResourceTelemetryChange) GetNumCpu() uint32 {
+	if x != nil {
+		return x.NumCpu
 	}
 	return 0
 }
@@ -1519,13 +1527,14 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\vsubject_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\n" +
 	"subjectPub\"*\n" +
 	"\rNatTypeChange\x12\x19\n" +
-	"\bnat_type\x18\x01 \x01(\rR\anatType\"\x83\x01\n" +
+	"\bnat_type\x18\x01 \x01(\rR\anatType\"\x9c\x01\n" +
 	"\x17ResourceTelemetryChange\x12\x1f\n" +
 	"\vcpu_percent\x18\x01 \x01(\rR\n" +
 	"cpuPercent\x12\x1f\n" +
 	"\vmem_percent\x18\x02 \x01(\rR\n" +
 	"memPercent\x12&\n" +
-	"\x0fmem_total_bytes\x18\x03 \x01(\x04R\rmemTotalBytes\"g\n" +
+	"\x0fmem_total_bytes\x18\x03 \x01(\x04R\rmemTotalBytes\x12\x17\n" +
+	"\anum_cpu\x18\x04 \x01(\rR\x06numCpu\"g\n" +
 	"\x12WorkloadSpecChange\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x12\x1a\n" +
 	"\breplicas\x18\x02 \x01(\rR\breplicas\x12!\n" +

@@ -144,6 +144,7 @@ type nodeRecord struct {
 	ExternalPort       uint32
 	CPUPercent         uint32
 	MemPercent         uint32
+	NumCPU             uint32
 	PubliclyAccessible bool
 }
 
@@ -217,6 +218,7 @@ type Store struct {
 	onDeny             func(types.PeerKey)
 	onRouteInvalidate  func()
 	onWorkloadChange   func()
+	onTrafficChange    func()
 	metrics            *metrics.GossipMetrics
 	mu                 sync.RWMutex
 	LocalID            types.PeerKey
@@ -372,6 +374,12 @@ func (s *Store) OnRouteInvalidate(fn func()) {
 // workload spec or claim event is applied via gossip.
 func (s *Store) OnWorkloadChange(fn func()) {
 	s.onWorkloadChange = fn
+}
+
+// OnTrafficChange registers a callback invoked (outside the lock) when a
+// traffic heatmap event is applied via gossip.
+func (s *Store) OnTrafficChange(fn func()) {
+	s.onTrafficChange = fn
 }
 
 // SetGossipMetrics replaces the no-op metrics with wired instruments.
@@ -587,6 +595,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	anyApplied := false
 	routesDirty := false
 	workloadsDirty := false
+	trafficDirty := false
 	for _, event := range events {
 		if event == nil {
 			continue
@@ -599,6 +608,8 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 				routesDirty = true
 			case *statev1.GossipEvent_WorkloadSpec, *statev1.GossipEvent_WorkloadClaim:
 				workloadsDirty = true
+			case *statev1.GossipEvent_TrafficHeatmap:
+				trafficDirty = true
 			}
 		}
 		result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
@@ -618,6 +629,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	onDeny := s.onDeny
 	onRouteInvalidate := s.onRouteInvalidate
 	onWorkloadChange := s.onWorkloadChange
+	onTrafficChange := s.onTrafficChange
 	s.mu.Unlock()
 
 	if onDeny != nil {
@@ -632,6 +644,10 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 
 	if workloadsDirty && onWorkloadChange != nil {
 		onWorkloadChange()
+	}
+
+	if trafficDirty && onTrafficChange != nil {
+		onTrafficChange()
 	}
 
 	return result
@@ -799,6 +815,7 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 		rec.CPUPercent = 0
 		rec.MemPercent = 0
 		rec.MemTotalBytes = 0
+		rec.NumCPU = 0
 	case attrWorkloadSpec:
 		delete(rec.WorkloadSpecs, key.name)
 	case attrWorkloadClaim:
@@ -861,6 +878,7 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 			rec.CPUPercent = v.ResourceTelemetry.GetCpuPercent()
 			rec.MemPercent = v.ResourceTelemetry.GetMemPercent()
 			rec.MemTotalBytes = v.ResourceTelemetry.GetMemTotalBytes()
+			rec.NumCPU = v.ResourceTelemetry.GetNumCpu()
 		}
 	case *statev1.GossipEvent_WorkloadSpec:
 		if v.WorkloadSpec != nil {
@@ -1072,20 +1090,21 @@ func (s *Store) SetLocalNatType(natType nat.Type) []*statev1.GossipEvent {
 
 const resourceTelemetryDeadband = 2
 
-func (s *Store) SetLocalResourceTelemetry(cpuPercent, memPercent uint32, memTotalBytes uint64) []*statev1.GossipEvent {
+func (s *Store) SetLocalResourceTelemetry(cpuPercent, memPercent uint32, memTotalBytes uint64, numCPU uint32) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	local := s.nodes[s.LocalID]
 	cpuDelta := absDiff(local.CPUPercent, cpuPercent)
 	memDelta := absDiff(local.MemPercent, memPercent)
-	if cpuDelta < resourceTelemetryDeadband && memDelta < resourceTelemetryDeadband && local.MemTotalBytes == memTotalBytes {
+	if cpuDelta < resourceTelemetryDeadband && memDelta < resourceTelemetryDeadband && local.MemTotalBytes == memTotalBytes && local.NumCPU == numCPU {
 		return nil
 	}
 
 	local.CPUPercent = cpuPercent
 	local.MemPercent = memPercent
 	local.MemTotalBytes = memTotalBytes
+	local.NumCPU = numCPU
 
 	key := resourceTelemetryAttrKey()
 	local.maxCounter++
@@ -1101,6 +1120,7 @@ func (s *Store) SetLocalResourceTelemetry(cpuPercent, memPercent uint32, memTota
 				CpuPercent:    cpuPercent,
 				MemPercent:    memPercent,
 				MemTotalBytes: memTotalBytes,
+				NumCpu:        numCPU,
 			},
 		},
 	}}
@@ -1191,6 +1211,46 @@ func (s *Store) AllTrafficHeatmaps() map[types.PeerKey]map[types.PeerKey]Traffic
 			m[peer] = TrafficSnapshot(rate)
 		}
 		out[pk] = m
+	}
+	return out
+}
+
+// NodePlacementState holds the data the scheduler needs for traffic-aware placement.
+type NodePlacementState struct {
+	Coord         *topology.Coord
+	TrafficTo     map[types.PeerKey]uint64
+	MemTotalBytes uint64
+	CPUPercent    uint32
+	MemPercent    uint32
+	NumCPU        uint32
+}
+
+// AllNodePlacementStates returns resource, coordinate, and traffic data for
+// every valid node, suitable for the scheduler's placement scoring function.
+func (s *Store) AllNodePlacementStates() map[types.PeerKey]NodePlacementState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	valid := s.validNodesLocked()
+	out := make(map[types.PeerKey]NodePlacementState, len(valid))
+	for pk, rec := range valid {
+		nps := NodePlacementState{
+			CPUPercent:    rec.CPUPercent,
+			MemPercent:    rec.MemPercent,
+			MemTotalBytes: rec.MemTotalBytes,
+			NumCPU:        rec.NumCPU,
+		}
+		if rec.VivaldiCoord != nil {
+			coord := *rec.VivaldiCoord
+			nps.Coord = &coord
+		}
+		if len(rec.TrafficRates) > 0 {
+			nps.TrafficTo = make(map[types.PeerKey]uint64, len(rec.TrafficRates))
+			for peer, rate := range rec.TrafficRates {
+				nps.TrafficTo[peer] = rate.BytesIn + rate.BytesOut
+			}
+		}
+		out[pk] = nps
 	}
 	return out
 }
@@ -1964,6 +2024,7 @@ func (s *Store) buildEventFromLog(peerIDStr string, key attrKey, entry logEntry,
 			change.CpuPercent = rec.CPUPercent
 			change.MemPercent = rec.MemPercent
 			change.MemTotalBytes = rec.MemTotalBytes
+			change.NumCpu = rec.NumCPU
 		}
 		event.Change = &statev1.GossipEvent_ResourceTelemetry{ResourceTelemetry: change}
 	case attrDeny:
