@@ -1824,6 +1824,51 @@ func TestOnWorkloadChangeCallback(t *testing.T) {
 	require.Equal(t, 2, callCount)
 }
 
+func TestReachabilityChangeTriggersWorkloadCallback(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	var callCount int
+	s.OnWorkloadChange(func() { callCount++ })
+
+	_, remotePeerStr := peerKey(2)
+	_, targetPeerStr := peerKey(3)
+
+	// A reachability event should trigger the workload callback because
+	// liveComponentLocked uses reachability to filter claims.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Reachability{
+			Reachability: &statev1.ReachabilityChange{PeerId: targetPeerStr},
+		},
+	})
+	require.Equal(t, 1, callCount)
+}
+
+func TestVivaldiChangeDoesNotTriggerWorkloadCallback(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	var callCount int
+	s.OnWorkloadChange(func() { callCount++ })
+
+	_, remotePeerStr := peerKey(2)
+
+	// Vivaldi updates should not trigger the workload callback — they are
+	// frequent and don't affect claim visibility via liveComponentLocked.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Vivaldi{
+			Vivaldi: &statev1.VivaldiCoordinateChange{X: 1, Y: 2, Height: 0.1},
+		},
+	})
+	require.Equal(t, 0, callCount)
+}
+
 func TestAllWorkloadSpecs_DuplicatePublishers_LowestPeerKeyWins(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 5 // local node has PeerKey starting with 5

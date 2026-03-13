@@ -637,6 +637,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	newlyDenied := make([]types.PeerKey, 0, len(otherEvents))
 	anyApplied := false
 	routesDirty := false
+	reachabilityDirty := false
 	workloadsDirty := false
 	trafficDirty := false
 
@@ -655,7 +656,10 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 		if len(r.Rebroadcast) > 0 {
 			anyApplied = true
 			switch event.GetChange().(type) {
-			case *statev1.GossipEvent_Reachability, *statev1.GossipEvent_Vivaldi:
+			case *statev1.GossipEvent_Reachability:
+				routesDirty = true
+				reachabilityDirty = true
+			case *statev1.GossipEvent_Vivaldi:
 				routesDirty = true
 			case *statev1.GossipEvent_WorkloadSpec, *statev1.GossipEvent_WorkloadClaim:
 				workloadsDirty = true
@@ -693,7 +697,11 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 		onRouteInvalidate()
 	}
 
-	if workloadsDirty && onWorkloadChange != nil {
+	// Reachability changes affect workload claim visibility (liveComponentLocked
+	// filters claims from unreachable peers), so signal workload reconciliation
+	// on reachability changes too — but not on Vivaldi updates, which are
+	// frequent and don't affect claim filtering.
+	if (workloadsDirty || reachabilityDirty) && onWorkloadChange != nil {
 		onWorkloadChange()
 	}
 
