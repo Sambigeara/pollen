@@ -9,6 +9,7 @@ import (
 	"time"
 
 	extism "github.com/extism/go-sdk"
+	"github.com/tetratelabs/wazero"
 )
 
 // ErrModuleMissing is returned when Call is invoked with a hash that has no
@@ -44,11 +45,12 @@ func (c PluginConfig) timeout() time.Duration {
 // Runtime wraps Extism for compiling and calling WASM plugins.
 // Compiled plugins are cached by content hash for fast re-instantiation.
 type Runtime struct {
-	compiled  map[string]*extism.CompiledPlugin
-	configs   map[string]PluginConfig
-	sem       chan struct{}
-	hostFuncs []extism.HostFunction
-	mu        sync.Mutex
+	runtimeConfig wazero.RuntimeConfig
+	compiled      map[string]*extism.CompiledPlugin
+	configs       map[string]PluginConfig
+	sem           chan struct{}
+	hostFuncs     []extism.HostFunction
+	mu            sync.Mutex
 }
 
 // NewRuntime creates an Extism-backed runtime with the given host functions.
@@ -59,11 +61,35 @@ func NewRuntime(hostFuncs []extism.HostFunction, maxConcurrency int) *Runtime {
 		maxConcurrency = max(1, runtime.GOMAXPROCS(0))
 	}
 	return &Runtime{
-		compiled:  make(map[string]*extism.CompiledPlugin),
-		configs:   make(map[string]PluginConfig),
-		hostFuncs: hostFuncs,
-		sem:       make(chan struct{}, maxConcurrency),
+		compiled:      make(map[string]*extism.CompiledPlugin),
+		configs:       make(map[string]PluginConfig),
+		hostFuncs:     hostFuncs,
+		runtimeConfig: probeRuntimeConfig(),
+		sem:           make(chan struct{}, maxConcurrency),
 	}
+}
+
+// probeRuntimeConfig returns a wazero RuntimeConfig that works on this
+// system. It tries the default config (JIT compiler on amd64/arm64) first;
+// if the host blocks mmap(PROT_EXEC) — e.g. systemd MemoryDenyWriteExecute —
+// it falls back to the interpreter.
+func probeRuntimeConfig() wazero.RuntimeConfig {
+	cfg := wazero.NewRuntimeConfig()
+	if tryRuntime(cfg) {
+		return cfg
+	}
+	return wazero.NewRuntimeConfigInterpreter()
+}
+
+func tryRuntime(cfg wazero.RuntimeConfig) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			ok = false
+		}
+	}()
+	r := wazero.NewRuntimeWithConfig(context.Background(), cfg)
+	r.Close(context.Background())
+	return true
 }
 
 // IsCompiled reports whether a module with the given hash is cached.
@@ -104,7 +130,8 @@ func (r *Runtime) Compile(ctx context.Context, wasmBytes []byte, hash string, cf
 	}
 
 	compiled, err := extism.NewCompiledPlugin(ctx, manifest, extism.PluginConfig{
-		EnableWasi: true,
+		EnableWasi:    true,
+		RuntimeConfig: r.runtimeConfig,
 	}, r.hostFuncs)
 	if err != nil {
 		return fmt.Errorf("wasm: compile: %w", err)
