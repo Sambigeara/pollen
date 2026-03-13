@@ -77,9 +77,10 @@ const (
 	punchTimeout  = 3 * time.Second
 
 	// eagerSyncCooldown should be >= GossipInterval to avoid redundant sends.
-	eagerSyncCooldown   = 5 * time.Second
-	eagerSyncTimeout    = 5 * time.Second
-	gossipStreamTimeout = 5 * time.Second
+	eagerSyncCooldown         = 5 * time.Second
+	eagerSyncTimeout          = 5 * time.Second
+	gossipStreamTimeout       = 5 * time.Second
+	workloadInvocationTimeout = 60 * time.Second
 
 	revokeStreakThreshold       = 3  // consecutive non-target ticks before revoking outbound
 	revokeStreakThresholdPublic = 30 // public peers are stickier (coordinator stability)
@@ -305,7 +306,7 @@ func (n *Node) Start(ctx context.Context) error {
 
 	// Wire workload invocation handler: execute function calls on local workloads.
 	n.mesh.SetWorkloadHandler(func(stream io.ReadWriteCloser, _ types.PeerKey) {
-		scheduler.HandleWorkloadStream(ctx, stream, n.workloads)
+		scheduler.HandleWorkloadStream(ctx, stream, n.workloads, workloadInvocationTimeout)
 	})
 
 	// Start scheduler reconciler for distributed workload placement.
@@ -641,8 +642,7 @@ func (n *Node) sendClockViaStream(ctx context.Context, peerID types.PeerKey, dig
 	}
 
 	// Half-close the write side so the responder sees EOF.
-	// quic.Stream.Close() is the write-side half-close; reading remains open.
-	if err := stream.Close(); err != nil {
+	if err := stream.CloseWrite(); err != nil {
 		return fmt.Errorf("half-close clock stream to %s: %w", peerID.Short(), err)
 	}
 

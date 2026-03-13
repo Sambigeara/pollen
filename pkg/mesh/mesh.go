@@ -58,18 +58,15 @@ func quicConfig() *quic.Config {
 	}
 }
 
-// streamCloser wraps a quic.Stream so that Close cancels reads (STOP_SENDING)
-// in addition to closing the write side. Without this, a blocked Read on the
-// remote side keeps the stream alive as a zombie.
-type streamCloser struct {
-	*quic.Stream
-}
+// Stream wraps a QUIC stream with safe Close semantics: Close cancels the
+// read side (STOP_SENDING) and closes the write side (FIN), ensuring QUIC
+// releases stream credits immediately. Use CloseWrite for write-side
+// half-close when the protocol requires reading after closing writes.
+type Stream struct{ *quic.Stream }
 
-func (s streamCloser) CloseWrite() error {
-	return s.Stream.Close()
-}
+func (s Stream) CloseWrite() error { return s.Stream.Close() }
 
-func (s streamCloser) Close() error {
+func (s Stream) Close() error {
 	s.CancelRead(0)
 	return s.Stream.Close()
 }
@@ -91,7 +88,7 @@ type Mesh interface {
 	Events() <-chan peer.Input
 	OpenStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
 	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
-	OpenClockStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
+	OpenClockStream(ctx context.Context, peer types.PeerKey) (Stream, error)
 	AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
 	JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error
 	JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
@@ -326,8 +323,12 @@ func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteClo
 	return m.acceptFromCh(ctx, m.streamCh)
 }
 
-func (m *impl) OpenClockStream(ctx context.Context, peerKey types.PeerKey) (io.ReadWriteCloser, error) {
-	return m.openTypedStream(ctx, peerKey, streamTypeClock)
+func (m *impl) OpenClockStream(ctx context.Context, peerKey types.PeerKey) (Stream, error) {
+	rwc, err := m.openTypedStream(ctx, peerKey, streamTypeClock)
+	if err != nil {
+		return Stream{}, err
+	}
+	return rwc.(Stream), nil //nolint:forcetypeassert
 }
 
 func (m *impl) AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {
@@ -348,10 +349,7 @@ func (m *impl) openTypedStream(ctx context.Context, peerKey types.PeerKey, strea
 		stream.CancelRead(0)
 		return nil, err
 	}
-	if streamType == streamTypeTunnel {
-		return streamCloser{stream}, nil
-	}
-	return stream, nil
+	return Stream{stream}, nil
 }
 
 func (m *impl) acceptFromCh(ctx context.Context, ch <-chan incomingStream) (types.PeerKey, io.ReadWriteCloser, error) {
@@ -743,7 +741,7 @@ func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 			continue
 		case streamTypeArtifact:
 			if h := m.artifactHandler; h != nil {
-				go h(stream, peerKey)
+				go h(Stream{stream}, peerKey)
 			} else {
 				stream.CancelRead(0)
 				stream.CancelWrite(0)
@@ -751,7 +749,7 @@ func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 			continue
 		case streamTypeWorkload:
 			if h := m.workloadHandler; h != nil {
-				go h(stream, peerKey)
+				go h(Stream{stream}, peerKey)
 			} else {
 				stream.CancelRead(0)
 				stream.CancelWrite(0)
@@ -763,13 +761,8 @@ func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 			continue
 		}
 
-		var wrapped io.ReadWriteCloser = stream
-		if typeBuf[0] == streamTypeTunnel {
-			wrapped = streamCloser{stream}
-		}
-
 		select {
-		case ch <- incomingStream{peerKey: peerKey, stream: wrapped}:
+		case ch <- incomingStream{peerKey: peerKey, stream: Stream{stream}}:
 		case <-ctx.Done():
 			stream.CancelRead(0)
 			stream.CancelWrite(0)
@@ -1023,7 +1016,7 @@ func (m *impl) openRoutedStream(ctx context.Context, dest types.PeerKey, innerTy
 		stream.CancelRead(0)
 		return nil, err
 	}
-	return streamCloser{stream}, nil
+	return Stream{stream}, nil
 }
 
 func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream, upstreamPeer types.PeerKey) {
@@ -1069,7 +1062,7 @@ func (m *impl) deliverRoutedStream(ctx context.Context, stream *quic.Stream, sou
 	switch innerType {
 	case streamTypeTunnel:
 		select {
-		case m.streamCh <- incomingStream{peerKey: source, stream: streamCloser{stream}}:
+		case m.streamCh <- incomingStream{peerKey: source, stream: Stream{stream}}:
 		case <-ctx.Done():
 			stream.CancelRead(0)
 			stream.CancelWrite(0)
@@ -1079,14 +1072,14 @@ func (m *impl) deliverRoutedStream(ctx context.Context, stream *quic.Stream, sou
 		}
 	case streamTypeArtifact:
 		if h := m.artifactHandler; h != nil {
-			go h(streamCloser{stream}, source)
+			go h(Stream{stream}, source)
 		} else {
 			stream.CancelRead(0)
 			stream.CancelWrite(0)
 		}
 	case streamTypeWorkload:
 		if h := m.workloadHandler; h != nil {
-			go h(streamCloser{stream}, source)
+			go h(Stream{stream}, source)
 		} else {
 			stream.CancelRead(0)
 			stream.CancelWrite(0)
@@ -1153,8 +1146,8 @@ func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, de
 		return
 	}
 
-	var in io.ReadWriteCloser = streamCloser{inbound}
-	var out io.ReadWriteCloser = streamCloser{outbound}
+	var in io.ReadWriteCloser = Stream{inbound}
+	var out io.ReadWriteCloser = Stream{outbound}
 	if m.trafficTracker != nil {
 		in = traffic.WrapStream(in, m.trafficTracker, upstreamPeer)
 		out = traffic.WrapStream(out, m.trafficTracker, nextHop)

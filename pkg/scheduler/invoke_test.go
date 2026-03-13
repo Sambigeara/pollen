@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +43,7 @@ func TestHandleAndInvokeRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	server, client := pipePair(t)
-	go HandleWorkloadStream(ctx, server, invoker)
+	go HandleWorkloadStream(ctx, server, invoker, 10*time.Second)
 
 	output, err := InvokeOverStream(ctx, client, hash, "handle", []byte("hello"))
 	require.NoError(t, err)
@@ -60,7 +61,7 @@ func TestHandleWorkloadStream_Error(t *testing.T) {
 
 	ctx := context.Background()
 	server, client := pipePair(t)
-	go HandleWorkloadStream(ctx, server, invoker)
+	go HandleWorkloadStream(ctx, server, invoker, 10*time.Second)
 
 	_, err := InvokeOverStream(ctx, client, hash, "run", nil)
 	require.Error(t, err)
@@ -78,7 +79,7 @@ func TestHandleWorkloadStream_EmptyInput(t *testing.T) {
 
 	ctx := context.Background()
 	server, client := pipePair(t)
-	go HandleWorkloadStream(ctx, server, invoker)
+	go HandleWorkloadStream(ctx, server, invoker, 10*time.Second)
 
 	output, err := InvokeOverStream(ctx, client, hash, "ping", nil)
 	require.NoError(t, err)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/sambigeara/pollen/pkg/workload"
 )
@@ -42,8 +43,10 @@ const (
 // HandleWorkloadStream reads a workload invocation request from stream,
 // calls the invoker, and writes the response. The context controls the
 // lifetime of the invocation — cancelling it aborts the call.
-func HandleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, invoker WorkloadInvoker) {
+func HandleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, invoker WorkloadInvoker, timeout time.Duration) {
 	defer stream.Close()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	// Read hash (64 bytes).
 	var hashBuf [64]byte
