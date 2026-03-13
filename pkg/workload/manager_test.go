@@ -31,7 +31,7 @@ func newTestManager(t *testing.T) *workload.Manager {
 	casStore, err := cas.New(t.TempDir())
 	require.NoError(t, err)
 
-	rt := wasm.NewRuntime(nil)
+	rt := wasm.NewRuntime(nil, 0)
 	t.Cleanup(rt.Close)
 
 	return workload.New(ctx, casStore, rt)

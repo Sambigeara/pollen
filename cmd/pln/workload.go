@@ -103,7 +103,7 @@ func runCall(cmd *cobra.Command, args []string) {
 		input = []byte(inputStr)
 	}
 
-	client := newControlClient(cmd)
+	client := newControlClientWithTimeout(cmd, callWorkloadTimeout)
 	resp, err := client.CallWorkload(cmd.Context(), connect.NewRequest(&controlv1.CallWorkloadRequest{
 		Hash:     hash,
 		Function: function,

@@ -262,7 +262,7 @@ func (n *Node) Start(ctx context.Context) error {
 	defer n.shutdown()
 
 	hostFuncs := wasm.NewHostFunctions(n.log.Named("wasm"), n)
-	wasmRT := wasm.NewRuntime(hostFuncs)
+	wasmRT := wasm.NewRuntime(hostFuncs, 0)
 	n.wasmRuntime = wasmRT
 	n.workloads = workload.New(ctx, n.casStore, wasmRT)
 
@@ -1251,7 +1251,7 @@ func (n *Node) RouteCall(ctx context.Context, targetHash, function string, input
 	for _, target := range sorted {
 		stream, err := n.mesh.OpenWorkloadStream(ctx, target)
 		if err != nil {
-			n.log.Warnw("workload stream failed, trying next claimant",
+			n.log.Debugw("workload stream failed, trying next claimant",
 				"target", target.Short(), "hash", targetHash[:min(12, len(targetHash))], "err", err) //nolint:mnd
 			lastErr = err
 			continue

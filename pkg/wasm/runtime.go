@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 
@@ -45,16 +46,23 @@ func (c PluginConfig) timeout() time.Duration {
 type Runtime struct {
 	compiled  map[string]*extism.CompiledPlugin
 	configs   map[string]PluginConfig
+	sem       chan struct{}
 	hostFuncs []extism.HostFunction
 	mu        sync.Mutex
 }
 
 // NewRuntime creates an Extism-backed runtime with the given host functions.
-func NewRuntime(hostFuncs []extism.HostFunction) *Runtime {
+// maxConcurrency limits the number of simultaneous WASM plugin instances;
+// 0 defaults to GOMAXPROCS.
+func NewRuntime(hostFuncs []extism.HostFunction, maxConcurrency int) *Runtime {
+	if maxConcurrency <= 0 {
+		maxConcurrency = max(1, runtime.GOMAXPROCS(0))
+	}
 	return &Runtime{
 		compiled:  make(map[string]*extism.CompiledPlugin),
 		configs:   make(map[string]PluginConfig),
 		hostFuncs: hostFuncs,
+		sem:       make(chan struct{}, maxConcurrency),
 	}
 }
 
@@ -126,6 +134,13 @@ func (r *Runtime) Call(ctx context.Context, hash, function string, input []byte)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrModuleMissing, hash)
 	}
+
+	select {
+	case r.sem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("wasm: acquire slot: %w", ctx.Err())
+	}
+	defer func() { <-r.sem }()
 
 	plugin, err := compiled.Instance(ctx, extism.PluginInstanceConfig{})
 	if err != nil {

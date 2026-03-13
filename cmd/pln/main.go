@@ -45,6 +45,7 @@ const (
 	socketName = "pln.sock"
 
 	controlClientTimeout         = 10 * time.Second
+	callWorkloadTimeout          = 60 * time.Second
 	passiveGossipInterval        = 10 * time.Second
 	defaultJoinTokenTTL          = 5 * time.Minute
 	defaultBootstrapJoinTokenTTL = 1 * time.Minute
@@ -620,6 +621,10 @@ func runDeny(cmd *cobra.Command, args []string) {
 }
 
 func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient {
+	return newControlClientWithTimeout(cmd, controlClientTimeout)
+}
+
+func newControlClientWithTimeout(cmd *cobra.Command, timeout time.Duration) controlv1connect.ControlServiceClient {
 	pollenDir, err := pollenPath(cmd)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
@@ -636,7 +641,7 @@ func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient 
 	}
 
 	httpClient := &http.Client{
-		Timeout:   controlClientTimeout,
+		Timeout:   timeout,
 		Transport: tr,
 	}
 

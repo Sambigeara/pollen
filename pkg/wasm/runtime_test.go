@@ -2,6 +2,7 @@ package wasm_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -22,7 +23,7 @@ func loadTestModule(t *testing.T, name string) []byte {
 
 func newTestRuntime(t *testing.T) *wasm.Runtime {
 	t.Helper()
-	rt := wasm.NewRuntime(nil)
+	rt := wasm.NewRuntime(nil, 0)
 	t.Cleanup(rt.Close)
 	return rt
 }
@@ -143,6 +144,43 @@ func TestConcurrentCalls(t *testing.T) {
 	for i, err := range errs {
 		require.NoError(t, err, "goroutine %d", i)
 	}
+}
+
+func TestCallConcurrencyLimit(t *testing.T) {
+	rt := wasm.NewRuntime(nil, 1)
+	t.Cleanup(rt.Close)
+
+	ctx := context.Background()
+	echoBytes := loadTestModule(t, "echo.wasm")
+	loopBytes := loadTestModule(t, "loop.wasm")
+
+	err := rt.Compile(ctx, echoBytes, "semhash", wasm.PluginConfig{})
+	require.NoError(t, err)
+	err = rt.Compile(ctx, loopBytes, "loopsem", wasm.PluginConfig{
+		Timeout: 2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	// Start a long-running call that holds the single slot.
+	go func() {
+		_, _ = rt.Call(ctx, "loopsem", "run", nil)
+	}()
+
+	// Wait until the slot is occupied: a short-deadline call must fail.
+	require.Eventually(t, func() bool {
+		probeCtx, cancel := context.WithTimeout(ctx, time.Millisecond)
+		defer cancel()
+		_, err := rt.Call(probeCtx, "semhash", "handle", []byte("probe"))
+		return errors.Is(err, context.DeadlineExceeded)
+	}, 3*time.Second, 10*time.Millisecond)
+
+	// Confirm a real caller also gets DeadlineExceeded.
+	tightCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+	defer cancel()
+
+	_, err = rt.Call(tightCtx, "semhash", "handle", []byte("blocked"))
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestCallUncompiledModule(t *testing.T) {
