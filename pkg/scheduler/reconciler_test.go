@@ -11,6 +11,7 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/wasm"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -102,9 +103,12 @@ type mockWorkloads struct {
 	seeded atomic.Bool
 }
 
-func (m *mockWorkloads) SeedFromCAS(string) error { m.seeded.Store(true); return nil }
-func (m *mockWorkloads) Unseed(string) error      { return nil }
-func (m *mockWorkloads) IsRunning(string) bool    { return false }
+func (m *mockWorkloads) SeedFromCAS(string, wasm.PluginConfig) error {
+	m.seeded.Store(true)
+	return nil
+}
+func (m *mockWorkloads) Unseed(string) error   { return nil }
+func (m *mockWorkloads) IsRunning(string) bool { return false }
 
 type runningWorkloads struct{ mockWorkloads }
 

@@ -42,14 +42,15 @@ func (s Status) String() string {
 	return "unknown"
 }
 
-// Summary is a snapshot of a running workload for status reporting.
+// Summary is a snapshot of a workload for status reporting.
 type Summary struct {
-	StartedAt time.Time
-	Hash      string
-	Status    Status
+	CompiledAt time.Time
+	Hash       string
+	Status     Status
 }
 
-// Manager orchestrates workload lifecycle: seed (store + run) and unseed (stop + remove).
+// Manager orchestrates workload lifecycle: seed (store + compile) and unseed (drop).
+// Workloads are compiled once and invoked on demand — no long-running instances.
 type Manager struct {
 	ctx       context.Context
 	cas       *cas.Store
@@ -59,13 +60,11 @@ type Manager struct {
 }
 
 type entry struct {
-	instance  *wasm.Instance
-	startedAt time.Time
-	stopping  bool
+	compiledAt time.Time
+	config     wasm.PluginConfig
 }
 
 // New creates a workload manager backed by the given CAS store and WASM runtime.
-// The context controls the lifetime of all spawned workloads.
 func New(ctx context.Context, store *cas.Store, rt *wasm.Runtime) *Manager {
 	return &Manager{
 		cas:       store,
@@ -75,37 +74,48 @@ func New(ctx context.Context, store *cas.Store, rt *wasm.Runtime) *Manager {
 	}
 }
 
-// Seed stores wasmBytes in the CAS, compiles the module, and starts execution.
-// Returns the content hash. Reuses the cached compiled module if available.
-func (m *Manager) Seed(wasmBytes []byte) (string, error) {
+// Seed stores wasmBytes in the CAS and compiles the module for invocation.
+// Returns the content hash. If the workload is already running with the same
+// config, returns ErrAlreadyRunning. If the config differs, the module is
+// recompiled with the new config.
+func (m *Manager) Seed(wasmBytes []byte, cfg wasm.PluginConfig) (string, error) {
 	hash, err := m.cas.Put(bytes.NewReader(wasmBytes))
 	if err != nil {
 		return "", fmt.Errorf("workload: %w: %w", ErrStore, err)
 	}
 
-	compiled, err := m.runtime.Compile(m.ctx, wasmBytes, hash)
-	if err != nil {
+	m.mu.Lock()
+	if e, ok := m.workloads[hash]; ok && e.config == cfg {
+		m.mu.Unlock()
+		return hash, ErrAlreadyRunning
+	}
+	m.mu.Unlock()
+
+	if err := m.runtime.Compile(m.ctx, wasmBytes, hash, cfg); err != nil {
 		return hash, fmt.Errorf("workload: %w: %w", ErrCompile, err)
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.workloads[hash]; ok {
-		return hash, ErrAlreadyRunning
-	}
-
-	inst := m.runtime.Instantiate(m.ctx, compiled, hash, wasm.ModuleConfig{})
 	m.workloads[hash] = &entry{
-		instance:  inst,
-		startedAt: time.Now(),
+		compiledAt: time.Now(),
+		config:     cfg,
 	}
 	return hash, nil
 }
 
-// SeedFromCAS reads WASM bytes from the CAS and starts the workload.
-// Unlike Seed, it does not write to the CAS (bytes are already there).
-func (m *Manager) SeedFromCAS(hash string) error {
+// SeedFromCAS reads WASM bytes from the CAS and compiles the module.
+// If the workload is already running with the same config, returns
+// ErrAlreadyRunning. If the config differs, recompiles with the new config.
+func (m *Manager) SeedFromCAS(hash string, cfg wasm.PluginConfig) error {
+	m.mu.Lock()
+	if e, ok := m.workloads[hash]; ok && e.config == cfg {
+		m.mu.Unlock()
+		return ErrAlreadyRunning
+	}
+	m.mu.Unlock()
+
 	rc, err := m.cas.Get(hash)
 	if err != nil {
 		return fmt.Errorf("workload: read CAS: %w", err)
@@ -116,57 +126,52 @@ func (m *Manager) SeedFromCAS(hash string) error {
 		return fmt.Errorf("workload: read CAS bytes: %w", err)
 	}
 
-	compiled, err := m.runtime.Compile(m.ctx, wasmBytes, hash)
-	if err != nil {
+	if err := m.runtime.Compile(m.ctx, wasmBytes, hash, cfg); err != nil {
 		return fmt.Errorf("workload: %w: %w", ErrCompile, err)
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.workloads[hash]; ok {
-		return ErrAlreadyRunning
-	}
-
-	inst := m.runtime.Instantiate(m.ctx, compiled, hash, wasm.ModuleConfig{})
 	m.workloads[hash] = &entry{
-		instance:  inst,
-		startedAt: time.Now(),
+		compiledAt: time.Now(),
+		config:     cfg,
 	}
 	return nil
 }
 
-// IsRunning reports whether a workload with the given hash is currently running.
+// IsRunning reports whether a workload with the given hash is compiled and available.
 func (m *Manager) IsRunning(hash string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	e, ok := m.workloads[hash]
-	if !ok || e.stopping {
-		return false
-	}
-	return workloadStatus(e) == StatusRunning
+	_, ok := m.workloads[hash]
+	return ok
 }
 
-// Unseed stops a running workload, waits for it to exit, and removes it.
+// Call invokes a function on a compiled workload.
+func (m *Manager) Call(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
+	if !m.IsRunning(hash) {
+		return nil, ErrNotRunning
+	}
+	out, err := m.runtime.Call(ctx, hash, function, input)
+	if err != nil && errors.Is(err, wasm.ErrModuleMissing) {
+		return nil, ErrNotRunning
+	}
+	return out, err
+}
+
+// Unseed removes a workload and drops its compiled module.
 func (m *Manager) Unseed(hash string) error {
 	m.mu.Lock()
-	e, ok := m.workloads[hash]
-	if !ok || e.stopping {
+	_, ok := m.workloads[hash]
+	if !ok {
 		m.mu.Unlock()
 		return ErrNotRunning
 	}
-	e.stopping = true
-	m.mu.Unlock()
-
-	e.instance.Stop()
-	e.instance.Wait() //nolint:errcheck
-
-	m.mu.Lock()
 	delete(m.workloads, hash)
 	m.mu.Unlock()
 
-	m.runtime.DropCompiled(m.ctx, hash)
+	m.runtime.DropCompiled(hash)
 	return nil
 }
 
@@ -177,10 +182,7 @@ func (m *Manager) ResolvePrefix(prefix string) (string, error) {
 	defer m.mu.Unlock()
 
 	var matches []string
-	for h, e := range m.workloads {
-		if e.stopping {
-			continue
-		}
+	for h := range m.workloads {
 		if len(h) >= len(prefix) && h[:len(prefix)] == prefix {
 			matches = append(matches, h)
 		}
@@ -203,43 +205,25 @@ func (m *Manager) List() []Summary {
 	out := make([]Summary, 0, len(m.workloads))
 	for hash, e := range m.workloads {
 		out = append(out, Summary{
-			Hash:      hash,
-			Status:    workloadStatus(e),
-			StartedAt: e.startedAt,
+			Hash:       hash,
+			Status:     StatusRunning,
+			CompiledAt: e.compiledAt,
 		})
 	}
 	return out
 }
 
-// Close stops all running workloads and waits for them to exit.
+// Close drops all compiled workloads.
 func (m *Manager) Close() {
 	m.mu.Lock()
-	snapshot := make(map[string]*entry, len(m.workloads))
-	for hash, e := range m.workloads {
-		e.stopping = true
-		snapshot[hash] = e
+	snapshot := make([]string, 0, len(m.workloads))
+	for hash := range m.workloads {
+		snapshot = append(snapshot, hash)
 	}
-	m.mu.Unlock()
-
-	for hash, e := range snapshot {
-		e.instance.Stop()
-		e.instance.Wait() //nolint:errcheck
-		m.runtime.DropCompiled(m.ctx, hash)
-	}
-
-	m.mu.Lock()
 	clear(m.workloads)
 	m.mu.Unlock()
-}
 
-func workloadStatus(e *entry) Status {
-	select {
-	case <-e.instance.Done():
-		if e.instance.Err() != nil {
-			return StatusErrored
-		}
-		return StatusStopped
-	default:
-		return StatusRunning
+	for _, hash := range snapshot {
+		m.runtime.DropCompiled(hash)
 	}
 }

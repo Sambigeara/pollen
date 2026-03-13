@@ -80,6 +80,7 @@ message WorkloadSpecChange {
   string hash = 1;
   uint32 replicas = 2;
   uint32 memory_pages = 3;
+  uint32 timeout_ms = 4;
 }
 
 message WorkloadClaimChange {

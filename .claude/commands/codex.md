@@ -17,24 +17,29 @@ If the tool call fails (connection refused, tool not found, timeout, or any erro
 
 Do not proceed to Step 1.
 
-## Step 1: Stage all changes
+## Step 1: Stage all changes (cycle 1 only)
 
-Before every Codex submission, stage all current changes so Codex can see them via `git diff --cached`:
+For the **first** Codex submission, stage all current changes so Codex can see them via `git diff --cached`:
 
 ```bash
 git add -A
 ```
 
-This is **critical** — Codex scopes its review to the staged diff. Unstaged changes are invisible to it.
+This establishes the baseline — Codex scopes its review to the staged diff.
+
+**For cycle 2+**: Do NOT stage before submitting. Fixes from the previous cycle must remain **unstaged** so Codex sees only the new minimal diff (via `git diff`) against its prior feedback. Codex can see both staged (`git diff --cached`, already reviewed) and unstaged (`git diff`, new fixes) changes.
 
 ## Step 2: Build the review prompt
 
-Construct the Codex prompt from three parts:
+Construct the Codex prompt from these parts:
 
 1. **Cycle header**: `"This is review cycle N."` (start at 1, increment each round).
 
-2. **User task**: The contents of `$ARGUMENTS`. If `$ARGUMENTS` is empty, use:
-   > "Review the staged git changeset for correctness, style, and adherence to `.claude/CLAUDE.md`. For all points that you deem necessary to address, suggest fixes."
+2. **User task**:
+   - **Cycle 1**: Use the contents of `$ARGUMENTS`. If `$ARGUMENTS` is empty, use:
+     > "Review the staged git changeset for correctness, style, and adherence to `.claude/CLAUDE.md`. For all points that you deem necessary to address, suggest fixes."
+   - **Cycle 2+**: Shift focus to the fixes. Use:
+     > "Review the unstaged changes, which are fixes addressing your previous review findings. Verify the fixes are correct and check for any new issues they introduce. Use `.claude/CLAUDE.md` for stylistic guidelines."
 
 3. **Prior-cycle context** (cycle 2+): A concise summary of:
    - Which prior findings were **addressed** (and how).
@@ -55,7 +60,7 @@ prompt: <constructed prompt from Step 2>
 sandbox: "read-only"
 ```
 
-## Step 4: Triage findings
+## Step 4: Triage findings and fix
 
 For each finding Codex returns:
 
@@ -66,12 +71,13 @@ After addressing all findings:
 
 1. Run `just lint` — fix any failures.
 2. Run `just test` — fix any failures.
+3. **Do NOT stage the fixes.** Keep them unstaged so the next Codex cycle sees only the new diff.
 
 ## Step 5: Stage and loop
 
-1. **Stage all changes again** (`git add -A`) — this is what scopes the next review.
-2. If there were findings in this cycle (whether agreed or disagreed), go back to **Step 2** with cycle N+1.
-3. If Codex returned **zero findings**, convergence is reached. Report the result to the user:
+1. **When Codex's review comes back** (i.e., at the start of processing a new cycle's results), stage everything first: `git add -A`. This rolls the previous cycle's fixes into the staged baseline.
+2. If there were findings in this cycle (whether agreed or disagreed): fix them (keeping fixes **unstaged**), verify with lint/test, then go back to **Step 2** with cycle N+1.
+3. If Codex returned **zero findings**, convergence is reached. Stage everything (`git add -A`) and report:
    > "Codex review converged after N cycles. All findings addressed. `just lint` and `just test` pass."
 
 ## Guidelines

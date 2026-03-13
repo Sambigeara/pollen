@@ -42,8 +42,9 @@ const (
 	streamTypeTunnel   byte = 2
 	streamTypeRouted   byte = 3
 	streamTypeArtifact byte = 4
+	streamTypeWorkload byte = 5
 
-	routeHeaderSize = 66 // 32 dest + 32 source + 1 TTL + 1 inner stream type (only tunnel=2 accepted at delivery)
+	routeHeaderSize = 66 // 32 dest + 32 source + 1 TTL + 1 inner stream type (tunnel=2, artifact=4, workload=5 accepted at delivery)
 	defaultRouteTTL = 16
 )
 
@@ -112,6 +113,8 @@ type Mesh interface {
 	SetTrafficTracker(t traffic.Recorder)
 	SetArtifactHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey))
 	OpenArtifactStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
+	SetWorkloadHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey))
+	OpenWorkloadStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
 	Close() error
 }
 
@@ -147,6 +150,7 @@ type impl struct {
 	router           Router
 	trafficTracker   traffic.Recorder
 	artifactHandler  func(stream io.ReadWriteCloser, peer types.PeerKey)
+	workloadHandler  func(stream io.ReadWriteCloser, peer types.PeerKey)
 	listener         *quic.Listener
 	sessions         *sessionRegistry
 	mainQT           *quic.Transport
@@ -745,6 +749,14 @@ func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 				stream.CancelWrite(0)
 			}
 			continue
+		case streamTypeWorkload:
+			if h := m.workloadHandler; h != nil {
+				go h(stream, peerKey)
+			} else {
+				stream.CancelRead(0)
+				stream.CancelWrite(0)
+			}
+			continue
 		default:
 			stream.CancelRead(0)
 			stream.CancelWrite(0)
@@ -932,6 +944,10 @@ func (m *impl) SetArtifactHandler(fn func(stream io.ReadWriteCloser, peer types.
 	m.artifactHandler = fn
 }
 
+func (m *impl) SetWorkloadHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey)) {
+	m.workloadHandler = fn
+}
+
 func (m *impl) OpenArtifactStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error) {
 	for {
 		sessionCh := m.sessions.onChange()
@@ -947,6 +963,32 @@ func (m *impl) OpenArtifactStream(ctx context.Context, peer types.PeerKey) (io.R
 			if nextHop, ok := m.router.Lookup(peer); ok {
 				if _, ok := m.sessions.get(nextHop); ok {
 					return m.openRoutedStream(ctx, peer, streamTypeArtifact, nextHop)
+				}
+			}
+		}
+
+		select {
+		case <-sessionCh:
+		case <-routeCh:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (m *impl) OpenWorkloadStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error) {
+	for {
+		sessionCh := m.sessions.onChange()
+		routeCh := routeChanged(m.router)
+
+		if _, ok := m.sessions.get(peer); ok {
+			return m.openTypedStream(ctx, peer, streamTypeWorkload)
+		}
+
+		if m.router != nil {
+			if nextHop, ok := m.router.Lookup(peer); ok {
+				if _, ok := m.sessions.get(nextHop); ok {
+					return m.openRoutedStream(ctx, peer, streamTypeWorkload, nextHop)
 				}
 			}
 		}
@@ -1014,8 +1056,9 @@ func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream, upst
 }
 
 // deliverRoutedStream dispatches a routed stream that has arrived at its final
-// destination. Only tunnel streams are accepted; clock/gossip streams must not
-// travel routed paths (gossip already propagates transitively via direct peers).
+// destination. Tunnel, artifact, and workload streams are accepted; clock/gossip
+// streams must not travel routed paths (gossip already propagates transitively
+// via direct peers).
 //
 // NOTE: The source peerKey is asserted by the routing header, NOT authenticated
 // by the QUIC session. Today this is acceptable because the tunnel manager uses
@@ -1036,6 +1079,13 @@ func (m *impl) deliverRoutedStream(ctx context.Context, stream *quic.Stream, sou
 		}
 	case streamTypeArtifact:
 		if h := m.artifactHandler; h != nil {
+			go h(streamCloser{stream}, source)
+		} else {
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+		}
+	case streamTypeWorkload:
+		if h := m.workloadHandler; h != nil {
 			go h(streamCloser{stream}, source)
 		} else {
 			stream.CancelRead(0)

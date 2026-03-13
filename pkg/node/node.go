@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -199,7 +200,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 	}
 	m, err := mesh.NewMesh(conf.Port, privKey, creds, conf.TLSIdentityTTL, conf.MembershipTTL, conf.ReconnectWindow, conf.MaxConnectionAge, isDenied, meshMetrics)
 	if err != nil {
-		log.Error("failed to load mesh", zap.Error(err))
+		log.Errorw("failed to load mesh", "err", err)
 		return nil, err
 	}
 
@@ -260,10 +261,8 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 func (n *Node) Start(ctx context.Context) error {
 	defer n.shutdown()
 
-	wasmRT, err := wasm.NewRuntime(ctx, wasm.RuntimeConfig{})
-	if err != nil {
-		return fmt.Errorf("create wasm runtime: %w", err)
-	}
+	hostFuncs := wasm.NewHostFunctions(n.log.Named("wasm"), n)
+	wasmRT := wasm.NewRuntime(hostFuncs)
 	n.wasmRuntime = wasmRT
 	n.workloads = workload.New(ctx, n.casStore, wasmRT)
 
@@ -302,6 +301,11 @@ func (n *Node) Start(ctx context.Context) error {
 	// Wire artifact fetch handler: serve WASM bytes from CAS to peers.
 	n.mesh.SetArtifactHandler(func(stream io.ReadWriteCloser, _ types.PeerKey) {
 		scheduler.HandleArtifactStream(stream, n.casStore)
+	})
+
+	// Wire workload invocation handler: execute function calls on local workloads.
+	n.mesh.SetWorkloadHandler(func(stream io.ReadWriteCloser, _ types.PeerKey) {
+		scheduler.HandleWorkloadStream(ctx, stream, n.workloads)
 	})
 
 	// Start scheduler reconciler for distributed workload placement.
@@ -1225,6 +1229,55 @@ func (n *Node) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedAddr
 	}
 }
 
+// RouteCall implements wasm.InvocationRouter. It invokes a function on the
+// target workload — locally if compiled here, otherwise over the mesh to a
+// node that claims it.
+func (n *Node) RouteCall(ctx context.Context, targetHash, function string, input []byte) ([]byte, error) {
+	// Local-first: if we have it compiled, call directly.
+	if n.workloads.IsRunning(targetHash) {
+		return n.workloads.Call(ctx, targetHash, function, input)
+	}
+
+	// Find claimants from gossip.
+	claims := n.store.AllWorkloadClaims()
+	claimants := claims[targetHash]
+	if len(claimants) == 0 {
+		return nil, fmt.Errorf("no node claims workload %s: %w", targetHash[:min(12, len(targetHash))], workload.ErrNotRunning) //nolint:mnd
+	}
+
+	// Sort claimants deterministically and try each until one succeeds.
+	sorted := sortedClaimants(claimants)
+	var lastErr error
+	for _, target := range sorted {
+		stream, err := n.mesh.OpenWorkloadStream(ctx, target)
+		if err != nil {
+			n.log.Warnw("workload stream failed, trying next claimant",
+				"target", target.Short(), "hash", targetHash[:min(12, len(targetHash))], "err", err) //nolint:mnd
+			lastErr = err
+			continue
+		}
+
+		out, err := scheduler.InvokeOverStream(ctx, stream, targetHash, function, input)
+		if err != nil {
+			n.log.Warnw("workload invocation failed, trying next claimant",
+				"target", target.Short(), "hash", targetHash[:min(12, len(targetHash))], "err", err) //nolint:mnd
+			lastErr = err
+			continue
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("all %d claimants failed for %s: %w", len(sorted), targetHash[:min(12, len(targetHash))], lastErr) //nolint:mnd
+}
+
+func sortedClaimants(claimants map[types.PeerKey]struct{}) []types.PeerKey {
+	keys := make([]types.PeerKey, 0, len(claimants))
+	for pk := range claimants {
+		keys = append(keys, pk)
+	}
+	slices.SortFunc(keys, func(a, b types.PeerKey) int { return a.Compare(b) })
+	return keys
+}
+
 func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
 	if _, ok := n.store.IdentityPub(peerID); !ok {
 		return 0, errors.New("peerID not recognised")
@@ -1466,9 +1519,7 @@ func (n *Node) shutdown() {
 		n.workloads.Close()
 	}
 	if n.wasmRuntime != nil {
-		if err := n.wasmRuntime.Close(context.Background()); err != nil {
-			n.log.Errorw("failed to close wasm runtime", "err", err)
-		}
+		n.wasmRuntime.Close()
 	}
 
 	n.tun.Close()

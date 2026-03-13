@@ -1682,7 +1682,7 @@ func TestWorkloadSpecRoundTrip(t *testing.T) {
 	s := newTestStore(pub)
 
 	// Publish a workload spec.
-	events, err := s.SetLocalWorkloadSpec("abc123", 2, 16)
+	events, err := s.SetLocalWorkloadSpec("abc123", 2, 16, 0)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	require.False(t, events[0].GetDeleted())
@@ -1697,7 +1697,7 @@ func TestWorkloadSpecRoundTrip(t *testing.T) {
 	require.Equal(t, s.LocalID, sv.Publisher)
 
 	// Idempotent — no event on identical call.
-	events2, err := s.SetLocalWorkloadSpec("abc123", 2, 16)
+	events2, err := s.SetLocalWorkloadSpec("abc123", 2, 16, 0)
 	require.NoError(t, err)
 	require.Nil(t, events2)
 
@@ -1827,7 +1827,7 @@ func TestAllWorkloadSpecs_DuplicatePublishers_LowestPeerKeyWins(t *testing.T) {
 	s := newTestStore(pub)
 
 	// Local node publishes spec with replicas=1 (no remote peers yet, so accepted).
-	_, err := s.SetLocalWorkloadSpec("shared", 1, 0)
+	_, err := s.SetLocalWorkloadSpec("shared", 1, 0, 0)
 	require.NoError(t, err)
 
 	// Two remote peers also publish specs for the same hash with different replicas.
@@ -1872,7 +1872,7 @@ func TestSetLocalWorkloadSpec_RejectsWhenRemoteOwns(t *testing.T) {
 	})
 
 	// Local attempt to publish the same hash should be rejected atomically.
-	events, err := s.SetLocalWorkloadSpec("contested", 2, 0)
+	events, err := s.SetLocalWorkloadSpec("contested", 2, 0, 0)
 	require.ErrorIs(t, err, ErrSpecOwnedRemotely)
 	require.Nil(t, events)
 
@@ -1889,7 +1889,7 @@ func TestRemoteSpec_TombstonesLosingLocalSpec(t *testing.T) {
 	s := newTestStore(pub)
 
 	// Local node publishes a spec first (no remote competitors yet).
-	events, err := s.SetLocalWorkloadSpec("contested", 3, 0)
+	events, err := s.SetLocalWorkloadSpec("contested", 3, 0, 0)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 
@@ -1930,7 +1930,7 @@ func TestRemoteSpec_NoTombstoneWhenLocalWins(t *testing.T) {
 	pub[0] = 1
 	s := newTestStore(pub)
 
-	events, err := s.SetLocalWorkloadSpec("mine", 3, 0)
+	events, err := s.SetLocalWorkloadSpec("mine", 3, 0, 0)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 
@@ -1959,7 +1959,7 @@ func TestRemoteSpec_NoTombstoneWhenRemoteDenied(t *testing.T) {
 	pub[0] = 9
 	s := newTestStore(pub)
 
-	events, err := s.SetLocalWorkloadSpec("contested", 3, 0)
+	events, err := s.SetLocalWorkloadSpec("contested", 3, 0, 0)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 
@@ -1990,7 +1990,7 @@ func TestRemoteSpec_NoTombstoneWhenRemoteExpired(t *testing.T) {
 	pub[0] = 9
 	s := newTestStore(pub)
 
-	events, err := s.SetLocalWorkloadSpec("contested", 3, 0)
+	events, err := s.SetLocalWorkloadSpec("contested", 3, 0, 0)
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 

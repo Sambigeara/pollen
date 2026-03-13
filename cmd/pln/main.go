@@ -107,6 +107,7 @@ func main() {
 		newLogsCmd(),
 		newSeedCmd(),
 		newUnseedCmd(),
+		newCallCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {

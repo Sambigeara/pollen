@@ -664,6 +664,11 @@ func (m *WorkloadSpecChange) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.TimeoutMs != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.TimeoutMs))
+		i--
+		dAtA[i] = 0x20
+	}
 	if m.MemoryPages != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.MemoryPages))
 		i--
@@ -1710,6 +1715,9 @@ func (m *WorkloadSpecChange) SizeVT() (n int) {
 	}
 	if m.MemoryPages != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.MemoryPages))
+	}
+	if m.TimeoutMs != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.TimeoutMs))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -3506,6 +3514,25 @@ func (m *WorkloadSpecChange) UnmarshalVT(dAtA []byte) error {
 				b := dAtA[iNdEx]
 				iNdEx++
 				m.MemoryPages |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 4:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field TimeoutMs", wireType)
+			}
+			m.TimeoutMs = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.TimeoutMs |= uint32(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}

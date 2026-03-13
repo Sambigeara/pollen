@@ -2,8 +2,8 @@ package workload_test
 
 import (
 	"context"
+	"os"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -12,24 +12,15 @@ import (
 	"github.com/sambigeara/pollen/pkg/workload"
 )
 
-// minimalWASM is a valid WASM module with an empty _start function.
-var minimalWASM = []byte{
-	0x00, 0x61, 0x73, 0x6d,
-	0x01, 0x00, 0x00, 0x00,
-	0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-	0x03, 0x02, 0x01, 0x00,
-	0x07, 0x0a, 0x01, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x00,
-	0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
-}
+var echoWASM []byte
 
-// loopingWASM is a valid WASM module whose _start function loops forever.
-var loopingWASM = []byte{
-	0x00, 0x61, 0x73, 0x6d,
-	0x01, 0x00, 0x00, 0x00,
-	0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-	0x03, 0x02, 0x01, 0x00,
-	0x07, 0x0a, 0x01, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x00,
-	0x0a, 0x09, 0x01, 0x07, 0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x0b,
+func TestMain(m *testing.M) {
+	data, err := os.ReadFile("../wasm/testdata/echo.wasm")
+	if err != nil {
+		panic("failed to load echo.wasm: " + err.Error())
+	}
+	echoWASM = data
+	os.Exit(m.Run())
 }
 
 func newTestManager(t *testing.T) *workload.Manager {
@@ -40,17 +31,16 @@ func newTestManager(t *testing.T) *workload.Manager {
 	casStore, err := cas.New(t.TempDir())
 	require.NoError(t, err)
 
-	rt, err := wasm.NewRuntime(ctx, wasm.RuntimeConfig{})
-	require.NoError(t, err)
-	t.Cleanup(func() { rt.Close(context.Background()) })
+	rt := wasm.NewRuntime(nil)
+	t.Cleanup(rt.Close)
 
 	return workload.New(ctx, casStore, rt)
 }
 
-func TestSeedListUnseed(t *testing.T) {
+func TestSeedAndCall(t *testing.T) {
 	mgr := newTestManager(t)
 
-	hash, err := mgr.Seed(minimalWASM)
+	hash, err := mgr.Seed(echoWASM, wasm.PluginConfig{})
 	require.NoError(t, err)
 	require.Len(t, hash, 64) // SHA-256 hex
 
@@ -58,23 +48,22 @@ func TestSeedListUnseed(t *testing.T) {
 	require.Len(t, list, 1)
 	require.Equal(t, hash, list[0].Hash)
 
+	out, err := mgr.Call(context.Background(), hash, "handle", []byte("hello"))
+	require.NoError(t, err)
+	require.Equal(t, []byte("hello"), out)
+
 	err = mgr.Unseed(hash)
 	require.NoError(t, err)
-
-	list = mgr.List()
-	require.Empty(t, list)
+	require.Empty(t, mgr.List())
 }
 
 func TestSeedDuplicate(t *testing.T) {
 	mgr := newTestManager(t)
 
-	hash1, err := mgr.Seed(minimalWASM)
+	hash1, err := mgr.Seed(echoWASM, wasm.PluginConfig{})
 	require.NoError(t, err)
 
-	// Wait for the first module to finish (trivial module exits immediately).
-	time.Sleep(100 * time.Millisecond)
-
-	hash2, err := mgr.Seed(minimalWASM)
+	hash2, err := mgr.Seed(echoWASM, wasm.PluginConfig{})
 	require.ErrorIs(t, err, workload.ErrAlreadyRunning)
 	require.Equal(t, hash1, hash2)
 }
@@ -89,7 +78,7 @@ func TestUnseedNotRunning(t *testing.T) {
 func TestResolvePrefix(t *testing.T) {
 	mgr := newTestManager(t)
 
-	hash, err := mgr.Seed(minimalWASM)
+	hash, err := mgr.Seed(echoWASM, wasm.PluginConfig{})
 	require.NoError(t, err)
 
 	resolved, err := mgr.ResolvePrefix(hash[:8])
@@ -107,30 +96,22 @@ func TestResolvePrefixNotFound(t *testing.T) {
 func TestClose(t *testing.T) {
 	mgr := newTestManager(t)
 
-	_, err := mgr.Seed(loopingWASM)
+	_, err := mgr.Seed(echoWASM, wasm.PluginConfig{})
 	require.NoError(t, err)
 
 	mgr.Close()
-
-	list := mgr.List()
-	require.Empty(t, list)
+	require.Empty(t, mgr.List())
 }
 
-func TestUnseedWaitsForShutdown(t *testing.T) {
+func TestCallUnseeded(t *testing.T) {
 	mgr := newTestManager(t)
 
-	hash, err := mgr.Seed(loopingWASM)
+	hash, err := mgr.Seed(echoWASM, wasm.PluginConfig{})
 	require.NoError(t, err)
 
-	// The looping module runs forever. Verify it's still alive.
-	time.Sleep(100 * time.Millisecond)
-	list := mgr.List()
-	require.Len(t, list, 1)
-
-	// Unseed should stop the module and block until it exits.
 	err = mgr.Unseed(hash)
 	require.NoError(t, err)
 
-	// After unseed, the workload should be gone from the list.
-	require.Empty(t, mgr.List())
+	_, err = mgr.Call(context.Background(), hash, "handle", nil)
+	require.Error(t, err)
 }

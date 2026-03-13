@@ -1665,7 +1665,7 @@ func (s *Store) isValidOwnerLocked(peerID types.PeerKey) bool {
 	return true
 }
 
-func (s *Store) SetLocalWorkloadSpec(hash string, replicas, memoryPages uint32) ([]*statev1.GossipEvent, error) {
+func (s *Store) SetLocalWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) ([]*statev1.GossipEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1685,13 +1685,14 @@ func (s *Store) SetLocalWorkloadSpec(hash string, replicas, memoryPages uint32) 
 	local := s.nodes[s.LocalID]
 
 	if existing, ok := local.WorkloadSpecs[hash]; ok &&
-		existing.GetReplicas() == replicas && existing.GetMemoryPages() == memoryPages {
+		existing.GetReplicas() == replicas && existing.GetMemoryPages() == memoryPages &&
+		existing.GetTimeoutMs() == timeoutMs {
 		return nil, nil
 	}
 
 	m := make(map[string]*statev1.WorkloadSpecChange, len(local.WorkloadSpecs)+1)
 	maps.Copy(m, local.WorkloadSpecs)
-	m[hash] = &statev1.WorkloadSpecChange{Hash: hash, Replicas: replicas, MemoryPages: memoryPages}
+	m[hash] = &statev1.WorkloadSpecChange{Hash: hash, Replicas: replicas, MemoryPages: memoryPages, TimeoutMs: timeoutMs}
 	local.WorkloadSpecs = m
 
 	key := workloadSpecAttrKey(hash)
@@ -1708,6 +1709,7 @@ func (s *Store) SetLocalWorkloadSpec(hash string, replicas, memoryPages uint32) 
 				Hash:        hash,
 				Replicas:    replicas,
 				MemoryPages: memoryPages,
+				TimeoutMs:   timeoutMs,
 			},
 		},
 	}}, nil

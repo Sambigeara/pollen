@@ -9,13 +9,12 @@ import (
 	"strconv"
 	"time"
 
-	"go.uber.org/zap"
-
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/wasm"
 	"github.com/sambigeara/pollen/pkg/workload"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -358,7 +357,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			ws := &controlv1.WorkloadSummary{
 				Hash:          w.Hash,
 				Status:        workloadStatusProto(w.Status),
-				StartedAtUnix: w.StartedAt.Unix(),
+				StartedAtUnix: w.CompiledAt.Unix(),
 				Local:         true,
 			}
 			if sv, ok := specs[w.Hash]; ok {
@@ -514,16 +513,20 @@ func (s *NodeService) SeedWorkload(_ context.Context, req *controlv1.SeedWorkloa
 	if s.node.workloads == nil {
 		return nil, status.Error(codes.FailedPrecondition, "workload manager not initialized")
 	}
-	hash, err := s.node.workloads.Seed(req.GetWasmBytes())
-	if err != nil {
+
+	cfg := wasm.PluginConfig{
+		MemoryPages: req.GetMemoryPages(),
+		Timeout:     time.Duration(req.GetTimeoutMs()) * time.Millisecond,
+	}
+	hash, err := s.node.workloads.Seed(req.GetWasmBytes(), cfg)
+	newlySeeded := err == nil
+	if err != nil && !errors.Is(err, workload.ErrAlreadyRunning) {
 		switch {
-		case errors.Is(err, workload.ErrAlreadyRunning):
-			return nil, status.Errorf(codes.AlreadyExists, "workload %s is already running", hash)
 		case errors.Is(err, workload.ErrCompile):
-			s.node.log.Warnw("seed workload failed", zap.Error(err))
+			s.node.log.Warnw("seed workload failed", "err", err)
 			return nil, status.Error(codes.InvalidArgument, "failed to compile workload")
 		default:
-			s.node.log.Errorw("seed workload failed", zap.Error(err))
+			s.node.log.Errorw("seed workload failed", "err", err)
 			return nil, status.Error(codes.Internal, "failed to seed workload")
 		}
 	}
@@ -536,10 +539,14 @@ func (s *NodeService) SeedWorkload(_ context.Context, req *controlv1.SeedWorkloa
 	// Publish spec atomically — the store rejects under its lock if a remote
 	// node already owns this hash, closing the TOCTOU race.
 	n := s.node
-	specEvents, err := n.store.SetLocalWorkloadSpec(hash, replicas, 0)
+	specEvents, err := n.store.SetLocalWorkloadSpec(hash, replicas, req.GetMemoryPages(), req.GetTimeoutMs())
 	if err != nil {
-		_ = s.node.workloads.Unseed(hash)
-		s.node.log.Infow("spec rejected", "hash", hash, zap.Error(err))
+		// Only tear down the runtime if we just compiled it — don't destroy
+		// a previously healthy workload on a spec rejection.
+		if newlySeeded {
+			_ = s.node.workloads.Unseed(hash)
+		}
+		s.node.log.Infow("spec rejected", "hash", hash, "err", err)
 		return nil, status.Error(codes.AlreadyExists, "workload already published by another node")
 	}
 	n.queueGossipEvents(specEvents)
@@ -572,7 +579,7 @@ func (s *NodeService) UnseedWorkload(_ context.Context, req *controlv1.UnseedWor
 	// Stop the local runtime only if this node is running it.
 	if s.node.workloads.IsRunning(hash) {
 		if err := s.node.workloads.Unseed(hash); err != nil {
-			s.node.log.Warnw("unseed workload failed", "hash", hash, zap.Error(err))
+			s.node.log.Warnw("unseed workload failed", "hash", hash, "err", err)
 			return nil, status.Error(codes.Internal, "failed to unseed workload")
 		}
 	}
@@ -583,6 +590,34 @@ func (s *NodeService) UnseedWorkload(_ context.Context, req *controlv1.UnseedWor
 	n.queueGossipEvents(n.store.SetLocalWorkloadClaim(hash, false))
 
 	return &controlv1.UnseedWorkloadResponse{}, nil
+}
+
+func (s *NodeService) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadRequest) (*controlv1.CallWorkloadResponse, error) {
+	if s.node.workloads == nil {
+		return nil, status.Error(codes.FailedPrecondition, "workload manager not initialized")
+	}
+
+	// Resolve prefix from cluster-wide specs.
+	hash, ambiguous, found := s.node.store.ResolveWorkloadPrefix(req.GetHash())
+	if ambiguous {
+		return nil, status.Error(codes.InvalidArgument, "prefix matches multiple workloads; use a longer prefix")
+	}
+	if !found {
+		return nil, status.Error(codes.NotFound, "no workload matches that prefix")
+	}
+
+	output, err := s.node.RouteCall(ctx, hash, req.GetFunction(), req.GetInput())
+	if err != nil {
+		s.node.log.Warnw("call workload failed", "hash", hash, "function", req.GetFunction(), "err", err)
+		if errors.Is(err, workload.ErrNotRunning) {
+			return nil, status.Error(codes.NotFound, "workload not running on any reachable node")
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.Error(codes.DeadlineExceeded, "workload invocation timed out")
+		}
+		return nil, status.Error(codes.Internal, "workload invocation failed")
+	}
+	return &controlv1.CallWorkloadResponse{Output: output}, nil
 }
 
 const vivaldiDegradedThreshold = 0.9

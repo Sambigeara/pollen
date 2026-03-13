@@ -19,6 +19,7 @@ service ControlService {
   rpc DenyPeer(DenyPeerRequest) returns (DenyPeerResponse);
   rpc SeedWorkload(SeedWorkloadRequest) returns (SeedWorkloadResponse);
   rpc UnseedWorkload(UnseedWorkloadRequest) returns (UnseedWorkloadResponse);
+  rpc CallWorkload(CallWorkloadRequest) returns (CallWorkloadResponse);
 }
 
 message NodeRef {
@@ -199,6 +200,8 @@ message DenyPeerResponse {}
 message SeedWorkloadRequest {
   bytes wasm_bytes = 1 [(buf.validate.field).bytes = {min_len: 1}];
   uint32 replicas = 2;
+  uint32 memory_pages = 3;
+  uint32 timeout_ms = 4;
 }
 
 message SeedWorkloadResponse {
@@ -210,6 +213,16 @@ message UnseedWorkloadRequest {
 }
 
 message UnseedWorkloadResponse {}
+
+message CallWorkloadRequest {
+  string hash = 1 [(buf.validate.field).string = {min_len: 1}];
+  string function = 2 [(buf.validate.field).string = {min_len: 1}];
+  bytes input = 3;
+}
+
+message CallWorkloadResponse {
+  bytes output = 1;
+}
 
 message GetMetricsRequest {}
 

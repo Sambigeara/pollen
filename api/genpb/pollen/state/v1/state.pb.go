@@ -715,6 +715,7 @@ type WorkloadSpecChange struct {
 	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
 	Replicas      uint32                 `protobuf:"varint,2,opt,name=replicas,proto3" json:"replicas,omitempty"`
 	MemoryPages   uint32                 `protobuf:"varint,3,opt,name=memory_pages,json=memoryPages,proto3" json:"memory_pages,omitempty"`
+	TimeoutMs     uint32                 `protobuf:"varint,4,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -766,6 +767,13 @@ func (x *WorkloadSpecChange) GetReplicas() uint32 {
 func (x *WorkloadSpecChange) GetMemoryPages() uint32 {
 	if x != nil {
 		return x.MemoryPages
+	}
+	return 0
+}
+
+func (x *WorkloadSpecChange) GetTimeoutMs() uint32 {
+	if x != nil {
+		return x.TimeoutMs
 	}
 	return 0
 }
@@ -1534,11 +1542,13 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\vmem_percent\x18\x02 \x01(\rR\n" +
 	"memPercent\x12&\n" +
 	"\x0fmem_total_bytes\x18\x03 \x01(\x04R\rmemTotalBytes\x12\x17\n" +
-	"\anum_cpu\x18\x04 \x01(\rR\x06numCpu\"g\n" +
+	"\anum_cpu\x18\x04 \x01(\rR\x06numCpu\"\x86\x01\n" +
 	"\x12WorkloadSpecChange\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x12\x1a\n" +
 	"\breplicas\x18\x02 \x01(\rR\breplicas\x12!\n" +
-	"\fmemory_pages\x18\x03 \x01(\rR\vmemoryPages\")\n" +
+	"\fmemory_pages\x18\x03 \x01(\rR\vmemoryPages\x12\x1d\n" +
+	"\n" +
+	"timeout_ms\x18\x04 \x01(\rR\ttimeoutMs\")\n" +
 	"\x13WorkloadClaimChange\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\"{\n" +
 	"\vTrafficRate\x124\n" +

@@ -8,6 +8,7 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/wasm"
 	"go.uber.org/zap"
 )
 
@@ -32,7 +33,7 @@ type SchedulerStore interface {
 
 // WorkloadManager abstracts the workload manager.
 type WorkloadManager interface {
-	SeedFromCAS(hash string) error
+	SeedFromCAS(hash string, cfg wasm.PluginConfig) error
 	Unseed(hash string) error
 	IsRunning(hash string) bool
 }
@@ -296,7 +297,7 @@ func (r *Reconciler) executeClaim(ctx context.Context, hash string, peers []type
 	// Ensure artifact is available locally.
 	if !r.cas.Has(hash) {
 		if err := r.fetcher.Fetch(ctx, hash, peers); err != nil {
-			r.log.Warnw("fetch artifact failed", "hash", hash, zap.Error(err))
+			r.log.Warnw("fetch artifact failed", "hash", hash, "err", err)
 			return
 		}
 	}
@@ -320,8 +321,12 @@ func (r *Reconciler) executeClaim(ctx context.Context, hash string, peers []type
 		}
 	}
 
-	if err := r.workloads.SeedFromCAS(hash); err != nil {
-		r.log.Warnw("seed from CAS failed", "hash", hash, zap.Error(err))
+	cfg := wasm.PluginConfig{
+		MemoryPages: sv.Spec.GetMemoryPages(),
+		Timeout:     time.Duration(sv.Spec.GetTimeoutMs()) * time.Millisecond,
+	}
+	if err := r.workloads.SeedFromCAS(hash, cfg); err != nil {
+		r.log.Warnw("seed from CAS failed", "hash", hash, "err", err)
 		return
 	}
 
@@ -337,7 +342,7 @@ func (r *Reconciler) executeClaim(ctx context.Context, hash string, peers []type
 
 func (r *Reconciler) executeRelease(hash string) {
 	if err := r.workloads.Unseed(hash); err != nil {
-		r.log.Warnw("unseed failed", "hash", hash, zap.Error(err))
+		r.log.Warnw("unseed failed", "hash", hash, "err", err)
 	}
 	events := r.store.SetLocalWorkloadClaim(hash, false)
 	if len(events) > 0 {

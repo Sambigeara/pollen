@@ -31,6 +31,7 @@ const (
 	ControlService_DenyPeer_FullMethodName          = "/pollen.control.v1.ControlService/DenyPeer"
 	ControlService_SeedWorkload_FullMethodName      = "/pollen.control.v1.ControlService/SeedWorkload"
 	ControlService_UnseedWorkload_FullMethodName    = "/pollen.control.v1.ControlService/UnseedWorkload"
+	ControlService_CallWorkload_FullMethodName      = "/pollen.control.v1.ControlService/CallWorkload"
 )
 
 // ControlServiceClient is the client API for ControlService service.
@@ -49,6 +50,7 @@ type ControlServiceClient interface {
 	DenyPeer(ctx context.Context, in *DenyPeerRequest, opts ...grpc.CallOption) (*DenyPeerResponse, error)
 	SeedWorkload(ctx context.Context, in *SeedWorkloadRequest, opts ...grpc.CallOption) (*SeedWorkloadResponse, error)
 	UnseedWorkload(ctx context.Context, in *UnseedWorkloadRequest, opts ...grpc.CallOption) (*UnseedWorkloadResponse, error)
+	CallWorkload(ctx context.Context, in *CallWorkloadRequest, opts ...grpc.CallOption) (*CallWorkloadResponse, error)
 }
 
 type controlServiceClient struct {
@@ -179,6 +181,16 @@ func (c *controlServiceClient) UnseedWorkload(ctx context.Context, in *UnseedWor
 	return out, nil
 }
 
+func (c *controlServiceClient) CallWorkload(ctx context.Context, in *CallWorkloadRequest, opts ...grpc.CallOption) (*CallWorkloadResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CallWorkloadResponse)
+	err := c.cc.Invoke(ctx, ControlService_CallWorkload_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ControlServiceServer is the server API for ControlService service.
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
@@ -195,6 +207,7 @@ type ControlServiceServer interface {
 	DenyPeer(context.Context, *DenyPeerRequest) (*DenyPeerResponse, error)
 	SeedWorkload(context.Context, *SeedWorkloadRequest) (*SeedWorkloadResponse, error)
 	UnseedWorkload(context.Context, *UnseedWorkloadRequest) (*UnseedWorkloadResponse, error)
+	CallWorkload(context.Context, *CallWorkloadRequest) (*CallWorkloadResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
 
@@ -240,6 +253,9 @@ func (UnimplementedControlServiceServer) SeedWorkload(context.Context, *SeedWork
 }
 func (UnimplementedControlServiceServer) UnseedWorkload(context.Context, *UnseedWorkloadRequest) (*UnseedWorkloadResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UnseedWorkload not implemented")
+}
+func (UnimplementedControlServiceServer) CallWorkload(context.Context, *CallWorkloadRequest) (*CallWorkloadResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CallWorkload not implemented")
 }
 func (UnimplementedControlServiceServer) mustEmbedUnimplementedControlServiceServer() {}
 func (UnimplementedControlServiceServer) testEmbeddedByValue()                        {}
@@ -478,6 +494,24 @@ func _ControlService_UnseedWorkload_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_CallWorkload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CallWorkloadRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).CallWorkload(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_CallWorkload_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).CallWorkload(ctx, req.(*CallWorkloadRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ControlService_ServiceDesc is the grpc.ServiceDesc for ControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -532,6 +566,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UnseedWorkload",
 			Handler:    _ControlService_UnseedWorkload_Handler,
+		},
+		{
+			MethodName: "CallWorkload",
+			Handler:    _ControlService_CallWorkload_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
