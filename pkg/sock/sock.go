@@ -47,7 +47,8 @@ func (c *Conn) Close() error {
 }
 
 type sockStore struct {
-	socks      *connList
+	socksMu    sync.Mutex
+	socksByKey map[string]*Conn
 	mainWrite  ProbeWriter
 	mainProbes map[[probeNonceSize]byte]chan *net.UDPAddr
 	probeMu    sync.Mutex
@@ -55,9 +56,27 @@ type sockStore struct {
 
 func NewSockStore() SockStore {
 	return &sockStore{
-		socks:      newConnList(),
+		socksByKey: make(map[string]*Conn),
 		mainProbes: make(map[[probeNonceSize]byte]chan *net.UDPAddr),
 	}
+}
+
+// appendConn adds a connection keyed by address. If already present, returns the existing connection.
+func (s *sockStore) appendConn(addr *net.UDPAddr, c *Conn) (*Conn, bool) {
+	s.socksMu.Lock()
+	defer s.socksMu.Unlock()
+	k := addr.String()
+	if existing, ok := s.socksByKey[k]; ok {
+		return existing, false
+	}
+	s.socksByKey[k] = c
+	return c, true
+}
+
+func (s *sockStore) removeConn(addr *net.UDPAddr) {
+	s.socksMu.Lock()
+	delete(s.socksByKey, addr.String())
+	s.socksMu.Unlock()
 }
 
 func (s *sockStore) SetMainProbeWriter(write ProbeWriter) {
@@ -88,7 +107,7 @@ func (s *sockStore) Punch(ctx context.Context, addr *net.UDPAddr, localNAT nat.T
 				c := &Conn{
 					UDPConn: udp,
 					peer:    dst,
-					onClose: func() { s.socks.Remove(dst) },
+					onClose: func() { s.removeConn(dst) },
 				}
 				c.refs.Store(1)
 				select {
@@ -120,7 +139,7 @@ func (s *sockStore) Punch(ctx context.Context, addr *net.UDPAddr, localNAT nat.T
 	select {
 	case c := <-ch:
 		if c.UDPConn != nil {
-			if existing, appended := s.socks.Append(c.peer, c); !appended {
+			if existing, appended := s.appendConn(c.peer, c); !appended {
 				_ = c.UDPConn.Close()
 				c = existing
 			}
