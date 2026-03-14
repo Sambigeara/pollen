@@ -262,7 +262,7 @@ func TestEnsureNodeCredentialsFromTokenReplacesExistingCert(t *testing.T) {
 	verified, err := auth.VerifyJoinToken(token, nodePub, now)
 	require.NoError(t, err)
 
-	creds, err := auth.EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
+	creds, err := auth.LoadOrEnrollNodeCredentials(pollenDir, nodePub, token, now)
 	require.NoError(t, err)
 	require.True(t, proto.Equal(verified.Cert, creds.Cert))
 	require.NotEqual(t, oldCert.GetClaims().GetNotAfterUnix(), creds.Cert.GetClaims().GetNotAfterUnix())
@@ -295,7 +295,7 @@ func TestEnsureNodeCredentialsFromTokenKeepsLongerTTLCert(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	creds, err := auth.EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
+	creds, err := auth.LoadOrEnrollNodeCredentials(pollenDir, nodePub, token, now)
 	require.NoError(t, err)
 	require.True(t, proto.Equal(oldCert, creds.Cert), "existing longer-TTL cert should be kept")
 }
@@ -326,7 +326,7 @@ func TestEnsureNodeCredentialsFromTokenReplacesExpiredCert(t *testing.T) {
 	verified, err := auth.VerifyJoinToken(token, nodePub, now)
 	require.NoError(t, err)
 
-	creds, err := auth.EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
+	creds, err := auth.LoadOrEnrollNodeCredentials(pollenDir, nodePub, token, now)
 	require.NoError(t, err)
 	require.True(t, proto.Equal(verified.Cert, creds.Cert), "expired cert should be replaced")
 }
@@ -391,7 +391,7 @@ func TestInviteTokenOpenSubjectAndSingleUse(t *testing.T) {
 	require.NoError(t, err)
 
 	subjectPub, _ := newKeyPair(t)
-	_, err = auth.VerifyInviteToken(invite, subjectPub, now)
+	err = auth.VerifyInviteToken(invite, subjectPub, now)
 	require.NoError(t, err)
 
 	accepted, err := signer.Consumed.TryConsume(invite, now)
@@ -428,18 +428,10 @@ func TestInviteTokenSubjectBoundMismatch(t *testing.T) {
 	require.NoError(t, err)
 
 	otherSubject, _ := newKeyPair(t)
-	_, err = auth.VerifyInviteToken(invite, otherSubject, now)
+	err = auth.VerifyInviteToken(invite, otherSubject, now)
 	require.ErrorContains(t, err, "subject mismatch")
 }
 
-func TestIsCapSubset(t *testing.T) {
-	full := auth.FullCapabilities()
-	leaf := auth.LeafCapabilities()
-
-	require.True(t, auth.IsCapSubset(leaf, full))
-	require.True(t, auth.IsCapSubset(full, full))
-	require.False(t, auth.IsCapSubset(full, leaf))
-}
 
 func TestCertTTL(t *testing.T) {
 	rootPub, rootPriv := newKeyPair(t)

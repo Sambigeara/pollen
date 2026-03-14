@@ -1277,13 +1277,13 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 
 	signer := m.inviteSigner
 	now := time.Now()
-	verified, err := auth.VerifyInviteToken(req.GetToken(), ed25519.PublicKey(peerKey.Bytes()), now)
-	if err != nil {
+	if err := auth.VerifyInviteToken(req.GetToken(), ed25519.PublicKey(peerKey.Bytes()), now); err != nil {
 		return err
 	}
 
+	claims := req.GetToken().GetClaims()
 	ttl := inviteRedeemTTL
-	if remaining := time.Unix(verified.Claims.GetExpiresAtUnix(), 0).Sub(now); remaining < ttl {
+	if remaining := time.Unix(claims.GetExpiresAtUnix(), 0).Sub(now); remaining < ttl {
 		ttl = remaining
 	}
 	if ttl <= 0 {
@@ -1300,7 +1300,7 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 
 	membershipTTL := m.membershipTTL
 	var accessDeadline time.Time
-	if s := verified.Claims.GetMembershipTtlSeconds(); s > 0 {
+	if s := claims.GetMembershipTtlSeconds(); s > 0 {
 		accessDeadline = now.Add(time.Duration(s) * time.Second)
 	}
 
@@ -1309,7 +1309,7 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 		signer.Trust,
 		signer.Issuer,
 		ed25519.PublicKey(peerKey.Bytes()),
-		verified.Claims.GetBootstrap(),
+		claims.GetBootstrap(),
 		now,
 		ttl,
 		membershipTTL,

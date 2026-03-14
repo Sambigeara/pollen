@@ -43,13 +43,12 @@ func redeemInviteWithDial(
 	subjectPub ed25519.PublicKey,
 	dial func(context.Context, *net.UDPAddr, types.PeerKey) (*quic.Conn, error),
 ) (*admissionv1.JoinToken, error) {
-	verified, err := auth.VerifyInviteToken(token, subjectPub, time.Now())
-	if err != nil {
+	if err := auth.VerifyInviteToken(token, subjectPub, time.Now()); err != nil {
 		return nil, err
 	}
 
 	var lastErr error
-	for _, bootstrap := range verified.Claims.GetBootstrap() {
+	for _, bootstrap := range token.GetClaims().GetBootstrap() {
 		expectedPeer := types.PeerKeyFromBytes(bootstrap.GetPeerPub())
 		for _, rawAddr := range bootstrap.GetAddrs() {
 			addr, err := net.ResolveUDPAddr("udp", rawAddr)

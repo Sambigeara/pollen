@@ -94,8 +94,7 @@ func CertAccessDeadline(cert *admissionv1.DelegationCert) (time.Time, bool) {
 	return time.Unix(dl, 0), true
 }
 
-// IsCapSubset returns true if child capabilities are a subset of parent's.
-func IsCapSubset(child, parent *admissionv1.Capabilities) bool {
+func isCapSubset(child, parent *admissionv1.Capabilities) bool {
 	if child.GetCanDelegate() && !parent.GetCanDelegate() {
 		return false
 	}
@@ -120,7 +119,7 @@ type VerifiedToken struct {
 	Cert   *admissionv1.DelegationCert
 }
 
-func EnsureNodeCredentialsFromToken(pollenDir string, nodePub ed25519.PublicKey, token *admissionv1.JoinToken, now time.Time) (*NodeCredentials, error) {
+func ensureNodeCredentialsFromToken(pollenDir string, nodePub ed25519.PublicKey, token *admissionv1.JoinToken, now time.Time) (*NodeCredentials, error) {
 	existing, err := loadNodeCredentialsIfPresent(pollenDir)
 	if err != nil {
 		return nil, err
@@ -158,7 +157,7 @@ func LoadOrEnrollNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, to
 		return LoadExistingNodeCredentials(pollenDir, nodePub, now)
 	}
 
-	return EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
+	return ensureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
 }
 
 func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now time.Time, membershipTTL, delegationTTL time.Duration) (*NodeCredentials, error) {
@@ -225,7 +224,7 @@ func LoadExistingNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, no
 	}
 
 	// Always verify the cryptographic chain (signatures, cluster scope, subject).
-	if err := verifyDelegationCertChain(creds.Cert, creds.Trust, nodePub); err != nil {
+	if err := VerifyDelegationCertChain(creds.Cert, creds.Trust, nodePub); err != nil {
 		return nil, fmt.Errorf("invalid stored delegation credentials: %w", err)
 	}
 
@@ -421,7 +420,7 @@ func validateParentChain(
 	if !parentCaps.GetCanDelegate() {
 		return errors.New("parent cert lacks delegation capability")
 	}
-	if !IsCapSubset(caps, parentCaps) {
+	if !isCapSubset(caps, parentCaps) {
 		return errors.New("child capabilities exceed parent capabilities")
 	}
 	if caps.GetMaxDepth() >= parentCaps.GetMaxDepth() {
@@ -508,9 +507,9 @@ func IssueDelegationCert(
 	}, nil
 }
 
-// verifyDelegationCertChain verifies proto validity, cluster scope, the
+// VerifyDelegationCertChain verifies proto validity, cluster scope, the
 // signature chain, and subject match — everything except the time check.
-func verifyDelegationCertChain(
+func VerifyDelegationCertChain(
 	cert *admissionv1.DelegationCert,
 	trust *admissionv1.TrustBundle,
 	expectedSubject []byte,
@@ -560,17 +559,6 @@ func verifyDelegationCertChain(
 	return nil
 }
 
-// VerifyDelegationCertChain verifies a DelegationCert chain against a
-// TrustBundle without checking time validity. Exported for use in TLS
-// reconnect-window fallback paths.
-func VerifyDelegationCertChain(
-	cert *admissionv1.DelegationCert,
-	trust *admissionv1.TrustBundle,
-	expectedSubject []byte,
-) error {
-	return verifyDelegationCertChain(cert, trust, expectedSubject)
-}
-
 // VerifyDelegationCert verifies a DelegationCert chain against a TrustBundle,
 // including time validity.
 func VerifyDelegationCert(
@@ -579,7 +567,7 @@ func VerifyDelegationCert(
 	now time.Time,
 	expectedSubject []byte,
 ) error {
-	if err := verifyDelegationCertChain(cert, trust, expectedSubject); err != nil {
+	if err := VerifyDelegationCertChain(cert, trust, expectedSubject); err != nil {
 		return err
 	}
 

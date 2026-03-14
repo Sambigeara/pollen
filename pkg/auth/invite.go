@@ -28,11 +28,6 @@ type DelegationSigner struct {
 	Priv     ed25519.PrivateKey
 }
 
-type VerifiedInviteToken struct {
-	Claims *admissionv1.InviteTokenClaims
-	Trust  *admissionv1.TrustBundle
-	Issuer *admissionv1.DelegationCert
-}
 
 func SaveDelegationCert(pollenDir string, cert *admissionv1.DelegationCert) error {
 	if cert == nil || cert.GetClaims() == nil {
@@ -169,55 +164,51 @@ func IssueInviteTokenWithSigner(
 	return &admissionv1.InviteToken{Claims: claims, Signature: sig}, nil
 }
 
-func VerifyInviteToken(token *admissionv1.InviteToken, expectedSubject ed25519.PublicKey, now time.Time) (*VerifiedInviteToken, error) {
+func VerifyInviteToken(token *admissionv1.InviteToken, expectedSubject ed25519.PublicKey, now time.Time) error {
 	if token == nil {
-		return nil, errors.New("invite token is nil")
+		return errors.New("invite token is nil")
 	}
 	if err := protovalidate.Validate(token); err != nil {
-		return nil, fmt.Errorf("invite token invalid: %w", err)
+		return fmt.Errorf("invite token invalid: %w", err)
 	}
 
 	claims := token.GetClaims()
 
 	trust := claims.GetTrust()
 	if err := validateTrustBundle(trust); err != nil {
-		return nil, err
+		return err
 	}
 
 	issuer := claims.GetIssuer()
 	if err := VerifyDelegationCert(issuer, trust, now, nil); err != nil {
-		return nil, fmt.Errorf("invite token issuer invalid: %w", err)
+		return fmt.Errorf("invite token issuer invalid: %w", err)
 	}
 
 	issuerPub := issuer.GetClaims().GetSubjectPub()
 	msg, err := signaturePayload(claims)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := verifyPayload(ed25519.PublicKey(issuerPub), msg, token.GetSignature(), sigContextInvite); err != nil {
-		return nil, errors.New("invite token signature invalid")
+		return errors.New("invite token signature invalid")
 	}
 
 	if len(claims.GetSubjectPub()) == ed25519.PublicKeySize && len(expectedSubject) > 0 {
 		if !bytes.Equal(claims.GetSubjectPub(), expectedSubject) {
-			return nil, errors.New("invite token subject mismatch")
+			return errors.New("invite token subject mismatch")
 		}
 	}
 
 	issuedAt := time.Unix(claims.GetIssuedAtUnix(), 0).Add(-timeSkewAllowance)
 	expiresAt := time.Unix(claims.GetExpiresAtUnix(), 0).Add(timeSkewAllowance)
 	if !expiresAt.After(issuedAt) {
-		return nil, errors.New("invite token validity window invalid")
+		return errors.New("invite token validity window invalid")
 	}
 	if now.Before(issuedAt) || now.After(expiresAt) {
-		return nil, errors.New("invite token expired or not yet valid")
+		return errors.New("invite token expired or not yet valid")
 	}
 
-	return &VerifiedInviteToken{
-		Claims: claims,
-		Trust:  trust,
-		Issuer: issuer,
-	}, nil
+	return nil
 }
 
 func EncodeInviteToken(token *admissionv1.InviteToken) (string, error) {
