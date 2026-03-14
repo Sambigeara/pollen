@@ -79,11 +79,12 @@ type ConnectionInfo struct {
 
 func New(transport StreamTransport) *Manager {
 	return &Manager{
-		log:           zap.S().Named("tun"),
-		transport:     transport,
-		connections:   make(map[connectionKey]connectionHandler),
-		services:      make(map[uint32]serviceHandler),
-		activeStreams: make(map[uint32]map[io.ReadWriteCloser]struct{}),
+		log:            zap.S().Named("tun"),
+		transport:      transport,
+		trafficTracker: traffic.Noop,
+		connections:    make(map[connectionKey]connectionHandler),
+		services:       make(map[uint32]serviceHandler),
+		activeStreams:  make(map[uint32]map[io.ReadWriteCloser]struct{}),
 	}
 }
 
@@ -122,9 +123,7 @@ func (m *Manager) handleIncomingStream(peerID types.PeerKey, stream io.ReadWrite
 		return
 	}
 
-	if m.trafficTracker != nil {
-		stream = traffic.WrapStream(stream, m.trafficTracker, peerID)
-	}
+	stream = traffic.WrapStream(stream, m.trafficTracker, peerID)
 
 	tracked := &trackedStream{ReadWriteCloser: stream}
 	tracked.onClose = func() { m.removeActiveStream(port, tracked) }
@@ -264,11 +263,7 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 					return
 				}
 
-				if m.trafficTracker != nil {
-					stream = traffic.WrapStream(stream, m.trafficTracker, peerID)
-				}
-
-				bridge(clientConn, stream)
+				bridge(clientConn, traffic.WrapStream(stream, m.trafficTracker, peerID))
 			})
 		}
 	})

@@ -12,6 +12,17 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
+// stream wraps a QUIC stream to implement the Stream interface with safe Close
+// semantics: CancelRead on the read side and Close (FIN) on the write side.
+type stream struct{ *quic.Stream }
+
+func (s stream) CloseWrite() error { return s.Stream.Close() }
+
+func (s stream) Close() error {
+	s.CancelRead(0)
+	return s.Stream.Close()
+}
+
 const routeBufSize = 64 * 1024
 
 var routeBufPool = sync.Pool{
@@ -73,7 +84,7 @@ func (m *impl) OpenWorkloadStream(ctx context.Context, peerKey types.PeerKey) (i
 func (m *impl) OpenClockStream(ctx context.Context, peerKey types.PeerKey) (Stream, error) {
 	rwc, err := m.openTypedStream(ctx, peerKey, streamTypeClock)
 	if err != nil {
-		return Stream{}, err
+		return nil, err
 	}
 	return rwc.(Stream), nil //nolint:forcetypeassert
 }
@@ -91,16 +102,16 @@ func (m *impl) openTypedStream(ctx context.Context, peerKey types.PeerKey, strea
 	if err != nil {
 		return nil, err
 	}
-	stream, err := s.conn.OpenStreamSync(ctx)
+	qs, err := s.conn.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := stream.Write([]byte{streamType}); err != nil {
-		stream.CancelWrite(0)
-		stream.CancelRead(0)
+	if _, err := qs.Write([]byte{streamType}); err != nil {
+		qs.CancelWrite(0)
+		qs.CancelRead(0)
 		return nil, err
 	}
-	return Stream{stream}, nil
+	return stream{qs}, nil
 }
 
 func (m *impl) acceptFromCh(ctx context.Context, ch <-chan incomingStream) (types.PeerKey, io.ReadWriteCloser, error) {
@@ -120,7 +131,7 @@ func (m *impl) openRoutedStream(ctx context.Context, dest types.PeerKey, innerTy
 	if !ok {
 		return nil, fmt.Errorf("no session to next hop %s", nextHop.Short())
 	}
-	stream, err := s.conn.OpenStreamSync(ctx)
+	qs, err := s.conn.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -131,19 +142,19 @@ func (m *impl) openRoutedStream(ctx context.Context, dest types.PeerKey, innerTy
 	copy(header[33:65], m.localKey[:])
 	header[65] = defaultRouteTTL
 	header[66] = innerType
-	if _, err := stream.Write(header[:]); err != nil {
-		stream.CancelWrite(0)
-		stream.CancelRead(0)
+	if _, err := qs.Write(header[:]); err != nil {
+		qs.CancelWrite(0)
+		qs.CancelRead(0)
 		return nil, err
 	}
-	return Stream{stream}, nil
+	return stream{qs}, nil
 }
 
-func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream, upstreamPeer types.PeerKey) {
+func (m *impl) handleRoutedStream(ctx context.Context, qs *quic.Stream, upstreamPeer types.PeerKey) {
 	var header [routeHeaderSize]byte
-	if _, err := io.ReadFull(stream, header[:]); err != nil {
-		stream.CancelRead(0)
-		stream.CancelWrite(0)
+	if _, err := io.ReadFull(qs, header[:]); err != nil {
+		qs.CancelRead(0)
+		qs.CancelWrite(0)
 		return
 	}
 
@@ -154,18 +165,18 @@ func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream, upst
 	innerType := header[65]
 
 	if dest == m.localKey {
-		m.deliverRoutedStream(ctx, stream, source, innerType)
+		m.deliverRoutedStream(ctx, qs, source, innerType)
 		return
 	}
 
 	if ttl <= 1 {
 		m.log.Debugw("routed stream TTL exhausted", "dest", dest.Short(), "source", source.Short())
-		stream.CancelRead(0)
-		stream.CancelWrite(0)
+		qs.CancelRead(0)
+		qs.CancelWrite(0)
 		return
 	}
 
-	m.forwardRoutedStream(ctx, stream, dest, source, ttl-1, innerType, upstreamPeer)
+	m.forwardRoutedStream(ctx, qs, dest, source, ttl-1, innerType, upstreamPeer)
 }
 
 // deliverRoutedStream dispatches a routed stream that has arrived at its final
@@ -178,35 +189,35 @@ func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream, upst
 // peerKey only for logging. If future code makes authorization decisions based
 // on AcceptStream's peerKey, routed streams must carry end-to-end proof of
 // origin (e.g., a signature over the stream header).
-func (m *impl) deliverRoutedStream(ctx context.Context, stream *quic.Stream, source types.PeerKey, innerType byte) {
+func (m *impl) deliverRoutedStream(ctx context.Context, qs *quic.Stream, source types.PeerKey, innerType byte) {
 	switch innerType {
 	case streamTypeTunnel:
 		select {
-		case m.streamCh <- incomingStream{peerKey: source, stream: Stream{stream}}:
+		case m.streamCh <- incomingStream{peerKey: source, stream: stream{qs}}:
 		case <-ctx.Done():
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
+			qs.CancelRead(0)
+			qs.CancelWrite(0)
 		default:
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
+			qs.CancelRead(0)
+			qs.CancelWrite(0)
 		}
 	case streamTypeArtifact:
 		if h := m.artifactHandler; h != nil {
-			go h(Stream{stream}, source)
+			go h(stream{qs}, source)
 		} else {
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
+			qs.CancelRead(0)
+			qs.CancelWrite(0)
 		}
 	case streamTypeWorkload:
 		if h := m.workloadHandler; h != nil {
-			go h(Stream{stream}, source)
+			go h(stream{qs}, source)
 		} else {
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
+			qs.CancelRead(0)
+			qs.CancelWrite(0)
 		}
 	default:
-		stream.CancelRead(0)
-		stream.CancelWrite(0)
+		qs.CancelRead(0)
+		qs.CancelWrite(0)
 	}
 }
 
@@ -266,12 +277,8 @@ func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, de
 		return
 	}
 
-	var in io.ReadWriteCloser = Stream{inbound}
-	var out io.ReadWriteCloser = Stream{outbound}
-	if m.trafficTracker != nil {
-		in = traffic.WrapStream(in, m.trafficTracker, upstreamPeer)
-		out = traffic.WrapStream(out, m.trafficTracker, nextHop)
-	}
+	in := traffic.WrapStream(stream{inbound}, m.trafficTracker, upstreamPeer)
+	out := traffic.WrapStream(stream{outbound}, m.trafficTracker, nextHop)
 	bridgeStreams(in, out)
 }
 

@@ -57,17 +57,13 @@ func quicConfig() *quic.Config {
 	}
 }
 
-// Stream wraps a QUIC stream with safe Close semantics: Close cancels the
-// read side (STOP_SENDING) and closes the write side (FIN), ensuring QUIC
-// releases stream credits immediately. Use CloseWrite for write-side
-// half-close when the protocol requires reading after closing writes.
-type Stream struct{ *quic.Stream }
-
-func (s Stream) CloseWrite() error { return s.Stream.Close() }
-
-func (s Stream) Close() error {
-	s.CancelRead(0)
-	return s.Stream.Close()
+// Stream is a QUIC bidi-stream with half-close support. CloseWrite sends a FIN
+// on the write side while keeping the read side open; Close cancels the read
+// side (STOP_SENDING) and then closes the write side, releasing stream credits
+// immediately.
+type Stream interface {
+	io.ReadWriteCloser
+	CloseWrite() error
 }
 
 // Router provides next-hop lookups for multi-hop mesh routing.
@@ -90,12 +86,10 @@ type Mesh interface {
 	OpenClockStream(ctx context.Context, peer types.PeerKey) (Stream, error)
 	AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
 	JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error
-	JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
 	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr, localNAT nat.Type) error
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
-	PeerCertExpiresAt(peer types.PeerKey) (time.Time, bool)
 	PeerDelegationCert(peer types.PeerKey) (*admissionv1.DelegationCert, bool)
 	IsOutbound(types.PeerKey) bool
 	ConnectedPeers() []types.PeerKey
@@ -221,6 +215,7 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 		streamCh:         make(chan incomingStream, queueBufSize),
 		clockStreamCh:    make(chan incomingStream, queueBufSize),
 		metrics:          mm,
+		trafficTracker:   traffic.Noop,
 	}
 	m.meshCert.Store(&meshCert)
 	return m, nil
@@ -320,9 +315,7 @@ func (m *impl) Close() error {
 	}
 	if m.mainQT != nil {
 		_ = m.mainQT.Close()
-		if m.mainQT.Conn != nil {
-			_ = m.mainQT.Conn.Close()
-		}
+		_ = m.mainQT.Conn.Close()
 	}
 	return nil
 }
