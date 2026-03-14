@@ -39,6 +39,7 @@ type meshHarness struct {
 	mesh    mesh.Mesh
 	peerKey types.PeerKey
 	pubKey  ed25519.PublicKey
+	priv    ed25519.PrivateKey
 	port    int
 	cancel  context.CancelFunc
 }
@@ -165,10 +166,11 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 	joinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	joinToken, err := joiner.mesh.JoinWithInvite(joinCtx, invite)
+	joinToken, err := mesh.RedeemInvite(joinCtx, joiner.priv, invite)
 	require.NoError(t, err)
 	_, err = auth.VerifyJoinToken(joinToken, joiner.pubKey, time.Now())
 	require.NoError(t, err)
+	require.NoError(t, joiner.mesh.JoinWithToken(joinCtx, joinToken))
 
 	require.Eventually(t, func() bool {
 		_, ok := joiner.mesh.GetConn(bootstrap.peerKey)
@@ -210,7 +212,7 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 	joinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = joiner.mesh.JoinWithInvite(joinCtx, invite)
+	_, err = mesh.RedeemInvite(joinCtx, joiner.priv, invite)
 	require.Error(t, err)
 }
 
@@ -701,6 +703,7 @@ func startMeshHarnessWithCreds(
 		mesh:    m,
 		peerKey: types.PeerKeyFromBytes(pub),
 		pubKey:  pub,
+		priv:    priv,
 		port:    m.ListenPort(),
 		cancel:  cancel,
 	}

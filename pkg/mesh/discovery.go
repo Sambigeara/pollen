@@ -16,10 +16,10 @@ import (
 const publicIPQueryTimeout = 3 * time.Second
 
 var (
-	TailscaleCGNAT = netip.MustParsePrefix("100.64.0.0/10") // RFC 6598 CGNAT
-	TailscaleULA   = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+	tailscaleCGNAT = netip.MustParsePrefix("100.64.0.0/10") // RFC 6598 CGNAT
+	tailscaleULA   = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
 
-	DefaultExclusions = []netip.Prefix{TailscaleCGNAT, TailscaleULA}
+	DefaultExclusions = []netip.Prefix{tailscaleCGNAT, tailscaleULA}
 )
 
 var (

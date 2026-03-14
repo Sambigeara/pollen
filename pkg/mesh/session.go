@@ -49,14 +49,6 @@ func (m *impl) GetActivePeerAddress(peerKey types.PeerKey) (*net.UDPAddr, bool) 
 	return s.conn.RemoteAddr().(*net.UDPAddr), true //nolint:forcetypeassert
 }
 
-func (m *impl) PeerCertExpiresAt(peerKey types.PeerKey) (time.Time, bool) {
-	s, ok := m.sessions.get(peerKey)
-	if !ok {
-		return time.Time{}, false
-	}
-	return s.certExpiresAt, true
-}
-
 func (m *impl) PeerDelegationCert(peerKey types.PeerKey) (*admissionv1.DelegationCert, bool) {
 	s, ok := m.sessions.get(peerKey)
 	if !ok {
@@ -139,10 +131,8 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 }
 
 func (m *impl) closeSession(s *peerSession, reason CloseReason) {
-	if s.conn != nil {
-		_ = s.conn.CloseWithError(0, string(reason))
-	}
-	if s.transport != nil && s.transport != m.mainQT {
+	_ = s.conn.CloseWithError(0, string(reason))
+	if s.transport != m.mainQT {
 		_ = s.transport.Close()
 	}
 	if s.sockConn != nil {
@@ -220,19 +210,19 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 	ctx := s.conn.Context()
 	for {
-		stream, err := s.conn.AcceptStream(ctx)
+		qs, err := s.conn.AcceptStream(ctx)
 		if err != nil {
 			return
 		}
 
-		_ = stream.SetReadDeadline(time.Now().Add(streamTypeTimeout))
+		_ = qs.SetReadDeadline(time.Now().Add(streamTypeTimeout))
 		var typeBuf [1]byte
-		if _, err := io.ReadFull(stream, typeBuf[:]); err != nil {
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
+		if _, err := io.ReadFull(qs, typeBuf[:]); err != nil {
+			qs.CancelRead(0)
+			qs.CancelWrite(0)
 			continue
 		}
-		_ = stream.SetReadDeadline(time.Time{})
+		_ = qs.SetReadDeadline(time.Time{})
 
 		var ch chan incomingStream
 		switch typeBuf[0] {
@@ -241,39 +231,39 @@ func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 		case streamTypeTunnel:
 			ch = m.streamCh
 		case streamTypeRouted:
-			go m.handleRoutedStream(ctx, stream, peerKey)
+			go m.handleRoutedStream(ctx, qs, peerKey)
 			continue
 		case streamTypeArtifact:
 			if h := m.artifactHandler; h != nil {
-				go h(Stream{stream}, peerKey)
+				go h(stream{qs}, peerKey)
 			} else {
-				stream.CancelRead(0)
-				stream.CancelWrite(0)
+				qs.CancelRead(0)
+				qs.CancelWrite(0)
 			}
 			continue
 		case streamTypeWorkload:
 			if h := m.workloadHandler; h != nil {
-				go h(Stream{stream}, peerKey)
+				go h(stream{qs}, peerKey)
 			} else {
-				stream.CancelRead(0)
-				stream.CancelWrite(0)
+				qs.CancelRead(0)
+				qs.CancelWrite(0)
 			}
 			continue
 		default:
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
+			qs.CancelRead(0)
+			qs.CancelWrite(0)
 			continue
 		}
 
 		select {
-		case ch <- incomingStream{peerKey: peerKey, stream: Stream{stream}}:
+		case ch <- incomingStream{peerKey: peerKey, stream: stream{qs}}:
 		case <-ctx.Done():
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
+			qs.CancelRead(0)
+			qs.CancelWrite(0)
 			return
 		default:
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
+			qs.CancelRead(0)
+			qs.CancelWrite(0)
 		}
 	}
 }
