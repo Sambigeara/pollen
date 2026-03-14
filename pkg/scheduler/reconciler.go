@@ -66,6 +66,7 @@ type Reconciler struct {
 	inFlight         map[string]struct{}
 	nowFunc          func() time.Time
 	inFlightMu       sync.Mutex
+	wg               sync.WaitGroup
 	localID          types.PeerKey
 	firstRun         bool
 }
@@ -139,6 +140,7 @@ func (r *Reconciler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			drainTimer(debounce)
 			drainTimer(trafficDebounce)
+			r.wg.Wait()
 			return
 		case <-r.triggerCh:
 			now := time.Now()
@@ -182,22 +184,6 @@ func (r *Reconciler) Run(ctx context.Context) {
 	}
 }
 
-func (r *Reconciler) buildClusterState() ClusterState {
-	nodePlacement := r.store.AllNodePlacementStates()
-	cluster := ClusterState{Nodes: make(map[types.PeerKey]NodeState, len(nodePlacement))}
-	for pk, nps := range nodePlacement {
-		cluster.Nodes[pk] = NodeState{
-			CPUPercent:    nps.CPUPercent,
-			MemPercent:    nps.MemPercent,
-			MemTotalBytes: nps.MemTotalBytes,
-			NumCPU:        nps.NumCPU,
-			Coord:         nps.Coord,
-			TrafficTo:     nps.TrafficTo,
-		}
-	}
-	return cluster
-}
-
 func (r *Reconciler) reconcile(ctx context.Context) {
 	// Startup cleanup: remove stale claims from prior session.
 	if r.firstRun {
@@ -208,26 +194,24 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	specViews := r.store.AllWorkloadSpecs()
 	claimMap := r.store.AllWorkloadClaims()
 	allPeers := r.store.AllPeerKeys()
-	cluster := r.buildClusterState()
+	cluster := r.store.AllNodePlacementStates()
 
-	specs := make(map[string]Spec, len(specViews))
+	specs := make(map[string]uint32, len(specViews))
 	for hash, sv := range specViews {
-		specs[hash] = Spec{
-			Replicas: sv.Spec.GetReplicas(),
-		}
+		specs[hash] = sv.Spec.GetReplicas()
 	}
 
-	actions := Evaluate(r.localID, allPeers, specs, claimMap, cluster, r.workloads.IsRunning)
+	actions := evaluate(r.localID, allPeers, specs, claimMap, cluster, r.workloads.IsRunning)
 
-	// Track which hashes Evaluate wants released this cycle.
+	// Track which hashes evaluate wants released this cycle.
 	wantRelease := make(map[string]struct{})
 
 	now := r.now()
 	for _, a := range actions {
 		switch a.Kind {
-		case ActionClaim:
+		case actionClaim:
 			r.startClaim(ctx, a.Hash, specViews, claimMap)
-		case ActionRelease:
+		case actionRelease:
 			wantRelease[a.Hash] = struct{}{}
 			if _, pending := r.pendingRelease[a.Hash]; !pending {
 				r.pendingRelease[a.Hash] = now.Add(evictionCooldown)
@@ -282,7 +266,7 @@ func (r *Reconciler) startClaim(ctx context.Context, hash string, specViews map[
 		peers = append(peers, pk)
 	}
 
-	go func() {
+	r.wg.Go(func() {
 		defer func() {
 			r.inFlightMu.Lock()
 			delete(r.inFlight, hash)
@@ -290,7 +274,7 @@ func (r *Reconciler) startClaim(ctx context.Context, hash string, specViews map[
 			r.Signal()
 		}()
 		r.executeClaim(ctx, hash, peers)
-	}()
+	})
 }
 
 func (r *Reconciler) executeClaim(ctx context.Context, hash string, peers []types.PeerKey) {
@@ -314,7 +298,7 @@ func (r *Reconciler) executeClaim(ctx context.Context, hash string, peers []type
 	allPeers := r.store.AllPeerKeys()
 	claimants := claimMap[hash]
 	if _, alreadyClaimed := claimants[r.localID]; !alreadyClaimed {
-		cluster := r.buildClusterState()
+		cluster := r.store.AllNodePlacementStates()
 		if !shouldClaim(r.localID, hash, sv.Spec.GetReplicas(), claimants, allPeers, cluster) {
 			r.log.Infow("no longer a winner after fetch, skipping claim", "hash", hash)
 			return
@@ -378,8 +362,5 @@ func (r *Reconciler) cleanupStaleClaims() {
 }
 
 func (r *Reconciler) now() time.Time {
-	if r.nowFunc != nil {
-		return r.nowFunc()
-	}
-	return time.Now()
+	return r.nowFunc()
 }

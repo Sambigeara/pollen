@@ -6,42 +6,21 @@ import (
 	"math"
 	"slices"
 
+	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// ActionKind describes what the local node should do for a workload.
-type ActionKind int
+type actionKind int
 
 const (
-	ActionClaim   ActionKind = iota // start running this workload
-	ActionRelease                   // stop running this workload
+	actionClaim   actionKind = iota // start running this workload
+	actionRelease                   // stop running this workload
 )
 
-// Action is a single scheduling decision for this node.
-type Action struct {
+type action struct {
 	Hash string
-	Kind ActionKind
-}
-
-// Spec describes desired workload state.
-type Spec struct {
-	Replicas uint32
-}
-
-// NodeState holds per-node data used for placement scoring.
-type NodeState struct {
-	Coord         *topology.Coord
-	TrafficTo     map[types.PeerKey]uint64
-	MemTotalBytes uint64
-	CPUPercent    uint32
-	MemPercent    uint32
-	NumCPU        uint32
-}
-
-// ClusterState provides cluster-wide data for traffic-aware placement.
-type ClusterState struct {
-	Nodes map[types.PeerKey]NodeState
+	Kind actionKind
 }
 
 const (
@@ -74,35 +53,35 @@ func compareScored(a, b scored) int {
 	return compareScores(a.tieBreak, b.tieBreak)
 }
 
-// Evaluate determines what this node should do given cluster state.
+// evaluate determines what this node should do given cluster state.
 // Pure function — no side effects, fully deterministic.
 //
 // allPeers is the set of all known valid peers in the cluster (including localID).
-func Evaluate(
+func evaluate(
 	localID types.PeerKey,
 	allPeers []types.PeerKey,
-	specs map[string]Spec,
+	specs map[string]uint32,
 	claims map[string]map[types.PeerKey]struct{},
-	cluster ClusterState,
+	cluster map[types.PeerKey]store.NodePlacementState,
 	isRunning func(string) bool,
-) []Action {
-	var actions []Action
+) []action {
+	var actions []action
 
-	for hash, spec := range specs {
+	for hash, replicas := range specs {
 		claimants := claims[hash]
 		claimCount := uint32(len(claimants))
 		_, iClaimed := claimants[localID]
 
-		if claimCount < spec.Replicas && !iClaimed {
-			if shouldClaim(localID, hash, spec.Replicas, claimants, allPeers, cluster) {
-				actions = append(actions, Action{Hash: hash, Kind: ActionClaim})
+		if claimCount < replicas && !iClaimed {
+			if shouldClaim(localID, hash, replicas, claimants, allPeers, cluster) {
+				actions = append(actions, action{Hash: hash, Kind: actionClaim})
 			}
-		} else if claimCount >= spec.Replicas && iClaimed {
+		} else if claimCount >= replicas && iClaimed {
 			// Covers both over-replication (claimCount > desired) and
 			// migration at exact count: if a non-claimant would rank
 			// higher than localID, release so it can claim.
-			if shouldRelease(localID, hash, spec.Replicas, claimants, allPeers, cluster) {
-				actions = append(actions, Action{Hash: hash, Kind: ActionRelease})
+			if shouldRelease(localID, hash, replicas, claimants, allPeers, cluster) {
+				actions = append(actions, action{Hash: hash, Kind: actionRelease})
 			}
 		}
 	}
@@ -113,7 +92,7 @@ func Evaluate(
 			continue
 		}
 		if _, hasSpec := specs[hash]; !hasSpec {
-			actions = append(actions, Action{Hash: hash, Kind: ActionRelease})
+			actions = append(actions, action{Hash: hash, Kind: actionRelease})
 		}
 	}
 
@@ -124,7 +103,7 @@ func Evaluate(
 			continue
 		}
 		if !isRunning(hash) {
-			actions = append(actions, Action{Hash: hash, Kind: ActionClaim})
+			actions = append(actions, action{Hash: hash, Kind: actionClaim})
 		}
 	}
 
@@ -133,7 +112,7 @@ func Evaluate(
 
 // shouldClaim returns true if localID is among the top `needed` unclaimed
 // nodes when all eligible peers are ranked by suitability then tie-break.
-func shouldClaim(localID types.PeerKey, hash string, desired uint32, claimants map[types.PeerKey]struct{}, allPeers []types.PeerKey, cluster ClusterState) bool {
+func shouldClaim(localID types.PeerKey, hash string, desired uint32, claimants map[types.PeerKey]struct{}, allPeers []types.PeerKey, cluster map[types.PeerKey]store.NodePlacementState) bool {
 	needed := int(desired) - len(claimants)
 	if needed <= 0 {
 		return false
@@ -146,7 +125,7 @@ func shouldClaim(localID types.PeerKey, hash string, desired uint32, claimants m
 		}
 		unclaimed = append(unclaimed, scored{
 			peer:        pk,
-			suitability: suitabilityScore(pk, hash, cluster, claimants, false),
+			suitability: suitabilityScore(pk, cluster, claimants, false),
 			tieBreak:    placementScore(pk, hash),
 		})
 	}
@@ -174,7 +153,7 @@ func shouldClaim(localID types.PeerKey, hash string, desired uint32, claimants m
 //     weakest incumbent against the best non-claimant. If a challenger
 //     outranks the weakest incumbent (after incumbent bonus), that
 //     incumbent releases so the challenger can claim.
-func shouldRelease(localID types.PeerKey, hash string, desired uint32, claimants map[types.PeerKey]struct{}, allPeers []types.PeerKey, cluster ClusterState) bool {
+func shouldRelease(localID types.PeerKey, hash string, desired uint32, claimants map[types.PeerKey]struct{}, allPeers []types.PeerKey, cluster map[types.PeerKey]store.NodePlacementState) bool {
 	claimCount := len(claimants)
 
 	if claimCount > int(desired) {
@@ -183,7 +162,7 @@ func shouldRelease(localID types.PeerKey, hash string, desired uint32, claimants
 		for pk := range claimants {
 			incumbents = append(incumbents, scored{
 				peer:        pk,
-				suitability: suitabilityScore(pk, hash, cluster, claimants, true),
+				suitability: suitabilityScore(pk, cluster, claimants, true),
 				tieBreak:    placementScore(pk, hash),
 			})
 		}
@@ -204,7 +183,7 @@ func shouldRelease(localID types.PeerKey, hash string, desired uint32, claimants
 	for pk := range claimants {
 		incumbents = append(incumbents, scored{
 			peer:        pk,
-			suitability: suitabilityScore(pk, hash, cluster, claimants, true),
+			suitability: suitabilityScore(pk, cluster, claimants, true),
 			tieBreak:    placementScore(pk, hash),
 		})
 	}
@@ -223,7 +202,7 @@ func shouldRelease(localID types.PeerKey, hash string, desired uint32, claimants
 		}
 		s := scored{
 			peer:        pk,
-			suitability: suitabilityScore(pk, hash, cluster, claimants, false),
+			suitability: suitabilityScore(pk, cluster, claimants, false),
 			tieBreak:    placementScore(pk, hash),
 		}
 		if bestChallenger == nil || compareScored(s, *bestChallenger) < 0 {
@@ -240,14 +219,14 @@ func shouldRelease(localID types.PeerKey, hash string, desired uint32, claimants
 
 // suitabilityScore computes a composite placement score for a candidate node.
 // Returns 0.0–1.0+ (incumbent bonus can push above 1.0). Higher is better.
-func suitabilityScore(candidate types.PeerKey, _ string, cluster ClusterState, claimants map[types.PeerKey]struct{}, isIncumbent bool) float64 {
-	if len(cluster.Nodes) == 0 {
+func suitabilityScore(candidate types.PeerKey, cluster map[types.PeerKey]store.NodePlacementState, claimants map[types.PeerKey]struct{}, isIncumbent bool) float64 {
+	if len(cluster) == 0 {
 		return 0.0
 	}
 
 	// Collect all candidate peers for normalisation context.
-	peers := make([]types.PeerKey, 0, len(cluster.Nodes))
-	for pk := range cluster.Nodes {
+	peers := make([]types.PeerKey, 0, len(cluster))
+	for pk := range cluster {
 		peers = append(peers, pk)
 	}
 
@@ -266,9 +245,9 @@ func suitabilityScore(candidate types.PeerKey, _ string, cluster ClusterState, c
 
 // capacityScore returns 0–1 for the candidate's free resources relative to
 // all peers. No telemetry → 0.5 (neutral).
-func capacityScore(candidate types.PeerKey, peers []types.PeerKey, cluster ClusterState) float64 {
+func capacityScore(candidate types.PeerKey, peers []types.PeerKey, cluster map[types.PeerKey]store.NodePlacementState) float64 {
 	freeCapacity := func(pk types.PeerKey) float64 {
-		ns := cluster.Nodes[pk]
+		ns := cluster[pk]
 		if ns.NumCPU == 0 && ns.MemTotalBytes == 0 {
 			return -1 // sentinel: no telemetry
 		}
@@ -297,19 +276,19 @@ func capacityScore(candidate types.PeerKey, peers []types.PeerKey, cluster Clust
 
 // trafficAffinityScore returns 0–1 for how much bidirectional traffic the
 // candidate exchanges with existing claimants. No traffic data → 0.0.
-func trafficAffinityScore(candidate types.PeerKey, peers []types.PeerKey, claimants map[types.PeerKey]struct{}, cluster ClusterState) float64 {
+func trafficAffinityScore(candidate types.PeerKey, peers []types.PeerKey, claimants map[types.PeerKey]struct{}, cluster map[types.PeerKey]store.NodePlacementState) float64 {
 	if len(claimants) == 0 {
 		return 0.0
 	}
 
 	trafficSum := func(pk types.PeerKey) float64 {
 		var total uint64
-		ns := cluster.Nodes[pk]
+		ns := cluster[pk]
 		for cl := range claimants {
 			if ns.TrafficTo != nil {
 				total += ns.TrafficTo[cl]
 			}
-			if clNS, ok := cluster.Nodes[cl]; ok && clNS.TrafficTo != nil {
+			if clNS, ok := cluster[cl]; ok && clNS.TrafficTo != nil {
 				total += clNS.TrafficTo[pk]
 			}
 		}
@@ -333,25 +312,25 @@ func trafficAffinityScore(candidate types.PeerKey, peers []types.PeerKey, claima
 
 // vivaldiScore returns 0–1 for proximity to claimants. Closest = 1.0.
 // Nil coords → 0.5 (neutral).
-func vivaldiScore(candidate types.PeerKey, peers []types.PeerKey, claimants map[types.PeerKey]struct{}, cluster ClusterState) float64 {
+func vivaldiScore(candidate types.PeerKey, peers []types.PeerKey, claimants map[types.PeerKey]struct{}, cluster map[types.PeerKey]store.NodePlacementState) float64 {
 	if len(claimants) == 0 {
 		return neutralScore
 	}
 
-	candidateCoord := cluster.Nodes[candidate].Coord
+	candidateCoord := cluster[candidate].Coord
 	if candidateCoord == nil {
 		return neutralScore
 	}
 
 	meanDist := func(pk types.PeerKey) float64 {
-		coord := cluster.Nodes[pk].Coord
+		coord := cluster[pk].Coord
 		if coord == nil {
 			return -1 // sentinel
 		}
 		var sum float64
 		var count int
 		for cl := range claimants {
-			clCoord := cluster.Nodes[cl].Coord
+			clCoord := cluster[cl].Coord
 			if clCoord == nil {
 				continue
 			}

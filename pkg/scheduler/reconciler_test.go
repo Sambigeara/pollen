@@ -190,10 +190,10 @@ func TestExecuteClaim_NoLongerWinnerAfterFetch(t *testing.T) {
 
 	// Verify precondition: local is the winner for replicas=1.
 	allPeers := []types.PeerKey{local, peer2, peer3}
-	actions := Evaluate(local, allPeers, map[string]Spec{hash: {Replicas: 1}}, nil, ClusterState{}, func(string) bool { return false })
+	actions := evaluate(local, allPeers, map[string]uint32{hash: 1}, nil, nil, func(string) bool { return false })
 	var localWouldClaim bool
 	for _, a := range actions {
-		if a.Hash == hash && a.Kind == ActionClaim {
+		if a.Hash == hash && a.Kind == actionClaim {
 			localWouldClaim = true
 		}
 	}
