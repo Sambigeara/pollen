@@ -17,10 +17,9 @@ type Sink interface {
 
 // Snapshot is a point-in-time reading of a single metric.
 type Snapshot struct {
-	Name   string
-	Labels Labels
-	Kind   Kind
-	Value  float64
+	Name  string
+	Kind  Kind
+	Value float64
 }
 
 // Kind distinguishes metric types for downstream interpretation.
@@ -30,9 +29,6 @@ const (
 	KindCounter Kind = iota
 	KindGauge
 )
-
-// Labels is a fixed-size array used as a map key for metric deduplication.
-type Labels [4]struct{ Key, Value string }
 
 // Config controls the collector's flush behavior.
 type Config struct {

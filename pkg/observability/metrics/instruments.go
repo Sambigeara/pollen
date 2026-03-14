@@ -18,14 +18,14 @@ func NewMeshMetrics(c *Collector) *MeshMetrics {
 		return &MeshMetrics{}
 	}
 	return &MeshMetrics{
-		DatagramsSent:      c.Counter("pollen_mesh_datagrams_sent_total", Labels{}),
-		DatagramsRecv:      c.Counter("pollen_mesh_datagrams_recv_total", Labels{}),
-		DatagramBytesSent:  c.Counter("pollen_mesh_datagram_bytes_sent_total", Labels{}),
-		DatagramBytesRecv:  c.Counter("pollen_mesh_datagram_bytes_recv_total", Labels{}),
-		DatagramErrors:     c.Counter("pollen_mesh_datagram_errors_total", Labels{}),
-		SessionConnects:    c.Counter("pollen_mesh_session_connects_total", Labels{}),
-		SessionDisconnects: c.Counter("pollen_mesh_session_disconnects_total", Labels{}),
-		SessionsActive:     c.Gauge("pollen_mesh_sessions_active", Labels{}),
+		DatagramsSent:      c.Counter("pollen_mesh_datagrams_sent_total"),
+		DatagramsRecv:      c.Counter("pollen_mesh_datagrams_recv_total"),
+		DatagramBytesSent:  c.Counter("pollen_mesh_datagram_bytes_sent_total"),
+		DatagramBytesRecv:  c.Counter("pollen_mesh_datagram_bytes_recv_total"),
+		DatagramErrors:     c.Counter("pollen_mesh_datagram_errors_total"),
+		SessionConnects:    c.Counter("pollen_mesh_session_connects_total"),
+		SessionDisconnects: c.Counter("pollen_mesh_session_disconnects_total"),
+		SessionsActive:     c.Gauge("pollen_mesh_sessions_active"),
 	}
 }
 
@@ -53,14 +53,14 @@ func NewPeerMetrics(c *Collector) *PeerMetrics {
 		return &PeerMetrics{}
 	}
 	return &PeerMetrics{
-		Connections:      c.Counter("pollen_peer_connections_total", Labels{}),
-		Disconnects:      c.Counter("pollen_peer_disconnects_total", Labels{}),
-		PeersDiscovered:  c.Gauge("pollen_peers_discovered", Labels{}),
-		PeersConnecting:  c.Gauge("pollen_peers_connecting", Labels{}),
-		PeersConnected:   c.Gauge("pollen_peers_connected", Labels{}),
-		PeersUnreachable: c.Gauge("pollen_peers_unreachable", Labels{}),
-		StageEscalations: c.Counter("pollen_peer_stage_escalations_total", Labels{}),
-		StateTransitions: c.Counter("pollen_peer_state_transitions_total", Labels{}),
+		Connections:      c.Counter("pollen_peer_connections_total"),
+		Disconnects:      c.Counter("pollen_peer_disconnects_total"),
+		PeersDiscovered:  c.Gauge("pollen_peers_discovered"),
+		PeersConnecting:  c.Gauge("pollen_peers_connecting"),
+		PeersConnected:   c.Gauge("pollen_peers_connected"),
+		PeersUnreachable: c.Gauge("pollen_peers_unreachable"),
+		StageEscalations: c.Counter("pollen_peer_stage_escalations_total"),
+		StateTransitions: c.Counter("pollen_peer_state_transitions_total"),
 	}
 }
 
@@ -83,12 +83,12 @@ func NewGossipMetrics(c *Collector) *GossipMetrics {
 		return &GossipMetrics{StaleRatio: NewEWMA(staleRatioAlpha)}
 	}
 	return &GossipMetrics{
-		EventsReceived: c.Counter("pollen_gossip_events_received_total", Labels{}),
-		EventsApplied:  c.Counter("pollen_gossip_events_applied_total", Labels{}),
-		EventsStale:    c.Counter("pollen_gossip_events_stale_total", Labels{}),
-		SelfConflicts:  c.Counter("pollen_gossip_self_conflicts_total", Labels{}),
-		Revocations:    c.Counter("pollen_gossip_revocations_total", Labels{}),
-		BatchSize:      c.Gauge("pollen_gossip_batch_size", Labels{}),
+		EventsReceived: c.Counter("pollen_gossip_events_received_total"),
+		EventsApplied:  c.Counter("pollen_gossip_events_applied_total"),
+		EventsStale:    c.Counter("pollen_gossip_events_stale_total"),
+		SelfConflicts:  c.Counter("pollen_gossip_self_conflicts_total"),
+		Revocations:    c.Counter("pollen_gossip_revocations_total"),
+		BatchSize:      c.Gauge("pollen_gossip_batch_size"),
 		StaleRatio:     NewEWMA(staleRatioAlpha),
 	}
 }
@@ -106,9 +106,9 @@ func NewTopologyMetrics(c *Collector) *TopologyMetrics {
 		return &TopologyMetrics{}
 	}
 	return &TopologyMetrics{
-		VivaldiError:       c.Gauge("pollen_topology_vivaldi_error", Labels{}),
-		HMACNearestEnabled: c.Gauge("pollen_topology_hmac_nearest_enabled", Labels{}),
-		TopologyPrunes:     c.Counter("pollen_topology_prunes_total", Labels{}),
+		VivaldiError:       c.Gauge("pollen_topology_vivaldi_error"),
+		HMACNearestEnabled: c.Gauge("pollen_topology_hmac_nearest_enabled"),
+		TopologyPrunes:     c.Counter("pollen_topology_prunes_total"),
 	}
 }
 
@@ -127,10 +127,10 @@ func NewNodeMetrics(c *Collector) *NodeMetrics {
 		return &NodeMetrics{}
 	}
 	return &NodeMetrics{
-		CertExpirySeconds:  c.Gauge("pollen_node_cert_expiry_seconds", Labels{}),
-		CertRenewals:       c.Counter("pollen_node_cert_renewals_total", Labels{}),
-		CertRenewalsFailed: c.Counter("pollen_node_cert_renewals_failed_total", Labels{}),
-		PunchAttempts:      c.Counter("pollen_node_punch_attempts_total", Labels{}),
-		PunchFailures:      c.Counter("pollen_node_punch_failures_total", Labels{}),
+		CertExpirySeconds:  c.Gauge("pollen_node_cert_expiry_seconds"),
+		CertRenewals:       c.Counter("pollen_node_cert_renewals_total"),
+		CertRenewalsFailed: c.Counter("pollen_node_cert_renewals_failed_total"),
+		PunchAttempts:      c.Counter("pollen_node_punch_attempts_total"),
+		PunchFailures:      c.Counter("pollen_node_punch_failures_total"),
 	}
 }

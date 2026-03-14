@@ -29,8 +29,8 @@ func (s *recordingSink) get() []Snapshot {
 
 func TestNilCollectorIsNoOp(t *testing.T) {
 	var c *Collector
-	ctr := c.Counter("test", Labels{})
-	g := c.Gauge("test", Labels{})
+	ctr := c.Counter("test")
+	g := c.Gauge("test")
 
 	// All operations should be safe on nil.
 	ctr.Inc()
@@ -44,7 +44,7 @@ func TestCounterIncrement(t *testing.T) {
 	c := New(sink, Config{FlushInterval: time.Hour})
 	defer c.Close()
 
-	ctr := c.Counter("requests", Labels{})
+	ctr := c.Counter("requests")
 	ctr.Inc()
 	ctr.Inc()
 	ctr.Add(3)
@@ -63,7 +63,7 @@ func TestCounterResetsAfterFlush(t *testing.T) {
 	c := New(sink, Config{FlushInterval: time.Hour})
 	defer c.Close()
 
-	ctr := c.Counter("requests", Labels{})
+	ctr := c.Counter("requests")
 	ctr.Add(10)
 	c.flush()
 
@@ -81,7 +81,7 @@ func TestZeroCounterNotFlushed(t *testing.T) {
 	c := New(sink, Config{FlushInterval: time.Hour})
 	defer c.Close()
 
-	c.Counter("idle", Labels{})
+	c.Counter("idle")
 	c.flush()
 
 	require.Empty(t, sink.get())
@@ -92,7 +92,7 @@ func TestGaugeSetAndFlush(t *testing.T) {
 	c := New(sink, Config{FlushInterval: time.Hour})
 	defer c.Close()
 
-	g := c.Gauge("temperature", Labels{})
+	g := c.Gauge("temperature")
 	g.Set(36.6)
 	c.flush()
 
@@ -108,8 +108,8 @@ func TestSameNameReturnsSameCounter(t *testing.T) {
 	c := New(sink, Config{FlushInterval: time.Hour})
 	defer c.Close()
 
-	a := c.Counter("hits", Labels{})
-	b := c.Counter("hits", Labels{})
+	a := c.Counter("hits")
+	b := c.Counter("hits")
 
 	a.Inc()
 	b.Inc()
@@ -121,30 +121,12 @@ func TestSameNameReturnsSameCounter(t *testing.T) {
 	require.Equal(t, 2.0, snaps[0].Value)
 }
 
-func TestDifferentLabelsAreSeparate(t *testing.T) {
-	sink := &recordingSink{}
-	c := New(sink, Config{FlushInterval: time.Hour})
-	defer c.Close()
-
-	labelsA := Labels{{Key: "method", Value: "GET"}}
-	labelsB := Labels{{Key: "method", Value: "POST"}}
-	a := c.Counter("hits", labelsA)
-	b := c.Counter("hits", labelsB)
-
-	a.Add(5)
-	b.Add(3)
-
-	c.flush()
-
-	snaps := sink.get()
-	require.Len(t, snaps, 2)
-}
 
 func TestClosePerformsFinalFlush(t *testing.T) {
 	sink := &recordingSink{}
 	c := New(sink, Config{FlushInterval: time.Hour})
 
-	c.Counter("final", Labels{}).Add(7)
+	c.Counter("final").Add(7)
 	c.Close()
 
 	snaps := sink.get()
@@ -155,8 +137,8 @@ func TestClosePerformsFinalFlush(t *testing.T) {
 func TestNilSinkCollectsWithoutFlush(t *testing.T) {
 	c := New(nil, Config{})
 	require.NotNil(t, c)
-	c.Counter("x", Labels{}).Inc()
-	c.Gauge("y", Labels{}).Set(3.14)
+	c.Counter("x").Inc()
+	c.Gauge("y").Set(3.14)
 	c.Close()
 }
 

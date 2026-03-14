@@ -13,16 +13,7 @@ func NewLogSink(log *zap.SugaredLogger) *LogSink {
 }
 
 func (s *LogSink) Flush(snapshots []Snapshot) {
-	fields := make([]any, 0, len(Labels{})*2+2) //nolint:mnd
 	for _, snap := range snapshots {
-		fields = fields[:0]
-		fields = append(fields, "value", snap.Value)
-		for _, l := range snap.Labels {
-			if l.Key == "" {
-				break
-			}
-			fields = append(fields, l.Key, l.Value)
-		}
-		s.log.Debugw(snap.Name, fields...)
+		s.log.Debugw(snap.Name, "value", snap.Value)
 	}
 }

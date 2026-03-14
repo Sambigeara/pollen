@@ -20,8 +20,7 @@ type Collector struct {
 }
 
 type metricKey struct {
-	name   string
-	labels Labels
+	name string
 }
 
 // New creates a Collector that flushes to sink. If sink is nil the collector
@@ -50,13 +49,13 @@ func (c *Collector) Close() {
 	c.flush()
 }
 
-// Counter returns a counter handle. Repeated calls with the same name+labels
-// return the same underlying counter.
-func (c *Collector) Counter(name string, labels Labels) *Counter {
+// Counter returns a counter handle. Repeated calls with the same name return
+// the same underlying counter.
+func (c *Collector) Counter(name string) *Counter {
 	if c == nil {
 		return nil
 	}
-	k := metricKey{name: name, labels: labels}
+	k := metricKey{name: name}
 	c.mu.Lock()
 	ctr, ok := c.counters[k]
 	if !ok {
@@ -68,11 +67,11 @@ func (c *Collector) Counter(name string, labels Labels) *Counter {
 }
 
 // Gauge returns a gauge handle.
-func (c *Collector) Gauge(name string, labels Labels) *Gauge {
+func (c *Collector) Gauge(name string) *Gauge {
 	if c == nil {
 		return nil
 	}
-	k := metricKey{name: name, labels: labels}
+	k := metricKey{name: name}
 	c.mu.Lock()
 	g, ok := c.gauges[k]
 	if !ok {
@@ -106,10 +105,9 @@ func (c *Collector) flush() {
 			continue
 		}
 		snaps = append(snaps, Snapshot{
-			Name:   k.name,
-			Labels: k.labels,
-			Kind:   KindCounter,
-			Value:  float64(v),
+			Name:  k.name,
+			Kind:  KindCounter,
+			Value: float64(v),
 		})
 	}
 	for k, g := range c.gauges {
@@ -117,10 +115,9 @@ func (c *Collector) flush() {
 			continue
 		}
 		snaps = append(snaps, Snapshot{
-			Name:   k.name,
-			Labels: k.labels,
-			Kind:   KindGauge,
-			Value:  g.load(),
+			Name:  k.name,
+			Kind:  KindGauge,
+			Value: g.load(),
 		})
 	}
 	c.mu.Unlock()
