@@ -21,18 +21,18 @@ type Sample struct {
 }
 
 const (
-	CcDefault = 0.25   // adaptive filter tuning constant
-	CeDefault = 0.25   // error weight tuning constant
-	MinHeight = 10e-6  // floor to keep height positive
-	MaxCoord  = 10_000 // clamp bound for coordinate components
+	ccDefault = 0.25   // adaptive filter tuning constant
+	ceDefault = 0.25   // error weight tuning constant
+	minHeight = 10e-6  // floor to keep height positive
+	maxCoord  = 10_000 // clamp bound for coordinate components
 
-	// MinRTTFloor dampens the relative error calculation for low-latency links.
+	// minRTTFloor dampens the relative error calculation for low-latency links.
 	// Without it, sub-millisecond jitter on a 1-3ms LAN link produces 16-50%
 	// relative error, preventing the error estimate from settling below the
 	// health-check threshold. The floor dampens the relative error for low-RTT
 	// links, reducing both the error estimate and the weight given to coordinate
 	// adjustments.
-	MinRTTFloor = 2.0 // milliseconds
+	minRTTFloor = 2.0 // milliseconds
 
 	// PublishEpsilon is the minimum coordinate movement (in distance units)
 	// before a node should re-publish its coordinates via gossip.
@@ -50,7 +50,7 @@ func RandomCoord() Coord {
 	return Coord{
 		X:      r * math.Cos(angle),
 		Y:      r * math.Sin(angle),
-		Height: MinHeight,
+		Height: minHeight,
 	}
 }
 
@@ -77,7 +77,7 @@ func MovementDistance(a, b Coord) float64 {
 // localErr represents the node's confidence in its current position
 // (higher = less confidence, 0 = perfect). It should stay in [0, 1]
 // because the per-sample relative error is bounded to [0, 1) by the
-// max(rtt, dist, MinRTTFloor) denominator.
+// max(rtt, dist, minRTTFloor) denominator.
 func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 	rtt := s.RTT.Seconds() * 1000 //nolint:mnd
 	if rtt <= 0 {
@@ -85,33 +85,33 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 	}
 
 	dist := Distance(local, s.PeerCoord)
-	if dist < MinHeight {
-		dist = MinHeight
+	if dist < minHeight {
+		dist = minHeight
 	}
 
 	// Normalize by max(rtt, dist) so the per-sample relative error stays in
 	// [0, 1). Using just rtt as the denominator causes LAN peers with large
 	// predicted distances to produce errors of 100+, which drives the error
 	// estimate to extreme values and prevents convergence.
-	err := math.Abs(rtt-dist) / max(rtt, dist, MinRTTFloor)
-	relWeight := localErr / (localErr + CeDefault)
+	err := math.Abs(rtt-dist) / max(rtt, dist, minRTTFloor)
+	relWeight := localErr / (localErr + ceDefault)
 
-	newErr := localErr + CcDefault*relWeight*(err-localErr)
-	newErr = clamp(newErr, 0, 1)
+	newErr := localErr + ccDefault*relWeight*(err-localErr)
+	newErr = max(0.0, min(1.0, newErr))
 
 	// Compute force: positive = push apart, negative = pull together.
-	delta := CcDefault * relWeight
+	delta := ccDefault * relWeight
 	force := delta * (rtt - dist)
 
 	// Unit vector from peer to local.
 	dx := local.X - s.PeerCoord.X
 	dy := local.Y - s.PeerCoord.Y
 	mag := math.Sqrt(dx*dx + dy*dy)
-	if mag < MinHeight {
+	if mag < minHeight {
 		angle := rand.Float64() * 2 * math.Pi //nolint:gosec,mnd
-		dx = math.Cos(angle) * MinHeight
-		dy = math.Sin(angle) * MinHeight
-		mag = MinHeight
+		dx = math.Cos(angle) * minHeight
+		dy = math.Sin(angle) * minHeight
+		mag = minHeight
 	}
 	ux, uy := dx/mag, dy/mag
 
@@ -121,23 +121,13 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 
 	// Apply force to height.
 	newHeight := local.Height + force
-	if newHeight < MinHeight {
-		newHeight = MinHeight
+	if newHeight < minHeight {
+		newHeight = minHeight
 	}
 
-	newX = clamp(newX, -MaxCoord, MaxCoord)
-	newY = clamp(newY, -MaxCoord, MaxCoord)
-	newHeight = clamp(newHeight, MinHeight, MaxCoord)
+	newX = max(-maxCoord, min(maxCoord, newX))
+	newY = max(-maxCoord, min(maxCoord, newY))
+	newHeight = max(minHeight, min(maxCoord, newHeight))
 
 	return Coord{X: newX, Y: newY, Height: newHeight}, newErr
-}
-
-func clamp(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }

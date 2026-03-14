@@ -39,12 +39,12 @@ type Params struct {
 
 // Budget: 2 infra + 4 nearest + 2 random = 8 max targets.
 const (
-	DefaultInfraMax       = 2
-	DefaultNearestK       = 4
-	DefaultRandomR        = 2
-	EpochSeconds          = 300  // 5 minutes
-	NearestHysteresis     = 0.20 // incumbent distance discount (20%)
-	MinHysteresisDistance = 5.0  // minimum absolute discount (ms) for close peers
+	DefaultInfraMax         = 2
+	DefaultNearestK         = 4
+	DefaultRandomR          = 2
+	EpochSeconds            = 300  // 5 minutes
+	nearestHysteresis       = 0.20 // incumbent distance discount (20%)
+	minHysteresisDistance   = 5.0  // minimum absolute discount (ms) for close peers
 )
 
 // DefaultParams returns Params with default budgets.
@@ -202,7 +202,7 @@ func selectNearest(localKey types.PeerKey, localCoord Coord, peers []PeerInfo, e
 			d = Distance(localCoord, *p.Coord)
 		}
 		if _, incumbent := params.CurrentOutbound[p.Key]; incumbent {
-			d = math.Max(0, d-math.Max(d*NearestHysteresis, MinHysteresisDistance))
+			d = math.Max(0, d-math.Max(d*nearestHysteresis, minHysteresisDistance))
 		}
 		isLAN := localPrefix != "" && lanPrefix(p.IPs) == localPrefix
 		candidates = append(candidates, nearestCandidate{key: p.Key, dist: d, ips: p.IPs, natType: p.NatType, lan: isLAN})

@@ -22,7 +22,7 @@ func TestDistanceIncludesHeight(t *testing.T) {
 
 func TestRandomCoord(t *testing.T) {
 	c1 := RandomCoord()
-	require.Equal(t, MinHeight, c1.Height)
+	require.Equal(t, minHeight, c1.Height)
 	require.LessOrEqual(t, c1.X*c1.X+c1.Y*c1.Y, initRadius*initRadius+1e-9)
 
 	c2 := RandomCoord()
@@ -68,7 +68,7 @@ func TestConvergence(t *testing.T) {
 	// Two nodes with a 50ms RTT between them. After many updates, the
 	// distance between their coordinates should converge toward 50.
 	a := Coord{}
-	b := Coord{X: 100, Y: 0, Height: MinHeight}
+	b := Coord{X: 100, Y: 0, Height: minHeight}
 	aErr, bErr := 1.0, 1.0
 	rtt := 50 * time.Millisecond
 
@@ -102,23 +102,23 @@ func TestConvergenceThreeNodes(t *testing.T) {
 }
 
 func TestClampingPreventsRunaway(t *testing.T) {
-	local := Coord{X: MaxCoord - 1, Y: MaxCoord - 1, Height: 1}
+	local := Coord{X: maxCoord - 1, Y: maxCoord - 1, Height: 1}
 	localErr := 1.0
 	// Huge RTT should push far, but clamping limits coordinates.
-	s := Sample{RTT: 999 * time.Second, PeerCoord: Coord{X: -MaxCoord, Y: -MaxCoord, Height: 1}}
+	s := Sample{RTT: 999 * time.Second, PeerCoord: Coord{X: -maxCoord, Y: -maxCoord, Height: 1}}
 	newCoord, _ := Update(local, localErr, s)
-	require.LessOrEqual(t, math.Abs(newCoord.X), float64(MaxCoord))
-	require.LessOrEqual(t, math.Abs(newCoord.Y), float64(MaxCoord))
-	require.LessOrEqual(t, newCoord.Height, float64(MaxCoord))
+	require.LessOrEqual(t, math.Abs(newCoord.X), float64(maxCoord))
+	require.LessOrEqual(t, math.Abs(newCoord.Y), float64(maxCoord))
+	require.LessOrEqual(t, newCoord.Height, float64(maxCoord))
 }
 
 func TestHeightFloor(t *testing.T) {
-	// When coords are very close and RTT is very small, height shouldn't go below MinHeight.
-	local := Coord{X: 0, Y: 0, Height: MinHeight}
+	// When coords are very close and RTT is very small, height shouldn't go below minHeight.
+	local := Coord{X: 0, Y: 0, Height: minHeight}
 	localErr := 1.0
-	s := Sample{RTT: time.Microsecond, PeerCoord: Coord{X: 0.001, Y: 0, Height: MinHeight}}
+	s := Sample{RTT: time.Microsecond, PeerCoord: Coord{X: 0.001, Y: 0, Height: minHeight}}
 	newCoord, _ := Update(local, localErr, s)
-	require.GreaterOrEqual(t, newCoord.Height, MinHeight)
+	require.GreaterOrEqual(t, newCoord.Height, minHeight)
 }
 
 func TestLowLatencyConvergence(t *testing.T) {
@@ -128,10 +128,10 @@ func TestLowLatencyConvergence(t *testing.T) {
 	local := Coord{}
 	localErr := 1.0
 	peers := []Coord{
-		{X: 2, Y: 1, Height: MinHeight},
-		{X: -1, Y: 3, Height: MinHeight},
-		{X: 3, Y: -2, Height: MinHeight},
-		{X: -2, Y: -1, Height: MinHeight},
+		{X: 2, Y: 1, Height: minHeight},
+		{X: -1, Y: 3, Height: minHeight},
+		{X: 3, Y: -2, Height: minHeight},
+		{X: -2, Y: -1, Height: minHeight},
 	}
 	peerErrs := []float64{0.5, 0.5, 0.5, 0.5}
 
@@ -161,7 +161,7 @@ func TestLowLatencyConvergence(t *testing.T) {
 func TestErrorEstimateDecreases(t *testing.T) {
 	local := Coord{}
 	localErr := 1.0
-	peer := Coord{X: 50, Y: 0, Height: MinHeight}
+	peer := Coord{X: 50, Y: 0, Height: minHeight}
 
 	for range 100 {
 		local, localErr = Update(local, localErr, Sample{
@@ -178,8 +178,8 @@ func TestRandomInitLANConvergence(t *testing.T) {
 	// distances far exceeding LAN RTTs (2-3ms). The max(rtt, dist, MinRTTFloor)
 	// denominator keeps per-sample error < 1.0, so the EMA converges normally
 	// even when the initial distance/RTT mismatch is large.
-	a := Coord{X: -7, Y: 5, Height: MinHeight} // ~8.6ms from origin
-	b := Coord{X: 6, Y: -4, Height: MinHeight} // ~7.2ms from origin
+	a := Coord{X: -7, Y: 5, Height: minHeight} // ~8.6ms from origin
+	b := Coord{X: 6, Y: -4, Height: minHeight} // ~7.2ms from origin
 	aErr, bErr := 1.0, 1.0
 	rtt := 2 * time.Millisecond // LAN link
 
