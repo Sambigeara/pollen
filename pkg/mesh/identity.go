@@ -137,11 +137,7 @@ func peerKeyFromConn(qc *quic.Conn) (types.PeerKey, error) {
 	if len(certs) == 0 {
 		return types.PeerKey{}, errors.New("no peer certificate")
 	}
-	pub, ok := certs[0].PublicKey.(ed25519.PublicKey)
-	if !ok {
-		return types.PeerKey{}, errors.New("peer cert is not ed25519")
-	}
-	return types.PeerKeyFromBytes(pub), nil
+	return peerKeyFromRawCert(certs[0].Raw)
 }
 
 func delegationCertFromConn(qc *quic.Conn) *admissionv1.DelegationCert {
