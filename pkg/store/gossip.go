@@ -768,7 +768,35 @@ func (s *Store) handleSelfConflictLocked(selfEvents []*statev1.GossipEvent) (App
 		adopted = true
 	}
 
-	if !conflictDetected && !adopted {
+	// Collect the highest-counter claim per hash. Non-deleted claims from a
+	// prior session are stale runtime state — we must broadcast deletions so
+	// peers drop them.
+	bestClaim := make(map[string]*statev1.GossipEvent)
+	for _, ev := range selfEvents {
+		v, ok := ev.GetChange().(*statev1.GossipEvent_WorkloadClaim)
+		if !ok || v.WorkloadClaim == nil || v.WorkloadClaim.GetHash() == "" {
+			continue
+		}
+		hash := v.WorkloadClaim.GetHash()
+		if prev, exists := bestClaim[hash]; !exists || ev.GetCounter() > prev.GetCounter() {
+			bestClaim[hash] = ev
+		}
+	}
+
+	claimsDeleted := false
+	for hash, ev := range bestClaim {
+		if ev.GetDeleted() {
+			continue
+		}
+		key := workloadClaimAttrKey(hash)
+		if existing, ok := local.log[key]; ok && existing.Deleted {
+			continue
+		}
+		local.log[key] = logEntry{Deleted: true}
+		claimsDeleted = true
+	}
+
+	if !conflictDetected && !adopted && !claimsDeleted {
 		s.nodes[s.LocalID] = local
 		return ApplyResult{}, false
 	}

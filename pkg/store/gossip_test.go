@@ -2592,7 +2592,7 @@ func TestSelfConflictDoesNotReAdoptClaims(t *testing.T) {
 	s := newTestStore(pub)
 	localIDStr := s.LocalID.String()
 
-	s.ApplyEvents([]*statev1.GossipEvent{
+	result := s.ApplyEvents([]*statev1.GossipEvent{
 		{
 			PeerId:  localIDStr,
 			Counter: 20,
@@ -2602,8 +2602,85 @@ func TestSelfConflictDoesNotReAdoptClaims(t *testing.T) {
 		},
 	}, true)
 
+	// Claims must not be adopted into the claims map.
 	claims := s.AllWorkloadClaims()
 	require.Empty(t, claims)
+
+	// A deletion rebroadcast must be emitted so peers drop the stale claim.
+	var claimDeletions int
+	for _, ev := range result.Rebroadcast {
+		if v, ok := ev.GetChange().(*statev1.GossipEvent_WorkloadClaim); ok &&
+			v.WorkloadClaim.GetHash() == "abc123" && ev.GetDeleted() {
+			claimDeletions++
+		}
+	}
+	require.Equal(t, 1, claimDeletions)
+}
+
+func TestSelfConflictDeletesStaleClaims(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	// Simulate a prior-session claim arriving back from a peer.
+	result := s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 10,
+			Change: &statev1.GossipEvent_WorkloadClaim{
+				WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "hash1"},
+			},
+		},
+		{
+			PeerId:  localIDStr,
+			Counter: 11,
+			Change: &statev1.GossipEvent_WorkloadClaim{
+				WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "hash2"},
+			},
+		},
+	}, true)
+
+	require.Empty(t, s.AllWorkloadClaims())
+
+	// Both claims must have deletion events in the rebroadcast.
+	deletedHashes := make(map[string]bool)
+	for _, ev := range result.Rebroadcast {
+		if v, ok := ev.GetChange().(*statev1.GossipEvent_WorkloadClaim); ok && ev.GetDeleted() {
+			deletedHashes[v.WorkloadClaim.GetHash()] = true
+		}
+	}
+	require.True(t, deletedHashes["hash1"], "missing deletion for hash1")
+	require.True(t, deletedHashes["hash2"], "missing deletion for hash2")
+}
+
+func TestSelfConflictSkipsAlreadyDeletedClaims(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	// Incoming claim is already marked deleted — no duplicate deletion needed.
+	result := s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 20,
+			Deleted: true,
+			Change: &statev1.GossipEvent_WorkloadClaim{
+				WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "abc123"},
+			},
+		},
+	}, true)
+
+	require.Empty(t, s.AllWorkloadClaims())
+
+	// No claim events should appear in the rebroadcast since there's nothing
+	// to delete — the incoming event was already a deletion.
+	for _, ev := range result.Rebroadcast {
+		if _, ok := ev.GetChange().(*statev1.GossipEvent_WorkloadClaim); ok {
+			t.Fatal("unexpected claim event in rebroadcast for already-deleted claim")
+		}
+	}
 }
 
 func TestSelfConflictMultiBatchSpecAdoption(t *testing.T) {
