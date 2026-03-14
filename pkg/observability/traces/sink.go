@@ -8,28 +8,22 @@ import (
 
 // ReadOnlySpan is a snapshot of a completed span for export.
 type ReadOnlySpan struct {
-	TraceID      string
-	SpanID       string
-	ParentSpanID string
-	Name         string
-	StartTime    time.Time
-	EndTime      time.Time
-	Attributes   []Attribute
+	TraceID    string
+	SpanID     string
+	Name       string
+	StartTime  time.Time
+	EndTime    time.Time
+	Attributes []Attribute
 }
 
 func (s *Span) readOnly() ReadOnlySpan {
-	parentID := ""
-	if !s.parentSpanID.IsZero() {
-		parentID = s.parentSpanID.String()
-	}
 	return ReadOnlySpan{
-		TraceID:      s.traceID.String(),
-		SpanID:       s.spanID.String(),
-		ParentSpanID: parentID,
-		Name:         s.name,
-		StartTime:    s.startTime,
-		EndTime:      s.endTime,
-		Attributes:   s.attributes,
+		TraceID:    s.traceID.String(),
+		SpanID:     s.spanID.String(),
+		Name:       s.name,
+		StartTime:  s.startTime,
+		EndTime:    s.endTime,
+		Attributes: s.attributes,
 	}
 }
 
@@ -54,9 +48,6 @@ func (s *LogSink) Export(spans []ReadOnlySpan) {
 			"trace_id", span.TraceID,
 			"span_id", span.SpanID,
 			"duration", span.EndTime.Sub(span.StartTime),
-		}
-		if span.ParentSpanID != "" {
-			fields = append(fields, "parent_span_id", span.ParentSpanID)
 		}
 		for _, attr := range span.Attributes {
 			fields = append(fields, attr.Key, attr.Value)

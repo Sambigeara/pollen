@@ -43,7 +43,7 @@ func TestSpanLifecycle(t *testing.T) {
 	span := tr.Start("root")
 	require.NotNil(t, span)
 	require.False(t, span.traceID.IsZero())
-	require.False(t, span.spanID.IsZero())
+	require.NotEqual(t, SpanID{}, span.spanID)
 
 	span.SetAttr("peer", "abc")
 	span.End()
@@ -61,7 +61,7 @@ func TestStartFromRemote(t *testing.T) {
 	tr := NewTracer(sink)
 
 	traceID := NewTraceID()
-	span := tr.StartFromRemote("remote-op", traceID.Bytes())
+	span := tr.StartFromRemote("remote-op", traceID[:])
 	require.Equal(t, traceID, span.traceID)
 
 	span.End()

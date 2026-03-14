@@ -31,9 +31,6 @@ func (id TraceID) IsZero() bool { return id == TraceID{} }
 // String returns the hex-encoded representation.
 func (id TraceID) String() string { return hex.EncodeToString(id[:]) }
 
-// Bytes returns the raw bytes for embedding in protobuf messages.
-func (id TraceID) Bytes() []byte { return id[:] }
-
 // SpanID is an 8-byte unique identifier for a single span within a trace.
 type SpanID [8]byte
 
@@ -43,9 +40,6 @@ func NewSpanID() SpanID {
 	_, _ = rand.Read(id[:])
 	return id
 }
-
-// IsZero reports whether the SpanID is the zero value.
-func (id SpanID) IsZero() bool { return id == SpanID{} }
 
 // String returns the hex-encoded representation.
 func (id SpanID) String() string { return hex.EncodeToString(id[:]) }

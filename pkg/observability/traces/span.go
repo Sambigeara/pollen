@@ -56,14 +56,13 @@ type Attribute struct {
 // Span represents a unit of work within a trace. A nil *Span is safe to use;
 // all methods are no-ops.
 type Span struct {
-	startTime    time.Time
-	endTime      time.Time
-	tracer       *Tracer
-	name         string
-	attributes   []Attribute
-	traceID      TraceID
-	spanID       SpanID
-	parentSpanID SpanID
+	startTime  time.Time
+	endTime    time.Time
+	tracer     *Tracer
+	name       string
+	attributes []Attribute
+	traceID    TraceID
+	spanID     SpanID
 }
 
 // End records the end time and exports the span. Calling End on a nil or
@@ -91,5 +90,5 @@ func (s *Span) TraceIDBytes() []byte {
 	if s == nil {
 		return nil
 	}
-	return s.traceID.Bytes()
+	return s.traceID[:]
 }
