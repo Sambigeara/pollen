@@ -10,13 +10,11 @@ const jitterScale = 2
 
 type JitterTicker struct {
 	C    <-chan time.Time
-	bump chan struct{}
 	stop context.CancelFunc
 }
 
 func NewJitterTicker(ctx context.Context, base time.Duration, percent float64) *JitterTicker {
 	tickCh := make(chan time.Time)
-	bump := make(chan struct{}, 1)
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		defer close(tickCh)
@@ -26,8 +24,6 @@ func NewJitterTicker(ctx context.Context, base time.Duration, percent float64) *
 			select {
 			case <-ctx.Done():
 				return
-			case <-bump:
-				timer.Reset(jitter(base, percent))
 			case t := <-timer.C:
 				select {
 				case <-ctx.Done():
@@ -38,14 +34,7 @@ func NewJitterTicker(ctx context.Context, base time.Duration, percent float64) *
 			}
 		}
 	}()
-	return &JitterTicker{C: tickCh, bump: bump, stop: cancel}
-}
-
-func (t *JitterTicker) Bump() {
-	select {
-	case t.bump <- struct{}{}:
-	default:
-	}
+	return &JitterTicker{C: tickCh, stop: cancel}
 }
 
 func (t *JitterTicker) Stop() {
