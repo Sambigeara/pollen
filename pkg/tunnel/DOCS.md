@@ -1,16 +1,36 @@
-# pkg/tunnel — Current State
+# pkg/tunnel
 
-## Changes from Current
+## Responsibilities
+- Manages service tunneling over peer QUIC streams
+- Handles incoming stream acceptance and port header parsing
+- Maintains service registrations and remote connections
+- Bridges tunnel connections to local services and clients
 
-- [SAFE] Initialize `trafficTracker` to `traffic.Noop` instead of nil, removing nil checks at call sites
-- [SAFE] `SetTrafficTracker` still works for wiring the real implementation
+## Consumer API
 
-## Exported API
+| Export | Kind | Description |
+|--------|------|-------------|
+| `Manager` | type | Service tunnel orchestrator |
+| `New` | func | Constructor |
+| `StreamTransport` | interface | QUIC stream provider (`OpenStream`, `AcceptStream`) |
+| `ConnectionInfo` | type | Active connection metadata |
+| `(*Manager).SetTrafficTracker` | method | Inject traffic recorder |
+| `(*Manager).Start` | method | Start stream acceptance loop |
+| `(*Manager).RegisterService` | method | Register local service port handler |
+| `(*Manager).UnregisterService` | method | Unregister service; close streams |
+| `(*Manager).ConnectService` | method | Open tunnel to remote service; return local port |
+| `(*Manager).ListConnections` | method | Return active connections |
+| `(*Manager).DisconnectLocalPort` | method | Close connection by local port |
+| `(*Manager).DisconnectPeer` | method | Close all connections to peer |
+| `(*Manager).DisconnectRemoteService` | method | Close specific remote service connection |
+| `(*Manager).Close` | method | Gracefully close all tunnels and services |
 
-No API changes. All exported types, methods, and interfaces remain.
+## Dependencies (internal)
 
-## Deleted Items
+| Package | What crosses the boundary |
+|---------|--------------------------|
+| pkg/traffic | `Recorder`, `Noop`, `WrapStream` |
+| pkg/types | `PeerKey` |
 
-| Item | Reason |
-|------|--------|
-| Nil checks on `trafficTracker` at call sites | Replaced by noop default initialization |
+## Consumed by
+- pkg/node (uses: `Manager`, `New`, all methods)

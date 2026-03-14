@@ -121,7 +121,6 @@ func TestSameNameReturnsSameCounter(t *testing.T) {
 	require.Equal(t, 2.0, snaps[0].Value)
 }
 
-
 func TestClosePerformsFinalFlush(t *testing.T) {
 	sink := &recordingSink{}
 	c := New(sink, Config{FlushInterval: time.Hour})

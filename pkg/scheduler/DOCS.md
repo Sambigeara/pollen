@@ -1,42 +1,47 @@
-# pkg/scheduler — Target State
+# pkg/scheduler
 
-## Changes from Current
+## Responsibilities
+- Distributed workload placement: ranks peers by capacity, traffic affinity, and network proximity
+- Manages workload lifecycle: seeding, artifact fetching, claim lifecycle, eviction with cooldowns
+- Artifact fetching from mesh streams with fallback to multiple peers
+- Workload function invocation over mesh streams with wire protocol
 
-- [SAFE] Delete `NodeState` and `ClusterState` shadow types — use `store.NodePlacementState` directly
-- [SAFE] Delete `Spec` wrapper struct — use `map[string]uint32` (replica counts) in `evaluate`
-- [BREAKING] Unexport `Evaluate`, `Action`, `ActionKind`, `Spec`, `NodeState`, `ClusterState` — all internal-only
-- [SAFE] Remove dead `hash string` parameter (named `_`) from `suitabilityScore`
-- [SAFE] Remove `now()` nil guard — `nowFunc` always set by constructor
-- [RISKY] Add `sync.WaitGroup` to track in-flight `executeClaim` goroutines; `Run` waits on it before returning
+## Consumer API
 
-## Target Exported API
+| Export | Kind | Description |
+|--------|------|-------------|
+| `SchedulerStore` | interface | Query gossip store for specs, claims, peers, placement state |
+| `WorkloadManager` | interface | Manage local workload compilation and execution |
+| `ArtifactStore` | interface | Check local WASM artifact availability |
+| `ArtifactFetcher` | interface | Fetch WASM from peers |
+| `CASReader` | interface | Read artifacts from CAS |
+| `CASWriter` | interface | Write artifacts into local CAS |
+| `MeshStreamOpener` | interface | Open artifact streams to peers |
+| `WorkloadInvoker` | interface | Execute function on locally compiled workload |
+| `GossipPublisher` | type | Function type for publishing gossip events |
+| `Reconciler` | type | Main reconciliation loop manager |
+| `NewReconciler` | func | Constructor |
+| `(*Reconciler).Run` | method | Main reconciliation loop (blocks until ctx cancelled) |
+| `(*Reconciler).Signal` | method | Trigger reconciliation cycle (non-blocking) |
+| `(*Reconciler).SignalTraffic` | method | Trigger traffic-driven reconciliation (non-blocking) |
+| `HandleArtifactStream` | func | Server-side handler for artifact fetch requests |
+| `HandleWorkloadStream` | func | Server-side handler for workload invocation requests |
+| `InvokeOverStream` | func | Client-side workload function invocation over stream |
+| `NewArtifactFetcher` | func | Create fetcher that pulls artifacts over mesh streams |
 
-### Unexported (were exported, only used internally)
+## Concurrency Contract
 
-- `Evaluate` -> `evaluate`
-- `Action` -> `action`
-- `ActionKind` -> `actionKind`
-- `ActionClaim` -> `actionClaim`
-- `ActionRelease` -> `actionRelease`
-- `Spec` -> deleted entirely (replaced by `map[string]uint32`)
-- `NodeState` -> deleted entirely (replaced by `store.NodePlacementState`)
-- `ClusterState` -> deleted entirely (replaced by `map[types.PeerKey]store.NodePlacementState`)
+`Run` calls `wg.Wait()` before returning, ensuring all background `executeClaim` goroutines complete before the caller assumes the reconciler is stopped. This prevents `store.SetLocalWorkloadClaim()` from racing with `store.Close()` during shutdown.
 
-### Unchanged exports
+## Dependencies (internal)
 
-`Reconciler`, `NewReconciler`, `Signal`, `SignalTraffic`, `Run`, `SchedulerStore`, `WorkloadManager`, `ArtifactStore`, `ArtifactFetcher`, `MeshStreamOpener`, `CASWriter`, `CASReader`, `WorkloadInvoker`, `GossipPublisher`, `NewArtifactFetcher`, `HandleArtifactStream`, `HandleWorkloadStream`, `InvokeOverStream`.
+| Package | What crosses the boundary |
+|---------|--------------------------|
+| pkg/store | `WorkloadSpecView`, `NodePlacementState`, `TrafficSnapshot` |
+| pkg/topology | `Distance`, `Coord` |
+| pkg/types | `PeerKey` |
+| pkg/wasm | `PluginConfig` |
+| pkg/workload | `ErrNotRunning` |
 
-## Target Concurrency Contract
-
-- `Run` now calls `wg.Wait()` before returning, ensuring all background `executeClaim` goroutines complete before the caller assumes the reconciler is stopped. This prevents `store.SetLocalWorkloadClaim()` from racing with `store.Close()` during shutdown.
-
-## Deleted Items
-
-| Item | Reason |
-|------|--------|
-| `NodeState` struct | Near-clone of `store.NodePlacementState`; use directly |
-| `ClusterState` struct | Thin wrapper around `map[PeerKey]NodeState`; use `map[PeerKey]store.NodePlacementState` |
-| `buildClusterState()` method | Field-by-field copy eliminated by using `store.NodePlacementState` directly |
-| `Spec` struct | Wraps single `uint32`; replaced by `map[string]uint32` |
-| `suitabilityScore` `hash string` parameter | Named `_`, never used |
-| `now()` nil guard | `nowFunc` always set by constructor |
+## Consumed by
+- pkg/node (uses: `Reconciler`, `NewReconciler`, `HandleArtifactStream`, `HandleWorkloadStream`, `InvokeOverStream`, `NewArtifactFetcher`)

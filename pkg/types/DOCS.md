@@ -1,8 +1,8 @@
 # pkg/types
 
-## Purpose
-
-Shared primitive types used across all packages. Currently contains only `PeerKey`, the canonical identity type for every node in the mesh.
+## Responsibilities
+- Defines `PeerKey`, the canonical 32-byte ed25519 public key identity for every mesh node
+- Provides constructors from bytes and hex strings, plus comparison/ordering utilities
 
 ## Files
 
@@ -10,27 +10,31 @@ Shared primitive types used across all packages. Currently contains only `PeerKe
 |------|---------|
 | `types.go` | `PeerKey` type and all constructors/methods |
 
-## Exported API
+## Consumer API
 
-### Types
+| Export | Kind | Description |
+|--------|------|-------------|
+| `PeerKey` | type | `[32]byte` ed25519 public key; comparable, usable as map key |
+| `PeerKeyFromBytes` | func | Construct PeerKey from byte slice |
+| `PeerKeyFromString` | func | Construct PeerKey from hex string |
+| `(PeerKey).Bytes` | method | Raw 32-byte slice |
+| `(PeerKey).String` | method | 64-char lowercase hex encoding |
+| `(PeerKey).Short` | method | First 8 hex chars for logging |
+| `(PeerKey).Less` | method | Lexicographic less-than |
+| `(PeerKey).Compare` | method | Three-way comparison (-1, 0, +1) |
 
-| Type | Description |
-|------|-------------|
-| `PeerKey` | `[32]byte` — ed25519 public key identifying a node; comparable, usable as map key |
+## Dependencies (internal)
 
-### Constructors
+None — leaf package.
 
-| Function | Description |
-|----------|-------------|
-| `PeerKeyFromBytes(b []byte) PeerKey` | Copies the first 32 bytes of `b` into a `PeerKey` |
-| `PeerKeyFromString(s string) (PeerKey, error)` | Decodes a 64-character hex string; returns error if malformed or wrong length |
-
-### Methods on PeerKey
-
-| Method | Description |
-|--------|-------------|
-| `Bytes() []byte` | Raw 32-byte slice (alias for `pk[:]`) |
-| `String() string` | 64-character lowercase hex encoding |
-| `Short() string` | First 8 hex characters (for logging) |
-| `Less(other PeerKey) bool` | Lexicographic less-than comparison |
-| `Compare(other PeerKey) int` | Returns -1, 0, or +1 (lexicographic) |
+## Consumed by
+- pkg/mesh (uses: `PeerKey`, `PeerKeyFromBytes`)
+- pkg/node (uses: `PeerKey`, `PeerKeyFromBytes`)
+- pkg/peer (uses: `PeerKey`)
+- pkg/store (uses: `PeerKey`, `PeerKeyFromBytes`, `PeerKeyFromString`)
+- pkg/topology (uses: `PeerKey`)
+- pkg/traffic (uses: `PeerKey`)
+- pkg/route (uses: `PeerKey`)
+- pkg/tunnel (uses: `PeerKey`)
+- pkg/scheduler (uses: `PeerKey`)
+- cmd/pln (uses: `PeerKey`, `PeerKeyFromBytes`)

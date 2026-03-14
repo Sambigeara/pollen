@@ -432,7 +432,6 @@ func TestInviteTokenSubjectBoundMismatch(t *testing.T) {
 	require.ErrorContains(t, err, "subject mismatch")
 }
 
-
 func TestCertTTL(t *testing.T) {
 	rootPub, rootPriv := newKeyPair(t)
 	trust := auth.NewTrustBundle(rootPub)

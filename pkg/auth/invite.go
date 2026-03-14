@@ -28,7 +28,6 @@ type DelegationSigner struct {
 	Priv     ed25519.PrivateKey
 }
 
-
 func SaveDelegationCert(pollenDir string, cert *admissionv1.DelegationCert) error {
 	if cert == nil || cert.GetClaims() == nil {
 		return errors.New("delegation cert missing claims")

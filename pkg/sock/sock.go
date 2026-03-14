@@ -47,10 +47,10 @@ func (c *Conn) Close() error {
 }
 
 type sockStore struct {
-	socksMu    sync.Mutex
 	socksByKey map[string]*Conn
 	mainWrite  ProbeWriter
 	mainProbes map[[probeNonceSize]byte]chan *net.UDPAddr
+	socksMu    sync.Mutex
 	probeMu    sync.Mutex
 }
 

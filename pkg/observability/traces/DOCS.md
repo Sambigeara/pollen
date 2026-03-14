@@ -1,27 +1,41 @@
-# pkg/observability/traces — Target State
+# pkg/observability/traces
 
-## Changes from Current
+## Responsibilities
+- Distributed tracing with TraceID (16-byte) and SpanID (8-byte) generation
+- Span creation and attribute tracking
+- Pluggable `Sink` interface for exporting completed spans
+- Nil-safe tracer and span API
 
-- [SAFE] Delete `Span.parentSpanID` field (never set — no child span API)
-- [SAFE] Delete `ReadOnlySpan.ParentSpanID` field and conversion in `readOnly()`
-- [SAFE] Delete dead `LogSink.Export` parent_span_id branch
-- [SAFE] Delete `SpanID.IsZero()` method (only used for dead parentSpanID check)
-- [SAFE] Inline `TraceID.Bytes()` into sole caller `Span.TraceIDBytes()`
+## Consumer API
 
-## Target Exported API
+| Export | Kind | Description |
+|--------|------|-------------|
+| `Tracer` | type | Creates and exports spans (nil-safe) |
+| `NewTracer` | func | Create tracer with sink |
+| `(*Tracer).Start` | method | Begin root span |
+| `(*Tracer).StartFromRemote` | method | Continue trace from remote envelope |
+| `Attribute` | type | Key-value pair attached to span |
+| `Span` | type | Unit of work within trace (nil-safe) |
+| `(*Span).End` | method | Record end time and export |
+| `(*Span).SetAttr` | method | Append attribute |
+| `(*Span).TraceIDBytes` | method | Extract trace ID for wire embedding |
+| `TraceID` | type | 16-byte trace identifier |
+| `NewTraceID` | func | Generate random TraceID |
+| `TraceIDFromBytes` | func | Construct from byte slice |
+| `(TraceID).IsZero` | method | Check if zero value |
+| `(TraceID).String` | method | Hex-encoded representation |
+| `SpanID` | type | 8-byte span identifier |
+| `NewSpanID` | func | Generate random SpanID |
+| `(SpanID).String` | method | Hex-encoded representation |
+| `ReadOnlySpan` | type | Snapshot of completed span for export |
+| `Sink` | interface | Receives completed spans (`Export` method) |
+| `LogSink` | type | Zap logger sink implementation |
+| `NewLogSink` | func | Create sink that logs spans |
 
-### Removed exports
+## Dependencies (internal)
 
-- `SpanID.IsZero()` — only used for dead parentSpanID check
-- `TraceID.Bytes()` — inlined into `Span.TraceIDBytes()`
-- `ReadOnlySpan.ParentSpanID` field — removed
+None — leaf package.
 
-## Deleted Items
-
-| Item | Reason |
-|------|--------|
-| `Span.parentSpanID` field | Never set; no child span API exists |
-| `ReadOnlySpan.ParentSpanID` field | Consequence of above — always empty |
-| `LogSink.Export` parent branch | Dead — `ParentSpanID` always empty |
-| `SpanID.IsZero()` | Only consumer was dead parentSpanID check |
-| `TraceID.Bytes()` | Trivial wrapper; inlined into sole caller |
+## Consumed by
+- pkg/mesh (uses: `Tracer`)
+- pkg/node (uses: `Tracer`, `NewTracer`, `LogSink`, `NewLogSink`, `TraceIDFromBytes`)

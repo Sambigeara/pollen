@@ -1,15 +1,25 @@
-# pkg/cas — Target State
+# pkg/cas
 
-## Changes from Current
+## Responsibilities
+- Content-addressable storage for WASM artifacts indexed by SHA-256 hash
+- Atomic store and retrieval backed by local filesystem
+- Directory sharding by hash prefix for scalability
 
-- [SAFE] Delete unreachable short-hash branch in `path()` — SHA-256 hashes are always 64 chars
+## Consumer API
 
-## Target Exported API
+| Export | Kind | Description |
+|--------|------|-------------|
+| `ErrNotFound` | var | Sentinel error when artifact not found |
+| `Store` | type | Content-addressable artifact store |
+| `New` | func | Create store rooted at pollenDir/cas |
+| `(*Store).Put` | method | Write artifact from reader; return SHA-256 hex hash |
+| `(*Store).Get` | method | Open artifact for reading by hash |
+| `(*Store).Has` | method | Check if artifact exists |
 
-No API changes. `Store`, `New`, `Put`, `Get`, `Has`, `ErrNotFound` all remain.
+## Dependencies (internal)
 
-## Deleted Items
+None — leaf package.
 
-| Item | Reason |
-|------|--------|
-| Short-hash guard in `path()` (`if len(hash) < 2`) | SHA-256 hashes always 64 chars; unreachable |
+## Consumed by
+- pkg/node (uses: `Store`, `New`)
+- pkg/workload (uses: `Store`, `Put`, `Get`)

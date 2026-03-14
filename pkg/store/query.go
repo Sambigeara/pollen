@@ -51,8 +51,8 @@ type RouteNodeInfo struct {
 	Services           map[string]*statev1.Service
 	Reachable          map[types.PeerKey]struct{}
 	Coord              *topology.Coord
-	IPs                []string
 	ObservedExternalIP string
+	IPs                []string
 	LocalPort          uint32
 	ExternalPort       uint32
 	CPUPercent         uint32
@@ -64,8 +64,8 @@ type RouteNodeInfo struct {
 // LocalNodeView holds a read-only view of the local node's state.
 type LocalNodeView struct {
 	WorkloadClaims     map[string]struct{}
-	IPs                []string
 	ObservedExternalIP string
+	IPs                []string
 	LocalPort          uint32
 	ExternalPort       uint32
 	CPUPercent         uint32
