@@ -50,7 +50,7 @@ type Runtime struct {
 	configs       map[string]PluginConfig
 	sem           chan struct{}
 	hostFuncs     []extism.HostFunction
-	mu            sync.Mutex
+	mu            sync.RWMutex
 }
 
 // NewRuntime creates an Extism-backed runtime with the given host functions.
@@ -90,14 +90,6 @@ func tryRuntime(cfg wazero.RuntimeConfig) (ok bool) {
 	r := wazero.NewRuntimeWithConfig(context.Background(), cfg)
 	r.Close(context.Background())
 	return true
-}
-
-// IsCompiled reports whether a module with the given hash is cached.
-func (r *Runtime) IsCompiled(hash string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	_, ok := r.compiled[hash]
-	return ok
 }
 
 // Compile compiles wasmBytes and caches the result under hash.
@@ -155,9 +147,9 @@ func (r *Runtime) Compile(ctx context.Context, wasmBytes []byte, hash string, cf
 // invokes the named function with input, and returns the output.
 // Each call is isolated — thread-safe for concurrent use.
 func (r *Runtime) Call(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
-	r.mu.Lock()
+	r.mu.RLock()
 	compiled, ok := r.compiled[hash]
-	r.mu.Unlock()
+	r.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrModuleMissing, hash)
 	}

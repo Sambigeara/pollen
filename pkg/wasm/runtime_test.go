@@ -52,7 +52,9 @@ func TestCompileCachesModule(t *testing.T) {
 	err = rt.Compile(ctx, echoBytes, "samehash", wasm.PluginConfig{})
 	require.NoError(t, err)
 
-	require.True(t, rt.IsCompiled("samehash"))
+	// Verify the module is still callable after duplicate compile.
+	_, err = rt.Call(ctx, "samehash", "handle", []byte("x"))
+	require.NoError(t, err)
 }
 
 func TestDropCompiled(t *testing.T) {
@@ -64,8 +66,6 @@ func TestDropCompiled(t *testing.T) {
 	require.NoError(t, err)
 
 	rt.DropCompiled("drophash")
-
-	require.False(t, rt.IsCompiled("drophash"))
 
 	_, err = rt.Call(ctx, "drophash", "handle", nil)
 	require.Error(t, err)
