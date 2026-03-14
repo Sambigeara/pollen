@@ -17,14 +17,19 @@ type Store struct {
 	nodes              map[types.PeerKey]nodeRecord
 	denied             map[types.PeerKey]struct{}
 	consumedInvites    map[string]consumedInviteEntry
-	desiredConnections map[string]Connection
+	desiredConnections map[Connection]struct{}
 	onDeny             func(types.PeerKey)
 	onRouteInvalidate  func()
 	onWorkloadChange   func()
 	onTrafficChange    func()
 	metrics            *metrics.GossipMetrics
 	mu                 sync.RWMutex
-	LocalID            types.PeerKey
+	localID            types.PeerKey
+}
+
+// LocalID returns the identity key of the local node.
+func (s *Store) LocalID() types.PeerKey {
+	return s.localID
 }
 
 func Load(pollenDir string, identityPub []byte) (*Store, error) {
@@ -47,7 +52,7 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 	}
 
 	s := &Store{
-		LocalID: localID,
+		localID: localID,
 		disk:    d,
 		metrics: metrics.NewGossipMetrics(nil),
 		nodes: map[types.PeerKey]nodeRecord{
@@ -65,7 +70,7 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 		},
 		denied:             denied,
 		consumedInvites:    loadConsumedInvites(onDisk.GetConsumedInvites(), time.Now()),
-		desiredConnections: make(map[string]Connection),
+		desiredConnections: make(map[Connection]struct{}),
 	}
 
 	// Correct stale state held by peers from a prior session.
@@ -140,7 +145,7 @@ func (s *Store) Save() error {
 func (s *Store) snapshotStateLocked() *statev1.RuntimeState {
 	peers := make([]*statev1.PeerState, 0, len(s.nodes))
 	for peerID, rec := range s.nodes {
-		if peerID == s.LocalID {
+		if peerID == s.localID {
 			continue
 		}
 		peers = append(peers, &statev1.PeerState{
@@ -176,7 +181,7 @@ func (s *Store) snapshotStateLocked() *statev1.RuntimeState {
 		return cmp.Compare(a.GetTokenId(), b.GetTokenId())
 	})
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	specs := make([]*statev1.WorkloadSpecChange, 0, len(local.WorkloadSpecs))
 	for _, spec := range local.WorkloadSpecs {
 		specs = append(specs, &statev1.WorkloadSpecChange{

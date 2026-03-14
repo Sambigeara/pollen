@@ -16,7 +16,7 @@ import (
 func newTestStore(pub []byte) *Store {
 	localID := types.PeerKeyFromBytes(pub)
 	s := &Store{
-		LocalID: localID,
+		localID: localID,
 		nodes: map[types.PeerKey]nodeRecord{
 			localID: {
 				maxCounter:     1,
@@ -31,7 +31,7 @@ func newTestStore(pub []byte) *Store {
 			},
 		},
 		denied:             make(map[types.PeerKey]struct{}),
-		desiredConnections: make(map[string]Connection),
+		desiredConnections: make(map[Connection]struct{}),
 		metrics:            metrics.NewGossipMetrics(nil),
 	}
 	local := s.nodes[localID]
@@ -74,8 +74,8 @@ func TestEagerSyncClock(t *testing.T) {
 	digest = s.EagerSyncClock()
 	peers := digest.GetPeers()
 	require.Len(t, peers, 2)
-	require.Equal(t, uint64(6), peers[s.LocalID.String()].GetMaxCounter())
-	require.NotZero(t, peers[s.LocalID.String()].GetStateHash())
+	require.Equal(t, uint64(6), peers[s.localID.String()].GetMaxCounter())
+	require.NotZero(t, peers[s.localID.String()].GetStateHash())
 	peerPK, _ := peerKey(2)
 	require.Equal(t, uint64(5), peers[peerPK.String()].GetMaxCounter())
 	require.NotZero(t, peers[peerPK.String()].GetStateHash())
@@ -193,7 +193,7 @@ func TestApplyEventSingleAttribute(t *testing.T) {
 		},
 	})
 
-	rec, ok := s.Get(peerPK)
+	rec, ok := s.getRecord(peerPK)
 	if !ok {
 		t.Fatal("expected peer record to exist")
 	}
@@ -220,7 +220,7 @@ func TestApplyEventObservedExternalIP(t *testing.T) {
 		},
 	})
 
-	rec, ok := s.Get(peerPK)
+	rec, ok := s.getRecord(peerPK)
 	require.True(t, ok)
 	require.Equal(t, "52.204.52.130", rec.ObservedExternalIP)
 	require.Equal(t, uint64(3), rec.maxCounter)
@@ -252,7 +252,7 @@ func TestApplyEventPerKeyCounter(t *testing.T) {
 	})
 
 	peerPK, _ := peerKey(2)
-	rec, _ := s.Get(peerPK)
+	rec, _ := s.getRecord(peerPK)
 	if rec.ExternalPort != 45000 {
 		t.Fatalf("expected ExternalPort=45000 (not overwritten), got %d", rec.ExternalPort)
 	}
@@ -284,7 +284,7 @@ func TestApplyEventDifferentKeys(t *testing.T) {
 	})
 
 	peerPK, _ := peerKey(2)
-	rec, _ := s.Get(peerPK)
+	rec, _ := s.getRecord(peerPK)
 	if rec.ExternalPort != 45000 {
 		t.Fatalf("expected ExternalPort=45000, got %d", rec.ExternalPort)
 	}
@@ -320,7 +320,7 @@ func TestApplyEventDeletion(t *testing.T) {
 	})
 
 	peerPK, _ := peerKey(2)
-	rec, _ := s.Get(peerPK)
+	rec, _ := s.getRecord(peerPK)
 	if _, ok := rec.Services["http"]; ok {
 		t.Fatal("service 'http' should have been deleted")
 	}
@@ -353,7 +353,7 @@ func TestApplyEventTombstonePreventResurrection(t *testing.T) {
 	})
 
 	peerPK, _ := peerKey(2)
-	rec, _ := s.Get(peerPK)
+	rec, _ := s.getRecord(peerPK)
 	if _, ok := rec.Services["http"]; ok {
 		t.Fatal("service 'http' should remain deleted")
 	}
@@ -363,7 +363,7 @@ func TestApplyEventSelfStateConflict(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
-	localID := s.LocalID
+	localID := s.localID
 
 	// Set some local state.
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
@@ -395,7 +395,7 @@ func TestApplyEventSelfStateNoConflict(t *testing.T) {
 
 	// Receiving own event with same or lower counter — no conflict.
 	result := s.applyEvent(&statev1.GossipEvent{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: 2,
 		Change: &statev1.GossipEvent_Network{
 			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
@@ -418,7 +418,7 @@ func TestMissingForReturnsEvents(t *testing.T) {
 	// Remote knows about us but with mismatched hash → full dump.
 	events := s.MissingFor(&statev1.GossipStateDigest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
+			s.localID.String(): {MaxCounter: 0, StateHash: 0},
 		},
 	})
 
@@ -436,10 +436,10 @@ func TestMissingForRespectsClock(t *testing.T) {
 	// Get real digest, then lower MaxCounter to test delta path
 	// (hash match + counter behind).
 	digest := s.Clock()
-	localDigest := digest.GetPeers()[s.LocalID.String()]
+	localDigest := digest.GetPeers()[s.localID.String()]
 	events := s.MissingFor(&statev1.GossipStateDigest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 6, StateHash: localDigest.GetStateHash()},
+			s.localID.String(): {MaxCounter: 6, StateHash: localDigest.GetStateHash()},
 		},
 	})
 
@@ -470,7 +470,7 @@ func TestClockUsesMaxCounter(t *testing.T) {
 	s.SetExternalPort(45000)
 
 	digest := s.Clock()
-	require.Equal(t, uint64(8), digest.GetPeers()[s.LocalID.String()].GetMaxCounter())
+	require.Equal(t, uint64(8), digest.GetPeers()[s.localID.String()].GetMaxCounter())
 }
 
 func TestUpsertLocalServiceReturnsEvent(t *testing.T) {
@@ -540,7 +540,7 @@ func TestApplyEventNetworkUpdate(t *testing.T) {
 		},
 	})
 
-	rec, ok := s.Get(peerPK)
+	rec, ok := s.getRecord(peerPK)
 	if !ok {
 		t.Fatal("expected peer to exist")
 	}
@@ -569,7 +569,7 @@ func TestApplyEventIdentityPub(t *testing.T) {
 		},
 	})
 
-	rec, _ := s.Get(peerPK)
+	rec, _ := s.getRecord(peerPK)
 	if len(rec.IdentityPub) == 0 {
 		t.Fatal("expected IdentityPub to be set")
 	}
@@ -595,7 +595,7 @@ func TestApplyEventReachablePeer(t *testing.T) {
 		},
 	})
 
-	rec, _ := s.Get(peerPK)
+	rec, _ := s.getRecord(peerPK)
 	if _, ok := rec.Reachable[targetPK]; !ok {
 		t.Fatal("expected target to be reachable")
 	}
@@ -610,7 +610,7 @@ func TestApplyEventReachablePeer(t *testing.T) {
 		},
 	})
 
-	rec, _ = s.Get(peerPK)
+	rec, _ = s.getRecord(peerPK)
 	if _, ok := rec.Reachable[targetPK]; ok {
 		t.Fatal("expected target to be removed from reachable")
 	}
@@ -731,7 +731,7 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 		}
 	}()
 
-	rec, ok := s2.Get(peerPK)
+	rec, ok := s2.getRecord(peerPK)
 	if !ok {
 		t.Fatal("expected peer record after reload")
 	}
@@ -781,7 +781,7 @@ func TestSaveLoadDoesNotPersistServices(t *testing.T) {
 	defer func() { require.NoError(t, s2.Close()) }()
 
 	peerPK, _ := peerKey(2)
-	rec, ok := s2.Get(peerPK)
+	rec, ok := s2.getRecord(peerPK)
 	require.True(t, ok)
 	require.Empty(t, rec.Services, "services should not survive save/load")
 }
@@ -833,7 +833,7 @@ func TestSetLocalPubliclyAccessibleClear(t *testing.T) {
 		t.Fatal("expected deleted=true for clearing accessible")
 	}
 
-	if s.IsPubliclyAccessible(s.LocalID) {
+	if s.IsPubliclyAccessible(s.localID) {
 		t.Fatal("expected PubliclyAccessible=false after clearing")
 	}
 }
@@ -884,7 +884,7 @@ func TestPubliclyAccessibleRoundTrip(t *testing.T) {
 
 	missing := s.MissingFor(&statev1.GossipStateDigest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
+			s.localID.String(): {MaxCounter: 0, StateHash: 0},
 		},
 	})
 
@@ -908,7 +908,7 @@ func TestPubliclyAccessibleConflictRecovery(t *testing.T) {
 	s.SetLocalPubliclyAccessible(true)
 
 	result := s.applyEvent(&statev1.GossipEvent{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: 100,
 		Change: &statev1.GossipEvent_PubliclyAccessible{
 			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
@@ -943,7 +943,7 @@ func TestFreshStoreGossipsPubliclyAccessibleDeletion(t *testing.T) {
 	// the seeded PubliclyAccessible deletion event on the first sync.
 	missing := s.MissingFor(&statev1.GossipStateDigest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
+			s.localID.String(): {MaxCounter: 0, StateHash: 0},
 		},
 	})
 
@@ -1196,7 +1196,7 @@ func TestVivaldiRoundTrip(t *testing.T) {
 
 	missing := s.MissingFor(&statev1.GossipStateDigest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
+			s.localID.String(): {MaxCounter: 0, StateHash: 0},
 		},
 	})
 
@@ -1218,7 +1218,7 @@ func TestVivaldiConflictRecovery(t *testing.T) {
 	s.SetLocalVivaldiCoord(topology.Coord{X: 10.5, Y: -3.2, Height: 0.001})
 
 	result := s.applyEvent(&statev1.GossipEvent{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: 100,
 		Change: &statev1.GossipEvent_Vivaldi{
 			Vivaldi: &statev1.VivaldiCoordinateChange{X: 1, Y: 2, Height: 3},
@@ -1247,7 +1247,7 @@ func TestFreshStoreDoesNotGossipVivaldi(t *testing.T) {
 
 	missing := s.MissingFor(&statev1.GossipStateDigest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
+			s.localID.String(): {MaxCounter: 0, StateHash: 0},
 		},
 	})
 
@@ -1331,7 +1331,7 @@ func TestMissingForNilClockSendsEverything(t *testing.T) {
 	for _, ev := range events {
 		peerIDs[ev.GetPeerId()] = struct{}{}
 	}
-	require.Contains(t, peerIDs, s.LocalID.String())
+	require.Contains(t, peerIDs, s.localID.String())
 	require.Contains(t, peerIDs, strA)
 	require.Contains(t, peerIDs, strB)
 }
@@ -1580,15 +1580,15 @@ func TestPeerHash(t *testing.T) {
 	// Deterministic: calling twice yields the same hash.
 	d1 := s.Clock()
 	d2 := s.Clock()
-	h1 := d1.GetPeers()[s.LocalID.String()].GetStateHash()
-	h2 := d2.GetPeers()[s.LocalID.String()].GetStateHash()
+	h1 := d1.GetPeers()[s.localID.String()].GetStateHash()
+	h2 := d2.GetPeers()[s.localID.String()].GetStateHash()
 	require.Equal(t, h1, h2)
 	require.NotZero(t, h1)
 
 	// Hash changes when state changes.
 	s.SetExternalPort(45000)
 	d3 := s.Clock()
-	h3 := d3.GetPeers()[s.LocalID.String()].GetStateHash()
+	h3 := d3.GetPeers()[s.localID.String()].GetStateHash()
 	require.NotEqual(t, h1, h3)
 }
 
@@ -1603,7 +1603,7 @@ func TestDigestHashMismatchSendsAll(t *testing.T) {
 	// Mismatched hash with high counter → full dump from counter 0.
 	events := s.MissingFor(&statev1.GossipStateDigest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 100, StateHash: 12345},
+			s.localID.String(): {MaxCounter: 100, StateHash: 12345},
 		},
 	})
 
@@ -1694,7 +1694,7 @@ func TestWorkloadSpecRoundTrip(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, uint32(2), sv.Spec.GetReplicas())
 	require.Equal(t, uint32(16), sv.Spec.GetMemoryPages())
-	require.Equal(t, s.LocalID, sv.Publisher)
+	require.Equal(t, s.localID, sv.Publisher)
 
 	// Idempotent — no event on identical call.
 	events2, err := s.SetLocalWorkloadSpec("abc123", 2, 16, 0)
@@ -1726,7 +1726,7 @@ func TestWorkloadClaimRoundTrip(t *testing.T) {
 
 	claims := s.AllWorkloadClaims()
 	require.Len(t, claims, 1)
-	require.Contains(t, claims["abc123"], s.LocalID)
+	require.Contains(t, claims["abc123"], s.localID)
 
 	// Idempotent.
 	events2 := s.SetLocalWorkloadClaim("abc123", true)
@@ -1943,7 +1943,7 @@ func TestRemoteSpec_TombstonesLosingLocalSpec(t *testing.T) {
 
 	specs := s.AllWorkloadSpecs()
 	require.Len(t, specs, 1)
-	require.Equal(t, s.LocalID, specs["contested"].Publisher)
+	require.Equal(t, s.localID, specs["contested"].Publisher)
 
 	// Remote peer with lower PeerKey publishes the same hash via gossip.
 	winnerPK, winnerStr := peerKey(1)
@@ -1959,7 +1959,7 @@ func TestRemoteSpec_TombstonesLosingLocalSpec(t *testing.T) {
 	require.Len(t, result.Rebroadcast, 2)
 	tombstone := result.Rebroadcast[1]
 	require.True(t, tombstone.GetDeleted())
-	require.Equal(t, s.LocalID.String(), tombstone.GetPeerId())
+	require.Equal(t, s.localID.String(), tombstone.GetPeerId())
 
 	// Only the winner's spec should remain in the merged view.
 	specs = s.AllWorkloadSpecs()
@@ -1968,7 +1968,7 @@ func TestRemoteSpec_TombstonesLosingLocalSpec(t *testing.T) {
 	require.Equal(t, uint32(2), specs["contested"].Spec.GetReplicas())
 
 	// Local node's raw record should no longer have the spec.
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	require.NotContains(t, local.WorkloadSpecs, "contested")
 }
 
@@ -1997,7 +1997,7 @@ func TestRemoteSpec_NoTombstoneWhenLocalWins(t *testing.T) {
 
 	// Local spec is still the winner.
 	specs := s.AllWorkloadSpecs()
-	require.Equal(t, s.LocalID, specs["mine"].Publisher)
+	require.Equal(t, s.localID, specs["mine"].Publisher)
 	require.Equal(t, uint32(3), specs["mine"].Spec.GetReplicas())
 }
 
@@ -2028,7 +2028,7 @@ func TestRemoteSpec_NoTombstoneWhenRemoteDenied(t *testing.T) {
 
 	// Local spec remains.
 	specs := s.AllWorkloadSpecs()
-	require.Equal(t, s.LocalID, specs["contested"].Publisher)
+	require.Equal(t, s.localID, specs["contested"].Publisher)
 	require.Equal(t, uint32(3), specs["contested"].Spec.GetReplicas())
 }
 
@@ -2071,7 +2071,7 @@ func TestRemoteSpec_NoTombstoneWhenRemoteExpired(t *testing.T) {
 
 	// Local spec remains.
 	specs := s.AllWorkloadSpecs()
-	require.Equal(t, s.LocalID, specs["contested"].Publisher)
+	require.Equal(t, s.localID, specs["contested"].Publisher)
 	require.Equal(t, uint32(3), specs["contested"].Spec.GetReplicas())
 }
 
@@ -2184,7 +2184,7 @@ func TestAllWorkloadClaims_ExcludesUnreachableNodes(t *testing.T) {
 	// Local claims are always visible regardless of reachability.
 	s.SetLocalWorkloadClaim("wl2", true)
 	claims = s.AllWorkloadClaims()
-	require.Contains(t, claims["wl2"], s.LocalID, "local claim must always be visible")
+	require.Contains(t, claims["wl2"], s.localID, "local claim must always be visible")
 }
 
 func TestAllWorkloadClaims_RackFailureIgnoresStaleObservers(t *testing.T) {
@@ -2429,7 +2429,7 @@ func TestAllNodePlacementStates(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
-	localPK := s.LocalID
+	localPK := s.localID
 
 	// Set local resource telemetry.
 	s.SetLocalResourceTelemetry(50, 60, 8<<30, 4)
@@ -2498,7 +2498,7 @@ func TestOnTrafficChangeCallback(t *testing.T) {
 	s.OnTrafficChange(func() { callCount++ })
 
 	_, remotePeerStr := peerKey(2)
-	localPK := s.LocalID
+	localPK := s.localID
 
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  remotePeerStr,
@@ -2532,7 +2532,7 @@ func TestSelfConflictReAdoptsWorkloadSpecs(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
-	localIDStr := s.LocalID.String()
+	localIDStr := s.localID.String()
 
 	// Simulate a prior session that published a workload spec at counter 20.
 	result := s.ApplyEvents([]*statev1.GossipEvent{
@@ -2558,10 +2558,10 @@ func TestSelfConflictReAdoptsWorkloadSpecs(t *testing.T) {
 	require.Equal(t, uint32(3), sv.Spec.GetReplicas())
 	require.Equal(t, uint32(16), sv.Spec.GetMemoryPages())
 	require.Equal(t, uint32(500), sv.Spec.GetTimeoutMs())
-	require.Equal(t, s.LocalID, sv.Publisher)
+	require.Equal(t, s.localID, sv.Publisher)
 
 	// maxCounter should be above the incoming 20.
-	rec := s.nodes[s.LocalID]
+	rec := s.nodes[s.localID]
 	require.Greater(t, rec.maxCounter, uint64(20))
 }
 
@@ -2569,7 +2569,7 @@ func TestSelfConflictSkipsDeletedSpecs(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
-	localIDStr := s.LocalID.String()
+	localIDStr := s.localID.String()
 
 	s.ApplyEvents([]*statev1.GossipEvent{
 		{
@@ -2590,7 +2590,7 @@ func TestSelfConflictDoesNotReAdoptClaims(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
-	localIDStr := s.LocalID.String()
+	localIDStr := s.localID.String()
 
 	result := s.ApplyEvents([]*statev1.GossipEvent{
 		{
@@ -2621,7 +2621,7 @@ func TestSelfConflictDeletesStaleClaims(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
-	localIDStr := s.LocalID.String()
+	localIDStr := s.localID.String()
 
 	// Simulate a prior-session claim arriving back from a peer.
 	result := s.ApplyEvents([]*statev1.GossipEvent{
@@ -2658,7 +2658,7 @@ func TestSelfConflictSkipsAlreadyDeletedClaims(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
-	localIDStr := s.LocalID.String()
+	localIDStr := s.localID.String()
 
 	// Incoming claim is already marked deleted — no duplicate deletion needed.
 	result := s.ApplyEvents([]*statev1.GossipEvent{
@@ -2687,7 +2687,7 @@ func TestSelfConflictPreservesActiveClaimsFromCurrentSession(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
-	localIDStr := s.LocalID.String()
+	localIDStr := s.localID.String()
 
 	// Node sets a claim in the current session.
 	s.SetLocalWorkloadClaim("abc123", true)
@@ -2712,7 +2712,7 @@ func TestSelfConflictMultiBatchSpecAdoption(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
-	localIDStr := s.LocalID.String()
+	localIDStr := s.localID.String()
 
 	// First batch: triggers conflict, adopts spec1.
 	s.ApplyEvents([]*statev1.GossipEvent{
@@ -2750,7 +2750,7 @@ func TestSelfConflictDoesNotReAdoptExistingSpec(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
-	localIDStr := s.LocalID.String()
+	localIDStr := s.localID.String()
 
 	// Set a local spec first.
 	_, err := s.SetLocalWorkloadSpec("abc123", 5, 32, 1000)
@@ -2806,7 +2806,7 @@ func TestSaveLoadPersistsWorkloadSpecs(t *testing.T) {
 	require.Equal(t, uint32(1000), specs["hash2"].Spec.GetTimeoutMs())
 
 	// Verify specs are in the local log (will be rebroadcast on first gossip).
-	rec := s2.nodes[s2.LocalID]
+	rec := s2.nodes[s2.localID]
 	_, ok := rec.log[workloadSpecAttrKey("hash1")]
 	require.True(t, ok)
 	_, ok = rec.log[workloadSpecAttrKey("hash2")]
@@ -2853,13 +2853,13 @@ func TestAllPeerKeysExcludesUnreachable(t *testing.T) {
 	s.SetLocalConnected(remotePK, true)
 	keys := s.AllPeerKeys()
 	require.Contains(t, keys, remotePK, "reachable peer must appear in AllPeerKeys")
-	require.Contains(t, keys, s.LocalID, "local node must appear in AllPeerKeys")
+	require.Contains(t, keys, s.localID, "local node must appear in AllPeerKeys")
 
 	// Disconnect — dead peer must be excluded.
 	s.SetLocalConnected(remotePK, false)
 	keys = s.AllPeerKeys()
 	require.NotContains(t, keys, remotePK, "unreachable peer must be excluded from AllPeerKeys")
-	require.Contains(t, keys, s.LocalID, "local node must always appear in AllPeerKeys")
+	require.Contains(t, keys, s.localID, "local node must always appear in AllPeerKeys")
 }
 
 func TestAllNodePlacementStatesExcludesUnreachable(t *testing.T) {
@@ -2882,11 +2882,11 @@ func TestAllNodePlacementStatesExcludesUnreachable(t *testing.T) {
 	s.SetLocalConnected(remotePK, true)
 	states := s.AllNodePlacementStates()
 	require.Contains(t, states, remotePK, "reachable peer must appear in AllNodePlacementStates")
-	require.Contains(t, states, s.LocalID, "local node must appear in AllNodePlacementStates")
+	require.Contains(t, states, s.localID, "local node must appear in AllNodePlacementStates")
 
 	// Disconnect — dead peer must be excluded.
 	s.SetLocalConnected(remotePK, false)
 	states = s.AllNodePlacementStates()
 	require.NotContains(t, states, remotePK, "unreachable peer must be excluded from AllNodePlacementStates")
-	require.Contains(t, states, s.LocalID, "local node must always appear in AllNodePlacementStates")
+	require.Contains(t, states, s.localID, "local node must always appear in AllNodePlacementStates")
 }

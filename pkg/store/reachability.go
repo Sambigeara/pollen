@@ -31,8 +31,8 @@ func (s *Store) validNodesLocked() map[types.PeerKey]nodeRecord {
 // other dead peers' claims alive, while still trusting multi-hop observations
 // through live intermediaries.
 func (s *Store) liveComponentLocked(valid map[types.PeerKey]nodeRecord) map[types.PeerKey]struct{} {
-	component := map[types.PeerKey]struct{}{s.LocalID: {}}
-	queue := []types.PeerKey{s.LocalID}
+	component := map[types.PeerKey]struct{}{s.localID: {}}
+	queue := []types.PeerKey{s.localID}
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]

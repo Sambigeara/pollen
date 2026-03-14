@@ -36,7 +36,7 @@ func (s *Store) SetLocalWorkloadSpec(hash string, replicas, memoryPages, timeout
 
 	// Reject if any valid remote node already publishes this hash.
 	for pk, rec := range s.nodes {
-		if pk == s.LocalID {
+		if pk == s.localID {
 			continue
 		}
 		if _, has := rec.WorkloadSpecs[hash]; !has {
@@ -47,7 +47,7 @@ func (s *Store) SetLocalWorkloadSpec(hash string, replicas, memoryPages, timeout
 		}
 	}
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 
 	if existing, ok := local.WorkloadSpecs[hash]; ok &&
 		existing.GetReplicas() == replicas && existing.GetMemoryPages() == memoryPages &&
@@ -64,10 +64,10 @@ func (s *Store) SetLocalWorkloadSpec(hash string, replicas, memoryPages, timeout
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Change: &statev1.GossipEvent_WorkloadSpec{
 			WorkloadSpec: &statev1.WorkloadSpecChange{
@@ -85,7 +85,7 @@ func (s *Store) SetLocalWorkloadSpec(hash string, replicas, memoryPages, timeout
 // the local spec and returns the tombstone event for rebroadcast.
 // Caller must hold s.mu.
 func (s *Store) tombstoneLosingLocalSpec(remotePeer types.PeerKey, hash string) []*statev1.GossipEvent {
-	if remotePeer == s.LocalID {
+	if remotePeer == s.localID {
 		return nil
 	}
 	// Ignore invalid peers — denied or expired nodes cannot win ownership.
@@ -93,10 +93,10 @@ func (s *Store) tombstoneLosingLocalSpec(remotePeer types.PeerKey, hash string) 
 		return nil
 	}
 	// Only tombstone if remote peer wins (lower PeerKey).
-	if s.LocalID.Compare(remotePeer) < 0 {
+	if s.localID.Compare(remotePeer) < 0 {
 		return nil
 	}
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	if _, has := local.WorkloadSpecs[hash]; !has {
 		return nil
 	}
@@ -107,10 +107,10 @@ func (s *Store) tombstoneLosingLocalSpec(remotePeer types.PeerKey, hash string) 
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter, Deleted: true}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Deleted: true,
 		Change: &statev1.GossipEvent_WorkloadSpec{
@@ -123,7 +123,7 @@ func (s *Store) RemoveLocalWorkloadSpec(hash string) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 
 	if _, ok := local.WorkloadSpecs[hash]; !ok {
 		return nil
@@ -135,10 +135,10 @@ func (s *Store) RemoveLocalWorkloadSpec(hash string) []*statev1.GossipEvent {
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter, Deleted: true}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Deleted: true,
 		Change: &statev1.GossipEvent_WorkloadSpec{
@@ -151,7 +151,7 @@ func (s *Store) SetLocalWorkloadClaim(hash string, claimed bool) []*statev1.Goss
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 
 	_, exists := local.WorkloadClaims[hash]
 	if claimed == exists {
@@ -171,10 +171,10 @@ func (s *Store) SetLocalWorkloadClaim(hash string, claimed bool) []*statev1.Goss
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter, Deleted: !claimed}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Deleted: !claimed,
 		Change: &statev1.GossipEvent_WorkloadClaim{

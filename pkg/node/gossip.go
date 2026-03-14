@@ -39,7 +39,7 @@ func (n *Node) broadcastGossipBatches(ctx context.Context, peerIDs []types.PeerK
 			Events: &statev1.GossipEventBatch{Events: batch},
 		}}
 		for _, peerID := range peerIDs {
-			if peerID == n.store.LocalID {
+			if peerID == n.store.LocalID() {
 				continue
 			}
 			if _, ok := failed[peerID]; ok {
@@ -58,7 +58,7 @@ func (n *Node) gossip(ctx context.Context) {
 	peers := n.GetConnectedPeers()
 	var wg sync.WaitGroup
 	for _, peerID := range peers {
-		if peerID == n.store.LocalID {
+		if peerID == n.store.LocalID() {
 			continue
 		}
 		wg.Go(func() {

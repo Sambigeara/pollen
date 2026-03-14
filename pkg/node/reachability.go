@@ -74,28 +74,27 @@ type coordinatorCandidate struct {
 	publiclyAccessible bool
 }
 
-func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connectedPeers []types.PeerKey, state *store.Store) []types.PeerKey {
-	localRec, _ := state.Get(state.LocalID)
-	targetRec, _ := state.Get(target)
+func rankCoordinators(localIPs, targetIPs []string, localObservedIP string, target types.PeerKey, connectedPeers []types.PeerKey, routeInfo map[types.PeerKey]store.RouteNodeInfo) []types.PeerKey {
+	targetObservedIP := routeInfo[target].ObservedExternalIP
 	candidates := make([]coordinatorCandidate, 0, len(connectedPeers))
 	for _, key := range connectedPeers {
-		candidateIPs := state.NodeIPs(key)
-		if len(candidateIPs) == 0 || topology.InferPrivatelyRoutable(localIPs, candidateIPs) || topology.InferPrivatelyRoutable(targetIPs, candidateIPs) {
-			continue
-		}
-		if !state.IsConnected(key, target) {
-			continue
-		}
-		rec, ok := state.Get(key)
+		info, ok := routeInfo[key]
 		if !ok {
 			continue
 		}
-		if topology.SameObservedEgress(localRec.ObservedExternalIP, rec.ObservedExternalIP) || topology.SameObservedEgress(targetRec.ObservedExternalIP, rec.ObservedExternalIP) {
+		candidateIPs := info.IPs
+		if len(candidateIPs) == 0 || topology.InferPrivatelyRoutable(localIPs, candidateIPs) || topology.InferPrivatelyRoutable(targetIPs, candidateIPs) {
+			continue
+		}
+		if _, connected := info.Reachable[target]; !connected {
+			continue
+		}
+		if topology.SameObservedEgress(localObservedIP, info.ObservedExternalIP) || topology.SameObservedEgress(targetObservedIP, info.ObservedExternalIP) {
 			continue
 		}
 		candidates = append(candidates, coordinatorCandidate{
 			key:                key,
-			publiclyAccessible: rec.PubliclyAccessible,
+			publiclyAccessible: info.PubliclyAccessible,
 		})
 	}
 

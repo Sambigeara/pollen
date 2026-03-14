@@ -274,12 +274,12 @@ func assertPeersConnected(t *testing.T, a, b *testNode) {
 	require.True(t, b.store.IsConnected(b.peerKey, a.peerKey))
 
 	require.Eventually(t, func() bool {
-		_, ok := b.store.getRecord(a.peerKey)
+		_, ok := b.store.AllRouteInfo()[a.peerKey]
 		return ok
 	}, 5*time.Second, 50*time.Millisecond, "B's store should know about A via gossip")
 
 	require.Eventually(t, func() bool {
-		_, ok := a.store.getRecord(b.peerKey)
+		_, ok := a.store.AllRouteInfo()[b.peerKey]
 		return ok
 	}, 5*time.Second, 50*time.Millisecond, "A's store should know about B via gossip")
 }

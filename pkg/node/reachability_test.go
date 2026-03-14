@@ -59,7 +59,7 @@ func TestRankCoordinatorsPrefersPublicCandidates(t *testing.T) {
 
 	// Candidate 1 shares the local site and should be excluded. Candidates 2 and 3
 	// are both valid and public; deterministic ordering falls back to peer key.
-	ranked := rankCoordinators(localIPs, targetIPs, target, []types.PeerKey{testPeerKey(1), testPeerKey(3), testPeerKey(2)}, n.store)
+	ranked := rankCoordinators(localIPs, targetIPs, "", target, []types.PeerKey{testPeerKey(1), testPeerKey(3), testPeerKey(2)}, n.store.AllRouteInfo())
 	require.Equal(t, []types.PeerKey{testPeerKey(2), testPeerKey(3)}, ranked)
 }
 
@@ -83,7 +83,7 @@ func TestRankCoordinatorsExcludesSharedObservedEgress(t *testing.T) {
 	setPeerObservedExternalIP(n.store, testPeerKey(2), "18.240.0.11", 103)
 	markPeerConnectedToTarget(n.store, testPeerKey(2), target, 201)
 
-	ranked := rankCoordinators(localIPs, targetIPs, target, []types.PeerKey{testPeerKey(1), testPeerKey(2)}, n.store)
+	ranked := rankCoordinators(localIPs, targetIPs, n.store.LocalRecord().ObservedExternalIP, target, []types.PeerKey{testPeerKey(1), testPeerKey(2)}, n.store.AllRouteInfo())
 	require.Equal(t, []types.PeerKey{testPeerKey(2)}, ranked)
 }
 

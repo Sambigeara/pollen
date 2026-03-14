@@ -13,7 +13,7 @@ func (s *Store) SetLocalNetwork(ips []string, port uint32) []*statev1.GossipEven
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 
 	if slices.Equal(local.IPs, ips) && local.LocalPort == port {
 		return nil
@@ -25,10 +25,10 @@ func (s *Store) SetLocalNetwork(ips []string, port uint32) []*statev1.GossipEven
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[networkAttrKey()] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Change: &statev1.GossipEvent_Network{
 			Network: &statev1.NetworkChange{
@@ -43,7 +43,7 @@ func (s *Store) SetExternalPort(port uint32) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	if local.ExternalPort == port {
 		return nil
 	}
@@ -53,10 +53,10 @@ func (s *Store) SetExternalPort(port uint32) []*statev1.GossipEvent {
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[externalPortAttrKey()] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Change: &statev1.GossipEvent_ExternalPort{
 			ExternalPort: &statev1.ExternalPortChange{ExternalPort: port},
@@ -68,7 +68,7 @@ func (s *Store) SetObservedExternalIP(ip string) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	if local.ObservedExternalIP == ip {
 		return nil
 	}
@@ -79,10 +79,10 @@ func (s *Store) SetObservedExternalIP(ip string) []*statev1.GossipEvent {
 	counter := local.maxCounter
 	deleted := ip == ""
 	local.log[observedExternalIPAttrKey()] = logEntry{Counter: counter, Deleted: deleted}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Deleted: deleted,
 		Change: &statev1.GossipEvent_ObservedExternalIp{
@@ -95,7 +95,7 @@ func (s *Store) SetLocalConnected(peerID types.PeerKey, connected bool) []*state
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 
 	_, exists := local.Reachable[peerID]
 	if connected == exists {
@@ -112,10 +112,10 @@ func (s *Store) SetLocalConnected(peerID types.PeerKey, connected bool) []*state
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter, Deleted: !connected}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	event := &statev1.GossipEvent{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Deleted: !connected,
 		Change: &statev1.GossipEvent_Reachability{
@@ -132,7 +132,7 @@ func (s *Store) SetLocalPubliclyAccessible(accessible bool) []*statev1.GossipEve
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	if local.PubliclyAccessible == accessible {
 		return nil
 	}
@@ -143,10 +143,10 @@ func (s *Store) SetLocalPubliclyAccessible(accessible bool) []*statev1.GossipEve
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter, Deleted: !accessible}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Deleted: !accessible,
 		Change: &statev1.GossipEvent_PubliclyAccessible{
@@ -159,7 +159,7 @@ func (s *Store) SetLocalNatType(natType nat.Type) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	if local.NatType == natType {
 		return nil
 	}
@@ -171,10 +171,10 @@ func (s *Store) SetLocalNatType(natType nat.Type) []*statev1.GossipEvent {
 	counter := local.maxCounter
 	deleted := natType == nat.Unknown
 	local.log[key] = logEntry{Counter: counter, Deleted: deleted}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Deleted: deleted,
 		Change: &statev1.GossipEvent_NatType{
@@ -189,7 +189,7 @@ func (s *Store) SetLocalResourceTelemetry(cpuPercent, memPercent uint32, memTota
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	cpuDelta := absDiff(local.CPUPercent, cpuPercent)
 	memDelta := absDiff(local.MemPercent, memPercent)
 	if cpuDelta < resourceTelemetryDeadband && memDelta < resourceTelemetryDeadband && local.MemTotalBytes == memTotalBytes && local.NumCPU == numCPU {
@@ -205,10 +205,10 @@ func (s *Store) SetLocalResourceTelemetry(cpuPercent, memPercent uint32, memTota
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Change: &statev1.GossipEvent_ResourceTelemetry{
 			ResourceTelemetry: &statev1.ResourceTelemetryChange{
@@ -236,7 +236,7 @@ func (s *Store) SetLocalTrafficHeatmap(rates map[types.PeerKey]TrafficSnapshot) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	key := trafficHeatmapAttrKey()
 
 	if len(filtered) == 0 {
@@ -248,9 +248,9 @@ func (s *Store) SetLocalTrafficHeatmap(rates map[types.PeerKey]TrafficSnapshot) 
 		local.maxCounter++
 		counter := local.maxCounter
 		local.log[key] = logEntry{Counter: counter, Deleted: true}
-		s.nodes[s.LocalID] = local
+		s.nodes[s.localID] = local
 		return []*statev1.GossipEvent{{
-			PeerId:  s.LocalID.String(),
+			PeerId:  s.localID.String(),
 			Counter: counter,
 			Deleted: true,
 			Change: &statev1.GossipEvent_TrafficHeatmap{
@@ -273,10 +273,10 @@ func (s *Store) SetLocalTrafficHeatmap(rates map[types.PeerKey]TrafficSnapshot) 
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Change: &statev1.GossipEvent_TrafficHeatmap{
 			TrafficHeatmap: &statev1.TrafficHeatmapChange{Rates: protoRates},
@@ -288,7 +288,7 @@ func (s *Store) SetLocalCertExpiry(expiry int64) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	if local.CertExpiry == expiry {
 		return nil
 	}
@@ -298,10 +298,10 @@ func (s *Store) SetLocalCertExpiry(expiry int64) []*statev1.GossipEvent {
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[identityAttrKey()] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Change: &statev1.GossipEvent_IdentityPub{
 			IdentityPub: &statev1.IdentityChange{
@@ -316,7 +316,7 @@ func (s *Store) SetLocalVivaldiCoord(coord topology.Coord) []*statev1.GossipEven
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	if local.VivaldiCoord != nil && topology.MovementDistance(*local.VivaldiCoord, coord) <= topology.PublishEpsilon {
 		return nil
 	}
@@ -327,10 +327,10 @@ func (s *Store) SetLocalVivaldiCoord(coord topology.Coord) []*statev1.GossipEven
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Change: &statev1.GossipEvent_Vivaldi{
 			Vivaldi: &statev1.VivaldiCoordinateChange{
@@ -366,15 +366,15 @@ func (s *Store) DenyPeer(subjectPub []byte) []*statev1.GossipEvent {
 
 	s.denied[subjectKey] = struct{}{}
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	key := denyAttrKey(subjectKey.String())
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Change: &statev1.GossipEvent_Deny{
 			Deny: &statev1.DenyChange{SubjectPub: append([]byte(nil), subjectPub...)},
@@ -386,7 +386,7 @@ func (s *Store) UpsertLocalService(port uint32, name string) []*statev1.GossipEv
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 
 	if existing, ok := local.Services[name]; ok && existing.GetPort() == port {
 		return nil
@@ -401,10 +401,10 @@ func (s *Store) UpsertLocalService(port uint32, name string) []*statev1.GossipEv
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Change: &statev1.GossipEvent_Service{
 			Service: &statev1.ServiceChange{Name: name, Port: port},
@@ -416,7 +416,7 @@ func (s *Store) RemoveLocalServices(name string) []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 
 	if _, ok := local.Services[name]; !ok {
 		return nil
@@ -428,10 +428,10 @@ func (s *Store) RemoveLocalServices(name string) []*statev1.GossipEvent {
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter, Deleted: true}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Deleted: true,
 		Change: &statev1.GossipEvent_Service{

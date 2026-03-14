@@ -12,7 +12,9 @@ import (
 )
 
 func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
-	localIPs := n.store.NodeIPs(n.store.LocalID)
+	routeInfo := n.store.AllRouteInfo()
+	localRec := n.store.LocalRecord()
+	localIPs := n.store.NodeIPs(n.store.LocalID())
 	targetIPs := n.store.NodeIPs(target)
 	connectedPeers := n.GetConnectedPeers()
 	filtered := make([]types.PeerKey, 0, len(connectedPeers))
@@ -22,7 +24,7 @@ func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
 		}
 		filtered = append(filtered, key)
 	}
-	return rankCoordinators(localIPs, targetIPs, target, filtered, n.store)
+	return rankCoordinators(localIPs, targetIPs, localRec.ObservedExternalIP, target, filtered, routeInfo)
 }
 
 // requestPunchCoordination sends a punch coordination request to the best

@@ -44,30 +44,30 @@ func (s *NodeService) Shutdown(_ context.Context, _ *controlv1.ShutdownRequest) 
 }
 
 func (s *NodeService) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootstrapInfoRequest) (*controlv1.GetBootstrapInfoResponse, error) {
-	local := s.node.store.LocalID
-	rec, ok := s.node.store.Get(local)
-	if !ok {
+	localID := s.node.store.LocalID()
+	localRec := s.node.store.LocalRecord()
+	if len(localRec.IPs) == 0 && localRec.LocalPort == 0 {
 		return &controlv1.GetBootstrapInfoResponse{}, nil
 	}
 
 	resp := &controlv1.GetBootstrapInfoResponse{
-		Self: nodeBootstrapInfo(local, rec.IPs, rec.LocalPort),
+		Self: nodeBootstrapInfo(localID, localRec.IPs, localRec.LocalPort),
 	}
 
-	resp.Recommended = s.pickRecommendedPeer(local)
+	resp.Recommended = s.pickRecommendedPeer(localID)
 
 	return resp, nil
 }
 
 func (s *NodeService) pickRecommendedPeer(localID types.PeerKey) *controlv1.BootstrapPeerInfo {
-	nodes := s.node.store.AllNodes()
+	nodes := s.node.store.AllRouteInfo()
 
 	var candidates []types.PeerKey
-	for peerID, rec := range nodes {
-		if peerID == localID || !rec.PubliclyAccessible {
+	for peerID, info := range nodes {
+		if peerID == localID || !info.PubliclyAccessible {
 			continue
 		}
-		if len(rec.IPs) == 0 || rec.LocalPort == 0 {
+		if len(info.IPs) == 0 || info.LocalPort == 0 {
 			continue
 		}
 		candidates = append(candidates, peerID)
@@ -76,15 +76,15 @@ func (s *NodeService) pickRecommendedPeer(localID types.PeerKey) *controlv1.Boot
 	if len(candidates) > 0 {
 		slices.SortFunc(candidates, types.PeerKey.Compare)
 		best := candidates[0]
-		rec := nodes[best]
-		return nodeBootstrapInfo(best, rec.IPs, rec.LocalPort)
+		info := nodes[best]
+		return nodeBootstrapInfo(best, info.IPs, info.LocalPort)
 	}
 
-	localRec, ok := nodes[localID]
-	if !ok || len(localRec.IPs) == 0 || localRec.LocalPort == 0 {
+	localInfo, ok := nodes[localID]
+	if !ok || len(localInfo.IPs) == 0 || localInfo.LocalPort == 0 {
 		return nil
 	}
-	return nodeBootstrapInfo(localID, localRec.IPs, localRec.LocalPort)
+	return nodeBootstrapInfo(localID, localInfo.IPs, localInfo.LocalPort)
 }
 
 func nodeBootstrapInfo(peerID types.PeerKey, ips []string, port uint32) *controlv1.BootstrapPeerInfo {
@@ -99,21 +99,19 @@ func nodeBootstrapInfo(peerID types.PeerKey, ips []string, port uint32) *control
 }
 
 func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
-	nodes := s.node.store.AllNodes()
-	localID := s.node.store.LocalID
+	nodes := s.node.store.AllRouteInfo()
+	localID := s.node.store.LocalID()
+	localRec := s.node.store.LocalRecord()
 
 	selfAddr := ""
-	selfPubliclyAccessible := false
-	if rec, ok := s.node.store.Get(localID); ok {
-		selfPubliclyAccessible = rec.PubliclyAccessible
-		if len(rec.IPs) > 0 {
-			port := rec.LocalPort
-			ip := net.ParseIP(rec.IPs[0])
-			if ip != nil && rec.ExternalPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
-				port = rec.ExternalPort
-			}
-			selfAddr = net.JoinHostPort(rec.IPs[0], strconv.Itoa(int(port)))
+	selfPubliclyAccessible := localRec.PubliclyAccessible
+	if len(localRec.IPs) > 0 {
+		port := localRec.LocalPort
+		ip := net.ParseIP(localRec.IPs[0])
+		if ip != nil && localRec.ExternalPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+			port = localRec.ExternalPort
 		}
+		selfAddr = net.JoinHostPort(localRec.IPs[0], strconv.Itoa(int(port)))
 	}
 
 	// Report degraded when cert is expired but within the reconnect window.
@@ -170,11 +168,9 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		tunnelCounts[c.PeerID]++
 	}
 
-	if rec, ok := s.node.store.Get(localID); ok {
-		out.Self.CpuPercent = rec.CPUPercent
-		out.Self.MemPercent = rec.MemPercent
-		out.Self.NumCpu = rec.NumCPU
-	}
+	out.Self.CpuPercent = localRec.CPUPercent
+	out.Self.MemPercent = localRec.MemPercent
+	out.Self.NumCpu = localRec.NumCPU
 	out.Self.TunnelCount = uint32(len(connections))
 
 	// Fetch mesh-wide traffic heatmaps for aggregate traffic display.
@@ -572,7 +568,7 @@ func (s *NodeService) UnseedWorkload(_ context.Context, req *controlv1.UnseedWor
 	// Only the spec owner can unseed — reject on non-owner nodes.
 	specs := s.node.store.AllWorkloadSpecs()
 	sv, ok := specs[hash]
-	if ok && sv.Publisher != s.node.store.LocalID {
+	if ok && sv.Publisher != s.node.store.LocalID() {
 		return nil, status.Error(codes.PermissionDenied, "workload owned by another node; unseed from the publishing node")
 	}
 

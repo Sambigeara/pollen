@@ -46,7 +46,37 @@ type TrafficSnapshot struct {
 	BytesOut uint64
 }
 
-func (s *Store) Get(peerID types.PeerKey) (nodeRecord, bool) {
+// RouteNodeInfo holds the per-node data needed for route computation and status display.
+type RouteNodeInfo struct {
+	Services           map[string]*statev1.Service
+	Reachable          map[types.PeerKey]struct{}
+	Coord              *topology.Coord
+	IPs                []string
+	ObservedExternalIP string
+	LocalPort          uint32
+	ExternalPort       uint32
+	CPUPercent         uint32
+	MemPercent         uint32
+	NumCPU             uint32
+	PubliclyAccessible bool
+}
+
+// LocalNodeView holds a read-only view of the local node's state.
+type LocalNodeView struct {
+	WorkloadClaims     map[string]struct{}
+	IPs                []string
+	ObservedExternalIP string
+	LocalPort          uint32
+	ExternalPort       uint32
+	CPUPercent         uint32
+	MemPercent         uint32
+	NumCPU             uint32
+	PubliclyAccessible bool
+}
+
+// getRecord returns a cloned nodeRecord for the given peer.
+// Used only within the package (including tests).
+func (s *Store) getRecord(peerID types.PeerKey) (nodeRecord, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -57,10 +87,63 @@ func (s *Store) Get(peerID types.PeerKey) (nodeRecord, bool) {
 	return rec.clone(), true
 }
 
-func (s *Store) AllNodes() map[types.PeerKey]nodeRecord {
+// AllRouteInfo returns per-node data for route computation and status display.
+// Includes all valid (non-denied, non-expired) nodes.
+func (s *Store) AllRouteInfo() map[types.PeerKey]RouteNodeInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.validNodesLocked()
+
+	valid := s.validNodesLocked()
+	result := make(map[types.PeerKey]RouteNodeInfo, len(valid))
+	for pk, rec := range valid {
+		result[pk] = RouteNodeInfo{
+			Services:           rec.Services,
+			IPs:                rec.IPs,
+			Reachable:          rec.Reachable,
+			Coord:              rec.VivaldiCoord,
+			ObservedExternalIP: rec.ObservedExternalIP,
+			PubliclyAccessible: rec.PubliclyAccessible,
+			LocalPort:          rec.LocalPort,
+			ExternalPort:       rec.ExternalPort,
+			CPUPercent:         rec.CPUPercent,
+			MemPercent:         rec.MemPercent,
+			NumCPU:             rec.NumCPU,
+		}
+	}
+	return result
+}
+
+// ExternalPort returns the external (STUN-observed) port for the given peer.
+func (s *Store) ExternalPort(peerID types.PeerKey) (uint32, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rec, ok := s.nodes[peerID]
+	if !ok || rec.ExternalPort == 0 {
+		return 0, false
+	}
+	return rec.ExternalPort, true
+}
+
+// LocalRecord returns a read-only view of the local node's state.
+func (s *Store) LocalRecord() LocalNodeView {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rec := s.nodes[s.localID]
+	claims := make(map[string]struct{}, len(rec.WorkloadClaims))
+	maps.Copy(claims, rec.WorkloadClaims)
+	return LocalNodeView{
+		IPs:                rec.IPs,
+		LocalPort:          rec.LocalPort,
+		ExternalPort:       rec.ExternalPort,
+		PubliclyAccessible: rec.PubliclyAccessible,
+		ObservedExternalIP: rec.ObservedExternalIP,
+		CPUPercent:         rec.CPUPercent,
+		MemPercent:         rec.MemPercent,
+		NumCPU:             rec.NumCPU,
+		WorkloadClaims:     claims,
+	}
 }
 
 func (s *Store) NodeIPs(peerID types.PeerKey) []string {
@@ -111,7 +194,7 @@ func (s *Store) KnownPeers() []KnownPeer {
 	valid := s.validNodesLocked()
 	known := make([]KnownPeer, 0, len(valid))
 	for peerID, rec := range valid {
-		if peerID == s.LocalID {
+		if peerID == s.localID {
 			continue
 		}
 		if rec.LastAddr == "" && (len(rec.IPs) == 0 || rec.LocalPort == 0) {
@@ -194,7 +277,7 @@ func (s *Store) LocalServices() map[string]*statev1.Service {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	return maps.Clone(local.Services)
 }
 

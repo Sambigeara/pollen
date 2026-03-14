@@ -24,7 +24,7 @@ func (s *Store) EagerSyncClock() *statev1.GossipStateDigest {
 	defer s.mu.RUnlock()
 
 	for peerID, rec := range s.nodes {
-		if peerID != s.LocalID && rec.maxCounter > 0 {
+		if peerID != s.localID && rec.maxCounter > 0 {
 			return s.digestLocked()
 		}
 	}
@@ -107,7 +107,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 	// Partition self-events from remote events so self-conflict resolution
 	// can see the full batch of our own state before bumping counters.
 	var selfEvents, otherEvents []*statev1.GossipEvent
-	localIDStr := s.LocalID.String()
+	localIDStr := s.localID.String()
 	for _, event := range events {
 		if event == nil {
 			continue
@@ -204,8 +204,8 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 // but lost on restart. Returns the rebroadcast events and whether any workload
 // state was adopted. Caller must hold s.mu.
 func (s *Store) handleSelfConflictLocked(selfEvents []*statev1.GossipEvent) (ApplyResult, bool) {
-	local := s.nodes[s.LocalID]
-	ensureNodeInit(&local, s.LocalID)
+	local := s.nodes[s.localID]
+	ensureNodeInit(&local, s.localID)
 
 	// Find the max counter across all incoming self-events.
 	var maxIncoming uint64
@@ -283,11 +283,11 @@ func (s *Store) handleSelfConflictLocked(selfEvents []*statev1.GossipEvent) (App
 	}
 
 	if !conflictDetected && !adopted && !claimsDeleted {
-		s.nodes[s.LocalID] = local
+		s.nodes[s.localID] = local
 		return ApplyResult{}, false
 	}
 
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 	return ApplyResult{Rebroadcast: s.bumpAndBroadcastAllLocked()}, adopted
 }
 
@@ -310,7 +310,7 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) (ApplyResult, []typ
 
 	// Self-events are handled in batch by handleSelfConflictLocked before
 	// this method is called. Reject any that slip through.
-	if peerID == s.LocalID {
+	if peerID == s.localID {
 		return ApplyResult{}, nil
 	}
 
@@ -549,15 +549,15 @@ func ensureNodeInit(rec *nodeRecord, peerID types.PeerKey) {
 func (s *Store) LocalEvents() []*statev1.GossipEvent {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	local := s.nodes[s.LocalID]
-	return s.buildEventsAbove(s.LocalID, local, 0)
+	local := s.nodes[s.localID]
+	return s.buildEventsAbove(s.localID, local, 0)
 }
 
 // bumpAndBroadcastAllLocked returns events for ALL current local attributes,
 // each with its own incremented counter. Used on self-state conflict (restart
 // recovery). Caller must hold s.mu.
 func (s *Store) bumpAndBroadcastAllLocked() []*statev1.GossipEvent {
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 
 	for key, entry := range local.log {
 		local.maxCounter++
@@ -565,8 +565,8 @@ func (s *Store) bumpAndBroadcastAllLocked() []*statev1.GossipEvent {
 		local.log[key] = entry
 	}
 
-	s.nodes[s.LocalID] = local
-	return s.buildEventsAbove(s.LocalID, local, 0)
+	s.nodes[s.localID] = local
+	return s.buildEventsAbove(s.localID, local, 0)
 }
 
 // buildEventsAbove constructs GossipEvent messages for all log entries with
