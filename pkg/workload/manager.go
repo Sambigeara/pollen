@@ -24,20 +24,11 @@ var (
 // Status describes the lifecycle state of a workload.
 type Status int
 
-const (
-	StatusRunning Status = iota
-	StatusStopped
-	StatusErrored
-)
+const StatusRunning Status = iota
 
 func (s Status) String() string {
-	switch s {
-	case StatusRunning:
+	if s == StatusRunning {
 		return "running"
-	case StatusStopped:
-		return "stopped"
-	case StatusErrored:
-		return "errored"
 	}
 	return "unknown"
 }
