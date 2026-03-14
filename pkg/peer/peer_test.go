@@ -57,9 +57,9 @@ func TestDisconnectReasonRetryDelays(t *testing.T) {
 
 			p, ok := s.Get(key)
 			require.True(t, ok)
-			require.Equal(t, PeerStateDiscovered, p.State)
-			require.Equal(t, ConnectStageEagerRetry, p.Stage)
-			require.Equal(t, 0, p.StageAttempts)
+			require.Equal(t, Discovered, p.State)
+			require.Equal(t, ConnectStageEagerRetry, p.stage)
+			require.Equal(t, 0, p.stageAttempts)
 			require.Equal(t, now.Add(tt.delay), p.NextActionAt)
 		})
 	}
@@ -76,7 +76,7 @@ func TestDisconnectTickReconnectCycle(t *testing.T) {
 
 	p, ok := s.Get(key)
 	require.True(t, ok)
-	require.Equal(t, PeerStateDiscovered, p.State)
+	require.Equal(t, Discovered, p.State)
 
 	// Tick before retry delay elapses — no output.
 	outputs := s.Step(now.Add(500*time.Millisecond), Tick{})
@@ -92,12 +92,12 @@ func TestDisconnectTickReconnectCycle(t *testing.T) {
 
 	// Peer is now connecting.
 	p, _ = s.Get(key)
-	require.Equal(t, PeerStateConnecting, p.State)
+	require.Equal(t, Connecting, p.State)
 
 	// Reconnect succeeds.
 	s.Step(now.Add(3*time.Second), ConnectPeer{PeerKey: key, IP: net.ParseIP("10.0.0.1"), ObservedPort: 9000})
 	p, _ = s.Get(key)
-	require.Equal(t, PeerStateConnected, p.State)
+	require.Equal(t, Connected, p.State)
 }
 
 func TestStageEscalation(t *testing.T) {
@@ -121,16 +121,16 @@ func TestStageEscalation(t *testing.T) {
 	// Fail direct attempt 1.
 	s.Step(now, ConnectFailed{PeerKey: key})
 	p, _ := s.Get(key)
-	require.Equal(t, ConnectStageDirect, p.Stage)
-	require.Equal(t, 1, p.StageAttempts)
+	require.Equal(t, ConnectStageDirect, p.stage)
+	require.Equal(t, 1, p.stageAttempts)
 
 	// Tick + fail direct attempt 2 → escalate to punch.
 	outputs = s.Step(now.Add(2*time.Second), Tick{})
 	require.Len(t, outputs, 1)
 	s.Step(now.Add(2*time.Second), ConnectFailed{PeerKey: key})
 	p, _ = s.Get(key)
-	require.Equal(t, ConnectStagePunch, p.Stage)
-	require.Equal(t, 0, p.StageAttempts)
+	require.Equal(t, ConnectStagePunch, p.stage)
+	require.Equal(t, 0, p.stageAttempts)
 
 	// Tick + fail punch attempt 1.
 	outputs = s.Step(now.Add(3*time.Second), Tick{})
@@ -139,15 +139,15 @@ func TestStageEscalation(t *testing.T) {
 	require.True(t, isPunch)
 	s.Step(now.Add(3*time.Second), ConnectFailed{PeerKey: key})
 	p, _ = s.Get(key)
-	require.Equal(t, ConnectStagePunch, p.Stage)
-	require.Equal(t, 1, p.StageAttempts)
+	require.Equal(t, ConnectStagePunch, p.stage)
+	require.Equal(t, 1, p.stageAttempts)
 
 	// Tick + fail punch attempt 2 → unreachable.
 	outputs = s.Step(now.Add(5*time.Second), Tick{})
 	require.Len(t, outputs, 1)
 	s.Step(now.Add(5*time.Second), ConnectFailed{PeerKey: key})
 	p, _ = s.Get(key)
-	require.Equal(t, PeerStateUnreachable, p.State)
+	require.Equal(t, Unreachable, p.State)
 	require.Equal(t, now.Add(5*time.Second).Add(unreachableRetryInterval), p.NextActionAt)
 }
 
@@ -166,7 +166,7 @@ func TestEagerRetryStage(t *testing.T) {
 
 	p, ok := s.Get(key)
 	require.True(t, ok)
-	require.Equal(t, ConnectStageEagerRetry, p.Stage)
+	require.Equal(t, ConnectStageEagerRetry, p.stage)
 
 	// Tick should emit AttemptEagerConnect.
 	outputs := s.Step(now, Tick{})
@@ -179,8 +179,8 @@ func TestEagerRetryStage(t *testing.T) {
 	// Fail → should escalate to ConnectStageDirect.
 	s.Step(now, ConnectFailed{PeerKey: key})
 	p, _ = s.Get(key)
-	require.Equal(t, ConnectStageDirect, p.Stage)
-	require.Equal(t, 0, p.StageAttempts)
+	require.Equal(t, ConnectStageDirect, p.stage)
+	require.Equal(t, 0, p.stageAttempts)
 
 	// Next tick should emit AttemptConnect (normal direct).
 	outputs = s.Step(now.Add(2*time.Second), Tick{})
@@ -203,7 +203,7 @@ func TestEagerRetrySkippedWhenNoLastAddr(t *testing.T) {
 
 	p, ok := s.Get(key)
 	require.True(t, ok)
-	require.Equal(t, ConnectStageDirect, p.Stage)
+	require.Equal(t, ConnectStageDirect, p.stage)
 
 	outputs := s.Step(now, Tick{})
 	require.Len(t, outputs, 1)
@@ -221,7 +221,7 @@ func TestEagerRetryWithOnlyLastAddr(t *testing.T) {
 
 	p, ok := s.Get(key)
 	require.True(t, ok)
-	require.Equal(t, ConnectStageEagerRetry, p.Stage)
+	require.Equal(t, ConnectStageEagerRetry, p.stage)
 
 	outputs := s.Step(now, Tick{})
 	require.Len(t, outputs, 1)
@@ -240,7 +240,7 @@ func TestForgetPeer(t *testing.T) {
 
 	p, ok := s.Get(key)
 	require.True(t, ok)
-	require.Equal(t, PeerStateConnected, p.State)
+	require.Equal(t, Connected, p.State)
 
 	// Disconnect, then forget.
 	s.Step(now, PeerDisconnected{PeerKey: key, Reason: DisconnectCertExpired})
@@ -286,7 +286,7 @@ func TestUnreachableRetryReturnsToEagerWithLastAddr(t *testing.T) {
 
 	p, ok := s.Get(key)
 	require.True(t, ok)
-	require.Equal(t, PeerStateUnreachable, p.State)
+	require.Equal(t, Unreachable, p.State)
 
 	// After unreachable retry interval, stage should return to eager retry.
 	outputs = s.Step(now.Add(8*time.Second).Add(unreachableRetryInterval), Tick{})
@@ -311,7 +311,7 @@ func TestPrivatePeerSkipsDirectStage(t *testing.T) {
 
 	p, ok := s.Get(key)
 	require.True(t, ok)
-	require.Equal(t, ConnectStagePunch, p.Stage)
+	require.Equal(t, ConnectStagePunch, p.stage)
 
 	// Tick should emit RequestPunchCoordination directly.
 	outputs := s.Step(now, Tick{})
@@ -334,7 +334,7 @@ func TestPublicPeerStartsAtDirect(t *testing.T) {
 
 	p, ok := s.Get(key)
 	require.True(t, ok)
-	require.Equal(t, ConnectStageDirect, p.Stage)
+	require.Equal(t, ConnectStageDirect, p.stage)
 }
 
 func TestPrivatePeerWithLastAddrStartsEager(t *testing.T) {
@@ -354,7 +354,7 @@ func TestPrivatePeerWithLastAddrStartsEager(t *testing.T) {
 	p, ok := s.Get(key)
 	require.True(t, ok)
 	// Has LastAddr → starts at EagerRetry even though not publicly accessible.
-	require.Equal(t, ConnectStageEagerRetry, p.Stage)
+	require.Equal(t, ConnectStageEagerRetry, p.stage)
 }
 
 func TestPrivatelyRoutablePeerStartsDirect(t *testing.T) {
@@ -372,7 +372,7 @@ func TestPrivatelyRoutablePeerStartsDirect(t *testing.T) {
 
 	p, ok := s.Get(key)
 	require.True(t, ok)
-	require.Equal(t, ConnectStageDirect, p.Stage)
+	require.Equal(t, ConnectStageDirect, p.stage)
 }
 
 func TestRediscoveredPrivatelyRoutablePeerRestagesToDirect(t *testing.T) {
@@ -389,7 +389,7 @@ func TestRediscoveredPrivatelyRoutablePeerRestagesToDirect(t *testing.T) {
 
 	p, ok := s.Get(key)
 	require.True(t, ok)
-	require.Equal(t, ConnectStagePunch, p.Stage)
+	require.Equal(t, ConnectStagePunch, p.stage)
 
 	s.Step(now.Add(time.Second), DiscoverPeer{
 		PeerKey:            key,
@@ -401,8 +401,8 @@ func TestRediscoveredPrivatelyRoutablePeerRestagesToDirect(t *testing.T) {
 
 	p, ok = s.Get(key)
 	require.True(t, ok)
-	require.Equal(t, ConnectStageDirect, p.Stage)
-	require.Zero(t, p.StageAttempts)
+	require.Equal(t, ConnectStageDirect, p.stage)
+	require.Zero(t, p.stageAttempts)
 }
 
 func TestConnectingTimeout(t *testing.T) {
@@ -422,20 +422,20 @@ func TestConnectingTimeout(t *testing.T) {
 	require.Len(t, outputs, 1)
 	p, ok := s.Get(key)
 	require.True(t, ok)
-	require.Equal(t, PeerStateConnecting, p.State)
+	require.Equal(t, Connecting, p.State)
 
 	// Before timeout: peer stays Connecting, no outputs.
 	outputs = s.Step(now.Add(9*time.Second), Tick{})
 	require.Empty(t, outputs)
 	p, _ = s.Get(key)
-	require.Equal(t, PeerStateConnecting, p.State)
+	require.Equal(t, Connecting, p.State)
 
 	// After timeout: peer returns to Discovered, stage attempt incremented.
 	outputs = s.Step(now.Add(11*time.Second), Tick{})
 	require.Empty(t, outputs) // no output yet — NextActionAt is in the future
 	p, _ = s.Get(key)
-	require.Equal(t, PeerStateDiscovered, p.State)
-	require.Equal(t, 1, p.StageAttempts)
+	require.Equal(t, Discovered, p.State)
+	require.Equal(t, 1, p.stageAttempts)
 
 	// After backoff from the timeout reset, peer retries.
 	outputs = s.Step(now.Add(12*time.Second), Tick{})
@@ -461,13 +461,13 @@ func TestConnectingTimeoutDoesNotFireEarly(t *testing.T) {
 	// Connect succeeds before timeout — no timeout behavior.
 	s.Step(now.Add(5*time.Second), ConnectPeer{PeerKey: key, IP: net.ParseIP("10.0.0.1"), ObservedPort: 9000})
 	p, _ := s.Get(key)
-	require.Equal(t, PeerStateConnected, p.State)
+	require.Equal(t, Connected, p.State)
 
 	// Tick after original timeout window — should remain connected.
 	outputs := s.Step(now.Add(15*time.Second), Tick{})
 	require.Empty(t, outputs)
 	p, _ = s.Get(key)
-	require.Equal(t, PeerStateConnected, p.State)
+	require.Equal(t, Connected, p.State)
 }
 
 func TestConnectingTimeoutPunchReachesUnreachable(t *testing.T) {
@@ -483,30 +483,30 @@ func TestConnectingTimeoutPunchReachesUnreachable(t *testing.T) {
 		PubliclyAccessible: false,
 	})
 	p, _ := s.Get(key)
-	require.Equal(t, ConnectStagePunch, p.Stage)
+	require.Equal(t, ConnectStagePunch, p.stage)
 
 	// Punch attempt 1: tick → Connecting, then timeout → StageAttempts=1.
 	s.Step(now, Tick{})
 	p, _ = s.Get(key)
-	require.Equal(t, PeerStateConnecting, p.State)
+	require.Equal(t, Connecting, p.State)
 
 	t1 := now.Add(11 * time.Second)
 	s.Step(t1, Tick{})
 	p, _ = s.Get(key)
-	require.Equal(t, PeerStateDiscovered, p.State)
-	require.Equal(t, ConnectStagePunch, p.Stage)
-	require.Equal(t, 1, p.StageAttempts)
+	require.Equal(t, Discovered, p.State)
+	require.Equal(t, ConnectStagePunch, p.stage)
+	require.Equal(t, 1, p.stageAttempts)
 
 	// Punch attempt 2: tick → Connecting, then timeout → Unreachable.
 	t2 := t1.Add(2 * time.Second)
 	s.Step(t2, Tick{})
 	p, _ = s.Get(key)
-	require.Equal(t, PeerStateConnecting, p.State)
+	require.Equal(t, Connecting, p.State)
 
 	t3 := t2.Add(11 * time.Second)
 	s.Step(t3, Tick{})
 	p, _ = s.Get(key)
-	require.Equal(t, PeerStateUnreachable, p.State)
+	require.Equal(t, Unreachable, p.State)
 }
 
 func TestTickCapsConnectionAttempts(t *testing.T) {
@@ -530,11 +530,11 @@ func TestTickCapsConnectionAttempts(t *testing.T) {
 		p, ok := s.Get(testPeerKey(byte(i)))
 		require.True(t, ok)
 		switch p.State {
-		case PeerStateConnecting:
+		case Connecting:
 			connecting++
-		case PeerStateDiscovered:
+		case Discovered:
 			discovered++
-		case PeerStateConnected, PeerStateUnreachable:
+		case Connected, Unreachable:
 			t.Fatalf("peer %d in unexpected state %d", i, p.State)
 		}
 	}
@@ -565,7 +565,7 @@ func TestTickCapDrainsAcrossTicks(t *testing.T) {
 	for i := range 20 {
 		p, ok := s.Get(testPeerKey(byte(i)))
 		require.True(t, ok)
-		require.Equal(t, PeerStateConnecting, p.State)
+		require.Equal(t, Connecting, p.State)
 	}
 }
 
@@ -605,7 +605,7 @@ func TestTickCapDoesNotBlockStateTransitions(t *testing.T) {
 	for i := range 10 {
 		p, ok := s.Get(testPeerKey(byte(i)))
 		require.True(t, ok)
-		require.Equal(t, PeerStateDiscovered, p.State,
+		require.Equal(t, Discovered, p.State,
 			"peer %d should have timed out to Discovered", i)
 	}
 }

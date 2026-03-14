@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"github.com/sourcegraph/conc/pool"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"golang.org/x/net/http2"
 	"google.golang.org/grpc"
 
@@ -33,7 +35,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/node"
-	"github.com/sambigeara/pollen/pkg/observability/logging"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/store"
@@ -286,7 +287,16 @@ func pollenPath(cmd *cobra.Command) (string, error) {
 }
 
 func runNode(cmd *cobra.Command) {
-	logging.Init()
+	zapCfg := zap.NewProductionConfig()
+	zapCfg.Encoding = "console"
+	zapCfg.DisableStacktrace = true
+	zapCfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	zapCfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	if l, err := zapCfg.Build(); err != nil {
+		log.Fatalf("can't initialize zap logger: %v", err)
+	} else {
+		zap.ReplaceGlobals(l.Named("pln"))
+	}
 	defer func() { _ = zap.S().Sync() }()
 
 	logger := zap.S()

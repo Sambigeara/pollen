@@ -345,7 +345,7 @@ func TestRevokeStreakPrivatePeerRevokedAfterThreshold(t *testing.T) {
 		n.syncPeersFromState()
 		_, ok := n.peers.Get(nonTarget)
 		require.True(t, ok, "peer should survive at streak tick %d", tick+1)
-		require.True(t, n.peers.InState(nonTarget, peer.PeerStateConnected),
+		require.True(t, n.peers.InState(nonTarget, peer.Connected),
 			"peer should still be Connected at streak tick %d", tick+1)
 	}
 
@@ -417,7 +417,7 @@ func TestRevokeStreakPublicPeerStickyLonger(t *testing.T) {
 		drainLocalPeerEvents(n)
 		n.syncPeersFromState()
 	}
-	require.True(t, n.peers.InState(nonTarget, peer.PeerStateConnected),
+	require.True(t, n.peers.InState(nonTarget, peer.Connected),
 		"public peer should survive the private threshold")
 
 	// Run up to revokeStreakThresholdPublic - 1 total ticks.
@@ -425,7 +425,7 @@ func TestRevokeStreakPublicPeerStickyLonger(t *testing.T) {
 		drainLocalPeerEvents(n)
 		n.syncPeersFromState()
 	}
-	require.True(t, n.peers.InState(nonTarget, peer.PeerStateConnected),
+	require.True(t, n.peers.InState(nonTarget, peer.Connected),
 		"public peer should survive at tick %d", revokeStreakThresholdPublic-1)
 
 	// One more tick → threshold reached, revoked.
