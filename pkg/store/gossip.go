@@ -480,12 +480,10 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 	case *statev1.GossipEvent_PubliclyAccessible:
 		rec.PubliclyAccessible = true
 	case *statev1.GossipEvent_Vivaldi:
-		if v.Vivaldi != nil {
-			rec.VivaldiCoord = &topology.Coord{
-				X:      v.Vivaldi.GetX(),
-				Y:      v.Vivaldi.GetY(),
-				Height: v.Vivaldi.GetHeight(),
-			}
+		rec.VivaldiCoord = &topology.Coord{
+			X:      v.Vivaldi.GetX(),
+			Y:      v.Vivaldi.GetY(),
+			Height: v.Vivaldi.GetHeight(),
 		}
 	case *statev1.GossipEvent_NatType:
 		rec.NatType = nat.TypeFromUint32(v.NatType.GetNatType())
@@ -505,17 +503,15 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 		m[v.WorkloadClaim.GetHash()] = struct{}{}
 		rec.WorkloadClaims = m
 	case *statev1.GossipEvent_TrafficHeatmap:
-		if v.TrafficHeatmap != nil {
-			m := make(map[types.PeerKey]trafficRate, len(v.TrafficHeatmap.GetRates()))
-			for _, r := range v.TrafficHeatmap.GetRates() {
-				pk, err := types.PeerKeyFromString(r.GetPeerId())
-				if err != nil {
-					return false
-				}
-				m[pk] = trafficRate{BytesIn: r.GetBytesIn(), BytesOut: r.GetBytesOut()}
+		m := make(map[types.PeerKey]trafficRate, len(v.TrafficHeatmap.GetRates()))
+		for _, r := range v.TrafficHeatmap.GetRates() {
+			pk, err := types.PeerKeyFromString(r.GetPeerId())
+			if err != nil {
+				return false
 			}
-			rec.TrafficRates = m
+			m[pk] = trafficRate{BytesIn: r.GetBytesIn(), BytesOut: r.GetBytesOut()}
 		}
+		rec.TrafficRates = m
 	default:
 		return true
 	}
