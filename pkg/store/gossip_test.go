@@ -2683,6 +2683,31 @@ func TestSelfConflictSkipsAlreadyDeletedClaims(t *testing.T) {
 	}
 }
 
+func TestSelfConflictPreservesActiveClaimsFromCurrentSession(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	// Node sets a claim in the current session.
+	s.SetLocalWorkloadClaim("abc123", true)
+
+	// The claim echoes back from a peer during a pull response.
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 1,
+			Change: &statev1.GossipEvent_WorkloadClaim{
+				WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "abc123"},
+			},
+		},
+	}, true)
+
+	// The active claim must survive — it belongs to the current session.
+	claims := s.AllWorkloadClaims()
+	require.Contains(t, claims, "abc123")
+}
+
 func TestSelfConflictMultiBatchSpecAdoption(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1

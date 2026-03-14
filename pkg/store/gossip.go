@@ -789,7 +789,7 @@ func (s *Store) handleSelfConflictLocked(selfEvents []*statev1.GossipEvent) (App
 			continue
 		}
 		key := workloadClaimAttrKey(hash)
-		if existing, ok := local.log[key]; ok && existing.Deleted {
+		if _, ok := local.log[key]; ok {
 			continue
 		}
 		local.log[key] = logEntry{Deleted: true}
