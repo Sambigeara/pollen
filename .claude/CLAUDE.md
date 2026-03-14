@@ -56,6 +56,10 @@
 
 ### Tooling
 - Use `just generate` to regenerate protobuf code, not raw `buf generate` commands.
+- **After editing Go files, ALWAYS run `goimports -w <file>` to fix imports and formatting — including adding missing imports AND removing unused ones.** This is faster than manually searching for import paths and more correct than hand-editing. Never manually add or remove import lines; let `goimports` handle it.
+
+### Config
+- `config.yaml` has a header with example CLI commands (`pln serve`, `pln connect`, `pln disconnect`). When renaming or adding CLI commands that affect services/connections, update the `configHeader` constant in `pkg/config/config.go` to match.
 
 ### Code Quality
 - Don't add comments that restate what the code already says. Only comment where logic isn't self-evident. This includes `nolint` directives — don't add a trailing comment that just restates the lint rule (e.g., `//nolint:forcetypeassert // always a UDPAddr`). The nolint directive is self-explanatory; only comment if the reason is genuinely non-obvious.

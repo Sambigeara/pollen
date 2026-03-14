@@ -2,69 +2,28 @@ package store
 
 import (
 	"bytes"
-	"cmp"
-	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"sync"
 	"syscall"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/types"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	stateFileName = "state.yaml"
-	lockFileName  = ".state.lock"
+	stateFileName     = "state.pb"
+	stateYAMLFileName = "state.yaml"
+	lockFileName      = ".state.lock"
 
 	filePerm = 0o600
 )
-
-type diskState struct {
-	Local       diskLocal        `yaml:"local"`
-	Peers       []diskPeer       `yaml:"peers,omitempty"`
-	Services    []diskService    `yaml:"services,omitempty"`
-	Connections []diskConnection `yaml:"connections,omitempty"`
-	Revocations []diskRevocation `yaml:"revocations,omitempty"`
-}
-
-type diskRevocation struct {
-	SubjectPub string `yaml:"subjectPub"`
-	Data       string `yaml:"data"`
-}
-
-type diskLocal struct {
-	IdentityPublic string `yaml:"identityPublic"`
-}
-
-type diskPeer struct {
-	IdentityPublic     string   `yaml:"identityPublic"`
-	LastAddr           string   `yaml:"lastAddr,omitempty"`
-	ExternalIP         string   `yaml:"externalIP,omitempty"`
-	Addresses          []string `yaml:"addresses,omitempty"`
-	Port               uint32   `yaml:"port,omitempty"`
-	ExternalPort       uint32   `yaml:"externalPort,omitempty"`
-	PubliclyAccessible bool     `yaml:"publiclyAccessible,omitempty"`
-}
-
-type diskService struct {
-	Name     string `yaml:"name"`
-	Provider string `yaml:"provider"`
-	Port     uint32 `yaml:"port"`
-}
-
-type diskConnection struct {
-	Peer       string `yaml:"peer"`
-	RemotePort uint32 `yaml:"remotePort"`
-	LocalPort  uint32 `yaml:"localPort"`
-}
 
 type disk struct {
 	lockFile  *os.File
@@ -93,19 +52,48 @@ func openDisk(pollenDir string) (*disk, error) {
 	}
 
 	statePath := filepath.Join(pollenDir, stateFileName)
-	if _, err := os.Stat(statePath); errors.Is(err, os.ErrNotExist) {
-		if err := perm.WriteGroupReadable(statePath, []byte("local:\n  identityPublic: \"\"\n")); err != nil {
-			_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
-			_ = lf.Close()
-			return nil, fmt.Errorf("create state: %w", err)
-		}
-	} else if err != nil {
+
+	if err := ensureStateFile(pollenDir, statePath); err != nil {
 		_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
 		_ = lf.Close()
-		return nil, fmt.Errorf("stat state: %w", err)
+		return nil, err
 	}
 
 	return &disk{statePath: statePath, lockFile: lf}, nil
+}
+
+func ensureStateFile(pollenDir, statePath string) error {
+	if err := ensureProtoState(pollenDir, statePath); err != nil {
+		return err
+	}
+	if err := migrateConsumedInvitesJSON(pollenDir, statePath); err != nil {
+		return fmt.Errorf("migrate consumed invites: %w", err)
+	}
+	return nil
+}
+
+func ensureProtoState(pollenDir, statePath string) error {
+	_, err := os.Stat(statePath)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat state: %w", err)
+	}
+
+	yamlPath := filepath.Join(pollenDir, stateYAMLFileName)
+	migrated, mErr := migrateYAMLToProto(yamlPath, statePath)
+	if mErr != nil {
+		return fmt.Errorf("migrate state: %w", mErr)
+	}
+	if migrated {
+		return nil
+	}
+
+	if err := perm.WriteGroupReadable(statePath, nil); err != nil {
+		return fmt.Errorf("create state: %w", err)
+	}
+	return nil
 }
 
 func (d *disk) close() error {
@@ -119,27 +107,29 @@ func (d *disk) close() error {
 	return d.lockFile.Close()
 }
 
-func (d *disk) load() (diskState, error) {
+func (d *disk) load() (*statev1.RuntimeState, error) {
 	b, err := os.ReadFile(d.statePath)
 	if err != nil {
-		return diskState{}, fmt.Errorf("read state: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			return &statev1.RuntimeState{}, nil
+		}
+		return nil, fmt.Errorf("read state: %w", err)
 	}
-
-	var st diskState
-	if len(bytes.TrimSpace(b)) == 0 {
-		return st, nil
+	if len(b) == 0 {
+		return &statev1.RuntimeState{}, nil
 	}
-	if err := yaml.Unmarshal(b, &st); err != nil {
-		return st, fmt.Errorf("unmarshal state: %w", err)
+	st := &statev1.RuntimeState{}
+	if err := st.UnmarshalVT(b); err != nil {
+		return nil, fmt.Errorf("unmarshal state: %w", err)
 	}
 	return st, nil
 }
 
-func (d *disk) save(st diskState) error {
+func (d *disk) save(st *statev1.RuntimeState) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	b, err := yaml.Marshal(st)
+	b, err := st.MarshalVT()
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
@@ -147,84 +137,142 @@ func (d *disk) save(st diskState) error {
 	return perm.WriteGroupReadable(d.statePath, b)
 }
 
-func marshalDiskRevocations(revocations map[types.PeerKey]*admissionv1.SignedRevocation) []diskRevocation {
-	if len(revocations) == 0 {
-		return nil
+// --- YAML migration (state.yaml → state.pb) ---
+
+type yamlDiskState struct {
+	Peers []yamlDiskPeer `yaml:"peers,omitempty"`
+}
+
+type yamlDiskPeer struct {
+	IdentityPublic     string   `yaml:"identityPublic"`
+	LastAddr           string   `yaml:"lastAddr,omitempty"`
+	ExternalIP         string   `yaml:"externalIP,omitempty"`
+	Addresses          []string `yaml:"addresses,omitempty"`
+	Port               uint32   `yaml:"port,omitempty"`
+	ExternalPort       uint32   `yaml:"externalPort,omitempty"`
+	PubliclyAccessible bool     `yaml:"publiclyAccessible,omitempty"`
+}
+
+func migrateYAMLToProto(yamlPath, protoPath string) (bool, error) {
+	raw, err := os.ReadFile(yamlPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read yaml state: %w", err)
 	}
 
-	revs := make([]diskRevocation, 0, len(revocations))
-	for subjectKey, rev := range revocations {
-		raw, err := rev.MarshalVT()
+	var ys yamlDiskState
+	if err := yaml.Unmarshal(raw, &ys); err != nil {
+		return false, fmt.Errorf("unmarshal yaml state: %w", err)
+	}
+
+	st := &statev1.RuntimeState{}
+
+	for _, p := range ys.Peers {
+		pk, err := types.PeerKeyFromString(p.IdentityPublic)
 		if err != nil {
-			slog.Warn("failed to marshal revocation for disk", "subject", subjectKey.String(), "err", err)
+			slog.Warn("skipping invalid peer key during migration", "key", p.IdentityPublic, "err", err)
 			continue
 		}
-		revs = append(revs, diskRevocation{
-			SubjectPub: subjectKey.String(),
-			Data:       base64.StdEncoding.EncodeToString(raw),
+		st.Peers = append(st.Peers, &statev1.PeerState{
+			IdentityPub:        pk[:],
+			Addresses:          p.Addresses,
+			Port:               p.Port,
+			ExternalPort:       p.ExternalPort,
+			LastAddr:           p.LastAddr,
+			ExternalIp:         p.ExternalIP,
+			PubliclyAccessible: p.PubliclyAccessible,
 		})
 	}
 
-	slices.SortFunc(revs, func(a, b diskRevocation) int {
-		return cmp.Compare(a.SubjectPub, b.SubjectPub)
-	})
-
-	return revs
-}
-
-func unmarshalDiskRevocations(diskRevs []diskRevocation, trustBundle *admissionv1.TrustBundle) map[types.PeerKey]*admissionv1.SignedRevocation {
-	revocations := make(map[types.PeerKey]*admissionv1.SignedRevocation, len(diskRevs))
-	for _, dr := range diskRevs {
-		subjectKey, err := types.PeerKeyFromString(dr.SubjectPub)
-		if err != nil {
-			slog.Warn("failed to parse revocation subject key from disk", "subject", dr.SubjectPub, "err", err)
-			continue
-		}
-		raw, err := base64.StdEncoding.DecodeString(dr.Data)
-		if err != nil {
-			slog.Warn("failed to decode revocation data from disk", "subject", dr.SubjectPub, "err", err)
-			continue
-		}
-		rev := &admissionv1.SignedRevocation{}
-		if err := rev.UnmarshalVT(raw); err != nil {
-			slog.Warn("failed to unmarshal revocation from disk", "subject", dr.SubjectPub, "err", err)
-			continue
-		}
-		if trustBundle != nil {
-			if err := auth.VerifyRevocation(rev, trustBundle); err != nil {
-				slog.Warn("failed to verify revocation from disk", "subject", dr.SubjectPub, "err", err)
-				continue
-			}
-		}
-		revocations[subjectKey] = rev
-	}
-	return revocations
-}
-
-func toDiskServices(nodes map[types.PeerKey]nodeRecord) []diskService {
-	var services []diskService
-	for peerID, rec := range nodes {
-		for _, svc := range rec.Services {
-			if svc == nil {
-				continue
-			}
-			services = append(services, diskService{
-				Name:     svc.GetName(),
-				Provider: peerID.String(),
-				Port:     svc.GetPort(),
-			})
-		}
+	pb, err := st.MarshalVT()
+	if err != nil {
+		return false, fmt.Errorf("marshal proto state: %w", err)
 	}
 
-	slices.SortFunc(services, func(a, b diskService) int {
-		if c := cmp.Compare(a.Name, b.Name); c != 0 {
-			return c
-		}
-		if c := cmp.Compare(a.Provider, b.Provider); c != 0 {
-			return c
-		}
-		return cmp.Compare(a.Port, b.Port)
-	})
+	if err := perm.WriteGroupReadable(protoPath, pb); err != nil {
+		return false, fmt.Errorf("write proto state: %w", err)
+	}
 
-	return services
+	if err := os.Rename(yamlPath, yamlPath+".bak"); err != nil {
+		slog.Warn("failed to rename old yaml state", "err", err)
+	}
+
+	slog.Info("migrated state.yaml to state.pb")
+	return true, nil
+}
+
+// --- consumed_invites.json migration ---
+
+const consumedInvitesJSONFile = "consumed_invites.json"
+
+type jsonConsumedInviteRecord struct {
+	TokenID        string `json:"tokenID"`
+	ExpiresAtUnix  int64  `json:"expiresAtUnix"`
+	ConsumedAtUnix int64  `json:"consumedAtUnix"`
+}
+
+type jsonConsumedInviteState struct {
+	Invites []jsonConsumedInviteRecord `json:"invites"`
+}
+
+func migrateConsumedInvitesJSON(pollenDir, statePath string) error {
+	jsonPath := filepath.Join(pollenDir, consumedInvitesJSONFile)
+	raw, err := os.ReadFile(jsonPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read consumed invites: %w", err)
+	}
+
+	if len(bytes.TrimSpace(raw)) == 0 {
+		_ = os.Remove(jsonPath)
+		return nil
+	}
+
+	var js jsonConsumedInviteState
+	if err := json.Unmarshal(raw, &js); err != nil {
+		return fmt.Errorf("decode consumed invites: %w", err)
+	}
+
+	stateRaw, err := os.ReadFile(statePath)
+	if err != nil {
+		return fmt.Errorf("read state for consumed invite migration: %w", err)
+	}
+
+	st := &statev1.RuntimeState{}
+	if len(stateRaw) > 0 {
+		if err := st.UnmarshalVT(stateRaw); err != nil {
+			return fmt.Errorf("unmarshal state for consumed invite migration: %w", err)
+		}
+	}
+
+	for _, rec := range js.Invites {
+		if rec.TokenID == "" {
+			continue
+		}
+		st.ConsumedInvites = append(st.ConsumedInvites, &statev1.ConsumedInvite{
+			TokenId:      rec.TokenID,
+			ExpiryUnix:   rec.ExpiresAtUnix,
+			ConsumedUnix: rec.ConsumedAtUnix,
+		})
+	}
+
+	pb, err := st.MarshalVT()
+	if err != nil {
+		return fmt.Errorf("marshal state after consumed invite migration: %w", err)
+	}
+
+	if err := perm.WriteGroupReadable(statePath, pb); err != nil {
+		return fmt.Errorf("write state after consumed invite migration: %w", err)
+	}
+
+	if err := os.Remove(jsonPath); err != nil {
+		slog.Warn("failed to remove old consumed_invites.json", "err", err)
+	}
+
+	slog.Info("migrated consumed_invites.json into state.pb")
+	return nil
 }

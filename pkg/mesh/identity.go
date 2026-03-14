@@ -31,49 +31,49 @@ const (
 	alpnInvite = "pollen-invite/1"
 )
 
-// UUID-derived private OID for pollen membership cert extension.
+// UUID-derived private OID for pollen delegation cert extension.
 // UUID: 9197192d-fb57-43c0-8399-ad704a8b0245.
-var oidPollenMembershipCert = asn1.ObjectIdentifier{2, 25, 37271, 6445, 64343, 17344, 33689, 44400, 19083, 581, 1, 1}
+var oidPollenDelegationCert = asn1.ObjectIdentifier{2, 25, 37271, 6445, 64343, 17344, 33689, 44400, 19083, 581, 1, 1}
 
-func marshalMembershipExtension(cert *admissionv1.MembershipCert) (pkix.Extension, error) {
+func marshalDelegationExtension(cert *admissionv1.DelegationCert) (pkix.Extension, error) {
 	raw, err := cert.MarshalVT()
 	if err != nil {
-		return pkix.Extension{}, fmt.Errorf("marshal membership cert: %w", err)
+		return pkix.Extension{}, fmt.Errorf("marshal delegation cert: %w", err)
 	}
 	val, err := asn1.Marshal(raw)
 	if err != nil {
-		return pkix.Extension{}, fmt.Errorf("asn1 wrap membership cert: %w", err)
+		return pkix.Extension{}, fmt.Errorf("asn1 wrap delegation cert: %w", err)
 	}
 	return pkix.Extension{
-		Id:    oidPollenMembershipCert,
+		Id:    oidPollenDelegationCert,
 		Value: val,
 	}, nil
 }
 
-func parseMembershipExtension(certDER []byte) (*admissionv1.MembershipCert, error) {
+func parseDelegationExtension(certDER []byte) (*admissionv1.DelegationCert, error) {
 	cert, err := x509.ParseCertificate(certDER)
 	if err != nil {
 		return nil, fmt.Errorf("parse x509 certificate: %w", err)
 	}
 
 	for _, ext := range cert.Extensions {
-		if ext.Id.Equal(oidPollenMembershipCert) {
+		if ext.Id.Equal(oidPollenDelegationCert) {
 			var raw []byte
 			if _, err := asn1.Unmarshal(ext.Value, &raw); err != nil {
-				return nil, fmt.Errorf("asn1 unwrap membership cert: %w", err)
+				return nil, fmt.Errorf("asn1 unwrap delegation cert: %w", err)
 			}
-			mc := &admissionv1.MembershipCert{}
-			if err := mc.UnmarshalVT(raw); err != nil {
-				return nil, fmt.Errorf("unmarshal membership cert: %w", err)
+			dc := &admissionv1.DelegationCert{}
+			if err := dc.UnmarshalVT(raw); err != nil {
+				return nil, fmt.Errorf("unmarshal delegation cert: %w", err)
 			}
-			return mc, nil
+			return dc, nil
 		}
 	}
 
 	return nil, nil
 }
 
-func GenerateIdentityCert(signPriv ed25519.PrivateKey, membershipCert *admissionv1.MembershipCert, validity time.Duration) (tls.Certificate, error) {
+func GenerateIdentityCert(signPriv ed25519.PrivateKey, delegationCert *admissionv1.DelegationCert, validity time.Duration) (tls.Certificate, error) {
 	pub := signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), certSerialBits))
@@ -93,8 +93,8 @@ func GenerateIdentityCert(signPriv ed25519.PrivateKey, membershipCert *admission
 		BasicConstraintsValid: true,
 	}
 
-	if membershipCert != nil {
-		ext, err := marshalMembershipExtension(membershipCert)
+	if delegationCert != nil {
+		ext, err := marshalDelegationExtension(delegationCert)
 		if err != nil {
 			return tls.Certificate{}, err
 		}
@@ -144,22 +144,22 @@ func peerKeyFromConn(qc *quic.Conn) (types.PeerKey, error) {
 	return types.PeerKeyFromBytes(pub), nil
 }
 
-func membershipCertFromConn(qc *quic.Conn) *admissionv1.MembershipCert {
+func delegationCertFromConn(qc *quic.Conn) *admissionv1.DelegationCert {
 	tlsState := qc.ConnectionState().TLS
 	if len(tlsState.PeerCertificates) == 0 {
 		return nil
 	}
-	mc, err := parseMembershipExtension(tlsState.PeerCertificates[0].Raw)
-	if err != nil || mc == nil {
+	dc, err := parseDelegationExtension(tlsState.PeerCertificates[0].Raw)
+	if err != nil || dc == nil {
 		return nil
 	}
-	return mc
+	return dc
 }
 
 type verifyMeshPeerOpts struct {
-	trustBundle      *admissionv1.TrustBundle
-	expectedPeer     *types.PeerKey
-	isSubjectRevoked func(subjectPub []byte) bool
+	trustBundle     *admissionv1.TrustBundle
+	expectedPeer    *types.PeerKey
+	reconnectWindow time.Duration
 }
 
 func verifyPeerIdentity(rawCerts [][]byte, expectedPeer *types.PeerKey) (types.PeerKey, error) {
@@ -186,26 +186,36 @@ func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certif
 			return err
 		}
 
-		mc, err := parseMembershipExtension(rawCerts[0])
+		dc, err := parseDelegationExtension(rawCerts[0])
 		if err != nil {
-			return fmt.Errorf("parse membership extension: %w", err)
+			return fmt.Errorf("parse delegation extension: %w", err)
 		}
-		if mc == nil {
-			return errors.New("peer certificate missing membership extension")
-		}
-
-		if err := auth.VerifyMembershipCert(mc, opts.trustBundle, time.Now(), peerKey.Bytes()); err != nil {
-			return err
+		if dc == nil {
+			return errors.New("peer certificate missing delegation extension")
 		}
 
-		if mc.GetClaims() != nil && opts.isSubjectRevoked != nil {
-			if opts.isSubjectRevoked(mc.GetClaims().GetSubjectPub()) {
-				return errors.New("peer membership certificate has been revoked")
-			}
+		now := time.Now()
+		if err := auth.VerifyDelegationCert(dc, opts.trustBundle, now, peerKey.Bytes()); err != nil {
+			return tryReconnectWindow(dc, opts, now, peerKey, err)
 		}
 
 		return nil
 	}
+}
+
+// tryReconnectWindow checks whether an expired-cert error can be recovered
+// because the cert is crypto-valid and within the reconnect grace period.
+func tryReconnectWindow(dc *admissionv1.DelegationCert, opts verifyMeshPeerOpts, now time.Time, peerKey types.PeerKey, origErr error) error {
+	if opts.reconnectWindow <= 0 || !errors.Is(origErr, auth.ErrCertExpired) {
+		return origErr
+	}
+	if err := auth.VerifyDelegationCertChain(dc, opts.trustBundle, peerKey.Bytes()); err != nil {
+		return err
+	}
+	if !auth.IsCertWithinReconnectWindow(dc, now, opts.reconnectWindow) {
+		return origErr
+	}
+	return nil
 }
 
 func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Certificate) error {
@@ -216,11 +226,11 @@ func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Ce
 }
 
 type serverTLSParams struct {
-	meshCertPtr      *atomic.Pointer[tls.Certificate]
-	inviteCert       tls.Certificate
-	trustBundle      *admissionv1.TrustBundle
-	isSubjectRevoked func([]byte) bool
-	inviteEnabled    bool
+	meshCertPtr     *atomic.Pointer[tls.Certificate]
+	inviteCert      tls.Certificate
+	trustBundle     *admissionv1.TrustBundle
+	reconnectWindow time.Duration
+	inviteEnabled   bool
 }
 
 func newServerTLSConfig(p serverTLSParams) *tls.Config {
@@ -232,8 +242,8 @@ func newServerTLSConfig(p serverTLSParams) *tls.Config {
 		ClientAuth: tls.RequireAnyClientCert,
 		NextProtos: []string{alpnMesh},
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{
-			trustBundle:      p.trustBundle,
-			isSubjectRevoked: p.isSubjectRevoked,
+			trustBundle:     p.trustBundle,
+			reconnectWindow: p.reconnectWindow,
 		}),
 	}
 
@@ -262,7 +272,7 @@ func newServerTLSConfig(p serverTLSParams) *tls.Config {
 	}
 }
 
-func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expectedPeer types.PeerKey, trustBundle *admissionv1.TrustBundle, isSubjectRevoked func([]byte) bool) *tls.Config {
+func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expectedPeer types.PeerKey, trustBundle *admissionv1.TrustBundle, reconnectWindow time.Duration) *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -274,9 +284,9 @@ func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expected
 		InsecureSkipVerify: true, //nolint:gosec
 		NextProtos:         []string{alpnMesh},
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{
-			trustBundle:      trustBundle,
-			expectedPeer:     &expectedPeer,
-			isSubjectRevoked: isSubjectRevoked,
+			trustBundle:     trustBundle,
+			expectedPeer:    &expectedPeer,
+			reconnectWindow: reconnectWindow,
 		}),
 	}
 }

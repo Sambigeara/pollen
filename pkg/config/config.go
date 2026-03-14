@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -23,6 +24,8 @@ const (
 	configFileName        = "config.yaml"
 	DefaultBootstrapPort  = 60611
 	ed25519PublicKeyBytes = 32
+
+	configHeader = "# Manual edits while the daemon runs will be overwritten.\n# Use `pln serve`, `pln connect`, `pln disconnect`, `pln seed`, and `pln unseed` to manage services.\n\n"
 )
 
 type BootstrapPeer struct {
@@ -31,15 +34,17 @@ type BootstrapPeer struct {
 }
 
 type CertTTLs struct {
-	Membership  time.Duration `yaml:"membership,omitempty"`
-	Admin       time.Duration `yaml:"admin,omitempty"`
-	TLSIdentity time.Duration `yaml:"tlsIdentity,omitempty"`
+	Membership      time.Duration `yaml:"membership,omitempty"`
+	Delegation      time.Duration `yaml:"delegation,omitempty"`
+	TLSIdentity     time.Duration `yaml:"tlsIdentity,omitempty"`
+	ReconnectWindow time.Duration `yaml:"reconnectWindow,omitempty"`
 }
 
 const (
-	DefaultMembershipTTL  = 365 * 24 * time.Hour
-	DefaultAdminTTL       = 5 * 365 * 24 * time.Hour
-	DefaultTLSIdentityTTL = 10 * 365 * 24 * time.Hour //nolint:mnd
+	DefaultMembershipTTL   = 4 * time.Hour
+	DefaultDelegationTTL   = 30 * 24 * time.Hour
+	DefaultTLSIdentityTTL  = 4 * time.Hour
+	DefaultReconnectWindow = 7 * 24 * time.Hour
 )
 
 func ttlOrDefault(ttl, fallback time.Duration) time.Duration {
@@ -52,14 +57,38 @@ func ttlOrDefault(ttl, fallback time.Duration) time.Duration {
 func (c CertTTLs) MembershipTTL() time.Duration {
 	return ttlOrDefault(c.Membership, DefaultMembershipTTL)
 }
-func (c CertTTLs) AdminTTL() time.Duration { return ttlOrDefault(c.Admin, DefaultAdminTTL) }
+
+func (c CertTTLs) DelegationTTL() time.Duration {
+	return ttlOrDefault(c.Delegation, DefaultDelegationTTL)
+}
+
 func (c CertTTLs) TLSIdentityTTL() time.Duration {
 	return ttlOrDefault(c.TLSIdentity, DefaultTLSIdentityTTL)
 }
 
+func (c CertTTLs) ReconnectWindowDuration() time.Duration {
+	return ttlOrDefault(c.ReconnectWindow, DefaultReconnectWindow)
+}
+
+type Service struct {
+	Name string `yaml:"name"`
+	Port uint32 `yaml:"port"`
+}
+
+type Connection struct {
+	Service    string `yaml:"service"`
+	Peer       string `yaml:"peer"`
+	RemotePort uint32 `yaml:"remotePort"`
+	LocalPort  uint32 `yaml:"localPort"`
+}
+
 type Config struct {
+	AdvertiseIPs   []string        `yaml:"advertiseIPs,omitempty"`
 	BootstrapPeers []BootstrapPeer `yaml:"bootstrapPeers,omitempty"`
+	Services       []Service       `yaml:"services,omitempty"`
+	Connections    []Connection    `yaml:"connections,omitempty"`
 	CertTTLs       CertTTLs        `yaml:"certTTLs,omitempty"` //nolint:tagliatelle
+	Port           uint32          `yaml:"port,omitempty"`
 	Public         bool            `yaml:"public,omitempty"`
 }
 
@@ -117,18 +146,21 @@ func Save(pollenDir string, cfg *Config) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	return perm.WritePrivate(filepath.Join(pollenDir, configFileName), encoded)
+	return perm.WriteGroupWritable(filepath.Join(pollenDir, configFileName), append([]byte(configHeader), encoded...))
 }
 
 func validateCertTTLs(ttls CertTTLs) error {
 	if ttls.Membership < 0 {
 		return errors.New("certTTLs.membership must be >= 0")
 	}
-	if ttls.Admin < 0 {
-		return errors.New("certTTLs.admin must be >= 0")
+	if ttls.Delegation < 0 {
+		return errors.New("certTTLs.delegation must be >= 0")
 	}
 	if ttls.TLSIdentity < 0 {
 		return errors.New("certTTLs.tlsIdentity must be >= 0")
+	}
+	if ttls.ReconnectWindow < 0 {
+		return errors.New("certTTLs.reconnectWindow must be >= 0")
 	}
 	return nil
 }
@@ -279,4 +311,89 @@ func NormalizeRelayAddr(spec string) (string, error) {
 	}
 
 	return net.JoinHostPort(spec, strconv.Itoa(DefaultBootstrapPort)), nil
+}
+
+func (c *Config) AddService(name string, port uint32) {
+	if name == "" {
+		for i, s := range c.Services {
+			if s.Name == "" && s.Port == port {
+				c.Services[i] = Service{Port: port}
+				return
+			}
+		}
+	} else {
+		for i, s := range c.Services {
+			if s.Name == name {
+				c.Services[i].Port = port
+				return
+			}
+		}
+	}
+	c.Services = append(c.Services, Service{Name: name, Port: port})
+	c.canonicalizeServices()
+}
+
+func (c *Config) RemoveService(name string) {
+	c.Services = slices.DeleteFunc(c.Services, func(s Service) bool {
+		return s.Name == name
+	})
+}
+
+func (c *Config) RemoveServiceByPort(port uint32) {
+	c.Services = slices.DeleteFunc(c.Services, func(s Service) bool {
+		return s.Port == port
+	})
+}
+
+func (c *Config) AddConnection(service, peer string, remotePort, localPort uint32) {
+	for _, conn := range c.Connections {
+		if conn.Service == service && conn.Peer == peer && conn.LocalPort == localPort {
+			return
+		}
+	}
+	c.Connections = append(c.Connections, Connection{
+		Service:    service,
+		Peer:       peer,
+		RemotePort: remotePort,
+		LocalPort:  localPort,
+	})
+	c.canonicalizeConnections()
+}
+
+// RemoveConnection removes connections matching the given fields.
+// Zero-value fields act as wildcards. All-zero is a no-op.
+func (c *Config) RemoveConnection(service, peer string, localPort uint32) {
+	if service == "" && peer == "" && localPort == 0 {
+		return
+	}
+	c.Connections = slices.DeleteFunc(c.Connections, func(conn Connection) bool {
+		if service != "" && conn.Service != service {
+			return false
+		}
+		if peer != "" && conn.Peer != peer {
+			return false
+		}
+		if localPort != 0 && conn.LocalPort != localPort {
+			return false
+		}
+		return true
+	})
+}
+
+func (c *Config) canonicalizeServices() {
+	slices.SortFunc(c.Services, func(a, b Service) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+}
+
+func (c *Config) canonicalizeConnections() {
+	slices.SortFunc(c.Connections, func(a, b Connection) int {
+		if v := cmp.Compare(a.Service, b.Service); v != 0 {
+			return v
+		}
+		if v := cmp.Compare(a.Peer, b.Peer); v != 0 {
+			return v
+		}
+		return cmp.Compare(a.LocalPort, b.LocalPort)
+	})
 }

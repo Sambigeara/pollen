@@ -45,12 +45,6 @@ const (
 	EpochSeconds          = 300  // 5 minutes
 	NearestHysteresis     = 0.20 // incumbent distance discount (20%)
 	MinHysteresisDistance = 5.0  // minimum absolute discount (ms) for close peers
-	privateIPv4Ten        = 10
-	privateIPv4One72      = 172
-	privateIPv4Two192     = 192
-	privateIPv4Two168     = 168
-	private172Min         = 16
-	private172Max         = 31
 )
 
 // DefaultParams returns Params with default budgets.
@@ -102,18 +96,13 @@ func ComputeTargetPeers(localKey types.PeerKey, localCoord Coord, peers []PeerIn
 	return result
 }
 
+// TODO(saml): cap full-mesh fan-out (e.g. 16 targets) to bound the burst
+// when a large cluster restarts with persisted state and 0 connections.
 func selectFeasibleFullMesh(localKey types.PeerKey, peers []PeerInfo, params Params) []types.PeerKey {
 	localPrefix := lanPrefix(params.LocalIPs)
 	result := make([]types.PeerKey, 0, len(peers))
 	for _, p := range peers {
 		if p.Key == localKey {
-			continue
-		}
-		if p.PubliclyAccessible || InferPrivatelyRoutable(params.LocalIPs, p.IPs) {
-			result = append(result, p.Key)
-			continue
-		}
-		if suppressProactivePrivate(params, p) {
 			continue
 		}
 		isLAN := localPrefix != "" && lanPrefix(p.IPs) == localPrefix
@@ -388,12 +377,13 @@ func privateSitePrefix(ip net.IP) (string, bool) {
 		return "", false
 	}
 	if ip4 := ip.To4(); ip4 != nil {
+		//nolint:mnd
 		switch {
-		case ip4[0] == privateIPv4Ten:
+		case ip4[0] == 10:
 			return string(ip4[:2]), true
-		case ip4[0] == privateIPv4One72 && ip4[1] >= private172Min && ip4[1] <= private172Max:
+		case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31:
 			return string(ip4[:2]), true
-		case ip4[0] == privateIPv4Two192 && ip4[1] == privateIPv4Two168:
+		case ip4[0] == 192 && ip4[1] == 168:
 			return string(ip4[:3]), true
 		}
 		return "", false

@@ -19,7 +19,7 @@ import (
 
 func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "status [nodes|services]",
+		Use:   "status [nodes|services|seeds]",
 		Short: "Show status",
 		Args:  cobra.RangeArgs(0, 1),
 		Run:   runStatus,
@@ -71,6 +71,9 @@ func runStatus(cmd *cobra.Command, args []string) {
 		if s := collectServicesSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
+		if s := collectSeedsSection(st, opts); len(s.rows) > 0 {
+			sections = append(sections, s)
+		}
 	case "nodes", "node":
 		if s := collectPeersSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
@@ -79,8 +82,12 @@ func runStatus(cmd *cobra.Command, args []string) {
 		if s := collectServicesSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
+	case "seeds", "seed":
+		if s := collectSeedsSection(st, opts); len(s.rows) > 0 {
+			sections = append(sections, s)
+		}
 	default:
-		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services)\n", mode)
+		fmt.Fprintf(cmd.ErrOrStderr(), "unknown status selector %q (use: nodes|services|seeds)\n", mode)
 		os.Exit(1)
 	}
 	renderStatusSections(cmd.OutOrStdout(), sections)
@@ -109,7 +116,7 @@ type statusSection struct {
 func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
 	sec := statusSection{
 		title:   "PEERS",
-		headers: []string{"NODE", "STATUS", "ADDR", "CPU", "MEM", "TUNNELS", "LATENCY"},
+		headers: []string{"NODE", "STATUS", "ADDR", "CPUs", "CPU", "MEM", "TUNNELS", "LATENCY", "TRAFFIC IN", "TRAFFIC OUT"},
 	}
 
 	if self := st.GetSelf(); self != nil && self.GetNode() != nil {
@@ -124,10 +131,12 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		}
 		sec.rows = append(sec.rows, []string{
 			label, status, addr,
+			formatCount(self.GetNumCpu()),
 			formatPercent(self.GetCpuPercent()),
 			formatPercent(self.GetMemPercent()),
-			formatTunnelCount(self.GetTunnelCount()),
+			formatCount(self.GetTunnelCount()),
 			"-",
+			"-", "-",
 		})
 	}
 
@@ -147,25 +156,38 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			addr = "-"
 		}
 
+		cpus := formatCount(n.GetNumCpu())
 		cpu := formatPercent(n.GetCpuPercent())
 		mem := formatPercent(n.GetMemPercent())
-		tunnels := formatTunnelCount(n.GetTunnelCount())
+		tunnels := formatCount(n.GetTunnelCount())
 		latency := formatLatency(n.GetLatencyMs())
+		trafficIn := formatBytes(n.GetTrafficBytesIn())
+		trafficOut := formatBytes(n.GetTrafficBytesOut())
 
 		if !isReachableStatus(n.GetStatus()) {
+			cpus = "-"
 			cpu = "-"
 			mem = "-"
 			tunnels = "-"
 			latency = "-"
+			trafficIn = "-"
+			trafficOut = "-"
 		}
 
-		sec.rows = append(sec.rows, []string{label, status, addr, cpu, mem, tunnels, latency})
+		sec.rows = append(sec.rows, []string{label, status, addr, cpus, cpu, mem, tunnels, latency, trafficIn, trafficOut})
 	}
 
 	if filtered > 0 {
 		sec.footer = fmt.Sprintf("offline peers: %d (use --all)", filtered)
 	}
 	return sec
+}
+
+func formatCount(v uint32) string {
+	if v == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d", v)
 }
 
 func formatPercent(v uint32) string {
@@ -175,11 +197,25 @@ func formatPercent(v uint32) string {
 	return fmt.Sprintf("%d%%", v)
 }
 
-func formatTunnelCount(v uint32) string {
-	if v == 0 {
+func formatBytes(b uint64) string {
+	if b == 0 {
 		return "-"
 	}
-	return fmt.Sprintf("%d", v)
+	const (
+		kb = 1024
+		mb = 1024 * kb
+		gb = 1024 * mb
+	)
+	switch {
+	case b >= gb:
+		return fmt.Sprintf("%.1f GB", float64(b)/float64(gb))
+	case b >= mb:
+		return fmt.Sprintf("%.1f MB", float64(b)/float64(mb))
+	case b >= kb:
+		return fmt.Sprintf("%.1f KB", float64(b)/float64(kb))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
 
 func formatLatency(ms float64) string {
@@ -245,18 +281,59 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 	return sec
 }
 
+func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
+	sec := statusSection{
+		title:   "SEEDS",
+		headers: []string{"HASH", "STATUS", "REPLICAS", "LOCAL", "UPTIME"},
+	}
+
+	now := time.Now()
+	for _, w := range st.GetWorkloads() {
+		hash := w.GetHash()
+		if !opts.wide && len(hash) > 16 { //nolint:mnd
+			hash = hash[:16]
+		}
+		st := formatWorkloadStatus(w.GetStatus())
+		replicas := fmt.Sprintf("%d/%d", w.GetActiveReplicas(), w.GetDesiredReplicas())
+		local := ""
+		if w.GetLocal() {
+			local = "*"
+		}
+		var uptime string
+		if w.GetStartedAtUnix() > 0 {
+			uptime = humanDuration(now.Sub(time.Unix(w.GetStartedAtUnix(), 0)))
+		} else {
+			uptime = "-"
+		}
+		sec.rows = append(sec.rows, []string{hash, st, replicas, local, uptime})
+	}
+	return sec
+}
+
+func formatWorkloadStatus(s controlv1.WorkloadStatus) string {
+	switch s {
+	case controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING:
+		return "running"
+	case controlv1.WorkloadStatus_WORKLOAD_STATUS_STOPPED:
+		return "stopped"
+	case controlv1.WorkloadStatus_WORKLOAD_STATUS_ERRORED:
+		return "errored"
+	case controlv1.WorkloadStatus_WORKLOAD_STATUS_UNSPECIFIED:
+		return "unknown"
+	}
+	return "unknown"
+}
+
 func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 	const certExpirySkew = time.Minute
 
 	var latest time.Time
 	var health controlv1.CertHealth
-	var nonRenewable bool
 	for _, c := range st.GetCertificates() {
 		t := time.Unix(c.GetNotAfterUnix(), 0)
 		if t.After(latest) {
 			latest = t
 			health = c.GetHealth()
-			nonRenewable = c.GetNonRenewable()
 		}
 	}
 	if latest.IsZero() {
@@ -265,26 +342,32 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 
 	remaining := time.Until(latest.Add(certExpirySkew))
 
-	if remaining <= 0 || health == controlv1.CertHealth_CERT_HEALTH_EXPIRED {
-		msg := "membership expired — node has stopped; rejoin the cluster or contact a cluster admin"
-		if nonRenewable {
-			msg = "guest membership expired — node has stopped; request a new invite from a cluster admin"
+	var latestDeadline int64
+	for _, c := range st.GetCertificates() {
+		if dl := c.GetAccessDeadlineUnix(); dl > latestDeadline {
+			latestDeadline = dl
 		}
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render(msg) //nolint:mnd
+	}
+	hasDeadline := latestDeadline > 0
+
+	if remaining <= 0 || health == controlv1.CertHealth_CERT_HEALTH_EXPIRED {
+		if hasDeadline {
+			return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render( //nolint:mnd
+				"temporary access expired — rejoin the cluster or contact a cluster admin")
+		}
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render( //nolint:mnd
+			"membership expired — entering degraded mode; will auto-recover when an admin peer is reachable")
 	}
 
 	msg := "membership expires in " + humanDuration(remaining)
-	if nonRenewable {
-		msg = "guest " + msg
+	if hasDeadline {
+		msg = "temporary access expires in " + humanDuration(time.Until(time.Unix(latestDeadline, 0)))
 	}
 
 	switch health {
 	case controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON:
-		detail := " — auto-renewal failed — rejoin the cluster or contact a cluster admin"
-		if nonRenewable {
-			detail = " — request a new invite to continue"
-		}
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + detail) //nolint:mnd
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render( //nolint:mnd
+			msg + " — auto-renewal failed — rejoin the cluster or contact a cluster admin")
 	case controlv1.CertHealth_CERT_HEALTH_RENEWING:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render( //nolint:mnd
 			msg + " — auto-renewal in progress")

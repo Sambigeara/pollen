@@ -6,32 +6,31 @@ import (
 	"testing"
 	"time"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
 
-func newTestStore(pub []byte, trustBundle *admissionv1.TrustBundle) *Store {
+func newTestStore(pub []byte) *Store {
 	localID := types.PeerKeyFromBytes(pub)
 	s := &Store{
 		LocalID: localID,
 		nodes: map[types.PeerKey]nodeRecord{
 			localID: {
-				maxCounter:  1,
-				IdentityPub: append([]byte(nil), pub...),
-				Reachable:   make(map[types.PeerKey]struct{}),
-				Services:    make(map[string]*statev1.Service),
+				maxCounter:     1,
+				IdentityPub:    append([]byte(nil), pub...),
+				Reachable:      make(map[types.PeerKey]struct{}),
+				Services:       make(map[string]*statev1.Service),
+				WorkloadSpecs:  make(map[string]*statev1.WorkloadSpecChange),
+				WorkloadClaims: make(map[string]struct{}),
 				log: map[attrKey]logEntry{
 					identityAttrKey(): {Counter: 1},
 				},
 			},
 		},
-		revocations:        make(map[types.PeerKey]*admissionv1.SignedRevocation),
-		trustBundle:        trustBundle,
+		denied:             make(map[types.PeerKey]struct{}),
 		desiredConnections: make(map[string]Connection),
 		metrics:            metrics.NewGossipMetrics(nil),
 	}
@@ -56,7 +55,7 @@ func peerKey(b byte) (types.PeerKey, string) {
 func TestEagerSyncClock(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	// Fresh store with only local state → empty digest.
 	digest := s.EagerSyncClock()
@@ -75,7 +74,7 @@ func TestEagerSyncClock(t *testing.T) {
 	digest = s.EagerSyncClock()
 	peers := digest.GetPeers()
 	require.Len(t, peers, 2)
-	require.Equal(t, uint64(5), peers[s.LocalID.String()].GetMaxCounter())
+	require.Equal(t, uint64(6), peers[s.LocalID.String()].GetMaxCounter())
 	require.NotZero(t, peers[s.LocalID.String()].GetStateHash())
 	peerPK, _ := peerKey(2)
 	require.Equal(t, uint64(5), peers[peerPK.String()].GetMaxCounter())
@@ -85,13 +84,13 @@ func TestEagerSyncClock(t *testing.T) {
 func TestSetLocalNetworkReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	require.Len(t, events, 1)
 
 	ev := events[0]
-	require.Equal(t, uint64(6), ev.GetCounter())
+	require.Equal(t, uint64(7), ev.GetCounter())
 	network := ev.GetNetwork()
 	require.NotNil(t, network)
 	require.Equal(t, []string{"10.0.0.1"}, network.GetIps())
@@ -101,7 +100,7 @@ func TestSetLocalNetworkReturnsEvent(t *testing.T) {
 func TestSetLocalNetworkNoOpWhenUnchanged(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	events := s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
@@ -113,7 +112,7 @@ func TestSetLocalNetworkNoOpWhenUnchanged(t *testing.T) {
 func TestSetExternalPortReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.SetExternalPort(45000)
 	if len(events) != 1 {
@@ -127,7 +126,7 @@ func TestSetExternalPortReturnsEvent(t *testing.T) {
 func TestSetObservedExternalIPReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.SetObservedExternalIP("52.204.52.130")
 	require.Len(t, events, 1)
@@ -137,7 +136,7 @@ func TestSetObservedExternalIPReturnsEvent(t *testing.T) {
 func TestSetLocalConnectedConnect(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPub := make([]byte, 32)
 	peerPub[0] = 2
@@ -160,7 +159,7 @@ func TestSetLocalConnectedConnect(t *testing.T) {
 func TestSetLocalConnectedDisconnect(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPub := make([]byte, 32)
 	peerPub[0] = 2
@@ -182,7 +181,7 @@ func TestSetLocalConnectedDisconnect(t *testing.T) {
 func TestApplyEventSingleAttribute(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -209,7 +208,7 @@ func TestApplyEventSingleAttribute(t *testing.T) {
 func TestApplyEventObservedExternalIP(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -230,7 +229,7 @@ func TestApplyEventObservedExternalIP(t *testing.T) {
 func TestApplyEventPerKeyCounter(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -262,7 +261,7 @@ func TestApplyEventPerKeyCounter(t *testing.T) {
 func TestApplyEventDifferentKeys(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -297,7 +296,7 @@ func TestApplyEventDifferentKeys(t *testing.T) {
 func TestApplyEventDeletion(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -330,7 +329,7 @@ func TestApplyEventDeletion(t *testing.T) {
 func TestApplyEventTombstonePreventResurrection(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -363,7 +362,7 @@ func TestApplyEventTombstonePreventResurrection(t *testing.T) {
 func TestApplyEventSelfStateConflict(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 	localID := s.LocalID
 
 	// Set some local state.
@@ -383,14 +382,14 @@ func TestApplyEventSelfStateConflict(t *testing.T) {
 	}
 
 	rec := s.nodes[localID]
-	// Adopted 10, then bumped once per attribute: net(11) + id(12) + pa(13) + nat(14) + observed_external_ip(15) + resource_telemetry(16).
-	require.Equal(t, uint64(16), rec.maxCounter)
+	// Adopted 10, then bumped once per attribute: net(11) + id(12) + pa(13) + nat(14) + observed_external_ip(15) + resource_telemetry(16) + traffic_heatmap(17).
+	require.Equal(t, uint64(17), rec.maxCounter)
 }
 
 func TestApplyEventSelfStateNoConflict(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 
@@ -411,7 +410,7 @@ func TestApplyEventSelfStateNoConflict(t *testing.T) {
 func TestMissingForReturnsEvents(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
@@ -423,13 +422,13 @@ func TestMissingForReturnsEvents(t *testing.T) {
 		},
 	})
 
-	require.Len(t, events, 7)
+	require.Len(t, events, 8)
 }
 
 func TestMissingForRespectsClock(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
@@ -440,7 +439,7 @@ func TestMissingForRespectsClock(t *testing.T) {
 	localDigest := digest.GetPeers()[s.LocalID.String()]
 	events := s.MissingFor(&statev1.GossipStateDigest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 5, StateHash: localDigest.GetStateHash()},
+			s.LocalID.String(): {MaxCounter: 6, StateHash: localDigest.GetStateHash()},
 		},
 	})
 
@@ -452,7 +451,7 @@ func TestMissingForRespectsClock(t *testing.T) {
 func TestMissingForReturnsNilForUpToDate(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 
@@ -465,19 +464,19 @@ func TestMissingForReturnsNilForUpToDate(t *testing.T) {
 func TestClockUsesMaxCounter(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
 
 	digest := s.Clock()
-	require.Equal(t, uint64(7), digest.GetPeers()[s.LocalID.String()].GetMaxCounter())
+	require.Equal(t, uint64(8), digest.GetPeers()[s.LocalID.String()].GetMaxCounter())
 }
 
 func TestUpsertLocalServiceReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.UpsertLocalService(8080, "http")
 	if len(events) != 1 {
@@ -494,7 +493,7 @@ func TestUpsertLocalServiceReturnsEvent(t *testing.T) {
 func TestRemoveLocalServicesReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.UpsertLocalService(8080, "http")
 	events := s.RemoveLocalServices("http")
@@ -515,7 +514,7 @@ func TestRemoveLocalServicesReturnsEvent(t *testing.T) {
 func TestRemoveLocalServicesNoOpWhenMissing(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.RemoveLocalServices("http")
 	if events != nil {
@@ -526,7 +525,7 @@ func TestRemoveLocalServicesNoOpWhenMissing(t *testing.T) {
 func TestApplyEventNetworkUpdate(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -556,7 +555,7 @@ func TestApplyEventNetworkUpdate(t *testing.T) {
 func TestApplyEventIdentityPub(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 	idPub := make([]byte, 32)
@@ -582,7 +581,7 @@ func TestApplyEventIdentityPub(t *testing.T) {
 func TestApplyEventReachablePeer(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 	targetPK, _ := peerKey(3)
@@ -620,7 +619,7 @@ func TestApplyEventReachablePeer(t *testing.T) {
 func TestSetLastAddr(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -647,7 +646,7 @@ func TestSetLastAddr(t *testing.T) {
 func TestSetLastAddrIgnoresUnknownPeer(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	unknownPK, _ := peerKey(99)
 	s.SetLastAddr(unknownPK, "1.2.3.4:5678")
@@ -661,7 +660,7 @@ func TestSetLastAddrIgnoresUnknownPeer(t *testing.T) {
 func TestKnownPeersIncludesPeerWithLastAddrOnly(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 	idPub := make([]byte, 32)
@@ -696,7 +695,7 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 	localPub := make([]byte, 32)
 	localPub[0] = 1
 
-	s, err := Load(dir, localPub, nil)
+	s, err := Load(dir, localPub)
 	if err != nil {
 		t.Fatalf("load store: %v", err)
 	}
@@ -722,7 +721,7 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 		t.Fatalf("close store: %v", err)
 	}
 
-	s2, err := Load(dir, localPub, nil)
+	s2, err := Load(dir, localPub)
 	if err != nil {
 		t.Fatalf("reload store: %v", err)
 	}
@@ -749,20 +748,16 @@ func TestSaveLoadPersistsLastAddr(t *testing.T) {
 	}
 }
 
-func TestLoadServiceWithOrphanedProvider(t *testing.T) {
+func TestSaveLoadDoesNotPersistServices(t *testing.T) {
 	dir := t.TempDir()
 
 	localPub := make([]byte, 32)
 	localPub[0] = 1
 
-	// Bootstrap an empty store to create the state file.
-	s, err := Load(dir, localPub, nil)
-	if err != nil {
-		t.Fatalf("initial load: %v", err)
-	}
+	s, err := Load(dir, localPub)
+	require.NoError(t, err)
 
-	// Add a peer with a service, then save.
-	peerPK, peerIDStr := peerKey(2)
+	_, peerIDStr := peerKey(2)
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  peerIDStr,
 		Counter: 1,
@@ -778,62 +773,23 @@ func TestLoadServiceWithOrphanedProvider(t *testing.T) {
 		},
 	})
 
-	if err := s.Save(); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+	require.NoError(t, s.Save())
+	require.NoError(t, s.Close())
 
-	// Tamper with disk state: remove the peer entry but keep the service.
-	// This simulates the bug where IdentityPub was empty and got skipped on load.
-	d, err := openDisk(dir)
-	if err != nil {
-		t.Fatalf("open disk: %v", err)
-	}
-	st, err := d.load()
-	if err != nil {
-		t.Fatalf("load disk: %v", err)
-	}
-	st.Peers = nil // remove all peers, keep services
-	if err := d.save(st); err != nil {
-		t.Fatalf("save tampered state: %v", err)
-	}
-	if err := d.close(); err != nil {
-		t.Fatalf("close disk: %v", err)
-	}
+	s2, err := Load(dir, localPub)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, s2.Close()) }()
 
-	// Load should not panic even though the service references an unknown provider.
-	s2, err := Load(dir, localPub, nil)
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	defer func() { _ = s2.Close() }()
-
+	peerPK, _ := peerKey(2)
 	rec, ok := s2.Get(peerPK)
-	if !ok {
-		t.Fatal("expected peer record to be created from orphaned service")
-	}
-	if _, exists := rec.Services["http"]; !exists {
-		t.Fatal("expected service 'http' on orphaned provider")
-	}
-	if len(rec.IdentityPub) == 0 {
-		t.Fatal("expected IdentityPub to be set from peer key")
-	}
-
-	idPub, found := s2.IdentityPub(peerPK)
-	if !found {
-		t.Fatal("IdentityPub should return true for orphaned provider")
-	}
-	if len(idPub) != 32 {
-		t.Fatalf("expected 32-byte IdentityPub, got %d bytes", len(idPub))
-	}
+	require.True(t, ok)
+	require.Empty(t, rec.Services, "services should not survive save/load")
 }
 
 func TestSetLocalPubliclyAccessibleReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.SetLocalPubliclyAccessible(true)
 	if len(events) != 1 {
@@ -852,7 +808,7 @@ func TestSetLocalPubliclyAccessibleReturnsEvent(t *testing.T) {
 func TestSetLocalPubliclyAccessibleNoOpWhenUnchanged(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalPubliclyAccessible(true)
 	events := s.SetLocalPubliclyAccessible(true)
@@ -864,7 +820,7 @@ func TestSetLocalPubliclyAccessibleNoOpWhenUnchanged(t *testing.T) {
 func TestSetLocalPubliclyAccessibleClear(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalPubliclyAccessible(true)
 	events := s.SetLocalPubliclyAccessible(false)
@@ -885,7 +841,7 @@ func TestSetLocalPubliclyAccessibleClear(t *testing.T) {
 func TestApplyPubliclyAccessibleFromPeer(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -919,7 +875,7 @@ func TestApplyPubliclyAccessibleFromPeer(t *testing.T) {
 func TestPubliclyAccessibleRoundTrip(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	events := s.SetLocalPubliclyAccessible(true)
 	if len(events) != 1 {
@@ -947,7 +903,7 @@ func TestPubliclyAccessibleRoundTrip(t *testing.T) {
 func TestPubliclyAccessibleConflictRecovery(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalPubliclyAccessible(true)
 
@@ -979,7 +935,7 @@ func TestFreshStoreGossipsPubliclyAccessibleDeletion(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	s, err := Load(t.TempDir(), pub, nil)
+	s, err := Load(t.TempDir(), pub)
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -1002,254 +958,50 @@ func TestFreshStoreGossipsPubliclyAccessibleDeletion(t *testing.T) {
 	require.True(t, found, "fresh store should gossip a PubliclyAccessible deletion to peers with stale state")
 }
 
-func newTestClusterAuth(t *testing.T) (ed25519.PrivateKey, *admissionv1.TrustBundle) {
-	t.Helper()
-	adminPub, adminPriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-	return adminPriv, auth.NewTrustBundle(adminPub)
-}
-
-func issueTestRevocation(t *testing.T, adminPriv ed25519.PrivateKey, trust *admissionv1.TrustBundle, subjectPub []byte) *admissionv1.SignedRevocation {
-	t.Helper()
-	rev, err := auth.IssueRevocation(adminPriv, trust.GetClusterId(), subjectPub, time.Now())
-	if err != nil {
-		t.Fatalf("issue revocation: %v", err)
-	}
-	return rev
-}
-
-func TestPublishRevocationAndIsRevoked(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-
+func TestDenyPeerAndIsDenied(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, trust)
+	s := newTestStore(pub)
 
 	subjectPub := make([]byte, 32)
-	subjectPub[0] = 2
+	subjectPub[0] = 0x42
 
-	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
+	require.False(t, s.IsDenied(subjectPub))
 
-	events := s.PublishRevocation(rev)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
+	events := s.DenyPeer(subjectPub)
+	require.Len(t, events, 1)
 
-	if !s.IsSubjectRevoked(subjectPub) {
-		t.Fatal("expected subject pub to be revoked")
-	}
+	require.True(t, s.IsDenied(subjectPub))
 
-	otherPub := make([]byte, 32)
-	otherPub[0] = 3
-	if s.IsSubjectRevoked(otherPub) {
-		t.Fatal("expected other pub to NOT be revoked")
-	}
+	// Duplicate deny is a no-op
+	events = s.DenyPeer(subjectPub)
+	require.Nil(t, events)
 }
 
-func TestPublishRevocationDuplicateIsNoop(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-
+func TestKnownPeersExcludesDenied(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, trust)
-
-	rev := issueTestRevocation(t, adminPriv, trust, make([]byte, 32))
-
-	events := s.PublishRevocation(rev)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-
-	events = s.PublishRevocation(rev)
-	if events != nil {
-		t.Fatal("expected nil for duplicate revocation")
-	}
-}
-
-func TestApplyRevocationEventFromPeer(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub, trust)
+	s := newTestStore(pub)
 
 	peerPub := make([]byte, 32)
-	peerPub[0] = 2
-	peerID := types.PeerKeyFromBytes(peerPub)
+	peerPub[0] = 0x02
+	peerKey := types.PeerKeyFromBytes(peerPub)
 
-	subjectPub := make([]byte, 32)
-	subjectPub[0] = 3
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{PeerId: peerKey.String(), Counter: 1, Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 1234}}},
+		{PeerId: peerKey.String(), Counter: 2, Change: &statev1.GossipEvent_IdentityPub{IdentityPub: &statev1.IdentityChange{IdentityPub: peerPub, CertExpiryUnix: time.Now().Add(time.Hour).Unix()}}},
+	}, false)
 
-	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
+	require.Len(t, s.KnownPeers(), 1)
 
-	event := &statev1.GossipEvent{
-		PeerId:  peerID.String(),
-		Counter: 1,
-		Change: &statev1.GossipEvent_Revocation{
-			Revocation: &statev1.RevocationChange{Revocation: rev},
-		},
-	}
-
-	s.applyEvent(event)
-
-	if !s.IsSubjectRevoked(subjectPub) {
-		t.Fatal("expected subject pub to be revoked after applying peer event")
-	}
-}
-
-func TestApplyRevocationEventRejectsWithoutTrustBundle(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub, nil)
-
-	peerPub := make([]byte, 32)
-	peerPub[0] = 2
-	peerID := types.PeerKeyFromBytes(peerPub)
-
-	subjectPub := make([]byte, 32)
-	subjectPub[0] = 3
-
-	rev := &admissionv1.SignedRevocation{
-		Entry: &admissionv1.RevocationEntry{
-			SubjectPub: subjectPub,
-		},
-		Signature: make([]byte, 64),
-	}
-
-	event := &statev1.GossipEvent{
-		PeerId:  peerID.String(),
-		Counter: 1,
-		Change: &statev1.GossipEvent_Revocation{
-			Revocation: &statev1.RevocationChange{Revocation: rev},
-		},
-	}
-
-	s.applyEvent(event)
-
-	if s.IsSubjectRevoked(subjectPub) {
-		t.Fatal("expected revocation to be rejected when trust bundle is nil")
-	}
-}
-
-func TestApplyRevocationDeletedEventRejected(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub, trust)
-
-	_, peerIDStr := peerKey(2)
-
-	subjectPub := make([]byte, 32)
-	subjectPub[0] = 3
-	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
-
-	event := &statev1.GossipEvent{
-		PeerId:  peerIDStr,
-		Counter: 1,
-		Deleted: true,
-		Change: &statev1.GossipEvent_Revocation{
-			Revocation: &statev1.RevocationChange{Revocation: rev},
-		},
-	}
-
-	s.applyEvent(event)
-
-	if s.IsSubjectRevoked(subjectPub) {
-		t.Fatal("deleted revocation event should be silently dropped")
-	}
-
-	peerPK, _ := peerKey(2)
-	rec, ok := s.Get(peerPK)
-	if ok && rec.maxCounter > 0 {
-		t.Fatal("deleted revocation should not advance the log")
-	}
-}
-
-func TestApplyRevocationDuplicateDoesNotFireCallback(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub, trust)
-
-	var callCount int
-	s.OnRevocation(func(types.PeerKey) { callCount++ })
-
-	subjectPub := make([]byte, 32)
-	subjectPub[0] = 3
-	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
-
-	// First peer sends revocation.
-	_, peer1Str := peerKey(2)
-	s.applyEvent(&statev1.GossipEvent{
-		PeerId:  peer1Str,
-		Counter: 1,
-		Change: &statev1.GossipEvent_Revocation{
-			Revocation: &statev1.RevocationChange{Revocation: rev},
-		},
-	})
-
-	// Second peer sends the same revocation.
-	_, peer2Str := peerKey(4)
-	s.applyEvent(&statev1.GossipEvent{
-		PeerId:  peer2Str,
-		Counter: 1,
-		Change: &statev1.GossipEvent_Revocation{
-			Revocation: &statev1.RevocationChange{Revocation: rev},
-		},
-	})
-
-	if callCount != 1 {
-		t.Fatalf("expected onRevocation to fire exactly once, got %d", callCount)
-	}
-
-	if !s.IsSubjectRevoked(subjectPub) {
-		t.Fatal("subject should still be revoked")
-	}
-}
-
-func TestKnownPeersExcludesRevoked(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub, trust)
-
-	peerPK, peerIDStr := peerKey(2)
-
-	// Add peer with network info so it appears in KnownPeers.
-	s.applyEvent(&statev1.GossipEvent{
-		PeerId:  peerIDStr,
-		Counter: 1,
-		Change: &statev1.GossipEvent_Network{
-			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.5"}, LocalPort: 7000},
-		},
-	})
-
-	peers := s.KnownPeers()
-	if len(peers) != 1 || peers[0].PeerID != peerPK {
-		t.Fatalf("expected 1 known peer before revocation, got %d", len(peers))
-	}
-
-	// Revoke the peer.
-	subjectPub := make([]byte, 32)
-	copy(subjectPub, peerPK[:])
-	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
-	s.PublishRevocation(rev)
-
-	peers = s.KnownPeers()
-	if len(peers) != 0 {
-		t.Fatalf("expected 0 known peers after revocation, got %d", len(peers))
-	}
+	s.DenyPeer(peerPub)
+	require.Len(t, s.KnownPeers(), 0)
 }
 
 func TestKnownPeersExcludesExpired(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 	_, peer3IDStr := peerKey(3)
@@ -1324,59 +1076,10 @@ func TestKnownPeersExcludesExpired(t *testing.T) {
 	}
 }
 
-func TestLoadRestoresRevocationsFromDisk(t *testing.T) {
-	adminPriv, trust := newTestClusterAuth(t)
-	dir := t.TempDir()
-
-	localPub := make([]byte, 32)
-	localPub[0] = 1
-
-	s, err := Load(dir, localPub, trust)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-
-	subjectPub := make([]byte, 32)
-	subjectPub[0] = 2
-	rev := issueTestRevocation(t, adminPriv, trust, subjectPub)
-
-	s.PublishRevocation(rev)
-
-	if err := s.Save(); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-
-	s2, err := Load(dir, localPub, trust)
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	defer func() { _ = s2.Close() }()
-
-	if !s2.IsSubjectRevoked(subjectPub) {
-		t.Fatal("revocation should survive save/load round-trip")
-	}
-
-	// The revocation should appear in MissingFor output for a new joiner.
-	events := s2.MissingFor(nil)
-	var found bool
-	for _, ev := range events {
-		if ev.GetRevocation() != nil {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("expected revocation event in MissingFor output after reload")
-	}
-}
-
 func TestSetLocalVivaldiCoordReturnsEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	coord := topology.Coord{X: 10.5, Y: -3.2, Height: 0.001}
 	events := s.SetLocalVivaldiCoord(coord)
@@ -1394,7 +1097,7 @@ func TestSetLocalVivaldiCoordReturnsEvent(t *testing.T) {
 func TestSetLocalVivaldiCoordEpsilonSuppression(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	coord := topology.Coord{X: 10.5, Y: -3.2, Height: 0.001}
 	s.SetLocalVivaldiCoord(coord)
@@ -1411,7 +1114,7 @@ func TestSetLocalVivaldiCoordEpsilonSuppression(t *testing.T) {
 func TestSetLocalVivaldiCoordUnchangedSuppressedAtHighHeight(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	coord := topology.Coord{X: 1.0, Y: 2.0, Height: 3.0}
 	s.SetLocalVivaldiCoord(coord)
@@ -1423,7 +1126,7 @@ func TestSetLocalVivaldiCoordUnchangedSuppressedAtHighHeight(t *testing.T) {
 func TestFirstSetLocalVivaldiCoordAlwaysPublishes(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	coord := topology.Coord{X: 0.1, Height: 0.2}
 	events := s.SetLocalVivaldiCoord(coord)
@@ -1435,7 +1138,7 @@ func TestFirstSetLocalVivaldiCoordAlwaysPublishes(t *testing.T) {
 func TestApplyVivaldiFromPeer(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -1457,7 +1160,7 @@ func TestApplyVivaldiFromPeer(t *testing.T) {
 func TestApplyVivaldiDeletionClearsToNil(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -1487,7 +1190,7 @@ func TestApplyVivaldiDeletionClearsToNil(t *testing.T) {
 func TestVivaldiRoundTrip(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalVivaldiCoord(topology.Coord{X: 10.5, Y: -3.2, Height: 0.001})
 
@@ -1510,7 +1213,7 @@ func TestVivaldiRoundTrip(t *testing.T) {
 func TestVivaldiConflictRecovery(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalVivaldiCoord(topology.Coord{X: 10.5, Y: -3.2, Height: 0.001})
 
@@ -1538,7 +1241,7 @@ func TestFreshStoreDoesNotGossipVivaldi(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	s, err := Load(t.TempDir(), pub, nil)
+	s, err := Load(t.TempDir(), pub)
 	require.NoError(t, err)
 	defer s.Close()
 
@@ -1561,7 +1264,7 @@ func TestFreshStoreDoesNotGossipVivaldi(t *testing.T) {
 func TestMissingForPartialClockIncludesUnknownPeers(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	pkA, strA := peerKey(2)
 	pkB, strB := peerKey(3)
@@ -1606,7 +1309,7 @@ func TestMissingForPartialClockIncludesUnknownPeers(t *testing.T) {
 func TestMissingForNilClockSendsEverything(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, strA := peerKey(2)
 	_, strB := peerKey(3)
@@ -1636,7 +1339,7 @@ func TestMissingForNilClockSendsEverything(t *testing.T) {
 func TestKnownPeersIncludesVivaldiCoord(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -1665,7 +1368,7 @@ func TestKnownPeersIncludesVivaldiCoord(t *testing.T) {
 func TestApplyRemoteEventRebroadcast(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -1683,7 +1386,7 @@ func TestApplyRemoteEventRebroadcast(t *testing.T) {
 func TestApplyStaleRemoteEventNoRebroadcast(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	_, peerIDStr := peerKey(2)
 
@@ -1711,7 +1414,7 @@ func TestSaveLoadPersistsPubliclyAccessible(t *testing.T) {
 	localPub := make([]byte, 32)
 	localPub[0] = 1
 
-	s, err := Load(dir, localPub, nil)
+	s, err := Load(dir, localPub)
 	require.NoError(t, err)
 
 	_, peerIDStr := peerKey(2)
@@ -1736,7 +1439,7 @@ func TestSaveLoadPersistsPubliclyAccessible(t *testing.T) {
 	require.NoError(t, s.Save())
 	require.NoError(t, s.Close())
 
-	s2, err := Load(dir, localPub, nil)
+	s2, err := Load(dir, localPub)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, s2.Close()) }()
 
@@ -1746,7 +1449,7 @@ func TestSaveLoadPersistsPubliclyAccessible(t *testing.T) {
 
 func TestStaleRatioBatchLevel(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 	gm := metrics.NewGossipMetrics(nil)
 	s.SetGossipMetrics(gm)
 
@@ -1806,30 +1509,35 @@ func TestStaleRatioBatchLevel(t *testing.T) {
 
 func TestResourceTelemetryDeadband(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	t.Run("first call emits", func(t *testing.T) {
-		events := s.SetLocalResourceTelemetry(10, 20, 1<<30)
+		events := s.SetLocalResourceTelemetry(10, 20, 1<<30, 4)
 		require.Len(t, events, 1)
 	})
 
 	t.Run("below threshold suppressed", func(t *testing.T) {
-		events := s.SetLocalResourceTelemetry(11, 21, 1<<30)
+		events := s.SetLocalResourceTelemetry(11, 21, 1<<30, 4)
 		require.Nil(t, events)
 	})
 
 	t.Run("cpu crosses threshold", func(t *testing.T) {
-		events := s.SetLocalResourceTelemetry(12, 20, 1<<30)
+		events := s.SetLocalResourceTelemetry(12, 20, 1<<30, 4)
 		require.Len(t, events, 1)
 	})
 
 	t.Run("mem crosses threshold", func(t *testing.T) {
-		events := s.SetLocalResourceTelemetry(12, 22, 1<<30)
+		events := s.SetLocalResourceTelemetry(12, 22, 1<<30, 4)
 		require.Len(t, events, 1)
 	})
 
 	t.Run("mem total change emits", func(t *testing.T) {
-		events := s.SetLocalResourceTelemetry(12, 22, 2<<30)
+		events := s.SetLocalResourceTelemetry(12, 22, 2<<30, 4)
+		require.Len(t, events, 1)
+	})
+
+	t.Run("num cpu change emits", func(t *testing.T) {
+		events := s.SetLocalResourceTelemetry(12, 22, 2<<30, 8)
 		require.Len(t, events, 1)
 	})
 }
@@ -1837,7 +1545,7 @@ func TestResourceTelemetryDeadband(t *testing.T) {
 func TestWatermarkAlwaysAdvances(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -1865,7 +1573,7 @@ func TestWatermarkAlwaysAdvances(t *testing.T) {
 func TestPeerHash(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 
@@ -1887,7 +1595,7 @@ func TestPeerHash(t *testing.T) {
 func TestDigestHashMismatchSendsAll(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 	s.SetExternalPort(45000)
@@ -1899,17 +1607,1286 @@ func TestDigestHashMismatchSendsAll(t *testing.T) {
 		},
 	})
 
-	require.Len(t, events, 7)
+	require.Len(t, events, 8)
 }
 
 func TestDigestMatchSkips(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
-	s := newTestStore(pub, nil)
+	s := newTestStore(pub)
 
 	s.SetLocalNetwork([]string{"10.0.0.1"}, 9000)
 
 	// Pass own digest back — everything matches → empty result.
 	events := s.MissingFor(s.Clock())
 	require.Empty(t, events)
+}
+
+func TestOnDenyCallbackFiredOnGossipReceipt(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	var deniedPeers []types.PeerKey
+	s.OnDenyPeer(func(pk types.PeerKey) {
+		deniedPeers = append(deniedPeers, pk)
+	})
+
+	// Simulate a deny event from a remote peer.
+	senderPK, senderPKStr := peerKey(2)
+	subjectPK, _ := peerKey(3)
+	_ = senderPK
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  senderPKStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Deny{
+			Deny: &statev1.DenyChange{SubjectPub: subjectPK[:]},
+		},
+	})
+
+	require.Len(t, deniedPeers, 1)
+	require.Equal(t, subjectPK, deniedPeers[0])
+	require.True(t, s.IsDenied(subjectPK[:]))
+}
+
+func TestOnDenyCallbackNotFiredForAlreadyDenied(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	subjectPK, _ := peerKey(3)
+	s.DenyPeer(subjectPK[:])
+
+	var callCount int
+	s.OnDenyPeer(func(_ types.PeerKey) {
+		callCount++
+	})
+
+	// Deny via gossip from a different peer — already denied, callback should not fire.
+	_, senderPKStr := peerKey(2)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  senderPKStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Deny{
+			Deny: &statev1.DenyChange{SubjectPub: subjectPK[:]},
+		},
+	})
+
+	require.Equal(t, 0, callCount)
+}
+
+func TestWorkloadSpecRoundTrip(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	// Publish a workload spec.
+	events, err := s.SetLocalWorkloadSpec("abc123", 2, 16, 0)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.False(t, events[0].GetDeleted())
+
+	// Query it back.
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	sv, ok := specs["abc123"]
+	require.True(t, ok)
+	require.Equal(t, uint32(2), sv.Spec.GetReplicas())
+	require.Equal(t, uint32(16), sv.Spec.GetMemoryPages())
+	require.Equal(t, s.LocalID, sv.Publisher)
+
+	// Idempotent — no event on identical call.
+	events2, err := s.SetLocalWorkloadSpec("abc123", 2, 16, 0)
+	require.NoError(t, err)
+	require.Nil(t, events2)
+
+	// Remove it.
+	del := s.RemoveLocalWorkloadSpec("abc123")
+	require.Len(t, del, 1)
+	require.True(t, del[0].GetDeleted())
+
+	specs2 := s.AllWorkloadSpecs()
+	require.Empty(t, specs2)
+
+	// Idempotent removal.
+	del2 := s.RemoveLocalWorkloadSpec("abc123")
+	require.Nil(t, del2)
+}
+
+func TestWorkloadClaimRoundTrip(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	// Claim a workload.
+	events := s.SetLocalWorkloadClaim("abc123", true)
+	require.Len(t, events, 1)
+	require.False(t, events[0].GetDeleted())
+
+	claims := s.AllWorkloadClaims()
+	require.Len(t, claims, 1)
+	require.Contains(t, claims["abc123"], s.LocalID)
+
+	// Idempotent.
+	events2 := s.SetLocalWorkloadClaim("abc123", true)
+	require.Nil(t, events2)
+
+	// Release.
+	rel := s.SetLocalWorkloadClaim("abc123", false)
+	require.Len(t, rel, 1)
+	require.True(t, rel[0].GetDeleted())
+
+	claims2 := s.AllWorkloadClaims()
+	require.Empty(t, claims2)
+}
+
+func TestWorkloadGossipApply(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	_, remotePeerStr := peerKey(2)
+
+	// Apply a remote spec event.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{
+				Hash:     "deadbeef",
+				Replicas: 3,
+			},
+		},
+	})
+
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	require.Equal(t, uint32(3), specs["deadbeef"].Spec.GetReplicas())
+
+	// Mark the remote peer as reachable so its claims are visible.
+	remotePK, _ := peerKey(2)
+	s.SetLocalConnected(remotePK, true)
+
+	// Apply a remote claim event.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "deadbeef"},
+		},
+	})
+
+	claims := s.AllWorkloadClaims()
+	require.Len(t, claims, 1)
+	require.Contains(t, claims["deadbeef"], remotePK)
+
+	// Delete remote spec.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 3,
+		Deleted: true,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "deadbeef"},
+		},
+	})
+
+	specs2 := s.AllWorkloadSpecs()
+	require.Empty(t, specs2)
+}
+
+func TestOnWorkloadChangeCallback(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	var callCount int
+	s.OnWorkloadChange(func() { callCount++ })
+
+	_, remotePeerStr := peerKey(2)
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "abc", Replicas: 1},
+		},
+	})
+	require.Equal(t, 1, callCount)
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "abc"},
+		},
+	})
+	require.Equal(t, 2, callCount)
+}
+
+func TestReachabilityChangeTriggersWorkloadCallback(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	var callCount int
+	s.OnWorkloadChange(func() { callCount++ })
+
+	_, remotePeerStr := peerKey(2)
+	_, targetPeerStr := peerKey(3)
+
+	// A reachability event should trigger the workload callback because
+	// liveComponentLocked uses reachability to filter claims.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Reachability{
+			Reachability: &statev1.ReachabilityChange{PeerId: targetPeerStr},
+		},
+	})
+	require.Equal(t, 1, callCount)
+}
+
+func TestVivaldiChangeDoesNotTriggerWorkloadCallback(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	var callCount int
+	s.OnWorkloadChange(func() { callCount++ })
+
+	_, remotePeerStr := peerKey(2)
+
+	// Vivaldi updates should not trigger the workload callback — they are
+	// frequent and don't affect claim visibility via liveComponentLocked.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Vivaldi{
+			Vivaldi: &statev1.VivaldiCoordinateChange{X: 1, Y: 2, Height: 0.1},
+		},
+	})
+	require.Equal(t, 0, callCount)
+}
+
+func TestAllWorkloadSpecs_DuplicatePublishers_LowestPeerKeyWins(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 5 // local node has PeerKey starting with 5
+	s := newTestStore(pub)
+
+	// Local node publishes spec with replicas=1 (no remote peers yet, so accepted).
+	_, err := s.SetLocalWorkloadSpec("shared", 1, 0, 0)
+	require.NoError(t, err)
+
+	// Two remote peers also publish specs for the same hash with different replicas.
+	peer2PK, peer2Str := peerKey(2) // lower PeerKey → should win
+	_, peer9Str := peerKey(9)       // higher PeerKey
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peer2Str,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "shared", Replicas: 3},
+		},
+	})
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peer9Str,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "shared", Replicas: 7},
+		},
+	})
+
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	sv := specs["shared"]
+	require.Equal(t, peer2PK, sv.Publisher, "lowest PeerKey should win")
+	require.Equal(t, uint32(3), sv.Spec.GetReplicas(), "should use winner's spec")
+}
+
+func TestSetLocalWorkloadSpec_RejectsWhenRemoteOwns(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	// Remote peer publishes a spec first via gossip.
+	_, remotePeerStr := peerKey(2)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "contested", Replicas: 1},
+		},
+	})
+
+	// Local attempt to publish the same hash should be rejected atomically.
+	events, err := s.SetLocalWorkloadSpec("contested", 2, 0, 0)
+	require.ErrorIs(t, err, ErrSpecOwnedRemotely)
+	require.Nil(t, events)
+
+	// Only the remote spec should exist.
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	require.Equal(t, uint32(1), specs["contested"].Spec.GetReplicas())
+}
+
+func TestRemoteSpec_TombstonesLosingLocalSpec(t *testing.T) {
+	// Local node has PeerKey starting with 9 (high).
+	pub := make([]byte, 32)
+	pub[0] = 9
+	s := newTestStore(pub)
+
+	// Local node publishes a spec first (no remote competitors yet).
+	events, err := s.SetLocalWorkloadSpec("contested", 3, 0, 0)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	require.Equal(t, s.LocalID, specs["contested"].Publisher)
+
+	// Remote peer with lower PeerKey publishes the same hash via gossip.
+	winnerPK, winnerStr := peerKey(1)
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  winnerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "contested", Replicas: 2},
+		},
+	})
+
+	// Rebroadcast should contain the original event AND the local tombstone.
+	require.Len(t, result.Rebroadcast, 2)
+	tombstone := result.Rebroadcast[1]
+	require.True(t, tombstone.GetDeleted())
+	require.Equal(t, s.LocalID.String(), tombstone.GetPeerId())
+
+	// Only the winner's spec should remain in the merged view.
+	specs = s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	require.Equal(t, winnerPK, specs["contested"].Publisher)
+	require.Equal(t, uint32(2), specs["contested"].Spec.GetReplicas())
+
+	// Local node's raw record should no longer have the spec.
+	local := s.nodes[s.LocalID]
+	require.NotContains(t, local.WorkloadSpecs, "contested")
+}
+
+func TestRemoteSpec_NoTombstoneWhenLocalWins(t *testing.T) {
+	// Local node has PeerKey starting with 1 (low — wins).
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	events, err := s.SetLocalWorkloadSpec("mine", 3, 0, 0)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	// Remote peer with higher PeerKey publishes the same hash.
+	_, loserStr := peerKey(9)
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  loserStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "mine", Replicas: 5},
+		},
+	})
+
+	// Only the original event should be rebroadcast — no tombstone.
+	require.Len(t, result.Rebroadcast, 1)
+
+	// Local spec is still the winner.
+	specs := s.AllWorkloadSpecs()
+	require.Equal(t, s.LocalID, specs["mine"].Publisher)
+	require.Equal(t, uint32(3), specs["mine"].Spec.GetReplicas())
+}
+
+func TestRemoteSpec_NoTombstoneWhenRemoteDenied(t *testing.T) {
+	// Local node has high PeerKey — would normally lose to remote.
+	pub := make([]byte, 32)
+	pub[0] = 9
+	s := newTestStore(pub)
+
+	events, err := s.SetLocalWorkloadSpec("contested", 3, 0, 0)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	// Remote peer with lower PeerKey — but denied.
+	deniedPK, deniedStr := peerKey(1)
+	s.denied[deniedPK] = struct{}{}
+
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  deniedStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "contested", Replicas: 2},
+		},
+	})
+
+	// No tombstone — denied peers cannot win ownership.
+	require.Len(t, result.Rebroadcast, 1)
+
+	// Local spec remains.
+	specs := s.AllWorkloadSpecs()
+	require.Equal(t, s.LocalID, specs["contested"].Publisher)
+	require.Equal(t, uint32(3), specs["contested"].Spec.GetReplicas())
+}
+
+func TestRemoteSpec_NoTombstoneWhenRemoteExpired(t *testing.T) {
+	// Local node has high PeerKey — would normally lose to remote.
+	pub := make([]byte, 32)
+	pub[0] = 9
+	s := newTestStore(pub)
+
+	events, err := s.SetLocalWorkloadSpec("contested", 3, 0, 0)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	// Remote peer with lower PeerKey, but expired cert.
+	_, expiredStr := peerKey(1)
+	pastExpiry := time.Now().Add(-time.Hour).Unix()
+
+	// Set up the remote peer's identity with an expired cert.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  expiredStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{
+				IdentityPub:    make([]byte, 32),
+				CertExpiryUnix: pastExpiry,
+			},
+		},
+	})
+
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  expiredStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "contested", Replicas: 2},
+		},
+	})
+
+	// No tombstone — expired peers cannot win ownership.
+	require.Len(t, result.Rebroadcast, 1)
+
+	// Local spec remains.
+	specs := s.AllWorkloadSpecs()
+	require.Equal(t, s.LocalID, specs["contested"].Publisher)
+	require.Equal(t, uint32(3), specs["contested"].Spec.GetReplicas())
+}
+
+func TestResolveWorkloadPrefix_ClusterWide(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	// Only a remote peer has this spec — local node has nothing.
+	_, remotePeerStr := peerKey(2)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "abcdef1234567890", Replicas: 2},
+		},
+	})
+
+	// Resolve by prefix.
+	hash, ambiguous, found := s.ResolveWorkloadPrefix("abcdef")
+	require.True(t, found)
+	require.False(t, ambiguous)
+	require.Equal(t, "abcdef1234567890", hash)
+
+	// No match.
+	_, _, found = s.ResolveWorkloadPrefix("zzz")
+	require.False(t, found)
+
+	// Ambiguous: add another spec with overlapping prefix.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "abcdef9999999999", Replicas: 1},
+		},
+	})
+
+	_, ambiguous, found = s.ResolveWorkloadPrefix("abcdef")
+	require.True(t, ambiguous)
+	require.False(t, found)
+}
+
+func TestWorkloadQueries_ExcludeDeniedNodes(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	// Remote peer publishes a spec and a claim.
+	deniedPK, deniedStr := peerKey(2)
+	s.SetLocalConnected(deniedPK, true)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  deniedStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "deniedwl", Replicas: 1},
+		},
+	})
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  deniedStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "deniedwl"},
+		},
+	})
+
+	// Before denial, spec and claim are visible.
+	require.Len(t, s.AllWorkloadSpecs(), 1)
+	claims := s.AllWorkloadClaims()
+	require.Contains(t, claims["deniedwl"], deniedPK)
+	h, _, found := s.ResolveWorkloadPrefix("denied")
+	require.True(t, found)
+	require.Equal(t, "deniedwl", h)
+
+	// Deny the peer.
+	s.denied[deniedPK] = struct{}{}
+
+	// After denial, spec, claim, and prefix resolution all exclude the peer.
+	require.Empty(t, s.AllWorkloadSpecs())
+	require.Empty(t, s.AllWorkloadClaims())
+	_, _, found = s.ResolveWorkloadPrefix("denied")
+	require.False(t, found)
+}
+
+func TestAllWorkloadClaims_ExcludesUnreachableNodes(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	remotePK, remoteStr := peerKey(2)
+
+	// Remote peer claims a workload while reachable.
+	s.SetLocalConnected(remotePK, true)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remoteStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "wl1"},
+		},
+	})
+
+	claims := s.AllWorkloadClaims()
+	require.Contains(t, claims["wl1"], remotePK, "reachable peer's claim should be visible")
+
+	// Peer becomes unreachable (simulates node death).
+	s.SetLocalConnected(remotePK, false)
+
+	claims = s.AllWorkloadClaims()
+	require.Empty(t, claims, "unreachable peer's claim should be filtered")
+
+	// Local claims are always visible regardless of reachability.
+	s.SetLocalWorkloadClaim("wl2", true)
+	claims = s.AllWorkloadClaims()
+	require.Contains(t, claims["wl2"], s.LocalID, "local claim must always be visible")
+}
+
+func TestAllWorkloadClaims_RackFailureIgnoresStaleObservers(t *testing.T) {
+	// Scenario: nodes B and C are in the same rack. Both die.
+	// B's stale reachability entry still claims C is reachable, but
+	// since the local node (A) can't reach B, B's observation is ignored.
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub) // local = A
+
+	pkB, strB := peerKey(2)
+	pkC, strC := peerKey(3)
+
+	// Both B and C are initially reachable.
+	s.SetLocalConnected(pkB, true)
+	s.SetLocalConnected(pkC, true)
+
+	// B reports C as reachable (via gossip).
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  strB,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Reachability{
+			Reachability: &statev1.ReachabilityChange{PeerId: strC},
+		},
+	})
+
+	// C claims a workload.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  strC,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "rackwl"},
+		},
+	})
+
+	claims := s.AllWorkloadClaims()
+	require.Contains(t, claims["rackwl"], pkC, "C reachable → claim visible")
+
+	// Rack failure: A loses connectivity to both B and C.
+	// B's stale gossip still says it can reach C.
+	s.SetLocalConnected(pkB, false)
+	s.SetLocalConnected(pkC, false)
+
+	claims = s.AllWorkloadClaims()
+	require.Empty(t, claims, "stale observer B must not keep C's claim alive")
+}
+
+func TestAllWorkloadClaims_MultiHopReachability(t *testing.T) {
+	// Topology: A(local) → B → C → D
+	// A can only directly reach B, but D is alive and reachable via the
+	// chain. D's claims must remain visible.
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub) // local = A
+
+	pkB, strB := peerKey(2)
+	_, strC := peerKey(3)
+	pkD, strD := peerKey(4)
+
+	// A → B
+	s.SetLocalConnected(pkB, true)
+
+	// B → C (via gossip)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  strB,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Reachability{
+			Reachability: &statev1.ReachabilityChange{PeerId: strC},
+		},
+	})
+
+	// C → D (via gossip)
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  strC,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Reachability{
+			Reachability: &statev1.ReachabilityChange{PeerId: strD},
+		},
+	})
+
+	// D claims a workload.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  strD,
+		Counter: 1,
+		Change: &statev1.GossipEvent_WorkloadClaim{
+			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "multihop"},
+		},
+	})
+
+	claims := s.AllWorkloadClaims()
+	require.Contains(t, claims["multihop"], pkD, "multi-hop reachable peer's claim must be visible")
+}
+
+func TestTrafficHeatmap_ApplyAndQuery(t *testing.T) {
+	localPK, localIDStr := peerKey(1)
+	remotePK, remotePKStr := peerKey(2)
+
+	s := newTestStore([]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	// Apply a traffic heatmap event from the remote peer.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePKStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_TrafficHeatmap{
+			TrafficHeatmap: &statev1.TrafficHeatmapChange{
+				Rates: []*statev1.TrafficRate{
+					{PeerId: localIDStr, BytesIn: 100, BytesOut: 200},
+				},
+			},
+		},
+	})
+
+	all := s.AllTrafficHeatmaps()
+	require.Contains(t, all, remotePK)
+	require.Equal(t, TrafficSnapshot{BytesIn: 100, BytesOut: 200}, all[remotePK][localPK])
+}
+
+func TestTrafficHeatmap_TombstoneOnRestart(t *testing.T) {
+	pub := []byte{3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	s := newTestStore(pub)
+
+	targetPK, _ := peerKey(4)
+	events := s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{
+		{4}: {BytesIn: 500, BytesOut: 600},
+	})
+	require.Len(t, events, 1)
+
+	// Verify it's stored.
+	all := s.AllTrafficHeatmaps()
+	localID := types.PeerKeyFromBytes(pub)
+	require.Contains(t, all, localID)
+	require.Equal(t, TrafficSnapshot{BytesIn: 500, BytesOut: 600}, all[localID][targetPK])
+
+	// Simulate restart by re-tombstoning stale attrs.
+	local := s.nodes[localID]
+	tombstoneStaleAttrs(&local)
+	s.nodes[localID] = local
+
+	// Traffic data should be tombstoned.
+	entry := local.log[trafficHeatmapAttrKey()]
+	require.True(t, entry.Deleted)
+}
+
+func TestTrafficHeatmap_ZeroSnapshotSkipped(t *testing.T) {
+	pub := []byte{5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	s := newTestStore(pub)
+
+	// Empty snapshot produces no gossip event when no prior data exists.
+	events := s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{})
+	require.Empty(t, events)
+
+	// All-zero snapshot also produces no gossip event.
+	events = s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{
+		{6}: {BytesIn: 0, BytesOut: 0},
+	})
+	require.Empty(t, events)
+}
+
+func TestTrafficHeatmap_StaleClearing(t *testing.T) {
+	pub := []byte{7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	s := newTestStore(pub)
+	localID := types.PeerKeyFromBytes(pub)
+
+	// Publish non-zero traffic.
+	events := s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{
+		{8}: {BytesIn: 100, BytesOut: 200},
+	})
+	require.Len(t, events, 1)
+	require.False(t, events[0].GetDeleted())
+
+	all := s.AllTrafficHeatmaps()
+	require.Contains(t, all, localID)
+
+	// Next tick: zero traffic. Should emit deletion event.
+	events = s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{})
+	require.Len(t, events, 1)
+	require.True(t, events[0].GetDeleted())
+
+	// Traffic data should be cleared.
+	all = s.AllTrafficHeatmaps()
+	require.NotContains(t, all, localID)
+
+	// Subsequent zero tick: no event (already cleared).
+	events = s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{})
+	require.Empty(t, events)
+}
+
+func TestMalformedTrafficHeatmapRejected(t *testing.T) {
+	_, remotePKStr := peerKey(2)
+	localPK, localIDStr := peerKey(1)
+
+	s := newTestStore([]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	remotePK := types.PeerKeyFromBytes([]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+
+	// Apply a valid traffic heatmap from the remote peer.
+	result := s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePKStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_TrafficHeatmap{
+			TrafficHeatmap: &statev1.TrafficHeatmapChange{
+				Rates: []*statev1.TrafficRate{
+					{PeerId: localIDStr, BytesIn: 100, BytesOut: 200},
+				},
+			},
+		},
+	})
+	require.Len(t, result.Rebroadcast, 1)
+
+	all := s.AllTrafficHeatmaps()
+	require.Equal(t, TrafficSnapshot{BytesIn: 100, BytesOut: 200}, all[remotePK][localPK])
+
+	// Capture the log entry and counter after the valid apply.
+	logBefore := s.nodes[remotePK].log[trafficHeatmapAttrKey()]
+
+	// Apply a second heatmap with one valid and one invalid peer_id.
+	result = s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePKStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_TrafficHeatmap{
+			TrafficHeatmap: &statev1.TrafficHeatmapChange{
+				Rates: []*statev1.TrafficRate{
+					{PeerId: localIDStr, BytesIn: 999, BytesOut: 999},
+					{PeerId: "not-a-valid-peer-key", BytesIn: 1, BytesOut: 1},
+				},
+			},
+		},
+	})
+
+	// The malformed heatmap must be rejected entirely — original data preserved.
+	all = s.AllTrafficHeatmaps()
+	require.Equal(t, TrafficSnapshot{BytesIn: 100, BytesOut: 200}, all[remotePK][localPK])
+
+	// The bad event must not advance the stored counter/log entry.
+	logAfter := s.nodes[remotePK].log[trafficHeatmapAttrKey()]
+	require.Equal(t, logBefore, logAfter)
+
+	// The bad event must not be rebroadcast.
+	require.Empty(t, result.Rebroadcast)
+}
+
+func TestAllNodePlacementStates(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localPK := s.LocalID
+
+	// Set local resource telemetry.
+	s.SetLocalResourceTelemetry(50, 60, 8<<30, 4)
+
+	// Set local Vivaldi coordinate.
+	s.SetLocalVivaldiCoord(topology.Coord{X: 1.0, Y: 2.0, Height: 0.5})
+
+	// Set local traffic heatmap.
+	remotePK, remotePKStr := peerKey(2)
+	s.SetLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{
+		remotePK: {BytesIn: 100, BytesOut: 200},
+	})
+
+	// Apply remote peer identity + resource telemetry via gossip.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePKStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{IdentityPub: remotePK.Bytes()},
+		},
+	})
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePKStr,
+		Counter: 2,
+		Change: &statev1.GossipEvent_ResourceTelemetry{
+			ResourceTelemetry: &statev1.ResourceTelemetryChange{
+				CpuPercent:    30,
+				MemPercent:    40,
+				MemTotalBytes: 16 << 30,
+				NumCpu:        8,
+			},
+		},
+	})
+
+	// Remote peer must be reachable to appear in placement states.
+	s.SetLocalConnected(remotePK, true)
+
+	states := s.AllNodePlacementStates()
+	require.Len(t, states, 2)
+
+	// Local node.
+	local := states[localPK]
+	require.Equal(t, uint32(50), local.CPUPercent)
+	require.Equal(t, uint32(60), local.MemPercent)
+	require.Equal(t, uint64(8<<30), local.MemTotalBytes)
+	require.Equal(t, uint32(4), local.NumCPU)
+	require.NotNil(t, local.Coord)
+	require.InDelta(t, 1.0, local.Coord.X, 1e-12)
+	require.Len(t, local.TrafficTo, 1)
+	require.Equal(t, uint64(300), local.TrafficTo[remotePK])
+
+	// Remote node.
+	remote := states[remotePK]
+	require.Equal(t, uint32(30), remote.CPUPercent)
+	require.Equal(t, uint32(8), remote.NumCPU)
+	require.Nil(t, remote.Coord)
+	require.Nil(t, remote.TrafficTo)
+}
+
+func TestOnTrafficChangeCallback(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	var callCount int
+	s.OnTrafficChange(func() { callCount++ })
+
+	_, remotePeerStr := peerKey(2)
+	localPK := s.LocalID
+
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_TrafficHeatmap{
+			TrafficHeatmap: &statev1.TrafficHeatmapChange{
+				Rates: []*statev1.TrafficRate{
+					{PeerId: localPK.String(), BytesIn: 100, BytesOut: 200},
+				},
+			},
+		},
+	})
+	require.Equal(t, 1, callCount)
+
+	// Stale event should not fire callback.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remotePeerStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_TrafficHeatmap{
+			TrafficHeatmap: &statev1.TrafficHeatmapChange{
+				Rates: []*statev1.TrafficRate{
+					{PeerId: localPK.String(), BytesIn: 999, BytesOut: 999},
+				},
+			},
+		},
+	})
+	require.Equal(t, 1, callCount)
+}
+
+func TestSelfConflictReAdoptsWorkloadSpecs(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	// Simulate a prior session that published a workload spec at counter 20.
+	result := s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 20,
+			Change: &statev1.GossipEvent_WorkloadSpec{
+				WorkloadSpec: &statev1.WorkloadSpecChange{
+					Hash: "abc123", Replicas: 3, MemoryPages: 16, TimeoutMs: 500,
+				},
+			},
+		},
+	}, true)
+
+	// Should trigger self-conflict + rebroadcast.
+	require.NotEmpty(t, result.Rebroadcast)
+
+	// The spec should be in the local materialized view.
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	sv, ok := specs["abc123"]
+	require.True(t, ok)
+	require.Equal(t, uint32(3), sv.Spec.GetReplicas())
+	require.Equal(t, uint32(16), sv.Spec.GetMemoryPages())
+	require.Equal(t, uint32(500), sv.Spec.GetTimeoutMs())
+	require.Equal(t, s.LocalID, sv.Publisher)
+
+	// maxCounter should be above the incoming 20.
+	rec := s.nodes[s.LocalID]
+	require.Greater(t, rec.maxCounter, uint64(20))
+}
+
+func TestSelfConflictSkipsDeletedSpecs(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 20,
+			Deleted: true,
+			Change: &statev1.GossipEvent_WorkloadSpec{
+				WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "abc123"},
+			},
+		},
+	}, true)
+
+	specs := s.AllWorkloadSpecs()
+	require.Empty(t, specs)
+}
+
+func TestSelfConflictDoesNotReAdoptClaims(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	result := s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 20,
+			Change: &statev1.GossipEvent_WorkloadClaim{
+				WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "abc123"},
+			},
+		},
+	}, true)
+
+	// Claims must not be adopted into the claims map.
+	claims := s.AllWorkloadClaims()
+	require.Empty(t, claims)
+
+	// A deletion rebroadcast must be emitted so peers drop the stale claim.
+	var claimDeletions int
+	for _, ev := range result.Rebroadcast {
+		if v, ok := ev.GetChange().(*statev1.GossipEvent_WorkloadClaim); ok &&
+			v.WorkloadClaim.GetHash() == "abc123" && ev.GetDeleted() {
+			claimDeletions++
+		}
+	}
+	require.Equal(t, 1, claimDeletions)
+}
+
+func TestSelfConflictDeletesStaleClaims(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	// Simulate a prior-session claim arriving back from a peer.
+	result := s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 10,
+			Change: &statev1.GossipEvent_WorkloadClaim{
+				WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "hash1"},
+			},
+		},
+		{
+			PeerId:  localIDStr,
+			Counter: 11,
+			Change: &statev1.GossipEvent_WorkloadClaim{
+				WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "hash2"},
+			},
+		},
+	}, true)
+
+	require.Empty(t, s.AllWorkloadClaims())
+
+	// Both claims must have deletion events in the rebroadcast.
+	deletedHashes := make(map[string]bool)
+	for _, ev := range result.Rebroadcast {
+		if v, ok := ev.GetChange().(*statev1.GossipEvent_WorkloadClaim); ok && ev.GetDeleted() {
+			deletedHashes[v.WorkloadClaim.GetHash()] = true
+		}
+	}
+	require.True(t, deletedHashes["hash1"], "missing deletion for hash1")
+	require.True(t, deletedHashes["hash2"], "missing deletion for hash2")
+}
+
+func TestSelfConflictSkipsAlreadyDeletedClaims(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	// Incoming claim is already marked deleted — no duplicate deletion needed.
+	result := s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 20,
+			Deleted: true,
+			Change: &statev1.GossipEvent_WorkloadClaim{
+				WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "abc123"},
+			},
+		},
+	}, true)
+
+	require.Empty(t, s.AllWorkloadClaims())
+
+	// No claim events should appear in the rebroadcast since there's nothing
+	// to delete — the incoming event was already a deletion.
+	for _, ev := range result.Rebroadcast {
+		if _, ok := ev.GetChange().(*statev1.GossipEvent_WorkloadClaim); ok {
+			t.Fatal("unexpected claim event in rebroadcast for already-deleted claim")
+		}
+	}
+}
+
+func TestSelfConflictPreservesActiveClaimsFromCurrentSession(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	// Node sets a claim in the current session.
+	s.SetLocalWorkloadClaim("abc123", true)
+
+	// The claim echoes back from a peer during a pull response.
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 1,
+			Change: &statev1.GossipEvent_WorkloadClaim{
+				WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "abc123"},
+			},
+		},
+	}, true)
+
+	// The active claim must survive — it belongs to the current session.
+	claims := s.AllWorkloadClaims()
+	require.Contains(t, claims, "abc123")
+}
+
+func TestSelfConflictMultiBatchSpecAdoption(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	// First batch: triggers conflict, adopts spec1.
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 20,
+			Change: &statev1.GossipEvent_WorkloadSpec{
+				WorkloadSpec: &statev1.WorkloadSpecChange{
+					Hash: "spec1", Replicas: 2, MemoryPages: 8,
+				},
+			},
+		},
+	}, true)
+
+	// Second batch: counter is below maxCounter but spec2 key is new.
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 15,
+			Change: &statev1.GossipEvent_WorkloadSpec{
+				WorkloadSpec: &statev1.WorkloadSpecChange{
+					Hash: "spec2", Replicas: 1, MemoryPages: 4,
+				},
+			},
+		},
+	}, true)
+
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 2)
+	require.Equal(t, uint32(2), specs["spec1"].Spec.GetReplicas())
+	require.Equal(t, uint32(1), specs["spec2"].Spec.GetReplicas())
+}
+
+func TestSelfConflictDoesNotReAdoptExistingSpec(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+	localIDStr := s.LocalID.String()
+
+	// Set a local spec first.
+	_, err := s.SetLocalWorkloadSpec("abc123", 5, 32, 1000)
+	require.NoError(t, err)
+
+	// Receive an old self-event for the same hash with different values.
+	s.ApplyEvents([]*statev1.GossipEvent{
+		{
+			PeerId:  localIDStr,
+			Counter: 100,
+			Change: &statev1.GossipEvent_WorkloadSpec{
+				WorkloadSpec: &statev1.WorkloadSpecChange{
+					Hash: "abc123", Replicas: 2, MemoryPages: 16,
+				},
+			},
+		},
+	}, true)
+
+	// The local spec should NOT be overwritten — we already have a live entry.
+	specs := s.AllWorkloadSpecs()
+	require.Len(t, specs, 1)
+	require.Equal(t, uint32(5), specs["abc123"].Spec.GetReplicas())
+	require.Equal(t, uint32(32), specs["abc123"].Spec.GetMemoryPages())
+}
+
+func TestSaveLoadPersistsWorkloadSpecs(t *testing.T) {
+	dir := t.TempDir()
+	localPub := make([]byte, 32)
+	localPub[0] = 1
+
+	s, err := Load(dir, localPub)
+	require.NoError(t, err)
+
+	_, err = s.SetLocalWorkloadSpec("hash1", 2, 16, 500)
+	require.NoError(t, err)
+	_, err = s.SetLocalWorkloadSpec("hash2", 3, 32, 1000)
+	require.NoError(t, err)
+
+	require.NoError(t, s.Save())
+	require.NoError(t, s.Close())
+
+	s2, err := Load(dir, localPub)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, s2.Close()) })
+
+	specs := s2.AllWorkloadSpecs()
+	require.Len(t, specs, 2)
+	require.Equal(t, uint32(2), specs["hash1"].Spec.GetReplicas())
+	require.Equal(t, uint32(16), specs["hash1"].Spec.GetMemoryPages())
+	require.Equal(t, uint32(500), specs["hash1"].Spec.GetTimeoutMs())
+	require.Equal(t, uint32(3), specs["hash2"].Spec.GetReplicas())
+	require.Equal(t, uint32(32), specs["hash2"].Spec.GetMemoryPages())
+	require.Equal(t, uint32(1000), specs["hash2"].Spec.GetTimeoutMs())
+
+	// Verify specs are in the local log (will be rebroadcast on first gossip).
+	rec := s2.nodes[s2.LocalID]
+	_, ok := rec.log[workloadSpecAttrKey("hash1")]
+	require.True(t, ok)
+	_, ok = rec.log[workloadSpecAttrKey("hash2")]
+	require.True(t, ok)
+}
+
+func TestBuildEventFromLogIncludesTimeoutMs(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	_, err := s.SetLocalWorkloadSpec("abc123", 2, 16, 750)
+	require.NoError(t, err)
+
+	events := s.LocalEvents()
+	var specEvent *statev1.GossipEvent
+	for _, ev := range events {
+		if v, ok := ev.GetChange().(*statev1.GossipEvent_WorkloadSpec); ok && v.WorkloadSpec.GetHash() == "abc123" {
+			specEvent = ev
+			break
+		}
+	}
+	require.NotNil(t, specEvent)
+	require.Equal(t, uint32(750), specEvent.GetChange().(*statev1.GossipEvent_WorkloadSpec).WorkloadSpec.GetTimeoutMs())
+}
+
+func TestAllPeerKeysExcludesUnreachable(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	remotePK, remoteStr := peerKey(2)
+
+	// Register the remote peer via identity event.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remoteStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{IdentityPub: []byte(remoteStr)},
+		},
+	})
+
+	// Connect remote peer — should appear in AllPeerKeys.
+	s.SetLocalConnected(remotePK, true)
+	keys := s.AllPeerKeys()
+	require.Contains(t, keys, remotePK, "reachable peer must appear in AllPeerKeys")
+	require.Contains(t, keys, s.LocalID, "local node must appear in AllPeerKeys")
+
+	// Disconnect — dead peer must be excluded.
+	s.SetLocalConnected(remotePK, false)
+	keys = s.AllPeerKeys()
+	require.NotContains(t, keys, remotePK, "unreachable peer must be excluded from AllPeerKeys")
+	require.Contains(t, keys, s.LocalID, "local node must always appear in AllPeerKeys")
+}
+
+func TestAllNodePlacementStatesExcludesUnreachable(t *testing.T) {
+	pub := make([]byte, 32)
+	pub[0] = 1
+	s := newTestStore(pub)
+
+	remotePK, remoteStr := peerKey(2)
+
+	// Register the remote peer via identity event.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  remoteStr,
+		Counter: 1,
+		Change: &statev1.GossipEvent_IdentityPub{
+			IdentityPub: &statev1.IdentityChange{IdentityPub: []byte(remoteStr)},
+		},
+	})
+
+	// Connect remote peer — should appear in placement states.
+	s.SetLocalConnected(remotePK, true)
+	states := s.AllNodePlacementStates()
+	require.Contains(t, states, remotePK, "reachable peer must appear in AllNodePlacementStates")
+	require.Contains(t, states, s.LocalID, "local node must appear in AllNodePlacementStates")
+
+	// Disconnect — dead peer must be excluded.
+	s.SetLocalConnected(remotePK, false)
+	states = s.AllNodePlacementStates()
+	require.NotContains(t, states, remotePK, "unreachable peer must be excluded from AllNodePlacementStates")
+	require.Contains(t, states, s.LocalID, "local node must always appear in AllNodePlacementStates")
 }

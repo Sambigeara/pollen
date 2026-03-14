@@ -87,7 +87,11 @@ type DiscoverPeer struct {
 func (DiscoverPeer) isInput() {}
 
 // Tick triggers the state machine to evaluate all peers and emit pending actions.
-type Tick struct{}
+// MaxConnect caps the number of new connection attempts per tick to prevent
+// thundering-herd on cold start. Zero or negative disables the cap.
+type Tick struct {
+	MaxConnect int
+}
 
 func (Tick) isInput() {}
 
@@ -115,7 +119,7 @@ const (
 	DisconnectReset                          // peer rebooted (stateless reset)
 	DisconnectGraceful                       // clean app-level close
 	DisconnectTopologyPrune                  // peer intentionally pruned this edge
-	DisconnectRevoked                        // peer revoked our session/membership
+	DisconnectDenied                         // peer denied our session/membership
 	DisconnectCertRotation                   // forced reconnection for cert rotation
 	DisconnectCertExpired                    // peer membership cert expired
 )
@@ -132,8 +136,8 @@ func (r DisconnectReason) String() string {
 		return "graceful"
 	case DisconnectTopologyPrune:
 		return "topology_prune"
-	case DisconnectRevoked:
-		return "revoked"
+	case DisconnectDenied:
+		return "denied"
 	case DisconnectCertRotation:
 		return "cert_rotation"
 	case DisconnectCertExpired:
@@ -202,7 +206,7 @@ func (RequestPunchCoordination) isOutput() {}
 
 const (
 	baseBackoff  = 1 * time.Second
-	maxBackoff   = 60 * time.Second
+	maxBackoff   = 10 * time.Minute
 	firstBackoff = 500 * time.Millisecond
 
 	eagerRetryAttemptThreshold = 1
@@ -214,7 +218,7 @@ const (
 	unreachableRetryInterval        = 20 * time.Second
 	idleTimeoutRetryInterval        = 1 * time.Second
 	resetRetryInterval              = 5 * time.Second
-	gracefulDisconnectRetryInterval = 3 * time.Second
+	gracefulDisconnectRetryInterval = 1 * time.Hour
 	unknownDisconnectRetryInterval  = 3 * time.Second
 )
 
@@ -237,7 +241,7 @@ func (s *Store) Step(now time.Time, in Input) []Output {
 	var out []Output
 	switch e := in.(type) {
 	case Tick:
-		out = s.tick(now)
+		out = s.tick(now, e.MaxConnect)
 	case DiscoverPeer:
 		s.discoverPeer(now, e)
 	case ConnectPeer:
@@ -325,7 +329,7 @@ func (s *Store) discoverPeer(now time.Time, e DiscoverPeer) {
 	}
 }
 
-func (s *Store) tick(now time.Time) []Output {
+func (s *Store) tick(now time.Time, maxConnect int) []Output {
 	var outputs []Output //nolint:prealloc
 	for _, p := range s.m {
 		if now.Before(p.NextActionAt) {
@@ -346,6 +350,10 @@ func (s *Store) tick(now time.Time) []Output {
 			p.resetStage()
 			p.StageAttempts = 0
 		case PeerStateDiscovered:
+		}
+
+		if maxConnect > 0 && len(outputs) >= maxConnect {
+			continue
 		}
 
 		var out Output
@@ -448,7 +456,7 @@ func (s *Store) disconnectPeer(now time.Time, e PeerDisconnected) {
 		delay = gracefulDisconnectRetryInterval
 	case DisconnectTopologyPrune:
 		delay = unreachableRetryInterval
-	case DisconnectRevoked:
+	case DisconnectDenied:
 		delay = unreachableRetryInterval
 	case DisconnectCertRotation:
 		delay = idleTimeoutRetryInterval

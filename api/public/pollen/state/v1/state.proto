@@ -3,7 +3,6 @@ syntax = "proto3";
 package pollen.state.v1;
 
 import "buf/validate/validate.proto";
-import "pollen/admission/v1/admission.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1";
 
@@ -62,8 +61,8 @@ message IdentityChange {
   int64 cert_expiry_unix = 2;
 }
 
-message RevocationChange {
-  pollen.admission.v1.SignedRevocation revocation = 1 [(buf.validate.field).required = true];
+message DenyChange {
+  bytes subject_pub = 1 [(buf.validate.field).bytes = {len: 32}];
 }
 
 message NatTypeChange {
@@ -74,6 +73,31 @@ message ResourceTelemetryChange {
   uint32 cpu_percent = 1;
   uint32 mem_percent = 2;
   uint64 mem_total_bytes = 3;
+  uint32 num_cpu = 4;
+}
+
+message WorkloadSpecChange {
+  string hash = 1;
+  uint32 replicas = 2;
+  uint32 memory_pages = 3;
+  uint32 timeout_ms = 4;
+}
+
+message WorkloadClaimChange {
+  string hash = 1;
+}
+
+message TrafficRate {
+  string peer_id = 1 [(buf.validate.field).string = {
+    pattern: "^[a-fA-F0-9]{64}$"
+    len: 64
+  }];
+  uint64 bytes_in = 2;
+  uint64 bytes_out = 3;
+}
+
+message TrafficHeatmapChange {
+  repeated TrafficRate rates = 1;
 }
 
 message GossipEvent {
@@ -85,20 +109,47 @@ message GossipEvent {
   oneof change {
     NetworkChange network = 3;
     ExternalPortChange external_port = 4;
-    ObservedExternalIPChange observed_external_ip = 13;
     IdentityChange identity_pub = 5;
     ServiceChange service = 6;
     ReachabilityChange reachability = 7;
-    RevocationChange revocation = 9;
-    PubliclyAccessibleChange publicly_accessible = 10;
-    VivaldiCoordinateChange vivaldi = 11;
-    NatTypeChange nat_type = 12;
-    ResourceTelemetryChange resource_telemetry = 14;
+    ObservedExternalIPChange observed_external_ip = 8;
+    PubliclyAccessibleChange publicly_accessible = 9;
+    VivaldiCoordinateChange vivaldi = 10;
+    NatTypeChange nat_type = 11;
+    ResourceTelemetryChange resource_telemetry = 12;
+    DenyChange deny = 13;
+    WorkloadSpecChange workload_spec = 15;
+    WorkloadClaimChange workload_claim = 16;
+    TrafficHeatmapChange traffic_heatmap = 17;
   }
-  bool deleted = 8;
+  bool deleted = 14;
 }
 
 message GossipEventBatch {
   repeated GossipEvent events = 1;
   bool is_response = 2;
+}
+
+// RuntimeState is the on-disk format for daemon-managed runtime state (state.pb).
+message RuntimeState {
+  repeated PeerState peers = 1;
+  repeated ConsumedInvite consumed_invites = 2;
+  repeated bytes denied_peers = 3;
+  repeated WorkloadSpecChange workload_specs = 4;
+}
+
+message PeerState {
+  bytes identity_pub = 1;
+  repeated string addresses = 2;
+  uint32 port = 3;
+  uint32 external_port = 4;
+  string last_addr = 5;
+  string external_ip = 6;
+  bool publicly_accessible = 7;
+}
+
+message ConsumedInvite {
+  string token_id = 1;
+  int64 expiry_unix = 2;
+  int64 consumed_unix = 3;
 }

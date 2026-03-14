@@ -16,7 +16,10 @@ service ControlService {
   rpc ConnectService(ConnectServiceRequest) returns (ConnectServiceResponse);
   rpc ConnectPeer(ConnectPeerRequest) returns (ConnectPeerResponse);
   rpc DisconnectService(DisconnectServiceRequest) returns (DisconnectServiceResponse);
-  rpc RevokePeer(RevokePeerRequest) returns (RevokePeerResponse);
+  rpc DenyPeer(DenyPeerRequest) returns (DenyPeerResponse);
+  rpc SeedWorkload(SeedWorkloadRequest) returns (SeedWorkloadResponse);
+  rpc UnseedWorkload(UnseedWorkloadRequest) returns (UnseedWorkloadResponse);
+  rpc CallWorkload(CallWorkloadRequest) returns (CallWorkloadResponse);
 }
 
 message NodeRef {
@@ -40,6 +43,9 @@ message NodeSummary {
   double latency_ms = 6;
   uint32 cpu_percent = 7;
   uint32 mem_percent = 8;
+  uint64 traffic_bytes_in = 9;
+  uint64 traffic_bytes_out = 10;
+  uint32 num_cpu = 11;
 }
 
 message ServiceSummary {
@@ -85,7 +91,10 @@ message CertInfo {
   int64 not_after_unix = 2;
   uint64 serial = 3;
   CertHealth health = 4;
-  bool non_renewable = 5;
+  bool can_delegate = 5;
+  bool can_admit = 6;
+  uint32 max_depth = 7;
+  int64 access_deadline_unix = 8;
 }
 
 message GetStatusResponse {
@@ -94,6 +103,24 @@ message GetStatusResponse {
   repeated ServiceSummary services = 3;
   repeated ConnectionSummary connections = 4;
   repeated CertInfo certificates = 5;
+  bool degraded = 6;
+  repeated WorkloadSummary workloads = 7;
+}
+
+enum WorkloadStatus {
+  WORKLOAD_STATUS_UNSPECIFIED = 0;
+  WORKLOAD_STATUS_RUNNING = 1;
+  WORKLOAD_STATUS_STOPPED = 2;
+  WORKLOAD_STATUS_ERRORED = 3;
+}
+
+message WorkloadSummary {
+  string hash = 1;
+  WorkloadStatus status = 2;
+  int64 started_at_unix = 3;
+  uint32 desired_replicas = 4;
+  uint32 active_replicas = 5;
+  bool local = 6;
 }
 
 message ConnectionSummary {
@@ -164,11 +191,38 @@ message DisconnectServiceRequest {
 
 message DisconnectServiceResponse {}
 
-message RevokePeerRequest {
+message DenyPeerRequest {
   bytes peer_id = 1 [(buf.validate.field).bytes = {len: 32}];
 }
 
-message RevokePeerResponse {}
+message DenyPeerResponse {}
+
+message SeedWorkloadRequest {
+  bytes wasm_bytes = 1 [(buf.validate.field).bytes = {min_len: 1}];
+  uint32 replicas = 2;
+  uint32 memory_pages = 3;
+  uint32 timeout_ms = 4;
+}
+
+message SeedWorkloadResponse {
+  string hash = 1;
+}
+
+message UnseedWorkloadRequest {
+  string hash = 1 [(buf.validate.field).string = {min_len: 1}];
+}
+
+message UnseedWorkloadResponse {}
+
+message CallWorkloadRequest {
+  string hash = 1 [(buf.validate.field).string = {min_len: 1}];
+  string function = 2 [(buf.validate.field).string = {min_len: 1}];
+  bytes input = 3;
+}
+
+message CallWorkloadResponse {
+  bytes output = 1;
+}
 
 message GetMetricsRequest {}
 
@@ -194,7 +248,6 @@ message GetMetricsResponse {
   uint64 punch_failures = 12;
   HealthStatus health = 13;
   uint64 vivaldi_samples = 14;
-  uint64 eager_syncs = 16;
-  uint64 eager_sync_failures = 17;
-  reserved 15, 18, 19, 20;
+  uint64 eager_syncs = 15;
+  uint64 eager_sync_failures = 16;
 }

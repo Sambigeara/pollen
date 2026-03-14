@@ -1,10 +1,9 @@
 package node
 
 import (
-	"bytes"
 	"cmp"
 	"context"
-	"crypto/ed25519"
+	"errors"
 	"net"
 	"slices"
 	"strconv"
@@ -12,7 +11,11 @@ import (
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/mesh"
+	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/wasm"
+	"github.com/sambigeara/pollen/pkg/workload"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -113,6 +116,16 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		}
 	}
 
+	// Report degraded when cert is expired but within the reconnect window.
+	degraded := false
+	if s.creds != nil && s.creds.Cert != nil {
+		now := time.Now()
+		if auth.IsCertExpired(s.creds.Cert, now) &&
+			auth.IsCertWithinReconnectWindow(s.creds.Cert, now, s.node.conf.ReconnectWindow) {
+			degraded = true
+		}
+	}
+
 	out := &controlv1.GetStatusResponse{
 		Self: &controlv1.NodeSummary{
 			Node:               &controlv1.NodeRef{PeerId: localID.Bytes()},
@@ -123,10 +136,12 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		Services:    []*controlv1.ServiceSummary{},
 		Nodes:       make([]*controlv1.NodeSummary, 0, len(nodes)),
 		Connections: []*controlv1.ConnectionSummary{},
+		Degraded:    degraded,
 	}
 
 	if s.creds != nil && s.creds.Cert != nil {
 		claims := s.creds.Cert.GetClaims()
+		caps := claims.GetCapabilities()
 		health := controlv1.CertHealth_CERT_HEALTH_OK
 		remaining := time.Until(auth.CertExpiresAt(s.creds.Cert))
 		switch {
@@ -135,18 +150,17 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		case remaining <= certCriticalThreshold:
 			health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
 		case remaining <= certWarnThreshold:
-			if claims.GetNonRenewable() || s.node.renewalFailed.Load() {
-				health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
-			} else {
-				health = controlv1.CertHealth_CERT_HEALTH_RENEWING
-			}
+			health = controlv1.CertHealth_CERT_HEALTH_RENEWING
 		}
 		out.Certificates = append(out.Certificates, &controlv1.CertInfo{
-			NotBeforeUnix: claims.GetNotBeforeUnix(),
-			NotAfterUnix:  claims.GetNotAfterUnix(),
-			Serial:        claims.GetSerial(),
-			Health:        health,
-			NonRenewable:  claims.GetNonRenewable(),
+			NotBeforeUnix:      claims.GetNotBeforeUnix(),
+			NotAfterUnix:       claims.GetNotAfterUnix(),
+			Serial:             claims.GetSerial(),
+			Health:             health,
+			CanDelegate:        caps.GetCanDelegate(),
+			CanAdmit:           caps.GetCanAdmit(),
+			MaxDepth:           caps.GetMaxDepth(),
+			AccessDeadlineUnix: claims.GetAccessDeadlineUnix(),
 		})
 	}
 
@@ -159,8 +173,18 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 	if rec, ok := s.node.store.Get(localID); ok {
 		out.Self.CpuPercent = rec.CPUPercent
 		out.Self.MemPercent = rec.MemPercent
+		out.Self.NumCpu = rec.NumCPU
 	}
 	out.Self.TunnelCount = uint32(len(connections))
+
+	// Fetch mesh-wide traffic heatmaps for aggregate traffic display.
+	// Each node's published heatmap is summed across all peers to give
+	// a total bytes-in / bytes-out for that node.
+	allTraffic := s.node.store.AllTrafficHeatmaps()
+	for _, snap := range allTraffic[localID] {
+		out.Self.TrafficBytesIn += snap.BytesIn
+		out.Self.TrafficBytesOut += snap.BytesOut
+	}
 
 	// Determine which peers have direct QUIC sessions (ONLINE).
 	// Store the address so we don't call GetActivePeerAddress again per peer
@@ -247,6 +271,11 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			TunnelCount:        tunnelCounts[key],
 			CpuPercent:         node.CPUPercent,
 			MemPercent:         node.MemPercent,
+			NumCpu:             node.NumCPU,
+		}
+		for _, snap := range allTraffic[key] {
+			ns.TrafficBytesIn += snap.BytesIn
+			ns.TrafficBytesOut += snap.BytesOut
 		}
 
 		if isDirect {
@@ -317,6 +346,39 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		return types.PeerKeyFromBytes(a.Peer.PeerId).Compare(types.PeerKeyFromBytes(b.Peer.PeerId))
 	})
 
+	// Merge local workload state with cluster-wide spec/claim data.
+	specs := s.node.store.AllWorkloadSpecs()
+	claims := s.node.store.AllWorkloadClaims()
+
+	seen := make(map[string]struct{})
+	if s.node.workloads != nil {
+		for _, w := range s.node.workloads.List() {
+			seen[w.Hash] = struct{}{}
+			ws := &controlv1.WorkloadSummary{
+				Hash:          w.Hash,
+				Status:        workloadStatusProto(w.Status),
+				StartedAtUnix: w.CompiledAt.Unix(),
+				Local:         true,
+			}
+			if sv, ok := specs[w.Hash]; ok {
+				ws.DesiredReplicas = sv.Spec.GetReplicas()
+			}
+			ws.ActiveReplicas = uint32(len(claims[w.Hash]))
+			out.Workloads = append(out.Workloads, ws)
+		}
+	}
+	// Add remote-only workloads (specs we know about but aren't running locally).
+	for hash, sv := range specs {
+		if _, ok := seen[hash]; ok {
+			continue
+		}
+		out.Workloads = append(out.Workloads, &controlv1.WorkloadSummary{
+			Hash:            hash,
+			DesiredReplicas: sv.Spec.GetReplicas(),
+			ActiveReplicas:  uint32(len(claims[hash])),
+		})
+	}
+
 	return out, nil
 }
 
@@ -376,34 +438,25 @@ func (s *NodeService) DisconnectService(_ context.Context, req *controlv1.Discon
 	return &controlv1.DisconnectServiceResponse{}, nil
 }
 
-func (s *NodeService) RevokePeer(_ context.Context, req *controlv1.RevokePeerRequest) (*controlv1.RevokePeerResponse, error) {
-	if s.creds.InviteSigner == nil {
-		return nil, status.Error(codes.FailedPrecondition, "admin signer not available; this node cannot revoke peers")
-	}
-
-	signerPub, ok := s.creds.InviteSigner.Priv.Public().(ed25519.PublicKey)
-	if !ok || !bytes.Equal(signerPub, s.creds.InviteSigner.Trust.GetRootPub()) {
-		return nil, status.Error(codes.PermissionDenied, "only the root admin can revoke peers")
+func (s *NodeService) DenyPeer(_ context.Context, req *controlv1.DenyPeerRequest) (*controlv1.DenyPeerResponse, error) {
+	if s.creds.DelegationKey == nil {
+		return nil, status.Error(codes.FailedPrecondition, "delegation key not available; this node cannot deny peers")
 	}
 
 	peerKey := types.PeerKeyFromBytes(req.GetPeerId())
-	now := time.Now()
 
-	rev, err := auth.IssueRevocation(
-		s.creds.InviteSigner.Priv,
-		s.creds.InviteSigner.Trust.GetClusterId(),
-		peerKey.Bytes(),
-		now,
-	)
-	if err != nil {
-		s.node.log.Errorw("failed to issue revocation", "peer", peerKey.Short(), "err", err)
-		return nil, status.Error(codes.Internal, "failed to issue revocation")
+	events := s.node.store.DenyPeer(req.GetPeerId())
+	s.node.queueGossipEvents(events)
+	s.node.tun.DisconnectPeer(peerKey)
+	s.node.store.RemoveDesiredConnection(peerKey, 0, 0)
+	s.node.mesh.ClosePeerSession(peerKey, mesh.CloseReasonDenied)
+	s.node.localPeerEvents <- peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectDenied}
+	s.node.localPeerEvents <- peer.ForgetPeer{PeerKey: peerKey}
+	if err := s.node.store.Save(); err != nil {
+		s.node.log.Warnw("failed to save state after deny", "err", err)
 	}
 
-	events := s.node.store.PublishRevocation(rev)
-	s.node.queueGossipEvents(events)
-
-	return &controlv1.RevokePeerResponse{}, nil
+	return &controlv1.DenyPeerResponse{}, nil
 }
 
 func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) (*controlv1.GetMetricsResponse, error) {
@@ -456,6 +509,117 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 	}, nil
 }
 
+func (s *NodeService) SeedWorkload(_ context.Context, req *controlv1.SeedWorkloadRequest) (*controlv1.SeedWorkloadResponse, error) {
+	if s.node.workloads == nil {
+		return nil, status.Error(codes.FailedPrecondition, "workload manager not initialized")
+	}
+
+	cfg := wasm.PluginConfig{
+		MemoryPages: req.GetMemoryPages(),
+		Timeout:     time.Duration(req.GetTimeoutMs()) * time.Millisecond,
+	}
+	hash, err := s.node.workloads.Seed(req.GetWasmBytes(), cfg)
+	newlySeeded := err == nil
+	if err != nil && !errors.Is(err, workload.ErrAlreadyRunning) {
+		switch {
+		case errors.Is(err, workload.ErrCompile):
+			s.node.log.Warnw("seed workload failed", "err", err)
+			return nil, status.Error(codes.InvalidArgument, "failed to compile workload")
+		default:
+			s.node.log.Errorw("seed workload failed", "err", err)
+			return nil, status.Error(codes.Internal, "failed to seed workload")
+		}
+	}
+
+	replicas := req.GetReplicas()
+	if replicas == 0 {
+		replicas = 1
+	}
+
+	// Publish spec atomically — the store rejects under its lock if a remote
+	// node already owns this hash, closing the TOCTOU race.
+	n := s.node
+	specEvents, err := n.store.SetLocalWorkloadSpec(hash, replicas, req.GetMemoryPages(), req.GetTimeoutMs())
+	if err != nil {
+		// Only tear down the runtime if we just compiled it — don't destroy
+		// a previously healthy workload on a spec rejection.
+		if newlySeeded {
+			_ = s.node.workloads.Unseed(hash)
+		}
+		s.node.log.Infow("spec rejected", "hash", hash, "err", err)
+		return nil, status.Error(codes.AlreadyExists, "workload already published by another node")
+	}
+	n.queueGossipEvents(specEvents)
+	n.queueGossipEvents(n.store.SetLocalWorkloadClaim(hash, true))
+
+	return &controlv1.SeedWorkloadResponse{Hash: hash}, nil
+}
+
+func (s *NodeService) UnseedWorkload(_ context.Context, req *controlv1.UnseedWorkloadRequest) (*controlv1.UnseedWorkloadResponse, error) {
+	if s.node.workloads == nil {
+		return nil, status.Error(codes.FailedPrecondition, "workload manager not initialized")
+	}
+
+	// Resolve prefix from cluster-wide specs, not just local workloads.
+	hash, ambiguous, found := s.node.store.ResolveWorkloadPrefix(req.GetHash())
+	if ambiguous {
+		return nil, status.Error(codes.InvalidArgument, "prefix matches multiple workloads; use a longer prefix")
+	}
+	if !found {
+		return nil, status.Error(codes.NotFound, "no workload matches that prefix")
+	}
+
+	// Only the spec owner can unseed — reject on non-owner nodes.
+	specs := s.node.store.AllWorkloadSpecs()
+	sv, ok := specs[hash]
+	if ok && sv.Publisher != s.node.store.LocalID {
+		return nil, status.Error(codes.PermissionDenied, "workload owned by another node; unseed from the publishing node")
+	}
+
+	// Stop the local runtime only if this node is running it.
+	if s.node.workloads.IsRunning(hash) {
+		if err := s.node.workloads.Unseed(hash); err != nil {
+			s.node.log.Warnw("unseed workload failed", "hash", hash, "err", err)
+			return nil, status.Error(codes.Internal, "failed to unseed workload")
+		}
+	}
+
+	// Remove spec + claim from local gossip record.
+	n := s.node
+	n.queueGossipEvents(n.store.RemoveLocalWorkloadSpec(hash))
+	n.queueGossipEvents(n.store.SetLocalWorkloadClaim(hash, false))
+
+	return &controlv1.UnseedWorkloadResponse{}, nil
+}
+
+func (s *NodeService) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadRequest) (*controlv1.CallWorkloadResponse, error) {
+	if s.node.workloads == nil {
+		return nil, status.Error(codes.FailedPrecondition, "workload manager not initialized")
+	}
+
+	// Resolve prefix from cluster-wide specs.
+	hash, ambiguous, found := s.node.store.ResolveWorkloadPrefix(req.GetHash())
+	if ambiguous {
+		return nil, status.Error(codes.InvalidArgument, "prefix matches multiple workloads; use a longer prefix")
+	}
+	if !found {
+		return nil, status.Error(codes.NotFound, "no workload matches that prefix")
+	}
+
+	output, err := s.node.RouteCall(ctx, hash, req.GetFunction(), req.GetInput())
+	if err != nil {
+		s.node.log.Warnw("call workload failed", "hash", hash, "function", req.GetFunction(), "err", err)
+		if errors.Is(err, workload.ErrNotRunning) {
+			return nil, status.Error(codes.NotFound, "workload not running on any reachable node")
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.Error(codes.DeadlineExceeded, "workload invocation timed out")
+		}
+		return nil, status.Error(codes.Internal, "workload invocation failed")
+	}
+	return &controlv1.CallWorkloadResponse{Output: output}, nil
+}
+
 const vivaldiDegradedThreshold = 0.9
 
 const offlineRank = 3
@@ -473,4 +637,16 @@ func nodeStatusRank(status controlv1.NodeStatus) int {
 		return offlineRank
 	}
 	return offlineRank
+}
+
+func workloadStatusProto(s workload.Status) controlv1.WorkloadStatus {
+	switch s {
+	case workload.StatusRunning:
+		return controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING
+	case workload.StatusStopped:
+		return controlv1.WorkloadStatus_WORKLOAD_STATUS_STOPPED
+	case workload.StatusErrored:
+		return controlv1.WorkloadStatus_WORKLOAD_STATUS_ERRORED
+	}
+	return controlv1.WorkloadStatus_WORKLOAD_STATUS_UNSPECIFIED
 }

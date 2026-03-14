@@ -21,11 +21,11 @@ func newMinimalNode(t *testing.T, bootstrapPublic bool) *Node {
 	adminPub, adminPriv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	trust := auth.NewTrustBundle(adminPub)
-	cert, err := auth.IssueMembershipCert(adminPriv, trust.GetClusterId(), pub, time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), config.CertTTLs{}.AdminTTL())
+	cert, err := auth.IssueDelegationCert(adminPriv, nil, trust.GetClusterId(), pub, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
 	require.NoError(t, err)
 
 	creds := &auth.NodeCredentials{Trust: trust, Cert: cert}
-	stateStore, err := store.Load(t.TempDir(), pub, trust)
+	stateStore, err := store.Load(t.TempDir(), pub)
 	require.NoError(t, err)
 
 	conf := &Config{

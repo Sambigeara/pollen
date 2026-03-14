@@ -452,7 +452,7 @@ func (m *Envelope) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		copy(dAtA[i:], m.TraceId)
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.TraceId)))
 		i--
-		dAtA[i] = 0x62
+		dAtA[i] = 0x4a
 	}
 	return len(dAtA) - i, nil
 }
@@ -472,11 +472,11 @@ func (m *Envelope_PunchCoordRequest) MarshalToSizedBufferVT(dAtA []byte) (int, e
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x1a
+		dAtA[i] = 0xa
 	} else {
 		i = protohelpers.EncodeVarint(dAtA, i, 0)
 		i--
-		dAtA[i] = 0x1a
+		dAtA[i] = 0xa
 	}
 	return len(dAtA) - i, nil
 }
@@ -495,11 +495,11 @@ func (m *Envelope_PunchCoordTrigger) MarshalToSizedBufferVT(dAtA []byte) (int, e
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x22
+		dAtA[i] = 0x12
 	} else {
 		i = protohelpers.EncodeVarint(dAtA, i, 0)
 		i--
-		dAtA[i] = 0x22
+		dAtA[i] = 0x12
 	}
 	return len(dAtA) - i, nil
 }
@@ -518,11 +518,11 @@ func (m *Envelope_InviteRedeemRequest) MarshalToSizedBufferVT(dAtA []byte) (int,
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x32
+		dAtA[i] = 0x1a
 	} else {
 		i = protohelpers.EncodeVarint(dAtA, i, 0)
 		i--
-		dAtA[i] = 0x32
+		dAtA[i] = 0x1a
 	}
 	return len(dAtA) - i, nil
 }
@@ -541,11 +541,11 @@ func (m *Envelope_InviteRedeemResponse) MarshalToSizedBufferVT(dAtA []byte) (int
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x3a
+		dAtA[i] = 0x22
 	} else {
 		i = protohelpers.EncodeVarint(dAtA, i, 0)
 		i--
-		dAtA[i] = 0x3a
+		dAtA[i] = 0x22
 	}
 	return len(dAtA) - i, nil
 }
@@ -564,11 +564,11 @@ func (m *Envelope_ObservedAddress) MarshalToSizedBufferVT(dAtA []byte) (int, err
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x42
+		dAtA[i] = 0x2a
 	} else {
 		i = protohelpers.EncodeVarint(dAtA, i, 0)
 		i--
-		dAtA[i] = 0x42
+		dAtA[i] = 0x2a
 	}
 	return len(dAtA) - i, nil
 }
@@ -599,11 +599,11 @@ func (m *Envelope_Events) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(encoded)))
 		}
 		i--
-		dAtA[i] = 0x4a
+		dAtA[i] = 0x32
 	} else {
 		i = protohelpers.EncodeVarint(dAtA, i, 0)
 		i--
-		dAtA[i] = 0x4a
+		dAtA[i] = 0x32
 	}
 	return len(dAtA) - i, nil
 }
@@ -622,11 +622,11 @@ func (m *Envelope_CertRenewalRequest) MarshalToSizedBufferVT(dAtA []byte) (int, 
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x52
+		dAtA[i] = 0x3a
 	} else {
 		i = protohelpers.EncodeVarint(dAtA, i, 0)
 		i--
-		dAtA[i] = 0x52
+		dAtA[i] = 0x3a
 	}
 	return len(dAtA) - i, nil
 }
@@ -645,11 +645,11 @@ func (m *Envelope_CertRenewalResponse) MarshalToSizedBufferVT(dAtA []byte) (int,
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x5a
+		dAtA[i] = 0x42
 	} else {
 		i = protohelpers.EncodeVarint(dAtA, i, 0)
 		i--
-		dAtA[i] = 0x5a
+		dAtA[i] = 0x42
 	}
 	return len(dAtA) - i, nil
 }
@@ -1757,7 +1757,7 @@ func (m *CertRenewalResponse) UnmarshalVT(dAtA []byte) error {
 				return io.ErrUnexpectedEOF
 			}
 			if m.Cert == nil {
-				m.Cert = &v1.MembershipCert{}
+				m.Cert = &v1.DelegationCert{}
 			}
 			if unmarshal, ok := interface{}(m.Cert).(interface {
 				UnmarshalVT([]byte) error
@@ -1822,7 +1822,7 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 			return fmt.Errorf("proto: Envelope: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
-		case 3:
+		case 1:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field PunchCoordRequest", wireType)
 			}
@@ -1863,7 +1863,7 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 				m.Body = &Envelope_PunchCoordRequest{PunchCoordRequest: v}
 			}
 			iNdEx = postIndex
-		case 4:
+		case 2:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field PunchCoordTrigger", wireType)
 			}
@@ -1904,7 +1904,7 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 				m.Body = &Envelope_PunchCoordTrigger{PunchCoordTrigger: v}
 			}
 			iNdEx = postIndex
-		case 6:
+		case 3:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field InviteRedeemRequest", wireType)
 			}
@@ -1945,7 +1945,7 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 				m.Body = &Envelope_InviteRedeemRequest{InviteRedeemRequest: v}
 			}
 			iNdEx = postIndex
-		case 7:
+		case 4:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field InviteRedeemResponse", wireType)
 			}
@@ -1986,7 +1986,7 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 				m.Body = &Envelope_InviteRedeemResponse{InviteRedeemResponse: v}
 			}
 			iNdEx = postIndex
-		case 8:
+		case 5:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field ObservedAddress", wireType)
 			}
@@ -2027,7 +2027,7 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 				m.Body = &Envelope_ObservedAddress{ObservedAddress: v}
 			}
 			iNdEx = postIndex
-		case 9:
+		case 6:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Events", wireType)
 			}
@@ -2084,7 +2084,7 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 				m.Body = &Envelope_Events{Events: v}
 			}
 			iNdEx = postIndex
-		case 10:
+		case 7:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field CertRenewalRequest", wireType)
 			}
@@ -2125,7 +2125,7 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 				m.Body = &Envelope_CertRenewalRequest{CertRenewalRequest: v}
 			}
 			iNdEx = postIndex
-		case 11:
+		case 8:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field CertRenewalResponse", wireType)
 			}
@@ -2166,7 +2166,7 @@ func (m *Envelope) UnmarshalVT(dAtA []byte) error {
 				m.Body = &Envelope_CertRenewalResponse{CertRenewalResponse: v}
 			}
 			iNdEx = postIndex
-		case 12:
+		case 9:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field TraceId", wireType)
 			}

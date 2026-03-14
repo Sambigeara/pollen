@@ -43,6 +43,7 @@ func TestBuildTargetPeerSetIncludesDesiredPeers(t *testing.T) {
 
 func TestSyncPeersFromStateKeepsDesiredNonTargets(t *testing.T) {
 	n := newMinimalNode(t, false)
+	disableFullMesh(n)
 
 	for i := range 20 {
 		pk := testPeerKey(byte(i + 1))
@@ -104,6 +105,7 @@ func TestSyncPeersFromStateKeepsDesiredNonTargets(t *testing.T) {
 
 func TestSyncPeersFromStateSuppressesRemotePrivateUnlessDesired(t *testing.T) {
 	n := newMinimalNode(t, false)
+	disableFullMesh(n)
 	n.store.ApplyEvents([]*statev1.GossipEvent{{
 		PeerId:  n.store.LocalID.String(),
 		Counter: 2,

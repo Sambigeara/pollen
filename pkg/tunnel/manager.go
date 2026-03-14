@@ -9,11 +9,15 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/sambigeara/pollen/pkg/traffic"
 	"github.com/sambigeara/pollen/pkg/types"
 )
+
+const streamOpenTimeout = 5 * time.Second
 
 var errNoServicePort = errors.New("no service port in stream header")
 
@@ -31,14 +35,16 @@ type connectionKey struct {
 
 // Manager manages service tunneling over peer streams.
 type Manager struct {
-	log           *zap.SugaredLogger
-	transport     StreamTransport
-	connections   map[connectionKey]connectionHandler
-	services      map[uint32]serviceHandler
-	activeStreams map[uint32]map[io.ReadWriteCloser]struct{}
-	connectionMu  sync.RWMutex
-	serviceMu     sync.RWMutex
-	streamMu      sync.Mutex
+	log            *zap.SugaredLogger
+	transport      StreamTransport
+	trafficTracker traffic.Recorder
+	connections    map[connectionKey]connectionHandler
+	services       map[uint32]serviceHandler
+	activeStreams  map[uint32]map[io.ReadWriteCloser]struct{}
+	connectionMu   sync.RWMutex
+	serviceMu      sync.RWMutex
+	streamMu       sync.Mutex
+	wg             sync.WaitGroup
 }
 
 type serviceHandler struct {
@@ -81,12 +87,17 @@ func New(transport StreamTransport) *Manager {
 	}
 }
 
+// SetTrafficTracker sets the traffic tracker for recording per-peer byte counts.
+func (m *Manager) SetTrafficTracker(t traffic.Recorder) {
+	m.trafficTracker = t
+}
+
 func (m *Manager) Start(ctx context.Context) {
-	go func() {
+	m.wg.Go(func() {
 		if err := m.acceptStreams(ctx); err != nil {
 			m.log.Debugw("tunnel stream loop stopped", "err", err)
 		}
-	}()
+	})
 }
 
 func (m *Manager) acceptStreams(ctx context.Context) error {
@@ -99,7 +110,7 @@ func (m *Manager) acceptStreams(ctx context.Context) error {
 			return err
 		}
 
-		go m.handleIncomingStream(peerID, stream)
+		m.wg.Go(func() { m.handleIncomingStream(peerID, stream) })
 	}
 }
 
@@ -109,6 +120,10 @@ func (m *Manager) handleIncomingStream(peerID types.PeerKey, stream io.ReadWrite
 		m.log.Warnw("failed reading service port from stream", "peer", peerID.Short(), "err", err)
 		_ = stream.Close()
 		return
+	}
+
+	if m.trafficTracker != nil {
+		stream = traffic.WrapStream(stream, m.trafficTracker, peerID)
 	}
 
 	tracked := &trackedStream{ReadWriteCloser: stream}
@@ -225,15 +240,17 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 		return 0, err
 	}
 
-	go func() {
+	m.wg.Go(func() {
 		logger := m.log.Named("tunnel")
 		for {
 			clientConn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			go func() {
-				stream, err := m.transport.OpenStream(ctx, peerID)
+			m.wg.Go(func() {
+				streamCtx, cancel := context.WithTimeout(ctx, streamOpenTimeout)
+				defer cancel()
+				stream, err := m.transport.OpenStream(streamCtx, peerID)
 				if err != nil {
 					logger.Warnw("open stream failed", "peer", peerID.Short(), "port", remotePort, "err", err)
 					_ = clientConn.Close()
@@ -247,10 +264,14 @@ func (m *Manager) ConnectService(peerID types.PeerKey, remotePort, localPort uin
 					return
 				}
 
+				if m.trafficTracker != nil {
+					stream = traffic.WrapStream(stream, m.trafficTracker, peerID)
+				}
+
 				bridge(clientConn, stream)
-			}()
+			})
 		}
-	}()
+	})
 
 	m.connections[connectionKey{peerID: peerID, port: uint32(boundPort)}] = connectionHandler{
 		cancel: cancelFn,
@@ -381,4 +402,6 @@ func (m *Manager) Close() {
 			_ = stream.Close()
 		}
 	}
+
+	m.wg.Wait()
 }

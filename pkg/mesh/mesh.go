@@ -21,6 +21,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/observability/traces"
 	"github.com/sambigeara/pollen/pkg/peer"
 	"github.com/sambigeara/pollen/pkg/sock"
+	"github.com/sambigeara/pollen/pkg/traffic"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
 )
@@ -30,14 +31,21 @@ const (
 	quicIdleTimeout     = 30 * time.Second
 	quicKeepAlivePeriod = 10 * time.Second
 	eventSendTimeout    = 5 * time.Second
-	queueBufSize        = 64
+	maxBidiStreams      = 256
+	queueBufSize        = maxBidiStreams
 	probeBufSize        = 2048
 	inviteRedeemTTL     = 5 * time.Minute
 	sessionReapInterval = 5 * time.Minute
 	streamTypeTimeout   = 5 * time.Second
 
-	streamTypeClock  byte = 1
-	streamTypeTunnel byte = 2
+	streamTypeClock    byte = 1
+	streamTypeTunnel   byte = 2
+	streamTypeRouted   byte = 3
+	streamTypeArtifact byte = 4
+	streamTypeWorkload byte = 5
+
+	routeHeaderSize = 66 // 32 dest + 32 source + 1 TTL + 1 inner stream type (tunnel=2, artifact=4, workload=5 accepted at delivery)
+	defaultRouteTTL = 16
 )
 
 func quicConfig() *quic.Config {
@@ -46,7 +54,26 @@ func quicConfig() *quic.Config {
 		KeepAlivePeriod:       quicKeepAlivePeriod,
 		EnableDatagrams:       true,
 		MaxIncomingUniStreams: -1,
+		MaxIncomingStreams:    maxBidiStreams,
 	}
+}
+
+// Stream wraps a QUIC stream with safe Close semantics: Close cancels the
+// read side (STOP_SENDING) and closes the write side (FIN), ensuring QUIC
+// releases stream credits immediately. Use CloseWrite for write-side
+// half-close when the protocol requires reading after closing writes.
+type Stream struct{ *quic.Stream }
+
+func (s Stream) CloseWrite() error { return s.Stream.Close() }
+
+func (s Stream) Close() error {
+	s.CancelRead(0)
+	return s.Stream.Close()
+}
+
+// Router provides next-hop lookups for multi-hop mesh routing.
+type Router interface {
+	Lookup(dest types.PeerKey) (nextHop types.PeerKey, ok bool)
 }
 
 type Packet struct {
@@ -61,7 +88,7 @@ type Mesh interface {
 	Events() <-chan peer.Input
 	OpenStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
 	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
-	OpenClockStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
+	OpenClockStream(ctx context.Context, peer types.PeerKey) (Stream, error)
 	AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
 	JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error
 	JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
@@ -70,22 +97,28 @@ type Mesh interface {
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
 	PeerCertExpiresAt(peer types.PeerKey) (time.Time, bool)
-	PeerMembershipCert(peer types.PeerKey) (*admissionv1.MembershipCert, bool)
+	PeerDelegationCert(peer types.PeerKey) (*admissionv1.DelegationCert, bool)
 	IsOutbound(types.PeerKey) bool
 	ConnectedPeers() []types.PeerKey
 	ClosePeerSession(peerKey types.PeerKey, reason CloseReason)
 	ListenPort() int
 	BroadcastDisconnect() error
 	UpdateMeshCert(cert tls.Certificate)
-	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.MembershipCert, error)
+	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.DelegationCert, error)
 	SetTracer(t *traces.Tracer)
+	SetRouter(r Router)
+	SetTrafficTracker(t traffic.Recorder)
+	SetArtifactHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey))
+	OpenArtifactStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
+	SetWorkloadHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey))
+	OpenWorkloadStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
 	Close() error
 }
 
 type CloseReason string
 
 const (
-	CloseReasonRevoked       CloseReason = "revoked"
+	CloseReasonDenied        CloseReason = "denied"
 	CloseReasonTopologyPrune CloseReason = "topology_prune"
 	CloseReasonCertExpired   CloseReason = "cert_expired"
 	CloseReasonCertRotation  CloseReason = "cert_rotation"
@@ -100,17 +133,21 @@ type impl struct {
 	meshCert         atomic.Pointer[tls.Certificate]
 	bareCert         tls.Certificate
 	socks            sock.SockStore
+	isDenied         func(types.PeerKey) bool
 	inCh             chan peer.Input
 	recvCh           chan Packet
 	renewalCh        chan *meshv1.CertRenewalResponse
-	inviteSigner     *auth.AdminSigner
-	isSubjectRevoked func([]byte) bool
+	inviteSigner     *auth.DelegationSigner
 	streamCh         chan incomingStream
 	clockStreamCh    chan incomingStream
 	trustBundle      *admissionv1.TrustBundle
 	log              *zap.SugaredLogger
 	metrics          *metrics.MeshMetrics
 	tracer           *traces.Tracer
+	router           Router
+	trafficTracker   traffic.Recorder
+	artifactHandler  func(stream io.ReadWriteCloser, peer types.PeerKey)
+	workloadHandler  func(stream io.ReadWriteCloser, peer types.PeerKey)
 	listener         *quic.Listener
 	sessions         *sessionRegistry
 	mainQT           *quic.Transport
@@ -118,6 +155,7 @@ type impl struct {
 	port             int
 	localKey         types.PeerKey
 	membershipTTL    time.Duration
+	reconnectWindow  time.Duration
 	maxConnectionAge time.Duration
 }
 
@@ -130,20 +168,20 @@ type peerSession struct {
 	conn           *quic.Conn
 	transport      *quic.Transport
 	sockConn       *sock.Conn
-	membershipCert *admissionv1.MembershipCert
+	delegationCert *admissionv1.DelegationCert
 	createdAt      time.Time
 	certExpiresAt  time.Time
 	outbound       bool
 }
 
 func newPeerSession(conn *quic.Conn, transport *quic.Transport, outbound bool) *peerSession {
-	mc := membershipCertFromConn(conn)
+	dc := delegationCertFromConn(conn)
 	return &peerSession{
 		conn:           conn,
 		transport:      transport,
-		membershipCert: mc,
+		delegationCert: dc,
 		createdAt:      time.Now(),
-		certExpiresAt:  auth.CertExpiresAt(mc),
+		certExpiresAt:  auth.CertExpiresAt(dc),
 		outbound:       outbound,
 	}
 }
@@ -153,7 +191,7 @@ type directDialResult struct {
 	err     error
 }
 
-func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsIdentityTTL, membershipTTL, maxConnectionAge time.Duration, isSubjectRevoked func([]byte) bool, mm *metrics.MeshMetrics) (Mesh, error) {
+func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCredentials, tlsIdentityTTL, membershipTTL, reconnectWindow, maxConnectionAge time.Duration, isDenied func(types.PeerKey) bool, mm *metrics.MeshMetrics) (Mesh, error) {
 	meshCert, err := GenerateIdentityCert(signPriv, creds.Cert, tlsIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate mesh cert: %w", err)
@@ -169,12 +207,13 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 		log:              zap.S().Named("mesh"),
 		bareCert:         bareCert,
 		trustBundle:      creds.Trust,
-		inviteSigner:     creds.InviteSigner,
-		isSubjectRevoked: isSubjectRevoked,
+		inviteSigner:     creds.DelegationKey,
+		isDenied:         isDenied,
 		localKey:         localKey,
 		socks:            sock.NewSockStore(),
 		port:             defaultPort,
 		membershipTTL:    membershipTTL,
+		reconnectWindow:  reconnectWindow,
 		maxConnectionAge: maxConnectionAge,
 		sessions:         newSessionRegistry(mm.SessionsActive),
 		recvCh:           make(chan Packet, queueBufSize),
@@ -196,11 +235,11 @@ func (m *impl) Start(ctx context.Context) error {
 
 	qt := &quic.Transport{Conn: conn}
 	ln, err := qt.Listen(newServerTLSConfig(serverTLSParams{
-		meshCertPtr:      &m.meshCert,
-		inviteCert:       m.bareCert,
-		trustBundle:      m.trustBundle,
-		isSubjectRevoked: m.isSubjectRevoked,
-		inviteEnabled:    m.inviteSigner != nil,
+		meshCertPtr:     &m.meshCert,
+		inviteCert:      m.bareCert,
+		trustBundle:     m.trustBundle,
+		reconnectWindow: m.reconnectWindow,
+		inviteEnabled:   m.inviteSigner != nil,
 	}), quicConfig())
 	if err != nil {
 		_ = conn.Close()
@@ -240,15 +279,56 @@ func (m *impl) Events() <-chan peer.Input {
 }
 
 func (m *impl) OpenStream(ctx context.Context, peerKey types.PeerKey) (io.ReadWriteCloser, error) {
-	return m.openTypedStream(ctx, peerKey, streamTypeTunnel)
+	for {
+		// Snapshot both notification channels BEFORE reading any state.
+		sessionCh := m.sessions.onChange()
+		routeCh := routeChanged(m.router)
+
+		// Fast path: direct session exists.
+		if _, ok := m.sessions.get(peerKey); ok {
+			return m.openTypedStream(ctx, peerKey, streamTypeTunnel)
+		}
+
+		// No router — only option is waiting for a direct session.
+		if m.router == nil {
+			return m.openTypedStream(ctx, peerKey, streamTypeTunnel)
+		}
+
+		// Check routed path.
+		if nextHop, ok := m.router.Lookup(peerKey); ok {
+			if _, ok := m.sessions.get(nextHop); ok {
+				return m.openRoutedStream(ctx, peerKey, streamTypeTunnel, nextHop)
+			}
+		}
+
+		// No viable path yet — wait for a session or route change.
+		select {
+		case <-sessionCh:
+		case <-routeCh:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func routeChanged(r Router) <-chan struct{} {
+	type notifier interface{ Changed() <-chan struct{} }
+	if n, ok := r.(notifier); ok {
+		return n.Changed()
+	}
+	return nil
 }
 
 func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {
 	return m.acceptFromCh(ctx, m.streamCh)
 }
 
-func (m *impl) OpenClockStream(ctx context.Context, peerKey types.PeerKey) (io.ReadWriteCloser, error) {
-	return m.openTypedStream(ctx, peerKey, streamTypeClock)
+func (m *impl) OpenClockStream(ctx context.Context, peerKey types.PeerKey) (Stream, error) {
+	rwc, err := m.openTypedStream(ctx, peerKey, streamTypeClock)
+	if err != nil {
+		return Stream{}, err
+	}
+	return rwc.(Stream), nil //nolint:forcetypeassert
 }
 
 func (m *impl) AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {
@@ -269,7 +349,7 @@ func (m *impl) openTypedStream(ctx context.Context, peerKey types.PeerKey, strea
 		stream.CancelRead(0)
 		return nil, err
 	}
-	return stream, nil
+	return Stream{stream}, nil
 }
 
 func (m *impl) acceptFromCh(ctx context.Context, ch <-chan incomingStream) (types.PeerKey, io.ReadWriteCloser, error) {
@@ -285,7 +365,7 @@ func (m *impl) acceptFromCh(ctx context.Context, ch <-chan incomingStream) (type
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
+	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.reconnectWindow)
 	qCfg := quicConfig()
 
 	qc, err := m.mainQT.Dial(ctx, addr, tlsCfg, qCfg)
@@ -297,7 +377,7 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 }
 
 func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey, localNAT nat.Type) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.isSubjectRevoked)
+	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.reconnectWindow)
 	qCfg := quicConfig()
 
 	conn, err := m.socks.Punch(ctx, addr, localNAT)
@@ -511,12 +591,12 @@ func (m *impl) PeerCertExpiresAt(peerKey types.PeerKey) (time.Time, bool) {
 	return s.certExpiresAt, true
 }
 
-func (m *impl) PeerMembershipCert(peerKey types.PeerKey) (*admissionv1.MembershipCert, bool) {
+func (m *impl) PeerDelegationCert(peerKey types.PeerKey) (*admissionv1.DelegationCert, bool) {
 	s, ok := m.sessions.get(peerKey)
 	if !ok {
 		return nil, false
 	}
-	return s.membershipCert, s.membershipCert != nil
+	return s.delegationCert, s.delegationCert != nil
 }
 
 func (m *impl) IsOutbound(peerKey types.PeerKey) bool {
@@ -593,10 +673,11 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		}
 
 		// Both connections are live — deterministic tie-break:
-		// the peer with the smaller key keeps its connection.
-		// If we're the smaller key, keep ours (close the new one).
-		// If they're the smaller key, replace ours with theirs.
-		return !m.localKey.Less(peerKey)
+		// both nodes agree to keep the connection dialed by the smaller key.
+		// This ensures convergence regardless of arrival order.
+		weAreSmaller := m.localKey.Less(peerKey)
+		currentPreferred := current.outbound == weAreSmaller
+		return !currentPreferred
 	})
 	if !ok {
 		span.SetAttr("result", "duplicate")
@@ -655,6 +736,25 @@ func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 			ch = m.clockStreamCh
 		case streamTypeTunnel:
 			ch = m.streamCh
+		case streamTypeRouted:
+			go m.handleRoutedStream(ctx, stream, peerKey)
+			continue
+		case streamTypeArtifact:
+			if h := m.artifactHandler; h != nil {
+				go h(Stream{stream}, peerKey)
+			} else {
+				stream.CancelRead(0)
+				stream.CancelWrite(0)
+			}
+			continue
+		case streamTypeWorkload:
+			if h := m.workloadHandler; h != nil {
+				go h(Stream{stream}, peerKey)
+			} else {
+				stream.CancelRead(0)
+				stream.CancelWrite(0)
+			}
+			continue
 		default:
 			stream.CancelRead(0)
 			stream.CancelWrite(0)
@@ -662,11 +762,14 @@ func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 		}
 
 		select {
-		case ch <- incomingStream{peerKey: peerKey, stream: stream}:
+		case ch <- incomingStream{peerKey: peerKey, stream: Stream{stream}}:
 		case <-ctx.Done():
 			stream.CancelRead(0)
 			stream.CancelWrite(0)
 			return
+		default:
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
 		}
 	}
 }
@@ -735,8 +838,8 @@ func classifyQUICError(err error) peer.DisconnectReason {
 		switch appErr.ErrorMessage {
 		case string(CloseReasonTopologyPrune):
 			return peer.DisconnectTopologyPrune
-		case string(CloseReasonRevoked):
-			return peer.DisconnectRevoked
+		case string(CloseReasonDenied):
+			return peer.DisconnectDenied
 		case string(CloseReasonCertExpired):
 			return peer.DisconnectCertExpired
 		case string(CloseReasonCertRotation):
@@ -783,6 +886,10 @@ func (m *impl) acceptLoop(ctx context.Context) {
 
 		switch qc.ConnectionState().TLS.NegotiatedProtocol {
 		case alpnMesh:
+			if m.isDenied != nil && m.isDenied(peerKey) {
+				_ = qc.CloseWithError(0, string(CloseReasonDenied))
+				continue
+			}
 			m.addPeer(newPeerSession(qc, m.mainQT, false), peerKey)
 		case alpnInvite:
 			go m.handleInviteConnection(ctx, qc, peerKey)
@@ -818,11 +925,275 @@ func (m *impl) SetTracer(t *traces.Tracer) {
 	m.tracer = t
 }
 
+func (m *impl) SetRouter(r Router) {
+	m.router = r
+}
+
+func (m *impl) SetTrafficTracker(t traffic.Recorder) {
+	m.trafficTracker = t
+}
+
+func (m *impl) SetArtifactHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey)) {
+	m.artifactHandler = fn
+}
+
+func (m *impl) SetWorkloadHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey)) {
+	m.workloadHandler = fn
+}
+
+func (m *impl) OpenArtifactStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error) {
+	for {
+		sessionCh := m.sessions.onChange()
+		routeCh := routeChanged(m.router)
+
+		// Direct session.
+		if _, ok := m.sessions.get(peer); ok {
+			return m.openTypedStream(ctx, peer, streamTypeArtifact)
+		}
+
+		// Routed path.
+		if m.router != nil {
+			if nextHop, ok := m.router.Lookup(peer); ok {
+				if _, ok := m.sessions.get(nextHop); ok {
+					return m.openRoutedStream(ctx, peer, streamTypeArtifact, nextHop)
+				}
+			}
+		}
+
+		select {
+		case <-sessionCh:
+		case <-routeCh:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (m *impl) OpenWorkloadStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error) {
+	for {
+		sessionCh := m.sessions.onChange()
+		routeCh := routeChanged(m.router)
+
+		if _, ok := m.sessions.get(peer); ok {
+			return m.openTypedStream(ctx, peer, streamTypeWorkload)
+		}
+
+		if m.router != nil {
+			if nextHop, ok := m.router.Lookup(peer); ok {
+				if _, ok := m.sessions.get(nextHop); ok {
+					return m.openRoutedStream(ctx, peer, streamTypeWorkload, nextHop)
+				}
+			}
+		}
+
+		select {
+		case <-sessionCh:
+		case <-routeCh:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (m *impl) openRoutedStream(ctx context.Context, dest types.PeerKey, innerType byte, nextHop types.PeerKey) (io.ReadWriteCloser, error) {
+	s, ok := m.sessions.get(nextHop)
+	if !ok {
+		return nil, fmt.Errorf("no session to next hop %s", nextHop.Short())
+	}
+	stream, err := s.conn.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var header [1 + routeHeaderSize]byte
+	header[0] = streamTypeRouted
+	copy(header[1:33], dest[:])
+	copy(header[33:65], m.localKey[:])
+	header[65] = defaultRouteTTL
+	header[66] = innerType
+	if _, err := stream.Write(header[:]); err != nil {
+		stream.CancelWrite(0)
+		stream.CancelRead(0)
+		return nil, err
+	}
+	return Stream{stream}, nil
+}
+
+func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream, upstreamPeer types.PeerKey) {
+	var header [routeHeaderSize]byte
+	if _, err := io.ReadFull(stream, header[:]); err != nil {
+		stream.CancelRead(0)
+		stream.CancelWrite(0)
+		return
+	}
+
+	var dest, source types.PeerKey
+	copy(dest[:], header[0:32])
+	copy(source[:], header[32:64])
+	ttl := header[64]
+	innerType := header[65]
+
+	if dest == m.localKey {
+		m.deliverRoutedStream(ctx, stream, source, innerType)
+		return
+	}
+
+	if ttl <= 1 {
+		m.log.Debugw("routed stream TTL exhausted", "dest", dest.Short(), "source", source.Short())
+		stream.CancelRead(0)
+		stream.CancelWrite(0)
+		return
+	}
+
+	m.forwardRoutedStream(ctx, stream, dest, source, ttl-1, innerType, upstreamPeer)
+}
+
+// deliverRoutedStream dispatches a routed stream that has arrived at its final
+// destination. Tunnel, artifact, and workload streams are accepted; clock/gossip
+// streams must not travel routed paths (gossip already propagates transitively
+// via direct peers).
+//
+// NOTE: The source peerKey is asserted by the routing header, NOT authenticated
+// by the QUIC session. Today this is acceptable because the tunnel manager uses
+// peerKey only for logging. If future code makes authorization decisions based
+// on AcceptStream's peerKey, routed streams must carry end-to-end proof of
+// origin (e.g., a signature over the stream header).
+func (m *impl) deliverRoutedStream(ctx context.Context, stream *quic.Stream, source types.PeerKey, innerType byte) {
+	switch innerType {
+	case streamTypeTunnel:
+		select {
+		case m.streamCh <- incomingStream{peerKey: source, stream: Stream{stream}}:
+		case <-ctx.Done():
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+		default:
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+		}
+	case streamTypeArtifact:
+		if h := m.artifactHandler; h != nil {
+			go h(Stream{stream}, source)
+		} else {
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+		}
+	case streamTypeWorkload:
+		if h := m.workloadHandler; h != nil {
+			go h(Stream{stream}, source)
+		} else {
+			stream.CancelRead(0)
+			stream.CancelWrite(0)
+		}
+	default:
+		stream.CancelRead(0)
+		stream.CancelWrite(0)
+	}
+}
+
+func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, dest, source types.PeerKey, ttl, innerType byte, upstreamPeer types.PeerKey) {
+	// Find next hop: try direct session first, then router.
+	nextHop := dest
+	s, ok := m.sessions.get(dest)
+	if !ok {
+		if m.router == nil {
+			m.log.Debugw("no route to forward", "dest", dest.Short())
+			inbound.CancelRead(0)
+			inbound.CancelWrite(0)
+			return
+		}
+		nextHop, ok = m.router.Lookup(dest)
+		if !ok {
+			m.log.Debugw("no route to forward", "dest", dest.Short())
+			inbound.CancelRead(0)
+			inbound.CancelWrite(0)
+			return
+		}
+		if nextHop == source {
+			m.log.Debugw("routing loop detected", "dest", dest.Short(), "source", source.Short())
+			inbound.CancelRead(0)
+			inbound.CancelWrite(0)
+			return
+		}
+		s, ok = m.sessions.get(nextHop)
+		if !ok {
+			m.log.Debugw("no session to next hop", "nextHop", nextHop.Short())
+			inbound.CancelRead(0)
+			inbound.CancelWrite(0)
+			return
+		}
+	}
+
+	outbound, err := s.conn.OpenStreamSync(ctx)
+	if err != nil {
+		m.log.Debugw("open outbound routed stream failed", "nextHop", nextHop.Short(), "err", err)
+		inbound.CancelRead(0)
+		inbound.CancelWrite(0)
+		return
+	}
+
+	// Write routing header on outbound stream.
+	var header [1 + routeHeaderSize]byte
+	header[0] = streamTypeRouted
+	copy(header[1:33], dest[:])
+	copy(header[33:65], source[:])
+	header[65] = ttl
+	header[66] = innerType
+	if _, err := outbound.Write(header[:]); err != nil {
+		outbound.CancelWrite(0)
+		outbound.CancelRead(0)
+		inbound.CancelRead(0)
+		inbound.CancelWrite(0)
+		return
+	}
+
+	var in io.ReadWriteCloser = Stream{inbound}
+	var out io.ReadWriteCloser = Stream{outbound}
+	if m.trafficTracker != nil {
+		in = traffic.WrapStream(in, m.trafficTracker, upstreamPeer)
+		out = traffic.WrapStream(out, m.trafficTracker, nextHop)
+	}
+	bridgeStreams(in, out)
+}
+
+// --- Routed-stream bridge helpers ---
+
+const routeBufSize = 64 * 1024
+
+var routeBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, routeBufSize)
+		return &b
+	},
+}
+
+func bridgeStreams(c1, c2 io.ReadWriteCloser) {
+	var wg sync.WaitGroup
+	transfer := func(dst, src io.ReadWriteCloser) {
+		bufPtr := routeBufPool.Get().(*[]byte) //nolint:forcetypeassert
+		defer routeBufPool.Put(bufPtr)
+		_, _ = io.CopyBuffer(dst, src, *bufPtr)
+		meshCloseWrite(dst)
+	}
+	wg.Go(func() { transfer(c1, c2) })
+	wg.Go(func() { transfer(c2, c1) })
+	wg.Wait()
+	_ = c1.Close()
+	_ = c2.Close()
+}
+
+func meshCloseWrite(conn io.Closer) {
+	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+	_ = conn.Close()
+}
+
 func (m *impl) UpdateMeshCert(cert tls.Certificate) {
 	m.meshCert.Store(&cert)
 }
 
-func (m *impl) RequestCertRenewal(ctx context.Context, peerKey types.PeerKey) (*admissionv1.MembershipCert, error) {
+func (m *impl) RequestCertRenewal(ctx context.Context, peerKey types.PeerKey) (*admissionv1.DelegationCert, error) {
 	s, ok := m.sessions.get(peerKey)
 	if !ok {
 		return nil, fmt.Errorf("no connection to peer %s", peerKey.Short())
@@ -928,8 +1299,9 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 	}
 
 	membershipTTL := m.membershipTTL
+	var accessDeadline time.Time
 	if s := verified.Claims.GetMembershipTtlSeconds(); s > 0 {
-		membershipTTL = time.Duration(s) * time.Second
+		accessDeadline = now.Add(time.Duration(s) * time.Second)
 	}
 
 	joinToken, err := auth.IssueJoinTokenWithIssuer(
@@ -941,7 +1313,7 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 		now,
 		ttl,
 		membershipTTL,
-		verified.Claims.GetNonRenewable(),
+		accessDeadline,
 	)
 	if err != nil {
 		return err
