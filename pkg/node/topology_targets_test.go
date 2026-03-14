@@ -55,7 +55,7 @@ func TestSyncPeersFromStateKeepsDesiredNonTargets(t *testing.T) {
 
 	epoch := time.Now().Unix() / topology.EpochSeconds
 	targets := topology.ComputeTargetPeers(
-		n.store.LocalID,
+		n.store.LocalID(),
 		n.localCoord,
 		peerInfos,
 		topology.DefaultParams(epoch),
@@ -107,7 +107,7 @@ func TestSyncPeersFromStateSuppressesRemotePrivateUnlessDesired(t *testing.T) {
 	n := newMinimalNode(t, false)
 	disableFullMesh(n)
 	n.store.ApplyEvents([]*statev1.GossipEvent{{
-		PeerId:  n.store.LocalID.String(),
+		PeerId:  n.store.LocalID().String(),
 		Counter: 2,
 		Change: &statev1.GossipEvent_Network{
 			Network: &statev1.NetworkChange{Ips: []string{"10.1.1.20"}, LocalPort: 60611},
@@ -336,7 +336,7 @@ func TestRevokeStreakPrivatePeerRevokedAfterThreshold(t *testing.T) {
 	disableFullMesh(n)
 
 	// Find a non-targeted peer and simulate it being connected+outbound.
-	nonTarget := findNonTargetPeer(t, n)
+	nonTarget := findNonTargetPeer(t, n, nil)
 	simulateConnectedOutbound(n, nonTarget, wrapper)
 
 	// Tick 1 and 2: streak builds but peer stays connected.
@@ -367,7 +367,7 @@ func TestRevokeStreakResetsOnTargetReentry(t *testing.T) {
 
 	disableFullMesh(n)
 
-	nonTarget := findNonTargetPeer(t, n)
+	nonTarget := findNonTargetPeer(t, n, nil)
 	simulateConnectedOutbound(n, nonTarget, wrapper)
 
 	// Build up streak to threshold - 1.
@@ -409,7 +409,7 @@ func TestRevokeStreakPublicPeerStickyLonger(t *testing.T) {
 
 	disableFullMesh(n)
 
-	nonTarget := findNonTargetPublicPeer(t, n)
+	nonTarget := findNonTargetPeer(t, n, func(kp store.KnownPeer) bool { return kp.PubliclyAccessible })
 	simulateConnectedOutbound(n, nonTarget, wrapper)
 
 	// Run revokeStreakThreshold ticks — should NOT be revoked (needs 30 for public).
@@ -449,7 +449,7 @@ func TestAllPublicClusterProducesFewerTargets(t *testing.T) {
 	}
 
 	known := n.store.KnownPeers()
-	localIPs := n.store.NodeIPs(n.store.LocalID)
+	localIPs := n.store.NodeIPs(n.store.LocalID())
 	shape := summarizeTopologyShape(localIPs, known)
 	epoch := time.Now().Unix() / topology.EpochSeconds
 	params := adaptiveTopologyParams(epoch, shape)
@@ -463,7 +463,7 @@ func TestAllPublicClusterProducesFewerTargets(t *testing.T) {
 	for i := range peerInfos {
 		peerInfos[i].NatType = nat.Easy
 	}
-	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
+	targets := topology.ComputeTargetPeers(n.store.LocalID(), n.localCoord, peerInfos, params)
 
 	// With adaptive params (NearestK=2, RandomR=1, InfraMax=2) budget is 5.
 	// Default budget would be 8 (NearestK=4, RandomR=2, InfraMax=2).
@@ -471,7 +471,7 @@ func TestAllPublicClusterProducesFewerTargets(t *testing.T) {
 	defaultParams.UseHMACNearest = n.useHMACNearest
 	defaultParams.LocalNATType = nat.Easy
 	defaultParams.LocalIPs = localIPs
-	defaultTargets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, defaultParams)
+	defaultTargets := topology.ComputeTargetPeers(n.store.LocalID(), n.localCoord, peerInfos, defaultParams)
 
 	require.Less(t, len(targets), len(defaultTargets),
 		"all-public cluster should produce fewer targets with adaptive params")
@@ -484,7 +484,7 @@ func TestMixedClusterRetainsSameSiteAndPublicPeers(t *testing.T) {
 	// Use custom IPs for the local node.
 	n.store.ApplyEvents([]*statev1.GossipEvent{
 		{
-			PeerId:  n.store.LocalID.String(),
+			PeerId:  n.store.LocalID().String(),
 			Counter: 1,
 			Change: &statev1.GossipEvent_Network{
 				Network: &statev1.NetworkChange{
@@ -520,7 +520,7 @@ func TestMixedClusterRetainsSameSiteAndPublicPeers(t *testing.T) {
 	}
 
 	known := n.store.KnownPeers()
-	localIPs := n.store.NodeIPs(n.store.LocalID)
+	localIPs := n.store.NodeIPs(n.store.LocalID())
 	shape := summarizeTopologyShape(localIPs, known)
 
 	// With 2/12 public (~17%), should keep default budgets.
@@ -532,50 +532,9 @@ func TestMixedClusterRetainsSameSiteAndPublicPeers(t *testing.T) {
 	require.Equal(t, topology.DefaultRandomR, params.RandomR, "mixed cluster should keep default RandomR")
 }
 
-func knownPeersToPeerInfos(peers []store.KnownPeer) []topology.PeerInfo {
-	infos := make([]topology.PeerInfo, 0, len(peers))
-	for _, kp := range peers {
-		infos = append(infos, topology.PeerInfo{
-			Key:                kp.PeerID,
-			Coord:              kp.VivaldiCoord,
-			IPs:                kp.IPs,
-			NatType:            kp.NatType,
-			ObservedExternalIP: kp.ObservedExternalIP,
-			PubliclyAccessible: kp.PubliclyAccessible,
-		})
-	}
-	return infos
-}
-
-// findNonTargetPublicPeer returns a publicly-accessible peer key that is known
-// in the store but NOT in the current topology target set.
-func findNonTargetPublicPeer(t *testing.T, n *Node) types.PeerKey {
-	t.Helper()
-
-	known := n.store.KnownPeers()
-	peerInfos := knownPeersToPeerInfos(known)
-
-	epoch := time.Now().Unix() / topology.EpochSeconds
-	params := topology.DefaultParams(epoch)
-	params.UseHMACNearest = n.useHMACNearest
-	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
-	targetSet := make(map[types.PeerKey]struct{}, len(targets))
-	for _, pk := range targets {
-		targetSet[pk] = struct{}{}
-	}
-
-	for _, kp := range known {
-		if _, targeted := targetSet[kp.PeerID]; !targeted && kp.PubliclyAccessible {
-			return kp.PeerID
-		}
-	}
-	t.Fatal("no non-targeted public peer found — add more public peers")
-	return types.PeerKey{}
-}
-
 // findNonTargetPeer returns a peer key that is known in the store but NOT in
-// the current topology target set.
-func findNonTargetPeer(t *testing.T, n *Node) types.PeerKey {
+// the current topology target set. pred filters candidates (nil = any peer).
+func findNonTargetPeer(t *testing.T, n *Node, pred func(store.KnownPeer) bool) types.PeerKey {
 	t.Helper()
 
 	known := n.store.KnownPeers()
@@ -584,17 +543,21 @@ func findNonTargetPeer(t *testing.T, n *Node) types.PeerKey {
 	epoch := time.Now().Unix() / topology.EpochSeconds
 	params := topology.DefaultParams(epoch)
 	params.UseHMACNearest = n.useHMACNearest
-	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
+	targets := topology.ComputeTargetPeers(n.store.LocalID(), n.localCoord, peerInfos, params)
 	targetSet := make(map[types.PeerKey]struct{}, len(targets))
 	for _, pk := range targets {
 		targetSet[pk] = struct{}{}
 	}
 
 	for _, kp := range known {
-		if _, targeted := targetSet[kp.PeerID]; !targeted {
-			return kp.PeerID
+		if _, targeted := targetSet[kp.PeerID]; targeted {
+			continue
 		}
+		if pred != nil && !pred(kp) {
+			continue
+		}
+		return kp.PeerID
 	}
-	t.Fatal("all known peers are targeted — need more peers to find a non-target")
+	t.Fatal("no non-targeted peer found matching predicate — add more peers")
 	return types.PeerKey{}
 }

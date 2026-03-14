@@ -45,10 +45,10 @@ func newMinimalNode(t *testing.T, bootstrapPublic bool) *Node {
 
 func TestBootstrapPublicSetsAccessibleImmediately(t *testing.T) {
 	n := newMinimalNode(t, true)
-	require.True(t, n.store.IsPubliclyAccessible(n.store.LocalID))
+	require.True(t, n.store.IsPubliclyAccessible(n.store.LocalID()))
 }
 
 func TestBootstrapPublicFalseIsNotAccessible(t *testing.T) {
 	n := newMinimalNode(t, false)
-	require.False(t, n.store.IsPubliclyAccessible(n.store.LocalID))
+	require.False(t, n.store.IsPubliclyAccessible(n.store.LocalID()))
 }

@@ -20,11 +20,11 @@ func TestBroadcastGossipBatchesStopsRetryingFailedPeer(t *testing.T) {
 	n.mesh = wrapper
 
 	batches := [][]*statev1.GossipEvent{{{}}, {{}}}
-	n.broadcastGossipBatches(context.Background(), []types.PeerKey{failPeer, okPeer, n.store.LocalID}, batches)
+	n.broadcastGossipBatches(context.Background(), []types.PeerKey{failPeer, okPeer, n.store.LocalID()}, batches)
 
 	require.Equal(t, 1, wrapper.calls[failPeer])
 	require.Equal(t, 2, wrapper.calls[okPeer])
-	_, calledLocal := wrapper.calls[n.store.LocalID]
+	_, calledLocal := wrapper.calls[n.store.LocalID()]
 	require.False(t, calledLocal)
 }
 
