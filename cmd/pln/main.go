@@ -25,6 +25,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	"golang.org/x/net/http2"
+	"google.golang.org/grpc"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
@@ -34,10 +35,9 @@ import (
 	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
 	"github.com/sambigeara/pollen/pkg/peer"
-	"github.com/sambigeara/pollen/pkg/server"
+	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/store"
 	"github.com/sambigeara/pollen/pkg/types"
-	"github.com/sambigeara/pollen/pkg/workspace"
 )
 
 const (
@@ -273,7 +273,16 @@ func pollenPath(cmd *cobra.Command) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return workspace.EnsurePollenDir(dir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		if errors.Is(err, os.ErrPermission) && strings.HasPrefix(dir, "/var/lib/pln") {
+			return "", fmt.Errorf("unable to create pollen dir: %w\n"+
+				"  %s requires membership in the \"pln\" group\n"+
+				"  fix: sudo usermod -aG pln $(whoami) && newgrp pln\n"+
+				"  alternatively, set PLN_DIR to use a different directory", err, dir)
+		}
+		return "", fmt.Errorf("unable to create pollen dir: %w", err)
+	}
+	return dir, nil
 }
 
 func runNode(cmd *cobra.Command) {
@@ -406,8 +415,7 @@ func runNode(cmd *cobra.Command) {
 
 	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
 	p.Go(func(ctx context.Context) error {
-		grpcSrv := server.NewGRPCServer()
-		return grpcSrv.Start(ctx, nodeSrv, filepath.Join(pollenDir, socketName))
+		return startGRPCServer(ctx, nodeSrv, filepath.Join(pollenDir, socketName))
 	})
 
 	p.Go(func(ctx context.Context) error {
@@ -437,6 +445,45 @@ func nodeSocketActive(sockPath string) (bool, error) {
 	}
 	_ = conn.Close()
 	return true, nil
+}
+
+func startGRPCServer(ctx context.Context, nodeServ *node.NodeService, path string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	srv := grpc.NewServer()
+	controlv1.RegisterControlServiceServer(srv, nodeServ)
+
+	if _, err := os.Stat(path); err == nil {
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), time.Second)
+		defer dialCancel()
+		conn, dialErr := (&net.Dialer{Timeout: time.Second}).DialContext(dialCtx, "unix", path)
+		if dialErr == nil {
+			_ = conn.Close()
+			return nil
+		}
+		_ = os.Remove(path)
+	}
+
+	l, err := (&net.ListenConfig{}).Listen(ctx, "unix", path)
+	if err != nil {
+		return fmt.Errorf("failed to listen: %w", err)
+	}
+	defer os.Remove(path)
+
+	log := zap.S().Named("grpc")
+	if err := perm.SetGroupSocket(path); err != nil {
+		log.Warnw("socket group permissions", "err", err)
+	}
+
+	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
+	p.Go(func(_ context.Context) error { return srv.Serve(l) })
+	p.Go(func(ctx context.Context) error {
+		<-ctx.Done()
+		srv.GracefulStop()
+		return nil
+	})
+	return p.Wait()
 }
 
 type tokenIssuerContext struct {
