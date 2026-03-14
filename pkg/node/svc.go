@@ -463,7 +463,7 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 	counts := s.node.peers.StateCounts()
 
 	nm := s.node.nodeMetrics
-	gm := s.node.store.GossipMetrics()
+	gm := s.node.gossipMetrics
 	gossipApplied := uint64(gm.EventsApplied.Value()) //nolint:gosec
 	gossipStale := uint64(gm.EventsStale.Value())     //nolint:gosec
 
@@ -640,13 +640,8 @@ func nodeStatusRank(status controlv1.NodeStatus) int {
 }
 
 func workloadStatusProto(s workload.Status) controlv1.WorkloadStatus {
-	switch s {
-	case workload.StatusRunning:
+	if s == workload.StatusRunning {
 		return controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING
-	case workload.StatusStopped:
-		return controlv1.WorkloadStatus_WORKLOAD_STATUS_STOPPED
-	case workload.StatusErrored:
-		return controlv1.WorkloadStatus_WORKLOAD_STATUS_ERRORED
 	}
 	return controlv1.WorkloadStatus_WORKLOAD_STATUS_UNSPECIFIED
 }

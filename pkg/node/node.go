@@ -1,7 +1,6 @@
 package node
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -14,11 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sync"
 	"sync/atomic"
 	"time"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
@@ -49,13 +46,6 @@ const (
 )
 
 var ErrCertExpired = errors.New("delegation certificate has expired")
-
-// envelopeOverhead is the serialized size of an empty Envelope wrapping
-// a GossipEventBatch — covers the oneof tag, length prefixes, and batch
-// wrapper framing.
-var envelopeOverhead = (&meshv1.Envelope{Body: &meshv1.Envelope_Events{
-	Events: &statev1.GossipEventBatch{},
-}}).SizeVT()
 
 const (
 	certCheckInterval     = 5 * time.Minute
@@ -150,6 +140,7 @@ type Node struct {
 	smoothedErr     *metrics.EWMA
 	gossipEvents    chan []*statev1.GossipEvent
 	topoMetrics     *metrics.TopologyMetrics
+	gossipMetrics   *metrics.GossipMetrics
 	metricsCol      *metrics.Collector
 	tracer          *traces.Tracer
 	nodeMetrics     *metrics.NodeMetrics
@@ -243,6 +234,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		useHMACNearest:  true,
 		metricsCol:      col,
 		topoMetrics:     metrics.NewTopologyMetrics(col),
+		gossipMetrics:   gossipMetrics,
 		nodeMetrics:     metrics.NewNodeMetrics(col),
 		tracer:          tracer,
 		smoothedErr:     metrics.NewEWMAFrom(vivaldiErrAlpha, 1.0),
@@ -487,17 +479,6 @@ func (n *Node) connectBootstrapPeers(ctx context.Context) {
 	}
 }
 
-func (n *Node) queueGossipEvents(events []*statev1.GossipEvent) {
-	if len(events) == 0 {
-		return
-	}
-
-	select {
-	case n.gossipEvents <- events:
-	default:
-	}
-}
-
 func (n *Node) recvLoop(ctx context.Context) {
 	for {
 		p, err := n.mesh.Recv(ctx)
@@ -509,59 +490,6 @@ func (n *Node) recvLoop(ctx context.Context) {
 			continue
 		}
 		n.handleDatagram(ctx, p.Peer, p.Envelope)
-	}
-}
-
-func (n *Node) acceptClockStreamsLoop(ctx context.Context) {
-	for {
-		peerKey, stream, err := n.mesh.AcceptClockStream(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			n.log.Debugw("accept clock stream failed", "err", err)
-			return
-		}
-		go n.handleClockStream(ctx, peerKey, stream)
-	}
-}
-
-func (n *Node) handleClockStream(_ context.Context, from types.PeerKey, stream io.ReadWriteCloser) {
-	defer stream.Close()
-	span := n.tracer.Start("gossip.handleClock")
-	span.SetAttr("peer", from.Short())
-	defer span.End()
-
-	const maxClockSize = 256 << 10 // 256 KB
-	b, err := io.ReadAll(io.LimitReader(stream, maxClockSize+1))
-	if err != nil {
-		n.log.Debugw("read clock stream failed", "peer", from.Short(), "err", err)
-		return
-	}
-	if len(b) > maxClockSize {
-		n.log.Warnw("clock stream exceeded size limit", "peer", from.Short(), "size", len(b))
-		return
-	}
-
-	digest := &statev1.GossipStateDigest{}
-	if err := digest.UnmarshalVT(b); err != nil {
-		n.log.Debugw("unmarshal clock stream failed", "peer", from.Short(), "err", err)
-		return
-	}
-
-	events := n.store.MissingFor(digest)
-	if len(events) == 0 {
-		return
-	}
-
-	batch := &statev1.GossipEventBatch{Events: events}
-	resp, err := batch.MarshalVT()
-	if err != nil {
-		n.log.Debugw("marshal clock response failed", "peer", from.Short(), "err", err)
-		return
-	}
-	if _, err := stream.Write(resp); err != nil {
-		n.log.Debugw("write clock response failed", "peer", from.Short(), "err", err)
 	}
 }
 
@@ -592,135 +520,6 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 	default:
 		n.log.Debugw("unknown datagram type", "peer", from.Short())
 	}
-}
-
-func (n *Node) broadcastEvents(ctx context.Context, events []*statev1.GossipEvent) {
-	if len(events) == 0 {
-		return
-	}
-
-	n.broadcastGossipBatches(ctx, n.GetConnectedPeers(), batchEvents(events, MaxDatagramPayload))
-}
-
-func (n *Node) broadcastGossipBatches(ctx context.Context, peerIDs []types.PeerKey, batches [][]*statev1.GossipEvent) {
-	failed := make(map[types.PeerKey]struct{})
-	for _, batch := range batches {
-		env := &meshv1.Envelope{Body: &meshv1.Envelope_Events{
-			Events: &statev1.GossipEventBatch{Events: batch},
-		}}
-		for _, peerID := range peerIDs {
-			if peerID == n.store.LocalID {
-				continue
-			}
-			if _, ok := failed[peerID]; ok {
-				continue
-			}
-			if err := n.mesh.Send(ctx, peerID, env); err != nil {
-				n.log.Debugw("event gossip send failed", "peer", peerID.Short(), "err", err)
-				failed[peerID] = struct{}{}
-			}
-		}
-	}
-}
-
-const maxResponseSize = 4 << 20 // 4 MB
-
-func (n *Node) sendClockViaStream(ctx context.Context, peerID types.PeerKey, digest *statev1.GossipStateDigest) error {
-	stream, err := n.mesh.OpenClockStream(ctx, peerID)
-	if err != nil {
-		return fmt.Errorf("open clock stream to %s: %w", peerID.Short(), err)
-	}
-
-	b, err := digest.MarshalVT()
-	if err != nil {
-		stream.Close()
-		return fmt.Errorf("marshal digest: %w", err)
-	}
-	if _, err := stream.Write(b); err != nil {
-		stream.Close()
-		return fmt.Errorf("write clock to %s: %w", peerID.Short(), err)
-	}
-
-	// Half-close the write side so the responder sees EOF.
-	if err := stream.CloseWrite(); err != nil {
-		return fmt.Errorf("half-close clock stream to %s: %w", peerID.Short(), err)
-	}
-
-	resp, err := io.ReadAll(io.LimitReader(stream, maxResponseSize+1))
-	if err != nil {
-		return fmt.Errorf("read clock response from %s: %w", peerID.Short(), err)
-	}
-	if len(resp) == 0 {
-		return nil
-	}
-	if len(resp) > maxResponseSize {
-		return fmt.Errorf("clock response from %s exceeded size limit (%d bytes)", peerID.Short(), len(resp))
-	}
-
-	batch := &statev1.GossipEventBatch{}
-	if err := batch.UnmarshalVT(resp); err != nil {
-		return fmt.Errorf("unmarshal clock response from %s: %w", peerID.Short(), err)
-	}
-
-	result := n.store.ApplyEvents(batch.GetEvents(), true)
-	n.queueGossipEvents(result.Rebroadcast)
-	return nil
-}
-
-// eventWireSize returns the on-wire size of a single event inside a
-// GossipEventBatch. Uses proto's own size calculation to avoid fragile
-// hand-computed varint arithmetic.
-func eventWireSize(event *statev1.GossipEvent) int {
-	single := &statev1.GossipEventBatch{Events: []*statev1.GossipEvent{event}}
-	empty := &statev1.GossipEventBatch{}
-	return single.SizeVT() - empty.SizeVT()
-}
-
-// batchEvents packs events into groups that each fit within maxSize when
-// serialized as an Envelope. Events that individually exceed maxSize are
-// placed in their own batch.
-func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.GossipEvent {
-	if len(events) == 0 {
-		return nil
-	}
-
-	var batches [][]*statev1.GossipEvent
-	var current []*statev1.GossipEvent
-	currentSize := envelopeOverhead
-
-	for _, event := range events {
-		eventSize := eventWireSize(event)
-		if len(current) > 0 && currentSize+eventSize > maxSize {
-			batches = append(batches, current)
-			current = nil
-			currentSize = envelopeOverhead
-		}
-		current = append(current, event)
-		currentSize += eventSize
-	}
-	if len(current) > 0 {
-		batches = append(batches, current)
-	}
-	return batches
-}
-
-func (n *Node) gossip(ctx context.Context) {
-	digest := n.store.Clock()
-	peers := n.GetConnectedPeers()
-	var wg sync.WaitGroup
-	for _, peerID := range peers {
-		if peerID == n.store.LocalID {
-			continue
-		}
-		wg.Go(func() {
-			gossipCtx, cancel := context.WithTimeout(ctx, gossipStreamTimeout)
-			defer cancel()
-			if err := n.sendClockViaStream(gossipCtx, peerID, digest); err != nil {
-				n.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
-			}
-		})
-	}
-	wg.Wait()
 }
 
 func (n *Node) sampleResourceTelemetry() {
@@ -947,7 +746,7 @@ func (n *Node) syncPeersFromState() {
 		if _, targeted := targetSet[kp.PeerID]; targeted {
 			continue
 		}
-		connected := n.peers.InState(kp.PeerID, peer.PeerStateConnected)
+		connected := n.peers.InState(kp.PeerID, peer.Connected)
 		if connected && !n.mesh.IsOutbound(kp.PeerID) {
 			continue
 		}
@@ -1016,7 +815,7 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 		case peer.AttemptConnect:
 			go n.doConnect(e.PeerKey, n.buildPeerAddrs(e.PeerKey, e.Ips, e.Port))
 		case peer.RequestPunchCoordination:
-			go n.requestPunchCoordination(e.PeerKey)
+			n.requestPunchCoordination(e.PeerKey)
 		}
 	}
 }
@@ -1063,7 +862,7 @@ func (n *Node) doConnect(peerKey types.PeerKey, addrs []*net.UDPAddr) {
 	defer cancel()
 
 	if err := n.mesh.Connect(ctx, peerKey, addrs); err != nil {
-		if n.peers.InState(peerKey, peer.PeerStateConnecting) {
+		if n.peers.InState(peerKey, peer.Connecting) {
 			if errors.Is(err, mesh.ErrIdentityMismatch) {
 				n.log.Warnw("connect failed: peer identity mismatch", "peer", peerKey.Short(), "err", err)
 			} else {
@@ -1081,122 +880,6 @@ func (n *Node) buildPeerAddrs(peerKey types.PeerKey, ips []net.IP, port int) []*
 	}
 
 	return orderPeerAddrs(n.store.NodeIPs(n.store.LocalID), ips, port, extPort)
-}
-
-func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
-	localIPs := n.store.NodeIPs(n.store.LocalID)
-	targetIPs := n.store.NodeIPs(target)
-	connectedPeers := n.GetConnectedPeers()
-	filtered := make([]types.PeerKey, 0, len(connectedPeers))
-	for _, key := range connectedPeers {
-		if key == target {
-			continue
-		}
-		filtered = append(filtered, key)
-	}
-	return rankCoordinators(localIPs, targetIPs, target, filtered, n.store)
-}
-
-func (n *Node) requestPunchCoordination(target types.PeerKey) {
-	coordinators := n.coordinatorPeers(target)
-	if len(coordinators) == 0 {
-		n.log.Debugw("no coordinators available for punch", "peer", target.Short())
-		return
-	}
-
-	req := &meshv1.PunchCoordRequest{PeerId: target.Bytes()}
-	env := &meshv1.Envelope{
-		Body: &meshv1.Envelope_PunchCoordRequest{PunchCoordRequest: req},
-	}
-
-	// TODO(saml) down the line, we should probably cycle through potential coordinators per request
-	coord := coordinators[0]
-	if err := n.mesh.Send(context.Background(), coord, env); err != nil {
-		n.log.Debugw("punch coord request send failed", "coordinator", coord.Short(), "err", err)
-	}
-}
-
-func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, req *meshv1.PunchCoordRequest) {
-	targetKey := types.PeerKeyFromBytes(req.PeerId)
-
-	fromAddr, fromOk := n.mesh.GetActivePeerAddress(from)
-	targetAddr, targetOk := n.mesh.GetActivePeerAddress(targetKey)
-	if !fromOk || !targetOk {
-		n.log.Debugw("punch coord: missing address",
-			"from", from.Short(), "fromOk", fromOk,
-			"target", targetKey.Short(), "targetOk", targetOk)
-		return
-	}
-
-	go func() {
-		if err := n.mesh.Send(ctx, from, &meshv1.Envelope{Body: &meshv1.Envelope_PunchCoordTrigger{PunchCoordTrigger: &meshv1.PunchCoordTrigger{
-			PeerId:   req.PeerId,
-			SelfAddr: fromAddr.String(),
-			PeerAddr: targetAddr.String(),
-		}}}); err != nil {
-			n.log.Debugw("punch coord trigger send failed", "to", from.Short(), "err", err)
-		}
-	}()
-	go func() {
-		if err := n.mesh.Send(ctx, targetKey, &meshv1.Envelope{Body: &meshv1.Envelope_PunchCoordTrigger{PunchCoordTrigger: &meshv1.PunchCoordTrigger{
-			PeerId:   from.Bytes(),
-			SelfAddr: targetAddr.String(),
-			PeerAddr: fromAddr.String(),
-		}}}); err != nil {
-			n.log.Debugw("punch coord trigger send failed", "to", targetKey.Short(), "err", err)
-		}
-	}()
-}
-
-func (n *Node) punchLoop(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case req := <-n.punchCh:
-			if n.peers.InState(req.peerKey, peer.PeerStateConnected) {
-				continue
-			}
-
-			localNAT := n.natDetector.Type()
-			n.nodeMetrics.PunchAttempts.Inc()
-
-			ctx, cancel := context.WithTimeout(context.Background(), punchTimeout)
-			err := n.mesh.Punch(ctx, req.peerKey, &net.UDPAddr{IP: req.ip, Port: req.port}, localNAT)
-			cancel()
-
-			if err != nil && n.peers.InState(req.peerKey, peer.PeerStateConnecting) {
-				if errors.Is(err, mesh.ErrIdentityMismatch) {
-					n.log.Warnw("punch failed: peer identity mismatch", "peer", req.peerKey.Short(), "err", err)
-				} else {
-					n.log.Debugw("punch failed", "peer", req.peerKey.Short(), "err", err)
-				}
-				n.nodeMetrics.PunchFailures.Inc()
-				n.localPeerEvents <- peer.ConnectFailed{PeerKey: req.peerKey}
-			}
-		}
-	}
-}
-
-func (n *Node) handlePunchCoordTrigger(trigger *meshv1.PunchCoordTrigger) {
-	peerKey := types.PeerKeyFromBytes(trigger.PeerId)
-	if n.peers.InState(peerKey, peer.PeerStateConnected) {
-		return
-	}
-
-	peerAddr, err := net.ResolveUDPAddr("udp", trigger.PeerAddr)
-	if err != nil {
-		n.log.Debugw("punch coord trigger: bad peer addr", "addr", trigger.PeerAddr, "err", err)
-		return
-	}
-
-	n.log.Infow("punch coord trigger received", "peer", peerKey.Short(), "peerAddr", peerAddr.String())
-
-	select {
-	case n.punchCh <- punchRequest{peerKey: peerKey, ip: peerAddr.IP, port: peerAddr.Port}:
-	default:
-		n.log.Debugw("punch queue full, dropping", "peer", peerKey.Short())
-	}
 }
 
 func (n *Node) sendObservedAddress(pk types.PeerKey, addr *net.UDPAddr) {
@@ -1311,206 +994,6 @@ func (n *Node) DisconnectService(localPort uint32) error {
 	return fmt.Errorf("no connection on local port %d", localPort)
 }
 
-// checkCertExpiry checks the local node's delegation cert and logs warnings.
-// Returns true if the cert has expired beyond the reconnect window and the
-// node should shut down.
-func (n *Node) checkCertExpiry() bool {
-	now := time.Now()
-	expired := auth.IsCertExpired(n.creds.Cert, now)
-	remaining := time.Until(auth.CertExpiresAt(n.creds.Cert))
-	n.nodeMetrics.CertExpirySeconds.Set(remaining.Seconds())
-
-	if expired {
-		// Attempt renewal before giving up.
-		if n.attemptCertRenewal() {
-			n.renewalFailed.Store(false)
-			return false
-		}
-		n.renewalFailed.Store(true)
-
-		if !auth.IsCertWithinReconnectWindow(n.creds.Cert, now, n.conf.ReconnectWindow) {
-			n.log.Errorw("delegation certificate expired beyond reconnect window, shutting down — rejoin the cluster or contact a cluster admin",
-				"expired_at", auth.CertExpiresAt(n.creds.Cert))
-			return true
-		}
-		n.log.Warnw("delegation certificate expired — running in degraded mode, will keep retrying renewal",
-			"expired_at", auth.CertExpiresAt(n.creds.Cert),
-			"reconnect_window_remaining", auth.CertExpiresAt(n.creds.Cert).Add(n.conf.ReconnectWindow).Sub(now).Truncate(time.Minute))
-		return false
-	}
-
-	if remaining <= certWarnThreshold {
-		failed := !n.attemptCertRenewal()
-		n.renewalFailed.Store(failed)
-		if !failed {
-			return false
-		}
-	}
-
-	switch {
-	case remaining <= certCriticalThreshold:
-		n.log.Warnw("delegation certificate expiring soon — auto-renewal failed — rejoin the cluster or contact a cluster admin",
-			"expires_in", remaining.Truncate(time.Minute))
-	case remaining <= certWarnThreshold:
-		n.log.Infow("delegation certificate approaching expiry — auto-renewal attempted but failed, will retry",
-			"expires_in", remaining.Truncate(time.Minute))
-	}
-	return false
-}
-
-func (n *Node) attemptCertRenewal() bool {
-	connectedPeers := n.GetConnectedPeers()
-	if len(connectedPeers) == 0 {
-		n.log.Warnw("delegation certificate renewal failed: no connected peers")
-		return false
-	}
-
-	n.log.Infow("renewing delegation certificate")
-
-	ctx, cancel := context.WithTimeout(context.Background(), certRenewalTimeout)
-	defer cancel()
-
-	for _, peerKey := range connectedPeers {
-		newCert, err := n.mesh.RequestCertRenewal(ctx, peerKey)
-		if err != nil {
-			n.log.Debugw("delegation certificate renewal failed", "peer", peerKey.Short(), "err", err)
-			continue
-		}
-
-		if err := n.applyCertRenewal(newCert); err != nil {
-			n.log.Warnw("delegation certificate renewal failed: invalid cert", "peer", peerKey.Short(), "err", err)
-			continue
-		}
-
-		n.log.Infow("delegation certificate renewed",
-			"expires_at", auth.CertExpiresAt(newCert))
-		n.nodeMetrics.CertRenewals.Inc()
-		return true
-	}
-
-	n.log.Warnw("delegation certificate renewal failed: all peers refused or returned errors")
-	n.nodeMetrics.CertRenewalsFailed.Inc()
-	return false
-}
-
-func (n *Node) applyCertRenewal(newCert *admissionv1.DelegationCert) error {
-	now := time.Now()
-	pubKey := n.signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-	if err := auth.VerifyDelegationCert(newCert, n.creds.Trust, now, pubKey); err != nil {
-		return err
-	}
-
-	tlsCert, err := mesh.GenerateIdentityCert(n.signPriv, newCert, n.conf.TLSIdentityTTL)
-	if err != nil {
-		return err
-	}
-
-	n.mesh.UpdateMeshCert(tlsCert)
-	n.creds.Cert = newCert
-
-	if err := auth.SaveNodeCredentials(n.pollenDir, n.creds); err != nil {
-		n.log.Warnw("failed to persist renewed credentials", "err", err)
-	}
-
-	n.queueGossipEvents(n.store.SetLocalCertExpiry(newCert.GetClaims().GetNotAfterUnix()))
-	return nil
-}
-
-func (n *Node) handleCertRenewalRequest(ctx context.Context, from types.PeerKey, req *meshv1.CertRenewalRequest) {
-	sendReject := func(reason string) {
-		_ = n.mesh.Send(ctx, from, &meshv1.Envelope{
-			Body: &meshv1.Envelope_CertRenewalResponse{
-				CertRenewalResponse: &meshv1.CertRenewalResponse{Reason: reason},
-			},
-		})
-	}
-
-	if !bytes.Equal(req.GetSubjectPub(), from.Bytes()) {
-		sendReject("subject_pub does not match sender")
-		return
-	}
-
-	signer := n.creds.DelegationKey
-	if signer == nil {
-		sendReject("this node is not an admin")
-		return
-	}
-
-	if n.store.IsDenied(req.GetSubjectPub()) {
-		sendReject("subject has been denied")
-		return
-	}
-
-	ttl := n.conf.MembershipTTL
-	var accessDeadline time.Time
-	if peerCert, ok := n.mesh.PeerDelegationCert(from); ok {
-		ttl = auth.CertTTL(peerCert)
-		if dl, hasDeadline := auth.CertAccessDeadline(peerCert); hasDeadline {
-			if time.Now().After(dl) {
-				sendReject("access deadline has passed")
-				return
-			}
-			accessDeadline = dl
-		}
-	}
-
-	now := time.Now()
-
-	notAfter := now.Add(ttl)
-	if !accessDeadline.IsZero() && notAfter.After(accessDeadline) {
-		notAfter = accessDeadline
-	}
-
-	parentChain := make([]*admissionv1.DelegationCert, 0, 1+len(signer.Issuer.GetChain()))
-	parentChain = append(parentChain, signer.Issuer)
-	parentChain = append(parentChain, signer.Issuer.GetChain()...)
-	newCert, err := auth.IssueDelegationCert(
-		signer.Priv,
-		parentChain,
-		signer.Trust.GetClusterId(),
-		req.GetSubjectPub(),
-		auth.LeafCapabilities(),
-		now.Add(-time.Minute),
-		notAfter,
-		accessDeadline,
-	)
-	if err != nil {
-		sendReject(err.Error())
-		return
-	}
-
-	_ = n.mesh.Send(ctx, from, &meshv1.Envelope{
-		Body: &meshv1.Envelope_CertRenewalResponse{CertRenewalResponse: &meshv1.CertRenewalResponse{
-			Accepted: true,
-			Cert:     newCert,
-		}},
-	})
-}
-
-func (n *Node) disconnectExpiredPeers() {
-	now := time.Now()
-	for _, peerKey := range n.mesh.ConnectedPeers() {
-		dc, ok := n.mesh.PeerDelegationCert(peerKey)
-		if !ok || dc == nil {
-			continue
-		}
-		if !auth.IsCertExpired(dc, now) {
-			continue
-		}
-		// Allow peers within the reconnect window to stay connected so
-		// they can renew their cert.
-		if auth.IsCertWithinReconnectWindow(dc, now, n.conf.ReconnectWindow) {
-			continue
-		}
-		n.log.Warnw("disconnecting peer with expired delegation cert beyond reconnect window",
-			"peer", peerKey.Short(), "expired_at", auth.CertExpiresAt(dc))
-		n.tun.DisconnectPeer(peerKey)
-		n.mesh.ClosePeerSession(peerKey, mesh.CloseReasonCertExpired)
-		n.handlePeerInput(peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertExpired})
-		n.handlePeerInput(peer.ForgetPeer{PeerKey: peerKey})
-	}
-}
-
 func (n *Node) shutdown() {
 	if err := n.store.Save(); err != nil {
 		n.log.Errorw("failed to save state", "err", err)
@@ -1581,7 +1064,7 @@ func (n *Node) ListenPort() int {
 
 // GetConnectedPeers returns all currently connected peer keys.
 func (n *Node) GetConnectedPeers() []types.PeerKey {
-	return n.peers.GetAll(peer.PeerStateConnected)
+	return n.peers.GetAll(peer.Connected)
 }
 
 func GenIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
