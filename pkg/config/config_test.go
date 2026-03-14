@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -10,9 +11,9 @@ import (
 )
 
 func TestForgetBootstrapPeer(t *testing.T) {
-	keyA := make([]byte, ed25519PublicKeyBytes)
+	keyA := make([]byte, ed25519.PublicKeySize)
 	keyA[0] = 0xAA
-	keyB := make([]byte, ed25519PublicKeyBytes)
+	keyB := make([]byte, ed25519.PublicKeySize)
 	keyB[0] = 0xBB
 
 	cfg := &Config{
@@ -29,9 +30,9 @@ func TestForgetBootstrapPeer(t *testing.T) {
 }
 
 func TestForgetBootstrapPeerNotPresent(t *testing.T) {
-	keyA := make([]byte, ed25519PublicKeyBytes)
+	keyA := make([]byte, ed25519.PublicKeySize)
 	keyA[0] = 0xAA
-	keyUnknown := make([]byte, ed25519PublicKeyBytes)
+	keyUnknown := make([]byte, ed25519.PublicKeySize)
 	keyUnknown[0] = 0xFF
 
 	cfg := &Config{

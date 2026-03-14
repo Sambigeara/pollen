@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"cmp"
+	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -21,9 +22,8 @@ import (
 )
 
 const (
-	configFileName        = "config.yaml"
-	DefaultBootstrapPort  = 60611
-	ed25519PublicKeyBytes = 32
+	configFileName       = "config.yaml"
+	DefaultBootstrapPort = 60611
 
 	configHeader = "# Manual edits while the daemon runs will be overwritten.\n# Use `pln serve`, `pln connect`, `pln disconnect`, `pln seed`, and `pln unseed` to manage services.\n\n"
 )
@@ -41,10 +41,10 @@ type CertTTLs struct {
 }
 
 const (
-	DefaultMembershipTTL   = 4 * time.Hour
-	DefaultDelegationTTL   = 30 * 24 * time.Hour
-	DefaultTLSIdentityTTL  = 4 * time.Hour
-	DefaultReconnectWindow = 7 * 24 * time.Hour
+	defaultMembershipTTL   = 4 * time.Hour
+	defaultDelegationTTL   = 30 * 24 * time.Hour
+	defaultTLSIdentityTTL  = 4 * time.Hour
+	defaultReconnectWindow = 7 * 24 * time.Hour
 )
 
 func ttlOrDefault(ttl, fallback time.Duration) time.Duration {
@@ -55,19 +55,19 @@ func ttlOrDefault(ttl, fallback time.Duration) time.Duration {
 }
 
 func (c CertTTLs) MembershipTTL() time.Duration {
-	return ttlOrDefault(c.Membership, DefaultMembershipTTL)
+	return ttlOrDefault(c.Membership, defaultMembershipTTL)
 }
 
 func (c CertTTLs) DelegationTTL() time.Duration {
-	return ttlOrDefault(c.Delegation, DefaultDelegationTTL)
+	return ttlOrDefault(c.Delegation, defaultDelegationTTL)
 }
 
 func (c CertTTLs) TLSIdentityTTL() time.Duration {
-	return ttlOrDefault(c.TLSIdentity, DefaultTLSIdentityTTL)
+	return ttlOrDefault(c.TLSIdentity, defaultTLSIdentityTTL)
 }
 
 func (c CertTTLs) ReconnectWindowDuration() time.Duration {
-	return ttlOrDefault(c.ReconnectWindow, DefaultReconnectWindow)
+	return ttlOrDefault(c.ReconnectWindow, defaultReconnectWindow)
 }
 
 type Service struct {
@@ -166,15 +166,12 @@ func validateCertTTLs(ttls CertTTLs) error {
 }
 
 func (c *Config) RememberBootstrapPeer(peer *admissionv1.BootstrapPeer) error {
-	if c == nil {
-		return errors.New("missing config")
-	}
 	if peer == nil {
 		return errors.New("missing bootstrap peer")
 	}
 
 	pub := peer.GetPeerPub()
-	if len(pub) != ed25519PublicKeyBytes {
+	if len(pub) != ed25519.PublicKeySize {
 		return errors.New("invalid bootstrap peer key length")
 	}
 
@@ -200,10 +197,6 @@ func (c *Config) ForgetBootstrapPeer(pubKey []byte) {
 }
 
 func (c *Config) BootstrapProtoPeers() ([]*admissionv1.BootstrapPeer, error) {
-	if c == nil {
-		return nil, nil
-	}
-
 	peers := make([]*admissionv1.BootstrapPeer, 0, len(c.BootstrapPeers))
 	for idx, peer := range c.BootstrapPeers {
 		pub, err := decodePubHex(peer.PeerPub)
@@ -274,8 +267,8 @@ func decodePubHex(v string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid public key encoding: %w", err)
 	}
-	if len(b) != ed25519PublicKeyBytes {
-		return nil, fmt.Errorf("invalid public key length: expected %d bytes", ed25519PublicKeyBytes)
+	if len(b) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("invalid public key length: expected %d bytes", ed25519.PublicKeySize)
 	}
 
 	return b, nil
