@@ -170,7 +170,7 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 					PeerKey: peerKey,
 					Reason:  reason,
 				}:
-				case <-ctx.Done():
+				case <-m.ctx.Done():
 				}
 				m.closeSession(s, CloseReasonDisconnected)
 			}
@@ -302,7 +302,12 @@ func (m *impl) acceptLoop(ctx context.Context) {
 			continue
 		}
 
-		peerKey, err := peerKeyFromConn(qc)
+		certs := qc.ConnectionState().TLS.PeerCertificates
+		if len(certs) == 0 {
+			_ = qc.CloseWithError(0, "identity failed")
+			continue
+		}
+		peerKey, err := peerKeyFromRawCert(certs[0].Raw)
 		if err != nil {
 			_ = qc.CloseWithError(0, "identity failed")
 			continue

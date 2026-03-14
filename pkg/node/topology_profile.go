@@ -20,6 +20,23 @@ type topologyShape struct {
 	remotePrivateCount   int
 }
 
+// knownPeersToPeerInfos maps store.KnownPeer records to topology.PeerInfo for
+// target peer computation. Used by both the main event loop and tests.
+func knownPeersToPeerInfos(peers []store.KnownPeer) []topology.PeerInfo {
+	infos := make([]topology.PeerInfo, 0, len(peers))
+	for _, kp := range peers {
+		infos = append(infos, topology.PeerInfo{
+			Key:                kp.PeerID,
+			Coord:              kp.VivaldiCoord,
+			IPs:                kp.IPs,
+			NatType:            kp.NatType,
+			ObservedExternalIP: kp.ObservedExternalIP,
+			PubliclyAccessible: kp.PubliclyAccessible,
+		})
+	}
+	return infos
+}
+
 // summarizeTopologyShape classifies known peers into public, same-site private,
 // and remote private buckets using the same logic the topology engine uses for
 // dial/suppression decisions.

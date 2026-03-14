@@ -137,6 +137,12 @@ func TestConnectRejectsCrossClusterPeer(t *testing.T) {
 	require.False(t, ok)
 }
 
+// inviteRedeemer is a narrow test interface for the JoinWithInvite method that
+// lives on *impl but is not part of the Mesh interface.
+type inviteRedeemer interface {
+	JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
+}
+
 func TestJoinWithInviteHappyPath(t *testing.T) {
 	cluster := newClusterAuth(t)
 
@@ -166,11 +172,13 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 	joinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	joinToken, err := mesh.RedeemInvite(joinCtx, joiner.priv, invite)
+	redeemer, ok := joiner.mesh.(inviteRedeemer)
+	require.True(t, ok, "mesh must implement inviteRedeemer")
+
+	joinToken, err := redeemer.JoinWithInvite(joinCtx, invite)
 	require.NoError(t, err)
 	_, err = auth.VerifyJoinToken(joinToken, joiner.pubKey, time.Now())
 	require.NoError(t, err)
-	require.NoError(t, joiner.mesh.JoinWithToken(joinCtx, joinToken))
 
 	require.Eventually(t, func() bool {
 		_, ok := joiner.mesh.GetConn(bootstrap.peerKey)
@@ -212,7 +220,10 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 	joinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = mesh.RedeemInvite(joinCtx, joiner.priv, invite)
+	redeemer, ok := joiner.mesh.(inviteRedeemer)
+	require.True(t, ok, "mesh must implement inviteRedeemer")
+
+	_, err = redeemer.JoinWithInvite(joinCtx, invite)
 	require.Error(t, err)
 }
 

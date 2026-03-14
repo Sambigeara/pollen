@@ -14,6 +14,8 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
+// RedeemInvite creates a one-shot QUIC transport and redeems an invite token
+// without an active mesh. Used by the CLI join flow.
 func RedeemInvite(ctx context.Context, signPriv ed25519.PrivateKey, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
 	bareCert, err := GenerateIdentityCert(signPriv, nil, config.CertTTLs{}.TLSIdentityTTL())
 	if err != nil {

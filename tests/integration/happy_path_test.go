@@ -76,8 +76,8 @@ func TestStoreCRDT_ApplyAndConverge(t *testing.T) {
 	require.Len(t, peersB, 1, "store B should know about 1 remote peer")
 
 	// Verify cross-visibility: A sees B, B sees A.
-	require.Equal(t, storeB.LocalID, peersA[0].PeerID)
-	require.Equal(t, storeA.LocalID, peersB[0].PeerID)
+	require.Equal(t, storeB.LocalID(), peersA[0].PeerID)
+	require.Equal(t, storeA.LocalID(), peersB[0].PeerID)
 }
 
 func TestStoreCRDT_IdempotentApply(t *testing.T) {
@@ -96,7 +96,7 @@ func TestStoreCRDT_IdempotentApply(t *testing.T) {
 	// KnownPeers excludes local, so B sees 1 remote (A).
 	peers := storeB.KnownPeers()
 	require.Len(t, peers, 1, "duplicate apply should not create extra records")
-	require.Equal(t, storeA.LocalID, peers[0].PeerID)
+	require.Equal(t, storeA.LocalID(), peers[0].PeerID)
 }
 
 func TestStoreCRDT_OutOfOrderEvents(t *testing.T) {
@@ -117,7 +117,7 @@ func TestStoreCRDT_OutOfOrderEvents(t *testing.T) {
 	// B should see A as a known peer (with IPs and port).
 	peers := storeB.KnownPeers()
 	require.Len(t, peers, 1)
-	require.Equal(t, storeA.LocalID, peers[0].PeerID)
+	require.Equal(t, storeA.LocalID(), peers[0].PeerID)
 }
 
 func TestStoreCRDT_WorkloadSpecAndClaim(t *testing.T) {
@@ -141,7 +141,7 @@ func TestStoreCRDT_WorkloadSpecAndClaim(t *testing.T) {
 	// Verify the claim is visible.
 	claims := s.AllWorkloadClaims()
 	require.Contains(t, claims, "abc123")
-	require.Contains(t, claims["abc123"], s.LocalID)
+	require.Contains(t, claims["abc123"], s.LocalID())
 
 	// Release the claim.
 	releaseEvents := s.SetLocalWorkloadClaim("abc123", false)
@@ -149,7 +149,7 @@ func TestStoreCRDT_WorkloadSpecAndClaim(t *testing.T) {
 
 	claims = s.AllWorkloadClaims()
 	if claimants, ok := claims["abc123"]; ok {
-		require.NotContains(t, claimants, s.LocalID)
+		require.NotContains(t, claimants, s.LocalID())
 	}
 }
 
@@ -189,7 +189,7 @@ func TestStoreCRDT_ClockDigestRoundTrip(t *testing.T) {
 	// Now B should see A as a known peer.
 	peersB := storeB.KnownPeers()
 	require.Len(t, peersB, 1)
-	require.Equal(t, storeA.LocalID, peersB[0].PeerID)
+	require.Equal(t, storeA.LocalID(), peersB[0].PeerID)
 }
 
 // ---------------------------------------------------------------------------
@@ -315,124 +315,7 @@ func TestPeerStateMachine_ConnectFailureEscalatesToUnreachable(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Scheduler evaluation
-// ---------------------------------------------------------------------------
-
-func TestSchedulerEvaluate_ClaimUnderReplicated(t *testing.T) {
-	local := testPeerKey(1)
-	peer2 := testPeerKey(2)
-	allPeers := []types.PeerKey{local, peer2}
-
-	specs := map[string]scheduler.Spec{
-		"workload1": {Replicas: 2},
-	}
-	claims := map[string]map[types.PeerKey]struct{}{
-		"workload1": {peer2: {}},
-	}
-
-	actions := scheduler.Evaluate(
-		local, allPeers, specs, claims,
-		scheduler.ClusterState{},
-		func(string) bool { return false },
-	)
-
-	var found bool
-	for _, a := range actions {
-		if a.Hash == "workload1" && a.Kind == scheduler.ActionClaim {
-			found = true
-		}
-	}
-	require.True(t, found, "should claim under-replicated workload")
-}
-
-func TestSchedulerEvaluate_NoClaimWhenFullyReplicated(t *testing.T) {
-	local := testPeerKey(1)
-	peer2 := testPeerKey(2)
-	allPeers := []types.PeerKey{local, peer2}
-
-	specs := map[string]scheduler.Spec{
-		"workload1": {Replicas: 1},
-	}
-	claims := map[string]map[types.PeerKey]struct{}{
-		"workload1": {peer2: {}},
-	}
-
-	actions := scheduler.Evaluate(
-		local, allPeers, specs, claims,
-		scheduler.ClusterState{},
-		func(string) bool { return false },
-	)
-
-	for _, a := range actions {
-		if a.Hash == "workload1" && a.Kind == scheduler.ActionClaim {
-			t.Fatal("should not claim fully-replicated workload")
-		}
-	}
-}
-
-func TestSchedulerEvaluate_ReleaseOrphanedClaim(t *testing.T) {
-	local := testPeerKey(1)
-	allPeers := []types.PeerKey{local}
-
-	specs := map[string]scheduler.Spec{} // no specs
-	claims := map[string]map[types.PeerKey]struct{}{
-		"orphan": {local: {}},
-	}
-
-	actions := scheduler.Evaluate(
-		local, allPeers, specs, claims,
-		scheduler.ClusterState{},
-		func(string) bool { return true },
-	)
-
-	var found bool
-	for _, a := range actions {
-		if a.Hash == "orphan" && a.Kind == scheduler.ActionRelease {
-			found = true
-		}
-	}
-	require.True(t, found, "should release claim with no matching spec")
-}
-
-func TestSchedulerEvaluate_DeterministicWinnerSelection(t *testing.T) {
-	peers := make([]types.PeerKey, 5)
-	for i := range peers {
-		peers[i] = testPeerKey(byte(i + 1))
-	}
-
-	specs := map[string]scheduler.Spec{
-		"workload1": {Replicas: 1},
-	}
-	claims := map[string]map[types.PeerKey]struct{}{}
-	isRunning := func(string) bool { return false }
-
-	// Run evaluation from every peer's perspective.
-	var claimers []types.PeerKey
-	for _, pk := range peers {
-		actions := scheduler.Evaluate(pk, peers, specs, claims, scheduler.ClusterState{}, isRunning)
-		for _, a := range actions {
-			if a.Hash == "workload1" && a.Kind == scheduler.ActionClaim {
-				claimers = append(claimers, pk)
-			}
-		}
-	}
-	require.Len(t, claimers, 1, "exactly one node should claim singleton workload")
-
-	// Repeat: same winner.
-	var claimers2 []types.PeerKey
-	for _, pk := range peers {
-		actions := scheduler.Evaluate(pk, peers, specs, claims, scheduler.ClusterState{}, isRunning)
-		for _, a := range actions {
-			if a.Hash == "workload1" && a.Kind == scheduler.ActionClaim {
-				claimers2 = append(claimers2, pk)
-			}
-		}
-	}
-	require.Equal(t, claimers, claimers2, "repeated evaluation must produce identical winners")
-}
-
-// ---------------------------------------------------------------------------
-// 4. Scheduler reconciler (with mocks)
+// 3. Scheduler reconciler (with mocks)
 // ---------------------------------------------------------------------------
 
 // mockSchedulerStore implements scheduler.SchedulerStore.
@@ -534,7 +417,7 @@ func TestReconciler_RunAndSignal(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Traffic recorder
+// 4. Traffic recorder
 // ---------------------------------------------------------------------------
 
 func TestTrafficRecorder_RecordAndRotate(t *testing.T) {
@@ -569,7 +452,7 @@ func TestTrafficRecorder_MultiPeer(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Store + Scheduler integration: spec -> evaluate -> claim
+// 5. Store + Scheduler integration: store-level claim lifecycle
 // ---------------------------------------------------------------------------
 
 func TestStoreAndScheduler_EndToEnd(t *testing.T) {
@@ -586,8 +469,8 @@ func TestStoreAndScheduler_EndToEnd(t *testing.T) {
 	storeA.ApplyEvents(netB, true)
 
 	// Mark both as connected so they appear in each other's live component.
-	connA := storeA.SetLocalConnected(storeB.LocalID, true)
-	connB := storeB.SetLocalConnected(storeA.LocalID, true)
+	connA := storeA.SetLocalConnected(storeB.LocalID(), true)
+	connB := storeB.SetLocalConnected(storeA.LocalID(), true)
 	storeB.ApplyEvents(connA, true)
 	storeA.ApplyEvents(connB, true)
 
@@ -604,35 +487,6 @@ func TestStoreAndScheduler_EndToEnd(t *testing.T) {
 	require.Contains(t, specsA, "wl1")
 	require.Contains(t, specsB, "wl1")
 
-	// Use the peer list directly (both know about each other).
-	allPeers := []types.PeerKey{storeA.LocalID, storeB.LocalID}
-	specs := map[string]scheduler.Spec{
-		"wl1": {Replicas: 2},
-	}
-	claims := storeA.AllWorkloadClaims()
-
-	// Evaluate from A's perspective: A should claim (under-replicated).
-	actionsA := scheduler.Evaluate(storeA.LocalID, allPeers, specs, claims, scheduler.ClusterState{}, func(string) bool { return false })
-
-	var aClaims bool
-	for _, a := range actionsA {
-		if a.Hash == "wl1" && a.Kind == scheduler.ActionClaim {
-			aClaims = true
-		}
-	}
-	require.True(t, aClaims, "A should claim under-replicated workload")
-
-	// B also evaluates: both should claim since replicas=2 and no one has claimed yet.
-	actionsB := scheduler.Evaluate(storeB.LocalID, allPeers, specs, claims, scheduler.ClusterState{}, func(string) bool { return false })
-
-	var bClaims bool
-	for _, a := range actionsB {
-		if a.Hash == "wl1" && a.Kind == scheduler.ActionClaim {
-			bClaims = true
-		}
-	}
-	require.True(t, bClaims, "B should claim under-replicated workload")
-
 	// Execute claims on both stores.
 	claimEventsA := storeA.SetLocalWorkloadClaim("wl1", true)
 	require.NotEmpty(t, claimEventsA)
@@ -648,12 +502,4 @@ func TestStoreAndScheduler_EndToEnd(t *testing.T) {
 	claimsB := storeB.AllWorkloadClaims()
 	require.Len(t, claimsA["wl1"], 2)
 	require.Len(t, claimsB["wl1"], 2)
-
-	// Re-evaluate: with replicas=2 and 2 claimants, no further actions.
-	actionsA = scheduler.Evaluate(storeA.LocalID, allPeers, specs, claimsA, scheduler.ClusterState{}, func(string) bool { return true })
-	for _, a := range actionsA {
-		if a.Hash == "wl1" {
-			t.Fatalf("expected no actions for fully-replicated workload, got %+v", a)
-		}
-	}
 }

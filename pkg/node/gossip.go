@@ -142,8 +142,10 @@ func (n *Node) sendClockViaStream(ctx context.Context, peerID types.PeerKey, dig
 	}
 
 	// Half-close the write side so the responder sees EOF.
-	if err := stream.CloseWrite(); err != nil {
-		return fmt.Errorf("half-close clock stream to %s: %w", peerID.Short(), err)
+	if cw, ok := stream.(interface{ CloseWrite() error }); ok {
+		if err := cw.CloseWrite(); err != nil {
+			return fmt.Errorf("half-close clock stream to %s: %w", peerID.Short(), err)
+		}
 	}
 
 	resp, err := io.ReadAll(io.LimitReader(stream, maxResponseSize+1))

@@ -1,4 +1,4 @@
-package util
+package node
 
 import (
 	"context"
@@ -8,17 +8,17 @@ import (
 
 const jitterScale = 2
 
-type JitterTicker struct {
+type jitterTicker struct {
 	C    <-chan time.Time
 	stop context.CancelFunc
 }
 
-func NewJitterTicker(ctx context.Context, base time.Duration, percent float64) *JitterTicker {
+func newJitterTicker(ctx context.Context, base time.Duration, percent float64) *jitterTicker {
 	tickCh := make(chan time.Time)
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		defer close(tickCh)
-		timer := time.NewTimer(jitter(base, percent))
+		timer := time.NewTimer(jitterDuration(base, percent))
 		defer timer.Stop()
 		for {
 			select {
@@ -30,18 +30,18 @@ func NewJitterTicker(ctx context.Context, base time.Duration, percent float64) *
 					return
 				case tickCh <- t:
 				}
-				timer.Reset(jitter(base, percent))
+				timer.Reset(jitterDuration(base, percent))
 			}
 		}
 	}()
-	return &JitterTicker{C: tickCh, stop: cancel}
+	return &jitterTicker{C: tickCh, stop: cancel}
 }
 
-func (t *JitterTicker) Stop() {
+func (t *jitterTicker) Stop() {
 	t.stop()
 }
 
-func jitter(d time.Duration, percent float64) time.Duration {
+func jitterDuration(d time.Duration, percent float64) time.Duration {
 	if percent <= 0 {
 		return d
 	}

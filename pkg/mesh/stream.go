@@ -12,8 +12,9 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// stream wraps a QUIC stream to implement the Stream interface with safe Close
-// semantics: CancelRead on the read side and Close (FIN) on the write side.
+// stream wraps a QUIC stream with safe Close semantics: CancelRead on the read
+// side and Close (FIN) on the write side. CloseWrite sends a FIN while keeping
+// the read side open.
 type stream struct{ *quic.Stream }
 
 func (s stream) CloseWrite() error { return s.Stream.Close() }
@@ -81,12 +82,8 @@ func (m *impl) OpenWorkloadStream(ctx context.Context, peerKey types.PeerKey) (i
 	return m.openStreamWaitLoop(ctx, peerKey, streamTypeWorkload)
 }
 
-func (m *impl) OpenClockStream(ctx context.Context, peerKey types.PeerKey) (Stream, error) {
-	rwc, err := m.openTypedStream(ctx, peerKey, streamTypeClock)
-	if err != nil {
-		return nil, err
-	}
-	return rwc.(Stream), nil //nolint:forcetypeassert
+func (m *impl) OpenClockStream(ctx context.Context, peerKey types.PeerKey) (io.ReadWriteCloser, error) {
+	return m.openTypedStream(ctx, peerKey, streamTypeClock)
 }
 
 func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {

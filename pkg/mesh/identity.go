@@ -132,14 +132,6 @@ func peerKeyFromRawCert(certDER []byte) (types.PeerKey, error) {
 	return types.PeerKeyFromBytes(pub), nil
 }
 
-func peerKeyFromConn(qc *quic.Conn) (types.PeerKey, error) {
-	certs := qc.ConnectionState().TLS.PeerCertificates
-	if len(certs) == 0 {
-		return types.PeerKey{}, errors.New("no peer certificate")
-	}
-	return peerKeyFromRawCert(certs[0].Raw)
-}
-
 func delegationCertFromConn(qc *quic.Conn) *admissionv1.DelegationCert {
 	tlsState := qc.ConnectionState().TLS
 	if len(tlsState.PeerCertificates) == 0 {

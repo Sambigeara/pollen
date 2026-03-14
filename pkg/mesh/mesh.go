@@ -56,15 +56,6 @@ func quicConfig() *quic.Config {
 	}
 }
 
-// Stream is a QUIC bidi-stream with half-close support. CloseWrite sends a FIN
-// on the write side while keeping the read side open; Close cancels the read
-// side (STOP_SENDING) and then closes the write side, releasing stream credits
-// immediately.
-type Stream interface {
-	io.ReadWriteCloser
-	CloseWrite() error
-}
-
 // Router provides next-hop lookups for multi-hop mesh routing.
 type Router interface {
 	Lookup(dest types.PeerKey) (nextHop types.PeerKey, ok bool)
@@ -82,7 +73,7 @@ type Mesh interface {
 	Events() <-chan peer.Input
 	OpenStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
 	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
-	OpenClockStream(ctx context.Context, peer types.PeerKey) (Stream, error)
+	OpenClockStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
 	AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
 	JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
@@ -311,13 +302,9 @@ func (m *impl) Close() error {
 	close(m.clockStreamCh)
 	close(m.recvCh)
 
-	if m.listener != nil {
-		_ = m.listener.Close()
-	}
-	if m.mainQT != nil {
-		_ = m.mainQT.Close()
-		_ = m.mainQT.Conn.Close()
-	}
+	_ = m.listener.Close()
+	_ = m.mainQT.Close()
+	_ = m.mainQT.Conn.Close()
 	return nil
 }
 
