@@ -31,3 +31,7 @@ None — leaf package.
 - pkg/store (uses: `Type`, `Unknown`)
 - pkg/topology (uses: `Type`)
 - pkg/sock (uses: `Type`, `Easy`)
+
+## Proposed Minimal API
+
+No changes — API surface already minimal. All 11 exports have production callers across 5 consumers.

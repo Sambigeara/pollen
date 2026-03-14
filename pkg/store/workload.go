@@ -10,9 +10,9 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// ErrSpecOwnedRemotely is returned by SetLocalWorkloadSpec when a valid remote
+// errSpecOwnedRemotely is returned by SetLocalWorkloadSpec when a valid remote
 // node already publishes a spec for the same hash.
-var ErrSpecOwnedRemotely = errors.New("spec published by another node")
+var errSpecOwnedRemotely = errors.New("spec published by another node")
 
 // isValidOwnerLocked reports whether a peer is a valid scheduling participant
 // (not denied, not expired). Caller must hold s.mu.
@@ -43,7 +43,7 @@ func (s *Store) SetLocalWorkloadSpec(hash string, replicas, memoryPages, timeout
 			continue
 		}
 		if s.isValidOwnerLocked(pk) {
-			return nil, ErrSpecOwnedRemotely
+			return nil, errSpecOwnedRemotely
 		}
 	}
 

@@ -62,7 +62,7 @@ func (n *Node) checkCertExpiry() bool {
 }
 
 func (n *Node) attemptCertRenewal() bool {
-	connectedPeers := n.GetConnectedPeers()
+	connectedPeers := n.getConnectedPeers()
 	if len(connectedPeers) == 0 {
 		n.log.Warnw("delegation certificate renewal failed: no connected peers")
 		return false

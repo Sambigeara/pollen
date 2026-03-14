@@ -16,8 +16,8 @@ const (
 // Route describes the next hop toward a destination.
 type Route struct {
 	NextHop  types.PeerKey
-	Distance float64
-	HopCount int
+	distance float64
+	hopCount int
 }
 
 // NodeInfo is the routing-relevant subset of a peer's state.
@@ -70,14 +70,6 @@ func (t *Table) Update(routes map[types.PeerKey]Route) {
 	close(t.changeCh)
 	t.changeCh = make(chan struct{})
 	t.mu.Unlock()
-}
-
-// Len returns the number of routes.
-func (t *Table) Len() int {
-	t.mu.RLock()
-	n := len(t.routes)
-	t.mu.RUnlock()
-	return n
 }
 
 // Recompute runs Dijkstra from localKey over the reachability graph and returns
@@ -160,8 +152,8 @@ func Recompute(localKey types.PeerKey, localCoord *topology.Coord, directPeers m
 		}
 		routes[pk] = Route{
 			NextHop:  first[pk],
-			Distance: d,
-			HopCount: hops[pk],
+			distance: d,
+			hopCount: hops[pk],
 		}
 	}
 	return routes

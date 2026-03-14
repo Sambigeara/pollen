@@ -29,3 +29,7 @@
 - pkg/mesh (uses: `Recorder`, `Noop`, `WrapStream`)
 - pkg/node (uses: `New`, `Tracker`, `RotateAndSnapshot`)
 - pkg/tunnel (uses: `Recorder`, `Noop`, `WrapStream`)
+
+## Proposed Minimal API
+
+No changes — API surface already minimal. All 8 exports have production callers across 3 consumers.

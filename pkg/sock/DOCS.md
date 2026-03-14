@@ -33,3 +33,22 @@
 
 ## Consumed by
 - pkg/mesh (uses: `SockStore`, `NewSockStore`, `Conn`, `ErrUnreachable`)
+
+## Proposed Minimal API
+
+### Exports kept
+
+| Export | Consumers |
+|--------|-----------|
+| `SockStore` | mesh |
+| `Conn`, `(*Conn).Peer`, `(*Conn).Close` | mesh |
+| `NewSockStore` | mesh |
+| `Punch` | mesh |
+| `SetMainProbeWriter`, `HandleMainProbePacket` | mesh |
+
+### Exports stripped (2)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `ErrUnreachable` | unexported | Only checked within package; mesh handles the error path internally |
+| `ProbeWriter` | unexported | Function type only used as internal callback signature |

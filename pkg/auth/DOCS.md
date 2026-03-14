@@ -67,3 +67,27 @@
 - pkg/node (uses: `NodeCredentials`, `IsCertExpired`, `IsCertWithinReconnectWindow`, `VerifyDelegationCert`, `SaveNodeCredentials`, `LoadOrEnrollNodeCredentials`, `EnsureLocalRootCredentials`, `LoadDelegationSigner`, `GenIdentityKey`, `ReadIdentityPub`)
 - pkg/store (uses: `InviteConsumer`, `IsCertExpiredAt`)
 - cmd/pln (uses: `VerifyJoinToken`, `NodeCredentials`, `LoadNodeCredentials`, `GenIdentityKey`, `IssueInviteToken`)
+
+## Proposed Minimal API
+
+### Exports kept
+
+All exports retained except `NewTrustBundle` and `IssueJoinToken`. Key consumers:
+
+| Export | Consumers |
+|--------|-----------|
+| `NodeCredentials`, `DelegationSigner`, `VerifiedToken` | mesh, node, cmd/pln |
+| `InviteConsumer` | store |
+| Cert utilities (`CertExpiresAt`, `IsCertExpired`, etc.) | mesh, node, store |
+| Credential I/O (`LoadOrEnrollNodeCredentials`, `SaveNodeCredentials`, etc.) | node, cmd/pln |
+| Join token functions (`IssueJoinTokenWithIssuer`, `VerifyJoinToken`, `EncodeJoinToken`, `DecodeJoinToken`) | mesh, cmd/pln |
+| Invite functions (`IssueInviteTokenWithSigner`, `VerifyInviteToken`, etc.) | mesh, cmd/pln |
+| Identity (`GenIdentityKey`, `ReadIdentityPub`) | node, cmd/pln |
+| Delegation cert (`IssueDelegationCert`, `VerifyDelegationCert`, `VerifyDelegationCertChain`) | mesh, node |
+
+### Exports stripped (2)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `NewTrustBundle` | unexported | Only used internally during enrollment/credential construction |
+| `IssueJoinToken` | deleted | Superseded by `IssueJoinTokenWithIssuer`; no direct callers remained |

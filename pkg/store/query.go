@@ -158,19 +158,6 @@ func (s *Store) NodeIPs(peerID types.PeerKey) []string {
 	return rec.IPs
 }
 
-func (s *Store) IsConnected(source, target types.PeerKey) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rec, ok := s.nodes[source]
-	if !ok {
-		return false
-	}
-
-	_, ok = rec.Reachable[target]
-	return ok
-}
-
 func (s *Store) HasServicePort(peerID types.PeerKey, port uint32) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -221,17 +208,6 @@ func (s *Store) KnownPeers() []KnownPeer {
 	return known
 }
 
-func (s *Store) IsPubliclyAccessible(peerID types.PeerKey) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rec, ok := s.nodes[peerID]
-	if !ok {
-		return false
-	}
-	return rec.PubliclyAccessible
-}
-
 func (s *Store) PeerVivaldiCoord(peerID types.PeerKey) (*topology.Coord, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -241,17 +217,6 @@ func (s *Store) PeerVivaldiCoord(peerID types.PeerKey) (*topology.Coord, bool) {
 		return nil, false
 	}
 	return rec.VivaldiCoord, rec.VivaldiCoord != nil
-}
-
-func (s *Store) NatType(peerID types.PeerKey) nat.Type {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rec, ok := s.nodes[peerID]
-	if !ok {
-		return nat.Unknown
-	}
-	return rec.NatType
 }
 
 func (s *Store) IdentityPub(peerID types.PeerKey) ([]byte, bool) {

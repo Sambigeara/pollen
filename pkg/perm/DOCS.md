@@ -26,3 +26,23 @@ None — leaf package.
 - pkg/auth (uses: `EnsureDir`, `SetGroupReadable`, `WriteGroupReadable`)
 - pkg/config (uses: `EnsureDir`, `WriteGroupWritable`)
 - pkg/store (uses: `EnsureDir`, `SetPrivate`, `WriteGroupReadable`)
+
+## Proposed Minimal API
+
+### Exports kept
+
+| Export | Consumers |
+|--------|-----------|
+| `SetGroupReadable` | auth |
+| `SetGroupSocket` | cmd/pln |
+| `SetPrivate` | store |
+| `EnsureDir` | auth, config, store |
+| `WriteGroupReadable` | auth, store |
+| `WriteGroupWritable` | config |
+
+### Exports stripped (2)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `SetGroupDir` | unexported | No production callers outside package |
+| `WritePrivate` | deleted | No production callers |

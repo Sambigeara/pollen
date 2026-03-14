@@ -16,8 +16,8 @@ import (
 var (
 	ErrAlreadyRunning  = errors.New("workload already running")
 	ErrNotRunning      = errors.New("workload not running")
-	ErrAmbiguousPrefix = errors.New("ambiguous prefix")
-	ErrStore           = errors.New("store artifact")
+	errAmbiguousPrefix = errors.New("ambiguous prefix")
+	errStore           = errors.New("store artifact")
 	ErrCompile         = errors.New("compile module")
 )
 
@@ -72,7 +72,7 @@ func New(ctx context.Context, store *cas.Store, rt *wasm.Runtime) *Manager {
 func (m *Manager) Seed(wasmBytes []byte, cfg wasm.PluginConfig) (string, error) {
 	hash, err := m.cas.Put(bytes.NewReader(wasmBytes))
 	if err != nil {
-		return "", fmt.Errorf("workload: %w: %w", ErrStore, err)
+		return "", fmt.Errorf("workload: %w: %w", errStore, err)
 	}
 
 	m.mu.Lock()
@@ -166,9 +166,9 @@ func (m *Manager) Unseed(hash string) error {
 	return nil
 }
 
-// ResolvePrefix resolves a hash prefix to a full hash. Returns an error if
+// resolvePrefix resolves a hash prefix to a full hash. Returns an error if
 // the prefix is ambiguous or not found.
-func (m *Manager) ResolvePrefix(prefix string) (string, error) {
+func (m *Manager) resolvePrefix(prefix string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -184,7 +184,7 @@ func (m *Manager) ResolvePrefix(prefix string) (string, error) {
 	case 1:
 		return matches[0], nil
 	default:
-		return "", fmt.Errorf("%w: %q matches %d workloads", ErrAmbiguousPrefix, prefix, len(matches))
+		return "", fmt.Errorf("%w: %q matches %d workloads", errAmbiguousPrefix, prefix, len(matches))
 	}
 }
 

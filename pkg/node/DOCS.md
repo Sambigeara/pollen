@@ -65,3 +65,27 @@
 
 ## Consumed by
 - cmd/pln (uses: `New`, `Node`, `Config`, `BootstrapPeer`, `NewNodeService`, `ErrCertExpired`)
+
+## Proposed Minimal API
+
+### Exports kept
+
+| Export | Consumers |
+|--------|-----------|
+| `Config`, `BootstrapPeer` | cmd/pln |
+| `Node`, `New` | cmd/pln |
+| `(*Node).Start` | cmd/pln |
+| `(*Node).RouteCall` | cmd/pln (via `wasm.InvocationRouter`) |
+| `NodeService`, `NewNodeService` | cmd/pln |
+
+### Exports stripped (7)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `MaxDatagramPayload` | unexported | Only used within package for QUIC datagram sizing |
+| `ErrCertExpired` | unexported | Only checked within package; gRPC status codes used at boundary |
+| `(*Node).ConnectService` | unexported | Accessed through gRPC `NodeService`, not direct calls |
+| `(*Node).DisconnectService` | unexported | Accessed through gRPC `NodeService`, not direct calls |
+| `(*Node).Ready` | unexported | Only used in tests and internal coordination |
+| `(*Node).ListenPort` | unexported | Only used in tests and internal coordination |
+| `(*Node).GetConnectedPeers` | unexported | Only used in tests; status exposed through gRPC |

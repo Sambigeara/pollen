@@ -34,11 +34,11 @@ import (
 )
 
 const (
-	// MaxDatagramPayload is the maximum safe payload size for a QUIC datagram.
-	MaxDatagramPayload = 1100
+	// maxDatagramPayload is the maximum safe payload size for a QUIC datagram.
+	maxDatagramPayload = 1100
 )
 
-var ErrCertExpired = errors.New("delegation certificate has expired")
+var errCertExpired = errors.New("delegation certificate has expired")
 
 const (
 	certCheckInterval     = 5 * time.Minute
@@ -116,7 +116,7 @@ type Node struct {
 	localPeerEvents chan peer.Input
 	peers           *peer.Store
 	conf            *Config
-	ready           chan struct{}
+	readyCh         chan struct{}
 	log             *zap.SugaredLogger
 	lastEagerSync   map[types.PeerKey]time.Time
 	punchCh         chan punchRequest
@@ -209,7 +209,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
 		punchCh:         make(chan punchRequest, punchChBufSize),
 		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
-		ready:           make(chan struct{}),
+		readyCh:         make(chan struct{}),
 		lastEagerSync:   make(map[types.PeerKey]time.Time),
 		peerConnectTime: make(map[types.PeerKey]time.Time),
 		nonTargetStreak: make(map[types.PeerKey]int),
@@ -305,7 +305,7 @@ func (n *Node) Start(ctx context.Context) error {
 	// are established.
 	n.store.SetLocalVivaldiCoord(n.localCoord)
 
-	close(n.ready)
+	close(n.readyCh)
 	n.connectBootstrapPeers(ctx)
 	n.tun.Start(ctx)
 	go n.recvLoop(ctx)
@@ -381,7 +381,7 @@ func (n *Node) Start(ctx context.Context) error {
 			n.refreshIPs()
 		case <-certCheckTicker.C:
 			if n.checkCertExpiry() {
-				return ErrCertExpired
+				return errCertExpired
 			}
 			// Speed up checks while renewal is failing.
 			if n.renewalFailed.Load() && certInterval != expirySweepInterval {
@@ -577,7 +577,7 @@ func (n *Node) tick() {
 func (n *Node) updateVivaldiCoords() {
 	updated := false
 	now := time.Now()
-	for _, peerKey := range n.GetConnectedPeers() {
+	for _, peerKey := range n.getConnectedPeers() {
 		if ct, ok := n.peerConnectTime[peerKey]; ok && now.Sub(ct) < vivaldiWarmupDuration {
 			continue
 		}
@@ -624,7 +624,7 @@ func (n *Node) syncPeersFromState() {
 
 	// Collect current outbound peer keys so the topology layer can apply
 	// hysteresis, keeping incumbents unless a challenger is meaningfully closer.
-	connectedPeers := n.GetConnectedPeers()
+	connectedPeers := n.getConnectedPeers()
 	currentOutbound := make(map[types.PeerKey]struct{}, len(connectedPeers))
 	for _, pk := range connectedPeers {
 		if n.mesh.IsOutbound(pk) {
@@ -825,7 +825,7 @@ func (n *Node) reconcileDesiredConnections() {
 			continue
 		}
 
-		if _, err := n.ConnectService(desiredConn.PeerID, desiredConn.RemotePort, desiredConn.LocalPort); err != nil {
+		if _, err := n.connectService(desiredConn.PeerID, desiredConn.RemotePort, desiredConn.LocalPort); err != nil {
 			n.log.Debugw("failed restoring desired connection", "peer", desiredConn.PeerID.Short(), "remotePort", desiredConn.RemotePort, "localPort", desiredConn.LocalPort, "err", err)
 		}
 	}
@@ -941,7 +941,7 @@ func sortedClaimants(claimants map[types.PeerKey]struct{}) []types.PeerKey {
 	return keys
 }
 
-func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
+func (n *Node) connectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
 	if _, ok := n.store.IdentityPub(peerID); !ok {
 		return 0, errors.New("peerID not recognised")
 	}
@@ -957,7 +957,7 @@ func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32
 	return port, nil
 }
 
-func (n *Node) DisconnectService(localPort uint32) error {
+func (n *Node) disconnectService(localPort uint32) error {
 	for _, conn := range n.store.DesiredConnections() {
 		if conn.LocalPort == localPort {
 			n.tun.DisconnectLocalPort(localPort)
@@ -1028,15 +1028,15 @@ func (n *Node) recomputeRoutes() {
 	n.routeTable.Update(routes)
 }
 
-func (n *Node) Ready() <-chan struct{} {
-	return n.ready
+func (n *Node) ready() <-chan struct{} {
+	return n.readyCh
 }
 
-func (n *Node) ListenPort() int {
+func (n *Node) listenPort() int {
 	return n.mesh.ListenPort()
 }
 
-// GetConnectedPeers returns all currently connected peer keys.
-func (n *Node) GetConnectedPeers() []types.PeerKey {
+// getConnectedPeers returns all currently connected peer keys.
+func (n *Node) getConnectedPeers() []types.PeerKey {
 	return n.peers.GetAll(peer.Connected)
 }

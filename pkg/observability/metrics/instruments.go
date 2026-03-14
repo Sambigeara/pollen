@@ -80,7 +80,7 @@ type GossipMetrics struct {
 // NewGossipMetrics registers all gossip instruments on c.
 func NewGossipMetrics(c *Collector) *GossipMetrics {
 	if c == nil {
-		return &GossipMetrics{StaleRatio: NewEWMA(staleRatioAlpha)}
+		return &GossipMetrics{StaleRatio: newEWMA(staleRatioAlpha)}
 	}
 	return &GossipMetrics{
 		EventsReceived: c.Counter("pollen_gossip_events_received_total"),
@@ -89,7 +89,7 @@ func NewGossipMetrics(c *Collector) *GossipMetrics {
 		SelfConflicts:  c.Counter("pollen_gossip_self_conflicts_total"),
 		Revocations:    c.Counter("pollen_gossip_revocations_total"),
 		BatchSize:      c.Gauge("pollen_gossip_batch_size"),
-		StaleRatio:     NewEWMA(staleRatioAlpha),
+		StaleRatio:     newEWMA(staleRatioAlpha),
 	}
 }
 

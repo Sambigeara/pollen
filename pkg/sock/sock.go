@@ -12,15 +12,15 @@ import (
 	"github.com/sambigeara/pollen/pkg/nat"
 )
 
-var ErrUnreachable = errors.New("peer unreachable")
+var errUnreachable = errors.New("peer unreachable")
 
 var _ SockStore = (*sockStore)(nil)
 
-type ProbeWriter func(payload []byte, addr *net.UDPAddr) error
+type probeWriter func(payload []byte, addr *net.UDPAddr) error
 
 type SockStore interface {
 	Punch(ctx context.Context, addr *net.UDPAddr, localNAT nat.Type) (*Conn, error)
-	SetMainProbeWriter(write ProbeWriter)
+	SetMainProbeWriter(write probeWriter)
 	HandleMainProbePacket(data []byte, sender *net.UDPAddr)
 }
 
@@ -48,7 +48,7 @@ func (c *Conn) Close() error {
 
 type sockStore struct {
 	socksByKey map[string]*Conn
-	mainWrite  ProbeWriter
+	mainWrite  probeWriter
 	mainProbes map[[probeNonceSize]byte]chan *net.UDPAddr
 	socksMu    sync.Mutex
 	probeMu    sync.Mutex
@@ -79,7 +79,7 @@ func (s *sockStore) removeConn(addr *net.UDPAddr) {
 	s.socksMu.Unlock()
 }
 
-func (s *sockStore) SetMainProbeWriter(write ProbeWriter) {
+func (s *sockStore) SetMainProbeWriter(write probeWriter) {
 	s.mainWrite = write
 }
 
@@ -146,7 +146,7 @@ func (s *sockStore) Punch(ctx context.Context, addr *net.UDPAddr, localNAT nat.T
 		}
 		return c, nil
 	case <-ctx.Done():
-		return nil, fmt.Errorf("punch %s: %w", addr, ErrUnreachable)
+		return nil, fmt.Errorf("punch %s: %w", addr, errUnreachable)
 	}
 }
 

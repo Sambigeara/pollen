@@ -180,7 +180,7 @@ func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now
 	}
 
 	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-	trust := NewTrustBundle(adminPub)
+	trust := newTrustBundle(adminPub)
 
 	// Root issues a delegation cert for itself with full capabilities.
 	cert, err := IssueDelegationCert(
@@ -400,7 +400,7 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 	return priv, pub, nil
 }
 
-func NewTrustBundle(rootPub ed25519.PublicKey) *admissionv1.TrustBundle {
+func newTrustBundle(rootPub ed25519.PublicKey) *admissionv1.TrustBundle {
 	clusterID := sha256.Sum256(rootPub)
 	return &admissionv1.TrustBundle{
 		ClusterId: clusterID[:],
@@ -589,44 +589,6 @@ func IsCertWithinReconnectWindow(cert *admissionv1.DelegationCert, now time.Time
 		return true // not expired yet, trivially within window
 	}
 	return now.Before(expiresAt.Add(reconnectWindow))
-}
-
-func IssueJoinToken(
-	adminPriv ed25519.PrivateKey,
-	trust *admissionv1.TrustBundle,
-	subject ed25519.PublicKey,
-	bootstrap []*admissionv1.BootstrapPeer,
-	now time.Time,
-	tokenTTL time.Duration,
-	membershipTTL time.Duration,
-	accessDeadline time.Time,
-) (*admissionv1.JoinToken, error) {
-	if trust == nil {
-		return nil, errors.New("missing trust bundle")
-	}
-
-	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-
-	if !bytes.Equal(adminPub, trust.GetRootPub()) {
-		return nil, errors.New("issuer delegation certificate required for non-root admin key")
-	}
-
-	// Root issues its own delegation cert as the issuer (no deadline on the issuer cert).
-	issuerCert, err := IssueDelegationCert(
-		adminPriv,
-		nil, // root-issued
-		trust.GetClusterId(),
-		adminPub,
-		FullCapabilities(),
-		now.Add(-timeSkewAllowance),
-		now.Add(membershipTTL),
-		time.Time{},
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return IssueJoinTokenWithIssuer(adminPriv, trust, issuerCert, subject, bootstrap, now, tokenTTL, membershipTTL, accessDeadline)
 }
 
 func IssueJoinTokenWithIssuer(

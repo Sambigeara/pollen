@@ -58,3 +58,27 @@ None — leaf package.
 - pkg/peer (uses: `PeerMetrics`)
 - pkg/store (uses: `GossipMetrics`)
 - pkg/scheduler (uses: `Counter`)
+
+## Proposed Minimal API
+
+### Exports kept
+
+All exports retained except `NewEWMA`. Key consumers:
+
+| Export | Consumers |
+|--------|-----------|
+| `Collector`, `New`, `Config` | node |
+| `Counter`, `Gauge` | mesh, node, peer, store, scheduler |
+| `EWMA`, `NewEWMAFrom` | node |
+| `MeshMetrics`, `NewMeshMetrics` | mesh, node |
+| `PeerMetrics`, `NewPeerMetrics` | peer, node |
+| `GossipMetrics`, `NewGossipMetrics` | store, node |
+| `TopologyMetrics`, `NewTopologyMetrics` | node |
+| `NodeMetrics`, `NewNodeMetrics` | node |
+| `Sink`, `LogSink`, `NewLogSink` | node |
+
+### Exports stripped (1)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `NewEWMA` | unexported | Only `NewEWMAFrom` is used externally; `NewEWMA` (starting at 0) had no production callers |

@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 )
 
-var ErrNotFound = errors.New("artifact not found")
+var errNotFound = errors.New("artifact not found")
 
 const dirPerm = 0o750
 
@@ -67,7 +67,7 @@ func (s *Store) Get(hash string) (io.ReadCloser, error) {
 	f, err := os.Open(p)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, ErrNotFound
+			return nil, errNotFound
 		}
 		return nil, fmt.Errorf("cas: open artifact: %w", err)
 	}

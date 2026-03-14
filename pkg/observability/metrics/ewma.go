@@ -12,8 +12,8 @@ type EWMA struct {
 	alpha float64
 }
 
-// NewEWMA creates an EWMA with the given smoothing factor, starting at 0.
-func NewEWMA(alpha float64) *EWMA {
+// newEWMA creates an EWMA with the given smoothing factor, starting at 0.
+func newEWMA(alpha float64) *EWMA {
 	return &EWMA{alpha: alpha}
 }
 

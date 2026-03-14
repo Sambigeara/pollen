@@ -75,7 +75,6 @@ type Mesh interface {
 	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
 	OpenClockStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
 	AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
-	JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
 	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr, localNAT nat.Type) error
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
@@ -104,12 +103,13 @@ const (
 	CloseReasonDenied        CloseReason = "denied"
 	CloseReasonTopologyPrune CloseReason = "topology_prune"
 	CloseReasonCertExpired   CloseReason = "cert_expired"
-	CloseReasonCertRotation  CloseReason = "cert_rotation"
-	CloseReasonDisconnect    CloseReason = "disconnect"
-	CloseReasonDuplicate     CloseReason = "duplicate"
-	CloseReasonReplaced      CloseReason = "replaced"
-	CloseReasonDisconnected  CloseReason = "disconnected"
-	CloseReasonShutdown      CloseReason = "shutdown"
+
+	closeReasonCertRotation CloseReason = "cert_rotation"
+	closeReasonDisconnect   CloseReason = "disconnect"
+	closeReasonDuplicate    CloseReason = "duplicate"
+	closeReasonReplaced     CloseReason = "replaced"
+	closeReasonDisconnected CloseReason = "disconnected"
+	closeReasonShutdown     CloseReason = "shutdown"
 )
 
 type impl struct {
@@ -267,7 +267,7 @@ func (m *impl) Events() <-chan peer.Input {
 func (m *impl) BroadcastDisconnect() error {
 	peers := m.sessions.drainPeers()
 	for _, s := range peers {
-		m.closeSession(s, CloseReasonDisconnect)
+		m.closeSession(s, closeReasonDisconnect)
 	}
 	return nil
 }
@@ -294,7 +294,7 @@ func (m *impl) SetWorkloadHandler(fn func(stream io.ReadWriteCloser, peer types.
 
 func (m *impl) Close() error {
 	for _, s := range m.sessions.drainPeers() {
-		m.closeSession(s, CloseReasonShutdown)
+		m.closeSession(s, closeReasonShutdown)
 	}
 
 	m.acceptWG.Wait()

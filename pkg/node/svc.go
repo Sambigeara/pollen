@@ -417,7 +417,7 @@ func (s *NodeService) ConnectPeer(ctx context.Context, req *controlv1.ConnectPee
 }
 
 func (s *NodeService) ConnectService(_ context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
-	localPort, err := s.node.ConnectService(types.PeerKeyFromBytes(req.Node.PeerId), req.RemotePort, req.LocalPort)
+	localPort, err := s.node.connectService(types.PeerKeyFromBytes(req.Node.PeerId), req.RemotePort, req.LocalPort)
 	if err != nil {
 		s.node.log.Warnw("connect service failed", "err", err)
 		return nil, status.Error(codes.Internal, "failed to connect service")
@@ -427,7 +427,7 @@ func (s *NodeService) ConnectService(_ context.Context, req *controlv1.ConnectSe
 }
 
 func (s *NodeService) DisconnectService(_ context.Context, req *controlv1.DisconnectServiceRequest) (*controlv1.DisconnectServiceResponse, error) {
-	if err := s.node.DisconnectService(req.GetLocalPort()); err != nil {
+	if err := s.node.disconnectService(req.GetLocalPort()); err != nil {
 		s.node.log.Warnw("disconnect service failed", "err", err)
 		return nil, status.Error(codes.Internal, "failed to disconnect service")
 	}

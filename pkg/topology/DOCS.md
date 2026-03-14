@@ -40,3 +40,7 @@
 - pkg/route (uses: `Coord`, `Distance`)
 - pkg/store (uses: `Coord`, `MovementDistance`, `PublishEpsilon`, `Distance`)
 - pkg/scheduler (uses: `Distance`, `Coord`)
+
+## Proposed Minimal API
+
+No changes — API surface already minimal. All 17 exports have production callers across 4 consumers.

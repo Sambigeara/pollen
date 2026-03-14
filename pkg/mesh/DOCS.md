@@ -65,3 +65,31 @@
 
 ## Consumed by
 - pkg/node (uses: `Mesh`, `NewMesh`, `GenerateIdentityCert`, `CloseReason*`, `ErrIdentityMismatch`, `GetAdvertisableAddrs`, `DefaultExclusions`)
+
+## Proposed Minimal API
+
+### Exports kept
+
+| Export | Consumers |
+|--------|-----------|
+| `Mesh` (interface, 28 methods) | node |
+| `Router` | node |
+| `Packet` | node |
+| `CloseReason`, `CloseReasonDenied`, `CloseReasonTopologyPrune`, `CloseReasonCertExpired` | node |
+| `NewMesh` | node |
+| `GenerateIdentityCert` | node |
+| `RedeemInvite` | cmd/pln |
+| `GetAdvertisableAddrs`, `DefaultExclusions` | node |
+| `ErrIdentityMismatch` | node |
+
+### Exports stripped (7)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `JoinWithToken` | removed from `Mesh` interface | Dead code; join flow uses `RedeemInvite` instead |
+| `CloseReasonCertRotation` | unexported | Internal session management detail |
+| `CloseReasonDisconnect` | unexported | Internal session management detail |
+| `CloseReasonDuplicate` | unexported | Internal session management detail |
+| `CloseReasonReplaced` | unexported | Internal session management detail |
+| `CloseReasonDisconnected` | unexported | Internal session management detail |
+| `CloseReasonShutdown` | unexported | Internal session management detail |

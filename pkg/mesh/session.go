@@ -99,12 +99,12 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 	if !ok {
 		span.SetAttr("result", "duplicate")
 		span.End()
-		m.closeSession(s, CloseReasonDuplicate)
+		m.closeSession(s, closeReasonDuplicate)
 		return
 	}
 
 	if replace != nil {
-		m.closeSession(replace, CloseReasonReplaced)
+		m.closeSession(replace, closeReasonReplaced)
 	}
 
 	span.End()
@@ -145,7 +145,7 @@ func (m *impl) handleSendFailure(peerKey types.PeerKey, s *peerSession, err erro
 		return
 	}
 	m.metrics.SessionDisconnects.Inc()
-	m.closeSession(s, CloseReasonDisconnect)
+	m.closeSession(s, closeReasonDisconnect)
 	select {
 	case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: reason}:
 	case <-m.ctx.Done():
@@ -172,7 +172,7 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 				}:
 				case <-m.ctx.Done():
 				}
-				m.closeSession(s, CloseReasonDisconnected)
+				m.closeSession(s, closeReasonDisconnected)
 			}
 			return
 		}
@@ -281,7 +281,7 @@ func (m *impl) sessionReaper(ctx context.Context) {
 				m.log.Debugw("reconnecting peer to refresh certificates", "peer", peerKey.Short(), "age", now.Sub(s.createdAt))
 				if m.sessions.removeIfCurrent(peerKey, s) {
 					m.metrics.SessionDisconnects.Inc()
-					m.closeSession(s, CloseReasonCertRotation)
+					m.closeSession(s, closeReasonCertRotation)
 					select {
 					case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertRotation}:
 					case <-ctx.Done():
@@ -368,7 +368,7 @@ func classifyQUICError(err error) peer.DisconnectReason {
 			return peer.DisconnectDenied
 		case string(CloseReasonCertExpired):
 			return peer.DisconnectCertExpired
-		case string(CloseReasonCertRotation):
+		case string(closeReasonCertRotation):
 			return peer.DisconnectCertRotation
 		default:
 			return peer.DisconnectGraceful

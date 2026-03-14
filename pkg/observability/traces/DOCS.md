@@ -39,3 +39,27 @@ None — leaf package.
 ## Consumed by
 - pkg/mesh (uses: `Tracer`)
 - pkg/node (uses: `Tracer`, `NewTracer`, `LogSink`, `NewLogSink`, `TraceIDFromBytes`)
+
+## Proposed Minimal API
+
+### Exports kept
+
+| Export | Consumers |
+|--------|-----------|
+| `Tracer`, `NewTracer` | mesh, node |
+| `(*Tracer).Start`, `(*Tracer).StartFromRemote` | mesh, node |
+| `Span`, `(*Span).End`, `(*Span).SetAttr` | mesh, node |
+| `Sink`, `ReadOnlySpan`, `Attribute` | node |
+| `LogSink`, `NewLogSink` | node |
+
+### Exports stripped (7)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `TraceID` | unexported | Internal implementation detail; consumers use `Tracer.Start`/`StartFromRemote` |
+| `NewTraceID` | unexported | Only used within package |
+| `TraceIDFromBytes` | unexported | Only used within package (called by `StartFromRemote`) |
+| `SpanID` | unexported | Internal implementation detail |
+| `NewSpanID` | unexported | Only used within package |
+| `(TraceID).IsZero` | unexported | Internal implementation detail |
+| `(*Span).TraceIDBytes` | deleted | Replaced by internal access; no external callers |

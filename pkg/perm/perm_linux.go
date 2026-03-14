@@ -19,8 +19,7 @@ func setPerm(path string, mode os.FileMode) error {
 	return setPlnGroup(path)
 }
 
-// SetGroupDir makes a directory traversable by the pln group (0770).
-func SetGroupDir(path string) error { return setPerm(path, 0o770) }
+func setGroupDir(path string) error { return setPerm(path, 0o770) }
 
 // SetGroupReadable makes a file readable by the pln group (0640).
 func SetGroupReadable(path string) error { return setPerm(path, 0o640) }
@@ -38,7 +37,7 @@ func EnsureDir(path string) error {
 		return fmt.Errorf("mkdir %s: %w", path, err)
 	}
 	if os.Getuid() == 0 {
-		return SetGroupDir(path)
+		return setGroupDir(path)
 	}
 	return setPlnGroup(path)
 }

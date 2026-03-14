@@ -28,7 +28,7 @@ const (
 	configHeader = "# Manual edits while the daemon runs will be overwritten.\n# Use `pln serve`, `pln connect`, `pln disconnect`, `pln seed`, and `pln unseed` to manage services.\n\n"
 )
 
-type BootstrapPeer struct {
+type bootstrapPeer struct {
 	PeerPub string   `yaml:"peerPub"`
 	Addrs   []string `yaml:"addrs,omitempty"`
 }
@@ -70,12 +70,12 @@ func (c CertTTLs) ReconnectWindowDuration() time.Duration {
 	return ttlOrDefault(c.ReconnectWindow, defaultReconnectWindow)
 }
 
-type Service struct {
+type service struct {
 	Name string `yaml:"name"`
 	Port uint32 `yaml:"port"`
 }
 
-type Connection struct {
+type connection struct {
 	Service    string `yaml:"service"`
 	Peer       string `yaml:"peer"`
 	RemotePort uint32 `yaml:"remotePort"`
@@ -84,9 +84,9 @@ type Connection struct {
 
 type Config struct {
 	AdvertiseIPs   []string        `yaml:"advertiseIPs,omitempty"`
-	BootstrapPeers []BootstrapPeer `yaml:"bootstrapPeers,omitempty"`
-	Services       []Service       `yaml:"services,omitempty"`
-	Connections    []Connection    `yaml:"connections,omitempty"`
+	BootstrapPeers []bootstrapPeer `yaml:"bootstrapPeers,omitempty"`
+	Services       []service       `yaml:"services,omitempty"`
+	Connections    []connection    `yaml:"connections,omitempty"`
 	CertTTLs       CertTTLs        `yaml:"certTTLs,omitempty"` //nolint:tagliatelle
 	Port           uint32          `yaml:"port,omitempty"`
 	Public         bool            `yaml:"public,omitempty"`
@@ -175,7 +175,7 @@ func (c *Config) RememberBootstrapPeer(peer *admissionv1.BootstrapPeer) error {
 		return errors.New("invalid bootstrap peer key length")
 	}
 
-	c.BootstrapPeers = append(c.BootstrapPeers, BootstrapPeer{
+	c.BootstrapPeers = append(c.BootstrapPeers, bootstrapPeer{
 		PeerPub: hex.EncodeToString(pub),
 		Addrs:   append([]string(nil), peer.GetAddrs()...),
 	})
@@ -191,7 +191,7 @@ func (c *Config) RememberBootstrapPeer(peer *admissionv1.BootstrapPeer) error {
 
 func (c *Config) ForgetBootstrapPeer(pubKey []byte) {
 	hexKey := hex.EncodeToString(pubKey)
-	c.BootstrapPeers = slices.DeleteFunc(c.BootstrapPeers, func(bp BootstrapPeer) bool {
+	c.BootstrapPeers = slices.DeleteFunc(c.BootstrapPeers, func(bp bootstrapPeer) bool {
 		return bp.PeerPub == hexKey
 	})
 }
@@ -218,7 +218,7 @@ func (c *Config) BootstrapProtoPeers() ([]*admissionv1.BootstrapPeer, error) {
 	return peers, nil
 }
 
-func canonicalizeBootstrapPeers(peers []BootstrapPeer) ([]BootstrapPeer, error) {
+func canonicalizeBootstrapPeers(peers []bootstrapPeer) ([]bootstrapPeer, error) {
 	byPeer := make(map[string]map[string]struct{})
 
 	for _, peer := range peers {
@@ -247,13 +247,13 @@ func canonicalizeBootstrapPeers(peers []BootstrapPeer) ([]BootstrapPeer, error) 
 
 	peerHexes := slices.Sorted(maps.Keys(byPeer))
 
-	out := make([]BootstrapPeer, 0, len(peerHexes))
+	out := make([]bootstrapPeer, 0, len(peerHexes))
 	for _, peerHex := range peerHexes {
 		addrs := slices.Sorted(maps.Keys(byPeer[peerHex]))
 		if len(addrs) == 0 {
 			return nil, fmt.Errorf("bootstrap peer %s has no addresses", peerHex)
 		}
-		out = append(out, BootstrapPeer{
+		out = append(out, bootstrapPeer{
 			PeerPub: peerHex,
 			Addrs:   addrs,
 		})
@@ -310,7 +310,7 @@ func (c *Config) AddService(name string, port uint32) {
 	if name == "" {
 		for i, s := range c.Services {
 			if s.Name == "" && s.Port == port {
-				c.Services[i] = Service{Port: port}
+				c.Services[i] = service{Port: port}
 				return
 			}
 		}
@@ -322,18 +322,18 @@ func (c *Config) AddService(name string, port uint32) {
 			}
 		}
 	}
-	c.Services = append(c.Services, Service{Name: name, Port: port})
+	c.Services = append(c.Services, service{Name: name, Port: port})
 	c.canonicalizeServices()
 }
 
 func (c *Config) RemoveService(name string) {
-	c.Services = slices.DeleteFunc(c.Services, func(s Service) bool {
+	c.Services = slices.DeleteFunc(c.Services, func(s service) bool {
 		return s.Name == name
 	})
 }
 
 func (c *Config) RemoveServiceByPort(port uint32) {
-	c.Services = slices.DeleteFunc(c.Services, func(s Service) bool {
+	c.Services = slices.DeleteFunc(c.Services, func(s service) bool {
 		return s.Port == port
 	})
 }
@@ -344,7 +344,7 @@ func (c *Config) AddConnection(service, peer string, remotePort, localPort uint3
 			return
 		}
 	}
-	c.Connections = append(c.Connections, Connection{
+	c.Connections = append(c.Connections, connection{
 		Service:    service,
 		Peer:       peer,
 		RemotePort: remotePort,
@@ -359,7 +359,7 @@ func (c *Config) RemoveConnection(service, peer string, localPort uint32) {
 	if service == "" && peer == "" && localPort == 0 {
 		return
 	}
-	c.Connections = slices.DeleteFunc(c.Connections, func(conn Connection) bool {
+	c.Connections = slices.DeleteFunc(c.Connections, func(conn connection) bool {
 		if service != "" && conn.Service != service {
 			return false
 		}
@@ -374,13 +374,13 @@ func (c *Config) RemoveConnection(service, peer string, localPort uint32) {
 }
 
 func (c *Config) canonicalizeServices() {
-	slices.SortFunc(c.Services, func(a, b Service) int {
+	slices.SortFunc(c.Services, func(a, b service) int {
 		return cmp.Compare(a.Name, b.Name)
 	})
 }
 
 func (c *Config) canonicalizeConnections() {
-	slices.SortFunc(c.Connections, func(a, b Connection) int {
+	slices.SortFunc(c.Connections, func(a, b connection) int {
 		if v := cmp.Compare(a.Service, b.Service); v != 0 {
 			return v
 		}

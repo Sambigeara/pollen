@@ -5,41 +5,40 @@ import (
 	"encoding/hex"
 )
 
-// TraceID is a 16-byte unique identifier for a distributed trace.
-type TraceID [16]byte
+// traceID is a 16-byte unique identifier for a distributed trace.
+type traceID [16]byte
 
-// NewTraceID generates a random TraceID.
-func NewTraceID() TraceID {
-	var id TraceID
+// newTraceID generates a random traceID.
+func newTraceID() traceID {
+	var id traceID
 	_, _ = rand.Read(id[:])
 	return id
 }
 
-// TraceIDFromBytes creates a TraceID from a byte slice. Returns a zero TraceID
+// traceIDFromBytes creates a traceID from a byte slice. Returns a zero traceID
 // if the slice is not exactly 16 bytes.
-func TraceIDFromBytes(b []byte) TraceID {
-	var id TraceID
+func traceIDFromBytes(b []byte) traceID {
+	var id traceID
 	if len(b) == len(id) {
 		copy(id[:], b)
 	}
 	return id
 }
 
-// IsZero reports whether the TraceID is the zero value.
-func (id TraceID) IsZero() bool { return id == TraceID{} }
+func (id traceID) isZero() bool { return id == traceID{} }
 
 // String returns the hex-encoded representation.
-func (id TraceID) String() string { return hex.EncodeToString(id[:]) }
+func (id traceID) String() string { return hex.EncodeToString(id[:]) }
 
-// SpanID is an 8-byte unique identifier for a single span within a trace.
-type SpanID [8]byte
+// spanID is an 8-byte unique identifier for a single span within a trace.
+type spanID [8]byte
 
-// NewSpanID generates a random SpanID.
-func NewSpanID() SpanID {
-	var id SpanID
+// newSpanID generates a random spanID.
+func newSpanID() spanID {
+	var id spanID
 	_, _ = rand.Read(id[:])
 	return id
 }
 
 // String returns the hex-encoded representation.
-func (id SpanID) String() string { return hex.EncodeToString(id[:]) }
+func (id spanID) String() string { return hex.EncodeToString(id[:]) }

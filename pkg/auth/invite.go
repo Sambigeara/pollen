@@ -256,7 +256,7 @@ func loadTrustBundleForSigner(pollenDir string, adminPub ed25519.PublicKey) (*ad
 		return nil, err
 	}
 
-	return NewTrustBundle(adminPub), nil
+	return newTrustBundle(adminPub), nil
 }
 
 func MarshalDelegationCertBase64(cert *admissionv1.DelegationCert) (string, error) {

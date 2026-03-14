@@ -29,7 +29,7 @@ func (n *Node) broadcastEvents(ctx context.Context, events []*statev1.GossipEven
 		return
 	}
 
-	n.broadcastGossipBatches(ctx, n.GetConnectedPeers(), batchEvents(events, MaxDatagramPayload))
+	n.broadcastGossipBatches(ctx, n.getConnectedPeers(), batchEvents(events, maxDatagramPayload))
 }
 
 func (n *Node) broadcastGossipBatches(ctx context.Context, peerIDs []types.PeerKey, batches [][]*statev1.GossipEvent) {
@@ -55,7 +55,7 @@ func (n *Node) broadcastGossipBatches(ctx context.Context, peerIDs []types.PeerK
 
 func (n *Node) gossip(ctx context.Context) {
 	digest := n.store.Clock()
-	peers := n.GetConnectedPeers()
+	peers := n.getConnectedPeers()
 	var wg sync.WaitGroup
 	for _, peerID := range peers {
 		if peerID == n.store.LocalID() {

@@ -38,3 +38,7 @@ None — leaf package.
 - pkg/tunnel (uses: `PeerKey`)
 - pkg/scheduler (uses: `PeerKey`)
 - cmd/pln (uses: `PeerKey`, `PeerKeyFromBytes`)
+
+## Proposed Minimal API
+
+No changes — API surface already minimal. All 8 exports have production callers across 10 consumers.

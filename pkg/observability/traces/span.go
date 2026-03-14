@@ -21,8 +21,8 @@ func (t *Tracer) Start(name string) *Span {
 	}
 	return &Span{
 		tracer:    t,
-		traceID:   NewTraceID(),
-		spanID:    NewSpanID(),
+		traceID:   newTraceID(),
+		spanID:    newSpanID(),
 		name:      name,
 		startTime: time.Now(),
 	}
@@ -30,18 +30,18 @@ func (t *Tracer) Start(name string) *Span {
 
 // StartFromRemote continues a trace received from a remote envelope.
 // If traceID is empty or invalid, a new trace is started.
-func (t *Tracer) StartFromRemote(name string, traceID []byte) *Span {
+func (t *Tracer) StartFromRemote(name string, rawTraceID []byte) *Span {
 	if t == nil {
 		return nil
 	}
-	tid := TraceIDFromBytes(traceID)
-	if tid.IsZero() {
-		tid = NewTraceID()
+	tid := traceIDFromBytes(rawTraceID)
+	if tid.isZero() {
+		tid = newTraceID()
 	}
 	return &Span{
 		tracer:    t,
 		traceID:   tid,
-		spanID:    NewSpanID(),
+		spanID:    newSpanID(),
 		name:      name,
 		startTime: time.Now(),
 	}
@@ -61,8 +61,8 @@ type Span struct {
 	tracer     *Tracer
 	name       string
 	attributes []Attribute
-	traceID    TraceID
-	spanID     SpanID
+	traceID    traceID
+	spanID     spanID
 }
 
 // End records the end time and exports the span. Calling End on a nil or
@@ -83,12 +83,4 @@ func (s *Span) SetAttr(key, value string) {
 		return
 	}
 	s.attributes = append(s.attributes, Attribute{Key: key, Value: value})
-}
-
-// TraceIDBytes returns the raw trace ID bytes for embedding in Envelope messages.
-func (s *Span) TraceIDBytes() []byte {
-	if s == nil {
-		return nil
-	}
-	return s.traceID[:]
 }

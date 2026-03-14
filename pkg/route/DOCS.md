@@ -29,3 +29,23 @@
 
 ## Consumed by
 - pkg/node (uses: `Table`, `New`, `Lookup`, `Update`, `NodeInfo`)
+
+## Proposed Minimal API
+
+### Exports kept
+
+| Export | Consumers |
+|--------|-----------|
+| `Table`, `New` | node |
+| `Route` | node (via `Lookup` return) |
+| `NodeInfo` | node |
+| `Recompute` | node |
+| `(*Table).Changed`, `(*Table).Lookup`, `(*Table).Update` | node |
+
+### Exports stripped (3)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `(*Table).Len` | deleted | No production callers |
+| `(Route).Distance` | unexported | Only used within package for Dijkstra edge weighting |
+| `(Route).HopCount` | unexported | Only used within package for route comparison |

@@ -71,3 +71,26 @@
 - pkg/mesh (uses: `Input`, `Output`, all event types, all state constants, all disconnect reasons)
 - pkg/node (uses: `Store`, `NewStore`, all event types, all output types, all disconnect reasons)
 - cmd/pln (uses: `Store`)
+
+## Proposed Minimal API
+
+### Exports kept
+
+All state machine types, event types, output types, disconnect reasons, and `Store` methods retained. Key consumers:
+
+| Export | Consumers |
+|--------|-----------|
+| `Store`, `NewStore`, `SetPeerMetrics`, `Step` | node |
+| `InState`, `GetAll`, `StateCounts` | node, cmd/pln |
+| `State`, `Discovered`, `Connecting`, `Connected`, `Unreachable` | mesh, node |
+| All `Input` event types | mesh, node |
+| All `Output` event types | mesh, node |
+| All `DisconnectReason` constants | mesh, node |
+
+### Exports stripped (4)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `ConnectStage` (type + 3 constants) | unexported | Internal state machine detail; no external callers read the connect stage |
+| `(*Store).Get` | unexported | Only used within package; external callers use `InState`/`GetAll` |
+| `connectTimedOut` | inlined + deleted | Internal helper with no external callers; logic inlined at call site |

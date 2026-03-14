@@ -23,3 +23,21 @@ None — leaf package.
 ## Consumed by
 - pkg/node (uses: `Store`, `New`)
 - pkg/workload (uses: `Store`, `Put`, `Get`)
+
+## Proposed Minimal API
+
+### Exports kept
+
+| Export | Consumers |
+|--------|-----------|
+| `Store` | node, workload, scheduler |
+| `New` | node |
+| `(*Store).Put` | workload, scheduler |
+| `(*Store).Get` | workload, scheduler |
+| `(*Store).Has` | scheduler |
+
+### Exports stripped (1)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `ErrNotFound` | unexported | Only used within package internals |

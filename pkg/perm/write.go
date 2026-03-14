@@ -50,11 +50,6 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	return nil
 }
 
-// WritePrivate atomically writes data to path with mode 0600.
-func WritePrivate(path string, data []byte) error {
-	return atomicWrite(path, data, 0o600) //nolint:mnd
-}
-
 // WriteGroupReadable atomically writes data to path with mode 0640.
 func WriteGroupReadable(path string, data []byte) error {
 	return atomicWrite(path, data, 0o640) //nolint:mnd

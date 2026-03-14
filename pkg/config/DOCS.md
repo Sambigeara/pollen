@@ -40,3 +40,25 @@
 
 ## Consumed by
 - cmd/pln (uses: `Load`, `Save`, `Config`, `RememberBootstrapPeer`, `ForgetBootstrapPeer`, `BootstrapProtoPeers`, `AddService`, `RemoveService`, `AddConnection`, `RemoveConnection`, TTL methods)
+
+## Proposed Minimal API
+
+### Exports kept
+
+| Export | Consumers |
+|--------|-----------|
+| `Config`, `CertTTLs` | cmd/pln, mesh (invite.go) |
+| `Load`, `Save` | cmd/pln |
+| `DefaultBootstrapPort`, `NormalizeRelayAddr` | cmd/pln |
+| `RememberBootstrapPeer`, `ForgetBootstrapPeer`, `BootstrapProtoPeers` | cmd/pln |
+| `AddService`, `RemoveService`, `RemoveServiceByPort` | cmd/pln |
+| `AddConnection`, `RemoveConnection` | cmd/pln |
+| `CertTTLs` methods (`MembershipTTL`, `DelegationTTL`, `TLSIdentityTTL`, `ReconnectWindowDuration`) | cmd/pln |
+
+### Exports stripped (3)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `BootstrapPeer` | unexported | Only accessed through `Config` fields and helper functions |
+| `Service` | unexported | Internal config structure; consumers use `AddService`/`RemoveService` |
+| `Connection` | unexported | Internal config structure; consumers use `AddConnection`/`RemoveConnection` |

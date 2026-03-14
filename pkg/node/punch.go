@@ -16,7 +16,7 @@ func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
 	localRec := n.store.LocalRecord()
 	localIPs := n.store.NodeIPs(n.store.LocalID())
 	targetIPs := n.store.NodeIPs(target)
-	connectedPeers := n.GetConnectedPeers()
+	connectedPeers := n.getConnectedPeers()
 	filtered := make([]types.PeerKey, 0, len(connectedPeers))
 	for _, key := range connectedPeers {
 		if key == target {

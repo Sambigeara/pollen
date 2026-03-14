@@ -45,3 +45,7 @@
 
 ## Consumed by
 - pkg/node (uses: `Reconciler`, `NewReconciler`, `HandleArtifactStream`, `HandleWorkloadStream`, `InvokeOverStream`, `NewArtifactFetcher`)
+
+## Proposed Minimal API
+
+No changes — API surface already minimal (gold standard). All dependencies accessed through narrow interfaces (`SchedulerStore`, `WorkloadManager`, `ArtifactStore`, etc.).

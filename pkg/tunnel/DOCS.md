@@ -34,3 +34,7 @@
 
 ## Consumed by
 - pkg/node (uses: `Manager`, `New`, all methods)
+
+## Proposed Minimal API
+
+No changes — API surface already minimal. All 14 exports have a single production consumer (node).

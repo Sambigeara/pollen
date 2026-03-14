@@ -10,13 +10,144 @@ Generated 2026-03-14. Covers 20 packages in `pkg/` plus `cmd/pln`.
 Layer 0 (leaves):  types, nat, perm, cas, wasm, observability/metrics, observability/traces
 Layer 1:           auth (→perm), config (→perm), traffic (→types), topology (→nat,types), peer (→metrics,types)
 Layer 2:           store (→nat,topology,types,auth,metrics), tunnel (→types,traffic), sock (→nat), route (→types,topology), workload (→cas,wasm)
-Layer 3:           mesh (→auth,nat,metrics,traces,peer,sock,traffic,types)
+Layer 3:           mesh (→auth,config,nat,metrics,traces,peer,sock,traffic,types)
 Layer 4:           scheduler (→store,topology,types,wasm,workload)
 Layer 5:           node (→auth,cas,mesh,nat,metrics,traces,peer,route,scheduler,store,topology,traffic,tunnel,types,wasm,workload)
-Layer 6:           cmd/pln (→auth,config,node,peer,perm,store,types)
+Layer 6:           cmd/pln (→auth,config,mesh,node,peer,perm,store,types)
 ```
 
 No cycles.
+
+```mermaid
+graph TD
+    subgraph Layer_6 ["Layer 6 — entry point"]
+        cmd_pln[cmd/pln]
+    end
+
+    subgraph Layer_5 ["Layer 5"]
+        node
+    end
+
+    subgraph Layer_4 ["Layer 4"]
+        scheduler
+    end
+
+    subgraph Layer_3 ["Layer 3"]
+        mesh
+    end
+
+    subgraph Layer_2 ["Layer 2"]
+        store
+        tunnel
+        sock
+        route
+        workload
+    end
+
+    subgraph Layer_1 ["Layer 1"]
+        auth
+        config
+        traffic
+        topology
+        peer
+    end
+
+    subgraph Layer_0 ["Layer 0 — leaves"]
+        types
+        nat
+        perm
+        cas
+        wasm
+        metrics[observability/metrics]
+        traces[observability/traces]
+    end
+
+    %% Layer 6 edges
+    cmd_pln --> auth
+    cmd_pln --> config
+    cmd_pln --> mesh
+    cmd_pln --> node
+    cmd_pln --> peer
+    cmd_pln --> perm
+    cmd_pln --> store
+    cmd_pln --> types
+
+    %% Layer 5 edges
+    node --> auth
+    node --> cas
+    node --> mesh
+    node --> nat
+    node --> metrics
+    node --> traces
+    node --> peer
+    node --> route
+    node --> scheduler
+    node --> store
+    node --> topology
+    node --> traffic
+    node --> tunnel
+    node --> types
+    node --> wasm
+    node --> workload
+
+    %% Layer 4 edges
+    scheduler --> store
+    scheduler --> topology
+    scheduler --> types
+    scheduler --> wasm
+    scheduler --> workload
+
+    %% Layer 3 edges
+    mesh --> auth
+    mesh --> config
+    mesh --> nat
+    mesh --> metrics
+    mesh --> traces
+    mesh --> peer
+    mesh --> sock
+    mesh --> traffic
+    mesh --> types
+
+    %% Layer 2 edges
+    store --> nat
+    store --> topology
+    store --> types
+    store --> auth
+    store --> metrics
+    tunnel --> types
+    tunnel --> traffic
+    sock --> nat
+    route --> types
+    route --> topology
+    workload --> cas
+    workload --> wasm
+
+    %% Layer 1 edges
+    auth --> perm
+    config --> perm
+    traffic --> types
+    topology --> nat
+    topology --> types
+    peer --> metrics
+    peer --> types
+
+    %% Styling
+    classDef layer0 fill:#e8f5e9,stroke:#2e7d32
+    classDef layer1 fill:#e3f2fd,stroke:#1565c0
+    classDef layer2 fill:#fff3e0,stroke:#e65100
+    classDef layer3 fill:#fce4ec,stroke:#c62828
+    classDef layer4 fill:#f3e5f5,stroke:#6a1b9a
+    classDef layer5 fill:#fff9c4,stroke:#f57f17
+    classDef layer6 fill:#eceff1,stroke:#37474f
+
+    class types,nat,perm,cas,wasm,metrics,traces layer0
+    class auth,config,traffic,topology,peer layer1
+    class store,tunnel,sock,route,workload layer2
+    class mesh layer3
+    class scheduler layer4
+    class node layer5
+    class cmd_pln layer6
+```
 
 ### Fan-in / Fan-out
 
@@ -30,7 +161,7 @@ No cycles.
 | `observability/metrics` | 5 | 0 | 0 |
 | `observability/traces` | 2 | 0 | 0 |
 | `auth` | 4 | 1 | 1 |
-| `config` | 1 | 1 | 1 |
+| `config` | 2 | 1 | 1 |
 | `traffic` | 3 | 1 | 1 |
 | `topology` | 4 | 2 | 1 |
 | `peer` | 3 | 2 | 1 |
@@ -39,10 +170,10 @@ No cycles.
 | `sock` | 1 | 1 | 2 |
 | `route` | 1 | 2 | 2 |
 | `workload` | 2 | 2 | 2 |
-| `mesh` | 1 | 8 | 3 |
+| `mesh` | 2 | 9 | 3 |
 | `scheduler` | 1 | 5 | 4 |
 | `node` | 1 | 16 | 5 |
-| `cmd/pln` | 0 | 7 | 6 |
+| `cmd/pln` | 0 | 8 | 6 |
 
 ### Boundary Observations
 
@@ -981,3 +1112,48 @@ Full method list: 40+ methods covering lifecycle, CRDT gossip, mutations, worklo
 ### Consumed by
 
 None — top-level binary.
+
+---
+
+## Changes Made (Boundary Hardening)
+
+Audit pass completed 2026-03-14. Stripped exports that had no production callers or were only used within their own package boundary.
+
+### Summary
+
+| Package | Exports before | Removed | Exports after | Action |
+|---------|---------------|---------|---------------|--------|
+| `types` | 8 | 0 | 8 | — |
+| `nat` | 11 | 0 | 11 | — |
+| `perm` | 8 | 2 | 6 | `SetGroupDir` unexported, `WritePrivate` deleted |
+| `cas` | 6 | 1 | 5 | `ErrNotFound` unexported |
+| `wasm` | 10 | 0 | 10 | — |
+| `observability/metrics` | 36 | 1 | 35 | `NewEWMA` unexported |
+| `observability/traces` | 21 | 7 | 14 | 6 types/funcs unexported, `Span.TraceIDBytes` deleted |
+| `auth` | 37 | 2 | 35 | `NewTrustBundle` unexported, `IssueJoinToken` deleted |
+| `config` | 21 | 3 | 18 | `BootstrapPeer`, `Service`, `Connection` types unexported |
+| `traffic` | 8 | 0 | 8 | — |
+| `topology` | 17 | 0 | 17 | — |
+| `peer` | 41 | 4 | 37 | `ConnectStage`+consts unexported, `Get` unexported, `connectTimedOut` deleted |
+| `store` | ~59 | 4 | ~55 | `NatType`/`IsConnected`/`IsPubliclyAccessible` deleted, `ErrSpecOwnedRemotely` unexported |
+| `tunnel` | 14 | 0 | 14 | — |
+| `sock` | 7 | 2 | 5 | `ErrUnreachable`/`ProbeWriter` unexported |
+| `route` | 9 | 3 | 6 | `Len` deleted, `Route.Distance`/`Route.HopCount` unexported |
+| `workload` | 15 | 3 | 12 | `ResolvePrefix`/`ErrAmbiguousPrefix`/`ErrStore` unexported |
+| `mesh` | 20 | 7 | 13 | `JoinWithToken` removed from interface, 6 `CloseReason` consts unexported |
+| `scheduler` | 18 | 0 | 18 | — |
+| `node` | 15 | 7 | 8 | 7 exports unexported (internal gRPC/test-only methods) |
+| `cmd/pln` | 1 | 0 | 1 | — |
+| **Total** | **~382** | **~46** | **~336** | **~12% reduction** |
+
+### Principles applied
+
+1. **Unexport** when the symbol is only consumed within its own package
+2. **Delete** when the symbol has zero callers anywhere (dead code)
+3. **Remove from interface** when the method is unreachable through the interface contract
+4. Internal types that consumers only interact with through higher-level APIs were unexported
+
+### Follow-ups needed
+
+- **Test migration**: Some tests may reference unexported symbols or deleted functions. These need updating to use the retained public API or be moved into the package as internal tests.
+- **Narrow consumer interfaces**: `pkg/scheduler` demonstrates the gold standard with `SchedulerStore`. Similar narrow interfaces could be defined for `pkg/node`'s consumption of `pkg/store` and `pkg/mesh`.

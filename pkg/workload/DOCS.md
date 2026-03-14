@@ -39,3 +39,24 @@
 ## Consumed by
 - pkg/node (uses: `Manager`, `New`, `Seed`, `SeedFromCAS`, `IsRunning`, `Call`, `Unseed`, `List`, `Close`, `Summary`, `ErrNotRunning`, `ErrCompile`, `ErrAlreadyRunning`)
 - pkg/scheduler (uses: `ErrNotRunning`; via interface: `SeedFromCAS`, `Unseed`, `IsRunning`)
+
+## Proposed Minimal API
+
+### Exports kept
+
+| Export | Consumers |
+|--------|-----------|
+| `Manager`, `New` | node, scheduler (via interface) |
+| `(*Manager).Seed`, `(*Manager).SeedFromCAS` | node, scheduler |
+| `(*Manager).IsRunning`, `(*Manager).Call` | node, scheduler |
+| `(*Manager).Unseed`, `(*Manager).List`, `(*Manager).Close` | node, scheduler |
+| `Status`, `StatusRunning`, `Summary` | node |
+| `ErrAlreadyRunning`, `ErrNotRunning`, `ErrCompile` | node, scheduler |
+
+### Exports stripped (3)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `(*Manager).ResolvePrefix` | unexported | Only used internally for hash prefix lookups |
+| `ErrAmbiguousPrefix` | unexported | Only relevant to internal `ResolvePrefix` logic |
+| `ErrStore` | unexported | Only returned/checked within package boundary |

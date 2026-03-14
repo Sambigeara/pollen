@@ -148,3 +148,34 @@ All `SetLocal*` methods return `[]*statev1.GossipEvent` for rebroadcast (nil if 
 - pkg/node (uses: `Store`, `Load`, all mutation/query methods, view types)
 - pkg/scheduler (uses: `NodePlacementState`, `WorkloadSpecView`, `AllNodePlacementStates`, `AllWorkloadSpecs`, `AllWorkloadClaims`, `AllPeerKeys`, `SetLocalWorkloadClaim`)
 - cmd/pln (uses: `Store`, `Load`)
+
+## Proposed Minimal API
+
+### Exports kept
+
+~55 exports retained covering lifecycle, CRDT gossip, mutations, workload, connections, invites, and queries. Key consumers:
+
+| Export | Consumers |
+|--------|-----------|
+| `Store`, `Load`, `Close`, `Save` | node, cmd/pln |
+| View types (`KnownPeer`, `WorkloadSpecView`, `NodePlacementState`, `TrafficSnapshot`, `RouteNodeInfo`, `LocalNodeView`, `Connection`, `ApplyResult`) | node, scheduler |
+| All `SetLocal*` mutations | node |
+| All query methods (`AllRouteInfo`, `KnownPeers`, `AllPeerKeys`, etc.) | node, scheduler |
+| Workload methods (`SetLocalWorkloadSpec`, `SetLocalWorkloadClaim`, etc.) | node, scheduler |
+| `TryConsume` | mesh (via `auth.InviteConsumer` interface) |
+
+### Exports stripped (4)
+
+| Export | Action | Reason |
+|--------|--------|--------|
+| `NatType` | deleted | No production callers; NAT type accessed through `KnownPeer` |
+| `IsConnected` | deleted | No production callers; reachability checked via `AllPeerKeys` BFS |
+| `IsPubliclyAccessible` | deleted | No production callers; accessibility data embedded in `KnownPeer` |
+| `ErrSpecOwnedRemotely` | unexported | Only returned/checked within package boundary |
+
+### Proposed narrow consumer interfaces
+
+`pkg/scheduler` already defines `SchedulerStore` covering exactly the methods it needs:
+- `AllWorkloadSpecs`, `AllWorkloadClaims`, `AllPeerKeys`, `SetLocalWorkloadClaim`, `AllNodePlacementStates`
+
+This pattern could be replicated for other narrow consumers (e.g., a `RouteStore` for pkg/route) as a follow-up.

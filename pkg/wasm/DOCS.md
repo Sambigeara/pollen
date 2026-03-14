@@ -29,3 +29,7 @@ None — leaf package.
 - pkg/node (uses: `Runtime`, `NewRuntime`, `NewHostFunctions`, `PluginConfig`, `InvocationRouter`)
 - pkg/scheduler (uses: `PluginConfig`)
 - pkg/workload (uses: `Runtime`, `PluginConfig`)
+
+## Proposed Minimal API
+
+No changes — API surface already minimal. All 10 exports have production callers across 3 consumers.
