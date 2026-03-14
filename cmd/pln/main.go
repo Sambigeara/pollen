@@ -203,11 +203,7 @@ func newIDCmd() *cobra.Command {
 }
 
 func runID(cmd *cobra.Command, _ []string) {
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		os.Exit(1)
-	}
+	pollenDir := mustPollenPath(cmd)
 
 	pub, err := auth.ReadIdentityPub(pollenDir)
 	if err != nil {
@@ -672,11 +668,7 @@ func runDeny(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
-		os.Exit(1)
-	}
+	pollenDir := mustPollenPath(cmd)
 	cfg := loadConfigOrDefault(pollenDir)
 	cfg.ForgetBootstrapPeer(peerID)
 	if saveErr := config.Save(pollenDir, cfg); saveErr != nil {
@@ -691,11 +683,7 @@ func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient 
 }
 
 func newControlClientWithTimeout(cmd *cobra.Command, timeout time.Duration) controlv1connect.ControlServiceClient {
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
-		os.Exit(1)
-	}
+	pollenDir := mustPollenPath(cmd)
 
 	socket := filepath.Join(pollenDir, socketName)
 

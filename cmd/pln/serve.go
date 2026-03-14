@@ -44,11 +44,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		os.Exit(1)
-	}
+	pollenDir := mustPollenPath(cmd)
 
 	cfg := loadConfigOrDefault(pollenDir)
 	cfg.AddService(name, uint32(port))
@@ -89,11 +85,7 @@ func runUnserve(cmd *cobra.Command, args []string) {
 		name = arg
 	}
 
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		os.Exit(1)
-	}
+	pollenDir := mustPollenPath(cmd)
 
 	cfg := loadConfigOrDefault(pollenDir)
 	if name != "" {

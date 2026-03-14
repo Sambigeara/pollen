@@ -36,11 +36,7 @@ func newPurgeCmd() *cobra.Command {
 }
 
 func runInit(cmd *cobra.Command, _ []string) {
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		os.Exit(1)
-	}
+	pollenDir := mustPollenPath(cmd)
 
 	running, err := nodeSocketActive(filepath.Join(pollenDir, socketName))
 	if err != nil {
@@ -107,11 +103,7 @@ func runInit(cmd *cobra.Command, _ []string) {
 }
 
 func runPurge(cmd *cobra.Command, _ []string) {
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		os.Exit(1)
-	}
+	pollenDir := mustPollenPath(cmd)
 
 	all, _ := cmd.Flags().GetBool("all")
 	confirmed, _ := cmd.Flags().GetBool("yes")

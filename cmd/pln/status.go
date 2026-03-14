@@ -318,10 +318,9 @@ func formatWorkloadStatus(s controlv1.WorkloadStatus) string {
 		return "stopped"
 	case controlv1.WorkloadStatus_WORKLOAD_STATUS_ERRORED:
 		return "errored"
-	case controlv1.WorkloadStatus_WORKLOAD_STATUS_UNSPECIFIED:
+	default:
 		return "unknown"
 	}
-	return "unknown"
 }
 
 func certExpiryFooter(st *controlv1.GetStatusResponse) string {
@@ -371,12 +370,9 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 	case controlv1.CertHealth_CERT_HEALTH_RENEWING:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render( //nolint:mnd
 			msg + " — auto-renewal in progress")
-	case controlv1.CertHealth_CERT_HEALTH_OK,
-		controlv1.CertHealth_CERT_HEALTH_UNSPECIFIED,
-		controlv1.CertHealth_CERT_HEALTH_EXPIRED:
+	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg) //nolint:mnd
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg) //nolint:mnd
 }
 
 func humanDuration(d time.Duration) string {

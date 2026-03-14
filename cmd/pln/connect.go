@@ -92,11 +92,7 @@ func runConnect(cmd *cobra.Command, args []string) {
 	provider := formatPeerID(svc.GetProvider().GetPeerId(), false)
 	peerHex := peerKeyString(svc.GetProvider().GetPeerId())
 
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
-		os.Exit(1)
-	}
+	pollenDir := mustPollenPath(cmd)
 	cfg := loadConfigOrDefault(pollenDir)
 	cfg.AddConnection(svc.GetName(), peerHex, svc.GetPort(), actualLocalPort)
 	if saveErr := config.Save(pollenDir, cfg); saveErr != nil {
@@ -134,11 +130,7 @@ func runDisconnect(cmd *cobra.Command, args []string) {
 	}
 
 	peerHex := peerKeyString(conn.GetPeer().GetPeerId())
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
-		os.Exit(1)
-	}
+	pollenDir := mustPollenPath(cmd)
 	cfg := loadConfigOrDefault(pollenDir)
 	cfg.RemoveConnection(conn.GetServiceName(), peerHex, conn.GetLocalPort())
 	if saveErr := config.Save(pollenDir, cfg); saveErr != nil {

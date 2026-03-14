@@ -38,11 +38,7 @@ func newAdminCmd() *cobra.Command {
 }
 
 func runAdminKeygen(cmd *cobra.Command, _ []string) {
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		os.Exit(1)
-	}
+	pollenDir := mustPollenPath(cmd)
 
 	_, pub, err := auth.LoadAdminKey(pollenDir)
 	switch {
@@ -64,11 +60,7 @@ func runAdminKeygen(cmd *cobra.Command, _ []string) {
 }
 
 func runAdminSetCert(cmd *cobra.Command, args []string) {
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		os.Exit(1)
-	}
+	pollenDir := mustPollenPath(cmd)
 
 	_, nodePub, err := auth.GenIdentityKey(pollenDir)
 	if err != nil {

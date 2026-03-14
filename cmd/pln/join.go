@@ -68,11 +68,7 @@ func enrollToken(ctx context.Context, pollenDir, rawToken string) error {
 }
 
 func runJoin(cmd *cobra.Command, args []string) {
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		os.Exit(1)
-	}
+	pollenDir := mustPollenPath(cmd)
 
 	noUp, _ := cmd.Flags().GetBool("no-up")
 	public, _ := cmd.Flags().GetBool("public")
