@@ -47,7 +47,3 @@ func (pk PeerKey) Less(other PeerKey) bool {
 func (pk PeerKey) Compare(other PeerKey) int {
 	return bytes.Compare(pk[:], other[:])
 }
-
-type Envelope struct {
-	Payload []byte
-}
