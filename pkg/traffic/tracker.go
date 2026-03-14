@@ -17,6 +17,13 @@ type Recorder interface {
 	Record(peer types.PeerKey, bytesIn, bytesOut uint64)
 }
 
+// Noop is a Recorder that discards all byte counts.
+var Noop Recorder = noopRecorder{}
+
+type noopRecorder struct{}
+
+func (noopRecorder) Record(types.PeerKey, uint64, uint64) {}
+
 // PeerTraffic holds accumulated byte counts for a single peer.
 type PeerTraffic struct {
 	BytesIn  uint64
@@ -82,13 +89,6 @@ func (t *Tracker) RotateAndSnapshot() (map[types.PeerKey]PeerTraffic, bool) {
 			pt.BytesIn += v.in
 			pt.BytesOut += v.out
 			window[k] = pt
-		}
-	}
-
-	// Remove zero entries.
-	for k, v := range window {
-		if v.BytesIn == 0 && v.BytesOut == 0 {
-			delete(window, k)
 		}
 	}
 
