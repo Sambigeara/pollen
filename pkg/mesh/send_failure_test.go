@@ -77,6 +77,7 @@ func TestHandleSendFailureRemovesSessionAndEmitsDisconnect(t *testing.T) {
 	core, _ := observer.New(zap.DebugLevel)
 	m := &impl{
 		log:      zap.New(core).Sugar(),
+		ctx:      context.Background(),
 		sessions: newSessionRegistry(nil),
 		inCh:     make(chan peer.Input, 1),
 		metrics:  &metrics.MeshMetrics{},

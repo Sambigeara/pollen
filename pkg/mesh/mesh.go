@@ -29,7 +29,6 @@ const (
 	handshakeTimeout    = 3 * time.Second
 	quicIdleTimeout     = 30 * time.Second
 	quicKeepAlivePeriod = 10 * time.Second
-	eventSendTimeout    = 5 * time.Second
 	maxBidiStreams      = 256
 	queueBufSize        = maxBidiStreams
 	probeBufSize        = 2048
@@ -127,6 +126,7 @@ type impl struct {
 	bareCert         tls.Certificate
 	socks            sock.SockStore
 	isDenied         func(types.PeerKey) bool
+	ctx              context.Context
 	inCh             chan peer.Input
 	recvCh           chan Packet
 	renewalCh        chan *meshv1.CertRenewalResponse
@@ -240,6 +240,7 @@ func (m *impl) Start(ctx context.Context) error {
 		return fmt.Errorf("quic listen: %w", err)
 	}
 
+	m.ctx = ctx
 	m.mainQT = qt
 	m.listener = ln
 

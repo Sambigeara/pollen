@@ -122,10 +122,6 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		IP:           addr.IP,
 		ObservedPort: addr.Port,
 	}:
-	case <-time.After(eventSendTimeout):
-		m.log.Warnw("dropped connect event, consumer lagging",
-			"peer", peerKey.Short(),
-		)
 	case <-s.conn.Context().Done():
 	}
 }
@@ -152,8 +148,7 @@ func (m *impl) handleSendFailure(peerKey types.PeerKey, s *peerSession, err erro
 	m.closeSession(s, CloseReasonDisconnect)
 	select {
 	case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: reason}:
-	case <-time.After(eventSendTimeout):
-		m.log.Warnw("dropped peer disconnect event after send failure", "peer", peerKey.Short(), "reason", reason)
+	case <-m.ctx.Done():
 	}
 }
 
@@ -175,10 +170,7 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 					PeerKey: peerKey,
 					Reason:  reason,
 				}:
-				case <-time.After(eventSendTimeout):
-					m.log.Warnw("dropped disconnect event, consumer lagging",
-						"peer", peerKey.Short(),
-					)
+				case <-ctx.Done():
 				}
 				m.closeSession(s, CloseReasonDisconnected)
 			}
@@ -292,8 +284,7 @@ func (m *impl) sessionReaper(ctx context.Context) {
 					m.closeSession(s, CloseReasonCertRotation)
 					select {
 					case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertRotation}:
-					case <-time.After(eventSendTimeout):
-						m.log.Warnw("dropped cert rotation disconnect event", "peer", peerKey.Short())
+					case <-ctx.Done():
 					}
 				}
 			}
