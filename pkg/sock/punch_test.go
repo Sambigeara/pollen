@@ -10,6 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// probe sends a probe on a socket and waits for the matching response.
+// It also echoes any incoming probe requests so that simultaneous punches
+// from both sides can discover each other.
+func probe(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) error {
+	_, err := probeAddr(ctx, conn, addr)
+	return err
+}
+
 func listenLoopback(t *testing.T) *net.UDPConn {
 	t.Helper()
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})

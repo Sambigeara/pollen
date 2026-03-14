@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 
 	"github.com/sambigeara/pollen/pkg/nat"
-	"go.uber.org/zap"
 )
 
 var ErrUnreachable = errors.New("peer unreachable")
@@ -41,18 +40,13 @@ func (c *Conn) Close() error {
 	}
 	var err error
 	c.closeOnce.Do(func() {
-		if c.onClose != nil {
-			c.onClose()
-		}
-		if c.UDPConn != nil {
-			err = c.UDPConn.Close()
-		}
+		c.onClose()
+		err = c.UDPConn.Close()
 	})
 	return err
 }
 
 type sockStore struct {
-	log        *zap.SugaredLogger
 	socks      *connList
 	mainWrite  ProbeWriter
 	mainProbes map[[probeNonceSize]byte]chan *net.UDPAddr
@@ -61,7 +55,6 @@ type sockStore struct {
 
 func NewSockStore() SockStore {
 	return &sockStore{
-		log:        zap.S().Named("sockstore"),
 		socks:      newConnList(),
 		mainProbes: make(map[[probeNonceSize]byte]chan *net.UDPAddr),
 	}

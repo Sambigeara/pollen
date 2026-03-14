@@ -21,14 +21,6 @@ const (
 	maxEphemeralPort = 65535
 )
 
-// probe sends a probe on a socket and waits for the matching response.
-// It also echoes any incoming probe requests so that simultaneous punches
-// from both sides can discover each other.
-func probe(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) error {
-	_, err := probeAddr(ctx, conn, addr)
-	return err
-}
-
 func probeAddr(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) (_ *net.UDPAddr, retErr error) {
 	nonce := make([]byte, probeNonceSize)
 	if _, err := rand.Read(nonce); err != nil {
