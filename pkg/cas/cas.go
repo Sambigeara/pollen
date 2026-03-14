@@ -81,8 +81,5 @@ func (s *Store) Has(hash string) bool {
 }
 
 func (s *Store) path(hash string) string {
-	if len(hash) < 2 { //nolint:mnd
-		return filepath.Join(s.root, hash+".wasm")
-	}
 	return filepath.Join(s.root, hash[:2], hash+".wasm")
 }
