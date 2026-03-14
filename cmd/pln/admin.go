@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/node"
 )
 
 func newAdminCmd() *cobra.Command {
@@ -71,7 +70,7 @@ func runAdminSetCert(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	_, nodePub, err := node.GenIdentityKey(pollenDir)
+	_, nodePub, err := auth.GenIdentityKey(pollenDir)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)

@@ -15,7 +15,6 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/mesh"
-	"github.com/sambigeara/pollen/pkg/node"
 )
 
 func newJoinCmd() *cobra.Command {
@@ -34,7 +33,7 @@ func newJoinCmd() *cobra.Command {
 // stale cluster state on cluster switch), saves bootstrap peers from the token,
 // and fixes file ownership.
 func enrollToken(ctx context.Context, pollenDir, rawToken string) error {
-	privKey, pubKey, err := node.GenIdentityKey(pollenDir)
+	privKey, pubKey, err := auth.GenIdentityKey(pollenDir)
 	if err != nil {
 		return err
 	}

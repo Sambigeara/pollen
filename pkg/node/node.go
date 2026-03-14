@@ -3,15 +3,11 @@ package node
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -25,16 +21,13 @@ import (
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/observability/traces"
 	"github.com/sambigeara/pollen/pkg/peer"
-	"github.com/sambigeara/pollen/pkg/perm"
 	"github.com/sambigeara/pollen/pkg/route"
 	"github.com/sambigeara/pollen/pkg/scheduler"
 	"github.com/sambigeara/pollen/pkg/store"
-	"github.com/sambigeara/pollen/pkg/sysinfo"
 	"github.com/sambigeara/pollen/pkg/topology"
 	"github.com/sambigeara/pollen/pkg/traffic"
 	"github.com/sambigeara/pollen/pkg/tunnel"
 	"github.com/sambigeara/pollen/pkg/types"
-	"github.com/sambigeara/pollen/pkg/util"
 	"github.com/sambigeara/pollen/pkg/wasm"
 	"github.com/sambigeara/pollen/pkg/workload"
 	"go.uber.org/zap"
@@ -53,15 +46,6 @@ const (
 	certCriticalThreshold = 15 * time.Minute
 	certRenewalTimeout    = 10 * time.Second
 	expirySweepInterval   = 30 * time.Second
-
-	localKeysDir = "keys"
-
-	signingKeyName    = "ed25519.key"
-	signingPubKeyName = "ed25519.pub"
-	pemTypePriv       = "ED25519 PRIVATE KEY"
-	pemTypePub        = "ED25519 PUBLIC KEY"
-	privKeyPerm       = 0o640
-	pubKeyPerm        = 0o640
 
 	directTimeout = 2 * time.Second
 	punchTimeout  = 3 * time.Second
@@ -238,7 +222,7 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		nodeMetrics:     metrics.NewNodeMetrics(col),
 		tracer:          tracer,
 		smoothedErr:     metrics.NewEWMAFrom(vivaldiErrAlpha, 1.0),
-		routeTable:      route.New(stateStore.LocalID),
+		routeTable:      route.New(stateStore.LocalID()),
 		trafficTracker:  traffic.New(),
 		routeInvalidate: make(chan struct{}, 1),
 	}
@@ -303,7 +287,7 @@ func (n *Node) Start(ctx context.Context) error {
 
 	// Start scheduler reconciler for distributed workload placement.
 	n.sched = scheduler.NewReconciler(
-		n.store.LocalID,
+		n.store.LocalID(),
 		n.store,
 		n.workloads,
 		n.casStore,
@@ -336,7 +320,7 @@ func (n *Node) Start(ctx context.Context) error {
 	} else if n.conf.GossipJitter > 0 {
 		jitter = n.conf.GossipJitter
 	}
-	gossipTicker := util.NewJitterTicker(ctx, n.conf.GossipInterval, jitter)
+	gossipTicker := newJitterTicker(ctx, n.conf.GossipInterval, jitter)
 	defer gossipTicker.Stop()
 
 	peerTicker := time.NewTicker(n.conf.PeerTickInterval)
@@ -523,7 +507,7 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 }
 
 func (n *Node) sampleResourceTelemetry() {
-	cpuPct, memPct, memTotal, numCPU := sysinfo.Sample()
+	cpuPct, memPct, memTotal, numCPU := sampleResources()
 	n.queueGossipEvents(n.store.SetLocalResourceTelemetry(cpuPct, memPct, memTotal, numCPU))
 }
 
@@ -631,19 +615,11 @@ func (n *Node) updateVivaldiCoords() {
 func (n *Node) syncPeersFromState() {
 	knownPeers := n.store.KnownPeers()
 
-	// Build topology peer infos for target selection.
-	peerInfos := make([]topology.PeerInfo, 0, len(knownPeers))
+	// Build topology peer infos and peer map for target selection.
+	peerInfos := knownPeersToPeerInfos(knownPeers)
 	peerMap := make(map[types.PeerKey]store.KnownPeer, len(knownPeers))
 	for _, kp := range knownPeers {
 		peerMap[kp.PeerID] = kp
-		peerInfos = append(peerInfos, topology.PeerInfo{
-			Key:                kp.PeerID,
-			Coord:              kp.VivaldiCoord,
-			IPs:                kp.IPs,
-			NatType:            kp.NatType,
-			ObservedExternalIP: kp.ObservedExternalIP,
-			PubliclyAccessible: kp.PubliclyAccessible,
-		})
 	}
 
 	// Collect current outbound peer keys so the topology layer can apply
@@ -668,7 +644,7 @@ func (n *Node) syncPeersFromState() {
 	}
 
 	epoch := time.Now().Unix() / topology.EpochSeconds
-	localIPs := n.store.NodeIPs(n.store.LocalID)
+	localIPs := n.store.NodeIPs(n.store.LocalID())
 	shape := summarizeTopologyShape(localIPs, knownPeers)
 	activePeerCount := len(connectedPeers)
 	params := adaptiveTopologyParams(epoch, shape)
@@ -676,11 +652,9 @@ func (n *Node) syncPeersFromState() {
 	params.LocalIPs = localIPs
 	params.CurrentOutbound = currentOutbound
 	params.LocalNATType = n.natDetector.Type()
-	if localRec, ok := n.store.Get(n.store.LocalID); ok {
-		params.LocalObservedExternalIP = localRec.ObservedExternalIP
-	}
+	params.LocalObservedExternalIP = n.store.LocalRecord().ObservedExternalIP
 	params.UseHMACNearest = n.useHMACNearest
-	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
+	targets := topology.ComputeTargetPeers(n.store.LocalID(), n.localCoord, peerInfos, params)
 
 	n.topoMetrics.VivaldiError.Set(smoothed)
 	if n.useHMACNearest {
@@ -837,13 +811,13 @@ func (n *Node) reconcileDesiredConnections() {
 		return
 	}
 
-	existing := make(map[string]struct{})
+	existing := make(map[store.Connection]struct{})
 	for _, conn := range n.tun.ListConnections() {
-		existing[store.Connection{PeerID: conn.PeerID, RemotePort: conn.RemotePort, LocalPort: conn.LocalPort}.Key()] = struct{}{}
+		existing[store.Connection{PeerID: conn.PeerID, RemotePort: conn.RemotePort, LocalPort: conn.LocalPort}] = struct{}{}
 	}
 
 	for _, desiredConn := range desired {
-		if _, ok := existing[desiredConn.Key()]; ok {
+		if _, ok := existing[desiredConn]; ok {
 			continue
 		}
 
@@ -875,11 +849,11 @@ func (n *Node) doConnect(peerKey types.PeerKey, addrs []*net.UDPAddr) {
 
 func (n *Node) buildPeerAddrs(peerKey types.PeerKey, ips []net.IP, port int) []*net.UDPAddr {
 	var extPort int
-	if rec, ok := n.store.Get(peerKey); ok && rec.ExternalPort != 0 {
-		extPort = int(rec.ExternalPort)
+	if ep, ok := n.store.ExternalPort(peerKey); ok {
+		extPort = int(ep)
 	}
 
-	return orderPeerAddrs(n.store.NodeIPs(n.store.LocalID), ips, port, extPort)
+	return orderPeerAddrs(n.store.NodeIPs(n.store.LocalID()), ips, port, extPort)
 }
 
 func (n *Node) sendObservedAddress(pk types.PeerKey, addr *net.UDPAddr) {
@@ -1036,12 +1010,12 @@ func (n *Node) signalRouteInvalidate() {
 }
 
 func (n *Node) recomputeRoutes() {
-	nodes := n.store.AllNodes()
-	nodeInfos := make(map[types.PeerKey]route.NodeInfo, len(nodes))
-	for pk, rec := range nodes {
+	routeInfo := n.store.AllRouteInfo()
+	nodeInfos := make(map[types.PeerKey]route.NodeInfo, len(routeInfo))
+	for pk, info := range routeInfo {
 		nodeInfos[pk] = route.NodeInfo{
-			Reachable: rec.Reachable,
-			Coord:     rec.VivaldiCoord,
+			Reachable: info.Reachable,
+			Coord:     info.Coord,
 		}
 	}
 
@@ -1050,7 +1024,7 @@ func (n *Node) recomputeRoutes() {
 		directPeers[pk] = struct{}{}
 	}
 
-	routes := route.Recompute(n.store.LocalID, &n.localCoord, directPeers, nodeInfos)
+	routes := route.Recompute(n.store.LocalID(), &n.localCoord, directPeers, nodeInfos)
 	n.routeTable.Update(routes)
 }
 
@@ -1065,99 +1039,4 @@ func (n *Node) ListenPort() int {
 // GetConnectedPeers returns all currently connected peer keys.
 func (n *Node) GetConnectedPeers() []types.PeerKey {
 	return n.peers.GetAll(peer.Connected)
-}
-
-func GenIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
-	dir := filepath.Join(pollenDir, localKeysDir)
-	privPath := filepath.Join(dir, signingKeyName)
-	pubPath := filepath.Join(dir, signingPubKeyName)
-
-	if priv, pub, err := loadIdentityKey(privPath, pubPath); err == nil {
-		return priv, pub, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, nil, err
-	}
-
-	if err := perm.EnsureDir(dir); err != nil {
-		return nil, nil, err
-	}
-
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	privFile, err := os.OpenFile(privPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, privKeyPerm)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer privFile.Close()
-
-	if err := pem.Encode(privFile, &pem.Block{
-		Type:  pemTypePriv,
-		Bytes: priv.Seed(),
-	}); err != nil {
-		return nil, nil, err
-	}
-
-	if err := perm.SetGroupReadable(privPath); err != nil {
-		return nil, nil, err
-	}
-
-	pubFile, err := os.OpenFile(pubPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, pubKeyPerm)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer pubFile.Close()
-
-	if err := pem.Encode(pubFile, &pem.Block{
-		Type:  pemTypePub,
-		Bytes: pub,
-	}); err != nil {
-		return nil, nil, err
-	}
-
-	if err := perm.SetGroupReadable(pubPath); err != nil {
-		return nil, nil, err
-	}
-
-	return priv, pub, nil
-}
-
-// ReadIdentityPub reads the public key from disk without requiring private key access.
-func ReadIdentityPub(pollenDir string) (ed25519.PublicKey, error) {
-	pubPath := filepath.Join(pollenDir, localKeysDir, signingPubKeyName)
-	pubEnc, err := os.ReadFile(pubPath)
-	if err != nil {
-		return nil, err
-	}
-	return decodePubKeyPEM(pubEnc)
-}
-
-func loadIdentityKey(privPath, pubPath string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
-	keyEnc, err := os.ReadFile(privPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	pubEnc, err := os.ReadFile(pubPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	block, _ := pem.Decode(keyEnc)
-	if block == nil || block.Type != pemTypePriv {
-		return nil, nil, errors.New("invalid private key PEM")
-	}
-	pub, err := decodePubKeyPEM(pubEnc)
-	if err != nil {
-		return nil, nil, err
-	}
-	return ed25519.NewKeyFromSeed(block.Bytes), pub, nil
-}
-
-func decodePubKeyPEM(data []byte) (ed25519.PublicKey, error) {
-	block, _ := pem.Decode(data)
-	if block == nil || block.Type != pemTypePub {
-		return nil, errors.New("invalid public key PEM")
-	}
-	return ed25519.PublicKey(block.Bytes), nil
 }

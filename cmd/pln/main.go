@@ -209,13 +209,13 @@ func runID(cmd *cobra.Command, _ []string) {
 		os.Exit(1)
 	}
 
-	pub, err := node.ReadIdentityPub(pollenDir)
+	pub, err := auth.ReadIdentityPub(pollenDir)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 			os.Exit(1)
 		}
-		_, pub, err = node.GenIdentityKey(pollenDir)
+		_, pub, err = auth.GenIdentityKey(pollenDir)
 		if err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 			os.Exit(1)
@@ -286,6 +286,15 @@ func pollenPath(cmd *cobra.Command) (string, error) {
 	return dir, nil
 }
 
+func mustPollenPath(cmd *cobra.Command) string {
+	dir, err := pollenPath(cmd)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		os.Exit(1)
+	}
+	return dir
+}
+
 func runNode(cmd *cobra.Command) {
 	zapCfg := zap.NewProductionConfig()
 	zapCfg.Encoding = "console"
@@ -310,7 +319,7 @@ func runNode(cmd *cobra.Command) {
 		logger.Fatal(err)
 	}
 
-	privKey, pubKey, err := node.GenIdentityKey(pollenDir)
+	privKey, pubKey, err := auth.GenIdentityKey(pollenDir)
 	if err != nil {
 		logger.Fatal("failed to load signing keys: ", err)
 	}
@@ -510,7 +519,7 @@ func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
 
 	cfg := loadConfigOrDefault(pollenDir)
 
-	nodePriv, _, err := node.GenIdentityKey(pollenDir)
+	nodePriv, _, err := auth.GenIdentityKey(pollenDir)
 	if err != nil {
 		return nil, err
 	}

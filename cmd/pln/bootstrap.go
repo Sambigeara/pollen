@@ -22,7 +22,6 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
-	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -144,7 +143,7 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 		return nil
 	}
 
-	_, localPub, err := node.GenIdentityKey(issuerCtx.pollenDir)
+	_, localPub, err := auth.GenIdentityKey(issuerCtx.pollenDir)
 	if err != nil {
 		return err
 	}

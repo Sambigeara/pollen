@@ -274,39 +274,14 @@ func assertPeersConnected(t *testing.T, a, b *testNode) {
 	require.True(t, b.store.IsConnected(b.peerKey, a.peerKey))
 
 	require.Eventually(t, func() bool {
-		_, ok := b.store.Get(a.peerKey)
+		_, ok := b.store.getRecord(a.peerKey)
 		return ok
 	}, 5*time.Second, 50*time.Millisecond, "B's store should know about A via gossip")
 
 	require.Eventually(t, func() bool {
-		_, ok := a.store.Get(b.peerKey)
+		_, ok := a.store.getRecord(b.peerKey)
 		return ok
 	}, 5*time.Second, 50*time.Millisecond, "A's store should know about B via gossip")
-}
-
-func TestGenIdentityKeyAndReadIdentityPub(t *testing.T) {
-	dir := t.TempDir()
-
-	priv, pub, err := node.GenIdentityKey(dir)
-	require.NoError(t, err)
-	require.Len(t, priv, ed25519.PrivateKeySize)
-	require.Len(t, pub, ed25519.PublicKeySize)
-
-	// ReadIdentityPub must return the same key (exercises decodePubKeyPEM).
-	gotPub, err := node.ReadIdentityPub(dir)
-	require.NoError(t, err)
-	require.Equal(t, pub, gotPub)
-
-	// Calling GenIdentityKey again returns the same keys (idempotent).
-	priv2, pub2, err := node.GenIdentityKey(dir)
-	require.NoError(t, err)
-	require.Equal(t, priv, priv2)
-	require.Equal(t, pub, pub2)
-}
-
-func TestReadIdentityPubMissingFile(t *testing.T) {
-	_, err := node.ReadIdentityPub(t.TempDir())
-	require.Error(t, err)
 }
 
 func getNodeStatus(t *testing.T, observer, target *testNode) controlv1.NodeStatus {

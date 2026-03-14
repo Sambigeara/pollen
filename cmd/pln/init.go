@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/node"
 )
 
 func newInitCmd() *cobra.Command {
@@ -53,7 +52,7 @@ func runInit(cmd *cobra.Command, _ []string) {
 		os.Exit(1)
 	}
 
-	_, pub, err := node.GenIdentityKey(pollenDir)
+	_, pub, err := auth.GenIdentityKey(pollenDir)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
