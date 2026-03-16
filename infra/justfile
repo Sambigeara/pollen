@@ -1,4 +1,5 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
+set dotenv-load
 
 ansible_dir := justfile_directory() / "ansible"
 ssh_args := "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
@@ -10,7 +11,7 @@ default:
 deploy-vivaldi version="": (_deploy "vivaldi" "vivaldi.py" "join-cluster.yml" version)
 
 # Deploy the vivaldi all-public cluster.
-deploy-vivaldi-pub version="": (_deploy "vivaldi-public" "vivaldi_public.py" "join-public-cluster.yml" version)
+deploy-vivaldi-pub version="": (_deploy "vivaldi-public" "vivaldi_public.py" "join-cluster.yml" version)
 
 # SSH into the bootstrap instance.
 ssh-bootstrap: (_ssh-direct "bootstrap" "ip")
@@ -26,6 +27,26 @@ destroy-vivaldi: (_destroy "vivaldi")
 
 # Tear down vivaldi-public infrastructure.
 destroy-vivaldi-pub: (_destroy "vivaldi-public")
+
+# Deploy the hetzner test cluster.
+deploy-hetzner version="": (_deploy "hetzner" "hetzner.py" "join-cluster.yml" version)
+
+# SSH into a hetzner node. N: 1=nbg1-1, 2=nbg1-2, 3=hel1.
+ssh-hetzner n="1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    LOCATIONS=(nbg1-1 nbg1-2 hel1)
+    N={{ n }}
+    LOC=${LOCATIONS[$((N - 1))]}
+    IP=$(cd {{ justfile_directory() }}/hetzner && terraform output -json node_ips | jq -r ".${LOC}")
+    exec ssh {{ ssh_args }} root@"$IP"
+
+# Run full verification against hetzner test cluster.
+verify-hetzner:
+    bash {{ justfile_directory() }}/scripts/verify-hetzner.sh
+
+# Tear down hetzner infrastructure.
+destroy-hetzner: (_destroy "hetzner")
 
 [private]
 _deploy tf_dir inventory join_playbook version:

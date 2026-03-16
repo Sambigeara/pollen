@@ -11,25 +11,84 @@ import (
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/mesh"
 	"github.com/sambigeara/pollen/pkg/peer"
+	"github.com/sambigeara/pollen/pkg/store"
+	"github.com/sambigeara/pollen/pkg/tunnel"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
 	"github.com/sambigeara/pollen/pkg/workload"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-var _ controlv1.ControlServiceServer = (*NodeService)(nil)
+// controlMetrics aggregates observability counters the control service exposes
+// via GetMetrics, decoupling svc.go from internal metric instruments.
+type controlMetrics struct {
+	CertExpirySeconds  float64
+	CertRenewals       uint64
+	CertRenewalsFailed uint64
+	PunchAttempts      uint64
+	PunchFailures      uint64
+	GossipApplied      uint64
+	GossipStale        uint64
+	SmoothedVivaldiErr float64
+	VivaldiSamples     uint64
+	EagerSyncs         uint64
+	EagerSyncFailures  uint64
+}
+
+// nodeController is the narrow interface the gRPC control service uses to
+// interact with the node. *Node satisfies it.
+type nodeController interface {
+	// State reads
+	Snapshot() store.Snapshot
+	ListConnections() []tunnel.ConnectionInfo
+	PeerStateCounts() peer.PeerStateCounts
+	GetActivePeerAddress(types.PeerKey) (*net.UDPAddr, bool)
+	PeerRTT(types.PeerKey) (time.Duration, bool)
+	ReconnectWindowDuration() time.Duration
+
+	// Service / peer mutations
+	UpsertService(port uint32, name string)
+	RemoveService(name string, port uint32)
+	ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error)
+	DisconnectService(localPort uint32) error
+	DenyPeer(pk types.PeerKey)
+	MeshConnect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
+
+	// Workload lifecycle
+	HasWorkloads() bool
+	WorkloadList() []workload.Summary
+	WorkloadSeed(wasmBytes []byte, cfg wasm.PluginConfig) (string, error)
+	WorkloadUnseed(hash string) error
+	WorkloadIsRunning(hash string) bool
+	RouteCall(ctx context.Context, hash, function string, input []byte) ([]byte, error)
+
+	// Workload store
+	ResolveWorkloadPrefix(prefix string) (hash string, ambiguous, found bool)
+	SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) error
+	SetLocalWorkloadClaim(hash string, claimed bool)
+	RemoveLocalWorkloadSpec(hash string)
+
+	// Observability
+	ControlMetrics() controlMetrics
+	Log() *zap.SugaredLogger
+}
+
+var (
+	_ controlv1.ControlServiceServer = (*NodeService)(nil)
+	_ nodeController                 = (*Node)(nil)
+)
 
 type NodeService struct {
 	controlv1.UnimplementedControlServiceServer
-	node     *Node
+	node     nodeController
 	shutdown func()
 	creds    *auth.NodeCredentials
 }
 
-func NewNodeService(n *Node, shutdown func(), creds *auth.NodeCredentials) *NodeService {
+func NewNodeService(n nodeController, shutdown func(), creds *auth.NodeCredentials) *NodeService {
 	return &NodeService{node: n, shutdown: shutdown, creds: creds}
 }
 
@@ -44,8 +103,9 @@ func (s *NodeService) Shutdown(_ context.Context, _ *controlv1.ShutdownRequest) 
 }
 
 func (s *NodeService) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootstrapInfoRequest) (*controlv1.GetBootstrapInfoResponse, error) {
-	local := s.node.store.LocalID
-	rec, ok := s.node.store.Get(local)
+	snap := s.node.Snapshot()
+	local := snap.LocalID
+	rec, ok := snap.Nodes[local]
 	if !ok {
 		return &controlv1.GetBootstrapInfoResponse{}, nil
 	}
@@ -54,20 +114,18 @@ func (s *NodeService) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootst
 		Self: nodeBootstrapInfo(local, rec.IPs, rec.LocalPort),
 	}
 
-	resp.Recommended = s.pickRecommendedPeer(local)
+	resp.Recommended = s.pickRecommendedPeer(snap)
 
 	return resp, nil
 }
 
-func (s *NodeService) pickRecommendedPeer(localID types.PeerKey) *controlv1.BootstrapPeerInfo {
-	nodes := s.node.store.AllNodes()
-
+func (s *NodeService) pickRecommendedPeer(snap store.Snapshot) *controlv1.BootstrapPeerInfo {
 	var candidates []types.PeerKey
-	for peerID, rec := range nodes {
-		if peerID == localID || !rec.PubliclyAccessible {
+	for peerID, nv := range snap.Nodes {
+		if peerID == snap.LocalID || !nv.PubliclyAccessible {
 			continue
 		}
-		if len(rec.IPs) == 0 || rec.LocalPort == 0 {
+		if len(nv.IPs) == 0 || nv.LocalPort == 0 {
 			continue
 		}
 		candidates = append(candidates, peerID)
@@ -76,15 +134,15 @@ func (s *NodeService) pickRecommendedPeer(localID types.PeerKey) *controlv1.Boot
 	if len(candidates) > 0 {
 		slices.SortFunc(candidates, types.PeerKey.Compare)
 		best := candidates[0]
-		rec := nodes[best]
-		return nodeBootstrapInfo(best, rec.IPs, rec.LocalPort)
+		nv := snap.Nodes[best]
+		return nodeBootstrapInfo(best, nv.IPs, nv.LocalPort)
 	}
 
-	localRec, ok := nodes[localID]
-	if !ok || len(localRec.IPs) == 0 || localRec.LocalPort == 0 {
+	localNV, ok := snap.Nodes[snap.LocalID]
+	if !ok || len(localNV.IPs) == 0 || localNV.LocalPort == 0 {
 		return nil
 	}
-	return nodeBootstrapInfo(localID, localRec.IPs, localRec.LocalPort)
+	return nodeBootstrapInfo(snap.LocalID, localNV.IPs, localNV.LocalPort)
 }
 
 func nodeBootstrapInfo(peerID types.PeerKey, ips []string, port uint32) *controlv1.BootstrapPeerInfo {
@@ -99,12 +157,13 @@ func nodeBootstrapInfo(peerID types.PeerKey, ips []string, port uint32) *control
 }
 
 func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
-	nodes := s.node.store.AllNodes()
-	localID := s.node.store.LocalID
+	snap := s.node.Snapshot()
+	nodes := snap.Nodes
+	localID := snap.LocalID
 
 	selfAddr := ""
 	selfPubliclyAccessible := false
-	if rec, ok := s.node.store.Get(localID); ok {
+	if rec, ok := nodes[localID]; ok {
 		selfPubliclyAccessible = rec.PubliclyAccessible
 		if len(rec.IPs) > 0 {
 			port := rec.LocalPort
@@ -121,7 +180,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 	if s.creds != nil && s.creds.Cert != nil {
 		now := time.Now()
 		if auth.IsCertExpired(s.creds.Cert, now) &&
-			auth.IsCertWithinReconnectWindow(s.creds.Cert, now, s.node.conf.ReconnectWindow) {
+			auth.IsCertWithinReconnectWindow(s.creds.Cert, now, s.node.ReconnectWindowDuration()) {
 			degraded = true
 		}
 	}
@@ -164,13 +223,13 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		})
 	}
 
-	connections := s.node.tun.ListConnections()
+	connections := s.node.ListConnections()
 	tunnelCounts := make(map[types.PeerKey]uint32, len(connections))
 	for _, c := range connections {
 		tunnelCounts[c.PeerID]++
 	}
 
-	if rec, ok := s.node.store.Get(localID); ok {
+	if rec, ok := nodes[localID]; ok {
 		out.Self.CpuPercent = rec.CPUPercent
 		out.Self.MemPercent = rec.MemPercent
 		out.Self.NumCpu = rec.NumCPU
@@ -180,10 +239,10 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 	// Fetch mesh-wide traffic heatmaps for aggregate traffic display.
 	// Each node's published heatmap is summed across all peers to give
 	// a total bytes-in / bytes-out for that node.
-	allTraffic := s.node.store.AllTrafficHeatmaps()
-	for _, snap := range allTraffic[localID] {
-		out.Self.TrafficBytesIn += snap.BytesIn
-		out.Self.TrafficBytesOut += snap.BytesOut
+	allTraffic := snap.Heatmaps
+	for _, ts := range allTraffic[localID] {
+		out.Self.TrafficBytesIn += ts.BytesIn
+		out.Self.TrafficBytesOut += ts.BytesOut
 	}
 
 	// Determine which peers have direct QUIC sessions (ONLINE).
@@ -194,7 +253,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		if key == localID {
 			continue
 		}
-		if addr, ok := s.node.mesh.GetActivePeerAddress(key); ok {
+		if addr, ok := s.node.GetActivePeerAddress(key); ok {
 			directPeers[key] = addr
 		}
 	}
@@ -230,17 +289,18 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		}
 	}
 
+	log := s.node.Log()
 	for key, node := range nodes {
 		if key == localID {
 			continue
 		}
 
 		addr, isDirect := directPeers[key]
-		status := controlv1.NodeStatus_NODE_STATUS_OFFLINE
+		peerStatus := controlv1.NodeStatus_NODE_STATUS_OFFLINE
 		if isDirect {
-			status = controlv1.NodeStatus_NODE_STATUS_ONLINE
+			peerStatus = controlv1.NodeStatus_NODE_STATUS_ONLINE
 		} else if _, ok := indirectPeers[key]; ok {
-			status = controlv1.NodeStatus_NODE_STATUS_INDIRECT
+			peerStatus = controlv1.NodeStatus_NODE_STATUS_INDIRECT
 		}
 
 		addrStr := ""
@@ -250,7 +310,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 		if addrStr == "" && len(node.IPs) > 0 {
 			ip := net.ParseIP(node.IPs[0])
 			if ip == nil {
-				s.node.log.Warnw("skipping unparseable peer IP", "peer", key.Short(), "ip", node.IPs[0])
+				log.Warnw("skipping unparseable peer IP", "peer", key.Short(), "ip", node.IPs[0])
 			} else {
 				port := int(node.LocalPort)
 				if node.ExternalPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
@@ -265,7 +325,7 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 
 		ns := &controlv1.NodeSummary{
 			Node:               &controlv1.NodeRef{PeerId: key.Bytes()},
-			Status:             status,
+			Status:             peerStatus,
 			Addr:               addrStr,
 			PubliclyAccessible: node.PubliclyAccessible,
 			TunnelCount:        tunnelCounts[key],
@@ -273,17 +333,14 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 			MemPercent:         node.MemPercent,
 			NumCpu:             node.NumCPU,
 		}
-		for _, snap := range allTraffic[key] {
-			ns.TrafficBytesIn += snap.BytesIn
-			ns.TrafficBytesOut += snap.BytesOut
+		for _, ts := range allTraffic[key] {
+			ns.TrafficBytesIn += ts.BytesIn
+			ns.TrafficBytesOut += ts.BytesOut
 		}
 
 		if isDirect {
-			if conn, ok := s.node.mesh.GetConn(key); ok {
-				rtt := conn.ConnectionStats().SmoothedRTT
-				if rtt > 0 {
-					ns.LatencyMs = float64(rtt.Microseconds()) / 1000 //nolint:mnd
-				}
+			if rtt, ok := s.node.PeerRTT(key); ok {
+				ns.LatencyMs = float64(rtt.Microseconds()) / 1000 //nolint:mnd
 			}
 		}
 
@@ -347,25 +404,23 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 	})
 
 	// Merge local workload state with cluster-wide spec/claim data.
-	specs := s.node.store.AllWorkloadSpecs()
-	claims := s.node.store.AllWorkloadClaims()
+	specs := snap.Specs
+	claims := snap.Claims
 
 	seen := make(map[string]struct{})
-	if s.node.workloads != nil {
-		for _, w := range s.node.workloads.List() {
-			seen[w.Hash] = struct{}{}
-			ws := &controlv1.WorkloadSummary{
-				Hash:          w.Hash,
-				Status:        workloadStatusProto(w.Status),
-				StartedAtUnix: w.CompiledAt.Unix(),
-				Local:         true,
-			}
-			if sv, ok := specs[w.Hash]; ok {
-				ws.DesiredReplicas = sv.Spec.GetReplicas()
-			}
-			ws.ActiveReplicas = uint32(len(claims[w.Hash]))
-			out.Workloads = append(out.Workloads, ws)
+	for _, w := range s.node.WorkloadList() {
+		seen[w.Hash] = struct{}{}
+		ws := &controlv1.WorkloadSummary{
+			Hash:          w.Hash,
+			Status:        workloadStatusProto(w.Status),
+			StartedAtUnix: w.CompiledAt.Unix(),
+			Local:         true,
 		}
+		if sv, ok := specs[w.Hash]; ok {
+			ws.DesiredReplicas = sv.Spec.GetReplicas()
+		}
+		ws.ActiveReplicas = uint32(len(claims[w.Hash]))
+		out.Workloads = append(out.Workloads, ws)
 	}
 	// Add remote-only workloads (specs we know about but aren't running locally).
 	for hash, sv := range specs {
@@ -383,23 +438,16 @@ func (s *NodeService) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest
 }
 
 func (s *NodeService) RegisterService(_ context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
-	s.node.tun.RegisterService(req.Port)
-
 	name := req.GetName()
 	if name == "" {
 		name = strconv.FormatUint(uint64(req.Port), 10)
 	}
-	s.node.queueGossipEvents(s.node.store.UpsertLocalService(req.Port, name))
-
+	s.node.UpsertService(req.Port, name)
 	return &controlv1.RegisterServiceResponse{}, nil
 }
 
 func (s *NodeService) UnregisterService(_ context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
-	name := req.GetName()
-	events := s.node.store.RemoveLocalServices(name)
-	s.node.tun.UnregisterService(req.GetPort())
-	s.node.queueGossipEvents(events)
-
+	s.node.RemoveService(req.GetName(), req.GetPort())
 	return &controlv1.UnregisterServiceResponse{}, nil
 }
 
@@ -413,8 +461,8 @@ func (s *NodeService) ConnectPeer(ctx context.Context, req *controlv1.ConnectPee
 		}
 		addrs = append(addrs, addr)
 	}
-	if err := s.node.mesh.Connect(ctx, peerKey, addrs); err != nil {
-		s.node.log.Warnw("connect peer failed", "peer", peerKey.Short(), "err", err)
+	if err := s.node.MeshConnect(ctx, peerKey, addrs); err != nil {
+		s.node.Log().Warnw("connect peer failed", "peer", peerKey.Short(), "err", err)
 		return nil, status.Error(codes.Internal, "failed to connect to peer")
 	}
 	return &controlv1.ConnectPeerResponse{}, nil
@@ -423,7 +471,7 @@ func (s *NodeService) ConnectPeer(ctx context.Context, req *controlv1.ConnectPee
 func (s *NodeService) ConnectService(_ context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
 	localPort, err := s.node.ConnectService(types.PeerKeyFromBytes(req.Node.PeerId), req.RemotePort, req.LocalPort)
 	if err != nil {
-		s.node.log.Warnw("connect service failed", "err", err)
+		s.node.Log().Warnw("connect service failed", "err", err)
 		return nil, status.Error(codes.Internal, "failed to connect service")
 	}
 
@@ -432,7 +480,7 @@ func (s *NodeService) ConnectService(_ context.Context, req *controlv1.ConnectSe
 
 func (s *NodeService) DisconnectService(_ context.Context, req *controlv1.DisconnectServiceRequest) (*controlv1.DisconnectServiceResponse, error) {
 	if err := s.node.DisconnectService(req.GetLocalPort()); err != nil {
-		s.node.log.Warnw("disconnect service failed", "err", err)
+		s.node.Log().Warnw("disconnect service failed", "err", err)
 		return nil, status.Error(codes.Internal, "failed to disconnect service")
 	}
 	return &controlv1.DisconnectServiceResponse{}, nil
@@ -442,36 +490,15 @@ func (s *NodeService) DenyPeer(_ context.Context, req *controlv1.DenyPeerRequest
 	if s.creds.DelegationKey == nil {
 		return nil, status.Error(codes.FailedPrecondition, "delegation key not available; this node cannot deny peers")
 	}
-
-	peerKey := types.PeerKeyFromBytes(req.GetPeerId())
-
-	events := s.node.store.DenyPeer(req.GetPeerId())
-	s.node.queueGossipEvents(events)
-	s.node.tun.DisconnectPeer(peerKey)
-	s.node.store.RemoveDesiredConnection(peerKey, 0, 0)
-	s.node.mesh.ClosePeerSession(peerKey, mesh.CloseReasonDenied)
-	s.node.localPeerEvents <- peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectDenied}
-	s.node.localPeerEvents <- peer.ForgetPeer{PeerKey: peerKey}
-	if err := s.node.store.Save(); err != nil {
-		s.node.log.Warnw("failed to save state after deny", "err", err)
-	}
-
+	s.node.DenyPeer(types.PeerKeyFromBytes(req.GetPeerId()))
 	return &controlv1.DenyPeerResponse{}, nil
 }
 
 func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) (*controlv1.GetMetricsResponse, error) {
-	counts := s.node.peers.StateCounts()
+	counts := s.node.PeerStateCounts()
+	m := s.node.ControlMetrics()
 
-	nm := s.node.nodeMetrics
-	gm := s.node.store.GossipMetrics()
-	gossipApplied := uint64(gm.EventsApplied.Value()) //nolint:gosec
-	gossipStale := uint64(gm.EventsStale.Value())     //nolint:gosec
-
-	certExpiry := nm.CertExpirySeconds.Value()
-	certRenewals := uint64(nm.CertRenewals.Value())             //nolint:gosec
-	certRenewalsFailed := uint64(nm.CertRenewalsFailed.Value()) //nolint:gosec
-	punchAttempts := uint64(nm.PunchAttempts.Value())           //nolint:gosec
-	punchFailures := uint64(nm.PunchFailures.Value())           //nolint:gosec
+	certExpiry := m.CertExpirySeconds
 
 	// When metrics are disabled the gauge stays at zero; compute expiry
 	// directly from the credential so the health check is always accurate.
@@ -485,7 +512,7 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 		health = controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY
 	case counts.Connected == 0:
 		health = controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY
-	case s.node.smoothedErr.Value() > vivaldiDegradedThreshold:
+	case m.SmoothedVivaldiErr > vivaldiDegradedThreshold:
 		health = controlv1.HealthStatus_HEALTH_STATUS_DEGRADED
 	}
 
@@ -494,23 +521,23 @@ func (s *NodeService) GetMetrics(_ context.Context, _ *controlv1.GetMetricsReque
 		PeersConnecting:    counts.Connecting,
 		PeersConnected:     counts.Connected,
 		PeersUnreachable:   counts.Unreachable,
-		EventsApplied:      gossipApplied,
-		EventsStale:        gossipStale,
-		VivaldiError:       s.node.smoothedErr.Value(),
+		EventsApplied:      m.GossipApplied,
+		EventsStale:        m.GossipStale,
+		VivaldiError:       m.SmoothedVivaldiErr,
 		CertExpirySeconds:  certExpiry,
-		CertRenewals:       certRenewals,
-		CertRenewalsFailed: certRenewalsFailed,
-		PunchAttempts:      punchAttempts,
-		PunchFailures:      punchFailures,
+		CertRenewals:       m.CertRenewals,
+		CertRenewalsFailed: m.CertRenewalsFailed,
+		PunchAttempts:      m.PunchAttempts,
+		PunchFailures:      m.PunchFailures,
 		Health:             health,
-		VivaldiSamples:     uint64(s.node.vivaldiSamples.Load()),    //nolint:gosec
-		EagerSyncs:         uint64(s.node.eagerSyncs.Load()),        //nolint:gosec
-		EagerSyncFailures:  uint64(s.node.eagerSyncFailures.Load()), //nolint:gosec
+		VivaldiSamples:     m.VivaldiSamples,
+		EagerSyncs:         m.EagerSyncs,
+		EagerSyncFailures:  m.EagerSyncFailures,
 	}, nil
 }
 
 func (s *NodeService) SeedWorkload(_ context.Context, req *controlv1.SeedWorkloadRequest) (*controlv1.SeedWorkloadResponse, error) {
-	if s.node.workloads == nil {
+	if !s.node.HasWorkloads() {
 		return nil, status.Error(codes.FailedPrecondition, "workload manager not initialized")
 	}
 
@@ -518,15 +545,16 @@ func (s *NodeService) SeedWorkload(_ context.Context, req *controlv1.SeedWorkloa
 		MemoryPages: req.GetMemoryPages(),
 		Timeout:     time.Duration(req.GetTimeoutMs()) * time.Millisecond,
 	}
-	hash, err := s.node.workloads.Seed(req.GetWasmBytes(), cfg)
+	hash, err := s.node.WorkloadSeed(req.GetWasmBytes(), cfg)
 	newlySeeded := err == nil
 	if err != nil && !errors.Is(err, workload.ErrAlreadyRunning) {
+		log := s.node.Log()
 		switch {
 		case errors.Is(err, workload.ErrCompile):
-			s.node.log.Warnw("seed workload failed", "err", err)
+			log.Warnw("seed workload failed", "err", err)
 			return nil, status.Error(codes.InvalidArgument, "failed to compile workload")
 		default:
-			s.node.log.Errorw("seed workload failed", "err", err)
+			log.Errorw("seed workload failed", "err", err)
 			return nil, status.Error(codes.Internal, "failed to seed workload")
 		}
 	}
@@ -538,30 +566,27 @@ func (s *NodeService) SeedWorkload(_ context.Context, req *controlv1.SeedWorkloa
 
 	// Publish spec atomically — the store rejects under its lock if a remote
 	// node already owns this hash, closing the TOCTOU race.
-	n := s.node
-	specEvents, err := n.store.SetLocalWorkloadSpec(hash, replicas, req.GetMemoryPages(), req.GetTimeoutMs())
-	if err != nil {
+	if err := s.node.SetWorkloadSpec(hash, replicas, req.GetMemoryPages(), req.GetTimeoutMs()); err != nil {
 		// Only tear down the runtime if we just compiled it — don't destroy
 		// a previously healthy workload on a spec rejection.
 		if newlySeeded {
-			_ = s.node.workloads.Unseed(hash)
+			_ = s.node.WorkloadUnseed(hash)
 		}
-		s.node.log.Infow("spec rejected", "hash", hash, "err", err)
+		s.node.Log().Infow("spec rejected", "hash", hash, "err", err)
 		return nil, status.Error(codes.AlreadyExists, "workload already published by another node")
 	}
-	n.queueGossipEvents(specEvents)
-	n.queueGossipEvents(n.store.SetLocalWorkloadClaim(hash, true))
+	s.node.SetLocalWorkloadClaim(hash, true)
 
 	return &controlv1.SeedWorkloadResponse{Hash: hash}, nil
 }
 
 func (s *NodeService) UnseedWorkload(_ context.Context, req *controlv1.UnseedWorkloadRequest) (*controlv1.UnseedWorkloadResponse, error) {
-	if s.node.workloads == nil {
+	if !s.node.HasWorkloads() {
 		return nil, status.Error(codes.FailedPrecondition, "workload manager not initialized")
 	}
 
 	// Resolve prefix from cluster-wide specs, not just local workloads.
-	hash, ambiguous, found := s.node.store.ResolveWorkloadPrefix(req.GetHash())
+	hash, ambiguous, found := s.node.ResolveWorkloadPrefix(req.GetHash())
 	if ambiguous {
 		return nil, status.Error(codes.InvalidArgument, "prefix matches multiple workloads; use a longer prefix")
 	}
@@ -570,35 +595,34 @@ func (s *NodeService) UnseedWorkload(_ context.Context, req *controlv1.UnseedWor
 	}
 
 	// Only the spec owner can unseed — reject on non-owner nodes.
-	specs := s.node.store.AllWorkloadSpecs()
-	sv, ok := specs[hash]
-	if ok && sv.Publisher != s.node.store.LocalID {
+	snap := s.node.Snapshot()
+	sv, ok := snap.Specs[hash]
+	if ok && sv.Publisher != snap.LocalID {
 		return nil, status.Error(codes.PermissionDenied, "workload owned by another node; unseed from the publishing node")
 	}
 
 	// Stop the local runtime only if this node is running it.
-	if s.node.workloads.IsRunning(hash) {
-		if err := s.node.workloads.Unseed(hash); err != nil {
-			s.node.log.Warnw("unseed workload failed", "hash", hash, "err", err)
+	if s.node.WorkloadIsRunning(hash) {
+		if err := s.node.WorkloadUnseed(hash); err != nil {
+			s.node.Log().Warnw("unseed workload failed", "hash", hash, "err", err)
 			return nil, status.Error(codes.Internal, "failed to unseed workload")
 		}
 	}
 
 	// Remove spec + claim from local gossip record.
-	n := s.node
-	n.queueGossipEvents(n.store.RemoveLocalWorkloadSpec(hash))
-	n.queueGossipEvents(n.store.SetLocalWorkloadClaim(hash, false))
+	s.node.RemoveLocalWorkloadSpec(hash)
+	s.node.SetLocalWorkloadClaim(hash, false)
 
 	return &controlv1.UnseedWorkloadResponse{}, nil
 }
 
 func (s *NodeService) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadRequest) (*controlv1.CallWorkloadResponse, error) {
-	if s.node.workloads == nil {
+	if !s.node.HasWorkloads() {
 		return nil, status.Error(codes.FailedPrecondition, "workload manager not initialized")
 	}
 
 	// Resolve prefix from cluster-wide specs.
-	hash, ambiguous, found := s.node.store.ResolveWorkloadPrefix(req.GetHash())
+	hash, ambiguous, found := s.node.ResolveWorkloadPrefix(req.GetHash())
 	if ambiguous {
 		return nil, status.Error(codes.InvalidArgument, "prefix matches multiple workloads; use a longer prefix")
 	}
@@ -608,7 +632,7 @@ func (s *NodeService) CallWorkload(ctx context.Context, req *controlv1.CallWorkl
 
 	output, err := s.node.RouteCall(ctx, hash, req.GetFunction(), req.GetInput())
 	if err != nil {
-		s.node.log.Warnw("call workload failed", "hash", hash, "function", req.GetFunction(), "err", err)
+		s.node.Log().Warnw("call workload failed", "hash", hash, "function", req.GetFunction(), "err", err)
 		if errors.Is(err, workload.ErrNotRunning) {
 			return nil, status.Error(codes.NotFound, "workload not running on any reachable node")
 		}

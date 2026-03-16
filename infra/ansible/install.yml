@@ -13,35 +13,17 @@
         that: pln_version is defined and pln_version | length > 0
         fail_msg: "pln_version must be set (e.g. -e pln_version=v0.1.0-alpha.36)"
 
+    - name: Check if cloud-init is available
+      ansible.builtin.command: which cloud-init
+      register: cloud_init_check
+      failed_when: false
+      changed_when: false
+
     - name: Wait for cloud-init to finish
       ansible.builtin.command: cloud-init status --wait
       changed_when: false
+      when: cloud_init_check.rc == 0
 
   tasks:
-    - name: Set package version
-      ansible.builtin.set_fact:
-        pkg_version: "{{ pln_version | regex_replace('^v', '') }}"
-
-    - name: Download .deb
-      ansible.builtin.get_url:
-        url: "https://github.com/sambigeara/pollen/releases/download/{{ pln_version }}/pln_{{ pkg_version }}_linux_arm64.deb"
-        dest: /tmp/pln.deb
-        mode: "0644"
-        force: true
-
-    - name: Install .deb
-      ansible.builtin.apt:
-        deb: /tmp/pln.deb
-        force: true
-      environment:
-        DEBIAN_FRONTEND: noninteractive
-        NEEDRESTART_SUSPEND: "1"
-
-    - name: Verify pln is installed
-      ansible.builtin.command: pln version
-      changed_when: false
-      register: pln_ver
-
-    - name: Show installed version
-      ansible.builtin.debug:
-        msg: "{{ inventory_hostname }}: {{ pln_ver.stdout }}"
+    - name: Install pln
+      ansible.builtin.include_tasks: tasks/install-pln.yml

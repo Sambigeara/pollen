@@ -3,12 +3,13 @@ package store
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
@@ -25,6 +26,11 @@ var _ auth.InviteConsumer = (*Store)(nil)
 // ErrSpecOwnedRemotely is returned by SetLocalWorkloadSpec when a valid remote
 // node already publishes a spec for the same hash.
 var ErrSpecOwnedRemotely = errors.New("spec published by another node")
+
+const (
+	eventBufSize      = 64
+	stateSaveInterval = 30 * time.Second
+)
 
 type attrKind uint8
 
@@ -215,12 +221,11 @@ type Store struct {
 	denied             map[types.PeerKey]struct{}
 	consumedInvites    map[string]consumedInviteEntry
 	desiredConnections map[string]Connection
-	onDeny             func(types.PeerKey)
-	onRouteInvalidate  func()
-	onWorkloadChange   func()
-	onTrafficChange    func()
+	events             chan StoreEvent
+	work               chan func()
+	ctx                context.Context
+	snap               atomic.Pointer[Snapshot]
 	metrics            *metrics.GossipMetrics
-	mu                 sync.RWMutex
 	LocalID            types.PeerKey
 }
 
@@ -246,6 +251,8 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 	s := &Store{
 		LocalID: localID,
 		disk:    d,
+		events:  make(chan StoreEvent, eventBufSize),
+		ctx:     context.Background(),
 		metrics: metrics.NewGossipMetrics(nil),
 		nodes: map[types.PeerKey]nodeRecord{
 			localID: {
@@ -314,6 +321,8 @@ func Load(pollenDir string, identityPub []byte) (*Store, error) {
 		}
 	}
 
+	s.updateSnapshot()
+
 	return s, nil
 }
 
@@ -322,6 +331,59 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.disk.close()
+}
+
+// do dispatches fn onto the store's single goroutine and blocks until it
+// completes. If the work channel is nil (tests that skip Run), fn executes
+// inline on the caller's goroutine.
+func (s *Store) do(fn func()) {
+	if s.work == nil {
+		fn()
+		return
+	}
+	done := make(chan struct{})
+	select {
+	case s.work <- func() {
+		fn()
+		close(done)
+	}:
+		<-done
+	case <-s.ctx.Done():
+	}
+}
+
+// updateSnapshot rebuilds the atomic snapshot from current state.
+// Must be called on the store's goroutine (or under exclusive access).
+func (s *Store) updateSnapshot() {
+	snap := s.snapshotLocked()
+	s.snap.Store(&snap)
+}
+
+// Run drives the store's single-goroutine event loop. All mutations and
+// reads of internal state are serialized through the work channel. Run
+// also handles periodic state persistence. It blocks until ctx is cancelled,
+// then performs a final save.
+//
+// ready is closed once the loop is accepting work. The caller must wait on
+// ready before dispatching mutations via public methods.
+func (s *Store) Run(ctx context.Context, ready chan<- struct{}) error {
+	s.ctx = ctx
+	s.work = make(chan func())
+	close(ready)
+
+	saveTicker := time.NewTicker(stateSaveInterval)
+	defer saveTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return s.saveInternal()
+		case fn := <-s.work:
+			fn()
+		case <-saveTicker.C:
+			_ = s.saveInternal()
+		}
+	}
 }
 
 // TryConsume marks an invite token as consumed, returning true if it was
@@ -336,23 +398,30 @@ func (s *Store) TryConsume(token *admissionv1.InviteToken, now time.Time) (bool,
 		return false, errors.New("invite token missing token id")
 	}
 
-	s.mu.Lock()
+	var (
+		consumed bool
+		snapshot *statev1.RuntimeState
+	)
+	s.do(func() {
+		s.dropExpiredInvites(now)
 
-	s.dropExpiredInvites(now)
+		if _, exists := s.consumedInvites[tokenID]; exists {
+			return
+		}
 
-	if _, exists := s.consumedInvites[tokenID]; exists {
-		s.mu.Unlock()
+		s.consumedInvites[tokenID] = consumedInviteEntry{
+			TokenID:        tokenID,
+			ExpiresAtUnix:  claims.GetExpiresAtUnix(),
+			ConsumedAtUnix: now.Unix(),
+		}
+
+		snapshot = s.snapshotStateLocked()
+		consumed = true
+	})
+
+	if !consumed {
 		return false, nil
 	}
-
-	s.consumedInvites[tokenID] = consumedInviteEntry{
-		TokenID:        tokenID,
-		ExpiresAtUnix:  claims.GetExpiresAtUnix(),
-		ConsumedAtUnix: now.Unix(),
-	}
-
-	snapshot := s.snapshotStateLocked()
-	s.mu.Unlock()
 
 	if err := s.disk.save(snapshot); err != nil {
 		return true, fmt.Errorf("persist consumed invite: %w", err)
@@ -370,29 +439,16 @@ func (s *Store) dropExpiredInvites(now time.Time) {
 	}
 }
 
-// OnDenyPeer registers a callback invoked (outside the lock) when a deny
-// event is applied via gossip. Only one callback may be registered.
-func (s *Store) OnDenyPeer(fn func(types.PeerKey)) {
-	s.onDeny = fn
+// Events returns a read-only channel of store events.
+func (s *Store) Events() <-chan StoreEvent {
+	return s.events
 }
 
-// OnRouteInvalidate registers a callback invoked (outside the lock) when a
-// reachability or Vivaldi event is applied via gossip. Only one callback may
-// be registered.
-func (s *Store) OnRouteInvalidate(fn func()) {
-	s.onRouteInvalidate = fn
-}
-
-// OnWorkloadChange registers a callback invoked (outside the lock) when a
-// workload spec or claim event is applied via gossip.
-func (s *Store) OnWorkloadChange(fn func()) {
-	s.onWorkloadChange = fn
-}
-
-// OnTrafficChange registers a callback invoked (outside the lock) when a
-// traffic heatmap event is applied via gossip.
-func (s *Store) OnTrafficChange(fn func()) {
-	s.onTrafficChange = fn
+func (s *Store) emitEvent(ev StoreEvent) {
+	select {
+	case s.events <- ev:
+	case <-s.ctx.Done():
+	}
 }
 
 // SetGossipMetrics replaces the no-op metrics with wired instruments.
@@ -406,15 +462,20 @@ func (s *Store) GossipMetrics() *metrics.GossipMetrics {
 }
 
 func (s *Store) Save() error {
-	s.mu.RLock()
-	snapshot := s.snapshotStateLocked()
-	s.mu.RUnlock()
-
+	var snapshot *statev1.RuntimeState
+	s.do(func() {
+		snapshot = s.snapshotStateLocked()
+	})
 	return s.disk.save(snapshot)
 }
 
+// saveInternal persists state to disk. Must be called on the store's goroutine.
+func (s *Store) saveInternal() error {
+	return s.disk.save(s.snapshotStateLocked())
+}
+
 // snapshotStateLocked builds a RuntimeState from in-memory data.
-// The caller must hold s.mu (read or write).
+// Must be called on the store's goroutine (or during initialization).
 func (s *Store) snapshotStateLocked() *statev1.RuntimeState {
 	peers := make([]*statev1.PeerState, 0, len(s.nodes))
 	for peerID, rec := range s.nodes {
@@ -530,25 +591,27 @@ func computePeerHashLocked(rec nodeRecord) uint64 {
 }
 
 // EagerSyncClock returns an empty digest when no remote peer has state yet
-// (so the responder sends everything), or the real digest otherwise. Both the
-// remote-state check and digest construction happen under a single RLock to
-// avoid a TOCTOU race with concurrent ApplyEvents calls.
+// (so the responder sends everything), or the real digest otherwise.
 func (s *Store) EagerSyncClock() *statev1.GossipStateDigest {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for peerID, rec := range s.nodes {
-		if peerID != s.LocalID && rec.maxCounter > 0 {
-			return s.digestLocked()
+	var result *statev1.GossipStateDigest
+	s.do(func() {
+		for peerID, rec := range s.nodes {
+			if peerID != s.LocalID && rec.maxCounter > 0 {
+				result = s.digestLocked()
+				return
+			}
 		}
-	}
-	return &statev1.GossipStateDigest{}
+		result = &statev1.GossipStateDigest{}
+	})
+	return result
 }
 
 func (s *Store) Clock() *statev1.GossipStateDigest {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.digestLocked()
+	var result *statev1.GossipStateDigest
+	s.do(func() {
+		result = s.digestLocked()
+	})
+	return result
 }
 
 func (s *Store) digestLocked() *statev1.GossipStateDigest {
@@ -573,28 +636,27 @@ func (s *Store) digestLocked() *statev1.GossipStateDigest {
 func (s *Store) MissingFor(digest *statev1.GossipStateDigest) []*statev1.GossipEvent {
 	remotePeers := digest.GetPeers()
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	var events []*statev1.GossipEvent
-	for peerID, rec := range s.nodes {
-		if rec.maxCounter == 0 {
-			continue
+	s.do(func() {
+		for peerID, rec := range s.nodes {
+			if rec.maxCounter == 0 {
+				continue
+			}
+			rd := remotePeers[peerID.String()]
+			if rd == nil {
+				events = append(events, s.buildEventsAbove(peerID, rec, 0)...)
+				continue
+			}
+			localHash := computePeerHashLocked(rec)
+			if localHash != rd.GetStateHash() {
+				events = append(events, s.buildEventsAbove(peerID, rec, 0)...)
+				continue
+			}
+			if rec.maxCounter > rd.GetMaxCounter() {
+				events = append(events, s.buildEventsAbove(peerID, rec, rd.GetMaxCounter())...)
+			}
 		}
-		rd := remotePeers[peerID.String()]
-		if rd == nil {
-			events = append(events, s.buildEventsAbove(peerID, rec, 0)...)
-			continue
-		}
-		localHash := computePeerHashLocked(rec)
-		if localHash != rd.GetStateHash() {
-			events = append(events, s.buildEventsAbove(peerID, rec, 0)...)
-			continue
-		}
-		if rec.maxCounter > rd.GetMaxCounter() {
-			events = append(events, s.buildEventsAbove(peerID, rec, rd.GetMaxCounter())...)
-		}
-	}
+	})
 
 	slices.SortFunc(events, func(a, b *statev1.GossipEvent) int {
 		if c := cmp.Compare(a.GetPeerId(), b.GetPeerId()); c != 0 {
@@ -613,100 +675,102 @@ func (s *Store) MissingFor(digest *statev1.GossipStateDigest) []*statev1.GossipE
 // The EWMA is updated once per batch (not per event) so that large batches
 // with a few fresh events aren't drowned out by individually-counted stale ones.
 func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) ApplyResult {
-	s.mu.Lock()
+	var (
+		result            ApplyResult
+		newlyDenied       []types.PeerKey
+		routesDirty       bool
+		reachabilityDirty bool
+		workloadsDirty    bool
+		trafficDirty      bool
+	)
 
-	s.metrics.BatchSize.Set(float64(len(events)))
-	s.metrics.EventsReceived.Add(int64(len(events)))
+	s.do(func() {
+		s.metrics.BatchSize.Set(float64(len(events)))
+		s.metrics.EventsReceived.Add(int64(len(events)))
 
-	// Partition self-events from remote events so self-conflict resolution
-	// can see the full batch of our own state before bumping counters.
-	var selfEvents, otherEvents []*statev1.GossipEvent
-	localIDStr := s.LocalID.String()
-	for _, event := range events {
-		if event == nil {
-			continue
-		}
-		if event.GetPeerId() == localIDStr {
-			selfEvents = append(selfEvents, event)
-		} else {
-			otherEvents = append(otherEvents, event)
-		}
-	}
-
-	var result ApplyResult
-	newlyDenied := make([]types.PeerKey, 0, len(otherEvents))
-	anyApplied := false
-	routesDirty := false
-	reachabilityDirty := false
-	workloadsDirty := false
-	trafficDirty := false
-
-	// Handle self-events as a batch: re-adopt workload specs before bumping.
-	if len(selfEvents) > 0 {
-		r, wlDirty := s.handleSelfConflictLocked(selfEvents)
-		if len(r.Rebroadcast) > 0 {
-			anyApplied = true
-			workloadsDirty = workloadsDirty || wlDirty
-		}
-		result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
-	}
-
-	for _, event := range otherEvents {
-		r, denied := s.applyEventLocked(event)
-		if len(r.Rebroadcast) > 0 {
-			anyApplied = true
-			switch event.GetChange().(type) {
-			case *statev1.GossipEvent_Reachability:
-				routesDirty = true
-				reachabilityDirty = true
-			case *statev1.GossipEvent_Vivaldi:
-				routesDirty = true
-			case *statev1.GossipEvent_WorkloadSpec, *statev1.GossipEvent_WorkloadClaim:
-				workloadsDirty = true
-			case *statev1.GossipEvent_TrafficHeatmap:
-				trafficDirty = true
+		// Partition self-events from remote events so self-conflict resolution
+		// can see the full batch of our own state before bumping counters.
+		var selfEvents, otherEvents []*statev1.GossipEvent
+		localIDStr := s.LocalID.String()
+		for _, event := range events {
+			if event == nil {
+				continue
+			}
+			if event.GetPeerId() == localIDStr {
+				selfEvents = append(selfEvents, event)
+			} else {
+				otherEvents = append(otherEvents, event)
 			}
 		}
-		result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
-		newlyDenied = append(newlyDenied, denied...)
-	}
 
-	// Update stale ratio once per pull-response batch: a batch with any
-	// fresh events is "useful" (0.0); a fully-stale batch is not (1.0).
-	if isPullResponse && len(events) > 0 {
-		if anyApplied {
-			s.metrics.StaleRatio.Update(0.0)
-		} else {
-			s.metrics.StaleRatio.Update(1.0)
+		newlyDenied = make([]types.PeerKey, 0, len(otherEvents))
+		anyApplied := false
+
+		// Handle self-events as a batch: re-adopt workload specs before bumping.
+		if len(selfEvents) > 0 {
+			r, wlDirty := s.handleSelfConflictLocked(selfEvents)
+			if len(r.Rebroadcast) > 0 {
+				anyApplied = true
+				workloadsDirty = workloadsDirty || wlDirty
+			}
+			result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
 		}
-	}
 
-	onDeny := s.onDeny
-	onRouteInvalidate := s.onRouteInvalidate
-	onWorkloadChange := s.onWorkloadChange
-	onTrafficChange := s.onTrafficChange
-	s.mu.Unlock()
-
-	if onDeny != nil {
-		for _, pk := range newlyDenied {
-			onDeny(pk)
+		for _, event := range otherEvents {
+			r, denied := s.applyEventLocked(event)
+			if len(r.Rebroadcast) > 0 {
+				anyApplied = true
+				switch event.GetChange().(type) {
+				case *statev1.GossipEvent_Reachability:
+					routesDirty = true
+					reachabilityDirty = true
+				case *statev1.GossipEvent_Vivaldi:
+					routesDirty = true
+				case *statev1.GossipEvent_WorkloadSpec, *statev1.GossipEvent_WorkloadClaim:
+					workloadsDirty = true
+				case *statev1.GossipEvent_TrafficHeatmap:
+					trafficDirty = true
+				}
+			}
+			result.Rebroadcast = append(result.Rebroadcast, r.Rebroadcast...)
+			newlyDenied = append(newlyDenied, denied...)
 		}
+
+		// Update stale ratio once per pull-response batch: a batch with any
+		// fresh events is "useful" (0.0); a fully-stale batch is not (1.0).
+		if isPullResponse && len(events) > 0 {
+			if anyApplied {
+				s.metrics.StaleRatio.Update(0.0)
+			} else {
+				s.metrics.StaleRatio.Update(1.0)
+			}
+		}
+
+		s.updateSnapshot()
+	})
+
+	for _, pk := range newlyDenied {
+		s.emitEvent(DenyApplied{PeerKey: pk})
 	}
 
-	if routesDirty && onRouteInvalidate != nil {
-		onRouteInvalidate()
+	if routesDirty {
+		s.emitEvent(RouteInvalidated{})
 	}
 
 	// Reachability changes affect workload claim visibility (liveComponentLocked
 	// filters claims from unreachable peers), so signal workload reconciliation
 	// on reachability changes too — but not on Vivaldi updates, which are
 	// frequent and don't affect claim filtering.
-	if (workloadsDirty || reachabilityDirty) && onWorkloadChange != nil {
-		onWorkloadChange()
+	if workloadsDirty || reachabilityDirty {
+		s.emitEvent(WorkloadChanged{})
 	}
 
-	if trafficDirty && onTrafficChange != nil {
-		onTrafficChange()
+	if trafficDirty {
+		s.emitEvent(TrafficChanged{})
+	}
+
+	if len(result.Rebroadcast) > 0 {
+		s.emitEvent(GossipApplied(result))
 	}
 
 	return result
@@ -716,7 +780,7 @@ func (s *Store) ApplyEvents(events []*statev1.GossipEvent, isPullResponse bool) 
 // node (received back from peers). It detects self-conflicts (restart recovery)
 // and re-adopts workload specs that the local node published in a prior session
 // but lost on restart. Returns the rebroadcast events and whether any workload
-// state was adopted. Caller must hold s.mu.
+// state was adopted. Must be called on the store's goroutine.
 func (s *Store) handleSelfConflictLocked(selfEvents []*statev1.GossipEvent) (ApplyResult, bool) {
 	local := s.nodes[s.LocalID]
 	ensureNodeInit(&local, s.LocalID)
@@ -1060,215 +1124,248 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 // --- Local mutation methods (return events for broadcasting) ---
 
 func (s *Store) SetLocalNetwork(ips []string, port uint32) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
 
-	local := s.nodes[s.LocalID]
+		if slices.Equal(local.IPs, ips) && local.LocalPort == port {
+			return
+		}
 
-	if slices.Equal(local.IPs, ips) && local.LocalPort == port {
-		return nil
-	}
+		local.IPs = append([]string(nil), ips...)
+		local.LocalPort = port
 
-	local.IPs = append([]string(nil), ips...)
-	local.LocalPort = port
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[networkAttrKey()] = logEntry{Counter: counter}
+		s.nodes[s.LocalID] = local
 
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[networkAttrKey()] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Change: &statev1.GossipEvent_Network{
-			Network: &statev1.NetworkChange{
-				Ips:       append([]string(nil), ips...),
-				LocalPort: port,
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Change: &statev1.GossipEvent_Network{
+				Network: &statev1.NetworkChange{
+					Ips:       append([]string(nil), ips...),
+					LocalPort: port,
+				},
 			},
-		},
-	}}
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
+	}
+	return events
 }
 
 func (s *Store) SetExternalPort(port uint32) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
+		if local.ExternalPort == port {
+			return
+		}
 
-	local := s.nodes[s.LocalID]
-	if local.ExternalPort == port {
-		return nil
+		local.ExternalPort = port
+
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[externalPortAttrKey()] = logEntry{Counter: counter}
+		s.nodes[s.LocalID] = local
+
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Change: &statev1.GossipEvent_ExternalPort{
+				ExternalPort: &statev1.ExternalPortChange{ExternalPort: port},
+			},
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
 	}
-
-	local.ExternalPort = port
-
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[externalPortAttrKey()] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Change: &statev1.GossipEvent_ExternalPort{
-			ExternalPort: &statev1.ExternalPortChange{ExternalPort: port},
-		},
-	}}
+	return events
 }
 
 func (s *Store) SetObservedExternalIP(ip string) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
+		if local.ObservedExternalIP == ip {
+			return
+		}
 
-	local := s.nodes[s.LocalID]
-	if local.ObservedExternalIP == ip {
-		return nil
+		local.ObservedExternalIP = ip
+
+		local.maxCounter++
+		counter := local.maxCounter
+		deleted := ip == ""
+		local.log[observedExternalIPAttrKey()] = logEntry{Counter: counter, Deleted: deleted}
+		s.nodes[s.LocalID] = local
+
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Deleted: deleted,
+			Change: &statev1.GossipEvent_ObservedExternalIp{
+				ObservedExternalIp: &statev1.ObservedExternalIPChange{Ip: ip},
+			},
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
 	}
-
-	local.ObservedExternalIP = ip
-
-	local.maxCounter++
-	counter := local.maxCounter
-	deleted := ip == ""
-	local.log[observedExternalIPAttrKey()] = logEntry{Counter: counter, Deleted: deleted}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Deleted: deleted,
-		Change: &statev1.GossipEvent_ObservedExternalIp{
-			ObservedExternalIp: &statev1.ObservedExternalIPChange{Ip: ip},
-		},
-	}}
+	return events
 }
 
 func (s *Store) SetLocalConnected(peerID types.PeerKey, connected bool) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
 
-	local := s.nodes[s.LocalID]
+		_, exists := local.Reachable[peerID]
+		if connected == exists {
+			return
+		}
 
-	_, exists := local.Reachable[peerID]
-	if connected == exists {
-		return nil
-	}
+		if connected {
+			local.Reachable[peerID] = struct{}{}
+		} else {
+			delete(local.Reachable, peerID)
+		}
 
-	if connected {
-		local.Reachable[peerID] = struct{}{}
-	} else {
-		delete(local.Reachable, peerID)
-	}
+		key := reachabilityAttrKey(peerID)
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[key] = logEntry{Counter: counter, Deleted: !connected}
+		s.nodes[s.LocalID] = local
 
-	key := reachabilityAttrKey(peerID)
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[key] = logEntry{Counter: counter, Deleted: !connected}
-	s.nodes[s.LocalID] = local
-
-	event := &statev1.GossipEvent{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Deleted: !connected,
-		Change: &statev1.GossipEvent_Reachability{
-			Reachability: &statev1.ReachabilityChange{
-				PeerId: peerID.String(),
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Deleted: !connected,
+			Change: &statev1.GossipEvent_Reachability{
+				Reachability: &statev1.ReachabilityChange{
+					PeerId: peerID.String(),
+				},
 			},
-		},
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
 	}
-
-	return []*statev1.GossipEvent{event}
+	return events
 }
 
 func (s *Store) SetLocalPubliclyAccessible(accessible bool) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
+		if local.PubliclyAccessible == accessible {
+			return
+		}
 
-	local := s.nodes[s.LocalID]
-	if local.PubliclyAccessible == accessible {
-		return nil
+		local.PubliclyAccessible = accessible
+
+		key := publiclyAccessibleAttrKey()
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[key] = logEntry{Counter: counter, Deleted: !accessible}
+		s.nodes[s.LocalID] = local
+
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Deleted: !accessible,
+			Change: &statev1.GossipEvent_PubliclyAccessible{
+				PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
+			},
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
 	}
-
-	local.PubliclyAccessible = accessible
-
-	key := publiclyAccessibleAttrKey()
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[key] = logEntry{Counter: counter, Deleted: !accessible}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Deleted: !accessible,
-		Change: &statev1.GossipEvent_PubliclyAccessible{
-			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
-		},
-	}}
+	return events
 }
 
 func (s *Store) SetLocalNatType(natType nat.Type) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
+		if local.NatType == natType {
+			return
+		}
 
-	local := s.nodes[s.LocalID]
-	if local.NatType == natType {
-		return nil
+		local.NatType = natType
+
+		key := natTypeAttrKey()
+		local.maxCounter++
+		counter := local.maxCounter
+		deleted := natType == nat.Unknown
+		local.log[key] = logEntry{Counter: counter, Deleted: deleted}
+		s.nodes[s.LocalID] = local
+
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Deleted: deleted,
+			Change: &statev1.GossipEvent_NatType{
+				NatType: &statev1.NatTypeChange{NatType: natType.ToUint32()},
+			},
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
 	}
-
-	local.NatType = natType
-
-	key := natTypeAttrKey()
-	local.maxCounter++
-	counter := local.maxCounter
-	deleted := natType == nat.Unknown
-	local.log[key] = logEntry{Counter: counter, Deleted: deleted}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Deleted: deleted,
-		Change: &statev1.GossipEvent_NatType{
-			NatType: &statev1.NatTypeChange{NatType: natType.ToUint32()},
-		},
-	}}
+	return events
 }
 
 const resourceTelemetryDeadband = 2
 
 func (s *Store) SetLocalResourceTelemetry(cpuPercent, memPercent uint32, memTotalBytes uint64, numCPU uint32) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
+		cpuDelta := absDiff(local.CPUPercent, cpuPercent)
+		memDelta := absDiff(local.MemPercent, memPercent)
+		if cpuDelta < resourceTelemetryDeadband && memDelta < resourceTelemetryDeadband && local.MemTotalBytes == memTotalBytes && local.NumCPU == numCPU {
+			return
+		}
 
-	local := s.nodes[s.LocalID]
-	cpuDelta := absDiff(local.CPUPercent, cpuPercent)
-	memDelta := absDiff(local.MemPercent, memPercent)
-	if cpuDelta < resourceTelemetryDeadband && memDelta < resourceTelemetryDeadband && local.MemTotalBytes == memTotalBytes && local.NumCPU == numCPU {
-		return nil
-	}
+		local.CPUPercent = cpuPercent
+		local.MemPercent = memPercent
+		local.MemTotalBytes = memTotalBytes
+		local.NumCPU = numCPU
 
-	local.CPUPercent = cpuPercent
-	local.MemPercent = memPercent
-	local.MemTotalBytes = memTotalBytes
-	local.NumCPU = numCPU
+		key := resourceTelemetryAttrKey()
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[key] = logEntry{Counter: counter}
+		s.nodes[s.LocalID] = local
 
-	key := resourceTelemetryAttrKey()
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[key] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Change: &statev1.GossipEvent_ResourceTelemetry{
-			ResourceTelemetry: &statev1.ResourceTelemetryChange{
-				CpuPercent:    cpuPercent,
-				MemPercent:    memPercent,
-				MemTotalBytes: memTotalBytes,
-				NumCpu:        numCPU,
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Change: &statev1.GossipEvent_ResourceTelemetry{
+				ResourceTelemetry: &statev1.ResourceTelemetryChange{
+					CpuPercent:    cpuPercent,
+					MemPercent:    memPercent,
+					MemTotalBytes: memTotalBytes,
+					NumCpu:        numCPU,
+				},
 			},
-		},
-	}}
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
+	}
+	return events
 }
 
 // SetLocalTrafficHeatmap publishes a traffic heatmap snapshot to gossip.
@@ -1283,55 +1380,61 @@ func (s *Store) SetLocalTrafficHeatmap(rates map[types.PeerKey]TrafficSnapshot) 
 		}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
+		key := trafficHeatmapAttrKey()
 
-	local := s.nodes[s.LocalID]
-	key := trafficHeatmapAttrKey()
-
-	if len(filtered) == 0 {
-		// No traffic this tick. If we previously had data, emit a deletion.
-		if len(local.TrafficRates) == 0 {
-			return nil
+		if len(filtered) == 0 {
+			if len(local.TrafficRates) == 0 {
+				return
+			}
+			local.TrafficRates = nil
+			local.maxCounter++
+			counter := local.maxCounter
+			local.log[key] = logEntry{Counter: counter, Deleted: true}
+			s.nodes[s.LocalID] = local
+			events = []*statev1.GossipEvent{{
+				PeerId:  s.LocalID.String(),
+				Counter: counter,
+				Deleted: true,
+				Change: &statev1.GossipEvent_TrafficHeatmap{
+					TrafficHeatmap: &statev1.TrafficHeatmapChange{},
+				},
+			}}
+			s.updateSnapshot()
+			return
 		}
-		local.TrafficRates = nil
+
+		local.TrafficRates = filtered
+
+		protoRates := make([]*statev1.TrafficRate, 0, len(filtered))
+		for pk, r := range filtered {
+			protoRates = append(protoRates, &statev1.TrafficRate{
+				PeerId:   pk.String(),
+				BytesIn:  r.BytesIn,
+				BytesOut: r.BytesOut,
+			})
+		}
+
 		local.maxCounter++
 		counter := local.maxCounter
-		local.log[key] = logEntry{Counter: counter, Deleted: true}
+		local.log[key] = logEntry{Counter: counter}
 		s.nodes[s.LocalID] = local
-		return []*statev1.GossipEvent{{
+
+		events = []*statev1.GossipEvent{{
 			PeerId:  s.LocalID.String(),
 			Counter: counter,
-			Deleted: true,
 			Change: &statev1.GossipEvent_TrafficHeatmap{
-				TrafficHeatmap: &statev1.TrafficHeatmapChange{},
+				TrafficHeatmap: &statev1.TrafficHeatmapChange{Rates: protoRates},
 			},
 		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
 	}
-
-	local.TrafficRates = filtered
-
-	protoRates := make([]*statev1.TrafficRate, 0, len(filtered))
-	for pk, r := range filtered {
-		protoRates = append(protoRates, &statev1.TrafficRate{
-			PeerId:   pk.String(),
-			BytesIn:  r.BytesIn,
-			BytesOut: r.BytesOut,
-		})
-	}
-
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[key] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Change: &statev1.GossipEvent_TrafficHeatmap{
-			TrafficHeatmap: &statev1.TrafficHeatmapChange{Rates: protoRates},
-		},
-	}}
+	return events
 }
 
 // TrafficSnapshot holds a single peer's accumulated traffic counters.
@@ -1342,22 +1445,7 @@ type TrafficSnapshot struct {
 
 // AllTrafficHeatmaps returns nodeID → peerID → TrafficSnapshot for valid nodes.
 func (s *Store) AllTrafficHeatmaps() map[types.PeerKey]map[types.PeerKey]TrafficSnapshot {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	valid := s.validNodesLocked()
-	out := make(map[types.PeerKey]map[types.PeerKey]TrafficSnapshot, len(valid))
-	for pk, rec := range valid {
-		if len(rec.TrafficRates) == 0 {
-			continue
-		}
-		m := make(map[types.PeerKey]TrafficSnapshot, len(rec.TrafficRates))
-		for peer, rate := range rec.TrafficRates {
-			m[peer] = TrafficSnapshot(rate)
-		}
-		out[pk] = m
-	}
-	return out
+	return s.Snapshot().Heatmaps
 }
 
 // NodePlacementState holds the data the scheduler needs for traffic-aware placement.
@@ -1375,33 +1463,7 @@ type NodePlacementState struct {
 // function. Dead nodes are excluded to stay consistent with AllPeerKeys and
 // AllWorkloadClaims.
 func (s *Store) AllNodePlacementStates() map[types.PeerKey]NodePlacementState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	valid := s.validNodesLocked()
-	live := s.liveComponentLocked(valid)
-	out := make(map[types.PeerKey]NodePlacementState, len(live))
-	for pk := range live {
-		rec := valid[pk]
-		nps := NodePlacementState{
-			CPUPercent:    rec.CPUPercent,
-			MemPercent:    rec.MemPercent,
-			MemTotalBytes: rec.MemTotalBytes,
-			NumCPU:        rec.NumCPU,
-		}
-		if rec.VivaldiCoord != nil {
-			coord := *rec.VivaldiCoord
-			nps.Coord = &coord
-		}
-		if len(rec.TrafficRates) > 0 {
-			nps.TrafficTo = make(map[types.PeerKey]uint64, len(rec.TrafficRates))
-			for peer, rate := range rec.TrafficRates {
-				nps.TrafficTo[peer] = rate.BytesIn + rate.BytesOut
-			}
-		}
-		out[pk] = nps
-	}
-	return out
+	return s.Snapshot().Placements
 }
 
 func absDiff(a, b uint32) uint32 {
@@ -1412,165 +1474,181 @@ func absDiff(a, b uint32) uint32 {
 }
 
 func (s *Store) NatType(peerID types.PeerKey) nat.Type {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rec, ok := s.nodes[peerID]
+	snap := s.Snapshot()
+	nv, ok := snap.Nodes[peerID]
 	if !ok {
 		return nat.Unknown
 	}
-	return rec.NatType
+	return nv.NatType
 }
 
 func (s *Store) SetLocalCertExpiry(expiry int64) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
+		if local.CertExpiry == expiry {
+			return
+		}
 
-	local := s.nodes[s.LocalID]
-	if local.CertExpiry == expiry {
-		return nil
-	}
+		local.CertExpiry = expiry
 
-	local.CertExpiry = expiry
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[identityAttrKey()] = logEntry{Counter: counter}
+		s.nodes[s.LocalID] = local
 
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[identityAttrKey()] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Change: &statev1.GossipEvent_IdentityPub{
-			IdentityPub: &statev1.IdentityChange{
-				IdentityPub:    append([]byte(nil), local.IdentityPub...),
-				CertExpiryUnix: expiry,
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Change: &statev1.GossipEvent_IdentityPub{
+				IdentityPub: &statev1.IdentityChange{
+					IdentityPub:    append([]byte(nil), local.IdentityPub...),
+					CertExpiryUnix: expiry,
+				},
 			},
-		},
-	}}
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
+	}
+	return events
 }
 
 func (s *Store) IsPubliclyAccessible(peerID types.PeerKey) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rec, ok := s.nodes[peerID]
+	snap := s.Snapshot()
+	nv, ok := snap.Nodes[peerID]
 	if !ok {
 		return false
 	}
-	return rec.PubliclyAccessible
+	return nv.PubliclyAccessible
 }
 
 func (s *Store) SetLocalVivaldiCoord(coord topology.Coord) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
+		if local.VivaldiCoord != nil && topology.MovementDistance(*local.VivaldiCoord, coord) <= topology.PublishEpsilon {
+			return
+		}
 
-	local := s.nodes[s.LocalID]
-	if local.VivaldiCoord != nil && topology.MovementDistance(*local.VivaldiCoord, coord) <= topology.PublishEpsilon {
-		return nil
-	}
+		local.VivaldiCoord = &coord
 
-	local.VivaldiCoord = &coord
+		key := vivaldiAttrKey()
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[key] = logEntry{Counter: counter}
+		s.nodes[s.LocalID] = local
 
-	key := vivaldiAttrKey()
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[key] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Change: &statev1.GossipEvent_Vivaldi{
-			Vivaldi: &statev1.VivaldiCoordinateChange{
-				X:      coord.X,
-				Y:      coord.Y,
-				Height: coord.Height,
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Change: &statev1.GossipEvent_Vivaldi{
+				Vivaldi: &statev1.VivaldiCoordinateChange{
+					X:      coord.X,
+					Y:      coord.Y,
+					Height: coord.Height,
+				},
 			},
-		},
-	}}
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
+	}
+	return events
 }
 
 func (s *Store) PeerVivaldiCoord(peerID types.PeerKey) (*topology.Coord, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rec, ok := s.nodes[peerID]
+	snap := s.Snapshot()
+	nv, ok := snap.Nodes[peerID]
 	if !ok {
 		return nil, false
 	}
-	return rec.VivaldiCoord, rec.VivaldiCoord != nil
+	return nv.VivaldiCoord, nv.VivaldiCoord != nil
 }
 
 func (s *Store) UpsertLocalService(port uint32, name string) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
 
-	local := s.nodes[s.LocalID]
+		if existing, ok := local.Services[name]; ok && existing.GetPort() == port {
+			return
+		}
 
-	if existing, ok := local.Services[name]; ok && existing.GetPort() == port {
-		return nil
+		local.Services[name] = &statev1.Service{
+			Name: name,
+			Port: port,
+		}
+
+		key := serviceAttrKey(name)
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[key] = logEntry{Counter: counter}
+		s.nodes[s.LocalID] = local
+
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Change: &statev1.GossipEvent_Service{
+				Service: &statev1.ServiceChange{Name: name, Port: port},
+			},
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
 	}
-
-	local.Services[name] = &statev1.Service{
-		Name: name,
-		Port: port,
-	}
-
-	key := serviceAttrKey(name)
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[key] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Change: &statev1.GossipEvent_Service{
-			Service: &statev1.ServiceChange{Name: name, Port: port},
-		},
-	}}
+	return events
 }
 
+//nolint:dupl
 func (s *Store) RemoveLocalServices(name string) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
 
-	local := s.nodes[s.LocalID]
+		if _, ok := local.Services[name]; !ok {
+			return
+		}
 
-	if _, ok := local.Services[name]; !ok {
-		return nil
+		delete(local.Services, name)
+
+		key := serviceAttrKey(name)
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[key] = logEntry{Counter: counter, Deleted: true}
+		s.nodes[s.LocalID] = local
+
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Deleted: true,
+			Change: &statev1.GossipEvent_Service{
+				Service: &statev1.ServiceChange{Name: name},
+			},
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
 	}
-
-	delete(local.Services, name)
-
-	key := serviceAttrKey(name)
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[key] = logEntry{Counter: counter, Deleted: true}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Deleted: true,
-		Change: &statev1.GossipEvent_Service{
-			Service: &statev1.ServiceChange{Name: name},
-		},
-	}}
+	return events
 }
 
 func (s *Store) LocalServices() map[string]*statev1.Service {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	local := s.nodes[s.LocalID]
-	return maps.Clone(local.Services)
+	snap := s.Snapshot()
+	nv, ok := snap.Nodes[snap.LocalID]
+	if !ok {
+		return nil
+	}
+	return nv.Services
 }
 
 // validNodesLocked returns nodes that are neither denied nor expired.
 // CertExpiry == 0 (unset/legacy peers) are NOT filtered.
-// Caller must hold s.mu (at least RLock).
+// Must be called on the store's goroutine.
 func (s *Store) validNodesLocked() map[types.PeerKey]nodeRecord {
 	now := time.Now()
 	out := make(map[types.PeerKey]nodeRecord, len(s.nodes))
@@ -1587,71 +1665,59 @@ func (s *Store) validNodesLocked() map[types.PeerKey]nodeRecord {
 }
 
 func (s *Store) AllNodes() map[types.PeerKey]nodeRecord {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.validNodesLocked()
+	var result map[types.PeerKey]nodeRecord
+	s.do(func() {
+		result = s.validNodesLocked()
+	})
+	return result
 }
 
 // AllPeerKeys returns the PeerKey for every valid, live (reachable from the
 // local node) peer. Dead nodes are excluded so the scheduler never assigns
 // workload slots to peers that can't fulfil them.
 func (s *Store) AllPeerKeys() []types.PeerKey {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	live := s.liveComponentLocked(s.validNodesLocked())
-	keys := make([]types.PeerKey, 0, len(live))
-	for pk := range live {
-		keys = append(keys, pk)
-	}
-	return keys
+	return s.Snapshot().PeerKeys
 }
 
 func (s *Store) Get(peerID types.PeerKey) (nodeRecord, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rec, ok := s.nodes[peerID]
-	if !ok {
-		return nodeRecord{}, false
-	}
-	return rec.clone(), true
+	var rec nodeRecord
+	var ok bool
+	s.do(func() {
+		var r nodeRecord
+		r, ok = s.nodes[peerID]
+		if ok {
+			rec = r.clone()
+		}
+	})
+	return rec, ok
 }
 
 func (s *Store) NodeIPs(peerID types.PeerKey) []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rec, ok := s.nodes[peerID]
-	if !ok || len(rec.IPs) == 0 {
+	snap := s.Snapshot()
+	nv, ok := snap.Nodes[peerID]
+	if !ok || len(nv.IPs) == 0 {
 		return nil
 	}
-
-	return rec.IPs
+	return nv.IPs
 }
 
 func (s *Store) IsConnected(source, target types.PeerKey) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rec, ok := s.nodes[source]
+	snap := s.Snapshot()
+	nv, ok := snap.Nodes[source]
 	if !ok {
 		return false
 	}
-
-	_, ok = rec.Reachable[target]
+	_, ok = nv.Reachable[target]
 	return ok
 }
 
 func (s *Store) HasServicePort(peerID types.PeerKey, port uint32) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rec, ok := s.nodes[peerID]
+	snap := s.Snapshot()
+	nv, ok := snap.Nodes[peerID]
 	if !ok {
 		return false
 	}
-	for _, svc := range rec.Services {
+	for _, svc := range nv.Services {
 		if svc.GetPort() == port {
 			return true
 		}
@@ -1660,29 +1726,26 @@ func (s *Store) HasServicePort(peerID types.PeerKey, port uint32) bool {
 }
 
 func (s *Store) KnownPeers() []KnownPeer {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	valid := s.validNodesLocked()
-	known := make([]KnownPeer, 0, len(valid))
-	for peerID, rec := range valid {
-		if peerID == s.LocalID {
+	snap := s.Snapshot()
+	known := make([]KnownPeer, 0, len(snap.Nodes))
+	for peerID, nv := range snap.Nodes {
+		if peerID == snap.LocalID {
 			continue
 		}
-		if rec.LastAddr == "" && (len(rec.IPs) == 0 || rec.LocalPort == 0) {
+		if nv.LastAddr == "" && (len(nv.IPs) == 0 || nv.LocalPort == 0) {
 			continue
 		}
 		known = append(known, KnownPeer{
 			PeerID:             peerID,
-			LocalPort:          rec.LocalPort,
-			ExternalPort:       rec.ExternalPort,
-			ObservedExternalIP: rec.ObservedExternalIP,
-			NatType:            rec.NatType,
-			IdentityPub:        rec.IdentityPub,
-			IPs:                rec.IPs,
-			LastAddr:           rec.LastAddr,
-			PubliclyAccessible: rec.PubliclyAccessible,
-			VivaldiCoord:       rec.VivaldiCoord,
+			LocalPort:          nv.LocalPort,
+			ExternalPort:       nv.ExternalPort,
+			ObservedExternalIP: nv.ObservedExternalIP,
+			NatType:            nv.NatType,
+			IdentityPub:        nv.IdentityPub,
+			IPs:                nv.IPs,
+			LastAddr:           nv.LastAddr,
+			PubliclyAccessible: nv.PubliclyAccessible,
+			VivaldiCoord:       nv.VivaldiCoord,
 		})
 	}
 
@@ -1694,63 +1757,54 @@ func (s *Store) KnownPeers() []KnownPeer {
 }
 
 func (s *Store) SetLastAddr(peerID types.PeerKey, addr string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	rec, ok := s.nodes[peerID]
-	if !ok {
-		return
-	}
-	rec.LastAddr = addr
-	s.nodes[peerID] = rec
+	s.do(func() {
+		rec, ok := s.nodes[peerID]
+		if !ok {
+			return
+		}
+		rec.LastAddr = addr
+		s.nodes[peerID] = rec
+		s.updateSnapshot()
+	})
 }
 
 func (s *Store) IdentityPub(peerID types.PeerKey) ([]byte, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	rec, ok := s.nodes[peerID]
-	if !ok || len(rec.IdentityPub) == 0 {
+	snap := s.Snapshot()
+	nv, ok := snap.Nodes[peerID]
+	if !ok || len(nv.IdentityPub) == 0 {
 		return nil, false
 	}
-
-	return rec.IdentityPub, true
+	return nv.IdentityPub, true
 }
 
 func (s *Store) AddDesiredConnection(peerID types.PeerKey, remotePort, localPort uint32) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	c := Connection{PeerID: peerID, RemotePort: remotePort, LocalPort: localPort}
-	s.desiredConnections[c.Key()] = c
+	s.do(func() {
+		c := Connection{PeerID: peerID, RemotePort: remotePort, LocalPort: localPort}
+		s.desiredConnections[c.Key()] = c
+		s.updateSnapshot()
+	})
 }
 
 func (s *Store) RemoveDesiredConnection(peerID types.PeerKey, remotePort, localPort uint32) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for key, conn := range s.desiredConnections {
-		if conn.PeerID != peerID {
-			continue
+	s.do(func() {
+		for key, conn := range s.desiredConnections {
+			if conn.PeerID != peerID {
+				continue
+			}
+			if remotePort != 0 && conn.RemotePort != remotePort {
+				continue
+			}
+			if localPort != 0 && conn.LocalPort != localPort {
+				continue
+			}
+			delete(s.desiredConnections, key)
 		}
-		if remotePort != 0 && conn.RemotePort != remotePort {
-			continue
-		}
-		if localPort != 0 && conn.LocalPort != localPort {
-			continue
-		}
-		delete(s.desiredConnections, key)
-	}
+		s.updateSnapshot()
+	})
 }
 
 func (s *Store) DesiredConnections() []Connection {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	connections := slices.Collect(maps.Values(s.desiredConnections))
-	sortConnections(connections)
-
-	return connections
+	return s.Snapshot().Connections
 }
 
 func sortConnections(cs []Connection) {
@@ -1768,40 +1822,46 @@ func sortConnections(cs []Connection) {
 func (s *Store) DenyPeer(subjectPub []byte) []*statev1.GossipEvent {
 	subjectKey := types.PeerKeyFromBytes(subjectPub)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		if _, ok := s.denied[subjectKey]; ok {
+			return
+		}
 
-	if _, ok := s.denied[subjectKey]; ok {
-		return nil
+		s.denied[subjectKey] = struct{}{}
+
+		local := s.nodes[s.LocalID]
+		key := denyAttrKey(subjectKey.String())
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[key] = logEntry{Counter: counter}
+		s.nodes[s.LocalID] = local
+
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Change: &statev1.GossipEvent_Deny{
+				Deny: &statev1.DenyChange{SubjectPub: append([]byte(nil), subjectPub...)},
+			},
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
 	}
-
-	s.denied[subjectKey] = struct{}{}
-
-	local := s.nodes[s.LocalID]
-	key := denyAttrKey(subjectKey.String())
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[key] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Change: &statev1.GossipEvent_Deny{
-			Deny: &statev1.DenyChange{SubjectPub: append([]byte(nil), subjectPub...)},
-		},
-	}}
+	return events
 }
 
 func (s *Store) IsDenied(subjectPub []byte) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	_, ok := s.denied[types.PeerKeyFromBytes(subjectPub)]
+	var ok bool
+	s.do(func() {
+		_, ok = s.denied[types.PeerKeyFromBytes(subjectPub)]
+	})
 	return ok
 }
 
 // isValidOwnerLocked reports whether a peer is a valid scheduling participant
-// (not denied, not expired). Caller must hold s.mu.
+// (not denied, not expired). Must be called on the store's goroutine.
 func (s *Store) isValidOwnerLocked(peerID types.PeerKey) bool {
 	if _, denied := s.denied[peerID]; denied {
 		return false
@@ -1817,59 +1877,71 @@ func (s *Store) isValidOwnerLocked(peerID types.PeerKey) bool {
 }
 
 func (s *Store) SetLocalWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) ([]*statev1.GossipEvent, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Reject if any valid remote node already publishes this hash.
-	for pk, rec := range s.nodes {
-		if pk == s.LocalID {
-			continue
+	var (
+		events []*statev1.GossipEvent
+		err    error
+	)
+	s.do(func() {
+		// Reject if any valid remote node already publishes this hash.
+		for pk, rec := range s.nodes {
+			if pk == s.LocalID {
+				continue
+			}
+			if _, has := rec.WorkloadSpecs[hash]; !has {
+				continue
+			}
+			if s.isValidOwnerLocked(pk) {
+				err = ErrSpecOwnedRemotely
+				return
+			}
 		}
-		if _, has := rec.WorkloadSpecs[hash]; !has {
-			continue
+
+		local := s.nodes[s.LocalID]
+
+		if existing, ok := local.WorkloadSpecs[hash]; ok &&
+			existing.GetReplicas() == replicas && existing.GetMemoryPages() == memoryPages &&
+			existing.GetTimeoutMs() == timeoutMs {
+			return
 		}
-		if s.isValidOwnerLocked(pk) {
-			return nil, ErrSpecOwnedRemotely
-		}
-	}
 
-	local := s.nodes[s.LocalID]
+		m := make(map[string]*statev1.WorkloadSpecChange, len(local.WorkloadSpecs)+1)
+		maps.Copy(m, local.WorkloadSpecs)
+		m[hash] = &statev1.WorkloadSpecChange{Hash: hash, Replicas: replicas, MemoryPages: memoryPages, TimeoutMs: timeoutMs}
+		local.WorkloadSpecs = m
 
-	if existing, ok := local.WorkloadSpecs[hash]; ok &&
-		existing.GetReplicas() == replicas && existing.GetMemoryPages() == memoryPages &&
-		existing.GetTimeoutMs() == timeoutMs {
-		return nil, nil
-	}
+		key := workloadSpecAttrKey(hash)
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[key] = logEntry{Counter: counter}
+		s.nodes[s.LocalID] = local
 
-	m := make(map[string]*statev1.WorkloadSpecChange, len(local.WorkloadSpecs)+1)
-	maps.Copy(m, local.WorkloadSpecs)
-	m[hash] = &statev1.WorkloadSpecChange{Hash: hash, Replicas: replicas, MemoryPages: memoryPages, TimeoutMs: timeoutMs}
-	local.WorkloadSpecs = m
-
-	key := workloadSpecAttrKey(hash)
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[key] = logEntry{Counter: counter}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Change: &statev1.GossipEvent_WorkloadSpec{
-			WorkloadSpec: &statev1.WorkloadSpecChange{
-				Hash:        hash,
-				Replicas:    replicas,
-				MemoryPages: memoryPages,
-				TimeoutMs:   timeoutMs,
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Change: &statev1.GossipEvent_WorkloadSpec{
+				WorkloadSpec: &statev1.WorkloadSpecChange{
+					Hash:        hash,
+					Replicas:    replicas,
+					MemoryPages: memoryPages,
+					TimeoutMs:   timeoutMs,
+				},
 			},
-		},
-	}}, nil
+		}}
+		s.updateSnapshot()
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
+	}
+	return events, nil
 }
 
 // tombstoneLosingLocalSpec checks whether the local node holds a spec for hash
 // that loses to the remote publisher (lower PeerKey wins). If so, it deletes
 // the local spec and returns the tombstone event for rebroadcast.
-// Caller must hold s.mu.
+// Must be called on the store's goroutine.
 func (s *Store) tombstoneLosingLocalSpec(remotePeer types.PeerKey, hash string) []*statev1.GossipEvent {
 	if remotePeer == s.LocalID {
 		return nil
@@ -1905,68 +1977,79 @@ func (s *Store) tombstoneLosingLocalSpec(remotePeer types.PeerKey, hash string) 
 	}}
 }
 
+//nolint:dupl
 func (s *Store) RemoveLocalWorkloadSpec(hash string) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
 
-	local := s.nodes[s.LocalID]
+		if _, ok := local.WorkloadSpecs[hash]; !ok {
+			return
+		}
 
-	if _, ok := local.WorkloadSpecs[hash]; !ok {
-		return nil
+		delete(local.WorkloadSpecs, hash)
+
+		key := workloadSpecAttrKey(hash)
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[key] = logEntry{Counter: counter, Deleted: true}
+		s.nodes[s.LocalID] = local
+
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Deleted: true,
+			Change: &statev1.GossipEvent_WorkloadSpec{
+				WorkloadSpec: &statev1.WorkloadSpecChange{Hash: hash},
+			},
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
 	}
-
-	delete(local.WorkloadSpecs, hash)
-
-	key := workloadSpecAttrKey(hash)
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[key] = logEntry{Counter: counter, Deleted: true}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Deleted: true,
-		Change: &statev1.GossipEvent_WorkloadSpec{
-			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: hash},
-		},
-	}}
+	return events
 }
 
 func (s *Store) SetLocalWorkloadClaim(hash string, claimed bool) []*statev1.GossipEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
 
-	local := s.nodes[s.LocalID]
+		_, exists := local.WorkloadClaims[hash]
+		if claimed == exists {
+			return
+		}
 
-	_, exists := local.WorkloadClaims[hash]
-	if claimed == exists {
-		return nil
+		if claimed {
+			m := make(map[string]struct{}, len(local.WorkloadClaims)+1)
+			maps.Copy(m, local.WorkloadClaims)
+			m[hash] = struct{}{}
+			local.WorkloadClaims = m
+		} else {
+			delete(local.WorkloadClaims, hash)
+		}
+
+		key := workloadClaimAttrKey(hash)
+		local.maxCounter++
+		counter := local.maxCounter
+		local.log[key] = logEntry{Counter: counter, Deleted: !claimed}
+		s.nodes[s.LocalID] = local
+
+		events = []*statev1.GossipEvent{{
+			PeerId:  s.LocalID.String(),
+			Counter: counter,
+			Deleted: !claimed,
+			Change: &statev1.GossipEvent_WorkloadClaim{
+				WorkloadClaim: &statev1.WorkloadClaimChange{Hash: hash},
+			},
+		}}
+		s.updateSnapshot()
+	})
+	if len(events) > 0 {
+		s.emitEvent(LocalMutationApplied{Events: events})
 	}
-
-	if claimed {
-		m := make(map[string]struct{}, len(local.WorkloadClaims)+1)
-		maps.Copy(m, local.WorkloadClaims)
-		m[hash] = struct{}{}
-		local.WorkloadClaims = m
-	} else {
-		delete(local.WorkloadClaims, hash)
-	}
-
-	key := workloadClaimAttrKey(hash)
-	local.maxCounter++
-	counter := local.maxCounter
-	local.log[key] = logEntry{Counter: counter, Deleted: !claimed}
-	s.nodes[s.LocalID] = local
-
-	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
-		Counter: counter,
-		Deleted: !claimed,
-		Change: &statev1.GossipEvent_WorkloadClaim{
-			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: hash},
-		},
-	}}
+	return events
 }
 
 // WorkloadSpecView is a merged view of a workload spec and its publisher.
@@ -1979,20 +2062,7 @@ type WorkloadSpecView struct {
 // When multiple peers publish a spec for the same hash, the lowest PeerKey
 // wins to ensure deterministic conflict resolution across all nodes.
 func (s *Store) AllWorkloadSpecs() map[string]WorkloadSpecView {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	valid := s.validNodesLocked()
-	out := make(map[string]WorkloadSpecView)
-	for peerID, rec := range valid {
-		for hash, spec := range rec.WorkloadSpecs {
-			existing, ok := out[hash]
-			if !ok || peerID.Compare(existing.Publisher) < 0 {
-				out[hash] = WorkloadSpecView{Spec: spec, Publisher: peerID}
-			}
-		}
-	}
-	return out
+	return s.Snapshot().Specs
 }
 
 // AllWorkloadClaims returns hash → set of claimant PeerKeys from valid nodes.
@@ -2000,25 +2070,153 @@ func (s *Store) AllWorkloadSpecs() map[string]WorkloadSpecView {
 // the reachability graph are excluded so that dead-node claims don't block
 // under-replication recovery.
 func (s *Store) AllWorkloadClaims() map[string]map[types.PeerKey]struct{} {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	return s.Snapshot().Claims
+}
 
+// Snapshot returns an immutable, point-in-time copy of the cluster state.
+// Reads from an atomic pointer — lock-free and safe to call from any goroutine.
+func (s *Store) Snapshot() Snapshot {
+	if p := s.snap.Load(); p != nil {
+		return *p
+	}
+	return Snapshot{}
+}
+
+func (s *Store) snapshotLocked() Snapshot {
 	valid := s.validNodesLocked()
 	live := s.liveComponentLocked(valid)
 
-	out := make(map[string]map[types.PeerKey]struct{})
+	// Build NodeView map from valid nodes.
+	nodes := make(map[types.PeerKey]NodeView, len(valid))
+	for pk, rec := range valid {
+		nv := NodeView{
+			LastAddr:           rec.LastAddr,
+			ObservedExternalIP: rec.ObservedExternalIP,
+			MemTotalBytes:      rec.MemTotalBytes,
+			NatType:            rec.NatType,
+			CertExpiry:         rec.CertExpiry,
+			LocalPort:          rec.LocalPort,
+			ExternalPort:       rec.ExternalPort,
+			CPUPercent:         rec.CPUPercent,
+			MemPercent:         rec.MemPercent,
+			NumCPU:             rec.NumCPU,
+			PubliclyAccessible: rec.PubliclyAccessible,
+			IdentityPub:        append([]byte(nil), rec.IdentityPub...),
+			IPs:                append([]string(nil), rec.IPs...),
+		}
+		if rec.VivaldiCoord != nil {
+			coord := *rec.VivaldiCoord
+			nv.VivaldiCoord = &coord
+		}
+		if len(rec.Services) > 0 {
+			nv.Services = make(map[string]*statev1.Service, len(rec.Services))
+			maps.Copy(nv.Services, rec.Services)
+		}
+		if len(rec.WorkloadSpecs) > 0 {
+			nv.WorkloadSpecs = make(map[string]*statev1.WorkloadSpecChange, len(rec.WorkloadSpecs))
+			maps.Copy(nv.WorkloadSpecs, rec.WorkloadSpecs)
+		}
+		if len(rec.WorkloadClaims) > 0 {
+			nv.WorkloadClaims = make(map[string]struct{}, len(rec.WorkloadClaims))
+			maps.Copy(nv.WorkloadClaims, rec.WorkloadClaims)
+		}
+		if len(rec.Reachable) > 0 {
+			nv.Reachable = make(map[types.PeerKey]struct{}, len(rec.Reachable))
+			maps.Copy(nv.Reachable, rec.Reachable)
+		}
+		if len(rec.TrafficRates) > 0 {
+			nv.TrafficRates = make(map[types.PeerKey]TrafficSnapshot, len(rec.TrafficRates))
+			for peer, rate := range rec.TrafficRates {
+				nv.TrafficRates[peer] = TrafficSnapshot(rate)
+			}
+		}
+		nodes[pk] = nv
+	}
+
+	// PeerKeys: valid + live peers.
+	peerKeys := make([]types.PeerKey, 0, len(live))
+	for pk := range live {
+		peerKeys = append(peerKeys, pk)
+	}
+
+	// Specs: conflict resolution — lowest PeerKey wins.
+	specs := make(map[string]WorkloadSpecView)
+	for peerID, rec := range valid {
+		for hash, spec := range rec.WorkloadSpecs {
+			existing, ok := specs[hash]
+			if !ok || peerID.Compare(existing.Publisher) < 0 {
+				specs[hash] = WorkloadSpecView{Spec: spec, Publisher: peerID}
+			}
+		}
+	}
+
+	// Claims: only from live-component nodes.
+	claims := make(map[string]map[types.PeerKey]struct{})
 	for peerID, rec := range valid {
 		if _, ok := live[peerID]; !ok {
 			continue
 		}
 		for hash := range rec.WorkloadClaims {
-			if out[hash] == nil {
-				out[hash] = make(map[types.PeerKey]struct{})
+			if claims[hash] == nil {
+				claims[hash] = make(map[types.PeerKey]struct{})
 			}
-			out[hash][peerID] = struct{}{}
+			claims[hash][peerID] = struct{}{}
 		}
 	}
-	return out
+
+	// Placements: resource + coordinate + traffic for live nodes.
+	placements := make(map[types.PeerKey]NodePlacementState, len(live))
+	for pk := range live {
+		rec := valid[pk]
+		nps := NodePlacementState{
+			CPUPercent:    rec.CPUPercent,
+			MemPercent:    rec.MemPercent,
+			MemTotalBytes: rec.MemTotalBytes,
+			NumCPU:        rec.NumCPU,
+		}
+		if rec.VivaldiCoord != nil {
+			coord := *rec.VivaldiCoord
+			nps.Coord = &coord
+		}
+		if len(rec.TrafficRates) > 0 {
+			nps.TrafficTo = make(map[types.PeerKey]uint64, len(rec.TrafficRates))
+			for peer, rate := range rec.TrafficRates {
+				nps.TrafficTo[peer] = rate.BytesIn + rate.BytesOut
+			}
+		}
+		placements[pk] = nps
+	}
+
+	// Heatmaps: from valid nodes with traffic data.
+	heatmaps := make(map[types.PeerKey]map[types.PeerKey]TrafficSnapshot, len(valid))
+	for pk, rec := range valid {
+		if len(rec.TrafficRates) == 0 {
+			continue
+		}
+		m := make(map[types.PeerKey]TrafficSnapshot, len(rec.TrafficRates))
+		for peer, rate := range rec.TrafficRates {
+			m[peer] = TrafficSnapshot(rate)
+		}
+		heatmaps[pk] = m
+	}
+
+	// Connections: deep copy.
+	connections := make([]Connection, 0, len(s.desiredConnections))
+	for _, c := range s.desiredConnections {
+		connections = append(connections, c)
+	}
+	sortConnections(connections)
+
+	return Snapshot{
+		LocalID:     s.LocalID,
+		Nodes:       nodes,
+		PeerKeys:    peerKeys,
+		Specs:       specs,
+		Claims:      claims,
+		Placements:  placements,
+		Heatmaps:    heatmaps,
+		Connections: connections,
+	}
 }
 
 // liveComponentLocked returns the set of valid peers reachable from the local
@@ -2054,13 +2252,10 @@ func (s *Store) liveComponentLocked(valid map[types.PeerKey]nodeRecord) map[type
 // valid (non-denied, non-expired) nodes' specs. Returns ("", false) if no
 // match, or ("", true, false) if multiple specs match the prefix.
 func (s *Store) ResolveWorkloadPrefix(prefix string) (hash string, ambiguous, found bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	valid := s.validNodesLocked()
+	snap := s.Snapshot()
 	var match string
-	for _, rec := range valid {
-		for h := range rec.WorkloadSpecs {
+	for _, nv := range snap.Nodes {
+		for h := range nv.WorkloadSpecs {
 			if len(h) >= len(prefix) && h[:len(prefix)] == prefix {
 				if match != "" && match != h {
 					return "", true, false
@@ -2102,15 +2297,17 @@ func ensureNodeInit(rec *nodeRecord, peerID types.PeerKey) {
 // Used at startup to broadcast the full local state so that peers receive
 // every event and maintain a correct maxCounter (no counter gaps).
 func (s *Store) LocalEvents() []*statev1.GossipEvent {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	local := s.nodes[s.LocalID]
-	return s.buildEventsAbove(s.LocalID, local, 0)
+	var events []*statev1.GossipEvent
+	s.do(func() {
+		local := s.nodes[s.LocalID]
+		events = s.buildEventsAbove(s.LocalID, local, 0)
+	})
+	return events
 }
 
 // bumpAndBroadcastAllLocked returns events for ALL current local attributes,
 // each with its own incremented counter. Used on self-state conflict (restart
-// recovery). Caller must hold s.mu.
+// recovery). Must be called on the store's goroutine.
 func (s *Store) bumpAndBroadcastAllLocked() []*statev1.GossipEvent {
 	local := s.nodes[s.LocalID]
 
@@ -2125,7 +2322,7 @@ func (s *Store) bumpAndBroadcastAllLocked() []*statev1.GossipEvent {
 }
 
 // buildEventsAbove constructs GossipEvent messages for all log entries with
-// counter > minCounter. Caller must hold s.mu (at least RLock).
+// counter > minCounter. Must be called on the store's goroutine.
 func (s *Store) buildEventsAbove(peerID types.PeerKey, rec nodeRecord, minCounter uint64) []*statev1.GossipEvent {
 	var events []*statev1.GossipEvent
 	peerIDStr := peerID.String()
@@ -2141,7 +2338,7 @@ func (s *Store) buildEventsAbove(peerID types.PeerKey, rec nodeRecord, minCounte
 }
 
 // buildEventFromLog constructs a single GossipEvent from a log entry and the
-// materialized view. Caller must hold the store's mu (at least RLock).
+// materialized view. Must be called on the store's goroutine.
 func (s *Store) buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRecord) *statev1.GossipEvent {
 	event := &statev1.GossipEvent{
 		PeerId:  peerIDStr,

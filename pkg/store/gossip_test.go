@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"testing"
@@ -17,6 +18,8 @@ func newTestStore(pub []byte) *Store {
 	localID := types.PeerKeyFromBytes(pub)
 	s := &Store{
 		LocalID: localID,
+		events:  make(chan StoreEvent, 64),
+		ctx:     context.Background(),
 		nodes: map[types.PeerKey]nodeRecord{
 			localID: {
 				maxCounter:     1,
@@ -37,6 +40,7 @@ func newTestStore(pub []byte) *Store {
 	local := s.nodes[localID]
 	tombstoneStaleAttrs(&local)
 	s.nodes[localID] = local
+	s.updateSnapshot()
 	return s
 }
 
@@ -50,6 +54,49 @@ func peerKey(b byte) (types.PeerKey, string) {
 	pub[0] = b
 	pk := types.PeerKeyFromBytes(pub)
 	return pk, pk.String()
+}
+
+// drainEvent reads events from ch until one of type T is found, failing
+// the test if the channel is empty (after draining buffered events).
+func drainEvent[T StoreEvent](t *testing.T, ch chan StoreEvent) T {
+	t.Helper()
+	for {
+		select {
+		case ev := <-ch:
+			if typed, ok := ev.(T); ok {
+				return typed
+			}
+		default:
+			t.Fatalf("expected event of type %T but channel was empty", *new(T))
+			return *new(T)
+		}
+	}
+}
+
+// drainAllEvents discards all buffered events.
+func drainAllEvents(ch chan StoreEvent) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
+	}
+}
+
+// requireNoEvent asserts that no event of type T is buffered.
+func requireNoEvent[T StoreEvent](t *testing.T, ch chan StoreEvent) {
+	t.Helper()
+	for {
+		select {
+		case ev := <-ch:
+			if _, ok := ev.(T); ok {
+				t.Fatalf("unexpected event of type %T", *new(T))
+			}
+		default:
+			return
+		}
+	}
 }
 
 func TestEagerSyncClock(t *testing.T) {
@@ -1622,20 +1669,14 @@ func TestDigestMatchSkips(t *testing.T) {
 	require.Empty(t, events)
 }
 
-func TestOnDenyCallbackFiredOnGossipReceipt(t *testing.T) {
+func TestDenyEventEmittedOnGossipReceipt(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
 
-	var deniedPeers []types.PeerKey
-	s.OnDenyPeer(func(pk types.PeerKey) {
-		deniedPeers = append(deniedPeers, pk)
-	})
-
 	// Simulate a deny event from a remote peer.
-	senderPK, senderPKStr := peerKey(2)
+	_, senderPKStr := peerKey(2)
 	subjectPK, _ := peerKey(3)
-	_ = senderPK
 
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  senderPKStr,
@@ -1645,25 +1686,21 @@ func TestOnDenyCallbackFiredOnGossipReceipt(t *testing.T) {
 		},
 	})
 
-	require.Len(t, deniedPeers, 1)
-	require.Equal(t, subjectPK, deniedPeers[0])
+	ev := drainEvent[DenyApplied](t, s.events)
+	require.Equal(t, subjectPK, ev.PeerKey)
 	require.True(t, s.IsDenied(subjectPK[:]))
 }
 
-func TestOnDenyCallbackNotFiredForAlreadyDenied(t *testing.T) {
+func TestNoDenyEventForAlreadyDenied(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
 
 	subjectPK, _ := peerKey(3)
 	s.DenyPeer(subjectPK[:])
+	drainAllEvents(s.events)
 
-	var callCount int
-	s.OnDenyPeer(func(_ types.PeerKey) {
-		callCount++
-	})
-
-	// Deny via gossip from a different peer — already denied, callback should not fire.
+	// Deny via gossip from a different peer — already denied, no DenyApplied event.
 	_, senderPKStr := peerKey(2)
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  senderPKStr,
@@ -1673,7 +1710,7 @@ func TestOnDenyCallbackNotFiredForAlreadyDenied(t *testing.T) {
 		},
 	})
 
-	require.Equal(t, 0, callCount)
+	requireNoEvent[DenyApplied](t, s.events)
 }
 
 func TestWorkloadSpecRoundTrip(t *testing.T) {
@@ -1795,13 +1832,10 @@ func TestWorkloadGossipApply(t *testing.T) {
 	require.Empty(t, specs2)
 }
 
-func TestOnWorkloadChangeCallback(t *testing.T) {
+func TestWorkloadChangedEventEmitted(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
-
-	var callCount int
-	s.OnWorkloadChange(func() { callCount++ })
 
 	_, remotePeerStr := peerKey(2)
 
@@ -1812,7 +1846,7 @@ func TestOnWorkloadChangeCallback(t *testing.T) {
 			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "abc", Replicas: 1},
 		},
 	})
-	require.Equal(t, 1, callCount)
+	drainEvent[WorkloadChanged](t, s.events)
 
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  remotePeerStr,
@@ -1821,21 +1855,18 @@ func TestOnWorkloadChangeCallback(t *testing.T) {
 			WorkloadClaim: &statev1.WorkloadClaimChange{Hash: "abc"},
 		},
 	})
-	require.Equal(t, 2, callCount)
+	drainEvent[WorkloadChanged](t, s.events)
 }
 
-func TestReachabilityChangeTriggersWorkloadCallback(t *testing.T) {
+func TestReachabilityChangeEmitsWorkloadEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
 
-	var callCount int
-	s.OnWorkloadChange(func() { callCount++ })
-
 	_, remotePeerStr := peerKey(2)
 	_, targetPeerStr := peerKey(3)
 
-	// A reachability event should trigger the workload callback because
+	// A reachability event should emit WorkloadChanged because
 	// liveComponentLocked uses reachability to filter claims.
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  remotePeerStr,
@@ -1844,20 +1875,17 @@ func TestReachabilityChangeTriggersWorkloadCallback(t *testing.T) {
 			Reachability: &statev1.ReachabilityChange{PeerId: targetPeerStr},
 		},
 	})
-	require.Equal(t, 1, callCount)
+	drainEvent[WorkloadChanged](t, s.events)
 }
 
-func TestVivaldiChangeDoesNotTriggerWorkloadCallback(t *testing.T) {
+func TestVivaldiChangeDoesNotEmitWorkloadEvent(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
 
-	var callCount int
-	s.OnWorkloadChange(func() { callCount++ })
-
 	_, remotePeerStr := peerKey(2)
 
-	// Vivaldi updates should not trigger the workload callback — they are
+	// Vivaldi updates should not emit WorkloadChanged — they are
 	// frequent and don't affect claim visibility via liveComponentLocked.
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  remotePeerStr,
@@ -1866,7 +1894,7 @@ func TestVivaldiChangeDoesNotTriggerWorkloadCallback(t *testing.T) {
 			Vivaldi: &statev1.VivaldiCoordinateChange{X: 1, Y: 2, Height: 0.1},
 		},
 	})
-	require.Equal(t, 0, callCount)
+	requireNoEvent[WorkloadChanged](t, s.events)
 }
 
 func TestAllWorkloadSpecs_DuplicatePublishers_LowestPeerKeyWins(t *testing.T) {
@@ -2147,6 +2175,7 @@ func TestWorkloadQueries_ExcludeDeniedNodes(t *testing.T) {
 
 	// Deny the peer.
 	s.denied[deniedPK] = struct{}{}
+	s.updateSnapshot()
 
 	// After denial, spec, claim, and prefix resolution all exclude the peer.
 	require.Empty(t, s.AllWorkloadSpecs())
@@ -2489,13 +2518,10 @@ func TestAllNodePlacementStates(t *testing.T) {
 	require.Nil(t, remote.TrafficTo)
 }
 
-func TestOnTrafficChangeCallback(t *testing.T) {
+func TestTrafficChangedEventEmitted(t *testing.T) {
 	pub := make([]byte, 32)
 	pub[0] = 1
 	s := newTestStore(pub)
-
-	var callCount int
-	s.OnTrafficChange(func() { callCount++ })
 
 	_, remotePeerStr := peerKey(2)
 	localPK := s.LocalID
@@ -2511,9 +2537,9 @@ func TestOnTrafficChangeCallback(t *testing.T) {
 			},
 		},
 	})
-	require.Equal(t, 1, callCount)
+	drainEvent[TrafficChanged](t, s.events)
 
-	// Stale event should not fire callback.
+	// Stale event should not emit TrafficChanged.
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  remotePeerStr,
 		Counter: 1,
@@ -2525,7 +2551,7 @@ func TestOnTrafficChangeCallback(t *testing.T) {
 			},
 		},
 	})
-	require.Equal(t, 1, callCount)
+	requireNoEvent[TrafficChanged](t, s.events)
 }
 
 func TestSelfConflictReAdoptsWorkloadSpecs(t *testing.T) {

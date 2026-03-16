@@ -1,0 +1,31 @@
+---
+# Shared tasks: download, install, and verify pln.
+# Caller must validate pln_version before including this.
+
+- name: Set package version
+  ansible.builtin.set_fact:
+    pkg_version: "{{ pln_version | regex_replace('^v', '') }}"
+
+- name: Download .deb
+  ansible.builtin.get_url:
+    url: "https://github.com/sambigeara/pollen/releases/download/{{ pln_version }}/pln_{{ pkg_version }}_linux_arm64.deb"
+    dest: /tmp/pln.deb
+    mode: "0644"
+    force: true
+
+- name: Install .deb
+  ansible.builtin.apt:
+    deb: /tmp/pln.deb
+    force: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+    NEEDRESTART_SUSPEND: "1"
+
+- name: Verify pln is installed
+  ansible.builtin.command: pln version
+  changed_when: false
+  register: pln_ver
+
+- name: Show installed version
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: {{ pln_ver.stdout }}"

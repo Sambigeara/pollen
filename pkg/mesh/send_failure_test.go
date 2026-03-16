@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -25,7 +26,7 @@ func TestHandleSendFailureRemovesSessionAndEmitsDisconnect(t *testing.T) {
 	session := &peerSession{}
 	m.sessions.peers[peerKey] = session
 
-	m.handleSendFailure(peerKey, session, &quic.ApplicationError{ErrorMessage: string(CloseReasonTopologyPrune)})
+	m.handleSendFailure(context.Background(), peerKey, session, &quic.ApplicationError{ErrorMessage: string(CloseReasonTopologyPrune)})
 
 	_, ok := m.sessions.get(peerKey)
 	require.False(t, ok)
@@ -53,7 +54,7 @@ func TestHandleSendFailureIgnoresUnknownErrors(t *testing.T) {
 	session := &peerSession{}
 	m.sessions.peers[peerKey] = session
 
-	m.handleSendFailure(peerKey, session, errors.New("boom"))
+	m.handleSendFailure(context.Background(), peerKey, session, errors.New("boom"))
 
 	_, ok := m.sessions.get(peerKey)
 	require.True(t, ok)

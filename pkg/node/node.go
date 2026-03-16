@@ -95,11 +95,8 @@ const (
 
 	loopIntervalJitter = 0.1
 	peerEventBufSize   = 64
-	gossipEventBufSize = 64
-	punchChBufSize     = 32
-	punchWorkers       = 3 // max concurrent punches; bounds socket usage to N×256
+	nodeWorkers        = 8
 	ipRefreshInterval  = 5 * time.Minute
-	stateSaveInterval  = 30 * time.Second
 )
 
 type BootstrapPeer struct {
@@ -108,25 +105,21 @@ type BootstrapPeer struct {
 }
 
 type Config struct {
+	PacketConn          net.PacketConn
 	AdvertisedIPs       []string
 	BootstrapPeers      []BootstrapPeer
-	Port                int
-	GossipInterval      time.Duration
+	TLSIdentityTTL      time.Duration
 	PeerTickInterval    time.Duration
 	GossipJitter        float64
-	TLSIdentityTTL      time.Duration
+	GossipInterval      time.Duration
 	MembershipTTL       time.Duration
 	ReconnectWindow     time.Duration
 	MaxConnectionAge    time.Duration
+	Port                int
 	DisableGossipJitter bool
 	BootstrapPublic     bool
 	MetricsEnabled      bool
-}
-
-type punchRequest struct {
-	ip      net.IP
-	port    int
-	peerKey types.PeerKey
+	DisableNATPunch     bool
 }
 
 type Node struct {
@@ -139,16 +132,15 @@ type Node struct {
 	casStore        *cas.Store
 	nonTargetStreak map[types.PeerKey]int
 	creds           *auth.NodeCredentials
+	workers         *workerPool
 	localPeerEvents chan peer.Input
 	peers           *peer.Store
 	conf            *Config
 	ready           chan struct{}
 	log             *zap.SugaredLogger
 	lastEagerSync   map[types.PeerKey]time.Time
-	punchCh         chan punchRequest
 	peerConnectTime map[types.PeerKey]time.Time
 	smoothedErr     *metrics.EWMA
-	gossipEvents    chan []*statev1.GossipEvent
 	topoMetrics     *metrics.TopologyMetrics
 	metricsCol      *metrics.Collector
 	tracer          *traces.Tracer
@@ -205,6 +197,13 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		return nil, err
 	}
 
+	if conf.PacketConn != nil {
+		m.SetPacketConn(conf.PacketConn)
+	}
+	if conf.DisableNATPunch {
+		m.SetDisableNATPunch(true)
+	}
+
 	m.SetTracer(tracer)
 	stateStore.SetGossipMetrics(gossipMetrics)
 	peerStore.SetPeerMetrics(peerMetrics)
@@ -231,9 +230,8 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 		conf:            conf,
 		signPriv:        privKey,
 		pollenDir:       pollenDir,
+		workers:         newWorkerPool(nodeWorkers),
 		localPeerEvents: make(chan peer.Input, peerEventBufSize),
-		punchCh:         make(chan punchRequest, punchChBufSize),
-		gossipEvents:    make(chan []*statev1.GossipEvent, gossipEventBufSize),
 		ready:           make(chan struct{}),
 		lastEagerSync:   make(map[types.PeerKey]time.Time),
 		peerConnectTime: make(map[types.PeerKey]time.Time),
@@ -262,6 +260,14 @@ func New(conf *Config, privKey ed25519.PrivateKey, creds *auth.NodeCredentials, 
 func (n *Node) Start(ctx context.Context) error {
 	defer n.shutdown()
 
+	storeReady := make(chan struct{})
+	go func() {
+		if err := n.store.Run(ctx, storeReady); err != nil && ctx.Err() == nil {
+			n.log.Errorw("store loop failed", "error", err)
+		}
+	}()
+	<-storeReady
+
 	hostFuncs := wasm.NewHostFunctions(n.log.Named("wasm"), n)
 	wasmRT := wasm.NewRuntime(hostFuncs, 0)
 	n.wasmRuntime = wasmRT
@@ -271,43 +277,12 @@ func (n *Node) Start(ctx context.Context) error {
 		n.store.SetLocalCertExpiry(n.creds.Cert.GetClaims().GetNotAfterUnix())
 	}
 
-	// Register deny callback: disconnect denied peers immediately when a
-	// deny event arrives via gossip from any cluster member.
-	n.store.OnDenyPeer(func(pk types.PeerKey) {
-		n.log.Infow("deny event received via gossip, disconnecting peer", "peer", pk.Short())
-		n.tun.DisconnectPeer(pk)
-		n.mesh.ClosePeerSession(pk, mesh.CloseReasonDenied)
-		n.store.RemoveDesiredConnection(pk, 0, 0)
-		select {
-		case n.localPeerEvents <- peer.PeerDisconnected{PeerKey: pk, Reason: peer.DisconnectDenied}:
-		default:
-		}
-		select {
-		case n.localPeerEvents <- peer.ForgetPeer{PeerKey: pk}:
-		default:
-		}
-	})
-
 	if err := n.mesh.Start(ctx); err != nil {
 		return err
 	}
 	n.mesh.SetRouter(n.routeTable)
 	n.mesh.SetTrafficTracker(n.trafficTracker)
 	n.tun.SetTrafficTracker(n.trafficTracker)
-
-	n.store.OnRouteInvalidate(func() {
-		n.signalRouteInvalidate()
-	})
-
-	// Wire artifact fetch handler: serve WASM bytes from CAS to peers.
-	n.mesh.SetArtifactHandler(func(stream io.ReadWriteCloser, _ types.PeerKey) {
-		scheduler.HandleArtifactStream(stream, n.casStore)
-	})
-
-	// Wire workload invocation handler: execute function calls on local workloads.
-	n.mesh.SetWorkloadHandler(func(stream io.ReadWriteCloser, _ types.PeerKey) {
-		scheduler.HandleWorkloadStream(ctx, stream, n.workloads, workloadInvocationTimeout)
-	})
 
 	// Start scheduler reconciler for distributed workload placement.
 	n.sched = scheduler.NewReconciler(
@@ -316,11 +291,9 @@ func (n *Node) Start(ctx context.Context) error {
 		n.workloads,
 		n.casStore,
 		scheduler.NewArtifactFetcher(n.mesh, n.casStore),
-		func(events []*statev1.GossipEvent) { n.queueGossipEvents(events) },
+		func([]*statev1.GossipEvent) {},
 		n.log.Named("scheduler"),
 	)
-	n.store.OnWorkloadChange(func() { n.sched.Signal() })
-	n.store.OnTrafficChange(func() { n.sched.SignalTraffic() })
 	go n.sched.Run(ctx)
 
 	// Publish the random startup coordinate so peers receive initial Vivaldi
@@ -331,12 +304,9 @@ func (n *Node) Start(ctx context.Context) error {
 
 	close(n.ready)
 	n.connectBootstrapPeers(ctx)
-	n.tun.Start(ctx)
+	go n.workers.run(ctx)
 	go n.recvLoop(ctx)
-	go n.acceptClockStreamsLoop(ctx)
-	for range punchWorkers {
-		go n.punchLoop(ctx)
-	}
+	go n.streamDispatchLoop(ctx)
 
 	jitter := loopIntervalJitter
 	if n.conf.DisableGossipJitter {
@@ -365,15 +335,12 @@ func (n *Node) Start(ctx context.Context) error {
 	certCheckTicker := time.NewTicker(certInterval)
 	defer certCheckTicker.Stop()
 
-	stateSaveTicker := time.NewTicker(stateSaveInterval)
-	defer stateSaveTicker.Stop()
-
-	n.tick()
+	n.tick(ctx)
 	n.recomputeRoutes()
 	n.checkCertExpiry()
 	n.sampleResourceTelemetry()
 	n.sampleTrafficHeatmap()
-	n.queueGossipEvents(n.store.LocalEvents())
+	n.broadcastEvents(ctx, n.store.LocalEvents())
 
 	// Debounced route recomputation state.
 	var (
@@ -396,7 +363,7 @@ func (n *Node) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-peerTicker.C:
-			n.tick()
+			n.tick(ctx)
 		case <-gossipTicker.C:
 			n.sampleResourceTelemetry()
 			n.sampleTrafficHeatmap()
@@ -415,25 +382,41 @@ func (n *Node) Start(ctx context.Context) error {
 				certInterval = certCheckInterval
 				certCheckTicker.Reset(certInterval)
 			}
-		case <-stateSaveTicker.C:
-			if err := n.store.Save(); err != nil {
-				n.log.Warnw("periodic state save failed", "err", err)
-			}
-		case events := <-n.gossipEvents:
-		drain:
-			for {
-				select {
-				case more := <-n.gossipEvents:
-					events = append(events, more...)
-				default:
-					break drain
+		case ev := <-n.store.Events():
+			switch e := ev.(type) {
+			case store.GossipApplied:
+				if len(e.Rebroadcast) > 0 {
+					n.broadcastEvents(ctx, e.Rebroadcast)
 				}
+			case store.LocalMutationApplied:
+				if len(e.Events) > 0 {
+					n.broadcastEvents(ctx, e.Events)
+				}
+			case store.DenyApplied:
+				pk := e.PeerKey
+				n.log.Infow("deny event received via gossip, disconnecting peer", "peer", pk.Short())
+				n.tun.DisconnectPeer(pk)
+				n.mesh.ClosePeerSession(pk, mesh.CloseReasonDenied)
+				n.store.RemoveDesiredConnection(pk, 0, 0)
+				select {
+				case n.localPeerEvents <- peer.PeerDisconnected{PeerKey: pk, Reason: peer.DisconnectDenied}:
+				default:
+				}
+				select {
+				case n.localPeerEvents <- peer.ForgetPeer{PeerKey: pk}:
+				default:
+				}
+			case store.RouteInvalidated:
+				n.signalRouteInvalidate()
+			case store.WorkloadChanged:
+				n.sched.Signal()
+			case store.TrafficChanged:
+				n.sched.SignalTraffic()
 			}
-			n.broadcastEvents(ctx, events)
 		case in := <-n.mesh.Events():
-			n.handlePeerInput(in)
+			n.handlePeerInput(ctx, in)
 		case in := <-n.localPeerEvents:
-			n.handlePeerInput(in)
+			n.handlePeerInput(ctx, in)
 		case <-n.routeInvalidate:
 			now := time.Now()
 			if firstRouteInvalidation.IsZero() {
@@ -487,17 +470,6 @@ func (n *Node) connectBootstrapPeers(ctx context.Context) {
 	}
 }
 
-func (n *Node) queueGossipEvents(events []*statev1.GossipEvent) {
-	if len(events) == 0 {
-		return
-	}
-
-	select {
-	case n.gossipEvents <- events:
-	default:
-	}
-}
-
 func (n *Node) recvLoop(ctx context.Context) {
 	for {
 		p, err := n.mesh.Recv(ctx)
@@ -512,18 +484,34 @@ func (n *Node) recvLoop(ctx context.Context) {
 	}
 }
 
-func (n *Node) acceptClockStreamsLoop(ctx context.Context) {
+func (n *Node) streamDispatchLoop(ctx context.Context) {
 	for {
-		peerKey, stream, err := n.mesh.AcceptClockStream(ctx)
+		stream, stype, peerKey, err := n.mesh.AcceptAllStreams(ctx)
 		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			n.log.Debugw("accept clock stream failed", "err", err)
 			return
 		}
-		go n.handleClockStream(ctx, peerKey, stream)
+		switch stype {
+		case mesh.StreamTypeClock:
+			go n.handleClockStream(ctx, peerKey, stream)
+		case mesh.StreamTypeTunnel:
+			n.tun.HandleIncoming(stream, peerKey)
+		case mesh.StreamTypeArtifact:
+			go n.handleArtifactStream(stream)
+		case mesh.StreamTypeWorkload:
+			go n.handleWorkloadStream(ctx, stream)
+		default:
+			n.log.Warnw("unknown stream type", "type", uint8(stype))
+			stream.Close()
+		}
 	}
+}
+
+func (n *Node) handleArtifactStream(stream io.ReadWriteCloser) {
+	scheduler.HandleArtifactStream(stream, n.casStore)
+}
+
+func (n *Node) handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser) {
+	scheduler.HandleWorkloadStream(ctx, stream, n.workloads, workloadInvocationTimeout)
 }
 
 func (n *Node) handleClockStream(_ context.Context, from types.PeerKey, stream io.ReadWriteCloser) {
@@ -570,10 +558,7 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 	case *meshv1.Envelope_Events:
 		span := n.tracer.StartFromRemote("gossip.applyEvents", env.GetTraceId())
 		span.SetAttr("peer", from.Short())
-		result := n.store.ApplyEvents(body.Events.GetEvents(), body.Events.GetIsResponse())
-		if len(result.Rebroadcast) > 0 && !body.Events.GetIsResponse() {
-			n.queueGossipEvents(result.Rebroadcast)
-		}
+		n.store.ApplyEvents(body.Events.GetEvents(), body.Events.GetIsResponse())
 		span.End()
 	case *meshv1.Envelope_PunchCoordRequest:
 		span := n.tracer.StartFromRemote("punch.coordRequest", env.GetTraceId())
@@ -583,7 +568,7 @@ func (n *Node) handleDatagram(ctx context.Context, from types.PeerKey, env *mesh
 	case *meshv1.Envelope_PunchCoordTrigger:
 		span := n.tracer.StartFromRemote("punch.coordTrigger", env.GetTraceId())
 		span.SetAttr("peer", from.Short())
-		n.handlePunchCoordTrigger(body.PunchCoordTrigger)
+		n.handlePunchCoordTrigger(ctx, body.PunchCoordTrigger)
 		span.End()
 	case *meshv1.Envelope_ObservedAddress:
 		n.handleObservedAddress(from, body.ObservedAddress)
@@ -662,8 +647,7 @@ func (n *Node) sendClockViaStream(ctx context.Context, peerID types.PeerKey, dig
 		return fmt.Errorf("unmarshal clock response from %s: %w", peerID.Short(), err)
 	}
 
-	result := n.store.ApplyEvents(batch.GetEvents(), true)
-	n.queueGossipEvents(result.Rebroadcast)
+	n.store.ApplyEvents(batch.GetEvents(), true)
 	return nil
 }
 
@@ -725,7 +709,7 @@ func (n *Node) gossip(ctx context.Context) {
 
 func (n *Node) sampleResourceTelemetry() {
 	cpuPct, memPct, memTotal, numCPU := sysinfo.Sample()
-	n.queueGossipEvents(n.store.SetLocalResourceTelemetry(cpuPct, memPct, memTotal, numCPU))
+	n.store.SetLocalResourceTelemetry(cpuPct, memPct, memTotal, numCPU)
 }
 
 func (n *Node) sampleTrafficHeatmap() {
@@ -737,7 +721,7 @@ func (n *Node) sampleTrafficHeatmap() {
 	for pk, pt := range snapshot {
 		rates[pk] = store.TrafficSnapshot{BytesIn: pt.BytesIn, BytesOut: pt.BytesOut}
 	}
-	n.queueGossipEvents(n.store.SetLocalTrafficHeatmap(rates))
+	n.store.SetLocalTrafficHeatmap(rates)
 	n.sched.SignalTraffic()
 }
 
@@ -748,17 +732,15 @@ func (n *Node) refreshIPs() {
 		return
 	}
 
-	events := n.store.SetLocalNetwork(newIPs, uint32(n.conf.Port))
-	if len(events) > 0 {
+	if len(n.store.SetLocalNetwork(newIPs, uint32(n.conf.Port))) > 0 {
 		n.log.Infow("advertised IPs changed", "ips", newIPs)
-		n.queueGossipEvents(events)
 	}
 }
 
-func (n *Node) handlePeerInput(in peer.Input) {
+func (n *Node) handlePeerInput(ctx context.Context, in peer.Input) {
 	switch d := in.(type) {
 	case peer.PeerDisconnected:
-		n.queueGossipEvents(n.store.SetLocalConnected(d.PeerKey, false))
+		n.store.SetLocalConnected(d.PeerKey, false)
 		n.signalRouteInvalidate()
 		if n.sched != nil {
 			n.sched.Signal() // reachability change affects workload claim visibility
@@ -771,27 +753,28 @@ func (n *Node) handlePeerInput(in peer.Input) {
 	}
 
 	outputs := n.peers.Step(time.Now(), in)
-	n.handleOutputs(outputs)
+	n.handleOutputs(ctx, outputs)
 }
 
-func (n *Node) tick() {
-	n.updateVivaldiCoords()
-	n.syncPeersFromState()
+func (n *Node) tick(ctx context.Context) {
+	snap := n.store.Snapshot()
+	n.updateVivaldiCoords(snap)
+	n.syncPeersFromState(ctx, snap)
 	if time.Since(n.lastExpirySweep) >= expirySweepInterval {
-		n.disconnectExpiredPeers()
+		n.disconnectExpiredPeers(ctx)
 		n.lastExpirySweep = time.Now()
 	}
-	n.reconcileConnections()
-	n.reconcileDesiredConnections()
+	n.reconcileConnections(snap)
+	n.reconcileDesiredConnections(snap)
 
 	now := time.Now()
 	outputs := n.peers.Step(now, peer.Tick{
 		MaxConnect: topology.DefaultInfraMax + topology.DefaultNearestK + topology.DefaultRandomR,
 	})
-	n.handleOutputs(outputs)
+	n.handleOutputs(ctx, outputs)
 }
 
-func (n *Node) updateVivaldiCoords() {
+func (n *Node) updateVivaldiCoords(snap store.Snapshot) {
 	updated := false
 	now := time.Now()
 	for _, peerKey := range n.GetConnectedPeers() {
@@ -806,10 +789,11 @@ func (n *Node) updateVivaldiCoords() {
 		if rtt <= 0 {
 			continue
 		}
-		peerCoord, ok := n.store.PeerVivaldiCoord(peerKey)
-		if !ok || peerCoord == nil {
+		nv, ok := snap.Nodes[peerKey]
+		if !ok || nv.VivaldiCoord == nil {
 			continue
 		}
+		peerCoord := nv.VivaldiCoord
 		var newErr float64
 		n.localCoord, newErr = topology.Update(
 			n.localCoord, n.localCoordErr,
@@ -821,16 +805,14 @@ func (n *Node) updateVivaldiCoords() {
 		updated = true
 	}
 	if updated {
-		events := n.store.SetLocalVivaldiCoord(n.localCoord)
-		n.queueGossipEvents(events)
-		if len(events) > 0 {
+		if len(n.store.SetLocalVivaldiCoord(n.localCoord)) > 0 {
 			n.signalRouteInvalidate()
 		}
 	}
 }
 
-func (n *Node) syncPeersFromState() {
-	knownPeers := n.store.KnownPeers()
+func (n *Node) syncPeersFromState(ctx context.Context, snap store.Snapshot) {
+	knownPeers := knownPeersFromSnapshot(snap)
 
 	// Build topology peer infos for target selection.
 	peerInfos := make([]topology.PeerInfo, 0, len(knownPeers))
@@ -869,7 +851,8 @@ func (n *Node) syncPeersFromState() {
 	}
 
 	epoch := time.Now().Unix() / topology.EpochSeconds
-	localIPs := n.store.NodeIPs(n.store.LocalID)
+	localNV := snap.Nodes[snap.LocalID]
+	localIPs := localNV.IPs
 	shape := summarizeTopologyShape(localIPs, knownPeers)
 	activePeerCount := len(connectedPeers)
 	params := adaptiveTopologyParams(epoch, shape)
@@ -877,11 +860,9 @@ func (n *Node) syncPeersFromState() {
 	params.LocalIPs = localIPs
 	params.CurrentOutbound = currentOutbound
 	params.LocalNATType = n.natDetector.Type()
-	if localRec, ok := n.store.Get(n.store.LocalID); ok {
-		params.LocalObservedExternalIP = localRec.ObservedExternalIP
-	}
+	params.LocalObservedExternalIP = localNV.ObservedExternalIP
 	params.UseHMACNearest = n.useHMACNearest
-	targets := topology.ComputeTargetPeers(n.store.LocalID, n.localCoord, peerInfos, params)
+	targets := topology.ComputeTargetPeers(snap.LocalID, n.localCoord, peerInfos, params)
 
 	n.topoMetrics.VivaldiError.Set(smoothed)
 	if n.useHMACNearest {
@@ -890,7 +871,7 @@ func (n *Node) syncPeersFromState() {
 		n.topoMetrics.HMACNearestEnabled.Set(0.0)
 	}
 
-	targetSet := buildTargetPeerSet(targets, n.store.DesiredConnections())
+	targetSet := buildTargetPeerSet(targets, snap.Connections)
 
 	// Discover peers that are topology targets or needed by local service
 	// forwards.
@@ -962,10 +943,10 @@ func (n *Node) syncPeersFromState() {
 			}
 			n.mesh.ClosePeerSession(kp.PeerID, mesh.CloseReasonTopologyPrune)
 			n.topoMetrics.TopologyPrunes.Inc()
-			n.handlePeerInput(peer.PeerDisconnected{PeerKey: kp.PeerID, Reason: peer.DisconnectGraceful})
+			n.handlePeerInput(ctx, peer.PeerDisconnected{PeerKey: kp.PeerID, Reason: peer.DisconnectGraceful})
 		}
 		delete(n.nonTargetStreak, kp.PeerID)
-		n.handlePeerInput(peer.ForgetPeer{PeerKey: kp.PeerID})
+		n.handlePeerInput(ctx, peer.ForgetPeer{PeerKey: kp.PeerID})
 	}
 }
 
@@ -980,23 +961,23 @@ func buildTargetPeerSet(targets []types.PeerKey, desired []store.Connection) map
 	return out
 }
 
-func (n *Node) handleOutputs(outputs []peer.Output) {
+func (n *Node) handleOutputs(ctx context.Context, outputs []peer.Output) {
 	for _, out := range outputs {
 		switch e := out.(type) {
 		case peer.PeerConnected:
 			addr := &net.UDPAddr{IP: e.IP, Port: e.ObservedPort}
 			n.store.SetLastAddr(e.PeerKey, addr.String())
 			n.peerConnectTime[e.PeerKey] = time.Now()
-			n.queueGossipEvents(n.store.SetLocalConnected(e.PeerKey, true))
+			n.store.SetLocalConnected(e.PeerKey, true)
 			n.signalRouteInvalidate()
 			if n.sched != nil {
-				n.sched.Signal() // reachability change affects workload claim visibility
+				n.sched.Signal()
 			}
 			if time.Since(n.lastEagerSync[e.PeerKey]) >= eagerSyncCooldown {
 				n.lastEagerSync[e.PeerKey] = time.Now()
 				clock := n.store.EagerSyncClock()
 				pk := e.PeerKey
-				go func() {
+				n.workers.submit(ctx, func() {
 					eagerCtx, cancel := context.WithTimeout(context.Background(), eagerSyncTimeout)
 					defer cancel()
 					if err := n.sendClockViaStream(eagerCtx, pk, clock); err != nil {
@@ -1005,25 +986,28 @@ func (n *Node) handleOutputs(outputs []peer.Output) {
 					} else {
 						n.eagerSyncs.Add(1)
 					}
-				}()
+				})
 			}
 
 			n.sendObservedAddress(e.PeerKey, addr)
 
 			n.log.Infow("peer connected", "peer_id", e.PeerKey.Short(), "ip", e.IP, "observedPort", e.ObservedPort)
 		case peer.AttemptEagerConnect:
-			go n.doConnect(e.PeerKey, []*net.UDPAddr{e.Addr})
+			pk, addr := e.PeerKey, e.Addr
+			n.workers.submit(ctx, func() { n.doConnect(pk, []*net.UDPAddr{addr}) })
 		case peer.AttemptConnect:
-			go n.doConnect(e.PeerKey, n.buildPeerAddrs(e.PeerKey, e.Ips, e.Port))
+			pk, addrs := e.PeerKey, n.buildPeerAddrs(e.PeerKey, e.Ips, e.Port)
+			n.workers.submit(ctx, func() { n.doConnect(pk, addrs) })
 		case peer.RequestPunchCoordination:
-			go n.requestPunchCoordination(e.PeerKey)
+			pk := e.PeerKey
+			n.workers.submit(ctx, func() { n.requestPunchCoordination(pk) })
 		}
 	}
 }
 
-func (n *Node) reconcileConnections() {
+func (n *Node) reconcileConnections(snap store.Snapshot) {
 	for _, conn := range n.tun.ListConnections() {
-		if n.store.HasServicePort(conn.PeerID, conn.RemotePort) {
+		if snapshotHasServicePort(snap, conn.PeerID, conn.RemotePort) {
 			continue
 		}
 		n.log.Infow("removing stale forward", "peer", conn.PeerID.Short(), "port", conn.RemotePort)
@@ -1032,9 +1016,8 @@ func (n *Node) reconcileConnections() {
 	}
 }
 
-func (n *Node) reconcileDesiredConnections() {
-	desired := n.store.DesiredConnections()
-	if len(desired) == 0 {
+func (n *Node) reconcileDesiredConnections(snap store.Snapshot) {
+	if len(snap.Connections) == 0 {
 		return
 	}
 
@@ -1043,12 +1026,12 @@ func (n *Node) reconcileDesiredConnections() {
 		existing[store.Connection{PeerID: conn.PeerID, RemotePort: conn.RemotePort, LocalPort: conn.LocalPort}.Key()] = struct{}{}
 	}
 
-	for _, desiredConn := range desired {
+	for _, desiredConn := range snap.Connections {
 		if _, ok := existing[desiredConn.Key()]; ok {
 			continue
 		}
 
-		if !n.store.HasServicePort(desiredConn.PeerID, desiredConn.RemotePort) {
+		if !snapshotHasServicePort(snap, desiredConn.PeerID, desiredConn.RemotePort) {
 			continue
 		}
 
@@ -1075,17 +1058,19 @@ func (n *Node) doConnect(peerKey types.PeerKey, addrs []*net.UDPAddr) {
 }
 
 func (n *Node) buildPeerAddrs(peerKey types.PeerKey, ips []net.IP, port int) []*net.UDPAddr {
+	snap := n.store.Snapshot()
 	var extPort int
-	if rec, ok := n.store.Get(peerKey); ok && rec.ExternalPort != 0 {
-		extPort = int(rec.ExternalPort)
+	if nv, ok := snap.Nodes[peerKey]; ok && nv.ExternalPort != 0 {
+		extPort = int(nv.ExternalPort)
 	}
 
-	return orderPeerAddrs(n.store.NodeIPs(n.store.LocalID), ips, port, extPort)
+	return orderPeerAddrs(snap.Nodes[snap.LocalID].IPs, ips, port, extPort)
 }
 
 func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
-	localIPs := n.store.NodeIPs(n.store.LocalID)
-	targetIPs := n.store.NodeIPs(target)
+	snap := n.store.Snapshot()
+	localIPs := snap.Nodes[snap.LocalID].IPs
+	targetIPs := snap.Nodes[target].IPs
 	connectedPeers := n.GetConnectedPeers()
 	filtered := make([]types.PeerKey, 0, len(connectedPeers))
 	for _, key := range connectedPeers {
@@ -1094,7 +1079,7 @@ func (n *Node) coordinatorPeers(target types.PeerKey) []types.PeerKey {
 		}
 		filtered = append(filtered, key)
 	}
-	return rankCoordinators(localIPs, targetIPs, target, filtered, n.store)
+	return rankCoordinators(localIPs, targetIPs, target, filtered, snap)
 }
 
 func (n *Node) requestPunchCoordination(target types.PeerKey) {
@@ -1128,7 +1113,7 @@ func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, 
 		return
 	}
 
-	go func() {
+	n.workers.submit(ctx, func() {
 		if err := n.mesh.Send(ctx, from, &meshv1.Envelope{Body: &meshv1.Envelope_PunchCoordTrigger{PunchCoordTrigger: &meshv1.PunchCoordTrigger{
 			PeerId:   req.PeerId,
 			SelfAddr: fromAddr.String(),
@@ -1136,8 +1121,8 @@ func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, 
 		}}}); err != nil {
 			n.log.Debugw("punch coord trigger send failed", "to", from.Short(), "err", err)
 		}
-	}()
-	go func() {
+	})
+	n.workers.submit(ctx, func() {
 		if err := n.mesh.Send(ctx, targetKey, &meshv1.Envelope{Body: &meshv1.Envelope_PunchCoordTrigger{PunchCoordTrigger: &meshv1.PunchCoordTrigger{
 			PeerId:   from.Bytes(),
 			SelfAddr: targetAddr.String(),
@@ -1145,40 +1130,10 @@ func (n *Node) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, 
 		}}}); err != nil {
 			n.log.Debugw("punch coord trigger send failed", "to", targetKey.Short(), "err", err)
 		}
-	}()
+	})
 }
 
-func (n *Node) punchLoop(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case req := <-n.punchCh:
-			if n.peers.InState(req.peerKey, peer.PeerStateConnected) {
-				continue
-			}
-
-			localNAT := n.natDetector.Type()
-			n.nodeMetrics.PunchAttempts.Inc()
-
-			ctx, cancel := context.WithTimeout(context.Background(), punchTimeout)
-			err := n.mesh.Punch(ctx, req.peerKey, &net.UDPAddr{IP: req.ip, Port: req.port}, localNAT)
-			cancel()
-
-			if err != nil && n.peers.InState(req.peerKey, peer.PeerStateConnecting) {
-				if errors.Is(err, mesh.ErrIdentityMismatch) {
-					n.log.Warnw("punch failed: peer identity mismatch", "peer", req.peerKey.Short(), "err", err)
-				} else {
-					n.log.Debugw("punch failed", "peer", req.peerKey.Short(), "err", err)
-				}
-				n.nodeMetrics.PunchFailures.Inc()
-				n.localPeerEvents <- peer.ConnectFailed{PeerKey: req.peerKey}
-			}
-		}
-	}
-}
-
-func (n *Node) handlePunchCoordTrigger(trigger *meshv1.PunchCoordTrigger) {
+func (n *Node) handlePunchCoordTrigger(ctx context.Context, trigger *meshv1.PunchCoordTrigger) {
 	peerKey := types.PeerKeyFromBytes(trigger.PeerId)
 	if n.peers.InState(peerKey, peer.PeerStateConnected) {
 		return
@@ -1192,11 +1147,28 @@ func (n *Node) handlePunchCoordTrigger(trigger *meshv1.PunchCoordTrigger) {
 
 	n.log.Infow("punch coord trigger received", "peer", peerKey.Short(), "peerAddr", peerAddr.String())
 
-	select {
-	case n.punchCh <- punchRequest{peerKey: peerKey, ip: peerAddr.IP, port: peerAddr.Port}:
-	default:
-		n.log.Debugw("punch queue full, dropping", "peer", peerKey.Short())
-	}
+	n.workers.submit(ctx, func() {
+		if n.peers.InState(peerKey, peer.PeerStateConnected) {
+			return
+		}
+
+		localNAT := n.natDetector.Type()
+		n.nodeMetrics.PunchAttempts.Inc()
+
+		punchCtx, cancel := context.WithTimeout(context.Background(), punchTimeout)
+		err := n.mesh.Punch(punchCtx, peerKey, peerAddr, localNAT)
+		cancel()
+
+		if err != nil && n.peers.InState(peerKey, peer.PeerStateConnecting) {
+			if errors.Is(err, mesh.ErrIdentityMismatch) {
+				n.log.Warnw("punch failed: peer identity mismatch", "peer", peerKey.Short(), "err", err)
+			} else {
+				n.log.Debugw("punch failed", "peer", peerKey.Short(), "err", err)
+			}
+			n.nodeMetrics.PunchFailures.Inc()
+			n.localPeerEvents <- peer.ConnectFailed{PeerKey: peerKey}
+		}
+	})
 }
 
 func (n *Node) sendObservedAddress(pk types.PeerKey, addr *net.UDPAddr) {
@@ -1221,15 +1193,15 @@ func (n *Node) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedAddr
 	}
 
 	n.log.Debugw("observed address received", "addr", addr.String(), "from", from.Short())
-	n.queueGossipEvents(n.store.SetObservedExternalIP(addr.IP.String()))
-	n.queueGossipEvents(n.store.SetExternalPort(uint32(addr.Port)))
+	n.store.SetObservedExternalIP(addr.IP.String())
+	n.store.SetExternalPort(uint32(addr.Port))
 
 	if peerAddr, ok := n.mesh.GetActivePeerAddress(from); ok {
 		if observerIP, ok := netip.AddrFromSlice(peerAddr.IP); ok {
 			observerIP = observerIP.Unmap()
 			if natType, changed := n.natDetector.AddObservation(observerIP, addr.Port); changed {
 				n.log.Infow("NAT type detected", "type", natType)
-				n.queueGossipEvents(n.store.SetLocalNatType(natType))
+				n.store.SetLocalNatType(natType)
 			}
 		}
 	}
@@ -1245,8 +1217,8 @@ func (n *Node) RouteCall(ctx context.Context, targetHash, function string, input
 	}
 
 	// Find claimants from gossip.
-	claims := n.store.AllWorkloadClaims()
-	claimants := claims[targetHash]
+	snap := n.store.Snapshot()
+	claimants := snap.Claims[targetHash]
 	if len(claimants) == 0 {
 		return nil, fmt.Errorf("no node claims workload %s: %w", targetHash[:min(12, len(targetHash))], workload.ErrNotRunning) //nolint:mnd
 	}
@@ -1285,7 +1257,8 @@ func sortedClaimants(claimants map[types.PeerKey]struct{}) []types.PeerKey {
 }
 
 func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
-	if _, ok := n.store.IdentityPub(peerID); !ok {
+	snap := n.store.Snapshot()
+	if nv, ok := snap.Nodes[peerID]; !ok || len(nv.IdentityPub) == 0 {
 		return 0, errors.New("peerID not recognised")
 	}
 
@@ -1301,7 +1274,8 @@ func (n *Node) ConnectService(peerID types.PeerKey, remotePort, localPort uint32
 }
 
 func (n *Node) DisconnectService(localPort uint32) error {
-	for _, conn := range n.store.DesiredConnections() {
+	snap := n.store.Snapshot()
+	for _, conn := range snap.Connections {
 		if conn.LocalPort == localPort {
 			n.tun.DisconnectLocalPort(localPort)
 			n.store.RemoveDesiredConnection(conn.PeerID, conn.RemotePort, conn.LocalPort)
@@ -1412,7 +1386,7 @@ func (n *Node) applyCertRenewal(newCert *admissionv1.DelegationCert) error {
 		n.log.Warnw("failed to persist renewed credentials", "err", err)
 	}
 
-	n.queueGossipEvents(n.store.SetLocalCertExpiry(newCert.GetClaims().GetNotAfterUnix()))
+	n.store.SetLocalCertExpiry(newCert.GetClaims().GetNotAfterUnix())
 	return nil
 }
 
@@ -1487,7 +1461,7 @@ func (n *Node) handleCertRenewalRequest(ctx context.Context, from types.PeerKey,
 	})
 }
 
-func (n *Node) disconnectExpiredPeers() {
+func (n *Node) disconnectExpiredPeers(ctx context.Context) {
 	now := time.Now()
 	for _, peerKey := range n.mesh.ConnectedPeers() {
 		dc, ok := n.mesh.PeerDelegationCert(peerKey)
@@ -1506,17 +1480,14 @@ func (n *Node) disconnectExpiredPeers() {
 			"peer", peerKey.Short(), "expired_at", auth.CertExpiresAt(dc))
 		n.tun.DisconnectPeer(peerKey)
 		n.mesh.ClosePeerSession(peerKey, mesh.CloseReasonCertExpired)
-		n.handlePeerInput(peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertExpired})
-		n.handlePeerInput(peer.ForgetPeer{PeerKey: peerKey})
+		n.handlePeerInput(ctx, peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertExpired})
+		n.handlePeerInput(ctx, peer.ForgetPeer{PeerKey: peerKey})
 	}
 }
 
 func (n *Node) shutdown() {
-	if err := n.store.Save(); err != nil {
-		n.log.Errorw("failed to save state", "err", err)
-	} else {
-		n.log.Info("state saved to disk")
-	}
+	n.workers.wait()
+
 	if err := n.store.Close(); err != nil {
 		n.log.Errorw("failed to close state store", "err", err)
 	}
@@ -1553,12 +1524,12 @@ func (n *Node) signalRouteInvalidate() {
 }
 
 func (n *Node) recomputeRoutes() {
-	nodes := n.store.AllNodes()
-	nodeInfos := make(map[types.PeerKey]route.NodeInfo, len(nodes))
-	for pk, rec := range nodes {
+	snap := n.store.Snapshot()
+	nodeInfos := make(map[types.PeerKey]route.NodeInfo, len(snap.Nodes))
+	for pk, nv := range snap.Nodes {
 		nodeInfos[pk] = route.NodeInfo{
-			Reachable: rec.Reachable,
-			Coord:     rec.VivaldiCoord,
+			Reachable: nv.Reachable,
+			Coord:     nv.VivaldiCoord,
 		}
 	}
 
@@ -1567,8 +1538,54 @@ func (n *Node) recomputeRoutes() {
 		directPeers[pk] = struct{}{}
 	}
 
-	routes := route.Recompute(n.store.LocalID, &n.localCoord, directPeers, nodeInfos)
+	routes := route.Recompute(snap.LocalID, &n.localCoord, directPeers, nodeInfos)
 	n.routeTable.Update(routes)
+}
+
+// knownPeersFromSnapshot builds a []store.KnownPeer from a snapshot,
+// applying the same filters as store.KnownPeers(): excludes the local node
+// and nodes without any address information.
+func knownPeersFromSnapshot(snap store.Snapshot) []store.KnownPeer {
+	known := make([]store.KnownPeer, 0, len(snap.Nodes))
+	for pk, nv := range snap.Nodes {
+		if pk == snap.LocalID {
+			continue
+		}
+		if nv.LastAddr == "" && (len(nv.IPs) == 0 || nv.LocalPort == 0) {
+			continue
+		}
+		known = append(known, store.KnownPeer{
+			PeerID:             pk,
+			LocalPort:          nv.LocalPort,
+			ExternalPort:       nv.ExternalPort,
+			ObservedExternalIP: nv.ObservedExternalIP,
+			NatType:            nv.NatType,
+			IdentityPub:        nv.IdentityPub,
+			IPs:                nv.IPs,
+			LastAddr:           nv.LastAddr,
+			PubliclyAccessible: nv.PubliclyAccessible,
+			VivaldiCoord:       nv.VivaldiCoord,
+		})
+	}
+	slices.SortFunc(known, func(a, b store.KnownPeer) int {
+		return a.PeerID.Compare(b.PeerID)
+	})
+	return known
+}
+
+// snapshotHasServicePort checks whether a peer in the snapshot has a service
+// registered on the given port.
+func snapshotHasServicePort(snap store.Snapshot, peerID types.PeerKey, port uint32) bool {
+	nv, ok := snap.Nodes[peerID]
+	if !ok {
+		return false
+	}
+	for _, svc := range nv.Services {
+		if svc.GetPort() == port {
+			return true
+		}
+	}
+	return false
 }
 
 func (n *Node) Ready() <-chan struct{} {
@@ -1582,6 +1599,179 @@ func (n *Node) ListenPort() int {
 // GetConnectedPeers returns all currently connected peer keys.
 func (n *Node) GetConnectedPeers() []types.PeerKey {
 	return n.peers.GetAll(peer.PeerStateConnected)
+}
+
+// ConnectPeer establishes a direct mesh connection to a peer at the given addresses.
+func (n *Node) ConnectPeer(ctx context.Context, pk types.PeerKey, addrs []*net.UDPAddr) error {
+	return n.mesh.Connect(ctx, pk, addrs)
+}
+
+func (n *Node) UpsertService(port uint32, name string) {
+	n.tun.RegisterService(port)
+	n.store.UpsertLocalService(port, name)
+}
+
+func (n *Node) RemoveService(name string, port uint32) {
+	n.store.RemoveLocalServices(name)
+	n.tun.UnregisterService(port)
+}
+
+func (n *Node) DenyPeer(pk types.PeerKey) {
+	n.store.DenyPeer(pk.Bytes())
+	n.tun.DisconnectPeer(pk)
+	n.store.RemoveDesiredConnection(pk, 0, 0)
+	n.mesh.ClosePeerSession(pk, mesh.CloseReasonDenied)
+	n.localPeerEvents <- peer.PeerDisconnected{PeerKey: pk, Reason: peer.DisconnectDenied}
+	n.localPeerEvents <- peer.ForgetPeer{PeerKey: pk}
+	if err := n.store.Save(); err != nil {
+		n.log.Warnw("failed to save state after deny", "err", err)
+	}
+}
+
+func (n *Node) SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) error {
+	_, err := n.store.SetLocalWorkloadSpec(hash, replicas, memoryPages, timeoutMs)
+	return err
+}
+
+// SeedWorkload stores WASM bytes in CAS, compiles the module, publishes the
+// workload spec, and claims it locally — the same path as NodeService.SeedWorkload.
+func (n *Node) SeedWorkload(wasmBytes []byte, replicas, memoryPages, timeoutMs uint32) (string, error) {
+	if n.workloads == nil {
+		return "", fmt.Errorf("workload manager not initialized")
+	}
+
+	cfg := wasm.PluginConfig{
+		MemoryPages: memoryPages,
+		Timeout:     time.Duration(timeoutMs) * time.Millisecond,
+	}
+	hash, err := n.workloads.Seed(wasmBytes, cfg)
+	if err != nil && !errors.Is(err, workload.ErrAlreadyRunning) {
+		return "", err
+	}
+
+	if replicas == 0 {
+		replicas = 1
+	}
+
+	if _, err := n.store.SetLocalWorkloadSpec(hash, replicas, memoryPages, timeoutMs); err != nil {
+		return "", err
+	}
+	n.store.SetLocalWorkloadClaim(hash, true)
+
+	return hash, nil
+}
+
+func (n *Node) Credentials() *auth.NodeCredentials {
+	return n.creds
+}
+
+// --- Control-service delegation methods ---
+// These thin wrappers satisfy the nodeController interface so svc.go
+// never reaches into Node's internal fields.
+
+func (n *Node) Snapshot() store.Snapshot {
+	return n.store.Snapshot()
+}
+
+func (n *Node) ListConnections() []tunnel.ConnectionInfo {
+	return n.tun.ListConnections()
+}
+
+func (n *Node) PeerStateCounts() peer.PeerStateCounts {
+	return n.peers.StateCounts()
+}
+
+func (n *Node) GetActivePeerAddress(pk types.PeerKey) (*net.UDPAddr, bool) {
+	return n.mesh.GetActivePeerAddress(pk)
+}
+
+func (n *Node) PeerRTT(pk types.PeerKey) (time.Duration, bool) {
+	conn, ok := n.mesh.GetConn(pk)
+	if !ok {
+		return 0, false
+	}
+	rtt := conn.ConnectionStats().SmoothedRTT
+	if rtt <= 0 {
+		return 0, false
+	}
+	return rtt, true
+}
+
+func (n *Node) MeshConnect(ctx context.Context, pk types.PeerKey, addrs []*net.UDPAddr) error {
+	return n.mesh.Connect(ctx, pk, addrs)
+}
+
+func (n *Node) ReconnectWindowDuration() time.Duration {
+	return n.conf.ReconnectWindow
+}
+
+func (n *Node) HasWorkloads() bool {
+	return n.workloads != nil
+}
+
+func (n *Node) WorkloadList() []workload.Summary {
+	if n.workloads == nil {
+		return nil
+	}
+	return n.workloads.List()
+}
+
+func (n *Node) WorkloadSeed(wasmBytes []byte, cfg wasm.PluginConfig) (string, error) {
+	return n.workloads.Seed(wasmBytes, cfg)
+}
+
+func (n *Node) WorkloadUnseed(hash string) error {
+	return n.workloads.Unseed(hash)
+}
+
+func (n *Node) WorkloadIsRunning(hash string) bool {
+	return n.workloads.IsRunning(hash)
+}
+
+func (n *Node) ResolveWorkloadPrefix(prefix string) (hash string, ambiguous, found bool) {
+	return n.store.ResolveWorkloadPrefix(prefix)
+}
+
+func (n *Node) SetLocalWorkloadClaim(hash string, claimed bool) {
+	n.store.SetLocalWorkloadClaim(hash, claimed)
+}
+
+func (n *Node) RemoveLocalWorkloadSpec(hash string) {
+	n.store.RemoveLocalWorkloadSpec(hash)
+}
+
+func (n *Node) ControlMetrics() controlMetrics {
+	nm := n.nodeMetrics
+	gm := n.store.GossipMetrics()
+	return controlMetrics{
+		CertExpirySeconds:  nm.CertExpirySeconds.Value(),
+		CertRenewals:       uint64(nm.CertRenewals.Value()),       //nolint:gosec
+		CertRenewalsFailed: uint64(nm.CertRenewalsFailed.Value()), //nolint:gosec
+		PunchAttempts:      uint64(nm.PunchAttempts.Value()),      //nolint:gosec
+		PunchFailures:      uint64(nm.PunchFailures.Value()),      //nolint:gosec
+		GossipApplied:      uint64(gm.EventsApplied.Value()),      //nolint:gosec
+		GossipStale:        uint64(gm.EventsStale.Value()),        //nolint:gosec
+		SmoothedVivaldiErr: n.smoothedErr.Value(),
+		VivaldiSamples:     uint64(n.vivaldiSamples.Load()),    //nolint:gosec
+		EagerSyncs:         uint64(n.eagerSyncs.Load()),        //nolint:gosec
+		EagerSyncFailures:  uint64(n.eagerSyncFailures.Load()), //nolint:gosec
+	}
+}
+
+func (n *Node) Log() *zap.SugaredLogger {
+	return n.log
+}
+
+func (n *Node) JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
+	return n.mesh.JoinWithInvite(ctx, token)
+}
+
+func (n *Node) AddDesiredConnection(pk types.PeerKey, remotePort, localPort uint32) {
+	n.store.AddDesiredConnection(pk, remotePort, localPort)
+}
+
+func (n *Node) RemoveDesiredConnection(pk types.PeerKey, remotePort, localPort uint32) {
+	n.store.RemoveDesiredConnection(pk, remotePort, localPort)
 }
 
 func GenIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {

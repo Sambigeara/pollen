@@ -30,7 +30,6 @@ const (
 	handshakeTimeout    = 3 * time.Second
 	quicIdleTimeout     = 30 * time.Second
 	quicKeepAlivePeriod = 10 * time.Second
-	eventSendTimeout    = 5 * time.Second
 	maxBidiStreams      = 256
 	queueBufSize        = maxBidiStreams
 	probeBufSize        = 2048
@@ -38,14 +37,25 @@ const (
 	sessionReapInterval = 5 * time.Minute
 	streamTypeTimeout   = 5 * time.Second
 
-	streamTypeClock    byte = 1
-	streamTypeTunnel   byte = 2
-	streamTypeRouted   byte = 3
-	streamTypeArtifact byte = 4
-	streamTypeWorkload byte = 5
+	streamTypeClock    StreamType = 1
+	streamTypeTunnel   StreamType = 2
+	streamTypeRouted   StreamType = 3
+	streamTypeArtifact StreamType = 4
+	streamTypeWorkload StreamType = 5
 
 	routeHeaderSize = 66 // 32 dest + 32 source + 1 TTL + 1 inner stream type (tunnel=2, artifact=4, workload=5 accepted at delivery)
 	defaultRouteTTL = 16
+)
+
+// StreamType identifies the purpose of a QUIC bidi stream.
+type StreamType byte
+
+const (
+	StreamTypeClock    StreamType = streamTypeClock
+	StreamTypeTunnel   StreamType = streamTypeTunnel
+	StreamTypeRouted   StreamType = streamTypeRouted
+	StreamTypeArtifact StreamType = streamTypeArtifact
+	StreamTypeWorkload StreamType = streamTypeWorkload
 )
 
 func quicConfig() *quic.Config {
@@ -87,9 +97,8 @@ type Mesh interface {
 	Recv(ctx context.Context) (Packet, error)
 	Events() <-chan peer.Input
 	OpenStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
-	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
+	AcceptAllStreams(ctx context.Context) (io.ReadWriteCloser, StreamType, types.PeerKey, error)
 	OpenClockStream(ctx context.Context, peer types.PeerKey) (Stream, error)
-	AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
 	JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error
 	JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
 	Connect(ctx context.Context, peer types.PeerKey, addrs []*net.UDPAddr) error
@@ -108,10 +117,10 @@ type Mesh interface {
 	SetTracer(t *traces.Tracer)
 	SetRouter(r Router)
 	SetTrafficTracker(t traffic.Recorder)
-	SetArtifactHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey))
 	OpenArtifactStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
-	SetWorkloadHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey))
 	OpenWorkloadStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error)
+	SetPacketConn(conn net.PacketConn)
+	SetDisableNATPunch(disable bool)
 	Close() error
 }
 
@@ -133,21 +142,20 @@ type impl struct {
 	meshCert         atomic.Pointer[tls.Certificate]
 	bareCert         tls.Certificate
 	socks            sock.SockStore
+	injectedConn     net.PacketConn
+	disableNATPunch  bool
 	isDenied         func(types.PeerKey) bool
 	inCh             chan peer.Input
 	recvCh           chan Packet
 	renewalCh        chan *meshv1.CertRenewalResponse
 	inviteSigner     *auth.DelegationSigner
-	streamCh         chan incomingStream
-	clockStreamCh    chan incomingStream
+	acceptCh         chan acceptedStream
 	trustBundle      *admissionv1.TrustBundle
 	log              *zap.SugaredLogger
 	metrics          *metrics.MeshMetrics
 	tracer           *traces.Tracer
 	router           Router
 	trafficTracker   traffic.Recorder
-	artifactHandler  func(stream io.ReadWriteCloser, peer types.PeerKey)
-	workloadHandler  func(stream io.ReadWriteCloser, peer types.PeerKey)
 	listener         *quic.Listener
 	sessions         *sessionRegistry
 	mainQT           *quic.Transport
@@ -159,8 +167,9 @@ type impl struct {
 	maxConnectionAge time.Duration
 }
 
-type incomingStream struct {
+type acceptedStream struct {
 	stream  io.ReadWriteCloser
+	stype   StreamType
 	peerKey types.PeerKey
 }
 
@@ -210,7 +219,6 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 		inviteSigner:     creds.DelegationKey,
 		isDenied:         isDenied,
 		localKey:         localKey,
-		socks:            sock.NewSockStore(),
 		port:             defaultPort,
 		membershipTTL:    membershipTTL,
 		reconnectWindow:  reconnectWindow,
@@ -219,21 +227,34 @@ func NewMesh(defaultPort int, signPriv ed25519.PrivateKey, creds *auth.NodeCrede
 		recvCh:           make(chan Packet, queueBufSize),
 		renewalCh:        make(chan *meshv1.CertRenewalResponse, 1),
 		inCh:             make(chan peer.Input, queueBufSize),
-		streamCh:         make(chan incomingStream, queueBufSize),
-		clockStreamCh:    make(chan incomingStream, queueBufSize),
+		acceptCh:         make(chan acceptedStream),
 		metrics:          mm,
 	}
 	m.meshCert.Store(&meshCert)
 	return m, nil
 }
 
+func (m *impl) SetPacketConn(conn net.PacketConn) {
+	m.injectedConn = conn
+}
+
+func (m *impl) SetDisableNATPunch(disable bool) {
+	m.disableNATPunch = disable
+}
+
 func (m *impl) Start(ctx context.Context) error {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: m.port})
-	if err != nil {
-		return fmt.Errorf("listen udp:%d: %w", m.port, err)
+	var pconn net.PacketConn
+	if m.injectedConn != nil {
+		pconn = m.injectedConn
+	} else {
+		udpConn, err := net.ListenUDP("udp", &net.UDPAddr{Port: m.port})
+		if err != nil {
+			return fmt.Errorf("listen udp:%d: %w", m.port, err)
+		}
+		pconn = udpConn
 	}
 
-	qt := &quic.Transport{Conn: conn}
+	qt := &quic.Transport{Conn: pconn}
 	ln, err := qt.Listen(newServerTLSConfig(serverTLSParams{
 		meshCertPtr:     &m.meshCert,
 		inviteCert:      m.bareCert,
@@ -242,18 +263,21 @@ func (m *impl) Start(ctx context.Context) error {
 		inviteEnabled:   m.inviteSigner != nil,
 	}), quicConfig())
 	if err != nil {
-		_ = conn.Close()
+		_ = pconn.Close()
 		return fmt.Errorf("quic listen: %w", err)
 	}
 
 	m.mainQT = qt
 	m.listener = ln
 
-	m.socks.SetMainProbeWriter(func(payload []byte, addr *net.UDPAddr) error {
-		_, err := qt.WriteTo(payload, addr)
-		return err
-	})
-	go m.runMainProbeLoop(ctx, qt)
+	if !m.disableNATPunch {
+		m.socks = sock.NewSockStore()
+		m.socks.SetMainProbeWriter(func(payload []byte, addr *net.UDPAddr) error {
+			_, err := qt.WriteTo(payload, addr)
+			return err
+		})
+		go m.runMainProbeLoop(ctx, qt)
+	}
 	go m.acceptLoop(ctx)
 	if m.maxConnectionAge > 0 {
 		go m.sessionReaper(ctx)
@@ -319,8 +343,13 @@ func routeChanged(r Router) <-chan struct{} {
 	return nil
 }
 
-func (m *impl) AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {
-	return m.acceptFromCh(ctx, m.streamCh)
+func (m *impl) AcceptAllStreams(ctx context.Context) (io.ReadWriteCloser, StreamType, types.PeerKey, error) {
+	select {
+	case as := <-m.acceptCh:
+		return as.stream, as.stype, as.peerKey, nil
+	case <-ctx.Done():
+		return nil, 0, types.PeerKey{}, ctx.Err()
+	}
 }
 
 func (m *impl) OpenClockStream(ctx context.Context, peerKey types.PeerKey) (Stream, error) {
@@ -331,11 +360,7 @@ func (m *impl) OpenClockStream(ctx context.Context, peerKey types.PeerKey) (Stre
 	return rwc.(Stream), nil //nolint:forcetypeassert
 }
 
-func (m *impl) AcceptClockStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error) {
-	return m.acceptFromCh(ctx, m.clockStreamCh)
-}
-
-func (m *impl) openTypedStream(ctx context.Context, peerKey types.PeerKey, streamType byte) (io.ReadWriteCloser, error) {
+func (m *impl) openTypedStream(ctx context.Context, peerKey types.PeerKey, streamType StreamType) (io.ReadWriteCloser, error) {
 	s, err := m.sessions.waitFor(ctx, peerKey)
 	if err != nil {
 		return nil, err
@@ -344,24 +369,12 @@ func (m *impl) openTypedStream(ctx context.Context, peerKey types.PeerKey, strea
 	if err != nil {
 		return nil, err
 	}
-	if _, err := stream.Write([]byte{streamType}); err != nil {
+	if _, err := stream.Write([]byte{byte(streamType)}); err != nil {
 		stream.CancelWrite(0)
 		stream.CancelRead(0)
 		return nil, err
 	}
 	return Stream{stream}, nil
-}
-
-func (m *impl) acceptFromCh(ctx context.Context, ch <-chan incomingStream) (types.PeerKey, io.ReadWriteCloser, error) {
-	select {
-	case incoming, ok := <-ch:
-		if !ok {
-			return types.PeerKey{}, nil, net.ErrClosed
-		}
-		return incoming.peerKey, incoming.stream, nil
-	case <-ctx.Done():
-		return types.PeerKey{}, nil, ctx.Err()
-	}
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
@@ -522,7 +535,7 @@ func (m *impl) Connect(ctx context.Context, peerKey types.PeerKey, addrs []*net.
 	return nil
 }
 
-func (m *impl) Send(_ context.Context, peerKey types.PeerKey, env *meshv1.Envelope) error {
+func (m *impl) Send(ctx context.Context, peerKey types.PeerKey, env *meshv1.Envelope) error {
 	s, ok := m.sessions.get(peerKey)
 	if !ok {
 		return fmt.Errorf("no connection to peer %s", peerKey.Short())
@@ -532,7 +545,7 @@ func (m *impl) Send(_ context.Context, peerKey types.PeerKey, env *meshv1.Envelo
 		return err
 	}
 	if err := s.conn.SendDatagram(b); err != nil {
-		m.handleSendFailure(peerKey, s, err)
+		m.handleSendFailure(ctx, peerKey, s, err)
 		m.metrics.DatagramErrors.Inc()
 		return err
 	}
@@ -541,7 +554,7 @@ func (m *impl) Send(_ context.Context, peerKey types.PeerKey, env *meshv1.Envelo
 	return nil
 }
 
-func (m *impl) handleSendFailure(peerKey types.PeerKey, s *peerSession, err error) {
+func (m *impl) handleSendFailure(ctx context.Context, peerKey types.PeerKey, s *peerSession, err error) {
 	reason := classifyQUICError(err)
 	if reason == peer.DisconnectUnknown {
 		return
@@ -553,12 +566,14 @@ func (m *impl) handleSendFailure(peerKey types.PeerKey, s *peerSession, err erro
 	m.closeSession(s, CloseReasonDisconnect)
 	select {
 	case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: reason}:
-	case <-time.After(eventSendTimeout):
-		m.log.Warnw("dropped peer disconnect event after send failure", "peer", peerKey.Short(), "reason", reason)
+	case <-ctx.Done():
 	}
 }
 
 func (m *impl) Punch(ctx context.Context, peerKey types.PeerKey, addr *net.UDPAddr, localNAT nat.Type) error {
+	if m.disableNATPunch {
+		return fmt.Errorf("NAT punch disabled")
+	}
 	s, err := m.dialPunch(ctx, addr, peerKey, localNAT)
 	if err != nil {
 		return err
@@ -646,8 +661,8 @@ func (m *impl) sessionReaper(ctx context.Context) {
 					m.closeSession(s, CloseReasonCertRotation)
 					select {
 					case m.inCh <- peer.PeerDisconnected{PeerKey: peerKey, Reason: peer.DisconnectCertRotation}:
-					case <-time.After(eventSendTimeout):
-						m.log.Warnw("dropped cert rotation disconnect event", "peer", peerKey.Short())
+					case <-ctx.Done():
+						return
 					}
 				}
 			}
@@ -705,10 +720,6 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 		IP:           addr.IP,
 		ObservedPort: addr.Port,
 	}:
-	case <-time.After(eventSendTimeout):
-		m.log.Warnw("dropped connect event, consumer lagging",
-			"peer", peerKey.Short(),
-		)
 	case <-s.conn.Context().Done():
 	}
 }
@@ -716,60 +727,32 @@ func (m *impl) addPeer(s *peerSession, peerKey types.PeerKey) {
 func (m *impl) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 	ctx := s.conn.Context()
 	for {
-		stream, err := s.conn.AcceptStream(ctx)
+		qs, err := s.conn.AcceptStream(ctx)
 		if err != nil {
 			return
 		}
 
-		_ = stream.SetReadDeadline(time.Now().Add(streamTypeTimeout))
+		_ = qs.SetReadDeadline(time.Now().Add(streamTypeTimeout))
 		var typeBuf [1]byte
-		if _, err := io.ReadFull(stream, typeBuf[:]); err != nil {
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
+		if _, err := io.ReadFull(qs, typeBuf[:]); err != nil {
+			qs.CancelRead(0)
+			qs.CancelWrite(0)
 			continue
 		}
-		_ = stream.SetReadDeadline(time.Time{})
+		_ = qs.SetReadDeadline(time.Time{})
 
-		var ch chan incomingStream
-		switch typeBuf[0] {
-		case streamTypeClock:
-			ch = m.clockStreamCh
-		case streamTypeTunnel:
-			ch = m.streamCh
+		streamType := StreamType(typeBuf[0])
+		switch streamType {
 		case streamTypeRouted:
-			go m.handleRoutedStream(ctx, stream, peerKey)
-			continue
-		case streamTypeArtifact:
-			if h := m.artifactHandler; h != nil {
-				go h(Stream{stream}, peerKey)
-			} else {
-				stream.CancelRead(0)
-				stream.CancelWrite(0)
-			}
-			continue
-		case streamTypeWorkload:
-			if h := m.workloadHandler; h != nil {
-				go h(Stream{stream}, peerKey)
-			} else {
-				stream.CancelRead(0)
-				stream.CancelWrite(0)
-			}
-			continue
+			go m.handleRoutedStream(ctx, qs, peerKey)
 		default:
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
-			continue
-		}
-
-		select {
-		case ch <- incomingStream{peerKey: peerKey, stream: Stream{stream}}:
-		case <-ctx.Done():
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
-			return
-		default:
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
+			wrapped := Stream{qs}
+			select {
+			case m.acceptCh <- acceptedStream{stream: wrapped, stype: streamType, peerKey: peerKey}:
+			case <-ctx.Done():
+				qs.CancelRead(0)
+				qs.CancelWrite(0)
+			}
 		}
 	}
 }
@@ -787,15 +770,9 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 					"reason", reason,
 					"err", err,
 				)
-				select {
-				case m.inCh <- peer.PeerDisconnected{
+				m.inCh <- peer.PeerDisconnected{
 					PeerKey: peerKey,
 					Reason:  reason,
-				}:
-				case <-time.After(eventSendTimeout):
-					m.log.Warnw("dropped disconnect event, consumer lagging",
-						"peer", peerKey.Short(),
-					)
 				}
 				m.closeSession(s, CloseReasonDisconnected)
 			}
@@ -811,7 +788,8 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 		if resp, ok := env.GetBody().(*meshv1.Envelope_CertRenewalResponse); ok {
 			select {
 			case m.renewalCh <- resp.CertRenewalResponse:
-			default:
+			case <-ctx.Done():
+				return
 			}
 			continue
 		}
@@ -933,14 +911,6 @@ func (m *impl) SetTrafficTracker(t traffic.Recorder) {
 	m.trafficTracker = t
 }
 
-func (m *impl) SetArtifactHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey)) {
-	m.artifactHandler = fn
-}
-
-func (m *impl) SetWorkloadHandler(fn func(stream io.ReadWriteCloser, peer types.PeerKey)) {
-	m.workloadHandler = fn
-}
-
 func (m *impl) OpenArtifactStream(ctx context.Context, peer types.PeerKey) (io.ReadWriteCloser, error) {
 	for {
 		sessionCh := m.sessions.onChange()
@@ -995,7 +965,7 @@ func (m *impl) OpenWorkloadStream(ctx context.Context, peer types.PeerKey) (io.R
 	}
 }
 
-func (m *impl) openRoutedStream(ctx context.Context, dest types.PeerKey, innerType byte, nextHop types.PeerKey) (io.ReadWriteCloser, error) {
+func (m *impl) openRoutedStream(ctx context.Context, dest types.PeerKey, innerType StreamType, nextHop types.PeerKey) (io.ReadWriteCloser, error) {
 	s, ok := m.sessions.get(nextHop)
 	if !ok {
 		return nil, fmt.Errorf("no session to next hop %s", nextHop.Short())
@@ -1006,11 +976,11 @@ func (m *impl) openRoutedStream(ctx context.Context, dest types.PeerKey, innerTy
 	}
 
 	var header [1 + routeHeaderSize]byte
-	header[0] = streamTypeRouted
+	header[0] = byte(streamTypeRouted)
 	copy(header[1:33], dest[:])
 	copy(header[33:65], m.localKey[:])
 	header[65] = defaultRouteTTL
-	header[66] = innerType
+	header[66] = byte(innerType)
 	if _, err := stream.Write(header[:]); err != nil {
 		stream.CancelWrite(0)
 		stream.CancelRead(0)
@@ -1031,7 +1001,7 @@ func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream, upst
 	copy(dest[:], header[0:32])
 	copy(source[:], header[32:64])
 	ttl := header[64]
-	innerType := header[65]
+	innerType := StreamType(header[65])
 
 	if dest == m.localKey {
 		m.deliverRoutedStream(ctx, stream, source, innerType)
@@ -1058,29 +1028,12 @@ func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream, upst
 // peerKey only for logging. If future code makes authorization decisions based
 // on AcceptStream's peerKey, routed streams must carry end-to-end proof of
 // origin (e.g., a signature over the stream header).
-func (m *impl) deliverRoutedStream(ctx context.Context, stream *quic.Stream, source types.PeerKey, innerType byte) {
+func (m *impl) deliverRoutedStream(ctx context.Context, stream *quic.Stream, source types.PeerKey, innerType StreamType) {
 	switch innerType {
-	case streamTypeTunnel:
+	case streamTypeTunnel, streamTypeArtifact, streamTypeWorkload:
 		select {
-		case m.streamCh <- incomingStream{peerKey: source, stream: Stream{stream}}:
+		case m.acceptCh <- acceptedStream{stream: Stream{stream}, stype: innerType, peerKey: source}:
 		case <-ctx.Done():
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
-		default:
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
-		}
-	case streamTypeArtifact:
-		if h := m.artifactHandler; h != nil {
-			go h(Stream{stream}, source)
-		} else {
-			stream.CancelRead(0)
-			stream.CancelWrite(0)
-		}
-	case streamTypeWorkload:
-		if h := m.workloadHandler; h != nil {
-			go h(Stream{stream}, source)
-		} else {
 			stream.CancelRead(0)
 			stream.CancelWrite(0)
 		}
@@ -1090,7 +1043,7 @@ func (m *impl) deliverRoutedStream(ctx context.Context, stream *quic.Stream, sou
 	}
 }
 
-func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, dest, source types.PeerKey, ttl, innerType byte, upstreamPeer types.PeerKey) {
+func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, dest, source types.PeerKey, ttl byte, innerType StreamType, upstreamPeer types.PeerKey) {
 	// Find next hop: try direct session first, then router.
 	nextHop := dest
 	s, ok := m.sessions.get(dest)
@@ -1133,11 +1086,11 @@ func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, de
 
 	// Write routing header on outbound stream.
 	var header [1 + routeHeaderSize]byte
-	header[0] = streamTypeRouted
+	header[0] = byte(streamTypeRouted)
 	copy(header[1:33], dest[:])
 	copy(header[33:65], source[:])
 	header[65] = ttl
-	header[66] = innerType
+	header[66] = byte(innerType)
 	if _, err := outbound.Write(header[:]); err != nil {
 		outbound.CancelWrite(0)
 		outbound.CancelRead(0)
@@ -1240,8 +1193,7 @@ func (m *impl) Close() error {
 	}
 
 	m.acceptWG.Wait()
-	close(m.streamCh)
-	close(m.clockStreamCh)
+	close(m.acceptCh)
 	close(m.recvCh)
 
 	if m.listener != nil {

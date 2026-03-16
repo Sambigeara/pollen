@@ -621,8 +621,9 @@ func TestRoutedDeliveryRejectsNonTunnel(t *testing.T) {
 	acceptCtx, acceptCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer acceptCancel()
 
-	peerKey, rwc, err := b.mesh.AcceptStream(acceptCtx)
+	rwc, stype, peerKey, err := b.mesh.AcceptAllStreams(acceptCtx)
 	require.NoError(t, err)
+	require.Equal(t, mesh.StreamTypeTunnel, stype)
 	require.Equal(t, a.peerKey, peerKey)
 	_ = rwc.Close()
 	stream2.CancelRead(0)
@@ -722,6 +723,13 @@ func TestRoutedRelayTrafficAttribution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Set up router on A: C→B and traffic tracker on B before connecting,
+	// so acceptBidiStreams goroutines see fully-initialized state.
+	routerA := newNotifyRouter(map[types.PeerKey]types.PeerKey{c.peerKey: b.peerKey})
+	a.mesh.SetRouter(routerA)
+	tracker := traffic.New()
+	b.mesh.SetTrafficTracker(tracker)
+
 	// Connect A↔B and B↔C (not A↔C).
 	require.NoError(t, a.mesh.Connect(ctx, b.peerKey, []*net.UDPAddr{
 		{IP: net.IPv4(127, 0, 0, 1), Port: b.port},
@@ -737,14 +745,6 @@ func TestRoutedRelayTrafficAttribution(t *testing.T) {
 		return ab && bc
 	}, 5*time.Second, 25*time.Millisecond)
 
-	// Set up router on A: C→B.
-	routerA := newNotifyRouter(map[types.PeerKey]types.PeerKey{c.peerKey: b.peerKey})
-	a.mesh.SetRouter(routerA)
-
-	// Inject traffic tracker into B.
-	tracker := traffic.New()
-	b.mesh.SetTrafficTracker(tracker)
-
 	// A opens a routed stream to C.
 	streamA, err := a.mesh.OpenStream(ctx, c.peerKey)
 	require.NoError(t, err)
@@ -752,8 +752,9 @@ func TestRoutedRelayTrafficAttribution(t *testing.T) {
 	// C accepts the stream.
 	acceptCtx, acceptCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer acceptCancel()
-	peerKey, streamC, err := c.mesh.AcceptStream(acceptCtx)
+	streamC, stype, peerKey, err := c.mesh.AcceptAllStreams(acceptCtx)
 	require.NoError(t, err)
+	require.Equal(t, mesh.StreamTypeTunnel, stype)
 	require.Equal(t, a.peerKey, peerKey)
 
 	// A→C: send payload.

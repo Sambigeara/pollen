@@ -19,7 +19,7 @@ go.work.sum
 # infra/
 dist*
 
-tasks/
+/tasks/
 
 .terraform/
 *.tfstate
@@ -40,3 +40,4 @@ terraform.rc
 
 to_llm.sh
 pln
+.worktrees/

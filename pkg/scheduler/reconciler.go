@@ -22,13 +22,10 @@ const (
 	minResidencyDuration    = 10 * time.Second
 )
 
-// SchedulerStore abstracts the gossip store query methods needed by the reconciler.
+// SchedulerStore abstracts the gossip store methods needed by the reconciler.
 type SchedulerStore interface {
-	AllWorkloadSpecs() map[string]store.WorkloadSpecView
-	AllWorkloadClaims() map[string]map[types.PeerKey]struct{}
-	AllPeerKeys() []types.PeerKey
+	Snapshot() store.Snapshot
 	SetLocalWorkloadClaim(hash string, claimed bool) []*statev1.GossipEvent
-	AllNodePlacementStates() map[types.PeerKey]store.NodePlacementState
 }
 
 // WorkloadManager abstracts the workload manager.
@@ -182,10 +179,9 @@ func (r *Reconciler) Run(ctx context.Context) {
 	}
 }
 
-func (r *Reconciler) buildClusterState() ClusterState {
-	nodePlacement := r.store.AllNodePlacementStates()
-	cluster := ClusterState{Nodes: make(map[types.PeerKey]NodeState, len(nodePlacement))}
-	for pk, nps := range nodePlacement {
+func buildClusterState(placements map[types.PeerKey]store.NodePlacementState) ClusterState {
+	cluster := ClusterState{Nodes: make(map[types.PeerKey]NodeState, len(placements))}
+	for pk, nps := range placements {
 		cluster.Nodes[pk] = NodeState{
 			CPUPercent:    nps.CPUPercent,
 			MemPercent:    nps.MemPercent,
@@ -199,25 +195,24 @@ func (r *Reconciler) buildClusterState() ClusterState {
 }
 
 func (r *Reconciler) reconcile(ctx context.Context) {
+	snap := r.store.Snapshot()
+
 	// Startup cleanup: remove stale claims from prior session.
 	if r.firstRun {
 		r.firstRun = false
-		r.cleanupStaleClaims()
+		r.cleanupStaleClaims(snap.Claims)
 	}
 
-	specViews := r.store.AllWorkloadSpecs()
-	claimMap := r.store.AllWorkloadClaims()
-	allPeers := r.store.AllPeerKeys()
-	cluster := r.buildClusterState()
+	cluster := buildClusterState(snap.Placements)
 
-	specs := make(map[string]Spec, len(specViews))
-	for hash, sv := range specViews {
+	specs := make(map[string]Spec, len(snap.Specs))
+	for hash, sv := range snap.Specs {
 		specs[hash] = Spec{
 			Replicas: sv.Spec.GetReplicas(),
 		}
 	}
 
-	actions := Evaluate(r.localID, allPeers, specs, claimMap, cluster, r.workloads.IsRunning)
+	actions := Evaluate(r.localID, snap.PeerKeys, specs, snap.Claims, cluster, r.workloads.IsRunning)
 
 	// Track which hashes Evaluate wants released this cycle.
 	wantRelease := make(map[string]struct{})
@@ -226,7 +221,7 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	for _, a := range actions {
 		switch a.Kind {
 		case ActionClaim:
-			r.startClaim(ctx, a.Hash, specViews, claimMap)
+			r.startClaim(ctx, a.Hash, snap.Specs, snap.Claims)
 		case ActionRelease:
 			wantRelease[a.Hash] = struct{}{}
 			if _, pending := r.pendingRelease[a.Hash]; !pending {
@@ -252,7 +247,7 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		claimTime, hasClaimTime := r.claimStartTime[hash]
 		r.inFlightMu.Unlock()
 		if hasClaimTime && now.Sub(claimTime) < minResidencyDuration {
-			if sv, specExists := specViews[hash]; specExists && uint32(len(claimMap[hash])) <= sv.Spec.GetReplicas() {
+			if sv, specExists := snap.Specs[hash]; specExists && uint32(len(snap.Claims[hash])) <= sv.Spec.GetReplicas() {
 				continue
 			}
 		}
@@ -304,18 +299,16 @@ func (r *Reconciler) executeClaim(ctx context.Context, hash string, peers []type
 
 	// Re-check cluster state after fetch — the spec may have been removed or
 	// enough other nodes may have claimed while we were fetching.
-	specViews := r.store.AllWorkloadSpecs()
-	sv, specExists := specViews[hash]
+	snap := r.store.Snapshot()
+	sv, specExists := snap.Specs[hash]
 	if !specExists {
 		r.log.Infow("spec removed during fetch, skipping claim", "hash", hash)
 		return
 	}
-	claimMap := r.store.AllWorkloadClaims()
-	allPeers := r.store.AllPeerKeys()
-	claimants := claimMap[hash]
+	claimants := snap.Claims[hash]
 	if _, alreadyClaimed := claimants[r.localID]; !alreadyClaimed {
-		cluster := r.buildClusterState()
-		if !shouldClaim(r.localID, hash, sv.Spec.GetReplicas(), claimants, allPeers, cluster) {
+		cluster := buildClusterState(snap.Placements)
+		if !shouldClaim(r.localID, hash, sv.Spec.GetReplicas(), claimants, snap.PeerKeys, cluster) {
 			r.log.Infow("no longer a winner after fetch, skipping claim", "hash", hash)
 			return
 		}
@@ -354,10 +347,9 @@ func (r *Reconciler) executeRelease(hash string) {
 	r.log.Infow("released workload", "hash", hash)
 }
 
-func (r *Reconciler) cleanupStaleClaims() {
+func (r *Reconciler) cleanupStaleClaims(claims map[string]map[types.PeerKey]struct{}) {
 	now := r.now()
-	claimMap := r.store.AllWorkloadClaims()
-	for hash, claimants := range claimMap {
+	for hash, claimants := range claims {
 		if _, mine := claimants[r.localID]; !mine {
 			continue
 		}

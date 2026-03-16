@@ -74,28 +74,28 @@ type coordinatorCandidate struct {
 	publiclyAccessible bool
 }
 
-func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connectedPeers []types.PeerKey, state *store.Store) []types.PeerKey {
-	localRec, _ := state.Get(state.LocalID)
-	targetRec, _ := state.Get(target)
+func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connectedPeers []types.PeerKey, snap store.Snapshot) []types.PeerKey {
+	localNV := snap.Nodes[snap.LocalID]
+	targetNV := snap.Nodes[target]
 	candidates := make([]coordinatorCandidate, 0, len(connectedPeers))
 	for _, key := range connectedPeers {
-		candidateIPs := state.NodeIPs(key)
-		if len(candidateIPs) == 0 || topology.InferPrivatelyRoutable(localIPs, candidateIPs) || topology.InferPrivatelyRoutable(targetIPs, candidateIPs) {
-			continue
-		}
-		if !state.IsConnected(key, target) {
-			continue
-		}
-		rec, ok := state.Get(key)
+		nv, ok := snap.Nodes[key]
 		if !ok {
 			continue
 		}
-		if topology.SameObservedEgress(localRec.ObservedExternalIP, rec.ObservedExternalIP) || topology.SameObservedEgress(targetRec.ObservedExternalIP, rec.ObservedExternalIP) {
+		candidateIPs := nv.IPs
+		if len(candidateIPs) == 0 || topology.InferPrivatelyRoutable(localIPs, candidateIPs) || topology.InferPrivatelyRoutable(targetIPs, candidateIPs) {
+			continue
+		}
+		if _, connected := nv.Reachable[target]; !connected {
+			continue
+		}
+		if topology.SameObservedEgress(localNV.ObservedExternalIP, nv.ObservedExternalIP) || topology.SameObservedEgress(targetNV.ObservedExternalIP, nv.ObservedExternalIP) {
 			continue
 		}
 		candidates = append(candidates, coordinatorCandidate{
 			key:                key,
-			publiclyAccessible: rec.PubliclyAccessible,
+			publiclyAccessible: nv.PubliclyAccessible,
 		})
 	}
 

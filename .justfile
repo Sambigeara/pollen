@@ -42,6 +42,9 @@ lint-modernize: _modernize
 test PKG='./...' TEST='.*':
     @ go test -v -failfast -cover -count=1 -run='{{ TEST }}' '{{ PKG }}'
 
+test-integration:
+    @ go test -tags integration -race -v -timeout 120s ./pkg/integration/cluster/
+
 # Executables
 
 _buf: (_install "buf" "github.com/bufbuild/buf" "cmd/buf")

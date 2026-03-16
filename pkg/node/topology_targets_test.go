@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"testing"
@@ -95,7 +96,7 @@ func TestSyncPeersFromStateKeepsDesiredNonTargets(t *testing.T) {
 	require.True(t, prunedKnown)
 
 	n.store.AddDesiredConnection(desiredPeer, 8080, 18080)
-	n.syncPeersFromState()
+	n.syncPeersFromState(context.Background(), n.store.Snapshot())
 
 	_, desiredKnown = n.peers.Get(desiredPeer)
 	require.True(t, desiredKnown, "desired connection peer should be retained")
@@ -121,7 +122,7 @@ func TestSyncPeersFromStateSuppressesRemotePrivateUnlessDesired(t *testing.T) {
 	addCustomPeerForTopology(t, n.store, localGateway, []string{"10.1.1.234"}, 9001, 1, "", true)
 	addCustomPeerForTopology(t, n.store, remotePrivate, []string{"10.2.2.10"}, 9002, 2, "34.252.188.39", false)
 
-	n.syncPeersFromState()
+	n.syncPeersFromState(context.Background(), n.store.Snapshot())
 
 	_, gatewayKnown := n.peers.Get(localGateway)
 	require.True(t, gatewayKnown, "same-site gateway should be targeted")
@@ -129,7 +130,7 @@ func TestSyncPeersFromStateSuppressesRemotePrivateUnlessDesired(t *testing.T) {
 	require.False(t, remoteKnown, "remote private peer should not be proactively targeted")
 
 	n.store.AddDesiredConnection(remotePrivate, 8080, 18080)
-	n.syncPeersFromState()
+	n.syncPeersFromState(context.Background(), n.store.Snapshot())
 
 	_, remoteKnown = n.peers.Get(remotePrivate)
 	require.True(t, remoteKnown, "desired connection should force remote private targeting")
@@ -283,7 +284,7 @@ func TestHysteresisExitsHMACWhenErrorDrops(t *testing.T) {
 
 	// Drop error below exit threshold (0.35).
 	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.30)
-	n.syncPeersFromState()
+	n.syncPeersFromState(context.Background(), n.store.Snapshot())
 	require.False(t, n.useHMACNearest, "should exit HMAC when error < 0.35")
 }
 
@@ -295,12 +296,12 @@ func TestHysteresisStaysDistanceInDeadZone(t *testing.T) {
 
 	// Exit HMAC first.
 	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.30)
-	n.syncPeersFromState()
+	n.syncPeersFromState(context.Background(), n.store.Snapshot())
 	require.False(t, n.useHMACNearest)
 
 	// Error rises into dead zone (0.35 < err < 0.6) — should stay distance-based.
 	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.50)
-	n.syncPeersFromState()
+	n.syncPeersFromState(context.Background(), n.store.Snapshot())
 	require.False(t, n.useHMACNearest, "should stay distance-based in hysteresis dead zone")
 }
 
@@ -312,12 +313,12 @@ func TestHysteresisReentersHMACAboveThreshold(t *testing.T) {
 
 	// Exit HMAC.
 	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.30)
-	n.syncPeersFromState()
+	n.syncPeersFromState(context.Background(), n.store.Snapshot())
 	require.False(t, n.useHMACNearest)
 
 	// Error rises above enter threshold (0.6).
 	n.smoothedErr = metrics.NewEWMAFrom(vivaldiErrAlpha, 0.65)
-	n.syncPeersFromState()
+	n.syncPeersFromState(context.Background(), n.store.Snapshot())
 	require.True(t, n.useHMACNearest, "should re-enter HMAC when error > 0.6")
 }
 
@@ -342,7 +343,7 @@ func TestRevokeStreakPrivatePeerRevokedAfterThreshold(t *testing.T) {
 	// Tick 1 and 2: streak builds but peer stays connected.
 	for tick := range revokeStreakThreshold - 1 {
 		drainLocalPeerEvents(n)
-		n.syncPeersFromState()
+		n.syncPeersFromState(context.Background(), n.store.Snapshot())
 		_, ok := n.peers.Get(nonTarget)
 		require.True(t, ok, "peer should survive at streak tick %d", tick+1)
 		require.True(t, n.peers.InState(nonTarget, peer.PeerStateConnected),
@@ -351,7 +352,7 @@ func TestRevokeStreakPrivatePeerRevokedAfterThreshold(t *testing.T) {
 
 	// Tick 3: threshold reached → revoked.
 	drainLocalPeerEvents(n)
-	n.syncPeersFromState()
+	n.syncPeersFromState(context.Background(), n.store.Snapshot())
 	_, ok := n.peers.Get(nonTarget)
 	require.False(t, ok, "peer should be forgotten after %d non-target ticks", revokeStreakThreshold)
 }
@@ -373,14 +374,14 @@ func TestRevokeStreakResetsOnTargetReentry(t *testing.T) {
 	// Build up streak to threshold - 1.
 	for range revokeStreakThreshold - 1 {
 		drainLocalPeerEvents(n)
-		n.syncPeersFromState()
+		n.syncPeersFromState(context.Background(), n.store.Snapshot())
 	}
 	require.Equal(t, revokeStreakThreshold-1, n.nonTargetStreak[nonTarget])
 
 	// Force peer back into target set via desired connection.
 	n.store.AddDesiredConnection(nonTarget, 8080, 18080)
 	drainLocalPeerEvents(n)
-	n.syncPeersFromState()
+	n.syncPeersFromState(context.Background(), n.store.Snapshot())
 
 	// Streak should be reset.
 	require.Zero(t, n.nonTargetStreak[nonTarget], "streak should reset when peer re-enters target set")
@@ -388,7 +389,7 @@ func TestRevokeStreakResetsOnTargetReentry(t *testing.T) {
 	// Remove the desired connection — streak starts fresh.
 	n.store.RemoveDesiredConnection(nonTarget, 8080, 18080)
 	drainLocalPeerEvents(n)
-	n.syncPeersFromState()
+	n.syncPeersFromState(context.Background(), n.store.Snapshot())
 	require.Equal(t, 1, n.nonTargetStreak[nonTarget], "streak should start from 1 again after reset")
 }
 
@@ -415,7 +416,7 @@ func TestRevokeStreakPublicPeerStickyLonger(t *testing.T) {
 	// Run revokeStreakThreshold ticks — should NOT be revoked (needs 30 for public).
 	for range revokeStreakThreshold {
 		drainLocalPeerEvents(n)
-		n.syncPeersFromState()
+		n.syncPeersFromState(context.Background(), n.store.Snapshot())
 	}
 	require.True(t, n.peers.InState(nonTarget, peer.PeerStateConnected),
 		"public peer should survive the private threshold")
@@ -423,14 +424,14 @@ func TestRevokeStreakPublicPeerStickyLonger(t *testing.T) {
 	// Run up to revokeStreakThresholdPublic - 1 total ticks.
 	for range revokeStreakThresholdPublic - revokeStreakThreshold - 1 {
 		drainLocalPeerEvents(n)
-		n.syncPeersFromState()
+		n.syncPeersFromState(context.Background(), n.store.Snapshot())
 	}
 	require.True(t, n.peers.InState(nonTarget, peer.PeerStateConnected),
 		"public peer should survive at tick %d", revokeStreakThresholdPublic-1)
 
 	// One more tick → threshold reached, revoked.
 	drainLocalPeerEvents(n)
-	n.syncPeersFromState()
+	n.syncPeersFromState(context.Background(), n.store.Snapshot())
 	_, ok := n.peers.Get(nonTarget)
 	require.False(t, ok, "public peer should be forgotten after %d non-target ticks", revokeStreakThresholdPublic)
 }

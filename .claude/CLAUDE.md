@@ -37,6 +37,13 @@
 - Zero context switching required from the user
 - Go fix failing CI tests without being told how
 
+### 7. Commit Message Style
+- Lowercase start, imperative/descriptive verb (`simplify`, `fix`, `add`, `remove`, `harden`, `clean up`, etc.)
+- Single-line title, ideally under 60 characters; add detail lines below only when context isn't clear from the title
+- No trailing period, no conventional-commit prefixes, no ticket references, no Co-Authored-By trailer
+- Describe what changed, not why — e.g. `simplify auth model and command surface`
+- Always sign commits (`git commit -s`)
+
 ## Task Management
 
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
@@ -93,6 +100,9 @@
 ### Performance
 - Don't hand-calculate serialization sizes. Use the serialization library's own `Size()` methods — hand-counted varint bytes silently break when field numbers change.
 - Batch lock acquisition on the receive side too. If you batch on send, the receive path should also take the lock once for the batch, not N times for N events.
+
+### Workflow
+- When `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` is enabled, use agent teams (TeamCreate) for multi-package coordination work, not plain subagents. The user expects agent teams when they've enabled the feature. Subagents are fine for research/analysis but not for cross-package execution.
 
 ### Testing
 - Use `require.Equal`, `require.Len`, `require.NoError`, etc. from `github.com/stretchr/testify/require` instead of manual `t.Fatalf` with format strings. Testify assertions are more readable and give better failure output.

@@ -27,32 +27,36 @@ type mockStore struct {
 	placementState map[types.PeerKey]store.NodePlacementState
 }
 
-func (m *mockStore) AllWorkloadSpecs() map[string]store.WorkloadSpecView {
+func (m *mockStore) Snapshot() store.Snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make(map[string]store.WorkloadSpecView, len(m.specs))
-	maps.Copy(out, m.specs)
-	return out
-}
 
-func (m *mockStore) AllWorkloadClaims() map[string]map[types.PeerKey]struct{} {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make(map[string]map[types.PeerKey]struct{}, len(m.claims))
+	specs := make(map[string]store.WorkloadSpecView, len(m.specs))
+	maps.Copy(specs, m.specs)
+
+	claims := make(map[string]map[types.PeerKey]struct{}, len(m.claims))
 	for k, v := range m.claims {
 		inner := make(map[types.PeerKey]struct{}, len(v))
 		for pk := range v {
 			inner[pk] = struct{}{}
 		}
-		out[k] = inner
+		claims[k] = inner
 	}
-	return out
-}
 
-func (m *mockStore) AllPeerKeys() []types.PeerKey {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]types.PeerKey(nil), m.allPeers...)
+	peers := append([]types.PeerKey(nil), m.allPeers...)
+
+	var placements map[types.PeerKey]store.NodePlacementState
+	if m.placementState != nil {
+		placements = make(map[types.PeerKey]store.NodePlacementState, len(m.placementState))
+		maps.Copy(placements, m.placementState)
+	}
+
+	return store.Snapshot{
+		Specs:      specs,
+		Claims:     claims,
+		PeerKeys:   peers,
+		Placements: placements,
+	}
 }
 
 func (m *mockStore) SetLocalWorkloadClaim(hash string, claimed bool) []*statev1.GossipEvent {
@@ -63,17 +67,6 @@ func (m *mockStore) SetLocalWorkloadClaim(hash string, claimed bool) []*statev1.
 	}
 	m.claimed[hash] = claimed
 	return nil
-}
-
-func (m *mockStore) AllNodePlacementStates() map[types.PeerKey]store.NodePlacementState {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.placementState == nil {
-		return nil
-	}
-	out := make(map[types.PeerKey]store.NodePlacementState, len(m.placementState))
-	maps.Copy(out, m.placementState)
-	return out
 }
 
 func (m *mockStore) wasClaimed(hash string) bool {

@@ -154,16 +154,15 @@ func defaultRootDir() string {
 	case homeState:
 		return home
 	default:
-		// Neither has state. System users (nonexistent home) always
-		// use sysDir. Root/sudo uses sysDir when it exists (system
-		// service setup). Regular users default to ~/.pln.
-		if _, err := os.Stat(homeDir); errors.Is(err, os.ErrNotExist) {
+		// Neither has state. Prefer sysDir when it exists (deb
+		// package installed) so credentials land where the system
+		// service reads from. Falls through to ~/.pln on systems
+		// without the package.
+		if fi, err := os.Stat(sysDir); err == nil && fi.IsDir() {
 			return sysDir
 		}
-		if os.Getuid() == 0 {
-			if fi, err := os.Stat(sysDir); err == nil && fi.IsDir() {
-				return sysDir
-			}
+		if _, err := os.Stat(homeDir); errors.Is(err, os.ErrNotExist) {
+			return sysDir
 		}
 		return home
 	}

@@ -25,7 +25,6 @@ var errNoServicePort = errors.New("no service port in stream header")
 // mesh owns QUIC connection/session management and provides this seam.
 type StreamTransport interface {
 	OpenStream(ctx context.Context, peerID types.PeerKey) (io.ReadWriteCloser, error)
-	AcceptStream(ctx context.Context) (types.PeerKey, io.ReadWriteCloser, error)
 }
 
 type connectionKey struct {
@@ -92,26 +91,11 @@ func (m *Manager) SetTrafficTracker(t traffic.Recorder) {
 	m.trafficTracker = t
 }
 
-func (m *Manager) Start(ctx context.Context) {
-	m.wg.Go(func() {
-		if err := m.acceptStreams(ctx); err != nil {
-			m.log.Debugw("tunnel stream loop stopped", "err", err)
-		}
-	})
-}
-
-func (m *Manager) acceptStreams(ctx context.Context) error {
-	for {
-		peerID, stream, err := m.transport.AcceptStream(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return err
-		}
-
-		m.wg.Go(func() { m.handleIncomingStream(peerID, stream) })
-	}
+// HandleIncoming accepts an already-dispatched tunnel stream from the node's
+// unified stream dispatch loop. It reads the service-port header and bridges
+// to the local service handler.
+func (m *Manager) HandleIncoming(stream io.ReadWriteCloser, peerID types.PeerKey) {
+	m.wg.Go(func() { m.handleIncomingStream(peerID, stream) })
 }
 
 func (m *Manager) handleIncomingStream(peerID types.PeerKey, stream io.ReadWriteCloser) {
