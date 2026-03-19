@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -22,12 +23,19 @@ type pendingNode struct {
 	name           string
 	role           NodeRole
 	enableNATPunch bool
+	addr           *net.UDPAddr
 }
 
 // latencySetting records a directed latency override between two named nodes.
 type latencySetting struct {
 	from, to string
 	latency  time.Duration
+}
+
+// natMapping records a NAT address mapping for a private node.
+type natMapping struct {
+	nodeName   string
+	publicAddr *net.UDPAddr
 }
 
 // introduction records a pair of nodes to connect after startup.
@@ -41,6 +49,7 @@ type Builder struct {
 	pending        []pendingNode
 	latencies      []latencySetting
 	introductions  []introduction
+	natMappings    []natMapping
 	defaultLatency time.Duration
 	defaultJitter  float64
 }
@@ -89,6 +98,25 @@ func (b *Builder) EnableNATPunch(name string) *Builder {
 	panic(fmt.Sprintf("EnableNATPunch: unknown node %q", name))
 }
 
+// SetAddr overrides the auto-assigned address for the named node.
+func (b *Builder) SetAddr(name string, addr *net.UDPAddr) *Builder {
+	for i := range b.pending {
+		if b.pending[i].name == name {
+			b.pending[i].addr = addr
+			return b
+		}
+	}
+	panic(fmt.Sprintf("SetAddr: unknown node %q", name))
+}
+
+// SetNATMapping configures NAT address rewriting for a private node. When the
+// node sends to a public node, the source is rewritten to publicAddr. When a
+// public node sends to publicAddr, the packet is routed to the real private conn.
+func (b *Builder) SetNATMapping(nodeName string, publicAddr *net.UDPAddr) *Builder {
+	b.natMappings = append(b.natMappings, natMapping{nodeName: nodeName, publicAddr: publicAddr})
+	return b
+}
+
 // Introduce records that fromNode should connect to toNode after startup.
 func (b *Builder) Introduce(from, to string) *Builder {
 	b.introductions = append(b.introductions, introduction{from: from, to: to})
@@ -118,7 +146,10 @@ func (b *Builder) Start(ctx context.Context) *Cluster {
 	}
 
 	for i, pn := range b.pending {
-		addr := indexToAddr(i)
+		addr := pn.addr
+		if addr == nil {
+			addr = indexToAddr(i)
+		}
 		tn := NewTestNode(t, TestNodeConfig{
 			Switch:         sw,
 			Auth:           auth,
@@ -130,6 +161,11 @@ func (b *Builder) Start(ctx context.Context) *Cluster {
 		})
 		c.ordered = append(c.ordered, tn)
 		c.byName[pn.name] = tn
+	}
+
+	for _, nm := range b.natMappings {
+		node := c.mustNode(nm.nodeName)
+		sw.SetNATMapping(node.VirtualAddr(), nm.publicAddr)
 	}
 
 	for _, ls := range b.latencies {
@@ -235,7 +271,7 @@ func (c *Cluster) introduce(ctx context.Context, fromName, toName string) {
 		}
 	}()
 
-	err := from.Node().ConnectPeer(introCtx, to.PeerKey(), []*net.UDPAddr{to.VirtualAddr()})
+	err := from.Node().Connect(introCtx, to.PeerKey(), []netip.AddrPort{to.VirtualAddr().AddrPort()})
 	if err != nil {
 		c.t.Logf("introduce %s -> %s: %v", fromName, toName, err)
 	}

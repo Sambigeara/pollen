@@ -22,7 +22,6 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
-	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -144,7 +143,7 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 		return nil
 	}
 
-	_, localPub, err := node.GenIdentityKey(issuerCtx.pollenDir)
+	_, localPub, err := auth.GenIdentityKey(issuerCtx.pollenDir)
 	if err != nil {
 		return err
 	}
@@ -232,6 +231,14 @@ func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipT
 }
 
 func ensureRemotePollen(ctx context.Context, sshTarget string) error {
+	// Skip remote install when pln binary and system user already exist.
+	// This allows dev workflows that deploy the binary via scp + create the
+	// user/group/dirs externally (e.g. verify-hetzner.sh step 0).
+	check := exec.CommandContext(ctx, "ssh", sshTarget, "which pln >/dev/null 2>&1 && id pln >/dev/null 2>&1")
+	if check.Run() == nil {
+		return nil
+	}
+
 	script, err := fetchInstallScript()
 	if err != nil {
 		return err

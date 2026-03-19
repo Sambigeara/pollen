@@ -41,3 +41,11 @@ terraform.rc
 to_llm.sh
 pln
 .worktrees/
+
+# Build artifacts
+pln-linux
+pln-local
+.pln-*
+
+# Local justfile (personal deploy recipes)
+.justfile.local

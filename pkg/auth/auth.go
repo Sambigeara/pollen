@@ -17,7 +17,7 @@ import (
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"github.com/sambigeara/pollen/pkg/perm"
+	"github.com/sambigeara/pollen/pkg/config"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -277,7 +277,7 @@ func loadNodeCredentials(pollenDir string) (*NodeCredentials, error) {
 
 func SaveNodeCredentials(pollenDir string, creds *NodeCredentials) error {
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := perm.EnsureDir(dir); err != nil {
+	if err := config.EnsureDir(dir); err != nil {
 		return err
 	}
 
@@ -291,11 +291,11 @@ func SaveNodeCredentials(pollenDir string, creds *NodeCredentials) error {
 		return err
 	}
 
-	if err := perm.WriteGroupReadable(filepath.Join(dir, trustBundleName), trustRaw); err != nil {
+	if err := config.WriteGroupReadable(filepath.Join(dir, trustBundleName), trustRaw); err != nil {
 		return err
 	}
 
-	return perm.WriteGroupReadable(filepath.Join(dir, delegationCertName), certRaw)
+	return config.WriteGroupReadable(filepath.Join(dir, delegationCertName), certRaw)
 }
 
 func LoadAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
@@ -347,7 +347,7 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 	}
 
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := perm.EnsureDir(dir); err != nil {
+	if err := config.EnsureDir(dir); err != nil {
 		return nil, nil, err
 	}
 
@@ -376,7 +376,7 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 		return nil, nil, err
 	}
 
-	if err := perm.SetGroupReadable(privPath); err != nil {
+	if err := config.SetGroupReadable(privPath); err != nil {
 		return nil, nil, err
 	}
 
@@ -394,7 +394,7 @@ func LoadOrCreateAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicK
 		return nil, nil, err
 	}
 
-	if err := perm.SetGroupReadable(pubPath); err != nil {
+	if err := config.SetGroupReadable(pubPath); err != nil {
 		return nil, nil, err
 	}
 
@@ -601,44 +601,6 @@ func IsCertWithinReconnectWindow(cert *admissionv1.DelegationCert, now time.Time
 		return true // not expired yet, trivially within window
 	}
 	return now.Before(expiresAt.Add(reconnectWindow))
-}
-
-func IssueJoinToken(
-	adminPriv ed25519.PrivateKey,
-	trust *admissionv1.TrustBundle,
-	subject ed25519.PublicKey,
-	bootstrap []*admissionv1.BootstrapPeer,
-	now time.Time,
-	tokenTTL time.Duration,
-	membershipTTL time.Duration,
-	accessDeadline time.Time,
-) (*admissionv1.JoinToken, error) {
-	if trust == nil {
-		return nil, errors.New("missing trust bundle")
-	}
-
-	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-
-	if !bytes.Equal(adminPub, trust.GetRootPub()) {
-		return nil, errors.New("issuer delegation certificate required for non-root admin key")
-	}
-
-	// Root issues its own delegation cert as the issuer (no deadline on the issuer cert).
-	issuerCert, err := IssueDelegationCert(
-		adminPriv,
-		nil, // root-issued
-		trust.GetClusterId(),
-		adminPub,
-		FullCapabilities(),
-		now.Add(-timeSkewAllowance),
-		now.Add(membershipTTL),
-		time.Time{},
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return IssueJoinTokenWithIssuer(adminPriv, trust, issuerCert, subject, bootstrap, now, tokenTTL, membershipTTL, accessDeadline)
 }
 
 func IssueJoinTokenWithIssuer(

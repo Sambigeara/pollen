@@ -38,6 +38,14 @@ func (e *EWMA) Update(sample float64) {
 	}
 }
 
+// Reset sets the EWMA to an exact value, discarding history.
+func (e *EWMA) Reset(value float64) {
+	if e == nil {
+		return
+	}
+	e.bits.Store(math.Float64bits(value))
+}
+
 func (e *EWMA) Value() float64 {
 	if e == nil {
 		return 0

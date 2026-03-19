@@ -7,6 +7,7 @@ import (
 	"net"
 	"testing"
 
+	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,7 +28,7 @@ func TestTestNode_StartsAndStops(t *testing.T) {
 		Role:    Public,
 	})
 
-	require.NotEqual(t, [32]byte{}, tn.PeerKey())
+	require.NotEqual(t, types.PeerKey{}, tn.PeerKey())
 	require.NotNil(t, tn.Node())
 	require.NotNil(t, tn.Store())
 	require.Equal(t, Public, tn.Role())

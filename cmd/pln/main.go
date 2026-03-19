@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/sourcegraph/conc/pool"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	"golang.org/x/net/http2"
@@ -31,13 +30,9 @@ import (
 	"github.com/sambigeara/pollen/api/genpb/pollen/control/v1/controlv1connect"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
-	"github.com/sambigeara/pollen/pkg/node"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
-	"github.com/sambigeara/pollen/pkg/peer"
-	"github.com/sambigeara/pollen/pkg/server"
-	"github.com/sambigeara/pollen/pkg/store"
+	"github.com/sambigeara/pollen/pkg/supervisor"
 	"github.com/sambigeara/pollen/pkg/types"
-	"github.com/sambigeara/pollen/pkg/workspace"
 )
 
 const (
@@ -207,13 +202,13 @@ func runID(cmd *cobra.Command, _ []string) {
 		os.Exit(1)
 	}
 
-	pub, err := node.ReadIdentityPub(pollenDir)
+	pub, err := auth.ReadIdentityPub(pollenDir)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 			os.Exit(1)
 		}
-		_, pub, err = node.GenIdentityKey(pollenDir)
+		_, pub, err = auth.GenIdentityKey(pollenDir)
 		if err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 			os.Exit(1)
@@ -272,7 +267,7 @@ func pollenPath(cmd *cobra.Command) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return workspace.EnsurePollenDir(dir)
+	return config.EnsurePollenDir(dir)
 }
 
 func runNode(cmd *cobra.Command) {
@@ -290,7 +285,7 @@ func runNode(cmd *cobra.Command) {
 		logger.Fatal(err)
 	}
 
-	privKey, pubKey, err := node.GenIdentityKey(pollenDir)
+	privKey, pubKey, err := auth.GenIdentityKey(pollenDir)
 	if err != nil {
 		logger.Fatal("failed to load signing keys: ", err)
 	}
@@ -338,40 +333,23 @@ func runNode(cmd *cobra.Command) {
 		logger.Infow("invite redemption disabled", "err", err)
 	}
 
-	stateStore, err := store.Load(pollenDir, pubKey)
-	if err != nil {
-		logger.Fatal("failed to load state: ", err)
-	}
-
 	if creds.DelegationKey != nil {
-		creds.DelegationKey.Consumed = stateStore
+		creds.DelegationKey.Consumed = auth.NewInviteConsumer()
 	}
 
-	for _, svc := range cfg.Services {
-		stateStore.UpsertLocalService(svc.Port, svc.Name)
+	var stateBlob []byte
+	if raw, readErr := os.ReadFile(filepath.Join(pollenDir, "state.pb")); readErr == nil && len(raw) > 0 {
+		stateBlob = raw
 	}
 
-	for _, conn := range cfg.Connections {
-		peerKey, parseErr := types.PeerKeyFromString(conn.Peer)
-		if parseErr != nil {
-			logger.Warnw("skipping invalid connection peer in config", "peer", conn.Peer, "err", parseErr)
-			continue
-		}
-		stateStore.AddDesiredConnection(peerKey, conn.RemotePort, conn.LocalPort)
-	}
-
-	var bootstrapPeers []node.BootstrapPeer
+	var bootstrapPeers []config.BootstrapTarget
 	protoPeers, loadErr := cfg.BootstrapProtoPeers()
 	if loadErr != nil {
 		logger.Warnw("failed to parse bootstrap peers from config", "err", loadErr)
 	} else {
 		for _, bp := range protoPeers {
 			pk := types.PeerKeyFromBytes(bp.GetPeerPub())
-			if stateStore.IsDenied(bp.GetPeerPub()) {
-				logger.Warnw("bootstrap peer is denied; skipping (remove from config.yaml)", "peer", pk.String())
-				continue
-			}
-			bootstrapPeers = append(bootstrapPeers, node.BootstrapPeer{
+			bootstrapPeers = append(bootstrapPeers, config.BootstrapTarget{
 				PeerKey: pk,
 				Addrs:   bp.GetAddrs(),
 			})
@@ -380,40 +358,46 @@ func runNode(cmd *cobra.Command) {
 
 	metricsEnabled, _ := cmd.Flags().GetBool("metrics")
 
-	conf := &node.Config{
-		Port:             port,
-		GossipInterval:   passiveGossipInterval,
-		PeerTickInterval: time.Second,
-		AdvertisedIPs:    addrs,
-		BootstrapPeers:   bootstrapPeers,
-		TLSIdentityTTL:   certTTLs.TLSIdentityTTL(),
-		MembershipTTL:    certTTLs.MembershipTTL(),
-		ReconnectWindow:  certTTLs.ReconnectWindowDuration(),
-		MaxConnectionAge: defaultMaxConnectionAge,
-		BootstrapPublic:  cfg.Public,
-		MetricsEnabled:   metricsEnabled,
+	var initialConns []config.ConnectionEntry
+	for _, conn := range cfg.Connections {
+		peerKey, parseErr := types.PeerKeyFromString(conn.Peer)
+		if parseErr != nil {
+			logger.Warnw("skipping invalid connection peer in config", "peer", conn.Peer, "err", parseErr)
+			continue
+		}
+		initialConns = append(initialConns, config.ConnectionEntry{
+			PeerKey:    peerKey,
+			RemotePort: conn.RemotePort,
+			LocalPort:  conn.LocalPort,
+		})
 	}
 
-	n, err := node.New(conf, privKey, creds, stateStore, peer.NewStore(), pollenDir)
+	cfg.SigningKey = privKey
+	cfg.PollenDir = pollenDir
+	cfg.SocketPath = filepath.Join(pollenDir, socketName)
+	cfg.StateBlob = stateBlob
+	cfg.ShutdownFunc = stopFunc
+	cfg.ListenPort = port
+	cfg.GossipInterval = passiveGossipInterval
+	cfg.PeerTickInterval = time.Second
+	cfg.AdvertisedIPs = addrs
+	cfg.ResolvedBootstrapPeers = bootstrapPeers
+	cfg.InitialConnections = initialConns
+	cfg.TLSIdentityTTL = certTTLs.TLSIdentityTTL()
+	cfg.MembershipTTL = certTTLs.MembershipTTL()
+	cfg.ReconnectWindow = certTTLs.ReconnectWindowDuration()
+	cfg.MaxConnectionAge = defaultMaxConnectionAge
+	cfg.BootstrapPublic = cfg.Public
+	cfg.MetricsEnabled = metricsEnabled
+
+	n, err := supervisor.New(cfg, creds)
 	if err != nil {
 		logger.Fatal(err)
 	}
 
-	nodeSrv := node.NewNodeService(n, stopFunc, creds)
-
 	logger.Info("successfully started node")
 
-	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError()
-	p.Go(func(ctx context.Context) error {
-		grpcSrv := server.NewGRPCServer()
-		return grpcSrv.Start(ctx, nodeSrv, filepath.Join(pollenDir, socketName))
-	})
-
-	p.Go(func(ctx context.Context) error {
-		return n.Start(ctx)
-	})
-
-	if err := p.Wait(); err != nil {
+	if err := n.Run(ctx); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
@@ -452,7 +436,7 @@ func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
 
 	cfg := loadConfigOrDefault(pollenDir)
 
-	nodePriv, _, err := node.GenIdentityKey(pollenDir)
+	nodePriv, _, err := auth.GenIdentityKey(pollenDir)
 	if err != nil {
 		return nil, err
 	}
@@ -467,6 +451,53 @@ func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
 		cfg:       cfg,
 		signer:    signer,
 	}, nil
+}
+
+// shouldEscalateToRoot reports whether the current process should re-exec
+// via sudo. Returns true when: running on Linux, not already root, targeting
+// a system install directory, the pln system user exists, and the current
+// user is not the pln user itself (bootstrap's `sudo -u pln` path).
+func shouldEscalateToRoot(goos string, uid int, dir string, plnUser *user.User) bool {
+	if goos != osLinux || uid == 0 {
+		return false
+	}
+	if dir != "/var/lib/pln" && !strings.HasPrefix(dir, "/var/lib/pln/") {
+		return false
+	}
+	if plnUser == nil {
+		return false
+	}
+	if fmt.Sprint(uid) == plnUser.Uid {
+		return false
+	}
+	return true
+}
+
+// reexecAsRoot re-execs the current process via sudo when a non-root user
+// targets a system install directory. All offline commands (init, join, purge,
+// admin) call this as their first action. The existing root code paths handle
+// file ownership (chown pln:pln) and group membership (ensureSudoUserInPlnGroup).
+func reexecAsRoot(cmd *cobra.Command) {
+	dir, _ := cmd.Flags().GetString("dir")
+	plnUser, _ := user.Lookup("pln")
+	if !shouldEscalateToRoot(runtime.GOOS, os.Getuid(), dir, plnUser) {
+		return
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "cannot resolve binary path: %v\n", err)
+		os.Exit(1)
+	}
+	sudoPath, err := exec.LookPath("sudo")
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "sudo is required for system installs: %v\n", err)
+		os.Exit(1)
+	}
+	args := append([]string{"sudo", binary}, os.Args[1:]...)
+	if err := syscall.Exec(sudoPath, args, os.Environ()); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "failed to escalate to root: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func ensureSudoUserInPlnGroup(cmd *cobra.Command) {
@@ -535,9 +566,9 @@ func clusterStatePaths(pollenDir string) []string {
 		filepath.Join(pollenDir, "state.pb"),
 		filepath.Join(pollenDir, "state.yaml"),     // TODO(saml) these can go after a release or two
 		filepath.Join(pollenDir, "state.yaml.bak"), // TODO(saml) these can go after a release or two
-		filepath.Join(pollenDir, ".state.lock"),
 		filepath.Join(pollenDir, "consumed_invites.json"),
 		filepath.Join(pollenDir, "invites"),
+		filepath.Join(pollenDir, "cas"),
 	}
 }
 

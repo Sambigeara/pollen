@@ -32,7 +32,7 @@ def build_inventory():
         "_meta": {
             "hostvars": {
                 ip: {
-                    "ansible_user": "ubuntu",
+                    "ansible_user": "root",
                     "ansible_ssh_common_args": ssh_args,
                 }
             }

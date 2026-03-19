@@ -8,17 +8,56 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"github.com/sambigeara/pollen/pkg/perm"
+	"github.com/sambigeara/pollen/pkg/config"
 )
 
 // InviteConsumer tracks which invite tokens have been redeemed.
 type InviteConsumer interface {
 	TryConsume(token *admissionv1.InviteToken, now time.Time) (bool, error)
+}
+
+type InMemoryInviteConsumer struct {
+	consumed map[string]int64
+	mu       sync.Mutex
+}
+
+func NewInviteConsumer() *InMemoryInviteConsumer {
+	return &InMemoryInviteConsumer{consumed: make(map[string]int64)}
+}
+
+const inviteExpirySkew = time.Minute
+
+func (c *InMemoryInviteConsumer) TryConsume(token *admissionv1.InviteToken, now time.Time) (bool, error) {
+	claims := token.GetClaims()
+	if claims == nil {
+		return false, errors.New("invite token missing claims")
+	}
+	tokenID := claims.GetTokenId()
+	if tokenID == "" {
+		return false, errors.New("invite token missing token id")
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	nowUnix := now.Unix()
+	for id, exp := range c.consumed {
+		if exp > 0 && exp+int64(inviteExpirySkew/time.Second) < nowUnix {
+			delete(c.consumed, id)
+		}
+	}
+
+	if _, exists := c.consumed[tokenID]; exists {
+		return false, nil
+	}
+	c.consumed[tokenID] = claims.GetExpiresAtUnix()
+	return true, nil
 }
 
 type DelegationSigner struct {
@@ -45,11 +84,11 @@ func SaveDelegationCert(pollenDir string, cert *admissionv1.DelegationCert) erro
 	}
 
 	dir := filepath.Join(pollenDir, keysDir)
-	if err := perm.EnsureDir(dir); err != nil {
+	if err := config.EnsureDir(dir); err != nil {
 		return err
 	}
 
-	return perm.WriteGroupReadable(filepath.Join(dir, delegationCertName), raw)
+	return config.WriteGroupReadable(filepath.Join(dir, delegationCertName), raw)
 }
 
 func LoadDelegationSigner(pollenDir string, nodePriv ed25519.PrivateKey, now time.Time, delegationTTL time.Duration) (*DelegationSigner, error) {

@@ -1,0 +1,255 @@
+package membership
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"sync"
+	"time"
+
+	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/observability/traces"
+	"github.com/sambigeara/pollen/pkg/state"
+	"github.com/sambigeara/pollen/pkg/transport"
+	"github.com/sambigeara/pollen/pkg/types"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+)
+
+func (s *Service) gossip(ctx context.Context) []state.Event {
+	clock := s.store.Snapshot().Clock()
+	clockBytes, err := clock.Marshal()
+	if err != nil {
+		s.log.Warnw("failed to marshal clock", "err", err)
+		return nil
+	}
+	peers := s.mesh.ConnectedPeers()
+	var (
+		mu        sync.Mutex
+		allEvents []state.Event
+		wg        sync.WaitGroup
+	)
+	for _, peerID := range peers {
+		if peerID == s.localID {
+			continue
+		}
+		wg.Go(func() {
+			gossipCtx, cancel := context.WithTimeout(ctx, gossipStreamTimeout)
+			defer cancel()
+			events, err := s.sendClockViaStream(gossipCtx, peerID, clockBytes)
+			if err != nil {
+				s.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
+				return
+			}
+			if len(events) > 0 {
+				mu.Lock()
+				allEvents = append(allEvents, events...)
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	return allEvents
+}
+
+func (s *Service) sendClockViaStream(ctx context.Context, peerID types.PeerKey, clockBytes []byte) ([]state.Event, error) {
+	stream, err := s.streams.OpenStream(ctx, peerID, transport.StreamTypeClock)
+	if err != nil {
+		return nil, fmt.Errorf("open clock stream to %s: %w", peerID.Short(), err)
+	}
+
+	if _, err := stream.Write(clockBytes); err != nil {
+		stream.Close()
+		return nil, fmt.Errorf("write clock to %s: %w", peerID.Short(), err)
+	}
+
+	if err := stream.CloseWrite(); err != nil {
+		return nil, fmt.Errorf("half-close clock stream to %s: %w", peerID.Short(), err)
+	}
+
+	resp, err := io.ReadAll(io.LimitReader(stream, maxResponseSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read clock response from %s: %w", peerID.Short(), err)
+	}
+	if len(resp) == 0 {
+		return nil, nil
+	}
+	if len(resp) > maxResponseSize {
+		return nil, fmt.Errorf("clock response from %s exceeded size limit (%d bytes)", peerID.Short(), len(resp))
+	}
+
+	events, _, err := s.store.ApplyDelta(peerID, resp)
+	if err != nil {
+		return nil, fmt.Errorf("apply clock response from %s: %w", peerID.Short(), err)
+	}
+	return events, nil
+}
+
+func (s *Service) HandleClockStream(ctx context.Context, stream transport.Stream, from types.PeerKey) {
+	defer stream.Close()
+	_, span := s.tracer.Start(ctx, "gossip.handleClock")
+	span.SetAttributes(attribute.String("peer", from.Short()))
+	defer span.End()
+
+	const maxClockSize = 256 << 10
+	b, err := io.ReadAll(io.LimitReader(stream, maxClockSize+1))
+	if err != nil {
+		s.log.Debugw("read clock stream failed", "peer", from.Short(), "err", err)
+		return
+	}
+	if len(b) > maxClockSize {
+		s.log.Warnw("clock stream exceeded size limit", "peer", from.Short(), "size", len(b))
+		return
+	}
+
+	clock, err := state.UnmarshalClock(b)
+	if err != nil {
+		s.log.Debugw("unmarshal clock stream failed", "peer", from.Short(), "err", err)
+		return
+	}
+
+	resp := s.store.EncodeDelta(clock)
+	if len(resp) == 0 {
+		return
+	}
+
+	if _, err := stream.Write(resp); err != nil {
+		s.log.Debugw("write clock response failed", "peer", from.Short(), "err", err)
+	}
+}
+
+func (s *Service) handleDatagram(ctx context.Context, from types.PeerKey, data []byte) {
+	env := &meshv1.Envelope{}
+	if err := env.UnmarshalVT(data); err != nil {
+		s.log.Debugw("unmarshal datagram failed", "peer", from.Short(), "err", err)
+		return
+	}
+	switch body := env.GetBody().(type) {
+	case *meshv1.Envelope_Events:
+		sc := traces.SpanContextFromTraceID(env.GetTraceId())
+		spanCtx := trace.ContextWithRemoteSpanContext(ctx, sc)
+		_, span := s.tracer.Start(spanCtx, "gossip.applyDelta")
+		span.SetAttributes(attribute.String("peer", from.Short()))
+		defer span.End()
+		batchData, err := body.Events.MarshalVT()
+		if err != nil {
+			s.log.Debugw("re-marshal events batch failed", "err", err)
+			return
+		}
+		events, rebroadcast, err := s.store.ApplyDelta(from, batchData)
+		if err != nil {
+			s.log.Debugw("apply delta from datagram failed", "peer", from.Short(), "err", err)
+			return
+		}
+		if len(rebroadcast) > 0 {
+			s.broadcastBatchBytes(ctx, rebroadcast)
+		}
+		s.forwardEvents(events)
+	case *meshv1.Envelope_ObservedAddress:
+		s.handleObservedAddress(from, body.ObservedAddress)
+	case *meshv1.Envelope_CertRenewalRequest:
+		s.handleCertRenewalRequest(ctx, from, body.CertRenewalRequest)
+	default:
+		if s.datagramHandler != nil {
+			s.datagramHandler(ctx, from, env)
+		}
+	}
+}
+
+func (s *Service) doEagerSync(ctx context.Context, peerKey types.PeerKey) {
+	s.mu.Lock()
+	s.lastEagerSync[peerKey] = time.Now()
+	s.mu.Unlock()
+
+	clockBytes, err := s.store.Snapshot().Clock().Marshal()
+	if err != nil {
+		s.log.Warnw("marshal clock for eager sync failed", "err", err)
+		return
+	}
+	s.wg.Go(func() {
+		eagerCtx, cancel := context.WithTimeout(ctx, eagerSyncTimeout)
+		defer cancel()
+		events, err := s.sendClockViaStream(eagerCtx, peerKey, clockBytes)
+		if err != nil {
+			s.log.Debugw("eager sync failed", "peer", peerKey.Short(), "err", err)
+			s.eagerSyncFailures.Add(1)
+		} else {
+			s.eagerSyncs.Add(1)
+			s.forwardEvents(events)
+		}
+	})
+}
+
+func (s *Service) broadcastEvents(ctx context.Context, events []*statev1.GossipEvent) {
+	if len(events) == 0 {
+		return
+	}
+	s.broadcastGossipBatches(ctx, s.mesh.ConnectedPeers(), batchEvents(events, maxDatagramPayload))
+}
+
+func (s *Service) broadcastGossipBatches(ctx context.Context, peerIDs []types.PeerKey, batches [][]*statev1.GossipEvent) {
+	failed := make(map[types.PeerKey]struct{})
+	for _, batch := range batches {
+		data, err := (&meshv1.Envelope{Body: &meshv1.Envelope_Events{
+			Events: &statev1.GossipEventBatch{Events: batch},
+		}}).MarshalVT()
+		if err != nil {
+			s.log.Debugw("gossip batch marshal failed", "err", err)
+			continue
+		}
+		for _, peerID := range peerIDs {
+			if peerID == s.localID {
+				continue
+			}
+			if _, ok := failed[peerID]; ok {
+				continue
+			}
+			if err := s.mesh.Send(ctx, peerID, data); err != nil {
+				s.log.Debugw("event gossip send failed", "peer", peerID.Short(), "err", err)
+				failed[peerID] = struct{}{}
+			}
+		}
+	}
+}
+
+func (s *Service) broadcastBatchBytes(ctx context.Context, data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	var batch statev1.GossipEventBatch
+	if err := batch.UnmarshalVT(data); err != nil {
+		s.log.Debugw("unmarshal gossip batch failed", "err", err)
+		return
+	}
+	s.broadcastEvents(ctx, batch.GetEvents())
+}
+
+func eventWireSize(event *statev1.GossipEvent) int {
+	return (&statev1.GossipEventBatch{Events: []*statev1.GossipEvent{event}}).SizeVT()
+}
+
+func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.GossipEvent {
+	if len(events) == 0 {
+		return nil
+	}
+
+	var batches [][]*statev1.GossipEvent
+	var current []*statev1.GossipEvent
+	currentSize := envelopeOverhead
+
+	for _, event := range events {
+		eventSize := eventWireSize(event)
+		if len(current) > 0 && currentSize+eventSize > maxSize {
+			batches = append(batches, current)
+			current = nil
+			currentSize = envelopeOverhead
+		}
+		current = append(current, event)
+		currentSize += eventSize
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
+}

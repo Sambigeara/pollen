@@ -1,0 +1,237 @@
+//go:build linux
+
+package config_test
+
+import (
+	"io/fs"
+	"net"
+	"os"
+	"path/filepath"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/config"
+)
+
+// permMap defines the canonical permission for every file and directory
+// that can appear in the pollen data directory. Any file found on disk
+// must match its entry here; any file not in this map is unexpected.
+var permMap = map[string]os.FileMode{
+	".":                       os.ModeDir | 0o770,
+	"keys":                    os.ModeDir | 0o770,
+	"keys/ed25519.key":        0o640,
+	"keys/ed25519.pub":        0o640,
+	"keys/admin_ed25519.key":  0o640,
+	"keys/admin_ed25519.pub":  0o640,
+	"keys/cluster.trust.pb":   0o640,
+	"keys/delegation.cert.pb": 0o640,
+	"config.yaml":             0o660,
+}
+
+// coreFiles are created by every init sequence.
+var coreFiles = []string{
+	".", "keys",
+	"keys/ed25519.key", "keys/ed25519.pub",
+	"keys/admin_ed25519.key", "keys/admin_ed25519.pub",
+	"keys/cluster.trust.pb", "keys/delegation.cert.pb",
+}
+
+// commandSequence represents an ordered list of operations that each
+// simulate a CLI command's file-creation side effects.
+type commandSequence struct {
+	name     string
+	ops      []func(t *testing.T, dir string)
+	required []string
+}
+
+// opInit simulates `pln init`: generate identity + create root credentials.
+func opInit(t *testing.T, dir string) {
+	t.Helper()
+	require.NoError(t, config.EnsureDir(dir))
+	_, pub, err := auth.GenIdentityKey(dir)
+	require.NoError(t, err)
+	_, err = auth.EnsureLocalRootCredentials(dir, pub, time.Now(), 4*time.Hour, 30*24*time.Hour) //nolint:mnd
+	require.NoError(t, err)
+}
+
+// opID simulates `pln id`: ensure dir, load or generate identity key.
+func opID(t *testing.T, dir string) {
+	t.Helper()
+	require.NoError(t, config.EnsureDir(dir))
+	_, _, err := auth.GenIdentityKey(dir)
+	require.NoError(t, err)
+}
+
+// opServe simulates `pln serve <port> [name]`: save config.
+func opServe(t *testing.T, dir string) {
+	t.Helper()
+	cfg, err := config.Load(dir)
+	if err != nil {
+		cfg = &config.Config{}
+	}
+	cfg.AddService("test-svc", 8080) //nolint:mnd
+	require.NoError(t, config.Save(dir, cfg))
+}
+
+func TestPermissionConvergence(t *testing.T) {
+	withConfig := append(append([]string{}, coreFiles...), "config.yaml")
+
+	sequences := []commandSequence{
+		{
+			name:     "init",
+			ops:      []func(t *testing.T, dir string){opInit},
+			required: coreFiles,
+		},
+		{
+			name:     "id_then_init",
+			ops:      []func(t *testing.T, dir string){opID, opInit},
+			required: coreFiles,
+		},
+		{
+			name:     "init_then_serve",
+			ops:      []func(t *testing.T, dir string){opInit, opServe},
+			required: withConfig,
+		},
+		{
+			name:     "serve_then_init",
+			ops:      []func(t *testing.T, dir string){opServe, opInit},
+			required: withConfig,
+		},
+		{
+			name:     "double_init",
+			ops:      []func(t *testing.T, dir string){opInit, opInit},
+			required: coreFiles,
+		},
+		{
+			name:     "id_then_serve_then_init",
+			ops:      []func(t *testing.T, dir string){opID, opServe, opInit},
+			required: withConfig,
+		},
+	}
+
+	for _, seq := range sequences {
+		t.Run(seq.name, func(t *testing.T) {
+			dir := t.TempDir()
+			pollenDir := filepath.Join(dir, "pln")
+
+			for _, op := range seq.ops {
+				op(t, pollenDir)
+			}
+
+			assertPermissions(t, pollenDir, seq.required)
+		})
+	}
+}
+
+// TestPermissionConvergenceUnderRestrictiveUmask runs sequences under umask
+// 0o077 to verify that explicit chmod in atomic writes and EnsureDir
+// overrides the umask correctly.
+func TestPermissionConvergenceUnderRestrictiveUmask(t *testing.T) {
+	oldUmask := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(oldUmask) })
+
+	withConfig := append(append([]string{}, coreFiles...), "config.yaml")
+
+	sequences := []commandSequence{
+		{
+			name:     "init_umask_077",
+			ops:      []func(t *testing.T, dir string){opInit},
+			required: coreFiles,
+		},
+		{
+			name:     "id_then_init_umask_077",
+			ops:      []func(t *testing.T, dir string){opID, opInit},
+			required: coreFiles,
+		},
+		{
+			name:     "serve_then_init_umask_077",
+			ops:      []func(t *testing.T, dir string){opServe, opInit},
+			required: withConfig,
+		},
+	}
+
+	for _, seq := range sequences {
+		t.Run(seq.name, func(t *testing.T) {
+			dir := t.TempDir()
+			pollenDir := filepath.Join(dir, "pln")
+
+			for _, op := range seq.ops {
+				op(t, pollenDir)
+			}
+
+			assertPermissions(t, pollenDir, seq.required)
+		})
+	}
+}
+
+// TestSocketPermissionsConvergence verifies that creating a unix socket and
+// calling SetGroupSocket results in the correct mode.
+func TestSocketPermissionsConvergence(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "pln.sock")
+
+	ln, err := net.Listen("unix", sock)
+	require.NoError(t, err)
+	t.Cleanup(func() { ln.Close() })
+
+	require.NoError(t, config.SetGroupSocket(sock))
+
+	info, err := os.Stat(sock)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o660)|os.ModeSocket, info.Mode())
+}
+
+// assertPermissions walks the pollen directory and checks:
+// 1. Every file that exists has the correct mode per permMap.
+// 2. No unexpected files exist (not in permMap).
+// 3. All required files are present.
+func assertPermissions(t *testing.T, pollenDir string, required []string) {
+	t.Helper()
+
+	found := make(map[string]bool)
+
+	err := filepath.WalkDir(pollenDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		rel, err := filepath.Rel(pollenDir, path)
+		if err != nil {
+			return err
+		}
+
+		// Skip .tmp files (atomic write intermediates that shouldn't persist).
+		if filepath.Ext(rel) == ".tmp" {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+
+		expected, known := permMap[rel]
+		if !known {
+			t.Errorf("unexpected file %q with mode %v", rel, info.Mode())
+			return nil
+		}
+
+		found[rel] = true
+		if info.Mode() != expected {
+			t.Errorf("file %q: got mode %v, want %v", rel, info.Mode(), expected)
+		}
+
+		return nil
+	})
+	require.NoError(t, err)
+
+	for _, path := range required {
+		if !found[path] {
+			t.Errorf("required file %q was not created", path)
+		}
+	}
+}

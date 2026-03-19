@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func TestPublicMesh_GossipConvergence(t *testing.T) {
 	})
 
 	t.Run("StateConvergesAfterMutation", func(t *testing.T) {
-		c.Node("node-0").Node().UpsertService(8080, "http") //nolint:mnd
+		c.Node("node-0").Node().Tunneling().ExposeService(8080, "http") //nolint:mnd
 		// Use eagerTimeout: state must arrive via eager push, not clock sync.
 		c.RequireEventually(t, func() bool {
 			pk := c.PeerKeyByName("node-0")
@@ -34,7 +35,7 @@ func TestPublicMesh_GossipConvergence(t *testing.T) {
 				if n.PeerKey() == pk {
 					continue
 				}
-				if !n.Store().HasServicePort(pk, 8080) { //nolint:mnd
+				if !snapshotHasServicePort(n.Store().Snapshot(), pk, 8080) { //nolint:mnd
 					return false
 				}
 			}
@@ -75,8 +76,8 @@ func TestPublicMesh_TopologyStabilization(t *testing.T) {
 					if n.PeerKey() == other.PeerKey() {
 						continue
 					}
-					coord, ok := n.Store().PeerVivaldiCoord(other.PeerKey())
-					if !ok || (coord.X == 0 && coord.Y == 0 && coord.Height == 0) {
+					nv, ok := n.Store().Snapshot().Nodes[other.PeerKey()]
+					if !ok || nv.VivaldiCoord == nil || (nv.VivaldiCoord.X == 0 && nv.VivaldiCoord.Y == 0 && nv.VivaldiCoord.Height == 0) {
 						return false
 					}
 				}
@@ -115,7 +116,7 @@ func TestPublicMesh_WorkloadPlacement(t *testing.T) {
 		// Use eagerTimeout: spec must arrive via eager push, not clock sync.
 		c.RequireEventually(t, func() bool {
 			for _, n := range c.Nodes() {
-				specs := n.Store().AllWorkloadSpecs()
+				specs := n.Store().Snapshot().Specs
 				if _, ok := specs[hash]; !ok {
 					return false
 				}
@@ -127,6 +128,21 @@ func TestPublicMesh_WorkloadPlacement(t *testing.T) {
 	t.Run("ClaimTracking", func(t *testing.T) {
 		c.RequireWorkloadReplicas(t, hash, 2) //nolint:mnd
 	})
+
+	t.Run("Unseed", func(t *testing.T) {
+		err := c.Node("node-0").Node().UnseedWorkload(hash)
+		require.NoError(t, err)
+		c.RequireWorkloadGone(t, hash)
+	})
+
+	t.Run("Reseed", func(t *testing.T) {
+		var err error
+		hash, err = c.Node("node-0").Node().SeedWorkload(minimalWASM, 3, 0, 0) //nolint:mnd
+		require.NoError(t, err)
+
+		c.RequireWorkloadSpecOnAllNodes(t, hash, 3) //nolint:mnd
+		c.RequireWorkloadReplicas(t, hash, 3)       //nolint:mnd
+	})
 }
 
 func TestPublicMesh_NodeJoinLeave(t *testing.T) {
@@ -137,20 +153,20 @@ func TestPublicMesh_NodeJoinLeave(t *testing.T) {
 	c.RequireConverged(t)
 
 	t.Run("JoinReceivesOngoingGossip", func(t *testing.T) {
-		c.Node("node-0").Node().UpsertService(9090, "grpc") //nolint:mnd
+		c.Node("node-0").Node().Tunneling().ExposeService(9090, "grpc") //nolint:mnd
 
 		joiner := c.AddNodeAndStart(t, "late-joiner", Public, ctx)
 
 		introCtx, introCancel := context.WithTimeout(ctx, 5*time.Second) //nolint:mnd
 		defer introCancel()
-		err := c.Node("node-0").Node().ConnectPeer(introCtx, joiner.PeerKey(), []*net.UDPAddr{joiner.VirtualAddr()})
+		err := c.Node("node-0").Node().Connect(introCtx, joiner.PeerKey(), []netip.AddrPort{joiner.VirtualAddr().AddrPort()})
 		require.NoError(t, err)
 
 		c.RequirePeerVisible(t, "late-joiner")
 
 		pk0 := c.PeerKeyByName("node-0")
 		c.RequireEventually(t, func() bool {
-			return joiner.Store().HasServicePort(pk0, 9090) //nolint:mnd
+			return snapshotHasServicePort(joiner.Store().Snapshot(), pk0, 9090) //nolint:mnd
 		}, assertTimeout, "late joiner did not see pre-existing service")
 	})
 
@@ -182,14 +198,14 @@ func TestPublicMesh_ServiceExposure(t *testing.T) {
 	c.RequireConverged(t)
 
 	t.Run("VisibleClusterWide", func(t *testing.T) {
-		c.Node("node-1").Node().UpsertService(3000, "web") //nolint:mnd
+		c.Node("node-1").Node().Tunneling().ExposeService(3000, "web") //nolint:mnd
 		pk1 := c.PeerKeyByName("node-1")
 		c.RequireEventually(t, func() bool {
 			for _, n := range c.Nodes() {
 				if n.PeerKey() == pk1 {
 					continue
 				}
-				if !n.Store().HasServicePort(pk1, 3000) { //nolint:mnd
+				if !snapshotHasServicePort(n.Store().Snapshot(), pk1, 3000) { //nolint:mnd
 					return false
 				}
 			}
@@ -202,7 +218,7 @@ func TestPublicMesh_ServiceExposure(t *testing.T) {
 		c.Node("node-2").Node().AddDesiredConnection(pk1, 3000, 4000) //nolint:mnd
 
 		c.RequireEventually(t, func() bool {
-			for _, conn := range c.Node("node-2").Store().DesiredConnections() {
+			for _, conn := range c.Node("node-2").Node().DesiredConnections() {
 				if conn.PeerID == pk1 && conn.RemotePort == 3000 && conn.LocalPort == 4000 { //nolint:mnd
 					return true
 				}
@@ -303,17 +319,13 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 		node0 := c.Node("node-0")
 		introCtx, introCancel := context.WithTimeout(ctx, 5*time.Second) //nolint:mnd
 		defer introCancel()
-		err := node0.Node().ConnectPeer(introCtx, joiner.PeerKey(), []*net.UDPAddr{joiner.VirtualAddr()})
+		err := node0.Node().Connect(introCtx, joiner.PeerKey(), []netip.AddrPort{joiner.VirtualAddr().AddrPort()})
 		require.NoError(t, err)
 
 		pk0 := node0.PeerKey()
 		c.RequireEventually(t, func() bool {
-			for _, kp := range joiner.Store().KnownPeers() {
-				if kp.PeerID == pk0 {
-					return true
-				}
-			}
-			return false
+			_, ok := joiner.Store().Snapshot().Nodes[pk0]
+			return ok
 		}, assertTimeout, "joiner did not discover node-0 via gossip")
 
 		require.NotNil(t, joiner.Node().Credentials())
@@ -344,13 +356,13 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 		pk0 := node0.PeerKey()
 		pk1 := c.Node("node-1").PeerKey()
 		c.RequireEventually(t, func() bool {
-			known := joiner.Store().KnownPeers()
+			snap := joiner.Store().Snapshot()
 			var saw0, saw1 bool
-			for _, kp := range known {
-				if kp.PeerID == pk0 {
+			for pk := range snap.Nodes {
+				if pk == pk0 {
 					saw0 = true
 				}
-				if kp.PeerID == pk1 {
+				if pk == pk1 {
 					saw1 = true
 				}
 			}
@@ -370,7 +382,7 @@ func TestPublicMesh_DenyPeer(t *testing.T) {
 	pk2 := c.PeerKeyByName("node-2")
 
 	t.Run("DeniedPeerDisconnected", func(t *testing.T) {
-		c.Node("node-0").Node().DenyPeer(pk2)
+		c.Node("node-0").Node().Membership().DenyPeer(pk2) //nolint:errcheck
 
 		c.RequireEventually(t, func() bool {
 			return len(c.Node("node-2").ConnectedPeers()) == 0
@@ -392,7 +404,7 @@ func TestPublicMesh_EagerGossipPropagation(t *testing.T) {
 	c.RequireConverged(t)
 
 	// Mutate state on node-0 by registering a service.
-	c.Node("node-0").Node().UpsertService(5050, "eager-prop") //nolint:mnd
+	c.Node("node-0").Node().Tunneling().ExposeService(5050, "eager-prop") //nolint:mnd
 
 	// The mutation must arrive at every other node within eagerTimeout (500ms),
 	// well under the 1s gossip tick configured in test clusters.
@@ -403,7 +415,7 @@ func TestPublicMesh_EagerGossipPropagation(t *testing.T) {
 		}
 		name := n.Name()
 		c.RequireEventually(t, func() bool {
-			return n.Store().HasServicePort(pk0, 5050) //nolint:mnd
+			return snapshotHasServicePort(n.Store().Snapshot(), pk0, 5050) //nolint:mnd
 		}, eagerTimeout, name+" did not see service within eager timeout")
 	}
 }
@@ -434,13 +446,16 @@ func TestRelayRegions_NATpunchthrough(t *testing.T) {
 		AddNode("relay-0", Public).
 		AddNode("relay-1", Public).
 		AddNode("region-0-node-0", Private).
+		SetAddr("region-0-node-0", &net.UDPAddr{IP: net.IPv4(10, 1, 0, 1), Port: 60611}). //nolint:mnd
 		EnableNATPunch("region-0-node-0").
 		AddNode("region-1-node-0", Private).
+		SetAddr("region-1-node-0", &net.UDPAddr{IP: net.IPv4(10, 2, 0, 1), Port: 60611}). //nolint:mnd
 		EnableNATPunch("region-1-node-0").
 		SetLatency("relay-0", "relay-1", 50*time.Millisecond). //nolint:mnd
 		Introduce("relay-0", "relay-1").
 		Introduce("region-0-node-0", "relay-0").
 		Introduce("region-1-node-0", "relay-1").
+		Introduce("region-1-node-0", "relay-0").
 		Start(ctx)
 
 	c.RequireConverged(t)
@@ -471,6 +486,56 @@ func TestRelayRegions_NATpunchthrough(t *testing.T) {
 	})
 }
 
+func TestRelayRegions_ExternalPortDistinct(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
+	t.Cleanup(cancel)
+
+	// Two private nodes on the same LAN behind a shared NAT gateway.
+	// The NAT assigns each a distinct external port on the same public IP.
+	c := New(t).
+		SetDefaultLatency(2*time.Millisecond). //nolint:mnd
+		SetDefaultJitter(0.15).                //nolint:mnd
+		AddNode("relay", Public).
+		SetAddr("relay", &net.UDPAddr{IP: net.IPv4(198, 51, 100, 1), Port: 60611}). //nolint:mnd
+		AddNode("lan-0", Private).
+		SetAddr("lan-0", &net.UDPAddr{IP: net.IPv4(10, 1, 0, 1), Port: 60611}).          //nolint:mnd
+		SetNATMapping("lan-0", &net.UDPAddr{IP: net.IPv4(203, 0, 113, 1), Port: 45678}). //nolint:mnd
+		AddNode("lan-1", Private).
+		SetAddr("lan-1", &net.UDPAddr{IP: net.IPv4(10, 1, 0, 2), Port: 60611}).          //nolint:mnd
+		SetNATMapping("lan-1", &net.UDPAddr{IP: net.IPv4(203, 0, 113, 1), Port: 45999}). //nolint:mnd
+		Introduce("lan-0", "relay").
+		Introduce("lan-1", "relay").
+		Start(ctx)
+
+	c.RequireConverged(t)
+
+	pk0 := c.PeerKeyByName("lan-0")
+	pk1 := c.PeerKeyByName("lan-1")
+
+	t.Run("SameObservedExternalIP", func(t *testing.T) {
+		c.RequireEventually(t, func() bool {
+			snap := c.Node("relay").Store().Snapshot()
+			nv0, ok0 := snap.Nodes[pk0]
+			nv1, ok1 := snap.Nodes[pk1]
+			if !ok0 || !ok1 {
+				return false
+			}
+			return nv0.ObservedExternalIP == "203.0.113.1" &&
+				nv1.ObservedExternalIP == "203.0.113.1"
+		}, assertTimeout, "both LAN nodes should share same observed external IP")
+	})
+
+	t.Run("DistinctExternalPorts", func(t *testing.T) {
+		c.RequireEventually(t, func() bool {
+			snap := c.Node("relay").Store().Snapshot()
+			nv0 := snap.Nodes[pk0]
+			nv1 := snap.Nodes[pk1]
+			return nv0.ExternalPort != 0 && nv1.ExternalPort != 0 &&
+				nv0.ExternalPort != nv1.ExternalPort
+		}, assertTimeout, "LAN nodes behind same NAT must have distinct external ports")
+	})
+}
+
 func TestRelayRegions_PartitionAndHeal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
 	t.Cleanup(cancel)
@@ -484,11 +549,11 @@ func TestRelayRegions_PartitionAndHeal(t *testing.T) {
 	t.Run("PartitionBlocksPropagation", func(t *testing.T) {
 		c.Partition(region0, region1)
 
-		c.Node("relay-0").Node().UpsertService(7070, "isolated") //nolint:mnd
+		c.Node("relay-0").Node().Tunneling().ExposeService(7070, "isolated") //nolint:mnd
 
 		pk0 := c.PeerKeyByName("relay-0")
 		c.RequireNever(t, func() bool {
-			return c.Node("relay-1").Store().HasServicePort(pk0, 7070) //nolint:mnd
+			return snapshotHasServicePort(c.Node("relay-1").Store().Snapshot(), pk0, 7070) //nolint:mnd
 		}, 2*time.Second, "partitioned relay should not see service") //nolint:mnd
 	})
 
@@ -497,7 +562,7 @@ func TestRelayRegions_PartitionAndHeal(t *testing.T) {
 
 		pk0 := c.PeerKeyByName("relay-0")
 		c.RequireEventually(t, func() bool {
-			return c.Node("relay-1").Store().HasServicePort(pk0, 7070) //nolint:mnd
+			return snapshotHasServicePort(c.Node("relay-1").Store().Snapshot(), pk0, 7070) //nolint:mnd
 		}, assertTimeout, "service did not propagate after heal")
 
 		c.RequireConverged(t)
@@ -522,7 +587,7 @@ func TestRelayRegions_WorkloadPlacement(t *testing.T) {
 
 		c.RequireEventually(t, func() bool {
 			for _, n := range c.Nodes() {
-				specs := n.Store().AllWorkloadSpecs()
+				specs := n.Store().Snapshot().Specs
 				if _, ok := specs[hash]; !ok {
 					return false
 				}
@@ -534,4 +599,62 @@ func TestRelayRegions_WorkloadPlacement(t *testing.T) {
 	t.Run("CrossRegionClaimTracking", func(t *testing.T) {
 		c.RequireWorkloadReplicas(t, hash, 2) //nolint:mnd
 	})
+
+	t.Run("Unseed", func(t *testing.T) {
+		err := c.Node(relays[0].Name()).Node().UnseedWorkload(hash)
+		require.NoError(t, err)
+		c.RequireWorkloadGone(t, hash)
+	})
+}
+
+func TestPublicMesh_WorkloadMigration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) //nolint:mnd
+	t.Cleanup(cancel)
+
+	c := PublicMesh(t, 4, ctx) //nolint:mnd
+	c.RequireConverged(t)
+
+	hash, err := c.Node("node-0").Node().SeedWorkload(minimalWASM, 2, 0, 0) //nolint:mnd
+	require.NoError(t, err)
+	c.RequireWorkloadReplicas(t, hash, 2) //nolint:mnd
+
+	// Find a node that claimed the workload.
+	var victim string
+	require.Eventually(t, func() bool {
+		for _, n := range c.Nodes() {
+			snap := n.Store().Snapshot()
+			if claimants, ok := snap.Claims[hash]; ok {
+				if _, claimed := claimants[n.PeerKey()]; claimed {
+					victim = n.Name()
+					return true
+				}
+			}
+		}
+		return false
+	}, assertTimeout, assertPoll, "no claimant found")
+
+	// Stop the claimant node.
+	c.Node(victim).Stop()
+
+	// The scheduler on surviving nodes should re-claim to maintain 2 replicas.
+	c.RequireEventually(t, func() bool {
+		claimCount := 0
+		for _, n := range c.Nodes() {
+			if n.Name() == victim {
+				continue
+			}
+			snap := n.Store().Snapshot()
+			claimants, ok := snap.Claims[hash]
+			if !ok {
+				continue
+			}
+			for pk := range claimants {
+				if pk != c.PeerKeyByName(victim) {
+					claimCount++
+					break
+				}
+			}
+		}
+		return claimCount >= 2 //nolint:mnd
+	}, 30*time.Second, assertPoll, "replicas not maintained after node %s stopped", victim) //nolint:mnd
 }

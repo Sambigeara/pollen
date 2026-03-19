@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/node"
-	"github.com/sambigeara/pollen/pkg/peer"
-	"github.com/sambigeara/pollen/pkg/store"
+	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/state"
+	"github.com/sambigeara/pollen/pkg/supervisor"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
@@ -26,19 +26,19 @@ type TestNodeConfig struct {
 	Addr           *net.UDPAddr
 	Name           string
 	Role           NodeRole
-	BootstrapPeers []node.BootstrapPeer
+	BootstrapPeers []config.BootstrapTarget
 	EnableNATPunch bool
 }
 
 // TestNode wraps a full-stack node for integration tests.
 type TestNode struct {
-	n       *node.Node
-	store   *store.Store
+	n       *supervisor.Supervisor
 	cancel  context.CancelFunc
 	peerKey types.PeerKey
 	addr    *net.UDPAddr
 	name    string
 	role    NodeRole
+	stopped bool
 }
 
 // NewTestNode creates and starts a fully wired node backed by VirtualSwitch.
@@ -51,12 +51,6 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 	// Get TLS cert and delegation cert from ClusterAuth.
 	_, dc := cfg.Auth.NodeCredentials(priv)
 
-	// Create state store in temp dir.
-	tmpDir := t.TempDir()
-	stateStore, err := store.Load(tmpDir, pub)
-	require.NoError(t, err)
-	t.Cleanup(func() { stateStore.Close() })
-
 	// Build auth.NodeCredentials with DelegationSigner.
 	creds := &auth.NodeCredentials{
 		Trust: cfg.Auth.TrustBundle(),
@@ -65,7 +59,7 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 			Priv:     priv,
 			Trust:    cfg.Auth.TrustBundle(),
 			Issuer:   dc,
-			Consumed: stateStore,
+			Consumed: auth.NewInviteConsumer(),
 		},
 	}
 
@@ -73,38 +67,31 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 	vconn := cfg.Switch.Bind(cfg.Addr, cfg.Role)
 
 	// Build node config with injected PacketConn.
-	nodeConf := &node.Config{
-		Port:             cfg.Addr.Port,
-		AdvertisedIPs:    []string{cfg.Addr.IP.String()},
-		PacketConn:       vconn,
-		DisableNATPunch:  !cfg.EnableNATPunch,
-		PeerTickInterval: 1 * time.Second,
-		GossipInterval:   1 * time.Second,
-		TLSIdentityTTL:   24 * time.Hour,  //nolint:mnd
-		MembershipTTL:    24 * time.Hour,  //nolint:mnd
-		ReconnectWindow:  5 * time.Minute, //nolint:mnd
-		BootstrapPeers:   cfg.BootstrapPeers,
+	nodeConf := &config.Config{
+		SigningKey:             priv,
+		PollenDir:              t.TempDir(),
+		ListenPort:             cfg.Addr.Port,
+		AdvertisedIPs:          []string{cfg.Addr.IP.String()},
+		PacketConn:             vconn,
+		DisableNATPunch:        !cfg.EnableNATPunch,
+		PeerTickInterval:       1 * time.Second,
+		GossipInterval:         1 * time.Second,
+		TLSIdentityTTL:         24 * time.Hour,  //nolint:mnd
+		MembershipTTL:          24 * time.Hour,  //nolint:mnd
+		ReconnectWindow:        5 * time.Minute, //nolint:mnd
+		ResolvedBootstrapPeers: cfg.BootstrapPeers,
 	}
 
-	n, err := node.New(nodeConf, priv, creds, stateStore, peer.NewStore(), tmpDir)
+	n, err := supervisor.New(nodeConf, creds)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(cfg.Context)
 
 	done := make(chan struct{})
 	go func() {
-		_ = n.Start(ctx)
+		_ = n.Run(ctx)
 		close(done)
 	}()
-
-	// Cleanup: cancel context, wait for node to stop, then close store.
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second): //nolint:mnd
-		}
-	})
 
 	select {
 	case <-n.Ready():
@@ -112,23 +99,39 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 		t.Fatal("node did not become ready")
 	}
 
-	return &TestNode{
+	tn := &TestNode{
 		n:       n,
-		store:   stateStore,
 		cancel:  cancel,
 		peerKey: peerKey,
 		addr:    cfg.Addr,
 		role:    cfg.Role,
 		name:    cfg.Name,
 	}
+
+	// Cleanup: mark stopped, cancel context, wait for node to stop.
+	t.Cleanup(func() {
+		tn.stopped = true
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second): //nolint:mnd
+		}
+	})
+
+	return tn
 }
 
-func (tn *TestNode) PeerKey() types.PeerKey          { return tn.peerKey }
-func (tn *TestNode) Node() *node.Node                { return tn.n }
-func (tn *TestNode) Store() *store.Store             { return tn.store }
-func (tn *TestNode) Role() NodeRole                  { return tn.role }
-func (tn *TestNode) VirtualAddr() *net.UDPAddr       { return tn.addr }
-func (tn *TestNode) Name() string                    { return tn.name }
-func (tn *TestNode) ConnectedPeers() []types.PeerKey { return tn.n.GetConnectedPeers() }
-func (tn *TestNode) ListenPort() int                 { return tn.n.ListenPort() }
-func (tn *TestNode) Stop()                           { tn.cancel() }
+func (tn *TestNode) PeerKey() types.PeerKey       { return tn.peerKey }
+func (tn *TestNode) Node() *supervisor.Supervisor { return tn.n }
+func (tn *TestNode) Store() state.StateStore      { return tn.n.StateStore() }
+func (tn *TestNode) Role() NodeRole               { return tn.role }
+func (tn *TestNode) VirtualAddr() *net.UDPAddr    { return tn.addr }
+func (tn *TestNode) Name() string                 { return tn.name }
+func (tn *TestNode) ConnectedPeers() []types.PeerKey {
+	if tn.stopped {
+		return nil
+	}
+	return tn.n.GetConnectedPeers()
+}
+func (tn *TestNode) ListenPort() int { return tn.n.ListenPort() }
+func (tn *TestNode) Stop()           { tn.stopped = true; tn.cancel() }

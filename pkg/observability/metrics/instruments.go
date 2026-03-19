@@ -1,136 +1,131 @@
 package metrics
 
-// MeshMetrics holds pre-registered instruments for the mesh layer.
+import (
+	"context"
+
+	"go.opentelemetry.io/otel/metric"
+)
+
+// MeshMetrics instruments the transport layer.
 type MeshMetrics struct {
-	DatagramsSent      *Counter
-	DatagramsRecv      *Counter
-	DatagramBytesSent  *Counter
-	DatagramBytesRecv  *Counter
-	DatagramErrors     *Counter
-	SessionConnects    *Counter
-	SessionDisconnects *Counter
-	SessionsActive     *Gauge
+	DatagramsSent      metric.Int64Counter
+	DatagramsRecv      metric.Int64Counter
+	DatagramBytesSent  metric.Int64Counter
+	DatagramBytesRecv  metric.Int64Counter
+	DatagramErrors     metric.Int64Counter
+	SessionConnects    metric.Int64Counter
+	SessionDisconnects metric.Int64Counter
+	SessionsActive     metric.Float64Gauge
 }
 
-// NewMeshMetrics registers all mesh instruments on c.
-func NewMeshMetrics(c *Collector) *MeshMetrics {
-	if c == nil {
-		return &MeshMetrics{}
-	}
-	return &MeshMetrics{
-		DatagramsSent:      c.Counter("pollen_mesh_datagrams_sent_total", Labels{}),
-		DatagramsRecv:      c.Counter("pollen_mesh_datagrams_recv_total", Labels{}),
-		DatagramBytesSent:  c.Counter("pollen_mesh_datagram_bytes_sent_total", Labels{}),
-		DatagramBytesRecv:  c.Counter("pollen_mesh_datagram_bytes_recv_total", Labels{}),
-		DatagramErrors:     c.Counter("pollen_mesh_datagram_errors_total", Labels{}),
-		SessionConnects:    c.Counter("pollen_mesh_session_connects_total", Labels{}),
-		SessionDisconnects: c.Counter("pollen_mesh_session_disconnects_total", Labels{}),
-		SessionsActive:     c.Gauge("pollen_mesh_sessions_active", Labels{}),
-	}
+func NewMeshMetrics(mp metric.MeterProvider) *MeshMetrics {
+	m := mp.Meter("pollen/mesh")
+	mm := &MeshMetrics{}
+	mm.DatagramsSent, _ = m.Int64Counter("pollen.mesh.datagrams.sent")
+	mm.DatagramsRecv, _ = m.Int64Counter("pollen.mesh.datagrams.recv")
+	mm.DatagramBytesSent, _ = m.Int64Counter("pollen.mesh.datagram.bytes.sent")
+	mm.DatagramBytesRecv, _ = m.Int64Counter("pollen.mesh.datagram.bytes.recv")
+	mm.DatagramErrors, _ = m.Int64Counter("pollen.mesh.datagram.errors")
+	mm.SessionConnects, _ = m.Int64Counter("pollen.mesh.session.connects")
+	mm.SessionDisconnects, _ = m.Int64Counter("pollen.mesh.session.disconnects")
+	mm.SessionsActive, _ = m.Float64Gauge("pollen.mesh.sessions.active")
+	return mm
 }
 
-// PeerMetrics holds pre-registered instruments for the peer state machine.
+// PeerMetrics instruments the peer state machine.
 type PeerMetrics struct {
-	Connections      *Counter
-	Disconnects      *Counter
-	PeersDiscovered  *Gauge
-	PeersConnecting  *Gauge
-	PeersConnected   *Gauge
-	PeersUnreachable *Gauge
-	StageEscalations *Counter
-	StateTransitions *Counter
+	Connections      metric.Int64Counter
+	Disconnects      metric.Int64Counter
+	StageEscalations metric.Int64Counter
+	StateTransitions metric.Int64Counter
+	PeersDiscovered  metric.Float64Gauge
+	PeersConnecting  metric.Float64Gauge
+	PeersConnected   metric.Float64Gauge
+	PeersUnreachable metric.Float64Gauge
 }
 
-// Enabled reports whether any gauge is wired (non-nil), so callers can skip
-// iterating peers when metrics collection is disabled.
-func (m *PeerMetrics) Enabled() bool {
-	return m.PeersDiscovered != nil
+func NewPeerMetrics(mp metric.MeterProvider) *PeerMetrics {
+	m := mp.Meter("pollen/peer")
+	pm := &PeerMetrics{}
+	pm.Connections, _ = m.Int64Counter("pollen.peer.connections")
+	pm.Disconnects, _ = m.Int64Counter("pollen.peer.disconnects")
+	pm.StageEscalations, _ = m.Int64Counter("pollen.peer.stage.escalations")
+	pm.StateTransitions, _ = m.Int64Counter("pollen.peer.state.transitions")
+	pm.PeersDiscovered, _ = m.Float64Gauge("pollen.peer.discovered")
+	pm.PeersConnecting, _ = m.Float64Gauge("pollen.peer.connecting")
+	pm.PeersConnected, _ = m.Float64Gauge("pollen.peer.connected")
+	pm.PeersUnreachable, _ = m.Float64Gauge("pollen.peer.unreachable")
+	return pm
 }
 
-// NewPeerMetrics registers all peer instruments on c.
-func NewPeerMetrics(c *Collector) *PeerMetrics {
-	if c == nil {
-		return &PeerMetrics{}
-	}
-	return &PeerMetrics{
-		Connections:      c.Counter("pollen_peer_connections_total", Labels{}),
-		Disconnects:      c.Counter("pollen_peer_disconnects_total", Labels{}),
-		PeersDiscovered:  c.Gauge("pollen_peers_discovered", Labels{}),
-		PeersConnecting:  c.Gauge("pollen_peers_connecting", Labels{}),
-		PeersConnected:   c.Gauge("pollen_peers_connected", Labels{}),
-		PeersUnreachable: c.Gauge("pollen_peers_unreachable", Labels{}),
-		StageEscalations: c.Counter("pollen_peer_stage_escalations_total", Labels{}),
-		StateTransitions: c.Counter("pollen_peer_state_transitions_total", Labels{}),
-	}
+// Enabled returns true if metrics are actively being collected (not noop).
+func (pm *PeerMetrics) Enabled(ctx context.Context) bool {
+	return pm.PeersConnected.Enabled(ctx)
 }
 
-const staleRatioAlpha = 0.01 // ~100-event EWMA window
-
-// GossipMetrics holds pre-registered instruments for the gossip/store layer.
+// GossipMetrics instruments the gossip/state layer.
 type GossipMetrics struct {
-	EventsReceived *Counter
-	EventsApplied  *Counter
-	EventsStale    *Counter
-	SelfConflicts  *Counter
-	Revocations    *Counter
-	BatchSize      *Gauge
+	EventsReceived metric.Int64Counter
+	EventsApplied  metric.Int64Counter
+	EventsStale    metric.Int64Counter
+	SelfConflicts  metric.Int64Counter
+	Revocations    metric.Int64Counter
+	BatchSize      metric.Float64Gauge
 	StaleRatio     *EWMA
 }
 
-// NewGossipMetrics registers all gossip instruments on c.
-func NewGossipMetrics(c *Collector) *GossipMetrics {
-	if c == nil {
-		return &GossipMetrics{StaleRatio: NewEWMA(staleRatioAlpha)}
+func NewGossipMetrics(mp metric.MeterProvider) *GossipMetrics {
+	m := mp.Meter("pollen/gossip")
+	gm := &GossipMetrics{
+		StaleRatio: NewEWMA(0.01), //nolint:mnd
 	}
-	return &GossipMetrics{
-		EventsReceived: c.Counter("pollen_gossip_events_received_total", Labels{}),
-		EventsApplied:  c.Counter("pollen_gossip_events_applied_total", Labels{}),
-		EventsStale:    c.Counter("pollen_gossip_events_stale_total", Labels{}),
-		SelfConflicts:  c.Counter("pollen_gossip_self_conflicts_total", Labels{}),
-		Revocations:    c.Counter("pollen_gossip_revocations_total", Labels{}),
-		BatchSize:      c.Gauge("pollen_gossip_batch_size", Labels{}),
-		StaleRatio:     NewEWMA(staleRatioAlpha),
-	}
+	gm.EventsReceived, _ = m.Int64Counter("pollen.gossip.events.received")
+	gm.EventsApplied, _ = m.Int64Counter("pollen.gossip.events.applied")
+	gm.EventsStale, _ = m.Int64Counter("pollen.gossip.events.stale")
+	gm.SelfConflicts, _ = m.Int64Counter("pollen.gossip.self.conflicts")
+	gm.Revocations, _ = m.Int64Counter("pollen.gossip.revocations")
+	gm.BatchSize, _ = m.Float64Gauge("pollen.gossip.batch.size")
+
+	_, _ = m.Float64ObservableGauge("pollen.gossip.stale.ratio",
+		metric.WithFloat64Callback(func(_ context.Context, o metric.Float64Observer) error {
+			o.Observe(gm.StaleRatio.Value())
+			return nil
+		}))
+	return gm
 }
 
-// TopologyMetrics holds pre-registered instruments for topology selection.
+// TopologyMetrics instruments topology selection.
 type TopologyMetrics struct {
-	VivaldiError       *Gauge
-	HMACNearestEnabled *Gauge
-	TopologyPrunes     *Counter
+	VivaldiError       metric.Float64Gauge
+	HMACNearestEnabled metric.Float64Gauge
+	TopologyPrunes     metric.Int64Counter
 }
 
-// NewTopologyMetrics registers all topology instruments on c.
-func NewTopologyMetrics(c *Collector) *TopologyMetrics {
-	if c == nil {
-		return &TopologyMetrics{}
-	}
-	return &TopologyMetrics{
-		VivaldiError:       c.Gauge("pollen_topology_vivaldi_error", Labels{}),
-		HMACNearestEnabled: c.Gauge("pollen_topology_hmac_nearest_enabled", Labels{}),
-		TopologyPrunes:     c.Counter("pollen_topology_prunes_total", Labels{}),
-	}
+func NewTopologyMetrics(mp metric.MeterProvider) *TopologyMetrics {
+	m := mp.Meter("pollen/topology")
+	tm := &TopologyMetrics{}
+	tm.VivaldiError, _ = m.Float64Gauge("pollen.topology.vivaldi.error")
+	tm.HMACNearestEnabled, _ = m.Float64Gauge("pollen.topology.hmac.nearest.enabled")
+	tm.TopologyPrunes, _ = m.Int64Counter("pollen.topology.prunes")
+	return tm
 }
 
-// NodeMetrics holds pre-registered instruments for the node orchestrator.
+// NodeMetrics instruments node-level operations.
 type NodeMetrics struct {
-	CertExpirySeconds  *Gauge
-	CertRenewals       *Counter
-	CertRenewalsFailed *Counter
-	PunchAttempts      *Counter
-	PunchFailures      *Counter
+	CertExpirySeconds  metric.Float64Gauge
+	CertRenewals       metric.Int64Counter
+	CertRenewalsFailed metric.Int64Counter
+	PunchAttempts      metric.Int64Counter
+	PunchFailures      metric.Int64Counter
 }
 
-// NewNodeMetrics registers all node instruments on c.
-func NewNodeMetrics(c *Collector) *NodeMetrics {
-	if c == nil {
-		return &NodeMetrics{}
-	}
-	return &NodeMetrics{
-		CertExpirySeconds:  c.Gauge("pollen_node_cert_expiry_seconds", Labels{}),
-		CertRenewals:       c.Counter("pollen_node_cert_renewals_total", Labels{}),
-		CertRenewalsFailed: c.Counter("pollen_node_cert_renewals_failed_total", Labels{}),
-		PunchAttempts:      c.Counter("pollen_node_punch_attempts_total", Labels{}),
-		PunchFailures:      c.Counter("pollen_node_punch_failures_total", Labels{}),
-	}
+func NewNodeMetrics(mp metric.MeterProvider) *NodeMetrics {
+	m := mp.Meter("pollen/node")
+	nm := &NodeMetrics{}
+	nm.CertExpirySeconds, _ = m.Float64Gauge("pollen.node.cert.expiry.seconds")
+	nm.CertRenewals, _ = m.Int64Counter("pollen.node.cert.renewals")
+	nm.CertRenewalsFailed, _ = m.Int64Counter("pollen.node.cert.renewals.failed")
+	nm.PunchAttempts, _ = m.Int64Counter("pollen.node.punch.attempts")
+	nm.PunchFailures, _ = m.Int64Counter("pollen.node.punch.failures")
+	return nm
 }

@@ -136,7 +136,7 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			formatPercent(self.GetMemPercent()),
 			formatCount(self.GetTunnelCount()),
 			"-",
-			"-", "-",
+			formatBytes(self.GetTrafficBytesIn()), formatBytes(self.GetTrafficBytesOut()),
 		})
 	}
 

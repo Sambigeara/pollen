@@ -55,6 +55,7 @@
 
 ## Core Principles
 
+- **ARCH_SPEC.md is gospel.** Every change must conform to the architecture spec — layer boundaries, dependency rules, interface patterns, unexported internals. Read it before proposing structural changes. Any deviation must be explicitly discussed and justified with the user before implementation. The only acceptable direction is *cleaner*: narrower interfaces, fewer cross-boundary types, less coupling. Never introduce new coupling, widen an interface, or export an internal without architectural justification. If you spot a concrete type crossing a package boundary where a narrow interface would suffice, replacing it is a priority — do it as part of the current change.
 - **Simplicity First**: Make every change as simple as possible. Only touch what's necessary. Avoid introducing bugs.
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
 - **Boyscout Rule**: Always leave the code cleaner than you found it. When defluff or review surfaces nearby debt — even if it predates the current diff — fix it, unless it opens a large can of worms.
@@ -83,6 +84,7 @@
 - **Use typed representations over string conventions.** Don't encode structured data into string keys with prefix parsing (`"s/http"`, `"r/<pk>"`). Use typed structs with enums from the start — string conventions are fragile and create implicit coupling.
 - **Unify parallel patterns immediately.** When multiple attributes need the same concept (e.g., deletion), use one consistent mechanism everywhere. After each step, ask: "have I introduced a second way of expressing the same idea?"
 - **Clean package APIs.** Each package should expose a clean API. Internal struct types, lock details, and implementation choices must not leak across package boundaries.
+- **Narrow interfaces at every boundary.** If a concrete type (e.g., `transport.Stream`) crosses a package boundary but the consumer only needs `io.ReadWriteCloser`, replace it with the narrow interface. This is not optional cleanup — it's a priority whenever encountered, even mid-task.
 - **Noop implementations for optional features.** When a feature can be disabled (metrics, tracing), implement the same interface with no-ops rather than scattering nil checks. Initialize to no-op, wire the real implementation later via setter.
 
 ### Proto Message Design
@@ -94,6 +96,7 @@
 - Don't add mutexes around write-once fields. If a field is set once before goroutines are spawned, the goroutine-spawn itself establishes happens-before — a mutex adds noise and implies the field is mutable when it isn't.
 - Don't wrap simple field access in a getter that only adds a nil check for conditions that can't happen. If the field is guaranteed set by the time callers run, just use it directly.
 - Every `for { select { ... } }` loop must have a `case <-ctx.Done()` branch. No exceptions.
+- **No fire-and-forget goroutines.** Every goroutine must be tracked by a `WaitGroup` (or equivalent) and use a cancellable context. Bare `go func()` with `context.Background()` creates goroutines that outlive shutdown and panic on closed channels. Use `wg.Go()` with the service's context.
 - Use `sync.Once` to guard channel closes when multiple code paths could trigger shutdown. Double-close panics.
 - Shutdown ordering matters: stop accepting → drain active work → flush observability → close stores. Each layer waits for the previous.
 
@@ -110,3 +113,4 @@
 - Prefer `t.Cleanup()` over `defer` for test resource teardown — it works correctly with subtests and `t.Fatal`.
 - Use `require.Eventually` for async assertions (peer connections, state convergence). Don't `time.Sleep` then assert.
 - Use test harness structs with factory methods (like `meshHarness`, `clusterAuth`) to keep test setup readable and reusable across subtests.
+- **Test harnesses must exercise the production code path.** If a harness method (e.g. `supervisor.SeedWorkload`) adds logic beyond what the production entry point does (e.g. `control.SeedWorkload → placement.Seed`), the production path is probably missing that logic. Harness shortcuts that bypass gRPC/API layers mask integration bugs.

@@ -677,8 +677,7 @@ Default directory: `~/.pln` (macOS/dev) or `/var/lib/pln` (Linux production).
 ```
 <pollenDir>/
   config.yaml            # YAML config, group-writable (0660)
-  state.pb               # Protobuf RuntimeState, group-readable (0640)
-  .state.lock            # flock(2) exclusive lock, private (0600)
+  state.pb               # Protobuf RuntimeState, private (0600)
   pln.sock               # Unix domain socket for control RPC (0660)
   keys/
     ed25519.key          # Node identity private key (PEM, 0640)
@@ -748,8 +747,7 @@ Header: `# Manual edits while the daemon runs will be overwritten.\n# Use 'pln s
 | `keys/cluster.trust.pb` | pln:pln | 0640 | WriteGroupReadable |
 | `keys/delegation.cert.pb` | pln:pln | 0640 | WriteGroupReadable |
 | `config.yaml` | pln:pln | 0660 | WriteGroupWritable |
-| `state.pb` | pln:pln | 0640 | WriteGroupReadable |
-| `.state.lock` | pln:pln | 0600 | SetPrivate |
+| `state.pb` | pln:pln | 0600 | WritePrivate |
 | `pln.sock` | pln:pln | 0660 | SetGroupSocket |
 
 ### Migration paths

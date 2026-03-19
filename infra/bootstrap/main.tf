@@ -1,67 +1,51 @@
 terraform {
-  required_providers { aws = { source = "hashicorp/aws" } }
-}
-
-provider "aws" {
-  region = "eu-west-2" # London
-}
-
-resource "aws_key_pair" "pollen" {
-  key_name   = "pollen"
-  public_key = file("~/.ssh/id_ed25519.pub")
-}
-
-resource "aws_security_group" "pollen" {
-  name        = "pollen-sg"
-  description = "Pollen ingress"
-  vpc_id      = data.aws_vpc.default.id
-
-  ingress {
-    description = "Pollen UDP Control Plane"
-    from_port   = 60611
-    to_port     = 60611
-    protocol    = "udp"
-    cidr_blocks = ["0.0.0.0/0"]
+  required_providers {
+    hcloud = {
+      source  = "hetznercloud/hcloud"
+      version = "~> 1.49"
+    }
   }
-  ingress {
-    from_port   = 22
-    to_port     = 22
+}
+
+provider "hcloud" {}
+
+variable "ssh_public_key_path" {
+  type    = string
+  default = "~/.ssh/id_ed25519.pub"
+}
+
+resource "hcloud_ssh_key" "pollen" {
+  name       = "pollen-bootstrap"
+  public_key = file(var.ssh_public_key_path)
+}
+
+resource "hcloud_firewall" "pollen" {
+  name = "pollen-bootstrap"
+
+  rule {
+    description = "SSH"
+    direction   = "in"
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    port        = "22"
+    source_ips  = ["0.0.0.0/0", "::/0"]
   }
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
 
-data "aws_vpc" "default" { default = true }
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
+  rule {
+    description = "Pollen UDP"
+    direction   = "in"
+    protocol    = "udp"
+    port        = "60611"
+    source_ips  = ["0.0.0.0/0", "::/0"]
   }
 }
 
-resource "aws_instance" "pollen" {
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = "t4g.nano"
-  subnet_id              = data.aws_subnets.default.ids[0]
-  vpc_security_group_ids = [aws_security_group.pollen.id]
-  key_name               = aws_key_pair.pollen.key_name
+resource "hcloud_server" "pollen" {
+  name         = "pollen-bootstrap"
+  server_type  = "cax11"
+  image        = "ubuntu-22.04"
+  location     = "nbg1"
+  ssh_keys     = [hcloud_ssh_key.pollen.id]
+  firewall_ids = [hcloud_firewall.pollen.id]
 }
 
-data "aws_ami" "ubuntu" {
-  most_recent = true
-  owners      = ["099720109477"] # Canonical
-  filter {
-    name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu*-22.04-arm64-server-*"]
-  }
-}
-
-resource "aws_eip" "pollen" { instance = aws_instance.pollen.id }
-
-output "ip" { value = aws_eip.pollen.public_ip }
+output "ip" { value = hcloud_server.pollen.ipv4_address }

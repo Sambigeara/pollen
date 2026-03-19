@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"cmp"
+	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,7 +17,7 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"github.com/sambigeara/pollen/pkg/perm"
+	"github.com/sambigeara/pollen/pkg/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -82,14 +83,49 @@ type Connection struct {
 	LocalPort  uint32 `yaml:"localPort"`
 }
 
+// BootstrapTarget is a resolved bootstrap peer for runtime use (as opposed
+// to BootstrapPeer which is the YAML config representation).
+type BootstrapTarget struct {
+	Addrs   []string
+	PeerKey types.PeerKey
+}
+
+// ConnectionEntry describes a desired tunnel connection for initial state.
+type ConnectionEntry struct {
+	PeerKey    types.PeerKey
+	RemotePort uint32
+	LocalPort  uint32
+}
+
 type Config struct {
-	AdvertiseIPs   []string        `yaml:"advertiseIPs,omitempty"`
-	BootstrapPeers []BootstrapPeer `yaml:"bootstrapPeers,omitempty"`
-	Services       []Service       `yaml:"services,omitempty"`
-	Connections    []Connection    `yaml:"connections,omitempty"`
-	CertTTLs       CertTTLs        `yaml:"certTTLs,omitempty"` //nolint:tagliatelle
-	Port           uint32          `yaml:"port,omitempty"`
-	Public         bool            `yaml:"public,omitempty"`
+	PacketConn             net.PacketConn     `yaml:"-"`
+	ShutdownFunc           func()             `yaml:"-"`
+	SocketPath             string             `yaml:"-"`
+	PollenDir              string             `yaml:"-"`
+	InitialConnections     []ConnectionEntry  `yaml:"-"`
+	StateBlob              []byte             `yaml:"-"`
+	AdvertiseIPs           []string           `yaml:"advertiseIPs,omitempty"`
+	ResolvedBootstrapPeers []BootstrapTarget  `yaml:"-"`
+	Connections            []Connection       `yaml:"connections,omitempty"`
+	SigningKey             ed25519.PrivateKey `yaml:"-"`
+	Services               []Service          `yaml:"services,omitempty"`
+	BootstrapPeers         []BootstrapPeer    `yaml:"bootstrapPeers,omitempty"`
+	AdvertisedIPs          []string           `yaml:"-"`
+	CertTTLs               CertTTLs           `yaml:"certTTLs,omitempty"` //nolint:tagliatelle
+	GossipInterval         time.Duration      `yaml:"-"`
+	ReconnectWindow        time.Duration      `yaml:"-"`
+	TLSIdentityTTL         time.Duration      `yaml:"-"`
+	PeerTickInterval       time.Duration      `yaml:"-"`
+	GossipJitter           float64            `yaml:"-"`
+	ListenPort             int                `yaml:"-"`
+	MembershipTTL          time.Duration      `yaml:"-"`
+	MaxConnectionAge       time.Duration      `yaml:"-"`
+	Port                   uint32             `yaml:"port,omitempty"`
+	Public                 bool               `yaml:"public,omitempty"`
+	DisableGossipJitter    bool               `yaml:"-"`
+	BootstrapPublic        bool               `yaml:"-"`
+	MetricsEnabled         bool               `yaml:"-"`
+	DisableNATPunch        bool               `yaml:"-"`
 }
 
 func Load(pollenDir string) (*Config, error) {
@@ -137,7 +173,7 @@ func Save(pollenDir string, cfg *Config) error {
 	}
 	cfg.BootstrapPeers = canonical
 
-	if err := perm.EnsureDir(pollenDir); err != nil {
+	if err := EnsureDir(pollenDir); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
@@ -146,7 +182,7 @@ func Save(pollenDir string, cfg *Config) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	return perm.WriteGroupWritable(filepath.Join(pollenDir, configFileName), append([]byte(configHeader), encoded...))
+	return WriteGroupWritable(filepath.Join(pollenDir, configFileName), append([]byte(configHeader), encoded...))
 }
 
 func validateCertTTLs(ttls CertTTLs) error {

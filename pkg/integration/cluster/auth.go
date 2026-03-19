@@ -11,7 +11,7 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/mesh"
+	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/stretchr/testify/require"
 )
 
@@ -54,7 +54,7 @@ func (ca *ClusterAuth) NodeCredentials(nodePriv ed25519.PrivateKey) (tls.Certifi
 	)
 	require.NoError(t, err)
 
-	tlsCert, err := mesh.GenerateIdentityCert(nodePriv, dc, 24*time.Hour) //nolint:mnd
+	tlsCert, err := transport.GenerateIdentityCert(nodePriv, dc, 24*time.Hour) //nolint:mnd
 	require.NoError(t, err)
 
 	return tlsCert, dc

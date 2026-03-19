@@ -63,7 +63,7 @@ echo "  Purging local state..."
 
 echo "  Purging remote state..."
 for ip in "${ALL_REMOTE[@]}"; do
-    rssh "$ip" "systemctl stop pln 2>/dev/null; rm -rf /var/lib/pln /root/.pln" || true
+    rssh "$ip" "systemctl stop pln 2>/dev/null; dpkg --purge pln 2>/dev/null; rm -rf /var/lib/pln /root/.pln" || true
 done
 
 echo "  Cross-compiling linux/arm64..."
@@ -72,9 +72,39 @@ echo "  Cross-compiling linux/arm64..."
 echo "  Building local binary..."
 (cd "$REPO_ROOT" && go build -o "$PLN_LOCAL" ./cmd/pln)
 
+echo "  Replacing homebrew binary with dev build..."
+BREW_PLN="$(brew --prefix pln 2>/dev/null)/bin/pln"
+if [ -f "$BREW_PLN" ]; then
+    chmod u+w "$BREW_PLN"
+    cp "$PLN_LOCAL" "$BREW_PLN"
+fi
+
 echo "  Deploying to remote nodes..."
 for ip in "${ALL_REMOTE[@]}"; do
     scp $SSH_OPTS "$PLN_LINUX" "root@${ip}:/usr/bin/pln"
+    # Provision the pln system user/group, state dirs, and systemd unit
+    # so that ensureRemotePollen skips the deb install and `pln up -d` works.
+    rssh "$ip" "id pln >/dev/null 2>&1 || (groupadd --system pln && useradd --system -g pln -d /var/lib/pln -s /usr/sbin/nologin pln)" || true
+    rssh "$ip" "install -d -m 0770 -o pln -g pln /var/lib/pln && install -d -m 0770 -o pln -g pln /var/lib/pln/keys" || true
+    rssh "$ip" "cat > /lib/systemd/system/pln.service << 'UNIT'
+[Unit]
+Description=PLN Mesh Node
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=pln
+Group=pln
+ExecStart=/usr/bin/pln --dir /var/lib/pln up
+Restart=on-failure
+RestartSec=5
+StateDirectory=pln
+StateDirectoryMode=0770
+LimitNOFILE=1048576
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload" || true
 done
 pass "Step 0: Build and deploy"
 

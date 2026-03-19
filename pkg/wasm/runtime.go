@@ -10,6 +10,7 @@ import (
 
 	extism "github.com/extism/go-sdk"
 	"github.com/tetratelabs/wazero"
+	"golang.org/x/sync/semaphore"
 )
 
 // ErrModuleMissing is returned when Call is invoked with a hash that has no
@@ -48,7 +49,7 @@ type Runtime struct {
 	runtimeConfig wazero.RuntimeConfig
 	compiled      map[string]*extism.CompiledPlugin
 	configs       map[string]PluginConfig
-	sem           chan struct{}
+	sem           *semaphore.Weighted
 	hostFuncs     []extism.HostFunction
 	mu            sync.Mutex
 }
@@ -65,7 +66,7 @@ func NewRuntime(hostFuncs []extism.HostFunction, maxConcurrency int) *Runtime {
 		configs:       make(map[string]PluginConfig),
 		hostFuncs:     hostFuncs,
 		runtimeConfig: probeRuntimeConfig(),
-		sem:           make(chan struct{}, maxConcurrency),
+		sem:           semaphore.NewWeighted(int64(maxConcurrency)),
 	}
 }
 
@@ -162,12 +163,10 @@ func (r *Runtime) Call(ctx context.Context, hash, function string, input []byte)
 		return nil, fmt.Errorf("%w: %s", ErrModuleMissing, hash)
 	}
 
-	select {
-	case r.sem <- struct{}{}:
-	case <-ctx.Done():
-		return nil, fmt.Errorf("wasm: acquire slot: %w", ctx.Err())
+	if err := r.sem.Acquire(ctx, 1); err != nil {
+		return nil, fmt.Errorf("wasm: acquire slot: %w", err)
 	}
-	defer func() { <-r.sem }()
+	defer r.sem.Release(1)
 
 	plugin, err := compiled.Instance(ctx, extism.PluginInstanceConfig{})
 	if err != nil {

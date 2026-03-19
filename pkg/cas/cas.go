@@ -8,11 +8,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/google/renameio/v2"
+	"github.com/sambigeara/pollen/pkg/config"
 )
 
 var ErrNotFound = errors.New("artifact not found")
-
-const dirPerm = 0o750
 
 // Store is a content-addressable artifact store backed by the local filesystem.
 // Artifacts are stored under <root>/<sha256hex[0:2]>/<sha256hex>.wasm.
@@ -23,7 +24,7 @@ type Store struct {
 // New creates a CAS store rooted at <pollenDir>/cas.
 func New(pollenDir string) (*Store, error) {
 	root := filepath.Join(pollenDir, "cas")
-	if err := os.MkdirAll(root, dirPerm); err != nil {
+	if err := config.EnsureDir(root); err != nil {
 		return nil, fmt.Errorf("cas: create store dir: %w", err)
 	}
 	return &Store{root: root}, nil
@@ -31,32 +32,21 @@ func New(pollenDir string) (*Store, error) {
 
 // Put writes the artifact from r and returns its SHA-256 hex digest.
 func (s *Store) Put(r io.Reader) (string, error) {
-	h := sha256.New()
-	tmp, err := os.CreateTemp(s.root, "cas-tmp-*")
+	data, err := io.ReadAll(r)
 	if err != nil {
-		return "", fmt.Errorf("cas: create temp file: %w", err)
-	}
-	defer func() {
-		tmp.Close()
-		os.Remove(tmp.Name())
-	}()
-
-	if _, err := io.Copy(io.MultiWriter(tmp, h), r); err != nil {
-		return "", fmt.Errorf("cas: write temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("cas: close temp file: %w", err)
+		return "", fmt.Errorf("cas: read artifact: %w", err)
 	}
 
-	hash := hex.EncodeToString(h.Sum(nil))
+	h := sha256.Sum256(data)
+	hash := hex.EncodeToString(h[:])
 	dir := filepath.Join(s.root, hash[:2])
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
+	if err := config.EnsureDir(dir); err != nil {
 		return "", fmt.Errorf("cas: create shard dir: %w", err)
 	}
 
 	dest := filepath.Join(dir, hash+".wasm")
-	if err := os.Rename(tmp.Name(), dest); err != nil {
-		return "", fmt.Errorf("cas: rename artifact: %w", err)
+	if err := renameio.WriteFile(dest, data, 0o644); err != nil { //nolint:mnd
+		return "", fmt.Errorf("cas: write artifact: %w", err)
 	}
 	return hash, nil
 }

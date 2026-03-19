@@ -39,6 +39,9 @@ lint: lint-modernize _golangcilint _buf
 lint-modernize: _modernize
     @ "${TOOLS_BIN_DIR}/modernize" -fix -test ./...
 
+deadcode: _deadcode
+    @ "${TOOLS_BIN_DIR}/deadcode" ./...
+
 test PKG='./...' TEST='.*':
     @ go test -v -failfast -cover -count=1 -run='{{ TEST }}' '{{ PKG }}'
 
@@ -50,6 +53,8 @@ test-integration:
 _buf: (_install "buf" "github.com/bufbuild/buf" "cmd/buf")
 
 _golangcilint: (_install "golangci-lint" "github.com/golangci/golangci-lint/v2" "cmd/golangci-lint")
+
+_deadcode: (_install "deadcode" "golang.org/x/tools" "cmd/deadcode")
 
 _modernize: (_install "modernize" "golang.org/x/tools/gopls" "internal/analysis/modernize/cmd/modernize")
 
@@ -73,3 +78,5 @@ _install EXECUTABLE MODULE CMD_PKG="":
       fi
       ln -s "$BINARY" "$SYMLINK"
     fi
+
+import? '.justfile.local'

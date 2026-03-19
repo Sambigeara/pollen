@@ -12,6 +12,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func issueRootJoinToken(t *testing.T, rootPriv ed25519.PrivateKey, trust *admissionv1.TrustBundle, subject ed25519.PublicKey, now time.Time, membershipTTL time.Duration, accessDeadline time.Time) *admissionv1.JoinToken {
+	t.Helper()
+	rootPub := rootPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
+	issuer, err := auth.IssueDelegationCert(rootPriv, nil, trust.GetClusterId(), rootPub, auth.FullCapabilities(), now.Add(-time.Minute), now.Add(membershipTTL), time.Time{})
+	require.NoError(t, err)
+	token, err := auth.IssueJoinTokenWithIssuer(rootPriv, trust, issuer, subject, nil, now, time.Hour, membershipTTL, accessDeadline)
+	require.NoError(t, err)
+	return token
+}
+
 type testConsumer struct {
 	seen map[string]struct{}
 }
@@ -196,6 +206,28 @@ func TestVerifyDelegationCert_Expired(t *testing.T) {
 	require.ErrorContains(t, err, "outside validity window")
 }
 
+func TestIssueJoinTokenWithIssuerRejectsInvalidCert(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	trust := auth.NewTrustBundle(rootPub)
+	subjectPub, _ := newKeyPair(t)
+
+	now := time.Now()
+
+	expiredIssuer, err := auth.IssueDelegationCert(
+		rootPriv, nil, trust.GetClusterId(), rootPub,
+		auth.FullCapabilities(),
+		now.Add(-48*time.Hour), now.Add(-24*time.Hour),
+		time.Time{},
+	)
+	require.NoError(t, err)
+
+	_, err = auth.IssueJoinTokenWithIssuer(
+		rootPriv, trust, expiredIssuer, subjectPub, nil, now,
+		time.Hour, 4*time.Hour, time.Time{},
+	)
+	require.ErrorContains(t, err, "issuer delegation cert invalid")
+}
+
 func TestIssueJoinTokenWithDelegatedAdmin(t *testing.T) {
 	rootPub, rootPriv := newKeyPair(t)
 	trust := auth.NewTrustBundle(rootPub)
@@ -223,19 +255,6 @@ func TestIssueJoinTokenWithDelegatedAdmin(t *testing.T) {
 	require.EqualValues(t, delegatedPub, verified.Cert.GetClaims().GetIssuerPub())
 }
 
-func TestIssueJoinTokenRejectsUnsignedDelegatedAdmin(t *testing.T) {
-	rootPub, _ := newKeyPair(t)
-	trust := auth.NewTrustBundle(rootPub)
-	_, delegatedPriv := newKeyPair(t)
-	subjectPub, _ := newKeyPair(t)
-
-	_, err := auth.IssueJoinToken(
-		delegatedPriv, trust, subjectPub, nil, time.Now(),
-		time.Hour, 4*time.Hour, time.Time{},
-	)
-	require.ErrorContains(t, err, "issuer delegation certificate required")
-}
-
 func TestEnsureNodeCredentialsFromTokenReplacesExistingCert(t *testing.T) {
 	rootPub, rootPriv := newKeyPair(t)
 	trust := auth.NewTrustBundle(rootPub)
@@ -253,11 +272,8 @@ func TestEnsureNodeCredentialsFromTokenReplacesExistingCert(t *testing.T) {
 	pollenDir := t.TempDir()
 	require.NoError(t, auth.SaveNodeCredentials(pollenDir, &auth.NodeCredentials{Trust: trust, Cert: oldCert}))
 
-	token, err := auth.IssueJoinToken(
-		rootPriv, trust, nodePub, nil, now,
-		time.Hour, 48*time.Hour, time.Time{},
-	)
-	require.NoError(t, err)
+	token := issueRootJoinToken(t, rootPriv, trust, nodePub, now,
+		48*time.Hour, time.Time{})
 
 	verified, err := auth.VerifyJoinToken(token, nodePub, now)
 	require.NoError(t, err)
@@ -289,11 +305,8 @@ func TestEnsureNodeCredentialsFromTokenKeepsLongerTTLCert(t *testing.T) {
 	pollenDir := t.TempDir()
 	require.NoError(t, auth.SaveNodeCredentials(pollenDir, &auth.NodeCredentials{Trust: trust, Cert: oldCert}))
 
-	token, err := auth.IssueJoinToken(
-		rootPriv, trust, nodePub, nil, now,
-		time.Hour, 24*time.Hour, time.Time{},
-	)
-	require.NoError(t, err)
+	token := issueRootJoinToken(t, rootPriv, trust, nodePub, now,
+		24*time.Hour, time.Time{})
 
 	creds, err := auth.EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now)
 	require.NoError(t, err)
@@ -317,11 +330,8 @@ func TestEnsureNodeCredentialsFromTokenReplacesExpiredCert(t *testing.T) {
 	pollenDir := t.TempDir()
 	require.NoError(t, auth.SaveNodeCredentials(pollenDir, &auth.NodeCredentials{Trust: trust, Cert: expiredCert}))
 
-	token, err := auth.IssueJoinToken(
-		rootPriv, trust, nodePub, nil, now,
-		time.Hour, 24*time.Hour, time.Time{},
-	)
-	require.NoError(t, err)
+	token := issueRootJoinToken(t, rootPriv, trust, nodePub, now,
+		24*time.Hour, time.Time{})
 
 	verified, err := auth.VerifyJoinToken(token, nodePub, now)
 	require.NoError(t, err)
@@ -536,11 +546,8 @@ func TestAccessDeadlineJoinToken(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	deadline := now.Add(24 * time.Hour)
 
-	token, err := auth.IssueJoinToken(
-		rootPriv, trust, subjectPub, nil, now,
-		time.Hour, 4*time.Hour, deadline,
-	)
-	require.NoError(t, err)
+	token := issueRootJoinToken(t, rootPriv, trust, subjectPub, now,
+		4*time.Hour, deadline)
 
 	verified, err := auth.VerifyJoinToken(token, subjectPub, now)
 	require.NoError(t, err)
@@ -563,11 +570,8 @@ func TestAccessDeadlineJoinTokenClamps(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	deadline := now.Add(2 * time.Hour)
 
-	token, err := auth.IssueJoinToken(
-		rootPriv, trust, subjectPub, nil, now,
-		time.Hour, 4*time.Hour, deadline,
-	)
-	require.NoError(t, err)
+	token := issueRootJoinToken(t, rootPriv, trust, subjectPub, now,
+		4*time.Hour, deadline)
 
 	verified, err := auth.VerifyJoinToken(token, subjectPub, now)
 	require.NoError(t, err)

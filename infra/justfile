@@ -14,7 +14,11 @@ deploy-vivaldi version="": (_deploy "vivaldi" "vivaldi.py" "join-cluster.yml" ve
 deploy-vivaldi-pub version="": (_deploy "vivaldi-public" "vivaldi_public.py" "join-cluster.yml" version)
 
 # SSH into the bootstrap instance.
-ssh-bootstrap: (_ssh-direct "bootstrap" "ip")
+ssh-bootstrap:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    IP=$(cd {{ justfile_directory() }}/bootstrap && terraform output -raw ip)
+    exec ssh {{ ssh_args }} root@"$IP"
 
 # SSH into a vivaldi node. N: round-robin index (1-4 = relays, 5+ = private).
 ssh-vivaldi n="1": (_ssh-vivaldi n)

@@ -53,6 +53,8 @@ type VirtualSwitch struct {
 	partitions   map[linkKey]bool
 	punchOpen    map[linkKey]bool
 	punchPending map[linkKey]*pendingPunch
+	natForward   map[string]*net.UDPAddr // privateAddr → publicNATAddr
+	natReverse   map[string]*net.UDPAddr // publicNATAddr → privateAddr
 	config       SwitchConfig
 	mu           sync.Mutex
 }
@@ -67,6 +69,8 @@ func NewVirtualSwitch(cfg SwitchConfig) *VirtualSwitch {
 		partitions:   make(map[linkKey]bool),
 		punchOpen:    make(map[linkKey]bool),
 		punchPending: make(map[linkKey]*pendingPunch),
+		natForward:   make(map[string]*net.UDPAddr),
+		natReverse:   make(map[string]*net.UDPAddr),
 	}
 }
 
@@ -96,18 +100,31 @@ func (vs *VirtualSwitch) unregister(addr *net.UDPAddr) {
 	delete(vs.roles, addr.String())
 }
 
-// deliver routes a packet from src to dst through the switch, applying NAT gating,
-// partitions, link config, packet loss, latency, and jitter.
+// deliver routes a packet from src to dst through the switch, applying NAT
+// address rewriting, NAT gating, partitions, link config, packet loss,
+// latency, and jitter.
 func (vs *VirtualSwitch) deliver(from, to *net.UDPAddr, data []byte) {
 	vs.mu.Lock()
 
 	fromKey := from.String()
 	toKey := to.String()
 
+	// NAT: resolve destination through reverse mapping for routing.
+	if realAddr, ok := vs.natReverse[toKey]; ok {
+		to = realAddr
+		toKey = realAddr.String()
+	}
+
 	destConn, ok := vs.conns[toKey]
 	if !ok {
 		vs.mu.Unlock()
 		return
+	}
+
+	// NAT: rewrite source through forward mapping.
+	actualFrom := from
+	if mapped, ok := vs.natForward[fromKey]; ok {
+		actualFrom = mapped
 	}
 
 	fromRole := vs.roles[fromKey]
@@ -131,14 +148,12 @@ func (vs *VirtualSwitch) deliver(from, to *net.UDPAddr, data []byte) {
 				// Deliver the buffered packet (toKey→fromKey) to its original dest.
 				pending.destConn.enqueue(inboundPacket{data: pending.data, addr: to})
 				// Deliver the current packet (fromKey→toKey).
-				destConn.enqueue(inboundPacket{data: copyBytes(data), addr: from})
+				destConn.enqueue(inboundPacket{data: copyBytes(data), addr: actualFrom})
 				return
 			}
 
 			// No opposite-direction pending — store this as pending punch.
 			dataCopy := copyBytes(data)
-			srcConn := vs.conns[fromKey]
-			_ = srcConn // the dest for the reverse lookup is the conn at toKey
 			vs.punchPending[pairFwd] = &pendingPunch{
 				senderAddr: fromKey,
 				data:       dataCopy,
@@ -183,7 +198,7 @@ func (vs *VirtualSwitch) deliver(from, to *net.UDPAddr, data []byte) {
 	// Compute delay.
 	delay := computeDelay(latency, jitter)
 
-	pkt := inboundPacket{data: copyBytes(data), addr: from}
+	pkt := inboundPacket{data: copyBytes(data), addr: actualFrom}
 
 	if delay == 0 {
 		destConn.enqueue(pkt)
@@ -255,6 +270,16 @@ func (vs *VirtualSwitch) getOrCreateLink(from, to string) *LinkConfig {
 		vs.links[lk] = lc
 	}
 	return lc
+}
+
+// SetNATMapping configures address rewriting for a private node. When the node
+// sends to a public node, the source address is rewritten to publicAddr. When a
+// public node sends to publicAddr, the packet is routed to the real private conn.
+func (vs *VirtualSwitch) SetNATMapping(privateAddr, publicAddr *net.UDPAddr) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	vs.natForward[privateAddr.String()] = publicAddr
+	vs.natReverse[publicAddr.String()] = privateAddr
 }
 
 // OpenPunch explicitly opens a bidirectional path between two private nodes.

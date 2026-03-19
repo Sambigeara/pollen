@@ -47,7 +47,7 @@ if [ "$OS" = "linux" ]; then
         log "Installing .deb via apt..."
         DEB_URL="https://github.com/$REPO/releases/download/${VERSION}/pln_${PKG_VER}_linux_${ARCH}.deb"
         curl -fsSL "$DEB_URL" -o /tmp/pln.deb
-        sudo NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/pln.deb
+        sudo NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades /tmp/pln.deb
     elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
         RPM_MGR=$(command -v dnf >/dev/null 2>&1 && echo dnf || echo yum)
         log "Installing .rpm via $RPM_MGR..."

@@ -6,9 +6,39 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
+
+// snapshotHasServicePort reports whether a peer has a service registered on the given port.
+func snapshotHasServicePort(snap state.Snapshot, peerID types.PeerKey, port uint32) bool {
+	nv, ok := snap.Nodes[peerID]
+	if !ok {
+		return false
+	}
+	for _, svc := range nv.Services {
+		if svc.GetPort() == port {
+			return true
+		}
+	}
+	return false
+}
+
+// snapshotRemotePeerCount returns the number of remote peers with address info.
+func snapshotRemotePeerCount(snap state.Snapshot) int {
+	count := 0
+	for pk, nv := range snap.Nodes {
+		if pk == snap.LocalID {
+			continue
+		}
+		if nv.LastAddr == "" && (len(nv.IPs) == 0 || nv.LocalPort == 0) {
+			continue
+		}
+		count++
+	}
+	return count
+}
 
 const (
 	assertPoll    = 25 * time.Millisecond
@@ -26,7 +56,7 @@ func (c *Cluster) RequireConverged(t testing.TB) { //nolint:thelper
 
 	require.Eventually(t, func() bool {
 		for _, n := range c.ordered {
-			if len(n.Store().KnownPeers()) < expected {
+			if snapshotRemotePeerCount(n.Store().Snapshot()) < expected {
 				return false
 			}
 		}
@@ -58,14 +88,8 @@ func (c *Cluster) RequirePeerVisible(t testing.TB, name string) { //nolint:thelp
 			if n.Name() == name {
 				continue
 			}
-			found := false
-			for _, kp := range n.Store().KnownPeers() {
-				if kp.PeerID == target {
-					found = true
-					break
-				}
-			}
-			if !found {
+			snap := n.Store().Snapshot()
+			if _, ok := snap.Nodes[target]; !ok {
 				return false
 			}
 		}
@@ -101,7 +125,7 @@ func (c *Cluster) RequireWorkloadReplicas(t testing.TB, hash string, count int) 
 	require.Eventually(t, func() bool {
 		total := 0
 		for _, n := range c.ordered {
-			claims := n.Store().AllWorkloadClaims()
+			claims := n.Store().Snapshot().Claims
 			if claimants, ok := claims[hash]; ok {
 				if _, claimed := claimants[n.PeerKey()]; claimed {
 					total++
@@ -121,7 +145,7 @@ func (c *Cluster) RequireWorkloadClaimedBy(t testing.TB, hash string, nodeNames 
 	}
 	require.Eventually(t, func() bool {
 		for _, n := range c.ordered {
-			claims := n.Store().AllWorkloadClaims()
+			claims := n.Store().Snapshot().Claims
 			claimants, ok := claims[hash]
 			if !ok {
 				continue
@@ -150,11 +174,54 @@ func (c *Cluster) RequireServiceVisible(t testing.TB, publisherName string, port
 			if n.PeerKey() == publisherKey {
 				continue
 			}
-			if !n.Store().HasServicePort(publisherKey, port) {
+			if !snapshotHasServicePort(n.Store().Snapshot(), publisherKey, port) {
 				return false
 			}
 		}
 		return true
 	}, assertTimeout, assertPoll,
 		"expected all nodes to see service on port %d from %s", port, publisherName)
+}
+
+// RequireWorkloadGone asserts that no node has a spec or claim for the given hash.
+func (c *Cluster) RequireWorkloadGone(t testing.TB, hash string) { //nolint:thelper
+	t.Helper()
+	require.Eventually(t, func() bool {
+		for _, n := range c.ordered {
+			if n.stopped {
+				continue
+			}
+			snap := n.Store().Snapshot()
+			if _, ok := snap.Specs[hash]; ok {
+				return false
+			}
+			if _, ok := snap.Claims[hash]; ok {
+				return false
+			}
+		}
+		return true
+	}, assertTimeout, assertPoll, "expected workload %s to be gone from all nodes", hash)
+}
+
+// RequireWorkloadSpecOnAllNodes asserts that every running node sees the spec
+// with the given desired replica count.
+func (c *Cluster) RequireWorkloadSpecOnAllNodes(t testing.TB, hash string, replicas uint32) { //nolint:thelper
+	t.Helper()
+	require.Eventually(t, func() bool {
+		for _, n := range c.ordered {
+			if n.stopped {
+				continue
+			}
+			snap := n.Store().Snapshot()
+			spec, ok := snap.Specs[hash]
+			if !ok {
+				return false
+			}
+			if spec.Spec.GetReplicas() != replicas {
+				return false
+			}
+		}
+		return true
+	}, assertTimeout, assertPoll,
+		"expected all nodes to see workload %s with %d replicas", hash, replicas)
 }

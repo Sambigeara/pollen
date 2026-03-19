@@ -35,6 +35,38 @@ Pollen nodes act as an implicit, peer-to-peer Content Delivery Network (CDN) for
 
 Pollen acts as a highly specialized, self-aware WebAssembly host, providing a custom Application Binary Interface (ABI) and strict resource boundaries.
 * **Custom Host Functions:** Rather than relying on standard WASI sockets (which require complex, heavy networking logic inside the module), Pollen injects custom host functions. WASM modules simply execute high-level RPC calls, and the Pollen host seamlessly bridges them into the underlying QUIC mesh.
-* **Telemetry-Driven Bidding:** The daemon continuously monitors real-time system health (CPU load, available memory) using cross-platform, pure-Go telemetry (e.g., `gopsutil`). 
+* **Telemetry-Driven Bidding:** The daemon continuously monitors real-time system health (CPU load, available memory) using cross-platform, pure-Go telemetry (e.g., `gopsutil`).
 * **Suitability Scoring:** When evaluating the CRDT for new workload requests, nodes calculate a local "Suitability Score" combining their dynamic hardware availability, geographic proximity, and local artifact cache.
 * **Resource Sandboxing:** To protect the host routing daemon from rogue workloads, `wazero` enforces strict context-cancellation timeouts and memory allocation limits on every executing module, preventing noisy-neighbor and host OOM scenarios.
+
+## 6. Package Architecture
+
+```
+cmd/pln              CLI (Cobra commands, flag parsing, output formatting)
+pkg/control          gRPC translation layer (CLI <-> domain services)
+pkg/supervisor       lifecycle, shutdown ordering, event loop, stream dispatch
+
+pkg/membership       gossip schedule, Vivaldi exchange, cert renewal, NAT, IP refresh
+pkg/placement        workload scheduling, seed/unseed, CAS fetch, WASM execution
+pkg/tunneling        service bridging, connection lifecycle, traffic tracking, relay
+
+pkg/routing          Dijkstra routing table (pure computation)
+
+pkg/state            CRDT state store, immutable snapshots, typed projections, events
+pkg/transport        QUIC sessions, peer FSM, stream mux, NAT punch, UDP sockets
+
+pkg/types            PeerKey, Envelope (foundational identity types)
+pkg/auth             credentials, delegation certs, trust bundles, join tokens
+pkg/coords           Vivaldi coordinate math (pure functions)
+pkg/nat              NAT type detection
+pkg/config           YAML config loading, defaults, persistence
+pkg/cas              content-addressable store (filesystem, SHA-256)
+pkg/wasm             WASM runtime (Extism/wazero wrapper)
+pkg/observability    metrics, traces, logging (noop pattern)
+pkg/traffic          per-peer traffic counting and heatmap
+pkg/topology         peer selection algorithm (Vivaldi-based)
+```
+
+**Dependency rules:** Each layer imports only from layers below. Siblings (state, transport) never import each other. Domain services define consumer interfaces for their dependencies.
+
+**Design spec:** `docs/superpowers/specs/2026-03-16-clean-room-architecture-design.md`
