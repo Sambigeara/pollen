@@ -18,7 +18,7 @@ func snapshotHasServicePort(snap state.Snapshot, peerID types.PeerKey, port uint
 		return false
 	}
 	for _, svc := range nv.Services {
-		if svc.GetPort() == port {
+		if svc.Port == port {
 			return true
 		}
 	}
@@ -44,7 +44,7 @@ const (
 	assertPoll    = 25 * time.Millisecond
 	assertTimeout = 10 * time.Second
 	// eagerTimeout is shorter than one gossip tick (1s). Assertions using this
-	// timeout only pass if state was broadcast eagerly — clock-sync-based pull
+	// timeout only pass if state was broadcast eagerly — digest-sync-based pull
 	// cannot fire in time.
 	eagerTimeout = 500 * time.Millisecond
 )

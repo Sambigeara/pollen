@@ -28,7 +28,7 @@ func TestClusterAuth_NodeCredentials(t *testing.T) {
 
 	// Delegation cert should be valid.
 	require.NotNil(t, dc)
-	err = auth.VerifyDelegationCert(dc, ca.TrustBundle(), time.Now(), pub)
+	err = auth.VerifyDelegationCert(dc, ca.RootPub(), time.Now(), pub)
 	require.NoError(t, err)
 
 	// TLS cert should contain extensions beyond standard ones (delegation cert).
@@ -51,6 +51,6 @@ func TestClusterAuth_TwoNodesSameTrust(t *testing.T) {
 	pubA := privA.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 	pubB := privB.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
-	require.NoError(t, auth.VerifyDelegationCert(dcA, ca.TrustBundle(), time.Now(), pubA))
-	require.NoError(t, auth.VerifyDelegationCert(dcB, ca.TrustBundle(), time.Now(), pubB))
+	require.NoError(t, auth.VerifyDelegationCert(dcA, ca.RootPub(), time.Now(), pubA))
+	require.NoError(t, auth.VerifyDelegationCert(dcB, ca.RootPub(), time.Now(), pubB))
 }

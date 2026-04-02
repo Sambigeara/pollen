@@ -7,6 +7,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func hasObserver(d *Detector, ip netip.Addr) bool {
+	for _, obs := range d.observations {
+		if obs.ip == ip {
+			return true
+		}
+	}
+	return false
+}
+
 func TestDetectorUnknownWithOneObservation(t *testing.T) {
 	d := NewDetector()
 	typ, changed := d.AddObservation(netip.MustParseAddr("1.2.3.4"), 5000)
@@ -57,18 +66,6 @@ func TestDetectorSameObserverIPDifferentPort(t *testing.T) {
 	require.False(t, changed)
 }
 
-func TestDetectorTypeGetter(t *testing.T) {
-	d := NewDetector()
-	require.Equal(t, Unknown, d.Type())
-
-	d.AddObservation(netip.MustParseAddr("1.2.3.4"), 5000)
-	d.AddObservation(netip.MustParseAddr("5.6.7.8"), 5000)
-	require.Equal(t, Unknown, d.Type()) // 2 matching → still Unknown
-
-	d.AddObservation(netip.MustParseAddr("9.10.11.12"), 5000)
-	require.Equal(t, Easy, d.Type()) // 3 matching → Easy
-}
-
 func TestDetectorTransitionEasyToHard(t *testing.T) {
 	d := NewDetector()
 	d.AddObservation(netip.MustParseAddr("1.2.3.4"), 5000)
@@ -82,48 +79,68 @@ func TestDetectorTransitionEasyToHard(t *testing.T) {
 	require.True(t, changed)
 }
 
-func TestTypeFromUint32RoundTrip(t *testing.T) {
-	for _, typ := range []Type{Unknown, Easy, Hard} {
-		require.Equal(t, typ, TypeFromUint32(typ.ToUint32()))
-	}
+func TestDetectorObserverPortRefresh(t *testing.T) {
+	d := NewDetector()
+	d.AddObservation(netip.MustParseAddr("1.2.3.4"), 5000)
+	d.AddObservation(netip.MustParseAddr("5.6.7.8"), 5000)
+	d.AddObservation(netip.MustParseAddr("9.10.11.12"), 5000)
+	require.Equal(t, Easy, d.Type())
+
+	// Observer's NAT mapping refreshes → sees a different port.
+	typ, changed := d.AddObservation(netip.MustParseAddr("1.2.3.4"), 9000)
+	require.Equal(t, Hard, typ)
+	require.True(t, changed)
 }
 
-func TestTypeFromUint32Invalid(t *testing.T) {
-	require.Equal(t, Unknown, TypeFromUint32(99))
+func TestDetectorResetClearsObservations(t *testing.T) {
+	d := NewDetector()
+	d.AddObservation(netip.MustParseAddr("1.2.3.4"), 5000)
+	d.AddObservation(netip.MustParseAddr("5.6.7.8"), 5000)
+	d.AddObservation(netip.MustParseAddr("9.10.11.12"), 5000)
+	require.Equal(t, Easy, d.Type())
+
+	d.Reset()
+	require.Equal(t, Unknown, d.Type())
+
+	// Fresh observation after reset starts from scratch.
+	typ, changed := d.AddObservation(netip.MustParseAddr("99.99.99.99"), 9000)
+	require.Equal(t, Unknown, typ)
+	require.False(t, changed) // Unknown → Unknown (1 observation)
+	require.Len(t, d.observations, 1)
 }
 
-func TestDetectorClearsOnMaxObservations(t *testing.T) {
+func TestDetectorEvictsStaleObserver(t *testing.T) {
 	d := NewDetector()
 
-	// Fill with 16 unique observers, all same port → Easy after the 3rd.
+	// Fill with 16 unique observers, all same port → Easy.
 	for i := range maxObservations {
 		ip := netip.AddrFrom4([4]byte{10, 0, byte(i >> 8), byte(i)})
-		typ, _ := d.AddObservation(ip, 5000)
-		if i >= minObservationsEasy-1 {
-			require.Equal(t, Easy, typ, "should be Easy at observer %d", i)
-		} else if i >= minObservationsHard-1 {
-			require.Equal(t, Unknown, typ, "should be Unknown at observer %d (below Easy threshold)", i)
-		}
+		d.AddObservation(ip, 5000)
 	}
+	require.Equal(t, Easy, d.Type())
 	require.Len(t, d.observations, maxObservations)
 
-	// 17th observer: map clears first, then only this one entry → Unknown.
+	// 17th observer evicts the stalest (10.0.0.0), type stays Easy.
 	typ, changed := d.AddObservation(netip.MustParseAddr("99.99.99.99"), 5000)
-	require.Equal(t, Unknown, typ)
-	require.True(t, changed)
-	require.Len(t, d.observations, 1)
-
-	// 18th + 19th observers with same port → Easy after 3rd total.
-	typ, _ = d.AddObservation(netip.MustParseAddr("88.88.88.88"), 5000)
-	require.Equal(t, Unknown, typ) // only 2 matching
-
-	typ, changed = d.AddObservation(netip.MustParseAddr("77.77.77.77"), 5000)
 	require.Equal(t, Easy, typ)
-	require.True(t, changed)
+	require.False(t, changed)
+	require.Len(t, d.observations, maxObservations)
+	require.False(t, hasObserver(d, netip.AddrFrom4([4]byte{10, 0, 0, 0})))
 }
 
-func TestTypeString(t *testing.T) {
-	require.Equal(t, "unknown", Unknown.String())
-	require.Equal(t, "easy", Easy.String())
-	require.Equal(t, "hard", Hard.String())
+func TestDetectorEvictionSparesFreshObserver(t *testing.T) {
+	d := NewDetector()
+
+	for i := range maxObservations {
+		ip := netip.AddrFrom4([4]byte{10, 0, 0, byte(i)})
+		d.AddObservation(ip, 5000)
+	}
+
+	// Re-observe the first-inserted entry — refreshes its sequence.
+	d.AddObservation(netip.AddrFrom4([4]byte{10, 0, 0, 0}), 5000)
+
+	// New observer evicts 10.0.0.1 (now the stalest), not 10.0.0.0.
+	d.AddObservation(netip.MustParseAddr("99.99.99.99"), 5000)
+	require.True(t, hasObserver(d, netip.AddrFrom4([4]byte{10, 0, 0, 0})), "re-observed entry should survive eviction")
+	require.False(t, hasObserver(d, netip.AddrFrom4([4]byte{10, 0, 0, 1})), "stalest entry should be evicted")
 }

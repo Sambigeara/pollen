@@ -10,10 +10,12 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/cas"
 	"github.com/sambigeara/pollen/pkg/config"
@@ -23,6 +25,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/observability/traces"
 	"github.com/sambigeara/pollen/pkg/placement"
+	"github.com/sambigeara/pollen/pkg/plnfs"
 	"github.com/sambigeara/pollen/pkg/routing"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
@@ -33,8 +36,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
-
-var ErrCertExpired = membership.ErrCertExpired
 
 const (
 	stateSaveInterval = 30 * time.Second
@@ -47,58 +48,72 @@ const (
 )
 
 type Supervisor struct {
-	store            state.StateStore
+	trafficRecorder  transport.TrafficRecorder
 	membership       membership.MembershipAPI
 	placement        placement.PlacementAPI
 	tunneling        tunneling.TunnelingAPI
 	mesh             Transport
 	meshInternal     TransportInternal
-	shutdownCh       chan struct{}
-	creds            *auth.NodeCredentials
-	wasmRuntime      *wasm.Runtime
-	natDetector      *nat.Detector
+	tracer           trace.Tracer
+	store            state.StateStore
+	inviteConsumer   auth.InviteConsumer
+	tracesProviders  *traces.Providers
+	punchSem         chan struct{}
 	router           *atomicRouter
-	workers          *workerPool
 	nonTargetStreak  map[types.PeerKey]int
 	vivaldiErr       *metrics.EWMA
 	nodeMetrics      *metrics.NodeMetrics
 	routeInvalidate  chan struct{}
-	conf             *config.Config
+	natDetector      *nat.Detector
 	casStore         *cas.Store
-	gossipMetrics    *metrics.GossipMetrics
 	topoMetrics      *metrics.TopologyMetrics
 	ready            chan struct{}
 	controlSrv       *control.Server
-	trafficRecorder  transport.TrafficRecorder
+	wasmRuntime      *wasm.Runtime
 	log              *zap.SugaredLogger
 	metricsProviders *metrics.Providers
-	tracesProviders  *traces.Providers
-	tracer           trace.Tracer
+	creds            *auth.NodeCredentials
+	shutdownCh       chan struct{}
 	pollenDir        string
+	socketPath       string
+	bootstrapPeers   []BootstrapTarget
 	signPriv         ed25519.PrivateKey
+	wg               sync.WaitGroup
+	peerTickInterval time.Duration
+	reconnectWindow  time.Duration
 	useHMACNearest   bool
 }
 
-func New(conf *config.Config, creds *auth.NodeCredentials) (*Supervisor, error) {
+func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteConsumer) (*Supervisor, error) {
 	log := zap.S().Named("supervisor")
 
-	privKey := conf.SigningKey
+	privKey := opts.SigningKey
 	pubKey := privKey.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-	pollenDir := conf.PollenDir
+	pollenDir := opts.PollenDir
 
-	stateStore := state.New(types.PeerKeyFromBytes(pubKey))
-	if conf.BootstrapPublic {
+	self := types.PeerKeyFromBytes(pubKey)
+	stateStore := state.New(self)
+	if opts.BootstrapPublic {
 		stateStore.SetBootstrapPublic()
 	}
-	if len(conf.StateBlob) > 0 {
-		if _, _, err := stateStore.ApplyDelta(stateStore.LocalID, conf.StateBlob); err != nil {
-			log.Warnw("failed to restore state from disk", "err", err)
+	if rs := opts.RuntimeState; rs != nil {
+		if gs := rs.GetGossipState(); len(gs) > 0 {
+			if _, _, err := stateStore.ApplyDelta(self, gs); err != nil {
+				log.Warnw("failed to restore gossip state from disk", "err", err)
+			}
 		}
+		lastAddrs := make(map[types.PeerKey]string, len(rs.GetPeers()))
+		for _, ps := range rs.GetPeers() {
+			if addr := ps.GetLastAddr(); addr != "" {
+				lastAddrs[types.PeerKeyFromBytes(ps.GetPeerPub())] = addr
+			}
+		}
+		stateStore.LoadLastAddrs(lastAddrs)
 	}
-	for _, svc := range conf.Services {
+	for _, svc := range opts.InitialServices {
 		stateStore.SetService(svc.Port, svc.Name)
 	}
-	ips := conf.AdvertisedIPs
+	ips := opts.AdvertisedIPs
 	if len(ips) == 0 {
 		var err error
 		ips, err = transport.GetAdvertisableAddrs(transport.DefaultExclusions)
@@ -112,44 +127,47 @@ func New(conf *config.Config, creds *auth.NodeCredentials) (*Supervisor, error) 
 		if err != nil {
 			continue
 		}
-		addrs = append(addrs, netip.AddrPortFrom(addr, uint16(conf.ListenPort)))
+		addrs = append(addrs, netip.AddrPortFrom(addr, uint16(opts.ListenPort)))
 	}
 	stateStore.SetLocalAddresses(addrs)
 
 	var mp *metrics.Providers
 	var tp *traces.Providers
-	if conf.MetricsEnabled {
-		mp = metrics.NewProviders(log.Named("metrics"))
-		tp = traces.NewProviders(log.Named("traces"))
+	if opts.MetricsEnabled {
+		mp = metrics.NewProviders()
+		tp = traces.NewProviders()
 	} else {
 		mp = metrics.NewNoopProviders()
 		tp = traces.NewNoopProviders()
 	}
-	meshMetrics := metrics.NewMeshMetrics(mp.Meter)
-	peerMetrics := metrics.NewPeerMetrics(mp.Meter)
-	gossipMetrics := metrics.NewGossipMetrics(mp.Meter)
-
+	meshMetrics := metrics.NewMeshMetrics(mp.Meter())
+	peerMetrics := metrics.NewPeerMetrics(mp.Meter())
 	isDenied := func(pk types.PeerKey) bool {
 		return slices.Contains(stateStore.Snapshot().DeniedPeers(), pk)
 	}
+	router := newAtomicRouter()
 	meshOpts := []transport.Option{
 		transport.WithSigningKey(privKey),
-		transport.WithTLSIdentityTTL(conf.TLSIdentityTTL),
-		transport.WithMembershipTTL(conf.MembershipTTL),
-		transport.WithReconnectWindow(conf.ReconnectWindow),
-		transport.WithMaxConnectionAge(conf.MaxConnectionAge),
-		transport.WithPeerTickInterval(conf.PeerTickInterval),
+		transport.WithTLSIdentityTTL(config.DefaultTLSIdentityTTL),
+		transport.WithMembershipTTL(config.DefaultMembershipTTL),
+		transport.WithReconnectWindow(config.DefaultReconnectWindow),
+		transport.WithMaxConnectionAge(opts.MaxConnectionAge),
+		transport.WithPeerTickInterval(opts.PeerTickInterval),
 		transport.WithIsDenied(isDenied),
 		transport.WithMetrics(meshMetrics),
-		transport.WithTracer(tp.Tracer),
+		transport.WithTracer(tp.Tracer()),
+		transport.WithRouter(router),
 	}
-	if conf.PacketConn != nil {
-		meshOpts = append(meshOpts, transport.WithPacketConn(conf.PacketConn))
+	if opts.PacketConn != nil {
+		meshOpts = append(meshOpts, transport.WithPacketConn(opts.PacketConn))
 	}
-	if conf.DisableNATPunch {
+	if opts.DisableNATPunch {
 		meshOpts = append(meshOpts, transport.WithDisableNATPunch())
 	}
-	m, err := transport.New(stateStore.LocalID, *creds, fmt.Sprintf(":%d", conf.ListenPort), meshOpts...)
+	if inviteConsumer != nil {
+		meshOpts = append(meshOpts, transport.WithInviteConsumer(inviteConsumer))
+	}
+	m, err := transport.New(self, *creds, fmt.Sprintf(":%d", opts.ListenPort), meshOpts...)
 	if err != nil {
 		log.Errorw("failed to load mesh", "err", err)
 		return nil, err
@@ -161,12 +179,11 @@ func New(conf *config.Config, creds *auth.NodeCredentials) (*Supervisor, error) 
 		return nil, fmt.Errorf("create CAS store: %w", err)
 	}
 	natDetector := nat.NewDetector()
-	nodeMetrics := metrics.NewNodeMetrics(mp.Meter)
-	router := newAtomicRouter()
+	nodeMetrics := metrics.NewNodeMetrics(mp.Meter())
 	streamAdapter := &streamOpenAdapter{m}
 
 	shutdownCh := make(chan struct{}, 1)
-	vivaldiErr := metrics.NewEWMAFrom(membership.VivaldiErrAlpha, 1.0)
+	vivaldiErr := metrics.NewEWMA(membership.VivaldiErrAlpha, 1.0)
 
 	n := &Supervisor{
 		log:              log,
@@ -175,10 +192,13 @@ func New(conf *config.Config, creds *auth.NodeCredentials) (*Supervisor, error) 
 		meshInternal:     m,
 		casStore:         casStore,
 		creds:            creds,
-		conf:             conf,
 		signPriv:         privKey,
 		pollenDir:        pollenDir,
-		workers:          newWorkerPool(nodeWorkers),
+		socketPath:       opts.SocketPath,
+		peerTickInterval: opts.PeerTickInterval,
+		bootstrapPeers:   opts.BootstrapPeers,
+		reconnectWindow:  config.DefaultReconnectWindow,
+		punchSem:         make(chan struct{}, nodeWorkers),
 		ready:            make(chan struct{}),
 		shutdownCh:       shutdownCh,
 		nonTargetStreak:  make(map[types.PeerKey]int),
@@ -186,55 +206,56 @@ func New(conf *config.Config, creds *auth.NodeCredentials) (*Supervisor, error) 
 		useHMACNearest:   true,
 		metricsProviders: mp,
 		tracesProviders:  tp,
-		topoMetrics:      metrics.NewTopologyMetrics(mp.Meter),
-		gossipMetrics:    gossipMetrics,
+		topoMetrics:      metrics.NewTopologyMetrics(mp.Meter()),
 		nodeMetrics:      nodeMetrics,
-		tracer:           tp.Tracer.Tracer("pollen/supervisor"),
+		tracer:           tp.Tracer().Tracer("pollen/supervisor"),
 		router:           router,
 		vivaldiErr:       vivaldiErr,
 		routeInvalidate:  make(chan struct{}, 1),
 	}
 
+	n.inviteConsumer = inviteConsumer
+
 	n.tunneling = tunneling.New(
-		stateStore.LocalID,
+		self,
 		stateStore,
 		streamAdapter,
 		router,
 		tunneling.WithTrafficTracking(),
 		tunneling.WithLogger(log.Named("tunneling")),
-		tunneling.WithSampleInterval(conf.GossipInterval),
-		tunneling.WithReconcileInterval(conf.PeerTickInterval),
+		tunneling.WithSampleInterval(opts.GossipInterval),
+		tunneling.WithReconcileInterval(opts.PeerTickInterval),
 	)
 
 	gossipJitter := loopIntervalJitter
-	if conf.DisableGossipJitter {
+	if opts.DisableGossipJitter {
 		gossipJitter = 0
-	} else if conf.GossipJitter > 0 {
-		gossipJitter = conf.GossipJitter
+	} else if opts.GossipJitter > 0 {
+		gossipJitter = opts.GossipJitter
 	}
 
 	n.membership = membership.New(
-		stateStore.LocalID, creds, m, stateStore,
+		self, creds, m, stateStore,
 		membership.WithStreamOpener(m),
 		membership.WithRTTSource(m),
 		membership.WithCertManager(m),
 		membership.WithPeerAddressSource(m),
 		membership.WithPeerSessionCloser(m),
 		membership.WithSmoothedErr(vivaldiErr),
-		membership.WithTracer(tp.Tracer),
+		membership.WithTracer(tp.Tracer()),
 		membership.WithNATDetector(natDetector),
 		membership.WithNodeMetrics(nodeMetrics),
 		membership.WithSigningKey(privKey),
 		membership.WithPollenDir(pollenDir),
 		membership.WithLogger(log.Named("membership")),
-		membership.WithPort(conf.ListenPort),
-		membership.WithTLSIdentityTTL(conf.TLSIdentityTTL),
-		membership.WithMembershipTTL(conf.MembershipTTL),
-		membership.WithReconnectWindow(conf.ReconnectWindow),
-		membership.WithGossipInterval(conf.GossipInterval),
+		membership.WithPort(opts.ListenPort),
+		membership.WithTLSIdentityTTL(config.DefaultTLSIdentityTTL),
+		membership.WithMembershipTTL(config.DefaultMembershipTTL),
+		membership.WithReconnectWindow(config.DefaultReconnectWindow),
+		membership.WithGossipInterval(opts.GossipInterval),
 		membership.WithGossipJitter(gossipJitter),
-		membership.WithPeerTickInterval(conf.PeerTickInterval),
-		membership.WithAdvertisedIPs(conf.AdvertisedIPs),
+		membership.WithPeerTickInterval(opts.PeerTickInterval),
+		membership.WithAdvertisedIPs(opts.AdvertisedIPs),
 		membership.WithShutdownSignal(shutdownCh),
 		membership.WithDatagramHandler(func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope) {
 			switch body := env.GetBody().(type) {
@@ -259,15 +280,20 @@ func New(conf *config.Config, creds *auth.NodeCredentials) (*Supervisor, error) 
 	)
 
 	hostFuncs := wasm.NewHostFunctions(log.Named("wasm"), n)
-	wasmRT := wasm.NewRuntime(hostFuncs, 0)
+	wasmRT, err := wasm.NewRuntime(hostFuncs, nodeWorkers)
+	if err != nil {
+		return nil, fmt.Errorf("wasm runtime: %w", err)
+	}
 	n.wasmRuntime = wasmRT
 
 	var placementMesh placement.StreamOpener = streamAdapter
 	if tr := n.tunneling.TrafficRecorder(); tr != nil {
+		n.trafficRecorder = tr
+		m.SetTrafficTracker(tr)
 		placementMesh = &trafficCountedOpener{inner: streamAdapter, recorder: tr}
 	}
 	n.placement = placement.New(
-		stateStore.LocalID, stateStore, casStore, wasmRT,
+		self, stateStore, casStore, wasmRT,
 		placement.WithMesh(placementMesh),
 		placement.WithLogger(log.Named("placement")),
 	)
@@ -278,15 +304,15 @@ func New(conf *config.Config, creds *auth.NodeCredentials) (*Supervisor, error) 
 		control.WithMetricsSource(&supervisorMetricsSource{providers: mp, membership: n.membership}),
 		control.WithMeshConnector(n),
 	}
-	if conf.ShutdownFunc != nil {
-		controlOpts = append(controlOpts, control.WithShutdown(conf.ShutdownFunc))
+	if opts.ShutdownFunc != nil {
+		controlOpts = append(controlOpts, control.WithShutdown(opts.ShutdownFunc))
 	}
 	n.controlSrv = control.New(
 		n.membership, n.placement, n.tunneling, stateStore,
 		controlOpts...,
 	)
 
-	for _, conn := range conf.InitialConnections {
+	for _, conn := range opts.InitialConnections {
 		n.tunneling.SeedDesiredConnection(conn.PeerKey, conn.RemotePort, conn.LocalPort)
 	}
 
@@ -299,12 +325,6 @@ func (n *Supervisor) Run(ctx context.Context) error {
 	if err := n.mesh.Start(ctx); err != nil {
 		return err
 	}
-	n.mesh.SetRouter(n.router)
-	if tr := n.tunneling.TrafficRecorder(); tr != nil {
-		n.trafficRecorder = tr
-		n.mesh.SetTrafficTracker(tr)
-	}
-
 	if err := n.membership.Start(ctx); err != nil {
 		return err
 	}
@@ -315,20 +335,17 @@ func (n *Supervisor) Run(ctx context.Context) error {
 		return err
 	}
 
-	if n.conf.SocketPath != "" {
-		go func() {
-			if err := n.controlSrv.Start(n.conf.SocketPath); err != nil {
-				n.log.Warnw("control server failed", "err", err)
-			}
-		}()
-	}
+	n.wg.Go(func() {
+		if err := n.controlSrv.Start(n.socketPath); err != nil {
+			n.log.Warnw("control server failed", "err", err)
+		}
+	})
 
 	close(n.ready)
 	n.connectBootstrapPeers(ctx)
-	go n.workers.run(ctx)
-	go n.streamDispatchLoop(ctx)
+	n.wg.Go(func() { n.streamDispatchLoop(ctx) })
 
-	peerTicker := time.NewTicker(n.conf.PeerTickInterval)
+	peerTicker := time.NewTicker(n.peerTickInterval)
 	defer peerTicker.Stop()
 
 	saveTicker := time.NewTicker(stateSaveInterval)
@@ -357,7 +374,7 @@ func (n *Supervisor) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-n.shutdownCh:
-			return ErrCertExpired
+			return membership.ErrCertExpired
 		case <-peerTicker.C:
 			n.syncPeersFromState(ctx, n.store.Snapshot())
 		case ev := <-n.membership.Events():
@@ -397,7 +414,7 @@ func (n *Supervisor) Run(ctx context.Context) error {
 }
 
 func (n *Supervisor) connectBootstrapPeers(ctx context.Context) {
-	for _, bp := range n.conf.ResolvedBootstrapPeers {
+	for _, bp := range n.bootstrapPeers {
 		if slices.Contains(n.store.Snapshot().DeniedPeers(), bp.PeerKey) {
 			continue
 		}
@@ -426,8 +443,8 @@ func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 			return
 		}
 		switch stype {
-		case transport.StreamTypeClock:
-			go n.membership.HandleClockStream(ctx, stream, peerKey)
+		case transport.StreamTypeDigest:
+			n.wg.Go(func() { n.membership.HandleDigestStream(ctx, stream, peerKey) })
 		case transport.StreamTypeTunnel:
 			n.tunneling.HandleTunnelStream(stream, peerKey)
 		case transport.StreamTypeArtifact:
@@ -435,15 +452,15 @@ func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 			if n.trafficRecorder != nil {
 				s = wrapTrafficStream(stream, n.trafficRecorder, peerKey)
 			}
-			go n.placement.HandleArtifactStream(s, peerKey)
+			n.wg.Go(func() { n.placement.HandleArtifactStream(s, peerKey) })
 		case transport.StreamTypeWorkload:
 			var s io.ReadWriteCloser = stream
 			if n.trafficRecorder != nil {
 				s = wrapTrafficStream(stream, n.trafficRecorder, peerKey)
 			}
-			go n.placement.HandleWorkloadStream(s, peerKey)
+			n.wg.Go(func() { n.placement.HandleWorkloadStream(s, peerKey) })
 		case transport.StreamTypeCertRenewal:
-			go n.membership.HandleCertRenewalStream(stream, peerKey)
+			n.wg.Go(func() { n.membership.HandleCertRenewalStream(stream, peerKey) })
 		default:
 			n.log.Warnw("unknown stream type", "type", uint8(stype))
 			stream.Close()
@@ -480,8 +497,16 @@ func (n *Supervisor) handlePeerEvent(_ context.Context, ev transport.PeerEvent) 
 		n.store.SetLocalReachable(n.GetConnectedPeers())
 		n.placement.Signal()
 	default:
-		n.workers.submit(context.Background(), func() { n.requestPunchCoordination(ev.Key) })
+		n.submitPunch(func() { n.requestPunchCoordination(ev.Key) })
 	}
+}
+
+func (n *Supervisor) submitPunch(fn func()) {
+	n.wg.Go(func() {
+		n.punchSem <- struct{}{}
+		defer func() { <-n.punchSem }()
+		fn()
+	})
 }
 
 func (n *Supervisor) signalRouteInvalidate() {
@@ -510,15 +535,36 @@ func (n *Supervisor) recomputeRoutes() {
 }
 
 func (n *Supervisor) saveState() {
-	blob := n.store.FullState()
-	if err := config.WritePrivate(filepath.Join(n.pollenDir, "state.pb"), blob); err != nil {
+	lastAddrs := n.store.ExportLastAddrs()
+	peers := make([]*statev1.PeerState, 0, len(lastAddrs))
+	for pk, addr := range lastAddrs {
+		peers = append(peers, &statev1.PeerState{
+			PeerPub:  pk.Bytes(),
+			LastAddr: addr,
+		})
+	}
+
+	rs := &statev1.RuntimeState{
+		GossipState: n.store.EncodeFull(),
+		Peers:       peers,
+	}
+	if n.inviteConsumer != nil {
+		rs.ConsumedInvites = n.inviteConsumer.Export()
+	}
+
+	blob, err := rs.MarshalVT()
+	if err != nil {
+		n.log.Warnw("failed to marshal state", "err", err)
+		return
+	}
+	if err := plnfs.WriteGroupReadable(filepath.Join(n.pollenDir, "state.pb"), blob); err != nil {
 		n.log.Warnw("failed to save state", "err", err)
 	}
 }
 
 func (n *Supervisor) shutdown() {
 	n.controlSrv.Stop()
-	n.workers.wait()
+	n.wg.Wait()
 	if err := n.membership.Stop(); err != nil {
 		n.log.Warnw("membership stop failed", "err", err)
 	}
@@ -528,7 +574,7 @@ func (n *Supervisor) shutdown() {
 	if err := n.placement.Stop(); err != nil {
 		n.log.Warnw("placement stop failed", "err", err)
 	}
-	n.wasmRuntime.Close()
+	n.wasmRuntime.Close(context.Background())
 
 	if err := n.tunneling.Stop(); err != nil {
 		n.log.Warnw("tunneling stop failed", "err", err)

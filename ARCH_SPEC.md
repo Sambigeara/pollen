@@ -35,10 +35,11 @@ Layer 2: Core (siblings -- neither imports the other)
 
 Layer 1: Foundation (leaf packages, zero or minimal internal deps)
   types            PeerKey, Envelope
-  auth             credentials, delegation certs, trust bundles, join tokens
+  auth             credentials, delegation certs, join tokens
   coords           Vivaldi math (pure functions: Update, Distance)
   nat              NAT type enum + detector (Easy, Hard, Unknown)
-  config           YAML loading, defaults, persistence, file permissions
+  plnfs            atomic writes, dir creation, pln group ownership
+  config           YAML loading, defaults, persistence
   cas              content-addressable store (filesystem, SHA-256)
   wasm             WASM runtime (Extism/wazero wrapper)
   sysinfo          CPU/memory/numCPU sampling (gopsutil)
@@ -77,7 +78,7 @@ type StateStore interface {
     Snapshot() Snapshot
     ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, error)
     EncodeDelta(since Clock) []byte
-    FullState() []byte
+    EncodeFull() []byte
     PendingNotify() <-chan struct{}
     FlushPendingGossip() []*statev1.GossipEvent
 
@@ -145,7 +146,7 @@ type ClusterState interface {
     Snapshot() state.Snapshot
     ApplyDelta(from types.PeerKey, data []byte) ([]state.Event, []byte, error)
     EncodeDelta(since state.Clock) []byte
-    FullState() []byte
+    EncodeFull() []byte
     PendingNotify() <-chan struct{}
     FlushPendingGossip() []*statev1.GossipEvent
     DenyPeer(key types.PeerKey) []state.Event
@@ -196,7 +197,7 @@ This makes membership the single gossip writer and supervisor the event router. 
 
 State has zero I/O — it doesn't read from or write to disk. Persistence is supervisor's responsibility:
 - **On startup:** supervisor reads the state file from disk, calls `state.ApplyDelta()` to hydrate.
-- **On shutdown:** supervisor calls `state.FullState()` and writes it to disk.
+- **On shutdown:** supervisor calls `state.EncodeFull()` and writes it to disk.
 - **Periodically:** supervisor snapshots state to disk on a timer (e.g., every 30s).
 
 ### Multi-Hop Relay and Routed Streams
@@ -254,7 +255,7 @@ The concrete type has additional methods for peer FSM, cert management, join flo
 **Stream type constants:**
 
 ```go
-StreamTypeClock         StreamType = 1
+StreamTypeDigest        StreamType = 1
 StreamTypeTunnel        StreamType = 2
 StreamTypeRouted        StreamType = 3  // handled internally by transport
 StreamTypeArtifact      StreamType = 4
@@ -352,7 +353,7 @@ type MembershipAPI interface {
     DenyPeer(key types.PeerKey) error
     Invite(subject string) (string, error)
 
-    HandleClockStream(stream transport.Stream, peer types.PeerKey)
+    HandleDigestStream(ctx context.Context, stream transport.Stream, peer types.PeerKey)
     HandleCertRenewalStream(stream transport.Stream, peer types.PeerKey)
 
     Events() <-chan state.Event
@@ -387,7 +388,7 @@ type PlacementAPI interface {
     Start(ctx context.Context) error
     Stop() error
 
-    Seed(hash string, binary []byte) error
+    Seed(hash string, binary []byte, replicas, memoryPages, timeoutMs uint32) error
     Unseed(hash string) error
     Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
     Status() []WorkloadSummary
@@ -486,7 +487,7 @@ type Supervisor struct {
     // ...
 }
 
-func New(conf *config.Config, creds *auth.NodeCredentials) (*Supervisor, error)
+func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteConsumer) (*Supervisor, error)
 func (s *Supervisor) Run(ctx context.Context) error
 ```
 
@@ -504,8 +505,8 @@ func (s *Supervisor) Run(ctx context.Context) error
 
 ```go
 switch st {
-case StreamTypeClock:
-    go membership.HandleClockStream(stream, peer)
+case StreamTypeDigest:
+    go membership.HandleDigestStream(ctx, stream, peer)
 case StreamTypeCertRenewal:
     go membership.HandleCertRenewalStream(stream, peer)
 case StreamTypeTunnel:
@@ -527,7 +528,7 @@ for {
     case ev := <-membership.Events():
         dispatchEvents(ev)  // routing, placement, tunneling
     case <-saveTicker.C:
-        writeStateToDisk(state.FullState())
+        writeStateToDisk(state.EncodeFull())
     }
 }
 ```
@@ -554,7 +555,7 @@ type MembershipControl interface {
 }
 
 type PlacementControl interface {
-    Seed(hash string, binary []byte) error
+    Seed(hash string, binary []byte, replicas, memoryPages, timeoutMs uint32) error
     Unseed(hash string) error
     Call(ctx context.Context, hash, fn string, input []byte) ([]byte, error)
     Status() []placement.WorkloadSummary

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,25 +17,22 @@ func newMinimalNode(t *testing.T, bootstrapPublic bool) *Supervisor {
 
 	adminPub, adminPriv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	trust := auth.NewTrustBundle(adminPub)
-	cert, err := auth.IssueDelegationCert(adminPriv, nil, trust.GetClusterId(), pub, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
+	cert, err := auth.IssueDelegationCert(adminPriv, nil, pub, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
 	require.NoError(t, err)
 
-	creds := &auth.NodeCredentials{Trust: trust, Cert: cert}
+	creds := auth.NewNodeCredentials(adminPub, cert)
 
-	conf := &config.Config{
+	opts := Options{
 		SigningKey:       priv,
 		PollenDir:        t.TempDir(),
 		ListenPort:       0,
 		AdvertisedIPs:    []string{"127.0.0.1"},
 		GossipInterval:   time.Second,
 		PeerTickInterval: time.Second,
-		TLSIdentityTTL:   config.CertTTLs{}.TLSIdentityTTL(),
-		MembershipTTL:    config.CertTTLs{}.MembershipTTL(),
 		BootstrapPublic:  bootstrapPublic,
 	}
 
-	n, err := New(conf, creds)
+	n, err := New(opts, creds, nil)
 	require.NoError(t, err)
 	return n
 }

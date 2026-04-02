@@ -18,8 +18,8 @@ import (
 
 func (s *Service) checkCertExpiry() bool {
 	now := time.Now()
-	expired := auth.IsCertExpired(s.creds.Cert, now)
-	remaining := time.Until(auth.CertExpiresAt(s.creds.Cert))
+	expired := auth.IsCertExpired(s.creds.Cert(), now)
+	remaining := time.Until(auth.CertExpiresAt(s.creds.Cert()))
 	s.nodeMetrics.CertExpirySeconds.Record(context.Background(), remaining.Seconds())
 
 	if expired {
@@ -29,14 +29,14 @@ func (s *Service) checkCertExpiry() bool {
 		}
 		s.renewalFailed.Store(true)
 
-		if !auth.IsCertWithinReconnectWindow(s.creds.Cert, now, s.reconnectWindow) {
+		if !now.Before(auth.CertExpiresAt(s.creds.Cert()).Add(s.reconnectWindow)) {
 			s.log.Errorw("delegation certificate expired beyond reconnect window, shutting down — rejoin the cluster or contact a cluster admin",
-				"expired_at", auth.CertExpiresAt(s.creds.Cert))
+				"expired_at", auth.CertExpiresAt(s.creds.Cert()))
 			return true
 		}
 		s.log.Warnw("delegation certificate expired — running in degraded mode, will keep retrying renewal",
-			"expired_at", auth.CertExpiresAt(s.creds.Cert),
-			"reconnect_window_remaining", auth.CertExpiresAt(s.creds.Cert).Add(s.reconnectWindow).Sub(now).Truncate(time.Minute))
+			"expired_at", auth.CertExpiresAt(s.creds.Cert()),
+			"reconnect_window_remaining", auth.CertExpiresAt(s.creds.Cert()).Add(s.reconnectWindow).Sub(now).Truncate(time.Minute))
 		return false
 	}
 
@@ -97,7 +97,7 @@ func (s *Service) attemptCertRenewal() bool {
 func (s *Service) applyCertRenewal(newCert *admissionv1.DelegationCert) error {
 	now := time.Now()
 	pubKey := s.signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-	if err := auth.VerifyDelegationCert(newCert, s.creds.Trust, now, pubKey); err != nil {
+	if err := auth.VerifyDelegationCert(newCert, s.creds.RootPub(), now, pubKey); err != nil {
 		return err
 	}
 
@@ -107,7 +107,7 @@ func (s *Service) applyCertRenewal(newCert *admissionv1.DelegationCert) error {
 	}
 
 	s.certs.UpdateMeshCert(tlsCert)
-	s.creds.Cert = newCert
+	s.creds.SetCert(newCert)
 
 	if err := auth.SaveNodeCredentials(s.pollenDir, s.creds); err != nil {
 		s.log.Warnw("failed to persist renewed credentials", "err", err)
@@ -129,18 +129,18 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 		_ = s.mesh.Send(ctx, from, data)
 	}
 
-	if !bytes.Equal(req.GetSubjectPub(), from.Bytes()) {
-		sendReject("subject_pub does not match sender")
+	if !bytes.Equal(req.GetPeerPub(), from.Bytes()) {
+		sendReject("peer_pub does not match sender")
 		return
 	}
 
-	signer := s.creds.DelegationKey
+	signer := s.creds.DelegationKey()
 	if signer == nil {
 		sendReject("this node is not an admin")
 		return
 	}
 
-	subjectKey := types.PeerKeyFromBytes(req.GetSubjectPub())
+	subjectKey := types.PeerKeyFromBytes(req.GetPeerPub())
 	if slices.Contains(s.store.Snapshot().DeniedPeers(), subjectKey) {
 		sendReject("subject has been denied")
 		return
@@ -166,14 +166,10 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 		notAfter = accessDeadline
 	}
 
-	parentChain := append([]*admissionv1.DelegationCert{signer.Issuer}, signer.Issuer.GetChain()...)
-	newCert, err := auth.IssueDelegationCert(
-		signer.Priv,
-		parentChain,
-		signer.Trust.GetClusterId(),
-		req.GetSubjectPub(),
+	newCert, err := signer.IssueMemberCert(
+		req.GetPeerPub(),
 		auth.LeafCapabilities(),
-		now.Add(-time.Minute),
+		now,
 		notAfter,
 		accessDeadline,
 	)
@@ -204,7 +200,7 @@ func (s *Service) disconnectExpiredPeers() {
 		if !auth.IsCertExpired(dc, now) {
 			continue
 		}
-		if auth.IsCertWithinReconnectWindow(dc, now, s.reconnectWindow) {
+		if now.Before(auth.CertExpiresAt(dc).Add(s.reconnectWindow)) {
 			continue
 		}
 		s.log.Warnw("disconnecting peer with expired delegation cert beyond reconnect window",

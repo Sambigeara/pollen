@@ -22,58 +22,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type TrustBundle struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ClusterId     []byte                 `protobuf:"bytes,1,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
-	RootPub       []byte                 `protobuf:"bytes,2,opt,name=root_pub,json=rootPub,proto3" json:"root_pub,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *TrustBundle) Reset() {
-	*x = TrustBundle{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TrustBundle) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TrustBundle) ProtoMessage() {}
-
-func (x *TrustBundle) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TrustBundle.ProtoReflect.Descriptor instead.
-func (*TrustBundle) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *TrustBundle) GetClusterId() []byte {
-	if x != nil {
-		return x.ClusterId
-	}
-	return nil
-}
-
-func (x *TrustBundle) GetRootPub() []byte {
-	if x != nil {
-		return x.RootPub
-	}
-	return nil
-}
-
 type Capabilities struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CanDelegate   bool                   `protobuf:"varint,1,opt,name=can_delegate,json=canDelegate,proto3" json:"can_delegate,omitempty"`
@@ -85,7 +33,7 @@ type Capabilities struct {
 
 func (x *Capabilities) Reset() {
 	*x = Capabilities{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[1]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -97,7 +45,7 @@ func (x *Capabilities) String() string {
 func (*Capabilities) ProtoMessage() {}
 
 func (x *Capabilities) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[1]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -110,7 +58,7 @@ func (x *Capabilities) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Capabilities.ProtoReflect.Descriptor instead.
 func (*Capabilities) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{1}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Capabilities) GetCanDelegate() bool {
@@ -136,21 +84,20 @@ func (x *Capabilities) GetMaxDepth() uint32 {
 
 type DelegationCertClaims struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
-	ClusterId          []byte                 `protobuf:"bytes,1,opt,name=cluster_id,json=clusterId,proto3" json:"cluster_id,omitempty"`
-	SubjectPub         []byte                 `protobuf:"bytes,2,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
-	IssuerPub          []byte                 `protobuf:"bytes,3,opt,name=issuer_pub,json=issuerPub,proto3" json:"issuer_pub,omitempty"`
-	Capabilities       *Capabilities          `protobuf:"bytes,4,opt,name=capabilities,proto3" json:"capabilities,omitempty"`
-	NotBeforeUnix      int64                  `protobuf:"varint,5,opt,name=not_before_unix,json=notBeforeUnix,proto3" json:"not_before_unix,omitempty"`
-	NotAfterUnix       int64                  `protobuf:"varint,6,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
-	Serial             uint64                 `protobuf:"varint,7,opt,name=serial,proto3" json:"serial,omitempty"`
-	AccessDeadlineUnix int64                  `protobuf:"varint,8,opt,name=access_deadline_unix,json=accessDeadlineUnix,proto3" json:"access_deadline_unix,omitempty"`
+	SubjectPub         []byte                 `protobuf:"bytes,1,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
+	IssuerPub          []byte                 `protobuf:"bytes,2,opt,name=issuer_pub,json=issuerPub,proto3" json:"issuer_pub,omitempty"`
+	Capabilities       *Capabilities          `protobuf:"bytes,3,opt,name=capabilities,proto3" json:"capabilities,omitempty"`
+	NotBeforeUnix      int64                  `protobuf:"varint,4,opt,name=not_before_unix,json=notBeforeUnix,proto3" json:"not_before_unix,omitempty"`
+	NotAfterUnix       int64                  `protobuf:"varint,5,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
+	Serial             uint64                 `protobuf:"varint,6,opt,name=serial,proto3" json:"serial,omitempty"`
+	AccessDeadlineUnix int64                  `protobuf:"varint,7,opt,name=access_deadline_unix,json=accessDeadlineUnix,proto3" json:"access_deadline_unix,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
 
 func (x *DelegationCertClaims) Reset() {
 	*x = DelegationCertClaims{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[2]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -162,7 +109,7 @@ func (x *DelegationCertClaims) String() string {
 func (*DelegationCertClaims) ProtoMessage() {}
 
 func (x *DelegationCertClaims) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[2]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -175,14 +122,7 @@ func (x *DelegationCertClaims) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DelegationCertClaims.ProtoReflect.Descriptor instead.
 func (*DelegationCertClaims) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *DelegationCertClaims) GetClusterId() []byte {
-	if x != nil {
-		return x.ClusterId
-	}
-	return nil
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *DelegationCertClaims) GetSubjectPub() []byte {
@@ -245,7 +185,7 @@ type DelegationCert struct {
 
 func (x *DelegationCert) Reset() {
 	*x = DelegationCert{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[3]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -257,7 +197,7 @@ func (x *DelegationCert) String() string {
 func (*DelegationCert) ProtoMessage() {}
 
 func (x *DelegationCert) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[3]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -270,7 +210,7 @@ func (x *DelegationCert) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DelegationCert.ProtoReflect.Descriptor instead.
 func (*DelegationCert) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{3}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *DelegationCert) GetClaims() *DelegationCertClaims {
@@ -304,7 +244,7 @@ type BootstrapPeer struct {
 
 func (x *BootstrapPeer) Reset() {
 	*x = BootstrapPeer{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[4]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -316,7 +256,7 @@ func (x *BootstrapPeer) String() string {
 func (*BootstrapPeer) ProtoMessage() {}
 
 func (x *BootstrapPeer) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[4]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -329,7 +269,7 @@ func (x *BootstrapPeer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BootstrapPeer.ProtoReflect.Descriptor instead.
 func (*BootstrapPeer) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{4}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *BootstrapPeer) GetPeerPub() []byte {
@@ -349,19 +289,18 @@ func (x *BootstrapPeer) GetAddrs() []string {
 type JoinTokenClaims struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TokenId       string                 `protobuf:"bytes,1,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
-	Trust         *TrustBundle           `protobuf:"bytes,2,opt,name=trust,proto3" json:"trust,omitempty"`
-	Issuer        *DelegationCert        `protobuf:"bytes,3,opt,name=issuer,proto3" json:"issuer,omitempty"`
-	MemberCert    *DelegationCert        `protobuf:"bytes,4,opt,name=member_cert,json=memberCert,proto3" json:"member_cert,omitempty"`
-	Bootstrap     []*BootstrapPeer       `protobuf:"bytes,5,rep,name=bootstrap,proto3" json:"bootstrap,omitempty"`
-	IssuedAtUnix  int64                  `protobuf:"varint,6,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
-	ExpiresAtUnix int64                  `protobuf:"varint,7,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
+	Issuer        *DelegationCert        `protobuf:"bytes,2,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	MemberCert    *DelegationCert        `protobuf:"bytes,3,opt,name=member_cert,json=memberCert,proto3" json:"member_cert,omitempty"`
+	Bootstrap     []*BootstrapPeer       `protobuf:"bytes,4,rep,name=bootstrap,proto3" json:"bootstrap,omitempty"`
+	IssuedAtUnix  int64                  `protobuf:"varint,5,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
+	ExpiresAtUnix int64                  `protobuf:"varint,6,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *JoinTokenClaims) Reset() {
 	*x = JoinTokenClaims{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[5]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -373,7 +312,7 @@ func (x *JoinTokenClaims) String() string {
 func (*JoinTokenClaims) ProtoMessage() {}
 
 func (x *JoinTokenClaims) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[5]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -386,7 +325,7 @@ func (x *JoinTokenClaims) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinTokenClaims.ProtoReflect.Descriptor instead.
 func (*JoinTokenClaims) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{5}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *JoinTokenClaims) GetTokenId() string {
@@ -394,13 +333,6 @@ func (x *JoinTokenClaims) GetTokenId() string {
 		return x.TokenId
 	}
 	return ""
-}
-
-func (x *JoinTokenClaims) GetTrust() *TrustBundle {
-	if x != nil {
-		return x.Trust
-	}
-	return nil
 }
 
 func (x *JoinTokenClaims) GetIssuer() *DelegationCert {
@@ -448,7 +380,7 @@ type JoinToken struct {
 
 func (x *JoinToken) Reset() {
 	*x = JoinToken{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[6]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -460,7 +392,7 @@ func (x *JoinToken) String() string {
 func (*JoinToken) ProtoMessage() {}
 
 func (x *JoinToken) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[6]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -473,7 +405,7 @@ func (x *JoinToken) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinToken.ProtoReflect.Descriptor instead.
 func (*JoinToken) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{6}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *JoinToken) GetClaims() *JoinTokenClaims {
@@ -493,20 +425,19 @@ func (x *JoinToken) GetSignature() []byte {
 type InviteTokenClaims struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	TokenId              string                 `protobuf:"bytes,1,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
-	Trust                *TrustBundle           `protobuf:"bytes,2,opt,name=trust,proto3" json:"trust,omitempty"`
-	Issuer               *DelegationCert        `protobuf:"bytes,3,opt,name=issuer,proto3" json:"issuer,omitempty"`
-	Bootstrap            []*BootstrapPeer       `protobuf:"bytes,4,rep,name=bootstrap,proto3" json:"bootstrap,omitempty"`
-	SubjectPub           []byte                 `protobuf:"bytes,5,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
-	IssuedAtUnix         int64                  `protobuf:"varint,6,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
-	ExpiresAtUnix        int64                  `protobuf:"varint,7,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
-	MembershipTtlSeconds int64                  `protobuf:"varint,8,opt,name=membership_ttl_seconds,json=membershipTtlSeconds,proto3" json:"membership_ttl_seconds,omitempty"`
+	Issuer               *DelegationCert        `protobuf:"bytes,2,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	Bootstrap            []*BootstrapPeer       `protobuf:"bytes,3,rep,name=bootstrap,proto3" json:"bootstrap,omitempty"`
+	SubjectPub           []byte                 `protobuf:"bytes,4,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
+	IssuedAtUnix         int64                  `protobuf:"varint,5,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
+	ExpiresAtUnix        int64                  `protobuf:"varint,6,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
+	MembershipTtlSeconds int64                  `protobuf:"varint,7,opt,name=membership_ttl_seconds,json=membershipTtlSeconds,proto3" json:"membership_ttl_seconds,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
 
 func (x *InviteTokenClaims) Reset() {
 	*x = InviteTokenClaims{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[7]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -518,7 +449,7 @@ func (x *InviteTokenClaims) String() string {
 func (*InviteTokenClaims) ProtoMessage() {}
 
 func (x *InviteTokenClaims) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[7]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -531,7 +462,7 @@ func (x *InviteTokenClaims) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InviteTokenClaims.ProtoReflect.Descriptor instead.
 func (*InviteTokenClaims) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{7}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *InviteTokenClaims) GetTokenId() string {
@@ -539,13 +470,6 @@ func (x *InviteTokenClaims) GetTokenId() string {
 		return x.TokenId
 	}
 	return ""
-}
-
-func (x *InviteTokenClaims) GetTrust() *TrustBundle {
-	if x != nil {
-		return x.Trust
-	}
-	return nil
 }
 
 func (x *InviteTokenClaims) GetIssuer() *DelegationCert {
@@ -600,7 +524,7 @@ type InviteToken struct {
 
 func (x *InviteToken) Reset() {
 	*x = InviteToken{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[8]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -612,7 +536,7 @@ func (x *InviteToken) String() string {
 func (*InviteToken) ProtoMessage() {}
 
 func (x *InviteToken) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[8]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -625,7 +549,7 @@ func (x *InviteToken) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InviteToken.ProtoReflect.Descriptor instead.
 func (*InviteToken) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{8}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *InviteToken) GetClaims() *InviteTokenClaims {
@@ -646,57 +570,49 @@ var File_pollen_admission_v1_admission_proto protoreflect.FileDescriptor
 
 const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\n" +
-	"#pollen/admission/v1/admission.proto\x12\x13pollen.admission.v1\x1a\x1bbuf/validate/validate.proto\"Y\n" +
-	"\vTrustBundle\x12&\n" +
-	"\n" +
-	"cluster_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\tclusterId\x12\"\n" +
-	"\broot_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\arootPub\"k\n" +
+	"#pollen/admission/v1/admission.proto\x12\x13pollen.admission.v1\x1a\x1bbuf/validate/validate.proto\"k\n" +
 	"\fCapabilities\x12!\n" +
 	"\fcan_delegate\x18\x01 \x01(\bR\vcanDelegate\x12\x1b\n" +
 	"\tcan_admit\x18\x02 \x01(\bR\bcanAdmit\x12\x1b\n" +
-	"\tmax_depth\x18\x03 \x01(\rR\bmaxDepth\"\xf7\x02\n" +
-	"\x14DelegationCertClaims\x12&\n" +
-	"\n" +
-	"cluster_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\tclusterId\x12(\n" +
-	"\vsubject_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\n" +
+	"\tmax_depth\x18\x03 \x01(\rR\bmaxDepth\"\xcf\x02\n" +
+	"\x14DelegationCertClaims\x12(\n" +
+	"\vsubject_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\n" +
 	"subjectPub\x12&\n" +
 	"\n" +
-	"issuer_pub\x18\x03 \x01(\fB\a\xbaH\x04z\x02h R\tissuerPub\x12M\n" +
-	"\fcapabilities\x18\x04 \x01(\v2!.pollen.admission.v1.CapabilitiesB\x06\xbaH\x03\xc8\x01\x01R\fcapabilities\x12&\n" +
-	"\x0fnot_before_unix\x18\x05 \x01(\x03R\rnotBeforeUnix\x12$\n" +
-	"\x0enot_after_unix\x18\x06 \x01(\x03R\fnotAfterUnix\x12\x16\n" +
-	"\x06serial\x18\a \x01(\x04R\x06serial\x120\n" +
-	"\x14access_deadline_unix\x18\b \x01(\x03R\x12accessDeadlineUnix\"\xbd\x01\n" +
+	"issuer_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\tissuerPub\x12M\n" +
+	"\fcapabilities\x18\x03 \x01(\v2!.pollen.admission.v1.CapabilitiesB\x06\xbaH\x03\xc8\x01\x01R\fcapabilities\x12&\n" +
+	"\x0fnot_before_unix\x18\x04 \x01(\x03R\rnotBeforeUnix\x12$\n" +
+	"\x0enot_after_unix\x18\x05 \x01(\x03R\fnotAfterUnix\x12\x16\n" +
+	"\x06serial\x18\x06 \x01(\x04R\x06serial\x120\n" +
+	"\x14access_deadline_unix\x18\a \x01(\x03R\x12accessDeadlineUnix\"\xbd\x01\n" +
 	"\x0eDelegationCert\x12I\n" +
 	"\x06claims\x18\x01 \x01(\v2).pollen.admission.v1.DelegationCertClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x129\n" +
 	"\x05chain\x18\x02 \x03(\v2#.pollen.admission.v1.DelegationCertR\x05chain\x12%\n" +
 	"\tsignature\x18\x03 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"Y\n" +
 	"\rBootstrapPeer\x12\"\n" +
 	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\x12$\n" +
-	"\x05addrs\x18\x02 \x03(\tB\x0e\xbaH\v\x92\x01\b\b\x01\"\x04r\x02\x10\x01R\x05addrs\"\x99\x03\n" +
+	"\x05addrs\x18\x02 \x03(\tB\x0e\xbaH\v\x92\x01\b\b\x01\"\x04r\x02\x10\x01R\x05addrs\"\xd9\x02\n" +
 	"\x0fJoinTokenClaims\x12#\n" +
-	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12>\n" +
-	"\x05trust\x18\x02 \x01(\v2 .pollen.admission.v1.TrustBundleB\x06\xbaH\x03\xc8\x01\x01R\x05trust\x12C\n" +
-	"\x06issuer\x18\x03 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\x06issuer\x12L\n" +
-	"\vmember_cert\x18\x04 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\n" +
+	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12C\n" +
+	"\x06issuer\x18\x02 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\x06issuer\x12L\n" +
+	"\vmember_cert\x18\x03 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\n" +
 	"memberCert\x12@\n" +
-	"\tbootstrap\x18\x05 \x03(\v2\".pollen.admission.v1.BootstrapPeerR\tbootstrap\x12$\n" +
-	"\x0eissued_at_unix\x18\x06 \x01(\x03R\fissuedAtUnix\x12&\n" +
-	"\x0fexpires_at_unix\x18\a \x01(\x03R\rexpiresAtUnix\"x\n" +
+	"\tbootstrap\x18\x04 \x03(\v2\".pollen.admission.v1.BootstrapPeerR\tbootstrap\x12$\n" +
+	"\x0eissued_at_unix\x18\x05 \x01(\x03R\fissuedAtUnix\x12&\n" +
+	"\x0fexpires_at_unix\x18\x06 \x01(\x03R\rexpiresAtUnix\"x\n" +
 	"\tJoinToken\x12D\n" +
 	"\x06claims\x18\x01 \x01(\v2$.pollen.admission.v1.JoinTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
-	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xba\x03\n" +
+	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xfa\x02\n" +
 	"\x11InviteTokenClaims\x12#\n" +
-	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12>\n" +
-	"\x05trust\x18\x02 \x01(\v2 .pollen.admission.v1.TrustBundleB\x06\xbaH\x03\xc8\x01\x01R\x05trust\x12C\n" +
-	"\x06issuer\x18\x03 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\x06issuer\x12J\n" +
-	"\tbootstrap\x18\x04 \x03(\v2\".pollen.admission.v1.BootstrapPeerB\b\xbaH\x05\x92\x01\x02\b\x01R\tbootstrap\x12+\n" +
-	"\vsubject_pub\x18\x05 \x01(\fB\n" +
+	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12C\n" +
+	"\x06issuer\x18\x02 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\x06issuer\x12J\n" +
+	"\tbootstrap\x18\x03 \x03(\v2\".pollen.admission.v1.BootstrapPeerB\b\xbaH\x05\x92\x01\x02\b\x01R\tbootstrap\x12+\n" +
+	"\vsubject_pub\x18\x04 \x01(\fB\n" +
 	"\xbaH\a\xd8\x01\x01z\x02h R\n" +
 	"subjectPub\x12$\n" +
-	"\x0eissued_at_unix\x18\x06 \x01(\x03R\fissuedAtUnix\x12&\n" +
-	"\x0fexpires_at_unix\x18\a \x01(\x03R\rexpiresAtUnix\x124\n" +
-	"\x16membership_ttl_seconds\x18\b \x01(\x03R\x14membershipTtlSeconds\"|\n" +
+	"\x0eissued_at_unix\x18\x05 \x01(\x03R\fissuedAtUnix\x12&\n" +
+	"\x0fexpires_at_unix\x18\x06 \x01(\x03R\rexpiresAtUnix\x124\n" +
+	"\x16membership_ttl_seconds\x18\a \x01(\x03R\x14membershipTtlSeconds\"|\n" +
 	"\vInviteToken\x12F\n" +
 	"\x06claims\x18\x01 \x01(\v2&.pollen.admission.v1.InviteTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
 	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignatureBHZFgithub.com/sambigeara/pollen/api/genpb/pollen/admission/v1;admissionv1b\x06proto3"
@@ -713,36 +629,33 @@ func file_pollen_admission_v1_admission_proto_rawDescGZIP() []byte {
 	return file_pollen_admission_v1_admission_proto_rawDescData
 }
 
-var file_pollen_admission_v1_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_pollen_admission_v1_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_pollen_admission_v1_admission_proto_goTypes = []any{
-	(*TrustBundle)(nil),          // 0: pollen.admission.v1.TrustBundle
-	(*Capabilities)(nil),         // 1: pollen.admission.v1.Capabilities
-	(*DelegationCertClaims)(nil), // 2: pollen.admission.v1.DelegationCertClaims
-	(*DelegationCert)(nil),       // 3: pollen.admission.v1.DelegationCert
-	(*BootstrapPeer)(nil),        // 4: pollen.admission.v1.BootstrapPeer
-	(*JoinTokenClaims)(nil),      // 5: pollen.admission.v1.JoinTokenClaims
-	(*JoinToken)(nil),            // 6: pollen.admission.v1.JoinToken
-	(*InviteTokenClaims)(nil),    // 7: pollen.admission.v1.InviteTokenClaims
-	(*InviteToken)(nil),          // 8: pollen.admission.v1.InviteToken
+	(*Capabilities)(nil),         // 0: pollen.admission.v1.Capabilities
+	(*DelegationCertClaims)(nil), // 1: pollen.admission.v1.DelegationCertClaims
+	(*DelegationCert)(nil),       // 2: pollen.admission.v1.DelegationCert
+	(*BootstrapPeer)(nil),        // 3: pollen.admission.v1.BootstrapPeer
+	(*JoinTokenClaims)(nil),      // 4: pollen.admission.v1.JoinTokenClaims
+	(*JoinToken)(nil),            // 5: pollen.admission.v1.JoinToken
+	(*InviteTokenClaims)(nil),    // 6: pollen.admission.v1.InviteTokenClaims
+	(*InviteToken)(nil),          // 7: pollen.admission.v1.InviteToken
 }
 var file_pollen_admission_v1_admission_proto_depIdxs = []int32{
-	1,  // 0: pollen.admission.v1.DelegationCertClaims.capabilities:type_name -> pollen.admission.v1.Capabilities
-	2,  // 1: pollen.admission.v1.DelegationCert.claims:type_name -> pollen.admission.v1.DelegationCertClaims
-	3,  // 2: pollen.admission.v1.DelegationCert.chain:type_name -> pollen.admission.v1.DelegationCert
-	0,  // 3: pollen.admission.v1.JoinTokenClaims.trust:type_name -> pollen.admission.v1.TrustBundle
-	3,  // 4: pollen.admission.v1.JoinTokenClaims.issuer:type_name -> pollen.admission.v1.DelegationCert
-	3,  // 5: pollen.admission.v1.JoinTokenClaims.member_cert:type_name -> pollen.admission.v1.DelegationCert
-	4,  // 6: pollen.admission.v1.JoinTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
-	5,  // 7: pollen.admission.v1.JoinToken.claims:type_name -> pollen.admission.v1.JoinTokenClaims
-	0,  // 8: pollen.admission.v1.InviteTokenClaims.trust:type_name -> pollen.admission.v1.TrustBundle
-	3,  // 9: pollen.admission.v1.InviteTokenClaims.issuer:type_name -> pollen.admission.v1.DelegationCert
-	4,  // 10: pollen.admission.v1.InviteTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
-	7,  // 11: pollen.admission.v1.InviteToken.claims:type_name -> pollen.admission.v1.InviteTokenClaims
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	0,  // 0: pollen.admission.v1.DelegationCertClaims.capabilities:type_name -> pollen.admission.v1.Capabilities
+	1,  // 1: pollen.admission.v1.DelegationCert.claims:type_name -> pollen.admission.v1.DelegationCertClaims
+	2,  // 2: pollen.admission.v1.DelegationCert.chain:type_name -> pollen.admission.v1.DelegationCert
+	2,  // 3: pollen.admission.v1.JoinTokenClaims.issuer:type_name -> pollen.admission.v1.DelegationCert
+	2,  // 4: pollen.admission.v1.JoinTokenClaims.member_cert:type_name -> pollen.admission.v1.DelegationCert
+	3,  // 5: pollen.admission.v1.JoinTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
+	4,  // 6: pollen.admission.v1.JoinToken.claims:type_name -> pollen.admission.v1.JoinTokenClaims
+	2,  // 7: pollen.admission.v1.InviteTokenClaims.issuer:type_name -> pollen.admission.v1.DelegationCert
+	3,  // 8: pollen.admission.v1.InviteTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
+	6,  // 9: pollen.admission.v1.InviteToken.claims:type_name -> pollen.admission.v1.InviteTokenClaims
+	10, // [10:10] is the sub-list for method output_type
+	10, // [10:10] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_pollen_admission_v1_admission_proto_init() }
@@ -756,7 +669,7 @@ func file_pollen_admission_v1_admission_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_admission_v1_admission_proto_rawDesc), len(file_pollen_admission_v1_admission_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

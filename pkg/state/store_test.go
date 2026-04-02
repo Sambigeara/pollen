@@ -1,8 +1,6 @@
 package state
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"testing"
 	"time"
 
@@ -13,18 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestStore(pub []byte) *Store {
-	return New(types.PeerKeyFromBytes(pub))
+func newTestStore(pk types.PeerKey) *store {
+	return New(pk).(*store) //nolint:forcetypeassert
 }
 
 // applyEvent is a test convenience for applying a single gossip event.
-func (s *Store) applyEvent(event *statev1.GossipEvent) applyResult {
+func (s *store) applyEvent(event *statev1.GossipEvent) applyResult {
 	return s.applyEvents([]*statev1.GossipEvent{event})
 }
 
-// clock returns the store's digest for test assertions.
-func (s *Store) clock() *statev1.GossipStateDigest {
-	var result *statev1.GossipStateDigest
+func (s *store) testDigest() *statev1.Digest {
+	var result *statev1.Digest
 	s.do(func() {
 		result = s.digestLocked()
 	})
@@ -41,15 +38,14 @@ func peerKey(b byte) (types.PeerKey, string) {
 // --- Local mutation tests ---
 
 func TestSetLocalNetworkReturnsEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	events := s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
 	require.Len(t, events, 1)
 
 	ev := events[0]
-	require.Equal(t, uint64(8), ev.GetCounter())
+	require.Equal(t, uint64(6), ev.GetCounter())
 	network := ev.GetNetwork()
 	require.NotNil(t, network)
 	require.Equal(t, []string{"10.0.0.1"}, network.GetIps())
@@ -57,43 +53,29 @@ func TestSetLocalNetworkReturnsEvent(t *testing.T) {
 }
 
 func TestSetLocalNetworkNoOpWhenUnchanged(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
 	events := s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
 	require.Nil(t, events)
 }
 
-func TestSetExternalPortReturnsEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+func TestSetObservedAddressReturnsEvent(t *testing.T) {
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
-	events := s.setExternalPort(51000)
+	events := s.setObservedAddress("52.204.52.130", 51000)
 	require.Len(t, events, 1)
-	require.Equal(t, uint32(51000), events[0].GetExternalPort().GetExternalPort())
-}
-
-func TestSetObservedExternalIPReturnsEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
-
-	events := s.setObservedExternalIP("52.204.52.130")
-	require.Len(t, events, 1)
-	require.Equal(t, "52.204.52.130", events[0].GetObservedExternalIp().GetIp())
+	require.Equal(t, uint32(51000), events[0].GetObservedAddress().GetPort())
+	require.Equal(t, "52.204.52.130", events[0].GetObservedAddress().GetIp())
 }
 
 func TestSetLocalConnectedConnect(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
-	peerPub := make([]byte, 32)
-	peerPub[0] = 2
-	peerID := types.PeerKeyFromBytes(peerPub)
+	peerID, _ := peerKey(2)
 
 	events := s.setLocalConnected(peerID, true)
 	require.Len(t, events, 1)
@@ -102,13 +84,10 @@ func TestSetLocalConnectedConnect(t *testing.T) {
 }
 
 func TestSetLocalConnectedDisconnect(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
-	peerPub := make([]byte, 32)
-	peerPub[0] = 2
-	peerID := types.PeerKeyFromBytes(peerPub)
+	peerID, _ := peerKey(2)
 
 	s.setLocalConnected(peerID, true)
 	events := s.setLocalConnected(peerID, false)
@@ -118,58 +97,37 @@ func TestSetLocalConnectedDisconnect(t *testing.T) {
 
 // --- Apply event tests ---
 
-func TestApplyEventSingleAttribute(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+func TestApplyEventObservedAddress(t *testing.T) {
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	peerPK, peerIDStr := peerKey(2)
 
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  peerIDStr,
 		Counter: 3,
-		Change: &statev1.GossipEvent_ExternalPort{
-			ExternalPort: &statev1.ExternalPortChange{ExternalPort: 45000},
+		Change: &statev1.GossipEvent_ObservedAddress{
+			ObservedAddress: &statev1.ObservedAddressChange{Port: 45000, Ip: "52.204.52.130"},
 		},
 	})
 
 	rec := s.nodes[peerPK]
 	require.Equal(t, uint32(45000), rec.ExternalPort)
-	require.Equal(t, uint64(3), rec.maxCounter)
-}
-
-func TestApplyEventObservedExternalIP(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
-
-	peerPK, peerIDStr := peerKey(2)
-
-	s.applyEvent(&statev1.GossipEvent{
-		PeerId:  peerIDStr,
-		Counter: 3,
-		Change: &statev1.GossipEvent_ObservedExternalIp{
-			ObservedExternalIp: &statev1.ObservedExternalIPChange{Ip: "52.204.52.130"},
-		},
-	})
-
-	rec := s.nodes[peerPK]
 	require.Equal(t, "52.204.52.130", rec.ObservedExternalIP)
 	require.Equal(t, uint64(3), rec.maxCounter)
 }
 
 func TestApplyEventPerKeyCounter(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, peerIDStr := peerKey(2)
 
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  peerIDStr,
 		Counter: 3,
-		Change: &statev1.GossipEvent_ExternalPort{
-			ExternalPort: &statev1.ExternalPortChange{ExternalPort: 45000},
+		Change: &statev1.GossipEvent_ObservedAddress{
+			ObservedAddress: &statev1.ObservedAddressChange{Port: 45000},
 		},
 	})
 
@@ -177,8 +135,8 @@ func TestApplyEventPerKeyCounter(t *testing.T) {
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  peerIDStr,
 		Counter: 2,
-		Change: &statev1.GossipEvent_ExternalPort{
-			ExternalPort: &statev1.ExternalPortChange{ExternalPort: 44000},
+		Change: &statev1.GossipEvent_ObservedAddress{
+			ObservedAddress: &statev1.ObservedAddressChange{Port: 44000},
 		},
 	})
 
@@ -187,17 +145,16 @@ func TestApplyEventPerKeyCounter(t *testing.T) {
 }
 
 func TestApplyEventDifferentKeys(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, peerIDStr := peerKey(2)
 
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  peerIDStr,
 		Counter: 5,
-		Change: &statev1.GossipEvent_ExternalPort{
-			ExternalPort: &statev1.ExternalPortChange{ExternalPort: 45000},
+		Change: &statev1.GossipEvent_ObservedAddress{
+			ObservedAddress: &statev1.ObservedAddressChange{Port: 45000},
 		},
 	})
 
@@ -217,9 +174,8 @@ func TestApplyEventDifferentKeys(t *testing.T) {
 }
 
 func TestApplyEventDeletion(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, peerIDStr := peerKey(2)
 
@@ -245,9 +201,8 @@ func TestApplyEventDeletion(t *testing.T) {
 }
 
 func TestApplyEventTombstonePreventResurrection(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, peerIDStr := peerKey(2)
 
@@ -273,9 +228,8 @@ func TestApplyEventTombstonePreventResurrection(t *testing.T) {
 }
 
 func TestApplyEventNetworkUpdate(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -295,30 +249,27 @@ func TestApplyEventNetworkUpdate(t *testing.T) {
 	require.Equal(t, uint32(7000), rec.LocalPort)
 }
 
-func TestApplyEventIdentityPub(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+func TestApplyEventCertExpiry(t *testing.T) {
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	peerPK, peerIDStr := peerKey(2)
-	idPub := make([]byte, 32)
-	idPub[0] = 2
+	expiry := time.Now().Add(time.Hour).Unix()
 
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId:  peerIDStr,
 		Counter: 1,
-		Change: &statev1.GossipEvent_IdentityPub{
-			IdentityPub: &statev1.IdentityChange{IdentityPub: idPub},
+		Change: &statev1.GossipEvent_CertExpiry{
+			CertExpiry: &statev1.CertExpiryChange{ExpiryUnix: expiry},
 		},
 	})
 
-	require.Equal(t, byte(2), s.nodes[peerPK].IdentityPub[0])
+	require.Equal(t, expiry, s.nodes[peerPK].CertExpiry)
 }
 
 func TestApplyEventReachablePeer(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	peerPK, peerIDStr := peerKey(2)
 	targetPK, _ := peerKey(3)
@@ -346,10 +297,9 @@ func TestApplyEventReachablePeer(t *testing.T) {
 // --- Self-state conflict ---
 
 func TestApplyEventSelfStateConflict(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
-	localID := s.LocalID
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
+	localID := s.localID
 
 	s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
 
@@ -363,18 +313,17 @@ func TestApplyEventSelfStateConflict(t *testing.T) {
 
 	require.NotEmpty(t, result.rebroadcast)
 	// Adopted 10, then bumped once per attribute.
-	require.Equal(t, uint64(18), s.nodes[localID].maxCounter)
+	require.Equal(t, uint64(16), s.nodes[localID].maxCounter)
 }
 
 func TestApplyEventSelfStateNoConflict(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
 
 	result := s.applyEvent(&statev1.GossipEvent{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: 2,
 		Change: &statev1.GossipEvent_Network{
 			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000},
@@ -387,82 +336,73 @@ func TestApplyEventSelfStateNoConflict(t *testing.T) {
 // --- MissingFor / digest tests ---
 
 func TestMissingForReturnsEvents(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
-	s.setExternalPort(45000)
+	s.setObservedAddress("", 45000)
 
-	events := s.missingFor(&statev1.GossipStateDigest{
+	events := s.missingFor(&statev1.Digest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
+			s.localID.String(): {MaxCounter: 0, StateHash: 0},
 		},
 	})
-	require.Len(t, events, 8)
+	require.Len(t, events, 6)
 }
 
-func TestMissingForRespectsClock(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+func TestMissingForRespectsDigest(t *testing.T) {
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
-	s.setExternalPort(45000)
+	s.setObservedAddress("", 45000)
 
-	digest := s.clock()
-	localDigest := digest.GetPeers()[s.LocalID.String()]
-	events := s.missingFor(&statev1.GossipStateDigest{
+	events := s.missingFor(&statev1.Digest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 7, StateHash: localDigest.GetStateHash()},
+			s.localID.String(): {MaxCounter: 5},
 		},
 	})
+	// Counter ahead → delta: only events above counter 5.
 	require.Len(t, events, 2)
-	require.NotNil(t, events[0].GetNetwork())
-	require.Equal(t, uint32(45000), events[1].GetExternalPort().GetExternalPort())
 }
 
 func TestMissingForReturnsNilForUpToDate(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
 
-	events := s.missingFor(s.clock())
+	events := s.missingFor(s.testDigest())
 	require.Empty(t, events)
 }
 
-func TestClockUsesMaxCounter(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+func TestDigestUsesMaxCounter(t *testing.T) {
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
-	s.setExternalPort(45000)
+	s.setObservedAddress("", 45000)
 
-	digest := s.clock()
-	require.Equal(t, uint64(9), digest.GetPeers()[s.LocalID.String()].GetMaxCounter())
+	digest := s.testDigest()
+	require.Equal(t, uint64(7), digest.GetPeers()[s.localID.String()].GetMaxCounter())
 }
 
 // --- Service tests ---
 
 func TestUpsertLocalServiceReturnsEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	events := s.upsertLocalService(8080, "http")
 	require.Len(t, events, 1)
 	sc := events[0].GetService()
 	require.Equal(t, "http", sc.GetName())
-	require.Equal(t, uint32(8080), sc.GetPort())
+	require.Equal(t, uint32(8080), sc.Port)
 }
 
 func TestRemoveLocalServiceReturnsEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.upsertLocalService(8080, "http")
 	events := s.removeLocalService("http")
@@ -472,9 +412,8 @@ func TestRemoveLocalServiceReturnsEvent(t *testing.T) {
 }
 
 func TestRemoveLocalServiceNoOpWhenMissing(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	events := s.removeLocalService("http")
 	require.Nil(t, events)
@@ -483,9 +422,8 @@ func TestRemoveLocalServiceNoOpWhenMissing(t *testing.T) {
 // --- Publicly accessible tests ---
 
 func TestSetLocalPubliclyAccessibleReturnsEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	events := s.setLocalPubliclyAccessible(true)
 	require.Len(t, events, 1)
@@ -494,9 +432,8 @@ func TestSetLocalPubliclyAccessibleReturnsEvent(t *testing.T) {
 }
 
 func TestSetLocalPubliclyAccessibleNoOpWhenUnchanged(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalPubliclyAccessible(true)
 	events := s.setLocalPubliclyAccessible(true)
@@ -504,21 +441,19 @@ func TestSetLocalPubliclyAccessibleNoOpWhenUnchanged(t *testing.T) {
 }
 
 func TestSetLocalPubliclyAccessibleClear(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalPubliclyAccessible(true)
 	events := s.setLocalPubliclyAccessible(false)
 	require.Len(t, events, 1)
 	require.True(t, events[0].GetDeleted())
-	require.False(t, s.Snapshot().Nodes[s.LocalID].PubliclyAccessible)
+	require.False(t, s.Snapshot().Nodes[s.localID].PubliclyAccessible)
 }
 
 func TestApplyPubliclyAccessibleFromPeer(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -543,15 +478,14 @@ func TestApplyPubliclyAccessibleFromPeer(t *testing.T) {
 }
 
 func TestPubliclyAccessibleRoundTrip(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalPubliclyAccessible(true)
 
-	missing := s.missingFor(&statev1.GossipStateDigest{
+	missing := s.missingFor(&statev1.Digest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
+			s.localID.String(): {MaxCounter: 0, StateHash: 0},
 		},
 	})
 
@@ -566,14 +500,13 @@ func TestPubliclyAccessibleRoundTrip(t *testing.T) {
 }
 
 func TestPubliclyAccessibleConflictRecovery(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalPubliclyAccessible(true)
 
 	result := s.applyEvent(&statev1.GossipEvent{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: 100,
 		Change: &statev1.GossipEvent_PubliclyAccessible{
 			PubliclyAccessible: &statev1.PubliclyAccessibleChange{},
@@ -592,21 +525,15 @@ func TestPubliclyAccessibleConflictRecovery(t *testing.T) {
 }
 
 func TestFreshStoreGossipsPubliclyAccessibleDeletion(t *testing.T) {
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
+	pk := genKey(t)
+	s := New(pk)
 
-	s := New(types.PeerKeyFromBytes(pub))
-
-	missing := s.missingFor(&statev1.GossipStateDigest{
-		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 0, StateHash: 0},
-		},
-	})
+	var batch statev1.GossipEventBatch
+	require.NoError(t, batch.UnmarshalVT(s.EncodeFull()))
 
 	var found bool
-	for _, ev := range missing {
+	for _, ev := range batch.GetEvents() {
 		if ev.GetPubliclyAccessible() != nil && ev.GetDeleted() {
-			require.Equal(t, uint64(2), ev.GetCounter())
 			found = true
 			break
 		}
@@ -617,47 +544,40 @@ func TestFreshStoreGossipsPubliclyAccessibleDeletion(t *testing.T) {
 // --- Deny tests ---
 
 func TestDenyPeerAndIsDenied(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
-	subjectPub := make([]byte, 32)
-	subjectPub[0] = 0x42
-	subjectKey := types.PeerKeyFromBytes(subjectPub)
+	subjectKey, _ := peerKey(0x42)
 
 	require.NotContains(t, s.Snapshot().DeniedPeers(), subjectKey)
 
-	events := s.denyPeerRaw(subjectPub)
+	events := s.denyPeerRaw(subjectKey[:])
 	require.Len(t, events, 1)
 	require.Contains(t, s.Snapshot().DeniedPeers(), subjectKey)
 
-	events = s.denyPeerRaw(subjectPub)
+	events = s.denyPeerRaw(subjectKey[:])
 	require.Nil(t, events)
 }
 
 func TestDeniedPeersExcludedFromSnapshot(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
-	peerPub := make([]byte, 32)
-	peerPub[0] = 0x02
-	peerKey := types.PeerKeyFromBytes(peerPub)
+	remotePK, remotePKStr := peerKey(0x02)
 
 	s.applyEvents([]*statev1.GossipEvent{
-		{PeerId: peerKey.String(), Counter: 1, Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 1234}}},
-		{PeerId: peerKey.String(), Counter: 2, Change: &statev1.GossipEvent_IdentityPub{IdentityPub: &statev1.IdentityChange{IdentityPub: peerPub, CertExpiryUnix: time.Now().Add(time.Hour).Unix()}}},
+		{PeerId: remotePKStr, Counter: 1, Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 1234}}},
+		{PeerId: remotePKStr, Counter: 2, Change: &statev1.GossipEvent_CertExpiry{CertExpiry: &statev1.CertExpiryChange{ExpiryUnix: time.Now().Add(time.Hour).Unix()}}},
 	})
-	require.Contains(t, s.Snapshot().Nodes, peerKey)
+	require.Contains(t, s.Snapshot().Nodes, remotePK)
 
-	s.denyPeerRaw(peerPub)
-	require.NotContains(t, s.Snapshot().Nodes, peerKey)
+	s.denyPeerRaw(remotePK[:])
+	require.NotContains(t, s.Snapshot().Nodes, remotePK)
 }
 
 func TestExpiredPeersExcludedFromSnapshot(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	pk2, peerIDStr := peerKey(2)
 	pk3, peer3IDStr := peerKey(3)
@@ -670,7 +590,7 @@ func TestExpiredPeersExcludedFromSnapshot(t *testing.T) {
 	})
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId: peerIDStr, Counter: 2,
-		Change: &statev1.GossipEvent_IdentityPub{IdentityPub: &statev1.IdentityChange{IdentityPub: make([]byte, 32), CertExpiryUnix: pastExpiry}},
+		Change: &statev1.GossipEvent_CertExpiry{CertExpiry: &statev1.CertExpiryChange{ExpiryUnix: pastExpiry}},
 	})
 
 	futureExpiry := time.Now().Add(24 * time.Hour).Unix()
@@ -680,7 +600,7 @@ func TestExpiredPeersExcludedFromSnapshot(t *testing.T) {
 	})
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId: peer3IDStr, Counter: 2,
-		Change: &statev1.GossipEvent_IdentityPub{IdentityPub: &statev1.IdentityChange{IdentityPub: make([]byte, 32), CertExpiryUnix: futureExpiry}},
+		Change: &statev1.GossipEvent_CertExpiry{CertExpiry: &statev1.CertExpiryChange{ExpiryUnix: futureExpiry}},
 	})
 
 	s.applyEvent(&statev1.GossipEvent{
@@ -695,9 +615,8 @@ func TestExpiredPeersExcludedFromSnapshot(t *testing.T) {
 }
 
 func TestDenyEventEmittedOnGossipReceipt(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, senderPKStr := peerKey(2)
 	subjectPK, _ := peerKey(3)
@@ -706,7 +625,7 @@ func TestDenyEventEmittedOnGossipReceipt(t *testing.T) {
 		PeerId:  senderPKStr,
 		Counter: 1,
 		Change: &statev1.GossipEvent_Deny{
-			Deny: &statev1.DenyChange{SubjectPub: subjectPK[:]},
+			Deny: &statev1.DenyChange{PeerPub: subjectPK[:]},
 		},
 	})
 
@@ -716,9 +635,8 @@ func TestDenyEventEmittedOnGossipReceipt(t *testing.T) {
 }
 
 func TestNoDenyEventForAlreadyDenied(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	subjectPK, _ := peerKey(3)
 	s.denyPeerRaw(subjectPK[:])
@@ -728,7 +646,7 @@ func TestNoDenyEventForAlreadyDenied(t *testing.T) {
 		PeerId:  senderPKStr,
 		Counter: 1,
 		Change: &statev1.GossipEvent_Deny{
-			Deny: &statev1.DenyChange{SubjectPub: subjectPK[:]},
+			Deny: &statev1.DenyChange{PeerPub: subjectPK[:]},
 		},
 	})
 	require.Empty(t, result.deniedPeers)
@@ -737,39 +655,37 @@ func TestNoDenyEventForAlreadyDenied(t *testing.T) {
 // --- Vivaldi tests ---
 
 func TestSetLocalVivaldiCoordReturnsEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	coord := coords.Coord{X: 10.5, Y: -3.2, Height: 0.001}
-	events := s.setLocalVivaldiCoord(coord)
+	events := s.setLocalVivaldiCoord(coord, 0.5)
 	require.Len(t, events, 1)
 	require.False(t, events[0].GetDeleted())
 	v := events[0].GetVivaldi()
 	require.Equal(t, 10.5, v.GetX())
 	require.Equal(t, -3.2, v.GetY())
 	require.Equal(t, 0.001, v.GetHeight())
+	require.Equal(t, 0.5, v.GetError())
 }
 
 func TestSetLocalVivaldiCoordEpsilonSuppression(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	coord := coords.Coord{X: 10.5, Y: -3.2, Height: 0.001}
-	s.setLocalVivaldiCoord(coord)
+	s.setLocalVivaldiCoord(coord, 0.5)
 
-	events := s.setLocalVivaldiCoord(coords.Coord{X: 10.5001, Y: -3.2, Height: 0.001})
+	events := s.setLocalVivaldiCoord(coords.Coord{X: 10.5001, Y: -3.2, Height: 0.001}, 0.5)
 	require.Nil(t, events)
 
-	events = s.setLocalVivaldiCoord(coords.Coord{X: 20.0, Y: -3.2, Height: 0.001})
+	events = s.setLocalVivaldiCoord(coords.Coord{X: 20.0, Y: -3.2, Height: 0.001}, 0.5)
 	require.Len(t, events, 1)
 }
 
 func TestApplyVivaldiFromPeer(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -787,9 +703,8 @@ func TestApplyVivaldiFromPeer(t *testing.T) {
 }
 
 func TestApplyVivaldiDeletionClearsToNil(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, peerIDStr := peerKey(2)
 
@@ -809,9 +724,8 @@ func TestApplyVivaldiDeletionClearsToNil(t *testing.T) {
 // --- Rebroadcast tests ---
 
 func TestApplyRemoteEventRebroadcast(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, peerIDStr := peerKey(2)
 
@@ -827,9 +741,8 @@ func TestApplyRemoteEventRebroadcast(t *testing.T) {
 }
 
 func TestApplyStaleRemoteEventNoRebroadcast(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, peerIDStr := peerKey(2)
 
@@ -848,8 +761,8 @@ func TestApplyStaleRemoteEventNoRebroadcast(t *testing.T) {
 // --- Resource telemetry tests ---
 
 func TestResourceTelemetryDeadbandTest(t *testing.T) {
-	pub, _, _ := ed25519.GenerateKey(rand.Reader)
-	s := newTestStore(pub)
+	pk := genKey(t)
+	s := newTestStore(pk)
 
 	events := s.setLocalResourceTelemetry(10, 20, 1<<30, 4)
 	require.Len(t, events, 1)
@@ -873,9 +786,8 @@ func TestResourceTelemetryDeadbandTest(t *testing.T) {
 // --- Watermark tests ---
 
 func TestWatermarkAlwaysAdvances(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	peerPK, peerIDStr := peerKey(2)
 
@@ -883,67 +795,80 @@ func TestWatermarkAlwaysAdvances(t *testing.T) {
 		PeerId: peerIDStr, Counter: 5,
 		Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000}},
 	}})
-	require.Equal(t, uint64(5), s.clock().GetPeers()[peerPK.String()].GetMaxCounter())
+	require.Equal(t, uint64(5), s.testDigest().GetPeers()[peerPK.String()].GetMaxCounter())
 
 	s.applyEvents([]*statev1.GossipEvent{{
 		PeerId: peerIDStr, Counter: 10,
 		Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.1"}, LocalPort: 9000}},
 	}})
-	require.Equal(t, uint64(10), s.clock().GetPeers()[peerPK.String()].GetMaxCounter())
+	require.Equal(t, uint64(10), s.testDigest().GetPeers()[peerPK.String()].GetMaxCounter())
 }
 
 // --- Peer hash tests ---
 
 func TestPeerHash(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
 
-	d1 := s.clock()
-	d2 := s.clock()
-	h1 := d1.GetPeers()[s.LocalID.String()].GetStateHash()
-	h2 := d2.GetPeers()[s.LocalID.String()].GetStateHash()
+	d1 := s.testDigest()
+	d2 := s.testDigest()
+	h1 := d1.GetPeers()[s.localID.String()].GetStateHash()
+	h2 := d2.GetPeers()[s.localID.String()].GetStateHash()
 	require.Equal(t, h1, h2)
 	require.NotZero(t, h1)
 
-	s.setExternalPort(52000)
-	d3 := s.clock()
-	h3 := d3.GetPeers()[s.LocalID.String()].GetStateHash()
+	s.setObservedAddress("", 52000)
+	d3 := s.testDigest()
+	h3 := d3.GetPeers()[s.localID.String()].GetStateHash()
 	require.NotEqual(t, h1, h3)
 }
 
-func TestDigestHashMismatchSendsAll(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+func TestDigestHashMismatchAtEqualCounterSendsAll(t *testing.T) {
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
-	s.setExternalPort(45000)
+	s.setObservedAddress("", 45000)
 
-	events := s.missingFor(&statev1.GossipStateDigest{
+	digest := s.testDigest()
+	localDigest := digest.GetPeers()[s.localID.String()]
+	events := s.missingFor(&statev1.Digest{
 		Peers: map[string]*statev1.PeerDigest{
-			s.LocalID.String(): {MaxCounter: 100, StateHash: 12345},
+			s.localID.String(): {MaxCounter: localDigest.GetMaxCounter(), StateHash: 12345},
 		},
 	})
-	require.Len(t, events, 8)
+	require.Len(t, events, 6)
 }
 
-func TestDigestMatchSkips(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+func TestDigestRemoteAheadSendsNothing(t *testing.T) {
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
-	events := s.missingFor(s.clock())
+	s.setObservedAddress("", 45000)
+
+	events := s.missingFor(&statev1.Digest{
+		Peers: map[string]*statev1.PeerDigest{
+			s.localID.String(): {MaxCounter: 100, StateHash: 12345},
+		},
+	})
 	require.Empty(t, events)
 }
 
-func TestMissingForPartialClockIncludesUnknownPeers(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+func TestDigestMatchSkips(t *testing.T) {
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
+
+	s.setLocalNetwork([]string{"10.0.0.1"}, 9000)
+	events := s.missingFor(s.testDigest())
+	require.Empty(t, events)
+}
+
+func TestMissingForPartialDigestIncludesUnknownPeers(t *testing.T) {
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	pkA, strA := peerKey(2)
 	pkB, strB := peerKey(3)
@@ -963,7 +888,7 @@ func TestMissingForPartialClockIncludesUnknownPeers(t *testing.T) {
 		})
 	}
 
-	events := s.missingFor(&statev1.GossipStateDigest{
+	events := s.missingFor(&statev1.Digest{
 		Peers: map[string]*statev1.PeerDigest{
 			pkA.String(): {MaxCounter: 0, StateHash: 0},
 		},
@@ -978,10 +903,9 @@ func TestMissingForPartialClockIncludesUnknownPeers(t *testing.T) {
 	require.Contains(t, peerIDs, pkC.String())
 }
 
-func TestMissingForNilClockSendsEverything(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+func TestMissingForNilDigestSendsEverything(t *testing.T) {
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, strA := peerKey(2)
 	_, strB := peerKey(3)
@@ -999,7 +923,7 @@ func TestMissingForNilClockSendsEverything(t *testing.T) {
 	for _, ev := range events {
 		peerIDs[ev.GetPeerId()] = struct{}{}
 	}
-	require.Contains(t, peerIDs, s.LocalID.String())
+	require.Contains(t, peerIDs, s.localID.String())
 	require.Contains(t, peerIDs, strA)
 	require.Contains(t, peerIDs, strB)
 }
@@ -1007,9 +931,8 @@ func TestMissingForNilClockSendsEverything(t *testing.T) {
 // --- Workload tests ---
 
 func TestWorkloadSpecRoundTrip(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	events, err := s.setLocalWorkloadSpec("abc123", 2, 16, 0)
 	require.NoError(t, err)
@@ -1019,7 +942,7 @@ func TestWorkloadSpecRoundTrip(t *testing.T) {
 	require.Len(t, specs, 1)
 	sv := specs["abc123"]
 	require.Equal(t, uint32(2), sv.Spec.GetReplicas())
-	require.Equal(t, s.LocalID, sv.Publisher)
+	require.Equal(t, s.localID, sv.Publisher)
 
 	events2, err := s.setLocalWorkloadSpec("abc123", 2, 16, 0)
 	require.NoError(t, err)
@@ -1035,14 +958,13 @@ func TestWorkloadSpecRoundTrip(t *testing.T) {
 }
 
 func TestWorkloadClaimRoundTrip(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	events := s.setLocalWorkloadClaim("abc123", true)
 	require.Len(t, events, 1)
 	require.False(t, events[0].GetDeleted())
-	require.Contains(t, s.Snapshot().Claims["abc123"], s.LocalID)
+	require.Contains(t, s.Snapshot().Claims["abc123"], s.localID)
 
 	events2 := s.setLocalWorkloadClaim("abc123", true)
 	require.Nil(t, events2)
@@ -1054,9 +976,8 @@ func TestWorkloadClaimRoundTrip(t *testing.T) {
 }
 
 func TestWorkloadGossipApply(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, remotePeerStr := peerKey(2)
 	remotePK, _ := peerKey(2)
@@ -1083,9 +1004,8 @@ func TestWorkloadGossipApply(t *testing.T) {
 }
 
 func TestWorkloadChangedEventEmitted(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, remotePeerStr := peerKey(2)
 
@@ -1103,9 +1023,8 @@ func TestWorkloadChangedEventEmitted(t *testing.T) {
 }
 
 func TestReachabilityChangeEmitsWorkloadEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, remotePeerStr := peerKey(2)
 	_, targetPeerStr := peerKey(3)
@@ -1118,9 +1037,8 @@ func TestReachabilityChangeEmitsWorkloadEvent(t *testing.T) {
 }
 
 func TestVivaldiChangeDoesNotEmitWorkloadEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, remotePeerStr := peerKey(2)
 
@@ -1132,9 +1050,8 @@ func TestVivaldiChangeDoesNotEmitWorkloadEvent(t *testing.T) {
 }
 
 func TestAllWorkloadSpecs_DuplicatePublishers_LowestPeerKeyWins(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 5
-	s := newTestStore(pub)
+	pk, _ := peerKey(5)
+	s := newTestStore(pk)
 
 	_, err := s.setLocalWorkloadSpec("shared", 1, 0, 0)
 	require.NoError(t, err)
@@ -1158,9 +1075,8 @@ func TestAllWorkloadSpecs_DuplicatePublishers_LowestPeerKeyWins(t *testing.T) {
 }
 
 func TestSetLocalWorkloadSpec_RejectsWhenRemoteOwns(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, remotePeerStr := peerKey(2)
 	s.applyEvent(&statev1.GossipEvent{
@@ -1174,9 +1090,8 @@ func TestSetLocalWorkloadSpec_RejectsWhenRemoteOwns(t *testing.T) {
 }
 
 func TestRemoteSpec_TombstonesLosingLocalSpec(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 9
-	s := newTestStore(pub)
+	pk, _ := peerKey(9)
+	s := newTestStore(pk)
 
 	events, err := s.setLocalWorkloadSpec("contested", 3, 0, 0)
 	require.NoError(t, err)
@@ -1197,9 +1112,8 @@ func TestRemoteSpec_TombstonesLosingLocalSpec(t *testing.T) {
 }
 
 func TestRemoteSpec_NoTombstoneWhenLocalWins(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	_, err := s.setLocalWorkloadSpec("mine", 3, 0, 0)
 	require.NoError(t, err)
@@ -1211,13 +1125,12 @@ func TestRemoteSpec_NoTombstoneWhenLocalWins(t *testing.T) {
 	})
 
 	require.Len(t, result.rebroadcast, 1)
-	require.Equal(t, s.LocalID, s.Snapshot().Specs["mine"].Publisher)
+	require.Equal(t, s.localID, s.Snapshot().Specs["mine"].Publisher)
 }
 
 func TestRemoteSpec_NoTombstoneWhenRemoteDenied(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 9
-	s := newTestStore(pub)
+	pk, _ := peerKey(9)
+	s := newTestStore(pk)
 
 	_, err := s.setLocalWorkloadSpec("contested", 3, 0, 0)
 	require.NoError(t, err)
@@ -1231,13 +1144,12 @@ func TestRemoteSpec_NoTombstoneWhenRemoteDenied(t *testing.T) {
 	})
 
 	require.Len(t, result.rebroadcast, 1)
-	require.Equal(t, s.LocalID, s.Snapshot().Specs["contested"].Publisher)
+	require.Equal(t, s.localID, s.Snapshot().Specs["contested"].Publisher)
 }
 
 func TestRemoteSpec_NoTombstoneWhenRemoteExpired(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 9
-	s := newTestStore(pub)
+	pk, _ := peerKey(9)
+	s := newTestStore(pk)
 
 	_, err := s.setLocalWorkloadSpec("contested", 3, 0, 0)
 	require.NoError(t, err)
@@ -1246,7 +1158,7 @@ func TestRemoteSpec_NoTombstoneWhenRemoteExpired(t *testing.T) {
 	pastExpiry := time.Now().Add(-time.Hour).Unix()
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId: expiredStr, Counter: 1,
-		Change: &statev1.GossipEvent_IdentityPub{IdentityPub: &statev1.IdentityChange{IdentityPub: make([]byte, 32), CertExpiryUnix: pastExpiry}},
+		Change: &statev1.GossipEvent_CertExpiry{CertExpiry: &statev1.CertExpiryChange{ExpiryUnix: pastExpiry}},
 	})
 
 	result := s.applyEvent(&statev1.GossipEvent{
@@ -1255,13 +1167,12 @@ func TestRemoteSpec_NoTombstoneWhenRemoteExpired(t *testing.T) {
 	})
 
 	require.Len(t, result.rebroadcast, 1)
-	require.Equal(t, s.LocalID, s.Snapshot().Specs["contested"].Publisher)
+	require.Equal(t, s.localID, s.Snapshot().Specs["contested"].Publisher)
 }
 
 func TestWorkloadQueries_ExcludeDeniedNodes(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	deniedPK, deniedStr := peerKey(2)
 	s.setLocalConnected(deniedPK, true)
@@ -1285,9 +1196,8 @@ func TestWorkloadQueries_ExcludeDeniedNodes(t *testing.T) {
 }
 
 func TestAllWorkloadClaims_ExcludesUnreachableNodes(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	remotePK, remoteStr := peerKey(2)
 
@@ -1302,13 +1212,12 @@ func TestAllWorkloadClaims_ExcludesUnreachableNodes(t *testing.T) {
 	require.Empty(t, s.Snapshot().Claims)
 
 	s.setLocalWorkloadClaim("wl2", true)
-	require.Contains(t, s.Snapshot().Claims["wl2"], s.LocalID)
+	require.Contains(t, s.Snapshot().Claims["wl2"], s.localID)
 }
 
 func TestAllWorkloadClaims_RackFailureIgnoresStaleObservers(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	pkB, strB := peerKey(2)
 	pkC, strC := peerKey(3)
@@ -1332,9 +1241,8 @@ func TestAllWorkloadClaims_RackFailureIgnoresStaleObservers(t *testing.T) {
 }
 
 func TestAllWorkloadClaims_MultiHopReachability(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	pkB, strB := peerKey(2)
 	_, strC := peerKey(3)
@@ -1364,7 +1272,7 @@ func TestTrafficHeatmap_ApplyAndQuery(t *testing.T) {
 	localPK, localIDStr := peerKey(1)
 	remotePK, remotePKStr := peerKey(2)
 
-	s := newTestStore([]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+	s := newTestStore(localPK)
 
 	s.applyEvent(&statev1.GossipEvent{
 		PeerId: remotePKStr, Counter: 1,
@@ -1380,37 +1288,63 @@ func TestTrafficHeatmap_ApplyAndQuery(t *testing.T) {
 	require.Equal(t, TrafficSnapshot{BytesIn: 100, BytesOut: 200}, all[remotePK][localPK])
 }
 
-func TestExternalPort_TombstoneOnRestart(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
+func TestObservedAddress_TombstoneOnRestart(t *testing.T) {
+	pk, _ := peerKey(1)
 
-	// First "lifetime": node sets an external port and captures its full state.
-	s1 := newTestStore(pub)
-	s1.setExternalPort(45678)
-	staleState := s1.FullState()
+	// First "lifetime": node sets an observed address and captures its full state.
+	s1 := newTestStore(pk)
+	s1.setObservedAddress("52.204.52.130", 45678)
+	staleState := s1.EncodeFull()
 
 	// Simulate restart: fresh store for the same peer key.
-	s2 := newTestStore(pub)
-	require.Equal(t, uint32(0), s2.Snapshot().Nodes[s2.LocalID].ExternalPort)
+	s2 := newTestStore(pk)
+	require.Equal(t, uint32(0), s2.Snapshot().Nodes[s2.localID].ExternalPort)
 
 	// A peer gossips the pre-restart state back. handleSelfConflictLocked
 	// detects the higher counter, bumps all local log entries (including
-	// tombstones), and rebroadcasts. Self-events for ExternalPort are NOT
+	// tombstones), and rebroadcasts. Self-events for ObservedAddress are NOT
 	// applied to the local record, so the value must stay zero.
-	_, _, err := s2.ApplyDelta(s2.LocalID, staleState)
+	_, _, err := s2.ApplyDelta(s2.localID, staleState)
 	require.NoError(t, err)
-	require.Equal(t, uint32(0), s2.Snapshot().Nodes[s2.LocalID].ExternalPort,
-		"stale ExternalPort must not survive a restart")
+	require.Equal(t, uint32(0), s2.Snapshot().Nodes[s2.localID].ExternalPort,
+		"stale ObservedAddress must not survive a restart")
 
 	// The tombstone must now have a counter higher than the stale value,
 	// ensuring peers also clear the stale attribute.
-	entry := s2.nodes[s2.LocalID].log[attrKey{kind: attrExternalPort}]
+	entry := s2.nodes[s2.localID].log[attrKey{kind: attrObservedAddress}]
+	require.True(t, entry.Deleted)
+}
+
+func TestReachability_TombstoneOnRestart(t *testing.T) {
+	pk, _ := peerKey(1)
+
+	s1 := newTestStore(pk)
+	targetPK, _ := peerKey(2)
+	s1.setLocalConnected(targetPK, true)
+	require.Contains(t, s1.Snapshot().Nodes[s1.localID].Reachable, targetPK)
+
+	staleState := s1.EncodeFull()
+
+	// Simulate restart: fresh store has no reachability.
+	s2 := newTestStore(pk)
+	require.Empty(t, s2.Snapshot().Nodes[s2.localID].Reachable)
+
+	// Peer gossips pre-restart state back. handleSelfConflictLocked bumps
+	// counters so the tombstone from tombstoneStaleAttrs wins.
+	_, _, err := s2.ApplyDelta(s2.localID, staleState)
+	require.NoError(t, err)
+	require.Empty(t, s2.Snapshot().Nodes[s2.localID].Reachable,
+		"stale reachability must not survive a restart")
+
+	key := attrKey{kind: attrReachability, peer: targetPK}
+	entry, ok := s2.nodes[s2.localID].log[key]
+	require.True(t, ok, "tombstone entry must exist for stale reachability")
 	require.True(t, entry.Deleted)
 }
 
 func TestTrafficHeatmap_TombstoneOnRestart(t *testing.T) {
-	pub := []byte{3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	s := newTestStore(pub)
+	pk, _ := peerKey(3)
+	s := newTestStore(pk)
 
 	targetPK, _ := peerKey(4)
 	events := s.setLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{
@@ -1418,7 +1352,7 @@ func TestTrafficHeatmap_TombstoneOnRestart(t *testing.T) {
 	})
 	require.Len(t, events, 1)
 
-	localID := types.PeerKeyFromBytes(pub)
+	localID := pk
 	require.Equal(t, TrafficSnapshot{BytesIn: 500, BytesOut: 600}, s.Snapshot().Heatmaps[localID][targetPK])
 
 	local := s.nodes[localID]
@@ -1430,8 +1364,8 @@ func TestTrafficHeatmap_TombstoneOnRestart(t *testing.T) {
 }
 
 func TestTrafficHeatmap_ZeroSnapshotSkipped(t *testing.T) {
-	pub := []byte{5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	s := newTestStore(pub)
+	pk, _ := peerKey(5)
+	s := newTestStore(pk)
 
 	events := s.setLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{})
 	require.Empty(t, events)
@@ -1443,9 +1377,9 @@ func TestTrafficHeatmap_ZeroSnapshotSkipped(t *testing.T) {
 }
 
 func TestTrafficHeatmap_StaleClearing(t *testing.T) {
-	pub := []byte{7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	s := newTestStore(pub)
-	localID := types.PeerKeyFromBytes(pub)
+	pk, _ := peerKey(7)
+	s := newTestStore(pk)
+	localID := pk
 
 	events := s.setLocalTrafficHeatmap(map[types.PeerKey]TrafficSnapshot{
 		{8}: {BytesIn: 100, BytesOut: 200},
@@ -1469,24 +1403,21 @@ func TestTrafficHeatmap_StaleClearing(t *testing.T) {
 // full gossip round-trip: local mutation → encode → apply on remote → snapshot.
 
 func TestGossipRoundTrip_AllAttributes(t *testing.T) {
-	pubA := make([]byte, 32)
-	pubA[0] = 1
-	storeA := newTestStore(pubA)
+	pkA, _ := peerKey(1)
+	storeA := newTestStore(pkA)
 
-	pubB := make([]byte, 32)
-	pubB[0] = 2
-	storeB := newTestStore(pubB)
+	pkB, _ := peerKey(2)
+	storeB := newTestStore(pkB)
 
 	peerC, _ := peerKey(3)
 
 	// Set every attribute type on store A.
 	storeA.setLocalNetwork([]string{"10.0.0.1", "192.168.1.1"}, 9000)
-	storeA.setExternalPort(45000)
-	storeA.setObservedExternalIP("52.204.52.130")
+	storeA.setObservedAddress("52.204.52.130", 45000)
 	storeA.upsertLocalService(8080, "http")
 	storeA.setLocalConnected(peerC, true)
 	storeA.setLocalPubliclyAccessible(true)
-	storeA.setLocalVivaldiCoord(coords.Coord{X: 10.5, Y: -3.2, Height: 0.001})
+	storeA.setLocalVivaldiCoord(coords.Coord{X: 10.5, Y: -3.2, Height: 0.001}, 0.5)
 	storeA.setLocalNatType(nat.Easy)
 	storeA.setLocalResourceTelemetry(42, 75, 1<<30, 4)
 	_, err := storeA.setLocalWorkloadSpec("abc123", 2, 16, 0)
@@ -1497,15 +1428,15 @@ func TestGossipRoundTrip_AllAttributes(t *testing.T) {
 	})
 
 	// Transfer A's full state to B.
-	fullState := storeA.FullState()
-	_, _, err2 := storeB.ApplyDelta(storeA.LocalID, fullState)
+	fullState := storeA.EncodeFull()
+	_, _, err2 := storeB.ApplyDelta(storeA.localID, fullState)
 	require.NoError(t, err2)
 
 	// Make A reachable from B so claims are in B's live component.
-	storeB.setLocalConnected(storeA.LocalID, true)
+	storeB.setLocalConnected(storeA.localID, true)
 
 	snap := storeB.Snapshot()
-	nodeA := snap.Nodes[storeA.LocalID]
+	nodeA := snap.Nodes[storeA.localID]
 
 	// Network
 	require.Equal(t, []string{"10.0.0.1", "192.168.1.1"}, nodeA.IPs)
@@ -1518,11 +1449,11 @@ func TestGossipRoundTrip_AllAttributes(t *testing.T) {
 	require.Equal(t, "52.204.52.130", nodeA.ObservedExternalIP)
 
 	// Identity (set at construction)
-	require.Equal(t, pubA, nodeA.IdentityPub)
+	require.Equal(t, pkA[:], nodeA.PeerPub)
 
 	// Service
 	require.Contains(t, nodeA.Services, "http")
-	require.Equal(t, uint32(8080), nodeA.Services["http"].GetPort())
+	require.Equal(t, uint32(8080), nodeA.Services["http"].Port)
 
 	// Reachability
 	require.Contains(t, nodeA.Reachable, peerC)
@@ -1547,45 +1478,41 @@ func TestGossipRoundTrip_AllAttributes(t *testing.T) {
 
 	// WorkloadSpec
 	require.Contains(t, snap.Specs, "abc123")
-	require.Equal(t, storeA.LocalID, snap.Specs["abc123"].Publisher)
+	require.Equal(t, storeA.localID, snap.Specs["abc123"].Publisher)
 	require.Equal(t, uint32(2), snap.Specs["abc123"].Spec.GetReplicas())
 
 	// WorkloadClaim (A is in B's live component via setLocalConnected)
 	require.Contains(t, snap.Claims, "abc123")
-	require.Contains(t, snap.Claims["abc123"], storeA.LocalID)
+	require.Contains(t, snap.Claims["abc123"], storeA.localID)
 
 	// TrafficHeatmap
-	require.Contains(t, snap.Heatmaps, storeA.LocalID)
-	require.Equal(t, TrafficSnapshot{BytesIn: 500, BytesOut: 600}, snap.Heatmaps[storeA.LocalID][peerC])
+	require.Contains(t, snap.Heatmaps, storeA.localID)
+	require.Equal(t, TrafficSnapshot{BytesIn: 500, BytesOut: 600}, snap.Heatmaps[storeA.localID][peerC])
 }
 
 func TestGossipRoundTrip_DenyAttribute(t *testing.T) {
-	pubA := make([]byte, 32)
-	pubA[0] = 1
-	storeA := newTestStore(pubA)
+	pkA, _ := peerKey(1)
+	storeA := newTestStore(pkA)
 
-	pubB := make([]byte, 32)
-	pubB[0] = 2
-	storeB := newTestStore(pubB)
+	pkB, _ := peerKey(2)
+	storeB := newTestStore(pkB)
 
 	subjectPK, _ := peerKey(9)
 	storeA.denyPeerRaw(subjectPK[:])
 
-	fullState := storeA.FullState()
-	_, _, err := storeB.ApplyDelta(storeA.LocalID, fullState)
+	fullState := storeA.EncodeFull()
+	_, _, err := storeB.ApplyDelta(storeA.localID, fullState)
 	require.NoError(t, err)
 
 	require.Contains(t, storeB.Snapshot().DeniedPeers(), subjectPK)
 }
 
 func TestGossipRoundTrip_TrafficHeatmap_MultiplePeers(t *testing.T) {
-	pubA := make([]byte, 32)
-	pubA[0] = 1
-	storeA := newTestStore(pubA)
+	pkA, _ := peerKey(1)
+	storeA := newTestStore(pkA)
 
-	pubB := make([]byte, 32)
-	pubB[0] = 2
-	storeB := newTestStore(pubB)
+	pkB, _ := peerKey(2)
+	storeB := newTestStore(pkB)
 
 	peerC, _ := peerKey(3)
 	peerD, _ := peerKey(4)
@@ -1595,11 +1522,11 @@ func TestGossipRoundTrip_TrafficHeatmap_MultiplePeers(t *testing.T) {
 		peerD: {BytesIn: 300, BytesOut: 400},
 	})
 
-	fullState := storeA.FullState()
-	_, _, err := storeB.ApplyDelta(storeA.LocalID, fullState)
+	fullState := storeA.EncodeFull()
+	_, _, err := storeB.ApplyDelta(storeA.localID, fullState)
 	require.NoError(t, err)
 
-	heatmap := storeB.Snapshot().Heatmaps[storeA.LocalID]
+	heatmap := storeB.Snapshot().Heatmaps[storeA.localID]
 	require.Len(t, heatmap, 2)
 	require.Equal(t, TrafficSnapshot{BytesIn: 100, BytesOut: 200}, heatmap[peerC])
 	require.Equal(t, TrafficSnapshot{BytesIn: 300, BytesOut: 400}, heatmap[peerD])
@@ -1609,9 +1536,8 @@ func TestGossipRoundTrip_TrafficHeatmap_MultiplePeers(t *testing.T) {
 // for multiple peers retains all peers' traffic in the heatmap. This exercises the
 // same calling pattern as tunneling.Service.sampleTraffic().
 func TestSetLocalTraffic_MultiplePeers_Retained(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	peerA, _ := peerKey(2)
 	peerB, _ := peerKey(3)
@@ -1622,7 +1548,7 @@ func TestSetLocalTraffic_MultiplePeers_Retained(t *testing.T) {
 	s.SetLocalTraffic(peerC, 500, 600)
 
 	snap := s.Snapshot()
-	heatmap := snap.Heatmaps[s.LocalID]
+	heatmap := snap.Heatmaps[s.localID]
 	require.Len(t, heatmap, 3, "all three peers' traffic must be retained")
 	require.Equal(t, TrafficSnapshot{BytesIn: 100, BytesOut: 200}, heatmap[peerA])
 	require.Equal(t, TrafficSnapshot{BytesIn: 300, BytesOut: 400}, heatmap[peerB])
@@ -1633,13 +1559,11 @@ func TestSetLocalTraffic_MultiplePeers_Retained(t *testing.T) {
 // SetLocalTraffic calls produce gossip events that, when applied on a remote
 // store, reconstruct the complete multi-peer heatmap.
 func TestSetLocalTraffic_MultiplePeers_GossipRoundTrip(t *testing.T) {
-	pubA := make([]byte, 32)
-	pubA[0] = 1
-	storeA := newTestStore(pubA)
+	pkA, _ := peerKey(1)
+	storeA := newTestStore(pkA)
 
-	pubB := make([]byte, 32)
-	pubB[0] = 2
-	storeB := newTestStore(pubB)
+	pkB, _ := peerKey(2)
+	storeB := newTestStore(pkB)
 
 	peerC, _ := peerKey(3)
 	peerD, _ := peerKey(4)
@@ -1647,12 +1571,56 @@ func TestSetLocalTraffic_MultiplePeers_GossipRoundTrip(t *testing.T) {
 	storeA.SetLocalTraffic(peerC, 100, 200)
 	storeA.SetLocalTraffic(peerD, 300, 400)
 
-	fullState := storeA.FullState()
-	_, _, err := storeB.ApplyDelta(storeA.LocalID, fullState)
+	fullState := storeA.EncodeFull()
+	_, _, err := storeB.ApplyDelta(storeA.localID, fullState)
 	require.NoError(t, err)
 
-	heatmap := storeB.Snapshot().Heatmaps[storeA.LocalID]
+	heatmap := storeB.Snapshot().Heatmaps[storeA.localID]
 	require.Len(t, heatmap, 2, "remote must see both peers' traffic")
 	require.Equal(t, TrafficSnapshot{BytesIn: 100, BytesOut: 200}, heatmap[peerC])
 	require.Equal(t, TrafficSnapshot{BytesIn: 300, BytesOut: 400}, heatmap[peerD])
+}
+
+func TestExportLoadLastAddrs(t *testing.T) {
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
+
+	peer2, peer2Str := peerKey(2)
+	peer3, peer3Str := peerKey(3)
+
+	// Register both remote peers via gossip events.
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peer2Str,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9002},
+		},
+	})
+	s.applyEvent(&statev1.GossipEvent{
+		PeerId:  peer3Str,
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.3"}, LocalPort: 9003},
+		},
+	})
+
+	s.SetPeerLastAddr(peer2, "10.0.0.2:9002")
+	s.SetPeerLastAddr(peer3, "10.0.0.3:9003")
+
+	addrs := s.ExportLastAddrs()
+	require.Len(t, addrs, 2)
+	require.Equal(t, "10.0.0.2:9002", addrs[peer2])
+	require.Equal(t, "10.0.0.3:9003", addrs[peer3])
+
+	// Create a fresh store and restore gossip state + last addresses.
+	freshPK, _ := peerKey(1)
+	s2 := newTestStore(freshPK)
+	_, _, err := s2.ApplyDelta(s.localID, s.EncodeFull())
+	require.NoError(t, err)
+
+	s2.LoadLastAddrs(addrs)
+
+	snap := s2.Snapshot()
+	require.Equal(t, "10.0.0.2:9002", snap.Nodes[peer2].LastAddr)
+	require.Equal(t, "10.0.0.3:9003", snap.Nodes[peer3].LastAddr)
 }

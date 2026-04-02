@@ -123,7 +123,7 @@ func raceProviders(ctx context.Context, providers []string) (netip.Addr, error) 
 	ctx, cancel := context.WithTimeout(ctx, publicIPQueryTimeout)
 	defer cancel()
 
-	ch := make(chan netip.Addr, 1)
+	ch := make(chan netip.Addr, len(providers))
 
 	for _, url := range providers {
 		go func() {

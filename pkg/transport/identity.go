@@ -153,8 +153,8 @@ func delegationCertFromConn(qc *quic.Conn) *admissionv1.DelegationCert {
 }
 
 type verifyMeshPeerOpts struct {
-	trustBundle     *admissionv1.TrustBundle
 	expectedPeer    *types.PeerKey
+	rootPub         []byte
 	reconnectWindow time.Duration
 }
 
@@ -191,8 +191,8 @@ func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certif
 		}
 
 		now := time.Now()
-		if err := auth.VerifyDelegationCert(dc, opts.trustBundle, now, peerKey.Bytes()); err != nil {
-			return tryReconnectWindow(dc, opts, now, peerKey, err)
+		if err := auth.VerifyDelegationCert(dc, opts.rootPub, now, peerKey.Bytes()); err != nil {
+			return tryReconnectWindow(dc, opts, now, err)
 		}
 
 		return nil
@@ -201,14 +201,11 @@ func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certif
 
 // tryReconnectWindow checks whether an expired-cert error can be recovered
 // because the cert is crypto-valid and within the reconnect grace period.
-func tryReconnectWindow(dc *admissionv1.DelegationCert, opts verifyMeshPeerOpts, now time.Time, peerKey types.PeerKey, origErr error) error {
+func tryReconnectWindow(dc *admissionv1.DelegationCert, opts verifyMeshPeerOpts, now time.Time, origErr error) error {
 	if opts.reconnectWindow <= 0 || !errors.Is(origErr, auth.ErrCertExpired) {
 		return origErr
 	}
-	if err := auth.VerifyDelegationCertChain(dc, opts.trustBundle, peerKey.Bytes()); err != nil {
-		return err
-	}
-	if !auth.IsCertWithinReconnectWindow(dc, now, opts.reconnectWindow) {
+	if !now.Before(auth.CertExpiresAt(dc).Add(opts.reconnectWindow)) {
 		return origErr
 	}
 	return nil
@@ -224,7 +221,7 @@ func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Ce
 type serverTLSParams struct {
 	meshCertPtr     *atomic.Pointer[tls.Certificate]
 	inviteCert      tls.Certificate
-	trustBundle     *admissionv1.TrustBundle
+	rootPub         []byte
 	reconnectWindow time.Duration
 	inviteEnabled   bool
 }
@@ -238,7 +235,7 @@ func newServerTLSConfig(p serverTLSParams) *tls.Config {
 		ClientAuth: tls.RequireAnyClientCert,
 		NextProtos: []string{alpnMesh},
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{
-			trustBundle:     p.trustBundle,
+			rootPub:         p.rootPub,
 			reconnectWindow: p.reconnectWindow,
 		}),
 	}
@@ -268,7 +265,7 @@ func newServerTLSConfig(p serverTLSParams) *tls.Config {
 	}
 }
 
-func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expectedPeer types.PeerKey, trustBundle *admissionv1.TrustBundle, reconnectWindow time.Duration) *tls.Config {
+func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expectedPeer types.PeerKey, rootPub []byte, reconnectWindow time.Duration) *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -280,7 +277,7 @@ func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expected
 		InsecureSkipVerify: true, //nolint:gosec
 		NextProtos:         []string{alpnMesh},
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{
-			trustBundle:     trustBundle,
+			rootPub:         rootPub,
 			expectedPeer:    &expectedPeer,
 			reconnectWindow: reconnectWindow,
 		}),

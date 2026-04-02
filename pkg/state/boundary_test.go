@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"net/netip"
 	"testing"
+	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/state"
@@ -12,12 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newBoundaryStore(t *testing.T) (*state.Store, ed25519.PublicKey) {
+func newBoundaryStore(t *testing.T) (state.StateStore, ed25519.PublicKey) {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	s := state.New(types.PeerKeyFromBytes(pub))
-	return s, pub
+	return state.New(types.PeerKeyFromBytes(pub)), pub
 }
 
 func genBoundaryPub(t *testing.T) ed25519.PublicKey {
@@ -63,7 +63,7 @@ func TestStore_ApplyDeltaReturnsEvents(t *testing.T) {
 	storeB, _ := newBoundaryStore(t)
 
 	storeA.SetService(8080, "web")
-	fullData := storeA.FullState()
+	fullData := storeA.EncodeFull()
 	require.NotEmpty(t, fullData)
 
 	from := types.PeerKeyFromBytes(pubA)
@@ -143,8 +143,8 @@ func TestSnapshot_ProjectionConsistency(t *testing.T) {
 			{
 				PeerId:  peerKey.String(),
 				Counter: 2,
-				Change: &statev1.GossipEvent_IdentityPub{
-					IdentityPub: &statev1.IdentityChange{IdentityPub: peerPub},
+				Change: &statev1.GossipEvent_CertExpiry{
+					CertExpiry: &statev1.CertExpiryChange{ExpiryUnix: time.Now().Add(time.Hour).Unix()},
 				},
 			},
 			{
@@ -175,7 +175,7 @@ func TestSnapshot_ProjectionConsistency(t *testing.T) {
 		nv, ok := snap.Nodes[svc.Peer]
 		require.True(t, ok, "service peer %s not found in Nodes", svc.Peer)
 		require.Contains(t, nv.Services, svc.Name)
-		require.Equal(t, svc.Port, nv.Services[svc.Name].GetPort())
+		require.Equal(t, svc.Port, nv.Services[svc.Name].Port)
 	}
 
 	// Each workload in Workloads() has a matching spec.

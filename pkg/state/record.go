@@ -13,9 +13,8 @@ type attrKind uint8
 
 const (
 	attrNetwork attrKind = iota + 1
-	attrExternalPort
-	attrObservedExternalIP
-	attrIdentity
+	attrObservedAddress
+	attrCertExpiry
 	attrService
 	attrReachability
 	attrDeny
@@ -27,6 +26,26 @@ const (
 	attrWorkloadClaim
 	attrTrafficHeatmap
 )
+
+// ephemeralSingletonAttrs are attribute kinds that represent transient runtime
+// state with a fixed key (no name/peer). On restart these are tombstoned
+// unconditionally so stale values don't survive gossip from peers that still
+// hold the previous session's state. When adding a new singleton ephemeral
+// attrKind, add it here.
+var ephemeralSingletonAttrs = [...]attrKind{
+	attrObservedAddress,
+	attrPubliclyAccessible,
+	attrNatType,
+	attrResourceTelemetry,
+	attrTrafficHeatmap,
+}
+
+// ephemeralKeyed reports whether a keyed attribute kind (name/peer-scoped) is
+// ephemeral. Keyed ephemeral attrs are tombstoned on restart only if they
+// already exist in the log, since the key set is dynamic.
+func (k attrKind) ephemeralKeyed() bool {
+	return k == attrReachability
+}
 
 type attrKey struct {
 	name string
@@ -40,8 +59,8 @@ type logEntry struct {
 }
 
 type nodeRecord struct {
-	log map[attrKey]logEntry
 	NodeView
+	log        map[attrKey]logEntry
 	maxCounter uint64
 }
 
@@ -51,39 +70,29 @@ func (r nodeRecord) clone() nodeRecord {
 	return c
 }
 
-func ensureNodeInit(rec *nodeRecord, peerID types.PeerKey) {
-	if rec.Reachable == nil {
-		rec.Reachable = make(map[types.PeerKey]struct{})
-	}
-	if rec.Services == nil {
-		rec.Services = make(map[string]*statev1.Service)
-	}
-	if rec.WorkloadSpecs == nil {
-		rec.WorkloadSpecs = make(map[string]*statev1.WorkloadSpecChange)
-	}
-	if rec.WorkloadClaims == nil {
-		rec.WorkloadClaims = make(map[string]struct{})
-	}
-	if rec.log == nil {
-		rec.log = make(map[attrKey]logEntry)
-	}
-	if len(rec.IdentityPub) == 0 {
-		rec.IdentityPub = append([]byte(nil), peerID[:]...)
+func newNodeRecord(peerID types.PeerKey) nodeRecord {
+	return nodeRecord{
+		NodeView: NodeView{
+			PeerPub:        peerID.Bytes(),
+			Reachable:      make(map[types.PeerKey]struct{}),
+			Services:       make(map[string]*Service),
+			WorkloadSpecs:  make(map[string]*statev1.WorkloadSpecChange),
+			WorkloadClaims: make(map[string]struct{}),
+		},
+		log: make(map[attrKey]logEntry),
 	}
 }
 
 func tombstoneStaleAttrs(rec *nodeRecord) {
-	staleKeys := []attrKey{
-		{kind: attrPubliclyAccessible},
-		{kind: attrNatType},
-		{kind: attrObservedExternalIP},
-		{kind: attrExternalPort},
-		{kind: attrResourceTelemetry},
-		{kind: attrTrafficHeatmap},
-	}
-	for _, key := range staleKeys {
+	for _, kind := range ephemeralSingletonAttrs {
 		rec.maxCounter++
-		rec.log[key] = logEntry{Counter: rec.maxCounter, Deleted: true}
+		rec.log[attrKey{kind: kind}] = logEntry{Counter: rec.maxCounter, Deleted: true}
+	}
+	for key := range rec.log {
+		if key.kind.ephemeralKeyed() {
+			rec.maxCounter++
+			rec.log[key] = logEntry{Counter: rec.maxCounter, Deleted: true}
+		}
 	}
 }
 
@@ -91,12 +100,10 @@ func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
 	switch v := event.GetChange().(type) {
 	case *statev1.GossipEvent_Network:
 		return attrKey{kind: attrNetwork}, true
-	case *statev1.GossipEvent_ExternalPort:
-		return attrKey{kind: attrExternalPort}, true
-	case *statev1.GossipEvent_ObservedExternalIp:
-		return attrKey{kind: attrObservedExternalIP}, true
-	case *statev1.GossipEvent_IdentityPub:
-		return attrKey{kind: attrIdentity}, true
+	case *statev1.GossipEvent_ObservedAddress:
+		return attrKey{kind: attrObservedAddress}, true
+	case *statev1.GossipEvent_CertExpiry:
+		return attrKey{kind: attrCertExpiry}, true
 	case *statev1.GossipEvent_Service:
 		if v.Service == nil || v.Service.GetName() == "" {
 			return attrKey{}, false
@@ -109,7 +116,7 @@ func eventAttrKey(event *statev1.GossipEvent) (attrKey, bool) {
 		}
 		return attrKey{kind: attrReachability, peer: pk}, true
 	case *statev1.GossipEvent_Deny:
-		subjectKey := types.PeerKeyFromBytes(v.Deny.GetSubjectPub())
+		subjectKey := types.PeerKeyFromBytes(v.Deny.GetPeerPub())
 		return attrKey{kind: attrDeny, name: subjectKey.String()}, true
 	case *statev1.GossipEvent_PubliclyAccessible:
 		return attrKey{kind: attrPubliclyAccessible}, true
@@ -141,12 +148,10 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 	case attrNetwork:
 		rec.IPs = nil
 		rec.LocalPort = 0
-	case attrExternalPort:
+	case attrObservedAddress:
 		rec.ExternalPort = 0
-	case attrObservedExternalIP:
 		rec.ObservedExternalIP = ""
-	case attrIdentity:
-		rec.IdentityPub = nil
+	case attrCertExpiry:
 		rec.CertExpiry = 0
 	case attrService:
 		delete(rec.Services, key.name)
@@ -157,6 +162,7 @@ func applyDeleteLocked(rec *nodeRecord, key attrKey) {
 		rec.PubliclyAccessible = false
 	case attrVivaldi:
 		rec.VivaldiCoord = nil
+		rec.VivaldiErr = 0
 	case attrNatType:
 		rec.NatType = nat.Unknown
 	case attrResourceTelemetry:
@@ -181,24 +187,20 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 		}
 		rec.IPs = append([]string(nil), v.Network.GetIps()...)
 		rec.LocalPort = v.Network.GetLocalPort()
-	case *statev1.GossipEvent_ExternalPort:
-		if v.ExternalPort != nil {
-			rec.ExternalPort = v.ExternalPort.GetExternalPort()
+	case *statev1.GossipEvent_ObservedAddress:
+		if v.ObservedAddress != nil {
+			rec.ObservedExternalIP = v.ObservedAddress.GetIp()
+			rec.ExternalPort = v.ObservedAddress.GetPort()
 		}
-	case *statev1.GossipEvent_ObservedExternalIp:
-		if v.ObservedExternalIp != nil {
-			rec.ObservedExternalIP = v.ObservedExternalIp.GetIp()
-		}
-	case *statev1.GossipEvent_IdentityPub:
-		if v.IdentityPub != nil {
-			rec.IdentityPub = append([]byte(nil), v.IdentityPub.GetIdentityPub()...)
-			rec.CertExpiry = v.IdentityPub.GetCertExpiryUnix()
+	case *statev1.GossipEvent_CertExpiry:
+		if v.CertExpiry != nil {
+			rec.CertExpiry = v.CertExpiry.GetExpiryUnix()
 		}
 	case *statev1.GossipEvent_Service:
 		if v.Service != nil {
-			m := make(map[string]*statev1.Service, len(rec.Services)+1)
+			m := make(map[string]*Service, len(rec.Services)+1)
 			maps.Copy(m, rec.Services)
-			m[key.name] = &statev1.Service{Name: key.name, Port: v.Service.GetPort()}
+			m[key.name] = &Service{Name: key.name, Port: v.Service.GetPort()}
 			rec.Services = m
 		}
 	case *statev1.GossipEvent_Reachability:
@@ -212,6 +214,7 @@ func applyValueLocked(rec *nodeRecord, event *statev1.GossipEvent, key attrKey) 
 				Y:      v.Vivaldi.GetY(),
 				Height: v.Vivaldi.GetHeight(),
 			}
+			rec.VivaldiErr = v.Vivaldi.GetError()
 		}
 	case *statev1.GossipEvent_NatType:
 		if v.NatType != nil {
@@ -271,30 +274,24 @@ func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRe
 			change.LocalPort = rec.LocalPort
 		}
 		event.Change = &statev1.GossipEvent_Network{Network: change}
-	case attrExternalPort:
-		change := &statev1.ExternalPortChange{}
-		if !entry.Deleted {
-			change.ExternalPort = rec.ExternalPort
-		}
-		event.Change = &statev1.GossipEvent_ExternalPort{ExternalPort: change}
-	case attrObservedExternalIP:
-		change := &statev1.ObservedExternalIPChange{}
+	case attrObservedAddress:
+		change := &statev1.ObservedAddressChange{}
 		if !entry.Deleted {
 			change.Ip = rec.ObservedExternalIP
+			change.Port = rec.ExternalPort
 		}
-		event.Change = &statev1.GossipEvent_ObservedExternalIp{ObservedExternalIp: change}
-	case attrIdentity:
-		change := &statev1.IdentityChange{}
+		event.Change = &statev1.GossipEvent_ObservedAddress{ObservedAddress: change}
+	case attrCertExpiry:
+		change := &statev1.CertExpiryChange{}
 		if !entry.Deleted {
-			change.IdentityPub = append([]byte(nil), rec.IdentityPub...)
-			change.CertExpiryUnix = rec.CertExpiry
+			change.ExpiryUnix = rec.CertExpiry
 		}
-		event.Change = &statev1.GossipEvent_IdentityPub{IdentityPub: change}
+		event.Change = &statev1.GossipEvent_CertExpiry{CertExpiry: change}
 	case attrService:
 		change := &statev1.ServiceChange{Name: key.name}
 		if !entry.Deleted {
 			svc := rec.Services[key.name]
-			change.Port = svc.GetPort()
+			change.Port = svc.Port
 		}
 		event.Change = &statev1.GossipEvent_Service{Service: change}
 	case attrReachability:
@@ -311,6 +308,7 @@ func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRe
 			change.X = rec.VivaldiCoord.X
 			change.Y = rec.VivaldiCoord.Y
 			change.Height = rec.VivaldiCoord.Height
+			change.Error = rec.VivaldiErr
 		}
 		event.Change = &statev1.GossipEvent_Vivaldi{Vivaldi: change}
 	case attrNatType:
@@ -334,7 +332,7 @@ func buildEventFromLog(peerIDStr string, key attrKey, entry logEntry, rec nodeRe
 			panic("invalid deny key in log")
 		}
 		event.Change = &statev1.GossipEvent_Deny{
-			Deny: &statev1.DenyChange{SubjectPub: append([]byte(nil), subjectKey[:]...)},
+			Deny: &statev1.DenyChange{PeerPub: append([]byte(nil), subjectKey[:]...)},
 		}
 	case attrWorkloadSpec:
 		change := &statev1.WorkloadSpecChange{Hash: key.name}

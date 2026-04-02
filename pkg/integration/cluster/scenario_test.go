@@ -12,7 +12,6 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,7 +27,7 @@ func TestPublicMesh_GossipConvergence(t *testing.T) {
 
 	t.Run("StateConvergesAfterMutation", func(t *testing.T) {
 		c.Node("node-0").Node().Tunneling().ExposeService(8080, "http") //nolint:mnd
-		// Use eagerTimeout: state must arrive via eager push, not clock sync.
+		// Use eagerTimeout: state must arrive via eager push, not digest sync.
 		c.RequireEventually(t, func() bool {
 			pk := c.PeerKeyByName("node-0")
 			for _, n := range c.Nodes() {
@@ -113,7 +112,7 @@ func TestPublicMesh_WorkloadPlacement(t *testing.T) {
 		hash, err = c.Node("node-0").Node().SeedWorkload(minimalWASM, 2, 0, 0) //nolint:mnd
 		require.NoError(t, err)
 
-		// Use eagerTimeout: spec must arrive via eager push, not clock sync.
+		// Use eagerTimeout: spec must arrive via eager push, not digest sync.
 		c.RequireEventually(t, func() bool {
 			for _, n := range c.Nodes() {
 				specs := n.Store().Snapshot().Specs
@@ -244,8 +243,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 			Addrs:   []string{node0.VirtualAddr().String()},
 		}}
 
-		invite, err := auth.IssueInviteTokenWithSigner(
-			node0.Node().Credentials().DelegationKey,
+		invite, err := node0.Node().Credentials().DelegationKey().IssueInviteToken(
 			joiner.PeerKey().Bytes(),
 			bootstrap,
 			time.Now(),
@@ -272,8 +270,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 		wrongSubject, _, err := ed25519.GenerateKey(rand.Reader)
 		require.NoError(t, err)
 
-		invite, err := auth.IssueInviteTokenWithSigner(
-			node0.Node().Credentials().DelegationKey,
+		invite, err := node0.Node().Credentials().DelegationKey().IssueInviteToken(
 			wrongSubject,
 			bootstrap,
 			time.Now(),
@@ -296,8 +293,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 			Addrs:   []string{node0.VirtualAddr().String()},
 		}}
 
-		invite, err := auth.IssueInviteTokenWithSigner(
-			node0.Node().Credentials().DelegationKey,
+		invite, err := node0.Node().Credentials().DelegationKey().IssueInviteToken(
 			nil,
 			bootstrap,
 			time.Now(),
@@ -340,8 +336,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 			Addrs:   []string{node0.VirtualAddr().String()},
 		}}
 
-		invite, err := auth.IssueInviteTokenWithSigner(
-			node0.Node().Credentials().DelegationKey,
+		invite, err := node0.Node().Credentials().DelegationKey().IssueInviteToken(
 			joiner.PeerKey().Bytes(),
 			bootstrap,
 			time.Now(),

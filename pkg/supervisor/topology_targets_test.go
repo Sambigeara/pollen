@@ -89,19 +89,10 @@ func TestSyncPeersFromStateConstructsLastAddrFromObservedExternalIP(t *testing.T
 				{
 					PeerId:  pk.String(),
 					Counter: counter + 2,
-					Change: &statev1.GossipEvent_ObservedExternalIp{
-						ObservedExternalIp: &statev1.ObservedExternalIPChange{Ip: "34.252.188.39"},
+					Change: &statev1.GossipEvent_ObservedAddress{
+						ObservedAddress: &statev1.ObservedAddressChange{Ip: "34.252.188.39", Port: tt.externalPort},
 					},
 				},
-			}
-			if tt.externalPort != 0 {
-				events = append(events, &statev1.GossipEvent{
-					PeerId:  pk.String(),
-					Counter: counter + 3,
-					Change: &statev1.GossipEvent_ExternalPort{
-						ExternalPort: &statev1.ExternalPortChange{ExternalPort: tt.externalPort},
-					},
-				})
 			}
 			applyTestEvents(t, n.store, events)
 
@@ -181,32 +172,6 @@ func TestSyncPeersFromStateKeepsDesiredNonTargets(t *testing.T) {
 	require.False(t, n.meshInternal.HasPeer(prunedPeer), "non-targeted peer without desired connection should be pruned")
 }
 
-func TestSyncPeersFromStateSuppressesRemotePrivateUnlessDesired(t *testing.T) {
-	n := newMinimalNode(t, false)
-	wrapper := newTestMeshWrapper(n.mesh, n.meshInternal)
-	n.mesh = wrapper
-	n.meshInternal = wrapper
-	disableFullMesh(wrapper)
-	n.store.SetLocalAddresses([]netip.AddrPort{netip.MustParseAddrPort("10.1.1.20:60611")})
-	setLocalObservedExternalIP(t, n.store, "52.204.52.130")
-
-	localGateway := testPeerKey(1)
-	remotePrivate := testPeerKey(2)
-
-	addCustomPeerForTopology(t, n.store, localGateway, []string{"10.1.1.234"}, 9001, 1, "", true)
-	addCustomPeerForTopology(t, n.store, remotePrivate, []string{"10.2.2.10"}, 9002, 2, "34.252.188.39", false)
-
-	n.syncPeersFromState(context.Background(), n.store.Snapshot())
-
-	require.True(t, n.meshInternal.HasPeer(localGateway), "same-site gateway should be targeted")
-	require.False(t, n.meshInternal.HasPeer(remotePrivate), "remote private peer should not be proactively targeted")
-
-	n.AddDesiredConnection(remotePrivate, 8080, 18080)
-	n.syncPeersFromState(context.Background(), n.store.Snapshot())
-
-	require.True(t, n.meshInternal.HasPeer(remotePrivate), "desired connection should force remote private targeting")
-}
-
 func addKnownPeerForTopology(t *testing.T, s state.StateStore, peerID types.PeerKey, ordinal int) {
 	t.Helper()
 
@@ -261,8 +226,8 @@ func addCustomPeerForTopology(t *testing.T, s state.StateStore, peerID types.Pee
 		events = append(events, &statev1.GossipEvent{
 			PeerId:  peerID.String(),
 			Counter: counter,
-			Change: &statev1.GossipEvent_ObservedExternalIp{
-				ObservedExternalIp: &statev1.ObservedExternalIPChange{Ip: observedExternalIP},
+			Change: &statev1.GossipEvent_ObservedAddress{
+				ObservedAddress: &statev1.ObservedAddressChange{Ip: observedExternalIP},
 			},
 		})
 		counter++
@@ -622,7 +587,6 @@ func productionParams(n *Supervisor, epoch int64) membership.Params {
 	params.LocalIPs = localIPs
 	params.CurrentOutbound = currentOutbound
 	params.LocalNATType = n.natDetector.Type()
-	params.LocalObservedExternalIP = localNV.ObservedExternalIP
 	params.UseHMACNearest = n.useHMACNearest
 	return params
 }
@@ -661,7 +625,6 @@ func knownPeersToPeerInfos(peers []knownPeer) []membership.PeerInfo {
 			Coord:              kp.VivaldiCoord,
 			IPs:                kp.IPs,
 			NatType:            kp.NatType,
-			ObservedExternalIP: kp.ObservedExternalIP,
 			PubliclyAccessible: kp.PubliclyAccessible,
 		})
 	}

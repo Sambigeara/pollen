@@ -14,6 +14,7 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/plnfs"
 	"github.com/sambigeara/pollen/pkg/transport"
 )
 
@@ -33,7 +34,7 @@ func newJoinCmd() *cobra.Command {
 // stale cluster state on cluster switch), saves bootstrap peers from the token,
 // and fixes file ownership.
 func enrollToken(ctx context.Context, pollenDir, rawToken string) error {
-	privKey, pubKey, err := auth.GenIdentityKey(pollenDir)
+	privKey, pubKey, err := auth.EnsureIdentityKey(pollenDir)
 	if err != nil {
 		return err
 	}
@@ -43,7 +44,7 @@ func enrollToken(ctx context.Context, pollenDir, rawToken string) error {
 		return fmt.Errorf("resolve token: %w", err)
 	}
 
-	_, credErr := auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, tkn, time.Now())
+	_, credErr := auth.EnrollNodeCredentials(pollenDir, pubKey, tkn, time.Now())
 	if credErr != nil {
 		if errors.Is(credErr, auth.ErrDifferentCluster) {
 			for _, p := range clusterStatePaths(pollenDir) {
@@ -51,7 +52,7 @@ func enrollToken(ctx context.Context, pollenDir, rawToken string) error {
 					return fmt.Errorf("purge old cluster state: remove %s: %w", p, purgeErr)
 				}
 			}
-			_, credErr = auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, tkn, time.Now())
+			_, credErr = auth.EnrollNodeCredentials(pollenDir, pubKey, tkn, time.Now())
 		}
 		if credErr != nil {
 			return fmt.Errorf("enroll credentials: %w", credErr)
@@ -69,8 +70,8 @@ func enrollToken(ctx context.Context, pollenDir, rawToken string) error {
 
 func runJoin(cmd *cobra.Command, args []string) {
 	reexecAsRoot(cmd)
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	if err := plnfs.EnsureDir(pollenDir); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
@@ -82,8 +83,6 @@ func runJoin(cmd *cobra.Command, args []string) {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
-
-	ensureSudoUserInPlnGroup(cmd)
 
 	if noUp {
 		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pln up -d` to start the node")

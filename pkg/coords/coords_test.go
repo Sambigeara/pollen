@@ -49,16 +49,42 @@ func TestMovementDistanceIncludesHeightDelta(t *testing.T) {
 func TestUpdateZeroRTTIsNoop(t *testing.T) {
 	local := Coord{X: 1, Y: 2, Height: 0.5}
 	localErr := 0.5
-	s := Sample{RTT: 0, PeerCoord: Coord{X: 5, Y: 5, Height: 0.1}}
+	s := Sample{RTT: 0, PeerCoord: Coord{X: 5, Y: 5, Height: 0.1}, PeerErr: 1.0}
 	newCoord, newErr := Update(local, localErr, s)
 	require.Equal(t, local, newCoord)
 	require.Equal(t, localErr, newErr)
 }
 
+func TestUpdateZeroMagnitudeRepulsion(t *testing.T) {
+	local := Coord{X: 1, Y: 1, Height: MinHeight}
+	localErr := 0.5
+	s := Sample{RTT: 10 * time.Millisecond, PeerCoord: local, PeerErr: 0.5}
+
+	newCoord, _ := Update(local, localErr, s)
+
+	require.False(t, newCoord.X == local.X && newCoord.Y == local.Y,
+		"co-located nodes should randomly repel when RTT > 0")
+}
+
+func TestUpdatePeerErrZeroFallback(t *testing.T) {
+	local := Coord{X: 0, Y: 0, Height: MinHeight}
+	localErr := 0.5
+	peer := Coord{X: 10, Y: 0, Height: MinHeight}
+
+	sZero := Sample{RTT: 20 * time.Millisecond, PeerCoord: peer, PeerErr: 0}
+	sDefault := Sample{RTT: 20 * time.Millisecond, PeerCoord: peer, PeerErr: CeDefault}
+
+	coord1, err1 := Update(local, localErr, sZero)
+	coord2, err2 := Update(local, localErr, sDefault)
+
+	require.Equal(t, coord2, coord1, "PeerErr=0 should behave identically to PeerErr=CeDefault")
+	require.Equal(t, err2, err1)
+}
+
 func TestUpdateNegativeRTTIsNoop(t *testing.T) {
 	local := Coord{X: 1, Y: 2, Height: 0.5}
 	localErr := 0.5
-	s := Sample{RTT: -5 * time.Millisecond, PeerCoord: Coord{X: 5, Y: 5, Height: 0.1}}
+	s := Sample{RTT: -5 * time.Millisecond, PeerCoord: Coord{X: 5, Y: 5, Height: 0.1}, PeerErr: 1.0}
 	newCoord, newErr := Update(local, localErr, s)
 	require.Equal(t, local, newCoord)
 	require.Equal(t, localErr, newErr)
@@ -73,8 +99,8 @@ func TestConvergence(t *testing.T) {
 	rtt := 50 * time.Millisecond
 
 	for range 200 {
-		a, aErr = Update(a, aErr, Sample{RTT: rtt, PeerCoord: b})
-		b, bErr = Update(b, bErr, Sample{RTT: rtt, PeerCoord: a})
+		a, aErr = Update(a, aErr, Sample{RTT: rtt, PeerCoord: b, PeerErr: bErr})
+		b, bErr = Update(b, bErr, Sample{RTT: rtt, PeerCoord: a, PeerErr: aErr})
 	}
 
 	dist := Distance(a, b)
@@ -87,12 +113,12 @@ func TestConvergenceThreeNodes(t *testing.T) {
 	aErr, bErr, cErr := 1.0, 1.0, 1.0
 
 	for range 300 {
-		a, aErr = Update(a, aErr, Sample{RTT: 10 * time.Millisecond, PeerCoord: b})
-		a, aErr = Update(a, aErr, Sample{RTT: 25 * time.Millisecond, PeerCoord: c})
-		b, bErr = Update(b, bErr, Sample{RTT: 10 * time.Millisecond, PeerCoord: a})
-		b, bErr = Update(b, bErr, Sample{RTT: 20 * time.Millisecond, PeerCoord: c})
-		c, cErr = Update(c, cErr, Sample{RTT: 25 * time.Millisecond, PeerCoord: a})
-		c, cErr = Update(c, cErr, Sample{RTT: 20 * time.Millisecond, PeerCoord: b})
+		a, aErr = Update(a, aErr, Sample{RTT: 10 * time.Millisecond, PeerCoord: b, PeerErr: bErr})
+		a, aErr = Update(a, aErr, Sample{RTT: 25 * time.Millisecond, PeerCoord: c, PeerErr: cErr})
+		b, bErr = Update(b, bErr, Sample{RTT: 10 * time.Millisecond, PeerCoord: a, PeerErr: aErr})
+		b, bErr = Update(b, bErr, Sample{RTT: 20 * time.Millisecond, PeerCoord: c, PeerErr: cErr})
+		c, cErr = Update(c, cErr, Sample{RTT: 25 * time.Millisecond, PeerCoord: a, PeerErr: aErr})
+		c, cErr = Update(c, cErr, Sample{RTT: 20 * time.Millisecond, PeerCoord: b, PeerErr: bErr})
 	}
 
 	require.InDelta(t, 10.0, Distance(a, b), 5.0)
@@ -105,7 +131,7 @@ func TestClampingPreventsRunaway(t *testing.T) {
 	local := Coord{X: MaxCoord - 1, Y: MaxCoord - 1, Height: 1}
 	localErr := 1.0
 	// Huge RTT should push far, but clamping limits coordinates.
-	s := Sample{RTT: 999 * time.Second, PeerCoord: Coord{X: -MaxCoord, Y: -MaxCoord, Height: 1}}
+	s := Sample{RTT: 999 * time.Second, PeerCoord: Coord{X: -MaxCoord, Y: -MaxCoord, Height: 1}, PeerErr: 1.0}
 	newCoord, _ := Update(local, localErr, s)
 	require.LessOrEqual(t, math.Abs(newCoord.X), float64(MaxCoord))
 	require.LessOrEqual(t, math.Abs(newCoord.Y), float64(MaxCoord))
@@ -116,7 +142,7 @@ func TestHeightFloor(t *testing.T) {
 	// When coords are very close and RTT is very small, height shouldn't go below MinHeight.
 	local := Coord{X: 0, Y: 0, Height: MinHeight}
 	localErr := 1.0
-	s := Sample{RTT: time.Microsecond, PeerCoord: Coord{X: 0.001, Y: 0, Height: MinHeight}}
+	s := Sample{RTT: time.Microsecond, PeerCoord: Coord{X: 0.001, Y: 0, Height: MinHeight}, PeerErr: 1.0}
 	newCoord, _ := Update(local, localErr, s)
 	require.GreaterOrEqual(t, newCoord.Height, MinHeight)
 }
@@ -150,8 +176,8 @@ func TestLowLatencyConvergence(t *testing.T) {
 			if rtt <= 0 {
 				rtt = 100 * time.Microsecond
 			}
-			local, localErr = Update(local, localErr, Sample{RTT: rtt, PeerCoord: p})
-			peers[i], peerErrs[i] = Update(p, peerErrs[i], Sample{RTT: rtt, PeerCoord: local})
+			local, localErr = Update(local, localErr, Sample{RTT: rtt, PeerCoord: p, PeerErr: peerErrs[i]})
+			peers[i], peerErrs[i] = Update(p, peerErrs[i], Sample{RTT: rtt, PeerCoord: local, PeerErr: localErr})
 		}
 	}
 
@@ -167,6 +193,7 @@ func TestErrorEstimateDecreases(t *testing.T) {
 		local, localErr = Update(local, localErr, Sample{
 			RTT:       50 * time.Millisecond,
 			PeerCoord: peer,
+			PeerErr:   0.5,
 		})
 	}
 
@@ -184,8 +211,8 @@ func TestRandomInitLANConvergence(t *testing.T) {
 	rtt := 2 * time.Millisecond // LAN link
 
 	for range 60 {
-		a, aErr = Update(a, aErr, Sample{RTT: rtt, PeerCoord: b})
-		b, bErr = Update(b, bErr, Sample{RTT: rtt, PeerCoord: a})
+		a, aErr = Update(a, aErr, Sample{RTT: rtt, PeerCoord: b, PeerErr: bErr})
+		b, bErr = Update(b, bErr, Sample{RTT: rtt, PeerCoord: a, PeerErr: aErr})
 	}
 
 	require.Less(t, aErr, 0.9, "error should drop below degraded threshold within 60 ticks")

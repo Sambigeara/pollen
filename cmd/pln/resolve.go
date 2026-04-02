@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -31,7 +32,7 @@ func resolveConnection(st *controlv1.GetStatusResponse, arg, providerArg string)
 	if len(matches) == 0 {
 		for _, c := range st.GetConnections() {
 			if c.GetServiceName() == arg {
-				if providerArg != "" && !peerIDHasPrefix(c.GetPeer().GetPeerId(), providerArg) {
+				if providerArg != "" && !peerIDHasPrefix(c.GetPeer().GetPeerPub(), providerArg) {
 					continue
 				}
 				matches = append(matches, c)
@@ -53,7 +54,7 @@ func resolveConnection(st *controlv1.GetStatusResponse, arg, providerArg string)
 			func(c *controlv1.ConnectionSummary) suffixCandidate {
 				return suffixCandidate{
 					name:    c.GetServiceName(),
-					peerKey: peerKeyString(c.GetPeer().GetPeerId()),
+					peerKey: peerKeyString(c.GetPeer().GetPeerPub()),
 					include: true,
 				}
 			},
@@ -69,14 +70,14 @@ func resolveConnection(st *controlv1.GetStatusResponse, arg, providerArg string)
 func connectionCollisionError(name string, matches []*controlv1.ConnectionSummary) error {
 	ids := make([]string, len(matches))
 	for i, c := range matches {
-		ids[i] = peerKeyString(c.GetPeer().GetPeerId())
+		ids[i] = peerKeyString(c.GetPeer().GetPeerPub())
 	}
 	prefixes := minUniquePrefixes(ids)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "multiple connections match %q — pick one:\n", name)
 	for i, c := range matches {
-		provider := formatPeerID(c.GetPeer().GetPeerId(), false)
+		provider := formatPeerID(c.GetPeer().GetPeerPub(), false)
 		connName := c.GetServiceName()
 		if connName == "" {
 			connName = strconv.FormatUint(uint64(c.GetRemotePort()), 10)
@@ -90,11 +91,11 @@ func connectionCollisionError(name string, matches []*controlv1.ConnectionSummar
 func reachableProviderSet(st *controlv1.GetStatusResponse) map[string]bool {
 	m := map[string]bool{}
 	if st.GetSelf() != nil && st.GetSelf().GetNode() != nil {
-		m[peerKeyString(st.GetSelf().GetNode().GetPeerId())] = true
+		m[peerKeyString(st.GetSelf().GetNode().GetPeerPub())] = true
 	}
 	for _, n := range st.Nodes {
 		if isReachableStatus(n.GetStatus()) {
-			m[peerKeyString(n.GetNode().GetPeerId())] = true
+			m[peerKeyString(n.GetNode().GetPeerPub())] = true
 		}
 	}
 	return m
@@ -118,11 +119,11 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg str
 			continue
 		}
 
-		providerID := peerKeyString(svc.GetProvider().GetPeerId())
+		providerID := peerKeyString(svc.GetProvider().GetPeerPub())
 		if !reachableProviders[providerID] {
 			continue
 		}
-		if providerArg != "" && !peerIDHasPrefix(svc.GetProvider().GetPeerId(), providerArg) {
+		if providerArg != "" && !peerIDHasPrefix(svc.GetProvider().GetPeerPub(), providerArg) {
 			continue
 		}
 		matches = append(matches, svc)
@@ -140,7 +141,7 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg str
 	if providerArg == "" && portFilter == 0 {
 		if svc, err := resolveBySuffix(serviceArg, st.Services,
 			func(svc *controlv1.ServiceSummary) suffixCandidate {
-				pk := peerKeyString(svc.GetProvider().GetPeerId())
+				pk := peerKeyString(svc.GetProvider().GetPeerPub())
 				return suffixCandidate{name: svc.GetName(), peerKey: pk, include: reachableProviders[pk]}
 			},
 			serviceCollisionError,
@@ -158,14 +159,14 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg str
 func serviceCollisionError(name string, matches []*controlv1.ServiceSummary) error {
 	ids := make([]string, len(matches))
 	for i, svc := range matches {
-		ids[i] = peerKeyString(svc.GetProvider().GetPeerId())
+		ids[i] = peerKeyString(svc.GetProvider().GetPeerPub())
 	}
 	prefixes := minUniquePrefixes(ids)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "multiple services match %q — pick one:\n", name)
 	for i, svc := range matches {
-		provider := formatPeerID(svc.GetProvider().GetPeerId(), false)
+		provider := formatPeerID(svc.GetProvider().GetPeerPub(), false)
 		fmt.Fprintf(&b, "  pln connect %s-%s    (%s:%d)\n", name, prefixes[i], provider, svc.GetPort())
 	}
 	return errors.New(strings.TrimSpace(b.String()))
@@ -279,8 +280,6 @@ func formatStatus(s controlv1.NodeStatus) string {
 		return "direct"
 	case controlv1.NodeStatus_NODE_STATUS_INDIRECT:
 		return "indirect"
-	case controlv1.NodeStatus_NODE_STATUS_RELAY:
-		return "relay"
 	default:
 		return "offline"
 	}
@@ -288,7 +287,6 @@ func formatStatus(s controlv1.NodeStatus) string {
 
 func isReachableStatus(s controlv1.NodeStatus) bool {
 	return s == controlv1.NodeStatus_NODE_STATUS_ONLINE ||
-		s == controlv1.NodeStatus_NODE_STATUS_RELAY ||
 		s == controlv1.NodeStatus_NODE_STATUS_INDIRECT
 }
 
@@ -333,7 +331,7 @@ type serviceProviderKey struct {
 func serviceNameSuffixes(services []*controlv1.ServiceSummary, include func(string) bool) map[serviceProviderKey]string {
 	groups := map[string][]string{}
 	for _, svc := range services {
-		pk := peerKeyString(svc.GetProvider().GetPeerId())
+		pk := peerKeyString(svc.GetProvider().GetPeerPub())
 		if !include(pk) {
 			continue
 		}
@@ -351,6 +349,24 @@ func serviceNameSuffixes(services []*controlv1.ServiceSummary, include func(stri
 		}
 	}
 	return result
+}
+
+func resolveServiceByPrefix(services []config.Service, prefix string) (string, error) {
+	var matches []string
+	for _, s := range services {
+		if strings.HasPrefix(s.Name, prefix) {
+			matches = append(matches, s.Name)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no service matching %q", prefix)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("prefix %q matches multiple services: %s", prefix, strings.Join(matches, ", "))
+	}
 }
 
 func isPortArg(s string) bool {

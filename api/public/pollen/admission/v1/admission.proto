@@ -6,11 +6,6 @@ import "buf/validate/validate.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1;admissionv1";
 
-message TrustBundle {
-  bytes cluster_id = 1 [(buf.validate.field).bytes = {len: 32}];
-  bytes root_pub = 2 [(buf.validate.field).bytes = {len: 32}];
-}
-
 message Capabilities {
   bool can_delegate = 1;
   bool can_admit = 2;
@@ -18,14 +13,13 @@ message Capabilities {
 }
 
 message DelegationCertClaims {
-  bytes cluster_id = 1 [(buf.validate.field).bytes = {len: 32}];
-  bytes subject_pub = 2 [(buf.validate.field).bytes = {len: 32}];
-  bytes issuer_pub = 3 [(buf.validate.field).bytes = {len: 32}];
-  Capabilities capabilities = 4 [(buf.validate.field).required = true];
-  int64 not_before_unix = 5;
-  int64 not_after_unix = 6;
-  uint64 serial = 7;
-  int64 access_deadline_unix = 8;
+  bytes subject_pub = 1 [(buf.validate.field).bytes = {len: 32}];
+  bytes issuer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+  Capabilities capabilities = 3 [(buf.validate.field).required = true];
+  int64 not_before_unix = 4;
+  int64 not_after_unix = 5;
+  uint64 serial = 6;
+  int64 access_deadline_unix = 7;
 }
 
 message DelegationCert {
@@ -46,12 +40,11 @@ message BootstrapPeer {
 
 message JoinTokenClaims {
   string token_id = 1 [(buf.validate.field).string = {uuid: true}];
-  TrustBundle trust = 2 [(buf.validate.field).required = true];
-  DelegationCert issuer = 3 [(buf.validate.field).required = true];
-  DelegationCert member_cert = 4 [(buf.validate.field).required = true];
-  repeated BootstrapPeer bootstrap = 5;
-  int64 issued_at_unix = 6;
-  int64 expires_at_unix = 7;
+  DelegationCert issuer = 2 [(buf.validate.field).required = true];
+  DelegationCert member_cert = 3 [(buf.validate.field).required = true];
+  repeated BootstrapPeer bootstrap = 4;
+  int64 issued_at_unix = 5;
+  int64 expires_at_unix = 6;
 }
 
 message JoinToken {
@@ -61,16 +54,15 @@ message JoinToken {
 
 message InviteTokenClaims {
   string token_id = 1 [(buf.validate.field).string = {uuid: true}];
-  TrustBundle trust = 2 [(buf.validate.field).required = true];
-  DelegationCert issuer = 3 [(buf.validate.field).required = true];
-  repeated BootstrapPeer bootstrap = 4 [(buf.validate.field).repeated.min_items = 1];
-  bytes subject_pub = 5 [
+  DelegationCert issuer = 2 [(buf.validate.field).required = true];
+  repeated BootstrapPeer bootstrap = 3 [(buf.validate.field).repeated.min_items = 1];
+  bytes subject_pub = 4 [
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
     (buf.validate.field).bytes = {len: 32}
   ];
-  int64 issued_at_unix = 6;
-  int64 expires_at_unix = 7;
-  int64 membership_ttl_seconds = 8;
+  int64 issued_at_unix = 5;
+  int64 expires_at_unix = 6;
+  int64 membership_ttl_seconds = 7;
 }
 
 message InviteToken {

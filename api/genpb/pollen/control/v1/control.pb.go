@@ -28,7 +28,6 @@ const (
 	NodeStatus_NODE_STATUS_UNSPECIFIED NodeStatus = 0
 	NodeStatus_NODE_STATUS_ONLINE      NodeStatus = 1
 	NodeStatus_NODE_STATUS_OFFLINE     NodeStatus = 2
-	NodeStatus_NODE_STATUS_RELAY       NodeStatus = 3
 	NodeStatus_NODE_STATUS_INDIRECT    NodeStatus = 4
 )
 
@@ -38,14 +37,12 @@ var (
 		0: "NODE_STATUS_UNSPECIFIED",
 		1: "NODE_STATUS_ONLINE",
 		2: "NODE_STATUS_OFFLINE",
-		3: "NODE_STATUS_RELAY",
 		4: "NODE_STATUS_INDIRECT",
 	}
 	NodeStatus_value = map[string]int32{
 		"NODE_STATUS_UNSPECIFIED": 0,
 		"NODE_STATUS_ONLINE":      1,
 		"NODE_STATUS_OFFLINE":     2,
-		"NODE_STATUS_RELAY":       3,
 		"NODE_STATUS_INDIRECT":    4,
 	}
 )
@@ -238,7 +235,7 @@ func (HealthStatus) EnumDescriptor() ([]byte, []int) {
 
 type NodeRef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	PeerPub       []byte                 `protobuf:"bytes,1,opt,name=peer_pub,json=peerPub,proto3" json:"peer_pub,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -273,9 +270,9 @@ func (*NodeRef) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *NodeRef) GetPeerId() []byte {
+func (x *NodeRef) GetPeerPub() []byte {
 	if x != nil {
-		return x.PeerId
+		return x.PeerPub
 	}
 	return nil
 }
@@ -1234,7 +1231,7 @@ func (*UnregisterServiceResponse) Descriptor() ([]byte, []int) {
 
 type ConnectPeerRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	PeerPub       []byte                 `protobuf:"bytes,1,opt,name=peer_pub,json=peerPub,proto3" json:"peer_pub,omitempty"`
 	Addrs         []string               `protobuf:"bytes,2,rep,name=addrs,proto3" json:"addrs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1270,9 +1267,9 @@ func (*ConnectPeerRequest) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{17}
 }
 
-func (x *ConnectPeerRequest) GetPeerId() []byte {
+func (x *ConnectPeerRequest) GetPeerPub() []byte {
 	if x != nil {
-		return x.PeerId
+		return x.PeerPub
 	}
 	return nil
 }
@@ -1506,7 +1503,7 @@ func (*DisconnectServiceResponse) Descriptor() ([]byte, []int) {
 
 type DenyPeerRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	PeerPub       []byte                 `protobuf:"bytes,1,opt,name=peer_pub,json=peerPub,proto3" json:"peer_pub,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1541,9 +1538,9 @@ func (*DenyPeerRequest) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{23}
 }
 
-func (x *DenyPeerRequest) GetPeerId() []byte {
+func (x *DenyPeerRequest) GetPeerPub() []byte {
 	if x != nil {
-		return x.PeerId
+		return x.PeerPub
 	}
 	return nil
 }
@@ -2084,9 +2081,9 @@ var File_pollen_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\n" +
-	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\x1a\x1bbuf/validate/validate.proto\"\"\n" +
-	"\aNodeRef\x12\x17\n" +
-	"\apeer_id\x18\x01 \x01(\fR\x06peerId\"\xac\x03\n" +
+	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\x1a\x1bbuf/validate/validate.proto\"$\n" +
+	"\aNodeRef\x12\x19\n" +
+	"\bpeer_pub\x18\x01 \x01(\fR\apeerPub\"\xac\x03\n" +
 	"\vNodeSummary\x12.\n" +
 	"\x04node\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04node\x125\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1d.pollen.control.v1.NodeStatusR\x06status\x12\x12\n" +
@@ -2157,9 +2154,9 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x04port\x18\x01 \x01(\rB\t\xbaH\x06*\x04\x18\xff\xff\x03R\x04port\x12\"\n" +
 	"\x04name\x18\x02 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@H\x00R\x04name\x88\x01\x01B\a\n" +
 	"\x05_name\"\x1b\n" +
-	"\x19UnregisterServiceResponse\"C\n" +
-	"\x12ConnectPeerRequest\x12\x17\n" +
-	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x14\n" +
+	"\x19UnregisterServiceResponse\"E\n" +
+	"\x12ConnectPeerRequest\x12\x19\n" +
+	"\bpeer_pub\x18\x01 \x01(\fR\apeerPub\x12\x14\n" +
 	"\x05addrs\x18\x02 \x03(\tR\x05addrs\"\x15\n" +
 	"\x13ConnectPeerResponse\"\x9f\x01\n" +
 	"\x15ConnectServiceRequest\x12.\n" +
@@ -2174,9 +2171,9 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x18DisconnectServiceRequest\x12*\n" +
 	"\n" +
 	"local_port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\"\x1b\n" +
-	"\x19DisconnectServiceResponse\"3\n" +
-	"\x0fDenyPeerRequest\x12 \n" +
-	"\apeer_id\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\x06peerId\"\x12\n" +
+	"\x19DisconnectServiceResponse\"5\n" +
+	"\x0fDenyPeerRequest\x12\"\n" +
+	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\"\x12\n" +
 	"\x10DenyPeerResponse\"\x9b\x01\n" +
 	"\x13SeedWorkloadRequest\x12&\n" +
 	"\n" +
@@ -2215,13 +2212,12 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x0fvivaldi_samples\x18\x0e \x01(\x04R\x0evivaldiSamples\x12\x1f\n" +
 	"\veager_syncs\x18\x0f \x01(\x04R\n" +
 	"eagerSyncs\x12.\n" +
-	"\x13eager_sync_failures\x18\x10 \x01(\x04R\x11eagerSyncFailures*\x8b\x01\n" +
+	"\x13eager_sync_failures\x18\x10 \x01(\x04R\x11eagerSyncFailures*t\n" +
 	"\n" +
 	"NodeStatus\x12\x1b\n" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12NODE_STATUS_ONLINE\x10\x01\x12\x17\n" +
-	"\x13NODE_STATUS_OFFLINE\x10\x02\x12\x15\n" +
-	"\x11NODE_STATUS_RELAY\x10\x03\x12\x18\n" +
+	"\x13NODE_STATUS_OFFLINE\x10\x02\x12\x18\n" +
 	"\x14NODE_STATUS_INDIRECT\x10\x04*\x8f\x01\n" +
 	"\n" +
 	"CertHealth\x12\x1b\n" +

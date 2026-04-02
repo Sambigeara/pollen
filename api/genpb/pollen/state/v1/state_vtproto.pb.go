@@ -20,51 +20,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-func (m *Service) MarshalVT() (dAtA []byte, err error) {
-	if m == nil {
-		return nil, nil
-	}
-	size := m.SizeVT()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *Service) MarshalToVT(dAtA []byte) (int, error) {
-	size := m.SizeVT()
-	return m.MarshalToSizedBufferVT(dAtA[:size])
-}
-
-func (m *Service) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
-	if m == nil {
-		return 0, nil
-	}
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if m.unknownFields != nil {
-		i -= len(m.unknownFields)
-		copy(dAtA[i:], m.unknownFields)
-	}
-	if m.Port != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Port))
-		i--
-		dAtA[i] = 0x10
-	}
-	if len(m.Name) > 0 {
-		i -= len(m.Name)
-		copy(dAtA[i:], m.Name)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Name)))
-		i--
-		dAtA[i] = 0xa
-	}
-	return len(dAtA) - i, nil
-}
-
 func (m *PeerDigest) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
@@ -109,7 +64,7 @@ func (m *PeerDigest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *GossipStateDigest) MarshalVT() (dAtA []byte, err error) {
+func (m *Digest) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -122,12 +77,12 @@ func (m *GossipStateDigest) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *GossipStateDigest) MarshalToVT(dAtA []byte) (int, error) {
+func (m *Digest) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *GossipStateDigest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *Digest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -296,7 +251,7 @@ func (m *NetworkChange) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *ExternalPortChange) MarshalVT() (dAtA []byte, err error) {
+func (m *ObservedAddressChange) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -309,12 +264,12 @@ func (m *ExternalPortChange) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *ExternalPortChange) MarshalToVT(dAtA []byte) (int, error) {
+func (m *ObservedAddressChange) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *ExternalPortChange) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *ObservedAddressChange) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -326,43 +281,10 @@ func (m *ExternalPortChange) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.ExternalPort != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.ExternalPort))
+	if m.Port != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Port))
 		i--
-		dAtA[i] = 0x8
-	}
-	return len(dAtA) - i, nil
-}
-
-func (m *ObservedExternalIPChange) MarshalVT() (dAtA []byte, err error) {
-	if m == nil {
-		return nil, nil
-	}
-	size := m.SizeVT()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *ObservedExternalIPChange) MarshalToVT(dAtA []byte) (int, error) {
-	size := m.SizeVT()
-	return m.MarshalToSizedBufferVT(dAtA[:size])
-}
-
-func (m *ObservedExternalIPChange) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
-	if m == nil {
-		return 0, nil
-	}
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if m.unknownFields != nil {
-		i -= len(m.unknownFields)
-		copy(dAtA[i:], m.unknownFields)
+		dAtA[i] = 0x10
 	}
 	if len(m.Ip) > 0 {
 		i -= len(m.Ip)
@@ -437,6 +359,12 @@ func (m *VivaldiCoordinateChange) MarshalToSizedBufferVT(dAtA []byte) (int, erro
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.Error != 0 {
+		i -= 8
+		binary.LittleEndian.PutUint64(dAtA[i:], uint64(math.Float64bits(float64(m.Error))))
+		i--
+		dAtA[i] = 0x21
+	}
 	if m.Height != 0 {
 		i -= 8
 		binary.LittleEndian.PutUint64(dAtA[i:], uint64(math.Float64bits(float64(m.Height))))
@@ -458,7 +386,7 @@ func (m *VivaldiCoordinateChange) MarshalToSizedBufferVT(dAtA []byte) (int, erro
 	return len(dAtA) - i, nil
 }
 
-func (m *IdentityChange) MarshalVT() (dAtA []byte, err error) {
+func (m *CertExpiryChange) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -471,12 +399,12 @@ func (m *IdentityChange) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *IdentityChange) MarshalToVT(dAtA []byte) (int, error) {
+func (m *CertExpiryChange) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *IdentityChange) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *CertExpiryChange) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -488,17 +416,10 @@ func (m *IdentityChange) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.CertExpiryUnix != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.CertExpiryUnix))
+	if m.ExpiryUnix != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.ExpiryUnix))
 		i--
-		dAtA[i] = 0x10
-	}
-	if len(m.IdentityPub) > 0 {
-		i -= len(m.IdentityPub)
-		copy(dAtA[i:], m.IdentityPub)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.IdentityPub)))
-		i--
-		dAtA[i] = 0xa
+		dAtA[i] = 0x8
 	}
 	return len(dAtA) - i, nil
 }
@@ -533,10 +454,10 @@ func (m *DenyChange) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if len(m.SubjectPub) > 0 {
-		i -= len(m.SubjectPub)
-		copy(dAtA[i:], m.SubjectPub)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.SubjectPub)))
+	if len(m.PeerPub) > 0 {
+		i -= len(m.PeerPub)
+		copy(dAtA[i:], m.PeerPub)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.PeerPub)))
 		i--
 		dAtA[i] = 0xa
 	}
@@ -911,15 +832,15 @@ func (m *GossipEvent_Network) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	}
 	return len(dAtA) - i, nil
 }
-func (m *GossipEvent_ExternalPort) MarshalToVT(dAtA []byte) (int, error) {
+func (m *GossipEvent_ObservedAddress) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *GossipEvent_ExternalPort) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *GossipEvent_ObservedAddress) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	i := len(dAtA)
-	if m.ExternalPort != nil {
-		size, err := m.ExternalPort.MarshalToSizedBufferVT(dAtA[:i])
+	if m.ObservedAddress != nil {
+		size, err := m.ObservedAddress.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
@@ -934,15 +855,15 @@ func (m *GossipEvent_ExternalPort) MarshalToSizedBufferVT(dAtA []byte) (int, err
 	}
 	return len(dAtA) - i, nil
 }
-func (m *GossipEvent_IdentityPub) MarshalToVT(dAtA []byte) (int, error) {
+func (m *GossipEvent_CertExpiry) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *GossipEvent_IdentityPub) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *GossipEvent_CertExpiry) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	i := len(dAtA)
-	if m.IdentityPub != nil {
-		size, err := m.IdentityPub.MarshalToSizedBufferVT(dAtA[:i])
+	if m.CertExpiry != nil {
+		size, err := m.CertExpiry.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
@@ -1000,29 +921,6 @@ func (m *GossipEvent_Reachability) MarshalToSizedBufferVT(dAtA []byte) (int, err
 		i = protohelpers.EncodeVarint(dAtA, i, 0)
 		i--
 		dAtA[i] = 0x3a
-	}
-	return len(dAtA) - i, nil
-}
-func (m *GossipEvent_ObservedExternalIp) MarshalToVT(dAtA []byte) (int, error) {
-	size := m.SizeVT()
-	return m.MarshalToSizedBufferVT(dAtA[:size])
-}
-
-func (m *GossipEvent_ObservedExternalIp) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
-	i := len(dAtA)
-	if m.ObservedExternalIp != nil {
-		size, err := m.ObservedExternalIp.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
-		i--
-		dAtA[i] = 0x42
-	} else {
-		i = protohelpers.EncodeVarint(dAtA, i, 0)
-		i--
-		dAtA[i] = 0x42
 	}
 	return len(dAtA) - i, nil
 }
@@ -1248,16 +1146,6 @@ func (m *GossipEventBatch) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.IsResponse {
-		i--
-		if m.IsResponse {
-			dAtA[i] = 1
-		} else {
-			dAtA[i] = 0
-		}
-		i--
-		dAtA[i] = 0x10
-	}
 	if len(m.Events) > 0 {
 		for iNdEx := len(m.Events) - 1; iNdEx >= 0; iNdEx-- {
 			size, err := m.Events[iNdEx].MarshalToSizedBufferVT(dAtA[:i])
@@ -1302,6 +1190,13 @@ func (m *RuntimeState) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if len(m.GossipState) > 0 {
+		i -= len(m.GossipState)
+		copy(dAtA[i:], m.GossipState)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.GossipState)))
+		i--
+		dAtA[i] = 0x2a
 	}
 	if len(m.WorkloadSpecs) > 0 {
 		for iNdEx := len(m.WorkloadSpecs) - 1; iNdEx >= 0; iNdEx-- {
@@ -1424,10 +1319,10 @@ func (m *PeerState) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			dAtA[i] = 0x12
 		}
 	}
-	if len(m.IdentityPub) > 0 {
-		i -= len(m.IdentityPub)
-		copy(dAtA[i:], m.IdentityPub)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.IdentityPub)))
+	if len(m.PeerPub) > 0 {
+		i -= len(m.PeerPub)
+		copy(dAtA[i:], m.PeerPub)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.PeerPub)))
 		i--
 		dAtA[i] = 0xa
 	}
@@ -1484,23 +1379,6 @@ func (m *ConsumedInvite) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *Service) SizeVT() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	l = len(m.Name)
-	if l > 0 {
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	if m.Port != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.Port))
-	}
-	n += len(m.unknownFields)
-	return n
-}
-
 func (m *PeerDigest) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -1517,7 +1395,7 @@ func (m *PeerDigest) SizeVT() (n int) {
 	return n
 }
 
-func (m *GossipStateDigest) SizeVT() (n int) {
+func (m *Digest) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -1590,20 +1468,7 @@ func (m *NetworkChange) SizeVT() (n int) {
 	return n
 }
 
-func (m *ExternalPortChange) SizeVT() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if m.ExternalPort != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.ExternalPort))
-	}
-	n += len(m.unknownFields)
-	return n
-}
-
-func (m *ObservedExternalIPChange) SizeVT() (n int) {
+func (m *ObservedAddressChange) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -1612,6 +1477,9 @@ func (m *ObservedExternalIPChange) SizeVT() (n int) {
 	l = len(m.Ip)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.Port != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.Port))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -1642,22 +1510,21 @@ func (m *VivaldiCoordinateChange) SizeVT() (n int) {
 	if m.Height != 0 {
 		n += 9
 	}
+	if m.Error != 0 {
+		n += 9
+	}
 	n += len(m.unknownFields)
 	return n
 }
 
-func (m *IdentityChange) SizeVT() (n int) {
+func (m *CertExpiryChange) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	l = len(m.IdentityPub)
-	if l > 0 {
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	if m.CertExpiryUnix != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.CertExpiryUnix))
+	if m.ExpiryUnix != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.ExpiryUnix))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -1669,7 +1536,7 @@ func (m *DenyChange) SizeVT() (n int) {
 	}
 	var l int
 	_ = l
-	l = len(m.SubjectPub)
+	l = len(m.PeerPub)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -1822,28 +1689,28 @@ func (m *GossipEvent_Network) SizeVT() (n int) {
 	}
 	return n
 }
-func (m *GossipEvent_ExternalPort) SizeVT() (n int) {
+func (m *GossipEvent_ObservedAddress) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.ExternalPort != nil {
-		l = m.ExternalPort.SizeVT()
+	if m.ObservedAddress != nil {
+		l = m.ObservedAddress.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	} else {
 		n += 2
 	}
 	return n
 }
-func (m *GossipEvent_IdentityPub) SizeVT() (n int) {
+func (m *GossipEvent_CertExpiry) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.IdentityPub != nil {
-		l = m.IdentityPub.SizeVT()
+	if m.CertExpiry != nil {
+		l = m.CertExpiry.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	} else {
 		n += 2
@@ -1872,20 +1739,6 @@ func (m *GossipEvent_Reachability) SizeVT() (n int) {
 	_ = l
 	if m.Reachability != nil {
 		l = m.Reachability.SizeVT()
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	} else {
-		n += 2
-	}
-	return n
-}
-func (m *GossipEvent_ObservedExternalIp) SizeVT() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if m.ObservedExternalIp != nil {
-		l = m.ObservedExternalIp.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	} else {
 		n += 2
@@ -2016,9 +1869,6 @@ func (m *GossipEventBatch) SizeVT() (n int) {
 			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 		}
 	}
-	if m.IsResponse {
-		n += 2
-	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -2053,6 +1903,10 @@ func (m *RuntimeState) SizeVT() (n int) {
 			n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 		}
 	}
+	l = len(m.GossipState)
+	if l > 0 {
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -2063,7 +1917,7 @@ func (m *PeerState) SizeVT() (n int) {
 	}
 	var l int
 	_ = l
-	l = len(m.IdentityPub)
+	l = len(m.PeerPub)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -2114,108 +1968,6 @@ func (m *ConsumedInvite) SizeVT() (n int) {
 	return n
 }
 
-func (m *Service) UnmarshalVT(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return protohelpers.ErrIntOverflow
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: Service: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: Service: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Name", wireType)
-			}
-			var stringLen uint64
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				stringLen |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			intStringLen := int(stringLen)
-			if intStringLen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + intStringLen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.Name = string(dAtA[iNdEx:postIndex])
-			iNdEx = postIndex
-		case 2:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Port", wireType)
-			}
-			m.Port = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.Port |= uint32(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		default:
-			iNdEx = preIndex
-			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
 func (m *PeerDigest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -2296,7 +2048,7 @@ func (m *PeerDigest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *GossipStateDigest) UnmarshalVT(dAtA []byte) error {
+func (m *Digest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -2319,10 +2071,10 @@ func (m *GossipStateDigest) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: GossipStateDigest: wiretype end group for non-group")
+			return fmt.Errorf("proto: Digest: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: GossipStateDigest: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: Digest: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
@@ -2763,7 +2515,7 @@ func (m *NetworkChange) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *ExternalPortChange) UnmarshalVT(dAtA []byte) error {
+func (m *ObservedAddressChange) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -2786,80 +2538,10 @@ func (m *ExternalPortChange) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: ExternalPortChange: wiretype end group for non-group")
+			return fmt.Errorf("proto: ObservedAddressChange: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: ExternalPortChange: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field ExternalPort", wireType)
-			}
-			m.ExternalPort = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.ExternalPort |= uint32(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		default:
-			iNdEx = preIndex
-			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *ObservedExternalIPChange) UnmarshalVT(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return protohelpers.ErrIntOverflow
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: ObservedExternalIPChange: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: ObservedExternalIPChange: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: ObservedAddressChange: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
@@ -2894,6 +2576,25 @@ func (m *ObservedExternalIPChange) UnmarshalVT(dAtA []byte) error {
 			}
 			m.Ip = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
+		case 2:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Port", wireType)
+			}
+			m.Port = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.Port |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -3029,6 +2730,17 @@ func (m *VivaldiCoordinateChange) UnmarshalVT(dAtA []byte) error {
 			v = uint64(binary.LittleEndian.Uint64(dAtA[iNdEx:]))
 			iNdEx += 8
 			m.Height = float64(math.Float64frombits(v))
+		case 4:
+			if wireType != 1 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Error", wireType)
+			}
+			var v uint64
+			if (iNdEx + 8) > l {
+				return io.ErrUnexpectedEOF
+			}
+			v = uint64(binary.LittleEndian.Uint64(dAtA[iNdEx:]))
+			iNdEx += 8
+			m.Error = float64(math.Float64frombits(v))
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -3051,7 +2763,7 @@ func (m *VivaldiCoordinateChange) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *IdentityChange) UnmarshalVT(dAtA []byte) error {
+func (m *CertExpiryChange) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -3074,51 +2786,17 @@ func (m *IdentityChange) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: IdentityChange: wiretype end group for non-group")
+			return fmt.Errorf("proto: CertExpiryChange: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: IdentityChange: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: CertExpiryChange: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field IdentityPub", wireType)
-			}
-			var byteLen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				byteLen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if byteLen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + byteLen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.IdentityPub = append(m.IdentityPub[:0], dAtA[iNdEx:postIndex]...)
-			if m.IdentityPub == nil {
-				m.IdentityPub = []byte{}
-			}
-			iNdEx = postIndex
-		case 2:
 			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field CertExpiryUnix", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field ExpiryUnix", wireType)
 			}
-			m.CertExpiryUnix = 0
+			m.ExpiryUnix = 0
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return protohelpers.ErrIntOverflow
@@ -3128,7 +2806,7 @@ func (m *IdentityChange) UnmarshalVT(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				m.CertExpiryUnix |= int64(b&0x7F) << shift
+				m.ExpiryUnix |= int64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
@@ -3186,7 +2864,7 @@ func (m *DenyChange) UnmarshalVT(dAtA []byte) error {
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field SubjectPub", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field PeerPub", wireType)
 			}
 			var byteLen int
 			for shift := uint(0); ; shift += 7 {
@@ -3213,9 +2891,9 @@ func (m *DenyChange) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.SubjectPub = append(m.SubjectPub[:0], dAtA[iNdEx:postIndex]...)
-			if m.SubjectPub == nil {
-				m.SubjectPub = []byte{}
+			m.PeerPub = append(m.PeerPub[:0], dAtA[iNdEx:postIndex]...)
+			if m.PeerPub == nil {
+				m.PeerPub = []byte{}
 			}
 			iNdEx = postIndex
 		default:
@@ -3989,7 +3667,7 @@ func (m *GossipEvent) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 4:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field ExternalPort", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field ObservedAddress", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -4016,21 +3694,21 @@ func (m *GossipEvent) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if oneof, ok := m.Change.(*GossipEvent_ExternalPort); ok {
-				if err := oneof.ExternalPort.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+			if oneof, ok := m.Change.(*GossipEvent_ObservedAddress); ok {
+				if err := oneof.ObservedAddress.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				v := &ExternalPortChange{}
+				v := &ObservedAddressChange{}
 				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
-				m.Change = &GossipEvent_ExternalPort{ExternalPort: v}
+				m.Change = &GossipEvent_ObservedAddress{ObservedAddress: v}
 			}
 			iNdEx = postIndex
 		case 5:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field IdentityPub", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field CertExpiry", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -4057,16 +3735,16 @@ func (m *GossipEvent) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if oneof, ok := m.Change.(*GossipEvent_IdentityPub); ok {
-				if err := oneof.IdentityPub.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+			if oneof, ok := m.Change.(*GossipEvent_CertExpiry); ok {
+				if err := oneof.CertExpiry.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				v := &IdentityChange{}
+				v := &CertExpiryChange{}
 				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
-				m.Change = &GossipEvent_IdentityPub{IdentityPub: v}
+				m.Change = &GossipEvent_CertExpiry{CertExpiry: v}
 			}
 			iNdEx = postIndex
 		case 6:
@@ -4149,47 +3827,6 @@ func (m *GossipEvent) UnmarshalVT(dAtA []byte) error {
 					return err
 				}
 				m.Change = &GossipEvent_Reachability{Reachability: v}
-			}
-			iNdEx = postIndex
-		case 8:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field ObservedExternalIp", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if oneof, ok := m.Change.(*GossipEvent_ObservedExternalIp); ok {
-				if err := oneof.ObservedExternalIp.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-					return err
-				}
-			} else {
-				v := &ObservedExternalIPChange{}
-				if err := v.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-					return err
-				}
-				m.Change = &GossipEvent_ObservedExternalIp{ObservedExternalIp: v}
 			}
 			iNdEx = postIndex
 		case 9:
@@ -4625,26 +4262,6 @@ func (m *GossipEventBatch) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
-		case 2:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field IsResponse", wireType)
-			}
-			var v int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				v |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			m.IsResponse = bool(v != 0)
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -4830,6 +4447,40 @@ func (m *RuntimeState) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 5:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field GossipState", wireType)
+			}
+			var byteLen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				byteLen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if byteLen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + byteLen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.GossipState = append(m.GossipState[:0], dAtA[iNdEx:postIndex]...)
+			if m.GossipState == nil {
+				m.GossipState = []byte{}
+			}
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -4883,7 +4534,7 @@ func (m *PeerState) UnmarshalVT(dAtA []byte) error {
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field IdentityPub", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field PeerPub", wireType)
 			}
 			var byteLen int
 			for shift := uint(0); ; shift += 7 {
@@ -4910,9 +4561,9 @@ func (m *PeerState) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.IdentityPub = append(m.IdentityPub[:0], dAtA[iNdEx:postIndex]...)
-			if m.IdentityPub == nil {
-				m.IdentityPub = []byte{}
+			m.PeerPub = append(m.PeerPub[:0], dAtA[iNdEx:postIndex]...)
+			if m.PeerPub == nil {
+				m.PeerPub = []byte{}
 			}
 			iNdEx = postIndex
 		case 2:

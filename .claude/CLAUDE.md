@@ -72,6 +72,7 @@
 ### Code Quality
 - Don't add comments that restate what the code already says. Only comment where logic isn't self-evident. This includes `nolint` directives — don't add a trailing comment that just restates the lint rule (e.g., `//nolint:forcetypeassert // always a UDPAddr`). The nolint directive is self-explanatory; only comment if the reason is genuinely non-obvious.
 - Don't ship dead or unused code — no dead branches for impossible conditions, no nil/zero guards on values that provably can't be nil/zero, no struct fields only tests read, no parameters the function ignores. These guards are actively misleading: they imply the guarded state is reachable when it isn't. Signatures and types are contracts.
+- No premature implementation. Don't build guards, validation, or abstractions for capability models that don't yet have variability. If every call site passes one of two hardcoded values, runtime checks against those values are dead logic. Add the guards when the variability is introduced, not before.
 - Deduplicate before shipping. If two functions build the same output from the same data, one should call the other.
 - Every switch on a type or enum must be exhaustive. Dead default branches that can't fire are fluff — remove them.
 - No naked returns in functions with named return values unless the function is trivially short.

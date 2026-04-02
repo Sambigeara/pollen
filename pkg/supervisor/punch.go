@@ -65,7 +65,7 @@ func (n *Supervisor) requestPunchCoordination(target types.PeerKey) {
 		return
 	}
 
-	req := &meshv1.PunchCoordRequest{PeerId: target.Bytes()}
+	req := &meshv1.PunchCoordRequest{PeerPub: target.Bytes()}
 	env := &meshv1.Envelope{
 		Body: &meshv1.Envelope_PunchCoordRequest{PunchCoordRequest: req},
 	}
@@ -82,7 +82,7 @@ func (n *Supervisor) requestPunchCoordination(target types.PeerKey) {
 }
 
 func (n *Supervisor) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, req *meshv1.PunchCoordRequest) {
-	targetKey := types.PeerKeyFromBytes(req.PeerId)
+	targetKey := types.PeerKeyFromBytes(req.PeerPub)
 
 	fromAddr, fromOk := n.mesh.GetActivePeerAddress(from)
 	targetAddr, targetOk := n.mesh.GetActivePeerAddress(targetKey)
@@ -93,9 +93,9 @@ func (n *Supervisor) handlePunchCoordRequest(ctx context.Context, from types.Pee
 		return
 	}
 
-	sendTrigger := func(to types.PeerKey, peerId []byte, selfAddr, peerAddr string) {
+	sendTrigger := func(to types.PeerKey, peerPub []byte, selfAddr, peerAddr string) {
 		triggerData, err := (&meshv1.Envelope{Body: &meshv1.Envelope_PunchCoordTrigger{PunchCoordTrigger: &meshv1.PunchCoordTrigger{
-			PeerId:   peerId,
+			PeerPub:  peerPub,
 			SelfAddr: selfAddr,
 			PeerAddr: peerAddr,
 		}}}).MarshalVT()
@@ -106,12 +106,12 @@ func (n *Supervisor) handlePunchCoordRequest(ctx context.Context, from types.Pee
 			n.log.Debugw("punch coord trigger send failed", "to", to.Short(), "err", err)
 		}
 	}
-	n.workers.submit(ctx, func() { sendTrigger(from, req.PeerId, fromAddr.String(), targetAddr.String()) })
-	n.workers.submit(ctx, func() { sendTrigger(targetKey, from.Bytes(), targetAddr.String(), fromAddr.String()) })
+	n.submitPunch(func() { sendTrigger(from, req.PeerPub, fromAddr.String(), targetAddr.String()) })
+	n.submitPunch(func() { sendTrigger(targetKey, from.Bytes(), targetAddr.String(), fromAddr.String()) })
 }
 
 func (n *Supervisor) handlePunchCoordTrigger(ctx context.Context, trigger *meshv1.PunchCoordTrigger) {
-	peerKey := types.PeerKeyFromBytes(trigger.PeerId)
+	peerKey := types.PeerKeyFromBytes(trigger.PeerPub)
 	if n.meshInternal.IsPeerConnected(peerKey) {
 		return
 	}
@@ -124,7 +124,7 @@ func (n *Supervisor) handlePunchCoordTrigger(ctx context.Context, trigger *meshv
 
 	n.log.Infow("punch coord trigger received", "peer", peerKey.Short(), "peerAddr", peerAddr.String())
 
-	n.workers.submit(ctx, func() {
+	n.submitPunch(func() {
 		if n.meshInternal.IsPeerConnected(peerKey) {
 			return
 		}

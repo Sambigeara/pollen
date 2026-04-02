@@ -5,34 +5,24 @@ import (
 	"sync"
 )
 
-// Type classifies a node's NAT behavior.
 type Type int
 
 const (
 	Unknown Type = iota
 	Easy         // endpoint-independent: same external port for all destinations
 	Hard         // endpoint-dependent: port varies by destination (symmetric)
+
+	minObservationsHard = 2
+	minObservationsEasy = 3
+	maxObservations     = 16
 )
 
-func (t Type) String() string {
-	switch t {
-	case Easy:
-		return "easy"
-	case Hard:
-		return "hard"
-	default:
-		return "unknown"
-	}
-}
-
-// ToUint32 converts a Type to the wire representation used in gossip.
 func (t Type) ToUint32() uint32 {
 	return uint32(t)
 }
 
-// TypeFromUint32 converts a wire representation back to a Type.
 func TypeFromUint32(v uint32) Type {
-	switch Type(v) { //nolint:mnd
+	switch Type(v) {
 	case Easy:
 		return Easy
 	case Hard:
@@ -42,18 +32,23 @@ func TypeFromUint32(v uint32) Type {
 	}
 }
 
+type observation struct {
+	ip   netip.Addr
+	port int
+}
+
 // Detector determines the local NAT type by comparing ObservedAddress
 // reports from peers with distinct public IPs. Same external port across
 // observers → Easy. Different ports → Hard.
 type Detector struct {
-	observations map[netip.Addr]int
+	observations []observation
 	natType      Type
 	mu           sync.RWMutex
 }
 
 func NewDetector() *Detector {
 	return &Detector{
-		observations: make(map[netip.Addr]int),
+		observations: make([]observation, 0, maxObservations),
 	}
 }
 
@@ -63,28 +58,34 @@ func (d *Detector) AddObservation(observerIP netip.Addr, port int) (Type, bool) 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if _, exists := d.observations[observerIP]; !exists && len(d.observations) >= maxObservations {
-		clear(d.observations)
+	for i, obs := range d.observations {
+		if obs.ip == observerIP {
+			d.observations = append(d.observations[:i], d.observations[i+1:]...)
+			break
+		}
 	}
-	d.observations[observerIP] = port
+	if len(d.observations) == maxObservations {
+		d.observations = d.observations[1:]
+	}
+	d.observations = append(d.observations, observation{ip: observerIP, port: port})
 
 	prev := d.natType
 	d.natType = d.evaluate()
 	return d.natType, d.natType != prev
 }
 
-// Type returns the current NAT type determination.
 func (d *Detector) Type() Type {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.natType
 }
 
-const (
-	minObservationsHard = 2
-	minObservationsEasy = 3
-	maxObservations     = 16
-)
+func (d *Detector) Reset() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.observations = d.observations[:0]
+	d.natType = Unknown
+}
 
 func (d *Detector) evaluate() Type {
 	if len(d.observations) < minObservationsHard {
@@ -93,13 +94,13 @@ func (d *Detector) evaluate() Type {
 
 	var firstPort int
 	first := true
-	for _, port := range d.observations {
+	for _, obs := range d.observations {
 		if first {
-			firstPort = port
+			firstPort = obs.port
 			first = false
 			continue
 		}
-		if port != firstPort {
+		if obs.port != firstPort {
 			return Hard
 		}
 	}

@@ -677,14 +677,14 @@ Default directory: `~/.pln` (macOS/dev) or `/var/lib/pln` (Linux production).
 ```
 <pollenDir>/
   config.yaml            # YAML config, group-writable (0660)
-  state.pb               # Protobuf RuntimeState, private (0600)
+  state.pb               # Protobuf RuntimeState, group-readable (0640)
   pln.sock               # Unix domain socket for control RPC (0660)
   keys/
     ed25519.key          # Node identity private key (PEM, 0640)
     ed25519.pub          # Node identity public key (PEM, 0640)
     admin_ed25519.key    # Cluster admin private key (PEM, 0640)
     admin_ed25519.pub    # Cluster admin public key (PEM, 0640)
-    cluster.trust.pb     # TrustBundle protobuf (0640)
+    root.pub             # Root public key, raw Ed25519 (0640)
     delegation.cert.pb   # DelegationCert protobuf (0640)
   cas/
     <sha256hex[0:2]>/
@@ -738,17 +738,20 @@ Header: `# Manual edits while the daemon runs will be overwritten.\n# Use 'pln s
 
 | Path | Owner:Group | Mode | Set by |
 |------|-------------|------|--------|
-| `/var/lib/pln/` | pln:pln | 0770 | postinstall.sh |
-| `keys/` | pln:pln | 0770 | EnsureDir |
-| `keys/ed25519.key` | pln:pln | 0640 | SetGroupReadable |
-| `keys/ed25519.pub` | pln:pln | 0640 | SetGroupReadable |
-| `keys/admin_ed25519.key` | pln:pln | 0640 | SetGroupReadable |
-| `keys/admin_ed25519.pub` | pln:pln | 0640 | SetGroupReadable |
-| `keys/cluster.trust.pb` | pln:pln | 0640 | WriteGroupReadable |
+| `/var/lib/pln/` | pln:pln | 2770 | Provision / EnsureDir |
+| `keys/` | pln:pln | 2770 | EnsureDir |
+| `keys/ed25519.key` | pln:pln | 0640 | WriteGroupReadable |
+| `keys/ed25519.pub` | pln:pln | 0640 | WriteGroupReadable |
+| `keys/admin_ed25519.key` | pln:pln | 0640 | WriteGroupReadable |
+| `keys/admin_ed25519.pub` | pln:pln | 0640 | WriteGroupReadable |
+| `keys/root.pub` | pln:pln | 0640 | WriteGroupReadable |
 | `keys/delegation.cert.pb` | pln:pln | 0640 | WriteGroupReadable |
 | `config.yaml` | pln:pln | 0660 | WriteGroupWritable |
-| `state.pb` | pln:pln | 0600 | WritePrivate |
+| `state.pb` | pln:pln | 0640 | WriteGroupReadable |
 | `pln.sock` | pln:pln | 0660 | SetGroupSocket |
+| `cas/` | pln:pln | 2770 | EnsureDir |
+| `cas/<shard>/` | pln:pln | 2770 | EnsureDir |
+| `cas/<shard>/<hash>.wasm` | pln:pln | 0640 | WriteGroupReadable |
 
 ### Migration paths
 

@@ -19,7 +19,7 @@ type directDialResult struct {
 }
 
 func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.reconnectWindow)
+	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.rootPub, m.reconnectWindow)
 	qCfg := quicConfig()
 
 	qc, err := m.mainQT.Dial(ctx, addr, tlsCfg, qCfg)
@@ -31,7 +31,7 @@ func (m *impl) dialDirect(ctx context.Context, addr *net.UDPAddr, expectedPeer t
 }
 
 func (m *impl) dialPunch(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey, localNAT nat.Type) (*peerSession, error) {
-	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.trustBundle, m.reconnectWindow)
+	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, expectedPeer, m.rootPub, m.reconnectWindow)
 	qCfg := quicConfig()
 
 	conn, err := m.socks.Punch(ctx, addr, localNAT)

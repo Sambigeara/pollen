@@ -10,21 +10,21 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-func (s *Store) emitLocal(local *nodeRecord, key attrKey, deleted bool, evt *statev1.GossipEvent) []*statev1.GossipEvent {
+func (s *store) emitLocal(local *nodeRecord, key attrKey, deleted bool, evt *statev1.GossipEvent) []*statev1.GossipEvent {
 	local.maxCounter++
-	evt.PeerId = s.LocalID.String()
+	evt.PeerId = s.localID.String()
 	evt.Counter = local.maxCounter
 	evt.Deleted = deleted
 	local.log[key] = logEntry{Counter: local.maxCounter, Deleted: deleted}
-	s.nodes[s.LocalID] = *local
+	s.nodes[s.localID] = *local
 	s.updateSnapshot()
 	return []*statev1.GossipEvent{evt}
 }
 
-func (s *Store) setLocalNetwork(ips []string, port uint32) []*statev1.GossipEvent {
+func (s *store) setLocalNetwork(ips []string, port uint32) []*statev1.GossipEvent {
 	var events []*statev1.GossipEvent
 	s.do(func() {
-		local := s.nodes[s.LocalID]
+		local := s.nodes[s.localID]
 		if slices.Equal(local.IPs, ips) && local.LocalPort == port {
 			return
 		}
@@ -39,44 +39,29 @@ func (s *Store) setLocalNetwork(ips []string, port uint32) []*statev1.GossipEven
 	return events
 }
 
-func (s *Store) setExternalPort(port uint32) []*statev1.GossipEvent {
+func (s *store) setObservedAddress(ip string, port uint32) []*statev1.GossipEvent {
 	var events []*statev1.GossipEvent
 	s.do(func() {
-		local := s.nodes[s.LocalID]
-		if local.ExternalPort == port {
-			return
-		}
-		local.ExternalPort = port
-		events = s.emitLocal(&local, attrKey{kind: attrExternalPort}, false, &statev1.GossipEvent{
-			Change: &statev1.GossipEvent_ExternalPort{
-				ExternalPort: &statev1.ExternalPortChange{ExternalPort: port},
-			},
-		})
-	})
-	return events
-}
-
-func (s *Store) setObservedExternalIP(ip string) []*statev1.GossipEvent {
-	var events []*statev1.GossipEvent
-	s.do(func() {
-		local := s.nodes[s.LocalID]
-		if local.ObservedExternalIP == ip {
+		local := s.nodes[s.localID]
+		if local.ObservedExternalIP == ip && local.ExternalPort == port {
 			return
 		}
 		local.ObservedExternalIP = ip
-		events = s.emitLocal(&local, attrKey{kind: attrObservedExternalIP}, ip == "", &statev1.GossipEvent{
-			Change: &statev1.GossipEvent_ObservedExternalIp{
-				ObservedExternalIp: &statev1.ObservedExternalIPChange{Ip: ip},
+		local.ExternalPort = port
+		deleted := ip == "" && port == 0
+		events = s.emitLocal(&local, attrKey{kind: attrObservedAddress}, deleted, &statev1.GossipEvent{
+			Change: &statev1.GossipEvent_ObservedAddress{
+				ObservedAddress: &statev1.ObservedAddressChange{Ip: ip, Port: port},
 			},
 		})
 	})
 	return events
 }
 
-func (s *Store) setLocalConnected(peerID types.PeerKey, connected bool) []*statev1.GossipEvent {
+func (s *store) setLocalConnected(peerID types.PeerKey, connected bool) []*statev1.GossipEvent {
 	var events []*statev1.GossipEvent
 	s.do(func() {
-		local := s.nodes[s.LocalID]
+		local := s.nodes[s.localID]
 		_, exists := local.Reachable[peerID]
 		if connected == exists {
 			return
@@ -95,10 +80,10 @@ func (s *Store) setLocalConnected(peerID types.PeerKey, connected bool) []*state
 	return events
 }
 
-func (s *Store) setLocalPubliclyAccessible(accessible bool) []*statev1.GossipEvent {
+func (s *store) setLocalPubliclyAccessible(accessible bool) []*statev1.GossipEvent {
 	var events []*statev1.GossipEvent
 	s.do(func() {
-		local := s.nodes[s.LocalID]
+		local := s.nodes[s.localID]
 		if local.PubliclyAccessible == accessible {
 			return
 		}
@@ -112,10 +97,10 @@ func (s *Store) setLocalPubliclyAccessible(accessible bool) []*statev1.GossipEve
 	return events
 }
 
-func (s *Store) setLocalNatType(natType nat.Type) []*statev1.GossipEvent {
+func (s *store) setLocalNatType(natType nat.Type) []*statev1.GossipEvent {
 	var events []*statev1.GossipEvent
 	s.do(func() {
-		local := s.nodes[s.LocalID]
+		local := s.nodes[s.localID]
 		if local.NatType == natType {
 			return
 		}
@@ -131,10 +116,10 @@ func (s *Store) setLocalNatType(natType nat.Type) []*statev1.GossipEvent {
 
 const resourceTelemetryDeadband = 2
 
-func (s *Store) setLocalResourceTelemetry(cpuPercent, memPercent uint32, memTotalBytes uint64, numCPU uint32) []*statev1.GossipEvent {
+func (s *store) setLocalResourceTelemetry(cpuPercent, memPercent uint32, memTotalBytes uint64, numCPU uint32) []*statev1.GossipEvent {
 	var events []*statev1.GossipEvent
 	s.do(func() {
-		local := s.nodes[s.LocalID]
+		local := s.nodes[s.localID]
 		cpuDelta := absDiff(local.CPUPercent, cpuPercent)
 		memDelta := absDiff(local.MemPercent, memPercent)
 		if cpuDelta < resourceTelemetryDeadband && memDelta < resourceTelemetryDeadband && local.MemTotalBytes == memTotalBytes && local.NumCPU == numCPU {
@@ -156,7 +141,7 @@ func (s *Store) setLocalResourceTelemetry(cpuPercent, memPercent uint32, memTota
 	return events
 }
 
-func (s *Store) setLocalTrafficHeatmap(rates map[types.PeerKey]TrafficSnapshot) []*statev1.GossipEvent {
+func (s *store) setLocalTrafficHeatmap(rates map[types.PeerKey]TrafficSnapshot) []*statev1.GossipEvent {
 	filtered := make(map[types.PeerKey]TrafficSnapshot, len(rates))
 	for pk, r := range rates {
 		if r.BytesIn > 0 || r.BytesOut > 0 {
@@ -166,7 +151,7 @@ func (s *Store) setLocalTrafficHeatmap(rates map[types.PeerKey]TrafficSnapshot) 
 
 	var events []*statev1.GossipEvent
 	s.do(func() {
-		local := s.nodes[s.LocalID]
+		local := s.nodes[s.localID]
 		key := attrKey{kind: attrTrafficHeatmap}
 
 		if len(filtered) == 0 {
@@ -205,31 +190,32 @@ func absDiff(a, b uint32) uint32 {
 	return b - a
 }
 
-func (s *Store) setLocalVivaldiCoord(coord coords.Coord) []*statev1.GossipEvent {
+func (s *store) setLocalVivaldiCoord(coord coords.Coord, coordErr float64) []*statev1.GossipEvent {
 	var events []*statev1.GossipEvent
 	s.do(func() {
-		local := s.nodes[s.LocalID]
+		local := s.nodes[s.localID]
 		if local.VivaldiCoord != nil && coords.MovementDistance(*local.VivaldiCoord, coord) <= coords.PublishEpsilon {
 			return
 		}
 		local.VivaldiCoord = &coord
+		local.VivaldiErr = coordErr
 		events = s.emitLocal(&local, attrKey{kind: attrVivaldi}, false, &statev1.GossipEvent{
 			Change: &statev1.GossipEvent_Vivaldi{
-				Vivaldi: &statev1.VivaldiCoordinateChange{X: coord.X, Y: coord.Y, Height: coord.Height},
+				Vivaldi: &statev1.VivaldiCoordinateChange{X: coord.X, Y: coord.Y, Height: coord.Height, Error: coordErr},
 			},
 		})
 	})
 	return events
 }
 
-func (s *Store) upsertLocalService(port uint32, name string) []*statev1.GossipEvent {
+func (s *store) upsertLocalService(port uint32, name string) []*statev1.GossipEvent {
 	var events []*statev1.GossipEvent
 	s.do(func() {
-		local := s.nodes[s.LocalID]
-		if existing, ok := local.Services[name]; ok && existing.GetPort() == port {
+		local := s.nodes[s.localID]
+		if existing, ok := local.Services[name]; ok && existing.Port == port {
 			return
 		}
-		local.Services[name] = &statev1.Service{Name: name, Port: port}
+		local.Services[name] = &Service{Name: name, Port: port}
 		events = s.emitLocal(&local, attrKey{kind: attrService, name: name}, false, &statev1.GossipEvent{
 			Change: &statev1.GossipEvent_Service{
 				Service: &statev1.ServiceChange{Name: name, Port: port},
@@ -239,10 +225,10 @@ func (s *Store) upsertLocalService(port uint32, name string) []*statev1.GossipEv
 	return events
 }
 
-func (s *Store) deleteLocalNamedAttr(key attrKey, fn func(local *nodeRecord, evt *statev1.GossipEvent) bool) []*statev1.GossipEvent {
+func (s *store) deleteLocalNamedAttr(key attrKey, fn func(local *nodeRecord, evt *statev1.GossipEvent) bool) []*statev1.GossipEvent {
 	var events []*statev1.GossipEvent
 	s.do(func() {
-		local := s.nodes[s.LocalID]
+		local := s.nodes[s.localID]
 		evt := &statev1.GossipEvent{}
 		if !fn(&local, evt) {
 			return
@@ -252,7 +238,7 @@ func (s *Store) deleteLocalNamedAttr(key attrKey, fn func(local *nodeRecord, evt
 	return events
 }
 
-func (s *Store) removeLocalService(name string) []*statev1.GossipEvent {
+func (s *store) removeLocalService(name string) []*statev1.GossipEvent {
 	return s.deleteLocalNamedAttr(attrKey{kind: attrService, name: name}, func(local *nodeRecord, evt *statev1.GossipEvent) bool {
 		if _, ok := local.Services[name]; !ok {
 			return false
@@ -263,7 +249,7 @@ func (s *Store) removeLocalService(name string) []*statev1.GossipEvent {
 	})
 }
 
-func (s *Store) denyPeerRaw(subjectPub []byte) []*statev1.GossipEvent {
+func (s *store) denyPeerRaw(subjectPub []byte) []*statev1.GossipEvent {
 	subjectKey := types.PeerKeyFromBytes(subjectPub)
 	var events []*statev1.GossipEvent
 	s.do(func() {
@@ -271,24 +257,24 @@ func (s *Store) denyPeerRaw(subjectPub []byte) []*statev1.GossipEvent {
 			return
 		}
 		s.denied[subjectKey] = struct{}{}
-		local := s.nodes[s.LocalID]
+		local := s.nodes[s.localID]
 		events = s.emitLocal(&local, attrKey{kind: attrDeny, name: subjectKey.String()}, false, &statev1.GossipEvent{
 			Change: &statev1.GossipEvent_Deny{
-				Deny: &statev1.DenyChange{SubjectPub: append([]byte(nil), subjectPub...)},
+				Deny: &statev1.DenyChange{PeerPub: append([]byte(nil), subjectPub...)},
 			},
 		})
 	})
 	return events
 }
 
-func (s *Store) setLocalWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) ([]*statev1.GossipEvent, error) {
+func (s *store) setLocalWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) ([]*statev1.GossipEvent, error) {
 	var (
 		events []*statev1.GossipEvent
 		err    error
 	)
 	s.do(func() {
 		for pk, rec := range s.nodes {
-			if pk == s.LocalID {
+			if pk == s.localID {
 				continue
 			}
 			if _, has := rec.WorkloadSpecs[hash]; !has {
@@ -300,7 +286,7 @@ func (s *Store) setLocalWorkloadSpec(hash string, replicas, memoryPages, timeout
 			}
 		}
 
-		local := s.nodes[s.LocalID]
+		local := s.nodes[s.localID]
 		if existing, ok := local.WorkloadSpecs[hash]; ok &&
 			existing.GetReplicas() == replicas && existing.GetMemoryPages() == memoryPages &&
 			existing.GetTimeoutMs() == timeoutMs {
@@ -325,7 +311,7 @@ func (s *Store) setLocalWorkloadSpec(hash string, replicas, memoryPages, timeout
 	return events, nil
 }
 
-func (s *Store) removeLocalWorkloadSpec(hash string) []*statev1.GossipEvent {
+func (s *store) removeLocalWorkloadSpec(hash string) []*statev1.GossipEvent {
 	return s.deleteLocalNamedAttr(attrKey{kind: attrWorkloadSpec, name: hash}, func(local *nodeRecord, evt *statev1.GossipEvent) bool {
 		if _, ok := local.WorkloadSpecs[hash]; !ok {
 			return false
@@ -336,10 +322,10 @@ func (s *Store) removeLocalWorkloadSpec(hash string) []*statev1.GossipEvent {
 	})
 }
 
-func (s *Store) setLocalWorkloadClaim(hash string, claimed bool) []*statev1.GossipEvent {
+func (s *store) setLocalWorkloadClaim(hash string, claimed bool) []*statev1.GossipEvent {
 	var events []*statev1.GossipEvent
 	s.do(func() {
-		local := s.nodes[s.LocalID]
+		local := s.nodes[s.localID]
 		_, exists := local.WorkloadClaims[hash]
 		if claimed == exists {
 			return

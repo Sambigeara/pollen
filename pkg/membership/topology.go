@@ -2,12 +2,14 @@ package membership
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
+	"maps"
 	"math"
 	"net"
-	"sort"
+	"slices"
 
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
@@ -16,7 +18,6 @@ import (
 
 type PeerInfo struct {
 	Coord              *coords.Coord
-	ObservedExternalIP string
 	IPs                []string
 	NatType            nat.Type
 	Key                types.PeerKey
@@ -24,16 +25,15 @@ type PeerInfo struct {
 }
 
 type Params struct {
-	CurrentOutbound         map[types.PeerKey]struct{}
-	LocalObservedExternalIP string
-	LocalIPs                []string
-	InfraMax                int
-	NearestK                int
-	RandomR                 int
-	Epoch                   int64
-	LocalNATType            nat.Type
-	PreferFullMesh          bool
-	UseHMACNearest          bool
+	CurrentOutbound map[types.PeerKey]struct{}
+	LocalIPs        []string
+	InfraMax        int
+	NearestK        int
+	RandomR         int
+	Epoch           int64
+	LocalNATType    nat.Type
+	PreferFullMesh  bool
+	UseHMACNearest  bool
 }
 
 const (
@@ -76,12 +76,7 @@ func ComputeTargetPeers(localKey types.PeerKey, localCoord coords.Coord, peers [
 		selected[pk] = struct{}{}
 	}
 
-	result := make([]types.PeerKey, 0, len(selected))
-	for pk := range selected {
-		result = append(result, pk)
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Less(result[j]) })
-	return result
+	return slices.SortedFunc(maps.Keys(selected), func(a, b types.PeerKey) int { return a.Compare(b) })
 }
 
 // TODO(saml): cap full-mesh fan-out (e.g. 16 targets) to bound the burst
@@ -99,7 +94,7 @@ func selectFeasibleFullMesh(localKey types.PeerKey, peers []PeerInfo, params Par
 		}
 		result = append(result, p.Key)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Less(result[j]) })
+	slices.SortFunc(result, func(a, b types.PeerKey) int { return a.Compare(b) })
 	return result
 }
 
@@ -119,12 +114,11 @@ func hmacScore(localKey types.PeerKey, parts ...[]byte) [32]byte {
 }
 
 func topByScore(candidates []scored, limit int) []types.PeerKey {
-	sort.Slice(candidates, func(i, j int) bool {
-		ci, cj := candidates[i].score, candidates[j].score
-		if ci != cj {
-			return bytes.Compare(ci[:], cj[:]) < 0
+	slices.SortFunc(candidates, func(a, b scored) int {
+		if c := bytes.Compare(a.score[:], b.score[:]); c != 0 {
+			return c
 		}
-		return candidates[i].key.Less(candidates[j].key)
+		return a.key.Compare(b.key)
 	})
 	if len(candidates) > limit {
 		candidates = candidates[:limit]
@@ -170,9 +164,6 @@ func selectNearest(localKey types.PeerKey, localCoord coords.Coord, peers []Peer
 		if _, ok := exclude[p.Key]; ok {
 			continue
 		}
-		if suppressProactivePrivate(params, p) {
-			continue
-		}
 		d := math.MaxFloat64
 		if p.Coord != nil {
 			d = coords.Distance(localCoord, *p.Coord)
@@ -194,11 +185,11 @@ func selectNearest(localKey types.PeerKey, localCoord coords.Coord, peers []Peer
 
 func selectNearestByDistance(candidates []nearestCandidate, k, lanCap int, params Params) []types.PeerKey {
 	lanCount := make(map[string]int)
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].dist != candidates[j].dist {
-			return candidates[i].dist < candidates[j].dist
+	slices.SortStableFunc(candidates, func(a, b nearestCandidate) int {
+		if c := cmp.Compare(a.dist, b.dist); c != 0 {
+			return c
 		}
-		return candidates[i].key.Less(candidates[j].key)
+		return a.key.Compare(b.key)
 	})
 
 	var result []types.PeerKey
@@ -244,12 +235,11 @@ func selectNearestHMAC(localKey types.PeerKey, candidates []nearestCandidate, k,
 		})
 	}
 
-	sort.Slice(scoredCandidates, func(i, j int) bool {
-		si, sj := scoredCandidates[i].score, scoredCandidates[j].score
-		if si != sj {
-			return bytes.Compare(si[:], sj[:]) < 0
+	slices.SortFunc(scoredCandidates, func(a, b hmacCandidate) int {
+		if c := bytes.Compare(a.score[:], b.score[:]); c != 0 {
+			return c
 		}
-		return scoredCandidates[i].key.Less(scoredCandidates[j].key)
+		return a.key.Compare(b.key)
 	})
 
 	var result []types.PeerKey
@@ -280,9 +270,6 @@ func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types
 		if _, ok := exclude[p.Key]; ok {
 			continue
 		}
-		if suppressProactivePrivate(params, p) {
-			continue
-		}
 		isLAN := localPrefix != "" && lanPrefix(p.IPs) == localPrefix
 		if natFiltered(isLAN, params.LocalNATType, p.NatType) {
 			continue
@@ -293,19 +280,6 @@ func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types
 		})
 	}
 	return topByScore(candidates, params.RandomR)
-}
-
-func suppressProactivePrivate(params Params, peer PeerInfo) bool {
-	if peer.PubliclyAccessible {
-		return false
-	}
-	if InferPrivatelyRoutable(params.LocalIPs, peer.IPs) {
-		return false
-	}
-	if params.LocalObservedExternalIP == "" || peer.ObservedExternalIP == "" {
-		return false
-	}
-	return !SameObservedEgress(params.LocalObservedExternalIP, peer.ObservedExternalIP)
 }
 
 func SameObservedEgress(a, b string) bool {

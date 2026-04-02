@@ -1,0 +1,50 @@
+---
+# Push a locally-built pln binary to all nodes and restart the service.
+# Usage: ansible-playbook push.yml -i inventories/<env>.py -e pln_binary=/path/to/pln
+
+- name: Push pln binary
+  hosts: all
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Validate pln_binary is set
+      ansible.builtin.assert:
+        that: pln_binary is defined and pln_binary | length > 0
+        fail_msg: "pln_binary must be set (e.g. -e pln_binary=./pln-linux)"
+
+  tasks:
+    - name: Copy binary
+      ansible.posix.synchronize:
+        src: "{{ pln_binary }}"
+        dest: /usr/bin/pln
+        compress: true
+        use_ssh_args: true
+
+    - name: Provision system user and state dirs
+      ansible.builtin.command: pln provision
+      changed_when: true
+
+    - name: Install systemd unit
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../packaging/pln.service"
+        dest: /lib/systemd/system/pln.service
+        mode: "0644"
+      notify: reload systemd
+
+    - name: Check if pln service is active
+      ansible.builtin.command: systemctl is-active pln
+      register: pln_active
+      failed_when: false
+      changed_when: false
+
+    - name: Restart pln service
+      ansible.builtin.systemd:
+        name: pln
+        state: restarted
+      when: pln_active.rc == 0
+
+  handlers:
+    - name: reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true

@@ -18,6 +18,7 @@ type Coord struct {
 type Sample struct {
 	RTT       time.Duration
 	PeerCoord Coord
+	PeerErr   float64
 }
 
 const (
@@ -94,9 +95,16 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 	// predicted distances to produce errors of 100+, which drives the error
 	// estimate to extreme values and prevents convergence.
 	err := math.Abs(rtt-dist) / max(rtt, dist, MinRTTFloor)
-	relWeight := localErr / (localErr + CeDefault)
 
-	newErr := localErr + CcDefault*relWeight*(err-localErr)
+	// Vivaldi weight: w = e_i / (e_i + e_j). A zero peer error means the
+	// peer hasn't gossiped its error yet (old node); fall back to CeDefault.
+	peerErr := s.PeerErr
+	if peerErr == 0 {
+		peerErr = CeDefault
+	}
+	relWeight := localErr / (localErr + peerErr)
+
+	newErr := localErr + CeDefault*relWeight*(err-localErr)
 	newErr = clamp(newErr, 0, 1)
 
 	// Compute force: positive = push apart, negative = pull together.

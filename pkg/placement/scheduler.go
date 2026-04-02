@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"crypto/sha256"
+	"maps"
 	"math"
 	"slices"
 
@@ -215,10 +216,7 @@ func suitabilityScore(candidate types.PeerKey, cluster clusterState, claimants m
 		return 0.0
 	}
 
-	peers := make([]types.PeerKey, 0, len(cluster.Nodes))
-	for pk := range cluster.Nodes {
-		peers = append(peers, pk)
-	}
+	peers := slices.Collect(maps.Keys(cluster.Nodes))
 
 	capacity := capacityScore(candidate, peers, cluster)
 	traffic := trafficAffinityScore(candidate, peers, claimants, cluster)

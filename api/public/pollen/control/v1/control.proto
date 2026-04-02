@@ -23,14 +23,13 @@ service ControlService {
 }
 
 message NodeRef {
-  bytes peer_id = 1;
+  bytes peer_pub = 1;
 }
 
 enum NodeStatus {
   NODE_STATUS_UNSPECIFIED = 0;
   NODE_STATUS_ONLINE = 1;
   NODE_STATUS_OFFLINE = 2;
-  NODE_STATUS_RELAY = 3;
   NODE_STATUS_INDIRECT = 4;
 }
 
@@ -160,7 +159,7 @@ message UnregisterServiceRequest {
 message UnregisterServiceResponse {}
 
 message ConnectPeerRequest {
-  bytes peer_id = 1;
+  bytes peer_pub = 1;
   repeated string addrs = 2;
 }
 
@@ -192,7 +191,7 @@ message DisconnectServiceRequest {
 message DisconnectServiceResponse {}
 
 message DenyPeerRequest {
-  bytes peer_id = 1 [(buf.validate.field).bytes = {len: 32}];
+  bytes peer_pub = 1 [(buf.validate.field).bytes = {len: 32}];
 }
 
 message DenyPeerResponse {}

@@ -6,20 +6,12 @@ import "buf/validate/validate.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1";
 
-message Service {
-  string name = 1;
-  uint32 port = 2 [(buf.validate.field).uint32 = {
-    gt: 0
-    lte: 65535
-  }];
-}
-
 message PeerDigest {
   uint64 max_counter = 1;
   fixed64 state_hash = 2;
 }
 
-message GossipStateDigest {
+message Digest {
   map<string, PeerDigest> peers = 1;
 }
 
@@ -40,12 +32,9 @@ message NetworkChange {
   uint32 local_port = 2;
 }
 
-message ExternalPortChange {
-  uint32 external_port = 1;
-}
-
-message ObservedExternalIPChange {
+message ObservedAddressChange {
   string ip = 1;
+  uint32 port = 2;
 }
 
 message PubliclyAccessibleChange {}
@@ -54,15 +43,15 @@ message VivaldiCoordinateChange {
   double x = 1;
   double y = 2;
   double height = 3;
+  double error = 4;
 }
 
-message IdentityChange {
-  bytes identity_pub = 1 [(buf.validate.field).bytes = {len: 32}];
-  int64 cert_expiry_unix = 2;
+message CertExpiryChange {
+  int64 expiry_unix = 1;
 }
 
 message DenyChange {
-  bytes subject_pub = 1 [(buf.validate.field).bytes = {len: 32}];
+  bytes peer_pub = 1 [(buf.validate.field).bytes = {len: 32}];
 }
 
 message NatTypeChange {
@@ -108,11 +97,10 @@ message GossipEvent {
   uint64 counter = 2;
   oneof change {
     NetworkChange network = 3;
-    ExternalPortChange external_port = 4;
-    IdentityChange identity_pub = 5;
+    ObservedAddressChange observed_address = 4;
+    CertExpiryChange cert_expiry = 5;
     ServiceChange service = 6;
     ReachabilityChange reachability = 7;
-    ObservedExternalIPChange observed_external_ip = 8;
     PubliclyAccessibleChange publicly_accessible = 9;
     VivaldiCoordinateChange vivaldi = 10;
     NatTypeChange nat_type = 11;
@@ -127,7 +115,6 @@ message GossipEvent {
 
 message GossipEventBatch {
   repeated GossipEvent events = 1;
-  bool is_response = 2;
 }
 
 // RuntimeState is the on-disk format for daemon-managed runtime state (state.pb).
@@ -136,10 +123,11 @@ message RuntimeState {
   repeated ConsumedInvite consumed_invites = 2;
   repeated bytes denied_peers = 3;
   repeated WorkloadSpecChange workload_specs = 4;
+  bytes gossip_state = 5;
 }
 
 message PeerState {
-  bytes identity_pub = 1;
+  bytes peer_pub = 1;
   repeated string addresses = 2;
   uint32 port = 3;
   uint32 external_port = 4;

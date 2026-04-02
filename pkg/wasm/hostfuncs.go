@@ -11,6 +11,7 @@ const (
 	logLevelDebug uint64 = 0
 	logLevelInfo  uint64 = 1
 	logLevelWarn  uint64 = 2
+	logLevelError uint64 = 3
 )
 
 // InvocationRouter handles inter-workload RPC through the mesh.
@@ -44,7 +45,10 @@ func NewHostFunctions(logger *zap.SugaredLogger, router InvocationRouter) []exti
 				logger.Infow(msg)
 			case logLevelWarn:
 				logger.Warnw(msg)
+			case logLevelError:
+				logger.Errorw(msg)
 			default:
+				logger.Warnw("pollen_log: unknown log level", "level", level)
 				logger.Errorw(msg)
 			}
 		},

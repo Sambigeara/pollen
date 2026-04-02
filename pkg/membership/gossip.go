@@ -18,10 +18,10 @@ import (
 )
 
 func (s *Service) gossip(ctx context.Context) []state.Event {
-	clock := s.store.Snapshot().Clock()
-	clockBytes, err := clock.Marshal()
+	digest := s.store.Snapshot().Digest()
+	digestBytes, err := digest.Marshal()
 	if err != nil {
-		s.log.Warnw("failed to marshal clock", "err", err)
+		s.log.Warnw("failed to marshal digest", "err", err)
 		return nil
 	}
 	peers := s.mesh.ConnectedPeers()
@@ -37,9 +37,9 @@ func (s *Service) gossip(ctx context.Context) []state.Event {
 		wg.Go(func() {
 			gossipCtx, cancel := context.WithTimeout(ctx, gossipStreamTimeout)
 			defer cancel()
-			events, err := s.sendClockViaStream(gossipCtx, peerID, clockBytes)
+			events, err := s.sendDigestViaStream(gossipCtx, peerID, digestBytes)
 			if err != nil {
-				s.log.Debugw("clock gossip send failed", "peer", peerID.Short(), "err", err)
+				s.log.Debugw("digest gossip send failed", "peer", peerID.Short(), "err", err)
 				return
 			}
 			if len(events) > 0 {
@@ -53,69 +53,75 @@ func (s *Service) gossip(ctx context.Context) []state.Event {
 	return allEvents
 }
 
-func (s *Service) sendClockViaStream(ctx context.Context, peerID types.PeerKey, clockBytes []byte) ([]state.Event, error) {
-	stream, err := s.streams.OpenStream(ctx, peerID, transport.StreamTypeClock)
+func (s *Service) sendDigestViaStream(ctx context.Context, peerID types.PeerKey, digestBytes []byte) ([]state.Event, error) {
+	stream, err := s.streams.OpenStream(ctx, peerID, transport.StreamTypeDigest)
 	if err != nil {
-		return nil, fmt.Errorf("open clock stream to %s: %w", peerID.Short(), err)
+		return nil, fmt.Errorf("open digest stream to %s: %w", peerID.Short(), err)
 	}
+	defer stream.Close()
 
-	if _, err := stream.Write(clockBytes); err != nil {
-		stream.Close()
-		return nil, fmt.Errorf("write clock to %s: %w", peerID.Short(), err)
+	if _, err := stream.Write(digestBytes); err != nil {
+		return nil, fmt.Errorf("write digest to %s: %w", peerID.Short(), err)
 	}
 
 	if err := stream.CloseWrite(); err != nil {
-		return nil, fmt.Errorf("half-close clock stream to %s: %w", peerID.Short(), err)
+		return nil, fmt.Errorf("half-close digest stream to %s: %w", peerID.Short(), err)
 	}
 
 	resp, err := io.ReadAll(io.LimitReader(stream, maxResponseSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("read clock response from %s: %w", peerID.Short(), err)
+		return nil, fmt.Errorf("read digest response from %s: %w", peerID.Short(), err)
 	}
 	if len(resp) == 0 {
 		return nil, nil
 	}
 	if len(resp) > maxResponseSize {
-		return nil, fmt.Errorf("clock response from %s exceeded size limit (%d bytes)", peerID.Short(), len(resp))
+		return nil, fmt.Errorf("digest response from %s exceeded size limit (%d bytes)", peerID.Short(), len(resp))
 	}
 
 	events, _, err := s.store.ApplyDelta(peerID, resp)
 	if err != nil {
-		return nil, fmt.Errorf("apply clock response from %s: %w", peerID.Short(), err)
+		return nil, fmt.Errorf("apply digest response from %s: %w", peerID.Short(), err)
 	}
 	return events, nil
 }
 
-func (s *Service) HandleClockStream(ctx context.Context, stream transport.Stream, from types.PeerKey) {
+func (s *Service) HandleDigestStream(ctx context.Context, stream transport.Stream, from types.PeerKey) {
 	defer stream.Close()
-	_, span := s.tracer.Start(ctx, "gossip.handleClock")
+	_, span := s.tracer.Start(ctx, "gossip.handleDigest")
 	span.SetAttributes(attribute.String("peer", from.Short()))
 	defer span.End()
 
-	const maxClockSize = 256 << 10
-	b, err := io.ReadAll(io.LimitReader(stream, maxClockSize+1))
+	const maxDigestSize = 256 << 10
+	b, err := io.ReadAll(io.LimitReader(stream, maxDigestSize+1))
 	if err != nil {
-		s.log.Debugw("read clock stream failed", "peer", from.Short(), "err", err)
+		s.log.Debugw("read digest stream failed", "peer", from.Short(), "err", err)
 		return
 	}
-	if len(b) > maxClockSize {
-		s.log.Warnw("clock stream exceeded size limit", "peer", from.Short(), "size", len(b))
+	if len(b) > maxDigestSize {
+		s.log.Warnw("digest stream exceeded size limit", "peer", from.Short(), "size", len(b))
 		return
 	}
 
-	clock, err := state.UnmarshalClock(b)
+	digest, err := state.UnmarshalDigest(b)
 	if err != nil {
-		s.log.Debugw("unmarshal clock stream failed", "peer", from.Short(), "err", err)
+		s.log.Debugw("unmarshal digest stream failed", "peer", from.Short(), "err", err)
 		return
 	}
 
-	resp := s.store.EncodeDelta(clock)
+	resp := s.store.EncodeDelta(digest)
 	if len(resp) == 0 {
+		return
+	}
+	if len(resp) > maxResponseSize {
+		// TODO(saml): Paginate digest responses so large deltas can be streamed in
+		// bounded batches instead of being dropped when they exceed maxResponseSize.
+		s.log.Warnw("digest response exceeded size limit", "peer", from.Short(), "size", len(resp))
 		return
 	}
 
 	if _, err := stream.Write(resp); err != nil {
-		s.log.Debugw("write clock response failed", "peer", from.Short(), "err", err)
+		s.log.Debugw("write digest response failed", "peer", from.Short(), "err", err)
 	}
 }
 
@@ -162,15 +168,15 @@ func (s *Service) doEagerSync(ctx context.Context, peerKey types.PeerKey) {
 	s.lastEagerSync[peerKey] = time.Now()
 	s.mu.Unlock()
 
-	clockBytes, err := s.store.Snapshot().Clock().Marshal()
+	digestBytes, err := s.store.Snapshot().Digest().Marshal()
 	if err != nil {
-		s.log.Warnw("marshal clock for eager sync failed", "err", err)
+		s.log.Warnw("marshal digest for eager sync failed", "err", err)
 		return
 	}
 	s.wg.Go(func() {
 		eagerCtx, cancel := context.WithTimeout(ctx, eagerSyncTimeout)
 		defer cancel()
-		events, err := s.sendClockViaStream(eagerCtx, peerKey, clockBytes)
+		events, err := s.sendDigestViaStream(eagerCtx, peerKey, digestBytes)
 		if err != nil {
 			s.log.Debugw("eager sync failed", "peer", peerKey.Short(), "err", err)
 			s.eagerSyncFailures.Add(1)

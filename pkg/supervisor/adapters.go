@@ -12,6 +12,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/placement"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
+	"go.uber.org/zap"
 )
 
 type streamOpenAdapter struct{ t Transport }
@@ -84,7 +85,7 @@ func (t *supervisorTransportInfo) PeerRTT(pk types.PeerKey) (time.Duration, bool
 }
 
 func (t *supervisorTransportInfo) ReconnectWindowDuration() time.Duration {
-	return t.n.conf.ReconnectWindow
+	return t.n.reconnectWindow
 }
 
 type supervisorMetricsSource struct {
@@ -93,16 +94,17 @@ type supervisorMetricsSource struct {
 }
 
 func (m *supervisorMetricsSource) ControlMetrics() control.Metrics {
-	snap := m.providers.CollectSnapshot(context.Background())
+	snap, err := m.providers.CollectSnapshot(context.Background())
+	if err != nil {
+		zap.S().Warnw("metric snapshot collection failed", zap.Error(err))
+	}
 	cm := m.membership.ControlMetrics()
 	return control.Metrics{
-		CertExpirySeconds:  snap.Float64s["pollen.node.cert.expiry.seconds"],
-		CertRenewals:       uint64(snap.Int64s["pollen.node.cert.renewals"]),        //nolint:gosec
-		CertRenewalsFailed: uint64(snap.Int64s["pollen.node.cert.renewals.failed"]), //nolint:gosec
-		PunchAttempts:      uint64(snap.Int64s["pollen.node.punch.attempts"]),       //nolint:gosec
-		PunchFailures:      uint64(snap.Int64s["pollen.node.punch.failures"]),       //nolint:gosec
-		GossipApplied:      uint64(snap.Int64s["pollen.gossip.events.applied"]),     //nolint:gosec
-		GossipStale:        uint64(snap.Int64s["pollen.gossip.events.stale"]),       //nolint:gosec
+		CertExpirySeconds:  snap.CertExpirySeconds,
+		CertRenewals:       uint64(snap.CertRenewals),       //nolint:gosec
+		CertRenewalsFailed: uint64(snap.CertRenewalsFailed), //nolint:gosec
+		PunchAttempts:      uint64(snap.PunchAttempts),      //nolint:gosec
+		PunchFailures:      uint64(snap.PunchFailures),      //nolint:gosec
 		SmoothedVivaldiErr: cm.SmoothedErr,
 		VivaldiSamples:     uint64(cm.VivaldiSamples),    //nolint:gosec
 		EagerSyncs:         uint64(cm.EagerSyncs),        //nolint:gosec

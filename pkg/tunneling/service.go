@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -37,7 +38,7 @@ type TunnelingAPI interface {
 	Start(ctx context.Context) error
 	Stop() error
 
-	Connect(ctx context.Context, service, peer string) error
+	Connect(ctx context.Context, service string, peer types.PeerKey, localPort uint32) error
 	Disconnect(service string) error
 	ExposeService(port uint32, name string) error
 	UnexposeService(name string) error
@@ -116,9 +117,7 @@ type serviceHandler struct {
 type connectionHandler struct {
 	ln     net.Listener
 	cancel context.CancelFunc
-	remote uint32
 	local  uint32
-	peerID types.PeerKey
 }
 
 type trackedStream struct {
@@ -245,15 +244,9 @@ func (s *Service) TrafficRecorder() transport.TrafficRecorder {
 	return s.trafficTracker
 }
 
-func (s *Service) Connect(ctx context.Context, service, peer string) error {
-	peerID, err := types.PeerKeyFromString(peer)
-	if err != nil {
-		return fmt.Errorf("invalid peer key: %w", err)
-	}
-
+func (s *Service) Connect(ctx context.Context, service string, peerID types.PeerKey, localPort uint32) error {
 	snap := s.store.Snapshot()
-	p, ok := snap.Peer(peerID)
-	if !ok || len(p.IdentityPub) == 0 {
+	if _, ok := snap.Peer(peerID); !ok {
 		return errors.New("peerID not recognised")
 	}
 
@@ -262,7 +255,7 @@ func (s *Service) Connect(ctx context.Context, service, peer string) error {
 		return fmt.Errorf("service %q not found on peer %s", service, peerID.Short())
 	}
 
-	port, err := s.connectService(peerID, remotePort, 0)
+	port, err := s.connectService(peerID, remotePort, localPort)
 	if err != nil {
 		return err
 	}
@@ -276,7 +269,7 @@ func (s *Service) Disconnect(service string) error {
 	snap := s.store.Snapshot()
 	for key, conn := range s.desiredConnections {
 		if matchesServiceName(snap, conn.PeerID, conn.RemotePort, service) {
-			s.disconnectWhere(func(h connectionHandler) bool { return h.local == conn.LocalPort })
+			s.disconnectKey(connectionKey{peerID: conn.PeerID, port: conn.RemotePort})
 			delete(s.desiredConnections, key)
 			return nil
 		}
@@ -314,10 +307,10 @@ func (s *Service) ListConnections() []ConnectionInfo {
 	s.connectionMu.RLock()
 	defer s.connectionMu.RUnlock()
 	out := make([]ConnectionInfo, 0, len(s.connections))
-	for _, h := range s.connections {
+	for key, h := range s.connections {
 		out = append(out, ConnectionInfo{
-			PeerID:     h.peerID,
-			RemotePort: h.remote,
+			PeerID:     key.peerID,
+			RemotePort: key.port,
 			LocalPort:  h.local,
 		})
 	}
@@ -325,7 +318,15 @@ func (s *Service) ListConnections() []ConnectionInfo {
 }
 
 func (s *Service) HandlePeerDenied(peerID types.PeerKey) {
-	s.disconnectWhere(func(h connectionHandler) bool { return h.peerID == peerID })
+	s.connectionMu.Lock()
+	for key, h := range s.connections {
+		if key.peerID == peerID {
+			_ = h.ln.Close()
+			h.cancel()
+			delete(s.connections, key)
+		}
+	}
+	s.connectionMu.Unlock()
 	s.removeDesiredWhere(func(c ConnectionInfo) bool { return c.PeerID == peerID })
 }
 
@@ -336,10 +337,7 @@ func (s *Service) DesiredPeers() []types.PeerKey {
 	for _, c := range s.desiredConnections {
 		seen[c.PeerID] = struct{}{}
 	}
-	peers := make([]types.PeerKey, 0, len(seen))
-	for pk := range seen {
-		peers = append(peers, pk)
-	}
+	peers := slices.Collect(maps.Keys(seen))
 	return peers
 }
 
@@ -433,17 +431,11 @@ func (s *Service) registerService(port uint32) {
 }
 
 func (s *Service) connectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
-	if remotePort == 0 || remotePort > 0xffff {
-		return 0, errors.New("remote port missing")
-	}
-
 	s.connectionMu.Lock()
 	defer s.connectionMu.Unlock()
 
-	for _, h := range s.connections {
-		if h.peerID == peerID && h.remote == remotePort {
-			return 0, fmt.Errorf("already connected to port %d on peer %s (local port %d)", remotePort, peerID.Short(), h.local)
-		}
+	if h, ok := s.connections[connectionKey{peerID: peerID, port: remotePort}]; ok {
+		return 0, fmt.Errorf("already connected to port %d on peer %s (local port %d)", remotePort, peerID.Short(), h.local)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -488,15 +480,17 @@ func (s *Service) connectService(peerID types.PeerKey, remotePort, localPort uin
 				if s.trafficTracker != nil {
 					stream = wrapStream(stream, s.trafficTracker, peerID)
 				}
+				stop := context.AfterFunc(ctx, func() {
+					_ = clientConn.Close()
+				})
+				defer stop()
 				bridge(clientConn, stream)
 			})
 		}
 	})
 
-	s.connections[connectionKey{peerID: peerID, port: boundPort}] = connectionHandler{
+	s.connections[connectionKey{peerID: peerID, port: remotePort}] = connectionHandler{
 		cancel: cancel,
-		peerID: peerID,
-		remote: remotePort,
 		local:  boundPort,
 		ln:     ln,
 	}
@@ -504,15 +498,13 @@ func (s *Service) connectService(peerID types.PeerKey, remotePort, localPort uin
 	return boundPort, nil
 }
 
-func (s *Service) disconnectWhere(match func(connectionHandler) bool) {
+func (s *Service) disconnectKey(key connectionKey) {
 	s.connectionMu.Lock()
 	defer s.connectionMu.Unlock()
-	for key, h := range s.connections {
-		if match(h) {
-			_ = h.ln.Close()
-			h.cancel()
-			delete(s.connections, key)
-		}
+	if h, ok := s.connections[key]; ok {
+		_ = h.ln.Close()
+		h.cancel()
+		delete(s.connections, key)
 	}
 }
 
@@ -580,9 +572,7 @@ func (s *Service) reconcileConnections(snap state.Snapshot) {
 			continue
 		}
 		s.log.Infow("removing stale forward", "peer", conn.PeerID.Short(), "port", conn.RemotePort)
-		s.disconnectWhere(func(h connectionHandler) bool {
-			return h.peerID == conn.PeerID && h.remote == conn.RemotePort
-		})
+		s.disconnectKey(connectionKey{peerID: conn.PeerID, port: conn.RemotePort})
 		s.removeDesiredWhere(func(c ConnectionInfo) bool {
 			return c.PeerID == conn.PeerID && c.RemotePort == conn.RemotePort
 		})
@@ -599,20 +589,19 @@ func (s *Service) reconcileDesiredConnections(snap state.Snapshot) {
 		return
 	}
 
-	existing := make(map[desiredKey]struct{})
-	for _, conn := range s.ListConnections() {
-		existing[desiredKey{peerID: conn.PeerID, remotePort: conn.RemotePort, localPort: conn.LocalPort}] = struct{}{}
-	}
+	s.connectionMu.RLock()
+	connections := maps.Clone(s.connections)
+	s.connectionMu.RUnlock()
 
-	for _, dc := range desired {
-		if _, ok := existing[desiredKey{peerID: dc.PeerID, remotePort: dc.RemotePort, localPort: dc.LocalPort}]; ok {
+	for key, dc := range desired {
+		if _, ok := connections[connectionKey{peerID: dc.PeerID, port: dc.RemotePort}]; ok {
 			continue
 		}
 		if !peerHasServicePort(snap, dc.PeerID, dc.RemotePort) {
 			continue
 		}
 		p, ok := snap.Peer(dc.PeerID)
-		if !ok || len(p.IdentityPub) == 0 {
+		if !ok || len(p.PeerPub) == 0 {
 			continue
 		}
 		port, err := s.connectService(dc.PeerID, dc.RemotePort, dc.LocalPort)
@@ -620,7 +609,12 @@ func (s *Service) reconcileDesiredConnections(snap state.Snapshot) {
 			s.log.Debugw("failed restoring desired connection", "peer", dc.PeerID.Short(), "remotePort", dc.RemotePort, "localPort", dc.LocalPort, "err", err)
 			continue
 		}
-		s.addDesiredConnection(dc.PeerID, dc.RemotePort, port)
+		if port != dc.LocalPort {
+			s.mu.Lock()
+			delete(s.desiredConnections, key)
+			s.mu.Unlock()
+			s.addDesiredConnection(dc.PeerID, dc.RemotePort, port)
+		}
 	}
 }
 
@@ -685,17 +679,24 @@ func closeWrite(conn io.Closer) {
 }
 
 func findServicePort(snap state.Snapshot, peerID types.PeerKey, name string) (uint32, bool) {
-	for _, svc := range snap.Services() {
-		if svc.Peer == peerID && svc.Name == name {
-			return svc.Port, true
-		}
+	nv, ok := snap.Nodes[peerID]
+	if !ok {
+		return 0, false
 	}
-	return 0, false
+	svc, ok := nv.Services[name]
+	if !ok {
+		return 0, false
+	}
+	return svc.Port, true
 }
 
 func peerHasServicePort(snap state.Snapshot, peerID types.PeerKey, port uint32) bool {
-	for _, svc := range snap.Services() {
-		if svc.Peer == peerID && svc.Port == port {
+	nv, ok := snap.Nodes[peerID]
+	if !ok {
+		return false
+	}
+	for _, svc := range nv.Services {
+		if svc.Port == port {
 			return true
 		}
 	}
@@ -703,10 +704,10 @@ func peerHasServicePort(snap state.Snapshot, peerID types.PeerKey, port uint32) 
 }
 
 func matchesServiceName(snap state.Snapshot, peerID types.PeerKey, port uint32, name string) bool {
-	for _, svc := range snap.Services() {
-		if svc.Peer == peerID && svc.Port == port && svc.Name == name {
-			return true
-		}
+	nv, ok := snap.Nodes[peerID]
+	if !ok {
+		return false
 	}
-	return false
+	svc, ok := nv.Services[name]
+	return ok && svc.Port == port
 }

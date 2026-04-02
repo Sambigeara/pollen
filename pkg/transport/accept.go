@@ -85,7 +85,7 @@ func (m *impl) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 		payload, err := s.conn.ReceiveDatagram(ctx)
 		if err != nil {
 			reason := classifyQUICError(err)
-			if m.removePeer(ctx, peerKey, s, closeReasonDisconnected, reason) {
+			if m.removePeer(peerKey, s, closeReasonDisconnected, reason) {
 				m.log.Debugw("peer session died",
 					"peer", peerKey.Short(),
 					"reason", reason,
@@ -138,6 +138,10 @@ func classifyQUICError(err error) disconnectReason {
 			return disconnectCertExpired
 		case string(closeReasonCertRotation):
 			return disconnectCertRotation
+		case string(closeReasonDuplicate):
+			return disconnectDuplicate
+		case string(closeReasonShutdown):
+			return disconnectShutdown
 		default:
 			return disconnectGraceful
 		}

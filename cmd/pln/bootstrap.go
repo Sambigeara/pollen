@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -105,7 +104,8 @@ func runBootstrapSSH(cmd *cobra.Command, args []string) {
 }
 
 func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs []string, sshTarget string, expireAfter time.Duration) error {
-	issuerCtx, err := loadTokenIssuerContext(cmd)
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	issuerCtx, err := loadTokenIssuerContext(pollenDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return errors.New("this node cannot issue join tokens; only delegated admins can sign enrollment tokens")
@@ -113,7 +113,7 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 		return err
 	}
 
-	seedToken, err := createJoinTokenWithSigner(issuerCtx.signer, issuerCtx.cfg.CertTTLs.MembershipTTL(), relayPub, defaultBootstrapJoinTokenTTL, expireAfter, nil)
+	seedToken, err := createJoinTokenWithSigner(issuerCtx.signer, config.DefaultMembershipTTL, relayPub, defaultBootstrapJoinTokenTTL, expireAfter, nil)
 	if err != nil {
 		return fmt.Errorf("create relay seed token: %w", err)
 	}
@@ -131,11 +131,11 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 
 	sockPath := filepath.Join(issuerCtx.pollenDir, socketName)
 	if active, _ := nodeSocketActive(sockPath); active {
-		client := newControlClient(cmd)
+		client := newControlClient(pollenDir)
 		ctx := cmd.Context()
 		if _, err := client.ConnectPeer(ctx, connect.NewRequest(&controlv1.ConnectPeerRequest{
-			PeerId: relayPub,
-			Addrs:  relayAddrs,
+			PeerPub: relayPub,
+			Addrs:   relayAddrs,
 		})); err != nil {
 			return fmt.Errorf("connect running node to relay: %w", err)
 		}
@@ -143,12 +143,12 @@ func bootstrapAccept(cmd *cobra.Command, relayPub ed25519.PublicKey, relayAddrs 
 		return nil
 	}
 
-	_, localPub, err := auth.GenIdentityKey(issuerCtx.pollenDir)
+	_, localPub, err := auth.EnsureIdentityKey(issuerCtx.pollenDir)
 	if err != nil {
 		return err
 	}
 
-	joinToken, err := createJoinTokenWithSigner(issuerCtx.signer, issuerCtx.cfg.CertTTLs.MembershipTTL(), localPub, defaultJoinTokenTTL, expireAfter, []*admissionv1.BootstrapPeer{{
+	joinToken, err := createJoinTokenWithSigner(issuerCtx.signer, config.DefaultMembershipTTL, localPub, defaultJoinTokenTTL, expireAfter, []*admissionv1.BootstrapPeer{{
 		PeerPub: append([]byte(nil), relayPub...),
 		Addrs:   append([]string(nil), relayAddrs...),
 	}})
@@ -212,10 +212,7 @@ func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipT
 		accessDeadline = time.Now().Add(expireAfter)
 	}
 
-	token, err := auth.IssueJoinTokenWithIssuer(
-		signer.Priv,
-		signer.Trust,
-		signer.Issuer,
+	token, err := signer.IssueJoinToken(
 		subjectPub,
 		bootstrap,
 		time.Now(),
@@ -231,11 +228,14 @@ func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipT
 }
 
 func ensureRemotePollen(ctx context.Context, sshTarget string) error {
-	// Skip remote install when pln binary and system user already exist.
-	// This allows dev workflows that deploy the binary via scp + create the
-	// user/group/dirs externally (e.g. verify-hetzner.sh step 0).
-	check := exec.CommandContext(ctx, "ssh", sshTarget, "which pln >/dev/null 2>&1 && id pln >/dev/null 2>&1")
+	// Skip remote install when pln binary already exists. Run `pln provision`
+	// to ensure the system user, group, and state dirs are current.
+	check := exec.CommandContext(ctx, "ssh", sshTarget, "which pln >/dev/null 2>&1")
 	if check.Run() == nil {
+		cmd := sshRoot(ctx, sshTarget, "pln provision")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("remote provision failed: %w\n%s", err, strings.TrimSpace(string(out)))
+		}
 		return nil
 	}
 
@@ -261,23 +261,21 @@ func ensureRemotePollen(ctx context.Context, sshTarget string) error {
 
 func provisionRelayAdminDelegation(cmd *cobra.Command, sshTarget string, relayPub ed25519.PublicKey) error {
 	ctx := cmd.Context()
+	pollenDir, _ := cmd.Flags().GetString("dir")
 
-	issuerCtx, err := loadTokenIssuerContext(cmd)
+	issuerCtx, err := loadTokenIssuerContext(pollenDir)
 	if err != nil {
 		return err
 	}
-	if !slices.Equal(issuerCtx.signer.Trust.GetRootPub(), issuerCtx.signer.Issuer.GetClaims().GetSubjectPub()) {
+	if !issuerCtx.signer.IsRoot() {
 		return errors.New("only root admin can delegate relay admin certs")
 	}
 
-	cert, err := auth.IssueDelegationCert(
-		issuerCtx.signer.Priv,
-		nil,
-		issuerCtx.signer.Trust.GetClusterId(),
+	cert, err := issuerCtx.signer.IssueMemberCert(
 		relayPub,
 		auth.FullCapabilities(),
 		time.Now().Add(-time.Minute),
-		time.Now().Add(issuerCtx.cfg.CertTTLs.DelegationTTL()),
+		time.Now().Add(config.DefaultDelegationTTL),
 		time.Time{},
 	)
 	if err != nil {

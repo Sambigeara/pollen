@@ -39,7 +39,7 @@ override.tf.json
 terraform.rc
 
 to_llm.sh
-pln
+/pln
 .worktrees/
 
 # Build artifacts

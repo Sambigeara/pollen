@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sambigeara/pollen/pkg/wasm"
 )
@@ -23,66 +23,57 @@ func loadTestModule(t *testing.T, name string) []byte {
 
 func newTestRuntime(t *testing.T) *wasm.Runtime {
 	t.Helper()
-	rt := wasm.NewRuntime(nil, 0)
-	t.Cleanup(rt.Close)
+	rt, err := wasm.NewRuntime(nil, 2)
+	require.NoError(t, err)
+	t.Cleanup(func() { rt.Close(context.Background()) })
 	return rt
 }
 
 func TestCompileAndCall(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx := context.Background()
 	echoBytes := loadTestModule(t, "echo.wasm")
 
-	err := rt.Compile(ctx, echoBytes, "echohash", wasm.PluginConfig{})
+	err := rt.Compile(t.Context(), echoBytes, "echohash", wasm.NewPluginConfig(0, 0))
 	require.NoError(t, err)
 
-	out, err := rt.Call(ctx, "echohash", "handle", []byte("hello"))
+	out, err := rt.Call(t.Context(), "echohash", "handle", []byte("hello"))
 	require.NoError(t, err)
 	require.Equal(t, []byte("hello"), out)
 }
 
 func TestCompileCachesModule(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx := context.Background()
 	echoBytes := loadTestModule(t, "echo.wasm")
 
-	err := rt.Compile(ctx, echoBytes, "samehash", wasm.PluginConfig{})
+	err := rt.Compile(t.Context(), echoBytes, "samehash", wasm.NewPluginConfig(0, 0))
 	require.NoError(t, err)
 
-	err = rt.Compile(ctx, echoBytes, "samehash", wasm.PluginConfig{})
+	err = rt.Compile(t.Context(), echoBytes, "samehash", wasm.NewPluginConfig(0, 0))
 	require.NoError(t, err)
-
-	require.True(t, rt.IsCompiled("samehash"))
 }
 
 func TestDropCompiled(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx := context.Background()
 	echoBytes := loadTestModule(t, "echo.wasm")
 
-	err := rt.Compile(ctx, echoBytes, "drophash", wasm.PluginConfig{})
+	err := rt.Compile(t.Context(), echoBytes, "drophash", wasm.NewPluginConfig(0, 0))
 	require.NoError(t, err)
 
-	rt.DropCompiled("drophash")
+	rt.DropCompiled(t.Context(), "drophash")
 
-	require.False(t, rt.IsCompiled("drophash"))
-
-	_, err = rt.Call(ctx, "drophash", "handle", nil)
+	_, err = rt.Call(t.Context(), "drophash", "handle", nil)
 	require.Error(t, err)
 }
 
 func TestCallTimeout(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx := context.Background()
 	loopBytes := loadTestModule(t, "loop.wasm")
 
-	err := rt.Compile(ctx, loopBytes, "loophash", wasm.PluginConfig{
-		Timeout: 500 * time.Millisecond,
-	})
+	err := rt.Compile(t.Context(), loopBytes, "loophash", wasm.NewPluginConfig(0, 500*time.Millisecond))
 	require.NoError(t, err)
 
 	start := time.Now()
-	_, err = rt.Call(ctx, "loophash", "run", nil)
+	_, err = rt.Call(t.Context(), "loophash", "run", nil)
 	elapsed := time.Since(start)
 
 	require.Error(t, err)
@@ -92,72 +83,49 @@ func TestCallTimeout(t *testing.T) {
 
 func TestCallNonExistentFunction(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx := context.Background()
 	echoBytes := loadTestModule(t, "echo.wasm")
 
-	err := rt.Compile(ctx, echoBytes, "fnhash", wasm.PluginConfig{})
+	err := rt.Compile(t.Context(), echoBytes, "fnhash", wasm.NewPluginConfig(0, 0))
 	require.NoError(t, err)
 
-	_, err = rt.Call(ctx, "fnhash", "nonexistent", nil)
+	_, err = rt.Call(t.Context(), "fnhash", "nonexistent", nil)
 	require.Error(t, err)
-}
-
-func TestGreetModule(t *testing.T) {
-	rt := newTestRuntime(t)
-	ctx := context.Background()
-	greetBytes := loadTestModule(t, "greet.wasm")
-
-	err := rt.Compile(ctx, greetBytes, "greethash", wasm.PluginConfig{})
-	require.NoError(t, err)
-
-	out, err := rt.Call(ctx, "greethash", "greet", []byte("World"))
-	require.NoError(t, err)
-	require.Equal(t, "Hello, World!", string(out))
 }
 
 func TestConcurrentCalls(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx := t.Context()
 	echoBytes := loadTestModule(t, "echo.wasm")
 
-	err := rt.Compile(ctx, echoBytes, "conchash", wasm.PluginConfig{})
+	err := rt.Compile(t.Context(), echoBytes, "conchash", wasm.NewPluginConfig(0, 0))
 	require.NoError(t, err)
 
-	var wg sync.WaitGroup
-	errs := make([]error, 10)
+	var eg errgroup.Group
 	for i := range 10 {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			out, callErr := rt.Call(ctx, "conchash", "handle", []byte("concurrent"))
-			if callErr != nil {
-				errs[idx] = callErr
-				return
+		eg.Go(func() error {
+			out, err := rt.Call(t.Context(), "conchash", "handle", []byte("concurrent"))
+			if err != nil {
+				return fmt.Errorf("goroutine %d: %w", i, err)
 			}
 			if string(out) != "concurrent" {
-				errs[idx] = fmt.Errorf("goroutine %d: got %q, want %q", idx, out, "concurrent")
+				return fmt.Errorf("goroutine %d: got %q, want %q", i, out, "concurrent")
 			}
-		}(i)
+			return nil
+		})
 	}
-	wg.Wait()
-
-	for i, err := range errs {
-		require.NoError(t, err, "goroutine %d", i)
-	}
+	require.NoError(t, eg.Wait())
 }
 
 func TestCallConcurrencyLimit(t *testing.T) {
-	rt := wasm.NewRuntime(nil, 1)
+	rt, err := wasm.NewRuntime(nil, 1)
+	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	echoBytes := loadTestModule(t, "echo.wasm")
 	loopBytes := loadTestModule(t, "loop.wasm")
 
-	err := rt.Compile(ctx, echoBytes, "semhash", wasm.PluginConfig{})
+	err = rt.Compile(ctx, echoBytes, "semhash", wasm.NewPluginConfig(0, 0))
 	require.NoError(t, err)
-	err = rt.Compile(ctx, loopBytes, "loopsem", wasm.PluginConfig{
-		Timeout: 2 * time.Second,
-	})
+	err = rt.Compile(ctx, loopBytes, "loopsem", wasm.NewPluginConfig(0, 2*time.Second))
 	require.NoError(t, err)
 
 	// Start a long-running call that holds the single slot.
@@ -166,6 +134,12 @@ func TestCallConcurrencyLimit(t *testing.T) {
 		defer close(done)
 		_, _ = rt.Call(ctx, "loopsem", "run", nil)
 	}()
+
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		rt.Close(context.Background())
+	})
 
 	// Wait until the slot is occupied: a short-deadline call must fail.
 	require.Eventually(t, func() bool {
@@ -182,17 +156,11 @@ func TestCallConcurrencyLimit(t *testing.T) {
 	_, err = rt.Call(tightCtx, "semhash", "handle", []byte("blocked"))
 	require.Error(t, err)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
-
-	// Cancel the long-running call and wait for it to exit before cleanup.
-	cancel()
-	<-done
-	rt.Close()
 }
 
 func TestCallUncompiledModule(t *testing.T) {
 	rt := newTestRuntime(t)
-	ctx := context.Background()
 
-	_, err := rt.Call(ctx, "nohash", "handle", nil)
+	_, err := rt.Call(t.Context(), "nohash", "handle", nil)
 	require.Error(t, err)
 }

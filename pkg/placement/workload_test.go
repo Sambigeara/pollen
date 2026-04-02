@@ -28,8 +28,9 @@ func newTestManager(t *testing.T) *manager {
 	casStore, err := cas.New(t.TempDir())
 	require.NoError(t, err)
 
-	rt := wasm.NewRuntime(nil, 0)
-	t.Cleanup(rt.Close)
+	rt, err := wasm.NewRuntime(nil, 2)
+	require.NoError(t, err)
+	t.Cleanup(func() { rt.Close(context.Background()) })
 
 	return newManager(casStore, rt)
 }
@@ -37,7 +38,7 @@ func newTestManager(t *testing.T) *manager {
 func TestSeedAndCall(t *testing.T) {
 	mgr := newTestManager(t)
 
-	hash, err := mgr.Seed(context.Background(), echoWASM, wasm.PluginConfig{})
+	hash, err := mgr.Seed(context.Background(), echoWASM, wasm.NewPluginConfig(0, 0))
 	require.NoError(t, err)
 	require.Len(t, hash, 64)
 
@@ -57,10 +58,10 @@ func TestSeedAndCall(t *testing.T) {
 func TestSeedDuplicate(t *testing.T) {
 	mgr := newTestManager(t)
 
-	hash1, err := mgr.Seed(context.Background(), echoWASM, wasm.PluginConfig{})
+	hash1, err := mgr.Seed(context.Background(), echoWASM, wasm.NewPluginConfig(0, 0))
 	require.NoError(t, err)
 
-	hash2, err := mgr.Seed(context.Background(), echoWASM, wasm.PluginConfig{})
+	hash2, err := mgr.Seed(context.Background(), echoWASM, wasm.NewPluginConfig(0, 0))
 	require.ErrorIs(t, err, ErrAlreadyRunning)
 	require.Equal(t, hash1, hash2)
 }
@@ -75,7 +76,7 @@ func TestUnseedNotRunning(t *testing.T) {
 func TestClose(t *testing.T) {
 	mgr := newTestManager(t)
 
-	_, err := mgr.Seed(context.Background(), echoWASM, wasm.PluginConfig{})
+	_, err := mgr.Seed(context.Background(), echoWASM, wasm.NewPluginConfig(0, 0))
 	require.NoError(t, err)
 
 	mgr.Close()
@@ -85,7 +86,7 @@ func TestClose(t *testing.T) {
 func TestCallUnseeded(t *testing.T) {
 	mgr := newTestManager(t)
 
-	hash, err := mgr.Seed(context.Background(), echoWASM, wasm.PluginConfig{})
+	hash, err := mgr.Seed(context.Background(), echoWASM, wasm.NewPluginConfig(0, 0))
 	require.NoError(t, err)
 
 	err = mgr.Unseed(hash)

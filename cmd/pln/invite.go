@@ -1,12 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -30,7 +29,6 @@ func newInviteCmd() *cobra.Command {
 	cmd.Flags().String("subject", "", "Optional hex node public key to bind invite")
 	cmd.Flags().Duration("ttl", defaultJoinTokenTTL, "Invite token validity duration")
 	cmd.Flags().Duration("expire-after", 0, "Hard access expiry for the invited peer (e.g. 24h)")
-	cmd.Flags().StringArray("bootstrap", nil, "Bootstrap peer as <peer-pub-hex>@<host:port> (repeatable)")
 	return cmd
 }
 
@@ -53,25 +51,20 @@ func runInvite(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	bootstrapSpecs, err := cmd.Flags().GetStringArray("bootstrap")
-	if err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), err)
-		os.Exit(1)
-	}
-
 	expireAfter, err := getExpireAfterFlag(cmd)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
 
-	bootstraps, err := resolveBootstrapPeers(cmd, bootstrapSpecs)
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	bootstraps, err := resolveBootstrapPeers(cmd.Context(), pollenDir)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
 
-	encoded, err := createInviteToken(cmd, subjectPub, ttl, expireAfter, bootstraps)
+	encoded, err := createInviteToken(pollenDir, subjectPub, ttl, expireAfter, bootstraps)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
@@ -80,12 +73,12 @@ func runInvite(cmd *cobra.Command, args []string) {
 	fmt.Fprint(cmd.OutOrStdout(), encoded)
 }
 
-func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
+func createInviteToken(pollenDir string, subjectPub ed25519.PublicKey, ttl, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
 	if ttl <= 0 {
 		return "", errors.New("token ttl must be positive")
 	}
 
-	issuerCtx, err := loadTokenIssuerContext(cmd)
+	issuerCtx, err := loadTokenIssuerContext(pollenDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", errors.New("this node cannot issue invites; only delegated admins can sign invite tokens")
@@ -93,7 +86,7 @@ func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, ex
 		return "", err
 	}
 
-	token, err := auth.IssueInviteTokenWithSigner(issuerCtx.signer, subjectPub, bootstrap, time.Now(), ttl, expireAfter)
+	token, err := issuerCtx.signer.IssueInviteToken(subjectPub, bootstrap, time.Now(), ttl, expireAfter)
 	if err != nil {
 		return "", err
 	}
@@ -101,45 +94,40 @@ func createInviteToken(cmd *cobra.Command, subjectPub ed25519.PublicKey, ttl, ex
 	return auth.EncodeInviteToken(token)
 }
 
-func resolveBootstrapPeers(cmd *cobra.Command, specs []string) ([]*admissionv1.BootstrapPeer, error) {
-	if len(specs) > 0 {
-		return parseBootstrapSpecs(specs)
-	}
-
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		return nil, err
-	}
-
+func resolveBootstrapPeers(ctx context.Context, pollenDir string) ([]*admissionv1.BootstrapPeer, error) {
 	cfg, err := config.Load(pollenDir)
 	if err != nil {
 		return nil, err
 	}
-	registered, err := cfg.BootstrapProtoPeers()
-	if err != nil {
-		return nil, err
-	}
-	if len(registered) > 0 {
-		return registered, nil
+	if len(cfg.BootstrapPeers) > 0 {
+		peers := make([]*admissionv1.BootstrapPeer, 0, len(cfg.BootstrapPeers))
+		for peerHex, addrs := range cfg.BootstrapPeers {
+			pk, _ := types.PeerKeyFromString(peerHex)
+			peers = append(peers, &admissionv1.BootstrapPeer{
+				PeerPub: pk.Bytes(),
+				Addrs:   addrs,
+			})
+		}
+		return peers, nil
 	}
 
-	bootstrap, err := localBootstrapPeer(cmd)
+	bootstrap, err := localBootstrapPeer(ctx, pollenDir)
 	if err != nil {
 		return nil, err
 	}
 	return []*admissionv1.BootstrapPeer{bootstrap}, nil
 }
 
-func localBootstrapPeer(cmd *cobra.Command) (*admissionv1.BootstrapPeer, error) {
-	client := newControlClient(cmd)
-	resp, err := client.GetBootstrapInfo(cmd.Context(), connect.NewRequest(&controlv1.GetBootstrapInfoRequest{}))
+func localBootstrapPeer(ctx context.Context, pollenDir string) (*admissionv1.BootstrapPeer, error) {
+	client := newControlClient(pollenDir)
+	resp, err := client.GetBootstrapInfo(ctx, connect.NewRequest(&controlv1.GetBootstrapInfoRequest{}))
 	if err != nil {
 		return nil, err
 	}
 
 	if rec := resp.Msg.GetRecommended(); rec != nil && rec.GetPeer() != nil && len(rec.GetAddrs()) > 0 {
 		return &admissionv1.BootstrapPeer{
-			PeerPub: append([]byte(nil), rec.GetPeer().GetPeerId()...),
+			PeerPub: append([]byte(nil), rec.GetPeer().GetPeerPub()...),
 			Addrs:   append([]string(nil), rec.GetAddrs()...),
 		}, nil
 	}
@@ -153,7 +141,7 @@ func localBootstrapPeer(cmd *cobra.Command) (*admissionv1.BootstrapPeer, error) 
 	}
 
 	return &admissionv1.BootstrapPeer{
-		PeerPub: append([]byte(nil), self.GetPeer().GetPeerId()...),
+		PeerPub: append([]byte(nil), self.GetPeer().GetPeerPub()...),
 		Addrs:   append([]string(nil), self.GetAddrs()...),
 	}, nil
 }
@@ -180,61 +168,4 @@ func resolveInviteSubject(subjectFlag string, args []string) (ed25519.PublicKey,
 		return nil, err
 	}
 	return ed25519.PublicKey(pk.Bytes()), nil
-}
-
-func parseBootstrapSpecs(specs []string) ([]*admissionv1.BootstrapPeer, error) {
-	byPeer := map[string]*admissionv1.BootstrapPeer{}
-	var order []string
-
-	for _, spec := range specs {
-		parsed, err := parseBootstrapSpec(spec)
-		if err != nil {
-			return nil, err
-		}
-
-		key := hex.EncodeToString(parsed.pub)
-		entry, ok := byPeer[key]
-		if !ok {
-			entry = &admissionv1.BootstrapPeer{PeerPub: append([]byte(nil), parsed.pub...)}
-			byPeer[key] = entry
-			order = append(order, key)
-		}
-
-		if !slices.Contains(entry.Addrs, parsed.addr) {
-			entry.Addrs = append(entry.Addrs, parsed.addr)
-		}
-	}
-
-	out := make([]*admissionv1.BootstrapPeer, 0, len(order))
-	for _, key := range order {
-		out = append(out, byPeer[key])
-	}
-
-	return out, nil
-}
-
-func parseBootstrapSpec(spec string) (bootstrapInfo, error) {
-	spec = strings.TrimSpace(spec)
-	parts := strings.SplitN(spec, "@", 2) //nolint:mnd
-	if len(parts) != 2 {                  //nolint:mnd
-		return bootstrapInfo{}, errors.New("invalid bootstrap format, expected <peer-pub-hex>@<host:port>")
-	}
-
-	pk, err := types.PeerKeyFromString(parts[0])
-	if err != nil {
-		return bootstrapInfo{}, fmt.Errorf("parse bootstrap peer key: %w", err)
-	}
-	pub := ed25519.PublicKey(pk.Bytes())
-
-	addr, err := config.NormalizeRelayAddr(parts[1])
-	if err != nil {
-		return bootstrapInfo{}, fmt.Errorf("parse bootstrap address: %w", err)
-	}
-
-	return bootstrapInfo{pub: pub, addr: addr}, nil
-}
-
-type bootstrapInfo struct {
-	addr string
-	pub  ed25519.PublicKey
 }

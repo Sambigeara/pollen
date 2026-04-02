@@ -96,7 +96,6 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 			Coord:              kp.VivaldiCoord,
 			IPs:                kp.IPs,
 			NatType:            kp.NatType,
-			ObservedExternalIP: kp.ObservedExternalIP,
 			PubliclyAccessible: kp.PubliclyAccessible,
 		})
 	}
@@ -130,7 +129,6 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 	params.LocalIPs = localIPs
 	params.CurrentOutbound = currentOutbound
 	params.LocalNATType = n.natDetector.Type()
-	params.LocalObservedExternalIP = localNV.ObservedExternalIP
 	params.UseHMACNearest = n.useHMACNearest
 	targets := membership.ComputeTargetPeers(snap.LocalID, cm.LocalCoord, peerInfos, params)
 
@@ -143,6 +141,21 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 	n.topoMetrics.HMACNearestEnabled.Record(ctx, hmac)
 
 	targetSet := buildTargetPeerSet(targets, n.tunneling.DesiredPeers())
+
+	// TODO(saml): remove diagnostic logging once topology reconnection bug is resolved
+	for _, kp := range knownPeers {
+		if _, targeted := targetSet[kp.PeerID]; !targeted {
+			n.log.Debugw("topology: known peer not targeted",
+				"peer", kp.PeerID.Short(),
+				"public", kp.PubliclyAccessible,
+				"has_ips", len(kp.IPs) > 0,
+				"connected_count", activePeerCount,
+				"full_mesh", params.PreferFullMesh,
+				"known_count", len(knownPeers),
+				"target_count", len(targetSet),
+			)
+		}
+	}
 
 	for pk := range targetSet {
 		kp, ok := peerMap[pk]
@@ -214,6 +227,12 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 			n.topoMetrics.TopologyPrunes.Add(ctx, 1)
 		}
 		delete(n.nonTargetStreak, kp.PeerID)
+		// TODO(saml): remove diagnostic logging once topology reconnection bug is resolved
+		n.log.Debugw("topology: forgetting peer",
+			"peer", kp.PeerID.Short(),
+			"public", kp.PubliclyAccessible,
+			"connected", connected,
+		)
 		n.meshInternal.ForgetPeer(kp.PeerID)
 	}
 }

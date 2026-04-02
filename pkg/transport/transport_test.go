@@ -15,6 +15,7 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/transport"
@@ -34,6 +35,8 @@ func (c *testConsumer) TryConsume(token *admissionv1.InviteToken, _ time.Time) (
 	c.seen[id] = struct{}{}
 	return true, nil
 }
+
+func (c *testConsumer) Export() []*statev1.ConsumedInvite { return nil }
 
 type trafficRecord struct {
 	bytesIn  uint64
@@ -74,33 +77,42 @@ func (h *meshHarness) loopbackAddr() []netip.AddrPort {
 	return []netip.AddrPort{netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(h.port))}
 }
 
+func loadTestSigner(t *testing.T, priv ed25519.PrivateKey, rootPub ed25519.PublicKey, issuer *admissionv1.DelegationCert) *auth.DelegationSigner {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(rootPub, issuer)))
+	signer, err := auth.NewDelegationSigner(dir, priv, 24*time.Hour)
+	require.NoError(t, err)
+	return signer
+}
+
 type clusterAuth struct {
 	adminPriv ed25519.PrivateKey
-	trust     *admissionv1.TrustBundle
+	rootPub   ed25519.PublicKey
 }
 
 func newClusterAuth(t *testing.T) *clusterAuth {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	return &clusterAuth{adminPriv: priv, trust: auth.NewTrustBundle(pub)}
+	return &clusterAuth{adminPriv: priv, rootPub: pub}
 }
 
 func (c *clusterAuth) credsFor(t *testing.T, subject ed25519.PublicKey) *auth.NodeCredentials {
 	t.Helper()
-	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, c.trust.GetClusterId(), subject, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
+	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, subject, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
 	require.NoError(t, err)
-	return &auth.NodeCredentials{Trust: c.trust, Cert: cert}
+	return auth.NewNodeCredentials(c.rootPub, cert)
 }
 
 func (c *clusterAuth) tokenFor(t *testing.T, subject ed25519.PublicKey, bootstrap *meshHarness) *admissionv1.JoinToken {
 	t.Helper()
 	now := time.Now()
-	membershipTTL := config.CertTTLs{}.MembershipTTL()
-	rootPub := c.adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-	issuer, err := auth.IssueDelegationCert(c.adminPriv, nil, c.trust.GetClusterId(), rootPub, auth.FullCapabilities(), now.Add(-time.Minute), now.Add(membershipTTL), time.Time{})
+	membershipTTL := config.DefaultMembershipTTL
+	issuer, err := auth.IssueDelegationCert(c.adminPriv, nil, c.rootPub, auth.FullCapabilities(), now.Add(-time.Minute), now.Add(membershipTTL), time.Time{})
 	require.NoError(t, err)
-	token, err := auth.IssueJoinTokenWithIssuer(c.adminPriv, c.trust, issuer, subject, []*admissionv1.BootstrapPeer{{
+	signer := loadTestSigner(t, c.adminPriv, c.rootPub, issuer)
+	token, err := signer.IssueJoinToken(subject, []*admissionv1.BootstrapPeer{{
 		PeerPub: bootstrap.pubKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(bootstrap.port))},
 	}}, now, time.Hour, membershipTTL, time.Time{})
@@ -110,14 +122,11 @@ func (c *clusterAuth) tokenFor(t *testing.T, subject ed25519.PublicKey, bootstra
 
 func (c *clusterAuth) signer(t *testing.T) *auth.DelegationSigner {
 	t.Helper()
-	adminPub, ok := c.adminPriv.Public().(ed25519.PublicKey)
-	require.True(t, ok)
 
 	issuer, err := auth.IssueDelegationCert(
 		c.adminPriv,
 		nil,
-		c.trust.GetClusterId(),
-		adminPub,
+		c.rootPub,
 		auth.FullCapabilities(),
 		time.Now().Add(-time.Minute),
 		time.Now().Add(365*24*time.Hour),
@@ -125,12 +134,7 @@ func (c *clusterAuth) signer(t *testing.T) *auth.DelegationSigner {
 	)
 	require.NoError(t, err)
 
-	return &auth.DelegationSigner{
-		Priv:     c.adminPriv,
-		Trust:    c.trust,
-		Issuer:   issuer,
-		Consumed: &testConsumer{seen: make(map[string]struct{})},
-	}
+	return loadTestSigner(t, c.adminPriv, c.rootPub, issuer)
 }
 
 func TestJoinWithTokenHappyPath(t *testing.T) {
@@ -180,13 +184,12 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 
 	bootstrapCreds := cluster.credsFor(t, bootstrapPub)
 	signer := cluster.signer(t)
-	bootstrapCreds.DelegationKey = signer
+	bootstrapCreds.SetDelegationKey(signer)
 	bootstrap := startMeshHarnessWithCreds(t, bootstrapPriv, bootstrapPub, bootstrapCreds)
 
 	joiner := startMeshHarness(t, cluster)
 
-	invite, err := auth.IssueInviteTokenWithSigner(
-		cluster.signer(t),
+	invite, err := cluster.signer(t).IssueInviteToken(
 		nil,
 		[]*admissionv1.BootstrapPeer{{
 			PeerPub: bootstrap.pubKey,
@@ -225,13 +228,12 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 
 	bootstrapCreds := cluster.credsFor(t, bootstrapPub)
 	signer := cluster.signer(t)
-	bootstrapCreds.DelegationKey = signer
+	bootstrapCreds.SetDelegationKey(signer)
 	bootstrap := startMeshHarnessWithCreds(t, bootstrapPriv, bootstrapPub, bootstrapCreds)
 
 	joiner := startMeshHarness(t, cluster)
 
-	invite, err := auth.IssueInviteTokenWithSigner(
-		cluster.signer(t),
+	invite, err := cluster.signer(t).IssueInviteToken(
 		nil,
 		[]*admissionv1.BootstrapPeer{{
 			PeerPub: bootstrap.pubKey,
@@ -589,7 +591,7 @@ func TestOpenStreamRouteUpdateBetweenSnapshotAndLookup(t *testing.T) {
 func TestRoutedDeliveryRejectsNonTunnel(t *testing.T) {
 	const (
 		typeRouted byte = 3
-		typeClock  byte = 1
+		typeDigest byte = 1
 		typeTunnel byte = 2
 		headerLen       = 66 // routeHeaderSize
 		ttl        byte = 16
@@ -611,7 +613,7 @@ func TestRoutedDeliveryRejectsNonTunnel(t *testing.T) {
 	conn, ok := a.mesh.GetConn(b.peerKey)
 	require.True(t, ok)
 
-	// --- Negative: clock inner type must be rejected ---
+	// --- Negative: digest inner type must be rejected ---
 
 	stream, err := conn.OpenStreamSync(ctx)
 	require.NoError(t, err)
@@ -621,7 +623,7 @@ func TestRoutedDeliveryRejectsNonTunnel(t *testing.T) {
 	copy(hdr[1:33], b.peerKey[:])  // dest = B (local delivery)
 	copy(hdr[33:65], a.peerKey[:]) // source = A
 	hdr[65] = ttl
-	hdr[66] = typeClock // rejected
+	hdr[66] = typeDigest // rejected
 	_, err = stream.Write(hdr[:])
 	require.NoError(t, err)
 
@@ -717,9 +719,10 @@ func startMeshHarnessWithCreds(
 	peerKey := types.PeerKeyFromBytes(pub)
 	m, err := transport.New(peerKey, *creds, ":0",
 		transport.WithSigningKey(priv),
-		transport.WithTLSIdentityTTL(config.CertTTLs{}.TLSIdentityTTL()),
-		transport.WithMembershipTTL(config.CertTTLs{}.MembershipTTL()),
-		transport.WithReconnectWindow(config.CertTTLs{}.ReconnectWindowDuration()),
+		transport.WithTLSIdentityTTL(config.DefaultTLSIdentityTTL),
+		transport.WithMembershipTTL(config.DefaultMembershipTTL),
+		transport.WithReconnectWindow(config.DefaultReconnectWindow),
+		transport.WithInviteConsumer(&testConsumer{seen: make(map[string]struct{})}),
 	)
 	require.NoError(t, err)
 

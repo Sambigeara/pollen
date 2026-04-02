@@ -14,7 +14,7 @@ RestartSec=5
 
 # systemd creates /var/lib/pln owned by pln:pln (belt-and-suspenders with postinstall)
 StateDirectory=pln
-StateDirectoryMode=0770
+StateDirectoryMode=2770
 
 # Mesh daemon may maintain many peer connections.
 LimitNOFILE=1048576
@@ -34,7 +34,6 @@ ProtectProc=invisible
 
 # Privilege
 NoNewPrivileges=yes
-RestrictSUIDSGID=yes
 LockPersonality=yes
 RemoveIPC=yes
 

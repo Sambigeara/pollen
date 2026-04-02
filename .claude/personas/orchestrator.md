@@ -30,7 +30,7 @@ You are the node lifecycle and service tunneling specialist for Pollen. You thin
 - `node.Node.ConnectService(peerID, remotePort, localPort) (uint32, error)` — establish tunnel, return bound port
 - `node.Node.DisconnectService(localPort) error` — tear down tunnel and remove desired connection
 - `node.Node.GetConnectedPeers() []types.PeerKey` — currently connected peers
-- `node.GenIdentityKey(pollenDir) (priv, pub, error)` — generate or load Ed25519 identity
+- `node.EnsureIdentityKey(pollenDir) (priv, pub, error)` — load or generate Ed25519 identity
 - `node.ReadIdentityPub(pollenDir) (pub, error)` — read public key only
 - `node.Config` — `{AdvertisedIPs, BootstrapPeers, Port, GossipInterval, PeerTickInterval, GossipJitter, TLSIdentityTTL, MembershipTTL, DisableGossipJitter}`
 - `node.BootstrapPeer` — `{Addrs []string, PeerKey types.PeerKey}`

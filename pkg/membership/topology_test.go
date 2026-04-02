@@ -428,78 +428,6 @@ func TestNearestLANBypassesNATFilterBothUnknown(t *testing.T) {
 	require.Equal(t, peerKey(1), result[0])
 }
 
-func TestNearestSuppressesRemotePrivateByDefault(t *testing.T) {
-	local := coords.Coord{X: 0, Y: 0}
-	params := Params{
-		NearestK:                2,
-		LocalNATType:            nat.Easy,
-		LocalIPs:                []string{"10.1.2.10"},
-		LocalObservedExternalIP: "52.204.52.130",
-	}
-	peers := []PeerInfo{
-		{Key: peerKey(1), Coord: &coords.Coord{X: 1}, IPs: []string{"10.2.2.10"}, NatType: nat.Hard, ObservedExternalIP: "34.252.188.39"},
-		{Key: peerKey(2), Coord: &coords.Coord{X: 2}, PubliclyAccessible: true, IPs: []string{"3.250.216.148"}},
-	}
-
-	result := selectNearest(peerKey(0), local, peers, nil, params)
-	require.Equal(t, []types.PeerKey{peerKey(2)}, result)
-}
-
-func TestNearestKeepsSameSitePrivate(t *testing.T) {
-	local := coords.Coord{X: 0, Y: 0}
-	params := Params{
-		NearestK:                2,
-		LocalNATType:            nat.Easy,
-		LocalIPs:                []string{"10.1.2.10"},
-		LocalObservedExternalIP: "52.204.52.130",
-	}
-	peers := []PeerInfo{
-		{Key: peerKey(1), Coord: &coords.Coord{X: 1}, IPs: []string{"10.1.1.234"}, NatType: nat.Hard},
-		{Key: peerKey(2), Coord: &coords.Coord{X: 2}, IPs: []string{"10.2.2.10"}, NatType: nat.Hard, ObservedExternalIP: "34.252.188.39"},
-	}
-
-	result := selectNearest(peerKey(0), local, peers, nil, params)
-	require.Equal(t, []types.PeerKey{peerKey(1)}, result)
-}
-
-func TestNearestKeepsSharedObservedEgressPrivate(t *testing.T) {
-	local := coords.Coord{X: 0, Y: 0}
-	params := Params{
-		NearestK:                1,
-		LocalNATType:            nat.Easy,
-		LocalIPs:                []string{"10.1.2.10"},
-		LocalObservedExternalIP: "52.204.52.130",
-	}
-	peers := []PeerInfo{{
-		Key:                peerKey(1),
-		Coord:              &coords.Coord{X: 1},
-		IPs:                []string{"10.9.9.10"},
-		NatType:            nat.Hard,
-		ObservedExternalIP: "52.204.52.130",
-	}}
-
-	result := selectNearest(peerKey(0), local, peers, nil, params)
-	require.Equal(t, []types.PeerKey{peerKey(1)}, result)
-}
-
-func TestNearestDoesNotSuppressRemotePrivateWithoutObservedEgressSignal(t *testing.T) {
-	local := coords.Coord{X: 0, Y: 0}
-	params := Params{
-		NearestK:     1,
-		LocalNATType: nat.Easy,
-		LocalIPs:     []string{"10.1.2.10"},
-	}
-	peers := []PeerInfo{{
-		Key:     peerKey(1),
-		Coord:   &coords.Coord{X: 1},
-		IPs:     []string{"10.2.2.10"},
-		NatType: nat.Hard,
-	}}
-
-	result := selectNearest(peerKey(0), local, peers, nil, params)
-	require.Equal(t, []types.PeerKey{peerKey(1)}, result)
-}
-
 func TestLongLinksSkipsNonEasyPairs(t *testing.T) {
 	local := peerKey(0)
 	localIPs := []string{"10.0.1.5"}
@@ -550,32 +478,12 @@ func TestLongLinksEasyLocalKeepsAll(t *testing.T) {
 	require.Len(t, result, 3)
 }
 
-func TestLongLinksSuppressRemotePrivateByDefault(t *testing.T) {
-	local := peerKey(0)
-	params := Params{
-		RandomR:                 2,
-		Epoch:                   1,
-		LocalNATType:            nat.Easy,
-		LocalIPs:                []string{"10.1.2.10"},
-		LocalObservedExternalIP: "52.204.52.130",
-	}
-	peers := []PeerInfo{
-		{Key: peerKey(1), IPs: []string{"10.2.2.10"}, NatType: nat.Hard, ObservedExternalIP: "34.252.188.39"},
-		{Key: peerKey(2), IPs: []string{"3.250.216.148"}, PubliclyAccessible: true},
-		{Key: peerKey(3), IPs: []string{"10.1.1.234"}, NatType: nat.Hard},
-	}
-
-	result := selectLongLinks(local, peers, nil, params)
-	require.ElementsMatch(t, []types.PeerKey{peerKey(2), peerKey(3)}, result)
-}
-
 func TestComputeTargetPeersPreferFullMeshTargetsAllFeasiblePeers(t *testing.T) {
 	local := peerKey(0)
 	params := Params{
-		LocalIPs:                []string{"81.108.176.99", "192.168.0.203"},
-		LocalObservedExternalIP: "81.108.176.99",
-		LocalNATType:            nat.Unknown,
-		PreferFullMesh:          true,
+		LocalIPs:       []string{"81.108.176.99", "192.168.0.203"},
+		LocalNATType:   nat.Unknown,
+		PreferFullMesh: true,
 	}
 	peers := []PeerInfo{
 		{Key: peerKey(1), IPs: []string{"18.135.80.64"}, PubliclyAccessible: true},
@@ -587,16 +495,15 @@ func TestComputeTargetPeersPreferFullMeshTargetsAllFeasiblePeers(t *testing.T) {
 	require.Equal(t, []types.PeerKey{peerKey(1), peerKey(2), peerKey(3)}, result)
 }
 
-func TestComputeTargetPeersPreferFullMeshSkipsInfeasibleRemotePrivate(t *testing.T) {
+func TestComputeTargetPeersPreferFullMeshSkipsHardHardNonLAN(t *testing.T) {
 	local := peerKey(0)
 	params := Params{
-		LocalIPs:                []string{"10.1.2.10"},
-		LocalObservedExternalIP: "52.204.52.130",
-		LocalNATType:            nat.Hard,
-		PreferFullMesh:          true,
+		LocalIPs:       []string{"10.1.2.10"},
+		LocalNATType:   nat.Hard,
+		PreferFullMesh: true,
 	}
 	peers := []PeerInfo{
-		{Key: peerKey(1), IPs: []string{"10.2.2.10"}, NatType: nat.Hard, ObservedExternalIP: "34.252.188.39"},
+		{Key: peerKey(1), IPs: []string{"10.2.2.10"}, NatType: nat.Hard},
 		{Key: peerKey(2), IPs: []string{"3.250.216.148"}, PubliclyAccessible: true},
 	}
 

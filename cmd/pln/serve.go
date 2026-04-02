@@ -11,6 +11,7 @@ import (
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/plnfs"
 )
 
 func newServeCmd() *cobra.Command {
@@ -44,8 +45,8 @@ func runServe(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	if err := plnfs.EnsureDir(pollenDir); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
@@ -55,7 +56,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 	sockPath := filepath.Join(pollenDir, socketName)
 	if running, _ := nodeSocketActive(sockPath); running {
-		client := newControlClient(cmd)
+		client := newControlClient(pollenDir)
 		req := &controlv1.RegisterServiceRequest{Port: uint32(port)}
 		if name != "" {
 			req.Name = &name
@@ -89,22 +90,27 @@ func runUnserve(cmd *cobra.Command, args []string) {
 		name = arg
 	}
 
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	if err := plnfs.EnsureDir(pollenDir); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
 
 	cfg := loadConfigOrDefault(pollenDir)
-	if name != "" {
-		cfg.RemoveService(name)
-	} else {
-		cfg.RemoveServiceByPort(port)
+	if name == "" {
+		name = strconv.FormatUint(uint64(port), 10)
 	}
+	resolved, err := resolveServiceByPrefix(cfg.Services, name)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		os.Exit(1)
+	}
+	name = resolved
+	cfg.RemoveService(name)
 
 	sockPath := filepath.Join(pollenDir, socketName)
 	if running, _ := nodeSocketActive(sockPath); running {
-		client := newControlClient(cmd)
+		client := newControlClient(pollenDir)
 		req := &controlv1.UnregisterServiceRequest{Port: port}
 		if name != "" {
 			req.Name = &name

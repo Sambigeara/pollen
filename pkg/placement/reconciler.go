@@ -266,10 +266,7 @@ func (r *reconciler) executeClaim(ctx context.Context, hash string, peers []type
 		}
 	}
 
-	cfg := wasm.PluginConfig{
-		MemoryPages: sv.Spec.GetMemoryPages(),
-		Timeout:     time.Duration(sv.Spec.GetTimeoutMs()) * time.Millisecond,
-	}
+	cfg := wasm.NewPluginConfig(sv.Spec.GetMemoryPages(), time.Duration(sv.Spec.GetTimeoutMs())*time.Millisecond)
 	if err := r.workloads.SeedFromCAS(ctx, hash, cfg); err != nil {
 		r.log.Warnw("seed from CAS failed", "hash", hash, "err", err)
 		return

@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -28,23 +26,18 @@ func TestSpanContextFromTraceID_Nil(t *testing.T) {
 	require.False(t, sc.HasTraceID())
 }
 
-func TestZapSpanExporter_RecordsSpans(t *testing.T) {
-	recorder := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
-	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-
-	tracer := tp.Tracer("test")
+func TestProvider_Smoke(t *testing.T) {
+	p := NewProviders()
+	tracer := p.Tracer().Tracer("test")
 	_, span := tracer.Start(context.Background(), "test.op")
 	span.End()
-
-	spans := recorder.Ended()
-	require.Len(t, spans, 1)
-	require.Equal(t, "test.op", spans[0].Name())
+	require.NoError(t, p.Shutdown(context.Background()))
 }
 
-func TestNoopProvider_NoSpans(t *testing.T) {
+func TestNoopProvider_Smoke(t *testing.T) {
 	p := NewNoopProviders()
-	tracer := p.Tracer.Tracer("test")
+	tracer := p.Tracer().Tracer("test")
 	_, span := tracer.Start(context.Background(), "noop.op")
 	span.End()
+	require.NoError(t, p.Shutdown(context.Background()))
 }

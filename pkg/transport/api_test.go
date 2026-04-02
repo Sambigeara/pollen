@@ -21,7 +21,7 @@ func TestPeerEventTypeConstants(t *testing.T) {
 }
 
 func TestStreamTypeConstantsExported(t *testing.T) {
-	require.Equal(t, transport.StreamType(1), transport.StreamTypeClock)
+	require.Equal(t, transport.StreamType(1), transport.StreamTypeDigest)
 	require.Equal(t, transport.StreamType(2), transport.StreamTypeTunnel)
 	require.Equal(t, transport.StreamType(3), transport.StreamTypeRouted)
 	require.Equal(t, transport.StreamType(4), transport.StreamTypeArtifact)

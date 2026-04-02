@@ -100,12 +100,12 @@ func setPeerObservedExternalIP(tb testing.TB, s state.StateStore, peerID types.P
 	applyTestEvents(tb, s, []*statev1.GossipEvent{{
 		PeerId:  peerID.String(),
 		Counter: counter,
-		Change: &statev1.GossipEvent_ObservedExternalIp{
-			ObservedExternalIp: &statev1.ObservedExternalIPChange{Ip: ip},
+		Change: &statev1.GossipEvent_ObservedAddress{
+			ObservedAddress: &statev1.ObservedAddressChange{Ip: ip},
 		},
 	}})
 }
 
 func setLocalObservedExternalIP(_ testing.TB, s state.StateStore, ip string) {
-	s.SetLocalObservedExternalIP(ip)
+	s.SetLocalObservedAddress(ip, 0)
 }

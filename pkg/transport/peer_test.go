@@ -41,6 +41,7 @@ func TestDisconnectReasonRetryDelays(t *testing.T) {
 		{disconnectTopologyPrune, unreachableRetryInterval},
 		{disconnectDenied, unreachableRetryInterval},
 		{disconnectUnknown, unknownDisconnectRetryInterval},
+		{disconnectShutdown, resetRetryInterval},
 	}
 
 	for _, tt := range tests {
@@ -61,6 +62,27 @@ func TestDisconnectReasonRetryDelays(t *testing.T) {
 			require.Equal(t, now.Add(tt.delay), p.NextActionAt)
 		})
 	}
+}
+
+func TestDisconnectDuplicateSchedulesReconnect(t *testing.T) {
+	s := newPeerStore()
+	key := testPeerKey(1)
+	now := time.Now()
+
+	setupConnectedPeer(t, s, key, now)
+
+	s.step(now, peerDisconnected{PeerKey: key, Reason: disconnectDuplicate})
+
+	p, ok := s.get(key)
+	require.True(t, ok)
+	require.Equal(t, peerStateDiscovered, p.State)
+	require.Equal(t, connectStageEagerRetry, p.Stage)
+	require.Equal(t, now.Add(unknownDisconnectRetryInterval), p.NextActionAt)
+
+	outputs := s.step(now.Add(unknownDisconnectRetryInterval+time.Millisecond), tick{})
+	require.Len(t, outputs, 1)
+	_, ok = outputs[0].(attemptEagerConnect)
+	require.True(t, ok)
 }
 
 func TestDisconnectTickReconnectCycle(t *testing.T) {

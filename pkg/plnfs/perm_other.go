@@ -1,13 +1,14 @@
 //go:build !linux
 
-package config
+package plnfs
 
 import "os"
 
-func SetGroupDir(_ string) error      { return nil }
-func SetGroupReadable(_ string) error { return nil }
-func SetGroupSocket(_ string) error   { return nil }
-func setPlnGroup(_ string) error      { return nil }
+func SetGroupSocket(_ string) error { return nil }
+
+func setPerm(path string, mode os.FileMode) error {
+	return os.Chmod(path, mode)
+}
 
 // EnsureDir creates a directory (and parents) with mode 0700.
 // On non-Linux platforms no group ownership is set.

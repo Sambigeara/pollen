@@ -18,53 +18,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-func (m *TrustBundle) MarshalVT() (dAtA []byte, err error) {
-	if m == nil {
-		return nil, nil
-	}
-	size := m.SizeVT()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *TrustBundle) MarshalToVT(dAtA []byte) (int, error) {
-	size := m.SizeVT()
-	return m.MarshalToSizedBufferVT(dAtA[:size])
-}
-
-func (m *TrustBundle) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
-	if m == nil {
-		return 0, nil
-	}
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if m.unknownFields != nil {
-		i -= len(m.unknownFields)
-		copy(dAtA[i:], m.unknownFields)
-	}
-	if len(m.RootPub) > 0 {
-		i -= len(m.RootPub)
-		copy(dAtA[i:], m.RootPub)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.RootPub)))
-		i--
-		dAtA[i] = 0x12
-	}
-	if len(m.ClusterId) > 0 {
-		i -= len(m.ClusterId)
-		copy(dAtA[i:], m.ClusterId)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.ClusterId)))
-		i--
-		dAtA[i] = 0xa
-	}
-	return len(dAtA) - i, nil
-}
-
 func (m *Capabilities) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
@@ -156,22 +109,22 @@ func (m *DelegationCertClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) 
 	if m.AccessDeadlineUnix != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.AccessDeadlineUnix))
 		i--
-		dAtA[i] = 0x40
+		dAtA[i] = 0x38
 	}
 	if m.Serial != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Serial))
 		i--
-		dAtA[i] = 0x38
+		dAtA[i] = 0x30
 	}
 	if m.NotAfterUnix != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.NotAfterUnix))
 		i--
-		dAtA[i] = 0x30
+		dAtA[i] = 0x28
 	}
 	if m.NotBeforeUnix != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.NotBeforeUnix))
 		i--
-		dAtA[i] = 0x28
+		dAtA[i] = 0x20
 	}
 	if m.Capabilities != nil {
 		size, err := m.Capabilities.MarshalToSizedBufferVT(dAtA[:i])
@@ -181,26 +134,19 @@ func (m *DelegationCertClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) 
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x22
+		dAtA[i] = 0x1a
 	}
 	if len(m.IssuerPub) > 0 {
 		i -= len(m.IssuerPub)
 		copy(dAtA[i:], m.IssuerPub)
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.IssuerPub)))
 		i--
-		dAtA[i] = 0x1a
+		dAtA[i] = 0x12
 	}
 	if len(m.SubjectPub) > 0 {
 		i -= len(m.SubjectPub)
 		copy(dAtA[i:], m.SubjectPub)
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.SubjectPub)))
-		i--
-		dAtA[i] = 0x12
-	}
-	if len(m.ClusterId) > 0 {
-		i -= len(m.ClusterId)
-		copy(dAtA[i:], m.ClusterId)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.ClusterId)))
 		i--
 		dAtA[i] = 0xa
 	}
@@ -351,12 +297,12 @@ func (m *JoinTokenClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.ExpiresAtUnix != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.ExpiresAtUnix))
 		i--
-		dAtA[i] = 0x38
+		dAtA[i] = 0x30
 	}
 	if m.IssuedAtUnix != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.IssuedAtUnix))
 		i--
-		dAtA[i] = 0x30
+		dAtA[i] = 0x28
 	}
 	if len(m.Bootstrap) > 0 {
 		for iNdEx := len(m.Bootstrap) - 1; iNdEx >= 0; iNdEx-- {
@@ -367,7 +313,7 @@ func (m *JoinTokenClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			i -= size
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 			i--
-			dAtA[i] = 0x2a
+			dAtA[i] = 0x22
 		}
 	}
 	if m.MemberCert != nil {
@@ -378,20 +324,10 @@ func (m *JoinTokenClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x22
+		dAtA[i] = 0x1a
 	}
 	if m.Issuer != nil {
 		size, err := m.Issuer.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
-		i--
-		dAtA[i] = 0x1a
-	}
-	if m.Trust != nil {
-		size, err := m.Trust.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
@@ -493,24 +429,24 @@ func (m *InviteTokenClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.MembershipTtlSeconds != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.MembershipTtlSeconds))
 		i--
-		dAtA[i] = 0x40
+		dAtA[i] = 0x38
 	}
 	if m.ExpiresAtUnix != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.ExpiresAtUnix))
 		i--
-		dAtA[i] = 0x38
+		dAtA[i] = 0x30
 	}
 	if m.IssuedAtUnix != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.IssuedAtUnix))
 		i--
-		dAtA[i] = 0x30
+		dAtA[i] = 0x28
 	}
 	if len(m.SubjectPub) > 0 {
 		i -= len(m.SubjectPub)
 		copy(dAtA[i:], m.SubjectPub)
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.SubjectPub)))
 		i--
-		dAtA[i] = 0x2a
+		dAtA[i] = 0x22
 	}
 	if len(m.Bootstrap) > 0 {
 		for iNdEx := len(m.Bootstrap) - 1; iNdEx >= 0; iNdEx-- {
@@ -521,21 +457,11 @@ func (m *InviteTokenClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			i -= size
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 			i--
-			dAtA[i] = 0x22
+			dAtA[i] = 0x1a
 		}
 	}
 	if m.Issuer != nil {
 		size, err := m.Issuer.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
-		i--
-		dAtA[i] = 0x1a
-	}
-	if m.Trust != nil {
-		size, err := m.Trust.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
@@ -604,24 +530,6 @@ func (m *InviteToken) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *TrustBundle) SizeVT() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	l = len(m.ClusterId)
-	if l > 0 {
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	l = len(m.RootPub)
-	if l > 0 {
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	n += len(m.unknownFields)
-	return n
-}
-
 func (m *Capabilities) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -647,10 +555,6 @@ func (m *DelegationCertClaims) SizeVT() (n int) {
 	}
 	var l int
 	_ = l
-	l = len(m.ClusterId)
-	if l > 0 {
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
 	l = len(m.SubjectPub)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
@@ -733,10 +637,6 @@ func (m *JoinTokenClaims) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.Trust != nil {
-		l = m.Trust.SizeVT()
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
 	if m.Issuer != nil {
 		l = m.Issuer.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
@@ -789,10 +689,6 @@ func (m *InviteTokenClaims) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.Trust != nil {
-		l = m.Trust.SizeVT()
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
 	if m.Issuer != nil {
 		l = m.Issuer.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
@@ -838,125 +734,6 @@ func (m *InviteToken) SizeVT() (n int) {
 	return n
 }
 
-func (m *TrustBundle) UnmarshalVT(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return protohelpers.ErrIntOverflow
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: TrustBundle: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: TrustBundle: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field ClusterId", wireType)
-			}
-			var byteLen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				byteLen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if byteLen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + byteLen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.ClusterId = append(m.ClusterId[:0], dAtA[iNdEx:postIndex]...)
-			if m.ClusterId == nil {
-				m.ClusterId = []byte{}
-			}
-			iNdEx = postIndex
-		case 2:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field RootPub", wireType)
-			}
-			var byteLen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				byteLen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if byteLen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + byteLen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.RootPub = append(m.RootPub[:0], dAtA[iNdEx:postIndex]...)
-			if m.RootPub == nil {
-				m.RootPub = []byte{}
-			}
-			iNdEx = postIndex
-		default:
-			iNdEx = preIndex
-			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
 func (m *Capabilities) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -1098,40 +875,6 @@ func (m *DelegationCertClaims) UnmarshalVT(dAtA []byte) error {
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field ClusterId", wireType)
-			}
-			var byteLen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				byteLen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if byteLen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + byteLen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.ClusterId = append(m.ClusterId[:0], dAtA[iNdEx:postIndex]...)
-			if m.ClusterId == nil {
-				m.ClusterId = []byte{}
-			}
-			iNdEx = postIndex
-		case 2:
-			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field SubjectPub", wireType)
 			}
 			var byteLen int
@@ -1164,7 +907,7 @@ func (m *DelegationCertClaims) UnmarshalVT(dAtA []byte) error {
 				m.SubjectPub = []byte{}
 			}
 			iNdEx = postIndex
-		case 3:
+		case 2:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field IssuerPub", wireType)
 			}
@@ -1198,7 +941,7 @@ func (m *DelegationCertClaims) UnmarshalVT(dAtA []byte) error {
 				m.IssuerPub = []byte{}
 			}
 			iNdEx = postIndex
-		case 4:
+		case 3:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Capabilities", wireType)
 			}
@@ -1234,7 +977,7 @@ func (m *DelegationCertClaims) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
-		case 5:
+		case 4:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field NotBeforeUnix", wireType)
 			}
@@ -1253,7 +996,7 @@ func (m *DelegationCertClaims) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-		case 6:
+		case 5:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field NotAfterUnix", wireType)
 			}
@@ -1272,7 +1015,7 @@ func (m *DelegationCertClaims) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-		case 7:
+		case 6:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Serial", wireType)
 			}
@@ -1291,7 +1034,7 @@ func (m *DelegationCertClaims) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-		case 8:
+		case 7:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field AccessDeadlineUnix", wireType)
 			}
@@ -1667,42 +1410,6 @@ func (m *JoinTokenClaims) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Trust", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if m.Trust == nil {
-				m.Trust = &TrustBundle{}
-			}
-			if err := m.Trust.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
-			iNdEx = postIndex
-		case 3:
-			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Issuer", wireType)
 			}
 			var msglen int
@@ -1737,7 +1444,7 @@ func (m *JoinTokenClaims) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
-		case 4:
+		case 3:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field MemberCert", wireType)
 			}
@@ -1773,7 +1480,7 @@ func (m *JoinTokenClaims) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
-		case 5:
+		case 4:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Bootstrap", wireType)
 			}
@@ -1807,7 +1514,7 @@ func (m *JoinTokenClaims) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
-		case 6:
+		case 5:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field IssuedAtUnix", wireType)
 			}
@@ -1826,7 +1533,7 @@ func (m *JoinTokenClaims) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-		case 7:
+		case 6:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field ExpiresAtUnix", wireType)
 			}
@@ -2051,42 +1758,6 @@ func (m *InviteTokenClaims) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Trust", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if m.Trust == nil {
-				m.Trust = &TrustBundle{}
-			}
-			if err := m.Trust.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
-			iNdEx = postIndex
-		case 3:
-			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Issuer", wireType)
 			}
 			var msglen int
@@ -2121,7 +1792,7 @@ func (m *InviteTokenClaims) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
-		case 4:
+		case 3:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Bootstrap", wireType)
 			}
@@ -2155,7 +1826,7 @@ func (m *InviteTokenClaims) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
-		case 5:
+		case 4:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field SubjectPub", wireType)
 			}
@@ -2189,7 +1860,7 @@ func (m *InviteTokenClaims) UnmarshalVT(dAtA []byte) error {
 				m.SubjectPub = []byte{}
 			}
 			iNdEx = postIndex
-		case 6:
+		case 5:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field IssuedAtUnix", wireType)
 			}
@@ -2208,7 +1879,7 @@ func (m *InviteTokenClaims) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-		case 7:
+		case 6:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field ExpiresAtUnix", wireType)
 			}
@@ -2227,7 +1898,7 @@ func (m *InviteTokenClaims) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-		case 8:
+		case 7:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field MembershipTtlSeconds", wireType)
 			}

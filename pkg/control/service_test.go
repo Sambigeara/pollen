@@ -2,6 +2,8 @@ package control_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -90,11 +92,11 @@ type fakeTunneling struct {
 	exposedName      string
 	unexposedName    string
 	connectedService string
-	connectedPeer    string
+	connectedPeer    types.PeerKey
 	disconnectedName string
 }
 
-func (f *fakeTunneling) Connect(_ context.Context, service, peer string) error {
+func (f *fakeTunneling) Connect(_ context.Context, service string, peer types.PeerKey, _ uint32) error {
 	f.connectedService = service
 	f.connectedPeer = peer
 	return f.connectErr
@@ -270,8 +272,8 @@ func TestConnectPeer(t *testing.T) {
 	svc := control.NewService(nil, nil, nil, nil, control.WithMeshConnector(fc))
 
 	_, err := svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
-		PeerId: pk.Bytes(),
-		Addrs:  []string{"1.2.3.4:5000"},
+		PeerPub: pk.Bytes(),
+		Addrs:   []string{"1.2.3.4:5000"},
 	})
 	require.NoError(t, err)
 	require.Equal(t, pk, fc.calledPeer)
@@ -281,7 +283,7 @@ func TestConnectPeer(t *testing.T) {
 func TestConnectPeerNoConnector(t *testing.T) {
 	svc := control.NewService(nil, nil, nil, nil)
 	_, err := svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
-		PeerId: testPeerKey(1).Bytes(),
+		PeerPub: testPeerKey(1).Bytes(),
 	})
 	require.Error(t, err)
 	st, _ := status.FromError(err)
@@ -293,8 +295,8 @@ func TestConnectPeerInvalidAddr(t *testing.T) {
 	svc := control.NewService(nil, nil, nil, nil, control.WithMeshConnector(fc))
 
 	_, err := svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
-		PeerId: testPeerKey(1).Bytes(),
-		Addrs:  []string{"not-an-addr"},
+		PeerPub: testPeerKey(1).Bytes(),
+		Addrs:   []string{"not-an-addr"},
 	})
 	require.Error(t, err)
 	st, _ := status.FromError(err)
@@ -306,8 +308,8 @@ func TestConnectPeerError(t *testing.T) {
 	svc := control.NewService(nil, nil, nil, nil, control.WithMeshConnector(fc))
 
 	_, err := svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
-		PeerId: testPeerKey(1).Bytes(),
-		Addrs:  []string{"1.2.3.4:5000"},
+		PeerPub: testPeerKey(1).Bytes(),
+		Addrs:   []string{"1.2.3.4:5000"},
 	})
 	require.Error(t, err)
 	st, _ := status.FromError(err)
@@ -440,9 +442,10 @@ func TestCallWorkloadInternalError(t *testing.T) {
 func TestDenyPeer(t *testing.T) {
 	fm := &fakeMembership{}
 	pk := testPeerKey(5)
-	svc := control.NewService(fm, nil, nil, nil, control.WithCredentials(&dummyCreds))
+	dc := dummyCreds(t)
+	svc := control.NewService(fm, nil, nil, nil, control.WithCredentials(&dc))
 
-	_, err := svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{PeerId: pk.Bytes()})
+	_, err := svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{PeerPub: pk.Bytes()})
 	require.NoError(t, err)
 	require.Equal(t, pk, fm.deniedKey)
 }
@@ -451,7 +454,7 @@ func TestDenyPeerNoCreds(t *testing.T) {
 	fm := &fakeMembership{}
 	svc := control.NewService(fm, nil, nil, nil)
 
-	_, err := svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{PeerId: testPeerKey(5).Bytes()})
+	_, err := svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{PeerPub: testPeerKey(5).Bytes()})
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.FailedPrecondition, st.Code())
@@ -459,9 +462,10 @@ func TestDenyPeerNoCreds(t *testing.T) {
 
 func TestDenyPeerError(t *testing.T) {
 	fm := &fakeMembership{denyErr: errors.New("boom")}
-	svc := control.NewService(fm, nil, nil, nil, control.WithCredentials(&dummyCreds))
+	dc := dummyCreds(t)
+	svc := control.NewService(fm, nil, nil, nil, control.WithCredentials(&dc))
 
-	_, err := svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{PeerId: testPeerKey(5).Bytes()})
+	_, err := svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{PeerPub: testPeerKey(5).Bytes()})
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.Internal, st.Code())
@@ -473,7 +477,7 @@ func TestConnectService(t *testing.T) {
 	fs := &fakeState{snap: state.Snapshot{
 		Nodes: map[types.PeerKey]state.NodeView{
 			pk: {
-				Services: map[string]*statev1.Service{
+				Services: map[string]*state.Service{
 					"web": {Port: 80, Name: "web"},
 				},
 			},
@@ -482,12 +486,12 @@ func TestConnectService(t *testing.T) {
 	svc := control.NewService(nil, nil, ft, fs)
 
 	_, err := svc.ConnectService(context.Background(), &controlv1.ConnectServiceRequest{
-		Node:       &controlv1.NodeRef{PeerId: pk.Bytes()},
+		Node:       &controlv1.NodeRef{PeerPub: pk.Bytes()},
 		RemotePort: 80,
 	})
 	require.NoError(t, err)
 	require.Equal(t, "web", ft.connectedService)
-	require.Equal(t, pk.String(), ft.connectedPeer)
+	require.Equal(t, pk, ft.connectedPeer)
 }
 
 func TestConnectServiceFallbackName(t *testing.T) {
@@ -501,7 +505,7 @@ func TestConnectServiceFallbackName(t *testing.T) {
 	svc := control.NewService(nil, nil, ft, fs)
 
 	_, err := svc.ConnectService(context.Background(), &controlv1.ConnectServiceRequest{
-		Node:       &controlv1.NodeRef{PeerId: pk.Bytes()},
+		Node:       &controlv1.NodeRef{PeerPub: pk.Bytes()},
 		RemotePort: 9999,
 	})
 	require.NoError(t, err)
@@ -518,7 +522,7 @@ func TestDisconnectService(t *testing.T) {
 	fs := &fakeState{snap: state.Snapshot{
 		Nodes: map[types.PeerKey]state.NodeView{
 			pk: {
-				Services: map[string]*statev1.Service{
+				Services: map[string]*state.Service{
 					"web": {Port: 80, Name: "web"},
 				},
 			},
@@ -630,7 +634,7 @@ func TestGetBootstrapInfoWithSelf(t *testing.T) {
 	resp, err := svc.GetBootstrapInfo(context.Background(), &controlv1.GetBootstrapInfoRequest{})
 	require.NoError(t, err)
 	require.NotNil(t, resp.Self)
-	require.Equal(t, pk.Bytes(), resp.Self.Peer.PeerId)
+	require.Equal(t, pk.Bytes(), resp.Self.Peer.PeerPub)
 	require.Equal(t, []string{"1.2.3.4:5000"}, resp.Self.Addrs)
 }
 
@@ -649,7 +653,7 @@ func TestGetBootstrapInfoRecommendedPeer(t *testing.T) {
 	resp, err := svc.GetBootstrapInfo(context.Background(), &controlv1.GetBootstrapInfoRequest{})
 	require.NoError(t, err)
 	require.NotNil(t, resp.Recommended)
-	require.Equal(t, remote.Bytes(), resp.Recommended.Peer.PeerId)
+	require.Equal(t, remote.Bytes(), resp.Recommended.Peer.PeerPub)
 }
 
 func TestGetStatusBasic(t *testing.T) {
@@ -681,7 +685,7 @@ func TestGetStatusBasic(t *testing.T) {
 	resp, err := svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
 	require.NoError(t, err)
 
-	require.Equal(t, local.Bytes(), resp.Self.Node.PeerId)
+	require.Equal(t, local.Bytes(), resp.Self.Node.PeerPub)
 	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_ONLINE, resp.Self.Status)
 	require.Equal(t, uint32(50), resp.Self.CpuPercent)
 	require.Equal(t, uint32(60), resp.Self.MemPercent)
@@ -825,7 +829,7 @@ func TestGetStatus_PeerTrafficFromGossip(t *testing.T) {
 
 	nodeByID := make(map[string]*controlv1.NodeSummary)
 	for _, n := range resp.Nodes {
-		nodeByID[string(n.Node.PeerId)] = n
+		nodeByID[string(n.Node.PeerPub)] = n
 	}
 
 	// peerA gossiped traffic with peerB: aggregate = 1000 in, 2000 out.
@@ -879,13 +883,65 @@ func TestGetStatus_SelfTrafficAggregation(t *testing.T) {
 	require.Equal(t, uint64(600), resp.Self.TrafficBytesOut, "self aggregated OUT")
 }
 
+func TestGetStatus_ExpiredPeerNotIndirect(t *testing.T) {
+	local := testPeerKey(1)
+	peerA := testPeerKey(2) // direct peer
+	peerB := testPeerKey(3) // expired peer that peerA claims to reach
+
+	expiredCertTime := time.Now().Add(-time.Hour).Unix()
+
+	fs := &fakeState{snap: state.Snapshot{
+		LocalID: local,
+		Nodes: map[types.PeerKey]state.NodeView{
+			local: {},
+			peerA: {
+				IPs:       []string{"1.2.3.4"},
+				LocalPort: 4000,
+				Reachable: map[types.PeerKey]struct{}{peerB: {}},
+			},
+			peerB: {
+				IPs:        []string{"5.6.7.8"},
+				LocalPort:  5000,
+				CertExpiry: expiredCertTime,
+			},
+		},
+	}}
+
+	ftr := &fakeTransport{
+		activeAddrs: map[types.PeerKey]*net.UDPAddr{
+			peerA: {IP: net.ParseIP("1.2.3.4"), Port: 4000},
+		},
+	}
+
+	svc := control.NewService(nil, &fakePlacement{}, &fakeTunneling{}, fs,
+		control.WithTransportInfo(ftr),
+	)
+
+	resp, err := svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+
+	for _, n := range resp.Nodes {
+		pk := types.PeerKeyFromBytes(n.Node.PeerPub)
+		if pk == peerB {
+			t.Fatalf("expired peer %s should not appear in status output, got status %v", pk.Short(), n.Status)
+		}
+	}
+}
+
 // --- Helpers ---
 
-// dummyCreds is a NodeCredentials with a non-nil DelegationKey for DenyPeer precondition tests.
-var dummyCreds = dummyCredsValue()
-
-func dummyCredsValue() auth.NodeCredentials {
-	return auth.NodeCredentials{
-		DelegationKey: &auth.DelegationSigner{},
-	}
+// dummyCreds returns a NodeCredentials with a non-nil DelegationKey for DenyPeer precondition tests.
+func dummyCreds(t *testing.T) auth.NodeCredentials {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	issuer, err := auth.IssueDelegationCert(priv, nil, pub, auth.FullCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
+	require.NoError(t, err)
+	dir := t.TempDir()
+	require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(pub, issuer)))
+	signer, err := auth.NewDelegationSigner(dir, priv, 24*time.Hour)
+	require.NoError(t, err)
+	creds := auth.NewNodeCredentials(nil, nil)
+	creds.SetDelegationKey(signer)
+	return *creds
 }

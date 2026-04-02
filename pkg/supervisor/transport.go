@@ -27,8 +27,6 @@ type Transport interface {
 	ConnectedPeers() []types.PeerKey
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
 	PeerStateCounts() transport.PeerStateCounts
-	SetRouter(r transport.Router)
-	SetTrafficTracker(t transport.TrafficRecorder)
 }
 
 type TransportInternal interface {

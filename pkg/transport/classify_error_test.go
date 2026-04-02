@@ -35,6 +35,16 @@ func TestClassifyQUICErrorMapsCloseReasons(t *testing.T) {
 			want: disconnectCertRotation,
 		},
 		{
+			name: "duplicate",
+			err:  &quic.ApplicationError{ErrorMessage: string(closeReasonDuplicate)},
+			want: disconnectDuplicate,
+		},
+		{
+			name: "shutdown",
+			err:  &quic.ApplicationError{ErrorMessage: string(closeReasonShutdown)},
+			want: disconnectShutdown,
+		},
+		{
 			name: "generic graceful",
 			err:  &quic.ApplicationError{ErrorMessage: "disconnect"},
 			want: disconnectGraceful,

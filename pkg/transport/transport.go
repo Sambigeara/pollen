@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
@@ -25,22 +24,23 @@ type impl struct {
 	socks            sockStore
 	injectedConn     net.PacketConn
 	trafficTracker   TrafficRecorder
-	log              *zap.SugaredLogger
-	meshCert         atomic.Pointer[tls.Certificate]
+	tracer           trace.Tracer
 	recvCh           chan Packet
+	peerEventCh      chan PeerEvent
 	renewalCh        chan *meshv1.CertRenewalResponse
 	inviteSigner     *auth.DelegationSigner
+	inviteConsumer   auth.InviteConsumer
 	acceptCh         chan acceptedStream
-	trustBundle      *admissionv1.TrustBundle
+	sessions         *sessionRegistry
 	mainQT           *quic.Transport
 	metrics          *metrics.MeshMetrics
-	tracer           trace.Tracer
+	log              *zap.SugaredLogger
 	isDenied         func(types.PeerKey) bool
 	peers            *peerStore
-	peerEventCh      chan PeerEvent
+	meshCert         atomic.Pointer[tls.Certificate]
 	supervisorCh     chan PeerEvent
 	listener         *quic.Listener
-	sessions         *sessionRegistry
+	rootPub          []byte
 	acceptWG         sync.WaitGroup
 	port             int
 	membershipTTL    time.Duration
@@ -73,7 +73,7 @@ func (m *impl) Start(ctx context.Context) error {
 	ln, err := qt.Listen(newServerTLSConfig(serverTLSParams{
 		meshCertPtr:     &m.meshCert,
 		inviteCert:      m.bareCert,
-		trustBundle:     m.trustBundle,
+		rootPub:         m.rootPub,
 		reconnectWindow: m.reconnectWindow,
 		inviteEnabled:   m.inviteSigner != nil,
 	}), quicConfig())
@@ -226,8 +226,8 @@ func (m *impl) Recv(ctx context.Context) (Packet, error) {
 }
 
 func (m *impl) OpenStream(ctx context.Context, peerKey types.PeerKey, st StreamType) (Stream, error) {
-	if st == StreamTypeClock {
-		return m.openTypedStream(ctx, peerKey, StreamTypeClock)
+	if st == StreamTypeDigest {
+		return m.openTypedStream(ctx, peerKey, StreamTypeDigest)
 	}
 
 	for {

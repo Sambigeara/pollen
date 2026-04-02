@@ -7,11 +7,23 @@ ssh_args := "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogL
 default:
     @just --list
 
-# Deploy the vivaldi mixed (public + private) cluster.
-deploy-vivaldi version="": (_deploy "vivaldi" "vivaldi.py" "join-cluster.yml" version)
+# Provision vivaldi mixed (public + private) infrastructure.
+deploy-vivaldi: (_terraform "vivaldi")
 
-# Deploy the vivaldi all-public cluster.
-deploy-vivaldi-pub version="": (_deploy "vivaldi-public" "vivaldi_public.py" "join-cluster.yml" version)
+# Provision vivaldi all-public infrastructure.
+deploy-vivaldi-pub: (_terraform "vivaldi-public")
+
+# Form the vivaldi mixed cluster (init root + join nodes).
+init-vivaldi: (_init "vivaldi.py" "join-cluster.yml")
+
+# Form the vivaldi all-public cluster (init root + join nodes).
+init-vivaldi-pub: (_init "vivaldi_public.py" "join-cluster.yml")
+
+# Push a dev binary to the vivaldi mixed cluster.
+push-vivaldi: (_push "vivaldi.py")
+
+# Push a dev binary to the vivaldi all-public cluster.
+push-vivaldi-pub: (_push "vivaldi_public.py")
 
 # SSH into the bootstrap instance.
 ssh-bootstrap:
@@ -32,8 +44,8 @@ destroy-vivaldi: (_destroy "vivaldi")
 # Tear down vivaldi-public infrastructure.
 destroy-vivaldi-pub: (_destroy "vivaldi-public")
 
-# Deploy the hetzner test cluster.
-deploy-hetzner version="": (_deploy "hetzner" "hetzner.py" "join-cluster.yml" version)
+# Provision the hetzner test cluster infrastructure (terraform only).
+deploy-hetzner: (_terraform "hetzner")
 
 # SSH into a hetzner node. N: 1=nbg1-1, 2=nbg1-2, 3=hel1.
 ssh-hetzner n="1":
@@ -53,18 +65,24 @@ verify-hetzner:
 destroy-hetzner: (_destroy "hetzner")
 
 [private]
-_deploy tf_dir inventory join_playbook version:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    VERSION="{{ version }}"
-    if [[ -z "$VERSION" ]]; then
-      VERSION=$(gh release view --repo sambigeara/pollen --json tagName --jq '.tagName')
-      echo "Resolved latest version: $VERSION"
-    fi
+_terraform tf_dir:
     cd {{ justfile_directory() }}/{{ tf_dir }} && terraform init -input=false && terraform apply -auto-approve
-    cd {{ ansible_dir }} && ansible-playbook install.yml -i inventories/{{ inventory }} -e pln_version="$VERSION"
+
+[private]
+_init inventory join_playbook:
     cd {{ ansible_dir }} && ansible-playbook init-cluster.yml -i inventories/{{ inventory }}
     cd {{ ansible_dir }} && ansible-playbook {{ join_playbook }} -i inventories/{{ inventory }}
+
+[private]
+_push inventory:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    REPO_ROOT="$(cd "{{ justfile_directory() }}/.." && pwd)"
+    BINARY="$REPO_ROOT/pln-linux"
+    echo "Cross-compiling linux/arm64..."
+    (cd "$REPO_ROOT" && GOOS=linux GOARCH=arm64 go build -o "$BINARY" ./cmd/pln)
+    echo "Pushing binary to cluster..."
+    cd {{ ansible_dir }} && ansible-playbook push.yml -i inventories/{{ inventory }} -e pln_binary="$BINARY"
 
 [private]
 _destroy tf_dir:

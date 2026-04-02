@@ -18,7 +18,7 @@ import (
 )
 
 func RedeemInvite(ctx context.Context, signPriv ed25519.PrivateKey, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
-	bareCert, err := GenerateIdentityCert(signPriv, nil, config.CertTTLs{}.TLSIdentityTTL())
+	bareCert, err := GenerateIdentityCert(signPriv, nil, config.DefaultTLSIdentityTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -46,13 +46,12 @@ func redeemInviteWithDial(
 	subjectPub ed25519.PublicKey,
 	dial func(context.Context, *net.UDPAddr, types.PeerKey) (*quic.Conn, error),
 ) (*admissionv1.JoinToken, error) {
-	verified, err := auth.VerifyInviteToken(token, subjectPub, time.Now())
-	if err != nil {
+	if err := auth.VerifyInviteToken(token, subjectPub, time.Now()); err != nil {
 		return nil, err
 	}
 
 	var lastErr error
-	for _, bootstrap := range verified.Claims.GetBootstrap() {
+	for _, bootstrap := range token.GetClaims().GetBootstrap() {
 		expectedPeer := types.PeerKeyFromBytes(bootstrap.GetPeerPub())
 		for _, rawAddr := range bootstrap.GetAddrs() {
 			addr, err := net.ResolveUDPAddr("udp", rawAddr)
@@ -174,20 +173,21 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 
 	signer := m.inviteSigner
 	now := time.Now()
-	verified, err := auth.VerifyInviteToken(req.GetToken(), ed25519.PublicKey(peerKey.Bytes()), now)
-	if err != nil {
+	if err := auth.VerifyInviteToken(req.GetToken(), ed25519.PublicKey(peerKey.Bytes()), now); err != nil {
 		return err
 	}
 
+	claims := req.GetToken().GetClaims()
+
 	ttl := inviteRedeemTTL
-	if remaining := time.Unix(verified.Claims.GetExpiresAtUnix(), 0).Sub(now); remaining < ttl {
+	if remaining := time.Unix(claims.GetExpiresAtUnix(), 0).Sub(now); remaining < ttl {
 		ttl = remaining
 	}
 	if ttl <= 0 {
 		return errors.New("invite token expired")
 	}
 
-	consumed, err := signer.Consumed.TryConsume(req.GetToken(), now)
+	consumed, err := m.inviteConsumer.TryConsume(req.GetToken(), now)
 	if err != nil {
 		return err
 	}
@@ -197,16 +197,13 @@ func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *mes
 
 	membershipTTL := m.membershipTTL
 	var accessDeadline time.Time
-	if s := verified.Claims.GetMembershipTtlSeconds(); s > 0 {
+	if s := claims.GetMembershipTtlSeconds(); s > 0 {
 		accessDeadline = now.Add(time.Duration(s) * time.Second)
 	}
 
-	joinToken, err := auth.IssueJoinTokenWithIssuer(
-		signer.Priv,
-		signer.Trust,
-		signer.Issuer,
+	joinToken, err := signer.IssueJoinToken(
 		ed25519.PublicKey(peerKey.Bytes()),
-		verified.Claims.GetBootstrap(),
+		claims.GetBootstrap(),
 		now,
 		ttl,
 		membershipTTL,
@@ -243,8 +240,8 @@ func redeemInviteOnConn(
 	if err := sendEnvelope(qc, &meshv1.Envelope{
 		Body: &meshv1.Envelope_InviteRedeemRequest{
 			InviteRedeemRequest: &meshv1.InviteRedeemRequest{
-				Token:      token,
-				SubjectPub: append([]byte(nil), subject...),
+				Token:   token,
+				PeerPub: append([]byte(nil), subject...),
 			},
 		},
 	}); err != nil {
@@ -285,7 +282,7 @@ func (m *impl) RequestCertRenewal(ctx context.Context, peerKey types.PeerKey) (*
 	if err := sendEnvelope(s.conn, &meshv1.Envelope{
 		Body: &meshv1.Envelope_CertRenewalRequest{
 			CertRenewalRequest: &meshv1.CertRenewalRequest{
-				SubjectPub:  m.localKey.Bytes(),
+				PeerPub:     m.localKey.Bytes(),
 				CurrentCert: currentCertRaw,
 			},
 		},

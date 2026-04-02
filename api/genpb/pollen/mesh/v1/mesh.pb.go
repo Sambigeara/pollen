@@ -25,7 +25,7 @@ const (
 
 type PunchCoordRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	PeerPub       []byte                 `protobuf:"bytes,1,opt,name=peer_pub,json=peerPub,proto3" json:"peer_pub,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -60,16 +60,16 @@ func (*PunchCoordRequest) Descriptor() ([]byte, []int) {
 	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *PunchCoordRequest) GetPeerId() []byte {
+func (x *PunchCoordRequest) GetPeerPub() []byte {
 	if x != nil {
-		return x.PeerId
+		return x.PeerPub
 	}
 	return nil
 }
 
 type PunchCoordTrigger struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	PeerId        []byte                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	PeerPub       []byte                 `protobuf:"bytes,1,opt,name=peer_pub,json=peerPub,proto3" json:"peer_pub,omitempty"`
 	SelfAddr      string                 `protobuf:"bytes,2,opt,name=self_addr,json=selfAddr,proto3" json:"self_addr,omitempty"`
 	PeerAddr      string                 `protobuf:"bytes,3,opt,name=peer_addr,json=peerAddr,proto3" json:"peer_addr,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -106,9 +106,9 @@ func (*PunchCoordTrigger) Descriptor() ([]byte, []int) {
 	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *PunchCoordTrigger) GetPeerId() []byte {
+func (x *PunchCoordTrigger) GetPeerPub() []byte {
 	if x != nil {
-		return x.PeerId
+		return x.PeerPub
 	}
 	return nil
 }
@@ -130,7 +130,7 @@ func (x *PunchCoordTrigger) GetPeerAddr() string {
 type InviteRedeemRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Token         *v1.InviteToken        `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
-	SubjectPub    []byte                 `protobuf:"bytes,2,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
+	PeerPub       []byte                 `protobuf:"bytes,2,opt,name=peer_pub,json=peerPub,proto3" json:"peer_pub,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -172,9 +172,9 @@ func (x *InviteRedeemRequest) GetToken() *v1.InviteToken {
 	return nil
 }
 
-func (x *InviteRedeemRequest) GetSubjectPub() []byte {
+func (x *InviteRedeemRequest) GetPeerPub() []byte {
 	if x != nil {
-		return x.SubjectPub
+		return x.PeerPub
 	}
 	return nil
 }
@@ -285,7 +285,7 @@ func (x *ObservedAddress) GetAddr() string {
 
 type CertRenewalRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	SubjectPub    []byte                 `protobuf:"bytes,1,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
+	PeerPub       []byte                 `protobuf:"bytes,1,opt,name=peer_pub,json=peerPub,proto3" json:"peer_pub,omitempty"`
 	CurrentCert   []byte                 `protobuf:"bytes,2,opt,name=current_cert,json=currentCert,proto3" json:"current_cert,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -321,9 +321,9 @@ func (*CertRenewalRequest) Descriptor() ([]byte, []int) {
 	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *CertRenewalRequest) GetSubjectPub() []byte {
+func (x *CertRenewalRequest) GetPeerPub() []byte {
 	if x != nil {
-		return x.SubjectPub
+		return x.PeerPub
 	}
 	return nil
 }
@@ -585,27 +585,25 @@ var File_pollen_mesh_v1_mesh_proto protoreflect.FileDescriptor
 
 const file_pollen_mesh_v1_mesh_proto_rawDesc = "" +
 	"\n" +
-	"\x19pollen/mesh/v1/mesh.proto\x12\x0epollen.mesh.v1\x1a#pollen/admission/v1/admission.proto\x1a\x1bpollen/state/v1/state.proto\",\n" +
-	"\x11PunchCoordRequest\x12\x17\n" +
-	"\apeer_id\x18\x01 \x01(\fR\x06peerId\"f\n" +
-	"\x11PunchCoordTrigger\x12\x17\n" +
-	"\apeer_id\x18\x01 \x01(\fR\x06peerId\x12\x1b\n" +
+	"\x19pollen/mesh/v1/mesh.proto\x12\x0epollen.mesh.v1\x1a#pollen/admission/v1/admission.proto\x1a\x1bpollen/state/v1/state.proto\".\n" +
+	"\x11PunchCoordRequest\x12\x19\n" +
+	"\bpeer_pub\x18\x01 \x01(\fR\apeerPub\"h\n" +
+	"\x11PunchCoordTrigger\x12\x19\n" +
+	"\bpeer_pub\x18\x01 \x01(\fR\apeerPub\x12\x1b\n" +
 	"\tself_addr\x18\x02 \x01(\tR\bselfAddr\x12\x1b\n" +
-	"\tpeer_addr\x18\x03 \x01(\tR\bpeerAddr\"n\n" +
+	"\tpeer_addr\x18\x03 \x01(\tR\bpeerAddr\"h\n" +
 	"\x13InviteRedeemRequest\x126\n" +
-	"\x05token\x18\x01 \x01(\v2 .pollen.admission.v1.InviteTokenR\x05token\x12\x1f\n" +
-	"\vsubject_pub\x18\x02 \x01(\fR\n" +
-	"subjectPub\"\x89\x01\n" +
+	"\x05token\x18\x01 \x01(\v2 .pollen.admission.v1.InviteTokenR\x05token\x12\x19\n" +
+	"\bpeer_pub\x18\x02 \x01(\fR\apeerPub\"\x89\x01\n" +
 	"\x14InviteRedeemResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x12=\n" +
 	"\n" +
 	"join_token\x18\x03 \x01(\v2\x1e.pollen.admission.v1.JoinTokenR\tjoinToken\"%\n" +
 	"\x0fObservedAddress\x12\x12\n" +
-	"\x04addr\x18\x01 \x01(\tR\x04addr\"X\n" +
-	"\x12CertRenewalRequest\x12\x1f\n" +
-	"\vsubject_pub\x18\x01 \x01(\fR\n" +
-	"subjectPub\x12!\n" +
+	"\x04addr\x18\x01 \x01(\tR\x04addr\"R\n" +
+	"\x12CertRenewalRequest\x12\x19\n" +
+	"\bpeer_pub\x18\x01 \x01(\fR\apeerPub\x12!\n" +
 	"\fcurrent_cert\x18\x02 \x01(\fR\vcurrentCert\"\x82\x01\n" +
 	"\x13CertRenewalResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x16\n" +

@@ -9,10 +9,8 @@ import (
 	"testing"
 	"time"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/control"
 	"github.com/sambigeara/pollen/pkg/supervisor"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -31,27 +29,27 @@ type testNode struct {
 	creds            *auth.NodeCredentials
 	cancel           context.CancelFunc
 	errCh            chan error
-	bootstrapPeers   []config.BootstrapTarget
+	bootstrapPeers   []supervisor.BootstrapTarget
 	peerTickInterval time.Duration
 }
 
 type clusterAuth struct {
 	adminPriv ed25519.PrivateKey
-	trust     *admissionv1.TrustBundle
+	rootPub   ed25519.PublicKey
 }
 
 func newClusterAuth(t *testing.T) *clusterAuth {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	return &clusterAuth{adminPriv: priv, trust: auth.NewTrustBundle(pub)}
+	return &clusterAuth{adminPriv: priv, rootPub: pub}
 }
 
 func (c *clusterAuth) credsFor(t *testing.T, subject ed25519.PublicKey) *auth.NodeCredentials {
 	t.Helper()
-	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, c.trust.GetClusterId(), subject, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
+	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, subject, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
 	require.NoError(t, err)
-	return &auth.NodeCredentials{Trust: c.trust, Cert: cert}
+	return auth.NewNodeCredentials(c.rootPub, cert)
 }
 
 func newTestNode(t *testing.T, cluster *clusterAuth, ips []string) *testNode {
@@ -88,22 +86,19 @@ func (tn *testNode) start(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	conf := &config.Config{
-		SigningKey:             tn.privKey,
-		PollenDir:              tn.dir,
-		ListenPort:             tn.port,
-		AdvertisedIPs:          tn.ips,
-		GossipInterval:         100 * time.Millisecond,
-		PeerTickInterval:       peerTick,
-		DisableGossipJitter:    true,
-		ResolvedBootstrapPeers: tn.bootstrapPeers,
-		TLSIdentityTTL:         config.CertTTLs{}.TLSIdentityTTL(),
-		MembershipTTL:          config.CertTTLs{}.MembershipTTL(),
-		ReconnectWindow:        config.CertTTLs{}.ReconnectWindowDuration(),
-		ShutdownFunc:           cancel,
+	opts := supervisor.Options{
+		SigningKey:          tn.privKey,
+		PollenDir:           tn.dir,
+		ListenPort:          tn.port,
+		AdvertisedIPs:       tn.ips,
+		GossipInterval:      100 * time.Millisecond,
+		PeerTickInterval:    peerTick,
+		DisableGossipJitter: true,
+		BootstrapPeers:      tn.bootstrapPeers,
+		ShutdownFunc:        cancel,
 	}
 
-	n, err := supervisor.New(conf, tn.creds)
+	n, err := supervisor.New(opts, tn.creds, nil)
 	require.NoError(t, err)
 	errCh := make(chan error, 1)
 
@@ -148,8 +143,8 @@ func TestConnectPeerFlow(t *testing.T) {
 
 	// Simulate `pollen bootstrap ssh` with running daemon: call ConnectPeer RPC on A → B.
 	req := &controlv1.ConnectPeerRequest{
-		PeerId: b.pubKey,
-		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
+		PeerPub: b.pubKey,
+		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
 	}
 	_, err := a.svc.ConnectPeer(context.Background(), req)
 	require.NoError(t, err)
@@ -161,7 +156,7 @@ func TestConnectPeerFlow(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, statusResp.Self)
 	require.Len(t, statusResp.Nodes, 1, "GetStatus should list the remote peer")
-	require.Equal(t, b.peerKey.Bytes(), statusResp.Nodes[0].Node.PeerId)
+	require.Equal(t, b.peerKey.Bytes(), statusResp.Nodes[0].Node.PeerPub)
 	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_ONLINE, statusResp.Nodes[0].Status)
 }
 
@@ -176,8 +171,8 @@ func TestInitialVivaldiCoordPropagatesAfterConnect(t *testing.T) {
 	b.start(t)
 
 	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
-		PeerId: b.pubKey,
-		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
+		PeerPub: b.pubKey,
+		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
 	})
 	require.NoError(t, err)
 
@@ -208,8 +203,8 @@ func TestConnectPeerAfterPriorConnection(t *testing.T) {
 	c := newTestNode(t, cluster, nodeIPs)
 	c.start(t)
 	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
-		PeerId: c.pubKey,
-		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(c.port))},
+		PeerPub: c.pubKey,
+		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(c.port))},
 	})
 	require.NoError(t, err)
 	assertPeersConnected(t, a, c)
@@ -225,8 +220,8 @@ func TestConnectPeerAfterPriorConnection(t *testing.T) {
 	b.start(t)
 
 	req := &controlv1.ConnectPeerRequest{
-		PeerId: b.pubKey,
-		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
+		PeerPub: b.pubKey,
+		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
 	}
 	_, err = a.svc.ConnectPeer(context.Background(), req)
 	require.NoError(t, err)
@@ -239,7 +234,7 @@ func TestConnectPeerAfterPriorConnection(t *testing.T) {
 
 	foundB := false
 	for _, n := range statusResp.Nodes {
-		if types.PeerKeyFromBytes(n.Node.PeerId) == b.peerKey {
+		if types.PeerKeyFromBytes(n.Node.PeerPub) == b.peerKey {
 			require.Equal(t, controlv1.NodeStatus_NODE_STATUS_ONLINE, n.Status)
 			foundB = true
 		}
@@ -277,10 +272,10 @@ func assertPeersConnected(t *testing.T, a, b *testNode) {
 	}, 5*time.Second, 50*time.Millisecond, "A's store should know about B via gossip")
 }
 
-func TestGenIdentityKeyAndReadIdentityPub(t *testing.T) {
+func TestEnsureIdentityKeyAndReadIdentityPub(t *testing.T) {
 	dir := t.TempDir()
 
-	priv, pub, err := auth.GenIdentityKey(dir)
+	priv, pub, err := auth.EnsureIdentityKey(dir)
 	require.NoError(t, err)
 	require.Len(t, priv, ed25519.PrivateKeySize)
 	require.Len(t, pub, ed25519.PublicKeySize)
@@ -290,8 +285,8 @@ func TestGenIdentityKeyAndReadIdentityPub(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, pub, gotPub)
 
-	// Calling GenIdentityKey again returns the same keys (idempotent).
-	priv2, pub2, err := auth.GenIdentityKey(dir)
+	// Calling EnsureIdentityKey again returns the same keys (idempotent).
+	priv2, pub2, err := auth.EnsureIdentityKey(dir)
 	require.NoError(t, err)
 	require.Equal(t, priv, priv2)
 	require.Equal(t, pub, pub2)
@@ -307,7 +302,7 @@ func getNodeStatus(t *testing.T, observer, target *testNode) controlv1.NodeStatu
 	resp, err := observer.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
 	require.NoError(t, err)
 	for _, n := range resp.Nodes {
-		if types.PeerKeyFromBytes(n.Node.PeerId) == target.peerKey {
+		if types.PeerKeyFromBytes(n.Node.PeerPub) == target.peerKey {
 			return n.Status
 		}
 	}
@@ -326,8 +321,8 @@ func TestGetStatusDisconnectedPeerIsOffline(t *testing.T) {
 	b.start(t)
 
 	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
-		PeerId: b.pubKey,
-		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
+		PeerPub: b.pubKey,
+		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
 	})
 	require.NoError(t, err)
 	assertPeersConnected(t, a, b)
@@ -364,16 +359,16 @@ func setupThreeNodeChain(t *testing.T) (a, b, c *testNode) {
 
 	// A↔B
 	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
-		PeerId: b.pubKey,
-		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
+		PeerPub: b.pubKey,
+		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
 	})
 	require.NoError(t, err)
 	assertPeersConnected(t, a, b)
 
 	// B↔C
 	_, err = b.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
-		PeerId: c.pubKey,
-		Addrs:  []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(c.port))},
+		PeerPub: c.pubKey,
+		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(c.port))},
 	})
 	require.NoError(t, err)
 	assertPeersConnected(t, b, c)
@@ -419,7 +414,7 @@ func TestBootstrapPeerConnectsAtStartup(t *testing.T) {
 
 	// Start A with B as a bootstrap transport.
 	a := newTestNode(t, cluster, nodeIPs)
-	a.bootstrapPeers = []config.BootstrapTarget{{
+	a.bootstrapPeers = []supervisor.BootstrapTarget{{
 		PeerKey: b.peerKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
 	}}

@@ -4,17 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"sync"
 	"time"
 
 	extism "github.com/extism/go-sdk"
 	"github.com/tetratelabs/wazero"
-	"golang.org/x/sync/semaphore"
+	"go.uber.org/zap"
 )
 
-// ErrModuleMissing is returned when Call is invoked with a hash that has no
-// compiled module in the cache.
 var ErrModuleMissing = errors.New("wasm: no compiled module")
 
 const (
@@ -25,49 +22,45 @@ const (
 
 // PluginConfig controls per-workload resource limits.
 type PluginConfig struct {
-	MemoryPages uint32        // 0 → default (256 = 16 MiB)
-	Timeout     time.Duration // 0 → default (30s)
+	MemoryPages uint32
+	Timeout     time.Duration
 }
 
-func (c PluginConfig) memoryPages() uint32 {
-	if c.MemoryPages == 0 {
-		return defaultMemoryLimitPages
+func NewPluginConfig(memoryPages uint32, timeout time.Duration) PluginConfig {
+	if memoryPages == 0 {
+		memoryPages = defaultMemoryLimitPages
 	}
-	return c.MemoryPages
+	if timeout == 0 {
+		timeout = defaultTimeout
+	}
+	return PluginConfig{MemoryPages: memoryPages, Timeout: timeout}
 }
 
-func (c PluginConfig) timeout() time.Duration {
-	if c.Timeout == 0 {
-		return defaultTimeout
-	}
-	return c.Timeout
+type compiledEntry struct {
+	plugin *extism.CompiledPlugin
+	refs   sync.WaitGroup
 }
 
 // Runtime wraps Extism for compiling and calling WASM plugins.
 // Compiled plugins are cached by content hash for fast re-instantiation.
 type Runtime struct {
 	runtimeConfig wazero.RuntimeConfig
-	compiled      map[string]*extism.CompiledPlugin
-	configs       map[string]PluginConfig
-	sem           *semaphore.Weighted
+	compiled      map[string]*compiledEntry
+	sem           chan struct{}
 	hostFuncs     []extism.HostFunction
 	mu            sync.Mutex
 }
 
-// NewRuntime creates an Extism-backed runtime with the given host functions.
-// maxConcurrency limits the number of simultaneous WASM plugin instances;
-// 0 defaults to GOMAXPROCS.
-func NewRuntime(hostFuncs []extism.HostFunction, maxConcurrency int) *Runtime {
+func NewRuntime(hostFuncs []extism.HostFunction, maxConcurrency int) (*Runtime, error) {
 	if maxConcurrency <= 0 {
-		maxConcurrency = max(1, runtime.GOMAXPROCS(0))
+		return nil, fmt.Errorf("wasm: maxConcurrency must be > 0, got %d", maxConcurrency)
 	}
 	return &Runtime{
-		compiled:      make(map[string]*extism.CompiledPlugin),
-		configs:       make(map[string]PluginConfig),
+		compiled:      make(map[string]*compiledEntry),
 		hostFuncs:     hostFuncs,
 		runtimeConfig: probeRuntimeConfig(),
-		sem:           semaphore.NewWeighted(int64(maxConcurrency)),
-	}
+		sem:           make(chan struct{}, maxConcurrency),
+	}, nil
 }
 
 // probeRuntimeConfig returns a wazero RuntimeConfig that works on this
@@ -76,60 +69,43 @@ func NewRuntime(hostFuncs []extism.HostFunction, maxConcurrency int) *Runtime {
 // it falls back to the interpreter.
 func probeRuntimeConfig() wazero.RuntimeConfig {
 	cfg := wazero.NewRuntimeConfig()
-	if tryRuntime(cfg) {
+	if tryCompilerRuntime(cfg) {
 		return cfg
 	}
+	zap.S().Warnw("wasm compiler unavailable, falling back to interpreter")
 	return wazero.NewRuntimeConfigInterpreter()
 }
 
-func tryRuntime(cfg wazero.RuntimeConfig) (ok bool) {
+func tryCompilerRuntime(cfg wazero.RuntimeConfig) (ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			ok = false
 		}
 	}()
+	// one cheap round-trip syscall to determine the supported runtime
 	r := wazero.NewRuntimeWithConfig(context.Background(), cfg)
 	r.Close(context.Background())
 	return true
 }
 
-// IsCompiled reports whether a module with the given hash is cached.
-func (r *Runtime) IsCompiled(hash string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	_, ok := r.compiled[hash]
-	return ok
-}
-
 // Compile compiles wasmBytes and caches the result under hash.
-// If the hash is already compiled with a different config, the old module is
-// dropped and recompiled with the new config.
 func (r *Runtime) Compile(ctx context.Context, wasmBytes []byte, hash string, cfg PluginConfig) error {
 	r.mu.Lock()
-	if existing, ok := r.compiled[hash]; ok {
-		if r.configs[hash] == cfg {
-			r.mu.Unlock()
-			return nil
-		}
-		// Config changed — drop old module and recompile.
-		delete(r.compiled, hash)
-		delete(r.configs, hash)
+	if _, ok := r.compiled[hash]; ok {
 		r.mu.Unlock()
-		existing.Close(ctx)
-	} else {
-		r.mu.Unlock()
+		return nil
 	}
+	r.mu.Unlock()
 
 	manifest := extism.Manifest{
 		Wasm: []extism.Wasm{
 			extism.WasmData{Data: wasmBytes},
 		},
 		Memory: &extism.ManifestMemory{
-			MaxPages: cfg.memoryPages(),
+			MaxPages: cfg.MemoryPages,
 		},
-		Timeout: uint64(cfg.timeout().Milliseconds()),
+		Timeout: uint64(cfg.Timeout.Milliseconds()),
 	}
-
 	compiled, err := extism.NewCompiledPlugin(ctx, manifest, extism.PluginConfig{
 		EnableWasi:    true,
 		RuntimeConfig: r.runtimeConfig,
@@ -142,13 +118,11 @@ func (r *Runtime) Compile(ctx context.Context, wasmBytes []byte, hash string, cf
 	defer r.mu.Unlock()
 
 	// Double-check: another goroutine may have compiled concurrently.
-	if existing, ok := r.compiled[hash]; ok {
+	if _, ok := r.compiled[hash]; ok {
 		compiled.Close(ctx)
-		_ = existing // keep the first one
 		return nil
 	}
-	r.compiled[hash] = compiled
-	r.configs[hash] = cfg
+	r.compiled[hash] = &compiledEntry{plugin: compiled}
 	return nil
 }
 
@@ -157,18 +131,23 @@ func (r *Runtime) Compile(ctx context.Context, wasmBytes []byte, hash string, cf
 // Each call is isolated — thread-safe for concurrent use.
 func (r *Runtime) Call(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
 	r.mu.Lock()
-	compiled, ok := r.compiled[hash]
-	r.mu.Unlock()
+	entry, ok := r.compiled[hash]
 	if !ok {
+		r.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrModuleMissing, hash)
 	}
+	entry.refs.Add(1)
+	r.mu.Unlock()
+	defer entry.refs.Done()
 
-	if err := r.sem.Acquire(ctx, 1); err != nil {
-		return nil, fmt.Errorf("wasm: acquire slot: %w", err)
+	select {
+	case r.sem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("wasm: acquire slot: %w", ctx.Err())
 	}
-	defer r.sem.Release(1)
+	defer func() { <-r.sem }()
 
-	plugin, err := compiled.Instance(ctx, extism.PluginInstanceConfig{})
+	plugin, err := entry.plugin.Instance(ctx, extism.PluginInstanceConfig{})
 	if err != nil {
 		return nil, fmt.Errorf("wasm: instantiate %s: %w", hash, err)
 	}
@@ -178,34 +157,32 @@ func (r *Runtime) Call(ctx context.Context, hash, function string, input []byte)
 	if err != nil {
 		return nil, fmt.Errorf("wasm: call %s.%s: %w", hash[:min(hashPreviewLen, len(hash))], function, err)
 	}
+
 	return output, nil
 }
 
-// DropCompiled closes and removes the cached compiled module for hash.
-func (r *Runtime) DropCompiled(hash string) {
+func (r *Runtime) DropCompiled(ctx context.Context, hash string) {
 	r.mu.Lock()
-	cp, ok := r.compiled[hash]
+	entry, ok := r.compiled[hash]
 	if ok {
 		delete(r.compiled, hash)
-		delete(r.configs, hash)
 	}
 	r.mu.Unlock()
 
 	if ok {
-		cp.Close(context.Background())
+		entry.refs.Wait()
+		entry.plugin.Close(ctx)
 	}
 }
 
-// Close shuts down all compiled plugins.
-func (r *Runtime) Close() {
+func (r *Runtime) Close(ctx context.Context) {
 	r.mu.Lock()
 	snapshot := r.compiled
-	r.compiled = make(map[string]*extism.CompiledPlugin)
-	r.configs = make(map[string]PluginConfig)
+	r.compiled = make(map[string]*compiledEntry)
 	r.mu.Unlock()
 
-	ctx := context.Background()
-	for _, cp := range snapshot {
-		cp.Close(ctx)
+	for _, entry := range snapshot {
+		entry.refs.Wait()
+		entry.plugin.Close(ctx)
 	}
 }

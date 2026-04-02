@@ -1,4 +1,4 @@
-package config
+package plnfs
 
 import (
 	"fmt"
@@ -11,15 +11,10 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := renameio.WriteFile(path, data, mode); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	if err := os.Chmod(path, mode); err != nil {
-		return fmt.Errorf("chmod %s: %w", path, err)
-	}
-	return setPlnGroup(path)
-}
-
-// WritePrivate atomically writes data to path with mode 0600.
-func WritePrivate(path string, data []byte) error {
-	return atomicWrite(path, data, 0o600) //nolint:mnd
+	// renameio creates the temp file in the same directory, so setgid
+	// group inheritance works. setPerm is still needed to override umask
+	// on the mode bits and, when root, to chown to pln:pln.
+	return setPerm(path, mode)
 }
 
 // WriteGroupReadable atomically writes data to path with mode 0640.

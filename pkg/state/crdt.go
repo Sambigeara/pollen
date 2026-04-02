@@ -71,7 +71,7 @@ func computePeerHash(rec nodeRecord) uint64 {
 	return digest
 }
 
-func (s *Store) digestLocked() *statev1.GossipStateDigest {
+func (s *store) digestLocked() *statev1.Digest {
 	peers := make(map[string]*statev1.PeerDigest, len(s.nodes))
 	for peerID, rec := range s.nodes {
 		peers[peerID.String()] = &statev1.PeerDigest{
@@ -79,12 +79,24 @@ func (s *Store) digestLocked() *statev1.GossipStateDigest {
 			StateHash:  computePeerHash(rec),
 		}
 	}
-	return &statev1.GossipStateDigest{Peers: peers}
+	return &statev1.Digest{Peers: peers}
 }
 
 // missingFor returns gossip events the remote is missing per its digest.
-// Unknown/hash-mismatch → full dump; hash match + counter ahead → delta; synced → skip.
-func (s *Store) missingFor(digest *statev1.GossipStateDigest) []*statev1.GossipEvent {
+//
+// For each peer:
+//   - Unknown to remote → full dump
+//   - Counter ahead → delta (events above remote's counter)
+//   - Counter equal, hash differs → full dump (divergence at same counter)
+//   - Counter equal, hash matches → skip (synced)
+//
+// TODO(saml): the delta path assumes the remote holds a consistent prefix of
+// our log, which may not be true if the remote missed an intermediate event
+// during a partition. The hash check at equal counters catches this, but under
+// sustained event generation counters may never equalize — leaving stale
+// attributes until a quiescent period. A future fix could track per-peer
+// counter→hash history to verify prefix consistency before sending a delta.
+func (s *store) missingFor(digest *statev1.Digest) []*statev1.GossipEvent {
 	remotePeers := digest.GetPeers()
 
 	var events []*statev1.GossipEvent
@@ -98,13 +110,12 @@ func (s *Store) missingFor(digest *statev1.GossipStateDigest) []*statev1.GossipE
 				events = append(events, buildEventsAbove(peerID, rec, 0)...)
 				continue
 			}
-			localHash := computePeerHash(rec)
-			if localHash != rd.GetStateHash() {
-				events = append(events, buildEventsAbove(peerID, rec, 0)...)
-				continue
-			}
 			if rec.maxCounter > rd.GetMaxCounter() {
 				events = append(events, buildEventsAbove(peerID, rec, rd.GetMaxCounter())...)
+				continue
+			}
+			if rec.maxCounter == rd.GetMaxCounter() && computePeerHash(rec) != rd.GetStateHash() {
+				events = append(events, buildEventsAbove(peerID, rec, 0)...)
 			}
 		}
 	})
@@ -119,7 +130,7 @@ func (s *Store) missingFor(digest *statev1.GossipStateDigest) []*statev1.GossipE
 	return events
 }
 
-func (s *Store) applyEvents(events []*statev1.GossipEvent) applyResult {
+func (s *store) applyEvents(events []*statev1.GossipEvent) applyResult {
 	var (
 		result            applyResult
 		newlyDenied       []types.PeerKey
@@ -130,7 +141,7 @@ func (s *Store) applyEvents(events []*statev1.GossipEvent) applyResult {
 
 	s.do(func() {
 		var selfEvents, otherEvents []*statev1.GossipEvent
-		localIDStr := s.LocalID.String()
+		localIDStr := s.localID.String()
 		for _, event := range events {
 			if event == nil {
 				continue
@@ -195,9 +206,8 @@ func (s *Store) applyEvents(events []*statev1.GossipEvent) applyResult {
 	return result
 }
 
-func (s *Store) handleSelfConflictLocked(selfEvents []*statev1.GossipEvent) (applyResult, bool) {
-	local := s.nodes[s.LocalID]
-	ensureNodeInit(&local, s.LocalID)
+func (s *store) handleSelfConflictLocked(selfEvents []*statev1.GossipEvent) (applyResult, bool) {
+	local := s.nodes[s.localID]
 
 	var maxIncoming uint64
 	for _, ev := range selfEvents {
@@ -216,7 +226,7 @@ func (s *Store) handleSelfConflictLocked(selfEvents []*statev1.GossipEvent) (app
 		if !ok || v.Deny == nil || ev.GetDeleted() {
 			continue
 		}
-		subjectKey := types.PeerKeyFromBytes(v.Deny.GetSubjectPub())
+		subjectKey := types.PeerKeyFromBytes(v.Deny.GetPeerPub())
 		s.denied[subjectKey] = struct{}{}
 		key := attrKey{kind: attrDeny, name: subjectKey.String()}
 		if _, ok := local.log[key]; !ok {
@@ -280,30 +290,50 @@ func (s *Store) handleSelfConflictLocked(selfEvents []*statev1.GossipEvent) (app
 		claimsDeleted = true
 	}
 
-	if !conflictDetected && !adopted && !claimsDeleted {
-		s.nodes[s.LocalID] = local
+	reachabilityDeleted := false
+	for _, ev := range selfEvents {
+		v, ok := ev.GetChange().(*statev1.GossipEvent_Reachability)
+		if !ok || v.Reachability == nil || ev.GetDeleted() {
+			continue
+		}
+		pk, err := types.PeerKeyFromString(v.Reachability.GetPeerId())
+		if err != nil {
+			continue
+		}
+		key := attrKey{kind: attrReachability, peer: pk}
+		if _, ok := local.log[key]; ok {
+			continue
+		}
+		local.log[key] = logEntry{Deleted: true}
+		reachabilityDeleted = true
+	}
+
+	if !conflictDetected && !adopted && !claimsDeleted && !reachabilityDeleted {
+		s.nodes[s.localID] = local
 		return applyResult{}, false
 	}
 
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 	return applyResult{rebroadcast: s.bumpAndBroadcastAllLocked()}, adopted
 }
 
-func (s *Store) applyEventLocked(event *statev1.GossipEvent) (applyResult, []types.PeerKey) {
+func (s *store) applyEventLocked(event *statev1.GossipEvent) (applyResult, []types.PeerKey) {
 	peerID, err := types.PeerKeyFromString(event.GetPeerId())
 	if err != nil {
 		return applyResult{}, nil
 	}
 
-	rec := s.nodes[peerID]
-	ensureNodeInit(&rec, peerID)
+	rec, exists := s.nodes[peerID]
+	if !exists {
+		rec = newNodeRecord(peerID)
+	}
 
 	key, ok := eventAttrKey(event)
 	if !ok {
 		return applyResult{}, nil
 	}
 
-	if peerID == s.LocalID {
+	if peerID == s.localID {
 		return applyResult{}, nil
 	}
 
@@ -324,7 +354,7 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) (applyResult, []typ
 			return applyResult{}, nil
 		}
 		v := event.GetChange().(*statev1.GossipEvent_Deny) //nolint:forcetypeassert
-		subjectKey := types.PeerKeyFromBytes(v.Deny.GetSubjectPub())
+		subjectKey := types.PeerKeyFromBytes(v.Deny.GetPeerPub())
 		if _, ok := s.denied[subjectKey]; !ok {
 			s.denied[subjectKey] = struct{}{}
 			newlyDenied = append(newlyDenied, subjectKey)
@@ -354,8 +384,8 @@ func (s *Store) applyEventLocked(event *statev1.GossipEvent) (applyResult, []typ
 	return applyResult{rebroadcast: rebroadcast}, newlyDenied
 }
 
-func (s *Store) bumpAndBroadcastAllLocked() []*statev1.GossipEvent {
-	local := s.nodes[s.LocalID]
+func (s *store) bumpAndBroadcastAllLocked() []*statev1.GossipEvent {
+	local := s.nodes[s.localID]
 
 	for key, entry := range local.log {
 		local.maxCounter++
@@ -363,8 +393,8 @@ func (s *Store) bumpAndBroadcastAllLocked() []*statev1.GossipEvent {
 		local.log[key] = entry
 	}
 
-	s.nodes[s.LocalID] = local
-	return buildEventsAbove(s.LocalID, local, 0)
+	s.nodes[s.localID] = local
+	return buildEventsAbove(s.localID, local, 0)
 }
 
 func buildEventsAbove(peerID types.PeerKey, rec nodeRecord, minCounter uint64) []*statev1.GossipEvent {

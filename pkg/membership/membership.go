@@ -58,7 +58,7 @@ type MembershipAPI interface {
 	DenyPeer(key types.PeerKey) error
 	Invite(subject string) (string, error)
 
-	HandleClockStream(ctx context.Context, stream transport.Stream, peer types.PeerKey)
+	HandleDigestStream(ctx context.Context, stream transport.Stream, peer types.PeerKey)
 	HandleCertRenewalStream(stream transport.Stream, peer types.PeerKey)
 
 	Events() <-chan state.Event
@@ -70,17 +70,16 @@ var _ MembershipAPI = (*Service)(nil)
 type ClusterState interface {
 	Snapshot() state.Snapshot
 	ApplyDelta(from types.PeerKey, data []byte) ([]state.Event, []byte, error)
-	EncodeDelta(since state.Clock) []byte
-	FullState() []byte
+	EncodeDelta(since state.Digest) []byte
+	EncodeFull() []byte
 	PendingNotify() <-chan struct{}
 	FlushPendingGossip() []*statev1.GossipEvent
 	DenyPeer(key types.PeerKey) []state.Event
 	SetLocalAddresses([]netip.AddrPort) []state.Event
-	SetLocalCoord(coords.Coord) []state.Event
+	SetLocalCoord(coords.Coord, float64) []state.Event
 	SetLocalNAT(nat.Type) []state.Event
 	SetLocalReachable([]types.PeerKey) []state.Event
-	SetLocalObservedExternalIP(string) []state.Event
-	SetLocalExternalPort(uint32) []state.Event
+	SetLocalObservedAddress(string, uint32) []state.Event
 }
 
 type Network interface {

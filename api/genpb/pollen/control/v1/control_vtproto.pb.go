@@ -50,10 +50,10 @@ func (m *NodeRef) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if len(m.PeerId) > 0 {
-		i -= len(m.PeerId)
-		copy(dAtA[i:], m.PeerId)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.PeerId)))
+	if len(m.PeerPub) > 0 {
+		i -= len(m.PeerPub)
+		copy(dAtA[i:], m.PeerPub)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.PeerPub)))
 		i--
 		dAtA[i] = 0xa
 	}
@@ -974,10 +974,10 @@ func (m *ConnectPeerRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			dAtA[i] = 0x12
 		}
 	}
-	if len(m.PeerId) > 0 {
-		i -= len(m.PeerId)
-		copy(dAtA[i:], m.PeerId)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.PeerId)))
+	if len(m.PeerPub) > 0 {
+		i -= len(m.PeerPub)
+		copy(dAtA[i:], m.PeerPub)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.PeerPub)))
 		i--
 		dAtA[i] = 0xa
 	}
@@ -1209,10 +1209,10 @@ func (m *DenyPeerRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if len(m.PeerId) > 0 {
-		i -= len(m.PeerId)
-		copy(dAtA[i:], m.PeerId)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.PeerId)))
+	if len(m.PeerPub) > 0 {
+		i -= len(m.PeerPub)
+		copy(dAtA[i:], m.PeerPub)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.PeerPub)))
 		i--
 		dAtA[i] = 0xa
 	}
@@ -1670,7 +1670,7 @@ func (m *NodeRef) SizeVT() (n int) {
 	}
 	var l int
 	_ = l
-	l = len(m.PeerId)
+	l = len(m.PeerPub)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -2016,7 +2016,7 @@ func (m *ConnectPeerRequest) SizeVT() (n int) {
 	}
 	var l int
 	_ = l
-	l = len(m.PeerId)
+	l = len(m.PeerPub)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -2102,7 +2102,7 @@ func (m *DenyPeerRequest) SizeVT() (n int) {
 	}
 	var l int
 	_ = l
-	l = len(m.PeerId)
+	l = len(m.PeerPub)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -2316,7 +2316,7 @@ func (m *NodeRef) UnmarshalVT(dAtA []byte) error {
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field PeerId", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field PeerPub", wireType)
 			}
 			var byteLen int
 			for shift := uint(0); ; shift += 7 {
@@ -2343,9 +2343,9 @@ func (m *NodeRef) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.PeerId = append(m.PeerId[:0], dAtA[iNdEx:postIndex]...)
-			if m.PeerId == nil {
-				m.PeerId = []byte{}
+			m.PeerPub = append(m.PeerPub[:0], dAtA[iNdEx:postIndex]...)
+			if m.PeerPub == nil {
+				m.PeerPub = []byte{}
 			}
 			iNdEx = postIndex
 		default:
@@ -4394,7 +4394,7 @@ func (m *ConnectPeerRequest) UnmarshalVT(dAtA []byte) error {
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field PeerId", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field PeerPub", wireType)
 			}
 			var byteLen int
 			for shift := uint(0); ; shift += 7 {
@@ -4421,9 +4421,9 @@ func (m *ConnectPeerRequest) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.PeerId = append(m.PeerId[:0], dAtA[iNdEx:postIndex]...)
-			if m.PeerId == nil {
-				m.PeerId = []byte{}
+			m.PeerPub = append(m.PeerPub[:0], dAtA[iNdEx:postIndex]...)
+			if m.PeerPub == nil {
+				m.PeerPub = []byte{}
 			}
 			iNdEx = postIndex
 		case 2:
@@ -4878,7 +4878,7 @@ func (m *DenyPeerRequest) UnmarshalVT(dAtA []byte) error {
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field PeerId", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field PeerPub", wireType)
 			}
 			var byteLen int
 			for shift := uint(0); ; shift += 7 {
@@ -4905,9 +4905,9 @@ func (m *DenyPeerRequest) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.PeerId = append(m.PeerId[:0], dAtA[iNdEx:postIndex]...)
-			if m.PeerId == nil {
-				m.PeerId = []byte{}
+			m.PeerPub = append(m.PeerPub[:0], dAtA[iNdEx:postIndex]...)
+			if m.PeerPub == nil {
+				m.PeerPub = []byte{}
 			}
 			iNdEx = postIndex
 		default:

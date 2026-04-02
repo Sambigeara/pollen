@@ -57,7 +57,8 @@ func runSeed(cmd *cobra.Command, args []string) {
 	memoryPages, _ := cmd.Flags().GetUint32("memory-pages")
 	timeoutMs, _ := cmd.Flags().GetUint32("timeout-ms")
 
-	client := newControlClient(cmd)
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	client := newControlClient(pollenDir)
 	resp, err := client.SeedWorkload(cmd.Context(), connect.NewRequest(&controlv1.SeedWorkloadRequest{
 		WasmBytes:   wasmBytes,
 		Replicas:    replicas,
@@ -74,8 +75,9 @@ func runSeed(cmd *cobra.Command, args []string) {
 
 func runUnseed(cmd *cobra.Command, args []string) {
 	hashPrefix := strings.ToLower(args[0])
+	pollenDir, _ := cmd.Flags().GetString("dir")
 
-	client := newControlClient(cmd)
+	client := newControlClient(pollenDir)
 	_, err := client.UnseedWorkload(cmd.Context(), connect.NewRequest(&controlv1.UnseedWorkloadRequest{
 		Hash: hashPrefix,
 	}))
@@ -103,7 +105,8 @@ func runCall(cmd *cobra.Command, args []string) {
 		input = []byte(inputStr)
 	}
 
-	client := newControlClientWithTimeout(cmd, callWorkloadTimeout)
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	client := newControlClientWithTimeout(pollenDir, callWorkloadTimeout)
 	resp, err := client.CallWorkload(cmd.Context(), connect.NewRequest(&controlv1.CallWorkloadRequest{
 		Hash:     hash,
 		Function: function,

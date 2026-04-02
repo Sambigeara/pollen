@@ -65,7 +65,8 @@ func runConnect(cmd *cobra.Command, args []string) {
 		localPort = uint32(p)
 	}
 
-	client := newControlClient(cmd)
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	client := newControlClient(pollenDir)
 	statusResp, err := client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
@@ -79,7 +80,7 @@ func runConnect(cmd *cobra.Command, args []string) {
 	}
 
 	connectResp, err := client.ConnectService(cmd.Context(), connect.NewRequest(&controlv1.ConnectServiceRequest{
-		Node:       &controlv1.NodeRef{PeerId: svc.GetProvider().GetPeerId()},
+		Node:       &controlv1.NodeRef{PeerPub: svc.GetProvider().GetPeerPub()},
 		RemotePort: svc.GetPort(),
 		LocalPort:  localPort,
 	}))
@@ -89,14 +90,8 @@ func runConnect(cmd *cobra.Command, args []string) {
 	}
 
 	actualLocalPort := connectResp.Msg.GetLocalPort()
-	provider := formatPeerID(svc.GetProvider().GetPeerId(), false)
-	peerHex := peerKeyString(svc.GetProvider().GetPeerId())
-
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
-		os.Exit(1)
-	}
+	provider := formatPeerID(svc.GetProvider().GetPeerPub(), false)
+	peerHex := peerKeyString(svc.GetProvider().GetPeerPub())
 	cfg := loadConfigOrDefault(pollenDir)
 	cfg.AddConnection(svc.GetName(), peerHex, svc.GetPort(), actualLocalPort)
 	if saveErr := config.Save(pollenDir, cfg); saveErr != nil {
@@ -113,7 +108,8 @@ func runDisconnect(cmd *cobra.Command, args []string) {
 		providerArg = args[1]
 	}
 
-	client := newControlClient(cmd)
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	client := newControlClient(pollenDir)
 	statusResp, err := client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
@@ -133,19 +129,13 @@ func runDisconnect(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	peerHex := peerKeyString(conn.GetPeer().GetPeerId())
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
-		os.Exit(1)
-	}
 	cfg := loadConfigOrDefault(pollenDir)
-	cfg.RemoveConnection(conn.GetServiceName(), peerHex, conn.GetLocalPort())
+	cfg.RemoveConnection(conn.GetLocalPort())
 	if saveErr := config.Save(pollenDir, cfg); saveErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to persist disconnection to config: %v\n", saveErr)
 	}
 
-	provider := formatPeerID(conn.GetPeer().GetPeerId(), false)
+	provider := formatPeerID(conn.GetPeer().GetPeerPub(), false)
 	name := conn.GetServiceName()
 	if name == "" {
 		name = strconv.FormatUint(uint64(conn.GetRemotePort()), 10)

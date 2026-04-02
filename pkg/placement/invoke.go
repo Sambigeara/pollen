@@ -148,7 +148,7 @@ func invokeOverStream(ctx context.Context, stream io.ReadWriteCloser, hash, func
 	case statusNotFound:
 		return nil, fmt.Errorf("invoke: workload not found: %s: %w", string(body), ErrNotRunning)
 	case statusError:
-		return nil, fmt.Errorf("invoke: %s", string(body))
+		return nil, fmt.Errorf("invoke: %s: %w", string(body), ErrWorkloadFailed)
 	default:
 		return nil, fmt.Errorf("invoke: unknown status %d", statusBuf[0])
 	}

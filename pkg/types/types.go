@@ -32,22 +32,13 @@ func (pk PeerKey) Bytes() []byte {
 }
 
 func (pk PeerKey) String() string {
-	return hex.EncodeToString(pk[:])
+	return hex.EncodeToString(pk.Bytes())
 }
 
 func (pk PeerKey) Short() string {
 	return pk.String()[:8]
 }
 
-func (pk PeerKey) Less(other PeerKey) bool {
-	return bytes.Compare(pk[:], other[:]) < 0
-}
-
-// Compare returns -1, 0, or +1 comparing two PeerKeys lexicographically.
 func (pk PeerKey) Compare(other PeerKey) int {
-	return bytes.Compare(pk[:], other[:])
-}
-
-type Envelope struct {
-	Payload []byte
+	return bytes.Compare(pk.Bytes(), other.Bytes())
 }

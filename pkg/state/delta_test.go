@@ -4,85 +4,81 @@ import (
 	"testing"
 
 	"github.com/sambigeara/pollen/pkg/coords"
-	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
 
 func TestEncodeDelta_RoundTrip(t *testing.T) {
-	pubA := genPub(t)
-	storeA := newTestStore(pubA)
+	pkA := genKey(t)
+	storeA := newTestStore(pkA)
 
 	storeA.setLocalNetwork([]string{"10.0.0.1"}, 9000)
 	storeA.upsertLocalService(8080, "web")
 
 	snapBefore := storeA.Snapshot()
-	clkBefore := snapBefore.Clock()
+	digestBefore := snapBefore.Digest()
 
-	storeA.setExternalPort(45000)
+	storeA.setObservedAddress("", 45000)
 
-	delta := storeA.EncodeDelta(clkBefore)
+	delta := storeA.EncodeDelta(digestBefore)
 	require.NotEmpty(t, delta)
 
-	pubB := genPub(t)
-	storeB := newTestStore(pubB)
+	pkB := genKey(t)
+	storeB := newTestStore(pkB)
 
-	from := types.PeerKeyFromBytes(pubA)
-	events, _, err := storeB.ApplyDelta(from, delta)
+	events, _, err := storeB.ApplyDelta(pkA, delta)
 	require.NoError(t, err)
 	require.NotEmpty(t, events)
 
 	snapB := storeB.Snapshot()
-	peerA, ok := snapB.Peer(from)
+	peerA, ok := snapB.Peer(pkA)
 	require.True(t, ok)
 	require.Equal(t, uint32(45000), peerA.ExternalPort)
 }
 
-func TestFullState_ContainsEverything(t *testing.T) {
-	pubA := genPub(t)
-	storeA := newTestStore(pubA)
+func TestEncodeFull_ContainsEverything(t *testing.T) {
+	pkA := genKey(t)
+	storeA := newTestStore(pkA)
 
 	storeA.setLocalNetwork([]string{"10.0.0.1", "10.0.0.2"}, 9000)
 	storeA.upsertLocalService(8080, "web")
 	storeA.upsertLocalService(9090, "api")
-	storeA.setExternalPort(45000)
-	storeA.setLocalVivaldiCoord(coords.Coord{X: 1.0, Y: 2.0, Height: coords.MinHeight})
+	storeA.setObservedAddress("", 45000)
+	storeA.setLocalVivaldiCoord(coords.Coord{X: 1.0, Y: 2.0, Height: coords.MinHeight}, 0.5)
 
-	full := storeA.FullState()
+	full := storeA.EncodeFull()
 	require.NotEmpty(t, full)
 
-	pubB := genPub(t)
-	storeB := newTestStore(pubB)
+	pkB := genKey(t)
+	storeB := newTestStore(pkB)
 
-	from := types.PeerKeyFromBytes(pubA)
-	_, _, err := storeB.ApplyDelta(from, full)
+	_, _, err := storeB.ApplyDelta(pkA, full)
 	require.NoError(t, err)
 
 	snapB := storeB.Snapshot()
-	peerA, ok := snapB.Peer(from)
+	peerA, ok := snapB.Peer(pkA)
 	require.True(t, ok)
 	require.Equal(t, uint32(45000), peerA.ExternalPort)
 	require.Equal(t, uint32(9000), peerA.LocalPort)
 	require.ElementsMatch(t, []string{"10.0.0.1", "10.0.0.2"}, peerA.IPs)
 	require.Contains(t, peerA.Services, "web")
 	require.Contains(t, peerA.Services, "api")
-	require.Equal(t, uint32(8080), peerA.Services["web"].GetPort())
-	require.Equal(t, uint32(9090), peerA.Services["api"].GetPort())
+	require.Equal(t, uint32(8080), peerA.Services["web"].Port)
+	require.Equal(t, uint32(9090), peerA.Services["api"].Port)
 }
 
 func TestApplyDelta_ReturnsDomainEvents(t *testing.T) {
-	pubA := genPub(t)
-	storeA := newTestStore(pubA)
+	pkA := genKey(t)
+	storeA := newTestStore(pkA)
 
 	storeA.upsertLocalService(8080, "web")
-	storeA.setLocalVivaldiCoord(coords.Coord{X: 1.0, Y: 2.0, Height: coords.MinHeight})
+	storeA.setLocalVivaldiCoord(coords.Coord{X: 1.0, Y: 2.0, Height: coords.MinHeight}, 0.5)
 
-	full := storeA.FullState()
+	full := storeA.EncodeFull()
 
-	pubB := genPub(t)
-	storeB := newTestStore(pubB)
+	pkB := genKey(t)
+	storeB := newTestStore(pkB)
 
-	from := types.PeerKeyFromBytes(pubA)
-	events, _, err := storeB.ApplyDelta(from, full)
+	events, _, err := storeB.ApplyDelta(pkA, full)
 	require.NoError(t, err)
 
 	var (

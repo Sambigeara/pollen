@@ -21,18 +21,17 @@ import (
 type StateStore interface {
 	Snapshot() Snapshot
 	ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, error)
-	EncodeDelta(since Clock) []byte
-	FullState() []byte
+	EncodeDelta(since Digest) []byte
+	EncodeFull() []byte
 	PendingNotify() <-chan struct{}
 	FlushPendingGossip() []*statev1.GossipEvent
 
 	DenyPeer(key types.PeerKey) []Event
 	SetLocalAddresses(addrs []netip.AddrPort) []Event
 	SetLocalNAT(t nat.Type) []Event
-	SetLocalCoord(c coords.Coord) []Event
+	SetLocalCoord(c coords.Coord, coordErr float64) []Event
 	SetLocalReachable(peers []types.PeerKey) []Event
-	SetLocalObservedExternalIP(ip string) []Event
-	SetLocalExternalPort(port uint32) []Event
+	SetLocalObservedAddress(ip string, port uint32) []Event
 
 	SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) []Event
 	ClaimWorkload(hash string) []Event
@@ -45,42 +44,32 @@ type StateStore interface {
 
 	SetPeerLastAddr(pk types.PeerKey, addr string)
 	SetBootstrapPublic()
+	ExportLastAddrs() map[types.PeerKey]string
+	LoadLastAddrs(addrs map[types.PeerKey]string)
 }
 
-var _ StateStore = (*Store)(nil)
+var _ StateStore = (*store)(nil)
 
 var errSpecOwnedRemotely = errors.New("spec published by another node")
 
-// Store is the CRDT-based in-memory state store. Mutations are mutex-protected;
+// store is the CRDT-based in-memory state store. Mutations are mutex-protected;
 // Snapshot() is lock-free via atomic.Pointer.
-type Store struct {
+type store struct {
 	nodes         map[types.PeerKey]nodeRecord
 	denied        map[types.PeerKey]struct{}
 	snap          atomic.Pointer[Snapshot]
 	pendingNotify chan struct{}
 	pendingGossip []*statev1.GossipEvent
 	mu            sync.Mutex
-	LocalID       types.PeerKey
+	localID       types.PeerKey
 }
 
-func New(self types.PeerKey) *Store {
-	s := &Store{
-		LocalID:       self,
+func New(self types.PeerKey) StateStore {
+	s := &store{
+		localID:       self,
 		pendingNotify: make(chan struct{}, 1),
 		nodes: map[types.PeerKey]nodeRecord{
-			self: {
-				NodeView: NodeView{
-					IdentityPub:    append([]byte(nil), self[:]...),
-					Reachable:      make(map[types.PeerKey]struct{}),
-					Services:       make(map[string]*statev1.Service),
-					WorkloadSpecs:  make(map[string]*statev1.WorkloadSpecChange),
-					WorkloadClaims: make(map[string]struct{}),
-				},
-				maxCounter: 1,
-				log: map[attrKey]logEntry{
-					{kind: attrIdentity}: {Counter: 1},
-				},
-			},
+			self: newNodeRecord(self),
 		},
 		denied: make(map[types.PeerKey]struct{}),
 	}
@@ -93,7 +82,7 @@ func New(self types.PeerKey) *Store {
 	return s
 }
 
-func (s *Store) SetPeerLastAddr(pk types.PeerKey, addr string) {
+func (s *store) SetPeerLastAddr(pk types.PeerKey, addr string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.nodes[pk]
@@ -105,22 +94,49 @@ func (s *Store) SetPeerLastAddr(pk types.PeerKey, addr string) {
 	s.updateSnapshot()
 }
 
-func (s *Store) SetBootstrapPublic() {
+func (s *store) ExportLastAddrs() map[types.PeerKey]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[types.PeerKey]string)
+	for pk, rec := range s.nodes {
+		if pk == s.localID || rec.LastAddr == "" {
+			continue
+		}
+		out[pk] = rec.LastAddr
+	}
+	return out
+}
+
+func (s *store) LoadLastAddrs(addrs map[types.PeerKey]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for pk, addr := range addrs {
+		rec, ok := s.nodes[pk]
+		if !ok {
+			continue
+		}
+		rec.LastAddr = addr
+		s.nodes[pk] = rec
+	}
+	s.updateSnapshot()
+}
+
+func (s *store) SetBootstrapPublic() {
 	s.setLocalPubliclyAccessible(true)
 }
 
-func (s *Store) Snapshot() Snapshot {
+func (s *store) Snapshot() Snapshot {
 	if p := s.snap.Load(); p != nil {
 		return *p
 	}
 	return Snapshot{}
 }
 
-func (s *Store) PendingNotify() <-chan struct{} {
+func (s *store) PendingNotify() <-chan struct{} {
 	return s.pendingNotify
 }
 
-func (s *Store) FlushPendingGossip() []*statev1.GossipEvent {
+func (s *store) FlushPendingGossip() []*statev1.GossipEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.pendingGossip) == 0 {
@@ -131,18 +147,18 @@ func (s *Store) FlushPendingGossip() []*statev1.GossipEvent {
 	return events
 }
 
-func (s *Store) do(fn func()) {
+func (s *store) do(fn func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fn()
 }
 
-func (s *Store) updateSnapshot() {
+func (s *store) updateSnapshot() {
 	snap := s.snapshotLocked()
 	s.snap.Store(&snap)
 }
 
-func (s *Store) enqueuePendingGossip(events []*statev1.GossipEvent) {
+func (s *store) enqueuePendingGossip(events []*statev1.GossipEvent) {
 	if len(events) == 0 {
 		return
 	}
@@ -155,14 +171,14 @@ func (s *Store) enqueuePendingGossip(events []*statev1.GossipEvent) {
 	}
 }
 
-func (s *Store) validNodesLocked() map[types.PeerKey]nodeRecord {
+func (s *store) validNodesLocked() map[types.PeerKey]nodeRecord {
 	now := time.Now()
 	out := make(map[types.PeerKey]nodeRecord, len(s.nodes))
 	for k, v := range s.nodes {
 		if _, denied := s.denied[k]; denied {
 			continue
 		}
-		if v.CertExpiry != 0 && auth.IsCertExpiredAt(time.Unix(v.CertExpiry, 0), now) {
+		if v.CertExpiry != 0 && auth.IsExpiredAt(time.Unix(v.CertExpiry, 0), now) {
 			continue
 		}
 		out[k] = v.clone()
@@ -170,7 +186,7 @@ func (s *Store) validNodesLocked() map[types.PeerKey]nodeRecord {
 	return out
 }
 
-func (s *Store) isValidOwnerLocked(peerID types.PeerKey) bool {
+func (s *store) isValidOwnerLocked(peerID types.PeerKey) bool {
 	if _, denied := s.denied[peerID]; denied {
 		return false
 	}
@@ -178,23 +194,23 @@ func (s *Store) isValidOwnerLocked(peerID types.PeerKey) bool {
 	if !ok {
 		return false
 	}
-	if rec.CertExpiry != 0 && auth.IsCertExpiredAt(time.Unix(rec.CertExpiry, 0), time.Now()) {
+	if rec.CertExpiry != 0 && auth.IsExpiredAt(time.Unix(rec.CertExpiry, 0), time.Now()) {
 		return false
 	}
 	return true
 }
 
-func (s *Store) tombstoneLosingLocalSpec(remotePeer types.PeerKey, hash string) []*statev1.GossipEvent {
-	if remotePeer == s.LocalID {
+func (s *store) tombstoneLosingLocalSpec(remotePeer types.PeerKey, hash string) []*statev1.GossipEvent {
+	if remotePeer == s.localID {
 		return nil
 	}
 	if !s.isValidOwnerLocked(remotePeer) {
 		return nil
 	}
-	if s.LocalID.Compare(remotePeer) < 0 {
+	if s.localID.Compare(remotePeer) < 0 {
 		return nil
 	}
-	local := s.nodes[s.LocalID]
+	local := s.nodes[s.localID]
 	if _, has := local.WorkloadSpecs[hash]; !has {
 		return nil
 	}
@@ -205,10 +221,10 @@ func (s *Store) tombstoneLosingLocalSpec(remotePeer types.PeerKey, hash string) 
 	local.maxCounter++
 	counter := local.maxCounter
 	local.log[key] = logEntry{Counter: counter, Deleted: true}
-	s.nodes[s.LocalID] = local
+	s.nodes[s.localID] = local
 
 	return []*statev1.GossipEvent{{
-		PeerId:  s.LocalID.String(),
+		PeerId:  s.localID.String(),
 		Counter: counter,
 		Deleted: true,
 		Change: &statev1.GossipEvent_WorkloadSpec{
@@ -217,7 +233,7 @@ func (s *Store) tombstoneLosingLocalSpec(remotePeer types.PeerKey, hash string) 
 	}}
 }
 
-func (s *Store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, error) {
+func (s *store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, error) {
 	var batch statev1.GossipEventBatch
 	if err := batch.UnmarshalVT(data); err != nil {
 		return nil, nil, fmt.Errorf("unmarshal gossip batch: %w", err)
@@ -234,12 +250,12 @@ func (s *Store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, er
 	return result.events(), rebroadcast, nil
 }
 
-func (s *Store) EncodeDelta(since Clock) []byte {
-	batch := &statev1.GossipEventBatch{Events: s.missingFor(since.digest)}
+func (s *store) EncodeDelta(since Digest) []byte {
+	batch := &statev1.GossipEventBatch{Events: s.missingFor(since.proto)}
 	data, _ := batch.MarshalVT()
 	return data
 }
 
-func (s *Store) FullState() []byte {
-	return s.EncodeDelta(Clock{})
+func (s *store) EncodeFull() []byte {
+	return s.EncodeDelta(Digest{})
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -88,7 +89,7 @@ func WithMesh(mesh StreamOpener) Option {
 
 // New creates a placement Service. Call Start to begin the reconciler loop
 // and resource telemetry ticker.
-func New(self types.PeerKey, store WorkloadState, casStore *cas.Store, runtime *wasm.Runtime, opts ...Option) *Service {
+func New(self types.PeerKey, store WorkloadState, casStore *cas.Store, runtime WASMRuntime, opts ...Option) *Service {
 	s := &Service{
 		localID: self,
 		store:   store,
@@ -117,15 +118,8 @@ func (s *Service) Start(ctx context.Context) error {
 		s.log.Named("scheduler"),
 	)
 
-	s.wg.Add(2) //nolint:mnd
-	go func() {
-		defer s.wg.Done()
-		s.reconciler.Run(ctx)
-	}()
-	go func() {
-		defer s.wg.Done()
-		s.runResourceTicker(ctx)
-	}()
+	s.wg.Go(func() { s.reconciler.Run(ctx) })
+	s.wg.Go(func() { s.runResourceTicker(ctx) })
 
 	return nil
 }
@@ -157,10 +151,7 @@ func (s *Service) runResourceTicker(ctx context.Context) {
 // Seed stores the WASM binary in CAS, compiles the module, publishes the
 // workload spec via gossip, and claims the workload locally.
 func (s *Service) Seed(hash string, binary []byte, replicas, memoryPages, timeoutMs uint32) error {
-	cfg := wasm.PluginConfig{
-		MemoryPages: memoryPages,
-		Timeout:     time.Duration(timeoutMs) * time.Millisecond,
-	}
+	cfg := wasm.NewPluginConfig(memoryPages, time.Duration(timeoutMs)*time.Millisecond)
 	gotHash, err := s.manager.Seed(s.ctx, binary, cfg)
 	if err != nil && !errors.Is(err, ErrAlreadyRunning) {
 		return err
@@ -216,6 +207,9 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 
 		out, err := invokeOverStream(ctx, stream, hash, function, input)
 		if err != nil {
+			if errors.Is(err, ErrWorkloadFailed) {
+				return nil, err
+			}
 			s.log.Warnw("workload invocation failed, trying next claimant",
 				"target", target.Short(), "hash", shortHash(hash), "err", err)
 			lastErr = err
@@ -278,10 +272,5 @@ func shortHash(h string) string {
 }
 
 func sortedClaimants(claimants map[types.PeerKey]struct{}) []types.PeerKey {
-	keys := make([]types.PeerKey, 0, len(claimants))
-	for pk := range claimants {
-		keys = append(keys, pk)
-	}
-	slices.SortFunc(keys, func(a, b types.PeerKey) int { return a.Compare(b) })
-	return keys
+	return slices.SortedFunc(maps.Keys(claimants), func(a, b types.PeerKey) int { return a.Compare(b) })
 }

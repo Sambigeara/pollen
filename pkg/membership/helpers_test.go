@@ -83,7 +83,7 @@ type fakeClusterState struct {
 	mu             sync.Mutex
 	snapshot       state.Snapshot
 	applyDeltaFn   func(from types.PeerKey, data []byte) ([]state.Event, []byte, error)
-	encodeDeltaFn  func(since state.Clock) []byte
+	encodeDeltaFn  func(since state.Digest) []byte
 	fullState      []byte
 	pendingNotify  chan struct{}
 	flushedEvents  []*statev1.GossipEvent
@@ -115,14 +115,14 @@ func (f *fakeClusterState) ApplyDelta(from types.PeerKey, data []byte) ([]state.
 	return nil, nil, nil
 }
 
-func (f *fakeClusterState) EncodeDelta(since state.Clock) []byte {
+func (f *fakeClusterState) EncodeDelta(since state.Digest) []byte {
 	if f.encodeDeltaFn != nil {
 		return f.encodeDeltaFn(since)
 	}
 	return nil
 }
 
-func (f *fakeClusterState) FullState() []byte {
+func (f *fakeClusterState) EncodeFull() []byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.fullState
@@ -148,7 +148,7 @@ func (f *fakeClusterState) SetLocalAddresses(_ []netip.AddrPort) []state.Event {
 	return nil
 }
 
-func (f *fakeClusterState) SetLocalCoord(c coords.Coord) []state.Event {
+func (f *fakeClusterState) SetLocalCoord(c coords.Coord, _ float64) []state.Event {
 	f.mu.Lock()
 	f.localCoord = c
 	f.mu.Unlock()
@@ -166,11 +166,7 @@ func (f *fakeClusterState) SetLocalReachable(peers []types.PeerKey) []state.Even
 	return nil
 }
 
-func (f *fakeClusterState) SetLocalObservedExternalIP(_ string) []state.Event {
-	return nil
-}
-
-func (f *fakeClusterState) SetLocalExternalPort(_ uint32) []state.Event {
+func (f *fakeClusterState) SetLocalObservedAddress(_ string, _ uint32) []state.Event {
 	return nil
 }
 

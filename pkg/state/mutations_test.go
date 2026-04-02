@@ -5,18 +5,14 @@ import (
 	"testing"
 
 	"github.com/sambigeara/pollen/pkg/coords"
-	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
 
 func TestDenyPeer_ReturnsPeerDeniedEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
-	targetPub := make([]byte, 32)
-	targetPub[0] = 0x42
-	targetKey := types.PeerKeyFromBytes(targetPub)
+	targetKey, _ := peerKey(0x42)
 
 	events := s.DenyPeer(targetKey)
 	require.Len(t, events, 1)
@@ -28,13 +24,12 @@ func TestDenyPeer_ReturnsPeerDeniedEvent(t *testing.T) {
 }
 
 func TestSetService_ReturnsServiceChangedEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	events := s.SetService(8080, "web")
 	require.Len(t, events, 1)
-	require.Equal(t, ServiceChanged{Peer: s.LocalID, Name: "web"}, events[0])
+	require.Equal(t, ServiceChanged{Peer: s.localID, Name: "web"}, events[0])
 
 	// Idempotent: same port+name returns no events.
 	events = s.SetService(8080, "web")
@@ -42,20 +37,18 @@ func TestSetService_ReturnsServiceChangedEvent(t *testing.T) {
 }
 
 func TestSetLocalCoord_ReturnsTopologyChangedEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	c := coords.Coord{X: 1.0, Y: 2.0, Height: 0.5}
-	events := s.SetLocalCoord(c)
+	events := s.SetLocalCoord(c, 0.5)
 	require.Len(t, events, 1)
-	require.Equal(t, TopologyChanged{Peer: s.LocalID}, events[0])
+	require.Equal(t, TopologyChanged{Peer: s.localID}, events[0])
 }
 
 func TestClaimWorkload_ReturnsWorkloadChangedEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	events := s.ClaimWorkload("abc123")
 	require.Len(t, events, 1)
@@ -72,9 +65,8 @@ func TestClaimWorkload_ReturnsWorkloadChangedEvent(t *testing.T) {
 }
 
 func TestSetLocalAddresses_ReturnsTopologyChangedEvent(t *testing.T) {
-	pub := make([]byte, 32)
-	pub[0] = 1
-	s := newTestStore(pub)
+	pk, _ := peerKey(1)
+	s := newTestStore(pk)
 
 	addrs := []netip.AddrPort{
 		netip.MustParseAddrPort("10.0.0.1:9000"),
@@ -82,7 +74,7 @@ func TestSetLocalAddresses_ReturnsTopologyChangedEvent(t *testing.T) {
 	}
 	events := s.SetLocalAddresses(addrs)
 	require.Len(t, events, 1)
-	require.Equal(t, TopologyChanged{Peer: s.LocalID}, events[0])
+	require.Equal(t, TopologyChanged{Peer: s.localID}, events[0])
 
 	// Same addresses returns no events.
 	events = s.SetLocalAddresses(addrs)

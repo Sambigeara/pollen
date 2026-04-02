@@ -17,44 +17,50 @@ type Snapshot struct {
 	Claims     map[string]map[types.PeerKey]struct{}
 	Placements map[types.PeerKey]NodePlacementState
 	Heatmaps   map[types.PeerKey]map[types.PeerKey]TrafficSnapshot
-	clock      Clock
+	digest     Digest
 	PeerKeys   []types.PeerKey
 	DeniedKeys []types.PeerKey
 	LocalID    types.PeerKey
 }
 
-type Clock struct {
-	digest *statev1.GossipStateDigest
+type Digest struct {
+	proto *statev1.Digest
 }
 
-func (c Clock) Marshal() ([]byte, error) {
-	if c.digest == nil {
-		return (&statev1.GossipStateDigest{}).MarshalVT()
+func (d Digest) Marshal() ([]byte, error) {
+	if d.proto == nil {
+		return (&statev1.Digest{}).MarshalVT()
 	}
-	return c.digest.MarshalVT()
+	return d.proto.MarshalVT()
 }
 
-func UnmarshalClock(data []byte) (Clock, error) {
-	digest := &statev1.GossipStateDigest{}
+func UnmarshalDigest(data []byte) (Digest, error) {
+	pb := &statev1.Digest{}
 	if len(data) > 0 {
-		if err := digest.UnmarshalVT(data); err != nil {
-			return Clock{}, fmt.Errorf("unmarshal clock: %w", err)
+		if err := pb.UnmarshalVT(data); err != nil {
+			return Digest{}, fmt.Errorf("unmarshal digest: %w", err)
 		}
 	}
-	return Clock{digest: digest}, nil
+	return Digest{proto: pb}, nil
+}
+
+type Service struct {
+	Name string
+	Port uint32
 }
 
 type NodeView struct {
-	TrafficRates       map[types.PeerKey]TrafficSnapshot
-	Services           map[string]*statev1.Service
+	Services           map[string]*Service
 	WorkloadSpecs      map[string]*statev1.WorkloadSpecChange
 	WorkloadClaims     map[string]struct{}
 	VivaldiCoord       *coords.Coord
+	TrafficRates       map[types.PeerKey]TrafficSnapshot
 	Reachable          map[types.PeerKey]struct{}
 	LastAddr           string
 	ObservedExternalIP string
+	PeerPub            []byte
 	IPs                []string
-	IdentityPub        []byte
+	VivaldiErr         float64
 	MemTotalBytes      uint64
 	NatType            nat.Type
 	CertExpiry         int64
@@ -74,7 +80,7 @@ func (nv NodeView) clone() NodeView {
 	c.WorkloadClaims = maps.Clone(nv.WorkloadClaims)
 	c.TrafficRates = maps.Clone(nv.TrafficRates)
 	c.IPs = append([]string(nil), nv.IPs...)
-	c.IdentityPub = append([]byte(nil), nv.IdentityPub...)
+	c.PeerPub = append([]byte(nil), nv.PeerPub...)
 	if nv.VivaldiCoord != nil {
 		coord := *nv.VivaldiCoord
 		c.VivaldiCoord = &coord
@@ -122,8 +128,8 @@ func (s Snapshot) Self() types.PeerKey {
 	return s.LocalID
 }
 
-func (s Snapshot) Clock() Clock {
-	return s.clock
+func (s Snapshot) Digest() Digest {
+	return s.digest
 }
 
 func (s Snapshot) Peers() []PeerInfo {
@@ -148,7 +154,7 @@ func (s Snapshot) Services() []ServiceInfo {
 		for name, svc := range nv.Services {
 			out = append(out, ServiceInfo{
 				Name: name,
-				Port: svc.GetPort(),
+				Port: svc.Port,
 				Peer: pk,
 			})
 		}
@@ -177,9 +183,9 @@ func (s Snapshot) DeniedPeers() []types.PeerKey {
 	return s.DeniedKeys
 }
 
-func (s *Store) snapshotLocked() Snapshot {
+func (s *store) snapshotLocked() Snapshot {
 	valid := s.validNodesLocked()
-	live := liveComponent(s.LocalID, valid)
+	live := liveComponent(s.localID, valid)
 
 	nodes := make(map[types.PeerKey]NodeView, len(valid))
 	heatmaps := make(map[types.PeerKey]map[types.PeerKey]TrafficSnapshot, len(valid))
@@ -190,10 +196,7 @@ func (s *Store) snapshotLocked() Snapshot {
 		}
 	}
 
-	peerKeys := make([]types.PeerKey, 0, len(live))
-	for pk := range live {
-		peerKeys = append(peerKeys, pk)
-	}
+	peerKeys := slices.Collect(maps.Keys(live))
 
 	// Specs: conflict resolution — lowest PeerKey wins.
 	specs := make(map[string]WorkloadSpecView)
@@ -239,14 +242,10 @@ func (s *Store) snapshotLocked() Snapshot {
 		placements[pk] = nps
 	}
 
-	deniedKeys := make([]types.PeerKey, 0, len(s.denied))
-	for pk := range s.denied {
-		deniedKeys = append(deniedKeys, pk)
-	}
-	slices.SortFunc(deniedKeys, func(a, b types.PeerKey) int { return a.Compare(b) })
+	deniedKeys := slices.SortedFunc(maps.Keys(s.denied), func(a, b types.PeerKey) int { return a.Compare(b) })
 
 	return Snapshot{
-		LocalID:    s.LocalID,
+		LocalID:    s.localID,
 		Nodes:      nodes,
 		PeerKeys:   peerKeys,
 		Specs:      specs,
@@ -254,7 +253,7 @@ func (s *Store) snapshotLocked() Snapshot {
 		Placements: placements,
 		Heatmaps:   heatmaps,
 		DeniedKeys: deniedKeys,
-		clock:      Clock{digest: s.digestLocked()},
+		digest:     Digest{proto: s.digestLocked()},
 	}
 }
 

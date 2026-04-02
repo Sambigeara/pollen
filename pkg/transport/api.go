@@ -44,7 +44,7 @@ type QUICTransport = impl
 type StreamType byte
 
 const (
-	StreamTypeClock       StreamType = 1
+	StreamTypeDigest      StreamType = 1
 	StreamTypeTunnel      StreamType = 2
 	StreamTypeRouted      StreamType = 3
 	StreamTypeArtifact    StreamType = 4
@@ -131,16 +131,19 @@ func quicConfig() *quic.Config {
 type Option func(*transportOptions)
 
 type transportOptions struct {
+	router           Router
+	packetConn       net.PacketConn
+	inviteConsumer   auth.InviteConsumer
+	tracerProvider   trace.TracerProvider
+	trafficTracker   TrafficRecorder
 	isDenied         func(types.PeerKey) bool
 	metrics          *metrics.MeshMetrics
-	tracerProvider   trace.TracerProvider
-	packetConn       net.PacketConn
 	signPriv         ed25519.PrivateKey
 	tlsIdentityTTL   time.Duration
-	membershipTTL    time.Duration
-	reconnectWindow  time.Duration
 	maxConnectionAge time.Duration
 	peerTickInterval time.Duration
+	reconnectWindow  time.Duration
+	membershipTTL    time.Duration
 	disableNATPunch  bool
 }
 
@@ -162,6 +165,10 @@ func WithReconnectWindow(d time.Duration) Option {
 
 func WithMaxConnectionAge(d time.Duration) Option {
 	return func(o *transportOptions) { o.maxConnectionAge = d }
+}
+
+func WithInviteConsumer(c auth.InviteConsumer) Option {
+	return func(o *transportOptions) { o.inviteConsumer = c }
 }
 
 func WithIsDenied(fn func(types.PeerKey) bool) Option {
@@ -188,6 +195,14 @@ func WithPeerTickInterval(d time.Duration) Option {
 	return func(o *transportOptions) { o.peerTickInterval = d }
 }
 
+func WithRouter(r Router) Option {
+	return func(o *transportOptions) { o.router = r }
+}
+
+func WithTrafficTracker(t TrafficRecorder) Option {
+	return func(o *transportOptions) { o.trafficTracker = t }
+}
+
 func New(self types.PeerKey, creds auth.NodeCredentials, listenAddr string, opts ...Option) (*QUICTransport, error) {
 	o := transportOptions{}
 	for _, opt := range opts {
@@ -212,7 +227,7 @@ func New(self types.PeerKey, creds auth.NodeCredentials, listenAddr string, opts
 		}
 	}
 
-	meshCert, err := GenerateIdentityCert(o.signPriv, creds.Cert, o.tlsIdentityTTL)
+	meshCert, err := GenerateIdentityCert(o.signPriv, creds.Cert(), o.tlsIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate mesh cert: %w", err)
 	}
@@ -237,8 +252,9 @@ func New(self types.PeerKey, creds auth.NodeCredentials, listenAddr string, opts
 	m := &impl{
 		log:              zap.S().Named("mesh"),
 		bareCert:         bareCert,
-		trustBundle:      creds.Trust,
-		inviteSigner:     creds.DelegationKey,
+		rootPub:          creds.RootPub(),
+		inviteSigner:     creds.DelegationKey(),
+		inviteConsumer:   o.inviteConsumer,
 		isDenied:         o.isDenied,
 		localKey:         self,
 		port:             port,
@@ -248,6 +264,8 @@ func New(self types.PeerKey, creds auth.NodeCredentials, listenAddr string, opts
 		peerTickInterval: peerTickInterval,
 		injectedConn:     o.packetConn,
 		disableNATPunch:  o.disableNATPunch,
+		router:           o.router,
+		trafficTracker:   o.trafficTracker,
 		tracer:           tracer,
 		peers:            newPeerStore(),
 		sessions:         newSessionRegistry(o.metrics.SessionsActive),

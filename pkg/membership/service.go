@@ -82,7 +82,7 @@ func New(
 		log:             zap.S().Named("membership"),
 		tracer:          tracenoop.NewTracerProvider().Tracer("pollen/membership"),
 		nodeMetrics:     metrics.NewNodeMetrics(metricnoop.NewMeterProvider()),
-		smoothedErr:     metrics.NewEWMAFrom(VivaldiErrAlpha, 1.0),
+		smoothedErr:     metrics.NewEWMA(VivaldiErrAlpha, 1.0),
 		localCoord:      coords.RandomCoord(),
 		localCoordErr:   1.0,
 		peerConnectTime: make(map[types.PeerKey]time.Time),
@@ -96,8 +96,8 @@ func New(
 }
 
 func (s *Service) Start(ctx context.Context) error {
-	s.store.SetLocalCoord(s.localCoord)
-	s.broadcastBatchBytes(ctx, s.store.FullState())
+	s.store.SetLocalCoord(s.localCoord, s.localCoordErr)
+	s.broadcastBatchBytes(ctx, s.store.EncodeFull())
 
 	if s.checkCertExpiry() {
 		return ErrCertExpired
@@ -147,12 +147,11 @@ func (s *Service) DenyPeer(key types.PeerKey) error {
 }
 
 func (s *Service) Invite(_ string) (string, error) {
-	signer := s.creds.DelegationKey
+	signer := s.creds.DelegationKey()
 	if signer == nil {
 		return "", fmt.Errorf("this node is not an admin")
 	}
-	token, err := auth.IssueInviteTokenWithSigner(
-		signer,
+	token, err := signer.IssueInviteToken(
 		nil, // open invite — any peer can claim
 		nil, // bootstrap peers filled by the control layer
 		time.Now(),
@@ -273,7 +272,7 @@ func (s *Service) runPendingGossipBroadcast(ctx context.Context) {
 
 func (s *Service) runCertCheckTicker(ctx context.Context) {
 	certInterval := certCheckInterval
-	if auth.IsCertExpired(s.creds.Cert, time.Now()) {
+	if auth.IsCertExpired(s.creds.Cert(), time.Now()) {
 		certInterval = expirySweepInterval
 	}
 	ticker := time.NewTicker(certInterval)
@@ -341,10 +340,19 @@ func (s *Service) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedA
 
 	s.log.Debugw("observed address received", "addr", addr.String(), "from", from.Short())
 
-	observedIP := addr.IP.String()
-	events := s.store.SetLocalObservedExternalIP(observedIP)
-	s.forwardEvents(events)
-	s.forwardEvents(s.store.SetLocalExternalPort(uint32(addr.Port)))
+	// Only accept address updates from publicly accessible peers. A NAT'd
+	// peer's observation has a destination-dependent port mapping that is
+	// only valid for traffic from that specific peer, not as a general
+	// external address. NAT type detection still uses all observations.
+	snap := s.store.Snapshot()
+	if fromNV, ok := snap.Nodes[from]; ok && fromNV.PubliclyAccessible {
+		events := s.store.SetLocalObservedAddress(addr.IP.String(), uint32(addr.Port))
+		if len(events) > 0 {
+			s.natDetector.Reset()
+			s.log.Infow("external IP changed, reset NAT observations")
+		}
+		s.forwardEvents(events)
+	}
 
 	if peerAddr, ok := s.peerAddrs.GetActivePeerAddress(from); ok {
 		if observerIP, ok := netip.AddrFromSlice(peerAddr.IP); ok {
@@ -407,7 +415,7 @@ func (s *Service) updateVivaldiCoords(snap state.Snapshot) {
 		var newErr float64
 		localCoord, newErr = coords.Update(
 			localCoord, localCoordErr,
-			coords.Sample{RTT: rtt, PeerCoord: *peerCoord},
+			coords.Sample{RTT: rtt, PeerCoord: *peerCoord, PeerErr: nv.VivaldiErr},
 		)
 		localCoordErr = newErr
 		s.smoothedErr.Update(newErr)
@@ -421,7 +429,7 @@ func (s *Service) updateVivaldiCoords(snap state.Snapshot) {
 		s.localCoordErr = localCoordErr
 		s.mu.Unlock()
 
-		events := s.store.SetLocalCoord(localCoord)
+		events := s.store.SetLocalCoord(localCoord, localCoordErr)
 		s.forwardEvents(events)
 	}
 }

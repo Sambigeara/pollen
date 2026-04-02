@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/sambigeara/pollen/pkg/state"
@@ -63,9 +64,16 @@ func TestSaveStatePersistsToDisk(t *testing.T) {
 	n := newMinimalNode(t, false)
 	n.saveState()
 
-	data, err := os.ReadFile(filepath.Join(n.pollenDir, "state.pb"))
+	path := filepath.Join(n.pollenDir, "state.pb")
+	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
+
+	if runtime.GOOS == "linux" {
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o640), info.Mode())
+	}
 }
 
 func TestRecomputeRoutesDoesNotPanic(t *testing.T) {

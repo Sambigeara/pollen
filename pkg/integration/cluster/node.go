@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/supervisor"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -26,7 +25,7 @@ type TestNodeConfig struct {
 	Addr           *net.UDPAddr
 	Name           string
 	Role           NodeRole
-	BootstrapPeers []config.BootstrapTarget
+	BootstrapPeers []supervisor.BootstrapTarget
 	EnableNATPunch bool
 }
 
@@ -51,38 +50,33 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 	// Get TLS cert and delegation cert from ClusterAuth.
 	_, dc := cfg.Auth.NodeCredentials(priv)
 
-	// Build auth.NodeCredentials with DelegationSigner.
-	creds := &auth.NodeCredentials{
-		Trust: cfg.Auth.TrustBundle(),
-		Cert:  dc,
-		DelegationKey: &auth.DelegationSigner{
-			Priv:     priv,
-			Trust:    cfg.Auth.TrustBundle(),
-			Issuer:   dc,
-			Consumed: auth.NewInviteConsumer(),
-		},
-	}
+	// Persist credentials to disk and load the signer via the production path.
+	pollenDir := t.TempDir()
+	creds := auth.NewNodeCredentials(cfg.Auth.RootPub(), dc)
+	require.NoError(t, auth.SaveNodeCredentials(pollenDir, creds))
+	signer, err := auth.NewDelegationSigner(pollenDir, priv, 24*time.Hour) //nolint:mnd
+	require.NoError(t, err)
+	creds.SetDelegationKey(signer)
 
 	// Get VirtualPacketConn from switch.
 	vconn := cfg.Switch.Bind(cfg.Addr, cfg.Role)
 
-	// Build node config with injected PacketConn.
-	nodeConf := &config.Config{
-		SigningKey:             priv,
-		PollenDir:              t.TempDir(),
-		ListenPort:             cfg.Addr.Port,
-		AdvertisedIPs:          []string{cfg.Addr.IP.String()},
-		PacketConn:             vconn,
-		DisableNATPunch:        !cfg.EnableNATPunch,
-		PeerTickInterval:       1 * time.Second,
-		GossipInterval:         1 * time.Second,
-		TLSIdentityTTL:         24 * time.Hour,  //nolint:mnd
-		MembershipTTL:          24 * time.Hour,  //nolint:mnd
-		ReconnectWindow:        5 * time.Minute, //nolint:mnd
-		ResolvedBootstrapPeers: cfg.BootstrapPeers,
+	opts := supervisor.Options{
+		SigningKey:       priv,
+		PollenDir:        pollenDir,
+		ListenPort:       cfg.Addr.Port,
+		AdvertisedIPs:    []string{cfg.Addr.IP.String()},
+		PacketConn:       vconn,
+		DisableNATPunch:  !cfg.EnableNATPunch,
+		PeerTickInterval: 1 * time.Second,
+		GossipInterval:   1 * time.Second,
+		TLSIdentityTTL:   24 * time.Hour,  //nolint:mnd
+		MembershipTTL:    24 * time.Hour,  //nolint:mnd
+		ReconnectWindow:  5 * time.Minute, //nolint:mnd
+		BootstrapPeers:   cfg.BootstrapPeers,
 	}
 
-	n, err := supervisor.New(nodeConf, creds)
+	n, err := supervisor.New(opts, creds, auth.NewInviteConsumer(nil))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(cfg.Context)

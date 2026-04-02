@@ -60,13 +60,17 @@ func closeReasonToDisconnectReason(r closeReason) disconnectReason {
 		return disconnectCertExpired
 	case closeReasonCertRotation:
 		return disconnectCertRotation
+	case closeReasonDuplicate:
+		return disconnectDuplicate
+	case closeReasonShutdown:
+		return disconnectShutdown
 	default:
 		return disconnectGraceful
 	}
 }
 
 func (m *impl) addPeer(ctx context.Context, s *peerSession, peerKey types.PeerKey) {
-	ctx, span := m.tracer.Start(ctx, "mesh.addPeer")
+	_, span := m.tracer.Start(ctx, "mesh.addPeer")
 	span.SetAttributes(attribute.String("peer", peerKey.Short()))
 
 	replace, ok := m.sessions.add(peerKey, s, func(current *peerSession) bool {
@@ -77,7 +81,7 @@ func (m *impl) addPeer(ctx context.Context, s *peerSession, peerKey types.PeerKe
 		// Both connections are live — deterministic tie-break:
 		// both nodes agree to keep the connection dialed by the smaller key.
 		// This ensures convergence regardless of arrival order.
-		weAreSmaller := m.localKey.Less(peerKey)
+		weAreSmaller := m.localKey.Compare(peerKey) < 0
 		currentPreferred := current.outbound == weAreSmaller
 		return !currentPreferred
 	})
@@ -93,7 +97,6 @@ func (m *impl) addPeer(ctx context.Context, s *peerSession, peerKey types.PeerKe
 	}
 
 	span.End()
-	m.metrics.SessionConnects.Add(ctx, 1)
 
 	m.acceptWG.Go(func() { m.recvDatagrams(s, peerKey) })
 	m.acceptWG.Go(func() { m.acceptBidiStreams(s, peerKey) })
@@ -115,11 +118,10 @@ func (m *impl) closeSession(s *peerSession, reason closeReason) {
 	}
 }
 
-func (m *impl) removePeer(ctx context.Context, pk types.PeerKey, s *peerSession, cr closeReason, dr disconnectReason) bool {
+func (m *impl) removePeer(pk types.PeerKey, s *peerSession, cr closeReason, dr disconnectReason) bool {
 	if !m.sessions.removeIfCurrent(pk, s) {
 		return false
 	}
-	m.metrics.SessionDisconnects.Add(ctx, 1)
 	m.closeSession(s, cr)
 	m.peers.step(time.Now(), peerDisconnected{PeerKey: pk, Reason: dr})
 	m.emitPeerEvent(PeerEvent{Key: pk, Type: PeerEventDisconnected})
@@ -132,7 +134,7 @@ func (m *impl) ClosePeerSession(peerKey types.PeerKey, reason string) {
 	if !ok {
 		return
 	}
-	m.removePeer(context.Background(), peerKey, s, cr, closeReasonToDisconnectReason(cr))
+	m.removePeer(peerKey, s, cr, closeReasonToDisconnectReason(cr))
 }
 
 func (m *impl) handleSendFailure(peerKey types.PeerKey, s *peerSession, err error) {
@@ -140,7 +142,7 @@ func (m *impl) handleSendFailure(peerKey types.PeerKey, s *peerSession, err erro
 	if reason == disconnectUnknown {
 		return
 	}
-	m.removePeer(context.Background(), peerKey, s, closeReasonDisconnect, reason)
+	m.removePeer(peerKey, s, closeReasonDisconnect, reason)
 }
 
 func (m *impl) sessionReaper(ctx context.Context) {
@@ -162,7 +164,7 @@ func (m *impl) sessionReaper(ctx context.Context) {
 					continue
 				}
 				m.log.Debugw("reconnecting peer to refresh certificates", "peer", peerKey.Short(), "age", now.Sub(s.createdAt))
-				m.removePeer(ctx, peerKey, s, closeReasonCertRotation, disconnectCertRotation)
+				m.removePeer(peerKey, s, closeReasonCertRotation, disconnectCertRotation)
 			}
 		}
 	}

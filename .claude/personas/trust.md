@@ -27,11 +27,10 @@ You are the cryptography and admission authority for Pollen. You think in terms 
 - `auth.EnsureNodeCredentialsFromToken(pollenDir, nodePub, token, now) (*NodeCredentials, error)`
 - `auth.LoadOrEnrollNodeCredentials(pollenDir, nodePub, token, now) (*NodeCredentials, error)`
 - `auth.EnsureLocalRootCredentials(pollenDir, nodePub, now, membershipTTL, adminCertTTL) (*NodeCredentials, error)`
-- `auth.LoadExistingNodeCredentials(pollenDir, nodePub, now) (*NodeCredentials, error)`
+- `auth.LoadNodeCredentials(pollenDir) (*NodeCredentials, error)`
 - `auth.SaveNodeCredentials(pollenDir, creds) error`
-- `auth.LoadOrCreateAdminKey(pollenDir) (priv, pub, error)`
+- `auth.EnsureAdminKey(pollenDir) (priv, pub, error)`
 - `auth.LoadAdminKey(pollenDir) (priv, pub, error)`
-- `auth.NewTrustBundle(rootPub) *admissionv1.TrustBundle`
 - `auth.IssueAdminCert(rootPriv, clusterID, adminPub, notBefore, notAfter) (*admissionv1.AdminCert, error)`
 - `auth.VerifyAdminCert(cert, trust, now) error`
 - `auth.IssueMembershipCert(adminPriv, clusterID, subject, notBefore, notAfter, adminCertTTL) (*admissionv1.MembershipCert, error)`

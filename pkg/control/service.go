@@ -16,9 +16,9 @@ import (
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/placement"
+	"github.com/sambigeara/pollen/pkg/plnfs"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/tunneling"
@@ -56,7 +56,7 @@ type PlacementControl interface {
 }
 
 type TunnelingControl interface {
-	Connect(ctx context.Context, service, peer string) error
+	Connect(ctx context.Context, service string, peer types.PeerKey, localPort uint32) error
 	Disconnect(service string) error
 	ExposeService(port uint32, name string) error
 	UnexposeService(name string) error
@@ -158,7 +158,7 @@ func (s *Server) Start(socketPath string) error {
 	}
 	defer os.Remove(socketPath)
 
-	if err := config.SetGroupSocket(socketPath); err != nil {
+	if err := plnfs.SetGroupSocket(socketPath); err != nil {
 		s.log.Warnw("socket group permissions", "err", err)
 	}
 
@@ -215,22 +215,32 @@ func (s *Service) pickRecommendedPeer(snap state.Snapshot) *controlv1.BootstrapP
 
 func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
 	snap := s.state.Snapshot()
-	nodes := snap.Nodes
 	localID := snap.LocalID
-	localNode := nodes[localID]
+	localNode := snap.Nodes[localID]
+
+	// The cached snapshot may include peers whose certs expired since the
+	// last snapshot rebuild. Re-filter so stale entries don't cause the
+	// BFS to classify unreachable nodes as indirect.
+	now := time.Now()
+	nodes := make(map[types.PeerKey]state.NodeView, len(snap.Nodes))
+	for key, nv := range snap.Nodes {
+		if key != localID && nv.CertExpiry != 0 && auth.IsExpiredAt(time.Unix(nv.CertExpiry, 0), now) {
+			continue
+		}
+		nodes[key] = nv
+	}
 
 	degraded := false
-	if s.creds != nil && s.creds.Cert != nil && s.transport != nil {
-		now := time.Now()
-		if auth.IsCertExpired(s.creds.Cert, now) &&
-			auth.IsCertWithinReconnectWindow(s.creds.Cert, now, s.transport.ReconnectWindowDuration()) {
+	if s.creds != nil && s.creds.Cert() != nil && s.transport != nil {
+		if auth.IsCertExpired(s.creds.Cert(), now) &&
+			now.Before(auth.CertExpiresAt(s.creds.Cert()).Add(s.transport.ReconnectWindowDuration())) {
 			degraded = true
 		}
 	}
 
 	out := &controlv1.GetStatusResponse{
 		Self: &controlv1.NodeSummary{
-			Node:               &controlv1.NodeRef{PeerId: localID.Bytes()},
+			Node:               &controlv1.NodeRef{PeerPub: localID.Bytes()},
 			Status:             controlv1.NodeStatus_NODE_STATUS_ONLINE,
 			Addr:               nodeViewAddr(localNode),
 			PubliclyAccessible: localNode.PubliclyAccessible,
@@ -244,11 +254,11 @@ func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*
 		Degraded:    degraded,
 	}
 
-	if s.creds != nil && s.creds.Cert != nil {
-		claims := s.creds.Cert.GetClaims()
+	if s.creds != nil && s.creds.Cert() != nil {
+		claims := s.creds.Cert().GetClaims()
 		caps := claims.GetCapabilities()
 		health := controlv1.CertHealth_CERT_HEALTH_OK
-		remaining := time.Until(auth.CertExpiresAt(s.creds.Cert))
+		remaining := time.Until(auth.CertExpiresAt(s.creds.Cert()))
 		switch {
 		case remaining <= 0:
 			health = controlv1.CertHealth_CERT_HEALTH_EXPIRED
@@ -334,7 +344,7 @@ func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*
 		}
 
 		ns := &controlv1.NodeSummary{
-			Node:               &controlv1.NodeRef{PeerId: key.Bytes()},
+			Node:               &controlv1.NodeRef{PeerPub: key.Bytes()},
 			Status:             peerStatus,
 			Addr:               addrStr,
 			PubliclyAccessible: node.PubliclyAccessible,
@@ -357,14 +367,14 @@ func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*
 
 	for key, node := range nodes {
 		for _, svc := range node.Services {
-			name := svc.GetName()
+			name := svc.Name
 			if name == "" {
-				name = strconv.FormatUint(uint64(svc.GetPort()), 10)
+				name = strconv.FormatUint(uint64(svc.Port), 10)
 			}
 			out.Services = append(out.Services, &controlv1.ServiceSummary{
 				Name:     name,
-				Provider: &controlv1.NodeRef{PeerId: key.Bytes()},
-				Port:     svc.GetPort(),
+				Provider: &controlv1.NodeRef{PeerPub: key.Bytes()},
+				Port:     svc.Port,
 			})
 		}
 	}
@@ -373,14 +383,14 @@ func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*
 		name := ""
 		if node, ok := nodes[c.PeerID]; ok {
 			for _, svc := range node.Services {
-				if svc.GetPort() == c.RemotePort {
-					name = svc.GetName()
+				if svc.Port == c.RemotePort {
+					name = svc.Name
 					break
 				}
 			}
 		}
 		out.Connections = append(out.Connections, &controlv1.ConnectionSummary{
-			Peer:        &controlv1.NodeRef{PeerId: c.PeerID.Bytes()},
+			Peer:        &controlv1.NodeRef{PeerPub: c.PeerID.Bytes()},
 			RemotePort:  c.RemotePort,
 			LocalPort:   c.LocalPort,
 			ServiceName: name,
@@ -391,7 +401,7 @@ func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*
 		if ra, rb := nodeStatusRank(a.Status), nodeStatusRank(b.Status); ra != rb {
 			return ra - rb
 		}
-		return types.PeerKeyFromBytes(a.Node.PeerId).Compare(types.PeerKeyFromBytes(b.Node.PeerId))
+		return types.PeerKeyFromBytes(a.Node.PeerPub).Compare(types.PeerKeyFromBytes(b.Node.PeerPub))
 	})
 
 	slices.SortFunc(out.Services, func(a, b *controlv1.ServiceSummary) int {
@@ -401,14 +411,14 @@ func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*
 		if a.Port != b.Port {
 			return cmp.Compare(a.Port, b.Port)
 		}
-		return types.PeerKeyFromBytes(a.Provider.PeerId).Compare(types.PeerKeyFromBytes(b.Provider.PeerId))
+		return types.PeerKeyFromBytes(a.Provider.PeerPub).Compare(types.PeerKeyFromBytes(b.Provider.PeerPub))
 	})
 
 	slices.SortFunc(out.Connections, func(a, b *controlv1.ConnectionSummary) int {
 		if a.LocalPort != b.LocalPort {
 			return cmp.Compare(a.LocalPort, b.LocalPort)
 		}
-		return types.PeerKeyFromBytes(a.Peer.PeerId).Compare(types.PeerKeyFromBytes(b.Peer.PeerId))
+		return types.PeerKeyFromBytes(a.Peer.PeerPub).Compare(types.PeerKeyFromBytes(b.Peer.PeerPub))
 	})
 
 	specs := snap.Specs
@@ -469,7 +479,7 @@ func (s *Service) ConnectPeer(ctx context.Context, req *controlv1.ConnectPeerReq
 	if s.connector == nil {
 		return nil, status.Error(codes.FailedPrecondition, "mesh connector not configured")
 	}
-	peerKey := types.PeerKeyFromBytes(req.PeerId)
+	peerKey := types.PeerKeyFromBytes(req.PeerPub)
 	addrs := make([]netip.AddrPort, 0, len(req.Addrs))
 	for _, a := range req.Addrs {
 		ap, err := netip.ParseAddrPort(a)
@@ -485,15 +495,19 @@ func (s *Service) ConnectPeer(ctx context.Context, req *controlv1.ConnectPeerReq
 }
 
 func (s *Service) ConnectService(ctx context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
-	peerKey := types.PeerKeyFromBytes(req.Node.PeerId)
+	peerKey := types.PeerKeyFromBytes(req.Node.PeerPub)
 	serviceName := resolveServiceName(s.state.Snapshot(), peerKey, req.RemotePort)
 	if serviceName == "" {
 		serviceName = strconv.FormatUint(uint64(req.RemotePort), 10)
 	}
-	if err := s.tunneling.Connect(ctx, serviceName, peerKey.String()); err != nil {
+	localPort := req.GetLocalPort()
+	if localPort == 0 {
+		localPort = req.GetRemotePort()
+	}
+	if err := s.tunneling.Connect(ctx, serviceName, peerKey, localPort); err != nil {
 		return nil, s.fail(err, "connect service failed")
 	}
-	return &controlv1.ConnectServiceResponse{}, nil
+	return &controlv1.ConnectServiceResponse{LocalPort: localPort}, nil
 }
 
 func (s *Service) DisconnectService(_ context.Context, req *controlv1.DisconnectServiceRequest) (*controlv1.DisconnectServiceResponse, error) {
@@ -516,10 +530,10 @@ func (s *Service) DisconnectService(_ context.Context, req *controlv1.Disconnect
 }
 
 func (s *Service) DenyPeer(_ context.Context, req *controlv1.DenyPeerRequest) (*controlv1.DenyPeerResponse, error) {
-	if s.creds == nil || s.creds.DelegationKey == nil {
+	if s.creds == nil || s.creds.DelegationKey() == nil {
 		return nil, status.Error(codes.FailedPrecondition, "delegation key not available; this node cannot deny peers")
 	}
-	if err := s.membership.DenyPeer(types.PeerKeyFromBytes(req.GetPeerId())); err != nil {
+	if err := s.membership.DenyPeer(types.PeerKeyFromBytes(req.GetPeerPub())); err != nil {
 		return nil, s.fail(err, "deny peer failed")
 	}
 	return &controlv1.DenyPeerResponse{}, nil
@@ -536,13 +550,13 @@ func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) 
 	}
 
 	certExpiry := m.CertExpirySeconds
-	if certExpiry == 0 && s.creds != nil && s.creds.Cert != nil {
-		certExpiry = time.Until(auth.CertExpiresAt(s.creds.Cert)).Seconds()
+	if certExpiry == 0 && s.creds != nil && s.creds.Cert() != nil {
+		certExpiry = time.Until(auth.CertExpiresAt(s.creds.Cert())).Seconds()
 	}
 
 	health := controlv1.HealthStatus_HEALTH_STATUS_HEALTHY
 	switch {
-	case certExpiry <= 0 && s.creds != nil && s.creds.Cert != nil:
+	case certExpiry <= 0 && s.creds != nil && s.creds.Cert() != nil:
 		health = controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY
 	case counts.Connected == 0:
 		health = controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY
@@ -619,7 +633,7 @@ func nodeBootstrapInfo(peerID types.PeerKey, ips []string, port uint32) *control
 		addrs = append(addrs, net.JoinHostPort(ip, strconv.Itoa(int(port))))
 	}
 	return &controlv1.BootstrapPeerInfo{
-		Peer:  &controlv1.NodeRef{PeerId: peerID.Bytes()},
+		Peer:  &controlv1.NodeRef{PeerPub: peerID.Bytes()},
 		Addrs: addrs,
 	}
 }
@@ -641,8 +655,8 @@ func resolveServiceName(snap state.Snapshot, peerKey types.PeerKey, port uint32)
 		return ""
 	}
 	for _, svc := range nv.Services {
-		if svc.GetPort() == port {
-			return svc.GetName()
+		if svc.Port == port {
+			return svc.Name
 		}
 	}
 	return ""
@@ -658,8 +672,6 @@ func nodeStatusRank(s controlv1.NodeStatus) int {
 		return 0
 	case controlv1.NodeStatus_NODE_STATUS_INDIRECT:
 		return 1
-	case controlv1.NodeStatus_NODE_STATUS_RELAY:
-		return 2 //nolint:mnd
 	case controlv1.NodeStatus_NODE_STATUS_OFFLINE,
 		controlv1.NodeStatus_NODE_STATUS_UNSPECIFIED:
 		return offlineRank

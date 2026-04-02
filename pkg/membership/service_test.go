@@ -20,13 +20,11 @@ import (
 )
 
 func testCreds() *auth.NodeCredentials {
-	return &auth.NodeCredentials{
-		Cert: &admissionv1.DelegationCert{
-			Claims: &admissionv1.DelegationCertClaims{
-				NotAfterUnix: time.Now().Add(24 * time.Hour).Unix(),
-			},
+	return auth.NewNodeCredentials(nil, &admissionv1.DelegationCert{
+		Claims: &admissionv1.DelegationCertClaims{
+			NotAfterUnix: time.Now().Add(24 * time.Hour).Unix(),
 		},
-	}
+	})
 }
 
 func newTestService(localID types.PeerKey) (*Service, *fakeNetwork, *fakeClusterState) {

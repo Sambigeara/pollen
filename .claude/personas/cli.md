@@ -63,4 +63,4 @@ No Go API — the CLI is a leaf binary. Its interface is the command-line surfac
 - **orchestrator**: `controlv1.ControlServiceClient` (generated Connect client) for all daemon communication
 - **trust**: `auth.Encode*Token` / `auth.Decode*Token` for token handling; `auth.EnsureLocalRootCredentials` / `auth.LoadOrEnrollNodeCredentials` for enrollment; `auth.LoadAdminSigner` for invite issuance
 - **state**: `config.Load` / `config.Save` for bootstrap peer persistence and TTL configuration
-- **orchestrator**: `node.GenIdentityKey` / `node.ReadIdentityPub` for key management
+- **orchestrator**: `node.EnsureIdentityKey` / `node.ReadIdentityPub` for key management

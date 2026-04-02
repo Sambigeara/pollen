@@ -113,6 +113,8 @@ const (
 	disconnectDenied                         // peer denied our session/membership
 	disconnectCertRotation                   // forced reconnection for cert rotation
 	disconnectCertExpired                    // peer membership cert expired
+	disconnectDuplicate                      // session lost tie-break; preferred session exists
+	disconnectShutdown                       // peer is shutting down, will likely restart soon
 )
 
 func (r disconnectReason) String() string {
@@ -133,6 +135,10 @@ func (r disconnectReason) String() string {
 		return "cert_rotation"
 	case disconnectCertExpired:
 		return "cert_expired"
+	case disconnectDuplicate:
+		return "duplicate"
+	case disconnectShutdown:
+		return "shutdown"
 	}
 	return "unknown"
 }
@@ -268,7 +274,6 @@ func (s *peerStore) updateGauges() {
 	s.metrics.PeersDiscovered.Record(ctx, float64(c.Backoff))
 	s.metrics.PeersConnecting.Record(ctx, float64(c.Connecting))
 	s.metrics.PeersConnected.Record(ctx, float64(c.Connected))
-	s.metrics.PeersUnreachable.Record(ctx, 0)
 }
 
 func (s *peerStore) discoverPeer(now time.Time, e discoverPeer) {
@@ -287,6 +292,13 @@ func (s *peerStore) discoverPeer(now time.Time, e discoverPeer) {
 			p.Stage = connectStagePunch
 		}
 		s.m[e.PeerKey] = p
+		// TODO(saml): remove diagnostic logging once topology reconnection bug is resolved
+		s.log.Debugw("peer discovered (new)",
+			"peer", e.PeerKey.Short(),
+			"has_last_addr", e.LastAddr != nil,
+			"ips", len(e.Ips),
+			"stage", p.Stage,
+		)
 		return
 	}
 
@@ -408,6 +420,7 @@ func (s *peerStore) disconnectPeer(now time.Time, e peerDisconnected) {
 
 	delay := unknownDisconnectRetryInterval
 	switch e.Reason {
+	case disconnectDuplicate:
 	case disconnectUnknown:
 	case disconnectIdleTimeout:
 		delay = idleTimeoutRetryInterval
@@ -423,6 +436,8 @@ func (s *peerStore) disconnectPeer(now time.Time, e peerDisconnected) {
 		delay = idleTimeoutRetryInterval
 	case disconnectCertExpired:
 		delay = unknownDisconnectRetryInterval
+	case disconnectShutdown:
+		delay = resetRetryInterval
 	}
 
 	s.metrics.Disconnects.Add(context.Background(), 1)

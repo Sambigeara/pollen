@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -18,7 +20,16 @@ var (
 	ErrNotRunning     = errors.New("workload not running")
 	ErrStore          = errors.New("store artifact")
 	ErrCompile        = errors.New("compile module")
+	ErrWorkloadFailed = errors.New("workload execution failed")
 )
+
+// WASMRuntime is the narrow interface the placement package requires from
+// the WASM runtime for compiling and invoking workload modules.
+type WASMRuntime interface {
+	Compile(ctx context.Context, wasmBytes []byte, hash string, cfg wasm.PluginConfig) error
+	Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
+	DropCompiled(ctx context.Context, hash string)
+}
 
 // Status describes the lifecycle state of a workload.
 type Status int
@@ -50,17 +61,16 @@ type WorkloadSummary struct {
 
 type manager struct {
 	cas       *cas.Store
-	runtime   *wasm.Runtime
+	runtime   WASMRuntime
 	workloads map[string]*entry
 	mu        sync.Mutex
 }
 
 type entry struct {
 	compiledAt time.Time
-	config     wasm.PluginConfig
 }
 
-func newManager(store *cas.Store, rt *wasm.Runtime) *manager {
+func newManager(store *cas.Store, rt WASMRuntime) *manager {
 	return &manager{
 		cas:       store,
 		runtime:   rt,
@@ -91,7 +101,7 @@ func (m *manager) SeedFromCAS(ctx context.Context, hash string, cfg wasm.PluginC
 
 func (m *manager) compileAndRegister(ctx context.Context, wasmBytes []byte, hash string, cfg wasm.PluginConfig) error {
 	m.mu.Lock()
-	if e, ok := m.workloads[hash]; ok && e.config == cfg {
+	if _, ok := m.workloads[hash]; ok {
 		m.mu.Unlock()
 		return ErrAlreadyRunning
 	}
@@ -103,7 +113,7 @@ func (m *manager) compileAndRegister(ctx context.Context, wasmBytes []byte, hash
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.workloads[hash] = &entry{compiledAt: time.Now(), config: cfg}
+	m.workloads[hash] = &entry{compiledAt: time.Now()}
 	return nil
 }
 
@@ -135,7 +145,7 @@ func (m *manager) Unseed(hash string) error {
 	delete(m.workloads, hash)
 	m.mu.Unlock()
 
-	m.runtime.DropCompiled(hash)
+	m.runtime.DropCompiled(context.Background(), hash)
 	return nil
 }
 
@@ -155,14 +165,11 @@ func (m *manager) List() []WorkloadSummary {
 
 func (m *manager) Close() {
 	m.mu.Lock()
-	snapshot := make([]string, 0, len(m.workloads))
-	for hash := range m.workloads {
-		snapshot = append(snapshot, hash)
-	}
+	snapshot := slices.Collect(maps.Keys(m.workloads))
 	clear(m.workloads)
 	m.mu.Unlock()
 
 	for _, hash := range snapshot {
-		m.runtime.DropCompiled(hash)
+		m.runtime.DropCompiled(context.Background(), hash)
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,7 +15,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/plnfs"
 )
+
+func sha256ClusterID(rootPub []byte) []byte {
+	h := sha256.Sum256(rootPub)
+	return h[:]
+}
 
 func newInitCmd() *cobra.Command {
 	return &cobra.Command{
@@ -37,8 +45,8 @@ func newPurgeCmd() *cobra.Command {
 
 func runInit(cmd *cobra.Command, _ []string) {
 	reexecAsRoot(cmd)
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	if err := plnfs.EnsureDir(pollenDir); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
@@ -53,13 +61,13 @@ func runInit(cmd *cobra.Command, _ []string) {
 		os.Exit(1)
 	}
 
-	_, pub, err := auth.GenIdentityKey(pollenDir)
+	_, pub, err := auth.EnsureIdentityKey(pollenDir)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
 
-	existing, err := auth.LoadExistingNodeCredentials(pollenDir, pub, time.Now())
+	existing, err := auth.LoadNodeCredentials(pollenDir)
 	if err == nil {
 		_, adminPub, adminErr := auth.LoadAdminKey(pollenDir)
 		if adminErr != nil && !errors.Is(adminErr, os.ErrNotExist) {
@@ -67,10 +75,10 @@ func runInit(cmd *cobra.Command, _ []string) {
 			os.Exit(1)
 		}
 
-		if adminErr == nil && slices.Equal(adminPub, existing.Trust.GetRootPub()) {
+		if adminErr == nil && slices.Equal(adminPub, existing.RootPub()) {
 			fmt.Fprintf(cmd.OutOrStdout(), "already initialized as root cluster\nroot_pub: %s\ncluster_id: %s\n",
 				hex.EncodeToString(adminPub),
-				hex.EncodeToString(existing.Trust.GetClusterId()),
+				hex.EncodeToString(sha256ClusterID(existing.RootPub())),
 			)
 			return
 		}
@@ -84,10 +92,7 @@ func runInit(cmd *cobra.Command, _ []string) {
 		os.Exit(1)
 	}
 
-	cfg := loadConfigOrDefault(pollenDir)
-	certTTLs := cfg.CertTTLs
-
-	creds, err := auth.EnsureLocalRootCredentials(pollenDir, pub, time.Now(), certTTLs.MembershipTTL(), certTTLs.DelegationTTL())
+	creds, err := auth.EnsureLocalRootCredentials(pollenDir, pub, time.Now(), config.DefaultMembershipTTL, config.DefaultDelegationTTL)
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
@@ -101,16 +106,14 @@ func runInit(cmd *cobra.Command, _ []string) {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "initialized root cluster\nroot_pub: %s\ncluster_id: %s\n",
 		hex.EncodeToString(adminPub),
-		hex.EncodeToString(creds.Trust.GetClusterId()),
+		hex.EncodeToString(sha256ClusterID(creds.RootPub())),
 	)
-
-	ensureSudoUserInPlnGroup(cmd)
 }
 
 func runPurge(cmd *cobra.Command, _ []string) {
 	reexecAsRoot(cmd)
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	if err := plnfs.EnsureDir(pollenDir); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}

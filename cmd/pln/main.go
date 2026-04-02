@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -15,7 +16,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -28,9 +28,11 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/api/genpb/pollen/control/v1/controlv1connect"
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
+	"github.com/sambigeara/pollen/pkg/plnfs"
 	"github.com/sambigeara/pollen/pkg/supervisor"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -104,6 +106,7 @@ func main() {
 		newSeedCmd(),
 		newUnseedCmd(),
 		newCallCmd(),
+		newProvisionCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -196,8 +199,8 @@ func newIDCmd() *cobra.Command {
 }
 
 func runID(cmd *cobra.Command, _ []string) {
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	if err := plnfs.EnsureDir(pollenDir); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
@@ -208,7 +211,7 @@ func runID(cmd *cobra.Command, _ []string) {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 			os.Exit(1)
 		}
-		_, pub, err = auth.GenIdentityKey(pollenDir)
+		_, pub, err = auth.EnsureIdentityKey(pollenDir)
 		if err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 			os.Exit(1)
@@ -236,7 +239,8 @@ func runUp(cmd *cobra.Command, _ []string) {
 	detach, _ := cmd.Flags().GetBool("detach")
 
 	if public, _ := cmd.Flags().GetBool("public"); public {
-		if err := applyPublicFlag(cmd); err != nil {
+		pollenDir, _ := cmd.Flags().GetString("dir")
+		if err := applyPublicFlag(pollenDir); err != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 			os.Exit(1)
 		}
@@ -249,8 +253,8 @@ func runUp(cmd *cobra.Command, _ []string) {
 		return
 	}
 
-	pollenDir, err := pollenPath(cmd)
-	if err == nil {
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	if err := plnfs.EnsureDir(pollenDir); err == nil {
 		sockPath := filepath.Join(pollenDir, socketName)
 		if active, _ := nodeSocketActive(sockPath); active {
 			fmt.Fprintln(cmd.ErrOrStderr(),
@@ -262,16 +266,12 @@ func runUp(cmd *cobra.Command, _ []string) {
 	runNode(cmd)
 }
 
-func pollenPath(cmd *cobra.Command) (string, error) {
-	dir, err := cmd.Flags().GetString("dir")
-	if err != nil {
-		return "", err
-	}
-	return config.EnsurePollenDir(dir)
-}
-
 func runNode(cmd *cobra.Command) {
-	logging.Init()
+	zapLogger, err := logging.New()
+	if err != nil {
+		log.Fatalf("can't initialize zap logger: %v", err)
+	}
+	zap.ReplaceGlobals(zapLogger.Named("pln"))
 	defer func() { _ = zap.S().Sync() }()
 
 	logger := zap.S()
@@ -280,23 +280,22 @@ func runNode(cmd *cobra.Command) {
 	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopFunc()
 
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	if err := plnfs.EnsureDir(pollenDir); err != nil {
 		logger.Fatal(err)
 	}
 
-	privKey, pubKey, err := auth.GenIdentityKey(pollenDir)
+	privKey, pubKey, err := auth.EnsureIdentityKey(pollenDir)
 	if err != nil {
 		logger.Fatal("failed to load signing keys: ", err)
 	}
 
-	cfg := loadConfigOrDefault(pollenDir)
-	certTTLs := cfg.CertTTLs
+	cfg, err := config.Load(pollenDir)
+	if err != nil {
+		logger.Fatalw("failed to load config", "err", err)
+	}
 
 	port, _ := cmd.Flags().GetInt("port")
-	if !cmd.Flags().Changed("port") && cfg.Port != 0 {
-		port = int(cfg.Port)
-	}
 
 	var addrs []string
 	if cmd.Flags().Changed("ips") {
@@ -305,92 +304,96 @@ func runNode(cmd *cobra.Command) {
 		for _, ip := range ips {
 			addrs = append(addrs, ip.String())
 		}
-	} else if len(cfg.AdvertiseIPs) > 0 {
-		addrs = cfg.AdvertiseIPs
 	}
 
-	creds, credErr := auth.LoadOrEnrollNodeCredentials(pollenDir, pubKey, nil, time.Now())
+	creds, credErr := auth.LoadNodeCredentials(pollenDir)
 	if credErr != nil {
-		switch {
-		case errors.Is(credErr, auth.ErrCredentialsNotFound):
-			logger.Info("node is not initialized; auto-initializing root cluster")
-			creds, credErr = auth.EnsureLocalRootCredentials(pollenDir, pubKey, time.Now(), certTTLs.MembershipTTL(), certTTLs.DelegationTTL())
-			if credErr != nil {
-				logger.Fatal("auto-init failed: ", credErr)
-			}
-		case errors.Is(credErr, auth.ErrCertExpired):
-			logger.Warnw("delegation certificate has expired — starting in degraded mode, will attempt renewal",
-				"expired_at", auth.CertExpiresAt(creds.Cert))
-		case errors.Is(credErr, auth.ErrDifferentCluster):
-			logger.Fatal("node is already enrolled in a different cluster; run `pln purge` before joining a new cluster")
-		default:
+		if !errors.Is(credErr, auth.ErrCredentialsNotFound) {
 			logger.Fatal(credErr)
 		}
+		logger.Info("node is not initialized; auto-initializing root cluster")
+		creds, credErr = auth.EnsureLocalRootCredentials(pollenDir, pubKey, time.Now(), config.DefaultMembershipTTL, config.DefaultDelegationTTL)
+		if credErr != nil {
+			logger.Fatal("auto-init failed: ", credErr)
+		}
+	} else if auth.IsCertExpired(creds.Cert(), time.Now()) {
+		logger.Warnw("delegation certificate has expired — starting in degraded mode, will attempt renewal",
+			"expired_at", auth.CertExpiresAt(creds.Cert()))
 	}
 
-	creds.DelegationKey, err = auth.LoadDelegationSigner(pollenDir, privKey, time.Now(), certTTLs.DelegationTTL())
+	signer, err := auth.NewDelegationSigner(pollenDir, privKey, config.DefaultDelegationTTL)
 	if err != nil {
 		logger.Infow("invite redemption disabled", "err", err)
-	}
-
-	if creds.DelegationKey != nil {
-		creds.DelegationKey.Consumed = auth.NewInviteConsumer()
-	}
-
-	var stateBlob []byte
-	if raw, readErr := os.ReadFile(filepath.Join(pollenDir, "state.pb")); readErr == nil && len(raw) > 0 {
-		stateBlob = raw
-	}
-
-	var bootstrapPeers []config.BootstrapTarget
-	protoPeers, loadErr := cfg.BootstrapProtoPeers()
-	if loadErr != nil {
-		logger.Warnw("failed to parse bootstrap peers from config", "err", loadErr)
 	} else {
-		for _, bp := range protoPeers {
-			pk := types.PeerKeyFromBytes(bp.GetPeerPub())
-			bootstrapPeers = append(bootstrapPeers, config.BootstrapTarget{
-				PeerKey: pk,
-				Addrs:   bp.GetAddrs(),
-			})
+		creds.SetDelegationKey(signer)
+	}
+
+	var runtimeState *statev1.RuntimeState
+	if raw, readErr := os.ReadFile(filepath.Join(pollenDir, "state.pb")); readErr == nil && len(raw) > 0 {
+		runtimeState = loadRuntimeState(raw)
+	}
+
+	var inviteConsumer auth.InviteConsumer
+	if creds.DelegationKey() != nil {
+		var entries []*statev1.ConsumedInvite
+		if runtimeState != nil {
+			entries = runtimeState.GetConsumedInvites()
 		}
+		inviteConsumer = auth.NewInviteConsumer(entries)
+	}
+
+	bootstrapPeers := make([]supervisor.BootstrapTarget, 0, len(cfg.BootstrapPeers))
+	for peerHex, addrs := range cfg.BootstrapPeers {
+		pk, _ := types.PeerKeyFromString(peerHex)
+		bootstrapPeers = append(bootstrapPeers, supervisor.BootstrapTarget{
+			PeerKey: pk,
+			Addrs:   addrs,
+		})
 	}
 
 	metricsEnabled, _ := cmd.Flags().GetBool("metrics")
 
-	var initialConns []config.ConnectionEntry
+	var initialConns []supervisor.ConnectionEntry
 	for _, conn := range cfg.Connections {
 		peerKey, parseErr := types.PeerKeyFromString(conn.Peer)
 		if parseErr != nil {
 			logger.Warnw("skipping invalid connection peer in config", "peer", conn.Peer, "err", parseErr)
 			continue
 		}
-		initialConns = append(initialConns, config.ConnectionEntry{
+		initialConns = append(initialConns, supervisor.ConnectionEntry{
 			PeerKey:    peerKey,
 			RemotePort: conn.RemotePort,
 			LocalPort:  conn.LocalPort,
 		})
 	}
 
-	cfg.SigningKey = privKey
-	cfg.PollenDir = pollenDir
-	cfg.SocketPath = filepath.Join(pollenDir, socketName)
-	cfg.StateBlob = stateBlob
-	cfg.ShutdownFunc = stopFunc
-	cfg.ListenPort = port
-	cfg.GossipInterval = passiveGossipInterval
-	cfg.PeerTickInterval = time.Second
-	cfg.AdvertisedIPs = addrs
-	cfg.ResolvedBootstrapPeers = bootstrapPeers
-	cfg.InitialConnections = initialConns
-	cfg.TLSIdentityTTL = certTTLs.TLSIdentityTTL()
-	cfg.MembershipTTL = certTTLs.MembershipTTL()
-	cfg.ReconnectWindow = certTTLs.ReconnectWindowDuration()
-	cfg.MaxConnectionAge = defaultMaxConnectionAge
-	cfg.BootstrapPublic = cfg.Public
-	cfg.MetricsEnabled = metricsEnabled
+	initialServices := make([]supervisor.ServiceEntry, 0, len(cfg.Services))
+	for _, svc := range cfg.Services {
+		initialServices = append(initialServices, supervisor.ServiceEntry{
+			Name: svc.Name,
+			Port: svc.Port,
+		})
+	}
 
-	n, err := supervisor.New(cfg, creds)
+	opts := supervisor.Options{
+		SigningKey:         privKey,
+		PollenDir:          pollenDir,
+		SocketPath:         filepath.Join(pollenDir, socketName),
+		RuntimeState:       runtimeState,
+		ShutdownFunc:       stopFunc,
+		ListenPort:         port,
+		GossipInterval:     passiveGossipInterval,
+		PeerTickInterval:   time.Second,
+		AdvertisedIPs:      addrs,
+		BootstrapPeers:     bootstrapPeers,
+		InitialConnections: initialConns,
+		InitialServices:    initialServices,
+		MaxConnectionAge:   defaultMaxConnectionAge,
+		BootstrapPublic:    cfg.Public,
+		MetricsEnabled:     metricsEnabled,
+	}
+
+	n, err := supervisor.New(opts, creds, inviteConsumer)
 	if err != nil {
 		logger.Fatal(err)
 	}
@@ -423,32 +426,23 @@ func nodeSocketActive(sockPath string) (bool, error) {
 }
 
 type tokenIssuerContext struct {
-	cfg       *config.Config
 	signer    *auth.DelegationSigner
 	pollenDir string
 }
 
-func loadTokenIssuerContext(cmd *cobra.Command) (*tokenIssuerContext, error) {
-	pollenDir, err := pollenPath(cmd)
+func loadTokenIssuerContext(pollenDir string) (*tokenIssuerContext, error) {
+	nodePriv, _, err := auth.EnsureIdentityKey(pollenDir)
 	if err != nil {
 		return nil, err
 	}
 
-	cfg := loadConfigOrDefault(pollenDir)
-
-	nodePriv, _, err := auth.GenIdentityKey(pollenDir)
-	if err != nil {
-		return nil, err
-	}
-
-	signer, err := auth.LoadDelegationSigner(pollenDir, nodePriv, time.Now(), cfg.CertTTLs.DelegationTTL())
+	signer, err := auth.NewDelegationSigner(pollenDir, nodePriv, config.DefaultDelegationTTL)
 	if err != nil {
 		return nil, err
 	}
 
 	return &tokenIssuerContext{
 		pollenDir: pollenDir,
-		cfg:       cfg,
 		signer:    signer,
 	}, nil
 }
@@ -500,29 +494,6 @@ func reexecAsRoot(cmd *cobra.Command) {
 	}
 }
 
-func ensureSudoUserInPlnGroup(cmd *cobra.Command) {
-	if runtime.GOOS != osLinux || os.Getuid() != 0 {
-		return
-	}
-	sudoUser := os.Getenv("SUDO_USER")
-	if sudoUser == "" || userInGroup(cmd.Context(), sudoUser, "pln") {
-		return
-	}
-	if err := exec.CommandContext(cmd.Context(), "usermod", "-aG", "pln", sudoUser).Run(); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not add %s to pln group: %v\n", sudoUser, err)
-	} else {
-		fmt.Fprintf(cmd.OutOrStdout(), "added %s to the pln group -- log out and back in for CLI access without sudo\n", sudoUser)
-	}
-}
-
-func userInGroup(ctx context.Context, user, group string) bool {
-	out, err := exec.CommandContext(ctx, "id", "-nG", user).Output()
-	if err != nil {
-		return false
-	}
-	return slices.Contains(strings.Fields(string(out)), group)
-}
-
 func setConfigPublic(pollenDir string, public bool) error {
 	cfg, err := config.Load(pollenDir)
 	if err != nil {
@@ -532,11 +503,7 @@ func setConfigPublic(pollenDir string, public bool) error {
 	return config.Save(pollenDir, cfg)
 }
 
-func applyPublicFlag(cmd *cobra.Command) error {
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		return err
-	}
+func applyPublicFlag(pollenDir string) error {
 	if _, _, err := auth.LoadAdminKey(pollenDir); err != nil {
 		return fmt.Errorf("--public requires admin keys; run `pln init` to create a root cluster, or join with an admin token")
 	}
@@ -548,16 +515,13 @@ func saveBootstrapPeer(pollenDir string, peer *admissionv1.BootstrapPeer) error 
 	if err != nil {
 		return err
 	}
-	if err := cfg.RememberBootstrapPeer(peer); err != nil {
-		return err
-	}
-
+	cfg.RememberBootstrapPeer(peer)
 	return config.Save(pollenDir, cfg)
 }
 
 func clusterStatePaths(pollenDir string) []string {
 	return []string{
-		filepath.Join(pollenDir, "keys", "cluster.trust.pb"),
+		filepath.Join(pollenDir, "keys", "root.pub"),
 		filepath.Join(pollenDir, "keys", "membership.cert.pb"),
 		filepath.Join(pollenDir, "keys", "delegation.cert.pb"),
 		filepath.Join(pollenDir, "keys", "admin_ed25519.key"),
@@ -602,8 +566,9 @@ func newDenyCmd() *cobra.Command {
 
 func runDeny(cmd *cobra.Command, args []string) {
 	prefix := strings.ToLower(args[0])
+	pollenDir, _ := cmd.Flags().GetString("dir")
 
-	client := newControlClient(cmd)
+	client := newControlClient(pollenDir)
 	statusResp, err := client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
@@ -613,8 +578,8 @@ func runDeny(cmd *cobra.Command, args []string) {
 	// Resolve the peer ID prefix to a full peer ID.
 	var matches [][]byte
 	for _, n := range statusResp.Msg.GetNodes() {
-		if peerIDHasPrefix(n.GetNode().GetPeerId(), prefix) {
-			matches = append(matches, n.GetNode().GetPeerId())
+		if peerIDHasPrefix(n.GetNode().GetPeerPub(), prefix) {
+			matches = append(matches, n.GetNode().GetPeerPub())
 		}
 	}
 
@@ -629,18 +594,13 @@ func runDeny(cmd *cobra.Command, args []string) {
 
 	peerID := matches[0]
 	_, err = client.DenyPeer(cmd.Context(), connect.NewRequest(&controlv1.DenyPeerRequest{
-		PeerId: peerID,
+		PeerPub: peerID,
 	}))
 	if err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), err)
 		os.Exit(1)
 	}
 
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
-		os.Exit(1)
-	}
 	cfg := loadConfigOrDefault(pollenDir)
 	cfg.ForgetBootstrapPeer(peerID)
 	if saveErr := config.Save(pollenDir, cfg); saveErr != nil {
@@ -650,17 +610,11 @@ func runDeny(cmd *cobra.Command, args []string) {
 	fmt.Fprintf(cmd.OutOrStdout(), "denied peer %s\n", formatPeerID(peerID, false))
 }
 
-func newControlClient(cmd *cobra.Command) controlv1connect.ControlServiceClient {
-	return newControlClientWithTimeout(cmd, controlClientTimeout)
+func newControlClient(pollenDir string) controlv1connect.ControlServiceClient {
+	return newControlClientWithTimeout(pollenDir, controlClientTimeout)
 }
 
-func newControlClientWithTimeout(cmd *cobra.Command, timeout time.Duration) controlv1connect.ControlServiceClient {
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "failed to prepare pln dir: %v\n", err)
-		os.Exit(1)
-	}
-
+func newControlClientWithTimeout(pollenDir string, timeout time.Duration) controlv1connect.ControlServiceClient {
 	socket := filepath.Join(pollenDir, socketName)
 
 	tr := &http2.Transport{
@@ -680,4 +634,14 @@ func newControlClientWithTimeout(cmd *cobra.Command, timeout time.Duration) cont
 		"http://unix",
 		connect.WithGRPC(),
 	)
+}
+
+// loadRuntimeState deserializes a RuntimeState from raw bytes, with backward
+// compatibility for state.pb files that contain raw GossipEventBatch bytes.
+func loadRuntimeState(raw []byte) *statev1.RuntimeState {
+	var rs statev1.RuntimeState
+	if err := rs.UnmarshalVT(raw); err == nil && (len(rs.GetGossipState()) > 0 || len(rs.GetPeers()) > 0 || len(rs.GetConsumedInvites()) > 0) {
+		return &rs
+	}
+	return &statev1.RuntimeState{GossipState: raw}
 }

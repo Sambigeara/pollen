@@ -18,7 +18,7 @@ import (
 // ClusterAuth bootstraps cryptographic identity for a test cluster.
 type ClusterAuth struct {
 	t       testing.TB
-	trust   *admissionv1.TrustBundle
+	rootPub ed25519.PublicKey
 	rootKey ed25519.PrivateKey
 }
 
@@ -27,13 +27,12 @@ func NewClusterAuth(t testing.TB) *ClusterAuth { //nolint:thelper
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	pub := priv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-	trust := auth.NewTrustBundle(pub)
-	return &ClusterAuth{trust: trust, rootKey: priv, t: t}
+	return &ClusterAuth{rootPub: pub, rootKey: priv, t: t}
 }
 
-// TrustBundle returns the shared trust bundle for the cluster.
-func (ca *ClusterAuth) TrustBundle() *admissionv1.TrustBundle {
-	return ca.trust
+// RootPub returns the cluster root public key.
+func (ca *ClusterAuth) RootPub() ed25519.PublicKey {
+	return ca.rootPub
 }
 
 // NodeCredentials mints a TLS certificate (with embedded delegation cert) for a node.
@@ -45,7 +44,6 @@ func (ca *ClusterAuth) NodeCredentials(nodePriv ed25519.PrivateKey) (tls.Certifi
 	dc, err := auth.IssueDelegationCert(
 		ca.rootKey,
 		nil, // root issues directly
-		ca.trust.GetClusterId(),
 		nodePub,
 		auth.FullCapabilities(),
 		now.Add(-time.Minute),

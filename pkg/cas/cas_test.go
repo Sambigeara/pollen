@@ -5,6 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -64,4 +67,21 @@ func TestPutIdempotent(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, hash1, hash2)
+}
+
+func TestPutSetsGroupReadableMode(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("permission semantics are Linux-only")
+	}
+
+	root := t.TempDir()
+	store, err := cas.New(root)
+	require.NoError(t, err)
+
+	hash, err := store.Put(bytes.NewReader([]byte("shared artifact")))
+	require.NoError(t, err)
+
+	info, err := os.Stat(filepath.Join(root, "cas", hash[:2], hash+".wasm"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o640), info.Mode())
 }

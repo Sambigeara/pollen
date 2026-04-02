@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"sync"
 	"testing"
+	"time"
 
-	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -42,9 +44,9 @@ func (f *fakeState) SetService(port uint32, name string) []state.Event {
 	defer f.mu.Unlock()
 	nv := f.snap.Nodes[f.snap.LocalID]
 	if nv.Services == nil {
-		nv.Services = make(map[string]*statev1.Service)
+		nv.Services = make(map[string]*state.Service)
 	}
-	nv.Services[name] = &statev1.Service{Port: port, Name: name}
+	nv.Services[name] = &state.Service{Port: port, Name: name}
 	f.snap.Nodes[f.snap.LocalID] = nv
 	return nil
 }
@@ -69,11 +71,11 @@ func (f *fakeState) addPeer(pk types.PeerKey, services map[string]uint32) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	nv := state.NodeView{
-		IdentityPub: []byte{1},
-		Services:    make(map[string]*statev1.Service),
+		PeerPub:  []byte{1},
+		Services: make(map[string]*state.Service),
 	}
 	for name, port := range services {
-		nv.Services[name] = &statev1.Service{Port: port, Name: name}
+		nv.Services[name] = &state.Service{Port: port, Name: name}
 	}
 	f.snap.Nodes[pk] = nv
 }
@@ -420,6 +422,29 @@ func TestReconcileDesiredConnections_RestoresMissing(t *testing.T) {
 	require.Equal(t, uint32(8080), conns[0].RemotePort)
 }
 
+func TestReconcileDesiredConnections_NoRetryAfterEstablished(t *testing.T) {
+	self := pk(0)
+	peer := pk(1)
+	st := newFakeState(self)
+	st.addPeer(peer, map[string]uint32{"http": 8080})
+	svc := New(self, st, &fakeStreams{}, &fakeRouter{})
+	t.Cleanup(func() { _ = svc.Stop() })
+
+	svc.SeedDesiredConnection(peer, 8080, 0)
+
+	snap := st.Snapshot()
+	svc.reconcileDesiredConnections(snap)
+
+	conns := svc.ListConnections()
+	require.Len(t, conns, 1)
+
+	// Second reconcile must be a no-op: the connection already exists.
+	svc.reconcileDesiredConnections(snap)
+
+	require.Len(t, svc.ListConnections(), 1)
+	require.Len(t, svc.ListDesiredConnections(), 1, "stale desired entry with localPort=0 should be replaced")
+}
+
 func TestSampleTraffic(t *testing.T) {
 	self := pk(0)
 	peer := pk(1)
@@ -528,18 +553,46 @@ func (c *countCloser) Read(p []byte) (int, error)  { return 0, io.EOF }
 func (c *countCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (c *countCloser) Close() error                { c.onClose(); return nil }
 
-func TestConnectServiceInvalidPort(t *testing.T) {
+
+func TestStopWithActiveBridge(t *testing.T) {
 	self := pk(0)
+	peer := pk(1)
 	st := newFakeState(self)
-	svc := newTestService(self, st)
 
-	_, err := svc.connectService(pk(1), 0, 0)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "remote port missing")
+	serverPipe, clientPipe := net.Pipe()
+	t.Cleanup(func() { _ = serverPipe.Close() })
 
-	_, err = svc.connectService(pk(1), 0x10000, 0)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "remote port missing")
+	streams := &fakeStreams{
+		openFn: func(ctx context.Context, _ types.PeerKey, _ transport.StreamType) (io.ReadWriteCloser, error) {
+			return clientPipe, nil
+		},
+	}
+	svc := New(self, st, streams, &fakeRouter{})
+
+	port, err := svc.connectService(peer, 8080, 0)
+	require.NoError(t, err)
+	require.NotZero(t, port)
+
+	// Dial the local listener to trigger a bridge goroutine.
+	conn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", fmt.Sprintf("localhost:%d", port))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	// Read the 2-byte service port header from the server pipe to confirm the bridge started.
+	var header [2]byte
+	_, err = io.ReadFull(serverPipe, header[:])
+	require.NoError(t, err)
+
+	// Stop must complete (not hang).
+	done := make(chan error, 1)
+	go func() { done <- svc.Stop() }()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop() hung with active outbound bridge")
+	}
 }
 
 func TestStartRegistersExistingServices(t *testing.T) {

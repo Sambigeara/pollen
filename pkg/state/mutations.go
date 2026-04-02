@@ -10,7 +10,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-func (s *Store) applyLocal(gossip []*statev1.GossipEvent, ev Event) []Event {
+func (s *store) applyLocal(gossip []*statev1.GossipEvent, ev Event) []Event {
 	s.enqueuePendingGossip(gossip)
 	if len(gossip) == 0 {
 		return nil
@@ -18,11 +18,11 @@ func (s *Store) applyLocal(gossip []*statev1.GossipEvent, ev Event) []Event {
 	return []Event{ev}
 }
 
-func (s *Store) DenyPeer(key types.PeerKey) []Event {
+func (s *store) DenyPeer(key types.PeerKey) []Event {
 	return s.applyLocal(s.denyPeerRaw(key[:]), PeerDenied{Key: key})
 }
 
-func (s *Store) SetLocalAddresses(addrs []netip.AddrPort) []Event {
+func (s *store) SetLocalAddresses(addrs []netip.AddrPort) []Event {
 	if len(addrs) == 0 {
 		return nil
 	}
@@ -30,24 +30,24 @@ func (s *Store) SetLocalAddresses(addrs []netip.AddrPort) []Event {
 	for i, a := range addrs {
 		ips[i] = a.Addr().String()
 	}
-	return s.applyLocal(s.setLocalNetwork(ips, uint32(addrs[0].Port())), TopologyChanged{Peer: s.LocalID})
+	return s.applyLocal(s.setLocalNetwork(ips, uint32(addrs[0].Port())), TopologyChanged{Peer: s.localID})
 }
 
-func (s *Store) SetLocalNAT(t nat.Type) []Event {
-	return s.applyLocal(s.setLocalNatType(t), TopologyChanged{Peer: s.LocalID})
+func (s *store) SetLocalNAT(t nat.Type) []Event {
+	return s.applyLocal(s.setLocalNatType(t), TopologyChanged{Peer: s.localID})
 }
 
-func (s *Store) SetLocalCoord(c coords.Coord) []Event {
-	return s.applyLocal(s.setLocalVivaldiCoord(c), TopologyChanged{Peer: s.LocalID})
+func (s *store) SetLocalCoord(c coords.Coord, coordErr float64) []Event {
+	return s.applyLocal(s.setLocalVivaldiCoord(c, coordErr), TopologyChanged{Peer: s.localID})
 }
 
-func (s *Store) SetLocalReachable(peers []types.PeerKey) []Event {
+func (s *store) SetLocalReachable(peers []types.PeerKey) []Event {
 	wanted := make(map[types.PeerKey]struct{}, len(peers))
 	for _, pk := range peers {
 		wanted[pk] = struct{}{}
 	}
 
-	current := s.Snapshot().Nodes[s.LocalID].Reachable
+	current := s.Snapshot().Nodes[s.localID].Reachable
 	var changed bool
 	for pk := range wanted {
 		if _, ok := current[pk]; !ok {
@@ -69,18 +69,14 @@ func (s *Store) SetLocalReachable(peers []types.PeerKey) []Event {
 	if !changed {
 		return nil
 	}
-	return []Event{TopologyChanged{Peer: s.LocalID}}
+	return []Event{TopologyChanged{Peer: s.localID}}
 }
 
-func (s *Store) SetLocalObservedExternalIP(ip string) []Event {
-	return s.applyLocal(s.setObservedExternalIP(ip), TopologyChanged{Peer: s.LocalID})
+func (s *store) SetLocalObservedAddress(ip string, port uint32) []Event {
+	return s.applyLocal(s.setObservedAddress(ip, port), TopologyChanged{Peer: s.localID})
 }
 
-func (s *Store) SetLocalExternalPort(port uint32) []Event {
-	return s.applyLocal(s.setExternalPort(port), TopologyChanged{Peer: s.LocalID})
-}
-
-func (s *Store) SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) []Event {
+func (s *store) SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) []Event {
 	if replicas == 0 && memoryPages == 0 && timeoutMs == 0 {
 		gossip := s.removeLocalWorkloadSpec(hash)
 		return s.applyLocal(gossip, WorkloadChanged{Hash: hash})
@@ -89,29 +85,29 @@ func (s *Store) SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs ui
 	return s.applyLocal(gossip, WorkloadChanged{Hash: hash})
 }
 
-func (s *Store) ClaimWorkload(hash string) []Event {
+func (s *store) ClaimWorkload(hash string) []Event {
 	return s.applyLocal(s.setLocalWorkloadClaim(hash, true), WorkloadChanged{Hash: hash})
 }
 
-func (s *Store) ReleaseWorkload(hash string) []Event {
+func (s *store) ReleaseWorkload(hash string) []Event {
 	return s.applyLocal(s.setLocalWorkloadClaim(hash, false), WorkloadChanged{Hash: hash})
 }
 
-func (s *Store) SetLocalResources(cpu, mem float64) []Event {
-	return s.applyLocal(s.setLocalResourceTelemetry(uint32(cpu), uint32(mem), 0, 0), TopologyChanged{Peer: s.LocalID})
+func (s *store) SetLocalResources(cpu, mem float64) []Event {
+	return s.applyLocal(s.setLocalResourceTelemetry(uint32(cpu), uint32(mem), 0, 0), TopologyChanged{Peer: s.localID})
 }
 
-func (s *Store) SetService(port uint32, name string) []Event {
-	return s.applyLocal(s.upsertLocalService(port, name), ServiceChanged{Peer: s.LocalID, Name: name})
+func (s *store) SetService(port uint32, name string) []Event {
+	return s.applyLocal(s.upsertLocalService(port, name), ServiceChanged{Peer: s.localID, Name: name})
 }
 
-func (s *Store) RemoveService(name string) []Event {
-	return s.applyLocal(s.removeLocalService(name), ServiceChanged{Peer: s.LocalID, Name: name})
+func (s *store) RemoveService(name string) []Event {
+	return s.applyLocal(s.removeLocalService(name), ServiceChanged{Peer: s.localID, Name: name})
 }
 
-func (s *Store) SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event {
+func (s *store) SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event {
 	s.mu.Lock()
-	merged := maps.Clone(s.nodes[s.LocalID].TrafficRates)
+	merged := maps.Clone(s.nodes[s.localID].TrafficRates)
 	s.mu.Unlock()
 
 	if merged == nil {

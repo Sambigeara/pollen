@@ -38,14 +38,15 @@ func runStatus(cmd *cobra.Command, args []string) {
 	includeAll, _ := cmd.Flags().GetBool("all")
 	opts := statusViewOpts{wide: wide, includeAll: includeAll}
 
-	client := newControlClient(cmd)
+	pollenDir, _ := cmd.Flags().GetString("dir")
+	client := newControlClient(pollenDir)
 	resp, err := client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
 		if connect.CodeOf(err) != connect.CodeUnavailable {
 			fmt.Fprintln(cmd.ErrOrStderr(), err)
 			os.Exit(1)
 		}
-		if socketPermissionDenied(cmd) {
+		if socketPermissionDenied(pollenDir) {
 			fmt.Fprintf(cmd.ErrOrStderr(),
 				"cannot reach daemon — are you in the pln group?\n"+
 					"  fix: sudo usermod -aG pln $(whoami) && newgrp pln\n")
@@ -120,7 +121,7 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 	}
 
 	if self := st.GetSelf(); self != nil && self.GetNode() != nil {
-		label := formatPeerID(self.GetNode().GetPeerId(), opts.wide) + " (self)"
+		label := formatPeerID(self.GetNode().GetPeerPub(), opts.wide) + " (self)"
 		addr := self.GetAddr()
 		if addr == "" {
 			addr = "-"
@@ -146,7 +147,7 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			filtered++
 			continue
 		}
-		label := formatPeerID(n.GetNode().GetPeerId(), opts.wide)
+		label := formatPeerID(n.GetNode().GetPeerPub(), opts.wide)
 		status := formatStatus(n.GetStatus())
 		if n.GetPubliclyAccessible() {
 			status += " (public)"
@@ -245,7 +246,7 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 	for _, c := range st.Connections {
 		k := connKey{
 			service:  c.GetServiceName(),
-			provider: peerKeyString(c.GetPeer().GetPeerId()),
+			provider: peerKeyString(c.GetPeer().GetPeerPub()),
 		}
 		connLocal[k] = c.GetLocalPort()
 	}
@@ -253,12 +254,12 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 	filtered := 0
 	hasCollisions := len(suffixes) > 0
 	for _, s := range st.Services {
-		providerID := peerKeyString(s.GetProvider().GetPeerId())
+		providerID := peerKeyString(s.GetProvider().GetPeerPub())
 		if !opts.includeAll && !reachableProviders[providerID] {
 			filtered++
 			continue
 		}
-		provider := formatPeerID(s.GetProvider().GetPeerId(), opts.wide)
+		provider := formatPeerID(s.GetProvider().GetPeerPub(), opts.wide)
 		local := "-"
 		if lp, ok := connLocal[connKey{service: s.GetName(), provider: providerID}]; ok {
 			local = fmt.Sprintf("%d", lp)
@@ -488,11 +489,7 @@ func renderMetricsDetails(w io.Writer, m *controlv1.GetMetricsResponse) {
 	fmt.Fprintln(w)
 }
 
-func socketPermissionDenied(cmd *cobra.Command) bool {
-	pollenDir, err := pollenPath(cmd)
-	if err != nil {
-		return false
-	}
+func socketPermissionDenied(pollenDir string) bool {
 	_, statErr := os.Stat(filepath.Join(pollenDir, socketName))
 	return errors.Is(statErr, os.ErrPermission)
 }

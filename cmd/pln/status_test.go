@@ -88,9 +88,9 @@ func TestServiceNameSuffixes(t *testing.T) {
 	peerC := fakePeerID("cc")
 
 	services := []*controlv1.ServiceSummary{
-		{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerA}, Port: 8080},
-		{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerB}, Port: 8080},
-		{Name: "dns", Provider: &controlv1.NodeRef{PeerId: peerC}, Port: 53},
+		{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerA}, Port: 8080},
+		{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerB}, Port: 8080},
+		{Name: "dns", Provider: &controlv1.NodeRef{PeerPub: peerC}, Port: 53},
 	}
 	includeAll := func(string) bool { return true }
 
@@ -113,8 +113,8 @@ func TestServiceNameSuffixesFilterExcluded(t *testing.T) {
 	peerB := fakePeerID("bb")
 
 	services := []*controlv1.ServiceSummary{
-		{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerA}, Port: 8080},
-		{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerB}, Port: 8080},
+		{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerA}, Port: 8080},
+		{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerB}, Port: 8080},
 	}
 
 	pkA := peerKeyString(peerA)
@@ -129,13 +129,13 @@ func TestCollectServicesSectionCollision(t *testing.T) {
 	peerB := fakePeerID("bb")
 
 	st := &controlv1.GetStatusResponse{
-		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerId: peerA}},
+		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerPub: peerA}},
 		Services: []*controlv1.ServiceSummary{
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerA}, Port: 8080},
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerB}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerA}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerB}, Port: 8080},
 		},
 		Nodes: []*controlv1.NodeSummary{
-			{Node: &controlv1.NodeRef{PeerId: peerB}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
+			{Node: &controlv1.NodeRef{PeerPub: peerB}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
 		},
 	}
 
@@ -152,9 +152,9 @@ func TestCollectServicesSectionNoCollision(t *testing.T) {
 	peerA := fakePeerID("aa")
 
 	st := &controlv1.GetStatusResponse{
-		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerId: peerA}},
+		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerPub: peerA}},
 		Services: []*controlv1.ServiceSummary{
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerA}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerA}, Port: 8080},
 		},
 	}
 
@@ -168,13 +168,13 @@ func TestResolveServiceSuffixArg(t *testing.T) {
 	peerB := fakePeerID("bb")
 
 	st := &controlv1.GetStatusResponse{
-		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerId: peerA}},
+		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerPub: peerA}},
 		Services: []*controlv1.ServiceSummary{
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerA}, Port: 8080},
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerB}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerA}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerB}, Port: 8080},
 		},
 		Nodes: []*controlv1.NodeSummary{
-			{Node: &controlv1.NodeRef{PeerId: peerB}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
+			{Node: &controlv1.NodeRef{PeerPub: peerB}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
 		},
 	}
 
@@ -182,7 +182,7 @@ func TestResolveServiceSuffixArg(t *testing.T) {
 	// Use the first two chars of pkA as the suffix.
 	svc, err := resolveService(st, "http-"+pkA[:2], "")
 	require.NoError(t, err)
-	require.Equal(t, peerA, svc.GetProvider().GetPeerId())
+	require.Equal(t, peerA, svc.GetProvider().GetPeerPub())
 }
 
 func TestResolveServiceCollisionError(t *testing.T) {
@@ -190,13 +190,13 @@ func TestResolveServiceCollisionError(t *testing.T) {
 	peerB := fakePeerID("bb")
 
 	st := &controlv1.GetStatusResponse{
-		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerId: peerA}},
+		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerPub: peerA}},
 		Services: []*controlv1.ServiceSummary{
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerA}, Port: 8080},
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerB}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerA}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerB}, Port: 8080},
 		},
 		Nodes: []*controlv1.NodeSummary{
-			{Node: &controlv1.NodeRef{PeerId: peerB}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
+			{Node: &controlv1.NodeRef{PeerPub: peerB}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
 		},
 	}
 
@@ -212,20 +212,20 @@ func TestResolveServiceDashedNameSuffix(t *testing.T) {
 	peerB := fakePeerID("bb")
 
 	st := &controlv1.GetStatusResponse{
-		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerId: peerA}},
+		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerPub: peerA}},
 		Services: []*controlv1.ServiceSummary{
-			{Name: "my-service", Provider: &controlv1.NodeRef{PeerId: peerA}, Port: 8080},
-			{Name: "my-service", Provider: &controlv1.NodeRef{PeerId: peerB}, Port: 8080},
+			{Name: "my-service", Provider: &controlv1.NodeRef{PeerPub: peerA}, Port: 8080},
+			{Name: "my-service", Provider: &controlv1.NodeRef{PeerPub: peerB}, Port: 8080},
 		},
 		Nodes: []*controlv1.NodeSummary{
-			{Node: &controlv1.NodeRef{PeerId: peerB}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
+			{Node: &controlv1.NodeRef{PeerPub: peerB}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
 		},
 	}
 
 	pkB := peerKeyString(peerB)
 	svc, err := resolveService(st, "my-service-"+pkB[:2], "")
 	require.NoError(t, err)
-	require.Equal(t, peerB, svc.GetProvider().GetPeerId())
+	require.Equal(t, peerB, svc.GetProvider().GetPeerPub())
 }
 
 func TestResolveConnectionSuffixArg(t *testing.T) {
@@ -234,8 +234,8 @@ func TestResolveConnectionSuffixArg(t *testing.T) {
 
 	st := &controlv1.GetStatusResponse{
 		Connections: []*controlv1.ConnectionSummary{
-			{ServiceName: "http", Peer: &controlv1.NodeRef{PeerId: peerA}, RemotePort: 8080, LocalPort: 9090},
-			{ServiceName: "http", Peer: &controlv1.NodeRef{PeerId: peerB}, RemotePort: 8080, LocalPort: 9091},
+			{ServiceName: "http", Peer: &controlv1.NodeRef{PeerPub: peerA}, RemotePort: 8080, LocalPort: 9090},
+			{ServiceName: "http", Peer: &controlv1.NodeRef{PeerPub: peerB}, RemotePort: 8080, LocalPort: 9091},
 		},
 	}
 
@@ -251,8 +251,8 @@ func TestResolveConnectionCollisionError(t *testing.T) {
 
 	st := &controlv1.GetStatusResponse{
 		Connections: []*controlv1.ConnectionSummary{
-			{ServiceName: "http", Peer: &controlv1.NodeRef{PeerId: peerA}, RemotePort: 8080, LocalPort: 9090},
-			{ServiceName: "http", Peer: &controlv1.NodeRef{PeerId: peerB}, RemotePort: 8080, LocalPort: 9091},
+			{ServiceName: "http", Peer: &controlv1.NodeRef{PeerPub: peerA}, RemotePort: 8080, LocalPort: 9090},
+			{ServiceName: "http", Peer: &controlv1.NodeRef{PeerPub: peerB}, RemotePort: 8080, LocalPort: 9091},
 		},
 	}
 
@@ -268,8 +268,8 @@ func TestResolveConnectionDashedNameSuffix(t *testing.T) {
 
 	st := &controlv1.GetStatusResponse{
 		Connections: []*controlv1.ConnectionSummary{
-			{ServiceName: "my-service", Peer: &controlv1.NodeRef{PeerId: peerA}, RemotePort: 8080, LocalPort: 9090},
-			{ServiceName: "my-service", Peer: &controlv1.NodeRef{PeerId: peerB}, RemotePort: 8080, LocalPort: 9091},
+			{ServiceName: "my-service", Peer: &controlv1.NodeRef{PeerPub: peerA}, RemotePort: 8080, LocalPort: 9090},
+			{ServiceName: "my-service", Peer: &controlv1.NodeRef{PeerPub: peerB}, RemotePort: 8080, LocalPort: 9091},
 		},
 	}
 
@@ -288,15 +288,15 @@ func TestResolveServiceAmbiguousSuffix(t *testing.T) {
 	peerAC := fakePeerID("ac")
 
 	st := &controlv1.GetStatusResponse{
-		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerId: peerAA}},
+		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerPub: peerAA}},
 		Services: []*controlv1.ServiceSummary{
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerAA}, Port: 8080},
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerAB}, Port: 8080},
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerAC}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerAA}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerAB}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerAC}, Port: 8080},
 		},
 		Nodes: []*controlv1.NodeSummary{
-			{Node: &controlv1.NodeRef{PeerId: peerAB}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
-			{Node: &controlv1.NodeRef{PeerId: peerAC}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
+			{Node: &controlv1.NodeRef{PeerPub: peerAB}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
+			{Node: &controlv1.NodeRef{PeerPub: peerAC}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
 		},
 	}
 
@@ -314,8 +314,8 @@ func TestResolveConnectionAmbiguousSuffix(t *testing.T) {
 
 	st := &controlv1.GetStatusResponse{
 		Connections: []*controlv1.ConnectionSummary{
-			{ServiceName: "http", Peer: &controlv1.NodeRef{PeerId: peerAA}, RemotePort: 8080, LocalPort: 9090},
-			{ServiceName: "http", Peer: &controlv1.NodeRef{PeerId: peerAB}, RemotePort: 8080, LocalPort: 9091},
+			{ServiceName: "http", Peer: &controlv1.NodeRef{PeerPub: peerAA}, RemotePort: 8080, LocalPort: 9090},
+			{ServiceName: "http", Peer: &controlv1.NodeRef{PeerPub: peerAB}, RemotePort: 8080, LocalPort: 9091},
 		},
 	}
 
@@ -331,13 +331,13 @@ func TestCollectServicesSectionCollisionFooter(t *testing.T) {
 	peerB := fakePeerID("bb")
 
 	st := &controlv1.GetStatusResponse{
-		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerId: peerA}},
+		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerPub: peerA}},
 		Services: []*controlv1.ServiceSummary{
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerA}, Port: 8080},
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerB}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerA}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerB}, Port: 8080},
 		},
 		Nodes: []*controlv1.NodeSummary{
-			{Node: &controlv1.NodeRef{PeerId: peerB}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
+			{Node: &controlv1.NodeRef{PeerPub: peerB}, Status: controlv1.NodeStatus_NODE_STATUS_ONLINE},
 		},
 	}
 
@@ -349,9 +349,9 @@ func TestCollectServicesSectionNoCollisionNoFooter(t *testing.T) {
 	peerA := fakePeerID("aa")
 
 	st := &controlv1.GetStatusResponse{
-		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerId: peerA}},
+		Self: &controlv1.NodeSummary{Node: &controlv1.NodeRef{PeerPub: peerA}},
 		Services: []*controlv1.ServiceSummary{
-			{Name: "http", Provider: &controlv1.NodeRef{PeerId: peerA}, Port: 8080},
+			{Name: "http", Provider: &controlv1.NodeRef{PeerPub: peerA}, Port: 8080},
 		},
 	}
 
