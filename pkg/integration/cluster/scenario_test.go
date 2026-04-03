@@ -12,6 +12,8 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/coords"
+	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -34,7 +36,7 @@ func TestPublicMesh_GossipConvergence(t *testing.T) {
 				if n.PeerKey() == pk {
 					continue
 				}
-				if !snapshotHasServicePort(n.Store().Snapshot(), pk, 8080) { //nolint:mnd
+				if !snapshotHasService(n.Store().Snapshot(), pk, 8080, "http") { //nolint:mnd
 					return false
 				}
 			}
@@ -142,6 +144,19 @@ func TestPublicMesh_WorkloadPlacement(t *testing.T) {
 		c.RequireWorkloadSpecOnAllNodes(t, hash, 3) //nolint:mnd
 		c.RequireWorkloadReplicas(t, hash, 3)       //nolint:mnd
 	})
+
+	t.Run("ReplicaCountUpdate", func(t *testing.T) {
+		err := c.Node("node-0").Node().UnseedWorkload(hash)
+		require.NoError(t, err)
+		c.RequireWorkloadGone(t, hash)
+
+		var err2 error
+		hash, err2 = c.Node("node-0").Node().SeedWorkload(minimalWASM, 1, 0, 0)
+		require.NoError(t, err2)
+
+		c.RequireWorkloadSpecOnAllNodes(t, hash, 1)
+		c.RequireWorkloadReplicas(t, hash, 1)
+	})
 }
 
 func TestPublicMesh_NodeJoinLeave(t *testing.T) {
@@ -165,7 +180,7 @@ func TestPublicMesh_NodeJoinLeave(t *testing.T) {
 
 		pk0 := c.PeerKeyByName("node-0")
 		c.RequireEventually(t, func() bool {
-			return snapshotHasServicePort(joiner.Store().Snapshot(), pk0, 9090) //nolint:mnd
+			return snapshotHasService(joiner.Store().Snapshot(), pk0, 9090, "grpc") //nolint:mnd
 		}, assertTimeout, "late joiner did not see pre-existing service")
 	})
 
@@ -204,7 +219,7 @@ func TestPublicMesh_ServiceExposure(t *testing.T) {
 				if n.PeerKey() == pk1 {
 					continue
 				}
-				if !snapshotHasServicePort(n.Store().Snapshot(), pk1, 3000) { //nolint:mnd
+				if !snapshotHasService(n.Store().Snapshot(), pk1, 3000, "web") { //nolint:mnd
 					return false
 				}
 			}
@@ -309,7 +324,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	t.Run("BootstrapSSHDelegation", func(t *testing.T) {
+	t.Run("BootstrapGossipAndCredentials", func(t *testing.T) {
 		joiner := c.AddNodeAndStart(t, "ssh-bootstrap-joiner", Public, ctx)
 
 		node0 := c.Node("node-0")
@@ -384,6 +399,28 @@ func TestPublicMesh_DenyPeer(t *testing.T) {
 		}, assertTimeout, "denied peer still has connections")
 	})
 
+	t.Run("DeniedKeyInSnapshot", func(t *testing.T) {
+		c.RequireEventually(t, func() bool {
+			for _, n := range c.Nodes() {
+				if n.Name() == "node-2" {
+					continue
+				}
+				snap := n.Store().Snapshot()
+				found := false
+				for _, dk := range snap.DeniedKeys {
+					if dk == pk2 {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return false
+				}
+			}
+			return true
+		}, assertTimeout, "denied peer key not propagated to all surviving nodes")
+	})
+
 	t.Run("DeniedPeerCannotReconnect", func(t *testing.T) {
 		c.RequireNever(t, func() bool {
 			return len(c.Node("node-2").ConnectedPeers()) > 0
@@ -410,7 +447,7 @@ func TestPublicMesh_EagerGossipPropagation(t *testing.T) {
 		}
 		name := n.Name()
 		c.RequireEventually(t, func() bool {
-			return snapshotHasServicePort(n.Store().Snapshot(), pk0, 5050) //nolint:mnd
+			return snapshotHasService(n.Store().Snapshot(), pk0, 5050, "eager-prop") //nolint:mnd
 		}, eagerTimeout, name+" did not see service within eager timeout")
 	}
 }
@@ -548,7 +585,7 @@ func TestRelayRegions_PartitionAndHeal(t *testing.T) {
 
 		pk0 := c.PeerKeyByName("relay-0")
 		c.RequireNever(t, func() bool {
-			return snapshotHasServicePort(c.Node("relay-1").Store().Snapshot(), pk0, 7070) //nolint:mnd
+			return snapshotHasService(c.Node("relay-1").Store().Snapshot(), pk0, 7070, "isolated") //nolint:mnd
 		}, 2*time.Second, "partitioned relay should not see service") //nolint:mnd
 	})
 
@@ -557,7 +594,7 @@ func TestRelayRegions_PartitionAndHeal(t *testing.T) {
 
 		pk0 := c.PeerKeyByName("relay-0")
 		c.RequireEventually(t, func() bool {
-			return snapshotHasServicePort(c.Node("relay-1").Store().Snapshot(), pk0, 7070) //nolint:mnd
+			return snapshotHasService(c.Node("relay-1").Store().Snapshot(), pk0, 7070, "isolated") //nolint:mnd
 		}, assertTimeout, "service did not propagate after heal")
 
 		c.RequireConverged(t)
@@ -632,24 +669,109 @@ func TestPublicMesh_WorkloadMigration(t *testing.T) {
 	c.Node(victim).Stop()
 
 	// The scheduler on surviving nodes should re-claim to maintain 2 replicas.
+	// Collect distinct non-victim claimants across all surviving snapshots.
+	victimKey := c.PeerKeyByName(victim)
 	c.RequireEventually(t, func() bool {
-		claimCount := 0
+		distinct := make(map[types.PeerKey]struct{})
 		for _, n := range c.Nodes() {
 			if n.Name() == victim {
 				continue
 			}
-			snap := n.Store().Snapshot()
-			claimants, ok := snap.Claims[hash]
+			claimants, ok := n.Store().Snapshot().Claims[hash]
 			if !ok {
 				continue
 			}
 			for pk := range claimants {
-				if pk != c.PeerKeyByName(victim) {
-					claimCount++
-					break
+				if pk != victimKey {
+					distinct[pk] = struct{}{}
 				}
 			}
 		}
-		return claimCount >= 2 //nolint:mnd
+		return len(distinct) >= 2 //nolint:mnd
 	}, 30*time.Second, assertPoll, "replicas not maintained after node %s stopped", victim) //nolint:mnd
+}
+
+func TestPublicMesh_ServiceUnexposure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
+	t.Cleanup(cancel)
+
+	c := PublicMesh(t, 3, ctx) //nolint:mnd
+	c.RequireConverged(t)
+
+	c.Node("node-0").Node().Tunneling().ExposeService(6060, "temp-svc") //nolint:mnd
+	c.RequireServiceVisible(t, "node-0", 6060, "temp-svc")              //nolint:mnd
+
+	require.NoError(t, c.Node("node-0").Node().Tunneling().UnexposeService("temp-svc"))
+
+	c.RequireServiceGone(t, "node-0", 6060, "temp-svc") //nolint:mnd
+}
+
+func TestPublicMesh_ExpiredInviteToken(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
+	t.Cleanup(cancel)
+
+	c := PublicMesh(t, 2, ctx) //nolint:mnd
+	c.RequireConverged(t)
+
+	joiner := c.AddNodeAndStart(t, "expired-joiner", Public, ctx)
+
+	node0 := c.Node("node-0")
+	bootstrap := []*admissionv1.BootstrapPeer{{
+		PeerPub: node0.PeerKey().Bytes(),
+		Addrs:   []string{node0.VirtualAddr().String()},
+	}}
+
+	// Issue a token with now=1h ago and TTL=1min → expired 59min ago.
+	invite, err := node0.Node().Credentials().DelegationKey().IssueInviteToken(
+		joiner.PeerKey().Bytes(),
+		bootstrap,
+		time.Now().Add(-time.Hour),
+		time.Minute,
+		24*time.Hour, //nolint:mnd
+	)
+	require.NoError(t, err)
+
+	_, err = joiner.Node().JoinWithInvite(ctx, invite)
+	require.Error(t, err, "expired invite token should be rejected")
+}
+
+func TestPublicMesh_VivaldiDistancesReflectTopology(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
+	t.Cleanup(cancel)
+
+	// Three fully connected nodes with asymmetric link latencies:
+	//   near ↔ origin: 10ms    far ↔ origin: 50ms    near ↔ far: 50ms
+	// Vivaldi should embed origin closer to near than to far.
+	c := New(t).
+		SetDefaultLatency(50*time.Millisecond). //nolint:mnd
+		AddNode("origin", Public).
+		AddNode("near", Public).
+		AddNode("far", Public).
+		SetLatency("origin", "near", 10*time.Millisecond). //nolint:mnd
+		Introduce("origin", "near").
+		Introduce("origin", "far").
+		Introduce("near", "far").
+		Start(ctx)
+
+	c.RequireConverged(t)
+
+	pkOrigin := c.PeerKeyByName("origin")
+	pkNear := c.PeerKeyByName("near")
+	pkFar := c.PeerKeyByName("far")
+
+	c.RequireEventually(t, func() bool {
+		snap := c.Node("origin").Store().Snapshot()
+		nvOrigin, ok0 := snap.Nodes[pkOrigin]
+		nvNear, ok1 := snap.Nodes[pkNear]
+		nvFar, ok2 := snap.Nodes[pkFar]
+		if !ok0 || !ok1 || !ok2 {
+			return false
+		}
+		if nvOrigin.VivaldiCoord == nil || nvNear.VivaldiCoord == nil || nvFar.VivaldiCoord == nil {
+			return false
+		}
+		distNear := coords.Distance(*nvOrigin.VivaldiCoord, *nvNear.VivaldiCoord)
+		distFar := coords.Distance(*nvOrigin.VivaldiCoord, *nvFar.VivaldiCoord)
+		return distNear > 0 && distFar > 0 && distNear < distFar
+	}, assertTimeout, "vivaldi: 10ms neighbor should be closer than 50ms neighbor")
 }

@@ -65,6 +65,10 @@ NODE3_IP=$(echo "$IPS_JSON" | jq -r '.["hel1"]')
 ALL_REMOTE=("$ROOT_IP" "$NODE2_IP" "$NODE3_IP")
 echo "  root(nbg1-1)=$ROOT_IP  node2(nbg1-2)=$NODE2_IP  node3(hel1)=$NODE3_IP"
 
+# Refresh SSH host keys — IPs are reused across reprovisions.
+for ip in "${ALL_REMOTE[@]}"; do ssh-keygen -R "$ip" 2>/dev/null || true; done
+ssh-keyscan "${ALL_REMOTE[@]}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
 # --- step 0: build & deploy ---
 
 echo -e "\n${BOLD}Step 0: Build and deploy${RESET}"

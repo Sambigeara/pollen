@@ -16,15 +16,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// --- mock store ---
-
 type mockStore struct {
-	mu             sync.Mutex
-	specs          map[string]state.WorkloadSpecView
-	claims         map[string]map[types.PeerKey]struct{}
-	allPeers       []types.PeerKey
-	claimed        map[string]bool
-	placementState map[types.PeerKey]state.NodePlacementState
+	mu       sync.Mutex
+	specs    map[string]state.WorkloadSpecView
+	claims   map[string]map[types.PeerKey]struct{}
+	allPeers []types.PeerKey
+	claimed  map[string]bool
+	nodes    map[types.PeerKey]state.NodeView
 }
 
 func (m *mockStore) Snapshot() state.Snapshot {
@@ -45,17 +43,14 @@ func (m *mockStore) Snapshot() state.Snapshot {
 
 	peers := append([]types.PeerKey(nil), m.allPeers...)
 
-	var placements map[types.PeerKey]state.NodePlacementState
-	if m.placementState != nil {
-		placements = make(map[types.PeerKey]state.NodePlacementState, len(m.placementState))
-		maps.Copy(placements, m.placementState)
-	}
+	nodes := make(map[types.PeerKey]state.NodeView, len(m.nodes))
+	maps.Copy(nodes, m.nodes)
 
 	return state.Snapshot{
-		Specs:      specs,
-		Claims:     claims,
-		PeerKeys:   peers,
-		Placements: placements,
+		Specs:    specs,
+		Claims:   claims,
+		PeerKeys: peers,
+		Nodes:    nodes,
 	}
 }
 
@@ -103,8 +98,6 @@ func (m *mockStore) addClaim(hash string, pk types.PeerKey) {
 	m.claims[hash][pk] = struct{}{}
 }
 
-// --- mock workload manager ---
-
 type mockWorkloads struct {
 	seeded atomic.Bool
 }
@@ -120,13 +113,9 @@ type runningWorkloads struct{ mockWorkloads }
 
 func (m *runningWorkloads) IsRunning(string) bool { return true }
 
-// --- mock CAS ---
-
 type mockCAS struct{}
 
 func (m *mockCAS) Has(string) bool { return false }
-
-// --- slow fetcher that calls a hook mid-flight ---
 
 type slowFetcher struct {
 	midFlight func()
@@ -139,8 +128,6 @@ func (f *slowFetcher) Fetch(_ context.Context, _ string, _ []types.PeerKey) erro
 	return nil
 }
 
-// TestExecuteClaim_SpecRemovedDuringFetch verifies that if a spec disappears
-// while an artifact fetch is in flight, no claim is published.
 func TestExecuteClaim_SpecRemovedDuringFetch(t *testing.T) {
 	local := peerKey(1)
 	hash := "workload1"
@@ -157,32 +144,13 @@ func TestExecuteClaim_SpecRemovedDuringFetch(t *testing.T) {
 	}
 	wm := &mockWorkloads{}
 
-	fetcher := &slowFetcher{
-		midFlight: func() {
-			ms.removeSpec(hash)
-		},
-	}
-
-	r := &reconciler{
-		localID:        local,
-		store:          ms,
-		workloads:      wm,
-		cas:            &mockCAS{},
-		fetcher:        fetcher,
-		log:            zap.NewNop().Sugar(),
-		claimStartTime: make(map[string]time.Time),
-		nowFunc:        time.Now,
-	}
-
+	r := newReconciler(local, ms, wm, &mockCAS{}, &slowFetcher{midFlight: func() { ms.removeSpec(hash) }}, zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.executeClaim(t.Context(), hash, []types.PeerKey{local})
 
 	require.False(t, wm.seeded.Load(), "should not seed when spec was removed")
 	require.False(t, ms.wasClaimed(hash), "should not set claim when spec was removed")
 }
 
-// TestExecuteClaim_NoLongerWinnerAfterFetch verifies that if another peer
-// claims the only replica slot while fetch is in flight, the local node's
-// post-fetch recheck prevents a stale claim.
 func TestExecuteClaim_NoLongerWinnerAfterFetch(t *testing.T) {
 	local := peerKey(1)
 	peer2 := peerKey(2)
@@ -204,24 +172,7 @@ func TestExecuteClaim_NoLongerWinnerAfterFetch(t *testing.T) {
 		allPeers: allPeers,
 	}
 
-	wm := &mockWorkloads{}
-	fetcher := &slowFetcher{
-		midFlight: func() {
-			ms.addClaim(hash, peer2)
-		},
-	}
-
-	r := &reconciler{
-		localID:        local,
-		store:          ms,
-		workloads:      wm,
-		cas:            &mockCAS{},
-		fetcher:        fetcher,
-		log:            zap.NewNop().Sugar(),
-		claimStartTime: make(map[string]time.Time),
-		nowFunc:        time.Now,
-	}
-
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{midFlight: func() { ms.addClaim(hash, peer2) }}, zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.executeClaim(t.Context(), hash, []types.PeerKey{local})
 
 	require.False(t, ms.wasClaimed(hash), "should not set claim when no longer a winner")
@@ -241,26 +192,14 @@ func TestResidencyWindow_SuppressesEarlyRelease(t *testing.T) {
 		},
 		claims:   map[string]map[types.PeerKey]struct{}{hash: {local: {}}},
 		allPeers: []types.PeerKey{local, peer2},
-		placementState: map[types.PeerKey]state.NodePlacementState{
+		nodes: map[types.PeerKey]state.NodeView{
 			local: {NumCPU: 2, CPUPercent: 90, MemTotalBytes: 2 << 30, MemPercent: 90},
 			peer2: {NumCPU: 16, CPUPercent: 5, MemTotalBytes: 64 << 30, MemPercent: 5},
 		},
 	}
 
-	r := &reconciler{
-		localID:        local,
-		store:          ms,
-		workloads:      &runningWorkloads{},
-		cas:            &mockCAS{},
-		fetcher:        &slowFetcher{},
-		triggerCh:      make(chan struct{}, 1),
-		pendingRelease: make(map[string]time.Time),
-		claimStartTime: map[string]time.Time{hash: time.Now()},
-		inFlight:       make(map[string]struct{}),
-		log:            zap.NewNop().Sugar(),
-		nowFunc:        time.Now,
-	}
-
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r.claimStartTime[hash] = time.Now()
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
 
 	r.reconcile(context.Background())
@@ -285,27 +224,15 @@ func TestResidencyWindow_AllowsReleaseAfterMaturity(t *testing.T) {
 		},
 		claims:   map[string]map[types.PeerKey]struct{}{hash: {local: {}}},
 		allPeers: []types.PeerKey{local, peer2},
-		placementState: map[types.PeerKey]state.NodePlacementState{
+		nodes: map[types.PeerKey]state.NodeView{
 			local: {NumCPU: 2, CPUPercent: 90, MemTotalBytes: 2 << 30, MemPercent: 90},
 			peer2: {NumCPU: 16, CPUPercent: 5, MemTotalBytes: 64 << 30, MemPercent: 5},
 		},
 	}
 
-	claimTime := time.Now().Add(-minResidencyDuration - time.Second)
-	r := &reconciler{
-		localID:        local,
-		store:          ms,
-		workloads:      &runningWorkloads{},
-		cas:            &mockCAS{},
-		fetcher:        &slowFetcher{},
-		triggerCh:      make(chan struct{}, 1),
-		pendingRelease: make(map[string]time.Time),
-		claimStartTime: map[string]time.Time{hash: claimTime},
-		inFlight:       make(map[string]struct{}),
-		log:            zap.NewNop().Sugar(),
-		nowFunc:        time.Now,
-	}
-
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r.firstRun = false // skip cleanupStaleClaims — test starts mid-lifecycle
+	r.claimStartTime[hash] = time.Now().Add(-minResidencyDuration - time.Second)
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
 
 	r.reconcile(context.Background())
@@ -325,10 +252,7 @@ func TestReconcile_SignalCoalesces(t *testing.T) {
 		allPeers: []types.PeerKey{local},
 	}
 
-	r := newReconciler(
-		local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{},
-		zap.NewNop().Sugar(),
-	)
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{}, zap.NewNop().Sugar(), &sync.WaitGroup{})
 
 	for range 100 {
 		r.Signal()
@@ -353,20 +277,8 @@ func TestResidencyWindow_SkippedForOverReplication(t *testing.T) {
 		allPeers: []types.PeerKey{local, peer2},
 	}
 
-	r := &reconciler{
-		localID:        local,
-		store:          ms,
-		workloads:      &runningWorkloads{},
-		cas:            &mockCAS{},
-		fetcher:        &slowFetcher{},
-		triggerCh:      make(chan struct{}, 1),
-		pendingRelease: make(map[string]time.Time),
-		claimStartTime: map[string]time.Time{hash: time.Now()},
-		inFlight:       make(map[string]struct{}),
-		log:            zap.NewNop().Sugar(),
-		nowFunc:        time.Now,
-	}
-
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r.claimStartTime[hash] = time.Now()
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
 
 	r.reconcile(context.Background())

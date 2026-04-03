@@ -44,10 +44,6 @@ func (f *fakeNetwork) Connect(_ context.Context, _ types.PeerKey, _ []netip.Addr
 	return nil
 }
 
-func (f *fakeNetwork) Disconnect(_ types.PeerKey) error {
-	return nil
-}
-
 func (f *fakeNetwork) Send(_ context.Context, _ types.PeerKey, _ []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -226,16 +222,16 @@ func (f *fakePeerAddressSource) GetActivePeerAddress(peer types.PeerKey) (*net.U
 
 type fakePeerSessionCloser struct {
 	mu     sync.Mutex
-	closed map[types.PeerKey]string
+	closed map[types.PeerKey]transport.DisconnectReason
 }
 
 func newFakePeerSessionCloser() *fakePeerSessionCloser {
 	return &fakePeerSessionCloser{
-		closed: make(map[types.PeerKey]string),
+		closed: make(map[types.PeerKey]transport.DisconnectReason),
 	}
 }
 
-func (f *fakePeerSessionCloser) ClosePeerSession(peer types.PeerKey, reason string) {
+func (f *fakePeerSessionCloser) ClosePeerSession(peer types.PeerKey, reason transport.DisconnectReason) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closed[peer] = reason

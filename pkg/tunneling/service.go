@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
-	"slices"
 	"sync"
 	"time"
 
@@ -25,39 +23,25 @@ const (
 
 var (
 	errNoServicePort = errors.New("no service port in stream header")
-
-	bufPool = sync.Pool{
-		New: func() any {
-			b := make([]byte, bufSize)
-			return &b
-		},
-	}
+	bufPool          = sync.Pool{New: func() any { b := make([]byte, bufSize); return &b }}
 )
 
 type TunnelingAPI interface {
 	Start(ctx context.Context) error
 	Stop() error
-
-	Connect(ctx context.Context, service string, peer types.PeerKey, localPort uint32) error
+	Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32) (uint32, error)
 	Disconnect(service string) error
 	ExposeService(port uint32, name string) error
 	UnexposeService(name string) error
 	ListConnections() []ConnectionInfo
-
 	HandleTunnelStream(stream transport.Stream, peer types.PeerKey)
 	HandleRoutedStream(stream transport.Stream, peer types.PeerKey)
-
 	HandlePeerDenied(peerID types.PeerKey)
 	DesiredPeers() []types.PeerKey
-	SeedDesiredConnection(pk types.PeerKey, remotePort, localPort uint32)
 	ListDesiredConnections() []ConnectionInfo
+	RemoveDesiredConnection(pk types.PeerKey, remotePort uint32)
 	TrafficRecorder() transport.TrafficRecorder
 }
-
-var (
-	_ TunnelingAPI              = (*Service)(nil)
-	_ transport.TrafficRecorder = (*tracker)(nil)
-)
 
 type ServiceState interface {
 	Snapshot() state.Snapshot
@@ -74,95 +58,46 @@ type RoutingTable interface {
 	NextHop(dest types.PeerKey) (next types.PeerKey, ok bool)
 }
 
-type Option func(*Service)
-
-func WithLogger(log *zap.SugaredLogger) Option {
-	return func(s *Service) { s.log = log }
-}
-
-func WithTrafficTracking() Option {
-	return func(s *Service) { s.trafficTracker = newTracker() }
-}
-
-func WithSampleInterval(d time.Duration) Option {
-	return func(s *Service) { s.sampleInterval = d }
-}
-
-func WithReconcileInterval(d time.Duration) Option {
-	return func(s *Service) { s.reconcileInterval = d }
-}
-
 type ConnectionInfo struct {
 	PeerID     types.PeerKey
 	RemotePort uint32
 	LocalPort  uint32
 }
 
-type connectionKey struct {
-	peerID types.PeerKey
-	port   uint32
-}
-
-type desiredKey struct {
-	peerID     types.PeerKey
-	remotePort uint32
-	localPort  uint32
-}
-
-type serviceHandler struct {
-	fn     func(io.ReadWriteCloser)
-	cancel context.CancelFunc
-}
-
-type connectionHandler struct {
+type connection struct {
 	ln     net.Listener
 	cancel context.CancelFunc
-	local  uint32
-}
-
-type trackedStream struct {
-	io.ReadWriteCloser
-	onClose   func()
-	closeOnce sync.Once
-}
-
-func (c *trackedStream) Close() error {
-	c.closeOnce.Do(c.onClose)
-	return c.ReadWriteCloser.Close()
+	info   ConnectionInfo
 }
 
 type Service struct {
-	router             RoutingTable
-	store              ServiceState
-	streams            StreamTransport
-	services           map[uint32]serviceHandler
-	activeStreams      map[uint32]map[io.ReadWriteCloser]struct{}
-	trafficTracker     *tracker
-	desiredConnections map[desiredKey]ConnectionInfo
-	connections        map[connectionKey]connectionHandler
-	log                *zap.SugaredLogger
-	loopWg             sync.WaitGroup
-	wg                 sync.WaitGroup
-	sampleInterval     time.Duration
-	reconcileInterval  time.Duration
-	connectionMu       sync.RWMutex
-	serviceMu          sync.RWMutex
-	streamMu           sync.Mutex
-	mu                 sync.Mutex
-	self               types.PeerKey
+	router            RoutingTable
+	store             ServiceState
+	streams           StreamTransport
+	connections       map[string]*connection
+	log               *zap.SugaredLogger
+	services          map[uint32]context.CancelFunc
+	desired           map[string]ConnectionInfo
+	tracker           *tracker
+	wg                sync.WaitGroup
+	sampleInterval    time.Duration
+	reconcileInterval time.Duration
+	mu                sync.RWMutex
+	self              types.PeerKey
 }
 
-func New(self types.PeerKey, services ServiceState, streams StreamTransport, router RoutingTable, opts ...Option) *Service {
+var _ TunnelingAPI = (*Service)(nil)
+
+func New(self types.PeerKey, store ServiceState, streams StreamTransport, router RoutingTable, opts ...Option) *Service {
 	s := &Service{
-		self:               self,
-		store:              services,
-		streams:            streams,
-		router:             router,
-		log:                zap.S().Named("tun"),
-		desiredConnections: make(map[desiredKey]ConnectionInfo),
-		connections:        make(map[connectionKey]connectionHandler),
-		services:           make(map[uint32]serviceHandler),
-		activeStreams:      make(map[uint32]map[io.ReadWriteCloser]struct{}),
+		self:        self,
+		store:       store,
+		streams:     streams,
+		router:      router,
+		log:         zap.S().Named("tun"),
+		services:    make(map[uint32]context.CancelFunc),
+		connections: make(map[string]*connection),
+		desired:     make(map[string]ConnectionInfo),
 	}
 	for _, o := range opts {
 		o(s)
@@ -170,107 +105,79 @@ func New(self types.PeerKey, services ServiceState, streams StreamTransport, rou
 	return s
 }
 
+type Option func(*Service)
+
+func WithLogger(log *zap.SugaredLogger) Option  { return func(s *Service) { s.log = log } }
+func WithTrafficTracking() Option               { return func(s *Service) { s.tracker = newTracker() } }
+func WithSampleInterval(d time.Duration) Option { return func(s *Service) { s.sampleInterval = d } }
+func WithReconcileInterval(d time.Duration) Option {
+	return func(s *Service) { s.reconcileInterval = d }
+}
+
 func (s *Service) Start(ctx context.Context) error {
 	snap := s.store.Snapshot()
 	for _, svc := range snap.Services() {
 		if svc.Peer == s.self {
-			s.registerService(svc.Port)
+			_ = s.ExposeService(svc.Port, svc.Name)
 		}
 	}
 
-	s.sampleTraffic()
-	s.runTicker(ctx, s.sampleInterval, s.sampleTraffic)
-	s.runTicker(ctx, s.reconcileInterval, func() {
-		snap := s.store.Snapshot()
-		s.reconcileConnections(snap)
-		s.reconcileDesiredConnections(snap)
-	})
+	if s.sampleInterval > 0 {
+		s.wg.Go(func() { s.ticker(ctx, s.sampleInterval, s.sampleTraffic) })
+	}
+	if s.reconcileInterval > 0 {
+		s.wg.Go(func() { s.ticker(ctx, s.reconcileInterval, s.reconcile) })
+	}
 	return nil
 }
 
-func (s *Service) runTicker(ctx context.Context, interval time.Duration, fn func()) {
-	if interval <= 0 {
-		return
-	}
-	s.loopWg.Go(func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				fn()
-			}
-		}
-	})
-}
-
 func (s *Service) Stop() error {
-	s.loopWg.Wait()
-
-	s.serviceMu.Lock()
-	for _, h := range s.services {
-		h.cancel()
+	s.mu.Lock()
+	for _, cancel := range s.services {
+		cancel()
 	}
-	s.serviceMu.Unlock()
-
-	s.connectionMu.Lock()
-	for _, h := range s.connections {
-		_ = h.ln.Close()
-		h.cancel()
+	for _, conn := range s.connections {
+		_ = conn.ln.Close()
+		conn.cancel()
 	}
-	s.connectionMu.Unlock()
-
-	s.streamMu.Lock()
-	portStreams := s.activeStreams
-	s.activeStreams = make(map[uint32]map[io.ReadWriteCloser]struct{})
-	s.streamMu.Unlock()
-
-	for _, streams := range portStreams {
-		for stream := range streams {
-			_ = stream.Close()
-		}
-	}
-
+	s.mu.Unlock()
 	s.wg.Wait()
 	return nil
 }
 
-func (s *Service) TrafficRecorder() transport.TrafficRecorder {
-	if s.trafficTracker == nil {
-		return nil
-	}
-	return s.trafficTracker
-}
-
-func (s *Service) Connect(ctx context.Context, service string, peerID types.PeerKey, localPort uint32) error {
-	snap := s.store.Snapshot()
-	if _, ok := snap.Peer(peerID); !ok {
-		return errors.New("peerID not recognised")
+func (s *Service) Connect(_ context.Context, peer types.PeerKey, remotePort, localPort uint32) (uint32, error) {
+	if localPort == 0 {
+		localPort = remotePort
 	}
 
-	remotePort, ok := findServicePort(snap, peerID, service)
-	if !ok {
-		return fmt.Errorf("service %q not found on peer %s", service, peerID.Short())
-	}
+	key := fmt.Sprintf("%s:%d", peer.String(), remotePort)
+	s.mu.Lock()
+	s.desired[key] = ConnectionInfo{PeerID: peer, RemotePort: remotePort, LocalPort: localPort}
+	s.mu.Unlock()
 
-	port, err := s.connectService(peerID, remotePort, localPort)
-	if err != nil {
-		return err
+	s.reconcile()
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if conn, ok := s.connections[key]; ok {
+		return conn.info.LocalPort, nil
 	}
-	s.addDesiredConnection(peerID, remotePort, port)
-	return nil
+	return localPort, nil
 }
 
 func (s *Service) Disconnect(service string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	snap := s.store.Snapshot()
-	for key, conn := range s.desiredConnections {
-		if matchesServiceName(snap, conn.PeerID, conn.RemotePort, service) {
-			s.disconnectKey(connectionKey{peerID: conn.PeerID, port: conn.RemotePort})
-			delete(s.desiredConnections, key)
+	for key, info := range s.desired {
+		if matchesService(snap, info.PeerID, info.RemotePort, service) {
+			if conn, ok := s.connections[key]; ok {
+				_ = conn.ln.Close()
+				conn.cancel()
+				delete(s.connections, key)
+			}
+			delete(s.desired, key)
 			return nil
 		}
 	}
@@ -278,17 +185,31 @@ func (s *Service) Disconnect(service string) error {
 }
 
 func (s *Service) ExposeService(port uint32, name string) error {
-	s.registerService(port)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if cancel, ok := s.services[port]; ok {
+		cancel()
+	}
+
+	_, cancel := context.WithCancel(context.Background())
+	s.services[port] = cancel
 	s.store.SetService(port, name)
 	return nil
 }
 
 func (s *Service) UnexposeService(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	snap := s.store.Snapshot()
 	for _, svc := range snap.Services() {
 		if svc.Peer == s.self && svc.Name == name {
+			if cancel, ok := s.services[svc.Port]; ok {
+				cancel()
+				delete(s.services, svc.Port)
+			}
 			s.store.RemoveService(name)
-			s.unregisterService(svc.Port)
 			return nil
 		}
 	}
@@ -296,418 +217,321 @@ func (s *Service) UnexposeService(name string) error {
 }
 
 func (s *Service) HandleTunnelStream(stream transport.Stream, peer types.PeerKey) {
-	s.wg.Go(func() { s.handleIncomingStream(peer, stream) })
+	s.handleIncoming(stream, peer)
 }
 
 func (s *Service) HandleRoutedStream(stream transport.Stream, peer types.PeerKey) {
-	s.wg.Go(func() { s.handleIncomingStream(peer, stream) })
+	s.handleIncoming(stream, peer)
 }
 
-func (s *Service) ListConnections() []ConnectionInfo {
-	s.connectionMu.RLock()
-	defer s.connectionMu.RUnlock()
-	out := make([]ConnectionInfo, 0, len(s.connections))
-	for key, h := range s.connections {
-		out = append(out, ConnectionInfo{
-			PeerID:     key.peerID,
-			RemotePort: key.port,
-			LocalPort:  h.local,
-		})
-	}
-	return out
+func (s *Service) handleIncoming(stream io.ReadWriteCloser, peer types.PeerKey) {
+	s.wg.Go(func() {
+		defer stream.Close()
+		port, err := readPort(stream)
+		if err != nil {
+			return
+		}
+
+		s.mu.RLock()
+		_, ok := s.services[port]
+		s.mu.RUnlock()
+
+		if !ok {
+			return
+		}
+
+		conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port)) //nolint:noctx
+		if err != nil {
+			return
+		}
+		s.bridge(stream, conn, peer)
+	})
 }
 
 func (s *Service) HandlePeerDenied(peerID types.PeerKey) {
-	s.connectionMu.Lock()
-	for key, h := range s.connections {
-		if key.peerID == peerID {
-			_ = h.ln.Close()
-			h.cancel()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for key, conn := range s.connections {
+		if conn.info.PeerID == peerID {
+			_ = conn.ln.Close()
+			conn.cancel()
 			delete(s.connections, key)
 		}
 	}
-	s.connectionMu.Unlock()
-	s.removeDesiredWhere(func(c ConnectionInfo) bool { return c.PeerID == peerID })
-}
-
-func (s *Service) DesiredPeers() []types.PeerKey {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	seen := make(map[types.PeerKey]struct{}, len(s.desiredConnections))
-	for _, c := range s.desiredConnections {
-		seen[c.PeerID] = struct{}{}
+	for key, info := range s.desired {
+		if info.PeerID == peerID {
+			delete(s.desired, key)
+		}
 	}
-	peers := slices.Collect(maps.Keys(seen))
-	return peers
 }
 
-func (s *Service) SeedDesiredConnection(pk types.PeerKey, remotePort, localPort uint32) {
-	s.addDesiredConnection(pk, remotePort, localPort)
-}
-
-func (s *Service) ListDesiredConnections() []ConnectionInfo {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]ConnectionInfo, 0, len(s.desiredConnections))
-	for _, c := range s.desiredConnections {
-		out = append(out, c)
+func (s *Service) ListConnections() []ConnectionInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ConnectionInfo, 0, len(s.connections))
+	for _, c := range s.connections {
+		out = append(out, c.info)
 	}
 	return out
 }
 
-func (s *Service) handleIncomingStream(peerID types.PeerKey, stream io.ReadWriteCloser) {
-	port, err := readServicePort(stream)
-	if err != nil {
-		s.log.Warnw("failed reading service port from stream", "peer", peerID.Short(), "err", err)
-		_ = stream.Close()
-		return
+func (s *Service) ListDesiredConnections() []ConnectionInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ConnectionInfo, 0, len(s.desired))
+	for _, d := range s.desired {
+		out = append(out, d)
 	}
-
-	if s.trafficTracker != nil {
-		stream = wrapStream(stream, s.trafficTracker, peerID)
-	}
-
-	tracked := &trackedStream{ReadWriteCloser: stream}
-	tracked.onClose = func() { s.removeActiveStream(port, tracked) }
-	s.addActiveStream(port, tracked)
-
-	s.serviceMu.RLock()
-	h, ok := s.services[port]
-	s.serviceMu.RUnlock()
-
-	if !ok {
-		s.log.Warnw("no handler for incoming stream", "peer", peerID.Short(), "port", port)
-		_ = tracked.Close()
-		return
-	}
-
-	h.fn(tracked)
+	return out
 }
 
-func readServicePort(r io.Reader) (uint32, error) {
-	var header [2]byte
-	if _, err := io.ReadFull(r, header[:]); err != nil {
-		return 0, err
-	}
-	port := binary.BigEndian.Uint16(header[:])
-	if port == 0 {
-		return 0, errNoServicePort
-	}
-	return uint32(port), nil
+func (s *Service) RemoveDesiredConnection(pk types.PeerKey, remotePort uint32) {
+	key := fmt.Sprintf("%s:%d", pk.String(), remotePort)
+	s.mu.Lock()
+	delete(s.desired, key)
+	s.mu.Unlock()
+	s.reconcile()
 }
 
-func writeServicePort(w io.Writer, port uint32) error {
-	if port == 0 || port > 0xffff {
-		return errors.New("remote port missing")
+func (s *Service) DesiredPeers() []types.PeerKey {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := make(map[types.PeerKey]struct{})
+	for _, d := range s.desired {
+		seen[d.PeerID] = struct{}{}
 	}
-	var header [2]byte
-	binary.BigEndian.PutUint16(header[:], uint16(port))
-	_, err := w.Write(header[:])
-	return err
+	out := make([]types.PeerKey, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	return out
 }
 
-func (s *Service) registerService(port uint32) {
-	s.serviceMu.Lock()
-	defer s.serviceMu.Unlock()
-
-	if curr, ok := s.services[port]; ok {
-		curr.cancel()
+func (s *Service) TrafficRecorder() transport.TrafficRecorder {
+	if s.tracker == nil {
+		return nil
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	s.services[port] = serviceHandler{
-		fn: func(tunnelConn io.ReadWriteCloser) {
-			conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", fmt.Sprintf("localhost:%d", port))
-			if err != nil {
-				s.log.Warnw("failed to dial local service", "port", port, "err", err)
-				_ = tunnelConn.Close()
-				return
-			}
-			bridge(tunnelConn, conn)
-		},
-		cancel: cancel,
-	}
-	s.log.Infow("registered service", "port", port)
+	return s.tracker
 }
 
-func (s *Service) connectService(peerID types.PeerKey, remotePort, localPort uint32) (uint32, error) {
-	s.connectionMu.Lock()
-	defer s.connectionMu.Unlock()
+func (s *Service) reconcile() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if h, ok := s.connections[connectionKey{peerID: peerID, port: remotePort}]; ok {
-		return 0, fmt.Errorf("already connected to port %d on peer %s (local port %d)", remotePort, peerID.Short(), h.local)
-	}
+	snap := s.store.Snapshot()
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	listenPort := localPort
-	if listenPort == 0 {
-		listenPort = remotePort
-	}
-
-	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", fmt.Sprintf(":%d", listenPort))
-	if err != nil && localPort == 0 {
-		ln, err = (&net.ListenConfig{}).Listen(ctx, "tcp", ":0")
-	}
-	if err != nil {
-		cancel()
-		return 0, err
-	}
-
-	boundPort := uint32(ln.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert
-
-	s.wg.Go(func() {
-		for {
-			clientConn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			s.wg.Go(func() {
-				streamCtx, streamCancel := context.WithTimeout(ctx, streamOpenTimeout)
-				defer streamCancel()
-				stream, err := s.streams.OpenStream(streamCtx, peerID, transport.StreamTypeTunnel)
-				if err != nil {
-					s.log.Warnw("open stream failed", "peer", peerID.Short(), "port", remotePort, "err", err)
-					_ = clientConn.Close()
-					return
-				}
-				if err := writeServicePort(stream, remotePort); err != nil {
-					s.log.Warnw("write stream header failed", "peer", peerID.Short(), "port", remotePort, "err", err)
-					_ = stream.Close()
-					_ = clientConn.Close()
-					return
-				}
-				if s.trafficTracker != nil {
-					stream = wrapStream(stream, s.trafficTracker, peerID)
-				}
-				stop := context.AfterFunc(ctx, func() {
-					_ = clientConn.Close()
-				})
-				defer stop()
-				bridge(clientConn, stream)
-			})
+	for key, conn := range s.connections {
+		if _, ok := s.desired[key]; !ok || !hasPort(snap, conn.info.PeerID, conn.info.RemotePort) {
+			_ = conn.ln.Close()
+			conn.cancel()
+			delete(s.connections, key)
 		}
-	})
-
-	s.connections[connectionKey{peerID: peerID, port: remotePort}] = connectionHandler{
-		cancel: cancel,
-		local:  boundPort,
-		ln:     ln,
 	}
-	s.log.Infow("connected to service", "peer", peerID.Short(), "port", remotePort, "local_port", boundPort)
-	return boundPort, nil
+
+	for key, info := range s.desired {
+		if _, ok := s.connections[key]; ok || !hasPort(snap, info.PeerID, info.RemotePort) {
+			continue
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", info.LocalPort)) //nolint:noctx
+		if err != nil {
+			cancel()
+			continue
+		}
+
+		boundPort := uint32(ln.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert
+		c := &connection{
+			info:   ConnectionInfo{PeerID: info.PeerID, RemotePort: info.RemotePort, LocalPort: boundPort},
+			ln:     ln,
+			cancel: cancel,
+		}
+		s.connections[key] = c
+
+		s.wg.Go(func() {
+			for {
+				client, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				s.wg.Go(func() {
+					defer client.Close()
+					sCtx, sCancel := context.WithTimeout(ctx, streamOpenTimeout)
+					defer sCancel()
+
+					stream, err := s.streams.OpenStream(sCtx, info.PeerID, transport.StreamTypeTunnel)
+					if err != nil {
+						return
+					}
+					defer stream.Close()
+
+					if err := writePort(stream, info.RemotePort); err != nil {
+						return
+					}
+					s.bridge(stream, client, info.PeerID)
+				})
+			}
+		})
+	}
 }
 
-func (s *Service) disconnectKey(key connectionKey) {
-	s.connectionMu.Lock()
-	defer s.connectionMu.Unlock()
-	if h, ok := s.connections[key]; ok {
-		_ = h.ln.Close()
-		h.cancel()
-		delete(s.connections, key)
+func (s *Service) bridge(c1, c2 io.ReadWriteCloser, peer types.PeerKey) {
+	if s.tracker != nil {
+		c1 = &countedStream{inner: c1, tr: s.tracker, peer: peer}
 	}
+	done := make(chan struct{}, 2) //nolint:mnd
+	copyDir := func(dst io.Writer, src io.Reader) {
+		buf := bufPool.Get().(*[]byte) //nolint:forcetypeassert
+		defer bufPool.Put(buf)
+		_, _ = io.CopyBuffer(dst, src, *buf)
+		done <- struct{}{}
+	}
+	go copyDir(c1, c2)
+	go copyDir(c2, c1)
+	<-done
+	_ = c1.Close()
+	_ = c2.Close()
+	<-done
 }
 
-func (s *Service) unregisterService(port uint32) {
-	s.serviceMu.Lock()
-	defer s.serviceMu.Unlock()
-	if h, ok := s.services[port]; ok {
-		h.cancel()
-		delete(s.services, port)
-	}
-	s.closeServiceStreams(port)
-}
-
-func (s *Service) closeServiceStreams(port uint32) {
-	s.streamMu.Lock()
-	streams := s.activeStreams[port]
-	delete(s.activeStreams, port)
-	s.streamMu.Unlock()
-
-	for stream := range streams {
-		_ = stream.Close()
-	}
-}
-
-func (s *Service) addActiveStream(port uint32, stream io.ReadWriteCloser) {
-	s.streamMu.Lock()
-	defer s.streamMu.Unlock()
-	streams, ok := s.activeStreams[port]
-	if !ok {
-		streams = make(map[io.ReadWriteCloser]struct{})
-		s.activeStreams[port] = streams
-	}
-	streams[stream] = struct{}{}
-}
-
-func (s *Service) removeActiveStream(port uint32, stream io.ReadWriteCloser) {
-	s.streamMu.Lock()
-	defer s.streamMu.Unlock()
-	streams, ok := s.activeStreams[port]
-	if !ok {
-		return
-	}
-	delete(streams, stream)
-	if len(streams) == 0 {
-		delete(s.activeStreams, port)
+func (s *Service) ticker(ctx context.Context, d time.Duration, fn func()) {
+	t := time.NewTicker(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			fn()
+		}
 	}
 }
 
 func (s *Service) sampleTraffic() {
-	if s.trafficTracker == nil {
+	if s.tracker == nil {
 		return
 	}
-	snapshot, changed := s.trafficTracker.RotateAndSnapshot()
-	if !changed {
-		return
-	}
-	for pk, pt := range snapshot {
-		s.store.SetLocalTraffic(pk, pt.BytesIn, pt.BytesOut)
-	}
-}
-
-func (s *Service) reconcileConnections(snap state.Snapshot) {
-	for _, conn := range s.ListConnections() {
-		if peerHasServicePort(snap, conn.PeerID, conn.RemotePort) {
-			continue
-		}
-		s.log.Infow("removing stale forward", "peer", conn.PeerID.Short(), "port", conn.RemotePort)
-		s.disconnectKey(connectionKey{peerID: conn.PeerID, port: conn.RemotePort})
-		s.removeDesiredWhere(func(c ConnectionInfo) bool {
-			return c.PeerID == conn.PeerID && c.RemotePort == conn.RemotePort
-		})
-	}
-}
-
-func (s *Service) reconcileDesiredConnections(snap state.Snapshot) {
-	s.mu.Lock()
-	desired := make(map[desiredKey]ConnectionInfo, len(s.desiredConnections))
-	maps.Copy(desired, s.desiredConnections)
-	s.mu.Unlock()
-
-	if len(desired) == 0 {
-		return
-	}
-
-	s.connectionMu.RLock()
-	connections := maps.Clone(s.connections)
-	s.connectionMu.RUnlock()
-
-	for key, dc := range desired {
-		if _, ok := connections[connectionKey{peerID: dc.PeerID, port: dc.RemotePort}]; ok {
-			continue
-		}
-		if !peerHasServicePort(snap, dc.PeerID, dc.RemotePort) {
-			continue
-		}
-		p, ok := snap.Peer(dc.PeerID)
-		if !ok || len(p.PeerPub) == 0 {
-			continue
-		}
-		port, err := s.connectService(dc.PeerID, dc.RemotePort, dc.LocalPort)
-		if err != nil {
-			s.log.Debugw("failed restoring desired connection", "peer", dc.PeerID.Short(), "remotePort", dc.RemotePort, "localPort", dc.LocalPort, "err", err)
-			continue
-		}
-		if port != dc.LocalPort {
-			s.mu.Lock()
-			delete(s.desiredConnections, key)
-			s.mu.Unlock()
-			s.addDesiredConnection(dc.PeerID, dc.RemotePort, port)
+	if snap, ok := s.tracker.rotate(); ok {
+		for pk, pt := range snap {
+			s.store.SetLocalTraffic(pk, pt.BytesIn, pt.BytesOut)
 		}
 	}
 }
 
-func (s *Service) addDesiredConnection(pk types.PeerKey, remotePort, localPort uint32) {
-	key := desiredKey{peerID: pk, remotePort: remotePort, localPort: localPort}
-	s.mu.Lock()
-	s.desiredConnections[key] = ConnectionInfo{PeerID: pk, RemotePort: remotePort, LocalPort: localPort}
-	s.mu.Unlock()
+func readPort(r io.Reader) (uint32, error) {
+	var b [2]byte
+	if _, err := io.ReadFull(r, b[:]); err != nil {
+		return 0, err
+	}
+	p := binary.BigEndian.Uint16(b[:])
+	if p == 0 {
+		return 0, errNoServicePort
+	}
+	return uint32(p), nil
 }
 
-func (s *Service) removeDesiredWhere(match func(ConnectionInfo) bool) {
-	s.mu.Lock()
-	for key, conn := range s.desiredConnections {
-		if match(conn) {
-			delete(s.desiredConnections, key)
-		}
-	}
-	s.mu.Unlock()
+func writePort(w io.Writer, p uint32) error {
+	var b [2]byte
+	binary.BigEndian.PutUint16(b[:], uint16(p))
+	_, err := w.Write(b[:])
+	return err
 }
 
-func (s *Service) RemoveDesiredConnectionByPorts(pk types.PeerKey, remotePort, localPort uint32) {
-	key := desiredKey{peerID: pk, remotePort: remotePort, localPort: localPort}
-	s.mu.Lock()
-	delete(s.desiredConnections, key)
-	s.mu.Unlock()
-}
-
-func bridge(c1, c2 io.ReadWriteCloser) {
-	var wg sync.WaitGroup
-	var once sync.Once
-	teardown := func() {
-		_ = c1.Close()
-		_ = c2.Close()
-	}
-
-	transfer := func(dst, src io.ReadWriteCloser, direction string) {
-		bufPtr := bufPool.Get().(*[]byte) //nolint:forcetypeassert
-		defer bufPool.Put(bufPtr)
-
-		_, err := io.CopyBuffer(dst, src, *bufPtr)
-
-		closeWrite(dst)
-		once.Do(teardown)
-
-		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-			zap.S().Named("tun").Debugw("bridge copy failed", "direction", direction, "err", err)
-		}
-	}
-
-	wg.Go(func() { transfer(c1, c2, "c1->c2") })
-	wg.Go(func() { transfer(c2, c1, "c2->c1") })
-
-	wg.Wait()
-}
-
-func closeWrite(conn io.Closer) {
-	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
-		_ = cw.CloseWrite()
-		return
-	}
-	_ = conn.Close()
-}
-
-func findServicePort(snap state.Snapshot, peerID types.PeerKey, name string) (uint32, bool) {
-	nv, ok := snap.Nodes[peerID]
-	if !ok {
-		return 0, false
-	}
-	svc, ok := nv.Services[name]
-	if !ok {
-		return 0, false
-	}
-	return svc.Port, true
-}
-
-func peerHasServicePort(snap state.Snapshot, peerID types.PeerKey, port uint32) bool {
-	nv, ok := snap.Nodes[peerID]
+func hasPort(snap state.Snapshot, peer types.PeerKey, port uint32) bool {
+	nv, ok := snap.Nodes[peer]
 	if !ok {
 		return false
 	}
-	for _, svc := range nv.Services {
-		if svc.Port == port {
+	for _, s := range nv.Services {
+		if s.Port == port {
 			return true
 		}
 	}
 	return false
 }
 
-func matchesServiceName(snap state.Snapshot, peerID types.PeerKey, port uint32, name string) bool {
-	nv, ok := snap.Nodes[peerID]
+func matchesService(snap state.Snapshot, peer types.PeerKey, port uint32, name string) bool {
+	nv, ok := snap.Nodes[peer]
 	if !ok {
 		return false
 	}
-	svc, ok := nv.Services[name]
-	return ok && svc.Port == port
+	s, ok := nv.Services[name]
+	return ok && s.Port == port
 }
+
+type peerTraffic struct{ BytesIn, BytesOut uint64 }
+
+type tracker struct {
+	current   map[types.PeerKey]*peerTraffic
+	published map[types.PeerKey]peerTraffic
+	mu        sync.Mutex
+}
+
+func newTracker() *tracker {
+	return &tracker{current: make(map[types.PeerKey]*peerTraffic)}
+}
+
+func (t *tracker) Record(pk types.PeerKey, in, out uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	p := t.current[pk]
+	if p == nil {
+		p = &peerTraffic{}
+		t.current[pk] = p
+	}
+	p.BytesIn += in
+	p.BytesOut += out
+}
+
+func (t *tracker) rotate() (map[types.PeerKey]peerTraffic, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	snap := make(map[types.PeerKey]peerTraffic, len(t.current))
+	changed := len(t.current) != len(t.published)
+	for k, v := range t.current {
+		snap[k] = *v
+		if !changed {
+			old := t.published[k]
+			if absDiff(old.BytesIn, v.BytesIn) > (old.BytesIn/50) || absDiff(old.BytesOut, v.BytesOut) > (old.BytesOut/50) { //nolint:mnd
+				changed = true
+			}
+		}
+	}
+	if changed {
+		t.published = snap
+	}
+	return snap, changed
+}
+
+func absDiff(a, b uint64) uint64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+type countedStream struct {
+	io.ReadWriteCloser
+	inner io.ReadWriteCloser
+	tr    *tracker
+	peer  types.PeerKey
+}
+
+func (s *countedStream) Read(p []byte) (int, error) {
+	n, err := s.inner.Read(p)
+	if n > 0 {
+		s.tr.Record(s.peer, uint64(n), 0)
+	}
+	return n, err
+}
+
+func (s *countedStream) Write(p []byte) (int, error) {
+	n, err := s.inner.Write(p)
+	if n > 0 {
+		s.tr.Record(s.peer, 0, uint64(n))
+	}
+	return n, err
+}
+
+func (s *countedStream) Close() error { return s.inner.Close() }

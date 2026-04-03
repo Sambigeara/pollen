@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sync"
 	"time"
 
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
@@ -18,38 +17,36 @@ import (
 )
 
 func (s *Service) gossip(ctx context.Context) []state.Event {
-	digest := s.store.Snapshot().Digest()
-	digestBytes, err := digest.Marshal()
+	digestBytes, err := s.store.Snapshot().Digest().Marshal()
 	if err != nil {
 		s.log.Warnw("failed to marshal digest", "err", err)
 		return nil
 	}
-	peers := s.mesh.ConnectedPeers()
-	var (
-		mu        sync.Mutex
-		allEvents []state.Event
-		wg        sync.WaitGroup
-	)
-	for _, peerID := range peers {
+
+	var allEvents []state.Event
+	s.mu.Lock()
+	defer s.mu.Unlock() // Ensure concurrent append safety if used with inner routines
+
+	for _, peerID := range s.mesh.ConnectedPeers() {
 		if peerID == s.localID {
 			continue
 		}
-		wg.Go(func() {
-			gossipCtx, cancel := context.WithTimeout(ctx, gossipStreamTimeout)
+		pID := peerID
+		s.spawn(ctx, func(gossipCtx context.Context) {
+			ctx, cancel := context.WithTimeout(gossipCtx, gossipStreamTimeout)
 			defer cancel()
-			events, err := s.sendDigestViaStream(gossipCtx, peerID, digestBytes)
+			events, err := s.sendDigestViaStream(ctx, pID, digestBytes)
 			if err != nil {
-				s.log.Debugw("digest gossip send failed", "peer", peerID.Short(), "err", err)
+				s.log.Debugw("digest gossip send failed", "peer", pID.Short(), "err", err)
 				return
 			}
 			if len(events) > 0 {
-				mu.Lock()
+				s.mu.Lock()
 				allEvents = append(allEvents, events...)
-				mu.Unlock()
+				s.mu.Unlock()
 			}
 		})
 	}
-	wg.Wait()
 	return allEvents
 }
 
@@ -114,8 +111,6 @@ func (s *Service) HandleDigestStream(ctx context.Context, stream transport.Strea
 		return
 	}
 	if len(resp) > maxResponseSize {
-		// TODO(saml): Paginate digest responses so large deltas can be streamed in
-		// bounded batches instead of being dropped when they exceed maxResponseSize.
 		s.log.Warnw("digest response exceeded size limit", "peer", from.Short(), "size", len(resp))
 		return
 	}
@@ -138,11 +133,13 @@ func (s *Service) handleDatagram(ctx context.Context, from types.PeerKey, data [
 		_, span := s.tracer.Start(spanCtx, "gossip.applyDelta")
 		span.SetAttributes(attribute.String("peer", from.Short()))
 		defer span.End()
+
 		batchData, err := body.Events.MarshalVT()
 		if err != nil {
 			s.log.Debugw("re-marshal events batch failed", "err", err)
 			return
 		}
+
 		events, rebroadcast, err := s.store.ApplyDelta(from, batchData)
 		if err != nil {
 			s.log.Debugw("apply delta from datagram failed", "peer", from.Short(), "err", err)
@@ -152,10 +149,13 @@ func (s *Service) handleDatagram(ctx context.Context, from types.PeerKey, data [
 			s.broadcastBatchBytes(ctx, rebroadcast)
 		}
 		s.forwardEvents(events)
+
 	case *meshv1.Envelope_ObservedAddress:
 		s.handleObservedAddress(from, body.ObservedAddress)
+
 	case *meshv1.Envelope_CertRenewalRequest:
 		s.handleCertRenewalRequest(ctx, from, body.CertRenewalRequest)
+
 	default:
 		if s.datagramHandler != nil {
 			s.datagramHandler(ctx, from, env)
@@ -173,17 +173,18 @@ func (s *Service) doEagerSync(ctx context.Context, peerKey types.PeerKey) {
 		s.log.Warnw("marshal digest for eager sync failed", "err", err)
 		return
 	}
-	s.wg.Go(func() {
-		eagerCtx, cancel := context.WithTimeout(ctx, eagerSyncTimeout)
+
+	s.spawn(ctx, func(eagerCtx context.Context) {
+		ctx, cancel := context.WithTimeout(eagerCtx, eagerSyncTimeout)
 		defer cancel()
-		events, err := s.sendDigestViaStream(eagerCtx, peerKey, digestBytes)
+		events, err := s.sendDigestViaStream(ctx, peerKey, digestBytes)
 		if err != nil {
 			s.log.Debugw("eager sync failed", "peer", peerKey.Short(), "err", err)
 			s.eagerSyncFailures.Add(1)
-		} else {
-			s.eagerSyncs.Add(1)
-			s.forwardEvents(events)
+			return
 		}
+		s.eagerSyncs.Add(1)
+		s.forwardEvents(events)
 	})
 }
 
@@ -205,10 +206,7 @@ func (s *Service) broadcastGossipBatches(ctx context.Context, peerIDs []types.Pe
 			continue
 		}
 		for _, peerID := range peerIDs {
-			if peerID == s.localID {
-				continue
-			}
-			if _, ok := failed[peerID]; ok {
+			if _, skip := failed[peerID]; peerID == s.localID || skip {
 				continue
 			}
 			if err := s.mesh.Send(ctx, peerID, data); err != nil {
@@ -231,10 +229,6 @@ func (s *Service) broadcastBatchBytes(ctx context.Context, data []byte) {
 	s.broadcastEvents(ctx, batch.GetEvents())
 }
 
-func eventWireSize(event *statev1.GossipEvent) int {
-	return (&statev1.GossipEventBatch{Events: []*statev1.GossipEvent{event}}).SizeVT()
-}
-
 func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.GossipEvent {
 	if len(events) == 0 {
 		return nil
@@ -245,7 +239,7 @@ func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.Gossip
 	currentSize := envelopeOverhead
 
 	for _, event := range events {
-		eventSize := eventWireSize(event)
+		eventSize := (&statev1.GossipEventBatch{Events: []*statev1.GossipEvent{event}}).SizeVT()
 		if len(current) > 0 && currentSize+eventSize > maxSize {
 			batches = append(batches, current)
 			current = nil

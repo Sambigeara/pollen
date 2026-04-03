@@ -12,10 +12,8 @@ import (
 )
 
 const (
-	debounceInterval = 200 * time.Millisecond
-	maxDebounceDelay = 2 * time.Second
-	evictionCooldown = 30 * time.Second
-
+	debounceInterval      = 200 * time.Millisecond
+	evictionCooldown      = 30 * time.Second
 	minResidencyDuration  = 10 * time.Second
 	reconcilePollInterval = 5 * time.Second
 )
@@ -34,18 +32,18 @@ type artifactFetcher interface {
 	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
 }
 
-// reconciler runs the debounced scheduling loop.
 type reconciler struct {
 	store          WorkloadState
 	workloads      workloadManager
 	cas            artifactStore
 	fetcher        artifactFetcher
-	triggerCh      chan struct{}
-	pendingRelease map[string]time.Time
 	claimStartTime map[string]time.Time
+	pendingRelease map[string]time.Time
+	triggerCh      chan struct{}
 	log            *zap.SugaredLogger
 	inFlight       map[string]struct{}
 	nowFunc        func() time.Time
+	wg             *sync.WaitGroup
 	inFlightMu     sync.Mutex
 	localID        types.PeerKey
 	firstRun       bool
@@ -58,6 +56,7 @@ func newReconciler(
 	cas artifactStore,
 	fetcher artifactFetcher,
 	log *zap.SugaredLogger,
+	wg *sync.WaitGroup,
 ) *reconciler {
 	return &reconciler{
 		localID:        localID,
@@ -70,12 +69,12 @@ func newReconciler(
 		claimStartTime: make(map[string]time.Time),
 		inFlight:       make(map[string]struct{}),
 		log:            log,
+		wg:             wg,
 		firstRun:       true,
 		nowFunc:        time.Now,
 	}
 }
 
-// Signal triggers a reconciliation cycle (non-blocking).
 func (r *reconciler) Signal() {
 	select {
 	case r.triggerCh <- struct{}{}:
@@ -83,66 +82,53 @@ func (r *reconciler) Signal() {
 	}
 }
 
-// Run is the main reconciliation loop. Blocks until ctx is cancelled.
 func (r *reconciler) Run(ctx context.Context) {
 	pollTicker := time.NewTicker(reconcilePollInterval)
 	defer pollTicker.Stop()
 
-	var (
-		debounce       *time.Timer
-		debounceC      <-chan time.Time
-		firstTriggerAt time.Time
-	)
-	drainTimer := func(t *time.Timer) {
-		if t != nil && !t.Stop() {
-			select {
-			case <-t.C:
-			default:
-			}
-		}
-	}
+	var debounce *time.Timer
+	var debounceC <-chan time.Time
 
 	for {
 		select {
 		case <-ctx.Done():
-			drainTimer(debounce)
+			if debounce != nil {
+				debounce.Stop()
+			}
 			return
 		case <-pollTicker.C:
 			r.reconcile(ctx)
 		case <-r.triggerCh:
-			now := time.Now()
-			if firstTriggerAt.IsZero() {
-				firstTriggerAt = now
+			if debounce != nil {
+				debounce.Stop()
 			}
-			if now.Sub(firstTriggerAt) >= maxDebounceDelay {
-				r.reconcile(ctx)
-				drainTimer(debounce)
-				debounceC = nil
-				firstTriggerAt = time.Time{}
-			} else {
-				drainTimer(debounce)
-				debounce = time.NewTimer(debounceInterval)
-				debounceC = debounce.C
-			}
+			debounce = time.NewTimer(debounceInterval)
+			debounceC = debounce.C
 		case <-debounceC:
 			r.reconcile(ctx)
 			debounceC = nil
-			firstTriggerAt = time.Time{}
 		}
 	}
 }
 
-func buildClusterState(placements map[types.PeerKey]state.NodePlacementState) clusterState {
-	cluster := clusterState{Nodes: make(map[types.PeerKey]nodeState, len(placements))}
-	for pk, nps := range placements {
-		cluster.Nodes[pk] = nodeState{
-			CPUPercent:    nps.CPUPercent,
-			MemPercent:    nps.MemPercent,
-			MemTotalBytes: nps.MemTotalBytes,
-			NumCPU:        nps.NumCPU,
-			Coord:         nps.Coord,
-			TrafficTo:     nps.TrafficTo,
+func buildClusterState(nodes map[types.PeerKey]state.NodeView, peerKeys []types.PeerKey) clusterState {
+	cluster := clusterState{Nodes: make(map[types.PeerKey]nodeState, len(peerKeys))}
+	for _, pk := range peerKeys {
+		nv := nodes[pk]
+		ns := nodeState{
+			CPUPercent:    nv.CPUPercent,
+			MemPercent:    nv.MemPercent,
+			MemTotalBytes: nv.MemTotalBytes,
+			NumCPU:        nv.NumCPU,
+			Coord:         nv.VivaldiCoord,
 		}
+		if len(nv.TrafficRates) > 0 {
+			ns.TrafficTo = make(map[types.PeerKey]uint64, len(nv.TrafficRates))
+			for peer, rate := range nv.TrafficRates {
+				ns.TrafficTo[peer] = rate.BytesIn + rate.BytesOut
+			}
+		}
+		cluster.Nodes[pk] = ns
 	}
 	return cluster
 }
@@ -155,27 +141,23 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		r.cleanupStaleClaims(snap.Claims)
 	}
 
-	cluster := buildClusterState(snap.Placements)
+	cluster := buildClusterState(snap.Nodes, snap.PeerKeys)
 
 	specs := make(map[string]spec, len(snap.Specs))
 	for hash, sv := range snap.Specs {
-		specs[hash] = spec{
-			Replicas: sv.Spec.GetReplicas(),
-		}
+		specs[hash] = spec{Replicas: sv.Spec.GetReplicas()}
 	}
 
 	actions := evaluate(r.localID, snap.PeerKeys, specs, snap.Claims, cluster, r.workloads.IsRunning)
-
 	wantRelease := make(map[string]struct{})
-
 	now := r.nowFunc()
+
 	for _, a := range actions {
 		switch a.Kind {
 		case actionClaim:
 			r.startClaim(ctx, a.Hash, snap.Specs, snap.Claims)
 		case actionRelease:
 			if _, specExists := snap.Specs[a.Hash]; !specExists {
-				// Spec deleted — release immediately, no cooldown.
 				r.executeRelease(a.Hash)
 				delete(r.pendingRelease, a.Hash)
 				continue
@@ -195,12 +177,11 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		if now.Before(deadline) {
 			continue
 		}
-		// Residency window: suppress release if claim is too recent.
-		// Only applies to migration (exact replica count). Over-replication
-		// proceeds immediately after cooldown.
+
 		r.inFlightMu.Lock()
 		claimTime, hasClaimTime := r.claimStartTime[hash]
 		r.inFlightMu.Unlock()
+
 		if hasClaimTime && now.Sub(claimTime) < minResidencyDuration {
 			if sv, specExists := snap.Specs[hash]; specExists && uint32(len(snap.Claims[hash])) <= sv.Spec.GetReplicas() {
 				continue
@@ -211,8 +192,6 @@ func (r *reconciler) reconcile(ctx context.Context) {
 	}
 }
 
-// startClaim launches claim execution in a background goroutine so that slow
-// artifact fetches don't block unrelated claim/release decisions.
 func (r *reconciler) startClaim(ctx context.Context, hash string, specViews map[string]state.WorkloadSpecView, claims map[string]map[types.PeerKey]struct{}) {
 	r.inFlightMu.Lock()
 	if _, ok := r.inFlight[hash]; ok {
@@ -230,7 +209,7 @@ func (r *reconciler) startClaim(ctx context.Context, hash string, specViews map[
 		peers = append(peers, pk)
 	}
 
-	go func() {
+	r.wg.Go(func() {
 		defer func() {
 			r.inFlightMu.Lock()
 			delete(r.inFlight, hash)
@@ -238,7 +217,7 @@ func (r *reconciler) startClaim(ctx context.Context, hash string, specViews map[
 			r.Signal()
 		}()
 		r.executeClaim(ctx, hash, peers)
-	}()
+	})
 }
 
 func (r *reconciler) executeClaim(ctx context.Context, hash string, peers []types.PeerKey) {
@@ -249,17 +228,16 @@ func (r *reconciler) executeClaim(ctx context.Context, hash string, peers []type
 		}
 	}
 
-	// Re-check cluster state after fetch — the spec may have been removed or
-	// enough other nodes may have claimed while we were fetching.
 	snap := r.store.Snapshot()
 	sv, specExists := snap.Specs[hash]
 	if !specExists {
 		r.log.Infow("spec removed during fetch, skipping claim", "hash", hash)
 		return
 	}
+
 	claimants := snap.Claims[hash]
 	if _, alreadyClaimed := claimants[r.localID]; !alreadyClaimed {
-		cluster := buildClusterState(snap.Placements)
+		cluster := buildClusterState(snap.Nodes, snap.PeerKeys)
 		if !shouldClaim(r.localID, hash, sv.Spec.GetReplicas(), claimants, snap.PeerKeys, cluster) {
 			r.log.Infow("no longer a winner after fetch, skipping claim", "hash", hash)
 			return

@@ -10,37 +10,54 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-type Providers struct {
-	provider *sdkmetric.MeterProvider
-	reader   *sdkmetric.ManualReader
+const (
+	nameCertExpirySeconds  = "pollen.node.cert.expiry.seconds"
+	nameCertRenewals       = "pollen.node.cert.renewals"
+	nameCertRenewalsFailed = "pollen.node.cert.renewals.failed"
+	namePunchAttempts      = "pollen.node.punch.attempts"
+	namePunchFailures      = "pollen.node.punch.failures"
+)
+
+// metricReader abstracts snapshot collection to allow zero-allocation noops.
+type metricReader interface {
+	Collect(context.Context, *metricdata.ResourceMetrics) error
 }
 
-func NewProviders() *Providers {
+type noopReader struct{}
+
+func (noopReader) Collect(context.Context, *metricdata.ResourceMetrics) error { return nil }
+
+type Provider struct {
+	provider metric.MeterProvider
+	reader   metricReader
+	shutdown func(context.Context) error
+}
+
+func NewProvider() *Provider {
 	manual := sdkmetric.NewManualReader()
-	return &Providers{
-		provider: sdkmetric.NewMeterProvider(
-			sdkmetric.WithReader(manual),
-		),
-		reader: manual,
+	sdk := sdkmetric.NewMeterProvider(sdkmetric.WithReader(manual))
+
+	return &Provider{
+		provider: sdk,
+		reader:   manual,
+		shutdown: sdk.Shutdown,
 	}
 }
 
-func NewNoopProviders() *Providers {
-	return &Providers{}
+func NewNoopProvider() *Provider {
+	return &Provider{
+		provider: noop.NewMeterProvider(),
+		reader:   noopReader{},
+		shutdown: func(context.Context) error { return nil },
+	}
 }
 
-func (p *Providers) Meter() metric.MeterProvider {
-	if p.provider != nil {
-		return p.provider
-	}
-	return noop.NewMeterProvider()
+func (p *Provider) Meter() metric.MeterProvider {
+	return p.provider
 }
 
-func (p *Providers) Shutdown(ctx context.Context) error {
-	if p.provider == nil {
-		return nil
-	}
-	return p.provider.Shutdown(ctx)
+func (p *Provider) Shutdown(ctx context.Context) error {
+	return p.shutdown(ctx)
 }
 
 type MetricSnapshot struct {
@@ -52,16 +69,14 @@ type MetricSnapshot struct {
 }
 
 // CollectSnapshot collects current metric values from the ManualReader.
-// Returns a zero snapshot in noop mode (reader is nil).
-func (p *Providers) CollectSnapshot(ctx context.Context) (MetricSnapshot, error) {
+func (p *Provider) CollectSnapshot(ctx context.Context) (MetricSnapshot, error) {
 	var snap MetricSnapshot
-	if p.reader == nil {
-		return snap, nil
-	}
 	var rm metricdata.ResourceMetrics
+
 	if err := p.reader.Collect(ctx, &rm); err != nil {
 		return snap, fmt.Errorf("collect metrics: %w", err)
 	}
+
 	for _, sm := range rm.ScopeMetrics {
 		for _, met := range sm.Metrics {
 			switch data := met.Data.(type) {

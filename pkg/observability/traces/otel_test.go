@@ -11,6 +11,7 @@ import (
 func TestSpanContextFromTraceID_Valid(t *testing.T) {
 	tid := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 	sc := SpanContextFromTraceID(tid[:])
+
 	require.True(t, sc.HasTraceID())
 	require.True(t, sc.IsRemote())
 	require.Equal(t, trace.TraceID(tid), sc.TraceID())
@@ -27,17 +28,21 @@ func TestSpanContextFromTraceID_Nil(t *testing.T) {
 }
 
 func TestProvider_Smoke(t *testing.T) {
-	p := NewProviders()
+	p := NewProvider()
 	tracer := p.Tracer().Tracer("test")
+
 	_, span := tracer.Start(context.Background(), "test.op")
 	span.End()
+
 	require.NoError(t, p.Shutdown(context.Background()))
 }
 
 func TestNoopProvider_Smoke(t *testing.T) {
-	p := NewNoopProviders()
+	p := NewNoopProvider()
 	tracer := p.Tracer().Tracer("test")
+
 	_, span := tracer.Start(context.Background(), "noop.op")
 	span.End()
+
 	require.NoError(t, p.Shutdown(context.Background()))
 }

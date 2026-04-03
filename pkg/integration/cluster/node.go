@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ type TestNode struct {
 	addr    *net.UDPAddr
 	name    string
 	role    NodeRole
-	stopped bool
+	stopped atomic.Bool
 }
 
 // NewTestNode creates and starts a fully wired node backed by VirtualSwitch.
@@ -70,10 +71,8 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 		DisableNATPunch:  !cfg.EnableNATPunch,
 		PeerTickInterval: 1 * time.Second,
 		GossipInterval:   1 * time.Second,
-		TLSIdentityTTL:   24 * time.Hour,  //nolint:mnd
-		MembershipTTL:    24 * time.Hour,  //nolint:mnd
-		ReconnectWindow:  5 * time.Minute, //nolint:mnd
 		BootstrapPeers:   cfg.BootstrapPeers,
+		BootstrapPublic:  cfg.Role == Public,
 	}
 
 	n, err := supervisor.New(opts, creds, auth.NewInviteConsumer(nil))
@@ -104,7 +103,7 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 
 	// Cleanup: mark stopped, cancel context, wait for node to stop.
 	t.Cleanup(func() {
-		tn.stopped = true
+		tn.stopped.Store(true)
 		cancel()
 		select {
 		case <-done:
@@ -122,10 +121,10 @@ func (tn *TestNode) Role() NodeRole               { return tn.role }
 func (tn *TestNode) VirtualAddr() *net.UDPAddr    { return tn.addr }
 func (tn *TestNode) Name() string                 { return tn.name }
 func (tn *TestNode) ConnectedPeers() []types.PeerKey {
-	if tn.stopped {
+	if tn.stopped.Load() {
 		return nil
 	}
 	return tn.n.GetConnectedPeers()
 }
 func (tn *TestNode) ListenPort() int { return tn.n.ListenPort() }
-func (tn *TestNode) Stop()           { tn.stopped = true; tn.cancel() }
+func (tn *TestNode) Stop()           { tn.stopped.Store(true); tn.cancel() }

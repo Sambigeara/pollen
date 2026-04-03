@@ -25,8 +25,6 @@ const (
 	resourceSampleInterval    = 5 * time.Second
 )
 
-// PlacementAPI is the complete producer-side interface for the placement package.
-// control.PlacementControl is a narrower consumer-defined subset.
 type PlacementAPI interface {
 	Start(ctx context.Context) error
 	Stop() error
@@ -44,7 +42,6 @@ type PlacementAPI interface {
 
 var _ PlacementAPI = (*Service)(nil)
 
-// WorkloadState is the narrow state-store interface the placement service requires.
 type WorkloadState interface {
 	Snapshot() state.Snapshot
 	SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) []state.Event
@@ -53,14 +50,10 @@ type WorkloadState interface {
 	SetLocalResources(cpu, mem float64) []state.Event
 }
 
-// StreamOpener opens workload streams to remote peers.
 type StreamOpener interface {
 	OpenStream(ctx context.Context, peer types.PeerKey, st transport.StreamType) (io.ReadWriteCloser, error)
 }
 
-// Service manages workload placement: routing invocations, seeding/unseeding
-// workloads, managing workload specs and claims, and handling artifact/workload
-// streams.
 type Service struct {
 	store      WorkloadState
 	mesh       StreamOpener
@@ -74,21 +67,16 @@ type Service struct {
 	localID    types.PeerKey
 }
 
-// Option configures the Service.
 type Option func(*Service)
 
-// WithLogger sets the logger for the service.
 func WithLogger(log *zap.SugaredLogger) Option {
 	return func(s *Service) { s.log = log }
 }
 
-// WithMesh sets the stream opener for remote invocations and artifact fetching.
 func WithMesh(mesh StreamOpener) Option {
 	return func(s *Service) { s.mesh = mesh }
 }
 
-// New creates a placement Service. Call Start to begin the reconciler loop
-// and resource telemetry ticker.
 func New(self types.PeerKey, store WorkloadState, casStore *cas.Store, runtime WASMRuntime, opts ...Option) *Service {
 	s := &Service{
 		localID: self,
@@ -103,28 +91,33 @@ func New(self types.PeerKey, store WorkloadState, casStore *cas.Store, runtime W
 	return s
 }
 
-// Start starts the reconciler loop and resource telemetry ticker.
 func (s *Service) Start(ctx context.Context) error {
 	ctx, s.cancel = context.WithCancel(ctx)
 	s.ctx = ctx
 
-	fetcher := newArtifactFetcher(s.mesh, s.cas)
 	s.reconciler = newReconciler(
 		s.localID,
 		s.store,
 		s.manager,
 		s.cas,
-		fetcher,
+		newArtifactFetcher(s.mesh, s.cas),
 		s.log.Named("scheduler"),
+		&s.wg,
 	)
 
-	s.wg.Go(func() { s.reconciler.Run(ctx) })
-	s.wg.Go(func() { s.runResourceTicker(ctx) })
+	s.wg.Add(2) //nolint:mnd
+	go func() {
+		defer s.wg.Done()
+		s.reconciler.Run(ctx)
+	}()
+	go func() {
+		defer s.wg.Done()
+		s.runResourceTicker(ctx)
+	}()
 
 	return nil
 }
 
-// Stop stops internal goroutines and releases compiled workloads.
 func (s *Service) Stop() error {
 	if s.cancel != nil {
 		s.cancel()
@@ -148,8 +141,6 @@ func (s *Service) runResourceTicker(ctx context.Context) {
 	}
 }
 
-// Seed stores the WASM binary in CAS, compiles the module, publishes the
-// workload spec via gossip, and claims the workload locally.
 func (s *Service) Seed(hash string, binary []byte, replicas, memoryPages, timeoutMs uint32) error {
 	cfg := wasm.NewPluginConfig(memoryPages, time.Duration(timeoutMs)*time.Millisecond)
 	gotHash, err := s.manager.Seed(s.ctx, binary, cfg)
@@ -167,8 +158,6 @@ func (s *Service) Seed(hash string, binary []byte, replicas, memoryPages, timeou
 	return nil
 }
 
-// Unseed removes a workload: drops the compiled module, releases the claim,
-// and zeros the spec so other nodes stop seeing it.
 func (s *Service) Unseed(hash string) error {
 	hash = s.resolveHash(hash)
 	if err := s.manager.Unseed(hash); err != nil {
@@ -179,8 +168,6 @@ func (s *Service) Unseed(hash string) error {
 	return nil
 }
 
-// Call invokes a function on the target workload — locally if compiled here,
-// otherwise over the mesh to a node that claims it.
 func (s *Service) Call(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
 	hash = s.resolveHash(hash)
 
@@ -199,8 +186,7 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 	for _, target := range sorted {
 		stream, err := s.mesh.OpenStream(ctx, target, transport.StreamTypeWorkload)
 		if err != nil {
-			s.log.Debugw("workload stream failed, trying next claimant",
-				"target", target.Short(), "hash", shortHash(hash), "err", err)
+			s.log.Debugw("workload stream failed, trying next claimant", "target", target.Short(), "hash", shortHash(hash), "err", err)
 			lastErr = err
 			continue
 		}
@@ -210,8 +196,7 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 			if errors.Is(err, ErrWorkloadFailed) {
 				return nil, err
 			}
-			s.log.Warnw("workload invocation failed, trying next claimant",
-				"target", target.Short(), "hash", shortHash(hash), "err", err)
+			s.log.Warnw("workload invocation failed, trying next claimant", "target", target.Short(), "hash", shortHash(hash), "err", err)
 			lastErr = err
 			continue
 		}
@@ -220,22 +205,18 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 	return nil, fmt.Errorf("all %d claimants failed for %s: %w", len(sorted), shortHash(hash), lastErr)
 }
 
-// Status returns a snapshot of all running workloads.
 func (s *Service) Status() []WorkloadSummary {
 	return s.manager.List()
 }
 
-// HandleArtifactStream handles an inbound artifact-fetch stream.
 func (s *Service) HandleArtifactStream(stream io.ReadWriteCloser, _ types.PeerKey) {
 	handleArtifactStream(stream, s.cas)
 }
 
-// HandleWorkloadStream handles an inbound workload-invocation stream.
 func (s *Service) HandleWorkloadStream(stream io.ReadWriteCloser, _ types.PeerKey) {
 	handleWorkloadStream(s.ctx, stream, s.manager, workloadInvocationTimeout)
 }
 
-// Signal triggers an immediate reconciliation cycle.
 func (s *Service) Signal() {
 	s.reconciler.Signal()
 }

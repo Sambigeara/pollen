@@ -84,7 +84,7 @@ func redeemInviteWithDial(
 	return nil, fmt.Errorf("failed to redeem invite token: %w", lastErr)
 }
 
-func (m *impl) JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error {
+func (m *QUICTransport) JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error {
 	claims := token.GetClaims()
 	if claims == nil {
 		return fmt.Errorf("join token missing claims")
@@ -127,7 +127,7 @@ func (m *impl) JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) 
 	return fmt.Errorf("failed to join via token bootstrap peers")
 }
 
-func (m *impl) JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
+func (m *QUICTransport) JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
 	joinToken, err := redeemInviteWithDial(ctx, token, ed25519.PublicKey(m.localKey.Bytes()), func(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*quic.Conn, error) {
 		return m.mainQT.Dial(ctx, addr, newInviteDialerTLSConfig(m.bareCert, expectedPeer), quicConfig())
 	})
@@ -142,7 +142,7 @@ func (m *impl) JoinWithInvite(ctx context.Context, token *admissionv1.InviteToke
 	return joinToken, nil
 }
 
-func (m *impl) handleInviteConnection(ctx context.Context, qc *quic.Conn, peerKey types.PeerKey) {
+func (m *QUICTransport) handleInviteConnection(ctx context.Context, qc *quic.Conn, peerKey types.PeerKey) {
 	waitCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
@@ -164,7 +164,7 @@ func (m *impl) handleInviteConnection(ctx context.Context, qc *quic.Conn, peerKe
 	}
 }
 
-func (m *impl) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (retErr error) {
+func (m *QUICTransport) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (retErr error) {
 	defer func() {
 		if retErr != nil {
 			_ = sendInviteRedeemResponse(qc, nil, retErr)
@@ -267,8 +267,8 @@ func redeemInviteOnConn(
 	}
 }
 
-func (m *impl) RequestCertRenewal(ctx context.Context, peerKey types.PeerKey) (*admissionv1.DelegationCert, error) {
-	s, ok := m.sessions.get(peerKey)
+func (m *QUICTransport) RequestCertRenewal(ctx context.Context, peerKey types.PeerKey) (*admissionv1.DelegationCert, error) {
+	s, ok := m.getSession(peerKey)
 	if !ok {
 		return nil, fmt.Errorf("no connection to peer %s", peerKey.Short())
 	}

@@ -30,44 +30,39 @@ func testCreds() *auth.NodeCredentials {
 func newTestService(localID types.PeerKey) (*Service, *fakeNetwork, *fakeClusterState) {
 	net := newFakeNetwork()
 	st := newFakeClusterState(localID)
-	svc := New(localID, testCreds(), net, st,
-		WithLogger(zap.S()),
-		WithTracer(tracenoop.NewTracerProvider()),
-		WithNodeMetrics(metrics.NewNodeMetrics(metricnoop.NewMeterProvider())),
-		WithGossipInterval(time.Hour),
-		WithGossipJitter(0),
-		WithPeerTickInterval(time.Hour),
-		WithStreamOpener(&fakeStreamOpener{}),
-		WithRTTSource(&fakeRTTSource{}),
-		WithCertManager(newFakeCertManager()),
-		WithPeerAddressSource(&fakePeerAddressSource{}),
-		WithPeerSessionCloser(newFakePeerSessionCloser()),
-		WithNATDetector(nat.NewDetector()),
-		WithReconnectWindow(time.Hour),
-	)
+	svc := New(localID, testCreds(), net, st, Config{
+		Log:              zap.S(),
+		TracerProvider:   tracenoop.NewTracerProvider(),
+		NodeMetrics:      metrics.NewNodeMetrics(metricnoop.NewMeterProvider()),
+		GossipInterval:   time.Hour,
+		PeerTickInterval: time.Hour,
+		Streams:          &fakeStreamOpener{},
+		RTT:              &fakeRTTSource{},
+		Certs:            newFakeCertManager(),
+		PeerAddrs:        &fakePeerAddressSource{},
+		SessionCloser:    newFakePeerSessionCloser(),
+		NATDetector:      nat.NewDetector(),
+		ReconnectWindow:  time.Hour,
+	})
 	return svc, net, st
 }
 
 func TestStartAndStop(t *testing.T) {
 	svc, _, _ := newTestService(peerKey(1))
-	ctx, cancel := context.WithCancel(context.Background())
 
-	err := svc.Start(ctx)
+	err := svc.Start(context.Background())
 	require.NoError(t, err)
 
-	cancel()
 	err = svc.Stop()
 	require.NoError(t, err)
 }
 
 func TestEventsChannelClosed(t *testing.T) {
 	svc, _, _ := newTestService(peerKey(1))
-	ctx, cancel := context.WithCancel(context.Background())
 
-	err := svc.Start(ctx)
+	err := svc.Start(context.Background())
 	require.NoError(t, err)
 
-	cancel()
 	require.NoError(t, svc.Stop())
 
 	_, ok := <-svc.Events()
@@ -76,13 +71,11 @@ func TestEventsChannelClosed(t *testing.T) {
 
 func TestDenyPeerEmitsEvent(t *testing.T) {
 	svc, _, _ := newTestService(peerKey(1))
-	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
-		cancel()
 		require.NoError(t, svc.Stop())
 	})
 
-	err := svc.Start(ctx)
+	err := svc.Start(context.Background())
 	require.NoError(t, err)
 
 	require.NoError(t, svc.DenyPeer(peerKey(2)))
@@ -114,7 +107,7 @@ func TestForwardEventsFiltersGossipApplied(t *testing.T) {
 	svc.forwardEvents([]state.Event{
 		state.PeerJoined{Key: peerKey(2)},
 		state.GossipApplied{},
-		state.PeerLeft{Key: peerKey(3)},
+		state.PeerDenied{Key: peerKey(3)},
 	})
 
 	ev1 := <-svc.events
@@ -122,7 +115,7 @@ func TestForwardEventsFiltersGossipApplied(t *testing.T) {
 	require.True(t, ok)
 
 	ev2 := <-svc.events
-	_, ok = ev2.(state.PeerLeft)
+	_, ok = ev2.(state.PeerDenied)
 	require.True(t, ok)
 
 	select {
@@ -134,16 +127,14 @@ func TestForwardEventsFiltersGossipApplied(t *testing.T) {
 
 func TestPeerEventConnectedUpdatesReachable(t *testing.T) {
 	svc, net, st := newTestService(peerKey(1))
-	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
-		cancel()
 		require.NoError(t, svc.Stop())
 	})
 
 	peer := peerKey(2)
 	net.setConnectedPeers(peer)
 
-	err := svc.Start(ctx)
+	err := svc.Start(context.Background())
 	require.NoError(t, err)
 
 	net.peerEvents <- transport.PeerEvent{
@@ -160,19 +151,16 @@ func TestPeerEventConnectedUpdatesReachable(t *testing.T) {
 
 func TestPeerEventDisconnectedUpdatesReachable(t *testing.T) {
 	svc, net, st := newTestService(peerKey(1))
-	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
-		cancel()
 		require.NoError(t, svc.Stop())
 	})
 
 	peer := peerKey(2)
 	net.setConnectedPeers(peer)
 
-	err := svc.Start(ctx)
+	err := svc.Start(context.Background())
 	require.NoError(t, err)
 
-	// Connect first.
 	net.peerEvents <- transport.PeerEvent{
 		Key:  peer,
 		Type: transport.PeerEventConnected,
@@ -183,7 +171,6 @@ func TestPeerEventDisconnectedUpdatesReachable(t *testing.T) {
 		return len(st.localReachable) > 0
 	}, time.Second, 10*time.Millisecond)
 
-	// Disconnect.
 	net.setConnectedPeers()
 	net.peerEvents <- transport.PeerEvent{
 		Key:  peer,

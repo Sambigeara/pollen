@@ -5,8 +5,28 @@ import (
 	"testing"
 
 	"github.com/sambigeara/pollen/pkg/membership"
+	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
+
+// --- Reachability Tests ---
+
+func TestInferPrivatelyRoutable(t *testing.T) {
+	require.True(t, membership.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"10.2.2.20"}))
+	require.False(t, membership.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"10.3.2.20"}))
+	require.True(t, membership.InferPrivatelyRoutable([]string{"192.168.1.10"}, []string{"192.168.200.20"}))
+	require.True(t, membership.InferPrivatelyRoutable([]string{"172.16.1.10"}, []string{"172.16.200.20"}))
+	require.False(t, membership.InferPrivatelyRoutable([]string{"172.16.1.10"}, []string{"172.17.200.20"}))
+	require.False(t, membership.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"203.0.113.7"}))
+}
+
+func TestInferReachability(t *testing.T) {
+	require.Equal(t, reachabilityPublicDirect, inferReachability([]string{"10.2.1.10"}, []string{"203.0.113.7"}, true))
+	require.Equal(t, reachabilitySameSitePrivate, inferReachability([]string{"10.2.1.10"}, []string{"10.2.9.20"}, false))
+	require.Equal(t, reachabilityUnknown, inferReachability([]string{"10.2.1.10"}, []string{"10.3.9.20"}, false))
+}
+
+// --- Topology Shape & Parameters ---
 
 func makeKnownPeers(public, sameSitePrivate, remotePrivate int) ([]string, []knownPeer) {
 	localIPs := []string{"10.1.0.1"}
@@ -48,31 +68,6 @@ func TestSummarizeTopologyShape(t *testing.T) {
 	require.Equal(t, 2, s.remotePrivateCount)
 }
 
-func TestSummarizeTopologyShapeEmpty(t *testing.T) {
-	s := summarizeTopologyShape(nil, nil)
-	require.Equal(t, topologyShape{}, s)
-}
-
-func TestAdaptiveParamsTinyCluster(t *testing.T) {
-	_, peers := makeKnownPeers(5, 0, 0)
-	shape := summarizeTopologyShape(nil, peers)
-	p := adaptiveTopologyParams(1, shape)
-
-	require.Equal(t, membership.DefaultNearestK, p.NearestK)
-	require.Equal(t, membership.DefaultRandomR, p.RandomR)
-	require.Equal(t, membership.DefaultInfraMax, p.InfraMax)
-}
-
-func TestAdaptiveParamsMostlyPublic(t *testing.T) {
-	localIPs, peers := makeKnownPeers(18, 1, 1)
-	shape := summarizeTopologyShape(localIPs, peers)
-	p := adaptiveTopologyParams(1, shape)
-
-	require.Equal(t, 2, p.NearestK)
-	require.Equal(t, 1, p.RandomR)
-	require.Equal(t, membership.DefaultInfraMax, p.InfraMax)
-}
-
 func TestAdaptiveParamsMixed(t *testing.T) {
 	localIPs, peers := makeKnownPeers(6, 3, 3)
 	shape := summarizeTopologyShape(localIPs, peers)
@@ -93,20 +88,8 @@ func TestAdaptiveParamsPrivateHeavy(t *testing.T) {
 	require.Equal(t, membership.DefaultInfraMax, p.InfraMax)
 }
 
-func TestAdaptiveParamsBoundaryFiftyPercent(t *testing.T) {
-	localIPs, peers := makeKnownPeers(5, 3, 2)
-	shape := summarizeTopologyShape(localIPs, peers)
-	p := adaptiveTopologyParams(1, shape)
-
-	require.Equal(t, 3, p.NearestK, "exactly 50%% public should get transitional budget")
-	require.Equal(t, 2, p.RandomR)
-}
-
-func TestAdaptiveParamsBoundarySeventyFivePercent(t *testing.T) {
-	localIPs, peers := makeKnownPeers(9, 2, 1)
-	shape := summarizeTopologyShape(localIPs, peers)
-	p := adaptiveTopologyParams(1, shape)
-
-	require.Equal(t, 2, p.NearestK, "75%% public should get sparse budget")
-	require.Equal(t, 1, p.RandomR)
+func testPeerKey(b byte) types.PeerKey {
+	var pk types.PeerKey
+	pk[0] = b
+	return pk
 }

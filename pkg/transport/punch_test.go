@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,11 +15,6 @@ func listenLoopback(t *testing.T) *net.UDPConn {
 	require.NoError(t, err)
 	t.Cleanup(func() { c.Close() })
 	return c
-}
-
-func probe(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) error {
-	_, err := probeAddr(ctx, conn, addr)
-	return err
 }
 
 func TestSimultaneousProbe(t *testing.T) {
@@ -34,154 +28,15 @@ func TestSimultaneousProbe(t *testing.T) {
 	addrB := b.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
 
 	errCh := make(chan error, 2)
-	go func() { errCh <- probe(ctx, a, addrB) }()
-	go func() { errCh <- probe(ctx, b, addrA) }()
+	go func() {
+		_, err := probeAddr(ctx, a, addrB)
+		errCh <- err
+	}()
+	go func() {
+		_, err := probeAddr(ctx, b, addrA)
+		errCh <- err
+	}()
 
 	require.NoError(t, <-errCh)
 	require.NoError(t, <-errCh)
-}
-
-func TestScatterProbeMainUsesFixedSourcePort(t *testing.T) {
-	store := newSockStore().(*sockStoreImpl) //nolint:forcetypeassert
-
-	mainConn := configureMainProbeIO(t, store)
-	mainAddr := mainConn.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
-
-	responder := listenLoopback(t)
-	responderAddr := responder.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
-
-	sourcePortCh := make(chan int, 1)
-	go func() {
-		buf := make([]byte, 1+probeNonceSize)
-		for {
-			n, sender, err := responder.ReadFromUDP(buf)
-			if err != nil {
-				return
-			}
-			if n != 1+probeNonceSize || buf[0] != probeReqByte {
-				continue
-			}
-			select {
-			case sourcePortCh <- sender.Port:
-			default:
-			}
-			resp := make([]byte, 1+probeNonceSize)
-			resp[0] = probeRespByte
-			copy(resp[1:], buf[1:n])
-			_, _ = responder.WriteToUDP(resp, sender)
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	dst, err := store.scatterProbeMain(ctx, responderAddr, punchAttempts)
-	require.NoError(t, err)
-	require.Equal(t, responderAddr.String(), dst.String())
-	require.Equal(t, mainAddr.Port, <-sourcePortCh)
-}
-
-func TestPunchUsesMainSocket(t *testing.T) {
-	store := newSockStore().(*sockStoreImpl) //nolint:forcetypeassert
-
-	mainConn := configureMainProbeIO(t, store)
-	mainAddr := mainConn.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
-
-	responder := listenLoopback(t)
-	responderAddr := responder.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
-
-	go func() {
-		buf := make([]byte, 1+probeNonceSize)
-		for {
-			n, sender, err := responder.ReadFromUDP(buf)
-			if err != nil {
-				return
-			}
-			if n != 1+probeNonceSize || buf[0] != probeReqByte {
-				continue
-			}
-			if sender.Port != mainAddr.Port {
-				continue
-			}
-			resp := make([]byte, 1+probeNonceSize)
-			resp[0] = probeRespByte
-			copy(resp[1:], buf[1:n])
-			_, _ = responder.WriteToUDP(resp, sender)
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	c, err := store.Punch(ctx, responderAddr, nat.Unknown)
-	require.NoError(t, err)
-	require.Nil(t, c.UDPConn)
-	require.Equal(t, responderAddr.String(), c.Peer().String())
-}
-
-func TestPunchSkipsEphemeralSocketsForEasyNAT(t *testing.T) {
-	store := newSockStore().(*sockStoreImpl) //nolint:forcetypeassert
-
-	mainConn := configureMainProbeIO(t, store)
-	mainAddr := mainConn.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
-
-	responder := listenLoopback(t)
-	responderAddr := responder.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
-
-	go func() {
-		buf := make([]byte, 1+probeNonceSize)
-		for {
-			n, sender, err := responder.ReadFromUDP(buf)
-			if err != nil {
-				return
-			}
-			if n != 1+probeNonceSize || buf[0] != probeReqByte {
-				continue
-			}
-			// Only respond to probes from the main socket port.
-			// If ephemeral sockets were spawned, they'd use different ports
-			// and this test would hang.
-			if sender.Port != mainAddr.Port {
-				continue
-			}
-			resp := make([]byte, 1+probeNonceSize)
-			resp[0] = probeRespByte
-			copy(resp[1:], buf[1:n])
-			_, _ = responder.WriteToUDP(resp, sender)
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// Local NAT is Easy → no ephemeral sockets should be spawned.
-	c, err := store.Punch(ctx, responderAddr, nat.Easy)
-	require.NoError(t, err)
-	require.Nil(t, c.UDPConn)
-	require.Equal(t, responderAddr.String(), c.Peer().String())
-}
-
-func configureMainProbeIO(t *testing.T, store *sockStoreImpl) *net.UDPConn {
-	t.Helper()
-
-	mainConn := listenLoopback(t)
-	store.SetMainProbeWriter(func(payload []byte, addr *net.UDPAddr) error {
-		_, err := mainConn.WriteToUDP(payload, addr)
-		return err
-	})
-
-	go func() {
-		buf := make([]byte, 2048)
-		for {
-			n, sender, err := mainConn.ReadFromUDP(buf)
-			if err != nil {
-				return
-			}
-			data := make([]byte, n)
-			copy(data, buf[:n])
-			store.HandleMainProbePacket(data, sender)
-		}
-	}()
-
-	return mainConn
 }

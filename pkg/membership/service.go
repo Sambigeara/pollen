@@ -3,7 +3,8 @@ package membership
 import (
 	"context"
 	"crypto/ed25519"
-	"fmt"
+	"crypto/tls"
+	"errors"
 	"maps"
 	"math/rand/v2"
 	"net"
@@ -12,7 +13,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/quic-go/quic-go"
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
@@ -26,71 +30,209 @@ import (
 	"go.uber.org/zap"
 )
 
+var ErrCertExpired = errors.New("delegation certificate has expired")
+
+const (
+	maxDatagramPayload    = 1100
+	eventBufSize          = 64
+	certCheckInterval     = 5 * time.Minute
+	CertWarnThreshold     = 1 * time.Hour
+	CertCriticalThreshold = 15 * time.Minute
+	certRenewalTimeout    = 10 * time.Second
+	gossipStreamTimeout   = 5 * time.Second
+	maxResponseSize       = 4 << 20 // 4 MB
+	vivaldiWarmupDuration = 5 * time.Second
+	VivaldiErrAlpha       = 0.2
+	eagerSyncCooldown     = 5 * time.Second
+	eagerSyncTimeout      = 5 * time.Second
+	expirySweepInterval   = 30 * time.Second
+	ipRefreshInterval     = 5 * time.Minute
+)
+
+var envelopeOverhead = (&meshv1.Envelope{Body: &meshv1.Envelope_Events{
+	Events: &statev1.GossipEventBatch{},
+}}).SizeVT()
+
+type MembershipAPI interface {
+	Start(ctx context.Context) error
+	Stop() error
+
+	DenyPeer(key types.PeerKey) error
+
+	HandleDigestStream(ctx context.Context, stream transport.Stream, peer types.PeerKey)
+
+	Events() <-chan state.Event
+	ControlMetrics() ControlMetrics
+}
+
+var _ MembershipAPI = (*Service)(nil)
+
+type ClusterState interface {
+	Snapshot() state.Snapshot
+	ApplyDelta(from types.PeerKey, data []byte) ([]state.Event, []byte, error)
+	EncodeDelta(since state.Digest) []byte
+	EncodeFull() []byte
+	PendingNotify() <-chan struct{}
+	FlushPendingGossip() []*statev1.GossipEvent
+	DenyPeer(key types.PeerKey) []state.Event
+	SetLocalAddresses([]netip.AddrPort) []state.Event
+	SetLocalCoord(coords.Coord, float64) []state.Event
+	SetLocalNAT(nat.Type) []state.Event
+	SetLocalReachable([]types.PeerKey) []state.Event
+	SetLocalObservedAddress(string, uint32) []state.Event
+}
+
+type Network interface {
+	Connect(ctx context.Context, key types.PeerKey, addrs []netip.AddrPort) error
+	Send(ctx context.Context, peer types.PeerKey, data []byte) error
+	Recv(ctx context.Context) (transport.Packet, error)
+	ConnectedPeers() []types.PeerKey
+	PeerEvents() <-chan transport.PeerEvent
+}
+
+type StreamOpener interface {
+	OpenStream(ctx context.Context, peer types.PeerKey, st transport.StreamType) (transport.Stream, error)
+}
+
+type RTTSource interface {
+	GetConn(peer types.PeerKey) (*quic.Conn, bool)
+}
+
+type CertManager interface {
+	UpdateMeshCert(cert tls.Certificate)
+	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.DelegationCert, error)
+	PeerDelegationCert(peer types.PeerKey) (*admissionv1.DelegationCert, bool)
+}
+
+type PeerAddressSource interface {
+	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
+}
+
+type PeerSessionCloser interface {
+	ClosePeerSession(peer types.PeerKey, reason transport.DisconnectReason)
+}
+
+type ControlMetrics struct {
+	LocalCoord        coords.Coord
+	SmoothedErr       float64
+	VivaldiSamples    int64
+	EagerSyncs        int64
+	EagerSyncFailures int64
+}
+
+type Config struct {
+	RTT              RTTSource
+	Certs            CertManager
+	PeerAddrs        PeerAddressSource
+	SessionCloser    PeerSessionCloser
+	TracerProvider   trace.TracerProvider
+	Streams          StreamOpener
+	ShutdownCh       chan<- struct{}
+	SmoothedErr      *metrics.EWMA
+	NATDetector      *nat.Detector
+	NodeMetrics      *metrics.NodeMetrics
+	DatagramHandler  func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope)
+	Log              *zap.SugaredLogger
+	PollenDir        string
+	AdvertisedIPs    []string
+	SignPriv         ed25519.PrivateKey
+	TLSIdentityTTL   time.Duration
+	MembershipTTL    time.Duration
+	ReconnectWindow  time.Duration
+	GossipInterval   time.Duration
+	GossipJitter     float64
+	PeerTickInterval time.Duration
+	Port             int
+}
+
 type Service struct {
-	store             ClusterState
+	tracer            trace.Tracer
 	mesh              Network
 	streams           StreamOpener
 	rtt               RTTSource
 	certs             CertManager
 	peerAddrs         PeerAddressSource
 	sessionCloser     PeerSessionCloser
-	datagramHandler   func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope)
+	store             ClusterState
 	peerConnectTime   map[types.PeerKey]time.Time
 	natDetector       *nat.Detector
 	creds             *auth.NodeCredentials
 	nodeMetrics       *metrics.NodeMetrics
 	smoothedErr       *metrics.EWMA
 	log               *zap.SugaredLogger
-	tracer            trace.Tracer
+	cancel            context.CancelFunc
 	events            chan state.Event
 	lastEagerSync     map[types.PeerKey]time.Time
 	shutdownCh        chan<- struct{}
+	datagramHandler   func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope)
 	pollenDir         string
-	signPriv          ed25519.PrivateKey
 	advertisedIPs     []string
+	signPriv          ed25519.PrivateKey
 	localCoord        coords.Coord
 	wg                sync.WaitGroup
-	eagerSyncFailures atomic.Int64
-	tlsIdentityTTL    time.Duration
-	reconnectWindow   time.Duration
-	vivaldiSamples    atomic.Int64
+	port              int
+	gossipInterval    time.Duration
 	eagerSyncs        atomic.Int64
 	gossipJitter      float64
-	port              int
+	reconnectWindow   time.Duration
 	membershipTTL     time.Duration
 	peerTickInterval  time.Duration
-	gossipInterval    time.Duration
+	vivaldiSamples    atomic.Int64
 	localCoordErr     float64
+	eagerSyncFailures atomic.Int64
+	tlsIdentityTTL    time.Duration
 	stopOnce          sync.Once
 	mu                sync.Mutex
 	renewalFailed     atomic.Bool
 	localID           types.PeerKey
 }
 
-func New(
-	self types.PeerKey,
-	creds *auth.NodeCredentials,
-	net Network,
-	cluster ClusterState,
-	opts ...Option,
-) *Service {
+func New(self types.PeerKey, creds *auth.NodeCredentials, net Network, cluster ClusterState, cfg Config) *Service {
 	s := &Service{
-		store:           cluster,
-		mesh:            net,
-		creds:           creds,
-		localID:         self,
-		log:             zap.S().Named("membership"),
-		tracer:          tracenoop.NewTracerProvider().Tracer("pollen/membership"),
-		nodeMetrics:     metrics.NewNodeMetrics(metricnoop.NewMeterProvider()),
-		smoothedErr:     metrics.NewEWMA(VivaldiErrAlpha, 1.0),
-		localCoord:      coords.RandomCoord(),
-		localCoordErr:   1.0,
-		peerConnectTime: make(map[types.PeerKey]time.Time),
-		lastEagerSync:   make(map[types.PeerKey]time.Time),
-		events:          make(chan state.Event, eventBufSize),
+		store:            cluster,
+		mesh:             net,
+		streams:          cfg.Streams,
+		rtt:              cfg.RTT,
+		certs:            cfg.Certs,
+		peerAddrs:        cfg.PeerAddrs,
+		sessionCloser:    cfg.SessionCloser,
+		datagramHandler:  cfg.DatagramHandler,
+		natDetector:      cfg.NATDetector,
+		creds:            creds,
+		localID:          self,
+		log:              zap.S().Named("membership"),
+		tracer:           tracenoop.NewTracerProvider().Tracer("pollen/membership"),
+		nodeMetrics:      metrics.NewNodeMetrics(metricnoop.NewMeterProvider()),
+		smoothedErr:      metrics.NewEWMA(VivaldiErrAlpha, 1.0),
+		localCoord:       coords.RandomCoord(),
+		localCoordErr:    1.0,
+		peerConnectTime:  make(map[types.PeerKey]time.Time),
+		lastEagerSync:    make(map[types.PeerKey]time.Time),
+		events:           make(chan state.Event, eventBufSize),
+		signPriv:         cfg.SignPriv,
+		advertisedIPs:    cfg.AdvertisedIPs,
+		pollenDir:        cfg.PollenDir,
+		port:             cfg.Port,
+		tlsIdentityTTL:   cfg.TLSIdentityTTL,
+		membershipTTL:    cfg.MembershipTTL,
+		reconnectWindow:  cfg.ReconnectWindow,
+		gossipInterval:   cfg.GossipInterval,
+		gossipJitter:     cfg.GossipJitter,
+		peerTickInterval: cfg.PeerTickInterval,
+		shutdownCh:       cfg.ShutdownCh,
 	}
-	for _, o := range opts {
-		o(s)
+
+	if cfg.Log != nil {
+		s.log = cfg.Log
+	}
+	if cfg.TracerProvider != nil {
+		s.tracer = cfg.TracerProvider.Tracer("pollen/membership")
+	}
+	if cfg.NodeMetrics != nil {
+		s.nodeMetrics = cfg.NodeMetrics
+	}
+	if cfg.SmoothedErr != nil {
+		s.smoothedErr = cfg.SmoothedErr
 	}
 	return s
 }
@@ -103,24 +245,38 @@ func (s *Service) Start(ctx context.Context) error {
 		return ErrCertExpired
 	}
 
-	s.wg.Go(func() { s.runGossipTicker(ctx) })
-	s.wg.Go(func() { s.runRecvLoop(ctx) })
-	s.wg.Go(func() { s.runPeerEventLoop(ctx) })
-	s.wg.Go(func() { s.runPeerTick(ctx) })
-	s.wg.Go(func() { s.runPendingGossipBroadcast(ctx) })
-	s.wg.Go(func() { s.runCertCheckTicker(ctx) })
+	runCtx, cancel := context.WithCancel(ctx)
+	s.cancel = cancel
+
+	s.spawn(runCtx, s.runGossipTicker)
+	s.spawn(runCtx, s.runRecvLoop)
+	s.spawn(runCtx, s.runPeerEventLoop)
+	s.spawn(runCtx, s.runPeerTick)
+	s.spawn(runCtx, s.runPendingGossipBroadcast)
+	s.spawn(runCtx, s.runCertCheckTicker)
 
 	if len(s.advertisedIPs) == 0 {
-		s.wg.Go(func() { s.runIPRefresh(ctx) })
+		s.spawn(runCtx, s.runIPRefresh)
 	}
 
 	return nil
 }
 
 func (s *Service) Stop() error {
-	s.wg.Wait()
-	s.stopOnce.Do(func() { close(s.events) })
+	s.stopOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		s.wg.Wait()
+		close(s.events)
+	})
 	return nil
+}
+
+func (s *Service) spawn(ctx context.Context, fn func(context.Context)) {
+	s.wg.Go(func() {
+		fn(ctx)
+	})
 }
 
 func (s *Service) Events() <-chan state.Event {
@@ -146,24 +302,6 @@ func (s *Service) DenyPeer(key types.PeerKey) error {
 	return nil
 }
 
-func (s *Service) Invite(_ string) (string, error) {
-	signer := s.creds.DelegationKey()
-	if signer == nil {
-		return "", fmt.Errorf("this node is not an admin")
-	}
-	token, err := signer.IssueInviteToken(
-		nil, // open invite — any peer can claim
-		nil, // bootstrap peers filled by the control layer
-		time.Now(),
-		s.membershipTTL,
-		s.membershipTTL,
-	)
-	if err != nil {
-		return "", fmt.Errorf("issue invite: %w", err)
-	}
-	return auth.EncodeInviteToken(token)
-}
-
 func (s *Service) sendEvent(ev state.Event) {
 	select {
 	case s.events <- ev:
@@ -181,15 +319,15 @@ func (s *Service) forwardEvents(events []state.Event) {
 }
 
 func (s *Service) runGossipTicker(ctx context.Context) {
-	ticker := newJitterTicker(ctx, s.gossipInterval, s.gossipJitter)
-	defer ticker.Stop()
+	timer := time.NewTimer(jitter(s.gossipInterval, s.gossipJitter))
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			events := s.gossip(ctx)
-			s.forwardEvents(events)
+		case <-timer.C:
+			s.forwardEvents(s.gossip(ctx))
+			timer.Reset(jitter(s.gossipInterval, s.gossipJitter))
 		}
 	}
 }
@@ -250,10 +388,23 @@ func (s *Service) runPeerTick(ctx context.Context) {
 		case <-ticker.C:
 			snap := s.store.Snapshot()
 			s.updateVivaldiCoords(snap)
+			s.resendObservedAddresses(snap)
 			if time.Since(lastExpirySweep) >= expirySweepInterval {
 				s.disconnectExpiredPeers()
 				lastExpirySweep = time.Now()
 			}
+		}
+	}
+}
+
+func (s *Service) resendObservedAddresses(snap state.Snapshot) {
+	localNV, ok := snap.Nodes[snap.LocalID]
+	if !ok || !localNV.PubliclyAccessible {
+		return
+	}
+	for _, pk := range s.mesh.ConnectedPeers() {
+		if addr, ok := s.peerAddrs.GetActivePeerAddress(pk); ok {
+			s.sendObservedAddress(pk, addr)
 		}
 	}
 }
@@ -340,10 +491,6 @@ func (s *Service) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedA
 
 	s.log.Debugw("observed address received", "addr", addr.String(), "from", from.Short())
 
-	// Only accept address updates from publicly accessible peers. A NAT'd
-	// peer's observation has a destination-dependent port mapping that is
-	// only valid for traffic from that specific peer, not as a general
-	// external address. NAT type detection still uses all observations.
 	snap := s.store.Snapshot()
 	if fromNV, ok := snap.Nodes[from]; ok && fromNV.PubliclyAccessible {
 		events := s.store.SetLocalObservedAddress(addr.IP.String(), uint32(addr.Port))
@@ -411,11 +558,11 @@ func (s *Service) updateVivaldiCoords(snap state.Snapshot) {
 		if !ok || nv.VivaldiCoord == nil {
 			continue
 		}
-		peerCoord := nv.VivaldiCoord
+
 		var newErr float64
 		localCoord, newErr = coords.Update(
 			localCoord, localCoordErr,
-			coords.Sample{RTT: rtt, PeerCoord: *peerCoord, PeerErr: nv.VivaldiErr},
+			coords.Sample{RTT: rtt, PeerCoord: *nv.VivaldiCoord, PeerErr: nv.VivaldiErr},
 		)
 		localCoordErr = newErr
 		s.smoothedErr.Update(newErr)
@@ -429,45 +576,11 @@ func (s *Service) updateVivaldiCoords(snap state.Snapshot) {
 		s.localCoordErr = localCoordErr
 		s.mu.Unlock()
 
-		events := s.store.SetLocalCoord(localCoord, localCoordErr)
-		s.forwardEvents(events)
+		s.forwardEvents(s.store.SetLocalCoord(localCoord, localCoordErr))
 	}
 }
 
 const jitterScale = 2
-
-type jitterTicker struct {
-	C    <-chan time.Time
-	stop context.CancelFunc
-}
-
-func newJitterTicker(ctx context.Context, base time.Duration, percent float64) *jitterTicker {
-	tickCh := make(chan time.Time)
-	ctx, cancel := context.WithCancel(ctx)
-	go func() {
-		defer close(tickCh)
-		timer := time.NewTimer(jitter(base, percent))
-		defer timer.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case t := <-timer.C:
-				select {
-				case <-ctx.Done():
-					return
-				case tickCh <- t:
-				}
-				timer.Reset(jitter(base, percent))
-			}
-		}
-	}()
-	return &jitterTicker{C: tickCh, stop: cancel}
-}
-
-func (t *jitterTicker) Stop() {
-	t.stop()
-}
 
 func jitter(d time.Duration, percent float64) time.Duration {
 	if percent <= 0 {

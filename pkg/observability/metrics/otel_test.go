@@ -8,7 +8,7 @@ import (
 )
 
 func TestCollectSnapshot(t *testing.T) {
-	p := NewProviders()
+	p := NewProvider()
 	t.Cleanup(func() { _ = p.Shutdown(context.Background()) })
 
 	nm := NewNodeMetrics(p.Meter())
@@ -30,14 +30,14 @@ func TestCollectSnapshot(t *testing.T) {
 }
 
 func TestCollectSnapshot_Noop(t *testing.T) {
-	p := NewNoopProviders()
+	p := NewNoopProvider()
 	snap, err := p.CollectSnapshot(context.Background())
 	require.NoError(t, err)
 	require.Zero(t, snap)
 }
 
 func TestPeerMetrics_EnabledReflectsProvider(t *testing.T) {
-	p := NewProviders()
+	p := NewProvider()
 	t.Cleanup(func() { _ = p.Shutdown(context.Background()) })
 
 	pm := NewPeerMetrics(p.Meter())
@@ -45,6 +45,6 @@ func TestPeerMetrics_EnabledReflectsProvider(t *testing.T) {
 }
 
 func TestPeerMetrics_NoopDisabled(t *testing.T) {
-	pm := NewPeerMetrics(NewNoopProviders().Meter())
+	pm := NewPeerMetrics(NewNoopProvider().Meter())
 	require.False(t, pm.Enabled(context.Background()))
 }

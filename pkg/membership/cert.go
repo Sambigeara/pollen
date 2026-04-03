@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"io"
 	"slices"
 	"time"
 
@@ -18,25 +17,24 @@ import (
 
 func (s *Service) checkCertExpiry() bool {
 	now := time.Now()
-	expired := auth.IsCertExpired(s.creds.Cert(), now)
-	remaining := time.Until(auth.CertExpiresAt(s.creds.Cert()))
+	cert := s.creds.Cert()
+	expiresAt := auth.CertExpiresAt(cert)
+	remaining := time.Until(expiresAt)
+
 	s.nodeMetrics.CertExpirySeconds.Record(context.Background(), remaining.Seconds())
 
-	if expired {
+	if auth.IsCertExpired(cert, now) {
 		if s.attemptCertRenewal() {
 			s.renewalFailed.Store(false)
 			return false
 		}
 		s.renewalFailed.Store(true)
 
-		if !now.Before(auth.CertExpiresAt(s.creds.Cert()).Add(s.reconnectWindow)) {
-			s.log.Errorw("delegation certificate expired beyond reconnect window, shutting down — rejoin the cluster or contact a cluster admin",
-				"expired_at", auth.CertExpiresAt(s.creds.Cert()))
+		if !now.Before(expiresAt.Add(s.reconnectWindow)) {
+			s.log.Errorw("delegation certificate expired beyond reconnect window, shutting down", "expired_at", expiresAt)
 			return true
 		}
-		s.log.Warnw("delegation certificate expired — running in degraded mode, will keep retrying renewal",
-			"expired_at", auth.CertExpiresAt(s.creds.Cert()),
-			"reconnect_window_remaining", auth.CertExpiresAt(s.creds.Cert()).Add(s.reconnectWindow).Sub(now).Truncate(time.Minute))
+		s.log.Warnw("delegation certificate expired — running in degraded mode", "expired_at", expiresAt)
 		return false
 	}
 
@@ -46,15 +44,12 @@ func (s *Service) checkCertExpiry() bool {
 		if !failed {
 			return false
 		}
-	}
 
-	switch {
-	case remaining <= CertCriticalThreshold:
-		s.log.Warnw("delegation certificate expiring soon — auto-renewal failed — rejoin the cluster or contact a cluster admin",
-			"expires_in", remaining.Truncate(time.Minute))
-	case remaining <= CertWarnThreshold:
-		s.log.Infow("delegation certificate approaching expiry — auto-renewal attempted but failed, will retry",
-			"expires_in", remaining.Truncate(time.Minute))
+		if remaining <= CertCriticalThreshold {
+			s.log.Warnw("delegation certificate expiring soon — auto-renewal failed", "expires_in", remaining.Truncate(time.Minute))
+		} else {
+			s.log.Infow("delegation certificate approaching expiry — auto-renewal failed", "expires_in", remaining.Truncate(time.Minute))
+		}
 	}
 	return false
 }
@@ -83,8 +78,7 @@ func (s *Service) attemptCertRenewal() bool {
 			continue
 		}
 
-		s.log.Infow("delegation certificate renewed",
-			"expires_at", auth.CertExpiresAt(newCert))
+		s.log.Infow("delegation certificate renewed", "expires_at", auth.CertExpiresAt(newCert))
 		s.nodeMetrics.CertRenewals.Add(ctx, 1)
 		return true
 	}
@@ -95,9 +89,8 @@ func (s *Service) attemptCertRenewal() bool {
 }
 
 func (s *Service) applyCertRenewal(newCert *admissionv1.DelegationCert) error {
-	now := time.Now()
 	pubKey := s.signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-	if err := auth.VerifyDelegationCert(newCert, s.creds.RootPub(), now, pubKey); err != nil {
+	if err := auth.VerifyDelegationCert(newCert, s.creds.RootPub(), time.Now(), pubKey); err != nil {
 		return err
 	}
 
@@ -123,10 +116,9 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 				CertRenewalResponse: &meshv1.CertRenewalResponse{Reason: reason},
 			},
 		}).MarshalVT()
-		if err != nil {
-			return
+		if err == nil {
+			_ = s.mesh.Send(ctx, from, data)
 		}
-		_ = s.mesh.Send(ctx, from, data)
 	}
 
 	if !bytes.Equal(req.GetPeerPub(), from.Bytes()) {
@@ -140,8 +132,7 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 		return
 	}
 
-	subjectKey := types.PeerKeyFromBytes(req.GetPeerPub())
-	if slices.Contains(s.store.Snapshot().DeniedPeers(), subjectKey) {
+	if slices.Contains(s.store.Snapshot().DeniedPeers(), types.PeerKeyFromBytes(req.GetPeerPub())) {
 		sendReject("subject has been denied")
 		return
 	}
@@ -160,7 +151,6 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 	}
 
 	now := time.Now()
-
 	notAfter := now.Add(ttl)
 	if !accessDeadline.IsZero() && notAfter.After(accessDeadline) {
 		notAfter = accessDeadline
@@ -184,51 +174,23 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 			Cert:     newCert,
 		}},
 	}).MarshalVT()
-	if err != nil {
-		return
+	if err == nil {
+		_ = s.mesh.Send(ctx, from, data)
 	}
-	_ = s.mesh.Send(ctx, from, data)
 }
 
 func (s *Service) disconnectExpiredPeers() {
 	now := time.Now()
 	for _, peerKey := range s.mesh.ConnectedPeers() {
 		dc, ok := s.certs.PeerDelegationCert(peerKey)
-		if !ok {
-			continue
-		}
-		if !auth.IsCertExpired(dc, now) {
+		if !ok || !auth.IsCertExpired(dc, now) {
 			continue
 		}
 		if now.Before(auth.CertExpiresAt(dc).Add(s.reconnectWindow)) {
 			continue
 		}
-		s.log.Warnw("disconnecting peer with expired delegation cert beyond reconnect window",
-			"peer", peerKey.Short(), "expired_at", auth.CertExpiresAt(dc))
-		s.sessionCloser.ClosePeerSession(peerKey, transport.CloseReasonCertExpired)
+		s.log.Warnw("disconnecting peer with expired delegation cert", "peer", peerKey.Short(), "expired_at", auth.CertExpiresAt(dc))
+		s.sessionCloser.ClosePeerSession(peerKey, transport.DisconnectCertExpired)
 		s.sendEvent(state.PeerDenied{Key: peerKey})
 	}
-}
-
-func (s *Service) HandleCertRenewalStream(stream transport.Stream, peer types.PeerKey) {
-	defer stream.Close()
-
-	const maxReqSize = 64 << 10
-	b, err := io.ReadAll(io.LimitReader(stream, maxReqSize+1))
-	if err != nil {
-		s.log.Debugw("read cert renewal stream failed", "peer", peer.Short(), "err", err)
-		return
-	}
-	if len(b) > maxReqSize {
-		s.log.Warnw("cert renewal stream exceeded size limit", "peer", peer.Short(), "size", len(b))
-		return
-	}
-
-	req := &meshv1.CertRenewalRequest{}
-	if err := req.UnmarshalVT(b); err != nil {
-		s.log.Debugw("unmarshal cert renewal request failed", "peer", peer.Short(), "err", err)
-		return
-	}
-
-	s.handleCertRenewalRequest(context.Background(), peer, req)
 }

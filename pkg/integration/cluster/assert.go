@@ -11,18 +11,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// snapshotHasServicePort reports whether a peer has a service registered on the given port.
-func snapshotHasServicePort(snap state.Snapshot, peerID types.PeerKey, port uint32) bool {
+// snapshotHasService reports whether a peer has a service registered with the given name and port.
+func snapshotHasService(snap state.Snapshot, peerID types.PeerKey, port uint32, name string) bool {
 	nv, ok := snap.Nodes[peerID]
 	if !ok {
 		return false
 	}
-	for _, svc := range nv.Services {
-		if svc.Port == port {
-			return true
-		}
-	}
-	return false
+	svc, ok := nv.Services[name]
+	return ok && svc.Name == name && svc.Port == port
 }
 
 // snapshotRemotePeerCount returns the number of remote peers with address info.
@@ -165,8 +161,8 @@ func (c *Cluster) RequireWorkloadClaimedBy(t testing.TB, hash string, nodeNames 
 	}, assertTimeout, assertPoll, "expected nodes %v to claim workload %s", nodeNames, hash)
 }
 
-// RequireServiceVisible asserts that all nodes (except the publisher) can see the service on the given port.
-func (c *Cluster) RequireServiceVisible(t testing.TB, publisherName string, port uint32) { //nolint:thelper
+// RequireServiceVisible asserts that all nodes (except the publisher) can see the named service on the given port.
+func (c *Cluster) RequireServiceVisible(t testing.TB, publisherName string, port uint32, name string) { //nolint:thelper
 	t.Helper()
 	publisherKey := c.PeerKeyByName(publisherName)
 	require.Eventually(t, func() bool {
@@ -174,13 +170,31 @@ func (c *Cluster) RequireServiceVisible(t testing.TB, publisherName string, port
 			if n.PeerKey() == publisherKey {
 				continue
 			}
-			if !snapshotHasServicePort(n.Store().Snapshot(), publisherKey, port) {
+			if !snapshotHasService(n.Store().Snapshot(), publisherKey, port, name) {
 				return false
 			}
 		}
 		return true
 	}, assertTimeout, assertPoll,
-		"expected all nodes to see service on port %d from %s", port, publisherName)
+		"expected all nodes to see service %s on port %d from %s", name, port, publisherName)
+}
+
+// RequireServiceGone asserts that no node (except the publisher) still sees the named service.
+func (c *Cluster) RequireServiceGone(t testing.TB, publisherName string, port uint32, name string) { //nolint:thelper
+	t.Helper()
+	publisherKey := c.PeerKeyByName(publisherName)
+	require.Eventually(t, func() bool {
+		for _, n := range c.ordered {
+			if n.PeerKey() == publisherKey {
+				continue
+			}
+			if snapshotHasService(n.Store().Snapshot(), publisherKey, port, name) {
+				return false
+			}
+		}
+		return true
+	}, assertTimeout, assertPoll,
+		"expected all nodes to stop seeing service %s on port %d from %s", name, port, publisherName)
 }
 
 // RequireWorkloadGone asserts that no node has a spec or claim for the given hash.
@@ -188,7 +202,7 @@ func (c *Cluster) RequireWorkloadGone(t testing.TB, hash string) { //nolint:thel
 	t.Helper()
 	require.Eventually(t, func() bool {
 		for _, n := range c.ordered {
-			if n.stopped {
+			if n.stopped.Load() {
 				continue
 			}
 			snap := n.Store().Snapshot()
@@ -209,7 +223,7 @@ func (c *Cluster) RequireWorkloadSpecOnAllNodes(t testing.TB, hash string, repli
 	t.Helper()
 	require.Eventually(t, func() bool {
 		for _, n := range c.ordered {
-			if n.stopped {
+			if n.stopped.Load() {
 				continue
 			}
 			snap := n.Store().Snapshot()

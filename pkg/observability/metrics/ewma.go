@@ -13,16 +13,18 @@ type EWMA struct {
 
 func NewEWMA(alpha, initial float64) *EWMA {
 	e := &EWMA{alpha: alpha}
-	e.bits.Store(math.Float64bits(initial))
+	e.Reset(initial)
 	return e
 }
 
+// Update adds a new sample to the moving average.
 func (e *EWMA) Update(sample float64) {
 	for {
-		old := e.bits.Load()
-		oldVal := math.Float64frombits(old)
+		oldBits := e.bits.Load()
+		oldVal := math.Float64frombits(oldBits)
 		newVal := e.alpha*sample + (1-e.alpha)*oldVal
-		if e.bits.CompareAndSwap(old, math.Float64bits(newVal)) {
+
+		if e.bits.CompareAndSwap(oldBits, math.Float64bits(newVal)) {
 			return
 		}
 	}
@@ -33,6 +35,7 @@ func (e *EWMA) Reset(value float64) {
 	e.bits.Store(math.Float64bits(value))
 }
 
+// Value returns the current moving average.
 func (e *EWMA) Value() float64 {
 	return math.Float64frombits(e.bits.Load())
 }

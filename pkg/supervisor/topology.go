@@ -4,14 +4,17 @@ import (
 	"context"
 	"net"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/nat"
+	"github.com/sambigeara/pollen/pkg/routing"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
+	"go.uber.org/zap"
 )
 
 const (
@@ -26,6 +29,42 @@ const (
 	publicRatioSparseThreshold = 0.75
 	publicRatioMixedThreshold  = 0.5
 )
+
+// --- Atomic Router ---
+
+type atomicRouter struct {
+	table    routing.Table
+	changeCh chan struct{}
+	mu       sync.RWMutex
+}
+
+func newAtomicRouter() *atomicRouter {
+	return &atomicRouter{changeCh: make(chan struct{})}
+}
+
+func (r *atomicRouter) NextHop(dest types.PeerKey) (types.PeerKey, bool) {
+	r.mu.RLock()
+	t := r.table
+	r.mu.RUnlock()
+	return t.NextHop(dest)
+}
+
+func (r *atomicRouter) Changed() <-chan struct{} {
+	r.mu.RLock()
+	ch := r.changeCh
+	r.mu.RUnlock()
+	return ch
+}
+
+func (r *atomicRouter) set(t routing.Table) {
+	r.mu.Lock()
+	r.table = t
+	close(r.changeCh)
+	r.changeCh = make(chan struct{})
+	r.mu.Unlock()
+}
+
+// --- Topology Resolution ---
 
 type inferredReachability int
 
@@ -58,9 +97,17 @@ type knownPeer struct {
 }
 
 func knownPeersFromSnapshot(snap state.Snapshot) []knownPeer {
-	known := make([]knownPeer, 0, len(snap.Nodes))
+	live := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
+	for _, pk := range snap.PeerKeys {
+		live[pk] = struct{}{}
+	}
+
+	known := make([]knownPeer, 0, len(live))
 	for pk, nv := range snap.Nodes {
 		if pk == snap.LocalID {
+			continue
+		}
+		if _, ok := live[pk]; !ok {
 			continue
 		}
 		if nv.LastAddr == "" && (len(nv.IPs) == 0 || nv.LocalPort == 0) {
@@ -103,7 +150,7 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 	connectedPeers := n.GetConnectedPeers()
 	currentOutbound := make(map[types.PeerKey]struct{}, len(connectedPeers))
 	for _, pk := range connectedPeers {
-		if n.meshInternal.IsOutbound(pk) {
+		if n.mesh.IsOutbound(pk) {
 			currentOutbound[pk] = struct{}{}
 		}
 	}
@@ -123,9 +170,8 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 	localNV := snap.Nodes[snap.LocalID]
 	localIPs := localNV.IPs
 	shape := summarizeTopologyShape(localIPs, knownPeers)
-	activePeerCount := len(connectedPeers)
 	params := adaptiveTopologyParams(epoch, shape)
-	params.PreferFullMesh = activePeerCount <= tinyClusterPeerThreshold
+	params.PreferFullMesh = len(knownPeers) <= tinyClusterPeerThreshold
 	params.LocalIPs = localIPs
 	params.CurrentOutbound = currentOutbound
 	params.LocalNATType = n.natDetector.Type()
@@ -142,21 +188,6 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 
 	targetSet := buildTargetPeerSet(targets, n.tunneling.DesiredPeers())
 
-	// TODO(saml): remove diagnostic logging once topology reconnection bug is resolved
-	for _, kp := range knownPeers {
-		if _, targeted := targetSet[kp.PeerID]; !targeted {
-			n.log.Debugw("topology: known peer not targeted",
-				"peer", kp.PeerID.Short(),
-				"public", kp.PubliclyAccessible,
-				"has_ips", len(kp.IPs) > 0,
-				"connected_count", activePeerCount,
-				"full_mesh", params.PreferFullMesh,
-				"known_count", len(knownPeers),
-				"target_count", len(targetSet),
-			)
-		}
-	}
-
 	for pk := range targetSet {
 		kp, ok := peerMap[pk]
 		if !ok {
@@ -165,20 +196,17 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 
 		ips := make([]net.IP, 0, len(kp.IPs))
 		for _, ipStr := range kp.IPs {
-			ip := net.ParseIP(ipStr)
-			if ip == nil {
-				n.log.Error("unable to parse IP")
-				continue
+			if ip := net.ParseIP(ipStr); ip != nil {
+				ips = append(ips, ip)
 			}
-			ips = append(ips, ip)
 		}
 
 		var lastAddr *net.UDPAddr
 		if kp.LastAddr != "" {
-			var err error
-			lastAddr, err = net.ResolveUDPAddr("udp", kp.LastAddr)
-			if err != nil {
-				n.log.Debugw("invalid last addr", "peer", kp.PeerID.Short(), "addr", kp.LastAddr, "err", err)
+			if addr, err := net.ResolveUDPAddr("udp", kp.LastAddr); err == nil {
+				lastAddr = addr
+			} else {
+				n.log.Debugw("invalid last addr", "peer", kp.PeerID.Short(), "addr", kp.LastAddr, zap.Error(err))
 			}
 		}
 		if lastAddr == nil && kp.ObservedExternalIP != "" {
@@ -197,9 +225,7 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 		}
 
 		reachability := inferReachability(params.LocalIPs, kp.IPs, kp.PubliclyAccessible)
-
-		n.meshInternal.DiscoverPeer(kp.PeerID, ips, int(kp.LocalPort), lastAddr,
-			reachability == reachabilitySameSitePrivate, kp.PubliclyAccessible)
+		n.mesh.DiscoverPeer(kp.PeerID, ips, int(kp.LocalPort), lastAddr, reachability == reachabilitySameSitePrivate, kp.PubliclyAccessible)
 	}
 
 	for pk := range targetSet {
@@ -210,8 +236,8 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 		if _, targeted := targetSet[kp.PeerID]; targeted {
 			continue
 		}
-		connected := n.meshInternal.IsPeerConnected(kp.PeerID)
-		if connected && !n.meshInternal.IsOutbound(kp.PeerID) {
+		connected := n.mesh.IsPeerConnected(kp.PeerID)
+		if connected && !n.mesh.IsOutbound(kp.PeerID) {
 			continue
 		}
 		if connected {
@@ -223,17 +249,11 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 			if n.nonTargetStreak[kp.PeerID] < threshold {
 				continue
 			}
-			n.meshInternal.ClosePeerSession(kp.PeerID, transport.CloseReasonTopologyPrune)
+			n.mesh.ClosePeerSession(kp.PeerID, transport.DisconnectTopologyPrune)
 			n.topoMetrics.TopologyPrunes.Add(ctx, 1)
 		}
 		delete(n.nonTargetStreak, kp.PeerID)
-		// TODO(saml): remove diagnostic logging once topology reconnection bug is resolved
-		n.log.Debugw("topology: forgetting peer",
-			"peer", kp.PeerID.Short(),
-			"public", kp.PubliclyAccessible,
-			"connected", connected,
-		)
-		n.meshInternal.ForgetPeer(kp.PeerID)
+		n.mesh.ForgetPeer(kp.PeerID)
 	}
 }
 

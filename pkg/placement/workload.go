@@ -23,15 +23,12 @@ var (
 	ErrWorkloadFailed = errors.New("workload execution failed")
 )
 
-// WASMRuntime is the narrow interface the placement package requires from
-// the WASM runtime for compiling and invoking workload modules.
 type WASMRuntime interface {
 	Compile(ctx context.Context, wasmBytes []byte, hash string, cfg wasm.PluginConfig) error
 	Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
 	DropCompiled(ctx context.Context, hash string)
 }
 
-// Status describes the lifecycle state of a workload.
 type Status int
 
 const (
@@ -52,7 +49,6 @@ func (s Status) String() string {
 	return "unknown"
 }
 
-// WorkloadSummary is a snapshot of a workload for status reporting.
 type WorkloadSummary struct {
 	CompiledAt time.Time
 	Hash       string
@@ -91,8 +87,9 @@ func (m *manager) SeedFromCAS(ctx context.Context, hash string, cfg wasm.PluginC
 	if err != nil {
 		return fmt.Errorf("workload: read CAS: %w", err)
 	}
+	defer rc.Close()
+
 	wasmBytes, err := io.ReadAll(rc)
-	rc.Close()
 	if err != nil {
 		return fmt.Errorf("workload: read CAS bytes: %w", err)
 	}
@@ -137,8 +134,7 @@ func (m *manager) Call(ctx context.Context, hash, function string, input []byte)
 
 func (m *manager) Unseed(hash string) error {
 	m.mu.Lock()
-	_, ok := m.workloads[hash]
-	if !ok {
+	if _, ok := m.workloads[hash]; !ok {
 		m.mu.Unlock()
 		return ErrNotRunning
 	}

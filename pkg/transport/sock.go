@@ -12,47 +12,20 @@ import (
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/nat"
-	"go.uber.org/zap"
 )
 
-var _ sockStore = (*sockStoreImpl)(nil)
-
-type connList struct {
-	byKey map[string]*conn
-	mu    sync.Mutex
-}
-
-func newConnList() *connList {
-	return &connList{
-		byKey: make(map[string]*conn),
-	}
-}
-
-func (l *connList) Append(addr *net.UDPAddr, c *conn) (*conn, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	k := addr.String()
-	if existing, ok := l.byKey[k]; ok {
-		return existing, false
-	}
-	l.byKey[k] = c
-	return c, true
-}
-
-func (l *connList) Remove(addr *net.UDPAddr) {
-	l.mu.Lock()
-	delete(l.byKey, addr.String())
-	l.mu.Unlock()
-}
+const (
+	probeReqByte   = 0x01
+	probeRespByte  = 0x02
+	probeNonceSize = 16
+	probeFrameSize = 1 + probeNonceSize // type byte + nonce
+	punchWorkers   = 8
+	punchAttempts  = 32
+	scatterDefault = 256
+	minEphemeral   = 1024
+)
 
 type probeWriter func(payload []byte, addr *net.UDPAddr) error
-
-type sockStore interface {
-	Punch(ctx context.Context, addr *net.UDPAddr, localNAT nat.Type) (*conn, error)
-	SetMainProbeWriter(write probeWriter)
-	HandleMainProbePacket(data []byte, sender *net.UDPAddr)
-}
 
 type conn struct {
 	*net.UDPConn
@@ -63,7 +36,6 @@ type conn struct {
 }
 
 func (c *conn) Peer() *net.UDPAddr { return c.peer }
-
 func (c *conn) Close() error {
 	if c.refs.Add(-1) > 0 {
 		return nil
@@ -81,67 +53,60 @@ func (c *conn) Close() error {
 }
 
 type sockStoreImpl struct {
-	log        *zap.SugaredLogger
-	socks      *connList
 	mainWrite  probeWriter
-	mainProbes map[[probeNonceSize]byte]chan *net.UDPAddr
+	mainProbes map[[16]byte]chan *net.UDPAddr
 	probeMu    sync.Mutex
 }
 
-func newSockStore() sockStore {
+func newSockStore() *sockStoreImpl {
 	return &sockStoreImpl{
-		log:        zap.S().Named("sockstore"),
-		socks:      newConnList(),
-		mainProbes: make(map[[probeNonceSize]byte]chan *net.UDPAddr),
+		mainProbes: make(map[[16]byte]chan *net.UDPAddr),
 	}
 }
 
-func (s *sockStoreImpl) SetMainProbeWriter(write probeWriter) {
-	s.mainWrite = write
-}
+func (s *sockStoreImpl) SetMainProbeWriter(write probeWriter) { s.mainWrite = write }
 
 func (s *sockStoreImpl) Punch(ctx context.Context, addr *net.UDPAddr, localNAT nat.Type) (*conn, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	ch := make(chan *conn, 1)
+	var wg sync.WaitGroup
 
-	// Hard-side: vary our source port by opening ephemeral sockets,
-	// each probing the peer's known address.
-	// Skip when local NAT is Easy — our main socket port is stable.
 	if localNAT != nat.Easy {
-		for range punchAttempts {
-			go func() {
-				udp, err := net.ListenUDP("udp", &net.UDPAddr{})
-				if err != nil {
-					return
+		// Cap parallel hole punching to 8 workers instead of 256 fire-and-forget loops.
+		for range punchWorkers {
+			wg.Go(func() {
+				for range punchAttempts {
+					if ctx.Err() != nil {
+						return
+					}
+					udp, err := net.ListenUDP("udp", &net.UDPAddr{})
+					if err != nil {
+						continue
+					}
+
+					dst, err := probeAddr(ctx, udp, addr)
+					if err != nil {
+						_ = udp.Close()
+						continue
+					}
+
+					c := &conn{UDPConn: udp, peer: dst}
+					c.refs.Store(1)
+					select {
+					case ch <- c:
+						return // Success, stop trying.
+					default:
+						_ = udp.Close()
+					}
 				}
-				dst, err := probeAddr(ctx, udp, addr)
-				if err != nil {
-					_ = udp.Close()
-					return
-				}
-				c := &conn{
-					UDPConn: udp,
-					peer:    dst,
-					onClose: func() { s.socks.Remove(dst) },
-				}
-				c.refs.Store(1)
-				select {
-				case ch <- c:
-				default:
-					_ = udp.Close()
-				}
-			}()
+			})
 		}
 	}
 
-	// Easy-side: from one fixed source port, spray probes at random
-	// destination ports on the peer. Always scatter fully — even when
-	// the remote has a stable port, outbound packets are needed to
-	// punch holes in our own NAT for the remote's probes to traverse.
-	go func() {
-		dst, err := s.scatterProbeMain(ctx, addr, punchAttempts)
+	wg.Go(func() {
+		dst, err := s.scatterProbeMain(ctx, addr, scatterDefault)
 		if err != nil {
 			return
 		}
@@ -149,48 +114,23 @@ func (s *sockStoreImpl) Punch(ctx context.Context, addr *net.UDPAddr, localNAT n
 		c.refs.Store(1)
 		select {
 		case ch <- c:
-		default:
+		case <-ctx.Done():
 		}
+	})
+
+	go func() {
+		wg.Wait()
+		close(ch)
 	}()
 
 	select {
-	case c := <-ch:
-		if c.UDPConn != nil {
-			if existing, appended := s.socks.Append(c.peer, c); !appended {
-				_ = c.UDPConn.Close()
-				c = existing
-			}
+	case c, ok := <-ch:
+		if !ok {
+			return nil, fmt.Errorf("punch %s: %w", addr, errUnreachable)
 		}
 		return c, nil
 	case <-ctx.Done():
-		return nil, fmt.Errorf("punch %s: %w", addr, ErrUnreachable)
-	}
-}
-
-func (s *sockStoreImpl) HandleMainProbePacket(data []byte, sender *net.UDPAddr) {
-	if len(data) != 1+probeNonceSize {
-		return
-	}
-
-	switch data[0] {
-	case probeReqByte:
-		resp := make([]byte, 1+probeNonceSize)
-		resp[0] = probeRespByte
-		copy(resp[1:], data[1:])
-		_ = s.mainWrite(resp, sender)
-	case probeRespByte:
-		var nonce [probeNonceSize]byte
-		copy(nonce[:], data[1:])
-
-		s.probeMu.Lock()
-		ch, ok := s.mainProbes[nonce]
-		s.probeMu.Unlock()
-		if ok {
-			select {
-			case ch <- sender:
-			default:
-			}
-		}
+		return nil, fmt.Errorf("punch %s: %w", addr, errUnreachable)
 	}
 }
 
@@ -200,7 +140,7 @@ func (s *sockStoreImpl) scatterProbeMain(ctx context.Context, target *net.UDPAdd
 		return nil, err
 	}
 
-	req := make([]byte, 1+probeNonceSize)
+	req := make([]byte, probeFrameSize)
 	req[0] = probeReqByte
 	copy(req[1:], nonce)
 
@@ -211,6 +151,7 @@ func (s *sockStoreImpl) scatterProbeMain(ctx context.Context, target *net.UDPAdd
 	s.probeMu.Lock()
 	s.mainProbes[nonceKey] = ch
 	s.probeMu.Unlock()
+
 	defer func() {
 		s.probeMu.Lock()
 		delete(s.mainProbes, nonceKey)
@@ -225,8 +166,7 @@ func (s *sockStoreImpl) scatterProbeMain(ctx context.Context, target *net.UDPAdd
 		if err != nil {
 			continue
 		}
-		dst := &net.UDPAddr{IP: target.IP, Port: port, Zone: target.Zone}
-		_ = s.mainWrite(req, dst)
+		_ = s.mainWrite(req, &net.UDPAddr{IP: target.IP, Port: port, Zone: target.Zone})
 	}
 
 	select {
@@ -237,24 +177,13 @@ func (s *sockStoreImpl) scatterProbeMain(ctx context.Context, target *net.UDPAdd
 	}
 }
 
-const (
-	punchAttempts  = 256
-	probeTimeout   = 1 * time.Second
-	probeReqByte   = 0x01
-	probeRespByte  = 0x02
-	probeNonceSize = 16
-
-	minEphemeralPort = 1024
-	maxEphemeralPort = 65535
-)
-
 func probeAddr(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) (*net.UDPAddr, error) {
 	nonce := make([]byte, probeNonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
 
-	req := make([]byte, 1+probeNonceSize)
+	req := make([]byte, probeFrameSize)
 	req[0] = probeReqByte
 	copy(req[1:], nonce)
 
@@ -262,14 +191,12 @@ func probeAddr(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) (*net.
 		return nil, err
 	}
 
-	expect := make([]byte, 1+probeNonceSize)
+	expect := make([]byte, probeFrameSize)
 	expect[0] = probeRespByte
 	copy(expect[1:], nonce)
 
-	buf := make([]byte, 1+probeNonceSize)
-	if err := conn.SetReadDeadline(time.Now().Add(probeTimeout)); err != nil {
-		return nil, err
-	}
+	buf := make([]byte, probeFrameSize)
+	_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 
 	for {
@@ -280,11 +207,12 @@ func probeAddr(ctx context.Context, conn *net.UDPConn, addr *net.UDPAddr) (*net.
 		if err != nil {
 			return nil, err
 		}
-		if n != 1+probeNonceSize {
+		if n != probeFrameSize {
 			continue
 		}
+
 		if buf[0] == probeReqByte {
-			resp := make([]byte, 1+probeNonceSize)
+			resp := make([]byte, probeFrameSize)
 			resp[0] = probeRespByte
 			copy(resp[1:], buf[1:n])
 			_, _ = conn.WriteToUDP(resp, sender)
@@ -301,5 +229,34 @@ func randomEphemeralPort() (int, error) {
 	if _, err := rand.Read(b[:]); err != nil {
 		return 0, err
 	}
-	return minEphemeralPort + int(binary.BigEndian.Uint16(b[:]))%(maxEphemeralPort-minEphemeralPort+1), nil
+	return minEphemeral + int(binary.BigEndian.Uint16(b[:]))%(65535-minEphemeral+1), nil
+}
+
+func (s *sockStoreImpl) HandleMainProbePacket(data []byte, sender *net.UDPAddr) {
+	if len(data) != probeFrameSize {
+		return
+	}
+
+	switch data[0] {
+	case probeReqByte:
+		resp := make([]byte, probeFrameSize)
+		resp[0] = probeRespByte
+		copy(resp[1:], data[1:])
+		if s.mainWrite != nil {
+			_ = s.mainWrite(resp, sender)
+		}
+	case probeRespByte:
+		var nonceKey [probeNonceSize]byte
+		copy(nonceKey[:], data[1:])
+
+		s.probeMu.Lock()
+		ch, ok := s.mainProbes[nonceKey]
+		s.probeMu.Unlock()
+		if ok {
+			select {
+			case ch <- sender:
+			default:
+			}
+		}
+	}
 }

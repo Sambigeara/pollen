@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -15,12 +17,47 @@ type Snapshot struct {
 	Nodes      map[types.PeerKey]NodeView
 	Specs      map[string]WorkloadSpecView
 	Claims     map[string]map[types.PeerKey]struct{}
-	Placements map[types.PeerKey]NodePlacementState
-	Heatmaps   map[types.PeerKey]map[types.PeerKey]TrafficSnapshot
 	digest     Digest
+	live       map[types.PeerKey]struct{}
 	PeerKeys   []types.PeerKey
 	DeniedKeys []types.PeerKey
 	LocalID    types.PeerKey
+}
+
+type NodeView struct {
+	VivaldiCoord       *coords.Coord
+	TrafficRates       map[types.PeerKey]TrafficSnapshot
+	Reachable          map[types.PeerKey]struct{}
+	Services           map[string]*Service
+	ObservedExternalIP string
+	LastAddr           string
+	PeerPub            []byte
+	IPs                []string
+	CertExpiry         int64
+	VivaldiErr         float64
+	MemTotalBytes      uint64
+	NatType            nat.Type
+	CPUPercent         uint32
+	MemPercent         uint32
+	NumCPU             uint32
+	ExternalPort       uint32
+	LocalPort          uint32
+	PubliclyAccessible bool
+}
+
+type WorkloadSpecView struct {
+	Spec      *statev1.WorkloadSpecChange
+	Publisher types.PeerKey
+}
+
+type TrafficSnapshot struct {
+	BytesIn  uint64
+	BytesOut uint64
+}
+
+type Service struct {
+	Name string
+	Port uint32
 }
 
 type Digest struct {
@@ -44,54 +81,8 @@ func UnmarshalDigest(data []byte) (Digest, error) {
 	return Digest{proto: pb}, nil
 }
 
-type Service struct {
-	Name string
-	Port uint32
-}
-
-type NodeView struct {
-	Services           map[string]*Service
-	WorkloadSpecs      map[string]*statev1.WorkloadSpecChange
-	WorkloadClaims     map[string]struct{}
-	VivaldiCoord       *coords.Coord
-	TrafficRates       map[types.PeerKey]TrafficSnapshot
-	Reachable          map[types.PeerKey]struct{}
-	LastAddr           string
-	ObservedExternalIP string
-	PeerPub            []byte
-	IPs                []string
-	VivaldiErr         float64
-	MemTotalBytes      uint64
-	NatType            nat.Type
-	CertExpiry         int64
-	LocalPort          uint32
-	ExternalPort       uint32
-	CPUPercent         uint32
-	MemPercent         uint32
-	NumCPU             uint32
-	PubliclyAccessible bool
-}
-
-func (nv NodeView) clone() NodeView {
-	c := nv
-	c.Services = maps.Clone(nv.Services)
-	c.Reachable = maps.Clone(nv.Reachable)
-	c.WorkloadSpecs = maps.Clone(nv.WorkloadSpecs)
-	c.WorkloadClaims = maps.Clone(nv.WorkloadClaims)
-	c.TrafficRates = maps.Clone(nv.TrafficRates)
-	c.IPs = append([]string(nil), nv.IPs...)
-	c.PeerPub = append([]byte(nil), nv.PeerPub...)
-	if nv.VivaldiCoord != nil {
-		coord := *nv.VivaldiCoord
-		c.VivaldiCoord = &coord
-	}
-	return c
-}
-
-type PeerInfo struct {
-	NodeView
-	Key types.PeerKey
-}
+func (s Snapshot) Digest() Digest               { return s.digest }
+func (s Snapshot) DeniedPeers() []types.PeerKey { return s.DeniedKeys }
 
 type ServiceInfo struct {
 	Name string
@@ -99,186 +90,179 @@ type ServiceInfo struct {
 	Peer types.PeerKey
 }
 
-type WorkloadInfo struct {
-	Hash    string
-	Claimed []types.PeerKey
-	Spec    WorkloadSpecView
-}
-
-type WorkloadSpecView struct {
-	Spec      *statev1.WorkloadSpecChange
-	Publisher types.PeerKey
-}
-
-type TrafficSnapshot struct {
-	BytesIn  uint64
-	BytesOut uint64
-}
-
-type NodePlacementState struct {
-	Coord         *coords.Coord
-	TrafficTo     map[types.PeerKey]uint64
-	MemTotalBytes uint64
-	CPUPercent    uint32
-	MemPercent    uint32
-	NumCPU        uint32
-}
-
-func (s Snapshot) Self() types.PeerKey {
-	return s.LocalID
-}
-
-func (s Snapshot) Digest() Digest {
-	return s.digest
-}
-
-func (s Snapshot) Peers() []PeerInfo {
-	peers := make([]PeerInfo, 0, len(s.PeerKeys))
-	for _, k := range s.PeerKeys {
-		peers = append(peers, PeerInfo{Key: k, NodeView: s.Nodes[k]})
-	}
-	return peers
-}
-
-func (s Snapshot) Peer(key types.PeerKey) (PeerInfo, bool) {
-	nv, ok := s.Nodes[key]
-	if !ok {
-		return PeerInfo{}, false
-	}
-	return PeerInfo{Key: key, NodeView: nv}, true
-}
-
 func (s Snapshot) Services() []ServiceInfo {
 	var out []ServiceInfo
 	for pk, nv := range s.Nodes {
 		for name, svc := range nv.Services {
-			out = append(out, ServiceInfo{
-				Name: name,
-				Port: svc.Port,
-				Peer: pk,
-			})
+			out = append(out, ServiceInfo{Name: name, Port: svc.Port, Peer: pk})
 		}
 	}
 	return out
 }
 
-func (s Snapshot) Workloads() []WorkloadInfo {
-	out := make([]WorkloadInfo, 0, len(s.Specs))
-	for hash, spec := range s.Specs {
-		claimants := s.Claims[hash]
-		claimed := make([]types.PeerKey, 0, len(claimants))
-		for pk := range claimants {
-			claimed = append(claimed, pk)
-		}
-		out = append(out, WorkloadInfo{
-			Hash:    hash,
-			Spec:    spec,
-			Claimed: claimed,
-		})
-	}
-	return out
-}
+func (s *store) buildSnapshot() Snapshot {
+	now := time.Now()
+	valid := make(map[types.PeerKey]nodeRecord)
 
-func (s Snapshot) DeniedPeers() []types.PeerKey {
-	return s.DeniedKeys
-}
-
-func (s *store) snapshotLocked() Snapshot {
-	valid := s.validNodesLocked()
-	live := liveComponent(s.localID, valid)
-
-	nodes := make(map[types.PeerKey]NodeView, len(valid))
-	heatmaps := make(map[types.PeerKey]map[types.PeerKey]TrafficSnapshot, len(valid))
-	for pk, rec := range valid {
-		nodes[pk] = rec.NodeView
-		if len(rec.TrafficRates) > 0 {
-			heatmaps[pk] = rec.TrafficRates
-		}
-	}
-
-	peerKeys := slices.Collect(maps.Keys(live))
-
-	// Specs: conflict resolution — lowest PeerKey wins.
-	specs := make(map[string]WorkloadSpecView)
-	for peerID, rec := range valid {
-		for hash, spec := range rec.WorkloadSpecs {
-			existing, ok := specs[hash]
-			if !ok || peerID.Compare(existing.Publisher) < 0 {
-				specs[hash] = WorkloadSpecView{Spec: spec, Publisher: peerID}
-			}
-		}
-	}
-
-	// Claims: only from live-component nodes.
-	claims := make(map[string]map[types.PeerKey]struct{})
-	for peerID, rec := range valid {
-		if _, ok := live[peerID]; !ok {
+	for pk, rec := range s.nodes {
+		if _, isDenied := s.denied[pk]; isDenied {
 			continue
 		}
-		for hash := range rec.WorkloadClaims {
+		if ev, ok := rec.log[attrKey{kind: attrCertExpiry}]; ok && !ev.Deleted {
+			if auth.IsExpiredAt(time.Unix(ev.GetCertExpiry().ExpiryUnix, 0), now) {
+				continue
+			}
+		}
+		valid[pk] = rec
+	}
+
+	nodes := make(map[types.PeerKey]NodeView)
+	specs := make(map[string]WorkloadSpecView)
+	claims := make(map[string]map[types.PeerKey]struct{})
+
+	for pk, rec := range valid {
+		nv, recSpecs, recClaims := buildNodeView(pk, rec)
+		nodes[pk] = nv
+
+		for hash, spec := range recSpecs {
+			if existing, ok := specs[hash]; !ok || pk.Compare(existing.Publisher) < 0 {
+				specs[hash] = WorkloadSpecView{Spec: spec, Publisher: pk}
+			}
+		}
+
+		for hash := range recClaims {
 			if claims[hash] == nil {
 				claims[hash] = make(map[types.PeerKey]struct{})
 			}
-			claims[hash][peerID] = struct{}{}
+			claims[hash][pk] = struct{}{}
 		}
 	}
 
-	placements := make(map[types.PeerKey]NodePlacementState, len(live))
+	live := s.calculateLiveComponent(nodes)
+
+	peersDigest := make(map[string]*statev1.PeerDigest, len(live))
 	for pk := range live {
-		nv := nodes[pk]
-		nps := NodePlacementState{
-			CPUPercent:    nv.CPUPercent,
-			MemPercent:    nv.MemPercent,
-			MemTotalBytes: nv.MemTotalBytes,
-			NumCPU:        nv.NumCPU,
-			Coord:         nv.VivaldiCoord,
+		rec := s.nodes[pk]
+		peersDigest[pk.String()] = &statev1.PeerDigest{
+			MaxCounter: rec.maxCounter,
+			StateHash:  s.computePeerHash(rec),
 		}
-		if len(nv.TrafficRates) > 0 {
-			nps.TrafficTo = make(map[types.PeerKey]uint64, len(nv.TrafficRates))
-			for peer, rate := range nv.TrafficRates {
-				nps.TrafficTo[peer] = rate.BytesIn + rate.BytesOut
+	}
+
+	denied := slices.SortedFunc(maps.Keys(s.denied), func(a, b types.PeerKey) int { return a.Compare(b) })
+
+	// Only expose claims from live nodes
+	filteredClaims := make(map[string]map[types.PeerKey]struct{})
+	for hash, peerMap := range claims {
+		for pk := range peerMap {
+			if _, ok := live[pk]; ok {
+				if filteredClaims[hash] == nil {
+					filteredClaims[hash] = make(map[types.PeerKey]struct{})
+				}
+				filteredClaims[hash][pk] = struct{}{}
 			}
 		}
-		placements[pk] = nps
 	}
-
-	deniedKeys := slices.SortedFunc(maps.Keys(s.denied), func(a, b types.PeerKey) int { return a.Compare(b) })
 
 	return Snapshot{
 		LocalID:    s.localID,
 		Nodes:      nodes,
-		PeerKeys:   peerKeys,
 		Specs:      specs,
-		Claims:     claims,
-		Placements: placements,
-		Heatmaps:   heatmaps,
-		DeniedKeys: deniedKeys,
-		digest:     Digest{proto: s.digestLocked()},
+		Claims:     filteredClaims,
+		live:       live,
+		PeerKeys:   slices.Collect(maps.Keys(live)),
+		DeniedKeys: denied,
+		digest:     Digest{proto: &statev1.Digest{Peers: peersDigest}},
 	}
 }
 
-// liveComponent returns the set of valid peers reachable from the local node
-// via BFS over the reachability graph.
-func liveComponent(localID types.PeerKey, valid map[types.PeerKey]nodeRecord) map[types.PeerKey]struct{} {
-	component := map[types.PeerKey]struct{}{localID: {}}
-	queue := []types.PeerKey{localID}
+func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*statev1.WorkloadSpecChange, map[string]struct{}) {
+	nv := NodeView{
+		PeerPub:      pk.Bytes(),
+		Services:     make(map[string]*Service),
+		Reachable:    make(map[types.PeerKey]struct{}),
+		TrafficRates: make(map[types.PeerKey]TrafficSnapshot),
+		LastAddr:     rec.LastAddr,
+	}
+	specs := make(map[string]*statev1.WorkloadSpecChange)
+	claims := make(map[string]struct{})
+
+	for key, ev := range rec.log {
+		if ev.Deleted {
+			continue
+		}
+		switch v := ev.Change.(type) {
+		case *statev1.GossipEvent_Network:
+			nv.IPs, nv.LocalPort = v.Network.Ips, v.Network.LocalPort
+		case *statev1.GossipEvent_ObservedAddress:
+			nv.ObservedExternalIP, nv.ExternalPort = v.ObservedAddress.Ip, v.ObservedAddress.Port
+		case *statev1.GossipEvent_CertExpiry:
+			nv.CertExpiry = v.CertExpiry.ExpiryUnix
+		case *statev1.GossipEvent_Service:
+			nv.Services[key.name] = &Service{Name: key.name, Port: v.Service.Port}
+		case *statev1.GossipEvent_Reachability:
+			nv.Reachable[key.peer] = struct{}{}
+		case *statev1.GossipEvent_PubliclyAccessible:
+			nv.PubliclyAccessible = true
+		case *statev1.GossipEvent_Vivaldi:
+			if v.Vivaldi != nil {
+				nv.VivaldiCoord = &coords.Coord{X: v.Vivaldi.X, Y: v.Vivaldi.Y, Height: v.Vivaldi.Height}
+				nv.VivaldiErr = v.Vivaldi.Error
+			}
+		case *statev1.GossipEvent_NatType:
+			nv.NatType = nat.TypeFromUint32(v.NatType.NatType)
+		case *statev1.GossipEvent_ResourceTelemetry:
+			nv.CPUPercent, nv.MemPercent = v.ResourceTelemetry.CpuPercent, v.ResourceTelemetry.MemPercent
+			nv.MemTotalBytes, nv.NumCPU = v.ResourceTelemetry.MemTotalBytes, v.ResourceTelemetry.NumCpu
+		case *statev1.GossipEvent_WorkloadSpec:
+			specs[key.name] = v.WorkloadSpec
+		case *statev1.GossipEvent_WorkloadClaim:
+			claims[key.name] = struct{}{}
+		case *statev1.GossipEvent_TrafficHeatmap:
+			for _, r := range v.TrafficHeatmap.Rates {
+				if peerPK, err := types.PeerKeyFromString(r.PeerId); err == nil {
+					nv.TrafficRates[peerPK] = TrafficSnapshot{BytesIn: r.BytesIn, BytesOut: r.BytesOut}
+				}
+			}
+		}
+	}
+	return nv, specs, claims
+}
+
+func (s *store) calculateLiveComponent(nodes map[types.PeerKey]NodeView) map[types.PeerKey]struct{} {
+	vouched := make(map[types.PeerKey]struct{})
+	for _, nv := range nodes {
+		for peer := range nv.Reachable {
+			vouched[peer] = struct{}{}
+		}
+	}
+
+	live := map[types.PeerKey]struct{}{s.localID: {}}
+	queue := []types.PeerKey{s.localID}
+
 	for len(queue) > 0 {
-		cur := queue[0]
+		curr := queue[0]
 		queue = queue[1:]
-		rec, ok := valid[cur]
+
+		if curr != s.localID {
+			if _, ok := vouched[curr]; !ok {
+				continue
+			}
+		}
+
+		nv, ok := nodes[curr]
 		if !ok {
 			continue
 		}
-		for neighbor := range rec.Reachable {
-			if _, seen := component[neighbor]; seen {
-				continue
+
+		for neighbor := range nv.Reachable {
+			if _, seen := live[neighbor]; !seen {
+				if _, ok := nodes[neighbor]; ok {
+					live[neighbor] = struct{}{}
+					queue = append(queue, neighbor)
+				}
 			}
-			if _, isValid := valid[neighbor]; !isValid {
-				continue
-			}
-			component[neighbor] = struct{}{}
-			queue = append(queue, neighbor)
 		}
 	}
-	return component
+	return live
 }

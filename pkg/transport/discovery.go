@@ -14,12 +14,10 @@ import (
 
 const publicIPQueryTimeout = 3 * time.Second
 
-var (
-	TailscaleCGNAT = netip.MustParsePrefix("100.64.0.0/10") // RFC 6598 CGNAT
-	TailscaleULA   = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
-
-	DefaultExclusions = []netip.Prefix{TailscaleCGNAT, TailscaleULA}
-)
+var DefaultExclusions = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),       // RFC 6598 CGNAT (Tailscale)
+	netip.MustParsePrefix("fd7a:115c:a1e0::/48"), // Tailscale ULA
+}
 
 var (
 	ipv4Providers = []string{

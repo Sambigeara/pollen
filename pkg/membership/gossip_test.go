@@ -112,7 +112,6 @@ func TestHandleDatagramEventsForwardsAndRebroadcasts(t *testing.T) {
 
 	svc.handleDatagram(context.Background(), from, data)
 
-	// Should forward PeerJoined but filter GossipApplied.
 	ev := <-svc.events
 	_, ok := ev.(state.PeerJoined)
 	require.True(t, ok, "expected PeerJoined, got %T", ev)
@@ -142,7 +141,6 @@ func TestHandleDatagramDelegatesToHandler(t *testing.T) {
 		},
 	}
 
-	// Send a punch coordination envelope — falls through to the default handler.
 	data, err := (&meshv1.Envelope{Body: &meshv1.Envelope_PunchCoordRequest{
 		PunchCoordRequest: &meshv1.PunchCoordRequest{},
 	}}).MarshalVT()
@@ -162,6 +160,5 @@ func TestHandleDatagramInvalidData(t *testing.T) {
 		events:  make(chan state.Event, eventBufSize),
 	}
 
-	// Should not panic on garbage data.
 	svc.handleDatagram(context.Background(), peerKey(2), []byte("garbage"))
 }

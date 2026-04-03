@@ -130,7 +130,6 @@ func (s Snapshot) Clock() Clock
 type Event interface { stateEvent() }  // sealed sum type
 
 type PeerJoined      struct { Key types.PeerKey }
-type PeerLeft        struct { Key types.PeerKey }
 type PeerDenied      struct { Key types.PeerKey }
 type ServiceChanged  struct { Name string; Peer types.PeerKey }
 type WorkloadChanged struct { Hash string }
@@ -185,7 +184,6 @@ func (s *Service) Events() <-chan state.Event
 ```
 
 Supervisor reads this channel and dispatches to other consumers:
-- `PeerLeft` -> rebuild routing table, signal placement re-evaluation
 - `PeerDenied` -> disconnect peer, clean up tunneling connections, forget peer
 - `TopologyChanged` -> rebuild routing table, signal placement re-evaluation
 - `WorkloadChanged` -> signal placement re-evaluation
@@ -231,26 +229,47 @@ Transport handles QUIC connections, stream multiplexing, and NAT traversal. Data
 ```go
 package transport
 
-type TransportAPI interface {
+type Transport interface {
     Start(ctx context.Context) error
     Stop() error
 
     Connect(ctx context.Context, key types.PeerKey, addrs []netip.AddrPort) error
-    Disconnect(key types.PeerKey) error
     PeerEvents() <-chan PeerEvent
+    SupervisorEvents() <-chan PeerEvent
     ConnectedPeers() []types.PeerKey
+    GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
+    IsOutbound(peer types.PeerKey) bool
 
     Send(ctx context.Context, peer types.PeerKey, data []byte) error
     Recv(ctx context.Context) (Packet, error)
 
     OpenStream(ctx context.Context, peer types.PeerKey, st StreamType) (Stream, error)
     AcceptStream(ctx context.Context) (Stream, StreamType, types.PeerKey, error)
+
+    DiscoverPeer(pk types.PeerKey, ips []net.IP, port int, lastAddr *net.UDPAddr, privatelyRoutable, publiclyAccessible bool)
+    ForgetPeer(pk types.PeerKey)
+    ConnectFailed(pk types.PeerKey)
+    IsPeerConnected(pk types.PeerKey) bool
+    IsPeerConnecting(pk types.PeerKey) bool
+    ClosePeerSession(peer types.PeerKey, reason DisconnectReason)
+
+    Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr, localNAT nat.Type) error
+
+    ListenPort() int
+    GetConn(peer types.PeerKey) (*quic.Conn, bool)
+    PeerStateCounts() PeerStateCounts
+
+    UpdateMeshCert(cert tls.Certificate)
+    RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.DelegationCert, error)
+    PeerDelegationCert(peer types.PeerKey) (*admissionv1.DelegationCert, bool)
+
+    JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
 }
 
-var _ TransportAPI = (*QUICTransport)(nil)
+var _ Transport = (*QUICTransport)(nil)
 ```
 
-The concrete type has additional methods for peer FSM, cert management, join flows, and NAT punching — accessed by supervisor via a separate `TransportInternal` interface. These are not part of the public API.
+The concrete type has additional methods beyond the interface (e.g. construction-time setters like `SetPeerMetrics`, internal FSM methods like `HasPeer`/`RetryPeer`/`MarkPeerConnected`) that are not part of the public API. Each consumer package defines its own narrow subset of `Transport` — see consumer-side interfaces below.
 
 **Stream type constants:**
 
@@ -405,7 +424,7 @@ type Service struct { ... }
 func New(self types.PeerKey, workloads WorkloadState, cas cas.Store, runtime wasm.Runtime, opts ...Option) *Service
 ```
 
-`Signal()` triggers immediate scheduling re-evaluation. Supervisor calls it on `WorkloadChanged`, `TopologyChanged`, and `PeerLeft` events to avoid waiting for the reconciliation poll ticker.
+`Signal()` triggers immediate scheduling re-evaluation. Supervisor calls it on `WorkloadChanged` and `TopologyChanged` events to avoid waiting for the reconciliation poll ticker.
 
 **Event loop:**
 
@@ -482,8 +501,7 @@ type Supervisor struct {
     membership membership.MembershipAPI
     placement  placement.PlacementAPI
     tunneling  tunneling.TunnelingAPI
-    mesh       Transport            // spec interface (narrow)
-    meshInt    TransportInternal     // supervisor-only transport methods
+    mesh       transport.Transport
     // ...
 }
 
@@ -497,7 +515,7 @@ func (s *Supervisor) Run(ctx context.Context) error
 2. Wires them together — passes consumer interfaces, no component knows its siblings.
 3. Starts in order: state (load from disk) -> transport -> domain services -> control plane.
 4. Runs the stream dispatch loop (routes accepted streams to domain services by type).
-5. Dispatches events from `membership.Events()`: `TopologyChanged` -> rebuild routing + signal placement, `WorkloadChanged` -> signal placement, `PeerLeft` -> signal placement, `PeerDenied` -> disconnect + cleanup.
+5. Dispatches events from `membership.Events()`: `TopologyChanged` -> rebuild routing + signal placement, `WorkloadChanged` -> signal placement, `PeerDenied` -> disconnect + cleanup.
 6. Shuts down in reverse: stop control -> stop domain services (drain) -> flush observability -> stop transport -> persist state to disk.
 7. Handles OS signals (SIGTERM, SIGINT).
 

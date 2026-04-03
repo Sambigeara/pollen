@@ -10,8 +10,10 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-func (m *impl) openRoutedStream(ctx context.Context, dest types.PeerKey, innerType StreamType, nextHop types.PeerKey) (Stream, error) {
-	s, ok := m.sessions.get(nextHop)
+func (m *QUICTransport) openRoutedStream(ctx context.Context, dest types.PeerKey, innerType StreamType, nextHop types.PeerKey) (Stream, error) {
+	m.sessionsMu.RLock()
+	s, ok := m.sessions[nextHop]
+	m.sessionsMu.RUnlock()
 	if !ok {
 		return Stream{}, fmt.Errorf("no session to next hop %s", nextHop.Short())
 	}
@@ -26,6 +28,7 @@ func (m *impl) openRoutedStream(ctx context.Context, dest types.PeerKey, innerTy
 	copy(header[33:65], m.localKey[:])
 	header[65] = defaultRouteTTL
 	header[66] = byte(innerType)
+
 	if _, err := stream.Write(header[:]); err != nil {
 		cancelStream(stream)
 		return Stream{}, err
@@ -33,7 +36,7 @@ func (m *impl) openRoutedStream(ctx context.Context, dest types.PeerKey, innerTy
 	return Stream{stream}, nil
 }
 
-func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream, upstreamPeer types.PeerKey) {
+func (m *QUICTransport) handleRoutedStream(ctx context.Context, stream *quic.Stream, upstreamPeer types.PeerKey) {
 	var header [routeHeaderSize]byte
 	if _, err := io.ReadFull(stream, header[:]); err != nil {
 		cancelStream(stream)
@@ -47,12 +50,19 @@ func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream, upst
 	innerType := StreamType(header[65])
 
 	if dest == m.localKey {
-		m.deliverRoutedStream(ctx, stream, source, innerType)
+		if innerType == StreamTypeTunnel || innerType == StreamTypeArtifact || innerType == StreamTypeWorkload {
+			select {
+			case m.acceptCh <- acceptedStream{stream: Stream{stream}, stype: innerType, peerKey: source}:
+			case <-ctx.Done():
+				cancelStream(stream)
+			}
+		} else {
+			cancelStream(stream)
+		}
 		return
 	}
 
 	if ttl <= 1 {
-		m.log.Debugw("routed stream TTL exhausted", "dest", dest.Short(), "source", source.Short())
 		cancelStream(stream)
 		return
 	}
@@ -60,45 +70,26 @@ func (m *impl) handleRoutedStream(ctx context.Context, stream *quic.Stream, upst
 	m.forwardRoutedStream(ctx, stream, dest, source, ttl-1, innerType, upstreamPeer)
 }
 
-// NOTE: The source peerKey is asserted by the routing header, NOT authenticated
-// by the QUIC session. If future code makes authorization decisions based on
-// AcceptStream's peerKey, routed streams must carry end-to-end proof of origin.
-func (m *impl) deliverRoutedStream(ctx context.Context, stream *quic.Stream, source types.PeerKey, innerType StreamType) {
-	switch innerType {
-	case StreamTypeTunnel, StreamTypeArtifact, StreamTypeWorkload:
-		select {
-		case m.acceptCh <- acceptedStream{stream: Stream{stream}, stype: innerType, peerKey: source}:
-		case <-ctx.Done():
-			cancelStream(stream)
-		}
-	default:
-		cancelStream(stream)
-	}
-}
-
-func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, dest, source types.PeerKey, ttl byte, innerType StreamType, upstreamPeer types.PeerKey) {
+func (m *QUICTransport) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, dest, source types.PeerKey, ttl byte, innerType StreamType, upstreamPeer types.PeerKey) {
+	m.sessionsMu.RLock()
+	s, ok := m.sessions[dest]
+	m.sessionsMu.RUnlock()
 	nextHop := dest
-	s, ok := m.sessions.get(dest)
+
 	if !ok {
 		if m.router == nil {
-			m.log.Debugw("no route to forward", "dest", dest.Short())
 			cancelStream(inbound)
 			return
 		}
 		nextHop, ok = m.router.NextHop(dest)
-		if !ok {
-			m.log.Debugw("no route to forward", "dest", dest.Short())
+		if !ok || nextHop == source {
 			cancelStream(inbound)
 			return
 		}
-		if nextHop == source {
-			m.log.Debugw("routing loop detected", "dest", dest.Short(), "source", source.Short())
-			cancelStream(inbound)
-			return
-		}
-		s, ok = m.sessions.get(nextHop)
+		m.sessionsMu.RLock()
+		s, ok = m.sessions[nextHop]
+		m.sessionsMu.RUnlock()
 		if !ok {
-			m.log.Debugw("no session to next hop", "nextHop", nextHop.Short())
 			cancelStream(inbound)
 			return
 		}
@@ -106,7 +97,6 @@ func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, de
 
 	outbound, err := s.conn.OpenStreamSync(ctx)
 	if err != nil {
-		m.log.Debugw("open outbound routed stream failed", "nextHop", nextHop.Short(), "err", err)
 		cancelStream(inbound)
 		return
 	}
@@ -117,6 +107,7 @@ func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, de
 	copy(header[33:65], source[:])
 	header[65] = ttl
 	header[66] = byte(innerType)
+
 	if _, err := outbound.Write(header[:]); err != nil {
 		cancelStream(outbound)
 		cancelStream(inbound)
@@ -132,11 +123,9 @@ func (m *impl) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, de
 	bridgeStreams(in, out)
 }
 
-const routeBufSize = 64 * 1024
-
 var routeBufPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, routeBufSize)
+		b := make([]byte, 64*1024) //nolint:mnd
 		return &b
 	},
 }
@@ -147,21 +136,18 @@ func bridgeStreams(c1, c2 io.ReadWriteCloser) {
 		bufPtr := routeBufPool.Get().(*[]byte) //nolint:forcetypeassert
 		defer routeBufPool.Put(bufPtr)
 		_, _ = io.CopyBuffer(dst, src, *bufPtr)
-		meshCloseWrite(dst)
+		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		} else {
+			_ = dst.Close()
+		}
 	}
-	wg.Go(func() { transfer(c1, c2) })
-	wg.Go(func() { transfer(c2, c1) })
+	wg.Add(2) //nolint:mnd
+	go func() { defer wg.Done(); transfer(c1, c2) }()
+	go func() { defer wg.Done(); transfer(c2, c1) }()
 	wg.Wait()
 	_ = c1.Close()
 	_ = c2.Close()
-}
-
-func meshCloseWrite(conn io.Closer) {
-	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
-		_ = cw.CloseWrite()
-		return
-	}
-	_ = conn.Close()
 }
 
 type trafficCountedStream struct {

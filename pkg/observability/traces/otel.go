@@ -8,40 +8,44 @@ import (
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
-type Providers struct {
-	provider *sdktrace.TracerProvider
+const traceIDSize = 16
+
+type Provider struct {
+	provider trace.TracerProvider
+	shutdown func(context.Context) error
 }
 
-func NewProviders() *Providers {
-	return &Providers{
-		provider: sdktrace.NewTracerProvider(),
+func NewProvider() *Provider {
+	sdk := sdktrace.NewTracerProvider()
+	return &Provider{
+		provider: sdk,
+		shutdown: sdk.Shutdown,
 	}
 }
 
-func NewNoopProviders() *Providers {
-	return &Providers{}
+func NewNoopProvider() *Provider {
+	return &Provider{
+		provider: tracenoop.NewTracerProvider(),
+		shutdown: func(context.Context) error { return nil },
+	}
 }
 
-func (p *Providers) Tracer() trace.TracerProvider {
-	if p.provider != nil {
-		return p.provider
-	}
-	return tracenoop.NewTracerProvider()
+func (p *Provider) Tracer() trace.TracerProvider {
+	return p.provider
 }
 
-func (p *Providers) Shutdown(ctx context.Context) error {
-	if p.provider == nil {
-		return nil
-	}
-	return p.provider.Shutdown(ctx)
+func (p *Provider) Shutdown(ctx context.Context) error {
+	return p.shutdown(ctx)
 }
 
 func SpanContextFromTraceID(traceID []byte) trace.SpanContext {
-	if len(traceID) != 16 { //nolint:mnd
+	if len(traceID) != traceIDSize {
 		return trace.SpanContext{}
 	}
+
 	var tid trace.TraceID
 	copy(tid[:], traceID)
+
 	return trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    tid,
 		TraceFlags: trace.FlagsSampled,

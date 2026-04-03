@@ -8,7 +8,7 @@ import (
 	"encoding/binary"
 	"maps"
 	"math"
-	"net"
+	"net/netip"
 	"slices"
 
 	"github.com/sambigeara/pollen/pkg/coords"
@@ -40,9 +40,9 @@ const (
 	DefaultInfraMax       = 2
 	DefaultNearestK       = 4
 	DefaultRandomR        = 2
-	EpochSeconds          = 300  // 5 minutes
-	NearestHysteresis     = 0.20 // incumbent distance discount (20%)
-	MinHysteresisDistance = 5.0  // minimum absolute discount (ms) for close peers
+	EpochSeconds          = 300 // 5 minutes
+	nearestHysteresis     = 0.20
+	minHysteresisDistance = 5.0
 )
 
 func DefaultParams(epoch int64) Params {
@@ -54,8 +54,6 @@ func DefaultParams(epoch int64) Params {
 	}
 }
 
-// ComputeTargetPeers selects outbound targets in three layers: infrastructure
-// backbone, Vivaldi k-nearest, and deterministic random long-links.
 func ComputeTargetPeers(localKey types.PeerKey, localCoord coords.Coord, peers []PeerInfo, params Params) []types.PeerKey {
 	if len(peers) == 0 {
 		return nil
@@ -79,17 +77,11 @@ func ComputeTargetPeers(localKey types.PeerKey, localCoord coords.Coord, peers [
 	return slices.SortedFunc(maps.Keys(selected), func(a, b types.PeerKey) int { return a.Compare(b) })
 }
 
-// TODO(saml): cap full-mesh fan-out (e.g. 16 targets) to bound the burst
-// when a large cluster restarts with persisted state and 0 connections.
 func selectFeasibleFullMesh(localKey types.PeerKey, peers []PeerInfo, params Params) []types.PeerKey {
 	localPrefix := lanPrefix(params.LocalIPs)
 	result := make([]types.PeerKey, 0, len(peers))
 	for _, p := range peers {
-		if p.Key == localKey {
-			continue
-		}
-		isLAN := localPrefix != "" && lanPrefix(p.IPs) == localPrefix
-		if natFiltered(isLAN, params.LocalNATType, p.NatType) {
+		if p.Key == localKey || peerNATFiltered(localPrefix, params.LocalNATType, p.NatType, p.IPs) {
 			continue
 		}
 		result = append(result, p.Key)
@@ -133,35 +125,29 @@ func topByScore(candidates []scored, limit int) []types.PeerKey {
 func selectInfra(localKey types.PeerKey, peers []PeerInfo, limit int) []types.PeerKey {
 	var candidates []scored
 	for _, p := range peers {
-		if !p.PubliclyAccessible {
-			continue
+		if p.PubliclyAccessible {
+			candidates = append(candidates, scored{
+				key:   p.Key,
+				score: hmacScore(localKey, []byte("infra"), p.Key.Bytes()),
+			})
 		}
-		candidates = append(candidates, scored{
-			key:   p.Key,
-			score: hmacScore(localKey, []byte("infra"), p.Key.Bytes()),
-		})
 	}
 	return topByScore(candidates, limit)
 }
 
 type nearestCandidate struct {
-	ips     []string
-	dist    float64
-	key     types.PeerKey
-	natType nat.Type
-	lan     bool
+	ips   []string
+	dist  float64
+	key   types.PeerKey
+	score [32]byte
 }
 
-// TODO(saml): peers behind the same NAT on different subnets (e.g., 10.2.2.x
-// and 10.2.3.x) can direct-dial but aren't detected as LAN by /24 prefix
-// matching. Gossiping each node's observed external IP and comparing would let
-// us identify same-NAT peers and bypass the NAT filter for them.
 func selectNearest(localKey types.PeerKey, localCoord coords.Coord, peers []PeerInfo, exclude map[types.PeerKey]struct{}, params Params) []types.PeerKey {
 	localPrefix := lanPrefix(params.LocalIPs)
 
 	var candidates []nearestCandidate
 	for _, p := range peers {
-		if _, ok := exclude[p.Key]; ok {
+		if _, ok := exclude[p.Key]; ok || peerNATFiltered(localPrefix, params.LocalNATType, p.NatType, p.IPs) {
 			continue
 		}
 		d := math.MaxFloat64
@@ -169,89 +155,44 @@ func selectNearest(localKey types.PeerKey, localCoord coords.Coord, peers []Peer
 			d = coords.Distance(localCoord, *p.Coord)
 		}
 		if _, incumbent := params.CurrentOutbound[p.Key]; incumbent {
-			d = math.Max(0, d-math.Max(d*NearestHysteresis, MinHysteresisDistance))
+			d = math.Max(0, d-math.Max(d*nearestHysteresis, minHysteresisDistance))
 		}
-		isLAN := localPrefix != "" && lanPrefix(p.IPs) == localPrefix
-		candidates = append(candidates, nearestCandidate{key: p.Key, dist: d, ips: p.IPs, natType: p.NatType, lan: isLAN})
+
+		cand := nearestCandidate{key: p.Key, dist: d, ips: p.IPs}
+		if params.UseHMACNearest {
+			cand.score = hmacScore(localKey, []byte("nearest"), p.Key.Bytes())
+		}
+		candidates = append(candidates, cand)
 	}
 
 	k := params.NearestK
 	lanCap := (k + 1) / 2 //nolint:mnd
-	if params.UseHMACNearest {
-		return selectNearestHMAC(localKey, candidates, k, lanCap, params)
-	}
-	return selectNearestByDistance(candidates, k, lanCap, params)
-}
 
-func selectNearestByDistance(candidates []nearestCandidate, k, lanCap int, params Params) []types.PeerKey {
-	lanCount := make(map[string]int)
 	slices.SortStableFunc(candidates, func(a, b nearestCandidate) int {
-		if c := cmp.Compare(a.dist, b.dist); c != 0 {
+		if params.UseHMACNearest {
+			if c := bytes.Compare(a.score[:], b.score[:]); c != 0 {
+				return c
+			}
+		} else if c := cmp.Compare(a.dist, b.dist); c != 0 {
 			return c
 		}
 		return a.key.Compare(b.key)
 	})
+	return selectWithLANCap(candidates, k, lanCap)
+}
 
+func selectWithLANCap(candidates []nearestCandidate, k, lanCap int) []types.PeerKey {
+	lanCount := make(map[string]int)
 	var result []types.PeerKey
 	for _, c := range candidates {
 		if len(result) >= k {
 			break
-		}
-		if natFiltered(c.lan, params.LocalNATType, c.natType) {
-			continue
 		}
 		prefix := lanPrefix(c.ips)
 		if prefix != "" && lanCount[prefix] >= lanCap {
 			continue
 		}
 		result = append(result, c.key)
-		if prefix != "" {
-			lanCount[prefix]++
-		}
-	}
-	return result
-}
-
-func selectNearestHMAC(localKey types.PeerKey, candidates []nearestCandidate, k, lanCap int, params Params) []types.PeerKey {
-	lanCount := make(map[string]int)
-
-	type hmacCandidate struct {
-		ips   []string
-		key   types.PeerKey
-		score [32]byte
-	}
-
-	// Epoch excluded: during HMAC mode targets must stay stable so vivaldi
-	// converges. Epoch rotation caused a churn → no-samples feedback loop.
-	var scoredCandidates []hmacCandidate
-	for _, c := range candidates {
-		if natFiltered(c.lan, params.LocalNATType, c.natType) {
-			continue
-		}
-		scoredCandidates = append(scoredCandidates, hmacCandidate{
-			key:   c.key,
-			score: hmacScore(localKey, []byte("nearest"), c.key.Bytes()),
-			ips:   c.ips,
-		})
-	}
-
-	slices.SortFunc(scoredCandidates, func(a, b hmacCandidate) int {
-		if c := bytes.Compare(a.score[:], b.score[:]); c != 0 {
-			return c
-		}
-		return a.key.Compare(b.key)
-	})
-
-	var result []types.PeerKey
-	for _, sc := range scoredCandidates {
-		if len(result) >= k {
-			break
-		}
-		prefix := lanPrefix(sc.ips)
-		if prefix != "" && lanCount[prefix] >= lanCap {
-			continue
-		}
-		result = append(result, sc.key)
 		if prefix != "" {
 			lanCount[prefix]++
 		}
@@ -267,11 +208,7 @@ func selectLongLinks(localKey types.PeerKey, peers []PeerInfo, exclude map[types
 
 	var candidates []scored
 	for _, p := range peers {
-		if _, ok := exclude[p.Key]; ok {
-			continue
-		}
-		isLAN := localPrefix != "" && lanPrefix(p.IPs) == localPrefix
-		if natFiltered(isLAN, params.LocalNATType, p.NatType) {
+		if _, ok := exclude[p.Key]; ok || peerNATFiltered(localPrefix, params.LocalNATType, p.NatType, p.IPs) {
 			continue
 		}
 		candidates = append(candidates, scored{
@@ -286,7 +223,8 @@ func SameObservedEgress(a, b string) bool {
 	return a != "" && a == b
 }
 
-func natFiltered(isLAN bool, localNAT, remoteNAT nat.Type) bool {
+func peerNATFiltered(localPrefix string, localNAT, remoteNAT nat.Type, peerIPs []string) bool {
+	isLAN := localPrefix != "" && lanPrefix(peerIPs) == localPrefix
 	return !isLAN && localNAT == nat.Hard && remoteNAT == nat.Hard
 }
 
@@ -306,51 +244,30 @@ func InferPrivatelyRoutable(localIPs, peerIPs []string) bool {
 func privateSitePrefixes(ips []string) map[string]struct{} {
 	out := make(map[string]struct{})
 	for _, s := range ips {
-		ip := net.ParseIP(s)
-		if prefix, ok := privateSitePrefix(ip); ok {
-			out[prefix] = struct{}{}
+		if ip, err := netip.ParseAddr(s); err == nil && isUsablePrivateIP(ip) {
+			b := ip.As16()
+			if ip.Is4() {
+				out[string(b[12:14])] = struct{}{} // Store 16-bit subnet equivalent
+			} else {
+				out[string(b[:6])] = struct{}{}
+			}
 		}
 	}
 	return out
 }
 
-func privateSitePrefix(ip net.IP) (string, bool) {
-	if !isUsablePrivateIP(ip) {
-		return "", false
-	}
-	if ip4 := ip.To4(); ip4 != nil {
-		//nolint:mnd
-		switch {
-		case ip4[0] == 10:
-			return string(ip4[:2]), true
-		case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31:
-			return string(ip4[:2]), true
-		case ip4[0] == 192 && ip4[1] == 168:
-			return string(ip4[:3]), true
-		}
-		return "", false
-	}
-	if ip16 := ip.To16(); ip16 != nil {
-		return string(ip16[:6]), true
-	}
-	return "", false
-}
-
-func isUsablePrivateIP(ip net.IP) bool {
-	return ip != nil && ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified()
+func isUsablePrivateIP(ip netip.Addr) bool {
+	return ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified()
 }
 
 func lanPrefix(ips []string) string {
 	for _, s := range ips {
-		ip := net.ParseIP(s)
-		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
-			continue
-		}
-		if ip4 := ip.To4(); ip4 != nil {
-			return string(ip4[:3])
-		}
-		if ip16 := ip.To16(); ip16 != nil {
-			return string(ip16[:8])
+		if ip, err := netip.ParseAddr(s); err == nil && !ip.IsLoopback() && !ip.IsUnspecified() {
+			b := ip.As16()
+			if ip.Is4() {
+				return string(b[12:15]) // /24 match
+			}
+			return string(b[:8]) // /64 match
 		}
 	}
 	return ""

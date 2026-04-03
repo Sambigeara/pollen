@@ -70,14 +70,6 @@ func NewTopologyMetrics(mp metric.MeterProvider) *TopologyMetrics {
 	return tm
 }
 
-const (
-	nameCertExpirySeconds  = "pollen.node.cert.expiry.seconds"
-	nameCertRenewals       = "pollen.node.cert.renewals"
-	nameCertRenewalsFailed = "pollen.node.cert.renewals.failed"
-	namePunchAttempts      = "pollen.node.punch.attempts"
-	namePunchFailures      = "pollen.node.punch.failures"
-)
-
 type NodeMetrics struct {
 	CertExpirySeconds  metric.Float64Gauge
 	CertRenewals       metric.Int64Counter

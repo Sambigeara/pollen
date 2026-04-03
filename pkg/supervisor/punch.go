@@ -12,6 +12,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
+	"go.uber.org/zap"
 )
 
 const punchTimeout = 3 * time.Second
@@ -44,7 +45,7 @@ func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connec
 		}
 		out = append(out, key)
 	}
-	slices.SortStableFunc(out, func(a, b types.PeerKey) int {
+	slices.SortFunc(out, func(a, b types.PeerKey) int {
 		aPub := snap.Nodes[a].PubliclyAccessible
 		bPub := snap.Nodes[b].PubliclyAccessible
 		if aPub != bPub {
@@ -71,13 +72,13 @@ func (n *Supervisor) requestPunchCoordination(target types.PeerKey) {
 	}
 	data, err := env.MarshalVT()
 	if err != nil {
-		n.log.Debugw("punch coord request marshal failed", "err", err)
+		n.log.Debugw("punch coord request marshal failed", zap.Error(err))
 		return
 	}
 
 	coord := coordinators[0]
 	if err := n.mesh.Send(context.Background(), coord, data); err != nil {
-		n.log.Debugw("punch coord request send failed", "coordinator", coord.Short(), "err", err)
+		n.log.Debugw("punch coord request send failed", "coordinator", coord.Short(), zap.Error(err))
 	}
 }
 
@@ -103,29 +104,41 @@ func (n *Supervisor) handlePunchCoordRequest(ctx context.Context, from types.Pee
 			return
 		}
 		if err := n.mesh.Send(ctx, to, triggerData); err != nil {
-			n.log.Debugw("punch coord trigger send failed", "to", to.Short(), "err", err)
+			n.log.Debugw("punch coord trigger send failed", "to", to.Short(), zap.Error(err))
 		}
 	}
-	n.submitPunch(func() { sendTrigger(from, req.PeerPub, fromAddr.String(), targetAddr.String()) })
-	n.submitPunch(func() { sendTrigger(targetKey, from.Bytes(), targetAddr.String(), fromAddr.String()) })
+
+	n.spawn(func() {
+		n.punchSem <- struct{}{}
+		defer func() { <-n.punchSem }()
+		sendTrigger(from, req.PeerPub, fromAddr.String(), targetAddr.String())
+	})
+	n.spawn(func() {
+		n.punchSem <- struct{}{}
+		defer func() { <-n.punchSem }()
+		sendTrigger(targetKey, from.Bytes(), targetAddr.String(), fromAddr.String())
+	})
 }
 
 func (n *Supervisor) handlePunchCoordTrigger(ctx context.Context, trigger *meshv1.PunchCoordTrigger) {
 	peerKey := types.PeerKeyFromBytes(trigger.PeerPub)
-	if n.meshInternal.IsPeerConnected(peerKey) {
+	if n.mesh.IsPeerConnected(peerKey) {
 		return
 	}
 
 	peerAddr, err := net.ResolveUDPAddr("udp", trigger.PeerAddr)
 	if err != nil {
-		n.log.Debugw("punch coord trigger: bad peer addr", "addr", trigger.PeerAddr, "err", err)
+		n.log.Debugw("punch coord trigger: bad peer addr", "addr", trigger.PeerAddr, zap.Error(err))
 		return
 	}
 
 	n.log.Infow("punch coord trigger received", "peer", peerKey.Short(), "peerAddr", peerAddr.String())
 
-	n.submitPunch(func() {
-		if n.meshInternal.IsPeerConnected(peerKey) {
+	n.spawn(func() {
+		n.punchSem <- struct{}{}
+		defer func() { <-n.punchSem }()
+
+		if n.mesh.IsPeerConnected(peerKey) {
 			return
 		}
 
@@ -133,17 +146,17 @@ func (n *Supervisor) handlePunchCoordTrigger(ctx context.Context, trigger *meshv
 		n.nodeMetrics.PunchAttempts.Add(ctx, 1)
 
 		punchCtx, cancel := context.WithTimeout(context.Background(), punchTimeout)
-		err := n.meshInternal.Punch(punchCtx, peerKey, peerAddr, localNAT)
-		cancel()
+		defer cancel()
 
-		if err != nil && n.meshInternal.IsPeerConnecting(peerKey) {
+		err := n.mesh.Punch(punchCtx, peerKey, peerAddr, localNAT)
+		if err != nil && n.mesh.IsPeerConnecting(peerKey) {
 			if errors.Is(err, transport.ErrIdentityMismatch) {
-				n.log.Warnw("punch failed: peer identity mismatch", "peer", peerKey.Short(), "err", err)
+				n.log.Warnw("punch failed: peer identity mismatch", "peer", peerKey.Short(), zap.Error(err))
 			} else {
-				n.log.Debugw("punch failed", "peer", peerKey.Short(), "err", err)
+				n.log.Debugw("punch failed", "peer", peerKey.Short(), zap.Error(err))
 			}
 			n.nodeMetrics.PunchFailures.Add(ctx, 1)
-			n.meshInternal.ConnectFailed(peerKey)
+			n.mesh.ConnectFailed(peerKey)
 		}
 	})
 }

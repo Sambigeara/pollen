@@ -411,7 +411,7 @@ func TestOpenStreamRoutedWaitsForNextHop(t *testing.T) {
 	require.Eventually(t, func() bool {
 		select {
 		case r := <-ch:
-			if r.stream != nil {
+			if r.err == nil {
 				_ = r.stream.Close()
 			}
 			// The call returned. It may succeed (stream opened to B with routing
@@ -468,7 +468,7 @@ func TestOpenStreamRouteChurn(t *testing.T) {
 	require.Eventually(t, func() bool {
 		select {
 		case r := <-ch:
-			if r.stream != nil {
+			if r.err == nil {
 				_ = r.stream.Close()
 			}
 			require.NotErrorIs(t, r.err, context.DeadlineExceeded)
@@ -512,7 +512,7 @@ func TestOpenStreamDirectSessionWhileRouting(t *testing.T) {
 	require.Eventually(t, func() bool {
 		select {
 		case r := <-ch:
-			if r.stream != nil {
+			if r.err == nil {
 				_ = r.stream.Close()
 			}
 			require.NotErrorIs(t, r.err, context.DeadlineExceeded)
@@ -577,7 +577,7 @@ func TestOpenStreamRouteUpdateBetweenSnapshotAndLookup(t *testing.T) {
 	require.Eventually(t, func() bool {
 		select {
 		case r := <-ch:
-			if r.stream != nil {
+			if r.err == nil {
 				_ = r.stream.Close()
 			}
 			require.NotErrorIs(t, r.err, context.DeadlineExceeded)
