@@ -25,18 +25,19 @@ type Snapshot struct {
 }
 
 type NodeView struct {
-	VivaldiCoord       *coords.Coord
+	LastEventAt        time.Time
 	TrafficRates       map[types.PeerKey]TrafficSnapshot
 	Reachable          map[types.PeerKey]struct{}
 	Services           map[string]*Service
+	VivaldiCoord       *coords.Coord
 	ObservedExternalIP string
 	LastAddr           string
 	PeerPub            []byte
 	IPs                []string
-	CertExpiry         int64
+	NatType            nat.Type
 	VivaldiErr         float64
 	MemTotalBytes      uint64
-	NatType            nat.Type
+	CertExpiry         int64
 	CPUPercent         uint32
 	MemPercent         uint32
 	NumCPU             uint32
@@ -101,7 +102,7 @@ func (s Snapshot) Services() []ServiceInfo {
 }
 
 func (s *store) buildSnapshot() Snapshot {
-	now := time.Now()
+	now := s.nowFunc()
 	valid := make(map[types.PeerKey]nodeRecord)
 
 	for pk, rec := range s.nodes {
@@ -138,7 +139,7 @@ func (s *store) buildSnapshot() Snapshot {
 		}
 	}
 
-	live := s.calculateLiveComponent(nodes)
+	live := s.calculateLiveComponent(nodes, now)
 
 	peersDigest := make(map[string]*statev1.PeerDigest, len(live))
 	for pk := range live {
@@ -183,6 +184,7 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 		Reachable:    make(map[types.PeerKey]struct{}),
 		TrafficRates: make(map[types.PeerKey]TrafficSnapshot),
 		LastAddr:     rec.LastAddr,
+		LastEventAt:  rec.lastEventAt,
 	}
 	specs := make(map[string]*statev1.WorkloadSpecChange)
 	claims := make(map[string]struct{})
@@ -224,14 +226,24 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 					nv.TrafficRates[peerPK] = TrafficSnapshot{BytesIn: r.BytesIn, BytesOut: r.BytesOut}
 				}
 			}
+		case *statev1.GossipEvent_Heartbeat:
 		}
 	}
 	return nv, specs, claims
 }
 
-func (s *store) calculateLiveComponent(nodes map[types.PeerKey]NodeView) map[types.PeerKey]struct{} {
+const reachableMaxAge = 30 * time.Second
+
+// calculateLiveComponent walks the reachability graph starting from the local
+// node. Only reachability claims from peers whose events we've received within
+// reachableMaxAge are trusted; stale peers' claims are excluded from the
+// vouched set. The local node's own claims are always trusted.
+func (s *store) calculateLiveComponent(nodes map[types.PeerKey]NodeView, now time.Time) map[types.PeerKey]struct{} {
 	vouched := make(map[types.PeerKey]struct{})
-	for _, nv := range nodes {
+	for pk, nv := range nodes {
+		if pk != s.localID && now.Sub(nv.LastEventAt) > reachableMaxAge {
+			continue
+		}
 		for peer := range nv.Reachable {
 			vouched[peer] = struct{}{}
 		}
@@ -255,8 +267,18 @@ func (s *store) calculateLiveComponent(nodes map[types.PeerKey]NodeView) map[typ
 			continue
 		}
 
+		// Only traverse a node's reachability claims if fresh (or local).
+		// A stale node may still be in the live set (vouched by a fresh peer),
+		// but its own claims about who it can reach are not trusted.
+		if curr != s.localID && now.Sub(nv.LastEventAt) > reachableMaxAge {
+			continue
+		}
+
 		for neighbor := range nv.Reachable {
 			if _, seen := live[neighbor]; !seen {
+				// nodes is pre-filtered (expired/denied peers removed); only enqueue
+				// neighbours present in it so live is a subset of nodes and downstream
+				// consumers (peersDigest, filteredClaims, encodeDelta) never see excluded peers.
 				if _, ok := nodes[neighbor]; ok {
 					live[neighbor] = struct{}{}
 					queue = append(queue, neighbor)

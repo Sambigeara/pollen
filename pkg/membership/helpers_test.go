@@ -166,6 +166,10 @@ func (f *fakeClusterState) SetLocalObservedAddress(_ string, _ uint32) []state.E
 	return nil
 }
 
+func (f *fakeClusterState) EmitHeartbeatIfNeeded() []state.Event {
+	return nil
+}
+
 type fakeStreamOpener struct{}
 
 func (f *fakeStreamOpener) OpenStream(_ context.Context, _ types.PeerKey, _ transport.StreamType) (transport.Stream, error) {

@@ -74,6 +74,7 @@ type ClusterState interface {
 	EncodeFull() []byte
 	PendingNotify() <-chan struct{}
 	FlushPendingGossip() []*statev1.GossipEvent
+	EmitHeartbeatIfNeeded() []state.Event
 	DenyPeer(key types.PeerKey) []state.Event
 	SetLocalAddresses([]netip.AddrPort) []state.Event
 	SetLocalCoord(coords.Coord, float64) []state.Event
@@ -249,6 +250,7 @@ func (s *Service) Start(ctx context.Context) error {
 	s.cancel = cancel
 
 	s.spawn(runCtx, s.runGossipTicker)
+	s.spawn(runCtx, s.runHeartbeatTicker)
 	s.spawn(runCtx, s.runRecvLoop)
 	s.spawn(runCtx, s.runPeerEventLoop)
 	s.spawn(runCtx, s.runPeerTick)
@@ -328,6 +330,19 @@ func (s *Service) runGossipTicker(ctx context.Context) {
 		case <-timer.C:
 			s.forwardEvents(s.gossip(ctx))
 			timer.Reset(jitter(s.gossipInterval, s.gossipJitter))
+		}
+	}
+}
+
+func (s *Service) runHeartbeatTicker(ctx context.Context) {
+	ticker := time.NewTicker(state.HeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.store.EmitHeartbeatIfNeeded()
 		}
 	}
 }

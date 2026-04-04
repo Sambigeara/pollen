@@ -21,6 +21,7 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 		return events
 	}
 
+	now := s.nowFunc()
 	for _, ev := range gossips {
 		key, _ := getAttrKey(ev)
 		rec.maxCounter++
@@ -30,6 +31,8 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 		s.pendingGossip = append(s.pendingGossip, ev)
 	}
 
+	rec.lastEventAt = now
+	s.lastLocalEmit = now
 	s.nodes[s.localID] = rec
 	s.updateSnapshotLocked()
 	s.notify()
@@ -47,12 +50,15 @@ func (s *store) DenyPeer(key types.PeerKey) []Event {
 
 	ev := &statev1.GossipEvent{Change: &statev1.GossipEvent_Deny{Deny: &statev1.DenyChange{PeerPub: key.Bytes()}}}
 
+	now := s.nowFunc()
 	rec := s.nodes[s.localID]
 	rec.maxCounter++
 	ev.PeerId = s.localID.String()
 	ev.Counter = rec.maxCounter
 	ak, _ := getAttrKey(ev)
 	rec.log[ak] = ev
+	rec.lastEventAt = now
+	s.lastLocalEmit = now
 	s.nodes[s.localID] = rec
 
 	s.pendingGossip = append(s.pendingGossip, ev)

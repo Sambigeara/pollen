@@ -13,36 +13,46 @@ import (
 // SetGroupSocket makes a socket read-writable by the pln group (0660).
 func SetGroupSocket(path string) error { return setPerm(path, 0o660) }
 
-// EnsureDir creates a directory (and parents) with setgid and pln group
-// ownership. The setgid bit is currently ineffective for files written via
-// atomicWrite because renameio creates temp files in /tmp (same mount) rather
-// than the target directory, so the renamed file never inherits the directory
-// group. setPerm handles group ownership explicitly instead.
+// EnsureDir creates a directory (and parents). In system mode it applies
+// setgid + pln group ownership so the daemon and CLI users in the pln
+// group can share access. In user mode it uses 0700 and skips group
+// ownership.
 func EnsureDir(path string) error {
+	if !system {
+		if err := os.MkdirAll(path, 0o700); err != nil { //nolint:mnd
+			return fmt.Errorf("mkdir %s: %w", path, err)
+		}
+		return os.Chmod(path, 0o700) //nolint:mnd
+	}
 	fm := os.ModeSetgid | 0o770
 	if err := os.MkdirAll(path, fm); err != nil {
 		return fmt.Errorf("mkdir %s: %w", path, err)
 	}
 	// MkdirAll's mode is subject to umask, so the setgid bit and
 	// permission bits may not survive. setPerm forces the exact mode
-	// and, when root, chowns to pln:pln. Non-root users who don't
-	// own the directory (e.g. CLI users in the pln group) can't chmod,
-	// so skip if the mode already matches.
+	// and, when root, chowns to pln:pln.
 	if info, err := os.Stat(path); err == nil && info.Mode() == os.ModeDir|fm {
 		return nil
 	}
 	return setPerm(path, fm)
 }
 
-// setPerm sets the mode and ownership so the pln daemon can access the file.
-// When root, both uid and gid are set to pln:pln. When non-root, the gid is
-// set to the pln group (keeping the caller's uid). This is necessary because
-// renameio may create temp files in /tmp instead of the setgid target
-// directory, so group inheritance cannot be relied upon.
+// setPerm sets the mode and, in system mode, the ownership so the pln
+// daemon can access the file.
 func setPerm(path string, mode os.FileMode) error {
 	if err := os.Chmod(path, mode); err != nil {
 		return fmt.Errorf("chmod %s: %w", path, err)
 	}
+	if !system {
+		return nil
+	}
+	return applyPlnOwnership(path)
+}
+
+// applyPlnOwnership chowns a path to pln:pln. When root, both uid and
+// gid are set; when non-root, only the gid is changed (keeping the
+// caller's uid). Exported via export_linux_test.go for Provision.
+func applyPlnOwnership(path string) error {
 	plnOnce.Do(resolvePlnOwner)
 	if !plnResolved {
 		if os.Getuid() == 0 {
@@ -50,7 +60,7 @@ func setPerm(path string, mode os.FileMode) error {
 		}
 		return nil
 	}
-	uid := -1 // existing owner
+	uid := -1
 	if os.Getuid() == 0 {
 		uid = plnUID
 	}

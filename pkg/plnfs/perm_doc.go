@@ -25,3 +25,18 @@
 //	cas/<shard>/               pln:pln        2770   EnsureDir
 //	cas/<shard>/<hash>.wasm    pln:pln        0640   WriteGroupReadable
 package plnfs
+
+// SystemDir is the root of the system-managed data directory on Linux.
+const SystemDir = "/var/lib/pln"
+
+// system controls whether plnfs applies system-directory semantics
+// (setgid, group ownership by pln:pln) or user-home semantics (0700,
+// no chown). Set once at startup via SetSystemMode; not concurrent-safe.
+var system bool
+
+// SetSystemMode sets the permission mode for all subsequent plnfs calls.
+// Must be called before any other plnfs function.
+func SetSystemMode(v bool) { system = v }
+
+// SystemMode reports whether system-directory semantics are active.
+func SystemMode() bool { return system }

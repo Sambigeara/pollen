@@ -27,6 +27,7 @@ const (
 	attrWorkloadSpec
 	attrWorkloadClaim
 	attrTrafficHeatmap
+	attrHeartbeat
 )
 
 type attrKey struct {
@@ -36,9 +37,10 @@ type attrKey struct {
 }
 
 type nodeRecord struct {
-	log        map[attrKey]*statev1.GossipEvent
-	LastAddr   string
-	maxCounter uint64
+	lastEventAt time.Time
+	log         map[attrKey]*statev1.GossipEvent
+	LastAddr    string
+	maxCounter  uint64
 }
 
 func newNodeRecord() nodeRecord {
@@ -54,17 +56,39 @@ func (s *store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var events []Event
+	events, rebroadcast := s.applyBatchLocked(batch.Events, true)
+	s.updateSnapshotLocked()
+
+	var rbData []byte
+	if len(rebroadcast) > 0 {
+		events = append(events, GossipApplied{})
+		rbBatch := &statev1.GossipEventBatch{Events: rebroadcast}
+		rbData, _ = rbBatch.MarshalVT()
+	}
+
+	return events, rbData, nil
+}
+
+// applyBatchLocked is the shared core for ApplyDelta and LoadGossipState.
+// When live is true (normal gossip), it stamps lastEventAt, generates domain
+// events, and collects rebroadcast entries. When false (disk restore), it
+// inserts events without liveness stamps and produces no domain events.
+func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Event, []*statev1.GossipEvent) {
+	var domainEvents []Event
 	var rebroadcast []*statev1.GossipEvent
 
-	for _, ev := range batch.Events {
+	for _, ev := range events {
 		pk, err := types.PeerKeyFromString(ev.PeerId)
 		if err != nil {
 			continue
 		}
 
 		if pk == s.localID {
-			rebroadcast = append(rebroadcast, s.handleSelfConflictLocked(ev)...)
+			if live {
+				rebroadcast = append(rebroadcast, s.handleSelfConflictLocked(ev)...)
+			} else {
+				s.handleSelfConflictLocked(ev)
+			}
 			continue
 		}
 
@@ -76,7 +100,9 @@ func (s *store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, er
 		rec, exists := s.nodes[pk]
 		if !exists {
 			rec = newNodeRecord()
-			events = append(events, PeerJoined{Key: pk})
+			if live {
+				domainEvents = append(domainEvents, PeerJoined{Key: pk})
+			}
 		}
 
 		if old, ok := rec.log[key]; ok && ev.Counter <= old.Counter {
@@ -91,38 +117,35 @@ func (s *store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, er
 		if ev.Counter > rec.maxCounter {
 			rec.maxCounter = ev.Counter
 		}
+		if live {
+			rec.lastEventAt = s.nowFunc()
+			rebroadcast = append(rebroadcast, ev)
+		}
 		s.nodes[pk] = rec
-		rebroadcast = append(rebroadcast, ev)
 
-		// Domain Events Generation
+		if !live {
+			continue
+		}
+
 		if key.kind == attrDeny && !ev.Deleted {
 			subject := types.PeerKeyFromBytes(ev.GetDeny().PeerPub)
 			if _, already := s.denied[subject]; !already {
 				s.denied[subject] = struct{}{}
-				events = append(events, PeerDenied{Key: subject})
+				domainEvents = append(domainEvents, PeerDenied{Key: subject})
 			}
 		}
 		if key.kind == attrService {
-			events = append(events, ServiceChanged{Peer: pk, Name: key.name})
+			domainEvents = append(domainEvents, ServiceChanged{Peer: pk, Name: key.name})
 		}
 		if key.kind == attrReachability || key.kind == attrVivaldi || key.kind == attrNetwork {
-			events = append(events, TopologyChanged{Peer: pk})
+			domainEvents = append(domainEvents, TopologyChanged{Peer: pk})
 		}
 		if key.kind == attrWorkloadClaim || key.kind == attrWorkloadSpec {
-			events = append(events, WorkloadChanged{Hash: key.name})
+			domainEvents = append(domainEvents, WorkloadChanged{Hash: key.name})
 		}
 	}
 
-	s.updateSnapshotLocked()
-
-	var rbData []byte
-	if len(rebroadcast) > 0 {
-		events = append(events, GossipApplied{})
-		rbBatch := &statev1.GossipEventBatch{Events: rebroadcast}
-		rbData, _ = rbBatch.MarshalVT()
-	}
-
-	return events, rbData, nil
+	return domainEvents, rebroadcast
 }
 
 func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent) []*statev1.GossipEvent {
@@ -143,7 +166,7 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent) []*statev1.Gos
 					Counter: rec.maxCounter,
 					Change:  ev.Change,
 				}
-			case attrWorkloadClaim, attrReachability:
+			case attrWorkloadClaim, attrReachability, attrHeartbeat:
 				rec.maxCounter++
 				rec.log[key] = &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
@@ -253,6 +276,7 @@ func (s *store) tombstoneStaleAttrsLocked(rec *nodeRecord) {
 		{Change: &statev1.GossipEvent_NatType{NatType: &statev1.NatTypeChange{}}},
 		{Change: &statev1.GossipEvent_ResourceTelemetry{ResourceTelemetry: &statev1.ResourceTelemetryChange{}}},
 		{Change: &statev1.GossipEvent_TrafficHeatmap{TrafficHeatmap: &statev1.TrafficHeatmapChange{}}},
+		{Change: &statev1.GossipEvent_Heartbeat{Heartbeat: &statev1.HeartbeatChange{}}},
 	}
 	for _, ev := range ephemeral {
 		rec.maxCounter++
@@ -357,6 +381,8 @@ func getAttrKey(ev *statev1.GossipEvent) (attrKey, bool) {
 		return attrKey{kind: attrWorkloadClaim, name: v.WorkloadClaim.Hash}, true
 	case *statev1.GossipEvent_TrafficHeatmap:
 		return attrKey{kind: attrTrafficHeatmap}, true
+	case *statev1.GossipEvent_Heartbeat:
+		return attrKey{kind: attrHeartbeat}, true
 	}
 	return attrKey{}, false
 }

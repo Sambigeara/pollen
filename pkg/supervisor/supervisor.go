@@ -95,7 +95,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	}
 	if rs := opts.RuntimeState; rs != nil {
 		if gs := rs.GetGossipState(); len(gs) > 0 {
-			if _, _, err := stateStore.ApplyDelta(self, gs); err != nil {
+			if err := stateStore.LoadGossipState(gs); err != nil {
 				log.Warnw("failed to restore gossip state from disk", zap.Error(err))
 			}
 		}

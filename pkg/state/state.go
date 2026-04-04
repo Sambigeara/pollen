@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/coords"
@@ -56,6 +57,9 @@ type StateStore interface {
 	RemoveService(name string) []Event
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event
 
+	EmitHeartbeatIfNeeded() []Event
+	LoadGossipState(data []byte) error
+
 	SetPeerLastAddr(pk types.PeerKey, addr string)
 	SetBootstrapPublic()
 	ExportLastAddrs() map[types.PeerKey]string
@@ -63,27 +67,33 @@ type StateStore interface {
 }
 
 type store struct {
+	lastLocalEmit time.Time
 	nodes         map[types.PeerKey]nodeRecord
 	denied        map[types.PeerKey]struct{}
 	pendingNotify chan struct{}
 	snap          atomic.Pointer[Snapshot]
+	nowFunc       func() time.Time
 	pendingGossip []*statev1.GossipEvent
 	mu            sync.Mutex
 	localID       types.PeerKey
 }
 
 func New(self types.PeerKey) StateStore {
+	now := time.Now()
 	s := &store{
 		localID:       self,
 		nodes:         map[types.PeerKey]nodeRecord{self: newNodeRecord()},
 		denied:        make(map[types.PeerKey]struct{}),
 		pendingNotify: make(chan struct{}, 1),
+		nowFunc:       time.Now,
+		lastLocalEmit: now,
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	rec := s.nodes[self]
+	rec.lastEventAt = now
 	s.tombstoneStaleAttrsLocked(&rec)
 	s.nodes[self] = rec
 	s.updateSnapshotLocked()
@@ -117,6 +127,48 @@ func (s *store) notify() {
 func (s *store) updateSnapshotLocked() {
 	snap := s.buildSnapshot()
 	s.snap.Store(&snap)
+}
+
+const HeartbeatInterval = 15 * time.Second
+
+func (s *store) EmitHeartbeatIfNeeded() []Event {
+	s.mu.Lock()
+	if s.nowFunc().Sub(s.lastLocalEmit) < HeartbeatInterval {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+	return s.mutateLocal(func(_ *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		return []*statev1.GossipEvent{
+			{Change: &statev1.GossipEvent_Heartbeat{Heartbeat: &statev1.HeartbeatChange{}}},
+		}, nil
+	})
+}
+
+func (s *store) LoadGossipState(data []byte) error {
+	var batch statev1.GossipEventBatch
+	if err := batch.UnmarshalVT(data); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.applyBatchLocked(batch.Events, false)
+
+	// Rebuild denied set from all loaded deny events (including self-events
+	// processed via handleSelfConflictLocked which skip the per-event check).
+	clear(s.denied)
+	for _, rec := range s.nodes {
+		for key, ev := range rec.log {
+			if key.kind == attrDeny && !ev.Deleted {
+				s.denied[types.PeerKeyFromBytes(ev.GetDeny().PeerPub)] = struct{}{}
+			}
+		}
+	}
+
+	s.updateSnapshotLocked()
+	return nil
 }
 
 func (s *store) SetPeerLastAddr(pk types.PeerKey, addr string) {

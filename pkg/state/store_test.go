@@ -25,6 +25,13 @@ func newTestStore(t *testing.T, pk types.PeerKey) *store {
 	return New(pk).(*store)
 }
 
+func newTestStoreWithClock(t *testing.T, pk types.PeerKey, now *time.Time) *store {
+	t.Helper()
+	s := New(pk).(*store)
+	s.nowFunc = func() time.Time { return *now }
+	return s
+}
+
 func applyTestEvent(t *testing.T, s StateStore, ev *statev1.GossipEvent) []Event {
 	t.Helper()
 	batch := &statev1.GossipEventBatch{Events: []*statev1.GossipEvent{ev}}
@@ -275,4 +282,167 @@ func TestExportLoadLastAddrs(t *testing.T) {
 
 	snap := s2.Snapshot()
 	require.Equal(t, "10.0.0.2:9002", snap.Nodes[peerA].LastAddr)
+}
+
+func TestCalculateLiveComponent_StalePeerFiltered(t *testing.T) {
+	fakeNow := time.Now()
+	localKey := genKey(t)
+	s := newTestStoreWithClock(t, localKey, &fakeNow)
+
+	peerA, peerB := genKey(t), genKey(t)
+
+	// Peer A joins
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId: peerA.String(), Counter: 1,
+		Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001}},
+	})
+
+	// Peer B joins
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId: peerB.String(), Counter: 1,
+		Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.3"}, LocalPort: 9002}},
+	})
+
+	// Local reaches A; A claims B reachable
+	s.SetLocalReachable([]types.PeerKey{peerA})
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId: peerA.String(), Counter: 2,
+		Change: &statev1.GossipEvent_Reachability{Reachability: &statev1.ReachabilityChange{PeerId: peerB.String()}},
+	})
+
+	snap := s.Snapshot()
+	require.Contains(t, snap.PeerKeys, peerA)
+	require.Contains(t, snap.PeerKeys, peerB)
+
+	// Advance past reachableMaxAge — A's claims become stale
+	fakeNow = fakeNow.Add(reachableMaxAge + time.Second)
+	s.mu.Lock()
+	s.updateSnapshotLocked()
+	s.mu.Unlock()
+
+	snap = s.Snapshot()
+	require.Contains(t, snap.PeerKeys, localKey)
+	// A is still vouched by local's reachable set
+	require.Contains(t, snap.PeerKeys, peerA)
+	// B is excluded: A is stale, so A's claim about B is ignored
+	require.NotContains(t, snap.PeerKeys, peerB)
+}
+
+func TestCalculateLiveComponent_FreshBumpRetainsPeer(t *testing.T) {
+	fakeNow := time.Now()
+	localKey := genKey(t)
+	s := newTestStoreWithClock(t, localKey, &fakeNow)
+
+	peerA, peerB := genKey(t), genKey(t)
+
+	// Setup: local -> A -> B
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId: peerA.String(), Counter: 1,
+		Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001}},
+	})
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId: peerB.String(), Counter: 1,
+		Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.3"}, LocalPort: 9002}},
+	})
+	s.SetLocalReachable([]types.PeerKey{peerA})
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId: peerA.String(), Counter: 2,
+		Change: &statev1.GossipEvent_Reachability{Reachability: &statev1.ReachabilityChange{PeerId: peerB.String()}},
+	})
+
+	// Advance 25s, then A sends fresh event
+	fakeNow = fakeNow.Add(25 * time.Second)
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId: peerA.String(), Counter: 3,
+		Change: &statev1.GossipEvent_Heartbeat{Heartbeat: &statev1.HeartbeatChange{}},
+	})
+
+	// Advance another 25s (50s total, but only 25s since A's last event)
+	fakeNow = fakeNow.Add(25 * time.Second)
+	s.mu.Lock()
+	s.updateSnapshotLocked()
+	s.mu.Unlock()
+
+	snap := s.Snapshot()
+	require.Contains(t, snap.PeerKeys, peerB, "A's claims should still be trusted (25s < 30s)")
+}
+
+func TestEmitHeartbeatIfNeeded_ConditionalEmission(t *testing.T) {
+	fakeNow := time.Now()
+	pk := genKey(t)
+	s := newTestStoreWithClock(t, pk, &fakeNow)
+
+	// Recently emitted (store construction) — no heartbeat needed
+	s.EmitHeartbeatIfNeeded()
+	counterBefore := s.nodes[pk].maxCounter
+
+	// Emit a regular event to reset lastLocalEmit
+	s.SetLocalAddresses([]netip.AddrPort{netip.MustParseAddrPort("10.0.0.1:9000")})
+	counterAfterAddr := s.nodes[pk].maxCounter
+	require.Greater(t, counterAfterAddr, counterBefore)
+
+	// Still recent — no heartbeat
+	s.EmitHeartbeatIfNeeded()
+	require.Equal(t, counterAfterAddr, s.nodes[pk].maxCounter, "no heartbeat should be emitted")
+
+	// Advance past heartbeat interval
+	fakeNow = fakeNow.Add(HeartbeatInterval + time.Second)
+	s.EmitHeartbeatIfNeeded()
+	counterAfterHB := s.nodes[pk].maxCounter
+	require.Greater(t, counterAfterHB, counterAfterAddr, "heartbeat should bump counter")
+
+	// Immediately after emitting — no heartbeat needed
+	s.EmitHeartbeatIfNeeded()
+	require.Equal(t, counterAfterHB, s.nodes[pk].maxCounter, "no second heartbeat")
+}
+
+func TestLoadGossipState_DeniedPeersSurviveRoundTrip(t *testing.T) {
+	pk := genKey(t)
+	s1 := newTestStore(t, pk)
+
+	victim := genKey(t)
+	s1.DenyPeer(victim)
+	require.Contains(t, s1.Snapshot().DeniedPeers(), victim)
+
+	saved := s1.EncodeFull()
+
+	s2 := newTestStore(t, pk)
+	require.NoError(t, s2.LoadGossipState(saved))
+	require.Contains(t, s2.Snapshot().DeniedPeers(), victim, "denied peer must survive LoadGossipState round-trip")
+}
+
+func TestLoadGossipState_PeersStartStale(t *testing.T) {
+	fakeNow := time.Now()
+	localKey := genKey(t)
+
+	// Build a source store with a remote peer
+	source := newTestStore(t, genKey(t))
+	peerA := genKey(t)
+	applyTestEvent(t, source, &statev1.GossipEvent{
+		PeerId: peerA.String(), Counter: 1,
+		Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001}},
+	})
+	applyTestEvent(t, source, &statev1.GossipEvent{
+		PeerId: peerA.String(), Counter: 2,
+		Change: &statev1.GossipEvent_Reachability{Reachability: &statev1.ReachabilityChange{PeerId: localKey.String()}},
+	})
+	savedState := source.EncodeFull()
+
+	// Create a new store and load from disk
+	s := newTestStoreWithClock(t, localKey, &fakeNow)
+	require.NoError(t, s.LoadGossipState(savedState))
+
+	// Peer A exists in nodes but with zero lastEventAt — should be stale
+	s.SetLocalReachable([]types.PeerKey{peerA})
+
+	snap := s.Snapshot()
+	// A is vouched by local (direct), so A is in live set
+	require.Contains(t, snap.PeerKeys, peerA)
+
+	// But A's own claims (about localKey) should be ignored because A is stale
+	// A's lastEventAt is zero, so now.Sub(zero) > reachableMaxAge
+	s.mu.Lock()
+	rec := s.nodes[peerA]
+	require.True(t, rec.lastEventAt.IsZero(), "loaded peer should have zero lastEventAt")
+	s.mu.Unlock()
 }

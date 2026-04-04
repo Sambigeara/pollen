@@ -4,6 +4,7 @@ package plnfs
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
@@ -19,8 +20,16 @@ func Provision(dir string) error {
 	if err := ensureUser("pln", dir); err != nil {
 		return err
 	}
+	fm := os.ModeSetgid | 0o770
 	for _, sub := range []string{"", "keys", "cas"} {
-		if err := EnsureDir(filepath.Join(dir, sub)); err != nil {
+		p := filepath.Join(dir, sub)
+		if err := os.MkdirAll(p, fm); err != nil {
+			return fmt.Errorf("mkdir %s: %w", p, err)
+		}
+		if err := os.Chmod(p, fm); err != nil {
+			return fmt.Errorf("chmod %s: %w", p, err)
+		}
+		if err := applyPlnOwnership(p); err != nil {
 			return err
 		}
 	}

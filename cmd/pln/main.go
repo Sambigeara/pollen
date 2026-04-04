@@ -52,9 +52,10 @@ type cliEnv struct {
 func withEnv(needsRoot bool, fn func(*cobra.Command, []string, *cliEnv) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		dir, _ := cmd.Flags().GetString("dir")
+		plnfs.SetSystemMode(dir == plnfs.SystemDir || strings.HasPrefix(dir, plnfs.SystemDir+"/"))
 
 		if needsRoot {
-			escalateToRoot(dir)
+			escalateToRoot()
 		}
 
 		if err := plnfs.EnsureDir(dir); err != nil {
@@ -147,21 +148,20 @@ func defaultRootDir() string {
 		return home
 	}
 
-	const sysDir = "/var/lib/pln"
-	sysState := hasState(sysDir)
+	sysState := hasState(plnfs.SystemDir)
 	homeState := hasState(home)
 
 	switch {
 	case sysState && homeState:
-		fmt.Fprintf(os.Stderr, "warning: pollen state found in both %s and %s; using %s\n", sysDir, home, sysDir)
-		return sysDir
+		fmt.Fprintf(os.Stderr, "warning: pollen state found in both %s and %s; using %s\n", plnfs.SystemDir, home, plnfs.SystemDir)
+		return plnfs.SystemDir
 	case sysState:
-		return sysDir
+		return plnfs.SystemDir
 	case homeState:
 		return home
 	default:
-		if fi, err := os.Stat(sysDir); err == nil && fi.IsDir() {
-			return sysDir
+		if fi, err := os.Stat(plnfs.SystemDir); err == nil && fi.IsDir() {
+			return plnfs.SystemDir
 		}
 		return home
 	}
@@ -172,11 +172,11 @@ func hasState(dir string) bool {
 	return err == nil
 }
 
-func escalateToRoot(dir string) {
+func escalateToRoot() {
 	if runtime.GOOS != osLinux || os.Getuid() == 0 {
 		return
 	}
-	if dir != "/var/lib/pln" && !strings.HasPrefix(dir, "/var/lib/pln/") {
+	if !plnfs.SystemMode() {
 		return
 	}
 	plnUser, _ := user.Lookup("pln")

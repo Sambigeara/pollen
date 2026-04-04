@@ -88,9 +88,10 @@ func opID(t *testing.T, dir string) {
 	require.NoError(t, err)
 }
 
-// opServe simulates `pln serve <port> [name]`: save config.
+// opServe simulates `pln serve <port> [name]`: ensure dir, save config.
 func opServe(t *testing.T, dir string) {
 	t.Helper()
+	require.NoError(t, plnfs.EnsureDir(dir))
 	cfg, err := config.Load(dir)
 	if err != nil {
 		cfg = &config.Config{}
@@ -113,6 +114,7 @@ func runSequences(t *testing.T, sequences []commandSequence) {
 	for _, seq := range sequences {
 		t.Run(seq.name, func(t *testing.T) {
 			pollenDir := filepath.Join(t.TempDir(), "pln")
+			t.Cleanup(plnfs.EnableSystemMode())
 			for _, op := range seq.ops {
 				op(t, pollenDir)
 			}
@@ -136,9 +138,10 @@ func TestPermissionConvergenceUnderRestrictiveUmask(t *testing.T) {
 }
 
 // TestEnsureDirRepairsPermissions verifies that EnsureDir corrects a
-// directory whose permissions were changed after initial creation.
+// system directory whose permissions were changed after initial creation.
 func TestEnsureDirRepairsPermissions(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "pln")
+	t.Cleanup(plnfs.EnableSystemMode())
 
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 
@@ -147,6 +150,18 @@ func TestEnsureDirRepairsPermissions(t *testing.T) {
 	info, err := os.Stat(dir)
 	require.NoError(t, err)
 	require.Equal(t, os.ModeDir|os.ModeSetgid|os.FileMode(0o770), info.Mode())
+}
+
+// TestEnsureDirUserHome verifies that EnsureDir for a non-system path
+// uses 0700 and does not attempt group ownership changes.
+func TestEnsureDirUserHome(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".pln")
+
+	require.NoError(t, plnfs.EnsureDir(dir))
+
+	info, err := os.Stat(dir)
+	require.NoError(t, err)
+	require.Equal(t, os.ModeDir|os.FileMode(0o700), info.Mode())
 }
 
 // TestSocketPermissionsConvergence verifies that creating a unix socket and

@@ -213,10 +213,11 @@ func runProvision(cmd *cobra.Command, _ []string) error {
 		return errors.New("pln provision must be run as root")
 	}
 
-	dir := "/var/lib/pln"
+	dir := plnfs.SystemDir
 	if cmd.Flags().Changed("dir") {
 		dir, _ = cmd.Flags().GetString("dir")
 	}
+	plnfs.SetSystemMode(true)
 
 	if err := plnfs.Provision(dir); err != nil {
 		return err
