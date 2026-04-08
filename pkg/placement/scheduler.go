@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"maps"
 	"math"
+	"math/rand/v2"
 	"slices"
+	"time"
 
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -20,40 +22,53 @@ const (
 )
 
 type action struct {
-	Hash string
-	Kind actionKind
+	Hash          string
+	Kind          actionKind
+	DynamicTarget uint32
 }
 
 type spec struct {
-	Replicas uint32
+	MinReplicas uint32
+	Spread      float32
 }
 
 type nodeState struct {
-	Coord         *coords.Coord
-	TrafficTo     map[types.PeerKey]uint64
-	MemTotalBytes uint64
-	CPUPercent    uint32
-	MemPercent    uint32
-	NumCPU        uint32
+	Coord            *coords.Coord
+	TrafficTo        map[types.PeerKey]uint64
+	MemTotalBytes    uint64
+	CPUPercent       uint32
+	MemPercent       uint32
+	NumCPU           uint32
+	CPUBudgetPercent uint32
+	MemBudgetPercent uint32
 }
 
 type clusterState struct {
-	Nodes map[types.PeerKey]nodeState
+	Nodes      map[types.PeerKey]nodeState
+	SeedLoad   map[types.PeerKey]map[string]float32 // per-node seed served rates (from gossip)
+	SeedDemand map[types.PeerKey]map[string]float32 // per-node seed demand rates (from gossip)
 }
 
 const (
-	weightCapacity = 0.4
-	weightTraffic  = 0.5
-	weightVivaldi  = 0.1
-	incumbentBonus = 1.3
-	neutralScore   = 0.5
-	percentMax     = 100
-	memScaleFactor = 1 << 30
+	weightCapacity = 0.30
+	weightDemand   = 0.30
+	weightTraffic  = 0.25
+	weightVivaldi  = 0.15
+
+	incumbentBonus     = 1.3
+	challengeThreshold = 1.2
+	neutralScore       = 0.5
+	percentMax         = 100
+	memScaleFactor     = 1 << 30
+
+	releaseIdleBase   = 2 * time.Minute
+	releaseIdleJitter = 30 * time.Second
 )
 
 type scored struct {
 	peer        types.PeerKey
 	suitability float64
+	rawScore    float64
 	tieBreak    [32]byte
 }
 
@@ -64,42 +79,60 @@ func compareScored(a, b scored) int {
 	return bytes.Compare(a.tieBreak[:], b.tieBreak[:])
 }
 
-func evaluate(
-	localID types.PeerKey,
-	allPeers []types.PeerKey,
-	specs map[string]spec,
-	claims map[string]map[types.PeerKey]struct{},
-	cluster clusterState,
-	isRunning func(string) bool,
-) []action {
+func effectiveTarget(s spec, clusterSize int, dynamicTarget uint32) uint32 {
+	if s.Spread >= 1.0 {
+		return uint32(clusterSize)
+	}
+	return max(s.MinReplicas, min(dynamicTarget, uint32(clusterSize)))
+}
+
+type evaluateInput struct {
+	specs          map[string]spec
+	claims         map[string]map[types.PeerKey]struct{}
+	cluster        clusterState
+	isRunning      func(string) bool
+	demandRates    map[string]float64
+	idleDurations  map[string]time.Duration
+	dynamicTargets map[string]uint32
+	allPeers       []types.PeerKey
+	localID        types.PeerKey
+}
+
+func evaluate(in evaluateInput) []action {
 	var actions []action
 
-	for hash, spec := range specs {
-		claimants := claims[hash]
+	for hash, sp := range in.specs {
+		claimants := in.claims[hash]
 		claimCount := uint32(len(claimants))
-		_, iClaimed := claimants[localID]
+		_, iClaimed := claimants[in.localID]
+		target := effectiveTarget(sp, len(in.allPeers), in.dynamicTargets[hash])
 
-		if iClaimed && !isRunning(hash) {
-			actions = append(actions, action{Hash: hash, Kind: actionClaim})
-			continue // Recover before assessing release status
+		if iClaimed && !in.isRunning(hash) {
+			actions = append(actions, action{Hash: hash, Kind: actionClaim, DynamicTarget: target})
+			continue
 		}
 
-		if !iClaimed && claimCount < spec.Replicas {
-			if shouldClaim(localID, hash, spec.Replicas, claimants, allPeers, cluster) {
-				actions = append(actions, action{Hash: hash, Kind: actionClaim})
+		switch {
+		case !iClaimed && claimCount < target:
+			if shouldClaim(in.localID, hash, target, claimants, in.allPeers, in.cluster, in.demandRates) {
+				actions = append(actions, action{Hash: hash, Kind: actionClaim, DynamicTarget: target})
 			}
-		} else if iClaimed && claimCount >= spec.Replicas {
-			if shouldRelease(localID, hash, spec.Replicas, claimants, allPeers, cluster) {
+		case !iClaimed && claimCount >= target:
+			if shouldChallenge(in.localID, hash, claimants, in.cluster, in.demandRates) {
+				actions = append(actions, action{Hash: hash, Kind: actionClaim, DynamicTarget: target})
+			}
+		case iClaimed && claimCount > target:
+			if shouldReleaseExcess(in.localID, hash, target, claimants, in.cluster, in.demandRates, in.idleDurations) {
 				actions = append(actions, action{Hash: hash, Kind: actionRelease})
 			}
 		}
 	}
 
-	for hash, claimants := range claims {
-		if _, iClaimed := claimants[localID]; !iClaimed {
+	for hash, claimants := range in.claims {
+		if _, iClaimed := claimants[in.localID]; !iClaimed {
 			continue
 		}
-		if _, hasSpec := specs[hash]; !hasSpec {
+		if _, hasSpec := in.specs[hash]; !hasSpec {
 			actions = append(actions, action{Hash: hash, Kind: actionRelease})
 		}
 	}
@@ -107,20 +140,18 @@ func evaluate(
 	return actions
 }
 
-func shouldClaim(localID types.PeerKey, hash string, desired uint32, claimants map[types.PeerKey]struct{}, allPeers []types.PeerKey, cluster clusterState) bool {
+func shouldClaim(localID types.PeerKey, hash string, desired uint32, claimants map[types.PeerKey]struct{}, allPeers []types.PeerKey, cluster clusterState, demandRates map[string]float64) bool {
 	needed := int(desired) - len(claimants)
-	if needed <= 0 {
-		return false
-	}
-
 	unclaimed := make([]scored, 0, len(allPeers))
 	for _, pk := range allPeers {
 		if _, already := claimants[pk]; already {
 			continue
 		}
+		raw := rawSuitabilityScore(pk, cluster, claimants, demandRates, hash, localID)
 		unclaimed = append(unclaimed, scored{
 			peer:        pk,
-			suitability: suitabilityScore(pk, cluster, claimants, false),
+			suitability: raw,
+			rawScore:    raw,
 			tieBreak:    placementScore(pk, hash),
 		})
 	}
@@ -138,93 +169,113 @@ func shouldClaim(localID types.PeerKey, hash string, desired uint32, claimants m
 	return false
 }
 
-func shouldRelease(localID types.PeerKey, hash string, desired uint32, claimants map[types.PeerKey]struct{}, allPeers []types.PeerKey, cluster clusterState) bool {
-	claimCount := len(claimants)
+// shouldChallenge decides whether localID should claim a hash that is already
+// at or above effectiveTarget. Requires the local raw score to exceed the
+// weakest incumbent's raw score by challengeThreshold.
+func shouldChallenge(localID types.PeerKey, hash string, claimants map[types.PeerKey]struct{}, cluster clusterState, demandRates map[string]float64) bool {
+	myRaw := rawSuitabilityScore(localID, cluster, claimants, demandRates, hash, localID)
 
-	incumbents := make([]scored, 0, claimCount)
+	var weakestRaw float64
+	first := true
 	for pk := range claimants {
+		raw := rawSuitabilityScore(pk, cluster, claimants, demandRates, hash, localID)
+		if first || raw < weakestRaw {
+			weakestRaw = raw
+			first = false
+		}
+	}
+
+	return myRaw > weakestRaw*challengeThreshold
+}
+
+// shouldReleaseExcess handles release for excess claimants (above effectiveTarget).
+// Requires the seed to be idle for releaseIdleBase + jitter, and the local node
+// to be the lowest-scoring excess claimant.
+func shouldReleaseExcess(localID types.PeerKey, hash string, target uint32, claimants map[types.PeerKey]struct{}, cluster clusterState, demandRates map[string]float64, idleDurations map[string]time.Duration) bool {
+	idle := idleDurations[hash]
+	//nolint:gosec
+	jitter := time.Duration(rand.Int64N(int64(releaseIdleJitter)))
+	if idle < releaseIdleBase+jitter {
+		return false
+	}
+
+	incumbents := make([]scored, 0, len(claimants))
+	for pk := range claimants {
+		raw := rawSuitabilityScore(pk, cluster, claimants, demandRates, hash, localID)
 		incumbents = append(incumbents, scored{
 			peer:        pk,
-			suitability: suitabilityScore(pk, cluster, claimants, true),
+			suitability: raw * incumbentBonus,
+			rawScore:    raw,
 			tieBreak:    placementScore(pk, hash),
 		})
 	}
 	slices.SortFunc(incumbents, compareScored)
 
-	if claimCount > int(desired) {
-		keep := min(int(desired), len(incumbents))
-		for _, s := range incumbents[:keep] {
-			if s.peer == localID {
-				return false
-			}
-		}
-		return true
-	}
-
-	weakest := incumbents[len(incumbents)-1]
-	if weakest.peer != localID {
-		return false
-	}
-
-	var bestChallenger *scored
-	for _, pk := range allPeers {
-		if _, incumbent := claimants[pk]; incumbent {
-			continue
-		}
-		s := scored{
-			peer:        pk,
-			suitability: suitabilityScore(pk, cluster, claimants, false),
-			tieBreak:    placementScore(pk, hash),
-		}
-		if bestChallenger == nil || compareScored(s, *bestChallenger) < 0 {
-			bestChallenger = &s
+	keep := min(int(target), len(incumbents))
+	for _, s := range incumbents[:keep] {
+		if s.peer == localID {
+			return false
 		}
 	}
-	if bestChallenger == nil {
-		return false
-	}
-
-	return compareScored(*bestChallenger, weakest) < 0
+	return true
 }
 
-func suitabilityScore(candidate types.PeerKey, cluster clusterState, claimants map[types.PeerKey]struct{}, isIncumbent bool) float64 {
+func rawSuitabilityScore(candidate types.PeerKey, cluster clusterState, claimants map[types.PeerKey]struct{}, demandRates map[string]float64, hash string, localID types.PeerKey) float64 {
 	peers := slices.Collect(maps.Keys(cluster.Nodes))
 
-	raw := capacityScore(candidate, peers, cluster)*weightCapacity +
+	return capacityScore(candidate, peers, cluster)*weightCapacity +
+		localDemandScore(candidate, localID, demandRates, hash)*weightDemand +
 		trafficAffinityScore(candidate, peers, claimants, cluster)*weightTraffic +
 		vivaldiScore(candidate, peers, claimants, cluster)*weightVivaldi
+}
 
-	if isIncumbent {
-		raw *= incumbentBonus
+func localDemandScore(candidate, localID types.PeerKey, demandRates map[string]float64, hash string) float64 {
+	if candidate != localID {
+		return 0
 	}
-
-	return raw
+	rate := demandRates[hash]
+	if rate <= 0 {
+		return 0
+	}
+	// Normalise to [0,1]. The 100 calls/sec saturation point is a placeholder —
+	// ideally this would normalise against peers (like capacityScore does), but
+	// demand rates are purely local so we have no cluster-wide max to compare
+	// against. Tune once real workload data is available.
+	return math.Min(1.0, rate/100.0) //nolint:mnd
 }
 
 func capacityScore(candidate types.PeerKey, peers []types.PeerKey, cluster clusterState) float64 {
-	freeCapacity := func(pk types.PeerKey) float64 {
+	freeCapacity := func(pk types.PeerKey) (float64, bool) {
 		ns := cluster.Nodes[pk]
 		if ns.NumCPU == 0 && ns.MemTotalBytes == 0 {
-			return -1
+			return 0, false
 		}
-		freeCPU := float64(ns.NumCPU) * float64(percentMax-ns.CPUPercent) / percentMax
-		freeMem := float64(ns.MemTotalBytes) * float64(percentMax-ns.MemPercent) / percentMax
-		return freeCPU + freeMem/memScaleFactor
+		cpuBudget := uint32(percentMax)
+		if ns.CPUBudgetPercent > 0 {
+			cpuBudget = ns.CPUBudgetPercent
+		}
+		memBudget := uint32(percentMax)
+		if ns.MemBudgetPercent > 0 {
+			memBudget = ns.MemBudgetPercent
+		}
+		freeCPU := float64(ns.NumCPU) * float64(int32(cpuBudget)-int32(ns.CPUPercent)) / percentMax
+		freeMem := float64(ns.MemTotalBytes) * float64(int32(memBudget)-int32(ns.MemPercent)) / percentMax
+		return freeCPU + freeMem/memScaleFactor, true
 	}
 
-	candidateFree := freeCapacity(candidate)
-	if candidateFree < 0 {
+	candidateFree, ok := freeCapacity(candidate)
+	if !ok {
 		return neutralScore
 	}
 
 	var maxFree float64
 	for _, pk := range peers {
-		f := freeCapacity(pk)
-		if f > maxFree {
+		f, ok := freeCapacity(pk)
+		if ok && f > maxFree {
 			maxFree = f
 		}
 	}
-	if maxFree == 0 {
+	if maxFree <= 0 {
 		return neutralScore
 	}
 	return candidateFree / maxFree

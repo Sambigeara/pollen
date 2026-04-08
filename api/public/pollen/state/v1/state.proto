@@ -15,9 +15,16 @@ message Digest {
   map<string, PeerDigest> peers = 1;
 }
 
+enum ServiceProtocol {
+  SERVICE_PROTOCOL_UNSPECIFIED = 0;
+  SERVICE_PROTOCOL_TCP = 1;
+  SERVICE_PROTOCOL_UDP = 2;
+}
+
 message ServiceChange {
   string name = 1;
   uint32 port = 2;
+  ServiceProtocol protocol = 3;
 }
 
 message ReachabilityChange {
@@ -63,13 +70,25 @@ message ResourceTelemetryChange {
   uint32 mem_percent = 2;
   uint64 mem_total_bytes = 3;
   uint32 num_cpu = 4;
+  uint32 cpu_budget_percent = 5;
+  uint32 mem_budget_percent = 6;
 }
 
 message WorkloadSpecChange {
   string hash = 1;
-  uint32 replicas = 2;
+  uint32 min_replicas = 2;
   uint32 memory_pages = 3;
   uint32 timeout_ms = 4;
+  string name = 5;
+  float spread = 6;
+}
+
+message SeedLoadChange {
+  map<string, float> rates = 1;
+}
+
+message SeedDemandChange {
+  map<string, float> rates = 1;
 }
 
 message WorkloadClaimChange {
@@ -90,6 +109,16 @@ message TrafficHeatmapChange {
 }
 
 message HeartbeatChange {}
+
+message AdminCapableChange {}
+
+message NodeNameChange {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[a-zA-Z0-9._-]+$"
+  }];
+}
 
 message GossipEvent {
   string peer_id = 1 [(buf.validate.field).string = {
@@ -112,6 +141,10 @@ message GossipEvent {
     WorkloadClaimChange workload_claim = 16;
     TrafficHeatmapChange traffic_heatmap = 17;
     HeartbeatChange heartbeat = 18;
+    SeedLoadChange seed_load = 19;
+    AdminCapableChange admin_capable = 20;
+    NodeNameChange node_name = 21;
+    SeedDemandChange seed_demand = 22;
   }
   bool deleted = 14;
 }

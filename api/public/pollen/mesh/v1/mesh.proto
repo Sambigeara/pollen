@@ -43,6 +43,25 @@ message CertRenewalResponse {
   pollen.admission.v1.DelegationCert cert = 3;
 }
 
+message CertPushRequest {
+  pollen.admission.v1.DelegationCert cert = 1;
+}
+
+message CertPushResponse {
+  bool accepted = 1;
+  string reason = 2;
+}
+
+message ForwardedInviteRedeemRequest {
+  InviteRedeemRequest inner = 1;
+  bytes joiner_pub = 2;
+}
+
+message ForwardedInviteRedeemResponse {
+  InviteRedeemResponse inner = 1;
+  bytes joiner_pub = 2;
+}
+
 message Envelope {
   oneof body {
     PunchCoordRequest punch_coord_request = 1;
@@ -53,6 +72,10 @@ message Envelope {
     pollen.state.v1.GossipEventBatch events = 6;
     CertRenewalRequest cert_renewal_request = 7;
     CertRenewalResponse cert_renewal_response = 8;
+    ForwardedInviteRedeemRequest forwarded_invite_request = 10;
+    ForwardedInviteRedeemResponse forwarded_invite_response = 11;
+    CertPushRequest cert_push_request = 12;
+    CertPushResponse cert_push_response = 13;
   }
   bytes trace_id = 9;
 }

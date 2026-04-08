@@ -15,6 +15,7 @@ import (
 	"time"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/placement"
@@ -23,10 +24,12 @@ import (
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/tunneling"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/wasm"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type Metrics struct {
@@ -45,19 +48,21 @@ type Metrics struct {
 
 type MembershipControl interface {
 	DenyPeer(key types.PeerKey) error
+	IssueCert(ctx context.Context, peerKey types.PeerKey, admin bool, attributes *structpb.Struct) error
 }
 
 type PlacementControl interface {
-	Seed(hash string, binary []byte, replicas, memoryPages, timeoutMs uint32) error
+	Seed(name, hash string, binary []byte, replicas, memoryPages, timeoutMs uint32, spread float32) error
 	Unseed(hash string) error
 	Call(ctx context.Context, hash, fn string, input []byte) ([]byte, error)
 	Status() []placement.WorkloadSummary
+	PlacementInfo() map[string][2]float64
 }
 
 type TunnelingControl interface {
-	Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32) (uint32, error)
+	Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) (uint32, error)
 	Disconnect(service string) error
-	ExposeService(port uint32, name string) error
+	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol) error
 	UnexposeService(name string) error
 	ListConnections() []tunneling.ConnectionInfo
 }
@@ -179,7 +184,7 @@ func (s *Service) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootstrapI
 		return &controlv1.GetBootstrapInfoResponse{}, nil
 	}
 	return &controlv1.GetBootstrapInfoResponse{
-		Self:        nodeBootstrapInfo(snap.LocalID, rec.IPs, rec.LocalPort),
+		Self:        nodeBootstrapInfo(snap.LocalID, rec),
 		Recommended: s.pickRecommendedPeer(snap),
 	}, nil
 }
@@ -187,22 +192,26 @@ func (s *Service) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootstrapI
 func (s *Service) pickRecommendedPeer(snap state.Snapshot) *controlv1.BootstrapPeerInfo {
 	var candidates []types.PeerKey
 	for peerID, nv := range snap.Nodes {
-		if peerID != snap.LocalID && nv.PubliclyAccessible && len(nv.IPs) > 0 && nv.LocalPort > 0 {
+		hasAddr := len(nv.IPs) > 0 || nv.ObservedExternalIP != ""
+		if peerID != snap.LocalID && nv.PubliclyAccessible && hasAddr && nv.LocalPort > 0 {
 			candidates = append(candidates, peerID)
 		}
 	}
 	if len(candidates) > 0 {
 		slices.SortFunc(candidates, types.PeerKey.Compare)
 		best := candidates[0]
-		nv := snap.Nodes[best]
-		return nodeBootstrapInfo(best, nv.IPs, nv.LocalPort)
+		return nodeBootstrapInfo(best, snap.Nodes[best])
 	}
 
 	localNV, ok := snap.Nodes[snap.LocalID]
-	if !ok || len(localNV.IPs) == 0 || localNV.LocalPort == 0 {
+	if !ok {
 		return nil
 	}
-	return nodeBootstrapInfo(snap.LocalID, localNV.IPs, localNV.LocalPort)
+	hasAddr := len(localNV.IPs) > 0 || localNV.ObservedExternalIP != ""
+	if !hasAddr || localNV.LocalPort == 0 {
+		return nil
+	}
+	return nodeBootstrapInfo(snap.LocalID, localNV)
 }
 
 func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
@@ -274,6 +283,7 @@ func (s *Service) buildCertificates() []*controlv1.CertInfo {
 		CanAdmit:           caps.GetCanAdmit(),
 		MaxDepth:           caps.GetMaxDepth(),
 		AccessDeadlineUnix: claims.GetAccessDeadlineUnix(),
+		Attributes:         caps.GetAttributes(),
 	}}
 }
 
@@ -281,6 +291,7 @@ func (s *Service) buildSelfSummary(localID types.PeerKey, localNode state.NodeVi
 	in, out := sumTraffic(localNode.TrafficRates)
 	return &controlv1.NodeSummary{
 		Node:               &controlv1.NodeRef{PeerPub: localID.Bytes()},
+		Name:               localNode.Name,
 		Status:             controlv1.NodeStatus_NODE_STATUS_ONLINE,
 		Addr:               nodeViewAddr(localNode),
 		PubliclyAccessible: localNode.PubliclyAccessible,
@@ -329,6 +340,7 @@ func (s *Service) buildNodeSummaries(snap state.Snapshot, nodes map[types.PeerKe
 		in, outBytes := sumTraffic(node.TrafficRates)
 		ns := &controlv1.NodeSummary{
 			Node:               &controlv1.NodeRef{PeerPub: key.Bytes()},
+			Name:               node.Name,
 			Status:             peerStatus,
 			Addr:               addrStr,
 			PubliclyAccessible: node.PubliclyAccessible,
@@ -357,6 +369,7 @@ func buildServiceSummaries(nodes map[types.PeerKey]state.NodeView) []*controlv1.
 				Name:     serviceNameOrDefault(svc.Name, svc.Port),
 				Provider: &controlv1.NodeRef{PeerPub: key.Bytes()},
 				Port:     svc.Port,
+				Protocol: svc.Protocol,
 			})
 		}
 	}
@@ -369,7 +382,7 @@ func buildConnectionSummaries(nodes map[types.PeerKey]state.NodeView, connection
 		var name string
 		if node, ok := nodes[c.PeerID]; ok {
 			for _, svc := range node.Services {
-				if svc.Port == c.RemotePort {
+				if svc.Port == c.RemotePort && svc.Protocol == c.Protocol {
 					name = svc.Name
 					break
 				}
@@ -380,6 +393,7 @@ func buildConnectionSummaries(nodes map[types.PeerKey]state.NodeView, connection
 			RemotePort:  c.RemotePort,
 			LocalPort:   c.LocalPort,
 			ServiceName: name,
+			Protocol:    c.Protocol,
 		})
 	}
 	return out
@@ -388,18 +402,23 @@ func buildConnectionSummaries(nodes map[types.PeerKey]state.NodeView, connection
 func (s *Service) buildWorkloadSummaries(snap state.Snapshot) []*controlv1.WorkloadSummary {
 	var out []*controlv1.WorkloadSummary
 	seen := make(map[string]struct{})
+	pinfo := s.placement.PlacementInfo()
 
 	for _, w := range s.placement.Status() {
 		seen[w.Hash] = struct{}{}
 		ws := &controlv1.WorkloadSummary{
-			Hash:           w.Hash,
-			Status:         workloadStatusProto(w.Status),
-			StartedAtUnix:  w.CompiledAt.Unix(),
-			Local:          true,
-			ActiveReplicas: uint32(len(snap.Claims[w.Hash])),
+			Hash:            w.Hash,
+			Name:            w.Name,
+			Status:          workloadStatusProto(w.Status),
+			StartedAtUnix:   w.CompiledAt.Unix(),
+			Local:           true,
+			ActiveReplicas:  uint32(len(snap.Claims[w.Hash])),
+			EffectiveTarget: w.EffectiveTarget,
+			Pressure:        float32(w.Pressure),
 		}
 		if sv, ok := snap.Specs[w.Hash]; ok {
-			ws.DesiredReplicas = sv.Spec.GetReplicas()
+			ws.MinReplicas = sv.Spec.GetMinReplicas()
+			ws.Spread = sv.Spec.GetSpread()
 		}
 		out = append(out, ws)
 	}
@@ -408,11 +427,18 @@ func (s *Service) buildWorkloadSummaries(snap state.Snapshot) []*controlv1.Workl
 		if _, ok := seen[hash]; ok {
 			continue
 		}
-		out = append(out, &controlv1.WorkloadSummary{
-			Hash:            hash,
-			DesiredReplicas: sv.Spec.GetReplicas(),
-			ActiveReplicas:  uint32(len(snap.Claims[hash])),
-		})
+		ws := &controlv1.WorkloadSummary{
+			Hash:           hash,
+			Name:           sv.Spec.GetName(),
+			MinReplicas:    sv.Spec.GetMinReplicas(),
+			Spread:         sv.Spec.GetSpread(),
+			ActiveReplicas: uint32(len(snap.Claims[hash])),
+		}
+		if info, ok := pinfo[hash]; ok {
+			ws.EffectiveTarget = uint32(info[0])
+			ws.Pressure = float32(info[1])
+		}
+		out = append(out, ws)
 	}
 	return out
 }
@@ -443,7 +469,7 @@ func sortStatusResponse(out *controlv1.GetStatusResponse) {
 
 func (s *Service) RegisterService(_ context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
 	name := serviceNameOrDefault(req.GetName(), req.Port)
-	if err := s.tunneling.ExposeService(req.Port, name); err != nil {
+	if err := s.tunneling.ExposeService(req.Port, name, normaliseProtocol(req.GetProtocol())); err != nil {
 		return nil, s.fail(err, "register service failed")
 	}
 	return &controlv1.RegisterServiceResponse{}, nil
@@ -478,7 +504,7 @@ func (s *Service) ConnectPeer(ctx context.Context, req *controlv1.ConnectPeerReq
 
 func (s *Service) ConnectService(ctx context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
 	peerKey := types.PeerKeyFromBytes(req.Node.PeerPub)
-	boundPort, err := s.tunneling.Connect(ctx, peerKey, req.GetRemotePort(), req.GetLocalPort())
+	boundPort, err := s.tunneling.Connect(ctx, peerKey, req.GetRemotePort(), req.GetLocalPort(), normaliseProtocol(req.GetProtocol()))
 	if err != nil {
 		return nil, s.fail(err, "connect service failed")
 	}
@@ -491,7 +517,7 @@ func (s *Service) DisconnectService(_ context.Context, req *controlv1.Disconnect
 	var serviceName string
 	for _, c := range s.tunneling.ListConnections() {
 		if c.LocalPort == localPort {
-			serviceName = resolveServiceName(snap, c.PeerID, c.RemotePort)
+			serviceName = resolveServiceName(snap, c.PeerID, c.RemotePort, c.Protocol)
 			break
 		}
 	}
@@ -512,6 +538,19 @@ func (s *Service) DenyPeer(_ context.Context, req *controlv1.DenyPeerRequest) (*
 		return nil, s.fail(err, "deny peer failed")
 	}
 	return &controlv1.DenyPeerResponse{}, nil
+}
+
+func (s *Service) IssueCert(ctx context.Context, req *controlv1.IssueCertRequest) (*controlv1.IssueCertResponse, error) {
+	if s.creds == nil || s.creds.DelegationKey() == nil {
+		return nil, status.Error(codes.FailedPrecondition, "only root admin can issue certificates")
+	}
+	if err := auth.ValidateAttributes(req.GetAttributes()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if err := s.membership.IssueCert(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), req.GetAdmin(), req.GetAttributes()); err != nil {
+		return nil, s.fail(err, "issue cert failed")
+	}
+	return &controlv1.IssueCertResponse{}, nil
 }
 
 func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) (*controlv1.GetMetricsResponse, error) {
@@ -561,7 +600,12 @@ func (s *Service) SeedWorkload(_ context.Context, req *controlv1.SeedWorkloadReq
 	h := sha256.Sum256(wasmBytes)
 	hash := hex.EncodeToString(h[:])
 
-	if err := s.placement.Seed(hash, wasmBytes, req.GetReplicas(), req.GetMemoryPages(), req.GetTimeoutMs()); err != nil && !errors.Is(err, placement.ErrAlreadyRunning) {
+	name := req.GetName()
+	if name == "" {
+		name = hash
+	}
+
+	if err := s.placement.Seed(name, hash, wasmBytes, req.GetMinReplicas(), req.GetMemoryPages(), req.GetTimeoutMs(), req.GetSpread()); err != nil && !errors.Is(err, placement.ErrAlreadyRunning) {
 		if errors.Is(err, placement.ErrCompile) {
 			s.log.Warnw("seed workload failed", "err", err)
 			return nil, status.Error(codes.InvalidArgument, "failed to compile workload")
@@ -569,7 +613,7 @@ func (s *Service) SeedWorkload(_ context.Context, req *controlv1.SeedWorkloadReq
 		return nil, s.fail(err, "failed to seed workload")
 	}
 
-	return &controlv1.SeedWorkloadResponse{Hash: hash}, nil
+	return &controlv1.SeedWorkloadResponse{Hash: hash, Name: name}, nil
 }
 
 func (s *Service) UnseedWorkload(_ context.Context, req *controlv1.UnseedWorkloadRequest) (*controlv1.UnseedWorkloadResponse, error) {
@@ -580,6 +624,7 @@ func (s *Service) UnseedWorkload(_ context.Context, req *controlv1.UnseedWorkloa
 }
 
 func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadRequest) (*controlv1.CallWorkloadResponse, error) {
+	ctx = s.localCallerContext(ctx)
 	output, err := s.placement.Call(ctx, req.GetHash(), req.GetFunction(), req.GetInput())
 	if err != nil {
 		s.log.Warnw("call workload failed", "hash", req.GetHash(), "function", req.GetFunction(), "err", err)
@@ -592,6 +637,23 @@ func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadR
 		return nil, status.Error(codes.Internal, "workload invocation failed")
 	}
 	return &controlv1.CallWorkloadResponse{Output: output}, nil
+}
+
+func (s *Service) localCallerContext(ctx context.Context) context.Context {
+	if s.creds == nil {
+		return ctx
+	}
+	cert := s.creds.Cert()
+	if cert == nil {
+		return ctx
+	}
+	info := wasm.CallerInfo{
+		PeerKey: types.PeerKeyFromBytes(cert.GetClaims().GetSubjectPub()),
+	}
+	if attrs := cert.GetClaims().GetCapabilities().GetAttributes(); attrs != nil {
+		info.Attributes = attrs.AsMap()
+	}
+	return wasm.WithCallerInfo(ctx, info)
 }
 
 func (s *Service) fail(err error, msg string, kv ...any) error {
@@ -615,10 +677,17 @@ func serviceNameOrDefault(name string, port uint32) string {
 	return strconv.FormatUint(uint64(port), 10)
 }
 
-func nodeBootstrapInfo(peerID types.PeerKey, ips []string, port uint32) *controlv1.BootstrapPeerInfo {
-	addrs := make([]string, 0, len(ips))
-	for _, ip := range ips {
-		addrs = append(addrs, net.JoinHostPort(ip, strconv.Itoa(int(port))))
+func nodeBootstrapInfo(peerID types.PeerKey, nv state.NodeView) *controlv1.BootstrapPeerInfo {
+	var addrs []string
+	if nv.ObservedExternalIP != "" {
+		port := nv.LocalPort
+		if nv.ExternalPort != 0 {
+			port = nv.ExternalPort
+		}
+		addrs = append(addrs, net.JoinHostPort(nv.ObservedExternalIP, strconv.Itoa(int(port))))
+	}
+	for _, ip := range nv.IPs {
+		addrs = append(addrs, net.JoinHostPort(ip, strconv.Itoa(int(nv.LocalPort))))
 	}
 	return &controlv1.BootstrapPeerInfo{
 		Peer:  &controlv1.NodeRef{PeerPub: peerID.Bytes()},
@@ -627,25 +696,36 @@ func nodeBootstrapInfo(peerID types.PeerKey, ips []string, port uint32) *control
 }
 
 func nodeViewAddr(nv state.NodeView) string {
+	if nv.ObservedExternalIP != "" {
+		port := nv.LocalPort
+		if nv.ExternalPort != 0 {
+			port = nv.ExternalPort
+		}
+		return net.JoinHostPort(nv.ObservedExternalIP, strconv.Itoa(int(port)))
+	}
 	if len(nv.IPs) == 0 {
 		return ""
 	}
-	port := nv.LocalPort
-	if ip := net.ParseIP(nv.IPs[0]); ip != nil && nv.ExternalPort != 0 && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
-		port = nv.ExternalPort
-	}
-	return net.JoinHostPort(nv.IPs[0], strconv.Itoa(int(port)))
+	return net.JoinHostPort(nv.IPs[0], strconv.Itoa(int(nv.LocalPort)))
 }
 
-func resolveServiceName(snap state.Snapshot, peerKey types.PeerKey, port uint32) string {
+func resolveServiceName(snap state.Snapshot, peerKey types.PeerKey, port uint32, protocol statev1.ServiceProtocol) string {
 	if nv, ok := snap.Nodes[peerKey]; ok {
 		for _, svc := range nv.Services {
-			if svc.Port == port {
+			if svc.Port == port && svc.Protocol == protocol {
 				return svc.Name
 			}
 		}
 	}
 	return ""
+}
+
+// TODO(saml): remove once all persisted state and in-flight gossip carry an explicit protocol.
+func normaliseProtocol(p statev1.ServiceProtocol) statev1.ServiceProtocol {
+	if p == statev1.ServiceProtocol_SERVICE_PROTOCOL_UNSPECIFIED {
+		return statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP
+	}
+	return p
 }
 
 const (

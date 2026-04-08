@@ -41,6 +41,7 @@ func newDaemonCmds() []*cobra.Command {
 	upCmd.Flags().Bool("public", false, "Mark this node as publicly accessible (relay)")
 	upCmd.Flags().BoolP("detach", "d", false, "Run as a background service")
 	upCmd.Flags().Bool("metrics", false, "Log metrics and trace output at debug level")
+	upCmd.Flags().String("name", "", "Human-readable node name")
 
 	upgradeCmd := &cobra.Command{
 		Use:   "upgrade",
@@ -78,6 +79,14 @@ func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {
 			return errors.New("--public requires admin keys; run `pln init` to create a root cluster")
 		}
 		env.cfg.Public = true
+		if err := config.Save(env.dir, env.cfg); err != nil {
+			return err
+		}
+	}
+
+	if cmd.Flags().Changed("name") {
+		name, _ := cmd.Flags().GetString("name")
+		env.cfg.Name = name
 		if err := config.Save(env.dir, env.cfg); err != nil {
 			return err
 		}
@@ -136,14 +145,11 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		runtimeState = loadRuntimeState(raw)
 	}
 
-	var inviteConsumer auth.InviteConsumer
-	if creds.DelegationKey() != nil {
-		var entries []*statev1.ConsumedInvite
-		if runtimeState != nil {
-			entries = runtimeState.GetConsumedInvites()
-		}
-		inviteConsumer = auth.NewInviteConsumer(entries)
+	var consumedEntries []*statev1.ConsumedInvite
+	if runtimeState != nil {
+		consumedEntries = runtimeState.GetConsumedInvites()
 	}
+	inviteConsumer := auth.NewInviteConsumer(consumedEntries)
 
 	bootstrapPeers := make([]supervisor.BootstrapTarget, 0, len(env.cfg.BootstrapPeers))
 	for peerHex, addrs := range env.cfg.BootstrapPeers {
@@ -168,12 +174,12 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		if parseErr != nil {
 			continue
 		}
-		initialConns = append(initialConns, supervisor.ConnectionEntry{PeerKey: peerKey, RemotePort: conn.RemotePort, LocalPort: conn.LocalPort})
+		initialConns = append(initialConns, supervisor.ConnectionEntry{PeerKey: peerKey, RemotePort: conn.RemotePort, LocalPort: conn.LocalPort, Protocol: configProtocolToProto(conn.Protocol)})
 	}
 
 	initialServices := make([]supervisor.ServiceEntry, 0, len(env.cfg.Services))
 	for _, svc := range env.cfg.Services {
-		initialServices = append(initialServices, supervisor.ServiceEntry{Name: svc.Name, Port: svc.Port})
+		initialServices = append(initialServices, supervisor.ServiceEntry{Name: svc.Name, Port: svc.Port, Protocol: configProtocolToProto(svc.Protocol)})
 	}
 
 	n, err := supervisor.New(supervisor.Options{
@@ -191,7 +197,10 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		InitialServices:    initialServices,
 		MaxConnectionAge:   24 * time.Hour, //nolint:mnd
 		BootstrapPublic:    env.cfg.Public,
+		NodeName:           env.cfg.Name,
 		MetricsEnabled:     metricsEnabled,
+		CPUBudgetPercent:   env.cfg.Resources.CPUPercent,
+		MemBudgetPercent:   env.cfg.Resources.MemPercent,
 	}, creds, inviteConsumer)
 	if err != nil {
 		return err

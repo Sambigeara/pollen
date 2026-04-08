@@ -28,6 +28,10 @@ const (
 	attrWorkloadClaim
 	attrTrafficHeatmap
 	attrHeartbeat
+	attrSeedLoad
+	attrAdminCapable
+	attrNodeName
+	attrSeedDemand
 )
 
 type attrKey struct {
@@ -137,7 +141,7 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		if key.kind == attrService {
 			domainEvents = append(domainEvents, ServiceChanged{Peer: pk, Name: key.name})
 		}
-		if key.kind == attrReachability || key.kind == attrVivaldi || key.kind == attrNetwork {
+		if key.kind == attrReachability || key.kind == attrVivaldi || key.kind == attrNetwork || key.kind == attrObservedAddress {
 			domainEvents = append(domainEvents, TopologyChanged{Peer: pk})
 		}
 		if key.kind == attrWorkloadClaim || key.kind == attrWorkloadSpec {
@@ -159,14 +163,14 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent) []*statev1.Gos
 	if ok && !ev.Deleted {
 		if _, exists := rec.log[key]; !exists {
 			switch key.kind { //nolint:exhaustive
-			case attrWorkloadSpec, attrService, attrNetwork, attrCertExpiry, attrDeny:
+			case attrWorkloadSpec, attrService, attrNetwork, attrCertExpiry, attrDeny, attrNodeName:
 				rec.maxCounter++
 				rec.log[key] = &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
 					Counter: rec.maxCounter,
 					Change:  ev.Change,
 				}
-			case attrWorkloadClaim, attrReachability, attrHeartbeat:
+			case attrWorkloadClaim, attrReachability, attrHeartbeat, attrSeedLoad, attrSeedDemand:
 				rec.maxCounter++
 				rec.log[key] = &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
@@ -277,6 +281,9 @@ func (s *store) tombstoneStaleAttrsLocked(rec *nodeRecord) {
 		{Change: &statev1.GossipEvent_ResourceTelemetry{ResourceTelemetry: &statev1.ResourceTelemetryChange{}}},
 		{Change: &statev1.GossipEvent_TrafficHeatmap{TrafficHeatmap: &statev1.TrafficHeatmapChange{}}},
 		{Change: &statev1.GossipEvent_Heartbeat{Heartbeat: &statev1.HeartbeatChange{}}},
+		{Change: &statev1.GossipEvent_SeedLoad{SeedLoad: &statev1.SeedLoadChange{}}},
+		{Change: &statev1.GossipEvent_SeedDemand{SeedDemand: &statev1.SeedDemandChange{}}},
+		{Change: &statev1.GossipEvent_AdminCapable{AdminCapable: &statev1.AdminCapableChange{}}},
 	}
 	for _, ev := range ephemeral {
 		rec.maxCounter++
@@ -383,6 +390,14 @@ func getAttrKey(ev *statev1.GossipEvent) (attrKey, bool) {
 		return attrKey{kind: attrTrafficHeatmap}, true
 	case *statev1.GossipEvent_Heartbeat:
 		return attrKey{kind: attrHeartbeat}, true
+	case *statev1.GossipEvent_SeedLoad:
+		return attrKey{kind: attrSeedLoad}, true
+	case *statev1.GossipEvent_AdminCapable:
+		return attrKey{kind: attrAdminCapable}, true
+	case *statev1.GossipEvent_NodeName:
+		return attrKey{kind: attrNodeName}, true
+	case *statev1.GossipEvent_SeedDemand:
+		return attrKey{kind: attrSeedDemand}, true
 	}
 	return attrKey{}, false
 }

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/quic-go/quic-go"
+	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -176,4 +177,114 @@ func (s *trafficCountedStream) Close() error { return s.inner.Close() }
 
 func wrapTrafficStream(stream io.ReadWriteCloser, recorder TrafficRecorder, peer types.PeerKey) io.ReadWriteCloser {
 	return &trafficCountedStream{inner: stream, recorder: recorder, peer: peer}
+}
+
+const datagramRouteHeaderSize = routeHeaderSize // 66 bytes: [32:dest][32:source][1:TTL][1:innerType]
+
+func (m *QUICTransport) sendRoutedDatagram(ctx context.Context, dest types.PeerKey, innerType DatagramType, data []byte, nextHop types.PeerKey) error {
+	hdr := make([]byte, 1+datagramRouteHeaderSize+len(data))
+	hdr[0] = byte(DatagramTypeRouted)
+	copy(hdr[1:33], dest[:])
+	copy(hdr[33:65], m.localKey[:])
+	hdr[65] = defaultRouteTTL
+	hdr[66] = byte(innerType)
+	copy(hdr[67:], data)
+	return m.sendRawDatagram(ctx, nextHop, hdr)
+}
+
+func (m *QUICTransport) handleRoutedDatagram(ctx context.Context, payload []byte, upstreamPeer types.PeerKey) {
+	if len(payload) < datagramRouteHeaderSize {
+		return
+	}
+
+	var dest, source types.PeerKey
+	copy(dest[:], payload[0:32])
+	copy(source[:], payload[32:64])
+	ttl := payload[64]
+	innerType := DatagramType(payload[65])
+	innerPayload := payload[datagramRouteHeaderSize:]
+
+	// TODO(saml) no-op trafficTracker would probably be a better pattern here (and poss elsewhere)
+	if m.trafficTracker != nil {
+		m.trafficTracker.Record(upstreamPeer, uint64(len(payload)), 0)
+	}
+
+	if dest == m.localKey {
+		switch innerType {
+		case DatagramTypeTunnel:
+			select {
+			case m.tunnelDatagramCh <- Packet{From: source, Data: innerPayload}:
+			case <-ctx.Done():
+			}
+		case DatagramTypeMembership:
+			m.deliverRoutedMembershipDatagram(ctx, source, innerPayload)
+		default:
+		}
+		return
+	}
+
+	if ttl <= 1 {
+		return
+	}
+
+	m.sessionsMu.RLock()
+	s, ok := m.sessions[dest]
+	m.sessionsMu.RUnlock()
+	nextHop := dest
+
+	if !ok {
+		if m.router == nil {
+			return
+		}
+		nextHop, ok = m.router.NextHop(dest)
+		if !ok || nextHop == source {
+			return
+		}
+		m.sessionsMu.RLock()
+		_, ok = m.sessions[nextHop]
+		m.sessionsMu.RUnlock()
+		if !ok {
+			return
+		}
+	}
+	_ = s // used only for the session existence check above
+
+	fwd := make([]byte, 1+datagramRouteHeaderSize+len(innerPayload))
+	fwd[0] = byte(DatagramTypeRouted)
+	copy(fwd[1:33], dest[:])
+	copy(fwd[33:65], source[:])
+	fwd[65] = ttl - 1
+	fwd[66] = byte(innerType)
+	copy(fwd[67:], innerPayload)
+
+	if m.trafficTracker != nil {
+		m.trafficTracker.Record(nextHop, 0, uint64(len(fwd)))
+	}
+
+	_ = m.sendRawDatagram(ctx, nextHop, fwd)
+}
+
+func (m *QUICTransport) deliverRoutedMembershipDatagram(ctx context.Context, source types.PeerKey, data []byte) {
+	env := &meshv1.Envelope{}
+	if err := env.UnmarshalVT(data); err != nil {
+		return
+	}
+	if resp, ok := env.GetBody().(*meshv1.Envelope_CertRenewalResponse); ok {
+		select {
+		case m.renewalCh <- resp.CertRenewalResponse:
+		case <-ctx.Done():
+		}
+		return
+	}
+	if resp, ok := env.GetBody().(*meshv1.Envelope_CertPushResponse); ok {
+		select {
+		case m.certPushCh <- resp.CertPushResponse:
+		case <-ctx.Done():
+		}
+		return
+	}
+	select {
+	case m.recvCh <- Packet{From: source, Data: data}:
+	case <-ctx.Done():
+	}
 }

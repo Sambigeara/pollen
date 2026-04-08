@@ -50,9 +50,12 @@ func (s Status) String() string {
 }
 
 type WorkloadSummary struct {
-	CompiledAt time.Time
-	Hash       string
-	Status     Status
+	CompiledAt      time.Time
+	Hash            string
+	Name            string
+	Status          Status
+	EffectiveTarget uint32
+	Pressure        float64
 }
 
 type manager struct {

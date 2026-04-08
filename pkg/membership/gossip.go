@@ -156,6 +156,9 @@ func (s *Service) handleDatagram(ctx context.Context, from types.PeerKey, data [
 	case *meshv1.Envelope_CertRenewalRequest:
 		s.handleCertRenewalRequest(ctx, from, body.CertRenewalRequest)
 
+	case *meshv1.Envelope_CertPushRequest:
+		s.handleCertPushRequest(ctx, from, body.CertPushRequest)
+
 	default:
 		if s.datagramHandler != nil {
 			s.datagramHandler(ctx, from, env)

@@ -110,7 +110,9 @@ func knownPeersFromSnapshot(snap state.Snapshot) []knownPeer {
 		if _, ok := live[pk]; !ok {
 			continue
 		}
-		if nv.LastAddr == "" && (len(nv.IPs) == 0 || nv.LocalPort == 0) {
+		hasObservedAddr := nv.ObservedExternalIP != "" && (nv.ExternalPort != 0 || nv.LocalPort != 0)
+		hasIPAddrs := len(nv.IPs) > 0 && nv.LocalPort != 0
+		if nv.LastAddr == "" && !hasObservedAddr && !hasIPAddrs {
 			continue
 		}
 		known = append(known, knownPeer{

@@ -32,19 +32,17 @@ var (
 	}
 )
 
-func GetAdvertisableAddrs(exclusions []netip.Prefix) ([]string, error) {
+// GetLocalInterfaceAddrs returns routable IPs from local network interfaces,
+// excluding loopback, link-local, virtual, and any prefixes in exclusions.
+func GetLocalInterfaceAddrs(exclusions []netip.Prefix) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), publicIPQueryTimeout)
 	defer cancel()
 
-	publicIPs := getPublicIPs(ctx)
 	localIPs := getLocalIPs(ctx)
-	all := make([]netip.Addr, 0, len(publicIPs)+len(localIPs))
-	all = append(all, publicIPs...)
-	all = append(all, localIPs...)
 
-	seen := make(map[netip.Addr]bool, len(all))
-	results := make([]string, 0, len(all))
-	for _, ip := range all {
+	seen := make(map[netip.Addr]bool, len(localIPs))
+	results := make([]string, 0, len(localIPs))
+	for _, ip := range localIPs {
 		if seen[ip] {
 			continue
 		}
@@ -56,20 +54,24 @@ func GetAdvertisableAddrs(exclusions []netip.Prefix) ([]string, error) {
 	}
 
 	if len(results) == 0 {
-		return nil, errors.New("could not determine any advertisable IP addresses")
+		return nil, errors.New("could not determine any local interface addresses")
 	}
 	return results, nil
 }
 
-func getPublicIPs(ctx context.Context) []netip.Addr {
-	var out []netip.Addr
+// GetPublicIP queries external providers for the node's public IP.
+// Returns a single IP string (preferring IPv4), or empty string on failure.
+func GetPublicIP() string {
+	ctx, cancel := context.WithTimeout(context.Background(), publicIPQueryTimeout)
+	defer cancel()
+
 	if ip, err := raceProviders(ctx, ipv4Providers); err == nil {
-		out = append(out, ip)
+		return ip.String()
 	}
 	if ip, err := raceProviders(ctx, ipv6Providers); err == nil {
-		out = append(out, ip)
+		return ip.String()
 	}
-	return out
+	return ""
 }
 
 func getLocalIPs(ctx context.Context) []netip.Addr {

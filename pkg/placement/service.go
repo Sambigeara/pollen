@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -29,10 +27,11 @@ type PlacementAPI interface {
 	Start(ctx context.Context) error
 	Stop() error
 
-	Seed(hash string, binary []byte, replicas, memoryPages, timeoutMs uint32) error
+	Seed(name, hash string, binary []byte, replicas, memoryPages, timeoutMs uint32, spread float32) error
 	Unseed(hash string) error
 	Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
 	Status() []WorkloadSummary
+	PlacementInfo() map[string][2]float64
 
 	HandleArtifactStream(stream io.ReadWriteCloser, peer types.PeerKey)
 	HandleWorkloadStream(stream io.ReadWriteCloser, peer types.PeerKey)
@@ -44,10 +43,12 @@ var _ PlacementAPI = (*Service)(nil)
 
 type WorkloadState interface {
 	Snapshot() state.Snapshot
-	SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) []state.Event
+	SetWorkloadSpec(name, hash string, replicas, memoryPages, timeoutMs uint32, spread float32) []state.Event
 	ClaimWorkload(hash string) []state.Event
 	ReleaseWorkload(hash string) []state.Event
-	SetLocalResources(cpu, mem float64) []state.Event
+	SetLocalResources(cpu, mem float64, memTotalBytes uint64, numCPU, cpuBudgetPct, memBudgetPct uint32) []state.Event
+	SetSeedLoad(rates map[string]float32) []state.Event
+	SetSeedDemand(rates map[string]float32) []state.Event
 }
 
 type StreamOpener interface {
@@ -55,16 +56,20 @@ type StreamOpener interface {
 }
 
 type Service struct {
-	store      WorkloadState
-	mesh       StreamOpener
-	ctx        context.Context
-	manager    *manager
-	reconciler *reconciler
-	cas        *cas.Store
-	log        *zap.SugaredLogger
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	localID    types.PeerKey
+	store            WorkloadState
+	mesh             StreamOpener
+	ctx              context.Context
+	manager          *manager
+	reconciler       *reconciler
+	cas              *cas.Store
+	log              *zap.SugaredLogger
+	cancel           context.CancelFunc
+	utilisation      *utilisationTracker
+	latency          *latencyTracker
+	wg               sync.WaitGroup
+	localID          types.PeerKey
+	cpuBudgetPercent uint32
+	memBudgetPercent uint32
 }
 
 type Option func(*Service)
@@ -75,6 +80,13 @@ func WithLogger(log *zap.SugaredLogger) Option {
 
 func WithMesh(mesh StreamOpener) Option {
 	return func(s *Service) { s.mesh = mesh }
+}
+
+func WithResourceBudget(cpuPercent, memPercent uint32) Option {
+	return func(s *Service) {
+		s.cpuBudgetPercent = cpuPercent
+		s.memBudgetPercent = memPercent
+	}
 }
 
 func New(self types.PeerKey, store WorkloadState, casStore *cas.Store, runtime WASMRuntime, opts ...Option) *Service {
@@ -88,6 +100,8 @@ func New(self types.PeerKey, store WorkloadState, casStore *cas.Store, runtime W
 		o(s)
 	}
 	s.manager = newManager(casStore, runtime)
+	s.utilisation = newUtilisationTracker()
+	s.latency = newLatencyTracker()
 	return s
 }
 
@@ -101,11 +115,12 @@ func (s *Service) Start(ctx context.Context) error {
 		s.manager,
 		s.cas,
 		newArtifactFetcher(s.mesh, s.cas),
+		s.utilisation,
 		s.log.Named("scheduler"),
 		&s.wg,
 	)
 
-	s.wg.Add(2) //nolint:mnd
+	s.wg.Add(3) //nolint:mnd
 	go func() {
 		defer s.wg.Done()
 		s.reconciler.Run(ctx)
@@ -113,6 +128,10 @@ func (s *Service) Start(ctx context.Context) error {
 	go func() {
 		defer s.wg.Done()
 		s.runResourceTicker(ctx)
+	}()
+	go func() {
+		defer s.wg.Done()
+		s.utilisation.run(ctx)
 	}()
 
 	return nil
@@ -135,13 +154,13 @@ func (s *Service) runResourceTicker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cpuPct, memPct, _, _ := sysinfo.Sample()
-			s.store.SetLocalResources(float64(cpuPct), float64(memPct))
+			cpuPct, memPct, memTotal, numCPU := sysinfo.Sample()
+			s.store.SetLocalResources(float64(cpuPct), float64(memPct), memTotal, numCPU, s.cpuBudgetPercent, s.memBudgetPercent)
 		}
 	}
 }
 
-func (s *Service) Seed(hash string, binary []byte, replicas, memoryPages, timeoutMs uint32) error {
+func (s *Service) Seed(name, hash string, binary []byte, replicas, memoryPages, timeoutMs uint32, spread float32) error {
 	cfg := wasm.NewPluginConfig(memoryPages, time.Duration(timeoutMs)*time.Millisecond)
 	gotHash, err := s.manager.Seed(s.ctx, binary, cfg)
 	if err != nil && !errors.Is(err, ErrAlreadyRunning) {
@@ -153,79 +172,203 @@ func (s *Service) Seed(hash string, binary []byte, replicas, memoryPages, timeou
 	if replicas == 0 {
 		replicas = 1
 	}
-	s.store.SetWorkloadSpec(hash, replicas, memoryPages, timeoutMs)
+
+	// Supersede: if this peer already has a spec with the same name but
+	// a different hash, unseed the old one first.
+	if oldHash, ok := s.store.Snapshot().LocalSpecByName(name, s.localID); ok && oldHash != hash {
+		if s.manager.IsRunning(oldHash) {
+			_ = s.manager.Unseed(oldHash)
+		}
+		s.store.ReleaseWorkload(oldHash)
+		s.store.SetWorkloadSpec(name, oldHash, 0, 0, 0, 0)
+		s.utilisation.Clear(oldHash)
+	}
+
+	s.store.SetWorkloadSpec(name, hash, replicas, memoryPages, timeoutMs, spread)
 	s.store.ClaimWorkload(hash)
 	return nil
 }
 
 func (s *Service) Unseed(hash string) error {
-	hash = s.resolveHash(hash)
+	name, hash := s.resolveLocalFirst(hash)
 	if err := s.manager.Unseed(hash); err != nil {
 		return err
 	}
 	s.store.ReleaseWorkload(hash)
-	s.store.SetWorkloadSpec(hash, 0, 0, 0)
+	s.store.SetWorkloadSpec(name, hash, 0, 0, 0, 0)
+	s.utilisation.Clear(hash)
 	return nil
 }
 
 func (s *Service) Call(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
-	hash = s.resolveHash(hash)
+	hash = s.resolveGlobal(hash)
 
-	if s.manager.IsRunning(hash) {
-		return s.manager.Call(ctx, hash, function, input)
-	}
-
+	locallyRunning := s.manager.IsRunning(hash)
 	snap := s.store.Snapshot()
 	claimants := snap.Claims[hash]
-	if len(claimants) == 0 {
+
+	// Record demand for every incoming call regardless of routing or claimant
+	// availability. This keeps the demand signal alive during outages and when
+	// serving locally, so the localDemandScore bonus persists. Only track
+	// hashes with a known spec to avoid bloating the tracker.
+	if _, hasSpec := snap.Specs[hash]; hasSpec {
+		s.utilisation.RecordDemand(hash)
+	}
+
+	if !locallyRunning && len(claimants) == 0 {
 		return nil, fmt.Errorf("no node claims workload %s: %w", shortHash(hash), ErrNotRunning)
 	}
 
-	sorted := sortedClaimants(claimants)
-	var lastErr error
-	for _, target := range sorted {
-		stream, err := s.mesh.OpenStream(ctx, target, transport.StreamTypeWorkload)
-		if err != nil {
-			s.log.Debugw("workload stream failed, trying next claimant", "target", target.Short(), "hash", shortHash(hash), "err", err)
-			lastErr = err
-			continue
-		}
+	target, isLocal := pickP2C(s.localID, locallyRunning, claimants, s.latency, hash)
 
-		out, err := invokeOverStream(ctx, stream, hash, function, input)
-		if err != nil {
-			if errors.Is(err, ErrWorkloadFailed) {
-				return nil, err
-			}
-			s.log.Warnw("workload invocation failed, trying next claimant", "target", target.Short(), "hash", shortHash(hash), "err", err)
-			lastErr = err
-			continue
+	if isLocal {
+		start := time.Now()
+		out, err := s.manager.Call(ctx, hash, function, input)
+		s.latency.Record(s.localID, hash, float64(time.Since(start).Milliseconds()))
+		if !errors.Is(err, ErrNotRunning) {
+			s.utilisation.RecordServed(hash)
 		}
+		return out, err
+	}
+
+	out, err := s.forwardCall(ctx, target, hash, function, input)
+	if err == nil {
 		return out, nil
 	}
-	return nil, fmt.Errorf("all %d claimants failed for %s: %w", len(sorted), shortHash(hash), lastErr)
+	if errors.Is(err, ErrWorkloadFailed) {
+		return nil, err
+	}
+
+	// Fallback: try remaining claimants in shuffled order.
+	for _, fallback := range shuffledClaimants(claimants, target) {
+		if fallback == s.localID && locallyRunning {
+			start := time.Now()
+			out, err = s.manager.Call(ctx, hash, function, input)
+			s.latency.Record(s.localID, hash, float64(time.Since(start).Milliseconds()))
+			if !errors.Is(err, ErrNotRunning) {
+				s.utilisation.RecordServed(hash)
+			}
+		} else {
+			out, err = s.forwardCall(ctx, fallback, hash, function, input)
+		}
+		if err == nil {
+			return out, nil
+		}
+		if errors.Is(err, ErrWorkloadFailed) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("all %d claimants failed for %s: %w", len(claimants), shortHash(hash), err)
+}
+
+func (s *Service) forwardCall(ctx context.Context, target types.PeerKey, hash, function string, input []byte) ([]byte, error) {
+	stream, err := s.mesh.OpenStream(ctx, target, transport.StreamTypeWorkload)
+	if err != nil {
+		s.log.Debugw("workload stream failed", "target", target.Short(), "hash", shortHash(hash), "err", err)
+		return nil, err
+	}
+
+	start := time.Now()
+	out, err := invokeOverStream(ctx, stream, hash, function, input)
+	if err != nil {
+		s.log.Warnw("workload invocation failed", "target", target.Short(), "hash", shortHash(hash), "err", err)
+		return nil, err
+	}
+	s.latency.Record(target, hash, float64(time.Since(start).Milliseconds()))
+	return out, nil
 }
 
 func (s *Service) Status() []WorkloadSummary {
-	return s.manager.List()
+	summaries := s.manager.List()
+	snap := s.store.Snapshot()
+	pinfo := s.reconciler.allPlacementInfo()
+	for i := range summaries {
+		for _, sv := range snap.Specs {
+			if sv.Spec.GetHash() == summaries[i].Hash {
+				summaries[i].Name = sv.Spec.GetName()
+				break
+			}
+		}
+		if info, ok := pinfo[summaries[i].Hash]; ok {
+			summaries[i].EffectiveTarget = uint32(info[0])
+			summaries[i].Pressure = info[1]
+		}
+	}
+	return summaries
+}
+
+// PlacementInfo returns effective target and pressure for all tracked hashes.
+func (s *Service) PlacementInfo() map[string][2]float64 {
+	return s.reconciler.allPlacementInfo()
 }
 
 func (s *Service) HandleArtifactStream(stream io.ReadWriteCloser, _ types.PeerKey) {
 	handleArtifactStream(stream, s.cas)
 }
 
-func (s *Service) HandleWorkloadStream(stream io.ReadWriteCloser, _ types.PeerKey) {
-	handleWorkloadStream(s.ctx, stream, s.manager, workloadInvocationTimeout)
+func (s *Service) HandleWorkloadStream(stream io.ReadWriteCloser, peer types.PeerKey) {
+	handleWorkloadStream(s.ctx, stream, peer, &trackedInvoker{inner: s.manager, ut: s.utilisation}, workloadInvocationTimeout)
+}
+
+type trackedInvoker struct {
+	inner workloadInvoker
+	ut    *utilisationTracker
+}
+
+func (t *trackedInvoker) Call(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
+	out, err := t.inner.Call(ctx, hash, function, input)
+	if !errors.Is(err, ErrNotRunning) {
+		t.ut.RecordServed(hash)
+	}
+	return out, err
 }
 
 func (s *Service) Signal() {
 	s.reconciler.Signal()
 }
 
-func (s *Service) resolveHash(prefix string) string {
+// resolveLocalFirst resolves an identifier (name or hash prefix) for local
+// operations like unseed. Prefers the local peer's spec when resolving
+// by name, so operators can manage their own seeds even when another
+// peer publishes the same name.
+func (s *Service) resolveLocalFirst(identifier string) (string, string) {
+	snap := s.store.Snapshot()
+
+	// Name match (local peer first)
+	if hash, ok := snap.LocalSpecByName(identifier, s.localID); ok {
+		return identifier, hash
+	}
+
+	// Fall back to global hash resolution
+	hash := s.resolveHashPrefix(identifier, snap)
+	name := identifier
+	for _, sv := range snap.Specs {
+		if sv.Spec.GetHash() == hash {
+			name = sv.Spec.GetName()
+			break
+		}
+	}
+	return name, hash
+}
+
+// resolveGlobal resolves an identifier (name or hash prefix) for global
+// operations like call. Prefers the canonical name winner (lowest PeerKey)
+// for routing to the best replica.
+func (s *Service) resolveGlobal(identifier string) string {
+	snap := s.store.Snapshot()
+
+	// Name match (canonical winner)
+	if hash, _, ok := snap.SpecByName(identifier); ok {
+		return hash
+	}
+
+	return s.resolveHashPrefix(identifier, snap)
+}
+
+func (s *Service) resolveHashPrefix(prefix string, snap state.Snapshot) string {
 	if s.manager.IsRunning(prefix) {
 		return prefix
 	}
-	snap := s.store.Snapshot()
 	if _, ok := snap.Claims[prefix]; ok {
 		return prefix
 	}
@@ -250,8 +393,4 @@ func shortHash(h string) string {
 		return h
 	}
 	return h[:n]
-}
-
-func sortedClaimants(claimants map[types.PeerKey]struct{}) []types.PeerKey {
-	return slices.SortedFunc(maps.Keys(claimants), func(a, b types.PeerKey) int { return a.Compare(b) })
 }

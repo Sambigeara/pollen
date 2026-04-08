@@ -12,6 +12,7 @@ import (
 
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/wasm"
 	"github.com/stretchr/testify/require"
 )
 
@@ -128,7 +129,7 @@ func TestHandleAndInvokeRoundTrip(t *testing.T) {
 	server, client := pipePair(t)
 
 	// Test goroutine does not matter, but production needs tracking.
-	go handleWorkloadStream(ctx, server, invoker, 10*time.Second)
+	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, 10*time.Second)
 
 	output, err := invokeOverStream(ctx, client, hash, "handle", []byte("hello"))
 	require.NoError(t, err)
@@ -145,11 +146,42 @@ func TestHandleWorkloadStream_Error(t *testing.T) {
 
 	ctx := context.Background()
 	server, client := pipePair(t)
-	go handleWorkloadStream(ctx, server, invoker, 10*time.Second)
+	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, 10*time.Second)
 
 	_, err := invokeOverStream(ctx, client, hash, "run", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not compiled")
+}
+
+func TestHandleAndInvokeRoundTrip_CallerInfo(t *testing.T) {
+	hash := "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	wirePK := types.PeerKeyFromBytes([]byte("01234567890123456789012345678901"))
+	authPK := types.PeerKeyFromBytes([]byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"))
+	var gotCtx context.Context
+	invoker := &mockInvoker{
+		callFn: func(ctx context.Context, _, _ string, input []byte) ([]byte, error) {
+			gotCtx = ctx
+			return input, nil
+		},
+	}
+
+	// Client sends wirePK in the CallerInfo JSON.
+	info := wasm.CallerInfo{PeerKey: wirePK, Attributes: map[string]any{"role": "relay"}}
+	ctx := wasm.WithCallerInfo(context.Background(), info)
+
+	server, client := pipePair(t)
+	// Server uses authPK as the transport-authenticated peer.
+	go handleWorkloadStream(context.Background(), server, authPK, invoker, 10*time.Second)
+
+	output, err := invokeOverStream(ctx, client, hash, "handle", []byte("x"))
+	require.NoError(t, err)
+	require.Equal(t, []byte("x"), output)
+
+	got, ok := wasm.CallerInfoFromContext(gotCtx)
+	require.True(t, ok)
+	// PeerKey must be the transport-authenticated peer, not the wire value.
+	require.Equal(t, authPK, got.PeerKey)
+	require.Equal(t, "relay", got.Attributes["role"])
 }
 
 func TestHandleWorkloadStream_EmptyInput(t *testing.T) {
@@ -162,7 +194,7 @@ func TestHandleWorkloadStream_EmptyInput(t *testing.T) {
 
 	ctx := context.Background()
 	server, client := pipePair(t)
-	go handleWorkloadStream(ctx, server, invoker, 10*time.Second)
+	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, 10*time.Second)
 
 	output, err := invokeOverStream(ctx, client, hash, "ping", nil)
 	require.NoError(t, err)

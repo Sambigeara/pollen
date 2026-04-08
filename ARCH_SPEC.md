@@ -98,7 +98,10 @@ type StateStore interface {
     RemoveService(name string) []Event
     SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event
 
-    SetBootstrapPublic()
+    SetPublic()
+    SetAdmin()
+    ClearAdmin()
+    SetNodeName(name string)
 }
 
 var _ StateStore = (*Store)(nil)
@@ -218,11 +221,19 @@ Tunneling and placement receive this adapter instead of raw transport.
 
 ### Datagram Protocol
 
-Datagrams (`Send`/`Recv`) carry gossip events, cert renewal request/response, observed address notifications, and punch coordination — all via `Envelope` proto oneof variants. Membership is the sole consumer of `Recv()` and demultiplexes internally. `StreamTypeCertRenewal` exists as a stream type constant for future migration of cert renewal to streams.
+All QUIC datagrams carry a 1-byte `DatagramType` prefix for multiplexing:
+
+| Type | Name | Consumer |
+|------|------|----------|
+| 1 | `DatagramTypeMembership` | membership (gossip events, cert renewal, observed address, punch coordination via `Envelope` proto oneof) |
+| 2 | `DatagramTypeTunnel` | tunneling (UDP tunnel payloads) |
+| 3 | `DatagramTypeRouted` | transport-internal (multi-hop datagram forwarding, analogous to `StreamTypeRouted`) |
+
+Membership consumes `Recv()` for type-1 datagrams. Tunneling consumes `RecvTunnelDatagram()` for type-2 datagrams. Routed datagrams are handled transparently by transport — callers never see `DatagramTypeRouted`, just as they never see `StreamTypeRouted`. The supervisor dispatches tunnel datagrams to `TunnelingAPI.HandleTunnelDatagram()` in a dedicated goroutine.
 
 ### Transport
 
-Transport handles QUIC connections, stream multiplexing, and NAT traversal. Data bytes are opaque. Transport also handles routed stream forwarding internally — when an accepted stream is `StreamTypeRouted`, transport reads the route header, forwards across hops, and delivers the inner stream type via the accept channel. Callers never see `StreamTypeRouted`.
+Transport handles QUIC connections, stream multiplexing, datagram multiplexing, and NAT traversal. Data bytes are opaque. Transport handles routed stream and datagram forwarding internally — when an accepted stream is `StreamTypeRouted` or a datagram is `DatagramTypeRouted`, transport reads the route header, forwards across hops, and delivers the inner type via the accept channel. Callers never see routed types.
 
 **Producer-side interface** — the complete public API:
 
@@ -241,6 +252,7 @@ type Transport interface {
     IsOutbound(peer types.PeerKey) bool
 
     Send(ctx context.Context, peer types.PeerKey, data []byte) error
+    SendMembershipDatagram(ctx context.Context, peer types.PeerKey, data []byte) error
     Recv(ctx context.Context) (Packet, error)
 
     OpenStream(ctx context.Context, peer types.PeerKey, st StreamType) (Stream, error)
@@ -263,6 +275,10 @@ type Transport interface {
     RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.DelegationCert, error)
     PeerDelegationCert(peer types.PeerKey) (*admissionv1.DelegationCert, bool)
 
+    SetInviteForwarder(f InviteForwarder)
+    SetInviteSigner(s *auth.DelegationSigner)
+    SetInviteConsumer(c auth.InviteConsumer)
+    PushCert(ctx context.Context, peer types.PeerKey, cert *admissionv1.DelegationCert) error
     JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
 }
 
@@ -370,10 +386,9 @@ type MembershipAPI interface {
     Stop() error
 
     DenyPeer(key types.PeerKey) error
-    Invite(subject string) (string, error)
+    IssueCert(ctx context.Context, peerKey types.PeerKey, admin bool, attributes *structpb.Struct) error
 
     HandleDigestStream(ctx context.Context, stream transport.Stream, peer types.PeerKey)
-    HandleCertRenewalStream(stream transport.Stream, peer types.PeerKey)
 
     Events() <-chan state.Event
     ControlMetrics() ControlMetrics
@@ -434,7 +449,7 @@ func New(self types.PeerKey, workloads WorkloadState, cas cas.Store, runtime was
 
 #### Tunneling
 
-Owns: service exposure, connection lifecycle, traffic tracking, desired connection management.
+Owns: service exposure (TCP and UDP), connection lifecycle, traffic tracking, desired connection management, UDP flow tracking and proxying.
 
 ```go
 package tunneling
@@ -443,19 +458,20 @@ type TunnelingAPI interface {
     Start(ctx context.Context) error
     Stop() error
 
-    Connect(ctx context.Context, service, peer string) error
+    Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) (uint32, error)
     Disconnect(service string) error
-    ExposeService(port uint32, name string) error
+    ExposeService(port uint32, name string, protocol statev1.ServiceProtocol) error
     UnexposeService(name string) error
     ListConnections() []ConnectionInfo
 
     HandleTunnelStream(stream transport.Stream, peer types.PeerKey)
     HandleRoutedStream(stream transport.Stream, peer types.PeerKey)
+    HandleTunnelDatagram(data []byte, peer types.PeerKey)
 
     HandlePeerDenied(peerID types.PeerKey)
     DesiredPeers() []types.PeerKey
-    SeedDesiredConnection(pk types.PeerKey, remotePort, localPort uint32)
     ListDesiredConnections() []ConnectionInfo
+    RemoveDesiredConnection(pk types.PeerKey, remotePort uint32)
     TrafficRecorder() transport.TrafficRecorder
 }
 
@@ -569,20 +585,20 @@ func (s *Service) Stop() error
 ```go
 type MembershipControl interface {
     DenyPeer(key types.PeerKey) error
-    Invite(subject string) (string, error)
+    IssueCert(ctx context.Context, peerKey types.PeerKey, admin bool, attributes *structpb.Struct) error
 }
 
 type PlacementControl interface {
-    Seed(hash string, binary []byte, replicas, memoryPages, timeoutMs uint32) error
+    Seed(name, hash string, binary []byte, replicas, memoryPages, timeoutMs uint32, spread float32) error
     Unseed(hash string) error
     Call(ctx context.Context, hash, fn string, input []byte) ([]byte, error)
     Status() []placement.WorkloadSummary
 }
 
 type TunnelingControl interface {
-    Connect(ctx context.Context, service, peer string) error
+    Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) (uint32, error)
     Disconnect(service string) error
-    ExposeService(port uint32, name string) error
+    ExposeService(port uint32, name string, protocol statev1.ServiceProtocol) error
     UnexposeService(name string) error
     ListConnections() []tunneling.ConnectionInfo
 }

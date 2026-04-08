@@ -70,6 +70,9 @@ const (
 	// ControlServiceCallWorkloadProcedure is the fully-qualified name of the ControlService's
 	// CallWorkload RPC.
 	ControlServiceCallWorkloadProcedure = "/pollen.control.v1.ControlService/CallWorkload"
+	// ControlServiceIssueCertProcedure is the fully-qualified name of the ControlService's IssueCert
+	// RPC.
+	ControlServiceIssueCertProcedure = "/pollen.control.v1.ControlService/IssueCert"
 )
 
 // ControlServiceClient is a client for the pollen.control.v1.ControlService service.
@@ -87,6 +90,7 @@ type ControlServiceClient interface {
 	SeedWorkload(context.Context, *connect.Request[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error)
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
+	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
 }
 
 // NewControlServiceClient constructs a client for the pollen.control.v1.ControlService service. By
@@ -178,6 +182,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("CallWorkload")),
 			connect.WithClientOptions(opts...),
 		),
+		issueCert: connect.NewClient[v1.IssueCertRequest, v1.IssueCertResponse](
+			httpClient,
+			baseURL+ControlServiceIssueCertProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("IssueCert")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -196,6 +206,7 @@ type controlServiceClient struct {
 	seedWorkload      *connect.Client[v1.SeedWorkloadRequest, v1.SeedWorkloadResponse]
 	unseedWorkload    *connect.Client[v1.UnseedWorkloadRequest, v1.UnseedWorkloadResponse]
 	callWorkload      *connect.Client[v1.CallWorkloadRequest, v1.CallWorkloadResponse]
+	issueCert         *connect.Client[v1.IssueCertRequest, v1.IssueCertResponse]
 }
 
 // Shutdown calls pollen.control.v1.ControlService.Shutdown.
@@ -263,6 +274,11 @@ func (c *controlServiceClient) CallWorkload(ctx context.Context, req *connect.Re
 	return c.callWorkload.CallUnary(ctx, req)
 }
 
+// IssueCert calls pollen.control.v1.ControlService.IssueCert.
+func (c *controlServiceClient) IssueCert(ctx context.Context, req *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error) {
+	return c.issueCert.CallUnary(ctx, req)
+}
+
 // ControlServiceHandler is an implementation of the pollen.control.v1.ControlService service.
 type ControlServiceHandler interface {
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
@@ -278,6 +294,7 @@ type ControlServiceHandler interface {
 	SeedWorkload(context.Context, *connect.Request[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error)
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
+	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
 }
 
 // NewControlServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -365,6 +382,12 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("CallWorkload")),
 		connect.WithHandlerOptions(opts...),
 	)
+	controlServiceIssueCertHandler := connect.NewUnaryHandler(
+		ControlServiceIssueCertProcedure,
+		svc.IssueCert,
+		connect.WithSchema(controlServiceMethods.ByName("IssueCert")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/pollen.control.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ControlServiceShutdownProcedure:
@@ -393,6 +416,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceUnseedWorkloadHandler.ServeHTTP(w, r)
 		case ControlServiceCallWorkloadProcedure:
 			controlServiceCallWorkloadHandler.ServeHTTP(w, r)
+		case ControlServiceIssueCertProcedure:
+			controlServiceIssueCertHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -452,4 +477,8 @@ func (UnimplementedControlServiceHandler) UnseedWorkload(context.Context, *conne
 
 func (UnimplementedControlServiceHandler) CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.CallWorkload is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.IssueCert is not implemented"))
 }

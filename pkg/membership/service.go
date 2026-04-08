@@ -28,25 +28,27 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var ErrCertExpired = errors.New("delegation certificate has expired")
 
 const (
-	maxDatagramPayload    = 1100
-	eventBufSize          = 64
-	certCheckInterval     = 5 * time.Minute
-	CertWarnThreshold     = 1 * time.Hour
-	CertCriticalThreshold = 15 * time.Minute
-	certRenewalTimeout    = 10 * time.Second
-	gossipStreamTimeout   = 5 * time.Second
-	maxResponseSize       = 4 << 20 // 4 MB
-	vivaldiWarmupDuration = 5 * time.Second
-	VivaldiErrAlpha       = 0.2
-	eagerSyncCooldown     = 5 * time.Second
-	eagerSyncTimeout      = 5 * time.Second
-	expirySweepInterval   = 30 * time.Second
-	ipRefreshInterval     = 5 * time.Minute
+	maxDatagramPayload         = transport.MaxDatagramPayload - 1 // minus 1-byte DatagramType prefix
+	eventBufSize               = 64
+	certCheckInterval          = 5 * time.Minute
+	CertWarnThreshold          = 1 * time.Hour
+	CertCriticalThreshold      = 15 * time.Minute
+	certRenewalTimeout         = 10 * time.Second
+	gossipStreamTimeout        = 5 * time.Second
+	maxResponseSize            = 4 << 20 // 4 MB
+	vivaldiWarmupDuration      = 5 * time.Second
+	VivaldiErrAlpha            = 0.2
+	eagerSyncCooldown          = 5 * time.Second
+	eagerSyncTimeout           = 5 * time.Second
+	expirySweepInterval        = 30 * time.Second
+	observedAddrResendInterval = 30 * time.Second
+	ipRefreshInterval          = 5 * time.Minute
 )
 
 var envelopeOverhead = (&meshv1.Envelope{Body: &meshv1.Envelope_Events{
@@ -58,6 +60,7 @@ type MembershipAPI interface {
 	Stop() error
 
 	DenyPeer(key types.PeerKey) error
+	IssueCert(ctx context.Context, peerKey types.PeerKey, admin bool, attributes *structpb.Struct) error
 
 	HandleDigestStream(ctx context.Context, stream transport.Stream, peer types.PeerKey)
 
@@ -103,6 +106,7 @@ type CertManager interface {
 	UpdateMeshCert(cert tls.Certificate)
 	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.DelegationCert, error)
 	PeerDelegationCert(peer types.PeerKey) (*admissionv1.DelegationCert, bool)
+	PushCert(ctx context.Context, peer types.PeerKey, cert *admissionv1.DelegationCert) error
 }
 
 type PeerAddressSource interface {
@@ -111,6 +115,15 @@ type PeerAddressSource interface {
 
 type PeerSessionCloser interface {
 	ClosePeerSession(peer types.PeerKey, reason transport.DisconnectReason)
+}
+
+type RoutedSender interface {
+	SendMembershipDatagram(ctx context.Context, peer types.PeerKey, data []byte) error
+}
+
+type CapabilityTransitioner interface {
+	UpgradeToAdmin(signer *auth.DelegationSigner)
+	DowngradeToLeaf()
 }
 
 type ControlMetrics struct {
@@ -132,6 +145,8 @@ type Config struct {
 	SmoothedErr      *metrics.EWMA
 	NATDetector      *nat.Detector
 	NodeMetrics      *metrics.NodeMetrics
+	RoutedSender     RoutedSender
+	CapTransition    CapabilityTransitioner
 	DatagramHandler  func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope)
 	Log              *zap.SugaredLogger
 	PollenDir        string
@@ -146,6 +161,11 @@ type Config struct {
 	Port             int
 }
 
+type sentAddr struct {
+	at   time.Time
+	addr string
+}
+
 type Service struct {
 	tracer            trace.Tracer
 	mesh              Network
@@ -155,6 +175,7 @@ type Service struct {
 	peerAddrs         PeerAddressSource
 	sessionCloser     PeerSessionCloser
 	store             ClusterState
+	lastSentAddr      map[types.PeerKey]sentAddr
 	peerConnectTime   map[types.PeerKey]time.Time
 	natDetector       *nat.Detector
 	creds             *auth.NodeCredentials
@@ -165,6 +186,8 @@ type Service struct {
 	events            chan state.Event
 	lastEagerSync     map[types.PeerKey]time.Time
 	shutdownCh        chan<- struct{}
+	routedSender      RoutedSender
+	capTransition     CapabilityTransitioner
 	datagramHandler   func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope)
 	pollenDir         string
 	advertisedIPs     []string
@@ -197,6 +220,8 @@ func New(self types.PeerKey, creds *auth.NodeCredentials, net Network, cluster C
 		certs:            cfg.Certs,
 		peerAddrs:        cfg.PeerAddrs,
 		sessionCloser:    cfg.SessionCloser,
+		routedSender:     cfg.RoutedSender,
+		capTransition:    cfg.CapTransition,
 		datagramHandler:  cfg.DatagramHandler,
 		natDetector:      cfg.NATDetector,
 		creds:            creds,
@@ -207,6 +232,7 @@ func New(self types.PeerKey, creds *auth.NodeCredentials, net Network, cluster C
 		smoothedErr:      metrics.NewEWMA(VivaldiErrAlpha, 1.0),
 		localCoord:       coords.RandomCoord(),
 		localCoordErr:    1.0,
+		lastSentAddr:     make(map[types.PeerKey]sentAddr),
 		peerConnectTime:  make(map[types.PeerKey]time.Time),
 		lastEagerSync:    make(map[types.PeerKey]time.Time),
 		events:           make(chan state.Event, eventBufSize),
@@ -378,13 +404,18 @@ func (s *Service) runPeerEventLoop(ctx context.Context) {
 					s.doEagerSync(ctx, ev.Key)
 				}
 				if len(ev.Addrs) > 0 {
-					s.sendObservedAddress(ev.Key, net.UDPAddrFromAddrPort(ev.Addrs[0]))
+					addr := net.UDPAddrFromAddrPort(ev.Addrs[0])
+					s.sendObservedAddress(ev.Key, addr)
+					s.mu.Lock()
+					s.lastSentAddr[ev.Key] = sentAddr{addr: addr.String(), at: time.Now()}
+					s.mu.Unlock()
 				}
 
 			case transport.PeerEventDisconnected:
 				s.mu.Lock()
 				delete(s.peerConnectTime, ev.Key)
 				delete(s.lastEagerSync, ev.Key)
+				delete(s.lastSentAddr, ev.Key)
 				s.mu.Unlock()
 			}
 			s.forwardEvents(s.store.SetLocalReachable(s.mesh.ConnectedPeers()))
@@ -417,10 +448,23 @@ func (s *Service) resendObservedAddresses(snap state.Snapshot) {
 	if !ok || !localNV.PubliclyAccessible {
 		return
 	}
+	now := time.Now()
 	for _, pk := range s.mesh.ConnectedPeers() {
-		if addr, ok := s.peerAddrs.GetActivePeerAddress(pk); ok {
-			s.sendObservedAddress(pk, addr)
+		addr, ok := s.peerAddrs.GetActivePeerAddress(pk)
+		if !ok {
+			continue
 		}
+		addrStr := addr.String()
+		s.mu.Lock()
+		prev := s.lastSentAddr[pk]
+		s.mu.Unlock()
+		if addrStr == prev.addr && now.Sub(prev.at) < observedAddrResendInterval {
+			continue
+		}
+		s.sendObservedAddress(pk, addr)
+		s.mu.Lock()
+		s.lastSentAddr[pk] = sentAddr{addr: addrStr, at: now}
+		s.mu.Unlock()
 	}
 }
 
@@ -528,21 +572,32 @@ func (s *Service) handleObservedAddress(from types.PeerKey, oa *meshv1.ObservedA
 }
 
 func (s *Service) refreshIPs() {
-	newIPs, err := transport.GetAdvertisableAddrs(transport.DefaultExclusions)
+	localIPs, err := transport.GetLocalInterfaceAddrs(transport.DefaultExclusions)
 	if err != nil {
-		s.log.Debugw("ip refresh failed", "err", err)
-		return
-	}
-	var addrs []netip.AddrPort
-	for _, ip := range newIPs {
-		addr, err := netip.ParseAddr(ip)
-		if err != nil {
-			continue
+		s.log.Debugw("local ip refresh failed", "err", err)
+	} else {
+		var addrs []netip.AddrPort
+		for _, ip := range localIPs {
+			addr, err := netip.ParseAddr(ip)
+			if err != nil {
+				continue
+			}
+			addrs = append(addrs, netip.AddrPortFrom(addr, uint16(s.port)))
 		}
-		addrs = append(addrs, netip.AddrPortFrom(addr, uint16(s.port)))
+		if len(s.store.SetLocalAddresses(addrs)) > 0 {
+			s.log.Infow("local IPs changed", "ips", localIPs)
+		}
 	}
-	if len(s.store.SetLocalAddresses(addrs)) > 0 {
-		s.log.Infow("advertised IPs changed", "ips", newIPs)
+
+	if publicIP := transport.GetPublicIP(); publicIP != "" {
+		snap := s.store.Snapshot()
+		if localNV, ok := snap.Nodes[snap.LocalID]; !ok || localNV.ObservedExternalIP != publicIP {
+			events := s.store.SetLocalObservedAddress(publicIP, 0)
+			if len(events) > 0 {
+				s.log.Infow("public IP changed", "ip", publicIP)
+			}
+			s.forwardEvents(events)
+		}
 	}
 }
 

@@ -7,9 +7,11 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -22,6 +24,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
@@ -59,6 +62,7 @@ func newBootstrapCmd() *cobra.Command {
 	}
 	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
 	sshCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the relay peer")
+	sshCmd.Flags().Bool("admin", false, "Delegate admin authority to the relay")
 
 	cmd.AddCommand(sshCmd)
 	return cmd
@@ -77,10 +81,22 @@ func newClusterCmds() []*cobra.Command {
 	inviteCmd.Flags().String("subject", "", "Optional hex node public key to bind invite")
 	inviteCmd.Flags().Duration("ttl", defaultInviteTTL, "Invite token validity duration")
 	inviteCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the invited peer")
+	inviteCmd.Flags().StringArray("attr", nil, "Cert attributes: key=value, JSON, or - for stdin")
 
 	adminCmd := &cobra.Command{Use: "admin", Short: "Manage admin keys"}
 	adminCmd.AddCommand(&cobra.Command{Use: "keygen", Short: "Generate the local admin key", RunE: withEnv(true, runAdminKeygen), Hidden: true})
 	adminCmd.AddCommand(&cobra.Command{Use: "set-cert <admin-cert-b64>", Short: "Install a delegated admin certificate", Args: cobra.ExactArgs(1), RunE: withEnv(true, runAdminSetCert), Hidden: true})
+
+	certCmd := &cobra.Command{Use: "cert", Short: "Certificate management"}
+	certIssueCmd := &cobra.Command{
+		Use:   "issue <peer-id>",
+		Short: "Issue a new certificate to a peer",
+		Args:  cobra.ExactArgs(1),
+		RunE:  withEnv(false, runCertIssue),
+	}
+	certIssueCmd.Flags().Bool("admin", false, "Issue with full admin capabilities")
+	certIssueCmd.Flags().StringArray("attr", nil, "Cert attributes: key=value, JSON, or - for stdin")
+	certCmd.AddCommand(certIssueCmd)
 
 	return []*cobra.Command{
 		{Use: "init", Short: "Initialize local root cluster state", RunE: withEnv(true, runInit)},
@@ -88,6 +104,7 @@ func newClusterCmds() []*cobra.Command {
 		joinCmd,
 		inviteCmd,
 		adminCmd,
+		certCmd,
 		newBootstrapCmd(),
 	}
 }
@@ -251,7 +268,12 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return err
 	}
 
-	token, err := signer.IssueInviteToken(subjectPub, bootstrap, time.Now(), ttl, expireAfter)
+	attrs, err := parseAttributes(cmd)
+	if err != nil {
+		return err
+	}
+
+	token, err := signer.IssueInviteToken(subjectPub, bootstrap, time.Now(), ttl, expireAfter, attrs)
 	if err != nil {
 		return err
 	}
@@ -325,7 +347,9 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	relayPub := ed25519.PublicKey(relayPeerKey.Bytes())
 	expireAfter, _ := cmd.Flags().GetDuration("expire-after")
 
-	if err := bootstrapAccept(cmd, env, relayPub, relayAddrs, host, expireAfter); err != nil {
+	delegateAdmin, _ := cmd.Flags().GetBool("admin")
+
+	if err := bootstrapAccept(cmd, env, relayPub, relayAddrs, host, expireAfter, delegateAdmin); err != nil {
 		return err
 	}
 
@@ -334,7 +358,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	return nil
 }
 
-func bootstrapAccept(cmd *cobra.Command, env *cliEnv, relayPub ed25519.PublicKey, relayAddrs []string, sshTarget string, expireAfter time.Duration) error {
+func bootstrapAccept(cmd *cobra.Command, env *cliEnv, relayPub ed25519.PublicKey, relayAddrs []string, sshTarget string, expireAfter time.Duration, delegateAdmin bool) error {
 	nodePriv, _, err := auth.EnsureIdentityKey(env.dir)
 	if err != nil {
 		return err
@@ -344,12 +368,12 @@ func bootstrapAccept(cmd *cobra.Command, env *cliEnv, relayPub ed25519.PublicKey
 		return errors.New("this node cannot issue tokens; only delegated admins can sign enrollment tokens")
 	}
 
-	seedToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, relayPub, 1*time.Minute, expireAfter, nil)
+	seedToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, relayPub, 1*time.Minute, expireAfter, nil, nil)
 	if err != nil {
 		return fmt.Errorf("create relay seed token: %w", err)
 	}
 
-	if err := bootstrapRelayOverSSH(cmd, env, sshTarget, seedToken, relayPub); err != nil {
+	if err := bootstrapRelayOverSSH(cmd, env, sshTarget, seedToken, relayPub, delegateAdmin); err != nil {
 		return err
 	}
 
@@ -380,7 +404,7 @@ func bootstrapAccept(cmd *cobra.Command, env *cliEnv, relayPub ed25519.PublicKey
 	joinToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, localPub, defaultInviteTTL, expireAfter, []*admissionv1.BootstrapPeer{{
 		PeerPub: append([]byte(nil), relayPub...),
 		Addrs:   append([]string(nil), relayAddrs...),
-	}})
+	}}, nil)
 	if err != nil {
 		return fmt.Errorf("create local join token: %w", err)
 	}
@@ -392,7 +416,7 @@ func bootstrapAccept(cmd *cobra.Command, env *cliEnv, relayPub ed25519.PublicKey
 	return servicectl("start", cmd)
 }
 
-func bootstrapRelayOverSSH(cmd *cobra.Command, env *cliEnv, sshTarget, seedToken string, relayPub ed25519.PublicKey) error {
+func bootstrapRelayOverSSH(cmd *cobra.Command, env *cliEnv, sshTarget, seedToken string, relayPub ed25519.PublicKey, delegateAdmin bool) error {
 	ctx := cmd.Context()
 	if out, err := sshPln(ctx, sshTarget, "join", "--no-up", "--public", seedToken).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to enroll relay node: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -403,13 +427,16 @@ func bootstrapRelayOverSSH(cmd *cobra.Command, env *cliEnv, sshTarget, seedToken
 	if err := waitForRelayReady(ctx, sshTarget); err != nil {
 		return err
 	}
-	if err := provisionRelayAdminDelegation(ctx, env, sshTarget, relayPub); err != nil {
-		return err
+	if delegateAdmin {
+		if err := provisionRelayAdminDelegation(ctx, env, sshTarget, relayPub); err != nil {
+			return err
+		}
+		if out, err := sshRoot(ctx, sshTarget, "sudo pln restart").CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
+		}
+		return waitForRelayReady(ctx, sshTarget)
 	}
-	if out, err := sshRoot(ctx, sshTarget, "sudo pln restart").CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
-	}
-	return waitForRelayReady(ctx, sshTarget)
+	return nil
 }
 
 func provisionRelayAdminDelegation(ctx context.Context, env *cliEnv, sshTarget string, relayPub ed25519.PublicKey) error {
@@ -436,6 +463,97 @@ func provisionRelayAdminDelegation(ctx context.Context, env *cliEnv, sshTarget s
 		return fmt.Errorf("failed to install relay admin cert: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func runCertIssue(cmd *cobra.Command, args []string, env *cliEnv) error {
+	prefix := strings.ToLower(args[0])
+	admin, _ := cmd.Flags().GetBool("admin")
+
+	attrs, err := parseAttributes(cmd)
+	if err != nil {
+		return err
+	}
+
+	statusResp, err := env.client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{}))
+	if err != nil {
+		return err
+	}
+
+	var matches [][]byte
+	for _, n := range statusResp.Msg.GetNodes() {
+		if peerIDHasPrefix(n.GetNode().GetPeerPub(), prefix) {
+			matches = append(matches, n.GetNode().GetPeerPub())
+		}
+	}
+	if len(matches) == 0 {
+		return fmt.Errorf("no peer matching %q", prefix)
+	}
+	if len(matches) > 1 {
+		return fmt.Errorf("ambiguous peer prefix %q matches %d peers", prefix, len(matches))
+	}
+
+	peerID := matches[0]
+	if _, err := env.client.IssueCert(cmd.Context(), connect.NewRequest(&controlv1.IssueCertRequest{
+		PeerPub:    peerID,
+		Admin:      admin,
+		Attributes: attrs,
+	})); err != nil {
+		return err
+	}
+
+	level := "leaf"
+	if admin {
+		level = "admin"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "certificate issued (%s) to %s\n", level, hex.EncodeToString(peerID)[:shortHexLen])
+	return nil
+}
+
+func parseAttributes(cmd *cobra.Command) (*structpb.Struct, error) {
+	vals, _ := cmd.Flags().GetStringArray("attr")
+	if len(vals) == 0 {
+		return nil, nil
+	}
+	merged := make(map[string]any)
+	for _, raw := range vals {
+		v := strings.TrimSpace(raw)
+		switch {
+		case v == "-":
+			stat, err := os.Stdin.Stat()
+			if err != nil || (stat.Mode()&os.ModeCharDevice) != 0 {
+				return nil, errors.New("expected JSON on stdin (pipe a file or use heredoc)")
+			}
+			data, err := io.ReadAll(cmd.InOrStdin())
+			if err != nil {
+				return nil, fmt.Errorf("reading attributes from stdin: %w", err)
+			}
+			var obj map[string]any
+			if err := json.Unmarshal(data, &obj); err != nil {
+				return nil, fmt.Errorf("invalid JSON on stdin: %w", err)
+			}
+			maps.Copy(merged, obj)
+		case strings.HasPrefix(v, "{"):
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(v), &obj); err != nil {
+				return nil, fmt.Errorf("invalid JSON in --attr: %w", err)
+			}
+			maps.Copy(merged, obj)
+		default:
+			k, val, ok := strings.Cut(v, "=")
+			if !ok || k == "" {
+				return nil, fmt.Errorf("invalid attribute: missing '=' in %q", v)
+			}
+			merged[k] = val
+		}
+	}
+	s, err := structpb.NewStruct(merged)
+	if err != nil {
+		return nil, fmt.Errorf("building attributes: %w", err)
+	}
+	if err := auth.ValidateAttributes(s); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // --- Utilities ---
@@ -489,12 +607,12 @@ func resolveJoinToken(ctx context.Context, priv ed25519.PrivateKey, encoded stri
 	return transport.RedeemInvite(ctx, priv, inviteToken)
 }
 
-func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer) (string, error) {
+func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer, attributes *structpb.Struct) (string, error) {
 	var accessDeadline time.Time
 	if expireAfter > 0 {
 		accessDeadline = time.Now().Add(expireAfter)
 	}
-	token, err := signer.IssueJoinToken(subjectPub, bootstrap, time.Now(), ttl, defaultMembershipTTL, accessDeadline)
+	token, err := signer.IssueJoinToken(subjectPub, bootstrap, time.Now(), ttl, defaultMembershipTTL, accessDeadline, attributes)
 	if err != nil {
 		return "", err
 	}

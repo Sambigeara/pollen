@@ -3,6 +3,7 @@ package auth_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var mockTime = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -48,7 +50,7 @@ func issueRootJoinToken(t *testing.T, rootPriv ed25519.PrivateKey, rootPub, subj
 	issuer, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, auth.FullCapabilities(), now.Add(-time.Minute), now.Add(membershipTTL), time.Time{})
 	require.NoError(t, err)
 	signer := loadTestSigner(t, rootPriv, rootPub, issuer)
-	token, err := signer.IssueJoinToken(subject, nil, now, time.Hour, membershipTTL, accessDeadline)
+	token, err := signer.IssueJoinToken(subject, nil, now, time.Hour, membershipTTL, accessDeadline, nil)
 	require.NoError(t, err)
 	return token
 }
@@ -370,7 +372,7 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 
 	t.Run("invite token", func(t *testing.T) {
 		bootstrap := []*admissionv1.BootstrapPeer{{PeerPub: nodePub, Addrs: []string{"127.0.0.1:60611"}}}
-		invite, err := signer.IssueInviteToken(nodePub, bootstrap, now, 10*time.Minute, 24*time.Hour)
+		invite, err := signer.IssueInviteToken(nodePub, bootstrap, now, 10*time.Minute, 24*time.Hour, nil)
 		require.NoError(t, err)
 
 		require.NoError(t, auth.VerifyInviteToken(invite, nodePub, now))
@@ -381,7 +383,7 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 	})
 
 	t.Run("join token", func(t *testing.T) {
-		join, err := signer.IssueJoinToken(nodePub, nil, now, 10*time.Minute, 24*time.Hour, time.Time{})
+		join, err := signer.IssueJoinToken(nodePub, nil, now, 10*time.Minute, 24*time.Hour, time.Time{}, nil)
 		require.NoError(t, err)
 
 		verified, err := auth.VerifyJoinToken(join, nodePub, now)
@@ -404,7 +406,7 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 		delegatedSigner := loadTestSigner(t, delegatedPriv, nodePub, issuer)
 		subjectPub, _ := newKeyPair(t)
 
-		token, err := delegatedSigner.IssueJoinToken(subjectPub, nil, now, time.Hour, 4*time.Hour, time.Time{})
+		token, err := delegatedSigner.IssueJoinToken(subjectPub, nil, now, time.Hour, 4*time.Hour, time.Time{}, nil)
 		require.NoError(t, err)
 
 		verified, err := auth.VerifyJoinToken(token, subjectPub, now)
@@ -431,7 +433,7 @@ func TestInviteTokenOpenSubject(t *testing.T) {
 	invite, err := signer.IssueInviteToken(
 		nil,
 		[]*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}},
-		now, time.Hour, 0,
+		now, time.Hour, 0, nil,
 	)
 	require.NoError(t, err)
 
@@ -456,7 +458,7 @@ func TestInviteTokenSubjectBoundMismatch(t *testing.T) {
 	invite, err := signer.IssueInviteToken(
 		boundSubject,
 		[]*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}},
-		now, time.Hour, 0,
+		now, time.Hour, 0, nil,
 	)
 	require.NoError(t, err)
 
@@ -526,9 +528,9 @@ func TestInviteConsumer_ExportAndLoad(t *testing.T) {
 	bootstrapPub, _ := newKeyPair(t)
 	bootstrapPeers := []*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}}
 
-	invite1, err := signer.IssueInviteToken(nil, bootstrapPeers, now, time.Hour, 0)
+	invite1, err := signer.IssueInviteToken(nil, bootstrapPeers, now, time.Hour, 0, nil)
 	require.NoError(t, err)
-	invite2, err := signer.IssueInviteToken(nil, bootstrapPeers, now, time.Hour, 0)
+	invite2, err := signer.IssueInviteToken(nil, bootstrapPeers, now, time.Hour, 0, nil)
 	require.NoError(t, err)
 
 	ok, err := consumer.TryConsume(invite1, now)
@@ -551,4 +553,82 @@ func TestInviteConsumer_ExportAndLoad(t *testing.T) {
 	ok, err = consumer2.TryConsume(invite2, now)
 	require.NoError(t, err)
 	require.False(t, ok, "invite2 should be rejected by restored consumer")
+}
+
+// --- Attributes tests ---
+
+func TestCertAttributesRoundTrip(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+
+	attrs, err := structpb.NewStruct(map[string]any{
+		"role":  "worker",
+		"team":  "infra",
+		"count": float64(42),
+	})
+	require.NoError(t, err)
+
+	caps := auth.LeafCapabilities()
+	caps.Attributes = attrs
+
+	cert, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, caps, now, now.Add(24*time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	require.NoError(t, auth.VerifyDelegationCert(cert, rootPub, now, rootPub))
+
+	got := cert.GetClaims().GetCapabilities().GetAttributes()
+	require.NotNil(t, got)
+	require.Equal(t, "worker", got.GetFields()["role"].GetStringValue())
+	require.Equal(t, "infra", got.GetFields()["team"].GetStringValue())
+	require.Equal(t, float64(42), got.GetFields()["count"].GetNumberValue())
+
+	// Marshal/unmarshal round-trip preserves attributes and signature.
+	raw, err := proto.Marshal(cert)
+	require.NoError(t, err)
+	restored := &admissionv1.DelegationCert{}
+	require.NoError(t, proto.Unmarshal(raw, restored))
+	require.NoError(t, auth.VerifyDelegationCert(restored, rootPub, now, rootPub))
+
+	restoredAttrs := restored.GetClaims().GetCapabilities().GetAttributes()
+	require.Equal(t, "worker", restoredAttrs.GetFields()["role"].GetStringValue())
+}
+
+func TestInviteAttributesTransfer(t *testing.T) {
+	dir := testPollenDir(t)
+	nodePub, nodePriv := newKeyPair(t)
+	now := time.Now()
+
+	_, err := auth.EnsureLocalRootCredentials(dir, nodePub, now, 24*time.Hour, 24*time.Hour)
+	require.NoError(t, err)
+
+	signer, err := auth.NewDelegationSigner(dir, nodePriv, 24*time.Hour)
+	require.NoError(t, err)
+
+	attrs, err := structpb.NewStruct(map[string]any{"role": "relay"})
+	require.NoError(t, err)
+
+	subjectPub, _ := newKeyPair(t)
+	token, err := signer.IssueJoinToken(subjectPub, nil, now, time.Hour, 24*time.Hour, time.Time{}, attrs)
+	require.NoError(t, err)
+
+	memberCert := token.GetClaims().GetMemberCert()
+	got := memberCert.GetClaims().GetCapabilities().GetAttributes()
+	require.NotNil(t, got)
+	require.Equal(t, "relay", got.GetFields()["role"].GetStringValue())
+}
+
+func TestValidateAttributesSizeLimit(t *testing.T) {
+	require.NoError(t, auth.ValidateAttributes(nil))
+
+	small, err := structpb.NewStruct(map[string]any{"k": "v"})
+	require.NoError(t, err)
+	require.NoError(t, auth.ValidateAttributes(small))
+
+	big := make(map[string]any)
+	for i := range 500 {
+		big[fmt.Sprintf("key-%04d", i)] = "a]long-value-that-adds-up-to-exceed-the-4kb-limit-easily"
+	}
+	bigStruct, err := structpb.NewStruct(big)
+	require.NoError(t, err)
+	require.ErrorContains(t, auth.ValidateAttributes(bigStruct), "attributes too large")
 }

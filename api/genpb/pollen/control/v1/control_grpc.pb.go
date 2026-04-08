@@ -32,6 +32,7 @@ const (
 	ControlService_SeedWorkload_FullMethodName      = "/pollen.control.v1.ControlService/SeedWorkload"
 	ControlService_UnseedWorkload_FullMethodName    = "/pollen.control.v1.ControlService/UnseedWorkload"
 	ControlService_CallWorkload_FullMethodName      = "/pollen.control.v1.ControlService/CallWorkload"
+	ControlService_IssueCert_FullMethodName         = "/pollen.control.v1.ControlService/IssueCert"
 )
 
 // ControlServiceClient is the client API for ControlService service.
@@ -51,6 +52,7 @@ type ControlServiceClient interface {
 	SeedWorkload(ctx context.Context, in *SeedWorkloadRequest, opts ...grpc.CallOption) (*SeedWorkloadResponse, error)
 	UnseedWorkload(ctx context.Context, in *UnseedWorkloadRequest, opts ...grpc.CallOption) (*UnseedWorkloadResponse, error)
 	CallWorkload(ctx context.Context, in *CallWorkloadRequest, opts ...grpc.CallOption) (*CallWorkloadResponse, error)
+	IssueCert(ctx context.Context, in *IssueCertRequest, opts ...grpc.CallOption) (*IssueCertResponse, error)
 }
 
 type controlServiceClient struct {
@@ -191,6 +193,16 @@ func (c *controlServiceClient) CallWorkload(ctx context.Context, in *CallWorkloa
 	return out, nil
 }
 
+func (c *controlServiceClient) IssueCert(ctx context.Context, in *IssueCertRequest, opts ...grpc.CallOption) (*IssueCertResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IssueCertResponse)
+	err := c.cc.Invoke(ctx, ControlService_IssueCert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ControlServiceServer is the server API for ControlService service.
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
@@ -208,6 +220,7 @@ type ControlServiceServer interface {
 	SeedWorkload(context.Context, *SeedWorkloadRequest) (*SeedWorkloadResponse, error)
 	UnseedWorkload(context.Context, *UnseedWorkloadRequest) (*UnseedWorkloadResponse, error)
 	CallWorkload(context.Context, *CallWorkloadRequest) (*CallWorkloadResponse, error)
+	IssueCert(context.Context, *IssueCertRequest) (*IssueCertResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
 
@@ -256,6 +269,9 @@ func (UnimplementedControlServiceServer) UnseedWorkload(context.Context, *Unseed
 }
 func (UnimplementedControlServiceServer) CallWorkload(context.Context, *CallWorkloadRequest) (*CallWorkloadResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CallWorkload not implemented")
+}
+func (UnimplementedControlServiceServer) IssueCert(context.Context, *IssueCertRequest) (*IssueCertResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method IssueCert not implemented")
 }
 func (UnimplementedControlServiceServer) mustEmbedUnimplementedControlServiceServer() {}
 func (UnimplementedControlServiceServer) testEmbeddedByValue()                        {}
@@ -512,6 +528,24 @@ func _ControlService_CallWorkload_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_IssueCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(IssueCertRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).IssueCert(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_IssueCert_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).IssueCert(ctx, req.(*IssueCertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ControlService_ServiceDesc is the grpc.ServiceDesc for ControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -570,6 +604,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CallWorkload",
 			Handler:    _ControlService_CallWorkload_Handler,
+		},
+		{
+			MethodName: "IssueCert",
+			Handler:    _ControlService_IssueCert_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

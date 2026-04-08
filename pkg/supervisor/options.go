@@ -15,6 +15,7 @@ type Options struct {
 	ShutdownFunc        func()
 	SocketPath          string
 	PollenDir           string
+	NodeName            string
 	RuntimeState        *statev1.RuntimeState
 	SigningKey          ed25519.PrivateKey
 	AdvertisedIPs       []string
@@ -28,6 +29,8 @@ type Options struct {
 	ListenPort          int
 	BootstrapPublic     bool
 	MetricsEnabled      bool
+	CPUBudgetPercent    uint32
+	MemBudgetPercent    uint32
 	DisableGossipJitter bool
 	DisableNATPunch     bool
 }
@@ -43,10 +46,12 @@ type ConnectionEntry struct {
 	PeerKey    types.PeerKey
 	RemotePort uint32
 	LocalPort  uint32
+	Protocol   statev1.ServiceProtocol
 }
 
 // ServiceEntry describes a service to register in state at startup.
 type ServiceEntry struct {
-	Name string
-	Port uint32
+	Name     string
+	Port     uint32
+	Protocol statev1.ServiceProtocol
 }

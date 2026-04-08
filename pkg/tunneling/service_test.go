@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -23,14 +24,14 @@ func (m *mockStore) Snapshot() state.Snapshot {
 	return m.snap
 }
 
-func (m *mockStore) SetService(port uint32, name string) []state.Event {
+func (m *mockStore) SetService(port uint32, name string, protocol statev1.ServiceProtocol) []state.Event {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	nv := m.snap.Nodes[m.snap.LocalID]
 	if nv.Services == nil {
 		nv.Services = make(map[string]*state.Service)
 	}
-	nv.Services[name] = &state.Service{Port: port, Name: name}
+	nv.Services[name] = &state.Service{Port: port, Name: name, Protocol: protocol}
 	m.snap.Nodes[m.snap.LocalID] = nv
 	return nil
 }
@@ -58,12 +59,18 @@ type mockRouter struct{}
 
 func (r *mockRouter) NextHop(dest types.PeerKey) (types.PeerKey, bool) { return dest, true }
 
+type mockDatagramTransport struct{}
+
+func (m *mockDatagramTransport) SendTunnelDatagram(_ context.Context, _ types.PeerKey, _ []byte) error {
+	return nil
+}
+
 func TestServiceLifecycle(t *testing.T) {
 	self := types.PeerKey{1}
 	store := &mockStore{snap: state.Snapshot{LocalID: self, Nodes: map[types.PeerKey]state.NodeView{self: {}}}}
-	svc := New(self, store, &mockTransport{}, &mockRouter{})
+	svc := New(self, store, &mockTransport{}, &mockDatagramTransport{}, &mockRouter{})
 
-	require.NoError(t, svc.ExposeService(8080, "web"))
+	require.NoError(t, svc.ExposeService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP))
 	require.Len(t, store.Snapshot().Nodes[self].Services, 1)
 
 	require.NoError(t, svc.UnexposeService("web"))
@@ -77,13 +84,13 @@ func TestReconciliation(t *testing.T) {
 		LocalID: self,
 		Nodes: map[types.PeerKey]state.NodeView{
 			self: {},
-			peer: {Services: map[string]*state.Service{"api": {Port: 9000, Name: "api"}}},
+			peer: {Services: map[string]*state.Service{"api": {Port: 9000, Name: "api", Protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP}}},
 		},
 	}}
 
-	svc := New(self, store, &mockTransport{}, &mockRouter{})
+	svc := New(self, store, &mockTransport{}, &mockDatagramTransport{}, &mockRouter{})
 
-	port, err := svc.Connect(context.Background(), peer, 9000, 0)
+	port, err := svc.Connect(context.Background(), peer, 9000, 0, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
 	require.NoError(t, err)
 	require.NotZero(t, port)
 
@@ -101,9 +108,9 @@ func TestHandlePeerDenied(t *testing.T) {
 	self := types.PeerKey{1}
 	peer := types.PeerKey{2}
 	store := &mockStore{snap: state.Snapshot{LocalID: self, Nodes: map[types.PeerKey]state.NodeView{self: {}, peer: {}}}}
-	svc := New(self, store, &mockTransport{}, &mockRouter{})
+	svc := New(self, store, &mockTransport{}, &mockDatagramTransport{}, &mockRouter{})
 
-	_, _ = svc.Connect(context.Background(), peer, 80, 8080)
+	_, _ = svc.Connect(context.Background(), peer, 80, 8080, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
 	require.Len(t, svc.ListDesiredConnections(), 1)
 
 	svc.HandlePeerDenied(peer)

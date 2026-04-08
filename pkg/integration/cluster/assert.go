@@ -28,7 +28,9 @@ func snapshotRemotePeerCount(snap state.Snapshot) int {
 		if pk == snap.LocalID {
 			continue
 		}
-		if nv.LastAddr == "" && (len(nv.IPs) == 0 || nv.LocalPort == 0) {
+		hasObservedAddr := nv.ObservedExternalIP != "" && (nv.ExternalPort != 0 || nv.LocalPort != 0)
+		hasIPAddrs := len(nv.IPs) > 0 && nv.LocalPort != 0
+		if nv.LastAddr == "" && !hasObservedAddr && !hasIPAddrs {
 			continue
 		}
 		count++
@@ -231,7 +233,7 @@ func (c *Cluster) RequireWorkloadSpecOnAllNodes(t testing.TB, hash string, repli
 			if !ok {
 				return false
 			}
-			if spec.Spec.GetReplicas() != replicas {
+			if spec.Spec.GetMinReplicas() != replicas {
 				return false
 			}
 		}

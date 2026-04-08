@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"errors"
+	"fmt"
 	"slices"
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func (s *Service) checkCertExpiry() bool {
@@ -73,7 +77,7 @@ func (s *Service) attemptCertRenewal() bool {
 			continue
 		}
 
-		if err := s.applyCertRenewal(newCert); err != nil {
+		if err := s.applyNewCert(newCert); err != nil {
 			s.log.Warnw("delegation certificate renewal failed: invalid cert", "peer", peerKey.Short(), "err", err)
 			continue
 		}
@@ -83,12 +87,39 @@ func (s *Service) attemptCertRenewal() bool {
 		return true
 	}
 
-	s.log.Warnw("delegation certificate renewal failed: all peers refused or returned errors")
+	connectedSet := make(map[types.PeerKey]struct{}, len(connectedPeers))
+	for _, pk := range connectedPeers {
+		connectedSet[pk] = struct{}{}
+	}
+
+	snap := s.store.Snapshot()
+	for pk, nv := range snap.Nodes {
+		if pk == s.localID || !nv.AdminCapable {
+			continue
+		}
+		if _, tried := connectedSet[pk]; tried {
+			continue
+		}
+		newCert, err := s.certs.RequestCertRenewal(ctx, pk)
+		if err != nil {
+			s.log.Debugw("routed cert renewal failed", "admin", pk.Short(), "err", err)
+			continue
+		}
+		if err := s.applyNewCert(newCert); err != nil {
+			s.log.Warnw("routed cert renewal: invalid cert", "admin", pk.Short(), "err", err)
+			continue
+		}
+		s.log.Infow("delegation certificate renewed via routed admin", "admin", pk.Short(), "expires_at", auth.CertExpiresAt(newCert))
+		s.nodeMetrics.CertRenewals.Add(ctx, 1)
+		return true
+	}
+
+	s.log.Warnw("delegation certificate renewal failed: all peers and admins refused or returned errors")
 	s.nodeMetrics.CertRenewalsFailed.Add(ctx, 1)
 	return false
 }
 
-func (s *Service) applyCertRenewal(newCert *admissionv1.DelegationCert) error {
+func (s *Service) applyNewCert(newCert *admissionv1.DelegationCert) error {
 	pubKey := s.signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 	if err := auth.VerifyDelegationCert(newCert, s.creds.RootPub(), time.Now(), pubKey); err != nil {
 		return err
@@ -103,22 +134,25 @@ func (s *Service) applyCertRenewal(newCert *admissionv1.DelegationCert) error {
 	s.creds.SetCert(newCert)
 
 	if err := auth.SaveNodeCredentials(s.pollenDir, s.creds); err != nil {
-		s.log.Warnw("failed to persist renewed credentials", "err", err)
+		s.log.Warnw("failed to persist credentials", "err", err)
 	}
 
 	return nil
 }
 
+func (s *Service) sendCertRenewalResponse(ctx context.Context, to types.PeerKey, resp *meshv1.CertRenewalResponse) {
+	data, err := (&meshv1.Envelope{
+		Body: &meshv1.Envelope_CertRenewalResponse{CertRenewalResponse: resp},
+	}).MarshalVT()
+	if err != nil {
+		return
+	}
+	_ = s.routedSender.SendMembershipDatagram(ctx, to, data)
+}
+
 func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerKey, req *meshv1.CertRenewalRequest) {
 	sendReject := func(reason string) {
-		data, err := (&meshv1.Envelope{
-			Body: &meshv1.Envelope_CertRenewalResponse{
-				CertRenewalResponse: &meshv1.CertRenewalResponse{Reason: reason},
-			},
-		}).MarshalVT()
-		if err == nil {
-			_ = s.mesh.Send(ctx, from, data)
-		}
+		s.sendCertRenewalResponse(ctx, from, &meshv1.CertRenewalResponse{Reason: reason})
 	}
 
 	if !bytes.Equal(req.GetPeerPub(), from.Bytes()) {
@@ -138,9 +172,11 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 	}
 
 	ttl := s.membershipTTL
+	caps := auth.LeafCapabilities()
 	var accessDeadline time.Time
 	if peerCert, ok := s.certs.PeerDelegationCert(from); ok {
 		ttl = auth.CertTTL(peerCert)
+		caps.Attributes = peerCert.GetClaims().GetCapabilities().GetAttributes()
 		if dl, hasDeadline := auth.CertAccessDeadline(peerCert); hasDeadline {
 			if time.Now().After(dl) {
 				sendReject("access deadline has passed")
@@ -158,7 +194,7 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 
 	newCert, err := signer.IssueMemberCert(
 		req.GetPeerPub(),
-		auth.LeafCapabilities(),
+		caps,
 		now,
 		notAfter,
 		accessDeadline,
@@ -168,15 +204,70 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 		return
 	}
 
-	data, err := (&meshv1.Envelope{
-		Body: &meshv1.Envelope_CertRenewalResponse{CertRenewalResponse: &meshv1.CertRenewalResponse{
-			Accepted: true,
-			Cert:     newCert,
-		}},
-	}).MarshalVT()
-	if err == nil {
-		_ = s.mesh.Send(ctx, from, data)
+	s.sendCertRenewalResponse(ctx, from, &meshv1.CertRenewalResponse{
+		Accepted: true,
+		Cert:     newCert,
+	})
+}
+
+func (s *Service) IssueCert(ctx context.Context, peerKey types.PeerKey, admin bool, attributes *structpb.Struct) error {
+	signer := s.creds.DelegationKey()
+	if signer == nil || !signer.IsRoot() {
+		return errors.New("only root admin can push certificates")
 	}
+
+	caps := auth.LeafCapabilities()
+	if admin {
+		caps = auth.FullCapabilities()
+	}
+	caps.Attributes = attributes
+
+	now := time.Now()
+	ttl := s.membershipTTL
+	if admin {
+		ttl = config.DefaultDelegationTTL
+	}
+	cert, err := signer.IssueMemberCert(peerKey.Bytes(), caps, now, now.Add(ttl), time.Time{})
+	if err != nil {
+		return fmt.Errorf("issue cert: %w", err)
+	}
+
+	return s.certs.PushCert(ctx, peerKey, cert)
+}
+
+func (s *Service) handleCertPushRequest(ctx context.Context, from types.PeerKey, req *meshv1.CertPushRequest) {
+	sendReject := func(reason string) {
+		s.sendCertPushResponse(ctx, from, &meshv1.CertPushResponse{Reason: reason})
+	}
+
+	newCert := req.GetCert()
+	if err := s.applyNewCert(newCert); err != nil {
+		sendReject(err.Error())
+		return
+	}
+
+	caps := newCert.GetClaims().GetCapabilities()
+	if caps.GetCanDelegate() {
+		signer := auth.NewDelegationSignerFromCert(s.signPriv, newCert)
+		s.creds.SetDelegationKey(signer)
+		s.capTransition.UpgradeToAdmin(signer)
+	} else {
+		s.creds.SetDelegationKey(nil)
+		s.capTransition.DowngradeToLeaf()
+	}
+
+	s.log.Infow("certificate pushed", "from", from.Short(), "can_delegate", caps.GetCanDelegate())
+	s.sendCertPushResponse(ctx, from, &meshv1.CertPushResponse{Accepted: true})
+}
+
+func (s *Service) sendCertPushResponse(ctx context.Context, to types.PeerKey, resp *meshv1.CertPushResponse) {
+	data, err := (&meshv1.Envelope{
+		Body: &meshv1.Envelope_CertPushResponse{CertPushResponse: resp},
+	}).MarshalVT()
+	if err != nil {
+		return
+	}
+	_ = s.routedSender.SendMembershipDatagram(ctx, to, data)
 }
 
 func (s *Service) disconnectExpiredPeers() {

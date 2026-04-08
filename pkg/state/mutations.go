@@ -169,7 +169,7 @@ func (s *store) SetLocalObservedAddress(ip string, port uint32) []Event {
 	})
 }
 
-func (s *store) SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) []Event {
+func (s *store) SetWorkloadSpec(name, hash string, replicas, memoryPages, timeoutMs uint32, spread float32) []Event {
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
 		// Check if remotely owned
 		for pk, r := range s.nodes {
@@ -182,23 +182,23 @@ func (s *store) SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs ui
 
 		ev, ok := rec.log[attrKey{kind: attrWorkloadSpec, name: hash}]
 
-		if replicas == 0 && memoryPages == 0 && timeoutMs == 0 {
+		if replicas == 0 && memoryPages == 0 && timeoutMs == 0 && spread == 0 {
 			if !ok || ev.Deleted {
 				return nil, nil
 			}
-			change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: &statev1.WorkloadSpecChange{Hash: hash}}}
+			change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: &statev1.WorkloadSpecChange{Hash: hash, Name: name}}}
 			return []*statev1.GossipEvent{change}, []Event{WorkloadChanged{Hash: hash}}
 		}
 
 		if ok && !ev.Deleted {
 			ws := ev.GetWorkloadSpec()
-			if ws.Replicas == replicas && ws.MemoryPages == memoryPages && ws.TimeoutMs == timeoutMs {
+			if ws.Name == name && ws.MinReplicas == replicas && ws.MemoryPages == memoryPages && ws.TimeoutMs == timeoutMs && ws.Spread == spread {
 				return nil, nil
 			}
 		}
 
 		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_WorkloadSpec{
-			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: hash, Replicas: replicas, MemoryPages: memoryPages, TimeoutMs: timeoutMs},
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: hash, Name: name, MinReplicas: replicas, MemoryPages: memoryPages, TimeoutMs: timeoutMs, Spread: spread},
 		}}
 		return []*statev1.GossipEvent{change}, []Event{WorkloadChanged{Hash: hash}}
 	})
@@ -226,7 +226,7 @@ func (s *store) setWorkloadClaimLocked(hash string, claimed bool) []Event {
 	})
 }
 
-func (s *store) SetLocalResources(cpu, mem float64) []Event {
+func (s *store) SetLocalResources(cpu, mem float64, memTotalBytes uint64, numCPU, cpuBudgetPct, memBudgetPct uint32) []Event {
 	c, m := uint32(cpu), uint32(mem)
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
 		if ev, ok := rec.log[attrKey{kind: attrResourceTelemetry}]; ok && !ev.Deleted {
@@ -241,24 +241,92 @@ func (s *store) SetLocalResources(cpu, mem float64) []Event {
 				memDelta = m - rt.MemPercent
 			}
 
-			if cpuDelta < 2 && memDelta < 2 {
+			if cpuDelta < 2 && memDelta < 2 &&
+				rt.MemTotalBytes == memTotalBytes && rt.NumCpu == numCPU &&
+				rt.CpuBudgetPercent == cpuBudgetPct && rt.MemBudgetPercent == memBudgetPct {
 				return nil, nil
 			}
 		}
 
-		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_ResourceTelemetry{ResourceTelemetry: &statev1.ResourceTelemetryChange{CpuPercent: c, MemPercent: m}}}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_ResourceTelemetry{ResourceTelemetry: &statev1.ResourceTelemetryChange{
+			CpuPercent:       c,
+			MemPercent:       m,
+			MemTotalBytes:    memTotalBytes,
+			NumCpu:           numCPU,
+			CpuBudgetPercent: cpuBudgetPct,
+			MemBudgetPercent: memBudgetPct,
+		}}}
 		return []*statev1.GossipEvent{change}, []Event{TopologyChanged{Peer: s.localID}}
 	})
 }
 
-func (s *store) SetService(port uint32, name string) []Event {
+func seedLoadChanged(old, cur map[string]float32) bool {
+	if len(old) != len(cur) {
+		return true
+	}
+	for k, v := range cur {
+		prev, ok := old[k]
+		if !ok {
+			return true
+		}
+		delta := v - prev
+		if delta < 0 {
+			delta = -delta
+		}
+		if prev == 0 || delta/prev > 0.2 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *store) SetSeedLoad(rates map[string]float32) []Event {
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		if ev, ok := rec.log[attrKey{kind: attrService, name: name}]; ok && !ev.Deleted {
-			if ev.GetService().Port == port {
+		if ev, ok := rec.log[attrKey{kind: attrSeedLoad}]; ok {
+			if ev.Deleted && len(rates) == 0 {
+				return nil, nil
+			}
+			if !ev.Deleted && !seedLoadChanged(ev.GetSeedLoad().Rates, rates) {
 				return nil, nil
 			}
 		}
-		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_Service{Service: &statev1.ServiceChange{Name: name, Port: port}}}
+
+		change := &statev1.GossipEvent{
+			Deleted: len(rates) == 0,
+			Change:  &statev1.GossipEvent_SeedLoad{SeedLoad: &statev1.SeedLoadChange{Rates: rates}},
+		}
+		return []*statev1.GossipEvent{change}, nil
+	})
+}
+
+func (s *store) SetSeedDemand(rates map[string]float32) []Event {
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		if ev, ok := rec.log[attrKey{kind: attrSeedDemand}]; ok {
+			if ev.Deleted && len(rates) == 0 {
+				return nil, nil
+			}
+			if !ev.Deleted && !seedLoadChanged(ev.GetSeedDemand().Rates, rates) {
+				return nil, nil
+			}
+		}
+
+		change := &statev1.GossipEvent{
+			Deleted: len(rates) == 0,
+			Change:  &statev1.GossipEvent_SeedDemand{SeedDemand: &statev1.SeedDemandChange{Rates: rates}},
+		}
+		return []*statev1.GossipEvent{change}, nil
+	})
+}
+
+func (s *store) SetService(port uint32, name string, protocol statev1.ServiceProtocol) []Event {
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		if ev, ok := rec.log[attrKey{kind: attrService, name: name}]; ok && !ev.Deleted {
+			svc := ev.GetService()
+			if svc.Port == port && svc.Protocol == protocol {
+				return nil, nil
+			}
+		}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_Service{Service: &statev1.ServiceChange{Name: name, Port: port, Protocol: protocol}}}
 		return []*statev1.GossipEvent{change}, []Event{ServiceChanged{Peer: s.localID, Name: name}}
 	})
 }
@@ -306,12 +374,50 @@ func (s *store) SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event {
 	})
 }
 
-func (s *store) SetBootstrapPublic() {
+func (s *store) SetPublic() {
 	s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
 		if ev, ok := rec.log[attrKey{kind: attrPubliclyAccessible}]; ok && !ev.Deleted {
 			return nil, nil
 		}
 		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_PubliclyAccessible{PubliclyAccessible: &statev1.PubliclyAccessibleChange{}}}
+		return []*statev1.GossipEvent{change}, nil
+	})
+}
+
+func (s *store) SetAdmin() {
+	s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		if ev, ok := rec.log[attrKey{kind: attrAdminCapable}]; ok && !ev.Deleted {
+			return nil, nil
+		}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_AdminCapable{AdminCapable: &statev1.AdminCapableChange{}}}
+		return []*statev1.GossipEvent{change}, nil
+	})
+}
+
+func (s *store) ClearAdmin() {
+	s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		if ev, ok := rec.log[attrKey{kind: attrAdminCapable}]; !ok || ev.Deleted {
+			return nil, nil
+		}
+		change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_AdminCapable{AdminCapable: &statev1.AdminCapableChange{}}}
+		return []*statev1.GossipEvent{change}, nil
+	})
+}
+
+func (s *store) SetNodeName(name string) {
+	s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		key := attrKey{kind: attrNodeName}
+		if name == "" {
+			if ev, ok := rec.log[key]; !ok || ev.Deleted {
+				return nil, nil
+			}
+			change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_NodeName{NodeName: &statev1.NodeNameChange{Name: name}}}
+			return []*statev1.GossipEvent{change}, nil
+		}
+		if ev, ok := rec.log[key]; ok && !ev.Deleted && ev.GetNodeName().Name == name {
+			return nil, nil
+		}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_NodeName{NodeName: &statev1.NodeNameChange{Name: name}}}
 		return []*statev1.GossipEvent{change}, nil
 	})
 }

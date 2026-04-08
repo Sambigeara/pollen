@@ -115,7 +115,7 @@ func (c *clusterAuth) tokenFor(t *testing.T, subject ed25519.PublicKey, bootstra
 	token, err := signer.IssueJoinToken(subject, []*admissionv1.BootstrapPeer{{
 		PeerPub: bootstrap.pubKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(bootstrap.port))},
-	}}, now, time.Hour, membershipTTL, time.Time{})
+	}}, now, time.Hour, membershipTTL, time.Time{}, nil)
 	require.NoError(t, err)
 	return token
 }
@@ -198,6 +198,7 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 		time.Now(),
 		time.Hour,
 		0,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -242,6 +243,7 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 		time.Now().Add(-2*time.Second),
 		time.Second,
 		0,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -717,7 +719,7 @@ func startMeshHarnessWithCreds(
 	t.Helper()
 
 	peerKey := types.PeerKeyFromBytes(pub)
-	m, err := transport.New(peerKey, *creds, ":0",
+	m, err := transport.New(peerKey, creds, ":0",
 		transport.WithSigningKey(priv),
 		transport.WithTLSIdentityTTL(config.DefaultTLSIdentityTTL),
 		transport.WithMembershipTTL(config.DefaultMembershipTTL),

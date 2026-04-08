@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -14,13 +15,32 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
 var errNoSuffixMatch = errors.New("no suffix match")
+
+const configProtocolUDP = "udp"
+
+func configProtocolToProto(p string) statev1.ServiceProtocol {
+	if p == configProtocolUDP {
+		return statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP
+	}
+	return statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP
+}
+
+func protoToConfigString(p statev1.ServiceProtocol) string {
+	if p == statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP {
+		return configProtocolUDP
+	}
+	return ""
+}
 
 const (
 	hoursPerDay      = 24
@@ -28,6 +48,7 @@ const (
 	minutesPerHour   = 60
 	tablePadding     = 2
 	minDisambigPeers = 2
+	shortHexLen      = 8
 )
 
 func newNetworkCmds() []*cobra.Command {
@@ -46,6 +67,7 @@ func newNetworkCmds() []*cobra.Command {
 		Args:  cobra.RangeArgs(1, 2), //nolint:mnd
 		RunE:  withEnv(false, runServe),
 	}
+	serveCmd.Flags().Bool("udp", false, "Expose as a UDP service")
 
 	unserveCmd := &cobra.Command{
 		Use:   "unserve <port|name>",
@@ -140,6 +162,8 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 		renderMetricsDetails(cmd.OutOrStdout(), metricsResp.Msg)
 	}
 
+	renderCertAttributes(cmd.OutOrStdout(), st)
+
 	if footer := certExpiryFooter(st); footer != "" {
 		fmt.Fprintln(cmd.OutOrStdout(), footer)
 	}
@@ -159,12 +183,22 @@ func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return err
 	}
 
-	env.cfg.AddService(name, uint32(port))
+	isUDP, _ := cmd.Flags().GetBool("udp")
+	proto := statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP
+	cfgProto := ""
+	if isUDP {
+		proto = statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP
+		cfgProto = configProtocolUDP
+		if name == "" {
+			name = portStr + "/" + configProtocolUDP
+		}
+	}
+
+	env.cfg.AddService(name, uint32(port), cfgProto)
 
 	sockPath := filepath.Join(env.dir, socketName)
-	// Catching only the single bool value
 	if nodeSocketActive(sockPath) {
-		req := &controlv1.RegisterServiceRequest{Port: uint32(port)}
+		req := &controlv1.RegisterServiceRequest{Port: uint32(port), Protocol: proto}
 		if name != "" {
 			req.Name = &name
 		}
@@ -269,6 +303,7 @@ func runConnect(cmd *cobra.Command, args []string, env *cliEnv) error {
 		Node:       &controlv1.NodeRef{PeerPub: svc.GetProvider().GetPeerPub()},
 		RemotePort: svc.GetPort(),
 		LocalPort:  localPort,
+		Protocol:   svc.GetProtocol(),
 	}))
 	if err != nil {
 		return err
@@ -278,7 +313,7 @@ func runConnect(cmd *cobra.Command, args []string, env *cliEnv) error {
 	provider := formatPeerID(svc.GetProvider().GetPeerPub(), false)
 	peerHex := peerKeyString(svc.GetProvider().GetPeerPub())
 
-	env.cfg.AddConnection(svc.GetName(), peerHex, svc.GetPort(), actualLocalPort)
+	env.cfg.AddConnection(svc.GetName(), peerHex, svc.GetPort(), actualLocalPort, protoToConfigString(svc.GetProtocol()))
 	if saveErr := config.Save(env.dir, env.cfg); saveErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to persist connection to config: %v\n", saveErr)
 	}
@@ -381,8 +416,15 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		headers: []string{"NODE", "STATUS", "ADDR", "CPUs", "CPU", "MEM", "TUNNELS", "LATENCY", "TRAFFIC IN", "TRAFFIC OUT"},
 	}
 
+	nameLabels := nodeNameLabels(st.GetSelf(), st.GetNodes(), opts.wide)
+
 	if self := st.GetSelf(); self != nil && self.GetNode() != nil {
-		label := formatPeerID(self.GetNode().GetPeerPub(), opts.wide) + " (self)"
+		selfPK := peerKeyString(self.GetNode().GetPeerPub())
+		label := nameLabels[selfPK]
+		if label == "" {
+			label = formatPeerID(self.GetNode().GetPeerPub(), opts.wide)
+		}
+		label += " (self)"
 		addr := self.GetAddr()
 		if addr == "" {
 			addr = "-"
@@ -405,7 +447,11 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			filtered++
 			continue
 		}
-		label := formatPeerID(n.GetNode().GetPeerPub(), opts.wide)
+		pk := peerKeyString(n.GetNode().GetPeerPub())
+		label := nameLabels[pk]
+		if label == "" {
+			label = formatPeerID(n.GetNode().GetPeerPub(), opts.wide)
+		}
 		status := formatStatus(n.GetStatus())
 		if n.GetPubliclyAccessible() {
 			status += " (public)"
@@ -438,6 +484,7 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 
 	reachableProviders := reachableProviderSet(st)
 	suffixes := serviceNameSuffixes(st.Services, func(pk string) bool { return opts.includeAll || reachableProviders[pk] })
+	nameLabels := nodeNameLabels(st.GetSelf(), st.GetNodes(), opts.wide)
 
 	type connKey struct {
 		service  string
@@ -456,7 +503,10 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 			filtered++
 			continue
 		}
-		provider := formatPeerID(s.GetProvider().GetPeerPub(), opts.wide)
+		provider := nameLabels[providerID]
+		if provider == "" {
+			provider = formatPeerID(s.GetProvider().GetPeerPub(), opts.wide)
+		}
 		local := "-"
 		if lp, ok := connLocal[connKey{s.GetName(), providerID}]; ok {
 			local = fmt.Sprintf("%d", lp)
@@ -482,17 +532,32 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
 	sec := statusSection{
 		title:   "SEEDS",
-		headers: []string{"HASH", "STATUS", "REPLICAS", "LOCAL", "UPTIME"},
+		headers: []string{"NAME", "HASH", "STATUS", "REPLICAS", "LOCAL", "UPTIME"},
 	}
 
 	now := time.Now()
+	clusterSize := uint32(len(st.GetNodes()) + 1) // +1 for self (not included in Nodes)
 	for _, w := range st.GetWorkloads() {
+		name := w.GetName()
 		hash := w.GetHash()
-		if !opts.wide && len(hash) > 16 {
-			hash = hash[:16]
+		if name == hash || name == "" {
+			name = "-"
+		}
+		if !opts.wide && len(hash) > shortHexLen {
+			hash = hash[:shortHexLen]
 		}
 		st := formatWorkloadStatus(w.GetStatus())
-		replicas := fmt.Sprintf("%d/%d", w.GetActiveReplicas(), w.GetDesiredReplicas())
+		target := w.GetEffectiveTarget()
+		if target == 0 {
+			target = w.GetMinReplicas()
+			if w.GetSpread() >= 1.0 {
+				target = clusterSize
+			}
+		}
+		replicas := fmt.Sprintf("%d/%d", w.GetActiveReplicas(), target)
+		if p := w.GetPressure(); p > 1.0 {
+			replicas = fmt.Sprintf("%s (%.1fx)", replicas, p)
+		}
 		local := ""
 		if w.GetLocal() {
 			local = "*"
@@ -501,7 +566,7 @@ func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		if w.GetStartedAtUnix() > 0 {
 			uptime = humanDuration(now.Sub(time.Unix(w.GetStartedAtUnix(), 0)))
 		}
-		sec.rows = append(sec.rows, []string{hash, st, replicas, local, uptime})
+		sec.rows = append(sec.rows, []string{name, hash, st, replicas, local, uptime})
 	}
 	return sec
 }
@@ -562,14 +627,14 @@ func renderHealthLine(w io.Writer, m *controlv1.GetMetricsResponse) {
 
 func renderMetricsDetails(w io.Writer, m *controlv1.GetMetricsResponse) {
 	fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Render("DIAGNOSTICS"))
-	fmt.Fprintf(w, "  vivaldi error:    %.3f\n", m.GetVivaldiError())
-	fmt.Fprintf(w, "  vivaldi samples:  %d\n", m.GetVivaldiSamples())
-	fmt.Fprintf(w, "  eager syncs:      %d ok, %d failed\n", m.GetEagerSyncs(), m.GetEagerSyncFailures())
+	fmt.Fprintf(w, "vivaldi error:    %.3f\n", m.GetVivaldiError())
+	fmt.Fprintf(w, "vivaldi samples:  %d\n", m.GetVivaldiSamples())
+	fmt.Fprintf(w, "eager syncs:      %d ok, %d failed\n", m.GetEagerSyncs(), m.GetEagerSyncFailures())
 	if m.GetPunchAttempts() > 0 {
-		fmt.Fprintf(w, "  punch success:    %d/%d\n", m.GetPunchAttempts()-m.GetPunchFailures(), m.GetPunchAttempts())
+		fmt.Fprintf(w, "punch success:    %d/%d\n", m.GetPunchAttempts()-m.GetPunchFailures(), m.GetPunchAttempts())
 	}
 	if m.GetCertRenewals() > 0 || m.GetCertRenewalsFailed() > 0 {
-		fmt.Fprintf(w, "  cert renewals:    %d ok, %d failed\n", m.GetCertRenewals(), m.GetCertRenewalsFailed())
+		fmt.Fprintf(w, "cert renewals:    %d ok, %d failed\n", m.GetCertRenewals(), m.GetCertRenewalsFailed())
 	}
 	fmt.Fprintln(w)
 }
@@ -615,6 +680,40 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + " — auto-renewal in progress")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg)
+	}
+}
+
+func renderCertAttributes(w io.Writer, st *controlv1.GetStatusResponse) {
+	for _, c := range st.GetCertificates() {
+		a := c.GetAttributes()
+		if a == nil || len(a.GetFields()) == 0 {
+			continue
+		}
+		keys := make([]string, 0, len(a.GetFields()))
+		for k := range a.GetFields() {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+
+		fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Render("ATTRIBUTES"))
+		for _, k := range keys {
+			fmt.Fprintf(w, "%-16s%s\n", k, formatStructValue(a.GetFields()[k]))
+		}
+		fmt.Fprintln(w)
+		return
+	}
+}
+
+func formatStructValue(v *structpb.Value) string {
+	switch v.GetKind().(type) {
+	case *structpb.Value_StringValue:
+		return v.GetStringValue()
+	case *structpb.Value_NumberValue:
+		return strconv.FormatFloat(v.GetNumberValue(), 'f', -1, 64)
+	case *structpb.Value_BoolValue:
+		return strconv.FormatBool(v.GetBoolValue())
+	default:
+		return protojson.Format(v)
 	}
 }
 
@@ -726,10 +825,10 @@ func formatPeerID(peerID []byte, wide bool) string {
 	if full == "" {
 		return "-"
 	}
-	if wide || len(full) <= 8 {
+	if wide || len(full) <= shortHexLen {
 		return full
 	}
-	return full[:8]
+	return full[:shortHexLen]
 }
 
 func peerKeyString(peerID []byte) string {
@@ -974,6 +1073,53 @@ func connectionCollisionError(name string, matches []*controlv1.ConnectionSummar
 		fmt.Fprintf(&b, "  pln disconnect %s-%s    (localhost:%d -> %s:%d)\n", connName, prefixes[i], c.GetLocalPort(), formatPeerID(c.GetPeer().GetPeerPub(), false), c.GetRemotePort())
 	}
 	return errors.New(strings.TrimSpace(b.String()))
+}
+
+// nodeNameLabels builds display labels for all nodes (self + peers). When
+// nodeNameLabels builds display labels for named nodes. In condensed mode
+// the shortest unique prefix of the peer ID (across all nodes, including
+// unnamed ones) is appended in brackets so users can copy it into commands
+// like `pln cert issue`. Wide mode shows the full ID in parentheses instead.
+// The returned map is keyed by hex peer ID; unnamed nodes are not included.
+func nodeNameLabels(self *controlv1.NodeSummary, peers []*controlv1.NodeSummary, wide bool) map[string]string {
+	// Collect all peer IDs (named and unnamed) so the prefix is unique
+	// across the entire cluster, not just named nodes.
+	var allIDs []string
+	nameByPeer := map[string]string{}
+
+	if self != nil {
+		pk := peerKeyString(self.GetNode().GetPeerPub())
+		allIDs = append(allIDs, pk)
+		if self.GetName() != "" {
+			nameByPeer[pk] = self.GetName()
+		}
+	}
+	for _, n := range peers {
+		pk := peerKeyString(n.GetNode().GetPeerPub())
+		allIDs = append(allIDs, pk)
+		if n.GetName() != "" {
+			nameByPeer[pk] = n.GetName()
+		}
+	}
+
+	// Build a peer-ID → shortest-unique-prefix map for condensed mode.
+	prefixByPeer := map[string]string{}
+	if !wide && len(allIDs) > 0 {
+		pfx := minUniquePrefixes(allIDs)
+		for i, id := range allIDs {
+			prefixByPeer[id] = pfx[i]
+		}
+	}
+
+	labels := make(map[string]string, len(nameByPeer))
+	for pk, name := range nameByPeer {
+		if wide {
+			labels[pk] = name + " (" + pk + ")"
+		} else {
+			labels[pk] = name + " [" + prefixByPeer[pk] + "]"
+		}
+	}
+	return labels
 }
 
 func serviceNameSuffixes(services []*controlv1.ServiceSummary, include func(string) bool) map[serviceProviderKey]string {

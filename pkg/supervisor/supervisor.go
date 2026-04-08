@@ -55,8 +55,8 @@ type Supervisor struct {
 	tracer           trace.Tracer
 	store            state.StateStore
 	inviteConsumer   auth.InviteConsumer
-	tracesProviders  *traces.Provider
-	punchSem         chan struct{}
+	ready            chan struct{}
+	log              *zap.SugaredLogger
 	router           *atomicRouter
 	nonTargetStreak  map[types.PeerKey]int
 	vivaldiErr       *metrics.EWMA
@@ -65,20 +65,23 @@ type Supervisor struct {
 	natDetector      *nat.Detector
 	casStore         *cas.Store
 	topoMetrics      *metrics.TopologyMetrics
-	ready            chan struct{}
+	tracesProviders  *traces.Provider
 	controlSrv       *control.Server
 	wasmRuntime      *wasm.Runtime
-	log              *zap.SugaredLogger
+	punchSem         chan struct{}
 	metricsProviders *metrics.Provider
 	creds            *auth.NodeCredentials
 	shutdownCh       chan struct{}
-	pollenDir        string
+	inviteWaiters    map[types.PeerKey]chan *meshv1.InviteRedeemResponse
 	socketPath       string
+	pollenDir        string
 	bootstrapPeers   []BootstrapTarget
 	signPriv         ed25519.PrivateKey
 	wg               sync.WaitGroup
 	peerTickInterval time.Duration
 	reconnectWindow  time.Duration
+	membershipTTL    time.Duration
+	inviteWaitersMu  sync.Mutex
 	useHMACNearest   bool
 }
 
@@ -91,7 +94,10 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 
 	stateStore := state.New(self)
 	if opts.BootstrapPublic {
-		stateStore.SetBootstrapPublic()
+		stateStore.SetPublic()
+	}
+	if creds.DelegationKey() != nil {
+		stateStore.SetAdmin()
 	}
 	if rs := opts.RuntimeState; rs != nil {
 		if gs := rs.GetGossipState(); len(gs) > 0 {
@@ -108,24 +114,15 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		stateStore.LoadLastAddrs(lastAddrs)
 	}
 	for _, svc := range opts.InitialServices {
-		stateStore.SetService(svc.Port, svc.Name)
+		stateStore.SetService(svc.Port, svc.Name, svc.Protocol)
+	}
+	if opts.NodeName != "" {
+		stateStore.SetNodeName(opts.NodeName)
 	}
 
-	ips := opts.AdvertisedIPs
-	if len(ips) == 0 {
-		var err error
-		ips, err = transport.GetAdvertisableAddrs(transport.DefaultExclusions)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get advertisable IPs: %w", err)
-		}
+	if err := initLocalAddresses(stateStore, opts); err != nil {
+		return nil, err
 	}
-	addrs := make([]netip.AddrPort, 0, len(ips))
-	for _, ipStr := range ips {
-		if addr, err := netip.ParseAddr(ipStr); err == nil {
-			addrs = append(addrs, netip.AddrPortFrom(addr, uint16(opts.ListenPort)))
-		}
-	}
-	stateStore.SetLocalAddresses(addrs)
 
 	mp, tp := metrics.NewNoopProvider(), traces.NewNoopProvider()
 	if opts.MetricsEnabled {
@@ -157,7 +154,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		meshOpts = append(meshOpts, transport.WithInviteConsumer(inviteConsumer))
 	}
 
-	m, err := transport.New(self, *creds, fmt.Sprintf(":%d", opts.ListenPort), meshOpts...)
+	m, err := transport.New(self, creds, fmt.Sprintf(":%d", opts.ListenPort), meshOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load mesh transport: %w", err)
 	}
@@ -199,12 +196,26 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		vivaldiErr:       vivaldiErr,
 		routeInvalidate:  make(chan struct{}, 1),
 		inviteConsumer:   inviteConsumer,
+		inviteWaiters:    make(map[types.PeerKey]chan *meshv1.InviteRedeemResponse),
+		membershipTTL:    config.DefaultMembershipTTL,
+	}
+
+	if creds.DelegationKey() == nil {
+		m.SetInviteForwarder(n.forwardInviteToAdmin)
+	}
+
+	capTrans := &capTransitioner{
+		mesh:               m,
+		store:              stateStore,
+		fwd:                n.forwardInviteToAdmin,
+		supervisorConsumer: &n.inviteConsumer,
 	}
 
 	streamAdapter := &streamOpenAdapter{t: m}
+	datagramAdapter := &datagramOpenAdapter{t: m}
 
 	n.tunneling = tunneling.New(
-		self, stateStore, streamAdapter, router,
+		self, stateStore, streamAdapter, datagramAdapter, router,
 		tunneling.WithTrafficTracking(),
 		tunneling.WithLogger(log.Named("tunneling")),
 		tunneling.WithSampleInterval(opts.GossipInterval),
@@ -226,6 +237,8 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 			Certs:            m,
 			PeerAddrs:        m,
 			SessionCloser:    m,
+			RoutedSender:     m,
+			CapTransition:    capTrans,
 			SmoothedErr:      vivaldiErr,
 			TracerProvider:   tp.Tracer(),
 			NATDetector:      n.natDetector,
@@ -258,6 +271,10 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 					span.SetAttributes(attribute.String("peer", from.Short()))
 					n.handlePunchCoordTrigger(spanCtx, body.PunchCoordTrigger)
 					span.End()
+				case *meshv1.Envelope_ForwardedInviteRequest:
+					n.handleForwardedInviteRequest(ctx, from, body.ForwardedInviteRequest)
+				case *meshv1.Envelope_ForwardedInviteResponse:
+					n.handleForwardedInviteResponse(from, body.ForwardedInviteResponse)
 				default:
 					n.log.Debugw("unknown datagram type", "peer", from.Short())
 				}
@@ -282,6 +299,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		self, stateStore, casStore, wasmRT,
 		placement.WithMesh(placementOpener),
 		placement.WithLogger(log.Named("placement")),
+		placement.WithResourceBudget(opts.CPUBudgetPercent, opts.MemBudgetPercent),
 	)
 
 	controlOpts := []control.Option{
@@ -297,7 +315,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	n.controlSrv = control.New(n.membership, n.placement, n.tunneling, stateStore, controlOpts...)
 
 	for _, conn := range opts.InitialConnections {
-		n.AddDesiredConnection(conn.PeerKey, conn.RemotePort, conn.LocalPort)
+		n.AddDesiredConnection(conn.PeerKey, conn.RemotePort, conn.LocalPort, conn.Protocol)
 	}
 
 	return n, nil
@@ -308,6 +326,39 @@ func (n *Supervisor) spawn(fn func()) {
 	n.wg.Go(func() {
 		fn()
 	})
+}
+
+func parseAddrPorts(ips []string, port int) []netip.AddrPort {
+	addrs := make([]netip.AddrPort, 0, len(ips))
+	for _, ipStr := range ips {
+		if addr, err := netip.ParseAddr(ipStr); err == nil {
+			addrs = append(addrs, netip.AddrPortFrom(addr, uint16(port)))
+		}
+	}
+	return addrs
+}
+
+func initLocalAddresses(store state.StateStore, opts Options) error {
+	if len(opts.AdvertisedIPs) > 0 {
+		store.SetLocalAddresses(parseAddrPorts(opts.AdvertisedIPs, opts.ListenPort))
+		return nil
+	}
+
+	localIPs, err := transport.GetLocalInterfaceAddrs(transport.DefaultExclusions)
+	publicIP := transport.GetPublicIP()
+	if err != nil && publicIP == "" {
+		return fmt.Errorf("failed to discover any addresses: %w", err)
+	}
+	if err == nil {
+		store.SetLocalAddresses(parseAddrPorts(localIPs, opts.ListenPort))
+	}
+	if publicIP != "" {
+		snap := store.Snapshot()
+		if localNV, ok := snap.Nodes[snap.LocalID]; !ok || localNV.ObservedExternalIP != publicIP {
+			store.SetLocalObservedAddress(publicIP, 0)
+		}
+	}
+	return nil
 }
 
 func (n *Supervisor) Run(ctx context.Context) error {
@@ -335,6 +386,7 @@ func (n *Supervisor) Run(ctx context.Context) error {
 	close(n.ready)
 	n.connectBootstrapPeers(ctx)
 	n.spawn(func() { n.streamDispatchLoop(ctx) })
+	n.spawn(func() { n.tunnelDatagramLoop(ctx) })
 
 	peerTicker := time.NewTicker(n.peerTickInterval)
 	defer peerTicker.Stop()
@@ -447,6 +499,16 @@ func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 			n.log.Warnw("unknown stream type", "type", uint8(stype))
 			stream.Close()
 		}
+	}
+}
+
+func (n *Supervisor) tunnelDatagramLoop(ctx context.Context) {
+	for {
+		p, err := n.mesh.RecvTunnelDatagram(ctx)
+		if err != nil {
+			return
+		}
+		n.tunneling.HandleTunnelDatagram(p.Data, p.From)
 	}
 }
 
@@ -626,6 +688,19 @@ func (n *Supervisor) ControlMetrics() control.Metrics {
 // --- Public API ---
 
 func (n *Supervisor) RouteCall(ctx context.Context, targetHash, function string, input []byte) ([]byte, error) {
+	// Preserve existing caller identity for inter-workload call chains.
+	// Only stamp the local node's identity on the first hop.
+	if _, ok := wasm.CallerInfoFromContext(ctx); !ok {
+		if cert := n.creds.Cert(); cert != nil {
+			info := wasm.CallerInfo{
+				PeerKey: types.PeerKeyFromBytes(cert.GetClaims().GetSubjectPub()),
+			}
+			if attrs := cert.GetClaims().GetCapabilities().GetAttributes(); attrs != nil {
+				info.Attributes = attrs.AsMap()
+			}
+			ctx = wasm.WithCallerInfo(ctx, info)
+		}
+	}
 	return n.placement.Call(ctx, targetHash, function, input)
 }
 
@@ -639,10 +714,13 @@ func (n *Supervisor) StateStore() state.StateStore         { return n.store }
 func (n *Supervisor) Ready() <-chan struct{}               { return n.ready }
 func (n *Supervisor) ListenPort() int                      { return n.mesh.ListenPort() }
 func (n *Supervisor) GetConnectedPeers() []types.PeerKey   { return n.mesh.ConnectedPeers() }
-func (n *Supervisor) SeedWorkload(wasmBytes []byte, replicas, memoryPages, timeoutMs uint32) (string, error) {
+func (n *Supervisor) SeedWorkload(wasmBytes []byte, name string, replicas, memoryPages, timeoutMs uint32, spread float32) (string, error) {
 	h := sha256.Sum256(wasmBytes)
 	hash := hex.EncodeToString(h[:])
-	if err := n.placement.Seed(hash, wasmBytes, replicas, memoryPages, timeoutMs); err != nil {
+	if name == "" {
+		name = hash
+	}
+	if err := n.placement.Seed(name, hash, wasmBytes, replicas, memoryPages, timeoutMs, spread); err != nil {
 		return "", err
 	}
 	return hash, nil
@@ -653,8 +731,8 @@ func (n *Supervisor) JoinWithInvite(ctx context.Context, token *admissionv1.Invi
 	return n.mesh.JoinWithInvite(ctx, token)
 }
 
-func (n *Supervisor) AddDesiredConnection(pk types.PeerKey, remotePort, localPort uint32) {
-	if _, err := n.tunneling.Connect(context.Background(), pk, remotePort, localPort); err != nil {
+func (n *Supervisor) AddDesiredConnection(pk types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) {
+	if _, err := n.tunneling.Connect(context.Background(), pk, remotePort, localPort, protocol); err != nil {
 		n.log.Warnw("failed to add desired connection", "peer", pk.Short(), "remotePort", remotePort, zap.Error(err))
 	}
 }
@@ -671,6 +749,14 @@ type streamOpenAdapter struct {
 
 func (a *streamOpenAdapter) OpenStream(ctx context.Context, peer types.PeerKey, st transport.StreamType) (io.ReadWriteCloser, error) {
 	return a.t.OpenStream(ctx, peer, st)
+}
+
+type datagramOpenAdapter struct {
+	t transport.Transport
+}
+
+func (a *datagramOpenAdapter) SendTunnelDatagram(ctx context.Context, peer types.PeerKey, data []byte) error {
+	return a.t.SendTunnelDatagram(ctx, peer, data)
 }
 
 type trafficCountedStream struct {

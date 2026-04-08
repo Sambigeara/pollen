@@ -12,11 +12,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"buf.build/go/protovalidate"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/sambigeara/pollen/pkg/plnfs"
 )
@@ -46,6 +48,8 @@ const (
 	timeSkewAllowance = time.Minute
 )
 
+const MaxAttributesSize = 4096
+
 var (
 	ErrCredentialsNotFound = errors.New("node membership credentials not found")
 	ErrDifferentCluster    = errors.New("node already has membership credentials for a different cluster")
@@ -68,6 +72,22 @@ func LeafCapabilities() *admissionv1.Capabilities {
 		CanAdmit:    false,
 		MaxDepth:    0,
 	}
+}
+
+// ValidateAttributes checks that serialised attributes do not exceed the size
+// limit. A nil Struct is always valid.
+func ValidateAttributes(attrs *structpb.Struct) error {
+	if attrs == nil {
+		return nil
+	}
+	b, err := proto.Marshal(attrs)
+	if err != nil {
+		return fmt.Errorf("invalid attributes: %w", err)
+	}
+	if len(b) > MaxAttributesSize {
+		return fmt.Errorf("attributes too large: %d bytes (max %d)", len(b), MaxAttributesSize)
+	}
+	return nil
 }
 
 func CertExpiresAt(cert *admissionv1.DelegationCert) time.Time {
@@ -101,17 +121,38 @@ type NodeCredentials struct {
 	cert          *admissionv1.DelegationCert
 	delegationKey *DelegationSigner
 	rootPub       ed25519.PublicKey
+	mu            sync.RWMutex
 }
 
 func NewNodeCredentials(rootPub ed25519.PublicKey, cert *admissionv1.DelegationCert) *NodeCredentials {
 	return &NodeCredentials{rootPub: rootPub, cert: cert}
 }
 
-func (c *NodeCredentials) Cert() *admissionv1.DelegationCert        { return c.cert }
-func (c *NodeCredentials) RootPub() ed25519.PublicKey               { return c.rootPub }
-func (c *NodeCredentials) DelegationKey() *DelegationSigner         { return c.delegationKey }
-func (c *NodeCredentials) SetDelegationKey(s *DelegationSigner)     { c.delegationKey = s }
-func (c *NodeCredentials) SetCert(cert *admissionv1.DelegationCert) { c.cert = cert }
+func (c *NodeCredentials) Cert() *admissionv1.DelegationCert {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.cert
+}
+
+func (c *NodeCredentials) RootPub() ed25519.PublicKey { return c.rootPub }
+
+func (c *NodeCredentials) DelegationKey() *DelegationSigner {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.delegationKey
+}
+
+func (c *NodeCredentials) SetDelegationKey(s *DelegationSigner) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.delegationKey = s
+}
+
+func (c *NodeCredentials) SetCert(cert *admissionv1.DelegationCert) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cert = cert
+}
 
 func EnrollNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, token *admissionv1.JoinToken, now time.Time) (*NodeCredentials, error) {
 	existing, err := LoadNodeCredentials(pollenDir)
@@ -340,6 +381,9 @@ func IssueDelegationCert(
 	}
 	if caps == nil {
 		return nil, errors.New("capabilities required")
+	}
+	if err := ValidateAttributes(caps.GetAttributes()); err != nil {
+		return nil, err
 	}
 
 	signerPub := signerPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert

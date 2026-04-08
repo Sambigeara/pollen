@@ -164,17 +164,19 @@ func (m *QUICTransport) handleInviteConnection(ctx context.Context, qc *quic.Con
 	}
 }
 
-func (m *QUICTransport) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (retErr error) {
-	defer func() {
-		if retErr != nil {
-			_ = sendInviteRedeemResponse(qc, nil, retErr)
-		}
-	}()
-
-	signer := m.inviteSigner
+// ProcessInviteRedeem verifies, consumes, and signs an invite redemption.
+// All dependencies are passed as parameters so both direct QUIC handling
+// (transport) and forwarded datagram handling (supervisor) can call it.
+func ProcessInviteRedeem(
+	signer *auth.DelegationSigner,
+	consumer auth.InviteConsumer,
+	membershipTTL time.Duration,
+	peerKey types.PeerKey,
+	req *meshv1.InviteRedeemRequest,
+) *meshv1.InviteRedeemResponse {
 	now := time.Now()
 	if err := auth.VerifyInviteToken(req.GetToken(), ed25519.PublicKey(peerKey.Bytes()), now); err != nil {
-		return err
+		return &meshv1.InviteRedeemResponse{Reason: err.Error()}
 	}
 
 	claims := req.GetToken().GetClaims()
@@ -184,21 +186,25 @@ func (m *QUICTransport) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey,
 		ttl = remaining
 	}
 	if ttl <= 0 {
-		return errors.New("invite token expired")
+		return &meshv1.InviteRedeemResponse{Reason: "invite token expired"}
 	}
 
-	consumed, err := m.inviteConsumer.TryConsume(req.GetToken(), now)
+	consumed, err := consumer.TryConsume(req.GetToken(), now)
 	if err != nil {
-		return err
+		return &meshv1.InviteRedeemResponse{Reason: err.Error()}
 	}
 	if !consumed {
-		return errors.New("invite token already consumed")
+		return &meshv1.InviteRedeemResponse{Reason: "invite token already consumed"}
 	}
 
-	membershipTTL := m.membershipTTL
 	var accessDeadline time.Time
 	if s := claims.GetMembershipTtlSeconds(); s > 0 {
 		accessDeadline = now.Add(time.Duration(s) * time.Second)
+	}
+
+	attrs := claims.GetAttributes()
+	if err := auth.ValidateAttributes(attrs); err != nil {
+		return &meshv1.InviteRedeemResponse{Reason: err.Error()}
 	}
 
 	joinToken, err := signer.IssueJoinToken(
@@ -208,11 +214,55 @@ func (m *QUICTransport) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey,
 		ttl,
 		membershipTTL,
 		accessDeadline,
+		attrs,
 	)
 	if err != nil {
+		return &meshv1.InviteRedeemResponse{Reason: err.Error()}
+	}
+	return &meshv1.InviteRedeemResponse{Accepted: true, JoinToken: joinToken}
+}
+
+// InviteForwarder is called by non-admin relays to forward invite redemption
+// requests to a known admin via the mesh.
+type InviteForwarder func(ctx context.Context, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (*meshv1.InviteRedeemResponse, error)
+
+func (m *QUICTransport) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			_ = sendInviteRedeemResponse(qc, nil, retErr)
+		}
+	}()
+
+	now := time.Now()
+	if err := auth.VerifyInviteToken(req.GetToken(), ed25519.PublicKey(peerKey.Bytes()), now); err != nil {
 		return err
 	}
-	return sendInviteRedeemResponse(qc, joinToken, nil)
+
+	m.inviteHandlerMu.RLock()
+	signer := m.inviteSigner
+	consumer := m.inviteConsumer
+	forwarder := m.inviteForwarder
+	m.inviteHandlerMu.RUnlock()
+
+	if signer != nil {
+		resp := ProcessInviteRedeem(signer, consumer, m.membershipTTL, peerKey, req)
+		if !resp.GetAccepted() {
+			return errors.New(resp.GetReason())
+		}
+		return sendInviteRedeemResponse(qc, resp.GetJoinToken(), nil)
+	}
+
+	if forwarder != nil {
+		resp, err := forwarder(context.Background(), peerKey, req)
+		if err != nil {
+			return fmt.Errorf("invite forwarding failed: %w", err)
+		}
+		return sendEnvelope(qc, &meshv1.Envelope{
+			Body: &meshv1.Envelope_InviteRedeemResponse{InviteRedeemResponse: resp},
+		})
+	}
+
+	return errors.New("this node is not an admin and has no forwarding configured")
 }
 
 func sendInviteRedeemResponse(qc *quic.Conn, joinToken *admissionv1.JoinToken, redeemErr error) error {
@@ -268,25 +318,24 @@ func redeemInviteOnConn(
 }
 
 func (m *QUICTransport) RequestCertRenewal(ctx context.Context, peerKey types.PeerKey) (*admissionv1.DelegationCert, error) {
-	s, ok := m.getSession(peerKey)
-	if !ok {
-		return nil, fmt.Errorf("no connection to peer %s", peerKey.Short())
-	}
-
 	currentCert := m.meshCert.Load()
 	var currentCertRaw []byte
 	if len(currentCert.Certificate) > 0 {
 		currentCertRaw = currentCert.Certificate[0]
 	}
 
-	if err := sendEnvelope(s.conn, &meshv1.Envelope{
+	data, err := (&meshv1.Envelope{
 		Body: &meshv1.Envelope_CertRenewalRequest{
 			CertRenewalRequest: &meshv1.CertRenewalRequest{
 				PeerPub:     m.localKey.Bytes(),
 				CurrentCert: currentCertRaw,
 			},
 		},
-	}); err != nil {
+	}).MarshalVT()
+	if err != nil {
+		return nil, fmt.Errorf("marshal renewal request: %w", err)
+	}
+	if err := m.SendMembershipDatagram(ctx, peerKey, data); err != nil {
 		return nil, fmt.Errorf("send renewal request: %w", err)
 	}
 

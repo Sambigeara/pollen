@@ -133,12 +133,12 @@ func TestConvergence_ThreeStoreFullMesh(t *testing.T) {
 	h := newDeterministicHarness(t, 3)
 
 	h.stores[0].SetLocalAddresses([]netip.AddrPort{netip.MustParseAddrPort("10.0.0.1:9000")})
-	h.stores[0].SetService(8080, "web")
+	h.stores[0].SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
 
 	h.stores[1].SetLocalCoord(coords.Coord{X: 1, Y: 2, Height: coords.MinHeight}, 0.5)
 	h.stores[1].SetLocalNAT(nat.Easy)
 
-	h.stores[2].SetWorkloadSpec("hash1", 2, 0, 0)
+	h.stores[2].SetWorkloadSpec("hash1", "hash1", 2, 0, 0, 0)
 	h.stores[2].ClaimWorkload("hash1")
 
 	h.establishFullReachability()
@@ -164,13 +164,13 @@ func TestConvergence_PartitionHealing(t *testing.T) {
 	h.assertConverged()
 
 	// Partition: A<->B communicate, C is isolated.
-	h.stores[0].SetService(8080, "web")
+	h.stores[0].SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
 	h.stores[1].SetLocalNAT(nat.Easy)
 	h.gossipOneway(0, 1)
 	h.gossipOneway(1, 0)
 
 	// C evolves independently.
-	h.stores[2].SetService(9090, "api")
+	h.stores[2].SetService(9090, "api", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
 
 	// Heal partition.
 	h.gossipFullMesh()
@@ -218,7 +218,7 @@ func applyFuzzMutation(s StateStore, kind int, peers []types.PeerKey, r *fuzzRea
 	case 1: // service
 		port := uint32(r.readUint16()) + 1
 		name := fmt.Sprintf("svc-%d", r.readByte()%8)
-		s.SetService(port, name)
+		s.SetService(port, name, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
 	case 2: // remove service
 		name := fmt.Sprintf("svc-%d", r.readByte()%8)
 		s.RemoveService(name)
@@ -252,7 +252,7 @@ func applyFuzzMutation(s StateStore, kind int, peers []types.PeerKey, r *fuzzRea
 	case 7: // workload spec
 		hash := fmt.Sprintf("wl-%d", r.readByte()%8)
 		replicas := uint32(r.readByte()%4) + 1
-		s.SetWorkloadSpec(hash, replicas, 0, 0)
+		s.SetWorkloadSpec(hash, hash, replicas, 0, 0, 0)
 	case 8: // workload claim
 		hash := fmt.Sprintf("wl-%d", r.readByte()%8)
 		if r.readByte()%2 == 0 {
@@ -263,7 +263,7 @@ func applyFuzzMutation(s StateStore, kind int, peers []types.PeerKey, r *fuzzRea
 	case 9: // resource telemetry
 		cpu := uint32(r.readByte())
 		mem := uint32(r.readByte())
-		s.SetLocalResources(float64(cpu), float64(mem))
+		s.SetLocalResources(float64(cpu), float64(mem), 8<<30, 4, 0, 0)
 	}
 }
 

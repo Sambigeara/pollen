@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/wasm"
 )
 
 const (
@@ -25,9 +27,10 @@ const (
 	statusNotFound byte = 1
 	statusError    byte = 2
 
-	hashLen     = 64
-	maxFuncLen  = 255
-	maxInputLen = 4 << 20 // 4 MiB
+	callerInfoLenSize = 2
+	hashLen           = 64
+	maxFuncLen        = 255
+	maxInputLen       = 4 << 20 // 4 MiB
 )
 
 type casWriter interface {
@@ -136,10 +139,29 @@ func handleArtifactStream(stream io.ReadWriteCloser, cas casReader) {
 	io.Copy(stream, rc)                    //nolint:errcheck
 }
 
-func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, invoker workloadInvoker, timeout time.Duration) {
+func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, peer types.PeerKey, invoker workloadInvoker, timeout time.Duration) {
 	defer stream.Close()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	// Read caller info prefix: [2-byte BE length][JSON].
+	// Attributes are taken from the wire but the peer key is always
+	// overwritten with the transport-authenticated identity.
+	var callerLenBuf [2]byte
+	if _, err := io.ReadFull(stream, callerLenBuf[:]); err != nil {
+		return
+	}
+	info := wasm.CallerInfo{PeerKey: peer}
+	if callerLen := binary.BigEndian.Uint16(callerLenBuf[:]); callerLen > 0 {
+		callerBuf := make([]byte, callerLen)
+		if _, err := io.ReadFull(stream, callerBuf); err != nil {
+			return
+		}
+		if wireInfo, ok := wasm.CallerInfoFromJSON(callerBuf); ok {
+			info.Attributes = wireInfo.Attributes
+		}
+	}
+	ctx = wasm.WithCallerInfo(ctx, info)
 
 	var hashBuf [64]byte
 	if _, err := io.ReadFull(stream, hashBuf[:]); err != nil {
@@ -198,11 +220,23 @@ func invokeOverStream(ctx context.Context, stream io.ReadWriteCloser, hash, func
 		return nil, fmt.Errorf("invoke: function name too long (%d > %d)", len(function), maxFuncLen)
 	}
 
-	buf := make([]byte, hashLen+1+len(function)+4+len(input))
-	copy(buf[0:hashLen], hash)
-	buf[hashLen] = byte(len(function))
-	copy(buf[hashLen+1:hashLen+1+len(function)], function)
-	off := hashLen + 1 + len(function)
+	// Caller info prefix: [2-byte BE length][JSON].
+	var callerJSON []byte
+	if info, ok := wasm.CallerInfoFromContext(ctx); ok {
+		callerJSON = wasm.MarshalCallerInfo(info)
+		if len(callerJSON) > math.MaxUint16 {
+			callerJSON = nil
+		}
+	}
+
+	buf := make([]byte, callerInfoLenSize+len(callerJSON)+hashLen+1+len(function)+4+len(input))
+	binary.BigEndian.PutUint16(buf[0:callerInfoLenSize], uint16(len(callerJSON)))
+	copy(buf[callerInfoLenSize:callerInfoLenSize+len(callerJSON)], callerJSON)
+	off := callerInfoLenSize + len(callerJSON)
+	copy(buf[off:off+hashLen], hash)
+	buf[off+hashLen] = byte(len(function))
+	copy(buf[off+hashLen+1:off+hashLen+1+len(function)], function)
+	off += hashLen + 1 + len(function)
 	binary.BigEndian.PutUint32(buf[off:off+4], uint32(len(input)))
 	copy(buf[off+4:], input)
 

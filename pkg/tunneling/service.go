@@ -8,8 +8,10 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -17,8 +19,11 @@ import (
 )
 
 const (
-	streamOpenTimeout = 5 * time.Second
-	bufSize           = 64 * 1024
+	streamOpenTimeout   = 5 * time.Second
+	bufSize             = 64 * 1024
+	udpReadBuf          = 1500
+	tunnelFrameOverhead = 3 // 1-byte DatagramType + 2-byte port
+	maxTunnelPayload    = transport.MaxDatagramPayload - tunnelFrameOverhead
 )
 
 var (
@@ -29,13 +34,14 @@ var (
 type TunnelingAPI interface {
 	Start(ctx context.Context) error
 	Stop() error
-	Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32) (uint32, error)
+	Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) (uint32, error)
 	Disconnect(service string) error
-	ExposeService(port uint32, name string) error
+	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol) error
 	UnexposeService(name string) error
 	ListConnections() []ConnectionInfo
 	HandleTunnelStream(stream transport.Stream, peer types.PeerKey)
 	HandleRoutedStream(stream transport.Stream, peer types.PeerKey)
+	HandleTunnelDatagram(data []byte, peer types.PeerKey)
 	HandlePeerDenied(peerID types.PeerKey)
 	DesiredPeers() []types.PeerKey
 	ListDesiredConnections() []ConnectionInfo
@@ -45,13 +51,17 @@ type TunnelingAPI interface {
 
 type ServiceState interface {
 	Snapshot() state.Snapshot
-	SetService(port uint32, name string) []state.Event
+	SetService(port uint32, name string, protocol statev1.ServiceProtocol) []state.Event
 	RemoveService(name string) []state.Event
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []state.Event
 }
 
 type StreamTransport interface {
 	OpenStream(ctx context.Context, peerID types.PeerKey, st transport.StreamType) (io.ReadWriteCloser, error)
+}
+
+type DatagramTransport interface {
+	SendTunnelDatagram(ctx context.Context, peer types.PeerKey, data []byte) error
 }
 
 type RoutingTable interface {
@@ -62,22 +72,43 @@ type ConnectionInfo struct {
 	PeerID     types.PeerKey
 	RemotePort uint32
 	LocalPort  uint32
+	Protocol   statev1.ServiceProtocol
 }
 
-type connection struct {
-	ln     net.Listener
+type connKey struct {
+	peer     types.PeerKey
+	port     uint32
+	protocol statev1.ServiceProtocol
+}
+
+type tunnelConn struct {
+	ln         net.Listener
+	pc         net.PacketConn
+	cancel     context.CancelFunc
+	lastClient atomic.Pointer[net.UDPAddr]
+	info       ConnectionInfo
+}
+
+type serviceKey struct {
+	port     uint32
+	protocol statev1.ServiceProtocol
+}
+
+type serviceEntry struct {
 	cancel context.CancelFunc
-	info   ConnectionInfo
+	proxy  *udpServiceProxy // nil for TCP
+	name   string
 }
 
 type Service struct {
 	router            RoutingTable
 	store             ServiceState
 	streams           StreamTransport
-	connections       map[string]*connection
+	datagrams         DatagramTransport
+	connections       map[connKey]*tunnelConn
 	log               *zap.SugaredLogger
-	services          map[uint32]context.CancelFunc
-	desired           map[string]ConnectionInfo
+	services          map[serviceKey]*serviceEntry
+	desired           map[connKey]ConnectionInfo
 	tracker           *tracker
 	wg                sync.WaitGroup
 	sampleInterval    time.Duration
@@ -88,16 +119,17 @@ type Service struct {
 
 var _ TunnelingAPI = (*Service)(nil)
 
-func New(self types.PeerKey, store ServiceState, streams StreamTransport, router RoutingTable, opts ...Option) *Service {
+func New(self types.PeerKey, store ServiceState, streams StreamTransport, datagrams DatagramTransport, router RoutingTable, opts ...Option) *Service {
 	s := &Service{
 		self:        self,
 		store:       store,
 		streams:     streams,
+		datagrams:   datagrams,
 		router:      router,
 		log:         zap.S().Named("tun"),
-		services:    make(map[uint32]context.CancelFunc),
-		connections: make(map[string]*connection),
-		desired:     make(map[string]ConnectionInfo),
+		services:    make(map[serviceKey]*serviceEntry),
+		connections: make(map[connKey]*tunnelConn),
+		desired:     make(map[connKey]ConnectionInfo),
 	}
 	for _, o := range opts {
 		o(s)
@@ -118,7 +150,7 @@ func (s *Service) Start(ctx context.Context) error {
 	snap := s.store.Snapshot()
 	for _, svc := range snap.Services() {
 		if svc.Peer == s.self {
-			_ = s.ExposeService(svc.Port, svc.Name)
+			_ = s.ExposeService(svc.Port, svc.Name, svc.Protocol)
 		}
 	}
 
@@ -133,26 +165,38 @@ func (s *Service) Start(ctx context.Context) error {
 
 func (s *Service) Stop() error {
 	s.mu.Lock()
-	for _, cancel := range s.services {
-		cancel()
+	for _, entry := range s.services {
+		if entry.proxy != nil {
+			entry.proxy.Close()
+		}
+		entry.cancel()
 	}
 	for _, conn := range s.connections {
-		_ = conn.ln.Close()
-		conn.cancel()
+		s.closeConn(conn)
 	}
 	s.mu.Unlock()
 	s.wg.Wait()
 	return nil
 }
 
-func (s *Service) Connect(_ context.Context, peer types.PeerKey, remotePort, localPort uint32) (uint32, error) {
+func (s *Service) closeConn(conn *tunnelConn) {
+	if conn.ln != nil {
+		_ = conn.ln.Close()
+	}
+	if conn.pc != nil {
+		_ = conn.pc.Close()
+	}
+	conn.cancel()
+}
+
+func (s *Service) Connect(_ context.Context, peer types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) (uint32, error) {
 	if localPort == 0 {
 		localPort = remotePort
 	}
 
-	key := fmt.Sprintf("%s:%d", peer.String(), remotePort)
+	key := connKey{peer: peer, port: remotePort, protocol: protocol}
 	s.mu.Lock()
-	s.desired[key] = ConnectionInfo{PeerID: peer, RemotePort: remotePort, LocalPort: localPort}
+	s.desired[key] = ConnectionInfo{PeerID: peer, RemotePort: remotePort, LocalPort: localPort, Protocol: protocol}
 	s.mu.Unlock()
 
 	s.reconcile()
@@ -162,7 +206,7 @@ func (s *Service) Connect(_ context.Context, peer types.PeerKey, remotePort, loc
 	if conn, ok := s.connections[key]; ok {
 		return conn.info.LocalPort, nil
 	}
-	return localPort, nil
+	return 0, fmt.Errorf("failed to bind local port %d: port may be in use", localPort)
 }
 
 func (s *Service) Disconnect(service string) error {
@@ -171,10 +215,9 @@ func (s *Service) Disconnect(service string) error {
 
 	snap := s.store.Snapshot()
 	for key, info := range s.desired {
-		if matchesService(snap, info.PeerID, info.RemotePort, service) {
+		if matchesService(snap, info.PeerID, info.RemotePort, info.Protocol, service) {
 			if conn, ok := s.connections[key]; ok {
-				_ = conn.ln.Close()
-				conn.cancel()
+				s.closeConn(conn)
 				delete(s.connections, key)
 			}
 			delete(s.desired, key)
@@ -184,17 +227,25 @@ func (s *Service) Disconnect(service string) error {
 	return fmt.Errorf("no connection for service %q", service)
 }
 
-func (s *Service) ExposeService(port uint32, name string) error {
+func (s *Service) ExposeService(port uint32, name string, protocol statev1.ServiceProtocol) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if cancel, ok := s.services[port]; ok {
-		cancel()
+	sk := serviceKey{port: port, protocol: protocol}
+	if existing, ok := s.services[sk]; ok {
+		if existing.proxy != nil {
+			existing.proxy.Close()
+		}
+		existing.cancel()
 	}
 
-	_, cancel := context.WithCancel(context.Background())
-	s.services[port] = cancel
-	s.store.SetService(port, name)
+	ctx, cancel := context.WithCancel(context.Background())
+	entry := &serviceEntry{cancel: cancel, name: name}
+	if protocol == statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP && s.datagrams != nil {
+		entry.proxy = newUDPServiceProxy(ctx, port, s.datagrams)
+	}
+	s.services[sk] = entry
+	s.store.SetService(port, name, protocol)
 	return nil
 }
 
@@ -205,9 +256,13 @@ func (s *Service) UnexposeService(name string) error {
 	snap := s.store.Snapshot()
 	for _, svc := range snap.Services() {
 		if svc.Peer == s.self && svc.Name == name {
-			if cancel, ok := s.services[svc.Port]; ok {
-				cancel()
-				delete(s.services, svc.Port)
+			sk := serviceKey{port: svc.Port, protocol: svc.Protocol}
+			if entry, ok := s.services[sk]; ok {
+				if entry.proxy != nil {
+					entry.proxy.Close()
+				}
+				entry.cancel()
+				delete(s.services, sk)
 			}
 			s.store.RemoveService(name)
 			return nil
@@ -217,14 +272,14 @@ func (s *Service) UnexposeService(name string) error {
 }
 
 func (s *Service) HandleTunnelStream(stream transport.Stream, peer types.PeerKey) {
-	s.handleIncoming(stream, peer)
+	s.handleIncomingStream(stream, peer)
 }
 
 func (s *Service) HandleRoutedStream(stream transport.Stream, peer types.PeerKey) {
-	s.handleIncoming(stream, peer)
+	s.handleIncomingStream(stream, peer)
 }
 
-func (s *Service) handleIncoming(stream io.ReadWriteCloser, peer types.PeerKey) {
+func (s *Service) handleIncomingStream(stream io.ReadWriteCloser, peer types.PeerKey) {
 	s.wg.Go(func() {
 		defer stream.Close()
 		port, err := readPort(stream)
@@ -233,7 +288,7 @@ func (s *Service) handleIncoming(stream io.ReadWriteCloser, peer types.PeerKey) 
 		}
 
 		s.mu.RLock()
-		_, ok := s.services[port]
+		_, ok := s.services[serviceKey{port: port, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP}]
 		s.mu.RUnlock()
 
 		if !ok {
@@ -248,14 +303,48 @@ func (s *Service) handleIncoming(stream io.ReadWriteCloser, peer types.PeerKey) 
 	})
 }
 
+func (s *Service) HandleTunnelDatagram(data []byte, peer types.PeerKey) {
+	if len(data) < 3 { //nolint:mnd
+		return
+	}
+	servicePort := uint32(binary.BigEndian.Uint16(data[:2]))
+	payload := data[2:]
+
+	// Client side: check if this is a response to an outgoing tunnel.
+	s.mu.RLock()
+	conn, connOK := s.connections[connKey{peer: peer, port: servicePort, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP}]
+	s.mu.RUnlock()
+
+	if connOK && conn.pc != nil {
+		if clientAddr := conn.lastClient.Load(); clientAddr != nil {
+			if s.tracker != nil {
+				s.tracker.Record(peer, uint64(len(payload)), 0)
+			}
+			_, _ = conn.pc.WriteTo(payload, clientAddr)
+			return
+		}
+	}
+
+	// Service side: forward to local service.
+	s.mu.RLock()
+	entry, svcOK := s.services[serviceKey{port: servicePort, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP}]
+	s.mu.RUnlock()
+
+	if svcOK && entry.proxy != nil {
+		if s.tracker != nil {
+			s.tracker.Record(peer, uint64(len(payload)), 0)
+		}
+		entry.proxy.Forward(peer, payload)
+	}
+}
+
 func (s *Service) HandlePeerDenied(peerID types.PeerKey) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for key, conn := range s.connections {
 		if conn.info.PeerID == peerID {
-			_ = conn.ln.Close()
-			conn.cancel()
+			s.closeConn(conn)
 			delete(s.connections, key)
 		}
 	}
@@ -287,9 +376,10 @@ func (s *Service) ListDesiredConnections() []ConnectionInfo {
 }
 
 func (s *Service) RemoveDesiredConnection(pk types.PeerKey, remotePort uint32) {
-	key := fmt.Sprintf("%s:%d", pk.String(), remotePort)
 	s.mu.Lock()
-	delete(s.desired, key)
+	// Remove both TCP and UDP desired entries for this peer+port.
+	delete(s.desired, connKey{peer: pk, port: remotePort, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP})
+	delete(s.desired, connKey{peer: pk, port: remotePort, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP})
 	s.mu.Unlock()
 	s.reconcile()
 }
@@ -321,59 +411,115 @@ func (s *Service) reconcile() {
 
 	snap := s.store.Snapshot()
 
+	// Teardown stale connections.
 	for key, conn := range s.connections {
-		if _, ok := s.desired[key]; !ok || !hasPort(snap, conn.info.PeerID, conn.info.RemotePort) {
-			_ = conn.ln.Close()
-			conn.cancel()
+		if _, ok := s.desired[key]; !ok || !hasPort(snap, conn.info.PeerID, conn.info.RemotePort, conn.info.Protocol) {
+			s.closeConn(conn)
 			delete(s.connections, key)
 		}
 	}
 
+	// Setup missing connections.
 	for key, info := range s.desired {
-		if _, ok := s.connections[key]; ok || !hasPort(snap, info.PeerID, info.RemotePort) {
+		if _, ok := s.connections[key]; ok || !hasPort(snap, info.PeerID, info.RemotePort, info.Protocol) {
 			continue
 		}
 
-		ctx, cancel := context.WithCancel(context.Background())
-		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", info.LocalPort)) //nolint:noctx
-		if err != nil {
-			cancel()
-			continue
+		switch info.Protocol {
+		case statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP:
+			s.reconcileUDP(key, info)
+		default:
+			s.reconcileTCP(key, info)
 		}
+	}
+}
 
-		boundPort := uint32(ln.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert
-		c := &connection{
-			info:   ConnectionInfo{PeerID: info.PeerID, RemotePort: info.RemotePort, LocalPort: boundPort},
-			ln:     ln,
-			cancel: cancel,
-		}
-		s.connections[key] = c
+func (s *Service) reconcileTCP(key connKey, info ConnectionInfo) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", info.LocalPort)) //nolint:noctx
+	if err != nil {
+		cancel()
+		return
+	}
 
-		s.wg.Go(func() {
-			for {
-				client, err := ln.Accept()
+	boundPort := uint32(ln.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert
+	c := &tunnelConn{
+		info:   ConnectionInfo{PeerID: info.PeerID, RemotePort: info.RemotePort, LocalPort: boundPort, Protocol: info.Protocol},
+		ln:     ln,
+		cancel: cancel,
+	}
+	s.connections[key] = c
+
+	s.wg.Go(func() {
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			s.wg.Go(func() {
+				defer client.Close()
+				sCtx, sCancel := context.WithTimeout(ctx, streamOpenTimeout)
+				defer sCancel()
+
+				stream, err := s.streams.OpenStream(sCtx, info.PeerID, transport.StreamTypeTunnel)
 				if err != nil {
 					return
 				}
-				s.wg.Go(func() {
-					defer client.Close()
-					sCtx, sCancel := context.WithTimeout(ctx, streamOpenTimeout)
-					defer sCancel()
+				defer stream.Close()
 
-					stream, err := s.streams.OpenStream(sCtx, info.PeerID, transport.StreamTypeTunnel)
-					if err != nil {
-						return
-					}
-					defer stream.Close()
+				if err := writePort(stream, info.RemotePort); err != nil {
+					return
+				}
+				s.bridge(stream, client, info.PeerID)
+			})
+		}
+	})
+}
 
-					if err := writePort(stream, info.RemotePort); err != nil {
-						return
-					}
-					s.bridge(stream, client, info.PeerID)
-				})
-			}
-		})
+func (s *Service) reconcileUDP(key connKey, info ConnectionInfo) {
+	ctx, cancel := context.WithCancel(context.Background())
+	pc, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", fmt.Sprintf(":%d", info.LocalPort))
+	if err != nil {
+		cancel()
+		return
 	}
+
+	boundPort := uint32(pc.LocalAddr().(*net.UDPAddr).Port) //nolint:forcetypeassert
+	c := &tunnelConn{
+		info:   ConnectionInfo{PeerID: info.PeerID, RemotePort: info.RemotePort, LocalPort: boundPort, Protocol: info.Protocol},
+		pc:     pc,
+		cancel: cancel,
+	}
+	s.connections[key] = c
+
+	// Read loop: local app → QUIC datagram.
+	s.wg.Go(func() {
+		buf := make([]byte, udpReadBuf)
+		for {
+			n, clientAddr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if n > maxTunnelPayload {
+				s.log.Debugw("dropping oversized UDP packet", "size", n, "max", maxTunnelPayload, "peer", info.PeerID.Short())
+				continue
+			}
+			udpAddr, ok := clientAddr.(*net.UDPAddr)
+			if !ok {
+				continue
+			}
+			c.lastClient.Store(udpAddr)
+
+			frame := make([]byte, 2+n) //nolint:mnd
+			binary.BigEndian.PutUint16(frame[:2], uint16(info.RemotePort))
+			copy(frame[2:], buf[:n])
+
+			if s.tracker != nil {
+				s.tracker.Record(info.PeerID, 0, uint64(n))
+			}
+			_ = s.datagrams.SendTunnelDatagram(ctx, info.PeerID, frame)
+		}
+	})
 }
 
 func (s *Service) bridge(c1, c2 io.ReadWriteCloser, peer types.PeerKey) {
@@ -438,26 +584,26 @@ func writePort(w io.Writer, p uint32) error {
 	return err
 }
 
-func hasPort(snap state.Snapshot, peer types.PeerKey, port uint32) bool {
+func hasPort(snap state.Snapshot, peer types.PeerKey, port uint32, protocol statev1.ServiceProtocol) bool {
 	nv, ok := snap.Nodes[peer]
 	if !ok {
 		return false
 	}
 	for _, s := range nv.Services {
-		if s.Port == port {
+		if s.Port == port && s.Protocol == protocol {
 			return true
 		}
 	}
 	return false
 }
 
-func matchesService(snap state.Snapshot, peer types.PeerKey, port uint32, name string) bool {
+func matchesService(snap state.Snapshot, peer types.PeerKey, port uint32, protocol statev1.ServiceProtocol, name string) bool {
 	nv, ok := snap.Nodes[peer]
 	if !ok {
 		return false
 	}
 	s, ok := nv.Services[name]
-	return ok && s.Port == port
+	return ok && s.Port == port && s.Protocol == protocol
 }
 
 type peerTraffic struct{ BytesIn, BytesOut uint64 }

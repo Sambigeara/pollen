@@ -48,12 +48,14 @@ type StateStore interface {
 	SetLocalReachable(peers []types.PeerKey) []Event
 	SetLocalObservedAddress(ip string, port uint32) []Event
 
-	SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) []Event
+	SetWorkloadSpec(name, hash string, replicas, memoryPages, timeoutMs uint32, spread float32) []Event
 	ClaimWorkload(hash string) []Event
 	ReleaseWorkload(hash string) []Event
-	SetLocalResources(cpu, mem float64) []Event
+	SetLocalResources(cpu, mem float64, memTotalBytes uint64, numCPU, cpuBudgetPct, memBudgetPct uint32) []Event
+	SetSeedLoad(rates map[string]float32) []Event
+	SetSeedDemand(rates map[string]float32) []Event
 
-	SetService(port uint32, name string) []Event
+	SetService(port uint32, name string, protocol statev1.ServiceProtocol) []Event
 	RemoveService(name string) []Event
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event
 
@@ -61,7 +63,10 @@ type StateStore interface {
 	LoadGossipState(data []byte) error
 
 	SetPeerLastAddr(pk types.PeerKey, addr string)
-	SetBootstrapPublic()
+	SetPublic()
+	SetAdmin()
+	ClearAdmin()
+	SetNodeName(name string)
 	ExportLastAddrs() map[types.PeerKey]string
 	LoadLastAddrs(addrs map[types.PeerKey]string)
 }

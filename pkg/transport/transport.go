@@ -34,6 +34,9 @@ type Transport interface {
 	Punch(ctx context.Context, peer types.PeerKey, addr *net.UDPAddr, localNAT nat.Type) error
 	Send(ctx context.Context, peer types.PeerKey, data []byte) error
 	Recv(ctx context.Context) (Packet, error)
+	SendTunnelDatagram(ctx context.Context, peer types.PeerKey, data []byte) error
+	SendMembershipDatagram(ctx context.Context, peer types.PeerKey, data []byte) error
+	RecvTunnelDatagram(ctx context.Context) (Packet, error)
 	OpenStream(ctx context.Context, peer types.PeerKey, st StreamType) (Stream, error)
 	AcceptStream(ctx context.Context) (Stream, StreamType, types.PeerKey, error)
 
@@ -56,6 +59,10 @@ type Transport interface {
 	UpdateMeshCert(cert tls.Certificate)
 	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.DelegationCert, error)
 	PeerDelegationCert(peer types.PeerKey) (*admissionv1.DelegationCert, bool)
+	SetInviteForwarder(f InviteForwarder)
+	SetInviteSigner(s *auth.DelegationSigner)
+	SetInviteConsumer(c auth.InviteConsumer)
+	PushCert(ctx context.Context, peer types.PeerKey, cert *admissionv1.DelegationCert) error
 	JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
 }
 
@@ -69,6 +76,14 @@ const (
 	StreamTypeRouted   StreamType = 3
 	StreamTypeArtifact StreamType = 4
 	StreamTypeWorkload StreamType = 5
+)
+
+type DatagramType byte
+
+const (
+	DatagramTypeMembership DatagramType = 1
+	DatagramTypeTunnel     DatagramType = 2
+	DatagramTypeRouted     DatagramType = 3
 )
 
 type Stream struct{ *quic.Stream }
@@ -105,6 +120,13 @@ type PeerStateCounts struct {
 }
 
 var errUnreachable = errors.New("peer unreachable")
+
+// MaxDatagramPayload is the largest payload callers can pass to Send or
+// SendTunnelDatagram. Derived from the QUIC minimum MTU (1200 bytes) minus
+// worst-case QUIC packet overhead (~50 bytes for short header, DATAGRAM
+// frame type, length varint, and AEAD tag). Conservative to avoid relying
+// on path MTU discovery.
+const MaxDatagramPayload = 1150
 
 const (
 	handshakeTimeout       = 3 * time.Second
@@ -213,8 +235,11 @@ type QUICTransport struct {
 	peers            *peerStore
 	listener         *quic.Listener
 	renewalCh        chan *meshv1.CertRenewalResponse
+	certPushCh       chan *meshv1.CertPushResponse
 	inviteSigner     *auth.DelegationSigner
+	inviteForwarder  InviteForwarder
 	recvCh           chan Packet
+	tunnelDatagramCh chan Packet
 	acceptCh         chan acceptedStream
 	mainQT           *quic.Transport
 	metrics          *metrics.MeshMetrics
@@ -234,11 +259,13 @@ type QUICTransport struct {
 	maxConnectionAge time.Duration
 	peerTickInterval time.Duration
 	sessionsMu       sync.RWMutex
+	inviteHandlerMu  sync.RWMutex
+	certPushMu       sync.Mutex
 	localKey         types.PeerKey
 	disableNATPunch  bool
 }
 
-func New(self types.PeerKey, creds auth.NodeCredentials, listenAddr string, opts ...Option) (*QUICTransport, error) {
+func New(self types.PeerKey, creds *auth.NodeCredentials, listenAddr string, opts ...Option) (*QUICTransport, error) {
 	o := transportOptions{}
 	for _, opt := range opts {
 		opt(&o)
@@ -305,7 +332,9 @@ func New(self types.PeerKey, creds auth.NodeCredentials, listenAddr string, opts
 		sessions:         make(map[types.PeerKey]*peerSession),
 		waiters:          make(map[types.PeerKey]chan struct{}),
 		recvCh:           make(chan Packet, queueBufSize),
+		tunnelDatagramCh: make(chan Packet, queueBufSize),
 		renewalCh:        make(chan *meshv1.CertRenewalResponse, 1),
+		certPushCh:       make(chan *meshv1.CertPushResponse, 1),
 		peerEventCh:      make(chan PeerEvent, queueBufSize),
 		supervisorCh:     make(chan PeerEvent, queueBufSize),
 		acceptCh:         make(chan acceptedStream),
@@ -334,7 +363,7 @@ func (m *QUICTransport) Start(ctx context.Context) error {
 		inviteCert:      m.bareCert,
 		rootPub:         m.rootPub,
 		reconnectWindow: m.reconnectWindow,
-		inviteEnabled:   m.inviteSigner != nil,
+		inviteEnabled:   m.inviteSigner != nil || m.inviteForwarder != nil,
 	}), quicConfig())
 	if err != nil {
 		_ = pconn.Close()
@@ -384,6 +413,7 @@ func (m *QUICTransport) Stop() error {
 	m.acceptWG.Wait()
 	close(m.acceptCh)
 	close(m.recvCh)
+	close(m.tunnelDatagramCh)
 	return nil
 }
 
@@ -537,24 +567,48 @@ func (m *QUICTransport) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 		}
 		m.metrics.DatagramsRecv.Add(ctx, 1)
 		m.metrics.DatagramBytesRecv.Add(ctx, int64(len(payload)))
-		env := &meshv1.Envelope{}
-		if err := env.UnmarshalVT(payload); err != nil {
-			continue
-		}
 
-		if resp, ok := env.GetBody().(*meshv1.Envelope_CertRenewalResponse); ok {
+		switch DatagramType(payload[0]) {
+		case DatagramTypeMembership:
+			data := payload[1:]
+			env := &meshv1.Envelope{}
+			if err := env.UnmarshalVT(data); err != nil {
+				continue
+			}
+			if resp, ok := env.GetBody().(*meshv1.Envelope_CertRenewalResponse); ok {
+				select {
+				case m.renewalCh <- resp.CertRenewalResponse:
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+			if resp, ok := env.GetBody().(*meshv1.Envelope_CertPushResponse); ok {
+				select {
+				case m.certPushCh <- resp.CertPushResponse:
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
 			select {
-			case m.renewalCh <- resp.CertRenewalResponse:
+			case m.recvCh <- Packet{From: peerKey, Data: data}:
 			case <-ctx.Done():
 				return
 			}
-			continue
-		}
 
-		select {
-		case m.recvCh <- Packet{From: peerKey, Data: payload}:
-		case <-ctx.Done():
-			return
+		case DatagramTypeTunnel:
+			select {
+			case m.tunnelDatagramCh <- Packet{From: peerKey, Data: payload[1:]}:
+			case <-ctx.Done():
+				return
+			}
+
+		case DatagramTypeRouted:
+			m.handleRoutedDatagram(ctx, payload[1:], peerKey)
+
+		default:
+			continue
 		}
 	}
 }
@@ -891,7 +945,7 @@ func (m *QUICTransport) ClosePeerSession(peer types.PeerKey, reason DisconnectRe
 	}
 }
 
-func (m *QUICTransport) Send(ctx context.Context, peerKey types.PeerKey, data []byte) error {
+func (m *QUICTransport) sendRawDatagram(ctx context.Context, peerKey types.PeerKey, data []byte) error {
 	s, ok := m.getSession(peerKey)
 	if !ok {
 		return fmt.Errorf("no connection to peer %s", peerKey.Short())
@@ -906,9 +960,53 @@ func (m *QUICTransport) Send(ctx context.Context, peerKey types.PeerKey, data []
 	return nil
 }
 
+func (m *QUICTransport) Send(ctx context.Context, peerKey types.PeerKey, data []byte) error {
+	prefixed := make([]byte, 1+len(data))
+	prefixed[0] = byte(DatagramTypeMembership)
+	copy(prefixed[1:], data)
+	return m.sendRawDatagram(ctx, peerKey, prefixed)
+}
+
 func (m *QUICTransport) Recv(ctx context.Context) (Packet, error) {
 	select {
 	case p := <-m.recvCh:
+		return p, nil
+	case <-ctx.Done():
+		return Packet{}, ctx.Err()
+	}
+}
+
+func (m *QUICTransport) sendOrRoute(ctx context.Context, dest types.PeerKey, dgType DatagramType, data []byte) error {
+	if _, ok := m.getSession(dest); ok {
+		prefixed := make([]byte, 1+len(data))
+		prefixed[0] = byte(dgType)
+		copy(prefixed[1:], data)
+		return m.sendRawDatagram(ctx, dest, prefixed)
+	}
+	if m.router != nil {
+		if nextHop, ok := m.router.NextHop(dest); ok {
+			if _, ok := m.getSession(nextHop); ok {
+				return m.sendRoutedDatagram(ctx, dest, dgType, data, nextHop)
+			}
+		}
+	}
+	return errUnreachable
+}
+
+func (m *QUICTransport) SendTunnelDatagram(ctx context.Context, peerKey types.PeerKey, data []byte) error {
+	return m.sendOrRoute(ctx, peerKey, DatagramTypeTunnel, data)
+}
+
+func (m *QUICTransport) SendMembershipDatagram(ctx context.Context, peerKey types.PeerKey, data []byte) error {
+	return m.sendOrRoute(ctx, peerKey, DatagramTypeMembership, data)
+}
+
+func (m *QUICTransport) RecvTunnelDatagram(ctx context.Context) (Packet, error) {
+	select {
+	case p, ok := <-m.tunnelDatagramCh:
+		if !ok {
+			return Packet{}, io.EOF
+		}
 		return p, nil
 	case <-ctx.Done():
 		return Packet{}, ctx.Err()
@@ -921,6 +1019,61 @@ func (m *QUICTransport) SetRouter(r Router) {
 
 func (m *QUICTransport) SetTrafficTracker(t TrafficRecorder) {
 	m.trafficTracker = t
+}
+
+func (m *QUICTransport) SetInviteForwarder(f InviteForwarder) {
+	m.inviteHandlerMu.Lock()
+	m.inviteForwarder = f
+	m.inviteHandlerMu.Unlock()
+}
+
+func (m *QUICTransport) SetInviteSigner(s *auth.DelegationSigner) {
+	m.inviteHandlerMu.Lock()
+	m.inviteSigner = s
+	m.inviteHandlerMu.Unlock()
+}
+
+func (m *QUICTransport) SetInviteConsumer(c auth.InviteConsumer) {
+	m.inviteHandlerMu.Lock()
+	m.inviteConsumer = c
+	m.inviteHandlerMu.Unlock()
+}
+
+func (m *QUICTransport) PushCert(ctx context.Context, peerKey types.PeerKey, cert *admissionv1.DelegationCert) error {
+	m.certPushMu.Lock()
+	defer m.certPushMu.Unlock()
+
+	select {
+	case <-m.certPushCh:
+	default:
+	}
+
+	data, err := (&meshv1.Envelope{
+		Body: &meshv1.Envelope_CertPushRequest{CertPushRequest: &meshv1.CertPushRequest{Cert: cert}},
+	}).MarshalVT()
+	if err != nil {
+		return fmt.Errorf("marshal cert push: %w", err)
+	}
+	if err := m.SendMembershipDatagram(ctx, peerKey, data); err != nil {
+		return fmt.Errorf("send cert push: %w", err)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancel()
+
+	select {
+	case resp := <-m.certPushCh:
+		if !resp.GetAccepted() {
+			reason := resp.GetReason()
+			if reason == "" {
+				reason = "cert push rejected"
+			}
+			return errors.New(reason)
+		}
+		return nil
+	case <-waitCtx.Done():
+		return fmt.Errorf("cert push response: %w", waitCtx.Err())
+	}
 }
 
 func (m *QUICTransport) SetPeerMetrics(pm *metrics.PeerMetrics) {

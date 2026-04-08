@@ -96,7 +96,7 @@ func opServe(t *testing.T, dir string) {
 	if err != nil {
 		cfg = &config.Config{}
 	}
-	cfg.AddService("test-svc", 8080) //nolint:mnd
+	cfg.AddService("test-svc", 8080, "") //nolint:mnd
 	require.NoError(t, config.Save(dir, cfg))
 }
 

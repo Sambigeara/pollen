@@ -38,6 +38,7 @@ func NewPluginConfig(memoryPages uint32, timeout time.Duration) PluginConfig {
 
 type compiledEntry struct {
 	plugin *extism.CompiledPlugin
+	pool   chan *extism.Plugin
 	refs   sync.WaitGroup
 }
 
@@ -115,20 +116,35 @@ func (r *Runtime) Compile(ctx context.Context, wasmBytes []byte, hash string, cf
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	// Double-check: another goroutine may have compiled concurrently.
 	if _, ok := r.compiled[hash]; ok {
+		r.mu.Unlock()
 		compiled.Close(ctx)
 		return nil
 	}
-	r.compiled[hash] = &compiledEntry{plugin: compiled}
+	entry := &compiledEntry{
+		plugin: compiled,
+		pool:   make(chan *extism.Plugin, cap(r.sem)),
+	}
+	r.compiled[hash] = entry
+	r.mu.Unlock()
+
+	// Pre-warm one instance so the first call avoids cold-start latency.
+	if inst, err := compiled.Instance(ctx, extism.PluginInstanceConfig{}); err == nil {
+		select {
+		case entry.pool <- inst:
+		default:
+			inst.Close(ctx)
+		}
+	}
 	return nil
 }
 
-// Call creates a fresh plugin instance from the cached compiled module,
-// invokes the named function with input, and returns the output.
-// Each call is isolated — thread-safe for concurrent use.
+// Call invokes the named function on a pooled plugin instance from the
+// cached compiled module and returns the output. Warm instances are reused
+// across calls to avoid re-running _initialize; on error the instance is
+// discarded to prevent reuse of potentially corrupted state.
 func (r *Runtime) Call(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
 	r.mu.Lock()
 	entry, ok := r.compiled[hash]
@@ -147,15 +163,27 @@ func (r *Runtime) Call(ctx context.Context, hash, function string, input []byte)
 	}
 	defer func() { <-r.sem }()
 
-	plugin, err := entry.plugin.Instance(ctx, extism.PluginInstanceConfig{})
-	if err != nil {
-		return nil, fmt.Errorf("wasm: instantiate %s: %w", hash, err)
+	var plugin *extism.Plugin
+	select {
+	case plugin = <-entry.pool:
+	default:
+		var err error
+		plugin, err = entry.plugin.Instance(ctx, extism.PluginInstanceConfig{})
+		if err != nil {
+			return nil, fmt.Errorf("wasm: instantiate %s: %w", hash, err)
+		}
 	}
-	defer plugin.Close(ctx)
 
 	_, output, err := plugin.CallWithContext(ctx, function, input)
 	if err != nil {
+		plugin.Close(ctx)
 		return nil, fmt.Errorf("wasm: call %s.%s: %w", hash[:min(hashPreviewLen, len(hash))], function, err)
+	}
+
+	select {
+	case entry.pool <- plugin:
+	default:
+		plugin.Close(ctx)
 	}
 
 	return output, nil
@@ -171,6 +199,7 @@ func (r *Runtime) DropCompiled(ctx context.Context, hash string) {
 
 	if ok {
 		entry.refs.Wait()
+		drainPool(ctx, entry.pool)
 		entry.plugin.Close(ctx)
 	}
 }
@@ -183,6 +212,18 @@ func (r *Runtime) Close(ctx context.Context) {
 
 	for _, entry := range snapshot {
 		entry.refs.Wait()
+		drainPool(ctx, entry.pool)
 		entry.plugin.Close(ctx)
+	}
+}
+
+func drainPool(ctx context.Context, pool chan *extism.Plugin) {
+	for {
+		select {
+		case inst := <-pool:
+			inst.Close(ctx)
+		default:
+			return
+		}
 	}
 }

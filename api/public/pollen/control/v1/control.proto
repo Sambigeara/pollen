@@ -3,6 +3,8 @@ syntax = "proto3";
 package pollen.control.v1;
 
 import "buf/validate/validate.proto";
+import "google/protobuf/struct.proto";
+import "pollen/state/v1/state.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1";
 
@@ -20,6 +22,7 @@ service ControlService {
   rpc SeedWorkload(SeedWorkloadRequest) returns (SeedWorkloadResponse);
   rpc UnseedWorkload(UnseedWorkloadRequest) returns (UnseedWorkloadResponse);
   rpc CallWorkload(CallWorkloadRequest) returns (CallWorkloadResponse);
+  rpc IssueCert(IssueCertRequest) returns (IssueCertResponse);
 }
 
 message NodeRef {
@@ -45,6 +48,7 @@ message NodeSummary {
   uint64 traffic_bytes_in = 9;
   uint64 traffic_bytes_out = 10;
   uint32 num_cpu = 11;
+  string name = 12;
 }
 
 message ServiceSummary {
@@ -57,6 +61,7 @@ message ServiceSummary {
     gt: 0
     lte: 65535
   }];
+  pollen.state.v1.ServiceProtocol protocol = 4;
 }
 
 message ShutdownRequest {}
@@ -94,6 +99,7 @@ message CertInfo {
   bool can_admit = 6;
   uint32 max_depth = 7;
   int64 access_deadline_unix = 8;
+  google.protobuf.Struct attributes = 9;
 }
 
 message GetStatusResponse {
@@ -117,9 +123,13 @@ message WorkloadSummary {
   string hash = 1;
   WorkloadStatus status = 2;
   int64 started_at_unix = 3;
-  uint32 desired_replicas = 4;
+  uint32 min_replicas = 4;
   uint32 active_replicas = 5;
   bool local = 6;
+  string name = 7;
+  float spread = 8;
+  uint32 effective_target = 9;
+  float pressure = 10;
 }
 
 message ConnectionSummary {
@@ -133,6 +143,7 @@ message ConnectionSummary {
     lte: 65535
   }];
   string service_name = 4;
+  pollen.state.v1.ServiceProtocol protocol = 5;
 }
 
 message RegisterServiceRequest {
@@ -144,6 +155,7 @@ message RegisterServiceRequest {
     min_len: 1
     max_len: 64
   }];
+  pollen.state.v1.ServiceProtocol protocol = 3;
 }
 
 message RegisterServiceResponse {}
@@ -172,6 +184,8 @@ message ConnectServiceRequest {
     lte: 65535
   }];
   uint32 local_port = 3 [(buf.validate.field).uint32 = {lte: 65535}];
+  reserved 4;
+  pollen.state.v1.ServiceProtocol protocol = 5;
 }
 
 message ConnectServiceResponse {
@@ -198,13 +212,16 @@ message DenyPeerResponse {}
 
 message SeedWorkloadRequest {
   bytes wasm_bytes = 1 [(buf.validate.field).bytes = {min_len: 1}];
-  uint32 replicas = 2;
+  uint32 min_replicas = 2;
   uint32 memory_pages = 3;
   uint32 timeout_ms = 4;
+  string name = 5;
+  float spread = 6;
 }
 
 message SeedWorkloadResponse {
   string hash = 1;
+  string name = 2;
 }
 
 message UnseedWorkloadRequest {
@@ -250,3 +267,11 @@ message GetMetricsResponse {
   uint64 eager_syncs = 15;
   uint64 eager_sync_failures = 16;
 }
+
+message IssueCertRequest {
+  bytes peer_pub = 1 [(buf.validate.field).bytes = {len: 32}];
+  bool admin = 2;
+  google.protobuf.Struct attributes = 3;
+}
+
+message IssueCertResponse {}

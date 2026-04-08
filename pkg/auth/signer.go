@@ -12,11 +12,13 @@ import (
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type DelegationSigner struct {
 	issuer *admissionv1.DelegationCert
 	priv   ed25519.PrivateKey
+	root   bool
 }
 
 func NewDelegationSigner(pollenDir string, nodePriv ed25519.PrivateKey, delegationTTL time.Duration) (*DelegationSigner, error) {
@@ -33,15 +35,16 @@ func NewDelegationSigner(pollenDir string, nodePriv ed25519.PrivateKey, delegati
 			return nil, err
 		}
 		if bytes.Equal(adminPub, rootPub) {
+			nodePub := nodePriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 			issuer, err := IssueDelegationCert(
-				adminPriv, nil, adminPub,
+				adminPriv, nil, nodePub,
 				FullCapabilities(),
 				now, now.Add(delegationTTL), time.Time{},
 			)
 			if err != nil {
 				return nil, err
 			}
-			return &DelegationSigner{priv: adminPriv, issuer: issuer}, nil
+			return &DelegationSigner{priv: nodePriv, issuer: issuer, root: true}, nil
 		}
 	}
 
@@ -60,9 +63,12 @@ func NewDelegationSigner(pollenDir string, nodePriv ed25519.PrivateKey, delegati
 	return &DelegationSigner{priv: nodePriv, issuer: creds.cert}, nil
 }
 
+func NewDelegationSignerFromCert(nodePriv ed25519.PrivateKey, cert *admissionv1.DelegationCert) *DelegationSigner {
+	return &DelegationSigner{priv: nodePriv, issuer: cert}
+}
+
 func (s *DelegationSigner) IsRoot() bool {
-	claims := s.issuer.GetClaims()
-	return bytes.Equal(claims.GetIssuerPub(), claims.GetSubjectPub())
+	return s.root
 }
 
 func (s *DelegationSigner) IssueInviteToken(
@@ -71,9 +77,13 @@ func (s *DelegationSigner) IssueInviteToken(
 	now time.Time,
 	tokenTTL time.Duration,
 	membershipTTL time.Duration,
+	attributes *structpb.Struct,
 ) (*admissionv1.InviteToken, error) {
 	if tokenTTL <= 0 {
 		return nil, errors.New("token ttl must be positive")
+	}
+	if err := ValidateAttributes(attributes); err != nil {
+		return nil, err
 	}
 	if err := protovalidate.Validate(s.issuer); err != nil {
 		return nil, fmt.Errorf("invite issuer delegation cert invalid: %w", err)
@@ -87,6 +97,7 @@ func (s *DelegationSigner) IssueInviteToken(
 		IssuedAtUnix:         now.Unix(),
 		ExpiresAtUnix:        now.Add(tokenTTL).Unix(),
 		MembershipTtlSeconds: int64(membershipTTL / time.Second),
+		Attributes:           attributes,
 	}
 	if err := protovalidate.Validate(claims); err != nil {
 		return nil, fmt.Errorf("invite token claims invalid: %w", err)
@@ -112,7 +123,12 @@ func (s *DelegationSigner) IssueJoinToken(
 	tokenTTL time.Duration,
 	membershipTTL time.Duration,
 	accessDeadline time.Time,
+	attributes *structpb.Struct,
 ) (*admissionv1.JoinToken, error) {
+	if err := ValidateAttributes(attributes); err != nil {
+		return nil, err
+	}
+
 	parentChain := append([]*admissionv1.DelegationCert{s.issuer}, s.issuer.GetChain()...)
 
 	notAfter := now.Add(membershipTTL)
@@ -120,11 +136,14 @@ func (s *DelegationSigner) IssueJoinToken(
 		notAfter = accessDeadline
 	}
 
+	caps := LeafCapabilities()
+	caps.Attributes = attributes
+
 	memberCert, err := IssueDelegationCert(
 		s.priv,
 		parentChain,
 		subject,
-		LeafCapabilities(),
+		caps,
 		now,
 		notAfter,
 		accessDeadline,

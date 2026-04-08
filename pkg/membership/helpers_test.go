@@ -215,6 +215,10 @@ func (f *fakeCertManager) PeerDelegationCert(peer types.PeerKey) (*admissionv1.D
 	return c, ok
 }
 
+func (f *fakeCertManager) PushCert(_ context.Context, _ types.PeerKey, _ *admissionv1.DelegationCert) error {
+	return nil
+}
+
 type fakePeerAddressSource struct {
 	addrs map[types.PeerKey]*net.UDPAddr
 }

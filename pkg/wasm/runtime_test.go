@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sambigeara/pollen/pkg/wasm"
@@ -21,9 +22,16 @@ func loadTestModule(t *testing.T, name string) []byte {
 	return data
 }
 
+type noopRouter struct{}
+
+func (noopRouter) RouteCall(context.Context, string, string, []byte) ([]byte, error) {
+	return nil, fmt.Errorf("no routing in tests")
+}
+
 func newTestRuntime(t *testing.T) *wasm.Runtime {
 	t.Helper()
-	rt, err := wasm.NewRuntime(nil, 2)
+	hostFuncs := wasm.NewHostFunctions(zap.NewNop().Sugar(), noopRouter{})
+	rt, err := wasm.NewRuntime(hostFuncs, 2)
 	require.NoError(t, err)
 	t.Cleanup(func() { rt.Close(context.Background()) })
 	return rt
@@ -116,7 +124,8 @@ func TestConcurrentCalls(t *testing.T) {
 }
 
 func TestCallConcurrencyLimit(t *testing.T) {
-	rt, err := wasm.NewRuntime(nil, 1)
+	hostFuncs := wasm.NewHostFunctions(zap.NewNop().Sugar(), noopRouter{})
+	rt, err := wasm.NewRuntime(hostFuncs, 1)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(t.Context())

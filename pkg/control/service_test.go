@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // --- Test Harness ---
@@ -292,7 +293,7 @@ func TestCallWorkloadInternalError(t *testing.T) {
 
 func TestDenyPeer(t *testing.T) {
 	dc := dummyCreds(t)
-	h := newHarness(t, control.WithCredentials(&dc))
+	h := newHarness(t, control.WithCredentials(dc))
 	pk := testPeerKey(5)
 
 	_, err := h.svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{PeerPub: pk.Bytes()})
@@ -310,7 +311,7 @@ func TestDenyPeerNoCreds(t *testing.T) {
 
 func TestDenyPeerError(t *testing.T) {
 	dc := dummyCreds(t)
-	h := newHarness(t, control.WithCredentials(&dc))
+	h := newHarness(t, control.WithCredentials(dc))
 	h.membership.denyErr = errors.New("boom")
 
 	_, err := h.svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{PeerPub: testPeerKey(5).Bytes()})
@@ -479,8 +480,8 @@ func TestGetStatusWorkloads(t *testing.T) {
 	h.state.snap.LocalID = local
 	h.state.snap.Nodes[local] = state.NodeView{}
 	h.state.snap.Specs = map[string]state.WorkloadSpecView{
-		"abc": {Spec: &statev1.WorkloadSpecChange{Replicas: 3}},
-		"def": {Spec: &statev1.WorkloadSpecChange{Replicas: 2}},
+		"abc": {Spec: &statev1.WorkloadSpecChange{MinReplicas: 3}},
+		"def": {Spec: &statev1.WorkloadSpecChange{MinReplicas: 2}},
 	}
 	h.state.snap.Claims = map[string]map[types.PeerKey]struct{}{
 		"abc": {local: {}},
@@ -505,12 +506,12 @@ func TestGetStatusWorkloads(t *testing.T) {
 	require.NotNil(t, localW)
 	require.True(t, localW.Local)
 	require.Equal(t, controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING, localW.Status)
-	require.Equal(t, uint32(3), localW.DesiredReplicas)
+	require.Equal(t, uint32(3), localW.MinReplicas)
 	require.Equal(t, uint32(1), localW.ActiveReplicas)
 
 	require.NotNil(t, remoteW)
 	require.False(t, remoteW.Local)
-	require.Equal(t, uint32(2), remoteW.DesiredReplicas)
+	require.Equal(t, uint32(2), remoteW.MinReplicas)
 	require.Equal(t, uint32(1), remoteW.ActiveReplicas)
 }
 
@@ -620,6 +621,10 @@ func (f *fakeMembership) DenyPeer(key types.PeerKey) error {
 	return f.denyErr
 }
 
+func (f *fakeMembership) IssueCert(_ context.Context, _ types.PeerKey, _ bool, _ *structpb.Struct) error {
+	return nil
+}
+
 type fakePlacement struct {
 	seedErr   error
 	unseedErr error
@@ -627,6 +632,7 @@ type fakePlacement struct {
 	callOut   []byte
 	statuses  []placement.WorkloadSummary
 
+	seededName   string
 	seededHash   string
 	seededBinary []byte
 	unseededHash string
@@ -635,7 +641,8 @@ type fakePlacement struct {
 	calledInput  []byte
 }
 
-func (f *fakePlacement) Seed(hash string, binary []byte, _, _, _ uint32) error {
+func (f *fakePlacement) Seed(name, hash string, binary []byte, _, _, _ uint32, _ float32) error {
+	f.seededName = name
 	f.seededHash = hash
 	f.seededBinary = binary
 	return f.seedErr
@@ -657,6 +664,8 @@ func (f *fakePlacement) Status() []placement.WorkloadSummary {
 	return f.statuses
 }
 
+func (f *fakePlacement) PlacementInfo() map[string][2]float64 { return nil }
+
 type fakeTunneling struct {
 	exposeErr     error
 	unexposeErr   error
@@ -673,7 +682,7 @@ type fakeTunneling struct {
 	disconnectedName    string
 }
 
-func (f *fakeTunneling) Connect(_ context.Context, peer types.PeerKey, remotePort, localPort uint32) (uint32, error) {
+func (f *fakeTunneling) Connect(_ context.Context, peer types.PeerKey, remotePort, localPort uint32, _ statev1.ServiceProtocol) (uint32, error) {
 	f.connectedPeer = peer
 	f.connectedRemotePort = remotePort
 	f.connectedLocalPort = localPort
@@ -688,7 +697,7 @@ func (f *fakeTunneling) Disconnect(service string) error {
 	return f.disconnectErr
 }
 
-func (f *fakeTunneling) ExposeService(port uint32, name string) error {
+func (f *fakeTunneling) ExposeService(port uint32, name string, _ statev1.ServiceProtocol) error {
 	f.exposedPort = port
 	f.exposedName = name
 	return f.exposeErr
@@ -764,7 +773,7 @@ func testPeerKey(b byte) types.PeerKey {
 	return types.PeerKeyFromBytes(raw[:])
 }
 
-func dummyCreds(t *testing.T) auth.NodeCredentials {
+func dummyCreds(t *testing.T) *auth.NodeCredentials {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
@@ -776,5 +785,22 @@ func dummyCreds(t *testing.T) auth.NodeCredentials {
 	require.NoError(t, err)
 	creds := auth.NewNodeCredentials(nil, nil)
 	creds.SetDelegationKey(signer)
-	return *creds
+	return creds
+}
+
+func TestGetStatus_NodeNames(t *testing.T) {
+	h := newHarness(t)
+	local := testPeerKey(1)
+	peer := testPeerKey(2)
+	h.state.snap.LocalID = local
+	h.state.snap.Nodes[local] = state.NodeView{Name: "my-laptop", IPs: []string{"10.0.0.1"}, LocalPort: 5000}
+	h.state.snap.Nodes[peer] = state.NodeView{Name: "server-1", IPs: []string{"1.2.3.4"}, LocalPort: 5000}
+	h.transport.activeAddrs[peer] = &net.UDPAddr{IP: net.ParseIP("1.2.3.4"), Port: 5000}
+
+	resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+
+	require.Equal(t, "my-laptop", resp.Self.Name)
+	require.Len(t, resp.Nodes, 1)
+	require.Equal(t, "server-1", resp.Nodes[0].Name)
 }

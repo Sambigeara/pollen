@@ -8,8 +8,10 @@ package controlv1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
+	v1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -290,6 +292,7 @@ type NodeSummary struct {
 	TrafficBytesIn     uint64                 `protobuf:"varint,9,opt,name=traffic_bytes_in,json=trafficBytesIn,proto3" json:"traffic_bytes_in,omitempty"`
 	TrafficBytesOut    uint64                 `protobuf:"varint,10,opt,name=traffic_bytes_out,json=trafficBytesOut,proto3" json:"traffic_bytes_out,omitempty"`
 	NumCpu             uint32                 `protobuf:"varint,11,opt,name=num_cpu,json=numCpu,proto3" json:"num_cpu,omitempty"`
+	Name               string                 `protobuf:"bytes,12,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -401,11 +404,19 @@ func (x *NodeSummary) GetNumCpu() uint32 {
 	return 0
 }
 
+func (x *NodeSummary) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
 type ServiceSummary struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Provider      *NodeRef               `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
 	Port          uint32                 `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`
+	Protocol      v1.ServiceProtocol     `protobuf:"varint,4,opt,name=protocol,proto3,enum=pollen.state.v1.ServiceProtocol" json:"protocol,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -459,6 +470,13 @@ func (x *ServiceSummary) GetPort() uint32 {
 		return x.Port
 	}
 	return 0
+}
+
+func (x *ServiceSummary) GetProtocol() v1.ServiceProtocol {
+	if x != nil {
+		return x.Protocol
+	}
+	return v1.ServiceProtocol(0)
 }
 
 type ShutdownRequest struct {
@@ -719,6 +737,7 @@ type CertInfo struct {
 	CanAdmit           bool                   `protobuf:"varint,6,opt,name=can_admit,json=canAdmit,proto3" json:"can_admit,omitempty"`
 	MaxDepth           uint32                 `protobuf:"varint,7,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
 	AccessDeadlineUnix int64                  `protobuf:"varint,8,opt,name=access_deadline_unix,json=accessDeadlineUnix,proto3" json:"access_deadline_unix,omitempty"`
+	Attributes         *structpb.Struct       `protobuf:"bytes,9,opt,name=attributes,proto3" json:"attributes,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -807,6 +826,13 @@ func (x *CertInfo) GetAccessDeadlineUnix() int64 {
 		return x.AccessDeadlineUnix
 	}
 	return 0
+}
+
+func (x *CertInfo) GetAttributes() *structpb.Struct {
+	if x != nil {
+		return x.Attributes
+	}
+	return nil
 }
 
 type GetStatusResponse struct {
@@ -906,9 +932,13 @@ type WorkloadSummary struct {
 	Hash            string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
 	Status          WorkloadStatus         `protobuf:"varint,2,opt,name=status,proto3,enum=pollen.control.v1.WorkloadStatus" json:"status,omitempty"`
 	StartedAtUnix   int64                  `protobuf:"varint,3,opt,name=started_at_unix,json=startedAtUnix,proto3" json:"started_at_unix,omitempty"`
-	DesiredReplicas uint32                 `protobuf:"varint,4,opt,name=desired_replicas,json=desiredReplicas,proto3" json:"desired_replicas,omitempty"`
+	MinReplicas     uint32                 `protobuf:"varint,4,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
 	ActiveReplicas  uint32                 `protobuf:"varint,5,opt,name=active_replicas,json=activeReplicas,proto3" json:"active_replicas,omitempty"`
 	Local           bool                   `protobuf:"varint,6,opt,name=local,proto3" json:"local,omitempty"`
+	Name            string                 `protobuf:"bytes,7,opt,name=name,proto3" json:"name,omitempty"`
+	Spread          float32                `protobuf:"fixed32,8,opt,name=spread,proto3" json:"spread,omitempty"`
+	EffectiveTarget uint32                 `protobuf:"varint,9,opt,name=effective_target,json=effectiveTarget,proto3" json:"effective_target,omitempty"`
+	Pressure        float32                `protobuf:"fixed32,10,opt,name=pressure,proto3" json:"pressure,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -964,9 +994,9 @@ func (x *WorkloadSummary) GetStartedAtUnix() int64 {
 	return 0
 }
 
-func (x *WorkloadSummary) GetDesiredReplicas() uint32 {
+func (x *WorkloadSummary) GetMinReplicas() uint32 {
 	if x != nil {
-		return x.DesiredReplicas
+		return x.MinReplicas
 	}
 	return 0
 }
@@ -985,12 +1015,41 @@ func (x *WorkloadSummary) GetLocal() bool {
 	return false
 }
 
+func (x *WorkloadSummary) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *WorkloadSummary) GetSpread() float32 {
+	if x != nil {
+		return x.Spread
+	}
+	return 0
+}
+
+func (x *WorkloadSummary) GetEffectiveTarget() uint32 {
+	if x != nil {
+		return x.EffectiveTarget
+	}
+	return 0
+}
+
+func (x *WorkloadSummary) GetPressure() float32 {
+	if x != nil {
+		return x.Pressure
+	}
+	return 0
+}
+
 type ConnectionSummary struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Peer          *NodeRef               `protobuf:"bytes,1,opt,name=peer,proto3" json:"peer,omitempty"`
 	RemotePort    uint32                 `protobuf:"varint,2,opt,name=remote_port,json=remotePort,proto3" json:"remote_port,omitempty"`
 	LocalPort     uint32                 `protobuf:"varint,3,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
 	ServiceName   string                 `protobuf:"bytes,4,opt,name=service_name,json=serviceName,proto3" json:"service_name,omitempty"`
+	Protocol      v1.ServiceProtocol     `protobuf:"varint,5,opt,name=protocol,proto3,enum=pollen.state.v1.ServiceProtocol" json:"protocol,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1053,10 +1112,18 @@ func (x *ConnectionSummary) GetServiceName() string {
 	return ""
 }
 
+func (x *ConnectionSummary) GetProtocol() v1.ServiceProtocol {
+	if x != nil {
+		return x.Protocol
+	}
+	return v1.ServiceProtocol(0)
+}
+
 type RegisterServiceRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Port          uint32                 `protobuf:"varint,1,opt,name=port,proto3" json:"port,omitempty"`
 	Name          *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	Protocol      v1.ServiceProtocol     `protobuf:"varint,3,opt,name=protocol,proto3,enum=pollen.state.v1.ServiceProtocol" json:"protocol,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1103,6 +1170,13 @@ func (x *RegisterServiceRequest) GetName() string {
 		return *x.Name
 	}
 	return ""
+}
+
+func (x *RegisterServiceRequest) GetProtocol() v1.ServiceProtocol {
+	if x != nil {
+		return x.Protocol
+	}
+	return v1.ServiceProtocol(0)
 }
 
 type RegisterServiceResponse struct {
@@ -1322,6 +1396,7 @@ type ConnectServiceRequest struct {
 	Node          *NodeRef               `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
 	RemotePort    uint32                 `protobuf:"varint,2,opt,name=remote_port,json=remotePort,proto3" json:"remote_port,omitempty"`
 	LocalPort     uint32                 `protobuf:"varint,3,opt,name=local_port,json=localPort,proto3" json:"local_port,omitempty"`
+	Protocol      v1.ServiceProtocol     `protobuf:"varint,5,opt,name=protocol,proto3,enum=pollen.state.v1.ServiceProtocol" json:"protocol,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1375,6 +1450,13 @@ func (x *ConnectServiceRequest) GetLocalPort() uint32 {
 		return x.LocalPort
 	}
 	return 0
+}
+
+func (x *ConnectServiceRequest) GetProtocol() v1.ServiceProtocol {
+	if x != nil {
+		return x.Protocol
+	}
+	return v1.ServiceProtocol(0)
 }
 
 type ConnectServiceResponse struct {
@@ -1584,9 +1666,11 @@ func (*DenyPeerResponse) Descriptor() ([]byte, []int) {
 type SeedWorkloadRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	WasmBytes     []byte                 `protobuf:"bytes,1,opt,name=wasm_bytes,json=wasmBytes,proto3" json:"wasm_bytes,omitempty"`
-	Replicas      uint32                 `protobuf:"varint,2,opt,name=replicas,proto3" json:"replicas,omitempty"`
+	MinReplicas   uint32                 `protobuf:"varint,2,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
 	MemoryPages   uint32                 `protobuf:"varint,3,opt,name=memory_pages,json=memoryPages,proto3" json:"memory_pages,omitempty"`
 	TimeoutMs     uint32                 `protobuf:"varint,4,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	Name          string                 `protobuf:"bytes,5,opt,name=name,proto3" json:"name,omitempty"`
+	Spread        float32                `protobuf:"fixed32,6,opt,name=spread,proto3" json:"spread,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1628,9 +1712,9 @@ func (x *SeedWorkloadRequest) GetWasmBytes() []byte {
 	return nil
 }
 
-func (x *SeedWorkloadRequest) GetReplicas() uint32 {
+func (x *SeedWorkloadRequest) GetMinReplicas() uint32 {
 	if x != nil {
-		return x.Replicas
+		return x.MinReplicas
 	}
 	return 0
 }
@@ -1649,9 +1733,24 @@ func (x *SeedWorkloadRequest) GetTimeoutMs() uint32 {
 	return 0
 }
 
+func (x *SeedWorkloadRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SeedWorkloadRequest) GetSpread() float32 {
+	if x != nil {
+		return x.Spread
+	}
+	return 0
+}
+
 type SeedWorkloadResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1689,6 +1788,13 @@ func (*SeedWorkloadResponse) Descriptor() ([]byte, []int) {
 func (x *SeedWorkloadResponse) GetHash() string {
 	if x != nil {
 		return x.Hash
+	}
+	return ""
+}
+
+func (x *SeedWorkloadResponse) GetName() string {
+	if x != nil {
+		return x.Name
 	}
 	return ""
 }
@@ -2077,13 +2183,109 @@ func (x *GetMetricsResponse) GetEagerSyncFailures() uint64 {
 	return 0
 }
 
+type IssueCertRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PeerPub       []byte                 `protobuf:"bytes,1,opt,name=peer_pub,json=peerPub,proto3" json:"peer_pub,omitempty"`
+	Admin         bool                   `protobuf:"varint,2,opt,name=admin,proto3" json:"admin,omitempty"`
+	Attributes    *structpb.Struct       `protobuf:"bytes,3,opt,name=attributes,proto3" json:"attributes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IssueCertRequest) Reset() {
+	*x = IssueCertRequest{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueCertRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueCertRequest) ProtoMessage() {}
+
+func (x *IssueCertRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueCertRequest.ProtoReflect.Descriptor instead.
+func (*IssueCertRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *IssueCertRequest) GetPeerPub() []byte {
+	if x != nil {
+		return x.PeerPub
+	}
+	return nil
+}
+
+func (x *IssueCertRequest) GetAdmin() bool {
+	if x != nil {
+		return x.Admin
+	}
+	return false
+}
+
+func (x *IssueCertRequest) GetAttributes() *structpb.Struct {
+	if x != nil {
+		return x.Attributes
+	}
+	return nil
+}
+
+type IssueCertResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IssueCertResponse) Reset() {
+	*x = IssueCertResponse{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IssueCertResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IssueCertResponse) ProtoMessage() {}
+
+func (x *IssueCertResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IssueCertResponse.ProtoReflect.Descriptor instead.
+func (*IssueCertResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{34}
+}
+
 var File_pollen_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\n" +
-	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\x1a\x1bbuf/validate/validate.proto\"$\n" +
+	"\x1fpollen/control/v1/control.proto\x12\x11pollen.control.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1bpollen/state/v1/state.proto\"$\n" +
 	"\aNodeRef\x12\x19\n" +
-	"\bpeer_pub\x18\x01 \x01(\fR\apeerPub\"\xac\x03\n" +
+	"\bpeer_pub\x18\x01 \x01(\fR\apeerPub\"\xc0\x03\n" +
 	"\vNodeSummary\x12.\n" +
 	"\x04node\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04node\x125\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1d.pollen.control.v1.NodeStatusR\x06status\x12\x12\n" +
@@ -2099,11 +2301,13 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x10traffic_bytes_in\x18\t \x01(\x04R\x0etrafficBytesIn\x12*\n" +
 	"\x11traffic_bytes_out\x18\n" +
 	" \x01(\x04R\x0ftrafficBytesOut\x12\x17\n" +
-	"\anum_cpu\x18\v \x01(\rR\x06numCpu\"\x88\x01\n" +
+	"\anum_cpu\x18\v \x01(\rR\x06numCpu\x12\x12\n" +
+	"\x04name\x18\f \x01(\tR\x04name\"\xc6\x01\n" +
 	"\x0eServiceSummary\x12\x1d\n" +
 	"\x04name\x18\x01 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@R\x04name\x126\n" +
 	"\bprovider\x18\x02 \x01(\v2\x1a.pollen.control.v1.NodeRefR\bprovider\x12\x1f\n" +
-	"\x04port\x18\x03 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\x04port\"\x11\n" +
+	"\x04port\x18\x03 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\x04port\x12<\n" +
+	"\bprotocol\x18\x04 \x01(\x0e2 .pollen.state.v1.ServiceProtocolR\bprotocol\"\x11\n" +
 	"\x0fShutdownRequest\"\x12\n" +
 	"\x10ShutdownResponse\"\x19\n" +
 	"\x17GetBootstrapInfoRequest\"Y\n" +
@@ -2113,7 +2317,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x18GetBootstrapInfoResponse\x128\n" +
 	"\x04self\x18\x01 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\x04self\x12F\n" +
 	"\vrecommended\x18\x02 \x01(\v2$.pollen.control.v1.BootstrapPeerInfoR\vrecommended\"\x12\n" +
-	"\x10GetStatusRequest\"\xb6\x02\n" +
+	"\x10GetStatusRequest\"\xef\x02\n" +
 	"\bCertInfo\x12&\n" +
 	"\x0fnot_before_unix\x18\x01 \x01(\x03R\rnotBeforeUnix\x12$\n" +
 	"\x0enot_after_unix\x18\x02 \x01(\x03R\fnotAfterUnix\x12\x16\n" +
@@ -2122,7 +2326,10 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\fcan_delegate\x18\x05 \x01(\bR\vcanDelegate\x12\x1b\n" +
 	"\tcan_admit\x18\x06 \x01(\bR\bcanAdmit\x12\x1b\n" +
 	"\tmax_depth\x18\a \x01(\rR\bmaxDepth\x120\n" +
-	"\x14access_deadline_unix\x18\b \x01(\x03R\x12accessDeadlineUnix\"\xa3\x03\n" +
+	"\x14access_deadline_unix\x18\b \x01(\x03R\x12accessDeadlineUnix\x127\n" +
+	"\n" +
+	"attributes\x18\t \x01(\v2\x17.google.protobuf.StructR\n" +
+	"attributes\"\xa3\x03\n" +
 	"\x11GetStatusResponse\x122\n" +
 	"\x04self\x18\x01 \x01(\v2\x1e.pollen.control.v1.NodeSummaryR\x04self\x124\n" +
 	"\x05nodes\x18\x02 \x03(\v2\x1e.pollen.control.v1.NodeSummaryR\x05nodes\x12=\n" +
@@ -2130,24 +2337,31 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\vconnections\x18\x04 \x03(\v2$.pollen.control.v1.ConnectionSummaryR\vconnections\x12?\n" +
 	"\fcertificates\x18\x05 \x03(\v2\x1b.pollen.control.v1.CertInfoR\fcertificates\x12\x1a\n" +
 	"\bdegraded\x18\x06 \x01(\bR\bdegraded\x12@\n" +
-	"\tworkloads\x18\a \x03(\v2\".pollen.control.v1.WorkloadSummaryR\tworkloads\"\xf2\x01\n" +
+	"\tworkloads\x18\a \x03(\v2\".pollen.control.v1.WorkloadSummaryR\tworkloads\"\xdd\x02\n" +
 	"\x0fWorkloadSummary\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x129\n" +
 	"\x06status\x18\x02 \x01(\x0e2!.pollen.control.v1.WorkloadStatusR\x06status\x12&\n" +
-	"\x0fstarted_at_unix\x18\x03 \x01(\x03R\rstartedAtUnix\x12)\n" +
-	"\x10desired_replicas\x18\x04 \x01(\rR\x0fdesiredReplicas\x12'\n" +
+	"\x0fstarted_at_unix\x18\x03 \x01(\x03R\rstartedAtUnix\x12!\n" +
+	"\fmin_replicas\x18\x04 \x01(\rR\vminReplicas\x12'\n" +
 	"\x0factive_replicas\x18\x05 \x01(\rR\x0eactiveReplicas\x12\x14\n" +
-	"\x05local\x18\x06 \x01(\bR\x05local\"\xc0\x01\n" +
+	"\x05local\x18\x06 \x01(\bR\x05local\x12\x12\n" +
+	"\x04name\x18\a \x01(\tR\x04name\x12\x16\n" +
+	"\x06spread\x18\b \x01(\x02R\x06spread\x12)\n" +
+	"\x10effective_target\x18\t \x01(\rR\x0feffectiveTarget\x12\x1a\n" +
+	"\bpressure\x18\n" +
+	" \x01(\x02R\bpressure\"\xfe\x01\n" +
 	"\x11ConnectionSummary\x12.\n" +
 	"\x04peer\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04peer\x12,\n" +
 	"\vremote_port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\n" +
 	"remotePort\x12*\n" +
 	"\n" +
 	"local_port\x18\x03 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\x12!\n" +
-	"\fservice_name\x18\x04 \x01(\tR\vserviceName\"f\n" +
+	"\fservice_name\x18\x04 \x01(\tR\vserviceName\x12<\n" +
+	"\bprotocol\x18\x05 \x01(\x0e2 .pollen.state.v1.ServiceProtocolR\bprotocol\"\xa4\x01\n" +
 	"\x16RegisterServiceRequest\x12\x1f\n" +
 	"\x04port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\x04port\x12\"\n" +
-	"\x04name\x18\x02 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@H\x00R\x04name\x88\x01\x01B\a\n" +
+	"\x04name\x18\x02 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@H\x00R\x04name\x88\x01\x01\x12<\n" +
+	"\bprotocol\x18\x03 \x01(\x0e2 .pollen.state.v1.ServiceProtocolR\bprotocolB\a\n" +
 	"\x05_name\"\x19\n" +
 	"\x17RegisterServiceResponse\"f\n" +
 	"\x18UnregisterServiceRequest\x12\x1d\n" +
@@ -2158,13 +2372,14 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x12ConnectPeerRequest\x12\x19\n" +
 	"\bpeer_pub\x18\x01 \x01(\fR\apeerPub\x12\x14\n" +
 	"\x05addrs\x18\x02 \x03(\tR\x05addrs\"\x15\n" +
-	"\x13ConnectPeerResponse\"\x9f\x01\n" +
+	"\x13ConnectPeerResponse\"\xe3\x01\n" +
 	"\x15ConnectServiceRequest\x12.\n" +
 	"\x04node\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04node\x12,\n" +
 	"\vremote_port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\n" +
 	"remotePort\x12(\n" +
 	"\n" +
-	"local_port\x18\x03 \x01(\rB\t\xbaH\x06*\x04\x18\xff\xff\x03R\tlocalPort\"D\n" +
+	"local_port\x18\x03 \x01(\rB\t\xbaH\x06*\x04\x18\xff\xff\x03R\tlocalPort\x12<\n" +
+	"\bprotocol\x18\x05 \x01(\x0e2 .pollen.state.v1.ServiceProtocolR\bprotocolJ\x04\b\x04\x10\x05\"D\n" +
 	"\x16ConnectServiceResponse\x12*\n" +
 	"\n" +
 	"local_port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\"F\n" +
@@ -2174,16 +2389,19 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x19DisconnectServiceResponse\"5\n" +
 	"\x0fDenyPeerRequest\x12\"\n" +
 	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\"\x12\n" +
-	"\x10DenyPeerResponse\"\x9b\x01\n" +
+	"\x10DenyPeerResponse\"\xce\x01\n" +
 	"\x13SeedWorkloadRequest\x12&\n" +
 	"\n" +
-	"wasm_bytes\x18\x01 \x01(\fB\a\xbaH\x04z\x02\x10\x01R\twasmBytes\x12\x1a\n" +
-	"\breplicas\x18\x02 \x01(\rR\breplicas\x12!\n" +
+	"wasm_bytes\x18\x01 \x01(\fB\a\xbaH\x04z\x02\x10\x01R\twasmBytes\x12!\n" +
+	"\fmin_replicas\x18\x02 \x01(\rR\vminReplicas\x12!\n" +
 	"\fmemory_pages\x18\x03 \x01(\rR\vmemoryPages\x12\x1d\n" +
 	"\n" +
-	"timeout_ms\x18\x04 \x01(\rR\ttimeoutMs\"*\n" +
+	"timeout_ms\x18\x04 \x01(\rR\ttimeoutMs\x12\x12\n" +
+	"\x04name\x18\x05 \x01(\tR\x04name\x12\x16\n" +
+	"\x06spread\x18\x06 \x01(\x02R\x06spread\">\n" +
 	"\x14SeedWorkloadResponse\x12\x12\n" +
-	"\x04hash\x18\x01 \x01(\tR\x04hash\"4\n" +
+	"\x04hash\x18\x01 \x01(\tR\x04hash\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"4\n" +
 	"\x15UnseedWorkloadRequest\x12\x1b\n" +
 	"\x04hash\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\x04hash\"\x18\n" +
 	"\x16UnseedWorkloadResponse\"m\n" +
@@ -2212,7 +2430,14 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x0fvivaldi_samples\x18\x0e \x01(\x04R\x0evivaldiSamples\x12\x1f\n" +
 	"\veager_syncs\x18\x0f \x01(\x04R\n" +
 	"eagerSyncs\x12.\n" +
-	"\x13eager_sync_failures\x18\x10 \x01(\x04R\x11eagerSyncFailures*t\n" +
+	"\x13eager_sync_failures\x18\x10 \x01(\x04R\x11eagerSyncFailures\"\x85\x01\n" +
+	"\x10IssueCertRequest\x12\"\n" +
+	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\x12\x14\n" +
+	"\x05admin\x18\x02 \x01(\bR\x05admin\x127\n" +
+	"\n" +
+	"attributes\x18\x03 \x01(\v2\x17.google.protobuf.StructR\n" +
+	"attributes\"\x13\n" +
+	"\x11IssueCertResponse*t\n" +
 	"\n" +
 	"NodeStatus\x12\x1b\n" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
@@ -2235,7 +2460,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x19HEALTH_STATUS_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15HEALTH_STATUS_HEALTHY\x10\x01\x12\x1a\n" +
 	"\x16HEALTH_STATUS_DEGRADED\x10\x02\x12\x1b\n" +
-	"\x17HEALTH_STATUS_UNHEALTHY\x10\x032\x92\n" +
+	"\x17HEALTH_STATUS_UNHEALTHY\x10\x032\xea\n" +
 	"\n" +
 	"\x0eControlService\x12S\n" +
 	"\bShutdown\x12\".pollen.control.v1.ShutdownRequest\x1a#.pollen.control.v1.ShutdownResponse\x12k\n" +
@@ -2251,7 +2476,8 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\bDenyPeer\x12\".pollen.control.v1.DenyPeerRequest\x1a#.pollen.control.v1.DenyPeerResponse\x12_\n" +
 	"\fSeedWorkload\x12&.pollen.control.v1.SeedWorkloadRequest\x1a'.pollen.control.v1.SeedWorkloadResponse\x12e\n" +
 	"\x0eUnseedWorkload\x12(.pollen.control.v1.UnseedWorkloadRequest\x1a).pollen.control.v1.UnseedWorkloadResponse\x12_\n" +
-	"\fCallWorkload\x12&.pollen.control.v1.CallWorkloadRequest\x1a'.pollen.control.v1.CallWorkloadResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
+	"\fCallWorkload\x12&.pollen.control.v1.CallWorkloadRequest\x1a'.pollen.control.v1.CallWorkloadResponse\x12V\n" +
+	"\tIssueCert\x12#.pollen.control.v1.IssueCertRequest\x1a$.pollen.control.v1.IssueCertResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
 
 var (
 	file_pollen_control_v1_control_proto_rawDescOnce sync.Once
@@ -2266,7 +2492,7 @@ func file_pollen_control_v1_control_proto_rawDescGZIP() []byte {
 }
 
 var file_pollen_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_pollen_control_v1_control_proto_goTypes = []any{
 	(NodeStatus)(0),                   // 0: pollen.control.v1.NodeStatus
 	(CertHealth)(0),                   // 1: pollen.control.v1.CertHealth
@@ -2305,56 +2531,68 @@ var file_pollen_control_v1_control_proto_goTypes = []any{
 	(*CallWorkloadResponse)(nil),      // 34: pollen.control.v1.CallWorkloadResponse
 	(*GetMetricsRequest)(nil),         // 35: pollen.control.v1.GetMetricsRequest
 	(*GetMetricsResponse)(nil),        // 36: pollen.control.v1.GetMetricsResponse
+	(*IssueCertRequest)(nil),          // 37: pollen.control.v1.IssueCertRequest
+	(*IssueCertResponse)(nil),         // 38: pollen.control.v1.IssueCertResponse
+	(v1.ServiceProtocol)(0),           // 39: pollen.state.v1.ServiceProtocol
+	(*structpb.Struct)(nil),           // 40: google.protobuf.Struct
 }
 var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	4,  // 0: pollen.control.v1.NodeSummary.node:type_name -> pollen.control.v1.NodeRef
 	0,  // 1: pollen.control.v1.NodeSummary.status:type_name -> pollen.control.v1.NodeStatus
 	4,  // 2: pollen.control.v1.ServiceSummary.provider:type_name -> pollen.control.v1.NodeRef
-	4,  // 3: pollen.control.v1.BootstrapPeerInfo.peer:type_name -> pollen.control.v1.NodeRef
-	10, // 4: pollen.control.v1.GetBootstrapInfoResponse.self:type_name -> pollen.control.v1.BootstrapPeerInfo
-	10, // 5: pollen.control.v1.GetBootstrapInfoResponse.recommended:type_name -> pollen.control.v1.BootstrapPeerInfo
-	1,  // 6: pollen.control.v1.CertInfo.health:type_name -> pollen.control.v1.CertHealth
-	5,  // 7: pollen.control.v1.GetStatusResponse.self:type_name -> pollen.control.v1.NodeSummary
-	5,  // 8: pollen.control.v1.GetStatusResponse.nodes:type_name -> pollen.control.v1.NodeSummary
-	6,  // 9: pollen.control.v1.GetStatusResponse.services:type_name -> pollen.control.v1.ServiceSummary
-	16, // 10: pollen.control.v1.GetStatusResponse.connections:type_name -> pollen.control.v1.ConnectionSummary
-	13, // 11: pollen.control.v1.GetStatusResponse.certificates:type_name -> pollen.control.v1.CertInfo
-	15, // 12: pollen.control.v1.GetStatusResponse.workloads:type_name -> pollen.control.v1.WorkloadSummary
-	2,  // 13: pollen.control.v1.WorkloadSummary.status:type_name -> pollen.control.v1.WorkloadStatus
-	4,  // 14: pollen.control.v1.ConnectionSummary.peer:type_name -> pollen.control.v1.NodeRef
-	4,  // 15: pollen.control.v1.ConnectServiceRequest.node:type_name -> pollen.control.v1.NodeRef
-	3,  // 16: pollen.control.v1.GetMetricsResponse.health:type_name -> pollen.control.v1.HealthStatus
-	7,  // 17: pollen.control.v1.ControlService.Shutdown:input_type -> pollen.control.v1.ShutdownRequest
-	9,  // 18: pollen.control.v1.ControlService.GetBootstrapInfo:input_type -> pollen.control.v1.GetBootstrapInfoRequest
-	12, // 19: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
-	35, // 20: pollen.control.v1.ControlService.GetMetrics:input_type -> pollen.control.v1.GetMetricsRequest
-	17, // 21: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
-	19, // 22: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
-	23, // 23: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
-	21, // 24: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
-	25, // 25: pollen.control.v1.ControlService.DisconnectService:input_type -> pollen.control.v1.DisconnectServiceRequest
-	27, // 26: pollen.control.v1.ControlService.DenyPeer:input_type -> pollen.control.v1.DenyPeerRequest
-	29, // 27: pollen.control.v1.ControlService.SeedWorkload:input_type -> pollen.control.v1.SeedWorkloadRequest
-	31, // 28: pollen.control.v1.ControlService.UnseedWorkload:input_type -> pollen.control.v1.UnseedWorkloadRequest
-	33, // 29: pollen.control.v1.ControlService.CallWorkload:input_type -> pollen.control.v1.CallWorkloadRequest
-	8,  // 30: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
-	11, // 31: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
-	14, // 32: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
-	36, // 33: pollen.control.v1.ControlService.GetMetrics:output_type -> pollen.control.v1.GetMetricsResponse
-	18, // 34: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
-	20, // 35: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
-	24, // 36: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
-	22, // 37: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
-	26, // 38: pollen.control.v1.ControlService.DisconnectService:output_type -> pollen.control.v1.DisconnectServiceResponse
-	28, // 39: pollen.control.v1.ControlService.DenyPeer:output_type -> pollen.control.v1.DenyPeerResponse
-	30, // 40: pollen.control.v1.ControlService.SeedWorkload:output_type -> pollen.control.v1.SeedWorkloadResponse
-	32, // 41: pollen.control.v1.ControlService.UnseedWorkload:output_type -> pollen.control.v1.UnseedWorkloadResponse
-	34, // 42: pollen.control.v1.ControlService.CallWorkload:output_type -> pollen.control.v1.CallWorkloadResponse
-	30, // [30:43] is the sub-list for method output_type
-	17, // [17:30] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	39, // 3: pollen.control.v1.ServiceSummary.protocol:type_name -> pollen.state.v1.ServiceProtocol
+	4,  // 4: pollen.control.v1.BootstrapPeerInfo.peer:type_name -> pollen.control.v1.NodeRef
+	10, // 5: pollen.control.v1.GetBootstrapInfoResponse.self:type_name -> pollen.control.v1.BootstrapPeerInfo
+	10, // 6: pollen.control.v1.GetBootstrapInfoResponse.recommended:type_name -> pollen.control.v1.BootstrapPeerInfo
+	1,  // 7: pollen.control.v1.CertInfo.health:type_name -> pollen.control.v1.CertHealth
+	40, // 8: pollen.control.v1.CertInfo.attributes:type_name -> google.protobuf.Struct
+	5,  // 9: pollen.control.v1.GetStatusResponse.self:type_name -> pollen.control.v1.NodeSummary
+	5,  // 10: pollen.control.v1.GetStatusResponse.nodes:type_name -> pollen.control.v1.NodeSummary
+	6,  // 11: pollen.control.v1.GetStatusResponse.services:type_name -> pollen.control.v1.ServiceSummary
+	16, // 12: pollen.control.v1.GetStatusResponse.connections:type_name -> pollen.control.v1.ConnectionSummary
+	13, // 13: pollen.control.v1.GetStatusResponse.certificates:type_name -> pollen.control.v1.CertInfo
+	15, // 14: pollen.control.v1.GetStatusResponse.workloads:type_name -> pollen.control.v1.WorkloadSummary
+	2,  // 15: pollen.control.v1.WorkloadSummary.status:type_name -> pollen.control.v1.WorkloadStatus
+	4,  // 16: pollen.control.v1.ConnectionSummary.peer:type_name -> pollen.control.v1.NodeRef
+	39, // 17: pollen.control.v1.ConnectionSummary.protocol:type_name -> pollen.state.v1.ServiceProtocol
+	39, // 18: pollen.control.v1.RegisterServiceRequest.protocol:type_name -> pollen.state.v1.ServiceProtocol
+	4,  // 19: pollen.control.v1.ConnectServiceRequest.node:type_name -> pollen.control.v1.NodeRef
+	39, // 20: pollen.control.v1.ConnectServiceRequest.protocol:type_name -> pollen.state.v1.ServiceProtocol
+	3,  // 21: pollen.control.v1.GetMetricsResponse.health:type_name -> pollen.control.v1.HealthStatus
+	40, // 22: pollen.control.v1.IssueCertRequest.attributes:type_name -> google.protobuf.Struct
+	7,  // 23: pollen.control.v1.ControlService.Shutdown:input_type -> pollen.control.v1.ShutdownRequest
+	9,  // 24: pollen.control.v1.ControlService.GetBootstrapInfo:input_type -> pollen.control.v1.GetBootstrapInfoRequest
+	12, // 25: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
+	35, // 26: pollen.control.v1.ControlService.GetMetrics:input_type -> pollen.control.v1.GetMetricsRequest
+	17, // 27: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
+	19, // 28: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
+	23, // 29: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
+	21, // 30: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
+	25, // 31: pollen.control.v1.ControlService.DisconnectService:input_type -> pollen.control.v1.DisconnectServiceRequest
+	27, // 32: pollen.control.v1.ControlService.DenyPeer:input_type -> pollen.control.v1.DenyPeerRequest
+	29, // 33: pollen.control.v1.ControlService.SeedWorkload:input_type -> pollen.control.v1.SeedWorkloadRequest
+	31, // 34: pollen.control.v1.ControlService.UnseedWorkload:input_type -> pollen.control.v1.UnseedWorkloadRequest
+	33, // 35: pollen.control.v1.ControlService.CallWorkload:input_type -> pollen.control.v1.CallWorkloadRequest
+	37, // 36: pollen.control.v1.ControlService.IssueCert:input_type -> pollen.control.v1.IssueCertRequest
+	8,  // 37: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
+	11, // 38: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
+	14, // 39: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
+	36, // 40: pollen.control.v1.ControlService.GetMetrics:output_type -> pollen.control.v1.GetMetricsResponse
+	18, // 41: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
+	20, // 42: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
+	24, // 43: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
+	22, // 44: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
+	26, // 45: pollen.control.v1.ControlService.DisconnectService:output_type -> pollen.control.v1.DisconnectServiceResponse
+	28, // 46: pollen.control.v1.ControlService.DenyPeer:output_type -> pollen.control.v1.DenyPeerResponse
+	30, // 47: pollen.control.v1.ControlService.SeedWorkload:output_type -> pollen.control.v1.SeedWorkloadResponse
+	32, // 48: pollen.control.v1.ControlService.UnseedWorkload:output_type -> pollen.control.v1.UnseedWorkloadResponse
+	34, // 49: pollen.control.v1.ControlService.CallWorkload:output_type -> pollen.control.v1.CallWorkloadResponse
+	38, // 50: pollen.control.v1.ControlService.IssueCert:output_type -> pollen.control.v1.IssueCertResponse
+	37, // [37:51] is the sub-list for method output_type
+	23, // [23:37] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_pollen_control_v1_control_proto_init() }
@@ -2370,7 +2608,7 @@ func file_pollen_control_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_control_v1_control_proto_rawDesc), len(file_pollen_control_v1_control_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   33,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

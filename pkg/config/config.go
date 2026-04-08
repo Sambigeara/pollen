@@ -32,21 +32,30 @@ const (
 )
 
 type Service struct {
-	Name string `yaml:"name"`
-	Port uint32 `yaml:"port"`
+	Name     string `yaml:"name"`
+	Protocol string `yaml:"protocol,omitempty"`
+	Port     uint32 `yaml:"port"`
 }
 
 type Connection struct {
 	Service    string `yaml:"service"`
 	Peer       string `yaml:"peer"`
+	Protocol   string `yaml:"protocol,omitempty"`
 	RemotePort uint32 `yaml:"remotePort"`
 	LocalPort  uint32 `yaml:"localPort"`
 }
 
+type Resources struct {
+	CPUPercent uint32 `yaml:"cpu,omitempty"`
+	MemPercent uint32 `yaml:"memory,omitempty"`
+}
+
 type Config struct {
 	BootstrapPeers map[string][]string `yaml:"bootstrapPeers,omitempty"`
+	Name           string              `yaml:"name,omitempty"`
 	Connections    []Connection        `yaml:"connections,omitempty"`
 	Services       []Service           `yaml:"services,omitempty"`
+	Resources      Resources           `yaml:"resources,omitempty"`
 	Public         bool                `yaml:"public,omitempty"`
 }
 
@@ -98,17 +107,18 @@ func (c *Config) ForgetBootstrapPeer(pubKey []byte) {
 	delete(c.BootstrapPeers, hex.EncodeToString(pubKey))
 }
 
-func (c *Config) AddService(name string, port uint32) {
+func (c *Config) AddService(name string, port uint32, protocol string) {
 	if name == "" {
 		name = strconv.FormatUint(uint64(port), 10)
 	}
 	for i, s := range c.Services {
 		if s.Name == name {
 			c.Services[i].Port = port
+			c.Services[i].Protocol = protocol
 			return
 		}
 	}
-	c.Services = append(c.Services, Service{Name: name, Port: port})
+	c.Services = append(c.Services, Service{Name: name, Port: port, Protocol: protocol})
 }
 
 func (c *Config) RemoveService(name string) {
@@ -117,14 +127,15 @@ func (c *Config) RemoveService(name string) {
 	})
 }
 
-func (c *Config) AddConnection(service, peer string, remotePort, localPort uint32) {
+func (c *Config) AddConnection(service, peer string, remotePort, localPort uint32, protocol string) {
 	for i, conn := range c.Connections {
-		if conn.LocalPort == localPort {
+		if conn.LocalPort == localPort && conn.Protocol == protocol {
 			c.Connections[i] = Connection{
 				Service:    service,
 				Peer:       peer,
 				RemotePort: remotePort,
 				LocalPort:  localPort,
+				Protocol:   protocol,
 			}
 			return
 		}
@@ -134,6 +145,7 @@ func (c *Config) AddConnection(service, peer string, remotePort, localPort uint3
 		Peer:       peer,
 		RemotePort: remotePort,
 		LocalPort:  localPort,
+		Protocol:   protocol,
 	})
 }
 

@@ -29,9 +29,12 @@ type NodeView struct {
 	TrafficRates       map[types.PeerKey]TrafficSnapshot
 	Reachable          map[types.PeerKey]struct{}
 	Services           map[string]*Service
+	SeedLoad           map[string]float32
+	SeedDemand         map[string]float32
 	VivaldiCoord       *coords.Coord
 	ObservedExternalIP string
 	LastAddr           string
+	Name               string
 	PeerPub            []byte
 	IPs                []string
 	NatType            nat.Type
@@ -41,9 +44,12 @@ type NodeView struct {
 	CPUPercent         uint32
 	MemPercent         uint32
 	NumCPU             uint32
+	CPUBudgetPercent   uint32
+	MemBudgetPercent   uint32
 	ExternalPort       uint32
 	LocalPort          uint32
 	PubliclyAccessible bool
+	AdminCapable       bool
 }
 
 type WorkloadSpecView struct {
@@ -57,8 +63,9 @@ type TrafficSnapshot struct {
 }
 
 type Service struct {
-	Name string
-	Port uint32
+	Name     string
+	Port     uint32
+	Protocol statev1.ServiceProtocol
 }
 
 type Digest struct {
@@ -82,20 +89,57 @@ func UnmarshalDigest(data []byte) (Digest, error) {
 	return Digest{proto: pb}, nil
 }
 
+// TODO(saml): remove once all persisted state and in-flight gossip carry an explicit protocol.
+// normaliseProtocol maps the zero value (UNSPECIFIED) to TCP for backward
+// compatibility with gossip data that predates the protocol field.
+func normaliseProtocol(p statev1.ServiceProtocol) statev1.ServiceProtocol {
+	if p == statev1.ServiceProtocol_SERVICE_PROTOCOL_UNSPECIFIED {
+		return statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP
+	}
+	return p
+}
+
 func (s Snapshot) Digest() Digest               { return s.digest }
 func (s Snapshot) DeniedPeers() []types.PeerKey { return s.DeniedKeys }
 
+func (s Snapshot) SpecByName(name string) (string, WorkloadSpecView, bool) {
+	var bestHash string
+	var bestView WorkloadSpecView
+	found := false
+	for hash, sv := range s.Specs {
+		if sv.Spec.GetName() != name {
+			continue
+		}
+		if !found || sv.Publisher.Compare(bestView.Publisher) < 0 {
+			bestHash = hash
+			bestView = sv
+			found = true
+		}
+	}
+	return bestHash, bestView, found
+}
+
+func (s Snapshot) LocalSpecByName(name string, localID types.PeerKey) (string, bool) {
+	for hash, sv := range s.Specs {
+		if sv.Spec.GetName() == name && sv.Publisher == localID {
+			return hash, true
+		}
+	}
+	return "", false
+}
+
 type ServiceInfo struct {
-	Name string
-	Port uint32
-	Peer types.PeerKey
+	Name     string
+	Port     uint32
+	Peer     types.PeerKey
+	Protocol statev1.ServiceProtocol
 }
 
 func (s Snapshot) Services() []ServiceInfo {
 	var out []ServiceInfo
 	for pk, nv := range s.Nodes {
 		for name, svc := range nv.Services {
-			out = append(out, ServiceInfo{Name: name, Port: svc.Port, Peer: pk})
+			out = append(out, ServiceInfo{Name: name, Port: svc.Port, Peer: pk, Protocol: svc.Protocol})
 		}
 	}
 	return out
@@ -183,6 +227,8 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 		Services:     make(map[string]*Service),
 		Reachable:    make(map[types.PeerKey]struct{}),
 		TrafficRates: make(map[types.PeerKey]TrafficSnapshot),
+		SeedLoad:     make(map[string]float32),
+		SeedDemand:   make(map[string]float32),
 		LastAddr:     rec.LastAddr,
 		LastEventAt:  rec.lastEventAt,
 	}
@@ -201,11 +247,13 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 		case *statev1.GossipEvent_CertExpiry:
 			nv.CertExpiry = v.CertExpiry.ExpiryUnix
 		case *statev1.GossipEvent_Service:
-			nv.Services[key.name] = &Service{Name: key.name, Port: v.Service.Port}
+			nv.Services[key.name] = &Service{Name: key.name, Port: v.Service.Port, Protocol: normaliseProtocol(v.Service.Protocol)}
 		case *statev1.GossipEvent_Reachability:
 			nv.Reachable[key.peer] = struct{}{}
 		case *statev1.GossipEvent_PubliclyAccessible:
 			nv.PubliclyAccessible = true
+		case *statev1.GossipEvent_AdminCapable:
+			nv.AdminCapable = true
 		case *statev1.GossipEvent_Vivaldi:
 			if v.Vivaldi != nil {
 				nv.VivaldiCoord = &coords.Coord{X: v.Vivaldi.X, Y: v.Vivaldi.Y, Height: v.Vivaldi.Height}
@@ -216,6 +264,7 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 		case *statev1.GossipEvent_ResourceTelemetry:
 			nv.CPUPercent, nv.MemPercent = v.ResourceTelemetry.CpuPercent, v.ResourceTelemetry.MemPercent
 			nv.MemTotalBytes, nv.NumCPU = v.ResourceTelemetry.MemTotalBytes, v.ResourceTelemetry.NumCpu
+			nv.CPUBudgetPercent, nv.MemBudgetPercent = v.ResourceTelemetry.CpuBudgetPercent, v.ResourceTelemetry.MemBudgetPercent
 		case *statev1.GossipEvent_WorkloadSpec:
 			specs[key.name] = v.WorkloadSpec
 		case *statev1.GossipEvent_WorkloadClaim:
@@ -226,7 +275,13 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 					nv.TrafficRates[peerPK] = TrafficSnapshot{BytesIn: r.BytesIn, BytesOut: r.BytesOut}
 				}
 			}
+		case *statev1.GossipEvent_SeedLoad:
+			maps.Copy(nv.SeedLoad, v.SeedLoad.Rates)
+		case *statev1.GossipEvent_SeedDemand:
+			maps.Copy(nv.SeedDemand, v.SeedDemand.Rates)
 		case *statev1.GossipEvent_Heartbeat:
+		case *statev1.GossipEvent_NodeName:
+			nv.Name = v.NodeName.Name
 		}
 	}
 	return nv, specs, claims

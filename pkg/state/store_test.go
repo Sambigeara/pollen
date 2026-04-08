@@ -47,12 +47,12 @@ func TestStore_SnapshotIsImmutable(t *testing.T) {
 	s := newTestStore(t, pk)
 
 	s.SetLocalAddresses([]netip.AddrPort{netip.MustParseAddrPort("10.0.0.1:9000")})
-	s.SetService(8080, "web")
+	s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
 
 	snap1 := s.Snapshot()
 
 	s.SetLocalAddresses([]netip.AddrPort{netip.MustParseAddrPort("10.0.0.99:7777")})
-	s.SetService(9090, "api")
+	s.SetService(9090, "api", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
 	s.RemoveService("web")
 
 	snap2 := s.Snapshot()
@@ -78,7 +78,7 @@ func TestStore_MutationsReturnEvents(t *testing.T) {
 	require.Len(t, events, 1)
 	require.IsType(t, TopologyChanged{}, events[0])
 
-	events = s.SetService(8080, "web")
+	events = s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
 	require.Len(t, events, 1)
 	require.Equal(t, ServiceChanged{Peer: s.localID, Name: "web"}, events[0])
 
@@ -99,7 +99,7 @@ func TestStore_MutationsReturnEvents(t *testing.T) {
 func TestStore_ApplyDeltaReturnsEvents(t *testing.T) {
 	pkA := genKey(t)
 	storeA := newTestStore(t, pkA)
-	storeA.SetService(8080, "web")
+	storeA.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
 	fullData := storeA.EncodeFull()
 
 	pkB := genKey(t)
@@ -182,21 +182,21 @@ func TestStore_WorkloadSpecConflict(t *testing.T) {
 	s := newTestStore(t, pk)
 
 	// Local claims spec
-	s.SetWorkloadSpec("contested", 3, 0, 0)
+	s.SetWorkloadSpec("contested", "contested", 3, 0, 0, 0)
 
 	// Remote (lower peer ID) claims spec
 	winnerPK := genKey(t)
 	if pk.Compare(winnerPK) < 0 {
 		winnerPK, pk = pk, winnerPK // Ensure winnerPK is actually lower
 		s = newTestStore(t, pk)
-		s.SetWorkloadSpec("contested", 3, 0, 0)
+		s.SetWorkloadSpec("contested", "contested", 3, 0, 0, 0)
 	}
 
 	applyTestEvent(t, s, &statev1.GossipEvent{
 		PeerId:  winnerPK.String(),
 		Counter: 1,
 		Change: &statev1.GossipEvent_WorkloadSpec{
-			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "contested", Replicas: 2},
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "contested", MinReplicas: 2},
 		},
 	})
 
@@ -229,7 +229,7 @@ func TestStore_EphemeralTombstones(t *testing.T) {
 	pk := genKey(t)
 	s1 := newTestStore(t, pk)
 	s1.SetLocalObservedAddress("1.2.3.4", 45000)
-	s1.SetBootstrapPublic()
+	s1.SetPublic()
 
 	staleState := s1.EncodeFull()
 
@@ -445,4 +445,173 @@ func TestLoadGossipState_PeersStartStale(t *testing.T) {
 	rec := s.nodes[peerA]
 	require.True(t, rec.lastEventAt.IsZero(), "loaded peer should have zero lastEventAt")
 	s.mu.Unlock()
+}
+
+func TestSnapshot_SpecByName(t *testing.T) {
+	localKey := genKey(t)
+	remoteKey := genKey(t)
+	s := newTestStore(t, localKey)
+
+	// Determine which key is lower so we can assert the winner.
+	lowerKey, higherKey := localKey, remoteKey
+	localHash, remoteHash := "hash-local", "hash-remote"
+	lowerHash := localHash
+	if remoteKey.Compare(localKey) < 0 {
+		lowerKey, higherKey = remoteKey, localKey
+		lowerHash = remoteHash
+	}
+	_ = higherKey
+
+	// Local peer publishes spec with name "myapp" and hash "hash-local".
+	s.SetWorkloadSpec("myapp", localHash, 1, 0, 0, 0)
+
+	// Remote peer publishes spec with same name but different hash.
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  remoteKey.String(),
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001},
+		},
+	})
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  remoteKey.String(),
+		Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: remoteHash, Name: "myapp", MinReplicas: 1},
+		},
+	})
+
+	// Make remote peer visible in the live set.
+	s.SetLocalReachable([]types.PeerKey{remoteKey})
+
+	snap := s.Snapshot()
+
+	// Both specs should exist in the map (different hashes).
+	require.Contains(t, snap.Specs, localHash)
+	require.Contains(t, snap.Specs, remoteHash)
+
+	hash, view, found := snap.SpecByName("myapp")
+	require.True(t, found)
+	require.Equal(t, lowerKey, view.Publisher, "SpecByName should return the spec from the peer with the lower PeerKey")
+	require.Equal(t, lowerHash, hash)
+
+	// Non-existent name returns not-found.
+	_, _, found = snap.SpecByName("nonexistent")
+	require.False(t, found)
+}
+
+func TestSnapshot_LocalSpecByName(t *testing.T) {
+	localKey := genKey(t)
+	remoteKey := genKey(t)
+	s := newTestStore(t, localKey)
+
+	localHash, remoteHash := "hash-local", "hash-remote"
+
+	// Local peer publishes spec.
+	s.SetWorkloadSpec("myapp", localHash, 1, 0, 0, 0)
+
+	// Remote peer publishes spec with the same name but different hash.
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  remoteKey.String(),
+		Counter: 1,
+		Change: &statev1.GossipEvent_Network{
+			Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001},
+		},
+	})
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  remoteKey.String(),
+		Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadSpec{
+			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: remoteHash, Name: "myapp", MinReplicas: 1},
+		},
+	})
+
+	s.SetLocalReachable([]types.PeerKey{remoteKey})
+
+	snap := s.Snapshot()
+
+	// LocalSpecByName should return only the local peer's hash.
+	hash, found := snap.LocalSpecByName("myapp", localKey)
+	require.True(t, found)
+	require.Equal(t, localHash, hash)
+
+	// Querying with the remote key returns the remote hash.
+	hash, found = snap.LocalSpecByName("myapp", remoteKey)
+	require.True(t, found)
+	require.Equal(t, remoteHash, hash)
+
+	// Non-existent name returns not-found.
+	_, found = snap.LocalSpecByName("nonexistent", localKey)
+	require.False(t, found)
+
+	// Unknown peer returns not-found.
+	unknownKey := genKey(t)
+	_, found = snap.LocalSpecByName("myapp", unknownKey)
+	require.False(t, found)
+}
+
+func TestSetNodeName(t *testing.T) {
+	pk := genKey(t)
+	s := newTestStore(t, pk)
+
+	// Setting a name appears in snapshot.
+	s.SetNodeName("sams-laptop")
+	snap := s.Snapshot()
+	require.Equal(t, "sams-laptop", snap.Nodes[pk].Name)
+
+	// Idempotent: same name produces no new gossip.
+	before := s.nodes[pk].maxCounter
+	s.SetNodeName("sams-laptop")
+	require.Equal(t, before, s.nodes[pk].maxCounter)
+
+	// Changing the name bumps the counter.
+	s.SetNodeName("work-machine")
+	snap = s.Snapshot()
+	require.Equal(t, "work-machine", snap.Nodes[pk].Name)
+	require.Greater(t, s.nodes[pk].maxCounter, before)
+
+	// Empty string tombstones the name.
+	s.SetNodeName("")
+	snap = s.Snapshot()
+	require.Equal(t, "", snap.Nodes[pk].Name)
+
+	// Tombstoning again is idempotent.
+	counter := s.nodes[pk].maxCounter
+	s.SetNodeName("")
+	require.Equal(t, counter, s.nodes[pk].maxCounter)
+}
+
+func TestNodeNameGossip(t *testing.T) {
+	pkA, pkB := genKey(t), genKey(t)
+	storeA := newTestStore(t, pkA)
+	storeB := newTestStore(t, pkB)
+
+	storeA.SetNodeName("node-alpha")
+	data := storeA.EncodeFull()
+	_, _, err := storeB.ApplyDelta(pkA, data)
+	require.NoError(t, err)
+
+	snap := storeB.Snapshot()
+	require.Equal(t, "node-alpha", snap.Nodes[pkA].Name)
+}
+
+func TestNodeNameSelfConflictAdopted(t *testing.T) {
+	pk := genKey(t)
+	s := newTestStore(t, pk)
+
+	// Simulate a remote peer claiming we have a name we don't know about.
+	ev := &statev1.GossipEvent{
+		PeerId:  pk.String(),
+		Counter: 100,
+		Change:  &statev1.GossipEvent_NodeName{NodeName: &statev1.NodeNameChange{Name: "recovered-name"}},
+	}
+	batch := &statev1.GossipEventBatch{Events: []*statev1.GossipEvent{ev}}
+	data, err := batch.MarshalVT()
+	require.NoError(t, err)
+	_, _, err = s.ApplyDelta(pk, data)
+	require.NoError(t, err)
+
+	// The name should be adopted (persistent attr).
+	snap := s.Snapshot()
+	require.Equal(t, "recovered-name", snap.Nodes[pk].Name)
 }

@@ -28,6 +28,11 @@ type InvocationRouter interface {
 // pollen_call(hash_offset i64, func_offset i64, input_offset i64) -> output_offset i64:
 //
 //	guest calls another workload through the mesh. Returns offset to output bytes (0 on error).
+//
+// pollen_caller_info() -> output_offset i64:
+//
+//	returns caller metadata as JSON ({"peerKey":"<hex>","attributes":{...}}).
+//	Returns 0 if no caller info is available in the invocation context.
 func NewHostFunctions(logger *zap.SugaredLogger, router InvocationRouter) []extism.HostFunction {
 	logFn := extism.NewHostFunctionWithStack(
 		"pollen_log",
@@ -98,5 +103,30 @@ func NewHostFunctions(logger *zap.SugaredLogger, router InvocationRouter) []exti
 		[]extism.ValueType{extism.ValueTypeI64},
 	)
 
-	return []extism.HostFunction{logFn, callFn}
+	callerInfoFn := extism.NewHostFunctionWithStack(
+		"pollen_caller_info",
+		func(ctx context.Context, p *extism.CurrentPlugin, stack []uint64) {
+			info, ok := CallerInfoFromContext(ctx)
+			if !ok {
+				stack[0] = 0
+				return
+			}
+			b := MarshalCallerInfo(info)
+			if b == nil {
+				stack[0] = 0
+				return
+			}
+			offset, err := p.WriteBytes(b)
+			if err != nil {
+				logger.Warnw("pollen_caller_info: failed to write", "err", err)
+				stack[0] = 0
+				return
+			}
+			stack[0] = offset
+		},
+		nil,
+		[]extism.ValueType{extism.ValueTypeI64},
+	)
+
+	return []extism.HostFunction{logFn, callFn, callerInfoFn}
 }

@@ -2,14 +2,22 @@ package placement
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	"github.com/sambigeara/pollen/pkg/cas"
 	"github.com/sambigeara/pollen/pkg/wasm"
 )
+
+type noopRouter struct{}
+
+func (noopRouter) RouteCall(context.Context, string, string, []byte) ([]byte, error) {
+	return nil, fmt.Errorf("no routing in tests")
+}
 
 var echoWASM []byte
 
@@ -28,7 +36,8 @@ func newTestManager(t *testing.T) *manager {
 	casStore, err := cas.New(t.TempDir())
 	require.NoError(t, err)
 
-	rt, err := wasm.NewRuntime(nil, 2)
+	hostFuncs := wasm.NewHostFunctions(zap.NewNop().Sugar(), noopRouter{})
+	rt, err := wasm.NewRuntime(hostFuncs, 2)
 	require.NoError(t, err)
 	t.Cleanup(func() { rt.Close(context.Background()) })
 
