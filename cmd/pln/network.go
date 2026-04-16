@@ -413,7 +413,7 @@ type statusSection struct {
 func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
 	sec := statusSection{
 		title:   "PEERS",
-		headers: []string{"NODE", "STATUS", "ADDR", "CPUs", "CPU", "MEM", "TUNNELS", "LATENCY", "TRAFFIC IN", "TRAFFIC OUT"},
+		headers: []string{"NODE", "STATUS", "ADDR", "CPUs", "CPU", "MEM", "TUNNELS", "LATENCY", "IN", "OUT"},
 	}
 
 	nameLabels := nodeNameLabels(st.GetSelf(), st.GetNodes(), opts.wide)
@@ -437,7 +437,7 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			label, status, addr,
 			formatCount(self.GetNumCpu()), formatPercent(self.GetCpuPercent()), formatPercent(self.GetMemPercent()),
 			formatCount(self.GetTunnelCount()), "-",
-			formatBytes(self.GetTrafficBytesIn()), formatBytes(self.GetTrafficBytesOut()),
+			formatRate(self.GetTrafficRateIn()), formatRate(self.GetTrafficRateOut()),
 		})
 	}
 
@@ -461,7 +461,7 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			addr = "-"
 		}
 
-		cpus, cpu, mem, tunnels, latency, trafficIn, trafficOut := formatCount(n.GetNumCpu()), formatPercent(n.GetCpuPercent()), formatPercent(n.GetMemPercent()), formatCount(n.GetTunnelCount()), formatLatency(n.GetLatencyMs()), formatBytes(n.GetTrafficBytesIn()), formatBytes(n.GetTrafficBytesOut())
+		cpus, cpu, mem, tunnels, latency, trafficIn, trafficOut := formatCount(n.GetNumCpu()), formatPercent(n.GetCpuPercent()), formatPercent(n.GetMemPercent()), formatCount(n.GetTunnelCount()), formatLatency(n.GetLatencyMs()), formatRate(n.GetTrafficRateIn()), formatRate(n.GetTrafficRateOut())
 
 		if !isReachableStatus(n.GetStatus()) {
 			cpus, cpu, mem, tunnels, latency, trafficIn, trafficOut = "-", "-", "-", "-", "-", "-", "-"
@@ -555,9 +555,6 @@ func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			}
 		}
 		replicas := fmt.Sprintf("%d/%d", w.GetActiveReplicas(), target)
-		if p := w.GetPressure(); p > 1.0 {
-			replicas = fmt.Sprintf("%s (%.1fx)", replicas, p)
-		}
 		local := ""
 		if w.GetLocal() {
 			local = "*"
@@ -733,20 +730,20 @@ func formatPercent(v uint32) string {
 	return fmt.Sprintf("%d%%", v)
 }
 
-func formatBytes(b uint64) string {
-	if b == 0 {
+func formatRate(bytesPerSec uint64) string {
+	if bytesPerSec == 0 {
 		return "-"
 	}
 	const kb, mb, gb = 1024, 1024 * 1024, 1024 * 1024 * 1024
 	switch {
-	case b >= gb:
-		return fmt.Sprintf("%.1f GB", float64(b)/float64(gb))
-	case b >= mb:
-		return fmt.Sprintf("%.1f MB", float64(b)/float64(mb))
-	case b >= kb:
-		return fmt.Sprintf("%.1f KB", float64(b)/float64(kb))
+	case bytesPerSec >= gb:
+		return fmt.Sprintf("%.1f GB/s", float64(bytesPerSec)/float64(gb))
+	case bytesPerSec >= mb:
+		return fmt.Sprintf("%.1f MB/s", float64(bytesPerSec)/float64(mb))
+	case bytesPerSec >= kb:
+		return fmt.Sprintf("%.1f KB/s", float64(bytesPerSec)/float64(kb))
 	default:
-		return fmt.Sprintf("%d B", b)
+		return fmt.Sprintf("%d B/s", bytesPerSec)
 	}
 }
 
@@ -1079,7 +1076,7 @@ func connectionCollisionError(name string, matches []*controlv1.ConnectionSummar
 // nodeNameLabels builds display labels for named nodes. In condensed mode
 // the shortest unique prefix of the peer ID (across all nodes, including
 // unnamed ones) is appended in brackets so users can copy it into commands
-// like `pln cert issue`. Wide mode shows the full ID in parentheses instead.
+// like `pln grant`. Wide mode shows the full ID in parentheses instead.
 // The returned map is keyed by hex peer ID; unnamed nodes are not included.
 func nodeNameLabels(self *controlv1.NodeSummary, peers []*controlv1.NodeSummary, wide bool) map[string]string {
 	// Collect all peer IDs (named and unnamed) so the prefix is unique

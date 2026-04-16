@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
@@ -54,16 +53,20 @@ func (m *mockStore) Snapshot() state.Snapshot {
 	}
 }
 
-func (m *mockStore) SetWorkloadSpec(string, string, uint32, uint32, uint32, float32) []state.Event {
+func (m *mockStore) SetWorkloadSpec(state.WorkloadSpec) []state.Event { return nil }
+func (m *mockStore) DeleteWorkloadSpec(hash string) []state.Event {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.specs, hash)
 	return nil
 }
 
-func (m *mockStore) SetLocalResources(float64, float64, uint64, uint32, uint32, uint32) []state.Event {
+func (m *mockStore) SetLocalResources(state.NodeResources) []state.Event { return nil }
+
+func (m *mockStore) SetSeedMetrics(map[string]state.SeedMetrics) []state.Event { return nil }
+func (m *mockStore) SetSeedDialRates(map[string]map[string]float32) []state.Event {
 	return nil
 }
-
-func (m *mockStore) SetSeedLoad(map[string]float32) []state.Event   { return nil }
-func (m *mockStore) SetSeedDemand(map[string]float32) []state.Event { return nil }
 
 func (m *mockStore) ClaimWorkload(hash string) []state.Event {
 	m.mu.Lock()
@@ -95,15 +98,6 @@ func (m *mockStore) removeSpec(hash string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.specs, hash)
-}
-
-func (m *mockStore) addClaim(hash string, pk types.PeerKey) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.claims[hash] == nil {
-		m.claims[hash] = make(map[types.PeerKey]struct{})
-	}
-	m.claims[hash][pk] = struct{}{}
 }
 
 type mockWorkloads struct {
@@ -143,7 +137,7 @@ func TestExecuteClaim_SpecRemovedDuringFetch(t *testing.T) {
 	ms := &mockStore{
 		specs: map[string]state.WorkloadSpecView{
 			hash: {
-				Spec:      &statev1.WorkloadSpecChange{Hash: hash, MinReplicas: 1},
+				Spec:      state.WorkloadSpec{Hash: hash, MinReplicas: 1},
 				Publisher: local,
 			},
 		},
@@ -152,48 +146,78 @@ func TestExecuteClaim_SpecRemovedDuringFetch(t *testing.T) {
 	}
 	wm := &mockWorkloads{}
 
-	r := newReconciler(local, ms, wm, &mockCAS{}, &slowFetcher{midFlight: func() { ms.removeSpec(hash) }}, newUtilisationTracker(), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, wm, &mockCAS{}, &slowFetcher{midFlight: func() { ms.removeSpec(hash) }}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.executeClaim(t.Context(), hash, 1, []types.PeerKey{local})
 
 	require.False(t, wm.seeded.Load(), "should not seed when spec was removed")
 	require.False(t, ms.wasClaimed(hash), "should not set claim when spec was removed")
 }
 
-func TestExecuteClaim_NoLongerWinnerAfterFetch(t *testing.T) {
+func TestExecuteClaim_LosesCapacityDuringFetch(t *testing.T) {
+	// While the artifact is being fetched, local's capacity collapses (e.g.
+	// CPU saturation). The post-fetch re-check should trip the hard
+	// capacity gate and skip the claim — the seed will land on a healthier
+	// peer next reconcile tick.
 	local := peerKey(1)
 	peer2 := peerKey(2)
-	peer3 := peerKey(3)
 	hash := "workload2"
-
-	allPeers := []types.PeerKey{local, peer2, peer3}
-	actions := evaluate(evaluateInput{
-		localID:        local,
-		allPeers:       allPeers,
-		specs:          map[string]spec{hash: {MinReplicas: 1}},
-		claims:         nil,
-		cluster:        clusterState{},
-		isRunning:      func(string) bool { return false },
-		demandRates:    map[string]float64{},
-		idleDurations:  map[string]time.Duration{},
-		dynamicTargets: map[string]uint32{hash: 1},
-	})
-	require.True(t, hasAction(actions, hash, actionClaim), "precondition: local must be the winner for this hash")
+	allPeers := []types.PeerKey{local, peer2}
 
 	ms := &mockStore{
 		specs: map[string]state.WorkloadSpecView{
 			hash: {
-				Spec:      &statev1.WorkloadSpecChange{Hash: hash, MinReplicas: 1},
+				Spec:      state.WorkloadSpec{Hash: hash, MinReplicas: 1},
 				Publisher: local,
 			},
 		},
 		claims:   map[string]map[types.PeerKey]struct{}{},
 		allPeers: allPeers,
+		nodes: map[types.PeerKey]state.NodeView{
+			local: {NumCPU: 4, CPUBudgetPercent: 100, MemTotalBytes: 8 << 30, MemBudgetPercent: 100, CPUPercent: 10},
+			peer2: {NumCPU: 4, CPUBudgetPercent: 100, MemTotalBytes: 8 << 30, MemBudgetPercent: 100, CPUPercent: 10},
+		},
 	}
 
-	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{midFlight: func() { ms.addClaim(hash, peer2) }}, newUtilisationTracker(), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	saturate := func() {
+		ms.mu.Lock()
+		nv := ms.nodes[local]
+		nv.CPUPercent = 100
+		ms.nodes[local] = nv
+		ms.mu.Unlock()
+	}
+
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{midFlight: saturate}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.executeClaim(t.Context(), hash, 1, []types.PeerKey{local})
 
-	require.False(t, ms.wasClaimed(hash), "should not set claim when no longer a winner")
+	require.False(t, ms.wasClaimed(hash), "should not set claim when capacity gate fails post-fetch")
+}
+
+// TestExecuteClaim_HappyPath ensures the claim path actually flips the
+// store's claimed bit to true. Paired with the failure-case tests above
+// it pins the positive assertion: a mutation that inverts the claim
+// decision (e.g. always-return-false) would fail here even if the
+// negative tests still passed.
+func TestExecuteClaim_HappyPath(t *testing.T) {
+	local := peerKey(1)
+	hash := "workload-happy"
+
+	ms := &mockStore{
+		specs: map[string]state.WorkloadSpecView{
+			hash: {
+				Spec:      state.WorkloadSpec{Hash: hash, MinReplicas: 1},
+				Publisher: local,
+			},
+		},
+		claims:   map[string]map[types.PeerKey]struct{}{},
+		allPeers: []types.PeerKey{local},
+	}
+	wm := &mockWorkloads{}
+
+	r := newReconciler(local, ms, wm, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r.executeClaim(t.Context(), hash, 1, []types.PeerKey{local})
+
+	require.True(t, wm.seeded.Load(), "manager should seed on happy path")
+	require.True(t, ms.wasClaimed(hash), "store should be marked claimed on happy path")
 }
 
 func TestResidencyWindow_SuppressesEarlyRelease(t *testing.T) {
@@ -204,7 +228,7 @@ func TestResidencyWindow_SuppressesEarlyRelease(t *testing.T) {
 	ms := &mockStore{
 		specs: map[string]state.WorkloadSpecView{
 			hash: {
-				Spec:      &statev1.WorkloadSpecChange{Hash: hash, MinReplicas: 1},
+				Spec:      state.WorkloadSpec{Hash: hash, MinReplicas: 1},
 				Publisher: peer2,
 			},
 		},
@@ -216,7 +240,7 @@ func TestResidencyWindow_SuppressesEarlyRelease(t *testing.T) {
 		},
 	}
 
-	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.claimStartTime[hash] = time.Now()
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
 
@@ -240,7 +264,7 @@ func TestResidencyWindow_AllowsReleaseAfterMaturity(t *testing.T) {
 	ms := &mockStore{
 		specs: map[string]state.WorkloadSpecView{
 			hash: {
-				Spec:      &statev1.WorkloadSpecChange{Hash: hash, MinReplicas: 1},
+				Spec:      state.WorkloadSpec{Hash: hash, MinReplicas: 1},
 				Publisher: peer2,
 			},
 		},
@@ -252,7 +276,7 @@ func TestResidencyWindow_AllowsReleaseAfterMaturity(t *testing.T) {
 		},
 	}
 
-	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.firstRun = false
 	r.claimStartTime[hash] = time.Now().Add(-minResidencyDuration - time.Second)
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
@@ -274,7 +298,7 @@ func TestReconcile_SignalCoalesces(t *testing.T) {
 		allPeers: []types.PeerKey{local},
 	}
 
-	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
 
 	for range 100 {
 		r.Signal()
@@ -291,7 +315,7 @@ func TestResidencyWindow_SkippedForOverReplication(t *testing.T) {
 	ms := &mockStore{
 		specs: map[string]state.WorkloadSpecView{
 			hash: {
-				Spec:      &statev1.WorkloadSpecChange{Hash: hash, MinReplicas: 1},
+				Spec:      state.WorkloadSpec{Hash: hash, MinReplicas: 1},
 				Publisher: peer2,
 			},
 		},
@@ -299,7 +323,7 @@ func TestResidencyWindow_SkippedForOverReplication(t *testing.T) {
 		allPeers: []types.PeerKey{local, peer2},
 	}
 
-	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.claimStartTime[hash] = time.Now()
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
 
@@ -322,11 +346,11 @@ func TestReconcile_NameConflictFiltering(t *testing.T) {
 	ms := &mockStore{
 		specs: map[string]state.WorkloadSpecView{
 			"hash-a": {
-				Spec:      &statev1.WorkloadSpecChange{Hash: "hash-a", Name: "myapp", MinReplicas: 1},
+				Spec:      state.WorkloadSpec{Hash: "hash-a", Name: "myapp", MinReplicas: 1},
 				Publisher: publisher1,
 			},
 			"hash-b": {
-				Spec:      &statev1.WorkloadSpecChange{Hash: "hash-b", Name: "myapp", MinReplicas: 1},
+				Spec:      state.WorkloadSpec{Hash: "hash-b", Name: "myapp", MinReplicas: 1},
 				Publisher: publisher2,
 			},
 		},
@@ -335,7 +359,7 @@ func TestReconcile_NameConflictFiltering(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), zap.NewNop().Sugar(), &wg)
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &wg)
 	r.reconcile(context.Background())
 	wg.Wait()
 

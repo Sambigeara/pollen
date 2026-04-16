@@ -2,6 +2,8 @@ package wasm
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	extism "github.com/extism/go-sdk"
 	"go.uber.org/zap"
@@ -14,26 +16,48 @@ const (
 	logLevelError uint64 = 3
 )
 
-// InvocationRouter handles inter-workload RPC through the mesh.
-type InvocationRouter interface {
-	RouteCall(ctx context.Context, targetHash, function string, input []byte) ([]byte, error)
+// dialTargetKey produces the typed string used to key dial-graph entries
+// for a target URI: "seed:<hash>" or "service:<name>".
+func dialTargetKey(uri URI) string {
+	switch uri.Scheme {
+	case SchemeSeed:
+		return "seed:" + uri.Name
+	case SchemeService:
+		return "service:" + uri.Name
+	}
+	return ""
+}
+
+// RequestRouter handles pln:// URI-addressed requests from WASM guests.
+// RecordDial observes outbound calls before they are routed so callers'
+// dial graphs can be tracked even when routing fails.
+// RecordParkedTime observes how long the calling invocation was blocked
+// inside pollen_request waiting for the downstream response; the
+// placement layer uses this to size workload concurrency gates
+// adaptively.
+type RequestRouter interface {
+	RouteRequest(ctx context.Context, uri URI, input []byte) ([]byte, error)
+	RecordDial(callerHash, targetKey string)
+	RecordParkedTime(callerHash string, elapsed time.Duration)
 }
 
 // NewHostFunctions creates the Extism host functions exposed to guest WASM modules.
+//
+// pollen_request(uri_offset i64, input_offset i64) -> output_offset i64:
+//
+//	guest calls a seed or service via a pln:// URI. Returns offset to output bytes (0 on error).
+//	Seed:    pln://seed/<name>/<function>
+//	Service: pln://service/<name>
 //
 // pollen_log(level i64, msg_offset i64): guest writes a log message to the host logger.
 //
 //	level: 0=debug, 1=info, 2=warn, 3=error
 //
-// pollen_call(hash_offset i64, func_offset i64, input_offset i64) -> output_offset i64:
-//
-//	guest calls another workload through the mesh. Returns offset to output bytes (0 on error).
-//
 // pollen_caller_info() -> output_offset i64:
 //
 //	returns caller metadata as JSON ({"peerKey":"<hex>","attributes":{...}}).
 //	Returns 0 if no caller info is available in the invocation context.
-func NewHostFunctions(logger *zap.SugaredLogger, router InvocationRouter) []extism.HostFunction {
+func NewHostFunctions(logger *zap.SugaredLogger, router RequestRouter) []extism.HostFunction {
 	logFn := extism.NewHostFunctionWithStack(
 		"pollen_log",
 		func(ctx context.Context, p *extism.CurrentPlugin, stack []uint64) {
@@ -61,45 +85,58 @@ func NewHostFunctions(logger *zap.SugaredLogger, router InvocationRouter) []exti
 		nil,
 	)
 
-	callFn := extism.NewHostFunctionWithStack(
-		"pollen_call",
+	requestFn := extism.NewHostFunctionWithStack(
+		"pollen_request",
 		func(ctx context.Context, p *extism.CurrentPlugin, stack []uint64) {
-			targetHash, err := p.ReadString(stack[0])
+			uriStr, err := p.ReadString(stack[0])
 			if err != nil {
-				logger.Warnw("pollen_call: failed to read hash", "err", err)
+				logger.Warnw("pollen_request: failed to read URI", "err", err)
 				stack[0] = 0
 				return
 			}
-			function, err := p.ReadString(stack[1])
+			input, err := p.ReadBytes(stack[1])
 			if err != nil {
-				logger.Warnw("pollen_call: failed to read function", "err", err)
-				stack[0] = 0
-				return
-			}
-			input, err := p.ReadBytes(stack[2])
-			if err != nil {
-				logger.Warnw("pollen_call: failed to read input", "err", err)
+				logger.Warnw("pollen_request: failed to read input", "err", err)
 				stack[0] = 0
 				return
 			}
 
-			output, err := router.RouteCall(ctx, targetHash, function, input)
+			uri, err := ParseURI(uriStr)
 			if err != nil {
-				logger.Warnw("pollen_call: route failed",
-					"target", targetHash, "function", function, "err", err)
+				logger.Warnw("pollen_request: invalid URI", "uri", uriStr, "err", err)
+				stack[0] = 0
+				return
+			}
+
+			caller := ExecutingSeedFromContext(ctx)
+			if caller != "" {
+				router.RecordDial(caller, dialTargetKey(uri))
+			}
+
+			parkStart := time.Now()
+			output, err := router.RouteRequest(ctx, uri, input)
+			if caller != "" {
+				router.RecordParkedTime(caller, time.Since(parkStart))
+			}
+			if err != nil {
+				if errors.Is(err, ErrTargetNotFound) {
+					logger.Infow("pollen_request: target not found", "uri", uriStr, "err", err)
+				} else {
+					logger.Warnw("pollen_request: route failed", "uri", uriStr, "err", err)
+				}
 				stack[0] = 0
 				return
 			}
 
 			offset, err := p.WriteBytes(output)
 			if err != nil {
-				logger.Warnw("pollen_call: failed to write output", "err", err)
+				logger.Warnw("pollen_request: failed to write output", "err", err)
 				stack[0] = 0
 				return
 			}
 			stack[0] = offset
 		},
-		[]extism.ValueType{extism.ValueTypeI64, extism.ValueTypeI64, extism.ValueTypeI64},
+		[]extism.ValueType{extism.ValueTypeI64, extism.ValueTypeI64},
 		[]extism.ValueType{extism.ValueTypeI64},
 	)
 
@@ -128,5 +165,5 @@ func NewHostFunctions(logger *zap.SugaredLogger, router InvocationRouter) []exti
 		[]extism.ValueType{extism.ValueTypeI64},
 	)
 
-	return []extism.HostFunction{logFn, callFn, callerInfoFn}
+	return []extism.HostFunction{logFn, requestFn, callerInfoFn}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/internal/testauth"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -36,20 +37,11 @@ func newKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	return pub, priv
 }
 
-func loadTestSigner(t *testing.T, priv ed25519.PrivateKey, rootPub ed25519.PublicKey, issuer *admissionv1.DelegationCert) *auth.DelegationSigner {
-	t.Helper()
-	dir := testPollenDir(t)
-	require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(rootPub, issuer)))
-	signer, err := auth.NewDelegationSigner(dir, priv, 24*time.Hour)
-	require.NoError(t, err)
-	return signer
-}
-
 func issueRootJoinToken(t *testing.T, rootPriv ed25519.PrivateKey, rootPub, subject ed25519.PublicKey, now time.Time, membershipTTL time.Duration, accessDeadline time.Time) *admissionv1.JoinToken {
 	t.Helper()
 	issuer, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, auth.FullCapabilities(), now.Add(-time.Minute), now.Add(membershipTTL), time.Time{})
 	require.NoError(t, err)
-	signer := loadTestSigner(t, rootPriv, rootPub, issuer)
+	signer := testauth.LoadTestSigner(t, rootPriv, rootPub, issuer)
 	token, err := signer.IssueJoinToken(subject, nil, now, time.Hour, membershipTTL, accessDeadline, nil)
 	require.NoError(t, err)
 	return token
@@ -403,7 +395,7 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 		)
 		require.NoError(t, err)
 
-		delegatedSigner := loadTestSigner(t, delegatedPriv, nodePub, issuer)
+		delegatedSigner := testauth.LoadTestSigner(t, delegatedPriv, nodePub, issuer)
 		subjectPub, _ := newKeyPair(t)
 
 		token, err := delegatedSigner.IssueJoinToken(subjectPub, nil, now, time.Hour, 4*time.Hour, time.Time{}, nil)
@@ -427,7 +419,7 @@ func TestInviteTokenOpenSubject(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	signer := loadTestSigner(t, adminPriv, adminPub, issuer)
+	signer := testauth.LoadTestSigner(t, adminPriv, adminPub, issuer)
 
 	bootstrapPub, _ := newKeyPair(t)
 	invite, err := signer.IssueInviteToken(
@@ -451,7 +443,7 @@ func TestInviteTokenSubjectBoundMismatch(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	signer := loadTestSigner(t, adminPriv, adminPub, issuer)
+	signer := testauth.LoadTestSigner(t, adminPriv, adminPub, issuer)
 
 	bootstrapPub, _ := newKeyPair(t)
 	boundSubject, _ := newKeyPair(t)
@@ -522,7 +514,7 @@ func TestInviteConsumer_ExportAndLoad(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	signer := loadTestSigner(t, adminPriv, adminPub, issuer)
+	signer := testauth.LoadTestSigner(t, adminPriv, adminPub, issuer)
 	consumer := auth.NewInviteConsumer(nil)
 
 	bootstrapPub, _ := newKeyPair(t)

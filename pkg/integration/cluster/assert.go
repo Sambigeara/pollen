@@ -233,7 +233,7 @@ func (c *Cluster) RequireWorkloadSpecOnAllNodes(t testing.TB, hash string, repli
 			if !ok {
 				return false
 			}
-			if spec.Spec.GetMinReplicas() != replicas {
+			if spec.Spec.MinReplicas != replicas {
 				return false
 			}
 		}

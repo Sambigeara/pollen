@@ -77,7 +77,7 @@ package state
 type StateStore interface {
     Snapshot() Snapshot
     ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, error)
-    EncodeDelta(since Clock) []byte
+    EncodeDelta(since Digest) []byte
     EncodeFull() []byte
     PendingNotify() <-chan struct{}
     FlushPendingGossip() []*statev1.GossipEvent
@@ -85,18 +85,27 @@ type StateStore interface {
     DenyPeer(key types.PeerKey) []Event
     SetLocalAddresses(addrs []netip.AddrPort) []Event
     SetLocalNAT(t nat.Type) []Event
-    SetLocalCoord(c coords.Coord) []Event
+    SetLocalCoord(c coords.Coord, coordErr float64) []Event
     SetLocalReachable(peers []types.PeerKey) []Event
-    SetLocalObservedExternalIP(ip string) []Event
+    SetLocalObservedAddress(ip string, port uint32) []Event
 
-    SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) []Event
+    SetWorkloadSpec(spec WorkloadSpec) []Event
+    DeleteWorkloadSpec(hash string) []Event
     ClaimWorkload(hash string) []Event
     ReleaseWorkload(hash string) []Event
-    SetLocalResources(cpu, mem float64) []Event
+    SetLocalResources(r NodeResources) []Event
+    SetSeedMetrics(metrics map[string]SeedMetrics) []Event
+    SetSeedDialRates(rates map[string]map[string]float32) []Event
 
-    SetService(port uint32, name string) []Event
+    SetService(port uint32, name string, protocol statev1.ServiceProtocol) []Event
     RemoveService(name string) []Event
     SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event
+
+    EmitHeartbeatIfNeeded() []Event
+    LoadGossipState(data []byte) error
+    SetPeerLastAddr(pk types.PeerKey, addr string)
+    ExportLastAddrs() map[types.PeerKey]string
+    LoadLastAddrs(addrs map[types.PeerKey]string)
 
     SetPublic()
     SetAdmin()
@@ -107,7 +116,44 @@ type StateStore interface {
 var _ StateStore = (*Store)(nil)
 
 type Store struct { ... }
-func New(self types.PeerKey) *Store
+func New(self types.PeerKey) StateStore
+```
+
+**Domain value types** — cross package boundaries by value so no proto
+type leaks out of state:
+
+```go
+type WorkloadSpec struct {
+    Hash        string
+    Name        string
+    MinReplicas uint32
+    MemoryBytes uint64
+    Timeout     time.Duration
+    Spread      float32
+    LatencySLO  time.Duration
+}
+
+type NodeResources struct {
+    CPUPercent       uint32
+    MemPercent       uint32
+    MemTotalBytes    uint64
+    NumCPU           uint32
+    CPUBudgetPercent uint32
+    MemBudgetPercent uint32
+}
+
+// SeedMetrics bundles the per-seed per-node telemetry gossiped
+// together: served rate, compute cost, SLO satisfied/burned rates,
+// and EWMA gate wait. Dial rates stay separate (SetSeedDialRates)
+// because their graph-shaped variable-cardinality data doesn't fit
+// the scalar bundle.
+type SeedMetrics struct {
+    ServedRate       float32
+    ComputeCostMs    float32
+    SLOSatisfiedRate float32
+    SLOBurnedRate    float32
+    GateWaitMs       uint32
+}
 ```
 
 `ApplyDelta` returns three values: domain events, a rebroadcast payload (non-stale gossip events for eager propagation), and an error. Every mutation method enqueues gossip events internally and signals `PendingNotify()` so membership can flush and broadcast them immediately.
@@ -147,35 +193,45 @@ type GossipApplied   struct {}
 type ClusterState interface {
     Snapshot() state.Snapshot
     ApplyDelta(from types.PeerKey, data []byte) ([]state.Event, []byte, error)
-    EncodeDelta(since state.Clock) []byte
+    EncodeDelta(since state.Digest) []byte
     EncodeFull() []byte
     PendingNotify() <-chan struct{}
     FlushPendingGossip() []*statev1.GossipEvent
     DenyPeer(key types.PeerKey) []state.Event
     SetLocalAddresses([]netip.AddrPort) []state.Event
-    SetLocalCoord(coords.Coord) []state.Event
+    SetLocalCoord(c coords.Coord, coordErr float64) []state.Event
     SetLocalNAT(nat.Type) []state.Event
     SetLocalReachable([]types.PeerKey) []state.Event
-    SetLocalObservedExternalIP(string) []state.Event
+    SetLocalObservedAddress(ip string, port uint32) []state.Event
+    EmitHeartbeatIfNeeded() []state.Event
 }
 
 // In package placement:
 type WorkloadState interface {
     Snapshot() state.Snapshot
-    SetWorkloadSpec(hash string, replicas, memoryPages, timeoutMs uint32) []state.Event
+    SetWorkloadSpec(spec state.WorkloadSpec) []state.Event
+    DeleteWorkloadSpec(hash string) []state.Event
     ClaimWorkload(hash string) []state.Event
     ReleaseWorkload(hash string) []state.Event
-    SetLocalResources(cpu, mem float64) []state.Event
+    SetLocalResources(r state.NodeResources) []state.Event
+    SetSeedMetrics(metrics map[string]state.SeedMetrics) []state.Event
+    SetSeedDialRates(rates map[string]map[string]float32) []state.Event
 }
 
 // In package tunneling:
 type ServiceState interface {
     Snapshot() state.Snapshot
-    SetService(port uint32, name string) []state.Event
+    SetService(port uint32, name string, protocol statev1.ServiceProtocol) []state.Event
     RemoveService(name string) []state.Event
     SetLocalTraffic(peer types.PeerKey, in, out uint64) []state.Event
 }
 ```
+
+Per-seed telemetry consolidates into `SeedMetrics` — served rate,
+compute cost, SLO satisfied/burned rates, and gate wait all travel
+together. Dial rates stay separate because the dial graph is
+variable-cardinality per seed; the scalar bundle and the graph are
+different kinds of telemetry.
 
 ### Event Fan-Out Model
 
@@ -422,15 +478,26 @@ type PlacementAPI interface {
     Start(ctx context.Context) error
     Stop() error
 
-    Seed(hash string, binary []byte, replicas, memoryPages, timeoutMs uint32) error
+    Seed(binary []byte, spec state.WorkloadSpec) error
     Unseed(hash string) error
     Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
     Status() []WorkloadSummary
+    PlacementInfo() map[string]PlacementInfo
+
+    RecordDial(callerHash, targetKey string)
+    RecordInvocation(seedHash string, elapsed time.Duration)
 
     HandleArtifactStream(stream io.ReadWriteCloser, peer types.PeerKey)
     HandleWorkloadStream(stream io.ReadWriteCloser, peer types.PeerKey)
 
     Signal()
+}
+
+// PlacementInfo summarises a single workload's autoscale state for
+// Status() and control-plane consumers.
+type PlacementInfo struct {
+    EffectiveTarget uint32
+    SLOBurnRatio    float64
 }
 
 var _ PlacementAPI = (*Service)(nil)
@@ -589,10 +656,11 @@ type MembershipControl interface {
 }
 
 type PlacementControl interface {
-    Seed(name, hash string, binary []byte, replicas, memoryPages, timeoutMs uint32, spread float32) error
+    Seed(binary []byte, spec state.WorkloadSpec) error
     Unseed(hash string) error
     Call(ctx context.Context, hash, fn string, input []byte) ([]byte, error)
     Status() []placement.WorkloadSummary
+    PlacementInfo() map[string]placement.PlacementInfo
 }
 
 type TunnelingControl interface {

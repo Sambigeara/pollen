@@ -28,10 +28,10 @@ const (
 	attrWorkloadClaim
 	attrTrafficHeatmap
 	attrHeartbeat
-	attrSeedLoad
 	attrAdminCapable
 	attrNodeName
-	attrSeedDemand
+	attrSeedDialRates
+	attrSeedMetrics
 )
 
 type attrKey struct {
@@ -65,7 +65,6 @@ func (s *store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, er
 
 	var rbData []byte
 	if len(rebroadcast) > 0 {
-		events = append(events, GossipApplied{})
 		rbBatch := &statev1.GossipEventBatch{Events: rebroadcast}
 		rbData, _ = rbBatch.MarshalVT()
 	}
@@ -170,7 +169,7 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent) []*statev1.Gos
 					Counter: rec.maxCounter,
 					Change:  ev.Change,
 				}
-			case attrWorkloadClaim, attrReachability, attrHeartbeat, attrSeedLoad, attrSeedDemand:
+			case attrWorkloadClaim, attrReachability, attrHeartbeat, attrSeedDialRates, attrSeedMetrics:
 				rec.maxCounter++
 				rec.log[key] = &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
@@ -205,17 +204,15 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent) []*statev1.Gos
 }
 
 func (s *store) EncodeDelta(since Digest) []byte {
-	return s.encodeDelta(since, s.snap.Load().live)
+	return s.encodeDelta(since)
 }
 
 func (s *store) EncodeFull() []byte {
-	return s.encodeDelta(Digest{proto: &statev1.Digest{}}, nil)
+	return s.encodeDelta(Digest{proto: &statev1.Digest{}})
 }
 
-// encodeDelta computes events the remote is missing. When live is non-nil,
-// only peers in the live set are included (topology-masked gossip). When nil,
-// all peers are included (state persistence and initial broadcast).
-func (s *store) encodeDelta(since Digest, live map[types.PeerKey]struct{}) []byte {
+// encodeDelta computes events the remote is missing.
+func (s *store) encodeDelta(since Digest) []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -223,12 +220,6 @@ func (s *store) encodeDelta(since Digest, live map[types.PeerKey]struct{}) []byt
 	remote := since.proto.GetPeers()
 
 	for pk, rec := range s.nodes {
-		if live != nil {
-			if _, ok := live[pk]; !ok {
-				continue
-			}
-		}
-
 		rd := remote[pk.String()]
 
 		if rd == nil || s.computePeerHash(rec) != rd.StateHash || rec.maxCounter > rd.MaxCounter {
@@ -281,8 +272,8 @@ func (s *store) tombstoneStaleAttrsLocked(rec *nodeRecord) {
 		{Change: &statev1.GossipEvent_ResourceTelemetry{ResourceTelemetry: &statev1.ResourceTelemetryChange{}}},
 		{Change: &statev1.GossipEvent_TrafficHeatmap{TrafficHeatmap: &statev1.TrafficHeatmapChange{}}},
 		{Change: &statev1.GossipEvent_Heartbeat{Heartbeat: &statev1.HeartbeatChange{}}},
-		{Change: &statev1.GossipEvent_SeedLoad{SeedLoad: &statev1.SeedLoadChange{}}},
-		{Change: &statev1.GossipEvent_SeedDemand{SeedDemand: &statev1.SeedDemandChange{}}},
+		{Change: &statev1.GossipEvent_SeedDialRates{SeedDialRates: &statev1.SeedDialRatesChange{}}},
+		{Change: &statev1.GossipEvent_SeedMetrics{SeedMetrics: &statev1.SeedMetricsChange{}}},
 		{Change: &statev1.GossipEvent_AdminCapable{AdminCapable: &statev1.AdminCapableChange{}}},
 	}
 	for _, ev := range ephemeral {
@@ -390,14 +381,14 @@ func getAttrKey(ev *statev1.GossipEvent) (attrKey, bool) {
 		return attrKey{kind: attrTrafficHeatmap}, true
 	case *statev1.GossipEvent_Heartbeat:
 		return attrKey{kind: attrHeartbeat}, true
-	case *statev1.GossipEvent_SeedLoad:
-		return attrKey{kind: attrSeedLoad}, true
 	case *statev1.GossipEvent_AdminCapable:
 		return attrKey{kind: attrAdminCapable}, true
 	case *statev1.GossipEvent_NodeName:
 		return attrKey{kind: attrNodeName}, true
-	case *statev1.GossipEvent_SeedDemand:
-		return attrKey{kind: attrSeedDemand}, true
+	case *statev1.GossipEvent_SeedDialRates:
+		return attrKey{kind: attrSeedDialRates}, true
+	case *statev1.GossipEvent_SeedMetrics:
+		return attrKey{kind: attrSeedMetrics}, true
 	}
 	return attrKey{}, false
 }

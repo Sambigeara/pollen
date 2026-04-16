@@ -16,6 +16,7 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/internal/testauth"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/transport"
@@ -77,72 +78,12 @@ func (h *meshHarness) loopbackAddr() []netip.AddrPort {
 	return []netip.AddrPort{netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(h.port))}
 }
 
-func loadTestSigner(t *testing.T, priv ed25519.PrivateKey, rootPub ed25519.PublicKey, issuer *admissionv1.DelegationCert) *auth.DelegationSigner {
-	t.Helper()
-	dir := t.TempDir()
-	require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(rootPub, issuer)))
-	signer, err := auth.NewDelegationSigner(dir, priv, 24*time.Hour)
-	require.NoError(t, err)
-	return signer
-}
-
-type clusterAuth struct {
-	adminPriv ed25519.PrivateKey
-	rootPub   ed25519.PublicKey
-}
-
-func newClusterAuth(t *testing.T) *clusterAuth {
-	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	return &clusterAuth{adminPriv: priv, rootPub: pub}
-}
-
-func (c *clusterAuth) credsFor(t *testing.T, subject ed25519.PublicKey) *auth.NodeCredentials {
-	t.Helper()
-	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, subject, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
-	require.NoError(t, err)
-	return auth.NewNodeCredentials(c.rootPub, cert)
-}
-
-func (c *clusterAuth) tokenFor(t *testing.T, subject ed25519.PublicKey, bootstrap *meshHarness) *admissionv1.JoinToken {
-	t.Helper()
-	now := time.Now()
-	membershipTTL := config.DefaultMembershipTTL
-	issuer, err := auth.IssueDelegationCert(c.adminPriv, nil, c.rootPub, auth.FullCapabilities(), now.Add(-time.Minute), now.Add(membershipTTL), time.Time{})
-	require.NoError(t, err)
-	signer := loadTestSigner(t, c.adminPriv, c.rootPub, issuer)
-	token, err := signer.IssueJoinToken(subject, []*admissionv1.BootstrapPeer{{
-		PeerPub: bootstrap.pubKey,
-		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(bootstrap.port))},
-	}}, now, time.Hour, membershipTTL, time.Time{}, nil)
-	require.NoError(t, err)
-	return token
-}
-
-func (c *clusterAuth) signer(t *testing.T) *auth.DelegationSigner {
-	t.Helper()
-
-	issuer, err := auth.IssueDelegationCert(
-		c.adminPriv,
-		nil,
-		c.rootPub,
-		auth.FullCapabilities(),
-		time.Now().Add(-time.Minute),
-		time.Now().Add(365*24*time.Hour),
-		time.Time{},
-	)
-	require.NoError(t, err)
-
-	return loadTestSigner(t, c.adminPriv, c.rootPub, issuer)
-}
-
 func TestJoinWithTokenHappyPath(t *testing.T) {
-	cluster := newClusterAuth(t)
+	cluster := testauth.NewClusterAuth(t)
 	bootstrap := startMeshHarness(t, cluster)
 	joiner := startMeshHarness(t, cluster)
 
-	token := cluster.tokenFor(t, joiner.pubKey, bootstrap)
+	token := cluster.TokenFor(t, joiner.pubKey, bootstrap.pubKey, net.JoinHostPort("127.0.0.1", strconv.Itoa(bootstrap.port)))
 
 	joinCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -160,8 +101,8 @@ func TestJoinWithTokenHappyPath(t *testing.T) {
 }
 
 func TestConnectRejectsCrossClusterPeer(t *testing.T) {
-	clusterA := newClusterAuth(t)
-	clusterB := newClusterAuth(t)
+	clusterA := testauth.NewClusterAuth(t)
+	clusterB := testauth.NewClusterAuth(t)
 
 	a := startMeshHarness(t, clusterA)
 	b := startMeshHarness(t, clusterB)
@@ -177,19 +118,19 @@ func TestConnectRejectsCrossClusterPeer(t *testing.T) {
 }
 
 func TestJoinWithInviteHappyPath(t *testing.T) {
-	cluster := newClusterAuth(t)
+	cluster := testauth.NewClusterAuth(t)
 
 	bootstrapPub, bootstrapPriv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	bootstrapCreds := cluster.credsFor(t, bootstrapPub)
-	signer := cluster.signer(t)
+	bootstrapCreds := cluster.CredsFor(t, bootstrapPub)
+	signer := cluster.Signer(t)
 	bootstrapCreds.SetDelegationKey(signer)
 	bootstrap := startMeshHarnessWithCreds(t, bootstrapPriv, bootstrapPub, bootstrapCreds)
 
 	joiner := startMeshHarness(t, cluster)
 
-	invite, err := cluster.signer(t).IssueInviteToken(
+	invite, err := cluster.Signer(t).IssueInviteToken(
 		nil,
 		[]*admissionv1.BootstrapPeer{{
 			PeerPub: bootstrap.pubKey,
@@ -222,19 +163,19 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 }
 
 func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
-	cluster := newClusterAuth(t)
+	cluster := testauth.NewClusterAuth(t)
 
 	bootstrapPub, bootstrapPriv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	bootstrapCreds := cluster.credsFor(t, bootstrapPub)
-	signer := cluster.signer(t)
+	bootstrapCreds := cluster.CredsFor(t, bootstrapPub)
+	signer := cluster.Signer(t)
 	bootstrapCreds.SetDelegationKey(signer)
 	bootstrap := startMeshHarnessWithCreds(t, bootstrapPriv, bootstrapPub, bootstrapCreds)
 
 	joiner := startMeshHarness(t, cluster)
 
-	invite, err := cluster.signer(t).IssueInviteToken(
+	invite, err := cluster.Signer(t).IssueInviteToken(
 		nil,
 		[]*admissionv1.BootstrapPeer{{
 			PeerPub: bootstrap.pubKey,
@@ -255,7 +196,7 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 }
 
 func TestConnectReturnsErrIdentityMismatch(t *testing.T) {
-	cluster := newClusterAuth(t)
+	cluster := testauth.NewClusterAuth(t)
 
 	a := startMeshHarness(t, cluster)
 	b := startMeshHarness(t, cluster)
@@ -371,8 +312,7 @@ func (r *notifyRouter) update(routes map[types.PeerKey]types.PeerKey) {
 }
 
 func TestOpenStreamRoutedWaitsForNextHop(t *testing.T) {
-	cluster := newClusterAuth(t)
-	a := startMeshHarness(t, cluster)
+	cluster := testauth.NewClusterAuth(t)
 	b := startMeshHarness(t, cluster)
 
 	// Fabricated unreachable peer C.
@@ -382,7 +322,7 @@ func TestOpenStreamRoutedWaitsForNextHop(t *testing.T) {
 
 	// Router tells A: to reach C, go through B.
 	router := newNotifyRouter(map[types.PeerKey]types.PeerKey{peerC: b.peerKey})
-	a.mesh.SetRouter(router)
+	a := startMeshHarness(t, cluster, transport.WithRouter(router))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -428,9 +368,7 @@ func TestOpenStreamRoutedWaitsForNextHop(t *testing.T) {
 }
 
 func TestOpenStreamRouteChurn(t *testing.T) {
-	cluster := newClusterAuth(t)
-	a := startMeshHarness(t, cluster)
-	d := startMeshHarness(t, cluster)
+	cluster := testauth.NewClusterAuth(t)
 
 	// Fabricated unreachable peers B and C.
 	bPub, _, err := ed25519.GenerateKey(rand.Reader)
@@ -441,6 +379,11 @@ func TestOpenStreamRouteChurn(t *testing.T) {
 	require.NoError(t, err)
 	peerC := types.PeerKeyFromBytes(cPub)
 
+	// Router initially points peerC → B (B is not connected).
+	router := newNotifyRouter(map[types.PeerKey]types.PeerKey{peerC: peerB})
+	a := startMeshHarness(t, cluster, transport.WithRouter(router))
+	d := startMeshHarness(t, cluster)
+
 	// Connect A ↔ D.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -449,10 +392,6 @@ func TestOpenStreamRouteChurn(t *testing.T) {
 		_, ok := d.mesh.GetConn(a.peerKey)
 		return ok
 	}, 5*time.Second, 25*time.Millisecond)
-
-	// Router initially points peerC → B (B is not connected).
-	router := newNotifyRouter(map[types.PeerKey]types.PeerKey{peerC: peerB})
-	a.mesh.SetRouter(router)
 
 	type result struct {
 		stream io.ReadWriteCloser
@@ -482,8 +421,7 @@ func TestOpenStreamRouteChurn(t *testing.T) {
 }
 
 func TestOpenStreamDirectSessionWhileRouting(t *testing.T) {
-	cluster := newClusterAuth(t)
-	a := startMeshHarness(t, cluster)
+	cluster := testauth.NewClusterAuth(t)
 	c := startMeshHarness(t, cluster)
 
 	// Fabricated unreachable peer B.
@@ -493,7 +431,7 @@ func TestOpenStreamDirectSessionWhileRouting(t *testing.T) {
 
 	// Router points C → B (B is not connected).
 	router := newNotifyRouter(map[types.PeerKey]types.PeerKey{c.peerKey: peerB})
-	a.mesh.SetRouter(router)
+	a := startMeshHarness(t, cluster, transport.WithRouter(router))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -530,9 +468,7 @@ func TestOpenStreamDirectSessionWhileRouting(t *testing.T) {
 // Because routeCh was captured before reading state, the closed channel wakes
 // the select and OpenStream re-evaluates with the new route.
 func TestOpenStreamRouteUpdateBetweenSnapshotAndLookup(t *testing.T) {
-	cluster := newClusterAuth(t)
-	a := startMeshHarness(t, cluster)
-	d := startMeshHarness(t, cluster)
+	cluster := testauth.NewClusterAuth(t)
 
 	// Fabricated unreachable peers B and C.
 	bPub, _, err := ed25519.GenerateKey(rand.Reader)
@@ -543,6 +479,11 @@ func TestOpenStreamRouteUpdateBetweenSnapshotAndLookup(t *testing.T) {
 	require.NoError(t, err)
 	peerC := types.PeerKeyFromBytes(cPub)
 
+	// Router initially points peerC → B (not connected).
+	router := newNotifyRouter(map[types.PeerKey]types.PeerKey{peerC: peerB})
+	a := startMeshHarness(t, cluster, transport.WithRouter(router))
+	d := startMeshHarness(t, cluster)
+
 	// Connect A ↔ D.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -551,10 +492,6 @@ func TestOpenStreamRouteUpdateBetweenSnapshotAndLookup(t *testing.T) {
 		_, ok := d.mesh.GetConn(a.peerKey)
 		return ok
 	}, 5*time.Second, 25*time.Millisecond)
-
-	// Router initially points peerC → B (not connected).
-	router := newNotifyRouter(map[types.PeerKey]types.PeerKey{peerC: peerB})
-	a.mesh.SetRouter(router)
 
 	// The hook fires during Lookup: it updates the route to peerC → D
 	// (connected) and closes the old changeCh. But staleOnce forces this
@@ -599,7 +536,7 @@ func TestRoutedDeliveryRejectsNonTunnel(t *testing.T) {
 		ttl        byte = 16
 	)
 
-	cluster := newClusterAuth(t)
+	cluster := testauth.NewClusterAuth(t)
 	a := startMeshHarness(t, cluster)
 	b := startMeshHarness(t, cluster)
 
@@ -666,7 +603,7 @@ func TestRoutedDeliveryRejectsNonTunnel(t *testing.T) {
 // bug where the tie-break logic didn't consider connection direction, causing
 // both nodes to hold different connections that the other side then closed.
 func TestSimultaneousDialConverges(t *testing.T) {
-	cluster := newClusterAuth(t)
+	cluster := testauth.NewClusterAuth(t)
 	a := startMeshHarness(t, cluster)
 	b := startMeshHarness(t, cluster)
 
@@ -701,13 +638,13 @@ func TestSimultaneousDialConverges(t *testing.T) {
 	require.True(t, bHasA, "b lost connection to a after simultaneous dial")
 }
 
-func startMeshHarness(t *testing.T, cluster *clusterAuth) *meshHarness {
+func startMeshHarness(t *testing.T, cluster *testauth.ClusterAuth, opts ...transport.Option) *meshHarness {
 	t.Helper()
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	return startMeshHarnessWithCreds(t, priv, pub, cluster.credsFor(t, pub))
+	return startMeshHarnessWithCreds(t, priv, pub, cluster.CredsFor(t, pub), opts...)
 }
 
 func startMeshHarnessWithCreds(
@@ -715,17 +652,21 @@ func startMeshHarnessWithCreds(
 	priv ed25519.PrivateKey,
 	pub ed25519.PublicKey,
 	creds *auth.NodeCredentials,
+	extraOpts ...transport.Option,
 ) *meshHarness {
 	t.Helper()
 
 	peerKey := types.PeerKeyFromBytes(pub)
-	m, err := transport.New(peerKey, creds, ":0",
+	opts := make([]transport.Option, 0, 5+len(extraOpts))
+	opts = append(opts,
 		transport.WithSigningKey(priv),
 		transport.WithTLSIdentityTTL(config.DefaultTLSIdentityTTL),
 		transport.WithMembershipTTL(config.DefaultMembershipTTL),
 		transport.WithReconnectWindow(config.DefaultReconnectWindow),
 		transport.WithInviteConsumer(&testConsumer{seen: make(map[string]struct{})}),
 	)
+	opts = append(opts, extraOpts...)
+	m, err := transport.New(peerKey, creds, ":0", opts...)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -748,18 +689,17 @@ func startMeshHarnessWithCreds(
 }
 
 func TestRoutedRelayTrafficAttribution(t *testing.T) {
-	cluster := newClusterAuth(t)
-	a := startMeshHarness(t, cluster)
+	cluster := testauth.NewClusterAuth(t)
 	b := startMeshHarness(t, cluster)
 	c := startMeshHarness(t, cluster)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	// Set up router on A: C→B and traffic tracker on B before connecting,
 	// so acceptBidiStreams goroutines see fully-initialized state.
 	routerA := newNotifyRouter(map[types.PeerKey]types.PeerKey{c.peerKey: b.peerKey})
-	a.mesh.SetRouter(routerA)
+	a := startMeshHarness(t, cluster, transport.WithRouter(routerA))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	tracker := &testTrafficTracker{records: make(map[types.PeerKey]trafficRecord)}
 	b.mesh.SetTrafficTracker(tracker)
 

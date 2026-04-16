@@ -110,11 +110,9 @@ func TestStore_ApplyDeltaReturnsEvents(t *testing.T) {
 	require.NotEmpty(t, events)
 	require.NotEmpty(t, rebroadcast)
 
-	var hasGossipApplied, hasPeerJoined, hasService bool
+	var hasPeerJoined, hasService bool
 	for _, ev := range events {
 		switch ev.(type) {
-		case GossipApplied:
-			hasGossipApplied = true
 		case PeerJoined:
 			hasPeerJoined = true
 		case ServiceChanged:
@@ -122,7 +120,6 @@ func TestStore_ApplyDeltaReturnsEvents(t *testing.T) {
 		}
 	}
 
-	require.True(t, hasGossipApplied)
 	require.True(t, hasPeerJoined)
 	require.True(t, hasService)
 }
@@ -177,19 +174,36 @@ func TestSnapshot_PeerKeysFiltering(t *testing.T) {
 	require.NotContains(t, snap2.Nodes, peerB)
 }
 
+func TestStore_SetWorkloadSpecClonesInput(t *testing.T) {
+	// SetWorkloadSpec must defensively copy its input — callers (e.g.
+	// placement.Service.Seed) reuse the same proto and may mutate it
+	// after the call. The persisted gossip state must not change in
+	// response to such caller-side mutation.
+	s := newTestStore(t, genKey(t))
+	spec := WorkloadSpec{Hash: "abc", Name: "abc", MinReplicas: 2}
+
+	s.SetWorkloadSpec(spec)
+	spec.MinReplicas = 99 // simulate caller reusing or mutating the proto
+
+	snap := s.Snapshot()
+	got, ok := snap.Specs["abc"]
+	require.True(t, ok)
+	require.Equal(t, uint32(2), got.Spec.MinReplicas, "store should not see caller-side mutation")
+}
+
 func TestStore_WorkloadSpecConflict(t *testing.T) {
 	pk := genKey(t)
 	s := newTestStore(t, pk)
 
 	// Local claims spec
-	s.SetWorkloadSpec("contested", "contested", 3, 0, 0, 0)
+	s.SetWorkloadSpec(WorkloadSpec{Name: "contested", Hash: "contested", MinReplicas: 3})
 
 	// Remote (lower peer ID) claims spec
 	winnerPK := genKey(t)
 	if pk.Compare(winnerPK) < 0 {
 		winnerPK, pk = pk, winnerPK // Ensure winnerPK is actually lower
 		s = newTestStore(t, pk)
-		s.SetWorkloadSpec("contested", "contested", 3, 0, 0, 0)
+		s.SetWorkloadSpec(WorkloadSpec{Name: "contested", Hash: "contested", MinReplicas: 3})
 	}
 
 	applyTestEvent(t, s, &statev1.GossipEvent{
@@ -222,7 +236,7 @@ func TestStore_TrafficHeatmapRoundTrip(t *testing.T) {
 
 	rates := storeB.Snapshot().Nodes[pkA].TrafficRates
 	require.Len(t, rates, 1)
-	require.Equal(t, TrafficSnapshot{BytesIn: 100, BytesOut: 200}, rates[peerC])
+	require.Equal(t, TrafficSnapshot{RateIn: 100, RateOut: 200}, rates[peerC])
 }
 
 func TestStore_EphemeralTombstones(t *testing.T) {
@@ -463,7 +477,7 @@ func TestSnapshot_SpecByName(t *testing.T) {
 	_ = higherKey
 
 	// Local peer publishes spec with name "myapp" and hash "hash-local".
-	s.SetWorkloadSpec("myapp", localHash, 1, 0, 0, 0)
+	s.SetWorkloadSpec(WorkloadSpec{Name: "myapp", Hash: localHash, MinReplicas: 1})
 
 	// Remote peer publishes spec with same name but different hash.
 	applyTestEvent(t, s, &statev1.GossipEvent{
@@ -508,7 +522,7 @@ func TestSnapshot_LocalSpecByName(t *testing.T) {
 	localHash, remoteHash := "hash-local", "hash-remote"
 
 	// Local peer publishes spec.
-	s.SetWorkloadSpec("myapp", localHash, 1, 0, 0, 0)
+	s.SetWorkloadSpec(WorkloadSpec{Name: "myapp", Hash: localHash, MinReplicas: 1})
 
 	// Remote peer publishes spec with the same name but different hash.
 	applyTestEvent(t, s, &statev1.GossipEvent{
@@ -595,6 +609,55 @@ func TestNodeNameGossip(t *testing.T) {
 	require.Equal(t, "node-alpha", snap.Nodes[pkA].Name)
 }
 
+func TestEncodeDelta_IncludesOfflinePeers(t *testing.T) {
+	fakeNow := time.Now()
+	localKey := genKey(t)
+	s := newTestStoreWithClock(t, localKey, &fakeNow)
+
+	offlinePeer := genKey(t)
+
+	// Offline peer publishes a workload spec via gossip.
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId: offlinePeer.String(), Counter: 1,
+		Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001}},
+	})
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId: offlinePeer.String(), Counter: 2,
+		Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "seed-abc", MinReplicas: 1}},
+	})
+
+	s.SetLocalReachable([]types.PeerKey{offlinePeer})
+
+	// Peer goes offline: local can no longer reach it.
+	s.SetLocalReachable(nil)
+
+	// A new node with an empty digest asks for state. EncodeDelta should
+	// include the offline peer's events (no live-set filtering).
+	emptyDigest := Digest{proto: &statev1.Digest{}}
+	delta := s.EncodeDelta(emptyDigest)
+	var batch statev1.GossipEventBatch
+	require.NoError(t, batch.UnmarshalVT(delta))
+	var foundOfflinePeer bool
+	for _, ev := range batch.Events {
+		if ev.PeerId == offlinePeer.String() {
+			foundOfflinePeer = true
+			break
+		}
+	}
+	require.True(t, foundOfflinePeer, "EncodeDelta must include events from offline peer")
+
+	// When the requester's digest already has the offline peer's counters,
+	// EncodeDelta should not redundantly re-send its events.
+	upToDateDigest := s.Snapshot().Digest()
+	delta = s.EncodeDelta(upToDateDigest)
+	var upToDateBatch statev1.GossipEventBatch
+	require.NoError(t, upToDateBatch.UnmarshalVT(delta))
+	for _, ev := range upToDateBatch.Events {
+		require.NotEqual(t, offlinePeer.String(), ev.PeerId,
+			"EncodeDelta should skip offline peer when requester digest is up-to-date")
+	}
+}
+
 func TestNodeNameSelfConflictAdopted(t *testing.T) {
 	pk := genKey(t)
 	s := newTestStore(t, pk)
@@ -614,4 +677,64 @@ func TestNodeNameSelfConflictAdopted(t *testing.T) {
 	// The name should be adopted (persistent attr).
 	snap := s.Snapshot()
 	require.Equal(t, "recovered-name", snap.Nodes[pk].Name)
+}
+
+func TestSetSeedMetrics_AllZeroEntryOmitted(t *testing.T) {
+	pk := genKey(t)
+	s := newTestStore(t, pk)
+
+	s.SetSeedMetrics(map[string]SeedMetrics{
+		"empty": {}, // all-zero → dropped
+		"live":  {ServedRate: 2.5},
+	})
+
+	snap := s.Snapshot()
+	metrics := snap.Nodes[pk].SeedMetrics
+	require.NotContains(t, metrics, "empty", "all-zero entries should be omitted")
+	require.Contains(t, metrics, "live")
+	require.InDelta(t, 2.5, metrics["live"].ServedRate, 0.001)
+}
+
+func TestSetSeedMetrics_DeadBandSuppressesTinyUpdates(t *testing.T) {
+	pk := genKey(t)
+	s := newTestStore(t, pk)
+
+	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 10, ComputeCostMs: 50, GateWaitMs: 20}})
+	baseline := s.Snapshot().Nodes[pk].SeedMetrics["a"]
+
+	// 5% change to ServedRate (within 20% dead-band) + 2ms GateWait
+	// delta (within 5ms dead-band): no gossip should fire.
+	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 10.5, ComputeCostMs: 50, GateWaitMs: 22}})
+	require.Equal(t, baseline, s.Snapshot().Nodes[pk].SeedMetrics["a"],
+		"material-free update should not propagate")
+}
+
+func TestSetSeedMetrics_GateWaitClearsButOtherFieldsRemain(t *testing.T) {
+	// Regression guard for the "gate wait clears to zero" material
+	// change path. Without it, a seed that became gate-free would show
+	// stale wait in dashboards until scrape retention flushed it.
+	pk := genKey(t)
+	s := newTestStore(t, pk)
+
+	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 10, GateWaitMs: 15}})
+	require.Equal(t, uint32(15), s.Snapshot().Nodes[pk].SeedMetrics["a"].GateWaitMs)
+
+	// Gate clears while traffic continues. Must gossip.
+	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 10, GateWaitMs: 0}})
+	require.Equal(t, uint32(0), s.Snapshot().Nodes[pk].SeedMetrics["a"].GateWaitMs,
+		"nonzero→zero gate wait must travel as a material change")
+	require.InDelta(t, 10.0, s.Snapshot().Nodes[pk].SeedMetrics["a"].ServedRate, 0.001,
+		"sibling field must still be present")
+}
+
+func TestSetSeedMetrics_EmptyTombstones(t *testing.T) {
+	pk := genKey(t)
+	s := newTestStore(t, pk)
+
+	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 5}})
+	require.Contains(t, s.Snapshot().Nodes[pk].SeedMetrics, "a")
+
+	s.SetSeedMetrics(map[string]SeedMetrics{})
+	require.Empty(t, s.Snapshot().Nodes[pk].SeedMetrics,
+		"empty map should tombstone the seed-metrics attr")
 }

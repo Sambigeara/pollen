@@ -49,7 +49,7 @@ type ControlServiceClient interface {
 	ConnectPeer(ctx context.Context, in *ConnectPeerRequest, opts ...grpc.CallOption) (*ConnectPeerResponse, error)
 	DisconnectService(ctx context.Context, in *DisconnectServiceRequest, opts ...grpc.CallOption) (*DisconnectServiceResponse, error)
 	DenyPeer(ctx context.Context, in *DenyPeerRequest, opts ...grpc.CallOption) (*DenyPeerResponse, error)
-	SeedWorkload(ctx context.Context, in *SeedWorkloadRequest, opts ...grpc.CallOption) (*SeedWorkloadResponse, error)
+	SeedWorkload(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[SeedWorkloadRequest, SeedWorkloadResponse], error)
 	UnseedWorkload(ctx context.Context, in *UnseedWorkloadRequest, opts ...grpc.CallOption) (*UnseedWorkloadResponse, error)
 	CallWorkload(ctx context.Context, in *CallWorkloadRequest, opts ...grpc.CallOption) (*CallWorkloadResponse, error)
 	IssueCert(ctx context.Context, in *IssueCertRequest, opts ...grpc.CallOption) (*IssueCertResponse, error)
@@ -163,15 +163,18 @@ func (c *controlServiceClient) DenyPeer(ctx context.Context, in *DenyPeerRequest
 	return out, nil
 }
 
-func (c *controlServiceClient) SeedWorkload(ctx context.Context, in *SeedWorkloadRequest, opts ...grpc.CallOption) (*SeedWorkloadResponse, error) {
+func (c *controlServiceClient) SeedWorkload(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[SeedWorkloadRequest, SeedWorkloadResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(SeedWorkloadResponse)
-	err := c.cc.Invoke(ctx, ControlService_SeedWorkload_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ControlService_ServiceDesc.Streams[0], ControlService_SeedWorkload_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &grpc.GenericClientStream[SeedWorkloadRequest, SeedWorkloadResponse]{ClientStream: stream}
+	return x, nil
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ControlService_SeedWorkloadClient = grpc.ClientStreamingClient[SeedWorkloadRequest, SeedWorkloadResponse]
 
 func (c *controlServiceClient) UnseedWorkload(ctx context.Context, in *UnseedWorkloadRequest, opts ...grpc.CallOption) (*UnseedWorkloadResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -217,7 +220,7 @@ type ControlServiceServer interface {
 	ConnectPeer(context.Context, *ConnectPeerRequest) (*ConnectPeerResponse, error)
 	DisconnectService(context.Context, *DisconnectServiceRequest) (*DisconnectServiceResponse, error)
 	DenyPeer(context.Context, *DenyPeerRequest) (*DenyPeerResponse, error)
-	SeedWorkload(context.Context, *SeedWorkloadRequest) (*SeedWorkloadResponse, error)
+	SeedWorkload(grpc.ClientStreamingServer[SeedWorkloadRequest, SeedWorkloadResponse]) error
 	UnseedWorkload(context.Context, *UnseedWorkloadRequest) (*UnseedWorkloadResponse, error)
 	CallWorkload(context.Context, *CallWorkloadRequest) (*CallWorkloadResponse, error)
 	IssueCert(context.Context, *IssueCertRequest) (*IssueCertResponse, error)
@@ -261,8 +264,8 @@ func (UnimplementedControlServiceServer) DisconnectService(context.Context, *Dis
 func (UnimplementedControlServiceServer) DenyPeer(context.Context, *DenyPeerRequest) (*DenyPeerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DenyPeer not implemented")
 }
-func (UnimplementedControlServiceServer) SeedWorkload(context.Context, *SeedWorkloadRequest) (*SeedWorkloadResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method SeedWorkload not implemented")
+func (UnimplementedControlServiceServer) SeedWorkload(grpc.ClientStreamingServer[SeedWorkloadRequest, SeedWorkloadResponse]) error {
+	return status.Error(codes.Unimplemented, "method SeedWorkload not implemented")
 }
 func (UnimplementedControlServiceServer) UnseedWorkload(context.Context, *UnseedWorkloadRequest) (*UnseedWorkloadResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method UnseedWorkload not implemented")
@@ -474,23 +477,12 @@ func _ControlService_DenyPeer_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ControlService_SeedWorkload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SeedWorkloadRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ControlServiceServer).SeedWorkload(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: ControlService_SeedWorkload_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlServiceServer).SeedWorkload(ctx, req.(*SeedWorkloadRequest))
-	}
-	return interceptor(ctx, in, info, handler)
+func _ControlService_SeedWorkload_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(ControlServiceServer).SeedWorkload(&grpc.GenericServerStream[SeedWorkloadRequest, SeedWorkloadResponse]{ServerStream: stream})
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ControlService_SeedWorkloadServer = grpc.ClientStreamingServer[SeedWorkloadRequest, SeedWorkloadResponse]
 
 func _ControlService_UnseedWorkload_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(UnseedWorkloadRequest)
@@ -594,10 +586,6 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ControlService_DenyPeer_Handler,
 		},
 		{
-			MethodName: "SeedWorkload",
-			Handler:    _ControlService_SeedWorkload_Handler,
-		},
-		{
 			MethodName: "UnseedWorkload",
 			Handler:    _ControlService_UnseedWorkload_Handler,
 		},
@@ -610,6 +598,12 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ControlService_IssueCert_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "SeedWorkload",
+			Handler:       _ControlService_SeedWorkload_Handler,
+			ClientStreams: true,
+		},
+	},
 	Metadata: "pollen/control/v1/control.proto",
 }

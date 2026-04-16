@@ -339,9 +339,6 @@ func (s *Service) sendEvent(ev state.Event) {
 
 func (s *Service) forwardEvents(events []state.Event) {
 	for _, ev := range events {
-		if _, ok := ev.(state.GossipApplied); ok {
-			continue
-		}
 		s.sendEvent(ev)
 	}
 }

@@ -48,9 +48,11 @@ func (lt *latencyTracker) Get(peer types.PeerKey, hash string) float64 {
 
 // pickP2C selects a target from claimants using power-of-two-choices.
 // If self is a claimant and other claimants exist, it compares self against
-// one random remote (local-biased variant). Otherwise picks 2 random remotes.
+// one random remote (local-biased variant — both latencies include local
+// gate wait so the comparison is symmetric). Otherwise picks 2 random
+// remotes and prefers the lower of the two known latencies.
 //
-//nolint:gosec
+//nolint:gosec,nestif
 func pickP2C(
 	self types.PeerKey,
 	locallyRunning bool,
@@ -69,20 +71,22 @@ func pickP2C(
 		remote := others[rand.IntN(len(others))]
 		selfLat := lt.Get(self, hash)
 		remoteLat := lt.Get(remote, hash)
-		if selfLat >= 0 && remoteLat >= 0 {
-			if selfLat <= remoteLat {
-				return self, true
-			}
+		switch {
+		case selfLat < 0:
+			// Self unknown — serve locally to bootstrap our own EWMA
+			// (covers the both-unknown case too).
+			return self, true
+		case remoteLat < 0:
+			return remote, false
+		case selfLat < remoteLat:
+			return self, true
+		case remoteLat < selfLat:
+			return remote, false
+		case rand.IntN(2) == 0: //nolint:mnd
+			return self, true
+		default:
 			return remote, false
 		}
-		if selfLat >= 0 {
-			// Self known, remote unknown — probe to bootstrap remote latency.
-			return remote, false
-		}
-		// Self unknown — serve locally to bootstrap self-latency and avoid
-		// a deadlock where a fresh claimant always defers to remotes with
-		// known latency.
-		return self, true
 	}
 
 	if locallyRunning {

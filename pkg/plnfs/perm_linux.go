@@ -13,6 +13,9 @@ import (
 // SetGroupSocket makes a socket read-writable by the pln group (0660).
 func SetGroupSocket(path string) error { return setPerm(path, 0o660) }
 
+// SetGroupReadable makes an existing file readable by the pln group (0640).
+func SetGroupReadable(path string) error { return setPerm(path, 0o640) }
+
 // EnsureDir creates a directory (and parents). In system mode it applies
 // setgid + pln group ownership so the daemon and CLI users in the pln
 // group can share access. In user mode it uses 0700 and skips group

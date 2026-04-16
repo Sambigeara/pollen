@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"testing"
@@ -22,7 +23,10 @@ import (
 	"github.com/sambigeara/pollen/pkg/tunneling"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -180,61 +184,67 @@ func TestConnectPeerError(t *testing.T) {
 	require.Equal(t, codes.Internal, st.Code())
 }
 
-func TestSeedWorkload(t *testing.T) {
+func TestSeedWorkloadNoCreds(t *testing.T) {
 	h := newHarness(t)
+	err := h.svc.SeedWorkload(newSeedStream([]byte("wasm")))
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
+}
+
+func TestSeedWorkload(t *testing.T) {
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	wasmBytes := []byte("test-wasm")
 	hash := hex.EncodeToString(func() []byte { h := sha256.Sum256(wasmBytes); return h[:] }())
 
-	resp, err := h.svc.SeedWorkload(context.Background(), &controlv1.SeedWorkloadRequest{
-		WasmBytes: wasmBytes,
-	})
-	require.NoError(t, err)
-	require.Equal(t, hash, resp.Hash)
+	stream := newSeedStream(wasmBytes)
+	require.NoError(t, h.svc.SeedWorkload(stream))
+	require.NotNil(t, stream.sent)
+	require.Equal(t, hash, stream.sent.Hash)
 	require.Equal(t, hash, h.placement.seededHash)
 	require.Equal(t, wasmBytes, h.placement.seededBinary)
 }
 
 func TestSeedWorkloadCompileError(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	h.placement.seedErr = placement.ErrCompile
-	_, err := h.svc.SeedWorkload(context.Background(), &controlv1.SeedWorkloadRequest{
-		WasmBytes: []byte("bad-wasm"),
-	})
+	err := h.svc.SeedWorkload(newSeedStream([]byte("bad-wasm")))
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.InvalidArgument, st.Code())
 }
 
-func TestSeedWorkloadAlreadyRunning(t *testing.T) {
-	h := newHarness(t)
-	h.placement.seedErr = placement.ErrAlreadyRunning
-	resp, err := h.svc.SeedWorkload(context.Background(), &controlv1.SeedWorkloadRequest{
-		WasmBytes: []byte("wasm"),
-	})
-	require.NoError(t, err)
-	require.NotEmpty(t, resp.Hash)
-}
-
 func TestSeedWorkloadInternalError(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	h.placement.seedErr = errors.New("disk full")
-	_, err := h.svc.SeedWorkload(context.Background(), &controlv1.SeedWorkloadRequest{
-		WasmBytes: []byte("wasm"),
-	})
+	err := h.svc.SeedWorkload(newSeedStream([]byte("wasm")))
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.Internal, st.Code())
 }
 
-func TestUnseedWorkload(t *testing.T) {
+func TestUnseedWorkloadNoCreds(t *testing.T) {
 	h := newHarness(t)
+	_, err := h.svc.UnseedWorkload(context.Background(), &controlv1.UnseedWorkloadRequest{Hash: "abc123"})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
+}
+
+func TestUnseedWorkload(t *testing.T) {
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	_, err := h.svc.UnseedWorkload(context.Background(), &controlv1.UnseedWorkloadRequest{Hash: "abc123"})
 	require.NoError(t, err)
 	require.Equal(t, "abc123", h.placement.unseededHash)
 }
 
 func TestUnseedWorkloadError(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	h.placement.unseedErr = errors.New("boom")
 	_, err := h.svc.UnseedWorkload(context.Background(), &controlv1.UnseedWorkloadRequest{Hash: "abc123"})
 	require.Error(t, err)
@@ -289,6 +299,125 @@ func TestCallWorkloadInternalError(t *testing.T) {
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.Internal, st.Code())
+}
+
+func TestCallWorkloadURISeed(t *testing.T) {
+	h := newHarness(t)
+	h.placement.callOut = []byte("result")
+
+	resp, err := h.svc.CallWorkload(context.Background(), &controlv1.CallWorkloadRequest{
+		Uri:   "pln://seed/ingest/handle",
+		Input: []byte("input"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, []byte("result"), resp.Output)
+	require.Equal(t, "ingest", h.placement.calledHash)
+	require.Equal(t, "handle", h.placement.calledFn)
+}
+
+func TestCallWorkloadURIInvalid(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.svc.CallWorkload(context.Background(), &controlv1.CallWorkloadRequest{
+		Uri: "not-a-uri",
+	})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.InvalidArgument, st.Code())
+}
+
+func TestCallWorkloadURIServiceRejected(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.svc.CallWorkload(context.Background(), &controlv1.CallWorkloadRequest{
+		Uri: "pln://service/store",
+	})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.InvalidArgument, st.Code())
+}
+
+func TestCallWorkloadMissingTarget(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.svc.CallWorkload(context.Background(), &controlv1.CallWorkloadRequest{})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.InvalidArgument, st.Code())
+}
+
+// TestStartTCP_TokenAuth exercises the live TCP listener plus token-auth
+// interceptor. Covers: valid token succeeds, missing/bad token is rejected,
+// no-token mode lets everyone through.
+func TestStartTCP_TokenAuth(t *testing.T) {
+	startServer := func(token string) (*control.Server, string, func()) {
+		placementStub := &fakePlacement{callOut: []byte("ok")}
+		srv := control.New(&fakeMembership{}, placementStub, &fakeTunneling{}, &fakeState{snap: state.Snapshot{Nodes: make(map[types.PeerKey]state.NodeView)}})
+		if token != "" {
+			srv.SetToken(token)
+		}
+
+		l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		addr := l.Addr().String()
+
+		go func() { _ = srv.Serve(l) }()
+
+		cleanup := func() {
+			srv.Stop()
+			_ = l.Close()
+		}
+		return srv, addr, cleanup
+	}
+
+	dialClient := func(t *testing.T, addr string) controlv1.ControlServiceClient {
+		t.Helper()
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.Close() })
+		return controlv1.NewControlServiceClient(conn)
+	}
+
+	t.Run("valid token", func(t *testing.T) {
+		_, addr, done := startServer("secret-token-xyz")
+		t.Cleanup(done)
+
+		client := dialClient(t, addr)
+		ctx := metadata.AppendToOutgoingContext(context.Background(), control.ControlTokenMetadataKey, "secret-token-xyz")
+		resp, err := client.CallWorkload(ctx, &controlv1.CallWorkloadRequest{Uri: "pln://seed/ingest/handle"})
+		require.NoError(t, err)
+		require.Equal(t, []byte("ok"), resp.Output)
+	})
+
+	t.Run("missing token rejected", func(t *testing.T) {
+		_, addr, done := startServer("secret-token-xyz")
+		t.Cleanup(done)
+
+		client := dialClient(t, addr)
+		_, err := client.CallWorkload(context.Background(), &controlv1.CallWorkloadRequest{Uri: "pln://seed/ingest/handle"})
+		require.Error(t, err)
+		st, _ := status.FromError(err)
+		require.Equal(t, codes.Unauthenticated, st.Code())
+	})
+
+	t.Run("wrong token rejected", func(t *testing.T) {
+		_, addr, done := startServer("secret-token-xyz")
+		t.Cleanup(done)
+
+		client := dialClient(t, addr)
+		ctx := metadata.AppendToOutgoingContext(context.Background(), control.ControlTokenMetadataKey, "wrong")
+		_, err := client.CallWorkload(ctx, &controlv1.CallWorkloadRequest{Uri: "pln://seed/ingest/handle"})
+		require.Error(t, err)
+		st, _ := status.FromError(err)
+		require.Equal(t, codes.Unauthenticated, st.Code())
+	})
+
+	t.Run("no token mode bypasses auth", func(t *testing.T) {
+		_, addr, done := startServer("")
+		t.Cleanup(done)
+
+		client := dialClient(t, addr)
+		resp, err := client.CallWorkload(context.Background(), &controlv1.CallWorkloadRequest{Uri: "pln://seed/ingest/handle"})
+		require.NoError(t, err)
+		require.Equal(t, []byte("ok"), resp.Output)
+	})
 }
 
 func TestDenyPeer(t *testing.T) {
@@ -370,7 +499,7 @@ func TestDisconnectServiceNotFound(t *testing.T) {
 func TestGetMetricsHealthy(t *testing.T) {
 	h := newHarness(t)
 	h.transport.counts = transport.PeerStateCounts{Connected: 3, Connecting: 1, Backoff: 2}
-	h.metrics.m = control.Metrics{GossipApplied: 100, GossipStale: 5}
+	h.metrics.m = control.Metrics{}
 
 	resp, err := h.svc.GetMetrics(context.Background(), &controlv1.GetMetricsRequest{})
 	require.NoError(t, err)
@@ -378,8 +507,6 @@ func TestGetMetricsHealthy(t *testing.T) {
 	require.Equal(t, uint32(3), resp.PeersConnected)
 	require.Equal(t, uint32(1), resp.PeersConnecting)
 	require.Equal(t, uint32(2), resp.PeersDiscovered)
-	require.Equal(t, uint64(100), resp.EventsApplied)
-	require.Equal(t, uint64(5), resp.EventsStale)
 }
 
 func TestGetMetricsUnhealthyNoPeers(t *testing.T) {
@@ -480,8 +607,8 @@ func TestGetStatusWorkloads(t *testing.T) {
 	h.state.snap.LocalID = local
 	h.state.snap.Nodes[local] = state.NodeView{}
 	h.state.snap.Specs = map[string]state.WorkloadSpecView{
-		"abc": {Spec: &statev1.WorkloadSpecChange{MinReplicas: 3}},
-		"def": {Spec: &statev1.WorkloadSpecChange{MinReplicas: 2}},
+		"abc": {Spec: state.WorkloadSpec{MinReplicas: 3}},
+		"def": {Spec: state.WorkloadSpec{MinReplicas: 2}},
 	}
 	h.state.snap.Claims = map[string]map[types.PeerKey]struct{}{
 		"abc": {local: {}},
@@ -527,10 +654,10 @@ func TestGetStatus_PeerTrafficFromGossip(t *testing.T) {
 	h.state.snap.LocalID = local
 	h.state.snap.Nodes[local] = state.NodeView{IPs: []string{"10.0.0.1"}, LocalPort: 5000}
 	h.state.snap.Nodes[peerA] = state.NodeView{IPs: []string{"1.2.3.4"}, LocalPort: 5000, TrafficRates: map[types.PeerKey]state.TrafficSnapshot{
-		peerB: {BytesIn: 1000, BytesOut: 2000},
+		peerB: {RateIn: 1000, RateOut: 2000},
 	}}
 	h.state.snap.Nodes[peerB] = state.NodeView{IPs: []string{"5.6.7.8"}, LocalPort: 5000, TrafficRates: map[types.PeerKey]state.TrafficSnapshot{
-		peerA: {BytesIn: 3000, BytesOut: 4000},
+		peerA: {RateIn: 3000, RateOut: 4000},
 	}}
 
 	resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
@@ -543,12 +670,12 @@ func TestGetStatus_PeerTrafficFromGossip(t *testing.T) {
 	}
 
 	a := nodeByID[string(peerA.Bytes())]
-	require.Equal(t, uint64(1000), a.TrafficBytesIn)
-	require.Equal(t, uint64(2000), a.TrafficBytesOut)
+	require.Equal(t, uint64(1000), a.TrafficRateIn)
+	require.Equal(t, uint64(2000), a.TrafficRateOut)
 
 	b := nodeByID[string(peerB.Bytes())]
-	require.Equal(t, uint64(3000), b.TrafficBytesIn)
-	require.Equal(t, uint64(4000), b.TrafficBytesOut)
+	require.Equal(t, uint64(3000), b.TrafficRateIn)
+	require.Equal(t, uint64(4000), b.TrafficRateOut)
 }
 
 func TestGetStatus_SelfTrafficAggregation(t *testing.T) {
@@ -562,8 +689,8 @@ func TestGetStatus_SelfTrafficAggregation(t *testing.T) {
 
 	h.state.snap.LocalID = local
 	h.state.snap.Nodes[local] = state.NodeView{IPs: []string{"10.0.0.1"}, LocalPort: 5000, TrafficRates: map[types.PeerKey]state.TrafficSnapshot{
-		peerA: {BytesIn: 100, BytesOut: 200},
-		peerB: {BytesIn: 300, BytesOut: 400},
+		peerA: {RateIn: 100, RateOut: 200},
+		peerB: {RateIn: 300, RateOut: 400},
 	}}
 	h.state.snap.Nodes[peerA] = state.NodeView{IPs: []string{"1.2.3.4"}, LocalPort: 5000}
 	h.state.snap.Nodes[peerB] = state.NodeView{IPs: []string{"5.6.7.8"}, LocalPort: 5000}
@@ -571,8 +698,8 @@ func TestGetStatus_SelfTrafficAggregation(t *testing.T) {
 	resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
 	require.NoError(t, err)
 
-	require.Equal(t, uint64(400), resp.Self.TrafficBytesIn)
-	require.Equal(t, uint64(600), resp.Self.TrafficBytesOut)
+	require.Equal(t, uint64(400), resp.Self.TrafficRateIn)
+	require.Equal(t, uint64(600), resp.Self.TrafficRateOut)
 }
 
 func TestGetStatus_ExpiredPeerNotIndirect(t *testing.T) {
@@ -641,9 +768,9 @@ type fakePlacement struct {
 	calledInput  []byte
 }
 
-func (f *fakePlacement) Seed(name, hash string, binary []byte, _, _, _ uint32, _ float32) error {
-	f.seededName = name
-	f.seededHash = hash
+func (f *fakePlacement) Seed(binary []byte, spec state.WorkloadSpec) error {
+	f.seededName = spec.Name
+	f.seededHash = spec.Hash
 	f.seededBinary = binary
 	return f.seedErr
 }
@@ -664,7 +791,7 @@ func (f *fakePlacement) Status() []placement.WorkloadSummary {
 	return f.statuses
 }
 
-func (f *fakePlacement) PlacementInfo() map[string][2]float64 { return nil }
+func (f *fakePlacement) PlacementInfo() map[string]placement.PlacementInfo { return nil }
 
 type fakeTunneling struct {
 	exposeErr     error
@@ -771,6 +898,44 @@ func testPeerKey(b byte) types.PeerKey {
 	var raw [32]byte
 	raw[0] = b
 	return types.PeerKeyFromBytes(raw[:])
+}
+
+// fakeSeedStream implements grpc.ClientStreamingServer for SeedWorkload
+// tests. It replays a header + optional binary chunk and captures the
+// response passed to SendAndClose.
+type fakeSeedStream struct {
+	grpc.ServerStream
+	ctx      context.Context //nolint:containedctx
+	messages []*controlv1.SeedWorkloadRequest
+	sent     *controlv1.SeedWorkloadResponse
+}
+
+func newSeedStream(wasmBytes []byte) *fakeSeedStream {
+	msgs := []*controlv1.SeedWorkloadRequest{
+		{Payload: &controlv1.SeedWorkloadRequest_Header{Header: &controlv1.SeedWorkloadHeader{}}},
+	}
+	if len(wasmBytes) > 0 {
+		msgs = append(msgs, &controlv1.SeedWorkloadRequest{
+			Payload: &controlv1.SeedWorkloadRequest_Chunk{Chunk: wasmBytes},
+		})
+	}
+	return &fakeSeedStream{ctx: context.Background(), messages: msgs}
+}
+
+func (f *fakeSeedStream) Context() context.Context { return f.ctx }
+
+func (f *fakeSeedStream) Recv() (*controlv1.SeedWorkloadRequest, error) {
+	if len(f.messages) == 0 {
+		return nil, io.EOF
+	}
+	msg := f.messages[0]
+	f.messages = f.messages[1:]
+	return msg, nil
+}
+
+func (f *fakeSeedStream) SendAndClose(resp *controlv1.SeedWorkloadResponse) error {
+	f.sent = resp
+	return nil
 }
 
 func dummyCreds(t *testing.T) *auth.NodeCredentials {

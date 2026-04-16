@@ -1,0 +1,23 @@
+[Unit]
+Description=Pollen load generator targeting node %i
+After=network-online.target
+Requires=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/pollen-exerciser@%i
+ExecStart=/usr/local/bin/exerciser \
+    --target ${TARGET_ADDR} \
+    --rate ${RATE} \
+    --duration ${DURATION} \
+    --uri ${URI} \
+    --metrics-addr ${METRICS_ADDR} \
+    --label %i
+Environment=PLN_CONTROL_TOKEN=
+# Token is injected via EnvironmentFile (PLN_CONTROL_TOKEN=...).
+Restart=no
+# One-shot per `just demo load`. systemctl restart kicks a new run with
+# whatever params are currently in /etc/default/pollen-exerciser@%i.
+
+[Install]
+WantedBy=multi-user.target

@@ -87,7 +87,7 @@ type ControlServiceClient interface {
 	ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error)
 	DisconnectService(context.Context, *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error)
 	DenyPeer(context.Context, *connect.Request[v1.DenyPeerRequest]) (*connect.Response[v1.DenyPeerResponse], error)
-	SeedWorkload(context.Context, *connect.Request[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error)
+	SeedWorkload(context.Context) *connect.ClientStreamForClient[v1.SeedWorkloadRequest, v1.SeedWorkloadResponse]
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
 	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
@@ -260,8 +260,8 @@ func (c *controlServiceClient) DenyPeer(ctx context.Context, req *connect.Reques
 }
 
 // SeedWorkload calls pollen.control.v1.ControlService.SeedWorkload.
-func (c *controlServiceClient) SeedWorkload(ctx context.Context, req *connect.Request[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error) {
-	return c.seedWorkload.CallUnary(ctx, req)
+func (c *controlServiceClient) SeedWorkload(ctx context.Context) *connect.ClientStreamForClient[v1.SeedWorkloadRequest, v1.SeedWorkloadResponse] {
+	return c.seedWorkload.CallClientStream(ctx)
 }
 
 // UnseedWorkload calls pollen.control.v1.ControlService.UnseedWorkload.
@@ -291,7 +291,7 @@ type ControlServiceHandler interface {
 	ConnectPeer(context.Context, *connect.Request[v1.ConnectPeerRequest]) (*connect.Response[v1.ConnectPeerResponse], error)
 	DisconnectService(context.Context, *connect.Request[v1.DisconnectServiceRequest]) (*connect.Response[v1.DisconnectServiceResponse], error)
 	DenyPeer(context.Context, *connect.Request[v1.DenyPeerRequest]) (*connect.Response[v1.DenyPeerResponse], error)
-	SeedWorkload(context.Context, *connect.Request[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error)
+	SeedWorkload(context.Context, *connect.ClientStream[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error)
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
 	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
@@ -364,7 +364,7 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("DenyPeer")),
 		connect.WithHandlerOptions(opts...),
 	)
-	controlServiceSeedWorkloadHandler := connect.NewUnaryHandler(
+	controlServiceSeedWorkloadHandler := connect.NewClientStreamHandler(
 		ControlServiceSeedWorkloadProcedure,
 		svc.SeedWorkload,
 		connect.WithSchema(controlServiceMethods.ByName("SeedWorkload")),
@@ -467,7 +467,7 @@ func (UnimplementedControlServiceHandler) DenyPeer(context.Context, *connect.Req
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.DenyPeer is not implemented"))
 }
 
-func (UnimplementedControlServiceHandler) SeedWorkload(context.Context, *connect.Request[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error) {
+func (UnimplementedControlServiceHandler) SeedWorkload(context.Context, *connect.ClientStream[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.SeedWorkload is not implemented"))
 }
 

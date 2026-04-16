@@ -42,6 +42,8 @@ func newDaemonCmds() []*cobra.Command {
 	upCmd.Flags().BoolP("detach", "d", false, "Run as a background service")
 	upCmd.Flags().Bool("metrics", false, "Log metrics and trace output at debug level")
 	upCmd.Flags().String("name", "", "Human-readable node name")
+	upCmd.Flags().String("http", "", "HTTP address for Prometheus metrics (e.g. :9090)")
+	upCmd.Flags().String("control-addr", "", "Additional TCP address for the control API (e.g. :50051). Unix socket is always served; TCP requires a shared-secret token stored at $PLN_DIR/control.token.")
 
 	upgradeCmd := &cobra.Command{
 		Use:   "upgrade",
@@ -74,19 +76,19 @@ func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	detach, _ := cmd.Flags().GetBool("detach")
 	public, _ := cmd.Flags().GetBool("public")
 
+	cfgDirty := false
 	if public {
 		if _, _, err := auth.LoadAdminKey(env.dir); err != nil {
 			return errors.New("--public requires admin keys; run `pln init` to create a root cluster")
 		}
 		env.cfg.Public = true
-		if err := config.Save(env.dir, env.cfg); err != nil {
-			return err
-		}
+		cfgDirty = true
 	}
-
 	if cmd.Flags().Changed("name") {
-		name, _ := cmd.Flags().GetString("name")
-		env.cfg.Name = name
+		env.cfg.Name, _ = cmd.Flags().GetString("name")
+		cfgDirty = true
+	}
+	if cfgDirty {
 		if err := config.Save(env.dir, env.cfg); err != nil {
 			return err
 		}
@@ -158,7 +160,21 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 	}
 
 	metricsEnabled, _ := cmd.Flags().GetBool("metrics")
+	httpAddr, _ := cmd.Flags().GetString("http")
+	if httpAddr != "" {
+		metricsEnabled = true
+	}
 	port, _ := cmd.Flags().GetInt("port")
+
+	controlAddr, _ := cmd.Flags().GetString("control-addr")
+	var controlToken string
+	if controlAddr != "" {
+		t, err := ensureControlToken(env.dir)
+		if err != nil {
+			return fmt.Errorf("load control token: %w", err)
+		}
+		controlToken = t
+	}
 
 	var addrs []string
 	if cmd.Flags().Changed("ips") {
@@ -199,8 +215,12 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		BootstrapPublic:    env.cfg.Public,
 		NodeName:           env.cfg.Name,
 		MetricsEnabled:     metricsEnabled,
+		HTTPAddr:           httpAddr,
+		ControlAddr:        controlAddr,
+		ControlToken:       controlToken,
 		CPUBudgetPercent:   env.cfg.Resources.CPUPercent,
 		MemBudgetPercent:   env.cfg.Resources.MemPercent,
+		IdleInstanceTTL:    env.cfg.Placement.IdleInstanceTTL,
 	}, creds, inviteConsumer)
 	if err != nil {
 		return err

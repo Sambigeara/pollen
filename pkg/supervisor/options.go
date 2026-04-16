@@ -11,28 +11,31 @@ import (
 
 // Options holds runtime parameters for constructing a Supervisor.
 type Options struct {
-	PacketConn          net.PacketConn
-	ShutdownFunc        func()
-	SocketPath          string
-	PollenDir           string
-	NodeName            string
-	RuntimeState        *statev1.RuntimeState
-	SigningKey          ed25519.PrivateKey
-	AdvertisedIPs       []string
-	BootstrapPeers      []BootstrapTarget
-	InitialConnections  []ConnectionEntry
-	InitialServices     []ServiceEntry
-	GossipInterval      time.Duration
-	PeerTickInterval    time.Duration
-	MaxConnectionAge    time.Duration
-	GossipJitter        float64
-	ListenPort          int
-	BootstrapPublic     bool
-	MetricsEnabled      bool
-	CPUBudgetPercent    uint32
-	MemBudgetPercent    uint32
-	DisableGossipJitter bool
-	DisableNATPunch     bool
+	PacketConn         net.PacketConn
+	ShutdownFunc       func()
+	RuntimeState       *statev1.RuntimeState
+	SocketPath         string
+	PollenDir          string
+	NodeName           string
+	HTTPAddr           string
+	ControlAddr        string
+	ControlToken       string
+	SigningKey         ed25519.PrivateKey
+	AdvertisedIPs      []string
+	BootstrapPeers     []BootstrapTarget
+	InitialConnections []ConnectionEntry
+	InitialServices    []ServiceEntry
+	GossipInterval     time.Duration
+	PeerTickInterval   time.Duration
+	MaxConnectionAge   time.Duration
+	IdleInstanceTTL    time.Duration
+	GossipJitter       float64
+	ListenPort         int
+	MemBudgetPercent   uint32
+	CPUBudgetPercent   uint32
+	MetricsEnabled     bool
+	BootstrapPublic    bool
+	DisableNATPunch    bool
 }
 
 // BootstrapTarget is a resolved bootstrap peer for runtime use.

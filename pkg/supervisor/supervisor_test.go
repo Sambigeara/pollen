@@ -10,6 +10,7 @@ import (
 	"time"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	"github.com/sambigeara/pollen/internal/testauth"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/control"
 	"github.com/sambigeara/pollen/pkg/supervisor"
@@ -35,26 +36,7 @@ type testNode struct {
 	peerTickInterval time.Duration
 }
 
-type clusterAuth struct {
-	adminPriv ed25519.PrivateKey
-	rootPub   ed25519.PublicKey
-}
-
-func newClusterAuth(t *testing.T) *clusterAuth {
-	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	return &clusterAuth{adminPriv: priv, rootPub: pub}
-}
-
-func (c *clusterAuth) credsFor(t *testing.T, subject ed25519.PublicKey) *auth.NodeCredentials {
-	t.Helper()
-	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, subject, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
-	require.NoError(t, err)
-	return auth.NewNodeCredentials(c.rootPub, cert)
-}
-
-func newTestNode(t *testing.T, cluster *clusterAuth, ips []string) *testNode {
+func newTestNode(t *testing.T, cluster *testauth.ClusterAuth, ips []string) *testNode {
 	t.Helper()
 	dir := t.TempDir()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -67,7 +49,7 @@ func newTestNode(t *testing.T, cluster *clusterAuth, ips []string) *testNode {
 		port:    0,
 		dir:     dir,
 		privKey: priv,
-		creds:   cluster.credsFor(t, pub),
+		creds:   cluster.CredsFor(t, pub),
 	}
 	t.Cleanup(tn.stop)
 	return tn
@@ -82,15 +64,15 @@ func (tn *testNode) start(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	opts := supervisor.Options{
-		SigningKey:          tn.privKey,
-		PollenDir:           tn.dir,
-		ListenPort:          tn.port,
-		AdvertisedIPs:       tn.ips,
-		GossipInterval:      100 * time.Millisecond,
-		PeerTickInterval:    peerTick,
-		DisableGossipJitter: true,
-		BootstrapPeers:      tn.bootstrapPeers,
-		ShutdownFunc:        cancel,
+		SigningKey:       tn.privKey,
+		PollenDir:        tn.dir,
+		ListenPort:       tn.port,
+		AdvertisedIPs:    tn.ips,
+		GossipInterval:   100 * time.Millisecond,
+		PeerTickInterval: peerTick,
+		GossipJitter:     -1,
+		BootstrapPeers:   tn.bootstrapPeers,
+		ShutdownFunc:     cancel,
 	}
 
 	n, err := supervisor.New(opts, tn.creds, nil)
@@ -153,7 +135,7 @@ func newMinimalNode(t *testing.T, bootstrapPublic bool) *supervisor.Supervisor {
 
 func TestConnectPeerFlow(t *testing.T) {
 	nodeIPs := []string{"127.0.0.1"}
-	cluster := newClusterAuth(t)
+	cluster := testauth.NewClusterAuth(t)
 
 	a := newTestNode(t, cluster, nodeIPs)
 	a.start(t)
@@ -178,7 +160,7 @@ func TestConnectPeerFlow(t *testing.T) {
 
 func TestInitialVivaldiCoordPropagatesAfterConnect(t *testing.T) {
 	nodeIPs := []string{"127.0.0.1"}
-	cluster := newClusterAuth(t)
+	cluster := testauth.NewClusterAuth(t)
 
 	a := newTestNode(t, cluster, nodeIPs)
 	a.start(t)
@@ -200,7 +182,7 @@ func TestInitialVivaldiCoordPropagatesAfterConnect(t *testing.T) {
 
 func TestConnectPeerAfterPriorConnection(t *testing.T) {
 	nodeIPs := []string{"127.0.0.1"}
-	cluster := newClusterAuth(t)
+	cluster := testauth.NewClusterAuth(t)
 
 	a := newTestNode(t, cluster, nodeIPs)
 	a.start(t)

@@ -46,6 +46,9 @@ to_llm.sh
 pln-linux
 pln-local
 .pln-*
+/exerciser
+/exerciser-linux
+/exercisor
 
 # Local justfile (personal deploy recipes)
 .justfile.local

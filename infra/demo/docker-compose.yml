@@ -1,0 +1,45 @@
+services:
+  store:
+    build:
+      context: ../../examples/demo/store
+    container_name: pollen-demo-store
+    network_mode: host
+    command: ["/data/pollen-demo-store.db"]
+    volumes:
+      - store-data:/data
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pollen-demo-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=2h'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./exerciser_targets.json:/etc/prometheus/exerciser_targets.json:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "9091:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: pollen-demo-grafana
+    depends_on:
+      - prometheus
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/pollen.json
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: "2s"
+      GF_INSTALL_PLUGINS: "volkovlabs-echarts-panel"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/gazetteer:/usr/share/grafana/public/gazetteer:ro
+    ports:
+      - "3000:3000"
+
+volumes:
+  store-data:

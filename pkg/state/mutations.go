@@ -169,9 +169,11 @@ func (s *store) SetLocalObservedAddress(ip string, port uint32) []Event {
 	})
 }
 
-func (s *store) SetWorkloadSpec(name, hash string, replicas, memoryPages, timeoutMs uint32, spread float32) []Event {
+func (s *store) SetWorkloadSpec(spec WorkloadSpec) []Event {
+	hash := spec.Hash
+	owned := workloadSpecToProto(spec)
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		// Check if remotely owned
+		// Check if remotely owned.
 		for pk, r := range s.nodes {
 			if pk != s.localID {
 				if ev, ok := r.log[attrKey{kind: attrWorkloadSpec, name: hash}]; ok && !ev.Deleted && s.isValidOwnerLocked(pk) {
@@ -180,28 +182,36 @@ func (s *store) SetWorkloadSpec(name, hash string, replicas, memoryPages, timeou
 			}
 		}
 
-		ev, ok := rec.log[attrKey{kind: attrWorkloadSpec, name: hash}]
-
-		if replicas == 0 && memoryPages == 0 && timeoutMs == 0 && spread == 0 {
-			if !ok || ev.Deleted {
-				return nil, nil
-			}
-			change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: &statev1.WorkloadSpecChange{Hash: hash, Name: name}}}
-			return []*statev1.GossipEvent{change}, []Event{WorkloadChanged{Hash: hash}}
-		}
-
-		if ok && !ev.Deleted {
+		if ev, ok := rec.log[attrKey{kind: attrWorkloadSpec, name: hash}]; ok && !ev.Deleted {
 			ws := ev.GetWorkloadSpec()
-			if ws.Name == name && ws.MinReplicas == replicas && ws.MemoryPages == memoryPages && ws.TimeoutMs == timeoutMs && ws.Spread == spread {
+			if specEqual(ws, owned) {
 				return nil, nil
 			}
 		}
 
-		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_WorkloadSpec{
-			WorkloadSpec: &statev1.WorkloadSpecChange{Hash: hash, Name: name, MinReplicas: replicas, MemoryPages: memoryPages, TimeoutMs: timeoutMs, Spread: spread},
-		}}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: owned}}
 		return []*statev1.GossipEvent{change}, []Event{WorkloadChanged{Hash: hash}}
 	})
+}
+
+func (s *store) DeleteWorkloadSpec(hash string) []Event {
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		ev, ok := rec.log[attrKey{kind: attrWorkloadSpec, name: hash}]
+		if !ok || ev.Deleted {
+			return nil, nil
+		}
+		change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: &statev1.WorkloadSpecChange{Hash: hash}}}
+		return []*statev1.GossipEvent{change}, []Event{WorkloadChanged{Hash: hash}}
+	})
+}
+
+func specEqual(a, b *statev1.WorkloadSpecChange) bool {
+	return a.GetName() == b.GetName() &&
+		a.GetMinReplicas() == b.GetMinReplicas() &&
+		a.GetMemoryBytes() == b.GetMemoryBytes() &&
+		a.GetTimeoutMs() == b.GetTimeoutMs() &&
+		a.GetSpread() == b.GetSpread() &&
+		a.GetLatencySloMs() == b.GetLatencySloMs()
 }
 
 func (s *store) ClaimWorkload(hash string) []Event {
@@ -226,41 +236,163 @@ func (s *store) setWorkloadClaimLocked(hash string, claimed bool) []Event {
 	})
 }
 
-func (s *store) SetLocalResources(cpu, mem float64, memTotalBytes uint64, numCPU, cpuBudgetPct, memBudgetPct uint32) []Event {
-	c, m := uint32(cpu), uint32(mem)
+func (s *store) SetLocalResources(r NodeResources) []Event {
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
 		if ev, ok := rec.log[attrKey{kind: attrResourceTelemetry}]; ok && !ev.Deleted {
 			rt := ev.GetResourceTelemetry()
 
-			cpuDelta := rt.CpuPercent - c
-			if c > rt.CpuPercent {
-				cpuDelta = c - rt.CpuPercent
+			cpuDelta := rt.CpuPercent - r.CPUPercent
+			if r.CPUPercent > rt.CpuPercent {
+				cpuDelta = r.CPUPercent - rt.CpuPercent
 			}
-			memDelta := rt.MemPercent - m
-			if m > rt.MemPercent {
-				memDelta = m - rt.MemPercent
+			memDelta := rt.MemPercent - r.MemPercent
+			if r.MemPercent > rt.MemPercent {
+				memDelta = r.MemPercent - rt.MemPercent
 			}
 
 			if cpuDelta < 2 && memDelta < 2 &&
-				rt.MemTotalBytes == memTotalBytes && rt.NumCpu == numCPU &&
-				rt.CpuBudgetPercent == cpuBudgetPct && rt.MemBudgetPercent == memBudgetPct {
+				rt.MemTotalBytes == r.MemTotalBytes && rt.NumCpu == r.NumCPU &&
+				rt.CpuBudgetPercent == r.CPUBudgetPercent && rt.MemBudgetPercent == r.MemBudgetPercent {
 				return nil, nil
 			}
 		}
 
 		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_ResourceTelemetry{ResourceTelemetry: &statev1.ResourceTelemetryChange{
-			CpuPercent:       c,
-			MemPercent:       m,
-			MemTotalBytes:    memTotalBytes,
-			NumCpu:           numCPU,
-			CpuBudgetPercent: cpuBudgetPct,
-			MemBudgetPercent: memBudgetPct,
+			CpuPercent:       r.CPUPercent,
+			MemPercent:       r.MemPercent,
+			MemTotalBytes:    r.MemTotalBytes,
+			NumCpu:           r.NumCPU,
+			CpuBudgetPercent: r.CPUBudgetPercent,
+			MemBudgetPercent: r.MemBudgetPercent,
 		}}}
 		return []*statev1.GossipEvent{change}, []Event{TopologyChanged{Peer: s.localID}}
 	})
 }
 
-func seedLoadChanged(old, cur map[string]float32) bool {
+// floatMaterialChange returns true when cur differs from prev by more
+// than the 20% relative dead-band used for all per-seed float signals.
+// Any transition across zero (prev == 0 while cur != 0, or vice versa)
+// is always material.
+func floatMaterialChange(prev, cur float32) bool {
+	if prev == cur {
+		return false
+	}
+	if prev == 0 || cur == 0 {
+		return true
+	}
+	delta := cur - prev
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta/prev > 0.2 //nolint:mnd
+}
+
+// gateWaitMaterialChange uses a 5ms absolute dead-band (gate wait moves
+// in 1ms steps; without the band we'd gossip every jitter).
+func gateWaitMaterialChange(prev, cur uint32) bool {
+	delta := cur - prev
+	if prev > cur {
+		delta = prev - cur
+	}
+	return delta >= 5 //nolint:mnd
+}
+
+func seedMetricsChanged(old map[string]*statev1.SeedMetrics, cur map[string]SeedMetrics) bool {
+	if len(old) != len(cur) {
+		return true
+	}
+	for hash, m := range cur {
+		prev, ok := old[hash]
+		if !ok {
+			return true
+		}
+		if floatMaterialChange(prev.GetServedRate(), m.ServedRate) ||
+			floatMaterialChange(prev.GetComputeCostMs(), m.ComputeCostMs) ||
+			floatMaterialChange(prev.GetSloSatisfiedRate(), m.SLOSatisfiedRate) ||
+			floatMaterialChange(prev.GetSloBurnedRate(), m.SLOBurnedRate) ||
+			floatMaterialChange(prev.GetParkedMs(), m.ParkedMs) ||
+			gateWaitMaterialChange(prev.GetGateWaitMs(), m.GateWaitMs) {
+			return true
+		}
+	}
+	return false
+}
+
+// SetSeedMetrics publishes the per-seed per-node telemetry bundle.
+// Hashes with an all-zero SeedMetrics are omitted — seeds with no
+// observations don't pollute gossip. When every field except GateWaitMs
+// is still nonzero, a zero-wait transition is retained as a material
+// change so dashboards reflect the gate clearing rather than pinning
+// at the last scrape with data.
+func (s *store) SetSeedMetrics(metrics map[string]SeedMetrics) []Event {
+	pruned := make(map[string]SeedMetrics, len(metrics))
+	for hash, m := range metrics {
+		if m.IsZero() {
+			continue
+		}
+		pruned[hash] = m
+	}
+
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		if ev, ok := rec.log[attrKey{kind: attrSeedMetrics}]; ok {
+			if ev.Deleted && len(pruned) == 0 {
+				return nil, nil
+			}
+			if !ev.Deleted && !seedMetricsChanged(ev.GetSeedMetrics().Seeds, pruned) {
+				return nil, nil
+			}
+		}
+
+		change := &statev1.GossipEvent{
+			Deleted: len(pruned) == 0,
+			Change:  &statev1.GossipEvent_SeedMetrics{SeedMetrics: seedMetricsToProto(pruned)},
+		}
+		return []*statev1.GossipEvent{change}, nil
+	})
+}
+
+func (s *store) SetSeedDialRates(rates map[string]map[string]float32) []Event {
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		if ev, ok := rec.log[attrKey{kind: attrSeedDialRates}]; ok {
+			if ev.Deleted && len(rates) == 0 {
+				return nil, nil
+			}
+			if !ev.Deleted && !seedDialRatesChanged(ev.GetSeedDialRates().Seeds, rates) {
+				return nil, nil
+			}
+		}
+
+		seeds := make(map[string]*statev1.DialRates, len(rates))
+		for hash, targets := range rates {
+			seeds[hash] = &statev1.DialRates{Rates: targets}
+		}
+		change := &statev1.GossipEvent{
+			Deleted: len(rates) == 0,
+			Change:  &statev1.GossipEvent_SeedDialRates{SeedDialRates: &statev1.SeedDialRatesChange{Seeds: seeds}},
+		}
+		return []*statev1.GossipEvent{change}, nil
+	})
+}
+
+func seedDialRatesChanged(old map[string]*statev1.DialRates, cur map[string]map[string]float32) bool {
+	if len(old) != len(cur) {
+		return true
+	}
+	for hash, targets := range cur {
+		prev, ok := old[hash]
+		if !ok {
+			return true
+		}
+		if dialTargetsChanged(prev.GetRates(), targets) {
+			return true
+		}
+	}
+	return false
+}
+
+// dialTargetsChanged is the 20% dead-band check applied per (caller,
+// target) pair inside a dial-rates map.
+func dialTargetsChanged(old, cur map[string]float32) bool {
 	if len(old) != len(cur) {
 		return true
 	}
@@ -269,53 +401,11 @@ func seedLoadChanged(old, cur map[string]float32) bool {
 		if !ok {
 			return true
 		}
-		delta := v - prev
-		if delta < 0 {
-			delta = -delta
-		}
-		if prev == 0 || delta/prev > 0.2 {
+		if floatMaterialChange(prev, v) {
 			return true
 		}
 	}
 	return false
-}
-
-func (s *store) SetSeedLoad(rates map[string]float32) []Event {
-	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		if ev, ok := rec.log[attrKey{kind: attrSeedLoad}]; ok {
-			if ev.Deleted && len(rates) == 0 {
-				return nil, nil
-			}
-			if !ev.Deleted && !seedLoadChanged(ev.GetSeedLoad().Rates, rates) {
-				return nil, nil
-			}
-		}
-
-		change := &statev1.GossipEvent{
-			Deleted: len(rates) == 0,
-			Change:  &statev1.GossipEvent_SeedLoad{SeedLoad: &statev1.SeedLoadChange{Rates: rates}},
-		}
-		return []*statev1.GossipEvent{change}, nil
-	})
-}
-
-func (s *store) SetSeedDemand(rates map[string]float32) []Event {
-	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		if ev, ok := rec.log[attrKey{kind: attrSeedDemand}]; ok {
-			if ev.Deleted && len(rates) == 0 {
-				return nil, nil
-			}
-			if !ev.Deleted && !seedLoadChanged(ev.GetSeedDemand().Rates, rates) {
-				return nil, nil
-			}
-		}
-
-		change := &statev1.GossipEvent{
-			Deleted: len(rates) == 0,
-			Change:  &statev1.GossipEvent_SeedDemand{SeedDemand: &statev1.SeedDemandChange{Rates: rates}},
-		}
-		return []*statev1.GossipEvent{change}, nil
-	})
 }
 
 func (s *store) SetService(port uint32, name string, protocol statev1.ServiceProtocol) []Event {
@@ -349,12 +439,12 @@ func (s *store) SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event {
 		if ev, ok := rec.log[attrKey{kind: attrTrafficHeatmap}]; ok && !ev.Deleted { //nolint:nestif
 			for _, r := range ev.GetTrafficHeatmap().Rates {
 				if r.PeerId == peer.String() {
-					if r.BytesIn == in && r.BytesOut == out {
+					if r.RateIn == in && r.RateOut == out {
 						return nil, nil
 					}
 					updated = true
 					if in > 0 || out > 0 {
-						rates = append(rates, &statev1.TrafficRate{PeerId: r.PeerId, BytesIn: in, BytesOut: out})
+						rates = append(rates, &statev1.TrafficRate{PeerId: r.PeerId, RateIn: in, RateOut: out})
 					}
 				} else {
 					rates = append(rates, r)
@@ -363,7 +453,7 @@ func (s *store) SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event {
 		}
 
 		if !updated && (in > 0 || out > 0) {
-			rates = append(rates, &statev1.TrafficRate{PeerId: peer.String(), BytesIn: in, BytesOut: out})
+			rates = append(rates, &statev1.TrafficRate{PeerId: peer.String(), RateIn: in, RateOut: out})
 		}
 
 		change := &statev1.GossipEvent{

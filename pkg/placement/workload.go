@@ -33,18 +33,11 @@ type Status int
 
 const (
 	StatusRunning Status = iota
-	StatusStopped
-	StatusErrored
 )
 
 func (s Status) String() string {
-	switch s {
-	case StatusRunning:
+	if s == StatusRunning {
 		return "running"
-	case StatusStopped:
-		return "stopped"
-	case StatusErrored:
-		return "errored"
 	}
 	return "unknown"
 }
@@ -128,6 +121,7 @@ func (m *manager) Call(ctx context.Context, hash, function string, input []byte)
 	if !m.IsRunning(hash) {
 		return nil, ErrNotRunning
 	}
+	ctx = wasm.WithExecutingSeed(ctx, hash)
 	out, err := m.runtime.Call(ctx, hash, function, input)
 	if err != nil && errors.Is(err, wasm.ErrModuleMissing) {
 		return nil, ErrNotRunning

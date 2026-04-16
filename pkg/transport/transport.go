@@ -337,7 +337,7 @@ func New(self types.PeerKey, creds *auth.NodeCredentials, listenAddr string, opt
 		certPushCh:       make(chan *meshv1.CertPushResponse, 1),
 		peerEventCh:      make(chan PeerEvent, queueBufSize),
 		supervisorCh:     make(chan PeerEvent, queueBufSize),
-		acceptCh:         make(chan acceptedStream),
+		acceptCh:         make(chan acceptedStream, queueBufSize),
 		metrics:          o.metrics,
 	}
 	m.peers = newPeerStore(m)
@@ -1011,10 +1011,6 @@ func (m *QUICTransport) RecvTunnelDatagram(ctx context.Context) (Packet, error) 
 	case <-ctx.Done():
 		return Packet{}, ctx.Err()
 	}
-}
-
-func (m *QUICTransport) SetRouter(r Router) {
-	m.router = r
 }
 
 func (m *QUICTransport) SetTrafficTracker(t TrafficRecorder) {

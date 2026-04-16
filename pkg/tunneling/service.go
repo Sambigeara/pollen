@@ -42,6 +42,7 @@ type TunnelingAPI interface {
 	HandleTunnelStream(stream transport.Stream, peer types.PeerKey)
 	HandleRoutedStream(stream transport.Stream, peer types.PeerKey)
 	HandleTunnelDatagram(data []byte, peer types.PeerKey)
+	RequestService(ctx context.Context, peer types.PeerKey, port uint32, body []byte) ([]byte, error)
 	HandlePeerDenied(peerID types.PeerKey)
 	DesiredPeers() []types.PeerKey
 	ListDesiredConnections() []ConnectionInfo
@@ -524,7 +525,7 @@ func (s *Service) reconcileUDP(key connKey, info ConnectionInfo) {
 
 func (s *Service) bridge(c1, c2 io.ReadWriteCloser, peer types.PeerKey) {
 	if s.tracker != nil {
-		c1 = &countedStream{inner: c1, tr: s.tracker, peer: peer}
+		c1 = transport.WrapTrafficStream(c1, s.tracker, peer)
 	}
 	done := make(chan struct{}, 2) //nolint:mnd
 	copyDir := func(dst io.Writer, src io.Reader) {
@@ -555,9 +556,6 @@ func (s *Service) ticker(ctx context.Context, d time.Duration, fn func()) {
 }
 
 func (s *Service) sampleTraffic() {
-	if s.tracker == nil {
-		return
-	}
 	if snap, ok := s.tracker.rotate(); ok {
 		for pk, pt := range snap {
 			s.store.SetLocalTraffic(pk, pt.BytesIn, pt.BytesOut)
@@ -609,13 +607,18 @@ func matchesService(snap state.Snapshot, peer types.PeerKey, port uint32, protoc
 type peerTraffic struct{ BytesIn, BytesOut uint64 }
 
 type tracker struct {
-	current   map[types.PeerKey]*peerTraffic
-	published map[types.PeerKey]peerTraffic
-	mu        sync.Mutex
+	current      map[types.PeerKey]*peerTraffic // pointers: mutated in place on every Record() call
+	lastSnap     map[types.PeerKey]peerTraffic
+	lastRotation time.Time
+	published    map[types.PeerKey]peerTraffic
+	mu           sync.Mutex
 }
 
 func newTracker() *tracker {
-	return &tracker{current: make(map[types.PeerKey]*peerTraffic)}
+	return &tracker{
+		current:      make(map[types.PeerKey]*peerTraffic),
+		lastRotation: time.Now(),
+	}
 }
 
 func (t *tracker) Record(pk types.PeerKey, in, out uint64) {
@@ -633,21 +636,43 @@ func (t *tracker) Record(pk types.PeerKey, in, out uint64) {
 func (t *tracker) rotate() (map[types.PeerKey]peerTraffic, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	snap := make(map[types.PeerKey]peerTraffic, len(t.current))
+
+	now := time.Now()
+	elapsed := now.Sub(t.lastRotation).Seconds()
+	if elapsed <= 0 {
+		return nil, false
+	}
+
+	rates := make(map[types.PeerKey]peerTraffic, len(t.current))
 	changed := len(t.current) != len(t.published)
 	for k, v := range t.current {
-		snap[k] = *v
+		prev := t.lastSnap[k]
+		r := peerTraffic{
+			BytesIn:  uint64(float64(v.BytesIn-prev.BytesIn) / elapsed),
+			BytesOut: uint64(float64(v.BytesOut-prev.BytesOut) / elapsed),
+		}
+		rates[k] = r
 		if !changed {
 			old := t.published[k]
-			if absDiff(old.BytesIn, v.BytesIn) > (old.BytesIn/50) || absDiff(old.BytesOut, v.BytesOut) > (old.BytesOut/50) { //nolint:mnd
+			zeroTransition := (old.BytesIn != 0) != (r.BytesIn != 0) || (old.BytesOut != 0) != (r.BytesOut != 0)
+			if zeroTransition || absDiff(old.BytesIn, r.BytesIn) > 1024 || absDiff(old.BytesOut, r.BytesOut) > 1024 { //nolint:mnd
 				changed = true
 			}
 		}
 	}
-	if changed {
-		t.published = snap
+
+	// snapshot current cumulative values for next delta
+	snap := make(map[types.PeerKey]peerTraffic, len(t.current))
+	for k, v := range t.current {
+		snap[k] = *v
 	}
-	return snap, changed
+	t.lastSnap = snap
+	t.lastRotation = now
+
+	if changed {
+		t.published = rates
+	}
+	return rates, changed
 }
 
 func absDiff(a, b uint64) uint64 {
@@ -656,28 +681,3 @@ func absDiff(a, b uint64) uint64 {
 	}
 	return b - a
 }
-
-type countedStream struct {
-	io.ReadWriteCloser
-	inner io.ReadWriteCloser
-	tr    *tracker
-	peer  types.PeerKey
-}
-
-func (s *countedStream) Read(p []byte) (int, error) {
-	n, err := s.inner.Read(p)
-	if n > 0 {
-		s.tr.Record(s.peer, uint64(n), 0)
-	}
-	return n, err
-}
-
-func (s *countedStream) Write(p []byte) (int, error) {
-	n, err := s.inner.Write(p)
-	if n > 0 {
-		s.tr.Record(s.peer, 0, uint64(n))
-	}
-	return n, err
-}
-
-func (s *countedStream) Close() error { return s.inner.Close() }

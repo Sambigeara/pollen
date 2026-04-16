@@ -1,12 +1,15 @@
 package control
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -28,9 +31,15 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 )
+
+// ControlTokenMetadataKey is the gRPC metadata key expected to carry the
+// shared secret for non-unix control RPCs.
+const ControlTokenMetadataKey = "x-pln-token"
 
 type Metrics struct {
 	CertExpirySeconds  float64
@@ -38,8 +47,6 @@ type Metrics struct {
 	CertRenewalsFailed uint64
 	PunchAttempts      uint64
 	PunchFailures      uint64
-	GossipApplied      uint64
-	GossipStale        uint64
 	SmoothedVivaldiErr float64
 	VivaldiSamples     uint64
 	EagerSyncs         uint64
@@ -52,11 +59,11 @@ type MembershipControl interface {
 }
 
 type PlacementControl interface {
-	Seed(name, hash string, binary []byte, replicas, memoryPages, timeoutMs uint32, spread float32) error
+	Seed(binary []byte, spec state.WorkloadSpec) error
 	Unseed(hash string) error
 	Call(ctx context.Context, hash, fn string, input []byte) ([]byte, error)
 	Status() []placement.WorkloadSummary
-	PlacementInfo() map[string][2]float64
+	PlacementInfo() map[string]placement.PlacementInfo
 }
 
 type TunnelingControl interface {
@@ -125,20 +132,62 @@ func NewService(membership MembershipControl, placement PlacementControl, tunnel
 }
 
 type Server struct {
-	svc *Service
-	gs  *grpc.Server
-	log *zap.SugaredLogger
+	svc   *Service
+	gs    *grpc.Server
+	log   *zap.SugaredLogger
+	token string
 }
 
 func New(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, state StateReader, opts ...Option) *Server {
 	svc := NewService(membership, placement, tunneling, state, opts...)
-	gs := grpc.NewServer()
-	controlv1.RegisterControlServiceServer(gs, svc)
-	return &Server{
+	s := &Server{
 		svc: svc,
-		gs:  gs,
 		log: zap.S().Named("grpc"),
 	}
+	s.gs = grpc.NewServer(
+		grpc.UnaryInterceptor(s.authInterceptor),
+		grpc.StreamInterceptor(s.streamAuthInterceptor),
+	)
+	controlv1.RegisterControlServiceServer(s.gs, svc)
+	return s
+}
+
+// SetToken installs the shared secret required on non-unix control RPCs.
+// Unix socket connections bypass this check. Must be called before Start
+// or StartTCP so every request goes through a configured interceptor.
+func (s *Server) SetToken(token string) { s.token = token }
+
+// checkToken is a no-op when the token is empty; unix callers always bypass.
+func (s *Server) checkToken(ctx context.Context) error {
+	if s.token == "" {
+		return nil
+	}
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil && p.Addr.Network() == "unix" {
+		return nil
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "missing metadata")
+	}
+	vals := md.Get(ControlTokenMetadataKey)
+	if len(vals) == 0 || subtle.ConstantTimeCompare([]byte(vals[0]), []byte(s.token)) != 1 {
+		return status.Error(codes.Unauthenticated, "invalid control token")
+	}
+	return nil
+}
+
+func (s *Server) authInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	if err := s.checkToken(ctx); err != nil {
+		return nil, err
+	}
+	return handler(ctx, req)
+}
+
+func (s *Server) streamAuthInterceptor(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	if err := s.checkToken(ss.Context()); err != nil {
+		return err
+	}
+	return handler(srv, ss)
 }
 
 func (s *Server) Start(socketPath string) error {
@@ -163,8 +212,25 @@ func (s *Server) Start(socketPath string) error {
 		s.log.Warnw("socket group permissions", "err", err)
 	}
 
-	return s.gs.Serve(l)
+	return s.Serve(l)
 }
+
+// StartTCP serves the control API on the given TCP address. Blocks until
+// the listener closes. When a token is configured via SetToken, non-unix
+// callers must present it via the x-pln-token metadata header.
+func (s *Server) StartTCP(addr string) error {
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("control tcp listen: %w", err)
+	}
+	s.log.Infow("control tcp listener", "addr", l.Addr().String(), "auth", s.token != "")
+	return s.Serve(l)
+}
+
+// Serve runs the gRPC handler on an already-established listener. All public
+// Start/StartTCP paths funnel through here; tests use it to drive the server
+// on an ephemeral listener.
+func (s *Server) Serve(l net.Listener) error { return s.gs.Serve(l) }
 
 func (s *Server) Stop()             { s.gs.GracefulStop() }
 func (s *Server) Service() *Service { return s.svc }
@@ -299,8 +365,8 @@ func (s *Service) buildSelfSummary(localID types.PeerKey, localNode state.NodeVi
 		MemPercent:         localNode.MemPercent,
 		NumCpu:             localNode.NumCPU,
 		TunnelCount:        uint32(len(connections)),
-		TrafficBytesIn:     in,
-		TrafficBytesOut:    out,
+		TrafficRateIn:      in,
+		TrafficRateOut:     out,
 	}
 }
 
@@ -348,8 +414,8 @@ func (s *Service) buildNodeSummaries(snap state.Snapshot, nodes map[types.PeerKe
 			CpuPercent:         node.CPUPercent,
 			MemPercent:         node.MemPercent,
 			NumCpu:             node.NumCPU,
-			TrafficBytesIn:     in,
-			TrafficBytesOut:    outBytes,
+			TrafficRateIn:      in,
+			TrafficRateOut:     outBytes,
 		}
 		if isDirect && s.transport != nil {
 			if rtt, ok := s.transport.PeerRTT(key); ok {
@@ -417,8 +483,8 @@ func (s *Service) buildWorkloadSummaries(snap state.Snapshot) []*controlv1.Workl
 			Pressure:        float32(w.Pressure),
 		}
 		if sv, ok := snap.Specs[w.Hash]; ok {
-			ws.MinReplicas = sv.Spec.GetMinReplicas()
-			ws.Spread = sv.Spec.GetSpread()
+			ws.MinReplicas = sv.Spec.MinReplicas
+			ws.Spread = sv.Spec.Spread
 		}
 		out = append(out, ws)
 	}
@@ -429,14 +495,14 @@ func (s *Service) buildWorkloadSummaries(snap state.Snapshot) []*controlv1.Workl
 		}
 		ws := &controlv1.WorkloadSummary{
 			Hash:           hash,
-			Name:           sv.Spec.GetName(),
-			MinReplicas:    sv.Spec.GetMinReplicas(),
-			Spread:         sv.Spec.GetSpread(),
+			Name:           sv.Spec.Name,
+			MinReplicas:    sv.Spec.MinReplicas,
+			Spread:         sv.Spec.Spread,
 			ActiveReplicas: uint32(len(snap.Claims[hash])),
 		}
 		if info, ok := pinfo[hash]; ok {
-			ws.EffectiveTarget = uint32(info[0])
-			ws.Pressure = float32(info[1])
+			ws.EffectiveTarget = info.EffectiveTarget
+			ws.Pressure = float32(info.SLOBurnRatio)
 		}
 		out = append(out, ws)
 	}
@@ -465,11 +531,17 @@ func sortStatusResponse(out *controlv1.GetStatusResponse) {
 		}
 		return types.PeerKeyFromBytes(a.Peer.PeerPub).Compare(types.PeerKeyFromBytes(b.Peer.PeerPub))
 	})
+	slices.SortFunc(out.Workloads, func(a, b *controlv1.WorkloadSummary) int {
+		if a.Name != b.Name {
+			return cmp.Compare(a.Name, b.Name)
+		}
+		return cmp.Compare(a.Hash, b.Hash)
+	})
 }
 
 func (s *Service) RegisterService(_ context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
 	name := serviceNameOrDefault(req.GetName(), req.Port)
-	if err := s.tunneling.ExposeService(req.Port, name, normaliseProtocol(req.GetProtocol())); err != nil {
+	if err := s.tunneling.ExposeService(req.Port, name, state.NormaliseProtocol(req.GetProtocol())); err != nil {
 		return nil, s.fail(err, "register service failed")
 	}
 	return &controlv1.RegisterServiceResponse{}, nil
@@ -504,7 +576,7 @@ func (s *Service) ConnectPeer(ctx context.Context, req *controlv1.ConnectPeerReq
 
 func (s *Service) ConnectService(ctx context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
 	peerKey := types.PeerKeyFromBytes(req.Node.PeerPub)
-	boundPort, err := s.tunneling.Connect(ctx, peerKey, req.GetRemotePort(), req.GetLocalPort(), normaliseProtocol(req.GetProtocol()))
+	boundPort, err := s.tunneling.Connect(ctx, peerKey, req.GetRemotePort(), req.GetLocalPort(), state.NormaliseProtocol(req.GetProtocol()))
 	if err != nil {
 		return nil, s.fail(err, "connect service failed")
 	}
@@ -580,8 +652,6 @@ func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) 
 		PeersDiscovered:    counts.Backoff,
 		PeersConnecting:    counts.Connecting,
 		PeersConnected:     counts.Connected,
-		EventsApplied:      m.GossipApplied,
-		EventsStale:        m.GossipStale,
 		VivaldiError:       m.SmoothedVivaldiErr,
 		CertExpirySeconds:  certExpiry,
 		CertRenewals:       m.CertRenewals,
@@ -595,28 +665,76 @@ func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) 
 	}, nil
 }
 
-func (s *Service) SeedWorkload(_ context.Context, req *controlv1.SeedWorkloadRequest) (*controlv1.SeedWorkloadResponse, error) {
-	wasmBytes := req.GetWasmBytes()
+func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedWorkloadRequest, controlv1.SeedWorkloadResponse]) error {
+	if s.creds == nil || s.creds.DelegationKey() == nil {
+		return status.Error(codes.PermissionDenied, "only admin nodes can seed workloads")
+	}
+
+	first, err := stream.Recv()
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return status.Error(codes.InvalidArgument, "missing seed header")
+		}
+		return status.Error(codes.InvalidArgument, "receive seed header")
+	}
+	header := first.GetHeader()
+	if header == nil {
+		return status.Error(codes.InvalidArgument, "first message must carry header")
+	}
+
+	var buf bytes.Buffer
+	for {
+		msg, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return status.Error(codes.InvalidArgument, "receive seed chunk")
+		}
+		chunk := msg.GetChunk()
+		if chunk == nil {
+			return status.Error(codes.InvalidArgument, "expected chunk after header")
+		}
+		buf.Write(chunk)
+	}
+
+	wasmBytes := buf.Bytes()
+	if len(wasmBytes) == 0 {
+		return status.Error(codes.InvalidArgument, "empty workload binary")
+	}
+
 	h := sha256.Sum256(wasmBytes)
 	hash := hex.EncodeToString(h[:])
 
-	name := req.GetName()
+	name := header.GetName()
 	if name == "" {
 		name = hash
 	}
 
-	if err := s.placement.Seed(name, hash, wasmBytes, req.GetMinReplicas(), req.GetMemoryPages(), req.GetTimeoutMs(), req.GetSpread()); err != nil && !errors.Is(err, placement.ErrAlreadyRunning) {
+	spec := state.WorkloadSpec{
+		Hash:        hash,
+		Name:        name,
+		MinReplicas: header.GetMinReplicas(),
+		MemoryBytes: header.GetMemoryBytes(),
+		Timeout:     time.Duration(header.GetTimeoutMs()) * time.Millisecond,
+		Spread:      header.GetSpread(),
+		LatencySLO:  time.Duration(header.GetLatencySloMs()) * time.Millisecond,
+	}
+	if err := s.placement.Seed(wasmBytes, spec); err != nil {
 		if errors.Is(err, placement.ErrCompile) {
-			s.log.Warnw("seed workload failed", "err", err)
-			return nil, status.Error(codes.InvalidArgument, "failed to compile workload")
+			s.log.Warnw("seed workload failed", "name", name, "hash", types.ShortHash(hash), "err", err)
+			return status.Error(codes.InvalidArgument, "failed to compile workload")
 		}
-		return nil, s.fail(err, "failed to seed workload")
+		return s.fail(err, "failed to seed workload")
 	}
 
-	return &controlv1.SeedWorkloadResponse{Hash: hash, Name: name}, nil
+	return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name})
 }
 
 func (s *Service) UnseedWorkload(_ context.Context, req *controlv1.UnseedWorkloadRequest) (*controlv1.UnseedWorkloadResponse, error) {
+	if s.creds == nil || s.creds.DelegationKey() == nil {
+		return nil, status.Error(codes.PermissionDenied, "only admin nodes can unseed workloads")
+	}
 	if err := s.placement.Unseed(req.GetHash()); err != nil {
 		return nil, s.fail(err, "unseed workload failed", "hash", req.GetHash())
 	}
@@ -624,17 +742,37 @@ func (s *Service) UnseedWorkload(_ context.Context, req *controlv1.UnseedWorkloa
 }
 
 func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadRequest) (*controlv1.CallWorkloadResponse, error) {
+	hash, function := req.GetHash(), req.GetFunction()
+	if uri := req.GetUri(); uri != "" {
+		parsed, err := wasm.ParseURI(uri)
+		if err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		if parsed.Scheme != wasm.SchemeSeed {
+			return nil, status.Errorf(codes.InvalidArgument, "unsupported uri scheme %q; CallWorkload only supports 'seed'", parsed.Scheme)
+		}
+		hash, function = parsed.Name, parsed.Function
+	}
+	if hash == "" || function == "" {
+		return nil, status.Error(codes.InvalidArgument, "either (hash, function) or uri must be set")
+	}
+
 	ctx = s.localCallerContext(ctx)
-	output, err := s.placement.Call(ctx, req.GetHash(), req.GetFunction(), req.GetInput())
+	output, err := s.placement.Call(ctx, hash, function, req.GetInput())
 	if err != nil {
-		s.log.Warnw("call workload failed", "hash", req.GetHash(), "function", req.GetFunction(), "err", err)
-		if errors.Is(err, placement.ErrNotRunning) {
+		s.log.Warnw("call workload failed", "hash", hash, "function", function, "err", err)
+		switch {
+		case errors.Is(err, wasm.ErrTargetNotFound):
+			return nil, status.Error(codes.NotFound, "no such workload")
+		case errors.Is(err, placement.ErrNotRunning):
 			return nil, status.Error(codes.NotFound, "workload not running on any reachable node")
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
+		case errors.Is(err, placement.ErrCycle):
+			return nil, status.Error(codes.FailedPrecondition, "call cycle detected")
+		case errors.Is(err, context.DeadlineExceeded):
 			return nil, status.Error(codes.DeadlineExceeded, "workload invocation timed out")
+		default:
+			return nil, status.Error(codes.Internal, "workload invocation failed")
 		}
-		return nil, status.Error(codes.Internal, "workload invocation failed")
 	}
 	return &controlv1.CallWorkloadResponse{Output: output}, nil
 }
@@ -664,8 +802,8 @@ func (s *Service) fail(err error, msg string, kv ...any) error {
 func sumTraffic(rates map[types.PeerKey]state.TrafficSnapshot) (uint64, uint64) {
 	var in, out uint64
 	for _, ts := range rates {
-		in += ts.BytesIn
-		out += ts.BytesOut
+		in += ts.RateIn
+		out += ts.RateOut
 	}
 	return in, out
 }
@@ -720,14 +858,6 @@ func resolveServiceName(snap state.Snapshot, peerKey types.PeerKey, port uint32,
 	return ""
 }
 
-// TODO(saml): remove once all persisted state and in-flight gossip carry an explicit protocol.
-func normaliseProtocol(p statev1.ServiceProtocol) statev1.ServiceProtocol {
-	if p == statev1.ServiceProtocol_SERVICE_PROTOCOL_UNSPECIFIED {
-		return statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP
-	}
-	return p
-}
-
 const (
 	vivaldiDegradedThreshold = 0.9
 	offlineRank              = 3
@@ -744,13 +874,8 @@ func nodeStatusRank(s controlv1.NodeStatus) int {
 }
 
 func workloadStatusProto(s placement.Status) controlv1.WorkloadStatus {
-	switch s {
-	case placement.StatusRunning:
+	if s == placement.StatusRunning {
 		return controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING
-	case placement.StatusStopped:
-		return controlv1.WorkloadStatus_WORKLOAD_STATUS_STOPPED
-	case placement.StatusErrored:
-		return controlv1.WorkloadStatus_WORKLOAD_STATUS_ERRORED
 	}
 	return controlv1.WorkloadStatus_WORKLOAD_STATUS_UNSPECIFIED
 }

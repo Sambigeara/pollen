@@ -92,7 +92,7 @@ func TestHandleDatagramEventsForwardsAndRebroadcasts(t *testing.T) {
 	net.setConnectedPeers(peerKey(3))
 	st := newFakeClusterState(localID)
 	st.applyDeltaFn = func(_ types.PeerKey, _ []byte) ([]state.Event, []byte, error) {
-		return []state.Event{state.PeerJoined{Key: from}, state.GossipApplied{}}, nil, nil
+		return []state.Event{state.PeerJoined{Key: from}}, nil, nil
 	}
 
 	svc := &Service{

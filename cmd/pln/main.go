@@ -25,14 +25,13 @@ import (
 )
 
 const (
-	plnDir               = ".pln"
-	socketName           = "pln.sock"
-	controlClientTimeout = 10 * time.Second
-	callWorkloadTimeout  = 60 * time.Second
-	minPort              = 1
-	maxPort              = 65535
-	osLinux              = "linux"
-	osDarwin             = "darwin"
+	plnDir              = ".pln"
+	socketName          = "pln.sock"
+	callWorkloadTimeout = 60 * time.Second
+	minPort             = 1
+	maxPort             = 65535
+	osLinux             = "linux"
+	osDarwin            = "darwin"
 )
 
 var (
@@ -70,9 +69,12 @@ func withEnv(needsRoot bool, fn func(*cobra.Command, []string, *cliEnv) error) f
 		env := &cliEnv{
 			dir: dir,
 			cfg: cfg,
+			// No http.Client.Timeout: per-command deadlines own the budget via
+			// context.WithTimeout on cmd.Context(). A global wall-clock would
+			// otherwise mask real errors and truncate long-lived calls before
+			// the server's own timeout fires.
 			client: controlv1connect.NewControlServiceClient(
 				&http.Client{
-					Timeout: controlClientTimeout,
 					Transport: &http2.Transport{
 						AllowHTTP: true,
 						DialTLS: func(_, _ string, _ *tls.Config) (net.Conn, error) {

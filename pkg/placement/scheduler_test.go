@@ -24,6 +24,22 @@ func hasAction(actions []action, hash string, kind actionKind) bool {
 	return false
 }
 
+// healthyCluster returns a clusterState where every peer has identical
+// capacity headroom (no Vivaldi coords, no observations). Useful for tests
+// that exercise placement decisions without latency differentiation.
+func healthyCluster(peers ...types.PeerKey) clusterState {
+	nodes := make(map[types.PeerKey]nodeState, len(peers))
+	for _, pk := range peers {
+		nodes[pk] = nodeState{
+			NumCPU:           4,
+			CPUBudgetPercent: 100,
+			MemTotalBytes:    8 << 30, //nolint:mnd
+			MemBudgetPercent: 100,
+		}
+	}
+	return clusterState{Nodes: nodes}
+}
+
 func TestEvaluate_UnderReplicated_Claims(t *testing.T) {
 	local := peerKey(1)
 	peer2 := peerKey(2)
@@ -35,12 +51,11 @@ func TestEvaluate_UnderReplicated_Claims(t *testing.T) {
 		allPeers:      []types.PeerKey{local, peer2},
 		specs:         specs,
 		claims:        claims,
-		cluster:       clusterState{},
+		cluster:       healthyCluster(local, peer2),
 		isRunning:     func(string) bool { return false },
-		demandRates:   map[string]float64{},
 		idleDurations: map[string]time.Duration{},
 	})
-	require.True(t, hasAction(actions, "abc123", actionClaim), "should claim under-replicated workload")
+	require.True(t, hasAction(actions, "abc123", actionClaim))
 }
 
 func TestEvaluate_FullyReplicated_NoClaim(t *testing.T) {
@@ -54,12 +69,11 @@ func TestEvaluate_FullyReplicated_NoClaim(t *testing.T) {
 		allPeers:      []types.PeerKey{local, peer2},
 		specs:         specs,
 		claims:        claims,
-		cluster:       clusterState{},
+		cluster:       healthyCluster(local, peer2),
 		isRunning:     func(string) bool { return false },
-		demandRates:   map[string]float64{},
 		idleDurations: map[string]time.Duration{},
 	})
-	require.False(t, hasAction(actions, "abc123", actionClaim), "should not claim fully-replicated workload")
+	require.False(t, hasAction(actions, "abc123", actionClaim))
 }
 
 func TestEvaluate_OverReplicated_LoserReleases(t *testing.T) {
@@ -69,15 +83,15 @@ func TestEvaluate_OverReplicated_LoserReleases(t *testing.T) {
 	claims := map[string]map[types.PeerKey]struct{}{"abc123": {local: {}, peer2: {}}}
 	allPeers := []types.PeerKey{local, peer2}
 	longIdle := map[string]time.Duration{"abc123": 10 * time.Minute}
+	cluster := healthyCluster(allPeers...)
 
 	actions := evaluate(evaluateInput{
 		localID:       local,
 		allPeers:      allPeers,
 		specs:         specs,
 		claims:        claims,
-		cluster:       clusterState{},
+		cluster:       cluster,
 		isRunning:     func(string) bool { return true },
-		demandRates:   map[string]float64{},
 		idleDurations: longIdle,
 	})
 	releasing := hasAction(actions, "abc123", actionRelease)
@@ -87,14 +101,13 @@ func TestEvaluate_OverReplicated_LoserReleases(t *testing.T) {
 		allPeers:      allPeers,
 		specs:         specs,
 		claims:        claims,
-		cluster:       clusterState{},
+		cluster:       cluster,
 		isRunning:     func(string) bool { return true },
-		demandRates:   map[string]float64{},
 		idleDurations: longIdle,
 	})
 	peer2Releasing := hasAction(actions2, "abc123", actionRelease)
 
-	require.NotEqual(t, releasing, peer2Releasing, "exactly one of the two peers should release")
+	require.NotEqual(t, releasing, peer2Releasing, "exactly one peer should release")
 }
 
 func TestEvaluate_NoSpec_ReleaseClaim(t *testing.T) {
@@ -106,12 +119,11 @@ func TestEvaluate_NoSpec_ReleaseClaim(t *testing.T) {
 		allPeers:      []types.PeerKey{local},
 		specs:         map[string]spec{},
 		claims:        claims,
-		cluster:       clusterState{},
+		cluster:       healthyCluster(local),
 		isRunning:     func(string) bool { return true },
-		demandRates:   map[string]float64{},
 		idleDurations: map[string]time.Duration{},
 	})
-	require.True(t, hasAction(actions, "orphan", actionRelease), "should release claim with no matching spec")
+	require.True(t, hasAction(actions, "orphan", actionRelease))
 }
 
 func TestEvaluate_ClaimedButNotRunning_ReClaim(t *testing.T) {
@@ -124,12 +136,11 @@ func TestEvaluate_ClaimedButNotRunning_ReClaim(t *testing.T) {
 		allPeers:      []types.PeerKey{local},
 		specs:         specs,
 		claims:        claims,
-		cluster:       clusterState{},
+		cluster:       healthyCluster(local),
 		isRunning:     func(string) bool { return false },
-		demandRates:   map[string]float64{},
 		idleDurations: map[string]time.Duration{},
 	})
-	require.True(t, hasAction(actions, "abc123", actionClaim), "should re-claim workload that is not running")
+	require.True(t, hasAction(actions, "abc123", actionClaim))
 }
 
 func TestPlacementScore_Deterministic(t *testing.T) {
@@ -145,7 +156,7 @@ func TestPlacementScore_DifferentInputs(t *testing.T) {
 func TestEvaluate_IndependentNodesAgreeOnWinner(t *testing.T) {
 	peers := []types.PeerKey{peerKey(1), peerKey(2), peerKey(3), peerKey(4), peerKey(5)}
 	specs := map[string]spec{"workload1": {MinReplicas: 2}}
-	claims := map[string]map[types.PeerKey]struct{}{}
+	cluster := healthyCluster(peers...)
 
 	var claimers []types.PeerKey
 	for _, pk := range peers {
@@ -153,10 +164,9 @@ func TestEvaluate_IndependentNodesAgreeOnWinner(t *testing.T) {
 			localID:       pk,
 			allPeers:      peers,
 			specs:         specs,
-			claims:        claims,
-			cluster:       clusterState{},
+			claims:        map[string]map[types.PeerKey]struct{}{},
+			cluster:       cluster,
 			isRunning:     func(string) bool { return false },
-			demandRates:   map[string]float64{},
 			idleDurations: map[string]time.Duration{},
 		}), "workload1", actionClaim) {
 			claimers = append(claimers, pk)
@@ -168,98 +178,9 @@ func TestEvaluate_IndependentNodesAgreeOnWinner(t *testing.T) {
 func TestEvaluate_UnderReplicated_OnlyBestClaims(t *testing.T) {
 	peers := []types.PeerKey{peerKey(10), peerKey(11), peerKey(12)}
 	specs := map[string]spec{"singleton": {MinReplicas: 1}}
-	claims := map[string]map[types.PeerKey]struct{}{}
+	cluster := healthyCluster(peers...)
 
 	var claimers int
-	for _, pk := range peers {
-		if hasAction(evaluate(evaluateInput{
-			localID:       pk,
-			allPeers:      peers,
-			specs:         specs,
-			claims:        claims,
-			cluster:       clusterState{},
-			isRunning:     func(string) bool { return false },
-			demandRates:   map[string]float64{},
-			idleDurations: map[string]time.Duration{},
-		}), "singleton", actionClaim) {
-			claimers++
-		}
-	}
-	require.Equal(t, 1, claimers, "only one node should claim when replicas=1")
-}
-
-func TestSuitabilityScore_ColdStart(t *testing.T) {
-	p1, p2 := peerKey(1), peerKey(2)
-	cluster := clusterState{Nodes: map[types.PeerKey]nodeState{
-		p1: {NumCPU: 8, CPUPercent: 20, MemTotalBytes: 16 << 30, MemPercent: 30},
-		p2: {NumCPU: 2, CPUPercent: 20, MemTotalBytes: 4 << 30, MemPercent: 30},
-	}}
-
-	s1 := rawSuitabilityScore(p1, cluster, map[types.PeerKey]struct{}{}, nil, "", p1)
-	s2 := rawSuitabilityScore(p2, cluster, map[types.PeerKey]struct{}{}, nil, "", p2)
-	require.Greater(t, s1, s2, "node with more free resources should score higher")
-}
-
-func TestSuitabilityScore_TrafficAffinity(t *testing.T) {
-	p1, p2, claimant := peerKey(1), peerKey(2), peerKey(3)
-	cluster := clusterState{Nodes: map[types.PeerKey]nodeState{
-		p1:       {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50, TrafficTo: map[types.PeerKey]uint64{claimant: 10000}},
-		p2:       {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50, TrafficTo: map[types.PeerKey]uint64{claimant: 1000}},
-		claimant: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50},
-	}}
-
-	s1 := rawSuitabilityScore(p1, cluster, map[types.PeerKey]struct{}{claimant: {}}, nil, "", p1)
-	s2 := rawSuitabilityScore(p2, cluster, map[types.PeerKey]struct{}{claimant: {}}, nil, "", p2)
-	require.Greater(t, s1, s2, "node with more traffic to claimants should score higher")
-}
-
-func TestSuitabilityScore_IncumbentBonus(t *testing.T) {
-	p1, p2 := peerKey(1), peerKey(2)
-	cluster := clusterState{Nodes: map[types.PeerKey]nodeState{
-		p1: {NumCPU: 4, CPUPercent: 60, MemTotalBytes: 8 << 30, MemPercent: 60},
-		p2: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50},
-	}}
-
-	incumbentScore := rawSuitabilityScore(p1, cluster, map[types.PeerKey]struct{}{}, nil, "", p1) * incumbentBonus
-	challengerScore := rawSuitabilityScore(p2, cluster, map[types.PeerKey]struct{}{}, nil, "", p2)
-	require.Greater(t, incumbentScore, challengerScore, "incumbent with slightly lower raw score should still beat challenger due to bonus")
-}
-
-func TestSuitabilityScore_ChallengerOvertakesIncumbent(t *testing.T) {
-	p1, p2 := peerKey(1), peerKey(2)
-	cluster := clusterState{Nodes: map[types.PeerKey]nodeState{
-		p1: {NumCPU: 2, CPUPercent: 95, MemTotalBytes: 2 << 30, MemPercent: 95},
-		p2: {NumCPU: 16, CPUPercent: 10, MemTotalBytes: 32 << 30, MemPercent: 10},
-	}}
-
-	incumbentScore := rawSuitabilityScore(p1, cluster, map[types.PeerKey]struct{}{}, nil, "", p1) * incumbentBonus
-	challengerScore := rawSuitabilityScore(p2, cluster, map[types.PeerKey]struct{}{}, nil, "", p2)
-	require.Greater(t, challengerScore, incumbentScore, "challenger with massively better raw score should overcome incumbent bonus")
-}
-
-func TestSuitabilityScore_VivaldiTieBreak(t *testing.T) {
-	p1, p2, claimant := peerKey(1), peerKey(2), peerKey(3)
-	cluster := clusterState{Nodes: map[types.PeerKey]nodeState{
-		p1:       {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50, Coord: &coords.Coord{X: 1, Y: 0}},
-		p2:       {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50, Coord: &coords.Coord{X: 100, Y: 0}},
-		claimant: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50, Coord: &coords.Coord{X: 0, Y: 0}},
-	}}
-
-	s1 := rawSuitabilityScore(p1, cluster, map[types.PeerKey]struct{}{claimant: {}}, nil, "", p1)
-	s2 := rawSuitabilityScore(p2, cluster, map[types.PeerKey]struct{}{claimant: {}}, nil, "", p2)
-	require.Greater(t, s1, s2, "closer node should score higher via Vivaldi")
-}
-
-func TestSuitabilityScore_HashFallback(t *testing.T) {
-	p1, p2 := peerKey(1), peerKey(2)
-	cluster := clusterState{Nodes: map[types.PeerKey]nodeState{
-		p1: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50},
-		p2: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50},
-	}}
-	specs := map[string]spec{"workload": {MinReplicas: 1}}
-
-	peers := []types.PeerKey{p1, p2}
-	var winner types.PeerKey
 	for _, pk := range peers {
 		if hasAction(evaluate(evaluateInput{
 			localID:       pk,
@@ -268,49 +189,80 @@ func TestSuitabilityScore_HashFallback(t *testing.T) {
 			claims:        map[string]map[types.PeerKey]struct{}{},
 			cluster:       cluster,
 			isRunning:     func(string) bool { return false },
-			demandRates:   map[string]float64{},
 			idleDurations: map[string]time.Duration{},
-		}), "workload", actionClaim) {
-			winner = pk
+		}), "singleton", actionClaim) {
+			claimers++
 		}
 	}
-	require.NotEqual(t, types.PeerKey{}, winner, "exactly one peer should claim")
+	require.Equal(t, 1, claimers, "only one node should claim when replicas=1")
 }
 
-func TestSuitabilityScore_GracefulDegradation(t *testing.T) {
-	p1, p2 := peerKey(1), peerKey(2)
-	cluster := clusterState{Nodes: map[types.PeerKey]nodeState{
-		p1: {},
-		p2: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50},
-	}}
+func TestEvaluate_HashTiebreakIsStable(t *testing.T) {
+	// Two peers, identical predicted latency — hash deterministically picks
+	// the same winner across repeated evaluations on each peer.
+	p1 := peerKey(1)
+	p2 := peerKey(2)
+	peers := []types.PeerKey{p1, p2}
+	specs := map[string]spec{"only": {MinReplicas: 1}}
+	cluster := healthyCluster(peers...)
 
-	s1 := rawSuitabilityScore(p1, cluster, map[types.PeerKey]struct{}{}, nil, "", p1)
-	s2 := rawSuitabilityScore(p2, cluster, map[types.PeerKey]struct{}{}, nil, "", p2)
-	require.Greater(t, s2, s1, "node with telemetry should beat node without")
-	require.Greater(t, s1, 0.0, "node without telemetry should still have a non-zero score")
+	winner := func(local types.PeerKey) bool {
+		return hasAction(evaluate(evaluateInput{
+			localID:       local,
+			allPeers:      peers,
+			specs:         specs,
+			claims:        map[string]map[types.PeerKey]struct{}{},
+			cluster:       cluster,
+			isRunning:     func(string) bool { return false },
+			idleDurations: map[string]time.Duration{},
+		}), "only", actionClaim)
+	}
+
+	for range 5 {
+		// p1 and p2 should always disagree on who wins, but the same
+		// peer should win on every tick (signal is hash-deterministic).
+		require.NotEqual(t, winner(p1), winner(p2))
+	}
 }
 
-// TestEvaluate_ChallengerJoinsOnTrafficShift verifies that a much-better-suited
-// non-claimant uses shouldChallenge to join (temporarily going above target),
-// rather than the old at-target replacement path which caused an under-provisioning
-// window.
-func TestEvaluate_ChallengerJoinsOnTrafficShift(t *testing.T) {
-	p1, p2, p3 := peerKey(1), peerKey(2), peerKey(3)
-	allPeers := []types.PeerKey{p1, p2, p3}
+func TestEvaluate_ChallengerJoinsOnDialAffinity(t *testing.T) {
+	// Demo-chain shape: p2 hosts the anchored downstream service that
+	// `migrating` calls heavily. p1 is the current incumbent but far from
+	// p2. p2 should challenge and win on predicted latency alone (no
+	// hysteresis).
+	p1 := peerKey(1)
+	p2 := peerKey(2)
+	allPeers := []types.PeerKey{p1, p2}
 	hash := "migrating"
 
-	// p2 and p3 have massive traffic affinity to p1 (the claimant).
-	// p2 should challenge because its raw score exceeds p1's by >1.2x.
-	cluster := clusterState{Nodes: map[types.PeerKey]nodeState{
-		p1: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50},
-		p2: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50, TrafficTo: map[types.PeerKey]uint64{p1: 100000}},
-		p3: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50, TrafficTo: map[types.PeerKey]uint64{p1: 100000}},
-	}}
+	cluster := clusterState{
+		Nodes: map[types.PeerKey]nodeState{
+			p1: {
+				NumCPU:           4,
+				CPUBudgetPercent: 100,
+				MemTotalBytes:    8 << 30, //nolint:mnd
+				MemBudgetPercent: 100,
+				Coord:            &coords.Coord{X: 1000, Y: 0},
+			},
+			p2: {
+				NumCPU:           4,
+				CPUBudgetPercent: 100,
+				MemTotalBytes:    8 << 30, //nolint:mnd
+				MemBudgetPercent: 100,
+				Coord:            &coords.Coord{X: 0, Y: 0},
+			},
+		},
+		ComputeCost:     map[string]float64{hash: 5.0},
+		InvocationRates: map[string]float64{hash: 100.0},
+		DialRates: map[string]map[string]float64{
+			hash: {"service:store": 100.0},
+		},
+		ServiceHosts: map[string][]types.PeerKey{
+			"store": {p2},
+		},
+	}
 	claims := map[string]map[types.PeerKey]struct{}{hash: {p1: {}}}
 
-	// From p2's perspective: at target (1 claimant, min_replicas=1), so
-	// shouldChallenge runs. p2's raw score should exceed p1's raw * 1.2x
-	// due to traffic affinity.
 	actions := evaluate(evaluateInput{
 		localID:       p2,
 		allPeers:      allPeers,
@@ -318,124 +270,114 @@ func TestEvaluate_ChallengerJoinsOnTrafficShift(t *testing.T) {
 		claims:        claims,
 		cluster:       cluster,
 		isRunning:     func(string) bool { return false },
-		demandRates:   map[string]float64{},
 		idleDurations: map[string]time.Duration{},
 	})
-	require.True(t, hasAction(actions, hash, actionClaim), "better-suited challenger should claim via shouldChallenge")
-
-	// p1 should NOT release — at target, no at-target release path exists.
-	// The swap completes when p1 becomes excess (after p2 claims) and goes idle.
-	actionsP1 := evaluate(evaluateInput{
-		localID:       p1,
-		allPeers:      allPeers,
-		specs:         map[string]spec{hash: {MinReplicas: 1}},
-		claims:        claims,
-		cluster:       cluster,
-		isRunning:     func(string) bool { return true },
-		demandRates:   map[string]float64{},
-		idleDurations: map[string]time.Duration{},
-	})
-	require.False(t, hasAction(actionsP1, hash, actionRelease), "incumbent at target should not release — challenger joins first")
+	require.True(t, hasAction(actions, hash, actionClaim))
 }
 
-func TestEvaluate_ChallengeInhibitedByThreshold(t *testing.T) {
-	p1, p2 := peerKey(1), peerKey(2)
-	hash := "stable"
-	cluster := clusterState{Nodes: map[types.PeerKey]nodeState{
-		p1: {NumCPU: 4, CPUPercent: 55, MemTotalBytes: 8 << 30, MemPercent: 55},
-		p2: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50},
-	}}
-
-	actions := evaluate(evaluateInput{
-		localID:       p2,
-		allPeers:      []types.PeerKey{p1, p2},
-		specs:         map[string]spec{hash: {MinReplicas: 1}},
-		claims:        map[string]map[types.PeerKey]struct{}{hash: {p1: {}}},
-		cluster:       cluster,
-		isRunning:     func(string) bool { return false },
-		demandRates:   map[string]float64{},
-		idleDurations: map[string]time.Duration{},
-	})
-	require.False(t, hasAction(actions, hash, actionClaim), "small advantage should not overcome 1.2x challenge threshold")
-}
-
-func TestEvaluate_OverReplicatedWithBetterNonClaimant(t *testing.T) {
-	p1, p2, p3 := peerKey(1), peerKey(2), peerKey(3)
+func TestEvaluate_OverReplicatedReleasesByLatency(t *testing.T) {
+	// Three peers, two incumbents. p3 is uncontended and far from any
+	// downstream traffic; p1 is colocated with the only thing the workload
+	// dials. Expect p3 (worse predicted latency) to release.
+	p1 := peerKey(1)
+	p2 := peerKey(2)
+	p3 := peerKey(3)
 	allPeers := []types.PeerKey{p1, p2, p3}
-	hash := "over-rep"
+	hash := "workload"
 
-	cluster := clusterState{Nodes: map[types.PeerKey]nodeState{
-		p1: {NumCPU: 4, CPUPercent: 70, MemTotalBytes: 8 << 30, MemPercent: 70},
-		p2: {NumCPU: 4, CPUPercent: 60, MemTotalBytes: 8 << 30, MemPercent: 60},
-		p3: {NumCPU: 8, CPUPercent: 10, MemTotalBytes: 16 << 30, MemPercent: 10},
-	}}
-
+	cluster := clusterState{
+		Nodes: map[types.PeerKey]nodeState{
+			p1: {
+				NumCPU: 4, CPUBudgetPercent: 100, MemTotalBytes: 8 << 30, MemBudgetPercent: 100, //nolint:mnd
+				Coord: &coords.Coord{X: 0, Y: 0},
+			},
+			p2: {
+				NumCPU: 4, CPUBudgetPercent: 100, MemTotalBytes: 8 << 30, MemBudgetPercent: 100, //nolint:mnd
+				Coord: &coords.Coord{X: 100, Y: 0},
+			},
+			p3: {
+				NumCPU: 4, CPUBudgetPercent: 100, MemTotalBytes: 8 << 30, MemBudgetPercent: 100, //nolint:mnd
+				Coord: &coords.Coord{X: 1000, Y: 0},
+			},
+		},
+		ComputeCost:     map[string]float64{hash: 5.0},
+		InvocationRates: map[string]float64{hash: 100.0},
+		DialRates: map[string]map[string]float64{
+			hash: {"service:store": 100.0},
+		},
+		ServiceHosts: map[string][]types.PeerKey{
+			"store": {p1},
+		},
+	}
 	longIdle := map[string]time.Duration{hash: 10 * time.Minute}
-	var releasers int
-	for _, pk := range allPeers {
-		if hasAction(evaluate(evaluateInput{
+
+	var releaser types.PeerKey
+	for _, pk := range []types.PeerKey{p2, p3} {
+		actions := evaluate(evaluateInput{
 			localID:       pk,
 			allPeers:      allPeers,
 			specs:         map[string]spec{hash: {MinReplicas: 1}},
-			claims:        map[string]map[types.PeerKey]struct{}{hash: {p1: {}, p2: {}}},
+			claims:        map[string]map[types.PeerKey]struct{}{hash: {p2: {}, p3: {}}},
 			cluster:       cluster,
 			isRunning:     func(string) bool { return true },
-			demandRates:   map[string]float64{},
 			idleDurations: longIdle,
-		}), hash, actionRelease) {
-			releasers++
+		})
+		if hasAction(actions, hash, actionRelease) {
+			releaser = pk
 		}
 	}
-	require.Equal(t, 1, releasers, "exactly one incumbent should release during over-replication, not both")
+	require.Equal(t, p3, releaser, "the worst-predicted incumbent should release first")
+}
+
+func TestEvaluate_CapacityGate_RejectsOversubscribedCandidate(t *testing.T) {
+	local := peerKey(1)
+	peer2 := peerKey(2)
+	allPeers := []types.PeerKey{local, peer2}
+	hash := "wl"
+
+	// peer2 has telemetry showing exhausted CPU; local is healthy.
+	cluster := clusterState{
+		Nodes: map[types.PeerKey]nodeState{
+			local: {NumCPU: 4, CPUBudgetPercent: 100, CPUPercent: 10, MemTotalBytes: 8 << 30, MemBudgetPercent: 100}, //nolint:mnd
+			peer2: {NumCPU: 4, CPUBudgetPercent: 80, CPUPercent: 80, MemTotalBytes: 8 << 30, MemBudgetPercent: 80},   //nolint:mnd
+		},
+	}
+
+	// Both peers ask "should I claim?": local should claim, peer2 shouldn't.
+	localClaims := hasAction(evaluate(evaluateInput{
+		localID:       local,
+		allPeers:      allPeers,
+		specs:         map[string]spec{hash: {MinReplicas: 1}},
+		claims:        map[string]map[types.PeerKey]struct{}{},
+		cluster:       cluster,
+		isRunning:     func(string) bool { return false },
+		idleDurations: map[string]time.Duration{},
+	}), hash, actionClaim)
+	peer2Claims := hasAction(evaluate(evaluateInput{
+		localID:       peer2,
+		allPeers:      allPeers,
+		specs:         map[string]spec{hash: {MinReplicas: 1}},
+		claims:        map[string]map[types.PeerKey]struct{}{},
+		cluster:       cluster,
+		isRunning:     func(string) bool { return false },
+		idleDurations: map[string]time.Duration{},
+	}), hash, actionClaim)
+
+	require.True(t, localClaims, "healthy node should claim")
+	require.False(t, peer2Claims, "exhausted node should be filtered by capacity gate")
 }
 
 func TestEvaluate_DeadNodeExcludedFromCandidates(t *testing.T) {
-	local, peer2 := peerKey(1), peerKey(2)
+	local := peerKey(1)
+	peer2 := peerKey(2)
 	actions := evaluate(evaluateInput{
 		localID:       local,
 		allPeers:      []types.PeerKey{local, peer2},
 		specs:         map[string]spec{"wl1": {MinReplicas: 2}},
 		claims:        map[string]map[types.PeerKey]struct{}{"wl1": {peer2: {}}},
-		cluster:       clusterState{},
+		cluster:       healthyCluster(local, peer2),
 		isRunning:     func(string) bool { return false },
-		demandRates:   map[string]float64{},
 		idleDurations: map[string]time.Duration{},
 	})
-	require.True(t, hasAction(actions, "wl1", actionClaim), "live node must claim when dead node is excluded from candidates")
-}
-
-func TestCapacityScore_BudgetCapped(t *testing.T) {
-	p1, p2 := peerKey(1), peerKey(2)
-
-	t.Run("positive headroom within budget", func(t *testing.T) {
-		cluster := clusterState{Nodes: map[types.PeerKey]nodeState{
-			p1: {NumCPU: 4, CPUPercent: 70, MemTotalBytes: 8 << 30, MemPercent: 70, CPUBudgetPercent: 80, MemBudgetPercent: 80},
-		}}
-		score := capacityScore(p1, []types.PeerKey{p1}, cluster)
-		require.Greater(t, score, 0.0, "node within budget should have positive score")
-	})
-
-	t.Run("negative headroom over budget", func(t *testing.T) {
-		// Two nodes: p2 has positive headroom (provides the maxFree reference),
-		// p1 is over budget so its negative headroom produces a negative score.
-		cluster := clusterState{Nodes: map[types.PeerKey]nodeState{
-			p1: {NumCPU: 4, CPUPercent: 90, MemTotalBytes: 8 << 30, MemPercent: 90, CPUBudgetPercent: 80, MemBudgetPercent: 80},
-			p2: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50},
-		}}
-		peers := []types.PeerKey{p1, p2}
-		score := capacityScore(p1, peers, cluster)
-		require.Less(t, score, 0.0, "node over budget should have negative score when peers have positive headroom")
-	})
-
-	t.Run("zero budget means no limit", func(t *testing.T) {
-		clusterNoBudget := clusterState{Nodes: map[types.PeerKey]nodeState{
-			p1: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50},
-		}}
-		clusterFullBudget := clusterState{Nodes: map[types.PeerKey]nodeState{
-			p1: {NumCPU: 4, CPUPercent: 50, MemTotalBytes: 8 << 30, MemPercent: 50, CPUBudgetPercent: 100, MemBudgetPercent: 100},
-		}}
-		scoreNoBudget := capacityScore(p1, []types.PeerKey{p1}, clusterNoBudget)
-		scoreFullBudget := capacityScore(p1, []types.PeerKey{p1}, clusterFullBudget)
-		require.InDelta(t, scoreFullBudget, scoreNoBudget, 0.001, "zero budget should behave like 100%%")
-	})
+	require.True(t, hasAction(actions, "wl1", actionClaim))
 }

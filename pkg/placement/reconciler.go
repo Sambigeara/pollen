@@ -2,6 +2,8 @@ package placement
 
 import (
 	"context"
+	"math"
+	"runtime"
 	"sync"
 	"time"
 
@@ -15,8 +17,11 @@ const (
 	debounceInterval      = 200 * time.Millisecond
 	evictionCooldown      = 30 * time.Second
 	minResidencyDuration  = 10 * time.Second
-	reconcilePollInterval = 5 * time.Second
-	scaleUpStreakRequired = 3 // consecutive high-pressure cycles before adding a replica
+	reconcilePollInterval = 2 * time.Second
+	scaleUpSustainTicks   = 2
+	// scaleUpMaxStepMultiplier caps per-decision target growth — 2× closes
+	// large gaps in a few ticks without overshooting on noisy signals.
+	scaleUpMaxStepMultiplier = 2.0
 )
 
 type workloadManager interface {
@@ -34,25 +39,26 @@ type artifactFetcher interface {
 }
 
 type reconciler struct {
-	store              WorkloadState
-	workloads          workloadManager
-	cas                artifactStore
-	fetcher            artifactFetcher
-	utilisation        *utilisationTracker
-	claimStartTime     map[string]time.Time
-	pendingRelease     map[string]time.Time
-	dynamicTargets     map[string]uint32
-	lastPressures      map[string]float64
-	highPressureStreak map[string]int
-	triggerCh          chan struct{}
-	fetchSem           chan struct{}
-	log                *zap.SugaredLogger
-	inFlight           map[string]struct{}
-	nowFunc            func() time.Time
-	wg                 *sync.WaitGroup
-	inFlightMu         sync.Mutex
-	localID            types.PeerKey
-	firstRun           bool
+	store          WorkloadState
+	workloads      workloadManager
+	cas            artifactStore
+	fetcher        artifactFetcher
+	utilisation    *utilisationTracker
+	gates          *gateRegistry
+	claimStartTime map[string]time.Time
+	pendingRelease map[string]time.Time
+	dynamicTargets map[string]uint32
+	lastPressures  map[string]float64
+	scaleUpStreak  map[string]int
+	triggerCh      chan struct{}
+	fetchSem       chan struct{}
+	log            *zap.SugaredLogger
+	inFlight       map[string]struct{}
+	nowFunc        func() time.Time
+	wg             *sync.WaitGroup
+	inFlightMu     sync.Mutex
+	localID        types.PeerKey
+	firstRun       bool
 }
 
 func newReconciler(
@@ -62,27 +68,29 @@ func newReconciler(
 	cas artifactStore,
 	fetcher artifactFetcher,
 	utilisation *utilisationTracker,
+	gates *gateRegistry,
 	log *zap.SugaredLogger,
 	wg *sync.WaitGroup,
 ) *reconciler {
 	return &reconciler{
-		localID:            localID,
-		store:              store,
-		workloads:          workloads,
-		cas:                cas,
-		fetcher:            fetcher,
-		utilisation:        utilisation,
-		triggerCh:          make(chan struct{}, 1),
-		fetchSem:           make(chan struct{}, 4), //nolint:mnd
-		pendingRelease:     make(map[string]time.Time),
-		claimStartTime:     make(map[string]time.Time),
-		dynamicTargets:     make(map[string]uint32),
-		highPressureStreak: make(map[string]int),
-		inFlight:           make(map[string]struct{}),
-		log:                log,
-		wg:                 wg,
-		firstRun:           true,
-		nowFunc:            time.Now,
+		localID:        localID,
+		store:          store,
+		workloads:      workloads,
+		cas:            cas,
+		fetcher:        fetcher,
+		utilisation:    utilisation,
+		gates:          gates,
+		triggerCh:      make(chan struct{}, 1),
+		fetchSem:       make(chan struct{}, 4), //nolint:mnd
+		pendingRelease: make(map[string]time.Time),
+		claimStartTime: make(map[string]time.Time),
+		dynamicTargets: make(map[string]uint32),
+		scaleUpStreak:  make(map[string]int),
+		inFlight:       make(map[string]struct{}),
+		log:            log,
+		wg:             wg,
+		firstRun:       true,
+		nowFunc:        time.Now,
 	}
 }
 
@@ -122,14 +130,22 @@ func (r *reconciler) Run(ctx context.Context) {
 	}
 }
 
-func buildClusterState(nodes map[types.PeerKey]state.NodeView, peerKeys []types.PeerKey) clusterState {
+func buildClusterState(snap state.Snapshot) clusterState {
 	cluster := clusterState{
-		Nodes:      make(map[types.PeerKey]nodeState, len(peerKeys)),
-		SeedLoad:   make(map[types.PeerKey]map[string]float32, len(peerKeys)),
-		SeedDemand: make(map[types.PeerKey]map[string]float32, len(peerKeys)),
+		Nodes:           make(map[types.PeerKey]nodeState, len(snap.PeerKeys)),
+		ComputeCost:     make(map[string]float64),
+		ParkedTime:      make(map[string]float64),
+		DialRates:       make(map[string]map[string]float64),
+		InvocationRates: make(map[string]float64),
+		SeedHosts:       make(map[string][]types.PeerKey, len(snap.Claims)),
+		ServiceHosts:    make(map[string][]types.PeerKey),
 	}
-	for _, pk := range peerKeys {
-		nv := nodes[pk]
+
+	costSamples := make(map[string]int)
+	parkedSamples := make(map[string]int)
+
+	for _, pk := range snap.PeerKeys {
+		nv := snap.Nodes[pk]
 		ns := nodeState{
 			CPUPercent:       nv.CPUPercent,
 			MemPercent:       nv.MemPercent,
@@ -139,20 +155,59 @@ func buildClusterState(nodes map[types.PeerKey]state.NodeView, peerKeys []types.
 			MemBudgetPercent: nv.MemBudgetPercent,
 			Coord:            nv.VivaldiCoord,
 		}
-		if len(nv.TrafficRates) > 0 {
-			ns.TrafficTo = make(map[types.PeerKey]uint64, len(nv.TrafficRates))
-			for peer, rate := range nv.TrafficRates {
-				ns.TrafficTo[peer] = rate.BytesIn + rate.BytesOut
+		cluster.Nodes[pk] = ns
+		// Unified seed-metrics bundle: ServedRate feeds cluster-wide
+		// invocation rate, ComputeCostMs contributes to the mean cost
+		// only when nonzero (a present-but-zero cost inside an entry
+		// driven by a sibling field means "no compute-cost observation",
+		// not a real 0 ms sample).
+		for hash, m := range nv.SeedMetrics {
+			if m.ServedRate > 0 {
+				cluster.InvocationRates[hash] += float64(m.ServedRate)
+			}
+			if m.ComputeCostMs > 0 {
+				cluster.ComputeCost[hash] += float64(m.ComputeCostMs)
+				costSamples[hash]++
+			}
+			if m.ParkedMs > 0 {
+				cluster.ParkedTime[hash] += float64(m.ParkedMs)
+				parkedSamples[hash]++
 			}
 		}
-		cluster.Nodes[pk] = ns
-		if len(nv.SeedLoad) > 0 {
-			cluster.SeedLoad[pk] = nv.SeedLoad
-		}
-		if len(nv.SeedDemand) > 0 {
-			cluster.SeedDemand[pk] = nv.SeedDemand
+		for hash, targets := range nv.SeedDialRates {
+			dst, ok := cluster.DialRates[hash]
+			if !ok {
+				dst = make(map[string]float64, len(targets))
+				cluster.DialRates[hash] = dst
+			}
+			for target, rate := range targets {
+				dst[target] += float64(rate)
+			}
 		}
 	}
+
+	for hash, n := range costSamples {
+		if n > 0 {
+			cluster.ComputeCost[hash] /= float64(n)
+		}
+	}
+	for hash, n := range parkedSamples {
+		if n > 0 {
+			cluster.ParkedTime[hash] /= float64(n)
+		}
+	}
+
+	for hash, claimants := range snap.Claims {
+		hosts := make([]types.PeerKey, 0, len(claimants))
+		for pk := range claimants {
+			hosts = append(hosts, pk)
+		}
+		cluster.SeedHosts[hash] = hosts
+	}
+	for _, svc := range snap.Services() {
+		cluster.ServiceHosts[svc.Name] = append(cluster.ServiceHosts[svc.Name], svc.Peer)
+	}
+
 	return cluster
 }
 
@@ -164,13 +219,13 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		r.cleanupStaleClaims(snap.Claims)
 	}
 
-	cluster := buildClusterState(snap.Nodes, snap.PeerKeys)
+	cluster := buildClusterState(snap)
 
 	// When multiple specs share a name, only schedule the deterministic
 	// winner (lowest PeerKey publisher). Unnamed specs always pass through.
 	nameWinners := make(map[string]string) // name → winning hash
 	for hash, sv := range snap.Specs {
-		name := sv.Spec.GetName()
+		name := sv.Spec.Name
 		if name == "" {
 			continue
 		}
@@ -181,39 +236,47 @@ func (r *reconciler) reconcile(ctx context.Context) {
 
 	specs := make(map[string]spec, len(snap.Specs))
 	for hash, sv := range snap.Specs {
-		name := sv.Spec.GetName()
+		name := sv.Spec.Name
 		if name != "" && nameWinners[name] != hash {
 			continue
 		}
-		specs[hash] = spec{MinReplicas: sv.Spec.GetMinReplicas(), Spread: sv.Spec.GetSpread()}
+		specs[hash] = spec{
+			MinReplicas: sv.Spec.MinReplicas,
+			MemoryBytes: sv.Spec.MemoryBytes,
+			Spread:      sv.Spec.Spread,
+		}
 	}
 
-	demandRates := make(map[string]float64, len(specs))
 	idleDurations := make(map[string]time.Duration, len(specs))
 	for hash := range specs {
-		demandRates[hash] = r.utilisation.DemandRate(hash)
 		idleDurations[hash] = r.utilisation.IdleDuration(hash)
 	}
 
-	servedRates := r.utilisation.ServedRates()
-	float32Rates := make(map[string]float32, len(servedRates))
-	for k, v := range servedRates {
-		float32Rates[k] = float32(v)
-	}
-	r.store.SetSeedLoad(float32Rates)
+	r.store.SetSeedMetrics(buildSeedMetrics(r.utilisation, r.gates))
 
-	demandRatesFull := r.utilisation.DemandRates()
-	float32DemandRates := make(map[string]float32, len(demandRatesFull))
-	for k, v := range demandRatesFull {
-		float32DemandRates[k] = float32(v)
+	dialRates := r.utilisation.DialRates()
+	float32DialRates := make(map[string]map[string]float32, len(dialRates))
+	for caller, targets := range dialRates {
+		dst := make(map[string]float32, len(targets))
+		for target, rate := range targets {
+			dst[target] = float32(rate)
+		}
+		float32DialRates[caller] = dst
 	}
-	r.store.SetSeedDemand(float32DemandRates)
+	r.store.SetSeedDialRates(float32DialRates)
 
-	pressures := computePressures(specs, cluster.SeedLoad, cluster.SeedDemand, snap.Claims)
+	r.adjustGateSizes(specs, cluster, snap.Claims)
+	r.refreshSLOLookup(snap)
+
+	signals := computeAutoscaleSignals(specs, r.utilisation)
+	dashboardPressures := make(map[string]float64, len(signals))
+	for hash, s := range signals {
+		dashboardPressures[hash] = s.burn
+	}
 	r.inFlightMu.Lock()
-	r.lastPressures = pressures
+	r.lastPressures = dashboardPressures
 	r.inFlightMu.Unlock()
-	r.stepAdjustTargets(specs, pressures, len(snap.PeerKeys))
+	r.stepAdjustTargets(specs, signals, len(snap.PeerKeys))
 
 	actions := evaluate(evaluateInput{
 		localID:        r.localID,
@@ -222,7 +285,6 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		claims:         snap.Claims,
 		cluster:        cluster,
 		isRunning:      r.workloads.IsRunning,
-		demandRates:    demandRates,
 		idleDurations:  idleDurations,
 		dynamicTargets: r.dynamicTargets,
 	})
@@ -260,7 +322,7 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		r.inFlightMu.Unlock()
 
 		if hasClaimTime && now.Sub(claimTime) < minResidencyDuration {
-			if sv, specExists := snap.Specs[hash]; specExists && uint32(len(snap.Claims[hash])) <= sv.Spec.GetMinReplicas() {
+			if sv, specExists := snap.Specs[hash]; specExists && uint32(len(snap.Claims[hash])) <= sv.Spec.MinReplicas {
 				continue
 			}
 		}
@@ -326,27 +388,31 @@ func (r *reconciler) executeClaim(ctx context.Context, hash string, dynamicTarge
 	if _, alreadyClaimed := claimants[r.localID]; !alreadyClaimed {
 		target := dynamicTarget
 		if target == 0 {
-			target = sv.Spec.GetMinReplicas()
+			target = sv.Spec.MinReplicas
 		}
-		cluster := buildClusterState(snap.Nodes, snap.PeerKeys)
-		demandRates := map[string]float64{hash: r.utilisation.DemandRate(hash)}
+		cluster := buildClusterState(snap)
+		sp := spec{
+			MinReplicas: sv.Spec.MinReplicas,
+			MemoryBytes: sv.Spec.MemoryBytes,
+			Spread:      sv.Spec.Spread,
+		}
 
 		claimCount := uint32(len(claimants))
 		var stillValid bool
 		if claimCount < target {
-			stillValid = shouldClaim(r.localID, hash, target, claimants, snap.PeerKeys, cluster, demandRates)
+			stillValid = shouldClaim(r.localID, hash, sp, target, claimants, snap.PeerKeys, cluster)
 		} else {
-			stillValid = shouldChallenge(r.localID, hash, claimants, cluster, demandRates)
+			stillValid = shouldChallenge(r.localID, hash, sp, target, claimants, cluster)
 		}
 		if !stillValid {
-			r.log.Debugw("no longer a winner after fetch, skipping claim", "hash", shortHash(hash))
+			r.log.Debugw("no longer a winner after fetch, skipping claim", "hash", types.ShortHash(hash))
 			return
 		}
 	}
 
-	cfg := wasm.NewPluginConfig(sv.Spec.GetMemoryPages(), time.Duration(sv.Spec.GetTimeoutMs())*time.Millisecond)
+	cfg := wasm.NewPluginConfig(sv.Spec.MemoryBytes, sv.Spec.Timeout)
 	if err := r.workloads.SeedFromCAS(ctx, hash, cfg); err != nil {
-		r.log.Warnw("seed from CAS failed", "hash", hash, "err", err)
+		r.log.Warnw("seed from CAS failed", "name", sv.Spec.Name, "hash", types.ShortHash(hash), "err", err)
 		return
 	}
 
@@ -364,6 +430,7 @@ func (r *reconciler) executeRelease(hash string) {
 	}
 	r.store.ReleaseWorkload(hash)
 	r.utilisation.Clear(hash)
+	r.gates.Clear(hash)
 	r.inFlightMu.Lock()
 	delete(r.claimStartTime, hash)
 	r.inFlightMu.Unlock()
@@ -371,12 +438,60 @@ func (r *reconciler) executeRelease(hash string) {
 }
 
 const (
-	scaleUpThreshold     = 1.2
-	scaleDownThreshold   = 0.8
-	coldStartPressureCap = scaleUpThreshold + 0.1
+	// burnCeiling is the SLO burn ratio above which a seed needs more
+	// replicas. 5% — i.e. one in twenty caller-observed invocations
+	// exceeded the spec's latency SLO recently.
+	burnCeiling = 0.05
+	// burnSignalFloor is the minimum sloBurned rate (calls/sec) required
+	// to treat the burn ratio as actionable. Below this, the ratio is
+	// untrustworthy: the satisfied/burned EWMAs decay at the same rate
+	// so the ratio sticks at its last value for ~40 ticks after load
+	// stops, and a handful of cold-start probes on a low-volume
+	// workload can synthesise a phantom high ratio. Zeroing burn below
+	// this floor keeps scale-up from firing on stale signal and lets
+	// scale-down via the healthy-under-load branch proceed.
+	burnSignalFloor = 1.0
+	// scaleDownBurnFloor is the SLO burn ratio below which a seed is
+	// comfortably over-provisioned and can shed a replica. Set above
+	// zero because network jitter produces an unavoidable trickle of
+	// > SLO round-trips; a strict zero-burn predicate would freeze
+	// replica counts indefinitely in any real-world cluster.
+	scaleDownBurnFloor = 0.005
+	// scaleDownTrafficFloor is the served rate below which a seed is
+	// considered truly idle for scale-down purposes.
+	scaleDownTrafficFloor = rateReportFloor
 )
 
-func (r *reconciler) stepAdjustTargets(specs map[string]spec, pressures map[string]float64, clusterSize int) {
+// autoscaleSignals feeds the per-tick scale decision. The
+// satisfied/burned rates together detect the truly-idle case where
+// there are no observations to drive the burn ratio.
+type autoscaleSignals struct {
+	satisfied float64
+	burned    float64
+	burn      float64
+}
+
+// stepAdjustTargets updates the reconciler's per-hash dynamicTargets map
+// based on this node's local autoscale signals.
+//
+// Invariant: autoscale decisions are node-local. Each node observes its
+// own RecordSLO stream through its own utilisation tracker and runs its
+// own reconciliation loop. There is no distributed consensus on target
+// replica count — `dynamicTargets` is not gossiped. Cluster-wide
+// convergence comes from two places:
+//
+//  1. Every node receives the same gossiped state (specs, claims, Vivaldi
+//     coordinates, compute costs, dial rates), so their candidate pools
+//     and latency predictions agree.
+//  2. `evaluate()` scores candidates using deterministic tie-breaks (peer
+//     key hash blended into the score), so every node would pick the same
+//     claimant or eviction target given the same view.
+//
+// Divergence in per-node `dynamicTargets` is expected and self-correcting
+// — the node with the highest computed target is the one whose
+// claim/release decision dominates, and all nodes converge on the same
+// cluster-wide claim count within a handful of reconcile ticks.
+func (r *reconciler) stepAdjustTargets(specs map[string]spec, signals map[string]autoscaleSignals, clusterSize int) {
 	r.inFlightMu.Lock()
 	defer r.inFlightMu.Unlock()
 
@@ -386,19 +501,29 @@ func (r *reconciler) stepAdjustTargets(specs map[string]spec, pressures map[stri
 			ct = sp.MinReplicas
 		}
 
-		p := pressures[hash]
+		s := signals[hash]
+		total := s.satisfied + s.burned
 		switch {
-		case p > scaleUpThreshold:
-			r.highPressureStreak[hash]++
-			if r.highPressureStreak[hash] >= scaleUpStreakRequired {
-				ct = min(ct+1, uint32(clusterSize))
-				r.highPressureStreak[hash] = 0
+		case s.burn > burnCeiling:
+			r.scaleUpStreak[hash]++
+			if r.scaleUpStreak[hash] >= scaleUpSustainTicks {
+				step := math.Min(scaleUpMaxStepMultiplier, 1.0+s.burn)
+				ct = min(uint32(math.Ceil(float64(ct)*step)), uint32(clusterSize))
+				r.scaleUpStreak[hash] = 0
 			}
-		case p < scaleDownThreshold:
-			r.highPressureStreak[hash] = 0
+		case total < scaleDownTrafficFloor && ct > sp.MinReplicas:
+			// Truly idle: no observations to drive a burn ratio, and the
+			// target is above MinReplicas because we previously scaled up.
+			// Shed one replica per tick toward MinReplicas.
+			r.scaleUpStreak[hash] = 0
+			ct = max(sp.MinReplicas, ct-1)
+		case total >= scaleDownTrafficFloor && s.burn < scaleDownBurnFloor && ct > sp.MinReplicas:
+			// Steady traffic and near-zero burn: comfortably
+			// over-provisioned, shed one replica per tick.
+			r.scaleUpStreak[hash] = 0
 			ct = max(sp.MinReplicas, ct-1)
 		default:
-			r.highPressureStreak[hash] = 0
+			r.scaleUpStreak[hash] = 0
 		}
 		r.dynamicTargets[hash] = ct
 	}
@@ -406,49 +531,184 @@ func (r *reconciler) stepAdjustTargets(specs map[string]spec, pressures map[stri
 	for hash := range r.dynamicTargets {
 		if _, ok := specs[hash]; !ok {
 			delete(r.dynamicTargets, hash)
-			delete(r.highPressureStreak, hash)
+			delete(r.scaleUpStreak, hash)
 		}
 	}
 }
 
-func computePressures(
-	specs map[string]spec,
-	seedLoad, seedDemand map[types.PeerKey]map[string]float32,
-	claims map[string]map[types.PeerKey]struct{},
-) map[string]float64 {
-	pressures := make(map[string]float64, len(specs))
+// refreshSLOLookup pushes the latest per-spec latency SLO map into the
+// utilisation tracker so RecordSLO can classify completed invocations
+// without consulting the snapshot on every call. Specs that haven't set
+// a latency SLO get the package default, which the tracker also uses
+// before this lookup is first installed.
+func (r *reconciler) refreshSLOLookup(snap state.Snapshot) {
+	specs := snap.Specs
+	slos := make(map[string]time.Duration, len(specs))
+	for hash, sv := range specs {
+		slo := sv.Spec.LatencySLO
+		if slo <= 0 {
+			slo = defaultLatencySLO
+		}
+		slos[hash] = slo
+	}
+	r.utilisation.SetSLOLookup(func(hash string) time.Duration {
+		if slo, ok := slos[hash]; ok {
+			return slo
+		}
+		return defaultLatencySLO
+	})
+}
+
+// buildSeedMetrics collects all per-seed telemetry on this node into a
+// single unified bundle per hash. Hashes are the union of every source;
+// a source missing a hash contributes zero for its field. The store's
+// SetSeedMetrics drops all-zero entries and applies the dead-band.
+func buildSeedMetrics(ut *utilisationTracker, gates *gateRegistry) map[string]state.SeedMetrics {
+	served := ut.ServedRates()
+	costs := ut.InvocationCosts()
+	parked := ut.ParkedTimes()
+	satisfied, burned := ut.SLORates()
+	gateWaits := gates.WaitEWMAs()
+
+	out := make(map[string]state.SeedMetrics, len(served)+len(costs)+len(parked)+len(satisfied)+len(burned)+len(gateWaits))
+	touch := func(hash string) state.SeedMetrics { return out[hash] }
+
+	for hash, v := range served {
+		m := touch(hash)
+		m.ServedRate = float32(v)
+		out[hash] = m
+	}
+	for hash, v := range costs {
+		m := touch(hash)
+		m.ComputeCostMs = float32(v)
+		out[hash] = m
+	}
+	for hash, v := range parked {
+		m := touch(hash)
+		m.ParkedMs = float32(v)
+		out[hash] = m
+	}
+	for hash, v := range satisfied {
+		m := touch(hash)
+		m.SLOSatisfiedRate = float32(v)
+		out[hash] = m
+	}
+	for hash, v := range burned {
+		m := touch(hash)
+		m.SLOBurnedRate = float32(v)
+		out[hash] = m
+	}
+	for hash, d := range gateWaits {
+		if d <= 0 {
+			continue
+		}
+		m := touch(hash)
+		m.GateWaitMs = uint32(d / time.Millisecond)
+		out[hash] = m
+	}
+	return out
+}
+
+// adjustGateSizes pushes a per-workload concurrency cap to the gate
+// registry for every locally-claimed seed. Once we have a live measurement
+// of how long invocations park inside pollen_request, the cap is derived
+// directly from the parked/active ratio (Little's Law). Before we have
+// that signal, we fall back to a heuristic based on the outbound-dial
+// ratio.
+func (r *reconciler) adjustGateSizes(specs map[string]spec, cluster clusterState, claims map[string]map[types.PeerKey]struct{}) {
+	cores := runtime.NumCPU()
 	for hash := range specs {
-		var clusterDemand, clusterServed float64
-		for _, rates := range seedDemand {
-			clusterDemand += float64(rates[hash])
+		if _, mine := claims[hash][r.localID]; !mine {
+			continue
 		}
-		for _, rates := range seedLoad {
-			clusterServed += float64(rates[hash])
-		}
-		switch {
-		case clusterDemand == 0:
-			pressures[hash] = 0
-		case clusterServed > 0:
-			pressures[hash] = clusterDemand / clusterServed
-		case len(claims[hash]) > 0:
-			// Claimants exist but served rate hasn't propagated via gossip
-			// yet. Hold steady — don't scale up on transient gossip lag.
-			pressures[hash] = 0
-		default:
-			// True cold start: demand exists, no claimants, no served rate.
-			// Bootstrap one extra replica per cycle.
-			pressures[hash] = coldStartPressureCap
-		}
+		dialOut := totalDialRate(cluster.DialRates[hash])
+		invRate := cluster.InvocationRates[hash]
+		size := desiredGateSize(cores, dialOut, invRate)
+		r.gates.SetSize(hash, size)
 	}
-	return pressures
 }
 
-func (r *reconciler) allPlacementInfo() map[string][2]float64 {
+// totalDialRate sums all per-target dial rates for a single seed.
+func totalDialRate(targets map[string]float64) float64 {
+	var sum float64
+	for _, r := range targets {
+		sum += r
+	}
+	return sum
+}
+
+// desiredGateSize returns the per-workload concurrency cap given the
+// host's CPU count and the seed's observed outbound-call ratio. A leaf
+// seed (no outbound dials) gets `cores`; a chain holder gets more
+// because its instances park inside pollen_request waiting for
+// downstream — those parked slots aren't doing CPU work and so can
+// safely outnumber cores.
+func desiredGateSize(cores int, dialRate, invRate float64) int {
+	if invRate <= 0 {
+		return cores * gateInitialMultiplier
+	}
+	out := dialRate / invRate
+	return int(math.Ceil(float64(cores) * (1 + gateDialMultiplier*out)))
+}
+
+const (
+	// gateInitialMultiplier sizes a fresh gate before any dial
+	// observations exist. Conservative: covers a small ramp without
+	// over-allocating instances on every node.
+	gateInitialMultiplier = 2
+	// gateDialMultiplier weights observed outbound-call ratio when
+	// computing per-workload concurrency. Higher values give
+	// chain-holders deeper pools to absorb downstream latency.
+	gateDialMultiplier = 4.0
+)
+
+// computeAutoscaleSignals derives per-seed SLO burn ratios from the local
+// utilisation tracker. The burn ratio is the share of caller-observed
+// invocations exceeding the spec's latency SLO over the recent window;
+// it ties scaling decisions directly to user-visible pain rather than
+// derived ratios that admission absorption can mask.
+func computeAutoscaleSignals(specs map[string]spec, ut *utilisationTracker) map[string]autoscaleSignals {
+	out := make(map[string]autoscaleSignals, len(specs))
+	for hash := range specs {
+		satisfied, burned, burn := ut.SLOBurnRate(hash)
+		// Zero out the burn ratio when the absolute burn rate is too
+		// low to trust. This kills the stale-EWMA bug where, after
+		// load stops, the ratio remains pinned at its last value
+		// until both rates decay below rateReportFloor ~40 ticks
+		// later — during which scale-up would keep firing on phantom
+		// signal. Also suppresses low-volume oscillation where a
+		// handful of cold-start probes dominate an otherwise quiet
+		// workload's ratio.
+		if burned < burnSignalFloor {
+			burn = 0
+		}
+		out[hash] = autoscaleSignals{
+			satisfied: satisfied,
+			burned:    burned,
+			burn:      burn,
+		}
+	}
+	return out
+}
+
+// PlacementInfo summarises a single workload's autoscale state for
+// Status() and control-plane consumers. EffectiveTarget is the
+// per-node autoscale decision (capped by spec.MinReplicas and cluster
+// size); SLOBurnRatio is the most recent burn signal feeding scale-up.
+type PlacementInfo struct {
+	EffectiveTarget uint32
+	SLOBurnRatio    float64
+}
+
+func (r *reconciler) allPlacementInfo() map[string]PlacementInfo {
 	r.inFlightMu.Lock()
 	defer r.inFlightMu.Unlock()
-	out := make(map[string][2]float64, len(r.dynamicTargets))
+	out := make(map[string]PlacementInfo, len(r.dynamicTargets))
 	for hash, target := range r.dynamicTargets {
-		out[hash] = [2]float64{float64(target), r.lastPressures[hash]}
+		out[hash] = PlacementInfo{
+			EffectiveTarget: target,
+			SLOBurnRatio:    r.lastPressures[hash],
+		}
 	}
 	return out
 }

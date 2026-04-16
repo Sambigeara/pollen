@@ -19,7 +19,7 @@ service ControlService {
   rpc ConnectPeer(ConnectPeerRequest) returns (ConnectPeerResponse);
   rpc DisconnectService(DisconnectServiceRequest) returns (DisconnectServiceResponse);
   rpc DenyPeer(DenyPeerRequest) returns (DenyPeerResponse);
-  rpc SeedWorkload(SeedWorkloadRequest) returns (SeedWorkloadResponse);
+  rpc SeedWorkload(stream SeedWorkloadRequest) returns (SeedWorkloadResponse);
   rpc UnseedWorkload(UnseedWorkloadRequest) returns (UnseedWorkloadResponse);
   rpc CallWorkload(CallWorkloadRequest) returns (CallWorkloadResponse);
   rpc IssueCert(IssueCertRequest) returns (IssueCertResponse);
@@ -45,8 +45,8 @@ message NodeSummary {
   double latency_ms = 6;
   uint32 cpu_percent = 7;
   uint32 mem_percent = 8;
-  uint64 traffic_bytes_in = 9;
-  uint64 traffic_bytes_out = 10;
+  uint64 traffic_rate_in = 9;
+  uint64 traffic_rate_out = 10;
   uint32 num_cpu = 11;
   string name = 12;
 }
@@ -210,13 +210,25 @@ message DenyPeerRequest {
 
 message DenyPeerResponse {}
 
+// The first SeedWorkloadRequest must carry `header`; subsequent
+// messages carry binary `chunk` fragments.
 message SeedWorkloadRequest {
-  bytes wasm_bytes = 1 [(buf.validate.field).bytes = {min_len: 1}];
-  uint32 min_replicas = 2;
-  uint32 memory_pages = 3;
-  uint32 timeout_ms = 4;
-  string name = 5;
-  float spread = 6;
+  oneof payload {
+    SeedWorkloadHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+
+message SeedWorkloadHeader {
+  uint32 min_replicas = 1;
+  uint64 memory_bytes = 2;
+  uint32 timeout_ms = 3;
+  string name = 4;
+  float spread = 5;
+  // latency_slo_ms is the per-invocation caller-perspective latency
+  // budget. Drives autoscale via SLO burn rate. Zero is replaced with
+  // a sensible default by the placement layer.
+  uint32 latency_slo_ms = 6;
 }
 
 message SeedWorkloadResponse {
@@ -231,9 +243,14 @@ message UnseedWorkloadRequest {
 message UnseedWorkloadResponse {}
 
 message CallWorkloadRequest {
-  string hash = 1 [(buf.validate.field).string = {min_len: 1}];
-  string function = 2 [(buf.validate.field).string = {min_len: 1}];
+  // hash+function specify the target directly. Mutually exclusive with uri:
+  // if uri is set, these fields are ignored.
+  string hash = 1;
+  string function = 2;
   bytes input = 3;
+  // uri, when set, addresses the target as a pln:// URI. Currently only the
+  // "seed" scheme is supported, e.g. "pln://seed/<name>/<function>".
+  string uri = 4;
 }
 
 message CallWorkloadResponse {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -13,11 +14,15 @@ import (
 	"github.com/sambigeara/pollen/pkg/wasm"
 )
 
-type noopRouter struct{}
+type noopRequestRouter struct{}
 
-func (noopRouter) RouteCall(context.Context, string, string, []byte) ([]byte, error) {
+func (noopRequestRouter) RouteRequest(context.Context, wasm.URI, []byte) ([]byte, error) {
 	return nil, fmt.Errorf("no routing in tests")
 }
+
+func (noopRequestRouter) RecordDial(string, string) {}
+
+func (noopRequestRouter) RecordParkedTime(string, time.Duration) {}
 
 var echoWASM []byte
 
@@ -36,8 +41,8 @@ func newTestManager(t *testing.T) *manager {
 	casStore, err := cas.New(t.TempDir())
 	require.NoError(t, err)
 
-	hostFuncs := wasm.NewHostFunctions(zap.NewNop().Sugar(), noopRouter{})
-	rt, err := wasm.NewRuntime(hostFuncs, 2)
+	hostFuncs := wasm.NewHostFunctions(zap.NewNop().Sugar(), noopRequestRouter{})
+	rt, err := wasm.NewRuntime(hostFuncs)
 	require.NoError(t, err)
 	t.Cleanup(func() { rt.Close(context.Background()) })
 

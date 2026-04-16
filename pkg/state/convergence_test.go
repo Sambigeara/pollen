@@ -138,7 +138,7 @@ func TestConvergence_ThreeStoreFullMesh(t *testing.T) {
 	h.stores[1].SetLocalCoord(coords.Coord{X: 1, Y: 2, Height: coords.MinHeight}, 0.5)
 	h.stores[1].SetLocalNAT(nat.Easy)
 
-	h.stores[2].SetWorkloadSpec("hash1", "hash1", 2, 0, 0, 0)
+	h.stores[2].SetWorkloadSpec(WorkloadSpec{Name: "hash1", Hash: "hash1", MinReplicas: 2}) //nolint:mnd
 	h.stores[2].ClaimWorkload("hash1")
 
 	h.establishFullReachability()
@@ -252,7 +252,7 @@ func applyFuzzMutation(s StateStore, kind int, peers []types.PeerKey, r *fuzzRea
 	case 7: // workload spec
 		hash := fmt.Sprintf("wl-%d", r.readByte()%8)
 		replicas := uint32(r.readByte()%4) + 1
-		s.SetWorkloadSpec(hash, hash, replicas, 0, 0, 0)
+		s.SetWorkloadSpec(WorkloadSpec{Name: hash, Hash: hash, MinReplicas: replicas})
 	case 8: // workload claim
 		hash := fmt.Sprintf("wl-%d", r.readByte()%8)
 		if r.readByte()%2 == 0 {
@@ -263,7 +263,12 @@ func applyFuzzMutation(s StateStore, kind int, peers []types.PeerKey, r *fuzzRea
 	case 9: // resource telemetry
 		cpu := uint32(r.readByte())
 		mem := uint32(r.readByte())
-		s.SetLocalResources(float64(cpu), float64(mem), 8<<30, 4, 0, 0)
+		s.SetLocalResources(NodeResources{
+			CPUPercent:    cpu,
+			MemPercent:    mem,
+			MemTotalBytes: 8 << 30,
+			NumCPU:        4,
+		})
 	}
 }
 

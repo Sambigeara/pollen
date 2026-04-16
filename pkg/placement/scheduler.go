@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"crypto/sha256"
-	"maps"
 	"math"
 	"math/rand/v2"
 	"slices"
@@ -28,13 +27,13 @@ type action struct {
 }
 
 type spec struct {
+	MemoryBytes uint64
 	MinReplicas uint32
 	Spread      float32
 }
 
 type nodeState struct {
 	Coord            *coords.Coord
-	TrafficTo        map[types.PeerKey]uint64
 	MemTotalBytes    uint64
 	CPUPercent       uint32
 	MemPercent       uint32
@@ -44,37 +43,44 @@ type nodeState struct {
 }
 
 type clusterState struct {
-	Nodes      map[types.PeerKey]nodeState
-	SeedLoad   map[types.PeerKey]map[string]float32 // per-node seed served rates (from gossip)
-	SeedDemand map[types.PeerKey]map[string]float32 // per-node seed demand rates (from gossip)
+	Nodes map[types.PeerKey]nodeState
+
+	// Per-seed observations aggregated across hosts. Compute cost is the mean
+	// wall-time per invocation; dial rates are the cluster-wide sum (aligned
+	// with the cluster-wide invocation rate so calls_per_invocation = sum/sum
+	// is well-defined). InvocationRates is the cluster-wide sum of per-node
+	// ServedRate contributions from the SeedMetrics bundle. ParkedTime is
+	// the cluster-wide mean of per-node parked-time observations (ms spent
+	// inside pollen_request per invocation); the gate sizer uses it to
+	// derive active CPU time as ComputeCost - ParkedTime.
+	ComputeCost     map[string]float64
+	ParkedTime      map[string]float64
+	DialRates       map[string]map[string]float64
+	InvocationRates map[string]float64
+
+	// Target → host lookups for dial-graph resolution.
+	SeedHosts    map[string][]types.PeerKey
+	ServiceHosts map[string][]types.PeerKey
 }
 
 const (
-	weightCapacity = 0.30
-	weightDemand   = 0.30
-	weightTraffic  = 0.25
-	weightVivaldi  = 0.15
+	percentMax = 100
 
-	incumbentBonus     = 1.3
-	challengeThreshold = 1.2
-	neutralScore       = 0.5
-	percentMax         = 100
-	memScaleFactor     = 1 << 30
-
-	releaseIdleBase   = 2 * time.Minute
-	releaseIdleJitter = 30 * time.Second
+	releaseIdleBase   = 30 * time.Second
+	releaseIdleJitter = 10 * time.Second
 )
 
 type scored struct {
-	peer        types.PeerKey
-	suitability float64
-	rawScore    float64
-	tieBreak    [32]byte
+	peer     types.PeerKey
+	latency  float64
+	tieBreak [32]byte
 }
 
+// compareScored ranks lowest predicted latency first, breaking exact ties
+// by hash so all nodes converge on the same ordering each tick.
 func compareScored(a, b scored) int {
-	if a.suitability != b.suitability {
-		return cmp.Compare(b.suitability, a.suitability)
+	if a.latency != b.latency {
+		return cmp.Compare(a.latency, b.latency)
 	}
 	return bytes.Compare(a.tieBreak[:], b.tieBreak[:])
 }
@@ -91,7 +97,6 @@ type evaluateInput struct {
 	claims         map[string]map[types.PeerKey]struct{}
 	cluster        clusterState
 	isRunning      func(string) bool
-	demandRates    map[string]float64
 	idleDurations  map[string]time.Duration
 	dynamicTargets map[string]uint32
 	allPeers       []types.PeerKey
@@ -114,15 +119,15 @@ func evaluate(in evaluateInput) []action {
 
 		switch {
 		case !iClaimed && claimCount < target:
-			if shouldClaim(in.localID, hash, target, claimants, in.allPeers, in.cluster, in.demandRates) {
+			if shouldClaim(in.localID, hash, sp, target, claimants, in.allPeers, in.cluster) {
 				actions = append(actions, action{Hash: hash, Kind: actionClaim, DynamicTarget: target})
 			}
 		case !iClaimed && claimCount >= target:
-			if shouldChallenge(in.localID, hash, claimants, in.cluster, in.demandRates) {
+			if shouldChallenge(in.localID, hash, sp, target, claimants, in.cluster) {
 				actions = append(actions, action{Hash: hash, Kind: actionClaim, DynamicTarget: target})
 			}
 		case iClaimed && claimCount > target:
-			if shouldReleaseExcess(in.localID, hash, target, claimants, in.cluster, in.demandRates, in.idleDurations) {
+			if shouldReleaseExcess(in.localID, hash, target, claimants, in.cluster, in.idleDurations) {
 				actions = append(actions, action{Hash: hash, Kind: actionRelease})
 			}
 		}
@@ -140,28 +145,25 @@ func evaluate(in evaluateInput) []action {
 	return actions
 }
 
-func shouldClaim(localID types.PeerKey, hash string, desired uint32, claimants map[types.PeerKey]struct{}, allPeers []types.PeerKey, cluster clusterState, demandRates map[string]float64) bool {
-	needed := int(desired) - len(claimants)
-	unclaimed := make([]scored, 0, len(allPeers))
-	for _, pk := range allPeers {
-		if _, already := claimants[pk]; already {
-			continue
-		}
-		raw := rawSuitabilityScore(pk, cluster, claimants, demandRates, hash, localID)
-		unclaimed = append(unclaimed, scored{
-			peer:        pk,
-			suitability: raw,
-			rawScore:    raw,
-			tieBreak:    placementScore(pk, hash),
-		})
+// rankTopN scores each candidate by predicted latency (with a
+// deterministic hash tiebreak), sorts, and returns whether localID is
+// in the first n entries. Used by the three decision functions below —
+// they only differ in which peers go into the candidate pool and what
+// n is.
+func rankTopN(candidates []types.PeerKey, hash string, cluster clusterState, n int, localID types.PeerKey) bool {
+	if n <= 0 || len(candidates) == 0 {
+		return false
 	}
-
-	slices.SortFunc(unclaimed, compareScored)
-
-	if needed > len(unclaimed) {
-		needed = len(unclaimed)
+	scored := make([]scored, 0, len(candidates))
+	for _, pk := range candidates {
+		scored = append(scored, newScored(pk, hash, cluster))
 	}
-	for _, s := range unclaimed[:needed] {
+	slices.SortFunc(scored, compareScored)
+
+	if n > len(scored) {
+		n = len(scored)
+	}
+	for _, s := range scored[:n] {
 		if s.peer == localID {
 			return true
 		}
@@ -169,29 +171,57 @@ func shouldClaim(localID types.PeerKey, hash string, desired uint32, claimants m
 	return false
 }
 
-// shouldChallenge decides whether localID should claim a hash that is already
-// at or above effectiveTarget. Requires the local raw score to exceed the
-// weakest incumbent's raw score by challengeThreshold.
-func shouldChallenge(localID types.PeerKey, hash string, claimants map[types.PeerKey]struct{}, cluster clusterState, demandRates map[string]float64) bool {
-	myRaw := rawSuitabilityScore(localID, cluster, claimants, demandRates, hash, localID)
-
-	var weakestRaw float64
-	first := true
-	for pk := range claimants {
-		raw := rawSuitabilityScore(pk, cluster, claimants, demandRates, hash, localID)
-		if first || raw < weakestRaw {
-			weakestRaw = raw
-			first = false
-		}
+func newScored(pk types.PeerKey, hash string, cluster clusterState) scored {
+	return scored{
+		peer:     pk,
+		latency:  predictedLatency(pk, hash, cluster),
+		tieBreak: placementScore(pk, hash),
 	}
-
-	return myRaw > weakestRaw*challengeThreshold
 }
 
-// shouldReleaseExcess handles release for excess claimants (above effectiveTarget).
-// Requires the seed to be idle for releaseIdleBase + jitter, and the local node
-// to be the lowest-scoring excess claimant.
-func shouldReleaseExcess(localID types.PeerKey, hash string, target uint32, claimants map[types.PeerKey]struct{}, cluster clusterState, demandRates map[string]float64, idleDurations map[string]time.Duration) bool {
+// shouldClaim decides whether localID should join the claimant set for an
+// under-replicated workload. Local wins if it is one of the `needed`
+// best-predicted candidates among capacity-passing unclaimed peers.
+func shouldClaim(localID types.PeerKey, hash string, sp spec, desired uint32, claimants map[types.PeerKey]struct{}, allPeers []types.PeerKey, cluster clusterState) bool {
+	needed := int(desired) - len(claimants)
+	if needed <= 0 {
+		return false
+	}
+	unclaimed := make([]types.PeerKey, 0, len(allPeers))
+	for _, pk := range allPeers {
+		if _, already := claimants[pk]; already {
+			continue
+		}
+		if !hasCapacity(pk, sp.MemoryBytes, cluster) {
+			continue
+		}
+		unclaimed = append(unclaimed, pk)
+	}
+	return rankTopN(unclaimed, hash, cluster, needed, localID)
+}
+
+// shouldChallenge decides whether localID should join an at-or-above-target
+// claimant set. Local wins if, when added to the contender pool, it ranks in
+// the top-`target` by predicted latency (with hash tiebreak on equality).
+func shouldChallenge(localID types.PeerKey, hash string, sp spec, target uint32, claimants map[types.PeerKey]struct{}, cluster clusterState) bool {
+	if !hasCapacity(localID, sp.MemoryBytes, cluster) {
+		return false
+	}
+	contenders := make([]types.PeerKey, 0, len(claimants)+1)
+	for pk := range claimants {
+		contenders = append(contenders, pk)
+	}
+	contenders = append(contenders, localID)
+	return rankTopN(contenders, hash, cluster, int(target), localID)
+}
+
+// shouldReleaseExcess fires when localID is among the excess claimants for a
+// workload (claimCount > target). Releases when the seed has been idle long
+// enough and localID is not one of the top-`target` claimants by predicted
+// latency. The idle window prevents thrashing during transient rebalances;
+// deterministic latency+hash ranking ensures at most one node chooses to
+// release per tick.
+func shouldReleaseExcess(localID types.PeerKey, hash string, target uint32, claimants map[types.PeerKey]struct{}, cluster clusterState, idleDurations map[string]time.Duration) bool {
 	idle := idleDurations[hash]
 	//nolint:gosec
 	jitter := time.Duration(rand.Int64N(int64(releaseIdleJitter)))
@@ -199,164 +229,12 @@ func shouldReleaseExcess(localID types.PeerKey, hash string, target uint32, clai
 		return false
 	}
 
-	incumbents := make([]scored, 0, len(claimants))
+	incumbents := make([]types.PeerKey, 0, len(claimants))
 	for pk := range claimants {
-		raw := rawSuitabilityScore(pk, cluster, claimants, demandRates, hash, localID)
-		incumbents = append(incumbents, scored{
-			peer:        pk,
-			suitability: raw * incumbentBonus,
-			rawScore:    raw,
-			tieBreak:    placementScore(pk, hash),
-		})
+		incumbents = append(incumbents, pk)
 	}
-	slices.SortFunc(incumbents, compareScored)
-
-	keep := min(int(target), len(incumbents))
-	for _, s := range incumbents[:keep] {
-		if s.peer == localID {
-			return false
-		}
-	}
-	return true
-}
-
-func rawSuitabilityScore(candidate types.PeerKey, cluster clusterState, claimants map[types.PeerKey]struct{}, demandRates map[string]float64, hash string, localID types.PeerKey) float64 {
-	peers := slices.Collect(maps.Keys(cluster.Nodes))
-
-	return capacityScore(candidate, peers, cluster)*weightCapacity +
-		localDemandScore(candidate, localID, demandRates, hash)*weightDemand +
-		trafficAffinityScore(candidate, peers, claimants, cluster)*weightTraffic +
-		vivaldiScore(candidate, peers, claimants, cluster)*weightVivaldi
-}
-
-func localDemandScore(candidate, localID types.PeerKey, demandRates map[string]float64, hash string) float64 {
-	if candidate != localID {
-		return 0
-	}
-	rate := demandRates[hash]
-	if rate <= 0 {
-		return 0
-	}
-	// Normalise to [0,1]. The 100 calls/sec saturation point is a placeholder —
-	// ideally this would normalise against peers (like capacityScore does), but
-	// demand rates are purely local so we have no cluster-wide max to compare
-	// against. Tune once real workload data is available.
-	return math.Min(1.0, rate/100.0) //nolint:mnd
-}
-
-func capacityScore(candidate types.PeerKey, peers []types.PeerKey, cluster clusterState) float64 {
-	freeCapacity := func(pk types.PeerKey) (float64, bool) {
-		ns := cluster.Nodes[pk]
-		if ns.NumCPU == 0 && ns.MemTotalBytes == 0 {
-			return 0, false
-		}
-		cpuBudget := uint32(percentMax)
-		if ns.CPUBudgetPercent > 0 {
-			cpuBudget = ns.CPUBudgetPercent
-		}
-		memBudget := uint32(percentMax)
-		if ns.MemBudgetPercent > 0 {
-			memBudget = ns.MemBudgetPercent
-		}
-		freeCPU := float64(ns.NumCPU) * float64(int32(cpuBudget)-int32(ns.CPUPercent)) / percentMax
-		freeMem := float64(ns.MemTotalBytes) * float64(int32(memBudget)-int32(ns.MemPercent)) / percentMax
-		return freeCPU + freeMem/memScaleFactor, true
-	}
-
-	candidateFree, ok := freeCapacity(candidate)
-	if !ok {
-		return neutralScore
-	}
-
-	var maxFree float64
-	for _, pk := range peers {
-		f, ok := freeCapacity(pk)
-		if ok && f > maxFree {
-			maxFree = f
-		}
-	}
-	if maxFree <= 0 {
-		return neutralScore
-	}
-	return candidateFree / maxFree
-}
-
-func trafficAffinityScore(candidate types.PeerKey, peers []types.PeerKey, claimants map[types.PeerKey]struct{}, cluster clusterState) float64 {
-	if len(claimants) == 0 {
-		return 0.0
-	}
-
-	trafficSum := func(pk types.PeerKey) float64 {
-		var total uint64
-		ns := cluster.Nodes[pk]
-		for cl := range claimants {
-			if ns.TrafficTo != nil {
-				total += ns.TrafficTo[cl]
-			}
-			if clNS, ok := cluster.Nodes[cl]; ok && clNS.TrafficTo != nil {
-				total += clNS.TrafficTo[pk]
-			}
-		}
-		return float64(total)
-	}
-
-	candidateTraffic := trafficSum(candidate)
-
-	var maxTraffic float64
-	for _, pk := range peers {
-		t := trafficSum(pk)
-		if t > maxTraffic {
-			maxTraffic = t
-		}
-	}
-	if maxTraffic == 0 {
-		return 0.0
-	}
-	return candidateTraffic / maxTraffic
-}
-
-func vivaldiScore(candidate types.PeerKey, peers []types.PeerKey, claimants map[types.PeerKey]struct{}, cluster clusterState) float64 {
-	if len(claimants) == 0 || cluster.Nodes[candidate].Coord == nil {
-		return neutralScore
-	}
-
-	meanDist := func(pk types.PeerKey) float64 {
-		coord := cluster.Nodes[pk].Coord
-		if coord == nil {
-			return -1
-		}
-		var sum float64
-		var count int
-		for cl := range claimants {
-			clCoord := cluster.Nodes[cl].Coord
-			if clCoord == nil {
-				continue
-			}
-			sum += coords.Distance(*coord, *clCoord)
-			count++
-		}
-		if count == 0 {
-			return -1
-		}
-		return sum / float64(count)
-	}
-
-	candidateDist := meanDist(candidate)
-	if candidateDist < 0 {
-		return neutralScore
-	}
-
-	var maxDist float64
-	for _, pk := range peers {
-		d := meanDist(pk)
-		if d > maxDist {
-			maxDist = d
-		}
-	}
-	if maxDist == 0 {
-		return 1.0
-	}
-	return math.Max(0, 1.0-candidateDist/maxDist)
+	// Top-target are safe; local is excess if not in the top-target.
+	return !rankTopN(incumbents, hash, cluster, int(target), localID)
 }
 
 func placementScore(nodeID types.PeerKey, hash string) [32]byte {
@@ -364,4 +242,140 @@ func placementScore(nodeID types.PeerKey, hash string) [32]byte {
 	copy(buf, nodeID[:])
 	copy(buf[len(nodeID):], hash)
 	return sha256.Sum256(buf)
+}
+
+// hostsForTarget resolves a dial-graph target key ("seed:<hash>" or
+// "service:<name>") to the set of peers currently hosting it.
+func hostsForTarget(targetKey string, cluster clusterState) []types.PeerKey {
+	prefix, name, ok := splitTargetKey(targetKey)
+	if !ok {
+		return nil
+	}
+	switch prefix {
+	case "seed":
+		return cluster.SeedHosts[name]
+	case "service":
+		return cluster.ServiceHosts[name]
+	}
+	return nil
+}
+
+func splitTargetKey(target string) (prefix, name string, ok bool) {
+	for i := 0; i < len(target); i++ {
+		if target[i] == ':' {
+			return target[:i], target[i+1:], true
+		}
+	}
+	return "", "", false
+}
+
+// minRTT returns the minimum Vivaldi distance from candidate to any node in
+// hosts. Returns 0 if candidate itself appears in hosts (co-located target).
+// Returns 0 if no usable coordinate pair exists — treats unknown distances
+// as zero so missing topology data doesn't artificially inflate latency.
+func minRTT(candidate types.PeerKey, hosts []types.PeerKey, cluster clusterState) float64 {
+	if len(hosts) == 0 {
+		return 0
+	}
+	candidateCoord := cluster.Nodes[candidate].Coord
+	best := math.Inf(1)
+	found := false
+	for _, h := range hosts {
+		if h == candidate {
+			return 0
+		}
+		hostCoord := cluster.Nodes[h].Coord
+		if candidateCoord == nil || hostCoord == nil {
+			continue
+		}
+		d := coords.Distance(*candidateCoord, *hostCoord)
+		if d < best {
+			best = d
+			found = true
+		}
+	}
+	if !found {
+		return 0
+	}
+	return best
+}
+
+// cpuCapacity returns the candidate's CPU allocation expressed as
+// CPU-seconds per wall-second (numCPU × budget fraction). Returns 0 when
+// node telemetry has not yet been published.
+func cpuCapacity(ns nodeState) float64 {
+	if ns.NumCPU == 0 {
+		return 0
+	}
+	budget := float64(percentMax)
+	if ns.CPUBudgetPercent > 0 {
+		budget = float64(ns.CPUBudgetPercent)
+	}
+	return float64(ns.NumCPU) * budget / float64(percentMax)
+}
+
+// predictedLatency estimates the per-invocation wall-time for hosting seed
+// hash on candidate. Combines the seed's measured compute cost (scaled to
+// the candidate's CPU capacity) with the network-traversal cost of each
+// downstream dial, weighted by calls-per-invocation.
+func predictedLatency(candidate types.PeerKey, hash string, cluster clusterState) float64 {
+	ns := cluster.Nodes[candidate]
+	capacity := cpuCapacity(ns)
+
+	var compute float64
+	if cost, ok := cluster.ComputeCost[hash]; ok {
+		// Cold candidates (no CPU telemetry yet) fall back to a single-CPU
+		// equivalent — pessimistic enough that they don't unfairly outrank
+		// measured peers, lenient enough that they remain placeable.
+		effectiveCapacity := capacity
+		if effectiveCapacity <= 0 {
+			effectiveCapacity = 1.0
+		}
+		compute = cost / effectiveCapacity
+	}
+
+	var network float64
+	if dials, ok := cluster.DialRates[hash]; ok {
+		invocationRate := cluster.InvocationRates[hash]
+		if invocationRate > 0 {
+			for target, rate := range dials {
+				callsPerInvocation := rate / invocationRate
+				hosts := hostsForTarget(target, cluster)
+				network += callsPerInvocation * minRTT(candidate, hosts, cluster)
+			}
+		}
+	}
+
+	return compute + network
+}
+
+// hasCapacity is the hard placement gate: rejects candidates whose
+// remaining CPU/memory headroom can't host the seed. Missing telemetry
+// (no entry in cluster.Nodes, or empty NodeState) is treated as
+// "unknown — assume fits" so cold nodes can be considered.
+func hasCapacity(candidate types.PeerKey, memoryBytes uint64, cluster clusterState) bool {
+	ns := cluster.Nodes[candidate]
+	if ns.NumCPU == 0 && ns.MemTotalBytes == 0 {
+		return true
+	}
+
+	cpuBudget := uint32(percentMax)
+	if ns.CPUBudgetPercent > 0 {
+		cpuBudget = ns.CPUBudgetPercent
+	}
+	if int32(ns.CPUPercent) >= int32(cpuBudget) {
+		return false
+	}
+
+	if memoryBytes > 0 && ns.MemTotalBytes > 0 {
+		memBudget := uint32(percentMax)
+		if ns.MemBudgetPercent > 0 {
+			memBudget = ns.MemBudgetPercent
+		}
+		freeMem := float64(ns.MemTotalBytes) * float64(int32(memBudget)-int32(ns.MemPercent)) / float64(percentMax)
+		if freeMem < float64(memoryBytes) {
+			return false
+		}
+	}
+	return true
 }

@@ -23,7 +23,6 @@ type (
 	}
 	WorkloadChanged struct{ Hash string }
 	TopologyChanged struct{ Peer types.PeerKey }
-	GossipApplied   struct{}
 )
 
 func (PeerJoined) stateEvent()      {}
@@ -31,7 +30,6 @@ func (PeerDenied) stateEvent()      {}
 func (ServiceChanged) stateEvent()  {}
 func (WorkloadChanged) stateEvent() {}
 func (TopologyChanged) stateEvent() {}
-func (GossipApplied) stateEvent()   {}
 
 type StateStore interface {
 	Snapshot() Snapshot
@@ -48,12 +46,13 @@ type StateStore interface {
 	SetLocalReachable(peers []types.PeerKey) []Event
 	SetLocalObservedAddress(ip string, port uint32) []Event
 
-	SetWorkloadSpec(name, hash string, replicas, memoryPages, timeoutMs uint32, spread float32) []Event
+	SetWorkloadSpec(spec WorkloadSpec) []Event
+	DeleteWorkloadSpec(hash string) []Event
 	ClaimWorkload(hash string) []Event
 	ReleaseWorkload(hash string) []Event
-	SetLocalResources(cpu, mem float64, memTotalBytes uint64, numCPU, cpuBudgetPct, memBudgetPct uint32) []Event
-	SetSeedLoad(rates map[string]float32) []Event
-	SetSeedDemand(rates map[string]float32) []Event
+	SetLocalResources(r NodeResources) []Event
+	SetSeedMetrics(metrics map[string]SeedMetrics) []Event
+	SetSeedDialRates(rates map[string]map[string]float32) []Event
 
 	SetService(port uint32, name string, protocol statev1.ServiceProtocol) []Event
 	RemoveService(name string) []Event

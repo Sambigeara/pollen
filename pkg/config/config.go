@@ -50,12 +50,22 @@ type Resources struct {
 	MemPercent uint32 `yaml:"memory,omitempty"`
 }
 
+// Placement configures the WASM runtime's idle-instance cache.
+// Concurrency limits live in the placement layer's per-workload gates,
+// not here. Zero values select package defaults.
+type Placement struct {
+	// IdleInstanceTTL is how long a workload's pooled instances persist
+	// without invocations before being evicted.
+	IdleInstanceTTL time.Duration `yaml:"idleInstanceTTL,omitempty"`
+}
+
 type Config struct {
 	BootstrapPeers map[string][]string `yaml:"bootstrapPeers,omitempty"`
 	Name           string              `yaml:"name,omitempty"`
 	Connections    []Connection        `yaml:"connections,omitempty"`
 	Services       []Service           `yaml:"services,omitempty"`
 	Resources      Resources           `yaml:"resources,omitempty"`
+	Placement      Placement           `yaml:"placement,omitempty"`
 	Public         bool                `yaml:"public,omitempty"`
 }
 

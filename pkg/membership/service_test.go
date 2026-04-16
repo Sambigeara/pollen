@@ -101,30 +101,6 @@ func TestControlMetricsReturnsCoord(t *testing.T) {
 	require.InDelta(t, 7.0, m.LocalCoord.Y, 0.01)
 }
 
-func TestForwardEventsFiltersGossipApplied(t *testing.T) {
-	svc, _, _ := newTestService(peerKey(1))
-
-	svc.forwardEvents([]state.Event{
-		state.PeerJoined{Key: peerKey(2)},
-		state.GossipApplied{},
-		state.PeerDenied{Key: peerKey(3)},
-	})
-
-	ev1 := <-svc.events
-	_, ok := ev1.(state.PeerJoined)
-	require.True(t, ok)
-
-	ev2 := <-svc.events
-	_, ok = ev2.(state.PeerDenied)
-	require.True(t, ok)
-
-	select {
-	case ev := <-svc.events:
-		t.Fatalf("unexpected event: %T", ev)
-	default:
-	}
-}
-
 func TestPeerEventConnectedUpdatesReachable(t *testing.T) {
 	svc, net, st := newTestService(peerKey(1))
 	t.Cleanup(func() {

@@ -33,13 +33,19 @@ type Provider struct {
 	shutdown func(context.Context) error
 }
 
-func NewProvider() *Provider {
-	manual := sdkmetric.NewManualReader()
-	sdk := sdkmetric.NewMeterProvider(sdkmetric.WithReader(manual))
+func NewProvider(readers ...sdkmetric.Reader) *Provider {
+	if len(readers) == 0 {
+		readers = []sdkmetric.Reader{sdkmetric.NewManualReader()}
+	}
+	opts := make([]sdkmetric.Option, 0, len(readers))
+	for _, r := range readers {
+		opts = append(opts, sdkmetric.WithReader(r))
+	}
+	sdk := sdkmetric.NewMeterProvider(opts...)
 
 	return &Provider{
 		provider: sdk,
-		reader:   manual,
+		reader:   readers[0],
 		shutdown: sdk.Shutdown,
 	}
 }

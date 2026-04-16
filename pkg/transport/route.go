@@ -118,8 +118,8 @@ func (m *QUICTransport) forwardRoutedStream(ctx context.Context, inbound *quic.S
 	var in io.ReadWriteCloser = Stream{inbound}
 	var out io.ReadWriteCloser = Stream{outbound}
 	if m.trafficTracker != nil {
-		in = wrapTrafficStream(in, m.trafficTracker, upstreamPeer)
-		out = wrapTrafficStream(out, m.trafficTracker, nextHop)
+		in = WrapTrafficStream(in, m.trafficTracker, upstreamPeer)
+		out = WrapTrafficStream(out, m.trafficTracker, nextHop)
 	}
 	bridgeStreams(in, out)
 }
@@ -175,7 +175,10 @@ func (s *trafficCountedStream) Write(p []byte) (int, error) {
 
 func (s *trafficCountedStream) Close() error { return s.inner.Close() }
 
-func wrapTrafficStream(stream io.ReadWriteCloser, recorder TrafficRecorder, peer types.PeerKey) io.ReadWriteCloser {
+func WrapTrafficStream(stream io.ReadWriteCloser, recorder TrafficRecorder, peer types.PeerKey) io.ReadWriteCloser {
+	if recorder == nil {
+		return stream
+	}
 	return &trafficCountedStream{inner: stream, recorder: recorder, peer: peer}
 }
 

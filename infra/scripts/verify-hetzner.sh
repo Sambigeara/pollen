@@ -47,7 +47,7 @@ cleanup() {
     rm -f /tmp/pln-verify-*.log
     exit $rc
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM HUP
 
 # --- resolve IPs ---
 
@@ -64,10 +64,6 @@ NODE2_IP=$(echo "$IPS_JSON" | jq -r '.["nbg1-2"]')
 NODE3_IP=$(echo "$IPS_JSON" | jq -r '.["hel1"]')
 ALL_REMOTE=("$ROOT_IP" "$NODE2_IP" "$NODE3_IP")
 echo "  root(nbg1-1)=$ROOT_IP  node2(nbg1-2)=$NODE2_IP  node3(hel1)=$NODE3_IP"
-
-# Refresh SSH host keys — IPs are reused across reprovisions.
-for ip in "${ALL_REMOTE[@]}"; do ssh-keygen -R "$ip" 2>/dev/null || true; done
-ssh-keyscan "${ALL_REMOTE[@]}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
 # --- step 0: build & deploy ---
 
@@ -96,26 +92,8 @@ echo "  Deploying to remote nodes..."
 for ip in "${ALL_REMOTE[@]}"; do
     (
         rsync -z -e "ssh $SSH_OPTS" "$PLN_LINUX" "root@${ip}:/usr/bin/pln"
-        rssh "$ip" "pln provision"
-        rssh "$ip" "cat > /lib/systemd/system/pln.service << 'UNIT'
-[Unit]
-Description=PLN Mesh Node
-After=network-online.target
-Wants=network-online.target
-[Service]
-Type=simple
-User=pln
-Group=pln
-ExecStart=/usr/bin/pln --dir /var/lib/pln up
-Restart=on-failure
-RestartSec=5
-StateDirectory=pln
-StateDirectoryMode=2770
-LimitNOFILE=1048576
-[Install]
-WantedBy=multi-user.target
-UNIT
-systemctl daemon-reload" || true
+        scp -O $SSH_OPTS "$REPO_ROOT/packaging/pln.service" "root@${ip}:/lib/systemd/system/pln.service"
+        rssh "$ip" "pln provision && systemctl daemon-reload"
     ) &
 done
 wait
@@ -145,9 +123,6 @@ pass "Step 1: Local root initialized"
 echo -e "\n${BOLD}Step 2: Bootstrap relay (nbg1-1)${RESET}"
 lpln bootstrap ssh "root@${ROOT_IP}"
 sleep 3
-
-peer_count() { lpln status 2>&1 | grep -cE 'direct|relay|indirect' || true; }
-remote_peer_count() { ssh $SSH_OPTS "root@$1" "/usr/bin/pln --dir /var/lib/pln status" 2>&1 | grep -cE 'direct|relay|indirect' || true; }
 
 poll "root sees relay" 15 bash -c "[[ \$(\"$PLN_LOCAL\" --dir \"$PLN_TEST_DIR\" status 2>&1 | grep -cE 'direct|relay|indirect' || true) -ge 1 ]]"
 poll "relay sees root" 15 bash -c "[[ \$(ssh $SSH_OPTS root@$ROOT_IP '/usr/bin/pln --dir /var/lib/pln status' 2>&1 | grep -cE 'direct|relay|indirect' || true) -ge 1 ]]"
@@ -250,9 +225,9 @@ for label_ip in "local:" "nbg1-1:$ROOT_IP" "nbg1-2:$NODE2_IP" "hel1:$NODE3_IP"; 
     label="${label_ip%%:*}"
     ip="${label_ip#*:}"
     if [ "$label" = "local" ]; then
-        OUT=$(lpln call "$SHORT" handle --input test 2>&1)
+        OUT=$(lpln call "$SHORT" handle test 2>&1)
     else
-        OUT=$(rpln "$ip" call "$SHORT" handle --input test 2>&1)
+        OUT=$(rpln "$ip" call "$SHORT" handle test 2>&1)
     fi
     echo "$OUT" | grep -q "test" || fail "Step 9" "call from $label returned unexpected: $OUT"
 done
@@ -264,9 +239,9 @@ echo -e "\n${BOLD}Step 10: Load test (1000 calls)${RESET}"
 LOAD_A="/tmp/pln-load-a-$$"
 LOAD_B="/tmp/pln-load-b-$$"
 # Single SSH session per node with internal loop — no per-call SSH overhead.
-rssh "$ROOT_IP" "P=0;F=0;for i in \$(seq 1 500);do if /usr/bin/pln --dir /var/lib/pln call $SHORT handle --input t >/dev/null 2>&1;then P=\$((P+1));else F=\$((F+1));fi;done;echo \$P \$F" > "$LOAD_A" 2>&1 &
+rssh "$ROOT_IP" "P=0;F=0;for i in \$(seq 1 500);do if /usr/bin/pln --dir /var/lib/pln call $SHORT handle t >/dev/null 2>&1;then P=\$((P+1));else F=\$((F+1));fi;done;echo \$P \$F" > "$LOAD_A" 2>&1 &
 PID_A=$!
-rssh "$NODE2_IP" "P=0;F=0;for i in \$(seq 1 500);do if /usr/bin/pln --dir /var/lib/pln call $SHORT handle --input t >/dev/null 2>&1;then P=\$((P+1));else F=\$((F+1));fi;done;echo \$P \$F" > "$LOAD_B" 2>&1 &
+rssh "$NODE2_IP" "P=0;F=0;for i in \$(seq 1 500);do if /usr/bin/pln --dir /var/lib/pln call $SHORT handle t >/dev/null 2>&1;then P=\$((P+1));else F=\$((F+1));fi;done;echo \$P \$F" > "$LOAD_B" 2>&1 &
 PID_B=$!
 wait $PID_A
 wait $PID_B

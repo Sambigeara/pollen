@@ -46,12 +46,9 @@
 
 ## Task Management
 
-1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
-2. **Verify Plan**: Check in before starting implementation
-3. **Track Progress**: Mark items complete as you go
-4. **Explain Changes**: High-level summary at each step
-5. **Document Results**: Add review section to `tasks/todo.md`
-6. **Capture Lessons**: Add to the **Lessons** section at the bottom of this file after corrections
+1. **Track Progress**: Mark items complete as you go
+2. **Explain Changes**: High-level summary at each step
+3. **Capture Lessons**: Add to the **Lessons** section at the bottom of this file after corrections
 
 ## Core Principles
 
@@ -115,3 +112,6 @@
 - Use `require.Eventually` for async assertions (peer connections, state convergence). Don't `time.Sleep` then assert.
 - Use test harness structs with factory methods (like `meshHarness`, `clusterAuth`) to keep test setup readable and reusable across subtests.
 - **Test harnesses must exercise the production code path.** If a harness method (e.g. `supervisor.SeedWorkload`) adds logic beyond what the production entry point does (e.g. `control.SeedWorkload → placement.Seed`), the production path is probably missing that logic. Harness shortcuts that bypass gRPC/API layers mask integration bugs.
+
+### Communication
+- **Push back on suggestions that would make things worse.** If the user suggests a change (e.g. making something private) and there's a concrete reason it needs to stay as-is (e.g. another package references it), say so immediately rather than making the change and discovering the breakage. Don't blindly apply suggestions — explain the constraint and let the user decide with full information.

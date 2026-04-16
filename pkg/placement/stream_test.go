@@ -16,6 +16,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func testGates() *gateRegistry {
+	return newGateRegistry(func(string) int { return 16 })
+}
+
 type hangingStream struct {
 	mu     sync.Mutex
 	closed bool
@@ -129,7 +133,7 @@ func TestHandleAndInvokeRoundTrip(t *testing.T) {
 	server, client := pipePair(t)
 
 	// Test goroutine does not matter, but production needs tracking.
-	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, 10*time.Second)
+	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, newUtilisationTracker(), testGates(), 10*time.Second)
 
 	output, err := invokeOverStream(ctx, client, hash, "handle", []byte("hello"))
 	require.NoError(t, err)
@@ -146,7 +150,7 @@ func TestHandleWorkloadStream_Error(t *testing.T) {
 
 	ctx := context.Background()
 	server, client := pipePair(t)
-	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, 10*time.Second)
+	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, newUtilisationTracker(), testGates(), 10*time.Second)
 
 	_, err := invokeOverStream(ctx, client, hash, "run", nil)
 	require.Error(t, err)
@@ -171,7 +175,7 @@ func TestHandleAndInvokeRoundTrip_CallerInfo(t *testing.T) {
 
 	server, client := pipePair(t)
 	// Server uses authPK as the transport-authenticated peer.
-	go handleWorkloadStream(context.Background(), server, authPK, invoker, 10*time.Second)
+	go handleWorkloadStream(context.Background(), server, authPK, invoker, newUtilisationTracker(), testGates(), 10*time.Second)
 
 	output, err := invokeOverStream(ctx, client, hash, "handle", []byte("x"))
 	require.NoError(t, err)
@@ -184,6 +188,29 @@ func TestHandleAndInvokeRoundTrip_CallerInfo(t *testing.T) {
 	require.Equal(t, "relay", got.Attributes["role"])
 }
 
+func TestHandleWorkloadStream_StampsCallChainForRecursionGuard(t *testing.T) {
+	// The forwarded-call handler must stamp the hash into the local
+	// call chain before invoking the workload, so a recursive
+	// pollen_request from this seed back into itself fails fast with
+	// ErrCycle instead of starving its own gate.
+	hash := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	invoker := &mockInvoker{
+		callFn: func(ctx context.Context, _, _ string, _ []byte) ([]byte, error) {
+			if chainContains(ctx, hash) {
+				return nil, fmt.Errorf("cycle: %w", ErrCycle)
+			}
+			return nil, fmt.Errorf("guard absent: chain did not contain %s", hash)
+		},
+	}
+
+	ctx := context.Background()
+	server, client := pipePair(t)
+	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, newUtilisationTracker(), testGates(), 10*time.Second)
+
+	_, err := invokeOverStream(ctx, client, hash, "handle", nil)
+	require.ErrorIs(t, err, ErrCycle)
+}
+
 func TestHandleWorkloadStream_EmptyInput(t *testing.T) {
 	hash := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	invoker := &mockInvoker{
@@ -194,7 +221,7 @@ func TestHandleWorkloadStream_EmptyInput(t *testing.T) {
 
 	ctx := context.Background()
 	server, client := pipePair(t)
-	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, 10*time.Second)
+	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, newUtilisationTracker(), testGates(), 10*time.Second)
 
 	output, err := invokeOverStream(ctx, client, hash, "ping", nil)
 	require.NoError(t, err)

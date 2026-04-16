@@ -10,6 +10,7 @@ linters:
     - bidichk
     - bodyclose
     - copyloopvar
+    - depguard
     - dupl
     - durationcheck
     - errorlint
@@ -47,6 +48,152 @@ linters:
     - whitespace
 
   settings:
+    depguard:
+      # Encodes ARCH_SPEC.md layer boundaries:
+      #   L5 composition: cmd/pln, control, supervisor
+      #   L4 domain:      membership, placement, tunneling  (siblings)
+      #   L3 routing:     routing
+      #   L2 core:        state, transport                  (siblings)
+      #   L1 foundation:  types auth coords nat plnfs config cas wasm observability
+      # Rules: each layer denies imports from layers above; siblings at L2/L4
+      # deny each other; control denies supervisor (supervisor composes control).
+      rules:
+        foundation:
+          list-mode: lax
+          files:
+            - "**/pkg/auth/**"
+            - "**/pkg/cas/**"
+            - "**/pkg/config/**"
+            - "**/pkg/coords/**"
+            - "**/pkg/nat/**"
+            - "**/pkg/observability/**"
+            - "**/pkg/plnfs/**"
+            - "**/pkg/types/**"
+            - "**/pkg/wasm/**"
+          deny:
+            - pkg: github.com/sambigeara/pollen/pkg/state
+              desc: foundation (L1) must not import core layer
+            - pkg: github.com/sambigeara/pollen/pkg/transport
+              desc: foundation (L1) must not import core layer
+            - pkg: github.com/sambigeara/pollen/pkg/routing
+              desc: foundation (L1) must not import routing layer
+            - pkg: github.com/sambigeara/pollen/pkg/membership
+              desc: foundation (L1) must not import domain services
+            - pkg: github.com/sambigeara/pollen/pkg/placement
+              desc: foundation (L1) must not import domain services
+            - pkg: github.com/sambigeara/pollen/pkg/tunneling
+              desc: foundation (L1) must not import domain services
+            - pkg: github.com/sambigeara/pollen/pkg/control
+              desc: foundation (L1) must not import composition layer
+            - pkg: github.com/sambigeara/pollen/pkg/supervisor
+              desc: foundation (L1) must not import composition layer
+
+        state:
+          list-mode: lax
+          files:
+            - "**/pkg/state/**"
+          deny:
+            - pkg: github.com/sambigeara/pollen/pkg/transport
+              desc: state and transport are L2 siblings — siblings never import each other
+            - pkg: github.com/sambigeara/pollen/pkg/routing
+              desc: core (L2) must not import routing layer
+            - pkg: github.com/sambigeara/pollen/pkg/membership
+              desc: core (L2) must not import domain services
+            - pkg: github.com/sambigeara/pollen/pkg/placement
+              desc: core (L2) must not import domain services
+            - pkg: github.com/sambigeara/pollen/pkg/tunneling
+              desc: core (L2) must not import domain services
+            - pkg: github.com/sambigeara/pollen/pkg/control
+              desc: core (L2) must not import composition layer
+            - pkg: github.com/sambigeara/pollen/pkg/supervisor
+              desc: core (L2) must not import composition layer
+
+        transport:
+          list-mode: lax
+          files:
+            - "**/pkg/transport/**"
+          deny:
+            - pkg: github.com/sambigeara/pollen/pkg/state
+              desc: state and transport are L2 siblings — siblings never import each other
+            - pkg: github.com/sambigeara/pollen/pkg/routing
+              desc: core (L2) must not import routing layer
+            - pkg: github.com/sambigeara/pollen/pkg/membership
+              desc: core (L2) must not import domain services
+            - pkg: github.com/sambigeara/pollen/pkg/placement
+              desc: core (L2) must not import domain services
+            - pkg: github.com/sambigeara/pollen/pkg/tunneling
+              desc: core (L2) must not import domain services
+            - pkg: github.com/sambigeara/pollen/pkg/control
+              desc: core (L2) must not import composition layer
+            - pkg: github.com/sambigeara/pollen/pkg/supervisor
+              desc: core (L2) must not import composition layer
+
+        routing:
+          list-mode: lax
+          files:
+            - "**/pkg/routing/**"
+          deny:
+            - pkg: github.com/sambigeara/pollen/pkg/membership
+              desc: routing (L3) must not import domain services
+            - pkg: github.com/sambigeara/pollen/pkg/placement
+              desc: routing (L3) must not import domain services
+            - pkg: github.com/sambigeara/pollen/pkg/tunneling
+              desc: routing (L3) must not import domain services
+            - pkg: github.com/sambigeara/pollen/pkg/control
+              desc: routing (L3) must not import composition layer
+            - pkg: github.com/sambigeara/pollen/pkg/supervisor
+              desc: routing (L3) must not import composition layer
+
+        membership:
+          list-mode: lax
+          files:
+            - "**/pkg/membership/**"
+          deny:
+            - pkg: github.com/sambigeara/pollen/pkg/placement
+              desc: domain service siblings never import each other
+            - pkg: github.com/sambigeara/pollen/pkg/tunneling
+              desc: domain service siblings never import each other
+            - pkg: github.com/sambigeara/pollen/pkg/control
+              desc: domain services (L4) must not import composition layer
+            - pkg: github.com/sambigeara/pollen/pkg/supervisor
+              desc: domain services (L4) must not import composition layer
+
+        placement:
+          list-mode: lax
+          files:
+            - "**/pkg/placement/**"
+          deny:
+            - pkg: github.com/sambigeara/pollen/pkg/membership
+              desc: domain service siblings never import each other
+            - pkg: github.com/sambigeara/pollen/pkg/tunneling
+              desc: domain service siblings never import each other
+            - pkg: github.com/sambigeara/pollen/pkg/control
+              desc: domain services (L4) must not import composition layer
+            - pkg: github.com/sambigeara/pollen/pkg/supervisor
+              desc: domain services (L4) must not import composition layer
+
+        tunneling:
+          list-mode: lax
+          files:
+            - "**/pkg/tunneling/**"
+          deny:
+            - pkg: github.com/sambigeara/pollen/pkg/membership
+              desc: domain service siblings never import each other
+            - pkg: github.com/sambigeara/pollen/pkg/placement
+              desc: domain service siblings never import each other
+            - pkg: github.com/sambigeara/pollen/pkg/control
+              desc: domain services (L4) must not import composition layer
+            - pkg: github.com/sambigeara/pollen/pkg/supervisor
+              desc: domain services (L4) must not import composition layer
+
+        control:
+          list-mode: lax
+          files:
+            - "**/pkg/control/**"
+          deny:
+            - pkg: github.com/sambigeara/pollen/pkg/supervisor
+              desc: supervisor composes control — imports flow supervisor → control, not the other way
+
     exhaustive:
       default-signifies-exhaustive: true
 

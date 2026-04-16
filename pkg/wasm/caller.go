@@ -7,13 +7,35 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-type callerInfoKey struct{}
+type (
+	callerInfoKey    struct{}
+	executingSeedKey struct{}
+)
+
+// WithExecutingSeed stamps ctx with the hash of the seed currently being
+// invoked. Host functions read this to attribute outbound dials to the
+// caller seed.
+func WithExecutingSeed(ctx context.Context, hash string) context.Context {
+	return context.WithValue(ctx, executingSeedKey{}, hash)
+}
+
+// ExecutingSeedFromContext returns the seed hash currently executing, or
+// "" if none is stamped.
+func ExecutingSeedFromContext(ctx context.Context) string {
+	if h, ok := ctx.Value(executingSeedKey{}).(string); ok {
+		return h
+	}
+	return ""
+}
 
 // CallerInfo holds the identity and cert attributes of the peer that
-// initiated a workload invocation.
+// initiated a workload invocation, plus wire-propagated metadata such as
+// the caller's deadline. DeadlineUnixMs is zero when no deadline has been
+// set.
 type CallerInfo struct {
-	Attributes map[string]any
-	PeerKey    types.PeerKey
+	Attributes     map[string]any
+	PeerKey        types.PeerKey
+	DeadlineUnixMs int64
 }
 
 // WithCallerInfo returns a context carrying the given caller metadata.
@@ -28,34 +50,50 @@ func CallerInfoFromContext(ctx context.Context) (CallerInfo, bool) {
 }
 
 type callerInfoJSON struct {
-	Attributes map[string]any `json:"attributes,omitempty"`
-	PeerKey    string         `json:"peerKey"`
+	Attributes     map[string]any `json:"attributes,omitempty"`
+	PeerKey        string         `json:"peerKey,omitempty"`
+	DeadlineUnixMs int64          `json:"deadlineUnixMs,omitempty"`
 }
 
-// MarshalCallerInfo serialises CallerInfo to JSON. Returns nil if PeerKey is zero.
+// MarshalCallerInfo serialises CallerInfo to JSON. Returns nil if every
+// field is zero — callers with nothing to say send no caller block.
 func MarshalCallerInfo(info CallerInfo) []byte {
-	if info.PeerKey == (types.PeerKey{}) {
+	if info.PeerKey == (types.PeerKey{}) && info.Attributes == nil && info.DeadlineUnixMs == 0 {
 		return nil
 	}
-	b, err := json.Marshal(callerInfoJSON{
-		PeerKey:    info.PeerKey.String(),
-		Attributes: info.Attributes,
-	})
+	j := callerInfoJSON{
+		Attributes:     info.Attributes,
+		DeadlineUnixMs: info.DeadlineUnixMs,
+	}
+	if info.PeerKey != (types.PeerKey{}) {
+		j.PeerKey = info.PeerKey.String()
+	}
+	b, err := json.Marshal(j)
 	if err != nil {
 		return nil
 	}
 	return b
 }
 
-// CallerInfoFromJSON deserialises CallerInfo from JSON produced by MarshalCallerInfo.
+// CallerInfoFromJSON deserialises CallerInfo from JSON produced by
+// MarshalCallerInfo. The peer key is optional — an absent or empty value
+// yields a zero PeerKey, which the transport-authenticated peer then
+// overrides on the server side.
 func CallerInfoFromJSON(data []byte) (CallerInfo, bool) {
 	var j callerInfoJSON
 	if err := json.Unmarshal(data, &j); err != nil {
 		return CallerInfo{}, false
 	}
-	pk, err := types.PeerKeyFromString(j.PeerKey)
-	if err != nil {
-		return CallerInfo{}, false
+	info := CallerInfo{
+		Attributes:     j.Attributes,
+		DeadlineUnixMs: j.DeadlineUnixMs,
 	}
-	return CallerInfo{PeerKey: pk, Attributes: j.Attributes}, true
+	if j.PeerKey != "" {
+		pk, err := types.PeerKeyFromString(j.PeerKey)
+		if err != nil {
+			return CallerInfo{}, false
+		}
+		info.PeerKey = pk
+	}
+	return info, true
 }

@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: 'pollen'
+    static_configs:
+      - targets: ['host.docker.internal:9090']
+
+  - job_name: 'store'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+
+  # Exerciser instances live on a dedicated AWS host, one port per target
+  # pollen node. Targets are written to exerciser_targets.json at
+  # `just start-demo` time from the current terraform output.
+  - job_name: 'exerciser'
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/exerciser_targets.json
+        refresh_interval: 10s

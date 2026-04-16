@@ -14,6 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	promexporter "go.opentelemetry.io/otel/exporters/prometheus"
+
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
@@ -43,7 +46,10 @@ const (
 	routeDebounceInterval = 100 * time.Millisecond
 	maxRouteDelay         = time.Second
 	loopIntervalJitter    = 0.1
-	nodeWorkers           = 8
+	// maxConcurrentPunches caps simultaneous NAT hole-punch attempts. Each
+	// punch opens a transient UDP socket, so we bound it independently of
+	// the workload concurrency story.
+	maxConcurrentPunches = 8
 )
 
 type Supervisor struct {
@@ -73,7 +79,10 @@ type Supervisor struct {
 	creds            *auth.NodeCredentials
 	shutdownCh       chan struct{}
 	inviteWaiters    map[types.PeerKey]chan *meshv1.InviteRedeemResponse
+	promRegistry     *prometheus.Registry
+	httpAddr         string
 	socketPath       string
+	controlAddr      string
 	pollenDir        string
 	bootstrapPeers   []BootstrapTarget
 	signPriv         ed25519.PrivateKey
@@ -129,6 +138,17 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		mp, tp = metrics.NewProvider(), traces.NewProvider()
 	}
 
+	var promRegistry *prometheus.Registry
+	if opts.HTTPAddr != "" {
+		promRegistry = prometheus.NewRegistry()
+		exporter, promErr := promexporter.New(promexporter.WithRegisterer(promRegistry))
+		if promErr != nil {
+			return nil, fmt.Errorf("prometheus exporter: %w", promErr)
+		}
+		mp = metrics.NewProvider(exporter)
+		tp = traces.NewProvider()
+	}
+
 	router := newAtomicRouter()
 	meshOpts := []transport.Option{
 		transport.WithSigningKey(privKey),
@@ -178,10 +198,11 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		signPriv:         privKey,
 		pollenDir:        pollenDir,
 		socketPath:       opts.SocketPath,
+		controlAddr:      opts.ControlAddr,
 		peerTickInterval: opts.PeerTickInterval,
 		bootstrapPeers:   opts.BootstrapPeers,
 		reconnectWindow:  config.DefaultReconnectWindow,
-		punchSem:         make(chan struct{}, nodeWorkers),
+		punchSem:         make(chan struct{}, maxConcurrentPunches),
 		ready:            make(chan struct{}),
 		shutdownCh:       shutdownCh,
 		nonTargetStreak:  make(map[types.PeerKey]int),
@@ -198,6 +219,8 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		inviteConsumer:   inviteConsumer,
 		inviteWaiters:    make(map[types.PeerKey]chan *meshv1.InviteRedeemResponse),
 		membershipTTL:    config.DefaultMembershipTTL,
+		promRegistry:     promRegistry,
+		httpAddr:         opts.HTTPAddr,
 	}
 
 	if creds.DelegationKey() == nil {
@@ -212,10 +235,9 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	}
 
 	streamAdapter := &streamOpenAdapter{t: m}
-	datagramAdapter := &datagramOpenAdapter{t: m}
 
 	n.tunneling = tunneling.New(
-		self, stateStore, streamAdapter, datagramAdapter, router,
+		self, stateStore, streamAdapter, m, router,
 		tunneling.WithTrafficTracking(),
 		tunneling.WithLogger(log.Named("tunneling")),
 		tunneling.WithSampleInterval(opts.GossipInterval),
@@ -223,10 +245,10 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	)
 
 	gossipJitter := loopIntervalJitter
-	if opts.DisableGossipJitter {
-		gossipJitter = 0
-	} else if opts.GossipJitter > 0 {
+	if opts.GossipJitter > 0 {
 		gossipJitter = opts.GossipJitter
+	} else if opts.GossipJitter < 0 {
+		gossipJitter = 0
 	}
 
 	n.membership = membership.New(
@@ -282,7 +304,11 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		},
 	)
 
-	wasmRT, err := wasm.NewRuntime(wasm.NewHostFunctions(log.Named("wasm"), n), nodeWorkers)
+	var wasmOpts []wasm.RuntimeOption
+	if opts.IdleInstanceTTL > 0 {
+		wasmOpts = append(wasmOpts, wasm.WithIdleTTL(opts.IdleInstanceTTL))
+	}
+	wasmRT, err := wasm.NewRuntime(wasm.NewHostFunctions(log.Named("wasm"), n), wasmOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("wasm runtime: %w", err)
 	}
@@ -313,6 +339,9 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	}
 
 	n.controlSrv = control.New(n.membership, n.placement, n.tunneling, stateStore, controlOpts...)
+	if opts.ControlToken != "" {
+		n.controlSrv.SetToken(opts.ControlToken)
+	}
 
 	for _, conn := range opts.InitialConnections {
 		n.AddDesiredConnection(conn.PeerKey, conn.RemotePort, conn.LocalPort, conn.Protocol)
@@ -382,6 +411,22 @@ func (n *Supervisor) Run(ctx context.Context) error {
 			n.log.Warnw("control server failed", zap.Error(err))
 		}
 	})
+
+	if n.controlAddr != "" {
+		n.spawn(func() {
+			if err := n.controlSrv.StartTCP(n.controlAddr); err != nil {
+				n.log.Warnw("control tcp server failed", zap.Error(err))
+			}
+		})
+	}
+
+	if n.promRegistry != nil {
+		n.spawn(func() {
+			if err := n.startPrometheus(ctx, n.httpAddr); err != nil {
+				n.log.Warnw("prometheus server failed", zap.Error(err))
+			}
+		})
+	}
 
 	close(n.ready)
 	n.connectBootstrapPeers(ctx)
@@ -488,12 +533,12 @@ func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 		case transport.StreamTypeDigest:
 			n.spawn(func() { n.membership.HandleDigestStream(ctx, stream, peerKey) })
 		case transport.StreamTypeTunnel:
-			n.tunneling.HandleTunnelStream(stream, peerKey)
+			n.spawn(func() { n.tunneling.HandleTunnelStream(stream, peerKey) })
 		case transport.StreamTypeArtifact:
-			s := wrapTrafficStream(stream, n.trafficRecorder, peerKey)
+			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
 			n.spawn(func() { n.placement.HandleArtifactStream(s, peerKey) })
 		case transport.StreamTypeWorkload:
-			s := wrapTrafficStream(stream, n.trafficRecorder, peerKey)
+			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
 			n.spawn(func() { n.placement.HandleWorkloadStream(s, peerKey) })
 		default:
 			n.log.Warnw("unknown stream type", "type", uint8(stype))
@@ -687,7 +732,7 @@ func (n *Supervisor) ControlMetrics() control.Metrics {
 
 // --- Public API ---
 
-func (n *Supervisor) RouteCall(ctx context.Context, targetHash, function string, input []byte) ([]byte, error) {
+func (n *Supervisor) RouteRequest(ctx context.Context, uri wasm.URI, input []byte) ([]byte, error) {
 	// Preserve existing caller identity for inter-workload call chains.
 	// Only stamp the local node's identity on the first hop.
 	if _, ok := wasm.CallerInfoFromContext(ctx); !ok {
@@ -701,7 +746,44 @@ func (n *Supervisor) RouteCall(ctx context.Context, targetHash, function string,
 			ctx = wasm.WithCallerInfo(ctx, info)
 		}
 	}
-	return n.placement.Call(ctx, targetHash, function, input)
+
+	switch uri.Scheme {
+	case wasm.SchemeSeed:
+		return n.placement.Call(ctx, uri.Name, uri.Function, input)
+	case wasm.SchemeService:
+		return n.routeServiceRequest(ctx, uri.Name, input)
+	default:
+		return nil, fmt.Errorf("unsupported URI scheme: %s", uri.Scheme)
+	}
+}
+
+// RecordDial satisfies wasm.RequestRouter so the host function can attribute
+// outbound calls from a seed to its dial graph.
+func (n *Supervisor) RecordDial(callerHash, targetKey string) {
+	n.placement.RecordDial(callerHash, targetKey)
+}
+
+func (n *Supervisor) RecordParkedTime(callerHash string, elapsed time.Duration) {
+	n.placement.RecordParkedTime(callerHash, elapsed)
+}
+
+func (n *Supervisor) routeServiceRequest(ctx context.Context, name string, input []byte) ([]byte, error) {
+	snap := n.store.Snapshot()
+	var candidates []state.ServiceInfo
+	for _, svc := range snap.Services() {
+		if svc.Name == name {
+			candidates = append(candidates, svc)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no provider for service %q: %w", name, wasm.ErrTargetNotFound)
+	}
+
+	svc := pickNearestService(snap, candidates)
+	if svc.Peer == snap.LocalID {
+		return dialLocalService(ctx, svc.Port, input)
+	}
+	return n.tunneling.RequestService(ctx, svc.Peer, svc.Port, input)
 }
 
 func (n *Supervisor) Connect(ctx context.Context, pk types.PeerKey, addrs []netip.AddrPort) error {
@@ -714,13 +796,14 @@ func (n *Supervisor) StateStore() state.StateStore         { return n.store }
 func (n *Supervisor) Ready() <-chan struct{}               { return n.ready }
 func (n *Supervisor) ListenPort() int                      { return n.mesh.ListenPort() }
 func (n *Supervisor) GetConnectedPeers() []types.PeerKey   { return n.mesh.ConnectedPeers() }
-func (n *Supervisor) SeedWorkload(wasmBytes []byte, name string, replicas, memoryPages, timeoutMs uint32, spread float32) (string, error) {
+func (n *Supervisor) SeedWorkload(wasmBytes []byte, spec state.WorkloadSpec) (string, error) {
 	h := sha256.Sum256(wasmBytes)
 	hash := hex.EncodeToString(h[:])
-	if name == "" {
-		name = hash
+	spec.Hash = hash
+	if spec.Name == "" {
+		spec.Name = hash
 	}
-	if err := n.placement.Seed(name, hash, wasmBytes, replicas, memoryPages, timeoutMs, spread); err != nil {
+	if err := n.placement.Seed(wasmBytes, spec); err != nil {
 		return "", err
 	}
 	return hash, nil
@@ -751,43 +834,6 @@ func (a *streamOpenAdapter) OpenStream(ctx context.Context, peer types.PeerKey, 
 	return a.t.OpenStream(ctx, peer, st)
 }
 
-type datagramOpenAdapter struct {
-	t transport.Transport
-}
-
-func (a *datagramOpenAdapter) SendTunnelDatagram(ctx context.Context, peer types.PeerKey, data []byte) error {
-	return a.t.SendTunnelDatagram(ctx, peer, data)
-}
-
-type trafficCountedStream struct {
-	io.ReadWriteCloser
-	recorder transport.TrafficRecorder
-	peer     types.PeerKey
-}
-
-func (s *trafficCountedStream) Read(p []byte) (int, error) {
-	n, err := s.ReadWriteCloser.Read(p)
-	if n > 0 {
-		s.recorder.Record(s.peer, uint64(n), 0)
-	}
-	return n, err
-}
-
-func (s *trafficCountedStream) Write(p []byte) (int, error) {
-	n, err := s.ReadWriteCloser.Write(p)
-	if n > 0 {
-		s.recorder.Record(s.peer, 0, uint64(n))
-	}
-	return n, err
-}
-
-func wrapTrafficStream(stream io.ReadWriteCloser, recorder transport.TrafficRecorder, peer types.PeerKey) io.ReadWriteCloser {
-	if recorder == nil {
-		return stream
-	}
-	return &trafficCountedStream{ReadWriteCloser: stream, recorder: recorder, peer: peer}
-}
-
 type trafficCountedOpener struct {
 	inner    placement.StreamOpener
 	recorder transport.TrafficRecorder
@@ -798,7 +844,7 @@ func (a *trafficCountedOpener) OpenStream(ctx context.Context, peer types.PeerKe
 	if err != nil {
 		return nil, err
 	}
-	return wrapTrafficStream(stream, a.recorder, peer), nil
+	return transport.WrapTrafficStream(stream, a.recorder, peer), nil
 }
 
 // Compile-time interface compliance checks.

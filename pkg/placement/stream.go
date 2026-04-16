@@ -26,6 +26,7 @@ const (
 	statusOK       byte = 0
 	statusNotFound byte = 1
 	statusError    byte = 2
+	statusCycle    byte = 4
 
 	callerInfoLenSize = 2
 	hashLen           = 64
@@ -139,7 +140,7 @@ func handleArtifactStream(stream io.ReadWriteCloser, cas casReader) {
 	io.Copy(stream, rc)                    //nolint:errcheck
 }
 
-func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, peer types.PeerKey, invoker workloadInvoker, timeout time.Duration) {
+func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, peer types.PeerKey, invoker workloadInvoker, utilisation *utilisationTracker, gates *gateRegistry, timeout time.Duration) {
 	defer stream.Close()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -159,9 +160,20 @@ func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, peer t
 		}
 		if wireInfo, ok := wasm.CallerInfoFromJSON(callerBuf); ok {
 			info.Attributes = wireInfo.Attributes
+			info.DeadlineUnixMs = wireInfo.DeadlineUnixMs
 		}
 	}
 	ctx = wasm.WithCallerInfo(ctx, info)
+
+	// Honour the caller's deadline if it's tighter than our timeout cap.
+	if info.DeadlineUnixMs > 0 {
+		dl := time.UnixMilli(info.DeadlineUnixMs)
+		if time.Until(dl) > 0 {
+			var dlCancel context.CancelFunc
+			ctx, dlCancel = context.WithDeadline(ctx, dl)
+			defer dlCancel()
+		}
+	}
 
 	var hashBuf [64]byte
 	if _, err := io.ReadFull(stream, hashBuf[:]); err != nil {
@@ -193,11 +205,40 @@ func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, peer t
 		return
 	}
 
-	output, err := invoker.Call(ctx, string(hashBuf[:]), string(funcName), input)
+	// Gate the call against the target's per-workload concurrency limit.
+	// Forwarded calls must respect the target's capacity, not just the
+	// caller's — otherwise P2C would route into hotspots its latency EWMA
+	// hadn't caught up with yet.
+	hash := string(hashBuf[:])
+	gateRelease, err := gates.acquire(ctx, hash)
 	if err != nil {
-		if errors.Is(err, ErrNotRunning) {
+		writeResponse(stream, statusError, []byte(err.Error()))
+		return
+	}
+	defer gateRelease()
+
+	// Stamp the hash into the local call chain so a recursive
+	// pollen_request from this seed back into itself fails fast with
+	// ErrCycle instead of starving its own gate.
+	ctx = withChain(ctx, hash)
+
+	workStart := time.Now()
+	output, err := invoker.Call(ctx, hash, string(funcName), input)
+	// Record Served + execution-only Invocation on the serving node for
+	// every non-ErrNotRunning outcome. SLO is not recorded here — it is
+	// caller-perspective and the caller's forwardCall observes it, so
+	// the serving node does not double-count or scale on forwarded pain.
+	if !errors.Is(err, ErrNotRunning) {
+		utilisation.RecordServed(hash)
+		utilisation.RecordInvocation(hash, time.Since(workStart))
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotRunning):
 			writeResponse(stream, statusNotFound, []byte(err.Error()))
-		} else {
+		case errors.Is(err, ErrCycle):
+			writeResponse(stream, statusCycle, []byte(err.Error()))
+		default:
 			writeResponse(stream, statusError, []byte(err.Error()))
 		}
 		return
@@ -220,13 +261,16 @@ func invokeOverStream(ctx context.Context, stream io.ReadWriteCloser, hash, func
 		return nil, fmt.Errorf("invoke: function name too long (%d > %d)", len(function), maxFuncLen)
 	}
 
-	// Caller info prefix: [2-byte BE length][JSON].
+	// Caller info prefix: [2-byte BE length][JSON]. Propagate the caller's
+	// deadline over the wire so the target peer can honour it instead of
+	// falling back on its local safety cap.
+	info, _ := wasm.CallerInfoFromContext(ctx)
+	if dl, ok := ctx.Deadline(); ok {
+		info.DeadlineUnixMs = dl.UnixMilli()
+	}
 	var callerJSON []byte
-	if info, ok := wasm.CallerInfoFromContext(ctx); ok {
-		callerJSON = wasm.MarshalCallerInfo(info)
-		if len(callerJSON) > math.MaxUint16 {
-			callerJSON = nil
-		}
+	if marshaled := wasm.MarshalCallerInfo(info); len(marshaled) <= math.MaxUint16 {
+		callerJSON = marshaled
 	}
 
 	buf := make([]byte, callerInfoLenSize+len(callerJSON)+hashLen+1+len(function)+4+len(input))
@@ -265,6 +309,8 @@ func invokeOverStream(ctx context.Context, stream io.ReadWriteCloser, hash, func
 		return body, nil
 	case statusNotFound:
 		return nil, fmt.Errorf("invoke: workload not found: %s: %w", string(body), ErrNotRunning)
+	case statusCycle:
+		return nil, fmt.Errorf("invoke: %s: %w", string(body), ErrCycle)
 	case statusError:
 		return nil, fmt.Errorf("invoke: %s: %w", string(body), ErrWorkloadFailed)
 	default:

@@ -14,6 +14,7 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/coords"
+	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
@@ -112,7 +113,7 @@ func TestPublicMesh_WorkloadPlacement(t *testing.T) {
 
 	t.Run("PropagatesViaGossip", func(t *testing.T) {
 		var err error
-		hash, err = c.Node("node-0").Node().SeedWorkload(minimalWASM, "test-workload", 2, 0, 0, 0) //nolint:mnd
+		hash, err = c.Node("node-0").Node().SeedWorkload(minimalWASM, state.WorkloadSpec{Name: "test-workload", MinReplicas: 2}) //nolint:mnd
 		require.NoError(t, err)
 
 		// Use eagerTimeout: spec must arrive via eager push, not digest sync.
@@ -139,7 +140,7 @@ func TestPublicMesh_WorkloadPlacement(t *testing.T) {
 
 	t.Run("Reseed", func(t *testing.T) {
 		var err error
-		hash, err = c.Node("node-0").Node().SeedWorkload(minimalWASM, "test-workload", 3, 0, 0, 0) //nolint:mnd
+		hash, err = c.Node("node-0").Node().SeedWorkload(minimalWASM, state.WorkloadSpec{Name: "test-workload", MinReplicas: 3}) //nolint:mnd
 		require.NoError(t, err)
 
 		c.RequireWorkloadSpecOnAllNodes(t, hash, 3) //nolint:mnd
@@ -152,7 +153,7 @@ func TestPublicMesh_WorkloadPlacement(t *testing.T) {
 		c.RequireWorkloadGone(t, hash)
 
 		var err2 error
-		hash, err2 = c.Node("node-0").Node().SeedWorkload(minimalWASM, "test-workload", 1, 0, 0, 0)
+		hash, err2 = c.Node("node-0").Node().SeedWorkload(minimalWASM, state.WorkloadSpec{Name: "test-workload", MinReplicas: 1})
 		require.NoError(t, err2)
 
 		c.RequireWorkloadSpecOnAllNodes(t, hash, 1)
@@ -619,7 +620,7 @@ func TestRelayRegions_WorkloadPlacement(t *testing.T) {
 
 	t.Run("CrossRegionSpecVisibility", func(t *testing.T) {
 		var err error
-		hash, err = c.Node(relays[0].Name()).Node().SeedWorkload(minimalWASM, "test-workload", 2, 0, 0, 0) //nolint:mnd
+		hash, err = c.Node(relays[0].Name()).Node().SeedWorkload(minimalWASM, state.WorkloadSpec{Name: "test-workload", MinReplicas: 2}) //nolint:mnd
 		require.NoError(t, err)
 
 		c.RequireEventually(t, func() bool {
@@ -651,7 +652,7 @@ func TestPublicMesh_WorkloadMigration(t *testing.T) {
 	c := PublicMesh(t, 4, ctx) //nolint:mnd
 	c.RequireConverged(t)
 
-	hash, err := c.Node("node-0").Node().SeedWorkload(minimalWASM, "test-workload", 2, 0, 0, 0) //nolint:mnd
+	hash, err := c.Node("node-0").Node().SeedWorkload(minimalWASM, state.WorkloadSpec{Name: "test-workload", MinReplicas: 2}) //nolint:mnd
 	require.NoError(t, err)
 	c.RequireWorkloadReplicas(t, hash, 2) //nolint:mnd
 

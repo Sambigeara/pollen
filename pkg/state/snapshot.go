@@ -29,8 +29,8 @@ type NodeView struct {
 	TrafficRates       map[types.PeerKey]TrafficSnapshot
 	Reachable          map[types.PeerKey]struct{}
 	Services           map[string]*Service
-	SeedLoad           map[string]float32
-	SeedDemand         map[string]float32
+	SeedMetrics        map[string]SeedMetrics
+	SeedDialRates      map[string]map[string]float32
 	VivaldiCoord       *coords.Coord
 	ObservedExternalIP string
 	LastAddr           string
@@ -53,13 +53,13 @@ type NodeView struct {
 }
 
 type WorkloadSpecView struct {
-	Spec      *statev1.WorkloadSpecChange
+	Spec      WorkloadSpec
 	Publisher types.PeerKey
 }
 
 type TrafficSnapshot struct {
-	BytesIn  uint64
-	BytesOut uint64
+	RateIn  uint64
+	RateOut uint64
 }
 
 type Service struct {
@@ -92,7 +92,7 @@ func UnmarshalDigest(data []byte) (Digest, error) {
 // TODO(saml): remove once all persisted state and in-flight gossip carry an explicit protocol.
 // normaliseProtocol maps the zero value (UNSPECIFIED) to TCP for backward
 // compatibility with gossip data that predates the protocol field.
-func normaliseProtocol(p statev1.ServiceProtocol) statev1.ServiceProtocol {
+func NormaliseProtocol(p statev1.ServiceProtocol) statev1.ServiceProtocol {
 	if p == statev1.ServiceProtocol_SERVICE_PROTOCOL_UNSPECIFIED {
 		return statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP
 	}
@@ -107,7 +107,7 @@ func (s Snapshot) SpecByName(name string) (string, WorkloadSpecView, bool) {
 	var bestView WorkloadSpecView
 	found := false
 	for hash, sv := range s.Specs {
-		if sv.Spec.GetName() != name {
+		if sv.Spec.Name != name {
 			continue
 		}
 		if !found || sv.Publisher.Compare(bestView.Publisher) < 0 {
@@ -121,7 +121,7 @@ func (s Snapshot) SpecByName(name string) (string, WorkloadSpecView, bool) {
 
 func (s Snapshot) LocalSpecByName(name string, localID types.PeerKey) (string, bool) {
 	for hash, sv := range s.Specs {
-		if sv.Spec.GetName() == name && sv.Publisher == localID {
+		if sv.Spec.Name == name && sv.Publisher == localID {
 			return hash, true
 		}
 	}
@@ -171,7 +171,7 @@ func (s *store) buildSnapshot() Snapshot {
 
 		for hash, spec := range recSpecs {
 			if existing, ok := specs[hash]; !ok || pk.Compare(existing.Publisher) < 0 {
-				specs[hash] = WorkloadSpecView{Spec: spec, Publisher: pk}
+				specs[hash] = WorkloadSpecView{Spec: workloadSpecFromProto(spec), Publisher: pk}
 			}
 		}
 
@@ -185,9 +185,8 @@ func (s *store) buildSnapshot() Snapshot {
 
 	live := s.calculateLiveComponent(nodes, now)
 
-	peersDigest := make(map[string]*statev1.PeerDigest, len(live))
-	for pk := range live {
-		rec := s.nodes[pk]
+	peersDigest := make(map[string]*statev1.PeerDigest, len(valid))
+	for pk, rec := range valid {
 		peersDigest[pk.String()] = &statev1.PeerDigest{
 			MaxCounter: rec.maxCounter,
 			StateHash:  s.computePeerHash(rec),
@@ -223,14 +222,14 @@ func (s *store) buildSnapshot() Snapshot {
 
 func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*statev1.WorkloadSpecChange, map[string]struct{}) {
 	nv := NodeView{
-		PeerPub:      pk.Bytes(),
-		Services:     make(map[string]*Service),
-		Reachable:    make(map[types.PeerKey]struct{}),
-		TrafficRates: make(map[types.PeerKey]TrafficSnapshot),
-		SeedLoad:     make(map[string]float32),
-		SeedDemand:   make(map[string]float32),
-		LastAddr:     rec.LastAddr,
-		LastEventAt:  rec.lastEventAt,
+		PeerPub:       pk.Bytes(),
+		Services:      make(map[string]*Service),
+		Reachable:     make(map[types.PeerKey]struct{}),
+		TrafficRates:  make(map[types.PeerKey]TrafficSnapshot),
+		SeedMetrics:   make(map[string]SeedMetrics),
+		SeedDialRates: make(map[string]map[string]float32),
+		LastAddr:      rec.LastAddr,
+		LastEventAt:   rec.lastEventAt,
 	}
 	specs := make(map[string]*statev1.WorkloadSpecChange)
 	claims := make(map[string]struct{})
@@ -247,7 +246,7 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 		case *statev1.GossipEvent_CertExpiry:
 			nv.CertExpiry = v.CertExpiry.ExpiryUnix
 		case *statev1.GossipEvent_Service:
-			nv.Services[key.name] = &Service{Name: key.name, Port: v.Service.Port, Protocol: normaliseProtocol(v.Service.Protocol)}
+			nv.Services[key.name] = &Service{Name: key.name, Port: v.Service.Port, Protocol: NormaliseProtocol(v.Service.Protocol)}
 		case *statev1.GossipEvent_Reachability:
 			nv.Reachable[key.peer] = struct{}{}
 		case *statev1.GossipEvent_PubliclyAccessible:
@@ -272,13 +271,20 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 		case *statev1.GossipEvent_TrafficHeatmap:
 			for _, r := range v.TrafficHeatmap.Rates {
 				if peerPK, err := types.PeerKeyFromString(r.PeerId); err == nil {
-					nv.TrafficRates[peerPK] = TrafficSnapshot{BytesIn: r.BytesIn, BytesOut: r.BytesOut}
+					nv.TrafficRates[peerPK] = TrafficSnapshot{RateIn: r.RateIn, RateOut: r.RateOut}
 				}
 			}
-		case *statev1.GossipEvent_SeedLoad:
-			maps.Copy(nv.SeedLoad, v.SeedLoad.Rates)
-		case *statev1.GossipEvent_SeedDemand:
-			maps.Copy(nv.SeedDemand, v.SeedDemand.Rates)
+		case *statev1.GossipEvent_SeedDialRates:
+			for hash, dr := range v.SeedDialRates.Seeds {
+				if dr == nil {
+					continue
+				}
+				targets := make(map[string]float32, len(dr.Rates))
+				maps.Copy(targets, dr.Rates)
+				nv.SeedDialRates[hash] = targets
+			}
+		case *statev1.GossipEvent_SeedMetrics:
+			maps.Copy(nv.SeedMetrics, seedMetricsFromProto(v.SeedMetrics))
 		case *statev1.GossipEvent_Heartbeat:
 		case *statev1.GossipEvent_NodeName:
 			nv.Name = v.NodeName.Name

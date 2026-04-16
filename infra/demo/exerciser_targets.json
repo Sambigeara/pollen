@@ -1,0 +1,82 @@
+[
+  {
+    "targets": [
+      "3.208.78.131:9192"
+    ],
+    "labels": {
+      "target": "euc"
+    }
+  },
+  {
+    "targets": [
+      "3.208.78.131:9193"
+    ],
+    "labels": {
+      "target": "eun"
+    }
+  },
+  {
+    "targets": [
+      "3.208.78.131:9194"
+    ],
+    "labels": {
+      "target": "euw"
+    }
+  },
+  {
+    "targets": [
+      "3.208.78.131:9195"
+    ],
+    "labels": {
+      "target": "mum"
+    }
+  },
+  {
+    "targets": [
+      "3.208.78.131:9196"
+    ],
+    "labels": {
+      "target": "sao"
+    }
+  },
+  {
+    "targets": [
+      "3.208.78.131:9197"
+    ],
+    "labels": {
+      "target": "sgp"
+    }
+  },
+  {
+    "targets": [
+      "3.208.78.131:9198"
+    ],
+    "labels": {
+      "target": "syd"
+    }
+  },
+  {
+    "targets": [
+      "3.208.78.131:9199"
+    ],
+    "labels": {
+      "target": "tok"
+    }
+  },
+  {
+    "targets": [
+      "3.208.78.131:9200"
+    ],
+    "labels": {
+      "target": "use"
+    }
+  },
+  {
+    "targets": [
+      "3.208.78.131:9201"
+    ],
+    "labels": {
+      "target": "usw"
+    }
+  }
+]

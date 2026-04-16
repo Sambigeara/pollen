@@ -2,7 +2,6 @@ package wasm_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -22,16 +21,20 @@ func loadTestModule(t *testing.T, name string) []byte {
 	return data
 }
 
-type noopRouter struct{}
+type noopRequestRouter struct{}
 
-func (noopRouter) RouteCall(context.Context, string, string, []byte) ([]byte, error) {
+func (noopRequestRouter) RouteRequest(context.Context, wasm.URI, []byte) ([]byte, error) {
 	return nil, fmt.Errorf("no routing in tests")
 }
 
+func (noopRequestRouter) RecordDial(string, string) {}
+
+func (noopRequestRouter) RecordParkedTime(string, time.Duration) {}
+
 func newTestRuntime(t *testing.T) *wasm.Runtime {
 	t.Helper()
-	hostFuncs := wasm.NewHostFunctions(zap.NewNop().Sugar(), noopRouter{})
-	rt, err := wasm.NewRuntime(hostFuncs, 2)
+	hostFuncs := wasm.NewHostFunctions(zap.NewNop().Sugar(), noopRequestRouter{})
+	rt, err := wasm.NewRuntime(hostFuncs)
 	require.NoError(t, err)
 	t.Cleanup(func() { rt.Close(context.Background()) })
 	return rt
@@ -121,50 +124,6 @@ func TestConcurrentCalls(t *testing.T) {
 		})
 	}
 	require.NoError(t, eg.Wait())
-}
-
-func TestCallConcurrencyLimit(t *testing.T) {
-	hostFuncs := wasm.NewHostFunctions(zap.NewNop().Sugar(), noopRouter{})
-	rt, err := wasm.NewRuntime(hostFuncs, 1)
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	echoBytes := loadTestModule(t, "echo.wasm")
-	loopBytes := loadTestModule(t, "loop.wasm")
-
-	err = rt.Compile(ctx, echoBytes, "semhash", wasm.NewPluginConfig(0, 0))
-	require.NoError(t, err)
-	err = rt.Compile(ctx, loopBytes, "loopsem", wasm.NewPluginConfig(0, 2*time.Second))
-	require.NoError(t, err)
-
-	// Start a long-running call that holds the single slot.
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, _ = rt.Call(ctx, "loopsem", "run", nil)
-	}()
-
-	t.Cleanup(func() {
-		cancel()
-		<-done
-		rt.Close(context.Background())
-	})
-
-	// Wait until the slot is occupied: a short-deadline call must fail.
-	require.Eventually(t, func() bool {
-		probeCtx, probeCancel := context.WithTimeout(ctx, time.Millisecond)
-		defer probeCancel()
-		_, err := rt.Call(probeCtx, "semhash", "handle", []byte("probe"))
-		return errors.Is(err, context.DeadlineExceeded)
-	}, 3*time.Second, 10*time.Millisecond)
-
-	// Confirm a real caller also gets DeadlineExceeded.
-	tightCtx, tightCancel := context.WithTimeout(ctx, 10*time.Millisecond)
-	defer tightCancel()
-
-	_, err = rt.Call(tightCtx, "semhash", "handle", []byte("blocked"))
-	require.Error(t, err)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestCallUncompiledModule(t *testing.T) {

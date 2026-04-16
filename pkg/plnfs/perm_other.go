@@ -6,6 +6,8 @@ import "os"
 
 func SetGroupSocket(_ string) error { return nil }
 
+func SetGroupReadable(path string) error { return setPerm(path, 0o640) } //nolint:mnd
+
 func setPerm(path string, mode os.FileMode) error {
 	return os.Chmod(path, mode)
 }

@@ -1,0 +1,6 @@
+*.wasm
+store/store
+*.db
+*.db-wal
+*.db-shm
+exercisor-linux

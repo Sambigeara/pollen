@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -40,6 +41,8 @@ const (
 	relayReadyTimeout = 20 * time.Second
 )
 
+var sshBaseArgs = []string{"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR"}
+
 func newIDCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "id",
@@ -55,9 +58,9 @@ func newBootstrapCmd() *cobra.Command {
 	}
 
 	sshCmd := &cobra.Command{
-		Use:   "ssh <host>",
-		Short: "Bootstrap a relay over SSH",
-		Args:  cobra.ExactArgs(1),
+		Use:   "ssh [name=]<target> [[name=]target...|-]",
+		Short: "Bootstrap one or more nodes over SSH",
+		Args:  cobra.MinimumNArgs(1),
 		RunE:  withEnv(false, runBootstrapSSH),
 	}
 	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
@@ -87,16 +90,14 @@ func newClusterCmds() []*cobra.Command {
 	adminCmd.AddCommand(&cobra.Command{Use: "keygen", Short: "Generate the local admin key", RunE: withEnv(true, runAdminKeygen), Hidden: true})
 	adminCmd.AddCommand(&cobra.Command{Use: "set-cert <admin-cert-b64>", Short: "Install a delegated admin certificate", Args: cobra.ExactArgs(1), RunE: withEnv(true, runAdminSetCert), Hidden: true})
 
-	certCmd := &cobra.Command{Use: "cert", Short: "Certificate management"}
-	certIssueCmd := &cobra.Command{
-		Use:   "issue <peer-id>",
-		Short: "Issue a new certificate to a peer",
+	grantCmd := &cobra.Command{
+		Use:   "grant <peer-id>",
+		Short: "Grant a certificate to a connected peer",
 		Args:  cobra.ExactArgs(1),
-		RunE:  withEnv(false, runCertIssue),
+		RunE:  withEnv(false, runGrant),
 	}
-	certIssueCmd.Flags().Bool("admin", false, "Issue with full admin capabilities")
-	certIssueCmd.Flags().StringArray("attr", nil, "Cert attributes: key=value, JSON, or - for stdin")
-	certCmd.AddCommand(certIssueCmd)
+	grantCmd.Flags().Bool("admin", false, "Issue with full admin capabilities")
+	grantCmd.Flags().StringArray("attr", nil, "Cert attributes: key=value, JSON, or - for stdin")
 
 	return []*cobra.Command{
 		{Use: "init", Short: "Initialize local root cluster state", RunE: withEnv(true, runInit)},
@@ -104,7 +105,7 @@ func newClusterCmds() []*cobra.Command {
 		joinCmd,
 		inviteCmd,
 		adminCmd,
-		certCmd,
+		grantCmd,
 		newBootstrapCmd(),
 	}
 }
@@ -314,52 +315,27 @@ func runAdminSetCert(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 // --- Bootstrap & Remote Operations ---
 
+type bootstrapResult struct {
+	err     error
+	target  string
+	peerPub ed25519.PublicKey
+	addrs   []string
+}
+
 func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
-	host := args[0]
+	specs, err := resolveSSHTargets(cmd, args)
+	if err != nil {
+		return err
+	}
+
 	relayPort, _ := cmd.Flags().GetInt("relay-port")
 	if relayPort < minPort || relayPort > maxPort {
 		return fmt.Errorf("invalid relay port %d", relayPort)
 	}
-
-	inferredAddr, err := inferRelayAddrFromSSHTarget(host, relayPort)
-	if err != nil {
-		return err
-	}
-	relayAddrs := []string{inferredAddr}
-
-	fmt.Fprintln(cmd.OutOrStdout(), "ensuring pln is installed on remote host...")
-	if err := ensureRemotePollen(cmd.Context(), host); err != nil {
-		return err
-	}
-
-	idCmd := sshPln(cmd.Context(), host, "id")
-	var idStdout, idStderr bytes.Buffer
-	idCmd.Stdout = &idStdout
-	idCmd.Stderr = &idStderr
-	if err := idCmd.Run(); err != nil {
-		return fmt.Errorf("failed to fetch remote node identity: %w\n%s", err, strings.TrimSpace(idStderr.String()))
-	}
-
-	relayPeerKey, err := types.PeerKeyFromString(strings.TrimSpace(idStdout.String()))
-	if err != nil {
-		return err
-	}
-	relayPub := ed25519.PublicKey(relayPeerKey.Bytes())
 	expireAfter, _ := cmd.Flags().GetDuration("expire-after")
-
 	delegateAdmin, _ := cmd.Flags().GetBool("admin")
 
-	if err := bootstrapAccept(cmd, env, relayPub, relayAddrs, host, expireAfter, delegateAdmin); err != nil {
-		return err
-	}
-
-	fmt.Fprintf(cmd.OutOrStdout(), "relay bootstrapped: %s\n", host)
-	fmt.Fprintln(cmd.OutOrStdout(), "hint: reconnect SSH to use `pln` without sudo (new group membership requires a fresh login)")
-	return nil
-}
-
-func bootstrapAccept(cmd *cobra.Command, env *cliEnv, relayPub ed25519.PublicKey, relayAddrs []string, sshTarget string, expireAfter time.Duration, delegateAdmin bool) error {
-	nodePriv, _, err := auth.EnsureIdentityKey(env.dir)
+	nodePriv, localPub, err := auth.EnsureIdentityKey(env.dir)
 	if err != nil {
 		return err
 	}
@@ -368,60 +344,151 @@ func bootstrapAccept(cmd *cobra.Command, env *cliEnv, relayPub ed25519.PublicKey
 		return errors.New("this node cannot issue tokens; only delegated admins can sign enrollment tokens")
 	}
 
-	seedToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, relayPub, 1*time.Minute, expireAfter, nil, nil)
-	if err != nil {
-		return fmt.Errorf("create relay seed token: %w", err)
+	results := make([]bootstrapResult, len(specs))
+	var wg sync.WaitGroup
+	for i, spec := range specs {
+		wg.Go(func() {
+			results[i] = bootstrapRemote(cmd.Context(), signer, env, spec, relayPort, expireAfter, delegateAdmin)
+		})
 	}
+	wg.Wait()
 
-	if err := bootstrapRelayOverSSH(cmd, env, sshTarget, seedToken, relayPub, delegateAdmin); err != nil {
-		return err
-	}
-
-	env.cfg.RememberBootstrapPeer(&admissionv1.BootstrapPeer{
-		PeerPub: append([]byte(nil), relayPub...),
-		Addrs:   append([]string(nil), relayAddrs...),
-	})
-	if err := config.Save(env.dir, env.cfg); err != nil {
-		return fmt.Errorf("save relay bootstrap details: %w", err)
-	}
-
-	if nodeSocketActive(filepath.Join(env.dir, socketName)) {
-		if _, err := env.client.ConnectPeer(cmd.Context(), connect.NewRequest(&controlv1.ConnectPeerRequest{
-			PeerPub: relayPub,
-			Addrs:   relayAddrs,
-		})); err != nil {
-			return fmt.Errorf("connect running node to relay: %w", err)
+	out := cmd.OutOrStdout()
+	var succeeded, failed int
+	var failErrs []error
+	var bootstrappedPeers []bootstrapResult
+	for _, r := range results {
+		if r.err != nil {
+			failed++
+			fmt.Fprintf(out, "  %-40s failed (%v)\n", r.target, r.err)
+			failErrs = append(failErrs, fmt.Errorf("%s: %w", r.target, r.err))
+			continue
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "relay is ready; connected to running node")
-		return nil
+		succeeded++
+		fmt.Fprintf(out, "  %-40s ok\n", r.target)
+		env.cfg.RememberBootstrapPeer(&admissionv1.BootstrapPeer{
+			PeerPub: append([]byte(nil), r.peerPub...),
+			Addrs:   append([]string(nil), r.addrs...),
+		})
+		bootstrappedPeers = append(bootstrappedPeers, r)
+	}
+	fmt.Fprintln(out)
+
+	if len(bootstrappedPeers) == 0 {
+		return errors.Join(failErrs...)
 	}
 
-	_, localPub, err := auth.EnsureIdentityKey(env.dir)
-	if err != nil {
-		return err
+	if err := config.Save(env.dir, env.cfg); err != nil {
+		return fmt.Errorf("save bootstrap peer details: %w", err)
 	}
 
-	joinToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, localPub, defaultInviteTTL, expireAfter, []*admissionv1.BootstrapPeer{{
-		PeerPub: append([]byte(nil), relayPub...),
-		Addrs:   append([]string(nil), relayAddrs...),
-	}}, nil)
-	if err != nil {
-		return fmt.Errorf("create local join token: %w", err)
+	if nodeSocketActive(filepath.Join(env.dir, socketName)) { //nolint:nestif
+		for _, r := range bootstrappedPeers {
+			if _, err := env.client.ConnectPeer(cmd.Context(), connect.NewRequest(&controlv1.ConnectPeerRequest{
+				PeerPub: r.peerPub,
+				Addrs:   r.addrs,
+			})); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "%s: connect failed: %v\n", r.target, err)
+			}
+		}
+	} else {
+		bsPeers := make([]*admissionv1.BootstrapPeer, 0, len(bootstrappedPeers))
+		for _, r := range bootstrappedPeers {
+			bsPeers = append(bsPeers, &admissionv1.BootstrapPeer{
+				PeerPub: append([]byte(nil), r.peerPub...),
+				Addrs:   append([]string(nil), r.addrs...),
+			})
+		}
+
+		joinToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, localPub, defaultInviteTTL, expireAfter, bsPeers, nil)
+		if err != nil {
+			return fmt.Errorf("create local join token: %w", err)
+		}
+
+		if err := runJoin(cmd, []string{joinToken}, env); err != nil {
+			return err
+		}
 	}
 
-	fmt.Fprintln(cmd.OutOrStdout(), "relay is ready; starting local node")
-	if err := runJoin(cmd, []string{joinToken}, env); err != nil {
-		return err
+	if len(specs) > 1 {
+		fmt.Fprintf(out, "%d succeeded, %d failed\n", succeeded, failed)
 	}
-	return servicectl("start", cmd)
+	if failed > 0 {
+		fmt.Fprintf(out, "hint: for failed hosts, use `pln invite` and run `pln join <token>` on the remote host\n")
+		return errors.Join(failErrs...)
+	}
+	return nil
 }
 
-func bootstrapRelayOverSSH(cmd *cobra.Command, env *cliEnv, sshTarget, seedToken string, relayPub ed25519.PublicKey, delegateAdmin bool) error {
-	ctx := cmd.Context()
-	if out, err := sshPln(ctx, sshTarget, "join", "--no-up", "--public", seedToken).CombinedOutput(); err != nil {
+// bootstrapRemote is safe to call concurrently for different targets.
+func bootstrapRemote(ctx context.Context, signer *auth.DelegationSigner, env *cliEnv, spec sshTargetSpec, relayPort int, expireAfter time.Duration, delegateAdmin bool) bootstrapResult {
+	target := spec.target
+	fail := func(err error) bootstrapResult {
+		return bootstrapResult{target: target, err: err}
+	}
+
+	inferredAddr, err := inferRelayAddrFromSSHTarget(ctx, target, relayPort)
+	if err != nil {
+		return fail(err)
+	}
+	relayAddrs := []string{inferredAddr}
+
+	relayHost, _, _ := net.SplitHostPort(inferredAddr)
+	relayIP := net.ParseIP(relayHost)
+	public := relayIP != nil && !relayIP.IsPrivate() && !relayIP.IsLoopback()
+
+	if err := requireRemoteSudo(ctx, target); err != nil {
+		return fail(err)
+	}
+
+	if err := ensureRemotePollen(ctx, target); err != nil {
+		return fail(err)
+	}
+
+	idCmd := sshPln(ctx, target, "id")
+	var idStdout, idStderr bytes.Buffer
+	idCmd.Stdout = &idStdout
+	idCmd.Stderr = &idStderr
+	if err := idCmd.Run(); err != nil {
+		return fail(fmt.Errorf("failed to fetch remote node identity: %w\n%s", err, strings.TrimSpace(idStderr.String())))
+	}
+
+	relayPeerKey, err := types.PeerKeyFromString(strings.TrimSpace(idStdout.String()))
+	if err != nil {
+		return fail(err)
+	}
+	relayPub := ed25519.PublicKey(relayPeerKey.Bytes())
+
+	seedToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, relayPub, 1*time.Minute, expireAfter, nil, nil)
+	if err != nil {
+		return fail(fmt.Errorf("create seed token: %w", err))
+	}
+
+	if err := bootstrapRelayOverSSH(ctx, env, target, seedToken, relayPub, delegateAdmin, spec.nodeName, public); err != nil {
+		return fail(err)
+	}
+
+	return bootstrapResult{
+		target:  target,
+		peerPub: relayPub,
+		addrs:   relayAddrs,
+	}
+}
+
+func bootstrapRelayOverSSH(ctx context.Context, env *cliEnv, sshTarget, seedToken string, relayPub ed25519.PublicKey, delegateAdmin bool, nodeName string, public bool) error {
+	joinArgs := []string{"join", "--no-up"}
+	if public {
+		joinArgs = append(joinArgs, "--public")
+	}
+	joinArgs = append(joinArgs, seedToken)
+	if out, err := sshPln(ctx, sshTarget, joinArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to enroll relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
-	if out, err := sshRoot(ctx, sshTarget, "sudo pln up -d").CombinedOutput(); err != nil {
+	upArgs := []string{"pln", "up", "-d"}
+	if nodeName != "" {
+		upArgs = append(upArgs, "--name", nodeName)
+	}
+	if out, err := sshSudo(ctx, sshTarget, upArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	if err := waitForRelayReady(ctx, sshTarget); err != nil {
@@ -431,7 +498,7 @@ func bootstrapRelayOverSSH(cmd *cobra.Command, env *cliEnv, sshTarget, seedToken
 		if err := provisionRelayAdminDelegation(ctx, env, sshTarget, relayPub); err != nil {
 			return err
 		}
-		if out, err := sshRoot(ctx, sshTarget, "sudo pln restart").CombinedOutput(); err != nil {
+		if out, err := sshSudo(ctx, sshTarget, "pln", "restart").CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 		}
 		return waitForRelayReady(ctx, sshTarget)
@@ -465,7 +532,7 @@ func provisionRelayAdminDelegation(ctx context.Context, env *cliEnv, sshTarget s
 	return nil
 }
 
-func runCertIssue(cmd *cobra.Command, args []string, env *cliEnv) error {
+func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 	prefix := strings.ToLower(args[0])
 	admin, _ := cmd.Flags().GetBool("admin")
 
@@ -602,7 +669,7 @@ func resolveJoinToken(ctx context.Context, priv ed25519.PrivateKey, encoded stri
 	}
 	inviteToken, err := auth.DecodeInviteToken(trimmed)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode token")
+		return nil, errors.New("failed to decode token")
 	}
 	return transport.RedeemInvite(ctx, priv, inviteToken)
 }
@@ -620,8 +687,8 @@ func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipT
 }
 
 func ensureRemotePollen(ctx context.Context, sshTarget string) error {
-	if exec.CommandContext(ctx, "ssh", sshTarget, "which pln >/dev/null 2>&1").Run() == nil {
-		if out, err := sshRoot(ctx, sshTarget, "pln provision").CombinedOutput(); err != nil {
+	if sshCmd(ctx, sshTarget, "which pln >/dev/null 2>&1").Run() == nil {
+		if out, err := sshSudo(ctx, sshTarget, "pln", "provision").CombinedOutput(); err != nil {
 			return fmt.Errorf("remote provision failed: %w\n%s", err, strings.TrimSpace(string(out)))
 		}
 		return nil
@@ -632,18 +699,24 @@ func ensureRemotePollen(ctx context.Context, sshTarget string) error {
 		return fmt.Errorf("failed to fetch install script: %w", reqErr)
 	}
 	resp, reqErr := (&http.Client{Timeout: httpFetchTimeout}).Do(req)
-	if reqErr != nil || resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to fetch install script")
+	if reqErr != nil {
+		return fmt.Errorf("fetch install script: %w", reqErr)
 	}
 	defer resp.Body.Close()
-	script, _ := io.ReadAll(resp.Body)
-
-	args := []string{sshTarget, "bash", "-s", "--"}
-	if version != "dev" {
-		args = append(args, "--version", version)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetch install script: unexpected status %s", resp.Status)
+	}
+	script, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read install script: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	installArgs := []string{"bash", "-s", "--"}
+	if version != "dev" {
+		installArgs = append(installArgs, "--version", version)
+	}
+
+	cmd := sshCmd(ctx, sshTarget, installArgs...)
 	cmd.Stdin = bytes.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to install pln on remote host: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -655,24 +728,42 @@ func waitForRelayReady(ctx context.Context, sshTarget string) error {
 	readyCtx, cancel := context.WithTimeout(ctx, relayReadyTimeout)
 	defer cancel()
 
-	checkCmd := "for i in $(seq 1 20); do if { sudo test -S /var/lib/pln/pln.sock || [ -S \"$HOME/.pln/pln.sock\" ]; } && sudo pln status --all >/dev/null 2>&1; then exit 0; fi; sleep 1; done; exit 1"
-	if out, err := sshRoot(readyCtx, sshTarget, checkCmd).CombinedOutput(); err != nil {
-		logOut, _ := sshRoot(ctx, sshTarget, "journalctl -u pln -n 120 --no-pager 2>/dev/null || tail -n 120 /opt/homebrew/var/log/pln.log 2>/dev/null || tail -n 120 /usr/local/var/log/pln.log 2>/dev/null || true").CombinedOutput()
+	checkCmd := "for i in $(seq 1 20); do if { test -S /var/lib/pln/pln.sock || [ -S \"$HOME/.pln/pln.sock\" ]; } && pln status --all >/dev/null 2>&1; then exit 0; fi; sleep 1; done; exit 1"
+	if out, err := sshSudoShell(readyCtx, sshTarget, checkCmd).CombinedOutput(); err != nil {
+		logOut, _ := sshSudoShell(ctx, sshTarget, "journalctl -u pln -n 120 --no-pager 2>/dev/null || tail -n 120 /opt/homebrew/var/log/pln.log 2>/dev/null || tail -n 120 /usr/local/var/log/pln.log 2>/dev/null || true").CombinedOutput()
 		return fmt.Errorf("relay failed to become ready\nstatus output: %s\nrelay log:\n%s", strings.TrimSpace(string(out)), strings.TrimSpace(string(logOut)))
 	}
 	return nil
 }
 
+// sshCmd builds an ssh(1) invocation with the standard base flags and the given
+// remote command tokens appended verbatim.
+func sshCmd(ctx context.Context, sshTarget string, remoteCmd ...string) *exec.Cmd {
+	args := slices.Concat(sshBaseArgs, []string{sshTarget}, remoteCmd)
+	return exec.CommandContext(ctx, "ssh", args...)
+}
+
 func sshPln(ctx context.Context, sshTarget string, args ...string) *exec.Cmd {
-	sshArgs := append([]string{sshTarget, "sudo", "-u", "pln", "pln"}, args...)
-	return exec.CommandContext(ctx, "ssh", sshArgs...)
+	return sshCmd(ctx, sshTarget, slices.Concat([]string{"sudo", "-n", "-u", "pln", "pln"}, args)...)
 }
 
-func sshRoot(ctx context.Context, sshTarget, shellCmd string) *exec.Cmd {
-	return exec.CommandContext(ctx, "ssh", sshTarget, shellCmd)
+func sshSudo(ctx context.Context, sshTarget string, args ...string) *exec.Cmd {
+	return sshCmd(ctx, sshTarget, slices.Concat([]string{"sudo", "-n"}, args)...)
 }
 
-func inferRelayAddrFromSSHTarget(target string, relayPort int) (string, error) {
+func sshSudoShell(ctx context.Context, sshTarget, shellCmd string) *exec.Cmd {
+	return sshCmd(ctx, sshTarget, "sudo -n sh -c '"+shellCmd+"'")
+}
+
+func requireRemoteSudo(ctx context.Context, sshTarget string) error {
+	script := `sh -c 'if [ "$(id -u)" -eq 0 ]; then exit 0; fi; sudo -n true >/dev/null 2>&1'`
+	if err := sshCmd(ctx, sshTarget, script).Run(); err != nil {
+		return errors.New("requires SSH as root or passwordless sudo")
+	}
+	return nil
+}
+
+func inferRelayAddrFromSSHTarget(ctx context.Context, target string, relayPort int) (string, error) {
 	host := strings.TrimSpace(target)
 	if host == "" {
 		return "", errors.New("ssh target is empty")
@@ -687,5 +778,85 @@ func inferRelayAddrFromSSHTarget(target string, relayPort int) (string, error) {
 	if host == "" {
 		return "", errors.New("ssh target host is empty")
 	}
+	if net.ParseIP(host) == nil {
+		ips, err := net.DefaultResolver.LookupHost(ctx, host)
+		if err != nil {
+			return "", fmt.Errorf("resolve hostname %q: %w", host, err)
+		}
+		if len(ips) == 0 {
+			return "", fmt.Errorf("resolve hostname %q: no addresses returned", host)
+		}
+		host = ips[0]
+		for _, ip := range ips {
+			if p := net.ParseIP(ip); p != nil && !p.IsLinkLocalUnicast() && !p.IsLinkLocalMulticast() {
+				host = ip
+				break
+			}
+		}
+	}
 	return net.JoinHostPort(host, strconv.Itoa(relayPort)), nil
+}
+
+type sshTargetSpec struct {
+	target   string
+	nodeName string
+}
+
+func resolveSSHTargets(cmd *cobra.Command, args []string) ([]sshTargetSpec, error) {
+	var raw []string
+	sawStdin := false
+	for _, arg := range args {
+		if arg == "-" {
+			if sawStdin {
+				return nil, errors.New("stdin marker '-' specified more than once")
+			}
+			sawStdin = true
+			data, err := io.ReadAll(cmd.InOrStdin())
+			if err != nil {
+				return nil, fmt.Errorf("reading targets from stdin: %w", err)
+			}
+			for t := range strings.FieldsSeq(string(data)) {
+				if t != "" {
+					raw = append(raw, t)
+				}
+			}
+			continue
+		}
+		raw = append(raw, arg)
+	}
+	if len(raw) == 0 {
+		return nil, errors.New("no SSH targets specified")
+	}
+
+	specs := make([]sshTargetSpec, len(raw))
+	seen := make(map[string]int)
+	for i, entry := range raw {
+		// An entry with `=` in the prefix (and no `@` before the `=`) binds an explicit name
+		// to the target; otherwise derive a name from the host portion.
+		if name, target, ok := strings.Cut(entry, "="); ok && !strings.Contains(name, "@") {
+			specs[i] = sshTargetSpec{target: target, nodeName: name}
+			continue
+		}
+		specs[i] = sshTargetSpec{target: entry, nodeName: deriveNodeName(entry, i, seen)}
+	}
+	return specs, nil
+}
+
+func deriveNodeName(target string, index int, seen map[string]int) string {
+	host := target
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	if splitHost, _, err := net.SplitHostPort(host); err == nil {
+		host = splitHost
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		host = fmt.Sprintf("node-%d", index+1)
+	}
+	seen[host]++
+	if seen[host] > 1 {
+		return fmt.Sprintf("%s-%d", host, seen[host])
+	}
+	return host
 }
