@@ -624,7 +624,7 @@ func (r *reconciler) adjustGateSizes(specs map[string]spec, cluster clusterState
 		dialOut := totalDialRate(cluster.DialRates[hash])
 		invRate := cluster.InvocationRates[hash]
 		size := desiredGateSize(cores, dialOut, invRate)
-		r.gates.SetSize(hash, size)
+		r.gates.SetHashSize(hash, size)
 	}
 }
 

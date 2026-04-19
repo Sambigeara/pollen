@@ -11,8 +11,9 @@ import (
 const latencyAlpha = 0.3
 
 type latencyKey struct {
-	hash string
-	peer types.PeerKey
+	hash     string
+	function string
+	peer     types.PeerKey
 }
 
 type latencyTracker struct {
@@ -24,8 +25,8 @@ func newLatencyTracker() *latencyTracker {
 	return &latencyTracker{ewma: make(map[latencyKey]*metrics.EWMA)}
 }
 
-func (lt *latencyTracker) Record(peer types.PeerKey, hash string, ms float64) {
-	k := latencyKey{peer: peer, hash: hash}
+func (lt *latencyTracker) Record(peer types.PeerKey, hash, function string, ms float64) {
+	k := latencyKey{peer: peer, hash: hash, function: function}
 	lt.mu.Lock()
 	e, ok := lt.ewma[k]
 	if !ok {
@@ -36,8 +37,8 @@ func (lt *latencyTracker) Record(peer types.PeerKey, hash string, ms float64) {
 	e.Update(ms)
 }
 
-func (lt *latencyTracker) Get(peer types.PeerKey, hash string) float64 {
-	k := latencyKey{peer: peer, hash: hash}
+func (lt *latencyTracker) Get(peer types.PeerKey, hash, function string) float64 {
+	k := latencyKey{peer: peer, hash: hash, function: function}
 	lt.mu.Lock()
 	defer lt.mu.Unlock()
 	if e, ok := lt.ewma[k]; ok {
@@ -46,7 +47,11 @@ func (lt *latencyTracker) Get(peer types.PeerKey, hash string) float64 {
 	return -1
 }
 
-// pickP2C selects a target from claimants using power-of-two-choices.
+// pickP2C selects a target from claimants using power-of-two-choices for
+// the given (hash, function). Per-function latency lets a fast function
+// route to one peer while a slow function on the same module routes
+// elsewhere, rather than averaging both into a single hash-keyed EWMA.
+//
 // If self is a claimant and other claimants exist, it compares self against
 // one random remote (local-biased variant — both latencies include local
 // gate wait so the comparison is symmetric). Otherwise picks 2 random
@@ -58,7 +63,7 @@ func pickP2C(
 	locallyRunning bool,
 	claimants map[types.PeerKey]struct{},
 	lt *latencyTracker,
-	hash string,
+	hash, function string,
 ) (target types.PeerKey, isLocal bool) {
 	others := make([]types.PeerKey, 0, len(claimants))
 	for pk := range claimants {
@@ -69,8 +74,8 @@ func pickP2C(
 
 	if locallyRunning && len(others) > 0 {
 		remote := others[rand.IntN(len(others))]
-		selfLat := lt.Get(self, hash)
-		remoteLat := lt.Get(remote, hash)
+		selfLat := lt.Get(self, hash, function)
+		remoteLat := lt.Get(remote, hash, function)
 		switch {
 		case selfLat < 0:
 			// Self unknown — serve locally to bootstrap our own EWMA
@@ -107,8 +112,8 @@ func pickP2C(
 		b = others[rand.IntN(len(others))]
 	}
 
-	latA := lt.Get(a, hash)
-	latB := lt.Get(b, hash)
+	latA := lt.Get(a, hash, function)
+	latB := lt.Get(b, hash, function)
 	if latA >= 0 && (latB < 0 || latA <= latB) {
 		return a, false
 	}

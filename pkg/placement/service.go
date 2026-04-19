@@ -52,9 +52,8 @@ type PlacementAPI interface {
 	Status() []WorkloadSummary
 	PlacementInfo() map[string]PlacementInfo
 
-	RecordDial(callerHash, targetKey string)
-	RecordInvocation(seedHash string, elapsed time.Duration)
-	RecordParkedTime(seedHash string, elapsed time.Duration)
+	RecordDial(callerHash, callerFunction, targetKey string)
+	RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration)
 
 	HandleArtifactStream(stream io.ReadWriteCloser, peer types.PeerKey)
 	HandleWorkloadStream(stream io.ReadWriteCloser, peer types.PeerKey)
@@ -127,7 +126,7 @@ func New(self types.PeerKey, store WorkloadState, casStore *cas.Store, wasmRT WA
 	s.manager = newManager(casStore, wasmRT)
 	s.utilisation = newUtilisationTracker()
 	s.latency = newLatencyTracker()
-	s.gates = newGateRegistry(func(string) int { return runtime.NumCPU() * gateInitialMultiplier })
+	s.gates = newGateRegistry(runtime.NumCPU() * gateInitialMultiplier)
 	return s
 }
 
@@ -298,7 +297,7 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 		return nil, fmt.Errorf("no node claims workload %s: %w", types.ShortHash(hash), ErrNotRunning)
 	}
 
-	target, isLocal := pickP2C(s.localID, locallyRunning, claimants, s.latency, hash)
+	target, isLocal := pickP2C(s.localID, locallyRunning, claimants, s.latency, hash, function)
 
 	if isLocal {
 		return s.callLocal(ctx, hash, function, input)
@@ -342,7 +341,7 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 // the per-seed compute-cost EWMA stays a clean signal for the autoscaler.
 func (s *Service) callLocal(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
 	callerStart := time.Now()
-	gateRelease, err := s.gates.acquire(ctx, hash)
+	gateRelease, err := s.gates.acquire(ctx, callKey{Hash: hash, Function: function})
 	if err != nil {
 		return nil, err
 	}
@@ -352,11 +351,11 @@ func (s *Service) callLocal(ctx context.Context, hash, function string, input []
 	out, err := s.manager.Call(ctx, hash, function, input)
 	work := time.Since(workStart)
 	callerElapsed := time.Since(callerStart)
-	s.latency.Record(s.localID, hash, float64(callerElapsed.Milliseconds()))
+	s.latency.Record(s.localID, hash, function, float64(callerElapsed.Milliseconds()))
 	if !errors.Is(err, ErrNotRunning) {
-		s.utilisation.RecordServed(hash)
-		s.utilisation.RecordInvocation(hash, work)
-		s.utilisation.RecordSLO(hash, callerElapsed)
+		s.utilisation.RecordServed(hash, function)
+		s.utilisation.RecordInvocation(hash, function, work)
+		s.utilisation.RecordSLO(hash, function, callerElapsed)
 	}
 	return out, err
 }
@@ -376,8 +375,8 @@ func (s *Service) forwardCall(ctx context.Context, target types.PeerKey, hash, f
 	// undercount remote pain. ErrNotRunning means the target wasn't
 	// hosting the seed at all — not informative for either signal.
 	if !errors.Is(err, ErrNotRunning) {
-		s.latency.Record(target, hash, float64(elapsed.Milliseconds()))
-		s.utilisation.RecordSLO(hash, elapsed)
+		s.latency.Record(target, hash, function, float64(elapsed.Milliseconds()))
+		s.utilisation.RecordSLO(hash, function, elapsed)
 	}
 	if err != nil {
 		s.log.Warnw("workload invocation failed", "target", target.Short(), "hash", types.ShortHash(hash), "err", err)
@@ -422,32 +421,24 @@ func (s *Service) Signal() {
 	s.reconciler.Signal()
 }
 
-// RecordDial observes an outbound dial from a caller workload to a target
-// (another seed or a service). targetKey is prefix-disambiguated:
+// RecordDial observes an outbound dial from a caller (hash, function) to a
+// target (another seed or a service). targetKey is prefix-disambiguated:
 // "seed:<name-or-hash>" or "service:<name>". Seed targets are normalised to
 // "seed:<hash>" so the dial graph aligns with the claim graph during
 // placement scoring.
-func (s *Service) RecordDial(callerHash, targetKey string) {
+func (s *Service) RecordDial(callerHash, callerFunction, targetKey string) {
 	if name, ok := strings.CutPrefix(targetKey, "seed:"); ok {
 		if hash, found := s.resolveGlobal(name); found {
 			targetKey = "seed:" + hash
 		}
 	}
-	s.utilisation.RecordDial(callerHash, targetKey)
-}
-
-// RecordInvocation observes an elapsed wall-time for a single invocation
-// of seedHash on this node.
-func (s *Service) RecordInvocation(seedHash string, elapsed time.Duration) {
-	s.utilisation.RecordInvocation(seedHash, elapsed)
+	s.utilisation.RecordDial(callerHash, callerFunction, targetKey)
 }
 
 // RecordParkedTime reports time the currently-executing invocation of
-// seedHash spent blocked inside pollen_request. The tick loop aggregates
-// these samples into an EWMA the reconciler uses to size the workload's
-// concurrency gate adaptively.
-func (s *Service) RecordParkedTime(seedHash string, elapsed time.Duration) {
-	s.utilisation.RecordParkedTime(seedHash, elapsed)
+// (callerHash, callerFunction) spent blocked inside pollen_request.
+func (s *Service) RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration) {
+	s.utilisation.RecordParkedTime(callerHash, callerFunction, elapsed)
 }
 
 // resolveLocalFirst resolves an identifier (name or hash prefix) for

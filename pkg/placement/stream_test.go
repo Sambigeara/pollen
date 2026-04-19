@@ -17,7 +17,7 @@ import (
 )
 
 func testGates() *gateRegistry {
-	return newGateRegistry(func(string) int { return 16 })
+	return newGateRegistry(16)
 }
 
 type hangingStream struct {

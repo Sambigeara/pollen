@@ -32,13 +32,13 @@ func dialTargetKey(uri URI) string {
 // RecordDial observes outbound calls before they are routed so callers'
 // dial graphs can be tracked even when routing fails.
 // RecordParkedTime observes how long the calling invocation was blocked
-// inside pollen_request waiting for the downstream response; the
-// placement layer uses this to size workload concurrency gates
-// adaptively.
+// inside pollen_request waiting for the downstream response. Both are
+// attributed to the caller's (hash, function) so telemetry matches the
+// per-function admission unit.
 type RequestRouter interface {
 	RouteRequest(ctx context.Context, uri URI, input []byte) ([]byte, error)
-	RecordDial(callerHash, targetKey string)
-	RecordParkedTime(callerHash string, elapsed time.Duration)
+	RecordDial(callerHash, callerFunction, targetKey string)
+	RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration)
 }
 
 // NewHostFunctions creates the Extism host functions exposed to guest WASM modules.
@@ -109,14 +109,15 @@ func NewHostFunctions(logger *zap.SugaredLogger, router RequestRouter) []extism.
 			}
 
 			caller := ExecutingSeedFromContext(ctx)
+			callerFn := ExecutingFunctionFromContext(ctx)
 			if caller != "" {
-				router.RecordDial(caller, dialTargetKey(uri))
+				router.RecordDial(caller, callerFn, dialTargetKey(uri))
 			}
 
 			parkStart := time.Now()
 			output, err := router.RouteRequest(ctx, uri, input)
 			if caller != "" {
-				router.RecordParkedTime(caller, time.Since(parkStart))
+				router.RecordParkedTime(caller, callerFn, time.Since(parkStart))
 			}
 			if err != nil {
 				if errors.Is(err, ErrTargetNotFound) {

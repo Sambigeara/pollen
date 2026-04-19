@@ -758,13 +758,13 @@ func (n *Supervisor) RouteRequest(ctx context.Context, uri wasm.URI, input []byt
 }
 
 // RecordDial satisfies wasm.RequestRouter so the host function can attribute
-// outbound calls from a seed to its dial graph.
-func (n *Supervisor) RecordDial(callerHash, targetKey string) {
-	n.placement.RecordDial(callerHash, targetKey)
+// outbound calls from a caller (hash, function) to its dial graph.
+func (n *Supervisor) RecordDial(callerHash, callerFunction, targetKey string) {
+	n.placement.RecordDial(callerHash, callerFunction, targetKey)
 }
 
-func (n *Supervisor) RecordParkedTime(callerHash string, elapsed time.Duration) {
-	n.placement.RecordParkedTime(callerHash, elapsed)
+func (n *Supervisor) RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration) {
+	n.placement.RecordParkedTime(callerHash, callerFunction, elapsed)
 }
 
 func (n *Supervisor) routeServiceRequest(ctx context.Context, name string, input []byte) ([]byte, error) {

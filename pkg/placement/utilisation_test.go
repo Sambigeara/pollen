@@ -18,9 +18,9 @@ func TestUtilisationTracker_RecordSLOClassifiesFromConstruction(t *testing.T) {
 	ut.nowFunc = func() time.Time { return now }
 
 	for range 5 {
-		ut.RecordSLO("abc", 50*time.Millisecond)
+		ut.RecordSLO("abc", "handle", 50*time.Millisecond)
 	}
-	ut.RecordSLO("abc", 2*time.Second)
+	ut.RecordSLO("abc", "handle", 2*time.Second)
 
 	now = now.Add(time.Second)
 	ut.tick(time.Second)
@@ -39,7 +39,7 @@ func TestUtilisationTracker_SetSLOLookupNilRestoresDefault(t *testing.T) {
 	now := time.Now()
 	ut.nowFunc = func() time.Time { return now }
 	for range 5 {
-		ut.RecordSLO("abc", 50*time.Millisecond)
+		ut.RecordSLO("abc", "handle", 50*time.Millisecond)
 	}
 	now = now.Add(time.Second)
 	ut.tick(time.Second)
@@ -53,7 +53,7 @@ func TestUtilisationTracker_RecordAndRate(t *testing.T) {
 	now := time.Now()
 	ut.nowFunc = func() time.Time { return now }
 
-	ut.RecordServed("abc")
+	ut.RecordServed("abc", "handle")
 
 	// Before tick, EWMA is still zero.
 	require.NotContains(t, ut.ServedRates(), "abc")
@@ -72,7 +72,7 @@ func TestUtilisationTracker_IdleDuration(t *testing.T) {
 
 	require.Equal(t, time.Duration(math.MaxInt64), ut.IdleDuration("abc"))
 
-	ut.RecordServed("abc")
+	ut.RecordServed("abc", "handle")
 	now = now.Add(3 * time.Minute)
 	require.InDelta(t, 3*time.Minute, ut.IdleDuration("abc"), float64(time.Millisecond))
 }
@@ -82,7 +82,7 @@ func TestUtilisationTracker_Clear(t *testing.T) {
 	now := time.Now()
 	ut.nowFunc = func() time.Time { return now }
 
-	ut.RecordServed("abc")
+	ut.RecordServed("abc", "handle")
 	now = now.Add(time.Second)
 	ut.tick(time.Second)
 	require.Contains(t, ut.ServedRates(), "abc")
@@ -98,9 +98,9 @@ func TestUtilisationTracker_ServedRates(t *testing.T) {
 	ut.nowFunc = func() time.Time { return now }
 
 	for range 100 {
-		ut.RecordServed("hot")
+		ut.RecordServed("hot", "handle")
 	}
-	ut.RecordServed("cold")
+	ut.RecordServed("cold", "handle")
 
 	now = now.Add(time.Second)
 	ut.tick(time.Second)
@@ -122,8 +122,8 @@ func TestUtilisationTracker_InvocationCost(t *testing.T) {
 	// first tick lands at (10 × 50 × 0.2) / (10 × 0.2) = 50ms: the ratio
 	// is cost per call regardless of EWMA warm-up.
 	for range 10 {
-		ut.RecordServed("abc")
-		ut.RecordInvocation("abc", 50*time.Millisecond)
+		ut.RecordServed("abc", "handle")
+		ut.RecordInvocation("abc", "handle", 50*time.Millisecond)
 	}
 	now = now.Add(time.Second)
 	ut.tick(time.Second)
@@ -151,9 +151,9 @@ func TestUtilisationTracker_ParkedTimes(t *testing.T) {
 	// pollen_request. Mean parked-per-invocation is 80ms; same EWMA
 	// warm-up logic as InvocationCosts — the ratio is invariant of alpha.
 	for range 10 {
-		ut.RecordServed("abc")
-		ut.RecordInvocation("abc", 100*time.Millisecond)
-		ut.RecordParkedTime("abc", 80*time.Millisecond)
+		ut.RecordServed("abc", "handle")
+		ut.RecordInvocation("abc", "handle", 100*time.Millisecond)
+		ut.RecordParkedTime("abc", "handle", 80*time.Millisecond)
 	}
 	now = now.Add(time.Second)
 	ut.tick(time.Second)
@@ -176,9 +176,9 @@ func TestUtilisationTracker_ClearDropsParked(t *testing.T) {
 	ut.nowFunc = func() time.Time { return now }
 
 	for range 5 {
-		ut.RecordServed("abc")
-		ut.RecordInvocation("abc", 50*time.Millisecond)
-		ut.RecordParkedTime("abc", 40*time.Millisecond)
+		ut.RecordServed("abc", "handle")
+		ut.RecordInvocation("abc", "handle", 50*time.Millisecond)
+		ut.RecordParkedTime("abc", "handle", 40*time.Millisecond)
 	}
 	now = now.Add(time.Second)
 	ut.tick(time.Second)
@@ -194,9 +194,9 @@ func TestUtilisationTracker_DialRates(t *testing.T) {
 	ut.nowFunc = func() time.Time { return now }
 
 	for range 50 {
-		ut.RecordDial("ingest", "seed:enrich")
+		ut.RecordDial("ingest", "handle", "seed:enrich")
 	}
-	ut.RecordDial("ingest", "service:store")
+	ut.RecordDial("ingest", "handle", "service:store")
 
 	now = now.Add(time.Second)
 	ut.tick(time.Second)
@@ -213,11 +213,11 @@ func TestUtilisationTracker_ClearDropsInvocationAndDial(t *testing.T) {
 	ut.nowFunc = func() time.Time { return now }
 
 	for range 5 {
-		ut.RecordServed("abc")
-		ut.RecordInvocation("abc", 25*time.Millisecond)
+		ut.RecordServed("abc", "handle")
+		ut.RecordInvocation("abc", "handle", 25*time.Millisecond)
 	}
 	for range 20 {
-		ut.RecordDial("abc", "seed:downstream")
+		ut.RecordDial("abc", "handle", "seed:downstream")
 	}
 	now = now.Add(time.Second)
 	ut.tick(time.Second)

@@ -23,31 +23,31 @@ func TestPickP2C(t *testing.T) {
 
 	t.Run("bootstrap: self unknown, remote known prefers local", func(t *testing.T) {
 		lt := newLatencyTracker()
-		lt.Record(peerA, hash, 10)
+		lt.Record(peerA, hash, "handle", 10)
 
-		target, isLocal := pickP2C(self, true, claimants(self, peerA), lt, hash)
+		target, isLocal := pickP2C(self, true, claimants(self, peerA), lt, hash, "handle")
 		require.Equal(t, self, target)
 		require.True(t, isLocal)
 	})
 
 	t.Run("both known, self faster prefers local", func(t *testing.T) {
 		lt := newLatencyTracker()
-		lt.Record(self, hash, 5)
-		lt.Record(peerA, hash, 10)
+		lt.Record(self, hash, "handle", 5)
+		lt.Record(peerA, hash, "handle", 10)
 
-		target, isLocal := pickP2C(self, true, claimants(self, peerA), lt, hash)
+		target, isLocal := pickP2C(self, true, claimants(self, peerA), lt, hash, "handle")
 		require.Equal(t, self, target)
 		require.True(t, isLocal)
 	})
 
 	t.Run("both known, remote faster prefers remote", func(t *testing.T) {
 		lt := newLatencyTracker()
-		lt.Record(self, hash, 50)
-		lt.Record(peerA, hash, 5)
-		lt.Record(peerB, hash, 5)
+		lt.Record(self, hash, "handle", 50)
+		lt.Record(peerA, hash, "handle", 5)
+		lt.Record(peerB, hash, "handle", 5)
 
 		// With only one remote, the pick is deterministic.
-		target, isLocal := pickP2C(self, true, claimants(self, peerA), lt, hash)
+		target, isLocal := pickP2C(self, true, claimants(self, peerA), lt, hash, "handle")
 		require.Equal(t, peerA, target)
 		require.False(t, isLocal)
 	})
@@ -55,16 +55,16 @@ func TestPickP2C(t *testing.T) {
 	t.Run("both unknown prefers local", func(t *testing.T) {
 		lt := newLatencyTracker()
 
-		target, isLocal := pickP2C(self, true, claimants(self, peerA), lt, hash)
+		target, isLocal := pickP2C(self, true, claimants(self, peerA), lt, hash, "handle")
 		require.Equal(t, self, target)
 		require.True(t, isLocal)
 	})
 
 	t.Run("self known, remote unknown probes remote", func(t *testing.T) {
 		lt := newLatencyTracker()
-		lt.Record(self, hash, 10)
+		lt.Record(self, hash, "handle", 10)
 
-		target, isLocal := pickP2C(self, true, claimants(self, peerA), lt, hash)
+		target, isLocal := pickP2C(self, true, claimants(self, peerA), lt, hash, "handle")
 		require.Equal(t, peerA, target)
 		require.False(t, isLocal)
 	})
@@ -72,7 +72,7 @@ func TestPickP2C(t *testing.T) {
 	t.Run("not running locally routes to remote", func(t *testing.T) {
 		lt := newLatencyTracker()
 
-		target, isLocal := pickP2C(self, false, claimants(peerA), lt, hash)
+		target, isLocal := pickP2C(self, false, claimants(peerA), lt, hash, "handle")
 		require.Equal(t, peerA, target)
 		require.False(t, isLocal)
 	})
@@ -80,7 +80,7 @@ func TestPickP2C(t *testing.T) {
 	t.Run("running locally with no others prefers local", func(t *testing.T) {
 		lt := newLatencyTracker()
 
-		target, isLocal := pickP2C(self, true, claimants(self), lt, hash)
+		target, isLocal := pickP2C(self, true, claimants(self), lt, hash, "handle")
 		require.Equal(t, self, target)
 		require.True(t, isLocal)
 	})

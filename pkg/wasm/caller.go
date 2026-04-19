@@ -8,8 +8,9 @@ import (
 )
 
 type (
-	callerInfoKey    struct{}
-	executingSeedKey struct{}
+	callerInfoKey        struct{}
+	executingSeedKey     struct{}
+	executingFunctionKey struct{}
 )
 
 // WithExecutingSeed stamps ctx with the hash of the seed currently being
@@ -24,6 +25,22 @@ func WithExecutingSeed(ctx context.Context, hash string) context.Context {
 func ExecutingSeedFromContext(ctx context.Context) string {
 	if h, ok := ctx.Value(executingSeedKey{}).(string); ok {
 		return h
+	}
+	return ""
+}
+
+// WithExecutingFunction stamps ctx with the exported function currently
+// being invoked. Paired with WithExecutingSeed so host functions can
+// attribute observations to the specific (hash, function) admission unit.
+func WithExecutingFunction(ctx context.Context, function string) context.Context {
+	return context.WithValue(ctx, executingFunctionKey{}, function)
+}
+
+// ExecutingFunctionFromContext returns the executing function name, or ""
+// if none is stamped.
+func ExecutingFunctionFromContext(ctx context.Context) string {
+	if f, ok := ctx.Value(executingFunctionKey{}).(string); ok {
+		return f
 	}
 	return ""
 }

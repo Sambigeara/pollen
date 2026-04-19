@@ -22,7 +22,7 @@ func newServiceForDialTests(store WorkloadState) *Service {
 
 func dialDrain(s *Service, dials int, caller, target string) map[string]map[string]float64 {
 	for range dials {
-		s.RecordDial(caller, target)
+		s.RecordDial(caller, "handle", target)
 	}
 	s.utilisation.tick(time.Second)
 	return s.utilisation.DialRates()
@@ -77,7 +77,7 @@ func newServiceForUnseedTests(localID types.PeerKey, store WorkloadState) *Servi
 		store:       store,
 		utilisation: newUtilisationTracker(),
 		manager:     newManager(nil, nil),
-		gates:       newGateRegistry(func(string) int { return 1 }),
+		gates:       newGateRegistry(1),
 	}
 }
 

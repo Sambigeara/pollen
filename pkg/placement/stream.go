@@ -205,12 +205,13 @@ func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, peer t
 		return
 	}
 
-	// Gate the call against the target's per-workload concurrency limit.
-	// Forwarded calls must respect the target's capacity, not just the
-	// caller's — otherwise P2C would route into hotspots its latency EWMA
-	// hadn't caught up with yet.
+	// Gate the call against the target's per-(hash, function) concurrency
+	// limit. Forwarded calls must respect the target's capacity, not just
+	// the caller's — otherwise P2C would route into hotspots its latency
+	// EWMA hadn't caught up with yet.
 	hash := string(hashBuf[:])
-	gateRelease, err := gates.acquire(ctx, hash)
+	function := string(funcName)
+	gateRelease, err := gates.acquire(ctx, callKey{Hash: hash, Function: function})
 	if err != nil {
 		writeResponse(stream, statusError, []byte(err.Error()))
 		return
@@ -223,14 +224,14 @@ func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, peer t
 	ctx = withChain(ctx, hash)
 
 	workStart := time.Now()
-	output, err := invoker.Call(ctx, hash, string(funcName), input)
+	output, err := invoker.Call(ctx, hash, function, input)
 	// Record Served + execution-only Invocation on the serving node for
 	// every non-ErrNotRunning outcome. SLO is not recorded here — it is
 	// caller-perspective and the caller's forwardCall observes it, so
 	// the serving node does not double-count or scale on forwarded pain.
 	if !errors.Is(err, ErrNotRunning) {
-		utilisation.RecordServed(hash)
-		utilisation.RecordInvocation(hash, time.Since(workStart))
+		utilisation.RecordServed(hash, function)
+		utilisation.RecordInvocation(hash, function, time.Since(workStart))
 	}
 	if err != nil {
 		switch {

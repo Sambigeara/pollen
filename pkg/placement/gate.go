@@ -9,11 +9,21 @@ import (
 
 const gateWaitAlpha = 0.2
 
-// workloadGate bounds in-flight invocations for a single workload on this
-// node. Acquire blocks when in-flight count meets the cap; callers
+// callKey identifies an admission unit: a specific exported function within
+// a WASM module. The module hash is the replication unit (placement, CAS,
+// warm instance); the function is the cost unit (admission, latency, SLO).
+// Per-function gating stops a slow function in a module from head-of-line-
+// blocking fast functions that share the same binary.
+type callKey struct {
+	Hash     string
+	Function string
+}
+
+// workloadGate bounds in-flight invocations for a single (hash, function) on
+// this node. Acquire blocks when in-flight count meets the cap; callers
 // honour their context deadline rather than a global wait budget. Wait
-// time is recorded into an EWMA so placement can observe per-workload
-// gate wait independently of any other workload's behaviour.
+// time is recorded into an EWMA so placement can observe per-function
+// gate wait independently of any other function's behaviour.
 //
 // The gate is backed by an explicit cap + inflight counter under a
 // mutex, with a 1-buffered notify channel waking blocked acquirers when
@@ -125,64 +135,90 @@ func (g *workloadGate) WaitEWMA() time.Duration {
 	return time.Duration(g.waitNs.Load())
 }
 
-// gateRegistry holds per-hash workloadGates. New gates are sized via the
-// sizer callback (typically a small, conservative default); the reconciler
-// then resizes them per-tick from observed dial behaviour via SetSize.
+// gateRegistry holds per-(hash, function) workloadGates. Each module hash
+// has a single size target — set by the reconciler from cluster-wide
+// signals — and every function of that module gets its own gate sized
+// to that target. New gates materialise on first acquire, so we don't
+// need to pre-enumerate a module's exported functions.
 type gateRegistry struct {
-	gates map[string]*workloadGate
-	sizer func(hash string) int
-	mu    sync.Mutex
+	gates       map[callKey]*workloadGate
+	hashSizes   map[string]int
+	defaultSize int
+	mu          sync.Mutex
 }
 
-func newGateRegistry(sizer func(string) int) *gateRegistry {
+func newGateRegistry(defaultSize int) *gateRegistry {
+	if defaultSize < 1 {
+		defaultSize = 1
+	}
 	return &gateRegistry{
-		gates: make(map[string]*workloadGate),
-		sizer: sizer,
+		gates:       make(map[callKey]*workloadGate),
+		hashSizes:   make(map[string]int),
+		defaultSize: defaultSize,
 	}
 }
 
-func (r *gateRegistry) acquire(ctx context.Context, hash string) (func(), error) {
+func (r *gateRegistry) acquire(ctx context.Context, key callKey) (func(), error) {
 	r.mu.Lock()
-	g, ok := r.gates[hash]
+	g, ok := r.gates[key]
 	if !ok {
-		g = newWorkloadGate(r.sizer(hash))
-		r.gates[hash] = g
+		size, hasSize := r.hashSizes[key.Hash]
+		if !hasSize {
+			size = r.defaultSize
+		}
+		g = newWorkloadGate(size)
+		r.gates[key] = g
 	}
 	r.mu.Unlock()
 	return g.acquire(ctx)
 }
 
-// SetSize adjusts a workload's gate cap, creating the gate at the new
-// size if it doesn't exist yet.
-func (r *gateRegistry) SetSize(hash string, n int) {
+// SetHashSize records a per-module concurrency target and resizes every
+// existing function gate for that module. Functions not yet observed
+// inherit the stored size when their gate is first created.
+func (r *gateRegistry) SetHashSize(hash string, n int) {
+	if n < 1 {
+		n = 1
+	}
 	r.mu.Lock()
-	g, ok := r.gates[hash]
-	if !ok {
-		g = newWorkloadGate(n)
-		r.gates[hash] = g
-		r.mu.Unlock()
-		return
+	r.hashSizes[hash] = n
+	affected := make([]*workloadGate, 0)
+	for key, g := range r.gates {
+		if key.Hash == hash {
+			affected = append(affected, g)
+		}
 	}
 	r.mu.Unlock()
-	g.SetCap(n)
+	for _, g := range affected {
+		g.SetCap(n)
+	}
 }
 
-// WaitEWMAs returns a snapshot of per-hash gate wait times. Used by the
-// supervisor's Prometheus collector to emit per-workload signals.
+// WaitEWMAs returns a per-hash snapshot of gate-wait EWMAs. Aggregated as
+// the max across functions so SeedMetrics surfaces the worst pain any
+// function of the module is experiencing.
 func (r *gateRegistry) WaitEWMAs() map[string]time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make(map[string]time.Duration, len(r.gates))
-	for hash, g := range r.gates {
-		out[hash] = g.WaitEWMA()
+	out := make(map[string]time.Duration)
+	for key, g := range r.gates {
+		w := g.WaitEWMA()
+		if existing, ok := out[key.Hash]; !ok || w > existing {
+			out[key.Hash] = w
+		}
 	}
 	return out
 }
 
-// Clear drops a workload's gate (called on unseed). Pending acquirers
-// will eventually exit via their ctx.
+// Clear drops every gate belonging to the given module hash (called on
+// unseed). Pending acquirers exit via their ctx.
 func (r *gateRegistry) Clear(hash string) {
 	r.mu.Lock()
-	delete(r.gates, hash)
+	for key := range r.gates {
+		if key.Hash == hash {
+			delete(r.gates, key)
+		}
+	}
+	delete(r.hashSizes, hash)
 	r.mu.Unlock()
 }

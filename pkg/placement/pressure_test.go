@@ -17,10 +17,10 @@ func TestComputeAutoscaleSignals(t *testing.T) {
 		// 90 satisfied + 10 burned per second → 10% burn.
 		// Volume kept above burnSignalFloor so the ratio is actionable.
 		for range 90 {
-			ut.RecordSLO("h1", 50*time.Millisecond)
+			ut.RecordSLO("h1", "handle", 50*time.Millisecond)
 		}
 		for range 10 {
-			ut.RecordSLO("h1", 200*time.Millisecond)
+			ut.RecordSLO("h1", "handle", 200*time.Millisecond)
 		}
 		now = now.Add(time.Second)
 		ut.tick(time.Second)
@@ -54,8 +54,8 @@ func TestComputeAutoscaleSignals(t *testing.T) {
 
 		// Seed a high-burn history, then stop observing.
 		for range 10 {
-			ut.RecordSLO("h1", 50*time.Millisecond)
-			ut.RecordSLO("h1", 200*time.Millisecond)
+			ut.RecordSLO("h1", "handle", 50*time.Millisecond)
+			ut.RecordSLO("h1", "handle", 200*time.Millisecond)
 		}
 		now = now.Add(time.Second)
 		ut.tick(time.Second)
@@ -87,7 +87,7 @@ func TestComputeAutoscaleSignals(t *testing.T) {
 		ut.SetSLOLookup(func(string) time.Duration { return 500 * time.Millisecond })
 
 		for range 50 {
-			ut.RecordSLO("h1", 30*time.Millisecond)
+			ut.RecordSLO("h1", "handle", 30*time.Millisecond)
 		}
 		now = now.Add(time.Second)
 		ut.tick(time.Second)

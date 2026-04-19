@@ -146,7 +146,7 @@ func TestExecuteClaim_SpecRemovedDuringFetch(t *testing.T) {
 	}
 	wm := &mockWorkloads{}
 
-	r := newReconciler(local, ms, wm, &mockCAS{}, &slowFetcher{midFlight: func() { ms.removeSpec(hash) }}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, wm, &mockCAS{}, &slowFetcher{midFlight: func() { ms.removeSpec(hash) }}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.executeClaim(t.Context(), hash, 1, []types.PeerKey{local})
 
 	require.False(t, wm.seeded.Load(), "should not seed when spec was removed")
@@ -186,7 +186,7 @@ func TestExecuteClaim_LosesCapacityDuringFetch(t *testing.T) {
 		ms.mu.Unlock()
 	}
 
-	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{midFlight: saturate}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{midFlight: saturate}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.executeClaim(t.Context(), hash, 1, []types.PeerKey{local})
 
 	require.False(t, ms.wasClaimed(hash), "should not set claim when capacity gate fails post-fetch")
@@ -213,7 +213,7 @@ func TestExecuteClaim_HappyPath(t *testing.T) {
 	}
 	wm := &mockWorkloads{}
 
-	r := newReconciler(local, ms, wm, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, wm, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.executeClaim(t.Context(), hash, 1, []types.PeerKey{local})
 
 	require.True(t, wm.seeded.Load(), "manager should seed on happy path")
@@ -240,7 +240,7 @@ func TestResidencyWindow_SuppressesEarlyRelease(t *testing.T) {
 		},
 	}
 
-	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.claimStartTime[hash] = time.Now()
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
 
@@ -276,7 +276,7 @@ func TestResidencyWindow_AllowsReleaseAfterMaturity(t *testing.T) {
 		},
 	}
 
-	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.firstRun = false
 	r.claimStartTime[hash] = time.Now().Add(-minResidencyDuration - time.Second)
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
@@ -298,7 +298,7 @@ func TestReconcile_SignalCoalesces(t *testing.T) {
 		allPeers: []types.PeerKey{local},
 	}
 
-	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 
 	for range 100 {
 		r.Signal()
@@ -323,7 +323,7 @@ func TestResidencyWindow_SkippedForOverReplication(t *testing.T) {
 		allPeers: []types.PeerKey{local, peer2},
 	}
 
-	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.claimStartTime[hash] = time.Now()
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
 
@@ -359,7 +359,7 @@ func TestReconcile_NameConflictFiltering(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(func(string) int { return 16 }), zap.NewNop().Sugar(), &wg)
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockCAS{}, &slowFetcher{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &wg)
 	r.reconcile(context.Background())
 	wg.Wait()
 

@@ -122,6 +122,7 @@ func (m *manager) Call(ctx context.Context, hash, function string, input []byte)
 		return nil, ErrNotRunning
 	}
 	ctx = wasm.WithExecutingSeed(ctx, hash)
+	ctx = wasm.WithExecutingFunction(ctx, function)
 	out, err := m.runtime.Call(ctx, hash, function, input)
 	if err != nil && errors.Is(err, wasm.ErrModuleMissing) {
 		return nil, ErrNotRunning

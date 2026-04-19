@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func key(hash, fn string) callKey { return callKey{Hash: hash, Function: fn} }
+
 func TestWorkloadGate_AcquireAndRelease(t *testing.T) {
 	g := newWorkloadGate(2)
 	ctx := context.Background()
@@ -60,39 +62,71 @@ func TestWorkloadGate_RespectsContextCancellation(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
-func TestGateRegistry_PerHashIsolation(t *testing.T) {
-	// Sink-style workload (size 1) saturates without affecting ingest's gate.
-	sizer := func(hash string) int {
-		if hash == "sink" {
-			return 1
-		}
-		return 4
-	}
-	r := newGateRegistry(sizer)
+// TestGateRegistry_PerFunctionIsolation is the core starvation-fix
+// regression: a slow function saturating its own gate must not block fast
+// calls into a different function of the same module.
+func TestGateRegistry_PerFunctionIsolation(t *testing.T) {
+	const hash = "mod"
+	r := newGateRegistry(4)
+	r.SetHashSize(hash, 1) // tight cap so the slow fn saturates fast
 	ctx := context.Background()
 
-	// Saturate sink.
-	sinkRel, err := r.acquire(ctx, "sink")
+	slowRel, err := r.acquire(ctx, key(hash, "slow"))
 	require.NoError(t, err)
-	defer sinkRel()
+	defer slowRel()
 
-	// Sink is full — second sink acquire should block.
+	// Slow fn's gate is saturated; a second slow acquire must block.
 	saturated := make(chan struct{})
 	go func() {
 		blockCtx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
 		defer cancel()
-		_, err := r.acquire(blockCtx, "sink")
+		_, err := r.acquire(blockCtx, key(hash, "slow"))
 		if err != nil {
 			close(saturated)
 		}
 	}()
 
-	// Meanwhile ingest is unaffected — multiple acquires succeed instantly.
+	// Fast fn on the same module gets its own gate, also cap=1 but
+	// independent. One call in flight, another would queue — we just need
+	// to prove the slow saturation doesn't leak into the fast queue.
+	fastRel, err := r.acquire(ctx, key(hash, "fast"))
+	require.NoError(t, err)
+	fastRel()
+
+	select {
+	case <-saturated:
+	case <-time.After(time.Second):
+		t.Fatal("blocked slow-fn acquire should have failed by now")
+	}
+}
+
+// TestGateRegistry_PerHashIsolation verifies that gates for different
+// modules remain independent — a saturated module must not starve
+// another module's gates.
+func TestGateRegistry_PerHashIsolation(t *testing.T) {
+	r := newGateRegistry(4)
+	r.SetHashSize("sink", 1)
+	ctx := context.Background()
+
+	sinkRel, err := r.acquire(ctx, key("sink", "handle"))
+	require.NoError(t, err)
+	defer sinkRel()
+
+	saturated := make(chan struct{})
+	go func() {
+		blockCtx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
+		defer cancel()
+		_, err := r.acquire(blockCtx, key("sink", "handle"))
+		if err != nil {
+			close(saturated)
+		}
+	}()
+
 	var ingestOK atomic.Int32
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Go(func() {
-			rel, err := r.acquire(ctx, "ingest")
+			rel, err := r.acquire(ctx, key("ingest", "handle"))
 			if err == nil {
 				ingestOK.Add(1)
 				rel()
@@ -114,7 +148,6 @@ func TestWorkloadGate_GrowAdmitsMoreCallers(t *testing.T) {
 	g := newWorkloadGate(2)
 	ctx := context.Background()
 
-	// Saturate at the original cap.
 	r1, err := g.acquire(ctx)
 	require.NoError(t, err)
 	r2, err := g.acquire(ctx)
@@ -122,13 +155,11 @@ func TestWorkloadGate_GrowAdmitsMoreCallers(t *testing.T) {
 	defer r1()
 	defer r2()
 
-	// Without growth, a third would block.
 	tightCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
 	defer cancel()
 	_, err = g.acquire(tightCtx)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 
-	// Grow and the next pair succeeds immediately.
 	g.SetCap(4)
 	r3, err := g.acquire(ctx)
 	require.NoError(t, err)
@@ -147,18 +178,12 @@ func TestWorkloadGate_ShrinkDrainsAfterReleases(t *testing.T) {
 	r2, err := g.acquire(ctx)
 	require.NoError(t, err)
 
-	// Shrink while two slots are in flight; the surplus drains as
-	// callers release, not before.
 	g.SetCap(1)
 
-	// Even after Cap reports 1, releases free their tokens — but the
-	// drain goroutine consumes the surplus, so net available stays at 0
-	// until the in-flight count drops below the new cap.
 	r1()
 	r2()
 
 	require.Eventually(t, func() bool {
-		// Once drain finishes, exactly one acquire should succeed.
 		ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 		defer cancel()
 		first, err := g.acquire(ctx)
@@ -167,9 +192,6 @@ func TestWorkloadGate_ShrinkDrainsAfterReleases(t *testing.T) {
 		}
 		defer first()
 
-		// And a second one should block. Release immediately if it
-		// somehow succeeds, otherwise we leak an inflight slot and
-		// break the accounting for future iterations.
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		defer cancel2()
 		second, err := g.acquire(ctx2)
@@ -181,9 +203,39 @@ func TestWorkloadGate_ShrinkDrainsAfterReleases(t *testing.T) {
 	}, time.Second, 10*time.Millisecond, "shrink should converge to cap=1 after releases")
 }
 
+// TestGateRegistry_SetHashSizeResizesAllFunctions verifies that a new
+// per-module size is propagated to every already-created function gate.
+func TestGateRegistry_SetHashSizeResizesAllFunctions(t *testing.T) {
+	r := newGateRegistry(1)
+	ctx := context.Background()
+
+	rel, err := r.acquire(ctx, key("m", "f1"))
+	require.NoError(t, err)
+	rel()
+	rel, err = r.acquire(ctx, key("m", "f2"))
+	require.NoError(t, err)
+	rel()
+
+	r.SetHashSize("m", 4)
+
+	// Both gates are cap=4 now; four parallel acquires succeed on each
+	// without blocking.
+	for _, fn := range []string{"f1", "f2"} {
+		rels := make([]func(), 0, 4)
+		for range 4 {
+			rel, err := r.acquire(ctx, key("m", fn))
+			require.NoError(t, err)
+			rels = append(rels, rel)
+		}
+		for _, rel := range rels {
+			rel()
+		}
+	}
+}
+
 func TestGateRegistry_ClearDropsGate(t *testing.T) {
-	r := newGateRegistry(func(string) int { return 1 })
-	rel, err := r.acquire(context.Background(), "abc")
+	r := newGateRegistry(1)
+	rel, err := r.acquire(context.Background(), key("abc", "handle"))
 	require.NoError(t, err)
 	rel()
 
@@ -201,8 +253,6 @@ func TestWorkloadGate_WaitEWMADecaysOnFastPath(t *testing.T) {
 	g := newWorkloadGate(1)
 	ctx := context.Background()
 
-	// First pair: force a blocked admit so the EWMA picks up a
-	// non-trivial sample.
 	r1, err := g.acquire(ctx)
 	require.NoError(t, err)
 	var r2 func()
@@ -221,10 +271,6 @@ func TestWorkloadGate_WaitEWMADecaysOnFastPath(t *testing.T) {
 	blocked := g.WaitEWMA()
 	require.Greater(t, blocked, time.Duration(0), "blocked admit must feed a non-zero EWMA sample")
 
-	// Now run a stream of fast-path acquires (no contention) and
-	// verify the EWMA decays toward zero. Each sample pulls the
-	// average closer to 0 with alpha=0.2, so a few dozen iterations
-	// is plenty.
 	for range 50 {
 		rel, err := g.acquire(ctx)
 		require.NoError(t, err)
