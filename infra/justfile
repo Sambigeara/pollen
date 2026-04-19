@@ -108,8 +108,9 @@ deploy-demo:
         ssh {{ ssh_args }} root@$ip "systemctl stop pln 2>/dev/null || true"
         scp -O {{ ssh_args }} "$BINARY" root@$ip:/usr/bin/pln
         ssh {{ ssh_args }} root@$ip "chmod +x /usr/bin/pln && pln service install && mkdir -p /etc/systemd/system/pln.service.d"
-        # Drop-in overrides the base unit with demo-only flags (--control-addr,
-        # --http, pprof, JIT). Uploaded after install so it isn't clobbered.
+        ssh {{ ssh_args }} root@$ip "pln --dir /var/lib/pln set control-addr :50051 && pln --dir /var/lib/pln set http :9090"
+        # Drop-in layers demo-only runtime tweaks (pprof, JIT) on top of the
+        # base unit. Uploaded after install so it isn't clobbered.
         scp -O {{ ssh_args }} "{{ demo_tf }}/pln.service.d/demo.conf" root@$ip:/etc/systemd/system/pln.service.d/demo.conf
         ssh {{ ssh_args }} root@$ip "systemctl daemon-reload"
         echo "  $name ($ip)... ok"
@@ -160,7 +161,8 @@ start-demo:
     else
         rm -f {{ pln_dir }}/pln.pid
         echo "starting local pln node..."
-        PLN_DIR={{ pln_dir }} nohup {{ repo_root }}/pln up --port 60612 --http :9090 > {{ pln_dir }}/pln.log 2>&1 &
+        PLN_DIR={{ pln_dir }} {{ repo_root }}/pln set http :9090
+        PLN_DIR={{ pln_dir }} nohup {{ repo_root }}/pln up --port 60612 > {{ pln_dir }}/pln.log 2>&1 &
         echo $! > {{ pln_dir }}/pln.pid
         sleep 3
         echo "root node running (pid $(cat {{ pln_dir }}/pln.pid))"

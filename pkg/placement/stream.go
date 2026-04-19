@@ -6,26 +6,17 @@ package placement
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"time"
 
-	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
 )
 
 const (
-	artifactFetchTimeout = 15 * time.Second
-
-	artifactStatusOK       byte = 0
-	artifactStatusNotFound byte = 1
-	hashDisplayLen              = 16
-	sha256Len                   = 32
-
 	statusOK       byte = 0
 	statusNotFound byte = 1
 	statusError    byte = 2
@@ -37,14 +28,6 @@ const (
 	maxInputLen       = 4 << 20 // 4 MiB
 )
 
-type casWriter interface {
-	Put(r io.Reader) (string, error)
-}
-
-type casReader interface {
-	Get(hash string) (io.ReadCloser, error)
-}
-
 type workloadInvoker interface {
 	Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
 }
@@ -55,92 +38,11 @@ func watchStream(ctx context.Context, stream io.Closer) func() {
 	go func() {
 		select {
 		case <-ctx.Done():
-			stream.Close()
+			stream.Close() //nolint:errcheck
 		case <-done:
 		}
 	}()
 	return func() { close(done) }
-}
-
-type meshFetcher struct {
-	mesh    StreamOpener
-	cas     casWriter
-	timeout time.Duration
-}
-
-func newArtifactFetcher(mesh StreamOpener, cas casWriter) artifactFetcher {
-	return &meshFetcher{mesh: mesh, cas: cas, timeout: artifactFetchTimeout}
-}
-
-func (f *meshFetcher) Fetch(ctx context.Context, hash string, peers []types.PeerKey) error {
-	var lastErr error
-	for _, pk := range peers {
-		if err := f.fetchFrom(ctx, hash, pk); err != nil {
-			lastErr = err
-			continue
-		}
-		return nil
-	}
-	if lastErr != nil {
-		return fmt.Errorf("fetch artifact %s: %w", hash[:min(hashDisplayLen, len(hash))], lastErr)
-	}
-	return fmt.Errorf("fetch artifact %s: no peers", hash[:min(hashDisplayLen, len(hash))])
-}
-
-func (f *meshFetcher) fetchFrom(ctx context.Context, hash string, peer types.PeerKey) error {
-	ctx, cancel := context.WithTimeout(ctx, f.timeout)
-	defer cancel()
-
-	stream, err := f.mesh.OpenStream(ctx, peer, transport.StreamTypeArtifact)
-	if err != nil {
-		return fmt.Errorf("open stream to %s: %w", peer.Short(), err)
-	}
-	defer stream.Close()
-	defer watchStream(ctx, stream)()
-
-	if len(hash) != hex.EncodedLen(sha256Len) {
-		return fmt.Errorf("invalid hash length: %d", len(hash))
-	}
-	if _, err := stream.Write([]byte(hash)); err != nil {
-		return fmt.Errorf("write hash: %w", err)
-	}
-
-	var status [1]byte
-	if _, err := io.ReadFull(stream, status[:]); err != nil {
-		return fmt.Errorf("read status: %w", err)
-	}
-	if status[0] != artifactStatusOK {
-		return fmt.Errorf("peer %s does not have artifact", peer.Short())
-	}
-
-	gotHash, err := f.cas.Put(stream)
-	if err != nil {
-		return fmt.Errorf("store artifact: %w", err)
-	}
-	if gotHash != hash {
-		return fmt.Errorf("hash mismatch: expected %s, got %s", hash, gotHash)
-	}
-
-	return nil
-}
-
-func handleArtifactStream(stream io.ReadWriteCloser, cas casReader) {
-	defer stream.Close()
-
-	var hashBuf [64]byte
-	if _, err := io.ReadFull(stream, hashBuf[:]); err != nil {
-		return
-	}
-
-	rc, err := cas.Get(string(hashBuf[:]))
-	if err != nil {
-		stream.Write([]byte{artifactStatusNotFound}) //nolint:errcheck
-		return
-	}
-	defer rc.Close()
-
-	stream.Write([]byte{artifactStatusOK}) //nolint:errcheck
-	io.Copy(stream, rc)                    //nolint:errcheck
 }
 
 func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, peer types.PeerKey, invoker workloadInvoker, utilisation *utilisationTracker, gates *gateRegistry, timeout time.Duration) {

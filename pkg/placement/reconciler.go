@@ -33,19 +33,10 @@ type workloadManager interface {
 	IsRunning(hash string) bool
 }
 
-type artifactStore interface {
-	Has(hash string) bool
-}
-
-type artifactFetcher interface {
-	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
-}
-
 type reconciler struct {
 	store          WorkloadState
 	workloads      workloadManager
-	cas            artifactStore
-	fetcher        artifactFetcher
+	blobs          blobsAPI
 	utilisation    *utilisationTracker
 	gates          *gateRegistry
 	claimStartTime map[string]time.Time
@@ -68,8 +59,7 @@ func newReconciler(
 	localID types.PeerKey,
 	store WorkloadState,
 	workloads workloadManager,
-	cas artifactStore,
-	fetcher artifactFetcher,
+	blobs blobsAPI,
 	utilisation *utilisationTracker,
 	gates *gateRegistry,
 	log *zap.SugaredLogger,
@@ -79,8 +69,7 @@ func newReconciler(
 		localID:        localID,
 		store:          store,
 		workloads:      workloads,
-		cas:            cas,
-		fetcher:        fetcher,
+		blobs:          blobs,
 		utilisation:    utilisation,
 		gates:          gates,
 		triggerCh:      make(chan struct{}, 1),
@@ -373,9 +362,9 @@ func (r *reconciler) startClaim(ctx context.Context, hash string, dynamicTarget 
 }
 
 func (r *reconciler) executeClaim(ctx context.Context, hash string, dynamicTarget uint32, peers []types.PeerKey) {
-	if !r.cas.Has(hash) {
-		if err := r.fetcher.Fetch(ctx, hash, peers); err != nil {
-			r.log.Warnw("fetch artifact failed", "hash", hash, "err", err)
+	if !r.blobs.Has(hash) {
+		if err := r.blobs.Fetch(ctx, hash, peers); err != nil {
+			r.log.Warnw("fetch blob failed", "hash", hash, "err", err)
 			return
 		}
 	}

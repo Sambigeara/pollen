@@ -6,6 +6,7 @@ package state
 import (
 	"cmp"
 	"encoding/binary"
+	"encoding/hex"
 	"slices"
 	"time"
 
@@ -35,6 +36,11 @@ const (
 	attrNodeName
 	attrSeedDialRates
 	attrSeedMetrics
+	attrBlobAvailability
+	attrStaticSpec
+	attrStaticClaim
+	attrBlobSpec
+	attrStaticCapable
 )
 
 type attrKey struct {
@@ -149,6 +155,9 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		if key.kind == attrWorkloadClaim || key.kind == attrWorkloadSpec {
 			domainEvents = append(domainEvents, WorkloadChanged{Hash: key.name})
 		}
+		if key.kind == attrStaticSpec || key.kind == attrStaticClaim {
+			domainEvents = append(domainEvents, StaticChanged{Name: key.name})
+		}
 	}
 
 	return domainEvents, rebroadcast
@@ -165,14 +174,14 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent) []*statev1.Gos
 	if ok && !ev.Deleted {
 		if _, exists := rec.log[key]; !exists {
 			switch key.kind { //nolint:exhaustive
-			case attrWorkloadSpec, attrService, attrNetwork, attrCertExpiry, attrDeny, attrNodeName:
+			case attrWorkloadSpec, attrService, attrNetwork, attrCertExpiry, attrDeny, attrNodeName, attrStaticSpec, attrBlobSpec:
 				rec.maxCounter++
 				rec.log[key] = &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
 					Counter: rec.maxCounter,
 					Change:  ev.Change,
 				}
-			case attrWorkloadClaim, attrReachability, attrHeartbeat, attrSeedDialRates, attrSeedMetrics:
+			case attrWorkloadClaim, attrReachability, attrHeartbeat, attrSeedDialRates, attrSeedMetrics, attrBlobAvailability, attrStaticClaim:
 				rec.maxCounter++
 				rec.log[key] = &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
@@ -278,6 +287,8 @@ func (s *store) tombstoneStaleAttrsLocked(rec *nodeRecord) {
 		{Change: &statev1.GossipEvent_SeedDialRates{SeedDialRates: &statev1.SeedDialRatesChange{}}},
 		{Change: &statev1.GossipEvent_SeedMetrics{SeedMetrics: &statev1.SeedMetricsChange{}}},
 		{Change: &statev1.GossipEvent_AdminCapable{AdminCapable: &statev1.AdminCapableChange{}}},
+		{Change: &statev1.GossipEvent_StaticCapable{StaticCapable: &statev1.StaticCapableChange{}}},
+		{Change: &statev1.GossipEvent_BlobAvailability{BlobAvailability: &statev1.BlobAvailabilityChange{}}},
 	}
 	for _, ev := range ephemeral {
 		rec.maxCounter++
@@ -386,12 +397,32 @@ func getAttrKey(ev *statev1.GossipEvent) (attrKey, bool) {
 		return attrKey{kind: attrHeartbeat}, true
 	case *statev1.GossipEvent_AdminCapable:
 		return attrKey{kind: attrAdminCapable}, true
+	case *statev1.GossipEvent_StaticCapable:
+		return attrKey{kind: attrStaticCapable}, true
 	case *statev1.GossipEvent_NodeName:
 		return attrKey{kind: attrNodeName}, true
 	case *statev1.GossipEvent_SeedDialRates:
 		return attrKey{kind: attrSeedDialRates}, true
 	case *statev1.GossipEvent_SeedMetrics:
 		return attrKey{kind: attrSeedMetrics}, true
+	case *statev1.GossipEvent_BlobAvailability:
+		return attrKey{kind: attrBlobAvailability}, true
+	case *statev1.GossipEvent_StaticSpec:
+		if v.StaticSpec.GetName() == "" {
+			return attrKey{}, false
+		}
+		return attrKey{kind: attrStaticSpec, name: v.StaticSpec.GetName()}, true
+	case *statev1.GossipEvent_StaticClaim:
+		if v.StaticClaim.GetName() == "" {
+			return attrKey{}, false
+		}
+		return attrKey{kind: attrStaticClaim, name: v.StaticClaim.GetName()}, true
+	case *statev1.GossipEvent_BlobSpec:
+		digest := v.BlobSpec.GetDigest()
+		if len(digest) != sha256Len {
+			return attrKey{}, false
+		}
+		return attrKey{kind: attrBlobSpec, name: hex.EncodeToString(digest)}, true
 	}
 	return attrKey{}, false
 }

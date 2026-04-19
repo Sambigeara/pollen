@@ -74,14 +74,16 @@ func TestService_RecordDial_UnknownSeedFallsBackToPrefix(t *testing.T) {
 	require.Contains(t, got["caller"], "seed:no-such-name")
 }
 
-func newServiceForUnseedTests(localID types.PeerKey, store WorkloadState) *Service {
+func newServiceForUnseedTests(localID types.PeerKey, store WorkloadState) (*Service, *mockBlobs) {
+	blobs := &mockBlobs{}
 	return &Service{
 		localID:     localID,
 		store:       store,
 		utilisation: newUtilisationTracker(),
 		manager:     newManager(nil, nil),
+		blobs:       blobs,
 		gates:       newGateRegistry(1),
-	}
+	}, blobs
 }
 
 // TestService_Unseed_WhenNotLocallyClaimed pins the bug where `pln unseed`
@@ -103,7 +105,7 @@ func TestService_Unseed_WhenNotLocallyClaimed(t *testing.T) {
 		},
 		claims: map[string]map[types.PeerKey]struct{}{hash: {peer2: {}}},
 	}
-	s := newServiceForUnseedTests(local, store)
+	s, _ := newServiceForUnseedTests(local, store)
 
 	require.NoError(t, s.Unseed(hash))
 
@@ -111,6 +113,27 @@ func TestService_Unseed_WhenNotLocallyClaimed(t *testing.T) {
 	_, specStillThere := store.specs[hash]
 	store.mu.Unlock()
 	require.False(t, specStillThere, "spec should be deleted so claimants release on reconcile")
+}
+
+// TestService_Unseed_EvictsWasmBlob pins the invariant that unseed
+// evicts the workload's wasm bytes from the local CAS — otherwise every
+// unseed leaves an orphan behind.
+func TestService_Unseed_EvictsWasmBlob(t *testing.T) {
+	local := peerKey(1)
+	hash := "workload-xyz"
+
+	store := &mockStore{
+		specs: map[string]state.WorkloadSpecView{
+			hash: {
+				Spec:      state.WorkloadSpec{Hash: hash, Name: "foo", MinReplicas: 1},
+				Publisher: local,
+			},
+		},
+	}
+	s, blobs := newServiceForUnseedTests(local, store)
+
+	require.NoError(t, s.Unseed(hash))
+	require.Equal(t, []string{hash}, blobs.removed)
 }
 
 // TestService_Unseed_RejectsNonOwner guards against a silent no-op when
@@ -132,7 +155,7 @@ func TestService_Unseed_RejectsNonOwner(t *testing.T) {
 			},
 		},
 	}
-	s := newServiceForUnseedTests(local, store)
+	s, _ := newServiceForUnseedTests(local, store)
 
 	err := s.Unseed("foo")
 	require.Error(t, err)
@@ -163,7 +186,7 @@ func TestService_Unseed_LocalNameWins(t *testing.T) {
 			},
 		},
 	}
-	s := newServiceForUnseedTests(local, store)
+	s, _ := newServiceForUnseedTests(local, store)
 
 	require.NoError(t, s.Unseed("foo"))
 
@@ -180,7 +203,7 @@ func TestService_Unseed_LocalNameWins(t *testing.T) {
 // state, so a dedicated "nothing to unseed" branch replaces the previous
 // ErrNotRunning path.
 func TestService_Unseed_UnknownHash(t *testing.T) {
-	s := newServiceForUnseedTests(peerKey(1), &mockStore{})
+	s, _ := newServiceForUnseedTests(peerKey(1), &mockStore{})
 
 	require.ErrorIs(t, s.Unseed("deadbeef"), ErrNotRunning)
 }
@@ -190,7 +213,7 @@ func TestService_Unseed_UnknownHash(t *testing.T) {
 // nobody is currently claiming it" (transient placement state). The first
 // must surface wasm.ErrTargetNotFound, never ErrNotRunning.
 func TestService_Call_UnknownTarget(t *testing.T) {
-	s := newServiceForUnseedTests(peerKey(1), &mockStore{})
+	s, _ := newServiceForUnseedTests(peerKey(1), &mockStore{})
 
 	_, err := s.Call(context.Background(), "no-such-name", "handle", nil)
 	require.ErrorIs(t, err, wasm.ErrTargetNotFound)
@@ -213,7 +236,7 @@ func TestService_Call_KnownSpecNoClaimants(t *testing.T) {
 			},
 		},
 	}
-	s := newServiceForUnseedTests(peerKey(1), store)
+	s, _ := newServiceForUnseedTests(peerKey(1), store)
 
 	_, err := s.Call(context.Background(), seedName, "handle", nil)
 	require.ErrorIs(t, err, ErrNotRunning)

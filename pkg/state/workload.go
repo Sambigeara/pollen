@@ -69,3 +69,18 @@ func (m SeedMetrics) IsZero() bool {
 		m.SLOSatisfiedRate == 0 && m.SLOBurnedRate == 0 &&
 		m.GateWaitMs == 0 && m.ParkedMs == 0
 }
+
+type StaticSpec struct {
+	Name           string
+	ManifestDigest string
+	MinReplicas    uint32
+}
+
+// BlobSpec names a content-addressed blob so callers can refer to it by
+// label rather than digest. Entries are keyed by (publisher, digest) —
+// re-publishing the same digest under a new name overwrites the previous
+// name for that publisher.
+type BlobSpec struct {
+	Name   string
+	Digest string
+}

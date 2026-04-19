@@ -33,6 +33,12 @@ const (
 	ControlService_UnseedWorkload_FullMethodName    = "/pollen.control.v1.ControlService/UnseedWorkload"
 	ControlService_CallWorkload_FullMethodName      = "/pollen.control.v1.ControlService/CallWorkload"
 	ControlService_IssueCert_FullMethodName         = "/pollen.control.v1.ControlService/IssueCert"
+	ControlService_FetchBlob_FullMethodName         = "/pollen.control.v1.ControlService/FetchBlob"
+	ControlService_AnnounceBlob_FullMethodName      = "/pollen.control.v1.ControlService/AnnounceBlob"
+	ControlService_RemoveBlob_FullMethodName        = "/pollen.control.v1.ControlService/RemoveBlob"
+	ControlService_SeedStatic_FullMethodName        = "/pollen.control.v1.ControlService/SeedStatic"
+	ControlService_UnseedStatic_FullMethodName      = "/pollen.control.v1.ControlService/UnseedStatic"
+	ControlService_ListStatic_FullMethodName        = "/pollen.control.v1.ControlService/ListStatic"
 )
 
 // ControlServiceClient is the client API for ControlService service.
@@ -53,6 +59,12 @@ type ControlServiceClient interface {
 	UnseedWorkload(ctx context.Context, in *UnseedWorkloadRequest, opts ...grpc.CallOption) (*UnseedWorkloadResponse, error)
 	CallWorkload(ctx context.Context, in *CallWorkloadRequest, opts ...grpc.CallOption) (*CallWorkloadResponse, error)
 	IssueCert(ctx context.Context, in *IssueCertRequest, opts ...grpc.CallOption) (*IssueCertResponse, error)
+	FetchBlob(ctx context.Context, in *FetchBlobRequest, opts ...grpc.CallOption) (*FetchBlobResponse, error)
+	AnnounceBlob(ctx context.Context, in *AnnounceBlobRequest, opts ...grpc.CallOption) (*AnnounceBlobResponse, error)
+	RemoveBlob(ctx context.Context, in *RemoveBlobRequest, opts ...grpc.CallOption) (*RemoveBlobResponse, error)
+	SeedStatic(ctx context.Context, in *SeedStaticRequest, opts ...grpc.CallOption) (*SeedStaticResponse, error)
+	UnseedStatic(ctx context.Context, in *UnseedStaticRequest, opts ...grpc.CallOption) (*UnseedStaticResponse, error)
+	ListStatic(ctx context.Context, in *ListStaticRequest, opts ...grpc.CallOption) (*ListStaticResponse, error)
 }
 
 type controlServiceClient struct {
@@ -206,6 +218,66 @@ func (c *controlServiceClient) IssueCert(ctx context.Context, in *IssueCertReque
 	return out, nil
 }
 
+func (c *controlServiceClient) FetchBlob(ctx context.Context, in *FetchBlobRequest, opts ...grpc.CallOption) (*FetchBlobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FetchBlobResponse)
+	err := c.cc.Invoke(ctx, ControlService_FetchBlob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlServiceClient) AnnounceBlob(ctx context.Context, in *AnnounceBlobRequest, opts ...grpc.CallOption) (*AnnounceBlobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AnnounceBlobResponse)
+	err := c.cc.Invoke(ctx, ControlService_AnnounceBlob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlServiceClient) RemoveBlob(ctx context.Context, in *RemoveBlobRequest, opts ...grpc.CallOption) (*RemoveBlobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveBlobResponse)
+	err := c.cc.Invoke(ctx, ControlService_RemoveBlob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlServiceClient) SeedStatic(ctx context.Context, in *SeedStaticRequest, opts ...grpc.CallOption) (*SeedStaticResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SeedStaticResponse)
+	err := c.cc.Invoke(ctx, ControlService_SeedStatic_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlServiceClient) UnseedStatic(ctx context.Context, in *UnseedStaticRequest, opts ...grpc.CallOption) (*UnseedStaticResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnseedStaticResponse)
+	err := c.cc.Invoke(ctx, ControlService_UnseedStatic_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlServiceClient) ListStatic(ctx context.Context, in *ListStaticRequest, opts ...grpc.CallOption) (*ListStaticResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListStaticResponse)
+	err := c.cc.Invoke(ctx, ControlService_ListStatic_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ControlServiceServer is the server API for ControlService service.
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
@@ -224,6 +296,12 @@ type ControlServiceServer interface {
 	UnseedWorkload(context.Context, *UnseedWorkloadRequest) (*UnseedWorkloadResponse, error)
 	CallWorkload(context.Context, *CallWorkloadRequest) (*CallWorkloadResponse, error)
 	IssueCert(context.Context, *IssueCertRequest) (*IssueCertResponse, error)
+	FetchBlob(context.Context, *FetchBlobRequest) (*FetchBlobResponse, error)
+	AnnounceBlob(context.Context, *AnnounceBlobRequest) (*AnnounceBlobResponse, error)
+	RemoveBlob(context.Context, *RemoveBlobRequest) (*RemoveBlobResponse, error)
+	SeedStatic(context.Context, *SeedStaticRequest) (*SeedStaticResponse, error)
+	UnseedStatic(context.Context, *UnseedStaticRequest) (*UnseedStaticResponse, error)
+	ListStatic(context.Context, *ListStaticRequest) (*ListStaticResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
 
@@ -275,6 +353,24 @@ func (UnimplementedControlServiceServer) CallWorkload(context.Context, *CallWork
 }
 func (UnimplementedControlServiceServer) IssueCert(context.Context, *IssueCertRequest) (*IssueCertResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method IssueCert not implemented")
+}
+func (UnimplementedControlServiceServer) FetchBlob(context.Context, *FetchBlobRequest) (*FetchBlobResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FetchBlob not implemented")
+}
+func (UnimplementedControlServiceServer) AnnounceBlob(context.Context, *AnnounceBlobRequest) (*AnnounceBlobResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AnnounceBlob not implemented")
+}
+func (UnimplementedControlServiceServer) RemoveBlob(context.Context, *RemoveBlobRequest) (*RemoveBlobResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveBlob not implemented")
+}
+func (UnimplementedControlServiceServer) SeedStatic(context.Context, *SeedStaticRequest) (*SeedStaticResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SeedStatic not implemented")
+}
+func (UnimplementedControlServiceServer) UnseedStatic(context.Context, *UnseedStaticRequest) (*UnseedStaticResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnseedStatic not implemented")
+}
+func (UnimplementedControlServiceServer) ListStatic(context.Context, *ListStaticRequest) (*ListStaticResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListStatic not implemented")
 }
 func (UnimplementedControlServiceServer) mustEmbedUnimplementedControlServiceServer() {}
 func (UnimplementedControlServiceServer) testEmbeddedByValue()                        {}
@@ -538,6 +634,114 @@ func _ControlService_IssueCert_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_FetchBlob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FetchBlobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).FetchBlob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_FetchBlob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).FetchBlob(ctx, req.(*FetchBlobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ControlService_AnnounceBlob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AnnounceBlobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).AnnounceBlob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_AnnounceBlob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).AnnounceBlob(ctx, req.(*AnnounceBlobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ControlService_RemoveBlob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveBlobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).RemoveBlob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_RemoveBlob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).RemoveBlob(ctx, req.(*RemoveBlobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ControlService_SeedStatic_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SeedStaticRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).SeedStatic(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_SeedStatic_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).SeedStatic(ctx, req.(*SeedStaticRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ControlService_UnseedStatic_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnseedStaticRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).UnseedStatic(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_UnseedStatic_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).UnseedStatic(ctx, req.(*UnseedStaticRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ControlService_ListStatic_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListStaticRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).ListStatic(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_ListStatic_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).ListStatic(ctx, req.(*ListStaticRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ControlService_ServiceDesc is the grpc.ServiceDesc for ControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -596,6 +800,30 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "IssueCert",
 			Handler:    _ControlService_IssueCert_Handler,
+		},
+		{
+			MethodName: "FetchBlob",
+			Handler:    _ControlService_FetchBlob_Handler,
+		},
+		{
+			MethodName: "AnnounceBlob",
+			Handler:    _ControlService_AnnounceBlob_Handler,
+		},
+		{
+			MethodName: "RemoveBlob",
+			Handler:    _ControlService_RemoveBlob_Handler,
+		},
+		{
+			MethodName: "SeedStatic",
+			Handler:    _ControlService_SeedStatic_Handler,
+		},
+		{
+			MethodName: "UnseedStatic",
+			Handler:    _ControlService_UnseedStatic_Handler,
+		},
+		{
+			MethodName: "ListStatic",
+			Handler:    _ControlService_ListStatic_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

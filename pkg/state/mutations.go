@@ -4,6 +4,9 @@
 package state
 
 import (
+	"bytes"
+	"encoding/hex"
+	"fmt"
 	"net/netip"
 	"slices"
 
@@ -172,16 +175,18 @@ func (s *store) SetLocalObservedAddress(ip string, port uint32) []Event {
 	})
 }
 
-func (s *store) SetWorkloadSpec(spec WorkloadSpec) []Event {
+func (s *store) SetWorkloadSpec(spec WorkloadSpec) ([]Event, error) {
 	hash := spec.Hash
 	owned := workloadSpecToProto(spec)
-	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		// Check if remotely owned.
+	var ownerErr error
+	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
 		for pk, r := range s.nodes {
-			if pk != s.localID {
-				if ev, ok := r.log[attrKey{kind: attrWorkloadSpec, name: hash}]; ok && !ev.Deleted && s.isValidOwnerLocked(pk) {
-					return nil, nil
-				}
+			if pk == s.localID {
+				continue
+			}
+			if ev, ok := r.log[attrKey{kind: attrWorkloadSpec, name: hash}]; ok && !ev.Deleted && s.isValidOwnerLocked(pk) {
+				ownerErr = fmt.Errorf("%w: %s owns %s", ErrSpecOwnedByPeer, pk.Short(), hash)
+				return nil, nil
 			}
 		}
 
@@ -195,6 +200,7 @@ func (s *store) SetWorkloadSpec(spec WorkloadSpec) []Event {
 		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: owned}}
 		return []*statev1.GossipEvent{change}, []Event{WorkloadChanged{Hash: hash}}
 	})
+	return events, ownerErr
 }
 
 func (s *store) DeleteWorkloadSpec(hash string) []Event {
@@ -434,6 +440,142 @@ func (s *store) RemoveService(name string) []Event {
 	})
 }
 
+func (s *store) SetStaticSpec(spec StaticSpec) ([]Event, error) {
+	name := spec.Name
+	digest, err := hex.DecodeString(spec.ManifestDigest)
+	if err != nil || len(digest) != sha256Len {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, spec.ManifestDigest)
+	}
+	var ownerErr error
+	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		for pk, r := range s.nodes {
+			if pk == s.localID {
+				continue
+			}
+			if ev, ok := r.log[attrKey{kind: attrStaticSpec, name: name}]; ok && !ev.Deleted && s.isValidOwnerLocked(pk) {
+				ownerErr = fmt.Errorf("%w: %s owns %q", ErrSpecOwnedByPeer, pk.Short(), name)
+				return nil, nil
+			}
+		}
+		if ev, ok := rec.log[attrKey{kind: attrStaticSpec, name: name}]; ok && !ev.Deleted {
+			sp := ev.GetStaticSpec()
+			if sp.GetMinReplicas() == spec.MinReplicas && bytes.Equal(sp.GetManifestDigest(), digest) {
+				return nil, nil
+			}
+		}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{
+			Name:           name,
+			ManifestDigest: digest,
+			MinReplicas:    spec.MinReplicas,
+		}}}
+		return []*statev1.GossipEvent{change}, []Event{StaticChanged{Name: name}}
+	})
+	return events, ownerErr
+}
+
+func (s *store) DeleteStaticSpec(name string) []Event {
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		ev, ok := rec.log[attrKey{kind: attrStaticSpec, name: name}]
+		if !ok || ev.Deleted {
+			return nil, nil
+		}
+		change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: name}}}
+		return []*statev1.GossipEvent{change}, []Event{StaticChanged{Name: name}}
+	})
+}
+
+func (s *store) ClaimStatic(name string) []Event {
+	return s.setStaticClaimLocked(name, true)
+}
+
+func (s *store) ReleaseStatic(name string) []Event {
+	return s.setStaticClaimLocked(name, false)
+}
+
+func (s *store) setStaticClaimLocked(name string, claimed bool) []Event {
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		ev, ok := rec.log[attrKey{kind: attrStaticClaim, name: name}]
+		exists := ok && !ev.Deleted
+		if claimed == exists {
+			return nil, nil
+		}
+		change := &statev1.GossipEvent{Deleted: !claimed, Change: &statev1.GossipEvent_StaticClaim{StaticClaim: &statev1.StaticClaimChange{Name: name}}}
+		return []*statev1.GossipEvent{change}, []Event{StaticChanged{Name: name}}
+	})
+}
+
+func (s *store) SetBlobSpec(spec BlobSpec) ([]Event, error) {
+	digest, err := hex.DecodeString(spec.Digest)
+	if err != nil || len(digest) != sha256Len {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, spec.Digest)
+	}
+	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		key := attrKey{kind: attrBlobSpec, name: spec.Digest}
+		if ev, ok := rec.log[key]; ok && !ev.Deleted {
+			if ev.GetBlobSpec().GetName() == spec.Name {
+				return nil, nil
+			}
+		}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_BlobSpec{BlobSpec: &statev1.BlobSpecChange{
+			Name:   spec.Name,
+			Digest: digest,
+		}}}
+		return []*statev1.GossipEvent{change}, nil
+	})
+	return events, nil
+}
+
+func (s *store) DeleteBlobSpec(digest string) []Event {
+	raw, err := hex.DecodeString(digest)
+	if err != nil || len(raw) != sha256Len {
+		return nil
+	}
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		key := attrKey{kind: attrBlobSpec, name: digest}
+		ev, ok := rec.log[key]
+		if !ok || ev.Deleted {
+			return nil, nil
+		}
+		change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_BlobSpec{BlobSpec: &statev1.BlobSpecChange{Digest: raw}}}
+		return []*statev1.GossipEvent{change}, nil
+	})
+}
+
+func (s *store) SetLocalBlobs(digests []string) []Event {
+	want := make([][]byte, 0, len(digests))
+	seen := make(map[string]struct{}, len(digests))
+	for _, h := range digests {
+		if _, dup := seen[h]; dup {
+			continue
+		}
+		seen[h] = struct{}{}
+		raw, err := hex.DecodeString(h)
+		if err != nil || len(raw) != sha256Len {
+			continue
+		}
+		want = append(want, raw)
+	}
+	slices.SortFunc(want, bytes.Compare)
+
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		if ev, ok := rec.log[attrKey{kind: attrBlobAvailability}]; ok {
+			if ev.Deleted && len(want) == 0 {
+				return nil, nil
+			}
+			if !ev.Deleted && slices.EqualFunc(ev.GetBlobAvailability().GetDigests(), want, bytes.Equal) {
+				return nil, nil
+			}
+		}
+		change := &statev1.GossipEvent{
+			Deleted: len(want) == 0,
+			Change:  &statev1.GossipEvent_BlobAvailability{BlobAvailability: &statev1.BlobAvailabilityChange{Digests: want}},
+		}
+		return []*statev1.GossipEvent{change}, nil
+	})
+}
+
+const sha256Len = 32
+
 func (s *store) SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event {
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
 		var rates []*statev1.TrafficRate
@@ -493,6 +635,16 @@ func (s *store) ClearAdmin() {
 			return nil, nil
 		}
 		change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_AdminCapable{AdminCapable: &statev1.AdminCapableChange{}}}
+		return []*statev1.GossipEvent{change}, nil
+	})
+}
+
+func (s *store) SetStaticCapable() {
+	s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		if ev, ok := rec.log[attrKey{kind: attrStaticCapable}]; ok && !ev.Deleted {
+			return nil, nil
+		}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_StaticCapable{StaticCapable: &statev1.StaticCapableChange{}}}
 		return []*statev1.GossipEvent{change}, nil
 	})
 }

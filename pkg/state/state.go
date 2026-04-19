@@ -4,6 +4,7 @@
 package state
 
 import (
+	"errors"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,11 @@ import (
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
+)
+
+var (
+	ErrSpecOwnedByPeer = errors.New("spec already published by another peer")
+	ErrInvalidDigest   = errors.New("invalid manifest digest")
 )
 
 type Event interface{ stateEvent() }
@@ -26,6 +32,7 @@ type (
 	}
 	WorkloadChanged struct{ Hash string }
 	TopologyChanged struct{ Peer types.PeerKey }
+	StaticChanged   struct{ Name string }
 )
 
 func (PeerJoined) stateEvent()      {}
@@ -33,6 +40,7 @@ func (PeerDenied) stateEvent()      {}
 func (ServiceChanged) stateEvent()  {}
 func (WorkloadChanged) stateEvent() {}
 func (TopologyChanged) stateEvent() {}
+func (StaticChanged) stateEvent()   {}
 
 type StateStore interface {
 	Snapshot() Snapshot
@@ -49,13 +57,22 @@ type StateStore interface {
 	SetLocalReachable(peers []types.PeerKey) []Event
 	SetLocalObservedAddress(ip string, port uint32) []Event
 
-	SetWorkloadSpec(spec WorkloadSpec) []Event
+	SetWorkloadSpec(spec WorkloadSpec) ([]Event, error)
 	DeleteWorkloadSpec(hash string) []Event
 	ClaimWorkload(hash string) []Event
 	ReleaseWorkload(hash string) []Event
 	SetLocalResources(r NodeResources) []Event
 	SetSeedMetrics(metrics map[string]SeedMetrics) []Event
 	SetSeedDialRates(rates map[string]map[string]float32) []Event
+	SetLocalBlobs(digests []string) []Event
+
+	SetStaticSpec(spec StaticSpec) ([]Event, error)
+	DeleteStaticSpec(name string) []Event
+	ClaimStatic(name string) []Event
+	ReleaseStatic(name string) []Event
+
+	SetBlobSpec(spec BlobSpec) ([]Event, error)
+	DeleteBlobSpec(digest string) []Event
 
 	SetService(port uint32, name string, protocol statev1.ServiceProtocol) []Event
 	RemoveService(name string) []Event
@@ -68,6 +85,7 @@ type StateStore interface {
 	SetPublic()
 	SetAdmin()
 	ClearAdmin()
+	SetStaticCapable()
 	SetNodeName(name string)
 	ExportLastAddrs() map[types.PeerKey]string
 	LoadLastAddrs(addrs map[types.PeerKey]string)

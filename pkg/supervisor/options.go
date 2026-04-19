@@ -21,6 +21,7 @@ type Options struct {
 	PollenDir          string
 	NodeName           string
 	HTTPAddr           string
+	StaticAddr         string
 	ControlAddr        string
 	ControlToken       string
 	SigningKey         ed25519.PrivateKey

@@ -141,7 +141,7 @@ func TestConvergence_ThreeStoreFullMesh(t *testing.T) {
 	h.stores[1].SetLocalCoord(coords.Coord{X: 1, Y: 2, Height: coords.MinHeight}, 0.5)
 	h.stores[1].SetLocalNAT(nat.Easy)
 
-	h.stores[2].SetWorkloadSpec(WorkloadSpec{Name: "hash1", Hash: "hash1", MinReplicas: 2}) //nolint:mnd
+	_, _ = h.stores[2].SetWorkloadSpec(WorkloadSpec{Name: "hash1", Hash: "hash1", MinReplicas: 2}) //nolint:mnd
 	h.stores[2].ClaimWorkload("hash1")
 
 	h.establishFullReachability()
@@ -255,7 +255,7 @@ func applyFuzzMutation(s StateStore, kind int, peers []types.PeerKey, r *fuzzRea
 	case 7: // workload spec
 		hash := fmt.Sprintf("wl-%d", r.readByte()%8)
 		replicas := uint32(r.readByte()%4) + 1
-		s.SetWorkloadSpec(WorkloadSpec{Name: hash, Hash: hash, MinReplicas: replicas})
+		_, _ = s.SetWorkloadSpec(WorkloadSpec{Name: hash, Hash: hash, MinReplicas: replicas})
 	case 8: // workload claim
 		hash := fmt.Sprintf("wl-%d", r.readByte()%8)
 		if r.readByte()%2 == 0 {

@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sambigeara/pollen/pkg/cas"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -58,17 +57,24 @@ type PlacementAPI interface {
 	RecordDial(callerHash, callerFunction, targetKey string)
 	RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration)
 
-	HandleArtifactStream(stream io.ReadWriteCloser, peer types.PeerKey)
 	HandleWorkloadStream(stream io.ReadWriteCloser, peer types.PeerKey)
 
 	Signal()
+}
+
+type blobsAPI interface {
+	Put(r io.Reader) (string, error)
+	Get(hash string) (io.ReadCloser, error)
+	Has(hash string) bool
+	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
+	Remove(hash string) error
 }
 
 var _ PlacementAPI = (*Service)(nil)
 
 type WorkloadState interface {
 	Snapshot() state.Snapshot
-	SetWorkloadSpec(spec state.WorkloadSpec) []state.Event
+	SetWorkloadSpec(spec state.WorkloadSpec) ([]state.Event, error)
 	DeleteWorkloadSpec(hash string) []state.Event
 	ClaimWorkload(hash string) []state.Event
 	ReleaseWorkload(hash string) []state.Event
@@ -87,7 +93,7 @@ type Service struct {
 	ctx              context.Context
 	manager          *manager
 	reconciler       *reconciler
-	cas              *cas.Store
+	blobs            blobsAPI
 	log              *zap.SugaredLogger
 	cancel           context.CancelFunc
 	utilisation      *utilisationTracker
@@ -116,17 +122,17 @@ func WithResourceBudget(cpuPercent, memPercent uint32) Option {
 	}
 }
 
-func New(self types.PeerKey, store WorkloadState, casStore *cas.Store, wasmRT WASMRuntime, opts ...Option) *Service {
+func New(self types.PeerKey, store WorkloadState, blobs blobsAPI, wasmRT WASMRuntime, opts ...Option) *Service {
 	s := &Service{
 		localID: self,
 		store:   store,
-		cas:     casStore,
+		blobs:   blobs,
 		log:     zap.NewNop().Sugar(),
 	}
 	for _, o := range opts {
 		o(s)
 	}
-	s.manager = newManager(casStore, wasmRT)
+	s.manager = newManager(blobs, wasmRT)
 	s.utilisation = newUtilisationTracker()
 	s.latency = newLatencyTracker()
 	s.gates = newGateRegistry(runtime.NumCPU() * gateInitialMultiplier)
@@ -141,8 +147,7 @@ func (s *Service) Start(ctx context.Context) error {
 		s.localID,
 		s.store,
 		s.manager,
-		s.cas,
-		newArtifactFetcher(s.mesh, s.cas),
+		s.blobs,
 		s.utilisation,
 		s.gates,
 		s.log.Named("scheduler"),
@@ -242,7 +247,9 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec) error {
 		spec.LatencySLO = defaultLatencySLO
 	}
 
-	s.store.SetWorkloadSpec(spec)
+	if _, err := s.store.SetWorkloadSpec(spec); err != nil {
+		return err
+	}
 	s.store.ClaimWorkload(hash)
 	return nil
 }
@@ -274,6 +281,9 @@ func (s *Service) Unseed(hash string) error {
 	s.store.DeleteWorkloadSpec(hash)
 	s.utilisation.Clear(hash)
 	s.gates.Clear(hash)
+	if err := s.blobs.Remove(hash); err != nil {
+		s.log.Warnw("evict wasm blob failed after unseed", "hash", types.ShortHash(hash), "err", err)
+	}
 	return nil
 }
 
@@ -410,10 +420,6 @@ func (s *Service) Status() []WorkloadSummary {
 // PlacementInfo returns per-hash autoscale state for all locally-tracked workloads.
 func (s *Service) PlacementInfo() map[string]PlacementInfo {
 	return s.reconciler.allPlacementInfo()
-}
-
-func (s *Service) HandleArtifactStream(stream io.ReadWriteCloser, _ types.PeerKey) {
-	handleArtifactStream(stream, s.cas)
 }
 
 func (s *Service) HandleWorkloadStream(stream io.ReadWriteCloser, peer types.PeerKey) {

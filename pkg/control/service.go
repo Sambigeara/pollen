@@ -23,6 +23,7 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/blobs"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/placement"
 	"github.com/sambigeara/pollen/pkg/plnfs"
@@ -81,6 +82,19 @@ type StateReader interface {
 	Snapshot() state.Snapshot
 }
 
+type BlobsControl interface {
+	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
+	Announce(hash string) error
+	SetName(hash, name string) error
+	Remove(hash string) error
+}
+
+type StaticControl interface {
+	SeedStatic(name string, manifestDigest []byte, minReplicas uint32) error
+	UnseedStatic(name string) error
+	StaticBlobs() map[string]struct{}
+}
+
 type TransportInfo interface {
 	PeerStateCounts() transport.PeerStateCounts
 	GetActivePeerAddress(types.PeerKey) (*net.UDPAddr, bool)
@@ -103,6 +117,8 @@ type Service struct {
 	membership MembershipControl
 	placement  PlacementControl
 	tunneling  TunnelingControl
+	blobs      BlobsControl
+	static     StaticControl
 	state      StateReader
 	shutdown   func()
 	creds      *auth.NodeCredentials
@@ -120,11 +136,13 @@ func WithTransportInfo(t TransportInfo) Option       { return func(s *Service) {
 func WithMetricsSource(m MetricsSource) Option       { return func(s *Service) { s.metrics = m } }
 func WithMeshConnector(c MeshConnector) Option       { return func(s *Service) { s.connector = c } }
 
-func NewService(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, state StateReader, opts ...Option) *Service {
+func NewService(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, blobs BlobsControl, sc StaticControl, state StateReader, opts ...Option) *Service {
 	s := &Service{
 		membership: membership,
 		placement:  placement,
 		tunneling:  tunneling,
+		blobs:      blobs,
+		static:     sc,
 		state:      state,
 		log:        zap.S().Named("control"),
 	}
@@ -141,8 +159,8 @@ type Server struct {
 	token string
 }
 
-func New(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, state StateReader, opts ...Option) *Server {
-	svc := NewService(membership, placement, tunneling, state, opts...)
+func New(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, blobs BlobsControl, sc StaticControl, state StateReader, opts ...Option) *Server {
+	svc := NewService(membership, placement, tunneling, blobs, sc, state, opts...)
 	s := &Server{
 		svc: svc,
 		log: zap.S().Named("grpc"),
@@ -298,6 +316,8 @@ func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*
 		Services:     buildServiceSummaries(activeNodes),
 		Connections:  buildConnectionSummaries(activeNodes, connections),
 		Workloads:    s.buildWorkloadSummaries(snap),
+		Sites:        buildStaticSummaries(snap),
+		Blobs:        s.buildBlobSummaries(snap),
 	}
 
 	sortStatusResponse(out)
@@ -540,6 +560,15 @@ func sortStatusResponse(out *controlv1.GetStatusResponse) {
 		}
 		return cmp.Compare(a.Hash, b.Hash)
 	})
+	slices.SortFunc(out.Sites, func(a, b *controlv1.StaticSummary) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+	slices.SortFunc(out.Blobs, func(a, b *controlv1.BlobSummary) int {
+		if a.Replicas != b.Replicas {
+			return cmp.Compare(b.Replicas, a.Replicas)
+		}
+		return cmp.Compare(a.Hash, b.Hash)
+	})
 }
 
 func (s *Service) RegisterService(_ context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
@@ -732,6 +761,144 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 	}
 
 	return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name})
+}
+
+func (s *Service) FetchBlob(ctx context.Context, req *controlv1.FetchBlobRequest) (*controlv1.FetchBlobResponse, error) {
+	hash := req.GetHash()
+	var peers []types.PeerKey
+	if pub := req.GetPeerPub(); len(pub) > 0 {
+		peers = []types.PeerKey{types.PeerKeyFromBytes(pub)}
+	} else {
+		peers = s.state.Snapshot().PeersWithBlob(hash)
+		if len(peers) == 0 {
+			return nil, status.Error(codes.NotFound, "no peers advertise blob")
+		}
+	}
+	if err := s.blobs.Fetch(ctx, hash, peers); err != nil {
+		s.log.Warnw("fetch blob failed", "hash", types.ShortHash(hash), "err", err)
+		return nil, status.Error(codes.NotFound, "fetch blob")
+	}
+	return &controlv1.FetchBlobResponse{}, nil
+}
+
+func (s *Service) AnnounceBlob(_ context.Context, req *controlv1.AnnounceBlobRequest) (*controlv1.AnnounceBlobResponse, error) {
+	if err := s.blobs.Announce(req.GetHash()); err != nil {
+		if errors.Is(err, blobs.ErrNotLocal) {
+			return nil, status.Error(codes.FailedPrecondition, "blob not present locally")
+		}
+		s.log.Warnw("announce blob failed", "hash", types.ShortHash(req.GetHash()), "err", err)
+		return nil, status.Error(codes.Internal, "announce blob")
+	}
+	if name := req.GetName(); name != "" {
+		if err := s.blobs.SetName(req.GetHash(), name); err != nil {
+			s.log.Warnw("set blob name failed", "hash", types.ShortHash(req.GetHash()), "name", name, "err", err)
+			return nil, status.Error(codes.Internal, "set blob name")
+		}
+	}
+	return &controlv1.AnnounceBlobResponse{}, nil
+}
+
+func (s *Service) RemoveBlob(_ context.Context, req *controlv1.RemoveBlobRequest) (*controlv1.RemoveBlobResponse, error) {
+	if err := s.blobs.Remove(req.GetHash()); err != nil {
+		if errors.Is(err, blobs.ErrNotLocal) {
+			return nil, status.Error(codes.FailedPrecondition, "blob not present locally")
+		}
+		s.log.Warnw("remove blob failed", "hash", types.ShortHash(req.GetHash()), "err", err)
+		return nil, status.Error(codes.Internal, "remove blob")
+	}
+	return &controlv1.RemoveBlobResponse{}, nil
+}
+
+func (s *Service) SeedStatic(_ context.Context, req *controlv1.SeedStaticRequest) (*controlv1.SeedStaticResponse, error) {
+	if s.creds == nil || s.creds.DelegationKey() == nil {
+		return nil, status.Error(codes.PermissionDenied, "only admin nodes can seed static sites")
+	}
+	if err := s.static.SeedStatic(req.GetName(), req.GetManifestDigest(), req.GetMinReplicas()); err != nil {
+		return nil, s.fail(err, "seed static")
+	}
+	return &controlv1.SeedStaticResponse{}, nil
+}
+
+func (s *Service) UnseedStatic(_ context.Context, req *controlv1.UnseedStaticRequest) (*controlv1.UnseedStaticResponse, error) {
+	if s.creds == nil || s.creds.DelegationKey() == nil {
+		return nil, status.Error(codes.PermissionDenied, "only admin nodes can unseed static sites")
+	}
+	if err := s.static.UnseedStatic(req.GetName()); err != nil {
+		return nil, s.fail(err, "unseed static")
+	}
+	return &controlv1.UnseedStaticResponse{}, nil
+}
+
+func (s *Service) ListStatic(_ context.Context, _ *controlv1.ListStaticRequest) (*controlv1.ListStaticResponse, error) {
+	return &controlv1.ListStaticResponse{Sites: buildStaticSummaries(s.state.Snapshot())}, nil
+}
+
+func buildStaticSummaries(snap state.Snapshot) []*controlv1.StaticSummary {
+	var capacity uint32
+	for _, nv := range snap.Nodes {
+		if nv.CanServeStatic {
+			capacity++
+		}
+	}
+	out := make([]*controlv1.StaticSummary, 0, len(snap.StaticSpecs))
+	for name, spec := range snap.StaticSpecs {
+		digest, _ := hex.DecodeString(spec.Spec.ManifestDigest)
+		claimants := snap.StaticClaims[name]
+		_, local := claimants[snap.LocalID]
+		summary := &controlv1.StaticSummary{
+			Name:            name,
+			ManifestDigest:  digest,
+			MinReplicas:     spec.Spec.MinReplicas,
+			Publisher:       &controlv1.NodeRef{PeerPub: spec.Publisher.Bytes()},
+			Local:           local,
+			ServingCapacity: capacity,
+		}
+		for pk := range claimants {
+			summary.Claimants = append(summary.Claimants, &controlv1.NodeRef{PeerPub: pk.Bytes()})
+		}
+		out = append(out, summary)
+	}
+	return out
+}
+
+// buildBlobSummaries skips blobs that back a workload or static site —
+// those are surfaced under their own summaries, so listing them again
+// would just be noise.
+func (s *Service) buildBlobSummaries(snap state.Snapshot) []*controlv1.BlobSummary {
+	counts := make(map[string]uint32)
+	for _, nv := range snap.Nodes {
+		for hash := range nv.Blobs {
+			counts[hash]++
+		}
+	}
+	staticBlobs := s.static.StaticBlobs()
+	localBlobs := snap.Nodes[snap.LocalID].Blobs
+	out := make([]*controlv1.BlobSummary, 0, len(counts))
+	for hash, n := range counts {
+		if _, ok := snap.Specs[hash]; ok {
+			continue
+		}
+		if _, ok := staticBlobs[hash]; ok {
+			continue
+		}
+		_, local := localBlobs[hash]
+		var (
+			name      string
+			publisher *controlv1.NodeRef
+		)
+		if view, ok := snap.BlobSpecs[hash]; ok {
+			name = view.Spec.Name
+			publisher = &controlv1.NodeRef{PeerPub: view.Publisher.Bytes()}
+		}
+		out = append(out, &controlv1.BlobSummary{
+			Hash:      hash,
+			Replicas:  n,
+			Local:     local,
+			Name:      name,
+			Publisher: publisher,
+		})
+	}
+	return out
 }
 
 func (s *Service) UnseedWorkload(_ context.Context, req *controlv1.UnseedWorkloadRequest) (*controlv1.UnseedWorkloadResponse, error) {

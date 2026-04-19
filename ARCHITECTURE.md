@@ -17,8 +17,9 @@ Layer 5: Composition
 
 Layer 4: Domain Services (each owns its event loop, independent of siblings)
   membership       join/deny, certs, gossip schedule, peer selection
-  placement        scheduling, workload exec, CAS fetch, WASM runtime
+  placement        scheduling, workload exec, WASM runtime
   tunneling        service bridging, connection lifecycle, traffic, relay
+  blobs            content-addressed bytes, local CAS + peer fetch
 
 Layer 3: Routing (pure computation, no goroutines)
   routing          topology snapshot -> Dijkstra table -> NextHop(dest)
@@ -349,7 +350,7 @@ The concrete type has additional methods beyond the interface (e.g. construction
 StreamTypeDigest        StreamType = 1
 StreamTypeTunnel        StreamType = 2
 StreamTypeRouted        StreamType = 3  // handled internally by transport
-StreamTypeArtifact      StreamType = 4
+StreamTypeBlob          StreamType = 4
 StreamTypeWorkload      StreamType = 5
 StreamTypeCertRenewal   StreamType = 6
 ```
@@ -487,7 +488,6 @@ type PlacementAPI interface {
     RecordDial(callerHash, callerFunction, targetKey string)
     RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration)
 
-    HandleArtifactStream(stream io.ReadWriteCloser, peer types.PeerKey)
     HandleWorkloadStream(stream io.ReadWriteCloser, peer types.PeerKey)
 
     Signal()
@@ -503,7 +503,15 @@ type PlacementInfo struct {
 var _ PlacementAPI = (*Service)(nil)
 
 type Service struct { ... }
-func New(self types.PeerKey, workloads WorkloadState, cas cas.Store, runtime wasm.Runtime, opts ...Option) *Service
+func New(self types.PeerKey, workloads WorkloadState, blobs Blobs, runtime wasm.Runtime, opts ...Option) *Service
+
+// Consumer-side narrow interface into the blob service.
+type Blobs interface {
+    Put(r io.Reader) (string, error)
+    Get(hash string) (io.ReadCloser, error)
+    Has(hash string) bool
+    Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
+}
 ```
 
 `Signal()` triggers immediate scheduling re-evaluation. Supervisor calls it on `WorkloadChanged` and `TopologyChanged` events to avoid waiting for the reconciliation poll ticker.
@@ -511,7 +519,7 @@ func New(self types.PeerKey, workloads WorkloadState, cas cas.Store, runtime was
 **Event loop:**
 
 - Reconciliation ticker (+ `Signal()` trigger) -> read snapshot -> pure `evaluate()` -> claim/release via state
-- React to workload spec changes -> fetch missing artifacts from peers
+- React to workload spec changes -> fetch missing blobs via `Blobs.Fetch`
 - Resource telemetry ticker -> report CPU/mem via state
 
 #### Tunneling
@@ -556,6 +564,29 @@ func New(self types.PeerKey, services ServiceState, streams StreamTransport, rou
 - Accept routed streams -> dispatch to local handler
 - Reconcile desired connections on ticker
 - Traffic ticker -> record bytes via state
+
+#### Blobs
+
+Owns: content-addressed bytes — local CAS (SHA-256, filesystem) plus cluster-aware fetch over `StreamTypeBlob`. No event loop; one-shot request/response per stream.
+
+```go
+package blobs
+
+type BlobsAPI interface {
+    Put(r io.Reader) (string, error)
+    Get(hash string) (io.ReadCloser, error)
+    Has(hash string) bool
+    Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
+    HandleStream(stream io.ReadWriteCloser, peer types.PeerKey)
+}
+
+var _ BlobsAPI = (*Service)(nil)
+
+type Service struct { ... }
+func New(pollenDir string, mesh StreamOpener) (*Service, error)
+```
+
+Wire protocol on `StreamTypeBlob`: opener writes a 64-byte hex digest; responder writes a status byte (0 = ok, 1 = not found) then streams the bytes. Hash is verified on receipt via `cas.Put`'s rehash; mismatched bytes are rejected.
 
 ### Routing
 
@@ -612,8 +643,8 @@ case StreamTypeCertRenewal:
     go membership.HandleCertRenewalStream(stream, peer)
 case StreamTypeTunnel:
     tunneling.HandleTunnelStream(stream, peer)
-case StreamTypeArtifact:
-    go placement.HandleArtifactStream(stream, peer)
+case StreamTypeBlob:
+    go blobs.HandleStream(stream, peer)
 case StreamTypeWorkload:
     go placement.HandleWorkloadStream(stream, peer)
 }
@@ -793,17 +824,17 @@ cmd/pln --gRPC--> control
                      |
                      | narrow interfaces
                      v
-              supervisor.Run(ctx)
-               |    |    |    |
-         +-----+    |    |    +------+
-         v          v    v           v
-    membership  placement  tunneling  stream dispatch
-         |          |        |  ^          |
-         |          |        |  | routing  |
-         |          |        |  |  .Build  |
-         v          v        v  |          |
-    +---------+  +------------+ |          |
-    |  state  |  | transport  |<+----------+
+                  supervisor.Run(ctx)
+               |    |    |    |     |
+         +-----+    |    |    |     +------+
+         v          v    v    v            v
+    membership  placement  tunneling  blobs  stream dispatch
+         |          |        |  ^       |         |
+         |          |        |  | routing         |
+         |          |        |  |  .Build         |
+         v          v        v  |                 |
+    +---------+  +------------+ |                 |
+    |  state  |  | transport  |<+-----------------+
     | (pure)  |  |  (QUIC)    |
     +----+----+  +-----+------+
          |             |

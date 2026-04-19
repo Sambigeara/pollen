@@ -54,7 +54,7 @@ func (m *QUICTransport) handleRoutedStream(ctx context.Context, stream *quic.Str
 	innerType := StreamType(header[65])
 
 	if dest == m.localKey {
-		if innerType == StreamTypeTunnel || innerType == StreamTypeArtifact || innerType == StreamTypeWorkload {
+		if innerType == StreamTypeTunnel || innerType == StreamTypeBlob || innerType == StreamTypeWorkload {
 			select {
 			case m.acceptCh <- acceptedStream{stream: Stream{stream}, stype: innerType, peerKey: source}:
 			case <-ctx.Done():

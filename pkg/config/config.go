@@ -24,7 +24,13 @@ const (
 	configFileName       = "config.yaml"
 	DefaultBootstrapPort = 60611
 
-	configHeader = "# Manual edits while the daemon runs will be overwritten.\n# Use `pln serve`, `pln connect`, `pln disconnect`, `pln seed`, and `pln unseed` to manage services.\n\n"
+	// Default bind addresses for optional daemon endpoints. Leave the
+	// corresponding config fields empty to keep each endpoint disabled.
+	DefaultHTTPAddr       = ":9090"
+	DefaultStaticHTTPAddr = ":8080"
+	DefaultControlAddr    = ":50051"
+
+	configHeader = "# Manual edits while the daemon runs will be overwritten.\n# Use `pln serve`, `pln connect`, `pln disconnect`, `pln seed`, and `pln unseed` to manage services.\n# Use `pln set <key> [value]` and `pln unset <key>` to change daemon bind addresses; restart the daemon to apply.\n\n"
 )
 
 const (
@@ -65,6 +71,9 @@ type Placement struct {
 type Config struct {
 	BootstrapPeers map[string][]string `yaml:"bootstrapPeers,omitempty"`
 	Name           string              `yaml:"name,omitempty"`
+	HTTP           string              `yaml:"http,omitempty"`
+	StaticHTTP     string              `yaml:"staticHTTP,omitempty"`
+	ControlAddr    string              `yaml:"controlAddr,omitempty"`
 	Connections    []Connection        `yaml:"connections,omitempty"`
 	Services       []Service           `yaml:"services,omitempty"`
 	Resources      Resources           `yaml:"resources,omitempty"`

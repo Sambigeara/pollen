@@ -149,6 +149,9 @@ func main() {
 	rootCmd.AddCommand(newClusterCmds()...)
 	rootCmd.AddCommand(newNetworkCmds()...)
 	rootCmd.AddCommand(newWorkloadCmds()...)
+	rootCmd.AddCommand(newBlobCmds()...)
+	rootCmd.AddCommand(newStaticCmds()...)
+	rootCmd.AddCommand(newSetCmds()...)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

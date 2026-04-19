@@ -4,6 +4,7 @@
 package state
 
 import (
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"slices"
@@ -17,14 +18,27 @@ import (
 )
 
 type Snapshot struct {
-	Nodes      map[types.PeerKey]NodeView
-	Specs      map[string]WorkloadSpecView
-	Claims     map[string]map[types.PeerKey]struct{}
-	digest     Digest
-	live       map[types.PeerKey]struct{}
-	PeerKeys   []types.PeerKey
-	DeniedKeys []types.PeerKey
-	LocalID    types.PeerKey
+	Nodes        map[types.PeerKey]NodeView
+	Specs        map[string]WorkloadSpecView
+	Claims       map[string]map[types.PeerKey]struct{}
+	StaticSpecs  map[string]StaticSpecView
+	StaticClaims map[string]map[types.PeerKey]struct{}
+	BlobSpecs    map[string]BlobSpecView
+	digest       Digest
+	live         map[types.PeerKey]struct{}
+	PeerKeys     []types.PeerKey
+	DeniedKeys   []types.PeerKey
+	LocalID      types.PeerKey
+}
+
+type StaticSpecView struct {
+	Spec      StaticSpec
+	Publisher types.PeerKey
+}
+
+type BlobSpecView struct {
+	Spec      BlobSpec
+	Publisher types.PeerKey
 }
 
 type NodeView struct {
@@ -34,6 +48,7 @@ type NodeView struct {
 	Services           map[string]*Service
 	SeedMetrics        map[string]SeedMetrics
 	SeedDialRates      map[string]map[string]float32
+	Blobs              map[string]struct{}
 	VivaldiCoord       *coords.Coord
 	ObservedExternalIP string
 	LastAddr           string
@@ -53,6 +68,7 @@ type NodeView struct {
 	LocalPort          uint32
 	PubliclyAccessible bool
 	AdminCapable       bool
+	CanServeStatic     bool
 }
 
 type WorkloadSpecView struct {
@@ -138,6 +154,35 @@ type ServiceInfo struct {
 	Protocol statev1.ServiceProtocol
 }
 
+func (s Snapshot) PeersWithBlob(hash string) []types.PeerKey {
+	var out []types.PeerKey
+	for pk, nv := range s.Nodes {
+		if _, ok := nv.Blobs[hash]; ok {
+			out = append(out, pk)
+		}
+	}
+	return out
+}
+
+// BlobByName returns the lowest-peer-key publisher's spec when multiple
+// peers publish the same name.
+func (s Snapshot) BlobByName(name string) (string, BlobSpecView, bool) {
+	var bestDigest string
+	var bestView BlobSpecView
+	found := false
+	for digest, view := range s.BlobSpecs {
+		if view.Spec.Name != name {
+			continue
+		}
+		if !found || view.Publisher.Compare(bestView.Publisher) < 0 {
+			bestDigest = digest
+			bestView = view
+			found = true
+		}
+	}
+	return bestDigest, bestView, found
+}
+
 func (s Snapshot) Services() []ServiceInfo {
 	var out []ServiceInfo
 	for pk, nv := range s.Nodes {
@@ -167,9 +212,12 @@ func (s *store) buildSnapshot() Snapshot {
 	nodes := make(map[types.PeerKey]NodeView)
 	specs := make(map[string]WorkloadSpecView)
 	claims := make(map[string]map[types.PeerKey]struct{})
+	staticSpecs := make(map[string]StaticSpecView)
+	staticClaims := make(map[string]map[types.PeerKey]struct{})
+	blobSpecs := make(map[string]BlobSpecView)
 
 	for pk, rec := range valid {
-		nv, recSpecs, recClaims := buildNodeView(pk, rec)
+		nv, recSpecs, recClaims, recStatic, recStaticClaims, recBlobSpecs := buildNodeView(pk, rec)
 		nodes[pk] = nv
 
 		for hash, spec := range recSpecs {
@@ -183,6 +231,25 @@ func (s *store) buildSnapshot() Snapshot {
 				claims[hash] = make(map[types.PeerKey]struct{})
 			}
 			claims[hash][pk] = struct{}{}
+		}
+
+		for name, spec := range recStatic {
+			if existing, ok := staticSpecs[name]; !ok || pk.Compare(existing.Publisher) < 0 {
+				staticSpecs[name] = StaticSpecView{Spec: staticSpecFromProto(spec), Publisher: pk}
+			}
+		}
+
+		for name := range recStaticClaims {
+			if staticClaims[name] == nil {
+				staticClaims[name] = make(map[types.PeerKey]struct{})
+			}
+			staticClaims[name][pk] = struct{}{}
+		}
+
+		for digest, spec := range recBlobSpecs {
+			if existing, ok := blobSpecs[digest]; !ok || pk.Compare(existing.Publisher) < 0 {
+				blobSpecs[digest] = BlobSpecView{Spec: blobSpecFromProto(spec), Publisher: pk}
+			}
 		}
 	}
 
@@ -198,32 +265,40 @@ func (s *store) buildSnapshot() Snapshot {
 
 	denied := slices.SortedFunc(maps.Keys(s.denied), func(a, b types.PeerKey) int { return a.Compare(b) })
 
-	// Only expose claims from live nodes
-	filteredClaims := make(map[string]map[types.PeerKey]struct{})
-	for hash, peerMap := range claims {
-		for pk := range peerMap {
-			if _, ok := live[pk]; ok {
-				if filteredClaims[hash] == nil {
-					filteredClaims[hash] = make(map[types.PeerKey]struct{})
-				}
-				filteredClaims[hash][pk] = struct{}{}
-			}
-		}
-	}
+	filteredClaims := filterLive(claims, live)
+	filteredStaticClaims := filterLive(staticClaims, live)
 
 	return Snapshot{
-		LocalID:    s.localID,
-		Nodes:      nodes,
-		Specs:      specs,
-		Claims:     filteredClaims,
-		live:       live,
-		PeerKeys:   slices.Collect(maps.Keys(live)),
-		DeniedKeys: denied,
-		digest:     Digest{proto: &statev1.Digest{Peers: peersDigest}},
+		LocalID:      s.localID,
+		Nodes:        nodes,
+		Specs:        specs,
+		Claims:       filteredClaims,
+		StaticSpecs:  staticSpecs,
+		StaticClaims: filteredStaticClaims,
+		BlobSpecs:    blobSpecs,
+		live:         live,
+		PeerKeys:     slices.Collect(maps.Keys(live)),
+		DeniedKeys:   denied,
+		digest:       Digest{proto: &statev1.Digest{Peers: peersDigest}},
 	}
 }
 
-func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*statev1.WorkloadSpecChange, map[string]struct{}) {
+func filterLive(claims map[string]map[types.PeerKey]struct{}, live map[types.PeerKey]struct{}) map[string]map[types.PeerKey]struct{} {
+	out := make(map[string]map[types.PeerKey]struct{})
+	for key, peerMap := range claims {
+		for pk := range peerMap {
+			if _, ok := live[pk]; ok {
+				if out[key] == nil {
+					out[key] = make(map[types.PeerKey]struct{})
+				}
+				out[key][pk] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*statev1.WorkloadSpecChange, map[string]struct{}, map[string]*statev1.StaticSpecChange, map[string]struct{}, map[string]*statev1.BlobSpecChange) {
 	nv := NodeView{
 		PeerPub:       pk.Bytes(),
 		Services:      make(map[string]*Service),
@@ -231,11 +306,15 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 		TrafficRates:  make(map[types.PeerKey]TrafficSnapshot),
 		SeedMetrics:   make(map[string]SeedMetrics),
 		SeedDialRates: make(map[string]map[string]float32),
+		Blobs:         make(map[string]struct{}),
 		LastAddr:      rec.LastAddr,
 		LastEventAt:   rec.lastEventAt,
 	}
 	specs := make(map[string]*statev1.WorkloadSpecChange)
 	claims := make(map[string]struct{})
+	staticSpecs := make(map[string]*statev1.StaticSpecChange)
+	staticClaims := make(map[string]struct{})
+	blobSpecs := make(map[string]*statev1.BlobSpecChange)
 
 	for key, ev := range rec.log {
 		if ev.Deleted {
@@ -256,6 +335,8 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 			nv.PubliclyAccessible = true
 		case *statev1.GossipEvent_AdminCapable:
 			nv.AdminCapable = true
+		case *statev1.GossipEvent_StaticCapable:
+			nv.CanServeStatic = true
 		case *statev1.GossipEvent_Vivaldi:
 			if v.Vivaldi != nil {
 				nv.VivaldiCoord = &coords.Coord{X: v.Vivaldi.X, Y: v.Vivaldi.Y, Height: v.Vivaldi.Height}
@@ -288,12 +369,37 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 			}
 		case *statev1.GossipEvent_SeedMetrics:
 			maps.Copy(nv.SeedMetrics, seedMetricsFromProto(v.SeedMetrics))
+		case *statev1.GossipEvent_BlobAvailability:
+			for _, d := range v.BlobAvailability.GetDigests() {
+				nv.Blobs[hex.EncodeToString(d)] = struct{}{}
+			}
 		case *statev1.GossipEvent_Heartbeat:
 		case *statev1.GossipEvent_NodeName:
 			nv.Name = v.NodeName.Name
+		case *statev1.GossipEvent_StaticSpec:
+			staticSpecs[key.name] = v.StaticSpec
+		case *statev1.GossipEvent_StaticClaim:
+			staticClaims[key.name] = struct{}{}
+		case *statev1.GossipEvent_BlobSpec:
+			blobSpecs[key.name] = v.BlobSpec
 		}
 	}
-	return nv, specs, claims
+	return nv, specs, claims, staticSpecs, staticClaims, blobSpecs
+}
+
+func staticSpecFromProto(p *statev1.StaticSpecChange) StaticSpec {
+	return StaticSpec{
+		Name:           p.GetName(),
+		ManifestDigest: hex.EncodeToString(p.GetManifestDigest()),
+		MinReplicas:    p.GetMinReplicas(),
+	}
+}
+
+func blobSpecFromProto(p *statev1.BlobSpecChange) BlobSpec {
+	return BlobSpec{
+		Name:   p.GetName(),
+		Digest: hex.EncodeToString(p.GetDigest()),
+	}
 }
 
 const reachableMaxAge = 30 * time.Second

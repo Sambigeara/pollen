@@ -14,14 +14,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sambigeara/pollen/pkg/cas"
 	"github.com/sambigeara/pollen/pkg/wasm"
 )
+
+type blobStore interface {
+	Put(r io.Reader) (string, error)
+	Get(hash string) (io.ReadCloser, error)
+}
 
 var (
 	ErrAlreadyRunning = errors.New("workload already running")
 	ErrNotRunning     = errors.New("workload not running")
-	ErrStore          = errors.New("store artifact")
+	ErrStore          = errors.New("store blob")
 	ErrCompile        = errors.New("compile module")
 	ErrWorkloadFailed = errors.New("workload execution failed")
 )
@@ -55,7 +59,7 @@ type WorkloadSummary struct {
 }
 
 type manager struct {
-	cas       *cas.Store
+	blobs     blobStore
 	runtime   WASMRuntime
 	workloads map[string]*entry
 	mu        sync.Mutex
@@ -65,16 +69,16 @@ type entry struct {
 	compiledAt time.Time
 }
 
-func newManager(store *cas.Store, rt WASMRuntime) *manager {
+func newManager(store blobStore, rt WASMRuntime) *manager {
 	return &manager{
-		cas:       store,
+		blobs:     store,
 		runtime:   rt,
 		workloads: make(map[string]*entry),
 	}
 }
 
 func (m *manager) Seed(ctx context.Context, wasmBytes []byte, cfg wasm.PluginConfig) (string, error) {
-	hash, err := m.cas.Put(bytes.NewReader(wasmBytes))
+	hash, err := m.blobs.Put(bytes.NewReader(wasmBytes))
 	if err != nil {
 		return "", fmt.Errorf("workload: %w: %w", ErrStore, err)
 	}
@@ -82,15 +86,15 @@ func (m *manager) Seed(ctx context.Context, wasmBytes []byte, cfg wasm.PluginCon
 }
 
 func (m *manager) SeedFromCAS(ctx context.Context, hash string, cfg wasm.PluginConfig) error {
-	rc, err := m.cas.Get(hash)
+	rc, err := m.blobs.Get(hash)
 	if err != nil {
-		return fmt.Errorf("workload: read CAS: %w", err)
+		return fmt.Errorf("workload: read blob: %w", err)
 	}
 	defer rc.Close()
 
 	wasmBytes, err := io.ReadAll(rc)
 	if err != nil {
-		return fmt.Errorf("workload: read CAS bytes: %w", err)
+		return fmt.Errorf("workload: read blob bytes: %w", err)
 	}
 	return m.compileAndRegister(ctx, wasmBytes, hash, cfg)
 }

@@ -96,7 +96,7 @@ just destroy-demo             # terraform destroy + cleanup
 
 ```
 laptop (root)
-├── pln --dir /tmp/pln-demo --port 60612 --http :9090
+├── pln --dir /tmp/pln-demo up --port 60612  (http :9090 via `pln set`)
 ├── store (Docker, host network, :8080)
 ├── Prometheus (Docker, scrapes localhost:9090)
 └── Grafana (Docker, :3000, ECharts plugin)

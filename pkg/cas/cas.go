@@ -82,6 +82,48 @@ func (s *Store) Has(hash string) bool {
 	return err == nil
 }
 
+// Remove returns ErrNotFound if the hash was never stored.
+func (s *Store) Remove(hash string) error {
+	if err := os.Remove(s.path(hash)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("cas: remove artifact: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) Hashes() ([]string, error) {
+	shards, err := os.ReadDir(s.root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("cas: read root: %w", err)
+	}
+	var out []string
+	for _, shard := range shards {
+		if !shard.IsDir() || len(shard.Name()) != 2 {
+			continue
+		}
+		entries, err := os.ReadDir(filepath.Join(s.root, shard.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("cas: read shard %s: %w", shard.Name(), err)
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if filepath.Ext(name) != ".wasm" {
+				continue
+			}
+			hash := name[:len(name)-len(".wasm")]
+			if len(hash) == hex.EncodedLen(sha256.Size) {
+				out = append(out, hash)
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) path(hash string) string {
 	return filepath.Join(s.root, hash[:2], hash+".wasm")
 }

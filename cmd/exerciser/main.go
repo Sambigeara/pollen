@@ -5,7 +5,7 @@
 //
 // The binary is deployed on a dedicated host that does NOT run pollen.
 // It targets a specific pollen node via its TCP control endpoint
-// (enabled on the node with `pln up --control-addr :PORT`), fires
+// (enabled on the node with `pln set control-addr :PORT`), fires
 // CallWorkload requests at a configured rate, and exposes Prometheus
 // metrics at /metrics for an external scraper.
 package main

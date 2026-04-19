@@ -121,6 +121,39 @@ Example modules live in [`examples/`](examples/). Run `pln --help` for
 the full CLI reference. For the architecture, see
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+### Serve a static site
+
+```bash
+# On each node that should serve HTTP. Port is optional;
+# defaults to :8080. `restart` to apply.
+pln set static-http               # or `pln set static-http 9000`
+
+# From any node:
+pln static seed my-site ./public
+
+# Fetch via any serving node:
+curl -H "Host: my-site" http://<node-addr>:8080/
+```
+
+`pln static seed` hashes every file into the local content-addressed
+store and publishes the site under `<name>`. Other nodes replicate
+the files and serve the site themselves. Each node's HTTP listener
+routes requests by `Host` header to the matching site.
+
+### Share a blob
+
+```bash
+# From any node:
+pln blob put ./big-file.bin       # prints sha-256 digest
+
+# From any other node:
+pln blob fetch <digest>           # pulls peer-to-peer over QUIC into the local store
+```
+
+Blobs are the primitive behind static sites — content-addressed,
+gossip-advertised, streamed peer-to-peer over QUIC. Receivers verify
+the digest on arrival.
+
 ## Project status
 
 Pollen runs end-to-end on real clusters, but it is not yet what it's

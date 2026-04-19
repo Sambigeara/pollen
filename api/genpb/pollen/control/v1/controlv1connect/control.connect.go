@@ -73,6 +73,24 @@ const (
 	// ControlServiceIssueCertProcedure is the fully-qualified name of the ControlService's IssueCert
 	// RPC.
 	ControlServiceIssueCertProcedure = "/pollen.control.v1.ControlService/IssueCert"
+	// ControlServiceFetchBlobProcedure is the fully-qualified name of the ControlService's FetchBlob
+	// RPC.
+	ControlServiceFetchBlobProcedure = "/pollen.control.v1.ControlService/FetchBlob"
+	// ControlServiceAnnounceBlobProcedure is the fully-qualified name of the ControlService's
+	// AnnounceBlob RPC.
+	ControlServiceAnnounceBlobProcedure = "/pollen.control.v1.ControlService/AnnounceBlob"
+	// ControlServiceRemoveBlobProcedure is the fully-qualified name of the ControlService's RemoveBlob
+	// RPC.
+	ControlServiceRemoveBlobProcedure = "/pollen.control.v1.ControlService/RemoveBlob"
+	// ControlServiceSeedStaticProcedure is the fully-qualified name of the ControlService's SeedStatic
+	// RPC.
+	ControlServiceSeedStaticProcedure = "/pollen.control.v1.ControlService/SeedStatic"
+	// ControlServiceUnseedStaticProcedure is the fully-qualified name of the ControlService's
+	// UnseedStatic RPC.
+	ControlServiceUnseedStaticProcedure = "/pollen.control.v1.ControlService/UnseedStatic"
+	// ControlServiceListStaticProcedure is the fully-qualified name of the ControlService's ListStatic
+	// RPC.
+	ControlServiceListStaticProcedure = "/pollen.control.v1.ControlService/ListStatic"
 )
 
 // ControlServiceClient is a client for the pollen.control.v1.ControlService service.
@@ -91,6 +109,12 @@ type ControlServiceClient interface {
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
 	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
+	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.Response[v1.FetchBlobResponse], error)
+	AnnounceBlob(context.Context, *connect.Request[v1.AnnounceBlobRequest]) (*connect.Response[v1.AnnounceBlobResponse], error)
+	RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error)
+	SeedStatic(context.Context, *connect.Request[v1.SeedStaticRequest]) (*connect.Response[v1.SeedStaticResponse], error)
+	UnseedStatic(context.Context, *connect.Request[v1.UnseedStaticRequest]) (*connect.Response[v1.UnseedStaticResponse], error)
+	ListStatic(context.Context, *connect.Request[v1.ListStaticRequest]) (*connect.Response[v1.ListStaticResponse], error)
 }
 
 // NewControlServiceClient constructs a client for the pollen.control.v1.ControlService service. By
@@ -188,6 +212,42 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("IssueCert")),
 			connect.WithClientOptions(opts...),
 		),
+		fetchBlob: connect.NewClient[v1.FetchBlobRequest, v1.FetchBlobResponse](
+			httpClient,
+			baseURL+ControlServiceFetchBlobProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("FetchBlob")),
+			connect.WithClientOptions(opts...),
+		),
+		announceBlob: connect.NewClient[v1.AnnounceBlobRequest, v1.AnnounceBlobResponse](
+			httpClient,
+			baseURL+ControlServiceAnnounceBlobProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("AnnounceBlob")),
+			connect.WithClientOptions(opts...),
+		),
+		removeBlob: connect.NewClient[v1.RemoveBlobRequest, v1.RemoveBlobResponse](
+			httpClient,
+			baseURL+ControlServiceRemoveBlobProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("RemoveBlob")),
+			connect.WithClientOptions(opts...),
+		),
+		seedStatic: connect.NewClient[v1.SeedStaticRequest, v1.SeedStaticResponse](
+			httpClient,
+			baseURL+ControlServiceSeedStaticProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("SeedStatic")),
+			connect.WithClientOptions(opts...),
+		),
+		unseedStatic: connect.NewClient[v1.UnseedStaticRequest, v1.UnseedStaticResponse](
+			httpClient,
+			baseURL+ControlServiceUnseedStaticProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("UnseedStatic")),
+			connect.WithClientOptions(opts...),
+		),
+		listStatic: connect.NewClient[v1.ListStaticRequest, v1.ListStaticResponse](
+			httpClient,
+			baseURL+ControlServiceListStaticProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("ListStatic")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -207,6 +267,12 @@ type controlServiceClient struct {
 	unseedWorkload    *connect.Client[v1.UnseedWorkloadRequest, v1.UnseedWorkloadResponse]
 	callWorkload      *connect.Client[v1.CallWorkloadRequest, v1.CallWorkloadResponse]
 	issueCert         *connect.Client[v1.IssueCertRequest, v1.IssueCertResponse]
+	fetchBlob         *connect.Client[v1.FetchBlobRequest, v1.FetchBlobResponse]
+	announceBlob      *connect.Client[v1.AnnounceBlobRequest, v1.AnnounceBlobResponse]
+	removeBlob        *connect.Client[v1.RemoveBlobRequest, v1.RemoveBlobResponse]
+	seedStatic        *connect.Client[v1.SeedStaticRequest, v1.SeedStaticResponse]
+	unseedStatic      *connect.Client[v1.UnseedStaticRequest, v1.UnseedStaticResponse]
+	listStatic        *connect.Client[v1.ListStaticRequest, v1.ListStaticResponse]
 }
 
 // Shutdown calls pollen.control.v1.ControlService.Shutdown.
@@ -279,6 +345,36 @@ func (c *controlServiceClient) IssueCert(ctx context.Context, req *connect.Reque
 	return c.issueCert.CallUnary(ctx, req)
 }
 
+// FetchBlob calls pollen.control.v1.ControlService.FetchBlob.
+func (c *controlServiceClient) FetchBlob(ctx context.Context, req *connect.Request[v1.FetchBlobRequest]) (*connect.Response[v1.FetchBlobResponse], error) {
+	return c.fetchBlob.CallUnary(ctx, req)
+}
+
+// AnnounceBlob calls pollen.control.v1.ControlService.AnnounceBlob.
+func (c *controlServiceClient) AnnounceBlob(ctx context.Context, req *connect.Request[v1.AnnounceBlobRequest]) (*connect.Response[v1.AnnounceBlobResponse], error) {
+	return c.announceBlob.CallUnary(ctx, req)
+}
+
+// RemoveBlob calls pollen.control.v1.ControlService.RemoveBlob.
+func (c *controlServiceClient) RemoveBlob(ctx context.Context, req *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error) {
+	return c.removeBlob.CallUnary(ctx, req)
+}
+
+// SeedStatic calls pollen.control.v1.ControlService.SeedStatic.
+func (c *controlServiceClient) SeedStatic(ctx context.Context, req *connect.Request[v1.SeedStaticRequest]) (*connect.Response[v1.SeedStaticResponse], error) {
+	return c.seedStatic.CallUnary(ctx, req)
+}
+
+// UnseedStatic calls pollen.control.v1.ControlService.UnseedStatic.
+func (c *controlServiceClient) UnseedStatic(ctx context.Context, req *connect.Request[v1.UnseedStaticRequest]) (*connect.Response[v1.UnseedStaticResponse], error) {
+	return c.unseedStatic.CallUnary(ctx, req)
+}
+
+// ListStatic calls pollen.control.v1.ControlService.ListStatic.
+func (c *controlServiceClient) ListStatic(ctx context.Context, req *connect.Request[v1.ListStaticRequest]) (*connect.Response[v1.ListStaticResponse], error) {
+	return c.listStatic.CallUnary(ctx, req)
+}
+
 // ControlServiceHandler is an implementation of the pollen.control.v1.ControlService service.
 type ControlServiceHandler interface {
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
@@ -295,6 +391,12 @@ type ControlServiceHandler interface {
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
 	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
+	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.Response[v1.FetchBlobResponse], error)
+	AnnounceBlob(context.Context, *connect.Request[v1.AnnounceBlobRequest]) (*connect.Response[v1.AnnounceBlobResponse], error)
+	RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error)
+	SeedStatic(context.Context, *connect.Request[v1.SeedStaticRequest]) (*connect.Response[v1.SeedStaticResponse], error)
+	UnseedStatic(context.Context, *connect.Request[v1.UnseedStaticRequest]) (*connect.Response[v1.UnseedStaticResponse], error)
+	ListStatic(context.Context, *connect.Request[v1.ListStaticRequest]) (*connect.Response[v1.ListStaticResponse], error)
 }
 
 // NewControlServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -388,6 +490,42 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("IssueCert")),
 		connect.WithHandlerOptions(opts...),
 	)
+	controlServiceFetchBlobHandler := connect.NewUnaryHandler(
+		ControlServiceFetchBlobProcedure,
+		svc.FetchBlob,
+		connect.WithSchema(controlServiceMethods.ByName("FetchBlob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	controlServiceAnnounceBlobHandler := connect.NewUnaryHandler(
+		ControlServiceAnnounceBlobProcedure,
+		svc.AnnounceBlob,
+		connect.WithSchema(controlServiceMethods.ByName("AnnounceBlob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	controlServiceRemoveBlobHandler := connect.NewUnaryHandler(
+		ControlServiceRemoveBlobProcedure,
+		svc.RemoveBlob,
+		connect.WithSchema(controlServiceMethods.ByName("RemoveBlob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	controlServiceSeedStaticHandler := connect.NewUnaryHandler(
+		ControlServiceSeedStaticProcedure,
+		svc.SeedStatic,
+		connect.WithSchema(controlServiceMethods.ByName("SeedStatic")),
+		connect.WithHandlerOptions(opts...),
+	)
+	controlServiceUnseedStaticHandler := connect.NewUnaryHandler(
+		ControlServiceUnseedStaticProcedure,
+		svc.UnseedStatic,
+		connect.WithSchema(controlServiceMethods.ByName("UnseedStatic")),
+		connect.WithHandlerOptions(opts...),
+	)
+	controlServiceListStaticHandler := connect.NewUnaryHandler(
+		ControlServiceListStaticProcedure,
+		svc.ListStatic,
+		connect.WithSchema(controlServiceMethods.ByName("ListStatic")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/pollen.control.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ControlServiceShutdownProcedure:
@@ -418,6 +556,18 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceCallWorkloadHandler.ServeHTTP(w, r)
 		case ControlServiceIssueCertProcedure:
 			controlServiceIssueCertHandler.ServeHTTP(w, r)
+		case ControlServiceFetchBlobProcedure:
+			controlServiceFetchBlobHandler.ServeHTTP(w, r)
+		case ControlServiceAnnounceBlobProcedure:
+			controlServiceAnnounceBlobHandler.ServeHTTP(w, r)
+		case ControlServiceRemoveBlobProcedure:
+			controlServiceRemoveBlobHandler.ServeHTTP(w, r)
+		case ControlServiceSeedStaticProcedure:
+			controlServiceSeedStaticHandler.ServeHTTP(w, r)
+		case ControlServiceUnseedStaticProcedure:
+			controlServiceUnseedStaticHandler.ServeHTTP(w, r)
+		case ControlServiceListStaticProcedure:
+			controlServiceListStaticHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -481,4 +631,28 @@ func (UnimplementedControlServiceHandler) CallWorkload(context.Context, *connect
 
 func (UnimplementedControlServiceHandler) IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.IssueCert is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.Response[v1.FetchBlobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.FetchBlob is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) AnnounceBlob(context.Context, *connect.Request[v1.AnnounceBlobRequest]) (*connect.Response[v1.AnnounceBlobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.AnnounceBlob is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.RemoveBlob is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) SeedStatic(context.Context, *connect.Request[v1.SeedStaticRequest]) (*connect.Response[v1.SeedStaticResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.SeedStatic is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) UnseedStatic(context.Context, *connect.Request[v1.UnseedStaticRequest]) (*connect.Response[v1.UnseedStaticResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.UnseedStatic is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) ListStatic(context.Context, *connect.Request[v1.ListStaticRequest]) (*connect.Response[v1.ListStaticResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.ListStatic is not implemented"))
 }

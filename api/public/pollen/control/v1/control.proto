@@ -23,6 +23,12 @@ service ControlService {
   rpc UnseedWorkload(UnseedWorkloadRequest) returns (UnseedWorkloadResponse);
   rpc CallWorkload(CallWorkloadRequest) returns (CallWorkloadResponse);
   rpc IssueCert(IssueCertRequest) returns (IssueCertResponse);
+  rpc FetchBlob(FetchBlobRequest) returns (FetchBlobResponse);
+  rpc AnnounceBlob(AnnounceBlobRequest) returns (AnnounceBlobResponse);
+  rpc RemoveBlob(RemoveBlobRequest) returns (RemoveBlobResponse);
+  rpc SeedStatic(SeedStaticRequest) returns (SeedStaticResponse);
+  rpc UnseedStatic(UnseedStaticRequest) returns (UnseedStaticResponse);
+  rpc ListStatic(ListStaticRequest) returns (ListStaticResponse);
 }
 
 message NodeRef {
@@ -110,6 +116,16 @@ message GetStatusResponse {
   repeated CertInfo certificates = 5;
   bool degraded = 6;
   repeated WorkloadSummary workloads = 7;
+  repeated StaticSummary sites = 8;
+  repeated BlobSummary blobs = 9;
+}
+
+message BlobSummary {
+  string hash = 1;
+  uint32 replicas = 2;
+  bool local = 3;
+  string name = 4;
+  NodeRef publisher = 5;
 }
 
 enum WorkloadStatus {
@@ -292,3 +308,71 @@ message IssueCertRequest {
 }
 
 message IssueCertResponse {}
+
+message FetchBlobRequest {
+  string hash = 1 [(buf.validate.field).string = {
+    pattern: "^[a-fA-F0-9]{64}$"
+    len: 64
+  }];
+  optional bytes peer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+}
+
+message FetchBlobResponse {}
+
+message AnnounceBlobRequest {
+  string hash = 1 [(buf.validate.field).string = {
+    pattern: "^[a-fA-F0-9]{64}$"
+    len: 64
+  }];
+  optional string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+}
+
+message AnnounceBlobResponse {}
+
+message RemoveBlobRequest {
+  string hash = 1 [(buf.validate.field).string = {
+    pattern: "^[a-fA-F0-9]{64}$"
+    len: 64
+  }];
+}
+
+message RemoveBlobResponse {}
+
+message SeedStaticRequest {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+  bytes manifest_digest = 2 [(buf.validate.field).bytes = {len: 32}];
+  uint32 min_replicas = 3;
+}
+
+message SeedStaticResponse {}
+
+message UnseedStaticRequest {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+}
+
+message UnseedStaticResponse {}
+
+message ListStaticRequest {}
+
+message StaticSummary {
+  string name = 1;
+  bytes manifest_digest = 2;
+  uint32 min_replicas = 3;
+  repeated NodeRef claimants = 4;
+  NodeRef publisher = 5;
+  bool local = 6;
+  uint32 serving_capacity = 7;
+}
+
+message ListStaticResponse {
+  repeated StaticSummary sites = 1;
+}

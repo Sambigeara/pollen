@@ -22,7 +22,7 @@ variable "control_ingress_cidrs" {
 }
 
 variable "control_port" {
-  description = "TCP port exposed by `pln up --control-addr`."
+  description = "TCP port exposed by `pln set control-addr`."
   type        = number
   default     = 50051
 }

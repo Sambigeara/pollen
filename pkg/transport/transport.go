@@ -77,7 +77,7 @@ const (
 	StreamTypeDigest   StreamType = 1
 	StreamTypeTunnel   StreamType = 2
 	StreamTypeRouted   StreamType = 3
-	StreamTypeArtifact StreamType = 4
+	StreamTypeBlob     StreamType = 4
 	StreamTypeWorkload StreamType = 5
 )
 
@@ -838,6 +838,7 @@ func (m *QUICTransport) AcceptStream(ctx context.Context) (Stream, StreamType, t
 }
 
 func (m *QUICTransport) OpenStream(ctx context.Context, peerKey types.PeerKey, st StreamType) (Stream, error) {
+	// TODO(saml) why is this handled separately?
 	if st == StreamTypeDigest {
 		return m.openTypedStream(ctx, peerKey, st)
 	}

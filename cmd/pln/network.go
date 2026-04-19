@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -56,7 +57,7 @@ const (
 
 func newNetworkCmds() []*cobra.Command {
 	statusCmd := &cobra.Command{
-		Use:   "status [nodes|services|seeds]",
+		Use:   "status [nodes|services|seeds|static|blobs]",
 		Short: "Show network status",
 		Args:  cobra.RangeArgs(0, 1),
 		RunE:  withEnv(runStatus),
@@ -145,6 +146,12 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 		if s := collectSeedsSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
+		if s := collectStaticSection(st, opts); len(s.rows) > 0 {
+			sections = append(sections, s)
+		}
+		if s := collectBlobsSection(st, opts); len(s.rows) > 0 {
+			sections = append(sections, s)
+		}
 	case "nodes", "node":
 		if s := collectPeersSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
@@ -157,8 +164,16 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 		if s := collectSeedsSection(st, opts); len(s.rows) > 0 {
 			sections = append(sections, s)
 		}
+	case "static", "sites":
+		if s := collectStaticSection(st, opts); len(s.rows) > 0 {
+			sections = append(sections, s)
+		}
+	case "blobs", "blob":
+		if s := collectBlobsSection(st, opts); len(s.rows) > 0 {
+			sections = append(sections, s)
+		}
 	default:
-		return fmt.Errorf("unknown status selector %q (use: nodes|services|seeds)", mode)
+		return fmt.Errorf("unknown status selector %q (use: nodes|services|seeds|static|blobs)", mode)
 	}
 
 	renderStatusSections(cmd.OutOrStdout(), sections)
@@ -488,7 +503,10 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 	}
 
 	reachableProviders := reachableProviderSet(st)
-	suffixes := serviceNameSuffixes(st.Services, func(pk string) bool { return opts.includeAll || reachableProviders[pk] })
+	suffixes := nameCollisionSuffixes(st.Services, func(svc *controlv1.ServiceSummary) (string, string, bool) {
+		pk := peerKeyString(svc.GetProvider().GetPeerPub())
+		return svc.GetName(), pk, opts.includeAll || reachableProviders[pk]
+	})
 	nameLabels := nodeNameLabels(st.GetSelf(), st.GetNodes(), opts.wide)
 
 	type connKey struct {
@@ -517,7 +535,7 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 			local = fmt.Sprintf("%d", lp)
 		}
 		displayName := s.GetName()
-		if sfx := suffixes[serviceProviderKey{s.GetName(), providerID}]; sfx != "" {
+		if sfx := suffixes[namePeerKey{s.GetName(), providerID}]; sfx != "" {
 			displayName += "-" + sfx
 		}
 		sec.rows = append(sec.rows, []string{displayName, provider, fmt.Sprintf("%d", s.GetPort()), local})
@@ -531,6 +549,70 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 		footerParts = append(footerParts, fmt.Sprintf("offline services: %d (use --all)", filtered))
 	}
 	sec.footer = strings.Join(footerParts, "\n")
+	return sec
+}
+
+func collectStaticSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
+	sec := statusSection{
+		title:   "STATIC",
+		headers: []string{"NAME", "MANIFEST", "REPLICAS", "LOCAL", "PUBLISHER"},
+	}
+	nameLabels := nodeNameLabels(st.GetSelf(), st.GetNodes(), opts.wide)
+	for _, site := range st.GetSites() {
+		digest := hex.EncodeToString(site.GetManifestDigest())
+		if !opts.wide && len(digest) > shortHexLen {
+			digest = digest[:shortHexLen]
+		}
+		target := min(site.GetMinReplicas(), site.GetServingCapacity())
+		replicas := fmt.Sprintf("%d/%d", len(site.GetClaimants()), target)
+		local := ""
+		if site.GetLocal() {
+			local = "*"
+		}
+		publisherPK := peerKeyString(site.GetPublisher().GetPeerPub())
+		publisher := nameLabels[publisherPK]
+		if publisher == "" {
+			publisher = formatPeerID(site.GetPublisher().GetPeerPub(), opts.wide)
+		}
+		sec.rows = append(sec.rows, []string{site.GetName(), digest, replicas, local, publisher})
+	}
+	return sec
+}
+
+func collectBlobsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
+	sec := statusSection{
+		title:   "BLOBS",
+		headers: []string{"NAME", "HASH", "REPLICAS", "LOCAL"},
+	}
+	const defaultBlobLimit = 20
+	blobs := st.GetBlobs()
+	limit := len(blobs)
+	if !opts.wide && limit > defaultBlobLimit {
+		limit = defaultBlobLimit
+	}
+	suffixes := nameCollisionSuffixes(blobs, func(b *controlv1.BlobSummary) (string, string, bool) {
+		return b.GetName(), peerKeyString(b.GetPublisher().GetPeerPub()), true
+	})
+	for _, b := range blobs[:limit] {
+		hash := b.GetHash()
+		if !opts.wide && len(hash) > shortHexLen {
+			hash = hash[:shortHexLen]
+		}
+		local := ""
+		if b.GetLocal() {
+			local = "*"
+		}
+		name := b.GetName()
+		if name == "" {
+			name = "-"
+		} else if sfx := suffixes[namePeerKey{b.GetName(), peerKeyString(b.GetPublisher().GetPeerPub())}]; sfx != "" {
+			name += "-" + sfx
+		}
+		sec.rows = append(sec.rows, []string{name, hash, fmt.Sprintf("%d", b.GetReplicas()), local})
+	}
+	if len(blobs) > limit {
+		sec.footer = fmt.Sprintf("%d more blobs (use --wide)", len(blobs)-limit)
+	}
 	return sec
 }
 
@@ -910,9 +992,10 @@ type suffixCandidate struct {
 	include bool
 }
 
-type serviceProviderKey struct {
-	name     string
-	provider string
+// namePeerKey identifies a named entity published by a specific peer.
+type namePeerKey struct {
+	name    string
+	peerKey string
 }
 
 func reachableProviderSet(st *controlv1.GetStatusResponse) map[string]bool {
@@ -1160,22 +1243,28 @@ func nodeNameLabels(self *controlv1.NodeSummary, peers []*controlv1.NodeSummary,
 	return labels
 }
 
-func serviceNameSuffixes(services []*controlv1.ServiceSummary, include func(string) bool) map[serviceProviderKey]string {
+// nameCollisionSuffixes returns the minimum-unique peer-key prefix for
+// each item sharing a name with another peer, so callers can render
+// disambiguation hints like "config-abc" vs "config-def". Items where
+// extract returns include=false or an empty name are skipped.
+func nameCollisionSuffixes[T any](items []T, extract func(T) (string, string, bool)) map[namePeerKey]string {
 	groups := map[string][]string{}
-	for _, svc := range services {
-		if pk := peerKeyString(svc.GetProvider().GetPeerPub()); include(pk) {
-			groups[svc.GetName()] = append(groups[svc.GetName()], pk)
+	for _, item := range items {
+		name, pk, include := extract(item)
+		if !include || name == "" {
+			continue
 		}
+		groups[name] = append(groups[name], pk)
 	}
 
-	result := map[serviceProviderKey]string{}
+	result := map[namePeerKey]string{}
 	for name, pks := range groups {
 		if len(pks) < minDisambigPeers {
 			continue
 		}
 		prefixes := minUniquePrefixes(pks)
 		for i, pk := range pks {
-			result[serviceProviderKey{name, pk}] = prefixes[i]
+			result[namePeerKey{name, pk}] = prefixes[i]
 		}
 	}
 	return result

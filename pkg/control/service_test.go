@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -19,6 +20,7 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/blobs"
 	"github.com/sambigeara/pollen/pkg/control"
 	"github.com/sambigeara/pollen/pkg/placement"
 	"github.com/sambigeara/pollen/pkg/state"
@@ -41,6 +43,8 @@ type harness struct {
 	membership *fakeMembership
 	placement  *fakePlacement
 	tunneling  *fakeTunneling
+	blobs      *fakeBlobs
+	static     *fakeStatic
 	state      *fakeState
 	transport  *fakeTransport
 	metrics    *fakeMetrics
@@ -54,12 +58,14 @@ func newHarness(t *testing.T, opts ...control.Option) *harness { //nolint:thelpe
 		membership: &fakeMembership{},
 		placement:  &fakePlacement{},
 		tunneling:  &fakeTunneling{},
+		blobs:      &fakeBlobs{store: make(map[string][]byte)},
+		static:     &fakeStatic{},
 		state:      &fakeState{snap: state.Snapshot{Nodes: make(map[types.PeerKey]state.NodeView)}},
 		transport:  &fakeTransport{activeAddrs: make(map[types.PeerKey]*net.UDPAddr), rtts: make(map[types.PeerKey]time.Duration)},
 		metrics:    &fakeMetrics{},
 		connector:  &fakeConnector{},
 	}
-	h.svc = control.NewService(h.membership, h.placement, h.tunneling, h.state, append([]control.Option{
+	h.svc = control.NewService(h.membership, h.placement, h.tunneling, h.blobs, h.static, h.state, append([]control.Option{
 		control.WithTransportInfo(h.transport),
 		control.WithMetricsSource(h.metrics),
 		control.WithMeshConnector(h.connector),
@@ -87,7 +93,7 @@ func TestShutdownInvokesCallback(t *testing.T) {
 }
 
 func TestShutdownNoCallback(t *testing.T) {
-	svc := control.NewService(nil, nil, nil, nil)
+	svc := control.NewService(nil, nil, nil, nil, nil, nil)
 	_, err := svc.Shutdown(context.Background(), &controlv1.ShutdownRequest{})
 	require.Error(t, err)
 	st, _ := status.FromError(err)
@@ -155,7 +161,7 @@ func TestConnectPeer(t *testing.T) {
 }
 
 func TestConnectPeerNoConnector(t *testing.T) {
-	svc := control.NewService(nil, nil, nil, nil)
+	svc := control.NewService(nil, nil, nil, nil, nil, nil)
 	_, err := svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
 		PeerPub: testPeerKey(1).Bytes(),
 	})
@@ -227,6 +233,30 @@ func TestSeedWorkloadInternalError(t *testing.T) {
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.Internal, st.Code())
+}
+
+func TestFetchBlobPeer(t *testing.T) {
+	h := newHarness(t)
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte("remote")))
+	_, err := h.svc.FetchBlob(context.Background(), &controlv1.FetchBlobRequest{
+		Hash:    hash,
+		PeerPub: testPeerKey(1).Bytes(),
+	})
+	require.NoError(t, err)
+	require.Equal(t, []byte("fetched-"+hash), h.blobs.store[hash])
+}
+
+func TestFetchBlobError(t *testing.T) {
+	h := newHarness(t)
+	h.blobs.fetchErr = errors.New("no peers reachable")
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte("remote")))
+	_, err := h.svc.FetchBlob(context.Background(), &controlv1.FetchBlobRequest{
+		Hash:    hash,
+		PeerPub: testPeerKey(1).Bytes(),
+	})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.NotFound, st.Code())
 }
 
 func TestUnseedWorkloadNoCreds(t *testing.T) {
@@ -352,7 +382,7 @@ func TestCallWorkloadMissingTarget(t *testing.T) {
 func TestStartTCP_TokenAuth(t *testing.T) {
 	startServer := func(token string) (*control.Server, string, func()) {
 		placementStub := &fakePlacement{callOut: []byte("ok")}
-		srv := control.New(&fakeMembership{}, placementStub, &fakeTunneling{}, &fakeState{snap: state.Snapshot{Nodes: make(map[types.PeerKey]state.NodeView)}})
+		srv := control.New(&fakeMembership{}, placementStub, &fakeTunneling{}, &fakeBlobs{}, &fakeStatic{}, &fakeState{snap: state.Snapshot{Nodes: make(map[types.PeerKey]state.NodeView)}})
 		if token != "" {
 			srv.SetToken(token)
 		}
@@ -645,6 +675,62 @@ func TestGetStatusWorkloads(t *testing.T) {
 	require.Equal(t, uint32(1), remoteW.ActiveReplicas)
 }
 
+func TestGetStatusBlobsExcludesWasmAndStatic(t *testing.T) {
+	h := newHarness(t)
+	local := testPeerKey(1)
+	h.state.snap.LocalID = local
+	h.state.snap.Nodes[local] = state.NodeView{
+		Blobs: map[string]struct{}{
+			"wasm-hash":     {},
+			"manifest-hash": {},
+			"static-file":   {},
+			"raw-blob":      {},
+		},
+	}
+	h.state.snap.Specs = map[string]state.WorkloadSpecView{
+		"wasm-hash": {Spec: state.WorkloadSpec{Hash: "wasm-hash"}},
+	}
+	h.static.blobs = map[string]struct{}{
+		"manifest-hash": {},
+		"static-file":   {},
+	}
+
+	resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.Blobs, 1)
+	require.Equal(t, "raw-blob", resp.Blobs[0].Hash)
+	require.True(t, resp.Blobs[0].Local)
+	require.Equal(t, uint32(1), resp.Blobs[0].Replicas)
+}
+
+func TestGetStatusBlobsIncludesName(t *testing.T) {
+	h := newHarness(t)
+	local := testPeerKey(1)
+	h.state.snap.LocalID = local
+	h.state.snap.Nodes[local] = state.NodeView{
+		Blobs: map[string]struct{}{
+			"named-blob":     {},
+			"anonymous-blob": {},
+		},
+	}
+	h.state.snap.BlobSpecs = map[string]state.BlobSpecView{
+		"named-blob": {Spec: state.BlobSpec{Name: "config", Digest: "named-blob"}, Publisher: local},
+	}
+
+	resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.Blobs, 2)
+
+	byHash := map[string]*controlv1.BlobSummary{}
+	for _, b := range resp.Blobs {
+		byHash[b.GetHash()] = b
+	}
+	require.Equal(t, "config", byHash["named-blob"].GetName())
+	require.Equal(t, local.Bytes(), byHash["named-blob"].GetPublisher().GetPeerPub())
+	require.Empty(t, byHash["anonymous-blob"].GetName())
+	require.Nil(t, byHash["anonymous-blob"].GetPublisher())
+}
+
 func TestGetStatus_PeerTrafficFromGossip(t *testing.T) {
 	h := newHarness(t)
 	local := testPeerKey(1)
@@ -795,6 +881,57 @@ func (f *fakePlacement) Status() []placement.WorkloadSummary {
 }
 
 func (f *fakePlacement) PlacementInfo() map[string]placement.PlacementInfo { return nil }
+
+type fakeBlobs struct {
+	store    map[string][]byte
+	names    map[string]string
+	fetchErr error
+}
+
+func (f *fakeBlobs) Fetch(_ context.Context, hash string, _ []types.PeerKey) error {
+	if f.fetchErr != nil {
+		return f.fetchErr
+	}
+	if f.store == nil {
+		f.store = make(map[string][]byte)
+	}
+	f.store[hash] = []byte("fetched-" + hash)
+	return nil
+}
+
+func (f *fakeBlobs) Announce(hash string) error {
+	if _, ok := f.store[hash]; !ok {
+		return blobs.ErrNotLocal
+	}
+	return nil
+}
+
+func (f *fakeBlobs) SetName(hash, name string) error {
+	if _, ok := f.store[hash]; !ok {
+		return blobs.ErrNotLocal
+	}
+	if f.names == nil {
+		f.names = make(map[string]string)
+	}
+	f.names[hash] = name
+	return nil
+}
+
+func (f *fakeBlobs) Remove(hash string) error {
+	delete(f.store, hash)
+	delete(f.names, hash)
+	return nil
+}
+
+type fakeStatic struct {
+	seedErr   error
+	unseedErr error
+	blobs     map[string]struct{}
+}
+
+func (f *fakeStatic) SeedStatic(string, []byte, uint32) error { return f.seedErr }
+func (f *fakeStatic) UnseedStatic(string) error               { return f.unseedErr }
+func (f *fakeStatic) StaticBlobs() map[string]struct{}        { return f.blobs }
 
 type fakeTunneling struct {
 	exposeErr     error

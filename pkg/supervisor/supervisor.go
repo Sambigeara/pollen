@@ -24,7 +24,7 @@ import (
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/cas"
+	"github.com/sambigeara/pollen/pkg/blobs"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/control"
 	"github.com/sambigeara/pollen/pkg/membership"
@@ -35,6 +35,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/plnfs"
 	"github.com/sambigeara/pollen/pkg/routing"
 	"github.com/sambigeara/pollen/pkg/state"
+	"github.com/sambigeara/pollen/pkg/static"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/tunneling"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -60,6 +61,9 @@ type Supervisor struct {
 	membership       membership.MembershipAPI
 	placement        placement.PlacementAPI
 	tunneling        tunneling.TunnelingAPI
+	static           static.StaticAPI
+	staticSvc        *static.Service
+	staticAddr       string
 	mesh             transport.Transport
 	tracer           trace.Tracer
 	store            state.StateStore
@@ -72,7 +76,7 @@ type Supervisor struct {
 	nodeMetrics      *metrics.NodeMetrics
 	routeInvalidate  chan struct{}
 	natDetector      *nat.Detector
-	casStore         *cas.Store
+	blobs            blobs.BlobsAPI
 	topoMetrics      *metrics.TopologyMetrics
 	tracesProviders  *traces.Provider
 	controlSrv       *control.Server
@@ -110,6 +114,9 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	}
 	if creds.DelegationKey() != nil {
 		stateStore.SetAdmin()
+	}
+	if opts.StaticAddr != "" {
+		stateStore.SetStaticCapable()
 	}
 	if rs := opts.RuntimeState; rs != nil {
 		if gs := rs.GetGossipState(); len(gs) > 0 {
@@ -183,9 +190,14 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	}
 	m.SetPeerMetrics(metrics.NewPeerMetrics(mp.Meter()))
 
-	casStore, err := cas.New(pollenDir)
+	streamAdapter := &streamOpenAdapter{t: m}
+
+	blobsSvc, err := blobs.New(pollenDir, self, streamAdapter, stateStore)
 	if err != nil {
-		return nil, fmt.Errorf("create CAS store: %w", err)
+		return nil, fmt.Errorf("create blob store: %w", err)
+	}
+	if err := blobsSvc.Rescan(); err != nil {
+		log.Warnw("scan local blobs", zap.Error(err))
 	}
 
 	vivaldiErr := metrics.NewEWMA(membership.VivaldiErrAlpha, 1.0)
@@ -196,7 +208,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		log:              log,
 		store:            stateStore,
 		mesh:             m,
-		casStore:         casStore,
+		blobs:            blobsSvc,
 		creds:            creds,
 		signPriv:         privKey,
 		pollenDir:        pollenDir,
@@ -236,8 +248,6 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		fwd:                n.forwardInviteToAdmin,
 		supervisorConsumer: &n.inviteConsumer,
 	}
-
-	streamAdapter := &streamOpenAdapter{t: m}
 
 	n.tunneling = tunneling.New(
 		self, stateStore, streamAdapter, m, router,
@@ -325,11 +335,16 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	}
 
 	n.placement = placement.New(
-		self, stateStore, casStore, wasmRT,
+		self, stateStore, blobsSvc, wasmRT,
 		placement.WithMesh(placementOpener),
 		placement.WithLogger(log.Named("placement")),
 		placement.WithResourceBudget(opts.CPUBudgetPercent, opts.MemBudgetPercent),
 	)
+
+	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", log.Named("static"))
+	n.static = staticSvc
+	n.staticSvc = staticSvc
+	n.staticAddr = opts.StaticAddr
 
 	controlOpts := []control.Option{
 		control.WithCredentials(creds),
@@ -341,7 +356,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		controlOpts = append(controlOpts, control.WithShutdown(opts.ShutdownFunc))
 	}
 
-	n.controlSrv = control.New(n.membership, n.placement, n.tunneling, stateStore, controlOpts...)
+	n.controlSrv = control.New(n.membership, n.placement, n.tunneling, n.blobs, n.static, stateStore, controlOpts...)
 	if opts.ControlToken != "" {
 		n.controlSrv.SetToken(opts.ControlToken)
 	}
@@ -408,6 +423,9 @@ func (n *Supervisor) Run(ctx context.Context) error {
 	if err := n.placement.Start(ctx); err != nil {
 		return fmt.Errorf("placement start: %w", err)
 	}
+	if err := n.static.Start(ctx); err != nil {
+		return fmt.Errorf("static start: %w", err)
+	}
 
 	n.spawn(func() {
 		if err := n.controlSrv.Start(n.socketPath); err != nil {
@@ -427,6 +445,14 @@ func (n *Supervisor) Run(ctx context.Context) error {
 		n.spawn(func() {
 			if err := n.startPrometheus(ctx, n.httpAddr); err != nil {
 				n.log.Warnw("prometheus server failed", zap.Error(err))
+			}
+		})
+	}
+
+	if n.staticAddr != "" {
+		n.spawn(func() {
+			if err := n.startStaticHTTP(ctx, n.staticAddr); err != nil {
+				n.log.Warnw("static http server failed", zap.Error(err))
 			}
 		})
 	}
@@ -469,6 +495,8 @@ func (n *Supervisor) Run(ctx context.Context) error {
 		case <-peerTicker.C:
 			n.syncPeersFromState(ctx, n.store.Snapshot())
 		case ev := <-n.membership.Events():
+			n.dispatchEvents(ctx, []state.Event{ev})
+		case ev := <-n.static.Events():
 			n.dispatchEvents(ctx, []state.Event{ev})
 		case ev := <-n.mesh.SupervisorEvents():
 			n.handlePeerEvent(ctx, ev)
@@ -537,9 +565,9 @@ func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 			n.spawn(func() { n.membership.HandleDigestStream(ctx, stream, peerKey) })
 		case transport.StreamTypeTunnel:
 			n.spawn(func() { n.tunneling.HandleTunnelStream(stream, peerKey) })
-		case transport.StreamTypeArtifact:
+		case transport.StreamTypeBlob:
 			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
-			n.spawn(func() { n.placement.HandleArtifactStream(s, peerKey) })
+			n.spawn(func() { n.blobs.HandleStream(s, peerKey) })
 		case transport.StreamTypeWorkload:
 			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
 			n.spawn(func() { n.placement.HandleWorkloadStream(s, peerKey) })
@@ -573,6 +601,8 @@ func (n *Supervisor) dispatchEvents(_ context.Context, events []state.Event) {
 			n.placement.Signal()
 		case state.WorkloadChanged:
 			n.placement.Signal()
+		case state.StaticChanged:
+			n.static.Signal()
 		}
 	}
 }
@@ -662,7 +692,7 @@ func (n *Supervisor) shutdown() {
 	n.controlSrv.Stop()
 
 	// Close QUIC sessions before waiting for goroutines — stream handlers
-	// (HandleDigestStream, HandleArtifactStream, HandleWorkloadStream) block
+	// (HandleDigestStream, blobs.HandleStream, HandleWorkloadStream) block
 	// on stream reads that only unblock when sessions close.
 	if err := n.mesh.Stop(); err != nil {
 		n.log.Errorw("failed to shut down mesh", zap.Error(err))
@@ -676,6 +706,9 @@ func (n *Supervisor) shutdown() {
 
 	n.saveState()
 
+	if err := n.static.Stop(); err != nil {
+		n.log.Warnw("static stop failed", zap.Error(err))
+	}
 	if err := n.placement.Stop(); err != nil {
 		n.log.Warnw("placement stop failed", zap.Error(err))
 	}
@@ -859,6 +892,8 @@ var (
 	_ control.MembershipControl = (*membership.Service)(nil)
 	_ control.PlacementControl  = (*placement.Service)(nil)
 	_ control.TunnelingControl  = (*tunneling.Service)(nil)
+	_ control.BlobsControl      = (*blobs.Service)(nil)
+	_ control.StaticControl     = (*static.Service)(nil)
 	_ control.StateReader       = state.StateStore(nil)
 	_ placement.WASMRuntime     = (*wasm.Runtime)(nil)
 	_ control.TransportInfo     = (*Supervisor)(nil)
