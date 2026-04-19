@@ -2,7 +2,7 @@ Run the defluff review in a sub-agent, then plan fixes based on its findings.
 
 ## Step 1: Sub-agent review
 
-Use the Task tool to launch a sub-agent (subagent_type: "general-purpose") with the following prompt. If available, pass ONLY the plan document that was used for the task. If no explicit plan was formalised, pass a clean summary of the context. The sub-agent should start fresh.
+Use the Task tool to launch a sub-agent (subagent_type: "Explore") with the following prompt. If available, pass ONLY the plan document that was used for the task. If no explicit plan was formalised, pass a clean summary of the context. The sub-agent should start fresh.
 
 ---
 
@@ -14,7 +14,9 @@ First, determine what to review:
 
 ### Review criteria
 
-Apply all lessons from `.claude/CLAUDE.md` (especially the Lessons section). In addition, apply this defluff-specific check:
+Apply the full contents of `.claude/CLAUDE.md` — Core Principles, Workflow Orchestration, and every lesson. `ARCHITECTURE.md` is gospel: layer boundaries, dependency rules, narrow interfaces at package boundaries, unexported internals. Flag any concrete type crossing a boundary where a narrow interface would suffice.
+
+In addition, apply this defluff-specific check:
 
 - **No cosmetic noise** in diffs (reformatting, reordering imports, renaming things that don't need renaming).
 
@@ -39,7 +41,7 @@ If something feels like it's unravelling, stop and re-approach. Never run away w
 
 ## Step 2: Plan fixes
 
-Once the sub-agent returns its findings, enter plan mode. Write a plan to `tasks/todo.md` that:
+Once the sub-agent returns its findings, enter plan mode. Write a plan to `tasks/defluff-plan.md` that:
 
 1. Lists every finding from the sub-agent review
 2. Groups them into logical fix batches (changes that should be made together)
