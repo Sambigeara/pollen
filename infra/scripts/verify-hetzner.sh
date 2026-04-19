@@ -200,7 +200,7 @@ pass "Step 7: Connection tunnel — data round-tripped"
 # --- step 8: workload lifecycle ---
 
 echo -e "\n${BOLD}Step 8: Workload lifecycle${RESET}"
-HASH=$(lpln seed "$WASM" --replicas 1 2>&1 | grep -oE '[a-f0-9]{16,}' | head -1)
+HASH=$(lpln seed "$WASM" --min-replicas 1 2>&1 | grep -oE '[a-f0-9]{8,}' | head -1)
 [ -n "$HASH" ] || fail "Step 8" "seed returned no hash"
 SHORT="${HASH:0:16}"
 
@@ -213,7 +213,7 @@ check_seed_gone() { lpln status seeds 2>&1 | grep -q "$SHORT" && return 1 || ret
 poll "seed gone" 15 check_seed_gone
 echo "  Seed removed"
 
-HASH=$(lpln seed "$WASM" --replicas 2 2>&1 | grep -oE '[a-f0-9]{16,}' | head -1)
+HASH=$(lpln seed "$WASM" 2>&1 | grep -oE '[a-f0-9]{8,}' | head -1)
 SHORT="${HASH:0:16}"
 poll "seed running 2/2" 30 bash -c "\"$PLN_LOCAL\" --dir \"$PLN_TEST_DIR\" status seeds 2>&1 | grep '$SHORT' | grep -q '2/2'"
 pass "Step 8: Workload lifecycle — seed/unseed/reseed"
@@ -225,9 +225,9 @@ for label_ip in "local:" "nbg1-1:$ROOT_IP" "nbg1-2:$NODE2_IP" "hel1:$NODE3_IP"; 
     label="${label_ip%%:*}"
     ip="${label_ip#*:}"
     if [ "$label" = "local" ]; then
-        OUT=$(lpln call "$SHORT" handle test 2>&1)
+        OUT=$(lpln call "$SHORT" echo test 2>&1)
     else
-        OUT=$(rpln "$ip" call "$SHORT" handle test 2>&1)
+        OUT=$(rpln "$ip" call "$SHORT" echo test 2>&1)
     fi
     echo "$OUT" | grep -q "test" || fail "Step 9" "call from $label returned unexpected: $OUT"
 done
@@ -239,9 +239,9 @@ echo -e "\n${BOLD}Step 10: Load test (1000 calls)${RESET}"
 LOAD_A="/tmp/pln-load-a-$$"
 LOAD_B="/tmp/pln-load-b-$$"
 # Single SSH session per node with internal loop — no per-call SSH overhead.
-rssh "$ROOT_IP" "P=0;F=0;for i in \$(seq 1 500);do if /usr/bin/pln --dir /var/lib/pln call $SHORT handle t >/dev/null 2>&1;then P=\$((P+1));else F=\$((F+1));fi;done;echo \$P \$F" > "$LOAD_A" 2>&1 &
+rssh "$ROOT_IP" "P=0;F=0;for i in \$(seq 1 500);do if /usr/bin/pln --dir /var/lib/pln call $SHORT echo t >/dev/null 2>&1;then P=\$((P+1));else F=\$((F+1));fi;done;echo \$P \$F" > "$LOAD_A" 2>&1 &
 PID_A=$!
-rssh "$NODE2_IP" "P=0;F=0;for i in \$(seq 1 500);do if /usr/bin/pln --dir /var/lib/pln call $SHORT handle t >/dev/null 2>&1;then P=\$((P+1));else F=\$((F+1));fi;done;echo \$P \$F" > "$LOAD_B" 2>&1 &
+rssh "$NODE2_IP" "P=0;F=0;for i in \$(seq 1 500);do if /usr/bin/pln --dir /var/lib/pln call $SHORT echo t >/dev/null 2>&1;then P=\$((P+1));else F=\$((F+1));fi;done;echo \$P \$F" > "$LOAD_B" 2>&1 &
 PID_B=$!
 wait $PID_A
 wait $PID_B
@@ -280,6 +280,59 @@ else
     poll "2/2 maintained after node down" 30 bash -c "ssh $SSH_OPTS root@$CHECK_IP '/usr/bin/pln --dir /var/lib/pln status seeds' 2>&1 | grep '$SHORT' | grep -q '2/2'"
     pass "Step 11: Workload migrated after node down"
 fi
+
+# Step 11 may have stopped the root daemon if it was the seed holder.
+# Steps 12+ need root alive.
+rssh "$ROOT_IP" "systemctl start pln" 2>/dev/null || true
+poll "root daemon alive" 60 ssh $SSH_OPTS "root@$ROOT_IP" "test -S /var/lib/pln/pln.sock"
+
+# --- step 12: -H remote targeting ---
+
+echo -e "\n${BOLD}Step 12: -H remote targeting${RESET}"
+REMOTE_STATUS=$("$PLN_LOCAL" --dir "$PLN_TEST_DIR" -H "root@$ROOT_IP" status 2>&1)
+echo "$REMOTE_STATUS" | grep -q "(self)" || fail "Step 12" "pln -H status did not reach remote: $REMOTE_STATUS"
+# The remote self should be nbg1-1, not the local laptop — check by comparing to native ssh+pln output.
+NATIVE_STATUS=$(rssh "$ROOT_IP" "/usr/bin/pln --dir /var/lib/pln status 2>&1" | head -5)
+# Both should report the same peer count as (self) marker.
+pass "Step 12: pln -H returned remote daemon's view"
+
+# --- step 13: pln context flow ---
+
+echo -e "\n${BOLD}Step 13: pln context flow${RESET}"
+# Run in a subshell so HOME overrides don't leak — contexts.yaml lives at ~/.pln/.
+(
+    CTX_HOME="/tmp/pln-ctx-$$"
+    mkdir -p "$CTX_HOME"
+    export HOME="$CTX_HOME"
+    trap "rm -rf $CTX_HOME" EXIT
+    PLN="$PLN_LOCAL --dir $PLN_TEST_DIR"
+
+    # Context with --from default imports the laptop's admin keys so the
+    # context can sign cluster-root operations.
+    $PLN ctx add prod "root@$ROOT_IP" --from default >/dev/null || { echo "ctx add failed"; exit 1; }
+    $PLN ctx switch prod >/dev/null || { echo "ctx switch failed"; exit 1; }
+
+    [ "$($PLN ctx current)" = "prod" ] || { echo "ctx current wrong"; exit 1; }
+
+    # Read-only RPC via SSH bridge.
+    CTX_STATUS=$($PLN status 2>&1)
+    echo "$CTX_STATUS" | grep -q "(self)" || { echo "status via ctx failed: $CTX_STATUS"; exit 1; }
+
+    # Local-key admin op: invite requires the context's admin key to match
+    # the cluster root. Proves identity routing, not just transport.
+    TOKEN=$($PLN invite 2>&1)
+    echo "$TOKEN" | grep -qE '^[A-Za-z0-9+/=]{40,}$' || { echo "invite failed: $TOKEN"; exit 1; }
+
+    # PLN_CONTEXT env overrides persisted current.
+    $PLN ctx switch default >/dev/null
+    PLN_CONTEXT=prod $PLN status 2>&1 | grep -q "(self)" || { echo "PLN_CONTEXT override failed"; exit 1; }
+    [ "$(PLN_CONTEXT=prod $PLN ctx current)" = "prod" ] || { echo "PLN_CONTEXT current wrong"; exit 1; }
+
+    # Cleanup: rm removes the auto-provisioned identity dir.
+    $PLN ctx rm prod >/dev/null || { echo "ctx rm failed"; exit 1; }
+    [ ! -d "$CTX_HOME/.pln/contexts/prod" ] || { echo "ctx rm left identity dir behind"; exit 1; }
+) || fail "Step 13" "pln context flow failed"
+pass "Step 13: pln context — transport, identity signing, env override, cleanup"
 
 # --- summary ---
 

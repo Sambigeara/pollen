@@ -56,9 +56,10 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 
 	// Persist credentials to disk and load the signer via the production path.
 	pollenDir := t.TempDir()
+	identityDir := auth.IdentityPath(pollenDir)
 	creds := auth.NewNodeCredentials(cfg.Auth.RootPub(), dc)
-	require.NoError(t, auth.SaveNodeCredentials(pollenDir, creds))
-	signer, err := auth.NewDelegationSigner(pollenDir, priv, 24*time.Hour) //nolint:mnd
+	require.NoError(t, auth.SaveNodeCredentials(identityDir, creds))
+	signer, err := auth.NewDelegationSigner(identityDir, priv, 24*time.Hour) //nolint:mnd
 	require.NoError(t, err)
 	creds.SetDelegationKey(signer)
 

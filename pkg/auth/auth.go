@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	keysDir = "keys"
+	keysSubdir = "keys"
 
 	signingKeyName    = "ed25519.key"
 	signingPubKeyName = "ed25519.pub"
@@ -58,6 +58,15 @@ var (
 	ErrDifferentCluster    = errors.New("node already has membership credentials for a different cluster")
 	ErrCertExpired         = errors.New("delegation cert has expired")
 )
+
+// IdentityPath returns the conventional identity directory within a Pollen
+// state directory. Functions in this package operate on an identity directory
+// (where admin_ed25519.{key,pub}, root.pub, ed25519.{key,pub}, and the
+// delegation cert live); callers that do not use named contexts pass
+// IdentityPath(pollenDir) rather than building the path themselves.
+func IdentityPath(pollenDir string) string {
+	return filepath.Join(pollenDir, keysSubdir)
+}
 
 // FullCapabilities returns capabilities for root/admin certs.
 func FullCapabilities() *admissionv1.Capabilities {
@@ -157,8 +166,8 @@ func (c *NodeCredentials) SetCert(cert *admissionv1.DelegationCert) {
 	c.cert = cert
 }
 
-func EnrollNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, token *admissionv1.JoinToken, now time.Time) (*NodeCredentials, error) {
-	existing, err := LoadNodeCredentials(pollenDir)
+func EnrollNodeCredentials(identityDir string, nodePub ed25519.PublicKey, token *admissionv1.JoinToken, now time.Time) (*NodeCredentials, error) {
+	existing, err := LoadNodeCredentials(identityDir)
 	if err != nil && !errors.Is(err, ErrCredentialsNotFound) {
 		return nil, err
 	}
@@ -179,15 +188,15 @@ func EnrollNodeCredentials(pollenDir string, nodePub ed25519.PublicKey, token *a
 		}
 	}
 
-	if err := SaveNodeCredentials(pollenDir, creds); err != nil {
+	if err := SaveNodeCredentials(identityDir, creds); err != nil {
 		return nil, err
 	}
 
 	return creds, nil
 }
 
-func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now time.Time, membershipTTL, delegationTTL time.Duration) (*NodeCredentials, error) {
-	existing, err := LoadNodeCredentials(pollenDir)
+func EnsureLocalRootCredentials(identityDir string, nodePub ed25519.PublicKey, now time.Time, membershipTTL, delegationTTL time.Duration) (*NodeCredentials, error) {
+	existing, err := LoadNodeCredentials(identityDir)
 	if err != nil && !errors.Is(err, ErrCredentialsNotFound) {
 		return nil, err
 	}
@@ -197,7 +206,7 @@ func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now
 		return existing, nil
 	}
 
-	adminPriv, _, err := EnsureAdminKey(pollenDir)
+	adminPriv, _, err := EnsureAdminKey(identityDir)
 	if err != nil {
 		return nil, err
 	}
@@ -219,17 +228,16 @@ func EnsureLocalRootCredentials(pollenDir string, nodePub ed25519.PublicKey, now
 	}
 
 	creds := &NodeCredentials{rootPub: adminPub, cert: cert}
-	if err := SaveNodeCredentials(pollenDir, creds); err != nil {
+	if err := SaveNodeCredentials(identityDir, creds); err != nil {
 		return nil, err
 	}
 
 	return creds, nil
 }
 
-func LoadNodeCredentials(pollenDir string) (*NodeCredentials, error) {
-	dir := filepath.Join(pollenDir, keysDir)
-	rootPubPath := filepath.Join(dir, rootPubName)
-	certPath := filepath.Join(dir, delegationCertName)
+func LoadNodeCredentials(identityDir string) (*NodeCredentials, error) {
+	rootPubPath := filepath.Join(identityDir, rootPubName)
+	certPath := filepath.Join(identityDir, delegationCertName)
 
 	rootPub, err := os.ReadFile(rootPubPath)
 	if err != nil {
@@ -258,21 +266,20 @@ func LoadNodeCredentials(pollenDir string) (*NodeCredentials, error) {
 	return &NodeCredentials{rootPub: ed25519.PublicKey(rootPub), cert: cert}, nil
 }
 
-func SaveNodeCredentials(pollenDir string, creds *NodeCredentials) error {
-	dir := filepath.Join(pollenDir, keysDir)
-	if err := plnfs.EnsureDir(dir); err != nil {
+func SaveNodeCredentials(identityDir string, creds *NodeCredentials) error {
+	if err := plnfs.EnsureDir(identityDir); err != nil {
 		return err
 	}
-	if err := plnfs.WriteGroupReadable(filepath.Join(dir, rootPubName), []byte(creds.rootPub)); err != nil {
+	if err := plnfs.WriteGroupReadable(filepath.Join(identityDir, rootPubName), []byte(creds.rootPub)); err != nil {
 		return err
 	}
 
-	return saveDelegationCert(pollenDir, creds.cert)
+	return saveDelegationCert(identityDir, creds.cert)
 }
 
 // InstallDelegationCert decodes a base64-encoded delegation cert, verifies it
 // against the cluster root and subject, and persists it to disk.
-func InstallDelegationCert(pollenDir, encoded string, rootPub, subject ed25519.PublicKey, now time.Time) error {
+func InstallDelegationCert(identityDir, encoded string, rootPub, subject ed25519.PublicKey, now time.Time) error {
 	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
 	if err != nil {
 		return err
@@ -286,19 +293,19 @@ func InstallDelegationCert(pollenDir, encoded string, rootPub, subject ed25519.P
 		return err
 	}
 
-	return saveDelegationCert(pollenDir, cert)
+	return saveDelegationCert(identityDir, cert)
 }
 
-func saveDelegationCert(pollenDir string, cert *admissionv1.DelegationCert) error {
+func saveDelegationCert(identityDir string, cert *admissionv1.DelegationCert) error {
 	raw, err := cert.MarshalVT()
 	if err != nil {
 		return err
 	}
-	return plnfs.WriteGroupReadable(filepath.Join(pollenDir, keysDir, delegationCertName), raw)
+	return plnfs.WriteGroupReadable(filepath.Join(identityDir, delegationCertName), raw)
 }
 
-func EnsureAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
-	priv, pub, err := LoadAdminKey(pollenDir)
+func EnsureAdminKey(identityDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
+	priv, pub, err := LoadAdminKey(identityDir)
 	if err == nil {
 		return priv, pub, nil
 	}
@@ -306,7 +313,7 @@ func EnsureAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 		return nil, nil, err
 	}
 
-	return generateKeyPair(filepath.Join(pollenDir, keysDir), adminPrivKeyName, adminPubKeyName, pemTypeAdminPriv, pemTypeAdminPub)
+	return generateKeyPair(identityDir, adminPrivKeyName, adminPubKeyName, pemTypeAdminPriv, pemTypeAdminPub)
 }
 
 // generateKeyPair creates an ed25519 key pair, writes both as PEM files into
@@ -333,10 +340,10 @@ func generateKeyPair(dir, privName, pubName, privPEMType, pubPEMType string) (ed
 	return priv, pub, nil
 }
 
-func LoadAdminKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
+func LoadAdminKey(identityDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
 	return loadKeyPair(
-		filepath.Join(pollenDir, keysDir, adminPrivKeyName),
-		filepath.Join(pollenDir, keysDir, adminPubKeyName),
+		filepath.Join(identityDir, adminPrivKeyName),
+		filepath.Join(identityDir, adminPubKeyName),
 		pemTypeAdminPriv,
 		pemTypeAdminPub,
 	)
@@ -593,10 +600,9 @@ func DecodeJoinToken(s string) (*admissionv1.JoinToken, error) {
 	return token, nil
 }
 
-func EnsureIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
-	dir := filepath.Join(pollenDir, keysDir)
-	privPath := filepath.Join(dir, signingKeyName)
-	pubPath := filepath.Join(dir, signingPubKeyName)
+func EnsureIdentityKey(identityDir string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
+	privPath := filepath.Join(identityDir, signingKeyName)
+	pubPath := filepath.Join(identityDir, signingPubKeyName)
 
 	if priv, pub, err := loadKeyPair(privPath, pubPath, pemTypePriv, pemTypePub); err == nil {
 		return priv, pub, nil
@@ -604,12 +610,12 @@ func EnsureIdentityKey(pollenDir string) (ed25519.PrivateKey, ed25519.PublicKey,
 		return nil, nil, err
 	}
 
-	return generateKeyPair(dir, signingKeyName, signingPubKeyName, pemTypePriv, pemTypePub)
+	return generateKeyPair(identityDir, signingKeyName, signingPubKeyName, pemTypePriv, pemTypePub)
 }
 
 // ReadIdentityPub reads the public key from disk without requiring private key access.
-func ReadIdentityPub(pollenDir string) (ed25519.PublicKey, error) {
-	raw, err := os.ReadFile(filepath.Join(pollenDir, keysDir, signingPubKeyName))
+func ReadIdentityPub(identityDir string) (ed25519.PublicKey, error) {
+	raw, err := os.ReadFile(filepath.Join(identityDir, signingPubKeyName))
 	if err != nil {
 		return nil, err
 	}

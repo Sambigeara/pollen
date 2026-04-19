@@ -77,9 +77,10 @@ func allSequences() []commandSequence {
 func opInit(t *testing.T, dir string) {
 	t.Helper()
 	require.NoError(t, plnfs.EnsureDir(dir))
-	_, pub, err := auth.EnsureIdentityKey(dir)
+	identityDir := auth.IdentityPath(dir)
+	_, pub, err := auth.EnsureIdentityKey(identityDir)
 	require.NoError(t, err)
-	_, err = auth.EnsureLocalRootCredentials(dir, pub, time.Now(), 4*time.Hour, 30*24*time.Hour) //nolint:mnd
+	_, err = auth.EnsureLocalRootCredentials(identityDir, pub, time.Now(), 4*time.Hour, 30*24*time.Hour) //nolint:mnd
 	require.NoError(t, err)
 }
 
@@ -87,7 +88,7 @@ func opInit(t *testing.T, dir string) {
 func opID(t *testing.T, dir string) {
 	t.Helper()
 	require.NoError(t, plnfs.EnsureDir(dir))
-	_, _, err := auth.EnsureIdentityKey(dir)
+	_, _, err := auth.EnsureIdentityKey(auth.IdentityPath(dir))
 	require.NoError(t, err)
 }
 

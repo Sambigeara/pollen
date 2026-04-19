@@ -136,7 +136,7 @@ func (s *Service) applyNewCert(newCert *admissionv1.DelegationCert) error {
 	s.certs.UpdateMeshCert(tlsCert)
 	s.creds.SetCert(newCert)
 
-	if err := auth.SaveNodeCredentials(s.pollenDir, s.creds); err != nil {
+	if err := auth.SaveNodeCredentials(auth.IdentityPath(s.pollenDir), s.creds); err != nil {
 		s.log.Warnw("failed to persist credentials", "err", err)
 	}
 

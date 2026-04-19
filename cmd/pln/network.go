@@ -59,7 +59,7 @@ func newNetworkCmds() []*cobra.Command {
 		Use:   "status [nodes|services|seeds]",
 		Short: "Show network status",
 		Args:  cobra.RangeArgs(0, 1),
-		RunE:  withEnv(false, runStatus),
+		RunE:  withEnv(runStatus),
 	}
 	statusCmd.Flags().Bool("wide", false, "Show full peer IDs and extra details")
 	statusCmd.Flags().Bool("all", false, "Include offline nodes and services")
@@ -68,7 +68,7 @@ func newNetworkCmds() []*cobra.Command {
 		Use:   "serve <port> [name]",
 		Short: "Expose a local port to the mesh",
 		Args:  cobra.RangeArgs(1, 2), //nolint:mnd
-		RunE:  withEnv(false, runServe),
+		RunE:  withEnv(runServe),
 	}
 	serveCmd.Flags().Bool("udp", false, "Expose as a UDP service")
 
@@ -76,28 +76,28 @@ func newNetworkCmds() []*cobra.Command {
 		Use:   "unserve <port|name>",
 		Short: "Stop exposing a local service",
 		Args:  cobra.ExactArgs(1),
-		RunE:  withEnv(false, runUnserve),
+		RunE:  withEnv(runUnserve),
 	}
 
 	connectCmd := &cobra.Command{
 		Use:   "connect <service> [provider] [local-port]",
 		Short: "Tunnel a local port to a service",
 		Args:  cobra.RangeArgs(1, 3), //nolint:mnd
-		RunE:  withEnv(false, runConnect),
+		RunE:  withEnv(runConnect),
 	}
 
 	disconnectCmd := &cobra.Command{
 		Use:   "disconnect <service|local-port> [provider]",
 		Short: "Close a tunnel to a service",
 		Args:  cobra.RangeArgs(1, 2), //nolint:mnd
-		RunE:  withEnv(false, runDisconnect),
+		RunE:  withEnv(runDisconnect),
 	}
 
 	denyCmd := &cobra.Command{
 		Use:   "deny <peer-id>",
 		Short: "Deny a peer's membership",
 		Args:  cobra.ExactArgs(1),
-		RunE:  withEnv(false, runDeny),
+		RunE:  withEnv(runDeny),
 	}
 
 	return []*cobra.Command{statusCmd, serveCmd, unserveCmd, connectCmd, disconnectCmd, denyCmd}
@@ -127,9 +127,11 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 	st := resp.Msg
 	metricsResp, metricsErr := env.client.GetMetrics(cmd.Context(), connect.NewRequest(&controlv1.GetMetricsRequest{}))
+	var health *controlv1.GetMetricsResponse
 	if metricsErr == nil {
-		renderHealthLine(cmd.OutOrStdout(), metricsResp.Msg)
+		health = metricsResp.Msg
 	}
+	renderStatusHeader(cmd.OutOrStdout(), health, statusContextLabel(env.dir))
 
 	var sections []statusSection
 	switch mode {
@@ -571,10 +573,28 @@ func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 	return sec
 }
 
+// Terminal 256-colour code for a muted grey — used for secondary text
+// (context label, table headers).
+const mutedFG = lipgloss.Color("245")
+
+func newStatusTable(headers ...string) *table.Table {
+	headerStyle := lipgloss.NewStyle().Foreground(mutedFG).PaddingRight(tablePadding)
+	dataStyle := lipgloss.NewStyle().PaddingRight(tablePadding)
+	return table.New().
+		Border(lipgloss.HiddenBorder()).
+		BorderTop(false).BorderBottom(false).BorderLeft(false).BorderRight(false).
+		BorderHeader(false).BorderColumn(false).
+		Headers(headers...).
+		StyleFunc(func(row, _ int) lipgloss.Style {
+			if row == table.HeaderRow {
+				return headerStyle
+			}
+			return dataStyle
+		})
+}
+
 func renderStatusSections(w io.Writer, sections []statusSection) {
 	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4"))
-	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).PaddingRight(tablePadding)
-	dataStyle := lipgloss.NewStyle().PaddingRight(tablePadding)
 
 	for i, sec := range sections {
 		if i > 0 {
@@ -582,23 +602,10 @@ func renderStatusSections(w io.Writer, sections []statusSection) {
 		}
 		fmt.Fprintln(w, sectionStyle.Render(sec.title))
 
-		t := table.New().
-			Border(lipgloss.HiddenBorder()).
-			BorderTop(false).BorderBottom(false).BorderLeft(false).BorderRight(false).
-			BorderHeader(false).BorderColumn(false).
-			Headers(sec.headers...)
-
+		t := newStatusTable(sec.headers...)
 		for _, dataRow := range sec.rows {
 			t.Row(dataRow...)
 		}
-
-		t.StyleFunc(func(row, _ int) lipgloss.Style {
-			if row == table.HeaderRow {
-				return headerStyle
-			}
-			return dataStyle
-		})
-
 		fmt.Fprintln(w, t)
 
 		if sec.footer != "" {
@@ -609,7 +616,7 @@ func renderStatusSections(w io.Writer, sections []statusSection) {
 	fmt.Fprintln(w)
 }
 
-func renderHealthLine(w io.Writer, m *controlv1.GetMetricsResponse) {
+func renderStatusHeader(w io.Writer, m *controlv1.GetMetricsResponse, contextLabel string) {
 	var label, color string
 	switch m.GetHealth() {
 	case controlv1.HealthStatus_HEALTH_STATUS_HEALTHY:
@@ -619,10 +626,41 @@ func renderHealthLine(w io.Writer, m *controlv1.GetMetricsResponse) {
 	case controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY:
 		label, color = "UNHEALTHY", "1"
 	case controlv1.HealthStatus_HEALTH_STATUS_UNSPECIFIED:
-		return
+		// no health line
 	}
-	fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(label))
-	fmt.Fprintln(w)
+
+	wrote := false
+	if label != "" {
+		fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(label))
+		wrote = true
+	}
+	if contextLabel != "" {
+		fmt.Fprintln(w, lipgloss.NewStyle().Foreground(mutedFG).Render("context: "+contextLabel))
+		wrote = true
+	}
+	if wrote {
+		fmt.Fprintln(w)
+	}
+}
+
+// e.g. "prod (root@prod.example)", "dev (/tmp/pln-dev)", or bare "default".
+func statusContextLabel(defaultDir string) string {
+	name := resolveContextName()
+	if name == "" {
+		return ""
+	}
+	dir, host, err := resolveContextBindings(name, defaultDir)
+	if err != nil {
+		return name
+	}
+	switch {
+	case host != "":
+		return name + " (" + host + ")"
+	case name != defaultContextName:
+		return name + " (" + dir + ")"
+	default:
+		return name
+	}
 }
 
 func renderMetricsDetails(w io.Writer, m *controlv1.GetMetricsResponse) {

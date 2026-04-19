@@ -50,28 +50,58 @@ type cliEnv struct {
 	dir    string
 }
 
+type envConfig struct {
+	wantsRoot     bool
+	localOnly     bool
+	systemService bool
+}
+
+type envOption func(*envConfig)
+
+func wantsRoot() envOption     { return func(c *envConfig) { c.wantsRoot = true } }
+func localOnly() envOption     { return func(c *envConfig) { c.localOnly = true } }
+func systemService() envOption { return func(c *envConfig) { c.systemService = true } }
+
 // withEnv wraps a command function, handling directory setup, config loading, and gRPC client init.
-func withEnv(needsRoot bool, fn func(*cobra.Command, []string, *cliEnv) error) func(*cobra.Command, []string) error {
+func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption) func(*cobra.Command, []string) error {
+	cfg := envConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	return func(cmd *cobra.Command, args []string) error {
-		dir, _ := cmd.Flags().GetString("dir")
-		plnfs.SetSystemMode(dir == plnfs.SystemDir || strings.HasPrefix(dir, plnfs.SystemDir+"/"))
-
-		if needsRoot {
-			escalateToRoot()
+		defaultDir, _ := cmd.Flags().GetString("dir")
+		dir, host, err := resolveTarget(cmd, defaultDir)
+		if err != nil {
+			return err
 		}
 
-		if err := plnfs.EnsureDir(dir); err != nil {
-			return fmt.Errorf("ensure pln dir: %w", err)
+		if cfg.localOnly && host != "" {
+			return errRemoteUnsupported
+		}
+		if cfg.systemService {
+			if err := ensureDefaultContext(); err != nil {
+				return err
+			}
 		}
 
-		cfg, _ := config.Load(dir)
-		if cfg == nil {
-			cfg = &config.Config{}
+		if host == "" {
+			plnfs.SetSystemMode(dir == plnfs.SystemDir || strings.HasPrefix(dir, plnfs.SystemDir+"/"))
+			if cfg.wantsRoot {
+				escalateToRoot()
+			}
+			if err := plnfs.EnsureDir(dir); err != nil {
+				return fmt.Errorf("ensure pln dir: %w", err)
+			}
+		}
+
+		cliCfg, _ := config.Load(dir)
+		if cliCfg == nil {
+			cliCfg = &config.Config{}
 		}
 
 		env := &cliEnv{
 			dir: dir,
-			cfg: cfg,
+			cfg: cliCfg,
 			// No http.Client.Timeout: per-command deadlines own the budget via
 			// context.WithTimeout on cmd.Context(). A global wall-clock would
 			// otherwise mask real errors and truncate long-lived calls before
@@ -80,9 +110,7 @@ func withEnv(needsRoot bool, fn func(*cobra.Command, []string, *cliEnv) error) f
 				&http.Client{
 					Transport: &http2.Transport{
 						AllowHTTP: true,
-						DialTLS: func(_, _ string, _ *tls.Config) (net.Conn, error) {
-							return (&net.Dialer{}).DialContext(context.Background(), "unix", filepath.Join(dir, socketName))
-						},
+						DialTLS:   dialTLSFunc(dir, host),
 					},
 				},
 				"http://unix",
@@ -91,6 +119,17 @@ func withEnv(needsRoot bool, fn func(*cobra.Command, []string, *cliEnv) error) f
 		}
 
 		return fn(cmd, args, env)
+	}
+}
+
+func dialTLSFunc(dir, target string) func(string, string, *tls.Config) (net.Conn, error) {
+	if target != "" {
+		return func(_, _ string, _ *tls.Config) (net.Conn, error) {
+			return sshBridgeDial(target)
+		}
+	}
+	return func(_, _ string, _ *tls.Config) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(context.Background(), "unix", filepath.Join(dir, socketName))
 	}
 }
 
@@ -103,8 +142,9 @@ func main() {
 	}
 
 	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted (env: PLN_DIR)")
+	rootCmd.PersistentFlags().StringP("host", "H", "", "Target daemon over SSH, e.g. user@host (env: PLN_HOST)")
 
-	rootCmd.AddCommand(newVersionCmd(), newIDCmd())
+	rootCmd.AddCommand(newVersionCmd(), newIDCmd(), newBridgeCmd(), newContextCmds())
 	rootCmd.AddCommand(newDaemonCmds()...)
 	rootCmd.AddCommand(newClusterCmds()...)
 	rootCmd.AddCommand(newNetworkCmds()...)

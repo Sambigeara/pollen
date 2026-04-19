@@ -37,7 +37,7 @@ func newDaemonCmds() []*cobra.Command {
 	upCmd := &cobra.Command{
 		Use:   "up",
 		Short: "Start a Pollen node (foreground by default, -d for background service)",
-		RunE:  withEnv(false, runUp),
+		RunE:  withEnv(runUp, localOnly()),
 	}
 	upCmd.Flags().Int("port", config.DefaultBootstrapPort, "Listening port")
 	upCmd.Flags().IPSlice("ips", []net.IP{}, "Advertised IPs")
@@ -52,7 +52,7 @@ func newDaemonCmds() []*cobra.Command {
 		Use:   "upgrade",
 		Short: "Upgrade pln to the latest version",
 		Args:  cobra.NoArgs,
-		RunE:  runUpgrade,
+		RunE:  withEnv(runUpgrade, localOnly()),
 	}
 	upgradeCmd.Flags().Bool("restart", false, "Restart the background service after upgrading")
 
@@ -60,7 +60,7 @@ func newDaemonCmds() []*cobra.Command {
 		Use:   "logs",
 		Short: "Show daemon logs",
 		Args:  cobra.NoArgs,
-		RunE:  runLogs,
+		RunE:  withEnv(runLogs, localOnly(), systemService()),
 	}
 	logsCmd.Flags().BoolP("follow", "f", false, "Stream logs in real time")
 	logsCmd.Flags().IntP("lines", "n", 50, "Number of lines to show") //nolint:mnd
@@ -69,19 +69,25 @@ func newDaemonCmds() []*cobra.Command {
 		upCmd,
 		upgradeCmd,
 		logsCmd,
-		{Use: "down", Short: "Stop the background service", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return servicectl("stop", cmd) }},
-		{Use: "restart", Short: "Restart the background service", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return servicectl("restart", cmd) }},
-		{Use: "provision", Short: "Create the pln system user, group, and state directories", RunE: runProvision},
+		{Use: "down", Short: "Stop the background service", Args: cobra.NoArgs, RunE: withEnv(runDown, localOnly(), systemService())},
+		{Use: "restart", Short: "Restart the background service", Args: cobra.NoArgs, RunE: withEnv(runRestart, localOnly(), systemService())},
+		{Use: "provision", Short: "Create the pln system user, group, and state directories", RunE: withEnv(runProvision, localOnly())},
 	}
 }
 
 func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	detach, _ := cmd.Flags().GetBool("detach")
+	if detach {
+		// Detach hands off to launchd/systemd, which is single-instance.
+		if err := ensureDefaultContext(); err != nil {
+			return err
+		}
+	}
 	public, _ := cmd.Flags().GetBool("public")
 
 	cfgDirty := false
 	if public {
-		if _, _, err := auth.LoadAdminKey(env.dir); err != nil {
+		if _, _, err := auth.LoadAdminKey(auth.IdentityPath(env.dir)); err != nil {
 			return errors.New("--public requires admin keys; run `pln init` to create a root cluster")
 		}
 		env.cfg.Public = true
@@ -121,18 +127,19 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopFunc()
 
-	privKey, pubKey, err := auth.EnsureIdentityKey(env.dir)
+	identityDir := auth.IdentityPath(env.dir)
+	privKey, pubKey, err := auth.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return fmt.Errorf("failed to load signing keys: %w", err)
 	}
 
-	creds, err := auth.LoadNodeCredentials(env.dir)
+	creds, err := auth.LoadNodeCredentials(identityDir)
 	if err != nil {
 		if !errors.Is(err, auth.ErrCredentialsNotFound) {
 			return err
 		}
 		logger.Info("node is not initialized; auto-initializing root cluster")
-		creds, err = auth.EnsureLocalRootCredentials(env.dir, pubKey, time.Now(), config.DefaultMembershipTTL, config.DefaultDelegationTTL)
+		creds, err = auth.EnsureLocalRootCredentials(identityDir, pubKey, time.Now(), config.DefaultMembershipTTL, config.DefaultDelegationTTL)
 		if err != nil {
 			return fmt.Errorf("auto-init failed: %w", err)
 		}
@@ -140,7 +147,7 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		logger.Warnw("delegation certificate has expired — starting in degraded mode, will attempt renewal", "expired_at", auth.CertExpiresAt(creds.Cert()))
 	}
 
-	signer, err := auth.NewDelegationSigner(env.dir, privKey, config.DefaultDelegationTTL)
+	signer, err := auth.NewDelegationSigner(identityDir, privKey, config.DefaultDelegationTTL)
 	if err == nil {
 		creds.SetDelegationKey(signer)
 	}
@@ -236,7 +243,7 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 	return nil
 }
 
-func runProvision(cmd *cobra.Command, _ []string) error {
+func runProvision(cmd *cobra.Command, _ []string, _ *cliEnv) error {
 	if runtime.GOOS != osLinux {
 		fmt.Fprintln(cmd.OutOrStdout(), "provisioning is not required on this platform")
 		return nil
@@ -266,7 +273,15 @@ func runProvision(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runLogs(cmd *cobra.Command, _ []string) error {
+func runDown(cmd *cobra.Command, _ []string, _ *cliEnv) error {
+	return servicectl("stop", cmd)
+}
+
+func runRestart(cmd *cobra.Command, _ []string, _ *cliEnv) error {
+	return servicectl("restart", cmd)
+}
+
+func runLogs(cmd *cobra.Command, _ []string, _ *cliEnv) error {
 	follow, _ := cmd.Flags().GetBool("follow")
 	lines, _ := cmd.Flags().GetInt("lines")
 
@@ -300,7 +315,7 @@ func runLogs(cmd *cobra.Command, _ []string) error {
 	return c.Run()
 }
 
-func runUpgrade(cmd *cobra.Command, _ []string) error {
+func runUpgrade(cmd *cobra.Command, _ []string, _ *cliEnv) error {
 	var err error
 	switch runtime.GOOS {
 	case osDarwin:

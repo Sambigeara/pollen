@@ -2,7 +2,7 @@
   <img src="assets/mascot.svg" alt="Pollen" width="128"/>
 </p>
 
-# Pollen: a zero-trust, peer-to-peer, local-first runtime for services and WASM workloads, in a single static binary
+# Pollen: a zero-trust, peer-to-peer, local-first mesh runtime for services and WASM workloads, with emergent placement, in a single static binary
 
 <p align="center">
   <a href="https://github.com/sambigeara/pollen/actions/workflows/ci.yml"><img src="https://github.com/sambigeara/pollen/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -14,32 +14,32 @@
 
 _Pollen is in early development — expect breaking changes and sharp edges._
 
-## Pollen is…
+## Highlights
 
 - **Ergonomic.** Opinionated defaults, opt-in configuration.
-- **CRDT-native, local-first.** A converging document on every node.
-  Changes gossip; conflicts resolve.
-- **Self-organising.** Topology, placement, and routing emerge from
-  local state. No scheduler, no leader, no coordinator.
-- **Partition-tolerant.** Both sides of a split keep running. State
+- **CRDT-native.** A converging document on every node; changes
+  gossip, conflicts resolve.
+- **Self-organising.** No scheduler, no leader, no coordinator.
+  Topology, placement, and routing emerge from local state; calls go
+  to the nearest, least-loaded replica, and replicas migrate toward
+  demand.
+- **Partition-tolerant.** Both sides of a split keep running; state
   converges on rejoin; survivors rehost workloads from failed nodes.
-- **Built on QUIC.** Multiplexed streams, UDP-based for NAT traversal.
-  One connection per peer carries gossip, services, and seeds.
-- **Mesh services.** `pln serve 8080 api` here, `pln connect api` there.
-  TCP and UDP.
-- **WASM seeds.** Deploy a `.wasm` with `pln seed`; artifacts distribute
-  peer-to-peer by hash.
-- **Seeds compose.** WASM modules call each other with one host
-  function. Plugins in [any Extism-compatible
-  language](https://extism.org/docs/quickstart/plugin-quickstart).
-- **Organic load balancing.** Calls go to the nearest, least-loaded
-  replica; replicas migrate toward demand.
-- **Zero-trust.** mTLS on every link. Admission is cryptographic, not
-  shared secrets or firewall rules.
-- **Edge-ready.** Pure Go, no CGO, one static binary. Raspberry Pi to
-  cloud host. Call your Pi like a supercomputer.
+- **Edge-ready.** Pure Go, no CGO. Raspberry Pi to cloud host.
+- **Mesh services.** `pln serve 8080 api` here, `pln connect api`
+  there. TCP and UDP, end-to-end mTLS.
+- **WASM seeds.** Deploy with `pln seed`; artifacts distribute
+  peer-to-peer by hash. Modules compose via one Extism host call,
+  authored in [a variety of languages](https://extism.org/docs/quickstart/plugin-quickstart).
+- **QUIC transport.** One multiplexed, encrypted, UDP-based
+  connection per peer carries gossip, services, and seeds. NAT
+  traversal built in.
+- **Cryptographic admission.** No shared secrets, no firewall rules —
+  every link is mTLS.
 
-## Install
+## Quickstart
+
+### Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash
@@ -49,7 +49,7 @@ A thin wrapper around your platform's package manager (Homebrew on
 macOS, apt or yum on Linux), so upgrades, uninstalls, and service files
 are managed natively.
 
-## Two commands to a cluster
+### Two commands to a cluster
 
 ```bash
 pln init                                # creates a new cluster rooted here
@@ -62,7 +62,7 @@ NAT traversal without configuration. Pass `--admin` to delegate admin
 authority to the new node, so your root machine doesn't need to stay
 online.
 
-## Add more nodes
+### Add more nodes
 
 **With SSH.** From any admin node:
 
@@ -90,7 +90,7 @@ relay, and its address is woven into new invites automatically, so a
 joiner behind NAT has a route in without you plumbing anything. Ship the
 token over any channel; it's signed and valid until its TTL expires.
 
-## Expose a service
+### Expose a service
 
 ```bash
 # Machine A:
@@ -105,7 +105,7 @@ TCP and UDP. Connections punch directly if both peers can reach each other,
 and relay over the shortest mesh path otherwise. No ingress controller, no
 DNS, no port forwarding.
 
-## Run a seed
+### Run a seed
 
 ```bash
 pln seed ./hello.wasm

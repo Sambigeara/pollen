@@ -44,13 +44,20 @@ const (
 	relayReadyTimeout = 20 * time.Second
 )
 
-var sshBaseArgs = []string{"-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR"}
+var sshBaseArgs = []string{
+	"-o", "StrictHostKeyChecking=no",
+	"-o", "UserKnownHostsFile=/dev/null",
+	"-o", "LogLevel=ERROR",
+	"-o", "ControlMaster=auto",
+	"-o", "ControlPath=~/.ssh/pln-cm-%r@%h:%p",
+	"-o", "ControlPersist=60s",
+}
 
 func newIDCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "id",
 		Short: "Show local node identity public key",
-		RunE:  withEnv(false, runID),
+		RunE:  withEnv(runID, localOnly()),
 	}
 }
 
@@ -64,7 +71,7 @@ func newBootstrapCmd() *cobra.Command {
 		Use:   "ssh [name=]<target> [[name=]target...|-]",
 		Short: "Bootstrap one or more nodes over SSH",
 		Args:  cobra.MinimumNArgs(1),
-		RunE:  withEnv(false, runBootstrapSSH),
+		RunE:  withEnv(runBootstrapSSH, localOnly()),
 	}
 	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
 	sshCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the relay peer")
@@ -75,35 +82,35 @@ func newBootstrapCmd() *cobra.Command {
 }
 
 func newClusterCmds() []*cobra.Command {
-	purgeCmd := &cobra.Command{Use: "purge", Short: "Delete local cluster state", RunE: withEnv(true, runPurge)}
+	purgeCmd := &cobra.Command{Use: "purge", Short: "Delete local cluster state", RunE: withEnv(runPurge, wantsRoot(), localOnly())}
 	purgeCmd.Flags().Bool("all", false, "Also delete local node identity keys")
 	purgeCmd.Flags().Bool("yes", false, "Skip interactive confirmation")
 
-	joinCmd := &cobra.Command{Use: "join <token>", Short: "Join a cluster using a token", Args: cobra.ExactArgs(1), RunE: withEnv(true, runJoin)}
+	joinCmd := &cobra.Command{Use: "join <token>", Short: "Join a cluster using a token", Args: cobra.ExactArgs(1), RunE: withEnv(runJoin, wantsRoot(), localOnly())}
 	joinCmd.Flags().Bool("no-up", false, "Enroll credentials without starting the daemon")
 	joinCmd.Flags().Bool("public", false, "Mark this node as publicly accessible (relay)")
 
-	inviteCmd := &cobra.Command{Use: "invite [subject-pub]", Short: "Generate an invite token", Args: cobra.RangeArgs(0, 1), RunE: withEnv(false, runInvite)}
+	inviteCmd := &cobra.Command{Use: "invite [subject-pub]", Short: "Generate an invite token", Args: cobra.RangeArgs(0, 1), RunE: withEnv(runInvite)}
 	inviteCmd.Flags().String("subject", "", "Optional hex node public key to bind invite")
 	inviteCmd.Flags().Duration("ttl", defaultInviteTTL, "Invite token validity duration")
 	inviteCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the invited peer")
 	inviteCmd.Flags().StringArray("attr", nil, "Cert attributes: key=value, JSON, or - for stdin")
 
 	adminCmd := &cobra.Command{Use: "admin", Short: "Manage admin keys"}
-	adminCmd.AddCommand(&cobra.Command{Use: "keygen", Short: "Generate the local admin key", RunE: withEnv(true, runAdminKeygen), Hidden: true})
-	adminCmd.AddCommand(&cobra.Command{Use: "set-cert <admin-cert-b64>", Short: "Install a delegated admin certificate", Args: cobra.ExactArgs(1), RunE: withEnv(true, runAdminSetCert), Hidden: true})
+	adminCmd.AddCommand(&cobra.Command{Use: "keygen", Short: "Generate the local admin key", RunE: withEnv(runAdminKeygen, wantsRoot(), localOnly()), Hidden: true})
+	adminCmd.AddCommand(&cobra.Command{Use: "set-cert <admin-cert-b64>", Short: "Install a delegated admin certificate", Args: cobra.ExactArgs(1), RunE: withEnv(runAdminSetCert, wantsRoot(), localOnly()), Hidden: true})
 
 	grantCmd := &cobra.Command{
 		Use:   "grant <peer-id>",
 		Short: "Grant a certificate to a connected peer",
 		Args:  cobra.ExactArgs(1),
-		RunE:  withEnv(false, runGrant),
+		RunE:  withEnv(runGrant),
 	}
 	grantCmd.Flags().Bool("admin", false, "Issue with full admin capabilities")
 	grantCmd.Flags().StringArray("attr", nil, "Cert attributes: key=value, JSON, or - for stdin")
 
 	return []*cobra.Command{
-		{Use: "init", Short: "Initialize local root cluster state", RunE: withEnv(true, runInit)},
+		{Use: "init", Short: "Initialize local root cluster state", RunE: withEnv(runInit, wantsRoot(), localOnly())},
 		purgeCmd,
 		joinCmd,
 		inviteCmd,
@@ -114,12 +121,13 @@ func newClusterCmds() []*cobra.Command {
 }
 
 func runID(cmd *cobra.Command, _ []string, env *cliEnv) error {
-	pub, err := auth.ReadIdentityPub(env.dir)
+	identityDir := auth.IdentityPath(env.dir)
+	pub, err := auth.ReadIdentityPub(identityDir)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if _, pub, err = auth.EnsureIdentityKey(env.dir); err != nil {
+		if _, pub, err = auth.EnsureIdentityKey(identityDir); err != nil {
 			return err
 		}
 	}
@@ -132,14 +140,15 @@ func runInit(cmd *cobra.Command, _ []string, env *cliEnv) error {
 		return errors.New("local node is running; run `pln down` before initializing")
 	}
 
-	_, pub, err := auth.EnsureIdentityKey(env.dir)
+	identityDir := auth.IdentityPath(env.dir)
+	_, pub, err := auth.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return err
 	}
 
-	existing, err := auth.LoadNodeCredentials(env.dir)
+	existing, err := auth.LoadNodeCredentials(identityDir)
 	if err == nil {
-		_, adminPub, adminErr := auth.LoadAdminKey(env.dir)
+		_, adminPub, adminErr := auth.LoadAdminKey(identityDir)
 		if adminErr == nil && slices.Equal(adminPub, existing.RootPub()) {
 			fmt.Fprintf(cmd.OutOrStdout(), "already initialized as root cluster\nroot_pub: %s\ncluster_id: %x\n", hex.EncodeToString(adminPub), sha256.Sum256(existing.RootPub()))
 			return nil
@@ -147,12 +156,12 @@ func runInit(cmd *cobra.Command, _ []string, env *cliEnv) error {
 		return errors.New("node is already enrolled in a cluster; run `pln purge` before initializing a new root cluster")
 	}
 
-	creds, err := auth.EnsureLocalRootCredentials(env.dir, pub, time.Now(), config.DefaultMembershipTTL, config.DefaultDelegationTTL)
+	creds, err := auth.EnsureLocalRootCredentials(identityDir, pub, time.Now(), config.DefaultMembershipTTL, config.DefaultDelegationTTL)
 	if err != nil {
 		return err
 	}
 
-	_, adminPub, _ := auth.LoadAdminKey(env.dir)
+	_, adminPub, _ := auth.LoadAdminKey(identityDir)
 	fmt.Fprintf(cmd.OutOrStdout(), "initialized root cluster\nroot_pub: %s\ncluster_id: %x\n", hex.EncodeToString(adminPub), sha256.Sum256(creds.RootPub()))
 	return nil
 }
@@ -191,7 +200,8 @@ func runPurge(cmd *cobra.Command, _ []string, env *cliEnv) error {
 }
 
 func runJoin(cmd *cobra.Command, args []string, env *cliEnv) error {
-	privKey, pubKey, err := auth.EnsureIdentityKey(env.dir)
+	identityDir := auth.IdentityPath(env.dir)
+	privKey, pubKey, err := auth.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return err
 	}
@@ -201,10 +211,10 @@ func runJoin(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return fmt.Errorf("resolve token: %w", err)
 	}
 
-	if _, credErr := auth.EnrollNodeCredentials(env.dir, pubKey, tkn, time.Now()); credErr != nil {
+	if _, credErr := auth.EnrollNodeCredentials(identityDir, pubKey, tkn, time.Now()); credErr != nil {
 		if errors.Is(credErr, auth.ErrDifferentCluster) {
 			_ = runPurge(cmd, nil, env) // Clear old cluster state
-			_, credErr = auth.EnrollNodeCredentials(env.dir, pubKey, tkn, time.Now())
+			_, credErr = auth.EnrollNodeCredentials(identityDir, pubKey, tkn, time.Now())
 		}
 		if credErr != nil {
 			return fmt.Errorf("enroll credentials: %w", credErr)
@@ -257,12 +267,13 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 	ttl, _ := cmd.Flags().GetDuration("ttl")
 	expireAfter, _ := cmd.Flags().GetDuration("expire-after")
 
-	nodePriv, _, err := auth.EnsureIdentityKey(env.dir)
+	identityDir := auth.IdentityPath(env.dir)
+	nodePriv, _, err := auth.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return err
 	}
 
-	signer, err := auth.NewDelegationSigner(env.dir, nodePriv, config.DefaultDelegationTTL)
+	signer, err := auth.NewDelegationSigner(identityDir, nodePriv, config.DefaultDelegationTTL)
 	if err != nil {
 		return errors.New("this node cannot issue invites; only delegated admins can sign invite tokens")
 	}
@@ -292,7 +303,7 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 }
 
 func runAdminKeygen(cmd *cobra.Command, _ []string, env *cliEnv) error {
-	_, pub, err := auth.EnsureAdminKey(env.dir)
+	_, pub, err := auth.EnsureAdminKey(auth.IdentityPath(env.dir))
 	if err != nil {
 		return err
 	}
@@ -301,15 +312,16 @@ func runAdminKeygen(cmd *cobra.Command, _ []string, env *cliEnv) error {
 }
 
 func runAdminSetCert(cmd *cobra.Command, args []string, env *cliEnv) error {
-	_, nodePub, err := auth.EnsureIdentityKey(env.dir)
+	identityDir := auth.IdentityPath(env.dir)
+	_, nodePub, err := auth.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return err
 	}
-	creds, err := auth.LoadNodeCredentials(env.dir)
+	creds, err := auth.LoadNodeCredentials(identityDir)
 	if err != nil {
 		return errors.New("node credentials not initialized; run `pln init` or `pln join <token>` first")
 	}
-	if err := auth.InstallDelegationCert(env.dir, args[0], creds.RootPub(), nodePub, time.Now()); err != nil {
+	if err := auth.InstallDelegationCert(identityDir, args[0], creds.RootPub(), nodePub, time.Now()); err != nil {
 		return err
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "delegated admin certificate installed")
@@ -338,11 +350,12 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	expireAfter, _ := cmd.Flags().GetDuration("expire-after")
 	delegateAdmin, _ := cmd.Flags().GetBool("admin")
 
-	nodePriv, localPub, err := auth.EnsureIdentityKey(env.dir)
+	identityDir := auth.IdentityPath(env.dir)
+	nodePriv, localPub, err := auth.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return err
 	}
-	signer, err := auth.NewDelegationSigner(env.dir, nodePriv, config.DefaultDelegationTTL)
+	signer, err := auth.NewDelegationSigner(identityDir, nodePriv, config.DefaultDelegationTTL)
 	if err != nil {
 		return errors.New("this node cannot issue tokens; only delegated admins can sign enrollment tokens")
 	}
@@ -510,11 +523,12 @@ func bootstrapRelayOverSSH(ctx context.Context, env *cliEnv, sshTarget, seedToke
 }
 
 func provisionRelayAdminDelegation(ctx context.Context, env *cliEnv, sshTarget string, relayPub ed25519.PublicKey) error {
-	nodePriv, _, err := auth.EnsureIdentityKey(env.dir)
+	identityDir := auth.IdentityPath(env.dir)
+	nodePriv, _, err := auth.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return err
 	}
-	signer, err := auth.NewDelegationSigner(env.dir, nodePriv, config.DefaultDelegationTTL)
+	signer, err := auth.NewDelegationSigner(identityDir, nodePriv, config.DefaultDelegationTTL)
 	if err != nil || !signer.IsRoot() {
 		return errors.New("only root admin can delegate relay admin certs")
 	}

@@ -24,7 +24,7 @@ import (
 )
 
 func newWorkloadCmds() []*cobra.Command {
-	seedCmd := &cobra.Command{Use: "seed <file.wasm>", Short: "Deploy a WASM workload", Args: cobra.ExactArgs(1), RunE: withEnv(false, runSeed)}
+	seedCmd := &cobra.Command{Use: "seed <file.wasm>", Short: "Deploy a WASM workload", Args: cobra.ExactArgs(1), RunE: withEnv(runSeed)}
 	seedCmd.Flags().SetNormalizeFunc(func(_ *pflag.FlagSet, name string) pflag.NormalizedName {
 		if name == "mem" {
 			return "memory"
@@ -38,9 +38,9 @@ func newWorkloadCmds() []*cobra.Command {
 	seedCmd.Flags().Uint32("timeout-ms", 0, "per-invocation timeout in ms")
 	seedCmd.Flags().Uint32("latency-slo-ms", 0, "caller-perspective latency SLO in ms; drives autoscale via burn rate")
 
-	unseedCmd := &cobra.Command{Use: "unseed <name-or-hash>", Short: "Stop a workload", Args: cobra.ExactArgs(1), RunE: withEnv(false, runUnseed)}
+	unseedCmd := &cobra.Command{Use: "unseed <name-or-hash>", Short: "Stop a workload", Args: cobra.ExactArgs(1), RunE: withEnv(runUnseed)}
 
-	callCmd := &cobra.Command{Use: "call <name-or-hash> <function> [input]", Short: "Invoke a WASM function", Args: cobra.RangeArgs(2, 3), RunE: withEnv(false, runCall)} //nolint:mnd
+	callCmd := &cobra.Command{Use: "call <name-or-hash> <function> [input]", Short: "Invoke a WASM function", Args: cobra.RangeArgs(2, 3), RunE: withEnv(runCall)} //nolint:mnd
 	callCmd.Flags().Duration("timeout", callWorkloadTimeout, "overall deadline for the invocation")
 	callCmd.Flags().Int("retries", defaultCallRetries, "retry budget for transient overload/unavailability")
 

@@ -24,16 +24,16 @@ type DelegationSigner struct {
 	root   bool
 }
 
-func NewDelegationSigner(pollenDir string, nodePriv ed25519.PrivateKey, delegationTTL time.Duration) (*DelegationSigner, error) {
+func NewDelegationSigner(identityDir string, nodePriv ed25519.PrivateKey, delegationTTL time.Duration) (*DelegationSigner, error) {
 	now := time.Now()
 
 	// Root admin: local admin key matches the persisted cluster root.
-	adminPriv, adminPub, err := LoadAdminKey(pollenDir)
+	adminPriv, adminPub, err := LoadAdminKey(identityDir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	if adminPriv != nil {
-		rootPub, err := os.ReadFile(filepath.Join(pollenDir, keysDir, rootPubName))
+		rootPub, err := os.ReadFile(filepath.Join(identityDir, rootPubName))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
@@ -52,7 +52,7 @@ func NewDelegationSigner(pollenDir string, nodePriv ed25519.PrivateKey, delegati
 	}
 
 	// Delegated admin: node cert carries CanDelegate.
-	creds, err := LoadNodeCredentials(pollenDir)
+	creds, err := LoadNodeCredentials(identityDir)
 	if err != nil {
 		return nil, err
 	}
