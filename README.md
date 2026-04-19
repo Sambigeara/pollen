@@ -1,93 +1,124 @@
-# Pollen
+<p align="center">
+  <img src="assets/mascot.svg" alt="Pollen" width="128"/>
+</p>
 
-> **Work in progress.** This project is in early development — expect breaking
-> changes, missing features, and rough edges. APIs and on-disk formats are not
-> yet stable.
+# Pollen: a zero-trust, P2P, local-first distributed system for services and WASM workloads, in a single static binary
 
-Pollen is a zero-trust, ergonomic peer-to-peer mesh runtime for workloads and service
-exposure.
+## Pollen is…
 
-This README is intentionally short and focused on day-to-day commands.
+- **Ergonomic.** Opinionated defaults, opt-in configuration. No control
+  plane, no registry.
+- **CRDT-native, local-first.** A converging document on every node.
+  Changes gossip; conflicts resolve.
+- **Self-organising.** Topology, placement, and routing emerge from
+  local state. No scheduler, no leader, no coordinator.
+- **Partition-tolerant.** Both sides of a split keep running. State
+  converges on rejoin; survivors rehost workloads from failed nodes.
+- **Built on QUIC.** Multiplexed streams, encrypted end-to-end,
+  UDP-based for NAT traversal. One connection per peer carries gossip,
+  services, and seeds.
+- **Mesh services.** `pln serve 8080 api` here, `pln connect api` there.
+  TCP and UDP, end-to-end mTLS.
+- **WASM seeds.** Deploy a `.wasm` with `pln seed`; artifacts distribute
+  peer-to-peer by hash.
+- **Seeds compose.** WASM modules call each other with one host
+  function. Plugins in [a variety of
+  languages](https://extism.org/docs/quickstart/plugin-quickstart) via
+  the Extism PDK.
+- **Organic load balancing.** Calls go to the nearest, least-loaded
+  replica; replicas migrate toward demand. All by default.
+- **Zero-trust.** mTLS on every link. Admission is cryptographic, not
+  shared secrets or firewall rules.
+- **Edge-ready.** Pure Go, no CGO, one static binary. Raspberry Pi to
+  cloud host. Call your Pi like a supercomputer.
 
-## Core commands
+> [!NOTE]
+> Pollen is in **early development**. Expect breaking changes and sharp
+> edges. More in [Project status](#project-status).
 
-- `pln init` — initialize local root cluster state
-- `pln up` — start a node in the foreground (`-d` for background service)
-- `pln down` — stop the background service
-- `pln join <token>` — enroll into a cluster and start the daemon (`--no-up` to enroll only)
-- `pln logs [-f]` — show daemon logs
-- `pln purge [--all]` — reset local cluster state (`--all` also removes node keys)
-- `pln status` — show nodes/services
-- `pln invite [--subject <node-pub>]` — create an invite token
-- `pln serve <port> [name]` / `pln unserve <port|name>` — expose/unexpose services
-- `pln connect <service> [provider]` — tunnel to a service
-- `pln version [--short]` — show CLI version
-
-## Install (Linux + macOS)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash
-```
-
-The install script is a thin wrapper around native package managers — Homebrew on
-macOS, apt/yum on Linux — so upgrades, uninstalls, and service files are all
-managed by your platform's package tooling.
-
-## Quick start: local (root) + public relay
-
-On your laptop (admin):
-
-```bash
-pln init
-pln up
-pln bootstrap ssh ubuntu@<RELAY_PUBLIC_IP>
-```
-
-If the bootstrap command prints a local join command, run it:
-
-```bash
-pln join "<LOCAL_JOIN_TOKEN>"
-```
-
-## Add another node
-
-On the admin node, create an invite:
-
-```bash
-pln invite
-```
-
-On the joining node, install and join:
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sambigeara/pollen/main/scripts/install.sh | bash
-sudo pln join "<INVITE_TOKEN>"  # Linux only; adds your user to the pln group
 ```
 
-`pln join` enrolls credentials and starts the daemon automatically. Use
-`--no-up` to enroll without starting.
+A thin wrapper around your platform's package manager (Homebrew on
+macOS, apt or yum on Linux), so upgrades, uninstalls, and service files
+are managed natively.
 
-Subject-bound invite flow (stricter):
+## Two commands to a cluster
 
 ```bash
-# on joining node
-pln id
-
-# on admin node
-pln invite <NODE_PUB>
+pln init                                # creates a new cluster rooted here
+pln bootstrap ssh user@host [--admin]   # requires passwordless SSH + sudo
 ```
 
-## Service ergonomics
+You have a zero-trust mesh, a peer-to-peer artifact store, and a WASM
+runtime. Public nodes automatically become relays, so the mesh handles
+NAT traversal without configuration. Pass `--admin` to delegate admin
+authority to the new node, so your root machine doesn't need to stay
+online.
+
+## Add more nodes
+
+**With SSH.** From any admin node:
 
 ```bash
+pln bootstrap ssh user@host [--admin]
+```
+
+Installs Pollen, enrols in the cluster, and starts. Needs SSH as root or
+passwordless sudo. `--admin` delegates admin authority.
+
+**Out-of-band.** Mint a token on an admin node, ship it to the joiner:
+
+```bash
+# Admin node:
+pln invite [--subject foo]   # subject key can be retrieved with `pln id` on the subject node
+
+# New node:
+pln join <token>
+```
+
+The token is self-contained: signed admission credentials, the cluster's
+root key, and every public relay address the cluster has organically
+learned. Any public node you've bootstrapped is already acting as a
+relay, and its address is woven into new invites automatically, so a
+joiner behind NAT has a route in without you plumbing anything. Ship the
+token over any channel; it's signed and valid until its TTL expires.
+
+## Expose a service
+
+```bash
+# Machine A:
 pln serve 8080 api
+
+# Machine B:
 pln connect api
-pln unserve api
+curl localhost:8080           # served from A, over the mesh
 ```
 
-## Notes
+TCP and UDP. Connections punch directly if both peers can reach each other,
+and relay over the shortest mesh path otherwise. No ingress controller, no
+DNS, no port forwarding.
 
-- On macOS, state defaults to `~/.pln`
-- On Linux, the package installs a systemd service and defaults state to `/var/lib/pln` when that directory exists
-- On Linux, `pln join` automatically adds your user to the `pln` group so CLI commands (`pln status`, `pln peers`, etc.) work without `sudo`. Log out and back in after joining for group membership to take effect.
-- Use `--dir` to run isolated test clusters
+## Run a seed
+
+```bash
+pln seed ./hello.wasm
+pln call hello greet '{"name":"world"}'
+```
+
+`pln seed` publishes a WASM binary into the cluster. Nodes decide
+*locally* whether to claim a replica, scoring themselves on available
+capacity, cached artifacts, and proximity to traffic. There is no central
+scheduler. When a node goes down, survivors pick up the slack.
+
+Example modules live in [`examples/`](examples/). Run `pln --help` for
+the full CLI reference. For the architecture, see
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+## Project status
+
+Pollen runs end-to-end on real clusters, but it is not yet what it's
+trying to be. Expect breaking changes until formats and APIs stabilise.
