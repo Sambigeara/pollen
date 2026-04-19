@@ -177,15 +177,15 @@ func TestSnapshot_PeerKeysFiltering(t *testing.T) {
 	require.NotContains(t, snap2.Nodes, peerB)
 }
 
-func TestStore_SetWorkloadSpecClonesInput(t *testing.T) {
-	// SetWorkloadSpec must defensively copy its input — callers (e.g.
+func TestStore_PublishWorkloadClonesInput(t *testing.T) {
+	// PublishWorkload must defensively copy its input — callers (e.g.
 	// placement.Service.Seed) reuse the same proto and may mutate it
 	// after the call. The persisted gossip state must not change in
 	// response to such caller-side mutation.
 	s := newTestStore(t, genKey(t))
 	spec := WorkloadSpec{Hash: "abc", Name: "abc", MinReplicas: 2}
 
-	_, _ = s.SetWorkloadSpec(spec)
+	_, _ = s.PublishWorkload(spec)
 	spec.MinReplicas = 99 // simulate caller reusing or mutating the proto
 
 	snap := s.Snapshot()
@@ -199,14 +199,14 @@ func TestStore_WorkloadSpecConflict(t *testing.T) {
 	s := newTestStore(t, pk)
 
 	// Local claims spec
-	_, _ = s.SetWorkloadSpec(WorkloadSpec{Name: "contested", Hash: "contested", MinReplicas: 3})
+	_, _ = s.PublishWorkload(WorkloadSpec{Name: "contested", Hash: "contested", MinReplicas: 3})
 
 	// Remote (lower peer ID) claims spec
 	winnerPK := genKey(t)
 	if pk.Compare(winnerPK) < 0 {
 		winnerPK, pk = pk, winnerPK // Ensure winnerPK is actually lower
 		s = newTestStore(t, pk)
-		_, _ = s.SetWorkloadSpec(WorkloadSpec{Name: "contested", Hash: "contested", MinReplicas: 3})
+		_, _ = s.PublishWorkload(WorkloadSpec{Name: "contested", Hash: "contested", MinReplicas: 3})
 	}
 
 	applyTestEvent(t, s, &statev1.GossipEvent{
@@ -480,7 +480,7 @@ func TestSnapshot_SpecByName(t *testing.T) {
 	_ = higherKey
 
 	// Local peer publishes spec with name "myapp" and hash "hash-local".
-	_, _ = s.SetWorkloadSpec(WorkloadSpec{Name: "myapp", Hash: localHash, MinReplicas: 1})
+	_, _ = s.PublishWorkload(WorkloadSpec{Name: "myapp", Hash: localHash, MinReplicas: 1})
 
 	// Remote peer publishes spec with same name but different hash.
 	applyTestEvent(t, s, &statev1.GossipEvent{
@@ -525,7 +525,7 @@ func TestSnapshot_LocalSpecByName(t *testing.T) {
 	localHash, remoteHash := "hash-local", "hash-remote"
 
 	// Local peer publishes spec.
-	_, _ = s.SetWorkloadSpec(WorkloadSpec{Name: "myapp", Hash: localHash, MinReplicas: 1})
+	_, _ = s.PublishWorkload(WorkloadSpec{Name: "myapp", Hash: localHash, MinReplicas: 1})
 
 	// Remote peer publishes spec with the same name but different hash.
 	applyTestEvent(t, s, &statev1.GossipEvent{

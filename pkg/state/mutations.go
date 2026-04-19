@@ -175,7 +175,11 @@ func (s *store) SetLocalObservedAddress(ip string, port uint32) []Event {
 	})
 }
 
-func (s *store) SetWorkloadSpec(spec WorkloadSpec) ([]Event, error) {
+// PublishWorkload emits the spec and the publisher's claim in a single
+// gossip batch. Splitting them lets a remote see the spec first, observe
+// zero claimants, and decide to claim before the publisher's own claim
+// arrives — causing over-replication until it unwinds minutes later.
+func (s *store) PublishWorkload(spec WorkloadSpec) ([]Event, error) {
 	hash := spec.Hash
 	owned := workloadSpecToProto(spec)
 	var ownerErr error
@@ -190,15 +194,17 @@ func (s *store) SetWorkloadSpec(spec WorkloadSpec) ([]Event, error) {
 			}
 		}
 
-		if ev, ok := rec.log[attrKey{kind: attrWorkloadSpec, name: hash}]; ok && !ev.Deleted {
-			ws := ev.GetWorkloadSpec()
-			if specEqual(ws, owned) {
-				return nil, nil
-			}
+		var gossips []*statev1.GossipEvent
+		if ev, ok := rec.log[attrKey{kind: attrWorkloadSpec, name: hash}]; !ok || ev.Deleted || !specEqual(ev.GetWorkloadSpec(), owned) {
+			gossips = append(gossips, &statev1.GossipEvent{Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: owned}})
 		}
-
-		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: owned}}
-		return []*statev1.GossipEvent{change}, []Event{WorkloadChanged{Hash: hash}}
+		if ev, ok := rec.log[attrKey{kind: attrWorkloadClaim, name: hash}]; !ok || ev.Deleted {
+			gossips = append(gossips, &statev1.GossipEvent{Change: &statev1.GossipEvent_WorkloadClaim{WorkloadClaim: &statev1.WorkloadClaimChange{Hash: hash}}})
+		}
+		if len(gossips) == 0 {
+			return nil, nil
+		}
+		return gossips, []Event{WorkloadChanged{Hash: hash}}
 	})
 	return events, ownerErr
 }

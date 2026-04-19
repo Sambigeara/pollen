@@ -57,7 +57,7 @@ func (m *mockStore) Snapshot() state.Snapshot {
 	}
 }
 
-func (m *mockStore) SetWorkloadSpec(state.WorkloadSpec) ([]state.Event, error) { return nil, nil }
+func (m *mockStore) PublishWorkload(state.WorkloadSpec) ([]state.Event, error) { return nil, nil }
 func (m *mockStore) DeleteWorkloadSpec(hash string) []state.Event {
 	m.mu.Lock()
 	defer m.mu.Unlock()

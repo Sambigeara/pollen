@@ -57,7 +57,7 @@ type StateStore interface {
 	SetLocalReachable(peers []types.PeerKey) []Event
 	SetLocalObservedAddress(ip string, port uint32) []Event
 
-	SetWorkloadSpec(spec WorkloadSpec) ([]Event, error)
+	PublishWorkload(spec WorkloadSpec) ([]Event, error)
 	DeleteWorkloadSpec(hash string) []Event
 	ClaimWorkload(hash string) []Event
 	ReleaseWorkload(hash string) []Event

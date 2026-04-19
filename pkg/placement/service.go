@@ -74,7 +74,7 @@ var _ PlacementAPI = (*Service)(nil)
 
 type WorkloadState interface {
 	Snapshot() state.Snapshot
-	SetWorkloadSpec(spec state.WorkloadSpec) ([]state.Event, error)
+	PublishWorkload(spec state.WorkloadSpec) ([]state.Event, error)
 	DeleteWorkloadSpec(hash string) []state.Event
 	ClaimWorkload(hash string) []state.Event
 	ReleaseWorkload(hash string) []state.Event
@@ -247,10 +247,9 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec) error {
 		spec.LatencySLO = defaultLatencySLO
 	}
 
-	if _, err := s.store.SetWorkloadSpec(spec); err != nil {
+	if _, err := s.store.PublishWorkload(spec); err != nil {
 		return err
 	}
-	s.store.ClaimWorkload(hash)
 	return nil
 }
 
