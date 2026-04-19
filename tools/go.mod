@@ -7,6 +7,7 @@ require (
 	connectrpc.com/connect v1.19.0
 	github.com/bufbuild/buf v1.57.2
 	github.com/golangci/golangci-lint/v2 v2.10.1
+	github.com/google/addlicense v1.2.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0
 	github.com/planetscale/vtprotobuf v0.6.1-0.20250313105119-ba97887b0a25
 	golang.org/x/tools/gopls v0.21.1
@@ -66,6 +67,7 @@ require (
 	github.com/bitfield/gotestdox v0.2.2 // indirect
 	github.com/bkielbasa/cyclop v1.2.3 // indirect
 	github.com/blizzy78/varnamelen v0.8.0 // indirect
+	github.com/bmatcuk/doublestar/v4 v4.0.2 // indirect
 	github.com/bombsimon/wsl/v4 v4.7.0 // indirect
 	github.com/bombsimon/wsl/v5 v5.6.0 // indirect
 	github.com/breml/bidichk v0.3.3 // indirect

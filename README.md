@@ -4,10 +4,19 @@
 
 # Pollen: a zero-trust, P2P, local-first distributed system for services and WASM workloads, in a single static binary
 
+<p align="center">
+  <a href="https://github.com/sambigeara/pollen/actions/workflows/ci.yml"><img src="https://github.com/sambigeara/pollen/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://goreportcard.com/report/github.com/sambigeara/pollen"><img src="https://goreportcard.com/badge/github.com/sambigeara/pollen" alt="Go Report Card"></a>
+  <a href="https://pkg.go.dev/github.com/sambigeara/pollen"><img src="https://pkg.go.dev/badge/github.com/sambigeara/pollen.svg" alt="Go Reference"></a>
+  <a href="https://github.com/sambigeara/pollen/releases"><img src="https://img.shields.io/github/v/release/sambigeara/pollen" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/sambigeara/pollen" alt="License"></a>
+</p>
+
+_Pollen is in early development — expect breaking changes and sharp edges._
+
 ## Pollen is…
 
-- **Ergonomic.** Opinionated defaults, opt-in configuration. No control
-  plane, no registry.
+- **Ergonomic.** Opinionated defaults, opt-in configuration. Simple control interface.
 - **CRDT-native, local-first.** A converging document on every node.
   Changes gossip; conflicts resolve.
 - **Self-organising.** Topology, placement, and routing emerge from
@@ -31,10 +40,6 @@
   shared secrets or firewall rules.
 - **Edge-ready.** Pure Go, no CGO, one static binary. Raspberry Pi to
   cloud host. Call your Pi like a supercomputer.
-
-> [!NOTE]
-> Pollen is in **early development**. Expect breaking changes and sharp
-> edges. More in [Project status](#project-status).
 
 ## Install
 
@@ -122,3 +127,7 @@ the full CLI reference. For the architecture, see
 
 Pollen runs end-to-end on real clusters, but it is not yet what it's
 trying to be. Expect breaking changes until formats and APIs stabilise.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).

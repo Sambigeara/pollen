@@ -1,3 +1,6 @@
+// Copyright 2026 Sam Lock
+// SPDX-License-Identifier: Apache-2.0
+
 // exerciser drives synthetic load against a pollen node's control API.
 //
 // The binary is deployed on a dedicated host that does NOT run pollen.

@@ -197,6 +197,11 @@ linters:
     exhaustive:
       default-signifies-exhaustive: true
 
+    goheader:
+      template: |-
+        Copyright {{ YEAR }} Sam Lock
+        SPDX-License-Identifier: Apache-2.0
+
     gosec:
       excludes:
         - G115 # integer overflow conversion

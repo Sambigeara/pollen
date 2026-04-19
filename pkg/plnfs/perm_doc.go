@@ -1,3 +1,6 @@
+// Copyright 2026 Sam Lock
+// SPDX-License-Identifier: Apache-2.0
+
 // File and directory permissions for the pln data directory.
 //
 // On Linux, `pln provision` creates the pln system user/group and the

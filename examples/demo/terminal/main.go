@@ -1,3 +1,6 @@
+// Copyright 2026 Sam Lock
+// SPDX-License-Identifier: Apache-2.0
+
 // terminal is the end-of-chain seed for the firehose demo variant.
 // It does the same shape of work as processor (hash the payload) but
 // returns directly without calling any downstream service. Used to
