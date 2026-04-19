@@ -77,15 +77,15 @@
   </g>
   <!-- leaves -->
   <g fill="#5FA84E">
-    <rect x="4" y="17" width="2" height="1"/>
+    <rect x="5" y="17" width="2" height="1"/>
     <rect x="13" y="17" width="2" height="1"/>
-    <rect x="4" y="18" width="2" height="1"/>
+    <rect x="5" y="18" width="2" height="1"/>
     <rect x="13" y="18" width="2" height="1"/>
   </g>
   <g fill="#2E6A23">
-    <rect x="3" y="18" width="1" height="1"/>
+    <rect x="4" y="18" width="1" height="1"/>
     <rect x="15" y="18" width="1" height="1"/>
-    <rect x="4" y="19" width="2" height="1"/>
+    <rect x="5" y="19" width="2" height="1"/>
     <rect x="13" y="19" width="2" height="1"/>
   </g>
 </svg>
