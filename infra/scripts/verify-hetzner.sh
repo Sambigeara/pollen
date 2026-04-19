@@ -13,6 +13,8 @@ PLN_LINUX="$REPO_ROOT/pln-linux"
 PLN_TEST_DIR="/tmp/pln-verify-$$"
 PLN_TEST_PORT=60612
 PLN_PID=""
+# Seconds to wait for a polite SIGTERM before escalating to SIGKILL.
+PLN_SHUTDOWN_GRACE=5
 RESULTS=()
 
 GREEN='\033[0;32m'
@@ -41,9 +43,51 @@ poll() {
 
 node_ips() { cd "$TF_DIR" && terraform output -json node_ips 2>/dev/null; }
 
+# SIGTERM with a grace period, then SIGKILL. `wait` only reaps direct
+# children — harmless if pid is an orphan, but keeps the shell tidy when
+# it isn't.
+stop_pln() {
+    local pid="$1"
+    [ -z "$pid" ] && return 0
+    kill -TERM "$pid" 2>/dev/null || true
+    local deadline=$((SECONDS + PLN_SHUTDOWN_GRACE))
+    while kill -0 "$pid" 2>/dev/null && (( SECONDS < deadline )); do sleep 1; done
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+}
+
+# Sweeps orphaned pln-local processes from prior runs. Detects them two
+# ways: by command-line (catches zombies that died without binding the
+# port) and by the test UDP port (catches same-port collisions from any
+# source, including an unrelated pln).
+reap_stale_pln() {
+    local pids=()
+    while IFS= read -r pid; do
+        [ -n "$pid" ] && pids+=("$pid")
+    done < <(
+        {
+            pgrep -f 'pln-local .*--dir /tmp/pln-verify-' 2>/dev/null || true
+            lsof -ti "udp:$PLN_TEST_PORT" 2>/dev/null || true
+        } | sort -u
+    )
+    (( ${#pids[@]} == 0 )) && return 0
+    echo "  Reaping stale pln-local processes: ${pids[*]}"
+    kill -TERM "${pids[@]}" 2>/dev/null || true
+    sleep 1
+    local survivors=()
+    for p in "${pids[@]}"; do
+        kill -0 "$p" 2>/dev/null && survivors+=("$p")
+    done
+    if (( ${#survivors[@]} > 0 )); then
+        echo "  Force-killing: ${survivors[*]}"
+        kill -KILL "${survivors[@]}" 2>/dev/null || true
+    fi
+}
+
 cleanup() {
     local rc=$?
-    if [ -n "$PLN_PID" ]; then kill "$PLN_PID" 2>/dev/null; wait "$PLN_PID" 2>/dev/null || true; fi
+    stop_pln "$PLN_PID"
+    rm -rf "$PLN_TEST_DIR"
     rm -f /tmp/pln-verify-*.log
     exit $rc
 }
@@ -70,11 +114,7 @@ echo "  root(nbg1-1)=$ROOT_IP  node2(nbg1-2)=$NODE2_IP  node3(hel1)=$NODE3_IP"
 echo -e "\n${BOLD}Step 0: Build and deploy${RESET}"
 
 echo "  Purging local test state..."
-STALE_PID=$(lsof -ti udp:"$PLN_TEST_PORT" 2>/dev/null || true)
-if [ -n "$STALE_PID" ]; then
-    echo "  Killing stale process on port $PLN_TEST_PORT (pid $STALE_PID)"
-    kill "$STALE_PID" 2>/dev/null; sleep 1
-fi
+reap_stale_pln
 rm -rf "$PLN_TEST_DIR"
 
 echo "  Purging remote state..."
@@ -265,7 +305,7 @@ done
 if [ -z "$SEED_IP" ]; then
     # Local might be running it — stop local
     if lpln status seeds 2>&1 | grep "$SHORT" | grep -q '\*'; then
-        kill "$PLN_PID" 2>/dev/null; wait "$PLN_PID" 2>/dev/null; PLN_PID=""
+        stop_pln "$PLN_PID"; PLN_PID=""
         poll "2/2 maintained after local down" 30 bash -c "ssh $SSH_OPTS root@$ROOT_IP '/usr/bin/pln --dir /var/lib/pln status seeds' 2>&1 | grep '$SHORT' | grep -q '2/2'"
         pass "Step 11: Workload migrated after local node down"
     else
