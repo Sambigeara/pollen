@@ -25,6 +25,9 @@ const (
 	// scaleUpMaxStepMultiplier caps per-decision target growth — 2× closes
 	// large gaps in a few ticks without overshooting on noisy signals.
 	scaleUpMaxStepMultiplier = 2.0
+	// Hold off fresh claim decisions so peer claims can gossip in first;
+	// avoids over-replication when cluster views diverge mid-convergence.
+	specStabilizationWindow = 3 * time.Second
 )
 
 type workloadManager interface {
@@ -41,6 +44,7 @@ type reconciler struct {
 	gates          *gateRegistry
 	claimStartTime map[string]time.Time
 	pendingRelease map[string]time.Time
+	specFirstSeen  map[string]time.Time
 	dynamicTargets map[string]uint32
 	lastPressures  map[string]float64
 	scaleUpStreak  map[string]int
@@ -76,6 +80,7 @@ func newReconciler(
 		fetchSem:       make(chan struct{}, 4), //nolint:mnd
 		pendingRelease: make(map[string]time.Time),
 		claimStartTime: make(map[string]time.Time),
+		specFirstSeen:  make(map[string]time.Time),
 		dynamicTargets: make(map[string]uint32),
 		scaleUpStreak:  make(map[string]int),
 		inFlight:       make(map[string]struct{}),
@@ -239,6 +244,8 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		}
 	}
 
+	r.trackSpecObservation(specs)
+
 	idleDurations := make(map[string]time.Duration, len(specs))
 	for hash := range specs {
 		idleDurations[hash] = r.utilisation.IdleDuration(hash)
@@ -286,6 +293,9 @@ func (r *reconciler) reconcile(ctx context.Context) {
 	for _, a := range actions {
 		switch a.Kind {
 		case actionClaim:
+			if seen, ok := r.specFirstSeen[a.Hash]; ok && now.Sub(seen) < specStabilizationWindow {
+				continue
+			}
 			r.startClaim(ctx, a.Hash, a.DynamicTarget, snap.Specs, snap.Claims)
 		case actionRelease:
 			if _, specExists := snap.Specs[a.Hash]; !specExists {
@@ -703,6 +713,20 @@ func (r *reconciler) allPlacementInfo() map[string]PlacementInfo {
 		}
 	}
 	return out
+}
+
+func (r *reconciler) trackSpecObservation(specs map[string]spec) {
+	now := r.nowFunc()
+	for hash := range specs {
+		if _, ok := r.specFirstSeen[hash]; !ok {
+			r.specFirstSeen[hash] = now
+		}
+	}
+	for hash := range r.specFirstSeen {
+		if _, ok := specs[hash]; !ok {
+			delete(r.specFirstSeen, hash)
+		}
+	}
 }
 
 func (r *reconciler) cleanupStaleClaims(claims map[string]map[types.PeerKey]struct{}) {
