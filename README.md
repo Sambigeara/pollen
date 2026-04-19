@@ -16,26 +16,24 @@ _Pollen is in early development — expect breaking changes and sharp edges._
 
 ## Pollen is…
 
-- **Ergonomic.** Opinionated defaults, opt-in configuration. Simple control interface.
+- **Ergonomic.** Opinionated defaults, opt-in configuration.
 - **CRDT-native, local-first.** A converging document on every node.
   Changes gossip; conflicts resolve.
 - **Self-organising.** Topology, placement, and routing emerge from
   local state. No scheduler, no leader, no coordinator.
 - **Partition-tolerant.** Both sides of a split keep running. State
   converges on rejoin; survivors rehost workloads from failed nodes.
-- **Built on QUIC.** Multiplexed streams, encrypted end-to-end,
-  UDP-based for NAT traversal. One connection per peer carries gossip,
-  services, and seeds.
+- **Built on QUIC.** Multiplexed streams, UDP-based for NAT traversal.
+  One connection per peer carries gossip, services, and seeds.
 - **Mesh services.** `pln serve 8080 api` here, `pln connect api` there.
-  TCP and UDP, end-to-end mTLS.
+  TCP and UDP.
 - **WASM seeds.** Deploy a `.wasm` with `pln seed`; artifacts distribute
   peer-to-peer by hash.
 - **Seeds compose.** WASM modules call each other with one host
-  function. Plugins in [a variety of
-  languages](https://extism.org/docs/quickstart/plugin-quickstart) via
-  the Extism PDK.
+  function. Plugins in [any Extism-compatible
+  language](https://extism.org/docs/quickstart/plugin-quickstart).
 - **Organic load balancing.** Calls go to the nearest, least-loaded
-  replica; replicas migrate toward demand. All by default.
+  replica; replicas migrate toward demand.
 - **Zero-trust.** mTLS on every link. Admission is cryptographic, not
   shared secrets or firewall rules.
 - **Edge-ready.** Pure Go, no CGO, one static binary. Raspberry Pi to
