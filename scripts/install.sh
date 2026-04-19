@@ -59,10 +59,9 @@ if [ "$OS" = "linux" ]; then
         curl -fsSL "$TAR_URL" -o /tmp/pln.tar.gz
         sudo tar -xzf /tmp/pln.tar.gz -C /usr/local/bin pln
         rm -f /tmp/pln.tar.gz
-        log "WARNING: No systemd service installed. You must manage the pln process manually."
+        log "Binary installed; run 'sudo pln service install' to register the systemd unit."
     fi
 
-    sudo pln provision
     log "Done! Run 'sudo pln join <token>' to enroll this node."
     exit 0
 fi

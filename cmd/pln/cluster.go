@@ -705,8 +705,8 @@ func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipT
 
 func ensureRemotePollen(ctx context.Context, sshTarget string) error {
 	if sshCmd(ctx, sshTarget, "which pln >/dev/null 2>&1").Run() == nil {
-		if out, err := sshSudo(ctx, sshTarget, "pln", "provision").CombinedOutput(); err != nil {
-			return fmt.Errorf("remote provision failed: %w\n%s", err, strings.TrimSpace(string(out)))
+		if out, err := sshSudo(ctx, sshTarget, "pln", "service", "install").CombinedOutput(); err != nil {
+			return fmt.Errorf("remote service install failed: %w\n%s", err, strings.TrimSpace(string(out)))
 		}
 		return nil
 	}

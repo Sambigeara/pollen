@@ -92,8 +92,7 @@ echo "  Deploying to remote nodes..."
 for ip in "${ALL_REMOTE[@]}"; do
     (
         rsync -z -e "ssh $SSH_OPTS" "$PLN_LINUX" "root@${ip}:/usr/bin/pln"
-        scp -O $SSH_OPTS "$REPO_ROOT/packaging/pln.service" "root@${ip}:/lib/systemd/system/pln.service"
-        rssh "$ip" "pln provision && systemctl daemon-reload"
+        rssh "$ip" "pln service install"
     ) &
 done
 wait

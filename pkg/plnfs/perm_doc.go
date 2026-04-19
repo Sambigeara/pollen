@@ -3,8 +3,8 @@
 
 // File and directory permissions for the pln data directory.
 //
-// On Linux, `pln provision` creates the pln system user/group and the
-// state directories with setgid (2770) so files created inside them
+// On Linux, `pln service install` creates the pln system user/group and
+// the state directories with setgid (2770) so files created inside them
 // automatically inherit the pln group. The daemon runs as pln; CLI
 // users in the pln group share access via group permissions. On
 // non-Linux platforms the ownership helpers are no-ops.

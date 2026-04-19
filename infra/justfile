@@ -103,9 +103,15 @@ deploy-demo:
     provision_node() {
         local name=$1 ip=$2
         ssh {{ ssh_args }} ubuntu@$ip "sudo cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/authorized_keys"
+        # Stop pln before replacing the binary — scp-over-running-executable
+        # trips ETXTBSY. Harmless on a fresh host where the unit doesn't exist yet.
+        ssh {{ ssh_args }} root@$ip "systemctl stop pln 2>/dev/null || true"
         scp -O {{ ssh_args }} "$BINARY" root@$ip:/usr/bin/pln
-        scp -O {{ ssh_args }} "{{ demo_tf }}/pln.service" root@$ip:/lib/systemd/system/pln.service
-        ssh {{ ssh_args }} root@$ip "chmod +x /usr/bin/pln && pln provision && systemctl daemon-reload"
+        ssh {{ ssh_args }} root@$ip "chmod +x /usr/bin/pln && pln service install && mkdir -p /etc/systemd/system/pln.service.d"
+        # Drop-in overrides the base unit with demo-only flags (--control-addr,
+        # --http, pprof, JIT). Uploaded after install so it isn't clobbered.
+        scp -O {{ ssh_args }} "{{ demo_tf }}/pln.service.d/demo.conf" root@$ip:/etc/systemd/system/pln.service.d/demo.conf
+        ssh {{ ssh_args }} root@$ip "systemctl daemon-reload"
         echo "  $name ($ip)... ok"
     }
     for entry in $(echo "$NODES" | jq -r 'to_entries | sort_by(.key) | .[] | "\(.key)=\(.value)"'); do

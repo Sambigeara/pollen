@@ -28,7 +28,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
-	"github.com/sambigeara/pollen/pkg/plnfs"
 	"github.com/sambigeara/pollen/pkg/supervisor"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -71,7 +70,6 @@ func newDaemonCmds() []*cobra.Command {
 		logsCmd,
 		{Use: "down", Short: "Stop the background service", Args: cobra.NoArgs, RunE: withEnv(runDown, localOnly(), systemService())},
 		{Use: "restart", Short: "Restart the background service", Args: cobra.NoArgs, RunE: withEnv(runRestart, localOnly(), systemService())},
-		{Use: "provision", Short: "Create the pln system user, group, and state directories", RunE: withEnv(runProvision, localOnly())},
 	}
 }
 
@@ -240,36 +238,6 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 	if err := n.Run(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	return nil
-}
-
-func runProvision(cmd *cobra.Command, _ []string, _ *cliEnv) error {
-	if runtime.GOOS != osLinux {
-		fmt.Fprintln(cmd.OutOrStdout(), "provisioning is not required on this platform")
-		return nil
-	}
-	if os.Getuid() != 0 {
-		return errors.New("pln provision must be run as root")
-	}
-
-	dir := plnfs.SystemDir
-	if cmd.Flags().Changed("dir") {
-		dir, _ = cmd.Flags().GetString("dir")
-	}
-	plnfs.SetSystemMode(true)
-
-	if err := plnfs.Provision(dir); err != nil {
-		return err
-	}
-
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-		if err := plnfs.AddUserToPlnGroup(sudoUser); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
-		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "added %s to the pln group -- log out and back in for CLI access without sudo\n", sudoUser)
-		}
-	}
-	fmt.Fprintln(cmd.OutOrStdout(), "provisioned "+dir)
 	return nil
 }
 
