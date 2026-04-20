@@ -360,14 +360,70 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return errors.New("this node cannot issue tokens; only delegated admins can sign enrollment tokens")
 	}
 
-	results := make([]bootstrapResult, len(specs))
-	var wg sync.WaitGroup
+	// Gather every remote's identity before issuing seed tokens: each remote must be told
+	// about every other remote as a persistent bootstrap peer, which we can only do once we
+	// know all their public keys.
+	type discovery struct {
+		err      error
+		prepared preparedRemote
+	}
+	discoveries := make([]discovery, len(specs))
+	var discWG sync.WaitGroup
 	for i, spec := range specs {
-		wg.Go(func() {
-			results[i] = bootstrapRemote(cmd.Context(), signer, env, spec, relayPort, expireAfter, delegateAdmin)
+		discWG.Go(func() {
+			prepared, err := discoverRemote(cmd.Context(), spec, relayPort)
+			discoveries[i] = discovery{prepared: prepared, err: err}
 		})
 	}
-	wg.Wait()
+	discWG.Wait()
+
+	// Seed pool = existing Mac-side peers plus every successfully-discovered remote. Each
+	// remote will receive this set minus itself, so daemon restarts always have someone to
+	// reconnect to.
+	peerPool := make(map[string]*admissionv1.BootstrapPeer)
+	for peerHex, addrs := range env.cfg.BootstrapPeers {
+		pk, err := types.PeerKeyFromString(peerHex)
+		if err != nil {
+			continue
+		}
+		peerPool[peerHex] = &admissionv1.BootstrapPeer{
+			PeerPub: pk.Bytes(),
+			Addrs:   slices.Clone(addrs),
+		}
+	}
+	for _, d := range discoveries {
+		if d.err != nil {
+			continue
+		}
+		key := types.PeerKeyFromBytes(d.prepared.peerPub).String()
+		peerPool[key] = &admissionv1.BootstrapPeer{
+			PeerPub: append([]byte(nil), d.prepared.peerPub...),
+			Addrs:   slices.Clone(d.prepared.addrs),
+		}
+	}
+
+	results := make([]bootstrapResult, len(specs))
+	var enrollWG sync.WaitGroup
+	for i, d := range discoveries {
+		if d.err != nil {
+			results[i] = bootstrapResult{target: d.prepared.spec.target, err: d.err}
+			continue
+		}
+		prepared := d.prepared
+		enrollWG.Go(func() {
+			seeded := seedPeersFor(peerPool, prepared.peerPub)
+			if err := enrollRemote(cmd.Context(), env, signer, prepared, seeded, expireAfter, delegateAdmin); err != nil {
+				results[i] = bootstrapResult{target: prepared.spec.target, err: err}
+				return
+			}
+			results[i] = bootstrapResult{
+				target:  prepared.spec.target,
+				peerPub: prepared.peerPub,
+				addrs:   prepared.addrs,
+			}
+		})
+	}
+	enrollWG.Wait()
 
 	out := cmd.OutOrStdout()
 	var succeeded, failed int
@@ -436,32 +492,39 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	return nil
 }
 
-// bootstrapRemote is safe to call concurrently for different targets.
-func bootstrapRemote(ctx context.Context, signer *auth.DelegationSigner, env *cliEnv, spec sshTargetSpec, relayPort int, expireAfter time.Duration, delegateAdmin bool) bootstrapResult {
-	target := spec.target
-	fail := func(err error) bootstrapResult {
-		return bootstrapResult{target: target, err: err}
+// preparedRemote describes a target after pre-enrolment: sudo access confirmed, pln binary
+// installed, node identity fetched. spec is always set so it can identify the target in
+// error paths; the other fields are only valid once discoverRemote returns nil.
+type preparedRemote struct {
+	spec    sshTargetSpec
+	peerPub ed25519.PublicKey
+	addrs   []string
+	public  bool
+}
+
+// discoverRemote runs pre-enrolment checks and fetches the remote node's public key.
+// Safe to call concurrently for different targets.
+func discoverRemote(ctx context.Context, spec sshTargetSpec, relayPort int) (preparedRemote, error) {
+	fail := func(err error) (preparedRemote, error) {
+		return preparedRemote{spec: spec}, err
 	}
 
-	inferredAddr, err := inferRelayAddrFromSSHTarget(ctx, target, relayPort)
+	inferredAddr, err := inferRelayAddrFromSSHTarget(ctx, spec.target, relayPort)
 	if err != nil {
 		return fail(err)
 	}
-	relayAddrs := []string{inferredAddr}
+	host, _, _ := net.SplitHostPort(inferredAddr)
+	ip := net.ParseIP(host)
+	public := ip != nil && !ip.IsPrivate() && !ip.IsLoopback()
 
-	relayHost, _, _ := net.SplitHostPort(inferredAddr)
-	relayIP := net.ParseIP(relayHost)
-	public := relayIP != nil && !relayIP.IsPrivate() && !relayIP.IsLoopback()
-
-	if err := requireRemoteSudo(ctx, target); err != nil {
+	if err := requireRemoteSudo(ctx, spec.target); err != nil {
+		return fail(err)
+	}
+	if err := ensureRemotePollen(ctx, spec.target); err != nil {
 		return fail(err)
 	}
 
-	if err := ensureRemotePollen(ctx, target); err != nil {
-		return fail(err)
-	}
-
-	idCmd := sshPln(ctx, target, "id")
+	idCmd := sshPln(ctx, spec.target, "id")
 	var idStdout, idStderr bytes.Buffer
 	idCmd.Stdout = &idStdout
 	idCmd.Stderr = &idStderr
@@ -469,26 +532,43 @@ func bootstrapRemote(ctx context.Context, signer *auth.DelegationSigner, env *cl
 		return fail(fmt.Errorf("failed to fetch remote node identity: %w\n%s", err, strings.TrimSpace(idStderr.String())))
 	}
 
-	relayPeerKey, err := types.PeerKeyFromString(strings.TrimSpace(idStdout.String()))
+	peerKey, err := types.PeerKeyFromString(strings.TrimSpace(idStdout.String()))
 	if err != nil {
 		return fail(err)
 	}
-	relayPub := ed25519.PublicKey(relayPeerKey.Bytes())
 
-	seedToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, relayPub, 1*time.Minute, expireAfter, nil, nil)
+	return preparedRemote{
+		spec:    spec,
+		peerPub: ed25519.PublicKey(peerKey.Bytes()),
+		addrs:   []string{inferredAddr},
+		public:  public,
+	}, nil
+}
+
+// enrollRemote issues a seed token carrying bootstrapPeers, enrols it on the remote and starts
+// the daemon. bootstrapPeers must already exclude the remote itself.
+// Safe to call concurrently for different targets.
+func enrollRemote(ctx context.Context, env *cliEnv, signer *auth.DelegationSigner, remote preparedRemote, bootstrapPeers []*admissionv1.BootstrapPeer, expireAfter time.Duration, delegateAdmin bool) error {
+	seedToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, remote.peerPub, 1*time.Minute, expireAfter, bootstrapPeers, nil)
 	if err != nil {
-		return fail(fmt.Errorf("create seed token: %w", err))
+		return fmt.Errorf("create seed token: %w", err)
 	}
+	return bootstrapRelayOverSSH(ctx, env, remote.spec.target, seedToken, remote.peerPub, delegateAdmin, remote.spec.nodeName, remote.public)
+}
 
-	if err := bootstrapRelayOverSSH(ctx, env, target, seedToken, relayPub, delegateAdmin, spec.nodeName, public); err != nil {
-		return fail(err)
+func seedPeersFor(pool map[string]*admissionv1.BootstrapPeer, self ed25519.PublicKey) []*admissionv1.BootstrapPeer {
+	selfKey := types.PeerKeyFromBytes(self).String()
+	out := make([]*admissionv1.BootstrapPeer, 0, len(pool))
+	for k, p := range pool {
+		if k == selfKey {
+			continue
+		}
+		out = append(out, &admissionv1.BootstrapPeer{
+			PeerPub: append([]byte(nil), p.GetPeerPub()...),
+			Addrs:   slices.Clone(p.GetAddrs()),
+		})
 	}
-
-	return bootstrapResult{
-		target:  target,
-		peerPub: relayPub,
-		addrs:   relayAddrs,
-	}
+	return out
 }
 
 func bootstrapRelayOverSSH(ctx context.Context, env *cliEnv, sshTarget, seedToken string, relayPub ed25519.PublicKey, delegateAdmin bool, nodeName string, public bool) error {
