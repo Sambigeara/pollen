@@ -2,7 +2,7 @@
   <img src="assets/mascot.svg" alt="Pollen" width="128"/>
 </p>
 
-# Pollen: a zero-trust, peer-to-peer, local-first mesh runtime for services and WASM workloads, with emergent placement, in a single static binary
+# Pollen: a local-first, zero-trust, emergent mesh and WASM runtime, in a single static binary
 
 <p align="center">
   <a href="https://github.com/sambigeara/pollen/actions/workflows/ci.yml"><img src="https://github.com/sambigeara/pollen/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
