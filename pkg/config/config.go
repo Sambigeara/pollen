@@ -30,7 +30,9 @@ const (
 	DefaultStaticHTTPAddr = ":8080"
 	DefaultControlAddr    = ":50051"
 
-	configHeader = "# Manual edits while the daemon runs will be overwritten.\n# Use `pln serve`, `pln connect`, `pln disconnect`, `pln seed`, and `pln unseed` to manage services.\n# Use `pln set <key> [value]` and `pln unset <key>` to change daemon bind addresses; restart the daemon to apply.\n\n"
+	DefaultLogLevel = "info"
+
+	configHeader = "# Manual edits while the daemon runs will be overwritten.\n# Use `pln serve`, `pln connect`, `pln disconnect`, `pln seed`, and `pln unseed` to manage services.\n# Use `pln set <key> [value]` and `pln unset <key>` to change daemon bind addresses or log level; restart the daemon to apply.\n\n"
 )
 
 const (
@@ -74,6 +76,7 @@ type Config struct {
 	HTTP           string              `yaml:"http,omitempty"`
 	StaticHTTP     string              `yaml:"staticHTTP,omitempty"`
 	ControlAddr    string              `yaml:"controlAddr,omitempty"`
+	LogLevel       string              `yaml:"logLevel,omitempty"`
 	Connections    []Connection        `yaml:"connections,omitempty"`
 	Services       []Service           `yaml:"services,omitempty"`
 	Resources      Resources           `yaml:"resources,omitempty"`

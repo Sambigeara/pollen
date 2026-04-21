@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/observability/logging"
 )
 
 // settableKey describes a config key that can be edited via `pln set`/`pln unset`.
@@ -50,6 +51,13 @@ func settableKeys() []settableKey {
 			defaultVal:  config.DefaultControlAddr,
 			apply:       func(c *config.Config, v string) (string, error) { return setAddr(&c.ControlAddr, v) },
 			clear:       func(c *config.Config) { c.ControlAddr = "" },
+		},
+		{
+			name:        "log-level",
+			description: "Log verbosity: debug, info, warn, error",
+			defaultVal:  config.DefaultLogLevel,
+			apply:       func(c *config.Config, v string) (string, error) { return setLogLevel(&c.LogLevel, v) },
+			clear:       func(c *config.Config) { c.LogLevel = "" },
 		},
 	}
 }
@@ -139,6 +147,14 @@ func printSettableKeys(w io.Writer) {
 	for _, k := range keys {
 		fmt.Fprintf(w, "  %-14s %s (default %s)\n", k.name, k.description, k.defaultVal)
 	}
+}
+
+func setLogLevel(dst *string, value string) (string, error) {
+	if _, err := logging.ParseLevel(value); err != nil {
+		return "", err
+	}
+	*dst = value
+	return value, nil
 }
 
 // setAddr validates that value is a port, ":port", or "host:port" and stores

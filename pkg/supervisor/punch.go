@@ -135,7 +135,7 @@ func (n *Supervisor) handlePunchCoordTrigger(ctx context.Context, trigger *meshv
 		return
 	}
 
-	n.log.Infow("punch coord trigger received", "peer", peerKey.Short(), "peerAddr", peerAddr.String())
+	n.log.Debugw("punch coord trigger received", "peer", peerKey.Short(), "peerAddr", peerAddr.String())
 
 	n.spawn(func() {
 		n.punchSem <- struct{}{}

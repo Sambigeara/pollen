@@ -64,7 +64,7 @@ func (s *Service) checkCertExpiry() bool {
 func (s *Service) attemptCertRenewal() bool {
 	connectedPeers := s.mesh.ConnectedPeers()
 	if len(connectedPeers) == 0 {
-		s.log.Warnw("delegation certificate renewal failed: no connected peers")
+		s.log.Debugw("delegation certificate renewal skipped: no connected peers")
 		return false
 	}
 
@@ -81,7 +81,7 @@ func (s *Service) attemptCertRenewal() bool {
 		}
 
 		if err := s.applyNewCert(newCert); err != nil {
-			s.log.Warnw("delegation certificate renewal failed: invalid cert", "peer", peerKey.Short(), "err", err)
+			s.log.Errorw("delegation certificate renewal failed: invalid cert", "peer", peerKey.Short(), "err", err)
 			continue
 		}
 
@@ -109,7 +109,7 @@ func (s *Service) attemptCertRenewal() bool {
 			continue
 		}
 		if err := s.applyNewCert(newCert); err != nil {
-			s.log.Warnw("routed cert renewal: invalid cert", "admin", pk.Short(), "err", err)
+			s.log.Errorw("routed cert renewal: invalid cert", "admin", pk.Short(), "err", err)
 			continue
 		}
 		s.log.Infow("delegation certificate renewed via routed admin", "admin", pk.Short(), "expires_at", auth.CertExpiresAt(newCert))

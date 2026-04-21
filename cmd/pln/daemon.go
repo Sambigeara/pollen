@@ -115,7 +115,7 @@ func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {
 }
 
 func runNode(cmd *cobra.Command, env *cliEnv) error {
-	zapLogger, err := logging.New()
+	zapLogger, err := logging.New(env.cfg.LogLevel)
 	if err != nil {
 		return fmt.Errorf("can't initialize zap logger: %w", err)
 	}
