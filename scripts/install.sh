@@ -88,7 +88,7 @@ install_deb() {
     log "Installing .deb via apt..."
     local deb="$TMPDIR/pln.deb"
     curl -fsSL "$(asset_url deb)" -o "$deb"
-    $SUDO NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive \
+    $SUDO env NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive \
         apt-get install -y --allow-downgrades "$deb"
 }
 
