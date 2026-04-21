@@ -72,8 +72,6 @@ message ResourceTelemetryChange {
   uint32 num_cpu = 4;
   uint32 cpu_budget_percent = 5;
   uint32 mem_budget_percent = 6;
-  reserved 7;
-  reserved "admission_wait_ms";
 }
 
 message WorkloadSpecChange {
@@ -225,8 +223,6 @@ message GossipEvent {
     StaticCapableChange static_capable = 32;
   }
   bool deleted = 14;
-  reserved 19, 22, 23, 25, 26;
-  reserved "seed_load", "seed_demand", "seed_compute_cost", "seed_slo_rates", "seed_gate_wait";
 }
 
 message GossipEventBatch {

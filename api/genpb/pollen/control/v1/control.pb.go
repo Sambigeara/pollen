@@ -3175,14 +3175,14 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x12ConnectPeerRequest\x12\x19\n" +
 	"\bpeer_pub\x18\x01 \x01(\fR\apeerPub\x12\x14\n" +
 	"\x05addrs\x18\x02 \x03(\tR\x05addrs\"\x15\n" +
-	"\x13ConnectPeerResponse\"\xe3\x01\n" +
+	"\x13ConnectPeerResponse\"\xdd\x01\n" +
 	"\x15ConnectServiceRequest\x12.\n" +
 	"\x04node\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04node\x12,\n" +
 	"\vremote_port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\n" +
 	"remotePort\x12(\n" +
 	"\n" +
 	"local_port\x18\x03 \x01(\rB\t\xbaH\x06*\x04\x18\xff\xff\x03R\tlocalPort\x12<\n" +
-	"\bprotocol\x18\x05 \x01(\x0e2 .pollen.state.v1.ServiceProtocolR\bprotocolJ\x04\b\x04\x10\x05\"D\n" +
+	"\bprotocol\x18\x05 \x01(\x0e2 .pollen.state.v1.ServiceProtocolR\bprotocol\"D\n" +
 	"\x16ConnectServiceResponse\x12*\n" +
 	"\n" +
 	"local_port\x18\x01 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\tlocalPort\"F\n" +

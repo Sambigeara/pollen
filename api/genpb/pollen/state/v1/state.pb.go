@@ -2372,7 +2372,7 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"DenyChange\x12\"\n" +
 	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\"*\n" +
 	"\rNatTypeChange\x12\x19\n" +
-	"\bnat_type\x18\x01 \x01(\rR\anatType\"\x91\x02\n" +
+	"\bnat_type\x18\x01 \x01(\rR\anatType\"\xf8\x01\n" +
 	"\x17ResourceTelemetryChange\x12\x1f\n" +
 	"\vcpu_percent\x18\x01 \x01(\rR\n" +
 	"cpuPercent\x12\x1f\n" +
@@ -2381,7 +2381,7 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x0fmem_total_bytes\x18\x03 \x01(\x04R\rmemTotalBytes\x12\x17\n" +
 	"\anum_cpu\x18\x04 \x01(\rR\x06numCpu\x12,\n" +
 	"\x12cpu_budget_percent\x18\x05 \x01(\rR\x10cpuBudgetPercent\x12,\n" +
-	"\x12mem_budget_percent\x18\x06 \x01(\rR\x10memBudgetPercentJ\x04\b\a\x10\bR\x11admission_wait_ms\"\xdf\x01\n" +
+	"\x12mem_budget_percent\x18\x06 \x01(\rR\x10memBudgetPercent\"\xdf\x01\n" +
 	"\x12WorkloadSpecChange\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x12!\n" +
 	"\fmin_replicas\x18\x02 \x01(\rR\vminReplicas\x12!\n" +
@@ -2451,7 +2451,7 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x12AdminCapableChange\"\x15\n" +
 	"\x13StaticCapableChange\"B\n" +
 	"\x0eNodeNameChange\x120\n" +
-	"\x04name\x18\x01 \x01(\tB\x1c\xbaH\x19r\x17\x10\x01\x18@2\x11^[a-zA-Z0-9._-]+$R\x04name\"\x81\x0f\n" +
+	"\x04name\x18\x01 \x01(\tB\x1c\xbaH\x19r\x17\x10\x01\x18@2\x11^[a-zA-Z0-9._-]+$R\x04name\"\x98\x0e\n" +
 	"\vGossipEvent\x124\n" +
 	"\apeer_id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x06peerId\x12\x18\n" +
 	"\acounter\x18\x02 \x01(\x04R\acounter\x12:\n" +
@@ -2482,7 +2482,7 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\tblob_spec\x18\x1f \x01(\v2\x1f.pollen.state.v1.BlobSpecChangeH\x00R\bblobSpec\x12M\n" +
 	"\x0estatic_capable\x18  \x01(\v2$.pollen.state.v1.StaticCapableChangeH\x00R\rstaticCapable\x12\x18\n" +
 	"\adeleted\x18\x0e \x01(\bR\adeletedB\b\n" +
-	"\x06changeJ\x04\b\x13\x10\x14J\x04\b\x16\x10\x17J\x04\b\x17\x10\x18J\x04\b\x19\x10\x1aJ\x04\b\x1a\x10\x1bR\tseed_loadR\vseed_demandR\x11seed_compute_costR\x0eseed_slo_ratesR\x0eseed_gate_wait\"H\n" +
+	"\x06change\"H\n" +
 	"\x10GossipEventBatch\x124\n" +
 	"\x06events\x18\x01 \x03(\v2\x1c.pollen.state.v1.GossipEventR\x06events\"\x9e\x02\n" +
 	"\fRuntimeState\x120\n" +

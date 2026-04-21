@@ -200,7 +200,6 @@ message ConnectServiceRequest {
     lte: 65535
   }];
   uint32 local_port = 3 [(buf.validate.field).uint32 = {lte: 65535}];
-  reserved 4;
   pollen.state.v1.ServiceProtocol protocol = 5;
 }
 
