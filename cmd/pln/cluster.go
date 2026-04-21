@@ -517,6 +517,9 @@ func discoverRemote(ctx context.Context, spec sshTargetSpec, relayPort int) (pre
 	ip := net.ParseIP(host)
 	public := ip != nil && !ip.IsPrivate() && !ip.IsLoopback()
 
+	if err := requireRemoteLinux(ctx, spec.target); err != nil {
+		return fail(err)
+	}
 	if err := requireRemoteSudo(ctx, spec.target); err != nil {
 		return fail(err)
 	}
@@ -856,6 +859,18 @@ func requireRemoteSudo(ctx context.Context, sshTarget string) error {
 	script := `sh -c 'if [ "$(id -u)" -eq 0 ]; then exit 0; fi; sudo -n true >/dev/null 2>&1'`
 	if err := sshCmd(ctx, sshTarget, script).Run(); err != nil {
 		return errors.New("requires SSH as root or passwordless sudo")
+	}
+	return nil
+}
+
+func requireRemoteLinux(ctx context.Context, sshTarget string) error {
+	out, err := sshCmd(ctx, sshTarget, "uname -s").Output()
+	if err != nil {
+		return fmt.Errorf("failed to probe remote OS: %w", err)
+	}
+	remoteOS := strings.TrimSpace(string(out))
+	if remoteOS != "Linux" {
+		return fmt.Errorf("remote OS is %q; pln bootstrap ssh targets Linux only", remoteOS)
 	}
 	return nil
 }
