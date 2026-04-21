@@ -14,6 +14,7 @@ default:
 #   just prod-up          # terraform apply (hetzner + cloudflare)
 #   just prod-bootstrap   # auto-install pln on nodes, form the mesh
 #   just prod-seed        # seed apex + docs sites
+#   just prod-upgrade     # bump pln on every node to the latest release
 #   just prod-status
 #
 # Teardown:
@@ -73,6 +74,19 @@ prod-seed:
     chmod +x "$APEX_BUNDLE/install.sh"
     pln static seed pln.sh "$APEX_BUNDLE" --min-replicas 2
     pln static seed docs.pln.sh web/docs --min-replicas 2
+
+# Upgrade pln on every node to the latest release. `pln upgrade` is
+# localOnly, so it has to run on each node directly — can't go through
+# the prod ctx. The .deb postinstall restarts an active service.
+prod-upgrade:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{ prod_tf }}
+    while IFS= read -r line || [ -n "$line" ]; do
+      host=${line##*=root@}
+      echo "upgrading $host..."
+      ssh {{ ssh_args }} "root@$host" "pln upgrade"
+    done < <(terraform output -raw bootstrap_targets)
 
 # Mesh status via the prod ctx.
 prod-status:
