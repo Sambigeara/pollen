@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pollen Docs</title>
 <meta name="description" content="Documentation for Pollen, a zero-trust, leaderless, emergent mesh runtime.">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <style>
   :root {
     --bg: #ffffff;
@@ -17,19 +18,30 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); }
   body { min-height: 100vh; display: flex; flex-direction: column; }
-  main { flex: 1; max-width: 640px; margin: 0 auto; padding: 6rem 1.5rem 3rem; width: 100%; }
-  h1 { font-size: clamp(1.5rem, 4vw, 2rem); font-weight: 600; letter-spacing: -0.02em; margin: 0 0 1.25rem; }
-  p { color: var(--mute); font-size: 1.05rem; line-height: 1.6; margin: 0 0 1.25rem; max-width: 58ch; }
+  main { flex: 1; max-width: 720px; margin: 0 auto; padding: 4rem 1.5rem 3rem; width: 100%; }
+  .mascot { display: block; width: 128px; height: 128px; margin: 0 auto 1.5rem; image-rendering: pixelated; }
+  h1 { font-size: clamp(1.75rem, 4.5vw, 2.5rem); font-weight: 600; letter-spacing: -0.02em; margin: 0 0 1.25rem; }
+  p { color: var(--mute); font-size: 1.05rem; line-height: 1.55; margin: 0 0 1.25rem; max-width: 58ch; }
   p a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 2px; }
   p a:hover { border-color: var(--accent); }
   nav { display: flex; gap: 1.5rem; font-size: 0.95rem; margin-top: 2rem; }
   nav a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 2px; }
   nav a:hover { border-color: var(--accent); }
-  footer { max-width: 640px; margin: 0 auto; padding: 1.5rem; color: var(--mute); font-size: 0.85rem; width: 100%; border-top: 1px solid var(--rule); }
+  footer { max-width: 720px; margin: 0 auto; padding: 1.5rem; color: var(--mute); font-size: 0.85rem; width: 100%; border-top: 1px solid var(--rule); }
 </style>
 </head>
 <body>
 <main>
+  <svg class="mascot" viewBox="0 0 20 20" shape-rendering="crispEdges" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <g fill="#8B5A1B"><rect x="7" y="0" width="6" height="1"/><rect x="5" y="1" width="2" height="1"/><rect x="13" y="1" width="2" height="1"/><rect x="4" y="2" width="1" height="1"/><rect x="15" y="2" width="1" height="1"/><rect x="3" y="3" width="1" height="1"/><rect x="16" y="3" width="1" height="1"/><rect x="2" y="4" width="1" height="9"/><rect x="17" y="4" width="1" height="9"/><rect x="3" y="13" width="1" height="1"/><rect x="16" y="13" width="1" height="1"/><rect x="4" y="14" width="1" height="1"/><rect x="15" y="14" width="1" height="1"/><rect x="5" y="15" width="2" height="1"/><rect x="13" y="15" width="2" height="1"/><rect x="7" y="16" width="6" height="1"/></g>
+    <g fill="#FFC93C"><rect x="7" y="1" width="6" height="1"/><rect x="5" y="2" width="10" height="1"/><rect x="4" y="3" width="12" height="1"/><rect x="3" y="4" width="3" height="1"/><rect x="8" y="4" width="4" height="1"/><rect x="14" y="4" width="3" height="1"/><rect x="3" y="5" width="3" height="1"/><rect x="8" y="5" width="4" height="1"/><rect x="14" y="5" width="3" height="1"/><rect x="3" y="6" width="14" height="1"/><rect x="3" y="7" width="4" height="1"/><rect x="8" y="7" width="4" height="1"/><rect x="13" y="7" width="4" height="1"/><rect x="3" y="8" width="5" height="1"/><rect x="12" y="8" width="5" height="1"/><rect x="3" y="9" width="14" height="1"/><rect x="3" y="10" width="5" height="1"/><rect x="12" y="10" width="5" height="1"/><rect x="3" y="11" width="5" height="1"/><rect x="12" y="11" width="5" height="1"/><rect x="3" y="12" width="6" height="1"/><rect x="11" y="12" width="6" height="1"/><rect x="4" y="13" width="12" height="1"/><rect x="5" y="14" width="10" height="1"/><rect x="7" y="15" width="6" height="1"/></g>
+    <g fill="#1A1A1A"><rect x="6" y="4" width="1" height="1"/><rect x="12" y="4" width="1" height="1"/><rect x="6" y="5" width="2" height="1"/><rect x="12" y="5" width="2" height="1"/><rect x="7" y="7" width="1" height="1"/><rect x="12" y="7" width="1" height="1"/><rect x="8" y="8" width="4" height="1"/></g>
+    <g fill="#FFFFFF"><rect x="7" y="4" width="1" height="1"/><rect x="13" y="4" width="1" height="1"/></g>
+    <g fill="#C48A2B"><rect x="8" y="10" width="1" height="1"/><rect x="11" y="10" width="1" height="1"/><rect x="8" y="11" width="1" height="1"/><rect x="11" y="11" width="1" height="1"/><rect x="9" y="12" width="2" height="1"/></g>
+    <g fill="#6A3E12"><rect x="9" y="10" width="2" height="1"/><rect x="9" y="11" width="2" height="1"/></g>
+    <g fill="#5FA84E"><rect x="5" y="17" width="2" height="1"/><rect x="13" y="17" width="2" height="1"/><rect x="5" y="18" width="2" height="1"/><rect x="13" y="18" width="2" height="1"/></g>
+    <g fill="#2E6A23"><rect x="4" y="18" width="1" height="1"/><rect x="15" y="18" width="1" height="1"/><rect x="5" y="19" width="2" height="1"/><rect x="13" y="19" width="2" height="1"/></g>
+  </svg>
   <h1>Docs coming soon</h1>
   <p>Proper documentation is being written. In the meantime, the Go package reference is the most complete source of truth:</p>
   <p><a href="https://pkg.go.dev/github.com/sambigeara/pollen">pkg.go.dev/github.com/sambigeara/pollen</a></p>

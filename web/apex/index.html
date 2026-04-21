@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Pollen</title>
     <meta name="description" content="A zero-trust, leaderless, emergent mesh runtime. One static binary, a whole fabric.">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <style>
         :root {
             --bg: #ffffff;
@@ -43,6 +44,14 @@
             margin: 0 auto;
             padding: 4rem 1.5rem 3rem;
             width: 100%;
+        }
+
+        .mascot {
+            display: block;
+            width: 128px;
+            height: 128px;
+            margin: 0 auto 1.5rem;
+            image-rendering: pixelated;
         }
 
         h1 {
@@ -146,6 +155,16 @@
 
 <body>
     <main>
+        <svg class="mascot" viewBox="0 0 20 20" shape-rendering="crispEdges" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+            <g fill="#8B5A1B"><rect x="7" y="0" width="6" height="1"/><rect x="5" y="1" width="2" height="1"/><rect x="13" y="1" width="2" height="1"/><rect x="4" y="2" width="1" height="1"/><rect x="15" y="2" width="1" height="1"/><rect x="3" y="3" width="1" height="1"/><rect x="16" y="3" width="1" height="1"/><rect x="2" y="4" width="1" height="9"/><rect x="17" y="4" width="1" height="9"/><rect x="3" y="13" width="1" height="1"/><rect x="16" y="13" width="1" height="1"/><rect x="4" y="14" width="1" height="1"/><rect x="15" y="14" width="1" height="1"/><rect x="5" y="15" width="2" height="1"/><rect x="13" y="15" width="2" height="1"/><rect x="7" y="16" width="6" height="1"/></g>
+            <g fill="#FFC93C"><rect x="7" y="1" width="6" height="1"/><rect x="5" y="2" width="10" height="1"/><rect x="4" y="3" width="12" height="1"/><rect x="3" y="4" width="3" height="1"/><rect x="8" y="4" width="4" height="1"/><rect x="14" y="4" width="3" height="1"/><rect x="3" y="5" width="3" height="1"/><rect x="8" y="5" width="4" height="1"/><rect x="14" y="5" width="3" height="1"/><rect x="3" y="6" width="14" height="1"/><rect x="3" y="7" width="4" height="1"/><rect x="8" y="7" width="4" height="1"/><rect x="13" y="7" width="4" height="1"/><rect x="3" y="8" width="5" height="1"/><rect x="12" y="8" width="5" height="1"/><rect x="3" y="9" width="14" height="1"/><rect x="3" y="10" width="5" height="1"/><rect x="12" y="10" width="5" height="1"/><rect x="3" y="11" width="5" height="1"/><rect x="12" y="11" width="5" height="1"/><rect x="3" y="12" width="6" height="1"/><rect x="11" y="12" width="6" height="1"/><rect x="4" y="13" width="12" height="1"/><rect x="5" y="14" width="10" height="1"/><rect x="7" y="15" width="6" height="1"/></g>
+            <g fill="#1A1A1A"><rect x="6" y="4" width="1" height="1"/><rect x="12" y="4" width="1" height="1"/><rect x="6" y="5" width="2" height="1"/><rect x="12" y="5" width="2" height="1"/><rect x="7" y="7" width="1" height="1"/><rect x="12" y="7" width="1" height="1"/><rect x="8" y="8" width="4" height="1"/></g>
+            <g fill="#FFFFFF"><rect x="7" y="4" width="1" height="1"/><rect x="13" y="4" width="1" height="1"/></g>
+            <g fill="#C48A2B"><rect x="8" y="10" width="1" height="1"/><rect x="11" y="10" width="1" height="1"/><rect x="8" y="11" width="1" height="1"/><rect x="11" y="11" width="1" height="1"/><rect x="9" y="12" width="2" height="1"/></g>
+            <g fill="#6A3E12"><rect x="9" y="10" width="2" height="1"/><rect x="9" y="11" width="2" height="1"/></g>
+            <g fill="#5FA84E"><rect x="5" y="17" width="2" height="1"/><rect x="13" y="17" width="2" height="1"/><rect x="5" y="18" width="2" height="1"/><rect x="13" y="18" width="2" height="1"/></g>
+            <g fill="#2E6A23"><rect x="4" y="18" width="1" height="1"/><rect x="15" y="18" width="1" height="1"/><rect x="5" y="19" width="2" height="1"/><rect x="13" y="19" width="2" height="1"/></g>
+        </svg>
         <h1>Pollen</h1>
         <p class="tagline">A local-first, zero-trust, leaderless, emergent mesh and WASM runtime, in a single static binary.</p>
         <div class="install"><code>curl -fsSL https://pln.sh/install.sh | bash</code></div>
