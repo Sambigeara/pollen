@@ -34,6 +34,7 @@ type BlobsAPI interface {
 	SetName(hash, name string) error
 	Remove(hash string) error
 	Rescan() error
+	Prune(keep map[string]struct{}, minAge time.Duration) ([]string, error)
 }
 
 type streamOpener interface {
@@ -51,7 +52,7 @@ type blobStore interface {
 	Get(hash string) (io.ReadCloser, error)
 	Has(hash string) bool
 	Remove(hash string) error
-	Hashes() ([]string, error)
+	Entries() ([]cas.Entry, error)
 }
 
 type Service struct {
@@ -145,15 +146,63 @@ func (s *Service) Remove(hash string) error {
 	return nil
 }
 
+// KeepSet returns digests protected from eviction: workload spec hashes,
+// named blob-spec digests, plus any extras the caller pre-collects (blobs
+// must not import sibling packages, so static passes its manifest + file
+// digests in here).
+func KeepSet(snap state.Snapshot, extras ...map[string]struct{}) map[string]struct{} {
+	keep := make(map[string]struct{}, len(snap.Specs)+len(snap.BlobSpecs))
+	for h := range snap.Specs {
+		keep[h] = struct{}{}
+	}
+	for h := range snap.BlobSpecs {
+		keep[h] = struct{}{}
+	}
+	for _, extra := range extras {
+		for h := range extra {
+			keep[h] = struct{}{}
+		}
+	}
+	return keep
+}
+
+// Prune evicts blobs outside keep. minAge shields freshly-written files
+// that don't yet have a spec referencing them — e.g. `pln static seed`
+// uploads file blobs anonymously before publishing the StaticSpec.
+func (s *Service) Prune(keep map[string]struct{}, minAge time.Duration) ([]string, error) {
+	entries, err := s.store.Entries()
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().Add(-minAge)
+	var removed []string
+	for _, e := range entries {
+		if _, ok := keep[e.Hash]; ok {
+			continue
+		}
+		if e.ModTime.After(cutoff) {
+			continue
+		}
+		if err := s.Remove(e.Hash); err != nil {
+			if errors.Is(err, ErrNotLocal) {
+				continue
+			}
+			return removed, err
+		}
+		removed = append(removed, e.Hash)
+	}
+	return removed, nil
+}
+
 func (s *Service) Rescan() error {
-	hashes, err := s.store.Hashes()
+	entries, err := s.store.Entries()
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.local = make(map[string]struct{}, len(hashes))
-	for _, h := range hashes {
-		s.local[h] = struct{}{}
+	s.local = make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		s.local[e.Hash] = struct{}{}
 	}
 	digests := slices.Sorted(maps.Keys(s.local))
 	s.mu.Unlock()

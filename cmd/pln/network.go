@@ -580,7 +580,20 @@ func collectBlobsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		headers: []string{"NAME", "HASH", "REPLICAS", "LOCAL"},
 	}
 	const defaultBlobLimit = 20
-	blobs := st.GetBlobs()
+	all := st.GetBlobs()
+	var (
+		blobs    []*controlv1.BlobSummary
+		orphaned int
+	)
+	for _, b := range all {
+		if b.GetOrphan() {
+			orphaned++
+			if !opts.includeAll {
+				continue
+			}
+		}
+		blobs = append(blobs, b)
+	}
 	limit := len(blobs)
 	if !opts.wide && limit > defaultBlobLimit {
 		limit = defaultBlobLimit
@@ -598,15 +611,23 @@ func collectBlobsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			local = "*"
 		}
 		name := b.GetName()
-		if name == "" {
+		switch {
+		case b.GetOrphan():
+			name = "(orphaned)"
+		case name == "":
 			name = "-"
-		} else if sfx := suffixes[namePeerKey{b.GetName(), peerKeyString(b.GetPublisher().GetPeerPub())}]; sfx != "" {
-			name += "-" + sfx
+		default:
+			if sfx := suffixes[namePeerKey{name, peerKeyString(b.GetPublisher().GetPeerPub())}]; sfx != "" {
+				name += "-" + sfx
+			}
 		}
 		sec.rows = append(sec.rows, []string{name, hash, fmt.Sprintf("%d", b.GetReplicas()), local})
 	}
-	if len(blobs) > limit {
+	switch {
+	case len(blobs) > limit:
 		sec.footer = fmt.Sprintf("%d more blobs (use --wide)", len(blobs)-limit)
+	case orphaned > 0 && !opts.includeAll:
+		sec.footer = fmt.Sprintf("%d orphaned blobs hidden (use --all)", orphaned)
 	}
 	return sec
 }

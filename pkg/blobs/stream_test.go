@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sambigeara/pollen/pkg/cas"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
@@ -65,7 +66,7 @@ func (f *fakeStore) Put(r io.Reader) (string, error) {
 func (f *fakeStore) Get(string) (io.ReadCloser, error) { return nil, nil }
 func (f *fakeStore) Has(string) bool                   { return false }
 func (f *fakeStore) Remove(string) error               { return nil }
-func (f *fakeStore) Hashes() ([]string, error)         { return nil, nil }
+func (f *fakeStore) Entries() ([]cas.Entry, error)     { return nil, nil }
 
 func peerKey(b byte) types.PeerKey {
 	var k types.PeerKey

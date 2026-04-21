@@ -947,12 +947,15 @@ func (x *GetStatusResponse) GetBlobs() []*BlobSummary {
 }
 
 type BlobSummary struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
-	Replicas      uint32                 `protobuf:"varint,2,opt,name=replicas,proto3" json:"replicas,omitempty"`
-	Local         bool                   `protobuf:"varint,3,opt,name=local,proto3" json:"local,omitempty"`
-	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
-	Publisher     *NodeRef               `protobuf:"bytes,5,opt,name=publisher,proto3" json:"publisher,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Hash      string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	Replicas  uint32                 `protobuf:"varint,2,opt,name=replicas,proto3" json:"replicas,omitempty"`
+	Local     bool                   `protobuf:"varint,3,opt,name=local,proto3" json:"local,omitempty"`
+	Name      string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
+	Publisher *NodeRef               `protobuf:"bytes,5,opt,name=publisher,proto3" json:"publisher,omitempty"`
+	// Set when no workload spec, named blob spec, or static manifest
+	// references this digest. The janitor evicts these on its next tick.
+	Orphan        bool `protobuf:"varint,6,opt,name=orphan,proto3" json:"orphan,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1020,6 +1023,13 @@ func (x *BlobSummary) GetPublisher() *NodeRef {
 		return x.Publisher
 	}
 	return nil
+}
+
+func (x *BlobSummary) GetOrphan() bool {
+	if x != nil {
+		return x.Orphan
+	}
+	return false
 }
 
 type WorkloadSummary struct {
@@ -3221,13 +3231,14 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\bdegraded\x18\x06 \x01(\bR\bdegraded\x12@\n" +
 	"\tworkloads\x18\a \x03(\v2\".pollen.control.v1.WorkloadSummaryR\tworkloads\x126\n" +
 	"\x05sites\x18\b \x03(\v2 .pollen.control.v1.StaticSummaryR\x05sites\x124\n" +
-	"\x05blobs\x18\t \x03(\v2\x1e.pollen.control.v1.BlobSummaryR\x05blobs\"\xa1\x01\n" +
+	"\x05blobs\x18\t \x03(\v2\x1e.pollen.control.v1.BlobSummaryR\x05blobs\"\xb9\x01\n" +
 	"\vBlobSummary\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x12\x1a\n" +
 	"\breplicas\x18\x02 \x01(\rR\breplicas\x12\x14\n" +
 	"\x05local\x18\x03 \x01(\bR\x05local\x12\x12\n" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x128\n" +
-	"\tpublisher\x18\x05 \x01(\v2\x1a.pollen.control.v1.NodeRefR\tpublisher\"\xdd\x02\n" +
+	"\tpublisher\x18\x05 \x01(\v2\x1a.pollen.control.v1.NodeRefR\tpublisher\x12\x16\n" +
+	"\x06orphan\x18\x06 \x01(\bR\x06orphan\"\xdd\x02\n" +
 	"\x0fWorkloadSummary\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x129\n" +
 	"\x06status\x18\x02 \x01(\x0e2!.pollen.control.v1.WorkloadStatusR\x06status\x12&\n" +

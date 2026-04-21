@@ -758,8 +758,10 @@ func TestGetStatusBlobsIncludesName(t *testing.T) {
 	}
 	require.Equal(t, "config", byHash["named-blob"].GetName())
 	require.Equal(t, local.Bytes(), byHash["named-blob"].GetPublisher().GetPeerPub())
+	require.False(t, byHash["named-blob"].GetOrphan())
 	require.Empty(t, byHash["anonymous-blob"].GetName())
 	require.Nil(t, byHash["anonymous-blob"].GetPublisher())
+	require.True(t, byHash["anonymous-blob"].GetOrphan())
 }
 
 func TestGetStatus_PeerTrafficFromGossip(t *testing.T) {

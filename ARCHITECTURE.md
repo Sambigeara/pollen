@@ -585,6 +585,11 @@ type BlobsAPI interface {
     Has(hash string) bool
     Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
     HandleStream(stream io.ReadWriteCloser, peer types.PeerKey)
+    Announce(hash string) error
+    SetName(hash, name string) error
+    Remove(hash string) error
+    Rescan() error
+    Prune(keep map[string]struct{}, minAge time.Duration) ([]string, error)
 }
 
 var _ BlobsAPI = (*Service)(nil)
@@ -594,6 +599,8 @@ func New(pollenDir string, mesh StreamOpener) (*Service, error)
 ```
 
 Wire protocol on `StreamTypeBlob`: opener writes a 64-byte hex digest; responder writes a status byte (0 = ok, 1 = not found) then streams the bytes. Hash is verified on receipt via `cas.Put`'s rehash; mismatched bytes are rejected.
+
+**Garbage collection.** `Prune(keep, minAge)` walks local CAS and evicts any digest outside `keep` whose on-disk mtime is older than `minAge`. Supervisor ticks the janitor periodically with `keep = blobs.KeepSet(snapshot, static.StaticBlobs())` — the union of every workload spec hash, named blob-spec digest, and static manifest + file digest. The grace period (`minAge`) exists because `pln static seed` uploads file blobs anonymously before publishing the spec that references them; the janitor must not race that window. Publisher-side `Unseed` paths still call `Remove` eagerly for user-facing responsiveness; the janitor is the backstop for claimant releases, spec tombstones observed via gossip, site updates, and crash orphans.
 
 ### Routing
 

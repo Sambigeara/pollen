@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/sambigeara/pollen/pkg/plnfs"
 )
@@ -20,6 +21,11 @@ var ErrNotFound = errors.New("artifact not found")
 // Store is a content-addressable artifact store backed by the local filesystem.
 type Store struct {
 	root string
+}
+
+type Entry struct {
+	ModTime time.Time
+	Hash    string
 }
 
 func New(pollenDir string) (*Store, error) {
@@ -93,7 +99,7 @@ func (s *Store) Remove(hash string) error {
 	return nil
 }
 
-func (s *Store) Hashes() ([]string, error) {
+func (s *Store) Entries() ([]Entry, error) {
 	shards, err := os.ReadDir(s.root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -101,7 +107,7 @@ func (s *Store) Hashes() ([]string, error) {
 		}
 		return nil, fmt.Errorf("cas: read root: %w", err)
 	}
-	var out []string
+	var out []Entry
 	for _, shard := range shards {
 		if !shard.IsDir() || len(shard.Name()) != 2 {
 			continue
@@ -116,9 +122,17 @@ func (s *Store) Hashes() ([]string, error) {
 				continue
 			}
 			hash := name[:len(name)-len(".wasm")]
-			if len(hash) == hex.EncodedLen(sha256.Size) {
-				out = append(out, hash)
+			if len(hash) != hex.EncodedLen(sha256.Size) {
+				continue
 			}
+			info, err := e.Info()
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				return nil, fmt.Errorf("cas: stat %s: %w", name, err)
+			}
+			out = append(out, Entry{Hash: hash, ModTime: info.ModTime()})
 		}
 	}
 	return out, nil

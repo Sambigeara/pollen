@@ -129,6 +129,9 @@ message BlobSummary {
   bool local = 3;
   string name = 4;
   NodeRef publisher = 5;
+  // Set when no workload spec, named blob spec, or static manifest
+  // references this digest. The janitor evicts these on its next tick.
+  bool orphan = 6;
 }
 
 enum WorkloadStatus {

@@ -888,9 +888,10 @@ func buildStaticSummaries(snap state.Snapshot) []*controlv1.StaticSummary {
 	return out
 }
 
-// buildBlobSummaries skips blobs that back a workload or static site —
-// those are surfaced under their own summaries, so listing them again
-// would just be noise.
+// buildBlobSummaries tags unreferenced blobs as orphan; the CLI filters
+// them from the default view and the janitor evicts them on its next tick.
+// Workload and static-backed blobs are surfaced under their own summaries
+// and skipped here.
 func (s *Service) buildBlobSummaries(snap state.Snapshot) []*controlv1.BlobSummary {
 	counts := make(map[string]uint32)
 	for _, nv := range snap.Nodes {
@@ -909,21 +910,18 @@ func (s *Service) buildBlobSummaries(snap state.Snapshot) []*controlv1.BlobSumma
 			continue
 		}
 		_, local := localBlobs[hash]
-		var (
-			name      string
-			publisher *controlv1.NodeRef
-		)
-		if view, ok := snap.BlobSpecs[hash]; ok {
-			name = view.Spec.Name
-			publisher = &controlv1.NodeRef{PeerPub: view.Publisher.Bytes()}
+		summary := &controlv1.BlobSummary{
+			Hash:     hash,
+			Replicas: n,
+			Local:    local,
 		}
-		out = append(out, &controlv1.BlobSummary{
-			Hash:      hash,
-			Replicas:  n,
-			Local:     local,
-			Name:      name,
-			Publisher: publisher,
-		})
+		if view, ok := snap.BlobSpecs[hash]; ok {
+			summary.Name = view.Spec.Name
+			summary.Publisher = &controlv1.NodeRef{PeerPub: view.Publisher.Bytes()}
+		} else {
+			summary.Orphan = true
+		}
+		out = append(out, summary)
 	}
 	return out
 }

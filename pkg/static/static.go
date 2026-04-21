@@ -63,7 +63,9 @@ type Service struct {
 
 var _ StaticAPI = (*Service)(nil)
 
-// canServe=false skips the reconciler loop; SeedStatic/UnseedStatic still work.
+// canServe gates file-fetch and claim; the reconciler still runs on
+// non-serving peers so every node pulls manifests (admin intent) and can
+// enumerate the referenced file digests.
 func New(localID types.PeerKey, store stateStore, blobs blobStore, canServe bool, log *zap.SugaredLogger) *Service {
 	return &Service{
 		store:         store,
@@ -78,9 +80,6 @@ func New(localID types.PeerKey, store stateStore, blobs blobStore, canServe bool
 }
 
 func (s *Service) Start(ctx context.Context) error {
-	if !s.canServe {
-		return nil
-	}
 	ctx, s.cancel = context.WithCancel(ctx)
 	s.wg.Go(func() { s.run(ctx) })
 	return nil
@@ -197,6 +196,13 @@ func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, nam
 	manifest, err := s.loadManifest(spec.ManifestDigest)
 	if err != nil {
 		return err
+	}
+
+	// Non-serving peers stop after the manifest — they don't hold the
+	// referenced files or claim the site, but the manifest is enough to
+	// enumerate file digests for keep-set membership.
+	if !s.canServe {
+		return nil
 	}
 
 	for path, digest := range manifest.paths {

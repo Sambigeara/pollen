@@ -55,6 +55,11 @@ const (
 	// punch opens a transient UDP socket, so we bound it independently of
 	// the workload concurrency story.
 	maxConcurrentPunches = 8
+	blobPruneInterval    = 5 * time.Minute
+	// blobPruneGrace must comfortably exceed the worst-case duration of a
+	// `pln static seed` so a janitor tick mid-seed can't race the spec
+	// publish that claims the just-uploaded file blobs.
+	blobPruneGrace = 5 * time.Minute
 )
 
 type Supervisor struct {
@@ -478,6 +483,9 @@ func (n *Supervisor) Run(ctx context.Context) error {
 	saveTicker := time.NewTicker(stateSaveInterval)
 	defer saveTicker.Stop()
 
+	pruneTicker := time.NewTicker(blobPruneInterval)
+	defer pruneTicker.Stop()
+
 	n.syncPeersFromState(ctx, n.store.Snapshot())
 	n.recomputeRoutes()
 
@@ -512,6 +520,8 @@ func (n *Supervisor) Run(ctx context.Context) error {
 			n.handlePeerEvent(ctx, ev)
 		case <-saveTicker.C:
 			n.saveState()
+		case <-pruneTicker.C:
+			n.pruneOrphanBlobs()
 		case <-n.routeInvalidate:
 			now := time.Now()
 			if firstRouteInvalidation.IsZero() {
@@ -705,6 +715,17 @@ func (n *Supervisor) saveState() {
 	}
 	if err := n.peerCache.Flush(); err != nil {
 		n.log.Warnw("failed to flush peer cache", zap.Error(err))
+	}
+}
+
+func (n *Supervisor) pruneOrphanBlobs() {
+	keep := blobs.KeepSet(n.store.Snapshot(), n.static.StaticBlobs())
+	removed, err := n.blobs.Prune(keep, blobPruneGrace)
+	if err != nil {
+		n.log.Warnw("prune orphan blobs failed", zap.Error(err))
+	}
+	if len(removed) > 0 {
+		n.log.Infow("evicted orphan blobs", "count", len(removed))
 	}
 }
 
