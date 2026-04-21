@@ -232,9 +232,11 @@ func (s *store) buildSnapshot() Snapshot {
 		}
 	}
 
-	// Specs are cluster-scoped admin intent: collected from every peer's log
-	// (not gated by the valid filter) so they survive publisher departure —
-	// cert expiry, deny, liveness. Lowest peer key wins on conflict.
+	// Specs are cluster-scoped admin intent: collected from every peer's
+	// log so they survive publisher departure — cert expiry, deny,
+	// liveness. Valid publishers outrank invalid ones so a fresh live
+	// seed supersedes a departed peer's stale spec; within the same tier
+	// the lower peer key wins.
 	//
 	// TODO(saml): O(n_peers * n_attrs) on every buildSnapshot call. Acceptable
 	// while specs are rare and buildNodeView already walks every valid peer's
@@ -244,6 +246,14 @@ func (s *store) buildSnapshot() Snapshot {
 	specs := make(map[string]WorkloadSpecView)
 	staticSpecs := make(map[string]StaticSpecView)
 	blobSpecs := make(map[string]BlobSpecView)
+	outranks := func(candidate, incumbent types.PeerKey) bool {
+		_, candidateValid := valid[candidate]
+		_, incumbentValid := valid[incumbent]
+		if candidateValid != incumbentValid {
+			return candidateValid
+		}
+		return candidate.Compare(incumbent) < 0
+	}
 	for pk, rec := range s.nodes {
 		for key, ev := range rec.log {
 			if ev.Deleted {
@@ -251,21 +261,21 @@ func (s *store) buildSnapshot() Snapshot {
 			}
 			switch key.kind { //nolint:exhaustive
 			case attrWorkloadSpec:
-				if existing, ok := specs[key.name]; !ok || pk.Compare(existing.Publisher) < 0 {
+				if existing, ok := specs[key.name]; !ok || outranks(pk, existing.Publisher) {
 					specs[key.name] = WorkloadSpecView{
 						Spec:      workloadSpecFromProto(ev.GetWorkloadSpec()),
 						Publisher: pk,
 					}
 				}
 			case attrStaticSpec:
-				if existing, ok := staticSpecs[key.name]; !ok || pk.Compare(existing.Publisher) < 0 {
+				if existing, ok := staticSpecs[key.name]; !ok || outranks(pk, existing.Publisher) {
 					staticSpecs[key.name] = StaticSpecView{
 						Spec:      staticSpecFromProto(ev.GetStaticSpec()),
 						Publisher: pk,
 					}
 				}
 			case attrBlobSpec:
-				if existing, ok := blobSpecs[key.name]; !ok || pk.Compare(existing.Publisher) < 0 {
+				if existing, ok := blobSpecs[key.name]; !ok || outranks(pk, existing.Publisher) {
 					blobSpecs[key.name] = BlobSpecView{
 						Spec:      blobSpecFromProto(ev.GetBlobSpec()),
 						Publisher: pk,
