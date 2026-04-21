@@ -62,6 +62,10 @@ func runServiceInstall(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "service install is Linux-only; on macOS install via Homebrew (`brew install sambigeara/homebrew-pln/pln`)")
 		return nil
 	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		fmt.Fprintln(cmd.OutOrStdout(), "systemd not detected; skipping service install. Run `pln up` directly if you don't need a system service.")
+		return nil //nolint:nilerr
+	}
 	if os.Getuid() != 0 {
 		return errors.New("must be run as root (try: sudo pln service install)")
 	}
