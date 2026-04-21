@@ -3,7 +3,9 @@ set -e
 {
 
 REPO="sambigeara/pollen"
-VERSION=""
+# Goreleaser rewrites this to the release tag; the untouched sentinel
+# triggers the API fallback below.
+VERSION="__VERSION__"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -32,7 +34,7 @@ if [ "$OS" = "darwin" ]; then
 fi
 
 if [ "$OS" = "linux" ]; then
-    if [ -z "$VERSION" ]; then
+    if [ "$VERSION" = "__VERSION__" ]; then
         log "Linux detected. Finding latest release..."
         API_RESP=$(curl -sS "https://api.github.com/repos/$REPO/releases/latest" 2>&1) || fatal "Could not reach GitHub API."
         VERSION=$(echo "$API_RESP" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')

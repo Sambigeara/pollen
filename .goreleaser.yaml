@@ -1,5 +1,17 @@
 version: 2
 project_name: pln
+before:
+  hooks:
+    # Bake the release tag into install.sh so users don't need a GitHub
+    # API round-trip to discover the latest version. The rendered copy
+    # lives outside dist/ because goreleaser asserts dist/ is empty
+    # after before-hooks run. The second hook fails loudly if the
+    # sentinel drifts and the substitution silently no-ops.
+    - sh -c 'mkdir -p .goreleaser-extras && sed "s|^VERSION=\"__VERSION__\"|VERSION=\"$(git describe --tags --abbrev=0)\"|" scripts/install.sh > .goreleaser-extras/install.sh'
+    - sh -c 'grep -q "^VERSION=\"$(git describe --tags --abbrev=0)\"$" .goreleaser-extras/install.sh'
+release:
+  extra_files:
+    - glob: ./.goreleaser-extras/install.sh
 builds:
   - main: ./cmd/pln
     ldflags:
