@@ -4,7 +4,6 @@
 package config
 
 import (
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -13,11 +12,9 @@ import (
 	"strconv"
 	"time"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"gopkg.in/yaml.v3"
 
 	"github.com/sambigeara/pollen/pkg/plnfs"
-	"github.com/sambigeara/pollen/pkg/types"
 )
 
 const (
@@ -71,17 +68,16 @@ type Placement struct {
 }
 
 type Config struct {
-	BootstrapPeers map[string][]string `yaml:"bootstrapPeers,omitempty"`
-	Name           string              `yaml:"name,omitempty"`
-	HTTP           string              `yaml:"http,omitempty"`
-	StaticHTTP     string              `yaml:"staticHTTP,omitempty"`
-	ControlAddr    string              `yaml:"controlAddr,omitempty"`
-	LogLevel       string              `yaml:"logLevel,omitempty"`
-	Connections    []Connection        `yaml:"connections,omitempty"`
-	Services       []Service           `yaml:"services,omitempty"`
-	Resources      Resources           `yaml:"resources,omitempty"`
-	Placement      Placement           `yaml:"placement,omitempty"`
-	Public         bool                `yaml:"public,omitempty"`
+	Name        string       `yaml:"name,omitempty"`
+	HTTP        string       `yaml:"http,omitempty"`
+	StaticHTTP  string       `yaml:"staticHTTP,omitempty"`
+	ControlAddr string       `yaml:"controlAddr,omitempty"`
+	LogLevel    string       `yaml:"logLevel,omitempty"`
+	Connections []Connection `yaml:"connections,omitempty"`
+	Services    []Service    `yaml:"services,omitempty"`
+	Resources   Resources    `yaml:"resources,omitempty"`
+	Placement   Placement    `yaml:"placement,omitempty"`
+	Public      bool         `yaml:"public,omitempty"`
 }
 
 func Load(pollenDir string) (*Config, error) {
@@ -97,17 +93,6 @@ func Load(pollenDir string) (*Config, error) {
 	if err := yaml.Unmarshal(raw, cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
-
-	// basic validation...
-	for peerHex, addrs := range cfg.BootstrapPeers {
-		if _, err := types.PeerKeyFromString(peerHex); err != nil {
-			return nil, fmt.Errorf("bootstrap peer %s: %w", peerHex, err)
-		}
-		if len(addrs) == 0 {
-			return nil, fmt.Errorf("bootstrap peer %s: at least one address is required", peerHex)
-		}
-	}
-
 	return cfg, nil
 }
 
@@ -118,18 +103,6 @@ func Save(pollenDir string, cfg *Config) error {
 	}
 
 	return plnfs.WriteGroupWritable(filepath.Join(pollenDir, configFileName), append([]byte(configHeader), encoded...))
-}
-
-func (c *Config) RememberBootstrapPeer(peer *admissionv1.BootstrapPeer) {
-	if c.BootstrapPeers == nil {
-		c.BootstrapPeers = make(map[string][]string)
-	}
-	pk := types.PeerKeyFromBytes(peer.GetPeerPub())
-	c.BootstrapPeers[pk.String()] = slices.Clone(peer.GetAddrs())
-}
-
-func (c *Config) ForgetBootstrapPeer(pubKey []byte) {
-	delete(c.BootstrapPeers, hex.EncodeToString(pubKey))
 }
 
 func (c *Config) AddService(name string, port uint32, protocol string) {

@@ -31,6 +31,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/observability/traces"
+	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/placement"
 	"github.com/sambigeara/pollen/pkg/plnfs"
 	"github.com/sambigeara/pollen/pkg/routing"
@@ -87,11 +88,11 @@ type Supervisor struct {
 	shutdownCh       chan struct{}
 	inviteWaiters    map[types.PeerKey]chan *meshv1.InviteRedeemResponse
 	promRegistry     *prometheus.Registry
+	peerCache        *peercache.Store
 	httpAddr         string
 	socketPath       string
 	controlAddr      string
 	pollenDir        string
-	bootstrapPeers   []BootstrapTarget
 	signPriv         ed25519.PrivateKey
 	wg               sync.WaitGroup
 	peerTickInterval time.Duration
@@ -107,6 +108,15 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	pubKey := privKey.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 	pollenDir := opts.PollenDir
 	self := types.PeerKeyFromBytes(pubKey)
+
+	peerCache := opts.PeerCache
+	if peerCache == nil {
+		pc, err := peercache.Open(pollenDir)
+		if err != nil {
+			return nil, fmt.Errorf("open peer cache: %w", err)
+		}
+		peerCache = pc
+	}
 
 	stateStore := state.New(self)
 	if opts.BootstrapPublic {
@@ -215,7 +225,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		socketPath:       opts.SocketPath,
 		controlAddr:      opts.ControlAddr,
 		peerTickInterval: opts.PeerTickInterval,
-		bootstrapPeers:   opts.BootstrapPeers,
+		peerCache:        peerCache,
 		reconnectWindow:  config.DefaultReconnectWindow,
 		punchSem:         make(chan struct{}, maxConcurrentPunches),
 		ready:            make(chan struct{}),
@@ -533,12 +543,13 @@ func (n *Supervisor) Run(ctx context.Context) error {
 }
 
 func (n *Supervisor) connectBootstrapPeers(ctx context.Context) {
-	for _, bp := range n.bootstrapPeers {
-		if slices.Contains(n.store.Snapshot().DeniedPeers(), bp.PeerKey) {
+	denied := n.store.Snapshot().DeniedPeers()
+	for _, entry := range n.peerCache.Snapshot() {
+		if slices.Contains(denied, entry.PeerKey) {
 			continue
 		}
-		addrs := make([]netip.AddrPort, 0, len(bp.Addrs))
-		for _, a := range bp.Addrs {
+		addrs := make([]netip.AddrPort, 0, len(entry.Addrs))
+		for _, a := range entry.Addrs {
 			ap, err := netip.ParseAddrPort(a)
 			if err != nil {
 				n.log.Warnw("bootstrap peer: resolve address failed", "addr", a, zap.Error(err))
@@ -547,8 +558,8 @@ func (n *Supervisor) connectBootstrapPeers(ctx context.Context) {
 			addrs = append(addrs, ap)
 		}
 		if len(addrs) > 0 {
-			if err := n.mesh.Connect(ctx, bp.PeerKey, addrs); err != nil {
-				n.log.Warnw("bootstrap peer: connect failed", "peer", bp.PeerKey.Short(), zap.Error(err))
+			if err := n.mesh.Connect(ctx, entry.PeerKey, addrs); err != nil {
+				n.log.Warnw("bootstrap peer: connect failed", "peer", entry.PeerKey.Short(), zap.Error(err))
 			}
 		}
 	}
@@ -596,6 +607,7 @@ func (n *Supervisor) dispatchEvents(_ context.Context, events []state.Event) {
 			n.tunneling.HandlePeerDenied(e.Key)
 			n.mesh.ClosePeerSession(e.Key, transport.DisconnectDenied)
 			n.mesh.ForgetPeer(e.Key)
+			n.peerCache.Forget(e.Key)
 		case state.TopologyChanged:
 			n.signalRouteInvalidate()
 			n.placement.Signal()
@@ -613,6 +625,11 @@ func (n *Supervisor) handlePeerEvent(_ context.Context, ev transport.PeerEvent) 
 		n.signalRouteInvalidate()
 		n.store.SetLocalReachable(n.GetConnectedPeers())
 		n.store.SetPeerLastAddr(ev.Key, ev.Addrs[0].String())
+		addrs := make([]string, len(ev.Addrs))
+		for i, a := range ev.Addrs {
+			addrs[i] = a.String()
+		}
+		n.peerCache.Upsert(ev.Key, addrs, time.Now())
 		n.log.Infow("peer connected", "peer_id", ev.Key.Short())
 	case transport.PeerEventDisconnected:
 		n.signalRouteInvalidate()
@@ -685,6 +702,9 @@ func (n *Supervisor) saveState() {
 	}
 	if err := plnfs.WriteGroupReadable(filepath.Join(n.pollenDir, "state.pb"), blob); err != nil {
 		n.log.Warnw("failed to save state", zap.Error(err))
+	}
+	if err := n.peerCache.Flush(); err != nil {
+		n.log.Warnw("failed to flush peer cache", zap.Error(err))
 	}
 }
 

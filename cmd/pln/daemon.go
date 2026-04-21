@@ -28,6 +28,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
+	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/supervisor"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -162,10 +163,9 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 	}
 	inviteConsumer := auth.NewInviteConsumer(consumedEntries)
 
-	bootstrapPeers := make([]supervisor.BootstrapTarget, 0, len(env.cfg.BootstrapPeers))
-	for peerHex, addrs := range env.cfg.BootstrapPeers {
-		pk, _ := types.PeerKeyFromString(peerHex)
-		bootstrapPeers = append(bootstrapPeers, supervisor.BootstrapTarget{PeerKey: pk, Addrs: addrs})
+	peerCache, err := peercache.Open(env.dir)
+	if err != nil {
+		return fmt.Errorf("load peer cache: %w", err)
 	}
 
 	metricsEnabled, _ := cmd.Flags().GetBool("metrics")
@@ -218,7 +218,7 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		GossipInterval:     10 * time.Second, //nolint:mnd
 		PeerTickInterval:   time.Second,
 		AdvertisedIPs:      addrs,
-		BootstrapPeers:     bootstrapPeers,
+		PeerCache:          peerCache,
 		InitialConnections: initialConns,
 		InitialServices:    initialServices,
 		MaxConnectionAge:   24 * time.Hour, //nolint:mnd

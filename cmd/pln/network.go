@@ -407,11 +407,6 @@ func runDeny(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return err
 	}
 
-	env.cfg.ForgetBootstrapPeer(peerID)
-	if saveErr := config.Save(env.dir, env.cfg); saveErr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to persist denial to config: %v\n", saveErr)
-	}
-
 	fmt.Fprintf(cmd.OutOrStdout(), "denied peer %s\n", formatPeerID(peerID, false))
 	return nil
 }

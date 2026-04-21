@@ -9,6 +9,7 @@ import (
 	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -17,6 +18,7 @@ type Options struct {
 	PacketConn         net.PacketConn
 	ShutdownFunc       func()
 	RuntimeState       *statev1.RuntimeState
+	PeerCache          *peercache.Store
 	SocketPath         string
 	PollenDir          string
 	NodeName           string
@@ -26,7 +28,6 @@ type Options struct {
 	ControlToken       string
 	SigningKey         ed25519.PrivateKey
 	AdvertisedIPs      []string
-	BootstrapPeers     []BootstrapTarget
 	InitialConnections []ConnectionEntry
 	InitialServices    []ServiceEntry
 	GossipInterval     time.Duration
@@ -40,12 +41,6 @@ type Options struct {
 	MetricsEnabled     bool
 	BootstrapPublic    bool
 	DisableNATPunch    bool
-}
-
-// BootstrapTarget is a resolved bootstrap peer for runtime use.
-type BootstrapTarget struct {
-	Addrs   []string
-	PeerKey types.PeerKey
 }
 
 // ConnectionEntry describes a desired tunnel connection for initial state.

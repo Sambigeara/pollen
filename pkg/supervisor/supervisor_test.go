@@ -35,7 +35,6 @@ type testNode struct {
 	creds            *auth.NodeCredentials
 	cancel           context.CancelFunc
 	errCh            chan error
-	bootstrapPeers   []supervisor.BootstrapTarget
 	peerTickInterval time.Duration
 }
 
@@ -74,7 +73,6 @@ func (tn *testNode) start(t *testing.T) {
 		GossipInterval:   100 * time.Millisecond,
 		PeerTickInterval: peerTick,
 		GossipJitter:     -1,
-		BootstrapPeers:   tn.bootstrapPeers,
 		ShutdownFunc:     cancel,
 	}
 

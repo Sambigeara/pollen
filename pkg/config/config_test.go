@@ -4,21 +4,12 @@
 package config
 
 import (
-	"crypto/ed25519"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/stretchr/testify/require"
 )
-
-func testKey(b byte) []byte {
-	k := make([]byte, ed25519.PublicKeySize)
-	k[0] = b
-	return k
-}
 
 func TestLoad(t *testing.T) {
 	t.Run("missing file returns empty config", func(t *testing.T) {
@@ -45,37 +36,6 @@ func TestLoad(t *testing.T) {
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "unmarshal config")
 	})
-
-	t.Run("invalid bootstrap peer key", func(t *testing.T) {
-		dir := t.TempDir()
-		yaml := "bootstrapPeers:\n  not-hex:\n    - relay.example.com:60611\n"
-		require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), []byte(yaml), 0o600))
-
-		_, err := Load(dir)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "bootstrap peer not-hex")
-	})
-
-	t.Run("bootstrap peer with short key", func(t *testing.T) {
-		dir := t.TempDir()
-		yaml := "bootstrapPeers:\n  aabb:\n    - relay.example.com:60611\n"
-		require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), []byte(yaml), 0o600))
-
-		_, err := Load(dir)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "bootstrap peer aabb")
-	})
-
-	t.Run("bootstrap peer with no addresses", func(t *testing.T) {
-		dir := t.TempDir()
-		hexKey := hex.EncodeToString(testKey(0xAA))
-		yaml := "bootstrapPeers:\n  " + hexKey + ": []\n"
-		require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), []byte(yaml), 0o600))
-
-		_, err := Load(dir)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "at least one address is required")
-	})
 }
 
 func TestSave(t *testing.T) {
@@ -93,10 +53,7 @@ func TestSave(t *testing.T) {
 		cfg := &Config{
 			Services:    []Service{{Name: "http", Port: 8080}},
 			Connections: []Connection{{Service: "http", Peer: "deadbeef", RemotePort: 80, LocalPort: 9090}},
-			BootstrapPeers: map[string][]string{
-				hex.EncodeToString(testKey(0xAA)): {"relay.example.com:60611"},
-			},
-			Public: true,
+			Public:      true,
 		}
 
 		require.NoError(t, Save(dir, cfg))
@@ -104,68 +61,6 @@ func TestSave(t *testing.T) {
 		loaded, err := Load(dir)
 		require.NoError(t, err)
 		require.Equal(t, cfg, loaded)
-	})
-}
-
-func TestRememberBootstrapPeer(t *testing.T) {
-	t.Run("initializes nil map", func(t *testing.T) {
-		cfg := &Config{}
-		cfg.RememberBootstrapPeer(&admissionv1.BootstrapPeer{
-			PeerPub: testKey(0xAA),
-			Addrs:   []string{"relay.example.com:60611"},
-		})
-
-		hexKey := hex.EncodeToString(testKey(0xAA))
-		require.Len(t, cfg.BootstrapPeers, 1)
-		require.Equal(t, []string{"relay.example.com:60611"}, cfg.BootstrapPeers[hexKey])
-	})
-
-	t.Run("overwrites existing peer", func(t *testing.T) {
-		hexKey := hex.EncodeToString(testKey(0xAA))
-		cfg := &Config{
-			BootstrapPeers: map[string][]string{
-				hexKey: {"old.example.com:60611"},
-			},
-		}
-
-		cfg.RememberBootstrapPeer(&admissionv1.BootstrapPeer{
-			PeerPub: testKey(0xAA),
-			Addrs:   []string{"new.example.com:60611"},
-		})
-
-		require.Len(t, cfg.BootstrapPeers, 1)
-		require.Equal(t, []string{"new.example.com:60611"}, cfg.BootstrapPeers[hexKey])
-	})
-}
-
-func TestForgetBootstrapPeer(t *testing.T) {
-	t.Run("removes existing peer", func(t *testing.T) {
-		keyA := testKey(0xAA)
-		keyB := testKey(0xBB)
-		cfg := &Config{
-			BootstrapPeers: map[string][]string{
-				hex.EncodeToString(keyA): {"relay1.example.com:60611"},
-				hex.EncodeToString(keyB): {"relay2.example.com:60611"},
-			},
-		}
-
-		cfg.ForgetBootstrapPeer(keyA)
-
-		require.Len(t, cfg.BootstrapPeers, 1)
-		require.Contains(t, cfg.BootstrapPeers, hex.EncodeToString(keyB))
-	})
-
-	t.Run("no-op for unknown peer", func(t *testing.T) {
-		keyA := testKey(0xAA)
-		cfg := &Config{
-			BootstrapPeers: map[string][]string{
-				hex.EncodeToString(keyA): {"relay.example.com:60611"},
-			},
-		}
-
-		cfg.ForgetBootstrapPeer(testKey(0xFF))
-
-		require.Len(t, cfg.BootstrapPeers, 1)
 	})
 }
 

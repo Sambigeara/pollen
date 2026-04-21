@@ -34,6 +34,7 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -185,7 +186,7 @@ func runPurge(cmd *cobra.Command, _ []string, env *cliEnv) error {
 		"keys/root.pub", "keys/membership.cert.pb", "keys/delegation.cert.pb",
 		"keys/admin_ed25519.key", "keys/admin_ed25519.pub", "config.yaml",
 		"state.pb", "state.yaml", "state.yaml.bak", "consumed_invites.json",
-		"invites", "cas", socketName,
+		"peers.json", "invites", "cas", socketName,
 	}
 	if all {
 		paths = append(paths, "keys/ed25519.key", "keys/ed25519.pub")
@@ -221,15 +222,15 @@ func runJoin(cmd *cobra.Command, args []string, env *cliEnv) error {
 		}
 	}
 
-	for _, bp := range tkn.GetClaims().GetBootstrap() {
-		env.cfg.RememberBootstrapPeer(bp)
+	if err := rememberBootstrapPeers(env.dir, tkn.GetClaims().GetBootstrap()); err != nil {
+		return fmt.Errorf("persist bootstrap peers: %w", err)
 	}
 
 	if public, _ := cmd.Flags().GetBool("public"); public {
 		env.cfg.Public = true
-	}
-	if err := config.Save(env.dir, env.cfg); err != nil {
-		return err
+		if err := config.Save(env.dir, env.cfg); err != nil {
+			return err
+		}
 	}
 
 	if noUp, _ := cmd.Flags().GetBool("no-up"); noUp {
@@ -381,14 +382,14 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	// remote will receive this set minus itself, so daemon restarts always have someone to
 	// reconnect to.
 	peerPool := make(map[string]*admissionv1.BootstrapPeer)
-	for peerHex, addrs := range env.cfg.BootstrapPeers {
-		pk, err := types.PeerKeyFromString(peerHex)
-		if err != nil {
-			continue
-		}
-		peerPool[peerHex] = &admissionv1.BootstrapPeer{
-			PeerPub: pk.Bytes(),
-			Addrs:   slices.Clone(addrs),
+	localCache, err := peercache.Open(env.dir)
+	if err != nil {
+		return fmt.Errorf("load peer cache: %w", err)
+	}
+	for _, entry := range localCache.Snapshot() {
+		peerPool[entry.PeerKey.String()] = &admissionv1.BootstrapPeer{
+			PeerPub: entry.PeerKey.Bytes(),
+			Addrs:   slices.Clone(entry.Addrs),
 		}
 	}
 	for _, d := range discoveries {
@@ -438,10 +439,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		}
 		succeeded++
 		fmt.Fprintf(out, "  %-40s ok\n", r.target)
-		env.cfg.RememberBootstrapPeer(&admissionv1.BootstrapPeer{
-			PeerPub: append([]byte(nil), r.peerPub...),
-			Addrs:   append([]string(nil), r.addrs...),
-		})
+		localCache.Upsert(types.PeerKeyFromBytes(r.peerPub), r.addrs, time.Now())
 		bootstrappedPeers = append(bootstrappedPeers, r)
 	}
 	fmt.Fprintln(out)
@@ -450,8 +448,8 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return errors.Join(failErrs...)
 	}
 
-	if err := config.Save(env.dir, env.cfg); err != nil {
-		return fmt.Errorf("save bootstrap peer details: %w", err)
+	if err := localCache.Flush(); err != nil {
+		return fmt.Errorf("persist bootstrap peers: %w", err)
 	}
 
 	if nodeSocketActive(filepath.Join(env.dir, socketName)) { //nolint:nestif
@@ -725,14 +723,35 @@ func parseAttributes(cmd *cobra.Command) (*structpb.Struct, error) {
 
 // --- Utilities ---
 
+// rememberBootstrapPeers primes the local peer cache from a freshly resolved token.
+// Only useful before the daemon starts; once running, its own handshakes refresh
+// the cache.
+func rememberBootstrapPeers(pollenDir string, peers []*admissionv1.BootstrapPeer) error {
+	if len(peers) == 0 {
+		return nil
+	}
+	cache, err := peercache.Open(pollenDir)
+	if err != nil {
+		return fmt.Errorf("load peer cache: %w", err)
+	}
+	now := time.Now()
+	for _, bp := range peers {
+		cache.Upsert(types.PeerKeyFromBytes(bp.GetPeerPub()), bp.GetAddrs(), now)
+	}
+	return cache.Flush()
+}
+
 func resolveBootstrapPeers(ctx context.Context, env *cliEnv) ([]*admissionv1.BootstrapPeer, error) {
-	if len(env.cfg.BootstrapPeers) > 0 {
-		peers := make([]*admissionv1.BootstrapPeer, 0, len(env.cfg.BootstrapPeers))
-		for peerHex, addrs := range env.cfg.BootstrapPeers {
-			pk, _ := types.PeerKeyFromString(peerHex)
+	cache, err := peercache.Open(env.dir)
+	if err != nil {
+		return nil, fmt.Errorf("load peer cache: %w", err)
+	}
+	if entries := cache.Snapshot(); len(entries) > 0 {
+		peers := make([]*admissionv1.BootstrapPeer, 0, len(entries))
+		for _, entry := range entries {
 			peers = append(peers, &admissionv1.BootstrapPeer{
-				PeerPub: pk.Bytes(),
-				Addrs:   addrs,
+				PeerPub: entry.PeerKey.Bytes(),
+				Addrs:   slices.Clone(entry.Addrs),
 			})
 		}
 		return peers, nil

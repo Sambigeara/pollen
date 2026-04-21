@@ -29,7 +29,6 @@ type TestNodeConfig struct {
 	Addr           *net.UDPAddr
 	Name           string
 	Role           NodeRole
-	BootstrapPeers []supervisor.BootstrapTarget
 	EnableNATPunch bool
 }
 
@@ -75,7 +74,6 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 		DisableNATPunch:  !cfg.EnableNATPunch,
 		PeerTickInterval: 1 * time.Second,
 		GossipInterval:   1 * time.Second,
-		BootstrapPeers:   cfg.BootstrapPeers,
 		BootstrapPublic:  cfg.Role == Public,
 	}
 
