@@ -1,3 +1,6 @@
+// Copyright 2026 Sam Lock
+// SPDX-License-Identifier: Apache-2.0
+
 syntax = "proto3";
 
 package pollen.admission.v1;

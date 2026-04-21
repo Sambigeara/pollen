@@ -31,14 +31,21 @@ generate-proto-code: _buf
     )
     GOWORK=off go mod tidy -C {{ genpb_dir }}
 
-lint: lint-modernize lint-license _golangcilint _buf
+lint: lint-modernize lint-proto-headers _golangcilint _buf
     @ "${TOOLS_BIN_DIR}/golangci-lint" run --config=.golangci.yaml --fix
     @ "${TOOLS_BIN_DIR}/buf" lint
     @ "${TOOLS_BIN_DIR}/buf" format --diff --exit-code
 
-lint-license: _addlicense
-    @ find . -name '*.go' -not -path './api/*' -not -path './.git/*' -print0 | \
-        xargs -0 "${TOOLS_BIN_DIR}/addlicense" -check -c "Sam Lock" -s=only -l apache
+# .proto source files need an SPDX header so protoc-gen-go propagates it into .pb.go;
+# goheader covers hand-written .go but skips generated files.
+lint-proto-headers:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    missing=$(grep -rL '^// SPDX-License-Identifier: Apache-2\.0$' --include='*.proto' api/public/ || true)
+    if [[ -n "$missing" ]]; then
+        printf 'Proto files missing SPDX licence header:\n%s\n' "$missing" >&2
+        exit 1
+    fi
 
 lint-modernize: _modernize
     @ "${TOOLS_BIN_DIR}/modernize" -fix -test ./...
@@ -61,8 +68,6 @@ _golangcilint: (_install "golangci-lint" "github.com/golangci/golangci-lint/v2" 
 _deadcode: (_install "deadcode" "golang.org/x/tools" "cmd/deadcode")
 
 _modernize: (_install "modernize" "golang.org/x/tools/gopls" "internal/analysis/modernize/cmd/modernize")
-
-_addlicense: (_install "addlicense" "github.com/google/addlicense")
 
 _install EXECUTABLE MODULE CMD_PKG="":
     #!/usr/bin/env bash
