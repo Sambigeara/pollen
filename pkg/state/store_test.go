@@ -730,6 +730,146 @@ func TestSetSeedMetrics_GateWaitClearsButOtherFieldsRemain(t *testing.T) {
 		"sibling field must still be present")
 }
 
+func TestSpecs_SurvivePublisherDeparture(t *testing.T) {
+	publisher := genKey(t)
+
+	// Seed all three spec kinds from the publisher, plus peer-local runtime
+	// state (a service) that should *not* survive departure.
+	seedEvents := []*statev1.GossipEvent{
+		{Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001}}},
+		{Change: &statev1.GossipEvent_Service{Service: &statev1.ServiceChange{Name: "web", Port: 8080}}},
+		{Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "wl-1", Name: "myapp", MinReplicas: 2}}},
+		{Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: make([]byte, sha256Len), MinReplicas: 2}}},
+		{Change: &statev1.GossipEvent_BlobSpec{BlobSpec: &statev1.BlobSpecChange{Name: "manifest", Digest: make([]byte, sha256Len)}}},
+	}
+	seed := func(s *store) {
+		for i, ev := range seedEvents {
+			ev.PeerId = publisher.String()
+			ev.Counter = uint64(i + 1)
+			applyTestEvent(t, s, ev)
+		}
+	}
+	assertSpecsVisible := func(t *testing.T, snap Snapshot) {
+		t.Helper()
+		require.Contains(t, snap.Specs, "wl-1")
+		require.Equal(t, publisher, snap.Specs["wl-1"].Publisher)
+		require.Contains(t, snap.StaticSpecs, "site.example")
+		require.Equal(t, publisher, snap.StaticSpecs["site.example"].Publisher)
+		require.Len(t, snap.BlobSpecs, 1)
+		for _, view := range snap.BlobSpecs {
+			require.Equal(t, publisher, view.Publisher)
+		}
+	}
+
+	t.Run("denied publisher", func(t *testing.T) {
+		s := newTestStore(t, genKey(t))
+		seed(s)
+		require.Contains(t, s.Snapshot().Specs, "wl-1")
+
+		s.DenyPeer(publisher)
+		snap := s.Snapshot()
+		assertSpecsVisible(t, snap)
+		require.NotContains(t, snap.Nodes, publisher, "denied publisher's peer-local state should be gone")
+	})
+
+	t.Run("cert expired publisher", func(t *testing.T) {
+		s := newTestStore(t, genKey(t))
+		seed(s)
+
+		expiryEv := &statev1.GossipEvent{
+			PeerId:  publisher.String(),
+			Counter: uint64(len(seedEvents) + 1),
+			Change:  &statev1.GossipEvent_CertExpiry{CertExpiry: &statev1.CertExpiryChange{ExpiryUnix: time.Now().Add(-time.Hour).Unix()}},
+		}
+		applyTestEvent(t, s, expiryEv)
+
+		snap := s.Snapshot()
+		assertSpecsVisible(t, snap)
+		require.NotContains(t, snap.Nodes, publisher, "expired publisher's peer-local state should be gone")
+	})
+
+	t.Run("explicit tombstone still removes spec", func(t *testing.T) {
+		s := newTestStore(t, genKey(t))
+		seed(s)
+
+		tombstones := []*statev1.GossipEvent{
+			{Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "wl-1"}}, Deleted: true},
+			{Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example"}}, Deleted: true},
+			{Change: &statev1.GossipEvent_BlobSpec{BlobSpec: &statev1.BlobSpecChange{Digest: make([]byte, sha256Len)}}, Deleted: true},
+		}
+		for i, ev := range tombstones {
+			ev.PeerId = publisher.String()
+			ev.Counter = uint64(len(seedEvents) + 10 + i)
+			applyTestEvent(t, s, ev)
+		}
+
+		snap := s.Snapshot()
+		require.NotContains(t, snap.Specs, "wl-1")
+		require.NotContains(t, snap.StaticSpecs, "site.example")
+		require.Empty(t, snap.BlobSpecs)
+	})
+}
+
+func TestSpecs_TombstoneFallsBackToLosingPublisher(t *testing.T) {
+	s := newTestStore(t, genKey(t))
+
+	// Two remote peers both publish "site.example". The lower peer wins
+	// the cluster map slot.
+	peerA, peerB := genKey(t), genKey(t)
+	if peerA.Compare(peerB) > 0 {
+		peerA, peerB = peerB, peerA
+	}
+	digest := make([]byte, sha256Len)
+
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId: peerA.String(), Counter: 1,
+		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: digest, MinReplicas: 2}},
+	})
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId: peerB.String(), Counter: 1,
+		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: digest, MinReplicas: 3}},
+	})
+
+	require.Equal(t, peerA, s.Snapshot().StaticSpecs["site.example"].Publisher)
+
+	// peerA tombstones. peerB's declaration should now be the winner.
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId: peerA.String(), Counter: 2, Deleted: true,
+		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example"}},
+	})
+
+	snap := s.Snapshot()
+	require.Contains(t, snap.StaticSpecs, "site.example")
+	require.Equal(t, peerB, snap.StaticSpecs["site.example"].Publisher)
+	require.Equal(t, uint32(3), snap.StaticSpecs["site.example"].Spec.MinReplicas)
+}
+
+func TestSpecs_SurviveLoadGossipState(t *testing.T) {
+	publisher := genKey(t)
+	src := newTestStore(t, genKey(t))
+
+	digest := make([]byte, sha256Len)
+	events := []*statev1.GossipEvent{
+		{Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "wl-1", Name: "myapp", MinReplicas: 2}}},
+		{Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: digest, MinReplicas: 2}}},
+		{Change: &statev1.GossipEvent_BlobSpec{BlobSpec: &statev1.BlobSpecChange{Name: "manifest", Digest: digest}}},
+	}
+	for i, ev := range events {
+		ev.PeerId = publisher.String()
+		ev.Counter = uint64(i + 1)
+		applyTestEvent(t, src, ev)
+	}
+	saved := src.EncodeFull()
+
+	restored := newTestStore(t, genKey(t))
+	require.NoError(t, restored.LoadGossipState(saved))
+
+	snap := restored.Snapshot()
+	require.Contains(t, snap.Specs, "wl-1")
+	require.Contains(t, snap.StaticSpecs, "site.example")
+	require.Len(t, snap.BlobSpecs, 1)
+}
+
 func TestSetSeedMetrics_EmptyTombstones(t *testing.T) {
 	pk := genKey(t)
 	s := newTestStore(t, pk)

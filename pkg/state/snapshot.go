@@ -210,21 +210,12 @@ func (s *store) buildSnapshot() Snapshot {
 	}
 
 	nodes := make(map[types.PeerKey]NodeView)
-	specs := make(map[string]WorkloadSpecView)
 	claims := make(map[string]map[types.PeerKey]struct{})
-	staticSpecs := make(map[string]StaticSpecView)
 	staticClaims := make(map[string]map[types.PeerKey]struct{})
-	blobSpecs := make(map[string]BlobSpecView)
 
 	for pk, rec := range valid {
-		nv, recSpecs, recClaims, recStatic, recStaticClaims, recBlobSpecs := buildNodeView(pk, rec)
+		nv, recClaims, recStaticClaims := buildNodeView(pk, rec)
 		nodes[pk] = nv
-
-		for hash, spec := range recSpecs {
-			if existing, ok := specs[hash]; !ok || pk.Compare(existing.Publisher) < 0 {
-				specs[hash] = WorkloadSpecView{Spec: workloadSpecFromProto(spec), Publisher: pk}
-			}
-		}
 
 		for hash := range recClaims {
 			if claims[hash] == nil {
@@ -233,22 +224,53 @@ func (s *store) buildSnapshot() Snapshot {
 			claims[hash][pk] = struct{}{}
 		}
 
-		for name, spec := range recStatic {
-			if existing, ok := staticSpecs[name]; !ok || pk.Compare(existing.Publisher) < 0 {
-				staticSpecs[name] = StaticSpecView{Spec: staticSpecFromProto(spec), Publisher: pk}
-			}
-		}
-
 		for name := range recStaticClaims {
 			if staticClaims[name] == nil {
 				staticClaims[name] = make(map[types.PeerKey]struct{})
 			}
 			staticClaims[name][pk] = struct{}{}
 		}
+	}
 
-		for digest, spec := range recBlobSpecs {
-			if existing, ok := blobSpecs[digest]; !ok || pk.Compare(existing.Publisher) < 0 {
-				blobSpecs[digest] = BlobSpecView{Spec: blobSpecFromProto(spec), Publisher: pk}
+	// Specs are cluster-scoped admin intent: collected from every peer's log
+	// (not gated by the valid filter) so they survive publisher departure —
+	// cert expiry, deny, liveness. Lowest peer key wins on conflict.
+	//
+	// TODO(saml): O(n_peers * n_attrs) on every buildSnapshot call. Acceptable
+	// while specs are rare and buildNodeView already walks every valid peer's
+	// log in the same shape. If this becomes a hot path, memoise via a
+	// cluster-scoped index maintained on ingest — at the cost of bookkeeping
+	// across every log-mutation path.
+	specs := make(map[string]WorkloadSpecView)
+	staticSpecs := make(map[string]StaticSpecView)
+	blobSpecs := make(map[string]BlobSpecView)
+	for pk, rec := range s.nodes {
+		for key, ev := range rec.log {
+			if ev.Deleted {
+				continue
+			}
+			switch key.kind { //nolint:exhaustive
+			case attrWorkloadSpec:
+				if existing, ok := specs[key.name]; !ok || pk.Compare(existing.Publisher) < 0 {
+					specs[key.name] = WorkloadSpecView{
+						Spec:      workloadSpecFromProto(ev.GetWorkloadSpec()),
+						Publisher: pk,
+					}
+				}
+			case attrStaticSpec:
+				if existing, ok := staticSpecs[key.name]; !ok || pk.Compare(existing.Publisher) < 0 {
+					staticSpecs[key.name] = StaticSpecView{
+						Spec:      staticSpecFromProto(ev.GetStaticSpec()),
+						Publisher: pk,
+					}
+				}
+			case attrBlobSpec:
+				if existing, ok := blobSpecs[key.name]; !ok || pk.Compare(existing.Publisher) < 0 {
+					blobSpecs[key.name] = BlobSpecView{
+						Spec:      blobSpecFromProto(ev.GetBlobSpec()),
+						Publisher: pk,
+					}
+				}
 			}
 		}
 	}
@@ -298,7 +320,10 @@ func filterLive(claims map[string]map[types.PeerKey]struct{}, live map[types.Pee
 	return out
 }
 
-func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*statev1.WorkloadSpecChange, map[string]struct{}, map[string]*statev1.StaticSpecChange, map[string]struct{}, map[string]*statev1.BlobSpecChange) {
+// buildNodeView projects a peer's log into its peer-local NodeView plus
+// the per-peer claim sets (workload and static). Spec declarations are
+// cluster-scoped and live in s.specs; they are not surfaced here.
+func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]struct{}, map[string]struct{}) {
 	nv := NodeView{
 		PeerPub:       pk.Bytes(),
 		Services:      make(map[string]*Service),
@@ -310,11 +335,8 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 		LastAddr:      rec.LastAddr,
 		LastEventAt:   rec.lastEventAt,
 	}
-	specs := make(map[string]*statev1.WorkloadSpecChange)
 	claims := make(map[string]struct{})
-	staticSpecs := make(map[string]*statev1.StaticSpecChange)
 	staticClaims := make(map[string]struct{})
-	blobSpecs := make(map[string]*statev1.BlobSpecChange)
 
 	for key, ev := range rec.log {
 		if ev.Deleted {
@@ -348,8 +370,6 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 			nv.CPUPercent, nv.MemPercent = v.ResourceTelemetry.CpuPercent, v.ResourceTelemetry.MemPercent
 			nv.MemTotalBytes, nv.NumCPU = v.ResourceTelemetry.MemTotalBytes, v.ResourceTelemetry.NumCpu
 			nv.CPUBudgetPercent, nv.MemBudgetPercent = v.ResourceTelemetry.CpuBudgetPercent, v.ResourceTelemetry.MemBudgetPercent
-		case *statev1.GossipEvent_WorkloadSpec:
-			specs[key.name] = v.WorkloadSpec
 		case *statev1.GossipEvent_WorkloadClaim:
 			claims[key.name] = struct{}{}
 		case *statev1.GossipEvent_TrafficHeatmap:
@@ -376,15 +396,12 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]*stat
 		case *statev1.GossipEvent_Heartbeat:
 		case *statev1.GossipEvent_NodeName:
 			nv.Name = v.NodeName.Name
-		case *statev1.GossipEvent_StaticSpec:
-			staticSpecs[key.name] = v.StaticSpec
 		case *statev1.GossipEvent_StaticClaim:
 			staticClaims[key.name] = struct{}{}
-		case *statev1.GossipEvent_BlobSpec:
-			blobSpecs[key.name] = v.BlobSpec
+		case *statev1.GossipEvent_WorkloadSpec, *statev1.GossipEvent_StaticSpec, *statev1.GossipEvent_BlobSpec:
 		}
 	}
-	return nv, specs, claims, staticSpecs, staticClaims, blobSpecs
+	return nv, claims, staticClaims
 }
 
 func staticSpecFromProto(p *statev1.StaticSpecChange) StaticSpec {

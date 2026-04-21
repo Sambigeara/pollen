@@ -70,6 +70,13 @@ Supervisor stores all component references as interface types, never concrete ty
 
 State is a pure data structure with zero I/O. No goroutines, no disk access, no network operations. Thread-safe via internal serialization (mutations are mutex-protected; `Snapshot()` is lock-free via `atomic.Pointer[Snapshot]`). Mutations buffer their gossip events in-memory and signal a notification channel so membership can eagerly push them without polling. The channel is a coordination primitive, not I/O — state never reads from it, only non-blocking-sends a signal.
 
+**Admin intent vs peer-local runtime.** The CRDT splits attrs into two classes, distinguished by how `buildSnapshot` projects them:
+
+- **Admin intent** — `WorkloadSpec`, `StaticSpec`, `BlobSpec`. Declarations of what the cluster should hold. Collected from every peer's log (not filtered by `valid`), lowest-peer-key wins on conflict. Survive publisher departure — `min-replicas` is a durability contract that must outlive any individual peer's presence in `valid`.
+- **Peer-local runtime** — claims, reachability, heartbeat, telemetry, blob availability. Facts that are true *because* a specific peer asserts them. When the peer falls out of `valid` (denied or cert-expired), `buildSnapshot` drops their runtime state from the view.
+
+`handleSelfConflictLocked` encodes the same split: persistent attrs (including specs) are adopted on self-conflict, ephemeral attrs are tombstoned.
+
 **Producer-side interface** — the complete public API, declared in the state package. Consumer-defined interfaces (`ClusterState`, `WorkloadState`, `ServiceState`) are narrower subsets.
 
 ```go
