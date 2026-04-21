@@ -2,7 +2,7 @@
   <img src="assets/mascot.svg" alt="Pollen" width="128"/>
 </p>
 
-# Pollen: a local-first, zero-trust, emergent mesh and WASM runtime, in a single static binary
+# Pollen: a local-first, zero-trust, leaderless, emergent mesh and WASM runtime, in a single static binary
 
 <p align="center">
   <a href="https://github.com/sambigeara/pollen/actions/workflows/ci.yml"><img src="https://github.com/sambigeara/pollen/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -31,6 +31,9 @@ _Pollen is in early development — expect breaking changes and sharp edges._
 - **WASM seeds.** Deploy with `pln seed`; artifacts distribute
   peer-to-peer by hash. Modules compose via one Extism host call,
   authored in [a variety of languages](https://extism.org/docs/quickstart/plugin-quickstart).
+- **Static sites & blobs.** `pln static seed ./public` publishes a
+  site; `pln blob put ./file` shares a file. Content-addressed,
+  gossiped, streamed peer-to-peer over QUIC.
 - **QUIC transport.** One multiplexed, encrypted, UDP-based
   connection per peer carries gossip, services, and seeds. NAT
   traversal built in.
@@ -68,10 +71,14 @@ online.
 
 ```bash
 pln bootstrap ssh user@host [--admin]
+
+# Or pipe labelled targets from stdin or a file:
+echo "media=alice@10.0.0.5" | pln bootstrap ssh -
 ```
 
 Installs Pollen, enrols in the cluster, and starts. Needs SSH as root or
-passwordless sudo. `--admin` delegates admin authority.
+passwordless sudo. `--admin` delegates admin authority; prefix a target
+with `name=` to label the node.
 
 **Out-of-band.** Mint a token on an admin node, ship it to the joiner:
 
@@ -120,6 +127,26 @@ scheduler. When a node goes down, survivors pick up the slack.
 Example modules live in [`examples/`](examples/). Run `pln --help` for
 the full CLI reference. For the architecture, see
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+### Grant capabilities
+
+```bash
+# Delegate admin authority to an existing peer — handy for keeping
+# the mesh operable (admissions, cert re-issues, etc.) with the root
+# node offline:
+pln grant <peer-id> --admin
+
+# Bake arbitrary key/value metadata into a peer's cert. Seeds see
+# the caller's peer key and attributes on every invocation, so auth,
+# routing, and policy decisions can live inside the workload:
+pln grant <peer-id> --attr role=lead --attr team=backend
+
+# Or bake them in at join time:
+pln invite --attr role=engineer --attr team=backend
+
+# Pipe a JSON payload from a file:
+cat attrs.json | pln grant <peer-id> --attr -
+```
 
 ### Serve a static site
 
