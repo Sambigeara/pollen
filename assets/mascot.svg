@@ -37,12 +37,9 @@
     <rect x="3" y="8" width="5" height="1"/>
     <rect x="12" y="8" width="5" height="1"/>
     <rect x="3" y="9" width="14" height="1"/>
-    <rect x="3" y="10" width="5" height="1"/>
-    <rect x="12" y="10" width="5" height="1"/>
-    <rect x="3" y="11" width="5" height="1"/>
-    <rect x="12" y="11" width="5" height="1"/>
-    <rect x="3" y="12" width="6" height="1"/>
-    <rect x="11" y="12" width="6" height="1"/>
+    <rect x="3" y="10" width="14" height="1"/>
+    <rect x="3" y="11" width="14" height="1"/>
+    <rect x="3" y="12" width="14" height="1"/>
     <rect x="4" y="13" width="12" height="1"/>
     <rect x="5" y="14" width="10" height="1"/>
     <rect x="7" y="15" width="6" height="1"/>
@@ -62,18 +59,23 @@
     <rect x="7" y="4" width="1" height="1"/>
     <rect x="13" y="4" width="1" height="1"/>
   </g>
-  <!-- seed ring -->
-  <g fill="#C48A2B">
-    <rect x="8" y="10" width="1" height="1"/>
-    <rect x="11" y="10" width="1" height="1"/>
+  <!-- bowtie -->
+  <g fill="#B8433A">
+    <rect x="7" y="11" width="1" height="3"/>
     <rect x="8" y="11" width="1" height="1"/>
-    <rect x="11" y="11" width="1" height="1"/>
-    <rect x="9" y="12" width="2" height="1"/>
+    <rect x="8" y="13" width="1" height="1"/>
   </g>
-  <!-- seed centre -->
+  <g fill="#2E3F75">
+    <rect x="12" y="11" width="1" height="3"/>
+    <rect x="11" y="11" width="1" height="1"/>
+    <rect x="11" y="13" width="1" height="1"/>
+  </g>
+  <g fill="#DCB876">
+    <rect x="8" y="12" width="1" height="1"/>
+    <rect x="11" y="12" width="1" height="1"/>
+  </g>
   <g fill="#6A3E12">
-    <rect x="9" y="10" width="2" height="1"/>
-    <rect x="9" y="11" width="2" height="1"/>
+    <rect x="9" y="12" width="2" height="1"/>
   </g>
   <!-- leaves -->
   <g fill="#5FA84E">
