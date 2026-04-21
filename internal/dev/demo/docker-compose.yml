@@ -1,7 +1,7 @@
 services:
   store:
     build:
-      context: ../../examples/demo/store
+      context: ../../../examples/demo/store
     container_name: pollen-demo-store
     network_mode: host
     command: ["/data/pollen-demo-store.db"]

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # Terraform state lives in the main worktree, not in git worktrees.
 # Resolve the main repo root via git.
 MAIN_ROOT="$(git -C "$REPO_ROOT" worktree list --porcelain | head -1 | sed 's/^worktree //')"
-TF_DIR="${MAIN_ROOT}/infra/hetzner"
+TF_DIR="${MAIN_ROOT}/internal/dev/hetzner"
 WASM="$REPO_ROOT/examples/echo/echo.wasm"
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 PLN_LOCAL="$REPO_ROOT/pln-local"

@@ -783,7 +783,7 @@ The following must remain stable across all changes:
 |------|-------|--------|
 | Unit | Each package in isolation | State: pure data structure, zero mocks. Routing: pure function, zero mocks. Domain services: fake state + fake transport via consumer interfaces. |
 | Integration | Multi-node cluster in-process | VirtualSwitch (UDP sim) -> real QUICTransport -> real state -> real domain services. TestNode, Builder, scenario assertions. |
-| Hetzner | Real cluster on real hardware | Terraform + Ansible + verification script. |
+| Hetzner | Real cluster on real hardware | Terraform + `pln` native bring-up + verification script. |
 
 ### Boundary Testing
 
