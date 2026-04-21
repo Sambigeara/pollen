@@ -27,7 +27,7 @@ service ControlService {
   rpc CallWorkload(CallWorkloadRequest) returns (CallWorkloadResponse);
   rpc IssueCert(IssueCertRequest) returns (IssueCertResponse);
   rpc FetchBlob(FetchBlobRequest) returns (FetchBlobResponse);
-  rpc AnnounceBlob(AnnounceBlobRequest) returns (AnnounceBlobResponse);
+  rpc UploadBlob(stream UploadBlobRequest) returns (UploadBlobResponse);
   rpc RemoveBlob(RemoveBlobRequest) returns (RemoveBlobResponse);
   rpc SeedStatic(SeedStaticRequest) returns (SeedStaticResponse);
   rpc UnseedStatic(UnseedStaticRequest) returns (UnseedStaticResponse);
@@ -321,18 +321,25 @@ message FetchBlobRequest {
 
 message FetchBlobResponse {}
 
-message AnnounceBlobRequest {
-  string hash = 1 [(buf.validate.field).string = {
-    pattern: "^[a-fA-F0-9]{64}$"
-    len: 64
-  }];
-  optional string name = 2 [(buf.validate.field).string = {
+// The first UploadBlobRequest must carry `header`; subsequent messages
+// carry binary `chunk` fragments.
+message UploadBlobRequest {
+  oneof payload {
+    UploadBlobHeader header = 1;
+    bytes chunk = 2;
+  }
+}
+
+message UploadBlobHeader {
+  optional string name = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 255
   }];
 }
 
-message AnnounceBlobResponse {}
+message UploadBlobResponse {
+  string hash = 1;
+}
 
 message RemoveBlobRequest {
   string hash = 1 [(buf.validate.field).string = {

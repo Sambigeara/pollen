@@ -47,8 +47,8 @@ func newWorkloadCmds() []*cobra.Command {
 	return []*cobra.Command{seedCmd, unseedCmd, callCmd}
 }
 
-// seedChunkBytes stays below the default 4 MiB gRPC per-message cap.
-const seedChunkBytes = 1 << 20
+// streamChunkBytes stays below the default 4 MiB gRPC per-message cap.
+const streamChunkBytes = 1 << 20
 
 func runSeed(cmd *cobra.Command, args []string, env *cliEnv) error {
 	f, err := os.Open(args[0])
@@ -92,7 +92,7 @@ func runSeed(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return err
 	}
 
-	buf := make([]byte, seedChunkBytes)
+	buf := make([]byte, streamChunkBytes)
 	for {
 		n, readErr := f.Read(buf)
 		if n > 0 {

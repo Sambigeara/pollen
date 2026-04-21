@@ -37,7 +37,7 @@ const (
 	ControlService_CallWorkload_FullMethodName      = "/pollen.control.v1.ControlService/CallWorkload"
 	ControlService_IssueCert_FullMethodName         = "/pollen.control.v1.ControlService/IssueCert"
 	ControlService_FetchBlob_FullMethodName         = "/pollen.control.v1.ControlService/FetchBlob"
-	ControlService_AnnounceBlob_FullMethodName      = "/pollen.control.v1.ControlService/AnnounceBlob"
+	ControlService_UploadBlob_FullMethodName        = "/pollen.control.v1.ControlService/UploadBlob"
 	ControlService_RemoveBlob_FullMethodName        = "/pollen.control.v1.ControlService/RemoveBlob"
 	ControlService_SeedStatic_FullMethodName        = "/pollen.control.v1.ControlService/SeedStatic"
 	ControlService_UnseedStatic_FullMethodName      = "/pollen.control.v1.ControlService/UnseedStatic"
@@ -63,7 +63,7 @@ type ControlServiceClient interface {
 	CallWorkload(ctx context.Context, in *CallWorkloadRequest, opts ...grpc.CallOption) (*CallWorkloadResponse, error)
 	IssueCert(ctx context.Context, in *IssueCertRequest, opts ...grpc.CallOption) (*IssueCertResponse, error)
 	FetchBlob(ctx context.Context, in *FetchBlobRequest, opts ...grpc.CallOption) (*FetchBlobResponse, error)
-	AnnounceBlob(ctx context.Context, in *AnnounceBlobRequest, opts ...grpc.CallOption) (*AnnounceBlobResponse, error)
+	UploadBlob(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadBlobRequest, UploadBlobResponse], error)
 	RemoveBlob(ctx context.Context, in *RemoveBlobRequest, opts ...grpc.CallOption) (*RemoveBlobResponse, error)
 	SeedStatic(ctx context.Context, in *SeedStaticRequest, opts ...grpc.CallOption) (*SeedStaticResponse, error)
 	UnseedStatic(ctx context.Context, in *UnseedStaticRequest, opts ...grpc.CallOption) (*UnseedStaticResponse, error)
@@ -231,15 +231,18 @@ func (c *controlServiceClient) FetchBlob(ctx context.Context, in *FetchBlobReque
 	return out, nil
 }
 
-func (c *controlServiceClient) AnnounceBlob(ctx context.Context, in *AnnounceBlobRequest, opts ...grpc.CallOption) (*AnnounceBlobResponse, error) {
+func (c *controlServiceClient) UploadBlob(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadBlobRequest, UploadBlobResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(AnnounceBlobResponse)
-	err := c.cc.Invoke(ctx, ControlService_AnnounceBlob_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ControlService_ServiceDesc.Streams[1], ControlService_UploadBlob_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &grpc.GenericClientStream[UploadBlobRequest, UploadBlobResponse]{ClientStream: stream}
+	return x, nil
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ControlService_UploadBlobClient = grpc.ClientStreamingClient[UploadBlobRequest, UploadBlobResponse]
 
 func (c *controlServiceClient) RemoveBlob(ctx context.Context, in *RemoveBlobRequest, opts ...grpc.CallOption) (*RemoveBlobResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -300,7 +303,7 @@ type ControlServiceServer interface {
 	CallWorkload(context.Context, *CallWorkloadRequest) (*CallWorkloadResponse, error)
 	IssueCert(context.Context, *IssueCertRequest) (*IssueCertResponse, error)
 	FetchBlob(context.Context, *FetchBlobRequest) (*FetchBlobResponse, error)
-	AnnounceBlob(context.Context, *AnnounceBlobRequest) (*AnnounceBlobResponse, error)
+	UploadBlob(grpc.ClientStreamingServer[UploadBlobRequest, UploadBlobResponse]) error
 	RemoveBlob(context.Context, *RemoveBlobRequest) (*RemoveBlobResponse, error)
 	SeedStatic(context.Context, *SeedStaticRequest) (*SeedStaticResponse, error)
 	UnseedStatic(context.Context, *UnseedStaticRequest) (*UnseedStaticResponse, error)
@@ -360,8 +363,8 @@ func (UnimplementedControlServiceServer) IssueCert(context.Context, *IssueCertRe
 func (UnimplementedControlServiceServer) FetchBlob(context.Context, *FetchBlobRequest) (*FetchBlobResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FetchBlob not implemented")
 }
-func (UnimplementedControlServiceServer) AnnounceBlob(context.Context, *AnnounceBlobRequest) (*AnnounceBlobResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method AnnounceBlob not implemented")
+func (UnimplementedControlServiceServer) UploadBlob(grpc.ClientStreamingServer[UploadBlobRequest, UploadBlobResponse]) error {
+	return status.Error(codes.Unimplemented, "method UploadBlob not implemented")
 }
 func (UnimplementedControlServiceServer) RemoveBlob(context.Context, *RemoveBlobRequest) (*RemoveBlobResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RemoveBlob not implemented")
@@ -655,23 +658,12 @@ func _ControlService_FetchBlob_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ControlService_AnnounceBlob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AnnounceBlobRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ControlServiceServer).AnnounceBlob(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: ControlService_AnnounceBlob_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlServiceServer).AnnounceBlob(ctx, req.(*AnnounceBlobRequest))
-	}
-	return interceptor(ctx, in, info, handler)
+func _ControlService_UploadBlob_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(ControlServiceServer).UploadBlob(&grpc.GenericServerStream[UploadBlobRequest, UploadBlobResponse]{ServerStream: stream})
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type ControlService_UploadBlobServer = grpc.ClientStreamingServer[UploadBlobRequest, UploadBlobResponse]
 
 func _ControlService_RemoveBlob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RemoveBlobRequest)
@@ -809,10 +801,6 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ControlService_FetchBlob_Handler,
 		},
 		{
-			MethodName: "AnnounceBlob",
-			Handler:    _ControlService_AnnounceBlob_Handler,
-		},
-		{
 			MethodName: "RemoveBlob",
 			Handler:    _ControlService_RemoveBlob_Handler,
 		},
@@ -833,6 +821,11 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "SeedWorkload",
 			Handler:       _ControlService_SeedWorkload_Handler,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "UploadBlob",
+			Handler:       _ControlService_UploadBlob_Handler,
 			ClientStreams: true,
 		},
 	},

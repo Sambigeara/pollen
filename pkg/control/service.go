@@ -84,7 +84,7 @@ type StateReader interface {
 
 type BlobsControl interface {
 	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
-	Announce(hash string) error
+	Put(r io.Reader) (string, error)
 	SetName(hash, name string) error
 	Remove(hash string) error
 }
@@ -781,21 +781,48 @@ func (s *Service) FetchBlob(ctx context.Context, req *controlv1.FetchBlobRequest
 	return &controlv1.FetchBlobResponse{}, nil
 }
 
-func (s *Service) AnnounceBlob(_ context.Context, req *controlv1.AnnounceBlobRequest) (*controlv1.AnnounceBlobResponse, error) {
-	if err := s.blobs.Announce(req.GetHash()); err != nil {
-		if errors.Is(err, blobs.ErrNotLocal) {
-			return nil, status.Error(codes.FailedPrecondition, "blob not present locally")
+func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadBlobRequest, controlv1.UploadBlobResponse]) error {
+	first, err := stream.Recv()
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return status.Error(codes.InvalidArgument, "missing upload header")
 		}
-		s.log.Warnw("announce blob failed", "hash", types.ShortHash(req.GetHash()), "err", err)
-		return nil, status.Error(codes.Internal, "announce blob")
+		return status.Error(codes.InvalidArgument, "receive upload header")
 	}
-	if name := req.GetName(); name != "" {
-		if err := s.blobs.SetName(req.GetHash(), name); err != nil {
-			s.log.Warnw("set blob name failed", "hash", types.ShortHash(req.GetHash()), "name", name, "err", err)
-			return nil, status.Error(codes.Internal, "set blob name")
+	header := first.GetHeader()
+	if header == nil {
+		return status.Error(codes.InvalidArgument, "first message must carry header")
+	}
+
+	var buf bytes.Buffer
+	for {
+		msg, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return status.Error(codes.InvalidArgument, "receive upload chunk")
+		}
+		chunk := msg.GetChunk()
+		if chunk == nil {
+			return status.Error(codes.InvalidArgument, "expected chunk after header")
+		}
+		buf.Write(chunk)
+	}
+
+	hash, err := s.blobs.Put(&buf)
+	if err != nil {
+		return s.fail(err, "upload blob")
+	}
+
+	if name := header.GetName(); name != "" {
+		if err := s.blobs.SetName(hash, name); err != nil {
+			s.log.Warnw("set blob name failed", "hash", types.ShortHash(hash), "name", name, "err", err)
+			return status.Error(codes.Internal, "set blob name")
 		}
 	}
-	return &controlv1.AnnounceBlobResponse{}, nil
+
+	return stream.SendAndClose(&controlv1.UploadBlobResponse{Hash: hash})
 }
 
 func (s *Service) RemoveBlob(_ context.Context, req *controlv1.RemoveBlobRequest) (*controlv1.RemoveBlobResponse, error) {

@@ -72,7 +72,7 @@ func newBootstrapCmd() *cobra.Command {
 		Use:   "ssh [name=]<target> [[name=]target...|-]",
 		Short: "Bootstrap one or more nodes over SSH",
 		Args:  cobra.MinimumNArgs(1),
-		RunE:  withEnv(runBootstrapSSH, localOnly()),
+		RunE:  withEnv(runBootstrapSSH),
 	}
 	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
 	sshCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the relay peer")
@@ -378,9 +378,10 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	}
 	discWG.Wait()
 
-	// Seed pool = existing Mac-side peers plus every successfully-discovered remote. Each
-	// remote will receive this set minus itself, so daemon restarts always have someone to
-	// reconnect to.
+	// Seed pool: local peer cache, any daemon we can reach (local or bridged), and every
+	// successfully-discovered remote. Each remote receives this set minus itself, so
+	// daemon restarts always have someone to reconnect to. Under ctx (no laptop daemon),
+	// the bridged daemon is the only populated source.
 	peerPool := make(map[string]*admissionv1.BootstrapPeer)
 	localCache, err := peercache.Open(env.dir)
 	if err != nil {
@@ -390,6 +391,21 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		peerPool[entry.PeerKey.String()] = &admissionv1.BootstrapPeer{
 			PeerPub: entry.PeerKey.Bytes(),
 			Addrs:   slices.Clone(entry.Addrs),
+		}
+	}
+	if resp, statusErr := env.client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{})); statusErr == nil {
+		for _, n := range append([]*controlv1.NodeSummary{resp.Msg.GetSelf()}, resp.Msg.GetNodes()...) {
+			if n == nil || n.GetAddr() == "" {
+				continue
+			}
+			key := types.PeerKeyFromBytes(n.GetNode().GetPeerPub()).String()
+			if _, ok := peerPool[key]; ok {
+				continue
+			}
+			peerPool[key] = &admissionv1.BootstrapPeer{
+				PeerPub: append([]byte(nil), n.GetNode().GetPeerPub()...),
+				Addrs:   []string{n.GetAddr()},
+			}
 		}
 	}
 	for _, d := range discoveries {

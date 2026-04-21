@@ -17,7 +17,6 @@ import (
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/cas"
 )
 
 func newStaticCmds() []*cobra.Command {
@@ -53,13 +52,8 @@ func runStaticSeed(cmd *cobra.Command, args []string, env *cliEnv) error {
 	name := args[0]
 	dir := args[1]
 
-	store, err := cas.New(env.dir)
-	if err != nil {
-		return fmt.Errorf("open blob store: %w", err)
-	}
-
 	var paths []*statev1.StaticPath
-	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -71,17 +65,14 @@ func runStaticSeed(cmd *cobra.Command, args []string, env *cliEnv) error {
 			return err
 		}
 		defer f.Close()
-		hash, putErr := store.Put(f)
-		if putErr != nil {
-			return fmt.Errorf("put %s: %w", path, putErr)
+		hash, uploadErr := uploadBlob(cmd, env, &controlv1.UploadBlobHeader{}, f)
+		if uploadErr != nil {
+			return fmt.Errorf("upload %s: %w", path, uploadErr)
 		}
 		digest, _ := hex.DecodeString(hash)
 		rel, _ := filepath.Rel(dir, path)
 		rel = "/" + strings.TrimPrefix(filepath.ToSlash(rel), "./")
 		paths = append(paths, &statev1.StaticPath{Path: rel, Digest: digest})
-		if _, err := env.client.AnnounceBlob(cmd.Context(), connect.NewRequest(&controlv1.AnnounceBlobRequest{Hash: hash})); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not announce %s: %v\n", hash, err) //nolint:gosec
-		}
 		return nil
 	})
 	if err != nil {
@@ -96,15 +87,11 @@ func runStaticSeed(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if err != nil {
 		return fmt.Errorf("marshal manifest: %w", err)
 	}
-	manifestHash, err := store.Put(bytes.NewReader(buf))
+	manifestHash, err := uploadBlob(cmd, env, &controlv1.UploadBlobHeader{}, bytes.NewReader(buf))
 	if err != nil {
-		return fmt.Errorf("put manifest: %w", err)
+		return fmt.Errorf("upload manifest: %w", err)
 	}
 	manifestDigest, _ := hex.DecodeString(manifestHash)
-
-	if _, err := env.client.AnnounceBlob(cmd.Context(), connect.NewRequest(&controlv1.AnnounceBlobRequest{Hash: manifestHash})); err != nil {
-		return fmt.Errorf("announce manifest: %w", err)
-	}
 
 	minReplicas, _ := cmd.Flags().GetUint32("min-replicas")
 	if _, err := env.client.SeedStatic(cmd.Context(), connect.NewRequest(&controlv1.SeedStaticRequest{

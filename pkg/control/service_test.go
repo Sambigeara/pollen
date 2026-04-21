@@ -259,6 +259,37 @@ func TestFetchBlobError(t *testing.T) {
 	require.Equal(t, codes.NotFound, st.Code())
 }
 
+func TestUploadBlob(t *testing.T) {
+	h := newHarness(t)
+	data := []byte("static-site-index.html")
+	sum := sha256.Sum256(data)
+	wantHash := hex.EncodeToString(sum[:])
+
+	stream := newUploadStream("index", data)
+	require.NoError(t, h.svc.UploadBlob(stream))
+	require.NotNil(t, stream.sent)
+	require.Equal(t, wantHash, stream.sent.GetHash())
+	require.Equal(t, data, h.blobs.store[wantHash])
+	require.Equal(t, "index", h.blobs.names[wantHash])
+}
+
+func TestUploadBlobMissingHeader(t *testing.T) {
+	h := newHarness(t)
+	err := h.svc.UploadBlob(&fakeUploadStream{ctx: context.Background()})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.InvalidArgument, st.Code())
+}
+
+func TestUploadBlobPutError(t *testing.T) {
+	h := newHarness(t)
+	h.blobs.putErr = errors.New("disk full")
+	err := h.svc.UploadBlob(newUploadStream("", []byte("data")))
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.Internal, st.Code())
+}
+
 func TestUnseedWorkloadNoCreds(t *testing.T) {
 	h := newHarness(t)
 	_, err := h.svc.UnseedWorkload(context.Background(), &controlv1.UnseedWorkloadRequest{Hash: "abc123"})
@@ -886,6 +917,7 @@ type fakeBlobs struct {
 	store    map[string][]byte
 	names    map[string]string
 	fetchErr error
+	putErr   error
 }
 
 func (f *fakeBlobs) Fetch(_ context.Context, hash string, _ []types.PeerKey) error {
@@ -899,11 +931,21 @@ func (f *fakeBlobs) Fetch(_ context.Context, hash string, _ []types.PeerKey) err
 	return nil
 }
 
-func (f *fakeBlobs) Announce(hash string) error {
-	if _, ok := f.store[hash]; !ok {
-		return blobs.ErrNotLocal
+func (f *fakeBlobs) Put(r io.Reader) (string, error) {
+	if f.putErr != nil {
+		return "", f.putErr
 	}
-	return nil
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	hash := hex.EncodeToString(sum[:])
+	if f.store == nil {
+		f.store = make(map[string][]byte)
+	}
+	f.store[hash] = data
+	return hash, nil
 }
 
 func (f *fakeBlobs) SetName(hash, name string) error {
@@ -1074,6 +1116,45 @@ func (f *fakeSeedStream) Recv() (*controlv1.SeedWorkloadRequest, error) {
 }
 
 func (f *fakeSeedStream) SendAndClose(resp *controlv1.SeedWorkloadResponse) error {
+	f.sent = resp
+	return nil
+}
+
+type fakeUploadStream struct {
+	grpc.ServerStream
+	ctx      context.Context //nolint:containedctx
+	messages []*controlv1.UploadBlobRequest
+	sent     *controlv1.UploadBlobResponse
+}
+
+func newUploadStream(name string, data []byte) *fakeUploadStream {
+	header := &controlv1.UploadBlobHeader{}
+	if name != "" {
+		header.Name = &name
+	}
+	msgs := []*controlv1.UploadBlobRequest{
+		{Payload: &controlv1.UploadBlobRequest_Header{Header: header}},
+	}
+	if len(data) > 0 {
+		msgs = append(msgs, &controlv1.UploadBlobRequest{
+			Payload: &controlv1.UploadBlobRequest_Chunk{Chunk: data},
+		})
+	}
+	return &fakeUploadStream{ctx: context.Background(), messages: msgs}
+}
+
+func (f *fakeUploadStream) Context() context.Context { return f.ctx }
+
+func (f *fakeUploadStream) Recv() (*controlv1.UploadBlobRequest, error) {
+	if len(f.messages) == 0 {
+		return nil, io.EOF
+	}
+	msg := f.messages[0]
+	f.messages = f.messages[1:]
+	return msg, nil
+}
+
+func (f *fakeUploadStream) SendAndClose(resp *controlv1.UploadBlobResponse) error {
 	f.sent = resp
 	return nil
 }

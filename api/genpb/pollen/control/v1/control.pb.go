@@ -2561,28 +2561,33 @@ func (*FetchBlobResponse) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{38}
 }
 
-type AnnounceBlobRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
-	Name          *string                `protobuf:"bytes,2,opt,name=name,proto3,oneof" json:"name,omitempty"`
+// The first UploadBlobRequest must carry `header`; subsequent messages
+// carry binary `chunk` fragments.
+type UploadBlobRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Payload:
+	//
+	//	*UploadBlobRequest_Header
+	//	*UploadBlobRequest_Chunk
+	Payload       isUploadBlobRequest_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *AnnounceBlobRequest) Reset() {
-	*x = AnnounceBlobRequest{}
+func (x *UploadBlobRequest) Reset() {
+	*x = UploadBlobRequest{}
 	mi := &file_pollen_control_v1_control_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *AnnounceBlobRequest) String() string {
+func (x *UploadBlobRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*AnnounceBlobRequest) ProtoMessage() {}
+func (*UploadBlobRequest) ProtoMessage() {}
 
-func (x *AnnounceBlobRequest) ProtoReflect() protoreflect.Message {
+func (x *UploadBlobRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_pollen_control_v1_control_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -2594,46 +2599,118 @@ func (x *AnnounceBlobRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use AnnounceBlobRequest.ProtoReflect.Descriptor instead.
-func (*AnnounceBlobRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use UploadBlobRequest.ProtoReflect.Descriptor instead.
+func (*UploadBlobRequest) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{39}
 }
 
-func (x *AnnounceBlobRequest) GetHash() string {
+func (x *UploadBlobRequest) GetPayload() isUploadBlobRequest_Payload {
 	if x != nil {
-		return x.Hash
+		return x.Payload
 	}
-	return ""
+	return nil
 }
 
-func (x *AnnounceBlobRequest) GetName() string {
+func (x *UploadBlobRequest) GetHeader() *UploadBlobHeader {
+	if x != nil {
+		if x, ok := x.Payload.(*UploadBlobRequest_Header); ok {
+			return x.Header
+		}
+	}
+	return nil
+}
+
+func (x *UploadBlobRequest) GetChunk() []byte {
+	if x != nil {
+		if x, ok := x.Payload.(*UploadBlobRequest_Chunk); ok {
+			return x.Chunk
+		}
+	}
+	return nil
+}
+
+type isUploadBlobRequest_Payload interface {
+	isUploadBlobRequest_Payload()
+}
+
+type UploadBlobRequest_Header struct {
+	Header *UploadBlobHeader `protobuf:"bytes,1,opt,name=header,proto3,oneof"`
+}
+
+type UploadBlobRequest_Chunk struct {
+	Chunk []byte `protobuf:"bytes,2,opt,name=chunk,proto3,oneof"`
+}
+
+func (*UploadBlobRequest_Header) isUploadBlobRequest_Payload() {}
+
+func (*UploadBlobRequest_Chunk) isUploadBlobRequest_Payload() {}
+
+type UploadBlobHeader struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          *string                `protobuf:"bytes,1,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UploadBlobHeader) Reset() {
+	*x = UploadBlobHeader{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UploadBlobHeader) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UploadBlobHeader) ProtoMessage() {}
+
+func (x *UploadBlobHeader) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UploadBlobHeader.ProtoReflect.Descriptor instead.
+func (*UploadBlobHeader) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *UploadBlobHeader) GetName() string {
 	if x != nil && x.Name != nil {
 		return *x.Name
 	}
 	return ""
 }
 
-type AnnounceBlobResponse struct {
+type UploadBlobResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *AnnounceBlobResponse) Reset() {
-	*x = AnnounceBlobResponse{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[40]
+func (x *UploadBlobResponse) Reset() {
+	*x = UploadBlobResponse{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *AnnounceBlobResponse) String() string {
+func (x *UploadBlobResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*AnnounceBlobResponse) ProtoMessage() {}
+func (*UploadBlobResponse) ProtoMessage() {}
 
-func (x *AnnounceBlobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[40]
+func (x *UploadBlobResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2644,9 +2721,16 @@ func (x *AnnounceBlobResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use AnnounceBlobResponse.ProtoReflect.Descriptor instead.
-func (*AnnounceBlobResponse) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{40}
+// Deprecated: Use UploadBlobResponse.ProtoReflect.Descriptor instead.
+func (*UploadBlobResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *UploadBlobResponse) GetHash() string {
+	if x != nil {
+		return x.Hash
+	}
+	return ""
 }
 
 type RemoveBlobRequest struct {
@@ -2658,7 +2742,7 @@ type RemoveBlobRequest struct {
 
 func (x *RemoveBlobRequest) Reset() {
 	*x = RemoveBlobRequest{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[41]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2670,7 +2754,7 @@ func (x *RemoveBlobRequest) String() string {
 func (*RemoveBlobRequest) ProtoMessage() {}
 
 func (x *RemoveBlobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[41]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2683,7 +2767,7 @@ func (x *RemoveBlobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveBlobRequest.ProtoReflect.Descriptor instead.
 func (*RemoveBlobRequest) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{41}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *RemoveBlobRequest) GetHash() string {
@@ -2701,7 +2785,7 @@ type RemoveBlobResponse struct {
 
 func (x *RemoveBlobResponse) Reset() {
 	*x = RemoveBlobResponse{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[42]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2713,7 +2797,7 @@ func (x *RemoveBlobResponse) String() string {
 func (*RemoveBlobResponse) ProtoMessage() {}
 
 func (x *RemoveBlobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[42]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2726,7 +2810,7 @@ func (x *RemoveBlobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveBlobResponse.ProtoReflect.Descriptor instead.
 func (*RemoveBlobResponse) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{42}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{43}
 }
 
 type SeedStaticRequest struct {
@@ -2740,7 +2824,7 @@ type SeedStaticRequest struct {
 
 func (x *SeedStaticRequest) Reset() {
 	*x = SeedStaticRequest{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[43]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2752,7 +2836,7 @@ func (x *SeedStaticRequest) String() string {
 func (*SeedStaticRequest) ProtoMessage() {}
 
 func (x *SeedStaticRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[43]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2765,7 +2849,7 @@ func (x *SeedStaticRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SeedStaticRequest.ProtoReflect.Descriptor instead.
 func (*SeedStaticRequest) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{43}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *SeedStaticRequest) GetName() string {
@@ -2797,7 +2881,7 @@ type SeedStaticResponse struct {
 
 func (x *SeedStaticResponse) Reset() {
 	*x = SeedStaticResponse{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[44]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2809,7 +2893,7 @@ func (x *SeedStaticResponse) String() string {
 func (*SeedStaticResponse) ProtoMessage() {}
 
 func (x *SeedStaticResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[44]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2822,7 +2906,7 @@ func (x *SeedStaticResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SeedStaticResponse.ProtoReflect.Descriptor instead.
 func (*SeedStaticResponse) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{44}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{45}
 }
 
 type UnseedStaticRequest struct {
@@ -2834,7 +2918,7 @@ type UnseedStaticRequest struct {
 
 func (x *UnseedStaticRequest) Reset() {
 	*x = UnseedStaticRequest{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[45]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2846,7 +2930,7 @@ func (x *UnseedStaticRequest) String() string {
 func (*UnseedStaticRequest) ProtoMessage() {}
 
 func (x *UnseedStaticRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[45]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2859,7 +2943,7 @@ func (x *UnseedStaticRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnseedStaticRequest.ProtoReflect.Descriptor instead.
 func (*UnseedStaticRequest) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{45}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *UnseedStaticRequest) GetName() string {
@@ -2877,7 +2961,7 @@ type UnseedStaticResponse struct {
 
 func (x *UnseedStaticResponse) Reset() {
 	*x = UnseedStaticResponse{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[46]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2889,7 +2973,7 @@ func (x *UnseedStaticResponse) String() string {
 func (*UnseedStaticResponse) ProtoMessage() {}
 
 func (x *UnseedStaticResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[46]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2902,7 +2986,7 @@ func (x *UnseedStaticResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnseedStaticResponse.ProtoReflect.Descriptor instead.
 func (*UnseedStaticResponse) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{46}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{47}
 }
 
 type ListStaticRequest struct {
@@ -2913,7 +2997,7 @@ type ListStaticRequest struct {
 
 func (x *ListStaticRequest) Reset() {
 	*x = ListStaticRequest{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[47]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2925,7 +3009,7 @@ func (x *ListStaticRequest) String() string {
 func (*ListStaticRequest) ProtoMessage() {}
 
 func (x *ListStaticRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[47]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2938,7 +3022,7 @@ func (x *ListStaticRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStaticRequest.ProtoReflect.Descriptor instead.
 func (*ListStaticRequest) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{47}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{48}
 }
 
 type StaticSummary struct {
@@ -2956,7 +3040,7 @@ type StaticSummary struct {
 
 func (x *StaticSummary) Reset() {
 	*x = StaticSummary{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[48]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2968,7 +3052,7 @@ func (x *StaticSummary) String() string {
 func (*StaticSummary) ProtoMessage() {}
 
 func (x *StaticSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[48]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2981,7 +3065,7 @@ func (x *StaticSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StaticSummary.ProtoReflect.Descriptor instead.
 func (*StaticSummary) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{48}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *StaticSummary) GetName() string {
@@ -3042,7 +3126,7 @@ type ListStaticResponse struct {
 
 func (x *ListStaticResponse) Reset() {
 	*x = ListStaticResponse{}
-	mi := &file_pollen_control_v1_control_proto_msgTypes[49]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3054,7 +3138,7 @@ func (x *ListStaticResponse) String() string {
 func (*ListStaticResponse) ProtoMessage() {}
 
 func (x *ListStaticResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_control_v1_control_proto_msgTypes[49]
+	mi := &file_pollen_control_v1_control_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3067,7 +3151,7 @@ func (x *ListStaticResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStaticResponse.ProtoReflect.Descriptor instead.
 func (*ListStaticResponse) Descriptor() ([]byte, []int) {
-	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{49}
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *ListStaticResponse) GetSites() []*StaticSummary {
@@ -3252,13 +3336,17 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x04hash\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x04hash\x12'\n" +
 	"\bpeer_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h H\x00R\apeerPub\x88\x01\x01B\v\n" +
 	"\t_peer_pub\"\x13\n" +
-	"\x11FetchBlobResponse\"t\n" +
-	"\x13AnnounceBlobRequest\x12/\n" +
-	"\x04hash\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x04hash\x12#\n" +
-	"\x04name\x18\x02 \x01(\tB\n" +
+	"\x11FetchBlobResponse\"u\n" +
+	"\x11UploadBlobRequest\x12=\n" +
+	"\x06header\x18\x01 \x01(\v2#.pollen.control.v1.UploadBlobHeaderH\x00R\x06header\x12\x16\n" +
+	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\t\n" +
+	"\apayload\"@\n" +
+	"\x10UploadBlobHeader\x12#\n" +
+	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01H\x00R\x04name\x88\x01\x01B\a\n" +
-	"\x05_name\"\x16\n" +
-	"\x14AnnounceBlobResponse\"D\n" +
+	"\x05_name\"(\n" +
+	"\x12UploadBlobResponse\x12\x12\n" +
+	"\x04hash\x18\x01 \x01(\tR\x04hash\"D\n" +
 	"\x11RemoveBlobRequest\x12/\n" +
 	"\x04hash\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x04hash\"\x14\n" +
 	"\x12RemoveBlobResponse\"\x88\x01\n" +
@@ -3305,7 +3393,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x19HEALTH_STATUS_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15HEALTH_STATUS_HEALTHY\x10\x01\x12\x1a\n" +
 	"\x16HEALTH_STATUS_DEGRADED\x10\x02\x12\x1b\n" +
-	"\x17HEALTH_STATUS_UNHEALTHY\x10\x032\x97\x0f\n" +
+	"\x17HEALTH_STATUS_UNHEALTHY\x10\x032\x93\x0f\n" +
 	"\x0eControlService\x12S\n" +
 	"\bShutdown\x12\".pollen.control.v1.ShutdownRequest\x1a#.pollen.control.v1.ShutdownResponse\x12k\n" +
 	"\x10GetBootstrapInfo\x12*.pollen.control.v1.GetBootstrapInfoRequest\x1a+.pollen.control.v1.GetBootstrapInfoResponse\x12V\n" +
@@ -3322,8 +3410,9 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x0eUnseedWorkload\x12(.pollen.control.v1.UnseedWorkloadRequest\x1a).pollen.control.v1.UnseedWorkloadResponse\x12_\n" +
 	"\fCallWorkload\x12&.pollen.control.v1.CallWorkloadRequest\x1a'.pollen.control.v1.CallWorkloadResponse\x12V\n" +
 	"\tIssueCert\x12#.pollen.control.v1.IssueCertRequest\x1a$.pollen.control.v1.IssueCertResponse\x12V\n" +
-	"\tFetchBlob\x12#.pollen.control.v1.FetchBlobRequest\x1a$.pollen.control.v1.FetchBlobResponse\x12_\n" +
-	"\fAnnounceBlob\x12&.pollen.control.v1.AnnounceBlobRequest\x1a'.pollen.control.v1.AnnounceBlobResponse\x12Y\n" +
+	"\tFetchBlob\x12#.pollen.control.v1.FetchBlobRequest\x1a$.pollen.control.v1.FetchBlobResponse\x12[\n" +
+	"\n" +
+	"UploadBlob\x12$.pollen.control.v1.UploadBlobRequest\x1a%.pollen.control.v1.UploadBlobResponse(\x01\x12Y\n" +
 	"\n" +
 	"RemoveBlob\x12$.pollen.control.v1.RemoveBlobRequest\x1a%.pollen.control.v1.RemoveBlobResponse\x12Y\n" +
 	"\n" +
@@ -3345,7 +3434,7 @@ func file_pollen_control_v1_control_proto_rawDescGZIP() []byte {
 }
 
 var file_pollen_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
+var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
 var file_pollen_control_v1_control_proto_goTypes = []any{
 	(NodeStatus)(0),                   // 0: pollen.control.v1.NodeStatus
 	(CertHealth)(0),                   // 1: pollen.control.v1.CertHealth
@@ -3390,96 +3479,98 @@ var file_pollen_control_v1_control_proto_goTypes = []any{
 	(*IssueCertResponse)(nil),         // 40: pollen.control.v1.IssueCertResponse
 	(*FetchBlobRequest)(nil),          // 41: pollen.control.v1.FetchBlobRequest
 	(*FetchBlobResponse)(nil),         // 42: pollen.control.v1.FetchBlobResponse
-	(*AnnounceBlobRequest)(nil),       // 43: pollen.control.v1.AnnounceBlobRequest
-	(*AnnounceBlobResponse)(nil),      // 44: pollen.control.v1.AnnounceBlobResponse
-	(*RemoveBlobRequest)(nil),         // 45: pollen.control.v1.RemoveBlobRequest
-	(*RemoveBlobResponse)(nil),        // 46: pollen.control.v1.RemoveBlobResponse
-	(*SeedStaticRequest)(nil),         // 47: pollen.control.v1.SeedStaticRequest
-	(*SeedStaticResponse)(nil),        // 48: pollen.control.v1.SeedStaticResponse
-	(*UnseedStaticRequest)(nil),       // 49: pollen.control.v1.UnseedStaticRequest
-	(*UnseedStaticResponse)(nil),      // 50: pollen.control.v1.UnseedStaticResponse
-	(*ListStaticRequest)(nil),         // 51: pollen.control.v1.ListStaticRequest
-	(*StaticSummary)(nil),             // 52: pollen.control.v1.StaticSummary
-	(*ListStaticResponse)(nil),        // 53: pollen.control.v1.ListStaticResponse
-	(v1.ServiceProtocol)(0),           // 54: pollen.state.v1.ServiceProtocol
-	(*structpb.Struct)(nil),           // 55: google.protobuf.Struct
+	(*UploadBlobRequest)(nil),         // 43: pollen.control.v1.UploadBlobRequest
+	(*UploadBlobHeader)(nil),          // 44: pollen.control.v1.UploadBlobHeader
+	(*UploadBlobResponse)(nil),        // 45: pollen.control.v1.UploadBlobResponse
+	(*RemoveBlobRequest)(nil),         // 46: pollen.control.v1.RemoveBlobRequest
+	(*RemoveBlobResponse)(nil),        // 47: pollen.control.v1.RemoveBlobResponse
+	(*SeedStaticRequest)(nil),         // 48: pollen.control.v1.SeedStaticRequest
+	(*SeedStaticResponse)(nil),        // 49: pollen.control.v1.SeedStaticResponse
+	(*UnseedStaticRequest)(nil),       // 50: pollen.control.v1.UnseedStaticRequest
+	(*UnseedStaticResponse)(nil),      // 51: pollen.control.v1.UnseedStaticResponse
+	(*ListStaticRequest)(nil),         // 52: pollen.control.v1.ListStaticRequest
+	(*StaticSummary)(nil),             // 53: pollen.control.v1.StaticSummary
+	(*ListStaticResponse)(nil),        // 54: pollen.control.v1.ListStaticResponse
+	(v1.ServiceProtocol)(0),           // 55: pollen.state.v1.ServiceProtocol
+	(*structpb.Struct)(nil),           // 56: google.protobuf.Struct
 }
 var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	4,  // 0: pollen.control.v1.NodeSummary.node:type_name -> pollen.control.v1.NodeRef
 	0,  // 1: pollen.control.v1.NodeSummary.status:type_name -> pollen.control.v1.NodeStatus
 	4,  // 2: pollen.control.v1.ServiceSummary.provider:type_name -> pollen.control.v1.NodeRef
-	54, // 3: pollen.control.v1.ServiceSummary.protocol:type_name -> pollen.state.v1.ServiceProtocol
+	55, // 3: pollen.control.v1.ServiceSummary.protocol:type_name -> pollen.state.v1.ServiceProtocol
 	4,  // 4: pollen.control.v1.BootstrapPeerInfo.peer:type_name -> pollen.control.v1.NodeRef
 	10, // 5: pollen.control.v1.GetBootstrapInfoResponse.self:type_name -> pollen.control.v1.BootstrapPeerInfo
 	10, // 6: pollen.control.v1.GetBootstrapInfoResponse.recommended:type_name -> pollen.control.v1.BootstrapPeerInfo
 	1,  // 7: pollen.control.v1.CertInfo.health:type_name -> pollen.control.v1.CertHealth
-	55, // 8: pollen.control.v1.CertInfo.attributes:type_name -> google.protobuf.Struct
+	56, // 8: pollen.control.v1.CertInfo.attributes:type_name -> google.protobuf.Struct
 	5,  // 9: pollen.control.v1.GetStatusResponse.self:type_name -> pollen.control.v1.NodeSummary
 	5,  // 10: pollen.control.v1.GetStatusResponse.nodes:type_name -> pollen.control.v1.NodeSummary
 	6,  // 11: pollen.control.v1.GetStatusResponse.services:type_name -> pollen.control.v1.ServiceSummary
 	17, // 12: pollen.control.v1.GetStatusResponse.connections:type_name -> pollen.control.v1.ConnectionSummary
 	13, // 13: pollen.control.v1.GetStatusResponse.certificates:type_name -> pollen.control.v1.CertInfo
 	16, // 14: pollen.control.v1.GetStatusResponse.workloads:type_name -> pollen.control.v1.WorkloadSummary
-	52, // 15: pollen.control.v1.GetStatusResponse.sites:type_name -> pollen.control.v1.StaticSummary
+	53, // 15: pollen.control.v1.GetStatusResponse.sites:type_name -> pollen.control.v1.StaticSummary
 	15, // 16: pollen.control.v1.GetStatusResponse.blobs:type_name -> pollen.control.v1.BlobSummary
 	4,  // 17: pollen.control.v1.BlobSummary.publisher:type_name -> pollen.control.v1.NodeRef
 	2,  // 18: pollen.control.v1.WorkloadSummary.status:type_name -> pollen.control.v1.WorkloadStatus
 	4,  // 19: pollen.control.v1.ConnectionSummary.peer:type_name -> pollen.control.v1.NodeRef
-	54, // 20: pollen.control.v1.ConnectionSummary.protocol:type_name -> pollen.state.v1.ServiceProtocol
-	54, // 21: pollen.control.v1.RegisterServiceRequest.protocol:type_name -> pollen.state.v1.ServiceProtocol
+	55, // 20: pollen.control.v1.ConnectionSummary.protocol:type_name -> pollen.state.v1.ServiceProtocol
+	55, // 21: pollen.control.v1.RegisterServiceRequest.protocol:type_name -> pollen.state.v1.ServiceProtocol
 	4,  // 22: pollen.control.v1.ConnectServiceRequest.node:type_name -> pollen.control.v1.NodeRef
-	54, // 23: pollen.control.v1.ConnectServiceRequest.protocol:type_name -> pollen.state.v1.ServiceProtocol
+	55, // 23: pollen.control.v1.ConnectServiceRequest.protocol:type_name -> pollen.state.v1.ServiceProtocol
 	31, // 24: pollen.control.v1.SeedWorkloadRequest.header:type_name -> pollen.control.v1.SeedWorkloadHeader
 	3,  // 25: pollen.control.v1.GetMetricsResponse.health:type_name -> pollen.control.v1.HealthStatus
-	55, // 26: pollen.control.v1.IssueCertRequest.attributes:type_name -> google.protobuf.Struct
-	4,  // 27: pollen.control.v1.StaticSummary.claimants:type_name -> pollen.control.v1.NodeRef
-	4,  // 28: pollen.control.v1.StaticSummary.publisher:type_name -> pollen.control.v1.NodeRef
-	52, // 29: pollen.control.v1.ListStaticResponse.sites:type_name -> pollen.control.v1.StaticSummary
-	7,  // 30: pollen.control.v1.ControlService.Shutdown:input_type -> pollen.control.v1.ShutdownRequest
-	9,  // 31: pollen.control.v1.ControlService.GetBootstrapInfo:input_type -> pollen.control.v1.GetBootstrapInfoRequest
-	12, // 32: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
-	37, // 33: pollen.control.v1.ControlService.GetMetrics:input_type -> pollen.control.v1.GetMetricsRequest
-	18, // 34: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
-	20, // 35: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
-	24, // 36: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
-	22, // 37: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
-	26, // 38: pollen.control.v1.ControlService.DisconnectService:input_type -> pollen.control.v1.DisconnectServiceRequest
-	28, // 39: pollen.control.v1.ControlService.DenyPeer:input_type -> pollen.control.v1.DenyPeerRequest
-	30, // 40: pollen.control.v1.ControlService.SeedWorkload:input_type -> pollen.control.v1.SeedWorkloadRequest
-	33, // 41: pollen.control.v1.ControlService.UnseedWorkload:input_type -> pollen.control.v1.UnseedWorkloadRequest
-	35, // 42: pollen.control.v1.ControlService.CallWorkload:input_type -> pollen.control.v1.CallWorkloadRequest
-	39, // 43: pollen.control.v1.ControlService.IssueCert:input_type -> pollen.control.v1.IssueCertRequest
-	41, // 44: pollen.control.v1.ControlService.FetchBlob:input_type -> pollen.control.v1.FetchBlobRequest
-	43, // 45: pollen.control.v1.ControlService.AnnounceBlob:input_type -> pollen.control.v1.AnnounceBlobRequest
-	45, // 46: pollen.control.v1.ControlService.RemoveBlob:input_type -> pollen.control.v1.RemoveBlobRequest
-	47, // 47: pollen.control.v1.ControlService.SeedStatic:input_type -> pollen.control.v1.SeedStaticRequest
-	49, // 48: pollen.control.v1.ControlService.UnseedStatic:input_type -> pollen.control.v1.UnseedStaticRequest
-	51, // 49: pollen.control.v1.ControlService.ListStatic:input_type -> pollen.control.v1.ListStaticRequest
-	8,  // 50: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
-	11, // 51: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
-	14, // 52: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
-	38, // 53: pollen.control.v1.ControlService.GetMetrics:output_type -> pollen.control.v1.GetMetricsResponse
-	19, // 54: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
-	21, // 55: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
-	25, // 56: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
-	23, // 57: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
-	27, // 58: pollen.control.v1.ControlService.DisconnectService:output_type -> pollen.control.v1.DisconnectServiceResponse
-	29, // 59: pollen.control.v1.ControlService.DenyPeer:output_type -> pollen.control.v1.DenyPeerResponse
-	32, // 60: pollen.control.v1.ControlService.SeedWorkload:output_type -> pollen.control.v1.SeedWorkloadResponse
-	34, // 61: pollen.control.v1.ControlService.UnseedWorkload:output_type -> pollen.control.v1.UnseedWorkloadResponse
-	36, // 62: pollen.control.v1.ControlService.CallWorkload:output_type -> pollen.control.v1.CallWorkloadResponse
-	40, // 63: pollen.control.v1.ControlService.IssueCert:output_type -> pollen.control.v1.IssueCertResponse
-	42, // 64: pollen.control.v1.ControlService.FetchBlob:output_type -> pollen.control.v1.FetchBlobResponse
-	44, // 65: pollen.control.v1.ControlService.AnnounceBlob:output_type -> pollen.control.v1.AnnounceBlobResponse
-	46, // 66: pollen.control.v1.ControlService.RemoveBlob:output_type -> pollen.control.v1.RemoveBlobResponse
-	48, // 67: pollen.control.v1.ControlService.SeedStatic:output_type -> pollen.control.v1.SeedStaticResponse
-	50, // 68: pollen.control.v1.ControlService.UnseedStatic:output_type -> pollen.control.v1.UnseedStaticResponse
-	53, // 69: pollen.control.v1.ControlService.ListStatic:output_type -> pollen.control.v1.ListStaticResponse
-	50, // [50:70] is the sub-list for method output_type
-	30, // [30:50] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	56, // 26: pollen.control.v1.IssueCertRequest.attributes:type_name -> google.protobuf.Struct
+	44, // 27: pollen.control.v1.UploadBlobRequest.header:type_name -> pollen.control.v1.UploadBlobHeader
+	4,  // 28: pollen.control.v1.StaticSummary.claimants:type_name -> pollen.control.v1.NodeRef
+	4,  // 29: pollen.control.v1.StaticSummary.publisher:type_name -> pollen.control.v1.NodeRef
+	53, // 30: pollen.control.v1.ListStaticResponse.sites:type_name -> pollen.control.v1.StaticSummary
+	7,  // 31: pollen.control.v1.ControlService.Shutdown:input_type -> pollen.control.v1.ShutdownRequest
+	9,  // 32: pollen.control.v1.ControlService.GetBootstrapInfo:input_type -> pollen.control.v1.GetBootstrapInfoRequest
+	12, // 33: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
+	37, // 34: pollen.control.v1.ControlService.GetMetrics:input_type -> pollen.control.v1.GetMetricsRequest
+	18, // 35: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
+	20, // 36: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
+	24, // 37: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
+	22, // 38: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
+	26, // 39: pollen.control.v1.ControlService.DisconnectService:input_type -> pollen.control.v1.DisconnectServiceRequest
+	28, // 40: pollen.control.v1.ControlService.DenyPeer:input_type -> pollen.control.v1.DenyPeerRequest
+	30, // 41: pollen.control.v1.ControlService.SeedWorkload:input_type -> pollen.control.v1.SeedWorkloadRequest
+	33, // 42: pollen.control.v1.ControlService.UnseedWorkload:input_type -> pollen.control.v1.UnseedWorkloadRequest
+	35, // 43: pollen.control.v1.ControlService.CallWorkload:input_type -> pollen.control.v1.CallWorkloadRequest
+	39, // 44: pollen.control.v1.ControlService.IssueCert:input_type -> pollen.control.v1.IssueCertRequest
+	41, // 45: pollen.control.v1.ControlService.FetchBlob:input_type -> pollen.control.v1.FetchBlobRequest
+	43, // 46: pollen.control.v1.ControlService.UploadBlob:input_type -> pollen.control.v1.UploadBlobRequest
+	46, // 47: pollen.control.v1.ControlService.RemoveBlob:input_type -> pollen.control.v1.RemoveBlobRequest
+	48, // 48: pollen.control.v1.ControlService.SeedStatic:input_type -> pollen.control.v1.SeedStaticRequest
+	50, // 49: pollen.control.v1.ControlService.UnseedStatic:input_type -> pollen.control.v1.UnseedStaticRequest
+	52, // 50: pollen.control.v1.ControlService.ListStatic:input_type -> pollen.control.v1.ListStaticRequest
+	8,  // 51: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
+	11, // 52: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
+	14, // 53: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
+	38, // 54: pollen.control.v1.ControlService.GetMetrics:output_type -> pollen.control.v1.GetMetricsResponse
+	19, // 55: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
+	21, // 56: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
+	25, // 57: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
+	23, // 58: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
+	27, // 59: pollen.control.v1.ControlService.DisconnectService:output_type -> pollen.control.v1.DisconnectServiceResponse
+	29, // 60: pollen.control.v1.ControlService.DenyPeer:output_type -> pollen.control.v1.DenyPeerResponse
+	32, // 61: pollen.control.v1.ControlService.SeedWorkload:output_type -> pollen.control.v1.SeedWorkloadResponse
+	34, // 62: pollen.control.v1.ControlService.UnseedWorkload:output_type -> pollen.control.v1.UnseedWorkloadResponse
+	36, // 63: pollen.control.v1.ControlService.CallWorkload:output_type -> pollen.control.v1.CallWorkloadResponse
+	40, // 64: pollen.control.v1.ControlService.IssueCert:output_type -> pollen.control.v1.IssueCertResponse
+	42, // 65: pollen.control.v1.ControlService.FetchBlob:output_type -> pollen.control.v1.FetchBlobResponse
+	45, // 66: pollen.control.v1.ControlService.UploadBlob:output_type -> pollen.control.v1.UploadBlobResponse
+	47, // 67: pollen.control.v1.ControlService.RemoveBlob:output_type -> pollen.control.v1.RemoveBlobResponse
+	49, // 68: pollen.control.v1.ControlService.SeedStatic:output_type -> pollen.control.v1.SeedStaticResponse
+	51, // 69: pollen.control.v1.ControlService.UnseedStatic:output_type -> pollen.control.v1.UnseedStaticResponse
+	54, // 70: pollen.control.v1.ControlService.ListStatic:output_type -> pollen.control.v1.ListStaticResponse
+	51, // [51:71] is the sub-list for method output_type
+	31, // [31:51] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_pollen_control_v1_control_proto_init() }
@@ -3494,14 +3585,18 @@ func file_pollen_control_v1_control_proto_init() {
 		(*SeedWorkloadRequest_Chunk)(nil),
 	}
 	file_pollen_control_v1_control_proto_msgTypes[37].OneofWrappers = []any{}
-	file_pollen_control_v1_control_proto_msgTypes[39].OneofWrappers = []any{}
+	file_pollen_control_v1_control_proto_msgTypes[39].OneofWrappers = []any{
+		(*UploadBlobRequest_Header)(nil),
+		(*UploadBlobRequest_Chunk)(nil),
+	}
+	file_pollen_control_v1_control_proto_msgTypes[40].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_control_v1_control_proto_rawDesc), len(file_pollen_control_v1_control_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   50,
+			NumMessages:   51,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

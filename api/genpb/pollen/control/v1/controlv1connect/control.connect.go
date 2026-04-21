@@ -79,9 +79,9 @@ const (
 	// ControlServiceFetchBlobProcedure is the fully-qualified name of the ControlService's FetchBlob
 	// RPC.
 	ControlServiceFetchBlobProcedure = "/pollen.control.v1.ControlService/FetchBlob"
-	// ControlServiceAnnounceBlobProcedure is the fully-qualified name of the ControlService's
-	// AnnounceBlob RPC.
-	ControlServiceAnnounceBlobProcedure = "/pollen.control.v1.ControlService/AnnounceBlob"
+	// ControlServiceUploadBlobProcedure is the fully-qualified name of the ControlService's UploadBlob
+	// RPC.
+	ControlServiceUploadBlobProcedure = "/pollen.control.v1.ControlService/UploadBlob"
 	// ControlServiceRemoveBlobProcedure is the fully-qualified name of the ControlService's RemoveBlob
 	// RPC.
 	ControlServiceRemoveBlobProcedure = "/pollen.control.v1.ControlService/RemoveBlob"
@@ -113,7 +113,7 @@ type ControlServiceClient interface {
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
 	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
 	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.Response[v1.FetchBlobResponse], error)
-	AnnounceBlob(context.Context, *connect.Request[v1.AnnounceBlobRequest]) (*connect.Response[v1.AnnounceBlobResponse], error)
+	UploadBlob(context.Context) *connect.ClientStreamForClient[v1.UploadBlobRequest, v1.UploadBlobResponse]
 	RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error)
 	SeedStatic(context.Context, *connect.Request[v1.SeedStaticRequest]) (*connect.Response[v1.SeedStaticResponse], error)
 	UnseedStatic(context.Context, *connect.Request[v1.UnseedStaticRequest]) (*connect.Response[v1.UnseedStaticResponse], error)
@@ -221,10 +221,10 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("FetchBlob")),
 			connect.WithClientOptions(opts...),
 		),
-		announceBlob: connect.NewClient[v1.AnnounceBlobRequest, v1.AnnounceBlobResponse](
+		uploadBlob: connect.NewClient[v1.UploadBlobRequest, v1.UploadBlobResponse](
 			httpClient,
-			baseURL+ControlServiceAnnounceBlobProcedure,
-			connect.WithSchema(controlServiceMethods.ByName("AnnounceBlob")),
+			baseURL+ControlServiceUploadBlobProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("UploadBlob")),
 			connect.WithClientOptions(opts...),
 		),
 		removeBlob: connect.NewClient[v1.RemoveBlobRequest, v1.RemoveBlobResponse](
@@ -271,7 +271,7 @@ type controlServiceClient struct {
 	callWorkload      *connect.Client[v1.CallWorkloadRequest, v1.CallWorkloadResponse]
 	issueCert         *connect.Client[v1.IssueCertRequest, v1.IssueCertResponse]
 	fetchBlob         *connect.Client[v1.FetchBlobRequest, v1.FetchBlobResponse]
-	announceBlob      *connect.Client[v1.AnnounceBlobRequest, v1.AnnounceBlobResponse]
+	uploadBlob        *connect.Client[v1.UploadBlobRequest, v1.UploadBlobResponse]
 	removeBlob        *connect.Client[v1.RemoveBlobRequest, v1.RemoveBlobResponse]
 	seedStatic        *connect.Client[v1.SeedStaticRequest, v1.SeedStaticResponse]
 	unseedStatic      *connect.Client[v1.UnseedStaticRequest, v1.UnseedStaticResponse]
@@ -353,9 +353,9 @@ func (c *controlServiceClient) FetchBlob(ctx context.Context, req *connect.Reque
 	return c.fetchBlob.CallUnary(ctx, req)
 }
 
-// AnnounceBlob calls pollen.control.v1.ControlService.AnnounceBlob.
-func (c *controlServiceClient) AnnounceBlob(ctx context.Context, req *connect.Request[v1.AnnounceBlobRequest]) (*connect.Response[v1.AnnounceBlobResponse], error) {
-	return c.announceBlob.CallUnary(ctx, req)
+// UploadBlob calls pollen.control.v1.ControlService.UploadBlob.
+func (c *controlServiceClient) UploadBlob(ctx context.Context) *connect.ClientStreamForClient[v1.UploadBlobRequest, v1.UploadBlobResponse] {
+	return c.uploadBlob.CallClientStream(ctx)
 }
 
 // RemoveBlob calls pollen.control.v1.ControlService.RemoveBlob.
@@ -395,7 +395,7 @@ type ControlServiceHandler interface {
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
 	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
 	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.Response[v1.FetchBlobResponse], error)
-	AnnounceBlob(context.Context, *connect.Request[v1.AnnounceBlobRequest]) (*connect.Response[v1.AnnounceBlobResponse], error)
+	UploadBlob(context.Context, *connect.ClientStream[v1.UploadBlobRequest]) (*connect.Response[v1.UploadBlobResponse], error)
 	RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error)
 	SeedStatic(context.Context, *connect.Request[v1.SeedStaticRequest]) (*connect.Response[v1.SeedStaticResponse], error)
 	UnseedStatic(context.Context, *connect.Request[v1.UnseedStaticRequest]) (*connect.Response[v1.UnseedStaticResponse], error)
@@ -499,10 +499,10 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("FetchBlob")),
 		connect.WithHandlerOptions(opts...),
 	)
-	controlServiceAnnounceBlobHandler := connect.NewUnaryHandler(
-		ControlServiceAnnounceBlobProcedure,
-		svc.AnnounceBlob,
-		connect.WithSchema(controlServiceMethods.ByName("AnnounceBlob")),
+	controlServiceUploadBlobHandler := connect.NewClientStreamHandler(
+		ControlServiceUploadBlobProcedure,
+		svc.UploadBlob,
+		connect.WithSchema(controlServiceMethods.ByName("UploadBlob")),
 		connect.WithHandlerOptions(opts...),
 	)
 	controlServiceRemoveBlobHandler := connect.NewUnaryHandler(
@@ -561,8 +561,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceIssueCertHandler.ServeHTTP(w, r)
 		case ControlServiceFetchBlobProcedure:
 			controlServiceFetchBlobHandler.ServeHTTP(w, r)
-		case ControlServiceAnnounceBlobProcedure:
-			controlServiceAnnounceBlobHandler.ServeHTTP(w, r)
+		case ControlServiceUploadBlobProcedure:
+			controlServiceUploadBlobHandler.ServeHTTP(w, r)
 		case ControlServiceRemoveBlobProcedure:
 			controlServiceRemoveBlobHandler.ServeHTTP(w, r)
 		case ControlServiceSeedStaticProcedure:
@@ -640,8 +640,8 @@ func (UnimplementedControlServiceHandler) FetchBlob(context.Context, *connect.Re
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.FetchBlob is not implemented"))
 }
 
-func (UnimplementedControlServiceHandler) AnnounceBlob(context.Context, *connect.Request[v1.AnnounceBlobRequest]) (*connect.Response[v1.AnnounceBlobResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.AnnounceBlob is not implemented"))
+func (UnimplementedControlServiceHandler) UploadBlob(context.Context, *connect.ClientStream[v1.UploadBlobRequest]) (*connect.Response[v1.UploadBlobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.UploadBlob is not implemented"))
 }
 
 func (UnimplementedControlServiceHandler) RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error) {

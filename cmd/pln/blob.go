@@ -16,7 +16,6 @@ import (
 	"github.com/spf13/cobra"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
-	"github.com/sambigeara/pollen/pkg/cas"
 )
 
 var hashPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
@@ -24,15 +23,15 @@ var hashPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 func newBlobCmds() []*cobra.Command {
 	putCmd := &cobra.Command{
 		Use:   "put <file> [name]",
-		Short: "Store a blob in the local content store and print its hash",
-		Long:  "Reads <file> (or stdin when <file> is '-') and stores it in the local content-addressed blob store. Prints the SHA-256 hex digest. When a daemon is running, announces the blob so other peers can discover it. If [name] is given, the blob is published under that name and other peers can fetch it via `pln blob fetch <name>`. Re-publishing the same content under a new name renames it.",
+		Short: "Upload a blob to the daemon and print its hash",
+		Long:  "Reads <file> (or stdin when <file> is '-') and uploads it to the connected daemon, which stores it in its content-addressed blob store and announces availability to the cluster. Prints the SHA-256 hex digest. If [name] is given, the blob is published under that name and other peers can fetch it via `pln blob fetch <name>`. Re-publishing the same content under a new name renames it.",
 		Args:  cobra.RangeArgs(1, 2), //nolint:mnd
 		RunE:  withEnv(runBlobPut),
 	}
 
 	fetchCmd := &cobra.Command{
 		Use:   "fetch <hash-or-name>",
-		Short: "Pull a blob into the local content store",
+		Short: "Pull a blob into the daemon's content store",
 		Args:  cobra.ExactArgs(1),
 		RunE:  withEnv(runBlobFetch),
 	}
@@ -40,8 +39,8 @@ func newBlobCmds() []*cobra.Command {
 
 	rmCmd := &cobra.Command{
 		Use:   "rm <hash-or-name>",
-		Short: "Remove a blob from the local store and drop its name",
-		Long:  "Evicts the blob's bytes from the local content store, un-announces availability, and drops any name this peer published for it. Other peers keep their own copies until they evict locally.",
+		Short: "Remove a blob from the daemon's store and drop its name",
+		Long:  "Evicts the blob's bytes from the daemon's content store, un-announces availability, and drops any name this peer published for it. Other peers keep their own copies until they evict locally.",
 		Args:  cobra.ExactArgs(1),
 		RunE:  withEnv(runBlobRm),
 	}
@@ -64,42 +63,55 @@ func runBlobPut(cmd *cobra.Command, args []string, env *cliEnv) error {
 		r = f
 	}
 
-	store, err := cas.New(env.dir)
-	if err != nil {
-		return fmt.Errorf("open blob store: %w", err)
-	}
-	hash, err := store.Put(r)
-	if err != nil {
-		return fmt.Errorf("store blob: %w", err)
-	}
-
-	req := &controlv1.AnnounceBlobRequest{Hash: hash}
+	header := &controlv1.UploadBlobHeader{}
 	if len(args) > 1 {
 		name := args[1]
-		req.Name = &name
+		header.Name = &name
 	}
-	if _, err := env.client.AnnounceBlob(cmd.Context(), connect.NewRequest(req)); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not announce %s to cluster: %v\n", hash, err) //nolint:gosec
+	hash, err := uploadBlob(cmd, env, header, r)
+	if err != nil {
+		return err
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "%s\n", hash) //nolint:gosec
 	return nil
 }
 
+func uploadBlob(cmd *cobra.Command, env *cliEnv, header *controlv1.UploadBlobHeader, r io.Reader) (string, error) {
+	stream := env.client.UploadBlob(cmd.Context())
+	if err := stream.Send(&controlv1.UploadBlobRequest{
+		Payload: &controlv1.UploadBlobRequest_Header{Header: header},
+	}); err != nil {
+		return "", err
+	}
+	buf := make([]byte, streamChunkBytes)
+	for {
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			if err := stream.Send(&controlv1.UploadBlobRequest{
+				Payload: &controlv1.UploadBlobRequest_Chunk{Chunk: buf[:n]},
+			}); err != nil {
+				return "", err
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return "", fmt.Errorf("read blob: %w", readErr)
+		}
+	}
+	resp, err := stream.CloseAndReceive()
+	if err != nil {
+		return "", err
+	}
+	return resp.Msg.GetHash(), nil
+}
+
 func runBlobFetch(cmd *cobra.Command, args []string, env *cliEnv) error {
 	hash, err := resolveBlob(cmd, env, args[0])
 	if err != nil {
 		return err
-	}
-
-	store, err := cas.New(env.dir)
-	if err != nil {
-		return fmt.Errorf("open blob store: %w", err)
-	}
-
-	if store.Has(hash) {
-		fmt.Fprintf(cmd.OutOrStdout(), "fetched %s\n", hash) //nolint:gosec
-		return nil
 	}
 
 	req := &controlv1.FetchBlobRequest{Hash: hash}
@@ -112,9 +124,6 @@ func runBlobFetch(cmd *cobra.Command, args []string, env *cliEnv) error {
 	}
 	if _, err := env.client.FetchBlob(cmd.Context(), connect.NewRequest(req)); err != nil {
 		return err
-	}
-	if !store.Has(hash) {
-		return fmt.Errorf("blob %s not available after fetch", hash)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "fetched %s\n", hash) //nolint:gosec

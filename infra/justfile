@@ -1,53 +1,27 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set dotenv-path := "../.env"
 
-ssh_args       := "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-repo_root      := justfile_directory() / ".."
-prod_tf        := justfile_directory() / "prod"
-prod_pln_dir   := "$HOME/.pln-prod"
-launch_plist   := "$HOME/Library/LaunchAgents/sh.pln.prod.plist"
-plist_template := justfile_directory() / "prod/laptop/sh.pln.prod.plist"
+ssh_args  := "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+repo_root := justfile_directory() / ".."
+prod_tf   := justfile_directory() / "prod"
 
 default:
     @just --list
 
 # ── Prod (pln.sh) ─────────────────────────────────────────────────────
 #
-# First-time lifecycle:
-#   just prod-laptop-install  # launchd agent runs a prod pln alongside home
-#   just prod-up              # terraform apply (hetzner + cloudflare)
-#   just prod-bootstrap       # auto-install pln on nodes, form the mesh
-#   just prod-seed            # seed docs.pln.sh + pln.sh static sites
+# Day-to-day lifecycle:
+#   just prod-up          # terraform apply (hetzner + cloudflare)
+#   just prod-bootstrap   # auto-install pln on nodes, form the mesh
+#   just prod-seed        # seed apex + docs sites
+#   just prod-status
 #
 # Teardown:
-#   just prod-down              # terraform destroy
-#   just prod-laptop-uninstall  # stop + remove the launchd agent
+#   just prod-down        # terraform destroy
 #
-# Every prod command uses the laptop's prod pln daemon (PLN_DIR={{ prod_pln_dir }},
-# port 60711) as the cluster root of trust. Your brew-managed home daemon
-# is untouched.
-
-# Install the launchd agent so the laptop runs a prod pln daemon
-# persistently on port 60711 with PLN_DIR={{ prod_pln_dir }}.
-prod-laptop-install:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    mkdir -p "{{ prod_pln_dir }}"
-    sed "s|__HOME__|$HOME|g" "{{ plist_template }}" > "{{ launch_plist }}"
-    launchctl load -w "{{ launch_plist }}"
-    echo "loaded sh.pln.prod — give it a second, then: pln --dir {{ prod_pln_dir }} status"
-
-# Stop and remove the launchd agent. State at {{ prod_pln_dir }} is preserved.
-prod-laptop-uninstall:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ -f "{{ launch_plist }}" ]; then
-      launchctl unload -w "{{ launch_plist }}" || true
-      rm -f "{{ launch_plist }}"
-      echo "removed launchd agent. State preserved at {{ prod_pln_dir }}"
-    else
-      echo "no launchd agent installed"
-    fi
+# All recipes run under PLN_CONTEXT=prod. The ctx is an SSH-bridged admin
+# handle — no local prod daemon required. `pln ctx add prod root@<host>`
+# bootstraps the ctx.
 
 # Provision hetzner nodes + cloudflare DNS + rules.
 prod-up:
@@ -58,15 +32,14 @@ prod-down:
     cd {{ prod_tf }} && terraform destroy
 
 # Form the mesh. pln bootstrap ssh auto-installs pln via install.sh on
-# any node that doesn't have it, then joins each to the mesh rooted at
-# the laptop's prod daemon. --admin delegates signing authority to both
-# prod nodes so the laptop can go offline afterwards. Post-join, each
-# node gets its static-http listener bound to :8080 (CF origin rule
-# routes proxied traffic there).
+# any node that doesn't have it, then joins each to the mesh using the
+# prod ctx's admin keys. --admin delegates signing authority to each
+# prod node. Post-join, each node gets its static-http listener bound
+# to :8080 (CF origin rule routes proxied traffic there).
 prod-bootstrap:
     #!/usr/bin/env bash
     set -euo pipefail
-    export PLN_DIR="{{ prod_pln_dir }}"
+    export PLN_CONTEXT="prod"
     cd {{ prod_tf }}
 
     echo "forming mesh via pln bootstrap ssh..."
@@ -85,12 +58,12 @@ prod-bootstrap:
 #
 # The apex bundle is assembled in a tmp dir: the static HTML from
 # web/apex/ plus install.sh with the latest release tag baked in (same
-# sed goreleaser does at release time). Seeds flow through the laptop's
-# prod daemon which is a peer of the mesh.
+# sed goreleaser does at release time). Seeds flow through the prod ctx
+# directly to the target daemon — no laptop CAS involved.
 prod-seed:
     #!/usr/bin/env bash
     set -euo pipefail
-    export PLN_DIR="{{ prod_pln_dir }}"
+    export PLN_CONTEXT="prod"
     cd {{ repo_root }}
     VERSION=$(git describe --tags --abbrev=0)
     APEX_BUNDLE=$(mktemp -d)
@@ -101,9 +74,9 @@ prod-seed:
     pln static seed pln.sh "$APEX_BUNDLE" --min-replicas 2
     pln static seed docs.pln.sh web/docs --min-replicas 2
 
-# Mesh status from the laptop's prod daemon.
+# Mesh status via the prod ctx.
 prod-status:
-    PLN_DIR="{{ prod_pln_dir }}" pln status
+    PLN_CONTEXT=prod pln status
 
 # SSH into a prod node by name (eu or us).
 prod-ssh name="eu":
