@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pollen Docs</title>
+<meta name="description" content="Documentation for Pollen, a zero-trust, leaderless, emergent mesh runtime.">
+<style>
+  :root {
+    --bg: #ffffff;
+    --ink: #16181c;
+    --mute: #6b6559;
+    --accent: #f2c14e;
+    --rule: #ececec;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); }
+  body { min-height: 100vh; display: flex; flex-direction: column; }
+  main { flex: 1; max-width: 640px; margin: 0 auto; padding: 6rem 1.5rem 3rem; width: 100%; }
+  h1 { font-size: clamp(1.5rem, 4vw, 2rem); font-weight: 600; letter-spacing: -0.02em; margin: 0 0 1.25rem; }
+  p { color: var(--mute); font-size: 1.05rem; line-height: 1.6; margin: 0 0 1.25rem; max-width: 58ch; }
+  p a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 2px; }
+  p a:hover { border-color: var(--accent); }
+  nav { display: flex; gap: 1.5rem; font-size: 0.95rem; margin-top: 2rem; }
+  nav a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 2px; }
+  nav a:hover { border-color: var(--accent); }
+  footer { max-width: 640px; margin: 0 auto; padding: 1.5rem; color: var(--mute); font-size: 0.85rem; width: 100%; border-top: 1px solid var(--rule); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Docs coming soon</h1>
+  <p>Proper documentation is being written. In the meantime, the Go package reference is the most complete source of truth:</p>
+  <p><a href="https://pkg.go.dev/github.com/sambigeara/pollen">pkg.go.dev/github.com/sambigeara/pollen</a></p>
+  <p>The <a href="https://github.com/sambigeara/pollen#readme">README</a> and <a href="https://github.com/sambigeara/pollen/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a> cover the headline concepts and layer design.</p>
+  <nav>
+    <a href="https://pln.sh/">Home</a>
+    <a href="https://github.com/sambigeara/pollen">GitHub</a>
+    <a href="https://github.com/sambigeara/pollen/releases">Releases</a>
+  </nav>
+</main>
+<footer>&copy; 2026 Sam Lock &middot; Apache-2.0</footer>
+</body>
+</html>

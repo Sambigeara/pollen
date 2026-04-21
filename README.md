@@ -45,7 +45,7 @@ _Pollen is in early development — expect breaking changes and sharp edges._
 ### Install
 
 ```bash
-curl -fsSL https://github.com/sambigeara/pollen/releases/latest/download/install.sh | bash
+curl -fsSL https://pln.sh/install.sh | bash
 ```
 
 A thin wrapper around your platform's package manager (Homebrew on

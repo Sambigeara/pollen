@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage:
-#   curl -fsSL https://github.com/sambigeara/pollen/releases/latest/download/install.sh | bash
-#   curl -fsSL https://github.com/sambigeara/pollen/releases/latest/download/install.sh | bash -s -- --version v1.2.3
+#   curl -fsSL https://pln.sh/install.sh | bash
+#   curl -fsSL https://pln.sh/install.sh | bash -s -- --version v1.2.3
 #
 # The outer brace block ensures the whole script is parsed before any
 # command runs, so a truncated download fails to parse rather than

@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Pollen</title>
+    <meta name="description" content="A zero-trust, leaderless, emergent mesh runtime. One static binary, a whole fabric.">
+    <style>
+        :root {
+            --bg: #ffffff;
+            --ink: #16181c;
+            --mute: #6b6559;
+            --accent: #f2c14e;
+            --rule: #ececec;
+            --code-bg: #f6f5f1;
+            --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            background: var(--bg);
+            color: var(--ink);
+            font-family: var(--sans);
+        }
+
+        body {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        main {
+            flex: 1;
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 4rem 1.5rem 3rem;
+            width: 100%;
+        }
+
+        h1 {
+            font-size: clamp(1.75rem, 4.5vw, 2.5rem);
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            margin: 0 0 0.5rem;
+        }
+
+        .tagline {
+            color: var(--mute);
+            font-size: 1.05rem;
+            line-height: 1.55;
+            margin: 0 0 2.5rem;
+            max-width: 58ch;
+        }
+
+        .install {
+            background: var(--code-bg);
+            border-radius: 10px;
+            padding: 1rem 1.25rem;
+            font-family: var(--mono);
+            font-size: 0.95rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            overflow-x: auto;
+            white-space: nowrap;
+            margin: 0 0 2rem;
+        }
+
+        .install::before {
+            content: "$";
+            color: var(--mute);
+            user-select: none;
+        }
+
+        .install code {
+            color: var(--ink);
+        }
+
+        ul.features {
+            list-style: none;
+            padding: 0;
+            margin: 0 0 2.5rem;
+        }
+
+        ul.features li {
+            position: relative;
+            padding-left: 1.25rem;
+            margin-bottom: 0.6rem;
+            font-size: 0.98rem;
+            line-height: 1.55;
+        }
+
+        ul.features li:last-child {
+            margin-bottom: 0;
+        }
+
+        ul.features li::before {
+            content: "·";
+            color: var(--accent);
+            font-weight: 700;
+            position: absolute;
+            left: 0;
+            top: 0;
+        }
+
+        ul.features strong {
+            font-weight: 600;
+        }
+
+        nav {
+            display: flex;
+            gap: 1.5rem;
+            font-size: 0.95rem;
+        }
+
+        nav a {
+            color: var(--ink);
+            text-decoration: none;
+            border-bottom: 1px solid var(--rule);
+            padding-bottom: 2px;
+        }
+
+        nav a:hover {
+            border-color: var(--accent);
+        }
+
+        footer {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 1.5rem;
+            color: var(--mute);
+            font-size: 0.85rem;
+            width: 100%;
+            border-top: 1px solid var(--rule);
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <h1>Pollen</h1>
+        <p class="tagline">A local-first, zero-trust, leaderless, emergent mesh and WASM runtime, in a single static binary.</p>
+        <div class="install"><code>curl -fsSL https://pln.sh/install.sh | bash</code></div>
+        <ul class="features">
+            <li><strong>Ergonomic.</strong> Opinionated defaults, opt-in configuration.</li>
+            <li><strong>Self-organising.</strong> No scheduler, no leader. Topology, placement and routing emerge from local state.</li>
+            <li><strong>Partition-tolerant.</strong> Both sides keep running; state converges on rejoin.</li>
+            <li><strong>QUIC transport.</strong> One multiplexed, encrypted link per peer carries gossip, services and seeds.</li>
+            <li><strong>Cryptographic admission.</strong> No shared secrets, no firewall rules — every link is mTLS.</li>
+        </ul>
+        <nav>
+            <a href="https://docs.pln.sh/">Docs</a>
+            <a href="https://github.com/sambigeara/pollen">GitHub</a>
+            <a href="https://github.com/sambigeara/pollen/releases">Releases</a>
+        </nav>
+    </main>
+    <footer>&copy; 2026 Sam Lock &middot; Apache-2.0</footer>
+</body>
+
+</html>
