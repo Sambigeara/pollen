@@ -365,10 +365,6 @@ func TestReconcile_NameConflictFiltering(t *testing.T) {
 
 	var wg sync.WaitGroup
 	r := newReconciler(local, ms, &mockWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &wg)
-	// Pre-observe the specs so the stabilization window is already past.
-	start := time.Now().Add(-2 * specStabilizationWindow)
-	r.specFirstSeen["hash-a"] = start
-	r.specFirstSeen["hash-b"] = start
 	r.reconcile(context.Background())
 	wg.Wait()
 

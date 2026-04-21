@@ -126,7 +126,7 @@ func evaluate(in evaluateInput) []action {
 				actions = append(actions, action{Hash: hash, Kind: actionClaim, DynamicTarget: target})
 			}
 		case !iClaimed && claimCount >= target:
-			if shouldChallenge(in.localID, hash, sp, target, claimants, in.cluster) {
+			if shouldChallenge(in.localID, hash, sp, target, claimants, in.allPeers, in.cluster) {
 				actions = append(actions, action{Hash: hash, Kind: actionClaim, DynamicTarget: target})
 			}
 		case iClaimed && claimCount > target:
@@ -204,17 +204,20 @@ func shouldClaim(localID types.PeerKey, hash string, sp spec, desired uint32, cl
 }
 
 // shouldChallenge decides whether localID should join an at-or-above-target
-// claimant set. Local wins if, when added to the contender pool, it ranks in
-// the top-`target` by predicted latency (with hash tiebreak on equality).
-func shouldChallenge(localID types.PeerKey, hash string, sp spec, target uint32, claimants map[types.PeerKey]struct{}, cluster clusterState) bool {
-	if !hasCapacity(localID, sp.MemoryBytes, cluster) {
-		return false
-	}
-	contenders := make([]types.PeerKey, 0, len(claimants)+1)
-	for pk := range claimants {
+// claimant set. Contenders are the current claimants plus every
+// capacity-passing non-claimant — local wins only when it ranks in the
+// top-`target` across that full pool. Ranking the full pool (rather than
+// just claimants+local) guarantees at most `target` winners cluster-wide;
+// otherwise every non-claimant that beats a single claimant would fire
+// actionClaim independently and herd-over-replicate.
+func shouldChallenge(localID types.PeerKey, hash string, sp spec, target uint32, claimants map[types.PeerKey]struct{}, allPeers []types.PeerKey, cluster clusterState) bool {
+	contenders := make([]types.PeerKey, 0, len(allPeers))
+	for _, pk := range allPeers {
+		if _, isClaimant := claimants[pk]; !isClaimant && !hasCapacity(pk, sp.MemoryBytes, cluster) {
+			continue
+		}
 		contenders = append(contenders, pk)
 	}
-	contenders = append(contenders, localID)
 	return rankTopN(contenders, hash, cluster, int(target), localID)
 }
 
