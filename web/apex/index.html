@@ -124,6 +124,24 @@
             font-weight: 600;
         }
 
+        ul.features code {
+            font-family: var(--mono);
+            font-size: 0.88em;
+            background: var(--code-bg);
+            padding: 0.1em 0.35em;
+            border-radius: 4px;
+        }
+
+        ul.features a {
+            color: var(--ink);
+            text-decoration: none;
+            border-bottom: 1px solid var(--rule);
+        }
+
+        ul.features a:hover {
+            border-color: var(--accent);
+        }
+
         nav {
             display: flex;
             gap: 1.5rem;
@@ -172,9 +190,14 @@
         <div class="install"><code>curl -fsSL https://pln.sh/install.sh | bash</code></div>
         <ul class="features">
             <li><strong>Ergonomic.</strong> Opinionated defaults, opt-in configuration.</li>
-            <li><strong>Self-organising.</strong> No scheduler, no leader. Topology, placement and routing emerge from local state.</li>
-            <li><strong>Partition-tolerant.</strong> Both sides keep running; state converges on rejoin.</li>
-            <li><strong>QUIC transport.</strong> One multiplexed, encrypted link per peer carries gossip, services and seeds.</li>
+            <li><strong>CRDT-native.</strong> A converging document on every node; changes gossip, conflicts resolve.</li>
+            <li><strong>Self-organising.</strong> No scheduler, no leader, no coordinator. Topology, placement, and routing emerge from local state; calls go to the nearest, least-loaded replica, and replicas migrate toward demand.</li>
+            <li><strong>Partition-tolerant.</strong> Both sides of a split keep running; state converges on rejoin; survivors rehost workloads from failed nodes.</li>
+            <li><strong>Edge-ready.</strong> Pure Go, no CGO. Raspberry Pi to cloud host.</li>
+            <li><strong>Mesh services.</strong> <code>pln serve 8080 api</code> here, <code>pln connect api</code> there. TCP and UDP, end-to-end mTLS.</li>
+            <li><strong>WASM seeds.</strong> Deploy with <code>pln seed</code>; artifacts distribute peer-to-peer by hash. Modules compose via one Extism host call, authored in <a href="https://extism.org/docs/quickstart/plugin-quickstart">a variety of languages</a>.</li>
+            <li><strong>Static sites &amp; blobs.</strong> <code>pln static seed ./public</code> publishes a site; <code>pln blob put ./file</code> shares a file. Content-addressed, gossiped, streamed peer-to-peer over QUIC.</li>
+            <li><strong>QUIC transport.</strong> One multiplexed, encrypted, UDP-based connection per peer carries gossip, services, and seeds. NAT traversal built in.</li>
             <li><strong>Cryptographic admission.</strong> No shared secrets, no firewall rules — every link is mTLS.</li>
         </ul>
         <nav>
