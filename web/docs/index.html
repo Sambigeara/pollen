@@ -16,74 +16,64 @@
     --code-bg: #f6f5f1;
     --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    --col: 1100px;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); }
   body { min-height: 100vh; display: flex; flex-direction: column; }
-  main { flex: 1; max-width: 1100px; margin: 0 auto; padding: 3rem 1.75rem 3rem; width: 100%; }
+  main { flex: 1; max-width: var(--col); margin: 0 auto; padding: 3rem 1.75rem; width: 100%; }
 
-  .header { display: flex; align-items: center; gap: 0.9rem; margin-bottom: 2rem; }
-  .header svg { width: 48px; height: 48px; image-rendering: pixelated; }
-  .header h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
-  .header .crumb { color: var(--mute); font-size: 0.95rem; margin-left: auto; }
-  .header .crumb a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 2px; }
-  .header .crumb a:hover { border-color: var(--accent); }
-
-  .lede { color: var(--mute); font-size: 1.05rem; line-height: 1.55; margin: 0 0 2.5rem; max-width: 60ch; }
-  .lede a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 1px; }
-  .lede a:hover { border-color: var(--accent); }
+  .masthead { display: flex; align-items: center; gap: 0.9rem; margin-bottom: 2rem; }
+  .masthead .logo { width: 48px; height: 48px; image-rendering: pixelated; flex-shrink: 0; }
+  .masthead h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+  .masthead nav { color: var(--mute); font-size: 0.95rem; margin-left: auto; }
+  .masthead nav a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 2px; }
+  .masthead nav a:hover { border-color: var(--accent); }
+  .masthead nav .sep { color: var(--rule); margin: 0 0.5rem; }
 
   h2 { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.01em; margin: 2.75rem 0 0.75rem; border-top: 1px solid var(--rule); padding-top: 2rem; }
   h2:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
   h3 { font-size: 1.05rem; font-weight: 600; margin: 1.75rem 0 0.5rem; }
 
-  p { color: var(--ink); font-size: 1rem; line-height: 1.6; margin: 0 0 1rem; max-width: 60ch; }
+  p { color: var(--ink); font-size: 1rem; line-height: 1.6; margin: 0 0 1rem; }
   p.aside { color: var(--mute); font-size: 0.92rem; }
-  p a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 1px; }
-  p a:hover { border-color: var(--accent); }
+  .lede { color: var(--mute); font-size: 1.05rem; line-height: 1.55; margin: 0 0 2.5rem; }
 
-  ul, ol { color: var(--ink); font-size: 1rem; line-height: 1.6; margin: 0 0 1.25rem; padding-left: 1.25rem; max-width: 60ch; }
+  a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
+  a:hover { border-color: var(--accent); }
+  .lede a { color: var(--ink); }
+
+  ul, ol { color: var(--ink); font-size: 1rem; line-height: 1.6; margin: 0 0 1.25rem; padding-left: 1.25rem; }
   li { margin-bottom: 0.35rem; }
-  li a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 1px; }
-  li a:hover { border-color: var(--accent); }
 
   code { font-family: var(--mono); font-size: 0.9em; background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
   pre { background: var(--code-bg); padding: 0.9rem 1.1rem; border-radius: 8px; overflow-x: auto; margin: 0 0 1.25rem; line-height: 1.55; }
   pre code { background: none; padding: 0; font-size: 0.9rem; }
   pre .c { color: var(--mute); }
 
-  .note { border-left: 3px solid var(--accent); background: var(--code-bg); padding: 0.7rem 1rem; border-radius: 4px; font-size: 0.95rem; margin: 0 0 1.25rem; max-width: 60ch; }
+  .note { border-left: 3px solid var(--accent); background: var(--code-bg); padding: 0.7rem 1rem; border-radius: 4px; font-size: 0.95rem; margin: 0 0 1.25rem; }
   .note strong { font-weight: 600; }
 
-  footer { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.75rem; color: var(--mute); font-size: 0.85rem; width: 100%; border-top: 1px solid var(--rule); }
-  footer a { color: var(--mute); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
+  footer { max-width: var(--col); margin: 0 auto; padding: 1.5rem 1.75rem; color: var(--mute); font-size: 0.85rem; width: 100%; border-top: 1px solid var(--rule); }
+  footer a { color: var(--mute); border-bottom-color: var(--rule); }
   footer a:hover { color: var(--ink); border-color: var(--accent); }
 </style>
 </head>
 <body>
 <main>
-  <div class="header">
-    <svg viewBox="0 0 20 20" shape-rendering="crispEdges" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-      <g fill="#8B5A1B"><rect x="7" y="0" width="6" height="1"/><rect x="5" y="1" width="2" height="1"/><rect x="13" y="1" width="2" height="1"/><rect x="4" y="2" width="1" height="1"/><rect x="15" y="2" width="1" height="1"/><rect x="3" y="3" width="1" height="1"/><rect x="16" y="3" width="1" height="1"/><rect x="2" y="4" width="1" height="9"/><rect x="17" y="4" width="1" height="9"/><rect x="3" y="13" width="1" height="1"/><rect x="16" y="13" width="1" height="1"/><rect x="4" y="14" width="1" height="1"/><rect x="15" y="14" width="1" height="1"/><rect x="5" y="15" width="2" height="1"/><rect x="13" y="15" width="2" height="1"/><rect x="7" y="16" width="6" height="1"/></g>
-      <g fill="#FFC93C"><rect x="7" y="1" width="6" height="1"/><rect x="5" y="2" width="10" height="1"/><rect x="4" y="3" width="12" height="1"/><rect x="3" y="4" width="3" height="1"/><rect x="8" y="4" width="4" height="1"/><rect x="14" y="4" width="3" height="1"/><rect x="3" y="5" width="3" height="1"/><rect x="8" y="5" width="4" height="1"/><rect x="14" y="5" width="3" height="1"/><rect x="3" y="6" width="14" height="1"/><rect x="3" y="7" width="4" height="1"/><rect x="8" y="7" width="4" height="1"/><rect x="13" y="7" width="4" height="1"/><rect x="3" y="8" width="5" height="1"/><rect x="12" y="8" width="5" height="1"/><rect x="3" y="9" width="14" height="1"/><rect x="3" y="10" width="14" height="1"/><rect x="3" y="11" width="14" height="1"/><rect x="3" y="12" width="14" height="1"/><rect x="4" y="13" width="12" height="1"/><rect x="5" y="14" width="10" height="1"/><rect x="7" y="15" width="6" height="1"/></g>
-      <g fill="#1A1A1A"><rect x="6" y="4" width="1" height="1"/><rect x="12" y="4" width="1" height="1"/><rect x="6" y="5" width="2" height="1"/><rect x="12" y="5" width="2" height="1"/><rect x="7" y="7" width="1" height="1"/><rect x="12" y="7" width="1" height="1"/><rect x="8" y="8" width="4" height="1"/></g>
-      <g fill="#FFFFFF"><rect x="7" y="4" width="1" height="1"/><rect x="13" y="4" width="1" height="1"/></g>
-      <g fill="#B8433A"><rect x="7" y="11" width="1" height="3"/><rect x="8" y="11" width="1" height="1"/><rect x="8" y="13" width="1" height="1"/></g>
-      <g fill="#2E3F75"><rect x="12" y="11" width="1" height="3"/><rect x="11" y="11" width="1" height="1"/><rect x="11" y="13" width="1" height="1"/></g>
-      <g fill="#DCB876"><rect x="8" y="12" width="1" height="1"/><rect x="11" y="12" width="1" height="1"/></g>
-      <g fill="#6A3E12"><rect x="9" y="12" width="2" height="1"/></g>
-      <g fill="#5FA84E"><rect x="5" y="17" width="2" height="1"/><rect x="13" y="17" width="2" height="1"/><rect x="5" y="18" width="2" height="1"/><rect x="13" y="18" width="2" height="1"/></g>
-      <g fill="#2E6A23"><rect x="4" y="18" width="1" height="1"/><rect x="15" y="18" width="1" height="1"/><rect x="5" y="19" width="2" height="1"/><rect x="13" y="19" width="2" height="1"/></g>
-    </svg>
+  <header class="masthead">
+    <img class="logo" src="logo.svg" alt="" width="48" height="48">
     <h1>Pollen docs</h1>
-    <span class="crumb"><a href="cli.html">CLI reference</a> &nbsp;&middot;&nbsp; <a href="https://github.com/sambigeara/pollen">GitHub</a></span>
-  </div>
+    <nav aria-label="Site">
+      <a href="cli.html">CLI reference</a><span class="sep">&middot;</span><a href="https://github.com/sambigeara/pollen">GitHub</a>
+    </nav>
+  </header>
 
   <p class="lede">Pollen runs a zero-trust mesh and a WASM workload runtime out of one static binary. These pages cover install, getting a cluster up, deploying workloads, and exposing services. For internals, see <a href="https://github.com/sambigeara/pollen/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>.</p>
 
   <h2>Install</h2>
   <pre><code>curl -fsSL https://pln.sh/install.sh | bash</code></pre>
-  <p>Wraps Homebrew on macOS and apt/yum on Linux. On macOS, state lives in <code>~/.pln</code>. On Linux, the installer runs <code>pln daemon install</code> to provision <code>/var/lib/pln</code> under a dedicated <code>pln</code> system user and adds the invoking user to the <code>pln</code> group for CLI access. Override either default with <code>$PLN_DIR</code>.</p>
+  <p>Wraps Homebrew on macOS and apt/yum on Linux. On macOS, state lives in <code>~/.pln</code>. On Linux, the installer runs <code>pln daemon install</code> to provision <code>/var/lib/pln</code> under a dedicated <code>pln</code> system user and adds the invoking user to the <code>pln</code> group for CLI access.</p>
 
   <h2>One-node cluster</h2>
   <pre><code>pln init
@@ -113,7 +103,7 @@ pln join &lt;token&gt;</code></pre>
 pln call hello greet '{"name":"world"}'</code></pre>
   <p><code>pln seed</code> publishes content. The kind is autodetected from the source: a <code>.wasm</code> file becomes a workload, a directory becomes a static site, anything else becomes a blob. Pass an optional name as the second arg.</p>
   <p>Replicas land on whichever nodes have capacity and proximity. There's no scheduler; every node decides locally. Tune with <code>--min-replicas</code>, <code>--everywhere</code>, <code>--memory</code>, <code>--latency-slo</code>.</p>
-  <div class="note"><strong>Authoring.</strong> Workloads are <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism plugins</a>. Author them in Go, Rust, JavaScript, Python, C#, Zig, and more. One host call lets a workload invoke another (<code>seed/&lt;name&gt;/&lt;fn&gt;</code>), so authz, routing, and policy can live inside WASM.</div>
+  <aside class="note"><strong>Authoring.</strong> Workloads are <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism plugins</a>. Author them in Go, Rust, JavaScript, Python, C#, Zig, and more. One host call lets a workload invoke another (<code>seed/&lt;name&gt;/&lt;fn&gt;</code>), so authz, routing, and policy can live inside WASM.</aside>
 
   <h2>Expose a service</h2>
   <pre><code><span class="c"># machine A</span>

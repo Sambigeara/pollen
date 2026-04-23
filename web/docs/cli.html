@@ -16,23 +16,23 @@
     --code-bg: #f6f5f1;
     --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    --col: 1100px;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); }
   body { min-height: 100vh; display: flex; flex-direction: column; }
-  main { flex: 1; max-width: 1100px; margin: 0 auto; padding: 3rem 1.75rem 3rem; width: 100%; }
+  main { flex: 1; max-width: var(--col); margin: 0 auto; padding: 3rem 1.75rem; width: 100%; }
 
-  .header { display: flex; align-items: center; gap: 0.9rem; margin-bottom: 2rem; }
-  .header svg { width: 48px; height: 48px; image-rendering: pixelated; }
-  .header h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
-  .header .crumb { color: var(--mute); font-size: 0.95rem; margin-left: auto; }
-  .header .crumb a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 2px; }
-  .header .crumb a:hover { border-color: var(--accent); }
+  .masthead { display: flex; align-items: center; gap: 0.9rem; margin-bottom: 2rem; }
+  .masthead .logo { width: 48px; height: 48px; image-rendering: pixelated; flex-shrink: 0; }
+  .masthead h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+  .masthead nav { color: var(--mute); font-size: 0.95rem; margin-left: auto; }
+  .masthead nav a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 2px; }
+  .masthead nav a:hover { border-color: var(--accent); }
+  .masthead nav .sep { color: var(--rule); margin: 0 0.5rem; }
 
-  .lede { color: var(--mute); font-size: 1.05rem; line-height: 1.55; margin: 0 0 1.5rem; max-width: 60ch; }
-  .lede a, .lede code { color: var(--ink); }
-  .lede a { border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 1px; }
-  .lede a:hover { border-color: var(--accent); }
+  .lede { color: var(--mute); font-size: 1.05rem; line-height: 1.55; margin: 0 0 1.5rem; }
+  .lede code { color: var(--ink); }
 
   .toc { margin: 0 0 2.5rem; font-size: 0.95rem; line-height: 1.7; color: var(--mute); }
   .toc a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
@@ -48,12 +48,13 @@
   h3 code { background: none; padding: 0; font-size: 1em; color: var(--ink); }
   h3 .sig-args { color: var(--mute); }
 
-  p { color: var(--ink); font-size: 0.98rem; line-height: 1.6; margin: 0 0 0.75rem; max-width: 64ch; }
+  p { color: var(--ink); font-size: 0.98rem; line-height: 1.6; margin: 0 0 0.75rem; }
   p.aside { color: var(--mute); font-size: 0.9rem; }
-  p a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 1px; }
-  p a:hover { border-color: var(--accent); }
 
-  ul { color: var(--ink); font-size: 0.98rem; line-height: 1.6; margin: 0 0 1rem; padding-left: 1.25rem; max-width: 64ch; }
+  a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
+  a:hover { border-color: var(--accent); }
+
+  ul { color: var(--ink); font-size: 0.98rem; line-height: 1.6; margin: 0 0 1rem; padding-left: 1.25rem; }
   li { margin-bottom: 0.3rem; }
 
   code { font-family: var(--mono); font-size: 0.9em; background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
@@ -67,42 +68,33 @@
   dl.flags dd { color: var(--mute); margin: 0.1rem 0 0 1.5rem; line-height: 1.5; }
   dl.flags dd code { color: var(--ink); }
 
-  footer { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.75rem; color: var(--mute); font-size: 0.85rem; width: 100%; border-top: 1px solid var(--rule); }
-  footer a { color: var(--mute); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
+  footer { max-width: var(--col); margin: 0 auto; padding: 1.5rem 1.75rem; color: var(--mute); font-size: 0.85rem; width: 100%; border-top: 1px solid var(--rule); }
+  footer a { color: var(--mute); border-bottom-color: var(--rule); }
   footer a:hover { color: var(--ink); border-color: var(--accent); }
 </style>
 </head>
 <body>
 <main>
-  <div class="header">
-    <svg viewBox="0 0 20 20" shape-rendering="crispEdges" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-      <g fill="#8B5A1B"><rect x="7" y="0" width="6" height="1"/><rect x="5" y="1" width="2" height="1"/><rect x="13" y="1" width="2" height="1"/><rect x="4" y="2" width="1" height="1"/><rect x="15" y="2" width="1" height="1"/><rect x="3" y="3" width="1" height="1"/><rect x="16" y="3" width="1" height="1"/><rect x="2" y="4" width="1" height="9"/><rect x="17" y="4" width="1" height="9"/><rect x="3" y="13" width="1" height="1"/><rect x="16" y="13" width="1" height="1"/><rect x="4" y="14" width="1" height="1"/><rect x="15" y="14" width="1" height="1"/><rect x="5" y="15" width="2" height="1"/><rect x="13" y="15" width="2" height="1"/><rect x="7" y="16" width="6" height="1"/></g>
-      <g fill="#FFC93C"><rect x="7" y="1" width="6" height="1"/><rect x="5" y="2" width="10" height="1"/><rect x="4" y="3" width="12" height="1"/><rect x="3" y="4" width="3" height="1"/><rect x="8" y="4" width="4" height="1"/><rect x="14" y="4" width="3" height="1"/><rect x="3" y="5" width="3" height="1"/><rect x="8" y="5" width="4" height="1"/><rect x="14" y="5" width="3" height="1"/><rect x="3" y="6" width="14" height="1"/><rect x="3" y="7" width="4" height="1"/><rect x="8" y="7" width="4" height="1"/><rect x="13" y="7" width="4" height="1"/><rect x="3" y="8" width="5" height="1"/><rect x="12" y="8" width="5" height="1"/><rect x="3" y="9" width="14" height="1"/><rect x="3" y="10" width="14" height="1"/><rect x="3" y="11" width="14" height="1"/><rect x="3" y="12" width="14" height="1"/><rect x="4" y="13" width="12" height="1"/><rect x="5" y="14" width="10" height="1"/><rect x="7" y="15" width="6" height="1"/></g>
-      <g fill="#1A1A1A"><rect x="6" y="4" width="1" height="1"/><rect x="12" y="4" width="1" height="1"/><rect x="6" y="5" width="2" height="1"/><rect x="12" y="5" width="2" height="1"/><rect x="7" y="7" width="1" height="1"/><rect x="12" y="7" width="1" height="1"/><rect x="8" y="8" width="4" height="1"/></g>
-      <g fill="#FFFFFF"><rect x="7" y="4" width="1" height="1"/><rect x="13" y="4" width="1" height="1"/></g>
-      <g fill="#B8433A"><rect x="7" y="11" width="1" height="3"/><rect x="8" y="11" width="1" height="1"/><rect x="8" y="13" width="1" height="1"/></g>
-      <g fill="#2E3F75"><rect x="12" y="11" width="1" height="3"/><rect x="11" y="11" width="1" height="1"/><rect x="11" y="13" width="1" height="1"/></g>
-      <g fill="#DCB876"><rect x="8" y="12" width="1" height="1"/><rect x="11" y="12" width="1" height="1"/></g>
-      <g fill="#6A3E12"><rect x="9" y="12" width="2" height="1"/></g>
-      <g fill="#5FA84E"><rect x="5" y="17" width="2" height="1"/><rect x="13" y="17" width="2" height="1"/><rect x="5" y="18" width="2" height="1"/><rect x="13" y="18" width="2" height="1"/></g>
-      <g fill="#2E6A23"><rect x="4" y="18" width="1" height="1"/><rect x="15" y="18" width="1" height="1"/><rect x="5" y="19" width="2" height="1"/><rect x="13" y="19" width="2" height="1"/></g>
-    </svg>
+  <header class="masthead">
+    <img class="logo" src="logo.svg" alt="" width="48" height="48">
     <h1>CLI reference</h1>
-    <span class="crumb"><a href="index.html">Docs</a> &nbsp;&middot;&nbsp; <a href="https://github.com/sambigeara/pollen">GitHub</a></span>
-  </div>
+    <nav aria-label="Site">
+      <a href="index.html">Docs</a><span class="sep">&middot;</span><a href="https://github.com/sambigeara/pollen">GitHub</a>
+    </nav>
+  </header>
 
   <p class="lede">Every <code>pln</code> command, grouped by topic. Run <code>pln &lt;command&gt; --help</code> for the same content from the binary.</p>
 
-  <nav class="toc">
-    <a href="#context">Contexts</a><span>·</span>
-    <a href="#lifecycle">Lifecycle</a><span>·</span>
-    <a href="#content">Content</a><span>·</span>
-    <a href="#networking">Networking</a><span>·</span>
-    <a href="#cluster">Cluster</a><span>·</span>
-    <a href="#inspection">Inspection</a><span>·</span>
-    <a href="#daemon">Daemon admin</a><span>·</span>
-    <a href="#config">Config</a><span>·</span>
-    <a href="#policy">Policy</a><span>·</span>
+  <nav class="toc" aria-label="Sections">
+    <a href="#context">Contexts</a><span>&middot;</span>
+    <a href="#lifecycle">Lifecycle</a><span>&middot;</span>
+    <a href="#content">Content</a><span>&middot;</span>
+    <a href="#networking">Networking</a><span>&middot;</span>
+    <a href="#cluster">Cluster</a><span>&middot;</span>
+    <a href="#inspection">Inspection</a><span>&middot;</span>
+    <a href="#daemon">Daemon admin</a><span>&middot;</span>
+    <a href="#config">Config</a><span>&middot;</span>
+    <a href="#policy">Policy</a><span>&middot;</span>
     <a href="#exit-codes">Exit codes</a>
   </nav>
 
@@ -145,7 +137,7 @@ pln context add dev /tmp/pln-dev</code></pre>
   <dl class="flags">
     <dt>-d, --detach</dt><dd>Run as background service.</dd>
     <dt>--port &lt;n&gt;</dt><dd>Listening UDP port (default 60611).</dd>
-    <dt>--ips &lt;ip,…&gt;</dt><dd>Advertise these IPs to peers.</dd>
+    <dt>--ips &lt;ip,&hellip;&gt;</dt><dd>Advertise these IPs to peers.</dd>
     <dt>--public</dt><dd>Hint that this node is publicly reachable, making it a relay candidate. Actual reachability is verified by the mesh via NAT probing.</dd>
     <dt>--name &lt;str&gt;</dt><dd>Human-readable node name.</dd>
     <dt>--metrics</dt><dd>Log metrics and trace output at debug level.</dd>
@@ -169,7 +161,7 @@ pln up -d --name relay --public</code></pre>
   <h2 id="content">Content</h2>
 
   <h3 id="seed"><code>pln seed &lt;source&gt; [name]</code></h3>
-  <p>Publish content to the mesh. Kind is autodetected from the source: <code>.wasm</code> → workload, directory → static site, anything else → blob (or stdin when source is <code>-</code>).</p>
+  <p>Publish content to the mesh. Kind is autodetected from the source: <code>.wasm</code> &rarr; workload, directory &rarr; static site, anything else &rarr; blob (or stdin when source is <code>-</code>).</p>
   <dl class="flags">
     <dt>--min-replicas &lt;n&gt;</dt><dd>Minimum replicas. Default 2 for workloads, 1 for static. Doesn't apply to blobs.</dd>
     <dt>--everywhere</dt><dd>Workload only. Place a replica on every node.</dd>
@@ -269,7 +261,7 @@ pln grant relay1 --admin</code></pre>
     <dt>--yes</dt><dd>Skip confirmation.</dd>
   </dl>
 
-  <h3 id="bootstrap"><code>pln bootstrap ssh [name=]&lt;target&gt; …</code></h3>
+  <h3 id="bootstrap"><code>pln bootstrap ssh [name=]&lt;target&gt; &hellip;</code></h3>
   <p>Install Pollen, enrol, and start the daemon on each SSH target in parallel. Linux only. Needs SSH as root or with passwordless sudo.</p>
   <dl class="flags">
     <dt>--admin</dt><dd>Delegate admin authority to the new relay.</dd>
