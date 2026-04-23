@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -364,6 +366,17 @@ func runContextRemove(cmd *cobra.Command, args []string) error {
 	if entry.Host != "" && entry.Dir == ctxRoot {
 		if err := os.RemoveAll(entry.Dir); err != nil {
 			return fmt.Errorf("remove identity dir: %w", err)
+		}
+	}
+
+	// Local named contexts on macOS may have a launchd plist we generated.
+	// Tear it down best-effort so the daemon stops and the file isn't orphaned.
+	if entry.Host == "" && runtime.GOOS == osDarwin {
+		if plistPath, err := userPlnPlistPath(name); err == nil {
+			if _, statErr := os.Stat(plistPath); statErr == nil {
+				_ = exec.CommandContext(cmd.Context(), "launchctl", "unload", "-w", plistPath).Run()
+				_ = os.Remove(plistPath)
+			}
 		}
 	}
 

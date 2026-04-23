@@ -79,7 +79,7 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 			return errRemoteUnsupported
 		}
 		if cfg.systemService {
-			if err := ensureDefaultContext(); err != nil {
+			if err := ensureSystemServiceContext(); err != nil {
 				return err
 			}
 		}

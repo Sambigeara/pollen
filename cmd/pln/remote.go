@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"sync"
 
@@ -19,12 +20,28 @@ import (
 
 var errRemoteUnsupported = errors.New("this command must run on the local node (--host or PLN_HOST is set, or the current context has a host)")
 
-// ensureDefaultContext rejects invocation when a named context is active.
-// System-service commands (up -d, down, restart, logs) operate on a single
-// launchd/systemd unit and cannot be meaningfully per-context.
-func ensureDefaultContext() error {
-	if name := resolveContextName(); name != defaultContextName {
-		return fmt.Errorf("this command manages the system service and requires the default context (current: %q)", name)
+// ensureSystemServiceContext rejects contexts the local system-service manager
+// can't drive: remote daemons (managed on the remote host) and, on Linux, any
+// named context (no per-context systemd unit is plumbed yet). On macOS a named
+// local context drives its own launchd unit under `sh.pln.<name>`.
+func ensureSystemServiceContext() error {
+	name := resolveContextName()
+	if name == defaultContextName {
+		return nil
+	}
+	cf, err := loadContexts()
+	if err != nil {
+		return err
+	}
+	entry, ok := cf.Contexts[name]
+	if !ok {
+		return notFoundErr("context %q not found", name)
+	}
+	if entry.Host != "" {
+		return fmt.Errorf("context %q targets a remote daemon; manage its service on the remote host", name)
+	}
+	if runtime.GOOS != osDarwin {
+		return fmt.Errorf("per-context system services are only supported on macOS; switch to the default context")
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -205,8 +206,8 @@ bounce the background service and pick up the new binary.`,
 func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	detach, _ := cmd.Flags().GetBool("detach")
 	if detach {
-		// Detach hands off to launchd/systemd, which is single-instance.
-		if err := ensureDefaultContext(); err != nil {
+		// Detach hands off to launchd/systemd, which is single-instance per unit.
+		if err := ensureSystemServiceContext(); err != nil {
 			return err
 		}
 		if cmd.Flags().Changed("port") {
@@ -234,7 +235,7 @@ func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	}
 
 	if detach {
-		return servicectl("start", cmd)
+		return servicectl("start", cmd, env)
 	}
 
 	sockPath := filepath.Join(env.dir, socketName)
@@ -383,22 +384,30 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 	return nil
 }
 
-func runDown(cmd *cobra.Command, _ []string, _ *cliEnv) error {
-	return servicectl("stop", cmd)
+func runDown(cmd *cobra.Command, _ []string, env *cliEnv) error {
+	return servicectl("stop", cmd, env)
 }
 
-func runRestart(cmd *cobra.Command, _ []string, _ *cliEnv) error {
-	return servicectl("restart", cmd)
+func runRestart(cmd *cobra.Command, _ []string, env *cliEnv) error {
+	return servicectl("restart", cmd, env)
 }
 
-func runLogs(cmd *cobra.Command, _ []string, _ *cliEnv) error {
+func runLogs(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	follow, _ := cmd.Flags().GetBool("follow")
 	lines, _ := cmd.Flags().GetInt("lines")
 
 	var args []string
 	var bin string
 
-	if runtime.GOOS == osDarwin { //nolint:nestif
+	switch {
+	case runtime.GOOS == osDarwin && resolveContextName() != defaultContextName:
+		bin = "tail"
+		args = []string{"-n", strconv.Itoa(lines)}
+		if follow {
+			args = append(args, "-f")
+		}
+		args = append(args, userPlnLogPath(env.dir))
+	case runtime.GOOS == osDarwin:
 		prefix := "/usr/local"
 		if out, err := exec.CommandContext(cmd.Context(), "brew", "--prefix").Output(); err == nil {
 			prefix = strings.TrimSpace(string(out))
@@ -411,7 +420,7 @@ func runLogs(cmd *cobra.Command, _ []string, _ *cliEnv) error {
 			args = append(args, "-f")
 		}
 		args = append(args, filepath.Join(prefix, "var", "log", "pln.log"))
-	} else {
+	default:
 		bin = "journalctl"
 		args = []string{"-u", "pln", "-n", strconv.Itoa(lines), "--no-pager"}
 		if follow {
@@ -425,7 +434,7 @@ func runLogs(cmd *cobra.Command, _ []string, _ *cliEnv) error {
 	return c.Run()
 }
 
-func runUpgrade(cmd *cobra.Command, _ []string, _ *cliEnv) error {
+func runUpgrade(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	var err error
 	switch runtime.GOOS {
 	case osDarwin:
@@ -455,13 +464,24 @@ func runUpgrade(cmd *cobra.Command, _ []string, _ *cliEnv) error {
 	}
 
 	if restart, _ := cmd.Flags().GetBool("restart"); restart {
-		return servicectl("restart", cmd)
+		return servicectl("restart", cmd, env)
 	}
 	return nil
 }
 
-func servicectl(action string, cmd *cobra.Command) error {
+// servicectl drives the platform's service manager for the currently active
+// context. Default context → brew/systemctl on the canonical `pln` unit.
+// Named local context on macOS → launchctl on `sh.pln.<name>`, auto-generating
+// the per-context plist on first start. Named local contexts on Linux and
+// remote contexts are rejected upstream by ensureSystemServiceContext.
+func servicectl(action string, cmd *cobra.Command, env *cliEnv) error {
 	ctx := cmd.Context()
+	name := resolveContextName()
+
+	if runtime.GOOS == osDarwin && name != defaultContextName {
+		return userLaunchctl(ctx, cmd, action, name, env.dir)
+	}
+
 	var c *exec.Cmd
 	switch runtime.GOOS {
 	case osDarwin:
@@ -478,6 +498,110 @@ func servicectl(action string, cmd *cobra.Command) error {
 	c.Stdout = cmd.OutOrStdout()
 	c.Stderr = cmd.ErrOrStderr()
 	return c.Run()
+}
+
+// userLaunchctl drives a per-context launchd unit on macOS. Plist is
+// generated on first start if missing. Restart is an unload+load pair so
+// the command is idempotent and works whether the unit is loaded or not.
+func userLaunchctl(ctx context.Context, cmd *cobra.Command, action, ctxName, ctxDir string) error {
+	plistPath, err := ensureUserPlnPlist(ctxName, ctxDir)
+	if err != nil {
+		return err
+	}
+	switch action {
+	case "start":
+		return runLaunchctl(ctx, cmd, "load", "-w", plistPath)
+	case "stop":
+		return runLaunchctl(ctx, cmd, "unload", "-w", plistPath)
+	case "restart":
+		_ = runLaunchctl(ctx, cmd, "unload", "-w", plistPath)
+		return runLaunchctl(ctx, cmd, "load", "-w", plistPath)
+	default:
+		return fmt.Errorf("unsupported service action %q", action)
+	}
+}
+
+func runLaunchctl(ctx context.Context, cmd *cobra.Command, args ...string) error {
+	c := exec.CommandContext(ctx, "launchctl", args...)
+	c.Stdout = cmd.OutOrStdout()
+	c.Stderr = cmd.ErrOrStderr()
+	return c.Run()
+}
+
+// userPlnPlistPath is the LaunchAgents path for a named local context.
+func userPlnPlistPath(ctxName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", "sh.pln."+ctxName+".plist"), nil
+}
+
+// userPlnLogPath is where the per-context launchd unit writes stdout/stderr.
+func userPlnLogPath(ctxDir string) string {
+	return filepath.Join(ctxDir, "pln.log")
+}
+
+// ensureUserPlnPlist writes a per-context launchd plist if one is not already
+// present. Existing plists are not overwritten so users can customize them.
+// Returns the plist path regardless.
+func ensureUserPlnPlist(ctxName, ctxDir string) (string, error) {
+	plistPath, err := userPlnPlistPath(ctxName)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(plistPath); err == nil {
+		return plistPath, nil
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("locate pln binary: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(binary); err == nil {
+		binary = resolved
+	}
+	plist := renderUserPlnPlist(ctxName, binary, ctxDir)
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil { //nolint:mnd
+		return "", fmt.Errorf("create LaunchAgents dir: %w", err)
+	}
+	if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil { //nolint:mnd,gosec
+		return "", fmt.Errorf("write plist: %w", err)
+	}
+	return plistPath, nil
+}
+
+func renderUserPlnPlist(ctxName, binary, ctxDir string) string {
+	label := xmlEscape("sh.pln." + ctxName)
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>KeepAlive</key>
+    <true/>
+    <key>Label</key>
+    <string>` + label + `</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>` + xmlEscape(binary) + `</string>
+        <string>--dir</string>
+        <string>` + xmlEscape(ctxDir) + `</string>
+        <string>up</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>` + xmlEscape(userPlnLogPath(ctxDir)) + `</string>
+    <key>StandardOutPath</key>
+    <string>` + xmlEscape(userPlnLogPath(ctxDir)) + `</string>
+</dict>
+</plist>
+`
+}
+
+func xmlEscape(s string) string {
+	var buf bytes.Buffer
+	_ = xml.EscapeText(&buf, []byte(s))
+	return buf.String()
 }
 
 func nodeSocketActive(sockPath string) bool {

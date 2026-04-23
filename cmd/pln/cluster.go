@@ -311,7 +311,7 @@ func runJoin(cmd *cobra.Command, args []string, env *cliEnv) error {
 	}
 
 	if nodeSocketActive(filepath.Join(env.dir, socketName)) {
-		if err := servicectl("restart", cmd); err != nil {
+		if err := servicectl("restart", cmd, env); err != nil {
 			return fmt.Errorf("joined cluster but failed to restart daemon: %w", err)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "joined cluster; daemon restarted")
@@ -319,7 +319,7 @@ func runJoin(cmd *cobra.Command, args []string, env *cliEnv) error {
 	}
 
 	fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; starting daemon")
-	return servicectl("start", cmd)
+	return servicectl("start", cmd, env)
 }
 
 func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
