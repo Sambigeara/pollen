@@ -101,6 +101,7 @@ func snapshotWith(manifestDigest string, publisher types.PeerKey) state.Snapshot
 		Nodes: map[types.PeerKey]state.NodeView{
 			publisher: {Blobs: map[string]struct{}{manifestDigest: {}}},
 		},
+		PeerKeys: []types.PeerKey{publisher},
 	}
 }
 

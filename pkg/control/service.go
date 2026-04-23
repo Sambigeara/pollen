@@ -1024,10 +1024,20 @@ func buildStaticSummaries(snap state.Snapshot) []*controlv1.StaticSummary {
 // buildBlobSummaries tags unreferenced blobs as orphan; the CLI filters
 // them from the default view and the janitor evicts them on its next tick.
 // Workload and static-backed blobs are surfaced under their own summaries
-// and skipped here.
+// and skipped here. Holders are restricted to live peers — stale
+// BlobAvailability from an offline peer persists in gossip until cert
+// expiry, but such a holder can neither serve fetches nor be pruned, so
+// counting it would inflate replicas and surface phantom orphans.
 func (s *Service) buildBlobSummaries(snap state.Snapshot) []*controlv1.BlobSummary {
+	liveSet := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
+	for _, pk := range snap.PeerKeys {
+		liveSet[pk] = struct{}{}
+	}
 	counts := make(map[string]uint32)
-	for _, nv := range snap.Nodes {
+	for pk, nv := range snap.Nodes {
+		if _, live := liveSet[pk]; !live {
+			continue
+		}
 		for hash := range nv.Blobs {
 			counts[hash]++
 		}

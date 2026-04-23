@@ -182,6 +182,42 @@ func TestSnapshot_PeerKeysFiltering(t *testing.T) {
 	require.NotContains(t, snap2.Nodes, peerB)
 }
 
+func TestSnapshot_PeersWithBlobSkipsOfflineHolders(t *testing.T) {
+	localKey := genKey(t)
+	s := newTestStore(t, localKey)
+
+	live, offline := genKey(t), genKey(t)
+	for _, pk := range []types.PeerKey{live, offline} {
+		applyTestEvent(t, s, &statev1.GossipEvent{
+			PeerId:  pk.String(),
+			Counter: 1,
+			Change: &statev1.GossipEvent_Network{
+				Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001},
+			},
+		})
+		applyTestEvent(t, s, &statev1.GossipEvent{
+			PeerId:  pk.String(),
+			Counter: 2,
+			Change: &statev1.GossipEvent_BlobAvailability{
+				BlobAvailability: &statev1.BlobAvailabilityChange{Digests: [][]byte{{0xab, 0xcd}}},
+			},
+		})
+	}
+
+	// Only `live` is reachable from local; `offline` stays valid (cert OK)
+	// but falls out of the live set, mirroring a peer that has departed
+	// without its BlobAvailability gossip being superseded.
+	s.SetLocalReachable([]types.PeerKey{live})
+	snap := s.Snapshot()
+
+	require.Contains(t, snap.PeerKeys, live)
+	require.NotContains(t, snap.PeerKeys, offline)
+	require.Contains(t, snap.Nodes, offline, "offline peer remains in snap.Nodes (cert still valid)")
+
+	holders := snap.PeersWithBlob("abcd")
+	require.ElementsMatch(t, []types.PeerKey{live}, holders)
+}
+
 func TestStore_PublishWorkloadClonesInput(t *testing.T) {
 	// PublishWorkload must defensively copy its input — callers (e.g.
 	// placement.Service.Seed) reuse the same proto and may mutate it

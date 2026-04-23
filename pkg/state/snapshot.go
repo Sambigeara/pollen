@@ -154,9 +154,19 @@ type ServiceInfo struct {
 	Protocol statev1.ServiceProtocol
 }
 
+// PeersWithBlob returns live peers advertising hash. Stale BlobAvailability
+// from offline peers persists in gossip until cert expiry; including them
+// would direct fetches at unreachable nodes.
 func (s Snapshot) PeersWithBlob(hash string) []types.PeerKey {
+	live := make(map[types.PeerKey]struct{}, len(s.PeerKeys))
+	for _, pk := range s.PeerKeys {
+		live[pk] = struct{}{}
+	}
 	var out []types.PeerKey
 	for pk, nv := range s.Nodes {
+		if _, ok := live[pk]; !ok {
+			continue
+		}
 		if _, ok := nv.Blobs[hash]; ok {
 			out = append(out, pk)
 		}

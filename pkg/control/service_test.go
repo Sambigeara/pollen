@@ -911,6 +911,7 @@ func TestGetStatusBlobsExcludesWasmAndStatic(t *testing.T) {
 	h := newHarness(t)
 	local := testPeerKey(1)
 	h.state.snap.LocalID = local
+	h.state.snap.PeerKeys = []types.PeerKey{local}
 	h.state.snap.Nodes[local] = state.NodeView{
 		Blobs: map[string]struct{}{
 			"wasm-hash":     {},
@@ -939,6 +940,7 @@ func TestGetStatusBlobsIncludesName(t *testing.T) {
 	h := newHarness(t)
 	local := testPeerKey(1)
 	h.state.snap.LocalID = local
+	h.state.snap.PeerKeys = []types.PeerKey{local}
 	h.state.snap.Nodes[local] = state.NodeView{
 		Blobs: map[string]struct{}{
 			"named-blob":     {},
@@ -963,6 +965,22 @@ func TestGetStatusBlobsIncludesName(t *testing.T) {
 	require.Empty(t, byHash["anonymous-blob"].GetName())
 	require.Nil(t, byHash["anonymous-blob"].GetPublisher())
 	require.True(t, byHash["anonymous-blob"].GetOrphan())
+}
+
+func TestGetStatusBlobsHidesPhantomsFromOfflinePeers(t *testing.T) {
+	h := newHarness(t)
+	local := testPeerKey(1)
+	offline := testPeerKey(2)
+	h.state.snap.LocalID = local
+	h.state.snap.PeerKeys = []types.PeerKey{local}
+	h.state.snap.Nodes[local] = state.NodeView{}
+	h.state.snap.Nodes[offline] = state.NodeView{
+		Blobs: map[string]struct{}{"phantom-orphan": {}},
+	}
+
+	resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+	require.Empty(t, resp.Blobs, "blob held only by an offline peer must not surface — neither serveable nor prunable")
 }
 
 func TestGetStatus_PeerTrafficFromGossip(t *testing.T) {
