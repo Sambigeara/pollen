@@ -94,7 +94,7 @@ deploy-demo:
         # trips ETXTBSY. Harmless on a fresh host where the unit doesn't exist yet.
         ssh {{ ssh_args }} root@$ip "systemctl stop pln 2>/dev/null || true"
         scp -O {{ ssh_args }} "$BINARY" root@$ip:/usr/bin/pln
-        ssh {{ ssh_args }} root@$ip "chmod +x /usr/bin/pln && pln service install && mkdir -p /etc/systemd/system/pln.service.d"
+        ssh {{ ssh_args }} root@$ip "chmod +x /usr/bin/pln && pln daemon install && mkdir -p /etc/systemd/system/pln.service.d"
         ssh {{ ssh_args }} root@$ip "pln --dir /var/lib/pln set control-addr :50051 && pln --dir /var/lib/pln set http :9090"
         # Drop-in layers demo-only runtime tweaks (pprof, JIT) on top of the
         # base unit. Uploaded after install so it isn't clobbered.
