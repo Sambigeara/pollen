@@ -34,11 +34,11 @@ destroy-vivaldi-pub: (_destroy "vivaldi-public")
 # ── Demo cluster ──────────────────────────────────────────────────────
 #
 # Headline lifecycle (all idempotent):
-#   just demo-up                      # build → deploy → start → bootstrap → seed
-#   just start-exerciser usw 100 5m   # fire 100 r/s at usw for 5 minutes from the dedicated exerciser host
-#   just start-exerciser usw 200      # replaces the usw run with a 200 r/s one (restart semantics)
-#   just stop-exerciser usw           # stop load to usw
-#   just destroy-demo                 # teardown: stop local + terraform destroy
+#   just demo-up                                      # build → deploy → start → bootstrap → seed
+#   just start-exerciser usw 1000 5m                  # 1k r/s at usw for 5 minutes (firehose chain by default)
+#   just start-exerciser usw,use,eun,sao,tok 1000 5m  # fan out 1k r/s to 5 regions in parallel
+#   just stop-exerciser usw                           # stop load to usw
+#   just destroy-demo                                 # teardown: stop local + terraform destroy
 #
 # Lower-level steps (each individually runnable, composed by demo-up):
 #   just build-demo      # cross-compile pln + exerciser + WASM modules
@@ -57,7 +57,7 @@ pln_dir := "/tmp/pln-demo"
 demo-up: build-demo deploy-demo start-demo bootstrap-demo seed-demo
     @echo ""
     @echo "demo ready. Grafana at http://localhost:3000"
-    @echo "next: just start-exerciser <node> <rate> [<duration>]   e.g. just start-exerciser usw 100 5m"
+    @echo "next: just start-exerciser <nodes> <rate> [<duration>]   e.g. just start-exerciser usw,use 1000 5m"
 
 # Cross-compile all demo artifacts.
 build-demo:
@@ -179,23 +179,30 @@ seed-demo:
     PLN_DIR={{ pln_dir }} {{ repo_root }}/pln seed "$WASM/processor.wasm" --name processor --latency-slo-ms 500
     PLN_DIR={{ pln_dir }} {{ repo_root }}/pln seed "$WASM/terminal.wasm"  --name terminal  --latency-slo-ms 50
 
-# Fire load at a specific pollen node from the dedicated exerciser host.
-# Idempotent per target: a second invocation for the same node replaces the
-# running process (systemctl restart). Different targets run concurrently.
-# Optional 4th arg selects the URI — default is the SQLite-constrained
-# chain (ingest/handle → processor → service/store); pass
-# pln://seed/ingest/handle_firehose to exercise the mesh-only chain
-# (ingest/handle_firehose → terminal).
-#   just start-exerciser usw 100 5m                                     # SQLite chain
-#   just start-exerciser usw 500 3m pln://seed/ingest/handle_firehose   # firehose chain
-start-exerciser node rate="100" duration="0" uri="pln://seed/ingest/handle":
+# Fire load at one or more pollen nodes from the dedicated exerciser host.
+# Pass a single node name or a comma-separated list; targets are configured
+# in parallel. Idempotent per target: a second invocation for the same node
+# replaces its running process (systemctl restart). Different targets keep
+# running concurrently.
+# Default URI is the mesh-only firehose chain (ingest/handle_firehose →
+# terminal). Pass pln://seed/ingest/handle to exercise the SQLite-constrained
+# chain (ingest/handle → processor → service/store).
+#   just start-exerciser usw 1000 5m                                      # firehose from one region
+#   just start-exerciser usw,use,eun,sao,tok 1000 5m                      # fan out to 5 regions in parallel
+#   just start-exerciser usw 500 3m pln://seed/ingest/handle              # SQLite chain
+start-exerciser nodes rate="100" duration="0" uri="pln://seed/ingest/handle_firehose":
     #!/usr/bin/env bash
     set -euo pipefail
-    NODE_IP=$(cd {{ demo_tf }} && terraform output -json node_ips | jq -r '."{{ node }}"')
     EXERCISER_IP=$(cd {{ demo_tf }} && terraform output -raw exerciser_ip)
-    PORT=$(just _exerciser-port {{ node }})
-    TOKEN=$(ssh {{ ssh_args }} root@$NODE_IP "cat /var/lib/pln/control.token")
-    ssh {{ ssh_args }} root@$EXERCISER_IP "cat > /etc/default/pollen-exerciser@{{ node }}" <<EOF
+    NODE_IPS_JSON=$(cd {{ demo_tf }} && terraform output -json node_ips)
+    IFS=',' read -ra NAMES <<< "{{ nodes }}"
+    pids=()
+    for name in "${NAMES[@]}"; do
+      (
+        NODE_IP=$(echo "$NODE_IPS_JSON" | jq -er --arg n "$name" '.[$n]')
+        PORT=$(just _exerciser-port "$name")
+        TOKEN=$(ssh {{ ssh_args }} root@$NODE_IP "cat /var/lib/pln/control.token")
+        ssh {{ ssh_args }} root@$EXERCISER_IP "cat > /etc/default/pollen-exerciser@$name" <<EOF
     TARGET_ADDR=$NODE_IP:50051
     RATE={{ rate }}
     DURATION={{ duration }}
@@ -203,8 +210,14 @@ start-exerciser node rate="100" duration="0" uri="pln://seed/ingest/handle":
     METRICS_ADDR=:$PORT
     PLN_CONTROL_TOKEN=$TOKEN
     EOF
-    ssh {{ ssh_args }} root@$EXERCISER_IP "systemctl restart pollen-exerciser@{{ node }}"
-    echo "exerciser@{{ node }} running at {{ rate }}/s via {{ uri }} (target $NODE_IP:50051, metrics :$PORT)"
+        ssh {{ ssh_args }} root@$EXERCISER_IP "systemctl restart pollen-exerciser@$name"
+        echo "exerciser@$name running at {{ rate }}/s via {{ uri }} (target $NODE_IP:50051, metrics :$PORT)"
+      ) &
+      pids+=($!)
+    done
+    fail=0
+    for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
+    exit "$fail"
 
 # Stop the exerciser targeting a specific pollen node.
 stop-exerciser node:
