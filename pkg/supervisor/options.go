@@ -9,6 +9,7 @@ import (
 	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -19,6 +20,7 @@ type Options struct {
 	ShutdownFunc       func()
 	RuntimeState       *statev1.RuntimeState
 	PeerCache          *peercache.Store
+	AuthzRouter        *evaluator.Router
 	SocketPath         string
 	PollenDir          string
 	NodeName           string

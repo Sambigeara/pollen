@@ -16,6 +16,7 @@ import (
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -195,6 +196,23 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 		notAfter = accessDeadline
 	}
 
+	if s.authz != nil {
+		var props map[string]any
+		if caps.GetAttributes() != nil {
+			props = caps.GetAttributes().AsMap()
+		}
+		evalReq := evaluator.Request{
+			Subject:  evaluator.Subject{Type: "peer", ID: from.String(), Properties: props},
+			Action:   evaluator.Action{Name: "renew"},
+			Resource: evaluator.NewResource(evaluator.ResourceCert, from.String(), props),
+		}
+		if err := s.authz.Allow(ctx, evaluator.GateGrantIssue, evalReq); err != nil {
+			s.log.Infow("cert renewal denied by grant_issue gate", "peer", from.Short(), "err", err)
+			sendReject("denied by policy")
+			return
+		}
+	}
+
 	newCert, err := signer.IssueMemberCert(
 		req.GetPeerPub(),
 		caps,
@@ -211,12 +229,32 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 		Accepted: true,
 		Cert:     newCert,
 	})
+	// Same rationale as IssueCert: the renewing admin must see the
+	// fresh cert in its own cache so any follow-up renewal or authz
+	// evaluation runs against ground truth rather than the
+	// pre-renewal attrs.
+	s.certs.SetPeerDelegationCert(from, newCert)
 }
 
 func (s *Service) IssueCert(ctx context.Context, peerKey types.PeerKey, admin bool, attributes *structpb.Struct) error {
 	signer := s.creds.DelegationKey()
 	if signer == nil || !signer.IsRoot() {
 		return errors.New("only root admin can push certificates")
+	}
+
+	if s.authz != nil {
+		var props map[string]any
+		if attributes != nil {
+			props = attributes.AsMap()
+		}
+		evalReq := evaluator.Request{
+			Subject:  evaluator.Subject{Type: "peer", ID: peerKey.String(), Properties: props},
+			Action:   evaluator.Action{Name: "issue"},
+			Resource: evaluator.NewResource(evaluator.ResourceCert, peerKey.String(), props),
+		}
+		if err := s.authz.Allow(ctx, evaluator.GateGrantIssue, evalReq); err != nil {
+			return fmt.Errorf("grant_issue denied: %w", err)
+		}
 	}
 
 	caps := auth.LeafCapabilities()
@@ -235,7 +273,16 @@ func (s *Service) IssueCert(ctx context.Context, peerKey types.PeerKey, admin bo
 		return fmt.Errorf("issue cert: %w", err)
 	}
 
-	return s.certs.PushCert(ctx, peerKey, cert)
+	if err := s.certs.PushCert(ctx, peerKey, cert); err != nil {
+		return err
+	}
+	// Install into our own cache so subsequent authz evaluations and
+	// renewal handlers see ground truth immediately — without waiting
+	// for the target's TLS session to us to re-handshake. Without this,
+	// a renewal routed through the issuer rebuilds the cert from the
+	// stale cache and silently drops the attributes we just granted.
+	s.certs.SetPeerDelegationCert(peerKey, cert)
+	return nil
 }
 
 func (s *Service) handleCertPushRequest(ctx context.Context, from types.PeerKey, req *meshv1.CertPushRequest) {
@@ -261,6 +308,36 @@ func (s *Service) handleCertPushRequest(ctx context.Context, from types.PeerKey,
 
 	s.log.Infow("certificate pushed", "from", from.Short(), "can_delegate", caps.GetCanDelegate())
 	s.sendCertPushResponse(ctx, from, &meshv1.CertPushResponse{Accepted: true})
+
+	// A pushed cert typically carries new capabilities or attributes;
+	// live QUIC sessions keep the old TLS identity indefinitely, so
+	// peers' PeerDelegationCert stores stay stale and authz rules
+	// keyed on subject.properties silently miss until a reconnect.
+	// Tearing down outbound sessions forces a fresh TLS handshake so
+	// the new cert propagates. The issuing peer is excluded: dropping
+	// that session races the accept datagram we just queued and causes
+	// the admin's PushCert RPC to time out as "issue cert failed". The
+	// issuer will observe the new cert on any later session reset and
+	// doesn't need it for its own authorisation decisions in the
+	// meantime — it's the party that just signed it.
+	s.rotateSessionsForNewCert(from)
+}
+
+// rotateSessionsForNewCert closes every outbound session except the
+// one to exclude (typically the peer that issued the cert push, whose
+// response datagram must flush before we can safely close). Safe to
+// call after applyNewCert has returned nil; no-op when sessionCloser
+// isn't wired (tests without the transport layer).
+func (s *Service) rotateSessionsForNewCert(exclude types.PeerKey) {
+	if s.sessionCloser == nil {
+		return
+	}
+	for _, pk := range s.mesh.ConnectedPeers() {
+		if pk == exclude {
+			continue
+		}
+		s.sessionCloser.ClosePeerSession(pk, transport.DisconnectCertRotation)
+	}
 }
 
 func (s *Service) sendCertPushResponse(ctx context.Context, to types.PeerKey, resp *meshv1.CertPushResponse) {

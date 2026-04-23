@@ -32,6 +32,7 @@ service ControlService {
   rpc SeedStatic(SeedStaticRequest) returns (SeedStaticResponse);
   rpc UnseedStatic(UnseedStaticRequest) returns (UnseedStaticResponse);
   rpc ListStatic(ListStaticRequest) returns (ListStaticResponse);
+  rpc CheckPolicy(CheckPolicyRequest) returns (CheckPolicyResponse);
 }
 
 message NodeRef {
@@ -250,6 +251,9 @@ message SeedWorkloadHeader {
   // budget. Drives autoscale via SLO burn rate. Zero is replaced with
   // a sensible default by the placement layer.
   uint32 latency_slo_ms = 6;
+  // properties populate the PublisherClaim on the emitted workload
+  // spec; policy (spec_publish, seed_placement) reads them.
+  google.protobuf.Struct properties = 7;
 }
 
 message SeedWorkloadResponse {
@@ -338,6 +342,9 @@ message UploadBlobHeader {
     min_len: 1
     max_len: 255
   }];
+  // properties populate the PublisherClaim on the named-upload path.
+  // Anonymous uploads (no name) ignore this field.
+  google.protobuf.Struct properties = 2;
 }
 
 message UploadBlobResponse {
@@ -360,6 +367,9 @@ message SeedStaticRequest {
   }];
   bytes manifest_digest = 2 [(buf.validate.field).bytes = {len: 32}];
   uint32 min_replicas = 3;
+  // properties populate the PublisherClaim on the emitted static
+  // spec; policy (spec_publish, seed_placement) reads them.
+  google.protobuf.Struct properties = 4;
 }
 
 message SeedStaticResponse {}
@@ -387,4 +397,40 @@ message StaticSummary {
 
 message ListStaticResponse {
   repeated StaticSummary sites = 1;
+}
+
+// AuthzSubject mirrors evaluator.Subject for the policy-check RPC.
+message AuthzSubject {
+  string type = 1;
+  string id = 2;
+  google.protobuf.Struct properties = 3;
+}
+
+message AuthzAction {
+  string name = 1;
+  google.protobuf.Struct properties = 2;
+}
+
+message AuthzResource {
+  string type = 1;
+  string id = 2;
+  google.protobuf.Struct properties = 3;
+}
+
+// CheckPolicyRequest asks the daemon's currently-loaded authz router
+// how it would decide on the supplied (gate, subject, action, resource)
+// tuple. The daemon runs the request through the real gate machinery —
+// same caching, same timeouts, same fallback — but doesn't dispatch to
+// any primitive. Useful for validating rules before deploying.
+message CheckPolicyRequest {
+  string gate = 1;
+  AuthzSubject subject = 2;
+  AuthzAction action = 3;
+  AuthzResource resource = 4;
+  google.protobuf.Struct context = 5;
+}
+
+message CheckPolicyResponse {
+  bool allow = 1;
+  string reason = 2;
 }

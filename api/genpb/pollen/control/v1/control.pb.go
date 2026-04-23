@@ -1862,7 +1862,10 @@ type SeedWorkloadHeader struct {
 	// latency_slo_ms is the per-invocation caller-perspective latency
 	// budget. Drives autoscale via SLO burn rate. Zero is replaced with
 	// a sensible default by the placement layer.
-	LatencySloMs  uint32 `protobuf:"varint,6,opt,name=latency_slo_ms,json=latencySloMs,proto3" json:"latency_slo_ms,omitempty"`
+	LatencySloMs uint32 `protobuf:"varint,6,opt,name=latency_slo_ms,json=latencySloMs,proto3" json:"latency_slo_ms,omitempty"`
+	// properties populate the PublisherClaim on the emitted workload
+	// spec; policy (spec_publish, seed_placement) reads them.
+	Properties    *structpb.Struct `protobuf:"bytes,7,opt,name=properties,proto3" json:"properties,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1937,6 +1940,13 @@ func (x *SeedWorkloadHeader) GetLatencySloMs() uint32 {
 		return x.LatencySloMs
 	}
 	return 0
+}
+
+func (x *SeedWorkloadHeader) GetProperties() *structpb.Struct {
+	if x != nil {
+		return x.Properties
+	}
+	return nil
 }
 
 type SeedWorkloadResponse struct {
@@ -2656,8 +2666,11 @@ func (*UploadBlobRequest_Header) isUploadBlobRequest_Payload() {}
 func (*UploadBlobRequest_Chunk) isUploadBlobRequest_Payload() {}
 
 type UploadBlobHeader struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          *string                `protobuf:"bytes,1,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  *string                `protobuf:"bytes,1,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	// properties populate the PublisherClaim on the named-upload path.
+	// Anonymous uploads (no name) ignore this field.
+	Properties    *structpb.Struct `protobuf:"bytes,2,opt,name=properties,proto3" json:"properties,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2697,6 +2710,13 @@ func (x *UploadBlobHeader) GetName() string {
 		return *x.Name
 	}
 	return ""
+}
+
+func (x *UploadBlobHeader) GetProperties() *structpb.Struct {
+	if x != nil {
+		return x.Properties
+	}
+	return nil
 }
 
 type UploadBlobResponse struct {
@@ -2828,8 +2848,11 @@ type SeedStaticRequest struct {
 	Name           string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	ManifestDigest []byte                 `protobuf:"bytes,2,opt,name=manifest_digest,json=manifestDigest,proto3" json:"manifest_digest,omitempty"`
 	MinReplicas    uint32                 `protobuf:"varint,3,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// properties populate the PublisherClaim on the emitted static
+	// spec; policy (spec_publish, seed_placement) reads them.
+	Properties    *structpb.Struct `protobuf:"bytes,4,opt,name=properties,proto3" json:"properties,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SeedStaticRequest) Reset() {
@@ -2881,6 +2904,13 @@ func (x *SeedStaticRequest) GetMinReplicas() uint32 {
 		return x.MinReplicas
 	}
 	return 0
+}
+
+func (x *SeedStaticRequest) GetProperties() *structpb.Struct {
+	if x != nil {
+		return x.Properties
+	}
+	return nil
 }
 
 type SeedStaticResponse struct {
@@ -3171,6 +3201,312 @@ func (x *ListStaticResponse) GetSites() []*StaticSummary {
 	return nil
 }
 
+// AuthzSubject mirrors evaluator.Subject for the policy-check RPC.
+type AuthzSubject struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
+	Properties    *structpb.Struct       `protobuf:"bytes,3,opt,name=properties,proto3" json:"properties,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuthzSubject) Reset() {
+	*x = AuthzSubject{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuthzSubject) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuthzSubject) ProtoMessage() {}
+
+func (x *AuthzSubject) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuthzSubject.ProtoReflect.Descriptor instead.
+func (*AuthzSubject) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *AuthzSubject) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *AuthzSubject) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *AuthzSubject) GetProperties() *structpb.Struct {
+	if x != nil {
+		return x.Properties
+	}
+	return nil
+}
+
+type AuthzAction struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Properties    *structpb.Struct       `protobuf:"bytes,2,opt,name=properties,proto3" json:"properties,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuthzAction) Reset() {
+	*x = AuthzAction{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuthzAction) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuthzAction) ProtoMessage() {}
+
+func (x *AuthzAction) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuthzAction.ProtoReflect.Descriptor instead.
+func (*AuthzAction) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *AuthzAction) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *AuthzAction) GetProperties() *structpb.Struct {
+	if x != nil {
+		return x.Properties
+	}
+	return nil
+}
+
+type AuthzResource struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
+	Properties    *structpb.Struct       `protobuf:"bytes,3,opt,name=properties,proto3" json:"properties,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuthzResource) Reset() {
+	*x = AuthzResource{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuthzResource) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuthzResource) ProtoMessage() {}
+
+func (x *AuthzResource) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuthzResource.ProtoReflect.Descriptor instead.
+func (*AuthzResource) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *AuthzResource) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *AuthzResource) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *AuthzResource) GetProperties() *structpb.Struct {
+	if x != nil {
+		return x.Properties
+	}
+	return nil
+}
+
+// CheckPolicyRequest asks the daemon's currently-loaded authz router
+// how it would decide on the supplied (gate, subject, action, resource)
+// tuple. The daemon runs the request through the real gate machinery —
+// same caching, same timeouts, same fallback — but doesn't dispatch to
+// any primitive. Useful for validating rules before deploying.
+type CheckPolicyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Gate          string                 `protobuf:"bytes,1,opt,name=gate,proto3" json:"gate,omitempty"`
+	Subject       *AuthzSubject          `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
+	Action        *AuthzAction           `protobuf:"bytes,3,opt,name=action,proto3" json:"action,omitempty"`
+	Resource      *AuthzResource         `protobuf:"bytes,4,opt,name=resource,proto3" json:"resource,omitempty"`
+	Context       *structpb.Struct       `protobuf:"bytes,5,opt,name=context,proto3" json:"context,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckPolicyRequest) Reset() {
+	*x = CheckPolicyRequest{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckPolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckPolicyRequest) ProtoMessage() {}
+
+func (x *CheckPolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckPolicyRequest.ProtoReflect.Descriptor instead.
+func (*CheckPolicyRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *CheckPolicyRequest) GetGate() string {
+	if x != nil {
+		return x.Gate
+	}
+	return ""
+}
+
+func (x *CheckPolicyRequest) GetSubject() *AuthzSubject {
+	if x != nil {
+		return x.Subject
+	}
+	return nil
+}
+
+func (x *CheckPolicyRequest) GetAction() *AuthzAction {
+	if x != nil {
+		return x.Action
+	}
+	return nil
+}
+
+func (x *CheckPolicyRequest) GetResource() *AuthzResource {
+	if x != nil {
+		return x.Resource
+	}
+	return nil
+}
+
+func (x *CheckPolicyRequest) GetContext() *structpb.Struct {
+	if x != nil {
+		return x.Context
+	}
+	return nil
+}
+
+type CheckPolicyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Allow         bool                   `protobuf:"varint,1,opt,name=allow,proto3" json:"allow,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckPolicyResponse) Reset() {
+	*x = CheckPolicyResponse{}
+	mi := &file_pollen_control_v1_control_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckPolicyResponse) ProtoMessage() {}
+
+func (x *CheckPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_control_v1_control_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckPolicyResponse.ProtoReflect.Descriptor instead.
+func (*CheckPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *CheckPolicyResponse) GetAllow() bool {
+	if x != nil {
+		return x.Allow
+	}
+	return false
+}
+
+func (x *CheckPolicyResponse) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 var File_pollen_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_pollen_control_v1_control_proto_rawDesc = "" +
@@ -3294,7 +3630,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x13SeedWorkloadRequest\x12?\n" +
 	"\x06header\x18\x01 \x01(\v2%.pollen.control.v1.SeedWorkloadHeaderH\x00R\x06header\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\t\n" +
-	"\apayload\"\xcb\x01\n" +
+	"\apayload\"\x84\x02\n" +
 	"\x12SeedWorkloadHeader\x12!\n" +
 	"\fmin_replicas\x18\x01 \x01(\rR\vminReplicas\x12!\n" +
 	"\fmemory_bytes\x18\x02 \x01(\x04R\vmemoryBytes\x12\x1d\n" +
@@ -3302,7 +3638,10 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"timeout_ms\x18\x03 \x01(\rR\ttimeoutMs\x12\x12\n" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x12\x16\n" +
 	"\x06spread\x18\x05 \x01(\x02R\x06spread\x12$\n" +
-	"\x0elatency_slo_ms\x18\x06 \x01(\rR\flatencySloMs\">\n" +
+	"\x0elatency_slo_ms\x18\x06 \x01(\rR\flatencySloMs\x127\n" +
+	"\n" +
+	"properties\x18\a \x01(\v2\x17.google.protobuf.StructR\n" +
+	"properties\">\n" +
 	"\x14SeedWorkloadResponse\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"4\n" +
@@ -3351,21 +3690,27 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x11UploadBlobRequest\x12=\n" +
 	"\x06header\x18\x01 \x01(\v2#.pollen.control.v1.UploadBlobHeaderH\x00R\x06header\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\t\n" +
-	"\apayload\"@\n" +
+	"\apayload\"y\n" +
 	"\x10UploadBlobHeader\x12#\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
-	"\xbaH\ar\x05\x10\x01\x18\xff\x01H\x00R\x04name\x88\x01\x01B\a\n" +
+	"\xbaH\ar\x05\x10\x01\x18\xff\x01H\x00R\x04name\x88\x01\x01\x127\n" +
+	"\n" +
+	"properties\x18\x02 \x01(\v2\x17.google.protobuf.StructR\n" +
+	"propertiesB\a\n" +
 	"\x05_name\"(\n" +
 	"\x12UploadBlobResponse\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\"D\n" +
 	"\x11RemoveBlobRequest\x12/\n" +
 	"\x04hash\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x04hash\"\x14\n" +
-	"\x12RemoveBlobResponse\"\x88\x01\n" +
+	"\x12RemoveBlobResponse\"\xc1\x01\n" +
 	"\x11SeedStaticRequest\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x120\n" +
 	"\x0fmanifest_digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x0emanifestDigest\x12!\n" +
-	"\fmin_replicas\x18\x03 \x01(\rR\vminReplicas\"\x14\n" +
+	"\fmin_replicas\x18\x03 \x01(\rR\vminReplicas\x127\n" +
+	"\n" +
+	"properties\x18\x04 \x01(\v2\x17.google.protobuf.StructR\n" +
+	"properties\"\x14\n" +
 	"\x12SeedStaticResponse\"5\n" +
 	"\x13UnseedStaticRequest\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
@@ -3381,7 +3726,33 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x05local\x18\x06 \x01(\bR\x05local\x12)\n" +
 	"\x10serving_capacity\x18\a \x01(\rR\x0fservingCapacity\"L\n" +
 	"\x12ListStaticResponse\x126\n" +
-	"\x05sites\x18\x01 \x03(\v2 .pollen.control.v1.StaticSummaryR\x05sites*t\n" +
+	"\x05sites\x18\x01 \x03(\v2 .pollen.control.v1.StaticSummaryR\x05sites\"k\n" +
+	"\fAuthzSubject\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\x127\n" +
+	"\n" +
+	"properties\x18\x03 \x01(\v2\x17.google.protobuf.StructR\n" +
+	"properties\"Z\n" +
+	"\vAuthzAction\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x127\n" +
+	"\n" +
+	"properties\x18\x02 \x01(\v2\x17.google.protobuf.StructR\n" +
+	"properties\"l\n" +
+	"\rAuthzResource\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\x127\n" +
+	"\n" +
+	"properties\x18\x03 \x01(\v2\x17.google.protobuf.StructR\n" +
+	"properties\"\x8c\x02\n" +
+	"\x12CheckPolicyRequest\x12\x12\n" +
+	"\x04gate\x18\x01 \x01(\tR\x04gate\x129\n" +
+	"\asubject\x18\x02 \x01(\v2\x1f.pollen.control.v1.AuthzSubjectR\asubject\x126\n" +
+	"\x06action\x18\x03 \x01(\v2\x1e.pollen.control.v1.AuthzActionR\x06action\x12<\n" +
+	"\bresource\x18\x04 \x01(\v2 .pollen.control.v1.AuthzResourceR\bresource\x121\n" +
+	"\acontext\x18\x05 \x01(\v2\x17.google.protobuf.StructR\acontext\"C\n" +
+	"\x13CheckPolicyResponse\x12\x14\n" +
+	"\x05allow\x18\x01 \x01(\bR\x05allow\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason*t\n" +
 	"\n" +
 	"NodeStatus\x12\x1b\n" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
@@ -3404,7 +3775,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x19HEALTH_STATUS_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15HEALTH_STATUS_HEALTHY\x10\x01\x12\x1a\n" +
 	"\x16HEALTH_STATUS_DEGRADED\x10\x02\x12\x1b\n" +
-	"\x17HEALTH_STATUS_UNHEALTHY\x10\x032\x93\x0f\n" +
+	"\x17HEALTH_STATUS_UNHEALTHY\x10\x032\xf1\x0f\n" +
 	"\x0eControlService\x12S\n" +
 	"\bShutdown\x12\".pollen.control.v1.ShutdownRequest\x1a#.pollen.control.v1.ShutdownResponse\x12k\n" +
 	"\x10GetBootstrapInfo\x12*.pollen.control.v1.GetBootstrapInfoRequest\x1a+.pollen.control.v1.GetBootstrapInfoResponse\x12V\n" +
@@ -3430,7 +3801,8 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"SeedStatic\x12$.pollen.control.v1.SeedStaticRequest\x1a%.pollen.control.v1.SeedStaticResponse\x12_\n" +
 	"\fUnseedStatic\x12&.pollen.control.v1.UnseedStaticRequest\x1a'.pollen.control.v1.UnseedStaticResponse\x12Y\n" +
 	"\n" +
-	"ListStatic\x12$.pollen.control.v1.ListStaticRequest\x1a%.pollen.control.v1.ListStaticResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
+	"ListStatic\x12$.pollen.control.v1.ListStaticRequest\x1a%.pollen.control.v1.ListStaticResponse\x12\\\n" +
+	"\vCheckPolicy\x12%.pollen.control.v1.CheckPolicyRequest\x1a&.pollen.control.v1.CheckPolicyResponseBDZBgithub.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1b\x06proto3"
 
 var (
 	file_pollen_control_v1_control_proto_rawDescOnce sync.Once
@@ -3445,7 +3817,7 @@ func file_pollen_control_v1_control_proto_rawDescGZIP() []byte {
 }
 
 var file_pollen_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
+var file_pollen_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 56)
 var file_pollen_control_v1_control_proto_goTypes = []any{
 	(NodeStatus)(0),                   // 0: pollen.control.v1.NodeStatus
 	(CertHealth)(0),                   // 1: pollen.control.v1.CertHealth
@@ -3502,19 +3874,24 @@ var file_pollen_control_v1_control_proto_goTypes = []any{
 	(*ListStaticRequest)(nil),         // 52: pollen.control.v1.ListStaticRequest
 	(*StaticSummary)(nil),             // 53: pollen.control.v1.StaticSummary
 	(*ListStaticResponse)(nil),        // 54: pollen.control.v1.ListStaticResponse
-	(v1.ServiceProtocol)(0),           // 55: pollen.state.v1.ServiceProtocol
-	(*structpb.Struct)(nil),           // 56: google.protobuf.Struct
+	(*AuthzSubject)(nil),              // 55: pollen.control.v1.AuthzSubject
+	(*AuthzAction)(nil),               // 56: pollen.control.v1.AuthzAction
+	(*AuthzResource)(nil),             // 57: pollen.control.v1.AuthzResource
+	(*CheckPolicyRequest)(nil),        // 58: pollen.control.v1.CheckPolicyRequest
+	(*CheckPolicyResponse)(nil),       // 59: pollen.control.v1.CheckPolicyResponse
+	(v1.ServiceProtocol)(0),           // 60: pollen.state.v1.ServiceProtocol
+	(*structpb.Struct)(nil),           // 61: google.protobuf.Struct
 }
 var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	4,  // 0: pollen.control.v1.NodeSummary.node:type_name -> pollen.control.v1.NodeRef
 	0,  // 1: pollen.control.v1.NodeSummary.status:type_name -> pollen.control.v1.NodeStatus
 	4,  // 2: pollen.control.v1.ServiceSummary.provider:type_name -> pollen.control.v1.NodeRef
-	55, // 3: pollen.control.v1.ServiceSummary.protocol:type_name -> pollen.state.v1.ServiceProtocol
+	60, // 3: pollen.control.v1.ServiceSummary.protocol:type_name -> pollen.state.v1.ServiceProtocol
 	4,  // 4: pollen.control.v1.BootstrapPeerInfo.peer:type_name -> pollen.control.v1.NodeRef
 	10, // 5: pollen.control.v1.GetBootstrapInfoResponse.self:type_name -> pollen.control.v1.BootstrapPeerInfo
 	10, // 6: pollen.control.v1.GetBootstrapInfoResponse.recommended:type_name -> pollen.control.v1.BootstrapPeerInfo
 	1,  // 7: pollen.control.v1.CertInfo.health:type_name -> pollen.control.v1.CertHealth
-	56, // 8: pollen.control.v1.CertInfo.attributes:type_name -> google.protobuf.Struct
+	61, // 8: pollen.control.v1.CertInfo.attributes:type_name -> google.protobuf.Struct
 	5,  // 9: pollen.control.v1.GetStatusResponse.self:type_name -> pollen.control.v1.NodeSummary
 	5,  // 10: pollen.control.v1.GetStatusResponse.nodes:type_name -> pollen.control.v1.NodeSummary
 	6,  // 11: pollen.control.v1.GetStatusResponse.services:type_name -> pollen.control.v1.ServiceSummary
@@ -3526,62 +3903,74 @@ var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	4,  // 17: pollen.control.v1.BlobSummary.publisher:type_name -> pollen.control.v1.NodeRef
 	2,  // 18: pollen.control.v1.WorkloadSummary.status:type_name -> pollen.control.v1.WorkloadStatus
 	4,  // 19: pollen.control.v1.ConnectionSummary.peer:type_name -> pollen.control.v1.NodeRef
-	55, // 20: pollen.control.v1.ConnectionSummary.protocol:type_name -> pollen.state.v1.ServiceProtocol
-	55, // 21: pollen.control.v1.RegisterServiceRequest.protocol:type_name -> pollen.state.v1.ServiceProtocol
+	60, // 20: pollen.control.v1.ConnectionSummary.protocol:type_name -> pollen.state.v1.ServiceProtocol
+	60, // 21: pollen.control.v1.RegisterServiceRequest.protocol:type_name -> pollen.state.v1.ServiceProtocol
 	4,  // 22: pollen.control.v1.ConnectServiceRequest.node:type_name -> pollen.control.v1.NodeRef
-	55, // 23: pollen.control.v1.ConnectServiceRequest.protocol:type_name -> pollen.state.v1.ServiceProtocol
+	60, // 23: pollen.control.v1.ConnectServiceRequest.protocol:type_name -> pollen.state.v1.ServiceProtocol
 	31, // 24: pollen.control.v1.SeedWorkloadRequest.header:type_name -> pollen.control.v1.SeedWorkloadHeader
-	3,  // 25: pollen.control.v1.GetMetricsResponse.health:type_name -> pollen.control.v1.HealthStatus
-	56, // 26: pollen.control.v1.IssueCertRequest.attributes:type_name -> google.protobuf.Struct
-	44, // 27: pollen.control.v1.UploadBlobRequest.header:type_name -> pollen.control.v1.UploadBlobHeader
-	4,  // 28: pollen.control.v1.StaticSummary.claimants:type_name -> pollen.control.v1.NodeRef
-	4,  // 29: pollen.control.v1.StaticSummary.publisher:type_name -> pollen.control.v1.NodeRef
-	53, // 30: pollen.control.v1.ListStaticResponse.sites:type_name -> pollen.control.v1.StaticSummary
-	7,  // 31: pollen.control.v1.ControlService.Shutdown:input_type -> pollen.control.v1.ShutdownRequest
-	9,  // 32: pollen.control.v1.ControlService.GetBootstrapInfo:input_type -> pollen.control.v1.GetBootstrapInfoRequest
-	12, // 33: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
-	37, // 34: pollen.control.v1.ControlService.GetMetrics:input_type -> pollen.control.v1.GetMetricsRequest
-	18, // 35: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
-	20, // 36: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
-	24, // 37: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
-	22, // 38: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
-	26, // 39: pollen.control.v1.ControlService.DisconnectService:input_type -> pollen.control.v1.DisconnectServiceRequest
-	28, // 40: pollen.control.v1.ControlService.DenyPeer:input_type -> pollen.control.v1.DenyPeerRequest
-	30, // 41: pollen.control.v1.ControlService.SeedWorkload:input_type -> pollen.control.v1.SeedWorkloadRequest
-	33, // 42: pollen.control.v1.ControlService.UnseedWorkload:input_type -> pollen.control.v1.UnseedWorkloadRequest
-	35, // 43: pollen.control.v1.ControlService.CallWorkload:input_type -> pollen.control.v1.CallWorkloadRequest
-	39, // 44: pollen.control.v1.ControlService.IssueCert:input_type -> pollen.control.v1.IssueCertRequest
-	41, // 45: pollen.control.v1.ControlService.FetchBlob:input_type -> pollen.control.v1.FetchBlobRequest
-	43, // 46: pollen.control.v1.ControlService.UploadBlob:input_type -> pollen.control.v1.UploadBlobRequest
-	46, // 47: pollen.control.v1.ControlService.RemoveBlob:input_type -> pollen.control.v1.RemoveBlobRequest
-	48, // 48: pollen.control.v1.ControlService.SeedStatic:input_type -> pollen.control.v1.SeedStaticRequest
-	50, // 49: pollen.control.v1.ControlService.UnseedStatic:input_type -> pollen.control.v1.UnseedStaticRequest
-	52, // 50: pollen.control.v1.ControlService.ListStatic:input_type -> pollen.control.v1.ListStaticRequest
-	8,  // 51: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
-	11, // 52: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
-	14, // 53: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
-	38, // 54: pollen.control.v1.ControlService.GetMetrics:output_type -> pollen.control.v1.GetMetricsResponse
-	19, // 55: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
-	21, // 56: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
-	25, // 57: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
-	23, // 58: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
-	27, // 59: pollen.control.v1.ControlService.DisconnectService:output_type -> pollen.control.v1.DisconnectServiceResponse
-	29, // 60: pollen.control.v1.ControlService.DenyPeer:output_type -> pollen.control.v1.DenyPeerResponse
-	32, // 61: pollen.control.v1.ControlService.SeedWorkload:output_type -> pollen.control.v1.SeedWorkloadResponse
-	34, // 62: pollen.control.v1.ControlService.UnseedWorkload:output_type -> pollen.control.v1.UnseedWorkloadResponse
-	36, // 63: pollen.control.v1.ControlService.CallWorkload:output_type -> pollen.control.v1.CallWorkloadResponse
-	40, // 64: pollen.control.v1.ControlService.IssueCert:output_type -> pollen.control.v1.IssueCertResponse
-	42, // 65: pollen.control.v1.ControlService.FetchBlob:output_type -> pollen.control.v1.FetchBlobResponse
-	45, // 66: pollen.control.v1.ControlService.UploadBlob:output_type -> pollen.control.v1.UploadBlobResponse
-	47, // 67: pollen.control.v1.ControlService.RemoveBlob:output_type -> pollen.control.v1.RemoveBlobResponse
-	49, // 68: pollen.control.v1.ControlService.SeedStatic:output_type -> pollen.control.v1.SeedStaticResponse
-	51, // 69: pollen.control.v1.ControlService.UnseedStatic:output_type -> pollen.control.v1.UnseedStaticResponse
-	54, // 70: pollen.control.v1.ControlService.ListStatic:output_type -> pollen.control.v1.ListStaticResponse
-	51, // [51:71] is the sub-list for method output_type
-	31, // [31:51] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	61, // 25: pollen.control.v1.SeedWorkloadHeader.properties:type_name -> google.protobuf.Struct
+	3,  // 26: pollen.control.v1.GetMetricsResponse.health:type_name -> pollen.control.v1.HealthStatus
+	61, // 27: pollen.control.v1.IssueCertRequest.attributes:type_name -> google.protobuf.Struct
+	44, // 28: pollen.control.v1.UploadBlobRequest.header:type_name -> pollen.control.v1.UploadBlobHeader
+	61, // 29: pollen.control.v1.UploadBlobHeader.properties:type_name -> google.protobuf.Struct
+	61, // 30: pollen.control.v1.SeedStaticRequest.properties:type_name -> google.protobuf.Struct
+	4,  // 31: pollen.control.v1.StaticSummary.claimants:type_name -> pollen.control.v1.NodeRef
+	4,  // 32: pollen.control.v1.StaticSummary.publisher:type_name -> pollen.control.v1.NodeRef
+	53, // 33: pollen.control.v1.ListStaticResponse.sites:type_name -> pollen.control.v1.StaticSummary
+	61, // 34: pollen.control.v1.AuthzSubject.properties:type_name -> google.protobuf.Struct
+	61, // 35: pollen.control.v1.AuthzAction.properties:type_name -> google.protobuf.Struct
+	61, // 36: pollen.control.v1.AuthzResource.properties:type_name -> google.protobuf.Struct
+	55, // 37: pollen.control.v1.CheckPolicyRequest.subject:type_name -> pollen.control.v1.AuthzSubject
+	56, // 38: pollen.control.v1.CheckPolicyRequest.action:type_name -> pollen.control.v1.AuthzAction
+	57, // 39: pollen.control.v1.CheckPolicyRequest.resource:type_name -> pollen.control.v1.AuthzResource
+	61, // 40: pollen.control.v1.CheckPolicyRequest.context:type_name -> google.protobuf.Struct
+	7,  // 41: pollen.control.v1.ControlService.Shutdown:input_type -> pollen.control.v1.ShutdownRequest
+	9,  // 42: pollen.control.v1.ControlService.GetBootstrapInfo:input_type -> pollen.control.v1.GetBootstrapInfoRequest
+	12, // 43: pollen.control.v1.ControlService.GetStatus:input_type -> pollen.control.v1.GetStatusRequest
+	37, // 44: pollen.control.v1.ControlService.GetMetrics:input_type -> pollen.control.v1.GetMetricsRequest
+	18, // 45: pollen.control.v1.ControlService.RegisterService:input_type -> pollen.control.v1.RegisterServiceRequest
+	20, // 46: pollen.control.v1.ControlService.UnregisterService:input_type -> pollen.control.v1.UnregisterServiceRequest
+	24, // 47: pollen.control.v1.ControlService.ConnectService:input_type -> pollen.control.v1.ConnectServiceRequest
+	22, // 48: pollen.control.v1.ControlService.ConnectPeer:input_type -> pollen.control.v1.ConnectPeerRequest
+	26, // 49: pollen.control.v1.ControlService.DisconnectService:input_type -> pollen.control.v1.DisconnectServiceRequest
+	28, // 50: pollen.control.v1.ControlService.DenyPeer:input_type -> pollen.control.v1.DenyPeerRequest
+	30, // 51: pollen.control.v1.ControlService.SeedWorkload:input_type -> pollen.control.v1.SeedWorkloadRequest
+	33, // 52: pollen.control.v1.ControlService.UnseedWorkload:input_type -> pollen.control.v1.UnseedWorkloadRequest
+	35, // 53: pollen.control.v1.ControlService.CallWorkload:input_type -> pollen.control.v1.CallWorkloadRequest
+	39, // 54: pollen.control.v1.ControlService.IssueCert:input_type -> pollen.control.v1.IssueCertRequest
+	41, // 55: pollen.control.v1.ControlService.FetchBlob:input_type -> pollen.control.v1.FetchBlobRequest
+	43, // 56: pollen.control.v1.ControlService.UploadBlob:input_type -> pollen.control.v1.UploadBlobRequest
+	46, // 57: pollen.control.v1.ControlService.RemoveBlob:input_type -> pollen.control.v1.RemoveBlobRequest
+	48, // 58: pollen.control.v1.ControlService.SeedStatic:input_type -> pollen.control.v1.SeedStaticRequest
+	50, // 59: pollen.control.v1.ControlService.UnseedStatic:input_type -> pollen.control.v1.UnseedStaticRequest
+	52, // 60: pollen.control.v1.ControlService.ListStatic:input_type -> pollen.control.v1.ListStaticRequest
+	58, // 61: pollen.control.v1.ControlService.CheckPolicy:input_type -> pollen.control.v1.CheckPolicyRequest
+	8,  // 62: pollen.control.v1.ControlService.Shutdown:output_type -> pollen.control.v1.ShutdownResponse
+	11, // 63: pollen.control.v1.ControlService.GetBootstrapInfo:output_type -> pollen.control.v1.GetBootstrapInfoResponse
+	14, // 64: pollen.control.v1.ControlService.GetStatus:output_type -> pollen.control.v1.GetStatusResponse
+	38, // 65: pollen.control.v1.ControlService.GetMetrics:output_type -> pollen.control.v1.GetMetricsResponse
+	19, // 66: pollen.control.v1.ControlService.RegisterService:output_type -> pollen.control.v1.RegisterServiceResponse
+	21, // 67: pollen.control.v1.ControlService.UnregisterService:output_type -> pollen.control.v1.UnregisterServiceResponse
+	25, // 68: pollen.control.v1.ControlService.ConnectService:output_type -> pollen.control.v1.ConnectServiceResponse
+	23, // 69: pollen.control.v1.ControlService.ConnectPeer:output_type -> pollen.control.v1.ConnectPeerResponse
+	27, // 70: pollen.control.v1.ControlService.DisconnectService:output_type -> pollen.control.v1.DisconnectServiceResponse
+	29, // 71: pollen.control.v1.ControlService.DenyPeer:output_type -> pollen.control.v1.DenyPeerResponse
+	32, // 72: pollen.control.v1.ControlService.SeedWorkload:output_type -> pollen.control.v1.SeedWorkloadResponse
+	34, // 73: pollen.control.v1.ControlService.UnseedWorkload:output_type -> pollen.control.v1.UnseedWorkloadResponse
+	36, // 74: pollen.control.v1.ControlService.CallWorkload:output_type -> pollen.control.v1.CallWorkloadResponse
+	40, // 75: pollen.control.v1.ControlService.IssueCert:output_type -> pollen.control.v1.IssueCertResponse
+	42, // 76: pollen.control.v1.ControlService.FetchBlob:output_type -> pollen.control.v1.FetchBlobResponse
+	45, // 77: pollen.control.v1.ControlService.UploadBlob:output_type -> pollen.control.v1.UploadBlobResponse
+	47, // 78: pollen.control.v1.ControlService.RemoveBlob:output_type -> pollen.control.v1.RemoveBlobResponse
+	49, // 79: pollen.control.v1.ControlService.SeedStatic:output_type -> pollen.control.v1.SeedStaticResponse
+	51, // 80: pollen.control.v1.ControlService.UnseedStatic:output_type -> pollen.control.v1.UnseedStaticResponse
+	54, // 81: pollen.control.v1.ControlService.ListStatic:output_type -> pollen.control.v1.ListStaticResponse
+	59, // 82: pollen.control.v1.ControlService.CheckPolicy:output_type -> pollen.control.v1.CheckPolicyResponse
+	62, // [62:83] is the sub-list for method output_type
+	41, // [41:62] is the sub-list for method input_type
+	41, // [41:41] is the sub-list for extension type_name
+	41, // [41:41] is the sub-list for extension extendee
+	0,  // [0:41] is the sub-list for field type_name
 }
 
 func init() { file_pollen_control_v1_control_proto_init() }
@@ -3607,7 +3996,7 @@ func file_pollen_control_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_control_v1_control_proto_rawDesc), len(file_pollen_control_v1_control_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   51,
+			NumMessages:   56,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

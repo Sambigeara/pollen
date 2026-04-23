@@ -152,6 +152,7 @@ func main() {
 	rootCmd.AddCommand(newBlobCmds()...)
 	rootCmd.AddCommand(newStaticCmds()...)
 	rootCmd.AddCommand(newSetCmds()...)
+	rootCmd.AddCommand(newPolicyCmds()...)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

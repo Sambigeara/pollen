@@ -14,11 +14,13 @@ import (
 )
 
 const (
-	statusOK       byte = 0
-	statusNotFound byte = 1
+	statusOK           byte = 0
+	statusNotFound     byte = 1
+	statusUnauthorized byte = 2
 
 	hashDisplayLen = 16
 	sha256Len      = 32
+	sha256HexLen   = 64 // 2 * sha256Len
 )
 
 func (s *Service) Fetch(ctx context.Context, hash string, peers []types.PeerKey) error {
@@ -66,7 +68,11 @@ func (s *Service) fetchFrom(ctx context.Context, hash string, peer types.PeerKey
 	if _, err := io.ReadFull(stream, status[:]); err != nil {
 		return fmt.Errorf("read status: %w", err)
 	}
-	if status[0] != statusOK {
+	switch status[0] {
+	case statusOK:
+	case statusUnauthorized:
+		return fmt.Errorf("%w: peer %s", ErrUnauthorized, peer.Short())
+	default:
 		return fmt.Errorf("peer %s does not have blob", peer.Short())
 	}
 
@@ -80,16 +86,40 @@ func (s *Service) fetchFrom(ctx context.Context, hash string, peer types.PeerKey
 	return s.Announce(hash)
 }
 
-// Wire: 64-byte hex hash in; status byte then bytes out.
-func (s *Service) HandleStream(stream io.ReadWriteCloser, _ types.PeerKey) {
+// ReadHash reads the 64-byte hex hash header from a blob stream.
+// Supervisor's dispatch loop calls this before the authorisation gate
+// so the gate decision can reference the hash.
+func ReadHash(r io.Reader) (string, error) {
+	var hashBuf [sha256HexLen]byte
+	if _, err := io.ReadFull(r, hashBuf[:]); err != nil {
+		return "", err
+	}
+	return string(hashBuf[:]), nil
+}
+
+// WriteStatus writes a single status byte to a blob stream. Supervisor
+// uses this to surface an authorisation denial in the same wire shape
+// the serve path would use for not-found.
+func WriteStatus(w io.Writer, status byte) error {
+	_, err := w.Write([]byte{status})
+	return err
+}
+
+// Status byte values exposed so supervisor can write a denial or
+// not-found response without depending on the serve path.
+const (
+	StatusOK           = statusOK
+	StatusNotFound     = statusNotFound
+	StatusUnauthorized = statusUnauthorized
+)
+
+// Serve responds to an inbound blob fetch for the given hash. The hash
+// is already consumed from the stream by supervisor's dispatch loop;
+// Serve assumes the caller is authorised.
+func (s *Service) Serve(stream io.ReadWriteCloser, hash string) {
 	defer stream.Close()
 
-	var hashBuf [64]byte
-	if _, err := io.ReadFull(stream, hashBuf[:]); err != nil {
-		return
-	}
-
-	rc, err := s.store.Get(string(hashBuf[:]))
+	rc, err := s.store.Get(hash)
 	if err != nil {
 		stream.Write([]byte{statusNotFound}) //nolint:errcheck
 		return

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -57,7 +58,7 @@ type PlacementAPI interface {
 	RecordDial(callerHash, callerFunction, targetKey string)
 	RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration)
 
-	HandleWorkloadStream(stream io.ReadWriteCloser, peer types.PeerKey)
+	Serve(stream io.ReadWriteCloser, info wasm.CallerInfo, hash, function string)
 
 	Signal()
 }
@@ -94,6 +95,7 @@ type Service struct {
 	manager          *manager
 	reconciler       *reconciler
 	blobs            blobsAPI
+	authz            *evaluator.Router
 	log              *zap.SugaredLogger
 	cancel           context.CancelFunc
 	utilisation      *utilisationTracker
@@ -120,6 +122,13 @@ func WithResourceBudget(cpuPercent, memPercent uint32) Option {
 		s.cpuBudgetPercent = cpuPercent
 		s.memBudgetPercent = memPercent
 	}
+}
+
+// WithAuthzRouter wires the authz router used to gate self-placement
+// decisions (seed_placement). Nil skips the gate — operators without a
+// policy leave it unset.
+func WithAuthzRouter(r *evaluator.Router) Option {
+	return func(s *Service) { s.authz = r }
 }
 
 func New(self types.PeerKey, store WorkloadState, blobs blobsAPI, wasmRT WASMRuntime, opts ...Option) *Service {
@@ -150,6 +159,7 @@ func (s *Service) Start(ctx context.Context) error {
 		s.blobs,
 		s.utilisation,
 		s.gates,
+		s.authz,
 		s.log.Named("scheduler"),
 		&s.wg,
 	)
@@ -421,8 +431,11 @@ func (s *Service) PlacementInfo() map[string]PlacementInfo {
 	return s.reconciler.allPlacementInfo()
 }
 
-func (s *Service) HandleWorkloadStream(stream io.ReadWriteCloser, peer types.PeerKey) {
-	handleWorkloadStream(s.ctx, stream, peer, s.manager, s.utilisation, s.gates, workloadInvocationTimeout)
+// Serve handles an inbound workload call stream after supervisor has
+// read the header (caller info, seed hash, function name) and
+// authorised the call via the workload_call gate.
+func (s *Service) Serve(stream io.ReadWriteCloser, info wasm.CallerInfo, hash, function string) {
+	handleWorkloadStream(s.ctx, stream, info, hash, function, s.manager, s.utilisation, s.gates, workloadInvocationTimeout)
 }
 
 func (s *Service) Signal() {

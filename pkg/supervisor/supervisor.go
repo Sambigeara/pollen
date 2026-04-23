@@ -27,6 +27,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/blobs"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/control"
+	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
@@ -77,6 +78,7 @@ type Supervisor struct {
 	ready            chan struct{}
 	log              *zap.SugaredLogger
 	router           *atomicRouter
+	authz            *evaluator.Router
 	nonTargetStreak  map[types.PeerKey]int
 	vivaldiErr       *metrics.EWMA
 	nodeMetrics      *metrics.NodeMetrics
@@ -219,11 +221,23 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	nodeMetrics := metrics.NewNodeMetrics(mp.Meter())
 	shutdownCh := make(chan struct{}, 1)
 
+	authz := opts.AuthzRouter
+	if authz == nil {
+		// Allow-all by default so a Supervisor constructed without an
+		// external authz configuration is immediately usable. Operators
+		// who want policy enforcement pass opts.AuthzRouter.
+		authz, err = evaluator.NewRouter(evaluator.Config{})
+		if err != nil {
+			return nil, fmt.Errorf("build default authz router: %w", err)
+		}
+	}
+
 	n := &Supervisor{
 		log:              log,
 		store:            stateStore,
 		mesh:             m,
 		blobs:            blobsSvc,
+		authz:            authz,
 		creds:            creds,
 		signPriv:         privKey,
 		pollenDir:        pollenDir,
@@ -289,6 +303,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 			SessionCloser:    m,
 			RoutedSender:     m,
 			CapTransition:    capTrans,
+			AuthzRouter:      authz,
 			SmoothedErr:      vivaldiErr,
 			TracerProvider:   tp.Tracer(),
 			NATDetector:      n.natDetector,
@@ -354,9 +369,10 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		placement.WithMesh(placementOpener),
 		placement.WithLogger(log.Named("placement")),
 		placement.WithResourceBudget(opts.CPUBudgetPercent, opts.MemBudgetPercent),
+		placement.WithAuthzRouter(authz),
 	)
 
-	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", log.Named("static"))
+	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", authz, log.Named("static"))
 	n.static = staticSvc
 	n.staticSvc = staticSvc
 	n.staticAddr = opts.StaticAddr
@@ -366,6 +382,8 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		control.WithTransportInfo(n),
 		control.WithMetricsSource(n),
 		control.WithMeshConnector(n),
+		control.WithAuthzRouter(n.authz),
+		control.WithSigningKey(privKey),
 	}
 	if opts.ShutdownFunc != nil {
 		controlOpts = append(controlOpts, control.WithShutdown(opts.ShutdownFunc))
@@ -575,6 +593,144 @@ func (n *Supervisor) connectBootstrapPeers(ctx context.Context) {
 	}
 }
 
+// peerProps resolves a remote peer's delegation-cert attributes so
+// policy rules can match on "role=admin" style claims. Returns nil
+// when the cert is absent (peer not yet authenticated) or has no
+// attributes — nil is a clean input for evaluator.Subject.Properties.
+func (n *Supervisor) peerProps(pk types.PeerKey) map[string]any {
+	cert, ok := n.mesh.PeerDelegationCert(pk)
+	if !ok || cert == nil {
+		return nil
+	}
+	attrs := cert.GetClaims().GetCapabilities().GetAttributes()
+	if attrs == nil {
+		return nil
+	}
+	return attrs.AsMap()
+}
+
+// dispatchBlobFetch gates an incoming blob fetch stream at supervisor
+// level: read the hash header, consult the blob_fetch gate, then hand
+// the stream off to the blob service. Denied fetches get a single
+// status byte and close — no existence leak, since the gate fires
+// before any CAS lookup.
+func (n *Supervisor) dispatchBlobFetch(ctx context.Context, stream io.ReadWriteCloser, peerKey types.PeerKey) {
+	hash, err := blobs.ReadHash(stream)
+	if err != nil {
+		stream.Close() //nolint:errcheck
+		return
+	}
+	var resourceProps map[string]any
+	if view, ok := n.store.Snapshot().BlobSpecs[hash]; ok {
+		resourceProps = view.Spec.Claim.GetProperties()
+	}
+	req := evaluator.Request{
+		Subject:  evaluator.SubjectFromPeerKey(peerKey, n.peerProps),
+		Action:   evaluator.Action{Name: "fetch"},
+		Resource: evaluator.NewResource(evaluator.ResourceBlob, hash, resourceProps),
+	}
+	if err := n.authz.Allow(ctx, evaluator.GateBlobFetch, req); err != nil {
+		blobs.WriteStatus(stream, blobs.StatusUnauthorized) //nolint:errcheck
+		stream.Close()                                      //nolint:errcheck
+		return
+	}
+	n.blobs.Serve(stream, hash)
+}
+
+// dispatchServiceConnect gates an inbound tunnel stream at supervisor
+// level. The stream's 2-byte port header is consumed first; denied
+// connects close the stream without a distinguishing reply — the
+// client-side sees the same close as service-not-found, so existence
+// is not leaked. Resource.ID resolves to the service name (not the
+// port) so policy rules read as `resource.id: foo_service` rather than
+// `resource.id: "8096"`.
+func (n *Supervisor) dispatchServiceConnect(ctx context.Context, stream io.ReadWriteCloser, peerKey types.PeerKey) {
+	port, err := tunneling.ReadPort(stream)
+	if err != nil {
+		stream.Close() //nolint:errcheck
+		return
+	}
+	req := evaluator.Request{
+		Subject:  evaluator.SubjectFromPeerKey(peerKey, n.peerProps),
+		Action:   evaluator.Action{Name: "connect"},
+		Resource: evaluator.NewResource(evaluator.ResourceService, n.localServiceName(port), nil),
+	}
+	if err := n.authz.Allow(ctx, evaluator.GateServiceConnect, req); err != nil {
+		stream.Close() //nolint:errcheck
+		return
+	}
+	n.tunneling.Serve(stream, peerKey, port)
+}
+
+// localServiceName looks up the service the local node exposes on the
+// given port. Returns the port stringified when no match is found —
+// the gate still fires for unknown ports (a deny-by-default matcher
+// would reject them).
+func (n *Supervisor) localServiceName(port uint32) string {
+	snap := n.store.Snapshot()
+	if nv, ok := snap.Nodes[snap.LocalID]; ok {
+		for name, svc := range nv.Services {
+			if svc != nil && svc.Port == port {
+				return name
+			}
+		}
+	}
+	return fmt.Sprintf("%d", port)
+}
+
+// dispatchWorkloadCall gates an inbound workload invocation stream at
+// supervisor level. The header (caller info, seed hash, function) is
+// consumed first so the gate decision can reference the seed; the
+// input body is read afterwards by placement.Serve to keep a denied
+// caller from forcing the daemon to buffer its input payload.
+//
+// When the CallerInfo envelope carries OnBehalfOf, the Subject is
+// built as seed-typed — but only after verifying the seed exists in
+// cluster state (so properties come from a signed publisher claim,
+// not envelope data) and the transport-authenticated peer holds a
+// live WorkloadClaim for it. Failures surface as deny.
+func (n *Supervisor) dispatchWorkloadCall(ctx context.Context, stream io.ReadWriteCloser, peerKey types.PeerKey) {
+	info, hash, function, err := placement.ReadHeader(stream, peerKey)
+	if err != nil {
+		stream.Close() //nolint:errcheck
+		return
+	}
+	snap := n.store.Snapshot()
+	seedProps := func(seedHash string) (map[string]any, bool) {
+		sv, ok := snap.Specs[seedHash]
+		if !ok {
+			return nil, false
+		}
+		return sv.Spec.Claim.GetProperties(), true
+	}
+	seedOwnedBy := func(seedHash string, peer types.PeerKey) bool {
+		_, owns := snap.Claims[seedHash][peer]
+		return owns
+	}
+	subject, err := evaluator.SubjectFromCallerInfo(
+		evaluator.CallerInput{PeerKey: peerKey, OnBehalfOf: info.OnBehalfOf},
+		n.peerProps, seedProps, seedOwnedBy,
+	)
+	if err != nil {
+		stream.Close() //nolint:errcheck
+		return
+	}
+	var resourceProps map[string]any
+	if sv, ok := snap.Specs[hash]; ok {
+		resourceProps = sv.Spec.Claim.GetProperties()
+	}
+	req := evaluator.Request{
+		Subject:  subject,
+		Action:   evaluator.Action{Name: "call"},
+		Resource: evaluator.NewResource(evaluator.ResourceSeed, hash, resourceProps),
+	}
+	if err := n.authz.Allow(ctx, evaluator.GateWorkloadCall, req); err != nil {
+		stream.Close() //nolint:errcheck
+		return
+	}
+	n.placement.Serve(stream, info, hash, function)
+}
+
 func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 	for {
 		stream, stype, peerKey, err := n.mesh.AcceptStream(ctx)
@@ -585,13 +741,13 @@ func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 		case transport.StreamTypeDigest:
 			n.spawn(func() { n.membership.HandleDigestStream(ctx, stream, peerKey) })
 		case transport.StreamTypeTunnel:
-			n.spawn(func() { n.tunneling.HandleTunnelStream(stream, peerKey) })
+			n.spawn(func() { n.dispatchServiceConnect(ctx, stream, peerKey) })
 		case transport.StreamTypeBlob:
 			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
-			n.spawn(func() { n.blobs.HandleStream(s, peerKey) })
+			n.spawn(func() { n.dispatchBlobFetch(ctx, s, peerKey) })
 		case transport.StreamTypeWorkload:
 			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
-			n.spawn(func() { n.placement.HandleWorkloadStream(s, peerKey) })
+			n.spawn(func() { n.dispatchWorkloadCall(ctx, s, peerKey) })
 		default:
 			n.log.Warnw("unknown stream type", "type", uint8(stype))
 			stream.Close()
@@ -812,17 +968,25 @@ func (n *Supervisor) ControlMetrics() control.Metrics {
 func (n *Supervisor) RouteRequest(ctx context.Context, uri wasm.URI, input []byte) ([]byte, error) {
 	// Preserve existing caller identity for inter-workload call chains.
 	// Only stamp the local node's identity on the first hop.
-	if _, ok := wasm.CallerInfoFromContext(ctx); !ok {
+	info, ok := wasm.CallerInfoFromContext(ctx)
+	if !ok {
 		if cert := n.creds.Cert(); cert != nil {
-			info := wasm.CallerInfo{
+			info = wasm.CallerInfo{
 				PeerKey: types.PeerKeyFromBytes(cert.GetClaims().GetSubjectPub()),
 			}
 			if attrs := cert.GetClaims().GetCapabilities().GetAttributes(); attrs != nil {
 				info.Attributes = attrs.AsMap()
 			}
-			ctx = wasm.WithCallerInfo(ctx, info)
 		}
 	}
+	// When the request originates inside a running seed, stamp
+	// on_behalf_of with that seed's hash. The receiver verifies against
+	// cluster state (seed exists + host peer claims it) before trusting
+	// the attribution, so this field is a hint — not a capability.
+	if executing := wasm.ExecutingSeedFromContext(ctx); executing != "" {
+		info.OnBehalfOf = executing
+	}
+	ctx = wasm.WithCallerInfo(ctx, info)
 
 	switch uri.Scheme {
 	case wasm.SchemeSeed:

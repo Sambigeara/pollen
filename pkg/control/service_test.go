@@ -21,7 +21,9 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/blobs"
+	claimspkg "github.com/sambigeara/pollen/pkg/claims"
 	"github.com/sambigeara/pollen/pkg/control"
+	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/placement"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
@@ -288,6 +290,205 @@ func TestUploadBlobPutError(t *testing.T) {
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.Internal, st.Code())
+}
+
+// denyAllRouter builds an authz router whose every gate denies, so
+// tests can prove the spec_publish hook is load-bearing on each
+// admin-side publish RPC.
+func denyAllRouter(t *testing.T) *evaluator.Router {
+	t.Helper()
+	r, err := evaluator.NewRouter(
+		evaluator.Config{Default: "deny_all"},
+		evaluator.WithFactory("deny_all", func(string) (evaluator.Evaluator, error) {
+			return denyAllEval{}, nil
+		}),
+	)
+	require.NoError(t, err)
+	return r
+}
+
+type denyAllEval struct{}
+
+func (denyAllEval) Allow(context.Context, evaluator.Request) (evaluator.Decision, error) {
+	return evaluator.Decision{Decision: false, Context: map[string]any{"reason_user": "blocked by policy"}}, nil
+}
+
+func TestSeedWorkload_DeniedByGate(t *testing.T) {
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)), control.WithAuthzRouter(denyAllRouter(t)))
+	err := h.svc.SeedWorkload(newSeedStream([]byte("wasm")))
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
+	// The caller never got to contribute a WASM payload — placement
+	// must not have seen a seed at all.
+	require.Empty(t, h.placement.seededHash)
+}
+
+func TestUploadBlob_NamedDeniedByGate(t *testing.T) {
+	h := newHarness(t, control.WithAuthzRouter(denyAllRouter(t)))
+	err := h.svc.UploadBlob(newUploadStream("public-name", []byte("payload")))
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
+	require.Empty(t, h.blobs.store, "denied named upload must not be stored")
+}
+
+// Anonymous uploads (no name, no properties) bypass spec_publish —
+// content-addressed local CAS, nothing to match policy against.
+func TestUploadBlob_AnonymousBypassesGate(t *testing.T) {
+	h := newHarness(t, control.WithAuthzRouter(denyAllRouter(t)))
+	require.NoError(t, h.svc.UploadBlob(newUploadStream("", []byte("payload"))))
+	require.NotEmpty(t, h.blobs.store, "anonymous upload must reach the store despite deny-all gate")
+}
+
+func TestRegisterService_DeniedByGate(t *testing.T) {
+	h := newHarness(t, control.WithAuthzRouter(denyAllRouter(t)))
+	_, err := h.svc.RegisterService(context.Background(), &controlv1.RegisterServiceRequest{
+		Name: new("api"),
+		Port: 8080,
+	})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
+	require.Empty(t, h.tunneling.exposedName, "denied register must not reach tunneling")
+}
+
+// When a signing key is wired, publish RPCs attach a verifiable
+// PublisherClaim to the spec they hand off. With properties empty the
+// signature binds to (resource_type, resource_id, nil) — enough for
+// ingest verification to fire on the remote side. When --prop lands,
+// policy-visible properties flow into this same call.
+func TestSeedWorkload_AttachesSignedClaim(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)), control.WithSigningKey(priv))
+
+	wasmBytes := []byte("test-wasm")
+	expectedHash := hex.EncodeToString(func() []byte { h := sha256.Sum256(wasmBytes); return h[:] }())
+
+	require.NoError(t, h.svc.SeedWorkload(newSeedStream(wasmBytes)))
+	require.NotNil(t, h.placement.seededClaim, "signing key wired — claim must be attached")
+	require.NoError(t, claimspkg.Verify(pub, evaluator.ResourceSeed, expectedHash, nil, h.placement.seededClaim.Signature))
+}
+
+// Without a signing key the spec flows through unsigned — legacy
+// behaviour, verified to pass the gossip-ingest verify path as-is.
+func TestSeedWorkload_UnsignedWhenNoSigningKey(t *testing.T) {
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)))
+	require.NoError(t, h.svc.SeedWorkload(newSeedStream([]byte("wasm"))))
+	require.Nil(t, h.placement.seededClaim, "no signing key — spec carries no claim")
+}
+
+// Properties on the SeedWorkload header flow through to both the
+// spec_publish gate (visible on Resource.Properties) and the signed
+// PublisherClaim (covered by the signature). Proves the CLI --prop
+// payload reaches policy decisions without being dropped.
+func TestSeedWorkload_PropertiesFlowToGateAndClaim(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	var seen *evaluator.Request
+	router, err := evaluator.NewRouter(
+		evaluator.Config{Default: "capture"},
+		evaluator.WithFactory("capture", func(string) (evaluator.Evaluator, error) {
+			return captureEval{target: &seen}, nil
+		}),
+	)
+	require.NoError(t, err)
+
+	h := newHarness(t,
+		control.WithCredentials(dummyCreds(t)),
+		control.WithSigningKey(priv),
+		control.WithAuthzRouter(router),
+	)
+
+	wasmBytes := []byte("test-wasm")
+	expectedHash := hex.EncodeToString(func() []byte { h := sha256.Sum256(wasmBytes); return h[:] }())
+	props, err := structpb.NewStruct(map[string]any{"tier": "gold", "team": "platform"})
+	require.NoError(t, err)
+
+	stream := &fakeSeedStream{ctx: context.Background(), messages: []*controlv1.SeedWorkloadRequest{
+		{Payload: &controlv1.SeedWorkloadRequest_Header{Header: &controlv1.SeedWorkloadHeader{
+			Name:       "my-workload",
+			Properties: props,
+		}}},
+		{Payload: &controlv1.SeedWorkloadRequest_Chunk{Chunk: wasmBytes}},
+	}}
+	require.NoError(t, h.svc.SeedWorkload(stream))
+
+	require.NotNil(t, seen, "spec_publish gate must see the request")
+	require.Equal(t, "gold", seen.Resource.Properties["tier"])
+	require.Equal(t, "platform", seen.Resource.Properties["team"])
+
+	require.NotNil(t, h.placement.seededClaim)
+	require.NoError(t, claimspkg.Verify(pub, evaluator.ResourceSeed, expectedHash, props, h.placement.seededClaim.Signature),
+		"signature must cover the published properties")
+}
+
+type captureEval struct {
+	target **evaluator.Request
+}
+
+func (c captureEval) Allow(_ context.Context, req evaluator.Request) (evaluator.Decision, error) {
+	copied := req
+	*c.target = &copied
+	return evaluator.Decision{Decision: true}, nil
+}
+
+func TestSeedStatic_DeniedByGate(t *testing.T) {
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)), control.WithAuthzRouter(denyAllRouter(t)))
+	_, err := h.svc.SeedStatic(context.Background(), &controlv1.SeedStaticRequest{
+		Name:           "site",
+		ManifestDigest: []byte("abc123"),
+		MinReplicas:    1,
+	})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
+}
+
+// CheckPolicy lets operators dry-run a (subject, action, resource)
+// against the loaded router. These tests pin the three outcomes:
+// explicit allow from a rule, explicit deny from a rule, and the
+// allow-all fallback when no router is wired at all.
+func TestCheckPolicy_AllowedByMatcher(t *testing.T) {
+	h := newHarness(t, control.WithAuthzRouter(denyAllRouter(t)))
+	// denyAllRouter denies everything — but it's still the router, so
+	// the call must reach it and return a proper deny response (not
+	// the no-router-configured shortcut).
+	props, err := structpb.NewStruct(map[string]any{"tier": "gold"})
+	require.NoError(t, err)
+	resp, err := h.svc.CheckPolicy(context.Background(), &controlv1.CheckPolicyRequest{
+		Gate:     "blob_fetch",
+		Subject:  &controlv1.AuthzSubject{Type: "peer", Id: "abc"},
+		Action:   &controlv1.AuthzAction{Name: "fetch"},
+		Resource: &controlv1.AuthzResource{Type: "blob", Id: "def", Properties: props},
+	})
+	require.NoError(t, err)
+	require.False(t, resp.GetAllow())
+	require.Equal(t, "blocked by policy", resp.GetReason())
+}
+
+func TestCheckPolicy_UnknownGateRejected(t *testing.T) {
+	h := newHarness(t, control.WithAuthzRouter(denyAllRouter(t)))
+	_, err := h.svc.CheckPolicy(context.Background(), &controlv1.CheckPolicyRequest{
+		Gate:   "not_a_gate",
+		Action: &controlv1.AuthzAction{Name: "fetch"},
+	})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.InvalidArgument, st.Code())
+}
+
+func TestCheckPolicy_AllowAllWhenNoRouter(t *testing.T) {
+	h := newHarness(t) // no WithAuthzRouter
+	resp, err := h.svc.CheckPolicy(context.Background(), &controlv1.CheckPolicyRequest{
+		Gate:   "blob_fetch",
+		Action: &controlv1.AuthzAction{Name: "fetch"},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.GetAllow())
+	require.Contains(t, resp.GetReason(), "no router configured")
 }
 
 func TestUnseedWorkloadNoCreds(t *testing.T) {
@@ -884,6 +1085,7 @@ type fakePlacement struct {
 	seededName   string
 	seededHash   string
 	seededBinary []byte
+	seededClaim  *claimspkg.PublisherClaim
 	unseededHash string
 	calledHash   string
 	calledFn     string
@@ -894,6 +1096,7 @@ func (f *fakePlacement) Seed(binary []byte, spec state.WorkloadSpec) error {
 	f.seededName = spec.Name
 	f.seededHash = spec.Hash
 	f.seededBinary = binary
+	f.seededClaim = spec.Claim
 	return f.seedErr
 }
 
@@ -950,7 +1153,7 @@ func (f *fakeBlobs) Put(r io.Reader) (string, error) {
 	return hash, nil
 }
 
-func (f *fakeBlobs) SetName(hash, name string) error {
+func (f *fakeBlobs) SetName(hash, name string, _ *claimspkg.PublisherClaim) error {
 	if _, ok := f.store[hash]; !ok {
 		return blobs.ErrNotLocal
 	}
@@ -973,9 +1176,11 @@ type fakeStatic struct {
 	blobs     map[string]struct{}
 }
 
-func (f *fakeStatic) SeedStatic(string, []byte, uint32) error { return f.seedErr }
-func (f *fakeStatic) UnseedStatic(string) error               { return f.unseedErr }
-func (f *fakeStatic) StaticBlobs() map[string]struct{}        { return f.blobs }
+func (f *fakeStatic) SeedStatic(string, []byte, uint32, *claimspkg.PublisherClaim) error {
+	return f.seedErr
+}
+func (f *fakeStatic) UnseedStatic(string) error        { return f.unseedErr }
+func (f *fakeStatic) StaticBlobs() map[string]struct{} { return f.blobs }
 
 type fakeTunneling struct {
 	exposeErr     error

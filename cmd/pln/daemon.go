@@ -27,11 +27,103 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/evaluator"
+	"github.com/sambigeara/pollen/pkg/evaluator/builtin/matcher"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
 	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/supervisor"
 	"github.com/sambigeara/pollen/pkg/types"
 )
+
+// TODO(saml): add a `pln auth-config update` subcommand that
+// triggers this reload over the control socket, so operators don't
+// have to find the daemon pid and send SIGHUP by hand.
+//
+// watchSIGHUPReload spawns a goroutine that calls reload on every
+// SIGHUP. A failed reload logs the error and leaves the previous rules
+// in place — a broken YAML must never brick authz.
+func watchSIGHUPReload(ctx context.Context, reload func() error, log *zap.SugaredLogger) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGHUP)
+	go func() {
+		defer signal.Stop(ch)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ch:
+				if err := reload(); err != nil {
+					log.Warnw("authz rule reload failed; keeping previous rules", zap.Error(err))
+					continue
+				}
+				log.Infow("authz rules reloaded")
+			}
+		}
+	}()
+}
+
+// buildAuthzRouter assembles the authorisation router from config.
+// Returns nil router (and no error) when no evaluator section is
+// configured — supervisor then wires an allow-all default. The
+// reload closure is non-nil only when matcher rules are in use, so
+// the SIGHUP handler can re-read the file in place without restart.
+func buildAuthzRouter(cfg config.Evaluator) (*evaluator.Router, func() error, error) {
+	if cfg.Default == "" && len(cfg.Gates) == 0 && cfg.MatcherRules == "" {
+		return nil, nil, nil
+	}
+	var matcherEval evaluator.Evaluator
+	var reload func() error
+	if cfg.MatcherRules != "" {
+		m, err := matcher.NewFromFile(cfg.MatcherRules)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load matcher rules: %w", err)
+		}
+		matcherEval = m
+		reload = func() error { return m.Reload(cfg.MatcherRules) }
+	}
+	gates := make(map[evaluator.GateName]string, len(cfg.Gates))
+	for k, v := range cfg.Gates {
+		gates[evaluator.GateName(k)] = v
+	}
+	router, err := evaluator.NewRouterFromConfig(evaluator.ConfigSpec{
+		Default:          cfg.Default,
+		Gates:            gates,
+		AttributeMatcher: matcherEval,
+		OnDeny:           logDeny(zap.S().Named("authz")),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return router, reload, nil
+}
+
+// logDeny builds the router's DenyObserver sink that structured-logs
+// every gate denial. Info level: denies are normal policy operation,
+// not errors. Stream-based gates (service_connect, workload_call,
+// blob_fetch) have no other operator-visible signal, so this log is
+// their only feedback surface short of the status API. Fallback
+// denials (evaluator errored, gate applied its configured fallback)
+// are logged at warn so a broken PDP surfaces distinctly from a
+// legitimate deny.
+func logDeny(log *zap.SugaredLogger) evaluator.DenyObserver {
+	return func(e evaluator.DenyEvent) {
+		fields := []any{
+			"gate", string(e.Gate),
+			"subject_type", e.Request.Subject.Type,
+			"subject_id", e.Request.Subject.ID,
+			"action", e.Request.Action.Name,
+			"resource_type", string(e.Request.Resource.Type),
+			"resource_id", e.Request.Resource.ID,
+			"reason", e.Reason,
+			"cached", e.Cached,
+		}
+		if e.Fallback {
+			log.Warnw("authz fallback deny (evaluator unreachable)", fields...)
+			return
+		}
+		log.Infow("authz deny", fields...)
+	}
+}
 
 func newDaemonCmds() []*cobra.Command {
 	upCmd := &cobra.Command{
@@ -208,6 +300,14 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		initialServices = append(initialServices, supervisor.ServiceEntry{Name: svc.Name, Port: svc.Port, Protocol: configProtocolToProto(svc.Protocol)})
 	}
 
+	authzRouter, reloadMatcher, err := buildAuthzRouter(env.cfg.Evaluator)
+	if err != nil {
+		return err
+	}
+	if reloadMatcher != nil {
+		watchSIGHUPReload(ctx, reloadMatcher, zap.S().Named("authz"))
+	}
+
 	n, err := supervisor.New(supervisor.Options{
 		SigningKey:         privKey,
 		PollenDir:          env.dir,
@@ -232,6 +332,7 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		CPUBudgetPercent:   env.cfg.Resources.CPUPercent,
 		MemBudgetPercent:   env.cfg.Resources.MemPercent,
 		IdleInstanceTTL:    env.cfg.Placement.IdleInstanceTTL,
+		AuthzRouter:        authzRouter,
 	}, creds, inviteConsumer)
 	if err != nil {
 		return err

@@ -67,7 +67,19 @@ type Placement struct {
 	IdleInstanceTTL time.Duration `yaml:"idleInstanceTTL,omitempty"`
 }
 
+// Evaluator configures the authorisation layer. Each gate name binds
+// to an evaluator spec: "allow_all", "attribute_matcher", or
+// "seed/<seed-name>". Unbound gates fall back to Default (empty =
+// "allow_all"). MatcherRules is required when any gate resolves to
+// "attribute_matcher".
+type Evaluator struct {
+	Default      string            `yaml:"default,omitempty"`
+	Gates        map[string]string `yaml:"gates,omitempty"`
+	MatcherRules string            `yaml:"matcherRules,omitempty"`
+}
+
 type Config struct {
+	Evaluator   Evaluator    `yaml:"evaluator,omitempty"`
 	Name        string       `yaml:"name,omitempty"`
 	HTTP        string       `yaml:"http,omitempty"`
 	StaticHTTP  string       `yaml:"staticHTTP,omitempty"`
@@ -75,8 +87,8 @@ type Config struct {
 	LogLevel    string       `yaml:"logLevel,omitempty"`
 	Connections []Connection `yaml:"connections,omitempty"`
 	Services    []Service    `yaml:"services,omitempty"`
-	Resources   Resources    `yaml:"resources,omitempty"`
 	Placement   Placement    `yaml:"placement,omitempty"`
+	Resources   Resources    `yaml:"resources,omitempty"`
 	Public      bool         `yaml:"public,omitempty"`
 }
 

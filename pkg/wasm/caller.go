@@ -52,10 +52,18 @@ func ExecutingFunctionFromContext(ctx context.Context) string {
 // initiated a workload invocation, plus wire-propagated metadata such as
 // the caller's deadline. DeadlineUnixMs is zero when no deadline has been
 // set.
+//
+// OnBehalfOf carries the hex hash of the seed the caller is acting for
+// on this hop — set when a running seed makes an outbound request so
+// the receiver can gate on the seed's identity rather than the host
+// peer's. Empty on the first hop (CLI / external caller). The receiver
+// validates it against cluster state before trusting the seed-typed
+// attribution (see evaluator.SubjectFromCallerInfo).
 type CallerInfo struct {
 	Attributes     map[string]any
-	PeerKey        types.PeerKey
+	OnBehalfOf     string
 	DeadlineUnixMs int64
+	PeerKey        types.PeerKey
 }
 
 // WithCallerInfo returns a context carrying the given caller metadata.
@@ -72,17 +80,19 @@ func CallerInfoFromContext(ctx context.Context) (CallerInfo, bool) {
 type callerInfoJSON struct {
 	Attributes     map[string]any `json:"attributes,omitempty"`
 	PeerKey        string         `json:"peerKey,omitempty"`
+	OnBehalfOf     string         `json:"onBehalfOf,omitempty"`
 	DeadlineUnixMs int64          `json:"deadlineUnixMs,omitempty"`
 }
 
 // MarshalCallerInfo serialises CallerInfo to JSON. Returns nil if every
 // field is zero — callers with nothing to say send no caller block.
 func MarshalCallerInfo(info CallerInfo) []byte {
-	if info.PeerKey == (types.PeerKey{}) && info.Attributes == nil && info.DeadlineUnixMs == 0 {
+	if info.PeerKey == (types.PeerKey{}) && info.Attributes == nil && info.DeadlineUnixMs == 0 && info.OnBehalfOf == "" {
 		return nil
 	}
 	j := callerInfoJSON{
 		Attributes:     info.Attributes,
+		OnBehalfOf:     info.OnBehalfOf,
 		DeadlineUnixMs: info.DeadlineUnixMs,
 	}
 	if info.PeerKey != (types.PeerKey{}) {
@@ -106,6 +116,7 @@ func CallerInfoFromJSON(data []byte) (CallerInfo, bool) {
 	}
 	info := CallerInfo{
 		Attributes:     j.Attributes,
+		OnBehalfOf:     j.OnBehalfOf,
 		DeadlineUnixMs: j.DeadlineUnixMs,
 	}
 	if j.PeerKey != "" {

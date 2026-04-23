@@ -94,6 +94,9 @@ const (
 	// ControlServiceListStaticProcedure is the fully-qualified name of the ControlService's ListStatic
 	// RPC.
 	ControlServiceListStaticProcedure = "/pollen.control.v1.ControlService/ListStatic"
+	// ControlServiceCheckPolicyProcedure is the fully-qualified name of the ControlService's
+	// CheckPolicy RPC.
+	ControlServiceCheckPolicyProcedure = "/pollen.control.v1.ControlService/CheckPolicy"
 )
 
 // ControlServiceClient is a client for the pollen.control.v1.ControlService service.
@@ -118,6 +121,7 @@ type ControlServiceClient interface {
 	SeedStatic(context.Context, *connect.Request[v1.SeedStaticRequest]) (*connect.Response[v1.SeedStaticResponse], error)
 	UnseedStatic(context.Context, *connect.Request[v1.UnseedStaticRequest]) (*connect.Response[v1.UnseedStaticResponse], error)
 	ListStatic(context.Context, *connect.Request[v1.ListStaticRequest]) (*connect.Response[v1.ListStaticResponse], error)
+	CheckPolicy(context.Context, *connect.Request[v1.CheckPolicyRequest]) (*connect.Response[v1.CheckPolicyResponse], error)
 }
 
 // NewControlServiceClient constructs a client for the pollen.control.v1.ControlService service. By
@@ -251,6 +255,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("ListStatic")),
 			connect.WithClientOptions(opts...),
 		),
+		checkPolicy: connect.NewClient[v1.CheckPolicyRequest, v1.CheckPolicyResponse](
+			httpClient,
+			baseURL+ControlServiceCheckPolicyProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("CheckPolicy")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -276,6 +286,7 @@ type controlServiceClient struct {
 	seedStatic        *connect.Client[v1.SeedStaticRequest, v1.SeedStaticResponse]
 	unseedStatic      *connect.Client[v1.UnseedStaticRequest, v1.UnseedStaticResponse]
 	listStatic        *connect.Client[v1.ListStaticRequest, v1.ListStaticResponse]
+	checkPolicy       *connect.Client[v1.CheckPolicyRequest, v1.CheckPolicyResponse]
 }
 
 // Shutdown calls pollen.control.v1.ControlService.Shutdown.
@@ -378,6 +389,11 @@ func (c *controlServiceClient) ListStatic(ctx context.Context, req *connect.Requ
 	return c.listStatic.CallUnary(ctx, req)
 }
 
+// CheckPolicy calls pollen.control.v1.ControlService.CheckPolicy.
+func (c *controlServiceClient) CheckPolicy(ctx context.Context, req *connect.Request[v1.CheckPolicyRequest]) (*connect.Response[v1.CheckPolicyResponse], error) {
+	return c.checkPolicy.CallUnary(ctx, req)
+}
+
 // ControlServiceHandler is an implementation of the pollen.control.v1.ControlService service.
 type ControlServiceHandler interface {
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
@@ -400,6 +416,7 @@ type ControlServiceHandler interface {
 	SeedStatic(context.Context, *connect.Request[v1.SeedStaticRequest]) (*connect.Response[v1.SeedStaticResponse], error)
 	UnseedStatic(context.Context, *connect.Request[v1.UnseedStaticRequest]) (*connect.Response[v1.UnseedStaticResponse], error)
 	ListStatic(context.Context, *connect.Request[v1.ListStaticRequest]) (*connect.Response[v1.ListStaticResponse], error)
+	CheckPolicy(context.Context, *connect.Request[v1.CheckPolicyRequest]) (*connect.Response[v1.CheckPolicyResponse], error)
 }
 
 // NewControlServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -529,6 +546,12 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("ListStatic")),
 		connect.WithHandlerOptions(opts...),
 	)
+	controlServiceCheckPolicyHandler := connect.NewUnaryHandler(
+		ControlServiceCheckPolicyProcedure,
+		svc.CheckPolicy,
+		connect.WithSchema(controlServiceMethods.ByName("CheckPolicy")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/pollen.control.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case ControlServiceShutdownProcedure:
@@ -571,6 +594,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceUnseedStaticHandler.ServeHTTP(w, r)
 		case ControlServiceListStaticProcedure:
 			controlServiceListStaticHandler.ServeHTTP(w, r)
+		case ControlServiceCheckPolicyProcedure:
+			controlServiceCheckPolicyHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -658,4 +683,8 @@ func (UnimplementedControlServiceHandler) UnseedStatic(context.Context, *connect
 
 func (UnimplementedControlServiceHandler) ListStatic(context.Context, *connect.Request[v1.ListStaticRequest]) (*connect.Response[v1.ListStaticResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.ListStatic is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) CheckPolicy(context.Context, *connect.Request[v1.CheckPolicyRequest]) (*connect.Response[v1.CheckPolicyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.CheckPolicy is not implemented"))
 }

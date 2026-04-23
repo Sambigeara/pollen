@@ -20,6 +20,19 @@ func testGates() *gateRegistry {
 	return newGateRegistry(16)
 }
 
+// serveWithHeaderRead is the production dispatch pair collapsed for
+// tests: read the workload stream header via ReadHeader (what
+// supervisor would do), then invoke handleWorkloadStream (what
+// placement.Serve would call). Returns only when the stream closes.
+func serveWithHeaderRead(ctx context.Context, stream io.ReadWriteCloser, peer types.PeerKey, invoker workloadInvoker, gates *gateRegistry) {
+	info, hash, function, err := ReadHeader(stream, peer)
+	if err != nil {
+		stream.Close()
+		return
+	}
+	handleWorkloadStream(ctx, stream, info, hash, function, invoker, newUtilisationTracker(), gates, 10*time.Second)
+}
+
 type mockInvoker struct {
 	callFn func(ctx context.Context, hash, function string, input []byte) ([]byte, error)
 }
@@ -52,7 +65,7 @@ func TestHandleAndInvokeRoundTrip(t *testing.T) {
 	server, client := pipePair(t)
 
 	// Test goroutine does not matter, but production needs tracking.
-	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, newUtilisationTracker(), testGates(), 10*time.Second)
+	go serveWithHeaderRead(ctx, server, types.PeerKey{}, invoker, testGates())
 
 	output, err := invokeOverStream(ctx, client, hash, "handle", []byte("hello"))
 	require.NoError(t, err)
@@ -69,7 +82,7 @@ func TestHandleWorkloadStream_Error(t *testing.T) {
 
 	ctx := context.Background()
 	server, client := pipePair(t)
-	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, newUtilisationTracker(), testGates(), 10*time.Second)
+	go serveWithHeaderRead(ctx, server, types.PeerKey{}, invoker, testGates())
 
 	_, err := invokeOverStream(ctx, client, hash, "run", nil)
 	require.Error(t, err)
@@ -94,7 +107,7 @@ func TestHandleAndInvokeRoundTrip_CallerInfo(t *testing.T) {
 
 	server, client := pipePair(t)
 	// Server uses authPK as the transport-authenticated peer.
-	go handleWorkloadStream(context.Background(), server, authPK, invoker, newUtilisationTracker(), testGates(), 10*time.Second)
+	go serveWithHeaderRead(context.Background(), server, authPK, invoker, testGates())
 
 	output, err := invokeOverStream(ctx, client, hash, "handle", []byte("x"))
 	require.NoError(t, err)
@@ -105,6 +118,35 @@ func TestHandleAndInvokeRoundTrip_CallerInfo(t *testing.T) {
 	// PeerKey must be the transport-authenticated peer, not the wire value.
 	require.Equal(t, authPK, got.PeerKey)
 	require.Equal(t, "relay", got.Attributes["role"])
+}
+
+// OnBehalfOf propagates from the sender's ctx through the wire into
+// the receiver's CallerInfo. The receiver's dispatch gate uses this
+// to build a seed-typed Subject rather than a peer-typed one.
+func TestHandleAndInvokeRoundTrip_OnBehalfOf(t *testing.T) {
+	hash := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	callerSeed := "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef"
+	authPK := types.PeerKeyFromBytes([]byte("0123456789ABCDEF0123456789ABCDEF"))
+
+	var gotCtx context.Context
+	invoker := &mockInvoker{
+		callFn: func(ctx context.Context, _, _ string, input []byte) ([]byte, error) {
+			gotCtx = ctx
+			return input, nil
+		},
+	}
+
+	ctx := wasm.WithCallerInfo(context.Background(), wasm.CallerInfo{OnBehalfOf: callerSeed})
+
+	server, client := pipePair(t)
+	go serveWithHeaderRead(context.Background(), server, authPK, invoker, testGates())
+
+	_, err := invokeOverStream(ctx, client, hash, "handle", []byte("x"))
+	require.NoError(t, err)
+
+	got, ok := wasm.CallerInfoFromContext(gotCtx)
+	require.True(t, ok)
+	require.Equal(t, callerSeed, got.OnBehalfOf, "OBO must survive the wire round-trip")
 }
 
 func TestHandleWorkloadStream_StampsCallChainForRecursionGuard(t *testing.T) {
@@ -124,7 +166,7 @@ func TestHandleWorkloadStream_StampsCallChainForRecursionGuard(t *testing.T) {
 
 	ctx := context.Background()
 	server, client := pipePair(t)
-	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, newUtilisationTracker(), testGates(), 10*time.Second)
+	go serveWithHeaderRead(ctx, server, types.PeerKey{}, invoker, testGates())
 
 	_, err := invokeOverStream(ctx, client, hash, "handle", nil)
 	require.ErrorIs(t, err, ErrCycle)
@@ -140,7 +182,7 @@ func TestHandleWorkloadStream_EmptyInput(t *testing.T) {
 
 	ctx := context.Background()
 	server, client := pipePair(t)
-	go handleWorkloadStream(ctx, server, types.PeerKey{}, invoker, newUtilisationTracker(), testGates(), 10*time.Second)
+	go serveWithHeaderRead(ctx, server, types.PeerKey{}, invoker, testGates())
 
 	output, err := invokeOverStream(ctx, client, hash, "ping", nil)
 	require.NoError(t, err)

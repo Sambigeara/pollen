@@ -419,6 +419,7 @@ func staticSpecFromProto(p *statev1.StaticSpecChange) StaticSpec {
 		Name:           p.GetName(),
 		ManifestDigest: hex.EncodeToString(p.GetManifestDigest()),
 		MinReplicas:    p.GetMinReplicas(),
+		Claim:          claimFromProto(p.GetPublisherClaim()),
 	}
 }
 
@@ -426,6 +427,7 @@ func blobSpecFromProto(p *statev1.BlobSpecChange) BlobSpec {
 	return BlobSpec{
 		Name:   p.GetName(),
 		Digest: hex.EncodeToString(p.GetDigest()),
+		Claim:  claimFromProto(p.GetPublisherClaim()),
 	}
 }
 

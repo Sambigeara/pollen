@@ -37,6 +37,7 @@ func newWorkloadCmds() []*cobra.Command {
 	seedCmd.Flags().String("memory", "", "memory limit, e.g. 64MiB, 128M, 1GiB (default 64MiB, alias --mem)")
 	seedCmd.Flags().Uint32("timeout-ms", 0, "per-invocation timeout in ms")
 	seedCmd.Flags().Uint32("latency-slo-ms", 0, "caller-perspective latency SLO in ms; drives autoscale via burn rate")
+	seedCmd.Flags().StringArray("prop", nil, "Publisher properties: key=value, JSON, or - for stdin")
 
 	unseedCmd := &cobra.Command{Use: "unseed <name-or-hash>", Short: "Stop a workload", Args: cobra.ExactArgs(1), RunE: withEnv(runUnseed)}
 
@@ -70,6 +71,10 @@ func runSeed(cmd *cobra.Command, args []string, env *cliEnv) error {
 	}
 	timeoutMs, _ := cmd.Flags().GetUint32("timeout-ms")
 	latencySloMs, _ := cmd.Flags().GetUint32("latency-slo-ms")
+	props, err := parseProperties(cmd)
+	if err != nil {
+		return err
+	}
 
 	var spread float32
 	if all {
@@ -86,6 +91,7 @@ func runSeed(cmd *cobra.Command, args []string, env *cliEnv) error {
 				MemoryBytes:  memoryBytes,
 				TimeoutMs:    timeoutMs,
 				LatencySloMs: latencySloMs,
+				Properties:   props,
 			},
 		},
 	}); err != nil {

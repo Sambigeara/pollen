@@ -28,6 +28,7 @@ func newStaticCmds() []*cobra.Command {
 		RunE:  withEnv(runStaticSeed),
 	}
 	seed.Flags().Uint32("min-replicas", 1, "minimum number of claiming replicas")
+	seed.Flags().StringArray("prop", nil, "Publisher properties: key=value, JSON, or - for stdin")
 
 	unseed := &cobra.Command{
 		Use:   "unseed <name>",
@@ -94,10 +95,15 @@ func runStaticSeed(cmd *cobra.Command, args []string, env *cliEnv) error {
 	manifestDigest, _ := hex.DecodeString(manifestHash)
 
 	minReplicas, _ := cmd.Flags().GetUint32("min-replicas")
+	props, err := parseProperties(cmd)
+	if err != nil {
+		return err
+	}
 	if _, err := env.client.SeedStatic(cmd.Context(), connect.NewRequest(&controlv1.SeedStaticRequest{
 		Name:           name,
 		ManifestDigest: manifestDigest,
 		MinReplicas:    minReplicas,
+		Properties:     props,
 	})); err != nil {
 		return err
 	}

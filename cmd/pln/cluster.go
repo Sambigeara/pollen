@@ -95,7 +95,7 @@ func newClusterCmds() []*cobra.Command {
 	inviteCmd.Flags().String("subject", "", "Optional hex node public key to bind invite")
 	inviteCmd.Flags().Duration("ttl", defaultInviteTTL, "Invite token validity duration")
 	inviteCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the invited peer")
-	inviteCmd.Flags().StringArray("attr", nil, "Cert attributes: key=value, JSON, or - for stdin")
+	inviteCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin")
 
 	adminCmd := &cobra.Command{Use: "admin", Short: "Manage admin keys"}
 	adminCmd.AddCommand(&cobra.Command{Use: "keygen", Short: "Generate the local admin key", RunE: withEnv(runAdminKeygen, wantsRoot(), localOnly()), Hidden: true})
@@ -108,7 +108,7 @@ func newClusterCmds() []*cobra.Command {
 		RunE:  withEnv(runGrant),
 	}
 	grantCmd.Flags().Bool("admin", false, "Issue with full admin capabilities")
-	grantCmd.Flags().StringArray("attr", nil, "Cert attributes: key=value, JSON, or - for stdin")
+	grantCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin")
 
 	return []*cobra.Command{
 		{Use: "init", Short: "Initialize local root cluster state", RunE: withEnv(runInit, wantsRoot(), localOnly())},
@@ -284,7 +284,7 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return err
 	}
 
-	attrs, err := parseAttributes(cmd)
+	attrs, err := parseProperties(cmd)
 	if err != nil {
 		return err
 	}
@@ -650,7 +650,7 @@ func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 	prefix := strings.ToLower(args[0])
 	admin, _ := cmd.Flags().GetBool("admin")
 
-	attrs, err := parseAttributes(cmd)
+	attrs, err := parseProperties(cmd)
 	if err != nil {
 		return err
 	}
@@ -690,8 +690,8 @@ func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 	return nil
 }
 
-func parseAttributes(cmd *cobra.Command) (*structpb.Struct, error) {
-	vals, _ := cmd.Flags().GetStringArray("attr")
+func parseProperties(cmd *cobra.Command) (*structpb.Struct, error) {
+	vals, _ := cmd.Flags().GetStringArray("prop")
 	if len(vals) == 0 {
 		return nil, nil
 	}
@@ -706,7 +706,7 @@ func parseAttributes(cmd *cobra.Command) (*structpb.Struct, error) {
 			}
 			data, err := io.ReadAll(cmd.InOrStdin())
 			if err != nil {
-				return nil, fmt.Errorf("reading attributes from stdin: %w", err)
+				return nil, fmt.Errorf("reading properties from stdin: %w", err)
 			}
 			var obj map[string]any
 			if err := json.Unmarshal(data, &obj); err != nil {
@@ -716,20 +716,20 @@ func parseAttributes(cmd *cobra.Command) (*structpb.Struct, error) {
 		case strings.HasPrefix(v, "{"):
 			var obj map[string]any
 			if err := json.Unmarshal([]byte(v), &obj); err != nil {
-				return nil, fmt.Errorf("invalid JSON in --attr: %w", err)
+				return nil, fmt.Errorf("invalid JSON in --prop: %w", err)
 			}
 			maps.Copy(merged, obj)
 		default:
 			k, val, ok := strings.Cut(v, "=")
 			if !ok || k == "" {
-				return nil, fmt.Errorf("invalid attribute: missing '=' in %q", v)
+				return nil, fmt.Errorf("invalid property: missing '=' in %q", v)
 			}
 			merged[k] = val
 		}
 	}
 	s, err := structpb.NewStruct(merged)
 	if err != nil {
-		return nil, fmt.Errorf("building attributes: %w", err)
+		return nil, fmt.Errorf("building properties: %w", err)
 	}
 	if err := auth.ValidateAttributes(s); err != nil {
 		return nil, err

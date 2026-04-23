@@ -473,6 +473,7 @@ func (s *store) SetStaticSpec(spec StaticSpec) ([]Event, error) {
 			Name:           name,
 			ManifestDigest: digest,
 			MinReplicas:    spec.MinReplicas,
+			PublisherClaim: claimToProto(spec.Claim),
 		}}}
 		return []*statev1.GossipEvent{change}, []Event{StaticChanged{Name: name}}
 	})
@@ -523,8 +524,9 @@ func (s *store) SetBlobSpec(spec BlobSpec) ([]Event, error) {
 			}
 		}
 		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_BlobSpec{BlobSpec: &statev1.BlobSpecChange{
-			Name:   spec.Name,
-			Digest: digest,
+			Name:           spec.Name,
+			Digest:         digest,
+			PublisherClaim: claimToProto(spec.Claim),
 		}}}
 		return []*statev1.GossipEvent{change}, nil
 	})

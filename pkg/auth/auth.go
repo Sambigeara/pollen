@@ -44,9 +44,10 @@ const (
 	pemTypeAdminPriv = "POLLEN ADMIN ED25519 PRIVATE KEY"
 	pemTypeAdminPub  = "POLLEN ADMIN ED25519 PUBLIC KEY"
 
-	sigContextDelegation = "pollen.delegation.v1"
-	sigContextJoinClaims = "pollen.join.v1"
-	sigContextInvite     = "pollen.invite.v1"
+	sigContextDelegation     = "pollen.delegation.v1"
+	sigContextJoinClaims     = "pollen.join.v1"
+	sigContextInvite         = "pollen.invite.v1"
+	sigContextPublisherClaim = "pollen.publisher-claim.v1"
 
 	timeSkewAllowance = time.Minute
 )
@@ -636,4 +637,17 @@ func signPayload(privateKey ed25519.PrivateKey, payload []byte, context string) 
 
 func verifyPayload(publicKey ed25519.PublicKey, payload, signature []byte, context string) error {
 	return ed25519.VerifyWithOptions(publicKey, payload, signature, &ed25519.Options{Context: context})
+}
+
+// SignPublisherClaim signs a canonicalised publisher-claim payload in
+// the publisher-claim Ed25519ctx domain. The caller builds the payload;
+// this package owns the domain separation so callers never name the
+// signature context directly.
+func SignPublisherClaim(priv ed25519.PrivateKey, payload []byte) ([]byte, error) {
+	return signPayload(priv, payload, sigContextPublisherClaim)
+}
+
+// VerifyPublisherClaim is the inverse of SignPublisherClaim.
+func VerifyPublisherClaim(pub ed25519.PublicKey, payload, signature []byte) error {
+	return verifyPayload(pub, payload, signature, sigContextPublisherClaim)
 }

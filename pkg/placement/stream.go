@@ -45,29 +45,55 @@ func watchStream(ctx context.Context, stream io.Closer) func() {
 	return func() { close(done) }
 }
 
-func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, peer types.PeerKey, invoker workloadInvoker, utilisation *utilisationTracker, gates *gateRegistry, timeout time.Duration) {
+// ReadHeader reads the caller-info envelope, seed hash, and function
+// name from an inbound workload stream. Supervisor's dispatch loop
+// calls this before the workload_call gate so the decision can
+// reference the seed identity and, when the envelope carries
+// OnBehalfOf, the calling seed. The returned CallerInfo.PeerKey is
+// always the transport-authenticated identity — wire-reported peer
+// keys are ignored so a malicious peer can't spoof attribution.
+func ReadHeader(r io.Reader, peer types.PeerKey) (wasm.CallerInfo, string, string, error) {
+	info := wasm.CallerInfo{PeerKey: peer}
+
+	var callerLenBuf [callerInfoLenSize]byte
+	if _, err := io.ReadFull(r, callerLenBuf[:]); err != nil {
+		return info, "", "", err
+	}
+	if callerLen := binary.BigEndian.Uint16(callerLenBuf[:]); callerLen > 0 {
+		callerBuf := make([]byte, callerLen)
+		if _, err := io.ReadFull(r, callerBuf); err != nil {
+			return info, "", "", err
+		}
+		if wireInfo, ok := wasm.CallerInfoFromJSON(callerBuf); ok {
+			info.Attributes = wireInfo.Attributes
+			info.OnBehalfOf = wireInfo.OnBehalfOf
+			info.DeadlineUnixMs = wireInfo.DeadlineUnixMs
+		}
+	}
+
+	var hashBuf [hashLen]byte
+	if _, err := io.ReadFull(r, hashBuf[:]); err != nil {
+		return info, "", "", err
+	}
+
+	var funcLenBuf [1]byte
+	if _, err := io.ReadFull(r, funcLenBuf[:]); err != nil {
+		return info, "", "", err
+	}
+
+	funcName := make([]byte, funcLenBuf[0])
+	if _, err := io.ReadFull(r, funcName); err != nil && len(funcName) > 0 {
+		return info, "", "", err
+	}
+
+	return info, string(hashBuf[:]), string(funcName), nil
+}
+
+func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, info wasm.CallerInfo, hash, function string, invoker workloadInvoker, utilisation *utilisationTracker, gates *gateRegistry, timeout time.Duration) {
 	defer stream.Close()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Read caller info prefix: [2-byte BE length][JSON].
-	// Attributes are taken from the wire but the peer key is always
-	// overwritten with the transport-authenticated identity.
-	var callerLenBuf [2]byte
-	if _, err := io.ReadFull(stream, callerLenBuf[:]); err != nil {
-		return
-	}
-	info := wasm.CallerInfo{PeerKey: peer}
-	if callerLen := binary.BigEndian.Uint16(callerLenBuf[:]); callerLen > 0 {
-		callerBuf := make([]byte, callerLen)
-		if _, err := io.ReadFull(stream, callerBuf); err != nil {
-			return
-		}
-		if wireInfo, ok := wasm.CallerInfoFromJSON(callerBuf); ok {
-			info.Attributes = wireInfo.Attributes
-			info.DeadlineUnixMs = wireInfo.DeadlineUnixMs
-		}
-	}
 	ctx = wasm.WithCallerInfo(ctx, info)
 
 	// Honour the caller's deadline if it's tighter than our timeout cap.
@@ -78,21 +104,6 @@ func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, peer t
 			ctx, dlCancel = context.WithDeadline(ctx, dl)
 			defer dlCancel()
 		}
-	}
-
-	var hashBuf [64]byte
-	if _, err := io.ReadFull(stream, hashBuf[:]); err != nil {
-		return
-	}
-
-	var funcLenBuf [1]byte
-	if _, err := io.ReadFull(stream, funcLenBuf[:]); err != nil {
-		return
-	}
-
-	funcName := make([]byte, funcLenBuf[0])
-	if _, err := io.ReadFull(stream, funcName); err != nil && len(funcName) > 0 {
-		return
 	}
 
 	var inputLenBuf [4]byte
@@ -114,8 +125,6 @@ func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, peer t
 	// limit. Forwarded calls must respect the target's capacity, not just
 	// the caller's — otherwise P2C would route into hotspots its latency
 	// EWMA hadn't caught up with yet.
-	hash := string(hashBuf[:])
-	function := string(funcName)
 	gateRelease, err := gates.acquire(ctx, callKey{Hash: hash, Function: function})
 	if err != nil {
 		writeResponse(stream, statusError, []byte(err.Error()))

@@ -42,8 +42,7 @@ type TunnelingAPI interface {
 	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol) error
 	UnexposeService(name string) error
 	ListConnections() []ConnectionInfo
-	HandleTunnelStream(stream transport.Stream, peer types.PeerKey)
-	HandleRoutedStream(stream transport.Stream, peer types.PeerKey)
+	Serve(stream io.ReadWriteCloser, peer types.PeerKey, port uint32)
 	HandleTunnelDatagram(data []byte, peer types.PeerKey)
 	RequestService(ctx context.Context, peer types.PeerKey, port uint32, body []byte) ([]byte, error)
 	HandlePeerDenied(peerID types.PeerKey)
@@ -275,22 +274,19 @@ func (s *Service) UnexposeService(name string) error {
 	return fmt.Errorf("service %q not found", name)
 }
 
-func (s *Service) HandleTunnelStream(stream transport.Stream, peer types.PeerKey) {
-	s.handleIncomingStream(stream, peer)
+// ReadPort reads the 2-byte port header from an inbound tunnel
+// stream. Supervisor's dispatch loop calls this before the
+// service_connect gate so the decision can reference the target port.
+func ReadPort(r io.Reader) (uint32, error) {
+	return readPort(r)
 }
 
-func (s *Service) HandleRoutedStream(stream transport.Stream, peer types.PeerKey) {
-	s.handleIncomingStream(stream, peer)
-}
-
-func (s *Service) handleIncomingStream(stream io.ReadWriteCloser, peer types.PeerKey) {
+// Serve handles an inbound TCP tunnel stream for the given port. The
+// port is already consumed from the stream by supervisor's dispatch
+// loop; Serve assumes the caller is authorised.
+func (s *Service) Serve(stream io.ReadWriteCloser, peer types.PeerKey, port uint32) {
 	s.wg.Go(func() {
 		defer stream.Close()
-		port, err := readPort(stream)
-		if err != nil {
-			return
-		}
-
 		s.mu.RLock()
 		_, ok := s.services[serviceKey{port: port, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP}]
 		s.mu.RUnlock()

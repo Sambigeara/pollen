@@ -28,6 +28,7 @@ func newBlobCmds() []*cobra.Command {
 		Args:  cobra.RangeArgs(1, 2), //nolint:mnd
 		RunE:  withEnv(runBlobPut),
 	}
+	putCmd.Flags().StringArray("prop", nil, "Publisher properties for named uploads: key=value, JSON, or - for stdin")
 
 	fetchCmd := &cobra.Command{
 		Use:   "fetch <hash-or-name>",
@@ -67,6 +68,11 @@ func runBlobPut(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if len(args) > 1 {
 		name := args[1]
 		header.Name = &name
+		props, err := parseProperties(cmd)
+		if err != nil {
+			return err
+		}
+		header.Properties = props
 	}
 	hash, err := uploadBlob(cmd, env, header, r)
 	if err != nil {

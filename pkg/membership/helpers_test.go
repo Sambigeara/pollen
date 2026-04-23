@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"maps"
 	"net"
 	"net/netip"
 	"sync"
@@ -222,6 +223,16 @@ func (f *fakeCertManager) PushCert(_ context.Context, _ types.PeerKey, _ *admiss
 	return nil
 }
 
+func (f *fakeCertManager) SetPeerDelegationCert(peer types.PeerKey, cert *admissionv1.DelegationCert) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if cert == nil {
+		delete(f.peerCerts, peer)
+		return
+	}
+	f.peerCerts[peer] = cert
+}
+
 type fakePeerAddressSource struct {
 	addrs map[types.PeerKey]*net.UDPAddr
 }
@@ -246,6 +257,14 @@ func (f *fakePeerSessionCloser) ClosePeerSession(peer types.PeerKey, reason tran
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closed[peer] = reason
+}
+
+func (f *fakePeerSessionCloser) snapshot() map[types.PeerKey]transport.DisconnectReason {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[types.PeerKey]transport.DisconnectReason, len(f.closed))
+	maps.Copy(out, f.closed)
+	return out
 }
 
 type sendRecorder struct {

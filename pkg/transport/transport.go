@@ -421,13 +421,34 @@ func (m *QUICTransport) Stop() error {
 }
 
 type peerSession struct {
-	conn           *quic.Conn
-	transport      *quic.Transport
-	sockConn       *conn
-	delegationCert *admissionv1.DelegationCert
+	conn      *quic.Conn
+	transport *quic.Transport
+	sockConn  *conn
+	// delegationCert is set at TLS handshake time from the peer's
+	// identity cert and may be overwritten live by SetPeerDelegationCert
+	// when the local node issues a new cert to this peer — the session
+	// stays up but its cached attributes become authoritative
+	// immediately, without waiting for a reconnect.
+	delegationCert atomic.Pointer[admissionv1.DelegationCert]
 	createdAt      time.Time
 	certExpiresAt  time.Time
 	outbound       bool
+}
+
+// newPeerSession is the one place peerSession is constructed so the
+// atomic.Pointer initialisation stays consistent across the accept
+// loop, direct-dial, bootstrap, and racing-dial paths.
+func newPeerSession(qc *quic.Conn, qt *quic.Transport, sock *conn, dc *admissionv1.DelegationCert, outbound bool) *peerSession {
+	s := &peerSession{
+		conn:          qc,
+		transport:     qt,
+		sockConn:      sock,
+		createdAt:     time.Now(),
+		certExpiresAt: auth.CertExpiresAt(dc),
+		outbound:      outbound,
+	}
+	s.delegationCert.Store(dc)
+	return s
 }
 
 func (m *QUICTransport) addPeer(_ context.Context, s *peerSession, peerKey types.PeerKey) {
@@ -513,15 +534,7 @@ func (m *QUICTransport) acceptLoop(ctx context.Context) {
 				_ = qc.CloseWithError(0, DisconnectDenied.String())
 				continue
 			}
-			dc := delegationCertFromConn(qc)
-			m.addPeer(ctx, &peerSession{
-				conn:           qc,
-				transport:      m.mainQT,
-				delegationCert: dc,
-				createdAt:      time.Now(),
-				certExpiresAt:  auth.CertExpiresAt(dc),
-				outbound:       false,
-			}, peerKey)
+			m.addPeer(ctx, newPeerSession(qc, m.mainQT, nil, delegationCertFromConn(qc), false), peerKey)
 		case alpnInvite:
 			m.acceptWG.Go(func() { m.handleInviteConnection(ctx, qc, peerKey) })
 		default:
@@ -638,11 +651,7 @@ func (m *QUICTransport) Connect(ctx context.Context, peerKey types.PeerKey, addr
 				ch <- result{err: err}
 				return
 			}
-			dc := delegationCertFromConn(qc)
-			ch <- result{s: &peerSession{
-				conn: qc, transport: m.mainQT, outbound: true,
-				createdAt: time.Now(), certExpiresAt: auth.CertExpiresAt(dc), delegationCert: dc,
-			}}
+			ch <- result{s: newPeerSession(qc, m.mainQT, nil, delegationCertFromConn(qc), true)}
 		})
 	}
 
@@ -712,12 +721,7 @@ func (m *QUICTransport) Punch(ctx context.Context, peerKey types.PeerKey, addr *
 		return err
 	}
 
-	dc := delegationCertFromConn(qc)
-	s := &peerSession{
-		conn: qc, transport: qt, sockConn: conn, outbound: true,
-		createdAt: time.Now(), certExpiresAt: auth.CertExpiresAt(dc), delegationCert: dc,
-	}
-	m.addPeer(ctx, s, peerKey)
+	m.addPeer(ctx, newPeerSession(qc, qt, conn, delegationCertFromConn(qc), true), peerKey)
 	return nil
 }
 
@@ -803,11 +807,7 @@ func (m *QUICTransport) raceDirectDial(ctx context.Context, peerKey types.PeerKe
 				ch <- result{err: err}
 				return
 			}
-			dc := delegationCertFromConn(qc)
-			ch <- result{s: &peerSession{
-				conn: qc, transport: m.mainQT, outbound: true,
-				createdAt: time.Now(), certExpiresAt: auth.CertExpiresAt(dc), delegationCert: dc,
-			}}
+			ch <- result{s: newPeerSession(qc, m.mainQT, nil, delegationCertFromConn(qc), true)}
 		}(ap)
 	}
 
@@ -914,7 +914,26 @@ func (m *QUICTransport) PeerDelegationCert(peerKey types.PeerKey) (*admissionv1.
 	if !ok {
 		return nil, false
 	}
-	return s.delegationCert, s.delegationCert != nil
+	dc := s.delegationCert.Load()
+	return dc, dc != nil
+}
+
+// SetPeerDelegationCert overwrites the delegation cert cached on the
+// live session to peer. The cert-issuance path calls this after a
+// successful PushCert/renewal response so the issuer's own
+// PeerDelegationCert view matches what the target now carries —
+// without waiting for a session tear-down and TLS rehandshake. No-op
+// when no session is active: the next handshake will carry the
+// target's authoritative cert via TLS.
+func (m *QUICTransport) SetPeerDelegationCert(peerKey types.PeerKey, cert *admissionv1.DelegationCert) {
+	if cert == nil {
+		return
+	}
+	s, ok := m.getSession(peerKey)
+	if !ok {
+		return
+	}
+	s.delegationCert.Store(cert)
 }
 
 func (m *QUICTransport) DiscoverPeer(pk types.PeerKey, ips []net.IP, port int, lastAddr *net.UDPAddr, privatelyRoutable, publiclyAccessible bool) {

@@ -137,15 +137,15 @@ the full CLI reference. For the architecture, see
 pln grant <peer-id> --admin
 
 # Bake arbitrary key/value metadata into a peer's cert. Seeds see
-# the caller's peer key and attributes on every invocation, so auth,
+# the caller's peer key and properties on every invocation, so auth,
 # routing, and policy decisions can live inside the workload:
-pln grant <peer-id> --attr role=lead --attr team=backend
+pln grant <peer-id> --prop role=lead --prop team=backend
 
 # Or bake them in at join time:
-pln invite --attr role=engineer --attr team=backend
+pln invite --prop role=engineer --prop team=backend
 
 # Pipe a JSON payload from a file:
-cat attrs.json | pln grant <peer-id> --attr -
+cat props.json | pln grant <peer-id> --prop -
 ```
 
 ### Serve a static site

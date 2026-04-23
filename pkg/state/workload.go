@@ -3,7 +3,11 @@
 
 package state
 
-import "time"
+import (
+	"time"
+
+	"github.com/sambigeara/pollen/pkg/claims"
+)
 
 // WorkloadSpec is the domain-side representation of a user's workload
 // declaration. It crosses package boundaries by value — the underlying
@@ -15,6 +19,7 @@ import "time"
 // whole-millisecond, in-uint32-range durations; anything finer or
 // larger is clamped/truncated at the translation boundary.
 type WorkloadSpec struct {
+	Claim       *claims.PublisherClaim
 	Hash        string
 	Name        string
 	MemoryBytes uint64
@@ -71,6 +76,7 @@ func (m SeedMetrics) IsZero() bool {
 }
 
 type StaticSpec struct {
+	Claim          *claims.PublisherClaim
 	Name           string
 	ManifestDigest string
 	MinReplicas    uint32
@@ -81,6 +87,7 @@ type StaticSpec struct {
 // re-publishing the same digest under a new name overwrites the previous
 // name for that publisher.
 type BlobSpec struct {
+	Claim  *claims.PublisherClaim
 	Name   string
 	Digest string
 }

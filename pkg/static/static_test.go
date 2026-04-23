@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/claims"
+	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
@@ -114,7 +116,7 @@ func TestEnsureReplicated_NonServingPeer_FetchesManifestButNotFilesOrClaim(t *te
 	snap.Nodes[publisher].Blobs[fileA] = struct{}{}
 
 	st := &fakeStore{snap: snap}
-	svc := New(self, st, blobs, false, zap.NewNop().Sugar())
+	svc := New(self, st, blobs, false, nil, zap.NewNop().Sugar())
 
 	err := svc.ensureReplicated(t.Context(), snap, "home.local", snap.StaticSpecs["home.local"].Spec)
 	require.NoError(t, err)
@@ -138,13 +140,88 @@ func TestEnsureReplicated_ServingPeer_FetchesFilesAndClaims(t *testing.T) {
 	snap.Nodes[publisher].Blobs[fileA] = struct{}{}
 
 	st := &fakeStore{snap: snap}
-	svc := New(self, st, blobs, true, zap.NewNop().Sugar())
+	svc := New(self, st, blobs, true, nil, zap.NewNop().Sugar())
 
 	err := svc.ensureReplicated(t.Context(), snap, "home.local", snap.StaticSpecs["home.local"].Spec)
 	require.NoError(t, err)
 
 	require.Contains(t, blobs.fetched, fileA, "serving peer must fetch file blobs")
 	require.Equal(t, []string{"home.local"}, st.claimed)
+}
+
+func TestEnsureReplicated_DeniedBySeedPlacementGate(t *testing.T) {
+	publisher := types.PeerKey{1}
+	self := types.PeerKey{2}
+
+	blobs := newFakeBlobs()
+	fileA := "cc" + hex.EncodeToString(bytes.Repeat([]byte{0xa}, 31))
+	manifestDigest := seedManifest(t, blobs, fileA)
+
+	snap := snapshotWith(manifestDigest, publisher)
+	snap.Nodes[publisher].Blobs[fileA] = struct{}{}
+
+	st := &fakeStore{snap: snap}
+	router, err := evaluator.NewRouter(
+		evaluator.Config{Default: "deny_all"},
+		evaluator.WithFactory("deny_all", func(string) (evaluator.Evaluator, error) {
+			return denyAllEval{}, nil
+		}),
+	)
+	require.NoError(t, err)
+	svc := New(self, st, blobs, true, router, zap.NewNop().Sugar())
+
+	err = svc.ensureReplicated(t.Context(), snap, "home.local", snap.StaticSpecs["home.local"].Spec)
+	require.NoError(t, err, "gate denial must not surface as an error — just skip the claim")
+	require.Empty(t, st.claimed, "denied seed_placement must not claim the site")
+}
+
+type denyAllEval struct{}
+
+func (denyAllEval) Allow(context.Context, evaluator.Request) (evaluator.Decision, error) {
+	return evaluator.Decision{Decision: false, Context: map[string]any{"reason_user": "blocked"}}, nil
+}
+
+// captureDenyEval records the last request it was asked to evaluate and
+// always denies. Denial keeps the service from claiming so the test
+// stays focused on the gate request shape.
+type captureDenyEval struct {
+	last evaluator.Request
+}
+
+func (c *captureDenyEval) Allow(_ context.Context, req evaluator.Request) (evaluator.Decision, error) {
+	c.last = req
+	return evaluator.Decision{Decision: false}, nil
+}
+
+func TestEnsureReplicated_GatePipesClaimProperties(t *testing.T) {
+	publisher := types.PeerKey{1}
+	self := types.PeerKey{2}
+
+	blobs := newFakeBlobs()
+	fileA := "cc" + hex.EncodeToString(bytes.Repeat([]byte{0xa}, 31))
+	manifestDigest := seedManifest(t, blobs, fileA)
+
+	snap := snapshotWith(manifestDigest, publisher)
+	snap.Nodes[publisher].Blobs[fileA] = struct{}{}
+	sv := snap.StaticSpecs["home.local"]
+	sv.Spec.Claim = claims.New(map[string]any{"tier": "gold"}, []byte("sig"))
+	snap.StaticSpecs["home.local"] = sv
+
+	st := &fakeStore{snap: snap}
+	spy := &captureDenyEval{}
+	router, err := evaluator.NewRouter(
+		evaluator.Config{Default: "capture"},
+		evaluator.WithFactory("capture", func(string) (evaluator.Evaluator, error) { return spy, nil }),
+	)
+	require.NoError(t, err)
+	svc := New(self, st, blobs, true, router, zap.NewNop().Sugar())
+
+	err = svc.ensureReplicated(t.Context(), snap, "home.local", snap.StaticSpecs["home.local"].Spec)
+	require.NoError(t, err)
+
+	require.Equal(t, "gold", spy.last.Resource.Properties["tier"], "publisher claim properties must reach the seed_placement gate")
+	require.Equal(t, "home.local", spy.last.Resource.ID)
+	require.Equal(t, evaluator.ResourceStatic, spy.last.Resource.Type)
 }
 
 func TestStaticBlobs_IncludesManifestFilesWhenManifestLocal(t *testing.T) {
@@ -157,7 +234,7 @@ func TestStaticBlobs_IncludesManifestFilesWhenManifestLocal(t *testing.T) {
 
 	snap := snapshotWith(manifestDigest, publisher)
 	st := &fakeStore{snap: snap}
-	svc := New(self, st, blobs, false, zap.NewNop().Sugar())
+	svc := New(self, st, blobs, false, nil, zap.NewNop().Sugar())
 
 	got := svc.StaticBlobs()
 	require.Contains(t, got, manifestDigest)

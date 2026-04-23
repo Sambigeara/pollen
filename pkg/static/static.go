@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sambigeara/pollen/pkg/claims"
+	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
@@ -29,7 +31,7 @@ type StaticAPI interface {
 	Stop() error
 	Signal()
 	Events() <-chan state.Event
-	SeedStatic(name string, manifestDigest []byte, minReplicas uint32) error
+	SeedStatic(name string, manifestDigest []byte, minReplicas uint32, claim *claims.PublisherClaim) error
 	UnseedStatic(name string) error
 	StaticBlobs() map[string]struct{}
 }
@@ -51,6 +53,7 @@ type blobStore interface {
 type Service struct {
 	store         stateStore
 	blobs         blobStore
+	authz         *evaluator.Router
 	log           *zap.SugaredLogger
 	manifestCache *manifestCache
 	trigger       chan struct{}
@@ -65,11 +68,13 @@ var _ StaticAPI = (*Service)(nil)
 
 // canServe gates file-fetch and claim; the reconciler still runs on
 // non-serving peers so every node pulls manifests (admin intent) and can
-// enumerate the referenced file digests.
-func New(localID types.PeerKey, store stateStore, blobs blobStore, canServe bool, log *zap.SugaredLogger) *Service {
+// enumerate the referenced file digests. authz may be nil — the gate is
+// then skipped and every serving peer claims unconditionally.
+func New(localID types.PeerKey, store stateStore, blobs blobStore, canServe bool, authz *evaluator.Router, log *zap.SugaredLogger) *Service {
 	return &Service{
 		store:         store,
 		blobs:         blobs,
+		authz:         authz,
 		log:           log,
 		localID:       localID,
 		canServe:      canServe,
@@ -112,7 +117,7 @@ func (s *Service) forwardEvents(events []state.Event) {
 	}
 }
 
-func (s *Service) SeedStatic(name string, manifestDigest []byte, minReplicas uint32) error {
+func (s *Service) SeedStatic(name string, manifestDigest []byte, minReplicas uint32, claim *claims.PublisherClaim) error {
 	if len(manifestDigest) != digestSize {
 		return fmt.Errorf("manifest digest must be %d bytes", digestSize)
 	}
@@ -120,6 +125,7 @@ func (s *Service) SeedStatic(name string, manifestDigest []byte, minReplicas uin
 		Name:           name,
 		ManifestDigest: hex.EncodeToString(manifestDigest),
 		MinReplicas:    minReplicas,
+		Claim:          claim,
 	})
 	if err != nil {
 		return err
@@ -211,10 +217,29 @@ func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, nam
 		}
 	}
 
-	if _, alreadyClaimed := snap.StaticClaims[name][s.localID]; !alreadyClaimed {
-		s.forwardEvents(s.store.ClaimStatic(name))
-		s.log.Infow("claimed static site", "name", name, "paths", len(manifest.paths))
+	if _, alreadyClaimed := snap.StaticClaims[name][s.localID]; alreadyClaimed {
+		return nil
 	}
+	// Gate before claiming — policy can deny this node from hosting the
+	// site based on local attributes or the static's signed claim
+	// properties.
+	if s.authz != nil {
+		var resourceProps map[string]any
+		if sv, ok := snap.StaticSpecs[name]; ok {
+			resourceProps = sv.Spec.Claim.GetProperties()
+		}
+		req := evaluator.Request{
+			Subject:  evaluator.SubjectFromPeerKey(s.localID, nil),
+			Action:   evaluator.Action{Name: "place"},
+			Resource: evaluator.NewResource(evaluator.ResourceStatic, name, resourceProps),
+		}
+		if err := s.authz.Allow(ctx, evaluator.GateSeedPlacement, req); err != nil {
+			s.log.Infow("seed_placement denied", "resource_type", "static", "name", name, "err", err)
+			return nil
+		}
+	}
+	s.forwardEvents(s.store.ClaimStatic(name))
+	s.log.Infow("claimed static site", "name", name, "paths", len(manifest.paths))
 	return nil
 }
 
