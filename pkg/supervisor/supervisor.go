@@ -58,7 +58,7 @@ const (
 	maxConcurrentPunches = 8
 	blobPruneInterval    = 5 * time.Minute
 	// blobPruneGrace must comfortably exceed the worst-case duration of a
-	// `pln static seed` so a janitor tick mid-seed can't race the spec
+	// directory seed so a janitor tick mid-seed can't race the spec
 	// publish that claims the just-uploaded file blobs.
 	blobPruneGrace = 5 * time.Minute
 )

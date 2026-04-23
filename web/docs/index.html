@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pollen Docs</title>
-<meta name="description" content="Documentation for Pollen, a zero-trust, leaderless, emergent mesh runtime.">
+<meta name="description" content="Install, run a cluster, and deploy a workload with the pln CLI.">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <style>
   :root {
@@ -13,47 +13,159 @@
     --mute: #6b6559;
     --accent: #f2c14e;
     --rule: #ececec;
+    --code-bg: #f6f5f1;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); }
   body { min-height: 100vh; display: flex; flex-direction: column; }
-  main { flex: 1; max-width: 720px; margin: 0 auto; padding: 4rem 1.5rem 3rem; width: 100%; }
-  .mascot { display: block; width: 128px; height: 128px; margin: 0 auto 1.5rem; image-rendering: pixelated; }
-  h1 { font-size: clamp(1.75rem, 4.5vw, 2.5rem); font-weight: 600; letter-spacing: -0.02em; margin: 0 0 1.25rem; }
-  p { color: var(--mute); font-size: 1.05rem; line-height: 1.55; margin: 0 0 1.25rem; max-width: 58ch; }
-  p a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 2px; }
+  main { flex: 1; max-width: 1100px; margin: 0 auto; padding: 3rem 1.75rem 3rem; width: 100%; }
+
+  .header { display: flex; align-items: center; gap: 0.9rem; margin-bottom: 2rem; }
+  .header svg { width: 48px; height: 48px; image-rendering: pixelated; }
+  .header h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+  .header .crumb { color: var(--mute); font-size: 0.95rem; margin-left: auto; }
+  .header .crumb a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 2px; }
+  .header .crumb a:hover { border-color: var(--accent); }
+
+  .lede { color: var(--mute); font-size: 1.05rem; line-height: 1.55; margin: 0 0 2.5rem; max-width: 60ch; }
+  .lede a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 1px; }
+  .lede a:hover { border-color: var(--accent); }
+
+  h2 { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.01em; margin: 2.75rem 0 0.75rem; border-top: 1px solid var(--rule); padding-top: 2rem; }
+  h2:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.75rem 0 0.5rem; }
+
+  p { color: var(--ink); font-size: 1rem; line-height: 1.6; margin: 0 0 1rem; max-width: 60ch; }
+  p.aside { color: var(--mute); font-size: 0.92rem; }
+  p a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 1px; }
   p a:hover { border-color: var(--accent); }
-  nav { display: flex; gap: 1.5rem; font-size: 0.95rem; margin-top: 2rem; }
-  nav a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 2px; }
-  nav a:hover { border-color: var(--accent); }
-  footer { max-width: 720px; margin: 0 auto; padding: 1.5rem; color: var(--mute); font-size: 0.85rem; width: 100%; border-top: 1px solid var(--rule); }
+
+  ul, ol { color: var(--ink); font-size: 1rem; line-height: 1.6; margin: 0 0 1.25rem; padding-left: 1.25rem; max-width: 60ch; }
+  li { margin-bottom: 0.35rem; }
+  li a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 1px; }
+  li a:hover { border-color: var(--accent); }
+
+  code { font-family: var(--mono); font-size: 0.9em; background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
+  pre { background: var(--code-bg); padding: 0.9rem 1.1rem; border-radius: 8px; overflow-x: auto; margin: 0 0 1.25rem; line-height: 1.55; }
+  pre code { background: none; padding: 0; font-size: 0.9rem; }
+  pre .c { color: var(--mute); }
+
+  .note { border-left: 3px solid var(--accent); background: var(--code-bg); padding: 0.7rem 1rem; border-radius: 4px; font-size: 0.95rem; margin: 0 0 1.25rem; max-width: 60ch; }
+  .note strong { font-weight: 600; }
+
+  footer { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.75rem; color: var(--mute); font-size: 0.85rem; width: 100%; border-top: 1px solid var(--rule); }
+  footer a { color: var(--mute); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
+  footer a:hover { color: var(--ink); border-color: var(--accent); }
 </style>
 </head>
 <body>
 <main>
-  <svg class="mascot" viewBox="0 0 20 20" shape-rendering="crispEdges" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-    <g fill="#8B5A1B"><rect x="7" y="0" width="6" height="1"/><rect x="5" y="1" width="2" height="1"/><rect x="13" y="1" width="2" height="1"/><rect x="4" y="2" width="1" height="1"/><rect x="15" y="2" width="1" height="1"/><rect x="3" y="3" width="1" height="1"/><rect x="16" y="3" width="1" height="1"/><rect x="2" y="4" width="1" height="9"/><rect x="17" y="4" width="1" height="9"/><rect x="3" y="13" width="1" height="1"/><rect x="16" y="13" width="1" height="1"/><rect x="4" y="14" width="1" height="1"/><rect x="15" y="14" width="1" height="1"/><rect x="5" y="15" width="2" height="1"/><rect x="13" y="15" width="2" height="1"/><rect x="7" y="16" width="6" height="1"/></g>
-    <g fill="#FFC93C"><rect x="7" y="1" width="6" height="1"/><rect x="5" y="2" width="10" height="1"/><rect x="4" y="3" width="12" height="1"/><rect x="3" y="4" width="3" height="1"/><rect x="8" y="4" width="4" height="1"/><rect x="14" y="4" width="3" height="1"/><rect x="3" y="5" width="3" height="1"/><rect x="8" y="5" width="4" height="1"/><rect x="14" y="5" width="3" height="1"/><rect x="3" y="6" width="14" height="1"/><rect x="3" y="7" width="4" height="1"/><rect x="8" y="7" width="4" height="1"/><rect x="13" y="7" width="4" height="1"/><rect x="3" y="8" width="5" height="1"/><rect x="12" y="8" width="5" height="1"/><rect x="3" y="9" width="14" height="1"/><rect x="3" y="10" width="14" height="1"/><rect x="3" y="11" width="14" height="1"/><rect x="3" y="12" width="14" height="1"/><rect x="4" y="13" width="12" height="1"/><rect x="5" y="14" width="10" height="1"/><rect x="7" y="15" width="6" height="1"/></g>
-    <g fill="#1A1A1A"><rect x="6" y="4" width="1" height="1"/><rect x="12" y="4" width="1" height="1"/><rect x="6" y="5" width="2" height="1"/><rect x="12" y="5" width="2" height="1"/><rect x="7" y="7" width="1" height="1"/><rect x="12" y="7" width="1" height="1"/><rect x="8" y="8" width="4" height="1"/></g>
-    <g fill="#FFFFFF"><rect x="7" y="4" width="1" height="1"/><rect x="13" y="4" width="1" height="1"/></g>
-    <g fill="#B8433A"><rect x="7" y="11" width="1" height="3"/><rect x="8" y="11" width="1" height="1"/><rect x="8" y="13" width="1" height="1"/></g>
-    <g fill="#2E3F75"><rect x="12" y="11" width="1" height="3"/><rect x="11" y="11" width="1" height="1"/><rect x="11" y="13" width="1" height="1"/></g>
-    <g fill="#DCB876"><rect x="8" y="12" width="1" height="1"/><rect x="11" y="12" width="1" height="1"/></g>
-    <g fill="#6A3E12"><rect x="9" y="12" width="2" height="1"/></g>
-    <g fill="#5FA84E"><rect x="5" y="17" width="2" height="1"/><rect x="13" y="17" width="2" height="1"/><rect x="5" y="18" width="2" height="1"/><rect x="13" y="18" width="2" height="1"/></g>
-    <g fill="#2E6A23"><rect x="4" y="18" width="1" height="1"/><rect x="15" y="18" width="1" height="1"/><rect x="5" y="19" width="2" height="1"/><rect x="13" y="19" width="2" height="1"/></g>
-  </svg>
-  <h1>Docs coming soon</h1>
-  <p>Proper documentation is being written. In the meantime, the Go package reference is the most complete source of truth:</p>
-  <p><a href="https://pkg.go.dev/github.com/sambigeara/pollen">pkg.go.dev/github.com/sambigeara/pollen</a></p>
-  <p>The <a href="https://github.com/sambigeara/pollen#readme">README</a> and <a href="https://github.com/sambigeara/pollen/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a> cover the headline concepts and layer design.</p>
-  <nav>
-    <a href="https://pln.sh/">Home</a>
-    <a href="https://github.com/sambigeara/pollen">GitHub</a>
-    <a href="https://github.com/sambigeara/pollen/releases">Releases</a>
-  </nav>
+  <div class="header">
+    <svg viewBox="0 0 20 20" shape-rendering="crispEdges" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <g fill="#8B5A1B"><rect x="7" y="0" width="6" height="1"/><rect x="5" y="1" width="2" height="1"/><rect x="13" y="1" width="2" height="1"/><rect x="4" y="2" width="1" height="1"/><rect x="15" y="2" width="1" height="1"/><rect x="3" y="3" width="1" height="1"/><rect x="16" y="3" width="1" height="1"/><rect x="2" y="4" width="1" height="9"/><rect x="17" y="4" width="1" height="9"/><rect x="3" y="13" width="1" height="1"/><rect x="16" y="13" width="1" height="1"/><rect x="4" y="14" width="1" height="1"/><rect x="15" y="14" width="1" height="1"/><rect x="5" y="15" width="2" height="1"/><rect x="13" y="15" width="2" height="1"/><rect x="7" y="16" width="6" height="1"/></g>
+      <g fill="#FFC93C"><rect x="7" y="1" width="6" height="1"/><rect x="5" y="2" width="10" height="1"/><rect x="4" y="3" width="12" height="1"/><rect x="3" y="4" width="3" height="1"/><rect x="8" y="4" width="4" height="1"/><rect x="14" y="4" width="3" height="1"/><rect x="3" y="5" width="3" height="1"/><rect x="8" y="5" width="4" height="1"/><rect x="14" y="5" width="3" height="1"/><rect x="3" y="6" width="14" height="1"/><rect x="3" y="7" width="4" height="1"/><rect x="8" y="7" width="4" height="1"/><rect x="13" y="7" width="4" height="1"/><rect x="3" y="8" width="5" height="1"/><rect x="12" y="8" width="5" height="1"/><rect x="3" y="9" width="14" height="1"/><rect x="3" y="10" width="14" height="1"/><rect x="3" y="11" width="14" height="1"/><rect x="3" y="12" width="14" height="1"/><rect x="4" y="13" width="12" height="1"/><rect x="5" y="14" width="10" height="1"/><rect x="7" y="15" width="6" height="1"/></g>
+      <g fill="#1A1A1A"><rect x="6" y="4" width="1" height="1"/><rect x="12" y="4" width="1" height="1"/><rect x="6" y="5" width="2" height="1"/><rect x="12" y="5" width="2" height="1"/><rect x="7" y="7" width="1" height="1"/><rect x="12" y="7" width="1" height="1"/><rect x="8" y="8" width="4" height="1"/></g>
+      <g fill="#FFFFFF"><rect x="7" y="4" width="1" height="1"/><rect x="13" y="4" width="1" height="1"/></g>
+      <g fill="#B8433A"><rect x="7" y="11" width="1" height="3"/><rect x="8" y="11" width="1" height="1"/><rect x="8" y="13" width="1" height="1"/></g>
+      <g fill="#2E3F75"><rect x="12" y="11" width="1" height="3"/><rect x="11" y="11" width="1" height="1"/><rect x="11" y="13" width="1" height="1"/></g>
+      <g fill="#DCB876"><rect x="8" y="12" width="1" height="1"/><rect x="11" y="12" width="1" height="1"/></g>
+      <g fill="#6A3E12"><rect x="9" y="12" width="2" height="1"/></g>
+      <g fill="#5FA84E"><rect x="5" y="17" width="2" height="1"/><rect x="13" y="17" width="2" height="1"/><rect x="5" y="18" width="2" height="1"/><rect x="13" y="18" width="2" height="1"/></g>
+      <g fill="#2E6A23"><rect x="4" y="18" width="1" height="1"/><rect x="15" y="18" width="1" height="1"/><rect x="5" y="19" width="2" height="1"/><rect x="13" y="19" width="2" height="1"/></g>
+    </svg>
+    <h1>Pollen docs</h1>
+    <span class="crumb"><a href="cli.html">CLI reference</a> &nbsp;&middot;&nbsp; <a href="https://github.com/sambigeara/pollen">GitHub</a></span>
+  </div>
+
+  <p class="lede">Pollen runs a zero-trust mesh and a WASM workload runtime out of one static binary. These pages cover install, getting a cluster up, deploying workloads, and exposing services. For internals, see <a href="https://github.com/sambigeara/pollen/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>.</p>
+
+  <h2>Install</h2>
+  <pre><code>curl -fsSL https://pln.sh/install.sh | bash</code></pre>
+  <p>Wraps Homebrew on macOS and apt/yum on Linux. On macOS, state lives in <code>~/.pln</code>. On Linux, the installer runs <code>pln daemon install</code> to provision <code>/var/lib/pln</code> under a dedicated <code>pln</code> system user and adds the invoking user to the <code>pln</code> group for CLI access. Override either default with <code>$PLN_DIR</code>.</p>
+
+  <h2>One-node cluster</h2>
+  <pre><code>pln init
+pln up</code></pre>
+  <p>That's a single-node cluster, fully functional. Add <code>-d</code> to <code>up</code> to detach into the background service. Everything below works against this baseline.</p>
+
+  <h2>Add a node</h2>
+  <p>Two paths. Pick whichever fits your access model.</p>
+
+  <h3>SSH (zero-touch)</h3>
+  <p>Installs Pollen, joins the cluster, and starts the daemon. Linux targets only. Needs SSH as root or with passwordless sudo.</p>
+  <pre><code>pln bootstrap ssh user@host
+pln bootstrap ssh relay-eu=root@10.0.0.5 --admin</code></pre>
+  <p class="aside">Prefix a target with <code>name=</code> to label the node. Pass <code>--admin</code> to delegate admin authority, so the cluster keeps issuing certs and admitting peers when your root machine is offline.</p>
+
+  <h3>Invite token (out of band)</h3>
+  <p>Mint on an admin, ship the token over any channel, redeem on the joiner.</p>
+  <pre><code><span class="c"># on the admin</span>
+pln invite                       <span class="c"># any joiner</span>
+pln invite --subject &lt;peer-pub&gt;  <span class="c"># bound to one node</span></code></pre>
+  <pre><code><span class="c"># on the joiner</span>
+pln join &lt;token&gt;</code></pre>
+  <p class="aside">Tokens are signed and self-contained, carrying the cluster root key and bootstrap addresses. Pass <code>--subject</code> with the recipient's <code>pln id</code> to bind a token to one node; omit it for an open invite. Safe to send over Slack or email. TTL defaults to 5 minutes.</p>
+
+  <h2>Run a workload</h2>
+  <pre><code>pln seed ./hello.wasm
+pln call hello greet '{"name":"world"}'</code></pre>
+  <p><code>pln seed</code> publishes content. The kind is autodetected from the source: a <code>.wasm</code> file becomes a workload, a directory becomes a static site, anything else becomes a blob. Pass an optional name as the second arg.</p>
+  <p>Replicas land on whichever nodes have capacity and proximity. There's no scheduler; every node decides locally. Tune with <code>--min-replicas</code>, <code>--everywhere</code>, <code>--memory</code>, <code>--latency-slo</code>.</p>
+  <div class="note"><strong>Authoring.</strong> Workloads are <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism plugins</a>. Author them in Go, Rust, JavaScript, Python, C#, Zig, and more. One host call lets a workload invoke another (<code>seed/&lt;name&gt;/&lt;fn&gt;</code>), so authz, routing, and policy can live inside WASM.</div>
+
+  <h2>Expose a service</h2>
+  <pre><code><span class="c"># machine A</span>
+pln serve 8080 api</code></pre>
+  <pre><code><span class="c"># machine B</span>
+pln connect api
+curl localhost:8080</code></pre>
+  <p>TCP or UDP (<code>--udp</code>), with mTLS end-to-end and NAT traversal built in. Connections punch directly when both sides can reach each other; otherwise they relay over the shortest mesh path. Persisted to <code>config.yaml</code> so they re-establish on restart.</p>
+
+  <h2>Publish a site</h2>
+  <pre><code>pln seed ./public my-site</code></pre>
+  <p>Walks the directory, hashes every file, and gossips them. Other nodes claim the site according to <code>--min-replicas</code> and serve it on <code>:8080</code> (routed by Host header).</p>
+  <pre><code>curl -H "Host: my-site" http://&lt;node-addr&gt;:8080/</code></pre>
+  <p>Re-running the same command is idempotent: it supersedes the existing site with a fresh manifest. Old blobs are GC'd once no spec references them.</p>
+
+  <h2>Share a blob</h2>
+  <pre><code>pln seed ./big.bin payload   <span class="c"># named</span>
+pln seed ./big.bin           <span class="c"># anon, hash-only</span>
+pln fetch payload            <span class="c"># pull onto this node</span>
+pln unseed payload           <span class="c"># drop the name + bytes</span></code></pre>
+  <p>Blobs are content-addressed bytes. Streamed peer-to-peer over QUIC, gossip-advertised, and verified on arrival by SHA-256. Anonymous blobs print just their hash; named blobs are also resolvable by name across the cluster.</p>
+
+  <h2>Day two</h2>
+  <ul>
+    <li><code>pln status</code> shows peers, services, seeds, sites, and blobs. Use <code>--wide</code> for full IDs, <code>--include-offline</code> to see departed peers.</li>
+    <li><code>pln logs -f</code> tails the background daemon's log.</li>
+    <li><code>pln daemon upgrade --restart</code> pulls the latest binary and bounces the service.</li>
+    <li><code>pln set</code> changes daemon config like HTTP bind or log level. Run with no args to list keys.</li>
+    <li><code>pln context</code> switches your admin shell between clusters or remote hosts.</li>
+    <li><code>pln down</code> and <code>pln restart</code> stop or restart the local node.</li>
+  </ul>
+
+  <h2>Authorisation</h2>
+  <p>Every link is mTLS. On top of that, cert <strong>properties</strong> baked into each issued cert are visible to seeds at call time, so admission, routing, and policy can run inside WASM without sharing secrets.</p>
+  <pre><code>pln grant &lt;peer-id&gt; --prop role=lead --prop team=backend
+pln invite --prop tier=gold      <span class="c"># bake at join time</span></code></pre>
+  <p>For cluster-wide policy gates, point at a Cerbos-style PDP seed. See <a href="https://github.com/sambigeara/pollen/tree/main/examples/cerbos">examples/cerbos</a>. Inspect what a gate would decide without dispatching:</p>
+  <pre><code>pln policy check workload_call \
+  --subject peer:a9b8... --action call \
+  --resource seed:deadbeef...</code></pre>
+
+  <h2>Where to go next</h2>
+  <ul>
+    <li><a href="cli.html">CLI reference</a>: every command, every flag.</li>
+    <li><a href="https://github.com/sambigeara/pollen#readme">README</a>: elevator pitch and feature highlights.</li>
+    <li><a href="https://github.com/sambigeara/pollen/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>: layers, CRDT, routing, placement.</li>
+    <li><a href="https://github.com/sambigeara/pollen/tree/main/examples">examples/</a>: runnable workloads and a Cerbos PDP.</li>
+    <li><a href="https://pkg.go.dev/github.com/sambigeara/pollen">pkg.go.dev</a>: Go API reference.</li>
+    <li><a href="https://github.com/sambigeara/pollen/releases">Releases</a>: changelog.</li>
+    <li><a href="https://github.com/sambigeara/pollen/issues">Issues</a>: bugs, questions, suggestions.</li>
+  </ul>
 </main>
-<footer>&copy; 2026 Sam Lock &middot; Apache-2.0</footer>
+<footer>&copy; 2026 Sam Lock &middot; Apache-2.0 &middot; <a href="https://pln.sh/">pln.sh</a></footer>
 </body>
 </html>

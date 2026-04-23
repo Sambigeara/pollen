@@ -58,7 +58,11 @@ func newIDCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "id",
 		Short: "Show local node identity public key",
-		RunE:  withEnv(runID, localOnly()),
+		Long: `Prints the hex-encoded ed25519 public key of this node, generating one
+on first call. Pipe-friendly (no trailing newline). Other admins use
+this value as the --subject of an invite token.`,
+		Example: "  pln id\n  pln invite --subject \"$(ssh user@host pln id)\"",
+		RunE:    withEnv(runID, localOnly()),
 	}
 }
 
@@ -71,47 +75,115 @@ func newBootstrapCmd() *cobra.Command {
 	sshCmd := &cobra.Command{
 		Use:   "ssh [name=]<target> [[name=]target...|-]",
 		Short: "Bootstrap one or more nodes over SSH",
-		Args:  cobra.MinimumNArgs(1),
-		RunE:  withEnv(runBootstrapSSH),
+		Long: `Installs Pollen, enrols the cluster, and starts the daemon on each
+SSH target in parallel. Targets must accept SSH as root or with
+passwordless sudo. Linux only.
+
+Prefix a target with ` + "`name=`" + ` to label the node, or pipe a list of targets
+on stdin via ` + "`-`" + `. Pass --admin to delegate admin authority to the new
+relay so the cluster keeps working with the root offline. Pass --no-up
+to skip starting the local daemon when the orchestrator also enrols
+itself as a cluster member.`,
+		Example: `  pln bootstrap ssh user@host
+  pln bootstrap ssh relay-eu=root@10.0.0.5 relay-us=root@10.0.0.6 --admin
+  echo "media=alice@10.0.0.5" | pln bootstrap ssh -`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: withEnv(runBootstrapSSH),
 	}
 	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
 	sshCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the relay peer")
 	sshCmd.Flags().Bool("admin", false, "Delegate admin authority to the relay")
+	sshCmd.Flags().Bool("no-up", false, "Enrol the orchestrator without starting its local daemon")
 
 	cmd.AddCommand(sshCmd)
 	return cmd
 }
 
 func newClusterCmds() []*cobra.Command {
-	purgeCmd := &cobra.Command{Use: "purge", Short: "Delete local cluster state", RunE: withEnv(runPurge, wantsRoot(), localOnly())}
-	purgeCmd.Flags().Bool("all", false, "Also delete local node identity keys")
+	purgeCmd := &cobra.Command{
+		Use:   "purge",
+		Short: "Delete local cluster state",
+		Long: `Deletes the local cluster credentials, CAS, runtime state, and
+config from $PLN_DIR. The node identity (signing keys) is preserved
+by default — use --include-keys to wipe them too. Errors if the daemon
+is running. Prompts unless --yes is given.`,
+		Example: "  pln down && pln purge --yes",
+		RunE:    withEnv(runPurge, wantsRoot(), localOnly()),
+	}
+	purgeCmd.Flags().Bool("include-keys", false, "Also delete local node identity keys")
 	purgeCmd.Flags().Bool("yes", false, "Skip interactive confirmation")
 
-	joinCmd := &cobra.Command{Use: "join <token>", Short: "Join a cluster using a token", Args: cobra.ExactArgs(1), RunE: withEnv(runJoin, wantsRoot(), localOnly())}
+	joinCmd := &cobra.Command{
+		Use:   "join <token>",
+		Short: "Join a cluster using a token",
+		Long: `Enrols this node into the cluster the token was minted for. Tokens
+come from ` + "`pln invite`" + ` on an admin node. By default, starts the daemon
+once enrolment succeeds; use --no-up to defer.`,
+		Example: "  pln join \"$(ssh admin pln invite --subject $(pln id))\"",
+		Args:    cobra.ExactArgs(1),
+		RunE:    withEnv(runJoin, wantsRoot(), localOnly()),
+	}
 	joinCmd.Flags().Bool("no-up", false, "Enroll credentials without starting the daemon")
-	joinCmd.Flags().Bool("public", false, "Mark this node as publicly accessible (relay)")
+	joinCmd.Flags().Bool("public", false, "Hint that this node is publicly reachable; the mesh may use it as a relay (verified at runtime)")
 
-	inviteCmd := &cobra.Command{Use: "invite [subject-pub]", Short: "Generate an invite token", Args: cobra.RangeArgs(0, 1), RunE: withEnv(runInvite)}
+	inviteCmd := &cobra.Command{
+		Use:   "invite [subject-pub]",
+		Short: "Generate an invite token",
+		Long: `Mints a signed invite token. Pass to ` + "`pln join`" + ` on the joining node.
+Tokens are time-limited (--ttl) and may bind to a specific subject key
+or carry hard access deadlines. Properties are baked into the issued
+cert and surfaced to seeds at call time.`,
+		Example: "  pln invite --ttl 30m --prop role=worker\n  pln invite --subject $(ssh laptop pln id) --prop role=editor",
+		Args:    cobra.RangeArgs(0, 1),
+		RunE:    withEnv(runInvite),
+	}
 	inviteCmd.Flags().String("subject", "", "Optional hex node public key to bind invite")
 	inviteCmd.Flags().Duration("ttl", defaultInviteTTL, "Invite token validity duration")
 	inviteCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the invited peer")
 	inviteCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin")
 
-	adminCmd := &cobra.Command{Use: "admin", Short: "Manage admin keys"}
-	adminCmd.AddCommand(&cobra.Command{Use: "keygen", Short: "Generate the local admin key", RunE: withEnv(runAdminKeygen, wantsRoot(), localOnly()), Hidden: true})
-	adminCmd.AddCommand(&cobra.Command{Use: "set-cert <admin-cert-b64>", Short: "Install a delegated admin certificate", Args: cobra.ExactArgs(1), RunE: withEnv(runAdminSetCert, wantsRoot(), localOnly()), Hidden: true})
+	adminCmd := &cobra.Command{Use: "admin", Short: "Manage admin keys (advanced)"}
+	adminCmd.AddCommand(&cobra.Command{
+		Use:    "keygen",
+		Short:  "Generate the local admin key",
+		Long:   "Generates an ed25519 admin keypair under $PLN_DIR/keys. Holding the key alone grants no signing authority — install a delegated cert with `pln admin set-cert`.",
+		RunE:   withEnv(runAdminKeygen, wantsRoot(), localOnly()),
+		Hidden: true,
+	})
+	adminCmd.AddCommand(&cobra.Command{
+		Use:    "set-cert <admin-cert-b64>",
+		Short:  "Install a delegated admin certificate",
+		Long:   "Installs a delegated admin cert (issued by the root admin) that grants this node signing authority on behalf of the cluster.",
+		Args:   cobra.ExactArgs(1),
+		RunE:   withEnv(runAdminSetCert, wantsRoot(), localOnly()),
+		Hidden: true,
+	})
 
 	grantCmd := &cobra.Command{
 		Use:   "grant <peer-id>",
 		Short: "Grant a certificate to a connected peer",
-		Args:  cobra.ExactArgs(1),
-		RunE:  withEnv(runGrant),
+		Long: `Issues a fresh delegation cert to an already-connected peer. Use
+--admin to delegate admin authority (so the cluster stays operable
+without the root). Properties are baked into the cert and visible to
+seeds and the policy router.`,
+		Example: "  pln grant ab12cd34 --prop role=lead --prop team=backend\n  pln grant relay1 --admin",
+		Args:    cobra.ExactArgs(1),
+		RunE:    withEnv(runGrant),
 	}
 	grantCmd.Flags().Bool("admin", false, "Issue with full admin capabilities")
 	grantCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin")
 
+	initCmd := &cobra.Command{
+		Use:   "init",
+		Short: "Initialize local root cluster state",
+		Long: `Generates root credentials and seeds a single-node cluster on this
+host. After ` + "`pln up`" + `, use ` + "`pln invite`" + ` or ` + "`pln bootstrap ssh`" + ` to add
+peers. Idempotent if already initialised as the root.`,
+		RunE: withEnv(runInit, wantsRoot(), localOnly()),
+	}
+
 	return []*cobra.Command{
-		{Use: "init", Short: "Initialize local root cluster state", RunE: withEnv(runInit, wantsRoot(), localOnly())},
+		initCmd,
 		purgeCmd,
 		joinCmd,
 		inviteCmd,
@@ -168,7 +240,7 @@ func runInit(cmd *cobra.Command, _ []string, env *cliEnv) error {
 }
 
 func runPurge(cmd *cobra.Command, _ []string, env *cliEnv) error {
-	all, _ := cmd.Flags().GetBool("all")
+	includeKeys, _ := cmd.Flags().GetBool("include-keys")
 	if nodeSocketActive(filepath.Join(env.dir, socketName)) {
 		return errors.New("local node is running; run `pln down` before purging state")
 	}
@@ -188,7 +260,7 @@ func runPurge(cmd *cobra.Command, _ []string, env *cliEnv) error {
 		"state.pb", "state.yaml", "state.yaml.bak", "consumed_invites.json",
 		"peers.json", "invites", "cas", socketName,
 	}
-	if all {
+	if includeKeys {
 		paths = append(paths, "keys/ed25519.key", "keys/ed25519.pub")
 	}
 
@@ -491,6 +563,8 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 			return fmt.Errorf("create local join token: %w", err)
 		}
 
+		// runJoin reads --no-up from cmd; with --no-up set it stages the
+		// orchestrator's credentials without starting the local daemon.
 		if err := runJoin(cmd, []string{joinToken}, env); err != nil {
 			return err
 		}
@@ -667,10 +741,10 @@ func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 		}
 	}
 	if len(matches) == 0 {
-		return fmt.Errorf("no peer matching %q", prefix)
+		return notFoundErr("no peer matching %q", prefix)
 	}
 	if len(matches) > 1 {
-		return fmt.Errorf("ambiguous peer prefix %q matches %d peers", prefix, len(matches))
+		return ambiguousErr("ambiguous peer prefix %q matches %d peers", prefix, len(matches))
 	}
 
 	peerID := matches[0]
@@ -823,8 +897,8 @@ func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipT
 
 func ensureRemotePollen(ctx context.Context, sshTarget string) error {
 	if sshCmd(ctx, sshTarget, "which pln >/dev/null 2>&1").Run() == nil {
-		if out, err := sshSudo(ctx, sshTarget, "pln", "service", "install").CombinedOutput(); err != nil {
-			return fmt.Errorf("remote service install failed: %w\n%s", err, strings.TrimSpace(string(out)))
+		if out, err := sshSudo(ctx, sshTarget, "pln", "daemon", "install").CombinedOutput(); err != nil {
+			return fmt.Errorf("remote daemon install failed: %w\n%s", err, strings.TrimSpace(string(out)))
 		}
 		return nil
 	}
@@ -863,7 +937,7 @@ func waitForRelayReady(ctx context.Context, sshTarget string) error {
 	readyCtx, cancel := context.WithTimeout(ctx, relayReadyTimeout)
 	defer cancel()
 
-	checkCmd := "for i in $(seq 1 20); do if { test -S /var/lib/pln/pln.sock || [ -S \"$HOME/.pln/pln.sock\" ]; } && pln status --all >/dev/null 2>&1; then exit 0; fi; sleep 1; done; exit 1"
+	checkCmd := "for i in $(seq 1 20); do if { test -S /var/lib/pln/pln.sock || [ -S \"$HOME/.pln/pln.sock\" ]; } && pln status --include-offline >/dev/null 2>&1; then exit 0; fi; sleep 1; done; exit 1"
 	if out, err := sshSudoShell(readyCtx, sshTarget, checkCmd).CombinedOutput(); err != nil {
 		logOut, _ := sshSudoShell(ctx, sshTarget, "journalctl -u pln -n 120 --no-pager 2>/dev/null || tail -n 120 /opt/homebrew/var/log/pln.log 2>/dev/null || tail -n 120 /usr/local/var/log/pln.log 2>/dev/null || true").CombinedOutput()
 		return fmt.Errorf("relay failed to become ready\nstatus output: %s\nrelay log:\n%s", strings.TrimSpace(string(out)), strings.TrimSpace(string(logOut)))

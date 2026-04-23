@@ -59,23 +59,35 @@ func newNetworkCmds() []*cobra.Command {
 	statusCmd := &cobra.Command{
 		Use:   "status [nodes|services|seeds|static|blobs]",
 		Short: "Show network status",
-		Args:  cobra.RangeArgs(0, 1),
-		RunE:  withEnv(runStatus),
+		Long: `Renders an overview of the cluster from this node's perspective:
+peers, services, seeds, static sites, and blobs. Optionally restrict
+output to a single section.
+
+By default, offline peers and orphaned blobs are filtered. Use
+--include-offline to include them and --wide for full peer IDs.`,
+		Example: "  pln status\n  pln status seeds --wide\n  pln status nodes --include-offline",
+		Args:    cobra.RangeArgs(0, 1),
+		RunE:    withEnv(runStatus),
 	}
 	statusCmd.Flags().Bool("wide", false, "Show full peer IDs and extra details")
-	statusCmd.Flags().Bool("all", false, "Include offline nodes and services")
+	statusCmd.Flags().Bool("include-offline", false, "Include offline nodes, services, and orphaned blobs")
 
 	serveCmd := &cobra.Command{
 		Use:   "serve <port> [name]",
 		Short: "Expose a local port to the mesh",
-		Args:  cobra.RangeArgs(1, 2), //nolint:mnd
-		RunE:  withEnv(runServe),
+		Long: `Registers a local TCP (or UDP, with --udp) port as a mesh service.
+Other nodes ` + "`pln connect`" + ` to it by name. Persisted to config.yaml so
+the service survives restarts.`,
+		Example: "  pln serve 8080 api\n  pln serve 5353 dns --udp",
+		Args:    cobra.RangeArgs(1, 2), //nolint:mnd
+		RunE:    withEnv(runServe),
 	}
 	serveCmd.Flags().Bool("udp", false, "Expose as a UDP service")
 
 	unserveCmd := &cobra.Command{
 		Use:   "unserve <port|name>",
 		Short: "Stop exposing a local service",
+		Long:  "Unregisters a local mesh service by port or name. Removes it from config.yaml so it doesn't come back on restart. Open tunnels from other peers terminate.",
 		Args:  cobra.ExactArgs(1),
 		RunE:  withEnv(runUnserve),
 	}
@@ -83,13 +95,21 @@ func newNetworkCmds() []*cobra.Command {
 	connectCmd := &cobra.Command{
 		Use:   "connect <service> [provider] [local-port]",
 		Short: "Tunnel a local port to a service",
-		Args:  cobra.RangeArgs(1, 3), //nolint:mnd
-		RunE:  withEnv(runConnect),
+		Long: `Opens a local TCP/UDP listener forwarding to a remote service over
+the mesh. If the local port is omitted, the service's remote port is
+used. The provider argument disambiguates when multiple peers serve
+the same name (use the peer-id prefix shown by ` + "`pln status`" + `).
+
+Persists to config.yaml so the tunnel re-establishes after restart.`,
+		Example: "  pln connect api                 # any provider, default port\n  pln connect api ab12 9090       # specific peer + local port",
+		Args:    cobra.RangeArgs(1, 3), //nolint:mnd
+		RunE:    withEnv(runConnect),
 	}
 
 	disconnectCmd := &cobra.Command{
 		Use:   "disconnect <service|local-port> [provider]",
 		Short: "Close a tunnel to a service",
+		Long:  "Tears down a local tunnel and removes it from config.yaml. Identify by service name or local port; pass a provider prefix to disambiguate when multiple tunnels share a name.",
 		Args:  cobra.RangeArgs(1, 2), //nolint:mnd
 		RunE:  withEnv(runDisconnect),
 	}
@@ -97,8 +117,12 @@ func newNetworkCmds() []*cobra.Command {
 	denyCmd := &cobra.Command{
 		Use:   "deny <peer-id>",
 		Short: "Deny a peer's membership",
-		Args:  cobra.ExactArgs(1),
-		RunE:  withEnv(runDeny),
+		Long: `Revokes a peer's cluster membership and tears down its connections.
+The peer is denied future re-admission until an admin re-issues credentials.
+Identify by hex peer-id prefix (as shown by ` + "`pln status`" + `).`,
+		Example: "  pln deny ab12cd34",
+		Args:    cobra.ExactArgs(1),
+		RunE:    withEnv(runDeny),
 	}
 
 	return []*cobra.Command{statusCmd, serveCmd, unserveCmd, connectCmd, disconnectCmd, denyCmd}
@@ -112,7 +136,7 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 		mode = args[0]
 	}
 	wide, _ := cmd.Flags().GetBool("wide")
-	includeAll, _ := cmd.Flags().GetBool("all")
+	includeAll, _ := cmd.Flags().GetBool("include-offline")
 	opts := statusViewOpts{wide: wide, includeAll: includeAll}
 
 	resp, err := env.client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{}))
@@ -121,9 +145,9 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 			return err
 		}
 		if socketPermissionDenied(env.dir) {
-			return errors.New("cannot reach daemon — are you in the pln group?\n  fix: sudo usermod -aG pln $(whoami) && newgrp pln")
+			return permissionErr("cannot reach daemon — are you in the pln group?\n  fix: sudo usermod -aG pln $(whoami) && newgrp pln")
 		}
-		return errors.New("daemon is not running")
+		return unreachableErr("daemon is not running")
 	}
 
 	st := resp.Msg
@@ -396,10 +420,10 @@ func runDeny(cmd *cobra.Command, args []string, env *cliEnv) error {
 	}
 
 	if len(matches) == 0 {
-		return fmt.Errorf("no peer matching %q", prefix)
+		return notFoundErr("no peer matching %q", prefix)
 	}
 	if len(matches) > 1 {
-		return fmt.Errorf("ambiguous peer prefix %q matches %d peers", prefix, len(matches))
+		return ambiguousErr("ambiguous peer prefix %q matches %d peers", prefix, len(matches))
 	}
 
 	peerID := matches[0]
@@ -486,7 +510,7 @@ func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 	}
 
 	if filtered > 0 {
-		sec.footer = fmt.Sprintf("offline peers: %d (use --all)", filtered)
+		sec.footer = fmt.Sprintf("offline peers: %d (use --include-offline)", filtered)
 	}
 	return sec
 }
@@ -541,7 +565,7 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 		footerParts = append(footerParts, "service suffixes match the start of the provider ID")
 	}
 	if filtered > 0 {
-		footerParts = append(footerParts, fmt.Sprintf("offline services: %d (use --all)", filtered))
+		footerParts = append(footerParts, fmt.Sprintf("offline services: %d (use --include-offline)", filtered))
 	}
 	sec.footer = strings.Join(footerParts, "\n")
 	return sec
@@ -627,7 +651,7 @@ func collectBlobsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 	case len(blobs) > limit:
 		sec.footer = fmt.Sprintf("%d more blobs (use --wide)", len(blobs)-limit)
 	case orphaned > 0 && !opts.includeAll:
-		sec.footer = fmt.Sprintf("%d orphaned blobs hidden (use --all)", orphaned)
+		sec.footer = fmt.Sprintf("%d orphaned blobs hidden (use --include-offline)", orphaned)
 	}
 	return sec
 }
@@ -992,11 +1016,11 @@ func resolveServiceByPrefix(services []config.Service, prefix string) (string, e
 	}
 	switch len(matches) {
 	case 0:
-		return "", fmt.Errorf("no service matching %q", prefix)
+		return "", notFoundErr("no service matching %q", prefix)
 	case 1:
 		return matches[0], nil
 	default:
-		return "", fmt.Errorf("prefix %q matches multiple services: %s", prefix, strings.Join(matches, ", "))
+		return "", ambiguousErr("prefix %q matches multiple services: %s", prefix, strings.Join(matches, ", "))
 	}
 }
 
@@ -1072,9 +1096,9 @@ func resolveService(st *controlv1.GetStatusResponse, serviceArg, providerArg str
 	}
 
 	if providerArg != "" {
-		return nil, fmt.Errorf("no reachable provider for %q on %q — run \"pln status\" to see available services", serviceArg, providerArg)
+		return nil, notFoundErr("no reachable provider for %q on %q — run \"pln status\" to see available services", serviceArg, providerArg)
 	}
-	return nil, fmt.Errorf("no reachable service matching %q — run \"pln status\" to see available services", serviceArg)
+	return nil, notFoundErr("no reachable service matching %q — run \"pln status\" to see available services", serviceArg)
 }
 
 func resolveConnection(st *controlv1.GetStatusResponse, arg, providerArg string) (*controlv1.ConnectionSummary, error) {
@@ -1116,7 +1140,7 @@ func resolveConnection(st *controlv1.GetStatusResponse, arg, providerArg string)
 		}
 	}
 
-	return nil, fmt.Errorf("no active connection matching %q — run \"pln status\" to see active connections", arg)
+	return nil, notFoundErr("no active connection matching %q — run \"pln status\" to see active connections", arg)
 }
 
 func resolveBySuffix[T any](arg string, items []T, toCandidate func(T) suffixCandidate, collisionErr func(string, []T) error) (T, error) {

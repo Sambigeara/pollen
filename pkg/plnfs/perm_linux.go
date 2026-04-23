@@ -62,7 +62,7 @@ func applyPlnOwnership(path string) error {
 	plnOnce.Do(resolvePlnOwner)
 	if !plnResolved {
 		if os.Getuid() == 0 {
-			return fmt.Errorf("chown %s: pln user not found; run `pln service install` first", path)
+			return fmt.Errorf("chown %s: pln user not found; run `pln daemon install` first", path)
 		}
 		return nil
 	}

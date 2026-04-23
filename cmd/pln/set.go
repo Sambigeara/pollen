@@ -78,13 +78,15 @@ func newSetCmds() []*cobra.Command {
 		Long: "Set a daemon config value in config.yaml. Works offline and online; the " +
 			"daemon must be restarted to rebind listeners. Run `pln set` with no arguments " +
 			"to list available keys.",
-		Args: cobra.MaximumNArgs(2), //nolint:mnd
-		RunE: withEnv(runSet, localOnly()),
+		Example: "  pln set                       # list available keys\n  pln set http :9100            # change Prometheus bind\n  pln set log-level debug",
+		Args:    cobra.MaximumNArgs(2), //nolint:mnd
+		RunE:    withEnv(runSet, localOnly()),
 	}
 
 	unsetCmd := &cobra.Command{
 		Use:   "unset <key>",
 		Short: "Clear a daemon config value",
+		Long:  "Clears a daemon config value, restoring the default behaviour. Restart the daemon to rebind listeners.",
 		Args:  cobra.ExactArgs(1),
 		RunE:  withEnv(runUnset, localOnly()),
 	}

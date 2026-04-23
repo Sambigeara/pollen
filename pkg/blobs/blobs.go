@@ -173,8 +173,9 @@ func KeepSet(snap state.Snapshot, extras ...map[string]struct{}) map[string]stru
 }
 
 // Prune evicts blobs outside keep. minAge shields freshly-written files
-// that don't yet have a spec referencing them — e.g. `pln static seed`
-// uploads file blobs anonymously before publishing the StaticSpec.
+// that don't yet have a spec referencing them — e.g. `pln seed` on a
+// directory uploads file blobs anonymously before publishing the
+// StaticSpec.
 func (s *Service) Prune(keep map[string]struct{}, minAge time.Duration) ([]string, error) {
 	entries, err := s.store.Entries()
 	if err != nil {

@@ -129,39 +129,77 @@ func newDaemonCmds() []*cobra.Command {
 	upCmd := &cobra.Command{
 		Use:   "up",
 		Short: "Start a Pollen node (foreground by default, -d for background service)",
-		RunE:  withEnv(runUp, localOnly()),
+		Long: `Brings the local Pollen node online. By default runs in the foreground
+and exits on Ctrl-C. With -d, hands off to the system service manager
+(launchd on macOS, systemd on Linux) for unattended operation.
+
+If no cluster credentials exist, auto-initialises a single-node root
+cluster — equivalent to running ` + "`pln init`" + ` first.`,
+		Example: "  pln up                        # foreground\n  pln up -d                     # detached\n  pln up --public --name relay  # advertise as a relay",
+		RunE:    withEnv(runUp, localOnly()),
 	}
 	upCmd.Flags().Int("port", config.DefaultBootstrapPort, "Listening port")
 	upCmd.Flags().IPSlice("ips", []net.IP{}, "Advertised IPs")
-	upCmd.Flags().Bool("public", false, "Mark this node as publicly accessible (relay)")
+	upCmd.Flags().Bool("public", false, "Hint that this node is publicly reachable; the mesh may use it as a relay (verified at runtime)")
 	upCmd.Flags().BoolP("detach", "d", false, "Run as a background service")
 	upCmd.Flags().Bool("metrics", false, "Log metrics and trace output at debug level")
 	upCmd.Flags().String("name", "", "Human-readable node name")
 
-	upgradeCmd := &cobra.Command{
-		Use:   "upgrade",
-		Short: "Upgrade pln to the latest version",
+	downCmd := &cobra.Command{
+		Use:   "down",
+		Short: "Stop the background service",
+		Long:  "Stops the launchd (macOS) or systemd (Linux) unit. Local state and credentials are preserved — a subsequent `pln up -d` restarts the same node.",
 		Args:  cobra.NoArgs,
-		RunE:  withEnv(runUpgrade, localOnly()),
+		RunE:  withEnv(runDown, localOnly(), systemService()),
 	}
-	upgradeCmd.Flags().Bool("restart", false, "Restart the background service after upgrading")
+	restartCmd := &cobra.Command{
+		Use:   "restart",
+		Short: "Restart the background service",
+		Long:  "Restarts the background service so config changes (`pln set`, `pln serve`, etc.) take effect on listeners and bind addresses.",
+		Args:  cobra.NoArgs,
+		RunE:  withEnv(runRestart, localOnly(), systemService()),
+	}
 
 	logsCmd := &cobra.Command{
 		Use:   "logs",
 		Short: "Show daemon logs",
-		Args:  cobra.NoArgs,
-		RunE:  withEnv(runLogs, localOnly(), systemService()),
+		Long: `Tails the background service log: ` + "`tail`" + ` against the Homebrew log file
+on macOS, ` + "`journalctl -u pln`" + ` on Linux. Use -f to stream and -n to
+control how many lines to show.`,
+		Example: "  pln logs -f -n 200",
+		Args:    cobra.NoArgs,
+		RunE:    withEnv(runLogs, localOnly(), systemService()),
 	}
 	logsCmd.Flags().BoolP("follow", "f", false, "Stream logs in real time")
 	logsCmd.Flags().IntP("lines", "n", 50, "Number of lines to show") //nolint:mnd
 
-	return []*cobra.Command{
-		upCmd,
-		upgradeCmd,
-		logsCmd,
-		{Use: "down", Short: "Stop the background service", Args: cobra.NoArgs, RunE: withEnv(runDown, localOnly(), systemService())},
-		{Use: "restart", Short: "Restart the background service", Args: cobra.NoArgs, RunE: withEnv(runRestart, localOnly(), systemService())},
+	return []*cobra.Command{upCmd, downCmd, restartCmd, logsCmd, newDaemonGroupCmd()}
+}
+
+// newDaemonGroupCmd builds the `pln daemon` subtree for admin
+// operations on the daemon binary and its background unit (install,
+// uninstall, upgrade). Operational lifecycle (`pln up/down/restart/logs`)
+// stays flat at the top level.
+func newDaemonGroupCmd() *cobra.Command {
+	root := &cobra.Command{
+		Use:   "daemon",
+		Short: "Manage the pln background service (install/uninstall/upgrade)",
 	}
+
+	upgradeCmd := &cobra.Command{
+		Use:   "upgrade",
+		Short: "Upgrade pln to the latest version",
+		Long: `Upgrades the local pln binary via the platform package manager
+(Homebrew on macOS, the install script on Linux). Pass --restart to also
+bounce the background service and pick up the new binary.`,
+		Example: "  pln daemon upgrade --restart",
+		Args:    cobra.NoArgs,
+		RunE:    withEnv(runUpgrade, localOnly()),
+	}
+	upgradeCmd.Flags().Bool("restart", false, "Restart the background service after upgrading")
+
+	root.AddCommand(newDaemonInstallCmd(), newDaemonUninstallCmd(), upgradeCmd)
+	return root
 }
 
 func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {

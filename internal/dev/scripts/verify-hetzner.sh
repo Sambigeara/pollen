@@ -132,7 +132,7 @@ echo "  Deploying to remote nodes..."
 for ip in "${ALL_REMOTE[@]}"; do
     (
         rsync -z -e "ssh $SSH_OPTS" "$PLN_LINUX" "root@${ip}:/usr/bin/pln"
-        rssh "$ip" "pln service install"
+        rssh "$ip" "pln daemon install"
     ) &
 done
 wait

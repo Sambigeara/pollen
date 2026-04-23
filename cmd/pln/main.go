@@ -135,8 +135,19 @@ func dialTLSFunc(dir, target string) func(string, string, *tls.Config) (net.Conn
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:           "pln",
-		Short:         "Peer-to-peer mesh networking",
+		Use:   "pln",
+		Short: "Peer-to-peer mesh networking",
+		Long: `Pollen runs a zero-trust, leaderless mesh and a WASM workload
+runtime out of a single static binary. Nodes gossip their state, route
+traffic over QUIC, and decide locally whether to claim replicas — there
+is no scheduler.
+
+Two commands to a cluster:
+
+  pln init                                # creates a new cluster rooted here
+  pln bootstrap ssh user@host [--admin]   # adds nodes via SSH
+
+See ARCHITECTURE.md for the full design.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -144,27 +155,27 @@ func main() {
 	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted (env: PLN_DIR)")
 	rootCmd.PersistentFlags().StringP("host", "H", "", "Target daemon over SSH, e.g. user@host (env: PLN_HOST)")
 
-	rootCmd.AddCommand(newVersionCmd(), newIDCmd(), newBridgeCmd(), newContextCmds(), newServiceCmds())
+	rootCmd.AddCommand(newVersionCmd(), newIDCmd(), newBridgeCmd(), newContextCmds(), newCallCmd())
 	rootCmd.AddCommand(newDaemonCmds()...)
 	rootCmd.AddCommand(newClusterCmds()...)
 	rootCmd.AddCommand(newNetworkCmds()...)
-	rootCmd.AddCommand(newWorkloadCmds()...)
-	rootCmd.AddCommand(newBlobCmds()...)
-	rootCmd.AddCommand(newStaticCmds()...)
+	rootCmd.AddCommand(newSeedCmds()...)
 	rootCmd.AddCommand(newSetCmds()...)
 	rootCmd.AddCommand(newPolicyCmds()...)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(exitCodeOf(err))
 	}
 }
 
 func newVersionCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "version",
-		Short: "Show Pollen version information",
-		Args:  cobra.NoArgs,
+		Use:     "version",
+		Short:   "Show Pollen version information",
+		Long:    "Prints the binary version, commit hash, and build date. Use --short for just the version, suitable for scripting.",
+		Example: "  pln version --short",
+		Args:    cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
 			if short, _ := cmd.Flags().GetBool("short"); short {
 				fmt.Fprintln(cmd.OutOrStdout(), version)

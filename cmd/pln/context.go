@@ -119,7 +119,7 @@ func resolveContextBindings(name, defaultDir string) (dir, host string, err erro
 	}
 	entry, ok := cf.Contexts[name]
 	if !ok {
-		return "", "", fmt.Errorf("context %q not found", name)
+		return "", "", notFoundErr("context %q not found", name)
 	}
 	return entry.Dir, entry.Host, nil
 }
@@ -161,13 +161,22 @@ func newContextCmds() *cobra.Command {
 		Use:     "context",
 		Aliases: []string{"ctx"},
 		Short:   "Manage named admin contexts",
+		Long: `Contexts let one admin shell target several clusters or remote
+daemons by name (analogous to kubectl contexts). The active context
+sets the implicit --dir/--host for every command. The reserved name
+"default" always resolves to $PLN_DIR.`,
 	}
 
 	addCmd := &cobra.Command{
 		Use:   "add <name> <user@host | /path/to/pln-dir>",
 		Short: "Create a new context bound to a remote host or local pln directory",
-		Args:  cobra.ExactArgs(2), //nolint:mnd
-		RunE:  runContextAdd,
+		Long: `Adds a named context. Targets containing '@' bind to a remote daemon
+over SSH; absolute or relative directory paths bind to a local pln dir.
+For remote contexts, --from imports an existing admin keypair so this
+shell can act as an admin against the remote cluster.`,
+		Example: "  pln context add prod root@prod.example.com --from default\n  pln context add dev /tmp/pln-dev",
+		Args:    cobra.ExactArgs(2), //nolint:mnd
+		RunE:    runContextAdd,
 	}
 	addCmd.Flags().String("from", "", "For remote contexts: import admin keys from <dir> or 'default' for $PLN_DIR/keys")
 
@@ -175,6 +184,8 @@ func newContextCmds() *cobra.Command {
 		Use:     "switch <name>",
 		Aliases: []string{"use"},
 		Short:   "Switch to a named context",
+		Long:    "Sets the active context for subsequent commands. Override per-command via $PLN_CONTEXT.",
+		Example: "  pln ctx use prod",
 		Args:    cobra.ExactArgs(1),
 		RunE:    runContextUse,
 	}
@@ -182,6 +193,7 @@ func newContextCmds() *cobra.Command {
 	lsCmd := &cobra.Command{
 		Use:   "ls",
 		Short: "List contexts",
+		Long:  "Lists all known contexts. The active context is marked with `*` in the CURRENT column.",
 		Args:  cobra.NoArgs,
 		RunE:  runContextList,
 	}
@@ -189,6 +201,7 @@ func newContextCmds() *cobra.Command {
 	rmCmd := &cobra.Command{
 		Use:   "rm <name>",
 		Short: "Remove a context",
+		Long:  "Removes a context entry. For remote contexts whose identity is stored under ~/.pln/contexts/<name>/, the per-context dir is also deleted. Local contexts (path-bound) leave their pln dir untouched.",
 		Args:  cobra.ExactArgs(1),
 		RunE:  runContextRemove,
 	}
@@ -196,6 +209,7 @@ func newContextCmds() *cobra.Command {
 	currentCmd := &cobra.Command{
 		Use:   "current",
 		Short: "Print the current context name",
+		Long:  "Prints the name of the active context. Useful in shell prompts or scripts.",
 		Args:  cobra.NoArgs,
 		RunE:  runContextCurrent,
 	}
@@ -280,7 +294,7 @@ func runContextUse(cmd *cobra.Command, args []string) error {
 	}
 	if name != defaultContextName {
 		if _, ok := cf.Contexts[name]; !ok {
-			return fmt.Errorf("context %q not found", name)
+			return notFoundErr("context %q not found", name)
 		}
 	}
 	cf.Current = name
@@ -340,7 +354,7 @@ func runContextRemove(cmd *cobra.Command, args []string) error {
 	}
 	entry, ok := cf.Contexts[name]
 	if !ok {
-		return fmt.Errorf("context %q not found", name)
+		return notFoundErr("context %q not found", name)
 	}
 
 	// Only remove the per-context dir if we own it (remote contexts store

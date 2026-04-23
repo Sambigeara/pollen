@@ -39,7 +39,7 @@ Edit `web/apex/index.html` or `web/docs/index.html` (or the install script at
 just prod-seed
 ```
 
-`pln static seed` is idempotent per name: it supersedes the existing site with
+`pln seed` (on a directory) is idempotent per name: it supersedes the existing site with
 a fresh manifest.
 
 ## Tear down

@@ -25,49 +25,48 @@ const (
 //go:embed pln.service
 var systemdUnit []byte
 
-// newServiceCmds wraps the one-shot install/uninstall of the pln system
-// service. The binary already ships a unit and can provision its own
-// user/group via plnfs.Provision — these commands glue those together
-// so a freshly-dropped binary can install itself without install.sh.
-func newServiceCmds() *cobra.Command {
-	root := &cobra.Command{
-		Use:   "service",
-		Short: "Manage the pln background service (Linux only)",
-	}
-
-	install := &cobra.Command{
+// newDaemonInstallCmd installs the pln binary as a Linux systemd unit
+// running under a dedicated pln user. Idempotent and re-runnable.
+func newDaemonInstallCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "install",
 		Short: "Install pln as a system service running as a dedicated pln user",
 		Long: `Creates the pln system user and state directories, drops the
 embedded systemd unit, and enables it. If invoked via sudo, the invoking
 user is added to the pln group for CLI access. Idempotent.`,
 		Args: cobra.NoArgs,
-		RunE: runServiceInstall,
+		RunE: runDaemonInstall,
 	}
+}
 
+// newDaemonUninstallCmd stops the systemd unit and removes it. With
+// --purge it also wipes /var/lib/pln state.
+func newDaemonUninstallCmd() *cobra.Command {
 	uninstall := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Stop and remove the pln system service",
-		Args:  cobra.NoArgs,
-		RunE:  runServiceUninstall,
+		Long: `Stops the pln systemd unit, disables auto-start, and removes the unit
+file. State under /var/lib/pln is preserved unless --purge is given —
+which permanently deletes cluster credentials and CAS contents.`,
+		Example: "  sudo pln daemon uninstall\n  sudo pln daemon uninstall --purge   # also wipe state",
+		Args:    cobra.NoArgs,
+		RunE:    runDaemonUninstall,
 	}
 	uninstall.Flags().Bool("purge", false, "Also delete /var/lib/pln state (irreversible)")
-
-	root.AddCommand(install, uninstall)
-	return root
+	return uninstall
 }
 
-func runServiceInstall(cmd *cobra.Command, _ []string) error {
+func runDaemonInstall(cmd *cobra.Command, _ []string) error {
 	if runtime.GOOS != osLinux {
-		fmt.Fprintln(cmd.OutOrStdout(), "service install is Linux-only; on macOS install via Homebrew (`brew install sambigeara/homebrew-pln/pln`)")
+		fmt.Fprintln(cmd.OutOrStdout(), "daemon install is Linux-only; on macOS install via Homebrew (`brew install sambigeara/homebrew-pln/pln`)")
 		return nil
 	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
-		fmt.Fprintln(cmd.OutOrStdout(), "systemd not detected; skipping service install. Run `pln up` directly if you don't need a system service.")
+		fmt.Fprintln(cmd.OutOrStdout(), "systemd not detected; skipping daemon install. Run `pln up` directly if you don't need a system service.")
 		return nil //nolint:nilerr
 	}
 	if os.Getuid() != 0 {
-		return errors.New("must be run as root (try: sudo pln service install)")
+		return errors.New("must be run as root (try: sudo pln daemon install)")
 	}
 
 	plnfs.SetSystemMode(true)
@@ -96,16 +95,16 @@ func runServiceInstall(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(cmd.OutOrStdout(), "added %s to the pln group -- log out and back in for CLI access without sudo\n", sudoUser)
 		}
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "pln service installed at "+plnUnitDir+"/"+plnUnitName)
+	fmt.Fprintln(cmd.OutOrStdout(), "pln daemon installed at "+plnUnitDir+"/"+plnUnitName)
 	return nil
 }
 
-func runServiceUninstall(cmd *cobra.Command, _ []string) error {
+func runDaemonUninstall(cmd *cobra.Command, _ []string) error {
 	if runtime.GOOS != osLinux {
 		return nil
 	}
 	if os.Getuid() != 0 {
-		return errors.New("must be run as root (try: sudo pln service uninstall)")
+		return errors.New("must be run as root (try: sudo pln daemon uninstall)")
 	}
 
 	_ = exec.CommandContext(cmd.Context(), "systemctl", "stop", "pln").Run()
@@ -120,6 +119,6 @@ func runServiceUninstall(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "purged %s\n", plnfs.SystemDir)
 	}
 
-	fmt.Fprintln(cmd.OutOrStdout(), "pln service uninstalled")
+	fmt.Fprintln(cmd.OutOrStdout(), "pln daemon uninstalled")
 	return nil
 }

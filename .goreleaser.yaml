@@ -38,7 +38,7 @@ nfpms:
     formats: [deb, rpm]
     bindir: /usr/bin
     # The systemd unit is embedded in the binary and written by
-    # `pln service install` in the postinstall hook — no need to ship it
+    # `pln daemon install` in the postinstall hook — no need to ship it
     # as a packaged file as well.
     scripts:
       postinstall: packaging/postinstall.sh

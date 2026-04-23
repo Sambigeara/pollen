@@ -31,9 +31,10 @@ _Pollen is in early development — expect breaking changes and sharp edges._
 - **WASM seeds.** Deploy with `pln seed`; artifacts distribute
   peer-to-peer by hash. Modules compose via one Extism host call,
   authored in [a variety of languages](https://extism.org/docs/quickstart/plugin-quickstart).
-- **Static sites & blobs.** `pln static seed ./public` publishes a
-  site; `pln blob put ./file` shares a file. Content-addressed,
-  gossiped, streamed peer-to-peer over QUIC.
+- **Static sites & blobs.** `pln seed ./public` publishes a site;
+  `pln seed ./file` shares a file. Same verb across workloads, sites,
+  and blobs — kind is autodetected from what you point at.
+  Content-addressed, gossiped, streamed peer-to-peer over QUIC.
 - **QUIC transport.** One multiplexed, encrypted, UDP-based
   connection per peer carries gossip, services, and seeds. NAT
   traversal built in.
@@ -156,25 +157,26 @@ cat props.json | pln grant <peer-id> --prop -
 pln set static-http               # or `pln set static-http 9000`
 
 # From any node:
-pln static seed my-site ./public
+pln seed ./public my-site
 
 # Fetch via any serving node:
 curl -H "Host: my-site" http://<node-addr>:8080/
 ```
 
-`pln static seed` hashes every file into the local content-addressed
-store and publishes the site under `<name>`. Other nodes replicate
-the files and serve the site themselves. Each node's HTTP listener
-routes requests by `Host` header to the matching site.
+`pln seed` on a directory hashes every file into the local
+content-addressed store and publishes the site under `<name>`. Other
+nodes replicate the files and serve the site themselves. Each node's
+HTTP listener routes requests by `Host` header to the matching site.
 
 ### Share a blob
 
 ```bash
 # From any node:
-pln blob put ./big-file.bin       # prints sha-256 digest
+pln seed ./big-file.bin           # prints sha-256 digest
+pln seed ./big-file.bin payload   # …or publish under a name
 
 # From any other node:
-pln blob fetch <digest>           # pulls peer-to-peer over QUIC into the local store
+pln fetch <digest|name>           # pulls peer-to-peer over QUIC into the local store
 ```
 
 Blobs are the primitive behind static sites — content-addressed,

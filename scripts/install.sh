@@ -103,7 +103,7 @@ install_tarball() {
     local tar="$TMPDIR/pln.tar.gz"
     curl -fsSL "$(asset_url tar.gz)" -o "$tar"
     $SUDO tar -xzf "$tar" -C /usr/local/bin pln
-    $SUDO /usr/local/bin/pln service install
+    $SUDO /usr/local/bin/pln daemon install
 }
 
 install_linux() {
