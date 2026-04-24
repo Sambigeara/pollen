@@ -16,146 +16,237 @@
     --code-bg: #f6f5f1;
     --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
-    --col: 1100px;
+    --gutter: clamp(1.25rem, 4vw, 3.5rem);
+    --sidebar-w: 240px;
+    --header-h: 4rem;
   }
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); }
   body { min-height: 100vh; display: flex; flex-direction: column; }
-  main { flex: 1; max-width: var(--col); margin: 0 auto; padding: 3rem 1.75rem; width: 100%; }
 
-  .masthead { display: flex; align-items: center; gap: 0.9rem; margin-bottom: 2rem; }
-  .masthead .logo { width: 48px; height: 48px; image-rendering: pixelated; flex-shrink: 0; }
-  .masthead h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
-  .masthead nav { color: var(--mute); font-size: 0.95rem; margin-left: auto; }
-  .masthead nav a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 2px; }
-  .masthead nav a:hover { border-color: var(--accent); }
-  .masthead nav .sep { color: var(--rule); margin: 0 0.5rem; }
+  .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(255, 255, 255, 0.9);
+    backdrop-filter: saturate(180%) blur(8px);
+    -webkit-backdrop-filter: saturate(180%) blur(8px);
+    border-bottom: 1px solid var(--rule);
+  }
+  .site-header-inner {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.75rem var(--gutter);
+    min-height: var(--header-h);
+  }
+  .brand { display: flex; align-items: center; gap: 0.7rem; text-decoration: none; color: var(--ink); font-weight: 600; font-size: 1rem; letter-spacing: -0.01em; }
+  .brand img { width: 32px; height: 32px; image-rendering: pixelated; flex-shrink: 0; }
+  .site-nav { margin-left: auto; display: flex; gap: 1.25rem; font-size: 0.95rem; }
+  .site-nav a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 2px; white-space: nowrap; }
+  .site-nav a:hover { border-color: var(--accent); }
 
-  h2 { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.01em; margin: 2.75rem 0 0.75rem; border-top: 1px solid var(--rule); padding-top: 2rem; }
+  .layout {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 80ch) var(--sidebar-w);
+    justify-content: center;
+    gap: clamp(2rem, 5vw, 4rem);
+    padding: 2.5rem var(--gutter) 3rem;
+    width: 100%;
+  }
+
+  .sidebar {
+    position: sticky;
+    top: calc(var(--header-h) + 1rem);
+    align-self: start;
+    max-height: calc(100vh - var(--header-h) - 2rem);
+    overflow-y: auto;
+  }
+  .sidebar-title { font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--mute); margin: 0 0 0.75rem 0.8rem; }
+  .sidebar nav { display: flex; flex-direction: column; font-size: 0.92rem; line-height: 1.45; }
+  .sidebar nav a {
+    color: var(--mute);
+    text-decoration: none;
+    padding: 0.35rem 0 0.35rem 0.8rem;
+    border-left: 2px solid var(--rule);
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .sidebar nav a:hover { color: var(--ink); border-left-color: var(--accent); }
+
+  main { min-width: 0; }
+
+  .lede { color: var(--mute); font-size: 1.05rem; line-height: 1.55; margin: 0 0 2.5rem; max-width: 70ch; }
+  .lede a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 1px; }
+  .lede a:hover { border-color: var(--accent); }
+
+  h2 { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.01em; margin: 2.75rem 0 0.75rem; border-top: 1px solid var(--rule); padding-top: 2rem; scroll-margin-top: calc(var(--header-h) + 1rem); }
   h2:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
-  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.75rem 0 0.5rem; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.75rem 0 0.5rem; scroll-margin-top: calc(var(--header-h) + 1rem); }
 
-  p { color: var(--ink); font-size: 1rem; line-height: 1.6; margin: 0 0 1rem; }
+  p { color: var(--ink); font-size: 1rem; line-height: 1.6; margin: 0 0 1rem; max-width: 70ch; }
   p.aside { color: var(--mute); font-size: 0.92rem; }
-  .lede { color: var(--mute); font-size: 1.05rem; line-height: 1.55; margin: 0 0 2.5rem; }
+  p a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 1px; }
+  p a:hover { border-color: var(--accent); }
 
-  a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
-  a:hover { border-color: var(--accent); }
-  .lede a { color: var(--ink); }
-
-  ul, ol { color: var(--ink); font-size: 1rem; line-height: 1.6; margin: 0 0 1.25rem; padding-left: 1.25rem; }
+  ul, ol { color: var(--ink); font-size: 1rem; line-height: 1.6; margin: 0 0 1.25rem; padding-left: 1.25rem; max-width: 70ch; }
   li { margin-bottom: 0.35rem; }
+  li a { color: var(--ink); border-bottom: 1px solid var(--rule); text-decoration: none; padding-bottom: 1px; }
+  li a:hover { border-color: var(--accent); }
 
   code { font-family: var(--mono); font-size: 0.9em; background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
   pre { background: var(--code-bg); padding: 0.9rem 1.1rem; border-radius: 8px; overflow-x: auto; margin: 0 0 1.25rem; line-height: 1.55; }
   pre code { background: none; padding: 0; font-size: 0.9rem; }
   pre .c { color: var(--mute); }
 
-  .note { border-left: 3px solid var(--accent); background: var(--code-bg); padding: 0.7rem 1rem; border-radius: 4px; font-size: 0.95rem; margin: 0 0 1.25rem; }
+  .note { border-left: 3px solid var(--accent); background: var(--code-bg); padding: 0.7rem 1rem; border-radius: 4px; font-size: 0.95rem; margin: 0 0 1.25rem; max-width: 70ch; }
   .note strong { font-weight: 600; }
 
-  footer { max-width: var(--col); margin: 0 auto; padding: 1.5rem 1.75rem; color: var(--mute); font-size: 0.85rem; width: 100%; border-top: 1px solid var(--rule); }
-  footer a { color: var(--mute); border-bottom-color: var(--rule); }
+  footer { padding: 1.5rem var(--gutter); color: var(--mute); font-size: 0.85rem; width: 100%; border-top: 1px solid var(--rule); }
+  footer a { color: var(--mute); text-decoration: none; border-bottom: 1px solid var(--rule); padding-bottom: 1px; }
   footer a:hover { color: var(--ink); border-color: var(--accent); }
+
+  @media (max-width: 900px) {
+    .layout {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0;
+      padding: 1.75rem var(--gutter) 2rem;
+    }
+    .sidebar { display: none; }
+  }
+  @media (max-width: 520px) {
+    :root { --gutter: 1rem; }
+    .site-header-inner { padding: 0.6rem var(--gutter); }
+    .brand { font-size: 0.95rem; }
+    .brand img { width: 28px; height: 28px; }
+    .site-nav { gap: 0.9rem; font-size: 0.9rem; }
+    h2 { font-size: 1.2rem; padding-top: 1.5rem; margin-top: 2rem; }
+    h3 { font-size: 1rem; }
+    pre { padding: 0.7rem 0.85rem; font-size: 0.88rem; }
+  }
 </style>
 </head>
 <body>
-<main>
-  <header class="masthead">
-    <img class="logo" src="logo.svg" alt="" width="48" height="48">
-    <h1>Pollen docs</h1>
-    <nav aria-label="Site">
-      <a href="cli.html">CLI reference</a><span class="sep">&middot;</span><a href="https://github.com/sambigeara/pollen">GitHub</a>
+<header class="site-header">
+  <div class="site-header-inner">
+    <a href="index.html" class="brand">
+      <img src="logo.svg" alt="" width="32" height="32">
+      <span>Pollen docs</span>
+    </a>
+    <nav class="site-nav">
+      <a href="cli.html">CLI reference</a>
+      <a href="https://github.com/sambigeara/pollen">GitHub</a>
     </nav>
-  </header>
+  </div>
+</header>
 
-  <p class="lede">Pollen runs a zero-trust mesh and a WASM workload runtime out of one static binary. These pages cover install, getting a cluster up, deploying workloads, and exposing services. For internals, see <a href="https://github.com/sambigeara/pollen/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>.</p>
+<div class="layout">
+  <main>
+    <p class="lede">Pollen runs a zero-trust mesh and a WASM workload runtime out of one static binary. These pages cover install, getting a cluster up, deploying workloads, and exposing services. For internals, see <a href="https://github.com/sambigeara/pollen/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>.</p>
 
-  <h2>Install</h2>
-  <pre><code>curl -fsSL https://pln.sh/install.sh | bash</code></pre>
-  <p>Wraps Homebrew on macOS and apt/yum on Linux. On macOS, state lives in <code>~/.pln</code>. On Linux, the installer runs <code>pln daemon install</code> to provision <code>/var/lib/pln</code> under a dedicated <code>pln</code> system user and adds the invoking user to the <code>pln</code> group for CLI access.</p>
+    <h2 id="install">Install</h2>
+    <pre><code>curl -fsSL https://pln.sh/install.sh | bash</code></pre>
+    <p>Wraps Homebrew on macOS and apt/yum on Linux. On macOS, state lives in <code>~/.pln</code>. On Linux, the installer runs <code>pln daemon install</code> to provision <code>/var/lib/pln</code> under a dedicated <code>pln</code> system user and adds the invoking user to the <code>pln</code> group for CLI access. Override either default with <code>$PLN_DIR</code>.</p>
 
-  <h2>One-node cluster</h2>
-  <pre><code>pln init
+    <h2 id="one-node-cluster">One-node cluster</h2>
+    <pre><code>pln init
 pln up</code></pre>
-  <p>That's a single-node cluster, fully functional. Add <code>-d</code> to <code>up</code> to detach into the background service. Everything below works against this baseline.</p>
+    <p>That's a single-node cluster, fully functional. Add <code>-d</code> to <code>up</code> to detach into the background service. Everything below works against this baseline.</p>
 
-  <h2>Add a node</h2>
-  <p>Two paths. Pick whichever fits your access model.</p>
+    <h2 id="add-a-node">Add a node</h2>
+    <p>Two paths. Pick whichever fits your access model.</p>
 
-  <h3>SSH (zero-touch)</h3>
-  <p>Installs Pollen, joins the cluster, and starts the daemon. Linux targets only. Needs SSH as root or with passwordless sudo.</p>
-  <pre><code>pln bootstrap ssh user@host
+    <h3>SSH (zero-touch)</h3>
+    <p>Installs Pollen, joins the cluster, and starts the daemon. Linux targets only. Needs SSH as root or with passwordless sudo.</p>
+    <pre><code>pln bootstrap ssh user@host
 pln bootstrap ssh relay-eu=root@10.0.0.5 --admin</code></pre>
-  <p class="aside">Prefix a target with <code>name=</code> to label the node. Pass <code>--admin</code> to delegate admin authority, so the cluster keeps issuing certs and admitting peers when your root machine is offline.</p>
+    <p class="aside">Prefix a target with <code>name=</code> to label the node. Pass <code>--admin</code> to delegate admin authority, so the cluster keeps issuing certs and admitting peers when your root machine is offline.</p>
 
-  <h3>Invite token (out of band)</h3>
-  <p>Mint on an admin, ship the token over any channel, redeem on the joiner.</p>
-  <pre><code><span class="c"># on the admin</span>
+    <h3>Invite token (out of band)</h3>
+    <p>Mint on an admin, ship the token over any channel, redeem on the joiner.</p>
+    <pre><code><span class="c"># on the admin</span>
 pln invite                       <span class="c"># any joiner</span>
 pln invite --subject &lt;peer-pub&gt;  <span class="c"># bound to one node</span></code></pre>
-  <pre><code><span class="c"># on the joiner</span>
+    <pre><code><span class="c"># on the joiner</span>
 pln join &lt;token&gt;</code></pre>
-  <p class="aside">Tokens are signed and self-contained, carrying the cluster root key and bootstrap addresses. Pass <code>--subject</code> with the recipient's <code>pln id</code> to bind a token to one node; omit it for an open invite. Safe to send over Slack or email. TTL defaults to 5 minutes.</p>
+    <p class="aside">Tokens are signed and self-contained, carrying the cluster root key and bootstrap addresses. Pass <code>--subject</code> with the recipient's <code>pln id</code> to bind a token to one node; omit it for an open invite. Safe to send over Slack or email. TTL defaults to 5 minutes.</p>
 
-  <h2>Run a workload</h2>
-  <pre><code>pln seed ./hello.wasm
+    <h2 id="run-a-workload">Run a workload</h2>
+    <pre><code>pln seed ./hello.wasm
 pln call hello greet '{"name":"world"}'</code></pre>
-  <p><code>pln seed</code> publishes content. The kind is autodetected from the source: a <code>.wasm</code> file becomes a workload, a directory becomes a static site, anything else becomes a blob. Pass an optional name as the second arg.</p>
-  <p>Replicas land on whichever nodes have capacity and proximity. There's no scheduler; every node decides locally. Tune with <code>--min-replicas</code>, <code>--everywhere</code>, <code>--memory</code>, <code>--latency-slo</code>.</p>
-  <aside class="note"><strong>Authoring.</strong> Workloads are <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism plugins</a>. Author them in Go, Rust, JavaScript, Python, C#, Zig, and more. One host call lets a workload invoke another (<code>seed/&lt;name&gt;/&lt;fn&gt;</code>), so authz, routing, and policy can live inside WASM.</aside>
+    <p><code>pln seed</code> publishes content. The kind is autodetected from the source: a <code>.wasm</code> file becomes a workload, a directory becomes a static site, anything else becomes a blob. Pass an optional name as the second arg.</p>
+    <p>Replicas land on whichever nodes have capacity and proximity. There's no scheduler; every node decides locally. Tune with <code>--min-replicas</code>, <code>--everywhere</code>, <code>--memory</code>, <code>--latency-slo</code>.</p>
+    <div class="note"><strong>Authoring.</strong> Workloads are <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism plugins</a>. Author them in Go, Rust, JavaScript, Python, C#, Zig, and more. One host call lets a workload invoke another (<code>seed/&lt;name&gt;/&lt;fn&gt;</code>), so authz, routing, and policy can live inside WASM.</div>
 
-  <h2>Expose a service</h2>
-  <pre><code><span class="c"># machine A</span>
+    <h2 id="expose-a-service">Expose a service</h2>
+    <pre><code><span class="c"># machine A</span>
 pln serve 8080 api</code></pre>
-  <pre><code><span class="c"># machine B</span>
+    <pre><code><span class="c"># machine B</span>
 pln connect api
 curl localhost:8080</code></pre>
-  <p>TCP or UDP (<code>--udp</code>), with mTLS end-to-end and NAT traversal built in. Connections punch directly when both sides can reach each other; otherwise they relay over the shortest mesh path. Persisted to <code>config.yaml</code> so they re-establish on restart.</p>
+    <p>TCP or UDP (<code>--udp</code>), with mTLS end-to-end and NAT traversal built in. Connections punch directly when both sides can reach each other; otherwise they relay over the shortest mesh path. Persisted to <code>config.yaml</code> so they re-establish on restart.</p>
 
-  <h2>Publish a site</h2>
-  <pre><code>pln seed ./public my-site</code></pre>
-  <p>Walks the directory, hashes every file, and gossips them. Other nodes claim the site according to <code>--min-replicas</code> and serve it on <code>:8080</code> (routed by Host header).</p>
-  <pre><code>curl -H "Host: my-site" http://&lt;node-addr&gt;:8080/</code></pre>
-  <p>Re-running the same command is idempotent: it supersedes the existing site with a fresh manifest. Old blobs are GC'd once no spec references them.</p>
+    <h2 id="publish-a-site">Publish a site</h2>
+    <pre><code>pln seed ./public my-site</code></pre>
+    <p>Walks the directory, hashes every file, and gossips them. Other nodes claim the site according to <code>--min-replicas</code> and serve it on <code>:8080</code> (routed by Host header).</p>
+    <pre><code>curl -H "Host: my-site" http://&lt;node-addr&gt;:8080/</code></pre>
+    <p>Re-running the same command is idempotent: it supersedes the existing site with a fresh manifest. Old blobs are GC'd once no spec references them.</p>
 
-  <h2>Share a blob</h2>
-  <pre><code>pln seed ./big.bin payload   <span class="c"># named</span>
+    <h2 id="share-a-blob">Share a blob</h2>
+    <pre><code>pln seed ./big.bin payload   <span class="c"># named</span>
 pln seed ./big.bin           <span class="c"># anon, hash-only</span>
 pln fetch payload            <span class="c"># pull onto this node</span>
 pln unseed payload           <span class="c"># drop the name + bytes</span></code></pre>
-  <p>Blobs are content-addressed bytes. Streamed peer-to-peer over QUIC, gossip-advertised, and verified on arrival by SHA-256. Anonymous blobs print just their hash; named blobs are also resolvable by name across the cluster.</p>
+    <p>Blobs are content-addressed bytes. Streamed peer-to-peer over QUIC, gossip-advertised, and verified on arrival by SHA-256. Anonymous blobs print just their hash; named blobs are also resolvable by name across the cluster.</p>
 
-  <h2>Day two</h2>
-  <ul>
-    <li><code>pln status</code> shows peers, services, seeds, sites, and blobs. Use <code>--wide</code> for full IDs, <code>--include-offline</code> to see departed peers.</li>
-    <li><code>pln logs -f</code> tails the background daemon's log.</li>
-    <li><code>pln daemon upgrade --restart</code> pulls the latest binary and bounces the service.</li>
-    <li><code>pln set</code> changes daemon config like HTTP bind or log level. Run with no args to list keys.</li>
-    <li><code>pln context</code> switches your admin shell between clusters or remote hosts.</li>
-    <li><code>pln down</code> and <code>pln restart</code> stop or restart the local node.</li>
-  </ul>
+    <h2 id="day-two">Day two</h2>
+    <ul>
+      <li><code>pln status</code> shows peers, services, seeds, sites, and blobs. Use <code>--wide</code> for full IDs, <code>--include-offline</code> to see departed peers.</li>
+      <li><code>pln logs -f</code> tails the background daemon's log.</li>
+      <li><code>pln daemon upgrade --restart</code> pulls the latest binary and bounces the service.</li>
+      <li><code>pln set</code> changes daemon config like HTTP bind or log level. Run with no args to list keys.</li>
+      <li><code>pln context</code> switches your admin shell between clusters or remote hosts.</li>
+      <li><code>pln down</code> and <code>pln restart</code> stop or restart the local node.</li>
+    </ul>
 
-  <h2>Authorisation</h2>
-  <p>Every link is mTLS. On top of that, cert <strong>properties</strong> baked into each issued cert are visible to seeds at call time, so admission, routing, and policy can run inside WASM without sharing secrets.</p>
-  <pre><code>pln grant &lt;peer-id&gt; --prop role=lead --prop team=backend
+    <h2 id="authorisation">Authorisation</h2>
+    <p>Every link is mTLS. On top of that, cert <strong>properties</strong> baked into each issued cert are visible to seeds at call time, so admission, routing, and policy can run inside WASM without sharing secrets.</p>
+    <pre><code>pln grant &lt;peer-id&gt; --prop role=lead --prop team=backend
 pln invite --prop tier=gold      <span class="c"># bake at join time</span></code></pre>
-  <p>For cluster-wide policy gates, point at a Cerbos-style PDP seed. See <a href="https://github.com/sambigeara/pollen/tree/main/examples/cerbos">examples/cerbos</a>. Inspect what a gate would decide without dispatching:</p>
-  <pre><code>pln policy check workload_call \
+    <p>For cluster-wide policy gates, point at a Cerbos-style PDP seed. See <a href="https://github.com/sambigeara/pollen/tree/main/examples/cerbos">examples/cerbos</a>. Inspect what a gate would decide without dispatching:</p>
+    <pre><code>pln policy check workload_call \
   --subject peer:a9b8... --action call \
   --resource seed:deadbeef...</code></pre>
 
-  <h2>Where to go next</h2>
-  <ul>
-    <li><a href="cli.html">CLI reference</a>: every command, every flag.</li>
-    <li><a href="https://github.com/sambigeara/pollen#readme">README</a>: elevator pitch and feature highlights.</li>
-    <li><a href="https://github.com/sambigeara/pollen/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>: layers, CRDT, routing, placement.</li>
-    <li><a href="https://github.com/sambigeara/pollen/tree/main/examples">examples/</a>: runnable workloads and a Cerbos PDP.</li>
-    <li><a href="https://pkg.go.dev/github.com/sambigeara/pollen">pkg.go.dev</a>: Go API reference.</li>
-    <li><a href="https://github.com/sambigeara/pollen/releases">Releases</a>: changelog.</li>
-    <li><a href="https://github.com/sambigeara/pollen/issues">Issues</a>: bugs, questions, suggestions.</li>
-  </ul>
-</main>
+    <h2 id="where-to-go-next">Where to go next</h2>
+    <ul>
+      <li><a href="cli.html">CLI reference</a>: every command, every flag.</li>
+      <li><a href="https://github.com/sambigeara/pollen#readme">README</a>: elevator pitch and feature highlights.</li>
+      <li><a href="https://github.com/sambigeara/pollen/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>: layers, CRDT, routing, placement.</li>
+      <li><a href="https://github.com/sambigeara/pollen/tree/main/examples">examples/</a>: runnable workloads and a Cerbos PDP.</li>
+      <li><a href="https://pkg.go.dev/github.com/sambigeara/pollen">pkg.go.dev</a>: Go API reference.</li>
+      <li><a href="https://github.com/sambigeara/pollen/releases">Releases</a>: changelog.</li>
+      <li><a href="https://github.com/sambigeara/pollen/issues">Issues</a>: bugs, questions, suggestions.</li>
+    </ul>
+  </main>
+
+  <aside class="sidebar">
+    <div class="sidebar-title">On this page</div>
+    <nav>
+      <a href="#install">Install</a>
+      <a href="#one-node-cluster">One-node cluster</a>
+      <a href="#add-a-node">Add a node</a>
+      <a href="#run-a-workload">Run a workload</a>
+      <a href="#expose-a-service">Expose a service</a>
+      <a href="#publish-a-site">Publish a site</a>
+      <a href="#share-a-blob">Share a blob</a>
+      <a href="#day-two">Day two</a>
+      <a href="#authorisation">Authorisation</a>
+      <a href="#where-to-go-next">Where to go next</a>
+    </nav>
+  </aside>
+</div>
 <footer>&copy; 2026 Sam Lock &middot; Apache-2.0 &middot; <a href="https://pln.sh/">pln.sh</a></footer>
 </body>
 </html>
