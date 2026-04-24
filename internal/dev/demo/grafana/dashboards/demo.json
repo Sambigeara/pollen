@@ -17,7 +17,7 @@
         "x": 0,
         "y": 0,
         "w": 24,
-        "h": 15
+        "h": 12
       },
       "datasource": {
         "type": "prometheus",
@@ -94,10 +94,10 @@
       "title": "Replicas per Workload",
       "description": "Total replicas claimed across the cluster, per workload. Watch the autoscaler add replicas as load ramps.",
       "gridPos": {
-        "x": 0,
-        "y": 15,
+        "x": 12,
+        "y": 12,
         "w": 12,
-        "h": 10
+        "h": 7
       },
       "datasource": {
         "type": "prometheus",
@@ -225,10 +225,10 @@
       "title": "Client-observed request rate (by region)",
       "description": "ok vs fail rate measured at the dedicated exerciser. One line per exerciser target — new lines appear as regions are added.",
       "gridPos": {
-        "x": 12,
-        "y": 15,
+        "x": 0,
+        "y": 12,
         "w": 12,
-        "h": 10
+        "h": 7
       },
       "datasource": {
         "type": "prometheus",
@@ -286,21 +286,17 @@
           "unit": "reqps"
         },
         "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* fail$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#E02F44"
-                }
-              }
-            ]
-          }
+          {"matcher": {"id": "byRegexp", "options": ".* fail$"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#E02F44"}}]},
+          {"matcher": {"id": "byName", "options": "euc ok"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#5794F2"}}]},
+          {"matcher": {"id": "byName", "options": "eun ok"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#73BF69"}}]},
+          {"matcher": {"id": "byName", "options": "euw ok"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#B877D9"}}]},
+          {"matcher": {"id": "byName", "options": "mum ok"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#8AB8FF"}}]},
+          {"matcher": {"id": "byName", "options": "sao ok"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#FADE2A"}}]},
+          {"matcher": {"id": "byName", "options": "sgp ok"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#00A699"}}]},
+          {"matcher": {"id": "byName", "options": "syd ok"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#FF7383"}}]},
+          {"matcher": {"id": "byName", "options": "tok ok"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#37872D"}}]},
+          {"matcher": {"id": "byName", "options": "use ok"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#FF9830"}}]},
+          {"matcher": {"id": "byName", "options": "usw ok"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#E0B400"}}]}
         ]
       }
     }

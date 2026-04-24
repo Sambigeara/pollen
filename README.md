@@ -79,7 +79,9 @@ echo "media=alice@10.0.0.5" | pln bootstrap ssh -
 
 Installs Pollen, enrols in the cluster, and starts. Linux targets only;
 needs SSH as root or passwordless sudo. `--admin` delegates admin
-authority; prefix a target with `name=` to label the node.
+authority; prefix a target with `name=` to label the node. See the
+[CLI reference](https://docs.pln.sh/cli#bootstrap) for the full flag
+set.
 
 **Out-of-band.** Mint a token on an admin node, ship it to the joiner:
 

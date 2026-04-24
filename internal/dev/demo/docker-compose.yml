@@ -31,7 +31,7 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/pollen.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/demo.json
       GF_DASHBOARDS_MIN_REFRESH_INTERVAL: "2s"
       GF_INSTALL_PLUGINS: "volkovlabs-echarts-panel"
     volumes:

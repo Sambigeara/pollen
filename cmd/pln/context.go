@@ -6,6 +6,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,11 @@ const (
 type contextEntry struct {
 	Dir  string `yaml:"dir"`
 	Host string `yaml:"host,omitempty"`
+	// Port is the mesh UDP port the daemon binds for this context. Local
+	// named contexts get a free ephemeral port assigned at ctx add so they
+	// coexist with other local daemons (default-context brew/apt pln, other
+	// named contexts) without collision. Zero means "use the default."
+	Port int `yaml:"port,omitempty"`
 }
 
 type contextsFile struct {
@@ -239,23 +245,51 @@ func runContextAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("context %q already exists", name)
 	}
 
+	entry := contextEntry{Dir: dir, Host: host}
 	if host != "" {
 		ctxDir, err := provisionRemoteIdentity(cmd, name)
 		if err != nil {
 			return err
 		}
-		dir = ctxDir
-	} else if _, statErr := os.Stat(dir); errors.Is(statErr, os.ErrNotExist) {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s does not exist yet; run `pln init` or `pln up` after switching to this context\n", dir)
+		entry.Dir = ctxDir
+	} else {
+		if _, statErr := os.Stat(dir); errors.Is(statErr, os.ErrNotExist) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s does not exist yet; run `pln init` or `pln up` after switching to this context\n", dir)
+		}
+		// Assign a free UDP port so the local daemon for this context can
+		// coexist with the default-context daemon (and any other named
+		// contexts) without binding :60611 twice.
+		port, err := pickFreeUDPPort()
+		if err != nil {
+			return fmt.Errorf("pick free port: %w", err)
+		}
+		entry.Port = port
 	}
 
-	cf.Contexts[name] = contextEntry{Dir: dir, Host: host}
+	cf.Contexts[name] = entry
 	if err := saveContexts(cf); err != nil {
 		return err
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "added context %q\n", name)
 	return nil
+}
+
+// pickFreeUDPPort asks the kernel for an unused UDP port by binding to :0
+// and immediately releasing it. There's an inherent race between release
+// and the daemon binding the same port later, but in practice launchd's
+// KeepAlive retries and the cost of the rare collision is one relaunch.
+func pickFreeUDPPort() (int, error) {
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return 0, fmt.Errorf("unexpected local addr type %T", conn.LocalAddr())
+	}
+	return addr.Port, nil
 }
 
 // Generates a fresh admin keypair under ~/.pln/contexts/<name>/, or copies
@@ -334,6 +368,9 @@ func runContextList(cmd *cobra.Command, _ []string) error {
 			target = cf.Contexts[n].Host
 		default:
 			target = cf.Contexts[n].Dir
+			if p := cf.Contexts[n].Port; p > 0 {
+				target = fmt.Sprintf("%s :%d", target, p)
+			}
 		}
 		marker := ""
 		if n == current {

@@ -33,41 +33,35 @@ destroy-vivaldi-pub: (_destroy "vivaldi-public")
 
 # ── Demo cluster ──────────────────────────────────────────────────────
 #
-# Headline lifecycle (all idempotent):
-#   just demo-up                                      # build → deploy → start → bootstrap → seed
-#   just start-exerciser usw 1000 5m                  # 1k r/s at usw for 5 minutes (firehose chain by default)
-#   just start-exerciser usw,use,eun,sao,tok 1000 5m  # fan out 1k r/s to 5 regions in parallel
-#   just stop-exerciser usw                           # stop load to usw
-#   just destroy-demo                                 # teardown: stop local + terraform destroy
+# The demo narrative lives in demo/SCRIPT.md. These recipes stop at the
+# infrastructure boundary: terraform plus the root authorized_keys and the
+# exerciser host (a dev tool, not a pollen release artifact). Pollen itself
+# is laid down on each pollen node by `pln bootstrap ssh` during the demo.
 #
-# Lower-level steps (each individually runnable, composed by demo-up):
-#   just build-demo      # cross-compile pln + exerciser + WASM modules
-#   just deploy-demo     # terraform + provision 10 pollen nodes + 1 exerciser host
-#   just start-demo      # local root node + store + prometheus + grafana
-#   just bootstrap-demo  # form the cluster from the local root
-#   just seed-demo       # deploy the WASM workload chain (ingest → processor)
-#   just stop-demo       # local stack down (leaves AWS infra alive)
+# Lifecycle:
+#   just build-demo          # exerciser binary + WASM modules + world map
+#   just deploy-demo         # terraform + authorized_keys + exerciser host setup
+#   just start-observability # grafana + prometheus + fresh file-SD targets
+#   just start-exerciser usw 1000 5m          # 1k r/s at usw for 5 minutes
+#   just start-exerciser usw,use,eun,sao 1000 5m
+#   just stop-exerciser usw
+#   just destroy-demo        # docker stack down + terraform destroy
+#
+# The pln bootstrap call from SCRIPT.md (public demo) is:
+#   cat ~/bootstrap_peers.txt | pln bootstrap ssh -
+# Enrolled nodes bind control-addr (:50051) by default. The demo also
+# needs Prometheus metrics on the local root — that's set by the
+# pre-record `pln set http :9090` step in SCRIPT.md, not by bootstrap.
 
 repo_root := justfile_directory() / ".." / ".."
 demo_dir := justfile_directory() / "demo"
 demo_tf := justfile_directory() / "demo-cluster"
-pln_dir := "/tmp/pln-demo"
 
-# End-to-end demo bring-up. Safe to re-run: each sub-step is idempotent.
-demo-up: build-demo deploy-demo start-demo bootstrap-demo seed-demo
-    @echo ""
-    @echo "demo ready. Grafana at http://localhost:3000"
-    @echo "next: just start-exerciser <nodes> <rate> [<duration>]   e.g. just start-exerciser usw,use 1000 5m"
-
-# Cross-compile all demo artifacts.
+# Build demo artifacts: exerciser binary, WASM modules, ECharts world map.
 build-demo:
     #!/usr/bin/env bash
     set -euo pipefail
     cd {{ repo_root }}
-    echo "building pln (host)..."
-    go build -o pln ./cmd/pln
-    echo "building pln-linux (arm64)..."
-    GOOS=linux GOARCH=arm64 go build -o pln-linux ./cmd/pln
     echo "building exerciser-linux (arm64)..."
     GOOS=linux GOARCH=arm64 go build -o exerciser-linux ./cmd/exerciser/
     echo "building WASM modules..."
@@ -76,35 +70,24 @@ build-demo:
     MAPFILE="{{ demo_dir }}/grafana/gazetteer/world.json"
     [ -f "$MAPFILE" ] || curl -sL 'https://cdn.jsdelivr.net/npm/echarts@4/map/json/world.json' -o "$MAPFILE"
 
-# Create AWS VMs and provision them with the local pln binary.
+# Provision AWS: 10 bare Ubuntu pollen nodes + exerciser host (pollen nodes untouched).
 deploy-demo:
     #!/usr/bin/env bash
     set -euo pipefail
     cd {{ demo_tf }} && terraform init -input=false && terraform apply -auto-approve
     NODES=$(terraform output -json node_ips)
     EXERCISER_IP=$(terraform output -raw exerciser_ip)
-    BINARY="{{ repo_root }}/pln-linux"
     EXERCISER="{{ repo_root }}/exerciser-linux"
 
-    echo "provisioning pollen nodes..."
-    provision_node() {
+    echo "granting root SSH to pollen nodes..."
+    grant_root() {
         local name=$1 ip=$2
         ssh {{ ssh_args }} ubuntu@$ip "sudo cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/authorized_keys"
-        # Stop pln before replacing the binary — scp-over-running-executable
-        # trips ETXTBSY. Harmless on a fresh host where the unit doesn't exist yet.
-        ssh {{ ssh_args }} root@$ip "systemctl stop pln 2>/dev/null || true"
-        scp -O {{ ssh_args }} "$BINARY" root@$ip:/usr/bin/pln
-        ssh {{ ssh_args }} root@$ip "chmod +x /usr/bin/pln && pln daemon install && mkdir -p /etc/systemd/system/pln.service.d"
-        ssh {{ ssh_args }} root@$ip "pln --dir /var/lib/pln set control-addr :50051 && pln --dir /var/lib/pln set http :9090"
-        # Drop-in layers demo-only runtime tweaks (pprof, JIT) on top of the
-        # base unit. Uploaded after install so it isn't clobbered.
-        scp -O {{ ssh_args }} "{{ demo_tf }}/pln.service.d/demo.conf" root@$ip:/etc/systemd/system/pln.service.d/demo.conf
-        ssh {{ ssh_args }} root@$ip "systemctl daemon-reload"
         echo "  $name ($ip)... ok"
     }
     for entry in $(echo "$NODES" | jq -r 'to_entries | sort_by(.key) | .[] | "\(.key)=\(.value)"'); do
         name="${entry%%=*}"; ip="${entry#*=}"
-        provision_node "$name" "$ip" &
+        grant_root "$name" "$ip" &
     done
     wait
 
@@ -114,22 +97,21 @@ deploy-demo:
     scp -O {{ ssh_args }} "{{ demo_tf }}/pollen-exerciser@.service" root@$EXERCISER_IP:/etc/systemd/system/pollen-exerciser@.service
     ssh {{ ssh_args }} root@$EXERCISER_IP "chmod +x /usr/local/bin/exerciser && mkdir -p /etc/default && systemctl daemon-reload"
     echo "  exerciser ($EXERCISER_IP)... ok"
+    just _refresh-exerciser-targets
 
-# Start local root node, store, prometheus, and grafana.
-start-demo:
+# Regenerate Prometheus' exerciser file-SD from the current terraform
+# state. Called by both deploy-demo (at end) and start-observability so
+# the targets file stays fresh regardless of ordering. Writes [] when
+# state has no outputs — terraform's stdout warnings include ANSI escape
+# codes, so guard with an IPv4 literal check.
+[private]
+_refresh-exerciser-targets:
     #!/usr/bin/env bash
     set -euo pipefail
-    mkdir -p {{ pln_dir }}
-    cat > {{ pln_dir }}/config.yaml <<EOF
-    name: root
-    services:
-      - name: store
-        port: 8080
-    EOF
-
-    # Refresh Prometheus file-based SD targets for the exerciser host.
-    # Terraform output may be empty on a first-ever run — handle gracefully.
     EXERCISER_IP=$(cd {{ demo_tf }} && terraform output -raw exerciser_ip 2>/dev/null || true)
+    if [[ ! "$EXERCISER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        EXERCISER_IP=""
+    fi
     if [ -n "$EXERCISER_IP" ]; then
       jq -n --arg ip "$EXERCISER_IP" '[
         {name:"euc",port:9192},{name:"eun",port:9193},{name:"euw",port:9194},
@@ -141,55 +123,14 @@ start-demo:
       echo "[]" > {{ demo_dir }}/exerciser_targets.json
     fi
 
+# Bring up grafana + prometheus + fresh file-SD targets. No pln.
+start-observability: _refresh-exerciser-targets
+    #!/usr/bin/env bash
+    set -euo pipefail
     cd {{ demo_dir }} && docker compose up -d --build
-
-    if [ -f {{ pln_dir }}/pln.pid ] && kill -0 "$(cat {{ pln_dir }}/pln.pid)" 2>/dev/null; then
-        echo "root node already running (pid $(cat {{ pln_dir }}/pln.pid))"
-    else
-        rm -f {{ pln_dir }}/pln.pid
-        echo "starting local pln node..."
-        PLN_DIR={{ pln_dir }} {{ repo_root }}/pln set http :9090
-        PLN_DIR={{ pln_dir }} nohup {{ repo_root }}/pln up --port 60612 > {{ pln_dir }}/pln.log 2>&1 &
-        echo $! > {{ pln_dir }}/pln.pid
-        sleep 3
-        echo "root node running (pid $(cat {{ pln_dir }}/pln.pid))"
-    fi
     echo "grafana: http://localhost:3000"
 
-# Bootstrap all remote nodes from the local root.
-bootstrap-demo:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd {{ demo_tf }}
-    terraform output -json node_ips \
-      | jq -r 'to_entries | sort_by(.key) | .[] | "\(.key)=root@\(.value)"' \
-      | PLN_DIR={{ pln_dir }} {{ repo_root }}/pln bootstrap ssh -
-
-# Seed the demo workload chain (ingest → processor → service/store).
-# Deploys both ingest entrypoints (handle, handle_firehose) and both
-# terminating seeds, so either scenario can be exercised on the same
-# cluster without reseeding. Per-seed latency SLOs are chosen to drive
-# autoscale against realistic load: leaves stay tight, chain-holders
-# tolerate one cross-region mesh hop plus admission wait.
-seed-demo:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    WASM="{{ repo_root }}/examples/demo"
-    PLN_DIR={{ pln_dir }} {{ repo_root }}/pln seed "$WASM/ingest.wasm"    --name ingest    --latency-slo-ms 500
-    PLN_DIR={{ pln_dir }} {{ repo_root }}/pln seed "$WASM/processor.wasm" --name processor --latency-slo-ms 500
-    PLN_DIR={{ pln_dir }} {{ repo_root }}/pln seed "$WASM/terminal.wasm"  --name terminal  --latency-slo-ms 50
-
-# Fire load at one or more pollen nodes from the dedicated exerciser host.
-# Pass a single node name or a comma-separated list; targets are configured
-# in parallel. Idempotent per target: a second invocation for the same node
-# replaces its running process (systemctl restart). Different targets keep
-# running concurrently.
-# Default URI is the mesh-only firehose chain (ingest/handle_firehose →
-# terminal). Pass pln://seed/ingest/handle to exercise the SQLite-constrained
-# chain (ingest/handle → processor → service/store).
-#   just start-exerciser usw 1000 5m                                      # firehose from one region
-#   just start-exerciser usw,use,eun,sao,tok 1000 5m                      # fan out to 5 regions in parallel
-#   just start-exerciser usw 500 3m pln://seed/ingest/handle              # SQLite chain
+# Fire load at one or more pollen nodes. Pass a comma-separated list to fan out.
 start-exerciser nodes rate="100" duration="0" uri="pln://seed/ingest/handle_firehose":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -268,21 +209,15 @@ ssh-demo node:
     IP=$(cd {{ demo_tf }} && terraform output -json node_ips | jq -r '."{{ node }}"')
     exec ssh {{ ssh_args }} root@"$IP"
 
-# Stop local stack and root node.
-stop-demo:
+# Stop the docker observability stack (grafana + prometheus + store).
+stop-observability:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -f {{ pln_dir }}/pln.pid ]; then
-        kill $(cat {{ pln_dir }}/pln.pid) 2>/dev/null || true
-        rm -f {{ pln_dir }}/pln.pid
-        echo "root node stopped"
-    fi
     cd {{ demo_dir }} && docker compose down
-    echo "local stack stopped"
+    echo "observability stack stopped"
 
-# Tear down AWS infrastructure.
-destroy-demo: stop-demo (_destroy "demo-cluster")
-    rm -rf {{ pln_dir }}
+# Tear down AWS + observability stack (does not touch pln contexts).
+destroy-demo: stop-observability (_destroy "demo-cluster")
 
 # Provision the hetzner test cluster infrastructure (terraform only).
 deploy-hetzner: (_terraform "hetzner")

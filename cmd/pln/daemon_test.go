@@ -12,7 +12,7 @@ import (
 )
 
 func TestRenderUserPlnPlist_Structure(t *testing.T) {
-	got := renderUserPlnPlist("home", "/opt/homebrew/opt/pln/bin/pln", "/Users/alice/.pln-home")
+	got := renderUserPlnPlist("home", "/opt/homebrew/opt/pln/bin/pln", "/Users/alice/.pln-home", 0)
 
 	var v struct {
 		XMLName xml.Name `xml:"plist"`
@@ -25,10 +25,22 @@ func TestRenderUserPlnPlist_Structure(t *testing.T) {
 	require.Contains(t, got, "<string>/Users/alice/.pln-home</string>")
 	require.Contains(t, got, "<string>up</string>")
 	require.Contains(t, got, "<string>/Users/alice/.pln-home/pln.log</string>")
+	require.NotContains(t, got, "<string>--port</string>", "port 0 must not emit --port flag")
+}
+
+func TestRenderUserPlnPlist_EmitsPort(t *testing.T) {
+	got := renderUserPlnPlist("home", "/bin/pln", "/d", 54321)
+
+	var v struct {
+		XMLName xml.Name `xml:"plist"`
+	}
+	require.NoError(t, xml.Unmarshal([]byte(got), &v))
+	require.Contains(t, got, "<string>--port</string>")
+	require.Contains(t, got, "<string>54321</string>")
 }
 
 func TestRenderUserPlnPlist_EscapesSpecialChars(t *testing.T) {
-	got := renderUserPlnPlist("weird&name", "/bin/pln", "/path with <brackets>")
+	got := renderUserPlnPlist("weird&name", "/bin/pln", "/path with <brackets>", 0)
 
 	var v struct {
 		XMLName xml.Name `xml:"plist"`

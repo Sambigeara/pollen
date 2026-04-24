@@ -479,7 +479,12 @@ func servicectl(action string, cmd *cobra.Command, env *cliEnv) error {
 	name := resolveContextName()
 
 	if runtime.GOOS == osDarwin && name != defaultContextName {
-		return userLaunchctl(ctx, cmd, action, name, env.dir)
+		cf, err := loadContexts()
+		if err != nil {
+			return err
+		}
+		port := cf.Contexts[name].Port
+		return userLaunchctl(ctx, cmd, action, name, env.dir, port)
 	}
 
 	var c *exec.Cmd
@@ -503,8 +508,8 @@ func servicectl(action string, cmd *cobra.Command, env *cliEnv) error {
 // userLaunchctl drives a per-context launchd unit on macOS. Plist is
 // generated on first start if missing. Restart is an unload+load pair so
 // the command is idempotent and works whether the unit is loaded or not.
-func userLaunchctl(ctx context.Context, cmd *cobra.Command, action, ctxName, ctxDir string) error {
-	plistPath, err := ensureUserPlnPlist(ctxName, ctxDir)
+func userLaunchctl(ctx context.Context, cmd *cobra.Command, action, ctxName, ctxDir string, port int) error {
+	plistPath, err := ensureUserPlnPlist(ctxName, ctxDir, port)
 	if err != nil {
 		return err
 	}
@@ -545,7 +550,7 @@ func userPlnLogPath(ctxDir string) string {
 // ensureUserPlnPlist writes a per-context launchd plist if one is not already
 // present. Existing plists are not overwritten so users can customize them.
 // Returns the plist path regardless.
-func ensureUserPlnPlist(ctxName, ctxDir string) (string, error) {
+func ensureUserPlnPlist(ctxName, ctxDir string, port int) (string, error) {
 	plistPath, err := userPlnPlistPath(ctxName)
 	if err != nil {
 		return "", err
@@ -560,7 +565,7 @@ func ensureUserPlnPlist(ctxName, ctxDir string) (string, error) {
 	if resolved, err := filepath.EvalSymlinks(binary); err == nil {
 		binary = resolved
 	}
-	plist := renderUserPlnPlist(ctxName, binary, ctxDir)
+	plist := renderUserPlnPlist(ctxName, binary, ctxDir, port)
 	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil { //nolint:mnd
 		return "", fmt.Errorf("create LaunchAgents dir: %w", err)
 	}
@@ -570,8 +575,14 @@ func ensureUserPlnPlist(ctxName, ctxDir string) (string, error) {
 	return plistPath, nil
 }
 
-func renderUserPlnPlist(ctxName, binary, ctxDir string) string {
+func renderUserPlnPlist(ctxName, binary, ctxDir string, port int) string {
 	label := xmlEscape("sh.pln." + ctxName)
+	portArgs := ""
+	if port > 0 {
+		portArgs = `
+        <string>--port</string>
+        <string>` + strconv.Itoa(port) + `</string>`
+	}
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -585,7 +596,7 @@ func renderUserPlnPlist(ctxName, binary, ctxDir string) string {
         <string>` + xmlEscape(binary) + `</string>
         <string>--dir</string>
         <string>` + xmlEscape(ctxDir) + `</string>
-        <string>up</string>
+        <string>up</string>` + portArgs + `
     </array>
     <key>RunAtLoad</key>
     <true/>

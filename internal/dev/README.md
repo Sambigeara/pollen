@@ -12,7 +12,7 @@ internal/dev/
   demo-cluster/        # 10-node demo AWS topology
   demo/                # local docker-compose (grafana + prometheus) for the demo
   scripts/             # verify-hetzner.sh end-to-end smoke test
-  justfile             # dev recipes (deploy-vivaldi, demo-up, verify-hetzner, …)
+  justfile             # dev recipes (deploy-vivaldi, deploy-demo, verify-hetzner, …)
 ```
 
 ## Hetzner verify cluster
@@ -33,14 +33,21 @@ just destroy-vivaldi
 ```
 
 `init-vivaldi` / `push-vivaldi` were removed with the Ansible retirement — use
-`pln bootstrap ssh -` directly against the terraform output, per the
-`demo-up` recipe.
+`pln bootstrap ssh -` directly against the terraform output.
 
 ## Demo cluster
 
+The narrative demo is driven from `demo/SCRIPT.md`; these recipes cover
+only the infrastructure plane.
+
 ```bash
 cd internal/dev
-just demo-up                 # build → deploy → bootstrap → seed
-just start-exerciser usw 100 5m
+just build-demo              # exerciser + WASM + world map
+just deploy-demo             # terraform + exerciser host (pollen nodes untouched)
+just start-observability     # grafana + prometheus
+
+# … narrative from demo/SCRIPT.md (pln init, pln bootstrap ssh -, pln seed, …)
+
+just start-exerciser usw 1000 5m
 just destroy-demo
 ```

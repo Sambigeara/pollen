@@ -83,7 +83,10 @@ Prefix a target with ` + "`name=`" + ` to label the node, or pipe a list of targ
 on stdin via ` + "`-`" + `. Pass --admin to delegate admin authority to the new
 relay so the cluster keeps working with the root offline. Pass --no-up
 to skip starting the local daemon when the orchestrator also enrols
-itself as a cluster member.`,
+itself as a cluster member.
+
+The token-authenticated control API is bound on each target at the
+standard port so the node is remotely manageable out of the box.`,
 		Example: `  pln bootstrap ssh user@host
   pln bootstrap ssh relay-eu=root@10.0.0.5 relay-us=root@10.0.0.6 --admin
   echo "media=alice@10.0.0.5" | pln bootstrap ssh -`,
@@ -442,8 +445,13 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	}
 	discoveries := make([]discovery, len(specs))
 	var discWG sync.WaitGroup
+	errOut := cmd.ErrOrStderr()
 	for i, spec := range specs {
 		discWG.Go(func() {
+			// Emit a per-target start line so the operator sees immediate
+			// progress instead of staring at a silent terminal for the
+			// ~30-60s it takes to curl-install + enrol + start each remote.
+			fmt.Fprintf(errOut, "bootstrapping %s...\n", spec.target)
 			prepared, err := discoverRemote(cmd.Context(), spec, relayPort)
 			discoveries[i] = discovery{prepared: prepared, err: err}
 		})
@@ -681,16 +689,24 @@ func bootstrapRelayOverSSH(ctx context.Context, env *cliEnv, sshTarget, seedToke
 	if err := waitForRelayReady(ctx, sshTarget); err != nil {
 		return err
 	}
+
+	// Bind the token-authenticated control API so the node is remotely
+	// manageable. Applied post-start (not via a pre-daemon `pln set`) to
+	// survive the config round-trip that `pln join --public` and
+	// `pln up -d --name` perform. Paired with the optional admin
+	// delegation into a single restart.
+	if out, err := sshPln(ctx, sshTarget, "set", "control-addr", config.DefaultControlAddr).CombinedOutput(); err != nil {
+		return fmt.Errorf("set control-addr: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
 	if delegateAdmin {
 		if err := provisionRelayAdminDelegation(ctx, env, sshTarget, relayPub); err != nil {
 			return err
 		}
-		if out, err := sshSudo(ctx, sshTarget, "pln", "restart").CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
-		}
-		return waitForRelayReady(ctx, sshTarget)
 	}
-	return nil
+	if out, err := sshSudo(ctx, sshTarget, "pln", "restart").CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return waitForRelayReady(ctx, sshTarget)
 }
 
 func provisionRelayAdminDelegation(ctx context.Context, env *cliEnv, sshTarget string, relayPub ed25519.PublicKey) error {
