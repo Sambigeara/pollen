@@ -53,6 +53,7 @@ func seedMetricsToProto(in map[string]SeedMetrics) *statev1.SeedMetricsChange {
 	for hash, m := range in {
 		seeds[hash] = &statev1.SeedMetrics{
 			ServedRate:       m.ServedRate,
+			OriginRate:       m.OriginRate,
 			ComputeCostMs:    m.ComputeCostMs,
 			SloSatisfiedRate: m.SLOSatisfiedRate,
 			SloBurnedRate:    m.SLOBurnedRate,
@@ -77,6 +78,7 @@ func seedMetricsFromProto(in *statev1.SeedMetricsChange) map[string]SeedMetrics 
 		}
 		out[hash] = SeedMetrics{
 			ServedRate:       m.ServedRate,
+			OriginRate:       m.OriginRate,
 			ComputeCostMs:    m.ComputeCostMs,
 			SLOSatisfiedRate: m.SloSatisfiedRate,
 			SLOBurnedRate:    m.SloBurnedRate,

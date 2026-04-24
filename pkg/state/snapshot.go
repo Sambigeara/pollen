@@ -47,7 +47,6 @@ type NodeView struct {
 	Reachable          map[types.PeerKey]struct{}
 	Services           map[string]*Service
 	SeedMetrics        map[string]SeedMetrics
-	SeedDialRates      map[string]map[string]float32
 	Blobs              map[string]struct{}
 	VivaldiCoord       *coords.Coord
 	ObservedExternalIP string
@@ -345,15 +344,14 @@ func filterLive(claims map[string]map[types.PeerKey]struct{}, live map[types.Pee
 // cluster-scoped and live in s.specs; they are not surfaced here.
 func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]struct{}, map[string]struct{}) {
 	nv := NodeView{
-		PeerPub:       pk.Bytes(),
-		Services:      make(map[string]*Service),
-		Reachable:     make(map[types.PeerKey]struct{}),
-		TrafficRates:  make(map[types.PeerKey]TrafficSnapshot),
-		SeedMetrics:   make(map[string]SeedMetrics),
-		SeedDialRates: make(map[string]map[string]float32),
-		Blobs:         make(map[string]struct{}),
-		LastAddr:      rec.LastAddr,
-		LastEventAt:   rec.lastEventAt,
+		PeerPub:      pk.Bytes(),
+		Services:     make(map[string]*Service),
+		Reachable:    make(map[types.PeerKey]struct{}),
+		TrafficRates: make(map[types.PeerKey]TrafficSnapshot),
+		SeedMetrics:  make(map[string]SeedMetrics),
+		Blobs:        make(map[string]struct{}),
+		LastAddr:     rec.LastAddr,
+		LastEventAt:  rec.lastEventAt,
 	}
 	claims := make(map[string]struct{})
 	staticClaims := make(map[string]struct{})
@@ -397,15 +395,6 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]struc
 				if peerPK, err := types.PeerKeyFromString(r.PeerId); err == nil {
 					nv.TrafficRates[peerPK] = TrafficSnapshot{RateIn: r.RateIn, RateOut: r.RateOut}
 				}
-			}
-		case *statev1.GossipEvent_SeedDialRates:
-			for hash, dr := range v.SeedDialRates.Seeds {
-				if dr == nil {
-					continue
-				}
-				targets := make(map[string]float32, len(dr.Rates))
-				maps.Copy(targets, dr.Rates)
-				nv.SeedDialRates[hash] = targets
 			}
 		case *statev1.GossipEvent_SeedMetrics:
 			maps.Copy(nv.SeedMetrics, seedMetricsFromProto(v.SeedMetrics))

@@ -9,26 +9,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDesiredGateSize_ColdStart: no invocations yet → conservative ramp.
+// TestDesiredGateSize_ColdStart: no compute observation yet — conservative
+// ramp keeps instance count bounded until telemetry lands.
 func TestDesiredGateSize_ColdStart(t *testing.T) {
 	require.Equal(t, 2*gateInitialMultiplier, desiredGateSize(2, 0, 0))
 }
 
-// TestDesiredGateSize_Leaf: observed invocations but no outbound dials.
-// Cap at host CPU count — pure CPU throughput, more instances thrash.
+// TestDesiredGateSize_Leaf: invocations observed, none of which park inside
+// pollen_request (leaf seed). Active fraction = 1 → cap collapses to the
+// initial-multiplier floor.
 func TestDesiredGateSize_Leaf(t *testing.T) {
-	require.Equal(t, 2, desiredGateSize(2, 0, 100))
+	require.Equal(t, 2*gateInitialMultiplier, desiredGateSize(2, 50, 0))
 }
 
-// TestDesiredGateSize_Chain: chain holder with one outbound dial per
-// invocation. Sizer expands the gate to absorb downstream latency.
-// NumCPU × (1 + 4×1) = 10.
+// TestDesiredGateSize_Chain: chain holder parks 80% of wall time inside
+// pollen_request waiting for downstream. active = 0.2, size = cores/0.2 = 10.
 func TestDesiredGateSize_Chain(t *testing.T) {
-	require.Equal(t, 10, desiredGateSize(2, 50, 50))
+	require.Equal(t, 10, desiredGateSize(2, 100, 80))
 }
 
-// TestDesiredGateSize_DeeperChain: two outbound dials per invocation,
-// bigger concurrency budget for the parked callers.
-func TestDesiredGateSize_DeeperChain(t *testing.T) {
-	require.Equal(t, 18, desiredGateSize(2, 100, 50))
+// TestDesiredGateSize_ParkedSpike: a momentary fully-parked sample would
+// produce a zero active fraction. The floor clamps to a 10× cap so the gate
+// stays bounded.
+func TestDesiredGateSize_ParkedSpike(t *testing.T) {
+	require.Equal(t, 20, desiredGateSize(2, 100, 100))
 }

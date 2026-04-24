@@ -34,7 +34,6 @@ const (
 	attrHeartbeat
 	attrAdminCapable
 	attrNodeName
-	attrSeedDialRates
 	attrSeedMetrics
 	attrBlobAvailability
 	attrStaticSpec
@@ -189,7 +188,7 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent) []*statev1.Gos
 					Counter: rec.maxCounter,
 					Change:  ev.Change,
 				}
-			case attrWorkloadClaim, attrReachability, attrHeartbeat, attrSeedDialRates, attrSeedMetrics, attrBlobAvailability, attrStaticClaim:
+			case attrWorkloadClaim, attrReachability, attrHeartbeat, attrSeedMetrics, attrBlobAvailability, attrStaticClaim:
 				rec.maxCounter++
 				rec.log[key] = &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
@@ -292,7 +291,6 @@ func (s *store) tombstoneStaleAttrsLocked(rec *nodeRecord) {
 		{Change: &statev1.GossipEvent_ResourceTelemetry{ResourceTelemetry: &statev1.ResourceTelemetryChange{}}},
 		{Change: &statev1.GossipEvent_TrafficHeatmap{TrafficHeatmap: &statev1.TrafficHeatmapChange{}}},
 		{Change: &statev1.GossipEvent_Heartbeat{Heartbeat: &statev1.HeartbeatChange{}}},
-		{Change: &statev1.GossipEvent_SeedDialRates{SeedDialRates: &statev1.SeedDialRatesChange{}}},
 		{Change: &statev1.GossipEvent_SeedMetrics{SeedMetrics: &statev1.SeedMetricsChange{}}},
 		{Change: &statev1.GossipEvent_AdminCapable{AdminCapable: &statev1.AdminCapableChange{}}},
 		{Change: &statev1.GossipEvent_StaticCapable{StaticCapable: &statev1.StaticCapableChange{}}},
@@ -409,8 +407,6 @@ func getAttrKey(ev *statev1.GossipEvent) (attrKey, bool) {
 		return attrKey{kind: attrStaticCapable}, true
 	case *statev1.GossipEvent_NodeName:
 		return attrKey{kind: attrNodeName}, true
-	case *statev1.GossipEvent_SeedDialRates:
-		return attrKey{kind: attrSeedDialRates}, true
 	case *statev1.GossipEvent_SeedMetrics:
 		return attrKey{kind: attrSeedMetrics}, true
 	case *statev1.GossipEvent_BlobAvailability:

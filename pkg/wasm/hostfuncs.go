@@ -19,28 +19,13 @@ const (
 	logLevelError uint64 = 3
 )
 
-// dialTargetKey produces the typed string used to key dial-graph entries
-// for a target URI: "seed:<hash>" or "service:<name>".
-func dialTargetKey(uri URI) string {
-	switch uri.Scheme {
-	case SchemeSeed:
-		return "seed:" + uri.Name
-	case SchemeService:
-		return "service:" + uri.Name
-	}
-	return ""
-}
-
 // RequestRouter handles pln:// URI-addressed requests from WASM guests.
-// RecordDial observes outbound calls before they are routed so callers'
-// dial graphs can be tracked even when routing fails.
 // RecordParkedTime observes how long the calling invocation was blocked
-// inside pollen_request waiting for the downstream response. Both are
-// attributed to the caller's (hash, function) so telemetry matches the
-// per-function admission unit.
+// inside pollen_request waiting for the downstream response, attributed
+// to the caller's (hash, function) so telemetry matches the per-function
+// admission unit.
 type RequestRouter interface {
 	RouteRequest(ctx context.Context, uri URI, input []byte) ([]byte, error)
-	RecordDial(callerHash, callerFunction, targetKey string)
 	RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration)
 }
 
@@ -113,9 +98,6 @@ func NewHostFunctions(logger *zap.SugaredLogger, router RequestRouter) []extism.
 
 			caller := ExecutingSeedFromContext(ctx)
 			callerFn := ExecutingFunctionFromContext(ctx)
-			if caller != "" {
-				router.RecordDial(caller, callerFn, dialTargetKey(uri))
-			}
 
 			parkStart := time.Now()
 			output, err := router.RouteRequest(ctx, uri, input)

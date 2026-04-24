@@ -55,7 +55,6 @@ type PlacementAPI interface {
 	Status() []WorkloadSummary
 	PlacementInfo() map[string]PlacementInfo
 
-	RecordDial(callerHash, callerFunction, targetKey string)
 	RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration)
 
 	Serve(stream io.ReadWriteCloser, info wasm.CallerInfo, hash, function string)
@@ -81,7 +80,6 @@ type WorkloadState interface {
 	ReleaseWorkload(hash string) []state.Event
 	SetLocalResources(r state.NodeResources) []state.Event
 	SetSeedMetrics(metrics map[string]state.SeedMetrics) []state.Event
-	SetSeedDialRates(rates map[string]map[string]float32) []state.Event
 }
 
 type StreamOpener interface {
@@ -311,6 +309,12 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 	}
 	ctx = withChain(ctx, hash)
 
+	// Record that a call for this hash originated at this node, regardless
+	// of whether we host it locally. Gossiped per-peer as OriginRate —
+	// placement scoring treats the cluster-wide distribution as the
+	// authoritative demand signal for where the seed should live.
+	s.utilisation.RecordOrigin(hash, function)
+
 	locallyRunning := s.manager.IsRunning(hash)
 	snap := s.store.Snapshot()
 	claimants := snap.Claims[hash]
@@ -440,20 +444,6 @@ func (s *Service) Serve(stream io.ReadWriteCloser, info wasm.CallerInfo, hash, f
 
 func (s *Service) Signal() {
 	s.reconciler.Signal()
-}
-
-// RecordDial observes an outbound dial from a caller (hash, function) to a
-// target (another seed or a service). targetKey is prefix-disambiguated:
-// "seed:<name-or-hash>" or "service:<name>". Seed targets are normalised to
-// "seed:<hash>" so the dial graph aligns with the claim graph during
-// placement scoring.
-func (s *Service) RecordDial(callerHash, callerFunction, targetKey string) {
-	if name, ok := strings.CutPrefix(targetKey, "seed:"); ok {
-		if hash, found := s.resolveGlobal(name); found {
-			targetKey = "seed:" + hash
-		}
-	}
-	s.utilisation.RecordDial(callerHash, callerFunction, targetKey)
 }
 
 // RecordParkedTime reports time the currently-executing invocation of

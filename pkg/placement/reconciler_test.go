@@ -70,9 +70,6 @@ func (m *mockStore) DeleteWorkloadSpec(hash string) []state.Event {
 func (m *mockStore) SetLocalResources(state.NodeResources) []state.Event { return nil }
 
 func (m *mockStore) SetSeedMetrics(map[string]state.SeedMetrics) []state.Event { return nil }
-func (m *mockStore) SetSeedDialRates(map[string]map[string]float32) []state.Event {
-	return nil
-}
 
 func (m *mockStore) ClaimWorkload(hash string) []state.Event {
 	m.mu.Lock()

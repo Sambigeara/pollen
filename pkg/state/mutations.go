@@ -322,6 +322,7 @@ func seedMetricsChanged(old map[string]*statev1.SeedMetrics, cur map[string]Seed
 			return true
 		}
 		if floatMaterialChange(prev.GetServedRate(), m.ServedRate) ||
+			floatMaterialChange(prev.GetOriginRate(), m.OriginRate) ||
 			floatMaterialChange(prev.GetComputeCostMs(), m.ComputeCostMs) ||
 			floatMaterialChange(prev.GetSloSatisfiedRate(), m.SLOSatisfiedRate) ||
 			floatMaterialChange(prev.GetSloBurnedRate(), m.SLOBurnedRate) ||
@@ -364,63 +365,6 @@ func (s *store) SetSeedMetrics(metrics map[string]SeedMetrics) []Event {
 		}
 		return []*statev1.GossipEvent{change}, nil
 	})
-}
-
-func (s *store) SetSeedDialRates(rates map[string]map[string]float32) []Event {
-	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		if ev, ok := rec.log[attrKey{kind: attrSeedDialRates}]; ok {
-			if ev.Deleted && len(rates) == 0 {
-				return nil, nil
-			}
-			if !ev.Deleted && !seedDialRatesChanged(ev.GetSeedDialRates().Seeds, rates) {
-				return nil, nil
-			}
-		}
-
-		seeds := make(map[string]*statev1.DialRates, len(rates))
-		for hash, targets := range rates {
-			seeds[hash] = &statev1.DialRates{Rates: targets}
-		}
-		change := &statev1.GossipEvent{
-			Deleted: len(rates) == 0,
-			Change:  &statev1.GossipEvent_SeedDialRates{SeedDialRates: &statev1.SeedDialRatesChange{Seeds: seeds}},
-		}
-		return []*statev1.GossipEvent{change}, nil
-	})
-}
-
-func seedDialRatesChanged(old map[string]*statev1.DialRates, cur map[string]map[string]float32) bool {
-	if len(old) != len(cur) {
-		return true
-	}
-	for hash, targets := range cur {
-		prev, ok := old[hash]
-		if !ok {
-			return true
-		}
-		if dialTargetsChanged(prev.GetRates(), targets) {
-			return true
-		}
-	}
-	return false
-}
-
-// dialTargetsChanged is the 20% dead-band check applied per (caller,
-// target) pair inside a dial-rates map.
-func dialTargetsChanged(old, cur map[string]float32) bool {
-	if len(old) != len(cur) {
-		return true
-	}
-	for k, v := range cur {
-		prev, ok := old[k]
-		if !ok {
-			return true
-		}
-		if floatMaterialChange(prev, v) {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *store) SetService(port uint32, name string, protocol statev1.ServiceProtocol) []Event {

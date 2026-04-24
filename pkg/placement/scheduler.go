@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"cmp"
 	"crypto/sha256"
-	"math"
 	"math/rand/v2"
 	"slices"
 	"time"
@@ -45,25 +44,31 @@ type nodeState struct {
 	MemBudgetPercent uint32
 }
 
+// clusterState is the per-tick input to placement scoring, built by
+// buildClusterState from the gossiped state snapshot. Node resources
+// live in Nodes; per-seed observations live in the two rate maps below.
 type clusterState struct {
 	Nodes map[types.PeerKey]nodeState
 
-	// Per-seed observations aggregated across hosts. Compute cost is the mean
-	// wall-time per invocation; dial rates are the cluster-wide sum (aligned
-	// with the cluster-wide invocation rate so calls_per_invocation = sum/sum
-	// is well-defined). InvocationRates is the cluster-wide sum of per-node
-	// ServedRate contributions from the SeedMetrics bundle. ParkedTime is
-	// the cluster-wide mean of per-node parked-time observations (ms spent
-	// inside pollen_request per invocation); the gate sizer uses it to
-	// derive active CPU time as ComputeCost - ParkedTime.
-	ComputeCost     map[string]float64
-	ParkedTime      map[string]float64
-	DialRates       map[string]map[string]float64
+	// InvocationRates[hash] is the cluster-wide sum of ServedRates — the
+	// total execution rate the cluster is carrying for each seed.
 	InvocationRates map[string]float64
 
-	// Target → host lookups for dial-graph resolution.
-	SeedHosts    map[string][]types.PeerKey
-	ServiceHosts map[string][]types.PeerKey
+	// OriginRates[hash][peer] is the rate of calls entering the cluster
+	// at peer for hash. Demand signal — where traffic for the seed wants
+	// to land. Gossiped per-peer so every node sees the same distribution.
+	OriginRates map[string]map[types.PeerKey]float64
+
+	// ComputeCost[hash] is the cluster-mean wall-time (ms) per invocation
+	// observed across hosts. Used for cold-start scoring (scaling by CPU
+	// capacity) and for Little's-Law gate sizing (active = compute -
+	// parked).
+	ComputeCost map[string]float64
+
+	// ParkedTime[hash] is the cluster-mean time (ms) per invocation that
+	// seeds spent blocked inside pollen_request waiting for downstream
+	// responses. Feeds adaptive gate sizing alongside ComputeCost.
+	ParkedTime map[string]float64
 }
 
 const (
@@ -71,6 +76,11 @@ const (
 
 	releaseIdleBase   = 30 * time.Second
 	releaseIdleJitter = 10 * time.Second
+
+	// observedDemandFloor is the cluster-wide InvocationRate below which
+	// the centroid score has too little signal and we fall back to
+	// cold-start scoring (CPU-fit plus hash tiebreak).
+	observedDemandFloor = 1.0
 )
 
 type scored struct {
@@ -250,60 +260,20 @@ func placementScore(nodeID types.PeerKey, hash string) [32]byte {
 	return sha256.Sum256(buf)
 }
 
-// hostsForTarget resolves a dial-graph target key ("seed:<hash>" or
-// "service:<name>") to the set of peers currently hosting it.
-func hostsForTarget(targetKey string, cluster clusterState) []types.PeerKey {
-	prefix, name, ok := splitTargetKey(targetKey)
-	if !ok {
-		return nil
-	}
-	switch prefix {
-	case "seed":
-		return cluster.SeedHosts[name]
-	case "service":
-		return cluster.ServiceHosts[name]
-	}
-	return nil
-}
-
-func splitTargetKey(target string) (prefix, name string, ok bool) {
-	for i := 0; i < len(target); i++ {
-		if target[i] == ':' {
-			return target[:i], target[i+1:], true
-		}
-	}
-	return "", "", false
-}
-
-// minRTT returns the minimum Vivaldi distance from candidate to any node in
-// hosts. Returns 0 if candidate itself appears in hosts (co-located target).
-// Returns 0 if no usable coordinate pair exists — treats unknown distances
-// as zero so missing topology data doesn't artificially inflate latency.
-func minRTT(candidate types.PeerKey, hosts []types.PeerKey, cluster clusterState) float64 {
-	if len(hosts) == 0 {
+// distance returns the Vivaldi distance between two peers' coordinates.
+// Returns 0 when either side is missing coordinates or the peers are the
+// same — treats unknown distances as zero so missing topology data
+// doesn't artificially inflate the centroid score.
+func distance(a, b types.PeerKey, cluster clusterState) float64 {
+	if a == b {
 		return 0
 	}
-	candidateCoord := cluster.Nodes[candidate].Coord
-	best := math.Inf(1)
-	found := false
-	for _, h := range hosts {
-		if h == candidate {
-			return 0
-		}
-		hostCoord := cluster.Nodes[h].Coord
-		if candidateCoord == nil || hostCoord == nil {
-			continue
-		}
-		d := coords.Distance(*candidateCoord, *hostCoord)
-		if d < best {
-			best = d
-			found = true
-		}
-	}
-	if !found {
+	ca := cluster.Nodes[a].Coord
+	cb := cluster.Nodes[b].Coord
+	if ca == nil || cb == nil {
 		return 0
 	}
-	return best
+	return coords.Distance(*ca, *cb)
 }
 
 // cpuCapacity returns the candidate's CPU allocation expressed as
@@ -320,39 +290,53 @@ func cpuCapacity(ns nodeState) float64 {
 	return float64(ns.NumCPU) * budget / float64(percentMax)
 }
 
-// predictedLatency estimates the per-invocation wall-time for hosting seed
-// hash on candidate. Combines the seed's measured compute cost (scaled to
-// the candidate's CPU capacity) with the network-traversal cost of each
-// downstream dial, weighted by calls-per-invocation.
+// predictedLatency scores a candidate to host a seed. The lower the
+// better; deterministic sha256(peerKey, hash) tiebreak handles exact
+// equalities.
+//
+// Under steady state (cluster-wide InvocationRate ≥ observedDemandFloor)
+// the score is the demand-weighted Vivaldi distance from candidate to
+// every peer currently observing traffic for the seed. Hosting here
+// minimises the expected first-hop cost for the cluster as a whole; a
+// peer sitting on the demand centroid scores 0, a peer far from all
+// traffic scores high. Chain affinity (A's hosts call B → those peers
+// carry OriginRate[B]) and external-entry affinity (edge peers see the
+// arriving pln call → they carry OriginRate[A]) both fall out of this
+// single signal.
+//
+// Before traffic flows (cold start), we have no demand distribution.
+// Rank by raw compute fit instead: expected wall-time = cluster-mean
+// ComputeCost / this peer's CPU capacity. With no observations at all,
+// every candidate scores zero and the hash tiebreak picks.
 func predictedLatency(candidate types.PeerKey, hash string, cluster clusterState) float64 {
-	ns := cluster.Nodes[candidate]
-	capacity := cpuCapacity(ns)
-
-	var compute float64
-	if cost, ok := cluster.ComputeCost[hash]; ok {
-		// Cold candidates (no CPU telemetry yet) fall back to a single-CPU
-		// equivalent — pessimistic enough that they don't unfairly outrank
-		// measured peers, lenient enough that they remain placeable.
-		effectiveCapacity := capacity
-		if effectiveCapacity <= 0 {
-			effectiveCapacity = 1.0
-		}
-		compute = cost / effectiveCapacity
-	}
-
-	var network float64
-	if dials, ok := cluster.DialRates[hash]; ok {
-		invocationRate := cluster.InvocationRates[hash]
-		if invocationRate > 0 {
-			for target, rate := range dials {
-				callsPerInvocation := rate / invocationRate
-				hosts := hostsForTarget(target, cluster)
-				network += callsPerInvocation * minRTT(candidate, hosts, cluster)
+	inv := cluster.InvocationRates[hash]
+	if inv < observedDemandFloor {
+		if cost, ok := cluster.ComputeCost[hash]; ok {
+			capacity := cpuCapacity(cluster.Nodes[candidate])
+			if capacity <= 0 {
+				// Cold candidate: pessimistic single-CPU default so
+				// nodes without telemetry don't unfairly outrank
+				// measured peers.
+				capacity = 1.0
 			}
+			return cost / capacity
 		}
+		return 0
 	}
 
-	return compute + network
+	var total float64
+	for peer, originRate := range cluster.OriginRates[hash] {
+		total += originRate * distance(candidate, peer, cluster)
+	}
+	// Self-origin discount: a peer absorbing its own share of demand
+	// strictly beats a centrally-placed demand-free peer of the same
+	// total distance profile. Without this, two candidates with
+	// identical weighted-avg distance to all origins tie — and a
+	// proxy sitting at the Vivaldi centroid of the demand set can
+	// outrank a hot entry node. The (1 - ownShare) factor breaks that
+	// tie in favour of the candidate actually generating traffic.
+	ownShare := cluster.OriginRates[hash][candidate] / inv
+	return total * (1 - ownShare) / inv
 }
 
 // hasCapacity is the hard placement gate: rejects candidates whose

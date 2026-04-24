@@ -7,72 +7,12 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
 	"github.com/stretchr/testify/require"
 )
-
-func newServiceForDialTests(store WorkloadState) *Service {
-	return &Service{
-		store:       store,
-		utilisation: newUtilisationTracker(),
-		manager:     newManager(nil, nil),
-	}
-}
-
-func dialDrain(s *Service, dials int, caller, target string) map[string]map[string]float64 {
-	for range dials {
-		s.RecordDial(caller, "handle", target)
-	}
-	s.utilisation.tick(time.Second)
-	return s.utilisation.DialRates()
-}
-
-func TestService_RecordDial_ResolvesSeedNameToHash(t *testing.T) {
-	// pln://seed/<name> dials arrive with the friendly name; the dial graph
-	// must store the resolved hash so it joins up with claim-keyed lookups
-	// during placement scoring.
-	const (
-		seedName = "sink"
-		seedHash = "deadbeef"
-		caller   = "ingest-hash"
-	)
-	store := &mockStore{
-		specs: map[string]state.WorkloadSpecView{
-			seedHash: {
-				Spec:      state.WorkloadSpec{Hash: seedHash, Name: seedName, MinReplicas: 1},
-				Publisher: peerKey(1),
-			},
-		},
-	}
-	s := newServiceForDialTests(store)
-
-	got := dialDrain(s, 50, caller, "seed:"+seedName) //nolint:mnd
-	require.Contains(t, got, caller)
-	require.Contains(t, got[caller], "seed:"+seedHash, "name should be resolved to hash")
-	require.NotContains(t, got[caller], "seed:"+seedName, "raw friendly-name target should not be stored")
-}
-
-func TestService_RecordDial_PassesServiceTargetUntouched(t *testing.T) {
-	// Service targets are name-keyed end-to-end (matches snap.Services()),
-	// so no rewrite happens.
-	s := newServiceForDialTests(&mockStore{})
-	got := dialDrain(s, 50, "caller", "service:store") //nolint:mnd
-	require.Contains(t, got["caller"], "service:store")
-}
-
-func TestService_RecordDial_UnknownSeedFallsBackToPrefix(t *testing.T) {
-	// resolveGlobal returns the raw identifier when no spec matches, so the
-	// dial still gets recorded under the raw key — placement scoring will
-	// see hosts(d) as empty and the affinity term simply contributes zero
-	// RTT.
-	s := newServiceForDialTests(&mockStore{})
-	got := dialDrain(s, 50, "caller", "seed:no-such-name") //nolint:mnd
-	require.Contains(t, got["caller"], "seed:no-such-name")
-}
 
 func newServiceForUnseedTests(localID types.PeerKey, store WorkloadState) (*Service, *mockBlobs) {
 	blobs := &mockBlobs{}

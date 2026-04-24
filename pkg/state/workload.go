@@ -51,16 +51,22 @@ type NodeResources struct {
 // rates. A zero ComputeCostMs inside an otherwise-nonzero entry means
 // "no compute-cost observation", not a real 0 ms sample.
 //
+// OriginRate is calls/sec entering the cluster at this node (whether
+// the node hosts the seed or forwards the call elsewhere). Placement
+// scoring treats the cluster-wide distribution of OriginRate as the
+// authoritative demand signal.
+//
 // ParkedMs is the mean time per invocation spent blocked inside
 // pollen_request. It's the signal adaptive gate sizing uses to separate
 // "CPU work" from "waiting on downstream" without hard-coding a ratio.
 type SeedMetrics struct {
 	ServedRate       float32
+	OriginRate       float32
 	ComputeCostMs    float32
 	SLOSatisfiedRate float32
 	SLOBurnedRate    float32
-	GateWaitMs       uint32
 	ParkedMs         float32
+	GateWaitMs       uint32
 }
 
 // IsZero reports whether every field is zero. Used by SetSeedMetrics to
@@ -70,9 +76,10 @@ type SeedMetrics struct {
 // wait clearing while traffic continues) is a material change and still
 // travels through the dead-band check.
 func (m SeedMetrics) IsZero() bool {
-	return m.ServedRate == 0 && m.ComputeCostMs == 0 &&
-		m.SLOSatisfiedRate == 0 && m.SLOBurnedRate == 0 &&
-		m.GateWaitMs == 0 && m.ParkedMs == 0
+	return m.ServedRate == 0 && m.OriginRate == 0 &&
+		m.ComputeCostMs == 0 && m.SLOSatisfiedRate == 0 &&
+		m.SLOBurnedRate == 0 && m.ParkedMs == 0 &&
+		m.GateWaitMs == 0
 }
 
 type StaticSpec struct {

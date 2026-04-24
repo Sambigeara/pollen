@@ -63,7 +63,6 @@ type StateStore interface {
 	ReleaseWorkload(hash string) []Event
 	SetLocalResources(r NodeResources) []Event
 	SetSeedMetrics(metrics map[string]SeedMetrics) []Event
-	SetSeedDialRates(rates map[string]map[string]float32) []Event
 	SetLocalBlobs(digests []string) []Event
 
 	SetStaticSpec(spec StaticSpec) ([]Event, error)

@@ -107,21 +107,14 @@ message WorkloadSpecChange {
   PublisherClaim publisher_claim = 8;
 }
 
-message DialRates {
-  map<string, float> rates = 1;
-}
-
-message SeedDialRatesChange {
-  map<string, DialRates> seeds = 1;
-}
-
 // SeedMetrics is the per-seed per-node telemetry bundle: served rate
-// (calls/sec on this node), mean compute cost (ms/invocation), SLO
-// satisfied and burned rates (calls/sec over the latency SLO),
-// and EWMA gate-wait (ms). Gossiped so cluster-wide observability
-// (pollen_workload_slo_burn_ratio, compute_cost, gate_wait) can
-// aggregate across nodes; the autoscaler itself still decides on
-// local observations only.
+// (calls/sec on this node), origin rate (calls/sec entering the cluster
+// via this node), mean compute cost (ms/invocation), SLO satisfied and
+// burned rates (calls/sec over the latency SLO), EWMA gate-wait (ms)
+// and mean parked time (ms per invocation). Gossiped so every peer
+// can score placement from the cluster-wide demand distribution, and
+// cluster-wide observability (pollen_workload_slo_burn_ratio,
+// compute_cost, gate_wait) can aggregate across nodes.
 message SeedMetrics {
   float served_rate = 1;
   float compute_cost_ms = 2;
@@ -129,10 +122,15 @@ message SeedMetrics {
   float slo_burned_rate = 4;
   uint32 gate_wait_ms = 5;
   // Mean wall-time (ms) per invocation spent parked inside pollen_request
-  // waiting for downstream responses. Observability only — gossiped so
-  // dashboards can plot parked-vs-active per workload; no autoscale or
-  // gate-sizing decision currently consumes it.
+  // waiting for downstream responses. Feeds adaptive gate sizing via
+  // Little's Law (active fraction = 1 - parked/compute).
   float parked_ms = 6;
+  // Calls/sec for this seed that enter the cluster at this node —
+  // incremented on every placement.Call entry regardless of whether the
+  // node hosts the seed. The cluster-wide distribution of origin_rate
+  // across peers is the demand signal placement scoring uses to pull
+  // seeds toward where their traffic enters.
+  float origin_rate = 7;
 }
 
 message SeedMetricsChange {
@@ -235,7 +233,6 @@ message GossipEvent {
     HeartbeatChange heartbeat = 18;
     AdminCapableChange admin_capable = 20;
     NodeNameChange node_name = 21;
-    SeedDialRatesChange seed_dial_rates = 24;
     SeedMetricsChange seed_metrics = 27;
     BlobAvailabilityChange blob_availability = 28;
     StaticSpecChange static_spec = 29;
@@ -244,6 +241,8 @@ message GossipEvent {
     StaticCapableChange static_capable = 32;
   }
   bool deleted = 14;
+  reserved 24;
+  reserved "seed_dial_rates";
 }
 
 message GossipEventBatch {

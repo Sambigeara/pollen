@@ -35,11 +35,13 @@ func defaultSLOLookup(string) time.Duration { return defaultLatencySLO }
 // doesn't average away a fast function's satisfaction.
 type functionMetrics struct {
 	servedRate       *metrics.EWMA
+	originRate       *metrics.EWMA
 	invocationMsRate *metrics.EWMA
 	parkedMsRate     *metrics.EWMA
 	sloSatisfiedRate *metrics.EWMA
 	sloBurnedRate    *metrics.EWMA
 	servedCount      atomic.Uint64
+	originCount      atomic.Uint64
 	invocationMs     atomic.Uint64
 	parkedMs         atomic.Uint64
 	sloSatisfied     atomic.Uint64
@@ -49,6 +51,7 @@ type functionMetrics struct {
 func newFunctionMetrics() *functionMetrics {
 	return &functionMetrics{
 		servedRate:       metrics.NewEWMA(utilisationAlpha, 0),
+		originRate:       metrics.NewEWMA(utilisationAlpha, 0),
 		invocationMsRate: metrics.NewEWMA(utilisationAlpha, 0),
 		parkedMsRate:     metrics.NewEWMA(utilisationAlpha, 0),
 		sloSatisfiedRate: metrics.NewEWMA(utilisationAlpha, 0),
@@ -70,21 +73,17 @@ func newHashState() *hashState {
 }
 
 type utilisationTracker struct {
-	hashes       map[string]*hashState
-	dial         map[callKey]map[string]*metrics.EWMA
-	dialCounters map[callKey]map[string]*atomic.Uint64
-	sloLookup    func(hash string) time.Duration
-	nowFunc      func() time.Time
-	mu           sync.Mutex
+	hashes    map[string]*hashState
+	sloLookup func(hash string) time.Duration
+	nowFunc   func() time.Time
+	mu        sync.Mutex
 }
 
 func newUtilisationTracker() *utilisationTracker {
 	return &utilisationTracker{
-		hashes:       make(map[string]*hashState),
-		dial:         make(map[callKey]map[string]*metrics.EWMA),
-		dialCounters: make(map[callKey]map[string]*atomic.Uint64),
-		sloLookup:    defaultSLOLookup,
-		nowFunc:      time.Now,
+		hashes:    make(map[string]*hashState),
+		sloLookup: defaultSLOLookup,
+		nowFunc:   time.Now,
 	}
 }
 
@@ -170,6 +169,28 @@ func (u *utilisationTracker) MarkActive(hash string) {
 	u.mu.Unlock()
 }
 
+// RecordOrigin counts a call that entered the cluster at this node for
+// this hash, regardless of whether the node hosts the seed or forwards
+// the call onward. The cluster-wide OriginRate distribution is the
+// demand signal placement scoring uses to pull a seed toward where its
+// traffic enters.
+func (u *utilisationTracker) RecordOrigin(hash, function string) {
+	u.mu.Lock()
+	hs := u.ensureHash(hash)
+	fm, ok := hs.functions[function]
+	if !ok {
+		fm = newFunctionMetrics()
+		hs.functions[function] = fm
+	}
+	hs.lastActivity = u.nowFunc()
+	u.mu.Unlock()
+	fm.originCount.Add(1)
+}
+
+// RecordServed counts a local execution of (hash, function) — either
+// this node's own pickP2C landed local, or a forwardCall arrived here.
+// Feeds the cluster-wide InvocationRate aggregate that normalises
+// OriginRate shares.
 func (u *utilisationTracker) RecordServed(hash, function string) {
 	u.mu.Lock()
 	hs := u.ensureHash(hash)
@@ -204,33 +225,6 @@ func (u *utilisationTracker) RecordParkedTime(hash, function string, elapsed tim
 	fm := u.ensureFunction(hash, function)
 	u.mu.Unlock()
 	fm.parkedMs.Add(uint64(elapsed / time.Millisecond))
-}
-
-// RecordDial increments the per-(callerHash, callerFn, target) dial
-// counter. Dial observations follow the same per-function model as the
-// rest of the telemetry; DialRates() aggregates them back to per-hash
-// for gossip and placement scoring.
-func (u *utilisationTracker) RecordDial(callerHash, callerFn, targetKey string) {
-	ck := callKey{Hash: callerHash, Function: callerFn}
-	u.mu.Lock()
-	targets, ok := u.dialCounters[ck]
-	if !ok {
-		targets = make(map[string]*atomic.Uint64)
-		u.dialCounters[ck] = targets
-	}
-	c, ok := targets[targetKey]
-	if !ok {
-		c = &atomic.Uint64{}
-		targets[targetKey] = c
-	}
-	if _, ok := u.dial[ck]; !ok {
-		u.dial[ck] = make(map[string]*metrics.EWMA)
-	}
-	if _, ok := u.dial[ck][targetKey]; !ok {
-		u.dial[ck][targetKey] = metrics.NewEWMA(utilisationAlpha, 0)
-	}
-	u.mu.Unlock()
-	c.Add(1)
 }
 
 func (u *utilisationTracker) IdleDuration(hash string) time.Duration {
@@ -284,6 +278,25 @@ func (u *utilisationTracker) ServedRates() map[string]float64 {
 	return out
 }
 
+// OriginRates returns per-module rates of calls entering the cluster at
+// this node for each hash, summed across functions. Gossiped so every
+// peer's placement scorer sees where demand originates.
+func (u *utilisationTracker) OriginRates() map[string]float64 {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	out := make(map[string]float64)
+	for hash, hs := range u.hashes {
+		var r float64
+		for _, fm := range hs.functions {
+			r += fm.originRate.Value()
+		}
+		if r > rateReportFloor {
+			out[hash] = r
+		}
+	}
+	return out
+}
+
 // InvocationCosts returns the per-module mean wall-time (ms) per
 // invocation as a traffic-weighted mean across functions: (sum of
 // per-function ms/sec) / (sum of per-function calls/sec). Functions
@@ -331,49 +344,11 @@ func (u *utilisationTracker) ParkedTimes() map[string]float64 {
 	return out
 }
 
-// DialRates returns a per-module dial-graph snapshot: caller hash → target
-// key → calls/sec, summed across the caller's functions. Placement
-// scoring operates at module granularity so the graph is rolled up
-// here.
-func (u *utilisationTracker) DialRates() map[string]map[string]float64 {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	out := make(map[string]map[string]float64)
-	for ck, targets := range u.dial {
-		for target, e := range targets {
-			v := e.Value()
-			if v <= rateReportFloor {
-				continue
-			}
-			dst, ok := out[ck.Hash]
-			if !ok {
-				dst = make(map[string]float64)
-				out[ck.Hash] = dst
-			}
-			dst[target] += v
-		}
-	}
-	return out
-}
-
-// Clear removes all tracking state for a module (called on unseed). Drops
-// every function's counters, EWMAs, and outbound dial graph. Inbound
-// dials from other seeds are not cleared — they decay to zero through
-// the rate filter.
+// Clear removes all tracking state for a module (called on unseed).
 func (u *utilisationTracker) Clear(hash string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	delete(u.hashes, hash)
-	for ck := range u.dial {
-		if ck.Hash == hash {
-			delete(u.dial, ck)
-		}
-	}
-	for ck := range u.dialCounters {
-		if ck.Hash == hash {
-			delete(u.dialCounters, ck)
-		}
-	}
 }
 
 // tick converts accumulated call counters to rates and feeds them into
@@ -390,17 +365,11 @@ func (u *utilisationTracker) tick(elapsed time.Duration) {
 	for _, hs := range u.hashes {
 		for _, fm := range hs.functions {
 			fm.servedRate.Update(float64(fm.servedCount.Swap(0)) / secs)
+			fm.originRate.Update(float64(fm.originCount.Swap(0)) / secs)
 			fm.invocationMsRate.Update(float64(fm.invocationMs.Swap(0)) / secs)
 			fm.parkedMsRate.Update(float64(fm.parkedMs.Swap(0)) / secs)
 			fm.sloSatisfiedRate.Update(float64(fm.sloSatisfied.Swap(0)) / secs)
 			fm.sloBurnedRate.Update(float64(fm.sloBurned.Swap(0)) / secs)
-		}
-	}
-
-	for ck, targets := range u.dialCounters {
-		for target, c := range targets {
-			r := float64(c.Swap(0)) / secs
-			u.dial[ck][target].Update(r)
 		}
 	}
 }

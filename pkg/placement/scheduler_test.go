@@ -228,11 +228,11 @@ func TestEvaluate_HashTiebreakIsStable(t *testing.T) {
 	}
 }
 
-func TestEvaluate_ChallengerJoinsOnDialAffinity(t *testing.T) {
-	// Demo-chain shape: p2 hosts the anchored downstream service that
-	// `migrating` calls heavily. p1 is the current incumbent but far from
-	// p2. p2 should challenge and win on predicted latency alone (no
-	// hysteresis).
+func TestEvaluate_ChallengerJoinsOnDemandAffinity(t *testing.T) {
+	// Demo-chain shape: p2 is where all the demand for `migrating` lands
+	// (the peer running upstream seeds). p1 is the current incumbent but
+	// far from p2, so forwarded traffic pays a hop each time. p2 should
+	// challenge and win on the centroid score alone (no hysteresis).
 	p1 := peerKey(1)
 	p2 := peerKey(2)
 	allPeers := []types.PeerKey{p1, p2}
@@ -255,13 +255,9 @@ func TestEvaluate_ChallengerJoinsOnDialAffinity(t *testing.T) {
 				Coord:            &coords.Coord{X: 0, Y: 0},
 			},
 		},
-		ComputeCost:     map[string]float64{hash: 5.0},
 		InvocationRates: map[string]float64{hash: 100.0},
-		DialRates: map[string]map[string]float64{
-			hash: {"service:store": 100.0},
-		},
-		ServiceHosts: map[string][]types.PeerKey{
-			"store": {p2},
+		OriginRates: map[string]map[types.PeerKey]float64{
+			hash: {p2: 100.0},
 		},
 	}
 	claims := map[string]map[types.PeerKey]struct{}{hash: {p1: {}}}
@@ -279,9 +275,9 @@ func TestEvaluate_ChallengerJoinsOnDialAffinity(t *testing.T) {
 }
 
 func TestEvaluate_OverReplicatedReleasesByLatency(t *testing.T) {
-	// Three peers, two incumbents. p3 is uncontended and far from any
-	// downstream traffic; p1 is colocated with the only thing the workload
-	// dials. Expect p3 (worse predicted latency) to release.
+	// Three peers, two incumbents. p3 is uncontended and far from where
+	// demand lands; p1 sits on the demand centroid. Expect p3 (worst
+	// centroid score) to release first.
 	p1 := peerKey(1)
 	p2 := peerKey(2)
 	p3 := peerKey(3)
@@ -303,13 +299,9 @@ func TestEvaluate_OverReplicatedReleasesByLatency(t *testing.T) {
 				Coord: &coords.Coord{X: 1000, Y: 0},
 			},
 		},
-		ComputeCost:     map[string]float64{hash: 5.0},
 		InvocationRates: map[string]float64{hash: 100.0},
-		DialRates: map[string]map[string]float64{
-			hash: {"service:store": 100.0},
-		},
-		ServiceHosts: map[string][]types.PeerKey{
-			"store": {p1},
+		OriginRates: map[string]map[types.PeerKey]float64{
+			hash: {p1: 100.0},
 		},
 	}
 	longIdle := map[string]time.Duration{hash: 10 * time.Minute}

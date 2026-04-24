@@ -113,6 +113,34 @@ func TestUtilisationTracker_ServedRates(t *testing.T) {
 	require.InDelta(t, 20.0, rates["hot"], 1.0)
 }
 
+func TestUtilisationTracker_OriginRates(t *testing.T) {
+	// RecordOrigin fires at Call() entry regardless of whether the seed
+	// runs locally — it captures where demand enters the cluster. It
+	// produces a per-hash rate analogous to RecordServed and bumps
+	// lastActivity so even a non-claimant edge peer looks "active".
+	ut := newUtilisationTracker()
+	now := time.Now()
+	ut.nowFunc = func() time.Time { return now }
+
+	require.Empty(t, ut.OriginRates())
+
+	for range 100 {
+		ut.RecordOrigin("hot", "handle")
+	}
+	now = now.Add(time.Second)
+	ut.tick(time.Second)
+
+	rates := ut.OriginRates()
+	require.Contains(t, rates, "hot")
+	require.InDelta(t, 20.0, rates["hot"], 1.0)
+	require.Less(t, ut.IdleDuration("hot"), time.Second+time.Millisecond,
+		"RecordOrigin must keep lastActivity fresh")
+
+	// ServedRates and OriginRates are independent channels on the same
+	// hash — a hash with only origin traffic should not appear in served.
+	require.NotContains(t, ut.ServedRates(), "hot")
+}
+
 func TestUtilisationTracker_InvocationCost(t *testing.T) {
 	ut := newUtilisationTracker()
 	now := time.Now()
@@ -191,26 +219,7 @@ func TestUtilisationTracker_ClearDropsParked(t *testing.T) {
 	require.NotContains(t, ut.ParkedTimes(), "abc")
 }
 
-func TestUtilisationTracker_DialRates(t *testing.T) {
-	ut := newUtilisationTracker()
-	now := time.Now()
-	ut.nowFunc = func() time.Time { return now }
-
-	for range 50 {
-		ut.RecordDial("ingest", "handle", "seed:enrich")
-	}
-	ut.RecordDial("ingest", "handle", "service:store")
-
-	now = now.Add(time.Second)
-	ut.tick(time.Second)
-
-	dials := ut.DialRates()
-	require.Contains(t, dials, "ingest")
-	require.InDelta(t, 10.0, dials["ingest"]["seed:enrich"], 1.0)
-	require.InDelta(t, 0.2, dials["ingest"]["service:store"], 0.05)
-}
-
-func TestUtilisationTracker_ClearDropsInvocationAndDial(t *testing.T) {
+func TestUtilisationTracker_ClearDropsInvocation(t *testing.T) {
 	ut := newUtilisationTracker()
 	now := time.Now()
 	ut.nowFunc = func() time.Time { return now }
@@ -218,17 +227,15 @@ func TestUtilisationTracker_ClearDropsInvocationAndDial(t *testing.T) {
 	for range 5 {
 		ut.RecordServed("abc", "handle")
 		ut.RecordInvocation("abc", "handle", 25*time.Millisecond)
-	}
-	for range 20 {
-		ut.RecordDial("abc", "handle", "seed:downstream")
+		ut.RecordOrigin("abc", "handle")
 	}
 	now = now.Add(time.Second)
 	ut.tick(time.Second)
 
 	require.Contains(t, ut.InvocationCosts(), "abc")
-	require.Contains(t, ut.DialRates(), "abc")
+	require.Contains(t, ut.OriginRates(), "abc")
 
 	ut.Clear("abc")
 	require.NotContains(t, ut.InvocationCosts(), "abc")
-	require.NotContains(t, ut.DialRates(), "abc")
+	require.NotContains(t, ut.OriginRates(), "abc")
 }

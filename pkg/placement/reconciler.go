@@ -129,12 +129,10 @@ func (r *reconciler) Run(ctx context.Context) {
 func buildClusterState(snap state.Snapshot) clusterState {
 	cluster := clusterState{
 		Nodes:           make(map[types.PeerKey]nodeState, len(snap.PeerKeys)),
+		InvocationRates: make(map[string]float64),
+		OriginRates:     make(map[string]map[types.PeerKey]float64),
 		ComputeCost:     make(map[string]float64),
 		ParkedTime:      make(map[string]float64),
-		DialRates:       make(map[string]map[string]float64),
-		InvocationRates: make(map[string]float64),
-		SeedHosts:       make(map[string][]types.PeerKey, len(snap.Claims)),
-		ServiceHosts:    make(map[string][]types.PeerKey),
 	}
 
 	costSamples := make(map[string]int)
@@ -142,7 +140,7 @@ func buildClusterState(snap state.Snapshot) clusterState {
 
 	for _, pk := range snap.PeerKeys {
 		nv := snap.Nodes[pk]
-		ns := nodeState{
+		cluster.Nodes[pk] = nodeState{
 			CPUPercent:       nv.CPUPercent,
 			MemPercent:       nv.MemPercent,
 			MemTotalBytes:    nv.MemTotalBytes,
@@ -151,15 +149,22 @@ func buildClusterState(snap state.Snapshot) clusterState {
 			MemBudgetPercent: nv.MemBudgetPercent,
 			Coord:            nv.VivaldiCoord,
 		}
-		cluster.Nodes[pk] = ns
-		// Unified seed-metrics bundle: ServedRate feeds cluster-wide
-		// invocation rate, ComputeCostMs contributes to the mean cost
-		// only when nonzero (a present-but-zero cost inside an entry
-		// driven by a sibling field means "no compute-cost observation",
-		// not a real 0 ms sample).
+		// Unified seed-metrics bundle: ServedRate sums into cluster-wide
+		// InvocationRate; OriginRate is kept per-peer so scoring can weight
+		// distances; ComputeCost and ParkedTime contribute to the cluster
+		// mean only when nonzero (a present-but-zero entry driven by a
+		// sibling field means "no observation", not a real 0 ms sample).
 		for hash, m := range nv.SeedMetrics {
 			if m.ServedRate > 0 {
 				cluster.InvocationRates[hash] += float64(m.ServedRate)
+			}
+			if m.OriginRate > 0 {
+				peers, ok := cluster.OriginRates[hash]
+				if !ok {
+					peers = make(map[types.PeerKey]float64)
+					cluster.OriginRates[hash] = peers
+				}
+				peers[pk] = float64(m.OriginRate)
 			}
 			if m.ComputeCostMs > 0 {
 				cluster.ComputeCost[hash] += float64(m.ComputeCostMs)
@@ -168,16 +173,6 @@ func buildClusterState(snap state.Snapshot) clusterState {
 			if m.ParkedMs > 0 {
 				cluster.ParkedTime[hash] += float64(m.ParkedMs)
 				parkedSamples[hash]++
-			}
-		}
-		for hash, targets := range nv.SeedDialRates {
-			dst, ok := cluster.DialRates[hash]
-			if !ok {
-				dst = make(map[string]float64, len(targets))
-				cluster.DialRates[hash] = dst
-			}
-			for target, rate := range targets {
-				dst[target] += float64(rate)
 			}
 		}
 	}
@@ -191,17 +186,6 @@ func buildClusterState(snap state.Snapshot) clusterState {
 		if n > 0 {
 			cluster.ParkedTime[hash] /= float64(n)
 		}
-	}
-
-	for hash, claimants := range snap.Claims {
-		hosts := make([]types.PeerKey, 0, len(claimants))
-		for pk := range claimants {
-			hosts = append(hosts, pk)
-		}
-		cluster.SeedHosts[hash] = hosts
-	}
-	for _, svc := range snap.Services() {
-		cluster.ServiceHosts[svc.Name] = append(cluster.ServiceHosts[svc.Name], svc.Peer)
 	}
 
 	return cluster
@@ -249,17 +233,6 @@ func (r *reconciler) reconcile(ctx context.Context) {
 	}
 
 	r.store.SetSeedMetrics(buildSeedMetrics(r.utilisation, r.gates))
-
-	dialRates := r.utilisation.DialRates()
-	float32DialRates := make(map[string]map[string]float32, len(dialRates))
-	for caller, targets := range dialRates {
-		dst := make(map[string]float32, len(targets))
-		for target, rate := range targets {
-			dst[target] = float32(rate)
-		}
-		float32DialRates[caller] = dst
-	}
-	r.store.SetSeedDialRates(float32DialRates)
 
 	r.adjustGateSizes(specs, cluster, snap.Claims)
 	r.refreshSLOLookup(snap)
@@ -580,17 +553,23 @@ func (r *reconciler) refreshSLOLookup(snap state.Snapshot) {
 // SetSeedMetrics drops all-zero entries and applies the dead-band.
 func buildSeedMetrics(ut *utilisationTracker, gates *gateRegistry) map[string]state.SeedMetrics {
 	served := ut.ServedRates()
+	origin := ut.OriginRates()
 	costs := ut.InvocationCosts()
 	parked := ut.ParkedTimes()
 	satisfied, burned := ut.SLORates()
 	gateWaits := gates.WaitEWMAs()
 
-	out := make(map[string]state.SeedMetrics, len(served)+len(costs)+len(parked)+len(satisfied)+len(burned)+len(gateWaits))
+	out := make(map[string]state.SeedMetrics, len(served)+len(origin)+len(costs)+len(parked)+len(satisfied)+len(burned)+len(gateWaits))
 	touch := func(hash string) state.SeedMetrics { return out[hash] }
 
 	for hash, v := range served {
 		m := touch(hash)
 		m.ServedRate = float32(v)
+		out[hash] = m
+	}
+	for hash, v := range origin {
+		m := touch(hash)
+		m.OriginRate = float32(v)
 		out[hash] = m
 	}
 	for hash, v := range costs {
@@ -625,56 +604,49 @@ func buildSeedMetrics(ut *utilisationTracker, gates *gateRegistry) map[string]st
 }
 
 // adjustGateSizes pushes a per-workload concurrency cap to the gate
-// registry for every locally-claimed seed. Once we have a live measurement
-// of how long invocations park inside pollen_request, the cap is derived
-// directly from the parked/active ratio (Little's Law). Before we have
-// that signal, we fall back to a heuristic based on the outbound-dial
-// ratio.
+// registry for every locally-claimed seed. Size is derived from the
+// parked/active split via Little's Law: when invocations spend most of
+// their time parked inside pollen_request the cap grows so parked slots
+// don't starve CPU work from ready work.
 func (r *reconciler) adjustGateSizes(specs map[string]spec, cluster clusterState, claims map[string]map[types.PeerKey]struct{}) {
 	cores := runtime.NumCPU()
 	for hash := range specs {
 		if _, mine := claims[hash][r.localID]; !mine {
 			continue
 		}
-		dialOut := totalDialRate(cluster.DialRates[hash])
-		invRate := cluster.InvocationRates[hash]
-		size := desiredGateSize(cores, dialOut, invRate)
+		size := desiredGateSize(cores, cluster.ComputeCost[hash], cluster.ParkedTime[hash])
 		r.gates.SetHashSize(hash, size)
 	}
 }
 
-// totalDialRate sums all per-target dial rates for a single seed.
-func totalDialRate(targets map[string]float64) float64 {
-	var sum float64
-	for _, r := range targets {
-		sum += r
-	}
-	return sum
-}
-
 // desiredGateSize returns the per-workload concurrency cap given the
-// host's CPU count and the seed's observed outbound-call ratio. A leaf
-// seed (no outbound dials) gets `cores`; a chain holder gets more
-// because its instances park inside pollen_request waiting for
-// downstream — those parked slots aren't doing CPU work and so can
-// safely outnumber cores.
-func desiredGateSize(cores int, dialRate, invRate float64) int {
-	if invRate <= 0 {
+// host's CPU count and the seed's observed compute and parked timings.
+// Little's Law: active fraction = (compute - parked) / compute, so a
+// fully-active gate needs cores / active slots to keep the CPUs busy.
+// Missing telemetry falls back to a conservative cores × initial
+// multiplier.
+func desiredGateSize(cores int, computeCostMs, parkedMs float64) int {
+	if computeCostMs <= 0 {
 		return cores * gateInitialMultiplier
 	}
-	out := dialRate / invRate
-	return int(math.Ceil(float64(cores) * (1 + gateDialMultiplier*out)))
+	activeFraction := (computeCostMs - parkedMs) / computeCostMs
+	if activeFraction < gateMinActiveFraction {
+		activeFraction = gateMinActiveFraction
+	}
+	size := max(int(math.Ceil(float64(cores)/activeFraction)), cores*gateInitialMultiplier)
+	return size
 }
 
 const (
-	// gateInitialMultiplier sizes a fresh gate before any dial
-	// observations exist. Conservative: covers a small ramp without
-	// over-allocating instances on every node.
+	// gateInitialMultiplier is the floor cap for a gate relative to cores
+	// — enough headroom to absorb a brief burst without over-allocating
+	// instances on every node before observations land.
 	gateInitialMultiplier = 2
-	// gateDialMultiplier weights observed outbound-call ratio when
-	// computing per-workload concurrency. Higher values give
-	// chain-holders deeper pools to absorb downstream latency.
-	gateDialMultiplier = 4.0
+	// gateMinActiveFraction clamps the Little's-Law denominator so a
+	// momentary ~100% parked sample doesn't blow the gate size up to
+	// thousands. 10% active corresponds to a 10× cap over cores — plenty
+	// for heavy chain-holders.
+	gateMinActiveFraction = 0.1
 )
 
 // computeAutoscaleSignals derives per-seed SLO burn ratios from the local
