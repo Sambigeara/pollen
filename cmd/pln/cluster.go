@@ -106,14 +106,15 @@ func newClusterCmds() []*cobra.Command {
 	purgeCmd := &cobra.Command{
 		Use:   "purge",
 		Short: "Delete local cluster state",
-		Long: `Deletes the local cluster credentials, CAS, runtime state, and
-config from $PLN_DIR. The node identity (signing keys) is preserved
-by default — use --include-keys to wipe them too. Errors if the daemon
-is running. Prompts unless --yes is given.`,
+		Long: `Deletes local cluster credentials (root.pub, membership and
+delegation certs, admin keypair), CAS, runtime state, and config from
+$PLN_DIR. The node identity (ed25519.{key,pub}) is preserved by
+default — pass --include-keys to wipe the keys directory entirely.
+Errors if the daemon is running. Prompts unless --yes is given.`,
 		Example: "  pln down && pln purge --yes",
 		RunE:    withEnv(runPurge, wantsRoot(), localOnly()),
 	}
-	purgeCmd.Flags().Bool("include-keys", false, "Also delete local node identity keys")
+	purgeCmd.Flags().Bool("include-keys", false, "Also delete the node identity keypair")
 	purgeCmd.Flags().Bool("yes", false, "Skip interactive confirmation")
 
 	joinCmd := &cobra.Command{
