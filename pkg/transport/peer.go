@@ -120,6 +120,7 @@ type peerStore struct {
 	m       map[types.PeerKey]*peer
 	metrics *metrics.PeerMetrics
 	trans   *QUICTransport
+	wakeCh  chan struct{}
 	mu      sync.RWMutex
 }
 
@@ -128,6 +129,16 @@ func newPeerStore(t *QUICTransport) *peerStore {
 		m:       make(map[types.PeerKey]*peer),
 		metrics: metrics.NewPeerMetrics(metricnoop.NewMeterProvider()),
 		trans:   t,
+		wakeCh:  make(chan struct{}, 1),
+	}
+}
+
+// wake signals the tick loop. The size-1 buffer plus non-blocking send
+// coalesces bursts of discoveries into a single follow-up tick.
+func (s *peerStore) wake() {
+	select {
+	case s.wakeCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -139,6 +150,8 @@ func (s *peerStore) runPeerTickLoop(ctx context.Context, tickInterval time.Durat
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			s.tick(ctx)
+		case <-s.wakeCh:
 			s.tick(ctx)
 		}
 	}
@@ -202,8 +215,15 @@ func (s *peerStore) tick(ctx context.Context) {
 }
 
 func (s *peerStore) Discover(pk types.PeerKey, ips []net.IP, port int, lastAddr *net.UDPAddr, privatelyRoutable, publiclyAccessible bool) {
+	woke := false
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() {
+		s.mu.Unlock()
+		if woke {
+			s.wake()
+		}
+	}()
+
 	now := time.Now()
 	if privatelyRoutable {
 		lastAddr = nil
@@ -223,6 +243,7 @@ func (s *peerStore) Discover(pk types.PeerKey, ips []net.IP, port int, lastAddr 
 		}
 		p.resetStage()
 		s.m[pk] = p
+		woke = true
 		return
 	}
 
@@ -242,6 +263,7 @@ func (s *peerStore) Discover(pk types.PeerKey, ips []net.IP, port int, lastAddr 
 		p.resetStage()
 		p.StageAttempts = 0
 		p.NextActionAt = now
+		woke = true
 	}
 }
 
@@ -352,8 +374,15 @@ func (s *peerStore) stateCounts() PeerStateCounts {
 // action to now. Called when fresh address info arrives in state so stale
 // eager-retry or punch attempts do not keep chasing dead WAN mappings.
 func (s *peerStore) Nudge(pk types.PeerKey) {
+	woke := false
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() {
+		s.mu.Unlock()
+		if woke {
+			s.wake()
+		}
+	}()
+
 	p, ok := s.m[pk]
 	if !ok || p.State == peerStateConnected || p.State == peerStateConnecting {
 		return
@@ -362,6 +391,7 @@ func (s *peerStore) Nudge(pk types.PeerKey) {
 	p.StageAttempts = 0
 	p.State = peerStateDiscovered
 	p.NextActionAt = time.Now()
+	woke = true
 }
 
 func (s *peerStore) Forget(pk types.PeerKey) {

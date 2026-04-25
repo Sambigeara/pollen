@@ -56,35 +56,88 @@ func redeemInviteWithDial(
 	var lastErr error
 	for _, bootstrap := range token.GetClaims().GetBootstrap() {
 		expectedPeer := types.PeerKeyFromBytes(bootstrap.GetPeerPub())
+		addrs := make([]*net.UDPAddr, 0, len(bootstrap.GetAddrs()))
 		for _, rawAddr := range bootstrap.GetAddrs() {
 			addr, err := net.ResolveUDPAddr("udp", rawAddr)
 			if err != nil {
 				continue
 			}
-
-			qc, err := dial(ctx, addr, expectedPeer)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-
-			joinToken, redeemErr := redeemInviteOnConn(ctx, qc, token, subjectPub)
-			_ = qc.CloseWithError(0, "invite redeemed")
-			if redeemErr != nil {
-				lastErr = redeemErr
-				continue
-			}
-
-			if _, verifyErr := auth.VerifyJoinToken(joinToken, subjectPub, time.Now()); verifyErr != nil {
-				lastErr = verifyErr
-				continue
-			}
-
-			return joinToken, nil
+			addrs = append(addrs, addr)
 		}
+		if len(addrs) == 0 {
+			continue
+		}
+
+		qc, err := raceInviteDials(ctx, addrs, expectedPeer, dial)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// Invite tokens are one-shot — racing redemptions would burn the token.
+		joinToken, redeemErr := redeemInviteOnConn(ctx, qc, token, subjectPub)
+		_ = qc.CloseWithError(0, "invite redeemed")
+		if redeemErr != nil {
+			lastErr = redeemErr
+			continue
+		}
+
+		if _, verifyErr := auth.VerifyJoinToken(joinToken, subjectPub, time.Now()); verifyErr != nil {
+			lastErr = verifyErr
+			continue
+		}
+
+		return joinToken, nil
 	}
 
 	return nil, fmt.Errorf("failed to redeem invite token: %w", lastErr)
+}
+
+// raceInviteDials cancels losing dials and closes any late successes before
+// returning, so the caller never inherits a stray QUIC connection.
+func raceInviteDials(
+	ctx context.Context,
+	addrs []*net.UDPAddr,
+	expectedPeer types.PeerKey,
+	dial func(context.Context, *net.UDPAddr, types.PeerKey) (*quic.Conn, error),
+) (*quic.Conn, error) {
+	dialCtx, cancelDial := context.WithCancel(ctx)
+	defer cancelDial()
+
+	type result struct {
+		qc  *quic.Conn
+		err error
+	}
+	ch := make(chan result, len(addrs))
+
+	for _, addr := range addrs {
+		go func(a *net.UDPAddr) {
+			qc, err := dial(dialCtx, a, expectedPeer)
+			ch <- result{qc: qc, err: err}
+		}(addr)
+	}
+
+	var winner *quic.Conn
+	var lastErr error
+	for range addrs {
+		r := <-ch
+		switch {
+		case r.err != nil:
+			if lastErr == nil {
+				lastErr = r.err
+			}
+		case winner == nil:
+			winner = r.qc
+			cancelDial()
+		default:
+			_ = r.qc.CloseWithError(0, "invite race lost")
+		}
+	}
+
+	if winner == nil {
+		return nil, lastErr
+	}
+	return winner, nil
 }
 
 func (m *QUICTransport) JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error {

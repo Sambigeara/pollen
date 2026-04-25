@@ -165,6 +165,71 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 	}, 5*time.Second, 25*time.Millisecond)
 }
 
+// TestRedeemInviteRacesAddresses puts a non-responsive UDP address first and
+// the live bootstrap second. The 2s deadline is below the per-dial handshake
+// timeout, so only a parallel race across both addresses can succeed.
+func TestRedeemInviteRacesAddresses(t *testing.T) {
+	cluster := testauth.NewClusterAuth(t)
+
+	bootstrapPub, bootstrapPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	bootstrapCreds := cluster.CredsFor(t, bootstrapPub)
+	bootstrapCreds.SetDelegationKey(cluster.Signer(t))
+	bootstrap := startMeshHarnessWithCreds(t, bootstrapPriv, bootstrapPub, bootstrapCreds)
+
+	// A bound UDP socket that nothing reads from acts as a deterministic
+	// blackhole: QUIC Initial packets land in the kernel queue, no
+	// response is ever produced, and the handshake hangs until cancelled.
+	blackhole, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = blackhole.Close() })
+	blackholeAddr := blackhole.LocalAddr().(*net.UDPAddr) //nolint:forcetypeassert
+
+	joinerPub, joinerPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	invite, err := cluster.Signer(t).IssueInviteToken(
+		joinerPub,
+		[]*admissionv1.BootstrapPeer{{
+			PeerPub: bootstrap.pubKey,
+			Addrs: []string{
+				blackholeAddr.String(),
+				net.JoinHostPort("127.0.0.1", strconv.Itoa(bootstrap.port)),
+			},
+		}},
+		time.Now(),
+		time.Hour,
+		time.Hour,
+		nil,
+	)
+	require.NoError(t, err)
+
+	// Tight deadline: a sequential implementation would burn it on the
+	// blackhole dial before reaching the live bootstrap.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	joinToken, err := transport.RedeemInvite(ctx, joinerPriv, invite)
+	require.NoError(t, err)
+	_, err = auth.VerifyJoinToken(joinToken, joinerPub, time.Now())
+	require.NoError(t, err)
+}
+
+// TestDiscoverPeerWakesDialer uses a one-hour tick interval so the connection
+// can only form if Discover signals the dialer directly.
+func TestDiscoverPeerWakesDialer(t *testing.T) {
+	cluster := testauth.NewClusterAuth(t)
+	a := startMeshHarness(t, cluster, transport.WithPeerTickInterval(time.Hour))
+	b := startMeshHarness(t, cluster)
+
+	a.mesh.DiscoverPeer(b.peerKey, []net.IP{net.IPv4(127, 0, 0, 1)}, b.port, nil, true, true)
+
+	require.Eventually(t, func() bool {
+		_, ok := a.mesh.GetConn(b.peerKey)
+		return ok
+	}, 5*time.Second, 25*time.Millisecond, "discover should wake the dialer rather than wait a full tick")
+}
+
 func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 	cluster := testauth.NewClusterAuth(t)
 
