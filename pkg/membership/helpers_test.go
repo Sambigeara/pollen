@@ -11,9 +11,11 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/state"
@@ -241,6 +243,14 @@ func (f *fakePeerAddressSource) GetActivePeerAddress(peer types.PeerKey) (*net.U
 	a, ok := f.addrs[peer]
 	return a, ok
 }
+
+type fakeCapTransitioner struct {
+	upgraded   atomic.Bool
+	downgraded atomic.Bool
+}
+
+func (f *fakeCapTransitioner) UpgradeToAdmin(*auth.DelegationSigner) { f.upgraded.Store(true) }
+func (f *fakeCapTransitioner) DowngradeToLeaf()                      { f.downgraded.Store(true) }
 
 type fakePeerSessionCloser struct {
 	mu     sync.Mutex

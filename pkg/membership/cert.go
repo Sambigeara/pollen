@@ -290,6 +290,10 @@ func (s *Service) handleCertPushRequest(ctx context.Context, from types.PeerKey,
 		s.sendCertPushResponse(ctx, from, &meshv1.CertPushResponse{Reason: reason})
 	}
 
+	// Capture before applyNewCert: it overwrites s.creds.Cert with the
+	// pushed cert, so reading after would always equal the new value.
+	oldCanDelegate := s.creds.Cert().GetClaims().GetCapabilities().GetCanDelegate()
+
 	newCert := req.GetCert()
 	if err := s.applyNewCert(newCert); err != nil {
 		sendReject(err.Error())
@@ -297,7 +301,8 @@ func (s *Service) handleCertPushRequest(ctx context.Context, from types.PeerKey,
 	}
 
 	caps := newCert.GetClaims().GetCapabilities()
-	if caps.GetCanDelegate() {
+	newCanDelegate := caps.GetCanDelegate()
+	if newCanDelegate {
 		signer := auth.NewDelegationSignerFromCert(s.signPriv, newCert)
 		s.creds.SetDelegationKey(signer)
 		s.capTransition.UpgradeToAdmin(signer)
@@ -306,28 +311,37 @@ func (s *Service) handleCertPushRequest(ctx context.Context, from types.PeerKey,
 		s.capTransition.DowngradeToLeaf()
 	}
 
-	s.log.Infow("certificate pushed", "from", from.Short(), "can_delegate", caps.GetCanDelegate())
+	s.log.Infow("certificate pushed", "from", from.Short(), "can_delegate", newCanDelegate)
 	s.sendCertPushResponse(ctx, from, &meshv1.CertPushResponse{Accepted: true})
 
 	// A pushed cert typically carries new capabilities or attributes;
 	// live QUIC sessions keep the old TLS identity indefinitely, so
 	// peers' PeerDelegationCert stores stay stale and authz rules
 	// keyed on subject.properties silently miss until a reconnect.
-	// Tearing down outbound sessions forces a fresh TLS handshake so
-	// the new cert propagates. The issuing peer is excluded: dropping
-	// that session races the accept datagram we just queued and causes
-	// the admin's PushCert RPC to time out as "issue cert failed". The
+	// Tearing down peer sessions forces a fresh TLS handshake so the
+	// new cert propagates. The issuing peer is excluded: dropping that
+	// session races the accept datagram we just queued and causes the
+	// admin's PushCert RPC to time out as "issue cert failed". The
 	// issuer will observe the new cert on any later session reset and
 	// doesn't need it for its own authorisation decisions in the
 	// meantime — it's the party that just signed it.
+	//
+	// Exception: skip on the leaf→admin transition. AdminCapable
+	// propagates via the SetAdmin gossip event, not TLS, and peers
+	// don't authz against our CanDelegate flag. Closing sessions the
+	// moment we become admin orphans in-flight invite forwarding the
+	// mesh routes through us — joins fail until reconnect. Admin→admin
+	// re-grants must still rotate so attribute changes reach peers'
+	// cached attrs (the basis for attribute-keyed authz).
+	if !oldCanDelegate && newCanDelegate {
+		return
+	}
 	s.rotateSessionsForNewCert(from)
 }
 
-// rotateSessionsForNewCert closes every outbound session except the
-// one to exclude (typically the peer that issued the cert push, whose
-// response datagram must flush before we can safely close). Safe to
-// call after applyNewCert has returned nil; no-op when sessionCloser
-// isn't wired (tests without the transport layer).
+// exclude is typically the cert pusher: closing its session races
+// the accept datagram still in flight and fails the admin's PushCert
+// RPC. No-op when sessionCloser isn't wired.
 func (s *Service) rotateSessionsForNewCert(exclude types.PeerKey) {
 	if s.sessionCloser == nil {
 		return

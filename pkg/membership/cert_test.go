@@ -82,6 +82,69 @@ func TestRotateSessionsForNewCertIsANoOpWithoutCloser(t *testing.T) {
 	require.NotPanics(t, func() { svc.rotateSessionsForNewCert(types.PeerKey{}) })
 }
 
+// TestHandleCertPushSkipsRotationOnPromotionToAdmin: closing every
+// peer session at the moment we become admin orphans the in-flight
+// invite forwarding the mesh routes through us. Rotation buys
+// nothing here — AdminCapable propagates via the SetAdmin gossip
+// event, not TLS.
+func TestHandleCertPushSkipsRotationOnPromotionToAdmin(t *testing.T) {
+	h := newRecipientHarness(t, false)
+	h.network.setConnectedPeers(peerKey(2), peerKey(3))
+
+	issuer := peerKey(4)
+	h.svc.handleCertPushRequest(context.Background(), issuer, &meshv1.CertPushRequest{
+		Cert: h.issueCert(t, true),
+	})
+
+	require.True(t, h.capTrans.upgraded.Load(), "must transition to admin")
+	require.Empty(t, h.closer.snapshot(), "no peer sessions should be closed on promotion to admin")
+}
+
+// TestHandleCertPushRotatesOnLeafCertPush is the symmetric pin: a
+// non-admin cert push must still rotate sessions so peers re-handshake
+// and pick up our updated subject.properties — that is the original
+// motivation for the rotation.
+func TestHandleCertPushRotatesOnLeafCertPush(t *testing.T) {
+	h := newRecipientHarness(t, false)
+	h.network.setConnectedPeers(peerKey(2), peerKey(3))
+
+	issuer := peerKey(4)
+	h.svc.handleCertPushRequest(context.Background(), issuer, &meshv1.CertPushRequest{
+		Cert: h.issueCert(t, false),
+	})
+
+	require.True(t, h.capTrans.downgraded.Load(), "must transition to leaf")
+	got := h.closer.snapshot()
+	require.Len(t, got, 2, "leaf cert push must rotate every connected peer")
+	require.NotContains(t, got, issuer, "issuer is excluded — its accept datagram is still flushing")
+	for _, pk := range []types.PeerKey{peerKey(2), peerKey(3)} {
+		require.Equal(t, transport.DisconnectCertRotation, got[pk])
+	}
+}
+
+// TestHandleCertPushRotatesOnAdminToAdminRegrant guards the
+// predicate against over-skipping. Re-pushing an admin cert (e.g.
+// attribute re-grant against an existing admin) must still rotate so
+// peers' cached cert attrs refresh — attribute-keyed authz reads
+// from that cache.
+func TestHandleCertPushRotatesOnAdminToAdminRegrant(t *testing.T) {
+	h := newRecipientHarness(t, true)
+	h.network.setConnectedPeers(peerKey(2), peerKey(3))
+
+	issuer := peerKey(4)
+	h.svc.handleCertPushRequest(context.Background(), issuer, &meshv1.CertPushRequest{
+		Cert: h.issueCert(t, true),
+	})
+
+	require.True(t, h.capTrans.upgraded.Load())
+	got := h.closer.snapshot()
+	require.Len(t, got, 2, "admin→admin re-grant must rotate so attribute changes propagate")
+	require.NotContains(t, got, issuer)
+	for _, pk := range []types.PeerKey{peerKey(2), peerKey(3)} {
+		require.Equal(t, transport.DisconnectCertRotation, got[pk])
+	}
+}
+
 // TestIssueCertInstallsFreshCertIntoLocalCache pins the fix for the
 // stale-issuer bug: after a successful PushCert, the issuer's own
 // PeerDelegationCert cache must reflect the cert it just signed, so a
@@ -138,6 +201,86 @@ func TestHandleCertRenewalInstallsFreshCertIntoLocalCache(t *testing.T) {
 		"renewed cert must carry the same attrs so the cache stays consistent for the next renewal")
 	require.Greater(t, got.GetClaims().GetNotAfterUnix(), seed.GetClaims().GetNotAfterUnix(),
 		"renewal must extend the NotAfter — otherwise the cache isn't the renewed cert")
+}
+
+// recipientHarness wires a Service so it can apply pushed delegation
+// certs from a known root. The service holds a real signPriv and
+// pollenDir so applyNewCert can verify, regenerate the TLS identity,
+// and persist the updated credentials.
+type recipientHarness struct {
+	svc      *Service
+	rootPriv ed25519.PrivateKey
+	selfPub  ed25519.PublicKey
+	closer   *fakePeerSessionCloser
+	capTrans *fakeCapTransitioner
+	network  *fakeNetwork
+}
+
+func newRecipientHarness(t *testing.T, startAsAdmin bool) *recipientHarness {
+	t.Helper()
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	selfPub, selfPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	initialCaps := auth.LeafCapabilities()
+	if startAsAdmin {
+		initialCaps = auth.FullCapabilities()
+	}
+	initialCert, err := auth.IssueDelegationCert(
+		rootPriv, nil, selfPub, initialCaps,
+		time.Now().Add(-time.Minute), time.Now().Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	creds := auth.NewNodeCredentials(rootPub, initialCert)
+	closer := newFakePeerSessionCloser()
+	capTrans := &fakeCapTransitioner{}
+	net := newFakeNetwork()
+	self := types.PeerKeyFromBytes(selfPub)
+	st := newFakeClusterState(self)
+
+	svc := New(self, creds, net, st, Config{
+		Log:              zap.S(),
+		TracerProvider:   tracenoop.NewTracerProvider(),
+		NodeMetrics:      metrics.NewNodeMetrics(metricnoop.NewMeterProvider()),
+		GossipInterval:   time.Hour,
+		PeerTickInterval: time.Hour,
+		Streams:          &fakeStreamOpener{},
+		RTT:              &fakeRTTSource{},
+		Certs:            newFakeCertManager(),
+		PeerAddrs:        &fakePeerAddressSource{},
+		SessionCloser:    closer,
+		RoutedSender:     noopRoutedSender{},
+		NATDetector:      nat.NewDetector(),
+		ReconnectWindow:  time.Hour,
+		MembershipTTL:    time.Hour,
+		CapTransition:    capTrans,
+		SignPriv:         selfPriv,
+		PollenDir:        t.TempDir(),
+		TLSIdentityTTL:   time.Hour,
+	})
+	return &recipientHarness{
+		svc:      svc,
+		rootPriv: rootPriv,
+		selfPub:  selfPub,
+		closer:   closer,
+		capTrans: capTrans,
+		network:  net,
+	}
+}
+
+func (h *recipientHarness) issueCert(t *testing.T, admin bool) *admissionv1.DelegationCert {
+	t.Helper()
+	caps := auth.LeafCapabilities()
+	if admin {
+		caps = auth.FullCapabilities()
+	}
+	cert, err := auth.IssueDelegationCert(
+		h.rootPriv, nil, h.selfPub, caps,
+		time.Now().Add(-time.Minute), time.Now().Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+	return cert
 }
 
 // newRootCredentials builds NodeCredentials whose DelegationKey is a
