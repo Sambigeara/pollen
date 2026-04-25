@@ -215,8 +215,6 @@ func resolveEvaluator(factories map[string]Factory, spec string) (Evaluator, err
 	return f(sub)
 }
 
-// boundEvaluator pairs an Evaluator with per-gate cache/timeout/
-// fallback/metrics. Unexported — Router is the only consumer.
 type boundEvaluator struct {
 	eval     Evaluator
 	metrics  Metrics

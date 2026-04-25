@@ -459,26 +459,10 @@ type autoscaleSignals struct {
 	burn      float64
 }
 
-// stepAdjustTargets updates the reconciler's per-hash dynamicTargets map
-// based on this node's local autoscale signals.
-//
-// Invariant: autoscale decisions are node-local. Each node observes its
-// own RecordSLO stream through its own utilisation tracker and runs its
-// own reconciliation loop. There is no distributed consensus on target
-// replica count — `dynamicTargets` is not gossiped. Cluster-wide
-// convergence comes from two places:
-//
-//  1. Every node receives the same gossiped state (specs, claims, Vivaldi
-//     coordinates, compute costs, dial rates), so their candidate pools
-//     and latency predictions agree.
-//  2. `evaluate()` scores candidates using deterministic tie-breaks (peer
-//     key hash blended into the score), so every node would pick the same
-//     claimant or eviction target given the same view.
-//
-// Divergence in per-node `dynamicTargets` is expected and self-correcting
-// — the node with the highest computed target is the one whose
-// claim/release decision dominates, and all nodes converge on the same
-// cluster-wide claim count within a handful of reconcile ticks.
+// stepAdjustTargets adjusts per-hash dynamicTargets from local autoscale
+// signals. Targets are node-local and never gossiped; cluster convergence
+// relies on every node seeing the same gossiped inputs and evaluate()
+// breaking ties deterministically by peer-key hash.
 func (r *reconciler) stepAdjustTargets(specs map[string]spec, signals map[string]autoscaleSignals, clusterSize int) {
 	r.inFlightMu.Lock()
 	defer r.inFlightMu.Unlock()

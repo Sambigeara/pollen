@@ -690,14 +690,9 @@ func (s *Service) DisconnectService(_ context.Context, req *controlv1.Disconnect
 	return &controlv1.DisconnectServiceResponse{}, nil
 }
 
-// CheckPolicy runs the supplied authorisation request through the
-// daemon's currently-loaded router and returns the decision. The gate
-// machinery is exercised end-to-end (cache, timeout, fallback), but no
-// primitive is dispatched — this is purely a policy-authoring aid.
-//
-// When no router is configured, the answer is always allow — consistent
-// with the daemon's default behaviour, and useful to confirm the
-// matcher file isn't being picked up.
+// CheckPolicy runs the request through the live router and returns the
+// decision without dispatching the primitive — a policy-authoring aid. With
+// no router configured, the answer is always allow.
 func (s *Service) CheckPolicy(ctx context.Context, req *controlv1.CheckPolicyRequest) (*controlv1.CheckPolicyResponse, error) {
 	gate := evaluator.GateName(req.GetGate())
 	if !gate.Valid() {
@@ -1021,13 +1016,10 @@ func buildStaticSummaries(snap state.Snapshot) []*controlv1.StaticSummary {
 	return out
 }
 
-// buildBlobSummaries tags unreferenced blobs as orphan; the CLI filters
-// them from the default view and the janitor evicts them on its next tick.
-// Workload and static-backed blobs are surfaced under their own summaries
-// and skipped here. Holders are restricted to live peers — stale
-// BlobAvailability from an offline peer persists in gossip until cert
-// expiry, but such a holder can neither serve fetches nor be pruned, so
-// counting it would inflate replicas and surface phantom orphans.
+// buildBlobSummaries tags unreferenced blobs as orphan and restricts holders
+// to live peers — stale BlobAvailability from offline peers would inflate
+// replicas and surface phantom orphans. Workload- and static-backed blobs
+// are surfaced under their own summaries and skipped here.
 func (s *Service) buildBlobSummaries(snap state.Snapshot) []*controlv1.BlobSummary {
 	liveSet := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
 	for _, pk := range snap.PeerKeys {

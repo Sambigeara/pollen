@@ -21,7 +21,7 @@ const (
 // published. Distinct from placement.ErrNotRunning (spec exists, no claimants).
 var ErrTargetNotFound = errors.New("target not found")
 
-// URI is a parsed pln:// address used by WASM guests to call seeds or services.
+// URI is a parsed pln:// address.
 type URI struct {
 	Scheme   URIScheme
 	Name     string // seed name or service name

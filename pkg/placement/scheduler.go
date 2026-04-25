@@ -158,11 +158,8 @@ func evaluate(in evaluateInput) []action {
 	return actions
 }
 
-// rankTopN scores each candidate by predicted latency (with a
-// deterministic hash tiebreak), sorts, and returns whether localID is
-// in the first n entries. Used by the three decision functions below —
-// they only differ in which peers go into the candidate pool and what
-// n is.
+// rankTopN scores each candidate by predicted latency with a deterministic
+// hash tiebreak, sorts, and returns whether localID is in the first n entries.
 func rankTopN(candidates []types.PeerKey, hash string, cluster clusterState, n int, localID types.PeerKey) bool {
 	if n <= 0 || len(candidates) == 0 {
 		return false

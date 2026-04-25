@@ -404,8 +404,6 @@ func runAdminSetCert(cmd *cobra.Command, args []string, env *cliEnv) error {
 	return nil
 }
 
-// --- Bootstrap & Remote Operations ---
-
 type bootstrapResult struct {
 	err     error
 	target  string
@@ -967,8 +965,6 @@ func waitForRelayReady(ctx context.Context, sshTarget string) error {
 	return nil
 }
 
-// sshCmd builds an ssh(1) invocation with the standard base flags and the given
-// remote command tokens appended verbatim.
 func sshCmd(ctx context.Context, sshTarget string, remoteCmd ...string) *exec.Cmd {
 	args := slices.Concat(sshBaseArgs, []string{sshTarget}, remoteCmd)
 	return exec.CommandContext(ctx, "ssh", args...)

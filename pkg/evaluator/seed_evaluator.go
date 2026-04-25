@@ -62,7 +62,6 @@ type seedEvaluator struct {
 	mu       sync.Mutex
 }
 
-// newSeedEvaluator binds a seedEvaluator to a specific seed name.
 func newSeedEvaluator(seedName string, caller CallerFn) *seedEvaluator {
 	return &seedEvaluator{
 		seed:   seedName,
@@ -71,9 +70,6 @@ func newSeedEvaluator(seedName string, caller CallerFn) *seedEvaluator {
 	}
 }
 
-// Allow marshals the request as JSON, invokes the seed, and parses the
-// returned Decision. An open circuit short-circuits with ErrCircuitOpen
-// until the cooldown expires.
 func (e *seedEvaluator) Allow(ctx context.Context, req Request) (Decision, error) {
 	if err := e.admit(); err != nil {
 		return Decision{}, err

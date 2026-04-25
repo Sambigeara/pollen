@@ -647,7 +647,6 @@ func SignPublisherClaim(priv ed25519.PrivateKey, payload []byte) ([]byte, error)
 	return signPayload(priv, payload, sigContextPublisherClaim)
 }
 
-// VerifyPublisherClaim is the inverse of SignPublisherClaim.
 func VerifyPublisherClaim(pub ed25519.PublicKey, payload, signature []byte) error {
 	return verifyPayload(pub, payload, signature, sigContextPublisherClaim)
 }

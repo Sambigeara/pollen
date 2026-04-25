@@ -133,8 +133,6 @@ func runUnset(cmd *cobra.Command, args []string, env *cliEnv) error {
 	return nil
 }
 
-// applyHint returns a parenthesised note describing how the change will take
-// effect, tailored to whether the daemon is currently running.
 func applyHint(dir string) string {
 	if nodeSocketActive(filepath.Join(dir, socketName)) {
 		return "(run `pln restart` to apply)"
@@ -159,8 +157,6 @@ func setLogLevel(dst *string, value string) (string, error) {
 	return value, nil
 }
 
-// setAddr validates that value is a port, ":port", or "host:port" and stores
-// the canonical ":port" / "host:port" form into dst, returning it for display.
 func setAddr(dst *string, value string) (string, error) {
 	normalised := value
 	if _, err := strconv.Atoi(value); err == nil {

@@ -25,8 +25,6 @@ const (
 //go:embed pln.service
 var systemdUnit []byte
 
-// newDaemonInstallCmd installs the pln binary as a Linux systemd unit
-// running under a dedicated pln user. Idempotent and re-runnable.
 func newDaemonInstallCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "install",
@@ -39,8 +37,6 @@ user is added to the pln group for CLI access. Idempotent.`,
 	}
 }
 
-// newDaemonUninstallCmd stops the systemd unit and removes it. With
-// --purge it also wipes /var/lib/pln state.
 func newDaemonUninstallCmd() *cobra.Command {
 	uninstall := &cobra.Command{
 		Use:   "uninstall",

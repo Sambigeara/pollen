@@ -41,8 +41,6 @@ func New(properties map[string]any, signature []byte) *PublisherClaim {
 	return &PublisherClaim{Properties: properties, Signature: signature}
 }
 
-// GetProperties returns the claim's properties or nil when the claim
-// is absent. Nil-safe read helper.
 func (c *PublisherClaim) GetProperties() map[string]any {
 	if c == nil {
 		return nil
@@ -77,11 +75,7 @@ func Sign(priv ed25519.PrivateKey, resourceType evaluator.ResourceType, resource
 	return auth.SignPublisherClaim(priv, payload)
 }
 
-// Verify performs the full shape-plus-cryptographic check over a
-// received claim. A nil Properties with empty Signature is accepted
-// (unsigned spec). Properties-without-signature returns
-// ErrSignatureMissing. Oversized properties return
-// ErrPropertiesTooLarge. Anything else returns ErrSignatureInvalid.
+// Verify checks shape and cryptographic validity of a received claim.
 func Verify(pub ed25519.PublicKey, resourceType evaluator.ResourceType, resourceID string, properties *structpb.Struct, signature []byte) error {
 	if len(signature) == 0 {
 		if properties == nil {

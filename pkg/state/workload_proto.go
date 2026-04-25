@@ -26,9 +26,8 @@ func workloadSpecToProto(spec WorkloadSpec) *statev1.WorkloadSpecChange {
 	}
 }
 
-// workloadSpecFromProto is the read-side counterpart used by snapshot
-// construction. A nil input yields the zero value so callers don't
-// need to nil-guard.
+// workloadSpecFromProto returns a zero-valued WorkloadSpec when pb is nil
+// so callers don't need to nil-guard.
 func workloadSpecFromProto(pb *statev1.WorkloadSpecChange) WorkloadSpec {
 	if pb == nil {
 		return WorkloadSpec{}
@@ -64,9 +63,8 @@ func seedMetricsToProto(in map[string]SeedMetrics) *statev1.SeedMetricsChange {
 	return &statev1.SeedMetricsChange{Seeds: seeds}
 }
 
-// seedMetricsFromProto is the read-side counterpart used by snapshot
-// construction. A nil or empty input yields an empty (non-nil) map so
-// callers can range over the result without nil-guarding.
+// seedMetricsFromProto returns a non-nil empty map when in is nil or empty
+// so callers can range over the result without nil-guarding.
 func seedMetricsFromProto(in *statev1.SeedMetricsChange) map[string]SeedMetrics {
 	if in == nil {
 		return map[string]SeedMetrics{}

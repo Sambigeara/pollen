@@ -48,17 +48,11 @@ func ExecutingFunctionFromContext(ctx context.Context) string {
 	return ""
 }
 
-// CallerInfo holds the identity and cert attributes of the peer that
-// initiated a workload invocation, plus wire-propagated metadata such as
-// the caller's deadline. DeadlineUnixMs is zero when no deadline has been
-// set.
-//
-// OnBehalfOf carries the hex hash of the seed the caller is acting for
-// on this hop — set when a running seed makes an outbound request so
-// the receiver can gate on the seed's identity rather than the host
-// peer's. Empty on the first hop (CLI / external caller). The receiver
-// validates it against cluster state before trusting the seed-typed
-// attribution (see evaluator.SubjectFromCallerInfo).
+// CallerInfo carries the peer's identity, cert attributes, and propagated
+// deadline. OnBehalfOf names the seed the caller is acting for on this hop,
+// letting the receiver gate on seed identity rather than the host peer; it
+// is empty on the first hop and validated against cluster state before any
+// seed-typed attribution is trusted (see evaluator.SubjectFromCallerInfo).
 type CallerInfo struct {
 	Attributes     map[string]any
 	OnBehalfOf     string

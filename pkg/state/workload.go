@@ -9,15 +9,10 @@ import (
 	"github.com/sambigeara/pollen/pkg/claims"
 )
 
-// WorkloadSpec is the domain-side representation of a user's workload
-// declaration. It crosses package boundaries by value — the underlying
-// proto (statev1.WorkloadSpecChange) stays internal to state, used
-// only for gossip serialization via seedMetrics/workloadSpec helpers.
-//
-// Timeout and LatencySLO are time.Duration in-domain but uint32 ms on
-// the wire. Round-tripping through the proto is lossless only for
-// whole-millisecond, in-uint32-range durations; anything finer or
-// larger is clamped/truncated at the translation boundary.
+// WorkloadSpec crosses package boundaries by value; the proto representation
+// stays internal to state. Timeout and LatencySLO are time.Duration in-domain
+// but uint32 ms on the wire — sub-millisecond or out-of-range values are
+// clamped at the translation boundary.
 type WorkloadSpec struct {
 	Claim       *claims.PublisherClaim
 	Hash        string
@@ -42,23 +37,12 @@ type NodeResources struct {
 	MemBudgetPercent uint32
 }
 
-// SeedMetrics is the per-seed per-node telemetry bundle. All fields are
-// gossiped together so consumers (Prometheus, the reconciler's
-// cluster-wide aggregates) read a single coherent snapshot per seed.
-//
-// Rate fields end in "Rate" to distinguish them from counts; cost and
-// wait-time fields carry unit suffixes instead because they aren't
-// rates. A zero ComputeCostMs inside an otherwise-nonzero entry means
-// "no compute-cost observation", not a real 0 ms sample.
-//
-// OriginRate is calls/sec entering the cluster at this node (whether
-// the node hosts the seed or forwards the call elsewhere). Placement
-// scoring treats the cluster-wide distribution of OriginRate as the
-// authoritative demand signal.
-//
-// ParkedMs is the mean time per invocation spent blocked inside
-// pollen_request. It's the signal adaptive gate sizing uses to separate
-// "CPU work" from "waiting on downstream" without hard-coding a ratio.
+// SeedMetrics is the per-seed per-node telemetry bundle, gossiped as one
+// snapshot. OriginRate is calls/sec entering the cluster at this node — the
+// authoritative demand signal for placement. ParkedMs is mean blocked time
+// inside pollen_request, used by adaptive gate sizing to separate compute
+// from waiting. Zero ComputeCostMs in an otherwise non-zero entry means
+// "no observation", not a real 0 ms sample.
 type SeedMetrics struct {
 	ServedRate       float32
 	OriginRate       float32
@@ -69,12 +53,8 @@ type SeedMetrics struct {
 	GateWaitMs       uint32
 }
 
-// IsZero reports whether every field is zero. Used by SetSeedMetrics to
-// decide whether a hash entry is worth gossiping — an all-zero bundle
-// means the seed has no active telemetry on this node and the entry is
-// omitted. A non-zero→zero transition on any single field (e.g. gate
-// wait clearing while traffic continues) is a material change and still
-// travels through the dead-band check.
+// IsZero is true when SetSeedMetrics should omit the entry from gossip;
+// non-zero→zero transitions on any single field still pass the dead-band check.
 func (m SeedMetrics) IsZero() bool {
 	return m.ServedRate == 0 && m.OriginRate == 0 &&
 		m.ComputeCostMs == 0 && m.SLOSatisfiedRate == 0 &&

@@ -60,13 +60,8 @@ var allResourceTypes = []ResourceType{
 	ResourceCert,
 }
 
-// AllResourceTypes returns the complete set of resource types — handy
-// for conformance tests that enumerate every case.
 func AllResourceTypes() []ResourceType { return slices.Clone(allResourceTypes) }
 
-// NewResource is the canonical constructor; using it keeps call sites
-// free of the string(ResourceFoo) conversion that would otherwise spread
-// across every dispatch point.
 func NewResource(rt ResourceType, id string, props map[string]any) Resource {
 	return Resource{Type: rt, ID: id, Properties: props}
 }

@@ -128,8 +128,6 @@ Identify by hex peer-id prefix (as shown by ` + "`pln status`" + `).`,
 	return []*cobra.Command{statusCmd, serveCmd, unserveCmd, connectCmd, disconnectCmd, denyCmd}
 }
 
-// --- Command Runners ---
-
 func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 	mode := "all"
 	if len(args) == 1 {
@@ -287,7 +285,6 @@ func runUnserve(cmd *cobra.Command, args []string, env *cliEnv) error {
 	env.cfg.RemoveService(name)
 
 	sockPath := filepath.Join(env.dir, socketName)
-	// Catching only the single bool value
 	if nodeSocketActive(sockPath) {
 		req := &controlv1.UnregisterServiceRequest{Port: port}
 		if name != "" {
@@ -1236,12 +1233,10 @@ func connectionCollisionError(name string, matches []*controlv1.ConnectionSummar
 	return errors.New(strings.TrimSpace(b.String()))
 }
 
-// nodeNameLabels builds display labels for all nodes (self + peers). When
-// nodeNameLabels builds display labels for named nodes. In condensed mode
-// the shortest unique prefix of the peer ID (across all nodes, including
-// unnamed ones) is appended in brackets so users can copy it into commands
-// like `pln grant`. Wide mode shows the full ID in parentheses instead.
-// The returned map is keyed by hex peer ID; unnamed nodes are not included.
+// nodeNameLabels builds display labels for named nodes, keyed by hex peer ID.
+// In condensed mode the shortest unique prefix across all peers is appended in
+// brackets so users can paste it into commands like `pln grant`; wide mode
+// shows the full ID in parentheses instead.
 func nodeNameLabels(self *controlv1.NodeSummary, peers []*controlv1.NodeSummary, wide bool) map[string]string {
 	// Collect all peer IDs (named and unnamed) so the prefix is unique
 	// across the entire cluster, not just named nodes.

@@ -12,8 +12,6 @@ import (
 	"strings"
 )
 
-// controlTokenFile is the per-node file holding the shared secret that
-// external (non-unix) callers must present on the control API.
 const controlTokenFile = "control.token"
 
 const (
@@ -21,9 +19,8 @@ const (
 	controlTokenPerm  = 0o600
 )
 
-// ensureControlToken returns the shared secret for the TCP control endpoint,
-// creating it on first use with 0600 permissions and reusing it on subsequent
-// starts. Returned string is the hex-encoded value.
+// ensureControlToken returns the hex-encoded shared secret for the TCP control
+// endpoint, creating it on first use with 0600 permissions.
 func ensureControlToken(dir string) (string, error) {
 	path := filepath.Join(dir, controlTokenFile)
 	if raw, err := os.ReadFile(path); err == nil {

@@ -241,17 +241,8 @@ func (s *store) buildSnapshot() Snapshot {
 		}
 	}
 
-	// Specs are cluster-scoped admin intent: collected from every peer's
-	// log so they survive publisher departure — cert expiry, deny,
-	// liveness. Valid publishers outrank invalid ones so a fresh live
-	// seed supersedes a departed peer's stale spec; within the same tier
-	// the lower peer key wins.
-	//
-	// TODO(saml): O(n_peers * n_attrs) on every buildSnapshot call. Acceptable
-	// while specs are rare and buildNodeView already walks every valid peer's
-	// log in the same shape. If this becomes a hot path, memoise via a
-	// cluster-scoped index maintained on ingest — at the cost of bookkeeping
-	// across every log-mutation path.
+	// Specs survive publisher departure: collected from every peer's log,
+	// valid publishers outrank invalid, lower peer key wins ties.
 	specs := make(map[string]WorkloadSpecView)
 	staticSpecs := make(map[string]StaticSpecView)
 	blobSpecs := make(map[string]BlobSpecView)

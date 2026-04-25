@@ -37,9 +37,6 @@ func (f *fakeEval) Allow(_ context.Context, _ evaluator.Request) (evaluator.Deci
 	return d, nil
 }
 
-// routerWith builds a single-gate router pinned to the blob_fetch gate
-// so tests exercising cache/fallback/invalidate semantics have a
-// predictable dispatch point.
 func routerWith(t *testing.T, eval evaluator.Evaluator, opts evaluator.GateOptions) *evaluator.Router {
 	t.Helper()
 	r, err := evaluator.NewRouter(
@@ -173,8 +170,6 @@ func (f *flipEval) Allow(context.Context, evaluator.Request) (evaluator.Decision
 	return evaluator.Decision{Decision: true}, nil
 }
 
-// recordingMetrics captures ObserveError reason labels so tests can
-// assert the closed-set classification.
 type recordingMetrics struct {
 	errorReasons []string
 }

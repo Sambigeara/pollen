@@ -36,13 +36,8 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// TODO(saml): add a `pln auth-config update` subcommand that
-// triggers this reload over the control socket, so operators don't
-// have to find the daemon pid and send SIGHUP by hand.
-//
-// watchSIGHUPReload spawns a goroutine that calls reload on every
-// SIGHUP. A failed reload logs the error and leaves the previous rules
-// in place — a broken YAML must never brick authz.
+// watchSIGHUPReload re-reads authz rules on every SIGHUP. A failed reload
+// leaves the previous rules in place — a broken YAML must never brick authz.
 func watchSIGHUPReload(ctx context.Context, reload func() error, log *zap.SugaredLogger) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP)
@@ -533,7 +528,6 @@ func runLaunchctl(ctx context.Context, cmd *cobra.Command, args ...string) error
 	return c.Run()
 }
 
-// userPlnPlistPath is the LaunchAgents path for a named local context.
 func userPlnPlistPath(ctxName string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -542,13 +536,12 @@ func userPlnPlistPath(ctxName string) (string, error) {
 	return filepath.Join(home, "Library", "LaunchAgents", "sh.pln."+ctxName+".plist"), nil
 }
 
-// userPlnLogPath is where the per-context launchd unit writes stdout/stderr.
 func userPlnLogPath(ctxDir string) string {
 	return filepath.Join(ctxDir, "pln.log")
 }
 
 // ensureUserPlnPlist writes a per-context launchd plist if one is not already
-// present. Existing plists are not overwritten so users can customize them.
+// present. Existing plists are not overwritten so users can customise them.
 // Returns the plist path regardless.
 func ensureUserPlnPlist(ctxName, ctxDir string, port int) (string, error) {
 	plistPath, err := userPlnPlistPath(ctxName)

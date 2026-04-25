@@ -13,20 +13,9 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// verifyPublisherClaim returns an error when a gossip event carries a
-// publisher claim whose signature does not verify against the
-// originating peer's ed25519 public key.
-//
-// Events without a claim are accepted unchanged: a nil properties +
-// nil signature pair is the "unsigned spec" case and passes through
-// claims.Verify untouched. Tampered or forged claims (relay peer
-// substitutes properties onto someone else's signed payload) fail.
-//
-// This is signature-only, the evaluator is never called here. The
-// evaluator layer can take time and depends on other subsystems; state
-// holds s.mu during ingest and must not block on foreign packages.
-// Attribute-based publish policy runs at the RPC boundary
-// (spec_publish gate).
+// verifyPublisherClaim runs at gossip ingest while s.mu is held — signature
+// only, no evaluator call. Attribute-based publish policy runs at the
+// spec_publish RPC gate instead.
 func verifyPublisherClaim(pk types.PeerKey, ev *statev1.GossipEvent) error {
 	if ev.GetDeleted() {
 		return nil
