@@ -96,6 +96,22 @@ func TestEagerRetryStageWithLastAddr(t *testing.T) {
 	require.Equal(t, connectStageEagerRetry, p.Stage)
 }
 
+func TestFailedEagerRetrySkipsDirectForPunchOnlyPeer(t *testing.T) {
+	s := setupTestStore()
+	pk := testPeerKey(1)
+	lastAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.5"), Port: 41234}
+
+	s.Discover(pk, []net.IP{net.ParseIP("10.0.0.1")}, 9000, lastAddr, false, false)
+	s.mu.Lock()
+	s.m[pk].State = peerStateConnecting
+	s.failConnectLocked(pk, time.Now())
+	p := s.m[pk]
+	s.mu.Unlock()
+
+	require.Equal(t, connectStagePunch, p.Stage)
+	require.Equal(t, 0, p.StageAttempts)
+}
+
 func TestDiscoverPrivateRouteClearsStaleLastAddr(t *testing.T) {
 	s := setupTestStore()
 	pk := testPeerKey(1)
@@ -113,7 +129,7 @@ func TestDiscoverPrivateRouteClearsStaleLastAddr(t *testing.T) {
 	require.Equal(t, 0, p.StageAttempts)
 }
 
-func TestNudgeAbandonsPunchAndRetriesDirect(t *testing.T) {
+func TestNudgeResetsToCurrentReachabilityStage(t *testing.T) {
 	s := setupTestStore()
 	pk := testPeerKey(1)
 	lastAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.5"), Port: 41234}
@@ -134,9 +150,9 @@ func TestNudgeAbandonsPunchAndRetriesDirect(t *testing.T) {
 	s.mu.RUnlock()
 
 	require.Equal(t, peerStateDiscovered, p.State, "nudge pulls peer out of unreachable wait")
-	require.Equal(t, connectStageDirect, p.Stage, "nudge resets stage to direct so we try the new addresses, not another punch")
+	require.Equal(t, connectStageEagerRetry, p.Stage, "nudge uses the current discovered reachability")
 	require.Equal(t, 0, p.StageAttempts)
-	require.Nil(t, p.LastAddr, "nudge clears stale lastAddr so eager retry doesn't waste 10s on a dead path")
+	require.Equal(t, lastAddr, p.LastAddr)
 	require.WithinDuration(t, time.Now(), p.NextActionAt, time.Second)
 }
 

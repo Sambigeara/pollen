@@ -91,22 +91,27 @@ const (
 )
 
 type peer struct {
-	NextActionAt  time.Time
-	ConnectingAt  time.Time
-	ConnectedAt   time.Time
-	LastAddr      *net.UDPAddr
-	Ips           []net.IP
-	State         peerState
-	Stage         connectStage
-	StageAttempts int
-	ObservedPort  int
-	ID            types.PeerKey
+	NextActionAt       time.Time
+	ConnectingAt       time.Time
+	ConnectedAt        time.Time
+	LastAddr           *net.UDPAddr
+	Ips                []net.IP
+	State              peerState
+	Stage              connectStage
+	StageAttempts      int
+	ObservedPort       int
+	ID                 types.PeerKey
+	PrivatelyRoutable  bool
+	PubliclyAccessible bool
 }
 
 func (p *peer) resetStage() {
-	if p.LastAddr != nil {
+	switch {
+	case p.LastAddr != nil:
 		p.Stage = connectStageEagerRetry
-	} else {
+	case !p.PubliclyAccessible && !p.PrivatelyRoutable:
+		p.Stage = connectStagePunch
+	default:
 		p.Stage = connectStageDirect
 	}
 }
@@ -207,22 +212,23 @@ func (s *peerStore) Discover(pk types.PeerKey, ips []net.IP, port int, lastAddr 
 	p, exists := s.m[pk]
 	if !exists {
 		p = &peer{
-			ID:           pk,
-			State:        peerStateDiscovered,
-			LastAddr:     lastAddr,
-			Ips:          ips,
-			ObservedPort: port,
-			NextActionAt: now,
+			ID:                 pk,
+			State:              peerStateDiscovered,
+			LastAddr:           lastAddr,
+			Ips:                ips,
+			ObservedPort:       port,
+			NextActionAt:       now,
+			PrivatelyRoutable:  privatelyRoutable,
+			PubliclyAccessible: publiclyAccessible,
 		}
 		p.resetStage()
-		if !publiclyAccessible && !privatelyRoutable && p.LastAddr == nil {
-			p.Stage = connectStagePunch
-		}
 		s.m[pk] = p
 		return
 	}
 
 	p.Ips = ips
+	p.PrivatelyRoutable = privatelyRoutable
+	p.PubliclyAccessible = publiclyAccessible
 	if port != 0 {
 		p.ObservedPort = port
 	}
@@ -233,7 +239,7 @@ func (s *peerStore) Discover(pk types.PeerKey, ips []net.IP, port int, lastAddr 
 	}
 
 	if p.State == peerStateDiscovered && privatelyRoutable && (p.Stage == connectStagePunch || p.Stage == connectStageEagerRetry) {
-		p.Stage = connectStageDirect
+		p.resetStage()
 		p.StageAttempts = 0
 		p.NextActionAt = now
 	}
@@ -292,7 +298,11 @@ func (s *peerStore) failConnectLocked(pk types.PeerKey, now time.Time) {
 	switch p.Stage {
 	case connectStageEagerRetry:
 		if p.StageAttempts >= eagerRetryAttemptThreshold {
-			p.Stage = connectStageDirect
+			if p.PubliclyAccessible || p.PrivatelyRoutable {
+				p.Stage = connectStageDirect
+			} else {
+				p.Stage = connectStagePunch
+			}
 			p.StageAttempts = 0
 		}
 	case connectStageDirect, connectStageUnspecified:
@@ -348,8 +358,7 @@ func (s *peerStore) Nudge(pk types.PeerKey) {
 	if !ok || p.State == peerStateConnected || p.State == peerStateConnecting {
 		return
 	}
-	p.LastAddr = nil
-	p.Stage = connectStageDirect
+	p.resetStage()
 	p.StageAttempts = 0
 	p.State = peerStateDiscovered
 	p.NextActionAt = time.Now()

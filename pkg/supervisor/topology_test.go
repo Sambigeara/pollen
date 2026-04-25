@@ -18,18 +18,19 @@ import (
 // --- Reachability Tests ---
 
 func TestInferPrivatelyRoutable(t *testing.T) {
-	require.True(t, membership.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"10.2.2.20"}))
-	require.False(t, membership.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"10.3.2.20"}))
-	require.True(t, membership.InferPrivatelyRoutable([]string{"192.168.1.10"}, []string{"192.168.200.20"}))
-	require.True(t, membership.InferPrivatelyRoutable([]string{"172.16.1.10"}, []string{"172.16.200.20"}))
-	require.False(t, membership.InferPrivatelyRoutable([]string{"172.16.1.10"}, []string{"172.17.200.20"}))
+	require.True(t, membership.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"10.2.1.20"}))
+	require.False(t, membership.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"10.2.2.20"}))
+	require.True(t, membership.InferPrivatelyRoutable([]string{"192.168.1.10"}, []string{"192.168.1.20"}))
+	require.False(t, membership.InferPrivatelyRoutable([]string{"192.168.139.3"}, []string{"192.168.0.220"}))
+	require.True(t, membership.InferPrivatelyRoutable([]string{"172.16.1.10"}, []string{"172.16.1.20"}))
+	require.False(t, membership.InferPrivatelyRoutable([]string{"172.16.1.10"}, []string{"172.16.2.20"}))
 	require.False(t, membership.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"203.0.113.7"}))
 }
 
 func TestInferReachability(t *testing.T) {
 	require.Equal(t, reachabilityPublicDirect, inferReachability([]string{"10.2.1.10"}, []string{"203.0.113.7"}, true))
-	require.Equal(t, reachabilitySameSitePrivate, inferReachability([]string{"10.2.1.10"}, []string{"10.2.9.20"}, false))
-	require.Equal(t, reachabilityUnknown, inferReachability([]string{"10.2.1.10"}, []string{"10.3.9.20"}, false))
+	require.Equal(t, reachabilitySameSitePrivate, inferReachability([]string{"10.2.1.10"}, []string{"10.2.1.20"}, false))
+	require.Equal(t, reachabilityUnknown, inferReachability([]string{"10.2.1.10"}, []string{"10.2.9.20"}, false))
 }
 
 // --- Topology Shape & Parameters ---

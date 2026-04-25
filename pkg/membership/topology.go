@@ -250,9 +250,9 @@ func privateSitePrefixes(ips []string) map[string]struct{} {
 		if ip, err := netip.ParseAddr(s); err == nil && isUsablePrivateIP(ip) {
 			b := ip.As16()
 			if ip.Is4() {
-				out[string(b[12:14])] = struct{}{} // Store 16-bit subnet equivalent
+				out[string(b[12:15])] = struct{}{}
 			} else {
-				out[string(b[:6])] = struct{}{}
+				out[string(b[:8])] = struct{}{}
 			}
 		}
 	}
