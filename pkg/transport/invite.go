@@ -216,7 +216,7 @@ func (m *QUICTransport) handleInviteConnection(ctx context.Context, qc *quic.Con
 
 	if err := m.handleInviteRedeem(qc, peerKey, body.InviteRedeemRequest); err != nil {
 		m.log.Debugw("rejected invite", "peer", peerKey.Short(), "err", err)
-		_ = qc.CloseWithError(0, "invite failed")
+		_ = qc.CloseWithError(0, "invite failed: "+err.Error())
 	}
 }
 
@@ -282,13 +282,7 @@ func ProcessInviteRedeem(
 // requests to a known admin via the mesh.
 type InviteForwarder func(ctx context.Context, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (*meshv1.InviteRedeemResponse, error)
 
-func (m *QUICTransport) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (retErr error) {
-	defer func() {
-		if retErr != nil {
-			_ = sendInviteRedeemResponse(qc, nil, retErr)
-		}
-	}()
-
+func (m *QUICTransport) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) error {
 	now := time.Now()
 	if err := auth.VerifyInviteToken(req.GetToken(), ed25519.PublicKey(peerKey.Bytes()), now); err != nil {
 		return err
@@ -300,37 +294,36 @@ func (m *QUICTransport) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey,
 	forwarder := m.inviteForwarder
 	m.inviteHandlerMu.RUnlock()
 
-	if signer != nil {
-		resp := ProcessInviteRedeem(signer, consumer, m.membershipTTL, peerKey, req)
-		if !resp.GetAccepted() {
-			return errors.New(resp.GetReason())
-		}
-		return sendInviteRedeemResponse(qc, resp.GetJoinToken(), nil)
-	}
-
-	if forwarder != nil {
-		resp, err := forwarder(context.Background(), peerKey, req)
+	var resp *meshv1.InviteRedeemResponse
+	switch {
+	case signer != nil:
+		resp = ProcessInviteRedeem(signer, consumer, m.membershipTTL, peerKey, req)
+	case forwarder != nil:
+		var err error
+		resp, err = forwarder(context.Background(), peerKey, req)
 		if err != nil {
 			return fmt.Errorf("invite forwarding failed: %w", err)
 		}
-		return sendEnvelope(qc, &meshv1.Envelope{
-			Body: &meshv1.Envelope_InviteRedeemResponse{InviteRedeemResponse: resp},
-		})
+	default:
+		return errors.New("this node is not an admin and has no forwarding configured")
 	}
 
-	return errors.New("this node is not an admin and has no forwarding configured")
+	if !resp.GetAccepted() {
+		reason := resp.GetReason()
+		if reason == "" {
+			reason = "invite token rejected"
+		}
+		return errors.New(reason)
+	}
+	return sendInviteRedeemResponse(qc, resp.GetJoinToken())
 }
 
-func sendInviteRedeemResponse(qc *quic.Conn, joinToken *admissionv1.JoinToken, redeemErr error) error {
-	resp := &meshv1.InviteRedeemResponse{
-		Accepted:  redeemErr == nil,
-		JoinToken: joinToken,
-	}
-	if redeemErr != nil {
-		resp.Reason = redeemErr.Error()
-	}
+func sendInviteRedeemResponse(qc *quic.Conn, joinToken *admissionv1.JoinToken) error {
 	return sendEnvelope(qc, &meshv1.Envelope{
-		Body: &meshv1.Envelope_InviteRedeemResponse{InviteRedeemResponse: resp},
+		Body: &meshv1.Envelope_InviteRedeemResponse{InviteRedeemResponse: &meshv1.InviteRedeemResponse{
+			Accepted:  true,
+			JoinToken: joinToken,
+		}},
 	})
 }
 

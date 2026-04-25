@@ -26,10 +26,9 @@ func (n *Supervisor) forwardInviteToAdmin(ctx context.Context, joinerKey types.P
 	}
 	issuerKey := types.PeerKeyFromBytes(issuerPub)
 
-	snap := n.store.Snapshot()
-	nv, ok := snap.Nodes[issuerKey]
-	if !ok || !nv.AdminCapable {
-		return nil, fmt.Errorf("issuing admin %s not available", issuerKey.Short())
+	candidates := n.adminForwardCandidates(issuerKey)
+	if len(candidates) == 0 {
+		return nil, errors.New("no admin peers available to redeem invite")
 	}
 
 	ch := make(chan *meshv1.InviteRedeemResponse, 1)
@@ -54,19 +53,43 @@ func (n *Supervisor) forwardInviteToAdmin(ctx context.Context, joinerKey types.P
 		return nil, fmt.Errorf("marshal forwarded invite: %w", err)
 	}
 
-	if err := n.mesh.SendMembershipDatagram(ctx, issuerKey, data); err != nil {
-		return nil, fmt.Errorf("invite forward to %s: %w", issuerKey.Short(), err)
-	}
+	var lastErr error
+	for _, admin := range candidates {
+		if err := n.mesh.SendMembershipDatagram(ctx, admin, data); err != nil {
+			lastErr = fmt.Errorf("invite forward to %s: %w", admin.Short(), err)
+			continue
+		}
 
-	waitCtx, cancel := context.WithTimeout(ctx, forwardedInviteTimeout)
-	defer cancel()
-
-	select {
-	case resp := <-ch:
-		return resp, nil
-	case <-waitCtx.Done():
-		return nil, fmt.Errorf("invite forward to %s: %w", issuerKey.Short(), waitCtx.Err())
+		waitCtx, cancel := context.WithTimeout(ctx, forwardedInviteTimeout)
+		select {
+		case resp := <-ch:
+			cancel()
+			return resp, nil
+		case <-waitCtx.Done():
+			cancel()
+			lastErr = fmt.Errorf("invite forward to %s: %w", admin.Short(), waitCtx.Err())
+		}
 	}
+	return nil, lastErr
+}
+
+// adminForwardCandidates returns admins to which an invite redemption can be
+// forwarded: the token issuer first if still admin-capable, then any other
+// admin-capable peer. The fallback covers the case where the issuer is offline
+// but admin has been delegated elsewhere in the mesh.
+func (n *Supervisor) adminForwardCandidates(issuer types.PeerKey) []types.PeerKey {
+	snap := n.store.Snapshot()
+	candidates := make([]types.PeerKey, 0, len(snap.Nodes))
+	if nv, ok := snap.Nodes[issuer]; ok && nv.AdminCapable {
+		candidates = append(candidates, issuer)
+	}
+	for pk, nv := range snap.Nodes {
+		if pk == issuer || !nv.AdminCapable {
+			continue
+		}
+		candidates = append(candidates, pk)
+	}
+	return candidates
 }
 
 func (n *Supervisor) handleForwardedInviteRequest(ctx context.Context, from types.PeerKey, req *meshv1.ForwardedInviteRedeemRequest) {
