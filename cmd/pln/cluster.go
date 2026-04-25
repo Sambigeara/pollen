@@ -261,10 +261,10 @@ func runPurge(cmd *cobra.Command, _ []string, env *cliEnv) error {
 		"keys/root.pub", "keys/membership.cert.pb", "keys/delegation.cert.pb",
 		"keys/admin_ed25519.key", "keys/admin_ed25519.pub", "config.yaml",
 		"state.pb", "state.yaml", "state.yaml.bak", "consumed_invites.json",
-		"peers.json", "invites", "cas", socketName,
+		"peers.json", "invites", "cas", "pln.log", socketName,
 	}
 	if includeKeys {
-		paths = append(paths, "keys/ed25519.key", "keys/ed25519.pub")
+		paths = append(paths, "keys")
 	}
 
 	for _, p := range paths {
@@ -865,7 +865,13 @@ func resolveBootstrapPeers(ctx context.Context, env *cliEnv) ([]*admissionv1.Boo
 
 	resp, err := env.client.GetBootstrapInfo(ctx, connect.NewRequest(&controlv1.GetBootstrapInfoRequest{}))
 	if err != nil {
-		return nil, err
+		if connect.CodeOf(err) != connect.CodeUnavailable {
+			return nil, err
+		}
+		if socketPermissionDenied(env.dir) {
+			return nil, permissionErr("cannot reach daemon — are you in the pln group?\n  fix: sudo usermod -aG pln $(whoami) && newgrp pln")
+		}
+		return nil, unreachableErr("daemon is not running; run `pln up -d` to start the local node before issuing invites")
 	}
 
 	if rec := resp.Msg.GetRecommended(); rec != nil && rec.GetPeer() != nil && len(rec.GetAddrs()) > 0 {
