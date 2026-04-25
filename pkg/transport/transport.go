@@ -45,6 +45,7 @@ type Transport interface {
 
 	DiscoverPeer(pk types.PeerKey, ips []net.IP, port int, lastAddr *net.UDPAddr, privatelyRoutable, publiclyAccessible bool)
 	ForgetPeer(pk types.PeerKey)
+	NudgePeer(pk types.PeerKey)
 	ConnectFailed(pk types.PeerKey)
 	IsPeerConnected(pk types.PeerKey) bool
 	IsPeerConnecting(pk types.PeerKey) bool
@@ -111,9 +112,10 @@ const (
 )
 
 type PeerEvent struct {
-	Addrs []netip.AddrPort
-	Type  PeerEventType
-	Key   types.PeerKey
+	Addrs  []netip.AddrPort
+	Type   PeerEventType
+	Key    types.PeerKey
+	Reason DisconnectReason
 }
 
 type PeerStateCounts struct {
@@ -509,7 +511,7 @@ func (m *QUICTransport) removePeer(pk types.PeerKey, s *peerSession, dr Disconne
 
 	m.closeSession(s, dr.String())
 	m.peers.Disconnect(pk, dr)
-	m.emitPeerEvent(PeerEvent{Key: pk, Type: PeerEventDisconnected})
+	m.emitPeerEvent(PeerEvent{Key: pk, Type: PeerEventDisconnected, Reason: dr})
 }
 
 func (m *QUICTransport) acceptLoop(ctx context.Context) {
@@ -941,6 +943,7 @@ func (m *QUICTransport) DiscoverPeer(pk types.PeerKey, ips []net.IP, port int, l
 }
 
 func (m *QUICTransport) ForgetPeer(pk types.PeerKey) { m.peers.Forget(pk) }
+func (m *QUICTransport) NudgePeer(pk types.PeerKey)  { m.peers.Nudge(pk) }
 
 func (m *QUICTransport) ConnectFailed(pk types.PeerKey) {
 	m.peers.mu.Lock()

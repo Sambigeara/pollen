@@ -28,27 +28,43 @@ func (n *Supervisor) coordinatorPeers(target types.PeerKey) []types.PeerKey {
 func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connectedPeers []types.PeerKey, snap state.Snapshot) []types.PeerKey {
 	localNV := snap.Nodes[snap.LocalID]
 	targetNV := snap.Nodes[target]
-	out := make([]types.PeerKey, 0, len(connectedPeers))
+	// Source and target sharing an observed external IP means they're behind
+	// the same NAT. A public relay coordinator would tell source to dial
+	// target's WAN address — which is *also* source's WAN address, requiring
+	// hairpin NAT support that residential routers usually lack. Prefer a
+	// LAN-adjacent coordinator instead: it sees the target via its private
+	// side and will relay a LAN candidate, sidestepping the WAN hop. If no
+	// LAN-adjacent peer is connected, fall back to a public relay so we at
+	// least *try* a hairpin punch — better than parking the FSM forever.
+	sharedEgress := localNV.ObservedExternalIP != "" && membership.SameObservedEgress(localNV.ObservedExternalIP, targetNV.ObservedExternalIP)
+
+	primary := make([]types.PeerKey, 0, len(connectedPeers))
+	fallback := make([]types.PeerKey, 0, len(connectedPeers))
 	for _, key := range connectedPeers {
 		if key == target {
 			continue
 		}
 		nv, ok := snap.Nodes[key]
-		if !ok {
-			continue
-		}
-		if len(nv.IPs) == 0 || membership.InferPrivatelyRoutable(localIPs, nv.IPs) || membership.InferPrivatelyRoutable(targetIPs, nv.IPs) {
+		if !ok || len(nv.IPs) == 0 {
 			continue
 		}
 		if _, connected := nv.Reachable[target]; !connected {
 			continue
 		}
-		if membership.SameObservedEgress(localNV.ObservedExternalIP, nv.ObservedExternalIP) || membership.SameObservedEgress(targetNV.ObservedExternalIP, nv.ObservedExternalIP) {
-			continue
+		targetLAN := membership.InferPrivatelyRoutable(targetIPs, nv.IPs)
+		sourceLAN := membership.InferPrivatelyRoutable(localIPs, nv.IPs)
+		candSharesEgress := membership.SameObservedEgress(localNV.ObservedExternalIP, nv.ObservedExternalIP) || membership.SameObservedEgress(targetNV.ObservedExternalIP, nv.ObservedExternalIP)
+
+		switch {
+		case sharedEgress && targetLAN:
+			primary = append(primary, key)
+		case sharedEgress && !candSharesEgress:
+			fallback = append(fallback, key)
+		case !sharedEgress && !sourceLAN && !targetLAN && !candSharesEgress:
+			primary = append(primary, key)
 		}
-		out = append(out, key)
 	}
-	slices.SortFunc(out, func(a, b types.PeerKey) int {
+	byPreference := func(a, b types.PeerKey) int {
 		aPub := snap.Nodes[a].PubliclyAccessible
 		bPub := snap.Nodes[b].PubliclyAccessible
 		if aPub != bPub {
@@ -58,8 +74,10 @@ func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connec
 			return 1
 		}
 		return a.Compare(b)
-	})
-	return out
+	}
+	slices.SortFunc(primary, byPreference)
+	slices.SortFunc(fallback, byPreference)
+	return append(primary, fallback...)
 }
 
 func (n *Supervisor) requestPunchCoordination(target types.PeerKey) {

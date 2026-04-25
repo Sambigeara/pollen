@@ -30,17 +30,19 @@ type (
 		Name string
 		Peer types.PeerKey
 	}
-	WorkloadChanged struct{ Hash string }
-	TopologyChanged struct{ Peer types.PeerKey }
-	StaticChanged   struct{ Name string }
+	WorkloadChanged  struct{ Hash string }
+	TopologyChanged  struct{ Peer types.PeerKey }
+	AddressesChanged struct{ Peer types.PeerKey }
+	StaticChanged    struct{ Name string }
 )
 
-func (PeerJoined) stateEvent()      {}
-func (PeerDenied) stateEvent()      {}
-func (ServiceChanged) stateEvent()  {}
-func (WorkloadChanged) stateEvent() {}
-func (TopologyChanged) stateEvent() {}
-func (StaticChanged) stateEvent()   {}
+func (PeerJoined) stateEvent()       {}
+func (PeerDenied) stateEvent()       {}
+func (ServiceChanged) stateEvent()   {}
+func (WorkloadChanged) stateEvent()  {}
+func (TopologyChanged) stateEvent()  {}
+func (AddressesChanged) stateEvent() {}
+func (StaticChanged) stateEvent()    {}
 
 type StateStore interface {
 	Snapshot() Snapshot

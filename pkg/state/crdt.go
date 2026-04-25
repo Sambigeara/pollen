@@ -159,6 +159,9 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		if key.kind == attrReachability || key.kind == attrVivaldi || key.kind == attrNetwork || key.kind == attrObservedAddress {
 			domainEvents = append(domainEvents, TopologyChanged{Peer: pk})
 		}
+		if key.kind == attrNetwork || key.kind == attrObservedAddress {
+			domainEvents = append(domainEvents, AddressesChanged{Peer: pk})
+		}
 		if key.kind == attrWorkloadClaim || key.kind == attrWorkloadSpec {
 			domainEvents = append(domainEvents, WorkloadChanged{Hash: key.name})
 		}

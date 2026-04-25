@@ -6,6 +6,7 @@ package supervisor
 import (
 	"context"
 	"net"
+	"net/netip"
 	"slices"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/nat"
+	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/routing"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
@@ -99,36 +101,63 @@ type knownPeer struct {
 	PubliclyAccessible bool
 }
 
-func knownPeersFromSnapshot(snap state.Snapshot) []knownPeer {
+// knownPeers returns the union of peers we should consider dialling: every
+// live gossip peer, plus every peer in the durable cache that has not been
+// explicitly denied. Cache entries supply addresses for peers we know about
+// from a join token but have never spoken to, and supplement the IP set of
+// peers already in gossip so transient route failures don't strand a LAN
+// candidate forever.
+func knownPeers(snap state.Snapshot, cache *peercache.Store) []knownPeer {
 	live := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
 	for _, pk := range snap.PeerKeys {
 		live[pk] = struct{}{}
 	}
+	denied := make(map[types.PeerKey]struct{})
+	for _, pk := range snap.DeniedPeers() {
+		denied[pk] = struct{}{}
+	}
 
-	known := make([]knownPeer, 0, len(live))
-	for pk, nv := range snap.Nodes {
-		if pk == snap.LocalID {
+	cacheByPeer := make(map[types.PeerKey][]netip.AddrPort)
+	if cache != nil {
+		for _, entry := range cache.Snapshot() {
+			for _, s := range entry.Addrs {
+				if ap, err := netip.ParseAddrPort(s); err == nil {
+					cacheByPeer[entry.PeerKey] = append(cacheByPeer[entry.PeerKey], ap)
+				}
+			}
+		}
+	}
+
+	candidates := make(map[types.PeerKey]struct{}, len(live)+len(cacheByPeer))
+	for pk := range live {
+		candidates[pk] = struct{}{}
+	}
+	for pk := range cacheByPeer {
+		candidates[pk] = struct{}{}
+	}
+	delete(candidates, snap.LocalID)
+	for pk := range denied {
+		delete(candidates, pk)
+	}
+
+	known := make([]knownPeer, 0, len(candidates))
+	for pk := range candidates {
+		kp := knownPeer{PeerID: pk}
+		if nv, ok := snap.Nodes[pk]; ok {
+			kp.LocalPort = nv.LocalPort
+			kp.ExternalPort = nv.ExternalPort
+			kp.ObservedExternalIP = nv.ObservedExternalIP
+			kp.NatType = nv.NatType
+			kp.IPs = slices.Clone(nv.IPs)
+			kp.LastAddr = nv.LastAddr
+			kp.PubliclyAccessible = nv.PubliclyAccessible
+			kp.VivaldiCoord = nv.VivaldiCoord
+		}
+		mergeCacheAddresses(&kp, cacheByPeer[pk])
+		if !knownPeerHasUsableAddr(kp) {
 			continue
 		}
-		if _, ok := live[pk]; !ok {
-			continue
-		}
-		hasObservedAddr := nv.ObservedExternalIP != "" && (nv.ExternalPort != 0 || nv.LocalPort != 0)
-		hasIPAddrs := len(nv.IPs) > 0 && nv.LocalPort != 0
-		if nv.LastAddr == "" && !hasObservedAddr && !hasIPAddrs {
-			continue
-		}
-		known = append(known, knownPeer{
-			PeerID:             pk,
-			LocalPort:          nv.LocalPort,
-			ExternalPort:       nv.ExternalPort,
-			ObservedExternalIP: nv.ObservedExternalIP,
-			NatType:            nv.NatType,
-			IPs:                nv.IPs,
-			LastAddr:           nv.LastAddr,
-			PubliclyAccessible: nv.PubliclyAccessible,
-			VivaldiCoord:       nv.VivaldiCoord,
-		})
+		known = append(known, kp)
 	}
 	slices.SortFunc(known, func(a, b knownPeer) int {
 		return a.PeerID.Compare(b.PeerID)
@@ -136,12 +165,78 @@ func knownPeersFromSnapshot(snap state.Snapshot) []knownPeer {
 	return known
 }
 
-func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) {
-	knownPeers := knownPeersFromSnapshot(snap)
+// mergeCacheAddresses augments a knownPeer with addresses from the persistent
+// peer cache. If state didn't supply a listening port, the most common cached
+// port stands in. Cached addresses on other ports are dropped — a peer binds
+// one UDP socket, so divergent ports are stale.
+func mergeCacheAddresses(kp *knownPeer, cached []netip.AddrPort) {
+	if len(cached) == 0 {
+		return
+	}
+	if kp.LocalPort == 0 {
+		kp.LocalPort = mostCommonPort(cached)
+	}
+	if kp.LocalPort == 0 {
+		return
+	}
 
-	peerInfos := make([]membership.PeerInfo, 0, len(knownPeers))
-	peerMap := make(map[types.PeerKey]knownPeer, len(knownPeers))
-	for _, kp := range knownPeers {
+	existing := make(map[string]struct{}, len(kp.IPs))
+	for _, ip := range kp.IPs {
+		existing[ip] = struct{}{}
+	}
+	for _, ap := range cached {
+		if uint32(ap.Port()) != kp.LocalPort {
+			continue
+		}
+		ipStr := ap.Addr().String()
+		if _, ok := existing[ipStr]; ok {
+			continue
+		}
+		kp.IPs = append(kp.IPs, ipStr)
+		existing[ipStr] = struct{}{}
+	}
+	if kp.LastAddr == "" {
+		for _, ap := range cached {
+			if uint32(ap.Port()) == kp.LocalPort {
+				kp.LastAddr = ap.String()
+				break
+			}
+		}
+	}
+}
+
+func mostCommonPort(addrs []netip.AddrPort) uint32 {
+	counts := make(map[uint16]int, len(addrs))
+	for _, a := range addrs {
+		counts[a.Port()]++
+	}
+	var bestPort uint16
+	var bestCount int
+	for p, c := range counts {
+		if c > bestCount || (c == bestCount && (bestCount == 0 || p < bestPort)) {
+			bestPort = p
+			bestCount = c
+		}
+	}
+	return uint32(bestPort)
+}
+
+func knownPeerHasUsableAddr(kp knownPeer) bool {
+	if kp.LastAddr != "" {
+		return true
+	}
+	if kp.ObservedExternalIP != "" && (kp.ExternalPort != 0 || kp.LocalPort != 0) {
+		return true
+	}
+	return len(kp.IPs) > 0 && kp.LocalPort != 0
+}
+
+func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) {
+	known := knownPeers(snap, n.peerCache)
+
+	peerInfos := make([]membership.PeerInfo, 0, len(known))
+	peerMap := make(map[types.PeerKey]knownPeer, len(known))
+	for _, kp := range known {
 		peerMap[kp.PeerID] = kp
 		peerInfos = append(peerInfos, membership.PeerInfo{
 			Key:                kp.PeerID,
@@ -174,9 +269,9 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 	epoch := time.Now().Unix() / membership.EpochSeconds
 	localNV := snap.Nodes[snap.LocalID]
 	localIPs := localNV.IPs
-	shape := summarizeTopologyShape(localIPs, knownPeers)
+	shape := summarizeTopologyShape(localIPs, known)
 	params := adaptiveTopologyParams(epoch, shape)
-	params.PreferFullMesh = len(knownPeers) <= tinyClusterPeerThreshold
+	params.PreferFullMesh = len(known) <= tinyClusterPeerThreshold
 	params.LocalIPs = localIPs
 	params.CurrentOutbound = currentOutbound
 	params.LocalNATType = n.natDetector.Type()
@@ -237,8 +332,20 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 		delete(n.nonTargetStreak, pk)
 	}
 
-	for _, kp := range knownPeers {
+	// Prune only peers that gossip has confirmed live. Cache-only entries
+	// belong to peers we haven't yet handshaken with; they get an FSM slot
+	// from DiscoverPeer above and stay there until either gossip arrives or
+	// the cache evicts them. Forgetting them here would just rediscover them
+	// on the next tick.
+	live := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
+	for _, pk := range snap.PeerKeys {
+		live[pk] = struct{}{}
+	}
+	for _, kp := range known {
 		if _, targeted := targetSet[kp.PeerID]; targeted {
+			continue
+		}
+		if _, isLive := live[kp.PeerID]; !isLive {
 			continue
 		}
 		connected := n.mesh.IsPeerConnected(kp.PeerID)

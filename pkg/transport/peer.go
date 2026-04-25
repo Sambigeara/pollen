@@ -200,6 +200,9 @@ func (s *peerStore) Discover(pk types.PeerKey, ips []net.IP, port int, lastAddr 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
+	if privatelyRoutable {
+		lastAddr = nil
+	}
 
 	p, exists := s.m[pk]
 	if !exists {
@@ -223,11 +226,13 @@ func (s *peerStore) Discover(pk types.PeerKey, ips []net.IP, port int, lastAddr 
 	if port != 0 {
 		p.ObservedPort = port
 	}
-	if lastAddr != nil {
+	if privatelyRoutable {
+		p.LastAddr = nil
+	} else if lastAddr != nil {
 		p.LastAddr = lastAddr
 	}
 
-	if p.State == peerStateDiscovered && p.Stage == connectStagePunch && privatelyRoutable && p.LastAddr == nil {
+	if p.State == peerStateDiscovered && privatelyRoutable && (p.Stage == connectStagePunch || p.Stage == connectStageEagerRetry) {
 		p.Stage = connectStageDirect
 		p.StageAttempts = 0
 		p.NextActionAt = now
@@ -331,6 +336,23 @@ func (s *peerStore) stateCounts() PeerStateCounts {
 		}
 	}
 	return c
+}
+
+// Nudge resets a non-connected peer to the direct stage and brings the next
+// action to now. Called when fresh address info arrives in state so stale
+// eager-retry or punch attempts do not keep chasing dead WAN mappings.
+func (s *peerStore) Nudge(pk types.PeerKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.m[pk]
+	if !ok || p.State == peerStateConnected || p.State == peerStateConnecting {
+		return
+	}
+	p.LastAddr = nil
+	p.Stage = connectStageDirect
+	p.StageAttempts = 0
+	p.State = peerStateDiscovered
+	p.NextActionAt = time.Now()
 }
 
 func (s *peerStore) Forget(pk types.PeerKey) {

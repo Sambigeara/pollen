@@ -52,7 +52,7 @@ const (
 	eagerSyncTimeout           = 5 * time.Second
 	expirySweepInterval        = 30 * time.Second
 	observedAddrResendInterval = 30 * time.Second
-	ipRefreshInterval          = 5 * time.Minute
+	ipRefreshInterval          = 5 * time.Second
 )
 
 var envelopeOverhead = (&meshv1.Envelope{Body: &meshv1.Envelope_Events{
@@ -589,8 +589,9 @@ func (s *Service) refreshIPs() {
 			}
 			addrs = append(addrs, netip.AddrPortFrom(addr, uint16(s.port)))
 		}
-		if len(s.store.SetLocalAddresses(addrs)) > 0 {
+		if events := s.store.SetLocalAddresses(addrs); len(events) > 0 {
 			s.log.Infow("local IPs changed", "ips", localIPs)
+			s.forwardEvents(events)
 		}
 	}
 

@@ -92,7 +92,7 @@ func (s *store) SetLocalAddresses(addrs []netip.AddrPort) []Event {
 			}
 		}
 		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: ips, LocalPort: port}}}
-		return []*statev1.GossipEvent{change}, []Event{TopologyChanged{Peer: s.localID}}
+		return []*statev1.GossipEvent{change}, []Event{TopologyChanged{Peer: s.localID}, AddressesChanged{Peer: s.localID}}
 	})
 }
 
@@ -171,7 +171,7 @@ func (s *store) SetLocalObservedAddress(ip string, port uint32) []Event {
 			Deleted: ip == "" && port == 0,
 			Change:  &statev1.GossipEvent_ObservedAddress{ObservedAddress: &statev1.ObservedAddressChange{Ip: ip, Port: port}},
 		}
-		return []*statev1.GossipEvent{change}, []Event{TopologyChanged{Peer: s.localID}}
+		return []*statev1.GossipEvent{change}, []Event{TopologyChanged{Peer: s.localID}, AddressesChanged{Peer: s.localID}}
 	})
 }
 

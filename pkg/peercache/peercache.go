@@ -1,11 +1,13 @@
 // Copyright 2026 Sam Lock
 // SPDX-License-Identifier: Apache-2.0
 
-// Package peercache persists a rolling cache of known peers and their last-seen
-// addresses. The daemon primes it from join tokens and bootstrap flows, refreshes
-// entries on successful connects, and reads it at cold start to dial its way back
-// into the mesh. The file is group-readable under the pollen directory; writers
-// use atomic rename via plnfs so readers never observe a partial file.
+// Package peercache persists the durable subset of the supervisor's peer
+// address book. The daemon primes it from join tokens and refreshes entries on
+// successful connects; the supervisor merges its contents with live gossip
+// state on every topology sync, so cached LAN candidates survive transient
+// route failures and joiner-side bootstrap survives a missed first dial. The
+// file is group-readable under the pollen directory; writers use atomic
+// rename via plnfs so readers never observe a partial file.
 package peercache
 
 import (
@@ -28,8 +30,10 @@ const (
 	maxEntries = 128
 )
 
-// Entry describes one peer the node has observed. Addrs is the full address set
-// most recently associated with the peer; LastSeen is updated on every Upsert.
+// Entry describes one peer the supervisor has been told about — either from a
+// join token or from a successful connect handshake. Addrs is the full address
+// set most recently associated with the peer; LastSeen is updated on every
+// Upsert and drives LRU eviction once maxEntries is exceeded.
 type Entry struct {
 	LastSeen time.Time
 	Addrs    []string

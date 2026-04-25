@@ -83,8 +83,10 @@ func TestStore_MutationsReturnEvents(t *testing.T) {
 	s := newTestStore(t, pk)
 
 	events := s.SetLocalAddresses([]netip.AddrPort{netip.MustParseAddrPort("10.0.0.1:9000")})
-	require.Len(t, events, 1)
-	require.IsType(t, TopologyChanged{}, events[0])
+	require.Equal(t, []Event{TopologyChanged{Peer: s.localID}, AddressesChanged{Peer: s.localID}}, events)
+
+	events = s.SetLocalObservedAddress("203.0.113.1", 9000)
+	require.Equal(t, []Event{TopologyChanged{Peer: s.localID}, AddressesChanged{Peer: s.localID}}, events)
 
 	events = s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
 	require.Len(t, events, 1)

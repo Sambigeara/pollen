@@ -491,7 +491,6 @@ func (n *Supervisor) Run(ctx context.Context) error {
 	}
 
 	close(n.ready)
-	n.connectBootstrapPeers(ctx)
 	n.spawn(func() { n.streamDispatchLoop(ctx) })
 	n.spawn(func() { n.tunnelDatagramLoop(ctx) })
 
@@ -566,29 +565,6 @@ func (n *Supervisor) Run(ctx context.Context) error {
 			firstRouteInvalidation = time.Time{}
 			routeDebounceC = nil
 			routeDebounce = nil
-		}
-	}
-}
-
-func (n *Supervisor) connectBootstrapPeers(ctx context.Context) {
-	denied := n.store.Snapshot().DeniedPeers()
-	for _, entry := range n.peerCache.Snapshot() {
-		if slices.Contains(denied, entry.PeerKey) {
-			continue
-		}
-		addrs := make([]netip.AddrPort, 0, len(entry.Addrs))
-		for _, a := range entry.Addrs {
-			ap, err := netip.ParseAddrPort(a)
-			if err != nil {
-				n.log.Warnw("bootstrap peer: resolve address failed", "addr", a, zap.Error(err))
-				continue
-			}
-			addrs = append(addrs, ap)
-		}
-		if len(addrs) > 0 {
-			if err := n.mesh.Connect(ctx, entry.PeerKey, addrs); err != nil {
-				n.log.Warnw("bootstrap peer: connect failed", "peer", entry.PeerKey.Short(), zap.Error(err))
-			}
 		}
 	}
 }
@@ -765,7 +741,7 @@ func (n *Supervisor) tunnelDatagramLoop(ctx context.Context) {
 	}
 }
 
-func (n *Supervisor) dispatchEvents(_ context.Context, events []state.Event) {
+func (n *Supervisor) dispatchEvents(ctx context.Context, events []state.Event) {
 	for _, ev := range events {
 		switch e := ev.(type) {
 		case state.PeerDenied:
@@ -777,6 +753,21 @@ func (n *Supervisor) dispatchEvents(_ context.Context, events []state.Event) {
 		case state.TopologyChanged:
 			n.signalRouteInvalidate()
 			n.placement.Signal()
+		case state.AddressesChanged:
+			snap := n.store.Snapshot()
+			n.syncPeersFromState(ctx, snap)
+			if e.Peer == snap.LocalID {
+				// A local network change can make every disconnected peer's last path stale.
+				for _, kp := range knownPeers(snap, n.peerCache) {
+					if !n.mesh.IsPeerConnected(kp.PeerID) {
+						n.mesh.NudgePeer(kp.PeerID)
+					}
+				}
+				continue
+			}
+			if !n.mesh.IsPeerConnected(e.Peer) {
+				n.mesh.NudgePeer(e.Peer)
+			}
 		case state.WorkloadChanged:
 			n.placement.Signal()
 		case state.StaticChanged:
@@ -801,6 +792,7 @@ func (n *Supervisor) handlePeerEvent(_ context.Context, ev transport.PeerEvent) 
 		n.signalRouteInvalidate()
 		n.store.SetLocalReachable(n.GetConnectedPeers())
 		n.placement.Signal()
+		n.log.Infow("peer disconnected", "peer_id", ev.Key.Short(), "reason", ev.Reason.String())
 	default:
 		n.spawn(func() {
 			n.punchSem <- struct{}{}

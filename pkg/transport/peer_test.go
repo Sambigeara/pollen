@@ -96,6 +96,68 @@ func TestEagerRetryStageWithLastAddr(t *testing.T) {
 	require.Equal(t, connectStageEagerRetry, p.Stage)
 }
 
+func TestDiscoverPrivateRouteClearsStaleLastAddr(t *testing.T) {
+	s := setupTestStore()
+	pk := testPeerKey(1)
+	lastAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.5"), Port: 41234}
+
+	s.Discover(pk, []net.IP{net.ParseIP("10.0.0.1")}, 9000, lastAddr, false, false)
+	s.Discover(pk, []net.IP{net.ParseIP("192.168.0.24")}, 9000, lastAddr, true, false)
+
+	s.mu.RLock()
+	p := s.m[pk]
+	s.mu.RUnlock()
+
+	require.Nil(t, p.LastAddr)
+	require.Equal(t, connectStageDirect, p.Stage)
+	require.Equal(t, 0, p.StageAttempts)
+}
+
+func TestNudgeAbandonsPunchAndRetriesDirect(t *testing.T) {
+	s := setupTestStore()
+	pk := testPeerKey(1)
+	lastAddr := &net.UDPAddr{IP: net.ParseIP("203.0.113.5"), Port: 41234}
+
+	s.Discover(pk, []net.IP{net.ParseIP("10.0.0.1")}, 9000, lastAddr, false, false)
+	s.mu.Lock()
+	p := s.m[pk]
+	p.State = peerStateUnreachable
+	p.NextActionAt = time.Now().Add(time.Hour)
+	p.StageAttempts = 1
+	p.Stage = connectStagePunch
+	s.mu.Unlock()
+
+	s.Nudge(pk)
+
+	s.mu.RLock()
+	p = s.m[pk]
+	s.mu.RUnlock()
+
+	require.Equal(t, peerStateDiscovered, p.State, "nudge pulls peer out of unreachable wait")
+	require.Equal(t, connectStageDirect, p.Stage, "nudge resets stage to direct so we try the new addresses, not another punch")
+	require.Equal(t, 0, p.StageAttempts)
+	require.Nil(t, p.LastAddr, "nudge clears stale lastAddr so eager retry doesn't waste 10s on a dead path")
+	require.WithinDuration(t, time.Now(), p.NextActionAt, time.Second)
+}
+
+func TestNudgeIsNoopForConnectedPeer(t *testing.T) {
+	s := setupTestStore()
+	pk := testPeerKey(1)
+
+	s.Discover(pk, []net.IP{net.ParseIP("10.0.0.1")}, 9000, nil, true, true)
+	s.MarkConnected(pk, net.ParseIP("203.0.113.5"), 41234)
+	originalNextAction := s.m[pk].NextActionAt
+
+	s.Nudge(pk)
+
+	s.mu.RLock()
+	p := s.m[pk]
+	s.mu.RUnlock()
+
+	require.Equal(t, peerStateConnected, p.State)
+	require.Equal(t, originalNextAction, p.NextActionAt, "nudge is a no-op for connected peers")
+}
+
 func TestFailConnectEscalation(t *testing.T) {
 	s := setupTestStore()
 	pk := testPeerKey(1)
