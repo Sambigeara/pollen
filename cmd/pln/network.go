@@ -159,39 +159,39 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 	var sections []statusSection
 	switch mode {
 	case "all":
-		if s := collectPeersSection(st, opts); len(s.rows) > 0 {
+		if s := collectPeersSection(st, opts); s.visible() {
 			sections = append(sections, s)
 		}
-		if s := collectServicesSection(st, opts); len(s.rows) > 0 {
+		if s := collectServicesSection(st, opts); s.visible() {
 			sections = append(sections, s)
 		}
-		if s := collectSeedsSection(st, opts); len(s.rows) > 0 {
+		if s := collectSeedsSection(st, opts); s.visible() {
 			sections = append(sections, s)
 		}
-		if s := collectStaticSection(st, opts); len(s.rows) > 0 {
+		if s := collectStaticSection(st, opts); s.visible() {
 			sections = append(sections, s)
 		}
-		if s := collectBlobsSection(st, opts); len(s.rows) > 0 {
+		if s := collectBlobsSection(st, opts); s.visible() {
 			sections = append(sections, s)
 		}
 	case "nodes", "node":
-		if s := collectPeersSection(st, opts); len(s.rows) > 0 {
+		if s := collectPeersSection(st, opts); s.visible() {
 			sections = append(sections, s)
 		}
 	case "services", "service", "serve":
-		if s := collectServicesSection(st, opts); len(s.rows) > 0 {
+		if s := collectServicesSection(st, opts); s.visible() {
 			sections = append(sections, s)
 		}
 	case "seeds", "seed":
-		if s := collectSeedsSection(st, opts); len(s.rows) > 0 {
+		if s := collectSeedsSection(st, opts); s.visible() {
 			sections = append(sections, s)
 		}
 	case "static", "sites":
-		if s := collectStaticSection(st, opts); len(s.rows) > 0 {
+		if s := collectStaticSection(st, opts); s.visible() {
 			sections = append(sections, s)
 		}
 	case "blobs", "blob":
-		if s := collectBlobsSection(st, opts); len(s.rows) > 0 {
+		if s := collectBlobsSection(st, opts); s.visible() {
 			sections = append(sections, s)
 		}
 	default:
@@ -446,6 +446,8 @@ type statusSection struct {
 	rows    [][]string
 }
 
+func (s statusSection) visible() bool { return len(s.rows) > 0 || s.footer != "" }
+
 func collectPeersSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
 	sec := statusSection{
 		title:   "PEERS",
@@ -607,7 +609,7 @@ func collectBlobsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		orphaned int
 	)
 	for _, b := range all {
-		if b.GetOrphan() {
+		if isRemoteOrphan(b) {
 			orphaned++
 			if !opts.includeAll {
 				continue
@@ -633,7 +635,7 @@ func collectBlobsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		}
 		name := b.GetName()
 		switch {
-		case b.GetOrphan():
+		case isRemoteOrphan(b):
 			name = "(orphaned)"
 		case name == "":
 			name = "-"
@@ -652,6 +654,8 @@ func collectBlobsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 	}
 	return sec
 }
+
+func isRemoteOrphan(b *controlv1.BlobSummary) bool { return b.GetOrphan() && !b.GetLocal() }
 
 func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
 	sec := statusSection{
@@ -721,14 +725,18 @@ func renderStatusSections(w io.Writer, sections []statusSection) {
 		}
 		fmt.Fprintln(w, sectionStyle.Render(sec.title))
 
-		t := newStatusTable(sec.headers...)
-		for _, dataRow := range sec.rows {
-			t.Row(dataRow...)
+		hasRows := len(sec.rows) > 0
+		if hasRows {
+			t := newStatusTable(sec.headers...)
+			for _, dataRow := range sec.rows {
+				t.Row(dataRow...)
+			}
+			fmt.Fprintln(w, t)
 		}
-		fmt.Fprintln(w, t)
-
 		if sec.footer != "" {
-			fmt.Fprintln(w)
+			if hasRows {
+				fmt.Fprintln(w)
+			}
 			fmt.Fprintln(w, sec.footer)
 		}
 	}

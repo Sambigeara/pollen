@@ -26,7 +26,7 @@
 //	pln.sock                   pln:pln        0660   SetGroupSocket
 //	cas/                       pln:pln        2770   EnsureDir
 //	cas/<shard>/               pln:pln        2770   EnsureDir
-//	cas/<shard>/<hash>.wasm    pln:pln        0640   WriteGroupReadable
+//	cas/<shard>/<hash>         pln:pln        0640   WriteGroupReadable
 package plnfs
 
 // SystemDir is the root of the system-managed data directory on Linux.

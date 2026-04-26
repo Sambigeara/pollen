@@ -84,7 +84,7 @@ func TestPutSetsGroupReadableMode(t *testing.T) {
 	hash, err := store.Put(bytes.NewReader([]byte("shared artifact")))
 	require.NoError(t, err)
 
-	info, err := os.Stat(filepath.Join(root, "cas", hash[:2], hash+".wasm"))
+	info, err := os.Stat(filepath.Join(root, "cas", hash[:2], hash))
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o640), info.Mode())
 }

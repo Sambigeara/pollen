@@ -64,7 +64,7 @@ func (s *Store) Put(r io.Reader) (string, error) {
 	if err := plnfs.EnsureDir(dir); err != nil {
 		return "", fmt.Errorf("cas: create shard dir: %w", err)
 	}
-	dest := filepath.Join(dir, hash+".wasm")
+	dest := filepath.Join(dir, hash)
 	if err := os.Rename(tmpName, dest); err != nil {
 		return "", fmt.Errorf("cas: commit artifact: %w", err)
 	}
@@ -117,11 +117,7 @@ func (s *Store) Entries() ([]Entry, error) {
 			return nil, fmt.Errorf("cas: read shard %s: %w", shard.Name(), err)
 		}
 		for _, e := range entries {
-			name := e.Name()
-			if filepath.Ext(name) != ".wasm" {
-				continue
-			}
-			hash := name[:len(name)-len(".wasm")]
+			hash := e.Name()
 			if len(hash) != hex.EncodedLen(sha256.Size) {
 				continue
 			}
@@ -130,7 +126,7 @@ func (s *Store) Entries() ([]Entry, error) {
 				if errors.Is(err, os.ErrNotExist) {
 					continue
 				}
-				return nil, fmt.Errorf("cas: stat %s: %w", name, err)
+				return nil, fmt.Errorf("cas: stat %s: %w", hash, err)
 			}
 			out = append(out, Entry{Hash: hash, ModTime: info.ModTime()})
 		}
@@ -139,5 +135,5 @@ func (s *Store) Entries() ([]Entry, error) {
 }
 
 func (s *Store) path(hash string) string {
-	return filepath.Join(s.root, hash[:2], hash+".wasm")
+	return filepath.Join(s.root, hash[:2], hash)
 }

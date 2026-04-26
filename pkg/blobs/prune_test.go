@@ -100,7 +100,7 @@ func putAged(t *testing.T, store *cas.Store, dir, content string, age time.Durat
 	t.Helper()
 	hash, err := store.Put(strings.NewReader(content))
 	require.NoError(t, err)
-	path := filepath.Join(dir, "cas", hash[:2], hash+".wasm")
+	path := filepath.Join(dir, "cas", hash[:2], hash)
 	when := time.Now().Add(age)
 	require.NoError(t, os.Chtimes(path, when, when))
 	return hash
