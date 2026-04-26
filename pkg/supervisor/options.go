@@ -16,11 +16,14 @@ import (
 
 // Options holds runtime parameters for constructing a Supervisor.
 type Options struct {
-	PacketConn         net.PacketConn
-	ShutdownFunc       func()
-	RuntimeState       *statev1.RuntimeState
-	PeerCache          *peercache.Store
-	AuthzRouter        *evaluator.Router
+	PacketConn   net.PacketConn
+	ShutdownFunc func()
+	RuntimeState *statev1.RuntimeState
+	PeerCache    *peercache.Store
+	AuthzRouter  *evaluator.Router
+	// SeedCallerSink lets an authz router built before placement exists
+	// wire its seed-backed PDP factory once placement is constructed.
+	SeedCallerSink     func(evaluator.Caller)
 	SocketPath         string
 	PollenDir          string
 	NodeName           string

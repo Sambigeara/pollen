@@ -378,6 +378,9 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 			placement.WithAuthzRouter(authz),
 		)
 	}
+	if opts.SeedCallerSink != nil {
+		opts.SeedCallerSink(n.placement)
+	}
 
 	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", authz, log.Named("static"))
 	n.static = staticSvc

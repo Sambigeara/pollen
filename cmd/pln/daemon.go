@@ -63,7 +63,7 @@ func watchSIGHUPReload(ctx context.Context, reload func() error, log *zap.Sugare
 // configured — supervisor then wires an allow-all default. The
 // reload closure is non-nil only when matcher rules are in use, so
 // the SIGHUP handler can re-read the file in place without restart.
-func buildAuthzRouter(cfg config.Evaluator) (*evaluator.Router, func() error, error) {
+func buildAuthzRouter(cfg config.Evaluator, seedCaller evaluator.CallerFn) (*evaluator.Router, func() error, error) {
 	if cfg.Default == "" && len(cfg.Gates) == 0 && cfg.MatcherRules == "" {
 		return nil, nil, nil
 	}
@@ -85,6 +85,7 @@ func buildAuthzRouter(cfg config.Evaluator) (*evaluator.Router, func() error, er
 		Default:          cfg.Default,
 		Gates:            gates,
 		AttributeMatcher: matcherEval,
+		SeedCaller:       seedCaller,
 		OnDeny:           logDeny(zap.S().Named("authz")),
 	})
 	if err != nil {
@@ -334,7 +335,12 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		initialServices = append(initialServices, supervisor.ServiceEntry{Name: svc.Name, Port: svc.Port, Protocol: configProtocolToProto(svc.Protocol)})
 	}
 
-	authzRouter, reloadMatcher, err := buildAuthzRouter(env.cfg.Evaluator)
+	// Written by SeedCallerSink during supervisor.New, before n.Run
+	// spawns the goroutines that read it via the closure below.
+	var seedCaller evaluator.Caller
+	authzRouter, reloadMatcher, err := buildAuthzRouter(env.cfg.Evaluator, func() evaluator.Caller {
+		return seedCaller
+	})
 	if err != nil {
 		return err
 	}
@@ -367,6 +373,7 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		MemBudgetPercent:   env.cfg.Resources.MemPercent,
 		IdleInstanceTTL:    env.cfg.Placement.IdleInstanceTTL,
 		AuthzRouter:        authzRouter,
+		SeedCallerSink:     func(c evaluator.Caller) { seedCaller = c },
 		RelayOnly:          env.cfg.RelayOnly,
 	}, creds, inviteConsumer)
 	if err != nil {
