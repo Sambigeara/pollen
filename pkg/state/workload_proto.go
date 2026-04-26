@@ -15,14 +15,13 @@ import (
 // than rely on silent coercion.
 func workloadSpecToProto(spec WorkloadSpec) *statev1.WorkloadSpecChange {
 	return &statev1.WorkloadSpecChange{
-		Hash:           spec.Hash,
-		Name:           spec.Name,
-		MinReplicas:    spec.MinReplicas,
-		MemoryBytes:    spec.MemoryBytes,
-		TimeoutMs:      uint32(spec.Timeout / time.Millisecond),
-		Spread:         spec.Spread,
-		LatencySloMs:   uint32(spec.LatencySLO / time.Millisecond),
-		PublisherClaim: claimToProto(spec.Claim),
+		Hash:         spec.Hash,
+		Name:         spec.Name,
+		MinReplicas:  spec.MinReplicas,
+		MemoryBytes:  spec.MemoryBytes,
+		TimeoutMs:    uint32(spec.Timeout / time.Millisecond),
+		Spread:       spec.Spread,
+		LatencySloMs: uint32(spec.LatencySLO / time.Millisecond),
 	}
 }
 
@@ -40,7 +39,6 @@ func workloadSpecFromProto(pb *statev1.WorkloadSpecChange) WorkloadSpec {
 		Timeout:     time.Duration(pb.TimeoutMs) * time.Millisecond,
 		Spread:      pb.Spread,
 		LatencySLO:  time.Duration(pb.LatencySloMs) * time.Millisecond,
-		Claim:       claimFromProto(pb.GetPublisherClaim()),
 	}
 }
 

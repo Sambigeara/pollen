@@ -13,8 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sambigeara/pollen/pkg/claims"
-	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
@@ -31,7 +29,7 @@ type StaticAPI interface {
 	Stop() error
 	Signal()
 	Events() <-chan state.Event
-	SeedStatic(name string, manifestDigest []byte, minReplicas uint32, claim *claims.PublisherClaim) error
+	SeedStatic(name string, manifestDigest []byte, minReplicas uint32) error
 	UnseedStatic(name string) error
 	StaticBlobs() map[string]struct{}
 }
@@ -53,7 +51,6 @@ type blobStore interface {
 type Service struct {
 	store         stateStore
 	blobs         blobStore
-	authz         *evaluator.Router
 	log           *zap.SugaredLogger
 	manifestCache *manifestCache
 	trigger       chan struct{}
@@ -68,13 +65,11 @@ var _ StaticAPI = (*Service)(nil)
 
 // canServe gates file-fetch and claim; the reconciler still runs on
 // non-serving peers so every node pulls manifests (admin intent) and can
-// enumerate the referenced file digests. authz may be nil — the gate is
-// then skipped and every serving peer claims unconditionally.
-func New(localID types.PeerKey, store stateStore, blobs blobStore, canServe bool, authz *evaluator.Router, log *zap.SugaredLogger) *Service {
+// enumerate the referenced file digests.
+func New(localID types.PeerKey, store stateStore, blobs blobStore, canServe bool, log *zap.SugaredLogger) *Service {
 	return &Service{
 		store:         store,
 		blobs:         blobs,
-		authz:         authz,
 		log:           log,
 		localID:       localID,
 		canServe:      canServe,
@@ -117,7 +112,7 @@ func (s *Service) forwardEvents(events []state.Event) {
 	}
 }
 
-func (s *Service) SeedStatic(name string, manifestDigest []byte, minReplicas uint32, claim *claims.PublisherClaim) error {
+func (s *Service) SeedStatic(name string, manifestDigest []byte, minReplicas uint32) error {
 	if len(manifestDigest) != digestSize {
 		return fmt.Errorf("manifest digest must be %d bytes", digestSize)
 	}
@@ -125,7 +120,6 @@ func (s *Service) SeedStatic(name string, manifestDigest []byte, minReplicas uin
 		Name:           name,
 		ManifestDigest: hex.EncodeToString(manifestDigest),
 		MinReplicas:    minReplicas,
-		Claim:          claim,
 	})
 	if err != nil {
 		return err
@@ -195,26 +189,6 @@ func (s *Service) StaticBlobs() map[string]struct{} {
 }
 
 func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, name string, spec state.StaticSpec) error {
-	_, alreadyClaimed := snap.StaticClaims[name][s.localID]
-
-	// Run the gate before any blob fetch. A deny must release an
-	// existing claim regardless of whether the publisher's current
-	// manifest or file blobs are reachable — otherwise a publisher
-	// flipping `place_locked: true` while also pointing at unavailable
-	// content leaves the stale claim live, since the manifest fetch
-	// would error out before the gate ran.
-	if s.canServe {
-		if denyErr := s.gatePlacement(ctx, snap, name); denyErr != nil {
-			if alreadyClaimed {
-				s.log.Infow("seed_placement now denied — releasing claim", "resource_type", "static", "name", name, "err", denyErr)
-				s.forwardEvents(s.store.ReleaseStatic(name))
-			} else {
-				s.log.Infow("seed_placement denied", "resource_type", "static", "name", name, "err", denyErr)
-			}
-			return nil
-		}
-	}
-
 	if err := s.ensureLocal(ctx, snap, spec.ManifestDigest); err != nil {
 		return fmt.Errorf("manifest: %w", err)
 	}
@@ -237,31 +211,12 @@ func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, nam
 		}
 	}
 
-	if alreadyClaimed {
+	if _, alreadyClaimed := snap.StaticClaims[name][s.localID]; alreadyClaimed {
 		return nil
 	}
 	s.forwardEvents(s.store.ClaimStatic(name))
 	s.log.Infow("claimed static site", "name", name, "paths", len(manifest.paths))
 	return nil
-}
-
-// gatePlacement runs the seed_placement gate for a named static site.
-// Returns nil when the gate is unconfigured or allows; the gate's error
-// otherwise. The publisher's signed claim properties feed in as the
-// resource attributes so policies can match on `place_locked` etc.
-func (s *Service) gatePlacement(ctx context.Context, snap state.Snapshot, name string) error {
-	if s.authz == nil {
-		return nil
-	}
-	var resourceProps map[string]any
-	if sv, ok := snap.StaticSpecs[name]; ok {
-		resourceProps = sv.Spec.Claim.GetProperties()
-	}
-	return s.authz.Allow(ctx, evaluator.GateSeedPlacement, evaluator.Request{
-		Subject:  evaluator.SubjectFromPeerKey(s.localID, nil),
-		Action:   evaluator.Action{Name: "place"},
-		Resource: evaluator.NewResource(evaluator.ResourceStatic, name, resourceProps),
-	})
 }
 
 func (s *Service) ensureLocal(ctx context.Context, snap state.Snapshot, hash string) error {

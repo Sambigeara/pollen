@@ -237,7 +237,7 @@ func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
 		}
 	}
 
-	props, err := parseKeyValues(cmd, "prop")
+	props, err := parseProperties(cmd)
 	if err != nil {
 		return err
 	}

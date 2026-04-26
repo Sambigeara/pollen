@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/cas"
-	"github.com/sambigeara/pollen/pkg/claims"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -23,10 +22,7 @@ import (
 
 const defaultFetchTimeout = 15 * time.Second
 
-var (
-	ErrNotLocal     = errors.New("blob not present in local store")
-	ErrUnauthorized = errors.New("blob fetch denied")
-)
+var ErrNotLocal = errors.New("blob not present in local store")
 
 type BlobsAPI interface {
 	Put(r io.Reader) (string, error)
@@ -35,7 +31,7 @@ type BlobsAPI interface {
 	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
 	Serve(stream io.ReadWriteCloser, hash string)
 	Announce(hash string) error
-	SetName(hash, name string, claim *claims.PublisherClaim) error
+	SetName(hash, name string) error
 	Remove(hash string) error
 	Rescan() error
 	Prune(keep map[string]struct{}, minAge time.Duration) ([]string, error)
@@ -117,17 +113,15 @@ func (s *Service) Announce(hash string) error {
 }
 
 // SetName requires the blob to be present locally. Re-naming the same
-// digest replaces any previous name from this publisher. The claim is
-// attached to the emitted BlobSpec so gossip receivers can verify the
-// publisher's signature at ingest.
-func (s *Service) SetName(hash, name string, claim *claims.PublisherClaim) error {
+// digest replaces any previous name from this publisher.
+func (s *Service) SetName(hash, name string) error {
 	if !s.store.Has(hash) {
 		return ErrNotLocal
 	}
 	if s.state == nil {
 		return nil
 	}
-	_, err := s.state.SetBlobSpec(state.BlobSpec{Name: name, Digest: hash, Claim: claim})
+	_, err := s.state.SetBlobSpec(state.BlobSpec{Name: name, Digest: hash})
 	return err
 }
 

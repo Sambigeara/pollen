@@ -16,14 +16,7 @@ import (
 // GateName constants. Adding a new constant requires updating the
 // literal below AND AllGateNames — a drift fails the assertion.
 func TestConformanceAllGateNamesEnumerated(t *testing.T) {
-	want := []evaluator.GateName{
-		evaluator.GateBlobFetch,
-		evaluator.GateServiceConnect,
-		evaluator.GateWorkloadCall,
-		evaluator.GateSpecPublish,
-		evaluator.GateGrantIssue,
-		evaluator.GateSeedPlacement,
-	}
+	want := []evaluator.GateName{evaluator.GateServiceConnect}
 	require.ElementsMatch(t, want, evaluator.AllGateNames())
 }
 

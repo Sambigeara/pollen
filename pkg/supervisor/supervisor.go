@@ -303,7 +303,6 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 			SessionCloser:    m,
 			RoutedSender:     m,
 			CapTransition:    capTrans,
-			AuthzRouter:      authz,
 			SmoothedErr:      vivaldiErr,
 			TracerProvider:   tp.Tracer(),
 			NATDetector:      n.natDetector,
@@ -375,15 +374,10 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 			placement.WithMesh(placementOpener),
 			placement.WithLogger(log.Named("placement")),
 			placement.WithResourceBudget(opts.CPUBudgetPercent, opts.MemBudgetPercent),
-			placement.WithAuthzRouter(authz),
-			placement.WithWorkloadCallGate(n.workloadCallGate),
 		)
 	}
-	if opts.SeedCallerSink != nil {
-		opts.SeedCallerSink(n.placement.AsSeedCaller())
-	}
 
-	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", authz, log.Named("static"))
+	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", log.Named("static"))
 	n.static = staticSvc
 	n.staticSvc = staticSvc
 	n.staticAddr = opts.StaticAddr
@@ -393,8 +387,6 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		control.WithTransportInfo(n),
 		control.WithMetricsSource(n),
 		control.WithMeshConnector(n),
-		control.WithAuthzRouter(n.authz),
-		control.WithSigningKey(privKey),
 	}
 	if opts.ShutdownFunc != nil {
 		controlOpts = append(controlOpts, control.WithShutdown(opts.ShutdownFunc))
@@ -596,25 +588,9 @@ func (n *Supervisor) peerProps(pk types.PeerKey) map[string]any {
 	return attrs.AsMap()
 }
 
-// dispatchBlobFetch gates an incoming blob fetch stream at supervisor
-// level: read the hash header, consult the blob_fetch gate, then hand
-// the stream off to the blob service. Denied fetches get a single
-// status byte and close — no existence leak, since the gate fires
-// before any CAS lookup.
-func (n *Supervisor) dispatchBlobFetch(ctx context.Context, stream io.ReadWriteCloser, peerKey types.PeerKey) {
+func (n *Supervisor) dispatchBlobFetch(_ context.Context, stream io.ReadWriteCloser, _ types.PeerKey) {
 	hash, err := blobs.ReadHash(stream)
 	if err != nil {
-		stream.Close() //nolint:errcheck
-		return
-	}
-	resourceProps := n.store.Snapshot().PublisherClaimForBlob(hash)
-	req := evaluator.Request{
-		Subject:  evaluator.SubjectFromPeerKey(peerKey, n.peerProps),
-		Action:   evaluator.Action{Name: "fetch"},
-		Resource: evaluator.NewResource(evaluator.ResourceBlob, hash, resourceProps),
-	}
-	if err := n.authz.Allow(ctx, evaluator.GateBlobFetch, req); err != nil {
-		blobs.WriteStatus(stream, blobs.StatusUnauthorized)
 		stream.Close() //nolint:errcheck
 		return
 	}
@@ -667,11 +643,6 @@ func (n *Supervisor) localService(port uint32) (string, map[string]any) {
 	return fmt.Sprintf("%d", port), nil
 }
 
-// dispatchWorkloadCall reads the wire header (caller info, seed hash,
-// function) and hands the stream to placement.Serve. The workload_call
-// gate is wired into placement.Service via WithWorkloadCallGate, so
-// both stream-borne calls (this path) and locally-routed calls
-// (placement.Call → callLocal) share one authoritative gate site.
 func (n *Supervisor) dispatchWorkloadCall(_ context.Context, stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	info, hash, function, err := placement.ReadHeader(stream, peerKey)
 	if err != nil {
@@ -679,43 +650,6 @@ func (n *Supervisor) dispatchWorkloadCall(_ context.Context, stream io.ReadWrite
 		return
 	}
 	n.placement.Serve(stream, info, hash, function)
-}
-
-// workloadCallGate builds the workload_call authz request and runs it
-// through the router. Wired into placement.Service so both the stream
-// and local-claimant paths share one gate site. info.PeerKey is the
-// transport-authenticated caller; OnBehalfOf is verified against
-// cluster state inside SubjectFromCallerInfo before any seed-typed
-// attribution is trusted.
-func (n *Supervisor) workloadCallGate(ctx context.Context, info wasm.CallerInfo, hash string) error {
-	snap := n.store.Snapshot()
-	seedProps := func(seedHash string) (map[string]any, bool) {
-		sv, ok := snap.Specs[seedHash]
-		if !ok {
-			return nil, false
-		}
-		return sv.Spec.Claim.GetProperties(), true
-	}
-	seedOwnedBy := func(seedHash string, peer types.PeerKey) bool {
-		_, owns := snap.Claims[seedHash][peer]
-		return owns
-	}
-	subject, err := evaluator.SubjectFromCallerInfo(
-		evaluator.CallerInput{PeerKey: info.PeerKey, OnBehalfOf: info.OnBehalfOf},
-		n.peerProps, seedProps, seedOwnedBy,
-	)
-	if err != nil {
-		return err
-	}
-	var resourceProps map[string]any
-	if sv, ok := snap.Specs[hash]; ok {
-		resourceProps = sv.Spec.Claim.GetProperties()
-	}
-	return n.authz.Allow(ctx, evaluator.GateWorkloadCall, evaluator.Request{
-		Subject:  subject,
-		Action:   evaluator.Action{Name: "call"},
-		Resource: evaluator.NewResource(evaluator.ResourceSeed, hash, resourceProps),
-	})
 }
 
 func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
@@ -983,13 +917,6 @@ func (n *Supervisor) RouteRequest(ctx context.Context, uri wasm.URI, input []byt
 				info.Attributes = attrs.AsMap()
 			}
 		}
-	}
-	// When the request originates inside a running seed, stamp
-	// on_behalf_of with that seed's hash. The receiver verifies against
-	// cluster state (seed exists + host peer claims it) before trusting
-	// the attribution, so this field is a hint — not a capability.
-	if executing := wasm.ExecutingSeedFromContext(ctx); executing != "" {
-		info.OnBehalfOf = executing
 	}
 	ctx = wasm.WithCallerInfo(ctx, info)
 

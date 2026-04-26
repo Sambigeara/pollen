@@ -94,14 +94,6 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 			continue
 		}
 
-		// Verify publisher-claim signatures before adopting the event.
-		// A relay peer that receives a legitimate signed spec must not
-		// be able to substitute properties and re-broadcast. Unsigned
-		// (legacy) specs pass through untouched.
-		if err := verifyPublisherClaim(pk, ev); err != nil {
-			continue
-		}
-
 		if pk == s.localID {
 			if live {
 				rebroadcast = append(rebroadcast, s.handleSelfConflictLocked(ev)...)

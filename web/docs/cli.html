@@ -222,7 +222,6 @@ pln up -d --name relay --public</code></pre>
       <dt>--memory, --mem &lt;size&gt;</dt><dd>Workload only. Memory limit (e.g. <code>64MiB</code>, <code>1GiB</code>). Default 64MiB.</dd>
       <dt>--timeout &lt;dur&gt;</dt><dd>Workload only. Per-invocation timeout (e.g. <code>500ms</code>, <code>5s</code>).</dd>
       <dt>--latency-slo &lt;dur&gt;</dt><dd>Workload only. Caller-perspective SLO; drives autoscale via burn rate.</dd>
-      <dt>--prop key=val</dt><dd>Publisher claim signed onto the spec. Surfaces to gates as <code>resource.properties</code>. Repeatable. Accepts JSON or <code>-</code> for stdin.</dd>
     </dl>
     <pre><code>pln seed ./hello.wasm                       <span class="c"># workload</span>
 pln seed ./hello.wasm greeter --everywhere
@@ -376,23 +375,6 @@ pln set log-level debug</code></pre>
     <h3 id="unset"><code>pln unset &lt;key&gt;</code></h3>
     <p>Clear a daemon config value, restoring default behaviour.</p>
 
-    <h2 id="policy">Policy</h2>
-
-    <h3 id="policy-check"><code>pln policy check &lt;gate&gt;</code></h3>
-    <p>Dry-run a (subject, action, resource) against a configured gate. The daemon answers from its running router (same rules, same matcher) without dispatching.</p>
-    <dl class="flags">
-      <dt>--subject &lt;type&gt;:&lt;id&gt;</dt><dd>e.g. <code>peer:&lt;hex&gt;</code> or <code>seed:&lt;hex&gt;</code>.</dd>
-      <dt>--subject-prop key=val</dt><dd>Subject property. Repeatable.</dd>
-      <dt>--action &lt;name&gt;</dt><dd>Action name (e.g. <code>fetch</code>, <code>call</code>, <code>publish</code>).</dd>
-      <dt>--action-prop key=val</dt><dd>Action property. Repeatable.</dd>
-      <dt>--resource &lt;type&gt;:&lt;id&gt;</dt><dd>e.g. <code>blob:&lt;hash&gt;</code> or <code>service:&lt;name&gt;</code>.</dd>
-      <dt>--resource-prop key=val</dt><dd>Resource property. Repeatable.</dd>
-    </dl>
-    <pre><code>pln policy check workload_call \
-  --subject peer:a9b8... --subject-prop role=admin \
-  --action call \
-  --resource seed:deadbeef... --resource-prop tier=gold</code></pre>
-
     <h2 id="exit-codes">Exit codes</h2>
     <p>Non-zero codes let scripts react to common failures without parsing error text.</p>
     <dl class="flags">
@@ -416,7 +398,6 @@ pln set log-level debug</code></pre>
       <a href="#inspection">Inspection</a>
       <a href="#daemon">Daemon admin</a>
       <a href="#config">Config</a>
-      <a href="#policy">Policy</a>
       <a href="#exit-codes">Exit codes</a>
     </nav>
   </aside>

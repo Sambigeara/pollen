@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
@@ -38,7 +37,6 @@ type reconciler struct {
 	store          WorkloadState
 	workloads      workloadManager
 	blobs          blobsAPI
-	authz          *evaluator.Router
 	utilisation    *utilisationTracker
 	gates          *gateRegistry
 	claimStartTime map[string]time.Time
@@ -64,7 +62,6 @@ func newReconciler(
 	blobs blobsAPI,
 	utilisation *utilisationTracker,
 	gates *gateRegistry,
-	authz *evaluator.Router,
 	log *zap.SugaredLogger,
 	wg *sync.WaitGroup,
 ) *reconciler {
@@ -73,7 +70,6 @@ func newReconciler(
 		store:          store,
 		workloads:      workloads,
 		blobs:          blobs,
-		authz:          authz,
 		utilisation:    utilisation,
 		gates:          gates,
 		triggerCh:      make(chan struct{}, 1),
@@ -197,33 +193,6 @@ func (r *reconciler) reconcile(ctx context.Context) {
 	if r.firstRun {
 		r.firstRun = false
 		r.cleanupStaleClaims(snap.Claims)
-	}
-
-	// Re-evaluate seed_placement for claims this node currently holds.
-	// If the publisher updated the spec to a state the gate now denies
-	// (e.g. flipped `place_locked: true`), release the claim — otherwise
-	// initial-only gating leaves stale claims live forever.
-	if r.authz != nil {
-		for hash, claimants := range snap.Claims {
-			if _, mine := claimants[r.localID]; !mine {
-				continue
-			}
-			sv, ok := snap.Specs[hash]
-			if !ok {
-				continue
-			}
-			req := evaluator.Request{
-				Subject:  evaluator.SubjectFromPeerKey(r.localID, nil),
-				Action:   evaluator.Action{Name: "place"},
-				Resource: evaluator.NewResource(evaluator.ResourceSeed, hash, sv.Spec.Claim.GetProperties()),
-			}
-			if err := r.authz.Allow(ctx, evaluator.GateSeedPlacement, req); err != nil {
-				r.log.Infow("seed_placement now denied — releasing claim", "hash", types.ShortHash(hash), "err", err)
-				r.executeRelease(hash)
-			}
-		}
-		// Snapshot is stale after releases; refresh.
-		snap = r.store.Snapshot()
 	}
 
 	cluster := buildClusterState(snap)
@@ -366,25 +335,6 @@ func (r *reconciler) startClaim(ctx context.Context, hash string, dynamicTarget 
 }
 
 func (r *reconciler) executeClaim(ctx context.Context, hash string, dynamicTarget uint32, peers []types.PeerKey) {
-	// Gate placement before any blob fetch — if policy forbids this
-	// node from hosting the seed, we shouldn't pay the bandwidth cost
-	// of pulling the WASM binary first.
-	if r.authz != nil {
-		var resourceProps map[string]any
-		if sv, ok := r.store.Snapshot().Specs[hash]; ok {
-			resourceProps = sv.Spec.Claim.GetProperties()
-		}
-		req := evaluator.Request{
-			Subject:  evaluator.SubjectFromPeerKey(r.localID, nil),
-			Action:   evaluator.Action{Name: "place"},
-			Resource: evaluator.NewResource(evaluator.ResourceSeed, hash, resourceProps),
-		}
-		if err := r.authz.Allow(ctx, evaluator.GateSeedPlacement, req); err != nil {
-			r.log.Infow("seed_placement denied", "hash", types.ShortHash(hash), "err", err)
-			return
-		}
-	}
-
 	if !r.blobs.Has(hash) {
 		if err := r.blobs.Fetch(ctx, hash, peers); err != nil {
 			r.log.Warnw("fetch blob failed", "hash", hash, "err", err)

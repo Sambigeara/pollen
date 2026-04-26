@@ -161,7 +161,6 @@ See ARCHITECTURE.md for the full design.`,
 	rootCmd.AddCommand(newNetworkCmds()...)
 	rootCmd.AddCommand(newSeedCmds()...)
 	rootCmd.AddCommand(newSetCmds()...)
-	rootCmd.AddCommand(newPolicyCmds()...)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

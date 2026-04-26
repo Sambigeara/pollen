@@ -79,20 +79,6 @@ message ResourceTelemetryChange {
   uint32 mem_budget_percent = 6;
 }
 
-// PublisherClaim binds a set of properties to the publishing node's
-// signature. Receivers verify the signature at gossip ingest against
-// the publisher's ed25519 public key (the peer whose log the event
-// came from) so relay peers can't substitute properties.
-//
-// The signature covers the canonical (resource_type, resource_id,
-// properties) tuple; see pkg/claims for the framing. A message with
-// neither properties nor signature is an unsigned (legacy) spec and
-// passes verification untouched.
-message PublisherClaim {
-  google.protobuf.Struct properties = 1;
-  bytes signature = 2;
-}
-
 message WorkloadSpecChange {
   string hash = 1;
   uint32 min_replicas = 2;
@@ -105,7 +91,8 @@ message WorkloadSpecChange {
   // counter; calls exceeding it contribute to the burn counter. The
   // ratio drives autoscale decisions.
   uint32 latency_slo_ms = 7;
-  PublisherClaim publisher_claim = 8;
+  reserved 8;
+  reserved "publisher_claim";
 }
 
 // SeedMetrics is the per-seed per-node telemetry bundle: served rate
@@ -149,7 +136,8 @@ message StaticSpecChange {
   }];
   bytes manifest_digest = 2 [(buf.validate.field).bytes = {len: 32}];
   uint32 min_replicas = 3;
-  PublisherClaim publisher_claim = 4;
+  reserved 4;
+  reserved "publisher_claim";
 }
 
 message StaticClaimChange {
@@ -165,7 +153,8 @@ message BlobSpecChange {
     max_len: 255
   }];
   bytes digest = 2 [(buf.validate.field).bytes = {len: 32}];
-  PublisherClaim publisher_claim = 3;
+  reserved 3;
+  reserved "publisher_claim";
 }
 
 message StaticPath {

@@ -6,19 +6,15 @@ package state
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"net/netip"
 	"testing"
 	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/claims"
 	"github.com/sambigeara/pollen/pkg/coords"
-	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func genKey(t *testing.T) types.PeerKey {
@@ -974,149 +970,4 @@ func TestSetSeedMetrics_EmptyTombstones(t *testing.T) {
 	s.SetSeedMetrics(map[string]SeedMetrics{})
 	require.Empty(t, s.Snapshot().Nodes[pk].SeedMetrics,
 		"empty map should tombstone the seed-metrics attr")
-}
-
-// TestStore_VerifiesPublisherClaimAtIngest proves the CRDT rejects a
-// gossip event carrying forged properties: same signature, tampered
-// properties. Without verification a relay peer could substitute
-// policy-visible attributes on someone else's legitimate signed spec.
-func TestStore_VerifiesPublisherClaimAtIngest(t *testing.T) {
-	localPK := genKey(t)
-	s := newTestStore(t, localPK)
-
-	// Publisher: generate a fresh keypair so we hold the private key.
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	publisher := types.PeerKeyFromBytes(pub)
-
-	// Build a legitimate signed blob spec.
-	originalProps, err := structpb.NewStruct(map[string]any{"tier": "gold"})
-	require.NoError(t, err)
-	digest := sha256.Sum256([]byte("blob-content"))
-	digestHex := hex.EncodeToString(digest[:])
-	sig, err := claims.Sign(priv, evaluator.ResourceBlob, digestHex, originalProps)
-	require.NoError(t, err)
-
-	signedEvent := &statev1.GossipEvent{
-		PeerId:  publisher.String(),
-		Counter: 1,
-		Change: &statev1.GossipEvent_BlobSpec{
-			BlobSpec: &statev1.BlobSpecChange{
-				Name:           "my-blob",
-				Digest:         digest[:],
-				PublisherClaim: &statev1.PublisherClaim{Properties: originalProps, Signature: sig},
-			},
-		},
-	}
-	applyTestEvent(t, s, signedEvent)
-
-	view, ok := s.Snapshot().BlobSpecs[digestHex]
-	require.True(t, ok, "legitimate signed spec must be adopted")
-	require.Equal(t, "gold", view.Spec.Claim.GetProperties()["tier"])
-
-	// Forgery: keep the signature, change the properties. A relay peer
-	// constructing this payload must not be able to smuggle different
-	// policy-visible attributes past the verifier.
-	forgedProps, err := structpb.NewStruct(map[string]any{"tier": "diamond"})
-	require.NoError(t, err)
-	forgedEvent := &statev1.GossipEvent{
-		PeerId:  publisher.String(),
-		Counter: 2,
-		Change: &statev1.GossipEvent_BlobSpec{
-			BlobSpec: &statev1.BlobSpecChange{
-				Name:           "my-blob",
-				Digest:         digest[:],
-				PublisherClaim: &statev1.PublisherClaim{Properties: forgedProps, Signature: sig},
-			},
-		},
-	}
-	applyTestEvent(t, s, forgedEvent)
-
-	// The forged event's higher counter would normally overwrite the
-	// original; verification must reject it before that happens.
-	view, ok = s.Snapshot().BlobSpecs[digestHex]
-	require.True(t, ok)
-	require.Equal(t, "gold", view.Spec.Claim.GetProperties()["tier"],
-		"forged claim must not replace the legitimate one")
-}
-
-// Unsigned specs (no claim) are the legacy pass-through path. Any
-// event with no claim attached flows through unchanged — verification
-// is a no-op.
-func TestStore_AcceptsUnsignedSpecs(t *testing.T) {
-	s := newTestStore(t, genKey(t))
-
-	publisher := genKey(t)
-	digest := sha256.Sum256([]byte("legacy"))
-	digestHex := hex.EncodeToString(digest[:])
-
-	unsigned := &statev1.GossipEvent{
-		PeerId:  publisher.String(),
-		Counter: 1,
-		Change: &statev1.GossipEvent_BlobSpec{
-			BlobSpec: &statev1.BlobSpecChange{
-				Name:   "legacy-blob",
-				Digest: digest[:],
-			},
-		},
-	}
-	applyTestEvent(t, s, unsigned)
-
-	view, ok := s.Snapshot().BlobSpecs[digestHex]
-	require.True(t, ok, "unsigned spec must pass through")
-	require.Nil(t, view.Spec.Claim, "unsigned spec carries no claim")
-}
-
-// TestSnapshot_PublisherClaimForBlob_StaticTieBreak regresses the Codex
-// M6 finding: when two static sites legitimately share a manifest digest
-// (content-addressing makes that possible), the gate's resource
-// properties must come from a deterministic winner. Map iteration order
-// is randomised, so the previous "first match wins" approach could flip
-// the gate's input from one reconcile to the next.
-func TestSnapshot_PublisherClaimForBlob_StaticTieBreak(t *testing.T) {
-	digest := "ab" + hex.EncodeToString(make([]byte, 31))
-	pubA := types.PeerKey{0x01}
-	pubB := types.PeerKey{0x02}
-	propsA, err := structpb.NewStruct(map[string]any{"public": true})
-	require.NoError(t, err)
-	propsB, err := structpb.NewStruct(map[string]any{"public": false})
-	require.NoError(t, err)
-
-	snap := Snapshot{
-		StaticSpecs: map[string]StaticSpecView{
-			"site-a": {
-				Spec:      StaticSpec{Name: "site-a", ManifestDigest: digest, Claim: claims.New(propsA.AsMap(), []byte("sigA"))},
-				Publisher: pubA,
-			},
-			"site-b": {
-				Spec:      StaticSpec{Name: "site-b", ManifestDigest: digest, Claim: claims.New(propsB.AsMap(), []byte("sigB"))},
-				Publisher: pubB,
-			},
-		},
-	}
-
-	// 100 lookups: with map iteration randomness, a non-deterministic
-	// implementation flips between the two within a few iterations.
-	for range 100 {
-		got := snap.PublisherClaimForBlob(digest)
-		require.Equal(t, true, got["public"], "lowest publisher (pubA, site-a) must always win")
-	}
-
-	// Same publisher, different names: name breaks the tie.
-	snapSamePub := Snapshot{
-		StaticSpecs: map[string]StaticSpecView{
-			"zzz": {
-				Spec:      StaticSpec{Name: "zzz", ManifestDigest: digest, Claim: claims.New(propsB.AsMap(), nil)},
-				Publisher: pubA,
-			},
-			"aaa": {
-				Spec:      StaticSpec{Name: "aaa", ManifestDigest: digest, Claim: claims.New(propsA.AsMap(), nil)},
-				Publisher: pubA,
-			},
-		},
-	}
-	for range 100 {
-		got := snapSamePub.PublisherClaimForBlob(digest)
-		require.Equal(t, true, got["public"], "lowest name (aaa) must win when publishers tie")
-	}
 }

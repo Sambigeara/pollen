@@ -176,45 +176,6 @@ func (s Snapshot) PeersWithBlob(hash string) []types.PeerKey {
 	return out
 }
 
-// PublisherClaimForBlob returns the publisher-claim properties governing a
-// blob hash. A hash can be published as a standalone BlobSpec, as the WASM
-// of a WorkloadSpec, or as the manifest of a StaticSpec — the gate needs
-// the claim from whichever spec produced it. Returns nil when the hash
-// isn't published anywhere or when the publisher attached no properties;
-// the gate then sees no resource attributes.
-//
-// Static manifests are content-addressed, so multiple sites can legitimately
-// share a digest with different claim properties. Pick the lowest
-// (publisher, name) tuple as the canonical owner so map-iteration randomness
-// doesn't flip the gate's input across reconciles.
-func (s Snapshot) PublisherClaimForBlob(hash string) map[string]any {
-	if v, ok := s.BlobSpecs[hash]; ok {
-		return v.Spec.Claim.GetProperties()
-	}
-	if v, ok := s.Specs[hash]; ok {
-		return v.Spec.Claim.GetProperties()
-	}
-	var winner StaticSpecView
-	winnerName := ""
-	found := false
-	for name, v := range s.StaticSpecs {
-		if v.Spec.ManifestDigest != hash {
-			continue
-		}
-		if !found ||
-			v.Publisher.Compare(winner.Publisher) < 0 ||
-			(v.Publisher == winner.Publisher && name < winnerName) {
-			winner = v
-			winnerName = name
-			found = true
-		}
-	}
-	if !found {
-		return nil
-	}
-	return winner.Spec.Claim.GetProperties()
-}
-
 // BlobByName returns the lowest-peer-key publisher's spec when multiple
 // peers publish the same name.
 func (s Snapshot) BlobByName(name string) (string, BlobSpecView, bool) {
@@ -451,7 +412,6 @@ func staticSpecFromProto(p *statev1.StaticSpecChange) StaticSpec {
 		Name:           p.GetName(),
 		ManifestDigest: hex.EncodeToString(p.GetManifestDigest()),
 		MinReplicas:    p.GetMinReplicas(),
-		Claim:          claimFromProto(p.GetPublisherClaim()),
 	}
 }
 
@@ -459,7 +419,6 @@ func blobSpecFromProto(p *statev1.BlobSpecChange) BlobSpec {
 	return BlobSpec{
 		Name:   p.GetName(),
 		Digest: hex.EncodeToString(p.GetDigest()),
-		Claim:  claimFromProto(p.GetPublisherClaim()),
 	}
 }
 

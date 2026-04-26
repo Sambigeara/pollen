@@ -76,32 +76,6 @@ func TestCallerInfoJSONRoundTrip(t *testing.T) {
 	require.Equal(t, "edge", got.Attributes["tier"])
 }
 
-// OnBehalfOf round-trips so the receiver's dispatch loop can attribute
-// the call to the caller seed rather than the host peer.
-func TestCallerInfoJSONRoundTrip_OnBehalfOf(t *testing.T) {
-	original := CallerInfo{
-		PeerKey:    types.PeerKeyFromBytes([]byte("01234567890123456789012345678901")),
-		OnBehalfOf: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-	}
-	b := MarshalCallerInfo(original)
-	require.NotNil(t, b)
-
-	got, ok := CallerInfoFromJSON(b)
-	require.True(t, ok)
-	require.Equal(t, original.OnBehalfOf, got.OnBehalfOf)
-}
-
-// OnBehalfOf alone (no peer key, no attributes, no deadline) is still
-// worth marshalling — the hop is a seed-to-seed invocation where the
-// wire identity comes from the OBO attribution.
-func TestMarshalCallerInfo_OnBehalfOfOnly(t *testing.T) {
-	b := MarshalCallerInfo(CallerInfo{OnBehalfOf: "abc"})
-	require.NotNil(t, b, "OnBehalfOf alone must still emit a caller block")
-	got, ok := CallerInfoFromJSON(b)
-	require.True(t, ok)
-	require.Equal(t, "abc", got.OnBehalfOf)
-}
-
 func TestCallerInfoFromJSONInvalid(t *testing.T) {
 	_, ok := CallerInfoFromJSON([]byte("not json"))
 	require.False(t, ok)

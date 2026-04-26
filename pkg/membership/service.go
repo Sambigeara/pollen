@@ -22,7 +22,6 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
-	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/state"
@@ -153,7 +152,6 @@ type Config struct {
 	RoutedSender     RoutedSender
 	CapTransition    CapabilityTransitioner
 	DatagramHandler  func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope)
-	AuthzRouter      *evaluator.Router
 	Log              *zap.SugaredLogger
 	PollenDir        string
 	AdvertisedIPs    []string
@@ -181,7 +179,6 @@ type Service struct {
 	peerAddrs         PeerAddressSource
 	sessionCloser     PeerSessionCloser
 	store             ClusterState
-	authz             *evaluator.Router
 	lastSentAddr      map[types.PeerKey]sentAddr
 	peerConnectTime   map[types.PeerKey]time.Time
 	natDetector       *nat.Detector
@@ -229,7 +226,6 @@ func New(self types.PeerKey, creds *auth.NodeCredentials, net Network, cluster C
 		sessionCloser:    cfg.SessionCloser,
 		routedSender:     cfg.RoutedSender,
 		capTransition:    cfg.CapTransition,
-		authz:            cfg.AuthzRouter,
 		datagramHandler:  cfg.DatagramHandler,
 		natDetector:      cfg.NATDetector,
 		creds:            creds,

@@ -120,35 +120,6 @@ func TestHandleAndInvokeRoundTrip_CallerInfo(t *testing.T) {
 	require.Equal(t, "relay", got.Attributes["role"])
 }
 
-// OnBehalfOf propagates from the sender's ctx through the wire into
-// the receiver's CallerInfo. The receiver's dispatch gate uses this
-// to build a seed-typed Subject rather than a peer-typed one.
-func TestHandleAndInvokeRoundTrip_OnBehalfOf(t *testing.T) {
-	hash := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-	callerSeed := "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef"
-	authPK := types.PeerKeyFromBytes([]byte("0123456789ABCDEF0123456789ABCDEF"))
-
-	var gotCtx context.Context
-	invoker := &mockInvoker{
-		callFn: func(ctx context.Context, _, _ string, input []byte) ([]byte, error) {
-			gotCtx = ctx
-			return input, nil
-		},
-	}
-
-	ctx := wasm.WithCallerInfo(context.Background(), wasm.CallerInfo{OnBehalfOf: callerSeed})
-
-	server, client := pipePair(t)
-	go serveWithHeaderRead(context.Background(), server, authPK, invoker, testGates())
-
-	_, err := invokeOverStream(ctx, client, hash, "handle", []byte("x"))
-	require.NoError(t, err)
-
-	got, ok := wasm.CallerInfoFromContext(gotCtx)
-	require.True(t, ok)
-	require.Equal(t, callerSeed, got.OnBehalfOf, "OBO must survive the wire round-trip")
-}
-
 func TestHandleWorkloadStream_StampsCallChainForRecursionGuard(t *testing.T) {
 	// The forwarded-call handler must stamp the hash into the local
 	// call chain before invoking the workload, so a recursive

@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -25,8 +24,6 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/blobs"
-	claimspkg "github.com/sambigeara/pollen/pkg/claims"
-	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/placement"
 	"github.com/sambigeara/pollen/pkg/plnfs"
@@ -88,12 +85,12 @@ type StateReader interface {
 type BlobsControl interface {
 	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
 	Put(r io.Reader) (string, error)
-	SetName(hash, name string, claim *claimspkg.PublisherClaim) error
+	SetName(hash, name string) error
 	Remove(hash string) error
 }
 
 type StaticControl interface {
-	SeedStatic(name string, manifestDigest []byte, minReplicas uint32, claim *claimspkg.PublisherClaim) error
+	SeedStatic(name string, manifestDigest []byte, minReplicas uint32) error
 	UnseedStatic(name string) error
 	StaticBlobs() map[string]struct{}
 }
@@ -123,14 +120,12 @@ type Service struct {
 	blobs      BlobsControl
 	static     StaticControl
 	state      StateReader
-	authz      *evaluator.Router
 	shutdown   func()
 	creds      *auth.NodeCredentials
 	transport  TransportInfo
 	metrics    MetricsSource
 	connector  MeshConnector
 	log        *zap.SugaredLogger
-	signPriv   ed25519.PrivateKey
 }
 
 type Option func(*Service)
@@ -140,8 +135,6 @@ func WithCredentials(c *auth.NodeCredentials) Option { return func(s *Service) {
 func WithTransportInfo(t TransportInfo) Option       { return func(s *Service) { s.transport = t } }
 func WithMetricsSource(m MetricsSource) Option       { return func(s *Service) { s.metrics = m } }
 func WithMeshConnector(c MeshConnector) Option       { return func(s *Service) { s.connector = c } }
-func WithAuthzRouter(r *evaluator.Router) Option     { return func(s *Service) { s.authz = r } }
-func WithSigningKey(p ed25519.PrivateKey) Option     { return func(s *Service) { s.signPriv = p } }
 
 func NewService(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, blobs BlobsControl, sc StaticControl, state StateReader, opts ...Option) *Service {
 	s := &Service{
@@ -157,52 +150,6 @@ func NewService(membership MembershipControl, placement PlacementControl, tunnel
 		o(s)
 	}
 	return s
-}
-
-// authorise is the single spec_publish gate entry point for every
-// admin-side publish RPC. A nil router (test constructor without the
-// option) bypasses the gate — the gate itself is the policy surface, so
-// "not configured" means "no policy enforced," not "deny." Denied
-// publishes surface as codes.PermissionDenied; the detailed reason is
-// logged locally and not leaked to the caller.
-func (s *Service) authorise(ctx context.Context, rt evaluator.ResourceType, id string, props *structpb.Struct) error {
-	if s.authz == nil {
-		return nil
-	}
-	var resourceProps map[string]any
-	if props != nil {
-		resourceProps = props.AsMap()
-	}
-	req := evaluator.Request{
-		Subject:  evaluator.Subject{Type: "admin", ID: "local"},
-		Action:   evaluator.Action{Name: "publish"},
-		Resource: evaluator.NewResource(rt, id, resourceProps),
-	}
-	if err := s.authz.Allow(ctx, evaluator.GateSpecPublish, req); err != nil {
-		s.log.Warnw("spec_publish denied", "resource_type", string(rt), "resource_id", id, zap.Error(err))
-		return status.Error(codes.PermissionDenied, "publish denied")
-	}
-	return nil
-}
-
-// signClaim produces a PublisherClaim for the given resource, binding
-// properties to the publisher's signature. Returns nil when no signing
-// key is wired (test constructor or a node without creds) — unsigned
-// specs pass gossip-ingest verification untouched, so this degrades
-// gracefully.
-func (s *Service) signClaim(rt evaluator.ResourceType, id string, props *structpb.Struct) (*claimspkg.PublisherClaim, error) {
-	if s.signPriv == nil {
-		return nil, nil
-	}
-	sig, err := claimspkg.Sign(s.signPriv, rt, id, props)
-	if err != nil {
-		return nil, fmt.Errorf("sign publisher claim: %w", err)
-	}
-	var propMap map[string]any
-	if props != nil {
-		propMap = props.AsMap()
-	}
-	return claimspkg.New(propMap, sig), nil
 }
 
 type Server struct {
@@ -624,11 +571,8 @@ func sortStatusResponse(out *controlv1.GetStatusResponse) {
 	})
 }
 
-func (s *Service) RegisterService(ctx context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
+func (s *Service) RegisterService(_ context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
 	name := serviceNameOrDefault(req.GetName(), req.Port)
-	if err := s.authorise(ctx, evaluator.ResourceService, name, req.GetProperties()); err != nil {
-		return nil, err
-	}
 	if err := s.tunneling.ExposeService(req.Port, name, state.NormaliseProtocol(req.GetProtocol()), req.GetProperties()); err != nil {
 		return nil, s.fail(err, "register service failed")
 	}
@@ -690,45 +634,6 @@ func (s *Service) DisconnectService(_ context.Context, req *controlv1.Disconnect
 	return &controlv1.DisconnectServiceResponse{}, nil
 }
 
-// CheckPolicy runs the request through the live router and returns the
-// decision without dispatching the primitive — a policy-authoring aid. With
-// no router configured, the answer is always allow.
-func (s *Service) CheckPolicy(ctx context.Context, req *controlv1.CheckPolicyRequest) (*controlv1.CheckPolicyResponse, error) {
-	gate := evaluator.GateName(req.GetGate())
-	if !gate.Valid() {
-		return nil, status.Errorf(codes.InvalidArgument, "unknown gate %q", req.GetGate())
-	}
-	if s.authz == nil {
-		return &controlv1.CheckPolicyResponse{Allow: true, Reason: "no router configured; allow-all"}, nil
-	}
-	authReq := evaluator.Request{
-		Subject: evaluator.Subject{
-			Type:       req.GetSubject().GetType(),
-			ID:         req.GetSubject().GetId(),
-			Properties: req.GetSubject().GetProperties().AsMap(),
-		},
-		Action: evaluator.Action{
-			Name:       req.GetAction().GetName(),
-			Properties: req.GetAction().GetProperties().AsMap(),
-		},
-		Resource: evaluator.NewResource(
-			evaluator.ResourceType(req.GetResource().GetType()),
-			req.GetResource().GetId(),
-			req.GetResource().GetProperties().AsMap(),
-		),
-		Context: req.GetContext().AsMap(),
-	}
-	err := s.authz.Allow(ctx, gate, authReq)
-	if err == nil {
-		return &controlv1.CheckPolicyResponse{Allow: true}, nil
-	}
-	var denied *evaluator.DeniedError
-	if errors.As(err, &denied) {
-		return &controlv1.CheckPolicyResponse{Allow: false, Reason: denied.Reason}, nil
-	}
-	return &controlv1.CheckPolicyResponse{Allow: false, Reason: err.Error()}, nil
-}
-
 func (s *Service) DenyPeer(_ context.Context, req *controlv1.DenyPeerRequest) (*controlv1.DenyPeerResponse, error) {
 	if s.creds == nil || s.creds.DelegationKey() == nil {
 		return nil, status.Error(codes.FailedPrecondition, "delegation key not available; this node cannot deny peers")
@@ -747,10 +652,6 @@ func (s *Service) IssueCert(ctx context.Context, req *controlv1.IssueCertRequest
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := s.membership.IssueCert(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), req.GetAdmin(), req.GetAttributes()); err != nil {
-		if errors.Is(err, evaluator.ErrDenied) {
-			s.log.Warnw("cert issuance denied", "peer", types.PeerKeyFromBytes(req.GetPeerPub()).Short(), zap.Error(err))
-			return nil, status.Error(codes.PermissionDenied, "cert issuance denied")
-		}
 		return nil, s.fail(err, "issue cert failed")
 	}
 	return &controlv1.IssueCertResponse{}, nil
@@ -813,12 +714,6 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 		return status.Error(codes.InvalidArgument, "first message must carry header")
 	}
 
-	// Gate on the header before consuming the WASM chunk stream so a
-	// denied caller can't force the daemon to buffer the upload.
-	if err := s.authorise(stream.Context(), evaluator.ResourceSeed, header.GetName(), header.GetProperties()); err != nil {
-		return err
-	}
-
 	var buf bytes.Buffer
 	for {
 		msg, err := stream.Recv()
@@ -848,10 +743,6 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 		name = hash
 	}
 
-	claim, err := s.signClaim(evaluator.ResourceSeed, hash, header.GetProperties())
-	if err != nil {
-		return s.fail(err, "sign workload claim")
-	}
 	spec := state.WorkloadSpec{
 		Hash:        hash,
 		Name:        name,
@@ -860,7 +751,6 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 		Timeout:     time.Duration(header.GetTimeoutMs()) * time.Millisecond,
 		Spread:      header.GetSpread(),
 		LatencySLO:  time.Duration(header.GetLatencySloMs()) * time.Millisecond,
-		Claim:       claim,
 	}
 	if err := s.placement.Seed(wasmBytes, spec); err != nil {
 		switch {
@@ -890,9 +780,6 @@ func (s *Service) FetchBlob(ctx context.Context, req *controlv1.FetchBlobRequest
 	}
 	if err := s.blobs.Fetch(ctx, hash, peers); err != nil {
 		s.log.Warnw("fetch blob failed", "hash", types.ShortHash(hash), "err", err)
-		if errors.Is(err, blobs.ErrUnauthorized) {
-			return nil, status.Error(codes.PermissionDenied, "fetch blob denied by holder")
-		}
 		return nil, status.Error(codes.NotFound, "fetch blob")
 	}
 	return &controlv1.FetchBlobResponse{}, nil
@@ -909,15 +796,6 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 	header := first.GetHeader()
 	if header == nil {
 		return status.Error(codes.InvalidArgument, "first message must carry header")
-	}
-
-	// Only named uploads run the publish gate — anonymous ones have
-	// no policy-relevant identifier yet.
-	name := header.GetName()
-	if name != "" {
-		if err := s.authorise(stream.Context(), evaluator.ResourceBlob, name, header.GetProperties()); err != nil {
-			return err
-		}
 	}
 
 	var buf bytes.Buffer
@@ -943,14 +821,11 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 
 	// Default an unnamed upload to a hash-prefix identifier so it
 	// always gets a BlobSpec and the janitor's KeepSet protects it.
+	name := header.GetName()
 	if name == "" {
 		name = types.ShortHash(hash)
 	}
-	claim, err := s.signClaim(evaluator.ResourceBlob, hash, header.GetProperties())
-	if err != nil {
-		return s.fail(err, "sign blob claim")
-	}
-	if err := s.blobs.SetName(hash, name, claim); err != nil {
+	if err := s.blobs.SetName(hash, name); err != nil {
 		s.log.Warnw("set blob name failed", "hash", types.ShortHash(hash), "name", name, "err", err)
 		return status.Error(codes.Internal, "set blob name")
 	}
@@ -969,18 +844,11 @@ func (s *Service) RemoveBlob(_ context.Context, req *controlv1.RemoveBlobRequest
 	return &controlv1.RemoveBlobResponse{}, nil
 }
 
-func (s *Service) SeedStatic(ctx context.Context, req *controlv1.SeedStaticRequest) (*controlv1.SeedStaticResponse, error) {
+func (s *Service) SeedStatic(_ context.Context, req *controlv1.SeedStaticRequest) (*controlv1.SeedStaticResponse, error) {
 	if s.creds == nil || s.creds.DelegationKey() == nil {
 		return nil, status.Error(codes.PermissionDenied, "only admin nodes can seed static sites")
 	}
-	if err := s.authorise(ctx, evaluator.ResourceStatic, req.GetName(), req.GetProperties()); err != nil {
-		return nil, err
-	}
-	claim, err := s.signClaim(evaluator.ResourceStatic, req.GetName(), req.GetProperties())
-	if err != nil {
-		return nil, s.fail(err, "sign static claim")
-	}
-	if err := s.static.SeedStatic(req.GetName(), req.GetManifestDigest(), req.GetMinReplicas(), claim); err != nil {
+	if err := s.static.SeedStatic(req.GetName(), req.GetManifestDigest(), req.GetMinReplicas()); err != nil {
 		return nil, s.fail(err, "seed static")
 	}
 	return &controlv1.SeedStaticResponse{}, nil
@@ -1111,8 +979,6 @@ func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadR
 			return nil, status.Error(codes.NotFound, "no such workload")
 		case errors.Is(err, placement.ErrNotRunning):
 			return nil, status.Error(codes.NotFound, "workload not running on any reachable node")
-		case errors.Is(err, placement.ErrUnauthorized):
-			return nil, status.Error(codes.PermissionDenied, "workload call denied by holder")
 		case errors.Is(err, placement.ErrCycle):
 			return nil, status.Error(codes.FailedPrecondition, "call cycle detected")
 		case errors.Is(err, placement.ErrRelayOnly):

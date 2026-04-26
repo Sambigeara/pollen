@@ -44,23 +44,7 @@ type Decision struct {
 // load.
 type ResourceType string
 
-const (
-	ResourceBlob    ResourceType = "blob"
-	ResourceSeed    ResourceType = "seed"
-	ResourceStatic  ResourceType = "static"
-	ResourceService ResourceType = "service"
-	ResourceCert    ResourceType = "cert"
-)
-
-var allResourceTypes = []ResourceType{
-	ResourceBlob,
-	ResourceSeed,
-	ResourceStatic,
-	ResourceService,
-	ResourceCert,
-}
-
-func AllResourceTypes() []ResourceType { return slices.Clone(allResourceTypes) }
+const ResourceService ResourceType = "service"
 
 func NewResource(rt ResourceType, id string, props map[string]any) Resource {
 	return Resource{Type: rt, ID: id, Properties: props}
@@ -70,23 +54,9 @@ func NewResource(rt ResourceType, id string, props map[string]any) Resource {
 // unknown names fail daemon startup rather than silently falling through.
 type GateName string
 
-const (
-	GateBlobFetch      GateName = "blob_fetch"
-	GateServiceConnect GateName = "service_connect"
-	GateWorkloadCall   GateName = "workload_call"
-	GateSpecPublish    GateName = "spec_publish"
-	GateGrantIssue     GateName = "grant_issue"
-	GateSeedPlacement  GateName = "seed_placement"
-)
+const GateServiceConnect GateName = "service_connect"
 
-var allGateNames = []GateName{
-	GateBlobFetch,
-	GateServiceConnect,
-	GateWorkloadCall,
-	GateSpecPublish,
-	GateGrantIssue,
-	GateSeedPlacement,
-}
+var allGateNames = []GateName{GateServiceConnect}
 
 func AllGateNames() []GateName { return slices.Clone(allGateNames) }
 

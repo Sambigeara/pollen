@@ -41,7 +41,7 @@ func routerWith(t *testing.T, eval evaluator.Evaluator, opts evaluator.GateOptio
 	t.Helper()
 	r, err := evaluator.NewRouter(
 		evaluator.Config{
-			Gates:       map[evaluator.GateName]string{evaluator.GateBlobFetch: "fake"},
+			Gates:       map[evaluator.GateName]string{evaluator.GateServiceConnect: "fake"},
 			GateOptions: opts,
 		},
 		evaluator.WithFactory("fake", func(string) (evaluator.Evaluator, error) { return eval, nil }),
@@ -59,7 +59,7 @@ func TestAllowAll(t *testing.T) {
 func TestGateAllow(t *testing.T) {
 	e := &fakeEval{decisions: []evaluator.Decision{{Decision: true}}}
 	r := routerWith(t, e, evaluator.GateOptions{})
-	require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, evaluator.Request{}))
+	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, evaluator.Request{}))
 	require.Equal(t, 1, e.calls)
 }
 
@@ -67,7 +67,7 @@ func TestGateDenyProducesDeniedError(t *testing.T) {
 	e := &fakeEval{decisions: []evaluator.Decision{{Decision: false, Context: map[string]any{"reason_user": "banned"}}}}
 	r := routerWith(t, e, evaluator.GateOptions{})
 
-	err := r.Allow(context.Background(), evaluator.GateBlobFetch, evaluator.Request{})
+	err := r.Allow(context.Background(), evaluator.GateServiceConnect, evaluator.Request{})
 	require.ErrorIs(t, err, evaluator.ErrDenied)
 
 	var denied *evaluator.DeniedError
@@ -83,10 +83,10 @@ func TestGateCacheHit(t *testing.T) {
 	req := evaluator.Request{
 		Subject:  evaluator.Subject{Type: "peer", ID: "abc"},
 		Action:   evaluator.Action{Name: "fetch"},
-		Resource: evaluator.NewResource(evaluator.ResourceBlob, "hash", nil),
+		Resource: evaluator.NewResource(evaluator.ResourceService, "hash", nil),
 	}
-	require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, req))
-	require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, req))
+	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, req))
+	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, req))
 	require.Equal(t, 1, e.calls, "second call should be served from cache")
 }
 
@@ -101,9 +101,9 @@ func TestGateCacheExpires(t *testing.T) {
 	r := routerWith(t, e, opts)
 
 	req := evaluator.Request{Subject: evaluator.Subject{ID: "abc"}, Action: evaluator.Action{Name: "fetch"}}
-	require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, req))
+	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, req))
 	clock = clock.Add(2 * time.Second)
-	require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, req))
+	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, req))
 	require.Equal(t, 2, e.calls, "expired cache entry should force re-evaluation")
 }
 
@@ -113,9 +113,9 @@ func TestRouterInvalidateSubject(t *testing.T) {
 	r := routerWith(t, e, opts)
 
 	req := evaluator.Request{Subject: evaluator.Subject{ID: "banned"}, Action: evaluator.Action{Name: "fetch"}}
-	require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, req))
+	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, req))
 	r.InvalidateSubject("banned")
-	require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, req))
+	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, req))
 	require.Equal(t, 2, e.calls, "invalidation should drop the cached decision")
 }
 
@@ -128,7 +128,7 @@ func TestGateFallbackOnEvaluatorError(t *testing.T) {
 	}
 	r := routerWith(t, e, opts)
 
-	err := r.Allow(context.Background(), evaluator.GateBlobFetch, evaluator.Request{})
+	err := r.Allow(context.Background(), evaluator.GateServiceConnect, evaluator.Request{})
 	require.Error(t, err)
 	require.ErrorIs(t, err, evaluator.ErrDenied)
 	require.Equal(t, []string{"internal"}, metrics.errorReasons,
@@ -149,10 +149,10 @@ func TestGateDoesNotCacheFallback(t *testing.T) {
 
 	req := evaluator.Request{Subject: evaluator.Subject{ID: "x"}, Action: evaluator.Action{Name: "fetch"}}
 
-	err := r.Allow(context.Background(), evaluator.GateBlobFetch, req)
+	err := r.Allow(context.Background(), evaluator.GateServiceConnect, req)
 	require.ErrorIs(t, err, evaluator.ErrDenied, "fallback deny observed after PDP error")
 
-	require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, req),
+	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, req),
 		"next call must re-evaluate and see allow — fallback must not be cached")
 }
 
@@ -197,7 +197,7 @@ func TestGateObserveError_ClosedSetClassification(t *testing.T) {
 			metrics := &recordingMetrics{}
 			e := &fakeEval{err: tc.err}
 			r := routerWith(t, e, evaluator.GateOptions{Metrics: metrics})
-			_ = r.Allow(context.Background(), evaluator.GateBlobFetch, evaluator.Request{})
+			_ = r.Allow(context.Background(), evaluator.GateServiceConnect, evaluator.Request{})
 			require.Equal(t, []string{tc.reason}, metrics.errorReasons)
 		})
 	}
@@ -214,13 +214,13 @@ func TestGateDenyObserverFires(t *testing.T) {
 			OnDeny: func(ev evaluator.DenyEvent) { got = append(got, ev) },
 		})
 
-		err := r.Allow(context.Background(), evaluator.GateBlobFetch, evaluator.Request{
+		err := r.Allow(context.Background(), evaluator.GateServiceConnect, evaluator.Request{
 			Subject:  evaluator.Subject{Type: "peer", ID: "abc"},
-			Resource: evaluator.NewResource(evaluator.ResourceBlob, "h", nil),
+			Resource: evaluator.NewResource(evaluator.ResourceService, "h", nil),
 		})
 		require.ErrorIs(t, err, evaluator.ErrDenied)
 		require.Len(t, got, 1)
-		require.Equal(t, evaluator.GateBlobFetch, got[0].Gate)
+		require.Equal(t, evaluator.GateServiceConnect, got[0].Gate)
 		require.Equal(t, "nope", got[0].Reason)
 		require.Equal(t, "abc", got[0].Request.Subject.ID)
 		require.False(t, got[0].Cached)
@@ -237,8 +237,8 @@ func TestGateDenyObserverFires(t *testing.T) {
 		})
 		req := evaluator.Request{Subject: evaluator.Subject{ID: "x"}, Action: evaluator.Action{Name: "fetch"}}
 
-		require.ErrorIs(t, r.Allow(context.Background(), evaluator.GateBlobFetch, req), evaluator.ErrDenied)
-		require.ErrorIs(t, r.Allow(context.Background(), evaluator.GateBlobFetch, req), evaluator.ErrDenied)
+		require.ErrorIs(t, r.Allow(context.Background(), evaluator.GateServiceConnect, req), evaluator.ErrDenied)
+		require.ErrorIs(t, r.Allow(context.Background(), evaluator.GateServiceConnect, req), evaluator.ErrDenied)
 		require.Equal(t, 1, e.calls, "second call is cached")
 		require.Len(t, got, 2, "observer fires on every deny including cache hits")
 		require.False(t, got[0].Cached)
@@ -253,7 +253,7 @@ func TestGateDenyObserverFires(t *testing.T) {
 			OnDeny:   func(ev evaluator.DenyEvent) { got = append(got, ev) },
 		})
 
-		require.ErrorIs(t, r.Allow(context.Background(), evaluator.GateBlobFetch, evaluator.Request{}), evaluator.ErrDenied)
+		require.ErrorIs(t, r.Allow(context.Background(), evaluator.GateServiceConnect, evaluator.Request{}), evaluator.ErrDenied)
 		require.Len(t, got, 1)
 		require.True(t, got[0].Fallback)
 		require.Equal(t, "fallback", got[0].Reason)
@@ -266,15 +266,15 @@ func TestGateDenyObserverFires(t *testing.T) {
 			OnDeny: func(ev evaluator.DenyEvent) { got = append(got, ev) },
 		})
 
-		require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, evaluator.Request{}))
+		require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, evaluator.Request{}))
 		require.Empty(t, got, "allow decisions must not emit deny events")
 	})
 }
 
 func TestNewResource(t *testing.T) {
-	got := evaluator.NewResource(evaluator.ResourceBlob, "hash", map[string]any{"tier": "cold"})
+	got := evaluator.NewResource(evaluator.ResourceService, "hash", map[string]any{"tier": "cold"})
 	require.Equal(t, evaluator.Resource{
-		Type:       evaluator.ResourceBlob,
+		Type:       evaluator.ResourceService,
 		ID:         "hash",
 		Properties: map[string]any{"tier": "cold"},
 	}, got)
@@ -283,7 +283,7 @@ func TestNewResource(t *testing.T) {
 func TestRouterPanicsOnFactoryReturnsNil(t *testing.T) {
 	require.Panics(t, func() {
 		_, _ = evaluator.NewRouter(
-			evaluator.Config{Gates: map[evaluator.GateName]string{evaluator.GateBlobFetch: "bogus"}},
+			evaluator.Config{Gates: map[evaluator.GateName]string{evaluator.GateServiceConnect: "bogus"}},
 			evaluator.WithFactory("bogus", func(string) (evaluator.Evaluator, error) { return nil, nil }),
 		)
 	})
@@ -320,12 +320,12 @@ func TestRouterFactoryRegistration(t *testing.T) {
 		return evaluator.AllowAll{}, nil
 	}
 	r, err := evaluator.NewRouter(
-		evaluator.Config{Gates: map[evaluator.GateName]string{evaluator.GateBlobFetch: "seed/my-pdp"}},
+		evaluator.Config{Gates: map[evaluator.GateName]string{evaluator.GateServiceConnect: "seed/my-pdp"}},
 		evaluator.WithFactory("seed", factory),
 	)
 	require.NoError(t, err)
 	require.True(t, called)
-	require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, evaluator.Request{}))
+	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, evaluator.Request{}))
 }
 
 // InvalidateSubject on the router must fan out to every cached gate —
@@ -335,12 +335,12 @@ func TestRouterInvalidateSubjectPropagates(t *testing.T) {
 	r := routerWith(t, e, evaluator.GateOptions{TTL: time.Minute, MaxCacheEntries: 10})
 
 	req := evaluator.Request{Subject: evaluator.Subject{ID: "x"}, Action: evaluator.Action{Name: "fetch"}}
-	require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, req))
-	require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, req))
+	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, req))
+	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, req))
 	require.Equal(t, 1, e.calls, "second call is served from cache")
 
 	r.InvalidateSubject("x")
-	require.NoError(t, r.Allow(context.Background(), evaluator.GateBlobFetch, req))
+	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, req))
 	require.Equal(t, 2, e.calls, "router.InvalidateSubject drops the cached decision")
 }
 
@@ -356,7 +356,7 @@ func TestRequestMarshalsAsConventionalShape(t *testing.T) {
 	req := evaluator.Request{
 		Subject:  evaluator.Subject{Type: "peer", ID: "abc", Properties: map[string]any{"role": "editor"}},
 		Action:   evaluator.Action{Name: "fetch"},
-		Resource: evaluator.NewResource(evaluator.ResourceBlob, "hash", nil),
+		Resource: evaluator.NewResource(evaluator.ResourceService, "hash", nil),
 	}
 	b, err := json.Marshal(req)
 	require.NoError(t, err)
@@ -372,7 +372,7 @@ func TestRequestMarshalsAsConventionalShape(t *testing.T) {
 	require.Equal(t, "editor", subject["properties"].(map[string]any)["role"])
 
 	resource := got["resource"].(map[string]any)
-	require.Equal(t, "blob", resource["type"], "ResourceType must marshal as its string form")
+	require.Equal(t, "service", resource["type"], "ResourceType must marshal as its string form")
 }
 
 // TestRequestRoundTripsResourceType verifies Resource.Type survives a
@@ -382,12 +382,12 @@ func TestRequestRoundTripsResourceType(t *testing.T) {
 	req := evaluator.Request{
 		Subject:  evaluator.Subject{Type: "peer", ID: "abc"},
 		Action:   evaluator.Action{Name: "fetch"},
-		Resource: evaluator.NewResource(evaluator.ResourceBlob, "hash", nil),
+		Resource: evaluator.NewResource(evaluator.ResourceService, "hash", nil),
 	}
 	b, err := json.Marshal(req)
 	require.NoError(t, err)
 
 	var back evaluator.Request
 	require.NoError(t, json.Unmarshal(b, &back))
-	require.Equal(t, evaluator.ResourceBlob, back.Resource.Type)
+	require.Equal(t, evaluator.ResourceService, back.Resource.Type)
 }

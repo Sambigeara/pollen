@@ -17,33 +17,16 @@ import (
 )
 
 const (
-	statusOK           byte = 0
-	statusNotFound     byte = 1
-	statusError        byte = 2
-	statusCycle        byte = 4
-	statusUnauthorized byte = 5
+	statusOK       byte = 0
+	statusNotFound byte = 1
+	statusError    byte = 2
+	statusCycle    byte = 4
 
 	callerInfoLenSize = 2
 	hashLen           = 64
 	maxFuncLen        = 255
 	maxInputLen       = 4 << 20 // 4 MiB
 )
-
-// StatusUnauthorized is exposed so supervisor can write a denial in the
-// same wire shape the serve path would use for not-found.
-const StatusUnauthorized = statusUnauthorized
-
-// WriteStatus writes a single-status response with no body. Supervisor
-// uses this to surface workload_call denials before the placement layer
-// has a chance to dispatch.
-func WriteStatus(w io.Writer, status byte) {
-	writeResponse(w, status, nil)
-}
-
-// ErrUnauthorized is returned by invokeOverStream when the holder peer
-// rejects the call at the supervisor's gate. Control handlers translate
-// it to codes.PermissionDenied.
-var ErrUnauthorized = errors.New("workload call denied by holder")
 
 type workloadInvoker interface {
 	Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
@@ -63,11 +46,8 @@ func watchStream(ctx context.Context, stream io.Closer) func() {
 }
 
 // ReadHeader reads the caller-info envelope, seed hash, and function
-// name from an inbound workload stream. Supervisor's dispatch loop
-// calls this before the workload_call gate so the decision can
-// reference the seed identity and, when the envelope carries
-// OnBehalfOf, the calling seed. The returned CallerInfo.PeerKey is
-// always the transport-authenticated identity — wire-reported peer
+// name from an inbound workload stream. The returned CallerInfo.PeerKey
+// is always the transport-authenticated identity — wire-reported peer
 // keys are ignored so a malicious peer can't spoof attribution.
 func ReadHeader(r io.Reader, peer types.PeerKey) (wasm.CallerInfo, string, string, error) {
 	info := wasm.CallerInfo{PeerKey: peer}
@@ -83,7 +63,6 @@ func ReadHeader(r io.Reader, peer types.PeerKey) (wasm.CallerInfo, string, strin
 		}
 		if wireInfo, ok := wasm.CallerInfoFromJSON(callerBuf); ok {
 			info.Attributes = wireInfo.Attributes
-			info.OnBehalfOf = wireInfo.OnBehalfOf
 			info.DeadlineUnixMs = wireInfo.DeadlineUnixMs
 		}
 	}
@@ -245,8 +224,6 @@ func invokeOverStream(ctx context.Context, stream io.ReadWriteCloser, hash, func
 		return nil, fmt.Errorf("invoke: %s: %w", string(body), ErrCycle)
 	case statusError:
 		return nil, fmt.Errorf("invoke: %s: %w", string(body), ErrWorkloadFailed)
-	case statusUnauthorized:
-		return nil, ErrUnauthorized
 	default:
 		return nil, fmt.Errorf("invoke: unknown status %d", statusBuf[0])
 	}

@@ -64,7 +64,7 @@ func watchSIGHUPReload(ctx context.Context, reload func() error, log *zap.Sugare
 // configured — supervisor then wires an allow-all default. The
 // reload closure is non-nil only when matcher rules are in use, so
 // the SIGHUP handler can re-read the file in place without restart.
-func buildAuthzRouter(cfg config.Evaluator, seedCaller evaluator.CallerFn) (*evaluator.Router, func() error, error) {
+func buildAuthzRouter(cfg config.Evaluator) (*evaluator.Router, func() error, error) {
 	if cfg.Default == "" && len(cfg.Gates) == 0 && cfg.MatcherRules == "" {
 		return nil, nil, nil
 	}
@@ -86,7 +86,6 @@ func buildAuthzRouter(cfg config.Evaluator, seedCaller evaluator.CallerFn) (*eva
 		Default:          cfg.Default,
 		Gates:            gates,
 		AttributeMatcher: matcherEval,
-		SeedCaller:       seedCaller,
 		OnDeny:           logDeny(zap.S().Named("authz")),
 	})
 	if err != nil {
@@ -97,12 +96,11 @@ func buildAuthzRouter(cfg config.Evaluator, seedCaller evaluator.CallerFn) (*eva
 
 // logDeny builds the router's DenyObserver sink that structured-logs
 // every gate denial. Info level: denies are normal policy operation,
-// not errors. Stream-based gates (service_connect, workload_call,
-// blob_fetch) have no other operator-visible signal, so this log is
-// their only feedback surface short of the status API. Fallback
-// denials (evaluator errored, gate applied its configured fallback)
-// are logged at warn so a broken PDP surfaces distinctly from a
-// legitimate deny.
+// not errors. service_connect has no other operator-visible signal, so
+// this log is its only feedback surface short of the status API.
+// Fallback denials (evaluator errored, gate applied its configured
+// fallback) are logged at warn so a broken PDP surfaces distinctly
+// from a legitimate deny.
 func logDeny(log *zap.SugaredLogger) evaluator.DenyObserver {
 	return func(e evaluator.DenyEvent) {
 		fields := []any{
@@ -344,12 +342,7 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		initialServices = append(initialServices, supervisor.ServiceEntry{Name: svc.Name, Port: svc.Port, Protocol: configProtocolToProto(svc.Protocol), Properties: props})
 	}
 
-	// Written by SeedCallerSink during supervisor.New, before n.Run
-	// spawns the goroutines that read it via the closure below.
-	var seedCaller evaluator.Caller
-	authzRouter, reloadMatcher, err := buildAuthzRouter(env.cfg.Evaluator, func() evaluator.Caller {
-		return seedCaller
-	})
+	authzRouter, reloadMatcher, err := buildAuthzRouter(env.cfg.Evaluator)
 	if err != nil {
 		return err
 	}
@@ -382,7 +375,6 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		MemBudgetPercent:   env.cfg.Resources.MemPercent,
 		IdleInstanceTTL:    env.cfg.Placement.IdleInstanceTTL,
 		AuthzRouter:        authzRouter,
-		SeedCallerSink:     func(c evaluator.Caller) { seedCaller = c },
 		RelayOnly:          env.cfg.RelayOnly,
 	}, creds, inviteConsumer)
 	if err != nil {

@@ -3,18 +3,13 @@
 
 package state
 
-import (
-	"time"
-
-	"github.com/sambigeara/pollen/pkg/claims"
-)
+import "time"
 
 // WorkloadSpec crosses package boundaries by value; the proto representation
 // stays internal to state. Timeout and LatencySLO are time.Duration in-domain
 // but uint32 ms on the wire — sub-millisecond or out-of-range values are
 // clamped at the translation boundary.
 type WorkloadSpec struct {
-	Claim       *claims.PublisherClaim
 	Hash        string
 	Name        string
 	MemoryBytes uint64
@@ -63,7 +58,6 @@ func (m SeedMetrics) IsZero() bool {
 }
 
 type StaticSpec struct {
-	Claim          *claims.PublisherClaim
 	Name           string
 	ManifestDigest string
 	MinReplicas    uint32
@@ -74,7 +68,6 @@ type StaticSpec struct {
 // re-publishing the same digest under a new name overwrites the previous
 // name for that publisher.
 type BlobSpec struct {
-	Claim  *claims.PublisherClaim
 	Name   string
 	Digest string
 }

@@ -49,13 +49,9 @@ func ExecutingFunctionFromContext(ctx context.Context) string {
 }
 
 // CallerInfo carries the peer's identity, cert attributes, and propagated
-// deadline. OnBehalfOf names the seed the caller is acting for on this hop,
-// letting the receiver gate on seed identity rather than the host peer; it
-// is empty on the first hop and validated against cluster state before any
-// seed-typed attribution is trusted (see evaluator.SubjectFromCallerInfo).
+// deadline.
 type CallerInfo struct {
 	Attributes     map[string]any
-	OnBehalfOf     string
 	DeadlineUnixMs int64
 	PeerKey        types.PeerKey
 }
@@ -74,19 +70,17 @@ func CallerInfoFromContext(ctx context.Context) (CallerInfo, bool) {
 type callerInfoJSON struct {
 	Attributes     map[string]any `json:"attributes,omitempty"`
 	PeerKey        string         `json:"peerKey,omitempty"`
-	OnBehalfOf     string         `json:"onBehalfOf,omitempty"`
 	DeadlineUnixMs int64          `json:"deadlineUnixMs,omitempty"`
 }
 
 // MarshalCallerInfo serialises CallerInfo to JSON. Returns nil if every
 // field is zero — callers with nothing to say send no caller block.
 func MarshalCallerInfo(info CallerInfo) []byte {
-	if info.PeerKey == (types.PeerKey{}) && info.Attributes == nil && info.DeadlineUnixMs == 0 && info.OnBehalfOf == "" {
+	if info.PeerKey == (types.PeerKey{}) && info.Attributes == nil && info.DeadlineUnixMs == 0 {
 		return nil
 	}
 	j := callerInfoJSON{
 		Attributes:     info.Attributes,
-		OnBehalfOf:     info.OnBehalfOf,
 		DeadlineUnixMs: info.DeadlineUnixMs,
 	}
 	if info.PeerKey != (types.PeerKey{}) {
@@ -110,7 +104,6 @@ func CallerInfoFromJSON(data []byte) (CallerInfo, bool) {
 	}
 	info := CallerInfo{
 		Attributes:     j.Attributes,
-		OnBehalfOf:     j.OnBehalfOf,
 		DeadlineUnixMs: j.DeadlineUnixMs,
 	}
 	if j.PeerKey != "" {

@@ -80,7 +80,6 @@ the blob remains anonymous (addressed only by hash).`,
 	seedCmd.Flags().String("memory", "", "memory limit, e.g. 64MiB, 128M (alias --mem; workload only; default 64MiB)")
 	seedCmd.Flags().Duration("timeout", 0, "per-invocation timeout (workload only, e.g. 500ms, 5s)")
 	seedCmd.Flags().Duration("latency-slo", 0, "caller-perspective latency SLO; drives autoscale via burn rate (workload only)")
-	seedCmd.Flags().StringArray("prop", nil, "Publisher properties: key=value, JSON, or - for stdin")
 	seedCmd.Example = `  pln seed ./hello.wasm                     # workload, named "hello"
   pln seed ./hello.wasm greeter --everywhere # workload on every node
   pln seed ./public my-site                 # static site
@@ -196,10 +195,6 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string) error {
 	}
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	latencySlo, _ := cmd.Flags().GetDuration("latency-slo")
-	props, err := parseProperties(cmd)
-	if err != nil {
-		return err
-	}
 
 	var spread float32
 	if everywhere {
@@ -216,7 +211,6 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string) error {
 				MemoryBytes:  memoryBytes,
 				TimeoutMs:    uint32(timeout.Milliseconds()),
 				LatencySloMs: uint32(latencySlo.Milliseconds()),
-				Properties:   props,
 			},
 		},
 	}); err != nil {
@@ -304,15 +298,10 @@ func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string) error {
 	if cmd.Flags().Changed("min-replicas") {
 		minReplicas, _ = cmd.Flags().GetUint32("min-replicas")
 	}
-	props, err := parseProperties(cmd)
-	if err != nil {
-		return err
-	}
 	if _, err := env.client.SeedStatic(cmd.Context(), connect.NewRequest(&controlv1.SeedStaticRequest{
 		Name:           name,
 		ManifestDigest: manifestDigest,
 		MinReplicas:    minReplicas,
-		Properties:     props,
 	})); err != nil {
 		return err
 	}
@@ -337,11 +326,6 @@ func seedBlob(cmd *cobra.Command, env *cliEnv, source, name string) error {
 	header := &controlv1.UploadBlobHeader{}
 	if name != "" {
 		header.Name = &name
-		props, err := parseProperties(cmd)
-		if err != nil {
-			return err
-		}
-		header.Properties = props
 	}
 
 	hash, err := uploadBlob(cmd, env, header, r)

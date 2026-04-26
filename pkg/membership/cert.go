@@ -16,7 +16,6 @@ import (
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
-	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -196,23 +195,6 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 		notAfter = accessDeadline
 	}
 
-	if s.authz != nil {
-		var props map[string]any
-		if caps.GetAttributes() != nil {
-			props = caps.GetAttributes().AsMap()
-		}
-		evalReq := evaluator.Request{
-			Subject:  evaluator.Subject{Type: "peer", ID: from.String(), Properties: props},
-			Action:   evaluator.Action{Name: "renew"},
-			Resource: evaluator.NewResource(evaluator.ResourceCert, from.String(), props),
-		}
-		if err := s.authz.Allow(ctx, evaluator.GateGrantIssue, evalReq); err != nil {
-			s.log.Infow("cert renewal denied by grant_issue gate", "peer", from.Short(), "err", err)
-			sendReject("denied by policy")
-			return
-		}
-	}
-
 	newCert, err := signer.IssueMemberCert(
 		req.GetPeerPub(),
 		caps,
@@ -240,21 +222,6 @@ func (s *Service) IssueCert(ctx context.Context, peerKey types.PeerKey, admin bo
 	signer := s.creds.DelegationKey()
 	if signer == nil || !signer.IsRoot() {
 		return errors.New("only root admin can push certificates")
-	}
-
-	if s.authz != nil {
-		var props map[string]any
-		if attributes != nil {
-			props = attributes.AsMap()
-		}
-		evalReq := evaluator.Request{
-			Subject:  evaluator.Subject{Type: "peer", ID: peerKey.String(), Properties: props},
-			Action:   evaluator.Action{Name: "issue"},
-			Resource: evaluator.NewResource(evaluator.ResourceCert, peerKey.String(), props),
-		}
-		if err := s.authz.Allow(ctx, evaluator.GateGrantIssue, evalReq); err != nil {
-			return fmt.Errorf("grant_issue denied: %w", err)
-		}
 	}
 
 	caps := auth.LeafCapabilities()

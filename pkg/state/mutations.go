@@ -401,7 +401,6 @@ func (s *store) SetStaticSpec(spec StaticSpec) ([]Event, error) {
 			Name:           name,
 			ManifestDigest: digest,
 			MinReplicas:    spec.MinReplicas,
-			PublisherClaim: claimToProto(spec.Claim),
 		}
 		if ev, ok := rec.log[attrKey{kind: attrStaticSpec, name: name}]; ok && !ev.Deleted && proto.Equal(ev.GetStaticSpec(), owned) {
 			return nil, nil
@@ -448,9 +447,8 @@ func (s *store) SetBlobSpec(spec BlobSpec) ([]Event, error) {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, spec.Digest)
 	}
 	owned := &statev1.BlobSpecChange{
-		Name:           spec.Name,
-		Digest:         digest,
-		PublisherClaim: claimToProto(spec.Claim),
+		Name:   spec.Name,
+		Digest: digest,
 	}
 	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
 		key := attrKey{kind: attrBlobSpec, name: spec.Digest}

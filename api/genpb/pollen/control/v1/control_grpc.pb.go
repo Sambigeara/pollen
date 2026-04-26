@@ -42,7 +42,6 @@ const (
 	ControlService_SeedStatic_FullMethodName        = "/pollen.control.v1.ControlService/SeedStatic"
 	ControlService_UnseedStatic_FullMethodName      = "/pollen.control.v1.ControlService/UnseedStatic"
 	ControlService_ListStatic_FullMethodName        = "/pollen.control.v1.ControlService/ListStatic"
-	ControlService_CheckPolicy_FullMethodName       = "/pollen.control.v1.ControlService/CheckPolicy"
 )
 
 // ControlServiceClient is the client API for ControlService service.
@@ -69,7 +68,6 @@ type ControlServiceClient interface {
 	SeedStatic(ctx context.Context, in *SeedStaticRequest, opts ...grpc.CallOption) (*SeedStaticResponse, error)
 	UnseedStatic(ctx context.Context, in *UnseedStaticRequest, opts ...grpc.CallOption) (*UnseedStaticResponse, error)
 	ListStatic(ctx context.Context, in *ListStaticRequest, opts ...grpc.CallOption) (*ListStaticResponse, error)
-	CheckPolicy(ctx context.Context, in *CheckPolicyRequest, opts ...grpc.CallOption) (*CheckPolicyResponse, error)
 }
 
 type controlServiceClient struct {
@@ -286,16 +284,6 @@ func (c *controlServiceClient) ListStatic(ctx context.Context, in *ListStaticReq
 	return out, nil
 }
 
-func (c *controlServiceClient) CheckPolicy(ctx context.Context, in *CheckPolicyRequest, opts ...grpc.CallOption) (*CheckPolicyResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CheckPolicyResponse)
-	err := c.cc.Invoke(ctx, ControlService_CheckPolicy_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // ControlServiceServer is the server API for ControlService service.
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
@@ -320,7 +308,6 @@ type ControlServiceServer interface {
 	SeedStatic(context.Context, *SeedStaticRequest) (*SeedStaticResponse, error)
 	UnseedStatic(context.Context, *UnseedStaticRequest) (*UnseedStaticResponse, error)
 	ListStatic(context.Context, *ListStaticRequest) (*ListStaticResponse, error)
-	CheckPolicy(context.Context, *CheckPolicyRequest) (*CheckPolicyResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
 
@@ -390,9 +377,6 @@ func (UnimplementedControlServiceServer) UnseedStatic(context.Context, *UnseedSt
 }
 func (UnimplementedControlServiceServer) ListStatic(context.Context, *ListStaticRequest) (*ListStaticResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListStatic not implemented")
-}
-func (UnimplementedControlServiceServer) CheckPolicy(context.Context, *CheckPolicyRequest) (*CheckPolicyResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CheckPolicy not implemented")
 }
 func (UnimplementedControlServiceServer) mustEmbedUnimplementedControlServiceServer() {}
 func (UnimplementedControlServiceServer) testEmbeddedByValue()                        {}
@@ -753,24 +737,6 @@ func _ControlService_ListStatic_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ControlService_CheckPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CheckPolicyRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ControlServiceServer).CheckPolicy(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: ControlService_CheckPolicy_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlServiceServer).CheckPolicy(ctx, req.(*CheckPolicyRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 // ControlService_ServiceDesc is the grpc.ServiceDesc for ControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -849,10 +815,6 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListStatic",
 			Handler:    _ControlService_ListStatic_Handler,
-		},
-		{
-			MethodName: "CheckPolicy",
-			Handler:    _ControlService_CheckPolicy_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

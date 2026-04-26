@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sambigeara/pollen/pkg/claims"
-	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
@@ -150,96 +148,11 @@ func TestExecuteClaim_SpecRemovedDuringFetch(t *testing.T) {
 	}
 	wm := &mockWorkloads{}
 
-	r := newReconciler(local, ms, wm, &mockBlobs{midFlight: func() { ms.removeSpec(hash) }}, newUtilisationTracker(), newGateRegistry(16), nil, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, wm, &mockBlobs{midFlight: func() { ms.removeSpec(hash) }}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.executeClaim(t.Context(), hash, 1, []types.PeerKey{local})
 
 	require.False(t, wm.seeded.Load(), "should not seed when spec was removed")
 	require.False(t, ms.wasClaimed(hash), "should not set claim when spec was removed")
-}
-
-func TestExecuteClaim_DeniedBySeedPlacementGate(t *testing.T) {
-	local := peerKey(1)
-	hash := "workload-denied"
-
-	ms := &mockStore{
-		specs: map[string]state.WorkloadSpecView{
-			hash: {
-				Spec:      state.WorkloadSpec{Hash: hash, MinReplicas: 1},
-				Publisher: local,
-			},
-		},
-		claims:   map[string]map[types.PeerKey]struct{}{},
-		allPeers: []types.PeerKey{local},
-	}
-	wm := &mockWorkloads{}
-
-	router, err := evaluator.NewRouter(
-		evaluator.Config{Default: "deny_all"},
-		evaluator.WithFactory("deny_all", func(string) (evaluator.Evaluator, error) {
-			return denyAllEval{}, nil
-		}),
-	)
-	require.NoError(t, err)
-
-	r := newReconciler(local, ms, wm, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), router, zap.NewNop().Sugar(), &sync.WaitGroup{})
-	r.executeClaim(t.Context(), hash, 1, []types.PeerKey{local})
-
-	require.False(t, wm.seeded.Load(), "denied seed_placement must not reach SeedFromCAS")
-	require.False(t, ms.wasClaimed(hash), "denied seed_placement must not claim")
-}
-
-type denyAllEval struct{}
-
-func (denyAllEval) Allow(context.Context, evaluator.Request) (evaluator.Decision, error) {
-	return evaluator.Decision{Decision: false, Context: map[string]any{"reason_user": "blocked"}}, nil
-}
-
-// captureDenyEval records the last request it was asked to evaluate and
-// always denies. Denial stops the reconciler after the gate so downstream
-// state stays untouched, which keeps the assertion focused on the gate
-// request shape.
-type captureDenyEval struct {
-	last evaluator.Request
-}
-
-func (c *captureDenyEval) Allow(_ context.Context, req evaluator.Request) (evaluator.Decision, error) {
-	c.last = req
-	return evaluator.Decision{Decision: false}, nil
-}
-
-func TestExecuteClaim_GatePipesClaimProperties(t *testing.T) {
-	local := peerKey(1)
-	hash := "workload-with-claim"
-
-	ms := &mockStore{
-		specs: map[string]state.WorkloadSpecView{
-			hash: {
-				Spec: state.WorkloadSpec{
-					Hash:        hash,
-					MinReplicas: 1,
-					Claim:       claims.New(map[string]any{"tier": "gold"}, []byte("sig")),
-				},
-				Publisher: local,
-			},
-		},
-		claims:   map[string]map[types.PeerKey]struct{}{},
-		allPeers: []types.PeerKey{local},
-	}
-	wm := &mockWorkloads{}
-
-	spy := &captureDenyEval{}
-	router, err := evaluator.NewRouter(
-		evaluator.Config{Default: "capture"},
-		evaluator.WithFactory("capture", func(string) (evaluator.Evaluator, error) { return spy, nil }),
-	)
-	require.NoError(t, err)
-
-	r := newReconciler(local, ms, wm, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), router, zap.NewNop().Sugar(), &sync.WaitGroup{})
-	r.executeClaim(t.Context(), hash, 1, []types.PeerKey{local})
-
-	require.Equal(t, "gold", spy.last.Resource.Properties["tier"], "publisher claim properties must reach the seed_placement gate")
-	require.Equal(t, hash, spy.last.Resource.ID)
-	require.Equal(t, evaluator.ResourceSeed, spy.last.Resource.Type)
 }
 
 func TestExecuteClaim_LosesCapacityDuringFetch(t *testing.T) {
@@ -275,7 +188,7 @@ func TestExecuteClaim_LosesCapacityDuringFetch(t *testing.T) {
 		ms.mu.Unlock()
 	}
 
-	r := newReconciler(local, ms, &mockWorkloads{}, &mockBlobs{midFlight: saturate}, newUtilisationTracker(), newGateRegistry(16), nil, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockBlobs{midFlight: saturate}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.executeClaim(t.Context(), hash, 1, []types.PeerKey{local})
 
 	require.False(t, ms.wasClaimed(hash), "should not set claim when capacity gate fails post-fetch")
@@ -302,7 +215,7 @@ func TestExecuteClaim_HappyPath(t *testing.T) {
 	}
 	wm := &mockWorkloads{}
 
-	r := newReconciler(local, ms, wm, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), nil, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, wm, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.executeClaim(t.Context(), hash, 1, []types.PeerKey{local})
 
 	require.True(t, wm.seeded.Load(), "manager should seed on happy path")
@@ -329,7 +242,7 @@ func TestResidencyWindow_SuppressesEarlyRelease(t *testing.T) {
 		},
 	}
 
-	r := newReconciler(local, ms, &runningWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), nil, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.claimStartTime[hash] = time.Now()
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
 
@@ -365,7 +278,7 @@ func TestResidencyWindow_AllowsReleaseAfterMaturity(t *testing.T) {
 		},
 	}
 
-	r := newReconciler(local, ms, &runningWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), nil, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.firstRun = false
 	r.claimStartTime[hash] = time.Now().Add(-minResidencyDuration - time.Second)
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
@@ -387,7 +300,7 @@ func TestReconcile_SignalCoalesces(t *testing.T) {
 		allPeers: []types.PeerKey{local},
 	}
 
-	r := newReconciler(local, ms, &mockWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), nil, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 
 	for range 100 {
 		r.Signal()
@@ -412,7 +325,7 @@ func TestResidencyWindow_SkippedForOverReplication(t *testing.T) {
 		allPeers: []types.PeerKey{local, peer2},
 	}
 
-	r := newReconciler(local, ms, &runningWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), nil, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.claimStartTime[hash] = time.Now()
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
 
@@ -448,7 +361,7 @@ func TestReconcile_NameConflictFiltering(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	r := newReconciler(local, ms, &mockWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), nil, zap.NewNop().Sugar(), &wg)
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &wg)
 	r.reconcile(context.Background())
 	wg.Wait()
 
