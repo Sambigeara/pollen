@@ -26,14 +26,31 @@ just destroy-hetzner
 
 ## Vivaldi (28-node AWS)
 
+Two flavours: `vivaldi` (mixed public+private) and `vivaldi-public` (all-public).
+
 ```bash
 cd internal/dev
-just deploy-vivaldi         # terraform only; cluster formation moved to pln-native
-just destroy-vivaldi
+just deploy-vivaldi          # mixed topology
+just deploy-vivaldi-pub      # all-public topology
+just destroy-vivaldi         # / destroy-vivaldi-pub
 ```
 
-`init-vivaldi` / `push-vivaldi` were removed with the Ansible retirement — use
-`pln bootstrap ssh -` directly against the terraform output.
+Terraform only provisions infra — form the mesh with `pln bootstrap ssh` against
+the terraform output. Use a dedicated `pln` context so vivaldi state stays out
+of your prod / dev ctxs:
+
+```fish
+pln ctx add vivaldi-pub        # one-time; ephemeral local port
+set -x PLN_CONTEXT vivaldi-pub # scope the rest of the shell to this ctx
+pln init                       # mint a root for this ctx
+
+cd internal/dev/vivaldi-public
+terraform output -json all_public_ips \
+  | jq -r 'to_entries | .[] | "node\(.key)=ubuntu@\(.value)"' \
+  | pln bootstrap ssh --admin -
+```
+
+The same shape works for `vivaldi/` (mixed) — swap the terraform dir.
 
 ## Demo cluster
 
