@@ -76,7 +76,7 @@ type PlacementControl interface {
 type TunnelingControl interface {
 	Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) (uint32, error)
 	Disconnect(service string) error
-	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol) error
+	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) error
 	UnexposeService(name string) error
 	ListConnections() []tunneling.ConnectionInfo
 }
@@ -626,10 +626,10 @@ func sortStatusResponse(out *controlv1.GetStatusResponse) {
 
 func (s *Service) RegisterService(ctx context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
 	name := serviceNameOrDefault(req.GetName(), req.Port)
-	if err := s.authorise(ctx, evaluator.ResourceService, name, nil); err != nil {
+	if err := s.authorise(ctx, evaluator.ResourceService, name, req.GetProperties()); err != nil {
 		return nil, err
 	}
-	if err := s.tunneling.ExposeService(req.Port, name, state.NormaliseProtocol(req.GetProtocol())); err != nil {
+	if err := s.tunneling.ExposeService(req.Port, name, state.NormaliseProtocol(req.GetProtocol()), req.GetProperties()); err != nil {
 		return nil, s.fail(err, "register service failed")
 	}
 	return &controlv1.RegisterServiceResponse{}, nil
@@ -747,6 +747,10 @@ func (s *Service) IssueCert(ctx context.Context, req *controlv1.IssueCertRequest
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	if err := s.membership.IssueCert(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), req.GetAdmin(), req.GetAttributes()); err != nil {
+		if errors.Is(err, evaluator.ErrDenied) {
+			s.log.Warnw("cert issuance denied", "peer", types.PeerKeyFromBytes(req.GetPeerPub()).Short(), zap.Error(err))
+			return nil, status.Error(codes.PermissionDenied, "cert issuance denied")
+		}
 		return nil, s.fail(err, "issue cert failed")
 	}
 	return &controlv1.IssueCertResponse{}, nil
@@ -886,6 +890,9 @@ func (s *Service) FetchBlob(ctx context.Context, req *controlv1.FetchBlobRequest
 	}
 	if err := s.blobs.Fetch(ctx, hash, peers); err != nil {
 		s.log.Warnw("fetch blob failed", "hash", types.ShortHash(hash), "err", err)
+		if errors.Is(err, blobs.ErrUnauthorized) {
+			return nil, status.Error(codes.PermissionDenied, "fetch blob denied by holder")
+		}
 		return nil, status.Error(codes.NotFound, "fetch blob")
 	}
 	return &controlv1.FetchBlobResponse{}, nil
@@ -1104,6 +1111,8 @@ func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadR
 			return nil, status.Error(codes.NotFound, "no such workload")
 		case errors.Is(err, placement.ErrNotRunning):
 			return nil, status.Error(codes.NotFound, "workload not running on any reachable node")
+		case errors.Is(err, placement.ErrUnauthorized):
+			return nil, status.Error(codes.PermissionDenied, "workload call denied by holder")
 		case errors.Is(err, placement.ErrCycle):
 			return nil, status.Error(codes.FailedPrecondition, "call cycle detected")
 		case errors.Is(err, placement.ErrRelayOnly):

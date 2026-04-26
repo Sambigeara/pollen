@@ -22,15 +22,22 @@ import (
 )
 
 type fakeStore struct {
-	snap    state.Snapshot
-	claimed []string
-	mu      sync.Mutex
+	snap     state.Snapshot
+	claimed  []string
+	released []string
+	mu       sync.Mutex
 }
 
 func (f *fakeStore) Snapshot() state.Snapshot                              { return f.snap }
 func (f *fakeStore) SetStaticSpec(state.StaticSpec) ([]state.Event, error) { return nil, nil }
 func (f *fakeStore) DeleteStaticSpec(string) []state.Event                 { return nil }
-func (f *fakeStore) ReleaseStatic(string) []state.Event                    { return nil }
+func (f *fakeStore) ReleaseStatic(name string) []state.Event {
+	f.mu.Lock()
+	f.released = append(f.released, name)
+	f.mu.Unlock()
+	return nil
+}
+
 func (f *fakeStore) ClaimStatic(name string) []state.Event {
 	f.mu.Lock()
 	f.claimed = append(f.claimed, name)
@@ -180,6 +187,38 @@ type denyAllEval struct{}
 
 func (denyAllEval) Allow(context.Context, evaluator.Request) (evaluator.Decision, error) {
 	return evaluator.Decision{Decision: false, Context: map[string]any{"reason_user": "blocked"}}, nil
+}
+
+// TestEnsureReplicated_ReleasesClaimWhenGateNowDenies regresses the
+// Codex M2 finding: a publisher flipping `place_locked: true` after the
+// site is already claimed must trigger a release. Without this, initial-
+// only gating leaves stale claims live forever.
+func TestEnsureReplicated_ReleasesClaimWhenGateNowDenies(t *testing.T) {
+	publisher := types.PeerKey{1}
+	self := types.PeerKey{2}
+
+	blobs := newFakeBlobs()
+	fileA := "cc" + hex.EncodeToString(bytes.Repeat([]byte{0xa}, 31))
+	manifestDigest := seedManifest(t, blobs, fileA)
+
+	snap := snapshotWith(manifestDigest, publisher)
+	snap.Nodes[publisher].Blobs[fileA] = struct{}{}
+	snap.StaticClaims["home.local"] = map[types.PeerKey]struct{}{self: {}}
+
+	st := &fakeStore{snap: snap}
+	router, err := evaluator.NewRouter(
+		evaluator.Config{Default: "deny_all"},
+		evaluator.WithFactory("deny_all", func(string) (evaluator.Evaluator, error) {
+			return denyAllEval{}, nil
+		}),
+	)
+	require.NoError(t, err)
+	svc := New(self, st, blobs, true, router, zap.NewNop().Sugar())
+
+	err = svc.ensureReplicated(t.Context(), snap, "home.local", snap.StaticSpecs["home.local"].Spec)
+	require.NoError(t, err, "deny on a previously-claimed site must surface as a release, not an error")
+	require.Equal(t, []string{"home.local"}, st.released, "stale claim must be released when policy now denies")
+	require.Empty(t, st.claimed, "must not re-claim a site the gate just denied")
 }
 
 // captureDenyEval records the last request it was asked to evaluate and

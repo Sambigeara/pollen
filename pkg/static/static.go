@@ -195,6 +195,26 @@ func (s *Service) StaticBlobs() map[string]struct{} {
 }
 
 func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, name string, spec state.StaticSpec) error {
+	_, alreadyClaimed := snap.StaticClaims[name][s.localID]
+
+	// Run the gate before any blob fetch. A deny must release an
+	// existing claim regardless of whether the publisher's current
+	// manifest or file blobs are reachable — otherwise a publisher
+	// flipping `place_locked: true` while also pointing at unavailable
+	// content leaves the stale claim live, since the manifest fetch
+	// would error out before the gate ran.
+	if s.canServe {
+		if denyErr := s.gatePlacement(ctx, snap, name); denyErr != nil {
+			if alreadyClaimed {
+				s.log.Infow("seed_placement now denied — releasing claim", "resource_type", "static", "name", name, "err", denyErr)
+				s.forwardEvents(s.store.ReleaseStatic(name))
+			} else {
+				s.log.Infow("seed_placement denied", "resource_type", "static", "name", name, "err", denyErr)
+			}
+			return nil
+		}
+	}
+
 	if err := s.ensureLocal(ctx, snap, spec.ManifestDigest); err != nil {
 		return fmt.Errorf("manifest: %w", err)
 	}
@@ -217,30 +237,31 @@ func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, nam
 		}
 	}
 
-	if _, alreadyClaimed := snap.StaticClaims[name][s.localID]; alreadyClaimed {
+	if alreadyClaimed {
 		return nil
-	}
-	// Gate before claiming — policy can deny this node from hosting the
-	// site based on local attributes or the static's signed claim
-	// properties.
-	if s.authz != nil {
-		var resourceProps map[string]any
-		if sv, ok := snap.StaticSpecs[name]; ok {
-			resourceProps = sv.Spec.Claim.GetProperties()
-		}
-		req := evaluator.Request{
-			Subject:  evaluator.SubjectFromPeerKey(s.localID, nil),
-			Action:   evaluator.Action{Name: "place"},
-			Resource: evaluator.NewResource(evaluator.ResourceStatic, name, resourceProps),
-		}
-		if err := s.authz.Allow(ctx, evaluator.GateSeedPlacement, req); err != nil {
-			s.log.Infow("seed_placement denied", "resource_type", "static", "name", name, "err", err)
-			return nil
-		}
 	}
 	s.forwardEvents(s.store.ClaimStatic(name))
 	s.log.Infow("claimed static site", "name", name, "paths", len(manifest.paths))
 	return nil
+}
+
+// gatePlacement runs the seed_placement gate for a named static site.
+// Returns nil when the gate is unconfigured or allows; the gate's error
+// otherwise. The publisher's signed claim properties feed in as the
+// resource attributes so policies can match on `place_locked` etc.
+func (s *Service) gatePlacement(ctx context.Context, snap state.Snapshot, name string) error {
+	if s.authz == nil {
+		return nil
+	}
+	var resourceProps map[string]any
+	if sv, ok := snap.StaticSpecs[name]; ok {
+		resourceProps = sv.Spec.Claim.GetProperties()
+	}
+	return s.authz.Allow(ctx, evaluator.GateSeedPlacement, evaluator.Request{
+		Subject:  evaluator.SubjectFromPeerKey(s.localID, nil),
+		Action:   evaluator.Action{Name: "place"},
+		Resource: evaluator.NewResource(evaluator.ResourceStatic, name, resourceProps),
+	})
 }
 
 func (s *Service) ensureLocal(ctx context.Context, snap state.Snapshot, hash string) error {

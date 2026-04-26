@@ -6,6 +6,7 @@ package blobs
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 
@@ -27,21 +28,31 @@ func (s *Service) Fetch(ctx context.Context, hash string, peers []types.PeerKey)
 	if s.store.Has(hash) {
 		return nil
 	}
-	var lastErr error
+	var lastErr, denyErr error
 	attempted := 0
 	for _, pk := range peers {
 		if pk == s.self {
 			continue
 		}
 		attempted++
-		if err := s.fetchFrom(ctx, hash, pk); err != nil {
-			lastErr = err
-			continue
+		err := s.fetchFrom(ctx, hash, pk)
+		if err == nil {
+			return nil
 		}
-		return nil
+		if errors.Is(err, ErrUnauthorized) && denyErr == nil {
+			denyErr = err
+		}
+		lastErr = err
 	}
 	if attempted == 0 {
 		return fmt.Errorf("fetch blob %s: no peers", hash[:min(hashDisplayLen, len(hash))])
+	}
+	// A definitive deny trumps a transport-level failure on a later
+	// peer. Without this, a denied holder followed by a stale or
+	// unreachable peer surfaces as NotFound and masks the policy
+	// signal — operators see "blob not found" instead of "denied".
+	if denyErr != nil {
+		return fmt.Errorf("fetch blob %s: %w", hash[:min(hashDisplayLen, len(hash))], denyErr)
 	}
 	return fmt.Errorf("fetch blob %s: %w", hash[:min(hashDisplayLen, len(hash))], lastErr)
 }
@@ -99,10 +110,10 @@ func ReadHash(r io.Reader) (string, error) {
 
 // WriteStatus writes a single status byte to a blob stream. Supervisor
 // uses this to surface an authorisation denial in the same wire shape
-// the serve path would use for not-found.
-func WriteStatus(w io.Writer, status byte) error {
-	_, err := w.Write([]byte{status})
-	return err
+// the serve path would use for not-found. Write errors are dropped —
+// every caller closes the stream immediately afterwards.
+func WriteStatus(w io.Writer, status byte) {
+	w.Write([]byte{status}) //nolint:errcheck
 }
 
 // Status byte values exposed so supervisor can write a denial or

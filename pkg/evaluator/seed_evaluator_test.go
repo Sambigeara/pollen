@@ -40,7 +40,7 @@ func TestSeedEvaluator_RoundTripsRequest(t *testing.T) {
 			return json.Marshal(want)
 		},
 	}
-	eval := newSeedEvaluator("cerbos-pdp", func() Caller { return fake })
+	eval := newSeedEvaluator("policy-pdp", func() Caller { return fake })
 
 	got, err := eval.Allow(context.Background(), Request{
 		Subject:  Subject{Type: "peer", ID: "abc"},
@@ -50,12 +50,12 @@ func TestSeedEvaluator_RoundTripsRequest(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, want.Decision, got.Decision)
 	require.Equal(t, "ok", got.Context["reason_user"])
-	require.Equal(t, "cerbos-pdp", fake.seedArg)
+	require.Equal(t, "policy-pdp", fake.seedArg)
 	require.Equal(t, "check", fake.funcArg)
 }
 
 func TestSeedEvaluator_CallerNotAvailable(t *testing.T) {
-	eval := newSeedEvaluator("cerbos-pdp", func() Caller { return nil })
+	eval := newSeedEvaluator("policy-pdp", func() Caller { return nil })
 	_, err := eval.Allow(context.Background(), Request{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "caller not available")
@@ -67,7 +67,7 @@ func TestSeedEvaluator_CallError(t *testing.T) {
 			return nil, errors.New("seed not placed")
 		},
 	}
-	eval := newSeedEvaluator("cerbos-pdp", func() Caller { return fake })
+	eval := newSeedEvaluator("policy-pdp", func() Caller { return fake })
 	_, err := eval.Allow(context.Background(), Request{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "seed not placed")
@@ -79,7 +79,7 @@ func TestSeedEvaluator_MalformedResponse(t *testing.T) {
 			return []byte("not json"), nil
 		},
 	}
-	eval := newSeedEvaluator("cerbos-pdp", func() Caller { return fake })
+	eval := newSeedEvaluator("policy-pdp", func() Caller { return fake })
 	_, err := eval.Allow(context.Background(), Request{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unmarshal")
@@ -97,7 +97,7 @@ func TestSeedEvaluator_CircuitBreakerTripsAndRecovers(t *testing.T) {
 			return fn(input)
 		},
 	}
-	eval := newSeedEvaluator("cerbos-pdp", func() Caller { return fake })
+	eval := newSeedEvaluator("policy-pdp", func() Caller { return fake })
 
 	clock := time.Unix(1_000, 0)
 	eval.now = func() time.Time { return clock }
@@ -151,7 +151,7 @@ func TestSeedEvaluator_HalfOpenAdmitsOneProbe(t *testing.T) {
 			return json.Marshal(Decision{Decision: true})
 		},
 	}
-	eval := newSeedEvaluator("cerbos-pdp", func() Caller { return fake })
+	eval := newSeedEvaluator("policy-pdp", func() Caller { return fake })
 
 	clock := time.Unix(1_000, 0)
 	eval.now = func() time.Time { return clock }

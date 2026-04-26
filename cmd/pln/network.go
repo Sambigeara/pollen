@@ -83,6 +83,7 @@ the service survives restarts.`,
 		RunE:    withEnv(runServe),
 	}
 	serveCmd.Flags().Bool("udp", false, "Expose as a UDP service")
+	serveCmd.Flags().StringArray("prop", nil, "Service-publisher property: key=value or JSON object (e.g. --prop '{\"public\":true}')")
 
 	unserveCmd := &cobra.Command{
 		Use:   "unserve <port|name>",
@@ -236,11 +237,19 @@ func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
 		}
 	}
 
-	env.cfg.AddService(name, uint32(port), cfgProto)
+	props, err := parseKeyValues(cmd, "prop")
+	if err != nil {
+		return err
+	}
+	var propMap map[string]any
+	if props != nil {
+		propMap = props.AsMap()
+	}
+	env.cfg.AddService(name, uint32(port), cfgProto, propMap)
 
 	sockPath := filepath.Join(env.dir, socketName)
 	if nodeSocketActive(sockPath) {
-		req := &controlv1.RegisterServiceRequest{Port: uint32(port), Protocol: proto}
+		req := &controlv1.RegisterServiceRequest{Port: uint32(port), Protocol: proto, Properties: props}
 		if name != "" {
 			req.Name = &name
 		}

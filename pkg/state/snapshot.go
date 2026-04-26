@@ -15,6 +15,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type Snapshot struct {
@@ -81,9 +82,10 @@ type TrafficSnapshot struct {
 }
 
 type Service struct {
-	Name     string
-	Port     uint32
-	Protocol statev1.ServiceProtocol
+	Properties *structpb.Struct
+	Name       string
+	Port       uint32
+	Protocol   statev1.ServiceProtocol
 }
 
 type Digest struct {
@@ -147,10 +149,11 @@ func (s Snapshot) LocalSpecByName(name string, localID types.PeerKey) (string, b
 }
 
 type ServiceInfo struct {
-	Name     string
-	Port     uint32
-	Peer     types.PeerKey
-	Protocol statev1.ServiceProtocol
+	Properties *structpb.Struct
+	Name       string
+	Peer       types.PeerKey
+	Port       uint32
+	Protocol   statev1.ServiceProtocol
 }
 
 // PeersWithBlob returns live peers advertising hash. Stale BlobAvailability
@@ -171,6 +174,45 @@ func (s Snapshot) PeersWithBlob(hash string) []types.PeerKey {
 		}
 	}
 	return out
+}
+
+// PublisherClaimForBlob returns the publisher-claim properties governing a
+// blob hash. A hash can be published as a standalone BlobSpec, as the WASM
+// of a WorkloadSpec, or as the manifest of a StaticSpec — the gate needs
+// the claim from whichever spec produced it. Returns nil when the hash
+// isn't published anywhere or when the publisher attached no properties;
+// the gate then sees no resource attributes.
+//
+// Static manifests are content-addressed, so multiple sites can legitimately
+// share a digest with different claim properties. Pick the lowest
+// (publisher, name) tuple as the canonical owner so map-iteration randomness
+// doesn't flip the gate's input across reconciles.
+func (s Snapshot) PublisherClaimForBlob(hash string) map[string]any {
+	if v, ok := s.BlobSpecs[hash]; ok {
+		return v.Spec.Claim.GetProperties()
+	}
+	if v, ok := s.Specs[hash]; ok {
+		return v.Spec.Claim.GetProperties()
+	}
+	var winner StaticSpecView
+	winnerName := ""
+	found := false
+	for name, v := range s.StaticSpecs {
+		if v.Spec.ManifestDigest != hash {
+			continue
+		}
+		if !found ||
+			v.Publisher.Compare(winner.Publisher) < 0 ||
+			(v.Publisher == winner.Publisher && name < winnerName) {
+			winner = v
+			winnerName = name
+			found = true
+		}
+	}
+	if !found {
+		return nil
+	}
+	return winner.Spec.Claim.GetProperties()
 }
 
 // BlobByName returns the lowest-peer-key publisher's spec when multiple
@@ -196,7 +238,7 @@ func (s Snapshot) Services() []ServiceInfo {
 	var out []ServiceInfo
 	for pk, nv := range s.Nodes {
 		for name, svc := range nv.Services {
-			out = append(out, ServiceInfo{Name: name, Port: svc.Port, Peer: pk, Protocol: svc.Protocol})
+			out = append(out, ServiceInfo{Name: name, Port: svc.Port, Peer: pk, Protocol: svc.Protocol, Properties: svc.Properties})
 		}
 	}
 	return out
@@ -359,7 +401,7 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]struc
 		case *statev1.GossipEvent_CertExpiry:
 			nv.CertExpiry = v.CertExpiry.ExpiryUnix
 		case *statev1.GossipEvent_Service:
-			nv.Services[key.name] = &Service{Name: key.name, Port: v.Service.Port, Protocol: NormaliseProtocol(v.Service.Protocol)}
+			nv.Services[key.name] = &Service{Name: key.name, Port: v.Service.Port, Protocol: NormaliseProtocol(v.Service.Protocol), Properties: v.Service.Properties}
 		case *statev1.GossipEvent_Reachability:
 			nv.Reachable[key.peer] = struct{}{}
 		case *statev1.GossipEvent_PubliclyAccessible:

@@ -66,7 +66,9 @@ type DenyObserver func(DenyEvent)
 const (
 	defaultCacheEntries = 10_000
 	defaultCacheTTL     = time.Second
-	defaultTimeout      = 100 * time.Millisecond
+	// TOD0(saml) this timeout is only long to account for cold start on hefty seeds.
+	// We need a better way of dealing with this.
+	defaultTimeout = 5 * time.Second
 )
 
 // GateOptions are the per-gate knobs a Router applies to every

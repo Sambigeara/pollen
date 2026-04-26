@@ -12,6 +12,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/types"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // Options holds runtime parameters for constructing a Supervisor.
@@ -61,7 +62,8 @@ type ConnectionEntry struct {
 
 // ServiceEntry describes a service to register in state at startup.
 type ServiceEntry struct {
-	Name     string
-	Port     uint32
-	Protocol statev1.ServiceProtocol
+	Properties *structpb.Struct
+	Name       string
+	Port       uint32
+	Protocol   statev1.ServiceProtocol
 }

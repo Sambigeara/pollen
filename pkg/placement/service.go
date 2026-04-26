@@ -60,6 +60,8 @@ type PlacementAPI interface {
 	Serve(stream io.ReadWriteCloser, info wasm.CallerInfo, hash, function string)
 
 	Signal()
+
+	AsSeedCaller() evaluator.Caller
 }
 
 type blobsAPI interface {
@@ -94,6 +96,7 @@ type Service struct {
 	reconciler       *reconciler
 	blobs            blobsAPI
 	authz            *evaluator.Router
+	workloadGate     WorkloadCallGate
 	log              *zap.SugaredLogger
 	cancel           context.CancelFunc
 	utilisation      *utilisationTracker
@@ -127,6 +130,68 @@ func WithResourceBudget(cpuPercent, memPercent uint32) Option {
 // policy leave it unset.
 func WithAuthzRouter(r *evaluator.Router) Option {
 	return func(s *Service) { s.authz = r }
+}
+
+// WorkloadCallGate authorises an incoming workload invocation. Returns
+// nil to allow, an error to deny — the placement layer translates a
+// non-nil return into ErrUnauthorized on the wire and to callers.
+// Supervisor wires the closure: it owns the peer/seed property lookups
+// and the evaluator.Router, so placement stays free of evaluator
+// internals while still owning the single gate site for both local and
+// remote dispatch.
+type WorkloadCallGate func(ctx context.Context, info wasm.CallerInfo, hash string) error
+
+// WithWorkloadCallGate wires the workload_call gate. Nil leaves the
+// gate unset — every invocation is allowed, matching the no-policy
+// default elsewhere in the runtime.
+func WithWorkloadCallGate(g WorkloadCallGate) Option {
+	return func(s *Service) { s.workloadGate = g }
+}
+
+type internalCallKey struct{}
+
+// withInternalCall marks a context as originating from inside the
+// daemon — the workload_call gate is skipped for this call. Used by
+// AsSeedCaller so the evaluator can invoke its gate's seed without
+// the gate recursively gating its own evaluator. Local-only: the
+// marker does not propagate over the wire. The trust boundary is the
+// daemon's own code; the wire-level path always gates and chain
+// detection catches the rare cross-node recursion.
+//
+// The marker is scoped tightly: it only suppresses the gate inside
+// callLocal, then clearInternalCall strips it before user WASM runs.
+// Otherwise a seed-backed evaluator's WASM could call
+// pollen_request and inherit the bypass, defeating the gate for
+// every downstream call its policy code makes.
+func withInternalCall(ctx context.Context) context.Context {
+	return context.WithValue(ctx, internalCallKey{}, true)
+}
+
+func clearInternalCall(ctx context.Context) context.Context {
+	if !isInternalCall(ctx) {
+		return ctx
+	}
+	return context.WithValue(ctx, internalCallKey{}, false)
+}
+
+func isInternalCall(ctx context.Context) bool {
+	v, _ := ctx.Value(internalCallKey{}).(bool)
+	return v
+}
+
+// AsSeedCaller returns an evaluator.Caller that drives every call
+// through placement with the internal-call marker set. Wire this into
+// the seed-backed PDP factory: a workload_call gate whose evaluator is
+// itself a seed otherwise gates its own evaluator on every call,
+// erasing every decision and tripping the fallback deny.
+func (s *Service) AsSeedCaller() evaluator.Caller {
+	return seedCaller{s: s}
+}
+
+type seedCaller struct{ s *Service }
+
+func (c seedCaller) Call(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
+	return c.s.Call(withInternalCall(ctx), hash, function, input)
 }
 
 func New(self types.PeerKey, store WorkloadState, blobs blobsAPI, wasmRT WASMRuntime, opts ...Option) *Service {
@@ -303,8 +368,12 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 
 	// Cycle detection: a hash already in the local call chain would
 	// deadlock on its own instance pool. Reject fast rather than let the
-	// nested Call block forever.
-	if chainContains(ctx, hash) {
+	// nested Call block forever. Internal calls (gate → evaluator → seed)
+	// run as fresh frames that acquire their own pool slot in series —
+	// they don't share the caller's frame — so chain detection is
+	// irrelevant for them, and applying it here trips a false cycle
+	// when a workload calls a seed that is also the gate's evaluator.
+	if !isInternalCall(ctx) && chainContains(ctx, hash) {
 		return nil, fmt.Errorf("%w: %s", ErrCycle, types.ShortHash(hash))
 	}
 	ctx = withChain(ctx, hash)
@@ -333,13 +402,14 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 	if err == nil {
 		return out, nil
 	}
-	if errors.Is(err, ErrWorkloadFailed) || errors.Is(err, ErrCycle) {
+	if errors.Is(err, ErrWorkloadFailed) || errors.Is(err, ErrCycle) || errors.Is(err, ErrUnauthorized) {
 		return nil, err
 	}
 
 	// Fallback: try remaining claimants in shuffled order. Transient
 	// failures (overload, timeout, transport hiccups) are retryable —
-	// the next peer might have slack.
+	// the next peer might have slack. Authz denials and workload-level
+	// errors are deterministic and bail out early.
 	for _, fallback := range shuffledClaimants(claimants, target) {
 		if fallback == s.localID && locallyRunning {
 			out, err = s.callLocal(ctx, hash, function, input)
@@ -349,15 +419,16 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 		if err == nil {
 			return out, nil
 		}
-		if errors.Is(err, ErrWorkloadFailed) || errors.Is(err, ErrCycle) {
+		if errors.Is(err, ErrWorkloadFailed) || errors.Is(err, ErrCycle) || errors.Is(err, ErrUnauthorized) {
 			return nil, err
 		}
 	}
 	return nil, fmt.Errorf("all %d claimants failed for %s: %w", len(claimants), types.ShortHash(hash), err)
 }
 
-// callLocal runs the workload on this node, gated by the per-workload
-// concurrency gate. The gate blocks only until ctx cancels — caller
+// callLocal runs the workload on this node, gated by both the
+// workload_call authz gate (when wired) and the per-workload concurrency
+// gate. The concurrency gate blocks only until ctx cancels — caller
 // deadlines drive wait budgets, not a global constant.
 //
 // Two timers run here. callerStart spans admission wait + execution so the
@@ -366,6 +437,15 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 // away from a saturated local node. workStart covers only execution so
 // the per-seed compute-cost EWMA stays a clean signal for the autoscaler.
 func (s *Service) callLocal(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
+	if s.workloadGate != nil && !isInternalCall(ctx) {
+		info, _ := wasm.CallerInfoFromContext(ctx)
+		if err := s.workloadGate(ctx, info, hash); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrUnauthorized, err)
+		}
+	}
+	// The marker authorised this single skip; strip it now so any
+	// pollen_request the WASM makes is gated like any other call.
+	ctx = clearInternalCall(ctx)
 	callerStart := time.Now()
 	gateRelease, err := s.gates.acquire(ctx, callKey{Hash: hash, Function: function})
 	if err != nil {
@@ -436,9 +516,17 @@ func (s *Service) PlacementInfo() map[string]PlacementInfo {
 }
 
 // Serve handles an inbound workload call stream after supervisor has
-// read the header (caller info, seed hash, function name) and
-// authorised the call via the workload_call gate.
+// read the header (caller info, seed hash, function name). Runs the
+// workload_call gate before reading the input body so a denied caller
+// doesn't force the daemon to buffer its payload.
 func (s *Service) Serve(stream io.ReadWriteCloser, info wasm.CallerInfo, hash, function string) {
+	if s.workloadGate != nil {
+		if err := s.workloadGate(s.ctx, info, hash); err != nil {
+			WriteStatus(stream, statusUnauthorized)
+			stream.Close() //nolint:errcheck
+			return
+		}
+	}
 	handleWorkloadStream(s.ctx, stream, info, hash, function, s.manager, s.utilisation, s.gates, workloadInvocationTimeout)
 }
 

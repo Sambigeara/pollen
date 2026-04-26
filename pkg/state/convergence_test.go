@@ -136,7 +136,7 @@ func TestConvergence_ThreeStoreFullMesh(t *testing.T) {
 	h := newDeterministicHarness(t, 3)
 
 	h.stores[0].SetLocalAddresses([]netip.AddrPort{netip.MustParseAddrPort("10.0.0.1:9000")})
-	h.stores[0].SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
+	h.stores[0].SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 
 	h.stores[1].SetLocalCoord(coords.Coord{X: 1, Y: 2, Height: coords.MinHeight}, 0.5)
 	h.stores[1].SetLocalNAT(nat.Easy)
@@ -167,13 +167,13 @@ func TestConvergence_PartitionHealing(t *testing.T) {
 	h.assertConverged()
 
 	// Partition: A<->B communicate, C is isolated.
-	h.stores[0].SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
+	h.stores[0].SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 	h.stores[1].SetLocalNAT(nat.Easy)
 	h.gossipOneway(0, 1)
 	h.gossipOneway(1, 0)
 
 	// C evolves independently.
-	h.stores[2].SetService(9090, "api", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
+	h.stores[2].SetService(9090, "api", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 
 	// Heal partition.
 	h.gossipFullMesh()
@@ -221,7 +221,7 @@ func applyFuzzMutation(s StateStore, kind int, peers []types.PeerKey, r *fuzzRea
 	case 1: // service
 		port := uint32(r.readUint16()) + 1
 		name := fmt.Sprintf("svc-%d", r.readByte()%8)
-		s.SetService(port, name, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
+		s.SetService(port, name, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 	case 2: // remove service
 		name := fmt.Sprintf("svc-%d", r.readByte()%8)
 		s.RemoveService(name)

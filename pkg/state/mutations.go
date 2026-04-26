@@ -14,6 +14,8 @@ import (
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event)) []Event {
@@ -195,7 +197,7 @@ func (s *store) PublishWorkload(spec WorkloadSpec) ([]Event, error) {
 		}
 
 		var gossips []*statev1.GossipEvent
-		if ev, ok := rec.log[attrKey{kind: attrWorkloadSpec, name: hash}]; !ok || ev.Deleted || !specEqual(ev.GetWorkloadSpec(), owned) {
+		if ev, ok := rec.log[attrKey{kind: attrWorkloadSpec, name: hash}]; !ok || ev.Deleted || !proto.Equal(ev.GetWorkloadSpec(), owned) {
 			gossips = append(gossips, &statev1.GossipEvent{Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: owned}})
 		}
 		if ev, ok := rec.log[attrKey{kind: attrWorkloadClaim, name: hash}]; !ok || ev.Deleted {
@@ -218,15 +220,6 @@ func (s *store) DeleteWorkloadSpec(hash string) []Event {
 		change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: &statev1.WorkloadSpecChange{Hash: hash}}}
 		return []*statev1.GossipEvent{change}, []Event{WorkloadChanged{Hash: hash}}
 	})
-}
-
-func specEqual(a, b *statev1.WorkloadSpecChange) bool {
-	return a.GetName() == b.GetName() &&
-		a.GetMinReplicas() == b.GetMinReplicas() &&
-		a.GetMemoryBytes() == b.GetMemoryBytes() &&
-		a.GetTimeoutMs() == b.GetTimeoutMs() &&
-		a.GetSpread() == b.GetSpread() &&
-		a.GetLatencySloMs() == b.GetLatencySloMs()
 }
 
 func (s *store) ClaimWorkload(hash string) []Event {
@@ -367,16 +360,13 @@ func (s *store) SetSeedMetrics(metrics map[string]SeedMetrics) []Event {
 	})
 }
 
-func (s *store) SetService(port uint32, name string, protocol statev1.ServiceProtocol) []Event {
+func (s *store) SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) []Event {
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		if ev, ok := rec.log[attrKey{kind: attrService, name: name}]; ok && !ev.Deleted {
-			svc := ev.GetService()
-			if svc.Port == port && svc.Protocol == protocol {
-				return nil, nil
-			}
+		owned := &statev1.ServiceChange{Name: name, Port: port, Protocol: protocol, Properties: properties}
+		if ev, ok := rec.log[attrKey{kind: attrService, name: name}]; ok && !ev.Deleted && proto.Equal(ev.GetService(), owned) {
+			return nil, nil
 		}
-		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_Service{Service: &statev1.ServiceChange{Name: name, Port: port, Protocol: protocol}}}
-		return []*statev1.GossipEvent{change}, []Event{ServiceChanged{Peer: s.localID, Name: name}}
+		return []*statev1.GossipEvent{{Change: &statev1.GossipEvent_Service{Service: owned}}}, []Event{ServiceChanged{Peer: s.localID, Name: name}}
 	})
 }
 
@@ -407,19 +397,16 @@ func (s *store) SetStaticSpec(spec StaticSpec) ([]Event, error) {
 				return nil, nil
 			}
 		}
-		if ev, ok := rec.log[attrKey{kind: attrStaticSpec, name: name}]; ok && !ev.Deleted {
-			sp := ev.GetStaticSpec()
-			if sp.GetMinReplicas() == spec.MinReplicas && bytes.Equal(sp.GetManifestDigest(), digest) {
-				return nil, nil
-			}
-		}
-		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{
+		owned := &statev1.StaticSpecChange{
 			Name:           name,
 			ManifestDigest: digest,
 			MinReplicas:    spec.MinReplicas,
 			PublisherClaim: claimToProto(spec.Claim),
-		}}}
-		return []*statev1.GossipEvent{change}, []Event{StaticChanged{Name: name}}
+		}
+		if ev, ok := rec.log[attrKey{kind: attrStaticSpec, name: name}]; ok && !ev.Deleted && proto.Equal(ev.GetStaticSpec(), owned) {
+			return nil, nil
+		}
+		return []*statev1.GossipEvent{{Change: &statev1.GossipEvent_StaticSpec{StaticSpec: owned}}}, []Event{StaticChanged{Name: name}}
 	})
 	return events, ownerErr
 }
@@ -460,19 +447,17 @@ func (s *store) SetBlobSpec(spec BlobSpec) ([]Event, error) {
 	if err != nil || len(digest) != sha256Len {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, spec.Digest)
 	}
+	owned := &statev1.BlobSpecChange{
+		Name:           spec.Name,
+		Digest:         digest,
+		PublisherClaim: claimToProto(spec.Claim),
+	}
 	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
 		key := attrKey{kind: attrBlobSpec, name: spec.Digest}
-		if ev, ok := rec.log[key]; ok && !ev.Deleted {
-			if ev.GetBlobSpec().GetName() == spec.Name {
-				return nil, nil
-			}
+		if ev, ok := rec.log[key]; ok && !ev.Deleted && proto.Equal(ev.GetBlobSpec(), owned) {
+			return nil, nil
 		}
-		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_BlobSpec{BlobSpec: &statev1.BlobSpecChange{
-			Name:           spec.Name,
-			Digest:         digest,
-			PublisherClaim: claimToProto(spec.Claim),
-		}}}
-		return []*statev1.GossipEvent{change}, nil
+		return []*statev1.GossipEvent{{Change: &statev1.GossipEvent_BlobSpec{BlobSpec: owned}}}, nil
 	})
 	return events, nil
 }

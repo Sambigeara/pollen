@@ -160,6 +160,106 @@ func TestService_Call_UnknownTarget(t *testing.T) {
 	require.False(t, errors.Is(err, ErrNotRunning), "must not collapse into ErrNotRunning")
 }
 
+// TestService_CallLocal_GateDenies regresses the Codex H1 finding: the
+// workload_call gate must run on local-claimant calls, not just on the
+// inbound stream path. With the gate wired into callLocal, a deny short-
+// circuits before manager.Call so a denied caller can't bypass policy
+// just by being colocated with the target.
+func TestService_CallLocal_GateDenies(t *testing.T) {
+	s := &Service{
+		localID:     peerKey(1),
+		store:       &mockStore{},
+		manager:     newManager(nil, nil),
+		blobs:       &mockBlobs{},
+		gates:       newGateRegistry(1),
+		latency:     newLatencyTracker(),
+		utilisation: newUtilisationTracker(),
+		workloadGate: func(context.Context, wasm.CallerInfo, string) error {
+			return errors.New("policy deny")
+		},
+	}
+
+	_, err := s.callLocal(context.Background(), "deadbeef", "fn", nil)
+	require.ErrorIs(t, err, ErrUnauthorized, "gate denial must surface as ErrUnauthorized so control maps to PermissionDenied")
+}
+
+// TestService_CallLocal_InternalCallSkipsGate ensures the seed-backed
+// PDP path doesn't gate-recurse on its own evaluator. AsSeedCaller
+// stamps the context with the internal-call marker; callLocal must
+// honour it and skip the gate, otherwise wiring workload_call to a
+// seed PDP causes the PDP's evaluator to call its own evaluator,
+// which calls itself, which trips the deny fallback on every call.
+func TestService_CallLocal_InternalCallSkipsGate(t *testing.T) {
+	gateRan := false
+	s := &Service{
+		localID:     peerKey(1),
+		store:       &mockStore{},
+		manager:     newManager(nil, nil),
+		blobs:       &mockBlobs{},
+		gates:       newGateRegistry(1),
+		latency:     newLatencyTracker(),
+		utilisation: newUtilisationTracker(),
+		workloadGate: func(context.Context, wasm.CallerInfo, string) error {
+			gateRan = true
+			return errors.New("policy deny")
+		},
+	}
+
+	ctx := withInternalCall(context.Background())
+	// manager.Call returns ErrNotRunning since no workload is registered;
+	// that's fine — we only need to assert the gate was skipped.
+	_, err := s.callLocal(ctx, "deadbeef", "fn", nil)
+	require.NotErrorIs(t, err, ErrUnauthorized, "internal-call marker must skip the gate")
+	require.False(t, gateRan, "gate must not run for internal calls")
+}
+
+// recordingRuntime stubs WASMRuntime to capture the context that
+// reaches the runtime, so the marker-strip check can observe what
+// flowed through.
+type recordingRuntime struct{ lastCtx context.Context }
+
+func (*recordingRuntime) Compile(context.Context, []byte, string, wasm.PluginConfig) error {
+	return nil
+}
+
+func (r *recordingRuntime) Call(ctx context.Context, _, _ string, _ []byte) ([]byte, error) {
+	r.lastCtx = ctx
+	return nil, nil
+}
+
+func (*recordingRuntime) DropCompiled(context.Context, string) {}
+
+// TestService_CallLocal_InternalCallStrippedBeforeWASM regresses the
+// Codex H4 finding: the internal-call marker must not flow into the
+// WASM execution context, otherwise a PDP's policy code can do
+// pollen_request and inherit the gate bypass for every downstream
+// call. The marker authorises a single gate skip — nothing more.
+func TestService_CallLocal_InternalCallStrippedBeforeWASM(t *testing.T) {
+	const hash = "deadbeef"
+	rt := &recordingRuntime{}
+	mgr := newManager(nil, rt)
+	require.NoError(t, mgr.compileAndRegister(context.Background(), nil, hash, wasm.PluginConfig{}))
+	s := &Service{
+		localID:     peerKey(1),
+		store:       &mockStore{},
+		manager:     mgr,
+		blobs:       &mockBlobs{},
+		gates:       newGateRegistry(1),
+		latency:     newLatencyTracker(),
+		utilisation: newUtilisationTracker(),
+		workloadGate: func(context.Context, wasm.CallerInfo, string) error {
+			t.Fatal("gate must not run for internal calls")
+			return nil
+		},
+	}
+
+	ctx := withInternalCall(context.Background())
+	_, err := s.callLocal(ctx, hash, "fn", nil)
+	require.NoError(t, err)
+	require.NotNil(t, rt.lastCtx, "runtime must have been invoked")
+	require.False(t, isInternalCall(rt.lastCtx), "marker must be stripped before user WASM runs")
+}
+
 // TestService_Call_KnownSpecNoClaimants is the inverse: the spec resolves
 // fine but no node currently claims it. This is transient and must keep
 // returning ErrNotRunning.

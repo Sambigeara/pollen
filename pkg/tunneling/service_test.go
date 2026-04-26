@@ -14,6 +14,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type mockStore struct {
@@ -27,14 +28,14 @@ func (m *mockStore) Snapshot() state.Snapshot {
 	return m.snap
 }
 
-func (m *mockStore) SetService(port uint32, name string, protocol statev1.ServiceProtocol) []state.Event {
+func (m *mockStore) SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) []state.Event {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	nv := m.snap.Nodes[m.snap.LocalID]
 	if nv.Services == nil {
 		nv.Services = make(map[string]*state.Service)
 	}
-	nv.Services[name] = &state.Service{Port: port, Name: name, Protocol: protocol}
+	nv.Services[name] = &state.Service{Port: port, Name: name, Protocol: protocol, Properties: properties}
 	m.snap.Nodes[m.snap.LocalID] = nv
 	return nil
 }
@@ -73,7 +74,7 @@ func TestServiceLifecycle(t *testing.T) {
 	store := &mockStore{snap: state.Snapshot{LocalID: self, Nodes: map[types.PeerKey]state.NodeView{self: {}}}}
 	svc := New(self, store, &mockTransport{}, &mockDatagramTransport{}, &mockRouter{})
 
-	require.NoError(t, svc.ExposeService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP))
+	require.NoError(t, svc.ExposeService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil))
 	require.Len(t, store.Snapshot().Nodes[self].Services, 1)
 
 	require.NoError(t, svc.UnexposeService("web"))

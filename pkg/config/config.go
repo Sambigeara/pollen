@@ -40,9 +40,10 @@ const (
 )
 
 type Service struct {
-	Name     string `yaml:"name"`
-	Protocol string `yaml:"protocol,omitempty"`
-	Port     uint32 `yaml:"port"`
+	Properties map[string]any `yaml:"properties,omitempty"`
+	Name       string         `yaml:"name"`
+	Protocol   string         `yaml:"protocol,omitempty"`
+	Port       uint32         `yaml:"port"`
 }
 
 type Connection struct {
@@ -120,7 +121,7 @@ func Save(pollenDir string, cfg *Config) error {
 	return plnfs.WriteGroupWritable(filepath.Join(pollenDir, configFileName), append([]byte(configHeader), encoded...))
 }
 
-func (c *Config) AddService(name string, port uint32, protocol string) {
+func (c *Config) AddService(name string, port uint32, protocol string, properties map[string]any) {
 	if name == "" {
 		name = strconv.FormatUint(uint64(port), 10)
 	}
@@ -128,10 +129,11 @@ func (c *Config) AddService(name string, port uint32, protocol string) {
 		if s.Name == name {
 			c.Services[i].Port = port
 			c.Services[i].Protocol = protocol
+			c.Services[i].Properties = properties
 			return
 		}
 	}
-	c.Services = append(c.Services, Service{Name: name, Port: port, Protocol: protocol})
+	c.Services = append(c.Services, Service{Name: name, Port: port, Protocol: protocol, Properties: properties})
 }
 
 func (c *Config) RemoveService(name string) {

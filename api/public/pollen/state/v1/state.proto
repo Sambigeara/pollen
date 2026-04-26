@@ -29,6 +29,7 @@ message ServiceChange {
   string name = 1;
   uint32 port = 2;
   ServiceProtocol protocol = 3;
+  google.protobuf.Struct properties = 4;
 }
 
 message ReachabilityChange {

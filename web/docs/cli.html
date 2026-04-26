@@ -156,7 +156,7 @@
     <p>Most pln commands need to know which daemon they're talking to. Named contexts are the primary mechanism. The reserved name <code>default</code> always resolves to the local daemon at <code>$PLN_DIR</code>; add more to point at remote hosts or alternate state directories. Aliased as <code>pln ctx</code>.</p>
 
     <h3 id="context-add"><code>pln context add &lt;name&gt; &lt;target&gt;</code></h3>
-    <p>Targets containing <code>@</code> bind to a remote daemon over SSH; absolute paths bind to a local pln dir.</p>
+    <p>Targets containing <code>@</code> bind to a remote daemon over SSH; absolute paths bind to a local pln dir. Local named contexts get a free UDP port assigned automatically so they coexist with the default-context daemon without colliding on <code>:60611</code>.</p>
     <dl class="flags">
       <dt>--from &lt;dir|default&gt;</dt><dd>For remote contexts: import an existing admin keypair so this shell can act as admin.</dd>
     </dl>
@@ -222,7 +222,7 @@ pln up -d --name relay --public</code></pre>
       <dt>--memory, --mem &lt;size&gt;</dt><dd>Workload only. Memory limit (e.g. <code>64MiB</code>, <code>1GiB</code>). Default 64MiB.</dd>
       <dt>--timeout &lt;dur&gt;</dt><dd>Workload only. Per-invocation timeout (e.g. <code>500ms</code>, <code>5s</code>).</dd>
       <dt>--latency-slo &lt;dur&gt;</dt><dd>Workload only. Caller-perspective SLO; drives autoscale via burn rate.</dd>
-      <dt>--prop key=val</dt><dd>Publisher properties baked into the cert. Repeatable. Accepts JSON or <code>-</code> for stdin.</dd>
+      <dt>--prop key=val</dt><dd>Publisher claim signed onto the spec. Surfaces to gates as <code>resource.properties</code>. Repeatable. Accepts JSON or <code>-</code> for stdin.</dd>
     </dl>
     <pre><code>pln seed ./hello.wasm                       <span class="c"># workload</span>
 pln seed ./hello.wasm greeter --everywhere
@@ -258,9 +258,11 @@ cat payload.json | pln call hello greet</code></pre>
     <p>Register a local TCP (or UDP) port as a mesh service. Persisted to <code>config.yaml</code>.</p>
     <dl class="flags">
       <dt>--udp</dt><dd>Expose as a UDP service.</dd>
+      <dt>--prop key=val</dt><dd>Publisher property; repeatable. Accepts JSON (<code>--prop '{"public":true}'</code>) for non-string values. Reaches the <code>service_connect</code> gate as <code>resource.properties</code>.</dd>
     </dl>
     <pre><code>pln serve 8080 api
-pln serve 5353 dns --udp</code></pre>
+pln serve 5353 dns --udp
+pln serve 9000 internal --prop '{"public":true}'</code></pre>
 
     <h3 id="unserve"><code>pln unserve &lt;port|name&gt;</code></h3>
     <p>Unregister a local mesh service. Removes it from <code>config.yaml</code>; open tunnels from peers terminate.</p>
@@ -332,7 +334,7 @@ echo "media=alice@10.0.0.5" | pln bootstrap ssh -</code></pre>
     <h3 id="status"><code>pln status [nodes|services|seeds|static|blobs]</code></h3>
     <p>Render an overview of the cluster from this node's perspective. Optionally restrict to a single section.</p>
     <dl class="flags">
-      <dt>--wide</dt><dd>Full peer IDs and extra columns.</dd>
+      <dt>--wide</dt><dd>Full peer IDs, plus per-peer metrics (CPU, memory, latency, throughput).</dd>
       <dt>--include-offline</dt><dd>Include offline peers, services, and orphaned blobs.</dd>
     </dl>
     <pre><code>pln status

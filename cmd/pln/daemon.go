@@ -24,6 +24,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
@@ -332,7 +333,15 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 
 	initialServices := make([]supervisor.ServiceEntry, 0, len(env.cfg.Services))
 	for _, svc := range env.cfg.Services {
-		initialServices = append(initialServices, supervisor.ServiceEntry{Name: svc.Name, Port: svc.Port, Protocol: configProtocolToProto(svc.Protocol)})
+		var props *structpb.Struct
+		if len(svc.Properties) > 0 {
+			s, err := structpb.NewStruct(svc.Properties)
+			if err != nil {
+				return fmt.Errorf("invalid service %q properties: %w", svc.Name, err)
+			}
+			props = s
+		}
+		initialServices = append(initialServices, supervisor.ServiceEntry{Name: svc.Name, Port: svc.Port, Protocol: configProtocolToProto(svc.Protocol), Properties: props})
 	}
 
 	// Written by SeedCallerSink during supervisor.New, before n.Run

@@ -19,6 +19,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 const (
@@ -39,7 +40,7 @@ type TunnelingAPI interface {
 	Stop() error
 	Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) (uint32, error)
 	Disconnect(service string) error
-	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol) error
+	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) error
 	UnexposeService(name string) error
 	ListConnections() []ConnectionInfo
 	Serve(stream io.ReadWriteCloser, peer types.PeerKey, port uint32)
@@ -54,7 +55,7 @@ type TunnelingAPI interface {
 
 type ServiceState interface {
 	Snapshot() state.Snapshot
-	SetService(port uint32, name string, protocol statev1.ServiceProtocol) []state.Event
+	SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) []state.Event
 	RemoveService(name string) []state.Event
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []state.Event
 }
@@ -153,7 +154,7 @@ func (s *Service) Start(ctx context.Context) error {
 	snap := s.store.Snapshot()
 	for _, svc := range snap.Services() {
 		if svc.Peer == s.self {
-			_ = s.ExposeService(svc.Port, svc.Name, svc.Protocol)
+			_ = s.ExposeService(svc.Port, svc.Name, svc.Protocol, svc.Properties)
 		}
 	}
 
@@ -230,7 +231,7 @@ func (s *Service) Disconnect(service string) error {
 	return fmt.Errorf("no connection for service %q", service)
 }
 
-func (s *Service) ExposeService(port uint32, name string, protocol statev1.ServiceProtocol) error {
+func (s *Service) ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -248,7 +249,7 @@ func (s *Service) ExposeService(port uint32, name string, protocol statev1.Servi
 		entry.proxy = newUDPServiceProxy(ctx, port, s.datagrams)
 	}
 	s.services[sk] = entry
-	s.store.SetService(port, name, protocol)
+	s.store.SetService(port, name, protocol, properties)
 	return nil
 }
 

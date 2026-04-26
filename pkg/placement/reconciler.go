@@ -199,6 +199,33 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		r.cleanupStaleClaims(snap.Claims)
 	}
 
+	// Re-evaluate seed_placement for claims this node currently holds.
+	// If the publisher updated the spec to a state the gate now denies
+	// (e.g. flipped `place_locked: true`), release the claim — otherwise
+	// initial-only gating leaves stale claims live forever.
+	if r.authz != nil {
+		for hash, claimants := range snap.Claims {
+			if _, mine := claimants[r.localID]; !mine {
+				continue
+			}
+			sv, ok := snap.Specs[hash]
+			if !ok {
+				continue
+			}
+			req := evaluator.Request{
+				Subject:  evaluator.SubjectFromPeerKey(r.localID, nil),
+				Action:   evaluator.Action{Name: "place"},
+				Resource: evaluator.NewResource(evaluator.ResourceSeed, hash, sv.Spec.Claim.GetProperties()),
+			}
+			if err := r.authz.Allow(ctx, evaluator.GateSeedPlacement, req); err != nil {
+				r.log.Infow("seed_placement now denied — releasing claim", "hash", types.ShortHash(hash), "err", err)
+				r.executeRelease(hash)
+			}
+		}
+		// Snapshot is stale after releases; refresh.
+		snap = r.store.Snapshot()
+	}
+
 	cluster := buildClusterState(snap)
 
 	// When multiple specs share a name, only schedule the deterministic

@@ -1,0 +1,88 @@
+rules:
+  # blob_fetch — public:true allows
+  - match:
+      action.name: fetch
+      resource.type: blob
+      resource.properties.public: true
+    decision: allow
+    reason: blob marked public
+
+  - match:
+      action.name: fetch
+      resource.type: blob
+    decision: deny
+    reason: blob not marked public
+
+  # workload_call — locked:true denies
+  - match:
+      action.name: call
+      resource.type: seed
+      resource.properties.locked: true
+    decision: deny
+    reason: seed locked
+
+  - match:
+      action.name: call
+      resource.type: seed
+    decision: allow
+
+  # service_connect — public:true allows
+  - match:
+      action.name: connect
+      resource.type: service
+      resource.properties.public: true
+    decision: allow
+    reason: service marked public
+
+  - match:
+      action.name: connect
+      resource.type: service
+    decision: deny
+    reason: service not marked public
+
+  # spec_publish — publish_locked:true denies
+  - match:
+      action.name: publish
+      resource.properties.publish_locked: true
+    decision: deny
+    reason: publish denied — publish_locked
+
+  - match:
+      action.name: publish
+    decision: allow
+
+  # seed_placement — place_locked:true denies (covers both seed and static)
+  - match:
+      action.name: place
+      resource.properties.place_locked: true
+    decision: deny
+    reason: placement denied — place_locked
+
+  - match:
+      action.name: place
+    decision: allow
+
+  # grant_issue — issue_locked:true denies issuance, renew_locked:true denies renewal
+  - match:
+      action.name: issue
+      resource.type: cert
+      resource.properties.issue_locked: true
+    decision: deny
+    reason: issue denied — issue_locked
+
+  - match:
+      action.name: renew
+      resource.type: cert
+      resource.properties.renew_locked: true
+    decision: deny
+    reason: renew denied — renew_locked
+
+  - match:
+      action.name: issue
+      resource.type: cert
+    decision: allow
+
+  - match:
+      action.name: renew
+      resource.type: cert
+    decision: allow

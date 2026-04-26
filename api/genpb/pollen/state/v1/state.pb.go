@@ -176,6 +176,7 @@ type ServiceChange struct {
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Port          uint32                 `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
 	Protocol      ServiceProtocol        `protobuf:"varint,3,opt,name=protocol,proto3,enum=pollen.state.v1.ServiceProtocol" json:"protocol,omitempty"`
+	Properties    *structpb.Struct       `protobuf:"bytes,4,opt,name=properties,proto3" json:"properties,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -229,6 +230,13 @@ func (x *ServiceChange) GetProtocol() ServiceProtocol {
 		return x.Protocol
 	}
 	return ServiceProtocol_SERVICE_PROTOCOL_UNSPECIFIED
+}
+
+func (x *ServiceChange) GetProperties() *structpb.Struct {
+	if x != nil {
+		return x.Properties
+	}
+	return nil
 }
 
 type ReachabilityChange struct {
@@ -2343,11 +2351,14 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\n" +
 	"PeersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x121\n" +
-	"\x05value\x18\x02 \x01(\v2\x1b.pollen.state.v1.PeerDigestR\x05value:\x028\x01\"u\n" +
+	"\x05value\x18\x02 \x01(\v2\x1b.pollen.state.v1.PeerDigestR\x05value:\x028\x01\"\xae\x01\n" +
 	"\rServiceChange\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\rR\x04port\x12<\n" +
-	"\bprotocol\x18\x03 \x01(\x0e2 .pollen.state.v1.ServiceProtocolR\bprotocol\"J\n" +
+	"\bprotocol\x18\x03 \x01(\x0e2 .pollen.state.v1.ServiceProtocolR\bprotocol\x127\n" +
+	"\n" +
+	"properties\x18\x04 \x01(\v2\x17.google.protobuf.StructR\n" +
+	"properties\"J\n" +
 	"\x12ReachabilityChange\x124\n" +
 	"\apeer_id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x06peerId\"@\n" +
 	"\rNetworkChange\x12\x10\n" +
@@ -2562,46 +2573,47 @@ var file_pollen_state_v1_state_proto_goTypes = []any{
 var file_pollen_state_v1_state_proto_depIdxs = []int32{
 	35, // 0: pollen.state.v1.Digest.peers:type_name -> pollen.state.v1.Digest.PeersEntry
 	0,  // 1: pollen.state.v1.ServiceChange.protocol:type_name -> pollen.state.v1.ServiceProtocol
-	37, // 2: pollen.state.v1.PublisherClaim.properties:type_name -> google.protobuf.Struct
-	13, // 3: pollen.state.v1.WorkloadSpecChange.publisher_claim:type_name -> pollen.state.v1.PublisherClaim
-	36, // 4: pollen.state.v1.SeedMetricsChange.seeds:type_name -> pollen.state.v1.SeedMetricsChange.SeedsEntry
-	13, // 5: pollen.state.v1.StaticSpecChange.publisher_claim:type_name -> pollen.state.v1.PublisherClaim
-	13, // 6: pollen.state.v1.BlobSpecChange.publisher_claim:type_name -> pollen.state.v1.PublisherClaim
-	21, // 7: pollen.state.v1.StaticManifest.paths:type_name -> pollen.state.v1.StaticPath
-	24, // 8: pollen.state.v1.TrafficHeatmapChange.rates:type_name -> pollen.state.v1.TrafficRate
-	5,  // 9: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
-	6,  // 10: pollen.state.v1.GossipEvent.observed_address:type_name -> pollen.state.v1.ObservedAddressChange
-	9,  // 11: pollen.state.v1.GossipEvent.cert_expiry:type_name -> pollen.state.v1.CertExpiryChange
-	3,  // 12: pollen.state.v1.GossipEvent.service:type_name -> pollen.state.v1.ServiceChange
-	4,  // 13: pollen.state.v1.GossipEvent.reachability:type_name -> pollen.state.v1.ReachabilityChange
-	7,  // 14: pollen.state.v1.GossipEvent.publicly_accessible:type_name -> pollen.state.v1.PubliclyAccessibleChange
-	8,  // 15: pollen.state.v1.GossipEvent.vivaldi:type_name -> pollen.state.v1.VivaldiCoordinateChange
-	11, // 16: pollen.state.v1.GossipEvent.nat_type:type_name -> pollen.state.v1.NatTypeChange
-	12, // 17: pollen.state.v1.GossipEvent.resource_telemetry:type_name -> pollen.state.v1.ResourceTelemetryChange
-	10, // 18: pollen.state.v1.GossipEvent.deny:type_name -> pollen.state.v1.DenyChange
-	14, // 19: pollen.state.v1.GossipEvent.workload_spec:type_name -> pollen.state.v1.WorkloadSpecChange
-	23, // 20: pollen.state.v1.GossipEvent.workload_claim:type_name -> pollen.state.v1.WorkloadClaimChange
-	25, // 21: pollen.state.v1.GossipEvent.traffic_heatmap:type_name -> pollen.state.v1.TrafficHeatmapChange
-	26, // 22: pollen.state.v1.GossipEvent.heartbeat:type_name -> pollen.state.v1.HeartbeatChange
-	27, // 23: pollen.state.v1.GossipEvent.admin_capable:type_name -> pollen.state.v1.AdminCapableChange
-	29, // 24: pollen.state.v1.GossipEvent.node_name:type_name -> pollen.state.v1.NodeNameChange
-	16, // 25: pollen.state.v1.GossipEvent.seed_metrics:type_name -> pollen.state.v1.SeedMetricsChange
-	17, // 26: pollen.state.v1.GossipEvent.blob_availability:type_name -> pollen.state.v1.BlobAvailabilityChange
-	18, // 27: pollen.state.v1.GossipEvent.static_spec:type_name -> pollen.state.v1.StaticSpecChange
-	19, // 28: pollen.state.v1.GossipEvent.static_claim:type_name -> pollen.state.v1.StaticClaimChange
-	20, // 29: pollen.state.v1.GossipEvent.blob_spec:type_name -> pollen.state.v1.BlobSpecChange
-	28, // 30: pollen.state.v1.GossipEvent.static_capable:type_name -> pollen.state.v1.StaticCapableChange
-	30, // 31: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
-	33, // 32: pollen.state.v1.RuntimeState.peers:type_name -> pollen.state.v1.PeerState
-	34, // 33: pollen.state.v1.RuntimeState.consumed_invites:type_name -> pollen.state.v1.ConsumedInvite
-	14, // 34: pollen.state.v1.RuntimeState.workload_specs:type_name -> pollen.state.v1.WorkloadSpecChange
-	1,  // 35: pollen.state.v1.Digest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
-	15, // 36: pollen.state.v1.SeedMetricsChange.SeedsEntry.value:type_name -> pollen.state.v1.SeedMetrics
-	37, // [37:37] is the sub-list for method output_type
-	37, // [37:37] is the sub-list for method input_type
-	37, // [37:37] is the sub-list for extension type_name
-	37, // [37:37] is the sub-list for extension extendee
-	0,  // [0:37] is the sub-list for field type_name
+	37, // 2: pollen.state.v1.ServiceChange.properties:type_name -> google.protobuf.Struct
+	37, // 3: pollen.state.v1.PublisherClaim.properties:type_name -> google.protobuf.Struct
+	13, // 4: pollen.state.v1.WorkloadSpecChange.publisher_claim:type_name -> pollen.state.v1.PublisherClaim
+	36, // 5: pollen.state.v1.SeedMetricsChange.seeds:type_name -> pollen.state.v1.SeedMetricsChange.SeedsEntry
+	13, // 6: pollen.state.v1.StaticSpecChange.publisher_claim:type_name -> pollen.state.v1.PublisherClaim
+	13, // 7: pollen.state.v1.BlobSpecChange.publisher_claim:type_name -> pollen.state.v1.PublisherClaim
+	21, // 8: pollen.state.v1.StaticManifest.paths:type_name -> pollen.state.v1.StaticPath
+	24, // 9: pollen.state.v1.TrafficHeatmapChange.rates:type_name -> pollen.state.v1.TrafficRate
+	5,  // 10: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
+	6,  // 11: pollen.state.v1.GossipEvent.observed_address:type_name -> pollen.state.v1.ObservedAddressChange
+	9,  // 12: pollen.state.v1.GossipEvent.cert_expiry:type_name -> pollen.state.v1.CertExpiryChange
+	3,  // 13: pollen.state.v1.GossipEvent.service:type_name -> pollen.state.v1.ServiceChange
+	4,  // 14: pollen.state.v1.GossipEvent.reachability:type_name -> pollen.state.v1.ReachabilityChange
+	7,  // 15: pollen.state.v1.GossipEvent.publicly_accessible:type_name -> pollen.state.v1.PubliclyAccessibleChange
+	8,  // 16: pollen.state.v1.GossipEvent.vivaldi:type_name -> pollen.state.v1.VivaldiCoordinateChange
+	11, // 17: pollen.state.v1.GossipEvent.nat_type:type_name -> pollen.state.v1.NatTypeChange
+	12, // 18: pollen.state.v1.GossipEvent.resource_telemetry:type_name -> pollen.state.v1.ResourceTelemetryChange
+	10, // 19: pollen.state.v1.GossipEvent.deny:type_name -> pollen.state.v1.DenyChange
+	14, // 20: pollen.state.v1.GossipEvent.workload_spec:type_name -> pollen.state.v1.WorkloadSpecChange
+	23, // 21: pollen.state.v1.GossipEvent.workload_claim:type_name -> pollen.state.v1.WorkloadClaimChange
+	25, // 22: pollen.state.v1.GossipEvent.traffic_heatmap:type_name -> pollen.state.v1.TrafficHeatmapChange
+	26, // 23: pollen.state.v1.GossipEvent.heartbeat:type_name -> pollen.state.v1.HeartbeatChange
+	27, // 24: pollen.state.v1.GossipEvent.admin_capable:type_name -> pollen.state.v1.AdminCapableChange
+	29, // 25: pollen.state.v1.GossipEvent.node_name:type_name -> pollen.state.v1.NodeNameChange
+	16, // 26: pollen.state.v1.GossipEvent.seed_metrics:type_name -> pollen.state.v1.SeedMetricsChange
+	17, // 27: pollen.state.v1.GossipEvent.blob_availability:type_name -> pollen.state.v1.BlobAvailabilityChange
+	18, // 28: pollen.state.v1.GossipEvent.static_spec:type_name -> pollen.state.v1.StaticSpecChange
+	19, // 29: pollen.state.v1.GossipEvent.static_claim:type_name -> pollen.state.v1.StaticClaimChange
+	20, // 30: pollen.state.v1.GossipEvent.blob_spec:type_name -> pollen.state.v1.BlobSpecChange
+	28, // 31: pollen.state.v1.GossipEvent.static_capable:type_name -> pollen.state.v1.StaticCapableChange
+	30, // 32: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
+	33, // 33: pollen.state.v1.RuntimeState.peers:type_name -> pollen.state.v1.PeerState
+	34, // 34: pollen.state.v1.RuntimeState.consumed_invites:type_name -> pollen.state.v1.ConsumedInvite
+	14, // 35: pollen.state.v1.RuntimeState.workload_specs:type_name -> pollen.state.v1.WorkloadSpecChange
+	1,  // 36: pollen.state.v1.Digest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
+	15, // 37: pollen.state.v1.SeedMetricsChange.SeedsEntry.value:type_name -> pollen.state.v1.SeedMetrics
+	38, // [38:38] is the sub-list for method output_type
+	38, // [38:38] is the sub-list for method input_type
+	38, // [38:38] is the sub-list for extension type_name
+	38, // [38:38] is the sub-list for extension extendee
+	0,  // [0:38] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_state_proto_init() }

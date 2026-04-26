@@ -9,6 +9,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/wasm"
 )
@@ -49,3 +50,16 @@ func (*NoopService) Serve(stream io.ReadWriteCloser, _ wasm.CallerInfo, _, _ str
 }
 
 func (*NoopService) Signal() {}
+
+// AsSeedCaller satisfies PlacementAPI on relay-only nodes. The real
+// Service wraps Call to stamp an internal-call marker so the gate
+// router can invoke its own evaluator without recursing — relay-only
+// nodes never dispatch a workload anyway, so there's no recursion to
+// guard against and no marker to add. Returning the receiver works
+// because (*NoopService).Call already satisfies evaluator.Caller.
+//
+// Operational note: a relay-only node can't run a seed-backed PDP, so
+// every gate wired to one falls back to the router's configured
+// fallback decision. If a relay needs to enforce policy, bind its
+// gates to attribute_matcher instead.
+func (n *NoopService) AsSeedCaller() evaluator.Caller { return n }

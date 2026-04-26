@@ -177,7 +177,7 @@ pln join &lt;token&gt;</code></pre>
 pln call hello greet '{"name":"world"}'</code></pre>
     <p><code>pln seed</code> publishes content. The kind is autodetected from the source: a <code>.wasm</code> file becomes a workload, a directory becomes a static site, anything else becomes a blob. Pass an optional name as the second arg.</p>
     <p>Replicas land on whichever nodes have capacity and proximity. There's no scheduler; every node decides locally. Tune with <code>--min-replicas</code>, <code>--everywhere</code>, <code>--memory</code>, <code>--latency-slo</code>.</p>
-    <div class="note"><strong>Authoring.</strong> Workloads are <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism plugins</a>. Author them in Go, Rust, JavaScript, Python, C#, Zig, and more. One host call lets a workload invoke another (<code>seed/&lt;name&gt;/&lt;fn&gt;</code>), so authz, routing, and policy can live inside WASM.</div>
+    <div class="note"><strong>Authoring.</strong> Workloads are <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism plugins</a>. Author them in Go, Rust, JavaScript, Python, C#, Zig, and more. One host call lets a workload invoke another (<code>pln://seed/&lt;name&gt;/&lt;fn&gt;</code>), so authz, routing, and policy can live inside WASM.</div>
 
     <h2 id="expose-a-service">Expose a service</h2>
     <pre><code><span class="c"># machine A</span>
@@ -189,7 +189,7 @@ curl localhost:8080</code></pre>
 
     <h2 id="publish-a-site">Publish a site</h2>
     <pre><code>pln seed ./public my-site</code></pre>
-    <p>Walks the directory, hashes every file, and gossips them. Other nodes claim the site according to <code>--min-replicas</code> and serve it on <code>:8080</code> (routed by Host header).</p>
+    <p>Walks the directory, hashes every file, and gossips them. Other nodes claim the site according to <code>--min-replicas</code> and serve it on <code>:8080</code> (routed by <code>Host</code> header). Override the port with <code>pln set static-http :9000</code>.</p>
     <pre><code>curl -H "Host: my-site" http://&lt;node-addr&gt;:8080/</code></pre>
     <p>Re-running the same command is idempotent: it supersedes the existing site with a fresh manifest. Old blobs are GC'd once no spec references them.</p>
 
@@ -202,37 +202,66 @@ pln unseed payload           <span class="c"># drop the name + bytes</span></cod
 
     <h2 id="day-two">Day two</h2>
     <ul>
-      <li><code>pln status</code> shows peers, services, seeds, sites, and blobs. Use <code>--wide</code> for full IDs, <code>--include-offline</code> to see departed peers.</li>
+      <li><code>pln status</code> shows peers, services, seeds, sites, and blobs. Use <code>--wide</code> for full IDs and metrics, <code>--include-offline</code> to see departed peers and orphaned blobs.</li>
       <li><code>pln logs -f</code> tails the background daemon's log.</li>
       <li><code>pln daemon upgrade --restart</code> pulls the latest binary and bounces the service.</li>
-      <li><code>pln set</code> changes daemon config like HTTP bind or log level. Run with no args to list keys.</li>
+      <li><code>pln set</code> changes daemon config: <code>http</code>, <code>static-http</code>, <code>control-addr</code>, <code>log-level</code>. Run with no args to list keys; restart to rebind listeners.</li>
       <li><code>pln context</code> switches your admin shell between clusters or remote hosts.</li>
+      <li><code>pln deny &lt;peer-id&gt;</code> revokes a peer's membership and tears down its connections.</li>
       <li><code>pln down</code> and <code>pln restart</code> stop or restart the local node.</li>
     </ul>
 
     <h2 id="authorisation">Authorisation</h2>
-    <p>Every link is mTLS. On top of that, two extension points let you decide who can do what: cert <strong>properties</strong> baked into each issued cert flow into authorisation requests, and a <strong>gate router</strong> dispatches each protected operation through the evaluator of your choice — built-in YAML matcher or a WASM PDP.</p>
+    <p>Every link is mTLS. On top of that, two extension points let you decide who can do what:</p>
+    <ul>
+      <li><strong>Publisher claims</strong>. Whoever seeds a resource (<code>pln seed</code>, <code>pln serve</code>) signs a property bag onto it. Replicas carry the claim with them; gates read its properties when deciding.</li>
+      <li><strong>Cert properties</strong>. Each delegation cert carries its own attributes. Gates read them as the subject's properties; workloads read them via <code>pollen_caller_info()</code>.</li>
+    </ul>
+    <p>A <strong>gate router</strong> sits between every protected operation and these inputs. Each gate binds independently to one evaluator — built-in YAML matcher, or a WASM PDP — so you can mix policy languages on a single cluster.</p>
 
-    <h3>Cert properties</h3>
-    <p>Properties baked into a delegation cert are visible to seeds at call time, so admission, routing, and policy can run inside WASM without sharing secrets.</p>
+    <h3 id="cert-properties">Cert properties</h3>
+    <p>Bake attributes into a delegation cert at issue time. They flow to gates as <code>subject.properties</code> and are visible to workloads at call time.</p>
     <pre><code>pln grant &lt;peer-id&gt; --prop role=lead --prop team=backend
 pln invite --prop tier=gold      <span class="c"># bake at join time</span></code></pre>
 
-    <h3>Gates</h3>
-    <p>Every protected operation runs through a named gate. Each gate independently binds to one evaluator; unbound gates fall through to the configured default.</p>
-    <ul>
-      <li><code>blob_fetch</code> — peer-to-peer blob downloads.</li>
-      <li><code>workload_call</code> — incoming WASM invocations.</li>
-      <li><code>service_connect</code> — inbound tunnel connects (by service name, not port).</li>
-      <li><code>spec_publish</code>, <code>grant_issue</code>, <code>seed_placement</code> — reserved for forthcoming hooks.</li>
-    </ul>
+    <h3 id="publisher-claims">Publisher claims</h3>
+    <p>Every <code>pln seed</code> and <code>pln serve</code> attaches publisher properties to the spec. They flow to gates as <code>resource.properties</code>. A gate sees the same value the operator set, regardless of which peer is currently holding the replica.</p>
+    <pre><code>pln seed ./img.bin asset --prop '{"public":true}'
+pln seed ./hello.wasm api --prop '{"locked":false}'
+pln serve 8080 internal --prop '{"public":true}'</code></pre>
+    <div class="note"><strong>String vs. typed values.</strong> <code>--prop k=v</code> always parses <code>v</code> as a string. For booleans and numbers, use the JSON form: <code>--prop '{"public":true}'</code>. The <a href="https://github.com/sambigeara/pollen/tree/main/examples/cerbos">cerbos example</a> uses booleans, so the JSON form is what most policies will want.</div>
+
+    <h3 id="gates">Gates</h3>
+    <p>Six gates cover the protected surface. Each one fires before the operation completes; a deny short-circuits with no side effect. Specs and certs that the gate denies are held — a later allow (after a cert renewal or a reseed without the deny prop) lets the operation through.</p>
+    <table style="font-size: 0.92rem; line-height: 1.5; border-collapse: collapse; margin: 0 0 1.25rem; max-width: 70ch;">
+      <thead>
+        <tr style="border-bottom: 1px solid var(--rule);">
+          <th style="text-align: left; padding: 0.4rem 0.75rem 0.4rem 0; font-weight: 600;">Gate</th>
+          <th style="text-align: left; padding: 0.4rem 0.75rem; font-weight: 600;">Action(s)</th>
+          <th style="text-align: left; padding: 0.4rem 0; font-weight: 600;">Fires when</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom: 1px solid var(--rule);"><td style="padding: 0.4rem 0.75rem 0.4rem 0;"><code>blob_fetch</code></td><td style="padding: 0.4rem 0.75rem;"><code>fetch</code></td><td style="padding: 0.4rem 0;">a peer requests a blob from this node</td></tr>
+        <tr style="border-bottom: 1px solid var(--rule);"><td style="padding: 0.4rem 0.75rem 0.4rem 0;"><code>workload_call</code></td><td style="padding: 0.4rem 0.75rem;"><code>call</code></td><td style="padding: 0.4rem 0;">a workload invocation lands on this node, whether routed locally or forwarded from a peer</td></tr>
+        <tr style="border-bottom: 1px solid var(--rule);"><td style="padding: 0.4rem 0.75rem 0.4rem 0;"><code>service_connect</code></td><td style="padding: 0.4rem 0.75rem;"><code>connect</code></td><td style="padding: 0.4rem 0;">a peer opens a tunnel to a service on this node (matched by service name, not port)</td></tr>
+        <tr style="border-bottom: 1px solid var(--rule);"><td style="padding: 0.4rem 0.75rem 0.4rem 0;"><code>spec_publish</code></td><td style="padding: 0.4rem 0.75rem;"><code>publish</code></td><td style="padding: 0.4rem 0;">an admin publishes a workload, blob, static site, or service spec on this node</td></tr>
+        <tr style="border-bottom: 1px solid var(--rule);"><td style="padding: 0.4rem 0.75rem 0.4rem 0;"><code>seed_placement</code></td><td style="padding: 0.4rem 0.75rem;"><code>place</code></td><td style="padding: 0.4rem 0;">this node decides to claim a workload or static-site spec; re-evaluated on every reconciler tick, so a publisher flipping <code>place_locked</code> later releases stale claims</td></tr>
+        <tr><td style="padding: 0.4rem 0.75rem 0.4rem 0;"><code>grant_issue</code></td><td style="padding: 0.4rem 0.75rem;"><code>issue</code>, <code>renew</code></td><td style="padding: 0.4rem 0;">a delegation cert is issued (admin-side push) or renewed (peer-side request)</td></tr>
+      </tbody>
+    </table>
     <p>Bind gates in <code>config.yaml</code>; restart the daemon to apply:</p>
     <pre><code>evaluator:
   default: allow_all                <span class="c"># fall-through for unbound gates</span>
+  matcherRules: /etc/pln/rules.yaml <span class="c"># required if any gate uses attribute_matcher</span>
   gates:
-    blob_fetch: attribute_matcher
+    blob_fetch: seed/cerbos-pdp     <span class="c"># PDP for data-plane denies</span>
     workload_call: seed/cerbos-pdp
-  matcherRules: /etc/pln/rules.yaml <span class="c"># required if any gate uses attribute_matcher</span></code></pre>
+    service_connect: seed/cerbos-pdp
+    spec_publish: seed/cerbos-pdp
+    seed_placement: attribute_matcher  <span class="c"># keep these on YAML; see the caveat below</span>
+    grant_issue: attribute_matcher</code></pre>
+    <div class="note"><strong>Bootstrap caveat.</strong> A PDP that lives as a seed needs <code>seed_placement</code> to be reachable before it can be claimed. Wiring <code>seed_placement: seed/&lt;your-pdp&gt;</code> creates a chicken-and-egg: the PDP can never be placed because the gate has no PDP to consult. Keep <code>seed_placement</code> (and <code>grant_issue</code>, since cert issuance is part of bootstrap) on <code>attribute_matcher</code> or <code>allow_all</code>. Data-plane gates (<code>blob_fetch</code>, <code>workload_call</code>, <code>service_connect</code>, <code>spec_publish</code>) are safe to delegate to a seed PDP.</div>
 
     <h3 id="authz-request">Authorisation request</h3>
     <p>Both evaluators see the same <a href="https://openid.net/specs/authorization-api-1_0.html">AuthZen-shaped</a> envelope. The router populates it from the in-flight operation:</p>
@@ -241,21 +270,23 @@ pln invite --prop tier=gold      <span class="c"># bake at join time</span></cod
   "action":   {"name": "fetch"},
   "resource": {"type": "blob", "id": "&lt;hash&gt;",   "properties": {"public": true}}
 }</code></pre>
-    <p><code>subject.type</code> is <code>peer</code> for direct callers (properties = the peer's delegation-cert attributes) or <code>seed</code> when a workload calls another via <code>OnBehalfOf</code> (properties = the publisher's claim). <code>resource.properties</code> are the publisher's <code>--prop</code> values verbatim.</p>
+    <p><code>subject.type</code> is <code>peer</code> for direct callers (properties = the peer's delegation-cert attributes) or <code>seed</code> when a workload calls another via <code>OnBehalfOf</code> (properties = the calling seed's publisher claim, verified against cluster state before any seed-typed attribution is trusted). <code>resource.properties</code> are the publisher's <code>--prop</code> values verbatim.</p>
+    <p><code>action.name</code> is one of <code>fetch</code>, <code>call</code>, <code>connect</code>, <code>publish</code>, <code>place</code>, <code>issue</code>, <code>renew</code>. <code>resource.type</code> is one of <code>blob</code>, <code>seed</code>, <code>static</code>, <code>service</code>, <code>cert</code>.</p>
 
     <h3 id="attribute-matcher">Attribute matcher</h3>
-    <p>YAML rules that match on dot-separated paths into the request. First rule whose match clause holds wins; no match falls through to deny. Scalar values match by equality; list values are any-of. Suitable for simple role-based and tag-based policy.</p>
+    <p>YAML rules that match on dot-separated paths into the request. First rule whose match clause holds wins; no match falls through to deny. Scalar values match by equality; list values are any-of. Suitable for simple role-based and tag-based policy, plus the bootstrap-sensitive gates that can't depend on a seed PDP.</p>
     <pre><code><span class="c"># /etc/pln/rules.yaml — referenced by evaluator.matcherRules in config.yaml.</span>
 rules:
-  - match:
-      subject.properties.role: admin
-    decision: allow
-    reason: admins have full access
-
   - match:
       action.name: fetch
       resource.properties.public: true
     decision: allow
+
+  - match:
+      action.name: place
+      resource.properties.place_locked: true
+    decision: deny
+    reason: placement denied — place_locked
 
   - match:
       action.name: connect
@@ -266,7 +297,7 @@ rules:
   - match: {}
     decision: deny
     reason: default deny</code></pre>
-    <p class="aside">Rules reload on <code>SIGHUP</code> — edit, send the signal, no restart. Malformed files leave the previous rules in place. The matcher is opt-out of decision caching; expensive evaluators (PDP seeds, remote services) keep the default 1s cache.</p>
+    <p class="aside">Rules reload on <code>SIGHUP</code> — edit, send the signal, no restart. Malformed files leave the previous rules in place. The matcher opts out of decision caching; expensive evaluators (PDP seeds, remote services) keep the default 1s cache. A complete ruleset covering every gate lives at <a href="https://github.com/sambigeara/pollen/blob/main/examples/matcher/rules.yaml">examples/matcher/rules.yaml</a>.</p>
 
     <h3 id="pdp-seed">PDP seed</h3>
     <p>For policy that outgrows YAML — derived roles, conditions, query plans — point a gate at a WASM seed. The router dispatches each decision over <code>seed/&lt;name&gt;/check</code> with the request envelope as JSON input; the seed returns a JSON decision. A circuit breaker isolates a misbehaving PDP after five consecutive failures.</p>
@@ -281,13 +312,15 @@ evaluator:
     <pre><code>{"decision": true,  "context": {"reason_admin": "EFFECT_ALLOW"}}
 {"decision": false, "context": {"reason_user": "team mismatch"}}</code></pre>
     <p><code>context.reason_user</code> is surfaced to the denied caller; <code>context.reason_admin</code> is for operator logs. A worked example using Cerbos lives at <a href="https://github.com/sambigeara/pollen/tree/main/examples/cerbos">examples/cerbos</a> — it serves both application authz (a workload calling <code>seed/cerbos-pdp/check</code> from a protected endpoint) and cluster gates (the same WASM bound to <code>gates.blob_fetch</code>) from one policy bundle.</p>
+    <p class="aside">Pollen short-circuits the obvious self-recursion: when an evaluator is a seed, calls from the gate to that seed bypass the gate so the PDP can answer questions about itself without recursing. App-side calls to the same PDP (e.g. a workload doing its own <code>pollen_request("pln://seed/cerbos-pdp/check")</code>) are gated normally.</p>
 
     <h3 id="inspect-a-gate">Inspect a gate</h3>
-    <p>Dry-run a request through the live router without any side effect. Useful for confirming a policy edit before traffic hits it, and for debugging unexpected denies.</p>
+    <p>Dry-run a request through the live router without any side effect. The daemon answers from its running router (same rules, same matcher, same PDP) without dispatching the underlying operation.</p>
     <pre><code>pln policy check workload_call \
   --subject peer:a9b8... --subject-prop role=lead \
   --action call \
-  --resource seed:deadbeef... --resource-prop tier=gold</code></pre>
+  --resource seed:deadbeef... --resource-prop '{"locked":false}'</code></pre>
+    <p>Use it to confirm a policy edit before traffic hits it, debug an unexpected deny in production, or sanity-check a fresh rules.yaml before committing.</p>
 
     <h2 id="where-to-go-next">Where to go next</h2>
     <ul>

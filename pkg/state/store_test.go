@@ -55,12 +55,12 @@ func TestStore_SnapshotIsImmutable(t *testing.T) {
 	s := newTestStore(t, pk)
 
 	s.SetLocalAddresses([]netip.AddrPort{netip.MustParseAddrPort("10.0.0.1:9000")})
-	s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
+	s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 
 	snap1 := s.Snapshot()
 
 	s.SetLocalAddresses([]netip.AddrPort{netip.MustParseAddrPort("10.0.0.99:7777")})
-	s.SetService(9090, "api", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
+	s.SetService(9090, "api", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 	s.RemoveService("web")
 
 	snap2 := s.Snapshot()
@@ -88,7 +88,7 @@ func TestStore_MutationsReturnEvents(t *testing.T) {
 	events = s.SetLocalObservedAddress("203.0.113.1", 9000)
 	require.Equal(t, []Event{TopologyChanged{Peer: s.localID}, AddressesChanged{Peer: s.localID}}, events)
 
-	events = s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
+	events = s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 	require.Len(t, events, 1)
 	require.Equal(t, ServiceChanged{Peer: s.localID, Name: "web"}, events[0])
 
@@ -109,7 +109,7 @@ func TestStore_MutationsReturnEvents(t *testing.T) {
 func TestStore_ApplyDeltaReturnsEvents(t *testing.T) {
 	pkA := genKey(t)
 	storeA := newTestStore(t, pkA)
-	storeA.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
+	storeA.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 	fullData := storeA.EncodeFull()
 
 	pkB := genKey(t)
@@ -1065,4 +1065,58 @@ func TestStore_AcceptsUnsignedSpecs(t *testing.T) {
 	view, ok := s.Snapshot().BlobSpecs[digestHex]
 	require.True(t, ok, "unsigned spec must pass through")
 	require.Nil(t, view.Spec.Claim, "unsigned spec carries no claim")
+}
+
+// TestSnapshot_PublisherClaimForBlob_StaticTieBreak regresses the Codex
+// M6 finding: when two static sites legitimately share a manifest digest
+// (content-addressing makes that possible), the gate's resource
+// properties must come from a deterministic winner. Map iteration order
+// is randomised, so the previous "first match wins" approach could flip
+// the gate's input from one reconcile to the next.
+func TestSnapshot_PublisherClaimForBlob_StaticTieBreak(t *testing.T) {
+	digest := "ab" + hex.EncodeToString(make([]byte, 31))
+	pubA := types.PeerKey{0x01}
+	pubB := types.PeerKey{0x02}
+	propsA, err := structpb.NewStruct(map[string]any{"public": true})
+	require.NoError(t, err)
+	propsB, err := structpb.NewStruct(map[string]any{"public": false})
+	require.NoError(t, err)
+
+	snap := Snapshot{
+		StaticSpecs: map[string]StaticSpecView{
+			"site-a": {
+				Spec:      StaticSpec{Name: "site-a", ManifestDigest: digest, Claim: claims.New(propsA.AsMap(), []byte("sigA"))},
+				Publisher: pubA,
+			},
+			"site-b": {
+				Spec:      StaticSpec{Name: "site-b", ManifestDigest: digest, Claim: claims.New(propsB.AsMap(), []byte("sigB"))},
+				Publisher: pubB,
+			},
+		},
+	}
+
+	// 100 lookups: with map iteration randomness, a non-deterministic
+	// implementation flips between the two within a few iterations.
+	for range 100 {
+		got := snap.PublisherClaimForBlob(digest)
+		require.Equal(t, true, got["public"], "lowest publisher (pubA, site-a) must always win")
+	}
+
+	// Same publisher, different names: name breaks the tie.
+	snapSamePub := Snapshot{
+		StaticSpecs: map[string]StaticSpecView{
+			"zzz": {
+				Spec:      StaticSpec{Name: "zzz", ManifestDigest: digest, Claim: claims.New(propsB.AsMap(), nil)},
+				Publisher: pubA,
+			},
+			"aaa": {
+				Spec:      StaticSpec{Name: "aaa", ManifestDigest: digest, Claim: claims.New(propsA.AsMap(), nil)},
+				Publisher: pubA,
+			},
+		},
+	}
+	for range 100 {
+		got := snapSamePub.PublisherClaimForBlob(digest)
+		require.Equal(t, true, got["public"], "lowest name (aaa) must win when publishers tie")
+	}
 }

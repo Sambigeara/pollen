@@ -4,7 +4,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -35,11 +37,11 @@ Example:
 		RunE: withEnv(runPolicyCheck),
 	}
 	check.Flags().String("subject", "", "<type>:<id>, e.g. peer:<hex> or seed:<hex>")
-	check.Flags().StringArray("subject-prop", nil, "Subject property: key=value (repeatable)")
+	check.Flags().StringArray("subject-prop", nil, `Subject property: key=value or {"k":v,...} JSON (repeatable)`)
 	check.Flags().String("action", "", "Action name, e.g. fetch, call, publish")
-	check.Flags().StringArray("action-prop", nil, "Action property: key=value (repeatable)")
+	check.Flags().StringArray("action-prop", nil, `Action property: key=value or {"k":v,...} JSON (repeatable)`)
 	check.Flags().String("resource", "", "<type>:<id>, e.g. blob:<hash> or service:<name>")
-	check.Flags().StringArray("resource-prop", nil, "Resource property: key=value (repeatable)")
+	check.Flags().StringArray("resource-prop", nil, `Resource property: key=value or {"k":v,...} JSON (repeatable)`)
 
 	policy := &cobra.Command{Use: "policy", Short: "Inspect and test the daemon's authorisation policy"}
 	policy.AddCommand(check)
@@ -132,11 +134,20 @@ func parseKeyValues(cmd *cobra.Command, flag string) (*structpb.Struct, error) {
 	}
 	merged := make(map[string]any, len(vals))
 	for _, raw := range vals {
-		k, v, ok := strings.Cut(raw, "=")
+		v := strings.TrimSpace(raw)
+		if strings.HasPrefix(v, "{") {
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(v), &obj); err != nil {
+				return nil, fmt.Errorf("--%s: invalid JSON: %w", flag, err)
+			}
+			maps.Copy(merged, obj)
+			continue
+		}
+		k, val, ok := strings.Cut(v, "=")
 		if !ok || k == "" {
 			return nil, fmt.Errorf("--%s: missing '=' in %q", flag, raw)
 		}
-		merged[k] = v
+		merged[k] = val
 	}
 	return structpb.NewStruct(merged)
 }

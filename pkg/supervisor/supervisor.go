@@ -150,7 +150,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		stateStore.LoadLastAddrs(lastAddrs)
 	}
 	for _, svc := range opts.InitialServices {
-		stateStore.SetService(svc.Port, svc.Name, svc.Protocol)
+		stateStore.SetService(svc.Port, svc.Name, svc.Protocol, svc.Properties)
 	}
 	if opts.NodeName != "" {
 		stateStore.SetNodeName(opts.NodeName)
@@ -376,10 +376,11 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 			placement.WithLogger(log.Named("placement")),
 			placement.WithResourceBudget(opts.CPUBudgetPercent, opts.MemBudgetPercent),
 			placement.WithAuthzRouter(authz),
+			placement.WithWorkloadCallGate(n.workloadCallGate),
 		)
 	}
 	if opts.SeedCallerSink != nil {
-		opts.SeedCallerSink(n.placement)
+		opts.SeedCallerSink(n.placement.AsSeedCaller())
 	}
 
 	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", authz, log.Named("static"))
@@ -606,18 +607,15 @@ func (n *Supervisor) dispatchBlobFetch(ctx context.Context, stream io.ReadWriteC
 		stream.Close() //nolint:errcheck
 		return
 	}
-	var resourceProps map[string]any
-	if view, ok := n.store.Snapshot().BlobSpecs[hash]; ok {
-		resourceProps = view.Spec.Claim.GetProperties()
-	}
+	resourceProps := n.store.Snapshot().PublisherClaimForBlob(hash)
 	req := evaluator.Request{
 		Subject:  evaluator.SubjectFromPeerKey(peerKey, n.peerProps),
 		Action:   evaluator.Action{Name: "fetch"},
 		Resource: evaluator.NewResource(evaluator.ResourceBlob, hash, resourceProps),
 	}
 	if err := n.authz.Allow(ctx, evaluator.GateBlobFetch, req); err != nil {
-		blobs.WriteStatus(stream, blobs.StatusUnauthorized) //nolint:errcheck
-		stream.Close()                                      //nolint:errcheck
+		blobs.WriteStatus(stream, blobs.StatusUnauthorized)
+		stream.Close() //nolint:errcheck
 		return
 	}
 	n.blobs.Serve(stream, hash)
@@ -636,10 +634,11 @@ func (n *Supervisor) dispatchServiceConnect(ctx context.Context, stream io.ReadW
 		stream.Close() //nolint:errcheck
 		return
 	}
+	name, props := n.localService(port)
 	req := evaluator.Request{
 		Subject:  evaluator.SubjectFromPeerKey(peerKey, n.peerProps),
 		Action:   evaluator.Action{Name: "connect"},
-		Resource: evaluator.NewResource(evaluator.ResourceService, n.localServiceName(port), nil),
+		Resource: evaluator.NewResource(evaluator.ResourceService, name, props),
 	}
 	if err := n.authz.Allow(ctx, evaluator.GateServiceConnect, req); err != nil {
 		stream.Close() //nolint:errcheck
@@ -648,39 +647,47 @@ func (n *Supervisor) dispatchServiceConnect(ctx context.Context, stream io.ReadW
 	n.tunneling.Serve(stream, peerKey, port)
 }
 
-// localServiceName looks up the service the local node exposes on the
-// given port. Returns the port stringified when no match is found —
-// the gate still fires for unknown ports (a deny-by-default matcher
-// would reject them).
-func (n *Supervisor) localServiceName(port uint32) string {
+// localService looks up the service the local node exposes on the given
+// port and returns (name, publisher properties). When no service is bound
+// to the port, returns (port-as-string, nil) so the gate still fires —
+// a deny-by-default policy will reject unknown ports.
+func (n *Supervisor) localService(port uint32) (string, map[string]any) {
 	snap := n.store.Snapshot()
 	if nv, ok := snap.Nodes[snap.LocalID]; ok {
 		for name, svc := range nv.Services {
 			if svc != nil && svc.Port == port {
-				return name
+				var props map[string]any
+				if svc.Properties != nil {
+					props = svc.Properties.AsMap()
+				}
+				return name, props
 			}
 		}
 	}
-	return fmt.Sprintf("%d", port)
+	return fmt.Sprintf("%d", port), nil
 }
 
-// dispatchWorkloadCall gates an inbound workload invocation stream at
-// supervisor level. The header (caller info, seed hash, function) is
-// consumed first so the gate decision can reference the seed; the
-// input body is read afterwards by placement.Serve to keep a denied
-// caller from forcing the daemon to buffer its input payload.
-//
-// When the CallerInfo envelope carries OnBehalfOf, the Subject is
-// built as seed-typed — but only after verifying the seed exists in
-// cluster state (so properties come from a signed publisher claim,
-// not envelope data) and the transport-authenticated peer holds a
-// live WorkloadClaim for it. Failures surface as deny.
-func (n *Supervisor) dispatchWorkloadCall(ctx context.Context, stream io.ReadWriteCloser, peerKey types.PeerKey) {
+// dispatchWorkloadCall reads the wire header (caller info, seed hash,
+// function) and hands the stream to placement.Serve. The workload_call
+// gate is wired into placement.Service via WithWorkloadCallGate, so
+// both stream-borne calls (this path) and locally-routed calls
+// (placement.Call → callLocal) share one authoritative gate site.
+func (n *Supervisor) dispatchWorkloadCall(_ context.Context, stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	info, hash, function, err := placement.ReadHeader(stream, peerKey)
 	if err != nil {
 		stream.Close() //nolint:errcheck
 		return
 	}
+	n.placement.Serve(stream, info, hash, function)
+}
+
+// workloadCallGate builds the workload_call authz request and runs it
+// through the router. Wired into placement.Service so both the stream
+// and local-claimant paths share one gate site. info.PeerKey is the
+// transport-authenticated caller; OnBehalfOf is verified against
+// cluster state inside SubjectFromCallerInfo before any seed-typed
+// attribution is trusted.
+func (n *Supervisor) workloadCallGate(ctx context.Context, info wasm.CallerInfo, hash string) error {
 	snap := n.store.Snapshot()
 	seedProps := func(seedHash string) (map[string]any, bool) {
 		sv, ok := snap.Specs[seedHash]
@@ -694,27 +701,21 @@ func (n *Supervisor) dispatchWorkloadCall(ctx context.Context, stream io.ReadWri
 		return owns
 	}
 	subject, err := evaluator.SubjectFromCallerInfo(
-		evaluator.CallerInput{PeerKey: peerKey, OnBehalfOf: info.OnBehalfOf},
+		evaluator.CallerInput{PeerKey: info.PeerKey, OnBehalfOf: info.OnBehalfOf},
 		n.peerProps, seedProps, seedOwnedBy,
 	)
 	if err != nil {
-		stream.Close() //nolint:errcheck
-		return
+		return err
 	}
 	var resourceProps map[string]any
 	if sv, ok := snap.Specs[hash]; ok {
 		resourceProps = sv.Spec.Claim.GetProperties()
 	}
-	req := evaluator.Request{
+	return n.authz.Allow(ctx, evaluator.GateWorkloadCall, evaluator.Request{
 		Subject:  subject,
 		Action:   evaluator.Action{Name: "call"},
 		Resource: evaluator.NewResource(evaluator.ResourceSeed, hash, resourceProps),
-	}
-	if err := n.authz.Allow(ctx, evaluator.GateWorkloadCall, req); err != nil {
-		stream.Close() //nolint:errcheck
-		return
-	}
-	n.placement.Serve(stream, info, hash, function)
+	})
 }
 
 func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
