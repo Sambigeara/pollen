@@ -364,11 +364,17 @@ func TestUploadBlob_NamedDeniedByGate(t *testing.T) {
 }
 
 // Anonymous uploads (no name, no properties) bypass spec_publish —
-// content-addressed local CAS, nothing to match policy against.
+// content-addressed local CAS, nothing to match policy against. The
+// daemon still defaults the name to a hash prefix so the blob lands
+// in KeepSet and isn't pruned as orphaned.
 func TestUploadBlob_AnonymousBypassesGate(t *testing.T) {
 	h := newHarness(t, control.WithAuthzRouter(denyAllRouter(t)))
-	require.NoError(t, h.svc.UploadBlob(newUploadStream("", []byte("payload"))))
-	require.NotEmpty(t, h.blobs.store, "anonymous upload must reach the store despite deny-all gate")
+	data := []byte("payload")
+	require.NoError(t, h.svc.UploadBlob(newUploadStream("", data)))
+	sum := sha256.Sum256(data)
+	hash := hex.EncodeToString(sum[:])
+	require.Equal(t, data, h.blobs.store[hash], "anonymous upload must reach the store despite deny-all gate")
+	require.Equal(t, types.ShortHash(hash), h.blobs.names[hash], "anonymous upload should default to hash-prefix name")
 }
 
 func TestRegisterService_DeniedByGate(t *testing.T) {

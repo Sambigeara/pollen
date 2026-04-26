@@ -904,12 +904,10 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 		return status.Error(codes.InvalidArgument, "first message must carry header")
 	}
 
-	// Anonymous uploads (no name) write local CAS only and stay
-	// ungated — the content is addressable but not advertised, so
-	// there's nothing for a publish policy to match on. Named
-	// uploads go through the spec_publish gate before the chunk loop
-	// so denial stops the upload early.
-	if name := header.GetName(); name != "" {
+	// Only named uploads run the publish gate — anonymous ones have
+	// no policy-relevant identifier yet.
+	name := header.GetName()
+	if name != "" {
 		if err := s.authorise(stream.Context(), evaluator.ResourceBlob, name, header.GetProperties()); err != nil {
 			return err
 		}
@@ -936,15 +934,18 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 		return s.fail(err, "upload blob")
 	}
 
-	if name := header.GetName(); name != "" {
-		claim, err := s.signClaim(evaluator.ResourceBlob, hash, header.GetProperties())
-		if err != nil {
-			return s.fail(err, "sign blob claim")
-		}
-		if err := s.blobs.SetName(hash, name, claim); err != nil {
-			s.log.Warnw("set blob name failed", "hash", types.ShortHash(hash), "name", name, "err", err)
-			return status.Error(codes.Internal, "set blob name")
-		}
+	// Default an unnamed upload to a hash-prefix identifier so it
+	// always gets a BlobSpec and the janitor's KeepSet protects it.
+	if name == "" {
+		name = types.ShortHash(hash)
+	}
+	claim, err := s.signClaim(evaluator.ResourceBlob, hash, header.GetProperties())
+	if err != nil {
+		return s.fail(err, "sign blob claim")
+	}
+	if err := s.blobs.SetName(hash, name, claim); err != nil {
+		s.log.Warnw("set blob name failed", "hash", types.ShortHash(hash), "name", name, "err", err)
+		return status.Error(codes.Internal, "set blob name")
 	}
 
 	return stream.SendAndClose(&controlv1.UploadBlobResponse{Hash: hash})
