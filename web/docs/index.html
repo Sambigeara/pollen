@@ -211,13 +211,83 @@ pln unseed payload           <span class="c"># drop the name + bytes</span></cod
     </ul>
 
     <h2 id="authorisation">Authorisation</h2>
-    <p>Every link is mTLS. On top of that, cert <strong>properties</strong> baked into each issued cert are visible to seeds at call time, so admission, routing, and policy can run inside WASM without sharing secrets.</p>
+    <p>Every link is mTLS. On top of that, two extension points let you decide who can do what: cert <strong>properties</strong> baked into each issued cert flow into authorisation requests, and a <strong>gate router</strong> dispatches each protected operation through the evaluator of your choice — built-in YAML matcher or a WASM PDP.</p>
+
+    <h3>Cert properties</h3>
+    <p>Properties baked into a delegation cert are visible to seeds at call time, so admission, routing, and policy can run inside WASM without sharing secrets.</p>
     <pre><code>pln grant &lt;peer-id&gt; --prop role=lead --prop team=backend
 pln invite --prop tier=gold      <span class="c"># bake at join time</span></code></pre>
-    <p>For cluster-wide policy gates, point at a Cerbos-style PDP seed. See <a href="https://github.com/sambigeara/pollen/tree/main/examples/cerbos">examples/cerbos</a>. Inspect what a gate would decide without dispatching:</p>
+
+    <h3>Gates</h3>
+    <p>Every protected operation runs through a named gate. Each gate independently binds to one evaluator; unbound gates fall through to the configured default.</p>
+    <ul>
+      <li><code>blob_fetch</code> — peer-to-peer blob downloads.</li>
+      <li><code>workload_call</code> — incoming WASM invocations.</li>
+      <li><code>service_connect</code> — inbound tunnel connects (by service name, not port).</li>
+      <li><code>spec_publish</code>, <code>grant_issue</code>, <code>seed_placement</code> — reserved for forthcoming hooks.</li>
+    </ul>
+    <p>Bind gates in <code>config.yaml</code>; restart the daemon to apply:</p>
+    <pre><code>evaluator:
+  default: allow_all                <span class="c"># fall-through for unbound gates</span>
+  gates:
+    blob_fetch: attribute_matcher
+    workload_call: seed/cerbos-pdp
+  matcherRules: /etc/pln/rules.yaml <span class="c"># required if any gate uses attribute_matcher</span></code></pre>
+
+    <h3 id="authz-request">Authorisation request</h3>
+    <p>Both evaluators see the same <a href="https://openid.net/specs/authorization-api-1_0.html">AuthZen-shaped</a> envelope. The router populates it from the in-flight operation:</p>
+    <pre><code>{
+  "subject":  {"type": "peer", "id": "&lt;pubkey&gt;", "properties": {"role": "lead", "team": "backend"}},
+  "action":   {"name": "fetch"},
+  "resource": {"type": "blob", "id": "&lt;hash&gt;",   "properties": {"public": true}}
+}</code></pre>
+    <p><code>subject.type</code> is <code>peer</code> for direct callers (properties = the peer's delegation-cert attributes) or <code>seed</code> when a workload calls another via <code>OnBehalfOf</code> (properties = the publisher's claim). <code>resource.properties</code> are the publisher's <code>--prop</code> values verbatim.</p>
+
+    <h3 id="attribute-matcher">Attribute matcher</h3>
+    <p>YAML rules that match on dot-separated paths into the request. First rule whose match clause holds wins; no match falls through to deny. Scalar values match by equality; list values are any-of. Suitable for simple role-based and tag-based policy.</p>
+    <pre><code><span class="c"># /etc/pln/rules.yaml — referenced by evaluator.matcherRules in config.yaml.</span>
+rules:
+  - match:
+      subject.properties.role: admin
+    decision: allow
+    reason: admins have full access
+
+  - match:
+      action.name: fetch
+      resource.properties.public: true
+    decision: allow
+
+  - match:
+      action.name: connect
+      resource.id: [api, internal-api]
+      subject.properties.team: backend
+    decision: allow
+
+  - match: {}
+    decision: deny
+    reason: default deny</code></pre>
+    <p class="aside">Rules reload on <code>SIGHUP</code> — edit, send the signal, no restart. Malformed files leave the previous rules in place. The matcher is opt-out of decision caching; expensive evaluators (PDP seeds, remote services) keep the default 1s cache.</p>
+
+    <h3 id="pdp-seed">PDP seed</h3>
+    <p>For policy that outgrows YAML — derived roles, conditions, query plans — point a gate at a WASM seed. The router dispatches each decision over <code>seed/&lt;name&gt;/check</code> with the request envelope as JSON input; the seed returns a JSON decision. A circuit breaker isolates a misbehaving PDP after five consecutive failures.</p>
+    <pre><code><span class="c"># config.yaml</span>
+evaluator:
+  gates:
+    blob_fetch: seed/cerbos-pdp
+    workload_call: seed/cerbos-pdp</code></pre>
+    <p>The PDP is a regular Pollen workload, deployed the same way as any other:</p>
+    <pre><code>pln seed cerbos-pdp.wasm --everywhere   <span class="c"># local on every node — low gate latency</span></code></pre>
+    <p>Implement a single export named <code>check</code> that consumes the JSON request and returns a JSON decision:</p>
+    <pre><code>{"decision": true,  "context": {"reason_admin": "EFFECT_ALLOW"}}
+{"decision": false, "context": {"reason_user": "team mismatch"}}</code></pre>
+    <p><code>context.reason_user</code> is surfaced to the denied caller; <code>context.reason_admin</code> is for operator logs. A worked example using Cerbos lives at <a href="https://github.com/sambigeara/pollen/tree/main/examples/cerbos">examples/cerbos</a> — it serves both application authz (a workload calling <code>seed/cerbos-pdp/check</code> from a protected endpoint) and cluster gates (the same WASM bound to <code>gates.blob_fetch</code>) from one policy bundle.</p>
+
+    <h3 id="inspect-a-gate">Inspect a gate</h3>
+    <p>Dry-run a request through the live router without any side effect. Useful for confirming a policy edit before traffic hits it, and for debugging unexpected denies.</p>
     <pre><code>pln policy check workload_call \
-  --subject peer:a9b8... --action call \
-  --resource seed:deadbeef...</code></pre>
+  --subject peer:a9b8... --subject-prop role=lead \
+  --action call \
+  --resource seed:deadbeef... --resource-prop tier=gold</code></pre>
 
     <h2 id="where-to-go-next">Where to go next</h2>
     <ul>
