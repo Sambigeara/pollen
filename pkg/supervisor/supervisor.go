@@ -28,6 +28,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/control"
 	"github.com/sambigeara/pollen/pkg/evaluator"
+	"github.com/sambigeara/pollen/pkg/evaluator/builtin/matcher"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
@@ -79,6 +80,8 @@ type Supervisor struct {
 	log              *zap.SugaredLogger
 	router           *atomicRouter
 	authz            *evaluator.Router
+	authzMatcher     *matcher.Matcher
+	authzMatcherPath string
 	nonTargetStreak  map[types.PeerKey]int
 	vivaldiErr       *metrics.EWMA
 	nodeMetrics      *metrics.NodeMetrics
@@ -115,6 +118,14 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	pubKey := privKey.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 	pollenDir := opts.PollenDir
 	self := types.PeerKeyFromBytes(pubKey)
+
+	// Validate authz config and preload matcher rules before allocating
+	// any resources. A late authz failure would leak peer cache, mesh,
+	// blob store, and wasm runtime state.
+	authzMatcher, err := preloadAuthz(opts.Authz, opts.RelayOnly)
+	if err != nil {
+		return nil, err
+	}
 
 	peerCache := opts.PeerCache
 	if peerCache == nil {
@@ -221,23 +232,11 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	nodeMetrics := metrics.NewNodeMetrics(mp.Meter())
 	shutdownCh := make(chan struct{}, 1)
 
-	authz := opts.AuthzRouter
-	if authz == nil {
-		// Allow-all by default so a Supervisor constructed without an
-		// external authz configuration is immediately usable. Operators
-		// who want policy enforcement pass opts.AuthzRouter.
-		authz, err = evaluator.NewRouter(evaluator.Config{})
-		if err != nil {
-			return nil, fmt.Errorf("build default authz router: %w", err)
-		}
-	}
-
 	n := &Supervisor{
 		log:              log,
 		store:            stateStore,
 		mesh:             m,
 		blobs:            blobsSvc,
-		authz:            authz,
 		creds:            creds,
 		signPriv:         privKey,
 		pollenDir:        pollenDir,
@@ -376,6 +375,14 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 			placement.WithResourceBudget(opts.CPUBudgetPercent, opts.MemBudgetPercent),
 		)
 	}
+
+	authz, err := buildAuthzRouter(opts.Authz, authzMatcher, n.placement, log.Named("authz"))
+	if err != nil {
+		return nil, err
+	}
+	n.authz = authz
+	n.authzMatcher = authzMatcher
+	n.authzMatcherPath = opts.Authz.MatcherRules
 
 	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", log.Named("static"))
 	n.static = staticSvc

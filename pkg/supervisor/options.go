@@ -9,11 +9,30 @@ import (
 	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/evaluator"
 	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/types"
 	"google.golang.org/protobuf/types/known/structpb"
 )
+
+// AuthzOptions configures the authorisation router supervisor builds
+// internally. A zero value selects allow-all so unconfigured supervisors
+// are usable. Supervisor wires the seed-backed PDP factory to its own
+// placement service, so callers don't plumb a Caller themselves. Field
+// shapes mirror the on-disk evaluator config so daemon can pass them
+// through without translation.
+type AuthzOptions struct {
+	// Default is the evaluator spec applied to gates not listed in
+	// Gates. Empty selects "allow_all".
+	Default string
+	// Gates binds gate names to evaluator specs ("allow_all",
+	// "attribute_matcher", "seed/<name>"). Unknown names fail at
+	// supervisor.New.
+	Gates map[string]string
+	// MatcherRules is the path to the YAML rule file consumed by the
+	// attribute_matcher built-in. Required if any gate (or Default)
+	// resolves to "attribute_matcher". Reload via Supervisor.ReloadAuthzMatcher.
+	MatcherRules string
+}
 
 // Options holds runtime parameters for constructing a Supervisor.
 type Options struct {
@@ -21,7 +40,7 @@ type Options struct {
 	ShutdownFunc       func()
 	RuntimeState       *statev1.RuntimeState
 	PeerCache          *peercache.Store
-	AuthzRouter        *evaluator.Router
+	Authz              AuthzOptions
 	SocketPath         string
 	PollenDir          string
 	NodeName           string
@@ -29,14 +48,14 @@ type Options struct {
 	StaticAddr         string
 	ControlAddr        string
 	ControlToken       string
-	SigningKey         ed25519.PrivateKey
-	AdvertisedIPs      []string
-	InitialConnections []ConnectionEntry
 	InitialServices    []ServiceEntry
-	GossipInterval     time.Duration
+	InitialConnections []ConnectionEntry
+	AdvertisedIPs      []string
+	SigningKey         ed25519.PrivateKey
+	IdleInstanceTTL    time.Duration
 	PeerTickInterval   time.Duration
 	MaxConnectionAge   time.Duration
-	IdleInstanceTTL    time.Duration
+	GossipInterval     time.Duration
 	GossipJitter       float64
 	ListenPort         int
 	MemBudgetPercent   uint32

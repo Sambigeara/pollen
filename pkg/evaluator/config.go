@@ -4,11 +4,17 @@
 package evaluator
 
 import (
+	"errors"
+	"fmt"
 	"time"
 )
 
 // ConfigSpec bundles the supervisor-facing inputs the authz router
-// needs to be assembled.
+// needs to be assembled. Built-in factory wiring (allow_all,
+// seed/<name>) lives here so external built-ins (e.g. attribute_matcher,
+// which imports pkg/evaluator and can't be imported back without a
+// cycle) plug in via AttributeMatcher. Supervisor pre-constructs them
+// and NewRouterFromConfig registers the kind.
 type ConfigSpec struct {
 	// Gates binds gate names to evaluator specs. Unknown names fail at
 	// startup via the router's validation pass.
@@ -22,6 +28,10 @@ type ConfigSpec struct {
 	// under the "attribute_matcher" kind. Left nil when the matcher
 	// built-in isn't configured.
 	AttributeMatcher Evaluator
+
+	// SeedCaller supplies the placement.Call dispatcher for seed-backed
+	// PDPs. Required when any gate (or Default) resolves to "seed/<name>".
+	SeedCaller Caller
 
 	// Metrics records gate-level observations. Left nil, a no-op
 	// recorder is wired.
@@ -47,8 +57,8 @@ type ConfigSpec struct {
 }
 
 // NewRouterFromConfig assembles the authz router, registering the
-// built-in factories (allow_all, optional attribute_matcher) and
-// returning a ready-to-wire *Router.
+// built-in factories (allow_all, seed/<name>, optional
+// attribute_matcher) and returning a ready-to-wire *Router.
 //
 // Additional factory bindings (e.g. test doubles) plug in via opts, the
 // same RouterOption-shaped extensibility NewRouter exposes.
@@ -70,7 +80,17 @@ func NewRouterFromConfig(cfg ConfigSpec, opts ...RouterOption) (*Router, error) 
 	gateOpts.Metrics = cfg.Metrics
 	gateOpts.OnDeny = cfg.OnDeny
 
-	var builtinOpts []RouterOption
+	builtinOpts := []RouterOption{
+		WithFactory("seed", func(name string) (Evaluator, error) {
+			if name == "" {
+				return nil, errors.New("seed evaluator requires a seed name (seed/<name>)")
+			}
+			if cfg.SeedCaller == nil {
+				return nil, fmt.Errorf("seed evaluator %q configured but no caller wired", name)
+			}
+			return newSeedEvaluator(name, cfg.SeedCaller), nil
+		}),
+	}
 	if cfg.AttributeMatcher != nil {
 		matcher := cfg.AttributeMatcher
 		builtinOpts = append(builtinOpts, WithFactory("attribute_matcher", func(string) (Evaluator, error) {
