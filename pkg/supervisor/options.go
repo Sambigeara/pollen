@@ -43,6 +43,9 @@ type Options struct {
 	MetricsEnabled     bool
 	BootstrapPublic    bool
 	DisableNATPunch    bool
+	// RelayOnly disables workload hosting; the node still gossips and forwards
+	// routed streams. Pair with an empty StaticAddr to also skip static hosting.
+	RelayOnly bool
 }
 
 // ConnectionEntry describes a desired tunnel connection for initial state.

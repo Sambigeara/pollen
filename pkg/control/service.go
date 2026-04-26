@@ -859,11 +859,15 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 		Claim:       claim,
 	}
 	if err := s.placement.Seed(wasmBytes, spec); err != nil {
-		if errors.Is(err, placement.ErrCompile) {
+		switch {
+		case errors.Is(err, placement.ErrCompile):
 			s.log.Warnw("seed workload failed", "name", name, "hash", types.ShortHash(hash), "err", err)
 			return status.Error(codes.InvalidArgument, "failed to compile workload")
+		case errors.Is(err, placement.ErrRelayOnly):
+			return status.Error(codes.FailedPrecondition, "node is relay-only; workload hosting disabled")
+		default:
+			return s.fail(err, "failed to seed workload")
 		}
-		return s.fail(err, "failed to seed workload")
 	}
 
 	return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name})
@@ -1066,6 +1070,9 @@ func (s *Service) UnseedWorkload(_ context.Context, req *controlv1.UnseedWorkloa
 		return nil, status.Error(codes.PermissionDenied, "only admin nodes can unseed workloads")
 	}
 	if err := s.placement.Unseed(req.GetHash()); err != nil {
+		if errors.Is(err, placement.ErrRelayOnly) {
+			return nil, status.Error(codes.FailedPrecondition, "node is relay-only; workload hosting disabled")
+		}
 		return nil, s.fail(err, "unseed workload failed", "hash", req.GetHash())
 	}
 	return &controlv1.UnseedWorkloadResponse{}, nil
@@ -1098,6 +1105,8 @@ func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadR
 			return nil, status.Error(codes.NotFound, "workload not running on any reachable node")
 		case errors.Is(err, placement.ErrCycle):
 			return nil, status.Error(codes.FailedPrecondition, "call cycle detected")
+		case errors.Is(err, placement.ErrRelayOnly):
+			return nil, status.Error(codes.FailedPrecondition, "node is relay-only; workload invocation disabled")
 		case errors.Is(err, context.DeadlineExceeded):
 			return nil, status.Error(codes.DeadlineExceeded, "workload invocation timed out")
 		default:

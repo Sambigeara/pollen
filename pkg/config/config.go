@@ -90,6 +90,9 @@ type Config struct {
 	Placement   Placement    `yaml:"placement,omitempty"`
 	Resources   Resources    `yaml:"resources,omitempty"`
 	Public      bool         `yaml:"public,omitempty"`
+	// RelayOnly disables workload hosting; the node still gossips and forwards
+	// routed streams. Pair with an empty staticHTTP to also skip static hosting.
+	RelayOnly bool `yaml:"relayOnly,omitempty"`
 }
 
 func Load(pollenDir string) (*Config, error) {

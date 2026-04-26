@@ -237,6 +237,36 @@ func TestSeedWorkloadInternalError(t *testing.T) {
 	require.Equal(t, codes.Internal, st.Code())
 }
 
+func TestSeedWorkloadRelayOnly(t *testing.T) {
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
+	h.placement.seedErr = placement.ErrRelayOnly
+	err := h.svc.SeedWorkload(newSeedStream([]byte("wasm")))
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.FailedPrecondition, st.Code())
+}
+
+func TestUnseedWorkloadRelayOnly(t *testing.T) {
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
+	h.placement.unseedErr = placement.ErrRelayOnly
+	_, err := h.svc.UnseedWorkload(context.Background(), &controlv1.UnseedWorkloadRequest{Hash: "abc"})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.FailedPrecondition, st.Code())
+}
+
+func TestCallWorkloadRelayOnly(t *testing.T) {
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
+	h.placement.callErr = placement.ErrRelayOnly
+	_, err := h.svc.CallWorkload(context.Background(), &controlv1.CallWorkloadRequest{Hash: "abc", Function: "fn"})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.FailedPrecondition, st.Code())
+}
+
 func TestFetchBlobPeer(t *testing.T) {
 	h := newHarness(t)
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte("remote")))

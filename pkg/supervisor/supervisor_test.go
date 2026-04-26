@@ -16,6 +16,8 @@ import (
 	"github.com/sambigeara/pollen/internal/testauth"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/control"
+	"github.com/sambigeara/pollen/pkg/placement"
+	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/supervisor"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
@@ -36,6 +38,7 @@ type testNode struct {
 	cancel           context.CancelFunc
 	errCh            chan error
 	peerTickInterval time.Duration
+	relayOnly        bool
 }
 
 func newTestNode(t *testing.T, cluster *testauth.ClusterAuth, ips []string) *testNode {
@@ -74,6 +77,7 @@ func (tn *testNode) start(t *testing.T) {
 		PeerTickInterval: peerTick,
 		GossipJitter:     -1,
 		ShutdownFunc:     cancel,
+		RelayOnly:        tn.relayOnly,
 	}
 
 	n, err := supervisor.New(opts, tn.creds, nil)
@@ -209,6 +213,28 @@ func TestConnectPeerAfterPriorConnection(t *testing.T) {
 	require.NoError(t, err)
 
 	assertPeersConnected(t, a, b)
+}
+
+func TestRelayOnlyNodePeersAndRefusesSeed(t *testing.T) {
+	nodeIPs := []string{"127.0.0.1"}
+	cluster := testauth.NewClusterAuth(t)
+
+	relay := newTestNode(t, cluster, nodeIPs)
+	relay.relayOnly = true
+	relay.start(t)
+
+	peer := newTestNode(t, cluster, nodeIPs)
+	peer.start(t)
+
+	_, err := relay.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+		PeerPub: peer.pubKey,
+		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(peer.port))},
+	})
+	require.NoError(t, err)
+	assertPeersConnected(t, relay, peer)
+
+	_, err = relay.node.SeedWorkload([]byte("wasm"), state.WorkloadSpec{Hash: "deadbeef", Name: "test"})
+	require.ErrorIs(t, err, placement.ErrRelayOnly)
 }
 
 func assertPeersConnected(t *testing.T, a, b *testNode) {

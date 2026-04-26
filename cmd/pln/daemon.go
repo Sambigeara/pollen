@@ -367,6 +367,7 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		MemBudgetPercent:   env.cfg.Resources.MemPercent,
 		IdleInstanceTTL:    env.cfg.Placement.IdleInstanceTTL,
 		AuthzRouter:        authzRouter,
+		RelayOnly:          env.cfg.RelayOnly,
 	}, creds, inviteConsumer)
 	if err != nil {
 		return err

@@ -347,30 +347,37 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		},
 	)
 
-	var wasmOpts []wasm.RuntimeOption
-	if opts.IdleInstanceTTL > 0 {
-		wasmOpts = append(wasmOpts, wasm.WithIdleTTL(opts.IdleInstanceTTL))
-	}
-	wasmRT, err := wasm.NewRuntime(wasm.NewHostFunctions(log.Named("wasm"), n), wasmOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("wasm runtime: %w", err)
-	}
-	n.wasmRuntime = wasmRT
-
-	var placementOpener placement.StreamOpener = streamAdapter
 	if tr := n.tunneling.TrafficRecorder(); tr != nil {
 		n.trafficRecorder = tr
 		m.SetTrafficTracker(tr)
-		placementOpener = &trafficCountedOpener{inner: streamAdapter, recorder: tr}
 	}
 
-	n.placement = placement.New(
-		self, stateStore, blobsSvc, wasmRT,
-		placement.WithMesh(placementOpener),
-		placement.WithLogger(log.Named("placement")),
-		placement.WithResourceBudget(opts.CPUBudgetPercent, opts.MemBudgetPercent),
-		placement.WithAuthzRouter(authz),
-	)
+	if opts.RelayOnly {
+		n.placement = placement.NewNoopService()
+	} else {
+		var wasmOpts []wasm.RuntimeOption
+		if opts.IdleInstanceTTL > 0 {
+			wasmOpts = append(wasmOpts, wasm.WithIdleTTL(opts.IdleInstanceTTL))
+		}
+		wasmRT, err := wasm.NewRuntime(wasm.NewHostFunctions(log.Named("wasm"), n), wasmOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("wasm runtime: %w", err)
+		}
+		n.wasmRuntime = wasmRT
+
+		var placementOpener placement.StreamOpener = streamAdapter
+		if n.trafficRecorder != nil {
+			placementOpener = &trafficCountedOpener{inner: streamAdapter, recorder: n.trafficRecorder}
+		}
+
+		n.placement = placement.New(
+			self, stateStore, blobsSvc, wasmRT,
+			placement.WithMesh(placementOpener),
+			placement.WithLogger(log.Named("placement")),
+			placement.WithResourceBudget(opts.CPUBudgetPercent, opts.MemBudgetPercent),
+			placement.WithAuthzRouter(authz),
+		)
+	}
 
 	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", authz, log.Named("static"))
 	n.static = staticSvc
@@ -901,7 +908,9 @@ func (n *Supervisor) shutdown() {
 	if err := n.placement.Stop(); err != nil {
 		n.log.Warnw("placement stop failed", zap.Error(err))
 	}
-	n.wasmRuntime.Close(context.Background())
+	if n.wasmRuntime != nil {
+		n.wasmRuntime.Close(context.Background())
+	}
 
 	if err := n.tunneling.Stop(); err != nil {
 		n.log.Warnw("tunneling stop failed", zap.Error(err))
