@@ -549,6 +549,11 @@ func (m *ResourceTelemetryChange) MarshalToSizedBufferVT(dAtA []byte) (int, erro
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.AdmissionState != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.AdmissionState))
+		i--
+		dAtA[i] = 0x38
+	}
 	if m.MemBudgetPercent != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.MemBudgetPercent))
 		i--
@@ -685,6 +690,24 @@ func (m *SeedMetrics) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.RejectRate != 0 {
+		i -= 4
+		binary.LittleEndian.PutUint32(dAtA[i:], uint32(math.Float32bits(float32(m.RejectRate))))
+		i--
+		dAtA[i] = 0x55
+	}
+	if m.OriginRateSlow != 0 {
+		i -= 4
+		binary.LittleEndian.PutUint32(dAtA[i:], uint32(math.Float32bits(float32(m.OriginRateSlow))))
+		i--
+		dAtA[i] = 0x4d
+	}
+	if m.OriginRateFast != 0 {
+		i -= 4
+		binary.LittleEndian.PutUint32(dAtA[i:], uint32(math.Float32bits(float32(m.OriginRateFast))))
+		i--
+		dAtA[i] = 0x45
+	}
 	if m.OriginRate != 0 {
 		i -= 4
 		binary.LittleEndian.PutUint32(dAtA[i:], uint32(math.Float32bits(float32(m.OriginRate))))
@@ -696,11 +719,6 @@ func (m *SeedMetrics) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		binary.LittleEndian.PutUint32(dAtA[i:], uint32(math.Float32bits(float32(m.ParkedMs))))
 		i--
 		dAtA[i] = 0x35
-	}
-	if m.GateWaitMs != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.GateWaitMs))
-		i--
-		dAtA[i] = 0x28
 	}
 	if m.SloBurnedRate != 0 {
 		i -= 4
@@ -1086,6 +1104,16 @@ func (m *WorkloadClaimChange) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.Draining {
+		i--
+		if m.Draining {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x10
 	}
 	if len(m.Hash) > 0 {
 		i -= len(m.Hash)
@@ -2417,6 +2445,9 @@ func (m *ResourceTelemetryChange) SizeVT() (n int) {
 	if m.MemBudgetPercent != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.MemBudgetPercent))
 	}
+	if m.AdmissionState != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.AdmissionState))
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -2472,13 +2503,19 @@ func (m *SeedMetrics) SizeVT() (n int) {
 	if m.SloBurnedRate != 0 {
 		n += 5
 	}
-	if m.GateWaitMs != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.GateWaitMs))
-	}
 	if m.ParkedMs != 0 {
 		n += 5
 	}
 	if m.OriginRate != 0 {
+		n += 5
+	}
+	if m.OriginRateFast != 0 {
+		n += 5
+	}
+	if m.OriginRateSlow != 0 {
+		n += 5
+	}
+	if m.RejectRate != 0 {
 		n += 5
 	}
 	n += len(m.unknownFields)
@@ -2620,6 +2657,9 @@ func (m *WorkloadClaimChange) SizeVT() (n int) {
 	l = len(m.Hash)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
+	if m.Draining {
+		n += 2
 	}
 	n += len(m.unknownFields)
 	return n
@@ -4365,6 +4405,25 @@ func (m *ResourceTelemetryChange) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
+		case 7:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field AdmissionState", wireType)
+			}
+			m.AdmissionState = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.AdmissionState |= AdmissionState(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -4662,25 +4721,6 @@ func (m *SeedMetrics) UnmarshalVT(dAtA []byte) error {
 			v = uint32(binary.LittleEndian.Uint32(dAtA[iNdEx:]))
 			iNdEx += 4
 			m.SloBurnedRate = float32(math.Float32frombits(v))
-		case 5:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field GateWaitMs", wireType)
-			}
-			m.GateWaitMs = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.GateWaitMs |= uint32(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
 		case 6:
 			if wireType != 5 {
 				return fmt.Errorf("proto: wrong wireType = %d for field ParkedMs", wireType)
@@ -4703,6 +4743,39 @@ func (m *SeedMetrics) UnmarshalVT(dAtA []byte) error {
 			v = uint32(binary.LittleEndian.Uint32(dAtA[iNdEx:]))
 			iNdEx += 4
 			m.OriginRate = float32(math.Float32frombits(v))
+		case 8:
+			if wireType != 5 {
+				return fmt.Errorf("proto: wrong wireType = %d for field OriginRateFast", wireType)
+			}
+			var v uint32
+			if (iNdEx + 4) > l {
+				return io.ErrUnexpectedEOF
+			}
+			v = uint32(binary.LittleEndian.Uint32(dAtA[iNdEx:]))
+			iNdEx += 4
+			m.OriginRateFast = float32(math.Float32frombits(v))
+		case 9:
+			if wireType != 5 {
+				return fmt.Errorf("proto: wrong wireType = %d for field OriginRateSlow", wireType)
+			}
+			var v uint32
+			if (iNdEx + 4) > l {
+				return io.ErrUnexpectedEOF
+			}
+			v = uint32(binary.LittleEndian.Uint32(dAtA[iNdEx:]))
+			iNdEx += 4
+			m.OriginRateSlow = float32(math.Float32frombits(v))
+		case 10:
+			if wireType != 5 {
+				return fmt.Errorf("proto: wrong wireType = %d for field RejectRate", wireType)
+			}
+			var v uint32
+			if (iNdEx + 4) > l {
+				return io.ErrUnexpectedEOF
+			}
+			v = uint32(binary.LittleEndian.Uint32(dAtA[iNdEx:]))
+			iNdEx += 4
+			m.RejectRate = float32(math.Float32frombits(v))
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -5587,6 +5660,26 @@ func (m *WorkloadClaimChange) UnmarshalVT(dAtA []byte) error {
 			}
 			m.Hash = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
+		case 2:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Draining", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Draining = bool(v != 0)
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

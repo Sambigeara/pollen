@@ -14,7 +14,7 @@ import (
 
 	"github.com/sambigeara/pollen/pkg/placement"
 	"github.com/sambigeara/pollen/pkg/state"
-	"github.com/sambigeara/pollen/pkg/wasm"
+	"github.com/sambigeara/pollen/pkg/types"
 )
 
 func TestNoopServiceRejectsHosting(t *testing.T) {
@@ -40,7 +40,7 @@ func TestNoopServiceRejectsHosting(t *testing.T) {
 func TestNoopServiceServeClosesStream(t *testing.T) {
 	noop := placement.NewNoopService()
 	stream := &countingCloser{}
-	noop.Serve(stream, wasm.CallerInfo{}, "hash", "fn")
+	noop.Serve(stream, types.PeerKey{})
 	require.Equal(t, 1, stream.closes)
 }
 

@@ -5,6 +5,7 @@ package placement
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,6 +21,10 @@ func testGates() *gateRegistry {
 	return newGateRegistry(16)
 }
 
+// noopReserver admits every call. Used by handler tests that don't
+// exercise the memory admission path.
+func noopReserver(string) (func(), error) { return func() {}, nil }
+
 // serveWithHeaderRead is the production dispatch pair collapsed for
 // tests: read the workload stream header via ReadHeader (what
 // supervisor would do), then invoke handleWorkloadStream (what
@@ -30,7 +35,7 @@ func serveWithHeaderRead(ctx context.Context, stream io.ReadWriteCloser, peer ty
 		stream.Close()
 		return
 	}
-	handleWorkloadStream(ctx, stream, info, hash, function, invoker, newUtilisationTracker(), gates, 10*time.Second)
+	handleWorkloadStream(ctx, stream, info, hash, function, invoker, newUtilisationTracker(), gates, noopReserver, 10*time.Second)
 }
 
 type mockInvoker struct {
@@ -158,4 +163,104 @@ func TestHandleWorkloadStream_EmptyInput(t *testing.T) {
 	output, err := invokeOverStream(ctx, client, hash, "ping", nil)
 	require.NoError(t, err)
 	require.Equal(t, []byte("ok"), output)
+}
+
+// TestHandleWorkloadStream_OverloadedRoundTrip pins the wire contract
+// for memory backpressure: when the target rejects admission with
+// ErrOverloaded, the client must decode the response back to
+// ErrOverloaded so Call's fallback loop treats it as retryable rather
+// than as a terminal workload failure.
+func TestHandleWorkloadStream_OverloadedRoundTrip(t *testing.T) {
+	hash := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	invoker := &mockInvoker{
+		callFn: func(_ context.Context, _, _ string, _ []byte) ([]byte, error) {
+			t.Fatal("invoker must not run when admission rejects")
+			return nil, nil
+		},
+	}
+	rejectingReserver := func(string) (func(), error) { return nil, ErrOverloaded }
+
+	ctx := context.Background()
+	server, client := pipePair(t)
+	go func() {
+		info, h, fn, err := ReadHeader(server, types.PeerKey{})
+		if err != nil {
+			server.Close()
+			return
+		}
+		handleWorkloadStream(ctx, server, info, h, fn, invoker, newUtilisationTracker(), testGates(), rejectingReserver, 10*time.Second)
+	}()
+
+	_, err := invokeOverStream(ctx, client, hash, "handle", nil)
+	require.ErrorIs(t, err, ErrOverloaded)
+	require.False(t, errors.Is(err, ErrWorkloadFailed), "must not collapse into ErrWorkloadFailed; Call's fallback loop treats that as terminal")
+}
+
+// Structured rejections carry retry-after metadata so callers (gRPC trailers,
+// chained workloads) can wait the suggested duration before retrying.
+func TestHandleWorkloadStream_OverloadCarriesRetryAfter(t *testing.T) {
+	hash := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	invoker := &mockInvoker{
+		callFn: func(_ context.Context, _, _ string, _ []byte) ([]byte, error) {
+			t.Fatal("invoker must not run when admission rejects")
+			return nil, nil
+		},
+	}
+	rejectingReserver := func(string) (func(), error) { return nil, ErrOverloaded }
+
+	ctx := context.Background()
+	server, client := pipePair(t)
+	go func() {
+		info, h, fn, err := ReadHeader(server, types.PeerKey{})
+		if err != nil {
+			server.Close()
+			return
+		}
+		handleWorkloadStream(ctx, server, info, h, fn, invoker, newUtilisationTracker(), testGates(), rejectingReserver, 10*time.Second)
+	}()
+
+	_, err := invokeOverStream(ctx, client, hash, "handle", nil)
+	var ovl *OverloadError
+	require.ErrorAs(t, err, &ovl)
+	require.ErrorIs(t, ovl.Sentinel, ErrOverloaded)
+	require.Equal(t, retryAfterDefault, ovl.RetryAfter, "retry-after must round-trip")
+	require.NotEmpty(t, ovl.Reason, "reason should be populated")
+}
+
+// Even gate-at-capacity round-trips as a structured OverloadError so callers
+// can distinguish concurrency pressure from memory pressure via the wrapped
+// sentinel and read the suggested retry hint.
+func TestHandleWorkloadStream_AtCapacityCarriesRetryAfter(t *testing.T) {
+	hash := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	invoker := &mockInvoker{
+		callFn: func(_ context.Context, _, _ string, _ []byte) ([]byte, error) {
+			t.Fatal("invoker must not run when gate rejects")
+			return nil, nil
+		},
+	}
+
+	// Gate sized to one — pre-take the only slot so the inbound call is
+	// rejected with ErrAtCapacity. Released at end-of-test.
+	gates := newGateRegistry(1)
+	gates.SetHashSize(hash, 1)
+	hold, err := gates.acquire(callKey{Hash: hash, Function: "handle"})
+	require.NoError(t, err)
+	t.Cleanup(hold)
+
+	ctx := context.Background()
+	server, client := pipePair(t)
+	go func() {
+		info, h, fn, herr := ReadHeader(server, types.PeerKey{})
+		if herr != nil {
+			server.Close()
+			return
+		}
+		handleWorkloadStream(ctx, server, info, h, fn, invoker, newUtilisationTracker(), gates, noopReserver, 10*time.Second)
+	}()
+
+	_, err = invokeOverStream(ctx, client, hash, "handle", nil)
+	var ovl *OverloadError
+	require.ErrorAs(t, err, &ovl)
+	require.ErrorIs(t, ovl.Sentinel, ErrAtCapacity)
+	require.Equal(t, retryAfterDefault, ovl.RetryAfter)
 }

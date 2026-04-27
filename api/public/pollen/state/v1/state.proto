@@ -77,6 +77,20 @@ message ResourceTelemetryChange {
   uint32 num_cpu = 4;
   uint32 cpu_budget_percent = 5;
   uint32 mem_budget_percent = 6;
+  // admission_state is the local backpressure picture rolled up from the
+  // node's gates and memory admission. OPEN means the node has headroom
+  // for new work; DEGRADED means it is admitting under pressure; CLOSED
+  // means new admissions will be rejected. Routing peers read this to
+  // skip CLOSED targets entirely and penalise DEGRADED ones rather than
+  // discovering saturation by probing.
+  AdmissionState admission_state = 7;
+}
+
+enum AdmissionState {
+  ADMISSION_STATE_UNSPECIFIED = 0;
+  ADMISSION_STATE_OPEN = 1;
+  ADMISSION_STATE_DEGRADED = 2;
+  ADMISSION_STATE_CLOSED = 3;
 }
 
 message WorkloadSpecChange {
@@ -108,10 +122,12 @@ message SeedMetrics {
   float compute_cost_ms = 2;
   float slo_satisfied_rate = 3;
   float slo_burned_rate = 4;
-  uint32 gate_wait_ms = 5;
+  reserved 5;
+  reserved "gate_wait_ms";
   // Mean wall-time (ms) per invocation spent parked inside pollen_request
-  // waiting for downstream responses. Feeds adaptive gate sizing via
-  // Little's Law (active fraction = 1 - parked/compute).
+  // waiting for downstream responses. Subtracted from compute_cost_ms in
+  // desiredReplicas so capacity sizing tracks active CPU work, not wall
+  // time spent waiting on downstream calls.
   float parked_ms = 6;
   // Calls/sec for this seed that enter the cluster at this node —
   // incremented on every placement.Call entry regardless of whether the
@@ -119,6 +135,22 @@ message SeedMetrics {
   // across peers is the demand signal placement scoring uses to pull
   // seeds toward where their traffic enters.
   float origin_rate = 7;
+  // Short-window EWMA of origin_rate for burst detection. The slow
+  // origin_rate reacts in seconds; this fast variant reacts in
+  // sub-second so the autoscaler can respond to a microburst before it
+  // has propagated into the slow EWMA. Take max(slow×headroom, fast)
+  // as the arrival rate.
+  float origin_rate_fast = 8;
+  // Long-window EWMA of origin_rate, the steady-state companion to
+  // origin_rate_fast. origin_rate (field 7) remains the canonical
+  // medium-window signal callers integrate against.
+  float origin_rate_slow = 9;
+  // Calls/sec rejected at admission for this seed — gate at-capacity,
+  // memory budget, or any other backpressure that returns OverloadError
+  // before the workload runs. A non-zero reject_rate is the strongest
+  // signal that the cluster is under-provisioned and forces immediate
+  // scale-up regardless of where the slow origin EWMA sits.
+  float reject_rate = 10;
 }
 
 message SeedMetricsChange {
@@ -171,6 +203,13 @@ message StaticManifest {
 
 message WorkloadClaimChange {
   string hash = 1;
+  // draining signals that the publisher intends to release this claim
+  // shortly. Other peers can issue a replacement claim during the
+  // drain window so make-before-break overlap is preserved across the
+  // handover. Default false; eligible only on persistent claims (not
+  // tombstones — when the publisher actually releases, deleted=true is
+  // emitted on the parent GossipEvent and this field is irrelevant).
+  bool draining = 2;
 }
 
 message TrafficRate {

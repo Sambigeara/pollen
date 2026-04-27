@@ -75,6 +75,58 @@ func (ServiceProtocol) EnumDescriptor() ([]byte, []int) {
 	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{0}
 }
 
+type AdmissionState int32
+
+const (
+	AdmissionState_ADMISSION_STATE_UNSPECIFIED AdmissionState = 0
+	AdmissionState_ADMISSION_STATE_OPEN        AdmissionState = 1
+	AdmissionState_ADMISSION_STATE_DEGRADED    AdmissionState = 2
+	AdmissionState_ADMISSION_STATE_CLOSED      AdmissionState = 3
+)
+
+// Enum value maps for AdmissionState.
+var (
+	AdmissionState_name = map[int32]string{
+		0: "ADMISSION_STATE_UNSPECIFIED",
+		1: "ADMISSION_STATE_OPEN",
+		2: "ADMISSION_STATE_DEGRADED",
+		3: "ADMISSION_STATE_CLOSED",
+	}
+	AdmissionState_value = map[string]int32{
+		"ADMISSION_STATE_UNSPECIFIED": 0,
+		"ADMISSION_STATE_OPEN":        1,
+		"ADMISSION_STATE_DEGRADED":    2,
+		"ADMISSION_STATE_CLOSED":      3,
+	}
+)
+
+func (x AdmissionState) Enum() *AdmissionState {
+	p := new(AdmissionState)
+	*p = x
+	return p
+}
+
+func (x AdmissionState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (AdmissionState) Descriptor() protoreflect.EnumDescriptor {
+	return file_pollen_state_v1_state_proto_enumTypes[1].Descriptor()
+}
+
+func (AdmissionState) Type() protoreflect.EnumType {
+	return &file_pollen_state_v1_state_proto_enumTypes[1]
+}
+
+func (x AdmissionState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use AdmissionState.Descriptor instead.
+func (AdmissionState) EnumDescriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{1}
+}
+
 type PeerDigest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	MaxCounter    uint64                 `protobuf:"varint,1,opt,name=max_counter,json=maxCounter,proto3" json:"max_counter,omitempty"`
@@ -631,8 +683,15 @@ type ResourceTelemetryChange struct {
 	NumCpu           uint32                 `protobuf:"varint,4,opt,name=num_cpu,json=numCpu,proto3" json:"num_cpu,omitempty"`
 	CpuBudgetPercent uint32                 `protobuf:"varint,5,opt,name=cpu_budget_percent,json=cpuBudgetPercent,proto3" json:"cpu_budget_percent,omitempty"`
 	MemBudgetPercent uint32                 `protobuf:"varint,6,opt,name=mem_budget_percent,json=memBudgetPercent,proto3" json:"mem_budget_percent,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// admission_state is the local backpressure picture rolled up from the
+	// node's gates and memory admission. OPEN means the node has headroom
+	// for new work; DEGRADED means it is admitting under pressure; CLOSED
+	// means new admissions will be rejected. Routing peers read this to
+	// skip CLOSED targets entirely and penalise DEGRADED ones rather than
+	// discovering saturation by probing.
+	AdmissionState AdmissionState `protobuf:"varint,7,opt,name=admission_state,json=admissionState,proto3,enum=pollen.state.v1.AdmissionState" json:"admission_state,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ResourceTelemetryChange) Reset() {
@@ -705,6 +764,13 @@ func (x *ResourceTelemetryChange) GetMemBudgetPercent() uint32 {
 		return x.MemBudgetPercent
 	}
 	return 0
+}
+
+func (x *ResourceTelemetryChange) GetAdmissionState() AdmissionState {
+	if x != nil {
+		return x.AdmissionState
+	}
+	return AdmissionState_ADMISSION_STATE_UNSPECIFIED
 }
 
 type WorkloadSpecChange struct {
@@ -817,17 +883,33 @@ type SeedMetrics struct {
 	ComputeCostMs    float32                `protobuf:"fixed32,2,opt,name=compute_cost_ms,json=computeCostMs,proto3" json:"compute_cost_ms,omitempty"`
 	SloSatisfiedRate float32                `protobuf:"fixed32,3,opt,name=slo_satisfied_rate,json=sloSatisfiedRate,proto3" json:"slo_satisfied_rate,omitempty"`
 	SloBurnedRate    float32                `protobuf:"fixed32,4,opt,name=slo_burned_rate,json=sloBurnedRate,proto3" json:"slo_burned_rate,omitempty"`
-	GateWaitMs       uint32                 `protobuf:"varint,5,opt,name=gate_wait_ms,json=gateWaitMs,proto3" json:"gate_wait_ms,omitempty"`
 	// Mean wall-time (ms) per invocation spent parked inside pollen_request
-	// waiting for downstream responses. Feeds adaptive gate sizing via
-	// Little's Law (active fraction = 1 - parked/compute).
+	// waiting for downstream responses. Subtracted from compute_cost_ms in
+	// desiredReplicas so capacity sizing tracks active CPU work, not wall
+	// time spent waiting on downstream calls.
 	ParkedMs float32 `protobuf:"fixed32,6,opt,name=parked_ms,json=parkedMs,proto3" json:"parked_ms,omitempty"`
 	// Calls/sec for this seed that enter the cluster at this node —
 	// incremented on every placement.Call entry regardless of whether the
 	// node hosts the seed. The cluster-wide distribution of origin_rate
 	// across peers is the demand signal placement scoring uses to pull
 	// seeds toward where their traffic enters.
-	OriginRate    float32 `protobuf:"fixed32,7,opt,name=origin_rate,json=originRate,proto3" json:"origin_rate,omitempty"`
+	OriginRate float32 `protobuf:"fixed32,7,opt,name=origin_rate,json=originRate,proto3" json:"origin_rate,omitempty"`
+	// Short-window EWMA of origin_rate for burst detection. The slow
+	// origin_rate reacts in seconds; this fast variant reacts in
+	// sub-second so the autoscaler can respond to a microburst before it
+	// has propagated into the slow EWMA. Take max(slow×headroom, fast)
+	// as the arrival rate.
+	OriginRateFast float32 `protobuf:"fixed32,8,opt,name=origin_rate_fast,json=originRateFast,proto3" json:"origin_rate_fast,omitempty"`
+	// Long-window EWMA of origin_rate, the steady-state companion to
+	// origin_rate_fast. origin_rate (field 7) remains the canonical
+	// medium-window signal callers integrate against.
+	OriginRateSlow float32 `protobuf:"fixed32,9,opt,name=origin_rate_slow,json=originRateSlow,proto3" json:"origin_rate_slow,omitempty"`
+	// Calls/sec rejected at admission for this seed — gate at-capacity,
+	// memory budget, or any other backpressure that returns OverloadError
+	// before the workload runs. A non-zero reject_rate is the strongest
+	// signal that the cluster is under-provisioned and forces immediate
+	// scale-up regardless of where the slow origin EWMA sits.
+	RejectRate    float32 `protobuf:"fixed32,10,opt,name=reject_rate,json=rejectRate,proto3" json:"reject_rate,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -890,13 +972,6 @@ func (x *SeedMetrics) GetSloBurnedRate() float32 {
 	return 0
 }
 
-func (x *SeedMetrics) GetGateWaitMs() uint32 {
-	if x != nil {
-		return x.GateWaitMs
-	}
-	return 0
-}
-
 func (x *SeedMetrics) GetParkedMs() float32 {
 	if x != nil {
 		return x.ParkedMs
@@ -907,6 +982,27 @@ func (x *SeedMetrics) GetParkedMs() float32 {
 func (x *SeedMetrics) GetOriginRate() float32 {
 	if x != nil {
 		return x.OriginRate
+	}
+	return 0
+}
+
+func (x *SeedMetrics) GetOriginRateFast() float32 {
+	if x != nil {
+		return x.OriginRateFast
+	}
+	return 0
+}
+
+func (x *SeedMetrics) GetOriginRateSlow() float32 {
+	if x != nil {
+		return x.OriginRateSlow
+	}
+	return 0
+}
+
+func (x *SeedMetrics) GetRejectRate() float32 {
+	if x != nil {
+		return x.RejectRate
 	}
 	return 0
 }
@@ -1252,8 +1348,15 @@ func (x *StaticManifest) GetPaths() []*StaticPath {
 }
 
 type WorkloadClaimChange struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Hash  string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	// draining signals that the publisher intends to release this claim
+	// shortly. Other peers can issue a replacement claim during the
+	// drain window so make-before-break overlap is preserved across the
+	// handover. Default false; eligible only on persistent claims (not
+	// tombstones — when the publisher actually releases, deleted=true is
+	// emitted on the parent GossipEvent and this field is irrelevant).
+	Draining      bool `protobuf:"varint,2,opt,name=draining,proto3" json:"draining,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1293,6 +1396,13 @@ func (x *WorkloadClaimChange) GetHash() string {
 		return x.Hash
 	}
 	return ""
+}
+
+func (x *WorkloadClaimChange) GetDraining() bool {
+	if x != nil {
+		return x.Draining
+	}
+	return false
 }
 
 type TrafficRate struct {
@@ -2296,7 +2406,7 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"DenyChange\x12\"\n" +
 	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\"*\n" +
 	"\rNatTypeChange\x12\x19\n" +
-	"\bnat_type\x18\x01 \x01(\rR\anatType\"\xf8\x01\n" +
+	"\bnat_type\x18\x01 \x01(\rR\anatType\"\xc2\x02\n" +
 	"\x17ResourceTelemetryChange\x12\x1f\n" +
 	"\vcpu_percent\x18\x01 \x01(\rR\n" +
 	"cpuPercent\x12\x1f\n" +
@@ -2305,7 +2415,8 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x0fmem_total_bytes\x18\x03 \x01(\x04R\rmemTotalBytes\x12\x17\n" +
 	"\anum_cpu\x18\x04 \x01(\rR\x06numCpu\x12,\n" +
 	"\x12cpu_budget_percent\x18\x05 \x01(\rR\x10cpuBudgetPercent\x12,\n" +
-	"\x12mem_budget_percent\x18\x06 \x01(\rR\x10memBudgetPercent\"\xf6\x01\n" +
+	"\x12mem_budget_percent\x18\x06 \x01(\rR\x10memBudgetPercent\x12H\n" +
+	"\x0fadmission_state\x18\a \x01(\x0e2\x1f.pollen.state.v1.AdmissionStateR\x0eadmissionState\"\xf6\x01\n" +
 	"\x12WorkloadSpecChange\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x12!\n" +
 	"\fmin_replicas\x18\x02 \x01(\rR\vminReplicas\x12!\n" +
@@ -2314,18 +2425,21 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"timeout_ms\x18\x04 \x01(\rR\ttimeoutMs\x12\x12\n" +
 	"\x04name\x18\x05 \x01(\tR\x04name\x12\x16\n" +
 	"\x06spread\x18\x06 \x01(\x02R\x06spread\x12$\n" +
-	"\x0elatency_slo_ms\x18\a \x01(\rR\flatencySloMsJ\x04\b\b\x10\tR\x0fpublisher_claim\"\x8c\x02\n" +
+	"\x0elatency_slo_ms\x18\a \x01(\rR\flatencySloMsJ\x04\b\b\x10\tR\x0fpublisher_claim\"\xf3\x02\n" +
 	"\vSeedMetrics\x12\x1f\n" +
 	"\vserved_rate\x18\x01 \x01(\x02R\n" +
 	"servedRate\x12&\n" +
 	"\x0fcompute_cost_ms\x18\x02 \x01(\x02R\rcomputeCostMs\x12,\n" +
 	"\x12slo_satisfied_rate\x18\x03 \x01(\x02R\x10sloSatisfiedRate\x12&\n" +
-	"\x0fslo_burned_rate\x18\x04 \x01(\x02R\rsloBurnedRate\x12 \n" +
-	"\fgate_wait_ms\x18\x05 \x01(\rR\n" +
-	"gateWaitMs\x12\x1b\n" +
+	"\x0fslo_burned_rate\x18\x04 \x01(\x02R\rsloBurnedRate\x12\x1b\n" +
 	"\tparked_ms\x18\x06 \x01(\x02R\bparkedMs\x12\x1f\n" +
 	"\vorigin_rate\x18\a \x01(\x02R\n" +
-	"originRate\"\xb0\x01\n" +
+	"originRate\x12(\n" +
+	"\x10origin_rate_fast\x18\b \x01(\x02R\x0eoriginRateFast\x12(\n" +
+	"\x10origin_rate_slow\x18\t \x01(\x02R\x0eoriginRateSlow\x12\x1f\n" +
+	"\vreject_rate\x18\n" +
+	" \x01(\x02R\n" +
+	"rejectRateJ\x04\b\x05\x10\x06R\fgate_wait_ms\"\xb0\x01\n" +
 	"\x11SeedMetricsChange\x12C\n" +
 	"\x05seeds\x18\x01 \x03(\v2-.pollen.state.v1.SeedMetricsChange.SeedsEntryR\x05seeds\x1aV\n" +
 	"\n" +
@@ -2352,9 +2466,10 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\xbaH\ar\x05\x10\x01\x18\x80\x10R\x04path\x12\x1f\n" +
 	"\x06digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x06digest\"C\n" +
 	"\x0eStaticManifest\x121\n" +
-	"\x05paths\x18\x01 \x03(\v2\x1b.pollen.state.v1.StaticPathR\x05paths\")\n" +
+	"\x05paths\x18\x01 \x03(\v2\x1b.pollen.state.v1.StaticPathR\x05paths\"E\n" +
 	"\x13WorkloadClaimChange\x12\x12\n" +
-	"\x04hash\x18\x01 \x01(\tR\x04hash\"w\n" +
+	"\x04hash\x18\x01 \x01(\tR\x04hash\x12\x1a\n" +
+	"\bdraining\x18\x02 \x01(\bR\bdraining\"w\n" +
 	"\vTrafficRate\x124\n" +
 	"\apeer_id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x06peerId\x12\x17\n" +
 	"\arate_in\x18\x02 \x01(\x04R\x06rateIn\x12\x19\n" +
@@ -2421,7 +2536,12 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x0fServiceProtocol\x12 \n" +
 	"\x1cSERVICE_PROTOCOL_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14SERVICE_PROTOCOL_TCP\x10\x01\x12\x18\n" +
-	"\x14SERVICE_PROTOCOL_UDP\x10\x02B@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
+	"\x14SERVICE_PROTOCOL_UDP\x10\x02*\x85\x01\n" +
+	"\x0eAdmissionState\x12\x1f\n" +
+	"\x1bADMISSION_STATE_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14ADMISSION_STATE_OPEN\x10\x01\x12\x1c\n" +
+	"\x18ADMISSION_STATE_DEGRADED\x10\x02\x12\x1a\n" +
+	"\x16ADMISSION_STATE_CLOSED\x10\x03B@Z>github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1b\x06proto3"
 
 var (
 	file_pollen_state_v1_state_proto_rawDescOnce sync.Once
@@ -2435,87 +2555,89 @@ func file_pollen_state_v1_state_proto_rawDescGZIP() []byte {
 	return file_pollen_state_v1_state_proto_rawDescData
 }
 
-var file_pollen_state_v1_state_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_pollen_state_v1_state_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_pollen_state_v1_state_proto_goTypes = []any{
 	(ServiceProtocol)(0),             // 0: pollen.state.v1.ServiceProtocol
-	(*PeerDigest)(nil),               // 1: pollen.state.v1.PeerDigest
-	(*Digest)(nil),                   // 2: pollen.state.v1.Digest
-	(*ServiceChange)(nil),            // 3: pollen.state.v1.ServiceChange
-	(*ReachabilityChange)(nil),       // 4: pollen.state.v1.ReachabilityChange
-	(*NetworkChange)(nil),            // 5: pollen.state.v1.NetworkChange
-	(*ObservedAddressChange)(nil),    // 6: pollen.state.v1.ObservedAddressChange
-	(*PubliclyAccessibleChange)(nil), // 7: pollen.state.v1.PubliclyAccessibleChange
-	(*VivaldiCoordinateChange)(nil),  // 8: pollen.state.v1.VivaldiCoordinateChange
-	(*CertExpiryChange)(nil),         // 9: pollen.state.v1.CertExpiryChange
-	(*DenyChange)(nil),               // 10: pollen.state.v1.DenyChange
-	(*NatTypeChange)(nil),            // 11: pollen.state.v1.NatTypeChange
-	(*ResourceTelemetryChange)(nil),  // 12: pollen.state.v1.ResourceTelemetryChange
-	(*WorkloadSpecChange)(nil),       // 13: pollen.state.v1.WorkloadSpecChange
-	(*SeedMetrics)(nil),              // 14: pollen.state.v1.SeedMetrics
-	(*SeedMetricsChange)(nil),        // 15: pollen.state.v1.SeedMetricsChange
-	(*BlobAvailabilityChange)(nil),   // 16: pollen.state.v1.BlobAvailabilityChange
-	(*StaticSpecChange)(nil),         // 17: pollen.state.v1.StaticSpecChange
-	(*StaticClaimChange)(nil),        // 18: pollen.state.v1.StaticClaimChange
-	(*BlobSpecChange)(nil),           // 19: pollen.state.v1.BlobSpecChange
-	(*StaticPath)(nil),               // 20: pollen.state.v1.StaticPath
-	(*StaticManifest)(nil),           // 21: pollen.state.v1.StaticManifest
-	(*WorkloadClaimChange)(nil),      // 22: pollen.state.v1.WorkloadClaimChange
-	(*TrafficRate)(nil),              // 23: pollen.state.v1.TrafficRate
-	(*TrafficHeatmapChange)(nil),     // 24: pollen.state.v1.TrafficHeatmapChange
-	(*HeartbeatChange)(nil),          // 25: pollen.state.v1.HeartbeatChange
-	(*AdminCapableChange)(nil),       // 26: pollen.state.v1.AdminCapableChange
-	(*StaticCapableChange)(nil),      // 27: pollen.state.v1.StaticCapableChange
-	(*NodeNameChange)(nil),           // 28: pollen.state.v1.NodeNameChange
-	(*GossipEvent)(nil),              // 29: pollen.state.v1.GossipEvent
-	(*GossipEventBatch)(nil),         // 30: pollen.state.v1.GossipEventBatch
-	(*RuntimeState)(nil),             // 31: pollen.state.v1.RuntimeState
-	(*PeerState)(nil),                // 32: pollen.state.v1.PeerState
-	(*ConsumedInvite)(nil),           // 33: pollen.state.v1.ConsumedInvite
-	nil,                              // 34: pollen.state.v1.Digest.PeersEntry
-	nil,                              // 35: pollen.state.v1.SeedMetricsChange.SeedsEntry
-	(*structpb.Struct)(nil),          // 36: google.protobuf.Struct
+	(AdmissionState)(0),              // 1: pollen.state.v1.AdmissionState
+	(*PeerDigest)(nil),               // 2: pollen.state.v1.PeerDigest
+	(*Digest)(nil),                   // 3: pollen.state.v1.Digest
+	(*ServiceChange)(nil),            // 4: pollen.state.v1.ServiceChange
+	(*ReachabilityChange)(nil),       // 5: pollen.state.v1.ReachabilityChange
+	(*NetworkChange)(nil),            // 6: pollen.state.v1.NetworkChange
+	(*ObservedAddressChange)(nil),    // 7: pollen.state.v1.ObservedAddressChange
+	(*PubliclyAccessibleChange)(nil), // 8: pollen.state.v1.PubliclyAccessibleChange
+	(*VivaldiCoordinateChange)(nil),  // 9: pollen.state.v1.VivaldiCoordinateChange
+	(*CertExpiryChange)(nil),         // 10: pollen.state.v1.CertExpiryChange
+	(*DenyChange)(nil),               // 11: pollen.state.v1.DenyChange
+	(*NatTypeChange)(nil),            // 12: pollen.state.v1.NatTypeChange
+	(*ResourceTelemetryChange)(nil),  // 13: pollen.state.v1.ResourceTelemetryChange
+	(*WorkloadSpecChange)(nil),       // 14: pollen.state.v1.WorkloadSpecChange
+	(*SeedMetrics)(nil),              // 15: pollen.state.v1.SeedMetrics
+	(*SeedMetricsChange)(nil),        // 16: pollen.state.v1.SeedMetricsChange
+	(*BlobAvailabilityChange)(nil),   // 17: pollen.state.v1.BlobAvailabilityChange
+	(*StaticSpecChange)(nil),         // 18: pollen.state.v1.StaticSpecChange
+	(*StaticClaimChange)(nil),        // 19: pollen.state.v1.StaticClaimChange
+	(*BlobSpecChange)(nil),           // 20: pollen.state.v1.BlobSpecChange
+	(*StaticPath)(nil),               // 21: pollen.state.v1.StaticPath
+	(*StaticManifest)(nil),           // 22: pollen.state.v1.StaticManifest
+	(*WorkloadClaimChange)(nil),      // 23: pollen.state.v1.WorkloadClaimChange
+	(*TrafficRate)(nil),              // 24: pollen.state.v1.TrafficRate
+	(*TrafficHeatmapChange)(nil),     // 25: pollen.state.v1.TrafficHeatmapChange
+	(*HeartbeatChange)(nil),          // 26: pollen.state.v1.HeartbeatChange
+	(*AdminCapableChange)(nil),       // 27: pollen.state.v1.AdminCapableChange
+	(*StaticCapableChange)(nil),      // 28: pollen.state.v1.StaticCapableChange
+	(*NodeNameChange)(nil),           // 29: pollen.state.v1.NodeNameChange
+	(*GossipEvent)(nil),              // 30: pollen.state.v1.GossipEvent
+	(*GossipEventBatch)(nil),         // 31: pollen.state.v1.GossipEventBatch
+	(*RuntimeState)(nil),             // 32: pollen.state.v1.RuntimeState
+	(*PeerState)(nil),                // 33: pollen.state.v1.PeerState
+	(*ConsumedInvite)(nil),           // 34: pollen.state.v1.ConsumedInvite
+	nil,                              // 35: pollen.state.v1.Digest.PeersEntry
+	nil,                              // 36: pollen.state.v1.SeedMetricsChange.SeedsEntry
+	(*structpb.Struct)(nil),          // 37: google.protobuf.Struct
 }
 var file_pollen_state_v1_state_proto_depIdxs = []int32{
-	34, // 0: pollen.state.v1.Digest.peers:type_name -> pollen.state.v1.Digest.PeersEntry
+	35, // 0: pollen.state.v1.Digest.peers:type_name -> pollen.state.v1.Digest.PeersEntry
 	0,  // 1: pollen.state.v1.ServiceChange.protocol:type_name -> pollen.state.v1.ServiceProtocol
-	36, // 2: pollen.state.v1.ServiceChange.properties:type_name -> google.protobuf.Struct
-	35, // 3: pollen.state.v1.SeedMetricsChange.seeds:type_name -> pollen.state.v1.SeedMetricsChange.SeedsEntry
-	20, // 4: pollen.state.v1.StaticManifest.paths:type_name -> pollen.state.v1.StaticPath
-	23, // 5: pollen.state.v1.TrafficHeatmapChange.rates:type_name -> pollen.state.v1.TrafficRate
-	5,  // 6: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
-	6,  // 7: pollen.state.v1.GossipEvent.observed_address:type_name -> pollen.state.v1.ObservedAddressChange
-	9,  // 8: pollen.state.v1.GossipEvent.cert_expiry:type_name -> pollen.state.v1.CertExpiryChange
-	3,  // 9: pollen.state.v1.GossipEvent.service:type_name -> pollen.state.v1.ServiceChange
-	4,  // 10: pollen.state.v1.GossipEvent.reachability:type_name -> pollen.state.v1.ReachabilityChange
-	7,  // 11: pollen.state.v1.GossipEvent.publicly_accessible:type_name -> pollen.state.v1.PubliclyAccessibleChange
-	8,  // 12: pollen.state.v1.GossipEvent.vivaldi:type_name -> pollen.state.v1.VivaldiCoordinateChange
-	11, // 13: pollen.state.v1.GossipEvent.nat_type:type_name -> pollen.state.v1.NatTypeChange
-	12, // 14: pollen.state.v1.GossipEvent.resource_telemetry:type_name -> pollen.state.v1.ResourceTelemetryChange
-	10, // 15: pollen.state.v1.GossipEvent.deny:type_name -> pollen.state.v1.DenyChange
-	13, // 16: pollen.state.v1.GossipEvent.workload_spec:type_name -> pollen.state.v1.WorkloadSpecChange
-	22, // 17: pollen.state.v1.GossipEvent.workload_claim:type_name -> pollen.state.v1.WorkloadClaimChange
-	24, // 18: pollen.state.v1.GossipEvent.traffic_heatmap:type_name -> pollen.state.v1.TrafficHeatmapChange
-	25, // 19: pollen.state.v1.GossipEvent.heartbeat:type_name -> pollen.state.v1.HeartbeatChange
-	26, // 20: pollen.state.v1.GossipEvent.admin_capable:type_name -> pollen.state.v1.AdminCapableChange
-	28, // 21: pollen.state.v1.GossipEvent.node_name:type_name -> pollen.state.v1.NodeNameChange
-	15, // 22: pollen.state.v1.GossipEvent.seed_metrics:type_name -> pollen.state.v1.SeedMetricsChange
-	16, // 23: pollen.state.v1.GossipEvent.blob_availability:type_name -> pollen.state.v1.BlobAvailabilityChange
-	17, // 24: pollen.state.v1.GossipEvent.static_spec:type_name -> pollen.state.v1.StaticSpecChange
-	18, // 25: pollen.state.v1.GossipEvent.static_claim:type_name -> pollen.state.v1.StaticClaimChange
-	19, // 26: pollen.state.v1.GossipEvent.blob_spec:type_name -> pollen.state.v1.BlobSpecChange
-	27, // 27: pollen.state.v1.GossipEvent.static_capable:type_name -> pollen.state.v1.StaticCapableChange
-	29, // 28: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
-	32, // 29: pollen.state.v1.RuntimeState.peers:type_name -> pollen.state.v1.PeerState
-	33, // 30: pollen.state.v1.RuntimeState.consumed_invites:type_name -> pollen.state.v1.ConsumedInvite
-	13, // 31: pollen.state.v1.RuntimeState.workload_specs:type_name -> pollen.state.v1.WorkloadSpecChange
-	1,  // 32: pollen.state.v1.Digest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
-	14, // 33: pollen.state.v1.SeedMetricsChange.SeedsEntry.value:type_name -> pollen.state.v1.SeedMetrics
-	34, // [34:34] is the sub-list for method output_type
-	34, // [34:34] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	37, // 2: pollen.state.v1.ServiceChange.properties:type_name -> google.protobuf.Struct
+	1,  // 3: pollen.state.v1.ResourceTelemetryChange.admission_state:type_name -> pollen.state.v1.AdmissionState
+	36, // 4: pollen.state.v1.SeedMetricsChange.seeds:type_name -> pollen.state.v1.SeedMetricsChange.SeedsEntry
+	21, // 5: pollen.state.v1.StaticManifest.paths:type_name -> pollen.state.v1.StaticPath
+	24, // 6: pollen.state.v1.TrafficHeatmapChange.rates:type_name -> pollen.state.v1.TrafficRate
+	6,  // 7: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
+	7,  // 8: pollen.state.v1.GossipEvent.observed_address:type_name -> pollen.state.v1.ObservedAddressChange
+	10, // 9: pollen.state.v1.GossipEvent.cert_expiry:type_name -> pollen.state.v1.CertExpiryChange
+	4,  // 10: pollen.state.v1.GossipEvent.service:type_name -> pollen.state.v1.ServiceChange
+	5,  // 11: pollen.state.v1.GossipEvent.reachability:type_name -> pollen.state.v1.ReachabilityChange
+	8,  // 12: pollen.state.v1.GossipEvent.publicly_accessible:type_name -> pollen.state.v1.PubliclyAccessibleChange
+	9,  // 13: pollen.state.v1.GossipEvent.vivaldi:type_name -> pollen.state.v1.VivaldiCoordinateChange
+	12, // 14: pollen.state.v1.GossipEvent.nat_type:type_name -> pollen.state.v1.NatTypeChange
+	13, // 15: pollen.state.v1.GossipEvent.resource_telemetry:type_name -> pollen.state.v1.ResourceTelemetryChange
+	11, // 16: pollen.state.v1.GossipEvent.deny:type_name -> pollen.state.v1.DenyChange
+	14, // 17: pollen.state.v1.GossipEvent.workload_spec:type_name -> pollen.state.v1.WorkloadSpecChange
+	23, // 18: pollen.state.v1.GossipEvent.workload_claim:type_name -> pollen.state.v1.WorkloadClaimChange
+	25, // 19: pollen.state.v1.GossipEvent.traffic_heatmap:type_name -> pollen.state.v1.TrafficHeatmapChange
+	26, // 20: pollen.state.v1.GossipEvent.heartbeat:type_name -> pollen.state.v1.HeartbeatChange
+	27, // 21: pollen.state.v1.GossipEvent.admin_capable:type_name -> pollen.state.v1.AdminCapableChange
+	29, // 22: pollen.state.v1.GossipEvent.node_name:type_name -> pollen.state.v1.NodeNameChange
+	16, // 23: pollen.state.v1.GossipEvent.seed_metrics:type_name -> pollen.state.v1.SeedMetricsChange
+	17, // 24: pollen.state.v1.GossipEvent.blob_availability:type_name -> pollen.state.v1.BlobAvailabilityChange
+	18, // 25: pollen.state.v1.GossipEvent.static_spec:type_name -> pollen.state.v1.StaticSpecChange
+	19, // 26: pollen.state.v1.GossipEvent.static_claim:type_name -> pollen.state.v1.StaticClaimChange
+	20, // 27: pollen.state.v1.GossipEvent.blob_spec:type_name -> pollen.state.v1.BlobSpecChange
+	28, // 28: pollen.state.v1.GossipEvent.static_capable:type_name -> pollen.state.v1.StaticCapableChange
+	30, // 29: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
+	33, // 30: pollen.state.v1.RuntimeState.peers:type_name -> pollen.state.v1.PeerState
+	34, // 31: pollen.state.v1.RuntimeState.consumed_invites:type_name -> pollen.state.v1.ConsumedInvite
+	14, // 32: pollen.state.v1.RuntimeState.workload_specs:type_name -> pollen.state.v1.WorkloadSpecChange
+	2,  // 33: pollen.state.v1.Digest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
+	15, // 34: pollen.state.v1.SeedMetricsChange.SeedsEntry.value:type_name -> pollen.state.v1.SeedMetrics
+	35, // [35:35] is the sub-list for method output_type
+	35, // [35:35] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_state_proto_init() }
@@ -2552,7 +2674,7 @@ func file_pollen_state_v1_state_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_state_v1_state_proto_rawDesc), len(file_pollen_state_v1_state_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   0,

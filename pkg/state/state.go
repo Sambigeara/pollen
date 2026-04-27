@@ -63,6 +63,7 @@ type StateStore interface {
 	PublishWorkload(spec WorkloadSpec) ([]Event, error)
 	DeleteWorkloadSpec(hash string) []Event
 	ClaimWorkload(hash string) []Event
+	MarkWorkloadDraining(hash string) []Event
 	ReleaseWorkload(hash string) []Event
 	SetLocalResources(r NodeResources) []Event
 	SetSeedMetrics(metrics map[string]SeedMetrics) []Event

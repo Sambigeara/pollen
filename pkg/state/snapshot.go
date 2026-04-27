@@ -19,17 +19,18 @@ import (
 )
 
 type Snapshot struct {
-	Nodes        map[types.PeerKey]NodeView
-	Specs        map[string]WorkloadSpecView
-	Claims       map[string]map[types.PeerKey]struct{}
-	StaticSpecs  map[string]StaticSpecView
-	StaticClaims map[string]map[types.PeerKey]struct{}
-	BlobSpecs    map[string]BlobSpecView
-	digest       Digest
-	live         map[types.PeerKey]struct{}
-	PeerKeys     []types.PeerKey
-	DeniedKeys   []types.PeerKey
-	LocalID      types.PeerKey
+	Nodes          map[types.PeerKey]NodeView
+	Specs          map[string]WorkloadSpecView
+	Claims         map[string]map[types.PeerKey]struct{}
+	DrainingClaims map[string]map[types.PeerKey]struct{}
+	StaticSpecs    map[string]StaticSpecView
+	StaticClaims   map[string]map[types.PeerKey]struct{}
+	BlobSpecs      map[string]BlobSpecView
+	digest         Digest
+	live           map[types.PeerKey]struct{}
+	PeerKeys       []types.PeerKey
+	DeniedKeys     []types.PeerKey
+	LocalID        types.PeerKey
 }
 
 type StaticSpecView struct {
@@ -59,13 +60,14 @@ type NodeView struct {
 	VivaldiErr         float64
 	MemTotalBytes      uint64
 	CertExpiry         int64
-	CPUPercent         uint32
+	CPUBudgetPercent   uint32
 	MemPercent         uint32
 	NumCPU             uint32
-	CPUBudgetPercent   uint32
+	CPUPercent         uint32
 	MemBudgetPercent   uint32
 	ExternalPort       uint32
 	LocalPort          uint32
+	AdmissionState     AdmissionState
 	PubliclyAccessible bool
 	AdminCapable       bool
 	CanServeStatic     bool
@@ -223,17 +225,24 @@ func (s *store) buildSnapshot() Snapshot {
 
 	nodes := make(map[types.PeerKey]NodeView)
 	claims := make(map[string]map[types.PeerKey]struct{})
+	drainingClaims := make(map[string]map[types.PeerKey]struct{})
 	staticClaims := make(map[string]map[types.PeerKey]struct{})
 
 	for pk, rec := range valid {
 		nv, recClaims, recStaticClaims := buildNodeView(pk, rec)
 		nodes[pk] = nv
 
-		for hash := range recClaims {
+		for hash, draining := range recClaims {
 			if claims[hash] == nil {
 				claims[hash] = make(map[types.PeerKey]struct{})
 			}
 			claims[hash][pk] = struct{}{}
+			if draining {
+				if drainingClaims[hash] == nil {
+					drainingClaims[hash] = make(map[types.PeerKey]struct{})
+				}
+				drainingClaims[hash][pk] = struct{}{}
+			}
 		}
 
 		for name := range recStaticClaims {
@@ -301,20 +310,22 @@ func (s *store) buildSnapshot() Snapshot {
 	denied := slices.SortedFunc(maps.Keys(s.denied), func(a, b types.PeerKey) int { return a.Compare(b) })
 
 	filteredClaims := filterLive(claims, live)
+	filteredDrainingClaims := filterLive(drainingClaims, live)
 	filteredStaticClaims := filterLive(staticClaims, live)
 
 	return Snapshot{
-		LocalID:      s.localID,
-		Nodes:        nodes,
-		Specs:        specs,
-		Claims:       filteredClaims,
-		StaticSpecs:  staticSpecs,
-		StaticClaims: filteredStaticClaims,
-		BlobSpecs:    blobSpecs,
-		live:         live,
-		PeerKeys:     slices.Collect(maps.Keys(live)),
-		DeniedKeys:   denied,
-		digest:       Digest{proto: &statev1.Digest{Peers: peersDigest}},
+		LocalID:        s.localID,
+		Nodes:          nodes,
+		Specs:          specs,
+		DrainingClaims: filteredDrainingClaims,
+		Claims:         filteredClaims,
+		StaticSpecs:    staticSpecs,
+		StaticClaims:   filteredStaticClaims,
+		BlobSpecs:      blobSpecs,
+		live:           live,
+		PeerKeys:       slices.SortedFunc(maps.Keys(live), types.PeerKey.Compare),
+		DeniedKeys:     denied,
+		digest:         Digest{proto: &statev1.Digest{Peers: peersDigest}},
 	}
 }
 
@@ -336,7 +347,17 @@ func filterLive(claims map[string]map[types.PeerKey]struct{}, live map[types.Pee
 // buildNodeView projects a peer's log into its peer-local NodeView plus
 // the per-peer claim sets (workload and static). Spec declarations are
 // cluster-scoped and live in s.specs; they are not surfaced here.
-func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]struct{}, map[string]struct{}) {
+// buildNodeView returns the projected per-node view alongside two
+// hash-keyed maps for the caller to aggregate cluster-wide:
+//
+//	claims        — workload hashes this peer is claiming, value = draining
+//	staticClaims  — static-bundle names this peer is claiming
+//
+// claims uses a bool value so the publisher's draining intent rides
+// alongside the membership signal: a true means "still claimant, but
+// scheduled for release". Other peers issue a replacement claim during
+// the drain window so make-before-break is preserved.
+func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool, map[string]struct{}) {
 	nv := NodeView{
 		PeerPub:      pk.Bytes(),
 		Services:     make(map[string]*Service),
@@ -347,7 +368,7 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]struc
 		LastAddr:     rec.LastAddr,
 		LastEventAt:  rec.lastEventAt,
 	}
-	claims := make(map[string]struct{})
+	claims := make(map[string]bool)
 	staticClaims := make(map[string]struct{})
 
 	for key, ev := range rec.log {
@@ -382,8 +403,9 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]struc
 			nv.CPUPercent, nv.MemPercent = v.ResourceTelemetry.CpuPercent, v.ResourceTelemetry.MemPercent
 			nv.MemTotalBytes, nv.NumCPU = v.ResourceTelemetry.MemTotalBytes, v.ResourceTelemetry.NumCpu
 			nv.CPUBudgetPercent, nv.MemBudgetPercent = v.ResourceTelemetry.CpuBudgetPercent, v.ResourceTelemetry.MemBudgetPercent
+			nv.AdmissionState = AdmissionState(v.ResourceTelemetry.AdmissionState)
 		case *statev1.GossipEvent_WorkloadClaim:
-			claims[key.name] = struct{}{}
+			claims[key.name] = v.WorkloadClaim.GetDraining()
 		case *statev1.GossipEvent_TrafficHeatmap:
 			for _, r := range v.TrafficHeatmap.Rates {
 				if peerPK, err := types.PeerKeyFromString(r.PeerId); err == nil {

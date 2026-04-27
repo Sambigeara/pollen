@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/wasm"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/mem"
+	"github.com/shirou/gopsutil/v4/process"
 	"go.uber.org/zap"
 )
 
@@ -33,7 +35,7 @@ const (
 	//   3. placement.Call — inherits caller ctx; forwards it to Runtime.Call
 	//      and to forwardCall, which opens a stream to the target peer
 	//   4. Target peer stream handler — this ceiling (min() with caller's
-	//      deadline once wire-level deadline propagation lands in Phase 4)
+	//      deadline once wire-level deadline propagation lands)
 	//   5. wasm.Runtime.Call — inherits; Extism enforces its own per-workload
 	//      timeout from the seed config as a further cap
 	//
@@ -56,7 +58,7 @@ type PlacementAPI interface {
 
 	RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration)
 
-	Serve(stream io.ReadWriteCloser, info wasm.CallerInfo, hash, function string)
+	Serve(stream io.ReadWriteCloser, peerKey types.PeerKey)
 
 	Signal()
 }
@@ -76,6 +78,7 @@ type WorkloadState interface {
 	PublishWorkload(spec state.WorkloadSpec) ([]state.Event, error)
 	DeleteWorkloadSpec(hash string) []state.Event
 	ClaimWorkload(hash string) []state.Event
+	MarkWorkloadDraining(hash string) []state.Event
 	ReleaseWorkload(hash string) []state.Event
 	SetLocalResources(r state.NodeResources) []state.Event
 	SetSeedMetrics(metrics map[string]state.SeedMetrics) []state.Event
@@ -97,6 +100,8 @@ type Service struct {
 	utilisation      *utilisationTracker
 	latency          *latencyTracker
 	gates            *gateRegistry
+	mem              *memoryAdmission
+	proc             *process.Process
 	wg               sync.WaitGroup
 	localID          types.PeerKey
 	cpuBudgetPercent uint32
@@ -130,10 +135,28 @@ func New(self types.PeerKey, store WorkloadState, blobs blobsAPI, wasmRT WASMRun
 	for _, o := range opts {
 		o(s)
 	}
+	// Normalise the configured budgets to their effective defaults so the
+	// gossiped values match what local admission and admissionState
+	// enforce. Without this, an unset memBudget admits at 80% locally
+	// (admission.go default) but gossips a raw 0 — and remote scoring
+	// reads 0 as 100% (no constraint), letting a saturated peer still
+	// win claims. Same idea for CPU even though every existing fallback
+	// already lands on 100%; making it explicit means the wire reflects
+	// the local view.
+	if s.memBudgetPercent == 0 {
+		s.memBudgetPercent = defaultMemBudgetPercent
+	}
+	if s.cpuBudgetPercent == 0 {
+		s.cpuBudgetPercent = defaultCPUBudgetPercent
+	}
 	s.manager = newManager(blobs, wasmRT)
 	s.utilisation = newUtilisationTracker()
 	s.latency = newLatencyTracker()
 	s.gates = newGateRegistry(runtime.NumCPU() * gateInitialMultiplier)
+	s.mem = newMemoryAdmission(s.memBudgetPercent)
+	if proc, err := process.NewProcess(int32(os.Getpid())); err == nil {
+		s.proc = proc
+	}
 	return s
 }
 
@@ -179,6 +202,10 @@ func (s *Service) Stop() error {
 }
 
 func (s *Service) runResourceTicker(ctx context.Context) {
+	// Immediate sample so memory admission has a hard limit before the
+	// first request lands instead of fail-open for the first interval.
+	s.sampleResources()
+
 	ticker := time.NewTicker(resourceSampleInterval)
 	defer ticker.Stop()
 	for {
@@ -186,26 +213,77 @@ func (s *Service) runResourceTicker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			var cpuPct, memPct uint32
-			var memTotal uint64
-			if pcts, err := cpu.Percent(0, false); err == nil && len(pcts) > 0 {
-				cpuPct = uint32(pcts[0])
-			}
-			if vm, err := mem.VirtualMemory(); err == nil {
-				memPct = uint32(vm.UsedPercent)
-				memTotal = vm.Total
-			}
-			numCPU := uint32(runtime.NumCPU()) //nolint:gosec
-			s.store.SetLocalResources(state.NodeResources{
-				CPUPercent:       cpuPct,
-				MemPercent:       memPct,
-				MemTotalBytes:    memTotal,
-				NumCPU:           numCPU,
-				CPUBudgetPercent: s.cpuBudgetPercent,
-				MemBudgetPercent: s.memBudgetPercent,
-			})
+			s.sampleResources()
 		}
 	}
+}
+
+func (s *Service) sampleResources() {
+	var cpuPct, memPct uint32
+	var memTotal uint64
+	if pcts, err := cpu.Percent(0, false); err == nil && len(pcts) > 0 {
+		cpuPct = uint32(pcts[0])
+	}
+	if vm, err := mem.VirtualMemory(); err == nil {
+		memPct = uint32(vm.UsedPercent)
+		memTotal = vm.Total
+	}
+	var rss uint64
+	if s.proc != nil {
+		if mi, err := s.proc.MemoryInfo(); err == nil {
+			rss = mi.RSS
+		}
+	}
+	s.mem.update(rss, memTotal)
+	numCPU := uint32(runtime.NumCPU()) //nolint:gosec
+	s.store.SetLocalResources(state.NodeResources{
+		CPUPercent:       cpuPct,
+		MemPercent:       memPct,
+		MemTotalBytes:    memTotal,
+		NumCPU:           numCPU,
+		CPUBudgetPercent: s.cpuBudgetPercent,
+		MemBudgetPercent: s.memBudgetPercent,
+		AdmissionState:   s.admissionState(cpuPct, memPct),
+	})
+}
+
+// admissionState rolls up the local backpressure picture into a single
+// gossip-friendly enum. Closed when the memory admission gate would
+// reject; degraded when CPU or memory headroom is below 10% of budget;
+// open otherwise. Routing peers use this to skip Closed targets
+// entirely and penalise Degraded targets in pickP2C.
+func (s *Service) admissionState(cpuPct, memPct uint32) state.AdmissionState {
+	const degradeBand = 10
+	if s.mem.closed() {
+		return state.AdmissionClosed
+	}
+	cpuBudget := s.cpuBudgetPercent
+	if cpuBudget == 0 {
+		cpuBudget = 100
+	}
+	memBudget := s.memBudgetPercent
+	if memBudget == 0 {
+		memBudget = 100
+	}
+	if cpuBudget >= cpuPct+degradeBand && memBudget >= memPct+degradeBand {
+		return state.AdmissionOpen
+	}
+	return state.AdmissionDegraded
+}
+
+// reserveCallMemory looks up the workload's declared memory cost and
+// asks the node-global admission gate to reserve it. The release is a
+// no-op when admission is disabled (no sample yet, no spec, or no
+// budget) so callers can defer it unconditionally.
+func (s *Service) reserveCallMemory(hash string) (func(), error) {
+	return s.mem.tryReserve(s.callMemoryBytes(hash))
+}
+
+func (s *Service) callMemoryBytes(hash string) uint64 {
+	if sv, ok := s.store.Snapshot().Specs[hash]; ok && sv.Spec.MemoryBytes > 0 {
+		return sv.Spec.MemoryBytes
+	}
+	return defaultCallMemoryBytes
 }
 
 func (s *Service) Seed(binary []byte, spec state.WorkloadSpec) error {
@@ -232,10 +310,14 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec) error {
 
 	cfg := wasm.NewPluginConfig(spec.MemoryBytes, spec.Timeout)
 	gotHash, err := s.manager.Seed(s.ctx, binary, cfg)
-	if err != nil && !errors.Is(err, ErrAlreadyRunning) {
+	alreadyRunning := errors.Is(err, ErrAlreadyRunning)
+	if err != nil && !alreadyRunning {
 		return err
 	}
 	if gotHash != hash {
+		if !alreadyRunning {
+			_ = s.manager.Unseed(gotHash)
+		}
 		return fmt.Errorf("hash mismatch: expected %s, got %s", hash, gotHash)
 	}
 	if spec.MinReplicas == 0 {
@@ -246,6 +328,14 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec) error {
 	}
 
 	if _, err := s.store.PublishWorkload(spec); err != nil {
+		// Compile happened but the publisher rejected the spec — undo
+		// the Seed so a half-installed module isn't left running with
+		// no spec to manage it (no autoscale, no idle release, no
+		// gossip). Skip when the module was already running pre-call;
+		// it predates this Seed and isn't ours to clean up.
+		if !alreadyRunning {
+			_ = s.manager.Unseed(hash)
+		}
 		return err
 	}
 	return nil
@@ -305,21 +395,24 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 	// authoritative demand signal for where the seed should live.
 	s.utilisation.RecordOrigin(hash, function)
 
-	locallyRunning := s.manager.IsRunning(hash)
 	snap := s.store.Snapshot()
 	claimants := snap.Claims[hash]
 
-	if !locallyRunning && len(claimants) == 0 {
+	if len(claimants) == 0 {
 		return nil, fmt.Errorf("no node claims workload %s: %w", types.ShortHash(hash), ErrNotRunning)
 	}
 
-	target, isLocal := pickP2C(s.localID, locallyRunning, claimants, s.latency, hash, function)
-
-	if isLocal {
-		return s.callLocal(ctx, hash, function, input)
+	view := routingView{
+		Claimants:       claimants,
+		Draining:        snap.DrainingClaims[hash],
+		AdmissionStates: admissionStatesFromSnap(snap),
+		RejectShares:    rejectSharesFromSnap(snap, hash),
 	}
-
-	out, err := s.forwardCall(ctx, target, hash, function, input)
+	target, isLocal, ok := pickP2C(s.localID, view, s.latency, hash, function)
+	if !ok {
+		return nil, newOverload(ErrOverloaded, "no admissible claimants")
+	}
+	out, err := s.attemptCall(ctx, target, isLocal, hash, function, input)
 	if err == nil {
 		return out, nil
 	}
@@ -327,42 +420,142 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 		return nil, err
 	}
 
-	// Fallback: try remaining claimants in shuffled order. Transient
-	// failures (overload, timeout, transport hiccups) are retryable —
-	// the next peer might have slack. Workload-level errors are
-	// deterministic and bail out early.
-	for _, fallback := range shuffledClaimants(claimants, target) {
-		if fallback == s.localID && locallyRunning {
-			out, err = s.callLocal(ctx, hash, function, input)
-		} else {
-			out, err = s.forwardCall(ctx, fallback, hash, function, input)
-		}
-		if err == nil {
-			return out, nil
-		}
-		if errors.Is(err, ErrWorkloadFailed) || errors.Is(err, ErrCycle) {
-			return nil, err
+	// One bounded fallback. The earlier shuffled-walk over every claimant
+	// turned a single hot spot into N×latency cascades and ignored
+	// retry-after; restricting to one P2C-picked alternate keeps the
+	// blast radius of a transient failure constant. Skip the retry when
+	// the remaining ctx deadline can't accommodate the target's stated
+	// retry-after — better to surface the structured overload than burn
+	// the deadline before the fallback can even reply.
+	if !canRetry(ctx, err) {
+		return nil, err
+	}
+	fallback, fallbackLocal, ok := pickP2CFallback(s.localID, view, target, s.latency, hash, function)
+	if !ok {
+		return nil, err
+	}
+	out2, err2 := s.attemptCall(ctx, fallback, fallbackLocal, hash, function, input)
+	if err2 == nil {
+		return out2, nil
+	}
+	if errors.Is(err2, ErrWorkloadFailed) || errors.Is(err2, ErrCycle) {
+		return nil, err2
+	}
+	return nil, preferStructured(err, err2)
+}
+
+func (s *Service) attemptCall(ctx context.Context, target types.PeerKey, isLocal bool, hash, function string, input []byte) ([]byte, error) {
+	if isLocal {
+		return s.callLocal(ctx, hash, function, input)
+	}
+	return s.forwardCall(ctx, target, hash, function, input)
+}
+
+// canRetry reports whether the call ctx has enough remaining time to
+// honour an OverloadError's RetryAfter hint before attempting the
+// fallback. Non-overload errors (transport hiccups, timeouts) are
+// always retried — they have no retry-after to consult.
+func canRetry(ctx context.Context, err error) bool {
+	var oe *OverloadError
+	if !errors.As(err, &oe) || oe.RetryAfter <= 0 {
+		return true
+	}
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return true
+	}
+	return time.Until(dl) >= oe.RetryAfter
+}
+
+// admissionStatesFromSnap projects per-peer AdmissionState out of the
+// snapshot for the routing layer. Building this once per Call keeps the
+// pickP2C variants pure (no snapshot dependency) and amortises the map
+// allocation across primary + fallback picks.
+func admissionStatesFromSnap(snap state.Snapshot) map[types.PeerKey]state.AdmissionState {
+	out := make(map[types.PeerKey]state.AdmissionState, len(snap.Nodes))
+	for pk, nv := range snap.Nodes {
+		if nv.AdmissionState != state.AdmissionUnspecified {
+			out[pk] = nv.AdmissionState
 		}
 	}
-	return nil, fmt.Errorf("all %d claimants failed for %s: %w", len(claimants), types.ShortHash(hash), err)
+	return out
+}
+
+// rejectSharesFromSnap projects per-peer rejected-share for the given
+// hash so pickP2C can penalise saturated claimants. Zero entries (no
+// served and no rejected traffic — fresh peer or idle hash) are omitted
+// so adjustedLatency leaves the EWMA untouched. RejectRate alone is the
+// wrong signal: a peer absorbing 1000 req/s and shedding 10/s is fine
+// (1% share); a peer absorbing 10/s and shedding 100/s is not (90%).
+func rejectSharesFromSnap(snap state.Snapshot, hash string) map[types.PeerKey]float64 {
+	out := make(map[types.PeerKey]float64, len(snap.Nodes))
+	for pk, nv := range snap.Nodes {
+		m, ok := nv.SeedMetrics[hash]
+		if !ok {
+			continue
+		}
+		total := float64(m.ServedRate) + float64(m.RejectRate)
+		if total <= 0 {
+			continue
+		}
+		out[pk] = float64(m.RejectRate) / total
+	}
+	return out
+}
+
+// preferStructured chooses which of two failures to surface to the
+// caller. A structured OverloadError (with retry-after and reason) is
+// more actionable than a bare transport error, so it wins; if both are
+// structured the first attempt wins because the second hit a wider
+// surface area on the way out.
+func preferStructured(first, second error) error {
+	var oe *OverloadError
+	if errors.As(first, &oe) {
+		return first
+	}
+	if errors.As(second, &oe) {
+		return second
+	}
+	return first
 }
 
 // callLocal runs the workload on this node, gated by the per-workload
-// concurrency gate. The concurrency gate blocks only until ctx cancels —
-// caller deadlines drive wait budgets, not a global constant.
+// concurrency gate and the node-global memory admission ceiling. Both
+// gates are non-blocking: at-capacity fast-fails (ErrAtCapacity for
+// concurrency, ErrOverloaded for memory) so Call can fall through to
+// another claimant. Failed admission increments RejectRate (gossiped
+// for the autoscaler's reject-driven scale-up) and the SLO burn signal
+// (observability).
 //
-// Two timers run here. callerStart spans admission wait + execution so the
+// Two timers run here. callerStart spans admission + execution so the
 // routing latency tracker reflects what callers actually experience —
 // this matches forwardCall's measurement and lets P2C migrate traffic
 // away from a saturated local node. workStart covers only execution so
-// the per-seed compute-cost EWMA stays a clean signal for the autoscaler.
+// the per-seed compute-cost EWMA stays a clean signal for the
+// Little's-Law replica sizing in desiredReplicas.
 func (s *Service) callLocal(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
 	callerStart := time.Now()
-	gateRelease, err := s.gates.acquire(ctx, callKey{Hash: hash, Function: function})
+	gateRelease, err := s.gates.acquire(callKey{Hash: hash, Function: function})
 	if err != nil {
+		if errors.Is(err, ErrAtCapacity) {
+			s.utilisation.RecordSLOMiss(hash, function)
+			s.utilisation.RecordReject(hash, function)
+			return nil, newOverload(ErrAtCapacity, "gate at capacity")
+		}
 		return nil, err
 	}
 	defer gateRelease()
+
+	memRelease, err := s.reserveCallMemory(hash)
+	if err != nil {
+		if errors.Is(err, ErrOverloaded) {
+			s.utilisation.RecordSLOMiss(hash, function)
+			s.utilisation.RecordReject(hash, function)
+			return nil, newOverload(ErrOverloaded, "node memory budget")
+		}
+		return nil, err
+	}
+	defer memRelease()
 
 	workStart := time.Now()
 	out, err := s.manager.Call(ctx, hash, function, input)
@@ -384,14 +577,41 @@ func (s *Service) forwardCall(ctx context.Context, target types.PeerKey, hash, f
 		return nil, err
 	}
 
+	// Cancel a blocked read/write if the call ctx fires. Tracked under
+	// s.wg so service shutdown drains the watcher before returning —
+	// otherwise the goroutine could outlive Stop() and panic on a closed
+	// channel.
+	if ctx.Done() != nil {
+		done := make(chan struct{})
+		s.wg.Go(func() {
+			select {
+			case <-ctx.Done():
+				_ = stream.Close()
+			case <-done:
+			}
+		})
+		defer close(done)
+	}
+
 	start := time.Now()
 	out, err := invokeOverStream(ctx, stream, hash, function, input)
 	elapsed := time.Since(start)
-	// Record latency and SLO on every attempt except ErrNotRunning so P2C
-	// learns about slow/failing remotes and the SLO autoscaler doesn't
-	// undercount remote pain. ErrNotRunning means the target wasn't
-	// hosting the seed at all — not informative for either signal.
-	if !errors.Is(err, ErrNotRunning) {
+	// Latency and SLO accounting for the remote attempt. Three branches:
+	//   - ErrNotRunning: the target isn't hosting the seed at all —
+	//     skip both signals; the bounce isn't informative.
+	//   - At-capacity / overloaded: a fast reject. Don't update the
+	//     latency EWMA — a 2 ms bounce would make a saturated peer
+	//     LOOK fast and bias the next P2C pick toward the rejector
+	//     (the original "routing rewards overload" bug). Burn ratio
+	//     still reflects the pain via RecordSLOMiss; the per-peer
+	//     RejectRate gossip is what feeds rejection-aware routing.
+	//   - Anything else: real wall time, real SLO classification.
+	switch {
+	case errors.Is(err, ErrNotRunning):
+		// Skip both.
+	case errors.Is(err, ErrAtCapacity), errors.Is(err, ErrOverloaded):
+		s.utilisation.RecordSLOMiss(hash, function)
+	default:
 		s.latency.Record(target, hash, function, float64(elapsed.Milliseconds()))
 		s.utilisation.RecordSLO(hash, function, elapsed)
 	}
@@ -426,10 +646,20 @@ func (s *Service) PlacementInfo() map[string]PlacementInfo {
 	return s.reconciler.allPlacementInfo()
 }
 
-// Serve handles an inbound workload call stream after supervisor has
-// read the header (caller info, seed hash, function name).
-func (s *Service) Serve(stream io.ReadWriteCloser, info wasm.CallerInfo, hash, function string) {
-	handleWorkloadStream(s.ctx, stream, info, hash, function, s.manager, s.utilisation, s.gates, workloadInvocationTimeout)
+// Serve handles an inbound workload call stream end-to-end: reads the
+// caller-info envelope, seed hash, and function name from the wire (so
+// the placement protocol stays inside this package), then runs the
+// invocation under the per-(hash, function) gate, the node-global
+// memory admission, and the per-call timeout. peerKey is the
+// transport-authenticated identity — wire-reported caller keys are
+// ignored to prevent spoofed attribution.
+func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
+	info, hash, function, err := ReadHeader(stream, peerKey)
+	if err != nil {
+		_ = stream.Close()
+		return
+	}
+	handleWorkloadStream(s.ctx, stream, info, hash, function, s.manager, s.utilisation, s.gates, s.reserveCallMemory, workloadInvocationTimeout)
 }
 
 func (s *Service) Signal() {
@@ -489,9 +719,11 @@ func (s *Service) resolveGlobal(identifier string) (string, bool) {
 }
 
 func (s *Service) resolveHashPrefix(prefix string, snap state.Snapshot) (string, bool) {
-	if s.manager.IsRunning(prefix) {
-		return prefix, true
-	}
+	// CRDT only — never consult the local manager. Resolution that
+	// trusts in-process runtime over gossip lets a stale local module
+	// short-circuit a peer-published workload's identity, and would
+	// give a peer with a vanishing CRDT claim the false confidence
+	// that the workload is still resolvable.
 	if _, ok := snap.Claims[prefix]; ok {
 		return prefix, true
 	}

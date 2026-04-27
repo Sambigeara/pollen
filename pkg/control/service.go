@@ -974,6 +974,18 @@ func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadR
 	output, err := s.placement.Call(ctx, hash, function, req.GetInput())
 	if err != nil {
 		s.log.Warnw("call workload failed", "hash", hash, "function", function, "err", err)
+		var ovl *placement.OverloadError
+		if errors.As(err, &ovl) {
+			// Surface retry-after metadata in a gRPC trailer so clients
+			// with a retry budget can wait the suggested duration before
+			// attempting again. The trailer key is lowercase per gRPC's
+			// canonical metadata convention.
+			md := metadata.Pairs(
+				"pln-retry-after-ms", strconv.FormatInt(ovl.RetryAfter.Milliseconds(), 10),
+				"pln-overload-reason", ovl.Reason,
+			)
+			grpc.SetTrailer(ctx, md) //nolint:errcheck
+		}
 		switch {
 		case errors.Is(err, wasm.ErrTargetNotFound):
 			return nil, status.Error(codes.NotFound, "no such workload")
@@ -981,6 +993,10 @@ func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadR
 			return nil, status.Error(codes.NotFound, "workload not running on any reachable node")
 		case errors.Is(err, placement.ErrCycle):
 			return nil, status.Error(codes.FailedPrecondition, "call cycle detected")
+		case errors.Is(err, placement.ErrOverloaded):
+			return nil, status.Error(codes.ResourceExhausted, "node overloaded; retry later")
+		case errors.Is(err, placement.ErrAtCapacity):
+			return nil, status.Error(codes.ResourceExhausted, "workload at capacity; retry later")
 		case errors.Is(err, placement.ErrRelayOnly):
 			return nil, status.Error(codes.FailedPrecondition, "node is relay-only; workload invocation disabled")
 		case errors.Is(err, context.DeadlineExceeded):

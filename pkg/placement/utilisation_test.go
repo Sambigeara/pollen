@@ -4,7 +4,6 @@
 package placement
 
 import (
-	"math"
 	"testing"
 	"time"
 
@@ -68,18 +67,6 @@ func TestUtilisationTracker_RecordAndRate(t *testing.T) {
 	require.InDelta(t, 0.2, ut.ServedRates()["abc"], 0.1)
 }
 
-func TestUtilisationTracker_IdleDuration(t *testing.T) {
-	ut := newUtilisationTracker()
-	now := time.Now()
-	ut.nowFunc = func() time.Time { return now }
-
-	require.Equal(t, time.Duration(math.MaxInt64), ut.IdleDuration("abc"))
-
-	ut.RecordServed("abc", "handle")
-	now = now.Add(3 * time.Minute)
-	require.InDelta(t, 3*time.Minute, ut.IdleDuration("abc"), float64(time.Millisecond))
-}
-
 func TestUtilisationTracker_Clear(t *testing.T) {
 	ut := newUtilisationTracker()
 	now := time.Now()
@@ -92,7 +79,6 @@ func TestUtilisationTracker_Clear(t *testing.T) {
 
 	ut.Clear("abc")
 	require.NotContains(t, ut.ServedRates(), "abc")
-	require.Equal(t, time.Duration(math.MaxInt64), ut.IdleDuration("abc"))
 }
 
 func TestUtilisationTracker_ServedRates(t *testing.T) {
@@ -116,8 +102,7 @@ func TestUtilisationTracker_ServedRates(t *testing.T) {
 func TestUtilisationTracker_OriginRates(t *testing.T) {
 	// RecordOrigin fires at Call() entry regardless of whether the seed
 	// runs locally — it captures where demand enters the cluster. It
-	// produces a per-hash rate analogous to RecordServed and bumps
-	// lastActivity so even a non-claimant edge peer looks "active".
+	// produces a per-hash rate analogous to RecordServed.
 	ut := newUtilisationTracker()
 	now := time.Now()
 	ut.nowFunc = func() time.Time { return now }
@@ -133,8 +118,6 @@ func TestUtilisationTracker_OriginRates(t *testing.T) {
 	rates := ut.OriginRates()
 	require.Contains(t, rates, "hot")
 	require.InDelta(t, 20.0, rates["hot"], 1.0)
-	require.Less(t, ut.IdleDuration("hot"), time.Second+time.Millisecond,
-		"RecordOrigin must keep lastActivity fresh")
 
 	// ServedRates and OriginRates are independent channels on the same
 	// hash — a hash with only origin traffic should not appear in served.

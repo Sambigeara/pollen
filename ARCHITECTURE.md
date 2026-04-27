@@ -97,35 +97,55 @@ type StateStore interface {
     SetLocalReachable(peers []types.PeerKey) []Event
     SetLocalObservedAddress(ip string, port uint32) []Event
 
-    SetWorkloadSpec(spec WorkloadSpec) []Event
+    PublishWorkload(spec WorkloadSpec) ([]Event, error)
     DeleteWorkloadSpec(hash string) []Event
     ClaimWorkload(hash string) []Event
+    MarkWorkloadDraining(hash string) []Event
     ReleaseWorkload(hash string) []Event
     SetLocalResources(r NodeResources) []Event
     SetSeedMetrics(metrics map[string]SeedMetrics) []Event
-    SetSeedDialRates(rates map[string]map[string]float32) []Event
+    SetLocalBlobs(digests []string) []Event
 
-    SetService(port uint32, name string, protocol statev1.ServiceProtocol) []Event
+    SetStaticSpec(spec StaticSpec) ([]Event, error)
+    DeleteStaticSpec(name string) []Event
+    ClaimStatic(name string) []Event
+    ReleaseStatic(name string) []Event
+
+    SetBlobSpec(spec BlobSpec) ([]Event, error)
+    DeleteBlobSpec(digest string) []Event
+
+    SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) []Event
     RemoveService(name string) []Event
     SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event
 
     EmitHeartbeatIfNeeded() []Event
     LoadGossipState(data []byte) error
-    SetPeerLastAddr(pk types.PeerKey, addr string)
-    ExportLastAddrs() map[types.PeerKey]string
-    LoadLastAddrs(addrs map[types.PeerKey]string)
 
+    SetPeerLastAddr(pk types.PeerKey, addr string)
     SetPublic()
     SetAdmin()
     ClearAdmin()
+    SetStaticCapable()
     SetNodeName(name string)
+    ExportLastAddrs() map[types.PeerKey]string
+    LoadLastAddrs(addrs map[types.PeerKey]string)
 }
 
-var _ StateStore = (*Store)(nil)
+var _ StateStore = (*store)(nil)
 
-type Store struct { ... }
 func New(self types.PeerKey) StateStore
 ```
+
+`PublishWorkload` issues the spec and the publisher's claim atomically;
+splitting them lets a remote see the spec first, claim before the
+publisher's own claim arrives, and over-replicate until the unwind
+catches up.
+
+`MarkWorkloadDraining` flips an existing claim into the draining state
+without removing it from the claimant set: callers continue routing to
+this peer until `ReleaseWorkload` lands, but other peers see the drain
+flag and issue replacement claims so make-before-break overlap is
+preserved across the handover.
 
 **Domain value types** — cross package boundaries by value so no proto
 type leaks out of state:
@@ -148,50 +168,82 @@ type NodeResources struct {
     NumCPU           uint32
     CPUBudgetPercent uint32
     MemBudgetPercent uint32
+    AdmissionState   AdmissionState
 }
 
+// AdmissionState is the local backpressure picture peers gossip so
+// routers can skip Closed targets and penalise Degraded ones in the
+// pickP2C latency adjustment.
+type AdmissionState uint8
+
+const (
+    AdmissionUnspecified AdmissionState = iota
+    AdmissionOpen
+    AdmissionDegraded
+    AdmissionClosed
+)
+
 // SeedMetrics bundles the per-seed per-node telemetry gossiped
-// together: served rate, compute cost, SLO satisfied/burned rates,
-// and EWMA gate wait. Dial rates stay separate (SetSeedDialRates)
-// because their graph-shaped variable-cardinality data doesn't fit
-// the scalar bundle.
+// together. ServedRate is local execution rate; OriginRate is the
+// rate of calls *entering* the cluster at this peer for this seed
+// (used by placement scoring to pull the seed toward demand);
+// OriginRateFast/Slow flank OriginRate with short- and long-window
+// EWMAs so a microburst is visible to the autoscaler before the
+// medium EWMA reacts; RejectRate counts admission rejections (gate
+// at-capacity, memory budget) so peers route away from saturated
+// claimants and the autoscaler scales replicas to absorb shedding;
+// ParkedMs is wall-time spent parked inside pollen_request waiting
+// for downstream responses (subtracted from ComputeCostMs in the
+// Little's-Law sizing so capacity math tracks active CPU work, not
+// wall-clock waiting); SLO satisfied/burned drive the observability
+// burn ratio.
 type SeedMetrics struct {
     ServedRate       float32
+    OriginRate       float32
+    OriginRateFast   float32
+    OriginRateSlow   float32
+    RejectRate       float32
     ComputeCostMs    float32
+    ParkedMs         float32
     SLOSatisfiedRate float32
     SLOBurnedRate    float32
-    GateWaitMs       uint32
 }
 ```
 
 `ApplyDelta` returns three values: domain events, a rebroadcast payload (non-stale gossip events for eager propagation), and an error. Every mutation method enqueues gossip events internally and signals `PendingNotify()` so membership can flush and broadcast them immediately.
 
-**Snapshot projections** — typed, read-only views off an immutable snapshot:
+**Snapshot projections** — typed, read-only views off an immutable snapshot.
+The snapshot fields (`Nodes`, `Specs`, `Claims`, `DrainingClaims`,
+`StaticSpecs`, `StaticClaims`, `BlobSpecs`, `PeerKeys`, `LocalID`) are
+the primary read surface; the methods are the few common derivations:
 
 ```go
-func (s Snapshot) Peers() []PeerInfo
-func (s Snapshot) Peer(key types.PeerKey) (PeerInfo, bool)
-func (s Snapshot) Services() []ServiceInfo
-func (s Snapshot) Workloads() []WorkloadInfo
+func (s Snapshot) Digest() Digest
 func (s Snapshot) DeniedPeers() []types.PeerKey
-func (s Snapshot) Self() types.PeerKey
-func (s Snapshot) Clock() Clock
-// Field: LocalID types.PeerKey
+func (s Snapshot) Services() []ServiceInfo
+func (s Snapshot) PeersWithBlob(hash string) []types.PeerKey
+func (s Snapshot) SpecByName(name string) (string, WorkloadSpecView, bool)
+func (s Snapshot) LocalSpecByName(name string, localID types.PeerKey) (string, bool)
+func (s Snapshot) BlobByName(name string) (string, BlobSpecView, bool)
 ```
 
-`PeerInfo` bundles: addresses, NAT type, Vivaldi coord, reachability set, resource telemetry, traffic heatmap.
+`Nodes[pk]` is a `NodeView` bundling: addresses, NAT type, Vivaldi
+coord, reachability set, resource telemetry (CPU/mem percent, budgets,
+`AdmissionState`), traffic heatmap, per-seed `SeedMetrics`, advertised
+blobs, and capability flags.
 
 **Events** — returned synchronously from mutations and `ApplyDelta`. The caller decides what to do with them:
 
 ```go
 type Event interface { stateEvent() }  // sealed sum type
 
-type PeerJoined      struct { Key types.PeerKey }
-type PeerDenied      struct { Key types.PeerKey }
-type ServiceChanged  struct { Name string; Peer types.PeerKey }
-type WorkloadChanged struct { Hash string }
-type TopologyChanged struct { Peer types.PeerKey }
-type GossipApplied   struct {}
+type PeerJoined       struct { Key types.PeerKey }
+type PeerDenied       struct { Key types.PeerKey }
+type ServiceChanged   struct { Name string; Peer types.PeerKey }
+type WorkloadChanged  struct { Hash string }
+type TopologyChanged  struct { Peer types.PeerKey }
+type AddressesChanged struct { Peer types.PeerKey }
+type StaticChanged    struct { Name string }
 ```
 
 **Consumer interface pattern** — each domain service defines the narrowest interface it needs:
@@ -217,13 +269,13 @@ type ClusterState interface {
 // In package placement:
 type WorkloadState interface {
     Snapshot() state.Snapshot
-    SetWorkloadSpec(spec state.WorkloadSpec) []state.Event
+    PublishWorkload(spec state.WorkloadSpec) ([]state.Event, error)
     DeleteWorkloadSpec(hash string) []state.Event
     ClaimWorkload(hash string) []state.Event
+    MarkWorkloadDraining(hash string) []state.Event
     ReleaseWorkload(hash string) []state.Event
     SetLocalResources(r state.NodeResources) []state.Event
     SetSeedMetrics(metrics map[string]state.SeedMetrics) []state.Event
-    SetSeedDialRates(rates map[string]map[string]float32) []state.Event
 }
 
 // In package tunneling:
@@ -236,10 +288,12 @@ type ServiceState interface {
 ```
 
 Per-seed telemetry consolidates into `SeedMetrics` — served rate,
-compute cost, SLO satisfied/burned rates, and gate wait all travel
-together. Dial rates stay separate because the dial graph is
-variable-cardinality per seed; the scalar bundle and the graph are
-different kinds of telemetry.
+origin rate (plus fast/slow EWMAs), reject rate, compute cost,
+parked time, and SLO satisfied/burned rates all travel together.
+The placement layer reads OriginRate to pull seeds toward where
+demand enters, RejectRate so peers route away from saturated
+claimants, and ComputeCostMs−ParkedMs as the service-time input to
+Little's-Law replica sizing.
 
 ### Event Fan-Out Model
 
@@ -254,6 +308,8 @@ Supervisor reads this channel and dispatches to other consumers:
 - `PeerDenied` -> disconnect peer, clean up tunneling connections, forget peer
 - `TopologyChanged` -> rebuild routing table, signal placement re-evaluation
 - `WorkloadChanged` -> signal placement re-evaluation
+- `AddressesChanged` -> resync desired peer connections, nudge stale paths
+- `StaticChanged` -> signal static service re-evaluation
 - `ServiceChanged` -> tunneling reconciles via periodic snapshot poll
 
 This makes membership the single gossip writer and supervisor the event router. No other domain service calls `ApplyDelta` or `Recv`. Placement reacts to supervisor `Signal()` calls and its own reconciliation ticker. Tunneling reconciles desired connections on its own ticker.
@@ -492,16 +548,30 @@ type PlacementAPI interface {
     Status() []WorkloadSummary
     PlacementInfo() map[string]PlacementInfo
 
-    RecordDial(callerHash, callerFunction, targetKey string)
     RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration)
 
-    HandleWorkloadStream(stream io.ReadWriteCloser, peer types.PeerKey)
+    Serve(stream io.ReadWriteCloser, peerKey types.PeerKey)
 
     Signal()
 }
 
-// PlacementInfo summarises a single workload's autoscale state for
-// Status() and control-plane consumers.
+// WorkloadSummary is the per-(local) workload status snapshot returned
+// by Status(). EffectiveTarget and Pressure are populated from the
+// reconciler's PlacementInfo so a single Status() call answers both
+// "is this running" and "how is autoscale tracking it".
+type WorkloadSummary struct {
+    CompiledAt      time.Time
+    Hash            string
+    Name            string
+    Status          Status
+    EffectiveTarget uint32
+    Pressure        float64
+}
+
+// PlacementInfo summarises a single workload's autoscale state.
+// EffectiveTarget is the cluster-aggregate desired replica count
+// (capped by spec.MinReplicas and cluster size). SLOBurnRatio is
+// observability only — capacity math drives placement.
 type PlacementInfo struct {
     EffectiveTarget uint32
     SLOBurnRatio    float64
@@ -510,14 +580,17 @@ type PlacementInfo struct {
 var _ PlacementAPI = (*Service)(nil)
 
 type Service struct { ... }
-func New(self types.PeerKey, workloads WorkloadState, blobs Blobs, runtime wasm.Runtime, opts ...Option) *Service
+func New(self types.PeerKey, store WorkloadState, blobs Blobs, runtime WASMRuntime, opts ...Option) *Service
 
-// Consumer-side narrow interface into the blob service.
+// Consumer-side narrow interface into the blob service. Remove evicts
+// the local copy on Unseed so a tombstoned workload's bytes don't pin
+// disk forever.
 type Blobs interface {
     Put(r io.Reader) (string, error)
     Get(hash string) (io.ReadCloser, error)
     Has(hash string) bool
     Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
+    Remove(hash string) error
 }
 ```
 
@@ -653,14 +726,12 @@ func (s *Supervisor) Run(ctx context.Context) error
 switch st {
 case StreamTypeDigest:
     go membership.HandleDigestStream(ctx, stream, peer)
-case StreamTypeCertRenewal:
-    go membership.HandleCertRenewalStream(stream, peer)
 case StreamTypeTunnel:
-    tunneling.HandleTunnelStream(stream, peer)
+    go dispatchServiceConnect(ctx, stream, peer)  // reads port + authz, then tunneling.Serve
 case StreamTypeBlob:
-    go blobs.HandleStream(stream, peer)
+    go dispatchBlobFetch(ctx, stream, peer)       // reads hash, then blobs.Serve
 case StreamTypeWorkload:
-    go placement.HandleWorkloadStream(stream, peer)
+    go placement.Serve(stream, peer)              // reads header inside Serve
 }
 ```
 
@@ -687,12 +758,19 @@ gRPC translation layer. The four core domain interfaces define the primary contr
 package control
 
 type Service struct { ... }
-func NewService(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, state StateReader, opts ...Option) *Service
-func (s *Service) Start(socketPath string) error
-func (s *Service) Stop() error
+func NewService(
+    membership MembershipControl,
+    placement  PlacementControl,
+    tunneling  TunnelingControl,
+    blobs      BlobsControl,
+    static     StaticControl,
+    state      StateReader,
+    opts       ...Option,
+) *Service
+func New(...) *Server   // wraps Service in a grpc.Server
 ```
 
-**Core domain interfaces** — the primary control surface. Each domain service implements exactly one:
+**Core domain interfaces** — the primary control surface:
 
 ```go
 type MembershipControl interface {
@@ -711,9 +789,22 @@ type PlacementControl interface {
 type TunnelingControl interface {
     Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) (uint32, error)
     Disconnect(service string) error
-    ExposeService(port uint32, name string, protocol statev1.ServiceProtocol) error
+    ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) error
     UnexposeService(name string) error
     ListConnections() []tunneling.ConnectionInfo
+}
+
+type BlobsControl interface {
+    Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
+    Put(r io.Reader) (string, error)
+    SetName(hash, name string) error
+    Remove(hash string) error
+}
+
+type StaticControl interface {
+    SeedStatic(name string, manifestDigest []byte, minReplicas uint32) error
+    UnseedStatic(name string) error
+    StaticBlobs() map[string]struct{}
 }
 
 type StateReader interface {
@@ -761,8 +852,6 @@ type Metrics struct {
     CertRenewalsFailed uint64
     PunchAttempts      uint64
     PunchFailures      uint64
-    GossipApplied      uint64
-    GossipStale        uint64
     SmoothedVivaldiErr float64
     VivaldiSamples     uint64
     EagerSyncs         uint64

@@ -51,10 +51,12 @@ func seedMetricsToProto(in map[string]SeedMetrics) *statev1.SeedMetricsChange {
 		seeds[hash] = &statev1.SeedMetrics{
 			ServedRate:       m.ServedRate,
 			OriginRate:       m.OriginRate,
+			OriginRateFast:   m.OriginRateFast,
+			OriginRateSlow:   m.OriginRateSlow,
+			RejectRate:       m.RejectRate,
 			ComputeCostMs:    m.ComputeCostMs,
 			SloSatisfiedRate: m.SLOSatisfiedRate,
 			SloBurnedRate:    m.SLOBurnedRate,
-			GateWaitMs:       m.GateWaitMs,
 			ParkedMs:         m.ParkedMs,
 		}
 	}
@@ -75,10 +77,12 @@ func seedMetricsFromProto(in *statev1.SeedMetricsChange) map[string]SeedMetrics 
 		out[hash] = SeedMetrics{
 			ServedRate:       m.ServedRate,
 			OriginRate:       m.OriginRate,
+			OriginRateFast:   m.OriginRateFast,
+			OriginRateSlow:   m.OriginRateSlow,
+			RejectRate:       m.RejectRate,
 			ComputeCostMs:    m.ComputeCostMs,
 			SLOSatisfiedRate: m.SloSatisfiedRate,
 			SLOBurnedRate:    m.SloBurnedRate,
-			GateWaitMs:       m.GateWaitMs,
 			ParkedMs:         m.ParkedMs,
 		}
 	}

@@ -4,9 +4,12 @@
 package placement
 
 import (
+	"math/rand/v2"
+	"slices"
 	"testing"
 
 	"github.com/sambigeara/pollen/pkg/coords"
+	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
@@ -88,7 +91,6 @@ func TestPredictedLatency_SteadyState_DemandCentroidWins(t *testing.T) {
 			far:       node(coords.Coord{X: 200, Y: 0}, 4),
 			demandSrc: node(coords.Coord{X: 0, Y: 0}, 4),
 		},
-		InvocationRates: map[string]float64{"hot": 100.0},
 		OriginRates: map[string]map[types.PeerKey]float64{
 			"hot": {demandSrc: 100.0},
 		},
@@ -119,7 +121,6 @@ func TestPredictedLatency_SteadyState_MultipleDemandSources(t *testing.T) {
 			srcA:    node(coords.Coord{X: 0, Y: 0}, 4),
 			srcB:    node(coords.Coord{X: 100, Y: 0}, 4),
 		},
-		InvocationRates: map[string]float64{"seed": 100.0},
 		OriginRates: map[string]map[types.PeerKey]float64{
 			"seed": {srcA: 50.0, srcB: 50.0},
 		},
@@ -147,7 +148,6 @@ func TestPredictedLatency_SteadyState_ShareWeighting(t *testing.T) {
 			src1:      node(coords.Coord{X: 0, Y: 0}, 4),
 			src2:      node(coords.Coord{X: 100, Y: 0}, 4),
 		},
-		InvocationRates: map[string]float64{"seed": 100.0},
 		OriginRates: map[string]map[types.PeerKey]float64{
 			"seed": {src1: 80.0, src2: 20.0},
 		},
@@ -170,7 +170,6 @@ func TestPredictedLatency_SteadyState_ColocatedHostWins(t *testing.T) {
 			xHost:   node(coords.Coord{X: 0, Y: 0}, 1),
 			farTwin: node(coords.Coord{X: 150, Y: 0}, 1),
 		},
-		InvocationRates: map[string]float64{"b": 1000.0},
 		OriginRates: map[string]map[types.PeerKey]float64{
 			"b": {xHost: 1000.0},
 		},
@@ -179,33 +178,6 @@ func TestPredictedLatency_SteadyState_ColocatedHostWins(t *testing.T) {
 	require.Equal(t, 0.0, predictedLatency(xHost, "b", cluster),
 		"colocated-with-demand-source candidate scores zero")
 	require.Greater(t, predictedLatency(farTwin, "b", cluster), 0.0)
-}
-
-func TestPredictedLatency_SelfOriginDiscount(t *testing.T) {
-	// A peer absorbing demand locally must strictly beat a demand-free
-	// peer sitting at the geographic centroid of the demand distribution.
-	// Without the self-origin discount, the two tie on weighted-avg
-	// distance and a proxy node wins the deterministic hash tiebreak — a
-	// hot entry point would never claim despite generating the traffic.
-	srcA := peerKey(1)
-	srcB := peerKey(2)
-	central := peerKey(3)
-
-	cluster := clusterState{
-		Nodes: map[types.PeerKey]nodeState{
-			srcA:    node(coords.Coord{X: 0, Y: 0}, 1),
-			srcB:    node(coords.Coord{X: 100, Y: 0}, 1),
-			central: node(coords.Coord{X: 50, Y: 0}, 1),
-		},
-		InvocationRates: map[string]float64{"seed": 100.0},
-		OriginRates: map[string]map[types.PeerKey]float64{
-			"seed": {srcA: 50.0, srcB: 50.0},
-		},
-	}
-
-	require.Less(t, predictedLatency(srcA, "seed", cluster),
-		predictedLatency(central, "seed", cluster),
-		"demand-source candidate must beat centrally-placed demand-free peer")
 }
 
 func TestPredictedLatency_ObservedFloor_UsesColdStart(t *testing.T) {
@@ -222,14 +194,172 @@ func TestPredictedLatency_ObservedFloor_UsesColdStart(t *testing.T) {
 			b:   node(coords.Coord{X: 0, Y: 0}, 4),
 			src: node(coords.Coord{X: 500, Y: 0}, 1),
 		},
-		ComputeCost:     map[string]float64{"seed": 20.0},
-		InvocationRates: map[string]float64{"seed": 0.1}, // below floor
+		ComputeCost: map[string]float64{"seed": 20.0},
 		OriginRates: map[string]map[types.PeerKey]float64{
 			"seed": {src: 0.1},
 		},
 	}
 	// Scoring should rank by compute/capacity alone — larger CPU wins.
 	require.Greater(t, predictedLatency(a, "seed", cluster), predictedLatency(b, "seed", cluster))
+}
+
+func TestPredictedLatency_OverloadKeepsWarmPath(t *testing.T) {
+	// Saturation depresses ServedRate (rejections don't serve), but
+	// OriginRate still reflects offered load. The warm-path gate
+	// reads sum-of-OriginRate so scoring stays warm and centroid-based
+	// exactly when the demand signal matters most.
+	a := peerKey(1)
+	b := peerKey(2)
+	src := peerKey(3)
+
+	cluster := clusterState{
+		Nodes: map[types.PeerKey]nodeState{
+			a:   node(coords.Coord{X: 0, Y: 0}, 4),
+			b:   node(coords.Coord{X: 1000, Y: 0}, 4),
+			src: node(coords.Coord{X: 0, Y: 0}, 1),
+		},
+		ComputeCost: map[string]float64{"seed": 20.0},
+		OriginRates: map[string]map[types.PeerKey]float64{
+			"seed": {src: 100.0}, // genuine offered load
+		},
+	}
+	// a is co-located with src (distance 0); b is far. Warm centroid
+	// scoring picks a.
+	require.Less(t, predictedLatency(a, "seed", cluster), predictedLatency(b, "seed", cluster))
+}
+
+func TestPredictedLatency_CoordBootstrap_UnknownDoesNotTieCentroid(t *testing.T) {
+	// Bootstrap hole: with only one known coord no pairwise samples
+	// exist, MeanCoordDistance stays 0, and distance(unknown, known)
+	// would return 0 — falsely tying a missing-coord candidate with a
+	// peer sitting on the demand centroid. The unknown candidate
+	// switches to cold-start (compute/capacity) so capacity
+	// differentiates it from the centroid-colocated peer.
+	known := peerKey(1)
+	unknown := peerKey(2) // no coord
+	cluster := clusterState{
+		Nodes: map[types.PeerKey]nodeState{
+			known:   node(coords.Coord{X: 0, Y: 0}, 4),
+			unknown: {NumCPU: 4, CPUBudgetPercent: 100}, // no Coord
+		},
+		ComputeCost: map[string]float64{"seed": 40.0},
+		OriginRates: map[string]map[types.PeerKey]float64{
+			"seed": {known: 100.0},
+		},
+		// MeanCoordDistance left zero — only one known coord.
+	}
+	knownScore := predictedLatency(known, "seed", cluster)
+	unknownScore := predictedLatency(unknown, "seed", cluster)
+	require.Equal(t, 0.0, knownScore, "known peer is colocated with the demand source")
+	require.Greater(t, unknownScore, 0.0,
+		"unknown candidate must NOT spuriously tie the centroid at 0; cold-start gives capacity-based score")
+}
+
+func TestDistance_MissingCoordReturnsMean(t *testing.T) {
+	// A candidate or peer without a published coord must not score
+	// distance == 0 — that would falsely reward unknown topology over
+	// every measured peer. Substituting the cluster-mean keeps the
+	// candidate at average rather than dominant.
+	known := peerKey(1)
+	unknown := peerKey(2)
+	cluster := clusterState{
+		Nodes: map[types.PeerKey]nodeState{
+			known:   {Coord: &coords.Coord{X: 0, Y: 0}},
+			unknown: {}, // no coord
+		},
+		MeanCoordDistance: 12.5,
+	}
+	require.Equal(t, 12.5, distance(known, unknown, cluster))
+	require.Equal(t, 12.5, distance(unknown, known, cluster))
+	require.Equal(t, 0.0, distance(unknown, unknown, cluster), "self-pair stays 0")
+	require.Equal(t, 0.0, distance(known, known, cluster), "self-pair stays 0")
+}
+
+func TestRankTopN_ShuffleInvariance(t *testing.T) {
+	// rankTopN's output must be a pure function of the candidate set
+	// and the cluster state — input ordering must NOT change which
+	// peer wins. Without sorted iteration in the FP-summing helpers
+	// (originSum, predictedLatency, meanCoordDistance) two peers
+	// reading the same gossip can disagree on the winner because
+	// float-summation is non-associative. Shuffle the input slice and
+	// confirm the same set of winners across N permutations.
+	peers := make([]types.PeerKey, 7)
+	for i := range peers {
+		peers[i] = peerKey(byte(i + 1))
+	}
+	src := peerKey(99)
+	nodes := map[types.PeerKey]nodeState{
+		src: node(coords.Coord{X: 0, Y: 0}, 4),
+	}
+	for i, pk := range peers {
+		// Spread peers across coordinate space so distance contributes
+		// a non-trivial summed value to the score.
+		nodes[pk] = node(coords.Coord{X: float64(i * 25), Y: float64(i * 7)}, 4)
+	}
+	cluster := clusterState{
+		Nodes: nodes,
+		OriginRates: map[string]map[types.PeerKey]float64{
+			"hot": {
+				peers[0]: 17,
+				peers[2]: 53,
+				peers[4]: 31,
+				src:      120,
+			},
+		},
+	}
+	cluster.MeanCoordDistance = meanCoordDistance(cluster.Nodes)
+
+	const top = 3
+	baseline := topN(peers, "hot", cluster, top)
+
+	rng := rand.New(rand.NewPCG(1, 2)) //nolint:gosec
+	for trial := range 16 {
+		shuffled := slices.Clone(peers)
+		rng.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+		got := topN(shuffled, "hot", cluster, top)
+		require.Equal(t, baseline, got, "trial %d permutation must produce identical top-%d winner set", trial, top)
+	}
+}
+
+// topN returns the top-n candidates by predictedLatency with the same
+// hash tiebreak rankTopN uses, exposing the ordering that rankTopN
+// reduces to a single boolean.
+func topN(candidates []types.PeerKey, hash string, cluster clusterState, n int) []types.PeerKey {
+	scored := make([]scored, 0, len(candidates))
+	for _, pk := range candidates {
+		scored = append(scored, newScored(pk, hash, cluster))
+	}
+	slices.SortFunc(scored, compareScored)
+	if n > len(scored) {
+		n = len(scored)
+	}
+	out := make([]types.PeerKey, 0, n)
+	for _, s := range scored[:n] {
+		out = append(out, s.peer)
+	}
+	return out
+}
+
+func TestHasCapacity_RejectsAdmissionClosed(t *testing.T) {
+	// Symmetric with routing's Closed exclusion (latency.eligibleRemotes):
+	// a peer that won't accept work mustn't pass the placement filter
+	// either, otherwise an over-pressured node keeps winning fresh
+	// claims while pickP2C correctly routes around it — split-brain.
+	pk := peerKey(1)
+	cluster := clusterState{
+		Nodes: map[types.PeerKey]nodeState{
+			pk: {
+				NumCPU:           4,
+				MemTotalBytes:    8 << 30, //nolint:mnd
+				CPUBudgetPercent: 100,
+				MemBudgetPercent: 100,
+				CPUPercent:       1,
+				MemPercent:       1,
+				AdmissionState:   state.AdmissionClosed,
+			},
+		},
+	}
+	require.False(t, hasCapacity(pk, 0, cluster), "Closed peers must not pass placement")
 }
 
 func TestHasCapacity_RejectsCpuExhausted(t *testing.T) {

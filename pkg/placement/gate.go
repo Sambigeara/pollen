@@ -4,13 +4,18 @@
 package placement
 
 import (
-	"context"
+	"errors"
 	"sync"
-	"sync/atomic"
-	"time"
 )
 
-const gateWaitAlpha = 0.2
+// ErrAtCapacity is returned by the gate when the workload's concurrency
+// cap is reached. Maps to gRPC ResourceExhausted at the API boundary;
+// internally signals callers to propagate backpressure upstream rather
+// than queue indefinitely.
+//
+// Composes with ErrOverloaded: the gate caps concurrency/CPU; admission
+// caps node memory. Either can reject a call independently.
+var ErrAtCapacity = errors.New("workload gate at capacity")
 
 // callKey identifies an admission unit: a specific exported function within
 // a WASM module. The module hash is the replication unit (placement, CAS,
@@ -22,21 +27,13 @@ type callKey struct {
 	Function string
 }
 
-// workloadGate bounds in-flight invocations for a single (hash, function) on
-// this node. Acquire blocks when in-flight count meets the cap; callers
-// honour their context deadline rather than a global wait budget. Wait
-// time is recorded into an EWMA so placement can observe per-function
-// gate wait independently of any other function's behaviour.
-//
-// The gate is backed by an explicit cap + inflight counter under a
-// mutex, with a 1-buffered notify channel waking blocked acquirers when
-// capacity changes. SetCap is atomic and immediately reflected — no
-// resize coordination, no background drainer goroutines.
+// workloadGate bounds in-flight invocations for a single (hash, function)
+// on this node. Acquire is non-blocking: at-capacity returns ErrAtCapacity
+// immediately. Bounded admission (running calls, no queue) IS the
+// concurrency bound — at most cap simultaneous calls per (hash, function).
 type workloadGate struct {
-	notify   chan struct{}
 	cap      int
 	inflight int
-	waitNs   atomic.Int64
 	mu       sync.Mutex
 }
 
@@ -44,17 +41,13 @@ func newWorkloadGate(initial int) *workloadGate {
 	if initial < 1 {
 		initial = 1
 	}
-	return &workloadGate{
-		notify: make(chan struct{}, 1),
-		cap:    initial,
-	}
+	return &workloadGate{cap: initial}
 }
 
-// SetCap adjusts the gate's concurrency ceiling. Honoured immediately:
-// growing wakes any waiters; shrinking simply means subsequent acquires
-// block sooner. In-flight calls are unaffected — releases just bring
-// the inflight count down past the new (lower) cap before the next
-// acquire admits anyone.
+// SetCap adjusts the gate's concurrency ceiling. Honoured immediately for
+// new acquires. In-flight calls are unaffected — releases just bring the
+// inflight count down past the new (lower) cap before the next acquire
+// admits anyone.
 func (g *workloadGate) SetCap(n int) {
 	if n < 1 {
 		n = 1
@@ -62,80 +55,24 @@ func (g *workloadGate) SetCap(n int) {
 	g.mu.Lock()
 	g.cap = n
 	g.mu.Unlock()
-	g.signal()
 }
 
-// acquire returns a release function that must be called when the
-// invocation completes. If the gate is full, it blocks until either a
-// slot frees, the cap grows, or ctx cancels. Both blocked and fast-path
-// admits feed the wait EWMA so the signal decays to zero when a
-// previously-saturated gate clears — dashboards see "wait cleared" as
-// a material nonzero→zero transition rather than a pinned last-
-// nonzero sample.
-func (g *workloadGate) acquire(ctx context.Context) (release func(), err error) {
-	if g.tryAcquire() {
-		g.recordWait(0)
-		return g.release, nil
-	}
-
-	start := time.Now()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-g.notify:
-			if g.tryAcquire() {
-				g.signal()
-				g.recordWait(time.Since(start))
-				return g.release, nil
-			}
-		}
-	}
-}
-
-func (g *workloadGate) tryAcquire() bool {
+// acquire admits a call if a slot is free, else returns ErrAtCapacity.
+func (g *workloadGate) acquire() (release func(), err error) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.inflight < g.cap {
-		g.inflight++
-		return true
+	if g.inflight >= g.cap {
+		g.mu.Unlock()
+		return nil, ErrAtCapacity
 	}
-	return false
+	g.inflight++
+	g.mu.Unlock()
+	return g.release, nil
 }
 
 func (g *workloadGate) release() {
 	g.mu.Lock()
 	g.inflight--
 	g.mu.Unlock()
-	g.signal()
-}
-
-// signal wakes one waiter. The notify channel is 1-buffered so a signal
-// while a waiter is mid-cycle isn't lost; acquire's loop also re-signals
-// after success so a single capacity-freeing event can cascade through
-// multiple waiters when the cap allows it.
-func (g *workloadGate) signal() {
-	select {
-	case g.notify <- struct{}{}:
-	default:
-	}
-}
-
-func (g *workloadGate) recordWait(d time.Duration) {
-	sample := float64(d.Nanoseconds())
-	for {
-		old := g.waitNs.Load()
-		next := int64(float64(old)*(1-gateWaitAlpha) + sample*gateWaitAlpha)
-		if g.waitNs.CompareAndSwap(old, next) {
-			return
-		}
-	}
-}
-
-// WaitEWMA returns the current EWMA of admitted wait times. Zero when the
-// gate has never blocked.
-func (g *workloadGate) WaitEWMA() time.Duration {
-	return time.Duration(g.waitNs.Load())
 }
 
 // gateRegistry holds per-(hash, function) workloadGates. Each module hash
@@ -161,7 +98,7 @@ func newGateRegistry(defaultSize int) *gateRegistry {
 	}
 }
 
-func (r *gateRegistry) acquire(ctx context.Context, key callKey) (func(), error) {
+func (r *gateRegistry) acquire(key callKey) (func(), error) {
 	r.mu.Lock()
 	g, ok := r.gates[key]
 	if !ok {
@@ -173,7 +110,7 @@ func (r *gateRegistry) acquire(ctx context.Context, key callKey) (func(), error)
 		r.gates[key] = g
 	}
 	r.mu.Unlock()
-	return g.acquire(ctx)
+	return g.acquire()
 }
 
 // SetHashSize records a per-module concurrency target and resizes every
@@ -197,24 +134,8 @@ func (r *gateRegistry) SetHashSize(hash string, n int) {
 	}
 }
 
-// WaitEWMAs returns a per-hash snapshot of gate-wait EWMAs. Aggregated as
-// the max across functions so SeedMetrics surfaces the worst pain any
-// function of the module is experiencing.
-func (r *gateRegistry) WaitEWMAs() map[string]time.Duration {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make(map[string]time.Duration)
-	for key, g := range r.gates {
-		w := g.WaitEWMA()
-		if existing, ok := out[key.Hash]; !ok || w > existing {
-			out[key.Hash] = w
-		}
-	}
-	return out
-}
-
 // Clear drops every gate belonging to the given module hash (called on
-// unseed). Pending acquirers exit via their ctx.
+// unseed).
 func (r *gateRegistry) Clear(hash string) {
 	r.mu.Lock()
 	for key := range r.gates {

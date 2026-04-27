@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
@@ -25,7 +26,9 @@ type mockStore struct {
 	claims   map[string]map[types.PeerKey]struct{}
 	allPeers []types.PeerKey
 	claimed  map[string]bool
+	draining map[string]bool
 	nodes    map[types.PeerKey]state.NodeView
+	localID  types.PeerKey
 }
 
 func (m *mockStore) Snapshot() state.Snapshot {
@@ -44,16 +47,42 @@ func (m *mockStore) Snapshot() state.Snapshot {
 		claims[k] = inner
 	}
 
+	// Reflect the drain map into Snapshot.DrainingClaims so the reconciler's
+	// drain-aware paths see the same gossip view a live cluster would.
+	// MarkWorkloadDraining is a local-peer operation, so the resulting drain
+	// flag attaches to localID.
+	drainingClaims := make(map[string]map[types.PeerKey]struct{})
+	for hash, on := range m.draining {
+		if !on {
+			continue
+		}
+		if _, claimed := claims[hash][m.localID]; !claimed {
+			continue
+		}
+		drainingClaims[hash] = map[types.PeerKey]struct{}{m.localID: {}}
+	}
+
 	peers := append([]types.PeerKey(nil), m.allPeers...)
 
+	// Stamp every peer with a fresh LastEventAt so placement's
+	// telemetry-staleness filter doesn't drop them. Tests asserting
+	// stale-peer behaviour can override this in their NodeView.
+	now := time.Now()
 	nodes := make(map[types.PeerKey]state.NodeView, len(m.nodes))
-	maps.Copy(nodes, m.nodes)
+	for pk, nv := range m.nodes {
+		if nv.LastEventAt.IsZero() {
+			nv.LastEventAt = now
+		}
+		nodes[pk] = nv
+	}
 
 	return state.Snapshot{
-		Specs:    specs,
-		Claims:   claims,
-		PeerKeys: peers,
-		Nodes:    nodes,
+		Specs:          specs,
+		Claims:         claims,
+		DrainingClaims: drainingClaims,
+		PeerKeys:       peers,
+		Nodes:          nodes,
+		LocalID:        m.localID,
 	}
 }
 
@@ -76,6 +105,17 @@ func (m *mockStore) ClaimWorkload(hash string) []state.Event {
 		m.claimed = make(map[string]bool)
 	}
 	m.claimed[hash] = true
+	delete(m.draining, hash)
+	return nil
+}
+
+func (m *mockStore) MarkWorkloadDraining(hash string) []state.Event {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.draining == nil {
+		m.draining = make(map[string]bool)
+	}
+	m.draining[hash] = true
 	return nil
 }
 
@@ -86,6 +126,7 @@ func (m *mockStore) ReleaseWorkload(hash string) []state.Event {
 		m.claimed = make(map[string]bool)
 	}
 	m.claimed[hash] = false
+	delete(m.draining, hash)
 	return nil
 }
 
@@ -254,6 +295,56 @@ func TestResidencyWindow_SuppressesEarlyRelease(t *testing.T) {
 	require.False(t, claimWasSet, "should not release during residency window")
 }
 
+// TestMakeBeforeBreak_CooldownSurvivesNextTick reproduces the bug where
+// the second reconcile tick after MarkWorkloadDraining cancels the
+// in-flight cooldown. Pre-fix: evaluate's silent-on-iDraining branch left
+// wantRelease empty on tick 2, the cooldown loop interpreted that as
+// "demand recovered", deleted pendingRelease and republished the claim
+// without the drain flag — make-before-break collapsed to a 200 ms blip.
+// Post-fix: evaluate re-emits actionRelease while still excess, the
+// cooldown loop sees wantRelease[hash] populated and lets the timer run.
+func TestMakeBeforeBreak_CooldownSurvivesNextTick(t *testing.T) {
+	local := peerKey(1)
+	peer2 := peerKey(2)
+	hash := "workload1"
+
+	ms := &mockStore{
+		localID: local,
+		specs: map[string]state.WorkloadSpecView{
+			hash: {
+				Spec:      state.WorkloadSpec{Hash: hash, MinReplicas: 1},
+				Publisher: peer2,
+			},
+		},
+		claims:   map[string]map[types.PeerKey]struct{}{hash: {local: {}, peer2: {}}},
+		allPeers: []types.PeerKey{local, peer2},
+		nodes: map[types.PeerKey]state.NodeView{
+			local: {NumCPU: 2, CPUPercent: 90, MemTotalBytes: 2 << 30, MemPercent: 90},
+			peer2: {NumCPU: 16, CPUPercent: 5, MemTotalBytes: 64 << 30, MemPercent: 5},
+		},
+	}
+
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r.claimStartTime[hash] = time.Now().Add(-minResidencyDuration - time.Second)
+
+	// Tick 1 — local is excess, expect drain to start.
+	r.reconcile(context.Background())
+	ms.mu.Lock()
+	require.True(t, ms.draining[hash], "first tick must mark draining")
+	ms.mu.Unlock()
+	_, hasPending := r.pendingRelease[hash]
+	require.True(t, hasPending, "first tick must arm the cooldown")
+
+	// Tick 2 — drain flag is now visible in the snapshot. Pre-fix this
+	// tick cancelled the cooldown; post-fix the cooldown must persist.
+	r.reconcile(context.Background())
+	ms.mu.Lock()
+	require.True(t, ms.draining[hash], "drain flag must still be set after tick 2")
+	ms.mu.Unlock()
+	_, stillPending := r.pendingRelease[hash]
+	require.True(t, stillPending, "second tick must NOT cancel the cooldown")
+}
+
 // TestResidencyWindow_AllowsReleaseAfterMaturity verifies that an excess
 // claimant (above target) releases after the residency window + idle timeout.
 // At-target claimants never release — challengers join first via shouldChallenge.
@@ -279,7 +370,6 @@ func TestResidencyWindow_AllowsReleaseAfterMaturity(t *testing.T) {
 	}
 
 	r := newReconciler(local, ms, &runningWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &sync.WaitGroup{})
-	r.firstRun = false
 	r.claimStartTime[hash] = time.Now().Add(-minResidencyDuration - time.Second)
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
 
@@ -338,6 +428,58 @@ func TestResidencyWindow_SkippedForOverReplication(t *testing.T) {
 	if claimWasSet {
 		require.False(t, val, "over-replicated release should bypass residency window")
 	}
+}
+
+// TestChallenge_FiresImmediatelyWithMargin: a challenger that clears
+// the 25% incumbentMargin gate (here local sits on the demand centroid
+// while peer2 is far away) must fire its claim on the very first tick.
+// No 3-tick streak counter — the margin band already filters the
+// rank-flap noise a streak would protect against, and gating real
+// improvements behind ~6 s of streak just delayed convergence.
+func TestChallenge_FiresImmediatelyWithMargin(t *testing.T) {
+	local := peerKey(1)
+	peer2 := peerKey(2)
+	hash := "challenger"
+
+	ms := &mockStore{
+		localID: local,
+		specs: map[string]state.WorkloadSpecView{
+			hash: {
+				Spec:      state.WorkloadSpec{Hash: hash, MinReplicas: 1},
+				Publisher: peer2,
+			},
+		},
+		claims:   map[string]map[types.PeerKey]struct{}{hash: {peer2: {}}},
+		allPeers: []types.PeerKey{local, peer2},
+		nodes: map[types.PeerKey]state.NodeView{
+			// Local sits on the demand source's coord and absorbs all
+			// of the workload's offered traffic — clears the margin
+			// against peer2 which is on a distant coord.
+			local: {
+				NumCPU: 4, CPUPercent: 5, MemTotalBytes: 8 << 30, MemPercent: 5, //nolint:mnd
+				CPUBudgetPercent: 100,
+				MemBudgetPercent: 100,
+				VivaldiCoord:     &coords.Coord{X: 0, Y: 0},
+				SeedMetrics: map[string]state.SeedMetrics{
+					hash: {OriginRate: 100},
+				},
+			},
+			peer2: {
+				NumCPU: 4, CPUPercent: 5, MemTotalBytes: 8 << 30, MemPercent: 5, //nolint:mnd
+				CPUBudgetPercent: 100,
+				MemBudgetPercent: 100,
+				VivaldiCoord:     &coords.Coord{X: 1000, Y: 0},
+			},
+		},
+	}
+
+	var wg sync.WaitGroup
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockBlobs{}, newUtilisationTracker(), newGateRegistry(16), zap.NewNop().Sugar(), &wg)
+
+	r.reconcile(context.Background())
+	wg.Wait()
+	require.True(t, ms.wasClaimed(hash),
+		"clear-margin challenger must claim on the first tick")
 }
 
 func TestReconcile_NameConflictFiltering(t *testing.T) {

@@ -61,7 +61,7 @@ func TestSeedAndCall(t *testing.T) {
 	require.Len(t, list, 1)
 	require.Equal(t, hash, list[0].Hash)
 
-	out, err := mgr.Call(context.Background(), hash, "handle", []byte("hello"))
+	out, err := mgr.Call(context.Background(), hash, "echo", []byte("hello"))
 	require.NoError(t, err)
 	require.Equal(t, []byte("hello"), out)
 
@@ -107,6 +107,6 @@ func TestCallUnseeded(t *testing.T) {
 	err = mgr.Unseed(hash)
 	require.NoError(t, err)
 
-	_, err = mgr.Call(context.Background(), hash, "handle", nil)
+	_, err = mgr.Call(context.Background(), hash, "echo", nil)
 	require.Error(t, err)
 }

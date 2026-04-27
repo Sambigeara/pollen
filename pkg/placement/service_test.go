@@ -26,6 +26,22 @@ func newServiceForUnseedTests(localID types.PeerKey, store WorkloadState) (*Serv
 	}, blobs
 }
 
+func TestNew_NormalisesBudgetDefaults(t *testing.T) {
+	// Without normalisation, an unset memBudget admits at 80% locally
+	// (admission.go default) but gossips a raw 0 — and remote scoring
+	// reads 0 as 100% (no constraint), letting a saturated peer still
+	// win claims. Pin both budgets to their effective defaults so the
+	// gossiped, locally-enforced, and admissionState views agree.
+	s := New(peerKey(1), nil, &mockBlobs{}, nil)
+	require.Equal(t, defaultMemBudgetPercent, s.memBudgetPercent)
+	require.Equal(t, defaultCPUBudgetPercent, s.cpuBudgetPercent)
+
+	// Explicit non-zero budgets pass through unchanged.
+	s2 := New(peerKey(1), nil, &mockBlobs{}, nil, WithResourceBudget(50, 60))
+	require.Equal(t, uint32(50), s2.cpuBudgetPercent)
+	require.Equal(t, uint32(60), s2.memBudgetPercent)
+}
+
 // TestService_Unseed_WhenNotLocallyClaimed pins the bug where `pln unseed`
 // on the publisher failed because the local manager wasn't running the
 // workload — e.g. placement had evicted the claim to another node. The

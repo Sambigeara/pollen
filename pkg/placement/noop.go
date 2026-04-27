@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/state"
-	"github.com/sambigeara/pollen/pkg/wasm"
+	"github.com/sambigeara/pollen/pkg/types"
 )
 
 var ErrRelayOnly = errors.New("placement disabled: relay-only mode")
@@ -44,7 +44,7 @@ func (*NoopService) RecordParkedTime(string, string, time.Duration) {}
 
 // Serve should never fire: relay-only nodes never claim workloads, so peers
 // never select them as a placement target. Close defensively if it does.
-func (*NoopService) Serve(stream io.ReadWriteCloser, _ wasm.CallerInfo, _, _ string) {
+func (*NoopService) Serve(stream io.ReadWriteCloser, _ types.PeerKey) {
 	_ = stream.Close()
 }
 

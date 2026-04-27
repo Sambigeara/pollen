@@ -651,12 +651,7 @@ func (n *Supervisor) localService(port uint32) (string, map[string]any) {
 }
 
 func (n *Supervisor) dispatchWorkloadCall(_ context.Context, stream io.ReadWriteCloser, peerKey types.PeerKey) {
-	info, hash, function, err := placement.ReadHeader(stream, peerKey)
-	if err != nil {
-		stream.Close() //nolint:errcheck
-		return
-	}
-	n.placement.Serve(stream, info, hash, function)
+	n.placement.Serve(stream, peerKey)
 }
 
 func (n *Supervisor) streamDispatchLoop(ctx context.Context) {

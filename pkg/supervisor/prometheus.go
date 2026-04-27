@@ -75,7 +75,6 @@ type stateCollector struct {
 	workloadComputeCost *prometheus.Desc
 	workloadParkedMs    *prometheus.Desc
 	workloadLoad        *prometheus.Desc
-	workloadGateWait    *prometheus.Desc
 	workloadBurnRatio   *prometheus.Desc
 }
 
@@ -92,9 +91,8 @@ func newStateCollector(snapshot func() state.Snapshot) *stateCollector {
 		workloadReplicas:    prometheus.NewDesc("pollen_workload_replicas", "Active replica count for a workload.", []string{"name"}, nil),
 		workloadClaim:       prometheus.NewDesc("pollen_workload_claim", "Workload claimed by a node.", []string{"workload", "node"}, nil),
 		workloadComputeCost: prometheus.NewDesc("pollen_workload_compute_cost_ms", "Per-node EWMA mean wall-time (milliseconds) of a single workload invocation. Mean only — not a histogram, so no p50/p99.", []string{"workload", "node"}, nil),
-		workloadParkedMs:    prometheus.NewDesc("pollen_workload_parked_ms", "Per-node EWMA mean time (milliseconds) each invocation spends parked inside pollen_request waiting for downstream responses. Subtract from compute_cost_ms to get active CPU time; drives adaptive gate sizing.", []string{"workload", "node"}, nil),
+		workloadParkedMs:    prometheus.NewDesc("pollen_workload_parked_ms", "Per-node EWMA mean time (milliseconds) each invocation spends parked inside pollen_request waiting for downstream responses. Subtracted from compute_cost_ms in the autoscaler so capacity sizing tracks active CPU work, not wall-clock waiting.", []string{"workload", "node"}, nil),
 		workloadLoad:        prometheus.NewDesc("pollen_workload_load", "Per-node served request rate (req/s) for a workload.", []string{"workload", "node"}, nil),
-		workloadGateWait:    prometheus.NewDesc("pollen_workload_gate_wait_ms", "Per-node EWMA of time spent waiting for the workload's concurrency gate. High values indicate that node is concurrency-starved for that workload.", []string{"workload", "node"}, nil),
 		workloadBurnRatio:   prometheus.NewDesc("pollen_workload_slo_burn_ratio", "Cluster-wide share of recent caller-perspective invocations exceeding the workload's spec'd latency SLO. Aggregates per-node satisfied/burned rates. Drives autoscaling.", []string{"workload"}, nil),
 	}
 }
@@ -112,7 +110,6 @@ func (c *stateCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.workloadComputeCost
 	ch <- c.workloadParkedMs
 	ch <- c.workloadLoad
-	ch <- c.workloadGateWait
 	ch <- c.workloadBurnRatio
 }
 
@@ -163,11 +160,6 @@ func (c *stateCollector) Collect(ch chan<- prometheus.Metric) {
 			if m.ServedRate > 0 {
 				ch <- prometheus.MustNewConstMetric(c.workloadLoad, prometheus.GaugeValue, float64(m.ServedRate), name, nodeNames[pk])
 			}
-			// Emit gate wait whenever this hash has a SeedMetrics entry,
-			// including zero. A nonzero→zero transition is a material
-			// clear; omission would pin the Prometheus series at the last
-			// scrape with data.
-			ch <- prometheus.MustNewConstMetric(c.workloadGateWait, prometheus.GaugeValue, float64(m.GateWaitMs), name, nodeNames[pk])
 			satTotal += float64(m.SLOSatisfiedRate)
 			burnTotal += float64(m.SLOBurnedRate)
 		}

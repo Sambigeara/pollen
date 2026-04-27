@@ -48,7 +48,7 @@ func TestCompileAndCall(t *testing.T) {
 	err := rt.Compile(t.Context(), echoBytes, "echohash", wasm.NewPluginConfig(0, 0))
 	require.NoError(t, err)
 
-	out, err := rt.Call(t.Context(), "echohash", "handle", []byte("hello"))
+	out, err := rt.Call(t.Context(), "echohash", "echo", []byte("hello"))
 	require.NoError(t, err)
 	require.Equal(t, []byte("hello"), out)
 }
@@ -73,7 +73,7 @@ func TestDropCompiled(t *testing.T) {
 
 	rt.DropCompiled(t.Context(), "drophash")
 
-	_, err = rt.Call(t.Context(), "drophash", "handle", nil)
+	_, err = rt.Call(t.Context(), "drophash", "echo", nil)
 	require.Error(t, err)
 }
 
@@ -114,7 +114,7 @@ func TestConcurrentCalls(t *testing.T) {
 	var eg errgroup.Group
 	for i := range 10 {
 		eg.Go(func() error {
-			out, err := rt.Call(t.Context(), "conchash", "handle", []byte("concurrent"))
+			out, err := rt.Call(t.Context(), "conchash", "echo", []byte("concurrent"))
 			if err != nil {
 				return fmt.Errorf("goroutine %d: %w", i, err)
 			}
@@ -130,6 +130,6 @@ func TestConcurrentCalls(t *testing.T) {
 func TestCallUncompiledModule(t *testing.T) {
 	rt := newTestRuntime(t)
 
-	_, err := rt.Call(t.Context(), "nohash", "handle", nil)
+	_, err := rt.Call(t.Context(), "nohash", "echo", nil)
 	require.Error(t, err)
 }

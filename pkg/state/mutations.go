@@ -223,23 +223,54 @@ func (s *store) DeleteWorkloadSpec(hash string) []Event {
 }
 
 func (s *store) ClaimWorkload(hash string) []Event {
-	return s.setWorkloadClaimLocked(hash, true)
+	return s.setWorkloadClaimLocked(hash, true, false)
 }
 
 func (s *store) ReleaseWorkload(hash string) []Event {
-	return s.setWorkloadClaimLocked(hash, false)
+	return s.setWorkloadClaimLocked(hash, false, false)
 }
 
-func (s *store) setWorkloadClaimLocked(hash string, claimed bool) []Event {
+// MarkWorkloadDraining flips an existing claim into the draining state.
+// The claim stays gossiped — callers continue routing to this peer until
+// the actual ReleaseWorkload — but other peers see the draining flag and
+// can issue a replacement claim during the drain window so make-before-
+// break overlap is preserved across the handover. No-op if the local node
+// is not currently claiming the workload.
+func (s *store) MarkWorkloadDraining(hash string) []Event {
+	return s.setWorkloadClaimLocked(hash, true, true)
+}
+
+func (s *store) setWorkloadClaimLocked(hash string, claimed, draining bool) []Event {
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
 		ev, ok := rec.log[attrKey{kind: attrWorkloadClaim, name: hash}]
 		exists := ok && !ev.Deleted
+		var currDraining bool
+		if exists {
+			currDraining = ev.GetWorkloadClaim().GetDraining()
+		}
 
-		if claimed == exists {
+		// MarkWorkloadDraining on a non-claimant is a no-op; releasing a
+		// non-claim is a no-op; re-claiming an already-active claim is a
+		// no-op; flipping the draining flag emits a fresh event.
+		if !claimed && !exists {
+			return nil, nil
+		}
+		if claimed && exists && draining == currDraining {
+			return nil, nil
+		}
+		if !claimed && !exists {
 			return nil, nil
 		}
 
-		change := &statev1.GossipEvent{Deleted: !claimed, Change: &statev1.GossipEvent_WorkloadClaim{WorkloadClaim: &statev1.WorkloadClaimChange{Hash: hash}}}
+		change := &statev1.GossipEvent{
+			Deleted: !claimed,
+			Change: &statev1.GossipEvent_WorkloadClaim{
+				WorkloadClaim: &statev1.WorkloadClaimChange{
+					Hash:     hash,
+					Draining: draining,
+				},
+			},
+		}
 		return []*statev1.GossipEvent{change}, []Event{WorkloadChanged{Hash: hash}}
 	})
 }
@@ -260,7 +291,8 @@ func (s *store) SetLocalResources(r NodeResources) []Event {
 
 			if cpuDelta < 2 && memDelta < 2 &&
 				rt.MemTotalBytes == r.MemTotalBytes && rt.NumCpu == r.NumCPU &&
-				rt.CpuBudgetPercent == r.CPUBudgetPercent && rt.MemBudgetPercent == r.MemBudgetPercent {
+				rt.CpuBudgetPercent == r.CPUBudgetPercent && rt.MemBudgetPercent == r.MemBudgetPercent &&
+				rt.AdmissionState == statev1.AdmissionState(r.AdmissionState) {
 				return nil, nil
 			}
 		}
@@ -272,6 +304,7 @@ func (s *store) SetLocalResources(r NodeResources) []Event {
 			NumCpu:           r.NumCPU,
 			CpuBudgetPercent: r.CPUBudgetPercent,
 			MemBudgetPercent: r.MemBudgetPercent,
+			AdmissionState:   statev1.AdmissionState(r.AdmissionState),
 		}}}
 		return []*statev1.GossipEvent{change}, []Event{TopologyChanged{Peer: s.localID}}
 	})
@@ -295,16 +328,6 @@ func floatMaterialChange(prev, cur float32) bool {
 	return delta/prev > 0.2 //nolint:mnd
 }
 
-// gateWaitMaterialChange uses a 5ms absolute dead-band (gate wait moves
-// in 1ms steps; without the band we'd gossip every jitter).
-func gateWaitMaterialChange(prev, cur uint32) bool {
-	delta := cur - prev
-	if prev > cur {
-		delta = prev - cur
-	}
-	return delta >= 5 //nolint:mnd
-}
-
 func seedMetricsChanged(old map[string]*statev1.SeedMetrics, cur map[string]SeedMetrics) bool {
 	if len(old) != len(cur) {
 		return true
@@ -316,11 +339,13 @@ func seedMetricsChanged(old map[string]*statev1.SeedMetrics, cur map[string]Seed
 		}
 		if floatMaterialChange(prev.GetServedRate(), m.ServedRate) ||
 			floatMaterialChange(prev.GetOriginRate(), m.OriginRate) ||
+			floatMaterialChange(prev.GetOriginRateFast(), m.OriginRateFast) ||
+			floatMaterialChange(prev.GetOriginRateSlow(), m.OriginRateSlow) ||
+			floatMaterialChange(prev.GetRejectRate(), m.RejectRate) ||
 			floatMaterialChange(prev.GetComputeCostMs(), m.ComputeCostMs) ||
 			floatMaterialChange(prev.GetSloSatisfiedRate(), m.SLOSatisfiedRate) ||
 			floatMaterialChange(prev.GetSloBurnedRate(), m.SLOBurnedRate) ||
-			floatMaterialChange(prev.GetParkedMs(), m.ParkedMs) ||
-			gateWaitMaterialChange(prev.GetGateWaitMs(), m.GateWaitMs) {
+			floatMaterialChange(prev.GetParkedMs(), m.ParkedMs) {
 			return true
 		}
 	}
@@ -329,10 +354,7 @@ func seedMetricsChanged(old map[string]*statev1.SeedMetrics, cur map[string]Seed
 
 // SetSeedMetrics publishes the per-seed per-node telemetry bundle.
 // Hashes with an all-zero SeedMetrics are omitted — seeds with no
-// observations don't pollute gossip. When every field except GateWaitMs
-// is still nonzero, a zero-wait transition is retained as a material
-// change so dashboards reflect the gate clearing rather than pinning
-// at the last scrape with data.
+// observations don't pollute gossip.
 func (s *store) SetSeedMetrics(metrics map[string]SeedMetrics) []Event {
 	pruned := make(map[string]SeedMetrics, len(metrics))
 	for hash, m := range metrics {

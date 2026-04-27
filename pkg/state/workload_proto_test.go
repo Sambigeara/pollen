@@ -45,7 +45,10 @@ func TestSeedMetricsRoundTrip(t *testing.T) {
 				ComputeCostMs:    48,
 				SLOSatisfiedRate: 10,
 				SLOBurnedRate:    2.5,
-				GateWaitMs:       35,
+				ParkedMs:         15,
+				OriginRateFast:   20,
+				OriginRateSlow:   10,
+				RejectRate:       1,
 			},
 			"cold": {ServedRate: 0.1},
 		}
@@ -83,8 +86,11 @@ func TestSeedMetricsRoundTrip(t *testing.T) {
 func TestSeedMetricsIsZero(t *testing.T) {
 	require.True(t, SeedMetrics{}.IsZero())
 	require.False(t, SeedMetrics{ServedRate: 1}.IsZero())
-	require.False(t, SeedMetrics{GateWaitMs: 1}.IsZero())
 	require.False(t, SeedMetrics{ComputeCostMs: 0.01}.IsZero())
 	require.False(t, SeedMetrics{SLOSatisfiedRate: 0.5}.IsZero())
 	require.False(t, SeedMetrics{SLOBurnedRate: 0.5}.IsZero())
+	require.False(t, SeedMetrics{ParkedMs: 0.5}.IsZero())
+	require.False(t, SeedMetrics{OriginRateFast: 0.5}.IsZero())
+	require.False(t, SeedMetrics{OriginRateSlow: 0.5}.IsZero())
+	require.False(t, SeedMetrics{RejectRate: 0.5}.IsZero())
 }

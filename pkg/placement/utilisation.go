@@ -22,6 +22,15 @@ const (
 	// enough that most reasonable workloads will satisfy it in steady
 	// state; tight enough that sustained pain triggers scale-up.
 	defaultLatencySLO = time.Second
+
+	// originAlphaFast and originAlphaSlow flank the canonical OriginRate
+	// EWMA (utilisationAlpha) for burst-vs-steady-state demand. Fast
+	// reacts in ~1.5 s so a microburst is visible to the autoscaler
+	// before the medium EWMA notices; slow integrates over ~10 s so
+	// transient noise above the medium reading doesn't yank desired
+	// replica counts around.
+	originAlphaFast = 0.6
+	originAlphaSlow = 0.1
 )
 
 // defaultSLOLookup is the fallback used until the reconciler installs
@@ -36,12 +45,16 @@ func defaultSLOLookup(string) time.Duration { return defaultLatencySLO }
 type functionMetrics struct {
 	servedRate       *metrics.EWMA
 	originRate       *metrics.EWMA
+	originRateFast   *metrics.EWMA
+	originRateSlow   *metrics.EWMA
+	rejectRate       *metrics.EWMA
 	invocationMsRate *metrics.EWMA
 	parkedMsRate     *metrics.EWMA
 	sloSatisfiedRate *metrics.EWMA
 	sloBurnedRate    *metrics.EWMA
 	servedCount      atomic.Uint64
 	originCount      atomic.Uint64
+	rejectCount      atomic.Uint64
 	invocationMs     atomic.Uint64
 	parkedMs         atomic.Uint64
 	sloSatisfied     atomic.Uint64
@@ -52,6 +65,9 @@ func newFunctionMetrics() *functionMetrics {
 	return &functionMetrics{
 		servedRate:       metrics.NewEWMA(utilisationAlpha, 0),
 		originRate:       metrics.NewEWMA(utilisationAlpha, 0),
+		originRateFast:   metrics.NewEWMA(originAlphaFast, 0),
+		originRateSlow:   metrics.NewEWMA(originAlphaSlow, 0),
+		rejectRate:       metrics.NewEWMA(utilisationAlpha, 0),
 		invocationMsRate: metrics.NewEWMA(utilisationAlpha, 0),
 		parkedMsRate:     metrics.NewEWMA(utilisationAlpha, 0),
 		sloSatisfiedRate: metrics.NewEWMA(utilisationAlpha, 0),
@@ -59,13 +75,8 @@ func newFunctionMetrics() *functionMetrics {
 	}
 }
 
-// hashState groups module-level lifecycle (lastActivity) with the
-// per-function metric bundles. lastActivity lives at module granularity
-// because claim residency and idle-eviction decisions are per-module —
-// the binary is the replication unit.
 type hashState struct {
-	lastActivity time.Time
-	functions    map[string]*functionMetrics
+	functions map[string]*functionMetrics
 }
 
 func newHashState() *hashState {
@@ -137,6 +148,18 @@ func (u *utilisationTracker) RecordSLO(hash, function string, elapsed time.Durat
 	}
 }
 
+// RecordSLOMiss records an explicit SLO miss for (hash, function),
+// bypassing elapsed-vs-SLO. Used when a call was rejected before
+// execution (gate ErrAtCapacity, admission ErrOverloaded) — admission
+// shedding is real pain that must feed the autoscaler so it grows
+// replicas to absorb the offered rate.
+func (u *utilisationTracker) RecordSLOMiss(hash, function string) {
+	u.mu.Lock()
+	fm := u.ensureFunction(hash, function)
+	u.mu.Unlock()
+	fm.sloBurned.Add(1)
+}
+
 // SLOBurnRate returns the per-module satisfied/burned rates and the
 // derived burn ratio, summed across every function of the module. Scale
 // decisions are per-module (the binary is the replication unit) so the
@@ -152,21 +175,8 @@ func (u *utilisationTracker) SLOBurnRate(hash string) (satisfied, burned, burnRa
 		satisfied += fm.sloSatisfiedRate.Value()
 		burned += fm.sloBurnedRate.Value()
 	}
-	if total := satisfied + burned; total > rateReportFloor {
-		burnRatio = burned / total
-	}
+	burnRatio = burned / math.Max(satisfied+burned, rateReportFloor)
 	return satisfied, burned, burnRatio
-}
-
-// MarkActive stamps module-level lastActivity without incrementing any
-// counter. Used when a seed is first claimed so the idle-release gate
-// starts from claim time rather than treating a fresh claimant as
-// infinitely idle.
-func (u *utilisationTracker) MarkActive(hash string) {
-	u.mu.Lock()
-	hs := u.ensureHash(hash)
-	hs.lastActivity = u.nowFunc()
-	u.mu.Unlock()
 }
 
 // RecordOrigin counts a call that entered the cluster at this node for
@@ -176,30 +186,31 @@ func (u *utilisationTracker) MarkActive(hash string) {
 // traffic enters.
 func (u *utilisationTracker) RecordOrigin(hash, function string) {
 	u.mu.Lock()
-	hs := u.ensureHash(hash)
-	fm, ok := hs.functions[function]
-	if !ok {
-		fm = newFunctionMetrics()
-		hs.functions[function] = fm
-	}
-	hs.lastActivity = u.nowFunc()
+	fm := u.ensureFunction(hash, function)
 	u.mu.Unlock()
 	fm.originCount.Add(1)
 }
 
+// RecordReject counts an admission rejection for (hash, function) — gate
+// at-capacity, memory budget, or any other backpressure that returns
+// before the workload runs. The rejected calls are also a kind of
+// "demand" that wasn't served, gossiped as RejectRate so other peers
+// can route away and the autoscaler can grow replicas to absorb the
+// offered rate.
+func (u *utilisationTracker) RecordReject(hash, function string) {
+	u.mu.Lock()
+	fm := u.ensureFunction(hash, function)
+	u.mu.Unlock()
+	fm.rejectCount.Add(1)
+}
+
 // RecordServed counts a local execution of (hash, function) — either
 // this node's own pickP2C landed local, or a forwardCall arrived here.
-// Feeds the cluster-wide InvocationRate aggregate that normalises
-// OriginRate shares.
+// Feeds the gossiped per-(peer, hash) ServedRate that the warm-replacement
+// gate consults before draining over-replicated claimants.
 func (u *utilisationTracker) RecordServed(hash, function string) {
 	u.mu.Lock()
-	hs := u.ensureHash(hash)
-	fm, ok := hs.functions[function]
-	if !ok {
-		fm = newFunctionMetrics()
-		hs.functions[function] = fm
-	}
-	hs.lastActivity = u.nowFunc()
+	fm := u.ensureFunction(hash, function)
 	u.mu.Unlock()
 	fm.servedCount.Add(1)
 }
@@ -225,15 +236,6 @@ func (u *utilisationTracker) RecordParkedTime(hash, function string, elapsed tim
 	fm := u.ensureFunction(hash, function)
 	u.mu.Unlock()
 	fm.parkedMs.Add(uint64(elapsed / time.Millisecond))
-}
-
-func (u *utilisationTracker) IdleDuration(hash string) time.Duration {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	if hs, ok := u.hashes[hash]; ok && !hs.lastActivity.IsZero() {
-		return u.nowFunc().Sub(hs.lastActivity)
-	}
-	return time.Duration(math.MaxInt64)
 }
 
 // SLORates returns per-module satisfied and burned rates (calls/sec),
@@ -289,6 +291,62 @@ func (u *utilisationTracker) OriginRates() map[string]float64 {
 		var r float64
 		for _, fm := range hs.functions {
 			r += fm.originRate.Value()
+		}
+		if r > rateReportFloor {
+			out[hash] = r
+		}
+	}
+	return out
+}
+
+// OriginRatesFast and OriginRatesSlow flank OriginRates with short- and
+// long-window EWMAs of the same counter stream. The autoscaler reads
+// max(slow×headroom, fast) so a microburst that hasn't lifted the
+// medium EWMA yet still triggers scale-up. Floor handling matches
+// OriginRates so a rate hovering near the noise band doesn't gossip.
+func (u *utilisationTracker) OriginRatesFast() map[string]float64 {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	out := make(map[string]float64)
+	for hash, hs := range u.hashes {
+		var r float64
+		for _, fm := range hs.functions {
+			r += fm.originRateFast.Value()
+		}
+		if r > rateReportFloor {
+			out[hash] = r
+		}
+	}
+	return out
+}
+
+func (u *utilisationTracker) OriginRatesSlow() map[string]float64 {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	out := make(map[string]float64)
+	for hash, hs := range u.hashes {
+		var r float64
+		for _, fm := range hs.functions {
+			r += fm.originRateSlow.Value()
+		}
+		if r > rateReportFloor {
+			out[hash] = r
+		}
+	}
+	return out
+}
+
+// RejectRates returns per-module admission-rejection rates summed
+// across functions. Gossiped so peers route away from saturated
+// claimants and the autoscaler reacts immediately to shedding.
+func (u *utilisationTracker) RejectRates() map[string]float64 {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	out := make(map[string]float64)
+	for hash, hs := range u.hashes {
+		var r float64
+		for _, fm := range hs.functions {
+			r += fm.rejectRate.Value()
 		}
 		if r > rateReportFloor {
 			out[hash] = r
@@ -365,7 +423,11 @@ func (u *utilisationTracker) tick(elapsed time.Duration) {
 	for _, hs := range u.hashes {
 		for _, fm := range hs.functions {
 			fm.servedRate.Update(float64(fm.servedCount.Swap(0)) / secs)
-			fm.originRate.Update(float64(fm.originCount.Swap(0)) / secs)
+			originPerSec := float64(fm.originCount.Swap(0)) / secs
+			fm.originRate.Update(originPerSec)
+			fm.originRateFast.Update(originPerSec)
+			fm.originRateSlow.Update(originPerSec)
+			fm.rejectRate.Update(float64(fm.rejectCount.Swap(0)) / secs)
 			fm.invocationMsRate.Update(float64(fm.invocationMs.Swap(0)) / secs)
 			fm.parkedMsRate.Update(float64(fm.parkedMs.Swap(0)) / secs)
 			fm.sloSatisfiedRate.Update(float64(fm.sloSatisfied.Swap(0)) / secs)

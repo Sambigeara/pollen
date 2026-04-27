@@ -21,7 +21,7 @@ var ErrModuleMissing = errors.New("wasm: no compiled module")
 
 const (
 	wasmPageBytes           = 64 << 10
-	defaultMemoryLimitPages = 1024 // 64 MiB
+	defaultMemoryLimitPages = 1024 // 64 MiB — fits Go-wasm modules (min memory section is typically ~32 MiB).
 	defaultTimeout          = 30 * time.Second
 	hashPreviewLen          = 12
 	defaultIdleTTL          = 60 * time.Second

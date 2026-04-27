@@ -741,32 +741,13 @@ func TestSetSeedMetrics_DeadBandSuppressesTinyUpdates(t *testing.T) {
 	pk := genKey(t)
 	s := newTestStore(t, pk)
 
-	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 10, ComputeCostMs: 50, GateWaitMs: 20}})
+	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 10, ComputeCostMs: 50}})
 	baseline := s.Snapshot().Nodes[pk].SeedMetrics["a"]
 
-	// 5% change to ServedRate (within 20% dead-band) + 2ms GateWait
-	// delta (within 5ms dead-band): no gossip should fire.
-	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 10.5, ComputeCostMs: 50, GateWaitMs: 22}})
+	// 5% change to ServedRate (within 20% dead-band): no gossip should fire.
+	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 10.5, ComputeCostMs: 50}})
 	require.Equal(t, baseline, s.Snapshot().Nodes[pk].SeedMetrics["a"],
 		"material-free update should not propagate")
-}
-
-func TestSetSeedMetrics_GateWaitClearsButOtherFieldsRemain(t *testing.T) {
-	// Regression guard for the "gate wait clears to zero" material
-	// change path. Without it, a seed that became gate-free would show
-	// stale wait in dashboards until scrape retention flushed it.
-	pk := genKey(t)
-	s := newTestStore(t, pk)
-
-	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 10, GateWaitMs: 15}})
-	require.Equal(t, uint32(15), s.Snapshot().Nodes[pk].SeedMetrics["a"].GateWaitMs)
-
-	// Gate clears while traffic continues. Must gossip.
-	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 10, GateWaitMs: 0}})
-	require.Equal(t, uint32(0), s.Snapshot().Nodes[pk].SeedMetrics["a"].GateWaitMs,
-		"nonzero→zero gate wait must travel as a material change")
-	require.InDelta(t, 10.0, s.Snapshot().Nodes[pk].SeedMetrics["a"].ServedRate, 0.001,
-		"sibling field must still be present")
 }
 
 func TestSpecs_SurvivePublisherDeparture(t *testing.T) {
