@@ -519,34 +519,37 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		}
 	}
 
-	results := make([]bootstrapResult, len(specs))
+	// Buffered to len(discoveries) so immediate-failure sends never block and the
+	// drain reads exactly one result per discovery. Results are printed in
+	// completion order so fast hosts confirm before slow ones finish.
+	results := make(chan bootstrapResult, len(discoveries))
 	var enrollWG sync.WaitGroup
-	for i, d := range discoveries {
+	for _, d := range discoveries {
 		if d.err != nil {
-			results[i] = bootstrapResult{target: d.prepared.spec.target, err: d.err}
+			results <- bootstrapResult{target: d.prepared.spec.target, err: d.err}
 			continue
 		}
 		prepared := d.prepared
 		enrollWG.Go(func() {
 			seeded := seedPeersFor(peerPool, prepared.peerPub)
 			if err := enrollRemote(cmd.Context(), env, signer, prepared, seeded, expireAfter, delegateAdmin); err != nil {
-				results[i] = bootstrapResult{target: prepared.spec.target, err: err}
+				results <- bootstrapResult{target: prepared.spec.target, err: err}
 				return
 			}
-			results[i] = bootstrapResult{
+			results <- bootstrapResult{
 				target:  prepared.spec.target,
 				peerPub: prepared.peerPub,
 				addrs:   prepared.addrs,
 			}
 		})
 	}
-	enrollWG.Wait()
 
 	out := cmd.OutOrStdout()
 	var succeeded, failed int
 	var failErrs []error
 	var bootstrappedPeers []bootstrapResult
-	for _, r := range results {
+	for range discoveries {
+		r := <-results
 		if r.err != nil {
 			failed++
 			fmt.Fprintf(out, "  %-40s failed (%v)\n", r.target, r.err)
@@ -558,6 +561,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		localCache.Upsert(types.PeerKeyFromBytes(r.peerPub), r.addrs, time.Now())
 		bootstrappedPeers = append(bootstrappedPeers, r)
 	}
+	enrollWG.Wait()
 	fmt.Fprintln(out)
 
 	if len(bootstrappedPeers) == 0 {
