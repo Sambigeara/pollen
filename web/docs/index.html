@@ -441,7 +441,7 @@ pln unseed payload           <span class="c"># drop the name + bytes</span></cod
             </ul>
 
             <h2 id="authorisation">Authorisation</h2>
-            <p>Every link is mTLS. One gate sits on top of that: <code>service_connect</code>, fired when a peer opens a tunnel to a service on this node (matched by service name, not port). It is the only resource Pollen gates because the resource — a <code>Service</code> — is defined in the local <code>config.yaml</code> and terminates on its owning node. For now, cluster-wide resources can't be gated per-node.</p>
+            <p>Every link is mTLS. On top of that, one gate is wired today: <code>service_connect</code>, fired when a peer opens a tunnel to a service on this node (matched by service name, not port). It shipped first because a <code>Service</code> is defined in the local <code>config.yaml</code> and terminates on its owning node — every fact the gate needs is right there. Gates for the other resource types — blobs, workloads, specs — are next, and they're the harder case: those resources aren't pinned to a single node, so the decision has to hold cluster-wide rather than locally on the node that owns the resource.</p>
             <p>The gate sees two property bags: the caller's delegation-cert attributes (subject) and the service publisher's properties (resource). It hands them to whichever evaluator you've bound — either the built-in YAML <code>attribute_matcher</code>, or a WASM seed in the cluster acting as a policy decision point.</p>
 
             <h3 id="subject-properties">Subject properties</h3>
