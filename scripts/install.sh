@@ -88,6 +88,11 @@ install_deb() {
     log "Installing .deb via apt..."
     local deb="$TMPDIR/pln.deb"
     curl -fsSL "$(asset_url deb)" -o "$deb"
+    # mktemp -d gives us a 0700 dir; apt's _apt user can't read it and
+    # falls back to "unsandboxed as root" with a Permission denied notice
+    # that looks like a failure. Open the path so the sandbox works.
+    chmod a+rx "$TMPDIR"
+    chmod a+r "$deb"
     $SUDO env NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive \
         apt-get install -y --allow-downgrades "$deb"
 }
@@ -111,6 +116,10 @@ install_linux() {
     need_sudo
     resolve_version
     log "Installing version $VERSION..."
+    local upgrade=false
+    if command -v pln >/dev/null 2>&1; then
+        upgrade=true
+    fi
     if command -v apt-get >/dev/null 2>&1; then
         install_deb
     elif command -v dnf >/dev/null 2>&1; then
@@ -120,7 +129,11 @@ install_linux() {
     else
         install_tarball
     fi
-    log "Done. Enrol this node with: sudo pln join <token>"
+    if [ "$upgrade" = true ]; then
+        log "Done."
+    else
+        log "Done. Enrol this node with: sudo pln join <token>"
+    fi
 }
 
 case "$OS" in
