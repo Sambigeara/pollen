@@ -32,45 +32,25 @@ destroy-vivaldi: (_destroy "vivaldi")
 destroy-vivaldi-pub: (_destroy "vivaldi-public")
 
 # ── Demo cluster ──────────────────────────────────────────────────────
-#
-# The demo narrative lives in demo/SCRIPT.md. These recipes stop at the
-# infrastructure boundary: terraform plus the root authorized_keys and the
-# exerciser host (a dev tool, not a pollen release artifact). Pollen itself
-# is laid down on each pollen node by `pln bootstrap ssh` during the demo.
-#
-# Lifecycle:
-#   just build-demo          # exerciser binary + WASM modules + world map
-#   just deploy-demo         # terraform + authorized_keys + exerciser host setup
-#   just start-observability # grafana + prometheus + fresh file-SD targets
-#   just start-exerciser usw 1000 5m          # 1k r/s at usw for 5 minutes
-#   just start-exerciser usw,use,eun,sao 1000 5m
-#   just stop-exerciser usw
-#   just destroy-demo        # docker stack down + terraform destroy
-#
-# The pln bootstrap call from SCRIPT.md (public demo) is:
-#   cat ~/bootstrap_peers.txt | pln bootstrap ssh -
-# Enrolled nodes bind control-addr (:50051) by default. The demo also
-# needs Prometheus metrics on the local root — that's set by the
-# pre-record `pln set http :9090` step in SCRIPT.md, not by bootstrap.
+# Narrative lives in demo/SCRIPT.md. These recipes provision infra and
+# observability only; pollen itself is laid down by `pln bootstrap ssh`.
 
 repo_root := justfile_directory() / ".." / ".."
 demo_dir := justfile_directory() / "demo"
 demo_tf := justfile_directory() / "demo-cluster"
 
-# Build demo artifacts: exerciser binary, WASM modules, ECharts world map.
+# Build demo artefacts: exerciser, sink, WASM modules, ECharts world map.
 build-demo:
     #!/usr/bin/env bash
     set -euo pipefail
     cd {{ repo_root }}
-    echo "building exerciser-linux (arm64)..."
     GOOS=linux GOARCH=arm64 go build -o exerciser-linux ./cmd/exerciser/
-    echo "building WASM modules..."
-    cd examples/demo && bash build.sh
-    echo "fetching ECharts world map..."
+    go build -o sink ./examples/demo/sink/
+    (cd examples/demo && bash build.sh)
     MAPFILE="{{ demo_dir }}/grafana/gazetteer/world.json"
     [ -f "$MAPFILE" ] || curl -sL 'https://cdn.jsdelivr.net/npm/echarts@4/map/json/world.json' -o "$MAPFILE"
 
-# Provision AWS: 10 bare Ubuntu pollen nodes + exerciser host (pollen nodes untouched).
+# Provision AWS: 10 bare Ubuntu pollen nodes + exerciser host.
 deploy-demo:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -99,11 +79,8 @@ deploy-demo:
     echo "  exerciser ($EXERCISER_IP)... ok"
     just _refresh-exerciser-targets
 
-# Regenerate Prometheus' exerciser file-SD from the current terraform
-# state. Called by both deploy-demo (at end) and start-observability so
-# the targets file stays fresh regardless of ordering. Writes [] when
-# state has no outputs — terraform's stdout warnings include ANSI escape
-# codes, so guard with an IPv4 literal check.
+# Regenerate Prometheus' exerciser file-SD from the current terraform state.
+# Writes [] when state has no outputs.
 [private]
 _refresh-exerciser-targets:
     #!/usr/bin/env bash
@@ -123,14 +100,25 @@ _refresh-exerciser-targets:
       echo "[]" > {{ demo_dir }}/exerciser_targets.json
     fi
 
-# Bring up grafana + prometheus + fresh file-SD targets. No pln.
+# Bring up grafana + prometheus.
 start-observability: _refresh-exerciser-targets
     #!/usr/bin/env bash
     set -euo pipefail
     cd {{ demo_dir }} && docker compose up -d --build
     echo "grafana: http://localhost:3000"
 
-# Fire load at one or more pollen nodes. Pass a comma-separated list to fan out.
+# Bring up prometheus and a grafterm TUI dashboard (alt to grafana web).
+start-terminal-dash: _refresh-exerciser-targets
+    #!/usr/bin/env bash
+    set -euo pipefail
+    GOBIN=$(go env GOBIN); [ -n "$GOBIN" ] || GOBIN=$(go env GOPATH)/bin
+    [ -x "$GOBIN/grafterm" ] || go install github.com/slok/grafterm/cmd/grafterm@latest
+    cd {{ demo_dir }} && docker compose up -d --build prometheus
+    # grafterm's termbox-go only recognises a hardcoded terminal list
+    # (xterm, rxvt, screen…); pin TERM so tmux/ghostty/kitty work.
+    exec env TERM=xterm-256color "$GOBIN/grafterm" -c {{ demo_dir }}/grafterm.json -d 5m -r 2s
+
+# Fire load at one or more pollen nodes (comma-separated to fan out). Default URI hits the firehose chain: ingest → terminal → pln://service/sink.
 start-exerciser nodes rate="100" duration="0" uri="pln://seed/ingest/handle_firehose":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -175,8 +163,7 @@ exerciser-log node:
     EXERCISER_IP=$(cd {{ demo_tf }} && terraform output -raw exerciser_ip)
     exec ssh {{ ssh_args }} root@$EXERCISER_IP "journalctl -u pollen-exerciser@{{ node }} -n 20 --no-pager"
 
-# Port assignment for per-target exerciser instances. Keeps the SG rule
-# range (9192-9201) matched 1:1 with cluster node names.
+# Per-target metrics ports — kept 1:1 with the SG rule range 9192-9201.
 [private]
 _exerciser-port node:
     #!/usr/bin/env bash
@@ -209,7 +196,7 @@ ssh-demo node:
     IP=$(cd {{ demo_tf }} && terraform output -json node_ips | jq -r '."{{ node }}"')
     exec ssh {{ ssh_args }} root@"$IP"
 
-# Stop the docker observability stack (grafana + prometheus + store).
+# Stop the docker observability stack.
 stop-observability:
     #!/usr/bin/env bash
     set -euo pipefail

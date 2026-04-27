@@ -53,6 +53,7 @@ pln-local
 /exerciser
 /exerciser-linux
 /exercisor
+/sink
 
 # Local justfile (personal deploy recipes)
 .justfile.local

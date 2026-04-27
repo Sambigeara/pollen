@@ -1,0 +1,79 @@
+{
+  "version": "v1",
+  "datasources": {
+    "prometheus": {
+      "prometheus": {
+        "address": "http://localhost:9091"
+      }
+    }
+  },
+  "dashboard": {
+    "grid": {
+      "fixedWidgets": false,
+      "maxWidth": 100
+    },
+    "widgets": [
+      {
+        "title": "Replicas per workload",
+        "gridpos": { "w": 100 },
+        "graph": {
+          "visualization": {
+            "legend": { "rightSide": true },
+            "yAxis": { "unit": "short", "decimals": 0 },
+            "seriesOverride": [
+              { "regex": "^ingest$", "color": "#3274D9" },
+              { "regex": "^terminal$", "color": "#FF9830" },
+              { "regex": "^total$", "color": "#1f78c1" }
+            ]
+          },
+          "queries": [
+            {
+              "datasourceID": "prometheus",
+              "expr": "pollen_workload_replicas",
+              "legend": "{{ .name }}"
+            },
+            {
+              "datasourceID": "prometheus",
+              "expr": "sum(pollen_workload_replicas)",
+              "legend": "total"
+            }
+          ]
+        }
+      },
+      {
+        "title": "Ingest load by region",
+        "gridpos": { "w": 100 },
+        "graph": {
+          "visualization": {
+            "legend": { "rightSide": true },
+            "yAxis": { "unit": "reqps" }
+          },
+          "queries": [
+            {
+              "datasourceID": "prometheus",
+              "expr": "pollen_workload_load{workload=\"ingest\"}",
+              "legend": "{{ .node }}"
+            }
+          ]
+        }
+      },
+      {
+        "title": "Terminal load by region",
+        "gridpos": { "w": 100 },
+        "graph": {
+          "visualization": {
+            "legend": { "rightSide": true },
+            "yAxis": { "unit": "reqps" }
+          },
+          "queries": [
+            {
+              "datasourceID": "prometheus",
+              "expr": "pollen_workload_load{workload=\"terminal\"}",
+              "legend": "{{ .node }}"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

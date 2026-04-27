@@ -63,10 +63,10 @@ func handle() int32 {
 	return rc
 }
 
-// handle_firehose is the entry point for the mesh-only chain:
-// ingest → terminal. No exit-service call, no SQLite. Used to isolate
-// the mesh's own throughput from the sink's constraints when comparing
-// the two demo scenarios side by side.
+// handle_firehose is the entry point for the firehose chain:
+// ingest → terminal → pln://service/sink. Sink runs on the operator's
+// local node and renders a live RPS counter, mirroring the
+// processor → service/store chain but without SQLite as a bottleneck.
 //
 //go:wasmexport handle_firehose
 func handle_firehose() int32 { //nolint:revive // wasm export name matches guest convention.
