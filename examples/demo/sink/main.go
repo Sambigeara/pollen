@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -36,6 +37,7 @@ const (
 	thousandsGroup    = 3
 	secondsPerMinute  = 60
 	minutesPerHour    = 60
+	rpsSmoothingAlpha = 0.3
 )
 
 func main() {
@@ -103,6 +105,8 @@ func runTUI(ctx context.Context, port int, counter *atomic.Uint64) {
 	startedAt := time.Now()
 	lastCount := uint64(0)
 	lastSampleAt := startedAt
+	var smoothedRPS float64
+	smoothedReady := false
 
 	tick := time.NewTicker(tickInterval)
 	defer tick.Stop()
@@ -115,11 +119,18 @@ func runTUI(ctx context.Context, port int, counter *atomic.Uint64) {
 		case now := <-tick.C:
 			cur := counter.Load()
 			if now.Sub(lastSampleAt) >= sampleInterval {
-				hist.push(cur - lastCount)
+				delta := cur - lastCount
+				hist.push(delta)
+				if smoothedReady {
+					smoothedRPS = rpsSmoothingAlpha*float64(delta) + (1-rpsSmoothingAlpha)*smoothedRPS
+				} else {
+					smoothedRPS = float64(delta)
+					smoothedReady = true
+				}
 				lastCount = cur
 				lastSampleAt = now
 			}
-			render(port, cur, hist.last(), time.Since(startedAt), hist)
+			render(port, cur, uint64(math.Round(smoothedRPS)), time.Since(startedAt), hist)
 		}
 	}
 }
@@ -137,13 +148,6 @@ func (h *history) push(v uint64) {
 		h.data = h.data[:h.max-1]
 	}
 	h.data = append(h.data, v)
-}
-
-func (h *history) last() uint64 {
-	if len(h.data) == 0 {
-		return 0
-	}
-	return h.data[len(h.data)-1]
 }
 
 var (

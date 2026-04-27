@@ -23,7 +23,8 @@
             "seriesOverride": [
               { "regex": "^ingest$", "color": "#3274D9" },
               { "regex": "^terminal$", "color": "#FF9830" },
-              { "regex": "^total$", "color": "#1f78c1" }
+              { "regex": "^total$", "color": "#1f78c1" },
+              { "regex": "^baseline$", "color": "#3a3a3a" }
             ]
           },
           "queries": [
@@ -36,6 +37,11 @@
               "datasourceID": "prometheus",
               "expr": "sum(pollen_workload_replicas)",
               "legend": "total"
+            },
+            {
+              "datasourceID": "prometheus",
+              "expr": "vector(0)",
+              "legend": "baseline"
             }
           ]
         }

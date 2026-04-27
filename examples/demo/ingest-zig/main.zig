@@ -1,0 +1,68 @@
+// Copyright 2026 Sam Lock
+// SPDX-License-Identifier: Apache-2.0
+
+// ingest is the first seed in the firehose chain. It timestamps the inbound
+// payload and forwards it to terminal via pln://seed/terminal/handle.
+
+const std = @import("std");
+const pdk = @import("extism-pdk");
+
+// Pollen host functions live under extism:host/user. The PDK only declares
+// the extism:host/env imports it ships with, so we declare these directly.
+extern "extism:host/user" fn pollen_log(level: u64, msg_offset: u64) void;
+extern "extism:host/user" fn pollen_request(uri_offset: u64, input_offset: u64) u64;
+
+// WASI clock_time_get for timestamping. wazero exposes WASI to all guests,
+// so this resolves at instantiation time even though we target freestanding.
+extern "wasi_snapshot_preview1" fn clock_time_get(
+    clock_id: u32,
+    precision: u64,
+    out_time: *u64,
+) u32;
+
+const log_level_info: u64 = 1;
+
+fn unixSeconds() i64 {
+    var ns: u64 = 0;
+    // CLOCK_REALTIME = 0; precision=0 is "best effort".
+    _ = clock_time_get(0, 0, &ns);
+    return @intCast(ns / std.time.ns_per_s);
+}
+
+export fn handle() i32 {
+    // Per-invocation arena: every allocation is freed when the call returns,
+    // and nothing crosses invocations, so concurrent calls share no state.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const plugin = pdk.Plugin.init(allocator);
+    const input = plugin.getInput() catch {
+        plugin.output("{\"error\":\"failed to read input\"}");
+        return 1;
+    };
+    const payload = std.fmt.allocPrint(
+        allocator,
+        "{{\"ts\":{d},\"data\":\"{s}\"}}",
+        .{ unixSeconds(), input },
+    ) catch {
+        plugin.output("{\"error\":\"failed to build payload\"}");
+        return 1;
+    };
+
+    const uri_mem = plugin.allocateBytes("pln://seed/terminal/handle");
+    const input_mem = plugin.allocateBytes(payload);
+    const out_offset = pollen_request(uri_mem.offset, input_mem.offset);
+
+    if (out_offset == 0) {
+        plugin.output("{\"error\":\"downstream call failed\"}");
+        return 1;
+    }
+
+    const out_mem = plugin.findMemory(out_offset);
+    plugin.outputMemory(out_mem);
+
+    const log_mem = plugin.allocateBytes("ingest: forwarded to terminal");
+    pollen_log(log_level_info, log_mem.offset);
+    return 0;
+}

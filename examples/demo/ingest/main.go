@@ -1,6 +1,8 @@
 // Copyright 2026 Sam Lock
 // SPDX-License-Identifier: Apache-2.0
 
+// ingest is the first seed in the firehose chain. It timestamps the inbound
+// payload and forwards it to terminal via pln://seed/terminal/handle.
 package main
 
 import (
@@ -24,10 +26,11 @@ func logStr(s string) {
 	mem.Free()
 }
 
-// forward wraps a single pollen_request call, returning the exported-function
-// status code that ingest should propagate back through Pollen.
-func forward(uri string, payload []byte) int32 {
-	uriMem := pdk.AllocateString(uri)
+//go:wasmexport handle
+func handle() int32 {
+	payload := []byte(`{"ts":` + strconv.FormatInt(time.Now().Unix(), 10) + `,"data":"` + string(pdk.Input()) + `"}`)
+
+	uriMem := pdk.AllocateString("pln://seed/terminal/handle")
 	inputMem := pdk.AllocateBytes(payload)
 	outOffset := pollenRequest(uriMem.Offset(), inputMem.Offset())
 	uriMem.Free()
@@ -44,37 +47,8 @@ func forward(uri string, payload []byte) int32 {
 	outMem.Free()
 
 	pdk.Output(outBuf)
+	logStr("ingest: forwarded to terminal")
 	return 0
-}
-
-func timestampedPayload(input []byte) []byte {
-	return []byte(`{"ts":` + strconv.FormatInt(time.Now().Unix(), 10) + `,"data":"` + string(input) + `"}`)
-}
-
-// handle is the entry point for the SQLite-constrained chain:
-// ingest → processor → pln://service/store.
-//
-//go:wasmexport handle
-func handle() int32 {
-	rc := forward("pln://seed/processor/handle", timestampedPayload(pdk.Input()))
-	if rc == 0 {
-		logStr("ingest: forwarded to processor")
-	}
-	return rc
-}
-
-// handle_firehose is the entry point for the firehose chain:
-// ingest → terminal → pln://service/sink. Sink runs on the operator's
-// local node and renders a live RPS counter, mirroring the
-// processor → service/store chain but without SQLite as a bottleneck.
-//
-//go:wasmexport handle_firehose
-func handle_firehose() int32 { //nolint:revive // wasm export name matches guest convention.
-	rc := forward("pln://seed/terminal/handle", timestampedPayload(pdk.Input()))
-	if rc == 0 {
-		logStr("ingest: forwarded to terminal")
-	}
-	return rc
 }
 
 func main() {}

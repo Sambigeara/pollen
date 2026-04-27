@@ -3,3 +3,5 @@ store/store
 *.db
 *.db-wal
 *.db-shm
+.zig-cache/
+zig-out/

@@ -27,7 +27,7 @@ pln init
 cat ~/bootstrap_peers.txt | pln bootstrap ssh -
 pln seed ./examples/demo/ingest.wasm   --latency-slo 500ms
 pln seed ./examples/demo/terminal.wasm --latency-slo 50ms
-./sink &                                # run sink locally
+./sink &                                # local RPS counter
 pln serve 8090 sink                     # expose as pln://service/sink
 
 # Load
@@ -48,7 +48,7 @@ exerciser → ingest seed → terminal seed → pln://service/sink → ./sink (l
 
 The exerciser dials each pollen node's TCP control endpoint (bound at
 bootstrap) authenticated with the per-node token at
-`/var/lib/pln/control.token`, then invokes `pln://seed/ingest/handle_firehose`.
+`/var/lib/pln/control.token`, then invokes `pln://seed/ingest/handle`.
 
 ## Dashboard
 

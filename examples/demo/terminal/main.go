@@ -1,10 +1,9 @@
 // Copyright 2026 Sam Lock
 // SPDX-License-Identifier: Apache-2.0
 
-// terminal is the second seed in the firehose chain. It hashes the input
-// payload (matching processor's shape of work) and forwards a tick to
-// pln://service/sink — the sink runs on the operator's local node and
-// renders a live RPS display.
+// terminal is the tail seed in the firehose chain. It hashes the input
+// payload and forwards a tick to pln://service/sink, which runs on the
+// operator's local node and renders a live RPS display.
 package main
 
 import (
@@ -34,8 +33,7 @@ func logStr(level uint64, s string) {
 
 //go:wasmexport handle
 func handle() int32 {
-	input := pdk.Input()
-	sum := sha256.Sum256(input)
+	sum := sha256.Sum256(pdk.Input())
 	hash := hex.EncodeToString(sum[:])
 
 	// Empty-body POST keeps the wire payload minimal so the chain measures

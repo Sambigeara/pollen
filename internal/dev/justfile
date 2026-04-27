@@ -119,7 +119,7 @@ start-terminal-dash: _refresh-exerciser-targets
     exec env TERM=xterm-256color "$GOBIN/grafterm" -c {{ demo_dir }}/grafterm.json -d 5m -r 2s
 
 # Fire load at one or more pollen nodes (comma-separated to fan out). Default URI hits the firehose chain: ingest → terminal → pln://service/sink.
-start-exerciser nodes rate="100" duration="0" uri="pln://seed/ingest/handle_firehose":
+start-exerciser nodes rate="100" duration="0" uri="pln://seed/ingest/handle":
     #!/usr/bin/env bash
     set -euo pipefail
     EXERCISER_IP=$(cd {{ demo_tf }} && terraform output -raw exerciser_ip)
