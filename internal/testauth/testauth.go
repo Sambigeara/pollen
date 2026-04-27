@@ -63,7 +63,7 @@ func LoadTestSigner(t testing.TB, priv ed25519.PrivateKey, rootPub ed25519.Publi
 	t.Helper()
 	dir := t.TempDir()
 	require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(rootPub, issuer)))
-	signer, err := auth.NewDelegationSigner(dir, priv, 24*time.Hour) //nolint:mnd
+	signer, err := auth.NewDelegationSigner(dir, priv)
 	require.NoError(t, err)
 	return signer
 }

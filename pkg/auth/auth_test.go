@@ -24,12 +24,14 @@ import (
 
 var mockTime = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-// testPollenDir creates a temp pollen directory with the keys subdirectory,
-// mirroring what plnfs.Provision creates in production.
-func testPollenDir(t *testing.T) string {
+// testIdentityDir creates the per-node identity directory tests use to
+// stand in for production's `<pollenDir>/keys/`. Returns the keys subdir
+// directly so tests pass it to functions expecting an identityDir, matching
+// what `auth.IdentityPath(pollenDir)` returns at runtime.
+func testIdentityDir(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "keys"), 0o700))
+	dir := auth.IdentityPath(t.TempDir())
+	require.NoError(t, os.MkdirAll(dir, 0o700))
 	return dir
 }
 
@@ -70,7 +72,7 @@ func TestLoadNodeCredentials_ExpiredCertStillLoads(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	pollenDir := testPollenDir(t)
+	pollenDir := testIdentityDir(t)
 	require.NoError(t, auth.SaveNodeCredentials(pollenDir, auth.NewNodeCredentials(rootPub, expiredCert)))
 
 	creds, err := auth.LoadNodeCredentials(pollenDir)
@@ -90,7 +92,7 @@ func TestEnrollReplacesExistingCert(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	pollenDir := testPollenDir(t)
+	pollenDir := testIdentityDir(t)
 	require.NoError(t, auth.SaveNodeCredentials(pollenDir, auth.NewNodeCredentials(rootPub, oldCert)))
 
 	token := issueRootJoinToken(t, rootPriv, rootPub, nodePub, now, 48*time.Hour, time.Time{})
@@ -118,7 +120,7 @@ func TestEnrollKeepsLongerTTLCert(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	pollenDir := testPollenDir(t)
+	pollenDir := testIdentityDir(t)
 	require.NoError(t, auth.SaveNodeCredentials(pollenDir, auth.NewNodeCredentials(rootPub, oldCert)))
 
 	token := issueRootJoinToken(t, rootPriv, rootPub, nodePub, now, 24*time.Hour, time.Time{})
@@ -139,7 +141,7 @@ func TestEnrollReplacesExpiredCert(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	pollenDir := testPollenDir(t)
+	pollenDir := testIdentityDir(t)
 	require.NoError(t, auth.SaveNodeCredentials(pollenDir, auth.NewNodeCredentials(rootPub, expiredCert)))
 
 	token := issueRootJoinToken(t, rootPriv, rootPub, nodePub, now, 24*time.Hour, time.Time{})
@@ -354,14 +356,14 @@ func TestVerifyDelegationCert(t *testing.T) {
 // --- Signer and token issuance ---
 
 func TestDelegationSignerAndTokens(t *testing.T) {
-	dir := testPollenDir(t)
+	dir := testIdentityDir(t)
 	nodePub, nodePriv := newKeyPair(t)
 	now := time.Now()
 
-	_, err := auth.EnsureLocalRootCredentials(dir, nodePub, now, 24*time.Hour, 24*time.Hour)
+	_, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
 	require.NoError(t, err)
 
-	signer, err := auth.NewDelegationSigner(dir, nodePriv, 24*time.Hour)
+	signer, err := auth.NewDelegationSigner(dir, nodePriv)
 	require.NoError(t, err)
 	require.True(t, signer.IsRoot())
 
@@ -408,6 +410,365 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 		require.NoError(t, err)
 		require.EqualValues(t, delegatedPub, verified.Cert.GetClaims().GetIssuerPub())
 	})
+}
+
+// --- Root self-renewal ---
+
+func TestEnsureLocalRootCredentials_NoOpOnFreshUnchangedCert(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, _ := newKeyPair(t)
+	now := time.Now()
+
+	first, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
+	require.NoError(t, err)
+
+	second, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now.Add(time.Minute), 24*time.Hour)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(first.Cert(), second.Cert()),
+		"unchanged attrs and unexpired cert should not trigger re-issue")
+}
+
+func TestEnsureLocalRootCredentials_ReissuesOnAttrDrift(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, _ := newKeyPair(t)
+	now := time.Now()
+
+	original, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
+	require.NoError(t, err)
+	require.Nil(t, original.Cert().GetClaims().GetCapabilities().GetAttributes())
+
+	attrs, err := structpb.NewStruct(map[string]any{"role": "primary"})
+	require.NoError(t, err)
+
+	updated, err := auth.EnsureLocalRootCredentials(dir, nodePub, attrs, now.Add(time.Minute), 24*time.Hour)
+	require.NoError(t, err)
+	require.False(t, proto.Equal(original.Cert(), updated.Cert()),
+		"attrs change should trigger re-issue")
+	require.Equal(t, "primary",
+		updated.Cert().GetClaims().GetCapabilities().GetAttributes().GetFields()["role"].GetStringValue())
+}
+
+func TestEnsureLocalRootCredentials_ReissuesOnExpiry(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, _ := newKeyPair(t)
+	now := time.Now()
+
+	original, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, time.Hour)
+	require.NoError(t, err)
+
+	renewed, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now.Add(2*time.Hour), time.Hour)
+	require.NoError(t, err)
+	require.False(t, proto.Equal(original.Cert(), renewed.Cert()), "expired cert should be re-issued")
+	require.Greater(t, renewed.Cert().GetClaims().GetNotAfterUnix(), original.Cert().GetClaims().GetNotAfterUnix())
+}
+
+// Chains issued by the root before a self-rotation still verify against the
+// same RootPub after rotation, because rotation re-uses the same admin key.
+func TestRootSelfRotation_PreservesDownstreamChainValidity(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, nodePriv := newKeyPair(t)
+	now := time.Now()
+
+	original, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
+	require.NoError(t, err)
+
+	signer, err := auth.NewDelegationSigner(dir, nodePriv)
+	require.NoError(t, err)
+
+	subjectPub, _ := newKeyPair(t)
+	downstream, err := signer.IssueMemberCert(
+		subjectPub, auth.LeafCapabilities(),
+		now, now.Add(time.Hour), time.Time{},
+	)
+	require.NoError(t, err)
+	require.NoError(t, auth.VerifyDelegationCert(downstream, original.RootPub(), now, subjectPub))
+
+	attrs, err := structpb.NewStruct(map[string]any{"role": "primary"})
+	require.NoError(t, err)
+	rotated, err := auth.EnsureLocalRootCredentials(dir, nodePub, attrs, now.Add(time.Minute), 24*time.Hour)
+	require.NoError(t, err)
+	require.False(t, proto.Equal(original.Cert(), rotated.Cert()))
+
+	require.NoError(t, auth.VerifyDelegationCert(downstream, rotated.RootPub(), now.Add(2*time.Minute), subjectPub),
+		"downstream cert minted before rotation must still verify after rotation")
+}
+
+func TestEnsureLocalRootCredentials_ReissuesOnSubjectDrift(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, _ := newKeyPair(t)
+	now := time.Now()
+
+	original, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
+	require.NoError(t, err)
+
+	rotatedPub, _ := newKeyPair(t)
+	updated, err := auth.EnsureLocalRootCredentials(dir, rotatedPub, nil, now.Add(time.Minute), 24*time.Hour)
+	require.NoError(t, err)
+	require.False(t, proto.Equal(original.Cert(), updated.Cert()),
+		"node identity drift must trigger a re-issue with the new subject")
+	require.Equal(t, []byte(rotatedPub), updated.Cert().GetClaims().GetSubjectPub())
+}
+
+func TestEnsureLocalRootCredentials_ReissuesOnAdminKeyDrift(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, _ := newKeyPair(t)
+	now := time.Now()
+
+	original, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
+	require.NoError(t, err)
+	originalRootPub := append(ed25519.PublicKey{}, original.RootPub()...)
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "admin_ed25519.key")))
+	require.NoError(t, os.Remove(filepath.Join(dir, "admin_ed25519.pub")))
+
+	updated, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now.Add(time.Minute), 24*time.Hour)
+	require.NoError(t, err)
+	require.False(t, proto.Equal(original.Cert(), updated.Cert()))
+	require.NotEqual(t, []byte(originalRootPub), []byte(updated.RootPub()),
+		"admin key rotation must produce a different root pub")
+}
+
+func TestEnsureLocalRootCredentials_TreatsNilAndEmptyAttrsAsEqual(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, _ := newKeyPair(t)
+	now := time.Now()
+
+	first, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
+	require.NoError(t, err)
+
+	emptyAttrs, err := structpb.NewStruct(map[string]any{})
+	require.NoError(t, err)
+	second, err := auth.EnsureLocalRootCredentials(dir, nodePub, emptyAttrs, now.Add(time.Minute), 24*time.Hour)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(first.Cert(), second.Cert()),
+		"nil attrs and empty Struct must be treated as equivalent — neither should trigger a spurious re-issue")
+}
+
+func TestNewDelegationSigner_RefreshesStaleRootCert(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, nodePriv := newKeyPair(t)
+	now := time.Now()
+
+	_, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
+	require.NoError(t, err)
+
+	adminPriv, _, err := auth.LoadAdminKey(dir)
+	require.NoError(t, err)
+	expired, err := auth.IssueDelegationCert(adminPriv, nil, nodePub, auth.FullCapabilities(),
+		now.Add(-2*time.Hour), now.Add(-time.Hour), time.Time{})
+	require.NoError(t, err)
+	expiredCreds := auth.NewNodeCredentials(adminPriv.Public().(ed25519.PublicKey), expired)
+	require.NoError(t, auth.SaveNodeCredentials(dir, expiredCreds))
+
+	signer, err := auth.NewDelegationSigner(dir, nodePriv)
+	require.NoError(t, err, "stale root cert must self-refresh during signer construction")
+	require.True(t, signer.IsRoot())
+
+	loaded, err := auth.LoadNodeCredentials(dir)
+	require.NoError(t, err)
+	require.False(t, auth.IsCertExpired(loaded.Cert(), time.Now()),
+		"refresh must persist a fresh cert, not just hold one in memory")
+}
+
+func TestNewDelegationSigner_RejectsSubjectMismatchForDelegated(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	subjectPub, _ := newKeyPair(t)
+	_, otherPriv := newKeyPair(t)
+
+	now := time.Now()
+	cert, err := auth.IssueDelegationCert(rootPriv, nil, subjectPub, auth.FullCapabilities(),
+		now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	dir := testIdentityDir(t)
+	require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(rootPub, cert)))
+
+	_, err = auth.NewDelegationSigner(dir, otherPriv)
+	require.ErrorContains(t, err, "subject does not match")
+}
+
+// TestAdminKeyDriftSelfHeals models the daemon-boot path: the daemon gates
+// refresh on HasLocalAdminKey (not on creds.RootPub equality), so a rotated
+// admin key with a stale persisted cert recovers — rootCertHealthy detects
+// the issuer/rootPub drift and EnsureLocalRootCredentials reissues.
+func TestAdminKeyDriftSelfHeals(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, _ := newKeyPair(t)
+	now := time.Now()
+
+	creds, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
+	require.NoError(t, err)
+	original := creds.Cert()
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "admin_ed25519.key")))
+	require.NoError(t, os.Remove(filepath.Join(dir, "admin_ed25519.pub")))
+	_, ok, err := auth.LocalRootAuthority(dir, creds)
+	require.NoError(t, err)
+	require.False(t, ok, "admin key gone — node no longer holds root authority")
+
+	updated, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now.Add(time.Minute), 24*time.Hour)
+	require.NoError(t, err)
+	_, ok, err = auth.LocalRootAuthority(dir, updated)
+	require.NoError(t, err)
+	require.True(t, ok, "EnsureLocalRootCredentials must recreate the admin key + root-shape cert")
+	require.False(t, proto.Equal(original, updated.Cert()),
+		"admin-key rotation must trigger reissue via the rootCertHealthy predicate")
+}
+
+func TestEnsureLocalRootCredentials_ReissuesOnTruncatedCaps(t *testing.T) {
+	tests := []struct {
+		mutate func(c *admissionv1.Capabilities)
+		name   string
+	}{
+		{name: "no_can_delegate", mutate: func(c *admissionv1.Capabilities) { c.CanDelegate = false }},
+		{name: "no_can_admit", mutate: func(c *admissionv1.Capabilities) { c.CanAdmit = false }},
+		{name: "zero_max_depth", mutate: func(c *admissionv1.Capabilities) { c.MaxDepth = 0 }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := testIdentityDir(t)
+			nodePub, _ := newKeyPair(t)
+			now := time.Now()
+
+			adminPriv, adminPub, err := auth.EnsureAdminKey(dir)
+			require.NoError(t, err)
+
+			caps := auth.FullCapabilities()
+			tt.mutate(caps)
+			truncated, err := auth.IssueDelegationCert(adminPriv, nil, nodePub, caps,
+				now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+			require.NoError(t, err)
+			require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(adminPub, truncated)))
+
+			updated, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
+			require.NoError(t, err)
+			require.False(t, proto.Equal(truncated, updated.Cert()),
+				"truncated root caps must trigger reissue")
+			gotCaps := updated.Cert().GetClaims().GetCapabilities()
+			want := auth.FullCapabilities()
+			require.True(t, gotCaps.GetCanDelegate())
+			require.True(t, gotCaps.GetCanAdmit())
+			require.Equal(t, want.MaxDepth, gotCaps.GetMaxDepth())
+		})
+	}
+}
+
+func TestEnsureLocalRootCredentials_ReissuesOnNonEmptyChain(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, _ := newKeyPair(t)
+	now := time.Now()
+
+	adminPriv, adminPub, err := auth.EnsureAdminKey(dir)
+	require.NoError(t, err)
+
+	parent, err := auth.IssueDelegationCert(adminPriv, nil, adminPub, auth.FullCapabilities(),
+		now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+	chained, err := auth.IssueDelegationCert(adminPriv, []*admissionv1.DelegationCert{parent}, nodePub, auth.FullCapabilities(),
+		now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+	require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(adminPub, chained)))
+
+	updated, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
+	require.NoError(t, err)
+	require.False(t, proto.Equal(chained, updated.Cert()),
+		"non-empty chain on a 'root' cert must trigger reissue")
+	require.Empty(t, updated.Cert().GetChain())
+}
+
+// TestLocalRootAuthority_DelegatedAdminWithStrayAdminKeyIsNotRoot pins the
+// fix for a cluster-corruption bug: a delegated admin (joined via token,
+// holds a delegated cert) that also happens to have a local admin key
+// (e.g. a leftover from a prior cluster, or a `pln admin keygen` mistake)
+// must NOT be classified as root. Otherwise EnsureLocalRootCredentials
+// would self-issue a fresh root cert and overwrite root.pub with the stray
+// local admin pub, forking trust away from the cluster's actual root.
+func TestLocalRootAuthority_DelegatedAdminWithStrayAdminKeyIsNotRoot(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, _ := newKeyPair(t)
+	rootPub, rootPriv := newKeyPair(t)
+	now := time.Now()
+
+	rootCert, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, auth.FullCapabilities(),
+		now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+	delegated, err := auth.IssueDelegationCert(rootPriv, []*admissionv1.DelegationCert{rootCert}, nodePub, auth.FullCapabilities(),
+		now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+	creds := auth.NewNodeCredentials(rootPub, delegated)
+	require.NoError(t, auth.SaveNodeCredentials(dir, creds))
+
+	_, _, err = auth.EnsureAdminKey(dir)
+	require.NoError(t, err)
+
+	_, ok, err := auth.LocalRootAuthority(dir, creds)
+	require.NoError(t, err)
+	require.False(t, ok,
+		"a delegated cert (non-empty chain) must defeat the root-authority gate even when an admin key is locally present")
+}
+
+// TestNewDelegationSigner_DelegatedAdminWithStrayAdminKeyDoesNotRewriteRoot
+// is the end-to-end pin: signer construction on a delegated admin with a
+// stray local admin key must not mutate the persisted creds (cert or
+// root.pub). The corruption mode pre-fix was: HasLocalAdminKey gates the
+// refresh path, rootCertHealthy fails (issuer != localAdminPub), refresh
+// reissues — silently overwriting root.pub with the stray admin pub.
+func TestNewDelegationSigner_DelegatedAdminWithStrayAdminKeyDoesNotRewriteRoot(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, nodePriv := newKeyPair(t)
+	rootPub, rootPriv := newKeyPair(t)
+	now := time.Now()
+
+	rootCert, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, auth.FullCapabilities(),
+		now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+	delegated, err := auth.IssueDelegationCert(rootPriv, []*admissionv1.DelegationCert{rootCert}, nodePub, auth.FullCapabilities(),
+		now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+	require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(rootPub, delegated)))
+	_, _, err = auth.EnsureAdminKey(dir)
+	require.NoError(t, err)
+
+	rootPubBefore, err := os.ReadFile(filepath.Join(dir, "root.pub"))
+	require.NoError(t, err)
+
+	signer, err := auth.NewDelegationSigner(dir, nodePriv)
+	require.NoError(t, err)
+	require.False(t, signer.IsRoot(),
+		"signer.IsRoot must be false — local admin key alone does not confer root authority")
+
+	rootPubAfter, err := os.ReadFile(filepath.Join(dir, "root.pub"))
+	require.NoError(t, err)
+	require.Equal(t, rootPubBefore, rootPubAfter,
+		"root.pub must not be rewritten — that would fork trust away from the cluster")
+
+	loaded, err := auth.LoadNodeCredentials(dir)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(delegated, loaded.Cert()),
+		"persisted cert must be untouched — stray admin keys do not authorise reissue")
+}
+
+func TestLocalRootAuthority_FreshDirIsNotRoot(t *testing.T) {
+	dir := testIdentityDir(t)
+	_, ok, err := auth.LocalRootAuthority(dir, nil)
+	require.NoError(t, err)
+	require.False(t, ok, "empty identity dir must not appear root")
+}
+
+func TestLocalRootAuthority_AfterEnsureIsRoot(t *testing.T) {
+	dir := testIdentityDir(t)
+	nodePub, _ := newKeyPair(t)
+	now := time.Now()
+
+	creds, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
+	require.NoError(t, err)
+
+	adminPub, ok, err := auth.LocalRootAuthority(dir, creds)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, []byte(creds.RootPub()), []byte(adminPub),
+		"the returned adminPub must match creds.RootPub for a healthy root")
 }
 
 // --- Invite token specifics ---
@@ -589,14 +950,14 @@ func TestCertAttributesRoundTrip(t *testing.T) {
 }
 
 func TestInviteAttributesTransfer(t *testing.T) {
-	dir := testPollenDir(t)
+	dir := testIdentityDir(t)
 	nodePub, nodePriv := newKeyPair(t)
 	now := time.Now()
 
-	_, err := auth.EnsureLocalRootCredentials(dir, nodePub, now, 24*time.Hour, 24*time.Hour)
+	_, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
 	require.NoError(t, err)
 
-	signer, err := auth.NewDelegationSigner(dir, nodePriv, 24*time.Hour)
+	signer, err := auth.NewDelegationSigner(dir, nodePriv)
 	require.NoError(t, err)
 
 	attrs, err := structpb.NewStruct(map[string]any{"role": "relay"})

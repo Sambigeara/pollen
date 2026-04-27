@@ -149,6 +149,10 @@ pln invite --prop role=engineer --prop team=backend
 
 # Pipe a JSON payload from a file:
 cat props.json | pln grant <peer-id> --prop -
+
+# Set the root node's own properties at init time (or later by
+# editing `properties:` in config.yaml and restarting):
+pln init --prop role=primary --prop region=eu
 ```
 
 ### Serve a static site

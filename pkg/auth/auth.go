@@ -53,6 +53,12 @@ const (
 
 const MaxAttributesSize = 4096
 
+// DefaultDelegationTTL is the lifetime of a freshly-issued delegation cert
+// in the absence of a caller-specified TTL. Lives here rather than in
+// pkg/config so pkg/auth can self-refresh root certs without inverting the
+// dependency direction.
+const DefaultDelegationTTL = 30 * 24 * time.Hour
+
 var (
 	ErrCredentialsNotFound = errors.New("node membership credentials not found")
 	ErrDifferentCluster    = errors.New("node already has membership credentials for a different cluster")
@@ -195,30 +201,42 @@ func EnrollNodeCredentials(identityDir string, nodePub ed25519.PublicKey, token 
 	return creds, nil
 }
 
-func EnsureLocalRootCredentials(identityDir string, nodePub ed25519.PublicKey, now time.Time, membershipTTL, delegationTTL time.Duration) (*NodeCredentials, error) {
+// EnsureLocalRootCredentials is the single root-cert lifecycle entrypoint.
+// It re-issues and persists the root's self-signed delegation cert whenever
+// any of the following drifts from the persisted cert: liveness (cert
+// missing or expired), attributes, the subject pub (node identity rotated),
+// or the root pub (admin key rotated). Otherwise it returns the existing
+// creds untouched. Root nodes hold the admin key, so this also doubles as
+// the root self-renewal path: callers invoke it at boot, on prop changes,
+// and from the cert-renewal pipeline when expiry approaches.
+func EnsureLocalRootCredentials(identityDir string, nodePub ed25519.PublicKey, attrs *structpb.Struct, now time.Time, delegationTTL time.Duration) (*NodeCredentials, error) {
+	if err := ValidateAttributes(attrs); err != nil {
+		return nil, err
+	}
+
 	existing, err := LoadNodeCredentials(identityDir)
 	if err != nil && !errors.Is(err, ErrCredentialsNotFound) {
 		return nil, err
 	}
 
-	// Root has admin key — fall through to re-issue a fresh cert when expired.
-	if existing != nil && !IsCertExpired(existing.cert, now) {
-		return existing, nil
-	}
-
-	adminPriv, _, err := EnsureAdminKey(identityDir)
+	adminPriv, adminPub, err := EnsureAdminKey(identityDir)
 	if err != nil {
 		return nil, err
 	}
 
-	adminPub := adminPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
+	if existing != nil && rootCertHealthy(existing, nodePub, adminPub, now) &&
+		attrsEqual(existing.cert.GetClaims().GetCapabilities().GetAttributes(), attrs) {
+		return existing, nil
+	}
 
-	// Root issues a delegation cert for itself with full capabilities.
+	caps := FullCapabilities()
+	caps.Attributes = attrs
+
 	cert, err := IssueDelegationCert(
 		adminPriv,
 		nil, // no parent chain — root-issued
 		nodePub,
-		FullCapabilities(),
+		caps,
 		now,
 		now.Add(delegationTTL),
 		time.Time{},
@@ -233,6 +251,49 @@ func EnsureLocalRootCredentials(identityDir string, nodePub ed25519.PublicKey, n
 	}
 
 	return creds, nil
+}
+
+// rootCertHealthy reports whether the persisted creds form a structurally
+// valid root cert for this node: alive, self-issued by the local admin key,
+// subject matches the local node identity, no parent chain, and root caps.
+// Attrs are config-driven and layered on by callers — callers that want to
+// reuse a cert across attr changes compose attrsEqual on top.
+func rootCertHealthy(existing *NodeCredentials, nodePub, adminPub ed25519.PublicKey, now time.Time) bool {
+	cert := existing.cert
+	if IsCertExpired(cert, now) {
+		return false
+	}
+	claims := cert.GetClaims()
+	if !bytes.Equal(claims.GetSubjectPub(), nodePub) {
+		return false
+	}
+	if !bytes.Equal(claims.GetIssuerPub(), adminPub) {
+		return false
+	}
+	if !bytes.Equal(existing.RootPub(), adminPub) {
+		return false
+	}
+	if len(cert.GetChain()) != 0 {
+		return false
+	}
+	want := FullCapabilities()
+	got := claims.GetCapabilities()
+	if got.GetCanDelegate() != want.CanDelegate ||
+		got.GetCanAdmit() != want.CanAdmit ||
+		got.GetMaxDepth() != want.MaxDepth {
+		return false
+	}
+	return true
+}
+
+// attrsEqual treats nil and an empty Struct as equivalent — yaml round-trips
+// can produce either, and a daemon restart with no config change must not
+// trigger a spurious cert re-issue.
+func attrsEqual(a, b *structpb.Struct) bool {
+	if len(a.GetFields()) == 0 && len(b.GetFields()) == 0 {
+		return true
+	}
+	return proto.Equal(a, b)
 }
 
 func LoadNodeCredentials(identityDir string) (*NodeCredentials, error) {
@@ -347,6 +408,49 @@ func LoadAdminKey(identityDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 		pemTypeAdminPriv,
 		pemTypeAdminPub,
 	)
+}
+
+// LocalRootAuthority reports whether this node holds root authority for
+// the cluster the persisted creds belong to. Returns (adminPub, true, nil)
+// when it does, so callers can avoid re-loading the admin key.
+//
+// True iff an admin key is present locally AND either:
+//   - creds is nil — bootstrap: the caller hasn't loaded creds yet, or the
+//     node has no creds at all and is about to auto-init. Local admin key
+//     alone is enough to claim root authority for the cluster being
+//     created; or
+//   - creds is non-nil and the persisted cert is structurally a root
+//     self-issued cert: empty parent chain, issuer matches the persisted
+//     root pub.
+//
+// The "issuer matches persisted root pub" check (rather than "issuer
+// matches local admin pub") is deliberate: it lets admin-key rotation
+// self-heal — the stale persisted cert is still root-shaped relative to
+// its own root pub, even when the local admin key has moved on.
+//
+// A delegated-admin node with a stray local admin key (e.g. from a prior
+// cluster, or `pln admin keygen` on a non-root) fails this gate because
+// its persisted cert has a non-empty chain. Without that, the daemon and
+// the signer would rewrite root.pub with the stray key — corrupting trust.
+func LocalRootAuthority(identityDir string, creds *NodeCredentials) (ed25519.PublicKey, bool, error) {
+	_, adminPub, err := LoadAdminKey(identityDir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, false, nil
+	case err != nil:
+		return nil, false, fmt.Errorf("load admin key: %w", err)
+	}
+	if creds == nil {
+		return adminPub, true, nil
+	}
+	cert := creds.cert
+	if len(cert.GetChain()) != 0 {
+		return nil, false, nil
+	}
+	if !bytes.Equal(cert.GetClaims().GetIssuerPub(), creds.RootPub()) {
+		return nil, false, nil
+	}
+	return adminPub, true, nil
 }
 
 func loadKeyPair(privPath, pubPath, privPEMType, pubPEMType string) (ed25519.PrivateKey, ed25519.PublicKey, error) {

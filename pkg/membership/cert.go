@@ -15,7 +15,6 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -62,6 +61,10 @@ func (s *Service) checkCertExpiry() bool {
 }
 
 func (s *Service) attemptCertRenewal() bool {
+	if signer := s.creds.DelegationKey(); signer != nil && signer.IsRoot() {
+		return s.attemptRootSelfRenewal()
+	}
+
 	connectedPeers := s.mesh.ConnectedPeers()
 	if len(connectedPeers) == 0 {
 		s.log.Debugw("delegation certificate renewal skipped: no connected peers")
@@ -120,6 +123,35 @@ func (s *Service) attemptCertRenewal() bool {
 	s.log.Warnw("delegation certificate renewal failed: all peers and admins refused or returned errors")
 	s.nodeMetrics.CertRenewalsFailed.Add(ctx, 1)
 	return false
+}
+
+// attemptRootSelfRenewal re-issues the root's self-signed cert from the local
+// admin key, preserving the attributes already on the cert. The daemon-boot
+// path applies config-driven property changes; this path is purely for
+// expiry-driven refresh, so it never needs to consult config.
+func (s *Service) attemptRootSelfRenewal() bool {
+	nodePub := s.signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
+	attrs := s.creds.Cert().GetClaims().GetCapabilities().GetAttributes()
+
+	creds, err := auth.EnsureLocalRootCredentials(
+		auth.IdentityPath(s.pollenDir), nodePub, attrs,
+		time.Now(), auth.DefaultDelegationTTL,
+	)
+	if err != nil {
+		s.log.Errorw("root cert self-renewal failed", "err", err)
+		s.nodeMetrics.CertRenewalsFailed.Add(context.Background(), 1)
+		return false
+	}
+
+	if err := s.applyNewCert(creds.Cert()); err != nil {
+		s.log.Errorw("root cert self-renewal: applyNewCert failed", "err", err)
+		s.nodeMetrics.CertRenewalsFailed.Add(context.Background(), 1)
+		return false
+	}
+
+	s.log.Infow("root cert self-renewed", "expires_at", auth.CertExpiresAt(creds.Cert()))
+	s.nodeMetrics.CertRenewals.Add(context.Background(), 1)
+	return true
 }
 
 func (s *Service) applyNewCert(newCert *admissionv1.DelegationCert) error {
@@ -233,7 +265,7 @@ func (s *Service) IssueCert(ctx context.Context, peerKey types.PeerKey, admin bo
 	now := time.Now()
 	ttl := s.membershipTTL
 	if admin {
-		ttl = config.DefaultDelegationTTL
+		ttl = auth.DefaultDelegationTTL
 	}
 	cert, err := signer.IssueMemberCert(peerKey.Bytes(), caps, now, now.Add(ttl), time.Time{})
 	if err != nil {

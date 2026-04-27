@@ -182,9 +182,15 @@ seeds and the policy router.`,
 		Short: "Initialize local root cluster state",
 		Long: `Generates root credentials and seeds a single-node cluster on this
 host. After ` + "`pln up`" + `, use ` + "`pln invite`" + ` or ` + "`pln bootstrap ssh`" + ` to add
-peers. Idempotent if already initialised as the root.`,
-		RunE: withEnv(runInit, wantsRoot(), localOnly()),
+peers. Idempotent if already initialised as the root.
+
+Properties baked in via --prop are written to config.yaml and applied on
+every subsequent ` + "`pln up`" + `. Edit config.yaml and restart to update them
+later.`,
+		Example: "  pln init\n  pln init --prop role=primary --prop region=eu",
+		RunE:    withEnv(runInit, wantsRoot(), localOnly()),
 	}
+	initCmd.Flags().StringArray("prop", nil, "Root node properties: key=value, JSON, or - for stdin")
 
 	return []*cobra.Command{
 		initCmd,
@@ -233,7 +239,22 @@ func runInit(cmd *cobra.Command, _ []string, env *cliEnv) error {
 		return errors.New("node is already enrolled in a cluster; run `pln purge` before initializing a new root cluster")
 	}
 
-	creds, err := auth.EnsureLocalRootCredentials(identityDir, pub, time.Now(), config.DefaultMembershipTTL, config.DefaultDelegationTTL)
+	props, err := parseProperties(cmd)
+	if err != nil {
+		return err
+	}
+
+	// Persist config before issuing the cert: the existing-root short-circuit
+	// blocks subsequent re-init, so a config save that races behind a cert
+	// write would leave the two diverged with no recovery path.
+	if props != nil {
+		env.cfg.Properties = props.AsMap()
+		if err := config.Save(env.dir, env.cfg); err != nil {
+			return fmt.Errorf("persist node properties to config: %w", err)
+		}
+	}
+
+	creds, err := auth.EnsureLocalRootCredentials(identityDir, pub, props, time.Now(), auth.DefaultDelegationTTL)
 	if err != nil {
 		return err
 	}
@@ -350,7 +371,7 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return err
 	}
 
-	signer, err := auth.NewDelegationSigner(identityDir, nodePriv, config.DefaultDelegationTTL)
+	signer, err := auth.NewDelegationSigner(identityDir, nodePriv)
 	if err != nil {
 		return errors.New("this node cannot issue invites; only delegated admins can sign invite tokens")
 	}
@@ -430,7 +451,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if err != nil {
 		return err
 	}
-	signer, err := auth.NewDelegationSigner(identityDir, nodePriv, config.DefaultDelegationTTL)
+	signer, err := auth.NewDelegationSigner(identityDir, nodePriv)
 	if err != nil {
 		return errors.New("this node cannot issue tokens; only delegated admins can sign enrollment tokens")
 	}
@@ -714,12 +735,12 @@ func provisionRelayAdminDelegation(ctx context.Context, env *cliEnv, sshTarget s
 	if err != nil {
 		return err
 	}
-	signer, err := auth.NewDelegationSigner(identityDir, nodePriv, config.DefaultDelegationTTL)
+	signer, err := auth.NewDelegationSigner(identityDir, nodePriv)
 	if err != nil || !signer.IsRoot() {
 		return errors.New("only root admin can delegate relay admin certs")
 	}
 
-	cert, err := signer.IssueMemberCert(relayPub, auth.FullCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(config.DefaultDelegationTTL), time.Time{})
+	cert, err := signer.IssueMemberCert(relayPub, auth.FullCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(auth.DefaultDelegationTTL), time.Time{})
 	if err != nil {
 		return err
 	}

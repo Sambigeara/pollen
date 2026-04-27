@@ -448,6 +448,13 @@ pln unseed payload           <span class="c"># drop the name + bytes</span></cod
             <p>Bake attributes into a delegation cert at issue time. They flow to the gate as <code>subject.properties</code> and are visible to workloads at call time.</p>
             <pre><code>pln grant &lt;peer-id&gt; --prop role=lead --prop team=backend
 pln invite --prop tier=gold      <span class="c"># bake at join time</span></code></pre>
+            <p>The root node sets its own attributes through configuration rather than self-grant. Bake them in at <code>pln init</code>, or edit <code>config.yaml</code> and restart:</p>
+            <pre><code>pln init --prop role=primary --prop region=eu</code></pre>
+            <pre><code><span class="c"># config.yaml</span>
+properties:
+  role: primary
+  region: eu</code></pre>
+            <p class="aside">On every <code>pln up</code>, root re-issues its self-signed cert from <code>config.yaml</code> if the attributes have drifted, and the cluster's regular renewal pipeline keeps the cert fresh from then on. Delegated peers continue to receive properties imperatively via <code>pln grant</code> or <code>pln invite</code> — root is asymmetric because it has no upstream issuer.</p>
 
             <h3 id="service-properties">Service properties</h3>
             <p>Attach properties to a service when you serve it. They flow to the gate as <code>resource.properties</code>.</p>
@@ -473,25 +480,13 @@ rules:
     service_connect: attribute_matcher</code></pre>
             <p class="aside">Rules reload on <code>SIGHUP</code> — edit, send the signal, no restart. Malformed files leave the previous rules in place. A reference ruleset lives at <a href="https://github.com/sambigeara/pollen/blob/main/examples/matcher/rules.yaml">examples/matcher/rules.yaml</a>.</p>
 
-            <h3 id="seed-pdp">Hand the decision to a seed</h3>
-            <p>When YAML rules aren't enough — you want CEL conditions, role hierarchies, time-of-day checks, or an off-the-shelf policy engine like <a href="https://www.cerbos.dev/">Cerbos</a> — point the gate at a WASM seed instead. The supervisor invokes the seed's <code>check</code> export with the same request envelope and expects a decision back.</p>
-            <pre><code>evaluator:
-  gates:
-    service_connect: seed/cerbos-gate</code></pre>
-            <p>Anything to the right of <code>seed/</code> is a seed name. Publish the WASM with <code>pln seed pdp.wasm cerbos-gate</code> and restart the daemon to bind the gate. On every <code>service_connect</code>, the supervisor JSON-encodes the <a href="#request-envelope">request envelope</a>, calls <code>cerbos-gate.check</code>, and reads back:</p>
-            <pre><code>{"decision": true, "context": {"reason_user": "team match"}}</code></pre>
-            <p>Use any decision logic the WASM runtime supports. Workloads compose with one Extism host call, so a PDP seed can itself fan out to other seeds — useful when policy depends on lookups that don't belong on the request envelope.</p>
-            <div class="note"><strong>If the PDP misbehaves.</strong> Five consecutive errors trip a circuit breaker; for the next ten seconds, the gate skips the seed entirely and returns its configured fallback decision (deny by default). One probe is admitted after the cooldown — recover, and the breaker closes.</div>
-            <p class="aside">Seed-backed gates need workload hosting. A node started with <code>relayOnly: true</code> can't bind one — the daemon refuses to start with a clear error rather than silently allowing every connect.</p>
-
             <h3 id="request-envelope">Request envelope</h3>
-            <p>Both the matcher and a seed-backed PDP see the same <a href="https://openid.net/specs/authorization-api-1_0.html">AuthZen-shaped</a> envelope, populated from the in-flight connect:</p>
+            <p>The matcher sees an <a href="https://openid.net/specs/authorization-api-1_0.html">AuthZen-shaped</a> envelope, populated from the in-flight connect:</p>
             <pre><code>{
   "subject":  {"type": "peer",    "id": "&lt;pubkey&gt;",       "properties": {"role": "lead", "team": "backend"}},
   "action":   {"name": "connect"},
   "resource": {"type": "service", "id": "internal",        "properties": {"public": true}}
 }</code></pre>
-            <p>A seed receives this as the raw <code>check</code> input, byte for byte.</p>
 
             <h2 id="where-to-go-next">Where to go next</h2>
             <ul>

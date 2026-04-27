@@ -36,7 +36,6 @@ const (
 	DefaultMembershipTTL   = 4 * time.Hour
 	DefaultTLSIdentityTTL  = 4 * time.Hour
 	DefaultReconnectWindow = 7 * 24 * time.Hour
-	DefaultDelegationTTL   = 30 * 24 * time.Hour
 )
 
 type Service struct {
@@ -80,17 +79,22 @@ type Evaluator struct {
 }
 
 type Config struct {
-	Evaluator   Evaluator    `yaml:"evaluator,omitempty"`
-	Name        string       `yaml:"name,omitempty"`
-	HTTP        string       `yaml:"http,omitempty"`
-	StaticHTTP  string       `yaml:"staticHTTP,omitempty"`
-	ControlAddr string       `yaml:"controlAddr,omitempty"`
-	LogLevel    string       `yaml:"logLevel,omitempty"`
-	Connections []Connection `yaml:"connections,omitempty"`
-	Services    []Service    `yaml:"services,omitempty"`
-	Placement   Placement    `yaml:"placement,omitempty"`
-	Resources   Resources    `yaml:"resources,omitempty"`
-	Public      bool         `yaml:"public,omitempty"`
+	Evaluator Evaluator `yaml:"evaluator,omitempty"`
+	Name      string    `yaml:"name,omitempty"`
+	HTTP      string    `yaml:"http,omitempty"`
+	// Properties are baked into this node's delegation cert and surface to the
+	// authz layer as subject.properties. On root nodes they're applied at boot
+	// by re-issuing the self-signed cert; delegated nodes receive properties
+	// imperatively via `pln grant`/`pln invite`.
+	Properties  map[string]any `yaml:"properties,omitempty"`
+	StaticHTTP  string         `yaml:"staticHTTP,omitempty"`
+	ControlAddr string         `yaml:"controlAddr,omitempty"`
+	LogLevel    string         `yaml:"logLevel,omitempty"`
+	Connections []Connection   `yaml:"connections,omitempty"`
+	Services    []Service      `yaml:"services,omitempty"`
+	Placement   Placement      `yaml:"placement,omitempty"`
+	Resources   Resources      `yaml:"resources,omitempty"`
+	Public      bool           `yaml:"public,omitempty"`
 	// RelayOnly disables workload hosting; the node still gossips and forwards
 	// routed streams. Pair with an empty staticHTTP to also skip static hosting.
 	RelayOnly bool `yaml:"relayOnly,omitempty"`

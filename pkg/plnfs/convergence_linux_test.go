@@ -80,7 +80,7 @@ func opInit(t *testing.T, dir string) {
 	identityDir := auth.IdentityPath(dir)
 	_, pub, err := auth.EnsureIdentityKey(identityDir)
 	require.NoError(t, err)
-	_, err = auth.EnsureLocalRootCredentials(identityDir, pub, time.Now(), 4*time.Hour, 30*24*time.Hour) //nolint:mnd
+	_, err = auth.EnsureLocalRootCredentials(identityDir, pub, nil, time.Now(), 30*24*time.Hour) //nolint:mnd
 	require.NoError(t, err)
 }
 
@@ -100,7 +100,7 @@ func opServe(t *testing.T, dir string) {
 	if err != nil {
 		cfg = &config.Config{}
 	}
-	cfg.AddService("test-svc", 8080, "") //nolint:mnd
+	cfg.AddService("test-svc", 8080, "", nil) //nolint:mnd
 	require.NoError(t, config.Save(dir, cfg))
 }
 

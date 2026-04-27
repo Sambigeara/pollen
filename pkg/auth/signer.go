@@ -8,8 +8,6 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"buf.build/go/protovalidate"
@@ -24,46 +22,55 @@ type DelegationSigner struct {
 	root   bool
 }
 
-func NewDelegationSigner(identityDir string, nodePriv ed25519.PrivateKey, delegationTTL time.Duration) (*DelegationSigner, error) {
-	now := time.Now()
-
-	// Root admin: local admin key matches the persisted cluster root.
-	adminPriv, adminPub, err := LoadAdminKey(identityDir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	if adminPriv != nil {
-		rootPub, err := os.ReadFile(filepath.Join(identityDir, rootPubName))
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		if bytes.Equal(adminPub, rootPub) {
-			nodePub := nodePriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-			issuer, err := IssueDelegationCert(
-				adminPriv, nil, nodePub,
-				FullCapabilities(),
-				now, now.Add(delegationTTL), time.Time{},
-			)
-			if err != nil {
-				return nil, err
-			}
-			return &DelegationSigner{priv: nodePriv, issuer: issuer, root: true}, nil
-		}
-	}
-
-	// Delegated admin: node cert carries CanDelegate.
+// NewDelegationSigner loads the persisted node credentials and returns a
+// signer that can issue downstream certs and tokens.
+//
+// For root nodes (per LocalRootAuthority), the persisted cert is lazily
+// refreshed via EnsureLocalRootCredentials whenever it fails
+// rootCertHealthy — i.e. expired, wrong subject, wrong issuer, wrong
+// rootPub, non-empty chain, or root caps drift. Attrs are preserved from
+// the existing cert, so CLI paths that bypass the daemon (e.g. `pln
+// invite` between restarts) still work. The daemon-boot path applies
+// config-driven property changes; this lazy path never consults config.
+//
+// For delegated nodes, no refresh happens — renewal is the peer-routed
+// pipeline's job.
+func NewDelegationSigner(identityDir string, nodePriv ed25519.PrivateKey) (*DelegationSigner, error) {
 	creds, err := LoadNodeCredentials(identityDir)
 	if err != nil {
 		return nil, err
 	}
-	if IsCertExpired(creds.cert, now) {
-		return nil, fmt.Errorf("delegated admin cert: %w", ErrCertExpired)
+
+	nodePub := nodePriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
+
+	adminPub, isRoot, err := LocalRootAuthority(identityDir, creds)
+	if err != nil {
+		return nil, err
+	}
+
+	if isRoot && !rootCertHealthy(creds, nodePub, adminPub, time.Now()) {
+		attrs := creds.cert.GetClaims().GetCapabilities().GetAttributes()
+		creds, err = EnsureLocalRootCredentials(identityDir, nodePub, attrs, time.Now(), DefaultDelegationTTL)
+		if err != nil {
+			return nil, fmt.Errorf("refresh stale root cert: %w", err)
+		}
+	}
+
+	if IsCertExpired(creds.cert, time.Now()) {
+		return nil, fmt.Errorf("delegation cert: %w", ErrCertExpired)
 	}
 	if !creds.cert.GetClaims().GetCapabilities().GetCanDelegate() {
 		return nil, errors.New("node cert lacks delegation capability")
 	}
+	if !bytes.Equal(creds.cert.GetClaims().GetSubjectPub(), nodePub) {
+		return nil, errors.New("delegation cert subject does not match local node identity")
+	}
 
-	return &DelegationSigner{priv: nodePriv, issuer: creds.cert}, nil
+	return &DelegationSigner{
+		priv:   nodePriv,
+		issuer: creds.cert,
+		root:   isRoot,
+	}, nil
 }
 
 func NewDelegationSignerFromCert(nodePriv ed25519.PrivateKey, cert *admissionv1.DelegationCert) *DelegationSigner {

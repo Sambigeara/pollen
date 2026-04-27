@@ -278,6 +278,11 @@ pln connect api ab12 9090      <span class="c"># specific peer, local port 9090<
 
     <h3 id="init"><code>pln init</code></h3>
     <p>Initialise a new root cluster on this node. Idempotent if already initialised as root.</p>
+    <dl class="flags">
+      <dt>--prop key=val</dt><dd>Root node properties; baked into the self-signed cert and persisted to <code>config.yaml</code>. Update later by editing config and restarting.</dd>
+    </dl>
+    <pre><code>pln init
+pln init --prop role=primary --prop region=eu</code></pre>
 
     <h3 id="join"><code>pln join &lt;token&gt;</code></h3>
     <p>Enrol this node into the cluster the token was minted for. Starts the daemon by default.</p>

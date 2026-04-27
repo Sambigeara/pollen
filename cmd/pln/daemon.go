@@ -201,21 +201,44 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		return fmt.Errorf("failed to load signing keys: %w", err)
 	}
 
-	creds, err := auth.LoadNodeCredentials(identityDir)
-	if err != nil {
-		if !errors.Is(err, auth.ErrCredentialsNotFound) {
-			return err
+	var nodeProps *structpb.Struct
+	if len(env.cfg.Properties) > 0 {
+		nodeProps, err = structpb.NewStruct(env.cfg.Properties)
+		if err != nil {
+			return fmt.Errorf("invalid node properties: %w", err)
 		}
+	}
+
+	creds, err := auth.LoadNodeCredentials(identityDir)
+	if err != nil && !errors.Is(err, auth.ErrCredentialsNotFound) {
+		return err
+	}
+
+	_, isRoot, err := auth.LocalRootAuthority(identityDir, creds)
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case creds == nil:
 		logger.Info("node is not initialized; auto-initializing root cluster")
-		creds, err = auth.EnsureLocalRootCredentials(identityDir, pubKey, time.Now(), config.DefaultMembershipTTL, config.DefaultDelegationTTL)
+		creds, err = auth.EnsureLocalRootCredentials(identityDir, pubKey, nodeProps, time.Now(), auth.DefaultDelegationTTL)
 		if err != nil {
 			return fmt.Errorf("auto-init failed: %w", err)
 		}
-	} else if auth.IsCertExpired(creds.Cert(), time.Now()) {
+	case isRoot:
+		// Re-issue the root self-signed cert so config property changes
+		// apply on restart and the cert refreshes ahead of expiry without
+		// the peer-routed renewal pipeline.
+		creds, err = auth.EnsureLocalRootCredentials(identityDir, pubKey, nodeProps, time.Now(), auth.DefaultDelegationTTL)
+		if err != nil {
+			return fmt.Errorf("root cert refresh: %w", err)
+		}
+	case auth.IsCertExpired(creds.Cert(), time.Now()):
 		logger.Warnw("delegation certificate has expired — starting in degraded mode, will attempt renewal", "expired_at", auth.CertExpiresAt(creds.Cert()))
 	}
 
-	signer, err := auth.NewDelegationSigner(identityDir, privKey, config.DefaultDelegationTTL)
+	signer, err := auth.NewDelegationSigner(identityDir, privKey)
 	if err == nil {
 		creds.SetDelegationKey(signer)
 	}

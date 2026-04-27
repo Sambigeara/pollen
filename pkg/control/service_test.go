@@ -1219,7 +1219,7 @@ func dummyCreds(t *testing.T) *auth.NodeCredentials {
 	require.NoError(t, err)
 	dir := t.TempDir()
 	require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(pub, issuer)))
-	signer, err := auth.NewDelegationSigner(dir, priv, 24*time.Hour)
+	signer, err := auth.NewDelegationSigner(dir, priv)
 	require.NoError(t, err)
 	creds := auth.NewNodeCredentials(nil, nil)
 	creds.SetDelegationKey(signer)

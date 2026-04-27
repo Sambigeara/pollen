@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"os"
 	"testing"
 	"time"
 
@@ -203,6 +204,56 @@ func TestHandleCertRenewalInstallsFreshCertIntoLocalCache(t *testing.T) {
 		"renewal must extend the NotAfter — otherwise the cache isn't the renewed cert")
 }
 
+// TestAttemptCertRenewalRootSelfRenewsWithoutPeers pins the fix for the
+// "root cannot renew its own cert" gap: a root node holds the admin key
+// and must re-issue its self-signed cert from local material when expiry
+// approaches, regardless of mesh connectivity. Pre-fix, attemptCertRenewal
+// returned false on root because the peer-routed branch had no peers.
+func TestAttemptCertRenewalRootSelfRenewsWithoutPeers(t *testing.T) {
+	creds, pollenDir, nodePriv, nodePub := newRootCredentialsWithIdentity(t)
+
+	identityDir := auth.IdentityPath(pollenDir)
+	adminPriv, _, err := auth.LoadAdminKey(identityDir)
+	require.NoError(t, err)
+	expired, err := auth.IssueDelegationCert(adminPriv, nil, nodePub, auth.FullCapabilities(),
+		time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour), time.Time{})
+	require.NoError(t, err)
+	creds.SetCert(expired)
+	require.NoError(t, auth.SaveNodeCredentials(identityDir, creds))
+
+	self := types.PeerKeyFromBytes(nodePub)
+	svc := New(self, creds, newFakeNetwork(), newFakeClusterState(self), Config{
+		Log:              zap.S(),
+		TracerProvider:   tracenoop.NewTracerProvider(),
+		NodeMetrics:      metrics.NewNodeMetrics(metricnoop.NewMeterProvider()),
+		GossipInterval:   time.Hour,
+		PeerTickInterval: time.Hour,
+		Streams:          &fakeStreamOpener{},
+		RTT:              &fakeRTTSource{},
+		Certs:            newFakeCertManager(),
+		PeerAddrs:        &fakePeerAddressSource{},
+		SessionCloser:    newFakePeerSessionCloser(),
+		RoutedSender:     noopRoutedSender{},
+		NATDetector:      nat.NewDetector(),
+		ReconnectWindow:  time.Hour,
+		MembershipTTL:    time.Hour,
+		SignPriv:         nodePriv,
+		PollenDir:        pollenDir,
+		TLSIdentityTTL:   time.Hour,
+	})
+
+	require.True(t, svc.attemptCertRenewal(),
+		"root with no peers must self-renew via the local admin key")
+
+	require.False(t, auth.IsCertExpired(creds.Cert(), time.Now()),
+		"in-memory creds must reflect the freshly self-issued cert")
+
+	loaded, err := auth.LoadNodeCredentials(identityDir)
+	require.NoError(t, err)
+	require.False(t, auth.IsCertExpired(loaded.Cert(), time.Now()),
+		"persisted cert on disk must also be the freshly self-issued one")
+}
+
 // recipientHarness wires a Service so it can apply pushed delegation
 // certs from a known root. The service holds a real signPriv and
 // pollenDir so applyNewCert can verify, regenerate the TLS identity,
@@ -287,12 +338,21 @@ func (h *recipientHarness) issueCert(t *testing.T, admin bool) *admissionv1.Dele
 // root signer. Root status is unlocked when the admin key on disk
 // matches the persisted root.pub, so the helper makes admin==root and
 // seeds the node credentials shape `pln init` produces when a cluster
-// is bootstrapped. SaveNodeCredentials needs a cert to marshal, but
-// NewDelegationSigner's root path ignores it and rebuilds its own
-// issuer cert — so the saved cert just has to be a valid marshal.
+// is bootstrapped.
 func newRootCredentials(t *testing.T) *auth.NodeCredentials {
 	t.Helper()
-	identityDir := t.TempDir()
+	creds, _, _, _ := newRootCredentialsWithIdentity(t)
+	return creds
+}
+
+// newRootCredentialsWithIdentity returns the same root credentials plus the
+// pollen dir, node identity private key, and node pub. Tests that exercise
+// the full root self-renewal path (signing, applyNewCert) need these.
+func newRootCredentialsWithIdentity(t *testing.T) (*auth.NodeCredentials, string, ed25519.PrivateKey, ed25519.PublicKey) {
+	t.Helper()
+	pollenDir := t.TempDir()
+	identityDir := auth.IdentityPath(pollenDir)
+	require.NoError(t, os.MkdirAll(identityDir, 0o700))
 
 	adminPriv, adminPub, err := auth.EnsureAdminKey(identityDir)
 	require.NoError(t, err)
@@ -305,11 +365,11 @@ func newRootCredentials(t *testing.T) *auth.NodeCredentials {
 	creds := auth.NewNodeCredentials(adminPub, seedCert)
 	require.NoError(t, auth.SaveNodeCredentials(identityDir, creds))
 
-	signer, err := auth.NewDelegationSigner(identityDir, nodePriv, time.Hour)
+	signer, err := auth.NewDelegationSigner(identityDir, nodePriv)
 	require.NoError(t, err)
 	require.True(t, signer.IsRoot(), "signer must be root — admin key was persisted as root.pub")
 	creds.SetDelegationKey(signer)
-	return creds
+	return creds, pollenDir, nodePriv, nodePub
 }
 
 // newIssuerService builds a membership.Service configured as the issuer
