@@ -9,8 +9,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
+	"io"
 	"net"
 	"net/netip"
+	"strconv"
 	"testing"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func TestPublicMesh_GossipConvergence(t *testing.T) {
@@ -33,7 +37,7 @@ func TestPublicMesh_GossipConvergence(t *testing.T) {
 	})
 
 	t.Run("StateConvergesAfterMutation", func(t *testing.T) {
-		c.Node("node-0").Node().Tunneling().ExposeService(8080, "http", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP) //nolint:mnd
+		c.Node("node-0").Node().Tunneling().ExposeService(8080, "http", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
 		// Use eagerTimeout: state must arrive via eager push, not digest sync.
 		c.RequireEventually(t, func() bool {
 			pk := c.PeerKeyByName("node-0")
@@ -172,7 +176,7 @@ func TestPublicMesh_NodeJoinLeave(t *testing.T) {
 	c.RequireConverged(t)
 
 	t.Run("JoinReceivesOngoingGossip", func(t *testing.T) {
-		c.Node("node-0").Node().Tunneling().ExposeService(9090, "grpc", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP) //nolint:mnd
+		c.Node("node-0").Node().Tunneling().ExposeService(9090, "grpc", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
 
 		joiner := c.AddNodeAndStart(t, "late-joiner", Public, ctx)
 
@@ -217,7 +221,7 @@ func TestPublicMesh_ServiceExposure(t *testing.T) {
 	c.RequireConverged(t)
 
 	t.Run("VisibleClusterWide", func(t *testing.T) {
-		c.Node("node-1").Node().Tunneling().ExposeService(3000, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP) //nolint:mnd
+		c.Node("node-1").Node().Tunneling().ExposeService(3000, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
 		pk1 := c.PeerKeyByName("node-1")
 		c.RequireEventually(t, func() bool {
 			for _, n := range c.Nodes() {
@@ -445,7 +449,7 @@ func TestPublicMesh_EagerGossipPropagation(t *testing.T) {
 	c.RequireConverged(t)
 
 	// Mutate state on node-0 by registering a service.
-	c.Node("node-0").Node().Tunneling().ExposeService(5050, "eager-prop", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP) //nolint:mnd
+	c.Node("node-0").Node().Tunneling().ExposeService(5050, "eager-prop", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
 
 	// The mutation must arrive at every other node within eagerTimeout (500ms),
 	// well under the 1s gossip tick configured in test clusters.
@@ -590,7 +594,7 @@ func TestRelayRegions_PartitionAndHeal(t *testing.T) {
 	t.Run("PartitionBlocksPropagation", func(t *testing.T) {
 		c.Partition(region0, region1)
 
-		c.Node("relay-0").Node().Tunneling().ExposeService(7070, "isolated", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP) //nolint:mnd
+		c.Node("relay-0").Node().Tunneling().ExposeService(7070, "isolated", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
 
 		pk0 := c.PeerKeyByName("relay-0")
 		c.RequireNever(t, func() bool {
@@ -707,8 +711,8 @@ func TestPublicMesh_ServiceUnexposure(t *testing.T) {
 	c := PublicMesh(t, 3, ctx) //nolint:mnd
 	c.RequireConverged(t)
 
-	c.Node("node-0").Node().Tunneling().ExposeService(6060, "temp-svc", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP) //nolint:mnd
-	c.RequireServiceVisible(t, "node-0", 6060, "temp-svc")                                                            //nolint:mnd
+	c.Node("node-0").Node().Tunneling().ExposeService(6060, "temp-svc", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
+	c.RequireServiceVisible(t, "node-0", 6060, "temp-svc")                                                                 //nolint:mnd
 
 	require.NoError(t, c.Node("node-0").Node().Tunneling().UnexposeService("temp-svc"))
 
@@ -784,4 +788,123 @@ func TestPublicMesh_VivaldiDistancesReflectTopology(t *testing.T) {
 		distFar := coords.Distance(*nvOrigin.VivaldiCoord, *nvFar.VivaldiCoord)
 		return distNear > 0 && distFar > 0 && distNear < distFar
 	}, assertTimeout, "vivaldi: 10ms neighbor should be closer than 50ms neighbor")
+}
+
+// liveTunnel returns an established TCP tunnel between two nodes; callers
+// mutate the service and assert the close behaviour themselves.
+type liveTunnel struct {
+	c         *Cluster
+	client    net.Conn
+	publisher string
+	serviceNm string
+	appPort   uint32
+}
+
+func newLiveTunnel(t *testing.T, ctx context.Context, name string) *liveTunnel { //nolint:thelper
+	c := PublicMesh(t, 2, ctx) //nolint:mnd
+	c.RequireConverged(t)
+
+	// Pre-allocate a distinct local port so clients don't bypass the tunnel by dialling the app listener directly.
+	tmpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	localPort := uint32(tmpLn.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert
+	require.NoError(t, tmpLn.Close())
+
+	app, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = app.Close() })
+	appPort := uint32(app.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert
+	require.NotEqual(t, appPort, localPort)
+
+	appConns := make(chan net.Conn, 4) //nolint:mnd
+	go func() {
+		for {
+			conn, err := app.Accept()
+			if err != nil {
+				return
+			}
+			appConns <- conn
+		}
+	}()
+
+	pubProps, err := structpb.NewStruct(map[string]any{"public": true})
+	require.NoError(t, err)
+	require.NoError(t,
+		c.Node("node-0").Node().Tunneling().ExposeService(appPort, name, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, pubProps),
+	)
+	c.RequireServiceVisible(t, "node-0", appPort, name)
+
+	pk0 := c.PeerKeyByName("node-0")
+	c.Node("node-1").Node().AddDesiredConnection(pk0, appPort, localPort, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP)
+	c.RequireEventually(t, func() bool {
+		for _, conn := range c.Node("node-1").Node().DesiredConnections() {
+			if conn.PeerID == pk0 && conn.RemotePort == appPort && conn.LocalPort == localPort {
+				return true
+			}
+		}
+		return false
+	}, assertTimeout, "node-1 did not bind a local tunnel port")
+
+	client, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.FormatUint(uint64(localPort), 10))) //nolint:mnd
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	var appSide net.Conn
+	select {
+	case appSide = <-appConns:
+		t.Cleanup(func() { _ = appSide.Close() })
+	case <-time.After(assertTimeout):
+		require.FailNow(t, "local app never received the tunnelled TCP client")
+	}
+
+	// Confirm the tunnel is live before the caller's mutation.
+	_, err = client.Write([]byte("ping"))
+	require.NoError(t, err)
+	buf := make([]byte, 4) //nolint:mnd
+	_ = appSide.SetReadDeadline(time.Now().Add(assertTimeout))
+	_, err = io.ReadFull(appSide, buf)
+	require.NoError(t, err)
+	require.Equal(t, "ping", string(buf))
+
+	return &liveTunnel{c: c, client: client, publisher: "node-0", serviceNm: name, appPort: appPort}
+}
+
+// requireClosed fails on a timeout error: that means the deadline expired without a close, i.e. revocation didn't fire.
+func (lt *liveTunnel) requireClosed(t *testing.T) { //nolint:thelper
+	_ = lt.client.SetReadDeadline(time.Now().Add(assertTimeout))
+	buf := make([]byte, 1)
+	_, err := lt.client.Read(buf)
+	require.Error(t, err)
+	var ne net.Error
+	if errors.As(err, &ne) {
+		require.Falsef(t, ne.Timeout(), "tunnel was not torn down promptly: %v", err)
+	}
+}
+
+func TestPublicMesh_ServicePropChangeRevokesActiveTunnels(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
+	t.Cleanup(cancel)
+
+	lt := newLiveTunnel(t, ctx, "samflix")
+
+	privProps, err := structpb.NewStruct(map[string]any{"public": false})
+	require.NoError(t, err)
+	require.NoError(t,
+		lt.c.Node(lt.publisher).Node().Tunneling().ExposeService(lt.appPort, lt.serviceNm, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, privProps),
+	)
+
+	lt.requireClosed(t)
+}
+
+func TestPublicMesh_ServiceUnexposureRevokesActiveTunnels(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
+	t.Cleanup(cancel)
+
+	lt := newLiveTunnel(t, ctx, "samflix-unx")
+
+	require.NoError(t,
+		lt.c.Node(lt.publisher).Node().Tunneling().UnexposeService(lt.serviceNm),
+	)
+
+	lt.requireClosed(t)
 }

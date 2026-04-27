@@ -104,6 +104,10 @@ type serviceEntry struct {
 	name   string
 }
 
+type activeServe struct {
+	stream io.ReadWriteCloser
+}
+
 type Service struct {
 	router            RoutingTable
 	store             ServiceState
@@ -113,6 +117,7 @@ type Service struct {
 	log               *zap.SugaredLogger
 	services          map[serviceKey]*serviceEntry
 	desired           map[connKey]ConnectionInfo
+	activeServes      map[string]map[*activeServe]struct{}
 	tracker           *tracker
 	wg                sync.WaitGroup
 	sampleInterval    time.Duration
@@ -125,15 +130,16 @@ var _ TunnelingAPI = (*Service)(nil)
 
 func New(self types.PeerKey, store ServiceState, streams StreamTransport, datagrams DatagramTransport, router RoutingTable, opts ...Option) *Service {
 	s := &Service{
-		self:        self,
-		store:       store,
-		streams:     streams,
-		datagrams:   datagrams,
-		router:      router,
-		log:         zap.S().Named("tun"),
-		services:    make(map[serviceKey]*serviceEntry),
-		connections: make(map[connKey]*tunnelConn),
-		desired:     make(map[connKey]ConnectionInfo),
+		self:         self,
+		store:        store,
+		streams:      streams,
+		datagrams:    datagrams,
+		router:       router,
+		log:          zap.S().Named("tun"),
+		services:     make(map[serviceKey]*serviceEntry),
+		connections:  make(map[connKey]*tunnelConn),
+		desired:      make(map[connKey]ConnectionInfo),
+		activeServes: make(map[string]map[*activeServe]struct{}),
 	}
 	for _, o := range opts {
 		o(s)
@@ -153,8 +159,12 @@ func WithReconcileInterval(d time.Duration) Option {
 func (s *Service) Start(ctx context.Context) error {
 	snap := s.store.Snapshot()
 	for _, svc := range snap.Services() {
-		if svc.Peer == s.self {
-			_ = s.ExposeService(svc.Port, svc.Name, svc.Protocol, svc.Properties)
+		if svc.Peer != s.self {
+			continue
+		}
+		if err := s.ExposeService(svc.Port, svc.Name, svc.Protocol, svc.Properties); err != nil {
+			// Persisted state should be self-consistent; an error here implies corruption an operator must resolve.
+			s.log.Warnw("rehydrate service failed", "name", svc.Name, "port", svc.Port, zap.Error(err))
 		}
 	}
 
@@ -169,16 +179,33 @@ func (s *Service) Start(ctx context.Context) error {
 
 func (s *Service) Stop() error {
 	s.mu.Lock()
+	entries := make([]*serviceEntry, 0, len(s.services))
 	for _, entry := range s.services {
-		if entry.proxy != nil {
-			entry.proxy.Close()
-		}
-		entry.cancel()
+		entries = append(entries, entry)
 	}
+	conns := make([]*tunnelConn, 0, len(s.connections))
 	for _, conn := range s.connections {
-		s.closeConn(conn)
+		conns = append(conns, conn)
 	}
+	// Active bridges hold their stream open; without closing them s.wg.Wait below never returns.
+	var streams []io.Closer
+	for _, set := range s.activeServes {
+		for sess := range set {
+			streams = append(streams, sess.stream)
+		}
+	}
+	clear(s.services)
+	clear(s.connections)
+	clear(s.activeServes)
 	s.mu.Unlock()
+
+	for _, e := range entries {
+		closeEntry(e)
+	}
+	for _, c := range conns {
+		s.closeConn(c)
+	}
+	closeAll(streams)
 	s.wg.Wait()
 	return nil
 }
@@ -233,45 +260,84 @@ func (s *Service) Disconnect(service string) error {
 
 func (s *Service) ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	sk := serviceKey{port: port, protocol: protocol}
-	if existing, ok := s.services[sk]; ok {
-		if existing.proxy != nil {
-			existing.proxy.Close()
+
+	// State keys by name, runtime keys by {port, protocol}: reject a second name on the same key, and tear down a stale runtime entry when a name moves keys.
+	if existing, ok := s.services[sk]; ok && existing.name != name {
+		s.mu.Unlock()
+		return fmt.Errorf("port %d/%s already exposed as %q", port, protocol, existing.name)
+	}
+	var stale *serviceEntry
+	for k, e := range s.services {
+		if e.name == name && k != sk {
+			stale = e
+			delete(s.services, k)
+			break
 		}
-		existing.cancel()
 	}
 
+	events := s.store.SetService(port, name, protocol, properties)
+
+	if len(events) == 0 {
+		// No store change: rehydrate runtime entry on cold start, otherwise leave any existing entry and active serves untouched.
+		if _, ok := s.services[sk]; !ok {
+			s.services[sk] = s.buildEntryLocked(port, name, protocol)
+		}
+		s.mu.Unlock()
+		return nil
+	}
+
+	displaced := s.services[sk]
+	s.services[sk] = s.buildEntryLocked(port, name, protocol)
+	toClose := s.detachServesLocked(name)
+	s.mu.Unlock()
+
+	closeEntry(displaced)
+	closeEntry(stale)
+	closeAll(toClose)
+	return nil
+}
+
+func (s *Service) buildEntryLocked(port uint32, name string, protocol statev1.ServiceProtocol) *serviceEntry {
 	ctx, cancel := context.WithCancel(context.Background())
 	entry := &serviceEntry{cancel: cancel, name: name}
 	if protocol == statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP && s.datagrams != nil {
 		entry.proxy = newUDPServiceProxy(ctx, port, s.datagrams)
 	}
-	s.services[sk] = entry
-	s.store.SetService(port, name, protocol, properties)
-	return nil
+	return entry
+}
+
+// closeEntry must run with s.mu released: proxy.Close blocks on goroutine teardown.
+func closeEntry(e *serviceEntry) {
+	if e == nil {
+		return
+	}
+	if e.proxy != nil {
+		e.proxy.Close()
+	}
+	e.cancel()
 }
 
 func (s *Service) UnexposeService(name string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	snap := s.store.Snapshot()
 	for _, svc := range snap.Services() {
 		if svc.Peer == s.self && svc.Name == name {
 			sk := serviceKey{port: svc.Port, protocol: svc.Protocol}
-			if entry, ok := s.services[sk]; ok {
-				if entry.proxy != nil {
-					entry.proxy.Close()
-				}
-				entry.cancel()
-				delete(s.services, sk)
+			entry := s.services[sk]
+			delete(s.services, sk)
+			events := s.store.RemoveService(name)
+			var toClose []io.Closer
+			if len(events) > 0 {
+				toClose = s.detachServesLocked(name)
 			}
-			s.store.RemoveService(name)
+			s.mu.Unlock()
+			closeEntry(entry)
+			closeAll(toClose)
 			return nil
 		}
 	}
+	s.mu.Unlock()
 	return fmt.Errorf("service %q not found", name)
 }
 
@@ -282,26 +348,76 @@ func ReadPort(r io.Reader) (uint32, error) {
 	return readPort(r)
 }
 
-// Serve handles an inbound TCP tunnel stream for the given port. The
-// port is already consumed from the stream by supervisor's dispatch
-// loop; Serve assumes the caller is authorised.
+// Serve handles an inbound TCP tunnel stream. Lookup and registration
+// happen under a single Lock so a concurrent revoke can't miss this stream.
 func (s *Service) Serve(stream io.ReadWriteCloser, peer types.PeerKey, port uint32) {
 	s.wg.Go(func() {
 		defer stream.Close()
-		s.mu.RLock()
-		_, ok := s.services[serviceKey{port: port, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP}]
-		s.mu.RUnlock()
 
+		s.mu.Lock()
+		entry, ok := s.services[serviceKey{port: port, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP}]
 		if !ok {
+			s.mu.Unlock()
 			return
 		}
+		sess := &activeServe{stream: stream}
+		s.registerServeLocked(entry.name, sess)
+		name := entry.name
+		s.mu.Unlock()
+
+		defer s.unregisterServe(name, sess)
 
 		conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port)) //nolint:noctx
 		if err != nil {
 			return
 		}
+
 		s.bridge(stream, conn, peer)
 	})
+}
+
+// detachServesLocked clears active inbound serves for name and returns their
+// streams. Caller must hold s.mu and Close the streams after releasing it —
+// Close blocks until bridge goroutines unwind.
+func (s *Service) detachServesLocked(name string) []io.Closer {
+	set := s.activeServes[name]
+	delete(s.activeServes, name)
+	if len(set) == 0 {
+		return nil
+	}
+	streams := make([]io.Closer, 0, len(set))
+	for sess := range set {
+		streams = append(streams, sess.stream)
+	}
+	return streams
+}
+
+func closeAll(cs []io.Closer) {
+	for _, c := range cs {
+		_ = c.Close()
+	}
+}
+
+func (s *Service) registerServeLocked(name string, sess *activeServe) {
+	set, ok := s.activeServes[name]
+	if !ok {
+		set = make(map[*activeServe]struct{})
+		s.activeServes[name] = set
+	}
+	set[sess] = struct{}{}
+}
+
+func (s *Service) unregisterServe(name string, sess *activeServe) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	set, ok := s.activeServes[name]
+	if !ok {
+		return
+	}
+	delete(set, sess)
+	if len(set) == 0 {
+		delete(s.activeServes, name)
+	}
 }
 
 func (s *Service) HandleTunnelDatagram(data []byte, peer types.PeerKey) {
