@@ -2,7 +2,7 @@
   <img src="assets/mascot.svg" alt="Pollen" width="128"/>
 </p>
 
-# Pollen: a local-first, zero-trust, leaderless, emergent mesh and WASM runtime, in a single static binary
+# Pollen
 
 <p align="center">
   <a href="https://github.com/sambigeara/pollen/actions/workflows/ci.yml"><img src="https://github.com/sambigeara/pollen/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -12,34 +12,50 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/sambigeara/pollen" alt="License"></a>
 </p>
 
-_Pollen is in early development — expect breaking changes and sharp edges._
+Distributed WASM runtime. Workloads place themselves over a zero-trust mesh. One static binary.
+
+<!-- TODO(demo): record a ~30s asciinema demo: `pln init` → bootstrap two more nodes → `pln seed hello.wasm` on one → `pln call hello greet '{"name":"world"}'` from another, returning the result. Convert to GIF with `agg`, drop at `assets/demo.gif`, then replace this comment with `![Pollen demo](assets/demo.gif)`. -->
+
+```bash
+curl -fsSL https://pln.sh/install.sh | bash
+```
+
+Pollen is a single Go binary. Install it on a few machines and you get a WASM runtime where workloads place themselves: nodes pick up replicas based on what they can host and where the traffic is, with no scheduler running anywhere. You also get a zero-trust mesh — `pln serve 8080 api` on one machine, `pln connect api` on another, mTLS end-to-end.
+
+Pollen runs WASM, not containers. You can't `pln seed` a Postgres image. That constraint is the whole point: WASM is narrow enough that placement can be leaderless. If you need containers, k3s and Nomad are still where to go. If your workloads can compile to WASM (Go, Rust, JS, Python, C#, Zig via [Extism](https://extism.org)), there's no etcd, no kubelet, no helm. Just pln.
+
+Pollen runs end-to-end on real clusters today. It's pre-1.0, so expect breaking changes.
 
 ## Highlights
 
-- **Ergonomic.** Opinionated defaults, opt-in configuration.
-- **CRDT-native.** A converging document on every node; changes
-  gossip, conflicts resolve.
+- **WASM seeds.** Deploy with `pln seed`; artifacts distribute
+  peer-to-peer by hash. One host call invokes another seed by name
+  (`pln://seed/<name>/<fn>`), so authz, routing, and policy can live
+  inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via
+  [Extism](https://extism.org/docs/quickstart/plugin-quickstart).
+- **Mesh services.** `pln serve 8080 api` here, `pln connect api`
+  there (or `pln://service/<name>` from a seed). TCP and UDP,
+  end-to-end mTLS.
+- **Static sites & blobs.** `pln seed ./public` publishes a site;
+  `pln seed ./file` shares a file. Same verb across workloads, sites,
+  and blobs; kind is autodetected from what you point at.
+  Content-addressed, gossiped, streamed peer-to-peer over QUIC.
 - **Self-organising.** No scheduler, no leader, no coordinator.
   Topology, placement, and routing emerge from local state; calls go
   to the nearest, least-loaded replica, and replicas migrate toward
   demand.
+- **CRDT-native.** A converging document on every node; changes
+  gossip, conflicts resolve.
 - **Partition-tolerant.** Both sides of a split keep running; state
   converges on rejoin; survivors rehost workloads from failed nodes.
-- **Edge-ready.** Pure Go, no CGO. Raspberry Pi to cloud host.
-- **Mesh services.** `pln serve 8080 api` here, `pln connect api`
-  there. TCP and UDP, end-to-end mTLS.
-- **WASM seeds.** Deploy with `pln seed`; artifacts distribute
-  peer-to-peer by hash. Modules compose via one Extism host call,
-  authored in [a variety of languages](https://extism.org/docs/quickstart/plugin-quickstart).
-- **Static sites & blobs.** `pln seed ./public` publishes a site;
-  `pln seed ./file` shares a file. Same verb across workloads, sites,
-  and blobs — kind is autodetected from what you point at.
-  Content-addressed, gossiped, streamed peer-to-peer over QUIC.
 - **QUIC transport.** One multiplexed, encrypted, UDP-based
-  connection per peer carries gossip, services, and seeds. NAT
-  traversal built in.
-- **Cryptographic admission.** No shared secrets, no firewall rules —
-  every link is mTLS.
+  connection per peer carries gossip, services, and seeds.
+  Connections punch direct between peers; otherwise they relay
+  through any cluster node both peers can reach.
+- **Cryptographic admission.** No shared secrets, no firewall rules.
+  Every link is mTLS.
+- **Edge-ready.** Pure Go, no CGO. Raspberry Pi to cloud host.
+- **Ergonomic.** Opinionated defaults, opt-in configuration.
 
 ## Quickstart
 
@@ -51,7 +67,8 @@ curl -fsSL https://pln.sh/install.sh | bash
 
 A thin wrapper around your platform's package manager (Homebrew on
 macOS, apt or yum on Linux), so upgrades, uninstalls, and service files
-are managed natively.
+are managed natively. On macOS, see the [FAQ](#faq) for a first-connect
+permissions note.
 
 ### Two commands to a cluster
 
@@ -185,14 +202,20 @@ pln seed ./big-file.bin payload   # …or publish under a name
 pln fetch <digest|name>           # pulls peer-to-peer over QUIC into the local store
 ```
 
-Blobs are the primitive behind static sites — content-addressed,
+Blobs are the primitive behind static sites: content-addressed,
 gossip-advertised, streamed peer-to-peer over QUIC. Receivers verify
 the digest on arrival.
 
-## Project status
+## FAQ
 
-Pollen runs end-to-end on real clusters, but it is not yet what it's
-trying to be. Expect breaking changes until formats and APIs stabilise.
+### macOS: `sendmsg: no route to host` on LAN dials
+
+Most likely macOS Local Network Privacy. Grant `pln` access in
+**System Settings → Privacy & Security → Local Network**. The prompt
+appears the first time `pln` tries to reach a LAN peer; if you miss
+it, or the binary's signature changes after an upgrade, LAN dials
+silently fail while WAN traffic keeps working. Re-granting access
+fixes it.
 
 ## License
 

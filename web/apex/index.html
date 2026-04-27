@@ -5,7 +5,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Pollen</title>
-    <meta name="description" content="A zero-trust, leaderless, emergent mesh runtime. One static binary, a whole fabric.">
+    <meta name="description" content="A distributed WASM runtime where workloads place themselves over a zero-trust mesh, in a single static binary.">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <style>
         :root {
@@ -142,20 +142,60 @@
             border-color: var(--accent);
         }
 
-        nav {
+        .site-header {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: saturate(180%) blur(8px);
+            -webkit-backdrop-filter: saturate(180%) blur(8px);
+            border-bottom: 1px solid var(--rule);
+        }
+
+        .site-header-inner {
             display: flex;
-            gap: 1.5rem;
+            align-items: center;
+            gap: 1rem;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 0.75rem 1.75rem;
+            min-height: 4rem;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+            text-decoration: none;
+            color: var(--ink);
+            font-weight: 600;
+            font-size: 1rem;
+            letter-spacing: -0.01em;
+        }
+
+        .brand img {
+            width: 32px;
+            height: 32px;
+            image-rendering: pixelated;
+            flex-shrink: 0;
+        }
+
+        .site-nav {
+            margin-left: auto;
+            display: flex;
+            gap: 1.25rem;
             font-size: 0.95rem;
         }
 
-        nav a {
+        .site-nav a {
             color: var(--ink);
             text-decoration: none;
             border-bottom: 1px solid var(--rule);
             padding-bottom: 2px;
+            white-space: nowrap;
         }
 
-        nav a:hover {
+        .site-nav a:hover {
             border-color: var(--accent);
         }
 
@@ -172,6 +212,19 @@
 </head>
 
 <body>
+    <header class="site-header">
+        <div class="site-header-inner">
+            <a href="/" class="brand">
+                <img src="favicon.svg" alt="" width="32" height="32">
+                <span>Pollen</span>
+            </a>
+            <nav class="site-nav">
+                <a href="https://docs.pln.sh/">Docs</a>
+                <a href="https://github.com/sambigeara/pollen">GitHub</a>
+                <a href="https://github.com/sambigeara/pollen/releases">Releases</a>
+            </nav>
+        </div>
+    </header>
     <main>
         <svg class="mascot" viewBox="0 0 20 20" shape-rendering="crispEdges" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
             <g fill="#8B5A1B"><rect x="7" y="0" width="6" height="1"/><rect x="5" y="1" width="2" height="1"/><rect x="13" y="1" width="2" height="1"/><rect x="4" y="2" width="1" height="1"/><rect x="15" y="2" width="1" height="1"/><rect x="3" y="3" width="1" height="1"/><rect x="16" y="3" width="1" height="1"/><rect x="2" y="4" width="1" height="9"/><rect x="17" y="4" width="1" height="9"/><rect x="3" y="13" width="1" height="1"/><rect x="16" y="13" width="1" height="1"/><rect x="4" y="14" width="1" height="1"/><rect x="15" y="14" width="1" height="1"/><rect x="5" y="15" width="2" height="1"/><rect x="13" y="15" width="2" height="1"/><rect x="7" y="16" width="6" height="1"/></g>
@@ -186,25 +239,20 @@
             <g fill="#2E6A23"><rect x="4" y="18" width="1" height="1"/><rect x="15" y="18" width="1" height="1"/><rect x="5" y="19" width="2" height="1"/><rect x="13" y="19" width="2" height="1"/></g>
         </svg>
         <h1>Pollen</h1>
-        <p class="tagline">A local-first, zero-trust, leaderless, emergent mesh and WASM runtime, in a single static binary.</p>
+        <p class="tagline">Distributed WASM runtime. Workloads place themselves over a zero-trust mesh. One static binary.</p>
         <div class="install"><code>curl -fsSL https://pln.sh/install.sh | bash</code></div>
         <ul class="features">
-            <li><strong>Ergonomic.</strong> Opinionated defaults, opt-in configuration.</li>
-            <li><strong>CRDT-native.</strong> A converging document on every node; changes gossip, conflicts resolve.</li>
+            <li><strong>WASM seeds.</strong> Deploy with <code>pln seed</code>; artifacts distribute peer-to-peer by hash. One host call invokes another seed by name (<code>pln://seed/&lt;name&gt;/&lt;fn&gt;</code>), so authz, routing, and policy can live inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism</a>.</li>
+            <li><strong>Mesh services.</strong> <code>pln serve 8080 api</code> here, <code>pln connect api</code> there (or <code>pln://service/&lt;name&gt;</code> from a seed). TCP and UDP, end-to-end mTLS.</li>
+            <li><strong>Static sites &amp; blobs.</strong> <code>pln seed ./public</code> publishes a site; <code>pln seed ./file</code> shares a file. Same verb across kinds; autodetected. Content-addressed, gossiped, streamed peer-to-peer over QUIC.</li>
             <li><strong>Self-organising.</strong> No scheduler, no leader, no coordinator. Topology, placement, and routing emerge from local state; calls go to the nearest, least-loaded replica, and replicas migrate toward demand.</li>
+            <li><strong>CRDT-native.</strong> A converging document on every node; changes gossip, conflicts resolve.</li>
             <li><strong>Partition-tolerant.</strong> Both sides of a split keep running; state converges on rejoin; survivors rehost workloads from failed nodes.</li>
+            <li><strong>QUIC transport.</strong> One multiplexed, encrypted, UDP-based connection per peer carries gossip, services, and seeds. Connections punch direct between peers; otherwise they relay through any cluster node both peers can reach.</li>
+            <li><strong>Cryptographic admission.</strong> No shared secrets, no firewall rules. Every link is mTLS.</li>
             <li><strong>Edge-ready.</strong> Pure Go, no CGO. Raspberry Pi to cloud host.</li>
-            <li><strong>Mesh services.</strong> <code>pln serve 8080 api</code> here, <code>pln connect api</code> there. TCP and UDP, end-to-end mTLS.</li>
-            <li><strong>WASM seeds.</strong> Deploy with <code>pln seed</code>; artifacts distribute peer-to-peer by hash. Modules compose via one Extism host call, authored in <a href="https://extism.org/docs/quickstart/plugin-quickstart">a variety of languages</a>.</li>
-            <li><strong>Static sites &amp; blobs.</strong> <code>pln seed ./public</code> publishes a site; <code>pln seed ./file</code> shares a file. Same verb across kinds &mdash; autodetected. Content-addressed, gossiped, streamed peer-to-peer over QUIC.</li>
-            <li><strong>QUIC transport.</strong> One multiplexed, encrypted, UDP-based connection per peer carries gossip, services, and seeds. NAT traversal built in.</li>
-            <li><strong>Cryptographic admission.</strong> No shared secrets, no firewall rules — every link is mTLS.</li>
+            <li><strong>Ergonomic.</strong> Opinionated defaults, opt-in configuration.</li>
         </ul>
-        <nav>
-            <a href="https://docs.pln.sh/">Docs</a>
-            <a href="https://github.com/sambigeara/pollen">GitHub</a>
-            <a href="https://github.com/sambigeara/pollen/releases">Releases</a>
-        </nav>
     </main>
     <footer>&copy; 2026 Sam Lock &middot; Apache-2.0</footer>
 </body>
