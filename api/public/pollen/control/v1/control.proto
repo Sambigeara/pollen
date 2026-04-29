@@ -137,8 +137,8 @@ message BlobSummary {
 enum WorkloadStatus {
   WORKLOAD_STATUS_UNSPECIFIED = 0;
   WORKLOAD_STATUS_RUNNING = 1;
-  WORKLOAD_STATUS_STOPPED = 2;
-  WORKLOAD_STATUS_ERRORED = 3;
+  reserved 2, 3;
+  reserved "WORKLOAD_STATUS_STOPPED", "WORKLOAD_STATUS_ERRORED";
 }
 
 message WorkloadSummary {
@@ -150,8 +150,8 @@ message WorkloadSummary {
   bool local = 6;
   string name = 7;
   float spread = 8;
-  uint32 effective_target = 9;
-  float pressure = 10;
+  reserved 9, 10;
+  reserved "effective_target", "pressure";
 }
 
 message ConnectionSummary {
@@ -247,12 +247,8 @@ message SeedWorkloadHeader {
   uint32 timeout_ms = 3;
   string name = 4;
   float spread = 5;
-  // latency_slo_ms is the per-invocation caller-perspective latency
-  // budget. Drives autoscale via SLO burn rate. Zero is replaced with
-  // a sensible default by the placement layer.
-  uint32 latency_slo_ms = 6;
-  reserved 7;
-  reserved "properties";
+  reserved 6, 7;
+  reserved "latency_slo_ms", "properties";
 }
 
 message SeedWorkloadResponse {

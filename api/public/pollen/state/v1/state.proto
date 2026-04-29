@@ -75,22 +75,8 @@ message ResourceTelemetryChange {
   uint32 mem_percent = 2;
   uint64 mem_total_bytes = 3;
   uint32 num_cpu = 4;
-  uint32 cpu_budget_percent = 5;
-  uint32 mem_budget_percent = 6;
-  // admission_state is the local backpressure picture rolled up from the
-  // node's gates and memory admission. OPEN means the node has headroom
-  // for new work; DEGRADED means it is admitting under pressure; CLOSED
-  // means new admissions will be rejected. Routing peers read this to
-  // skip CLOSED targets entirely and penalise DEGRADED ones rather than
-  // discovering saturation by probing.
-  AdmissionState admission_state = 7;
-}
-
-enum AdmissionState {
-  ADMISSION_STATE_UNSPECIFIED = 0;
-  ADMISSION_STATE_OPEN = 1;
-  ADMISSION_STATE_DEGRADED = 2;
-  ADMISSION_STATE_CLOSED = 3;
+  reserved 5, 6, 7;
+  reserved "cpu_budget_percent", "mem_budget_percent", "admission_state";
 }
 
 message WorkloadSpecChange {
@@ -100,61 +86,8 @@ message WorkloadSpecChange {
   uint32 timeout_ms = 4;
   string name = 5;
   float spread = 6;
-  // latency_slo_ms is the per-invocation caller-perspective latency
-  // budget. Calls completing under this contribute to the satisfied
-  // counter; calls exceeding it contribute to the burn counter. The
-  // ratio drives autoscale decisions.
-  uint32 latency_slo_ms = 7;
-  reserved 8;
-  reserved "publisher_claim";
-}
-
-// SeedMetrics is the per-seed per-node telemetry bundle: served rate
-// (calls/sec on this node), origin rate (calls/sec entering the cluster
-// via this node), mean compute cost (ms/invocation), SLO satisfied and
-// burned rates (calls/sec over the latency SLO), EWMA gate-wait (ms)
-// and mean parked time (ms per invocation). Gossiped so every peer
-// can score placement from the cluster-wide demand distribution, and
-// cluster-wide observability (pollen_workload_slo_burn_ratio,
-// compute_cost, gate_wait) can aggregate across nodes.
-message SeedMetrics {
-  float served_rate = 1;
-  float compute_cost_ms = 2;
-  float slo_satisfied_rate = 3;
-  float slo_burned_rate = 4;
-  reserved 5;
-  reserved "gate_wait_ms";
-  // Mean wall-time (ms) per invocation spent parked inside pollen_request
-  // waiting for downstream responses. Subtracted from compute_cost_ms in
-  // desiredReplicas so capacity sizing tracks active CPU work, not wall
-  // time spent waiting on downstream calls.
-  float parked_ms = 6;
-  // Calls/sec for this seed that enter the cluster at this node —
-  // incremented on every placement.Call entry regardless of whether the
-  // node hosts the seed. The cluster-wide distribution of origin_rate
-  // across peers is the demand signal placement scoring uses to pull
-  // seeds toward where their traffic enters.
-  float origin_rate = 7;
-  // Short-window EWMA of origin_rate for burst detection. The slow
-  // origin_rate reacts in seconds; this fast variant reacts in
-  // sub-second so the autoscaler can respond to a microburst before it
-  // has propagated into the slow EWMA. Take max(slow×headroom, fast)
-  // as the arrival rate.
-  float origin_rate_fast = 8;
-  // Long-window EWMA of origin_rate, the steady-state companion to
-  // origin_rate_fast. origin_rate (field 7) remains the canonical
-  // medium-window signal callers integrate against.
-  float origin_rate_slow = 9;
-  // Calls/sec rejected at admission for this seed — gate at-capacity,
-  // memory budget, or any other backpressure that returns OverloadError
-  // before the workload runs. A non-zero reject_rate is the strongest
-  // signal that the cluster is under-provisioned and forces immediate
-  // scale-up regardless of where the slow origin EWMA sits.
-  float reject_rate = 10;
-}
-
-message SeedMetricsChange {
-  map<string, SeedMetrics> seeds = 1;
+  reserved 7, 8;
+  reserved "latency_slo_ms", "publisher_claim";
 }
 
 message BlobAvailabilityChange {
@@ -239,6 +172,14 @@ message NodeNameChange {
   }];
 }
 
+message BackoffTTLChange {
+  int64 expires_at_unix_ms = 1;
+}
+
+message PerSeedCallCountsChange {
+  map<string, uint64> counts = 1;
+}
+
 message GossipEvent {
   string peer_id = 1 [(buf.validate.field).string = {
     pattern: "^[a-fA-F0-9]{64}$"
@@ -262,16 +203,17 @@ message GossipEvent {
     HeartbeatChange heartbeat = 18;
     AdminCapableChange admin_capable = 20;
     NodeNameChange node_name = 21;
-    SeedMetricsChange seed_metrics = 27;
     BlobAvailabilityChange blob_availability = 28;
     StaticSpecChange static_spec = 29;
     StaticClaimChange static_claim = 30;
     BlobSpecChange blob_spec = 31;
     StaticCapableChange static_capable = 32;
+    BackoffTTLChange backoff_ttl = 33;
+    PerSeedCallCountsChange per_seed_call_counts = 34;
   }
   bool deleted = 14;
-  reserved 24;
-  reserved "seed_dial_rates";
+  reserved 24, 27;
+  reserved "seed_dial_rates", "seed_metrics";
 }
 
 message GossipEventBatch {

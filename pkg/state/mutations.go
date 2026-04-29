@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/coords"
@@ -290,95 +291,57 @@ func (s *store) SetLocalResources(r NodeResources) []Event {
 			}
 
 			if cpuDelta < 2 && memDelta < 2 &&
-				rt.MemTotalBytes == r.MemTotalBytes && rt.NumCpu == r.NumCPU &&
-				rt.CpuBudgetPercent == r.CPUBudgetPercent && rt.MemBudgetPercent == r.MemBudgetPercent &&
-				rt.AdmissionState == statev1.AdmissionState(r.AdmissionState) {
+				rt.MemTotalBytes == r.MemTotalBytes && rt.NumCpu == r.NumCPU {
 				return nil, nil
 			}
 		}
 
 		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_ResourceTelemetry{ResourceTelemetry: &statev1.ResourceTelemetryChange{
-			CpuPercent:       r.CPUPercent,
-			MemPercent:       r.MemPercent,
-			MemTotalBytes:    r.MemTotalBytes,
-			NumCpu:           r.NumCPU,
-			CpuBudgetPercent: r.CPUBudgetPercent,
-			MemBudgetPercent: r.MemBudgetPercent,
-			AdmissionState:   statev1.AdmissionState(r.AdmissionState),
+			CpuPercent:    r.CPUPercent,
+			MemPercent:    r.MemPercent,
+			MemTotalBytes: r.MemTotalBytes,
+			NumCpu:        r.NumCPU,
 		}}}
 		return []*statev1.GossipEvent{change}, []Event{TopologyChanged{Peer: s.localID}}
 	})
 }
 
-// floatMaterialChange returns true when cur differs from prev by more
-// than the 20% relative dead-band used for all per-seed float signals.
-// Any transition across zero (prev == 0 while cur != 0, or vice versa)
-// is always material.
-func floatMaterialChange(prev, cur float32) bool {
-	if prev == cur {
-		return false
-	}
-	if prev == 0 || cur == 0 {
-		return true
-	}
-	delta := cur - prev
-	if delta < 0 {
-		delta = -delta
-	}
-	return delta/prev > 0.2 //nolint:mnd
-}
-
-func seedMetricsChanged(old map[string]*statev1.SeedMetrics, cur map[string]SeedMetrics) bool {
-	if len(old) != len(cur) {
-		return true
-	}
-	for hash, m := range cur {
-		prev, ok := old[hash]
-		if !ok {
-			return true
-		}
-		if floatMaterialChange(prev.GetServedRate(), m.ServedRate) ||
-			floatMaterialChange(prev.GetOriginRate(), m.OriginRate) ||
-			floatMaterialChange(prev.GetOriginRateFast(), m.OriginRateFast) ||
-			floatMaterialChange(prev.GetOriginRateSlow(), m.OriginRateSlow) ||
-			floatMaterialChange(prev.GetRejectRate(), m.RejectRate) ||
-			floatMaterialChange(prev.GetComputeCostMs(), m.ComputeCostMs) ||
-			floatMaterialChange(prev.GetSloSatisfiedRate(), m.SLOSatisfiedRate) ||
-			floatMaterialChange(prev.GetSloBurnedRate(), m.SLOBurnedRate) ||
-			floatMaterialChange(prev.GetParkedMs(), m.ParkedMs) {
-			return true
-		}
-	}
-	return false
-}
-
-// SetSeedMetrics publishes the per-seed per-node telemetry bundle.
-// Hashes with an all-zero SeedMetrics are omitted — seeds with no
-// observations don't pollute gossip.
-func (s *store) SetSeedMetrics(metrics map[string]SeedMetrics) []Event {
-	pruned := make(map[string]SeedMetrics, len(metrics))
-	for hash, m := range metrics {
-		if m.IsZero() {
-			continue
-		}
-		pruned[hash] = m
-	}
-
+// SetBackoffTTL publishes a BackoffTTL gossip event with the
+// emitter's-clock absolute expiry. Idempotent — repeats with the
+// same expires_at are skipped.
+func (s *store) SetBackoffTTL(expiresAt time.Time) []Event {
+	expiresAtMs := expiresAt.UnixMilli()
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		if ev, ok := rec.log[attrKey{kind: attrSeedMetrics}]; ok {
-			if ev.Deleted && len(pruned) == 0 {
-				return nil, nil
-			}
-			if !ev.Deleted && !seedMetricsChanged(ev.GetSeedMetrics().Seeds, pruned) {
+		if ev, ok := rec.log[attrKey{kind: attrBackoffTTL}]; ok && !ev.Deleted {
+			if cur := ev.GetBackoffTtl(); cur != nil && cur.ExpiresAtUnixMs == expiresAtMs {
 				return nil, nil
 			}
 		}
+		change := &statev1.BackoffTTLChange{ExpiresAtUnixMs: expiresAtMs}
+		return []*statev1.GossipEvent{
+			{Change: &statev1.GossipEvent_BackoffTtl{BackoffTtl: change}},
+		}, nil
+	})
+}
 
-		change := &statev1.GossipEvent{
-			Deleted: len(pruned) == 0,
-			Change:  &statev1.GossipEvent_SeedMetrics{SeedMetrics: seedMetricsToProto(pruned)},
+// SetPerSeedCallCounts publishes the per-seed call-count window for
+// this node. Replaces any prior counts; an empty map publishes a
+// tombstone so peers can drop our last window.
+func (s *store) SetPerSeedCallCounts(counts map[string]uint64) []Event {
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		if len(counts) == 0 {
+			if ev, ok := rec.log[attrKey{kind: attrPerSeedCallCounts}]; ok && ev.Deleted {
+				return nil, nil
+			}
+			change := &statev1.PerSeedCallCountsChange{}
+			return []*statev1.GossipEvent{
+				{Deleted: true, Change: &statev1.GossipEvent_PerSeedCallCounts{PerSeedCallCounts: change}},
+			}, nil
 		}
-		return []*statev1.GossipEvent{change}, nil
+		change := &statev1.PerSeedCallCountsChange{Counts: counts}
+		return []*statev1.GossipEvent{
+			{Change: &statev1.GossipEvent_PerSeedCallCounts{PerSeedCallCounts: change}},
+		}, nil
 	})
 }
 

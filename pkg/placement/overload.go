@@ -3,23 +3,29 @@
 
 package placement
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
-// retryAfterDefault is the suggested wait we attach to gate / admission
-// rejections when nothing more specific is known. Roughly the time a
-// short call takes — long enough that the rejecting node has space again
-// for steady-state workloads, short enough that callers don't sit on a
-// retry budget for human-noticeable durations.
+// ErrOverloaded is returned when a node refuses a call because admission
+// would breach the local memory budget. Distinct from ErrAlreadyRunning
+// / ErrNotRunning: overload is node-wide and retryable on a different
+// claimant, so callers fall through to the next replica rather than
+// surfacing the failure to the user.
+var ErrOverloaded = errors.New("placement: node overloaded")
+
+// retryAfterDefault is how long callers should wait before retrying an
+// overloaded node — used by canRetry to decide whether the remaining
+// context deadline can still absorb a retry.
 const retryAfterDefault = 100 * time.Millisecond
 
-// OverloadError wraps a backpressure sentinel (ErrAtCapacity /
-// ErrOverloaded) with retry-after metadata. Callers detect the cause
-// with errors.Is(err, ErrAtCapacity) and read the retry hint with
-// errors.As(err, &target).
+// OverloadError wraps an overload sentinel with a human-readable reason.
+// errors.Is(err, ErrOverloaded) detects the cause; the Reason aids
+// debugging without bleeding into program logic.
 type OverloadError struct {
-	Sentinel   error
-	Reason     string
-	RetryAfter time.Duration
+	Sentinel error
+	Reason   string
 }
 
 func (e *OverloadError) Error() string {
@@ -31,13 +37,9 @@ func (e *OverloadError) Error() string {
 
 func (e *OverloadError) Unwrap() error { return e.Sentinel }
 
-// newOverload wraps a sentinel into an OverloadError with the package
-// default retry hint. Call sites with a better heuristic can construct
-// OverloadError directly.
 func newOverload(sentinel error, reason string) *OverloadError {
 	return &OverloadError{
-		Sentinel:   sentinel,
-		Reason:     reason,
-		RetryAfter: retryAfterDefault,
+		Sentinel: sentinel,
+		Reason:   reason,
 	}
 }

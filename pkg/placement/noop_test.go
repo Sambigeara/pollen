@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -31,9 +30,7 @@ func TestNoopServiceRejectsHosting(t *testing.T) {
 	require.Nil(t, out)
 
 	require.Empty(t, noop.Status())
-	require.Empty(t, noop.PlacementInfo())
 
-	noop.RecordParkedTime("hash", "fn", time.Second)
 	noop.Signal()
 }
 

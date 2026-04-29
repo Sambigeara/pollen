@@ -53,14 +53,8 @@ type Connection struct {
 	LocalPort  uint32 `yaml:"localPort"`
 }
 
-type Resources struct {
-	CPUPercent uint32 `yaml:"cpu,omitempty"`
-	MemPercent uint32 `yaml:"memory,omitempty"`
-}
-
-// Placement configures the WASM runtime's idle-instance cache.
-// Concurrency limits live in the placement layer's per-workload gates,
-// not here. Zero values select package defaults.
+// Placement configures the WASM runtime's idle-instance cache. Zero
+// values select package defaults.
 type Placement struct {
 	// IdleInstanceTTL is how long a workload's pooled instances persist
 	// without invocations before being evicted.
@@ -93,7 +87,6 @@ type Config struct {
 	Connections []Connection   `yaml:"connections,omitempty"`
 	Services    []Service      `yaml:"services,omitempty"`
 	Placement   Placement      `yaml:"placement,omitempty"`
-	Resources   Resources      `yaml:"resources,omitempty"`
 	Public      bool           `yaml:"public,omitempty"`
 	// RelayOnly disables workload hosting; the node still gossips and forwards
 	// routed streams. Pair with an empty staticHTTP to also skip static hosting.

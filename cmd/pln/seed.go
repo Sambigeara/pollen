@@ -77,9 +77,8 @@ the blob remains anonymous (addressed only by hash).`,
 	})
 	seedCmd.Flags().Uint32("min-replicas", 0, "minimum replicas (workload default 2, static default 1, n/a for blob)")
 	seedCmd.Flags().Bool("everywhere", false, "place workload on every node (workload only)")
-	seedCmd.Flags().String("memory", "", "memory limit, e.g. 64MiB, 128M (alias --mem; workload only; default 64MiB)")
+	seedCmd.Flags().String("memory", "", "memory limit, e.g. 64MiB, 128M (alias --mem; workload only; default 8MiB)")
 	seedCmd.Flags().Duration("timeout", 0, "per-invocation timeout (workload only, e.g. 500ms, 5s)")
-	seedCmd.Flags().Duration("latency-slo", 0, "caller-perspective latency SLO; drives autoscale via burn rate (workload only)")
 	seedCmd.Example = `  pln seed ./hello.wasm                     # workload, named "hello"
   pln seed ./hello.wasm greeter --everywhere # workload on every node
   pln seed ./public my-site                 # static site
@@ -130,7 +129,7 @@ func detectSeedKind(source string) (seedKind, error) {
 }
 
 func validateSeedFlags(cmd *cobra.Command, kind seedKind) error {
-	workloadOnly := []string{"everywhere", "memory", "timeout", "latency-slo"}
+	workloadOnly := []string{"everywhere", "memory", "timeout"}
 	if kind != kindWorkload {
 		for _, f := range workloadOnly {
 			if cmd.Flags().Changed(f) {
@@ -194,7 +193,6 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string) error {
 		return fmt.Errorf("invalid --memory: %w", err)
 	}
 	timeout, _ := cmd.Flags().GetDuration("timeout")
-	latencySlo, _ := cmd.Flags().GetDuration("latency-slo")
 
 	var spread float32
 	if everywhere {
@@ -205,12 +203,11 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string) error {
 	if err := stream.Send(&controlv1.SeedWorkloadRequest{
 		Payload: &controlv1.SeedWorkloadRequest_Header{
 			Header: &controlv1.SeedWorkloadHeader{
-				Name:         name,
-				MinReplicas:  minReplicas,
-				Spread:       spread,
-				MemoryBytes:  memoryBytes,
-				TimeoutMs:    uint32(timeout.Milliseconds()),
-				LatencySloMs: uint32(latencySlo.Milliseconds()),
+				Name:        name,
+				MinReplicas: minReplicas,
+				Spread:      spread,
+				MemoryBytes: memoryBytes,
+				TimeoutMs:   uint32(timeout.Milliseconds()),
 			},
 		},
 	}); err != nil {

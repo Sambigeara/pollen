@@ -4,6 +4,11 @@
 // terminal is the tail seed in the firehose chain. It hashes the input
 // payload and forwards a tick to pln://service/sink, which runs on the
 // operator's local node and renders a live RPS display.
+//
+// terminal also exports `echo`, a zero-work loopback that returns the
+// input unchanged. Loopback load tests target pln://seed/terminal/echo
+// to measure admission + dispatch + wasm-runtime cost without the chain
+// or sink in the critical path.
 
 const std = @import("std");
 const pdk = @import("extism-pdk");
@@ -72,5 +77,19 @@ export fn handle() i32 {
 
     logStr(plugin, log_level_info, "terminal: forwarded to sink");
     plugin.output(out_payload);
+    return 0;
+}
+
+export fn echo() i32 {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const plugin = pdk.Plugin.init(allocator);
+    const input = plugin.getInput() catch {
+        plugin.output("{\"error\":\"failed to read input\"}");
+        return 1;
+    };
+    plugin.output(input);
     return 0;
 }

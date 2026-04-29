@@ -709,7 +709,7 @@ func TestGetStatusWorkloads(t *testing.T) {
 		"def": {testPeerKey(2): {}},
 	}
 	h.placement.statuses = []placement.WorkloadSummary{
-		{Hash: "abc", Status: placement.StatusRunning, CompiledAt: time.Unix(1000, 0)},
+		{Hash: "abc", CompiledAt: time.Unix(1000, 0)},
 	}
 
 	resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
@@ -960,8 +960,6 @@ func (f *fakePlacement) Call(_ context.Context, hash, fn string, input []byte) (
 func (f *fakePlacement) Status() []placement.WorkloadSummary {
 	return f.statuses
 }
-
-func (f *fakePlacement) PlacementInfo() map[string]placement.PlacementInfo { return nil }
 
 type fakeBlobs struct {
 	store    map[string][]byte

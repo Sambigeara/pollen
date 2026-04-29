@@ -5,8 +5,6 @@ package placement
 
 import (
 	"context"
-	"math"
-	"runtime"
 	"sync"
 	"time"
 
@@ -30,23 +28,21 @@ type workloadManager interface {
 }
 
 type reconciler struct {
-	store           WorkloadState
-	workloads       workloadManager
-	blobs           blobsAPI
-	utilisation     *utilisationTracker
-	gates           *gateRegistry
-	claimStartTime  map[string]time.Time
-	pendingRelease  map[string]time.Time
-	desiredReplicas map[string]uint32
-	lastPressures   map[string]float64
-	triggerCh       chan struct{}
-	fetchSem        chan struct{}
-	log             *zap.SugaredLogger
-	inFlight        map[string]struct{}
-	nowFunc         func() time.Time
-	wg              *sync.WaitGroup
-	inFlightMu      sync.Mutex
-	localID         types.PeerKey
+	store          WorkloadState
+	workloads      workloadManager
+	blobs          blobsAPI
+	budget         *budget
+	backoff        *backoff
+	claimStartTime map[string]time.Time
+	pendingRelease map[string]time.Time
+	triggerCh      chan struct{}
+	fetchSem       chan struct{}
+	log            *zap.SugaredLogger
+	inFlight       map[string]struct{}
+	nowFunc        func() time.Time
+	wg             *sync.WaitGroup
+	inFlightMu     sync.Mutex
+	localID        types.PeerKey
 }
 
 func newReconciler(
@@ -54,27 +50,26 @@ func newReconciler(
 	store WorkloadState,
 	workloads workloadManager,
 	blobs blobsAPI,
-	utilisation *utilisationTracker,
-	gates *gateRegistry,
+	budget *budget,
+	backoff *backoff,
 	log *zap.SugaredLogger,
 	wg *sync.WaitGroup,
 ) *reconciler {
 	return &reconciler{
-		localID:         localID,
-		store:           store,
-		workloads:       workloads,
-		blobs:           blobs,
-		utilisation:     utilisation,
-		gates:           gates,
-		triggerCh:       make(chan struct{}, 1),
-		fetchSem:        make(chan struct{}, 4), //nolint:mnd
-		pendingRelease:  make(map[string]time.Time),
-		claimStartTime:  make(map[string]time.Time),
-		desiredReplicas: make(map[string]uint32),
-		inFlight:        make(map[string]struct{}),
-		log:             log,
-		wg:              wg,
-		nowFunc:         time.Now,
+		localID:        localID,
+		store:          store,
+		workloads:      workloads,
+		blobs:          blobs,
+		budget:         budget,
+		backoff:        backoff,
+		triggerCh:      make(chan struct{}, 1),
+		fetchSem:       make(chan struct{}, 4), //nolint:mnd
+		pendingRelease: make(map[string]time.Time),
+		claimStartTime: make(map[string]time.Time),
+		inFlight:       make(map[string]struct{}),
+		log:            log,
+		wg:             wg,
+		nowFunc:        time.Now,
 	}
 }
 
@@ -86,10 +81,8 @@ func (r *reconciler) Signal() {
 }
 
 func (r *reconciler) Run(ctx context.Context) {
-	// Reap stale claims (we crashed before unseeding, the wasm runtime
-	// cleared, etc.) before entering the steady-state loop. Running this
-	// once at start is enough — every subsequent claim flows through
-	// executeClaim, which only sets the CRDT bit after a successful seed.
+	// Reap claims left behind by an earlier crash before normal
+	// reconcile cycles begin.
 	r.cleanupStaleClaims(r.store.Snapshot().Claims)
 
 	pollTicker := time.NewTicker(reconcilePollInterval)
@@ -122,11 +115,10 @@ func (r *reconciler) Run(ctx context.Context) {
 
 func (r *reconciler) reconcile(ctx context.Context) {
 	snap := r.store.Snapshot()
-	cluster := buildClusterState(snap, r.nowFunc())
 
-	// When multiple specs share a name, only schedule the deterministic
-	// winner (lowest PeerKey publisher). Unnamed specs always pass through.
-	nameWinners := make(map[string]string) // name → winning hash
+	// Lowest-PeerKey publisher wins when names collide; unnamed specs
+	// pass through unchanged.
+	nameWinners := make(map[string]string)
 	for hash, sv := range snap.Specs {
 		name := sv.Spec.Name
 		if name == "" {
@@ -150,33 +142,13 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		}
 	}
 
-	r.store.SetSeedMetrics(buildSeedMetrics(r.utilisation))
-
-	r.adjustGateSizes(specs, snap.Claims)
-	r.refreshSLOLookup(snap)
-
-	dashboardPressures := burnRatios(specs, r.utilisation)
-
-	clusterSize := len(snap.PeerKeys)
-	targets := make(map[string]uint32, len(specs))
-	for hash, sp := range specs {
-		targets[hash] = desiredReplicas(sp, hash, cluster, clusterSize)
-	}
-
-	r.inFlightMu.Lock()
-	r.lastPressures = dashboardPressures
-	r.desiredReplicas = targets
-	r.inFlightMu.Unlock()
-
 	actions := evaluate(evaluateInput{
-		localID:         r.localID,
-		allPeers:        snap.PeerKeys,
-		specs:           specs,
-		claims:          snap.Claims,
-		draining:        snap.DrainingClaims,
-		cluster:         cluster,
-		isRunning:       r.workloads.IsRunning,
-		desiredReplicas: targets,
+		localID:   r.localID,
+		allPeers:  snap.PeerKeys,
+		specs:     specs,
+		claims:    snap.Claims,
+		draining:  snap.DrainingClaims,
+		isRunning: r.workloads.IsRunning,
 	})
 	wantRelease := make(map[string]struct{})
 	now := r.nowFunc()
@@ -185,15 +157,13 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		switch a.Kind {
 		case actionClaim:
 			if _, draining := snap.DrainingClaims[a.Hash][r.localID]; draining {
-				// Decision plane has rescinded the drain — backfill is
-				// needed or demand recovered. Cancel the cooldown and
-				// republish the claim without the drain flag. No fetch
-				// or seed: the workload is still running locally.
+				// Drain rescinded: republish the claim without the
+				// flag, no fetch/seed needed.
 				delete(r.pendingRelease, a.Hash)
 				r.store.ClaimWorkload(a.Hash)
 				continue
 			}
-			r.startClaim(ctx, a.Hash, a.DesiredReplicas, snap.Specs, snap.Claims)
+			r.startClaim(ctx, a.Hash, snap.Specs, snap.Claims)
 		case actionRelease:
 			if _, specExists := snap.Specs[a.Hash]; !specExists {
 				r.executeRelease(a.Hash)
@@ -203,8 +173,8 @@ func (r *reconciler) reconcile(ctx context.Context) {
 			wantRelease[a.Hash] = struct{}{}
 			if _, pending := r.pendingRelease[a.Hash]; !pending {
 				r.pendingRelease[a.Hash] = now.Add(evictionCooldown)
-				// Flag the claim as draining so other peers can issue a
-				// replacement during the cooldown — make-before-break.
+				// Make-before-break: signal drain so peers can mint a
+				// replacement claim during the cooldown.
 				r.store.MarkWorkloadDraining(a.Hash)
 			}
 		}
@@ -212,11 +182,8 @@ func (r *reconciler) reconcile(ctx context.Context) {
 
 	for hash, deadline := range r.pendingRelease {
 		if _, stillWanted := wantRelease[hash]; !stillWanted {
-			// Defensive: the decision plane re-emits actionRelease every
-			// tick a drain is in flight, so this branch is unreachable in
-			// the steady state. If we land here anyway (e.g. spec deleted
-			// out from under us between the action loop and this loop),
-			// drop the stale entry so it can't pin draining state.
+			// Spec went away mid-tick; drop the stale drain entry so it
+			// can't pin the cooldown forever.
 			delete(r.pendingRelease, hash)
 			continue
 		}
@@ -238,7 +205,7 @@ func (r *reconciler) reconcile(ctx context.Context) {
 	}
 }
 
-func (r *reconciler) startClaim(ctx context.Context, hash string, desired uint32, specViews map[string]state.WorkloadSpecView, claims map[string]map[types.PeerKey]struct{}) {
+func (r *reconciler) startClaim(ctx context.Context, hash string, specViews map[string]state.WorkloadSpecView, claims map[string]map[types.PeerKey]struct{}) {
 	r.inFlightMu.Lock()
 	if _, ok := r.inFlight[hash]; ok {
 		r.inFlightMu.Unlock()
@@ -272,11 +239,11 @@ func (r *reconciler) startClaim(ctx context.Context, hash string, desired uint32
 			r.inFlightMu.Unlock()
 			r.Signal()
 		}()
-		r.executeClaim(ctx, hash, desired, peers)
+		r.executeClaim(ctx, hash, peers)
 	})
 }
 
-func (r *reconciler) executeClaim(ctx context.Context, hash string, desired uint32, peers []types.PeerKey) {
+func (r *reconciler) executeClaim(ctx context.Context, hash string, peers []types.PeerKey) {
 	if !r.blobs.Has(hash) {
 		if err := r.blobs.Fetch(ctx, hash, peers); err != nil {
 			r.log.Warnw("fetch blob failed", "hash", hash, "err", err)
@@ -291,35 +258,15 @@ func (r *reconciler) executeClaim(ctx context.Context, hash string, desired uint
 		return
 	}
 
-	claimants := snap.Claims[hash]
-	if _, alreadyClaimed := claimants[r.localID]; !alreadyClaimed {
-		target := desired
-		if target == 0 {
-			target = sv.Spec.MinReplicas
-		}
-		cluster := buildClusterState(snap, r.nowFunc())
-		sp := spec{
-			MinReplicas: sv.Spec.MinReplicas,
-			MemoryBytes: sv.Spec.MemoryBytes,
-			Spread:      sv.Spec.Spread,
-		}
-
-		drainSet := snap.DrainingClaims[hash]
-		claimCount := activeClaimCount(claimants, drainSet)
-		var stillValid bool
-		if claimCount < target {
-			stillValid = shouldClaim(r.localID, hash, sp, target, claimants, drainSet, snap.PeerKeys, cluster)
-		} else {
-			stillValid = shouldChallenge(r.localID, hash, sp, target, claimants, drainSet, snap.PeerKeys, cluster)
-		}
-		if !stillValid {
-			r.log.Debugw("no longer a winner after fetch, skipping claim", "hash", types.ShortHash(hash))
-			return
-		}
+	if !r.budget.Reserve(hash, replicaMemoryBytes(sv.Spec.MemoryBytes)) {
+		r.backoff.SignalRefusal()
+		r.log.Infow("refused claim: memory budget exhausted", "name", sv.Spec.Name, "hash", types.ShortHash(hash))
+		return
 	}
 
 	cfg := wasm.NewPluginConfig(sv.Spec.MemoryBytes, sv.Spec.Timeout)
 	if err := r.workloads.SeedFromCAS(ctx, hash, cfg); err != nil {
+		r.budget.Release(hash)
 		r.log.Warnw("seed from CAS failed", "name", sv.Spec.Name, "hash", types.ShortHash(hash), "err", err)
 		return
 	}
@@ -335,178 +282,12 @@ func (r *reconciler) executeRelease(hash string) {
 	if err := r.workloads.Unseed(hash); err != nil {
 		r.log.Warnw("unseed failed", "hash", hash, "err", err)
 	}
+	r.budget.Release(hash)
 	r.store.ReleaseWorkload(hash)
-	r.utilisation.Clear(hash)
-	r.gates.Clear(hash)
 	r.inFlightMu.Lock()
 	delete(r.claimStartTime, hash)
 	r.inFlightMu.Unlock()
 	r.log.Infow("released workload", "hash", hash)
-}
-
-// refreshSLOLookup pushes the latest per-spec latency SLO map into the
-// utilisation tracker so RecordSLO can classify completed invocations
-// without consulting the snapshot on every call. Specs that haven't set
-// a latency SLO get the package default, which the tracker also uses
-// before this lookup is first installed.
-func (r *reconciler) refreshSLOLookup(snap state.Snapshot) {
-	specs := snap.Specs
-	slos := make(map[string]time.Duration, len(specs))
-	for hash, sv := range specs {
-		slo := sv.Spec.LatencySLO
-		if slo <= 0 {
-			slo = defaultLatencySLO
-		}
-		slos[hash] = slo
-	}
-	r.utilisation.SetSLOLookup(func(hash string) time.Duration {
-		if slo, ok := slos[hash]; ok {
-			return slo
-		}
-		return defaultLatencySLO
-	})
-}
-
-// buildSeedMetrics collects all per-seed telemetry on this node into a
-// single unified bundle per hash. Hashes are the union of every source;
-// a source missing a hash contributes zero for its field. The store's
-// SetSeedMetrics drops all-zero entries and applies the dead-band.
-func buildSeedMetrics(ut *utilisationTracker) map[string]state.SeedMetrics {
-	served := ut.ServedRates()
-	origin := ut.OriginRates()
-	originFast := ut.OriginRatesFast()
-	originSlow := ut.OriginRatesSlow()
-	rejects := ut.RejectRates()
-	costs := ut.InvocationCosts()
-	parked := ut.ParkedTimes()
-	satisfied, burned := ut.SLORates()
-
-	out := make(map[string]state.SeedMetrics)
-	touch := func(hash string) state.SeedMetrics { return out[hash] }
-
-	for hash, v := range served {
-		m := touch(hash)
-		m.ServedRate = float32(v)
-		out[hash] = m
-	}
-	for hash, v := range origin {
-		m := touch(hash)
-		m.OriginRate = float32(v)
-		out[hash] = m
-	}
-	for hash, v := range originFast {
-		m := touch(hash)
-		m.OriginRateFast = float32(v)
-		out[hash] = m
-	}
-	for hash, v := range originSlow {
-		m := touch(hash)
-		m.OriginRateSlow = float32(v)
-		out[hash] = m
-	}
-	for hash, v := range rejects {
-		m := touch(hash)
-		m.RejectRate = float32(v)
-		out[hash] = m
-	}
-	for hash, v := range costs {
-		m := touch(hash)
-		m.ComputeCostMs = float32(v)
-		out[hash] = m
-	}
-	for hash, v := range parked {
-		m := touch(hash)
-		m.ParkedMs = float32(v)
-		out[hash] = m
-	}
-	for hash, v := range satisfied {
-		m := touch(hash)
-		m.SLOSatisfiedRate = float32(v)
-		out[hash] = m
-	}
-	for hash, v := range burned {
-		m := touch(hash)
-		m.SLOBurnedRate = float32(v)
-		out[hash] = m
-	}
-	return out
-}
-
-const (
-	// gateInitialMultiplier is the floor cap for a gate relative to host
-	// cores. Sized so a cold-started gate admits useful concurrency before
-	// any per-seed telemetry has accumulated; without it a non-blocking
-	// admission rejects most calls during ramp-up, starving the parked-time
-	// signal the local-only adaptive sizer needs to grow the cap further.
-	// 4 keeps Little's Law dominant for parked chain workloads
-	// (cores/0.1 = 10× cores, > floor) and gives leaf workloads a usable
-	// cold cap.
-	gateInitialMultiplier = 4
-	// gateMinActiveFraction clamps the Little's-Law denominator so a
-	// momentary ~100% parked sample doesn't blow the gate size up to
-	// thousands. 10% active corresponds to a 10× cap over cores.
-	gateMinActiveFraction = 0.1
-)
-
-// adjustGateSizes resizes the per-workload concurrency cap on this node
-// using LOCAL utilisation samples — never cluster-mean parked time. A
-// chain workload that parks ~90% of wall time waiting on downstream
-// calls gets a wider cap (cores / 0.1 = 10× cores) so parked slots
-// don't starve ready work; a leaf at 0% parked stays at the floor.
-// Each peer tunes its own gate from its own observation, so a single
-// hot node can grow without dragging cool peers' caps with it.
-func (r *reconciler) adjustGateSizes(specs map[string]spec, claims map[string]map[types.PeerKey]struct{}) {
-	cores := runtime.NumCPU()
-	costs := r.utilisation.InvocationCosts()
-	parked := r.utilisation.ParkedTimes()
-	for hash := range specs {
-		if _, mine := claims[hash][r.localID]; !mine {
-			continue
-		}
-		size := desiredGateSize(cores, costs[hash], parked[hash])
-		r.gates.SetHashSize(hash, size)
-	}
-}
-
-// desiredGateSize returns the per-workload concurrency cap given the
-// host's CPU count and locally-observed compute and parked timings.
-// Little's Law: active fraction = (compute - parked) / compute, so a
-// fully-active gate needs cores / active slots to keep the CPUs busy.
-// Missing telemetry falls back to the cores × initial multiplier floor.
-func desiredGateSize(cores int, computeCostMs, parkedMs float64) int {
-	if computeCostMs <= 0 {
-		return cores * gateInitialMultiplier
-	}
-	activeFraction := (computeCostMs - parkedMs) / computeCostMs
-	if activeFraction < gateMinActiveFraction {
-		activeFraction = gateMinActiveFraction
-	}
-	size := max(int(math.Ceil(float64(cores)/activeFraction)), cores*gateInitialMultiplier)
-	return size
-}
-
-// PlacementInfo summarises a single workload's autoscale state for
-// Status() and control-plane consumers. EffectiveTarget is the
-// cluster-aggregate desired replica count from desiredReplicas
-// (capped by spec.MinReplicas and cluster size); SLOBurnRatio is
-// observability only — capacity math (Little's Law on origin/compute)
-// is what actually drives placement.
-type PlacementInfo struct {
-	EffectiveTarget uint32
-	SLOBurnRatio    float64
-}
-
-func (r *reconciler) allPlacementInfo() map[string]PlacementInfo {
-	r.inFlightMu.Lock()
-	defer r.inFlightMu.Unlock()
-	out := make(map[string]PlacementInfo, len(r.desiredReplicas))
-	for hash, target := range r.desiredReplicas {
-		out[hash] = PlacementInfo{
-			EffectiveTarget: target,
-			SLOBurnRatio:    r.lastPressures[hash],
-		}
-	}
-	return out
 }
 
 func (r *reconciler) cleanupStaleClaims(claims map[string]map[types.PeerKey]struct{}) {

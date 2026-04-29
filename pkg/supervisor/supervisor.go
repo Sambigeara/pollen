@@ -372,7 +372,6 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 			self, stateStore, blobsSvc, wasmRT,
 			placement.WithMesh(placementOpener),
 			placement.WithLogger(log.Named("placement")),
-			placement.WithResourceBudget(opts.CPUBudgetPercent, opts.MemBudgetPercent),
 		)
 	}
 
@@ -930,10 +929,6 @@ func (n *Supervisor) RouteRequest(ctx context.Context, uri wasm.URI, input []byt
 	default:
 		return nil, fmt.Errorf("unsupported URI scheme: %s", uri.Scheme)
 	}
-}
-
-func (n *Supervisor) RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration) {
-	n.placement.RecordParkedTime(callerHash, callerFunction, elapsed)
 }
 
 func (n *Supervisor) routeServiceRequest(ctx context.Context, name string, input []byte) ([]byte, error) {

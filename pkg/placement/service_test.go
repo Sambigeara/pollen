@@ -16,30 +16,7 @@ import (
 
 func newServiceForUnseedTests(localID types.PeerKey, store WorkloadState) (*Service, *mockBlobs) {
 	blobs := &mockBlobs{}
-	return &Service{
-		localID:     localID,
-		store:       store,
-		utilisation: newUtilisationTracker(),
-		manager:     newManager(nil, nil),
-		blobs:       blobs,
-		gates:       newGateRegistry(1),
-	}, blobs
-}
-
-func TestNew_NormalisesBudgetDefaults(t *testing.T) {
-	// Without normalisation, an unset memBudget admits at 80% locally
-	// (admission.go default) but gossips a raw 0 — and remote scoring
-	// reads 0 as 100% (no constraint), letting a saturated peer still
-	// win claims. Pin both budgets to their effective defaults so the
-	// gossiped, locally-enforced, and admissionState views agree.
-	s := New(peerKey(1), nil, &mockBlobs{}, nil)
-	require.Equal(t, defaultMemBudgetPercent, s.memBudgetPercent)
-	require.Equal(t, defaultCPUBudgetPercent, s.cpuBudgetPercent)
-
-	// Explicit non-zero budgets pass through unchanged.
-	s2 := New(peerKey(1), nil, &mockBlobs{}, nil, WithResourceBudget(50, 60))
-	require.Equal(t, uint32(50), s2.cpuBudgetPercent)
-	require.Equal(t, uint32(60), s2.memBudgetPercent)
+	return New(localID, store, blobs, nil), blobs
 }
 
 // TestService_Unseed_WhenNotLocallyClaimed pins the bug where `pln unseed`
@@ -197,4 +174,61 @@ func TestService_Call_KnownSpecNoClaimants(t *testing.T) {
 	_, err := s.Call(context.Background(), seedName, "handle", nil)
 	require.ErrorIs(t, err, ErrNotRunning)
 	require.False(t, errors.Is(err, wasm.ErrTargetNotFound), "resolved spec must not surface as not-found")
+}
+
+// TestService_callLocal_RefusedWhenBudgetExhausted pins the call-level
+// admission contract: when the shared memory budget is full, callLocal
+// returns *OverloadError wrapping ErrOverloaded without ever invoking
+// the workload manager, and backoff is signalled so the gossip TTL
+// fires for peers' dispatchers.
+func TestService_callLocal_RefusedWhenBudgetExhausted(t *testing.T) {
+	local := peerKey(1)
+	const seedHash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+	store := &mockStore{
+		specs: map[string]state.WorkloadSpecView{
+			seedHash: {
+				Spec:      state.WorkloadSpec{Hash: seedHash, Name: "sink", MinReplicas: 1},
+				Publisher: local,
+			},
+		},
+	}
+	s, _ := newServiceForUnseedTests(local, store)
+
+	const totalBytes = int64(1 << 20)
+	s.budget = newBudget(totalBytes)
+	require.True(t, s.budget.Reserve("filler", totalBytes))
+
+	_, err := s.callLocal(context.Background(), seedHash, "handle", nil)
+
+	var ovl *OverloadError
+	require.ErrorAs(t, err, &ovl)
+	require.ErrorIs(t, err, ErrOverloaded)
+	require.Equal(t, "node memory budget exhausted", ovl.Reason)
+	require.True(t, s.backoff.IsLocallyOverloaded(), "refusal must arm backoff so peers' dispatchers divert future calls")
+}
+
+// TestService_callLocal_ReleasesAdmissionOnReturn pins that a successful
+// admission releases its budget slice when the call completes, so
+// long-running services don't accumulate phantom reservations. The
+// underlying manager has no compiled hash and returns ErrNotRunning,
+// which exercises the deferred release path on a non-overload exit.
+func TestService_callLocal_ReleasesAdmissionOnReturn(t *testing.T) {
+	local := peerKey(1)
+	const seedHash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+	store := &mockStore{
+		specs: map[string]state.WorkloadSpecView{
+			seedHash: {
+				Spec:      state.WorkloadSpec{Hash: seedHash, Name: "sink", MinReplicas: 1},
+				Publisher: local,
+			},
+		},
+	}
+	s, _ := newServiceForUnseedTests(local, store)
+	s.budget = newBudget(replicaMemoryBytes(0) * 2)
+
+	_, err := s.callLocal(context.Background(), seedHash, "handle", nil)
+	require.ErrorIs(t, err, ErrNotRunning)
+	require.Zero(t, s.budget.reserved.Load(), "release must run regardless of how the call exits")
 }

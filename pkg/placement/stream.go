@@ -22,30 +22,20 @@ const (
 	statusError      byte = 2
 	statusCycle      byte = 4
 	statusOverloaded byte = 5
-	statusAtCapacity byte = 6
 
 	callerInfoLenSize = 2
 	hashLen           = 64
 	maxFuncLen        = 255
 	maxInputLen       = 4 << 20 // 4 MiB
-
-	// retryAfterFieldSize is the size in bytes of the retry_after_ms
-	// prefix in an overload-status body — uint32 big-endian.
-	retryAfterFieldSize = 4
 )
-
-// memReserver reserves node-global memory budget for a single
-// invocation. The release callback must run when the call finishes.
-type memReserver func(hash string) (release func(), err error)
 
 type workloadInvoker interface {
 	Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
 }
 
 // ReadHeader reads the caller-info envelope, seed hash, and function
-// name from an inbound workload stream. The returned CallerInfo.PeerKey
-// is always the transport-authenticated identity — wire-reported peer
-// keys are ignored so a malicious peer can't spoof attribution.
+// name from an inbound workload stream. CallerInfo.PeerKey is overridden
+// with the transport-authenticated peer; wire values would be spoofable.
 func ReadHeader(r io.Reader, peer types.PeerKey) (wasm.CallerInfo, string, string, error) {
 	info := wasm.CallerInfo{PeerKey: peer}
 
@@ -82,7 +72,7 @@ func ReadHeader(r io.Reader, peer types.PeerKey) (wasm.CallerInfo, string, strin
 	return info, string(hashBuf[:]), string(funcName), nil
 }
 
-func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, info wasm.CallerInfo, hash, function string, invoker workloadInvoker, utilisation *utilisationTracker, gates *gateRegistry, reserve memReserver, timeout time.Duration) {
+func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, info wasm.CallerInfo, hash, function string, invoker workloadInvoker, timeout time.Duration) {
 	defer stream.Close()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -114,53 +104,12 @@ func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, info w
 		return
 	}
 
-	// Gate the call against the target's per-(hash, function) concurrency
-	// limit. Forwarded calls must respect the target's capacity, not just
-	// the caller's — otherwise P2C would route into hotspots its latency
-	// EWMA hadn't caught up with yet. Both gate-at-capacity and memory
-	// overload are caller-retryable on another claimant, so they get
-	// their own status bytes (with structured retry-after metadata)
-	// rather than collapsing into statusError (which is terminal in Call's
-	// fallback loop).
-	gateRelease, err := gates.acquire(callKey{Hash: hash, Function: function})
-	if err != nil {
-		if errors.Is(err, ErrAtCapacity) {
-			utilisation.RecordReject(hash, function)
-			writeOverload(stream, statusAtCapacity, retryAfterDefault, "gate at capacity")
-			return
-		}
-		writeResponse(stream, statusError, []byte(err.Error()))
-		return
-	}
-	defer gateRelease()
-
-	memRelease, err := reserve(hash)
-	if err != nil {
-		if errors.Is(err, ErrOverloaded) {
-			utilisation.RecordReject(hash, function)
-			writeOverload(stream, statusOverloaded, retryAfterDefault, "node memory budget")
-			return
-		}
-		writeResponse(stream, statusError, []byte(err.Error()))
-		return
-	}
-	defer memRelease()
-
-	// Stamp the hash into the local call chain so a recursive
-	// pollen_request from this seed back into itself fails fast with
-	// ErrCycle instead of starving its own gate.
+	// Recursive pollen_request from this seed back into itself would
+	// deadlock on the instance pool; stamp the hash so it fails with
+	// ErrCycle instead.
 	ctx = withChain(ctx, hash)
 
-	workStart := time.Now()
 	output, err := invoker.Call(ctx, hash, function, input)
-	// Record Served + execution-only Invocation on the serving node for
-	// every non-ErrNotRunning outcome. SLO is not recorded here — it is
-	// caller-perspective and the caller's forwardCall observes it, so
-	// the serving node does not double-count or scale on forwarded pain.
-	if !errors.Is(err, ErrNotRunning) {
-		utilisation.RecordServed(hash, function)
-		utilisation.RecordInvocation(hash, function, time.Since(workStart))
-	}
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrNotRunning):
@@ -186,9 +135,8 @@ func invokeOverStream(ctx context.Context, stream io.ReadWriteCloser, hash, func
 		return nil, fmt.Errorf("invoke: function name too long (%d > %d)", len(function), maxFuncLen)
 	}
 
-	// Caller info prefix: [2-byte BE length][JSON]. Propagate the caller's
-	// deadline over the wire so the target peer can honour it instead of
-	// falling back on its local safety cap.
+	// Propagate the caller's deadline over the wire so the target peer
+	// can honour it instead of falling back on its local safety cap.
 	info, _ := wasm.CallerInfoFromContext(ctx)
 	if dl, ok := ctx.Deadline(); ok {
 		info.DeadlineUnixMs = dl.UnixMilli()
@@ -238,8 +186,6 @@ func invokeOverStream(ctx context.Context, stream io.ReadWriteCloser, hash, func
 		return nil, fmt.Errorf("invoke: %s: %w", string(body), ErrCycle)
 	case statusOverloaded:
 		return nil, decodeOverload(body, ErrOverloaded)
-	case statusAtCapacity:
-		return nil, decodeOverload(body, ErrAtCapacity)
 	case statusError:
 		return nil, fmt.Errorf("invoke: %s: %w", string(body), ErrWorkloadFailed)
 	default:
@@ -262,30 +208,13 @@ func writeResponse(w io.Writer, status byte, body []byte) {
 	w.Write(buf) //nolint:errcheck
 }
 
-// writeOverload encodes a retry-after-bearing rejection. Body layout:
-//
-//	[4 bytes BE: retry_after_ms][reason bytes]
-//
-// invokeOverStream decodes this back into an OverloadError when the
-// status byte is statusOverloaded or statusAtCapacity.
-func writeOverload(w io.Writer, status byte, retryAfter time.Duration, reason string) {
-	body := make([]byte, retryAfterFieldSize+len(reason))
-	binary.BigEndian.PutUint32(body[:retryAfterFieldSize], uint32(retryAfter/time.Millisecond))
-	copy(body[retryAfterFieldSize:], reason)
-	writeResponse(w, status, body)
+// writeOverload encodes an overload rejection. The body is the reason
+// text; the recipient wraps it in an OverloadError around the supplied
+// sentinel.
+func writeOverload(w io.Writer, status byte, reason string) {
+	writeResponse(w, status, []byte(reason))
 }
 
 func decodeOverload(body []byte, sentinel error) error {
-	if len(body) < retryAfterFieldSize {
-		// Older peer or malformed body — fall back to the bare sentinel
-		// so callers can still detect cause via errors.Is. Reason and
-		// retry-after default to zero values.
-		return &OverloadError{Sentinel: sentinel, Reason: string(body)}
-	}
-	retryMs := binary.BigEndian.Uint32(body[:retryAfterFieldSize])
-	return &OverloadError{
-		Sentinel:   sentinel,
-		Reason:     string(body[retryAfterFieldSize:]),
-		RetryAfter: time.Duration(retryMs) * time.Millisecond,
-	}
+	return &OverloadError{Sentinel: sentinel, Reason: string(body)}
 }

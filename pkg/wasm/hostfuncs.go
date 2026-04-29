@@ -6,7 +6,6 @@ package wasm
 import (
 	"context"
 	"errors"
-	"time"
 
 	extism "github.com/extism/go-sdk"
 	"go.uber.org/zap"
@@ -20,13 +19,8 @@ const (
 )
 
 // RequestRouter handles pln:// URI-addressed requests from WASM guests.
-// RecordParkedTime observes how long the calling invocation was blocked
-// inside pollen_request waiting for the downstream response, attributed
-// to the caller's (hash, function) so telemetry matches the per-function
-// admission unit.
 type RequestRouter interface {
 	RouteRequest(ctx context.Context, uri URI, input []byte) ([]byte, error)
-	RecordParkedTime(callerHash, callerFunction string, elapsed time.Duration)
 }
 
 // NewHostFunctions creates the Extism host functions exposed to guest WASM modules.
@@ -96,14 +90,7 @@ func NewHostFunctions(logger *zap.SugaredLogger, router RequestRouter) []extism.
 				return
 			}
 
-			caller := ExecutingSeedFromContext(ctx)
-			callerFn := ExecutingFunctionFromContext(ctx)
-
-			parkStart := time.Now()
 			output, err := router.RouteRequest(ctx, uri, input)
-			if caller != "" {
-				router.RecordParkedTime(caller, callerFn, time.Since(parkStart))
-			}
 			if err != nil {
 				if errors.Is(err, ErrTargetNotFound) {
 					logger.Infow("pollen_request: target not found", "uri", uriStr, "err", err)

@@ -139,8 +139,6 @@ type WorkloadStatus int32
 const (
 	WorkloadStatus_WORKLOAD_STATUS_UNSPECIFIED WorkloadStatus = 0
 	WorkloadStatus_WORKLOAD_STATUS_RUNNING     WorkloadStatus = 1
-	WorkloadStatus_WORKLOAD_STATUS_STOPPED     WorkloadStatus = 2
-	WorkloadStatus_WORKLOAD_STATUS_ERRORED     WorkloadStatus = 3
 )
 
 // Enum value maps for WorkloadStatus.
@@ -148,14 +146,10 @@ var (
 	WorkloadStatus_name = map[int32]string{
 		0: "WORKLOAD_STATUS_UNSPECIFIED",
 		1: "WORKLOAD_STATUS_RUNNING",
-		2: "WORKLOAD_STATUS_STOPPED",
-		3: "WORKLOAD_STATUS_ERRORED",
 	}
 	WorkloadStatus_value = map[string]int32{
 		"WORKLOAD_STATUS_UNSPECIFIED": 0,
 		"WORKLOAD_STATUS_RUNNING":     1,
-		"WORKLOAD_STATUS_STOPPED":     2,
-		"WORKLOAD_STATUS_ERRORED":     3,
 	}
 )
 
@@ -1033,19 +1027,17 @@ func (x *BlobSummary) GetOrphan() bool {
 }
 
 type WorkloadSummary struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Hash            string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
-	Status          WorkloadStatus         `protobuf:"varint,2,opt,name=status,proto3,enum=pollen.control.v1.WorkloadStatus" json:"status,omitempty"`
-	StartedAtUnix   int64                  `protobuf:"varint,3,opt,name=started_at_unix,json=startedAtUnix,proto3" json:"started_at_unix,omitempty"`
-	MinReplicas     uint32                 `protobuf:"varint,4,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
-	ActiveReplicas  uint32                 `protobuf:"varint,5,opt,name=active_replicas,json=activeReplicas,proto3" json:"active_replicas,omitempty"`
-	Local           bool                   `protobuf:"varint,6,opt,name=local,proto3" json:"local,omitempty"`
-	Name            string                 `protobuf:"bytes,7,opt,name=name,proto3" json:"name,omitempty"`
-	Spread          float32                `protobuf:"fixed32,8,opt,name=spread,proto3" json:"spread,omitempty"`
-	EffectiveTarget uint32                 `protobuf:"varint,9,opt,name=effective_target,json=effectiveTarget,proto3" json:"effective_target,omitempty"`
-	Pressure        float32                `protobuf:"fixed32,10,opt,name=pressure,proto3" json:"pressure,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Hash           string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	Status         WorkloadStatus         `protobuf:"varint,2,opt,name=status,proto3,enum=pollen.control.v1.WorkloadStatus" json:"status,omitempty"`
+	StartedAtUnix  int64                  `protobuf:"varint,3,opt,name=started_at_unix,json=startedAtUnix,proto3" json:"started_at_unix,omitempty"`
+	MinReplicas    uint32                 `protobuf:"varint,4,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
+	ActiveReplicas uint32                 `protobuf:"varint,5,opt,name=active_replicas,json=activeReplicas,proto3" json:"active_replicas,omitempty"`
+	Local          bool                   `protobuf:"varint,6,opt,name=local,proto3" json:"local,omitempty"`
+	Name           string                 `protobuf:"bytes,7,opt,name=name,proto3" json:"name,omitempty"`
+	Spread         float32                `protobuf:"fixed32,8,opt,name=spread,proto3" json:"spread,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *WorkloadSummary) Reset() {
@@ -1130,20 +1122,6 @@ func (x *WorkloadSummary) GetName() string {
 func (x *WorkloadSummary) GetSpread() float32 {
 	if x != nil {
 		return x.Spread
-	}
-	return 0
-}
-
-func (x *WorkloadSummary) GetEffectiveTarget() uint32 {
-	if x != nil {
-		return x.EffectiveTarget
-	}
-	return 0
-}
-
-func (x *WorkloadSummary) GetPressure() float32 {
-	if x != nil {
-		return x.Pressure
 	}
 	return 0
 }
@@ -1861,16 +1839,12 @@ func (*SeedWorkloadRequest_Header) isSeedWorkloadRequest_Payload() {}
 func (*SeedWorkloadRequest_Chunk) isSeedWorkloadRequest_Payload() {}
 
 type SeedWorkloadHeader struct {
-	state       protoimpl.MessageState `protogen:"open.v1"`
-	MinReplicas uint32                 `protobuf:"varint,1,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
-	MemoryBytes uint64                 `protobuf:"varint,2,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
-	TimeoutMs   uint32                 `protobuf:"varint,3,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
-	Name        string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
-	Spread      float32                `protobuf:"fixed32,5,opt,name=spread,proto3" json:"spread,omitempty"`
-	// latency_slo_ms is the per-invocation caller-perspective latency
-	// budget. Drives autoscale via SLO burn rate. Zero is replaced with
-	// a sensible default by the placement layer.
-	LatencySloMs  uint32 `protobuf:"varint,6,opt,name=latency_slo_ms,json=latencySloMs,proto3" json:"latency_slo_ms,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MinReplicas   uint32                 `protobuf:"varint,1,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
+	MemoryBytes   uint64                 `protobuf:"varint,2,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
+	TimeoutMs     uint32                 `protobuf:"varint,3,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
+	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
+	Spread        float32                `protobuf:"fixed32,5,opt,name=spread,proto3" json:"spread,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1936,13 +1910,6 @@ func (x *SeedWorkloadHeader) GetName() string {
 func (x *SeedWorkloadHeader) GetSpread() float32 {
 	if x != nil {
 		return x.Spread
-	}
-	return 0
-}
-
-func (x *SeedWorkloadHeader) GetLatencySloMs() uint32 {
-	if x != nil {
-		return x.LatencySloMs
 	}
 	return 0
 }
@@ -3246,7 +3213,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x05local\x18\x03 \x01(\bR\x05local\x12\x12\n" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x128\n" +
 	"\tpublisher\x18\x05 \x01(\v2\x1a.pollen.control.v1.NodeRefR\tpublisher\x12\x16\n" +
-	"\x06orphan\x18\x06 \x01(\bR\x06orphan\"\xdd\x02\n" +
+	"\x06orphan\x18\x06 \x01(\bR\x06orphan\"\xbe\x02\n" +
 	"\x0fWorkloadSummary\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x129\n" +
 	"\x06status\x18\x02 \x01(\x0e2!.pollen.control.v1.WorkloadStatusR\x06status\x12&\n" +
@@ -3255,10 +3222,9 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x0factive_replicas\x18\x05 \x01(\rR\x0eactiveReplicas\x12\x14\n" +
 	"\x05local\x18\x06 \x01(\bR\x05local\x12\x12\n" +
 	"\x04name\x18\a \x01(\tR\x04name\x12\x16\n" +
-	"\x06spread\x18\b \x01(\x02R\x06spread\x12)\n" +
-	"\x10effective_target\x18\t \x01(\rR\x0feffectiveTarget\x12\x1a\n" +
-	"\bpressure\x18\n" +
-	" \x01(\x02R\bpressure\"\xfe\x01\n" +
+	"\x06spread\x18\b \x01(\x02R\x06spreadJ\x04\b\t\x10\n" +
+	"J\x04\b\n" +
+	"\x10\vR\x10effective_targetR\bpressure\"\xfe\x01\n" +
 	"\x11ConnectionSummary\x12.\n" +
 	"\x04peer\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04peer\x12,\n" +
 	"\vremote_port\x18\x02 \x01(\rB\v\xbaH\b*\x06\x18\xff\xff\x03 \x00R\n" +
@@ -3305,15 +3271,14 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x13SeedWorkloadRequest\x12?\n" +
 	"\x06header\x18\x01 \x01(\v2%.pollen.control.v1.SeedWorkloadHeaderH\x00R\x06header\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\t\n" +
-	"\apayload\"\xdd\x01\n" +
+	"\apayload\"\xcd\x01\n" +
 	"\x12SeedWorkloadHeader\x12!\n" +
 	"\fmin_replicas\x18\x01 \x01(\rR\vminReplicas\x12!\n" +
 	"\fmemory_bytes\x18\x02 \x01(\x04R\vmemoryBytes\x12\x1d\n" +
 	"\n" +
 	"timeout_ms\x18\x03 \x01(\rR\ttimeoutMs\x12\x12\n" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x12\x16\n" +
-	"\x06spread\x18\x05 \x01(\x02R\x06spread\x12$\n" +
-	"\x0elatency_slo_ms\x18\x06 \x01(\rR\flatencySloMsJ\x04\b\a\x10\bR\n" +
+	"\x06spread\x18\x05 \x01(\x02R\x06spreadJ\x04\b\x06\x10\aJ\x04\b\a\x10\bR\x0elatency_slo_msR\n" +
 	"properties\">\n" +
 	"\x14SeedWorkloadResponse\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x12\x12\n" +
@@ -3408,12 +3373,10 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x0eCERT_HEALTH_OK\x10\x01\x12\x1d\n" +
 	"\x19CERT_HEALTH_EXPIRING_SOON\x10\x02\x12\x17\n" +
 	"\x13CERT_HEALTH_EXPIRED\x10\x03\x12\x18\n" +
-	"\x14CERT_HEALTH_RENEWING\x10\x04*\x88\x01\n" +
+	"\x14CERT_HEALTH_RENEWING\x10\x04*\x8c\x01\n" +
 	"\x0eWorkloadStatus\x12\x1f\n" +
 	"\x1bWORKLOAD_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
-	"\x17WORKLOAD_STATUS_RUNNING\x10\x01\x12\x1b\n" +
-	"\x17WORKLOAD_STATUS_STOPPED\x10\x02\x12\x1b\n" +
-	"\x17WORKLOAD_STATUS_ERRORED\x10\x03*\x81\x01\n" +
+	"\x17WORKLOAD_STATUS_RUNNING\x10\x01\"\x04\b\x02\x10\x02\"\x04\b\x03\x10\x03*\x17WORKLOAD_STATUS_STOPPED*\x17WORKLOAD_STATUS_ERRORED*\x81\x01\n" +
 	"\fHealthStatus\x12\x1d\n" +
 	"\x19HEALTH_STATUS_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15HEALTH_STATUS_HEALTHY\x10\x01\x12\x1a\n" +

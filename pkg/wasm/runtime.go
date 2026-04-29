@@ -21,17 +21,18 @@ var ErrModuleMissing = errors.New("wasm: no compiled module")
 
 const (
 	wasmPageBytes           = 64 << 10
-	defaultMemoryLimitPages = 1024 // 64 MiB — fits Go-wasm modules (min memory section is typically ~32 MiB).
+	defaultMemoryLimitPages = 128 // 8 MiB — fits Zig and Rust wasi guests; Go-wasm guests should declare a higher cap via the spec.
 	defaultTimeout          = 30 * time.Second
 	hashPreviewLen          = 12
 	defaultIdleTTL          = 60 * time.Second
 	evictInterval           = 15 * time.Second
-	// idleCacheSize bounds how many warm instances each workload keeps
-	// around between calls. It is not a concurrency limit — that lives
-	// in the placement layer's per-workload gate. When the cache is
-	// full and a call returns, the surplus instance is closed.
-	idleCacheSize = 1024
 )
+
+// IdleCacheSize bounds how many warm instances each workload keeps
+// around between calls. The placement budget pre-reserves
+// IdleCacheSize × per-spec-cap per replica so the warm pool's
+// worst-case footprint is accounted for alongside in-flight calls.
+const IdleCacheSize = 4
 
 // PluginConfig controls per-workload resource limits.
 type PluginConfig struct {
@@ -58,11 +59,11 @@ func NewPluginConfig(memoryBytes uint64, timeout time.Duration) PluginConfig {
 }
 
 // compiledEntry bundles a compiled plugin with a cache of warm instances.
-// The cache is not a concurrency bound — placement gates that — it just
-// avoids paying instance-creation cost on every call. Acquire returns a
-// warm instance when one is available and instantiates a new one
-// otherwise; release returns the instance to the cache up to
-// idleCacheSize before closing the surplus.
+// The cache avoids paying instance-creation cost on every call. Acquire
+// returns a warm instance when one is available and instantiates a new
+// one otherwise; release returns the instance to the cache up to
+// IdleCacheSize before closing the surplus. Memory accounting for both
+// the warm pool and active calls lives in placement's budget.
 type compiledEntry struct {
 	plugin   *extism.CompiledPlugin
 	pool     chan *extism.Plugin
@@ -72,9 +73,9 @@ type compiledEntry struct {
 
 // Runtime wraps Extism for compiling and calling WASM plugins.
 // Compiled plugins are cached by content hash; each hash maintains its
-// own warm-instance cache. Concurrency limits live in the placement
-// layer; the runtime always instantiates on demand when no warm
-// instance is available.
+// own warm-instance cache. The runtime always instantiates on demand
+// when no warm instance is available — back-pressure under load is the
+// placement budget's job, not the runtime's.
 type Runtime struct {
 	runtimeConfig wazero.RuntimeConfig
 	compiled      map[string]*compiledEntry
@@ -172,7 +173,7 @@ func (r *Runtime) Compile(ctx context.Context, wasmBytes []byte, hash string, cf
 	}
 	entry := &compiledEntry{
 		plugin: compiled,
-		pool:   make(chan *extism.Plugin, idleCacheSize),
+		pool:   make(chan *extism.Plugin, IdleCacheSize),
 	}
 	entry.lastUsed.Store(time.Now().UnixNano())
 	r.compiled[hash] = entry
@@ -191,9 +192,8 @@ func (r *Runtime) Compile(ctx context.Context, wasmBytes []byte, hash string, cf
 
 // Call invokes the named function on a warm instance from the workload's
 // cache, or instantiates a fresh one if no warm instance is available.
-// On success the instance is returned to the cache (up to idleCacheSize);
-// on error it is discarded so no corrupted state is reused. Concurrency
-// limits live in the placement layer's per-workload gate.
+// On success the instance is returned to the cache (up to IdleCacheSize);
+// on error it is discarded so no corrupted state is reused.
 func (r *Runtime) Call(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
 	r.mu.Lock()
 	entry, ok := r.compiled[hash]
@@ -222,9 +222,8 @@ func (r *Runtime) Call(ctx context.Context, hash, function string, input []byte)
 }
 
 // acquire returns a warm instance from the cache or creates a new one.
-// No concurrency limit lives here — instantiation is unbounded subject
-// only to caller context cancellation. The placement gate is the
-// authoritative concurrency boundary.
+// Instantiation is unbounded subject only to caller context cancellation
+// — the placement budget refuses calls upstream when memory is tight.
 func (e *compiledEntry) acquire(ctx context.Context) (*extism.Plugin, error) {
 	select {
 	case p := <-e.pool:

@@ -30,8 +30,6 @@ func (noopRequestRouter) RouteRequest(context.Context, wasm.URI, []byte) ([]byte
 	return nil, fmt.Errorf("no routing in tests")
 }
 
-func (noopRequestRouter) RecordParkedTime(string, string, time.Duration) {}
-
 func newTestRuntime(t *testing.T) *wasm.Runtime {
 	t.Helper()
 	hostFuncs := wasm.NewHostFunctions(zap.NewNop().Sugar(), noopRequestRouter{})

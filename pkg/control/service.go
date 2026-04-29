@@ -67,7 +67,6 @@ type PlacementControl interface {
 	Unseed(hash string) error
 	Call(ctx context.Context, hash, fn string, input []byte) ([]byte, error)
 	Status() []placement.WorkloadSummary
-	PlacementInfo() map[string]placement.PlacementInfo
 }
 
 type TunnelingControl interface {
@@ -491,19 +490,16 @@ func buildConnectionSummaries(nodes map[types.PeerKey]state.NodeView, connection
 func (s *Service) buildWorkloadSummaries(snap state.Snapshot) []*controlv1.WorkloadSummary {
 	var out []*controlv1.WorkloadSummary
 	seen := make(map[string]struct{})
-	pinfo := s.placement.PlacementInfo()
 
 	for _, w := range s.placement.Status() {
 		seen[w.Hash] = struct{}{}
 		ws := &controlv1.WorkloadSummary{
-			Hash:            w.Hash,
-			Name:            w.Name,
-			Status:          workloadStatusProto(w.Status),
-			StartedAtUnix:   w.CompiledAt.Unix(),
-			Local:           true,
-			ActiveReplicas:  uint32(len(snap.Claims[w.Hash])),
-			EffectiveTarget: w.EffectiveTarget,
-			Pressure:        float32(w.Pressure),
+			Hash:           w.Hash,
+			Name:           w.Name,
+			Status:         controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING,
+			StartedAtUnix:  w.CompiledAt.Unix(),
+			Local:          true,
+			ActiveReplicas: uint32(len(snap.Claims[w.Hash])),
 		}
 		if sv, ok := snap.Specs[w.Hash]; ok {
 			ws.MinReplicas = sv.Spec.MinReplicas
@@ -522,10 +518,6 @@ func (s *Service) buildWorkloadSummaries(snap state.Snapshot) []*controlv1.Workl
 			MinReplicas:    sv.Spec.MinReplicas,
 			Spread:         sv.Spec.Spread,
 			ActiveReplicas: uint32(len(snap.Claims[hash])),
-		}
-		if info, ok := pinfo[hash]; ok {
-			ws.EffectiveTarget = info.EffectiveTarget
-			ws.Pressure = float32(info.SLOBurnRatio)
 		}
 		out = append(out, ws)
 	}
@@ -750,7 +742,6 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 		MemoryBytes: header.GetMemoryBytes(),
 		Timeout:     time.Duration(header.GetTimeoutMs()) * time.Millisecond,
 		Spread:      header.GetSpread(),
-		LatencySLO:  time.Duration(header.GetLatencySloMs()) * time.Millisecond,
 	}
 	if err := s.placement.Seed(wasmBytes, spec); err != nil {
 		switch {
@@ -974,18 +965,6 @@ func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadR
 	output, err := s.placement.Call(ctx, hash, function, req.GetInput())
 	if err != nil {
 		s.log.Warnw("call workload failed", "hash", hash, "function", function, "err", err)
-		var ovl *placement.OverloadError
-		if errors.As(err, &ovl) {
-			// Surface retry-after metadata in a gRPC trailer so clients
-			// with a retry budget can wait the suggested duration before
-			// attempting again. The trailer key is lowercase per gRPC's
-			// canonical metadata convention.
-			md := metadata.Pairs(
-				"pln-retry-after-ms", strconv.FormatInt(ovl.RetryAfter.Milliseconds(), 10),
-				"pln-overload-reason", ovl.Reason,
-			)
-			grpc.SetTrailer(ctx, md) //nolint:errcheck
-		}
 		switch {
 		case errors.Is(err, wasm.ErrTargetNotFound):
 			return nil, status.Error(codes.NotFound, "no such workload")
@@ -995,8 +974,6 @@ func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadR
 			return nil, status.Error(codes.FailedPrecondition, "call cycle detected")
 		case errors.Is(err, placement.ErrOverloaded):
 			return nil, status.Error(codes.ResourceExhausted, "node overloaded; retry later")
-		case errors.Is(err, placement.ErrAtCapacity):
-			return nil, status.Error(codes.ResourceExhausted, "workload at capacity; retry later")
 		case errors.Is(err, placement.ErrRelayOnly):
 			return nil, status.Error(codes.FailedPrecondition, "node is relay-only; workload invocation disabled")
 		case errors.Is(err, context.DeadlineExceeded):
@@ -1102,11 +1079,4 @@ func nodeStatusRank(s controlv1.NodeStatus) int {
 		return 1
 	}
 	return offlineRank
-}
-
-func workloadStatusProto(s placement.Status) controlv1.WorkloadStatus {
-	if s == placement.StatusRunning {
-		return controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING
-	}
-	return controlv1.WorkloadStatus_WORKLOAD_STATUS_UNSPECIFIED
 }

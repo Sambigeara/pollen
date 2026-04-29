@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -22,8 +21,6 @@ type noopRequestRouter struct{}
 func (noopRequestRouter) RouteRequest(context.Context, wasm.URI, []byte) ([]byte, error) {
 	return nil, fmt.Errorf("no routing in tests")
 }
-
-func (noopRequestRouter) RecordParkedTime(string, string, time.Duration) {}
 
 var echoWASM []byte
 

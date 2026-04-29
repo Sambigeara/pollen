@@ -66,7 +66,8 @@ type StateStore interface {
 	MarkWorkloadDraining(hash string) []Event
 	ReleaseWorkload(hash string) []Event
 	SetLocalResources(r NodeResources) []Event
-	SetSeedMetrics(metrics map[string]SeedMetrics) []Event
+	SetBackoffTTL(expiresAt time.Time) []Event
+	SetPerSeedCallCounts(counts map[string]uint64) []Event
 	SetLocalBlobs(digests []string) []Event
 
 	SetStaticSpec(spec StaticSpec) ([]Event, error)

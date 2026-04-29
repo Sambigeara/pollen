@@ -810,17 +810,6 @@ func (m *WorkloadSummary) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.Pressure != 0 {
-		i -= 4
-		binary.LittleEndian.PutUint32(dAtA[i:], uint32(math.Float32bits(float32(m.Pressure))))
-		i--
-		dAtA[i] = 0x55
-	}
-	if m.EffectiveTarget != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.EffectiveTarget))
-		i--
-		dAtA[i] = 0x48
-	}
 	if m.Spread != 0 {
 		i -= 4
 		binary.LittleEndian.PutUint32(dAtA[i:], uint32(math.Float32bits(float32(m.Spread))))
@@ -1540,11 +1529,6 @@ func (m *SeedWorkloadHeader) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m.unknownFields != nil {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
-	}
-	if m.LatencySloMs != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.LatencySloMs))
-		i--
-		dAtA[i] = 0x30
 	}
 	if m.Spread != 0 {
 		i -= 4
@@ -3003,12 +2987,6 @@ func (m *WorkloadSummary) SizeVT() (n int) {
 	if m.Spread != 0 {
 		n += 5
 	}
-	if m.EffectiveTarget != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.EffectiveTarget))
-	}
-	if m.Pressure != 0 {
-		n += 5
-	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -3272,9 +3250,6 @@ func (m *SeedWorkloadHeader) SizeVT() (n int) {
 	}
 	if m.Spread != 0 {
 		n += 5
-	}
-	if m.LatencySloMs != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.LatencySloMs))
 	}
 	n += len(m.unknownFields)
 	return n
@@ -5695,36 +5670,6 @@ func (m *WorkloadSummary) UnmarshalVT(dAtA []byte) error {
 			v = uint32(binary.LittleEndian.Uint32(dAtA[iNdEx:]))
 			iNdEx += 4
 			m.Spread = float32(math.Float32frombits(v))
-		case 9:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field EffectiveTarget", wireType)
-			}
-			m.EffectiveTarget = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.EffectiveTarget |= uint32(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 10:
-			if wireType != 5 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Pressure", wireType)
-			}
-			var v uint32
-			if (iNdEx + 4) > l {
-				return io.ErrUnexpectedEOF
-			}
-			v = uint32(binary.LittleEndian.Uint32(dAtA[iNdEx:]))
-			iNdEx += 4
-			m.Pressure = float32(math.Float32frombits(v))
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -7179,25 +7124,6 @@ func (m *SeedWorkloadHeader) UnmarshalVT(dAtA []byte) error {
 			v = uint32(binary.LittleEndian.Uint32(dAtA[iNdEx:]))
 			iNdEx += 4
 			m.Spread = float32(math.Float32frombits(v))
-		case 6:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field LatencySloMs", wireType)
-			}
-			m.LatencySloMs = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.LatencySloMs |= uint32(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

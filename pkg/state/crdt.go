@@ -34,12 +34,13 @@ const (
 	attrHeartbeat
 	attrAdminCapable
 	attrNodeName
-	attrSeedMetrics
 	attrBlobAvailability
 	attrStaticSpec
 	attrStaticClaim
 	attrBlobSpec
 	attrStaticCapable
+	attrBackoffTTL
+	attrPerSeedCallCounts
 )
 
 type attrKey struct {
@@ -183,7 +184,7 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent) []*statev1.Gos
 					Counter: rec.maxCounter,
 					Change:  ev.Change,
 				}
-			case attrWorkloadClaim, attrReachability, attrHeartbeat, attrSeedMetrics, attrBlobAvailability, attrStaticClaim:
+			case attrWorkloadClaim, attrReachability, attrHeartbeat, attrBlobAvailability, attrStaticClaim, attrBackoffTTL, attrPerSeedCallCounts:
 				rec.maxCounter++
 				rec.log[key] = &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
@@ -286,7 +287,6 @@ func (s *store) tombstoneStaleAttrsLocked(rec *nodeRecord) {
 		{Change: &statev1.GossipEvent_ResourceTelemetry{ResourceTelemetry: &statev1.ResourceTelemetryChange{}}},
 		{Change: &statev1.GossipEvent_TrafficHeatmap{TrafficHeatmap: &statev1.TrafficHeatmapChange{}}},
 		{Change: &statev1.GossipEvent_Heartbeat{Heartbeat: &statev1.HeartbeatChange{}}},
-		{Change: &statev1.GossipEvent_SeedMetrics{SeedMetrics: &statev1.SeedMetricsChange{}}},
 		{Change: &statev1.GossipEvent_AdminCapable{AdminCapable: &statev1.AdminCapableChange{}}},
 		{Change: &statev1.GossipEvent_StaticCapable{StaticCapable: &statev1.StaticCapableChange{}}},
 		{Change: &statev1.GossipEvent_BlobAvailability{BlobAvailability: &statev1.BlobAvailabilityChange{}}},
@@ -402,8 +402,6 @@ func getAttrKey(ev *statev1.GossipEvent) (attrKey, bool) {
 		return attrKey{kind: attrStaticCapable}, true
 	case *statev1.GossipEvent_NodeName:
 		return attrKey{kind: attrNodeName}, true
-	case *statev1.GossipEvent_SeedMetrics:
-		return attrKey{kind: attrSeedMetrics}, true
 	case *statev1.GossipEvent_BlobAvailability:
 		return attrKey{kind: attrBlobAvailability}, true
 	case *statev1.GossipEvent_StaticSpec:
@@ -422,6 +420,10 @@ func getAttrKey(ev *statev1.GossipEvent) (attrKey, bool) {
 			return attrKey{}, false
 		}
 		return attrKey{kind: attrBlobSpec, name: hex.EncodeToString(digest)}, true
+	case *statev1.GossipEvent_BackoffTtl:
+		return attrKey{kind: attrBackoffTTL}, true
+	case *statev1.GossipEvent_PerSeedCallCounts:
+		return attrKey{kind: attrPerSeedCallCounts}, true
 	}
 	return attrKey{}, false
 }

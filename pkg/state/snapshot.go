@@ -45,10 +45,11 @@ type BlobSpecView struct {
 
 type NodeView struct {
 	LastEventAt        time.Time
+	BackoffExpiry      time.Time
 	TrafficRates       map[types.PeerKey]TrafficSnapshot
 	Reachable          map[types.PeerKey]struct{}
 	Services           map[string]*Service
-	SeedMetrics        map[string]SeedMetrics
+	CallCounts         map[string]uint64
 	Blobs              map[string]struct{}
 	VivaldiCoord       *coords.Coord
 	ObservedExternalIP string
@@ -60,14 +61,11 @@ type NodeView struct {
 	VivaldiErr         float64
 	MemTotalBytes      uint64
 	CertExpiry         int64
-	CPUBudgetPercent   uint32
 	MemPercent         uint32
 	NumCPU             uint32
 	CPUPercent         uint32
-	MemBudgetPercent   uint32
 	ExternalPort       uint32
 	LocalPort          uint32
-	AdmissionState     AdmissionState
 	PubliclyAccessible bool
 	AdminCapable       bool
 	CanServeStatic     bool
@@ -363,7 +361,7 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 		Services:     make(map[string]*Service),
 		Reachable:    make(map[types.PeerKey]struct{}),
 		TrafficRates: make(map[types.PeerKey]TrafficSnapshot),
-		SeedMetrics:  make(map[string]SeedMetrics),
+		CallCounts:   make(map[string]uint64),
 		Blobs:        make(map[string]struct{}),
 		LastAddr:     rec.LastAddr,
 		LastEventAt:  rec.lastEventAt,
@@ -402,8 +400,6 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 		case *statev1.GossipEvent_ResourceTelemetry:
 			nv.CPUPercent, nv.MemPercent = v.ResourceTelemetry.CpuPercent, v.ResourceTelemetry.MemPercent
 			nv.MemTotalBytes, nv.NumCPU = v.ResourceTelemetry.MemTotalBytes, v.ResourceTelemetry.NumCpu
-			nv.CPUBudgetPercent, nv.MemBudgetPercent = v.ResourceTelemetry.CpuBudgetPercent, v.ResourceTelemetry.MemBudgetPercent
-			nv.AdmissionState = AdmissionState(v.ResourceTelemetry.AdmissionState)
 		case *statev1.GossipEvent_WorkloadClaim:
 			claims[key.name] = v.WorkloadClaim.GetDraining()
 		case *statev1.GossipEvent_TrafficHeatmap:
@@ -412,8 +408,14 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 					nv.TrafficRates[peerPK] = TrafficSnapshot{RateIn: r.RateIn, RateOut: r.RateOut}
 				}
 			}
-		case *statev1.GossipEvent_SeedMetrics:
-			maps.Copy(nv.SeedMetrics, seedMetricsFromProto(v.SeedMetrics))
+		case *statev1.GossipEvent_BackoffTtl:
+			if v.BackoffTtl != nil {
+				nv.BackoffExpiry = time.UnixMilli(v.BackoffTtl.ExpiresAtUnixMs)
+			}
+		case *statev1.GossipEvent_PerSeedCallCounts:
+			if v.PerSeedCallCounts != nil {
+				maps.Copy(nv.CallCounts, v.PerSeedCallCounts.Counts)
+			}
 		case *statev1.GossipEvent_BlobAvailability:
 			for _, d := range v.BlobAvailability.GetDigests() {
 				nv.Blobs[hex.EncodeToString(d)] = struct{}{}

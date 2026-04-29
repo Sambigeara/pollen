@@ -684,12 +684,9 @@ func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 			hash = hash[:shortHexLen]
 		}
 		st := formatWorkloadStatus(w.GetStatus())
-		target := w.GetEffectiveTarget()
-		if target == 0 {
-			target = w.GetMinReplicas()
-			if w.GetSpread() >= 1.0 {
-				target = clusterSize
-			}
+		target := w.GetMinReplicas()
+		if w.GetSpread() >= 1.0 {
+			target = clusterSize
 		}
 		replicas := fmt.Sprintf("%d/%d", w.GetActiveReplicas(), target)
 		local := ""
@@ -932,16 +929,10 @@ func formatLatency(ms float64) string {
 }
 
 func formatWorkloadStatus(s controlv1.WorkloadStatus) string {
-	switch s {
-	case controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING:
+	if s == controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING {
 		return "running"
-	case controlv1.WorkloadStatus_WORKLOAD_STATUS_STOPPED:
-		return "stopped"
-	case controlv1.WorkloadStatus_WORKLOAD_STATUS_ERRORED:
-		return "errored"
-	default:
-		return "unknown"
 	}
+	return "unknown"
 }
 
 func humanDuration(d time.Duration) string {

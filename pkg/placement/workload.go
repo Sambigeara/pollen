@@ -36,26 +36,10 @@ type WASMRuntime interface {
 	DropCompiled(ctx context.Context, hash string)
 }
 
-type Status int
-
-const (
-	StatusRunning Status = iota
-)
-
-func (s Status) String() string {
-	if s == StatusRunning {
-		return "running"
-	}
-	return "unknown"
-}
-
 type WorkloadSummary struct {
-	CompiledAt      time.Time
-	Hash            string
-	Name            string
-	Status          Status
-	EffectiveTarget uint32
-	Pressure        float64
+	CompiledAt time.Time
+	Hash       string
+	Name       string
 }
 
 type manager struct {
@@ -157,7 +141,6 @@ func (m *manager) List() []WorkloadSummary {
 	for hash, e := range m.workloads {
 		out = append(out, WorkloadSummary{
 			Hash:       hash,
-			Status:     StatusRunning,
 			CompiledAt: e.compiledAt,
 		})
 	}

@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"time"
 
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -15,9 +14,8 @@ import (
 
 var ErrRelayOnly = errors.New("placement disabled: relay-only mode")
 
-// NoopService satisfies PlacementAPI for nodes that don't host workloads.
-// Membership and tunneling still run, so the node gossips topology and
-// forwards routed streams; only the placement axis is disabled.
+// NoopService is the relay-only PlacementAPI: membership and tunneling
+// still run, but every workload-hosting operation rejects.
 type NoopService struct{}
 
 var _ PlacementAPI = (*NoopService)(nil)
@@ -38,12 +36,8 @@ func (*NoopService) Call(context.Context, string, string, []byte) ([]byte, error
 
 func (*NoopService) Status() []WorkloadSummary { return nil }
 
-func (*NoopService) PlacementInfo() map[string]PlacementInfo { return nil }
-
-func (*NoopService) RecordParkedTime(string, string, time.Duration) {}
-
-// Serve should never fire: relay-only nodes never claim workloads, so peers
-// never select them as a placement target. Close defensively if it does.
+// Serve should be unreachable on a relay-only node — peers won't pick a
+// non-claimant target. Close defensively if it does fire.
 func (*NoopService) Serve(stream io.ReadWriteCloser, _ types.PeerKey) {
 	_ = stream.Close()
 }

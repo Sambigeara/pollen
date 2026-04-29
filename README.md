@@ -28,10 +28,11 @@ Pollen runs end-to-end on real clusters today. It's pre-1.0, so expect breaking 
 
 ## Highlights
 
-- **WASM seeds.** Deploy with `pln seed`; artifacts distribute
-  peer-to-peer by hash. One host call invokes another seed by name
-  (`pln://seed/<name>/<fn>`), so authz, routing, and policy can live
-  inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via
+- **WASM seeds.** `pln seed ./hello.wasm` here, `pln call hello greet`
+  there; artifacts distribute peer-to-peer by hash. One host call
+  invokes another seed by name (`pln://seed/<name>/<fn>`), so authz,
+  routing, and policy can live inside WASM. Authored in Go, Rust, JS,
+  Python, C#, Zig via
   [Extism](https://extism.org/docs/quickstart/plugin-quickstart).
 - **Mesh services.** `pln serve 8080 api` here, `pln connect api`
   there (or `pln://service/<name>` from a seed). TCP and UDP,
@@ -96,9 +97,8 @@ echo "media=alice@10.0.0.5" | pln bootstrap ssh -
 
 Installs Pollen, enrols in the cluster, and starts. Linux targets only;
 needs SSH as root or passwordless sudo. `--admin` delegates admin
-authority; prefix a target with `name=` to label the node. See the
-[CLI reference](https://docs.pln.sh/cli#bootstrap) for the full flag
-set.
+authority; prefix a target with `name=` to label the node. Run
+`pln bootstrap ssh --help` for the full flag set.
 
 **Out-of-band.** Mint a token on an admin node, ship it to the joiner:
 

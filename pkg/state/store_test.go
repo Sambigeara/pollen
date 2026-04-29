@@ -721,35 +721,6 @@ func TestNodeNameSelfConflictAdopted(t *testing.T) {
 	require.Equal(t, "recovered-name", snap.Nodes[pk].Name)
 }
 
-func TestSetSeedMetrics_AllZeroEntryOmitted(t *testing.T) {
-	pk := genKey(t)
-	s := newTestStore(t, pk)
-
-	s.SetSeedMetrics(map[string]SeedMetrics{
-		"empty": {}, // all-zero → dropped
-		"live":  {ServedRate: 2.5},
-	})
-
-	snap := s.Snapshot()
-	metrics := snap.Nodes[pk].SeedMetrics
-	require.NotContains(t, metrics, "empty", "all-zero entries should be omitted")
-	require.Contains(t, metrics, "live")
-	require.InDelta(t, 2.5, metrics["live"].ServedRate, 0.001)
-}
-
-func TestSetSeedMetrics_DeadBandSuppressesTinyUpdates(t *testing.T) {
-	pk := genKey(t)
-	s := newTestStore(t, pk)
-
-	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 10, ComputeCostMs: 50}})
-	baseline := s.Snapshot().Nodes[pk].SeedMetrics["a"]
-
-	// 5% change to ServedRate (within 20% dead-band): no gossip should fire.
-	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 10.5, ComputeCostMs: 50}})
-	require.Equal(t, baseline, s.Snapshot().Nodes[pk].SeedMetrics["a"],
-		"material-free update should not propagate")
-}
-
 func TestSpecs_SurvivePublisherDeparture(t *testing.T) {
 	publisher := genKey(t)
 
@@ -939,16 +910,4 @@ func TestSpecs_SurviveLoadGossipState(t *testing.T) {
 	require.Contains(t, snap.Specs, "wl-1")
 	require.Contains(t, snap.StaticSpecs, "site.example")
 	require.Len(t, snap.BlobSpecs, 1)
-}
-
-func TestSetSeedMetrics_EmptyTombstones(t *testing.T) {
-	pk := genKey(t)
-	s := newTestStore(t, pk)
-
-	s.SetSeedMetrics(map[string]SeedMetrics{"a": {ServedRate: 5}})
-	require.Contains(t, s.Snapshot().Nodes[pk].SeedMetrics, "a")
-
-	s.SetSeedMetrics(map[string]SeedMetrics{})
-	require.Empty(t, s.Snapshot().Nodes[pk].SeedMetrics,
-		"empty map should tombstone the seed-metrics attr")
 }

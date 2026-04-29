@@ -328,8 +328,6 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		StaticAddr:         staticAddr,
 		ControlAddr:        controlAddr,
 		ControlToken:       controlToken,
-		CPUBudgetPercent:   env.cfg.Resources.CPUPercent,
-		MemBudgetPercent:   env.cfg.Resources.MemPercent,
 		IdleInstanceTTL:    env.cfg.Placement.IdleInstanceTTL,
 		Authz: supervisor.AuthzOptions{
 			Default:      env.cfg.Evaluator.Default,

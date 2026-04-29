@@ -1,31 +1,23 @@
 // Copyright 2026 Sam Lock
 // SPDX-License-Identifier: Apache-2.0
 
-// exerciser drives synthetic load against a pollen node's control API.
-//
-// The binary is deployed on a dedicated host that does NOT run pollen.
-// It targets a specific pollen node via its TCP control endpoint
-// (enabled on the node with `pln set control-addr :PORT`), fires
-// CallWorkload requests at a configured rate, and exposes Prometheus
-// metrics at /metrics for an external scraper.
 package main
 
 import (
 	"context"
 	"errors"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"golang.org/x/sync/semaphore"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -39,17 +31,26 @@ const (
 	defaultURI         = "pln://seed/ingest/handle"
 	defaultMetricsAddr = ":9192"
 
+	minWorkers               = 32
+	maxWorkers               = 4096
+	inputBufferCap           = 32
 	callTimeout              = 30 * time.Second
 	metricsReadHeaderTimeout = 10 * time.Second
 	metricsShutdownTimeout   = 2 * time.Second
 
-	// inflightHeadroom keeps the semaphore non-zero at rate=0 (pathological)
-	// and avoids boundary flakiness when rate × callTimeout rounds low.
-	inflightHeadroom = 4
-	// shedReasonInflightCap labels sheds caused by the safety cap — the
-	// target is slower than the offered rate, not that the client errored.
 	shedReasonInflightCap = "inflight_cap"
 )
+
+func workersFor(rate int) int {
+	switch {
+	case rate < minWorkers:
+		return minWorkers
+	case rate > maxWorkers:
+		return maxWorkers
+	default:
+		return rate
+	}
+}
 
 func main() {
 	target := flag.String("target", "", "host:port of the target pollen node's TCP control endpoint (required)")
@@ -95,7 +96,6 @@ func main() {
 		Help: "Current number of in-flight CallWorkload invocations.",
 	}, []string{"target"})
 	reg.MustRegister(calls, sheds, callDuration, inflight)
-	// Pre-create series so scrapers see zero rather than absent.
 	calls.WithLabelValues(targetLabel, "ok")
 	calls.WithLabelValues(targetLabel, "fail")
 	sheds.WithLabelValues(targetLabel, shedReasonInflightCap)
@@ -115,14 +115,6 @@ func main() {
 	defer conn.Close()
 	client := controlv1.NewControlServiceClient(conn)
 
-	// Size the in-flight cap at rate × callTimeout. Any call that's still
-	// in flight past callTimeout has been cancelled by its context anyway,
-	// so sizing for that window lets realistic steady-state in-flight
-	// (rate × p95) sit comfortably below the cap without shedding.
-	// Shedding should only fire on genuine goroutine runaway.
-	maxInflight := (*rate)*int(callTimeout/time.Second) + inflightHeadroom
-	sem := semaphore.NewWeighted(int64(maxInflight))
-
 	if *duration > 0 {
 		log.Printf("exerciser firing %d/s at %s for %s (uri=%s)", *rate, *target, *duration, *uri)
 		var cancel context.CancelFunc
@@ -132,7 +124,7 @@ func main() {
 		log.Printf("exerciser firing %d/s at %s (uri=%s)", *rate, *target, *uri)
 	}
 
-	runLoadLoop(ctx, client, secret, *uri, *rate, targetLabel, sem, calls, sheds, callDuration, inflight)
+	runLoadLoop(ctx, client, secret, *uri, *rate, targetLabel, calls, sheds, callDuration, inflight)
 }
 
 func runLoadLoop(
@@ -141,57 +133,81 @@ func runLoadLoop(
 	token, uri string,
 	rate int,
 	label string,
-	sem *semaphore.Weighted,
 	calls, sheds *prometheus.CounterVec,
 	callDuration *prometheus.HistogramVec,
 	inflight *prometheus.GaugeVec,
 ) {
-	interval := time.Second / time.Duration(rate)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
 	okCounter := calls.WithLabelValues(label, "ok")
 	failCounter := calls.WithLabelValues(label, "fail")
 	shedCounter := sheds.WithLabelValues(label, shedReasonInflightCap)
 	durationHist := callDuration.WithLabelValues(label)
 	gauge := inflight.WithLabelValues(label)
 
+	baseCtx := ctx
+	if token != "" {
+		baseCtx = metadata.AppendToOutgoingContext(ctx, control.ControlTokenMetadataKey, token)
+	}
+
+	n := workersFor(rate)
+	ticks := make(chan struct{}, n)
 	var wg sync.WaitGroup
+	wg.Add(n)
+	for range n {
+		go worker(baseCtx, client, uri, ticks, gauge, durationHist, okCounter, failCounter, &wg)
+	}
+
+	interval := time.Second / time.Duration(rate)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
+			close(ticks)
 			log.Print("draining in-flight calls...")
 			wg.Wait()
 			return
 		case <-ticker.C:
-			if !sem.TryAcquire(1) {
+			select {
+			case ticks <- struct{}{}:
+			default:
 				shedCounter.Inc()
-				continue
 			}
-			wg.Add(1)
-			gauge.Inc()
-			go func() {
-				defer wg.Done()
-				defer sem.Release(1)
-				defer gauge.Dec()
-
-				callCtx, cancel := context.WithTimeout(context.Background(), callTimeout)
-				defer cancel()
-				if token != "" {
-					callCtx = metadata.AppendToOutgoingContext(callCtx, control.ControlTokenMetadataKey, token)
-				}
-
-				start := time.Now()
-				input := fmt.Appendf(nil, `{"ts":%d}`, time.Now().UnixMilli())
-				_, err := client.CallWorkload(callCtx, &controlv1.CallWorkloadRequest{Uri: uri, Input: input})
-				durationHist.Observe(time.Since(start).Seconds())
-				if err != nil {
-					failCounter.Inc()
-				} else {
-					okCounter.Inc()
-				}
-			}()
 		}
+	}
+}
+
+func worker(
+	baseCtx context.Context,
+	client controlv1.ControlServiceClient,
+	uri string,
+	ticks <-chan struct{},
+	gauge prometheus.Gauge,
+	durationHist prometheus.Observer,
+	okCounter, failCounter prometheus.Counter,
+	wg *sync.WaitGroup,
+) {
+	defer wg.Done()
+	req := &controlv1.CallWorkloadRequest{Uri: uri}
+	buf := make([]byte, 0, inputBufferCap)
+	for range ticks {
+		gauge.Inc()
+		buf = append(buf[:0], `{"ts":`...)
+		buf = strconv.AppendInt(buf, time.Now().UnixMilli(), 10) //nolint:mnd
+		buf = append(buf, '}')
+		req.Input = buf
+
+		callCtx, cancel := context.WithTimeout(baseCtx, callTimeout)
+		start := time.Now()
+		_, err := client.CallWorkload(callCtx, req)
+		durationHist.Observe(time.Since(start).Seconds())
+		cancel()
+		if err != nil {
+			failCounter.Inc()
+		} else {
+			okCounter.Inc()
+		}
+		gauge.Dec()
 	}
 }
 

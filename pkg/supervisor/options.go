@@ -58,8 +58,6 @@ type Options struct {
 	GossipInterval     time.Duration
 	GossipJitter       float64
 	ListenPort         int
-	MemBudgetPercent   uint32
-	CPUBudgetPercent   uint32
 	MetricsEnabled     bool
 	BootstrapPublic    bool
 	DisableNATPunch    bool
