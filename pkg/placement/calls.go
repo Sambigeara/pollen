@@ -15,10 +15,11 @@ type callCountsEmitter func(counts map[string]uint64)
 // flushes them to gossip on a fixed window. Remote counts are read from
 // the gossip snapshot — no local cache.
 type callTracker struct {
-	emit   callCountsEmitter
-	local  map[string]uint64
-	window time.Duration
-	mu     sync.Mutex
+	emit     callCountsEmitter
+	local    map[string]uint64
+	window   time.Duration
+	mu       sync.Mutex
+	occupied bool
 }
 
 func newCallTracker(window time.Duration, emit callCountsEmitter) *callTracker {
@@ -47,10 +48,13 @@ func (t *callTracker) flush() {
 	t.mu.Lock()
 	counts := t.local
 	t.local = make(map[string]uint64)
+	occupied := t.occupied
+	t.occupied = len(counts) > 0
 	t.mu.Unlock()
-	if len(counts) > 0 {
-		t.emit(counts)
+	if len(counts) == 0 && !occupied {
+		return
 	}
+	t.emit(counts)
 }
 
 func (t *callTracker) Run(ctx context.Context) {

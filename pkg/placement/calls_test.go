@@ -54,6 +54,20 @@ func TestCallTracker_FlushSkipsEmptyWindow(t *testing.T) {
 	require.Empty(t, r.snapshots)
 }
 
+func TestCallTracker_FlushClearsAfterTraffic(t *testing.T) {
+	r := &callsRecorder{}
+	tr := newCallTracker(time.Hour, r.emit)
+
+	tr.RecordCall("seed-a")
+	tr.flush()
+	tr.flush()
+	tr.flush()
+
+	require.Len(t, r.snapshots, 2)
+	require.Equal(t, uint64(1), r.snapshots[0]["seed-a"])
+	require.Empty(t, r.snapshots[1])
+}
+
 func TestCallTracker_LocalCount(t *testing.T) {
 	tr := newCallTracker(time.Hour, func(_ map[string]uint64) {})
 
