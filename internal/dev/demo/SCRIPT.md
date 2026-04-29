@@ -13,6 +13,7 @@ pln ctx use demo
 pln set http :9090
 
 just internal/dev/start-terminal-dash
+just internal/dev/start-observability
 
 cd internal/dev/demo-cluster
 terraform output -json node_ips \
