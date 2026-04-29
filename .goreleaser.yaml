@@ -52,7 +52,7 @@ brews:
     install: |
       bin.install "pln"
     service: |
-      run [opt_bin/"pln", "up"]
+      run [opt_bin/"pln", "--dir", Dir.home + "/.pln", "up"]
       keep_alive true
       log_path var/"log/pln.log"
       error_log_path var/"log/pln.log"

@@ -108,6 +108,12 @@ func resolveContextName() string {
 	if v := os.Getenv("PLN_CONTEXT"); v != "" {
 		return v
 	}
+	// The brew launchd unit runs `pln up` with no --dir, so without this
+	// short-circuit a service restart would bind the default daemon to
+	// whichever context the user last selected for CLI routing.
+	if os.Getenv("XPC_SERVICE_NAME") == "homebrew.mxcl.pln" {
+		return defaultContextName
+	}
 	cf, _ := loadContexts()
 	if cf != nil && cf.Current != "" {
 		return cf.Current
