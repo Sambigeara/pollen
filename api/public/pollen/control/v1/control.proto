@@ -360,9 +360,8 @@ message SeedStaticRequest {
     max_len: 255
   }];
   bytes manifest_digest = 2 [(buf.validate.field).bytes = {len: 32}];
-  uint32 min_replicas = 3;
-  reserved 4;
-  reserved "properties";
+  reserved 3, 4;
+  reserved "min_replicas", "properties";
 }
 
 message SeedStaticResponse {}
@@ -381,7 +380,8 @@ message ListStaticRequest {}
 message StaticSummary {
   string name = 1;
   bytes manifest_digest = 2;
-  uint32 min_replicas = 3;
+  reserved 3;
+  reserved "min_replicas";
   repeated NodeRef claimants = 4;
   NodeRef publisher = 5;
   bool local = 6;

@@ -100,9 +100,8 @@ message StaticSpecChange {
     max_len: 255
   }];
   bytes manifest_digest = 2 [(buf.validate.field).bytes = {len: 32}];
-  uint32 min_replicas = 3;
-  reserved 4;
-  reserved "publisher_claim";
+  reserved 3, 4;
+  reserved "min_replicas", "publisher_claim";
 }
 
 message StaticClaimChange {

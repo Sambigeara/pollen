@@ -385,7 +385,6 @@ func (s *store) SetStaticSpec(spec StaticSpec) ([]Event, error) {
 		owned := &statev1.StaticSpecChange{
 			Name:           name,
 			ManifestDigest: digest,
-			MinReplicas:    spec.MinReplicas,
 		}
 		if ev, ok := rec.log[attrKey{kind: attrStaticSpec, name: name}]; ok && !ev.Deleted && proto.Equal(ev.GetStaticSpec(), owned) {
 			return nil, nil

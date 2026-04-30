@@ -18,7 +18,7 @@ cd infra
 just prod-laptop-install  # launchd: start prod pln on laptop (PLN_DIR=~/.pln-prod, :60711)
 just prod-up              # terraform: 2× cpx21 + cloudflare DNS + rules
 just prod-bootstrap       # pln bootstrap ssh --admin: auto-install + join + config :8080
-just prod-seed            # seed pln.sh apex + docs.pln.sh (min-replicas 2)
+just prod-seed            # seed pln.sh apex + docs.pln.sh
 ```
 
 Verify:

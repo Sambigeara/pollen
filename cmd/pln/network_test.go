@@ -161,27 +161,31 @@ func TestMatchBlobArg_NamePreferredOverPrefix(t *testing.T) {
 	require.Equal(t, "beefcafe", got)
 }
 
-func TestCollectStaticSection_EffectiveTarget(t *testing.T) {
+func TestCollectStaticSection_ReplicasDisplay(t *testing.T) {
 	self := &controlv1.NodeSummary{Node: nodeRef("a")}
 	cases := []struct {
-		name     string
-		min      uint32
-		capacity uint32
-		want     string
+		name      string
+		claimants int
+		capacity  uint32
+		want      string
 	}{
-		{"no capable peers drops target to 0", 1, 0, "0/0"},
-		{"capacity caps above-min target", 5, 2, "0/2"},
-		{"min caps below-capacity target", 2, 5, "0/2"},
+		{"no capable peers", 0, 0, "0/0"},
+		{"partial coverage", 1, 3, "1/3"},
+		{"full coverage", 3, 3, "3/3"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			claimants := make([]*controlv1.NodeRef, tc.claimants)
+			for i := range claimants {
+				claimants[i] = nodeRef("a")
+			}
 			resp := &controlv1.GetStatusResponse{
 				Self: self,
 				Sites: []*controlv1.StaticSummary{{
 					Name:            "home.local",
 					ManifestDigest:  make([]byte, 32),
-					MinReplicas:     tc.min,
 					ServingCapacity: tc.capacity,
+					Claimants:       claimants,
 					Publisher:       self.GetNode(),
 				}},
 			}

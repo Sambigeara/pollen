@@ -72,7 +72,7 @@ State is a pure data structure with zero I/O. No goroutines, no disk access, no 
 
 **Admin intent vs peer-local runtime.** The CRDT splits attrs into two classes, distinguished by how `buildSnapshot` projects them:
 
-- **Admin intent** — `WorkloadSpec`, `StaticSpec`, `BlobSpec`. Declarations of what the cluster should hold. Collected from every peer's log (not filtered by `valid`), lowest-peer-key wins on conflict. Survive publisher departure — `min-replicas` is a durability contract that must outlive any individual peer's presence in `valid`.
+- **Admin intent** — `WorkloadSpec`, `StaticSpec`, `BlobSpec`. Declarations of what the cluster should hold. Collected from every peer's log (not filtered by `valid`), lowest-peer-key wins on conflict. Survive publisher departure — admin intent must outlive any individual peer's presence in `valid` so workloads keep meeting `min-replicas`, late-joining peers can still claim static sites, and blob names stay resolvable.
 - **Peer-local runtime** — claims, reachability, heartbeat, telemetry, blob availability. Facts that are true *because* a specific peer asserts them. When the peer falls out of `valid` (denied or cert-expired), `buildSnapshot` drops their runtime state from the view.
 
 `handleSelfConflictLocked` encodes the same split: persistent attrs (including specs) are adopted on self-conflict, ephemeral attrs are tombstoned.

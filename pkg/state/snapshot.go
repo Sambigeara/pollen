@@ -435,7 +435,6 @@ func staticSpecFromProto(p *statev1.StaticSpecChange) StaticSpec {
 	return StaticSpec{
 		Name:           p.GetName(),
 		ManifestDigest: hex.EncodeToString(p.GetManifestDigest()),
-		MinReplicas:    p.GetMinReplicas(),
 	}
 }
 

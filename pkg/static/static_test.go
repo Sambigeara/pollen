@@ -98,7 +98,7 @@ func snapshotWith(manifestDigest string, publisher types.PeerKey) state.Snapshot
 	return state.Snapshot{
 		StaticSpecs: map[string]state.StaticSpecView{
 			"home.local": {
-				Spec:      state.StaticSpec{Name: "home.local", ManifestDigest: manifestDigest, MinReplicas: 1},
+				Spec:      state.StaticSpec{Name: "home.local", ManifestDigest: manifestDigest},
 				Publisher: publisher,
 			},
 		},

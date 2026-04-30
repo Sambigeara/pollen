@@ -823,7 +823,6 @@ type StaticSpecChange struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Name           string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	ManifestDigest []byte                 `protobuf:"bytes,2,opt,name=manifest_digest,json=manifestDigest,proto3" json:"manifest_digest,omitempty"`
-	MinReplicas    uint32                 `protobuf:"varint,3,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -870,13 +869,6 @@ func (x *StaticSpecChange) GetManifestDigest() []byte {
 		return x.ManifestDigest
 	}
 	return nil
-}
-
-func (x *StaticSpecChange) GetMinReplicas() uint32 {
-	if x != nil {
-		return x.MinReplicas
-	}
-	return 0
 }
 
 type StaticClaimChange struct {
@@ -2251,12 +2243,11 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x04name\x18\x05 \x01(\tR\x04name\x12\x16\n" +
 	"\x06spread\x18\x06 \x01(\x02R\x06spreadJ\x04\b\a\x10\bJ\x04\b\b\x10\tR\x0elatency_slo_msR\x0fpublisher_claim\"2\n" +
 	"\x16BlobAvailabilityChange\x12\x18\n" +
-	"\adigests\x18\x01 \x03(\fR\adigests\"\x9e\x01\n" +
+	"\adigests\x18\x01 \x03(\fR\adigests\"\x8f\x01\n" +
 	"\x10StaticSpecChange\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x120\n" +
-	"\x0fmanifest_digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x0emanifestDigest\x12!\n" +
-	"\fmin_replicas\x18\x03 \x01(\rR\vminReplicasJ\x04\b\x04\x10\x05R\x0fpublisher_claim\"3\n" +
+	"\x0fmanifest_digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x0emanifestDigestJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\fmin_replicasR\x0fpublisher_claim\"3\n" +
 	"\x11StaticClaimChange\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\"h\n" +

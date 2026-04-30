@@ -588,8 +588,7 @@ func collectStaticSection(st *controlv1.GetStatusResponse, opts statusViewOpts) 
 		if !opts.wide && len(digest) > shortHexLen {
 			digest = digest[:shortHexLen]
 		}
-		target := min(site.GetMinReplicas(), site.GetServingCapacity())
-		replicas := fmt.Sprintf("%d/%d", len(site.GetClaimants()), target)
+		replicas := fmt.Sprintf("%d/%d", len(site.GetClaimants()), site.GetServingCapacity())
 		local := ""
 		if site.GetLocal() {
 			local = "*"

@@ -72,8 +72,8 @@ prod-seed:
     cp -r web/apex/. "$APEX_BUNDLE"/
     sed "s|^VERSION=\"__VERSION__\"|VERSION=\"$VERSION\"|" scripts/install.sh > "$APEX_BUNDLE/install.sh"
     chmod +x "$APEX_BUNDLE/install.sh"
-    pln seed "$APEX_BUNDLE" pln.sh --min-replicas 2
-    pln seed web/docs docs.pln.sh --min-replicas 2
+    pln seed "$APEX_BUNDLE" pln.sh
+    pln seed web/docs docs.pln.sh
 
 # Upgrade pln on every node to the latest release. `pln daemon upgrade`
 # is localOnly, so it has to run on each node directly — can't go through

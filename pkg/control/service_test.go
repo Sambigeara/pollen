@@ -1015,7 +1015,7 @@ type fakeStatic struct {
 	blobs     map[string]struct{}
 }
 
-func (f *fakeStatic) SeedStatic(string, []byte, uint32) error {
+func (f *fakeStatic) SeedStatic(string, []byte) error {
 	return f.seedErr
 }
 func (f *fakeStatic) UnseedStatic(string) error        { return f.unseedErr }

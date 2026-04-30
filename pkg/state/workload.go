@@ -30,7 +30,6 @@ type NodeResources struct {
 type StaticSpec struct {
 	Name           string
 	ManifestDigest string
-	MinReplicas    uint32
 }
 
 // BlobSpec names a content-addressed blob so callers can refer to it by

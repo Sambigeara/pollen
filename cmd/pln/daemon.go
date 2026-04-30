@@ -111,7 +111,7 @@ control how many lines to show.`,
 	logsCmd.Flags().BoolP("follow", "f", false, "Stream logs in real time")
 	logsCmd.Flags().IntP("lines", "n", 50, "Number of lines to show") //nolint:mnd
 
-	return []*cobra.Command{upCmd, downCmd, restartCmd, logsCmd, newDaemonGroupCmd()}
+	return []*cobra.Command{upCmd, downCmd, restartCmd, logsCmd, newUpgradeCmd(), newDaemonGroupCmd()}
 }
 
 // newDaemonGroupCmd builds the `pln daemon` subtree for admin
@@ -123,21 +123,23 @@ func newDaemonGroupCmd() *cobra.Command {
 		Use:   "daemon",
 		Short: "Manage the pln background service (install/uninstall/upgrade)",
 	}
+	root.AddCommand(newDaemonInstallCmd(), newDaemonUninstallCmd(), newUpgradeCmd())
+	return root
+}
 
-	upgradeCmd := &cobra.Command{
+func newUpgradeCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Upgrade pln to the latest version",
 		Long: `Upgrades the local pln binary via the platform package manager
 (Homebrew on macOS, the install script on Linux). Pass --restart to also
 bounce the background service and pick up the new binary.`,
-		Example: "  pln daemon upgrade --restart",
+		Example: "  pln upgrade --restart",
 		Args:    cobra.NoArgs,
 		RunE:    withEnv(runUpgrade, localOnly()),
 	}
-	upgradeCmd.Flags().Bool("restart", false, "Restart the background service after upgrading")
-
-	root.AddCommand(newDaemonInstallCmd(), newDaemonUninstallCmd(), upgradeCmd)
-	return root
+	cmd.Flags().Bool("restart", false, "Restart the background service after upgrading")
+	return cmd
 }
 
 func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {

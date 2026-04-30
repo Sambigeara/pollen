@@ -2802,7 +2802,6 @@ type SeedStaticRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Name           string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	ManifestDigest []byte                 `protobuf:"bytes,2,opt,name=manifest_digest,json=manifestDigest,proto3" json:"manifest_digest,omitempty"`
-	MinReplicas    uint32                 `protobuf:"varint,3,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -2849,13 +2848,6 @@ func (x *SeedStaticRequest) GetManifestDigest() []byte {
 		return x.ManifestDigest
 	}
 	return nil
-}
-
-func (x *SeedStaticRequest) GetMinReplicas() uint32 {
-	if x != nil {
-		return x.MinReplicas
-	}
-	return 0
 }
 
 type SeedStaticResponse struct {
@@ -3014,7 +3006,6 @@ type StaticSummary struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Name            string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	ManifestDigest  []byte                 `protobuf:"bytes,2,opt,name=manifest_digest,json=manifestDigest,proto3" json:"manifest_digest,omitempty"`
-	MinReplicas     uint32                 `protobuf:"varint,3,opt,name=min_replicas,json=minReplicas,proto3" json:"min_replicas,omitempty"`
 	Claimants       []*NodeRef             `protobuf:"bytes,4,rep,name=claimants,proto3" json:"claimants,omitempty"`
 	Publisher       *NodeRef               `protobuf:"bytes,5,opt,name=publisher,proto3" json:"publisher,omitempty"`
 	Local           bool                   `protobuf:"varint,6,opt,name=local,proto3" json:"local,omitempty"`
@@ -3065,13 +3056,6 @@ func (x *StaticSummary) GetManifestDigest() []byte {
 		return x.ManifestDigest
 	}
 	return nil
-}
-
-func (x *StaticSummary) GetMinReplicas() uint32 {
-	if x != nil {
-		return x.MinReplicas
-	}
-	return 0
 }
 
 func (x *StaticSummary) GetClaimants() []*NodeRef {
@@ -3338,27 +3322,25 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\"D\n" +
 	"\x11RemoveBlobRequest\x12/\n" +
 	"\x04hash\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x04hash\"\x14\n" +
-	"\x12RemoveBlobResponse\"\x9a\x01\n" +
+	"\x12RemoveBlobResponse\"\x8b\x01\n" +
 	"\x11SeedStaticRequest\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x120\n" +
-	"\x0fmanifest_digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x0emanifestDigest\x12!\n" +
-	"\fmin_replicas\x18\x03 \x01(\rR\vminReplicasJ\x04\b\x04\x10\x05R\n" +
+	"\x0fmanifest_digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x0emanifestDigestJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\fmin_replicasR\n" +
 	"properties\"\x14\n" +
 	"\x12SeedStaticResponse\"5\n" +
 	"\x13UnseedStaticRequest\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\"\x16\n" +
 	"\x14UnseedStaticResponse\"\x13\n" +
-	"\x11ListStaticRequest\"\xa4\x02\n" +
+	"\x11ListStaticRequest\"\x95\x02\n" +
 	"\rStaticSummary\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12'\n" +
-	"\x0fmanifest_digest\x18\x02 \x01(\fR\x0emanifestDigest\x12!\n" +
-	"\fmin_replicas\x18\x03 \x01(\rR\vminReplicas\x128\n" +
+	"\x0fmanifest_digest\x18\x02 \x01(\fR\x0emanifestDigest\x128\n" +
 	"\tclaimants\x18\x04 \x03(\v2\x1a.pollen.control.v1.NodeRefR\tclaimants\x128\n" +
 	"\tpublisher\x18\x05 \x01(\v2\x1a.pollen.control.v1.NodeRefR\tpublisher\x12\x14\n" +
 	"\x05local\x18\x06 \x01(\bR\x05local\x12)\n" +
-	"\x10serving_capacity\x18\a \x01(\rR\x0fservingCapacity\"L\n" +
+	"\x10serving_capacity\x18\a \x01(\rR\x0fservingCapacityJ\x04\b\x03\x10\x04R\fmin_replicas\"L\n" +
 	"\x12ListStaticResponse\x126\n" +
 	"\x05sites\x18\x01 \x03(\v2 .pollen.control.v1.StaticSummaryR\x05sites*t\n" +
 	"\n" +

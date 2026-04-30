@@ -29,7 +29,6 @@ var hashPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 const (
 	streamChunkBytes       = 1 << 20 // stays below the default 4 MiB gRPC per-message cap
 	defaultWorkloadMinReps = 2
-	defaultStaticMinReps   = 1
 )
 
 type seedKind int
@@ -75,7 +74,7 @@ the blob remains anonymous (addressed only by hash).`,
 		}
 		return pflag.NormalizedName(name)
 	})
-	seedCmd.Flags().Uint32("min-replicas", 0, "minimum replicas (workload default 2, static default 1, n/a for blob)")
+	seedCmd.Flags().Uint32("min-replicas", 0, "minimum replicas (workload only; default 2)")
 	seedCmd.Flags().Bool("everywhere", false, "place workload on every node (workload only)")
 	seedCmd.Flags().String("memory", "", "memory limit, e.g. 64MiB, 128M (alias --mem; workload only; default 8MiB)")
 	seedCmd.Flags().Duration("timeout", 0, "per-invocation timeout (workload only, e.g. 500ms, 5s)")
@@ -129,16 +128,13 @@ func detectSeedKind(source string) (seedKind, error) {
 }
 
 func validateSeedFlags(cmd *cobra.Command, kind seedKind) error {
-	workloadOnly := []string{"everywhere", "memory", "timeout"}
+	workloadOnly := []string{"everywhere", "memory", "timeout", "min-replicas"}
 	if kind != kindWorkload {
 		for _, f := range workloadOnly {
 			if cmd.Flags().Changed(f) {
 				return fmt.Errorf("--%s only applies to .wasm workloads", f)
 			}
 		}
-	}
-	if kind == kindBlob && cmd.Flags().Changed("min-replicas") {
-		return errors.New("--min-replicas does not apply to blobs")
 	}
 	return nil
 }
@@ -291,14 +287,9 @@ func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string) error {
 	}
 	manifestDigest, _ := hex.DecodeString(manifestHash)
 
-	minReplicas := uint32(defaultStaticMinReps)
-	if cmd.Flags().Changed("min-replicas") {
-		minReplicas, _ = cmd.Flags().GetUint32("min-replicas")
-	}
 	if _, err := env.client.SeedStatic(cmd.Context(), connect.NewRequest(&controlv1.SeedStaticRequest{
 		Name:           name,
 		ManifestDigest: manifestDigest,
-		MinReplicas:    minReplicas,
 	})); err != nil {
 		return err
 	}

@@ -729,7 +729,7 @@ func TestSpecs_SurvivePublisherDeparture(t *testing.T) {
 		{Change: &statev1.GossipEvent_Network{Network: &statev1.NetworkChange{Ips: []string{"10.0.0.2"}, LocalPort: 9001}}},
 		{Change: &statev1.GossipEvent_Service{Service: &statev1.ServiceChange{Name: "web", Port: 8080}}},
 		{Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "wl-1", Name: "myapp", MinReplicas: 2}}},
-		{Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: make([]byte, sha256Len), MinReplicas: 2}}},
+		{Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: make([]byte, sha256Len)}}},
 		{Change: &statev1.GossipEvent_BlobSpec{BlobSpec: &statev1.BlobSpecChange{Name: "manifest", Digest: make([]byte, sha256Len)}}},
 	}
 	seed := func(s *store) {
@@ -809,15 +809,16 @@ func TestSpecs_TombstoneFallsBackToLosingPublisher(t *testing.T) {
 	if peerA.Compare(peerB) > 0 {
 		peerA, peerB = peerB, peerA
 	}
-	digest := make([]byte, sha256Len)
+	digestA, digestB := make([]byte, sha256Len), make([]byte, sha256Len)
+	digestA[0], digestB[0] = 0x01, 0x02
 
 	applyTestEvent(t, s, &statev1.GossipEvent{
 		PeerId: peerA.String(), Counter: 1,
-		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: digest, MinReplicas: 2}},
+		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: digestA}},
 	})
 	applyTestEvent(t, s, &statev1.GossipEvent{
 		PeerId: peerB.String(), Counter: 1,
-		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: digest, MinReplicas: 3}},
+		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: digestB}},
 	})
 
 	require.Equal(t, peerA, s.Snapshot().StaticSpecs["site.example"].Publisher)
@@ -831,7 +832,7 @@ func TestSpecs_TombstoneFallsBackToLosingPublisher(t *testing.T) {
 	snap := s.Snapshot()
 	require.Contains(t, snap.StaticSpecs, "site.example")
 	require.Equal(t, peerB, snap.StaticSpecs["site.example"].Publisher)
-	require.Equal(t, uint32(3), snap.StaticSpecs["site.example"].Spec.MinReplicas)
+	require.Equal(t, hex.EncodeToString(digestB), snap.StaticSpecs["site.example"].Spec.ManifestDigest)
 }
 
 func TestSpecs_ValidPublisherOutranksInvalid(t *testing.T) {
@@ -848,7 +849,7 @@ func TestSpecs_ValidPublisherOutranksInvalid(t *testing.T) {
 
 	applyTestEvent(t, s, &statev1.GossipEvent{
 		PeerId: stale.String(), Counter: 1,
-		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: staleDigest, MinReplicas: 2}},
+		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: staleDigest}},
 	})
 	applyTestEvent(t, s, &statev1.GossipEvent{
 		PeerId: stale.String(), Counter: 2,
@@ -857,26 +858,25 @@ func TestSpecs_ValidPublisherOutranksInvalid(t *testing.T) {
 
 	applyTestEvent(t, s, &statev1.GossipEvent{
 		PeerId: fresh.String(), Counter: 1,
-		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: freshDigest, MinReplicas: 3}},
+		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: freshDigest}},
 	})
 
 	snap := s.Snapshot()
 	require.Equal(t, fresh, snap.StaticSpecs["site.example"].Publisher,
 		"valid publisher should outrank invalid one regardless of peer key")
 	require.Equal(t, hex.EncodeToString(freshDigest), snap.StaticSpecs["site.example"].Spec.ManifestDigest)
-	require.Equal(t, uint32(3), snap.StaticSpecs["site.example"].Spec.MinReplicas)
 
 	// Denied publishers should also lose to a valid one.
 	s.DenyPeer(fresh)
 	denied := newTestStore(t, genKey(t))
 	applyTestEvent(t, denied, &statev1.GossipEvent{
 		PeerId: stale.String(), Counter: 1,
-		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: staleDigest, MinReplicas: 2}},
+		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: staleDigest}},
 	})
 	denied.DenyPeer(stale)
 	applyTestEvent(t, denied, &statev1.GossipEvent{
 		PeerId: fresh.String(), Counter: 1,
-		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: freshDigest, MinReplicas: 3}},
+		Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: freshDigest}},
 	})
 
 	snap = denied.Snapshot()
@@ -892,7 +892,7 @@ func TestSpecs_SurviveLoadGossipState(t *testing.T) {
 	digest := make([]byte, sha256Len)
 	events := []*statev1.GossipEvent{
 		{Change: &statev1.GossipEvent_WorkloadSpec{WorkloadSpec: &statev1.WorkloadSpecChange{Hash: "wl-1", Name: "myapp", MinReplicas: 2}}},
-		{Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: digest, MinReplicas: 2}}},
+		{Change: &statev1.GossipEvent_StaticSpec{StaticSpec: &statev1.StaticSpecChange{Name: "site.example", ManifestDigest: digest}}},
 		{Change: &statev1.GossipEvent_BlobSpec{BlobSpec: &statev1.BlobSpecChange{Name: "manifest", Digest: digest}}},
 	}
 	for i, ev := range events {

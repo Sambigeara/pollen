@@ -418,7 +418,7 @@ curl localhost:8080</code></pre>
 
             <h2 id="publish-a-site">Publish a site</h2>
             <pre><code>pln seed ./public my-site</code></pre>
-            <p>Walks the directory, hashes every file, and gossips them. Other nodes claim the site according to <code>--min-replicas</code> and serve it on <code>:8080</code> (routed by <code>Host</code> header). Override the port with <code>pln set static-http :9000</code>.</p>
+            <p>Walks the directory, hashes every file, and gossips them. Every node with <code>static-http</code> enabled claims the site and serves it on <code>:8080</code> (routed by <code>Host</code> header). Override the port with <code>pln set static-http :9000</code>.</p>
             <pre><code>curl -H "Host: my-site" http://&lt;node-addr&gt;:8080/</code></pre>
             <p>Re-running the same command is idempotent: it supersedes the existing site with a fresh manifest. Old blobs are GC'd once no spec references them.</p>
 

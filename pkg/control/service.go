@@ -89,7 +89,7 @@ type BlobsControl interface {
 }
 
 type StaticControl interface {
-	SeedStatic(name string, manifestDigest []byte, minReplicas uint32) error
+	SeedStatic(name string, manifestDigest []byte) error
 	UnseedStatic(name string) error
 	StaticBlobs() map[string]struct{}
 }
@@ -839,7 +839,7 @@ func (s *Service) SeedStatic(_ context.Context, req *controlv1.SeedStaticRequest
 	if s.creds == nil || s.creds.DelegationKey() == nil {
 		return nil, status.Error(codes.PermissionDenied, "only admin nodes can seed static sites")
 	}
-	if err := s.static.SeedStatic(req.GetName(), req.GetManifestDigest(), req.GetMinReplicas()); err != nil {
+	if err := s.static.SeedStatic(req.GetName(), req.GetManifestDigest()); err != nil {
 		return nil, s.fail(err, "seed static")
 	}
 	return &controlv1.SeedStaticResponse{}, nil
@@ -874,7 +874,6 @@ func buildStaticSummaries(snap state.Snapshot) []*controlv1.StaticSummary {
 		summary := &controlv1.StaticSummary{
 			Name:            name,
 			ManifestDigest:  digest,
-			MinReplicas:     spec.Spec.MinReplicas,
 			Publisher:       &controlv1.NodeRef{PeerPub: spec.Publisher.Bytes()},
 			Local:           local,
 			ServingCapacity: capacity,

@@ -29,7 +29,7 @@ type StaticAPI interface {
 	Stop() error
 	Signal()
 	Events() <-chan state.Event
-	SeedStatic(name string, manifestDigest []byte, minReplicas uint32) error
+	SeedStatic(name string, manifestDigest []byte) error
 	UnseedStatic(name string) error
 	StaticBlobs() map[string]struct{}
 }
@@ -112,14 +112,13 @@ func (s *Service) forwardEvents(events []state.Event) {
 	}
 }
 
-func (s *Service) SeedStatic(name string, manifestDigest []byte, minReplicas uint32) error {
+func (s *Service) SeedStatic(name string, manifestDigest []byte) error {
 	if len(manifestDigest) != digestSize {
 		return fmt.Errorf("manifest digest must be %d bytes", digestSize)
 	}
 	events, err := s.store.SetStaticSpec(state.StaticSpec{
 		Name:           name,
 		ManifestDigest: hex.EncodeToString(manifestDigest),
-		MinReplicas:    minReplicas,
 	})
 	if err != nil {
 		return err
