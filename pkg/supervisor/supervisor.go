@@ -410,7 +410,6 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	return n, nil
 }
 
-// spawn safely manages goroutine lifecycles against the Supervisor's waitgroup.
 func (n *Supervisor) spawn(fn func()) {
 	n.wg.Go(func() {
 		fn()
@@ -864,8 +863,6 @@ func (n *Supervisor) shutdown() {
 	}
 }
 
-// --- Interface implementations directly mapped for indirection removal ---
-
 func (n *Supervisor) PeerStateCounts() transport.PeerStateCounts { return n.mesh.PeerStateCounts() }
 
 func (n *Supervisor) GetActivePeerAddress(pk types.PeerKey) (*net.UDPAddr, bool) {
@@ -902,8 +899,6 @@ func (n *Supervisor) ControlMetrics() control.Metrics {
 		EagerSyncFailures:  uint64(cm.EagerSyncFailures),
 	}
 }
-
-// --- Public API ---
 
 func (n *Supervisor) RouteRequest(ctx context.Context, uri wasm.URI, input []byte) ([]byte, error) {
 	// Preserve existing caller identity for inter-workload call chains.
@@ -988,8 +983,6 @@ func (n *Supervisor) DesiredConnections() []tunneling.ConnectionInfo {
 	return n.tunneling.ListDesiredConnections()
 }
 
-// --- Internal Stream Wrappers ---
-
 type streamOpenAdapter struct {
 	t transport.Transport
 }
@@ -1011,7 +1004,6 @@ func (a *trafficCountedOpener) OpenStream(ctx context.Context, peer types.PeerKe
 	return transport.WrapTrafficStream(stream, a.recorder, peer), nil
 }
 
-// Compile-time interface compliance checks.
 var (
 	_ membership.ClusterState   = state.StateStore(nil)
 	_ membership.Network        = (*transport.QUICTransport)(nil)

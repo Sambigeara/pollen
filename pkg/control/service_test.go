@@ -36,8 +36,6 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// --- Test Harness ---
-
 type harness struct {
 	t          *testing.T
 	membership *fakeMembership
@@ -72,8 +70,6 @@ func newHarness(t *testing.T, opts ...control.Option) *harness { //nolint:thelpe
 	}, opts...)...)
 	return h
 }
-
-// --- Tests ---
 
 func TestShutdownInvokesCallback(t *testing.T) {
 	done := make(chan struct{})

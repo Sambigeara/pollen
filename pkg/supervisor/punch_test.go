@@ -62,8 +62,6 @@ func TestRankCoordinatorsCrossNATPrefersPublicRelay(t *testing.T) {
 	require.Equal(t, []types.PeerKey{publicRelay}, got)
 }
 
-// Covered by TestRankCoordinatorsSharedEgressLANBeatsPublicFallback below.
-
 func TestRankCoordinatorsSharedEgressFallsBackToPublicRelay(t *testing.T) {
 	local := testPeerKey(1)
 	target := testPeerKey(2)

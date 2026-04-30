@@ -289,7 +289,6 @@ func TestStore_EphemeralTombstones(t *testing.T) {
 
 	staleState := s1.EncodeFull()
 
-	// Restart
 	s2 := newTestStore(t, pk)
 	require.Equal(t, uint32(0), s2.Snapshot().Nodes[s2.localID].ExternalPort)
 

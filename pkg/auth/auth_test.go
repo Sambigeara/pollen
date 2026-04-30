@@ -59,8 +59,6 @@ func invalidateSignature(sig []byte) []byte {
 	return bad
 }
 
-// --- Credential persistence ---
-
 func TestLoadNodeCredentials_ExpiredCertStillLoads(t *testing.T) {
 	rootPub, rootPriv := newKeyPair(t)
 	nodePub, _ := newKeyPair(t)
@@ -152,8 +150,6 @@ func TestEnrollReplacesExpiredCert(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, proto.Equal(verified.Cert, creds.Cert()), "expired cert should be replaced")
 }
-
-// --- Cert properties ---
 
 func TestCertTTLAndExpiry(t *testing.T) {
 	_, rootPriv := newKeyPair(t)
@@ -265,8 +261,6 @@ func TestReconnectWindow(t *testing.T) {
 	require.False(t, now.Add(8*24*time.Hour).Before(expiresAt.Add(reconnectWindow)))
 }
 
-// --- Delegation cert verification ---
-
 func TestVerifyDelegationCert(t *testing.T) {
 	rootPub, rootPriv := newKeyPair(t)
 	nodePub, _ := newKeyPair(t)
@@ -353,8 +347,6 @@ func TestVerifyDelegationCert(t *testing.T) {
 	}
 }
 
-// --- Signer and token issuance ---
-
 func TestDelegationSignerAndTokens(t *testing.T) {
 	dir := testIdentityDir(t)
 	nodePub, nodePriv := newKeyPair(t)
@@ -411,8 +403,6 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 		require.EqualValues(t, delegatedPub, verified.Cert.GetClaims().GetIssuerPub())
 	})
 }
-
-// --- Root self-renewal ---
 
 func TestEnsureLocalRootCredentials_NoOpOnFreshUnchangedCert(t *testing.T) {
 	dir := testIdentityDir(t)
@@ -771,8 +761,6 @@ func TestLocalRootAuthority_AfterEnsureIsRoot(t *testing.T) {
 		"the returned adminPub must match creds.RootPub for a healthy root")
 }
 
-// --- Invite token specifics ---
-
 func TestInviteTokenOpenSubject(t *testing.T) {
 	adminPub, adminPriv := newKeyPair(t)
 
@@ -821,8 +809,6 @@ func TestInviteTokenSubjectBoundMismatch(t *testing.T) {
 	otherSubject, _ := newKeyPair(t)
 	require.ErrorContains(t, auth.VerifyInviteToken(invite, otherSubject, now), "subject mismatch")
 }
-
-// --- Invite consumer ---
 
 func TestInviteConsumer(t *testing.T) {
 	initialState := []*statev1.ConsumedInvite{
@@ -911,8 +897,6 @@ func TestInviteConsumer_ExportAndLoad(t *testing.T) {
 	require.False(t, ok, "invite2 should be rejected by restored consumer")
 }
 
-// --- Attributes tests ---
-
 func TestCertAttributesRoundTrip(t *testing.T) {
 	now := time.Now()
 	rootPub, rootPriv := newKeyPair(t)
@@ -938,7 +922,6 @@ func TestCertAttributesRoundTrip(t *testing.T) {
 	require.Equal(t, "infra", got.GetFields()["team"].GetStringValue())
 	require.Equal(t, float64(42), got.GetFields()["count"].GetNumberValue())
 
-	// Marshal/unmarshal round-trip preserves attributes and signature.
 	raw, err := proto.Marshal(cert)
 	require.NoError(t, err)
 	restored := &admissionv1.DelegationCert{}

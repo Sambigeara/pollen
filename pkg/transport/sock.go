@@ -99,7 +99,7 @@ func (s *sockStoreImpl) Punch(ctx context.Context, addr *net.UDPAddr, localNAT n
 					c.refs.Store(1)
 					select {
 					case ch <- c:
-						return // Success, stop trying.
+						return
 					default:
 						_ = udp.Close()
 					}

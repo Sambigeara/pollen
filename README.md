@@ -24,7 +24,7 @@ Pollen is a single Go binary. Install it on a few machines and you get a WASM ru
 
 Pollen runs WASM, not containers. You can't `pln seed` a Postgres image. That constraint is the whole point: WASM is narrow enough that placement can be leaderless. If you need containers, k3s and Nomad are still where to go. If your workloads can compile to WASM (Go, Rust, JS, Python, C#, Zig via [Extism](https://extism.org)), there's no etcd, no kubelet, no helm. Just pln.
 
-Pollen runs end-to-end on real clusters today. It's pre-1.0, so expect breaking changes.
+Pollen runs end-to-end on real clusters today. It's pre-1.0, built by one person across a limited set of hardware. Expect breaking changes and rough edges. Please [raise an issue](https://github.com/sambigeara/pollen/issues) if you hit any snags!
 
 ## Highlights
 
@@ -208,14 +208,14 @@ the digest on arrival.
 
 ## FAQ
 
-### macOS: `sendmsg: no route to host` on LAN dials
+- **macOS: `sendmsg: no route to host` on LAN dials**
 
-Most likely macOS Local Network Privacy. Grant `pln` access in
-**System Settings → Privacy & Security → Local Network**. The prompt
-appears the first time `pln` tries to reach a LAN peer; if you miss
-it, or the binary's signature changes after an upgrade, LAN dials
-silently fail while WAN traffic keeps working. Re-granting access
-fixes it.
+  Most likely macOS Local Network Privacy. Grant `pln` access in
+  **System Settings → Privacy & Security → Local Network**. The prompt
+  appears the first time `pln` tries to reach a LAN peer; if you miss
+  it, or the binary's signature changes after an upgrade, LAN dials
+  silently fail while WAN traffic keeps working. Re-granting access
+  fixes it.
 
 ## License
 

@@ -167,13 +167,11 @@ func (vs *VirtualSwitch) deliver(from, to *net.UDPAddr, data []byte) {
 		}
 	}
 
-	// Check partition.
 	if vs.isPartitioned(fromKey, toKey) {
 		vs.mu.Unlock()
 		return
 	}
 
-	// Get link config.
 	lk := linkKey{fromKey, toKey}
 	lc := vs.links[lk]
 
@@ -193,12 +191,10 @@ func (vs *VirtualSwitch) deliver(from, to *net.UDPAddr, data []byte) {
 
 	vs.mu.Unlock()
 
-	// Apply packet loss.
 	if packetLoss > 0 && rand.Float64() < packetLoss { //nolint:gosec
 		return
 	}
 
-	// Compute delay.
 	delay := computeDelay(latency, jitter)
 
 	pkt := inboundPacket{data: copyBytes(data), addr: actualFrom}
@@ -340,14 +336,12 @@ func (c *VirtualPacketConn) enqueue(pkt inboundPacket) {
 // ReadFrom blocks until a packet arrives, the deadline expires, or the conn is closed.
 func (c *VirtualPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	for {
-		// Check if closed.
 		select {
 		case <-c.closedCh:
 			return 0, nil, net.ErrClosed
 		default:
 		}
 
-		// Evaluate deadline.
 		c.deadlineMu.Lock()
 		dl := c.deadline
 		c.deadlineMu.Unlock()

@@ -269,7 +269,6 @@ func TestConnectReturnsErrIdentityMismatch(t *testing.T) {
 	a := startMeshHarness(t, cluster)
 	b := startMeshHarness(t, cluster)
 
-	// Generate a random key that differs from b's actual key.
 	wrongPub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	wrongKey := types.PeerKeyFromBytes(wrongPub)
@@ -277,7 +276,6 @@ func TestConnectReturnsErrIdentityMismatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Dial b's address but expect the wrong key.
 	err = a.mesh.Connect(ctx, wrongKey, b.loopbackAddr())
 	require.Error(t, err)
 	require.True(t, errors.Is(err, transport.ErrIdentityMismatch), "expected ErrIdentityMismatch, got: %v", err)
@@ -620,8 +618,6 @@ func TestRoutedDeliveryRejectsNonTunnel(t *testing.T) {
 	conn, ok := a.mesh.GetConn(b.peerKey)
 	require.True(t, ok)
 
-	// --- Negative: digest inner type must be rejected ---
-
 	stream, err := conn.OpenStreamSync(ctx)
 	require.NoError(t, err)
 
@@ -630,7 +626,7 @@ func TestRoutedDeliveryRejectsNonTunnel(t *testing.T) {
 	copy(hdr[1:33], b.peerKey[:])  // dest = B (local delivery)
 	copy(hdr[33:65], a.peerKey[:]) // source = A
 	hdr[65] = ttl
-	hdr[66] = typeDigest // rejected
+	hdr[66] = typeDigest
 	_, err = stream.Write(hdr[:])
 	require.NoError(t, err)
 
@@ -638,8 +634,6 @@ func TestRoutedDeliveryRejectsNonTunnel(t *testing.T) {
 	buf := make([]byte, 1)
 	_, err = stream.Read(buf)
 	require.Error(t, err, "expected stream reset for non-tunnel inner type")
-
-	// --- Positive: tunnel inner type must be delivered ---
 
 	stream2, err := conn.OpenStreamSync(ctx)
 	require.NoError(t, err)
@@ -678,7 +672,6 @@ func TestSimultaneousDialConverges(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Both sides dial simultaneously.
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -782,11 +775,9 @@ func TestRoutedRelayTrafficAttribution(t *testing.T) {
 		return ab && bc
 	}, 5*time.Second, 25*time.Millisecond)
 
-	// A opens a routed stream to C.
 	streamA, err := a.mesh.OpenStream(ctx, c.peerKey, transport.StreamTypeTunnel)
 	require.NoError(t, err)
 
-	// C accepts the stream.
 	acceptCtx, acceptCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer acceptCancel()
 	streamC, stype, peerKey, err := c.mesh.AcceptStream(acceptCtx)
@@ -794,7 +785,6 @@ func TestRoutedRelayTrafficAttribution(t *testing.T) {
 	require.Equal(t, transport.StreamTypeTunnel, stype)
 	require.Equal(t, a.peerKey, peerKey)
 
-	// A→C: send payload.
 	payload := []byte("hello from A to C")
 	_, err = streamA.Write(payload)
 	require.NoError(t, err)
@@ -804,7 +794,6 @@ func TestRoutedRelayTrafficAttribution(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, payload, buf[:n])
 
-	// C→A: send response.
 	response := []byte("reply from C to A")
 	_, err = streamC.Write(response)
 	require.NoError(t, err)
@@ -813,7 +802,6 @@ func TestRoutedRelayTrafficAttribution(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, response, buf[:n])
 
-	// Close streams.
 	_ = streamA.Close()
 	_ = streamC.Close()
 

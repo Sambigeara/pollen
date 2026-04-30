@@ -57,7 +57,7 @@ func setPerm(path string, mode os.FileMode) error {
 
 // applyPlnOwnership chowns a path to pln:pln. When root, both uid and
 // gid are set; when non-root, only the gid is changed (keeping the
-// caller's uid). Exported via export_linux_test.go for Provision.
+// caller's uid).
 func applyPlnOwnership(path string) error {
 	plnOnce.Do(resolvePlnOwner)
 	if !plnResolved {

@@ -187,8 +187,6 @@ func TestConvergence_PartitionHealing(t *testing.T) {
 	}
 }
 
-// --- Fuzz test ---
-
 type fuzzReader struct {
 	data []byte
 	pos  int

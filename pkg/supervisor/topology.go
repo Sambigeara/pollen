@@ -35,8 +35,6 @@ const (
 	publicRatioMixedThreshold  = 0.5
 )
 
-// --- Atomic Router ---
-
 type atomicRouter struct {
 	table    routing.Table
 	changeCh chan struct{}
@@ -68,8 +66,6 @@ func (r *atomicRouter) set(t routing.Table) {
 	r.changeCh = make(chan struct{})
 	r.mu.Unlock()
 }
-
-// --- Topology Resolution ---
 
 type inferredReachability int
 

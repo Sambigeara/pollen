@@ -43,7 +43,7 @@ const (
 	DefaultInfraMax       = 2
 	DefaultNearestK       = 4
 	DefaultRandomR        = 2
-	EpochSeconds          = 300 // 5 minutes
+	EpochSeconds          = 300
 	nearestHysteresis     = 0.20
 	minHysteresisDistance = 5.0
 )

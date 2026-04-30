@@ -32,7 +32,6 @@ func TestPeerDiscoveryLifecycle(t *testing.T) {
 	pk := testPeerKey(1)
 	ip := net.ParseIP("10.0.0.1")
 
-	// 1. Discover
 	s.Discover(pk, []net.IP{ip}, 9000, nil, true, true)
 
 	s.mu.RLock()
@@ -43,7 +42,6 @@ func TestPeerDiscoveryLifecycle(t *testing.T) {
 	require.Equal(t, peerStateDiscovered, p.State)
 	require.Equal(t, connectStageDirect, p.Stage)
 
-	// 2. Mark Connected
 	s.MarkConnected(pk, ip, 9000)
 
 	s.mu.RLock()
@@ -54,7 +52,6 @@ func TestPeerDiscoveryLifecycle(t *testing.T) {
 	require.Equal(t, peerStateConnected, p.State)
 	require.Equal(t, 9000, p.ObservedPort)
 
-	// 3. Disconnect
 	s.Disconnect(pk, disconnectIdleTimeout)
 
 	s.mu.RLock()
@@ -63,7 +60,6 @@ func TestPeerDiscoveryLifecycle(t *testing.T) {
 
 	require.True(t, ok)
 	require.Equal(t, peerStateDiscovered, p.State)
-	// Verify backoff was applied
 	require.True(t, p.NextActionAt.After(time.Now()))
 }
 

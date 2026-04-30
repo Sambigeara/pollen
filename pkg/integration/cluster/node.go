@@ -50,7 +50,6 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 	pub := priv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 	peerKey := types.PeerKeyFromBytes(pub)
 
-	// Get TLS cert and delegation cert from ClusterAuth.
 	_, dc := cfg.Auth.NodeCredentials(priv)
 
 	// Persist credentials to disk and load the signer via the production path.
@@ -62,7 +61,6 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 	require.NoError(t, err)
 	creds.SetDelegationKey(signer)
 
-	// Get VirtualPacketConn from switch.
 	vconn := cfg.Switch.Bind(cfg.Addr, cfg.Role)
 
 	opts := supervisor.Options{
@@ -103,7 +101,6 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 		name:    cfg.Name,
 	}
 
-	// Cleanup: mark stopped, cancel context, wait for node to stop.
 	t.Cleanup(func() {
 		tn.stopped.Store(true)
 		cancel()

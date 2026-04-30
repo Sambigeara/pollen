@@ -166,10 +166,6 @@ type Router interface {
 	NextHop(dest types.PeerKey) (nextHop types.PeerKey, ok bool)
 }
 
-// -----------------------------------------------------------------------------
-// Options & Initialization
-// -----------------------------------------------------------------------------
-
 type transportOptions struct {
 	router           Router
 	packetConn       net.PacketConn

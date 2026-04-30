@@ -304,10 +304,6 @@ func indexToAddr(i int) *net.UDPAddr {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Preset factories
-// ---------------------------------------------------------------------------
-
 // PublicMesh creates n Public nodes in a full mesh.
 func PublicMesh(t testing.TB, n int, ctx context.Context) *Cluster { //nolint:thelper
 	t.Helper()

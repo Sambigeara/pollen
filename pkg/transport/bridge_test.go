@@ -46,29 +46,23 @@ func TestBridgeStreamsHalfClose(t *testing.T) {
 		bridgeStreams(bridgeA, bridgeB)
 	}()
 
-	// A writes a request then half-closes its write side.
 	_, err := appA.Write([]byte("request"))
 	require.NoError(t, err)
 	require.NoError(t, appA.CloseWrite())
 
-	// B reads the request.
 	buf := make([]byte, 64)
 	n, err := io.ReadFull(appB, buf[:7])
 	require.NoError(t, err)
 	require.Equal(t, "request", string(buf[:n]))
 
-	// B writes a response then half-closes.
 	_, err = appB.Write([]byte("response"))
 	require.NoError(t, err)
 	require.NoError(t, appB.CloseWrite())
 
-	// A reads the response — this is what broke before the fix because the
-	// eager once.Do(teardown) killed both streams when the first copy finished.
 	n, err = io.ReadFull(appA, buf[:8])
 	require.NoError(t, err)
 	require.Equal(t, "response", string(buf[:n]))
 
-	// Bridge goroutine should exit cleanly.
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

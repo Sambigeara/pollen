@@ -441,8 +441,6 @@ func runDeny(cmd *cobra.Command, args []string, env *cliEnv) error {
 	return nil
 }
 
-// --- Status View & UI Logic ---
-
 type statusViewOpts struct {
 	wide       bool
 	includeAll bool
@@ -888,8 +886,6 @@ func formatStructValue(v *structpb.Value) string {
 	}
 }
 
-// --- Formatters ---
-
 func formatCount(v uint32) string {
 	if v == 0 {
 		return "-"
@@ -1029,15 +1025,12 @@ func resolveServiceByPrefix(services []config.Service, prefix string) (string, e
 	}
 }
 
-// --- Resolution & Collision Logic ---
-
 type suffixCandidate struct {
 	name    string
 	peerKey string
 	include bool
 }
 
-// namePeerKey identifies a named entity published by a specific peer.
 type namePeerKey struct {
 	name    string
 	peerKey string

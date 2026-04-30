@@ -28,7 +28,7 @@ func (s *Service) gossip(ctx context.Context) []state.Event {
 
 	var allEvents []state.Event
 	s.mu.Lock()
-	defer s.mu.Unlock() // Ensure concurrent append safety if used with inner routines
+	defer s.mu.Unlock()
 
 	for _, peerID := range s.mesh.ConnectedPeers() {
 		if peerID == s.localID {

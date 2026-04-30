@@ -15,8 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// --- Reachability Tests ---
-
 func TestInferPrivatelyRoutable(t *testing.T) {
 	require.True(t, membership.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"10.2.1.20"}))
 	require.False(t, membership.InferPrivatelyRoutable([]string{"10.2.1.10"}, []string{"10.2.2.20"}))
@@ -32,8 +30,6 @@ func TestInferReachability(t *testing.T) {
 	require.Equal(t, reachabilitySameSitePrivate, inferReachability([]string{"10.2.1.10"}, []string{"10.2.1.20"}, false))
 	require.Equal(t, reachabilityUnknown, inferReachability([]string{"10.2.1.10"}, []string{"10.2.9.20"}, false))
 }
-
-// --- Topology Shape & Parameters ---
 
 func makeKnownPeers(public, sameSitePrivate, remotePrivate int) ([]string, []knownPeer) {
 	localIPs := []string{"10.1.0.1"}
@@ -100,8 +96,6 @@ func testPeerKey(b byte) types.PeerKey {
 	pk[0] = b
 	return pk
 }
-
-// --- knownPeers merge ---
 
 func newTestCache(t *testing.T) *peercache.Store {
 	t.Helper()

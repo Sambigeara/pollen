@@ -308,7 +308,6 @@ func (s *store) tombstoneStaleAttrsLocked(rec *nodeRecord) {
 	}
 }
 
-// CRDT Mapping & Hashing.
 const (
 	fnvOffset64 = 14695981039346656037
 	fnvPrime64  = 1099511628211

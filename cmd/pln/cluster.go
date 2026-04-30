@@ -851,8 +851,6 @@ func parseProperties(cmd *cobra.Command) (*structpb.Struct, error) {
 	return s, nil
 }
 
-// --- Utilities ---
-
 // rememberBootstrapPeers primes the local peer cache from a freshly resolved token.
 // Only useful before the daemon starts; once running, its own handshakes refresh
 // the cache.

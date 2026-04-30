@@ -23,8 +23,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// --- Shared Harness Logic ---
-
 type testNode struct {
 	node             *supervisor.Supervisor
 	svc              *control.Service
@@ -135,8 +133,6 @@ func newMinimalNode(t *testing.T, bootstrapPublic bool) *supervisor.Supervisor {
 	require.NoError(t, err)
 	return n
 }
-
-// --- Tests ---
 
 func TestConnectPeerFlow(t *testing.T) {
 	nodeIPs := []string{"127.0.0.1"}
