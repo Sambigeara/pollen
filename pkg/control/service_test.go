@@ -307,6 +307,29 @@ func TestUploadBlobMissingHeader(t *testing.T) {
 	require.Equal(t, codes.InvalidArgument, st.Code())
 }
 
+// Unnamed + unanchored uploads must NOT get a BlobSpec — static-seed
+// file uploads rely on this so the StaticSpec stays the sole durable
+// reference and stale files don't survive a manifest swap.
+func TestUploadBlob_AnonymousNoSpec(t *testing.T) {
+	h := newHarness(t)
+	stream := newUploadStream("", []byte("payload"))
+	require.NoError(t, h.svc.UploadBlob(stream))
+	sum := sha256.Sum256([]byte("payload"))
+	hash := hex.EncodeToString(sum[:])
+	require.Equal(t, []byte("payload"), h.blobs.store[hash])
+	require.Empty(t, h.blobs.names, "anonymous unanchored upload must not create a BlobSpec")
+}
+
+func TestUploadBlob_AnchorAutoNames(t *testing.T) {
+	h := newHarness(t)
+	data := []byte("anchored")
+	stream := newAnchoredUploadStream(data)
+	require.NoError(t, h.svc.UploadBlob(stream))
+	sum := sha256.Sum256(data)
+	hash := hex.EncodeToString(sum[:])
+	require.Equal(t, types.ShortHash(hash), h.blobs.names[hash])
+}
+
 func TestUploadBlobPutError(t *testing.T) {
 	h := newHarness(t)
 	h.blobs.putErr = errors.New("disk full")
@@ -1187,6 +1210,14 @@ func newUploadStream(name string, data []byte) *fakeUploadStream {
 	if name != "" {
 		header.Name = &name
 	}
+	return uploadStreamFor(header, data)
+}
+
+func newAnchoredUploadStream(data []byte) *fakeUploadStream {
+	return uploadStreamFor(&controlv1.UploadBlobHeader{Anchor: true}, data)
+}
+
+func uploadStreamFor(header *controlv1.UploadBlobHeader, data []byte) *fakeUploadStream {
 	msgs := []*controlv1.UploadBlobRequest{
 		{Payload: &controlv1.UploadBlobRequest_Header{Header: header}},
 	}

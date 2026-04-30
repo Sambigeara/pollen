@@ -2633,6 +2633,7 @@ func (*UploadBlobRequest_Chunk) isUploadBlobRequest_Payload() {}
 type UploadBlobHeader struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          *string                `protobuf:"bytes,1,opt,name=name,proto3,oneof" json:"name,omitempty"`
+	Anchor        bool                   `protobuf:"varint,3,opt,name=anchor,proto3" json:"anchor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2672,6 +2673,13 @@ func (x *UploadBlobHeader) GetName() string {
 		return *x.Name
 	}
 	return ""
+}
+
+func (x *UploadBlobHeader) GetAnchor() bool {
+	if x != nil {
+		return x.Anchor
+	}
+	return false
 }
 
 type UploadBlobResponse struct {
@@ -3312,10 +3320,11 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x11UploadBlobRequest\x12=\n" +
 	"\x06header\x18\x01 \x01(\v2#.pollen.control.v1.UploadBlobHeaderH\x00R\x06header\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\t\n" +
-	"\apayload\"R\n" +
+	"\apayload\"j\n" +
 	"\x10UploadBlobHeader\x12#\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
-	"\xbaH\ar\x05\x10\x01\x18\xff\x01H\x00R\x04name\x88\x01\x01B\a\n" +
+	"\xbaH\ar\x05\x10\x01\x18\xff\x01H\x00R\x04name\x88\x01\x01\x12\x16\n" +
+	"\x06anchor\x18\x03 \x01(\bR\x06anchorB\a\n" +
 	"\x05_nameJ\x04\b\x02\x10\x03R\n" +
 	"properties\"(\n" +
 	"\x12UploadBlobResponse\x12\x12\n" +

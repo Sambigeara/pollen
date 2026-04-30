@@ -810,15 +810,15 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 		return s.fail(err, "upload blob")
 	}
 
-	// Default an unnamed upload to a hash-prefix identifier so it
-	// always gets a BlobSpec and the janitor's KeepSet protects it.
 	name := header.GetName()
-	if name == "" {
+	if name == "" && header.GetAnchor() {
 		name = types.ShortHash(hash)
 	}
-	if err := s.blobs.SetName(hash, name); err != nil {
-		s.log.Warnw("set blob name failed", "hash", types.ShortHash(hash), "name", name, "err", err)
-		return status.Error(codes.Internal, "set blob name")
+	if name != "" {
+		if err := s.blobs.SetName(hash, name); err != nil {
+			s.log.Warnw("set blob name failed", "hash", types.ShortHash(hash), "name", name, "err", err)
+			return status.Error(codes.Internal, "set blob name")
+		}
 	}
 
 	return stream.SendAndClose(&controlv1.UploadBlobResponse{Hash: hash})

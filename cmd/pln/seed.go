@@ -314,6 +314,8 @@ func seedBlob(cmd *cobra.Command, env *cliEnv, source, name string) error {
 	header := &controlv1.UploadBlobHeader{}
 	if name != "" {
 		header.Name = &name
+	} else {
+		header.Anchor = true
 	}
 
 	hash, err := uploadBlob(cmd, env, header, r)

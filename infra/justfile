@@ -75,8 +75,8 @@ prod-seed:
     pln seed "$APEX_BUNDLE" pln.sh
     pln seed web/docs docs.pln.sh
 
-# Upgrade pln on every node to the latest release. `pln daemon upgrade`
-# is localOnly, so it has to run on each node directly — can't go through
+# Upgrade pln on every node to the latest release. `pln upgrade` is
+# localOnly, so it has to run on each node directly — can't go through
 # the prod ctx. The .deb postinstall restarts an active service.
 prod-upgrade:
     #!/usr/bin/env bash
@@ -85,7 +85,7 @@ prod-upgrade:
     while IFS= read -r line || [ -n "$line" ]; do
       host=${line##*=root@}
       echo "upgrading $host..."
-      ssh {{ ssh_args }} "root@$host" "pln daemon upgrade"
+      ssh {{ ssh_args }} "root@$host" "pln upgrade"
     done < <(terraform output -raw bootstrap_targets)
 
 # Mesh status via the prod ctx.

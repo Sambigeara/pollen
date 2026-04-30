@@ -90,12 +90,16 @@ func (s *Store) Has(hash string) bool {
 
 // Remove returns ErrNotFound if the hash was never stored.
 func (s *Store) Remove(hash string) error {
-	if err := os.Remove(s.path(hash)); err != nil {
+	p := s.path(hash)
+	if err := os.Remove(p); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return ErrNotFound
 		}
 		return fmt.Errorf("cas: remove artifact: %w", err)
 	}
+	// Best-effort drop of the now-empty shard dir; ENOTEMPTY is the
+	// expected outcome when a sibling blob remains.
+	_ = os.Remove(filepath.Dir(p)) //nolint:errcheck
 	return nil
 }
 

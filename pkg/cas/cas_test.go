@@ -88,3 +88,34 @@ func TestPutSetsGroupReadableMode(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o640), info.Mode())
 }
+
+func TestRemovePrunesEmptyShard(t *testing.T) {
+	root := t.TempDir()
+	store, err := cas.New(root)
+	require.NoError(t, err)
+
+	hash, err := store.Put(bytes.NewReader([]byte("only blob in shard")))
+	require.NoError(t, err)
+	shard := filepath.Join(root, "cas", hash[:2])
+	require.DirExists(t, shard)
+
+	require.NoError(t, store.Remove(hash))
+	require.NoDirExists(t, shard)
+}
+
+func TestRemoveLeavesNonEmptyShard(t *testing.T) {
+	root := t.TempDir()
+	store, err := cas.New(root)
+	require.NoError(t, err)
+
+	// Two blobs whose hashes share a shard: write one, fabricate a
+	// sibling so Remove sees ENOTEMPTY and leaves the dir intact.
+	hash, err := store.Put(bytes.NewReader([]byte("first")))
+	require.NoError(t, err)
+	sibling := filepath.Join(root, "cas", hash[:2], hash[:2]+"00sibling000000000000000000000000000000000000000000000000000000")
+	require.NoError(t, os.WriteFile(sibling, []byte("sibling"), 0o600))
+
+	require.NoError(t, store.Remove(hash))
+	require.DirExists(t, filepath.Join(root, "cas", hash[:2]))
+	require.FileExists(t, sibling)
+}

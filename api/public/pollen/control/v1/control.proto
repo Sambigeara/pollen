@@ -339,6 +339,7 @@ message UploadBlobHeader {
   }];
   reserved 2;
   reserved "properties";
+  bool anchor = 3;
 }
 
 message UploadBlobResponse {
