@@ -666,7 +666,7 @@ func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) 
 
 	health := controlv1.HealthStatus_HEALTH_STATUS_HEALTHY
 	switch {
-	case (certExpiry <= 0 && s.creds != nil && s.creds.Cert() != nil) || counts.Connected == 0:
+	case (certExpiry <= 0 && s.creds != nil && s.creds.Cert() != nil) || (counts.Connected == 0 && (counts.Connecting > 0 || counts.Backoff > 0)):
 		health = controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY
 	case m.SmoothedVivaldiErr > vivaldiDegradedThreshold:
 		health = controlv1.HealthStatus_HEALTH_STATUS_DEGRADED

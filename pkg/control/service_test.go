@@ -599,9 +599,18 @@ func TestGetMetricsHealthy(t *testing.T) {
 	require.Equal(t, uint32(2), resp.PeersDiscovered)
 }
 
-func TestGetMetricsUnhealthyNoPeers(t *testing.T) {
+func TestGetMetricsHealthyFreshStart(t *testing.T) {
 	h := newHarness(t)
-	h.transport.counts = transport.PeerStateCounts{Connected: 0}
+	h.transport.counts = transport.PeerStateCounts{}
+
+	resp, err := h.svc.GetMetrics(context.Background(), &controlv1.GetMetricsRequest{})
+	require.NoError(t, err)
+	require.Equal(t, controlv1.HealthStatus_HEALTH_STATUS_HEALTHY, resp.Health)
+}
+
+func TestGetMetricsUnhealthyKnownPeersNoneConnected(t *testing.T) {
+	h := newHarness(t)
+	h.transport.counts = transport.PeerStateCounts{Backoff: 2}
 
 	resp, err := h.svc.GetMetrics(context.Background(), &controlv1.GetMetricsRequest{})
 	require.NoError(t, err)
