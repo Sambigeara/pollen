@@ -22,9 +22,10 @@ curl -fsSL https://pln.sh/install.sh | bash
 
 Pollen is a single Go binary. Install it on a few machines and you get a WASM runtime where workloads place themselves: nodes pick up replicas based on what they can host and where the traffic is, with no scheduler running anywhere. You also get a zero-trust mesh — `pln serve 8080 api` on one machine, `pln connect api` on another, mTLS end-to-end.
 
-Pollen runs WASM, not containers. You can't `pln seed` a Postgres image. That constraint is the whole point: WASM is narrow enough that placement can be leaderless. If you need containers, k3s and Nomad are still where to go. If your workloads can compile to WASM (Go, Rust, JS, Python, C#, Zig via [Extism](https://extism.org)), there's no etcd, no kubelet, no helm. Just pln.
+Pollen runs WASM, not containers. You can't `pln seed` a Postgres image. That constraint is the whole point: WASM is narrow enough that placement can be leaderless. If you need containers, k3s and Nomad are still where to go. If your workloads can compile to WASM (Go, Rust, JS, Python, C#, Zig via [Extism](https://extism.org)), try pln!
 
-Pollen runs end-to-end on real clusters today. It's pre-1.0, built by one person across a limited set of hardware. Expect breaking changes and rough edges. Please [raise an issue](https://github.com/sambigeara/pollen/issues) if you hit any snags!
+> [!NOTE]
+Pollen runs end-to-end on real clusters today. That said, it's pre-1.0 and built by one person across a limited set of hardware. Expect breaking changes and rough edges. Please [raise an issue](https://github.com/sambigeara/pollen/issues) if you hit any snags.
 
 ## Highlights
 
@@ -202,9 +203,9 @@ pln seed ./big-file.bin payload   # …or publish under a name
 pln fetch <digest|name>           # pulls peer-to-peer over QUIC into the local store
 ```
 
-Blobs are the primitive behind static sites: content-addressed,
-gossip-advertised, streamed peer-to-peer over QUIC. Receivers verify
-the digest on arrival.
+> Blobs are the primitive behind static sites: content-addressed,
+> gossip-advertised, streamed peer-to-peer over QUIC. Receivers verify
+> the digest on arrival.
 
 ## FAQ
 
