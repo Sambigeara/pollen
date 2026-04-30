@@ -93,6 +93,22 @@
             color: var(--ink);
         }
 
+        .demo {
+            display: block;
+            width: 100%;
+            height: auto;
+            border-radius: 10px;
+            margin: 0 0 0.75rem;
+            background: var(--code-bg);
+        }
+
+        .caption {
+            color: var(--mute);
+            font-size: 0.9rem;
+            line-height: 1.55;
+            margin: 0 0 2.5rem;
+        }
+
         ul.features {
             list-style: none;
             padding: 0;
@@ -241,6 +257,10 @@
         <h1>Pollen</h1>
         <p class="tagline">Distributed WASM runtime. Workloads place themselves over a zero-trust mesh. One static binary.</p>
         <div class="install"><code>curl -fsSL https://pln.sh/install.sh | bash</code></div>
+        <video class="demo" autoplay loop muted playsinline controls>
+            <source src="pln-demo-web.mp4" type="video/mp4">
+        </video>
+        <p class="caption">Zero to cluster to loadtest. Errors are nodes applying backpressure.</p>
         <ul class="features">
             <li><strong>WASM seeds.</strong> Deploy with <code>pln seed</code>; artifacts distribute peer-to-peer by hash. One host call invokes another seed by name (<code>pln://seed/&lt;name&gt;/&lt;fn&gt;</code>), so authz, routing, and policy can live inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism</a>.</li>
             <li><strong>Mesh services.</strong> <code>pln serve 8080 api</code> here, <code>pln connect api</code> there (or <code>pln://service/&lt;name&gt;</code> from a seed). TCP and UDP, end-to-end mTLS.</li>

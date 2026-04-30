@@ -14,13 +14,11 @@
 
 Distributed WASM runtime. Workloads place themselves over a zero-trust mesh. One static binary.
 
-<!-- TODO(demo): record a ~30s asciinema demo: `pln init` → bootstrap two more nodes → `pln seed hello.wasm` on one → `pln call hello greet '{"name":"world"}'` from another, returning the result. Convert to GIF with `agg`, drop at `assets/demo.gif`, then replace this comment with `![Pollen demo](assets/demo.gif)`. -->
+![Pollen demo](assets/demo.gif)
 
-```bash
-curl -fsSL https://pln.sh/install.sh | bash
-```
+*Zero to cluster to loadtest. Errors are nodes applying backpressure. Full video at [pln.sh](https://pln.sh).*
 
-Pollen is a single Go binary. Install it on a few machines and you get a WASM runtime where workloads place themselves: nodes pick up replicas based on what they can host and where the traffic is, with no scheduler running anywhere. You also get a zero-trust mesh — `pln serve 8080 api` on one machine, `pln connect api` on another, mTLS end-to-end.
+Pollen is a single Go binary. Install it on a few machines and you get a WASM runtime where workloads place themselves: nodes pick up replicas based on what they can host and where the traffic is, with no scheduler running anywhere. You also get a zero-trust mesh: `pln serve 8080 api` on one machine, `pln connect api` on another, mTLS end-to-end.
 
 Pollen runs WASM, not containers. You can't `pln seed` a Postgres image. That constraint is the whole point: WASM is narrow enough that placement can be leaderless. If you need containers, k3s and Nomad are still where to go. If your workloads can compile to WASM (Go, Rust, JS, Python, C#, Zig via [Extism](https://extism.org)), try pln!
 
@@ -152,7 +150,7 @@ the full CLI reference. For the architecture, see
 ### Grant capabilities
 
 ```bash
-# Delegate admin authority to an existing peer — handy for keeping
+# Delegate admin authority to an existing peer; handy for keeping
 # the mesh operable (admissions, cert re-issues, etc.) with the root
 # node offline:
 pln grant <peer-id> --admin
