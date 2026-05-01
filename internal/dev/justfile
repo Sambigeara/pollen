@@ -116,7 +116,7 @@ start-terminal-dash: _refresh-exerciser-targets
     cd {{ demo_dir }} && docker compose up -d --build prometheus
     # grafterm's termbox-go only recognises a hardcoded terminal list
     # (xterm, rxvt, screen…); pin TERM so tmux/ghostty/kitty work.
-    exec env TERM=xterm-256color "$GOBIN/grafterm" -c {{ demo_dir }}/grafterm.json -d 5m -r 2s
+    exec env TERM=xterm-256color "$GOBIN/grafterm" -c {{ demo_dir }}/grafterm.json -d 1m -r 2s
 
 # Fire load at one or more pollen nodes (comma-separated to fan out). Default URI hits the firehose chain: ingest → terminal → pln://service/sink.
 start-exerciser nodes rate="100" duration="0" uri="pln://seed/ingest/handle":

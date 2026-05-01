@@ -35,8 +35,6 @@ const (
 	maxPort           = 65535
 	labelWidth        = 8
 	thousandsGroup    = 3
-	secondsPerMinute  = 60
-	minutesPerHour    = 60
 	rpsSmoothingAlpha = 0.3
 )
 
@@ -102,9 +100,8 @@ func run() error {
 
 func runTUI(ctx context.Context, port int, counter *atomic.Uint64) {
 	hist := newHistory(historySize)
-	startedAt := time.Now()
 	lastCount := uint64(0)
-	lastSampleAt := startedAt
+	lastSampleAt := time.Now()
 	var smoothedRPS float64
 	smoothedReady := false
 
@@ -130,7 +127,7 @@ func runTUI(ctx context.Context, port int, counter *atomic.Uint64) {
 				lastCount = cur
 				lastSampleAt = now
 			}
-			render(port, cur, uint64(math.Round(smoothedRPS)), time.Since(startedAt), hist)
+			render(port, cur, uint64(math.Round(smoothedRPS)), hist)
 		}
 	}
 }
@@ -160,7 +157,7 @@ var (
 
 const sparkChars = "▁▂▃▄▅▆▇█"
 
-func render(port int, total, rps uint64, uptime time.Duration, h *history) {
+func render(port int, total, rps uint64, h *history) {
 	out := os.Stdout
 	fmt.Fprint(out, "\033[H\033[2J")
 
@@ -169,7 +166,6 @@ func render(port int, total, rps uint64, uptime time.Duration, h *history) {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "  %s%s\n", labelStyle.Render("rps"), valueStyle.Render(formatNum(rps)))
 	fmt.Fprintf(out, "  %s%s\n", labelStyle.Render("total"), valueStyle.Render(formatNum(total)))
-	fmt.Fprintf(out, "  %s%s\n", labelStyle.Render("uptime"), valueStyle.Render(humanDuration(uptime)))
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "  "+sparkStyle.Render(sparkline(h.data, h.max)))
 	axis := "  60s" + strings.Repeat(" ", h.max-len("60s")-len("now")) + "now"
@@ -193,17 +189,6 @@ func formatNum(n uint64) string {
 		b.WriteString(s[i : i+thousandsGroup])
 	}
 	return b.String()
-}
-
-func humanDuration(d time.Duration) string {
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm %ds", int(d.Minutes()), int(d.Seconds())%secondsPerMinute)
-	default:
-		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%minutesPerHour)
-	}
 }
 
 // sparkline renders data as block characters scaled to the largest value seen,

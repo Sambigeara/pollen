@@ -20,11 +20,6 @@ Distributed WASM runtime. Workloads place themselves over a zero-trust mesh. One
 
 Pollen is a single Go binary. Install it on a few machines and you get a WASM runtime where workloads place themselves: nodes pick up replicas based on what they can host and where the traffic is, with no scheduler running anywhere. You also get a zero-trust mesh: `pln serve 8080 api` on one machine, `pln connect api` on another, mTLS end-to-end.
 
-Pollen runs WASM, not containers. You can't `pln seed` a Postgres image. That constraint is the whole point: WASM is narrow enough that placement can be leaderless. If you need containers, k3s and Nomad are still where to go. If your workloads can compile to WASM (Go, Rust, JS, Python, C#, Zig via [Extism](https://extism.org)), try pln!
-
-> [!NOTE]
-Pollen runs end-to-end on real clusters today. That said, it's pre-1.0 and built by one person across a limited set of hardware. Expect breaking changes and rough edges. Please [raise an issue](https://github.com/sambigeara/pollen/issues) if you hit any snags.
-
 ## Highlights
 
 - **WASM seeds.** `pln seed ./hello.wasm` here, `pln call hello greet`

@@ -78,6 +78,7 @@ prod-seed:
 # Upgrade pln on every node to the latest release. `pln upgrade` is
 # localOnly, so it has to run on each node directly — can't go through
 # the prod ctx. The .deb postinstall restarts an active service.
+# TODO(saml) this seems to skip the second node
 prod-upgrade:
     #!/usr/bin/env bash
     set -euo pipefail
