@@ -6,6 +6,7 @@ package supervisor
 import (
 	"testing"
 
+	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
@@ -116,6 +117,74 @@ func TestRankCoordinatorsSharedEgressLANBeatsPublicFallback(t *testing.T) {
 		[]types.PeerKey{publicRelay, lanCoord}, snap)
 
 	require.Equal(t, []types.PeerKey{lanCoord, publicRelay}, got, "LAN-adjacent ranks ahead of the hairpin fallback")
+}
+
+func TestRankCoordinatorsPrefersEasyNATOverUnknown(t *testing.T) {
+	local := testPeerKey(1)
+	target := testPeerKey(2)
+	// Order PeerKeys so the OLD (untiered) sort would give the wrong answer:
+	// unknownPeer < easyNATPeer by Compare, so without tier promotion the
+	// unknown peer would come first.
+	unknownPeer := testPeerKey(3)
+	easyNATPeer := testPeerKey(4)
+
+	snap := state.Snapshot{
+		LocalID: local,
+		Nodes: map[types.PeerKey]state.NodeView{
+			local:  {IPs: []string{"192.168.0.10"}, ObservedExternalIP: "203.0.113.1"},
+			target: {IPs: []string{"10.99.0.20"}, ObservedExternalIP: "198.51.100.7"},
+			unknownPeer: {
+				IPs:                []string{"203.0.113.50"},
+				ObservedExternalIP: "203.0.113.50",
+				Reachable:          reachableTo(target, local),
+			},
+			easyNATPeer: {
+				IPs:                []string{"203.0.113.51"},
+				ObservedExternalIP: "203.0.113.51",
+				NatType:            nat.Easy,
+				Reachable:          reachableTo(target, local),
+			},
+		},
+	}
+
+	got := rankCoordinators(snap.Nodes[local].IPs, snap.Nodes[target].IPs, target,
+		[]types.PeerKey{unknownPeer, easyNATPeer}, snap)
+
+	require.Equal(t, []types.PeerKey{easyNATPeer, unknownPeer}, got, "inferred easy-NAT outranks unknown-NAT when no admin-public relay is available")
+}
+
+func TestRankCoordinatorsAdminPublicBeatsEasyNAT(t *testing.T) {
+	local := testPeerKey(1)
+	target := testPeerKey(2)
+	// publicRelay sorts after easyNATPeer by Compare, so without tiering the
+	// easy-NAT peer would come first. Tiering must keep admin-public ahead.
+	easyNATPeer := testPeerKey(3)
+	publicRelay := testPeerKey(4)
+
+	snap := state.Snapshot{
+		LocalID: local,
+		Nodes: map[types.PeerKey]state.NodeView{
+			local:  {IPs: []string{"192.168.0.10"}, ObservedExternalIP: "203.0.113.1"},
+			target: {IPs: []string{"10.99.0.20"}, ObservedExternalIP: "198.51.100.7"},
+			easyNATPeer: {
+				IPs:                []string{"203.0.113.50"},
+				ObservedExternalIP: "203.0.113.50",
+				NatType:            nat.Easy,
+				Reachable:          reachableTo(target, local),
+			},
+			publicRelay: {
+				IPs:                []string{"91.99.170.199"},
+				ObservedExternalIP: "91.99.170.199",
+				PubliclyAccessible: true,
+				Reachable:          reachableTo(target, local),
+			},
+		},
+	}
+
+	got := rankCoordinators(snap.Nodes[local].IPs, snap.Nodes[target].IPs, target,
+		[]types.PeerKey{easyNATPeer, publicRelay}, snap)
+
+	require.Equal(t, []types.PeerKey{publicRelay, easyNATPeer}, got, "admin-public stays the top tier even when an easy-NAT candidate is also available")
 }
 
 func TestRankCoordinatorsExcludesUnreachableCandidate(t *testing.T) {

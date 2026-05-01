@@ -145,9 +145,7 @@ is no scheduler.
 Two commands to a cluster:
 
   pln init                                # creates a new cluster rooted here
-  pln bootstrap ssh user@host [--admin]   # adds nodes via SSH
-
-See ARCHITECTURE.md for the full design.`,
+  pln bootstrap ssh user@host [--admin]   # adds nodes via SSH`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

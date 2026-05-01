@@ -139,8 +139,7 @@ capacity, cached artifacts, and proximity to traffic. There is no central
 scheduler. When a node goes down, survivors pick up the slack.
 
 Example modules live in [`examples/`](examples/). Run `pln --help` for
-the full CLI reference. For the architecture, see
-[`ARCHITECTURE.md`](ARCHITECTURE.md).
+the full CLI reference.
 
 ### Grant capabilities
 

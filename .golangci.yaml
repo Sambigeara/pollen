@@ -49,7 +49,7 @@ linters:
 
   settings:
     depguard:
-      # Encodes ARCHITECTURE.md layer boundaries:
+      # Layer boundaries:
       #   L5 composition: cmd/pln, control, supervisor
       #   L4 domain:      membership, placement, tunneling  (siblings)
       #   L3 routing:     routing

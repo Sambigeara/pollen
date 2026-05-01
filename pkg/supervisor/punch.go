@@ -12,6 +12,7 @@ import (
 
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/membership"
+	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -19,6 +20,12 @@ import (
 )
 
 const punchTimeout = 3 * time.Second
+
+const (
+	relayTierAdminPublic = iota
+	relayTierEasyNAT
+	relayTierFallback
+)
 
 func (n *Supervisor) coordinatorPeers(target types.PeerKey) []types.PeerKey {
 	snap := n.store.Snapshot()
@@ -64,14 +71,19 @@ func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connec
 			primary = append(primary, key)
 		}
 	}
+	relayTier := func(nv state.NodeView) int {
+		switch {
+		case nv.PubliclyAccessible:
+			return relayTierAdminPublic
+		case nv.NatType == nat.Easy:
+			return relayTierEasyNAT
+		default:
+			return relayTierFallback
+		}
+	}
 	byPreference := func(a, b types.PeerKey) int {
-		aPub := snap.Nodes[a].PubliclyAccessible
-		bPub := snap.Nodes[b].PubliclyAccessible
-		if aPub != bPub {
-			if aPub {
-				return -1
-			}
-			return 1
+		if at, bt := relayTier(snap.Nodes[a]), relayTier(snap.Nodes[b]); at != bt {
+			return at - bt
 		}
 		return a.Compare(b)
 	}
