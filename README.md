@@ -12,43 +12,24 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/sambigeara/pollen" alt="License"></a>
 </p>
 
-Distributed WASM runtime. Workloads place themselves over a zero-trust mesh. One static binary.
+Pollen is a self-organising mesh and WASM runtime written in pure Go. Workloads are "seeded" into the cluster and organically scale and follow load. There is no central coordinator; decisions are made deterministically, locally, using a gossiped CRDT runtime state as their source of truth. Same view of the world; same workload placement and routing.
+
+The goal is for Pollen to turn a collection of heterogeneous machines into a blob of generic compute that can run absolutely anywhere. Think: a Raspberry Pi acting as though it has the power of a server-farm.
 
 ![Pollen demo](assets/demo.gif)
 
-*Zero to cluster to loadtest. Errors are nodes applying backpressure. Full video at [pln.sh](https://pln.sh).*
+This demo shows a simple processing pipeline: two chained workloads and a single "sink" egress server running on my home laptop (all requests end up here). 10 freshly provisioned (global) nodes are bootstrapped into the cluster, workloads are seeded, and ~5000req/s calls spread across 5 locations simultaneously. The scale-up and workload placement all happens organically. The nodes gate and apply backpressure and gossip saturation across the cluster so other nodes know where to direct traffic. Pausable video at [pln.sh](https://pln.sh).
 
-Pollen is a single Go binary. Install it on a few machines and you get a WASM runtime where workloads place themselves: nodes pick up replicas based on what they can host and where the traffic is, with no scheduler running anywhere. You also get a zero-trust mesh: `pln serve 8080 api` on one machine, `pln connect api` on another, mTLS end-to-end.
+## Features
 
-## Highlights
-
-- **WASM seeds.** `pln seed ./hello.wasm` here, `pln call hello greet`
-  there; artifacts distribute peer-to-peer by hash. One host call
-  invokes another seed by name (`pln://seed/<name>/<fn>`), so authz,
-  routing, and policy can live inside WASM. Authored in Go, Rust, JS,
-  Python, C#, Zig via
-  [Extism](https://extism.org/docs/quickstart/plugin-quickstart).
-- **Mesh services.** `pln serve 8080 api` here, `pln connect api`
-  there (or `pln://service/<name>` from a seed). TCP and UDP,
-  end-to-end mTLS.
-- **Static sites & blobs.** `pln seed ./public` publishes a site;
-  `pln seed ./file` shares a file. Same verb across workloads, sites,
-  and blobs; kind is autodetected from what you point at.
-  Content-addressed, gossiped, streamed peer-to-peer over QUIC.
-- **Self-organising.** No scheduler, no leader, no coordinator.
-  Topology, placement, and routing emerge from local state; calls go
-  to the nearest, least-loaded replica, and replicas migrate toward
-  demand.
-- **CRDT-native.** A converging document on every node; changes
-  gossip, conflicts resolve.
-- **Partition-tolerant.** Both sides of a split keep running; state
-  converges on rejoin; survivors rehost workloads from failed nodes.
-- **QUIC transport.** One multiplexed, encrypted, UDP-based
-  connection per peer carries gossip, services, and seeds.
-  Connections punch direct between peers; otherwise they relay
-  through any cluster node both peers can reach.
-- **Cryptographic admission.** No shared secrets, no firewall rules.
-  Every link is mTLS.
+- **WASM seeds.** `pln seed ./hello.wasm` here, `pln call hello greet` there; artifacts distribute peer-to-peer by hash. One host call invokes another seed by name (`pln://seed/<name>/<fn>`), so authz, routing, and policy can live inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via [Extism](https://extism.org/docs/quickstart/plugin-quickstart).
+- **Mesh services.** `pln serve 8080 api` here, `pln connect api` there (or `pln://service/<name>` from a seed). TCP and UDP, end-to-end mTLS.
+- **Static sites & blobs.** `pln seed ./public` publishes a site; `pln seed ./file` shares a file. Same verb across workloads, sites, and blobs; kind is autodetected from what you point at. Content-addressed, gossiped, streamed peer-to-peer over QUIC.
+- **Self-organising.** No scheduler, no leader, no coordinator. Topology, placement, and routing emerge from local state; calls go to the nearest, least-loaded replica, and replicas migrate toward demand.
+- **CRDT-native.** A converging document on every node; changes gossip, conflicts resolve.
+- **Partition-tolerant.** Both sides of a split keep running; state converges on rejoin; survivors rehost workloads from failed nodes.
+- **QUIC transport.** One multiplexed, encrypted, UDP-based connection per peer carries gossip, services, and seeds. Connections punch direct between peers; otherwise they relay through any cluster node both peers can reach.
+- **Cryptographic admission.** No shared secrets, no firewall rules. Every link is mTLS.
 - **Edge-ready.** Pure Go, no CGO. Raspberry Pi to cloud host.
 - **Ergonomic.** Opinionated defaults, opt-in configuration.
 
