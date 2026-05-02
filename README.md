@@ -18,7 +18,7 @@ The goal is for Pollen to turn a collection of heterogeneous machines into a blo
 
 ![Pollen demo](assets/demo.gif)
 
-This demo shows a simple processing pipeline: two chained workloads and a single "sink" egress server running on my home laptop (all requests end up here). 10 freshly provisioned (global) nodes are bootstrapped into the cluster, workloads are seeded, and ~5000req/s calls spread across 5 locations simultaneously. The scale-up and workload placement all happens organically. The nodes gate and apply backpressure and gossip saturation across the cluster so other nodes know where to direct traffic. Pausable video at [pln.sh](https://pln.sh).
+This demo shows a simple processing pipeline: two chained workloads and a single "sink" egress server running on my home laptop (all requests end up here). 10 freshly provisioned (global) nodes are bootstrapped into the cluster, workloads are seeded, and ~4000req/s calls spread across 5 locations simultaneously. The scale-up and workload placement all happens organically. The nodes gate and apply backpressure and gossip saturation across the cluster so other nodes know where to direct traffic. Pausable video at [pln.sh](https://pln.sh).
 
 ## Features
 
