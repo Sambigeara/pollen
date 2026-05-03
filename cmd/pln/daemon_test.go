@@ -60,3 +60,24 @@ func TestUserPlnPlistPath(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, strings.HasSuffix(got, "/Library/LaunchAgents/sh.pln.home.plist"), "got %q", got)
 }
+
+func TestRenderSystemdUnit_UsesPackageBinary(t *testing.T) {
+	got, err := renderSystemdUnit("/usr/bin/pln")
+	require.NoError(t, err)
+	require.Contains(t, string(got), "ExecStart=/usr/bin/pln --dir /var/lib/pln up")
+	require.NotContains(t, string(got), systemdBinaryPlaceholder)
+}
+
+func TestRenderSystemdUnit_UsesTarballBinary(t *testing.T) {
+	got, err := renderSystemdUnit("/usr/local/bin/pln")
+	require.NoError(t, err)
+	require.Contains(t, string(got), "ExecStart=/usr/local/bin/pln --dir /var/lib/pln up")
+	require.NotContains(t, string(got), systemdBinaryPlaceholder)
+}
+
+func TestSupportedSystemdPlnBinary(t *testing.T) {
+	require.True(t, supportedSystemdPlnBinary("/usr/bin/pln"))
+	require.True(t, supportedSystemdPlnBinary("/usr/local/bin/pln"))
+	require.False(t, supportedSystemdPlnBinary("/tmp/pln"))
+	require.False(t, supportedSystemdPlnBinary("/home/alice/bin/pln"))
+}

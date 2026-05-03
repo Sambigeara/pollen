@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=pln
 Group=pln
-ExecStart=/usr/bin/pln --dir /var/lib/pln up
+ExecStart={{PLN_BINARY}} --dir /var/lib/pln up
 Restart=on-failure
 RestartSec=5
 

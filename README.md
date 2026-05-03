@@ -42,9 +42,12 @@ curl -fsSL https://pln.sh/install.sh | bash
 ```
 
 A thin wrapper around your platform's package manager (Homebrew on
-macOS, apt or yum on Linux), so upgrades, uninstalls, and service files
-are managed natively. On macOS, see the [FAQ](#faq) for a first-connect
-permissions note.
+macOS, apt/dnf/yum/zypper on Linux), so upgrades, uninstalls, and
+service files are managed natively. On Linux, the installer reads
+`/etc/os-release` and refuses to guess on unknown distros; pass
+`--method tarball` to opt in to a `/usr/local/bin` binary install with
+the same daemon provisioning. On macOS, see the [FAQ](#faq) for a
+first-connect permissions note.
 
 ### Two commands to a cluster
 
