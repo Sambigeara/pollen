@@ -376,7 +376,7 @@
 
             <h2 id="install">Install</h2>
             <pre><code>curl -fsSL https://pln.sh/install.sh | bash</code></pre>
-            <p>Wraps Homebrew on macOS and apt/yum on Linux. On macOS, state lives in <code>~/.pln</code>. On Linux, the installer runs <code>pln daemon install</code> to provision <code>/var/lib/pln</code> under a dedicated <code>pln</code> system user and adds the invoking user to the <code>pln</code> group for CLI access. Override either default with <code>$PLN_DIR</code>.</p>
+            <p>Wraps Homebrew on macOS and apt/dnf/yum/zypper on Linux. Linux package-manager selection is based on <code>/etc/os-release</code>; unknown distros are refused instead of guessed, and <code>--method tarball</code> opts in to a <code>/usr/local/bin</code> binary install with the same daemon provisioning. On macOS, state lives in <code>~/.pln</code>. On Linux, the installer runs <code>pln daemon install</code> to provision <code>/var/lib/pln</code> under a dedicated <code>pln</code> system user and adds the invoking user to the <code>pln</code> group for CLI access. Override either default with <code>$PLN_DIR</code>.</p>
 
             <h2 id="one-node-cluster">One-node cluster</h2>
             <pre><code>pln init

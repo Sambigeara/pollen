@@ -25,5 +25,10 @@ jobs:
       - name: Setup just
         uses: extractions/setup-just@v3
 
+      - name: Check installer
+        run: |
+          bash -n scripts/install.sh scripts/install_test.sh
+          bash scripts/install_test.sh
+
       - name: Compile
         run: just compile
