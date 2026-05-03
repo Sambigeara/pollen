@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/xml"
+	"errors"
 	"strings"
 	"testing"
 
@@ -67,23 +68,58 @@ func TestInstallScriptURLUsesCanonicalInstaller(t *testing.T) {
 	require.NotContains(t, installScriptURL, "/main/")
 }
 
+func TestLinuxUpgradeInstallArgs_PreservesPackageInstall(t *testing.T) {
+	cmd := newUpgradeCmd()
+	got, err := linuxUpgradeInstallArgs(cmd, func() (string, error) { return packagePlnBinary, nil })
+	require.NoError(t, err)
+	require.Equal(t, []string{"-s", "--"}, got)
+}
+
+func TestLinuxUpgradeInstallArgs_PreservesTarballInstall(t *testing.T) {
+	cmd := newUpgradeCmd()
+	got, err := linuxUpgradeInstallArgs(cmd, func() (string, error) { return tarballPlnBinary, nil })
+	require.NoError(t, err)
+	require.Equal(t, []string{"-s", "--", "--method", "tarball"}, got)
+}
+
+func TestLinuxUpgradeInstallArgs_ExplicitMethodOverridesExecutable(t *testing.T) {
+	cmd := newUpgradeCmd()
+	require.NoError(t, cmd.Flags().Set("method", "auto"))
+	got, err := linuxUpgradeInstallArgs(cmd, func() (string, error) { return "", errors.New("must not inspect executable") })
+	require.NoError(t, err)
+	require.Equal(t, []string{"-s", "--", "--method", "auto"}, got)
+}
+
+func TestLinuxUpgradeInstallArgs_RefusesUnknownExecutable(t *testing.T) {
+	cmd := newUpgradeCmd()
+	_, err := linuxUpgradeInstallArgs(cmd, func() (string, error) { return "/tmp/pln", nil })
+	require.ErrorContains(t, err, "cannot infer Linux install method")
+}
+
+func TestLinuxUpgradeInstallArgs_RefusesUnknownMethod(t *testing.T) {
+	cmd := newUpgradeCmd()
+	require.NoError(t, cmd.Flags().Set("method", "dnf"))
+	_, err := linuxUpgradeInstallArgs(cmd, func() (string, error) { return packagePlnBinary, nil })
+	require.ErrorContains(t, err, "unknown install method")
+}
+
 func TestRenderSystemdUnit_UsesPackageBinary(t *testing.T) {
-	got, err := renderSystemdUnit("/usr/bin/pln")
+	got, err := renderSystemdUnit(packagePlnBinary)
 	require.NoError(t, err)
 	require.Contains(t, string(got), "ExecStart=/usr/bin/pln --dir /var/lib/pln up")
 	require.NotContains(t, string(got), systemdBinaryPlaceholder)
 }
 
 func TestRenderSystemdUnit_UsesTarballBinary(t *testing.T) {
-	got, err := renderSystemdUnit("/usr/local/bin/pln")
+	got, err := renderSystemdUnit(tarballPlnBinary)
 	require.NoError(t, err)
 	require.Contains(t, string(got), "ExecStart=/usr/local/bin/pln --dir /var/lib/pln up")
 	require.NotContains(t, string(got), systemdBinaryPlaceholder)
 }
 
 func TestSupportedSystemdPlnBinary(t *testing.T) {
-	require.True(t, supportedSystemdPlnBinary("/usr/bin/pln"))
-	require.True(t, supportedSystemdPlnBinary("/usr/local/bin/pln"))
+	require.True(t, supportedSystemdPlnBinary(packagePlnBinary))
+	require.True(t, supportedSystemdPlnBinary(tarballPlnBinary))
 	require.False(t, supportedSystemdPlnBinary("/tmp/pln"))
 	require.False(t, supportedSystemdPlnBinary("/home/alice/bin/pln"))
 }

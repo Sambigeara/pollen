@@ -23,6 +23,8 @@ const (
 	plnUnitDir               = "/lib/systemd/system"
 	plnUnitName              = "pln.service"
 	systemdBinaryPlaceholder = "{{PLN_BINARY}}"
+	packagePlnBinary         = "/usr/bin/pln"
+	tarballPlnBinary         = "/usr/local/bin/pln"
 )
 
 //go:embed pln.service
@@ -121,7 +123,7 @@ func systemdPlnBinaryPath() (string, error) {
 	}
 	plnBinary = filepath.Clean(plnBinary)
 	if !supportedSystemdPlnBinary(plnBinary) {
-		return "", fmt.Errorf("refusing to install systemd service for %s; install pln to /usr/bin/pln or /usr/local/bin/pln first", plnBinary)
+		return "", fmt.Errorf("refusing to install systemd service for %s; install pln to %s or %s first", plnBinary, packagePlnBinary, tarballPlnBinary)
 	}
 	if err := validateRootOwnedSystemdPath(plnBinary); err != nil {
 		return "", err
@@ -131,7 +133,7 @@ func systemdPlnBinaryPath() (string, error) {
 
 func supportedSystemdPlnBinary(plnBinary string) bool {
 	switch filepath.Clean(plnBinary) {
-	case "/usr/bin/pln", "/usr/local/bin/pln":
+	case packagePlnBinary, tarballPlnBinary:
 		return true
 	default:
 		return false

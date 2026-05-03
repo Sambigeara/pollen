@@ -362,9 +362,10 @@ pln status nodes --include-offline</code></pre>
     <p>Stop and remove the systemd unit. <code>--purge</code> also wipes <code>/var/lib/pln</code> (irreversible).</p>
 
     <h3 id="daemon-upgrade"><code>pln daemon upgrade</code></h3>
-    <p>Upgrade the local pln binary via the platform package manager.</p>
+    <p>Upgrade the local pln binary. Linux preserves the current install method by default: <code>/usr/local/bin/pln</code> stays on tarball installs, while <code>/usr/bin/pln</code> uses distro package-manager detection.</p>
     <dl class="flags">
       <dt>--restart</dt><dd>Bounce the background service after upgrading.</dd>
+      <dt>--method</dt><dd>Linux install method override: <code>auto</code> or <code>tarball</code>.</dd>
     </dl>
 
     <h2 id="config">Config</h2>

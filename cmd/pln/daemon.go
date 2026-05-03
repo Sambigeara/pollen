@@ -123,13 +123,16 @@ func newUpgradeCmd() *cobra.Command {
 		Use:   "upgrade",
 		Short: "Upgrade pln to the latest version",
 		Long: `Upgrades the local pln binary via the platform package manager
-(Homebrew on macOS, the install script on Linux). Pass --restart to also
-bounce the background service and pick up the new binary.`,
-		Example: "  pln upgrade --restart",
+(Homebrew on macOS, the install script on Linux). Linux upgrades preserve the
+current install method by default: /usr/local/bin/pln stays on tarball installs,
+while /usr/bin/pln uses distro package-manager detection. Pass --restart to
+also bounce the background service and pick up the new binary.`,
+		Example: "  pln upgrade --restart\n  pln upgrade --method tarball",
 		Args:    cobra.NoArgs,
 		RunE:    withEnv(runUpgrade, localOnly()),
 	}
 	cmd.Flags().Bool("restart", false, "Restart the background service after upgrading")
+	cmd.Flags().String("method", "", "Linux install method override: auto or tarball (default: preserve current method)")
 	return cmd
 }
 
@@ -393,11 +396,18 @@ func runUpgrade(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	var err error
 	switch runtime.GOOS {
 	case osDarwin:
+		if cmd.Flags().Changed("method") {
+			return errors.New("--method is only supported on Linux")
+		}
 		c := exec.CommandContext(cmd.Context(), "brew", "upgrade", "sambigeara/homebrew-pln/pln")
 		c.Stdout = cmd.OutOrStdout()
 		c.Stderr = cmd.ErrOrStderr()
 		err = c.Run()
 	case osLinux:
+		installArgs, argsErr := linuxUpgradeInstallArgs(cmd, os.Executable)
+		if argsErr != nil {
+			return argsErr
+		}
 		resp, reqErr := (&http.Client{Timeout: 30 * time.Second}).Get(installScriptURL) //nolint:mnd,noctx
 		if reqErr != nil || resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("failed to fetch install script")
@@ -405,7 +415,7 @@ func runUpgrade(cmd *cobra.Command, _ []string, env *cliEnv) error {
 		defer resp.Body.Close()
 		script, _ := io.ReadAll(resp.Body)
 
-		c := exec.CommandContext(cmd.Context(), "bash", "-s", "--")
+		c := exec.CommandContext(cmd.Context(), "bash", installArgs...)
 		c.Stdin = bytes.NewReader(script)
 		c.Stdout = cmd.OutOrStdout()
 		c.Stderr = cmd.ErrOrStderr()
@@ -422,6 +432,57 @@ func runUpgrade(cmd *cobra.Command, _ []string, env *cliEnv) error {
 		return servicectl("restart", cmd, env)
 	}
 	return nil
+}
+
+func linuxUpgradeInstallArgs(cmd *cobra.Command, executable func() (string, error)) ([]string, error) {
+	method, explicit, err := linuxUpgradeInstallMethod(cmd, executable)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"-s", "--"}
+	if explicit || method == installMethodTarball {
+		args = append(args, "--method", method)
+	}
+	return args, nil
+}
+
+func linuxUpgradeInstallMethod(cmd *cobra.Command, executable func() (string, error)) (method string, explicit bool, err error) {
+	method, _ = cmd.Flags().GetString("method")
+	if cmd.Flags().Changed("method") {
+		method, err = validateLinuxInstallMethod(method)
+		return method, true, err
+	}
+	exe, err := executable()
+	if err != nil {
+		return "", false, fmt.Errorf("resolve pln binary path: %w", err)
+	}
+	method, err = linuxUpgradeInstallMethodForExecutable(exe)
+	return method, false, err
+}
+
+const (
+	installMethodAuto    = "auto"
+	installMethodTarball = "tarball"
+)
+
+func validateLinuxInstallMethod(method string) (string, error) {
+	switch method {
+	case installMethodAuto, installMethodTarball:
+		return method, nil
+	default:
+		return "", fmt.Errorf("unknown install method: %s (expected auto|tarball)", method)
+	}
+}
+
+func linuxUpgradeInstallMethodForExecutable(executable string) (string, error) {
+	switch filepath.Clean(executable) {
+	case packagePlnBinary:
+		return installMethodAuto, nil
+	case tarballPlnBinary:
+		return installMethodTarball, nil
+	default:
+		return "", fmt.Errorf("cannot infer Linux install method from %s; rerun with --method auto or --method tarball", executable)
+	}
 }
 
 func servicectl(action string, cmd *cobra.Command, env *cliEnv) error {
