@@ -61,6 +61,12 @@ func TestUserPlnPlistPath(t *testing.T) {
 	require.True(t, strings.HasSuffix(got, "/Library/LaunchAgents/sh.pln.home.plist"), "got %q", got)
 }
 
+func TestInstallScriptURLUsesCanonicalInstaller(t *testing.T) {
+	require.Equal(t, "https://pln.sh/install.sh", installScriptURL)
+	require.NotContains(t, installScriptURL, "raw.githubusercontent.com")
+	require.NotContains(t, installScriptURL, "/main/")
+}
+
 func TestRenderSystemdUnit_UsesPackageBinary(t *testing.T) {
 	got, err := renderSystemdUnit("/usr/bin/pln")
 	require.NoError(t, err)

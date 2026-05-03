@@ -35,6 +35,7 @@ const (
 	maxPort             = 65535
 	osLinux             = "linux"
 	osDarwin            = "darwin"
+	installScriptURL    = "https://pln.sh/install.sh"
 )
 
 var (

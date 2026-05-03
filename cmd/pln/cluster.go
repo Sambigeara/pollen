@@ -922,7 +922,7 @@ func ensureRemotePollen(ctx context.Context, sshTarget string) error {
 		return nil
 	}
 
-	req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://raw.githubusercontent.com/%s/main/scripts/install.sh", "sambigeara/pollen"), nil)
+	req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, installScriptURL, nil)
 	if reqErr != nil {
 		return fmt.Errorf("failed to fetch install script: %w", reqErr)
 	}

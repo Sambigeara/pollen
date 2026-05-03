@@ -398,7 +398,7 @@ func runUpgrade(cmd *cobra.Command, _ []string, env *cliEnv) error {
 		c.Stderr = cmd.ErrOrStderr()
 		err = c.Run()
 	case osLinux:
-		resp, reqErr := (&http.Client{Timeout: 30 * time.Second}).Get(fmt.Sprintf("https://raw.githubusercontent.com/%s/main/scripts/install.sh", "sambigeara/pollen")) //nolint:mnd,noctx
+		resp, reqErr := (&http.Client{Timeout: 30 * time.Second}).Get(installScriptURL) //nolint:mnd,noctx
 		if reqErr != nil || resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("failed to fetch install script")
 		}
