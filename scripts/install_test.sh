@@ -140,6 +140,21 @@ assert_tarball_installs_root_owned_binary() {
     rm -rf "$tmp"
 }
 
+assert_stdin_execution_runs() {
+    set +e
+    RUN_OUTPUT=$(bash -s -- --help <"$SCRIPT_DIR/install.sh" 2>&1)
+    RUN_STATUS=$?
+    set -e
+
+    if [ "$RUN_STATUS" -ne 0 ]; then
+        fail "stdin execution: expected success, got failure: $RUN_OUTPUT"
+    fi
+    case "$RUN_OUTPUT" in
+        *"Usage: install.sh"*) ;;
+        *) fail "stdin execution: expected help output, got $RUN_OUTPUT" ;;
+    esac
+}
+
 assert_detect "debian uses apt" "apt" $'ID=debian' apt-get
 assert_detect "ubuntu-like uses apt" "apt" $'ID=linuxmint\nID_LIKE="ubuntu debian"' apt-get dnf
 assert_detect "fedora prefers dnf" "dnf" $'ID=fedora' dnf yum
@@ -151,5 +166,6 @@ assert_refuses "debian without apt refuses" "apt-get is not installed" $'ID=debi
 assert_method "explicit tarball accepted" "tarball" 0 "tarball"
 assert_method "package-manager override refused" "dnf" 1 "unknown install method"
 assert_tarball_installs_root_owned_binary
+assert_stdin_execution_runs
 
 printf 'ok - install detection\n'
