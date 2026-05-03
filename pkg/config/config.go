@@ -21,8 +21,6 @@ const (
 	configFileName       = "config.yaml"
 	DefaultBootstrapPort = 60611
 
-	// Default bind addresses for optional daemon endpoints. Leave the
-	// corresponding config fields empty to keep each endpoint disabled.
 	DefaultHTTPAddr       = ":9090"
 	DefaultStaticHTTPAddr = ":8080"
 	DefaultControlAddr    = ":50051"
@@ -53,19 +51,10 @@ type Connection struct {
 	LocalPort  uint32 `yaml:"localPort"`
 }
 
-// Placement configures the WASM runtime's idle-instance cache. Zero
-// values select package defaults.
 type Placement struct {
-	// IdleInstanceTTL is how long a workload's pooled instances persist
-	// without invocations before being evicted.
 	IdleInstanceTTL time.Duration `yaml:"idleInstanceTTL,omitempty"`
 }
 
-// Evaluator configures the authorisation layer. Each gate name binds
-// to an evaluator spec: "allow_all", "attribute_matcher", or
-// "seed/<seed-name>". Unbound gates fall back to Default (empty =
-// "allow_all"). MatcherRules is required when any gate resolves to
-// "attribute_matcher".
 type Evaluator struct {
 	Default      string            `yaml:"default,omitempty"`
 	Gates        map[string]string `yaml:"gates,omitempty"`
@@ -73,13 +62,9 @@ type Evaluator struct {
 }
 
 type Config struct {
-	Evaluator Evaluator `yaml:"evaluator,omitempty"`
-	Name      string    `yaml:"name,omitempty"`
-	HTTP      string    `yaml:"http,omitempty"`
-	// Properties are baked into this node's delegation cert and surface to the
-	// authz layer as subject.properties. On root nodes they're applied at boot
-	// by re-issuing the self-signed cert; delegated nodes receive properties
-	// imperatively via `pln grant`/`pln invite`.
+	Evaluator   Evaluator      `yaml:"evaluator,omitempty"`
+	Name        string         `yaml:"name,omitempty"`
+	HTTP        string         `yaml:"http,omitempty"`
 	Properties  map[string]any `yaml:"properties,omitempty"`
 	StaticHTTP  string         `yaml:"staticHTTP,omitempty"`
 	ControlAddr string         `yaml:"controlAddr,omitempty"`
@@ -88,9 +73,7 @@ type Config struct {
 	Services    []Service      `yaml:"services,omitempty"`
 	Placement   Placement      `yaml:"placement,omitempty"`
 	Public      bool           `yaml:"public,omitempty"`
-	// RelayOnly disables workload hosting; the node still gossips and forwards
-	// routed streams. Pair with an empty staticHTTP to also skip static hosting.
-	RelayOnly bool `yaml:"relayOnly,omitempty"`
+	RelayOnly   bool           `yaml:"relayOnly,omitempty"`
 }
 
 func Load(pollenDir string) (*Config, error) {

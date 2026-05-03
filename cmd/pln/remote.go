@@ -20,10 +20,6 @@ import (
 
 var errRemoteUnsupported = errors.New("this command must run on the local node (--host or PLN_HOST is set, or the current context has a host)")
 
-// ensureSystemServiceContext rejects contexts the local system-service manager
-// can't drive: remote daemons (managed on the remote host) and, on Linux, any
-// named context (no per-context systemd unit is plumbed yet). On macOS a named
-// local context drives its own launchd unit under `sh.pln.<name>`.
 func ensureSystemServiceContext() error {
 	name := resolveContextName()
 	if name == defaultContextName {
@@ -46,8 +42,6 @@ func ensureSystemServiceContext() error {
 	return nil
 }
 
-// Dir precedence: --dir flag > current context's dir > default.
-// Host precedence: --host flag > PLN_HOST env > current context's host.
 func resolveTarget(cmd *cobra.Command, defaultDir string) (dir, host string, err error) {
 	name := resolveContextName()
 	dir, host, err = resolveContextBindings(name, defaultDir)
@@ -70,8 +64,7 @@ func resolveTarget(cmd *cobra.Command, defaultDir string) (dir, host string, err
 	return dir, host, nil
 }
 
-// Uses net.Pipe between http2 and the subprocess so SetReadDeadline (called
-// for idle pings) works — raw exec.Cmd pipes don't support deadlines.
+// net.Pipe so SetReadDeadline works; raw exec.Cmd pipes don't support deadlines.
 func sshBridgeDial(target string) (net.Conn, error) {
 	cmdCtx, cancel := context.WithCancel(context.Background())
 

@@ -108,8 +108,6 @@ func TestRemoveLeavesNonEmptyShard(t *testing.T) {
 	store, err := cas.New(root)
 	require.NoError(t, err)
 
-	// Two blobs whose hashes share a shard: write one, fabricate a
-	// sibling so Remove sees ENOTEMPTY and leaves the dir intact.
 	hash, err := store.Put(bytes.NewReader([]byte("first")))
 	require.NoError(t, err)
 	sibling := filepath.Join(root, "cas", hash[:2], hash[:2]+"00sibling000000000000000000000000000000000000000000000000000000")

@@ -5,7 +5,6 @@ package evaluator
 
 import "context"
 
-// AllowAll is the router's default fallback evaluator.
 type AllowAll struct{}
 
 func (AllowAll) Allow(_ context.Context, _ Request) (Decision, error) {

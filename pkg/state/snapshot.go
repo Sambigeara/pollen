@@ -109,9 +109,8 @@ func UnmarshalDigest(data []byte) (Digest, error) {
 	return Digest{proto: pb}, nil
 }
 
-// TODO(saml): remove once all persisted state and in-flight gossip carry an explicit protocol.
-// normaliseProtocol maps the zero value (UNSPECIFIED) to TCP for backward
-// compatibility with gossip data that predates the protocol field.
+// Backward compatibility: gossip data that predates the protocol field
+// carries UNSPECIFIED, which callers treat as TCP.
 func NormaliseProtocol(p statev1.ServiceProtocol) statev1.ServiceProtocol {
 	if p == statev1.ServiceProtocol_SERVICE_PROTOCOL_UNSPECIFIED {
 		return statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP
@@ -157,8 +156,8 @@ type ServiceInfo struct {
 }
 
 // PeersWithBlob returns live peers advertising hash. Stale BlobAvailability
-// from offline peers persists in gossip until cert expiry; including them
-// would direct fetches at unreachable nodes.
+// from offline peers persists in gossip until cert expiry; including them would
+// direct fetches at unreachable nodes.
 func (s Snapshot) PeersWithBlob(hash string) []types.PeerKey {
 	live := make(map[types.PeerKey]struct{}, len(s.PeerKeys))
 	for _, pk := range s.PeerKeys {
@@ -176,8 +175,6 @@ func (s Snapshot) PeersWithBlob(hash string) []types.PeerKey {
 	return out
 }
 
-// BlobByName returns the lowest-peer-key publisher's spec when multiple
-// peers publish the same name.
 func (s Snapshot) BlobByName(name string) (string, BlobSpecView, bool) {
 	var bestDigest string
 	var bestView BlobSpecView
@@ -251,8 +248,6 @@ func (s *store) buildSnapshot() Snapshot {
 		}
 	}
 
-	// Specs survive publisher departure: collected from every peer's log,
-	// valid publishers outrank invalid, lower peer key wins ties.
 	specs := make(map[string]WorkloadSpecView)
 	staticSpecs := make(map[string]StaticSpecView)
 	blobSpecs := make(map[string]BlobSpecView)
@@ -342,19 +337,8 @@ func filterLive(claims map[string]map[types.PeerKey]struct{}, live map[types.Pee
 	return out
 }
 
-// buildNodeView projects a peer's log into its peer-local NodeView plus
-// the per-peer claim sets (workload and static). Spec declarations are
-// cluster-scoped and live in s.specs; they are not surfaced here.
-// buildNodeView returns the projected per-node view alongside two
-// hash-keyed maps for the caller to aggregate cluster-wide:
-//
-//	claims        — workload hashes this peer is claiming, value = draining
-//	staticClaims  — static-bundle names this peer is claiming
-//
-// claims uses a bool value so the publisher's draining intent rides
-// alongside the membership signal: a true means "still claimant, but
-// scheduled for release". Other peers issue a replacement claim during
-// the drain window so make-before-break is preserved.
+// claims bool value: true = draining (still claimant but scheduled for
+// release), allowing peers to issue replacement claims for make-before-break.
 func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool, map[string]struct{}) {
 	nv := NodeView{
 		PeerPub:      pk.Bytes(),
@@ -447,10 +431,6 @@ func blobSpecFromProto(p *statev1.BlobSpecChange) BlobSpec {
 
 const reachableMaxAge = 30 * time.Second
 
-// calculateLiveComponent walks the reachability graph starting from the local
-// node. Only reachability claims from peers whose events we've received within
-// reachableMaxAge are trusted; stale peers' claims are excluded from the
-// vouched set. The local node's own claims are always trusted.
 func (s *store) calculateLiveComponent(nodes map[types.PeerKey]NodeView, now time.Time) map[types.PeerKey]struct{} {
 	vouched := make(map[types.PeerKey]struct{})
 	for pk, nv := range nodes {
@@ -480,18 +460,14 @@ func (s *store) calculateLiveComponent(nodes map[types.PeerKey]NodeView, now tim
 			continue
 		}
 
-		// Only traverse a node's reachability claims if fresh (or local).
-		// A stale node may still be in the live set (vouched by a fresh peer),
-		// but its own claims about who it can reach are not trusted.
+		// A stale node may be live (vouched by others) but its own
+		// reachability claims are not trusted.
 		if curr != s.localID && now.Sub(nv.LastEventAt) > reachableMaxAge {
 			continue
 		}
 
 		for neighbor := range nv.Reachable {
 			if _, seen := live[neighbor]; !seen {
-				// nodes is pre-filtered (expired/denied peers removed); only enqueue
-				// neighbours present in it so live is a subset of nodes and downstream
-				// consumers (peersDigest, filteredClaims, encodeDelta) never see excluded peers.
 				if _, ok := nodes[neighbor]; ok {
 					live[neighbor] = struct{}{}
 					queue = append(queue, neighbor)

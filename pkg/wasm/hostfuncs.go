@@ -18,27 +18,10 @@ const (
 	logLevelError uint64 = 3
 )
 
-// RequestRouter handles pln:// URI-addressed requests from WASM guests.
 type RequestRouter interface {
 	RouteRequest(ctx context.Context, uri URI, input []byte) ([]byte, error)
 }
 
-// NewHostFunctions creates the Extism host functions exposed to guest WASM modules.
-//
-// pollen_request(uri_offset i64, input_offset i64) -> output_offset i64:
-//
-//	guest calls a seed or service via a pln:// URI. Returns offset to output bytes (0 on error).
-//	Seed:    pln://seed/<name>/<function>
-//	Service: pln://service/<name>
-//
-// pollen_log(level i64, msg_offset i64): guest writes a log message to the host logger.
-//
-//	level: 0=debug, 1=info, 2=warn, 3=error
-//
-// pollen_caller_info() -> output_offset i64:
-//
-//	returns caller metadata as JSON ({"peerKey":"<hex>","attributes":{...}}).
-//	Returns 0 if no caller info is available in the invocation context.
 func NewHostFunctions(logger *zap.SugaredLogger, router RequestRouter) []extism.HostFunction {
 	logFn := extism.NewHostFunctionWithStack(
 		"pollen_log",

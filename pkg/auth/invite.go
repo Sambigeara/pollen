@@ -19,7 +19,6 @@ import (
 
 const inviteExpirySkew = time.Minute
 
-// InviteConsumer tracks which invite tokens have been redeemed.
 type InviteConsumer interface {
 	TryConsume(token *admissionv1.InviteToken, now time.Time) (bool, error)
 	Export() []*statev1.ConsumedInvite
@@ -68,7 +67,6 @@ func (c *impl) TryConsume(token *admissionv1.InviteToken, now time.Time) (bool, 
 	return true, nil
 }
 
-// Export returns the consumed invite set as a proto slice for persistence.
 func (c *impl) Export() []*statev1.ConsumedInvite {
 	c.mu.Lock()
 	defer c.mu.Unlock()

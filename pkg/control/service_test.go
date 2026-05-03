@@ -307,9 +307,8 @@ func TestUploadBlobMissingHeader(t *testing.T) {
 	require.Equal(t, codes.InvalidArgument, st.Code())
 }
 
-// Unnamed + unanchored uploads must NOT get a BlobSpec — static-seed
-// file uploads rely on this so the StaticSpec stays the sole durable
-// reference and stale files don't survive a manifest swap.
+// Static-seed file uploads rely on the StaticSpec being the sole durable
+// reference so stale files don't survive a manifest swap.
 func TestUploadBlob_AnonymousNoSpec(t *testing.T) {
 	h := newHarness(t)
 	stream := newUploadStream("", []byte("payload"))
@@ -456,9 +455,6 @@ func TestCallWorkloadMissingTarget(t *testing.T) {
 	require.Equal(t, codes.InvalidArgument, st.Code())
 }
 
-// TestStartTCP_TokenAuth exercises the live TCP listener plus token-auth
-// interceptor. Covers: valid token succeeds, missing/bad token is rejected,
-// no-token mode lets everyone through.
 func TestStartTCP_TokenAuth(t *testing.T) {
 	startServer := func(token string) (*control.Server, string, func()) {
 		placementStub := &fakePlacement{callOut: []byte("ok")}
@@ -934,8 +930,6 @@ func TestGetStatus_ExpiredPeerNotIndirect(t *testing.T) {
 	}
 }
 
-// --- Fakes ---
-
 type fakeMembership struct {
 	denyErr   error
 	deniedKey types.PeerKey
@@ -1152,17 +1146,12 @@ func (f *fakeConnector) Connect(_ context.Context, peer types.PeerKey, addrs []n
 	return f.err
 }
 
-// --- Helpers ---
-
 func testPeerKey(b byte) types.PeerKey {
 	var raw [32]byte
 	raw[0] = b
 	return types.PeerKeyFromBytes(raw[:])
 }
 
-// fakeSeedStream implements grpc.ClientStreamingServer for SeedWorkload
-// tests. It replays a header + optional binary chunk and captures the
-// response passed to SendAndClose.
 type fakeSeedStream struct {
 	grpc.ServerStream
 	ctx      context.Context //nolint:containedctx

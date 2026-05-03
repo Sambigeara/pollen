@@ -16,8 +16,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/state"
 )
 
-// dialLocalService connects directly to a service on the local node, bypassing
-// the tunnel. This is used when the selected provider is the local peer.
 func dialLocalService(ctx context.Context, port uint32, input []byte) ([]byte, error) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", "127.0.0.1:"+strconv.Itoa(int(port)))
 	if err != nil {
@@ -34,9 +32,6 @@ func dialLocalService(ctx context.Context, port uint32, input []byte) ([]byte, e
 	return resp, nil
 }
 
-// pickNearestService selects a service provider using power-of-two-choices with
-// Vivaldi distance as the comparison metric. If fewer than two candidates exist
-// or coordinates are unavailable, it falls back to an arbitrary pick.
 func pickNearestService(snap state.Snapshot, candidates []state.ServiceInfo) state.ServiceInfo {
 	if len(candidates) == 1 {
 		return candidates[0]
@@ -47,8 +42,6 @@ func pickNearestService(snap state.Snapshot, candidates []state.ServiceInfo) sta
 		return candidates[rand.IntN(len(candidates))] //nolint:gosec
 	}
 
-	// P2C: pick two distinct random candidates, choose the closer one.
-	// j is drawn from [0, len-2] then shifted past i to guarantee i != j.
 	i := rand.IntN(len(candidates))     //nolint:gosec
 	j := rand.IntN(len(candidates) - 1) //nolint:gosec
 	if j >= i {

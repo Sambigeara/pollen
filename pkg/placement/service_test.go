@@ -19,11 +19,6 @@ func newServiceForUnseedTests(localID types.PeerKey, store WorkloadState) (*Serv
 	return New(localID, store, blobs, nil), blobs
 }
 
-// TestService_Unseed_WhenNotLocallyClaimed pins the bug where `pln unseed`
-// on the publisher failed because the local manager wasn't running the
-// workload — e.g. placement had evicted the claim to another node. The
-// authoritative tear-down is the spec deletion (gossip propagates to
-// claimants), not the local manager's runtime state.
 func TestService_Unseed_WhenNotLocallyClaimed(t *testing.T) {
 	local := peerKey(1)
 	peer2 := peerKey(2)
@@ -48,9 +43,6 @@ func TestService_Unseed_WhenNotLocallyClaimed(t *testing.T) {
 	require.False(t, specStillThere, "spec should be deleted so claimants release on reconcile")
 }
 
-// TestService_Unseed_EvictsWasmBlob pins the invariant that unseed
-// evicts the workload's wasm bytes from the local CAS — otherwise every
-// unseed leaves an orphan behind.
 func TestService_Unseed_EvictsWasmBlob(t *testing.T) {
 	local := peerKey(1)
 	hash := "workload-xyz"
@@ -69,12 +61,6 @@ func TestService_Unseed_EvictsWasmBlob(t *testing.T) {
 	require.Equal(t, []string{hash}, blobs.removed)
 }
 
-// TestService_Unseed_RejectsNonOwner guards against a silent no-op when
-// unseed runs against a node that didn't publish the spec:
-// DeleteWorkloadSpec only tombstones the local log, so a non-owner's call
-// would do nothing. The handler must resolve the name globally — an admin
-// that didn't publish the seed still needs to see the ownership error
-// rather than a useless "workload not running: <name>".
 func TestService_Unseed_RejectsNonOwner(t *testing.T) {
 	local := peerKey(1)
 	peer2 := peerKey(2)
@@ -96,11 +82,6 @@ func TestService_Unseed_RejectsNonOwner(t *testing.T) {
 	require.NotContains(t, err.Error(), ErrNotRunning.Error(), "must not fall through to the generic not-running branch")
 }
 
-// TestService_Unseed_LocalNameWins verifies the local-first bias in name
-// resolution: if two peers publish specs under the same name, the local
-// publisher's spec is selected so operators don't accidentally delete (or
-// in this case, fail to delete) their own seed just because a remote
-// namesake exists.
 func TestService_Unseed_LocalNameWins(t *testing.T) {
 	local := peerKey(1)
 	peer2 := peerKey(2)
@@ -131,20 +112,12 @@ func TestService_Unseed_LocalNameWins(t *testing.T) {
 	require.True(t, remoteStillThere, "remote spec must remain untouched")
 }
 
-// TestService_Unseed_UnknownHash ensures an obviously bogus identifier
-// still errors — after the fix, Unseed no longer gates on local manager
-// state, so a dedicated "nothing to unseed" branch replaces the previous
-// ErrNotRunning path.
 func TestService_Unseed_UnknownHash(t *testing.T) {
 	s, _ := newServiceForUnseedTests(peerKey(1), &mockStore{})
 
 	require.ErrorIs(t, s.Unseed("deadbeef"), ErrNotRunning)
 }
 
-// TestService_Call_UnknownTarget pins the distinction between "URI names a
-// target that simply doesn't exist" (caller bug) and "spec exists but
-// nobody is currently claiming it" (transient placement state). The first
-// must surface wasm.ErrTargetNotFound, never ErrNotRunning.
 func TestService_Call_UnknownTarget(t *testing.T) {
 	s, _ := newServiceForUnseedTests(peerKey(1), &mockStore{})
 
@@ -153,9 +126,6 @@ func TestService_Call_UnknownTarget(t *testing.T) {
 	require.False(t, errors.Is(err, ErrNotRunning), "must not collapse into ErrNotRunning")
 }
 
-// TestService_Call_KnownSpecNoClaimants is the inverse: the spec resolves
-// fine but no node currently claims it. This is transient and must keep
-// returning ErrNotRunning.
 func TestService_Call_KnownSpecNoClaimants(t *testing.T) {
 	const (
 		seedName = "sink"
@@ -176,11 +146,6 @@ func TestService_Call_KnownSpecNoClaimants(t *testing.T) {
 	require.False(t, errors.Is(err, wasm.ErrTargetNotFound), "resolved spec must not surface as not-found")
 }
 
-// TestService_callLocal_RefusedWhenBudgetExhausted pins the call-level
-// admission contract: when the shared memory budget is full, callLocal
-// returns *OverloadError wrapping ErrOverloaded without ever invoking
-// the workload manager, and backoff is signalled so the gossip TTL
-// fires for peers' dispatchers.
 func TestService_callLocal_RefusedWhenBudgetExhausted(t *testing.T) {
 	local := peerKey(1)
 	const seedHash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
@@ -208,11 +173,6 @@ func TestService_callLocal_RefusedWhenBudgetExhausted(t *testing.T) {
 	require.True(t, s.backoff.IsLocallyOverloaded(), "refusal must arm backoff so peers' dispatchers divert future calls")
 }
 
-// TestService_callLocal_ReleasesAdmissionOnReturn pins that a successful
-// admission releases its budget slice when the call completes, so
-// long-running services don't accumulate phantom reservations. The
-// underlying manager has no compiled hash and returns ErrNotRunning,
-// which exercises the deferred release path on a non-overload exit.
 func TestService_callLocal_ReleasesAdmissionOnReturn(t *testing.T) {
 	local := peerKey(1)
 	const seedHash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"

@@ -43,7 +43,6 @@ func TestUpsertAndFlushRoundTrip(t *testing.T) {
 
 	snap := reopened.Snapshot()
 	require.Len(t, snap, 2)
-	// Most recently seen first.
 	require.Equal(t, keyWith(0xBB), snap[0].PeerKey)
 	require.Equal(t, []string{"a.example.com:60611", "b.example.com:60611"}, snap[0].Addrs)
 	require.Equal(t, keyWith(0xAA), snap[1].PeerKey)
@@ -108,7 +107,6 @@ func TestEvictionOnOverflow(t *testing.T) {
 
 	snap := s.Snapshot()
 	require.Len(t, snap, maxEntries)
-	// Oldest five (indices 0..4) should have been evicted.
 	for _, e := range snap {
 		require.NotEqual(t, keyWith(0x00), e.PeerKey)
 		require.NotEqual(t, keyWith(0x04), e.PeerKey)

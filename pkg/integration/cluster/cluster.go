@@ -21,7 +21,6 @@ const (
 	introduceTimeout = 5 * time.Second
 )
 
-// pendingNode records a node definition before the cluster is started.
 type pendingNode struct {
 	name           string
 	role           NodeRole
@@ -29,24 +28,20 @@ type pendingNode struct {
 	addr           *net.UDPAddr
 }
 
-// latencySetting records a directed latency override between two named nodes.
 type latencySetting struct {
 	from, to string
 	latency  time.Duration
 }
 
-// natMapping records a NAT address mapping for a private node.
 type natMapping struct {
 	nodeName   string
 	publicAddr *net.UDPAddr
 }
 
-// introduction records a pair of nodes to connect after startup.
 type introduction struct {
 	from, to string
 }
 
-// Builder accumulates cluster configuration before Start() materializes it.
 type Builder struct {
 	t              testing.TB
 	pending        []pendingNode
@@ -57,7 +52,6 @@ type Builder struct {
 	defaultJitter  float64
 }
 
-// New returns a Builder that will construct a Cluster when Start() is called.
 func New(t testing.TB) *Builder { //nolint:thelper
 	return &Builder{
 		t:              t,
@@ -65,32 +59,26 @@ func New(t testing.TB) *Builder { //nolint:thelper
 	}
 }
 
-// AddNode registers a named node with the given role.
 func (b *Builder) AddNode(name string, role NodeRole) *Builder {
 	b.pending = append(b.pending, pendingNode{name: name, role: role})
 	return b
 }
 
-// SetLatency sets per-link latency between two named nodes (both directions).
 func (b *Builder) SetLatency(from, to string, d time.Duration) *Builder {
 	b.latencies = append(b.latencies, latencySetting{from: from, to: to, latency: d})
 	return b
 }
 
-// SetDefaultLatency overrides the switch-level default latency.
 func (b *Builder) SetDefaultLatency(d time.Duration) *Builder {
 	b.defaultLatency = d
 	return b
 }
 
-// SetDefaultJitter overrides the switch-level default jitter ratio.
 func (b *Builder) SetDefaultJitter(j float64) *Builder {
 	b.defaultJitter = j
 	return b
 }
 
-// EnableNATPunch enables NAT punch on the named node. Must be called after
-// AddNode for that name.
 func (b *Builder) EnableNATPunch(name string) *Builder {
 	for i := range b.pending {
 		if b.pending[i].name == name {
@@ -101,7 +89,6 @@ func (b *Builder) EnableNATPunch(name string) *Builder {
 	panic(fmt.Sprintf("EnableNATPunch: unknown node %q", name))
 }
 
-// SetAddr overrides the auto-assigned address for the named node.
 func (b *Builder) SetAddr(name string, addr *net.UDPAddr) *Builder {
 	for i := range b.pending {
 		if b.pending[i].name == name {
@@ -112,22 +99,16 @@ func (b *Builder) SetAddr(name string, addr *net.UDPAddr) *Builder {
 	panic(fmt.Sprintf("SetAddr: unknown node %q", name))
 }
 
-// SetNATMapping configures NAT address rewriting for a private node. When the
-// node sends to a public node, the source is rewritten to publicAddr. When a
-// public node sends to publicAddr, the packet is routed to the real private conn.
 func (b *Builder) SetNATMapping(nodeName string, publicAddr *net.UDPAddr) *Builder {
 	b.natMappings = append(b.natMappings, natMapping{nodeName: nodeName, publicAddr: publicAddr})
 	return b
 }
 
-// Introduce records that fromNode should connect to toNode after startup.
 func (b *Builder) Introduce(from, to string) *Builder {
 	b.introductions = append(b.introductions, introduction{from: from, to: to})
 	return b
 }
 
-// Start materializes the cluster: creates the switch, nodes, waits for readiness,
-// executes introductions, and registers cleanup.
 func (b *Builder) Start(ctx context.Context) *Cluster {
 	t := b.t
 	t.Helper()
@@ -187,7 +168,6 @@ func (b *Builder) Start(ctx context.Context) *Cluster {
 	return c
 }
 
-// Cluster is the top-level test harness owning a virtual switch, auth, and nodes.
 type Cluster struct {
 	t       testing.TB
 	ctx     context.Context
@@ -198,17 +178,14 @@ type Cluster struct {
 	nextIdx int
 }
 
-// Node returns the named TestNode, or nil if not found.
 func (c *Cluster) Node(name string) *TestNode {
 	return c.byName[name]
 }
 
-// Nodes returns all nodes in creation order.
 func (c *Cluster) Nodes() []*TestNode {
 	return c.ordered
 }
 
-// NodesByRole returns nodes matching the given role, in creation order.
 func (c *Cluster) NodesByRole(role NodeRole) []*TestNode {
 	var result []*TestNode
 	for _, n := range c.ordered {
@@ -219,27 +196,22 @@ func (c *Cluster) NodesByRole(role NodeRole) []*TestNode {
 	return result
 }
 
-// Switch returns the underlying VirtualSwitch.
 func (c *Cluster) Switch() *VirtualSwitch {
 	return c.sw
 }
 
-// PeerKeyByName returns the PeerKey for the named node.
 func (c *Cluster) PeerKeyByName(name string) types.PeerKey {
 	return c.mustNode(name).PeerKey()
 }
 
-// Partition blocks traffic between two groups of named nodes.
 func (c *Cluster) Partition(groupA, groupB []string) {
 	c.sw.Partition(c.resolveAddrs(groupA), c.resolveAddrs(groupB))
 }
 
-// Heal removes a partition between two groups of named nodes.
 func (c *Cluster) Heal(groupA, groupB []string) {
 	c.sw.Heal(c.resolveAddrs(groupA), c.resolveAddrs(groupB))
 }
 
-// AddNodeAndStart creates and starts a new node mid-test.
 func (c *Cluster) AddNodeAndStart(t testing.TB, name string, role NodeRole, ctx context.Context) *TestNode { //nolint:thelper
 	t.Helper()
 
@@ -296,7 +268,6 @@ func (c *Cluster) resolveAddrs(names []string) []string {
 	return addrs
 }
 
-// indexToAddr converts a zero-based index to a 10.0.x.y:60611 address.
 func indexToAddr(i int) *net.UDPAddr {
 	return &net.UDPAddr{
 		IP:   net.IPv4(10, 0, byte(i/256), byte(i%256+1)), //nolint:mnd
@@ -304,7 +275,6 @@ func indexToAddr(i int) *net.UDPAddr {
 	}
 }
 
-// PublicMesh creates n Public nodes in a full mesh.
 func PublicMesh(t testing.TB, n int, ctx context.Context) *Cluster { //nolint:thelper
 	t.Helper()
 
@@ -325,7 +295,6 @@ func PublicMesh(t testing.TB, n int, ctx context.Context) *Cluster { //nolint:th
 	return b.Start(ctx)
 }
 
-// RelayRegions creates a multi-region cluster with relays and private nodes.
 func RelayRegions(t testing.TB, regions, nodesPerRegion int, ctx context.Context) *Cluster { //nolint:thelper
 	t.Helper()
 

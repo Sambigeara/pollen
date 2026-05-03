@@ -165,9 +165,6 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 	}, 5*time.Second, 25*time.Millisecond)
 }
 
-// TestRedeemInviteRacesAddresses puts a non-responsive UDP address first and
-// the live bootstrap second. The 2s deadline is below the per-dial handshake
-// timeout, so only a parallel race across both addresses can succeed.
 func TestRedeemInviteRacesAddresses(t *testing.T) {
 	cluster := testauth.NewClusterAuth(t)
 
@@ -177,9 +174,6 @@ func TestRedeemInviteRacesAddresses(t *testing.T) {
 	bootstrapCreds.SetDelegationKey(cluster.Signer(t))
 	bootstrap := startMeshHarnessWithCreds(t, bootstrapPriv, bootstrapPub, bootstrapCreds)
 
-	// A bound UDP socket that nothing reads from acts as a deterministic
-	// blackhole: QUIC Initial packets land in the kernel queue, no
-	// response is ever produced, and the handshake hangs until cancelled.
 	blackhole, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = blackhole.Close() })
@@ -204,8 +198,6 @@ func TestRedeemInviteRacesAddresses(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Tight deadline: a sequential implementation would burn it on the
-	// blackhole dial before reaching the live bootstrap.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -215,8 +207,6 @@ func TestRedeemInviteRacesAddresses(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestDiscoverPeerWakesDialer uses a one-hour tick interval so the connection
-// can only form if Discover signals the dialer directly.
 func TestDiscoverPeerWakesDialer(t *testing.T) {
 	cluster := testauth.NewClusterAuth(t)
 	a := startMeshHarness(t, cluster, transport.WithPeerTickInterval(time.Hour))
@@ -281,16 +271,6 @@ func TestConnectReturnsErrIdentityMismatch(t *testing.T) {
 	require.True(t, errors.Is(err, transport.ErrIdentityMismatch), "expected ErrIdentityMismatch, got: %v", err)
 }
 
-// notifyRouter implements Router with a Changed() channel so OpenStream's
-// select loop can wake on route updates.
-//
-// lookupHook fires during Lookup (outside the lock) to inject concurrent route
-// updates at a precise point in the OpenStream loop.
-//
-// staleOnce, when set, makes the first Lookup for the matching dest return
-// staleOnce.next instead of the live routes map — even if the hook just updated
-// the map. This lets tests force a stale return so that OpenStream must rely on
-// the pre-snapshotted routeCh rather than observing the new route immediately.
 type notifyRouter struct {
 	mu         sync.Mutex
 	routes     map[types.PeerKey]types.PeerKey
@@ -316,14 +296,12 @@ func newNotifyRouter(routes map[types.PeerKey]types.PeerKey) *notifyRouter {
 func (r *notifyRouter) NextHop(dest types.PeerKey) (types.PeerKey, bool) {
 	r.mu.Lock()
 
-	// Signal that NextHop has been entered.
 	select {
 	case <-r.lookupCh:
 	default:
 		close(r.lookupCh)
 	}
 
-	// Capture and clear one-shot fields.
 	hook := r.lookupHook
 	r.lookupHook = nil
 	stale := r.staleOnce
@@ -338,8 +316,6 @@ func (r *notifyRouter) NextHop(dest types.PeerKey) (types.PeerKey, bool) {
 		hook()
 	}
 
-	// Return the stale route for this call even though the hook may have
-	// already updated r.routes.
 	if stale != nil {
 		return stale.next, true
 	}
@@ -381,12 +357,10 @@ func TestOpenStreamRoutedWaitsForNextHop(t *testing.T) {
 	cluster := testauth.NewClusterAuth(t)
 	b := startMeshHarness(t, cluster)
 
-	// Fabricated unreachable peer C.
 	cPub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	peerC := types.PeerKeyFromBytes(cPub)
 
-	// Router tells A: to reach C, go through B.
 	router := newNotifyRouter(map[types.PeerKey]types.PeerKey{peerC: b.peerKey})
 	a := startMeshHarness(t, cluster, transport.WithRouter(router))
 
@@ -403,7 +377,6 @@ func TestOpenStreamRoutedWaitsForNextHop(t *testing.T) {
 		ch <- result{s, err}
 	}()
 
-	// Wait for OpenStream to enter the router path (first Lookup call).
 	require.Eventually(t, func() bool {
 		select {
 		case <-router.lookupCh:
@@ -413,7 +386,6 @@ func TestOpenStreamRoutedWaitsForNextHop(t *testing.T) {
 		}
 	}, 5*time.Second, 10*time.Millisecond)
 
-	// Connect A ↔ B — this should unblock the session wait.
 	require.NoError(t, a.mesh.Connect(ctx, b.peerKey, b.loopbackAddr()))
 
 	require.Eventually(t, func() bool {
@@ -422,9 +394,6 @@ func TestOpenStreamRoutedWaitsForNextHop(t *testing.T) {
 			if r.err == nil {
 				_ = r.stream.Close()
 			}
-			// The call returned. It may succeed (stream opened to B with routing
-			// header) or fail (B can't forward to C). Either way, it must NOT be
-			// a deadline-exceeded hang waiting for a direct session to C.
 			require.NotErrorIs(t, r.err, context.DeadlineExceeded)
 			return true
 		default:
@@ -436,7 +405,6 @@ func TestOpenStreamRoutedWaitsForNextHop(t *testing.T) {
 func TestOpenStreamRouteChurn(t *testing.T) {
 	cluster := testauth.NewClusterAuth(t)
 
-	// Fabricated unreachable peers B and C.
 	bPub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	peerB := types.PeerKeyFromBytes(bPub)
@@ -445,12 +413,10 @@ func TestOpenStreamRouteChurn(t *testing.T) {
 	require.NoError(t, err)
 	peerC := types.PeerKeyFromBytes(cPub)
 
-	// Router initially points peerC → B (B is not connected).
 	router := newNotifyRouter(map[types.PeerKey]types.PeerKey{peerC: peerB})
 	a := startMeshHarness(t, cluster, transport.WithRouter(router))
 	d := startMeshHarness(t, cluster)
 
-	// Connect A ↔ D.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	require.NoError(t, a.mesh.Connect(ctx, d.peerKey, d.loopbackAddr()))
@@ -469,7 +435,6 @@ func TestOpenStreamRouteChurn(t *testing.T) {
 		ch <- result{s, err}
 	}()
 
-	// Update route: peerC → D (D is already connected).
 	router.update(map[types.PeerKey]types.PeerKey{peerC: d.peerKey})
 
 	require.Eventually(t, func() bool {
@@ -490,12 +455,10 @@ func TestOpenStreamDirectSessionWhileRouting(t *testing.T) {
 	cluster := testauth.NewClusterAuth(t)
 	c := startMeshHarness(t, cluster)
 
-	// Fabricated unreachable peer B.
 	bPub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	peerB := types.PeerKeyFromBytes(bPub)
 
-	// Router points C → B (B is not connected).
 	router := newNotifyRouter(map[types.PeerKey]types.PeerKey{c.peerKey: peerB})
 	a := startMeshHarness(t, cluster, transport.WithRouter(router))
 
@@ -512,7 +475,6 @@ func TestOpenStreamDirectSessionWhileRouting(t *testing.T) {
 		ch <- result{s, err}
 	}()
 
-	// Connect A ↔ C directly — should unblock via the direct-session fast path.
 	require.NoError(t, a.mesh.Connect(ctx, c.peerKey, c.loopbackAddr()))
 
 	require.Eventually(t, func() bool {
@@ -529,14 +491,9 @@ func TestOpenStreamDirectSessionWhileRouting(t *testing.T) {
 	}, 5*time.Second, 25*time.Millisecond, "OpenStream hung on stale route instead of using direct session")
 }
 
-// TestOpenStreamRouteUpdateBetweenSnapshotAndLookup exercises the TOCTOU window:
-// the route table updates after Changed() is snapshotted but during Lookup().
-// Because routeCh was captured before reading state, the closed channel wakes
-// the select and OpenStream re-evaluates with the new route.
 func TestOpenStreamRouteUpdateBetweenSnapshotAndLookup(t *testing.T) {
 	cluster := testauth.NewClusterAuth(t)
 
-	// Fabricated unreachable peers B and C.
 	bPub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	peerB := types.PeerKeyFromBytes(bPub)
@@ -545,12 +502,10 @@ func TestOpenStreamRouteUpdateBetweenSnapshotAndLookup(t *testing.T) {
 	require.NoError(t, err)
 	peerC := types.PeerKeyFromBytes(cPub)
 
-	// Router initially points peerC → B (not connected).
 	router := newNotifyRouter(map[types.PeerKey]types.PeerKey{peerC: peerB})
 	a := startMeshHarness(t, cluster, transport.WithRouter(router))
 	d := startMeshHarness(t, cluster)
 
-	// Connect A ↔ D.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	require.NoError(t, a.mesh.Connect(ctx, d.peerKey, d.loopbackAddr()))
@@ -559,11 +514,6 @@ func TestOpenStreamRouteUpdateBetweenSnapshotAndLookup(t *testing.T) {
 		return ok
 	}, 5*time.Second, 25*time.Millisecond)
 
-	// The hook fires during Lookup: it updates the route to peerC → D
-	// (connected) and closes the old changeCh. But staleOnce forces this
-	// first Lookup to still return peerB, so OpenStream cannot observe the
-	// new route on this iteration. It must rely on the pre-snapshotted
-	// routeCh (now closed) to wake the select and re-evaluate.
 	router.setStaleOnce(peerC, peerB)
 	router.setLookupHook(func() {
 		router.update(map[types.PeerKey]types.PeerKey{peerC: d.peerKey})
@@ -659,11 +609,6 @@ func TestRoutedDeliveryRejectsNonTunnel(t *testing.T) {
 	stream2.CancelWrite(0)
 }
 
-// TestSimultaneousDialConverges verifies that when two peers dial each other at
-// the same time (creating two QUIC connections), both nodes converge on the same
-// connection and neither peer gets kicked out. This is a regression test for a
-// bug where the tie-break logic didn't consider connection direction, causing
-// both nodes to hold different connections that the other side then closed.
 func TestSimultaneousDialConverges(t *testing.T) {
 	cluster := testauth.NewClusterAuth(t)
 	a := startMeshHarness(t, cluster)
@@ -684,14 +629,12 @@ func TestSimultaneousDialConverges(t *testing.T) {
 	}()
 	wg.Wait()
 
-	// Both peers must see each other as connected and stay connected.
 	require.Eventually(t, func() bool {
 		_, aHasB := a.mesh.GetConn(b.peerKey)
 		_, bHasA := b.mesh.GetConn(a.peerKey)
 		return aHasB && bHasA
 	}, 5*time.Second, 25*time.Millisecond, "peers should see each other after simultaneous dial")
 
-	// Verify stability: the sessions should not die within a reasonable window.
 	time.Sleep(500 * time.Millisecond)
 	_, aHasB := a.mesh.GetConn(b.peerKey)
 	_, bHasA := b.mesh.GetConn(a.peerKey)
@@ -754,8 +697,6 @@ func TestRoutedRelayTrafficAttribution(t *testing.T) {
 	b := startMeshHarness(t, cluster)
 	c := startMeshHarness(t, cluster)
 
-	// Set up router on A: C→B and traffic tracker on B before connecting,
-	// so acceptBidiStreams goroutines see fully-initialized state.
 	routerA := newNotifyRouter(map[types.PeerKey]types.PeerKey{c.peerKey: b.peerKey})
 	a := startMeshHarness(t, cluster, transport.WithRouter(routerA))
 
@@ -764,11 +705,9 @@ func TestRoutedRelayTrafficAttribution(t *testing.T) {
 	tracker := &testTrafficTracker{records: make(map[types.PeerKey]trafficRecord)}
 	b.mesh.SetTrafficTracker(tracker)
 
-	// Connect A↔B and B↔C (not A↔C).
 	require.NoError(t, a.mesh.Connect(ctx, b.peerKey, b.loopbackAddr()))
 	require.NoError(t, b.mesh.Connect(ctx, c.peerKey, c.loopbackAddr()))
 
-	// Wait for bidirectional sessions.
 	require.Eventually(t, func() bool {
 		_, ab := b.mesh.GetConn(a.peerKey)
 		_, bc := c.mesh.GetConn(b.peerKey)
@@ -805,18 +744,13 @@ func TestRoutedRelayTrafficAttribution(t *testing.T) {
 	_ = streamA.Close()
 	_ = streamC.Close()
 
-	// Check the tracker recorded traffic for both legs.
 	snap := tracker.snapshot()
 
-	// Bytes B read from A (A's outbound data forwarded through B).
 	require.Contains(t, snap, a.peerKey)
 	require.Greater(t, snap[a.peerKey].bytesIn, uint64(0))
-	// Bytes B wrote to A (C's response forwarded back through B).
 	require.Greater(t, snap[a.peerKey].bytesOut, uint64(0))
 
-	// Bytes B wrote to C (A's data forwarded to C).
 	require.Contains(t, snap, c.peerKey)
 	require.Greater(t, snap[c.peerKey].bytesOut, uint64(0))
-	// Bytes B read from C (C's response).
 	require.Greater(t, snap[c.peerKey].bytesIn, uint64(0))
 }

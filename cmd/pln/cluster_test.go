@@ -15,11 +15,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/config"
 )
 
-// TestRunInitWritesPropsToCertAndConfig pins the v1 ergonomic story for
-// root properties: `pln init --prop k=v` bakes the attribute into the
-// self-signed root cert AND persists it into config.yaml so subsequent
-// daemon boots re-issue with the same attrs (rather than drifting back
-// to nothing on the next prop-drift detection).
 func TestRunInitWritesPropsToCertAndConfig(t *testing.T) {
 	dir := t.TempDir()
 

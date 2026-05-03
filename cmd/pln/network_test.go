@@ -32,7 +32,6 @@ func TestNodeNameLabels_UniqueNames(t *testing.T) {
 	selfPK := peerKeyString(self.GetNode().GetPeerPub())
 	peerPK := peerKeyString(peers[0].GetNode().GetPeerPub())
 
-	// Condensed mode shows name [prefix].
 	require.Contains(t, labels[selfPK], "laptop [")
 	require.Contains(t, labels[peerPK], "server [")
 }
@@ -45,7 +44,6 @@ func TestNodeNameLabels_DuplicateNames(t *testing.T) {
 	selfPK := peerKeyString(self.GetNode().GetPeerPub())
 	peerPK := peerKeyString(peers[0].GetNode().GetPeerPub())
 
-	// Both share the name but have distinct prefixes in brackets.
 	require.Contains(t, labels[selfPK], "node [")
 	require.Contains(t, labels[peerPK], "node [")
 	require.NotEqual(t, labels[selfPK], labels[peerPK])
@@ -56,7 +54,6 @@ func TestNodeNameLabels_Wide(t *testing.T) {
 	labels := nodeNameLabels(self, nil, true)
 	selfPK := peerKeyString(self.GetNode().GetPeerPub())
 
-	// Wide mode includes the full peer ID in parentheses.
 	require.Contains(t, labels[selfPK], "laptop (")
 	require.Contains(t, labels[selfPK], selfPK)
 }
@@ -69,7 +66,6 @@ func TestNodeNameLabels_MixedNamedAndUnnamed(t *testing.T) {
 	selfPK := peerKeyString(self.GetNode().GetPeerPub())
 	peerPK := peerKeyString(peers[0].GetNode().GetPeerPub())
 
-	// Named node gets a label with prefix; unnamed node gets no label.
 	require.Contains(t, labels[selfPK], "laptop [")
 	require.Empty(t, labels[peerPK])
 }

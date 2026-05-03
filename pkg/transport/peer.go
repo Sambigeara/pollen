@@ -133,8 +133,6 @@ func newPeerStore(t *QUICTransport) *peerStore {
 	}
 }
 
-// wake signals the tick loop. The size-1 buffer plus non-blocking send
-// coalesces bursts of discoveries into a single follow-up tick.
 func (s *peerStore) wake() {
 	select {
 	case s.wakeCh <- struct{}{}:
@@ -183,7 +181,6 @@ func (s *peerStore) tick(ctx context.Context) {
 		p.State = peerStateConnecting
 		p.ConnectingAt = now
 
-		// Capture current state for the async execution
 		pk := p.ID
 		stage := p.Stage
 		lastAddr := p.LastAddr
@@ -370,9 +367,6 @@ func (s *peerStore) stateCounts() PeerStateCounts {
 	return c
 }
 
-// Nudge resets a non-connected peer to the direct stage and brings the next
-// action to now. Called when fresh address info arrives in state so stale
-// eager-retry or punch attempts do not keep chasing dead WAN mappings.
 func (s *peerStore) Nudge(pk types.PeerKey) {
 	woke := false
 	s.mu.Lock()

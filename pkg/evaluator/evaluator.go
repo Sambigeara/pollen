@@ -8,25 +8,19 @@ import (
 	"errors"
 )
 
-// Evaluator implementations must be safe for concurrent use.
 type Evaluator interface {
 	Allow(ctx context.Context, req Request) (Decision, error)
 }
 
 // Cacheable is an optional trait. Router.Allow skips the decision cache
 // for evaluators returning false, avoiding the per-call JSON-marshal
-// cost for trivially-fast evaluators (the cache only earns its keep
-// when Allow is expensive — e.g. a seed-backed PDP).
+// cost when Allow is cheaper than the cache key itself.
 type Cacheable interface {
 	Cacheable() bool
 }
 
-// ErrDenied is the sentinel for denied requests. Callers typically map
-// to codes.PermissionDenied at their RPC boundary.
 var ErrDenied = errors.New("authz denied")
 
-// DeniedError wraps ErrDenied; every denial satisfies
-// errors.Is(err, ErrDenied).
 type DeniedError struct {
 	Reason string
 }

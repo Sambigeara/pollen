@@ -21,7 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNodeConfig holds parameters for creating a TestNode.
 type TestNodeConfig struct {
 	Context        context.Context
 	Switch         *VirtualSwitch
@@ -32,7 +31,6 @@ type TestNodeConfig struct {
 	EnableNATPunch bool
 }
 
-// TestNode wraps a full-stack node for integration tests.
 type TestNode struct {
 	n       *supervisor.Supervisor
 	cancel  context.CancelFunc
@@ -43,7 +41,6 @@ type TestNode struct {
 	stopped atomic.Bool
 }
 
-// NewTestNode creates and starts a fully wired node backed by VirtualSwitch.
 func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
@@ -52,7 +49,6 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 
 	_, dc := cfg.Auth.NodeCredentials(priv)
 
-	// Persist credentials to disk and load the signer via the production path.
 	pollenDir := t.TempDir()
 	identityDir := auth.IdentityPath(pollenDir)
 	creds := auth.NewNodeCredentials(cfg.Auth.RootPub(), dc)

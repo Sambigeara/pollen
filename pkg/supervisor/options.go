@@ -14,27 +14,12 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// AuthzOptions configures the authorisation router supervisor builds
-// internally. A zero value selects allow-all so unconfigured supervisors
-// are usable. Supervisor wires the seed-backed PDP factory to its own
-// placement service, so callers don't plumb a Caller themselves. Field
-// shapes mirror the on-disk evaluator config so daemon can pass them
-// through without translation.
 type AuthzOptions struct {
-	// Default is the evaluator spec applied to gates not listed in
-	// Gates. Empty selects "allow_all".
-	Default string
-	// Gates binds gate names to evaluator specs ("allow_all",
-	// "attribute_matcher", "seed/<name>"). Unknown names fail at
-	// supervisor.New.
-	Gates map[string]string
-	// MatcherRules is the path to the YAML rule file consumed by the
-	// attribute_matcher built-in. Required if any gate (or Default)
-	// resolves to "attribute_matcher". Reload via Supervisor.ReloadAuthzMatcher.
+	Default      string
+	Gates        map[string]string
 	MatcherRules string
 }
 
-// Options holds runtime parameters for constructing a Supervisor.
 type Options struct {
 	PacketConn         net.PacketConn
 	ShutdownFunc       func()
@@ -61,12 +46,9 @@ type Options struct {
 	MetricsEnabled     bool
 	BootstrapPublic    bool
 	DisableNATPunch    bool
-	// RelayOnly disables workload hosting; the node still gossips and forwards
-	// routed streams. Pair with an empty StaticAddr to also skip static hosting.
-	RelayOnly bool
+	RelayOnly          bool
 }
 
-// ConnectionEntry describes a desired tunnel connection for initial state.
 type ConnectionEntry struct {
 	PeerKey    types.PeerKey
 	RemotePort uint32
@@ -74,7 +56,6 @@ type ConnectionEntry struct {
 	Protocol   statev1.ServiceProtocol
 }
 
-// ServiceEntry describes a service to register in state at startup.
 type ServiceEntry struct {
 	Properties *structpb.Struct
 	Name       string

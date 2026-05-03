@@ -18,7 +18,6 @@ import (
 
 var ErrNotFound = errors.New("artifact not found")
 
-// Store is a content-addressable artifact store backed by the local filesystem.
 type Store struct {
 	root string
 }
@@ -32,7 +31,6 @@ func New(pollenDir string) (*Store, error) {
 	return &Store{root: filepath.Join(pollenDir, "cas")}, nil
 }
 
-// Put streams the artifact from r into the store and returns its SHA-256 hex digest.
 func (s *Store) Put(r io.Reader) (string, error) {
 	if err := plnfs.EnsureDir(s.root); err != nil {
 		return "", fmt.Errorf("cas: ensure root: %w", err)
@@ -88,7 +86,6 @@ func (s *Store) Has(hash string) bool {
 	return err == nil
 }
 
-// Remove returns ErrNotFound if the hash was never stored.
 func (s *Store) Remove(hash string) error {
 	p := s.path(hash)
 	if err := os.Remove(p); err != nil {

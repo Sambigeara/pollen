@@ -185,7 +185,7 @@ func WrapTrafficStream(stream io.ReadWriteCloser, recorder TrafficRecorder, peer
 	return &trafficCountedStream{inner: stream, recorder: recorder, peer: peer}
 }
 
-const datagramRouteHeaderSize = routeHeaderSize // 66 bytes: [32:dest][32:source][1:TTL][1:innerType]
+const datagramRouteHeaderSize = routeHeaderSize
 
 func (m *QUICTransport) sendRoutedDatagram(ctx context.Context, dest types.PeerKey, innerType DatagramType, data []byte, nextHop types.PeerKey) error {
 	hdr := make([]byte, 1+datagramRouteHeaderSize+len(data))
@@ -210,7 +210,6 @@ func (m *QUICTransport) handleRoutedDatagram(ctx context.Context, payload []byte
 	innerType := DatagramType(payload[65])
 	innerPayload := payload[datagramRouteHeaderSize:]
 
-	// TODO(saml) no-op trafficTracker would probably be a better pattern here (and poss elsewhere)
 	if m.trafficTracker != nil {
 		m.trafficTracker.Record(upstreamPeer, uint64(len(payload)), 0)
 	}

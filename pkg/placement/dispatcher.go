@@ -33,10 +33,6 @@ func newDispatcher(store WorkloadState, self types.PeerKey) *dispatcher {
 	return &dispatcher{store: store, self: self, now: time.Now}
 }
 
-// Pick selects the replica that should serve the next invocation of
-// seed: K-nearest by Vivaldi distance, drop backed-off peers, random
-// among the survivors. Falls back to the K-nearest set when every
-// candidate is backed off so the call still progresses.
 func (d *dispatcher) Pick(seed string) (types.PeerKey, error) {
 	snap := d.store.Snapshot()
 	replicas := replicasOf(snap, seed)
@@ -65,8 +61,6 @@ func (d *dispatcher) Pick(seed string) (types.PeerKey, error) {
 	return pool[rand.IntN(len(pool))], nil //nolint:gosec
 }
 
-// distanceFromSelf returns the Vivaldi distance between self and peer,
-// or +Inf when either side hasn't gossiped a coordinate yet.
 func distanceFromSelf(snap state.Snapshot, self, peer types.PeerKey) float64 {
 	selfNV, sok := snap.Nodes[self]
 	peerNV, pok := snap.Nodes[peer]

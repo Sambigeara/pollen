@@ -58,9 +58,6 @@ func TestPublicMesh_TopologyStabilization(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
 	t.Cleanup(cancel)
 
-	// Build a sparse chain (0→1→2→3→4→5) so topology selection must establish
-	// additional connections beyond the initial introductions. PublicMesh
-	// introduces all pairs which bypasses topology entirely.
 	c := New(t).
 		SetDefaultLatency(5*time.Millisecond). //nolint:mnd
 		SetDefaultJitter(0.15).                //nolint:mnd
@@ -106,7 +103,6 @@ func TestPublicMesh_TopologyStabilization(t *testing.T) {
 	})
 }
 
-// minimalWASM is the smallest valid WASM module (magic + version header).
 var minimalWASM = []byte("\x00asm\x01\x00\x00\x00")
 
 func TestPublicMesh_WorkloadPlacement(t *testing.T) {
@@ -535,8 +531,6 @@ func TestRelayRegions_ExternalPortDistinct(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
 	t.Cleanup(cancel)
 
-	// Two private nodes on the same LAN behind a shared NAT gateway.
-	// The NAT assigns each a distinct external port on the same public IP.
 	c := New(t).
 		SetDefaultLatency(2*time.Millisecond). //nolint:mnd
 		SetDefaultJitter(0.15).                //nolint:mnd
@@ -663,7 +657,6 @@ func TestPublicMesh_WorkloadMigration(t *testing.T) {
 	require.NoError(t, err)
 	c.RequireWorkloadReplicas(t, hash, 2) //nolint:mnd
 
-	// Find a node that claimed the workload.
 	var victim string
 	require.Eventually(t, func() bool {
 		for _, n := range c.Nodes() {
@@ -678,11 +671,8 @@ func TestPublicMesh_WorkloadMigration(t *testing.T) {
 		return false
 	}, assertTimeout, assertPoll, "no claimant found")
 
-	// Stop the claimant node.
 	c.Node(victim).Stop()
 
-	// The scheduler on surviving nodes should re-claim to maintain 2 replicas.
-	// Collect distinct non-victim claimants across all surviving snapshots.
 	victimKey := c.PeerKeyByName(victim)
 	c.RequireEventually(t, func() bool {
 		distinct := make(map[types.PeerKey]struct{})
@@ -734,7 +724,6 @@ func TestPublicMesh_ExpiredInviteToken(t *testing.T) {
 		Addrs:   []string{node0.VirtualAddr().String()},
 	}}
 
-	// Issue a token with now=1h ago and TTL=1min → expired 59min ago.
 	invite, err := node0.Node().Credentials().DelegationKey().IssueInviteToken(
 		joiner.PeerKey().Bytes(),
 		bootstrap,
@@ -753,9 +742,6 @@ func TestPublicMesh_VivaldiDistancesReflectTopology(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
 	t.Cleanup(cancel)
 
-	// Three fully connected nodes with asymmetric link latencies:
-	//   near ↔ origin: 10ms    far ↔ origin: 50ms    near ↔ far: 50ms
-	// Vivaldi should embed origin closer to near than to far.
 	c := New(t).
 		SetDefaultLatency(50*time.Millisecond). //nolint:mnd
 		AddNode("origin", Public).
@@ -790,8 +776,6 @@ func TestPublicMesh_VivaldiDistancesReflectTopology(t *testing.T) {
 	}, assertTimeout, "vivaldi: 10ms neighbor should be closer than 50ms neighbor")
 }
 
-// liveTunnel returns an established TCP tunnel between two nodes; callers
-// mutate the service and assert the close behaviour themselves.
 type liveTunnel struct {
 	c         *Cluster
 	client    net.Conn
@@ -804,7 +788,6 @@ func newLiveTunnel(t *testing.T, ctx context.Context, name string) *liveTunnel {
 	c := PublicMesh(t, 2, ctx) //nolint:mnd
 	c.RequireConverged(t)
 
-	// Pre-allocate a distinct local port so clients don't bypass the tunnel by dialling the app listener directly.
 	tmpLn, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	localPort := uint32(tmpLn.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert
@@ -857,7 +840,6 @@ func newLiveTunnel(t *testing.T, ctx context.Context, name string) *liveTunnel {
 		require.FailNow(t, "local app never received the tunnelled TCP client")
 	}
 
-	// Confirm the tunnel is live before the caller's mutation.
 	_, err = client.Write([]byte("ping"))
 	require.NoError(t, err)
 	buf := make([]byte, 4) //nolint:mnd
@@ -869,7 +851,6 @@ func newLiveTunnel(t *testing.T, ctx context.Context, name string) *liveTunnel {
 	return &liveTunnel{c: c, client: client, publisher: "node-0", serviceNm: name, appPort: appPort}
 }
 
-// requireClosed fails on a timeout error: that means the deadline expired without a close, i.e. revocation didn't fire.
 func (lt *liveTunnel) requireClosed(t *testing.T) { //nolint:thelper
 	_ = lt.client.SetReadDeadline(time.Now().Add(assertTimeout))
 	buf := make([]byte, 1)

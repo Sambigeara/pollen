@@ -24,17 +24,14 @@ func TestClusterAuth_NodeCredentials(t *testing.T) {
 
 	tlsCert, dc := ca.NodeCredentials(priv)
 
-	// TLS cert should be valid.
 	require.NotEmpty(t, tlsCert.Certificate)
 	require.NotNil(t, tlsCert.Leaf)
 	require.Equal(t, priv, tlsCert.PrivateKey)
 
-	// Delegation cert should be valid.
 	require.NotNil(t, dc)
 	err = auth.VerifyDelegationCert(dc, ca.RootPub(), time.Now(), pub)
 	require.NoError(t, err)
 
-	// TLS cert should contain extensions beyond standard ones (delegation cert).
 	leaf, err := x509.ParseCertificate(tlsCert.Certificate[0])
 	require.NoError(t, err)
 	require.NotEmpty(t, leaf.Extensions, "TLS cert must contain extensions (including delegation cert)")

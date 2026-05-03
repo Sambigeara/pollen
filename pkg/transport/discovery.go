@@ -35,8 +35,6 @@ var (
 	}
 )
 
-// GetLocalInterfaceAddrs returns routable IPs from local network interfaces,
-// excluding loopback, link-local, virtual, and any prefixes in exclusions.
 func GetLocalInterfaceAddrs(exclusions []netip.Prefix) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), publicIPQueryTimeout)
 	defer cancel()
@@ -62,8 +60,6 @@ func GetLocalInterfaceAddrs(exclusions []netip.Prefix) ([]string, error) {
 	return results, nil
 }
 
-// GetPublicIP queries external providers for the node's public IP.
-// Returns a single IP string (preferring IPv4), or empty string on failure.
 func GetPublicIP() string {
 	ctx, cancel := context.WithTimeout(context.Background(), publicIPQueryTimeout)
 	defer cancel()

@@ -163,7 +163,6 @@ func (s *Service) Start(ctx context.Context) error {
 			continue
 		}
 		if err := s.ExposeService(svc.Port, svc.Name, svc.Protocol, svc.Properties); err != nil {
-			// Persisted state should be self-consistent; an error here implies corruption an operator must resolve.
 			s.log.Warnw("rehydrate service failed", "name", svc.Name, "port", svc.Port, zap.Error(err))
 		}
 	}
@@ -187,7 +186,6 @@ func (s *Service) Stop() error {
 	for _, conn := range s.connections {
 		conns = append(conns, conn)
 	}
-	// Active bridges hold their stream open; without closing them s.wg.Wait below never returns.
 	var streams []io.Closer
 	for _, set := range s.activeServes {
 		for sess := range set {
@@ -262,7 +260,6 @@ func (s *Service) ExposeService(port uint32, name string, protocol statev1.Servi
 	s.mu.Lock()
 	sk := serviceKey{port: port, protocol: protocol}
 
-	// State keys by name, runtime keys by {port, protocol}: reject a second name on the same key, and tear down a stale runtime entry when a name moves keys.
 	if existing, ok := s.services[sk]; ok && existing.name != name {
 		s.mu.Unlock()
 		return fmt.Errorf("port %d/%s already exposed as %q", port, protocol, existing.name)
@@ -279,7 +276,6 @@ func (s *Service) ExposeService(port uint32, name string, protocol statev1.Servi
 	events := s.store.SetService(port, name, protocol, properties)
 
 	if len(events) == 0 {
-		// No store change: rehydrate runtime entry on cold start, otherwise leave any existing entry and active serves untouched.
 		if _, ok := s.services[sk]; !ok {
 			s.services[sk] = s.buildEntryLocked(port, name, protocol)
 		}
@@ -307,7 +303,6 @@ func (s *Service) buildEntryLocked(port uint32, name string, protocol statev1.Se
 	return entry
 }
 
-// closeEntry must run with s.mu released: proxy.Close blocks on goroutine teardown.
 func closeEntry(e *serviceEntry) {
 	if e == nil {
 		return
@@ -341,15 +336,10 @@ func (s *Service) UnexposeService(name string) error {
 	return fmt.Errorf("service %q not found", name)
 }
 
-// ReadPort reads the 2-byte port header from an inbound tunnel
-// stream. Supervisor's dispatch loop calls this before the
-// service_connect gate so the decision can reference the target port.
 func ReadPort(r io.Reader) (uint32, error) {
 	return readPort(r)
 }
 
-// Serve handles an inbound TCP tunnel stream. Lookup and registration
-// happen under a single Lock so a concurrent revoke can't miss this stream.
 func (s *Service) Serve(stream io.ReadWriteCloser, peer types.PeerKey, port uint32) {
 	s.wg.Go(func() {
 		defer stream.Close()
@@ -376,9 +366,6 @@ func (s *Service) Serve(stream io.ReadWriteCloser, peer types.PeerKey, port uint
 	})
 }
 
-// detachServesLocked clears active inbound serves for name and returns their
-// streams. Caller must hold s.mu and Close the streams after releasing it —
-// Close blocks until bridge goroutines unwind.
 func (s *Service) detachServesLocked(name string) []io.Closer {
 	set := s.activeServes[name]
 	delete(s.activeServes, name)
@@ -427,7 +414,6 @@ func (s *Service) HandleTunnelDatagram(data []byte, peer types.PeerKey) {
 	servicePort := uint32(binary.BigEndian.Uint16(data[:2]))
 	payload := data[2:]
 
-	// Client side: check if this is a response to an outgoing tunnel.
 	s.mu.RLock()
 	conn, connOK := s.connections[connKey{peer: peer, port: servicePort, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP}]
 	s.mu.RUnlock()
@@ -442,7 +428,6 @@ func (s *Service) HandleTunnelDatagram(data []byte, peer types.PeerKey) {
 		}
 	}
 
-	// Service side: forward to local service.
 	s.mu.RLock()
 	entry, svcOK := s.services[serviceKey{port: servicePort, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP}]
 	s.mu.RUnlock()
@@ -494,7 +479,6 @@ func (s *Service) ListDesiredConnections() []ConnectionInfo {
 
 func (s *Service) RemoveDesiredConnection(pk types.PeerKey, remotePort uint32) {
 	s.mu.Lock()
-	// Remove both TCP and UDP desired entries for this peer+port.
 	delete(s.desired, connKey{peer: pk, port: remotePort, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP})
 	delete(s.desired, connKey{peer: pk, port: remotePort, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP})
 	s.mu.Unlock()
@@ -528,7 +512,6 @@ func (s *Service) reconcile() {
 
 	snap := s.store.Snapshot()
 
-	// Teardown stale connections.
 	for key, conn := range s.connections {
 		if _, ok := s.desired[key]; !ok || !hasPort(snap, conn.info.PeerID, conn.info.RemotePort, conn.info.Protocol) {
 			s.closeConn(conn)
@@ -536,7 +519,6 @@ func (s *Service) reconcile() {
 		}
 	}
 
-	// Setup missing connections.
 	for key, info := range s.desired {
 		if _, ok := s.connections[key]; ok || !hasPort(snap, info.PeerID, info.RemotePort, info.Protocol) {
 			continue
@@ -609,7 +591,6 @@ func (s *Service) reconcileUDP(key connKey, info ConnectionInfo) {
 	}
 	s.connections[key] = c
 
-	// Read loop: local app → QUIC datagram.
 	s.wg.Go(func() {
 		buf := make([]byte, udpReadBuf)
 		for {
@@ -723,7 +704,7 @@ func matchesService(snap state.Snapshot, peer types.PeerKey, port uint32, protoc
 type peerTraffic struct{ BytesIn, BytesOut uint64 }
 
 type tracker struct {
-	current      map[types.PeerKey]*peerTraffic // pointers: mutated in place on every Record() call
+	current      map[types.PeerKey]*peerTraffic
 	lastSnap     map[types.PeerKey]peerTraffic
 	lastRotation time.Time
 	published    map[types.PeerKey]peerTraffic
@@ -777,7 +758,6 @@ func (t *tracker) rotate() (map[types.PeerKey]peerTraffic, bool) {
 		}
 	}
 
-	// snapshot current cumulative values for next delta
 	snap := make(map[types.PeerKey]peerTraffic, len(t.current))
 	for k, v := range t.current {
 		snap[k] = *v

@@ -20,11 +20,6 @@ const (
 	proxyReadDeadline = time.Second
 )
 
-// udpServiceProxy forwards tunnel datagrams to a local UDP service and routes
-// responses back to the originating peer. One net.Conn per peer ensures the
-// local service sees a distinct source address per tunnel consumer, so
-// responses are correctly attributed. Idle peer connections are evicted by
-// the response-reading goroutine after proxyIdleTimeout of inactivity.
 type udpServiceProxy struct {
 	datagrams DatagramTransport
 	peers     map[types.PeerKey]*peerConn

@@ -22,19 +22,6 @@ type DelegationSigner struct {
 	root   bool
 }
 
-// NewDelegationSigner loads the persisted node credentials and returns a
-// signer that can issue downstream certs and tokens.
-//
-// For root nodes (per LocalRootAuthority), the persisted cert is lazily
-// refreshed via EnsureLocalRootCredentials whenever it fails
-// rootCertHealthy — i.e. expired, wrong subject, wrong issuer, wrong
-// rootPub, non-empty chain, or root caps drift. Attrs are preserved from
-// the existing cert, so CLI paths that bypass the daemon (e.g. `pln
-// invite` between restarts) still work. The daemon-boot path applies
-// config-driven property changes; this lazy path never consults config.
-//
-// For delegated nodes, no refresh happens — renewal is the peer-routed
-// pipeline's job.
 func NewDelegationSigner(identityDir string, nodePriv ed25519.PrivateKey) (*DelegationSigner, error) {
 	creds, err := LoadNodeCredentials(identityDir)
 	if err != nil {
@@ -184,8 +171,6 @@ func (s *DelegationSigner) IssueJoinToken(
 	return &admissionv1.JoinToken{Claims: claims, Signature: sig}, nil
 }
 
-// IssueMemberCert issues a delegation cert for a subject using this signer's
-// chain and private key.
 func (s *DelegationSigner) IssueMemberCert(
 	subjectPub ed25519.PublicKey,
 	caps *admissionv1.Capabilities,

@@ -11,9 +11,6 @@ import (
 
 type callCountsEmitter func(counts map[string]uint64)
 
-// callTracker records per-seed call counts originating at this node and
-// flushes them to gossip on a fixed window. Remote counts are read from
-// the gossip snapshot — no local cache.
 type callTracker struct {
 	emit     callCountsEmitter
 	local    map[string]uint64

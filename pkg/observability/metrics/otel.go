@@ -21,7 +21,6 @@ const (
 	namePunchFailures      = "pollen.node.punch.failures"
 )
 
-// metricReader abstracts snapshot collection to allow zero-allocation noops.
 type metricReader interface {
 	Collect(context.Context, *metricdata.ResourceMetrics) error
 }
@@ -77,7 +76,6 @@ type MetricSnapshot struct {
 	PunchFailures      int64
 }
 
-// CollectSnapshot collects current metric values from the ManualReader.
 func (p *Provider) CollectSnapshot(ctx context.Context) (MetricSnapshot, error) {
 	var snap MetricSnapshot
 	var rm metricdata.ResourceMetrics

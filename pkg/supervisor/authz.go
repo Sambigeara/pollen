@@ -14,10 +14,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/evaluator/builtin/matcher"
 )
 
-// preloadAuthz validates AuthzOptions and loads the matcher rules file
-// if configured. Failure-prone authz setup runs here so supervisor.New
-// can fail fast before allocating resources that would leak on a later
-// authz error.
 func preloadAuthz(opts AuthzOptions, relayOnly bool) (*matcher.Matcher, error) {
 	if opts.Default == "" && len(opts.Gates) == 0 && opts.MatcherRules == "" {
 		return nil, nil
@@ -40,10 +36,6 @@ func preloadAuthz(opts AuthzOptions, relayOnly bool) (*matcher.Matcher, error) {
 	return m, nil
 }
 
-// buildAuthzRouter wires the router with the live placement caller and
-// the preloaded matcher. Called after preloadAuthz validates the config
-// and after placement is constructed. Residual failure modes (typo in
-// an evaluator kind) are rare; preloadAuthz catches the common ones.
 func buildAuthzRouter(opts AuthzOptions, mtr *matcher.Matcher, caller evaluator.Caller, log *zap.SugaredLogger) (*evaluator.Router, error) {
 	if opts.Default == "" && len(opts.Gates) == 0 && opts.MatcherRules == "" {
 		return evaluator.NewRouter(evaluator.Config{})
@@ -82,11 +74,8 @@ func isSeedSpec(spec string) bool {
 	return kind == "seed"
 }
 
-// logDeny structured-logs every gate denial. Info level: denies are
-// normal policy operation, not errors. service_connect has no other
-// operator-visible signal short of the status API. Fallback denials
-// (evaluator errored, gate applied its configured fallback) log at warn
-// so a broken PDP surfaces distinctly from a legitimate deny.
+// Fallback denials (evaluator errored) log at warn so a broken PDP
+// surfaces distinctly from a legitimate deny.
 func logDeny(log *zap.SugaredLogger) evaluator.DenyObserver {
 	return func(e evaluator.DenyEvent) {
 		fields := []any{
@@ -107,13 +96,9 @@ func logDeny(log *zap.SugaredLogger) evaluator.DenyObserver {
 	}
 }
 
-// ErrNoMatcher is returned by ReloadAuthzMatcher when no matcher rules
-// were configured at supervisor.New time — there's nothing to reload.
 var ErrNoMatcher = errors.New("supervisor: authz matcher not configured")
 
-// ReloadAuthzMatcher re-reads the matcher rules file. A failed reload
-// leaves the previous rules in place — a broken YAML must never brick
-// authz. Daemon SIGHUP handlers call this directly.
+// A failed reload leaves the previous rules in place.
 func (n *Supervisor) ReloadAuthzMatcher() error {
 	if n.authzMatcher == nil {
 		return ErrNoMatcher

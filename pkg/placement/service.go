@@ -55,9 +55,6 @@ const (
 	replicaScaleDownThreshold = 0.1
 	replicaScaleDownGrace     = 2 * time.Minute
 
-	// resourceSampleInterval drives the periodic CPU/mem snapshot that
-	// surfaces in `pln status` and Prometheus. Backoff no longer reads
-	// these values — they're observability only.
 	resourceSampleInterval = 5 * time.Second
 )
 
@@ -315,8 +312,7 @@ func (s *Service) Unseed(hash string) error {
 		return fmt.Errorf("%w: %s", ErrNotRunning, types.ShortHash(hash))
 	}
 
-	// Gossip tombstones from non-publishers are ignored, so reject early
-	// rather than silently no-op when an admin runs unseed off-host.
+	// Tombstones from non-publishers are ignored by gossip.
 	if specExists && sv.Publisher != s.localID {
 		return fmt.Errorf("workload %s is owned by peer %s; run unseed on that node", types.ShortHash(hash), sv.Publisher.Short())
 	}
@@ -342,9 +338,6 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 	}
 	hash = resolved
 
-	// Cycle detection: a hash already in the local call chain would
-	// deadlock on its own instance pool. Reject fast rather than let the
-	// nested Call block forever.
 	if chainContains(ctx, hash) {
 		return nil, fmt.Errorf("%w: %s", ErrCycle, types.ShortHash(hash))
 	}
@@ -390,9 +383,6 @@ func (s *Service) attemptCall(ctx context.Context, target types.PeerKey, isLocal
 	return s.forwardCall(ctx, target, hash, function, input)
 }
 
-// canRetry reports whether the call ctx has time left to absorb a
-// retry. Non-overload errors are always retryable here — the caller's
-// outer loop decides whether to consume the retry budget.
 func canRetry(ctx context.Context, err error) bool {
 	if !errors.Is(err, ErrOverloaded) {
 		return true
@@ -404,10 +394,6 @@ func canRetry(ctx context.Context, err error) bool {
 	return time.Until(dl) >= retryAfterDefault
 }
 
-// preferStructured returns whichever of the two errors is an
-// OverloadError — the typed form carries the reason and signals to the
-// caller that this was a clean refusal rather than a generic failure.
-// The first attempt wins ties.
 func preferStructured(first, second error) error {
 	var oe *OverloadError
 	if errors.As(first, &oe) {
@@ -436,8 +422,7 @@ func (s *Service) forwardCall(ctx context.Context, target types.PeerKey, hash, f
 		return nil, err
 	}
 
-	// Watcher tracked under s.wg so Stop() drains it before the channel
-	// it would Close() on goes away.
+	// Tracked under s.wg so Stop() drains before the stream goes away.
 	if ctx.Done() != nil {
 		done := make(chan struct{})
 		s.wg.Go(func() {
@@ -496,11 +481,9 @@ func (s *Service) Signal() {
 	s.reconciler.Signal()
 }
 
-// resolveLocalFirst resolves an identifier (name or hash prefix) for
-// operator-facing operations like unseed. Local matches win first so
-// operators manage their own seeds; remote matches fall through so a
-// non-publisher admin still gets the ownership error rather than a
-// generic not-running.
+// resolveLocalFirst resolves for operator-facing operations: local
+// matches win so operators manage their own seeds; remote falls
+// through so non-publishers still get the ownership error.
 func (s *Service) resolveLocalFirst(identifier string) (string, string) {
 	snap := s.store.Snapshot()
 
@@ -523,8 +506,6 @@ func (s *Service) resolveLocalFirst(identifier string) (string, string) {
 	return name, hash
 }
 
-// resolveGlobal resolves an identifier for cluster-wide call routing.
-// Names tiebreak on lowest publisher PeerKey.
 func (s *Service) resolveGlobal(identifier string) (string, bool) {
 	snap := s.store.Snapshot()
 
@@ -536,8 +517,8 @@ func (s *Service) resolveGlobal(identifier string) (string, bool) {
 }
 
 func (s *Service) resolveHashPrefix(prefix string, snap state.Snapshot) (string, bool) {
-	// Resolve from gossip only; trusting the local manager would let a
-	// stale in-process module shadow a peer-published workload.
+	// Gossip-only: trusting the local manager would let a stale
+	// in-process module shadow a peer-published workload.
 	if _, ok := snap.Claims[prefix]; ok {
 		return prefix, true
 	}

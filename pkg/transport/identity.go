@@ -202,8 +202,6 @@ func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certif
 	}
 }
 
-// tryReconnectWindow checks whether an expired-cert error can be recovered
-// because the cert is crypto-valid and within the reconnect grace period.
 func tryReconnectWindow(dc *admissionv1.DelegationCert, opts verifyMeshPeerOpts, now time.Time, origErr error) error {
 	if opts.reconnectWindow <= 0 || !errors.Is(origErr, auth.ErrCertExpired) {
 		return origErr

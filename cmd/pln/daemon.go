@@ -35,10 +35,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// watchAuthzReload re-runs the supervisor's matcher reload on every
-// SIGHUP. A failed reload leaves the previous rules in place — a broken
-// YAML must never brick authz. A no-matcher supervisor returns
-// supervisor.ErrNoMatcher, which the handler ignores.
 func watchAuthzReload(ctx context.Context, n *supervisor.Supervisor, log *zap.SugaredLogger) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP)
@@ -54,7 +50,6 @@ func watchAuthzReload(ctx context.Context, n *supervisor.Supervisor, log *zap.Su
 				case err == nil:
 					log.Infow("authz rules reloaded")
 				case errors.Is(err, supervisor.ErrNoMatcher):
-					// No matcher configured — nothing to do.
 				default:
 					log.Warnw("authz rule reload failed; keeping previous rules", zap.Error(err))
 				}
@@ -114,10 +109,6 @@ control how many lines to show.`,
 	return []*cobra.Command{upCmd, downCmd, restartCmd, logsCmd, newUpgradeCmd(), newDaemonGroupCmd()}
 }
 
-// newDaemonGroupCmd builds the `pln daemon` subtree for admin
-// operations on the daemon binary and its background unit (install,
-// uninstall, upgrade). Operational lifecycle (`pln up/down/restart/logs`)
-// stays flat at the top level.
 func newDaemonGroupCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "daemon",
@@ -145,7 +136,6 @@ bounce the background service and pick up the new binary.`,
 func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	detach, _ := cmd.Flags().GetBool("detach")
 	if detach {
-		// Detach hands off to launchd/systemd, which is single-instance per unit.
 		if err := ensureSystemServiceContext(); err != nil {
 			return err
 		}
@@ -229,9 +219,8 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 			return fmt.Errorf("auto-init failed: %w", err)
 		}
 	case isRoot:
-		// Re-issue the root self-signed cert so config property changes
-		// apply on restart and the cert refreshes ahead of expiry without
-		// the peer-routed renewal pipeline.
+		// Re-issue so property changes apply and the cert refreshes ahead
+		// of expiry without peer-routed renewal.
 		creds, err = auth.EnsureLocalRootCredentials(identityDir, pubKey, nodeProps, time.Now(), auth.DefaultDelegationTTL)
 		if err != nil {
 			return fmt.Errorf("root cert refresh: %w", err)
@@ -435,11 +424,6 @@ func runUpgrade(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	return nil
 }
 
-// servicectl drives the platform's service manager for the currently active
-// context. Default context → brew/systemctl on the canonical `pln` unit.
-// Named local context on macOS → launchctl on `sh.pln.<name>`, auto-generating
-// the per-context plist on first start. Named local contexts on Linux and
-// remote contexts are rejected upstream by ensureSystemServiceContext.
 func servicectl(action string, cmd *cobra.Command, env *cliEnv) error {
 	ctx := cmd.Context()
 	name := resolveContextName()
@@ -471,9 +455,6 @@ func servicectl(action string, cmd *cobra.Command, env *cliEnv) error {
 	return c.Run()
 }
 
-// userLaunchctl drives a per-context launchd unit on macOS. Plist is
-// generated on first start if missing. Restart is an unload+load pair so
-// the command is idempotent and works whether the unit is loaded or not.
 func userLaunchctl(ctx context.Context, cmd *cobra.Command, action, ctxName, ctxDir string, port int) error {
 	plistPath, err := ensureUserPlnPlist(ctxName, ctxDir, port)
 	if err != nil {
@@ -511,9 +492,7 @@ func userPlnLogPath(ctxDir string) string {
 	return filepath.Join(ctxDir, "pln.log")
 }
 
-// ensureUserPlnPlist writes a per-context launchd plist if one is not already
-// present. Existing plists are not overwritten so users can customise them.
-// Returns the plist path regardless.
+// Existing plists are not overwritten so users can customise them.
 func ensureUserPlnPlist(ctxName, ctxDir string, port int) (string, error) {
 	plistPath, err := userPlnPlistPath(ctxName)
 	if err != nil {

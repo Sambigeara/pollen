@@ -57,11 +57,6 @@ func activeClaimCount(claimants, drainSet map[types.PeerKey]struct{}) uint32 {
 	return n
 }
 
-// evaluate emits the claim/release actions reconciler must execute
-// locally. Three cases: drain reconciliation (release while draining,
-// or un-drain if the cluster dipped below target), local recovery
-// (claimed but no longer running), and orphaned claims (spec deleted).
-// Replica-count election lives in replicaCountLoop, not here.
 func evaluate(in evaluateInput) []action {
 	var actions []action
 

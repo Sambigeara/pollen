@@ -15,27 +15,21 @@ const (
 	minPositiveWeight = 1e-6
 )
 
-// PeerTopology is the routing-relevant subset of a peer's state.
 type PeerTopology struct {
 	Reachable map[types.PeerKey]struct{}
 	Coord     *coords.Coord
 	Key       types.PeerKey
 }
 
-// Table is an immutable routing table produced by Build.
 type Table struct {
 	routes map[types.PeerKey]types.PeerKey
 }
 
-// NextHop returns the next hop toward dest.
 func (t Table) NextHop(dest types.PeerKey) (types.PeerKey, bool) {
 	next, ok := t.routes[dest]
 	return next, ok
 }
 
-// Build computes a routing table via Dijkstra from self over the topology graph.
-// Edge weights are Vivaldi distances between peers. Connected peers (direct QUIC
-// sessions) are excluded from the result since they need no routing.
 func Build(self types.PeerKey, topology []PeerTopology, connected []types.PeerKey) Table {
 	coordOf := make(map[types.PeerKey]*coords.Coord, len(topology))
 	for i := range topology {

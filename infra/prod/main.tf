@@ -18,9 +18,6 @@ terraform {
 provider "hcloud" {}
 provider "cloudflare" {}
 
-# Cloudflare publishes its edge network CIDRs at these static URLs. We
-# fetch them at plan time so the origin firewall stays current without
-# a hardcoded list.
 data "http" "cf_ipv4" { url = "https://www.cloudflare.com/ips-v4" }
 data "http" "cf_ipv6" { url = "https://www.cloudflare.com/ips-v6" }
 
@@ -86,8 +83,6 @@ data "cloudflare_zone" "pln" {
   filter = { name = var.zone_name }
 }
 
-# Apex (pln.sh) and docs — proxied through Cloudflare so it terminates TLS
-# and we stay plain HTTP on the origin.
 resource "cloudflare_dns_record" "apex" {
   for_each = hcloud_server.node
   zone_id  = data.cloudflare_zone.pln.id
@@ -110,8 +105,8 @@ resource "cloudflare_dns_record" "docs" {
   comment  = "docs → pln-prod-${each.key}"
 }
 
-# www.pln.sh → pln.sh (301, preserves path + query). A CNAME to apex
-# gives CF a host to answer for; the ruleset below rewrites the response.
+# CNAME to apex gives CF a host to answer for; the ruleset below handles
+# the 301 redirect.
 resource "cloudflare_dns_record" "www" {
   zone_id = data.cloudflare_zone.pln.id
   name    = "www"
@@ -167,9 +162,8 @@ resource "cloudflare_ruleset" "origin_port" {
   }]
 }
 
-# Per-node hostnames (grey-cloud, direct to IP) so `pln ctx add prod
-# root@<hostname>` resolves straight to the origin and the UDP mesh port
-# isn't fronted by Cloudflare (which only proxies HTTPS).
+# Grey-cloud (unproxied) — the UDP mesh port can't go through CF's
+# HTTPS-only proxy.
 resource "cloudflare_dns_record" "node" {
   for_each = hcloud_server.node
   zone_id  = data.cloudflare_zone.pln.id

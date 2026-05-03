@@ -5,10 +5,6 @@ package evaluator
 
 import "slices"
 
-// JSON field names follow the conventional authorisation-request shape
-// (subject/action/resource/context), so a PDP seed receives
-// json.Marshal(Request) as-is.
-
 type Subject struct {
 	Properties map[string]any `json:"properties,omitempty"`
 	Type       string         `json:"type,omitempty"`
@@ -33,15 +29,11 @@ type Request struct {
 	Action   Action         `json:"action"`
 }
 
-// Decision=true means allow. Context carries a reason_user string the
-// dispatch site surfaces to the denied caller.
 type Decision struct {
 	Context  map[string]any `json:"context,omitempty"`
 	Decision bool           `json:"decision"`
 }
 
-// ResourceType is closed so unknown values fail validation at config
-// load.
 type ResourceType string
 
 const ResourceService ResourceType = "service"
@@ -50,8 +42,6 @@ func NewResource(rt ResourceType, id string, props map[string]any) Resource {
 	return Resource{Type: rt, ID: id, Properties: props}
 }
 
-// GateName is closed so config references are validated at load time;
-// unknown names fail daemon startup rather than silently falling through.
 type GateName string
 
 const GateServiceConnect GateName = "service_connect"

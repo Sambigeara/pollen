@@ -24,10 +24,6 @@ import (
 
 var mockTime = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-// testIdentityDir creates the per-node identity directory tests use to
-// stand in for production's `<pollenDir>/keys/`. Returns the keys subdir
-// directly so tests pass it to functions expecting an identityDir, matching
-// what `auth.IdentityPath(pollenDir)` returns at runtime.
 func testIdentityDir(t *testing.T) string {
 	t.Helper()
 	dir := auth.IdentityPath(t.TempDir())
@@ -452,8 +448,6 @@ func TestEnsureLocalRootCredentials_ReissuesOnExpiry(t *testing.T) {
 	require.Greater(t, renewed.Cert().GetClaims().GetNotAfterUnix(), original.Cert().GetClaims().GetNotAfterUnix())
 }
 
-// Chains issued by the root before a self-rotation still verify against the
-// same RootPub after rotation, because rotation re-uses the same admin key.
 func TestRootSelfRotation_PreservesDownstreamChainValidity(t *testing.T) {
 	dir := testIdentityDir(t)
 	nodePub, nodePriv := newKeyPair(t)
@@ -577,10 +571,6 @@ func TestNewDelegationSigner_RejectsSubjectMismatchForDelegated(t *testing.T) {
 	require.ErrorContains(t, err, "subject does not match")
 }
 
-// TestAdminKeyDriftSelfHeals models the daemon-boot path: the daemon gates
-// refresh on HasLocalAdminKey (not on creds.RootPub equality), so a rotated
-// admin key with a stale persisted cert recovers — rootCertHealthy detects
-// the issuer/rootPub drift and EnsureLocalRootCredentials reissues.
 func TestAdminKeyDriftSelfHeals(t *testing.T) {
 	dir := testIdentityDir(t)
 	nodePub, _ := newKeyPair(t)
@@ -667,13 +657,9 @@ func TestEnsureLocalRootCredentials_ReissuesOnNonEmptyChain(t *testing.T) {
 	require.Empty(t, updated.Cert().GetChain())
 }
 
-// TestLocalRootAuthority_DelegatedAdminWithStrayAdminKeyIsNotRoot pins the
-// fix for a cluster-corruption bug: a delegated admin (joined via token,
-// holds a delegated cert) that also happens to have a local admin key
-// (e.g. a leftover from a prior cluster, or a `pln admin keygen` mistake)
-// must NOT be classified as root. Otherwise EnsureLocalRootCredentials
-// would self-issue a fresh root cert and overwrite root.pub with the stray
-// local admin pub, forking trust away from the cluster's actual root.
+// Pins the fix for a cluster-corruption bug: a stray local admin key
+// on a delegated admin must not cause root classification, or
+// EnsureLocalRootCredentials would overwrite root.pub and fork trust.
 func TestLocalRootAuthority_DelegatedAdminWithStrayAdminKeyIsNotRoot(t *testing.T) {
 	dir := testIdentityDir(t)
 	nodePub, _ := newKeyPair(t)
@@ -698,12 +684,8 @@ func TestLocalRootAuthority_DelegatedAdminWithStrayAdminKeyIsNotRoot(t *testing.
 		"a delegated cert (non-empty chain) must defeat the root-authority gate even when an admin key is locally present")
 }
 
-// TestNewDelegationSigner_DelegatedAdminWithStrayAdminKeyDoesNotRewriteRoot
-// is the end-to-end pin: signer construction on a delegated admin with a
-// stray local admin key must not mutate the persisted creds (cert or
-// root.pub). The corruption mode pre-fix was: HasLocalAdminKey gates the
-// refresh path, rootCertHealthy fails (issuer != localAdminPub), refresh
-// reissues — silently overwriting root.pub with the stray admin pub.
+// End-to-end pin: signer construction must not rewrite root.pub when
+// a stray local admin key is present on a delegated admin.
 func TestNewDelegationSigner_DelegatedAdminWithStrayAdminKeyDoesNotRewriteRoot(t *testing.T) {
 	dir := testIdentityDir(t)
 	nodePub, nodePriv := newKeyPair(t)

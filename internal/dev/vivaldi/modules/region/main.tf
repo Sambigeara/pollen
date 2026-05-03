@@ -2,8 +2,6 @@ terraform {
   required_providers { aws = { source = "hashicorp/aws" } }
 }
 
-# --- Key Pair & AMI ---
-
 resource "aws_key_pair" "pollen" {
   key_name   = "pollen-vivaldi"
   public_key = var.ssh_public_key
@@ -17,8 +15,6 @@ data "aws_ami" "ubuntu" {
     values = ["ubuntu/images/hvm-ssd/ubuntu*-22.04-arm64-server-*"]
   }
 }
-
-# --- VPC & Networking ---
 
 data "aws_availability_zones" "available" {
   state = "available"
@@ -85,8 +81,6 @@ resource "aws_eip_association" "nat" {
   allocation_id = aws_eip.nat.id
 }
 
-# --- Route Tables ---
-
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main.id
   route {
@@ -114,8 +108,6 @@ resource "aws_route_table_association" "private" {
   subnet_id      = aws_subnet.private.id
   route_table_id = aws_route_table.private.id
 }
-
-# --- Security Groups ---
 
 resource "aws_security_group" "nat" {
   name        = "pollen-vivaldi-${var.region_name}-nat"
@@ -197,8 +189,6 @@ resource "aws_security_group" "private" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
-
-# --- Instances ---
 
 resource "aws_instance" "public" {
   ami                         = data.aws_ami.ubuntu.id

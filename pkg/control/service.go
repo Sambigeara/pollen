@@ -41,8 +41,6 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// ControlTokenMetadataKey is the gRPC metadata key expected to carry the
-// shared secret for non-unix control RPCs.
 const ControlTokenMetadataKey = "x-pln-token"
 
 type Metrics struct {
@@ -172,12 +170,8 @@ func New(membership MembershipControl, placement PlacementControl, tunneling Tun
 	return s
 }
 
-// SetToken installs the shared secret required on non-unix control RPCs.
-// Unix socket connections bypass this check. Must be called before Start
-// or StartTCP so every request goes through a configured interceptor.
 func (s *Server) SetToken(token string) { s.token = token }
 
-// checkToken is a no-op when the token is empty; unix callers always bypass.
 func (s *Server) checkToken(ctx context.Context) error {
 	if s.token == "" {
 		return nil
@@ -235,9 +229,6 @@ func (s *Server) Start(socketPath string) error {
 	return s.Serve(l)
 }
 
-// StartTCP serves the control API on the given TCP address. Blocks until
-// the listener closes. When a token is configured via SetToken, non-unix
-// callers must present it via the x-pln-token metadata header.
 func (s *Server) StartTCP(addr string) error {
 	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 	if err != nil {
@@ -247,9 +238,6 @@ func (s *Server) StartTCP(addr string) error {
 	return s.Serve(l)
 }
 
-// Serve runs the gRPC handler on an already-established listener. All public
-// Start/StartTCP paths funnel through here; tests use it to drive the server
-// on an ephemeral listener.
 func (s *Server) Serve(l net.Listener) error { return s.gs.Serve(l) }
 
 func (s *Server) Stop()             { s.gs.GracefulStop() }
@@ -886,10 +874,8 @@ func buildStaticSummaries(snap state.Snapshot) []*controlv1.StaticSummary {
 	return out
 }
 
-// buildBlobSummaries tags unreferenced blobs as orphan and restricts holders
-// to live peers — stale BlobAvailability from offline peers would inflate
-// replicas and surface phantom orphans. Workload- and static-backed blobs
-// are surfaced under their own summaries and skipped here.
+// Restricts holders to live peers; stale BlobAvailability from offline
+// peers would inflate replicas and surface phantom orphans.
 func (s *Service) buildBlobSummaries(snap state.Snapshot) []*controlv1.BlobSummary {
 	liveSet := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
 	for _, pk := range snap.PeerKeys {

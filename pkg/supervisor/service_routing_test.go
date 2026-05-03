@@ -14,9 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRouteServiceRequest_NoProvider pins that a pln://service/<name> dial
-// for an unregistered service surfaces wasm.ErrTargetNotFound, so the host
-// can demote the log and gRPC callers can map it to NotFound.
 func TestRouteServiceRequest_NoProvider(t *testing.T) {
 	store := state.New(types.PeerKey{})
 	n := &Supervisor{store: store}

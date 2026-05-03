@@ -63,9 +63,7 @@ type Service struct {
 
 var _ StaticAPI = (*Service)(nil)
 
-// canServe gates file-fetch and claim; the reconciler still runs on
-// non-serving peers so every node pulls manifests (admin intent) and can
-// enumerate the referenced file digests.
+// canServe gates file-fetch; non-serving peers still pull manifests for digest enumeration.
 func New(localID types.PeerKey, store stateStore, blobs blobStore, canServe bool, log *zap.SugaredLogger) *Service {
 	return &Service{
 		store:         store,
@@ -136,7 +134,6 @@ func (s *Service) UnseedStatic(name string) error {
 	if sv.Publisher != s.localID {
 		return fmt.Errorf("static site %q is owned by peer %s; run unseed on that node", name, sv.Publisher.Short())
 	}
-	// TODO(saml) could these be consolidated into one API?
 	s.forwardEvents(s.store.DeleteStaticSpec(name))
 	s.forwardEvents(s.store.ReleaseStatic(name))
 	return nil
@@ -166,10 +163,6 @@ func (s *Service) reconcile(ctx context.Context) {
 	}
 }
 
-// StaticBlobs returns the hex digests of all blobs that back published
-// static sites — manifest blobs plus the file blobs they reference. Sites
-// whose manifest cannot be loaded locally yet contribute only the manifest
-// digest; file digests join once the manifest is fetched.
 func (s *Service) StaticBlobs() map[string]struct{} {
 	snap := s.store.Snapshot()
 	out := make(map[string]struct{}, len(snap.StaticSpecs))
@@ -197,9 +190,6 @@ func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, nam
 		return err
 	}
 
-	// Non-serving peers stop after the manifest — they don't hold the
-	// referenced files or claim the site, but the manifest is enough to
-	// enumerate file digests for keep-set membership.
 	if !s.canServe {
 		return nil
 	}

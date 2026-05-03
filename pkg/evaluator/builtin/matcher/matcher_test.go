@@ -96,9 +96,6 @@ rules:
 	require.False(t, d.Decision)
 }
 
-// YAML integers and floats both parse as numeric types. equalValues
-// normalises through float64 so policy authors don't need to know the
-// YAML representation distinction.
 func TestMatcher_NumericEquality(t *testing.T) {
 	m := build(t, `
 rules:
@@ -131,9 +128,6 @@ rules:
 	require.False(t, d.Decision, "unknown top-level path must not match silently")
 }
 
-// equalValues must not panic when a rule matches against a context
-// value that's a map or slice — `a == b` is a runtime panic on
-// non-comparable types, so the guard falls back to reflect.DeepEqual.
 func TestMatcher_NonComparableContextDoesNotPanic(t *testing.T) {
 	m := build(t, `
 rules:
@@ -160,9 +154,6 @@ rules:
 	})
 }
 
-// Reload swaps the in-memory rule slice atomically — a concurrent
-// Allow that started before the swap either sees the old or the new
-// rules, never a torn half.
 func TestMatcher_ReloadReplacesRules(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/rules.yaml"
@@ -193,9 +184,6 @@ func TestMatcher_ReloadReplacesRules(t *testing.T) {
 	require.Equal(t, "second", d.Context["reason_user"])
 }
 
-// A bad reload leaves the previous rules intact and returns the parse
-// error — operators must be able to fix a typo without the daemon
-// dropping to deny-everything.
 func TestMatcher_ReloadBadYAMLKeepsPreviousRules(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/rules.yaml"

@@ -53,11 +53,8 @@ const (
 	routeDebounceInterval = 100 * time.Millisecond
 	maxRouteDelay         = time.Second
 	loopIntervalJitter    = 0.1
-	// maxConcurrentPunches caps simultaneous NAT hole-punch attempts. Each
-	// punch opens a transient UDP socket, so we bound it independently of
-	// the workload concurrency story.
-	maxConcurrentPunches = 8
-	blobPruneInterval    = 5 * time.Minute
+	maxConcurrentPunches  = 8
+	blobPruneInterval     = 5 * time.Minute
 	// blobPruneGrace must comfortably exceed the worst-case duration of a
 	// directory seed so a janitor tick mid-seed can't race the spec
 	// publish that claims the just-uploaded file blobs.
@@ -119,9 +116,6 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	pollenDir := opts.PollenDir
 	self := types.PeerKeyFromBytes(pubKey)
 
-	// Validate authz config and preload matcher rules before allocating
-	// any resources. A late authz failure would leak peer cache, mesh,
-	// blob store, and wasm runtime state.
 	authzMatcher, err := preloadAuthz(opts.Authz, opts.RelayOnly)
 	if err != nil {
 		return nil, err
@@ -577,10 +571,6 @@ func (n *Supervisor) Run(ctx context.Context) error {
 	}
 }
 
-// peerProps resolves a remote peer's delegation-cert attributes so
-// policy rules can match on "role=admin" style claims. Returns nil
-// when the cert is absent (peer not yet authenticated) or has no
-// attributes — nil is a clean input for evaluator.Subject.Properties.
 func (n *Supervisor) peerProps(pk types.PeerKey) map[string]any {
 	cert, ok := n.mesh.PeerDelegationCert(pk)
 	if !ok || cert == nil {
@@ -602,13 +592,8 @@ func (n *Supervisor) dispatchBlobFetch(_ context.Context, stream io.ReadWriteClo
 	n.blobs.Serve(stream, hash)
 }
 
-// dispatchServiceConnect gates an inbound tunnel stream at supervisor
-// level. The stream's 2-byte port header is consumed first; denied
-// connects close the stream without a distinguishing reply — the
-// client-side sees the same close as service-not-found, so existence
-// is not leaked. Resource.ID resolves to the service name (not the
-// port) so policy rules read as `resource.id: foo_service` rather than
-// `resource.id: "8096"`.
+// Denied connects close the stream without a distinguishing reply so
+// service existence is not leaked to the caller.
 func (n *Supervisor) dispatchServiceConnect(ctx context.Context, stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	port, err := tunneling.ReadPort(stream)
 	if err != nil {
@@ -628,10 +613,6 @@ func (n *Supervisor) dispatchServiceConnect(ctx context.Context, stream io.ReadW
 	n.tunneling.Serve(stream, peerKey, port)
 }
 
-// localService looks up the service the local node exposes on the given
-// port and returns (name, publisher properties). When no service is bound
-// to the port, returns (port-as-string, nil) so the gate still fires —
-// a deny-by-default policy will reject unknown ports.
 func (n *Supervisor) localService(port uint32) (string, map[string]any) {
 	snap := n.store.Snapshot()
 	if nv, ok := snap.Nodes[snap.LocalID]; ok {
@@ -702,7 +683,6 @@ func (n *Supervisor) dispatchEvents(ctx context.Context, events []state.Event) {
 			snap := n.store.Snapshot()
 			n.syncPeersFromState(ctx, snap)
 			if e.Peer == snap.LocalID {
-				// A local network change can make every disconnected peer's last path stale.
 				for _, kp := range knownPeers(snap, n.peerCache) {
 					if !n.mesh.IsPeerConnected(kp.PeerID) {
 						n.mesh.NudgePeer(kp.PeerID)
@@ -825,9 +805,7 @@ func (n *Supervisor) pruneOrphanBlobs() {
 func (n *Supervisor) shutdown() {
 	n.controlSrv.Stop()
 
-	// Close QUIC sessions before waiting for goroutines — stream handlers
-	// (HandleDigestStream, blobs.HandleStream, HandleWorkloadStream) block
-	// on stream reads that only unblock when sessions close.
+	// Stream handlers block on reads that only unblock when sessions close.
 	if err := n.mesh.Stop(); err != nil {
 		n.log.Errorw("failed to shut down mesh", zap.Error(err))
 	}
@@ -901,8 +879,6 @@ func (n *Supervisor) ControlMetrics() control.Metrics {
 }
 
 func (n *Supervisor) RouteRequest(ctx context.Context, uri wasm.URI, input []byte) ([]byte, error) {
-	// Preserve existing caller identity for inter-workload call chains.
-	// Only stamp the local node's identity on the first hop.
 	info, ok := wasm.CallerInfoFromContext(ctx)
 	if !ok {
 		if cert := n.creds.Cert(); cert != nil {

@@ -19,8 +19,6 @@ const (
 	controlTokenPerm  = 0o600
 )
 
-// ensureControlToken returns the hex-encoded shared secret for the TCP control
-// endpoint, creating it on first use with 0600 permissions.
 func ensureControlToken(dir string) (string, error) {
 	path := filepath.Join(dir, controlTokenFile)
 	if raw, err := os.ReadFile(path); err == nil {

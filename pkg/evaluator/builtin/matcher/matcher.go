@@ -32,25 +32,17 @@ type ruleFile struct {
 	Rules []rule `yaml:"rules"`
 }
 
-// compiledRule is the runtime form of rule: decision is pre-parsed to a
-// bool so the hot path dodges the string compare on every check.
 type compiledRule struct {
 	match  map[string]any
 	reason string
 	allow  bool
 }
 
-// Matcher is the Evaluator implementation. Safe for concurrent use;
-// the rule slice is stored behind an atomic.Pointer so Reload can swap
-// it in under running callers without a mutex.
 type Matcher struct {
 	rules    atomic.Pointer[[]compiledRule]
 	fallback evaluator.Decision
 }
 
-// NewFromFile loads rules from a YAML file. A missing or empty file is
-// an error — silently running with zero rules would default-deny every
-// request, which is surprising behaviour for a misconfigured path.
 func NewFromFile(path string) (*Matcher, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -59,8 +51,6 @@ func NewFromFile(path string) (*Matcher, error) {
 	return NewFromBytes(data)
 }
 
-// NewFromBytes loads rules from a byte slice. Useful for tests and
-// embedded configurations.
 func NewFromBytes(data []byte) (*Matcher, error) {
 	compiled, err := compileRules(data)
 	if err != nil {
@@ -73,9 +63,8 @@ func NewFromBytes(data []byte) (*Matcher, error) {
 	return m, nil
 }
 
-// Reload re-reads the rules file and swaps the in-memory rule slice
-// atomically. A malformed file leaves the previous rules in place and
-// returns the parse error — so a bad edit can't brick authz.
+// Reload swaps the rules atomically. A malformed file leaves the
+// previous rules in place.
 func (m *Matcher) Reload(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -111,16 +100,8 @@ func compileRules(data []byte) ([]compiledRule, error) {
 	return compiled, nil
 }
 
-// Cacheable opts the matcher out of decision caching: the JSON-marshal
-// cache-key cost exceeds the rule walk for the shapes dispatch sites
-// actually see, so caching is net-negative here. Operators with
-// expensive evaluators (PDP seeds, remote policy services) leave the
-// default on.
 func (*Matcher) Cacheable() bool { return false }
 
-// Allow walks rules in order. The first rule whose match clause is
-// satisfied returns its decision; if no rule matches, the fallback
-// (deny) applies.
 func (m *Matcher) Allow(_ context.Context, req evaluator.Request) (evaluator.Decision, error) {
 	addr := requestMap(req)
 	rules := *m.rules.Load()
@@ -136,9 +117,6 @@ func (m *Matcher) Allow(_ context.Context, req evaluator.Request) (evaluator.Dec
 	return m.fallback, nil
 }
 
-// requestMap builds the addressable shape once per Allow call so rule
-// walks don't re-allocate the subject/action/resource/context maps per
-// rule.
 func requestMap(req evaluator.Request) map[string]any {
 	return map[string]any{
 		"subject": map[string]any{
@@ -159,9 +137,6 @@ func requestMap(req evaluator.Request) map[string]any {
 	}
 }
 
-// matchesRequest returns true when every (path, expected) pair in match
-// satisfies the pre-built request map. Scalar expected values check
-// equality; list-valued expected checks any-of.
 func matchesRequest(match, req map[string]any) bool {
 	for path, expected := range match {
 		actual, ok := lookupPath(req, path)
@@ -187,11 +162,9 @@ func matchValue(expected, actual any) bool {
 	return equalValues(expected, actual)
 }
 
-// equalValues performs literal equality on strings, bools, and numbers.
-// Numeric types are normalised through float64 so YAML's int/float
-// duality doesn't surprise rule authors. Non-comparable values (maps,
-// slices) fall through to reflect.DeepEqual so `a == b` can't panic at
-// runtime on a rule that targets a structured context value.
+// equalValues normalises numerics through float64 (YAML int/float duality)
+// and falls through to reflect.DeepEqual for non-comparable types to avoid
+// panics on structured context values.
 func equalValues(a, b any) bool {
 	if af, aok := toFloat(a); aok {
 		if bf, bok := toFloat(b); bok {
@@ -204,8 +177,6 @@ func equalValues(a, b any) bool {
 	return a == b
 }
 
-// comparableKind rejects kinds that panic under `==`. reflect.Kind on a
-// nil any is Invalid, which is comparable (nil == nil is fine).
 func comparableKind(v any) bool {
 	if v == nil {
 		return true
@@ -240,10 +211,6 @@ func toFloat(v any) (float64, bool) {
 	return 0, false
 }
 
-// lookupPath resolves a dot-separated path against the pre-built
-// request map. Only the known top-level fields (subject, action,
-// resource, context) are addressable — unknown prefixes return false
-// rather than silently matching nothing.
 func lookupPath(req map[string]any, path string) (any, bool) {
 	parts := strings.Split(path, ".")
 	head, ok := req[parts[0]]

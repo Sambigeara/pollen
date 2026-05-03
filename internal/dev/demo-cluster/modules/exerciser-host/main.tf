@@ -4,10 +4,6 @@ terraform {
   }
 }
 
-# Exerciser host — one dedicated EC2 instance that generates synthetic load
-# against the pollen cluster over each node's TCP control endpoint.
-# Runs the exerciser binary under systemd, not pln itself.
-
 data "aws_ami" "ubuntu" {
   most_recent = true
   owners      = ["099720109477"] # Canonical

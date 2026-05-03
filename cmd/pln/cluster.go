@@ -456,9 +456,8 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return errors.New("this node cannot issue tokens; only delegated admins can sign enrollment tokens")
 	}
 
-	// Gather every remote's identity before issuing seed tokens: each remote must be told
-	// about every other remote as a persistent bootstrap peer, which we can only do once we
-	// know all their public keys.
+	// Each remote must know about every other remote as a bootstrap peer,
+	// so we gather all identities before issuing any tokens.
 	type discovery struct {
 		err      error
 		prepared preparedRemote
@@ -468,9 +467,6 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	errOut := cmd.ErrOrStderr()
 	for i, spec := range specs {
 		discWG.Go(func() {
-			// Emit a per-target start line so the operator sees immediate
-			// progress instead of staring at a silent terminal for the
-			// ~30-60s it takes to curl-install + enrol + start each remote.
 			fmt.Fprintf(errOut, "bootstrapping %s...\n", spec.target)
 			prepared, err := discoverRemote(cmd.Context(), spec, relayPort)
 			discoveries[i] = discovery{prepared: prepared, err: err}
@@ -478,10 +474,6 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	}
 	discWG.Wait()
 
-	// Seed pool: local peer cache, any daemon we can reach (local or bridged), and every
-	// successfully-discovered remote. Each remote receives this set minus itself, so
-	// daemon restarts always have someone to reconnect to. Under ctx (no laptop daemon),
-	// the bridged daemon is the only populated source.
 	peerPool := make(map[string]*admissionv1.BootstrapPeer)
 	localCache, err := peercache.Open(env.dir)
 	if err != nil {
@@ -519,9 +511,6 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		}
 	}
 
-	// Buffered to len(discoveries) so immediate-failure sends never block and the
-	// drain reads exactly one result per discovery. Results are printed in
-	// completion order so fast hosts confirm before slow ones finish.
 	results := make(chan bootstrapResult, len(discoveries))
 	var enrollWG sync.WaitGroup
 	for _, d := range discoveries {
@@ -595,8 +584,6 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 			return fmt.Errorf("create local join token: %w", err)
 		}
 
-		// runJoin reads --no-up from cmd; with --no-up set it stages the
-		// orchestrator's credentials without starting the local daemon.
 		if err := runJoin(cmd, []string{joinToken}, env); err != nil {
 			return err
 		}
@@ -612,9 +599,6 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	return nil
 }
 
-// preparedRemote describes a target after pre-enrolment: sudo access confirmed, pln binary
-// installed, node identity fetched. spec is always set so it can identify the target in
-// error paths; the other fields are only valid once discoverRemote returns nil.
 type preparedRemote struct {
 	spec    sshTargetSpec
 	peerPub ed25519.PublicKey
@@ -622,8 +606,6 @@ type preparedRemote struct {
 	public  bool
 }
 
-// discoverRemote runs pre-enrolment checks and fetches the remote node's public key.
-// Safe to call concurrently for different targets.
 func discoverRemote(ctx context.Context, spec sshTargetSpec, relayPort int) (preparedRemote, error) {
 	fail := func(err error) (preparedRemote, error) {
 		return preparedRemote{spec: spec}, err
@@ -668,9 +650,6 @@ func discoverRemote(ctx context.Context, spec sshTargetSpec, relayPort int) (pre
 	}, nil
 }
 
-// enrollRemote issues a seed token carrying bootstrapPeers, enrols it on the remote and starts
-// the daemon. bootstrapPeers must already exclude the remote itself.
-// Safe to call concurrently for different targets.
 func enrollRemote(ctx context.Context, env *cliEnv, signer *auth.DelegationSigner, remote preparedRemote, bootstrapPeers []*admissionv1.BootstrapPeer, expireAfter time.Duration, delegateAdmin bool) error {
 	seedToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, remote.peerPub, 1*time.Minute, expireAfter, bootstrapPeers, nil)
 	if err != nil {
@@ -714,11 +693,8 @@ func bootstrapRelayOverSSH(ctx context.Context, env *cliEnv, sshTarget, seedToke
 		return err
 	}
 
-	// Bind the token-authenticated control API so the node is remotely
-	// manageable. Applied post-start (not via a pre-daemon `pln set`) to
-	// survive the config round-trip that `pln join --public` and
-	// `pln up -d --name` perform. Paired with the optional admin
-	// delegation into a single restart.
+	// Applied post-start to survive the config round-trip that
+	// `pln join --public` and `pln up -d --name` perform.
 	if out, err := sshPln(ctx, sshTarget, "set", "control-addr", config.DefaultControlAddr).CombinedOutput(); err != nil {
 		return fmt.Errorf("set control-addr: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
@@ -851,9 +827,8 @@ func parseProperties(cmd *cobra.Command) (*structpb.Struct, error) {
 	return s, nil
 }
 
-// rememberBootstrapPeers primes the local peer cache from a freshly resolved token.
-// Only useful before the daemon starts; once running, its own handshakes refresh
-// the cache.
+// Primes the peer cache before the daemon starts; once running, handshakes
+// refresh the cache.
 func rememberBootstrapPeers(pollenDir string, peers []*admissionv1.BootstrapPeer) error {
 	if len(peers) == 0 {
 		return nil
@@ -1094,8 +1069,6 @@ func resolveSSHTargets(cmd *cobra.Command, args []string) ([]sshTargetSpec, erro
 	specs := make([]sshTargetSpec, len(raw))
 	seen := make(map[string]int)
 	for i, entry := range raw {
-		// An entry with `=` in the prefix (and no `@` before the `=`) binds an explicit name
-		// to the target; otherwise derive a name from the host portion.
 		if name, target, ok := strings.Cut(entry, "="); ok && !strings.Contains(name, "@") {
 			specs[i] = sshTargetSpec{target: target, nodeName: name}
 			continue

@@ -191,8 +191,6 @@ func formatNum(n uint64) string {
 	return b.String()
 }
 
-// sparkline renders data as block characters scaled to the largest value seen,
-// right-aligned within a fixed-width strip so the line grows from the right.
 func sparkline(data []uint64, width int) string {
 	out := make([]rune, 0, width)
 	for i := 0; i < width-len(data); i++ {

@@ -12,9 +12,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// RequestService opens a tunnel to a mesh service and pipes raw bytes through it.
-// The caller is responsible for protocol framing (e.g. constructing an HTTP request).
-// The response is whatever the service writes back before closing the connection.
 func (s *Service) RequestService(ctx context.Context, peer types.PeerKey, port uint32, payload []byte) ([]byte, error) {
 	sCtx, cancel := context.WithTimeout(ctx, streamOpenTimeout)
 	defer cancel()

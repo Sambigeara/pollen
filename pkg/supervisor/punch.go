@@ -35,14 +35,9 @@ func (n *Supervisor) coordinatorPeers(target types.PeerKey) []types.PeerKey {
 func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connectedPeers []types.PeerKey, snap state.Snapshot) []types.PeerKey {
 	localNV := snap.Nodes[snap.LocalID]
 	targetNV := snap.Nodes[target]
-	// Source and target sharing an observed external IP means they're behind
-	// the same NAT. A public relay coordinator would tell source to dial
-	// target's WAN address — which is *also* source's WAN address, requiring
-	// hairpin NAT support that residential routers usually lack. Prefer a
-	// LAN-adjacent coordinator instead: it sees the target via its private
-	// side and will relay a LAN candidate, sidestepping the WAN hop. If no
-	// LAN-adjacent peer is connected, fall back to a public relay so we at
-	// least *try* a hairpin punch — better than parking the FSM forever.
+	// Shared egress (same WAN IP) means a public relay would produce a
+	// hairpin candidate that residential routers usually can't handle.
+	// Prefer a LAN-adjacent coordinator; fall back to public relay.
 	sharedEgress := localNV.ObservedExternalIP != "" && membership.SameObservedEgress(localNV.ObservedExternalIP, targetNV.ObservedExternalIP)
 
 	primary := make([]types.PeerKey, 0, len(connectedPeers))

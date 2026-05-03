@@ -37,9 +37,7 @@ nfpms:
     # license: "MIT"
     formats: [deb, rpm]
     bindir: /usr/bin
-    # The systemd unit is embedded in the binary and written by
-    # `pln daemon install` in the postinstall hook — no need to ship it
-    # as a packaged file as well.
+    # Systemd unit is embedded in the binary; no separate file needed.
     scripts:
       postinstall: packaging/postinstall.sh
       preremove: packaging/preremove.sh

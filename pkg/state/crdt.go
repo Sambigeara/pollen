@@ -226,7 +226,6 @@ func (s *store) EncodeFull() []byte {
 	return s.encodeDelta(Digest{proto: &statev1.Digest{}})
 }
 
-// encodeDelta computes events the remote is missing.
 func (s *store) encodeDelta(since Digest) []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()

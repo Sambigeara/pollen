@@ -1,8 +1,6 @@
 // Copyright 2026 Sam Lock
 // SPDX-License-Identifier: Apache-2.0
 
-// Package blobs is a content-addressed byte store with peer-to-peer fetch
-// over StreamTypeBlob.
 package blobs
 
 import (
@@ -112,8 +110,6 @@ func (s *Service) Announce(hash string) error {
 	return nil
 }
 
-// SetName requires the blob to be present locally. Re-naming the same
-// digest replaces any previous name from this publisher.
 func (s *Service) SetName(hash, name string) error {
 	if !s.store.Has(hash) {
 		return ErrNotLocal
@@ -125,9 +121,6 @@ func (s *Service) SetName(hash, name string) error {
 	return err
 }
 
-// Remove evicts the blob from the local store, un-announces availability,
-// and tombstones any BlobSpec previously published by this peer. Other
-// peers retain their own copies — removal is publisher-local only.
 func (s *Service) Remove(hash string) error {
 	if err := s.store.Remove(hash); err != nil {
 		if errors.Is(err, cas.ErrNotFound) {
@@ -146,10 +139,6 @@ func (s *Service) Remove(hash string) error {
 	return nil
 }
 
-// KeepSet returns digests protected from eviction: workload spec hashes,
-// named blob-spec digests, plus any extras the caller pre-collects (blobs
-// must not import sibling packages, so static passes its manifest + file
-// digests in here).
 func KeepSet(snap state.Snapshot, extras ...map[string]struct{}) map[string]struct{} {
 	keep := make(map[string]struct{}, len(snap.Specs)+len(snap.BlobSpecs))
 	for h := range snap.Specs {
@@ -166,10 +155,6 @@ func KeepSet(snap state.Snapshot, extras ...map[string]struct{}) map[string]stru
 	return keep
 }
 
-// Prune evicts blobs outside keep. minAge shields freshly-written files
-// that don't yet have a spec referencing them — e.g. `pln seed` on a
-// directory uploads file blobs anonymously before publishing the
-// StaticSpec.
 func (s *Service) Prune(keep map[string]struct{}, minAge time.Duration) ([]string, error) {
 	entries, err := s.store.Entries()
 	if err != nil {

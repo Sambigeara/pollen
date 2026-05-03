@@ -37,10 +37,8 @@ func TestBuild(t *testing.T) {
 		self      types.PeerKey
 		topology  []PeerTopology
 		connected []types.PeerKey
-		// expected[dest] = nextHop; absent means no route expected
-		expected map[types.PeerKey]types.PeerKey
-		// noRoute lists destinations that must NOT have a route
-		noRoute []types.PeerKey
+		expected  map[types.PeerKey]types.PeerKey
+		noRoute   []types.PeerKey
 	}{
 		{
 			name:     "empty graph",
@@ -154,8 +152,7 @@ func TestBuild(t *testing.T) {
 				topo(D, coord(20, 0), B, C),
 			},
 			connected: []types.PeerKey{B, C},
-			// A→B→D = ~10+10 = ~20, A→C→D ≈ ~100+~103 ≈ ~203
-			expected: map[types.PeerKey]types.PeerKey{D: B},
+			expected:  map[types.PeerKey]types.PeerKey{D: B},
 		},
 		{
 			name: "cycle handling (triangle)",

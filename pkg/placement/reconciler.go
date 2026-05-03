@@ -81,8 +81,6 @@ func (r *reconciler) Signal() {
 }
 
 func (r *reconciler) Run(ctx context.Context) {
-	// Reap claims left behind by an earlier crash before normal
-	// reconcile cycles begin.
 	r.cleanupStaleClaims(r.store.Snapshot().Claims)
 
 	pollTicker := time.NewTicker(reconcilePollInterval)
@@ -182,8 +180,6 @@ func (r *reconciler) reconcile(ctx context.Context) {
 
 	for hash, deadline := range r.pendingRelease {
 		if _, stillWanted := wantRelease[hash]; !stillWanted {
-			// Spec went away mid-tick; drop the stale drain entry so it
-			// can't pin the cooldown forever.
 			delete(r.pendingRelease, hash)
 			continue
 		}

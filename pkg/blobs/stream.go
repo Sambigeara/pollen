@@ -81,7 +81,6 @@ func (s *Service) fetchFrom(ctx context.Context, hash string, peer types.PeerKey
 	return s.Announce(hash)
 }
 
-// ReadHash reads the 64-byte hex hash header from a blob stream.
 func ReadHash(r io.Reader) (string, error) {
 	var hashBuf [sha256HexLen]byte
 	if _, err := io.ReadFull(r, hashBuf[:]); err != nil {
@@ -90,8 +89,8 @@ func ReadHash(r io.Reader) (string, error) {
 	return string(hashBuf[:]), nil
 }
 
-// Serve responds to an inbound blob fetch for the given hash. The hash
-// must already be consumed from the stream before calling.
+// Serve responds to an inbound blob fetch. The hash must already be
+// consumed from the stream before calling.
 func (s *Service) Serve(stream io.ReadWriteCloser, hash string) {
 	defer stream.Close()
 

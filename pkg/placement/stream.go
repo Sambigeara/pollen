@@ -34,8 +34,8 @@ type workloadInvoker interface {
 }
 
 // ReadHeader reads the caller-info envelope, seed hash, and function
-// name from an inbound workload stream. CallerInfo.PeerKey is overridden
-// with the transport-authenticated peer; wire values would be spoofable.
+// name. CallerInfo.PeerKey is overridden with the transport-authenticated
+// peer; wire values would be spoofable.
 func ReadHeader(r io.Reader, peer types.PeerKey) (wasm.CallerInfo, string, string, error) {
 	info := wasm.CallerInfo{PeerKey: peer}
 
@@ -104,9 +104,6 @@ func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, info w
 		return
 	}
 
-	// Recursive pollen_request from this seed back into itself would
-	// deadlock on the instance pool; stamp the hash so it fails with
-	// ErrCycle instead.
 	ctx = withChain(ctx, hash)
 
 	output, err := invoker.Call(ctx, hash, function, input)
@@ -135,8 +132,6 @@ func invokeOverStream(ctx context.Context, stream io.ReadWriteCloser, hash, func
 		return nil, fmt.Errorf("invoke: function name too long (%d > %d)", len(function), maxFuncLen)
 	}
 
-	// Propagate the caller's deadline over the wire so the target peer
-	// can honour it instead of falling back on its local safety cap.
 	info, _ := wasm.CallerInfoFromContext(ctx)
 	if dl, ok := ctx.Deadline(); ok {
 		info.DeadlineUnixMs = dl.UnixMilli()
@@ -208,9 +203,6 @@ func writeResponse(w io.Writer, status byte, body []byte) {
 	w.Write(buf) //nolint:errcheck
 }
 
-// writeOverload encodes an overload rejection. The body is the reason
-// text; the recipient wraps it in an OverloadError around the supplied
-// sentinel.
 func writeOverload(w io.Writer, status byte, reason string) {
 	writeResponse(w, status, []byte(reason))
 }

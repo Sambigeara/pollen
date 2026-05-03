@@ -228,7 +228,6 @@ func TestStop_DrainsInflightServe(t *testing.T) {
 		return len(svc.activeServes["samflix"]) == 1
 	}, time.Second, 10*time.Millisecond, "Serve should register active session")
 
-	// Run Stop in a goroutine so a hang manifests as a clean timeout, not a deadlock.
 	stopped := make(chan error, 1)
 	go func() { stopped <- svc.Stop() }()
 
@@ -284,9 +283,6 @@ func TestExposeService_NameMoveTearsDownOldRuntimeKey(t *testing.T) {
 	require.Contains(t, svc.services, serviceKey{port: 9090, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP})
 }
 
-// TestStart_RehydratesSeededServices: SetService is a no-op when supervisor
-// has already seeded the store, so ExposeService must still build the runtime
-// entry on the rehydrate path.
 func TestStart_RehydratesSeededServices(t *testing.T) {
 	self := types.PeerKey{1}
 	store := &mockStore{snap: state.Snapshot{

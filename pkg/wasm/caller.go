@@ -16,15 +16,10 @@ type (
 	executingFunctionKey struct{}
 )
 
-// WithExecutingSeed stamps ctx with the hash of the seed currently being
-// invoked. Host functions read this to attribute outbound dials to the
-// caller seed.
 func WithExecutingSeed(ctx context.Context, hash string) context.Context {
 	return context.WithValue(ctx, executingSeedKey{}, hash)
 }
 
-// ExecutingSeedFromContext returns the seed hash currently executing, or
-// "" if none is stamped.
 func ExecutingSeedFromContext(ctx context.Context) string {
 	if h, ok := ctx.Value(executingSeedKey{}).(string); ok {
 		return h
@@ -32,15 +27,10 @@ func ExecutingSeedFromContext(ctx context.Context) string {
 	return ""
 }
 
-// WithExecutingFunction stamps ctx with the exported function currently
-// being invoked. Paired with WithExecutingSeed so host functions can
-// attribute observations to the specific (hash, function) admission unit.
 func WithExecutingFunction(ctx context.Context, function string) context.Context {
 	return context.WithValue(ctx, executingFunctionKey{}, function)
 }
 
-// ExecutingFunctionFromContext returns the executing function name, or ""
-// if none is stamped.
 func ExecutingFunctionFromContext(ctx context.Context) string {
 	if f, ok := ctx.Value(executingFunctionKey{}).(string); ok {
 		return f
@@ -48,20 +38,16 @@ func ExecutingFunctionFromContext(ctx context.Context) string {
 	return ""
 }
 
-// CallerInfo carries the peer's identity, cert attributes, and propagated
-// deadline.
 type CallerInfo struct {
 	Attributes     map[string]any
 	DeadlineUnixMs int64
 	PeerKey        types.PeerKey
 }
 
-// WithCallerInfo returns a context carrying the given caller metadata.
 func WithCallerInfo(ctx context.Context, info CallerInfo) context.Context {
 	return context.WithValue(ctx, callerInfoKey{}, info)
 }
 
-// CallerInfoFromContext extracts CallerInfo from a context.
 func CallerInfoFromContext(ctx context.Context) (CallerInfo, bool) {
 	info, ok := ctx.Value(callerInfoKey{}).(CallerInfo)
 	return info, ok
@@ -73,8 +59,6 @@ type callerInfoJSON struct {
 	DeadlineUnixMs int64          `json:"deadlineUnixMs,omitempty"`
 }
 
-// MarshalCallerInfo serialises CallerInfo to JSON. Returns nil if every
-// field is zero — callers with nothing to say send no caller block.
 func MarshalCallerInfo(info CallerInfo) []byte {
 	if info.PeerKey == (types.PeerKey{}) && info.Attributes == nil && info.DeadlineUnixMs == 0 {
 		return nil
@@ -93,10 +77,6 @@ func MarshalCallerInfo(info CallerInfo) []byte {
 	return b
 }
 
-// CallerInfoFromJSON deserialises CallerInfo from JSON produced by
-// MarshalCallerInfo. The peer key is optional — an absent or empty value
-// yields a zero PeerKey, which the transport-authenticated peer then
-// overrides on the server side.
 func CallerInfoFromJSON(data []byte) (CallerInfo, bool) {
 	var j callerInfoJSON
 	if err := json.Unmarshal(data, &j); err != nil {

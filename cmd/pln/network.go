@@ -699,8 +699,6 @@ func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 	return sec
 }
 
-// Terminal 256-colour code for a muted grey — used for secondary text
-// (context label, table headers).
 const mutedFG = lipgloss.Color("245")
 
 func newStatusTable(headers ...string) *table.Table {
@@ -773,7 +771,6 @@ func renderStatusHeader(w io.Writer, m *controlv1.GetMetricsResponse, contextLab
 	}
 }
 
-// e.g. "prod (root@prod.example)", "dev (/tmp/pln-dev)", or bare "default".
 func statusContextLabel(defaultDir string) string {
 	name := resolveContextName()
 	if name == "" {
@@ -1233,13 +1230,7 @@ func connectionCollisionError(name string, matches []*controlv1.ConnectionSummar
 	return errors.New(strings.TrimSpace(b.String()))
 }
 
-// nodeNameLabels builds display labels for named nodes, keyed by hex peer ID.
-// In condensed mode the shortest unique prefix across all peers is appended in
-// brackets so users can paste it into commands like `pln grant`; wide mode
-// shows the full ID in parentheses instead.
 func nodeNameLabels(self *controlv1.NodeSummary, peers []*controlv1.NodeSummary, wide bool) map[string]string {
-	// Collect all peer IDs (named and unnamed) so the prefix is unique
-	// across the entire cluster, not just named nodes.
 	var allIDs []string
 	nameByPeer := map[string]string{}
 
@@ -1258,7 +1249,6 @@ func nodeNameLabels(self *controlv1.NodeSummary, peers []*controlv1.NodeSummary,
 		}
 	}
 
-	// Build a peer-ID → shortest-unique-prefix map for condensed mode.
 	prefixByPeer := map[string]string{}
 	if !wide && len(allIDs) > 0 {
 		pfx := minUniquePrefixes(allIDs)
@@ -1278,10 +1268,6 @@ func nodeNameLabels(self *controlv1.NodeSummary, peers []*controlv1.NodeSummary,
 	return labels
 }
 
-// nameCollisionSuffixes returns the minimum-unique peer-key prefix for
-// each item sharing a name with another peer, so callers can render
-// disambiguation hints like "config-abc" vs "config-def". Items where
-// extract returns include=false or an empty name are skipped.
 func nameCollisionSuffixes[T any](items []T, extract func(T) (string, string, bool)) map[namePeerKey]string {
 	groups := map[string][]string{}
 	for _, item := range items {

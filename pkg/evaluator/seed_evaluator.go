@@ -11,24 +11,17 @@ import (
 	"time"
 )
 
-// Caller dispatches a seed invocation. Satisfied by placement.Service's
-// Call method; declared at the evaluator layer so the seed-backed PDP
-// factory lives here without cross-layer imports.
+// Caller dispatches a seed invocation. Declared here so the seed-backed
+// PDP factory avoids cross-layer imports.
 type Caller interface {
 	Call(ctx context.Context, seed, function string, input []byte) ([]byte, error)
 }
 
-// Circuit breaker defaults. Tuned for the PDP-unreachable case: five
-// quick failures trip, ten-second cooldown before the next probe.
 const (
 	defaultFailThreshold = 5
 	defaultCooldown      = 10 * time.Second
 )
 
-// breakerState tracks the seed evaluator's failure-isolation breaker.
-// closed permits calls; open short-circuits with ErrCircuitOpen; halfOpen
-// is the single-probe window after cooldown — only the first caller
-// through admit() enters halfOpen, the rest see ErrCircuitOpen.
 type breakerState int
 
 const (
@@ -37,13 +30,8 @@ const (
 	breakerHalfOpen
 )
 
-// checkFunction is the WASM export name every PDP seed exposes. The
-// dispatch site always invokes this export.
 const checkFunction = "check"
 
-// seedEvaluator delegates authorisation decisions to a named seed's
-// `check` export. Wraps a consecutive-failure circuit breaker so a dead
-// PDP doesn't get hammered on every gate check.
 type seedEvaluator struct {
 	openedAt time.Time
 	caller   Caller
@@ -63,11 +51,8 @@ func newSeedEvaluator(seedName string, caller Caller) *seedEvaluator {
 }
 
 func (e *seedEvaluator) Allow(ctx context.Context, req Request) (Decision, error) {
-	// Marshal before admit so a malformed Request — a programmer error,
-	// not an evaluator outage — doesn't strand a half-open breaker.
-	// admit() in halfOpen claims the single probe slot; once claimed,
-	// the breaker won't progress until recordFailure or recordSuccess
-	// runs.
+	// Marshal before admit so a malformed Request doesn't strand a
+	// half-open breaker whose single probe slot was already claimed.
 	body, err := json.Marshal(req)
 	if err != nil {
 		return Decision{}, fmt.Errorf("seed evaluator: marshal request: %w", err)
@@ -99,9 +84,6 @@ func (e *seedEvaluator) admit() error {
 		if e.now().Sub(e.openedAt) < defaultCooldown {
 			return ErrCircuitOpen
 		}
-		// Cooldown elapsed — promote this caller to the single probe.
-		// Concurrent callers observing halfOpen keep seeing
-		// ErrCircuitOpen until the probe resolves.
 		e.state = breakerHalfOpen
 		return nil
 	case breakerHalfOpen:
@@ -110,13 +92,10 @@ func (e *seedEvaluator) admit() error {
 	panic(fmt.Sprintf("seed evaluator: invalid breaker state %d", e.state))
 }
 
-// recordFailure runs only after admit() returned nil, so the breaker is
-// in breakerClosed or breakerHalfOpen — never breakerOpen.
 func (e *seedEvaluator) recordFailure() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.state == breakerHalfOpen {
-		// Probe failed — re-open and restart the cooldown clock.
 		e.state = breakerOpen
 		e.openedAt = e.now()
 		return

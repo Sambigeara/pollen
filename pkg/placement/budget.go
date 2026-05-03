@@ -47,9 +47,6 @@ func newBudget(totalBytes int64) *budget {
 	}
 }
 
-// detectMemoryBudget returns the host-derived budget ceiling. Any
-// failure to read total memory yields zero, which the caller treats as
-// "no budget" — admission gating is then a no-op.
 func detectMemoryBudget() int64 {
 	vm, err := mem.VirtualMemory()
 	if err != nil {
@@ -58,11 +55,7 @@ func detectMemoryBudget() int64 {
 	return int64(float64(vm.Total) * memoryBudgetFraction)
 }
 
-// Reserve records a replica's warm-pool footprint against the budget
-// and stashes the per-call cap so ReserveCall can size individual
-// invocations. The per-call cap is recovered as bytes/IdleCacheSize —
-// the inverse of replicaMemoryBytes. A repeat reservation for the same
-// hash is a no-op success — replays must not double-count.
+// Reserve is idempotent per hash — replays must not double-count.
 func (b *budget) Reserve(hash string, bytes int64) bool {
 	if b.totalBytes <= 0 {
 		return true
@@ -81,9 +74,6 @@ func (b *budget) Reserve(hash string, bytes int64) bool {
 	return true
 }
 
-// Release drops the reservation tied to hash. Releasing an unknown
-// hash is a no-op so the caller doesn't have to track which seed paths
-// were admitted.
 func (b *budget) Release(hash string) {
 	if b.totalBytes <= 0 {
 		return
@@ -100,10 +90,6 @@ func (b *budget) Release(hash string) {
 	b.reserved.Add(-bytes)
 }
 
-// ReserveCall reserves a per-call slice of the budget for an in-flight
-// invocation of hash. The returned closure releases the slice — calling
-// it more than once is safe but only the first call decrements. A
-// totalBytes <= 0 budget admits unconditionally with a no-op release.
 func (b *budget) ReserveCall(hash string) (func(), bool) {
 	if b.totalBytes <= 0 {
 		return func() {}, true
@@ -128,8 +114,6 @@ func (b *budget) ReserveCall(hash string) (func(), bool) {
 	}, true
 }
 
-// tryAdd CAS-loops the reserved counter, refusing the addition when it
-// would breach totalBytes.
 func (b *budget) tryAdd(bytes int64) bool {
 	for {
 		cur := b.reserved.Load()
@@ -143,11 +127,9 @@ func (b *budget) tryAdd(bytes int64) bool {
 	}
 }
 
-// replicaMemoryBytes is the warm-pool worst case the replica path
-// reserves: IdleCacheSize × per-spec-cap. Pre-reserving the pool
-// footprint at claim time lets the call-level path account for one
-// in-flight invocation per call without double-counting active vs
-// idle instances.
+// replicaMemoryBytes pre-reserves IdleCacheSize × per-spec-cap at
+// claim time so the call path accounts for one in-flight invocation
+// without double-counting active vs idle instances.
 func replicaMemoryBytes(specBytes uint64) int64 {
 	specCap := defaultReplicaMemoryBytes
 	if specBytes != 0 {

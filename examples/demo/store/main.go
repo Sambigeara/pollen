@@ -39,12 +39,7 @@ func main() {
 	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
 		log.Fatal(err)
 	}
-	// SetMaxOpenConns trades two failure modes: 1 serialises everything
-	// through a single driver-side queue (tight tail but unbounded wait),
-	// 16+ encourages lock contention that can push individual writers
-	// past busy_timeout. 4 is a conservative middle ground — pipelines
-	// the handler while keeping the WAL write-lock queue shallow enough
-	// to clear inside busy_timeout under normal load.
+	// 4 balances serialisation (1) vs WAL lock contention (16+) within busy_timeout.
 	db.SetMaxOpenConns(4)
 	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS events (ts INTEGER, data TEXT)"); err != nil {
 		log.Fatal(err)

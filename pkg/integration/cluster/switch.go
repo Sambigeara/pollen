@@ -13,7 +13,6 @@ import (
 	"time"
 )
 
-// NodeRole distinguishes public (relay/bootstrap) nodes from private (NATed) nodes.
 type NodeRole int
 
 const (
@@ -21,13 +20,11 @@ const (
 	Private NodeRole = iota
 )
 
-// SwitchConfig holds default network characteristics for the virtual switch.
 type SwitchConfig struct {
 	DefaultLatency time.Duration
 	DefaultJitter  float64 // 0 means zero jitter
 }
 
-// LinkConfig overrides network characteristics for a specific directed link.
 type LinkConfig struct {
 	Latency    time.Duration
 	Jitter     float64
@@ -35,20 +32,16 @@ type LinkConfig struct {
 	Blocked    bool
 }
 
-// linkKey identifies a directed link between two addresses.
 type linkKey struct {
 	from, to string
 }
 
-// pendingPunch records a packet from a private node that hasn't been matched yet.
 type pendingPunch struct {
 	destConn   *VirtualPacketConn
 	senderAddr string
 	data       []byte
 }
 
-// VirtualSwitch routes UDP datagrams between in-process VirtualPacketConns with
-// configurable latency, jitter, packet loss, partitions, and NAT gating.
 type VirtualSwitch struct {
 	conns        map[string]*VirtualPacketConn
 	roles        map[string]NodeRole
@@ -62,7 +55,6 @@ type VirtualSwitch struct {
 	mu           sync.Mutex
 }
 
-// NewVirtualSwitch creates a switch with the given default config.
 func NewVirtualSwitch(cfg SwitchConfig) *VirtualSwitch {
 	return &VirtualSwitch{
 		config:       cfg,
@@ -77,7 +69,6 @@ func NewVirtualSwitch(cfg SwitchConfig) *VirtualSwitch {
 	}
 }
 
-// Bind registers a new virtual connection on the switch.
 func (vs *VirtualSwitch) Bind(addr *net.UDPAddr, role NodeRole) *VirtualPacketConn {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -95,7 +86,6 @@ func (vs *VirtualSwitch) Bind(addr *net.UDPAddr, role NodeRole) *VirtualPacketCo
 	return conn
 }
 
-// unregister removes a connection from the switch (called by VirtualPacketConn.Close).
 func (vs *VirtualSwitch) unregister(addr *net.UDPAddr) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -103,16 +93,12 @@ func (vs *VirtualSwitch) unregister(addr *net.UDPAddr) {
 	delete(vs.roles, addr.String())
 }
 
-// deliver routes a packet from src to dst through the switch, applying NAT
-// address rewriting, NAT gating, partitions, link config, packet loss,
-// latency, and jitter.
 func (vs *VirtualSwitch) deliver(from, to *net.UDPAddr, data []byte) {
 	vs.mu.Lock()
 
 	fromKey := from.String()
 	toKey := to.String()
 
-	// NAT: resolve destination through reverse mapping for routing.
 	if realAddr, ok := vs.natReverse[toKey]; ok {
 		to = realAddr
 		toKey = realAddr.String()
@@ -124,7 +110,6 @@ func (vs *VirtualSwitch) deliver(from, to *net.UDPAddr, data []byte) {
 		return
 	}
 
-	// NAT: rewrite source through forward mapping.
 	actualFrom := from
 	if mapped, ok := vs.natForward[fromKey]; ok {
 		actualFrom = mapped
@@ -133,16 +118,13 @@ func (vs *VirtualSwitch) deliver(from, to *net.UDPAddr, data []byte) {
 	fromRole := vs.roles[fromKey]
 	toRole := vs.roles[toKey]
 
-	// NAT gating: private→private blocked unless punch opened.
 	if fromRole == Private && toRole == Private {
 		pairFwd := linkKey{fromKey, toKey}
 		pairRev := linkKey{toKey, fromKey}
 
 		if !vs.punchOpen[pairFwd] && !vs.punchOpen[pairRev] {
-			// Check for pending punch from the opposite direction.
 			if pending, exists := vs.punchPending[pairRev]; exists && pending.senderAddr == toKey {
-				// Simultaneous open: toKey previously sent to fromKey, and now
-				// fromKey is sending to toKey. Open the path in both directions.
+				// Simultaneous open: both sides sent, open bidirectionally.
 				vs.punchOpen[pairFwd] = true
 				vs.punchOpen[pairRev] = true
 				delete(vs.punchPending, pairRev)
@@ -155,7 +137,6 @@ func (vs *VirtualSwitch) deliver(from, to *net.UDPAddr, data []byte) {
 				return
 			}
 
-			// No opposite-direction pending — store this as pending punch.
 			dataCopy := copyBytes(data)
 			vs.punchPending[pairFwd] = &pendingPunch{
 				senderAddr: fromKey,
@@ -213,7 +194,6 @@ func (vs *VirtualSwitch) isPartitioned(a, b string) bool {
 	return vs.partitions[linkKey{a, b}] || vs.partitions[linkKey{b, a}]
 }
 
-// Partition blocks traffic between two groups of addresses.
 func (vs *VirtualSwitch) Partition(groupA, groupB []string) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -225,7 +205,6 @@ func (vs *VirtualSwitch) Partition(groupA, groupB []string) {
 	}
 }
 
-// Heal removes a partition between two groups of addresses.
 func (vs *VirtualSwitch) Heal(groupA, groupB []string) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -237,7 +216,6 @@ func (vs *VirtualSwitch) Heal(groupA, groupB []string) {
 	}
 }
 
-// SetLinkLatency configures latency for a directed link.
 func (vs *VirtualSwitch) SetLinkLatency(from, to string, d time.Duration) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -245,7 +223,6 @@ func (vs *VirtualSwitch) SetLinkLatency(from, to string, d time.Duration) {
 	lc.Latency = d
 }
 
-// SetLinkLoss configures packet loss for a directed link.
 func (vs *VirtualSwitch) SetLinkLoss(from, to string, loss float64) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -253,7 +230,6 @@ func (vs *VirtualSwitch) SetLinkLoss(from, to string, loss float64) {
 	lc.PacketLoss = loss
 }
 
-// SetLinkJitter configures jitter for a directed link.
 func (vs *VirtualSwitch) SetLinkJitter(from, to string, j float64) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -271,9 +247,6 @@ func (vs *VirtualSwitch) getOrCreateLink(from, to string) *LinkConfig {
 	return lc
 }
 
-// SetNATMapping configures address rewriting for a private node. When the node
-// sends to a public node, the source address is rewritten to publicAddr. When a
-// public node sends to publicAddr, the packet is routed to the real private conn.
 func (vs *VirtualSwitch) SetNATMapping(privateAddr, publicAddr *net.UDPAddr) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -281,7 +254,6 @@ func (vs *VirtualSwitch) SetNATMapping(privateAddr, publicAddr *net.UDPAddr) {
 	vs.natReverse[publicAddr.String()] = privateAddr
 }
 
-// OpenPunch explicitly opens a bidirectional path between two private nodes.
 func (vs *VirtualSwitch) OpenPunch(a, b string) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -296,7 +268,6 @@ func computeDelay(base time.Duration, jitter float64) time.Duration {
 	if jitter == 0 {
 		return base
 	}
-	// Delay = base ± (jitter * base * random)
 	offset := float64(base) * jitter * (2*rand.Float64() - 1) //nolint:gosec,mnd
 	d := max(time.Duration(float64(base)+offset), 0)
 	return d
@@ -308,13 +279,11 @@ func copyBytes(b []byte) []byte {
 	return c
 }
 
-// inboundPacket is a datagram received by a VirtualPacketConn.
 type inboundPacket struct {
 	addr *net.UDPAddr
 	data []byte
 }
 
-// VirtualPacketConn implements net.PacketConn for in-process virtual networking.
 type VirtualPacketConn struct {
 	deadline       time.Time
 	addr           *net.UDPAddr
@@ -333,7 +302,6 @@ func (c *VirtualPacketConn) enqueue(pkt inboundPacket) {
 	}
 }
 
-// ReadFrom blocks until a packet arrives, the deadline expires, or the conn is closed.
 func (c *VirtualPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	for {
 		select {
@@ -379,12 +347,10 @@ func (c *VirtualPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
 			if timer != nil {
 				timer.Stop()
 			}
-			// Re-evaluate deadline at top of loop.
 		}
 	}
 }
 
-// WriteTo sends a packet through the virtual switch.
 func (c *VirtualPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	select {
 	case <-c.closedCh:
@@ -397,7 +363,6 @@ func (c *VirtualPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	return len(b), nil
 }
 
-// Close shuts down the connection and unregisters it from the switch.
 func (c *VirtualPacketConn) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.closedCh)
@@ -406,23 +371,19 @@ func (c *VirtualPacketConn) Close() error {
 	return nil
 }
 
-// LocalAddr returns the virtual UDP address of this connection.
 func (c *VirtualPacketConn) LocalAddr() net.Addr {
 	return c.addr
 }
 
-// SetDeadline sets both read and write deadlines.
 func (c *VirtualPacketConn) SetDeadline(t time.Time) error {
 	return c.SetReadDeadline(t)
 }
 
-// SetReadDeadline stores the deadline and signals any blocked ReadFrom to re-evaluate.
 func (c *VirtualPacketConn) SetReadDeadline(t time.Time) error {
 	c.deadlineMu.Lock()
 	c.deadline = t
 	c.deadlineMu.Unlock()
 
-	// Signal deadlineNotify to wake any blocked ReadFrom.
 	select {
 	case c.deadlineNotify <- struct{}{}:
 	default:
@@ -430,7 +391,6 @@ func (c *VirtualPacketConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-// SetWriteDeadline is a no-op (writes are non-blocking).
 func (c *VirtualPacketConn) SetWriteDeadline(time.Time) error {
 	return nil
 }

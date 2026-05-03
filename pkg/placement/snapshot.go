@@ -55,8 +55,6 @@ func backedOffSet(snap state.Snapshot, now time.Time) map[types.PeerKey]struct{}
 	return out
 }
 
-// sourceCount pairs a peer with its most recently gossiped call count
-// for some seed.
 type sourceCount struct {
 	caller types.PeerKey
 	count  uint64

@@ -25,8 +25,6 @@ func New(level string) (*zap.Logger, error) {
 	return cfg.Build()
 }
 
-// ParseLevel maps an empty string to info so callers can pass an unset
-// config field directly.
 func ParseLevel(level string) (zapcore.Level, error) {
 	if level == "" {
 		return zapcore.InfoLevel, nil

@@ -43,7 +43,6 @@ var (
 	date    = "unknown"
 )
 
-// cliEnv centralizes common command dependencies to eliminate boilerplate.
 type cliEnv struct {
 	client controlv1connect.ControlServiceClient
 	cfg    *config.Config
@@ -62,7 +61,6 @@ func wantsRoot() envOption     { return func(c *envConfig) { c.wantsRoot = true 
 func localOnly() envOption     { return func(c *envConfig) { c.localOnly = true } }
 func systemService() envOption { return func(c *envConfig) { c.systemService = true } }
 
-// withEnv wraps a command function, handling directory setup, config loading, and gRPC client init.
 func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption) func(*cobra.Command, []string) error {
 	cfg := envConfig{}
 	for _, opt := range opts {

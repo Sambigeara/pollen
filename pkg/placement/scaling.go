@@ -114,9 +114,6 @@ func (r *replicaCountLoop) evaluate(snap state.Snapshot, seed string, backed map
 	r.clearLowSince(seed)
 }
 
-// tryFillFloor elects the lex-min live peer not already claiming the
-// seed and not currently in backoff. One claim per tick — successive
-// ticks fill the gap.
 func (r *replicaCountLoop) tryFillFloor(snap state.Snapshot, seed string, replicas []types.PeerKey, backed map[types.PeerKey]struct{}) {
 	replicaSet := make(map[types.PeerKey]struct{}, len(replicas))
 	for _, p := range replicas {
@@ -161,8 +158,6 @@ func (r *replicaCountLoop) tryScaleUp(snap state.Snapshot, seed string, replicas
 	r.tryFillFloor(snap, seed, replicas, backed)
 }
 
-// targetFor reads the spec's effective replica target: MinReplicas
-// (capped by cluster size), or full cluster when Spread >= 1.
 func targetFor(snap state.Snapshot, seed string) uint32 {
 	sv, ok := snap.Specs[seed]
 	if !ok {

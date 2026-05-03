@@ -94,8 +94,6 @@ func TestUpdateNegativeRTTIsNoop(t *testing.T) {
 }
 
 func TestConvergence(t *testing.T) {
-	// Two nodes with a 50ms RTT between them. After many updates, the
-	// distance between their coordinates should converge toward 50.
 	a := Coord{}
 	b := Coord{X: 100, Y: 0, Height: MinHeight}
 	aErr, bErr := 1.0, 1.0
@@ -111,7 +109,6 @@ func TestConvergence(t *testing.T) {
 }
 
 func TestConvergenceThreeNodes(t *testing.T) {
-	// Triangle: A-B=10ms, B-C=20ms, A-C=25ms.
 	a, b, c := Coord{}, Coord{X: 50, Y: 0}, Coord{X: 0, Y: 50}
 	aErr, bErr, cErr := 1.0, 1.0, 1.0
 
@@ -133,7 +130,6 @@ func TestConvergenceThreeNodes(t *testing.T) {
 func TestClampingPreventsRunaway(t *testing.T) {
 	local := Coord{X: MaxCoord - 1, Y: MaxCoord - 1, Height: 1}
 	localErr := 1.0
-	// Huge RTT should push far, but clamping limits coordinates.
 	s := Sample{RTT: 999 * time.Second, PeerCoord: Coord{X: -MaxCoord, Y: -MaxCoord, Height: 1}, PeerErr: 1.0}
 	newCoord, _ := Update(local, localErr, s)
 	require.LessOrEqual(t, math.Abs(newCoord.X), float64(MaxCoord))
@@ -142,7 +138,6 @@ func TestClampingPreventsRunaway(t *testing.T) {
 }
 
 func TestHeightFloor(t *testing.T) {
-	// When coords are very close and RTT is very small, height shouldn't go below MinHeight.
 	local := Coord{X: 0, Y: 0, Height: MinHeight}
 	localErr := 1.0
 	s := Sample{RTT: time.Microsecond, PeerCoord: Coord{X: 0.001, Y: 0, Height: MinHeight}, PeerErr: 1.0}
@@ -151,9 +146,6 @@ func TestHeightFloor(t *testing.T) {
 }
 
 func TestLowLatencyConvergence(t *testing.T) {
-	// Simulate a 5-node LAN cluster with 2-3ms RTTs and ~0.5ms jitter.
-	// With the RTT floor, error should settle below the 0.6 degradation
-	// threshold despite the high relative jitter on fast links.
 	local := Coord{}
 	localErr := 1.0
 	peers := []Coord{
@@ -173,7 +165,6 @@ func TestLowLatencyConvergence(t *testing.T) {
 
 	for round := range 300 {
 		for i, p := range peers {
-			// Add ±0.5ms jitter.
 			jitter := time.Duration((round%5)-2) * 100 * time.Microsecond
 			rtt := baseRTTs[i] + jitter
 			if rtt <= 0 {

@@ -9,7 +9,6 @@ import (
 	"strings"
 )
 
-// URIScheme identifies the target type in a pln:// URI.
 type URIScheme string
 
 const (
@@ -17,25 +16,16 @@ const (
 	SchemeService URIScheme = "service"
 )
 
-// ErrTargetNotFound means the URI named a seed or service that no peer has
-// published. Distinct from placement.ErrNotRunning (spec exists, no claimants).
 var ErrTargetNotFound = errors.New("target not found")
 
-// URI is a parsed pln:// address.
 type URI struct {
 	Scheme   URIScheme
-	Name     string // seed name or service name
-	Function string // only for seed URIs
+	Name     string
+	Function string
 }
 
 const plnPrefix = "pln://"
 
-// ParseURI parses a pln:// URI string.
-//
-// Supported forms:
-//
-//	pln://seed/<name>/<function>
-//	pln://service/<name>
 func ParseURI(raw string) (URI, error) {
 	if !strings.HasPrefix(raw, plnPrefix) {
 		return URI{}, fmt.Errorf("invalid pln URI: missing pln:// prefix: %q", raw)

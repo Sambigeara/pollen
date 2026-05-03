@@ -73,10 +73,8 @@ func (n *Supervisor) forwardInviteToAdmin(ctx context.Context, joinerKey types.P
 	return nil, lastErr
 }
 
-// adminForwardCandidates returns admins to which an invite redemption can be
-// forwarded: the token issuer first if still admin-capable, then any other
-// admin-capable peer. The fallback covers the case where the issuer is offline
-// but admin has been delegated elsewhere in the mesh.
+// Token issuer first, then any other admin-capable peer. Fallback covers
+// the case where the issuer is offline but admin has been delegated elsewhere.
 func (n *Supervisor) adminForwardCandidates(issuer types.PeerKey) []types.PeerKey {
 	snap := n.store.Snapshot()
 	candidates := make([]types.PeerKey, 0, len(snap.Nodes))

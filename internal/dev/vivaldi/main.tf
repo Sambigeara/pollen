@@ -6,8 +6,6 @@ locals {
   ssh_public_key = file(var.ssh_public_key_path)
 }
 
-# --- Providers ---
-
 provider "aws" {
   alias  = "us_east_1"
   region = "us-east-1"
@@ -27,8 +25,6 @@ provider "aws" {
   alias  = "sa_east_1"
   region = "sa-east-1"
 }
-
-# --- Region Modules ---
 
 module "us_east_1" {
   source    = "./modules/region"
@@ -73,8 +69,6 @@ module "sa_east_1" {
   instance_type    = var.instance_type
   ssh_public_key   = local.ssh_public_key
 }
-
-# --- Outputs ---
 
 output "ips_by_region" {
   value = {

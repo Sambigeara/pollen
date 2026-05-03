@@ -78,10 +78,6 @@ func TestSeedEvaluator_MalformedResponse(t *testing.T) {
 	require.Contains(t, err.Error(), "unmarshal")
 }
 
-// A marshal failure must not claim the half-open probe slot. Pre-fix,
-// admit() promoted the breaker to halfOpen before json.Marshal ran;
-// when marshal then failed, neither recordFailure nor recordSuccess
-// fired and every subsequent caller saw ErrCircuitOpen forever.
 func TestSeedEvaluator_MarshalFailureDoesNotStrandBreaker(t *testing.T) {
 	var calls atomic.Int32
 	respond := make(chan func() ([]byte, error), 16)
@@ -95,8 +91,6 @@ func TestSeedEvaluator_MarshalFailureDoesNotStrandBreaker(t *testing.T) {
 	clock := time.Unix(1_000, 0)
 	eval.now = func() time.Time { return clock }
 
-	// Trip the breaker so subsequent admit() in halfOpen would claim
-	// the single probe slot.
 	for range 5 {
 		respond <- func() ([]byte, error) { return nil, errors.New("pdp unreachable") }
 		_, err := eval.Allow(context.Background(), Request{})
@@ -104,18 +98,14 @@ func TestSeedEvaluator_MarshalFailureDoesNotStrandBreaker(t *testing.T) {
 	}
 	require.Equal(t, int32(5), calls.Load())
 
-	// Advance past cooldown so the next admit() promotes to halfOpen.
 	clock = clock.Add(11 * time.Second)
 
-	// An unmarshalable Request must fail before admit runs.
 	bad := Request{Subject: Subject{Properties: map[string]any{"ch": make(chan int)}}}
 	_, err := eval.Allow(context.Background(), bad)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "marshal")
 	require.Equal(t, int32(5), calls.Load(), "marshal failure must not reach the caller")
 
-	// A subsequent valid request must still claim the probe slot and
-	// — on success — close the breaker.
 	respond <- func() ([]byte, error) { return json.Marshal(Decision{Decision: true}) }
 	got, err := eval.Allow(context.Background(), Request{})
 	require.NoError(t, err)
@@ -123,8 +113,6 @@ func TestSeedEvaluator_MarshalFailureDoesNotStrandBreaker(t *testing.T) {
 	require.Equal(t, int32(6), calls.Load(), "probe must reach the caller after recovery")
 }
 
-// Consecutive failures trip the breaker; cooldown admits exactly one
-// probe that — on success — closes the breaker and restores normal flow.
 func TestSeedEvaluator_CircuitBreakerTripsAndRecovers(t *testing.T) {
 	var calls atomic.Int32
 	respond := make(chan func([]byte) ([]byte, error), 16)
@@ -165,9 +153,6 @@ func TestSeedEvaluator_CircuitBreakerTripsAndRecovers(t *testing.T) {
 	require.Equal(t, int32(7), calls.Load(), "breaker closed, calls flow again")
 }
 
-// After the cooldown elapses, only the first caller through the gate is
-// admitted as the probe. Concurrent callers see ErrCircuitOpen until the
-// probe resolves, preventing a thundering-herd on a recovering PDP.
 func TestSeedEvaluator_HalfOpenAdmitsOneProbe(t *testing.T) {
 	var calls atomic.Int32
 	probeStarted := make(chan struct{})

@@ -7,11 +7,6 @@ terraform {
   }
 }
 
-# ---------------------------------------------------------------------------
-# Provider aliases — one per region, 10 globally distributed locations.
-# All are default-enabled AWS regions (no opt-in required).
-# ---------------------------------------------------------------------------
-
 provider "aws" {
   alias  = "us_east_1"
   region = "us-east-1"
@@ -65,7 +60,6 @@ provider "aws" {
 locals {
   ssh_public_key = file(var.ssh_public_key_path)
 
-  # Aggregate module outputs into a flat name→ip map for use in outputs.
   modules = {
     use = module.use.ip
     usw = module.usw.ip
@@ -79,16 +73,8 @@ locals {
     sao = module.sao.ip
   }
 
-  # Ingress allow-list for every pollen node's control endpoint.
-  # Only the dedicated exerciser host needs external TCP access.
   node_control_ingress_cidrs = [module.exerciser.eip_cidr]
 }
-
-# ---------------------------------------------------------------------------
-# Dedicated exerciser host — one EC2 instance in us-east-1 that runs the
-# load generator under systemd and targets any of the 10 pollen nodes via
-# their TCP control endpoints. No pln daemon on this host.
-# ---------------------------------------------------------------------------
 
 module "exerciser" {
   source    = "./modules/exerciser-host"
@@ -97,10 +83,6 @@ module "exerciser" {
   ssh_public_key = local.ssh_public_key
   scraper_cidr   = var.scraper_cidr
 }
-
-# ---------------------------------------------------------------------------
-# Nodes — one per region, each gets its own VPC and public instance.
-# ---------------------------------------------------------------------------
 
 module "use" {
   source    = "./modules/node"

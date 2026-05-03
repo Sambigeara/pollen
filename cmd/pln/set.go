@@ -18,9 +18,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/observability/logging"
 )
 
-// settableKey describes a config key that can be edited via `pln set`/`pln unset`.
-// apply normalises and stores the value, returning the canonical form so the
-// caller can echo exactly what landed in config.yaml.
 type settableKey struct {
 	apply       func(*config.Config, string) (string, error)
 	clear       func(*config.Config)

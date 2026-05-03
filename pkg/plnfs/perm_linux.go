@@ -13,16 +13,10 @@ import (
 	"sync"
 )
 
-// SetGroupSocket makes a socket read-writable by the pln group (0660).
 func SetGroupSocket(path string) error { return setPerm(path, 0o660) }
 
-// SetGroupReadable makes an existing file readable by the pln group (0640).
 func SetGroupReadable(path string) error { return setPerm(path, 0o640) }
 
-// EnsureDir creates a directory (and parents). In system mode it applies
-// setgid + pln group ownership so the daemon and CLI users in the pln
-// group can share access. In user mode it uses 0700 and skips group
-// ownership.
 func EnsureDir(path string) error {
 	if !system {
 		if err := os.MkdirAll(path, 0o700); err != nil { //nolint:mnd
@@ -43,8 +37,6 @@ func EnsureDir(path string) error {
 	return setPerm(path, fm)
 }
 
-// setPerm sets the mode and, in system mode, the ownership so the pln
-// daemon can access the file.
 func setPerm(path string, mode os.FileMode) error {
 	if err := os.Chmod(path, mode); err != nil {
 		return fmt.Errorf("chmod %s: %w", path, err)
@@ -55,9 +47,7 @@ func setPerm(path string, mode os.FileMode) error {
 	return applyPlnOwnership(path)
 }
 
-// applyPlnOwnership chowns a path to pln:pln. When root, both uid and
-// gid are set; when non-root, only the gid is changed (keeping the
-// caller's uid).
+// When root, both uid and gid are set; when non-root, only gid is changed.
 func applyPlnOwnership(path string) error {
 	plnOnce.Do(resolvePlnOwner)
 	if !plnResolved {

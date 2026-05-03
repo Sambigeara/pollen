@@ -27,7 +27,7 @@ import (
 var hashPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
 const (
-	streamChunkBytes       = 1 << 20 // stays below the default 4 MiB gRPC per-message cap
+	streamChunkBytes       = 1 << 20
 	defaultWorkloadMinReps = 2
 )
 
@@ -361,9 +361,6 @@ func uploadBlob(cmd *cobra.Command, env *cliEnv, header *controlv1.UploadBlobHea
 	return resp.Msg.GetHash(), nil
 }
 
-// runUnseed dispatches to the right RPC by inspecting the daemon's
-// status. Workload, static, and blob each have their own resolver; if
-// the arg matches in more than one kind we error rather than guess.
 func runUnseed(cmd *cobra.Command, args []string, env *cliEnv) error {
 	arg := args[0]
 
@@ -377,8 +374,6 @@ func runUnseed(cmd *cobra.Command, args []string, env *cliEnv) error {
 	site := matchStaticArg(st.GetSites(), arg)
 	blobHash, blobErr := matchBlobArg(st.GetBlobs(), arg)
 	hasBlob := blobErr == nil
-	// Distinguish "no match" from "ambiguous" — only the latter should
-	// short-circuit; "no match" lets the other kinds still satisfy.
 	var blobAmbiguous error
 	if blobErr != nil && !strings.HasPrefix(blobErr.Error(), "no blob") {
 		blobAmbiguous = blobErr
@@ -460,11 +455,6 @@ func resolveBlob(cmd *cobra.Command, env *cliEnv, arg string) (string, error) {
 	return matchBlobArg(statusResp.Msg.GetBlobs(), arg)
 }
 
-// matchWorkloadArg returns the unique workload matching arg by name, full
-// hash, or hash prefix. Returns nil for no match. Ambiguity is rare for
-// workloads because names are unique within the spec namespace; if the
-// hash prefix is ambiguous we conservatively return nil and let the
-// daemon's UnseedWorkload do its own resolution.
 func matchWorkloadArg(workloads []*controlv1.WorkloadSummary, arg string) *controlv1.WorkloadSummary {
 	for _, w := range workloads {
 		if w.GetName() == arg || w.GetHash() == arg {
@@ -584,9 +574,6 @@ func isHexPrefix(s string) bool {
 	return true
 }
 
-// parseMemoryBytes parses a human-readable memory size ("64MiB", "128M",
-// "1GiB"). An empty string returns 0, which tells the server to use its
-// default.
 func parseMemoryBytes(s string) (uint64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {

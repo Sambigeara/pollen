@@ -77,7 +77,6 @@ func (s *sockStoreImpl) Punch(ctx context.Context, addr *net.UDPAddr, localNAT n
 	var wg sync.WaitGroup
 
 	if localNAT != nat.Easy {
-		// Cap parallel hole punching to 8 workers instead of 256 fire-and-forget loops.
 		for range punchWorkers {
 			wg.Go(func() {
 				for range punchAttempts {

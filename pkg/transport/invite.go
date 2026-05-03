@@ -93,8 +93,6 @@ func redeemInviteWithDial(
 	return nil, fmt.Errorf("failed to redeem invite token: %w", lastErr)
 }
 
-// raceInviteDials cancels losing dials and closes any late successes before
-// returning, so the caller never inherits a stray QUIC connection.
 func raceInviteDials(
 	ctx context.Context,
 	addrs []*net.UDPAddr,
@@ -220,9 +218,6 @@ func (m *QUICTransport) handleInviteConnection(ctx context.Context, qc *quic.Con
 	}
 }
 
-// ProcessInviteRedeem verifies, consumes, and signs an invite redemption.
-// All dependencies are passed as parameters so both direct QUIC handling
-// (transport) and forwarded datagram handling (supervisor) can call it.
 func ProcessInviteRedeem(
 	signer *auth.DelegationSigner,
 	consumer auth.InviteConsumer,
@@ -278,8 +273,6 @@ func ProcessInviteRedeem(
 	return &meshv1.InviteRedeemResponse{Accepted: true, JoinToken: joinToken}
 }
 
-// InviteForwarder is called by non-admin relays to forward invite redemption
-// requests to a known admin via the mesh.
 type InviteForwarder func(ctx context.Context, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (*meshv1.InviteRedeemResponse, error)
 
 func (m *QUICTransport) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) error {

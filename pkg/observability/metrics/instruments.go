@@ -53,7 +53,6 @@ func NewPeerMetrics(mp metric.MeterProvider) *PeerMetrics {
 	return pm
 }
 
-// Enabled returns true if metrics are actively being collected (not noop).
 func (pm *PeerMetrics) Enabled(ctx context.Context) bool {
 	return pm.PeersConnected.Enabled(ctx)
 }

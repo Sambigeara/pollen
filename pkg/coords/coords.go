@@ -9,15 +9,12 @@ import (
 	"time"
 )
 
-// Coord represents a Vivaldi network coordinate: 2D Euclidean position plus a
-// non-negative height that models last-mile latency asymmetries.
 type Coord struct {
 	X      float64
 	Y      float64
 	Height float64
 }
 
-// Sample is a single RTT measurement to a peer whose coordinate is known.
 type Sample struct {
 	RTT       time.Duration
 	PeerCoord Coord
@@ -38,16 +35,13 @@ const (
 	// adjustments.
 	MinRTTFloor = 2.0 // milliseconds
 
-	// PublishEpsilon is the minimum coordinate movement (in distance units)
-	// before a node should re-publish its coordinates via gossip.
 	PublishEpsilon = 0.5
 )
 
 const initRadius = 10.0 // ms-scale spread for initial coordinate diversity
 
-// RandomCoord returns a coordinate uniformly distributed within a circle of
-// radius initRadius. The non-trivial inter-node distances let Vivaldi error
-// begin dropping from tick 1, avoiding the stuck-at-1.0 cold-start problem.
+// RandomCoord spreads initial coords so Vivaldi error drops from tick 1
+// instead of stalling at 1.0 when all nodes start at the origin.
 func RandomCoord() Coord {
 	angle := rand.Float64() * 2 * math.Pi       //nolint:gosec,mnd
 	r := math.Sqrt(rand.Float64()) * initRadius //nolint:gosec
@@ -58,16 +52,12 @@ func RandomCoord() Coord {
 	}
 }
 
-// Distance returns the Vivaldi distance between two coordinates:
-// ||a.pos − b.pos|| + a.Height + b.Height.
 func Distance(a, b Coord) float64 {
 	dx := a.X - b.X
 	dy := a.Y - b.Y
 	return math.Sqrt(dx*dx+dy*dy) + a.Height + b.Height
 }
 
-// MovementDistance returns how far a coordinate moved in Euclidean 3D
-// coordinate space (x, y, height).
 func MovementDistance(a, b Coord) float64 {
 	dx := a.X - b.X
 	dy := a.Y - b.Y
@@ -75,13 +65,6 @@ func MovementDistance(a, b Coord) float64 {
 	return math.Sqrt(dx*dx + dy*dy + dh*dh)
 }
 
-// Update applies a single RTT sample to the local coordinate using the Vivaldi
-// algorithm. It returns the updated coordinate and error estimate.
-//
-// localErr represents the node's confidence in its current position
-// (higher = less confidence, 0 = perfect). It should stay in [0, 1]
-// because the per-sample relative error is bounded to [0, 1) by the
-// max(rtt, dist, MinRTTFloor) denominator.
 func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 	rtt := s.RTT.Seconds() * 1000 //nolint:mnd
 	if rtt <= 0 {
@@ -93,14 +76,12 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 		dist = MinHeight
 	}
 
-	// Normalize by max(rtt, dist) so the per-sample relative error stays in
-	// [0, 1). Using just rtt as the denominator causes LAN peers with large
-	// predicted distances to produce errors of 100+, which drives the error
-	// estimate to extreme values and prevents convergence.
+	// max(rtt, dist, MinRTTFloor) keeps per-sample relative error in [0, 1).
+	// Using just rtt as denominator causes LAN peers with large predicted
+	// distances to produce errors of 100+, preventing convergence.
 	err := math.Abs(rtt-dist) / max(rtt, dist, MinRTTFloor)
 
-	// Vivaldi weight: w = e_i / (e_i + e_j). A zero peer error means the
-	// peer hasn't gossiped its error yet (old node); fall back to CeDefault.
+	// Zero peer error means the peer hasn't gossiped its error yet.
 	peerErr := s.PeerErr
 	if peerErr == 0 {
 		peerErr = CeDefault
@@ -110,11 +91,9 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 	newErr := localErr + CeDefault*relWeight*(err-localErr)
 	newErr = clamp(newErr, 0, 1)
 
-	// Compute force: positive = push apart, negative = pull together.
 	delta := CcDefault * relWeight
 	force := delta * (rtt - dist)
 
-	// Unit vector from peer to local.
 	dx := local.X - s.PeerCoord.X
 	dy := local.Y - s.PeerCoord.Y
 	mag := math.Sqrt(dx*dx + dy*dy)
@@ -126,11 +105,9 @@ func Update(local Coord, localErr float64, s Sample) (Coord, float64) {
 	}
 	ux, uy := dx/mag, dy/mag
 
-	// Apply force to the Euclidean component.
 	newX := local.X + ux*(force)
 	newY := local.Y + uy*(force)
 
-	// Apply force to height.
 	newHeight := local.Height + force
 	if newHeight < MinHeight {
 		newHeight = MinHeight

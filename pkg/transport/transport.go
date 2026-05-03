@@ -419,23 +419,15 @@ func (m *QUICTransport) Stop() error {
 }
 
 type peerSession struct {
-	conn      *quic.Conn
-	transport *quic.Transport
-	sockConn  *conn
-	// delegationCert is set at TLS handshake time from the peer's
-	// identity cert and may be overwritten live by SetPeerDelegationCert
-	// when the local node issues a new cert to this peer — the session
-	// stays up but its cached attributes become authoritative
-	// immediately, without waiting for a reconnect.
+	conn           *quic.Conn
+	transport      *quic.Transport
+	sockConn       *conn
 	delegationCert atomic.Pointer[admissionv1.DelegationCert]
 	createdAt      time.Time
 	certExpiresAt  time.Time
 	outbound       bool
 }
 
-// newPeerSession is the one place peerSession is constructed so the
-// atomic.Pointer initialisation stays consistent across the accept
-// loop, direct-dial, bootstrap, and racing-dial paths.
 func newPeerSession(qc *quic.Conn, qt *quic.Transport, sock *conn, dc *admissionv1.DelegationCert, outbound bool) *peerSession {
 	s := &peerSession{
 		conn:          qc,
@@ -836,7 +828,6 @@ func (m *QUICTransport) AcceptStream(ctx context.Context) (Stream, StreamType, t
 }
 
 func (m *QUICTransport) OpenStream(ctx context.Context, peerKey types.PeerKey, st StreamType) (Stream, error) {
-	// TODO(saml) why is this handled separately?
 	if st == StreamTypeDigest {
 		return m.openTypedStream(ctx, peerKey, st)
 	}
@@ -916,13 +907,6 @@ func (m *QUICTransport) PeerDelegationCert(peerKey types.PeerKey) (*admissionv1.
 	return dc, dc != nil
 }
 
-// SetPeerDelegationCert overwrites the delegation cert cached on the
-// live session to peer. The cert-issuance path calls this after a
-// successful PushCert/renewal response so the issuer's own
-// PeerDelegationCert view matches what the target now carries —
-// without waiting for a session tear-down and TLS rehandshake. No-op
-// when no session is active: the next handshake will carry the
-// target's authoritative cert via TLS.
 func (m *QUICTransport) SetPeerDelegationCert(peerKey types.PeerKey, cert *admissionv1.DelegationCert) {
 	if cert == nil {
 		return

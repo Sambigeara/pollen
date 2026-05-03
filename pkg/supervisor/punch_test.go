@@ -12,12 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// rankCoordinators picks who should mediate a punch attempt between local and
-// target. The test fixtures model the two regimes the function distinguishes:
-// cross-NAT (public relays preferred, same-subnet/same-egress excluded) and
-// shared-egress (LAN-adjacent coordinators required so the punch trigger
-// carries a LAN candidate instead of a hairpin-bound WAN one).
-
 func reachableTo(targets ...types.PeerKey) map[types.PeerKey]struct{} {
 	m := make(map[types.PeerKey]struct{}, len(targets))
 	for _, t := range targets {

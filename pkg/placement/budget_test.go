@@ -82,9 +82,6 @@ func TestBudget_ConcurrentReserveRespectsLimit(t *testing.T) {
 	require.Equal(t, admitted.Load()*each, b.reserved.Load())
 }
 
-// TestBudget_ReserveCall_UsesPerSpecCap pins that ReserveCall sizes the
-// in-flight slice from the cap stashed by Reserve — a fixed multiple of
-// IdleCacheSize relative to the replica reservation.
 func TestBudget_ReserveCall_UsesPerSpecCap(t *testing.T) {
 	const specCap = int64(64 << 20)
 	const callSlots = 4
@@ -106,9 +103,6 @@ func TestBudget_ReserveCall_UsesPerSpecCap(t *testing.T) {
 	}
 }
 
-// TestBudget_ReserveCall_FallsBackToDefault pins the defence for a call
-// arriving before its replica reservation has been booked: the call is
-// sized at the package default rather than refused outright.
 func TestBudget_ReserveCall_FallsBackToDefault(t *testing.T) {
 	b := newBudget(defaultReplicaMemoryBytes * 2)
 
@@ -119,8 +113,6 @@ func TestBudget_ReserveCall_FallsBackToDefault(t *testing.T) {
 	require.Zero(t, b.reserved.Load(), "release must drop exactly the bytes the reservation took")
 }
 
-// TestBudget_ReserveCall_DoubleReleaseIsNoop guards against accidental
-// double-decrement when a caller invokes the release closure twice.
 func TestBudget_ReserveCall_DoubleReleaseIsNoop(t *testing.T) {
 	b := newBudget(defaultReplicaMemoryBytes * 2)
 	release, ok := b.ReserveCall("seed")
@@ -130,9 +122,6 @@ func TestBudget_ReserveCall_DoubleReleaseIsNoop(t *testing.T) {
 	require.Zero(t, b.reserved.Load())
 }
 
-// TestBudget_ReserveCall_ConcurrentRespectsLimit hammers the CAS path
-// from many goroutines and asserts the atomic counter remains accurate
-// and the limit is honoured.
 func TestBudget_ReserveCall_ConcurrentRespectsLimit(t *testing.T) {
 	const calls = 200
 	const slots = wasm.IdleCacheSize * 2
@@ -165,9 +154,6 @@ func TestBudget_ReserveCall_ConcurrentRespectsLimit(t *testing.T) {
 	require.Equal(t, int64(wasm.IdleCacheSize)*specCap, b.reserved.Load())
 }
 
-// TestBudget_ReserveAndCall_ShareCeiling pins that a replica reservation
-// plus an in-flight call accumulate against the same ceiling: once the
-// replica reservation has filled the budget, no call can squeeze through.
 func TestBudget_ReserveAndCall_ShareCeiling(t *testing.T) {
 	const specCap = int64(64 << 20)
 	totalBudget := replicaMemoryBytes(uint64(specCap)) + specCap
@@ -183,9 +169,6 @@ func TestBudget_ReserveAndCall_ShareCeiling(t *testing.T) {
 	require.True(t, b.Reserve("seed-2", specCap), "freeing call headroom must reopen room for a small replica reservation against the same ceiling")
 }
 
-// TestBudget_ReplicaMemoryBytesPreReservesPool documents the warm-pool
-// reservation invariant: replica overhead is IdleCacheSize × per-spec
-// cap, not 1× cap.
 func TestBudget_ReplicaMemoryBytesPreReservesPool(t *testing.T) {
 	require.Equal(t, int64(wasm.IdleCacheSize)*defaultReplicaMemoryBytes, replicaMemoryBytes(0))
 	const specCap = uint64(128 << 20)

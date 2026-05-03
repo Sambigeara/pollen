@@ -20,12 +20,10 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	return setPerm(path, mode)
 }
 
-// WriteGroupReadable atomically writes data to path with mode 0640.
 func WriteGroupReadable(path string, data []byte) error {
 	return atomicWrite(path, data, 0o640) //nolint:mnd
 }
 
-// WriteGroupWritable atomically writes data to path with mode 0660.
 func WriteGroupWritable(path string, data []byte) error {
 	return atomicWrite(path, data, 0o660) //nolint:mnd
 }

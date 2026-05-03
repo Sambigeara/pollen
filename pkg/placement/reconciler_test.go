@@ -51,10 +51,6 @@ func (m *mockStore) Snapshot() state.Snapshot {
 		claims[k] = inner
 	}
 
-	// Reflect the drain map into Snapshot.DrainingClaims so the reconciler's
-	// drain-aware paths see the same gossip view a live cluster would.
-	// MarkWorkloadDraining is a local-peer operation, so the resulting drain
-	// flag attaches to localID.
 	drainingClaims := make(map[string]map[types.PeerKey]struct{})
 	for hash, on := range m.draining {
 		if !on {
@@ -68,9 +64,8 @@ func (m *mockStore) Snapshot() state.Snapshot {
 
 	peers := append([]types.PeerKey(nil), m.allPeers...)
 
-	// Stamp every peer with a fresh LastEventAt so placement's
-	// telemetry-staleness filter doesn't drop them. Tests asserting
-	// stale-peer behaviour can override this in their NodeView.
+	// Stamp every peer with a fresh LastEventAt so the staleness
+	// filter doesn't drop them.
 	now := time.Now()
 	nodes := make(map[types.PeerKey]state.NodeView, len(m.nodes))
 	for pk, nv := range m.nodes {
@@ -201,11 +196,6 @@ func TestExecuteClaim_SpecRemovedDuringFetch(t *testing.T) {
 	require.False(t, ms.wasClaimed(hash), "should not set claim when spec was removed")
 }
 
-// TestExecuteClaim_HappyPath ensures the claim path actually flips the
-// store's claimed bit to true. Paired with the failure-case tests above
-// it pins the positive assertion: a mutation that inverts the claim
-// decision (e.g. always-return-false) would fail here even if the
-// negative tests still passed.
 func TestExecuteClaim_HappyPath(t *testing.T) {
 	local := peerKey(1)
 	hash := "workload-happy"

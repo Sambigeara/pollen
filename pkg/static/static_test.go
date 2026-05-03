@@ -76,8 +76,6 @@ func (f *fakeBlobs) Fetch(_ context.Context, hash string, _ []types.PeerKey) err
 	return nil
 }
 
-// seedManifest marshals a manifest referencing fileDigests (hex strings),
-// stores it in the fake blob store, and returns its digest.
 func seedManifest(t *testing.T, blobs *fakeBlobs, fileDigests ...string) string {
 	t.Helper()
 	paths := make([]*statev1.StaticPath, len(fileDigests))
@@ -129,8 +127,6 @@ func TestEnsureReplicated_NonServingPeer_FetchesManifestButNotFilesOrClaim(t *te
 
 	require.NotContains(t, blobs.fetched, fileA, "non-serving peer must not fetch file blobs")
 	require.Empty(t, st.claimed, "non-serving peer must not claim the site")
-	// The manifest was already in the fake store (publisher-seeded), so no
-	// fetch was needed; Has() returned true.
 	require.True(t, blobs.Has(manifestDigest))
 }
 

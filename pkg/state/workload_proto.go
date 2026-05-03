@@ -9,10 +9,6 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 )
 
-// workloadSpecToProto builds the gossip-side change message owned by
-// the store. Sub-millisecond and overflow durations truncate cleanly:
-// callers are expected to reject those at the API boundary rather
-// than rely on silent coercion.
 func workloadSpecToProto(spec WorkloadSpec) *statev1.WorkloadSpecChange {
 	return &statev1.WorkloadSpecChange{
 		Hash:        spec.Hash,
@@ -24,8 +20,6 @@ func workloadSpecToProto(spec WorkloadSpec) *statev1.WorkloadSpecChange {
 	}
 }
 
-// workloadSpecFromProto returns a zero-valued WorkloadSpec when pb is nil
-// so callers don't need to nil-guard.
 func workloadSpecFromProto(pb *statev1.WorkloadSpecChange) WorkloadSpec {
 	if pb == nil {
 		return WorkloadSpec{}

@@ -29,10 +29,7 @@ const (
 type contextEntry struct {
 	Dir  string `yaml:"dir"`
 	Host string `yaml:"host,omitempty"`
-	// Port is the mesh UDP port the daemon binds for this context. Local
-	// named contexts get a free ephemeral port assigned at ctx add so they
-	// coexist with other local daemons (default-context brew/apt pln, other
-	// named contexts) without collision. Zero means "use the default."
+	// Ephemeral port so named local contexts coexist without collision.
 	Port int `yaml:"port,omitempty"`
 }
 
@@ -41,8 +38,6 @@ type contextsFile struct {
 	Current  string                  `yaml:"current,omitempty"`
 }
 
-// Contexts live under the user's home, never under $PLN_DIR — they're
-// operator state, not per-daemon state.
 func contextsPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -108,9 +103,8 @@ func resolveContextName() string {
 	if v := os.Getenv("PLN_CONTEXT"); v != "" {
 		return v
 	}
-	// The brew launchd unit runs `pln up` with no --dir, so without this
-	// short-circuit a service restart would bind the default daemon to
-	// whichever context the user last selected for CLI routing.
+	// Brew's launchd unit must always use the default context, not
+	// whichever context the interactive shell last switched to.
 	if os.Getenv("XPC_SERVICE_NAME") == "homebrew.mxcl.pln" {
 		return defaultContextName
 	}
@@ -121,8 +115,6 @@ func resolveContextName() string {
 	return defaultContextName
 }
 
-// The default context falls back to the caller's $PLN_DIR. Identity for
-// any context is always auth.IdentityPath(dir).
 func resolveContextBindings(name, defaultDir string) (dir, host string, err error) {
 	if name == defaultContextName {
 		return defaultDir, "", nil
@@ -138,9 +130,6 @@ func resolveContextBindings(name, defaultDir string) (dir, host string, err erro
 	return entry.Dir, entry.Host, nil
 }
 
-// Rules: contains '@' → host; starts with /, ~, ./, ../ → dir; resolves to
-// an existing directory on disk → dir; otherwise → error. Directory targets
-// are always absolutised so stored contexts don't depend on CWD.
 func inferTarget(arg string) (dir, host string, err error) {
 	if strings.Contains(arg, "@") {
 		return "", arg, nil
@@ -262,9 +251,6 @@ func runContextAdd(cmd *cobra.Command, args []string) error {
 		if _, statErr := os.Stat(dir); errors.Is(statErr, os.ErrNotExist) {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s does not exist yet; run `pln init` or `pln up` after switching to this context\n", dir)
 		}
-		// Assign a free UDP port so the local daemon for this context can
-		// coexist with the default-context daemon (and any other named
-		// contexts) without binding :60611 twice.
 		port, err := pickFreeUDPPort()
 		if err != nil {
 			return fmt.Errorf("pick free port: %w", err)
@@ -298,8 +284,6 @@ func pickFreeUDPPort() (int, error) {
 	return addr.Port, nil
 }
 
-// Generates a fresh admin keypair under ~/.pln/contexts/<name>/, or copies
-// one in when --from is set.
 func provisionRemoteIdentity(cmd *cobra.Command, name string) (string, error) {
 	ctxDir, err := contextDir(name)
 	if err != nil {

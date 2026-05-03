@@ -40,9 +40,6 @@ type observation struct {
 	port int
 }
 
-// Detector determines the local NAT type by comparing ObservedAddress
-// reports from peers with distinct public IPs. Same external port across
-// observers → Easy. Different ports → Hard.
 type Detector struct {
 	observations []observation
 	natType      Type
@@ -55,8 +52,6 @@ func NewDetector() *Detector {
 	}
 }
 
-// AddObservation records that the observer at observerIP saw us on the given
-// port. Returns the (possibly updated) NAT type and whether it changed.
 func (d *Detector) AddObservation(observerIP netip.Addr, port int) (Type, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

@@ -231,12 +231,6 @@ func (s *store) ReleaseWorkload(hash string) []Event {
 	return s.setWorkloadClaimLocked(hash, false, false)
 }
 
-// MarkWorkloadDraining flips an existing claim into the draining state.
-// The claim stays gossiped — callers continue routing to this peer until
-// the actual ReleaseWorkload — but other peers see the draining flag and
-// can issue a replacement claim during the drain window so make-before-
-// break overlap is preserved across the handover. No-op if the local node
-// is not currently claiming the workload.
 func (s *store) MarkWorkloadDraining(hash string) []Event {
 	return s.setWorkloadClaimLocked(hash, true, true)
 }
@@ -250,9 +244,6 @@ func (s *store) setWorkloadClaimLocked(hash string, claimed, draining bool) []Ev
 			currDraining = ev.GetWorkloadClaim().GetDraining()
 		}
 
-		// MarkWorkloadDraining on a non-claimant is a no-op; releasing a
-		// non-claim is a no-op; re-claiming an already-active claim is a
-		// no-op; flipping the draining flag emits a fresh event.
 		if !claimed && !exists {
 			return nil, nil
 		}
@@ -306,9 +297,6 @@ func (s *store) SetLocalResources(r NodeResources) []Event {
 	})
 }
 
-// SetBackoffTTL publishes a BackoffTTL gossip event with the
-// emitter's-clock absolute expiry. Idempotent — repeats with the
-// same expires_at are skipped.
 func (s *store) SetBackoffTTL(expiresAt time.Time) []Event {
 	expiresAtMs := expiresAt.UnixMilli()
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
@@ -324,9 +312,6 @@ func (s *store) SetBackoffTTL(expiresAt time.Time) []Event {
 	})
 }
 
-// SetPerSeedCallCounts publishes the per-seed call-count window for
-// this node. Replaces any prior counts; an empty map publishes a
-// tombstone so peers can drop our last window.
 func (s *store) SetPerSeedCallCounts(counts map[string]uint64) []Event {
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
 		if len(counts) == 0 {

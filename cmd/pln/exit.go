@@ -8,9 +8,6 @@ import (
 	"fmt"
 )
 
-// Exit codes for scripting consumers. 0 = success, 1 = generic.
-// Sub-categories let scripts react to common failure shapes without
-// parsing error text.
 const (
 	exitSuccess     = 0
 	exitGeneric     = 1
@@ -20,8 +17,6 @@ const (
 	exitUnreachable = 6
 )
 
-// exitError tags an error with a non-default exit code. Construct with
-// notFoundErr / ambiguousErr / permissionErr / unreachableErr.
 type exitError struct {
 	err  error
 	code int
@@ -46,9 +41,6 @@ func unreachableErr(msg string) error {
 	return &exitError{code: exitUnreachable, err: errors.New(msg)}
 }
 
-// wrapExit attaches a code to an arbitrary error, preserving its
-// chain. Useful when wrapping a third-party error (e.g. blob lookup
-// helper) without losing its original message.
 func wrapExit(code int, err error) error {
 	if err == nil {
 		return nil

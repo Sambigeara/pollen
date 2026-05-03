@@ -125,8 +125,7 @@ func (s *Service) loadManifest(digest string) (*parsedManifest, error) {
 	return pm, nil
 }
 
-// hostOnly strips the optional :port suffix from a Host header value,
-// correctly handling IPv6 bracketed literals like "[::1]:80".
+// hostOnly strips :port, handling IPv6 bracketed literals.
 func hostOnly(hostport string) string {
 	if hostport == "" {
 		return ""

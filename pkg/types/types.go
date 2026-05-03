@@ -46,7 +46,6 @@ func (pk PeerKey) Compare(other PeerKey) int {
 	return bytes.Compare(pk.Bytes(), other.Bytes())
 }
 
-// ShortHash returns a truncated hash prefix suitable for log output.
 func ShortHash(h string) string {
 	const n = 12
 	if len(h) <= n {

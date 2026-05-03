@@ -15,14 +15,8 @@ import (
 // surfacing the failure to the user.
 var ErrOverloaded = errors.New("placement: node overloaded")
 
-// retryAfterDefault is how long callers should wait before retrying an
-// overloaded node — used by canRetry to decide whether the remaining
-// context deadline can still absorb a retry.
 const retryAfterDefault = 100 * time.Millisecond
 
-// OverloadError wraps an overload sentinel with a human-readable reason.
-// errors.Is(err, ErrOverloaded) detects the cause; the Reason aids
-// debugging without bleeding into program logic.
 type OverloadError struct {
 	Sentinel error
 	Reason   string

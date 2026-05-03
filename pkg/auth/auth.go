@@ -65,16 +65,10 @@ var (
 	ErrCertExpired         = errors.New("delegation cert has expired")
 )
 
-// IdentityPath returns the conventional identity directory within a Pollen
-// state directory. Functions in this package operate on an identity directory
-// (where admin_ed25519.{key,pub}, root.pub, ed25519.{key,pub}, and the
-// delegation cert live); callers that do not use named contexts pass
-// IdentityPath(pollenDir) rather than building the path themselves.
 func IdentityPath(pollenDir string) string {
 	return filepath.Join(pollenDir, keysSubdir)
 }
 
-// FullCapabilities returns capabilities for root/admin certs.
 func FullCapabilities() *admissionv1.Capabilities {
 	return &admissionv1.Capabilities{
 		CanDelegate: true,
@@ -83,7 +77,6 @@ func FullCapabilities() *admissionv1.Capabilities {
 	}
 }
 
-// LeafCapabilities returns capabilities for regular member certs.
 func LeafCapabilities() *admissionv1.Capabilities {
 	return &admissionv1.Capabilities{
 		CanDelegate: false,
@@ -92,8 +85,6 @@ func LeafCapabilities() *admissionv1.Capabilities {
 	}
 }
 
-// ValidateAttributes checks that serialised attributes do not exceed the size
-// limit. A nil Struct is always valid.
 func ValidateAttributes(attrs *structpb.Struct) error {
 	if attrs == nil {
 		return nil
@@ -125,8 +116,6 @@ func CertTTL(cert *admissionv1.DelegationCert) time.Duration {
 	return time.Unix(claims.GetNotAfterUnix(), 0).Sub(time.Unix(claims.GetNotBeforeUnix(), 0))
 }
 
-// CertAccessDeadline returns the hard access deadline from a delegation cert.
-// Returns the zero time and false if no deadline is set.
 func CertAccessDeadline(cert *admissionv1.DelegationCert) (time.Time, bool) {
 	dl := cert.GetClaims().GetAccessDeadlineUnix()
 	if dl == 0 {
@@ -201,14 +190,10 @@ func EnrollNodeCredentials(identityDir string, nodePub ed25519.PublicKey, token 
 	return creds, nil
 }
 
-// EnsureLocalRootCredentials is the single root-cert lifecycle entrypoint.
-// It re-issues and persists the root's self-signed delegation cert whenever
-// any of the following drifts from the persisted cert: liveness (cert
-// missing or expired), attributes, the subject pub (node identity rotated),
-// or the root pub (admin key rotated). Otherwise it returns the existing
-// creds untouched. Root nodes hold the admin key, so this also doubles as
-// the root self-renewal path: callers invoke it at boot, on prop changes,
-// and from the cert-renewal pipeline when expiry approaches.
+// EnsureLocalRootCredentials re-issues the root's self-signed delegation cert
+// whenever liveness, attributes, subject pub, or root pub drift from the
+// persisted cert. Also serves as the root self-renewal path at boot, on
+// prop changes, and when expiry approaches.
 func EnsureLocalRootCredentials(identityDir string, nodePub ed25519.PublicKey, attrs *structpb.Struct, now time.Time, delegationTTL time.Duration) (*NodeCredentials, error) {
 	if err := ValidateAttributes(attrs); err != nil {
 		return nil, err
@@ -253,11 +238,8 @@ func EnsureLocalRootCredentials(identityDir string, nodePub ed25519.PublicKey, a
 	return creds, nil
 }
 
-// rootCertHealthy reports whether the persisted creds form a structurally
-// valid root cert for this node: alive, self-issued by the local admin key,
-// subject matches the local node identity, no parent chain, and root caps.
-// Attrs are config-driven and layered on by callers — callers that want to
-// reuse a cert across attr changes compose attrsEqual on top.
+// Attrs are deliberately excluded; callers compose attrsEqual on top so
+// config-driven changes can be checked independently.
 func rootCertHealthy(existing *NodeCredentials, nodePub, adminPub ed25519.PublicKey, now time.Time) bool {
 	cert := existing.cert
 	if IsCertExpired(cert, now) {
@@ -338,8 +320,6 @@ func SaveNodeCredentials(identityDir string, creds *NodeCredentials) error {
 	return saveDelegationCert(identityDir, creds.cert)
 }
 
-// InstallDelegationCert decodes a base64-encoded delegation cert, verifies it
-// against the cluster root and subject, and persists it to disk.
 func InstallDelegationCert(identityDir, encoded string, rootPub, subject ed25519.PublicKey, now time.Time) error {
 	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
 	if err != nil {
@@ -377,8 +357,6 @@ func EnsureAdminKey(identityDir string) (ed25519.PrivateKey, ed25519.PublicKey, 
 	return generateKeyPair(identityDir, adminPrivKeyName, adminPubKeyName, pemTypeAdminPriv, pemTypeAdminPub)
 }
 
-// generateKeyPair creates an ed25519 key pair, writes both as PEM files into
-// dir, and returns the keys.
 func generateKeyPair(dir, privName, pubName, privPEMType, pubPEMType string) (ed25519.PrivateKey, ed25519.PublicKey, error) {
 	if err := plnfs.EnsureDir(dir); err != nil {
 		return nil, nil, err
@@ -410,28 +388,10 @@ func LoadAdminKey(identityDir string) (ed25519.PrivateKey, ed25519.PublicKey, er
 	)
 }
 
-// LocalRootAuthority reports whether this node holds root authority for
-// the cluster the persisted creds belong to. Returns (adminPub, true, nil)
-// when it does, so callers can avoid re-loading the admin key.
-//
-// True iff an admin key is present locally AND either:
-//   - creds is nil — bootstrap: the caller hasn't loaded creds yet, or the
-//     node has no creds at all and is about to auto-init. Local admin key
-//     alone is enough to claim root authority for the cluster being
-//     created; or
-//   - creds is non-nil and the persisted cert is structurally a root
-//     self-issued cert: empty parent chain, issuer matches the persisted
-//     root pub.
-//
-// The "issuer matches persisted root pub" check (rather than "issuer
-// matches local admin pub") is deliberate: it lets admin-key rotation
-// self-heal — the stale persisted cert is still root-shaped relative to
-// its own root pub, even when the local admin key has moved on.
-//
-// A delegated-admin node with a stray local admin key (e.g. from a prior
-// cluster, or `pln admin keygen` on a non-root) fails this gate because
-// its persisted cert has a non-empty chain. Without that, the daemon and
-// the signer would rewrite root.pub with the stray key — corrupting trust.
+// LocalRootAuthority checks issuer against the persisted root pub (not the
+// local admin pub) so admin-key rotation self-heals. The non-empty-chain
+// gate prevents a delegated admin with a stray local admin key from being
+// classified as root, which would rewrite root.pub and fork trust.
 func LocalRootAuthority(identityDir string, creds *NodeCredentials) (ed25519.PublicKey, bool, error) {
 	_, adminPub, err := LoadAdminKey(identityDir)
 	switch {
@@ -476,9 +436,6 @@ func loadKeyPair(privPath, pubPath, privPEMType, pubPEMType string) (ed25519.Pri
 	return ed25519.NewKeyFromSeed(privBlock.Bytes), ed25519.PublicKey(pubBlock.Bytes), nil
 }
 
-// IssueDelegationCert creates a new DelegationCert signed by signerPriv.
-// parentChain is nil for root-issued certs; otherwise it's the issuer's chain
-// (issuer's own cert + issuer's chain).
 func IssueDelegationCert(
 	signerPriv ed25519.PrivateKey,
 	parentChain []*admissionv1.DelegationCert,
@@ -502,7 +459,6 @@ func IssueDelegationCert(
 
 	signerPub := signerPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
-	// Clamp notAfter to parent's expiry and verify signer matches parent.
 	if len(parentChain) > 0 {
 		parentExpiry := time.Unix(parentChain[0].GetClaims().GetNotAfterUnix(), 0)
 		if notAfter.After(parentExpiry) {
@@ -551,8 +507,6 @@ func IssueDelegationCert(
 	}, nil
 }
 
-// VerifyDelegationCert verifies a DelegationCert chain against a root public
-// key, including time validity.
 func VerifyDelegationCert(
 	cert *admissionv1.DelegationCert,
 	rootPub []byte,
@@ -581,15 +535,11 @@ func VerifyDelegationCert(
 	return nil
 }
 
-// verifyDelegationCertChain verifies every signature in the delegation cert
-// chain and returns the root public key (the terminal cert's issuer_pub).
-// Trust and subject assertions are the caller's responsibility.
 func verifyDelegationCertChain(cert *admissionv1.DelegationCert) (ed25519.PublicKey, error) {
 	if err := protovalidate.Validate(cert); err != nil {
 		return nil, fmt.Errorf("delegation cert invalid: %w", err)
 	}
 
-	// Walk chain from leaf to root verifying signatures.
 	current := cert
 	for _, parent := range cert.GetChain() {
 		if !bytes.Equal(current.GetClaims().GetIssuerPub(), parent.GetClaims().GetSubjectPub()) {
@@ -605,7 +555,6 @@ func verifyDelegationCertChain(cert *admissionv1.DelegationCert) (ed25519.Public
 		current = parent
 	}
 
-	// Verify the terminal (root-most) cert's signature.
 	rootPub := ed25519.PublicKey(current.GetClaims().GetIssuerPub())
 	msg, err := signaturePayload(current.GetClaims())
 	if err != nil {
@@ -717,7 +666,6 @@ func EnsureIdentityKey(identityDir string) (ed25519.PrivateKey, ed25519.PublicKe
 	return generateKeyPair(identityDir, signingKeyName, signingPubKeyName, pemTypePriv, pemTypePub)
 }
 
-// ReadIdentityPub reads the public key from disk without requiring private key access.
 func ReadIdentityPub(identityDir string) (ed25519.PublicKey, error) {
 	raw, err := os.ReadFile(filepath.Join(identityDir, signingPubKeyName))
 	if err != nil {

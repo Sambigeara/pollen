@@ -135,9 +135,6 @@ func TestGateFallbackOnEvaluatorError(t *testing.T) {
 		"fallback must be distinguishable from always-deny via the metric reason label")
 }
 
-// A transient evaluator error must not poison the cache with the
-// fallback decision — the next call after recovery should see the real
-// decision.
 func TestGateDoesNotCacheFallback(t *testing.T) {
 	e := &flipEval{errOnce: errors.New("pdp flapped")}
 	opts := evaluator.GateOptions{
@@ -156,7 +153,6 @@ func TestGateDoesNotCacheFallback(t *testing.T) {
 		"next call must re-evaluate and see allow — fallback must not be cached")
 }
 
-// flipEval returns errOnce on the first call, then a permanent allow.
 type flipEval struct {
 	errOnce error
 	calls   int
@@ -203,9 +199,6 @@ func TestGateObserveError_ClosedSetClassification(t *testing.T) {
 	}
 }
 
-// TestGateDenyObserverFires pins the three code paths that must emit a
-// DenyEvent: a fresh deny from the evaluator, a cached deny served on a
-// repeat call, and a fallback deny when the evaluator errors.
 func TestGateDenyObserverFires(t *testing.T) {
 	t.Run("fresh deny emits event", func(t *testing.T) {
 		var got []evaluator.DenyEvent
@@ -328,8 +321,6 @@ func TestRouterFactoryRegistration(t *testing.T) {
 	require.NoError(t, r.Allow(context.Background(), evaluator.GateServiceConnect, evaluator.Request{}))
 }
 
-// InvalidateSubject on the router must fan out to every cached gate —
-// a peer denial should propagate without waiting for TTL.
 func TestRouterInvalidateSubjectPropagates(t *testing.T) {
 	e := &fakeEval{}
 	r := routerWith(t, e, evaluator.GateOptions{TTL: time.Minute, MaxCacheEntries: 10})
@@ -375,9 +366,6 @@ func TestRequestMarshalsAsConventionalShape(t *testing.T) {
 	require.Equal(t, "service", resource["type"], "ResourceType must marshal as its string form")
 }
 
-// TestRequestRoundTripsResourceType verifies Resource.Type survives a
-// JSON round-trip despite its underlying kind being ResourceType rather
-// than string — PDP wire format compatibility.
 func TestRequestRoundTripsResourceType(t *testing.T) {
 	req := evaluator.Request{
 		Subject:  evaluator.Subject{Type: "peer", ID: "abc"},

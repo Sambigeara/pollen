@@ -66,7 +66,6 @@ func TestPrune_GracePeriodProtectsRecentBlobs(t *testing.T) {
 	store, err := cas.New(dir)
 	require.NoError(t, err)
 
-	// Freshly-committed blob — real mtime is "now".
 	hash, err := store.Put(strings.NewReader("fresh"))
 	require.NoError(t, err)
 
@@ -94,8 +93,6 @@ func TestPrune_ZeroGraceEvictsImmediately(t *testing.T) {
 	require.False(t, store.Has(hash))
 }
 
-// putAged backdates mtime on-disk so the test needn't sleep to clear
-// the grace window.
 func putAged(t *testing.T, store *cas.Store, dir, content string, age time.Duration) string {
 	t.Helper()
 	hash, err := store.Put(strings.NewReader(content))

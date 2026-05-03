@@ -20,14 +20,9 @@ import (
 
 const (
 	prometheusReadHeaderTimeout = 10 * time.Second
-	// debugPprofEnvVar gates exposure of net/http/pprof endpoints on the
-	// metrics HTTP server. Off by default — pprof leaks goroutine stacks,
-	// heap contents, and can be used as a DoS vector.
-	debugPprofEnvVar = "PLN_DEBUG_PPROF"
+	debugPprofEnvVar            = "PLN_DEBUG_PPROF"
 
-	// callCountsWindowSeconds must match placement.callTrackerWindow.
-	// Each peer gossips its in-window call counts every window; dividing
-	// by it yields calls/sec.
+	// Must match placement.callTrackerWindow.
 	callCountsWindowSeconds = 30
 )
 
@@ -63,8 +58,6 @@ func (n *Supervisor) startPrometheus(ctx context.Context, addr string) error {
 	return nil
 }
 
-// stateCollector implements prometheus.Collector by reading the current gossip
-// state snapshot on each scrape and emitting node, workload, and traffic metrics.
 type stateCollector struct {
 	snapshot func() state.Snapshot
 

@@ -97,12 +97,6 @@ type knownPeer struct {
 	PubliclyAccessible bool
 }
 
-// knownPeers returns the union of peers we should consider dialling: every
-// live gossip peer, plus every peer in the durable cache that has not been
-// explicitly denied. Cache entries supply addresses for peers we know about
-// from a join token but have never spoken to, and supplement the IP set of
-// peers already in gossip so transient route failures don't strand a LAN
-// candidate forever.
 func knownPeers(snap state.Snapshot, cache *peercache.Store) []knownPeer {
 	live := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
 	for _, pk := range snap.PeerKeys {
@@ -161,10 +155,8 @@ func knownPeers(snap state.Snapshot, cache *peercache.Store) []knownPeer {
 	return known
 }
 
-// mergeCacheAddresses augments a knownPeer with addresses from the persistent
-// peer cache. If state didn't supply a listening port, the most common cached
-// port stands in. Cached addresses on other ports are dropped — a peer binds
-// one UDP socket, so divergent ports are stale.
+// Cached addresses on other ports are dropped — a peer binds one UDP socket,
+// so divergent ports are stale.
 func mergeCacheAddresses(kp *knownPeer, cached []netip.AddrPort) {
 	if len(cached) == 0 {
 		return
@@ -328,11 +320,8 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 		delete(n.nonTargetStreak, pk)
 	}
 
-	// Prune only peers that gossip has confirmed live. Cache-only entries
-	// belong to peers we haven't yet handshaken with; they get an FSM slot
-	// from DiscoverPeer above and stay there until either gossip arrives or
-	// the cache evicts them. Forgetting them here would just rediscover them
-	// on the next tick.
+	// Cache-only entries belong to peers we haven't yet handshaken with;
+	// forgetting them here would just rediscover them on the next tick.
 	live := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
 	for _, pk := range snap.PeerKeys {
 		live[pk] = struct{}{}

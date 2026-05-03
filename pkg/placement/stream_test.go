@@ -59,7 +59,6 @@ func TestHandleAndInvokeRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	server, client := pipePair(t)
 
-	// Test goroutine does not matter, but production needs tracking.
 	go serveWithHeaderRead(ctx, server, types.PeerKey{}, invoker)
 
 	output, err := invokeOverStream(ctx, client, hash, "handle", []byte("hello"))
@@ -96,12 +95,10 @@ func TestHandleAndInvokeRoundTrip_CallerInfo(t *testing.T) {
 		},
 	}
 
-	// Client sends wirePK in the CallerInfo JSON.
 	info := wasm.CallerInfo{PeerKey: wirePK, Attributes: map[string]any{"role": "relay"}}
 	ctx := wasm.WithCallerInfo(context.Background(), info)
 
 	server, client := pipePair(t)
-	// Server uses authPK as the transport-authenticated peer.
 	go serveWithHeaderRead(context.Background(), server, authPK, invoker)
 
 	output, err := invokeOverStream(ctx, client, hash, "handle", []byte("x"))
@@ -110,16 +107,11 @@ func TestHandleAndInvokeRoundTrip_CallerInfo(t *testing.T) {
 
 	got, ok := wasm.CallerInfoFromContext(gotCtx)
 	require.True(t, ok)
-	// PeerKey must be the transport-authenticated peer, not the wire value.
 	require.Equal(t, authPK, got.PeerKey)
 	require.Equal(t, "relay", got.Attributes["role"])
 }
 
 func TestHandleWorkloadStream_StampsCallChainForRecursionGuard(t *testing.T) {
-	// The forwarded-call handler must stamp the hash into the local
-	// call chain before invoking the workload, so a recursive
-	// pollen_request from this seed back into itself fails fast with
-	// ErrCycle instead of starving its own gate.
 	hash := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	invoker := &mockInvoker{
 		callFn: func(ctx context.Context, _, _ string, _ []byte) ([]byte, error) {
@@ -155,12 +147,6 @@ func TestHandleWorkloadStream_EmptyInput(t *testing.T) {
 	require.Equal(t, []byte("ok"), output)
 }
 
-// TestOverload_WireRoundTrip pins the wire contract for backpressure:
-// writeOverload's encoding must decode back to an *OverloadError that
-// Call's fallback loop treats as retryable rather than as a terminal
-// workload failure. The admission gate that triggers this reply lives
-// in Service.Serve / Service.callLocal; this test isolates the wire
-// shape.
 func TestOverload_WireRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	writeOverload(&buf, statusOverloaded, "node memory budget exhausted")

@@ -26,9 +26,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// newTestServiceWithCloser is a newTestService variant that also
-// returns the fake session closer so a test can assert rotation
-// behaviour after a cert push.
 func newTestServiceWithCloser(localID types.PeerKey) (*Service, *fakeNetwork, *fakePeerSessionCloser) {
 	net := newFakeNetwork()
 	st := newFakeClusterState(localID)
@@ -50,13 +47,6 @@ func newTestServiceWithCloser(localID types.PeerKey) (*Service, *fakeNetwork, *f
 	return svc, net, closer
 }
 
-// TestRotateSessionsForNewCertClosesEveryConnectedPeerExceptIssuer pins
-// the fix for the grant-doesn't-propagate bug: after a new cert lands,
-// every outbound session must be torn down so peers re-handshake with
-// the fresh TLS identity. Without this, `peerProps(target)` on the
-// issuer side stays pinned to the old cert's attributes indefinitely.
-// The issuing peer is excluded because closing its session would race
-// the accept-response datagram and fail the admin's PushCert RPC.
 func TestRotateSessionsForNewCertClosesEveryConnectedPeerExceptIssuer(t *testing.T) {
 	svc, net, closer := newTestServiceWithCloser(peerKey(1))
 
@@ -73,9 +63,6 @@ func TestRotateSessionsForNewCertClosesEveryConnectedPeerExceptIssuer(t *testing
 	}
 }
 
-// TestRotateSessionsForNewCertIsANoOpWithoutCloser protects the
-// sessionCloser == nil branch — some constructions (non-transport
-// tests) don't wire one.
 func TestRotateSessionsForNewCertIsANoOpWithoutCloser(t *testing.T) {
 	svc, net, _ := newTestServiceWithCloser(peerKey(1))
 	svc.sessionCloser = nil
@@ -83,11 +70,6 @@ func TestRotateSessionsForNewCertIsANoOpWithoutCloser(t *testing.T) {
 	require.NotPanics(t, func() { svc.rotateSessionsForNewCert(types.PeerKey{}) })
 }
 
-// TestHandleCertPushSkipsRotationOnPromotionToAdmin: closing every
-// peer session at the moment we become admin orphans the in-flight
-// invite forwarding the mesh routes through us. Rotation buys
-// nothing here — AdminCapable propagates via the SetAdmin gossip
-// event, not TLS.
 func TestHandleCertPushSkipsRotationOnPromotionToAdmin(t *testing.T) {
 	h := newRecipientHarness(t, false)
 	h.network.setConnectedPeers(peerKey(2), peerKey(3))
@@ -101,10 +83,6 @@ func TestHandleCertPushSkipsRotationOnPromotionToAdmin(t *testing.T) {
 	require.Empty(t, h.closer.snapshot(), "no peer sessions should be closed on promotion to admin")
 }
 
-// TestHandleCertPushRotatesOnLeafCertPush is the symmetric pin: a
-// non-admin cert push must still rotate sessions so peers re-handshake
-// and pick up our updated subject.properties — that is the original
-// motivation for the rotation.
 func TestHandleCertPushRotatesOnLeafCertPush(t *testing.T) {
 	h := newRecipientHarness(t, false)
 	h.network.setConnectedPeers(peerKey(2), peerKey(3))
@@ -123,11 +101,6 @@ func TestHandleCertPushRotatesOnLeafCertPush(t *testing.T) {
 	}
 }
 
-// TestHandleCertPushRotatesOnAdminToAdminRegrant guards the
-// predicate against over-skipping. Re-pushing an admin cert (e.g.
-// attribute re-grant against an existing admin) must still rotate so
-// peers' cached cert attrs refresh — attribute-keyed authz reads
-// from that cache.
 func TestHandleCertPushRotatesOnAdminToAdminRegrant(t *testing.T) {
 	h := newRecipientHarness(t, true)
 	h.network.setConnectedPeers(peerKey(2), peerKey(3))
@@ -146,12 +119,6 @@ func TestHandleCertPushRotatesOnAdminToAdminRegrant(t *testing.T) {
 	}
 }
 
-// TestIssueCertInstallsFreshCertIntoLocalCache pins the fix for the
-// stale-issuer bug: after a successful PushCert, the issuer's own
-// PeerDelegationCert cache must reflect the cert it just signed, so a
-// subsequent renewal or authz evaluation on the issuer sees ground
-// truth rather than the pre-grant attrs. Without this, a renewal
-// routed through the issuer silently drops the new attributes.
 func TestIssueCertInstallsFreshCertIntoLocalCache(t *testing.T) {
 	creds := newRootCredentials(t)
 	certs := newFakeCertManager()
@@ -172,11 +139,6 @@ func TestIssueCertInstallsFreshCertIntoLocalCache(t *testing.T) {
 		"cached cert must carry the attrs we just signed")
 }
 
-// TestHandleCertRenewalInstallsFreshCertIntoLocalCache covers the
-// renewal fork of the same fix: the renewing admin must update its
-// cache with the cert it just signed, otherwise a subsequent renewal
-// through the same admin rebuilds attrs from the pre-renewal cache
-// and silently drops them.
 func TestHandleCertRenewalInstallsFreshCertIntoLocalCache(t *testing.T) {
 	creds := newRootCredentials(t)
 	certs := newFakeCertManager()
@@ -204,11 +166,6 @@ func TestHandleCertRenewalInstallsFreshCertIntoLocalCache(t *testing.T) {
 		"renewal must extend the NotAfter — otherwise the cache isn't the renewed cert")
 }
 
-// TestAttemptCertRenewalRootSelfRenewsWithoutPeers pins the fix for the
-// "root cannot renew its own cert" gap: a root node holds the admin key
-// and must re-issue its self-signed cert from local material when expiry
-// approaches, regardless of mesh connectivity. Pre-fix, attemptCertRenewal
-// returned false on root because the peer-routed branch had no peers.
 func TestAttemptCertRenewalRootSelfRenewsWithoutPeers(t *testing.T) {
 	creds, pollenDir, nodePriv, nodePub := newRootCredentialsWithIdentity(t)
 
@@ -254,10 +211,6 @@ func TestAttemptCertRenewalRootSelfRenewsWithoutPeers(t *testing.T) {
 		"persisted cert on disk must also be the freshly self-issued one")
 }
 
-// recipientHarness wires a Service so it can apply pushed delegation
-// certs from a known root. The service holds a real signPriv and
-// pollenDir so applyNewCert can verify, regenerate the TLS identity,
-// and persist the updated credentials.
 type recipientHarness struct {
 	svc      *Service
 	rootPriv ed25519.PrivateKey
@@ -334,20 +287,12 @@ func (h *recipientHarness) issueCert(t *testing.T, admin bool) *admissionv1.Dele
 	return cert
 }
 
-// newRootCredentials builds NodeCredentials whose DelegationKey is a
-// root signer. Root status is unlocked when the admin key on disk
-// matches the persisted root.pub, so the helper makes admin==root and
-// seeds the node credentials shape `pln init` produces when a cluster
-// is bootstrapped.
 func newRootCredentials(t *testing.T) *auth.NodeCredentials {
 	t.Helper()
 	creds, _, _, _ := newRootCredentialsWithIdentity(t)
 	return creds
 }
 
-// newRootCredentialsWithIdentity returns the same root credentials plus the
-// pollen dir, node identity private key, and node pub. Tests that exercise
-// the full root self-renewal path (signing, applyNewCert) need these.
 func newRootCredentialsWithIdentity(t *testing.T) (*auth.NodeCredentials, string, ed25519.PrivateKey, ed25519.PublicKey) {
 	t.Helper()
 	pollenDir := t.TempDir()
@@ -372,9 +317,6 @@ func newRootCredentialsWithIdentity(t *testing.T) (*auth.NodeCredentials, string
 	return creds, pollenDir, nodePriv, nodePub
 }
 
-// newIssuerService builds a membership.Service configured as the issuer
-// (root signer in creds) with a controllable fake cert manager. Used by
-// both IssueCert and handleCertRenewalRequest tests.
 func newIssuerService(t *testing.T, creds *auth.NodeCredentials, certs CertManager) *Service {
 	t.Helper()
 	net := newFakeNetwork()
@@ -397,18 +339,12 @@ func newIssuerService(t *testing.T, creds *auth.NodeCredentials, certs CertManag
 	})
 }
 
-// noopRoutedSender lets the handlers' response-sending calls complete
-// without a wire — the tests assert cache state on the issuer, not on
-// the datagram the peer would have received.
 type noopRoutedSender struct{}
 
 func (noopRoutedSender) SendMembershipDatagram(context.Context, types.PeerKey, []byte) error {
 	return nil
 }
 
-// issueSubjectCert produces a leaf cert for subjectPub signed by the
-// root signer carried in creds — used to seed a pre-existing cached
-// cert the renewal path inherits attrs from.
 func issueSubjectCert(t *testing.T, creds *auth.NodeCredentials, subjectPub ed25519.PublicKey, attrs *structpb.Struct) *admissionv1.DelegationCert {
 	t.Helper()
 	caps := auth.LeafCapabilities()

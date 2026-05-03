@@ -13,9 +13,6 @@ import (
 	"path/filepath"
 )
 
-// Provision creates the pln system group and user, then ensures the
-// standard state directories exist with correct ownership and modes.
-// Idempotent.
 func Provision(dir string) error {
 	if err := ensureGroup("pln"); err != nil {
 		return err
@@ -39,7 +36,6 @@ func Provision(dir string) error {
 	return nil
 }
 
-// AddUserToPlnGroup adds the named user to the pln group.
 func AddUserToPlnGroup(username string) error {
 	if out, err := exec.Command("usermod", "-aG", "pln", username).CombinedOutput(); err != nil {
 		return fmt.Errorf("add %s to pln group: %w\n%s", username, err, out)

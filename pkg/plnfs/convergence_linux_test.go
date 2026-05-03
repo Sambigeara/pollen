@@ -23,9 +23,6 @@ import (
 
 const casFile = "cas/ab/ab00000000000000000000000000000000000000000000000000000000000000.wasm"
 
-// permMap defines the canonical permission for every file and directory
-// that can appear in the pollen data directory. Any file found on disk
-// must match its entry here; any file not in this map is unexpected.
 var permMap = map[string]os.FileMode{
 	".":                       os.ModeDir | os.ModeSetgid | 0o770,
 	"keys":                    os.ModeDir | os.ModeSetgid | 0o770,
@@ -41,7 +38,6 @@ var permMap = map[string]os.FileMode{
 	casFile:                   0o640,
 }
 
-// coreFiles are created by every init sequence.
 var coreFiles = []string{
 	".", "keys",
 	"keys/ed25519.key", "keys/ed25519.pub",
@@ -49,15 +45,12 @@ var coreFiles = []string{
 	"keys/root.pub", "keys/delegation.cert.pb",
 }
 
-// commandSequence represents an ordered list of operations that each
-// simulate a CLI command's file-creation side effects.
 type commandSequence struct {
 	name     string
 	ops      []func(t *testing.T, dir string)
 	required []string
 }
 
-// allSequences returns the full set of command orderings to test.
 func allSequences() []commandSequence {
 	withConfig := append(append([]string{}, coreFiles...), "config.yaml")
 	withCAS := append(append([]string{}, coreFiles...), "cas", "cas/ab", casFile)
@@ -73,7 +66,6 @@ func allSequences() []commandSequence {
 	}
 }
 
-// opInit simulates `pln init`: generate identity + create root credentials.
 func opInit(t *testing.T, dir string) {
 	t.Helper()
 	require.NoError(t, plnfs.EnsureDir(dir))
@@ -84,7 +76,6 @@ func opInit(t *testing.T, dir string) {
 	require.NoError(t, err)
 }
 
-// opID simulates `pln id`: ensure dir, load or generate identity key.
 func opID(t *testing.T, dir string) {
 	t.Helper()
 	require.NoError(t, plnfs.EnsureDir(dir))
@@ -92,7 +83,6 @@ func opID(t *testing.T, dir string) {
 	require.NoError(t, err)
 }
 
-// opServe simulates `pln serve <port> [name]`: ensure dir, save config.
 func opServe(t *testing.T, dir string) {
 	t.Helper()
 	require.NoError(t, plnfs.EnsureDir(dir))
@@ -104,8 +94,6 @@ func opServe(t *testing.T, dir string) {
 	require.NoError(t, config.Save(dir, cfg))
 }
 
-// opCAS simulates storing a CAS artifact. Mirrors the production code path:
-// cas.New calls EnsureDir(cas/), then Put calls EnsureDir(cas/<shard>/).
 func opCAS(t *testing.T, dir string) {
 	t.Helper()
 	require.NoError(t, plnfs.EnsureDir(filepath.Join(dir, "cas")))
@@ -131,9 +119,6 @@ func TestPermissionConvergence(t *testing.T) {
 	runSequences(t, allSequences())
 }
 
-// TestPermissionConvergenceUnderRestrictiveUmask runs all sequences under
-// umask 0077 to verify that explicit chmod in atomic writes and EnsureDir
-// overrides the umask correctly.
 func TestPermissionConvergenceUnderRestrictiveUmask(t *testing.T) {
 	old := syscall.Umask(0o077)
 	t.Cleanup(func() { syscall.Umask(old) })
@@ -141,8 +126,6 @@ func TestPermissionConvergenceUnderRestrictiveUmask(t *testing.T) {
 	runSequences(t, allSequences())
 }
 
-// TestEnsureDirRepairsPermissions verifies that EnsureDir corrects a
-// system directory whose permissions were changed after initial creation.
 func TestEnsureDirRepairsPermissions(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "pln")
 	t.Cleanup(plnfs.EnableSystemMode())
@@ -156,8 +139,6 @@ func TestEnsureDirRepairsPermissions(t *testing.T) {
 	require.Equal(t, os.ModeDir|os.ModeSetgid|os.FileMode(0o770), info.Mode())
 }
 
-// TestEnsureDirUserHome verifies that EnsureDir for a non-system path
-// uses 0700 and does not attempt group ownership changes.
 func TestEnsureDirUserHome(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), ".pln")
 
@@ -168,8 +149,6 @@ func TestEnsureDirUserHome(t *testing.T) {
 	require.Equal(t, os.ModeDir|os.FileMode(0o700), info.Mode())
 }
 
-// TestSocketPermissionsConvergence verifies that creating a unix socket and
-// calling SetGroupSocket results in the correct mode.
 func TestSocketPermissionsConvergence(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "pln.sock")
 
@@ -184,10 +163,6 @@ func TestSocketPermissionsConvergence(t *testing.T) {
 	require.Equal(t, os.FileMode(0o660)|os.ModeSocket, info.Mode())
 }
 
-// assertPermissions walks the pollen directory and checks:
-// 1. Every file that exists has the correct mode per permMap.
-// 2. No unexpected files exist (not in permMap).
-// 3. All required files are present.
 func assertPermissions(t *testing.T, pollenDir string, required []string) {
 	t.Helper()
 

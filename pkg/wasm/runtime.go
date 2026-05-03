@@ -28,21 +28,13 @@ const (
 	evictInterval           = 15 * time.Second
 )
 
-// IdleCacheSize bounds how many warm instances each workload keeps
-// around between calls. The placement budget pre-reserves
-// IdleCacheSize × per-spec-cap per replica so the warm pool's
-// worst-case footprint is accounted for alongside in-flight calls.
 const IdleCacheSize = 4
 
-// PluginConfig controls per-workload resource limits.
 type PluginConfig struct {
 	MemoryPages uint32
 	Timeout     time.Duration
 }
 
-// NewPluginConfig converts a byte-denominated memory limit into the page-based
-// limit that the underlying WASM runtime expects. A zero value for either
-// argument selects the package default.
 func NewPluginConfig(memoryBytes uint64, timeout time.Duration) PluginConfig {
 	var pages uint32
 	switch memoryBytes {
@@ -58,12 +50,6 @@ func NewPluginConfig(memoryBytes uint64, timeout time.Duration) PluginConfig {
 	return PluginConfig{MemoryPages: pages, Timeout: timeout}
 }
 
-// compiledEntry bundles a compiled plugin with a cache of warm instances.
-// The cache avoids paying instance-creation cost on every call. Acquire
-// returns a warm instance when one is available and instantiates a new
-// one otherwise; release returns the instance to the cache up to
-// IdleCacheSize before closing the surplus. Memory accounting for both
-// the warm pool and active calls lives in placement's budget.
 type compiledEntry struct {
 	plugin   *extism.CompiledPlugin
 	pool     chan *extism.Plugin
@@ -71,11 +57,6 @@ type compiledEntry struct {
 	lastUsed atomic.Int64 // unix nanos
 }
 
-// Runtime wraps Extism for compiling and calling WASM plugins.
-// Compiled plugins are cached by content hash; each hash maintains its
-// own warm-instance cache. The runtime always instantiates on demand
-// when no warm instance is available — back-pressure under load is the
-// placement budget's job, not the runtime's.
 type Runtime struct {
 	runtimeConfig wazero.RuntimeConfig
 	compiled      map[string]*compiledEntry
@@ -86,11 +67,8 @@ type Runtime struct {
 	mu            sync.Mutex
 }
 
-// RuntimeOption configures a Runtime at construction.
 type RuntimeOption func(*Runtime)
 
-// WithIdleTTL configures how long a workload's pooled instances persist with
-// no activity before being closed. Zero disables the evictor.
 func WithIdleTTL(d time.Duration) RuntimeOption {
 	return func(r *Runtime) { r.idleTTL = d }
 }
@@ -114,10 +92,6 @@ func NewRuntime(hostFuncs []extism.HostFunction, opts ...RuntimeOption) (*Runtim
 	return r, nil
 }
 
-// probeRuntimeConfig returns a wazero RuntimeConfig that works on this
-// system. It tries the default config (JIT compiler on amd64/arm64) first;
-// if the host blocks mmap(PROT_EXEC) — e.g. systemd MemoryDenyWriteExecute —
-// it falls back to the interpreter.
 func probeRuntimeConfig() wazero.RuntimeConfig {
 	cfg := wazero.NewRuntimeConfig()
 	if tryCompilerRuntime(cfg) {
@@ -133,13 +107,11 @@ func tryCompilerRuntime(cfg wazero.RuntimeConfig) (ok bool) {
 			ok = false
 		}
 	}()
-	// one cheap round-trip syscall to determine the supported runtime
 	r := wazero.NewRuntimeWithConfig(context.Background(), cfg)
 	r.Close(context.Background())
 	return true
 }
 
-// Compile compiles wasmBytes and caches the result under hash.
 func (r *Runtime) Compile(ctx context.Context, wasmBytes []byte, hash string, cfg PluginConfig) error {
 	r.mu.Lock()
 	if _, ok := r.compiled[hash]; ok {
@@ -179,7 +151,6 @@ func (r *Runtime) Compile(ctx context.Context, wasmBytes []byte, hash string, cf
 	r.compiled[hash] = entry
 	r.mu.Unlock()
 
-	// Pre-warm one instance so the first call avoids cold-start latency.
 	if inst, err := compiled.Instance(ctx, extism.PluginInstanceConfig{}); err == nil {
 		select {
 		case entry.pool <- inst:
@@ -190,10 +161,6 @@ func (r *Runtime) Compile(ctx context.Context, wasmBytes []byte, hash string, cf
 	return nil
 }
 
-// Call invokes the named function on a warm instance from the workload's
-// cache, or instantiates a fresh one if no warm instance is available.
-// On success the instance is returned to the cache (up to IdleCacheSize);
-// on error it is discarded so no corrupted state is reused.
 func (r *Runtime) Call(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
 	r.mu.Lock()
 	entry, ok := r.compiled[hash]
@@ -221,9 +188,6 @@ func (r *Runtime) Call(ctx context.Context, hash, function string, input []byte)
 	return output, nil
 }
 
-// acquire returns a warm instance from the cache or creates a new one.
-// Instantiation is unbounded subject only to caller context cancellation
-// — the placement budget refuses calls upstream when memory is tight.
 func (e *compiledEntry) acquire(ctx context.Context) (*extism.Plugin, error) {
 	select {
 	case p := <-e.pool:
@@ -244,7 +208,6 @@ func (e *compiledEntry) release(ctx context.Context, p *extism.Plugin) {
 	select {
 	case e.pool <- p:
 	default:
-		// Cache full — close the surplus instance.
 		p.Close(ctx)
 	}
 }
@@ -253,9 +216,6 @@ func (e *compiledEntry) discard(ctx context.Context, p *extism.Plugin) {
 	p.Close(ctx)
 }
 
-// runEvictor periodically drops pooled instances for workloads that have
-// been idle for longer than idleTTL. Instances currently in flight are not
-// touched (they're not in the pool).
 func (r *Runtime) runEvictor(ctx context.Context) {
 	defer close(r.evictDone)
 	ticker := time.NewTicker(evictInterval)
@@ -287,8 +247,6 @@ func (r *Runtime) evictIdle(ctx context.Context) {
 	}
 }
 
-// evictPool closes all pooled instances in an entry so new invocations may
-// recreate them on demand.
 func evictPool(ctx context.Context, e *compiledEntry) {
 	for {
 		select {
@@ -333,8 +291,6 @@ func (r *Runtime) Close(ctx context.Context) {
 	}
 }
 
-// drainPool closes all pooled instances. For use during entry destruction
-// (DropCompiled, Close).
 func drainPool(ctx context.Context, pool chan *extism.Plugin) {
 	for {
 		select {
