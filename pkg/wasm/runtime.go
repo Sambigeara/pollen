@@ -14,7 +14,6 @@ import (
 
 	extism "github.com/extism/go-sdk"
 	"github.com/tetratelabs/wazero"
-	"go.uber.org/zap"
 )
 
 var ErrModuleMissing = errors.New("wasm: no compiled module")
@@ -77,7 +76,7 @@ func NewRuntime(hostFuncs []extism.HostFunction, opts ...RuntimeOption) (*Runtim
 	r := &Runtime{
 		compiled:      make(map[string]*compiledEntry),
 		hostFuncs:     hostFuncs,
-		runtimeConfig: probeRuntimeConfig(),
+		runtimeConfig: wazero.NewRuntimeConfig(),
 		idleTTL:       defaultIdleTTL,
 	}
 	for _, o := range opts {
@@ -90,26 +89,6 @@ func NewRuntime(hostFuncs []extism.HostFunction, opts ...RuntimeOption) (*Runtim
 		go r.runEvictor(ctx)
 	}
 	return r, nil
-}
-
-func probeRuntimeConfig() wazero.RuntimeConfig {
-	cfg := wazero.NewRuntimeConfig()
-	if tryCompilerRuntime(cfg) {
-		return cfg
-	}
-	zap.S().Warnw("wasm compiler unavailable, falling back to interpreter")
-	return wazero.NewRuntimeConfigInterpreter()
-}
-
-func tryCompilerRuntime(cfg wazero.RuntimeConfig) (ok bool) {
-	defer func() {
-		if r := recover(); r != nil {
-			ok = false
-		}
-	}()
-	r := wazero.NewRuntimeWithConfig(context.Background(), cfg)
-	r.Close(context.Background())
-	return true
 }
 
 func (r *Runtime) Compile(ctx context.Context, wasmBytes []byte, hash string, cfg PluginConfig) error {
