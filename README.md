@@ -125,6 +125,18 @@ scheduler. When a node goes down, survivors pick up the slack.
 Example modules live in [`examples/`](examples/). Run `pln --help` for
 the full CLI reference.
 
+Seeds that only delegate to another seed can return a tail-call marker
+instead of making a synchronous `pollen_request` host call:
+
+```json
+{"kind":"tail_call","uri":"pln://seed/upper/handle","input":"aGVsbG8="}
+```
+
+`input` is standard base64-encoded bytes, and the URI must target a
+seed. Pollen releases the caller's WASM instance as soon as the marker
+is observed, then routes the target seed and returns its output to the
+original caller.
+
 ### Grant capabilities
 
 ```bash
