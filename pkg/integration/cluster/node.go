@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/supervisor"
@@ -29,6 +30,7 @@ type TestNodeConfig struct {
 	Name           string
 	Role           NodeRole
 	EnableNATPunch bool
+	IsRoot         bool
 }
 
 type TestNode struct {
@@ -42,12 +44,19 @@ type TestNode struct {
 }
 
 func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
+	var priv ed25519.PrivateKey
+	var dc = (*admissionv1.DelegationCert)(nil)
+	if cfg.IsRoot {
+		priv = cfg.Auth.RootKey()
+		_, dc = cfg.Auth.RootNodeCredentials()
+	} else {
+		_, p, err := ed25519.GenerateKey(rand.Reader)
+		require.NoError(t, err)
+		priv = p
+		_, dc = cfg.Auth.NodeCredentials(priv)
+	}
 	pub := priv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 	peerKey := types.PeerKeyFromBytes(pub)
-
-	_, dc := cfg.Auth.NodeCredentials(priv)
 
 	pollenDir := t.TempDir()
 	identityDir := auth.IdentityPath(pollenDir)

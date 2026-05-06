@@ -25,6 +25,7 @@ type pendingNode struct {
 	name           string
 	role           NodeRole
 	enableNATPunch bool
+	isRoot         bool
 	addr           *net.UDPAddr
 }
 
@@ -89,6 +90,22 @@ func (b *Builder) EnableNATPunch(name string) *Builder {
 	panic(fmt.Sprintf("EnableNATPunch: unknown node %q", name))
 }
 
+// MakeRoot marks the named node as the cluster's root admin: it uses
+// the cluster's root key as its signing identity, and its delegation
+// cert is the self-signed root cert. Other nodes still get root-issued
+// leaf certs as before. Lets tests exercise admin-scoped operations
+// (notably DenyPeer); only an ancestor in a peer's chain, or the root
+// itself, is authorised to revoke that peer.
+func (b *Builder) MakeRoot(name string) *Builder {
+	for i := range b.pending {
+		if b.pending[i].name == name {
+			b.pending[i].isRoot = true
+			return b
+		}
+	}
+	panic(fmt.Sprintf("MakeRoot: unknown node %q", name))
+}
+
 func (b *Builder) SetAddr(name string, addr *net.UDPAddr) *Builder {
 	for i := range b.pending {
 		if b.pending[i].name == name {
@@ -142,6 +159,7 @@ func (b *Builder) Start(ctx context.Context) *Cluster {
 			Context:        ctx,
 			Name:           pn.name,
 			EnableNATPunch: pn.enableNATPunch,
+			IsRoot:         pn.isRoot,
 		})
 		c.ordered = append(c.ordered, tn)
 		c.byName[pn.name] = tn

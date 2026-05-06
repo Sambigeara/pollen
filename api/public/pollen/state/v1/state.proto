@@ -7,6 +7,7 @@ package pollen.state.v1;
 
 import "buf/validate/validate.proto";
 import "google/protobuf/struct.proto";
+import "pollen/admission/v1/admission.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1";
 
@@ -179,6 +180,11 @@ message PerSeedCallCountsChange {
   map<string, uint64> counts = 1;
 }
 
+message DelegationCertChange {
+  pollen.admission.v1.DelegationCert cert = 1 [(buf.validate.field).required = true];
+  bytes subject_signature = 2 [(buf.validate.field).bytes = {len: 64}];
+}
+
 message GossipEvent {
   string peer_id = 1 [(buf.validate.field).string = {
     pattern: "^[a-fA-F0-9]{64}$"
@@ -209,6 +215,7 @@ message GossipEvent {
     StaticCapableChange static_capable = 32;
     BackoffTTLChange backoff_ttl = 33;
     PerSeedCallCountsChange per_seed_call_counts = 34;
+    DelegationCertChange delegation_cert = 35;
   }
   bool deleted = 14;
   reserved 24, 27;

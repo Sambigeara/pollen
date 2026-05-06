@@ -120,7 +120,13 @@ Persists to config.yaml so the tunnel re-establishes after restart.`,
 		Short: "Deny a peer's membership",
 		Long: `Revokes a peer's cluster membership and tears down its connections.
 The peer is denied future re-admission until an admin re-issues credentials.
-Identify by hex peer-id prefix (as shown by ` + "`pln status`" + `).`,
+Identify by hex peer-id prefix (as shown by ` + "`pln status`" + `).
+
+Authority is bounded by the delegation tree: a delegated admin can only
+deny peers it (transitively) admitted. Denies that fall outside the
+issuer's subtree are gossiped but ignored by other nodes. The root node
+can deny anyone. Revoking an intermediate admin cascades to the entire
+subtree it issued.`,
 		Example: "  pln deny ab12cd34",
 		Args:    cobra.ExactArgs(1),
 		RunE:    withEnv(runDeny),

@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"time"
@@ -19,6 +20,8 @@ import (
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/types"
 )
+
+const maxInviteEnvelopeSize = 64 * 1024
 
 func RedeemInvite(ctx context.Context, signPriv ed25519.PrivateKey, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
 	bareCert, err := GenerateIdentityCert(signPriv, nil, config.DefaultTLSIdentityTTL)
@@ -200,9 +203,18 @@ func (m *QUICTransport) handleInviteConnection(ctx context.Context, qc *quic.Con
 	waitCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
-	first, err := recvEnvelope(waitCtx, qc)
+	stream, err := qc.AcceptStream(waitCtx)
 	if err != nil {
-		_ = qc.CloseWithError(0, "recv failed")
+		_ = qc.CloseWithError(0, "accept invite stream failed")
+		return
+	}
+	defer stream.Close()
+
+	_ = stream.SetReadDeadline(time.Now().Add(handshakeTimeout))
+	first, err := readStreamEnvelope(stream)
+	_ = stream.SetReadDeadline(time.Time{})
+	if err != nil {
+		_ = qc.CloseWithError(0, "read invite stream failed")
 		return
 	}
 
@@ -212,7 +224,7 @@ func (m *QUICTransport) handleInviteConnection(ctx context.Context, qc *quic.Con
 		return
 	}
 
-	if err := m.handleInviteRedeem(qc, peerKey, body.InviteRedeemRequest); err != nil {
+	if err := m.handleInviteRedeem(ctx, stream, peerKey, body.InviteRedeemRequest); err != nil {
 		m.log.Debugw("rejected invite", "peer", peerKey.Short(), "err", err)
 		_ = qc.CloseWithError(0, "invite failed: "+err.Error())
 	}
@@ -231,6 +243,9 @@ func ProcessInviteRedeem(
 	}
 
 	claims := req.GetToken().GetClaims()
+	if signer == nil || !signer.MatchesIssuer(claims.GetIssuer()) {
+		return &meshv1.InviteRedeemResponse{Reason: "invite token issuer is not local signer"}
+	}
 
 	ttl := inviteRedeemTTL
 	if remaining := time.Unix(claims.GetExpiresAtUnix(), 0).Sub(now); remaining < ttl {
@@ -275,7 +290,7 @@ func ProcessInviteRedeem(
 
 type InviteForwarder func(ctx context.Context, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (*meshv1.InviteRedeemResponse, error)
 
-func (m *QUICTransport) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) error {
+func (m *QUICTransport) handleInviteRedeem(ctx context.Context, stream *quic.Stream, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) error {
 	now := time.Now()
 	if err := auth.VerifyInviteToken(req.GetToken(), ed25519.PublicKey(peerKey.Bytes()), now); err != nil {
 		return err
@@ -289,14 +304,16 @@ func (m *QUICTransport) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey,
 
 	var resp *meshv1.InviteRedeemResponse
 	switch {
-	case signer != nil:
+	case signer != nil && signer.MatchesIssuer(req.GetToken().GetClaims().GetIssuer()):
 		resp = ProcessInviteRedeem(signer, consumer, m.membershipTTL, peerKey, req)
 	case forwarder != nil:
 		var err error
-		resp, err = forwarder(context.Background(), peerKey, req)
+		resp, err = forwarder(ctx, peerKey, req)
 		if err != nil {
 			return fmt.Errorf("invite forwarding failed: %w", err)
 		}
+	case signer != nil:
+		resp = ProcessInviteRedeem(signer, consumer, m.membershipTTL, peerKey, req)
 	default:
 		return errors.New("this node is not an admin and has no forwarding configured")
 	}
@@ -308,11 +325,11 @@ func (m *QUICTransport) handleInviteRedeem(qc *quic.Conn, peerKey types.PeerKey,
 		}
 		return errors.New(reason)
 	}
-	return sendInviteRedeemResponse(qc, resp.GetJoinToken())
+	return sendInviteRedeemResponse(stream, resp.GetJoinToken())
 }
 
-func sendInviteRedeemResponse(qc *quic.Conn, joinToken *admissionv1.JoinToken) error {
-	return sendEnvelope(qc, &meshv1.Envelope{
+func sendInviteRedeemResponse(stream *quic.Stream, joinToken *admissionv1.JoinToken) error {
+	return writeStreamEnvelope(stream, &meshv1.Envelope{
 		Body: &meshv1.Envelope_InviteRedeemResponse{InviteRedeemResponse: &meshv1.InviteRedeemResponse{
 			Accepted:  true,
 			JoinToken: joinToken,
@@ -329,7 +346,13 @@ func redeemInviteOnConn(
 	waitCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
-	if err := sendEnvelope(qc, &meshv1.Envelope{
+	stream, err := qc.OpenStreamSync(waitCtx)
+	if err != nil {
+		return nil, err
+	}
+	defer stream.Close()
+
+	if err := writeStreamEnvelope(stream, &meshv1.Envelope{
 		Body: &meshv1.Envelope_InviteRedeemRequest{
 			InviteRedeemRequest: &meshv1.InviteRedeemRequest{
 				Token:   token,
@@ -340,8 +363,10 @@ func redeemInviteOnConn(
 		return nil, err
 	}
 
+	_ = stream.SetReadDeadline(time.Now().Add(handshakeTimeout))
+	defer func() { _ = stream.SetReadDeadline(time.Time{}) }()
 	for {
-		env, err := recvEnvelope(waitCtx, qc)
+		env, err := readStreamEnvelope(stream)
 		if err != nil {
 			return nil, err
 		}
@@ -399,24 +424,28 @@ func (m *QUICTransport) RequestCertRenewal(ctx context.Context, peerKey types.Pe
 	}
 }
 
-func recvEnvelope(ctx context.Context, qc *quic.Conn) (*meshv1.Envelope, error) {
-	for {
-		payload, err := qc.ReceiveDatagram(ctx)
-		if err != nil {
-			return nil, err
-		}
-		env := &meshv1.Envelope{}
-		if err := env.UnmarshalVT(payload); err != nil {
-			continue
-		}
-		return env, nil
+func readStreamEnvelope(stream *quic.Stream) (*meshv1.Envelope, error) {
+	b, err := io.ReadAll(io.LimitReader(stream, maxInviteEnvelopeSize+1))
+	if err != nil {
+		return nil, err
 	}
+	if len(b) > maxInviteEnvelopeSize {
+		return nil, errors.New("invite envelope exceeded size limit")
+	}
+	env := &meshv1.Envelope{}
+	if err := env.UnmarshalVT(b); err != nil {
+		return nil, err
+	}
+	return env, nil
 }
 
-func sendEnvelope(qc *quic.Conn, env *meshv1.Envelope) error {
+func writeStreamEnvelope(stream *quic.Stream, env *meshv1.Envelope) error {
 	b, err := env.MarshalVT()
 	if err != nil {
 		return err
 	}
-	return qc.SendDatagram(b)
+	if _, err := stream.Write(b); err != nil {
+		return err
+	}
+	return stream.Close()
 }

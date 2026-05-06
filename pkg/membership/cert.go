@@ -170,7 +170,32 @@ func (s *Service) applyNewCert(newCert *admissionv1.DelegationCert) error {
 		s.log.Warnw("failed to persist credentials", "err", err)
 	}
 
+	// Gossip the new cert so peers can evaluate chain-scoped policy
+	// (deny scoping, downstream cascade) without needing a direct TLS
+	// session to us.
+	s.publishLocalDelegationCert(newCert)
+
 	return nil
+}
+
+// publishLocalDelegationCert signs the cert with the local subject
+// key and emits the change. The subject signature is what proves to
+// other nodes that we (and not some delegated admin re-parenting our
+// pub) authored this current cert.
+func (s *Service) publishLocalDelegationCert(cert *admissionv1.DelegationCert) {
+	if cert == nil || len(s.signPriv) == 0 {
+		// Test fixtures and bare-token enrollment paths may invoke
+		// us without a signing key wired in yet. Skip gossiping
+		// rather than panic; the next renewal/push that reaches us
+		// will publish a properly-signed cert.
+		return
+	}
+	sig, err := auth.SignDelegationCertSubject(cert, s.signPriv)
+	if err != nil {
+		s.log.Errorw("sign delegation cert for gossip", "err", err)
+		return
+	}
+	s.forwardEvents(s.store.SetLocalDelegationCert(cert, sig))
 }
 
 func (s *Service) sendCertRenewalResponse(ctx context.Context, to types.PeerKey, resp *meshv1.CertRenewalResponse) {
@@ -246,8 +271,11 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 
 func (s *Service) IssueCert(ctx context.Context, peerKey types.PeerKey, admin bool, attributes *structpb.Struct) error {
 	signer := s.creds.DelegationKey()
-	if signer == nil || !signer.IsRoot() {
-		return errors.New("only root admin can push certificates")
+	if signer == nil {
+		return errors.New("this node has no delegation authority")
+	}
+	if admin && !signer.IsRoot() {
+		return errors.New("only the root admin can issue admin certificates")
 	}
 
 	caps := auth.LeafCapabilities()

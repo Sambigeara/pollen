@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
@@ -91,6 +92,8 @@ type StateStore interface {
 	ClearAdmin()
 	SetStaticCapable()
 	SetNodeName(name string)
+	SetLocalDelegationCert(cert *admissionv1.DelegationCert, subjectSig []byte) []Event
+	SetRootPub(rootPub []byte)
 	ExportLastAddrs() map[types.PeerKey]string
 	LoadLastAddrs(addrs map[types.PeerKey]string)
 }
@@ -103,6 +106,7 @@ type store struct {
 	snap          atomic.Pointer[Snapshot]
 	nowFunc       func() time.Time
 	pendingGossip []*statev1.GossipEvent
+	rootPub       []byte
 	mu            sync.Mutex
 	localID       types.PeerKey
 }
@@ -185,19 +189,29 @@ func (s *store) LoadGossipState(data []byte) error {
 
 	s.applyBatchLocked(batch.Events, false)
 
-	// Rebuild denied set from all loaded deny events (including self-events
-	// processed via handleSelfConflictLocked which skip the per-event check).
-	clear(s.denied)
-	for _, rec := range s.nodes {
-		for key, ev := range rec.log {
-			if key.kind == attrDeny && !ev.Deleted {
-				s.denied[types.PeerKeyFromBytes(ev.GetDeny().PeerPub)] = struct{}{}
-			}
-		}
-	}
+	// Derive the denied set from the freshly-loaded cert + deny graph.
+	// applyBatchLocked skips this when live=false (replay/restore path),
+	// so we trigger it explicitly here.
+	s.recomputeDeniedLocked()
 
 	s.updateSnapshotLocked()
 	return nil
+}
+
+// SetRootPub installs the cluster root pub for cert-event verification.
+// Without it, the store accepts gossiped cert events on faith, which
+// suits unit tests that don't exercise deny scoping. Production callers
+// (the supervisor) supply rootPub immediately after construction.
+func (s *store) SetRootPub(rootPub []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(rootPub) == 0 {
+		s.rootPub = nil
+	} else {
+		s.rootPub = append([]byte(nil), rootPub...)
+	}
+	s.recomputeDeniedLocked()
+	s.updateSnapshotLocked()
 }
 
 func (s *store) SetPeerLastAddr(pk types.PeerKey, addr string) {

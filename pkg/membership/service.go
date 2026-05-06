@@ -87,6 +87,7 @@ type ClusterState interface {
 	SetLocalNAT(nat.Type) []state.Event
 	SetLocalReachable([]types.PeerKey) []state.Event
 	SetLocalObservedAddress(string, uint32) []state.Event
+	SetLocalDelegationCert(cert *admissionv1.DelegationCert, subjectSig []byte) []state.Event
 }
 
 type Network interface {
@@ -270,6 +271,9 @@ func New(self types.PeerKey, creds *auth.NodeCredentials, net Network, cluster C
 
 func (s *Service) Start(ctx context.Context) error {
 	s.store.SetLocalCoord(s.localCoord, s.localCoordErr)
+	// Seed the cert graph before the initial full-state broadcast so
+	// other nodes can immediately authorise denies for / against us.
+	s.publishLocalDelegationCert(s.creds.Cert())
 	s.broadcastBatchBytes(ctx, s.store.EncodeFull())
 
 	if s.checkCertExpiry() {

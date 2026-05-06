@@ -626,7 +626,7 @@ func (s *Service) DenyPeer(_ context.Context, req *controlv1.DenyPeerRequest) (*
 
 func (s *Service) IssueCert(ctx context.Context, req *controlv1.IssueCertRequest) (*controlv1.IssueCertResponse, error) {
 	if s.creds == nil || s.creds.DelegationKey() == nil {
-		return nil, status.Error(codes.FailedPrecondition, "only root admin can issue certificates")
+		return nil, status.Error(codes.FailedPrecondition, "this node has no delegation authority")
 	}
 	if err := auth.ValidateAttributes(req.GetAttributes()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())

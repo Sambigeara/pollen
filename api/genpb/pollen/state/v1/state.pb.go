@@ -11,6 +11,7 @@ package statev1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
+	v1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	structpb "google.golang.org/protobuf/types/known/structpb"
@@ -1465,6 +1466,58 @@ func (x *PerSeedCallCountsChange) GetCounts() map[string]uint64 {
 	return nil
 }
 
+type DelegationCertChange struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Cert             *v1.DelegationCert     `protobuf:"bytes,1,opt,name=cert,proto3" json:"cert,omitempty"`
+	SubjectSignature []byte                 `protobuf:"bytes,2,opt,name=subject_signature,json=subjectSignature,proto3" json:"subject_signature,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *DelegationCertChange) Reset() {
+	*x = DelegationCertChange{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DelegationCertChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DelegationCertChange) ProtoMessage() {}
+
+func (x *DelegationCertChange) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DelegationCertChange.ProtoReflect.Descriptor instead.
+func (*DelegationCertChange) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *DelegationCertChange) GetCert() *v1.DelegationCert {
+	if x != nil {
+		return x.Cert
+	}
+	return nil
+}
+
+func (x *DelegationCertChange) GetSubjectSignature() []byte {
+	if x != nil {
+		return x.SubjectSignature
+	}
+	return nil
+}
+
 type GossipEvent struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	PeerId  string                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
@@ -1494,6 +1547,7 @@ type GossipEvent struct {
 	//	*GossipEvent_StaticCapable
 	//	*GossipEvent_BackoffTtl
 	//	*GossipEvent_PerSeedCallCounts
+	//	*GossipEvent_DelegationCert
 	Change        isGossipEvent_Change `protobuf_oneof:"change"`
 	Deleted       bool                 `protobuf:"varint,14,opt,name=deleted,proto3" json:"deleted,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -1502,7 +1556,7 @@ type GossipEvent struct {
 
 func (x *GossipEvent) Reset() {
 	*x = GossipEvent{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[28]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1514,7 +1568,7 @@ func (x *GossipEvent) String() string {
 func (*GossipEvent) ProtoMessage() {}
 
 func (x *GossipEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[28]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1527,7 +1581,7 @@ func (x *GossipEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GossipEvent.ProtoReflect.Descriptor instead.
 func (*GossipEvent) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{28}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *GossipEvent) GetPeerId() string {
@@ -1758,6 +1812,15 @@ func (x *GossipEvent) GetPerSeedCallCounts() *PerSeedCallCountsChange {
 	return nil
 }
 
+func (x *GossipEvent) GetDelegationCert() *DelegationCertChange {
+	if x != nil {
+		if x, ok := x.Change.(*GossipEvent_DelegationCert); ok {
+			return x.DelegationCert
+		}
+	}
+	return nil
+}
+
 func (x *GossipEvent) GetDeleted() bool {
 	if x != nil {
 		return x.Deleted
@@ -1861,6 +1924,10 @@ type GossipEvent_PerSeedCallCounts struct {
 	PerSeedCallCounts *PerSeedCallCountsChange `protobuf:"bytes,34,opt,name=per_seed_call_counts,json=perSeedCallCounts,proto3,oneof"`
 }
 
+type GossipEvent_DelegationCert struct {
+	DelegationCert *DelegationCertChange `protobuf:"bytes,35,opt,name=delegation_cert,json=delegationCert,proto3,oneof"`
+}
+
 func (*GossipEvent_Network) isGossipEvent_Change() {}
 
 func (*GossipEvent_ObservedAddress) isGossipEvent_Change() {}
@@ -1907,6 +1974,8 @@ func (*GossipEvent_BackoffTtl) isGossipEvent_Change() {}
 
 func (*GossipEvent_PerSeedCallCounts) isGossipEvent_Change() {}
 
+func (*GossipEvent_DelegationCert) isGossipEvent_Change() {}
+
 type GossipEventBatch struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Events        []*GossipEvent         `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
@@ -1916,7 +1985,7 @@ type GossipEventBatch struct {
 
 func (x *GossipEventBatch) Reset() {
 	*x = GossipEventBatch{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[29]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1928,7 +1997,7 @@ func (x *GossipEventBatch) String() string {
 func (*GossipEventBatch) ProtoMessage() {}
 
 func (x *GossipEventBatch) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[29]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1941,7 +2010,7 @@ func (x *GossipEventBatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GossipEventBatch.ProtoReflect.Descriptor instead.
 func (*GossipEventBatch) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{29}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GossipEventBatch) GetEvents() []*GossipEvent {
@@ -1965,7 +2034,7 @@ type RuntimeState struct {
 
 func (x *RuntimeState) Reset() {
 	*x = RuntimeState{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[30]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1977,7 +2046,7 @@ func (x *RuntimeState) String() string {
 func (*RuntimeState) ProtoMessage() {}
 
 func (x *RuntimeState) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[30]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1990,7 +2059,7 @@ func (x *RuntimeState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeState.ProtoReflect.Descriptor instead.
 func (*RuntimeState) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{30}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *RuntimeState) GetPeers() []*PeerState {
@@ -2043,7 +2112,7 @@ type PeerState struct {
 
 func (x *PeerState) Reset() {
 	*x = PeerState{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[31]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2055,7 +2124,7 @@ func (x *PeerState) String() string {
 func (*PeerState) ProtoMessage() {}
 
 func (x *PeerState) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[31]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2068,7 +2137,7 @@ func (x *PeerState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerState.ProtoReflect.Descriptor instead.
 func (*PeerState) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{31}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *PeerState) GetPeerPub() []byte {
@@ -2131,7 +2200,7 @@ type ConsumedInvite struct {
 
 func (x *ConsumedInvite) Reset() {
 	*x = ConsumedInvite{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[32]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2143,7 +2212,7 @@ func (x *ConsumedInvite) String() string {
 func (*ConsumedInvite) ProtoMessage() {}
 
 func (x *ConsumedInvite) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[32]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2156,7 +2225,7 @@ func (x *ConsumedInvite) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsumedInvite.ProtoReflect.Descriptor instead.
 func (*ConsumedInvite) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{32}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ConsumedInvite) GetTokenId() string {
@@ -2184,7 +2253,7 @@ var File_pollen_state_v1_state_proto protoreflect.FileDescriptor
 
 const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\n" +
-	"\x1bpollen/state/v1/state.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"L\n" +
+	"\x1bpollen/state/v1/state.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a#pollen/admission/v1/admission.proto\"L\n" +
 	"\n" +
 	"PeerDigest\x12\x1f\n" +
 	"\vmax_counter\x18\x01 \x01(\x04R\n" +
@@ -2282,7 +2351,10 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x06counts\x18\x01 \x03(\v24.pollen.state.v1.PerSeedCallCountsChange.CountsEntryR\x06counts\x1a9\n" +
 	"\vCountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xcd\x0e\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\x8d\x01\n" +
+	"\x14DelegationCertChange\x12?\n" +
+	"\x04cert\x18\x01 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\x04cert\x124\n" +
+	"\x11subject_signature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\x10subjectSignature\"\x9f\x0f\n" +
 	"\vGossipEvent\x124\n" +
 	"\apeer_id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x06peerId\x12\x18\n" +
 	"\acounter\x18\x02 \x01(\x04R\acounter\x12:\n" +
@@ -2312,7 +2384,8 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x0estatic_capable\x18  \x01(\v2$.pollen.state.v1.StaticCapableChangeH\x00R\rstaticCapable\x12D\n" +
 	"\vbackoff_ttl\x18! \x01(\v2!.pollen.state.v1.BackoffTTLChangeH\x00R\n" +
 	"backoffTtl\x12[\n" +
-	"\x14per_seed_call_counts\x18\" \x01(\v2(.pollen.state.v1.PerSeedCallCountsChangeH\x00R\x11perSeedCallCounts\x12\x18\n" +
+	"\x14per_seed_call_counts\x18\" \x01(\v2(.pollen.state.v1.PerSeedCallCountsChangeH\x00R\x11perSeedCallCounts\x12P\n" +
+	"\x0fdelegation_cert\x18# \x01(\v2%.pollen.state.v1.DelegationCertChangeH\x00R\x0edelegationCert\x12\x18\n" +
 	"\adeleted\x18\x0e \x01(\bR\adeletedB\b\n" +
 	"\x06changeJ\x04\b\x18\x10\x19J\x04\b\x1b\x10\x1cR\x0fseed_dial_ratesR\fseed_metrics\"H\n" +
 	"\x10GossipEventBatch\x124\n" +
@@ -2355,7 +2428,7 @@ func file_pollen_state_v1_state_proto_rawDescGZIP() []byte {
 }
 
 var file_pollen_state_v1_state_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
+var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_pollen_state_v1_state_proto_goTypes = []any{
 	(ServiceProtocol)(0),             // 0: pollen.state.v1.ServiceProtocol
 	(*PeerDigest)(nil),               // 1: pollen.state.v1.PeerDigest
@@ -2386,55 +2459,59 @@ var file_pollen_state_v1_state_proto_goTypes = []any{
 	(*NodeNameChange)(nil),           // 26: pollen.state.v1.NodeNameChange
 	(*BackoffTTLChange)(nil),         // 27: pollen.state.v1.BackoffTTLChange
 	(*PerSeedCallCountsChange)(nil),  // 28: pollen.state.v1.PerSeedCallCountsChange
-	(*GossipEvent)(nil),              // 29: pollen.state.v1.GossipEvent
-	(*GossipEventBatch)(nil),         // 30: pollen.state.v1.GossipEventBatch
-	(*RuntimeState)(nil),             // 31: pollen.state.v1.RuntimeState
-	(*PeerState)(nil),                // 32: pollen.state.v1.PeerState
-	(*ConsumedInvite)(nil),           // 33: pollen.state.v1.ConsumedInvite
-	nil,                              // 34: pollen.state.v1.Digest.PeersEntry
-	nil,                              // 35: pollen.state.v1.PerSeedCallCountsChange.CountsEntry
-	(*structpb.Struct)(nil),          // 36: google.protobuf.Struct
+	(*DelegationCertChange)(nil),     // 29: pollen.state.v1.DelegationCertChange
+	(*GossipEvent)(nil),              // 30: pollen.state.v1.GossipEvent
+	(*GossipEventBatch)(nil),         // 31: pollen.state.v1.GossipEventBatch
+	(*RuntimeState)(nil),             // 32: pollen.state.v1.RuntimeState
+	(*PeerState)(nil),                // 33: pollen.state.v1.PeerState
+	(*ConsumedInvite)(nil),           // 34: pollen.state.v1.ConsumedInvite
+	nil,                              // 35: pollen.state.v1.Digest.PeersEntry
+	nil,                              // 36: pollen.state.v1.PerSeedCallCountsChange.CountsEntry
+	(*structpb.Struct)(nil),          // 37: google.protobuf.Struct
+	(*v1.DelegationCert)(nil),        // 38: pollen.admission.v1.DelegationCert
 }
 var file_pollen_state_v1_state_proto_depIdxs = []int32{
-	34, // 0: pollen.state.v1.Digest.peers:type_name -> pollen.state.v1.Digest.PeersEntry
+	35, // 0: pollen.state.v1.Digest.peers:type_name -> pollen.state.v1.Digest.PeersEntry
 	0,  // 1: pollen.state.v1.ServiceChange.protocol:type_name -> pollen.state.v1.ServiceProtocol
-	36, // 2: pollen.state.v1.ServiceChange.properties:type_name -> google.protobuf.Struct
+	37, // 2: pollen.state.v1.ServiceChange.properties:type_name -> google.protobuf.Struct
 	18, // 3: pollen.state.v1.StaticManifest.paths:type_name -> pollen.state.v1.StaticPath
 	21, // 4: pollen.state.v1.TrafficHeatmapChange.rates:type_name -> pollen.state.v1.TrafficRate
-	35, // 5: pollen.state.v1.PerSeedCallCountsChange.counts:type_name -> pollen.state.v1.PerSeedCallCountsChange.CountsEntry
-	5,  // 6: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
-	6,  // 7: pollen.state.v1.GossipEvent.observed_address:type_name -> pollen.state.v1.ObservedAddressChange
-	9,  // 8: pollen.state.v1.GossipEvent.cert_expiry:type_name -> pollen.state.v1.CertExpiryChange
-	3,  // 9: pollen.state.v1.GossipEvent.service:type_name -> pollen.state.v1.ServiceChange
-	4,  // 10: pollen.state.v1.GossipEvent.reachability:type_name -> pollen.state.v1.ReachabilityChange
-	7,  // 11: pollen.state.v1.GossipEvent.publicly_accessible:type_name -> pollen.state.v1.PubliclyAccessibleChange
-	8,  // 12: pollen.state.v1.GossipEvent.vivaldi:type_name -> pollen.state.v1.VivaldiCoordinateChange
-	11, // 13: pollen.state.v1.GossipEvent.nat_type:type_name -> pollen.state.v1.NatTypeChange
-	12, // 14: pollen.state.v1.GossipEvent.resource_telemetry:type_name -> pollen.state.v1.ResourceTelemetryChange
-	10, // 15: pollen.state.v1.GossipEvent.deny:type_name -> pollen.state.v1.DenyChange
-	13, // 16: pollen.state.v1.GossipEvent.workload_spec:type_name -> pollen.state.v1.WorkloadSpecChange
-	20, // 17: pollen.state.v1.GossipEvent.workload_claim:type_name -> pollen.state.v1.WorkloadClaimChange
-	22, // 18: pollen.state.v1.GossipEvent.traffic_heatmap:type_name -> pollen.state.v1.TrafficHeatmapChange
-	23, // 19: pollen.state.v1.GossipEvent.heartbeat:type_name -> pollen.state.v1.HeartbeatChange
-	24, // 20: pollen.state.v1.GossipEvent.admin_capable:type_name -> pollen.state.v1.AdminCapableChange
-	26, // 21: pollen.state.v1.GossipEvent.node_name:type_name -> pollen.state.v1.NodeNameChange
-	14, // 22: pollen.state.v1.GossipEvent.blob_availability:type_name -> pollen.state.v1.BlobAvailabilityChange
-	15, // 23: pollen.state.v1.GossipEvent.static_spec:type_name -> pollen.state.v1.StaticSpecChange
-	16, // 24: pollen.state.v1.GossipEvent.static_claim:type_name -> pollen.state.v1.StaticClaimChange
-	17, // 25: pollen.state.v1.GossipEvent.blob_spec:type_name -> pollen.state.v1.BlobSpecChange
-	25, // 26: pollen.state.v1.GossipEvent.static_capable:type_name -> pollen.state.v1.StaticCapableChange
-	27, // 27: pollen.state.v1.GossipEvent.backoff_ttl:type_name -> pollen.state.v1.BackoffTTLChange
-	28, // 28: pollen.state.v1.GossipEvent.per_seed_call_counts:type_name -> pollen.state.v1.PerSeedCallCountsChange
-	29, // 29: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
-	32, // 30: pollen.state.v1.RuntimeState.peers:type_name -> pollen.state.v1.PeerState
-	33, // 31: pollen.state.v1.RuntimeState.consumed_invites:type_name -> pollen.state.v1.ConsumedInvite
-	13, // 32: pollen.state.v1.RuntimeState.workload_specs:type_name -> pollen.state.v1.WorkloadSpecChange
-	1,  // 33: pollen.state.v1.Digest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
-	34, // [34:34] is the sub-list for method output_type
-	34, // [34:34] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	36, // 5: pollen.state.v1.PerSeedCallCountsChange.counts:type_name -> pollen.state.v1.PerSeedCallCountsChange.CountsEntry
+	38, // 6: pollen.state.v1.DelegationCertChange.cert:type_name -> pollen.admission.v1.DelegationCert
+	5,  // 7: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
+	6,  // 8: pollen.state.v1.GossipEvent.observed_address:type_name -> pollen.state.v1.ObservedAddressChange
+	9,  // 9: pollen.state.v1.GossipEvent.cert_expiry:type_name -> pollen.state.v1.CertExpiryChange
+	3,  // 10: pollen.state.v1.GossipEvent.service:type_name -> pollen.state.v1.ServiceChange
+	4,  // 11: pollen.state.v1.GossipEvent.reachability:type_name -> pollen.state.v1.ReachabilityChange
+	7,  // 12: pollen.state.v1.GossipEvent.publicly_accessible:type_name -> pollen.state.v1.PubliclyAccessibleChange
+	8,  // 13: pollen.state.v1.GossipEvent.vivaldi:type_name -> pollen.state.v1.VivaldiCoordinateChange
+	11, // 14: pollen.state.v1.GossipEvent.nat_type:type_name -> pollen.state.v1.NatTypeChange
+	12, // 15: pollen.state.v1.GossipEvent.resource_telemetry:type_name -> pollen.state.v1.ResourceTelemetryChange
+	10, // 16: pollen.state.v1.GossipEvent.deny:type_name -> pollen.state.v1.DenyChange
+	13, // 17: pollen.state.v1.GossipEvent.workload_spec:type_name -> pollen.state.v1.WorkloadSpecChange
+	20, // 18: pollen.state.v1.GossipEvent.workload_claim:type_name -> pollen.state.v1.WorkloadClaimChange
+	22, // 19: pollen.state.v1.GossipEvent.traffic_heatmap:type_name -> pollen.state.v1.TrafficHeatmapChange
+	23, // 20: pollen.state.v1.GossipEvent.heartbeat:type_name -> pollen.state.v1.HeartbeatChange
+	24, // 21: pollen.state.v1.GossipEvent.admin_capable:type_name -> pollen.state.v1.AdminCapableChange
+	26, // 22: pollen.state.v1.GossipEvent.node_name:type_name -> pollen.state.v1.NodeNameChange
+	14, // 23: pollen.state.v1.GossipEvent.blob_availability:type_name -> pollen.state.v1.BlobAvailabilityChange
+	15, // 24: pollen.state.v1.GossipEvent.static_spec:type_name -> pollen.state.v1.StaticSpecChange
+	16, // 25: pollen.state.v1.GossipEvent.static_claim:type_name -> pollen.state.v1.StaticClaimChange
+	17, // 26: pollen.state.v1.GossipEvent.blob_spec:type_name -> pollen.state.v1.BlobSpecChange
+	25, // 27: pollen.state.v1.GossipEvent.static_capable:type_name -> pollen.state.v1.StaticCapableChange
+	27, // 28: pollen.state.v1.GossipEvent.backoff_ttl:type_name -> pollen.state.v1.BackoffTTLChange
+	28, // 29: pollen.state.v1.GossipEvent.per_seed_call_counts:type_name -> pollen.state.v1.PerSeedCallCountsChange
+	29, // 30: pollen.state.v1.GossipEvent.delegation_cert:type_name -> pollen.state.v1.DelegationCertChange
+	30, // 31: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
+	33, // 32: pollen.state.v1.RuntimeState.peers:type_name -> pollen.state.v1.PeerState
+	34, // 33: pollen.state.v1.RuntimeState.consumed_invites:type_name -> pollen.state.v1.ConsumedInvite
+	13, // 34: pollen.state.v1.RuntimeState.workload_specs:type_name -> pollen.state.v1.WorkloadSpecChange
+	1,  // 35: pollen.state.v1.Digest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
+	36, // [36:36] is the sub-list for method output_type
+	36, // [36:36] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_state_proto_init() }
@@ -2442,7 +2519,7 @@ func file_pollen_state_v1_state_proto_init() {
 	if File_pollen_state_v1_state_proto != nil {
 		return
 	}
-	file_pollen_state_v1_state_proto_msgTypes[28].OneofWrappers = []any{
+	file_pollen_state_v1_state_proto_msgTypes[29].OneofWrappers = []any{
 		(*GossipEvent_Network)(nil),
 		(*GossipEvent_ObservedAddress)(nil),
 		(*GossipEvent_CertExpiry)(nil),
@@ -2466,6 +2543,7 @@ func file_pollen_state_v1_state_proto_init() {
 		(*GossipEvent_StaticCapable)(nil),
 		(*GossipEvent_BackoffTtl)(nil),
 		(*GossipEvent_PerSeedCallCounts)(nil),
+		(*GossipEvent_DelegationCert)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -2473,7 +2551,7 @@ func file_pollen_state_v1_state_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_state_v1_state_proto_rawDesc), len(file_pollen_state_v1_state_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   35,
+			NumMessages:   36,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

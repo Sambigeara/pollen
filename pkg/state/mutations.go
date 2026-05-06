@@ -11,6 +11,7 @@ import (
 	"slices"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
@@ -31,8 +32,12 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 	}
 
 	now := s.nowFunc()
+	denyOrCertChanged := false
 	for _, ev := range gossips {
 		key, _ := getAttrKey(ev)
+		if key.kind == attrDeny || key.kind == attrDelegationCert {
+			denyOrCertChanged = true
+		}
 		rec.maxCounter++
 		ev.PeerId = s.localID.String()
 		ev.Counter = rec.maxCounter
@@ -43,6 +48,11 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 	rec.lastEventAt = now
 	s.lastLocalEmit = now
 	s.nodes[s.localID] = rec
+
+	if denyOrCertChanged {
+		events = append(events, s.recomputeDeniedLocked()...)
+	}
+
 	s.updateSnapshotLocked()
 	s.notify()
 
@@ -50,30 +60,42 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 }
 
 func (s *store) DenyPeer(key types.PeerKey) []Event {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.denied[key]; ok {
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		ak := attrKey{kind: attrDeny, name: key.String()}
+		if ev, ok := rec.log[ak]; ok && !ev.Deleted {
+			return nil, nil
+		}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_Deny{Deny: &statev1.DenyChange{PeerPub: key.Bytes()}}}
+		// PeerDenied for the new effective denied set is emitted by the
+		// recompute pass triggered after mutateLocal commits, so that
+		// cascade victims (subtree of a revoked admin) are also reported.
+		return []*statev1.GossipEvent{change}, nil
+	})
+}
+
+// SetLocalDelegationCert publishes the local node's current delegation
+// cert into the CRDT so every other node can evaluate chain-scoped
+// rules (most importantly: subtree-bounded deny authorisation).
+//
+// subjectSig must be a valid ed25519 signature by cert.subject_pub
+// (== local node identity) over the cert's claims, produced by
+// auth.SignDelegationCertSubject. Without subject proof-of-possession,
+// any admin could forge a cert for another peer's pub and bypass deny
+// scoping. Callers in production wire this from the signing key; tests
+// that exercise non-cert paths can leave subjectSig empty (apply-time
+// verification is skipped when rootPub is unset).
+func (s *store) SetLocalDelegationCert(cert *admissionv1.DelegationCert, subjectSig []byte) []Event {
+	if cert == nil {
 		return nil
 	}
-	s.denied[key] = struct{}{}
-
-	ev := &statev1.GossipEvent{Change: &statev1.GossipEvent_Deny{Deny: &statev1.DenyChange{PeerPub: key.Bytes()}}}
-
-	now := s.nowFunc()
-	rec := s.nodes[s.localID]
-	rec.maxCounter++
-	ev.PeerId = s.localID.String()
-	ev.Counter = rec.maxCounter
-	ak, _ := getAttrKey(ev)
-	rec.log[ak] = ev
-	rec.lastEventAt = now
-	s.lastLocalEmit = now
-	s.nodes[s.localID] = rec
-
-	s.pendingGossip = append(s.pendingGossip, ev)
-	s.updateSnapshotLocked()
-	s.notify()
-	return []Event{PeerDenied{Key: key}}
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		owned := &statev1.DelegationCertChange{Cert: cert, SubjectSignature: subjectSig}
+		if ev, ok := rec.log[attrKey{kind: attrDelegationCert}]; ok && !ev.Deleted && proto.Equal(ev.GetDelegationCert(), owned) {
+			return nil, nil
+		}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_DelegationCert{DelegationCert: owned}}
+		return []*statev1.GossipEvent{change}, nil
+	})
 }
 
 func (s *store) SetLocalAddresses(addrs []netip.AddrPort) []Event {

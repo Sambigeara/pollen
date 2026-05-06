@@ -75,11 +75,12 @@ var _ Transport = (*QUICTransport)(nil)
 type StreamType byte
 
 const (
-	StreamTypeDigest   StreamType = 1
-	StreamTypeTunnel   StreamType = 2
-	StreamTypeRouted   StreamType = 3
-	StreamTypeBlob     StreamType = 4
-	StreamTypeWorkload StreamType = 5
+	StreamTypeDigest     StreamType = 1
+	StreamTypeTunnel     StreamType = 2
+	StreamTypeRouted     StreamType = 3
+	StreamTypeBlob       StreamType = 4
+	StreamTypeWorkload   StreamType = 5
+	StreamTypeMembership StreamType = 6
 )
 
 type DatagramType byte
@@ -124,7 +125,10 @@ type PeerStateCounts struct {
 	Backoff    uint32
 }
 
-var errUnreachable = errors.New("peer unreachable")
+var (
+	errUnreachable   = errors.New("peer unreachable")
+	errDeniedSubtree = errors.New("peer or ancestor in denied set")
+)
 
 // MaxDatagramPayload is the largest payload callers can pass to Send or
 // SendTunnelDatagram. Derived from the QUIC minimum MTU (1200 bytes) minus
@@ -520,17 +524,37 @@ func (m *QUICTransport) acceptLoop(ctx context.Context) {
 
 		switch qc.ConnectionState().TLS.NegotiatedProtocol {
 		case alpnMesh:
-			if m.isDenied != nil && m.isDenied(peerKey) {
+			dc := delegationCertFromConn(qc)
+			if m.isDenied != nil && m.isChainDenied(peerKey, dc) {
 				_ = qc.CloseWithError(0, DisconnectDenied.String())
 				continue
 			}
-			m.addPeer(ctx, newPeerSession(qc, m.mainQT, nil, delegationCertFromConn(qc), false), peerKey)
+			m.addPeer(ctx, newPeerSession(qc, m.mainQT, nil, dc, false), peerKey)
 		case alpnInvite:
 			m.acceptWG.Go(func() { m.handleInviteConnection(ctx, qc, peerKey) })
 		default:
 			_ = qc.CloseWithError(0, "unknown protocol")
 		}
 	}
+}
+
+// isChainDenied rejects a peer either by its leaf identity (steady-state
+// from gossiped denied set) or by any subject in its presented chain
+// (fast-path: lets us reject a peer in a revoked admin's subtree even
+// before that peer's own delegation cert has gossipped to us).
+func (m *QUICTransport) isChainDenied(peerKey types.PeerKey, dc *admissionv1.DelegationCert) bool {
+	if m.isDenied == nil {
+		return false
+	}
+	if m.isDenied(peerKey) {
+		return true
+	}
+	for _, sub := range auth.ChainSubjectPubs(dc) {
+		if pk := types.PeerKeyFromBytes(sub); pk != peerKey && m.isDenied(pk) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *QUICTransport) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
@@ -656,6 +680,10 @@ func (m *QUICTransport) Connect(ctx context.Context, peerKey types.PeerKey, addr
 				continue
 			}
 			cancelDial()
+			if m.isChainDenied(peerKey, r.s.delegationCert.Load()) {
+				_ = r.s.conn.CloseWithError(0, DisconnectDenied.String())
+				return fmt.Errorf("connect to %s: %w", peerKey.Short(), errDeniedSubtree)
+			}
 			m.addPeer(ctx, r.s, peerKey)
 			remaining := len(addrs) - consumed
 			if remaining > 0 {
@@ -711,7 +739,12 @@ func (m *QUICTransport) Punch(ctx context.Context, peerKey types.PeerKey, addr *
 		return err
 	}
 
-	m.addPeer(ctx, newPeerSession(qc, qt, conn, delegationCertFromConn(qc), true), peerKey)
+	s := newPeerSession(qc, qt, conn, delegationCertFromConn(qc), true)
+	if m.isChainDenied(peerKey, s.delegationCert.Load()) {
+		m.closeSession(s, DisconnectDenied.String())
+		return fmt.Errorf("punch to %s: %w", peerKey.Short(), errDeniedSubtree)
+	}
+	m.addPeer(ctx, s, peerKey)
 	return nil
 }
 
@@ -810,6 +843,10 @@ func (m *QUICTransport) raceDirectDial(ctx context.Context, peerKey types.PeerKe
 				continue
 			}
 			cancelDial()
+			if m.isChainDenied(peerKey, r.s.delegationCert.Load()) {
+				_ = r.s.conn.CloseWithError(0, DisconnectDenied.String())
+				return nil, fmt.Errorf("dial %s: %w", peerKey.Short(), errDeniedSubtree)
+			}
 			return r.s, nil
 		case <-ctx.Done():
 			return nil, ctx.Err()

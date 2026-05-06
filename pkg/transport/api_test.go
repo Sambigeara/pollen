@@ -29,4 +29,5 @@ func TestStreamTypeConstantsExported(t *testing.T) {
 	require.Equal(t, transport.StreamType(3), transport.StreamTypeRouted)
 	require.Equal(t, transport.StreamType(4), transport.StreamTypeBlob)
 	require.Equal(t, transport.StreamType(5), transport.StreamTypeWorkload)
+	require.Equal(t, transport.StreamType(6), transport.StreamTypeMembership)
 }

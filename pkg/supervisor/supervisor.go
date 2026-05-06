@@ -93,7 +93,6 @@ type Supervisor struct {
 	metricsProviders *metrics.Provider
 	creds            *auth.NodeCredentials
 	shutdownCh       chan struct{}
-	inviteWaiters    map[types.PeerKey]chan *meshv1.InviteRedeemResponse
 	promRegistry     *prometheus.Registry
 	peerCache        *peercache.Store
 	httpAddr         string
@@ -105,7 +104,6 @@ type Supervisor struct {
 	peerTickInterval time.Duration
 	reconnectWindow  time.Duration
 	membershipTTL    time.Duration
-	inviteWaitersMu  sync.Mutex
 	useHMACNearest   bool
 }
 
@@ -131,6 +129,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	}
 
 	stateStore := state.New(self)
+	stateStore.SetRootPub(creds.RootPub())
 	if opts.BootstrapPublic {
 		stateStore.SetPublic()
 	}
@@ -254,15 +253,12 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		vivaldiErr:       vivaldiErr,
 		routeInvalidate:  make(chan struct{}, 1),
 		inviteConsumer:   inviteConsumer,
-		inviteWaiters:    make(map[types.PeerKey]chan *meshv1.InviteRedeemResponse),
 		membershipTTL:    config.DefaultMembershipTTL,
 		promRegistry:     promRegistry,
 		httpAddr:         opts.HTTPAddr,
 	}
 
-	if creds.DelegationKey() == nil {
-		m.SetInviteForwarder(n.forwardInviteToAdmin)
-	}
+	m.SetInviteForwarder(n.forwardInviteToAdmin)
 
 	capTrans := &capTransitioner{
 		mesh:               m,
@@ -328,10 +324,6 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 					span.SetAttributes(attribute.String("peer", from.Short()))
 					n.handlePunchCoordTrigger(spanCtx, body.PunchCoordTrigger)
 					span.End()
-				case *meshv1.Envelope_ForwardedInviteRequest:
-					n.handleForwardedInviteRequest(ctx, from, body.ForwardedInviteRequest)
-				case *meshv1.Envelope_ForwardedInviteResponse:
-					n.handleForwardedInviteResponse(from, body.ForwardedInviteResponse)
 				default:
 					n.log.Debugw("unknown datagram type", "peer", from.Short())
 				}
@@ -642,6 +634,8 @@ func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 		switch stype {
 		case transport.StreamTypeDigest:
 			n.spawn(func() { n.membership.HandleDigestStream(ctx, stream, peerKey) })
+		case transport.StreamTypeMembership:
+			n.spawn(func() { n.handleMembershipStream(ctx, stream, peerKey) })
 		case transport.StreamTypeTunnel:
 			n.spawn(func() { n.dispatchServiceConnect(ctx, stream, peerKey) })
 		case transport.StreamTypeBlob:
@@ -676,6 +670,14 @@ func (n *Supervisor) dispatchEvents(ctx context.Context, events []state.Event) {
 			n.mesh.ClosePeerSession(e.Key, transport.DisconnectDenied)
 			n.mesh.ForgetPeer(e.Key)
 			n.peerCache.Forget(e.Key)
+			// Refresh routes and placement explicitly so non-connected
+			// cascade victims (denied peers we never had a session with,
+			// e.g. routed-only or workload destinations) are removed
+			// from routing/placement decisions. The connected path
+			// piggybacks on PeerEventDisconnected, but that event only
+			// fires when ClosePeerSession actually closed something.
+			n.signalRouteInvalidate()
+			n.placement.Signal()
 		case state.TopologyChanged:
 			n.signalRouteInvalidate()
 			n.placement.Signal()

@@ -4,12 +4,14 @@
 package state
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/binary"
 	"encoding/hex"
 	"slices"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -41,6 +43,7 @@ const (
 	attrStaticCapable
 	attrBackoffTTL
 	attrPerSeedCallCounts
+	attrDelegationCert
 )
 
 type attrKey struct {
@@ -88,6 +91,7 @@ func (s *store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, er
 func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Event, []*statev1.GossipEvent) {
 	var domainEvents []Event
 	var rebroadcast []*statev1.GossipEvent
+	denyOrCertChanged := false
 
 	for _, ev := range events {
 		pk, err := types.PeerKeyFromString(ev.PeerId)
@@ -106,6 +110,14 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 
 		key, ok := getAttrKey(ev)
 		if !ok {
+			continue
+		}
+
+		// Drop structurally invalid or impostor delegation certs at apply
+		// time. The cert chain is signed end-to-end so this is a free
+		// integrity check; without it any admitted peer could spoof
+		// another's chain and bypass deny scoping.
+		if key.kind == attrDelegationCert && !ev.Deleted && !s.isAcceptableCertEvent(pk, ev) {
 			continue
 		}
 
@@ -139,12 +151,8 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 			continue
 		}
 
-		if key.kind == attrDeny && !ev.Deleted {
-			subject := types.PeerKeyFromBytes(ev.GetDeny().PeerPub)
-			if _, already := s.denied[subject]; !already {
-				s.denied[subject] = struct{}{}
-				domainEvents = append(domainEvents, PeerDenied{Key: subject})
-			}
+		if key.kind == attrDeny || key.kind == attrDelegationCert {
+			denyOrCertChanged = true
 		}
 		if key.kind == attrService {
 			domainEvents = append(domainEvents, ServiceChanged{Peer: pk, Name: key.name})
@@ -163,7 +171,141 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		}
 	}
 
+	if live && denyOrCertChanged {
+		domainEvents = append(domainEvents, s.recomputeDeniedLocked()...)
+	}
+
 	return domainEvents, rebroadcast
+}
+
+// isAcceptableCertEvent enforces three invariants on incoming cert events:
+//   - The cert's subject_pub matches the gossip event's peer_id
+//     (basic shape check).
+//   - When rootPub is configured, the chain is structurally and
+//     cryptographically valid (signatures + root anchor). Expiry is
+//     not enforced; past chains stay authoritative for chain-scoped
+//     decisions even after their TTL.
+//   - When rootPub is configured, the subject_signature is valid
+//     under cert.subject_pub. This is the proof-of-possession that
+//     prevents a delegated admin from forging a cert for someone
+//     else's pub and re-parenting them into the admin's subtree.
+func (s *store) isAcceptableCertEvent(pk types.PeerKey, ev *statev1.GossipEvent) bool {
+	change := ev.GetDelegationCert()
+	cert := change.GetCert()
+	if cert == nil {
+		return false
+	}
+	if !bytes.Equal(cert.GetClaims().GetSubjectPub(), pk.Bytes()) {
+		return false
+	}
+	if len(s.rootPub) > 0 {
+		if err := auth.VerifyDelegationCertStructure(cert, s.rootPub); err != nil {
+			return false
+		}
+		if err := auth.VerifyDelegationCertSubject(cert, change.GetSubjectSignature()); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// recomputeDeniedLocked rebuilds s.denied from authorised deny events
+// plus the gossiped cert graph. Returns PeerDenied domain events for
+// peers newly classified as denied. A peer becomes denied iff some
+// node in its current delegation chain has an authorised deny against
+// it; "authorised" means the deny was issued by the cluster root or
+// by an ancestor of the subject in the subject's own cert chain.
+//
+// When rootPub is unset (test fixtures with no cluster identity), this
+// degrades to the legacy semantic: every deny event takes effect
+// unconditionally and no cascade is computed. Prod always sets rootPub.
+func (s *store) recomputeDeniedLocked() []Event {
+	rootKnown := len(s.rootPub) > 0
+
+	revoked := make(map[types.PeerKey]struct{})
+	if !rootKnown {
+		for _, rec := range s.nodes {
+			for key, ev := range rec.log {
+				if key.kind == attrDeny && !ev.Deleted {
+					revoked[types.PeerKeyFromBytes(ev.GetDeny().PeerPub)] = struct{}{}
+				}
+			}
+		}
+		return s.commitDeniedLocked(revoked)
+	}
+
+	certs := make(map[types.PeerKey]*admissionv1.DelegationCert)
+	for pk, rec := range s.nodes {
+		ev, ok := rec.log[attrKey{kind: attrDelegationCert}]
+		if !ok || ev.Deleted {
+			continue
+		}
+		if cert := ev.GetDelegationCert().GetCert(); cert != nil {
+			certs[pk] = cert
+		}
+	}
+
+	rootKey := types.PeerKeyFromBytes(s.rootPub)
+
+	for issuerPK, rec := range s.nodes {
+		for key, ev := range rec.log {
+			if key.kind != attrDeny || ev.Deleted {
+				continue
+			}
+			subject := types.PeerKeyFromBytes(ev.GetDeny().PeerPub)
+
+			// Self-deny is always allowed (peer disowning itself,
+			// e.g. on cert expiry sweep). Root-issued denies are
+			// authorised regardless of cert availability; root is
+			// the universal ancestor.
+			if issuerPK == subject || issuerPK == rootKey {
+				revoked[subject] = struct{}{}
+				continue
+			}
+
+			cert, ok := certs[subject]
+			if !ok {
+				// Subject's chain unknown; deny stays pending until
+				// their cert is gossiped.
+				continue
+			}
+			for _, sub := range auth.ChainSubjectPubs(cert) {
+				if bytes.Equal(sub, issuerPK.Bytes()) {
+					revoked[subject] = struct{}{}
+					break
+				}
+			}
+		}
+	}
+
+	effective := make(map[types.PeerKey]struct{}, len(revoked))
+	for r := range revoked {
+		effective[r] = struct{}{}
+	}
+	for pk, cert := range certs {
+		if _, already := effective[pk]; already {
+			continue
+		}
+		for _, sub := range auth.ChainSubjectPubs(cert) {
+			if _, ok := revoked[types.PeerKeyFromBytes(sub)]; ok {
+				effective[pk] = struct{}{}
+				break
+			}
+		}
+	}
+
+	return s.commitDeniedLocked(effective)
+}
+
+func (s *store) commitDeniedLocked(effective map[types.PeerKey]struct{}) []Event {
+	var events []Event
+	for pk := range effective {
+		if _, was := s.denied[pk]; !was {
+			events = append(events, PeerDenied{Key: pk})
+		}
+	}
+	s.denied = effective
+	return events
 }
 
 func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent) []*statev1.GossipEvent {
@@ -177,7 +319,7 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent) []*statev1.Gos
 	if ok && !ev.Deleted {
 		if _, exists := rec.log[key]; !exists {
 			switch key.kind { //nolint:exhaustive
-			case attrWorkloadSpec, attrService, attrNetwork, attrCertExpiry, attrDeny, attrNodeName, attrStaticSpec, attrBlobSpec:
+			case attrWorkloadSpec, attrService, attrNetwork, attrCertExpiry, attrDeny, attrNodeName, attrStaticSpec, attrBlobSpec, attrDelegationCert:
 				rec.maxCounter++
 				rec.log[key] = &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
@@ -422,6 +564,8 @@ func getAttrKey(ev *statev1.GossipEvent) (attrKey, bool) {
 		return attrKey{kind: attrBackoffTTL}, true
 	case *statev1.GossipEvent_PerSeedCallCounts:
 		return attrKey{kind: attrPerSeedCallCounts}, true
+	case *statev1.GossipEvent_DelegationCert:
+		return attrKey{kind: attrDelegationCert}, true
 	}
 	return attrKey{}, false
 }

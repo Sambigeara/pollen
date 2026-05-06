@@ -68,6 +68,11 @@ func (s *DelegationSigner) IsRoot() bool {
 	return s.root
 }
 
+// MatchesIssuer reports whether this signer holds the subject key for cert.
+func (s *DelegationSigner) MatchesIssuer(cert *admissionv1.DelegationCert) bool {
+	return bytes.Equal(s.issuer.GetClaims().GetSubjectPub(), cert.GetClaims().GetSubjectPub())
+}
+
 func (s *DelegationSigner) IssueInviteToken(
 	subject ed25519.PublicKey,
 	bootstrap []*admissionv1.BootstrapPeer,

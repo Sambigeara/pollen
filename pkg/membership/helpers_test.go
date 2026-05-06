@@ -172,6 +172,10 @@ func (f *fakeClusterState) SetLocalObservedAddress(_ string, _ uint32) []state.E
 	return nil
 }
 
+func (f *fakeClusterState) SetLocalDelegationCert(_ *admissionv1.DelegationCert, _ []byte) []state.Event {
+	return nil
+}
+
 func (f *fakeClusterState) EmitHeartbeatIfNeeded() []state.Event {
 	return nil
 }

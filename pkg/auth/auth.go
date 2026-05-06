@@ -44,9 +44,10 @@ const (
 	pemTypeAdminPriv = "POLLEN ADMIN ED25519 PRIVATE KEY"
 	pemTypeAdminPub  = "POLLEN ADMIN ED25519 PUBLIC KEY"
 
-	sigContextDelegation = "pollen.delegation.v1"
-	sigContextJoinClaims = "pollen.join.v1"
-	sigContextInvite     = "pollen.invite.v1"
+	sigContextDelegation        = "pollen.delegation.v1"
+	sigContextJoinClaims        = "pollen.join.v1"
+	sigContextInvite            = "pollen.invite.v1"
+	sigContextDelegationSubject = "pollen.delegation.subject.v1"
 
 	timeSkewAllowance = time.Minute
 )
@@ -565,6 +566,92 @@ func verifyDelegationCertChain(cert *admissionv1.DelegationCert) (ed25519.Public
 	}
 
 	return rootPub, nil
+}
+
+// ChainSubjectPubs returns every pub authoritatively above (and
+// including) the leaf in this cert's delegation lineage. Used to
+// evaluate subtree-scoped policies (e.g. "issuer must be an ancestor
+// of subject in the delegation tree").
+//
+// Walks every cert from leaf to root, collecting each cert's
+// subject_pub plus the topmost issuer_pub. The topmost issuer is
+// the root signing key -- for fully-chained certs it duplicates the
+// root cert's subject; for short chains (e.g. a leaf whose Chain is
+// empty because the parent cert wasn't bundled) it surfaces root
+// authority explicitly so root-issued denies remain authorisable.
+func ChainSubjectPubs(cert *admissionv1.DelegationCert) [][]byte {
+	if cert == nil {
+		return nil
+	}
+	chain := cert.GetChain()
+	out := make([][]byte, 0, len(chain)+2) //nolint:mnd
+	out = append(out, cert.GetClaims().GetSubjectPub())
+	for _, parent := range chain {
+		out = append(out, parent.GetClaims().GetSubjectPub())
+	}
+	// For short/legacy chains the topmost issuer is the only place
+	// root authority surfaces; for full chains it duplicates the last
+	// subject and the dedupe is the caller's problem.
+	top := cert
+	if len(chain) > 0 {
+		top = chain[len(chain)-1]
+	}
+	if issuer := top.GetClaims().GetIssuerPub(); len(issuer) > 0 {
+		out = append(out, issuer)
+	}
+	return out
+}
+
+// SignDelegationCertSubject produces a subject-side proof-of-possession
+// over the cert's claims, signed with the subject's identity key.
+// Required when gossiping a peer's current cert: cert.signature alone
+// is by the issuer, which would let any admin re-parent any peer pub.
+// Verifying this signature with cert.subject_pub guarantees the peer
+// actually owns the published cert.
+func SignDelegationCertSubject(cert *admissionv1.DelegationCert, subjectPriv ed25519.PrivateKey) ([]byte, error) {
+	if cert == nil {
+		return nil, errors.New("cert is nil")
+	}
+	subjectPub := subjectPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
+	if !bytes.Equal(cert.GetClaims().GetSubjectPub(), subjectPub) {
+		return nil, errors.New("signing key does not match cert subject")
+	}
+	msg, err := signaturePayload(cert.GetClaims())
+	if err != nil {
+		return nil, err
+	}
+	return signPayload(subjectPriv, msg, sigContextDelegationSubject)
+}
+
+// VerifyDelegationCertSubject checks the subject-side signature against
+// cert.subject_pub. Pair with VerifyDelegationCertStructure to fully
+// authenticate a gossiped cert event.
+func VerifyDelegationCertSubject(cert *admissionv1.DelegationCert, signature []byte) error {
+	if cert == nil {
+		return errors.New("cert is nil")
+	}
+	msg, err := signaturePayload(cert.GetClaims())
+	if err != nil {
+		return err
+	}
+	return verifyPayload(ed25519.PublicKey(cert.GetClaims().GetSubjectPub()), msg, signature, sigContextDelegationSubject)
+}
+
+// VerifyDelegationCertStructure validates the cert chain's signatures,
+// issuer/subject linkage, and root anchor without enforcing the
+// validity window. Use this when applying a gossiped cert: an expired
+// cert is still authoritative for chain-scoped policy decisions
+// (e.g. denies issued by a now-expired admin remain effective for
+// peers still chained to that admin).
+func VerifyDelegationCertStructure(cert *admissionv1.DelegationCert, rootPub []byte) error {
+	got, err := verifyDelegationCertChain(cert)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(got, rootPub) {
+		return errors.New("delegation cert chain root mismatch")
+	}
+	return nil
 }
 
 func MarshalDelegationCertBase64(cert *admissionv1.DelegationCert) (string, error) {

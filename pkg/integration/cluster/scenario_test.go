@@ -10,10 +10,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -390,11 +392,66 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 	})
 }
 
+func TestPublicMesh_DelegatedAdminInviteRedeemsViaRootBootstrap(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
+	t.Cleanup(cancel)
+
+	b := New(t).
+		SetDefaultLatency(5 * time.Millisecond). //nolint:mnd
+		SetDefaultJitter(0.15)                   //nolint:mnd
+	b.AddNode("root", Public)
+	b.AddNode("admin", Public)
+	b.MakeRoot("root")
+	b.Introduce("root", "admin")
+	c := b.Start(ctx)
+	c.RequireConverged(t)
+
+	root := c.Node("root")
+	admin := c.Node("admin")
+	require.NotNil(t, admin.Node().Credentials().DelegationKey())
+
+	joiner := c.AddNodeAndStart(t, "joiner", Public, ctx)
+	attrs, err := structpb.NewStruct(map[string]any{"payload": strings.Repeat("x", 550)}) //nolint:mnd
+	require.NoError(t, err)
+	bootstrap := []*admissionv1.BootstrapPeer{{
+		PeerPub: root.PeerKey().Bytes(),
+		Addrs:   []string{root.VirtualAddr().String()},
+	}}
+	invite, err := admin.Node().Credentials().DelegationKey().IssueInviteToken(
+		joiner.PeerKey().Bytes(),
+		bootstrap,
+		time.Now(),
+		5*time.Minute, //nolint:mnd
+		24*time.Hour,  //nolint:mnd
+		attrs,
+	)
+	require.NoError(t, err)
+
+	_, err = joiner.Node().JoinWithInvite(ctx, invite)
+	require.NoError(t, err)
+	c.RequirePeerVisible(t, "joiner")
+}
+
 func TestPublicMesh_DenyPeer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
 	t.Cleanup(cancel)
 
-	c := PublicMesh(t, 3, ctx) //nolint:mnd
+	// node-0 holds the cluster root key. Without that, root-issued
+	// denies wouldn't be authorised under subtree scoping (no node
+	// would be in any other node's chain).
+	b := New(t).
+		SetDefaultLatency(5 * time.Millisecond). //nolint:mnd
+		SetDefaultJitter(0.15)                   //nolint:mnd
+	for i := range 3 {
+		b.AddNode(fmt.Sprintf("node-%d", i), Public)
+	}
+	b.MakeRoot("node-0")
+	for i := range 3 {
+		for j := i + 1; j < 3; j++ {
+			b.Introduce(fmt.Sprintf("node-%d", i), fmt.Sprintf("node-%d", j))
+		}
+	}
+	c := b.Start(ctx)
 	c.RequireConverged(t)
 	c.RequireHealthy(t)
 

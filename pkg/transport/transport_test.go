@@ -18,6 +18,7 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/internal/testauth"
 	"github.com/sambigeara/pollen/pkg/auth"
@@ -163,6 +164,34 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 		_, ok := bootstrap.mesh.GetConn(joiner.peerKey)
 		return ok
 	}, 5*time.Second, 25*time.Millisecond)
+}
+
+func TestProcessInviteRedeemRejectsNonIssuerSigner(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	rootCert, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, auth.FullCapabilities(), now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+	rootSigner := testauth.LoadTestSigner(t, rootPriv, rootPub, rootCert)
+
+	adminPub, adminPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	adminCert, err := auth.IssueDelegationCert(rootPriv, []*admissionv1.DelegationCert{rootCert}, adminPub, auth.FullCapabilities(), now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+	adminSigner := testauth.LoadTestSigner(t, adminPriv, rootPub, adminCert)
+
+	joinerPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	invite, err := adminSigner.IssueInviteToken(joinerPub, []*admissionv1.BootstrapPeer{{
+		PeerPub: rootPub,
+		Addrs:   []string{net.JoinHostPort("127.0.0.1", "1")},
+	}}, now, time.Hour, 0, nil)
+	require.NoError(t, err)
+
+	resp := transport.ProcessInviteRedeem(rootSigner, &testConsumer{seen: make(map[string]struct{})}, config.DefaultMembershipTTL, types.PeerKeyFromBytes(joinerPub), &meshv1.InviteRedeemRequest{Token: invite})
+	require.False(t, resp.GetAccepted())
+	require.Contains(t, resp.GetReason(), "invite token issuer")
 }
 
 func TestRedeemInviteRacesAddresses(t *testing.T) {
