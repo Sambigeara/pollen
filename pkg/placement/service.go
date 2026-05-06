@@ -50,8 +50,8 @@ const (
 	placementMigrateThreshold = 50.0
 	placementMinDwell         = 60 * time.Second
 
-	replicaTickInterval       = 5 * time.Second
-	replicaScaleUpThreshold   = 0.5
+	replicaTickInterval       = 3 * time.Second
+	replicaScaleUpThreshold   = 0.3
 	replicaScaleDownThreshold = 0.1
 	replicaScaleDownGrace     = 2 * time.Minute
 
@@ -129,6 +129,7 @@ func WithMesh(mesh StreamOpener) Option {
 
 func New(self types.PeerKey, store WorkloadState, blobs blobsAPI, wasmRT WASMRuntime, opts ...Option) *Service {
 	s := &Service{
+		ctx:     context.Background(),
 		localID: self,
 		store:   store,
 		blobs:   blobs,
@@ -331,26 +332,89 @@ func (s *Service) Unseed(hash string) error {
 	return nil
 }
 
+type firstHopMode uint8
+
+const (
+	firstHopDispatch firstHopMode = iota
+	firstHopLocal
+)
+
+type localCall func(context.Context, string, string, []byte) ([]byte, error)
+
 func (s *Service) Call(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
+	return s.routeCall(ctx, hash, function, input, firstHopDispatch, s.callLocal)
+}
+
+func (s *Service) routeCall(ctx context.Context, hash, function string, input []byte, mode firstHopMode, local localCall) ([]byte, error) {
+	tailHop := false
+	for {
+		var out []byte
+		var err error
+		if mode == firstHopLocal {
+			ctx, out, err = s.callFirstLocalHop(ctx, hash, function, input, local)
+			mode = firstHopDispatch
+		} else {
+			ctx, hash, out, err = s.callDispatchedHop(ctx, hash, function, input, tailHop, local)
+		}
+		if err != nil {
+			if tailHop && errors.Is(err, ErrNotRunning) {
+				return nil, fmt.Errorf("%w: tail call target %s not running", ErrWorkloadFailed, types.ShortHash(hash))
+			}
+			return nil, err
+		}
+
+		tail, ok, err := wasm.ParseTailCallMarker(out)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrWorkloadFailed, err)
+		}
+		if !ok {
+			return out, nil
+		}
+		if tail.URI.Scheme != wasm.SchemeSeed {
+			return nil, fmt.Errorf("%w: tail call URI scheme %q is unsupported", ErrWorkloadFailed, tail.URI.Scheme)
+		}
+
+		tailHop = true
+		hash, function, input = tail.URI.Name, tail.URI.Function, tail.Input
+	}
+}
+
+func (s *Service) callFirstLocalHop(ctx context.Context, hash, function string, input []byte, local localCall) (context.Context, []byte, error) {
+	if chainContains(ctx, hash) {
+		return ctx, nil, fmt.Errorf("%w: %s", ErrCycle, types.ShortHash(hash))
+	}
+	ctx = withChain(ctx, hash)
+	out, err := local(ctx, hash, function, input)
+	return ctx, out, err
+}
+
+func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, input []byte, tailHop bool, local localCall) (context.Context, string, []byte, error) {
 	resolved, found := s.resolveGlobal(hash)
 	if !found {
-		return nil, fmt.Errorf("no such workload %q: %w", hash, wasm.ErrTargetNotFound)
+		if tailHop {
+			return ctx, hash, nil, fmt.Errorf("%w: tail call target %q not found", ErrWorkloadFailed, hash)
+		}
+		return ctx, hash, nil, fmt.Errorf("no such workload %q: %w", hash, wasm.ErrTargetNotFound)
 	}
 	hash = resolved
 
 	if chainContains(ctx, hash) {
-		return nil, fmt.Errorf("%w: %s", ErrCycle, types.ShortHash(hash))
+		return ctx, hash, nil, fmt.Errorf("%w: %s", ErrCycle, types.ShortHash(hash))
 	}
 	ctx = withChain(ctx, hash)
-
 	s.calls.RecordCall(hash)
 
+	out, err := s.callHop(ctx, hash, function, input, local)
+	return ctx, hash, out, err
+}
+
+func (s *Service) callHop(ctx context.Context, hash, function string, input []byte, local localCall) ([]byte, error) {
 	target, perr := s.dispatcher.Pick(hash)
 	if perr != nil {
 		return nil, fmt.Errorf("no node claims workload %s: %w", types.ShortHash(hash), ErrNotRunning)
 	}
 	isLocal := target == s.localID
-	out, err := s.attemptCall(ctx, target, isLocal, hash, function, input)
+	out, err := s.attemptCall(ctx, target, isLocal, hash, function, input, local)
 	if err == nil {
 		return out, nil
 	}
@@ -366,7 +430,7 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 		return nil, err
 	}
 	fallbackLocal := fallback == s.localID
-	out2, err2 := s.attemptCall(ctx, fallback, fallbackLocal, hash, function, input)
+	out2, err2 := s.attemptCall(ctx, fallback, fallbackLocal, hash, function, input, local)
 	if err2 == nil {
 		return out2, nil
 	}
@@ -376,9 +440,9 @@ func (s *Service) Call(ctx context.Context, hash, function string, input []byte)
 	return nil, preferStructured(err, err2)
 }
 
-func (s *Service) attemptCall(ctx context.Context, target types.PeerKey, isLocal bool, hash, function string, input []byte) ([]byte, error) {
+func (s *Service) attemptCall(ctx context.Context, target types.PeerKey, isLocal bool, hash, function string, input []byte, local localCall) ([]byte, error) {
 	if isLocal {
-		return s.callLocal(ctx, hash, function, input)
+		return local(ctx, hash, function, input)
 	}
 	return s.forwardCall(ctx, target, hash, function, input)
 }
@@ -413,6 +477,12 @@ func (s *Service) callLocal(ctx context.Context, hash, function string, input []
 	}
 	defer release()
 	return s.manager.Call(ctx, hash, function, input)
+}
+
+func (s *Service) callLocalServeHop(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
+	hopCtx, cancel := context.WithTimeout(ctx, workloadInvocationTimeout)
+	defer cancel()
+	return s.callLocal(hopCtx, hash, function, input)
 }
 
 func (s *Service) forwardCall(ctx context.Context, target types.PeerKey, hash, function string, input []byte) ([]byte, error) {
@@ -461,20 +531,44 @@ func (s *Service) Status() []WorkloadSummary {
 // transport-authenticated identity; wire-reported caller keys would be
 // spoofable.
 func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
-	info, hash, function, err := ReadHeader(stream, peerKey)
+	defer stream.Close()
+	info, chain, hash, function, err := ReadHeader(stream, peerKey)
 	if err != nil {
-		_ = stream.Close()
 		return
 	}
-	release, ok := s.budget.ReserveCall(hash)
-	if !ok {
-		s.backoff.SignalRefusal()
-		writeOverload(stream, statusOverloaded, "node memory budget exhausted")
-		_ = stream.Close()
+
+	ctx := withChainSnapshot(s.ctx, chain)
+	ctx = wasm.WithCallerInfo(ctx, info)
+	ctx, deadlineCancel := withCallerDeadline(ctx, info)
+	defer deadlineCancel()
+
+	input, err := readWorkloadInput(stream)
+	if errors.Is(err, errInputTooLarge) {
+		if err := writeResponse(stream, statusError, []byte("input too large")); err != nil {
+			s.log.Debugw("workload response write failed", zap.Error(err))
+		}
 		return
 	}
-	defer release()
-	handleWorkloadStream(s.ctx, stream, info, hash, function, s.manager, workloadInvocationTimeout)
+	if err != nil {
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		if werr := writeErrorResponse(stream, err); werr != nil {
+			s.log.Debugw("workload response write failed", zap.Error(werr))
+		}
+		return
+	}
+
+	output, err := s.routeCall(ctx, hash, function, input, firstHopLocal, s.callLocalServeHop)
+	if err != nil {
+		if werr := writeErrorResponse(stream, err); werr != nil {
+			s.log.Debugw("workload response write failed", zap.Error(werr))
+		}
+		return
+	}
+	if err := writeResponse(stream, statusOK, output); err != nil {
+		s.log.Debugw("workload response write failed", zap.Error(err))
+	}
 }
 
 func (s *Service) Signal() {

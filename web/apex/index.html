@@ -262,7 +262,7 @@
         </video>
         <p class="caption">Zero to cluster to loadtest. Errors are nodes applying backpressure.</p>
         <ul class="features">
-            <li><strong>WASM seeds.</strong> Deploy with <code>pln seed</code>; artifacts distribute peer-to-peer by hash. One host call invokes another seed by name (<code>pln://seed/&lt;name&gt;/&lt;fn&gt;</code>), so authz, routing, and policy can live inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism</a>.</li>
+            <li><strong>WASM seeds.</strong> Deploy with <code>pln seed</code>; artifacts distribute peer-to-peer by hash. A seed invokes another by host call (<code>pln://seed/&lt;name&gt;/&lt;fn&gt;</code>) or by returning a <code>tail_call</code> marker, so authz, routing, and policy can live inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism</a>.</li>
             <li><strong>Mesh services.</strong> <code>pln serve 8080 api</code> here, <code>pln connect api</code> there (or <code>pln://service/&lt;name&gt;</code> from a seed). TCP and UDP, end-to-end mTLS.</li>
             <li><strong>Static sites &amp; blobs.</strong> <code>pln seed ./public</code> publishes a site; <code>pln seed ./file</code> shares a file. Same verb across kinds; autodetected. Content-addressed, gossiped, streamed peer-to-peer over QUIC.</li>
             <li><strong>Self-organising.</strong> No scheduler, no leader, no coordinator. Topology, placement, and routing emerge from local state; calls go to the nearest, least-loaded replica, and replicas migrate toward demand.</li>

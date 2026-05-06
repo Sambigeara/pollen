@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // ingest is the first seed in the firehose chain. It timestamps the inbound
-// payload and forwards it to terminal via pln://seed/terminal/handle.
+// payload and tail-calls terminal via pln://seed/terminal/handle, so the
+// host releases this instance before routing the next hop.
 
 const std = @import("std");
 const pdk = @import("extism-pdk");
@@ -10,7 +11,6 @@ const pdk = @import("extism-pdk");
 // Pollen host functions live under extism:host/user. The PDK only declares
 // the extism:host/env imports it ships with, so we declare these directly.
 extern "extism:host/user" fn pollen_log(level: u64, msg_offset: u64) void;
-extern "extism:host/user" fn pollen_request(uri_offset: u64, input_offset: u64) u64;
 
 // WASI clock_time_get for timestamping. wazero exposes WASI to all guests,
 // so this resolves at instantiation time even though we target freestanding.
@@ -50,19 +50,25 @@ export fn handle() i32 {
         return 1;
     };
 
-    const uri_mem = plugin.allocateBytes("pln://seed/terminal/handle");
-    const input_mem = plugin.allocateBytes(payload);
-    const out_offset = pollen_request(uri_mem.offset, input_mem.offset);
-
-    if (out_offset == 0) {
-        plugin.output("{\"error\":\"downstream call failed\"}");
+    const encoder = std.base64.standard.Encoder;
+    const encoded = allocator.alloc(u8, encoder.calcSize(payload.len)) catch {
+        plugin.output("{\"error\":\"failed to encode payload\"}");
         return 1;
-    }
+    };
+    _ = encoder.encode(encoded, payload);
 
-    const out_mem = plugin.findMemory(out_offset);
-    plugin.outputMemory(out_mem);
+    const marker = std.fmt.allocPrint(
+        allocator,
+        "{{\"kind\":\"tail_call\",\"uri\":\"pln://seed/terminal/handle\",\"input\":\"{s}\"}}",
+        .{encoded},
+    ) catch {
+        plugin.output("{\"error\":\"failed to build tail call marker\"}");
+        return 1;
+    };
 
-    const log_mem = plugin.allocateBytes("ingest: forwarded to terminal");
+    plugin.output(marker);
+
+    const log_mem = plugin.allocateBytes("ingest: tail-calling terminal");
     pollen_log(log_level_info, log_mem.offset);
     return 0;
 }

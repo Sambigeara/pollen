@@ -406,7 +406,7 @@ pln join &lt;token&gt;</code></pre>
 pln call hello greet '{"name":"world"}'</code></pre>
             <p><code>pln seed</code> publishes content. The kind is autodetected from the source: a <code>.wasm</code> file becomes a workload, a directory becomes a static site, anything else becomes a blob. Pass an optional name as the second arg.</p>
             <p>Replicas land on whichever nodes have capacity and proximity. There's no scheduler; every node decides locally. Tune with <code>--min-replicas</code>, <code>--everywhere</code>, <code>--memory</code>, <code>--latency-slo</code>.</p>
-            <div class="note"><strong>Authoring.</strong> Workloads are <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism plugins</a>. Author them in Go, Rust, JavaScript, Python, C#, Zig, and more. One host call lets a workload invoke another (<code>pln://seed/&lt;name&gt;/&lt;fn&gt;</code>), so authz, routing, and policy can live inside WASM.</div>
+            <div class="note"><strong>Authoring.</strong> Workloads are <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism plugins</a>. Author them in Go, Rust, JavaScript, Python, C#, Zig, and more. A workload invokes another seed by host call (<code>pln://seed/&lt;name&gt;/&lt;fn&gt;</code>) or by returning a <code>tail_call</code> marker, so authz, routing, and policy can live inside WASM.</div>
 
             <h2 id="expose-a-service">Expose a service</h2>
             <pre><code><span class="c"># machine A</span>
