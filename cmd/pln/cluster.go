@@ -845,21 +845,6 @@ func rememberBootstrapPeers(pollenDir string, peers []*admissionv1.BootstrapPeer
 }
 
 func resolveBootstrapPeers(ctx context.Context, env *cliEnv) ([]*admissionv1.BootstrapPeer, error) {
-	cache, err := peercache.Open(env.dir)
-	if err != nil {
-		return nil, fmt.Errorf("load peer cache: %w", err)
-	}
-	if entries := cache.Snapshot(); len(entries) > 0 {
-		peers := make([]*admissionv1.BootstrapPeer, 0, len(entries))
-		for _, entry := range entries {
-			peers = append(peers, &admissionv1.BootstrapPeer{
-				PeerPub: entry.PeerKey.Bytes(),
-				Addrs:   slices.Clone(entry.Addrs),
-			})
-		}
-		return peers, nil
-	}
-
 	resp, err := env.client.GetBootstrapInfo(ctx, connect.NewRequest(&controlv1.GetBootstrapInfoRequest{}))
 	if err != nil {
 		if connect.CodeOf(err) != connect.CodeUnavailable {
@@ -871,21 +856,24 @@ func resolveBootstrapPeers(ctx context.Context, env *cliEnv) ([]*admissionv1.Boo
 		return nil, unreachableErr("daemon is not running; run `pln up -d` to start the local node before issuing invites")
 	}
 
-	if rec := resp.Msg.GetRecommended(); rec != nil && rec.GetPeer() != nil && len(rec.GetAddrs()) > 0 {
-		return []*admissionv1.BootstrapPeer{{
-			PeerPub: append([]byte(nil), rec.GetPeer().GetPeerPub()...),
-			Addrs:   append([]string(nil), rec.GetAddrs()...),
-		}}, nil
-	}
-
-	self := resp.Msg.GetSelf()
-	if self == nil || self.GetPeer() == nil || len(self.GetAddrs()) == 0 {
+	peers := resp.Msg.GetPeers()
+	if len(peers) == 0 {
 		return nil, errors.New("no bootstrap peer addresses available")
 	}
-	return []*admissionv1.BootstrapPeer{{
-		PeerPub: append([]byte(nil), self.GetPeer().GetPeerPub()...),
-		Addrs:   append([]string(nil), self.GetAddrs()...),
-	}}, nil
+	out := make([]*admissionv1.BootstrapPeer, 0, len(peers))
+	for _, p := range peers {
+		if p.GetPeer() == nil || len(p.GetAddrs()) == 0 {
+			continue
+		}
+		out = append(out, &admissionv1.BootstrapPeer{
+			PeerPub: append([]byte(nil), p.GetPeer().GetPeerPub()...),
+			Addrs:   append([]string(nil), p.GetAddrs()...),
+		})
+	}
+	if len(out) == 0 {
+		return nil, errors.New("no bootstrap peer addresses available")
+	}
+	return out, nil
 }
 
 func resolveJoinToken(ctx context.Context, priv ed25519.PrivateKey, encoded string) (*admissionv1.JoinToken, error) {

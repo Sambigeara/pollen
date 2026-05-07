@@ -86,17 +86,11 @@ func VerifyInviteToken(token *admissionv1.InviteToken, expectedSubject ed25519.P
 	}
 
 	claims := token.GetClaims()
-	issuer := claims.GetIssuer()
-	if IsCertExpired(issuer, now) {
-		return fmt.Errorf("invite token issuer: %w", ErrCertExpired)
-	}
-
-	issuerPub := issuer.GetClaims().GetSubjectPub()
 	msg, err := signaturePayload(claims)
 	if err != nil {
 		return err
 	}
-	if err := verifyPayload(ed25519.PublicKey(issuerPub), msg, token.GetSignature(), sigContextInvite); err != nil {
+	if err := verifyPayload(ed25519.PublicKey(claims.GetIssuerPub()), msg, token.GetSignature(), sigContextInvite); err != nil {
 		return errors.New("invite token signature invalid")
 	}
 

@@ -85,8 +85,10 @@ message BootstrapPeerInfo {
 }
 
 message GetBootstrapInfoResponse {
-  BootstrapPeerInfo self = 1;
-  BootstrapPeerInfo recommended = 2;
+  // peers covers the distinct networks this node sees. A joiner only
+  // needs to reach one — the daemon picks one representative per network
+  // (LAN, public, etc.) and keeps the list short by construction.
+  repeated BootstrapPeerInfo peers = 1;
 }
 
 message GetStatusRequest {}

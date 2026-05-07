@@ -503,9 +503,26 @@ func IssueDelegationCert(
 
 	return &admissionv1.DelegationCert{
 		Claims:    claims,
-		Chain:     parentChain,
+		Chain:     stripChainEntries(parentChain),
 		Signature: sig,
 	}, nil
+}
+
+// stripChainEntries returns parents with each entry's own Chain cleared.
+// verifyDelegationCertChain walks one level via cert.GetChain(), so leaving
+// nested chains populated duplicates every ancestor at every level.
+func stripChainEntries(parents []*admissionv1.DelegationCert) []*admissionv1.DelegationCert {
+	if len(parents) == 0 {
+		return nil
+	}
+	out := make([]*admissionv1.DelegationCert, len(parents))
+	for i, p := range parents {
+		out[i] = &admissionv1.DelegationCert{
+			Claims:    p.GetClaims(),
+			Signature: p.GetSignature(),
+		}
+	}
+	return out
 }
 
 func VerifyDelegationCert(
@@ -675,18 +692,14 @@ func VerifyJoinToken(token *admissionv1.JoinToken, expectedSubject ed25519.Publi
 
 	tokenClaims := token.GetClaims()
 
-	// Issuer chain integrity is verified by the member cert chain walk below
-	// (memberCert.Chain includes the issuer cert). Here we only need the time check.
-	if IsCertExpired(tokenClaims.GetIssuer(), now) {
-		return nil, fmt.Errorf("join token issuer: %w", ErrCertExpired)
-	}
-
-	issuerPub := tokenClaims.GetIssuer().GetClaims().GetSubjectPub()
+	// The member cert is signed by the issuer and its Chain walks to root,
+	// so we verify the token signature against IssuerPub directly and let
+	// the chain walk below establish trust and expiry of the issuing line.
 	msg, err := signaturePayload(tokenClaims)
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyPayload(ed25519.PublicKey(issuerPub), msg, token.GetSignature(), sigContextJoinClaims); err != nil {
+	if err := verifyPayload(ed25519.PublicKey(tokenClaims.GetIssuerPub()), msg, token.GetSignature(), sigContextJoinClaims); err != nil {
 		return nil, errors.New("join token signature invalid")
 	}
 

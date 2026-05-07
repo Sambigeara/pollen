@@ -301,7 +301,7 @@ func (x *BootstrapPeer) GetAddrs() []string {
 type JoinTokenClaims struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TokenId       string                 `protobuf:"bytes,1,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
-	Issuer        *DelegationCert        `protobuf:"bytes,2,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	IssuerPub     []byte                 `protobuf:"bytes,2,opt,name=issuer_pub,json=issuerPub,proto3" json:"issuer_pub,omitempty"`
 	MemberCert    *DelegationCert        `protobuf:"bytes,3,opt,name=member_cert,json=memberCert,proto3" json:"member_cert,omitempty"`
 	Bootstrap     []*BootstrapPeer       `protobuf:"bytes,4,rep,name=bootstrap,proto3" json:"bootstrap,omitempty"`
 	IssuedAtUnix  int64                  `protobuf:"varint,5,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
@@ -347,9 +347,9 @@ func (x *JoinTokenClaims) GetTokenId() string {
 	return ""
 }
 
-func (x *JoinTokenClaims) GetIssuer() *DelegationCert {
+func (x *JoinTokenClaims) GetIssuerPub() []byte {
 	if x != nil {
-		return x.Issuer
+		return x.IssuerPub
 	}
 	return nil
 }
@@ -437,7 +437,7 @@ func (x *JoinToken) GetSignature() []byte {
 type InviteTokenClaims struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	TokenId              string                 `protobuf:"bytes,1,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
-	Issuer               *DelegationCert        `protobuf:"bytes,2,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	IssuerPub            []byte                 `protobuf:"bytes,2,opt,name=issuer_pub,json=issuerPub,proto3" json:"issuer_pub,omitempty"`
 	Bootstrap            []*BootstrapPeer       `protobuf:"bytes,3,rep,name=bootstrap,proto3" json:"bootstrap,omitempty"`
 	SubjectPub           []byte                 `protobuf:"bytes,4,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
 	IssuedAtUnix         int64                  `protobuf:"varint,5,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
@@ -485,9 +485,9 @@ func (x *InviteTokenClaims) GetTokenId() string {
 	return ""
 }
 
-func (x *InviteTokenClaims) GetIssuer() *DelegationCert {
+func (x *InviteTokenClaims) GetIssuerPub() []byte {
 	if x != nil {
-		return x.Issuer
+		return x.IssuerPub
 	}
 	return nil
 }
@@ -614,10 +614,11 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\tsignature\x18\x03 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"Y\n" +
 	"\rBootstrapPeer\x12\"\n" +
 	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\x12$\n" +
-	"\x05addrs\x18\x02 \x03(\tB\x0e\xbaH\v\x92\x01\b\b\x01\"\x04r\x02\x10\x01R\x05addrs\"\xd9\x02\n" +
+	"\x05addrs\x18\x02 \x03(\tB\x0e\xbaH\v\x92\x01\b\b\x01\"\x04r\x02\x10\x01R\x05addrs\"\xbc\x02\n" +
 	"\x0fJoinTokenClaims\x12#\n" +
-	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12C\n" +
-	"\x06issuer\x18\x02 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\x06issuer\x12L\n" +
+	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12&\n" +
+	"\n" +
+	"issuer_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\tissuerPub\x12L\n" +
 	"\vmember_cert\x18\x03 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\n" +
 	"memberCert\x12@\n" +
 	"\tbootstrap\x18\x04 \x03(\v2\".pollen.admission.v1.BootstrapPeerR\tbootstrap\x12$\n" +
@@ -625,10 +626,11 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\x0fexpires_at_unix\x18\x06 \x01(\x03R\rexpiresAtUnix\"x\n" +
 	"\tJoinToken\x12D\n" +
 	"\x06claims\x18\x01 \x01(\v2$.pollen.admission.v1.JoinTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
-	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xb3\x03\n" +
+	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\x96\x03\n" +
 	"\x11InviteTokenClaims\x12#\n" +
-	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12C\n" +
-	"\x06issuer\x18\x02 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\x06issuer\x12J\n" +
+	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12&\n" +
+	"\n" +
+	"issuer_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\tissuerPub\x12J\n" +
 	"\tbootstrap\x18\x03 \x03(\v2\".pollen.admission.v1.BootstrapPeerB\b\xbaH\x05\x92\x01\x02\b\x01R\tbootstrap\x12+\n" +
 	"\vsubject_pub\x18\x04 \x01(\fB\n" +
 	"\xbaH\a\xd8\x01\x01z\x02h R\n" +
@@ -672,19 +674,17 @@ var file_pollen_admission_v1_admission_proto_depIdxs = []int32{
 	0,  // 1: pollen.admission.v1.DelegationCertClaims.capabilities:type_name -> pollen.admission.v1.Capabilities
 	1,  // 2: pollen.admission.v1.DelegationCert.claims:type_name -> pollen.admission.v1.DelegationCertClaims
 	2,  // 3: pollen.admission.v1.DelegationCert.chain:type_name -> pollen.admission.v1.DelegationCert
-	2,  // 4: pollen.admission.v1.JoinTokenClaims.issuer:type_name -> pollen.admission.v1.DelegationCert
-	2,  // 5: pollen.admission.v1.JoinTokenClaims.member_cert:type_name -> pollen.admission.v1.DelegationCert
-	3,  // 6: pollen.admission.v1.JoinTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
-	4,  // 7: pollen.admission.v1.JoinToken.claims:type_name -> pollen.admission.v1.JoinTokenClaims
-	2,  // 8: pollen.admission.v1.InviteTokenClaims.issuer:type_name -> pollen.admission.v1.DelegationCert
-	3,  // 9: pollen.admission.v1.InviteTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
-	8,  // 10: pollen.admission.v1.InviteTokenClaims.attributes:type_name -> google.protobuf.Struct
-	6,  // 11: pollen.admission.v1.InviteToken.claims:type_name -> pollen.admission.v1.InviteTokenClaims
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	2,  // 4: pollen.admission.v1.JoinTokenClaims.member_cert:type_name -> pollen.admission.v1.DelegationCert
+	3,  // 5: pollen.admission.v1.JoinTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
+	4,  // 6: pollen.admission.v1.JoinToken.claims:type_name -> pollen.admission.v1.JoinTokenClaims
+	3,  // 7: pollen.admission.v1.InviteTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
+	8,  // 8: pollen.admission.v1.InviteTokenClaims.attributes:type_name -> google.protobuf.Struct
+	6,  // 9: pollen.admission.v1.InviteToken.claims:type_name -> pollen.admission.v1.InviteTokenClaims
+	10, // [10:10] is the sub-list for method output_type
+	10, // [10:10] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_pollen_admission_v1_admission_proto_init() }

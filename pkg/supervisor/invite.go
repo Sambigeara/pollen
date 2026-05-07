@@ -24,9 +24,9 @@ const (
 )
 
 func (n *Supervisor) forwardInviteToAdmin(ctx context.Context, joinerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (*meshv1.InviteRedeemResponse, error) {
-	issuerPub := req.GetToken().GetClaims().GetIssuer().GetClaims().GetSubjectPub()
+	issuerPub := req.GetToken().GetClaims().GetIssuerPub()
 	if len(issuerPub) != ed25519.PublicKeySize {
-		return nil, errors.New("invite token missing issuer")
+		return nil, errors.New("invite token missing issuer pub")
 	}
 	issuerKey := types.PeerKeyFromBytes(issuerPub)
 

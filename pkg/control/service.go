@@ -253,39 +253,9 @@ func (s *Service) Shutdown(_ context.Context, _ *controlv1.ShutdownRequest) (*co
 
 func (s *Service) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootstrapInfoRequest) (*controlv1.GetBootstrapInfoResponse, error) {
 	snap := s.state.Snapshot()
-	rec, ok := snap.Nodes[snap.LocalID]
-	if !ok {
-		return &controlv1.GetBootstrapInfoResponse{}, nil
-	}
 	return &controlv1.GetBootstrapInfoResponse{
-		Self:        nodeBootstrapInfo(snap.LocalID, rec),
-		Recommended: s.pickRecommendedPeer(snap),
+		Peers: pickBootstrapPeers(snap, time.Now()),
 	}, nil
-}
-
-func (s *Service) pickRecommendedPeer(snap state.Snapshot) *controlv1.BootstrapPeerInfo {
-	var candidates []types.PeerKey
-	for peerID, nv := range snap.Nodes {
-		hasAddr := len(nv.IPs) > 0 || nv.ObservedExternalIP != ""
-		if peerID != snap.LocalID && nv.PubliclyAccessible && hasAddr && nv.LocalPort > 0 {
-			candidates = append(candidates, peerID)
-		}
-	}
-	if len(candidates) > 0 {
-		slices.SortFunc(candidates, types.PeerKey.Compare)
-		best := candidates[0]
-		return nodeBootstrapInfo(best, snap.Nodes[best])
-	}
-
-	localNV, ok := snap.Nodes[snap.LocalID]
-	if !ok {
-		return nil
-	}
-	hasAddr := len(localNV.IPs) > 0 || localNV.ObservedExternalIP != ""
-	if !hasAddr || localNV.LocalPort == 0 {
-		return nil
-	}
-	return nodeBootstrapInfo(snap.LocalID, localNV)
 }
 
 func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
@@ -1006,24 +976,6 @@ func serviceNameOrDefault(name string, port uint32) string {
 		return name
 	}
 	return strconv.FormatUint(uint64(port), 10)
-}
-
-func nodeBootstrapInfo(peerID types.PeerKey, nv state.NodeView) *controlv1.BootstrapPeerInfo {
-	var addrs []string
-	if nv.ObservedExternalIP != "" {
-		port := nv.LocalPort
-		if nv.ExternalPort != 0 {
-			port = nv.ExternalPort
-		}
-		addrs = append(addrs, net.JoinHostPort(nv.ObservedExternalIP, strconv.Itoa(int(port))))
-	}
-	for _, ip := range nv.IPs {
-		addrs = append(addrs, net.JoinHostPort(ip, strconv.Itoa(int(nv.LocalPort))))
-	}
-	return &controlv1.BootstrapPeerInfo{
-		Peer:  &controlv1.NodeRef{PeerPub: peerID.Bytes()},
-		Addrs: addrs,
-	}
 }
 
 func nodeViewAddr(nv state.NodeView) string {

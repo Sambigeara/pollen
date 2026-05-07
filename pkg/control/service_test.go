@@ -650,10 +650,10 @@ func TestGetBootstrapInfoEmpty(t *testing.T) {
 	h := newHarness(t)
 	resp, err := h.svc.GetBootstrapInfo(context.Background(), &controlv1.GetBootstrapInfoRequest{})
 	require.NoError(t, err)
-	require.Nil(t, resp.Self)
+	require.Empty(t, resp.Peers)
 }
 
-func TestGetBootstrapInfoWithSelf(t *testing.T) {
+func TestGetBootstrapInfoSelfOnly(t *testing.T) {
 	h := newHarness(t)
 	pk := testPeerKey(1)
 	h.state.snap.LocalID = pk
@@ -661,12 +661,12 @@ func TestGetBootstrapInfoWithSelf(t *testing.T) {
 
 	resp, err := h.svc.GetBootstrapInfo(context.Background(), &controlv1.GetBootstrapInfoRequest{})
 	require.NoError(t, err)
-	require.NotNil(t, resp.Self)
-	require.Equal(t, pk.Bytes(), resp.Self.Peer.PeerPub)
-	require.Equal(t, []string{"1.2.3.4:5000"}, resp.Self.Addrs)
+	require.Len(t, resp.Peers, 1)
+	require.Equal(t, pk.Bytes(), resp.Peers[0].Peer.PeerPub)
+	require.Equal(t, []string{"1.2.3.4:5000"}, resp.Peers[0].Addrs)
 }
 
-func TestGetBootstrapInfoRecommendedPeer(t *testing.T) {
+func TestGetBootstrapInfoSpansLANAndPublic(t *testing.T) {
 	h := newHarness(t)
 	local := testPeerKey(1)
 	remote := testPeerKey(2)
@@ -676,8 +676,15 @@ func TestGetBootstrapInfoRecommendedPeer(t *testing.T) {
 
 	resp, err := h.svc.GetBootstrapInfo(context.Background(), &controlv1.GetBootstrapInfoRequest{})
 	require.NoError(t, err)
-	require.NotNil(t, resp.Recommended)
-	require.Equal(t, remote.Bytes(), resp.Recommended.Peer.PeerPub)
+	require.Len(t, resp.Peers, 2, "one bootstrap entry per network bucket")
+
+	gotPubs := map[string]string{}
+	for _, p := range resp.Peers {
+		require.Len(t, p.Addrs, 1, "each entry carries only the address relevant to its network")
+		gotPubs[string(p.Peer.PeerPub)] = p.Addrs[0]
+	}
+	require.Equal(t, "10.0.0.1:5000", gotPubs[string(local.Bytes())])
+	require.Equal(t, "1.2.3.4:5000", gotPubs[string(remote.Bytes())])
 }
 
 func TestGetStatusBasic(t *testing.T) {

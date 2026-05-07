@@ -68,9 +68,17 @@ func (s *DelegationSigner) IsRoot() bool {
 	return s.root
 }
 
-// MatchesIssuer reports whether this signer holds the subject key for cert.
-func (s *DelegationSigner) MatchesIssuer(cert *admissionv1.DelegationCert) bool {
-	return bytes.Equal(s.issuer.GetClaims().GetSubjectPub(), cert.GetClaims().GetSubjectPub())
+// IssuerPub is the subject pub of this signer's own cert. Tokens carry it
+// so verifiers and forwarders can authenticate against the issuing key
+// without embedding the full cert.
+func (s *DelegationSigner) IssuerPub() ed25519.PublicKey {
+	return ed25519.PublicKey(s.issuer.GetClaims().GetSubjectPub())
+}
+
+// IssuerCert returns the signer's own cert. Used by callers that need the
+// issuer's expiry or chain (e.g. redemption-side validity checks).
+func (s *DelegationSigner) IssuerCert() *admissionv1.DelegationCert {
+	return s.issuer
 }
 
 func (s *DelegationSigner) IssueInviteToken(
@@ -93,7 +101,7 @@ func (s *DelegationSigner) IssueInviteToken(
 
 	claims := &admissionv1.InviteTokenClaims{
 		TokenId:              uuid.NewString(),
-		Issuer:               s.issuer,
+		IssuerPub:            s.IssuerPub(),
 		Bootstrap:            bootstrap,
 		SubjectPub:           subject,
 		IssuedAtUnix:         now.Unix(),
@@ -156,7 +164,7 @@ func (s *DelegationSigner) IssueJoinToken(
 
 	claims := &admissionv1.JoinTokenClaims{
 		TokenId:       uuid.NewString(),
-		Issuer:        s.issuer,
+		IssuerPub:     s.IssuerPub(),
 		MemberCert:    memberCert,
 		Bootstrap:     bootstrap,
 		IssuedAtUnix:  now.Unix(),

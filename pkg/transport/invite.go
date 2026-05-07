@@ -4,6 +4,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -243,8 +244,11 @@ func ProcessInviteRedeem(
 	}
 
 	claims := req.GetToken().GetClaims()
-	if signer == nil || !signer.MatchesIssuer(claims.GetIssuer()) {
+	if signer == nil || !bytes.Equal(signer.IssuerPub(), claims.GetIssuerPub()) {
 		return &meshv1.InviteRedeemResponse{Reason: "invite token issuer is not local signer"}
+	}
+	if auth.IsCertExpired(signer.IssuerCert(), now) {
+		return &meshv1.InviteRedeemResponse{Reason: "issuer cert expired"}
 	}
 
 	ttl := inviteRedeemTTL
@@ -304,7 +308,7 @@ func (m *QUICTransport) handleInviteRedeem(ctx context.Context, stream *quic.Str
 
 	var resp *meshv1.InviteRedeemResponse
 	switch {
-	case signer != nil && signer.MatchesIssuer(req.GetToken().GetClaims().GetIssuer()):
+	case signer != nil && bytes.Equal(signer.IssuerPub(), req.GetToken().GetClaims().GetIssuerPub()):
 		resp = ProcessInviteRedeem(signer, consumer, m.membershipTTL, peerKey, req)
 	case forwarder != nil:
 		var err error

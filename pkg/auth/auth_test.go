@@ -953,3 +953,43 @@ func TestValidateAttributesSizeLimit(t *testing.T) {
 	require.NoError(t, err)
 	require.ErrorContains(t, auth.ValidateAttributes(bigStruct), "attributes too large")
 }
+
+func TestIssueDelegationCert_StripsNestedChainEntries(t *testing.T) {
+	now := mockTime
+	rootPub, rootPriv := newKeyPair(t)
+	intermediatePub, intermediatePriv := newKeyPair(t)
+	leafPub, _ := newKeyPair(t)
+
+	rootCert, err := auth.IssueDelegationCert(
+		rootPriv, nil, rootPub, auth.FullCapabilities(),
+		now, now.Add(time.Hour), time.Time{},
+	)
+	require.NoError(t, err)
+
+	intermediateCert, err := auth.IssueDelegationCert(
+		rootPriv,
+		[]*admissionv1.DelegationCert{rootCert},
+		intermediatePub, auth.FullCapabilities(),
+		now, now.Add(time.Hour), time.Time{},
+	)
+	require.NoError(t, err)
+	require.Len(t, intermediateCert.GetChain(), 1)
+	require.Empty(t, intermediateCert.GetChain()[0].GetChain(), "embedded root must not carry its own chain")
+
+	leafParents := []*admissionv1.DelegationCert{intermediateCert, rootCert}
+	leafCert, err := auth.IssueDelegationCert(
+		intermediatePriv,
+		leafParents,
+		leafPub, auth.LeafCapabilities(),
+		now, now.Add(time.Hour), time.Time{},
+	)
+	require.NoError(t, err)
+	require.Len(t, leafCert.GetChain(), 2)
+	for _, parent := range leafCert.GetChain() {
+		require.Empty(t, parent.GetChain(), "every embedded parent must have its chain stripped")
+	}
+
+	require.NoError(t, auth.VerifyDelegationCert(leafCert, rootPub, now, leafPub))
+
+	require.NotEmpty(t, intermediateCert.GetChain(), "callers' input chain must not be mutated")
+}

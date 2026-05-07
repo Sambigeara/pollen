@@ -338,13 +338,10 @@ func (m *JoinTokenClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x1a
 	}
-	if m.Issuer != nil {
-		size, err := m.Issuer.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+	if len(m.IssuerPub) > 0 {
+		i -= len(m.IssuerPub)
+		copy(dAtA[i:], m.IssuerPub)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.IssuerPub)))
 		i--
 		dAtA[i] = 0x12
 	}
@@ -482,13 +479,10 @@ func (m *InviteTokenClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			dAtA[i] = 0x1a
 		}
 	}
-	if m.Issuer != nil {
-		size, err := m.Issuer.MarshalToSizedBufferVT(dAtA[:i])
-		if err != nil {
-			return 0, err
-		}
-		i -= size
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+	if len(m.IssuerPub) > 0 {
+		i -= len(m.IssuerPub)
+		copy(dAtA[i:], m.IssuerPub)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.IssuerPub)))
 		i--
 		dAtA[i] = 0x12
 	}
@@ -663,8 +657,8 @@ func (m *JoinTokenClaims) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.Issuer != nil {
-		l = m.Issuer.SizeVT()
+	l = len(m.IssuerPub)
+	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	if m.MemberCert != nil {
@@ -715,8 +709,8 @@ func (m *InviteTokenClaims) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.Issuer != nil {
-		l = m.Issuer.SizeVT()
+	l = len(m.IssuerPub)
+	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	if len(m.Bootstrap) > 0 {
@@ -1476,9 +1470,9 @@ func (m *JoinTokenClaims) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Issuer", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field IssuerPub", wireType)
 			}
-			var msglen int
+			var byteLen int
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return protohelpers.ErrIntOverflow
@@ -1488,26 +1482,24 @@ func (m *JoinTokenClaims) UnmarshalVT(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				msglen |= int(b&0x7F) << shift
+				byteLen |= int(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
 			}
-			if msglen < 0 {
+			if byteLen < 0 {
 				return protohelpers.ErrInvalidLength
 			}
-			postIndex := iNdEx + msglen
+			postIndex := iNdEx + byteLen
 			if postIndex < 0 {
 				return protohelpers.ErrInvalidLength
 			}
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.Issuer == nil {
-				m.Issuer = &DelegationCert{}
-			}
-			if err := m.Issuer.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-				return err
+			m.IssuerPub = append(m.IssuerPub[:0], dAtA[iNdEx:postIndex]...)
+			if m.IssuerPub == nil {
+				m.IssuerPub = []byte{}
 			}
 			iNdEx = postIndex
 		case 3:
@@ -1824,9 +1816,9 @@ func (m *InviteTokenClaims) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Issuer", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field IssuerPub", wireType)
 			}
-			var msglen int
+			var byteLen int
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return protohelpers.ErrIntOverflow
@@ -1836,26 +1828,24 @@ func (m *InviteTokenClaims) UnmarshalVT(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				msglen |= int(b&0x7F) << shift
+				byteLen |= int(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
 			}
-			if msglen < 0 {
+			if byteLen < 0 {
 				return protohelpers.ErrInvalidLength
 			}
-			postIndex := iNdEx + msglen
+			postIndex := iNdEx + byteLen
 			if postIndex < 0 {
 				return protohelpers.ErrInvalidLength
 			}
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.Issuer == nil {
-				m.Issuer = &DelegationCert{}
-			}
-			if err := m.Issuer.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-				return err
+			m.IssuerPub = append(m.IssuerPub[:0], dAtA[iNdEx:postIndex]...)
+			if m.IssuerPub == nil {
+				m.IssuerPub = []byte{}
 			}
 			iNdEx = postIndex
 		case 3:

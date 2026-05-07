@@ -45,7 +45,7 @@ message BootstrapPeer {
 
 message JoinTokenClaims {
   string token_id = 1 [(buf.validate.field).string = {uuid: true}];
-  DelegationCert issuer = 2 [(buf.validate.field).required = true];
+  bytes issuer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
   DelegationCert member_cert = 3 [(buf.validate.field).required = true];
   repeated BootstrapPeer bootstrap = 4;
   int64 issued_at_unix = 5;
@@ -59,7 +59,7 @@ message JoinToken {
 
 message InviteTokenClaims {
   string token_id = 1 [(buf.validate.field).string = {uuid: true}];
-  DelegationCert issuer = 2 [(buf.validate.field).required = true];
+  bytes issuer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
   repeated BootstrapPeer bootstrap = 3 [(buf.validate.field).repeated.min_items = 1];
   bytes subject_pub = 4 [
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
