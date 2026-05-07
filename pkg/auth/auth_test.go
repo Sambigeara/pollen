@@ -993,3 +993,73 @@ func TestIssueDelegationCert_StripsNestedChainEntries(t *testing.T) {
 
 	require.NotEmpty(t, intermediateCert.GetChain(), "callers' input chain must not be mutated")
 }
+
+func TestIssueDelegationCert_RejectsCapsExceedingParent(t *testing.T) {
+	now := mockTime
+	rootPub, rootPriv := newKeyPair(t)
+	delegatedPub, delegatedPriv := newKeyPair(t)
+	childPub, _ := newKeyPair(t)
+
+	rootCert, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, auth.FullCapabilities(),
+		now, now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	// Delegated admin has CanDelegate but lacks CanAdmit, with a finite depth budget.
+	delegated := &admissionv1.Capabilities{CanDelegate: true, CanAdmit: false, MaxDepth: 5}
+	delegatedCert, err := auth.IssueDelegationCert(rootPriv,
+		[]*admissionv1.DelegationCert{rootCert}, delegatedPub, delegated,
+		now, now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	parents := []*admissionv1.DelegationCert{delegatedCert, rootCert}
+
+	cases := []struct {
+		caps *admissionv1.Capabilities
+		name string
+		want string
+	}{
+		{
+			name: "child_can_admit_parent_lacks_it",
+			caps: &admissionv1.Capabilities{CanAdmit: true},
+			want: "CanAdmit",
+		},
+		{
+			name: "child_max_depth_exceeds_parent",
+			caps: &admissionv1.Capabilities{CanDelegate: true, MaxDepth: 6},
+			want: "MaxDepth",
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := auth.IssueDelegationCert(delegatedPriv, parents, childPub, tt.caps,
+				now, now.Add(time.Hour), time.Time{})
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+
+	// Within-parent caps must still succeed (equal MaxDepth allowed).
+	_, err = auth.IssueDelegationCert(delegatedPriv, parents, childPub,
+		&admissionv1.Capabilities{CanDelegate: true, MaxDepth: 5},
+		now, now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+}
+
+func TestIssueDelegationCert_RejectsParentWithoutCanDelegate(t *testing.T) {
+	now := mockTime
+	rootPub, rootPriv := newKeyPair(t)
+	leafPub, leafPriv := newKeyPair(t)
+	childPub, _ := newKeyPair(t)
+
+	rootCert, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, auth.FullCapabilities(),
+		now, now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+	leafCert, err := auth.IssueDelegationCert(rootPriv,
+		[]*admissionv1.DelegationCert{rootCert}, leafPub, auth.LeafCapabilities(),
+		now, now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	_, err = auth.IssueDelegationCert(leafPriv,
+		[]*admissionv1.DelegationCert{leafCert, rootCert}, childPub, auth.LeafCapabilities(),
+		now, now.Add(time.Hour), time.Time{})
+	require.ErrorContains(t, err, "CanDelegate")
+}

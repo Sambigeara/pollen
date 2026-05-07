@@ -461,12 +461,16 @@ func IssueDelegationCert(
 	signerPub := signerPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	if len(parentChain) > 0 {
-		parentExpiry := time.Unix(parentChain[0].GetClaims().GetNotAfterUnix(), 0)
+		parent := parentChain[0]
+		parentExpiry := time.Unix(parent.GetClaims().GetNotAfterUnix(), 0)
 		if notAfter.After(parentExpiry) {
 			notAfter = parentExpiry
 		}
-		if !bytes.Equal(parentChain[0].GetClaims().GetSubjectPub(), signerPub) {
+		if !bytes.Equal(parent.GetClaims().GetSubjectPub(), signerPub) {
 			return nil, errors.New("signer key does not match parent cert subject")
+		}
+		if err := validateChildCapabilities(caps, parent.GetClaims().GetCapabilities()); err != nil {
+			return nil, err
 		}
 	}
 
@@ -506,6 +510,22 @@ func IssueDelegationCert(
 		Chain:     stripChainEntries(parentChain),
 		Signature: sig,
 	}, nil
+}
+
+// validateChildCapabilities enforces that an issued cert cannot grant
+// itself capabilities its issuer lacks. Skipped only at root self-issuance
+// (parent == nil), where the root defines its own ceiling.
+func validateChildCapabilities(child, parent *admissionv1.Capabilities) error {
+	if !parent.GetCanDelegate() {
+		return errors.New("parent cert lacks CanDelegate capability")
+	}
+	if child.GetCanAdmit() && !parent.GetCanAdmit() {
+		return errors.New("child capabilities exceed parent: CanAdmit")
+	}
+	if child.GetMaxDepth() > parent.GetMaxDepth() {
+		return errors.New("child capabilities exceed parent: MaxDepth")
+	}
+	return nil
 }
 
 // stripChainEntries returns parents with each entry's own Chain cleared.
