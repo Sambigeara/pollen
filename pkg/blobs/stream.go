@@ -71,6 +71,13 @@ func (s *Service) fetchFrom(ctx context.Context, hash string, peer types.PeerKey
 		return fmt.Errorf("peer %s does not have blob", peer.Short())
 	}
 
+	// Reject before consuming the body. Storing first then evicting
+	// would briefly land unentitled bytes on disk, defeating the
+	// at-rest invariant Phase 3 will rely on.
+	if err := s.MayStore(hash); err != nil {
+		return fmt.Errorf("local cert not entitled to hold blob %s: %w", hash[:min(hashDisplayLen, len(hash))], err)
+	}
+
 	gotHash, err := s.store.Put(stream)
 	if err != nil {
 		return fmt.Errorf("store blob: %w", err)

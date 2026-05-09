@@ -48,8 +48,8 @@ func TestPrune_EvictsOrphansKeepsReferenced(t *testing.T) {
 	store, err := cas.New(dir)
 	require.NoError(t, err)
 
-	keepHash := putAged(t, store, dir, "keep-me", -time.Hour)
-	orphanHash := putAged(t, store, dir, "orphan", -time.Hour)
+	keepHash := putAged(t, store, dir, "keep-me")
+	orphanHash := putAged(t, store, dir, "orphan")
 
 	svc := &Service{store: store, local: map[string]struct{}{keepHash: {}, orphanHash: {}}}
 
@@ -93,12 +93,15 @@ func TestPrune_ZeroGraceEvictsImmediately(t *testing.T) {
 	require.False(t, store.Has(hash))
 }
 
-func putAged(t *testing.T, store *cas.Store, dir, content string, age time.Duration) string {
+// putAged stamps the file mtime an hour in the past so prune's grace
+// window can't protect it. Callers always want this so the parameter is
+// implicit.
+func putAged(t *testing.T, store *cas.Store, dir, content string) string {
 	t.Helper()
 	hash, err := store.Put(strings.NewReader(content))
 	require.NoError(t, err)
 	path := filepath.Join(dir, "cas", hash[:2], hash)
-	when := time.Now().Add(age)
+	when := time.Now().Add(-time.Hour)
 	require.NoError(t, os.Chtimes(path, when, when))
 	return hash
 }

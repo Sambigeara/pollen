@@ -180,6 +180,33 @@ func (s Snapshot) PeersWithBlob(hash string) []types.PeerKey {
 	return out
 }
 
+// BlobEntitlements returns every spec auth that directly references hash
+// (workload-spec hash, blob-spec digest, or static-spec manifest digest).
+// Each returned auth is a candidate entitlement: a node may hold the
+// bytes if its cert satisfies any one of them. The set is union, not
+// intersection: revoking one publisher's entitlement only matters if it
+// was the last reference standing.
+//
+// Nested static-manifest paths are not surfaced here; that requires
+// reading the manifest blob, which the snapshot has no access to.
+// Callers needing nested entitlement (blobs.Service.MayStore) overlay
+// the manifest-derived set on top.
+func (s Snapshot) BlobEntitlements(hash string) []*admissionv1.SpecAuth {
+	var out []*admissionv1.SpecAuth
+	if sv, ok := s.Specs[hash]; ok && sv.Auth != nil {
+		out = append(out, sv.Auth)
+	}
+	if bv, ok := s.BlobSpecs[hash]; ok && bv.Auth != nil {
+		out = append(out, bv.Auth)
+	}
+	for _, sv := range s.StaticSpecs {
+		if sv.Spec.ManifestDigest == hash && sv.Auth != nil {
+			out = append(out, sv.Auth)
+		}
+	}
+	return out
+}
+
 func (s Snapshot) BlobByName(name string) (string, BlobSpecView, bool) {
 	var bestDigest string
 	var bestView BlobSpecView

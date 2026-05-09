@@ -212,7 +212,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 
 	streamAdapter := &streamOpenAdapter{t: m}
 
-	blobsSvc, err := blobs.New(pollenDir, self, streamAdapter, stateStore)
+	blobsSvc, err := blobs.New(pollenDir, self, streamAdapter, stateStore, runtimeGate)
 	if err != nil {
 		return nil, fmt.Errorf("create blob store: %w", err)
 	}
