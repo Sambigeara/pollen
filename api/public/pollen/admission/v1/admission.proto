@@ -75,3 +75,69 @@ message InviteToken {
   InviteTokenClaims claims = 1 [(buf.validate.field).required = true];
   bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
 }
+
+message SpecAuth {
+  ResourceID resource = 1 [(buf.validate.field).required = true];
+  Predicate policy = 2;
+  bytes body_hash = 3 [(buf.validate.field).bytes = {len: 32}];
+  DelegationCert publisher = 4 [(buf.validate.field).required = true];
+  bytes signature = 5 [(buf.validate.field).bytes = {len: 64}];
+  bool deleted = 6;
+}
+
+message ResourceID {
+  oneof body {
+    SeedID seed = 1;
+    BlobID blob = 2;
+    StaticID static = 3;
+    ServiceID service = 4;
+  }
+}
+
+message SeedID {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+  bytes hash = 2 [(buf.validate.field).bytes = {len: 32}];
+}
+
+message BlobID {
+  string name = 1 [(buf.validate.field).string = {max_len: 255}];
+  bytes digest = 2 [(buf.validate.field).bytes = {len: 32}];
+}
+
+message StaticID {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+  bytes manifest_digest = 2 [(buf.validate.field).bytes = {len: 32}];
+}
+
+message ServiceID {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
+}
+
+message Predicate {
+  InlinePredicate inline = 1;
+}
+
+message InlinePredicate {
+  repeated Clause clauses = 1;
+}
+
+message Clause {
+  string key = 1 [(buf.validate.field).string = {min_len: 1}];
+  oneof match {
+    string equals = 2;
+    StringList in = 3;
+  }
+}
+
+message StringList {
+  repeated string values = 1;
+}

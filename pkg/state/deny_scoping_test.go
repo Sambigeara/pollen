@@ -137,8 +137,7 @@ func denied(snap Snapshot, pk types.PeerKey) bool {
 func TestDenyScoping_RootCanDenyAnyone(t *testing.T) {
 	f := newDenyScopingFixture(t)
 	observer := genKey(t)
-	s := newTestStore(t, observer)
-	s.SetRootPub(f.rootPub())
+	s := newTestStore(t, observer, f.rootPub())
 
 	pushCert(t, s, f.adminA.key, f.adminAC, f.adminA.priv)
 	pushCert(t, s, f.leafA.key, f.leafACert, f.leafA.priv)
@@ -150,8 +149,7 @@ func TestDenyScoping_RootCanDenyAnyone(t *testing.T) {
 func TestDenyScoping_AdminCanDenyOwnSubtree(t *testing.T) {
 	f := newDenyScopingFixture(t)
 	observer := genKey(t)
-	s := newTestStore(t, observer)
-	s.SetRootPub(f.rootPub())
+	s := newTestStore(t, observer, f.rootPub())
 
 	pushCert(t, s, f.adminA.key, f.adminAC, f.adminA.priv)
 	pushCert(t, s, f.leafA.key, f.leafACert, f.leafA.priv)
@@ -163,8 +161,7 @@ func TestDenyScoping_AdminCanDenyOwnSubtree(t *testing.T) {
 func TestDenyScoping_AdminCannotDenyForeignSubtree(t *testing.T) {
 	f := newDenyScopingFixture(t)
 	observer := genKey(t)
-	s := newTestStore(t, observer)
-	s.SetRootPub(f.rootPub())
+	s := newTestStore(t, observer, f.rootPub())
 
 	pushCert(t, s, f.adminA.key, f.adminAC, f.adminA.priv)
 	pushCert(t, s, f.adminB.key, f.adminBC, f.adminB.priv)
@@ -178,8 +175,7 @@ func TestDenyScoping_AdminCannotDenyForeignSubtree(t *testing.T) {
 func TestDenyScoping_RevokingIntermediateAdminCascades(t *testing.T) {
 	f := newDenyScopingFixture(t)
 	observer := genKey(t)
-	s := newTestStore(t, observer)
-	s.SetRootPub(f.rootPub())
+	s := newTestStore(t, observer, f.rootPub())
 
 	pushCert(t, s, f.adminA.key, f.adminAC, f.adminA.priv)
 	pushCert(t, s, f.leafA.key, f.leafACert, f.leafA.priv)
@@ -217,8 +213,7 @@ func TestDenyScoping_RevokingIntermediateAdminCascades(t *testing.T) {
 func TestDenyScoping_DenyPendingUntilCertArrives(t *testing.T) {
 	f := newDenyScopingFixture(t)
 	observer := genKey(t)
-	s := newTestStore(t, observer)
-	s.SetRootPub(f.rootPub())
+	s := newTestStore(t, observer, f.rootPub())
 
 	// adminA denies leafA before leafA's cert is gossiped — deny is pending,
 	// not yet effective (we can't verify adminA is in leafA's chain).
@@ -241,8 +236,7 @@ func TestDenyScoping_DenyPendingUntilCertArrives(t *testing.T) {
 func TestDenyScoping_RejectsDelegatedAdminForgingForeignSubject(t *testing.T) {
 	f := newDenyScopingFixture(t)
 	observer := genKey(t)
-	s := newTestStore(t, observer)
-	s.SetRootPub(f.rootPub())
+	s := newTestStore(t, observer, f.rootPub())
 
 	// Set up the legitimate cluster shape: leafB belongs to adminB.
 	pushCert(t, s, f.adminA.key, f.adminAC, f.adminA.priv)
@@ -277,11 +271,50 @@ func TestDenyScoping_RejectsDelegatedAdminForgingForeignSubject(t *testing.T) {
 		"a delegated admin must not be able to deny a foreign-subtree peer by re-parenting their pub")
 }
 
+// TestStore_RejectsForgedCertTombstone covers the failure mode where an
+// attacker replays a peer's published cert event with the Deleted bit
+// flipped. No legitimate path produces a cert tombstone (rotation
+// overwrites the live entry, revocation goes through deny), so the
+// admission filter must drop them outright. Without the drop, an
+// attacker could erase a victim's cert from peers' snapshots and lift
+// any deny that depends on the victim's chain being known.
+func TestStore_RejectsForgedCertTombstone(t *testing.T) {
+	f := newDenyScopingFixture(t)
+	observer := genKey(t)
+	s := newTestStore(t, observer, f.rootPub())
+
+	pushCert(t, s, f.leafA.key, f.leafACert, f.leafA.priv)
+	require.NotNil(t, s.Snapshot().Nodes[f.leafA.key].Cert,
+		"legitimate cert push must populate the snapshot before the tombstone test")
+
+	// Replay leafA's own cert + signature with the tombstone bit set
+	// and a higher counter — what an attacker who captured the gossip
+	// would do. Both the cert structural verification and the subject
+	// signature verification still pass, so the only thing standing
+	// between this event and an erased cert is the explicit deleted
+	// guard at apply time.
+	msg, err := proto.MarshalOptions{Deterministic: true}.Marshal(f.leafACert.GetClaims())
+	require.NoError(t, err)
+	sig, err := f.leafA.priv.Sign(nil, msg, &ed25519.Options{Context: "pollen.delegation.subject.v1"})
+	require.NoError(t, err)
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  f.leafA.key.String(),
+		Counter: 99,
+		Deleted: true,
+		Change: &statev1.GossipEvent_DelegationCert{DelegationCert: &statev1.DelegationCertChange{
+			Cert:             f.leafACert,
+			SubjectSignature: sig,
+		}},
+	})
+
+	require.NotNil(t, s.Snapshot().Nodes[f.leafA.key].Cert,
+		"cert tombstone events must be rejected; legitimate cert must still be present")
+}
+
 func TestDenyScoping_RejectsForgedCertChain(t *testing.T) {
 	f := newDenyScopingFixture(t)
 	observer := genKey(t)
-	s := newTestStore(t, observer)
-	s.SetRootPub(f.rootPub())
+	s := newTestStore(t, observer, f.rootPub())
 
 	// Attacker key that isn't in the trust graph.
 	bogus := newIdentity(t)

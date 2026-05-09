@@ -166,6 +166,23 @@ func (s *Service) applyNewCert(newCert *admissionv1.DelegationCert) error {
 	s.certs.UpdateMeshCert(tlsCert)
 	s.creds.SetCert(newCert)
 
+	// DelegationSigner captures its issuer cert by value, so every
+	// renewal must rebuild it; otherwise SpecAuth issuance and invite
+	// minting keep embedding the about-to-expire cert as publisher and
+	// fresh joiners reject those events once the old TTL elapses. The
+	// cert-push path used to handle this externally; folding it in here
+	// covers root self-renewal and routed admin renewal too. Gated on
+	// CanDelegate so leaf renewals (no signer) stay a no-op; the
+	// admin→leaf transition is still handled by the caller because it
+	// needs the prior capability to decide whether to downgrade.
+	if newCert.GetClaims().GetCapabilities().GetCanDelegate() {
+		signer := auth.NewDelegationSignerFromCert(s.signPriv, newCert)
+		s.creds.SetDelegationKey(signer)
+		if s.capTransition != nil {
+			s.capTransition.UpgradeToAdmin(signer)
+		}
+	}
+
 	if err := auth.SaveNodeCredentials(auth.IdentityPath(s.pollenDir), s.creds); err != nil {
 		s.log.Warnw("failed to persist credentials", "err", err)
 	}
@@ -320,13 +337,11 @@ func (s *Service) handleCertPushRequest(ctx context.Context, from types.PeerKey,
 		return
 	}
 
-	caps := newCert.GetClaims().GetCapabilities()
-	newCanDelegate := caps.GetCanDelegate()
-	if newCanDelegate {
-		signer := auth.NewDelegationSignerFromCert(s.signPriv, newCert)
-		s.creds.SetDelegationKey(signer)
-		s.capTransition.UpgradeToAdmin(signer)
-	} else {
+	newCanDelegate := newCert.GetClaims().GetCapabilities().GetCanDelegate()
+	// The upgrade/regrant case is handled inside applyNewCert; only
+	// the downgrade needs the prior capability to know it has to
+	// strip the signer and clear the admin marker.
+	if !newCanDelegate {
 		s.creds.SetDelegationKey(nil)
 		s.capTransition.DowngradeToLeaf()
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 )
@@ -64,7 +65,9 @@ func newSeedCmds() []*cobra.Command {
   any other   → blob (or stdin when <source> is '-')
 
 Without [name], the workload/site is named after the file/directory and
-the blob remains anonymous (addressed only by hash).`,
+the blob remains anonymous (addressed only by hash). Publishing workloads,
+static sites, and named blobs requires an admin-capable node because each
+published resource carries a signed resource certificate.`,
 		Args: cobra.RangeArgs(1, 2), //nolint:mnd
 		RunE: withEnv(runSeed),
 	}
@@ -78,6 +81,7 @@ the blob remains anonymous (addressed only by hash).`,
 	seedCmd.Flags().Bool("everywhere", false, "place workload on every node (workload only)")
 	seedCmd.Flags().String("memory", "", "memory limit, e.g. 64MiB, 128M (alias --mem; workload only; default 8MiB)")
 	seedCmd.Flags().Duration("timeout", 0, "per-invocation timeout (workload only, e.g. 500ms, 5s)")
+	addPolicyFlags(seedCmd)
 	seedCmd.Example = `  pln seed ./hello.wasm                     # workload, named "hello"
   pln seed ./hello.wasm greeter --everywhere # workload on every node
   pln seed ./public my-site                 # static site
@@ -89,7 +93,8 @@ the blob remains anonymous (addressed only by hash).`,
 		Short: "Stop publishing content (workload, static site, or blob)",
 		Long: `Resolves the name or hash against currently-published workloads, static
 sites, and blobs, and removes the matching one. Errors if multiple kinds
-share the same name.`,
+share the same name. Unseeding workloads or static sites requires an
+admin-capable node.`,
 		Example: "  pln unseed hello\n  pln unseed ab12cd34   # by hash prefix",
 		Args:    cobra.ExactArgs(1),
 		RunE:    withEnv(runUnseed),
@@ -136,6 +141,18 @@ func validateSeedFlags(cmd *cobra.Command, kind seedKind) error {
 			}
 		}
 	}
+	if kind == kindStatic {
+		// Static sites are served via plain HTTP with no authenticated
+		// principal, so a caller predicate has no identity to match
+		// against. Refuse the publish here so the operator finds out
+		// before the manifest and blobs upload.
+		policyFlags := []string{"allow-caller", "allow-caller-in", "allow-target"}
+		for _, f := range policyFlags {
+			if cmd.Flags().Changed(f) {
+				return fmt.Errorf("--%s not supported for static sites; HTTP serving is unauthenticated", f)
+			}
+		}
+	}
 	return nil
 }
 
@@ -153,21 +170,25 @@ func runSeed(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if err := validateSeedFlags(cmd, kind); err != nil {
 		return err
 	}
+	policy, err := policyFromFlags(cmd)
+	if err != nil {
+		return err
+	}
 
 	switch kind {
 	case kindWorkload:
-		return seedWorkload(cmd, env, source, name)
+		return seedWorkload(cmd, env, source, name, policy)
 	case kindStatic:
-		return seedStatic(cmd, env, source, name)
+		return seedStatic(cmd, env, source, name, policy)
 	case kindBlob:
-		return seedBlob(cmd, env, source, name)
+		return seedBlob(cmd, env, source, name, policy)
 	case kindUnknown:
 		return fmt.Errorf("could not detect kind for %q", source)
 	}
 	return nil
 }
 
-func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string) error {
+func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string, policy *admissionv1.Predicate) error {
 	f, err := os.Open(source)
 	if err != nil {
 		return fmt.Errorf("failed to open %s: %w", source, err)
@@ -204,6 +225,7 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string) error {
 				Spread:      spread,
 				MemoryBytes: memoryBytes,
 				TimeoutMs:   uint32(timeout.Milliseconds()),
+				Policy:      policy,
 			},
 		},
 	}); err != nil {
@@ -241,7 +263,7 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string) error {
 	return nil
 }
 
-func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string) error {
+func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string, policy *admissionv1.Predicate) error {
 	if name == "" {
 		name = filepath.Base(filepath.Clean(dir))
 	}
@@ -290,6 +312,7 @@ func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string) error {
 	if _, err := env.client.SeedStatic(cmd.Context(), connect.NewRequest(&controlv1.SeedStaticRequest{
 		Name:           name,
 		ManifestDigest: manifestDigest,
+		Policy:         policy,
 	})); err != nil {
 		return err
 	}
@@ -298,7 +321,7 @@ func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string) error {
 	return nil
 }
 
-func seedBlob(cmd *cobra.Command, env *cliEnv, source, name string) error {
+func seedBlob(cmd *cobra.Command, env *cliEnv, source, name string, policy *admissionv1.Predicate) error {
 	var r io.Reader
 	if source == "-" {
 		r = cmd.InOrStdin()
@@ -312,6 +335,7 @@ func seedBlob(cmd *cobra.Command, env *cliEnv, source, name string) error {
 	}
 
 	header := &controlv1.UploadBlobHeader{}
+	header.Policy = policy
 	if name != "" {
 		header.Name = &name
 	} else {

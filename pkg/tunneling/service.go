@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
@@ -40,7 +41,7 @@ type TunnelingAPI interface {
 	Stop() error
 	Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) (uint32, error)
 	Disconnect(service string) error
-	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) error
+	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, policy *admissionv1.Predicate) error
 	UnexposeService(name string) error
 	ListConnections() []ConnectionInfo
 	Serve(stream io.ReadWriteCloser, peer types.PeerKey, port uint32)
@@ -55,8 +56,8 @@ type TunnelingAPI interface {
 
 type ServiceState interface {
 	Snapshot() state.Snapshot
-	SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) []state.Event
-	RemoveService(name string) []state.Event
+	SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, policy *admissionv1.Predicate) ([]state.Event, error)
+	RemoveService(name string) ([]state.Event, error)
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []state.Event
 }
 
@@ -158,14 +159,15 @@ func WithReconcileInterval(d time.Duration) Option {
 
 func (s *Service) Start(ctx context.Context) error {
 	snap := s.store.Snapshot()
+	s.mu.Lock()
 	for _, svc := range snap.Services() {
 		if svc.Peer != s.self {
 			continue
 		}
-		if err := s.ExposeService(svc.Port, svc.Name, svc.Protocol, svc.Properties); err != nil {
-			s.log.Warnw("rehydrate service failed", "name", svc.Name, "port", svc.Port, zap.Error(err))
-		}
+		sk := serviceKey{port: svc.Port, protocol: svc.Protocol}
+		s.services[sk] = s.buildEntryLocked(svc.Port, svc.Name, svc.Protocol)
 	}
+	s.mu.Unlock()
 
 	if s.sampleInterval > 0 {
 		s.wg.Go(func() { s.ticker(ctx, s.sampleInterval, s.sampleTraffic) })
@@ -256,7 +258,7 @@ func (s *Service) Disconnect(service string) error {
 	return fmt.Errorf("no connection for service %q", service)
 }
 
-func (s *Service) ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) error {
+func (s *Service) ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, policy *admissionv1.Predicate) error {
 	s.mu.Lock()
 	sk := serviceKey{port: port, protocol: protocol}
 
@@ -273,7 +275,11 @@ func (s *Service) ExposeService(port uint32, name string, protocol statev1.Servi
 		}
 	}
 
-	events := s.store.SetService(port, name, protocol, properties)
+	events, err := s.store.SetService(port, name, protocol, properties, policy)
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
 
 	if len(events) == 0 {
 		if _, ok := s.services[sk]; !ok {
@@ -321,7 +327,12 @@ func (s *Service) UnexposeService(name string) error {
 			sk := serviceKey{port: svc.Port, protocol: svc.Protocol}
 			entry := s.services[sk]
 			delete(s.services, sk)
-			events := s.store.RemoveService(name)
+			events, err := s.store.RemoveService(name)
+			if err != nil {
+				s.services[sk] = entry
+				s.mu.Unlock()
+				return err
+			}
 			var toClose []io.Closer
 			if len(events) > 0 {
 				toClose = s.detachServesLocked(name)

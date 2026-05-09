@@ -360,7 +360,7 @@ func redeemInviteOnConn(
 		Body: &meshv1.Envelope_InviteRedeemRequest{
 			InviteRedeemRequest: &meshv1.InviteRedeemRequest{
 				Token:   token,
-				PeerPub: append([]byte(nil), subject...),
+				PeerPub: subject,
 			},
 		},
 	}); err != nil {

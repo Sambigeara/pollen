@@ -36,6 +36,12 @@ type workloadInvoker interface {
 	Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
 }
 
+// TODO(saml): migrate the wire envelope to protobuf. JSON was chosen
+// here for symmetry with the wasm-guest CallerInfo format (which needs a
+// portable encoding any guest language can decode), but this struct is
+// only sent pollen-to-pollen and has already diverged from the guest
+// shape with CallChain. Protobuf+vtprotobuf would halve the PeerKey hex
+// bloat and remove json.Marshal cost from the hot dispatch path.
 type workloadCallerJSON struct {
 	Attributes     map[string]any `json:"attributes,omitempty"`
 	PeerKey        string         `json:"peerKey,omitempty"`

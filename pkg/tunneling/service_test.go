@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
@@ -33,7 +34,7 @@ func (m *mockStore) Snapshot() state.Snapshot {
 	return m.snap
 }
 
-func (m *mockStore) SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) []state.Event {
+func (m *mockStore) SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, _ *admissionv1.Predicate) ([]state.Event, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	nv := m.snap.Nodes[m.snap.LocalID]
@@ -42,23 +43,23 @@ func (m *mockStore) SetService(port uint32, name string, protocol statev1.Servic
 	}
 	next := &state.Service{Port: port, Name: name, Protocol: protocol, Properties: properties}
 	if existing, ok := nv.Services[name]; ok && existing.Port == next.Port && existing.Protocol == next.Protocol && proto.Equal(existing.Properties, next.Properties) {
-		return nil
+		return nil, nil
 	}
 	nv.Services[name] = next
 	m.snap.Nodes[m.snap.LocalID] = nv
-	return []state.Event{state.ServiceChanged{Peer: m.snap.LocalID, Name: name}}
+	return []state.Event{state.ServiceChanged{Peer: m.snap.LocalID, Name: name}}, nil
 }
 
-func (m *mockStore) RemoveService(name string) []state.Event {
+func (m *mockStore) RemoveService(name string) ([]state.Event, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	nv := m.snap.Nodes[m.snap.LocalID]
 	if _, ok := nv.Services[name]; !ok {
-		return nil
+		return nil, nil
 	}
 	delete(nv.Services, name)
 	m.snap.Nodes[m.snap.LocalID] = nv
-	return []state.Event{state.ServiceChanged{Peer: m.snap.LocalID, Name: name}}
+	return []state.Event{state.ServiceChanged{Peer: m.snap.LocalID, Name: name}}, nil
 }
 
 func (m *mockStore) SetLocalTraffic(peer types.PeerKey, in, out uint64) []state.Event { return nil }
@@ -86,7 +87,7 @@ func TestServiceLifecycle(t *testing.T) {
 	store := &mockStore{snap: state.Snapshot{LocalID: self, Nodes: map[types.PeerKey]state.NodeView{self: {}}}}
 	svc := New(self, store, &mockTransport{}, &mockDatagramTransport{}, &mockRouter{})
 
-	require.NoError(t, svc.ExposeService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil))
+	require.NoError(t, svc.ExposeService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil))
 	require.Len(t, store.Snapshot().Nodes[self].Services, 1)
 
 	require.NoError(t, svc.UnexposeService("web"))
@@ -144,7 +145,7 @@ func TestRevokeService_ClosesActiveServe(t *testing.T) {
 	t.Cleanup(func() { _ = app.Close() })
 	appPort := uint32(app.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert
 
-	require.NoError(t, svc.ExposeService(appPort, "samflix", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil))
+	require.NoError(t, svc.ExposeService(appPort, "samflix", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil))
 
 	appAccepted := make(chan net.Conn, 1)
 	go func() {
@@ -202,7 +203,7 @@ func TestStop_DrainsInflightServe(t *testing.T) {
 	t.Cleanup(func() { _ = app.Close() })
 	appPort := uint32(app.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert
 
-	require.NoError(t, svc.ExposeService(appPort, "samflix", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil))
+	require.NoError(t, svc.ExposeService(appPort, "samflix", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil))
 
 	appAccepted := make(chan net.Conn, 1)
 	go func() {
@@ -249,9 +250,9 @@ func TestExposeService_RejectsConflictingNameOnSamePort(t *testing.T) {
 	store := &mockStore{snap: state.Snapshot{LocalID: self, Nodes: map[types.PeerKey]state.NodeView{self: {}}}}
 	svc := New(self, store, &mockTransport{}, &mockDatagramTransport{}, &mockRouter{})
 
-	require.NoError(t, svc.ExposeService(8080, "foo", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil))
+	require.NoError(t, svc.ExposeService(8080, "foo", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil))
 
-	err := svc.ExposeService(8080, "bar", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
+	err := svc.ExposeService(8080, "bar", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), `already exposed as "foo"`)
 
@@ -266,7 +267,7 @@ func TestExposeService_NameMoveTearsDownOldRuntimeKey(t *testing.T) {
 	store := &mockStore{snap: state.Snapshot{LocalID: self, Nodes: map[types.PeerKey]state.NodeView{self: {}}}}
 	svc := New(self, store, &mockTransport{}, &mockDatagramTransport{}, &mockRouter{})
 
-	require.NoError(t, svc.ExposeService(8080, "samflix", statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP, nil))
+	require.NoError(t, svc.ExposeService(8080, "samflix", statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP, nil, nil))
 
 	svc.mu.RLock()
 	oldKey := serviceKey{port: 8080, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP}
@@ -275,7 +276,7 @@ func TestExposeService_NameMoveTearsDownOldRuntimeKey(t *testing.T) {
 	require.NotNil(t, oldEntry)
 	require.NotNil(t, oldEntry.proxy)
 
-	require.NoError(t, svc.ExposeService(9090, "samflix", statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP, nil))
+	require.NoError(t, svc.ExposeService(9090, "samflix", statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP, nil, nil))
 
 	svc.mu.RLock()
 	defer svc.mu.RUnlock()
@@ -318,14 +319,14 @@ func TestExposeService_NoOpReExposePreservesActiveServes(t *testing.T) {
 	store := &mockStore{snap: state.Snapshot{LocalID: self, Nodes: map[types.PeerKey]state.NodeView{self: {}}}}
 	svc := New(self, store, &mockTransport{}, &mockDatagramTransport{}, &mockRouter{})
 
-	require.NoError(t, svc.ExposeService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil))
+	require.NoError(t, svc.ExposeService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil))
 
 	stream := &spyCloser{}
 	svc.mu.Lock()
 	svc.registerServeLocked("web", &activeServe{stream: stream})
 	svc.mu.Unlock()
 
-	require.NoError(t, svc.ExposeService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil))
+	require.NoError(t, svc.ExposeService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil))
 
 	require.False(t, stream.closed.Load(), "no-op re-expose must not close active streams")
 	svc.mu.RLock()
@@ -338,7 +339,7 @@ func TestExposeService_NoOpReExposePreservesUDPProxy(t *testing.T) {
 	store := &mockStore{snap: state.Snapshot{LocalID: self, Nodes: map[types.PeerKey]state.NodeView{self: {}}}}
 	svc := New(self, store, &mockTransport{}, &mockDatagramTransport{}, &mockRouter{})
 
-	require.NoError(t, svc.ExposeService(9090, "dns", statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP, nil))
+	require.NoError(t, svc.ExposeService(9090, "dns", statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP, nil, nil))
 
 	svc.mu.RLock()
 	first := svc.services[serviceKey{port: 9090, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP}]
@@ -346,7 +347,7 @@ func TestExposeService_NoOpReExposePreservesUDPProxy(t *testing.T) {
 	require.NotNil(t, first)
 	require.NotNil(t, first.proxy, "UDP entry should have a proxy")
 
-	require.NoError(t, svc.ExposeService(9090, "dns", statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP, nil))
+	require.NoError(t, svc.ExposeService(9090, "dns", statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP, nil, nil))
 
 	svc.mu.RLock()
 	second := svc.services[serviceKey{port: 9090, protocol: statev1.ServiceProtocol_SERVICE_PROTOCOL_UDP}]

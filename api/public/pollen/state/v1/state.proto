@@ -59,10 +59,6 @@ message VivaldiCoordinateChange {
   double error = 4;
 }
 
-message CertExpiryChange {
-  int64 expiry_unix = 1;
-}
-
 message DenyChange {
   bytes peer_pub = 1 [(buf.validate.field).bytes = {len: 32}];
 }
@@ -120,6 +116,16 @@ message BlobSpecChange {
   bytes digest = 2 [(buf.validate.field).bytes = {len: 32}];
   reserved 3;
   reserved "publisher_claim";
+}
+
+message SpecChange {
+  pollen.admission.v1.SpecAuth auth = 1 [(buf.validate.field).required = true];
+  oneof body {
+    ServiceChange service = 2;
+    WorkloadSpecChange workload = 3;
+    StaticSpecChange static = 4;
+    BlobSpecChange blob = 5;
+  }
 }
 
 message StaticPath {
@@ -194,32 +200,28 @@ message GossipEvent {
   oneof change {
     NetworkChange network = 3;
     ObservedAddressChange observed_address = 4;
-    CertExpiryChange cert_expiry = 5;
-    ServiceChange service = 6;
     ReachabilityChange reachability = 7;
     PubliclyAccessibleChange publicly_accessible = 9;
     VivaldiCoordinateChange vivaldi = 10;
     NatTypeChange nat_type = 11;
     ResourceTelemetryChange resource_telemetry = 12;
     DenyChange deny = 13;
-    WorkloadSpecChange workload_spec = 15;
     WorkloadClaimChange workload_claim = 16;
     TrafficHeatmapChange traffic_heatmap = 17;
     HeartbeatChange heartbeat = 18;
     AdminCapableChange admin_capable = 20;
     NodeNameChange node_name = 21;
     BlobAvailabilityChange blob_availability = 28;
-    StaticSpecChange static_spec = 29;
     StaticClaimChange static_claim = 30;
-    BlobSpecChange blob_spec = 31;
     StaticCapableChange static_capable = 32;
     BackoffTTLChange backoff_ttl = 33;
     PerSeedCallCountsChange per_seed_call_counts = 34;
     DelegationCertChange delegation_cert = 35;
+    SpecChange spec_change = 36;
   }
   bool deleted = 14;
-  reserved 24, 27;
-  reserved "seed_dial_rates", "seed_metrics";
+  reserved 5, 6, 15, 24, 27, 29, 31;
+  reserved "cert_expiry", "service", "workload_spec", "seed_dial_rates", "seed_metrics", "static_spec", "blob_spec";
 }
 
 message GossipEventBatch {

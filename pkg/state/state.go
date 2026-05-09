@@ -12,6 +12,7 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -46,6 +47,12 @@ func (TopologyChanged) stateEvent()  {}
 func (AddressesChanged) stateEvent() {}
 func (StaticChanged) stateEvent()    {}
 
+type LocalSigner interface {
+	IssueSpecAuth(resource *admissionv1.ResourceID, body auth.SpecBody, policy *admissionv1.Predicate, deleted bool) (*admissionv1.SpecAuth, error)
+}
+
+type MutationValidator func(*statev1.SpecChange) error
+
 type StateStore interface {
 	Snapshot() Snapshot
 	ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, error)
@@ -61,8 +68,8 @@ type StateStore interface {
 	SetLocalReachable(peers []types.PeerKey) []Event
 	SetLocalObservedAddress(ip string, port uint32) []Event
 
-	PublishWorkload(spec WorkloadSpec) ([]Event, error)
-	DeleteWorkloadSpec(hash string) []Event
+	PublishWorkload(spec WorkloadSpec, policy *admissionv1.Predicate) ([]Event, error)
+	DeleteWorkloadSpec(hash string) ([]Event, error)
 	ClaimWorkload(hash string) []Event
 	MarkWorkloadDraining(hash string) []Event
 	ReleaseWorkload(hash string) []Event
@@ -71,16 +78,16 @@ type StateStore interface {
 	SetPerSeedCallCounts(counts map[string]uint64) []Event
 	SetLocalBlobs(digests []string) []Event
 
-	SetStaticSpec(spec StaticSpec) ([]Event, error)
-	DeleteStaticSpec(name string) []Event
+	SetStaticSpec(spec StaticSpec, policy *admissionv1.Predicate) ([]Event, error)
+	DeleteStaticSpec(name string) ([]Event, error)
 	ClaimStatic(name string) []Event
 	ReleaseStatic(name string) []Event
 
-	SetBlobSpec(spec BlobSpec) ([]Event, error)
-	DeleteBlobSpec(digest string) []Event
+	SetBlobSpec(spec BlobSpec, policy *admissionv1.Predicate) ([]Event, error)
+	DeleteBlobSpec(digest string) ([]Event, error)
 
-	SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) []Event
-	RemoveService(name string) []Event
+	SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, policy *admissionv1.Predicate) ([]Event, error)
+	RemoveService(name string) ([]Event, error)
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event
 
 	EmitHeartbeatIfNeeded() []Event
@@ -93,13 +100,16 @@ type StateStore interface {
 	SetStaticCapable()
 	SetNodeName(name string)
 	SetLocalDelegationCert(cert *admissionv1.DelegationCert, subjectSig []byte) []Event
-	SetRootPub(rootPub []byte)
+	SetLocalSigner(signer LocalSigner)
+	SetMutationValidator(v MutationValidator)
 	ExportLastAddrs() map[types.PeerKey]string
 	LoadLastAddrs(addrs map[types.PeerKey]string)
 }
 
 type store struct {
 	lastLocalEmit time.Time
+	signer        LocalSigner
+	validate      MutationValidator
 	nodes         map[types.PeerKey]nodeRecord
 	denied        map[types.PeerKey]struct{}
 	pendingNotify chan struct{}
@@ -111,7 +121,10 @@ type store struct {
 	localID       types.PeerKey
 }
 
-func New(self types.PeerKey) StateStore {
+func New(self types.PeerKey, rootPub []byte) StateStore {
+	if len(rootPub) == 0 {
+		panic("state.New: rootPub is required")
+	}
 	now := time.Now()
 	s := &store{
 		localID:       self,
@@ -120,6 +133,7 @@ func New(self types.PeerKey) StateStore {
 		pendingNotify: make(chan struct{}, 1),
 		nowFunc:       time.Now,
 		lastLocalEmit: now,
+		rootPub:       rootPub,
 	}
 
 	s.mu.Lock()
@@ -198,20 +212,16 @@ func (s *store) LoadGossipState(data []byte) error {
 	return nil
 }
 
-// SetRootPub installs the cluster root pub for cert-event verification.
-// Without it, the store accepts gossiped cert events on faith, which
-// suits unit tests that don't exercise deny scoping. Production callers
-// (the supervisor) supply rootPub immediately after construction.
-func (s *store) SetRootPub(rootPub []byte) {
+func (s *store) SetLocalSigner(signer LocalSigner) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(rootPub) == 0 {
-		s.rootPub = nil
-	} else {
-		s.rootPub = append([]byte(nil), rootPub...)
-	}
-	s.recomputeDeniedLocked()
-	s.updateSnapshotLocked()
+	s.signer = signer
+}
+
+func (s *store) SetMutationValidator(v MutationValidator) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.validate = v
 }
 
 func (s *store) SetPeerLastAddr(pk types.PeerKey, addr string) {

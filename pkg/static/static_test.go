@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -26,9 +27,11 @@ type fakeStore struct {
 	mu       sync.Mutex
 }
 
-func (f *fakeStore) Snapshot() state.Snapshot                              { return f.snap }
-func (f *fakeStore) SetStaticSpec(state.StaticSpec) ([]state.Event, error) { return nil, nil }
-func (f *fakeStore) DeleteStaticSpec(string) []state.Event                 { return nil }
+func (f *fakeStore) Snapshot() state.Snapshot { return f.snap }
+func (f *fakeStore) SetStaticSpec(state.StaticSpec, *admissionv1.Predicate) ([]state.Event, error) {
+	return nil, nil
+}
+func (f *fakeStore) DeleteStaticSpec(string) ([]state.Event, error) { return nil, nil }
 func (f *fakeStore) ReleaseStatic(name string) []state.Event {
 	f.mu.Lock()
 	f.released = append(f.released, name)
@@ -106,6 +109,16 @@ func snapshotWith(manifestDigest string, publisher types.PeerKey) state.Snapshot
 		},
 		PeerKeys: []types.PeerKey{publisher},
 	}
+}
+
+func TestSeedStaticRejectsPolicy(t *testing.T) {
+	svc := New(types.PeerKey{1}, &fakeStore{}, newFakeBlobs(), true, zap.S())
+	digest := bytes.Repeat([]byte{0xab}, digestSize)
+	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
+		{Key: "role", Match: &admissionv1.Clause_Equals{Equals: "admin"}},
+	}}}
+	err := svc.SeedStatic("home.local", digest, policy)
+	require.ErrorIs(t, err, ErrPolicyOnStatic)
 }
 
 func TestEnsureReplicated_NonServingPeer_FetchesManifestButNotFilesOrClaim(t *testing.T) {

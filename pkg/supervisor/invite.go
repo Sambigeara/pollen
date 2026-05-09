@@ -163,10 +163,23 @@ func (t *capTransitioner) UpgradeToAdmin(signer *auth.DelegationSigner) {
 	t.mesh.SetInviteSigner(signer)
 	t.mesh.SetInviteForwarder(t.fwd)
 	t.store.SetAdmin()
+	// The signer captures its issuer cert by value at construction, so
+	// the store needs the freshly rebuilt signer rather than the
+	// pre-upgrade one for subsequent publishes to carry the new
+	// admin-anchored cert as their SpecAuth publisher.
+	t.store.SetLocalSigner(signer)
 }
 
+// DowngradeToLeaf strips admin authority. Both the store and the
+// invite mesh lose their signer; admin-only enforcement lives at the
+// control RPC layer (canPublishResources) and at the publish path
+// (signer must be non-nil to issue a SpecAuth). The admission gate
+// only validates cryptographic chain integrity, so this downgrade
+// alone does not cause peers to reject anything we managed to gossip
+// before — it simply prevents new publishes from being signed.
 func (t *capTransitioner) DowngradeToLeaf() {
 	t.mesh.SetInviteForwarder(t.fwd)
 	t.mesh.SetInviteSigner(nil)
 	t.store.ClearAdmin()
+	t.store.SetLocalSigner(nil)
 }

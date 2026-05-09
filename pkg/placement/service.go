@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -62,7 +63,7 @@ type PlacementAPI interface {
 	Start(ctx context.Context) error
 	Stop() error
 
-	Seed(binary []byte, spec state.WorkloadSpec) error
+	Seed(binary []byte, spec state.WorkloadSpec, policy *admissionv1.Predicate) error
 	Unseed(hash string) error
 	Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
 	Status() []WorkloadSummary
@@ -84,8 +85,8 @@ var _ PlacementAPI = (*Service)(nil)
 
 type WorkloadState interface {
 	Snapshot() state.Snapshot
-	PublishWorkload(spec state.WorkloadSpec) ([]state.Event, error)
-	DeleteWorkloadSpec(hash string) []state.Event
+	PublishWorkload(spec state.WorkloadSpec, policy *admissionv1.Predicate) ([]state.Event, error)
+	DeleteWorkloadSpec(hash string) ([]state.Event, error)
 	ClaimWorkload(hash string) []state.Event
 	MarkWorkloadDraining(hash string) []state.Event
 	ReleaseWorkload(hash string) []state.Event
@@ -96,6 +97,14 @@ type WorkloadState interface {
 
 type StreamOpener interface {
 	OpenStream(ctx context.Context, peer types.PeerKey, st transport.StreamType) (io.ReadWriteCloser, error)
+}
+
+// InvokeGate authorises a workload invocation and returns the cert-bound
+// CallerInfo to plumb into the seed's execution context. It must be
+// consulted before a seed runs whether the call is dispatched inbound from
+// a remote peer or outbound from a local host call.
+type InvokeGate interface {
+	Invoke(peerKey types.PeerKey, hash, function string) (wasm.CallerInfo, error)
 }
 
 type Service struct {
@@ -113,6 +122,7 @@ type Service struct {
 	calls        *callTracker
 	placement    *placementLoop
 	replicaCount *replicaCountLoop
+	gate         InvokeGate
 	wg           sync.WaitGroup
 	localID      types.PeerKey
 }
@@ -125,6 +135,10 @@ func WithLogger(log *zap.SugaredLogger) Option {
 
 func WithMesh(mesh StreamOpener) Option {
 	return func(s *Service) { s.mesh = mesh }
+}
+
+func WithInvokeGate(g InvokeGate) Option {
+	return func(s *Service) { s.gate = g }
 }
 
 func New(self types.PeerKey, store WorkloadState, blobs blobsAPI, wasmRT WASMRuntime, opts ...Option) *Service {
@@ -245,7 +259,7 @@ func (s *Service) publishResources() {
 	})
 }
 
-func (s *Service) Seed(binary []byte, spec state.WorkloadSpec) error {
+func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admissionv1.Predicate) error {
 	hash, name := spec.Hash, spec.Name
 	snap := s.store.Snapshot()
 	if oldHash, ok := snap.LocalSpecByName(name, s.localID); ok { //nolint:nestif
@@ -255,7 +269,9 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec) error {
 				s.budget.Release(oldHash)
 			}
 			s.store.ReleaseWorkload(oldHash)
-			s.store.DeleteWorkloadSpec(oldHash)
+			if _, err := s.store.DeleteWorkloadSpec(oldHash); err != nil {
+				return err
+			}
 		} else if sv, ok := snap.Specs[oldHash]; ok {
 			old := sv.Spec
 			if old.MemoryBytes != spec.MemoryBytes || old.Timeout != spec.Timeout {
@@ -290,7 +306,7 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec) error {
 		spec.MinReplicas = 1
 	}
 
-	if _, err := s.store.PublishWorkload(spec); err != nil {
+	if _, err := s.store.PublishWorkload(spec, policy); err != nil {
 		// Roll back the local seed on spec rejection so we don't leave a
 		// running module with no gossiped spec.
 		if !alreadyRunning {
@@ -325,7 +341,9 @@ func (s *Service) Unseed(hash string) error {
 		s.budget.Release(hash)
 	}
 	s.store.ReleaseWorkload(hash)
-	s.store.DeleteWorkloadSpec(hash)
+	if _, err := s.store.DeleteWorkloadSpec(hash); err != nil {
+		return err
+	}
 	if err := s.blobs.Remove(hash); err != nil {
 		s.log.Warnw("evict wasm blob failed after unseed", "hash", types.ShortHash(hash), "err", err)
 	}
@@ -397,6 +415,16 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 		return ctx, hash, nil, fmt.Errorf("no such workload %q: %w", hash, wasm.ErrTargetNotFound)
 	}
 	hash = resolved
+
+	if s.gate != nil {
+		info, _ := wasm.CallerInfoFromContext(ctx)
+		gated, err := s.gate.Invoke(info.PeerKey, hash, function)
+		if err != nil {
+			return ctx, hash, nil, fmt.Errorf("invoke %s: %w", types.ShortHash(hash), wasm.ErrTargetNotFound)
+		}
+		gated.DeadlineUnixMs = info.DeadlineUnixMs
+		ctx = wasm.WithCallerInfo(ctx, gated)
+	}
 
 	if chainContains(ctx, hash) {
 		return ctx, hash, nil, fmt.Errorf("%w: %s", ErrCycle, types.ShortHash(hash))
@@ -528,13 +556,21 @@ func (s *Service) Status() []WorkloadSummary {
 }
 
 // Serve handles an inbound workload call. peerKey must be the
-// transport-authenticated identity; wire-reported caller keys would be
-// spoofable.
+// transport-authenticated identity; wire-reported caller attributes
+// are replaced by the gate's cert-bound view before the seed runs.
 func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	defer stream.Close()
 	info, chain, hash, function, err := ReadHeader(stream, peerKey)
 	if err != nil {
 		return
+	}
+	if s.gate != nil {
+		gated, err := s.gate.Invoke(peerKey, hash, function)
+		if err != nil {
+			return
+		}
+		gated.DeadlineUnixMs = info.DeadlineUnixMs
+		info = gated
 	}
 
 	ctx := withChainSnapshot(s.ctx, chain)

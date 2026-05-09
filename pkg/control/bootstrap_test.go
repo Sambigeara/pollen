@@ -56,7 +56,7 @@ func TestPickBootstrapPeers_OnePerNetwork(t *testing.T) {
 		},
 	}
 
-	peers := pickBootstrapPeers(snap, now)
+	peers := pickBootstrapPeers(snap)
 	require.Len(t, peers, 2, "LAN + public should produce two entries")
 
 	for _, p := range peers {
@@ -78,7 +78,7 @@ func TestPickBootstrapPeers_CollapsesSameLAN(t *testing.T) {
 		},
 	}
 
-	peers := pickBootstrapPeers(snap, now)
+	peers := pickBootstrapPeers(snap)
 	require.Len(t, peers, 1, "three peers on the same LAN must collapse to one entry")
 	require.Equal(t, local.Bytes(), peers[0].Peer.PeerPub, "self preferred over other LAN peers")
 }
@@ -95,27 +95,10 @@ func TestPickBootstrapPeers_PrefersSelfPerNetwork(t *testing.T) {
 		},
 	}
 
-	peers := pickBootstrapPeers(snap, now)
+	peers := pickBootstrapPeers(snap)
 	require.Len(t, peers, 1)
 	require.Equal(t, local.Bytes(), peers[0].Peer.PeerPub,
 		"self wins even when another LAN peer is more recently active")
-}
-
-func TestPickBootstrapPeers_SkipsExpiredCertPeers(t *testing.T) {
-	now := time.Now()
-	local := peerKeyN(1)
-	expired := peerKeyN(2)
-	snap := state.Snapshot{
-		LocalID: local,
-		Nodes: map[types.PeerKey]state.NodeView{
-			local:   {IPs: []string{"10.0.0.1"}, LocalPort: 60611, LastEventAt: now},
-			expired: {IPs: []string{"91.99.170.199"}, LocalPort: 60611, LastEventAt: now, CertExpiry: now.Add(-2 * time.Hour).Unix()},
-		},
-	}
-
-	peers := pickBootstrapPeers(snap, now)
-	require.Len(t, peers, 1, "expired-cert peers must not appear in bootstrap")
-	require.Equal(t, local.Bytes(), peers[0].Peer.PeerPub)
 }
 
 func TestPickBootstrapPeers_PreferentialAddressInBucket(t *testing.T) {
@@ -136,7 +119,7 @@ func TestPickBootstrapPeers_PreferentialAddressInBucket(t *testing.T) {
 		},
 	}
 
-	peers := pickBootstrapPeers(snap, now)
+	peers := pickBootstrapPeers(snap)
 	require.Len(t, peers, 2, "self covers LAN and observed-external; remote covers public")
 	gotAddrs := map[string][]string{}
 	for _, p := range peers {
@@ -161,7 +144,7 @@ func TestPickBootstrapPeers_CollapsesIPv4AndULAOnSamePeer(t *testing.T) {
 		},
 	}
 
-	peers := pickBootstrapPeers(snap, now)
+	peers := pickBootstrapPeers(snap)
 	require.Len(t, peers, 1, "v4 LAN and v6 ULA must share one bucket")
 	require.Len(t, peers[0].Addrs, 1, "merged LAN bucket emits one address per peer")
 }

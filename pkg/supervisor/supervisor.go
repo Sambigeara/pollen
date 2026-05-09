@@ -27,8 +27,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/blobs"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/control"
-	"github.com/sambigeara/pollen/pkg/evaluator"
-	"github.com/sambigeara/pollen/pkg/evaluator/builtin/matcher"
+	"github.com/sambigeara/pollen/pkg/gate"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
@@ -62,39 +61,37 @@ const (
 )
 
 type Supervisor struct {
-	trafficRecorder  transport.TrafficRecorder
+	inviteConsumer   auth.InviteConsumer
 	membership       membership.MembershipAPI
 	placement        placement.PlacementAPI
 	tunneling        tunneling.TunnelingAPI
 	static           static.StaticAPI
-	staticSvc        *static.Service
-	staticAddr       string
+	blobs            blobs.BlobsAPI
+	trafficRecorder  transport.TrafficRecorder
 	mesh             transport.Transport
 	tracer           trace.Tracer
 	store            state.StateStore
-	inviteConsumer   auth.InviteConsumer
-	ready            chan struct{}
+	natDetector      *nat.Detector
+	wasmRuntime      *wasm.Runtime
 	log              *zap.SugaredLogger
 	router           *atomicRouter
-	authz            *evaluator.Router
-	authzMatcher     *matcher.Matcher
-	authzMatcherPath string
+	gate             *gate.Gate
+	peerCache        *peercache.Store
 	nonTargetStreak  map[types.PeerKey]int
 	vivaldiErr       *metrics.EWMA
 	nodeMetrics      *metrics.NodeMetrics
 	routeInvalidate  chan struct{}
-	natDetector      *nat.Detector
-	blobs            blobs.BlobsAPI
+	promRegistry     *prometheus.Registry
+	staticSvc        *static.Service
 	topoMetrics      *metrics.TopologyMetrics
 	tracesProviders  *traces.Provider
 	controlSrv       *control.Server
-	wasmRuntime      *wasm.Runtime
+	ready            chan struct{}
 	punchSem         chan struct{}
 	metricsProviders *metrics.Provider
 	creds            *auth.NodeCredentials
 	shutdownCh       chan struct{}
-	promRegistry     *prometheus.Registry
-	peerCache        *peercache.Store
+	staticAddr       string
 	httpAddr         string
 	socketPath       string
 	controlAddr      string
@@ -104,6 +101,7 @@ type Supervisor struct {
 	peerTickInterval time.Duration
 	reconnectWindow  time.Duration
 	membershipTTL    time.Duration
+	localID          types.PeerKey
 	useHMACNearest   bool
 }
 
@@ -114,11 +112,6 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	pollenDir := opts.PollenDir
 	self := types.PeerKeyFromBytes(pubKey)
 
-	authzMatcher, err := preloadAuthz(opts.Authz, opts.RelayOnly)
-	if err != nil {
-		return nil, err
-	}
-
 	peerCache := opts.PeerCache
 	if peerCache == nil {
 		pc, err := peercache.Open(pollenDir)
@@ -128,8 +121,12 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		peerCache = pc
 	}
 
-	stateStore := state.New(self)
-	stateStore.SetRootPub(creds.RootPub())
+	stateStore := state.New(self, creds.RootPub())
+	runtimeGate := gate.New(creds.RootPub(), stateStore)
+	stateStore.SetMutationValidator(runtimeGate.Admit)
+	if signer := creds.DelegationKey(); signer != nil {
+		stateStore.SetLocalSigner(signer)
+	}
 	if opts.BootstrapPublic {
 		stateStore.SetPublic()
 	}
@@ -154,7 +151,9 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		stateStore.LoadLastAddrs(lastAddrs)
 	}
 	for _, svc := range opts.InitialServices {
-		stateStore.SetService(svc.Port, svc.Name, svc.Protocol, svc.Properties)
+		if _, err := stateStore.SetService(svc.Port, svc.Name, svc.Protocol, svc.Properties, nil); err != nil {
+			return nil, err
+		}
 	}
 	if opts.NodeName != "" {
 		stateStore.SetNodeName(opts.NodeName)
@@ -227,6 +226,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 
 	n := &Supervisor{
 		log:              log,
+		localID:          self,
 		store:            stateStore,
 		mesh:             m,
 		blobs:            blobsSvc,
@@ -358,16 +358,11 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 			self, stateStore, blobsSvc, wasmRT,
 			placement.WithMesh(placementOpener),
 			placement.WithLogger(log.Named("placement")),
+			placement.WithInvokeGate(runtimeGate),
 		)
 	}
 
-	authz, err := buildAuthzRouter(opts.Authz, authzMatcher, n.placement, log.Named("authz"))
-	if err != nil {
-		return nil, err
-	}
-	n.authz = authz
-	n.authzMatcher = authzMatcher
-	n.authzMatcherPath = opts.Authz.MatcherRules
+	n.gate = runtimeGate
 
 	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", log.Named("static"))
 	n.static = staticSvc
@@ -379,6 +374,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		control.WithTransportInfo(n),
 		control.WithMetricsSource(n),
 		control.WithMeshConnector(n),
+		control.WithOperatorGate(runtimeGate),
 	}
 	if opts.ShutdownFunc != nil {
 		controlOpts = append(controlOpts, control.WithShutdown(opts.ShutdownFunc))
@@ -563,21 +559,13 @@ func (n *Supervisor) Run(ctx context.Context) error {
 	}
 }
 
-func (n *Supervisor) peerProps(pk types.PeerKey) map[string]any {
-	cert, ok := n.mesh.PeerDelegationCert(pk)
-	if !ok || cert == nil {
-		return nil
-	}
-	attrs := cert.GetClaims().GetCapabilities().GetAttributes()
-	if attrs == nil {
-		return nil
-	}
-	return attrs.AsMap()
-}
-
-func (n *Supervisor) dispatchBlobFetch(_ context.Context, stream io.ReadWriteCloser, _ types.PeerKey) {
+func (n *Supervisor) dispatchBlobFetch(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	hash, err := blobs.ReadHash(stream)
 	if err != nil {
+		stream.Close() //nolint:errcheck
+		return
+	}
+	if err := n.gate.Fetch(peerKey, hash); err != nil {
 		stream.Close() //nolint:errcheck
 		return
 	}
@@ -586,42 +574,20 @@ func (n *Supervisor) dispatchBlobFetch(_ context.Context, stream io.ReadWriteClo
 
 // Denied connects close the stream without a distinguishing reply so
 // service existence is not leaked to the caller.
-func (n *Supervisor) dispatchServiceConnect(ctx context.Context, stream io.ReadWriteCloser, peerKey types.PeerKey) {
+func (n *Supervisor) dispatchServiceConnect(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	port, err := tunneling.ReadPort(stream)
 	if err != nil {
 		stream.Close() //nolint:errcheck
 		return
 	}
-	name, props := n.localService(port)
-	req := evaluator.Request{
-		Subject:  evaluator.SubjectFromPeerKey(peerKey, n.peerProps),
-		Action:   evaluator.Action{Name: "connect"},
-		Resource: evaluator.NewResource(evaluator.ResourceService, name, props),
-	}
-	if err := n.authz.Allow(ctx, evaluator.GateServiceConnect, req); err != nil {
+	if err := n.gate.Connect(peerKey, n.localID, port); err != nil {
 		stream.Close() //nolint:errcheck
 		return
 	}
 	n.tunneling.Serve(stream, peerKey, port)
 }
 
-func (n *Supervisor) localService(port uint32) (string, map[string]any) {
-	snap := n.store.Snapshot()
-	if nv, ok := snap.Nodes[snap.LocalID]; ok {
-		for name, svc := range nv.Services {
-			if svc != nil && svc.Port == port {
-				var props map[string]any
-				if svc.Properties != nil {
-					props = svc.Properties.AsMap()
-				}
-				return name, props
-			}
-		}
-	}
-	return fmt.Sprintf("%d", port), nil
-}
-
-func (n *Supervisor) dispatchWorkloadCall(_ context.Context, stream io.ReadWriteCloser, peerKey types.PeerKey) {
+func (n *Supervisor) dispatchWorkloadCall(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	n.placement.Serve(stream, peerKey)
 }
 
@@ -637,13 +603,13 @@ func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 		case transport.StreamTypeMembership:
 			n.spawn(func() { n.handleMembershipStream(ctx, stream, peerKey) })
 		case transport.StreamTypeTunnel:
-			n.spawn(func() { n.dispatchServiceConnect(ctx, stream, peerKey) })
+			n.spawn(func() { n.dispatchServiceConnect(stream, peerKey) })
 		case transport.StreamTypeBlob:
 			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
-			n.spawn(func() { n.dispatchBlobFetch(ctx, s, peerKey) })
+			n.spawn(func() { n.dispatchBlobFetch(s, peerKey) })
 		case transport.StreamTypeWorkload:
 			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
-			n.spawn(func() { n.dispatchWorkloadCall(ctx, s, peerKey) })
+			n.spawn(func() { n.dispatchWorkloadCall(s, peerKey) })
 		default:
 			n.log.Warnw("unknown stream type", "type", uint8(stype))
 			stream.Close()
@@ -892,19 +858,20 @@ func (n *Supervisor) RouteRequest(ctx context.Context, uri wasm.URI, input []byt
 			}
 		}
 	}
+
 	ctx = wasm.WithCallerInfo(ctx, info)
 
 	switch uri.Scheme {
 	case wasm.SchemeSeed:
 		return n.placement.Call(ctx, uri.Name, uri.Function, input)
 	case wasm.SchemeService:
-		return n.routeServiceRequest(ctx, uri.Name, input)
+		return n.routeServiceRequest(ctx, info.PeerKey, uri.Name, input)
 	default:
 		return nil, fmt.Errorf("unsupported URI scheme: %s", uri.Scheme)
 	}
 }
 
-func (n *Supervisor) routeServiceRequest(ctx context.Context, name string, input []byte) ([]byte, error) {
+func (n *Supervisor) routeServiceRequest(ctx context.Context, callerKey types.PeerKey, name string, input []byte) ([]byte, error) {
 	snap := n.store.Snapshot()
 	var candidates []state.ServiceInfo
 	for _, svc := range snap.Services() {
@@ -917,6 +884,9 @@ func (n *Supervisor) routeServiceRequest(ctx context.Context, name string, input
 	}
 
 	svc := pickNearestService(snap, candidates)
+	if err := n.gate.Connect(callerKey, svc.Peer, svc.Port); err != nil {
+		return nil, fmt.Errorf("connect %s: %w", name, wasm.ErrTargetNotFound)
+	}
 	if svc.Peer == snap.LocalID {
 		return dialLocalService(ctx, svc.Port, input)
 	}
@@ -940,7 +910,7 @@ func (n *Supervisor) SeedWorkload(wasmBytes []byte, spec state.WorkloadSpec) (st
 	if spec.Name == "" {
 		spec.Name = hash
 	}
-	if err := n.placement.Seed(wasmBytes, spec); err != nil {
+	if err := n.placement.Seed(wasmBytes, spec, nil); err != nil {
 		return "", err
 	}
 	return hash, nil

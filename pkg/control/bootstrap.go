@@ -6,10 +6,8 @@ package control
 import (
 	"net/netip"
 	"slices"
-	"time"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -19,7 +17,7 @@ const maxBootstrapPeers = 5
 // pickBootstrapPeers returns one representative peer per network the local
 // node can see. A joiner only needs to reach one: an entry per network is
 // enough redundancy across reachability domains, more is wire bloat.
-func pickBootstrapPeers(snap state.Snapshot, now time.Time) []*controlv1.BootstrapPeerInfo {
+func pickBootstrapPeers(snap state.Snapshot) []*controlv1.BootstrapPeerInfo {
 	type candidate struct {
 		addr   string
 		nv     state.NodeView
@@ -47,9 +45,6 @@ func pickBootstrapPeers(snap state.Snapshot, now time.Time) []*controlv1.Bootstr
 	}
 	for peerID, nv := range snap.Nodes {
 		if peerID == snap.LocalID {
-			continue
-		}
-		if nv.CertExpiry != 0 && auth.IsExpiredAt(time.Unix(nv.CertExpiry, 0), now) {
 			continue
 		}
 		add(peerID, nv)

@@ -77,13 +77,15 @@ By default, offline peers and orphaned blobs are filtered. Use
 		Short: "Expose a local port to the mesh",
 		Long: `Registers a local TCP (or UDP, with --udp) port as a mesh service.
 Other nodes ` + "`pln connect`" + ` to it by name. Persisted to config.yaml so
-the service survives restarts.`,
+the service survives restarts. Requires an admin-capable node because
+publishing a service issues a signed resource certificate.`,
 		Example: "  pln serve 8080 api\n  pln serve 5353 dns --udp",
 		Args:    cobra.RangeArgs(1, 2), //nolint:mnd
 		RunE:    withEnv(runServe),
 	}
 	serveCmd.Flags().Bool("udp", false, "Expose as a UDP service")
 	serveCmd.Flags().StringArray("prop", nil, "Service-publisher property: key=value or JSON object (e.g. --prop '{\"public\":true}')")
+	addPolicyFlags(serveCmd)
 
 	unserveCmd := &cobra.Command{
 		Use:   "unserve <port|name>",
@@ -247,6 +249,10 @@ func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if err != nil {
 		return err
 	}
+	policy, err := policyFromFlags(cmd)
+	if err != nil {
+		return err
+	}
 	var propMap map[string]any
 	if props != nil {
 		propMap = props.AsMap()
@@ -255,7 +261,7 @@ func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 	sockPath := filepath.Join(env.dir, socketName)
 	if nodeSocketActive(sockPath) {
-		req := &controlv1.RegisterServiceRequest{Port: uint32(port), Protocol: proto, Properties: props}
+		req := &controlv1.RegisterServiceRequest{Port: uint32(port), Protocol: proto, Properties: props, Policy: policy}
 		if name != "" {
 			req.Name = &name
 		}
