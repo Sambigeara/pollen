@@ -78,7 +78,7 @@ func (g *Gate) Invoke(peerKey types.PeerKey, hash, function string) (wasm.Caller
 	if !ok || sv.Auth == nil {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
-	if err := decide(caller.Cert, sv.Auth, function, time.Now()); err != nil {
+	if err := decide(caller.Cert, sv.Auth, function, time.Now(), asCaller); err != nil {
 		return wasm.CallerInfo{}, err
 	}
 	return wasm.CallerInfo{PeerKey: peerKey, Attributes: caller.Cert.GetClaims().GetCapabilities().GetAttributes().AsMap()}, nil
@@ -94,7 +94,7 @@ func (g *Gate) Fetch(peerKey types.PeerKey, hash string) error {
 	if !ok || view.Auth == nil {
 		return wasm.ErrTargetNotFound
 	}
-	return decide(caller.Cert, view.Auth, "", time.Now())
+	return decide(caller.Cert, view.Auth, "", time.Now(), asCaller)
 }
 
 // Connect authorises callerKey to open a connection to (hostPeer, port).
@@ -115,13 +115,34 @@ func (g *Gate) Connect(callerKey, hostPeer types.PeerKey, port uint32) error {
 		if svc.Port != port || svc.Auth == nil {
 			continue
 		}
-		return decide(caller.Cert, svc.Auth, "", time.Now())
+		return decide(caller.Cert, svc.Auth, "", time.Now(), asCaller)
 	}
 	return wasm.ErrTargetNotFound
 }
 
-func decide(caller *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth, target string, now time.Time) error {
-	if auth.IsCertExpired(caller, now) {
+// MayHost authorises hostCert to host the workload described by specAuth.
+// A host running a workload can necessarily invoke any function on it
+// locally (loopback, direct state access), so identity-keyed clauses
+// must hold against the host's cert. Per-function clauses keyed on
+// pln.target apply only to external callers and are skipped here: a
+// host implicitly satisfies every function value, so the only sensible
+// way to evaluate them in this direction is to ignore them.
+func (g *Gate) MayHost(hostCert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth) error {
+	if hostCert == nil || specAuth == nil {
+		return wasm.ErrTargetNotFound
+	}
+	return decide(hostCert, specAuth, "", time.Now(), asHost)
+}
+
+type subjectMode uint8
+
+const (
+	asCaller subjectMode = iota
+	asHost
+)
+
+func decide(cert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth, target string, now time.Time, mode subjectMode) error {
+	if auth.IsCertExpired(cert, now) {
 		return wasm.ErrTargetNotFound
 	}
 	policy := specAuth.GetPolicy()
@@ -130,18 +151,21 @@ func decide(caller *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth, 
 	}
 
 	ctx := make(map[string]string)
-	for k, v := range caller.GetClaims().GetCapabilities().GetAttributes().GetFields() {
+	for k, v := range cert.GetClaims().GetCapabilities().GetAttributes().GetFields() {
 		if s := v.GetStringValue(); s != "" {
 			ctx[k] = s
 		}
 	}
 
-	ctx[CallerKey] = hex.EncodeToString(caller.GetClaims().GetSubjectPub())
+	ctx[CallerKey] = hex.EncodeToString(cert.GetClaims().GetSubjectPub())
 	if target != "" {
 		ctx[TargetKey] = target
 	}
 
 	for _, clause := range policy.GetInline().GetClauses() {
+		if mode == asHost && clause.GetKey() == TargetKey {
+			continue
+		}
 		got, ok := ctx[clause.GetKey()]
 		if !ok {
 			return wasm.ErrTargetNotFound

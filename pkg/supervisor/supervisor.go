@@ -358,7 +358,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 			self, stateStore, blobsSvc, wasmRT,
 			placement.WithMesh(placementOpener),
 			placement.WithLogger(log.Named("placement")),
-			placement.WithInvokeGate(runtimeGate),
+			placement.WithGate(runtimeGate),
 		)
 	}
 

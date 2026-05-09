@@ -249,6 +249,85 @@ func TestConnectAuthorsesAgainstChosenHost(t *testing.T) {
 	require.NoError(t, g.Connect(callerKey, looseKey, 8081), "loose host's blue policy must accept blue caller")
 }
 
+func TestMayHostAcceptsMatchingHost(t *testing.T) {
+	now := time.Now()
+	g, hostCert, specAuth := newHostFixture(t, now,
+		map[string]any{"team": "blue"},
+		clauseEquals("team", "blue"),
+	)
+	require.NoError(t, g.MayHost(hostCert, specAuth))
+}
+
+func TestMayHostRejectsMismatchedHost(t *testing.T) {
+	now := time.Now()
+	g, hostCert, specAuth := newHostFixture(t, now,
+		map[string]any{"team": "red"},
+		clauseEquals("team", "blue"),
+	)
+	require.ErrorIs(t, g.MayHost(hostCert, specAuth), wasm.ErrTargetNotFound)
+}
+
+func TestMayHostAllowsOpenPolicy(t *testing.T) {
+	now := time.Now()
+	g, hostCert, specAuth := newHostFixture(t, now, nil, nil)
+	require.NoError(t, g.MayHost(hostCert, specAuth))
+}
+
+// Per-function clauses keyed on pln.target only meaningfully constrain
+// external callers: a host implicitly satisfies every function value
+// because hosting includes loopback invocation. MayHost must skip them
+// rather than collapse to "no host can ever satisfy a per-function
+// policy", which would make per-function policies inadvertently
+// unhostable.
+func TestMayHostSkipsTargetClauses(t *testing.T) {
+	now := time.Now()
+	g, hostCert, specAuth := newHostFixture(t, now,
+		map[string]any{"team": "blue"},
+		&admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
+			{Key: "team", Match: &admissionv1.Clause_Equals{Equals: "blue"}},
+			{Key: TargetKey, Match: &admissionv1.Clause_Equals{Equals: "read"}},
+		}}},
+	)
+	require.NoError(t, g.MayHost(hostCert, specAuth), "host should pass identity clause and bypass target clause")
+}
+
+func TestMayHostRejectsExpiredHost(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	hostPub, hostPriv := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	expired, err := auth.IssueDelegationCert(hostPriv, nil, hostPub, auth.FullCapabilities(),
+		now.Add(-2*time.Hour), now.Add(-time.Hour), time.Time{})
+	require.NoError(t, err)
+	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("9", 64), Name: "echo", MinReplicas: 1}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
+		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0x99)}}},
+		body, nil, false)
+	require.NoError(t, err)
+	g := New(rootPub, fakeStore{})
+	require.ErrorIs(t, g.MayHost(expired, specAuth), wasm.ErrTargetNotFound)
+}
+
+func TestMayHostRejectsNilInputs(t *testing.T) {
+	g := New(nil, fakeStore{})
+	require.ErrorIs(t, g.MayHost(nil, &admissionv1.SpecAuth{}), wasm.ErrTargetNotFound)
+	require.ErrorIs(t, g.MayHost(&admissionv1.DelegationCert{}, nil), wasm.ErrTargetNotFound)
+}
+
+func newHostFixture(t *testing.T, now time.Time, hostAttrs map[string]any, policy *admissionv1.Predicate) (*Gate, *admissionv1.DelegationCert, *admissionv1.SpecAuth) {
+	t.Helper()
+	rootPub, rootPriv := newKeyPair(t)
+	hostPub, hostPriv := newKeyPair(t)
+	hostCert := testCert(t, hostPriv, hostPub, hostAttrs, now)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("c", 64), Name: "echo", MinReplicas: 1}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
+		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xcc)}}},
+		body, policy, false)
+	require.NoError(t, err)
+	return New(rootPub, fakeStore{}), hostCert, specAuth
+}
+
 func bytesOf(v byte) []byte {
 	out := make([]byte, 32)
 	for i := range out {

@@ -177,6 +177,103 @@ func (m *mockBlobs) Fetch(_ context.Context, _ string, _ []types.PeerKey) error 
 	return nil
 }
 
+type fakeHostGate struct {
+	deny func(*admissionv1.SpecAuth) error
+}
+
+func (f *fakeHostGate) Invoke(types.PeerKey, string, string) (wasm.CallerInfo, error) {
+	return wasm.CallerInfo{}, nil
+}
+
+func (f *fakeHostGate) MayHost(_ *admissionv1.DelegationCert, sa *admissionv1.SpecAuth) error {
+	if f.deny == nil {
+		return nil
+	}
+	return f.deny(sa)
+}
+
+func TestReconcile_FiltersSpecsByHostPolicy(t *testing.T) {
+	local := peerKey(1)
+	hash := "workload-denied"
+
+	ms := &mockStore{
+		specs: map[string]state.WorkloadSpecView{
+			hash: {
+				Spec:      state.WorkloadSpec{Hash: hash, MinReplicas: 1},
+				Publisher: local,
+				Auth:      &admissionv1.SpecAuth{},
+			},
+		},
+		claims:   map[string]map[types.PeerKey]struct{}{},
+		allPeers: []types.PeerKey{local},
+		localID:  local,
+	}
+	gate := &fakeHostGate{deny: func(*admissionv1.SpecAuth) error { return wasm.ErrTargetNotFound }}
+
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockBlobs{}, newBudget(0), testBackoff(t), gate, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r.reconcile(context.Background())
+
+	// Wait for any inflight claim work that might have been spawned.
+	r.wg.Wait()
+	require.False(t, ms.wasClaimed(hash), "policy-denied spec must not be claimed")
+}
+
+func TestReconcile_EvictsClaimWhenPolicyDenies(t *testing.T) {
+	local := peerKey(1)
+	hash := "workload-evict"
+
+	ms := &mockStore{
+		specs: map[string]state.WorkloadSpecView{
+			hash: {
+				Spec:      state.WorkloadSpec{Hash: hash, MinReplicas: 1},
+				Publisher: local,
+				Auth:      &admissionv1.SpecAuth{},
+			},
+		},
+		claims:   map[string]map[types.PeerKey]struct{}{hash: {local: {}}},
+		claimed:  map[string]bool{hash: true},
+		allPeers: []types.PeerKey{local},
+		localID:  local,
+	}
+	gate := &fakeHostGate{deny: func(*admissionv1.SpecAuth) error { return wasm.ErrTargetNotFound }}
+
+	wm := &runningWorkloads{}
+	r := newReconciler(local, ms, wm, &mockBlobs{}, newBudget(0), testBackoff(t), gate, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r.claimStartTime[hash] = time.Now().Add(-time.Hour)
+	r.reconcile(context.Background())
+
+	ms.mu.Lock()
+	stillClaimed := ms.claimed[hash]
+	ms.mu.Unlock()
+	require.False(t, stillClaimed, "policy denial must release in-flight claim immediately, no cooldown")
+}
+
+func TestExecuteClaim_RejectsClaimWhenPolicyDenies(t *testing.T) {
+	local := peerKey(1)
+	hash := "workload-defence"
+
+	ms := &mockStore{
+		specs: map[string]state.WorkloadSpecView{
+			hash: {
+				Spec:      state.WorkloadSpec{Hash: hash, MinReplicas: 1},
+				Publisher: local,
+				Auth:      &admissionv1.SpecAuth{},
+			},
+		},
+		claims:   map[string]map[types.PeerKey]struct{}{},
+		allPeers: []types.PeerKey{local},
+		localID:  local,
+	}
+	gate := &fakeHostGate{deny: func(*admissionv1.SpecAuth) error { return wasm.ErrTargetNotFound }}
+	wm := &mockWorkloads{}
+
+	r := newReconciler(local, ms, wm, &mockBlobs{}, newBudget(0), testBackoff(t), gate, zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r.executeClaim(context.Background(), hash, []types.PeerKey{local})
+
+	require.False(t, wm.seeded.Load(), "must not seed when MayHost denies at executeClaim re-check")
+	require.False(t, ms.wasClaimed(hash), "must not write claim when MayHost denies at executeClaim re-check")
+}
+
 func TestExecuteClaim_SpecRemovedDuringFetch(t *testing.T) {
 	local := peerKey(1)
 	hash := "workload1"
@@ -193,7 +290,7 @@ func TestExecuteClaim_SpecRemovedDuringFetch(t *testing.T) {
 	}
 	wm := &mockWorkloads{}
 
-	r := newReconciler(local, ms, wm, &mockBlobs{midFlight: func() { ms.removeSpec(hash) }}, newBudget(0), testBackoff(t), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, wm, &mockBlobs{midFlight: func() { ms.removeSpec(hash) }}, newBudget(0), testBackoff(t), nil, zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.executeClaim(t.Context(), hash, []types.PeerKey{local})
 
 	require.False(t, wm.seeded.Load(), "should not seed when spec was removed")
@@ -216,7 +313,7 @@ func TestExecuteClaim_HappyPath(t *testing.T) {
 	}
 	wm := &mockWorkloads{}
 
-	r := newReconciler(local, ms, wm, &mockBlobs{}, newBudget(0), testBackoff(t), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, wm, &mockBlobs{}, newBudget(0), testBackoff(t), nil, zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.executeClaim(t.Context(), hash, []types.PeerKey{local})
 
 	require.True(t, wm.seeded.Load(), "manager should seed on happy path")
@@ -243,7 +340,7 @@ func TestResidencyWindow_SuppressesEarlyRelease(t *testing.T) {
 		},
 	}
 
-	r := newReconciler(local, ms, &runningWorkloads{}, &mockBlobs{}, newBudget(0), testBackoff(t), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockBlobs{}, newBudget(0), testBackoff(t), nil, zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.claimStartTime[hash] = time.Now()
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
 
@@ -263,7 +360,7 @@ func TestReconcile_SignalCoalesces(t *testing.T) {
 		allPeers: []types.PeerKey{local},
 	}
 
-	r := newReconciler(local, ms, &mockWorkloads{}, &mockBlobs{}, newBudget(0), testBackoff(t), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &mockWorkloads{}, &mockBlobs{}, newBudget(0), testBackoff(t), nil, zap.NewNop().Sugar(), &sync.WaitGroup{})
 
 	for range 100 {
 		r.Signal()
@@ -288,7 +385,7 @@ func TestResidencyWindow_SkippedForOverReplication(t *testing.T) {
 		allPeers: []types.PeerKey{local, peer2},
 	}
 
-	r := newReconciler(local, ms, &runningWorkloads{}, &mockBlobs{}, newBudget(0), testBackoff(t), zap.NewNop().Sugar(), &sync.WaitGroup{})
+	r := newReconciler(local, ms, &runningWorkloads{}, &mockBlobs{}, newBudget(0), testBackoff(t), nil, zap.NewNop().Sugar(), &sync.WaitGroup{})
 	r.claimStartTime[hash] = time.Now()
 	r.pendingRelease[hash] = time.Now().Add(-time.Second)
 

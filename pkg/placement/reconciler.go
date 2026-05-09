@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
@@ -33,6 +34,7 @@ type reconciler struct {
 	blobs          blobsAPI
 	budget         *budget
 	backoff        *backoff
+	gate           Gate
 	claimStartTime map[string]time.Time
 	pendingRelease map[string]time.Time
 	triggerCh      chan struct{}
@@ -52,6 +54,7 @@ func newReconciler(
 	blobs blobsAPI,
 	budget *budget,
 	backoff *backoff,
+	gate Gate,
 	log *zap.SugaredLogger,
 	wg *sync.WaitGroup,
 ) *reconciler {
@@ -62,6 +65,7 @@ func newReconciler(
 		blobs:          blobs,
 		budget:         budget,
 		backoff:        backoff,
+		gate:           gate,
 		triggerCh:      make(chan struct{}, 1),
 		fetchSem:       make(chan struct{}, 4), //nolint:mnd
 		pendingRelease: make(map[string]time.Time),
@@ -113,6 +117,7 @@ func (r *reconciler) Run(ctx context.Context) {
 
 func (r *reconciler) reconcile(ctx context.Context) {
 	snap := r.store.Snapshot()
+	localCert := localCertFromSnap(snap)
 
 	// Lowest-PeerKey publisher wins when names collide; unnamed specs
 	// pass through unchanged.
@@ -133,11 +138,35 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		if name != "" && nameWinners[name] != hash {
 			continue
 		}
+		if !r.mayHost(localCert, sv.Auth) {
+			continue
+		}
 		specs[hash] = spec{
 			MinReplicas: sv.Spec.MinReplicas,
 			MemoryBytes: sv.Spec.MemoryBytes,
 			Spread:      sv.Spec.Spread,
 		}
+	}
+
+	// Drop existing claims that the local cert no longer entitles us to
+	// host. Spec deletion is handled in the action loop below; this
+	// branch covers the case where the spec is still live but our
+	// entitlement (cert attributes, policy revision, parent revocation)
+	// has shifted under us.
+	for hash, claimants := range snap.Claims {
+		if _, mine := claimants[r.localID]; !mine {
+			continue
+		}
+		sv, ok := snap.Specs[hash]
+		if !ok {
+			continue
+		}
+		if r.mayHost(localCert, sv.Auth) {
+			continue
+		}
+		r.log.Infow("policy denies local hosting, releasing claim", "hash", types.ShortHash(hash), "name", sv.Spec.Name)
+		r.executeRelease(hash)
+		delete(r.pendingRelease, hash)
 	}
 
 	actions := evaluate(evaluateInput{
@@ -247,10 +276,17 @@ func (r *reconciler) executeClaim(ctx context.Context, hash string, peers []type
 		}
 	}
 
+	// TODO(saml) should we thread the snapshot through for the lifecycle of the event?
+	// would negate the need for the double gate (`mayHost`) below
 	snap := r.store.Snapshot()
 	sv, specExists := snap.Specs[hash]
 	if !specExists {
 		r.log.Infow("spec removed during fetch, skipping claim", "hash", hash)
+		return
+	}
+
+	if !r.mayHost(localCertFromSnap(snap), sv.Auth) {
+		r.log.Infow("policy denies local hosting, abandoning claim", "hash", types.ShortHash(hash), "name", sv.Spec.Name)
 		return
 	}
 
@@ -284,6 +320,25 @@ func (r *reconciler) executeRelease(hash string) {
 	delete(r.claimStartTime, hash)
 	r.inFlightMu.Unlock()
 	r.log.Infow("released workload", "hash", hash)
+}
+
+// mayHost returns true when the local node is entitled to host the
+// workload described by sa. A nil gate (test fixtures) is treated as
+// permissive; a nil cert with a configured gate is treated as denial,
+// since hosting without a verifiable identity must fail closed.
+func (r *reconciler) mayHost(cert *admissionv1.DelegationCert, sa *admissionv1.SpecAuth) bool {
+	if r.gate == nil {
+		return true
+	}
+	return r.gate.MayHost(cert, sa) == nil
+}
+
+func localCertFromSnap(snap state.Snapshot) *admissionv1.DelegationCert {
+	nv, ok := snap.Nodes[snap.LocalID]
+	if !ok {
+		return nil
+	}
+	return nv.Cert
 }
 
 func (r *reconciler) cleanupStaleClaims(claims map[string]map[types.PeerKey]struct{}) {

@@ -99,12 +99,15 @@ type StreamOpener interface {
 	OpenStream(ctx context.Context, peer types.PeerKey, st transport.StreamType) (io.ReadWriteCloser, error)
 }
 
-// InvokeGate authorises a workload invocation and returns the cert-bound
-// CallerInfo to plumb into the seed's execution context. It must be
-// consulted before a seed runs whether the call is dispatched inbound from
-// a remote peer or outbound from a local host call.
-type InvokeGate interface {
+// Gate authorises both invocations and host placement decisions. Invoke
+// returns the cert-bound CallerInfo to plumb into the seed's execution
+// context whenever a call is dispatched inbound or outbound. MayHost
+// decides whether the local node is entitled to run the workload at
+// all, gating the reconciler's claim before any blob fetch or memory
+// reservation.
+type Gate interface {
 	Invoke(peerKey types.PeerKey, hash, function string) (wasm.CallerInfo, error)
+	MayHost(hostCert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth) error
 }
 
 type Service struct {
@@ -122,7 +125,7 @@ type Service struct {
 	calls        *callTracker
 	placement    *placementLoop
 	replicaCount *replicaCountLoop
-	gate         InvokeGate
+	gate         Gate
 	wg           sync.WaitGroup
 	localID      types.PeerKey
 }
@@ -137,7 +140,7 @@ func WithMesh(mesh StreamOpener) Option {
 	return func(s *Service) { s.mesh = mesh }
 }
 
-func WithInvokeGate(g InvokeGate) Option {
+func WithGate(g Gate) Option {
 	return func(s *Service) { s.gate = g }
 }
 
@@ -188,6 +191,7 @@ func (s *Service) Start(ctx context.Context) error {
 		s.blobs,
 		s.budget,
 		s.backoff,
+		s.gate,
 		s.log.Named("scheduler"),
 		&s.wg,
 	)

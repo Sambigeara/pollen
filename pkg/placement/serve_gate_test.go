@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
@@ -37,6 +38,10 @@ func (g *recordingGate) Invoke(peer types.PeerKey, hash, function string) (wasm.
 	defer g.mu.Unlock()
 	g.calls = append(g.calls, gateCall{peer: peer, hash: hash, function: function})
 	return g.returnInfo, g.returnErr
+}
+
+func (g *recordingGate) MayHost(*admissionv1.DelegationCert, *admissionv1.SpecAuth) error {
+	return nil
 }
 
 func (g *recordingGate) callCount() int {
@@ -81,7 +86,7 @@ func TestServeConsultsGate(t *testing.T) {
 
 	store := &mockStore{}
 	blobs := &mockBlobs{}
-	svc := New(types.PeerKey{}, store, blobs, nil, WithInvokeGate(gate))
+	svc := New(types.PeerKey{}, store, blobs, nil, WithGate(gate))
 	defer func() { _ = svc.Stop() }()
 
 	server, client := net.Pipe()
@@ -122,7 +127,7 @@ func TestServeClosesStreamOnGateDeny(t *testing.T) {
 
 	store := &mockStore{}
 	blobs := &mockBlobs{}
-	svc := New(types.PeerKey{}, store, blobs, nil, WithInvokeGate(gate))
+	svc := New(types.PeerKey{}, store, blobs, nil, WithGate(gate))
 	defer func() { _ = svc.Stop() }()
 
 	server, client := net.Pipe()
@@ -169,7 +174,7 @@ func TestCallConsultsGate(t *testing.T) {
 			seedHash: {Spec: state.WorkloadSpec{Hash: seedHash, Name: "myseed", MinReplicas: 1}},
 		},
 	}
-	s := New(peerKey(1), store, &mockBlobs{}, nil, WithInvokeGate(gate))
+	s := New(peerKey(1), store, &mockBlobs{}, nil, WithGate(gate))
 	defer func() { _ = s.Stop() }()
 
 	// Dispatch fails because no claimants, but the gate must fire first.
@@ -190,7 +195,7 @@ func TestCallDeniesAtGate(t *testing.T) {
 			seedHash: {Spec: state.WorkloadSpec{Hash: seedHash, Name: "myseed", MinReplicas: 1}},
 		},
 	}
-	s := New(peerKey(1), store, &mockBlobs{}, nil, WithInvokeGate(gate))
+	s := New(peerKey(1), store, &mockBlobs{}, nil, WithGate(gate))
 	defer func() { _ = s.Stop() }()
 
 	_, err := s.Call(context.Background(), seedHash, "run", nil)
