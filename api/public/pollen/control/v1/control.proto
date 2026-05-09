@@ -7,6 +7,7 @@ package pollen.control.v1;
 
 import "buf/validate/validate.proto";
 import "google/protobuf/struct.proto";
+import "pollen/admission/v1/admission.proto";
 import "pollen/state/v1/state.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1";
@@ -181,6 +182,7 @@ message RegisterServiceRequest {
   }];
   pollen.state.v1.ServiceProtocol protocol = 3;
   google.protobuf.Struct properties = 4;
+  pollen.admission.v1.Predicate policy = 5;
 }
 
 message RegisterServiceResponse {}
@@ -251,6 +253,7 @@ message SeedWorkloadHeader {
   float spread = 5;
   reserved 6, 7;
   reserved "latency_slo_ms", "properties";
+  pollen.admission.v1.Predicate policy = 8;
 }
 
 message SeedWorkloadResponse {
@@ -342,6 +345,7 @@ message UploadBlobHeader {
   reserved 2;
   reserved "properties";
   bool anchor = 3;
+  pollen.admission.v1.Predicate policy = 4;
 }
 
 message UploadBlobResponse {
@@ -365,6 +369,7 @@ message SeedStaticRequest {
   bytes manifest_digest = 2 [(buf.validate.field).bytes = {len: 32}];
   reserved 3, 4;
   reserved "min_replicas", "properties";
+  pollen.admission.v1.Predicate policy = 5;
 }
 
 message SeedStaticResponse {}

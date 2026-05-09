@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
@@ -85,12 +86,15 @@ func (m *mockStore) Snapshot() state.Snapshot {
 	}
 }
 
-func (m *mockStore) PublishWorkload(state.WorkloadSpec) ([]state.Event, error) { return nil, nil }
-func (m *mockStore) DeleteWorkloadSpec(hash string) []state.Event {
+func (m *mockStore) PublishWorkload(state.WorkloadSpec, *admissionv1.Predicate) ([]state.Event, error) {
+	return nil, nil
+}
+
+func (m *mockStore) DeleteWorkloadSpec(hash string) ([]state.Event, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.specs, hash)
-	return nil
+	return nil, nil
 }
 
 func (m *mockStore) SetLocalResources(state.NodeResources) []state.Event { return nil }

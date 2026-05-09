@@ -22,7 +22,7 @@ func TestNoopServiceRejectsHosting(t *testing.T) {
 	require.NoError(t, noop.Start(context.Background()))
 	t.Cleanup(func() { require.NoError(t, noop.Stop()) })
 
-	require.ErrorIs(t, noop.Seed([]byte("wasm"), state.WorkloadSpec{}), placement.ErrRelayOnly)
+	require.ErrorIs(t, noop.Seed([]byte("wasm"), state.WorkloadSpec{}, nil), placement.ErrRelayOnly)
 	require.ErrorIs(t, noop.Unseed("hash"), placement.ErrRelayOnly)
 
 	out, err := noop.Call(context.Background(), "hash", "fn", []byte("input"))

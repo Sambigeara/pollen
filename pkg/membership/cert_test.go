@@ -120,16 +120,16 @@ func TestHandleCertPushRotatesOnAdminToAdminRegrant(t *testing.T) {
 }
 
 func TestIssueCertInstallsFreshCertIntoLocalCache(t *testing.T) {
-	creds := newRootCredentials(t)
+	attrs, err := structpb.NewStruct(map[string]any{"host": "admin"})
+	require.NoError(t, err)
+
+	creds, _, _, _ := newRootCredentialsWithAttrs(t, attrs)
 	certs := newFakeCertManager()
 	svc := newIssuerService(t, creds, certs)
 
 	subjectPub, _, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	subject := types.PeerKeyFromBytes(subjectPub)
-
-	attrs, err := structpb.NewStruct(map[string]any{"host": "admin"})
-	require.NoError(t, err)
 
 	require.NoError(t, svc.IssueCert(context.Background(), subject, false, attrs))
 
@@ -140,7 +140,10 @@ func TestIssueCertInstallsFreshCertIntoLocalCache(t *testing.T) {
 }
 
 func TestHandleCertRenewalInstallsFreshCertIntoLocalCache(t *testing.T) {
-	creds := newRootCredentials(t)
+	attrs, err := structpb.NewStruct(map[string]any{"host": "admin"})
+	require.NoError(t, err)
+
+	creds, _, _, _ := newRootCredentialsWithAttrs(t, attrs)
 	certs := newFakeCertManager()
 	svc := newIssuerService(t, creds, certs)
 
@@ -151,8 +154,6 @@ func TestHandleCertRenewalInstallsFreshCertIntoLocalCache(t *testing.T) {
 	// Seed the peer cache with a cert carrying the attrs we expect to
 	// be preserved across renewal — same shape applyNewCert would have
 	// installed on a fresh handshake.
-	attrs, err := structpb.NewStruct(map[string]any{"host": "admin"})
-	require.NoError(t, err)
 	seed := issueSubjectCert(t, creds, subjectPub, attrs)
 	certs.SetPeerDelegationCert(subject, seed)
 
@@ -209,6 +210,56 @@ func TestAttemptCertRenewalRootSelfRenewsWithoutPeers(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, auth.IsCertExpired(loaded.Cert(), time.Now()),
 		"persisted cert on disk must also be the freshly self-issued one")
+}
+
+// TestRootSelfRenewalRebuildsDelegationSigner pins the invariant that
+// every renewal path refreshes the DelegationSigner. The signer
+// captures its issuer cert by value, so a stale signer keeps signing
+// SpecAuth and invite tokens with the about-to-expire publisher cert
+// — peers reject those once the old TTL elapses, even though the
+// node has long since rotated to a fresh cert.
+func TestRootSelfRenewalRebuildsDelegationSigner(t *testing.T) {
+	creds, pollenDir, nodePriv, nodePub := newRootCredentialsWithIdentity(t)
+
+	staleSerial := creds.DelegationKey().IssuerCert().GetClaims().GetSerial()
+
+	identityDir := auth.IdentityPath(pollenDir)
+	adminPriv, _, err := auth.LoadAdminKey(identityDir)
+	require.NoError(t, err)
+	expired, err := auth.IssueDelegationCert(adminPriv, nil, nodePub, auth.FullCapabilities(),
+		time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour), time.Time{})
+	require.NoError(t, err)
+	creds.SetCert(expired)
+	require.NoError(t, auth.SaveNodeCredentials(identityDir, creds))
+
+	self := types.PeerKeyFromBytes(nodePub)
+	svc := New(self, creds, newFakeNetwork(), newFakeClusterState(self), Config{
+		Log:              zap.S(),
+		TracerProvider:   tracenoop.NewTracerProvider(),
+		NodeMetrics:      metrics.NewNodeMetrics(metricnoop.NewMeterProvider()),
+		GossipInterval:   time.Hour,
+		PeerTickInterval: time.Hour,
+		Streams:          &fakeStreamOpener{},
+		RTT:              &fakeRTTSource{},
+		Certs:            newFakeCertManager(),
+		PeerAddrs:        &fakePeerAddressSource{},
+		SessionCloser:    newFakePeerSessionCloser(),
+		RoutedSender:     noopRoutedSender{},
+		NATDetector:      nat.NewDetector(),
+		ReconnectWindow:  time.Hour,
+		MembershipTTL:    time.Hour,
+		SignPriv:         nodePriv,
+		PollenDir:        pollenDir,
+		TLSIdentityTTL:   time.Hour,
+	})
+
+	require.True(t, svc.attemptCertRenewal(), "root must self-renew")
+
+	signerIssuer := creds.DelegationKey().IssuerCert()
+	require.NotEqual(t, staleSerial, signerIssuer.GetClaims().GetSerial(),
+		"signer must be rebuilt with the renewed cert; otherwise SpecAuth issuance still embeds the stale publisher")
+	require.Equal(t, creds.Cert().GetClaims().GetSerial(), signerIssuer.GetClaims().GetSerial(),
+		"signer's issuer cert must match the freshly-installed creds cert")
 }
 
 type recipientHarness struct {
@@ -287,13 +338,12 @@ func (h *recipientHarness) issueCert(t *testing.T, admin bool) *admissionv1.Dele
 	return cert
 }
 
-func newRootCredentials(t *testing.T) *auth.NodeCredentials {
+func newRootCredentialsWithIdentity(t *testing.T) (*auth.NodeCredentials, string, ed25519.PrivateKey, ed25519.PublicKey) {
 	t.Helper()
-	creds, _, _, _ := newRootCredentialsWithIdentity(t)
-	return creds
+	return newRootCredentialsWithAttrs(t, nil)
 }
 
-func newRootCredentialsWithIdentity(t *testing.T) (*auth.NodeCredentials, string, ed25519.PrivateKey, ed25519.PublicKey) {
+func newRootCredentialsWithAttrs(t *testing.T, attrs *structpb.Struct) (*auth.NodeCredentials, string, ed25519.PrivateKey, ed25519.PublicKey) {
 	t.Helper()
 	pollenDir := t.TempDir()
 	identityDir := auth.IdentityPath(pollenDir)
@@ -304,7 +354,9 @@ func newRootCredentialsWithIdentity(t *testing.T) (*auth.NodeCredentials, string
 
 	nodePub, nodePriv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	seedCert, err := auth.IssueDelegationCert(adminPriv, nil, nodePub, auth.FullCapabilities(),
+	caps := auth.FullCapabilities()
+	caps.Attributes = attrs
+	seedCert, err := auth.IssueDelegationCert(adminPriv, nil, nodePub, caps,
 		time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
 	require.NoError(t, err)
 	creds := auth.NewNodeCredentials(adminPub, seedCert)

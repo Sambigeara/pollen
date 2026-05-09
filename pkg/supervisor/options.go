@@ -14,18 +14,11 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-type AuthzOptions struct {
-	Default      string
-	Gates        map[string]string
-	MatcherRules string
-}
-
 type Options struct {
 	PacketConn         net.PacketConn
 	ShutdownFunc       func()
 	RuntimeState       *statev1.RuntimeState
 	PeerCache          *peercache.Store
-	Authz              AuthzOptions
 	SocketPath         string
 	PollenDir          string
 	NodeName           string

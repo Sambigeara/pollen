@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
@@ -97,7 +98,8 @@ func TestShutdownNoCallback(t *testing.T) {
 }
 
 func TestRegisterService(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	_, err := h.svc.RegisterService(context.Background(), &controlv1.RegisterServiceRequest{
 		Port: 8080,
 		Name: new("web"),
@@ -108,7 +110,8 @@ func TestRegisterService(t *testing.T) {
 }
 
 func TestRegisterServiceError(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	h.tunneling.exposeErr = errors.New("boom")
 	_, err := h.svc.RegisterService(context.Background(), &controlv1.RegisterServiceRequest{Port: 8080})
 	require.Error(t, err)
@@ -117,7 +120,8 @@ func TestRegisterServiceError(t *testing.T) {
 }
 
 func TestRegisterServiceFallbackName(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	_, err := h.svc.RegisterService(context.Background(), &controlv1.RegisterServiceRequest{Port: 9090})
 	require.NoError(t, err)
 	require.Equal(t, "9090", h.tunneling.exposedName)
@@ -286,7 +290,8 @@ func TestFetchBlobError(t *testing.T) {
 }
 
 func TestUploadBlob(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	data := []byte("static-site-index.html")
 	sum := sha256.Sum256(data)
 	wantHash := hex.EncodeToString(sum[:])
@@ -299,8 +304,17 @@ func TestUploadBlob(t *testing.T) {
 	require.Equal(t, "index", h.blobs.names[wantHash])
 }
 
-func TestUploadBlobMissingHeader(t *testing.T) {
+func TestUploadBlobNoCreds(t *testing.T) {
 	h := newHarness(t)
+	err := h.svc.UploadBlob(newUploadStream("", []byte("data")))
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
+}
+
+func TestUploadBlobMissingHeader(t *testing.T) {
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	err := h.svc.UploadBlob(&fakeUploadStream{ctx: context.Background()})
 	require.Error(t, err)
 	st, _ := status.FromError(err)
@@ -310,7 +324,8 @@ func TestUploadBlobMissingHeader(t *testing.T) {
 // Static-seed file uploads rely on the StaticSpec being the sole durable
 // reference so stale files don't survive a manifest swap.
 func TestUploadBlob_AnonymousNoSpec(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	stream := newUploadStream("", []byte("payload"))
 	require.NoError(t, h.svc.UploadBlob(stream))
 	sum := sha256.Sum256([]byte("payload"))
@@ -320,7 +335,8 @@ func TestUploadBlob_AnonymousNoSpec(t *testing.T) {
 }
 
 func TestUploadBlob_AnchorAutoNames(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	data := []byte("anchored")
 	stream := newAnchoredUploadStream(data)
 	require.NoError(t, h.svc.UploadBlob(stream))
@@ -330,12 +346,70 @@ func TestUploadBlob_AnchorAutoNames(t *testing.T) {
 }
 
 func TestUploadBlobPutError(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	h.blobs.putErr = errors.New("disk full")
 	err := h.svc.UploadBlob(newUploadStream("", []byte("data")))
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.Internal, st.Code())
+}
+
+func TestRemoveBlobNoCreds(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.svc.RemoveBlob(context.Background(), &controlv1.RemoveBlobRequest{Hash: "abc123"})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
+}
+
+func TestRemoveBlob(t *testing.T) {
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
+	sum := sha256.Sum256([]byte("payload"))
+	hash := hex.EncodeToString(sum[:])
+	h.blobs.store[hash] = []byte("payload")
+	_, err := h.svc.RemoveBlob(context.Background(), &controlv1.RemoveBlobRequest{Hash: hash})
+	require.NoError(t, err)
+	require.NotContains(t, h.blobs.store, hash)
+}
+
+func TestRemoveBlobRefusesWorkloadReferenced(t *testing.T) {
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
+	sum := sha256.Sum256([]byte("wasm"))
+	hash := hex.EncodeToString(sum[:])
+	h.blobs.store[hash] = []byte("wasm")
+	h.state.snap.Specs = map[string]state.WorkloadSpecView{hash: {}}
+	_, err := h.svc.RemoveBlob(context.Background(), &controlv1.RemoveBlobRequest{Hash: hash})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.FailedPrecondition, st.Code())
+	require.Contains(t, st.Message(), "workload")
+	require.Contains(t, h.blobs.store, hash, "blob must remain when refused")
+}
+
+func TestRemoveBlobRefusesStaticReferenced(t *testing.T) {
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
+	sum := sha256.Sum256([]byte("asset"))
+	hash := hex.EncodeToString(sum[:])
+	h.blobs.store[hash] = []byte("asset")
+	h.static.blobs = map[string]struct{}{hash: {}}
+	_, err := h.svc.RemoveBlob(context.Background(), &controlv1.RemoveBlobRequest{Hash: hash})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.FailedPrecondition, st.Code())
+	require.Contains(t, st.Message(), "static")
+	require.Contains(t, h.blobs.store, hash, "blob must remain when refused")
+}
+
+func TestRegisterServiceNoCreds(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.svc.RegisterService(context.Background(), &controlv1.RegisterServiceRequest{Port: 8080, Name: new("api")})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
 }
 
 func TestUnseedWorkloadNoCreds(t *testing.T) {
@@ -574,6 +648,107 @@ func TestConnectService(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint32(80), h.tunneling.connectedRemotePort)
 	require.Equal(t, pk, h.tunneling.connectedPeer)
+}
+
+type fakeGate struct {
+	connectErr  error
+	fetchErr    error
+	connectArgs *fakeGateConnect
+	fetchArgs   *fakeGateFetch
+}
+
+type fakeGateConnect struct {
+	caller, host types.PeerKey
+	port         uint32
+}
+
+type fakeGateFetch struct {
+	caller types.PeerKey
+	hash   string
+}
+
+func (g *fakeGate) Connect(caller, host types.PeerKey, port uint32) error {
+	g.connectArgs = &fakeGateConnect{caller: caller, host: host, port: port}
+	return g.connectErr
+}
+
+func (g *fakeGate) Fetch(caller types.PeerKey, hash string) error {
+	g.fetchArgs = &fakeGateFetch{caller: caller, hash: hash}
+	return g.fetchErr
+}
+
+func TestConnectServiceConsultsGate(t *testing.T) {
+	dc := dummyCreds(t)
+	gate := &fakeGate{}
+	h := newHarness(t, control.WithCredentials(dc), control.WithOperatorGate(gate))
+	pk := testPeerKey(7)
+
+	_, err := h.svc.ConnectService(context.Background(), &controlv1.ConnectServiceRequest{
+		Node:       &controlv1.NodeRef{PeerPub: pk.Bytes()},
+		RemotePort: 80,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, gate.connectArgs, "ConnectService must consult gate.Connect")
+	require.Equal(t, pk, gate.connectArgs.host)
+	require.Equal(t, uint32(80), gate.connectArgs.port)
+}
+
+func TestConnectServiceDeniedByGate(t *testing.T) {
+	dc := dummyCreds(t)
+	gate := &fakeGate{connectErr: errors.New("no")}
+	h := newHarness(t, control.WithCredentials(dc), control.WithOperatorGate(gate))
+
+	_, err := h.svc.ConnectService(context.Background(), &controlv1.ConnectServiceRequest{
+		Node:       &controlv1.NodeRef{PeerPub: testPeerKey(8).Bytes()},
+		RemotePort: 80,
+	})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
+	require.Zero(t, h.tunneling.connectedRemotePort, "tunneling.Connect must not run when gate denies")
+}
+
+func TestFetchBlobConsultsGate(t *testing.T) {
+	dc := dummyCreds(t)
+	gate := &fakeGate{}
+	h := newHarness(t, control.WithCredentials(dc), control.WithOperatorGate(gate))
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte("payload")))
+
+	_, err := h.svc.FetchBlob(context.Background(), &controlv1.FetchBlobRequest{
+		Hash:    hash,
+		PeerPub: testPeerKey(9).Bytes(),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, gate.fetchArgs)
+	require.Equal(t, hash, gate.fetchArgs.hash)
+}
+
+func TestFetchBlobDeniedByGate(t *testing.T) {
+	dc := dummyCreds(t)
+	gate := &fakeGate{fetchErr: errors.New("no")}
+	h := newHarness(t, control.WithCredentials(dc), control.WithOperatorGate(gate))
+
+	_, err := h.svc.FetchBlob(context.Background(), &controlv1.FetchBlobRequest{
+		Hash:    fmt.Sprintf("%x", sha256.Sum256([]byte("blocked"))),
+		PeerPub: testPeerKey(9).Bytes(),
+	})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
+}
+
+func TestConnectServiceWithoutCredsCallsGateWithZeroCaller(t *testing.T) {
+	gate := &fakeGate{}
+	h := newHarness(t, control.WithOperatorGate(gate))
+	pk := testPeerKey(10)
+
+	_, err := h.svc.ConnectService(context.Background(), &controlv1.ConnectServiceRequest{
+		Node:       &controlv1.NodeRef{PeerPub: pk.Bytes()},
+		RemotePort: 80,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, gate.connectArgs)
+	require.Equal(t, types.PeerKey{}, gate.connectArgs.caller, "missing creds yields zero caller key — production gate looks up the snapshot, sees no caller, and denies")
 }
 
 func TestDisconnectService(t *testing.T) {
@@ -903,40 +1078,6 @@ func TestGetStatus_SelfTrafficAggregation(t *testing.T) {
 	require.Equal(t, uint64(600), resp.Self.TrafficRateOut)
 }
 
-func TestGetStatus_ExpiredPeerNotIndirect(t *testing.T) {
-	h := newHarness(t)
-	local := testPeerKey(1)
-	peerA := testPeerKey(2)
-	peerB := testPeerKey(3)
-
-	expiredCertTime := time.Now().Add(-time.Hour).Unix()
-
-	h.state.snap.LocalID = local
-	h.state.snap.Nodes[local] = state.NodeView{}
-	h.state.snap.Nodes[peerA] = state.NodeView{
-		IPs:       []string{"1.2.3.4"},
-		LocalPort: 4000,
-		Reachable: map[types.PeerKey]struct{}{peerB: {}},
-	}
-	h.state.snap.Nodes[peerB] = state.NodeView{
-		IPs:        []string{"5.6.7.8"},
-		LocalPort:  5000,
-		CertExpiry: expiredCertTime,
-	}
-
-	h.transport.activeAddrs[peerA] = &net.UDPAddr{IP: net.ParseIP("1.2.3.4"), Port: 4000}
-
-	resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
-	require.NoError(t, err)
-
-	for _, n := range resp.Nodes {
-		pk := types.PeerKeyFromBytes(n.Node.PeerPub)
-		if pk == peerB {
-			t.Fatalf("expired peer %s should not appear in status output", pk.Short())
-		}
-	}
-}
-
 type fakeMembership struct {
 	denyErr   error
 	deniedKey types.PeerKey
@@ -967,7 +1108,7 @@ type fakePlacement struct {
 	calledInput  []byte
 }
 
-func (f *fakePlacement) Seed(binary []byte, spec state.WorkloadSpec) error {
+func (f *fakePlacement) Seed(binary []byte, spec state.WorkloadSpec, _ *admissionv1.Predicate) error {
 	f.seededName = spec.Name
 	f.seededHash = spec.Hash
 	f.seededBinary = binary
@@ -1025,7 +1166,7 @@ func (f *fakeBlobs) Put(r io.Reader) (string, error) {
 	return hash, nil
 }
 
-func (f *fakeBlobs) SetName(hash, name string) error {
+func (f *fakeBlobs) Publish(hash, name string, _ *admissionv1.Predicate) error {
 	if _, ok := f.store[hash]; !ok {
 		return blobs.ErrNotLocal
 	}
@@ -1048,7 +1189,7 @@ type fakeStatic struct {
 	blobs     map[string]struct{}
 }
 
-func (f *fakeStatic) SeedStatic(string, []byte) error {
+func (f *fakeStatic) SeedStatic(string, []byte, *admissionv1.Predicate) error {
 	return f.seedErr
 }
 func (f *fakeStatic) UnseedStatic(string) error        { return f.unseedErr }
@@ -1085,7 +1226,7 @@ func (f *fakeTunneling) Disconnect(service string) error {
 	return f.disconnectErr
 }
 
-func (f *fakeTunneling) ExposeService(port uint32, name string, _ statev1.ServiceProtocol, _ *structpb.Struct) error {
+func (f *fakeTunneling) ExposeService(port uint32, name string, _ statev1.ServiceProtocol, _ *structpb.Struct, _ *admissionv1.Predicate) error {
 	f.exposedPort = port
 	f.exposedName = name
 	return f.exposeErr

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/cas"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
@@ -29,7 +30,7 @@ type BlobsAPI interface {
 	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
 	Serve(stream io.ReadWriteCloser, hash string)
 	Announce(hash string) error
-	SetName(hash, name string) error
+	Publish(hash, name string, policy *admissionv1.Predicate) error
 	Remove(hash string) error
 	Rescan() error
 	Prune(keep map[string]struct{}, minAge time.Duration) ([]string, error)
@@ -41,8 +42,8 @@ type streamOpener interface {
 
 type blobState interface {
 	SetLocalBlobs(digests []string) []state.Event
-	SetBlobSpec(spec state.BlobSpec) ([]state.Event, error)
-	DeleteBlobSpec(digest string) []state.Event
+	SetBlobSpec(spec state.BlobSpec, policy *admissionv1.Predicate) ([]state.Event, error)
+	DeleteBlobSpec(digest string) ([]state.Event, error)
 }
 
 type blobStore interface {
@@ -110,14 +111,14 @@ func (s *Service) Announce(hash string) error {
 	return nil
 }
 
-func (s *Service) SetName(hash, name string) error {
+func (s *Service) Publish(hash, name string, policy *admissionv1.Predicate) error {
 	if !s.store.Has(hash) {
 		return ErrNotLocal
 	}
 	if s.state == nil {
 		return nil
 	}
-	_, err := s.state.SetBlobSpec(state.BlobSpec{Name: name, Digest: hash})
+	_, err := s.state.SetBlobSpec(state.BlobSpec{Name: name, Digest: hash}, policy)
 	return err
 }
 
@@ -134,7 +135,9 @@ func (s *Service) Remove(hash string) error {
 	s.mu.Unlock()
 	s.publish(digests)
 	if s.state != nil {
-		s.state.DeleteBlobSpec(hash)
+		if _, err := s.state.DeleteBlobSpec(hash); err != nil {
+			return err
+		}
 	}
 	return nil
 }

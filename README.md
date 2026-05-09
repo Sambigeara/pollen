@@ -121,6 +121,9 @@ pln call hello greet '{"name":"world"}'
 *locally* whether to claim a replica, scoring themselves on available
 capacity, cached artifacts, and proximity to traffic. There is no central
 scheduler. When a node goes down, survivors pick up the slack.
+Publishing workloads, static sites, named blobs, and services requires an
+admin-capable node: each published resource carries a signed cert anchored
+to the publisher's admin delegation cert.
 
 Example modules live in [`examples/`](examples/). Run `pln --help` for
 the full CLI reference.
@@ -160,6 +163,26 @@ cat props.json | pln grant <peer-id> --prop -
 # editing `properties:` in config.yaml and restarting):
 pln init --prop role=primary --prop region=eu
 ```
+
+### Restrict who can call what
+
+```bash
+# Require an attribute on the caller's cert; repeatable, all
+# clauses must match:
+pln serve 8080 internal --allow-caller team=backend
+pln seed ./hello.wasm --allow-caller role=lead
+
+# Any-of matching for a single attribute:
+pln serve 9000 vip --allow-caller-in tier=gold,silver
+
+# Workloads only: restrict which exported functions may be invoked:
+pln seed ./hello.wasm --allow-target run
+```
+
+Policy flags ride on the spec's signed cert. The runtime gate
+evaluates them against the caller's delegation-cert attributes on
+every invoke, fetch, or connect; failed matches close the stream.
+Without a flag the resource is open to any authenticated peer.
 
 ### Serve a static site
 

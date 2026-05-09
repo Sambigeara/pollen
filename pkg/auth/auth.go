@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
@@ -48,6 +49,7 @@ const (
 	sigContextJoinClaims        = "pollen.join.v1"
 	sigContextInvite            = "pollen.invite.v1"
 	sigContextDelegationSubject = "pollen.delegation.subject.v1"
+	sigContextSpecAuth          = "pollen.specauth.v1"
 
 	timeSkewAllowance = time.Minute
 )
@@ -525,6 +527,28 @@ func validateChildCapabilities(child, parent *admissionv1.Capabilities) error {
 	if child.GetMaxDepth() > parent.GetMaxDepth() {
 		return errors.New("child capabilities exceed parent: MaxDepth")
 	}
+	return validateAttributesSubset(child.GetAttributes(), parent.GetAttributes())
+}
+
+// validateAttributesSubset enforces that every key the child claims is
+// also held by the parent with an equal value. The child may omit keys
+// to narrow scope, but cannot add new keys or change a value: gate
+// policy decisions trust attribute claims, so an issuer must not be
+// able to mint scopes it never received.
+func validateAttributesSubset(child, parent *structpb.Struct) error {
+	if len(child.GetFields()) == 0 {
+		return nil
+	}
+	parentFields := parent.GetFields()
+	for k, cv := range child.GetFields() {
+		pv, ok := parentFields[k]
+		if !ok {
+			return fmt.Errorf("child capabilities exceed parent: attribute %q not granted by parent", k)
+		}
+		if !proto.Equal(cv, pv) {
+			return fmt.Errorf("child capabilities exceed parent: attribute %q value not granted by parent", k)
+		}
+	}
 	return nil
 }
 
@@ -571,6 +595,94 @@ func VerifyDelegationCert(
 	}
 
 	return nil
+}
+
+type SpecBody interface {
+	proto.Message
+}
+
+func HashSpecBody(body SpecBody) ([]byte, error) {
+	if body == nil {
+		return nil, errors.New("spec body is nil")
+	}
+	b, err := signaturePayload(body)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(b)
+	return sum[:], nil
+}
+
+func IssueSpecAuth(
+	publisherPriv ed25519.PrivateKey,
+	publisher *admissionv1.DelegationCert,
+	resource *admissionv1.ResourceID,
+	body SpecBody,
+	policy *admissionv1.Predicate,
+	deleted bool,
+) (*admissionv1.SpecAuth, error) {
+	if err := protovalidate.Validate(publisher); err != nil {
+		return nil, fmt.Errorf("publisher cert invalid: %w", err)
+	}
+	publisherPub := publisherPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
+	if !bytes.Equal(publisher.GetClaims().GetSubjectPub(), publisherPub) {
+		return nil, errors.New("publisher key does not match cert subject")
+	}
+	bodyHash, err := HashSpecBody(body)
+	if err != nil {
+		return nil, err
+	}
+	specAuth := &admissionv1.SpecAuth{
+		Resource:  resource,
+		Policy:    policy,
+		BodyHash:  bodyHash,
+		Publisher: publisher,
+		Deleted:   deleted,
+	}
+	msg, err := specAuthPayload(specAuth)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := signPayload(publisherPriv, msg, sigContextSpecAuth)
+	if err != nil {
+		return nil, err
+	}
+	specAuth.Signature = sig
+	if err := protovalidate.Validate(specAuth); err != nil {
+		return nil, fmt.Errorf("spec auth invalid: %w", err)
+	}
+	return specAuth, nil
+}
+
+func VerifySpecAuth(specAuth *admissionv1.SpecAuth, body SpecBody, rootPub []byte, now time.Time) error {
+	if err := protovalidate.Validate(specAuth); err != nil {
+		return fmt.Errorf("spec auth invalid: %w", err)
+	}
+	bodyHash, err := HashSpecBody(body)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(bodyHash, specAuth.GetBodyHash()) {
+		return errors.New("spec auth body hash mismatch")
+	}
+	publisher := specAuth.GetPublisher()
+	if err := VerifyDelegationCert(publisher, rootPub, now, nil); err != nil {
+		return fmt.Errorf("publisher cert invalid: %w", err)
+	}
+	msg, err := specAuthPayload(specAuth)
+	if err != nil {
+		return err
+	}
+	if err := verifyPayload(ed25519.PublicKey(publisher.GetClaims().GetSubjectPub()), msg, specAuth.GetSignature(), sigContextSpecAuth); err != nil {
+		return errors.New("spec auth signature invalid")
+	}
+	return nil
+}
+
+func specAuthPayload(specAuth *admissionv1.SpecAuth) ([]byte, error) {
+	payload := proto.Clone(specAuth).(*admissionv1.SpecAuth) //nolint:forcetypeassert
+	payload.Signature = nil
+	return signaturePayload(payload)
 }
 
 func verifyDelegationCertChain(cert *admissionv1.DelegationCert) (ed25519.PublicKey, error) {

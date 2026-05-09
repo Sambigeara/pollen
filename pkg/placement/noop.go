@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -26,7 +27,9 @@ func (*NoopService) Start(context.Context) error { return nil }
 
 func (*NoopService) Stop() error { return nil }
 
-func (*NoopService) Seed([]byte, state.WorkloadSpec) error { return ErrRelayOnly }
+func (*NoopService) Seed([]byte, state.WorkloadSpec, *admissionv1.Predicate) error {
+	return ErrRelayOnly
+}
 
 func (*NoopService) Unseed(string) error { return ErrRelayOnly }
 

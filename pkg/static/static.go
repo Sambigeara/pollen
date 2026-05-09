@@ -8,11 +8,13 @@ package static
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
@@ -29,15 +31,15 @@ type StaticAPI interface {
 	Stop() error
 	Signal()
 	Events() <-chan state.Event
-	SeedStatic(name string, manifestDigest []byte) error
+	SeedStatic(name string, manifestDigest []byte, policy *admissionv1.Predicate) error
 	UnseedStatic(name string) error
 	StaticBlobs() map[string]struct{}
 }
 
 type stateStore interface {
 	Snapshot() state.Snapshot
-	SetStaticSpec(spec state.StaticSpec) ([]state.Event, error)
-	DeleteStaticSpec(name string) []state.Event
+	SetStaticSpec(spec state.StaticSpec, policy *admissionv1.Predicate) ([]state.Event, error)
+	DeleteStaticSpec(name string) ([]state.Event, error)
 	ClaimStatic(name string) []state.Event
 	ReleaseStatic(name string) []state.Event
 }
@@ -110,14 +112,22 @@ func (s *Service) forwardEvents(events []state.Event) {
 	}
 }
 
-func (s *Service) SeedStatic(name string, manifestDigest []byte) error {
+// ErrPolicyOnStatic rejects publish-time policy on static sites: HTTP
+// serving is unauthenticated by design, so a caller predicate has no
+// principal to evaluate against and would be silently ignored.
+var ErrPolicyOnStatic = errors.New("static sites are served via plain HTTP; caller policies have no principal to evaluate against")
+
+func (s *Service) SeedStatic(name string, manifestDigest []byte, policy *admissionv1.Predicate) error {
+	if policy != nil {
+		return ErrPolicyOnStatic
+	}
 	if len(manifestDigest) != digestSize {
 		return fmt.Errorf("manifest digest must be %d bytes", digestSize)
 	}
 	events, err := s.store.SetStaticSpec(state.StaticSpec{
 		Name:           name,
 		ManifestDigest: hex.EncodeToString(manifestDigest),
-	})
+	}, policy)
 	if err != nil {
 		return err
 	}
@@ -134,7 +144,11 @@ func (s *Service) UnseedStatic(name string) error {
 	if sv.Publisher != s.localID {
 		return fmt.Errorf("static site %q is owned by peer %s; run unseed on that node", name, sv.Publisher.Short())
 	}
-	s.forwardEvents(s.store.DeleteStaticSpec(name))
+	events, err := s.store.DeleteStaticSpec(name)
+	if err != nil {
+		return err
+	}
+	s.forwardEvents(events)
 	s.forwardEvents(s.store.ReleaseStatic(name))
 	return nil
 }

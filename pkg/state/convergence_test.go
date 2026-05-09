@@ -6,6 +6,7 @@ package state
 import (
 	"fmt"
 	"net/netip"
+	"strings"
 	"testing"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
@@ -28,7 +29,9 @@ func newDeterministicHarness(t *testing.T, n int) *convergenceHarness {
 		pub := make([]byte, 32)
 		pub[0] = byte(i + 1)
 		h.keys[i] = types.PeerKeyFromBytes(pub)
-		h.stores[i] = New(h.keys[i])
+		s := New(h.keys[i], h.keys[i].Bytes())
+		s.SetLocalSigner(fakeSpecSigner{pub: h.keys[i].Bytes()})
+		h.stores[i] = s
 	}
 	return h
 }
@@ -136,13 +139,14 @@ func TestConvergence_ThreeStoreFullMesh(t *testing.T) {
 	h := newDeterministicHarness(t, 3)
 
 	h.stores[0].SetLocalAddresses([]netip.AddrPort{netip.MustParseAddrPort("10.0.0.1:9000")})
-	h.stores[0].SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
+	_, _ = h.stores[0].SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil)
 
 	h.stores[1].SetLocalCoord(coords.Coord{X: 1, Y: 2, Height: coords.MinHeight}, 0.5)
 	h.stores[1].SetLocalNAT(nat.Easy)
 
-	_, _ = h.stores[2].PublishWorkload(WorkloadSpec{Name: "hash1", Hash: "hash1", MinReplicas: 2}) //nolint:mnd
-	h.stores[2].ClaimWorkload("hash1")
+	hash := strings.Repeat("a", 64)
+	_, _ = h.stores[2].PublishWorkload(WorkloadSpec{Name: "hash1", Hash: hash, MinReplicas: 2}, nil) //nolint:mnd
+	h.stores[2].ClaimWorkload(hash)
 
 	h.establishFullReachability()
 	h.gossipFullMesh()
@@ -167,13 +171,13 @@ func TestConvergence_PartitionHealing(t *testing.T) {
 	h.assertConverged()
 
 	// Partition: A<->B communicate, C is isolated.
-	h.stores[0].SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
+	_, _ = h.stores[0].SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil)
 	h.stores[1].SetLocalNAT(nat.Easy)
 	h.gossipOneway(0, 1)
 	h.gossipOneway(1, 0)
 
 	// C evolves independently.
-	h.stores[2].SetService(9090, "api", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
+	_, _ = h.stores[2].SetService(9090, "api", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil)
 
 	// Heal partition.
 	h.gossipFullMesh()
@@ -219,10 +223,10 @@ func applyFuzzMutation(s StateStore, kind int, peers []types.PeerKey, r *fuzzRea
 	case 1: // service
 		port := uint32(r.readUint16()) + 1
 		name := fmt.Sprintf("svc-%d", r.readByte()%8)
-		s.SetService(port, name, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
+		_, _ = s.SetService(port, name, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil)
 	case 2: // remove service
 		name := fmt.Sprintf("svc-%d", r.readByte()%8)
-		s.RemoveService(name)
+		_, _ = s.RemoveService(name)
 	case 3: // observed address
 		ip := fmt.Sprintf("1.2.%d.%d", r.readByte(), r.readByte())
 		port := uint32(r.readUint16())
@@ -251,11 +255,14 @@ func applyFuzzMutation(s StateStore, kind int, peers []types.PeerKey, r *fuzzRea
 		}
 		s.SetLocalReachable(reachable)
 	case 7: // workload spec
-		hash := fmt.Sprintf("wl-%d", r.readByte()%8)
+		idx := r.readByte() % 8
+		hash := strings.Repeat(string('a'+idx), 64)
+		name := fmt.Sprintf("wl-%d", idx)
 		replicas := uint32(r.readByte()%4) + 1
-		_, _ = s.PublishWorkload(WorkloadSpec{Name: hash, Hash: hash, MinReplicas: replicas})
+		_, _ = s.PublishWorkload(WorkloadSpec{Name: name, Hash: hash, MinReplicas: replicas}, nil)
 	case 8: // workload claim
-		hash := fmt.Sprintf("wl-%d", r.readByte()%8)
+		idx := r.readByte() % 8
+		hash := strings.Repeat(string('a'+idx), 64)
 		if r.readByte()%2 == 0 {
 			s.ClaimWorkload(hash)
 		} else {

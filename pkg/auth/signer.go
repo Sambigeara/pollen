@@ -81,6 +81,15 @@ func (s *DelegationSigner) IssuerCert() *admissionv1.DelegationCert {
 	return s.issuer
 }
 
+func (s *DelegationSigner) IssueSpecAuth(
+	resource *admissionv1.ResourceID,
+	body SpecBody,
+	policy *admissionv1.Predicate,
+	deleted bool,
+) (*admissionv1.SpecAuth, error) {
+	return IssueSpecAuth(s.priv, s.issuer, resource, body, policy, deleted)
+}
+
 func (s *DelegationSigner) IssueInviteToken(
 	subject ed25519.PublicKey,
 	bootstrap []*admissionv1.BootstrapPeer,

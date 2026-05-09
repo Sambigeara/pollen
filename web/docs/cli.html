@@ -215,13 +215,15 @@ pln up -d --name relay --public</code></pre>
     <h2 id="content">Content</h2>
 
     <h3 id="seed"><code>pln seed &lt;source&gt; [name]</code></h3>
-    <p>Publish content to the mesh. Kind is autodetected from the source: <code>.wasm</code> → workload, directory → static site, anything else → blob (or stdin when source is <code>-</code>).</p>
+    <p>Publish content to the mesh. Kind is autodetected from the source: <code>.wasm</code> → workload, directory → static site, anything else → blob (or stdin when source is <code>-</code>). Publishing workloads, static sites, and named blobs requires an admin-capable node because each published resource carries a signed cert anchored to the publisher's admin delegation cert.</p>
     <dl class="flags">
       <dt>--min-replicas &lt;n&gt;</dt><dd>Workload only. Minimum replicas; default 2. Static sites fan out to every node with <code>static-http</code> enabled; blobs replicate on demand.</dd>
       <dt>--everywhere</dt><dd>Workload only. Place a replica on every node.</dd>
       <dt>--memory, --mem &lt;size&gt;</dt><dd>Workload only. Memory limit (e.g. <code>64MiB</code>, <code>1GiB</code>). Default 64MiB.</dd>
       <dt>--timeout &lt;dur&gt;</dt><dd>Workload only. Per-invocation timeout (e.g. <code>500ms</code>, <code>5s</code>).</dd>
-      <dt>--latency-slo &lt;dur&gt;</dt><dd>Workload only. Caller-perspective SLO; drives autoscale via burn rate.</dd>
+      <dt>--allow-caller key=value</dt><dd>Require the caller's delegation-cert attribute to equal value; repeatable. Without any policy flag the resource is open to every authenticated peer.</dd>
+      <dt>--allow-caller-in key=v1,v2,…</dt><dd>Require the caller attribute to be one of the listed values; repeatable.</dd>
+      <dt>--allow-target name</dt><dd>Workload only. Restrict which exported function names may be invoked; repeatable.</dd>
     </dl>
     <pre><code>pln seed ./hello.wasm                       <span class="c"># workload</span>
 pln seed ./hello.wasm greeter --everywhere
@@ -254,10 +256,12 @@ cat payload.json | pln call hello greet</code></pre>
     <h2 id="networking">Networking</h2>
 
     <h3 id="serve"><code>pln serve &lt;port&gt; [name]</code></h3>
-    <p>Register a local TCP (or UDP) port as a mesh service. Persisted to <code>config.yaml</code>.</p>
+    <p>Register a local TCP (or UDP) port as a mesh service. Requires an admin-capable node and is persisted to <code>config.yaml</code>. Every register issues a fresh signed cert anchored to the publisher's admin delegation cert.</p>
     <dl class="flags">
       <dt>--udp</dt><dd>Expose as a UDP service.</dd>
-      <dt>--prop key=val</dt><dd>Publisher property; repeatable. Accepts JSON (<code>--prop '{"public":true}'</code>) for non-string values. Reaches the <code>service_connect</code> gate as <code>resource.properties</code>.</dd>
+      <dt>--prop key=val</dt><dd>Publisher property; repeatable. Accepts JSON (<code>--prop '{"public":true}'</code>) for non-string values. Stored on the service spec as descriptive metadata.</dd>
+      <dt>--allow-caller key=value</dt><dd>Require the caller's delegation-cert attribute to equal value; repeatable. Without any policy flag the service is open to every authenticated peer.</dd>
+      <dt>--allow-caller-in key=v1,v2,…</dt><dd>Require the caller attribute to be one of the listed values; repeatable.</dd>
     </dl>
     <pre><code>pln serve 8080 api
 pln serve 5353 dns --udp

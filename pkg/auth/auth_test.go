@@ -4,11 +4,13 @@
 package auth_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +55,71 @@ func invalidateSignature(sig []byte) []byte {
 	copy(bad, sig)
 	bad[0] ^= 0xFF
 	return bad
+}
+
+func TestSpecAuthVerifiesSignedBody(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	now := time.Now()
+	publisher, err := auth.IssueDelegationCert(
+		rootPriv, nil, rootPub, auth.FullCapabilities(),
+		now.Add(-time.Minute), now.Add(24*time.Hour), time.Time{},
+	)
+	require.NoError(t, err)
+
+	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("a", 64), Name: "echo", MinReplicas: 1}
+	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{
+		Name: body.GetName(),
+		Hash: bytes.Repeat([]byte{0xaa}, 32),
+	}}}
+	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
+		{Key: "role", Match: &admissionv1.Clause_Equals{Equals: "worker"}},
+	}}}
+
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, policy, false)
+	require.NoError(t, err)
+
+	require.NoError(t, auth.VerifySpecAuth(specAuth, body, rootPub, now))
+}
+
+func TestSpecAuthRejectsTamperedBodyHash(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	now := time.Now()
+	publisher, err := auth.IssueDelegationCert(
+		rootPriv, nil, rootPub, auth.FullCapabilities(),
+		now.Add(-time.Minute), now.Add(24*time.Hour), time.Time{},
+	)
+	require.NoError(t, err)
+	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("b", 64), Name: "echo", MinReplicas: 1}
+	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{
+		Name: body.GetName(),
+		Hash: bytes.Repeat([]byte{0xbb}, 32),
+	}}}
+
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
+	require.NoError(t, err)
+	specAuth.BodyHash[0] ^= 0xFF
+
+	require.ErrorContains(t, auth.VerifySpecAuth(specAuth, body, rootPub, now), "body hash")
+}
+
+func TestIssueSpecAuthRejectsPublisherKeyMismatch(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	otherPub, otherPriv := newKeyPair(t)
+	now := time.Now()
+	publisher, err := auth.IssueDelegationCert(
+		rootPriv, nil, rootPub, auth.FullCapabilities(),
+		now.Add(-time.Minute), now.Add(24*time.Hour), time.Time{},
+	)
+	require.NoError(t, err)
+	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("c", 64), Name: "echo", MinReplicas: 1}
+	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{
+		Name: body.GetName(),
+		Hash: bytes.Repeat([]byte{0xcc}, 32),
+	}}}
+	require.NotEqual(t, otherPub, publisher.GetClaims().GetSubjectPub())
+
+	_, err = auth.IssueSpecAuth(otherPriv, publisher, resource, body, nil, false)
+	require.ErrorContains(t, err, "publisher key")
 }
 
 func TestLoadNodeCredentials_ExpiredCertStillLoads(t *testing.T) {
@@ -919,13 +986,13 @@ func TestInviteAttributesTransfer(t *testing.T) {
 	nodePub, nodePriv := newKeyPair(t)
 	now := time.Now()
 
-	_, err := auth.EnsureLocalRootCredentials(dir, nodePub, nil, now, 24*time.Hour)
+	attrs, err := structpb.NewStruct(map[string]any{"role": "relay"})
+	require.NoError(t, err)
+
+	_, err = auth.EnsureLocalRootCredentials(dir, nodePub, attrs, now, 24*time.Hour)
 	require.NoError(t, err)
 
 	signer, err := auth.NewDelegationSigner(dir, nodePriv)
-	require.NoError(t, err)
-
-	attrs, err := structpb.NewStruct(map[string]any{"role": "relay"})
 	require.NoError(t, err)
 
 	subjectPub, _ := newKeyPair(t)
@@ -1042,6 +1109,78 @@ func TestIssueDelegationCert_RejectsCapsExceedingParent(t *testing.T) {
 		&admissionv1.Capabilities{CanDelegate: true, MaxDepth: 5},
 		now, now.Add(time.Hour), time.Time{})
 	require.NoError(t, err)
+}
+
+func TestIssueDelegationCert_RejectsAttributesExceedingParent(t *testing.T) {
+	now := mockTime
+	rootPub, rootPriv := newKeyPair(t)
+	delegatedPub, delegatedPriv := newKeyPair(t)
+	childPub, _ := newKeyPair(t)
+
+	parentAttrs, err := structpb.NewStruct(map[string]any{"region": "us"})
+	require.NoError(t, err)
+
+	rootCaps := auth.FullCapabilities()
+	rootCaps.Attributes = parentAttrs
+	rootCert, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, rootCaps,
+		now, now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	delegatedCaps := auth.FullCapabilities()
+	delegatedCaps.Attributes = parentAttrs
+	delegatedCert, err := auth.IssueDelegationCert(rootPriv,
+		[]*admissionv1.DelegationCert{rootCert}, delegatedPub, delegatedCaps,
+		now, now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	parents := []*admissionv1.DelegationCert{delegatedCert, rootCert}
+
+	cases := []struct {
+		attrs map[string]any
+		name  string
+		want  string
+	}{
+		{
+			name:  "child_adds_new_key",
+			attrs: map[string]any{"region": "us", "role": "admin"},
+			want:  `attribute "role" not granted by parent`,
+		},
+		{
+			name:  "child_changes_value",
+			attrs: map[string]any{"region": "eu"},
+			want:  `attribute "region" value not granted by parent`,
+		},
+		{
+			name:  "parent_has_no_attribute_for_key",
+			attrs: map[string]any{"team": "infra"},
+			want:  `attribute "team" not granted by parent`,
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			childAttrs, err := structpb.NewStruct(tt.attrs)
+			require.NoError(t, err)
+			childCaps := auth.LeafCapabilities()
+			childCaps.Attributes = childAttrs
+			_, err = auth.IssueDelegationCert(delegatedPriv, parents, childPub, childCaps,
+				now, now.Add(time.Hour), time.Time{})
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
+
+	t.Run("child_equal_attrs_passes", func(t *testing.T) {
+		caps := auth.LeafCapabilities()
+		caps.Attributes = parentAttrs
+		_, err := auth.IssueDelegationCert(delegatedPriv, parents, childPub, caps,
+			now, now.Add(time.Hour), time.Time{})
+		require.NoError(t, err)
+	})
+
+	t.Run("child_omits_attrs_passes", func(t *testing.T) {
+		_, err := auth.IssueDelegationCert(delegatedPriv, parents, childPub, auth.LeafCapabilities(),
+			now, now.Add(time.Hour), time.Time{})
+		require.NoError(t, err)
+	})
 }
 
 func TestIssueDelegationCert_RejectsParentWithoutCanDelegate(t *testing.T) {

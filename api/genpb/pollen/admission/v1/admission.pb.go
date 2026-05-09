@@ -586,6 +586,626 @@ func (x *InviteToken) GetSignature() []byte {
 	return nil
 }
 
+type SpecAuth struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Resource      *ResourceID            `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
+	Policy        *Predicate             `protobuf:"bytes,2,opt,name=policy,proto3" json:"policy,omitempty"`
+	BodyHash      []byte                 `protobuf:"bytes,3,opt,name=body_hash,json=bodyHash,proto3" json:"body_hash,omitempty"`
+	Publisher     *DelegationCert        `protobuf:"bytes,4,opt,name=publisher,proto3" json:"publisher,omitempty"`
+	Signature     []byte                 `protobuf:"bytes,5,opt,name=signature,proto3" json:"signature,omitempty"`
+	Deleted       bool                   `protobuf:"varint,6,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SpecAuth) Reset() {
+	*x = SpecAuth{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SpecAuth) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SpecAuth) ProtoMessage() {}
+
+func (x *SpecAuth) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SpecAuth.ProtoReflect.Descriptor instead.
+func (*SpecAuth) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *SpecAuth) GetResource() *ResourceID {
+	if x != nil {
+		return x.Resource
+	}
+	return nil
+}
+
+func (x *SpecAuth) GetPolicy() *Predicate {
+	if x != nil {
+		return x.Policy
+	}
+	return nil
+}
+
+func (x *SpecAuth) GetBodyHash() []byte {
+	if x != nil {
+		return x.BodyHash
+	}
+	return nil
+}
+
+func (x *SpecAuth) GetPublisher() *DelegationCert {
+	if x != nil {
+		return x.Publisher
+	}
+	return nil
+}
+
+func (x *SpecAuth) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
+func (x *SpecAuth) GetDeleted() bool {
+	if x != nil {
+		return x.Deleted
+	}
+	return false
+}
+
+type ResourceID struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Body:
+	//
+	//	*ResourceID_Seed
+	//	*ResourceID_Blob
+	//	*ResourceID_Static
+	//	*ResourceID_Service
+	Body          isResourceID_Body `protobuf_oneof:"body"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResourceID) Reset() {
+	*x = ResourceID{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResourceID) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResourceID) ProtoMessage() {}
+
+func (x *ResourceID) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResourceID.ProtoReflect.Descriptor instead.
+func (*ResourceID) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ResourceID) GetBody() isResourceID_Body {
+	if x != nil {
+		return x.Body
+	}
+	return nil
+}
+
+func (x *ResourceID) GetSeed() *SeedID {
+	if x != nil {
+		if x, ok := x.Body.(*ResourceID_Seed); ok {
+			return x.Seed
+		}
+	}
+	return nil
+}
+
+func (x *ResourceID) GetBlob() *BlobID {
+	if x != nil {
+		if x, ok := x.Body.(*ResourceID_Blob); ok {
+			return x.Blob
+		}
+	}
+	return nil
+}
+
+func (x *ResourceID) GetStatic() *StaticID {
+	if x != nil {
+		if x, ok := x.Body.(*ResourceID_Static); ok {
+			return x.Static
+		}
+	}
+	return nil
+}
+
+func (x *ResourceID) GetService() *ServiceID {
+	if x != nil {
+		if x, ok := x.Body.(*ResourceID_Service); ok {
+			return x.Service
+		}
+	}
+	return nil
+}
+
+type isResourceID_Body interface {
+	isResourceID_Body()
+}
+
+type ResourceID_Seed struct {
+	Seed *SeedID `protobuf:"bytes,1,opt,name=seed,proto3,oneof"`
+}
+
+type ResourceID_Blob struct {
+	Blob *BlobID `protobuf:"bytes,2,opt,name=blob,proto3,oneof"`
+}
+
+type ResourceID_Static struct {
+	Static *StaticID `protobuf:"bytes,3,opt,name=static,proto3,oneof"`
+}
+
+type ResourceID_Service struct {
+	Service *ServiceID `protobuf:"bytes,4,opt,name=service,proto3,oneof"`
+}
+
+func (*ResourceID_Seed) isResourceID_Body() {}
+
+func (*ResourceID_Blob) isResourceID_Body() {}
+
+func (*ResourceID_Static) isResourceID_Body() {}
+
+func (*ResourceID_Service) isResourceID_Body() {}
+
+type SeedID struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Hash          []byte                 `protobuf:"bytes,2,opt,name=hash,proto3" json:"hash,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SeedID) Reset() {
+	*x = SeedID{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SeedID) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SeedID) ProtoMessage() {}
+
+func (x *SeedID) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SeedID.ProtoReflect.Descriptor instead.
+func (*SeedID) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *SeedID) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SeedID) GetHash() []byte {
+	if x != nil {
+		return x.Hash
+	}
+	return nil
+}
+
+type BlobID struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Digest        []byte                 `protobuf:"bytes,2,opt,name=digest,proto3" json:"digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BlobID) Reset() {
+	*x = BlobID{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BlobID) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BlobID) ProtoMessage() {}
+
+func (x *BlobID) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BlobID.ProtoReflect.Descriptor instead.
+func (*BlobID) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *BlobID) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *BlobID) GetDigest() []byte {
+	if x != nil {
+		return x.Digest
+	}
+	return nil
+}
+
+type StaticID struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Name           string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	ManifestDigest []byte                 `protobuf:"bytes,2,opt,name=manifest_digest,json=manifestDigest,proto3" json:"manifest_digest,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *StaticID) Reset() {
+	*x = StaticID{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StaticID) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StaticID) ProtoMessage() {}
+
+func (x *StaticID) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StaticID.ProtoReflect.Descriptor instead.
+func (*StaticID) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *StaticID) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *StaticID) GetManifestDigest() []byte {
+	if x != nil {
+		return x.ManifestDigest
+	}
+	return nil
+}
+
+type ServiceID struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServiceID) Reset() {
+	*x = ServiceID{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServiceID) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServiceID) ProtoMessage() {}
+
+func (x *ServiceID) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServiceID.ProtoReflect.Descriptor instead.
+func (*ServiceID) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ServiceID) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type Predicate struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Inline        *InlinePredicate       `protobuf:"bytes,1,opt,name=inline,proto3" json:"inline,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Predicate) Reset() {
+	*x = Predicate{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Predicate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Predicate) ProtoMessage() {}
+
+func (x *Predicate) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Predicate.ProtoReflect.Descriptor instead.
+func (*Predicate) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *Predicate) GetInline() *InlinePredicate {
+	if x != nil {
+		return x.Inline
+	}
+	return nil
+}
+
+type InlinePredicate struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Clauses       []*Clause              `protobuf:"bytes,1,rep,name=clauses,proto3" json:"clauses,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InlinePredicate) Reset() {
+	*x = InlinePredicate{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InlinePredicate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InlinePredicate) ProtoMessage() {}
+
+func (x *InlinePredicate) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InlinePredicate.ProtoReflect.Descriptor instead.
+func (*InlinePredicate) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *InlinePredicate) GetClauses() []*Clause {
+	if x != nil {
+		return x.Clauses
+	}
+	return nil
+}
+
+type Clause struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// Types that are valid to be assigned to Match:
+	//
+	//	*Clause_Equals
+	//	*Clause_In
+	Match         isClause_Match `protobuf_oneof:"match"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Clause) Reset() {
+	*x = Clause{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Clause) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Clause) ProtoMessage() {}
+
+func (x *Clause) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Clause.ProtoReflect.Descriptor instead.
+func (*Clause) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *Clause) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *Clause) GetMatch() isClause_Match {
+	if x != nil {
+		return x.Match
+	}
+	return nil
+}
+
+func (x *Clause) GetEquals() string {
+	if x != nil {
+		if x, ok := x.Match.(*Clause_Equals); ok {
+			return x.Equals
+		}
+	}
+	return ""
+}
+
+func (x *Clause) GetIn() *StringList {
+	if x != nil {
+		if x, ok := x.Match.(*Clause_In); ok {
+			return x.In
+		}
+	}
+	return nil
+}
+
+type isClause_Match interface {
+	isClause_Match()
+}
+
+type Clause_Equals struct {
+	Equals string `protobuf:"bytes,2,opt,name=equals,proto3,oneof"`
+}
+
+type Clause_In struct {
+	In *StringList `protobuf:"bytes,3,opt,name=in,proto3,oneof"`
+}
+
+func (*Clause_Equals) isClause_Match() {}
+
+func (*Clause_In) isClause_Match() {}
+
+type StringList struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Values        []string               `protobuf:"bytes,1,rep,name=values,proto3" json:"values,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StringList) Reset() {
+	*x = StringList{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StringList) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StringList) ProtoMessage() {}
+
+func (x *StringList) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StringList.ProtoReflect.Descriptor instead.
+func (*StringList) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *StringList) GetValues() []string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
 var File_pollen_admission_v1_admission_proto protoreflect.FileDescriptor
 
 const file_pollen_admission_v1_admission_proto_rawDesc = "" +
@@ -643,7 +1263,47 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"attributes\"|\n" +
 	"\vInviteToken\x12F\n" +
 	"\x06claims\x18\x01 \x01(\v2&.pollen.admission.v1.InviteTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
-	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignatureBHZFgithub.com/sambigeara/pollen/api/genpb/pollen/admission/v1;admissionv1b\x06proto3"
+	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xb9\x02\n" +
+	"\bSpecAuth\x12C\n" +
+	"\bresource\x18\x01 \x01(\v2\x1f.pollen.admission.v1.ResourceIDB\x06\xbaH\x03\xc8\x01\x01R\bresource\x126\n" +
+	"\x06policy\x18\x02 \x01(\v2\x1e.pollen.admission.v1.PredicateR\x06policy\x12$\n" +
+	"\tbody_hash\x18\x03 \x01(\fB\a\xbaH\x04z\x02h R\bbodyHash\x12I\n" +
+	"\tpublisher\x18\x04 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\tpublisher\x12%\n" +
+	"\tsignature\x18\x05 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\x12\x18\n" +
+	"\adeleted\x18\x06 \x01(\bR\adeleted\"\xef\x01\n" +
+	"\n" +
+	"ResourceID\x121\n" +
+	"\x04seed\x18\x01 \x01(\v2\x1b.pollen.admission.v1.SeedIDH\x00R\x04seed\x121\n" +
+	"\x04blob\x18\x02 \x01(\v2\x1b.pollen.admission.v1.BlobIDH\x00R\x04blob\x127\n" +
+	"\x06static\x18\x03 \x01(\v2\x1d.pollen.admission.v1.StaticIDH\x00R\x06static\x12:\n" +
+	"\aservice\x18\x04 \x01(\v2\x1e.pollen.admission.v1.ServiceIDH\x00R\aserviceB\x06\n" +
+	"\x04body\"E\n" +
+	"\x06SeedID\x12\x1e\n" +
+	"\x04name\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x12\x1b\n" +
+	"\x04hash\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x04hash\"G\n" +
+	"\x06BlobID\x12\x1c\n" +
+	"\x04name\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\xff\x01R\x04name\x12\x1f\n" +
+	"\x06digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x06digest\"\\\n" +
+	"\bStaticID\x12\x1e\n" +
+	"\x04name\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x120\n" +
+	"\x0fmanifest_digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x0emanifestDigest\"+\n" +
+	"\tServiceID\x12\x1e\n" +
+	"\x04name\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\"I\n" +
+	"\tPredicate\x12<\n" +
+	"\x06inline\x18\x01 \x01(\v2$.pollen.admission.v1.InlinePredicateR\x06inline\"H\n" +
+	"\x0fInlinePredicate\x125\n" +
+	"\aclauses\x18\x01 \x03(\v2\x1b.pollen.admission.v1.ClauseR\aclauses\"y\n" +
+	"\x06Clause\x12\x19\n" +
+	"\x03key\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\x03key\x12\x18\n" +
+	"\x06equals\x18\x02 \x01(\tH\x00R\x06equals\x121\n" +
+	"\x02in\x18\x03 \x01(\v2\x1f.pollen.admission.v1.StringListH\x00R\x02inB\a\n" +
+	"\x05match\"$\n" +
+	"\n" +
+	"StringList\x12\x16\n" +
+	"\x06values\x18\x01 \x03(\tR\x06valuesBHZFgithub.com/sambigeara/pollen/api/genpb/pollen/admission/v1;admissionv1b\x06proto3"
 
 var (
 	file_pollen_admission_v1_admission_proto_rawDescOnce sync.Once
@@ -657,7 +1317,7 @@ func file_pollen_admission_v1_admission_proto_rawDescGZIP() []byte {
 	return file_pollen_admission_v1_admission_proto_rawDescData
 }
 
-var file_pollen_admission_v1_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_pollen_admission_v1_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_pollen_admission_v1_admission_proto_goTypes = []any{
 	(*Capabilities)(nil),         // 0: pollen.admission.v1.Capabilities
 	(*DelegationCertClaims)(nil), // 1: pollen.admission.v1.DelegationCertClaims
@@ -667,10 +1327,20 @@ var file_pollen_admission_v1_admission_proto_goTypes = []any{
 	(*JoinToken)(nil),            // 5: pollen.admission.v1.JoinToken
 	(*InviteTokenClaims)(nil),    // 6: pollen.admission.v1.InviteTokenClaims
 	(*InviteToken)(nil),          // 7: pollen.admission.v1.InviteToken
-	(*structpb.Struct)(nil),      // 8: google.protobuf.Struct
+	(*SpecAuth)(nil),             // 8: pollen.admission.v1.SpecAuth
+	(*ResourceID)(nil),           // 9: pollen.admission.v1.ResourceID
+	(*SeedID)(nil),               // 10: pollen.admission.v1.SeedID
+	(*BlobID)(nil),               // 11: pollen.admission.v1.BlobID
+	(*StaticID)(nil),             // 12: pollen.admission.v1.StaticID
+	(*ServiceID)(nil),            // 13: pollen.admission.v1.ServiceID
+	(*Predicate)(nil),            // 14: pollen.admission.v1.Predicate
+	(*InlinePredicate)(nil),      // 15: pollen.admission.v1.InlinePredicate
+	(*Clause)(nil),               // 16: pollen.admission.v1.Clause
+	(*StringList)(nil),           // 17: pollen.admission.v1.StringList
+	(*structpb.Struct)(nil),      // 18: google.protobuf.Struct
 }
 var file_pollen_admission_v1_admission_proto_depIdxs = []int32{
-	8,  // 0: pollen.admission.v1.Capabilities.attributes:type_name -> google.protobuf.Struct
+	18, // 0: pollen.admission.v1.Capabilities.attributes:type_name -> google.protobuf.Struct
 	0,  // 1: pollen.admission.v1.DelegationCertClaims.capabilities:type_name -> pollen.admission.v1.Capabilities
 	1,  // 2: pollen.admission.v1.DelegationCert.claims:type_name -> pollen.admission.v1.DelegationCertClaims
 	2,  // 3: pollen.admission.v1.DelegationCert.chain:type_name -> pollen.admission.v1.DelegationCert
@@ -678,13 +1348,23 @@ var file_pollen_admission_v1_admission_proto_depIdxs = []int32{
 	3,  // 5: pollen.admission.v1.JoinTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
 	4,  // 6: pollen.admission.v1.JoinToken.claims:type_name -> pollen.admission.v1.JoinTokenClaims
 	3,  // 7: pollen.admission.v1.InviteTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
-	8,  // 8: pollen.admission.v1.InviteTokenClaims.attributes:type_name -> google.protobuf.Struct
+	18, // 8: pollen.admission.v1.InviteTokenClaims.attributes:type_name -> google.protobuf.Struct
 	6,  // 9: pollen.admission.v1.InviteToken.claims:type_name -> pollen.admission.v1.InviteTokenClaims
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	9,  // 10: pollen.admission.v1.SpecAuth.resource:type_name -> pollen.admission.v1.ResourceID
+	14, // 11: pollen.admission.v1.SpecAuth.policy:type_name -> pollen.admission.v1.Predicate
+	2,  // 12: pollen.admission.v1.SpecAuth.publisher:type_name -> pollen.admission.v1.DelegationCert
+	10, // 13: pollen.admission.v1.ResourceID.seed:type_name -> pollen.admission.v1.SeedID
+	11, // 14: pollen.admission.v1.ResourceID.blob:type_name -> pollen.admission.v1.BlobID
+	12, // 15: pollen.admission.v1.ResourceID.static:type_name -> pollen.admission.v1.StaticID
+	13, // 16: pollen.admission.v1.ResourceID.service:type_name -> pollen.admission.v1.ServiceID
+	15, // 17: pollen.admission.v1.Predicate.inline:type_name -> pollen.admission.v1.InlinePredicate
+	16, // 18: pollen.admission.v1.InlinePredicate.clauses:type_name -> pollen.admission.v1.Clause
+	17, // 19: pollen.admission.v1.Clause.in:type_name -> pollen.admission.v1.StringList
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_pollen_admission_v1_admission_proto_init() }
@@ -692,13 +1372,23 @@ func file_pollen_admission_v1_admission_proto_init() {
 	if File_pollen_admission_v1_admission_proto != nil {
 		return
 	}
+	file_pollen_admission_v1_admission_proto_msgTypes[9].OneofWrappers = []any{
+		(*ResourceID_Seed)(nil),
+		(*ResourceID_Blob)(nil),
+		(*ResourceID_Static)(nil),
+		(*ResourceID_Service)(nil),
+	}
+	file_pollen_admission_v1_admission_proto_msgTypes[16].OneofWrappers = []any{
+		(*Clause_Equals)(nil),
+		(*Clause_In)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_admission_v1_admission_proto_rawDesc), len(file_pollen_admission_v1_admission_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

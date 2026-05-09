@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
@@ -61,7 +62,7 @@ type MembershipControl interface {
 }
 
 type PlacementControl interface {
-	Seed(binary []byte, spec state.WorkloadSpec) error
+	Seed(binary []byte, spec state.WorkloadSpec, policy *admissionv1.Predicate) error
 	Unseed(hash string) error
 	Call(ctx context.Context, hash, fn string, input []byte) ([]byte, error)
 	Status() []placement.WorkloadSummary
@@ -70,7 +71,7 @@ type PlacementControl interface {
 type TunnelingControl interface {
 	Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) (uint32, error)
 	Disconnect(service string) error
-	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct) error
+	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, policy *admissionv1.Predicate) error
 	UnexposeService(name string) error
 	ListConnections() []tunneling.ConnectionInfo
 }
@@ -82,12 +83,12 @@ type StateReader interface {
 type BlobsControl interface {
 	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
 	Put(r io.Reader) (string, error)
-	SetName(hash, name string) error
+	Publish(hash, name string, policy *admissionv1.Predicate) error
 	Remove(hash string) error
 }
 
 type StaticControl interface {
-	SeedStatic(name string, manifestDigest []byte) error
+	SeedStatic(name string, manifestDigest []byte, policy *admissionv1.Predicate) error
 	UnseedStatic(name string) error
 	StaticBlobs() map[string]struct{}
 }
@@ -107,6 +108,14 @@ type MeshConnector interface {
 	Connect(ctx context.Context, peer types.PeerKey, addrs []netip.AddrPort) error
 }
 
+// OperatorGate authorises Connect and Fetch. Workload invocations are
+// gated in placement.Call because that path catches remote dispatch and
+// seed-to-seed tail calls as well as operator RPCs.
+type OperatorGate interface {
+	Connect(callerKey, hostPeer types.PeerKey, port uint32) error
+	Fetch(callerKey types.PeerKey, hash string) error
+}
+
 var _ controlv1.ControlServiceServer = (*Service)(nil)
 
 type Service struct {
@@ -117,12 +126,28 @@ type Service struct {
 	blobs      BlobsControl
 	static     StaticControl
 	state      StateReader
+	gate       OperatorGate
 	shutdown   func()
 	creds      *auth.NodeCredentials
 	transport  TransportInfo
 	metrics    MetricsSource
 	connector  MeshConnector
 	log        *zap.SugaredLogger
+}
+
+func (s *Service) canPublishResources() bool {
+	return s.creds != nil && s.creds.DelegationKey() != nil
+}
+
+func (s *Service) localPeerKey() types.PeerKey {
+	if s.creds == nil {
+		return types.PeerKey{}
+	}
+	cert := s.creds.Cert()
+	if cert == nil {
+		return types.PeerKey{}
+	}
+	return types.PeerKeyFromBytes(cert.GetClaims().GetSubjectPub())
 }
 
 type Option func(*Service)
@@ -132,6 +157,7 @@ func WithCredentials(c *auth.NodeCredentials) Option { return func(s *Service) {
 func WithTransportInfo(t TransportInfo) Option       { return func(s *Service) { s.transport = t } }
 func WithMetricsSource(m MetricsSource) Option       { return func(s *Service) { s.metrics = m } }
 func WithMeshConnector(c MeshConnector) Option       { return func(s *Service) { s.connector = c } }
+func WithOperatorGate(g OperatorGate) Option         { return func(s *Service) { s.gate = g } }
 
 func NewService(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, blobs BlobsControl, sc StaticControl, state StateReader, opts ...Option) *Service {
 	s := &Service{
@@ -254,24 +280,21 @@ func (s *Service) Shutdown(_ context.Context, _ *controlv1.ShutdownRequest) (*co
 func (s *Service) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootstrapInfoRequest) (*controlv1.GetBootstrapInfoResponse, error) {
 	snap := s.state.Snapshot()
 	return &controlv1.GetBootstrapInfoResponse{
-		Peers: pickBootstrapPeers(snap, time.Now()),
+		Peers: pickBootstrapPeers(snap),
 	}, nil
 }
 
 func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
 	snap := s.state.Snapshot()
-	now := time.Now()
-
-	activeNodes := filterActiveNodes(snap.Nodes, snap.LocalID, now)
 	connections := s.tunneling.ListConnections()
 
 	out := &controlv1.GetStatusResponse{
-		Degraded:     s.isDegraded(now),
+		Degraded:     s.isDegraded(time.Now()),
 		Certificates: s.buildCertificates(),
 		Self:         s.buildSelfSummary(snap.LocalID, snap.Nodes[snap.LocalID], connections),
-		Nodes:        s.buildNodeSummaries(snap, activeNodes, connections),
-		Services:     buildServiceSummaries(activeNodes),
-		Connections:  buildConnectionSummaries(activeNodes, connections),
+		Nodes:        s.buildNodeSummaries(snap, snap.Nodes, connections),
+		Services:     buildServiceSummaries(snap.Nodes),
+		Connections:  buildConnectionSummaries(snap.Nodes, connections),
 		Workloads:    s.buildWorkloadSummaries(snap),
 		Sites:        buildStaticSummaries(snap),
 		Blobs:        s.buildBlobSummaries(snap),
@@ -279,17 +302,6 @@ func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*
 
 	sortStatusResponse(out)
 	return out, nil
-}
-
-func filterActiveNodes(nodes map[types.PeerKey]state.NodeView, localID types.PeerKey, now time.Time) map[types.PeerKey]state.NodeView {
-	active := make(map[types.PeerKey]state.NodeView, len(nodes))
-	for key, nv := range nodes {
-		if key != localID && nv.CertExpiry != 0 && auth.IsExpiredAt(time.Unix(nv.CertExpiry, 0), now) {
-			continue
-		}
-		active[key] = nv
-	}
-	return active
 }
 
 func (s *Service) isDegraded(now time.Time) bool {
@@ -522,8 +534,11 @@ func sortStatusResponse(out *controlv1.GetStatusResponse) {
 }
 
 func (s *Service) RegisterService(_ context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
+	if !s.canPublishResources() {
+		return nil, status.Error(codes.PermissionDenied, "only admin nodes can publish services")
+	}
 	name := serviceNameOrDefault(req.GetName(), req.Port)
-	if err := s.tunneling.ExposeService(req.Port, name, state.NormaliseProtocol(req.GetProtocol()), req.GetProperties()); err != nil {
+	if err := s.tunneling.ExposeService(req.Port, name, state.NormaliseProtocol(req.GetProtocol()), req.GetProperties(), req.GetPolicy()); err != nil {
 		return nil, s.fail(err, "register service failed")
 	}
 	return &controlv1.RegisterServiceResponse{}, nil
@@ -558,6 +573,11 @@ func (s *Service) ConnectPeer(ctx context.Context, req *controlv1.ConnectPeerReq
 
 func (s *Service) ConnectService(ctx context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
 	peerKey := types.PeerKeyFromBytes(req.Node.PeerPub)
+	if s.gate != nil {
+		if err := s.gate.Connect(s.localPeerKey(), peerKey, req.GetRemotePort()); err != nil {
+			return nil, status.Error(codes.PermissionDenied, "connect denied")
+		}
+	}
 	boundPort, err := s.tunneling.Connect(ctx, peerKey, req.GetRemotePort(), req.GetLocalPort(), state.NormaliseProtocol(req.GetProtocol()))
 	if err != nil {
 		return nil, s.fail(err, "connect service failed")
@@ -595,7 +615,7 @@ func (s *Service) DenyPeer(_ context.Context, req *controlv1.DenyPeerRequest) (*
 }
 
 func (s *Service) IssueCert(ctx context.Context, req *controlv1.IssueCertRequest) (*controlv1.IssueCertResponse, error) {
-	if s.creds == nil || s.creds.DelegationKey() == nil {
+	if !s.canPublishResources() {
 		return nil, status.Error(codes.FailedPrecondition, "this node has no delegation authority")
 	}
 	if err := auth.ValidateAttributes(req.GetAttributes()); err != nil {
@@ -648,7 +668,7 @@ func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) 
 }
 
 func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedWorkloadRequest, controlv1.SeedWorkloadResponse]) error {
-	if s.creds == nil || s.creds.DelegationKey() == nil {
+	if !s.canPublishResources() {
 		return status.Error(codes.PermissionDenied, "only admin nodes can seed workloads")
 	}
 
@@ -701,7 +721,7 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 		Timeout:     time.Duration(header.GetTimeoutMs()) * time.Millisecond,
 		Spread:      header.GetSpread(),
 	}
-	if err := s.placement.Seed(wasmBytes, spec); err != nil {
+	if err := s.placement.Seed(wasmBytes, spec, header.GetPolicy()); err != nil {
 		switch {
 		case errors.Is(err, placement.ErrCompile):
 			s.log.Warnw("seed workload failed", "name", name, "hash", types.ShortHash(hash), "err", err)
@@ -718,6 +738,11 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 
 func (s *Service) FetchBlob(ctx context.Context, req *controlv1.FetchBlobRequest) (*controlv1.FetchBlobResponse, error) {
 	hash := req.GetHash()
+	if s.gate != nil {
+		if err := s.gate.Fetch(s.localPeerKey(), hash); err != nil {
+			return nil, status.Error(codes.PermissionDenied, "fetch denied")
+		}
+	}
 	var peers []types.PeerKey
 	if pub := req.GetPeerPub(); len(pub) > 0 {
 		peers = []types.PeerKey{types.PeerKeyFromBytes(pub)}
@@ -735,6 +760,10 @@ func (s *Service) FetchBlob(ctx context.Context, req *controlv1.FetchBlobRequest
 }
 
 func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadBlobRequest, controlv1.UploadBlobResponse]) error {
+	if !s.canPublishResources() {
+		return status.Error(codes.PermissionDenied, "only admin nodes can upload blobs")
+	}
+
 	first, err := stream.Recv()
 	if err != nil {
 		if errors.Is(err, io.EOF) {
@@ -773,9 +802,9 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 		name = types.ShortHash(hash)
 	}
 	if name != "" {
-		if err := s.blobs.SetName(hash, name); err != nil {
-			s.log.Warnw("set blob name failed", "hash", types.ShortHash(hash), "name", name, "err", err)
-			return status.Error(codes.Internal, "set blob name")
+		if err := s.blobs.Publish(hash, name, header.GetPolicy()); err != nil {
+			s.log.Warnw("publish blob failed", "hash", types.ShortHash(hash), "name", name, "err", err)
+			return status.Error(codes.Internal, "publish blob")
 		}
 	}
 
@@ -783,28 +812,39 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 }
 
 func (s *Service) RemoveBlob(_ context.Context, req *controlv1.RemoveBlobRequest) (*controlv1.RemoveBlobResponse, error) {
-	if err := s.blobs.Remove(req.GetHash()); err != nil {
+	if !s.canPublishResources() {
+		return nil, status.Error(codes.PermissionDenied, "only admin nodes can remove blobs")
+	}
+	hash := req.GetHash()
+	snap := s.state.Snapshot()
+	if _, ok := snap.Specs[hash]; ok {
+		return nil, status.Error(codes.FailedPrecondition, "blob is referenced by a workload spec; unseed the workload instead")
+	}
+	if _, ok := s.static.StaticBlobs()[hash]; ok {
+		return nil, status.Error(codes.FailedPrecondition, "blob is referenced by a static manifest; unseed the static site instead")
+	}
+	if err := s.blobs.Remove(hash); err != nil {
 		if errors.Is(err, blobs.ErrNotLocal) {
 			return nil, status.Error(codes.FailedPrecondition, "blob not present locally")
 		}
-		s.log.Warnw("remove blob failed", "hash", types.ShortHash(req.GetHash()), "err", err)
+		s.log.Warnw("remove blob failed", "hash", types.ShortHash(hash), "err", err)
 		return nil, status.Error(codes.Internal, "remove blob")
 	}
 	return &controlv1.RemoveBlobResponse{}, nil
 }
 
 func (s *Service) SeedStatic(_ context.Context, req *controlv1.SeedStaticRequest) (*controlv1.SeedStaticResponse, error) {
-	if s.creds == nil || s.creds.DelegationKey() == nil {
+	if !s.canPublishResources() {
 		return nil, status.Error(codes.PermissionDenied, "only admin nodes can seed static sites")
 	}
-	if err := s.static.SeedStatic(req.GetName(), req.GetManifestDigest()); err != nil {
+	if err := s.static.SeedStatic(req.GetName(), req.GetManifestDigest(), req.GetPolicy()); err != nil {
 		return nil, s.fail(err, "seed static")
 	}
 	return &controlv1.SeedStaticResponse{}, nil
 }
 
 func (s *Service) UnseedStatic(_ context.Context, req *controlv1.UnseedStaticRequest) (*controlv1.UnseedStaticResponse, error) {
-	if s.creds == nil || s.creds.DelegationKey() == nil {
+	if !s.canPublishResources() {
 		return nil, status.Error(codes.PermissionDenied, "only admin nodes can unseed static sites")
 	}
 	if err := s.static.UnseedStatic(req.GetName()); err != nil {
@@ -888,7 +928,7 @@ func (s *Service) buildBlobSummaries(snap state.Snapshot) []*controlv1.BlobSumma
 }
 
 func (s *Service) UnseedWorkload(_ context.Context, req *controlv1.UnseedWorkloadRequest) (*controlv1.UnseedWorkloadResponse, error) {
-	if s.creds == nil || s.creds.DelegationKey() == nil {
+	if !s.canPublishResources() {
 		return nil, status.Error(codes.PermissionDenied, "only admin nodes can unseed workloads")
 	}
 	if err := s.placement.Unseed(req.GetHash()); err != nil {

@@ -35,29 +35,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-func watchAuthzReload(ctx context.Context, n *supervisor.Supervisor, log *zap.SugaredLogger) {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGHUP)
-	go func() {
-		defer signal.Stop(ch)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ch:
-				err := n.ReloadAuthzMatcher()
-				switch {
-				case err == nil:
-					log.Infow("authz rules reloaded")
-				case errors.Is(err, supervisor.ErrNoMatcher):
-				default:
-					log.Warnw("authz rule reload failed; keeping previous rules", zap.Error(err))
-				}
-			}
-		}
-	}()
-}
-
 func newDaemonCmds() []*cobra.Command {
 	upCmd := &cobra.Command{
 		Use:   "up",
@@ -323,17 +300,11 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		ControlAddr:        controlAddr,
 		ControlToken:       controlToken,
 		IdleInstanceTTL:    env.cfg.Placement.IdleInstanceTTL,
-		Authz: supervisor.AuthzOptions{
-			Default:      env.cfg.Evaluator.Default,
-			Gates:        env.cfg.Evaluator.Gates,
-			MatcherRules: env.cfg.Evaluator.MatcherRules,
-		},
-		RelayOnly: env.cfg.RelayOnly,
+		RelayOnly:          env.cfg.RelayOnly,
 	}, creds, inviteConsumer)
 	if err != nil {
 		return err
 	}
-	watchAuthzReload(ctx, n, zap.S().Named("authz"))
 
 	logger.Info("successfully started node")
 	if err := n.Run(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {

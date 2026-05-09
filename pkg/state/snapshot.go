@@ -10,8 +10,8 @@ import (
 	"slices"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -34,11 +34,13 @@ type Snapshot struct {
 }
 
 type StaticSpecView struct {
+	Auth      *admissionv1.SpecAuth
 	Spec      StaticSpec
 	Publisher types.PeerKey
 }
 
 type BlobSpecView struct {
+	Auth      *admissionv1.SpecAuth
 	Spec      BlobSpec
 	Publisher types.PeerKey
 }
@@ -51,6 +53,7 @@ type NodeView struct {
 	Services           map[string]*Service
 	CallCounts         map[string]uint64
 	Blobs              map[string]struct{}
+	Cert               *admissionv1.DelegationCert
 	VivaldiCoord       *coords.Coord
 	ObservedExternalIP string
 	LastAddr           string
@@ -60,7 +63,6 @@ type NodeView struct {
 	NatType            nat.Type
 	VivaldiErr         float64
 	MemTotalBytes      uint64
-	CertExpiry         int64
 	MemPercent         uint32
 	NumCPU             uint32
 	CPUPercent         uint32
@@ -72,6 +74,7 @@ type NodeView struct {
 }
 
 type WorkloadSpecView struct {
+	Auth      *admissionv1.SpecAuth
 	Spec      WorkloadSpec
 	Publisher types.PeerKey
 }
@@ -83,6 +86,7 @@ type TrafficSnapshot struct {
 
 type Service struct {
 	Properties *structpb.Struct
+	Auth       *admissionv1.SpecAuth
 	Name       string
 	Port       uint32
 	Protocol   statev1.ServiceProtocol
@@ -149,6 +153,7 @@ func (s Snapshot) LocalSpecByName(name string, localID types.PeerKey) (string, b
 
 type ServiceInfo struct {
 	Properties *structpb.Struct
+	Auth       *admissionv1.SpecAuth
 	Name       string
 	Peer       types.PeerKey
 	Port       uint32
@@ -196,7 +201,7 @@ func (s Snapshot) Services() []ServiceInfo {
 	var out []ServiceInfo
 	for pk, nv := range s.Nodes {
 		for name, svc := range nv.Services {
-			out = append(out, ServiceInfo{Name: name, Port: svc.Port, Peer: pk, Protocol: svc.Protocol, Properties: svc.Properties})
+			out = append(out, ServiceInfo{Name: name, Port: svc.Port, Peer: pk, Protocol: svc.Protocol, Properties: svc.Properties, Auth: svc.Auth})
 		}
 	}
 	return out
@@ -209,11 +214,6 @@ func (s *store) buildSnapshot() Snapshot {
 	for pk, rec := range s.nodes {
 		if _, isDenied := s.denied[pk]; isDenied {
 			continue
-		}
-		if ev, ok := rec.log[attrKey{kind: attrCertExpiry}]; ok && !ev.Deleted {
-			if auth.IsExpiredAt(time.Unix(ev.GetCertExpiry().ExpiryUnix, 0), now) {
-				continue
-			}
 		}
 		valid[pk] = rec
 	}
@@ -251,15 +251,15 @@ func (s *store) buildSnapshot() Snapshot {
 	specs := make(map[string]WorkloadSpecView)
 	staticSpecs := make(map[string]StaticSpecView)
 	blobSpecs := make(map[string]BlobSpecView)
+	// Iterating valid (not s.nodes) means specs published only by a
+	// denied peer drop out of the snapshot. Their gossip events stay in
+	// the log so deny scoping can still reason about them, but
+	// gate.Invoke/Fetch/Connect should not surface a resource whose only
+	// publisher has lost authority.
 	outranks := func(candidate, incumbent types.PeerKey) bool {
-		_, candidateValid := valid[candidate]
-		_, incumbentValid := valid[incumbent]
-		if candidateValid != incumbentValid {
-			return candidateValid
-		}
 		return candidate.Compare(incumbent) < 0
 	}
-	for pk, rec := range s.nodes {
+	for pk, rec := range valid {
 		for key, ev := range rec.log {
 			if ev.Deleted {
 				continue
@@ -267,22 +267,28 @@ func (s *store) buildSnapshot() Snapshot {
 			switch key.kind { //nolint:exhaustive
 			case attrWorkloadSpec:
 				if existing, ok := specs[key.name]; !ok || outranks(pk, existing.Publisher) {
+					sc := ev.GetSpecChange()
 					specs[key.name] = WorkloadSpecView{
-						Spec:      workloadSpecFromProto(ev.GetWorkloadSpec()),
+						Spec:      workloadSpecFromProto(sc.GetWorkload()),
+						Auth:      sc.GetAuth(),
 						Publisher: pk,
 					}
 				}
 			case attrStaticSpec:
 				if existing, ok := staticSpecs[key.name]; !ok || outranks(pk, existing.Publisher) {
+					sc := ev.GetSpecChange()
 					staticSpecs[key.name] = StaticSpecView{
-						Spec:      staticSpecFromProto(ev.GetStaticSpec()),
+						Spec:      staticSpecFromProto(sc.GetStatic()),
+						Auth:      sc.GetAuth(),
 						Publisher: pk,
 					}
 				}
 			case attrBlobSpec:
 				if existing, ok := blobSpecs[key.name]; !ok || outranks(pk, existing.Publisher) {
+					sc := ev.GetSpecChange()
 					blobSpecs[key.name] = BlobSpecView{
-						Spec:      blobSpecFromProto(ev.GetBlobSpec()),
+						Spec:      blobSpecFromProto(sc.GetBlob()),
+						Auth:      sc.GetAuth(),
 						Publisher: pk,
 					}
 				}
@@ -362,10 +368,10 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 			nv.IPs, nv.LocalPort = v.Network.Ips, v.Network.LocalPort
 		case *statev1.GossipEvent_ObservedAddress:
 			nv.ObservedExternalIP, nv.ExternalPort = v.ObservedAddress.Ip, v.ObservedAddress.Port
-		case *statev1.GossipEvent_CertExpiry:
-			nv.CertExpiry = v.CertExpiry.ExpiryUnix
-		case *statev1.GossipEvent_Service:
-			nv.Services[key.name] = &Service{Name: key.name, Port: v.Service.Port, Protocol: NormaliseProtocol(v.Service.Protocol), Properties: v.Service.Properties}
+		case *statev1.GossipEvent_SpecChange:
+			if svc := v.SpecChange.GetService(); svc != nil {
+				nv.Services[key.name] = &Service{Name: key.name, Port: svc.Port, Protocol: NormaliseProtocol(svc.Protocol), Properties: svc.Properties, Auth: v.SpecChange.GetAuth()}
+			}
 		case *statev1.GossipEvent_Reachability:
 			nv.Reachable[key.peer] = struct{}{}
 		case *statev1.GossipEvent_PubliclyAccessible:
@@ -409,7 +415,8 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 			nv.Name = v.NodeName.Name
 		case *statev1.GossipEvent_StaticClaim:
 			staticClaims[key.name] = struct{}{}
-		case *statev1.GossipEvent_WorkloadSpec, *statev1.GossipEvent_StaticSpec, *statev1.GossipEvent_BlobSpec:
+		case *statev1.GossipEvent_DelegationCert:
+			nv.Cert = v.DelegationCert.GetCert()
 		}
 	}
 	return nv, claims, staticClaims

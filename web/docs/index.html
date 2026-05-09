@@ -404,8 +404,8 @@ pln join &lt;token&gt;</code></pre>
             <h2 id="run-a-workload">Run a workload</h2>
             <pre><code>pln seed ./hello.wasm
 pln call hello greet '{"name":"world"}'</code></pre>
-            <p><code>pln seed</code> publishes content. The kind is autodetected from the source: a <code>.wasm</code> file becomes a workload, a directory becomes a static site, anything else becomes a blob. Pass an optional name as the second arg.</p>
-            <p>Replicas land on whichever nodes have capacity and proximity. There's no scheduler; every node decides locally. Tune with <code>--min-replicas</code>, <code>--everywhere</code>, <code>--memory</code>, <code>--latency-slo</code>.</p>
+            <p><code>pln seed</code> publishes content from an admin-capable node. The kind is autodetected from the source: a <code>.wasm</code> file becomes a workload, a directory becomes a static site, anything else becomes a blob. Pass an optional name as the second arg.</p>
+            <p>Replicas land on whichever nodes have capacity and proximity. There's no scheduler; every node decides locally. Tune with <code>--min-replicas</code>, <code>--everywhere</code>, <code>--memory</code>, <code>--timeout</code>.</p>
             <div class="note"><strong>Authoring.</strong> Workloads are <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism plugins</a>. Author them in Go, Rust, JavaScript, Python, C#, Zig, and more. A workload invokes another seed by host call (<code>pln://seed/&lt;name&gt;/&lt;fn&gt;</code>) or by returning a <code>tail_call</code> marker, so authz, routing, and policy can live inside WASM.</div>
 
             <h2 id="expose-a-service">Expose a service</h2>
@@ -414,7 +414,7 @@ pln serve 8080 api</code></pre>
             <pre><code><span class="c"># machine B</span>
 pln connect api
 curl localhost:8080</code></pre>
-            <p>TCP or UDP (<code>--udp</code>), with mTLS end-to-end and NAT traversal built in. Connections punch directly when both sides can reach each other; otherwise they relay over the shortest mesh path. Persisted to <code>config.yaml</code> so they re-establish on restart.</p>
+            <p>TCP or UDP (<code>--udp</code>), with mTLS end-to-end and NAT traversal built in. Publishing the service requires an admin-capable node. Connections punch directly when both sides can reach each other; otherwise they relay over the shortest mesh path. Persisted to <code>config.yaml</code> so they re-establish on restart.</p>
 
             <h2 id="publish-a-site">Publish a site</h2>
             <pre><code>pln seed ./public my-site</code></pre>
@@ -441,11 +441,10 @@ pln unseed payload           <span class="c"># drop the name + bytes</span></cod
             </ul>
 
             <h2 id="authorisation">Authorisation</h2>
-            <p>Every link is mTLS. On top of that, one gate is wired today: <code>service_connect</code>, fired when a peer opens a tunnel to a service on this node (matched by service name, not port). It shipped first because a <code>Service</code> is defined in the local <code>config.yaml</code> and terminates on its owning node — every fact the gate needs is right there. Gates for the other resource types — blobs, workloads, specs — are next, and they're the harder case: those resources aren't pinned to a single node, so the decision has to hold cluster-wide rather than locally on the node that owns the resource.</p>
-            <p>The gate sees two property bags: the caller's delegation-cert attributes (subject) and the service publisher's properties (resource). It hands them to whichever evaluator you've bound — either the built-in YAML <code>attribute_matcher</code>, or a WASM seed in the cluster acting as a policy decision point.</p>
+            <p>Every link is mTLS. On top of that, every published resource — workload, service, static site, named blob — carries a signed predicate that the runtime gate evaluates on each invoke, fetch, or connect. The predicate matches against the caller's delegation-cert attributes; failed matches close the stream silently.</p>
 
-            <h3 id="subject-properties">Subject properties</h3>
-            <p>Bake attributes into a delegation cert at issue time. They flow to the gate as <code>subject.properties</code> and are visible to workloads at call time.</p>
+            <h3 id="caller-attributes">Caller attributes</h3>
+            <p>Bake attributes into a delegation cert at issue time. They are visible to workloads at call time and feed every policy decision.</p>
             <pre><code>pln grant &lt;peer-id&gt; --prop role=lead --prop team=backend
 pln invite --prop tier=gold      <span class="c"># bake at join time</span></code></pre>
             <p>The root node sets its own attributes through configuration rather than self-grant. Bake them in at <code>pln init</code>, or edit <code>config.yaml</code> and restart:</p>
@@ -456,43 +455,18 @@ properties:
   region: eu</code></pre>
             <p class="aside">On every <code>pln up</code>, root re-issues its self-signed cert from <code>config.yaml</code> if the attributes have drifted, and the cluster's regular renewal pipeline keeps the cert fresh from then on. Delegated peers continue to receive properties imperatively via <code>pln grant</code> or <code>pln invite</code> — root is asymmetric because it has no upstream issuer.</p>
 
-            <h3 id="service-properties">Service properties</h3>
-            <p>Attach properties to a service when you serve it. They flow to the gate as <code>resource.properties</code>.</p>
-            <pre><code>pln serve 8080 internal --prop '{"public":true}'</code></pre>
-            <div class="note"><strong>String vs. typed values.</strong> <code>--prop k=v</code> always parses <code>v</code> as a string. For booleans and numbers, use the JSON form: <code>--prop '{"public":true}'</code>.</div>
-
-            <h3 id="rules">Match against rules</h3>
-            <p>The built-in <code>attribute_matcher</code> evaluates YAML rules against dot-separated paths into the request. First match wins; no match falls through to deny. Scalar values match by equality; list values are any-of.</p>
-            <pre><code><span class="c"># /etc/pln/rules.yaml — referenced by evaluator.matcherRules in config.yaml.</span>
-rules:
-  - match:
-      action.name: connect
-      resource.properties.public: true
-    decision: allow
-
-  - match: {}
-    decision: deny
-    reason: default deny</code></pre>
-            <p>Bind the gate in <code>config.yaml</code>; restart the daemon to apply:</p>
-            <pre><code>evaluator:
-  matcherRules: /etc/pln/rules.yaml
-  gates:
-    service_connect: attribute_matcher</code></pre>
-            <p class="aside">Rules reload on <code>SIGHUP</code> — edit, send the signal, no restart. Malformed files leave the previous rules in place. A reference ruleset lives at <a href="https://github.com/sambigeara/pollen/blob/main/examples/matcher/rules.yaml">examples/matcher/rules.yaml</a>.</p>
-
-            <h3 id="request-envelope">Request envelope</h3>
-            <p>The matcher sees an <a href="https://openid.net/specs/authorization-api-1_0.html">AuthZen-shaped</a> envelope, populated from the in-flight connect:</p>
-            <pre><code>{
-  "subject":  {"type": "peer",    "id": "&lt;pubkey&gt;",       "properties": {"role": "lead", "team": "backend"}},
-  "action":   {"name": "connect"},
-  "resource": {"type": "service", "id": "internal",        "properties": {"public": true}}
-}</code></pre>
+            <h3 id="resource-policy">Resource policy</h3>
+            <p>Pass <code>--allow-caller</code> when you publish a resource to require an attribute on the caller's cert; <code>--allow-caller-in</code> takes a comma-separated list for any-of matching. For workloads, <code>--allow-target</code> additionally restricts which exported function names may be invoked. Repeat each flag for additional clauses; all clauses must match for the call to proceed.</p>
+            <pre><code>pln serve 8080 internal --allow-caller team=backend
+pln serve 9000 vip --allow-caller-in tier=gold,silver
+pln seed ./hello.wasm greeter --allow-caller role=lead --allow-target run</code></pre>
+            <p>Without any policy flag the resource is open to every authenticated peer in the cluster.</p>
 
             <h2 id="where-to-go-next">Where to go next</h2>
             <ul>
                 <li><a href="cli.html">CLI reference</a>: every command, every flag.</li>
                 <li><a href="https://github.com/sambigeara/pollen#readme">README</a>: elevator pitch and feature highlights.</li>
-                <li><a href="https://github.com/sambigeara/pollen/tree/main/examples">examples/</a>: runnable workloads and a reference matcher ruleset.</li>
+                <li><a href="https://github.com/sambigeara/pollen/tree/main/examples">examples/</a>: runnable workloads.</li>
                 <li><a href="https://pkg.go.dev/github.com/sambigeara/pollen">pkg.go.dev</a>: Go API reference.</li>
                 <li><a href="https://github.com/sambigeara/pollen/releases">Releases</a>: changelog.</li>
                 <li><a href="https://github.com/sambigeara/pollen/issues">Issues</a>: bugs, questions, suggestions.</li>

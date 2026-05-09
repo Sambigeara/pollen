@@ -55,14 +55,7 @@ type Placement struct {
 	IdleInstanceTTL time.Duration `yaml:"idleInstanceTTL,omitempty"`
 }
 
-type Evaluator struct {
-	Default      string            `yaml:"default,omitempty"`
-	Gates        map[string]string `yaml:"gates,omitempty"`
-	MatcherRules string            `yaml:"matcherRules,omitempty"`
-}
-
 type Config struct {
-	Evaluator   Evaluator      `yaml:"evaluator,omitempty"`
 	Name        string         `yaml:"name,omitempty"`
 	HTTP        string         `yaml:"http,omitempty"`
 	Properties  map[string]any `yaml:"properties,omitempty"`
