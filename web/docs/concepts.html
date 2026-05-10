@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Concepts · Pollen docs</title>
+  <meta name="description" content="The model behind Pollen: peers, gossiped state, workload placement, content storage, and the capability system.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="site-header-inner">
+    <a href="index.html" class="brand">
+      <img src="logo.svg" alt="" width="32" height="32">
+      <span>Pollen docs</span>
+    </a>
+    <nav class="site-nav">
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html" class="active">Concepts</a>
+      <a href="how-to.html">How-to</a>
+      <a href="cli.html">CLI</a>
+      <a href="troubleshoot.html">Troubleshoot</a>
+      <a href="https://github.com/sambigeara/pollen">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="layout">
+  <main class="no-rule">
+    <h1>Concepts</h1>
+    <p class="lede">Pollen's surface is small because the model underneath is small. Five ideas are enough to explain everything else: a peer-to-peer mesh, a gossiped CRDT, locally-decided workload placement, a content-addressed store, and a capability model rooted in a single signing key.</p>
+
+    <h2 id="mesh">The mesh</h2>
+    <p>Every node has an ed25519 identity. Peers maintain at most one QUIC connection between them, multiplexed for gossip, service tunnels, and seed traffic. mTLS is end-to-end; there are no shared secrets and no separate ingress.</p>
+
+    <h3>Finding each other</h3>
+    <p>Two peers learn about each other through gossip. Once they've exchanged addresses they try a direct UDP punch. Most of the time it works, even between two NATs. When it doesn't, they fall back to relaying through any mutually-reachable cluster node.</p>
+
+    <div class="diagram">   Peer A and Peer B are both behind NAT, and want to talk.
+
+   1. Exchange candidate addresses (via gossip or relay):
+        A's addrs ---&gt; B
+        B's addrs ---&gt; A
+
+   2. Simultaneous UDP punch:
+        A: SYN ---&gt; B
+        B: SYN ---&gt; A
+
+   3a. If either SYN escapes its NAT, the connection is direct.
+
+   3b. Otherwise both peers route through a public node R that
+       they can each reach. R is just a normal cluster node
+       that happens to be publicly reachable:
+
+           A &lt;----&gt; R &lt;----&gt; B</div>
+
+    <p>A relay is just a regular node that happens to be publicly reachable. Bootstrap one with <code>pln bootstrap ssh root@host --admin</code> on a machine with a public IP, or hint it on start with <code>pln up --public</code>; the mesh verifies actual reachability via NAT probing. Public nodes' addresses are woven into invite tokens automatically, so a joiner behind NAT has a route in without you plumbing anything.</p>
+
+    <h3>One transport, one connection</h3>
+    <p>QUIC carries everything. Gossip messages, service tunnels, and seed RPCs share the same multiplexed stream per peer. Encryption is end-to-end; relays cannot read traffic they forward. There is no separate VPN, ingress controller, or sidecar.</p>
+
+    <p class="aside">See the <a href="how-to.html#add-relay">recipe for adding a relay</a> and the <a href="cli.html#bootstrap">bootstrap-ssh reference</a>.</p>
+
+    <h2 id="state">State and gossip</h2>
+    <p>Every node holds the same document: a CRDT describing peers, services, workloads, sites, blobs, and the capability tree. CRDTs are designed so that any two nodes that have seen the same set of changes converge on identical state, regardless of the order they observed those changes.</p>
+
+    <p>That property gives Pollen three things for free:</p>
+    <ul>
+      <li><strong>No leader.</strong> No node is the source of truth. Every node can read, every admin-capable node can write, and every node observes the same world.</li>
+      <li><strong>Partition tolerance.</strong> Split the cluster in half and both sides keep working. Reunite them and the document re-converges.</li>
+      <li><strong>Local decisions.</strong> Because every node has the same view, every node can make placement and routing decisions without consulting anyone else.</li>
+    </ul>
+
+    <div class="diagram">   $ pln seed ./hello.wasm
+
+   Node A writes one CRDT change:
+
+        c1 = workloads[hello] := { hash: 4f3a, ... }
+
+   Gossip rounds (anti-entropy) ensure every other peer
+   eventually receives c1 via at least one path.
+
+   Once converged, every node sees the same:
+
+        state.workloads[hello] = { hash: 4f3a, ... }</div>
+
+    <p>Changes ride QUIC streams between peers. Conflict resolution is built into the document itself: each entry is keyed by a stable identifier and most fields are write-once or last-writer-wins. Tombstones mark deletes and propagate the same way as creates, so a peer that's been offline for an hour will catch up on both sides of the timeline when it reconnects.</p>
+
+    <p class="aside">There's no "control plane" to fail because there's no control plane at all. Every node holds it.</p>
+
+    <h2 id="workloads">Workloads (seeds)</h2>
+    <p>A seed is a unit of code that the cluster runs. Today that's a WebAssembly module compiled to <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism's plugin shape</a>, which you can produce from Go, Rust, JavaScript, Python, C#, or Zig. <code>pln seed</code> publishes one as a signed spec; the cluster handles everything else.</p>
+
+    <h3>How replicas land somewhere</h3>
+    <p>There is no scheduler. When a workload spec gossips out, every node independently scores itself as a candidate host: does it have spare capacity? Does it already have the artifact in its content store? Is it close to where calls are originating? Each node decides locally whether to claim a replica, and how many.</p>
+
+    <div class="diagram">   $ pln seed ./hello.wasm --min-replicas 2
+
+   The spec gossips out: spec(hello, hash=4f3a, target=2)
+
+   Every node independently scores itself as a candidate host:
+
+        Node A:   cpu 20%   cache hit    score 0.85   -&gt; claim
+        Node B:   cpu 80%   cache miss   score 0.30   -&gt; skip
+        Node C:   cpu 30%   cache hit    score 0.70   -&gt; claim
+
+   Two replicas land. No node was told what to do.</div>
+
+    <p>The scoring system tries to minimise call latency by placing replicas near the traffic that uses them. As load shifts, replicas migrate. Kill a node and the survivors notice its claims have gone stale; the next scoring round produces a new placement and brings the workload back to its target replica count.</p>
+
+    <h3>How calls find a replica</h3>
+    <p>Every node knows where every replica lives. When you call a seed, the local node picks two candidates (power-of-two-choices) and routes to whichever responds with the lower load score. This works the same whether the caller is the CLI, a service, or another seed.</p>
+
+    <h3>Seeds calling seeds</h3>
+    <p>A seed can invoke another seed in two ways:</p>
+    <ul>
+      <li><strong>Host call:</strong> <code>pollen_request("pln://seed/upper/handle", input)</code> blocks until the inner seed returns. The runtime picks a replica, ships the call, and hands the response back. Good for composition where the outer seed needs the result.</li>
+      <li><strong>Tail call:</strong> the seed returns a JSON marker <code>{"kind":"tail_call","uri":"pln://seed/upper/handle","input":"..."}</code>. The runtime releases the caller's WASM instance immediately, routes the inner seed, and returns its output to the original caller. Good for fan-out and policy gateways where the outer seed has nothing more to do.</li>
+    </ul>
+
+    <p class="aside">The same model handles services: a seed can call <code>pln://service/&lt;name&gt;</code> to reach a TCP/UDP service somewhere on the mesh. Routing and authorisation are the same as for seed-to-seed calls.</p>
+
+    <h2 id="storage">Storage</h2>
+    <p>Workload modules, static-site files, and named blobs are all just bytes. Pollen stores them in a single content-addressed store keyed by SHA-256, with each artifact's hash baked into the spec that references it.</p>
+
+    <div class="diagram">   $ pln seed ./big.bin payload
+
+   Publisher writes the bytes to its local content store:
+
+        CAS[publisher] += { 4f3a... -&gt; bytes }
+
+   And gossips a blob spec:
+
+        blobspec(payload, hash=4f3a, publisher=...)
+
+   Every other node now knows the blob exists. Any of them
+   can stream it from any holder on demand, verifying the
+   SHA-256 on arrival:
+
+        Node B  &lt;------ stream over QUIC ------ Node A</div>
+
+    <p>Three things follow from content addressing:</p>
+    <ul>
+      <li><strong>Trust the bytes, not the source.</strong> Receivers verify the SHA-256 on arrival. A rogue peer cannot serve poisoned content under a known hash.</li>
+      <li><strong>One-shot transfer.</strong> The same hash from any holder is the same bytes. Two peers can each pull from a third without coordination.</li>
+      <li><strong>Free deduplication.</strong> Two seeds that share an artifact share one entry in the store.</li>
+    </ul>
+
+    <p>Blobs are encrypted at rest with a per-node key. The plaintext only ever exists in memory, so a node's disk is safe to lose without leaking content.</p>
+
+    <h3>Eviction</h3>
+    <p>When a spec is unseeded, its hash becomes a tombstone in the gossip layer. Holders that don't see any other live spec referencing the hash drop it from their store on the next sweep. There is no explicit GC step.</p>
+
+    <h2 id="authorisation">Authorisation</h2>
+    <p>Pollen's authorisation model is two parts: a chain of cryptographic capabilities that say <em>who you are</em>, and policy clauses on each spec that say <em>who may use it</em>. The runtime gate compares the two on every invoke, fetch, or connect.</p>
+
+    <h3>The capability tree</h3>
+    <p>Every cert in the cluster traces back to the root key created by <code>pln init</code>. Admin authority can be delegated; properties (key/value metadata) can be baked into a cert at issue time. Capability subsetting is enforced at issuance: a leaf cannot be issued more rights than the issuer holds.</p>
+
+    <div class="diagram">                      [ root cert ]
+                            |
+                            |  delegates admin authority
+                            |
+              +-------------+-------------+
+              |                           |
+         [ admin-A ]                 [ admin-B ]
+              |                           |
+              |  delegates leaf certs
+              |                           |
+         [ leaf-A ]                  [ leaf-B ]
+         role=engineer               role=admin
+         team=backend                team=ops</div>
+
+    <p>The relationships are stored on the gossiped CRDT, so every node can independently verify any cert. Revocation works through a deny set on the same document; the CRDT propagates revocations the same way it propagates everything else.</p>
+
+    <h3>Properties</h3>
+    <p>Properties are key/value strings baked into a cert. Seeds see the caller's peer key and properties on every invocation, so authorisation, routing, and policy decisions can live inside workload code. Operators bake them in at issue time:</p>
+
+    <pre><code>pln invite --prop role=engineer --prop team=backend
+pln grant &lt;peer&gt; --prop tier=privileged
+pln bootstrap ssh root@host --prop region=eu</code></pre>
+
+    <p>The root node's own properties live in <code>config.yaml</code> and are re-applied on every <code>pln up</code>. Replace them with <code>pln props</code>.</p>
+
+    <h3>The policy gate</h3>
+    <p>Every published spec — workload, service, static site, named blob — can carry policy clauses. The runtime gate evaluates them against the caller's properties on every call.</p>
+
+    <div class="diagram">   spec(hello, --allow-props role=admin)
+
+   On every call, the runtime gate runs:
+
+        for each --allow-props clause on the spec:
+            require caller's properties match exactly
+        if any clause fails: close the stream silently
+
+   So:
+
+        leaf-A calls hello   { role=engineer }    -&gt; deny (silent)
+        leaf-B calls hello   { role=admin }       -&gt; allow</div>
+
+    <p>Clauses are <strong>conjunctive</strong>: every <code>--allow-props</code> on the spec must match. To express disjunction (<em>"editors or admins"</em>), mint both groups with a shared property and require it on the spec:</p>
+
+    <pre><code>pln grant &lt;editor&gt; --prop tier=privileged
+pln grant &lt;admin&gt;  --prop tier=privileged
+pln serve 8080 ops --allow-props tier=privileged</code></pre>
+
+    <p>Two consequences of pushing disjunction up to the issuance side:</p>
+    <ul>
+      <li><strong>The runtime gate stays trivially fast.</strong> String equality across a few clauses, no expression evaluator on the hot path.</li>
+      <li><strong>Policy is auditable.</strong> Who can call what is decided when you mint the cert, not at every invocation. The set of capable peers is visible from <code>pln status nodes --wide</code>.</li>
+    </ul>
+
+    <p>Without any policy flag a published resource is open to every authenticated peer in the cluster. Failed gate checks close the stream silently — a denied caller can't probe the resource shape.</p>
+
+    <p class="aside">For the recipes that build on top of this, see <a href="how-to.html#restrict-access">Restrict who can call a workload</a> and <a href="how-to.html#offline-root">Run with the root machine offline</a>.</p>
+
+    <h2 id="putting-together">How the pieces fit</h2>
+    <p>A single <code>pln seed</code> exercises the whole stack:</p>
+    <ol>
+      <li>The CLI hashes the artifact and stores it in the local CAS.</li>
+      <li>The supervisor signs a spec with the local admin cert; the spec carries the hash, any policy clauses, and the publisher's identity.</li>
+      <li>The change goes into the CRDT and gossips to every peer.</li>
+      <li>Each peer scores itself as a candidate host. Selected peers fetch the artifact from any holder over QUIC, verifying the hash on arrival.</li>
+      <li>The first call into the workload routes to whichever replica is nearest and least loaded. The runtime gate checks the caller's properties against the spec's policy. If it passes, the call goes through.</li>
+    </ol>
+
+    <p>No central coordinator was contacted. No shared secrets were used. Every step was decided locally against the same converged view of the world.</p>
+
+    <p>The other commands — <code>pln serve</code>, <code>pln connect</code>, <code>pln invite</code>, <code>pln grant</code>, <code>pln deny</code> — exercise the same machinery with different payloads. Once you've understood seeds, the rest of the surface follows.</p>
+
+    <h2 id="next">Where to go next</h2>
+    <ul>
+      <li><a href="how-to.html">How-to recipes</a> for the operator-side patterns this implies: relays, offline root, property-based access.</li>
+      <li><a href="cli.html">CLI reference</a> for the surface that exposes all of this.</li>
+      <li><a href="https://github.com/sambigeara/pollen">Source</a> if you want to see how it's actually wired.</li>
+    </ul>
+  </main>
+
+  <aside class="sidebar">
+    <div class="sidebar-title">On this page</div>
+    <nav>
+      <a href="#mesh">The mesh</a>
+      <a href="#state">State and gossip</a>
+      <a href="#workloads">Workloads (seeds)</a>
+      <a href="#storage">Storage</a>
+      <a href="#authorisation">Authorisation</a>
+      <a href="#putting-together">How the pieces fit</a>
+      <a href="#next">Where to go next</a>
+    </nav>
+  </aside>
+</div>
+
+<footer>&copy; 2026 Sam Lock &middot; Apache-2.0 &middot; <a href="https://pln.sh/">pln.sh</a></footer>
+</body>
+</html>

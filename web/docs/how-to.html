@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>How-to · Pollen docs</title>
+  <meta name="description" content="Recipes for common Pollen operator tasks: relays, offline root, property-based access, contexts, rollouts.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="site-header-inner">
+    <a href="index.html" class="brand">
+      <img src="logo.svg" alt="" width="32" height="32">
+      <span>Pollen docs</span>
+    </a>
+    <nav class="site-nav">
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="how-to.html" class="active">How-to</a>
+      <a href="cli.html">CLI</a>
+      <a href="troubleshoot.html">Troubleshoot</a>
+      <a href="https://github.com/sambigeara/pollen">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="layout">
+  <main class="no-rule">
+    <h1>How-to</h1>
+    <p class="lede">Goal-oriented recipes for common operator tasks. Each recipe is independent: pick the one that matches what you're trying to do. If you're new, run through the <a href="quickstart.html">Quickstart</a> first so the commands feel familiar.</p>
+
+    <h2 id="add-relay">Add a public relay</h2>
+    <p>So peers behind NAT can find each other when direct UDP punching fails. A relay is just a normal cluster node that happens to be publicly reachable.</p>
+
+    <ol class="steps">
+      <li>
+        <h3>Provision a public Linux box</h3>
+        <p>Anywhere with a public IPv4 address and a UDP port reachable from outside (default <code>60611</code>). A small VM is plenty.</p>
+      </li>
+      <li>
+        <h3>Bootstrap it from your admin node</h3>
+        <div class="terminal">
+          <span class="cmd">pln bootstrap ssh relay-eu=root@198.51.100.10 --admin</span>
+          <span class="out">bootstrapping relay-eu=root@198.51.100.10...
+  relay-eu=root@198.51.100.10              ok
+
+1 succeeded, 0 failed</span>
+        </div>
+        <p><code>--admin</code> delegates admin authority too, so the relay can keep admitting peers if your root machine is offline. Drop it for a relay that only forwards traffic.</p>
+      </li>
+      <li>
+        <h3>Verify reachability</h3>
+        <div class="terminal">
+          <span class="cmd">pln status nodes</span>
+          <span class="out">PEERS
+NODE             STATUS         ADDR                 CPUs  CPU  MEM  TUNNELS  LATENCY  IN  OUT
+7c9a4f8d (self)  -              -                    8     2%   18%  1        -        -   -
+ab12cd34         online (public) 198.51.100.10:60611  4     1%   8%   1        12ms     0   0</span>
+        </div>
+        <p>The <code>(public)</code> tag means the cluster has verified the node is reachable from outside, not just hinted. New invite tokens minted from any admin will include this address as a bootstrap target.</p>
+      </li>
+    </ol>
+
+    <p><strong>Related:</strong> <a href="concepts.html#mesh">Concepts → The mesh</a>, <a href="cli.html#bootstrap"><code>pln bootstrap ssh</code></a>, <a href="cli.html#up"><code>pln up --public</code></a>.</p>
+
+    <h2 id="offline-root">Run with the root machine offline</h2>
+    <p>So you can take your laptop with you. Delegate admin authority to a node that stays online, and the cluster keeps issuing certs, admitting peers, and renewing leases without you.</p>
+
+    <ol class="steps">
+      <li>
+        <h3>Pick the node that should hold admin</h3>
+        <p>A relay is a natural fit (always-on and well-connected). Note its peer ID:</p>
+        <div class="terminal">
+          <span class="cmd">pln status nodes --wide</span>
+          <span class="out">PEERS
+NODE                                                           STATUS         ADDR
+7c9a4f8d3e2b1c5a6d8e9f0a1b2c3d4e5f6a7b8c... (self)             -              -
+ab12cd34e5f6789a1b2c3d4e5f6789a1b2c3d4e5...                    online (public) 198.51.100.10:60611</span>
+        </div>
+      </li>
+      <li>
+        <h3>Grant admin to that peer</h3>
+        <div class="terminal">
+          <span class="cmd">pln grant ab12cd34 --admin</span>
+          <span class="out">certificate issued (admin) to ab12cd34</span>
+        </div>
+        <p>The <code>--admin</code> flag mints a delegation cert with <code>CanDelegate</code> and <code>CanAdmit</code>. The new admin can issue further delegations and admit new peers without involving root.</p>
+      </li>
+      <li>
+        <h3>Confirm and shut root down</h3>
+        <div class="terminal">
+          <span class="cmd">pln down</span>
+        </div>
+        <p>The cluster keeps running. Issue invites, grant new peers, and seed workloads from the relay using <code>--host</code> or a context (see <a href="#multiple-clusters">below</a>).</p>
+      </li>
+    </ol>
+
+    <div class="callout">
+      <p><strong>Bake admin in at join time.</strong> If you're standing up a fresh relay, skip the post-hoc grant: <code>pln bootstrap ssh root@host --admin</code> or <code>pln invite --admin --subject &lt;peer-pub&gt;</code> mints the relay with admin capability from the start.</p>
+    </div>
+
+    <p><strong>Related:</strong> <a href="concepts.html#authorisation">Concepts → Authorisation</a>, <a href="cli.html#grant"><code>pln grant</code></a>, <a href="cli.html#invite"><code>pln invite</code></a>.</p>
+
+    <h2 id="restrict-access">Restrict who can call a workload or service</h2>
+    <p>Bake properties into the callers' certs, attach <code>--allow-props</code> clauses to the spec. The runtime gate checks them on every call. See <a href="concepts.html#authorisation">Concepts → Authorisation</a> for the model.</p>
+
+    <ol class="steps">
+      <li>
+        <h3>Tag the callers</h3>
+        <p>For peers that already exist:</p>
+        <div class="terminal">
+          <span class="cmd">pln grant ab12cd34 --prop role=lead --prop team=backend</span>
+          <span class="out">certificate issued (leaf) to ab12cd34</span>
+        </div>
+        <p>For new peers, bake at join time:</p>
+        <div class="terminal">
+          <span class="cmd">pln invite --prop role=lead --prop team=backend</span>
+        </div>
+      </li>
+      <li>
+        <h3>Publish the resource with policy</h3>
+        <div class="terminal">
+          <span class="cmd">pln serve 8080 internal-api --allow-props team=backend</span>
+          <span class="cmd">pln seed ./hello.wasm greeter --allow-props role=lead</span>
+        </div>
+        <p>Repeat <code>--allow-props</code> for additional clauses; all must match (conjunction).</p>
+      </li>
+      <li>
+        <h3>Verify denials are silent</h3>
+        <p>Try to call the resource from a peer that doesn't carry the required property. The call closes the stream without revealing why; this prevents probing the resource shape.</p>
+        <div class="terminal">
+          <span class="cmd">pln call greeter run 'hi'</span>
+          <span class="out">Error: stream closed by peer</span>
+        </div>
+      </li>
+    </ol>
+
+    <div class="callout callout-info">
+      <p><strong>Need disjunction?</strong> Mint both groups with a shared property and require it on the spec:</p>
+      <pre><code>pln grant &lt;editor&gt; --prop tier=privileged
+pln grant &lt;admin&gt;  --prop tier=privileged
+pln serve 8080 ops --allow-props tier=privileged</code></pre>
+      <p>Pollen pushes disjunction up to the issuance side so the runtime gate stays trivially fast. The property name itself is your conceptual group.</p>
+    </div>
+
+    <p><strong>Related:</strong> <a href="concepts.html#authorisation">Concepts → Authorisation</a>, <a href="cli.html#serve"><code>pln serve</code></a>, <a href="cli.html#seed"><code>pln seed</code></a>.</p>
+
+    <h2 id="publish-site">Publish a static site across the cluster</h2>
+    <p>Every node with <code>static-http</code> enabled claims the site and serves it locally; requests are routed by <code>Host</code> header.</p>
+
+    <ol class="steps">
+      <li>
+        <h3>Enable the static HTTP listener on each node that should serve</h3>
+        <div class="terminal">
+          <span class="cmd">pln set static-http</span>
+          <span class="out">set static-http=:8080 (run `pln restart` to apply)</span>
+          <span class="cmd">pln restart</span>
+        </div>
+        <p>Pass a port to override: <code>pln set static-http :9000</code>. Run on every node you want to serve from.</p>
+      </li>
+      <li>
+        <h3>Publish the directory from any admin node</h3>
+        <div class="terminal">
+          <span class="cmd">pln seed ./public my-site</span>
+          <span class="out">seeded my-site (12 files, manifest 3a8c7d2e)</span>
+        </div>
+        <p><code>pln seed</code> hashes every file into the local content store, signs a static-site spec, and gossips both. Each enabled node pulls the missing blobs and starts serving.</p>
+      </li>
+      <li>
+        <h3>Confirm rollout</h3>
+        <div class="terminal">
+          <span class="cmd">pln status static</span>
+          <span class="out">STATIC
+NAME     MANIFEST  REPLICAS  LOCAL  PUBLISHER
+my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
+          <span class="cmd">curl -H "Host: my-site" http://localhost:8080/</span>
+        </div>
+        <p><code>3/3</code> means three replicas claimed against three eligible nodes. Re-running <code>pln seed ./public my-site</code> is idempotent: the spec gets a fresh manifest, old blobs are GC'd once nothing references them.</p>
+      </li>
+    </ol>
+
+    <p><strong>Related:</strong> <a href="concepts.html#storage">Concepts → Storage</a>, <a href="cli.html#seed"><code>pln seed</code></a>, <a href="cli.html#set"><code>pln set static-http</code></a>.</p>
+
+    <h2 id="pin-workload">Pin a workload's placement</h2>
+    <p>Pollen places replicas based on local scoring. You can tilt the scoring with flags, or override it for special cases.</p>
+
+    <h3>Run a single replica everywhere</h3>
+    <p>Use when every node should hold a copy (PDPs, edge caches, agents):</p>
+    <div class="terminal">
+      <span class="cmd">pln seed ./agent.wasm --everywhere</span>
+    </div>
+
+    <h3>Set a higher target replica count</h3>
+    <p>Use when you want headroom across the cluster. Default is two:</p>
+    <div class="terminal">
+      <span class="cmd">pln seed ./api.wasm --min-replicas 5</span>
+    </div>
+
+    <h3>Restrict by property</h3>
+    <p>Tag the eligible nodes, then require the tag on the spec. The capability gate stops other nodes from claiming the spec at all:</p>
+    <div class="terminal">
+      <span class="cmd">pln grant &lt;node&gt; --prop region=eu</span>
+      <span class="cmd">pln grant &lt;node&gt; --prop region=eu</span>
+      <span class="cmd">pln seed ./eu-only.wasm --allow-props region=eu</span>
+    </div>
+    <p class="aside">Strictly, <code>--allow-props</code> gates <em>callers</em>, not <em>placement</em>. To restrict placement specifically you'd compose a policy that matches host-side properties; the simplest workaround for now is property-tagging the nodes you want to host and gating the resource so only they can act on it.</p>
+
+    <p><strong>Related:</strong> <a href="concepts.html#workloads">Concepts → Workloads</a>, <a href="cli.html#seed"><code>pln seed</code></a>.</p>
+
+    <h2 id="multiple-clusters">Manage multiple clusters from one shell</h2>
+    <p>Contexts let you point your CLI at different daemons without re-typing flags. The reserved name <code>default</code> always resolves to the local daemon at <code>$PLN_DIR</code>.</p>
+
+    <ol class="steps">
+      <li>
+        <h3>Add a context for the remote cluster</h3>
+        <div class="terminal">
+          <span class="cmd">pln ctx add prod root@prod.example.com --from default</span>
+        </div>
+        <p>Targets containing <code>@</code> bind to a remote daemon over SSH. <code>--from default</code> imports your local admin keypair so this shell can act as admin against the remote cluster.</p>
+      </li>
+      <li>
+        <h3>Switch active context</h3>
+        <div class="terminal">
+          <span class="cmd">pln ctx use prod</span>
+          <span class="cmd">pln status              <span class="cmt"># now reads prod</span></span>
+        </div>
+        <p>Override per-command via <code>$PLN_CONTEXT=prod pln status</code>, or skip contexts entirely with <code>-H root@prod.example.com pln status</code>.</p>
+      </li>
+      <li>
+        <h3>Switch back</h3>
+        <div class="terminal">
+          <span class="cmd">pln ctx use default</span>
+        </div>
+      </li>
+    </ol>
+
+    <div class="callout callout-info">
+      <p><strong>Local-only contexts.</strong> Targets that are absolute paths bind to a local pln dir, useful for running multiple test clusters on one machine. Each gets its own UDP port assigned automatically so they coexist with the default context.</p>
+    </div>
+
+    <p><strong>Related:</strong> <a href="cli.html#context"><code>pln ctx</code></a>.</p>
+
+    <h2 id="rotate-properties">Rotate a node's properties</h2>
+    <p>Properties are baked into certs, so a rotation means re-issuing the cert. The flow differs for delegated peers and the root.</p>
+
+    <h3>Delegated peer</h3>
+    <p>Re-issue with <code>pln grant</code>. The new cert supersedes the old one and gossips out:</p>
+    <div class="terminal">
+      <span class="cmd">pln grant ab12cd34 --prop role=primary --prop region=eu</span>
+      <span class="out">certificate issued (leaf) to ab12cd34</span>
+    </div>
+
+    <h3>Root node</h3>
+    <p>Root issues its own cert from <code>config.yaml</code>, so update the persisted properties and let the next <code>pln up</code> re-issue:</p>
+    <div class="terminal">
+      <span class="cmd">pln props role=primary region=eu</span>
+      <span class="out">properties updated (run `pln restart` to apply)</span>
+      <span class="cmd">pln restart</span>
+    </div>
+    <p>Replace semantics: positional args define the complete set, so any unlisted key is removed. Use <code>pln props --clear</code> to wipe.</p>
+
+    <p><strong>Related:</strong> <a href="concepts.html#authorisation">Concepts → Authorisation</a>, <a href="cli.html#props"><code>pln props</code></a>, <a href="cli.html#grant"><code>pln grant</code></a>.</p>
+
+    <h2 id="revoke-peer">Revoke a peer</h2>
+    <p>Tear down a peer's connections and put it on the deny set so it can't rejoin without a new cert.</p>
+
+    <ol class="steps">
+      <li>
+        <h3>Identify the peer</h3>
+        <div class="terminal">
+          <span class="cmd">pln status nodes</span>
+        </div>
+      </li>
+      <li>
+        <h3>Deny it</h3>
+        <div class="terminal">
+          <span class="cmd">pln deny ab12cd34</span>
+          <span class="out">denied ab12cd34</span>
+        </div>
+        <p>The deny gossips out. Every node tears down its tunnels to the denied peer and refuses to admit any cert that chains through it.</p>
+      </li>
+      <li>
+        <h3>Verify</h3>
+        <div class="terminal">
+          <span class="cmd">pln status nodes</span>
+          <span class="out">offline peers: 1 (use --include-offline)</span>
+        </div>
+      </li>
+    </ol>
+
+    <div class="callout callout-warn">
+      <p><strong>Cascading revocation.</strong> If the denied peer had delegated admin to others, those leaves' certs chain through it and become invalid too. <code>pln status nodes --include-offline</code> shows the affected peers.</p>
+    </div>
+
+    <p><strong>Related:</strong> <a href="cli.html#deny"><code>pln deny</code></a>, <a href="concepts.html#authorisation">Concepts → Authorisation</a>.</p>
+
+    <h2 id="upgrade">Upgrade across the cluster</h2>
+    <p>There is no rolling-upgrade orchestration. Run <code>pln upgrade --restart</code> on each machine independently.</p>
+
+    <div class="terminal">
+      <span class="cmd">pln upgrade --restart</span>
+    </div>
+    <p>Wraps Homebrew on macOS and the install script on Linux (preserving install method). <code>--restart</code> bounces the background service so the new binary picks up.</p>
+
+    <p><strong>Related:</strong> <a href="cli.html#daemon-upgrade"><code>pln upgrade</code></a>.</p>
+
+    <h2 id="next">Where to go next</h2>
+    <ul>
+      <li><a href="concepts.html">Concepts</a> for the model behind these recipes.</li>
+      <li><a href="cli.html">CLI reference</a> for every flag, every default.</li>
+      <li><a href="troubleshoot.html">Troubleshoot</a> when a recipe doesn't behave as expected.</li>
+    </ul>
+  </main>
+
+  <aside class="sidebar">
+    <div class="sidebar-title">Recipes</div>
+    <nav>
+      <a href="#add-relay">Add a public relay</a>
+      <a href="#offline-root">Offline root</a>
+      <a href="#restrict-access">Restrict access</a>
+      <a href="#publish-site">Publish a static site</a>
+      <a href="#pin-workload">Pin workload placement</a>
+      <a href="#multiple-clusters">Multiple clusters</a>
+      <a href="#rotate-properties">Rotate properties</a>
+      <a href="#revoke-peer">Revoke a peer</a>
+      <a href="#upgrade">Upgrade the cluster</a>
+    </nav>
+  </aside>
+</div>
+
+<footer>&copy; 2026 Sam Lock &middot; Apache-2.0 &middot; <a href="https://pln.sh/">pln.sh</a></footer>
+</body>
+</html>

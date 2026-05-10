@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Quickstart · Pollen docs</title>
+  <meta name="description" content="Install Pollen, stand up a cluster, deploy a WASM workload, and call it. About fifteen minutes.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="site-header-inner">
+    <a href="index.html" class="brand">
+      <img src="logo.svg" alt="" width="32" height="32">
+      <span>Pollen docs</span>
+    </a>
+    <nav class="site-nav">
+      <a href="quickstart.html" class="active">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="how-to.html">How-to</a>
+      <a href="cli.html">CLI</a>
+      <a href="troubleshoot.html">Troubleshoot</a>
+      <a href="https://github.com/sambigeara/pollen">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="layout">
+  <main class="no-rule">
+    <h1>Quickstart</h1>
+    <p class="lede">Install Pollen, stand up a single-node cluster, deploy a WASM workload, and call it. By the end you'll have a working mesh you can extend with a second machine, a service, or a static site without learning anything new.</p>
+
+    <h2 id="prereqs">What you need</h2>
+    <ul>
+      <li>A Mac or Linux machine. Pollen is pure Go, no CGO; a Raspberry Pi works fine.</li>
+      <li>UDP port <code>60611</code> reachable on the loopback interface. Outbound UDP for talking to other peers later.</li>
+      <li>Sudo on the machine for the daemon install (Linux only).</li>
+    </ul>
+
+    <h2 id="install">1. Install</h2>
+    <p>The installer wraps Homebrew on macOS and the right package manager on Linux (apt, dnf, yum, zypper). Use it instead of grabbing a binary so upgrades and uninstalls are managed natively.</p>
+
+    <div class="terminal">
+      <span class="cmd">curl -fsSL https://pln.sh/install.sh | bash</span>
+    </div>
+
+    <p>On Linux this also creates a <code>pln</code> system user, provisions <code>/var/lib/pln</code>, and adds you to the <code>pln</code> group so the CLI can reach the daemon socket. Open a new shell so the group membership applies. Verify the install:</p>
+
+    <div class="terminal">
+      <span class="cmd">pln version</span>
+      <span class="out">pln 0.x.y (build 9eefda9, 2026-05-10)</span>
+    </div>
+
+    <div class="callout">
+      <p><strong>macOS first run.</strong> The first time <code>pln</code> tries to reach a LAN peer, macOS will ask for Local Network access. Grant it. If you miss the prompt, see <a href="troubleshoot.html#mac-local-network">Troubleshoot &rarr; macOS Local Network</a>.</p>
+    </div>
+
+    <h2 id="cluster">2. Stand up a cluster</h2>
+    <p>One command creates the root cluster on this machine. Pollen mints an admin keypair, writes a self-signed root cert, and persists state under <code>~/.pln</code> (or <code>/var/lib/pln</code> on Linux when installed as a service).</p>
+
+    <div class="terminal">
+      <span class="cmd">pln init</span>
+      <span class="out">initialized root cluster
+root_pub: 7c9a4f8d3e2b1c5a6d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c
+cluster_id: a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2</span>
+    </div>
+
+    <p>Now start the daemon. <code>-d</code> detaches into the background service (launchd on macOS, systemd on Linux). Skip <code>-d</code> to run in the foreground if you want to see the logs directly.</p>
+
+    <div class="terminal">
+      <span class="cmd">pln up -d</span>
+      <span class="out">Successfully started `pln` (label: homebrew.mxcl.pln)</span>
+    </div>
+
+    <p>Check that you have a one-node cluster:</p>
+
+    <div class="terminal">
+      <span class="cmd">pln status</span>
+      <span class="out">PEERS
+NODE             STATUS  ADDR  CPUs  CPU   MEM   TUNNELS  LATENCY  IN  OUT
+7c9a4f8d (self)  -       -     8     2%    18%   0        -        -   -</span>
+    </div>
+
+    <p>That's a fully functional Pollen cluster. Everything below works against this baseline; bringing in a second machine just adds another row to the table.</p>
+
+    <h2 id="workload">3. Deploy a workload</h2>
+    <p>Pollen runs WebAssembly. Any module compiled to <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism's plugin shape</a> works, which means Go, Rust, JavaScript, Python, C#, or Zig. We'll use the bundled <code>echo</code> example, which takes a string and returns it.</p>
+
+    <div class="terminal">
+      <span class="cmd">git clone https://github.com/sambigeara/pollen.git ~/pollen</span>
+      <span class="cmd">cd ~/pollen/examples/echo &amp;&amp; ./build.sh</span>
+      <span class="out">building echo.wasm...
+building upper.wasm...
+done</span>
+    </div>
+
+    <p><code>pln seed</code> publishes content into the cluster. The kind is autodetected from what you point at: a <code>.wasm</code> file becomes a workload, a directory becomes a static site, anything else becomes a blob.</p>
+
+    <div class="terminal">
+      <span class="cmd">pln seed ./echo.wasm</span>
+      <span class="out">seeded echo (4f3a7c91)</span>
+    </div>
+
+    <p>Pollen has hashed the artifact, signed a workload spec with your admin cert, and gossiped both into the cluster. With one node you'll see one replica. With many nodes, replicas land wherever there's capacity nearby.</p>
+
+    <div class="terminal">
+      <span class="cmd">pln status seeds</span>
+      <span class="out">SEEDS
+NAME  HASH      STATUS  REPLICAS  LOCAL  UPTIME
+echo  4f3a7c91  ready   1/2       *      3s</span>
+    </div>
+
+    <p class="aside"><code>1/2</code> means one active replica out of a target of two. The default <code>--min-replicas</code> is two; with only one node available the second replica waits for capacity to appear.</p>
+
+    <h2 id="call">4. Call it</h2>
+    <p>Invoke a function on the workload. Calls are routed to the nearest, least-loaded replica. With one node, that's local.</p>
+
+    <div class="terminal">
+      <span class="cmd">pln call echo echo 'hello world'</span>
+      <span class="out">hello world</span>
+    </div>
+
+    <p>That round-trip went through the local supervisor, into the WASM runtime, and back out. From a second node the same call would route over the mesh to whichever replica answered first.</p>
+
+    <div class="callout callout-info">
+      <p><strong>Want to see seeds calling seeds?</strong> The <code>echo</code> module ships with a <code>shout</code> function that delegates to the <code>upper</code> seed via host call. Seed both, then call <code>shout</code>:</p>
+      <pre><code>pln seed ./upper.wasm
+pln call echo shout 'hello world'      <span class="c"># → HELLO WORLD</span></code></pre>
+      <p>That second call hops through the mesh to wherever <code>upper</code> is running.</p>
+    </div>
+
+    <h2 id="extend">5. Extend the cluster</h2>
+    <p>Adding a second machine gives you the rest of the story: replicas spread, calls take the shortest path, and the cluster keeps working when nodes leave. From any admin-capable node:</p>
+
+    <div class="terminal">
+      <span class="cmd">pln bootstrap ssh user@second-machine</span>
+      <span class="cmt"># or several at once, with labels:</span>
+      <span class="cmd">pln bootstrap ssh edge-eu=root@10.0.0.5 edge-us=root@10.0.0.6</span>
+    </div>
+
+    <p>Linux targets only, SSH as root or with passwordless sudo. The orchestrator installs Pollen on the target, mints a cert, and starts the daemon. Within seconds the new node appears in <code>pln status</code> and replicas start to balance.</p>
+
+    <div class="callout">
+      <p><strong>Out of band joins.</strong> If you can't SSH directly, mint an invite token on the admin and ship it (Slack, email, anywhere). On the joiner, run <code>pln join &lt;token&gt;</code>. Tokens are signed and self-contained; the default TTL is five minutes.</p>
+    </div>
+
+    <h2 id="what-happened">What just happened</h2>
+    <p>Three things, in layers:</p>
+    <ul>
+      <li><strong>A signed root.</strong> <code>pln init</code> created an ed25519 admin keypair and a self-signed root cert. Every cert in the cluster traces back to that root via a chain of delegations. Membership is cryptographic; there are no shared secrets to leak.</li>
+      <li><strong>A converging document.</strong> Every node holds the same CRDT describing peers, services, workloads, sites, and blobs. <code>pln seed</code> writes a fact into that document; the gossip layer fans it out to every other node, which then independently decides what to do about it.</li>
+      <li><strong>Local placement.</strong> No node tells any other node to host the workload. Each one scores itself against the spec — capacity, cached artifacts, proximity to traffic — and claims a replica if it's a good fit. Add a node, and it joins the scoring round.</li>
+    </ul>
+
+    <h2 id="next">Where to go next</h2>
+    <ul>
+      <li><a href="concepts.html">Concepts</a> for the model behind what you just did: how peers find each other, how state converges, how authorisation works.</li>
+      <li><a href="how-to.html">How-to recipes</a> for common operator tasks: relays, offline root, property-based access, multiple clusters.</li>
+      <li><a href="cli.html">CLI reference</a> for every command and flag.</li>
+      <li><a href="troubleshoot.html">Troubleshoot</a> when something doesn't behave as you expect.</li>
+    </ul>
+  </main>
+
+  <aside class="sidebar">
+    <div class="sidebar-title">On this page</div>
+    <nav>
+      <a href="#prereqs">What you need</a>
+      <a href="#install">1. Install</a>
+      <a href="#cluster">2. Stand up a cluster</a>
+      <a href="#workload">3. Deploy a workload</a>
+      <a href="#call">4. Call it</a>
+      <a href="#extend">5. Extend the cluster</a>
+      <a href="#what-happened">What just happened</a>
+      <a href="#next">Where to go next</a>
+    </nav>
+  </aside>
+</div>
+
+<footer>&copy; 2026 Sam Lock &middot; Apache-2.0 &middot; <a href="https://pln.sh/">pln.sh</a></footer>
+</body>
+</html>

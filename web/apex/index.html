@@ -1,280 +1,340 @@
 <!doctype html>
 <html lang="en">
-
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>Pollen</title>
-    <meta name="description" content="A distributed WASM runtime where workloads place themselves over a zero-trust mesh, in a single static binary.">
-    <link rel="icon" type="image/svg+xml" href="favicon.svg">
-    <style>
-        :root {
-            --bg: #ffffff;
-            --ink: #16181c;
-            --mute: #6b6559;
-            --accent: #f2c14e;
-            --rule: #ececec;
-            --code-bg: #f6f5f1;
-            --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-            --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
-        }
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Pollen</title>
+  <meta name="description" content="Self-organising mesh and WASM runtime in a single static binary. Workloads place themselves over a zero-trust mesh.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-elev: #fbfaf6;
+      --ink: #16181c;
+      --mute: #6b6559;
+      --rule: #ececec;
+      --accent: #f2c14e;
+      --accent-soft: #faead0;
+      --code-bg: #f6f5f1;
+      --term-bg: #1d1f24;
+      --term-ink: #f4f1ea;
+      --term-prompt: #f2c14e;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+      --gutter: clamp(1.25rem, 4vw, 3.5rem);
+      --header-h: 4rem;
+    }
 
-        * {
-            box-sizing: border-box;
-        }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg); color: var(--ink);
+      font-family: var(--sans);
+    }
+    body { min-height: 100vh; display: flex; flex-direction: column; }
 
-        html,
-        body {
-            margin: 0;
-            padding: 0;
-            background: var(--bg);
-            color: var(--ink);
-            font-family: var(--sans);
-        }
+    .site-header {
+      position: sticky; top: 0; z-index: 10;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: saturate(180%) blur(8px);
+      -webkit-backdrop-filter: saturate(180%) blur(8px);
+      border-bottom: 1px solid var(--rule);
+    }
+    .site-header-inner {
+      display: flex; align-items: center; gap: 1.5rem;
+      max-width: 1100px; margin: 0 auto;
+      padding: 0.75rem var(--gutter);
+      min-height: var(--header-h);
+    }
+    .brand {
+      display: flex; align-items: center; gap: 0.7rem;
+      text-decoration: none; color: var(--ink);
+      font-weight: 600; font-size: 1rem;
+      letter-spacing: -0.01em; white-space: nowrap;
+    }
+    .brand img {
+      width: 32px; height: 32px;
+      image-rendering: pixelated; flex-shrink: 0;
+    }
+    .site-nav {
+      margin-left: auto; display: flex; gap: 1.4rem;
+      font-size: 0.94rem; flex-wrap: wrap;
+    }
+    .site-nav a {
+      color: var(--mute); text-decoration: none;
+      padding: 0.25rem 0;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }
+    .site-nav a:hover { color: var(--ink); }
 
-        body {
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
+    main {
+      flex: 1;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 3.5rem 1.75rem 3rem;
+      width: 100%;
+    }
 
-        main {
-            flex: 1;
-            max-width: 1100px;
-            margin: 0 auto;
-            padding: 4rem 1.75rem 3rem;
-            width: 100%;
-        }
+    .mascot {
+      display: block;
+      width: 128px; height: 128px;
+      margin: 0 auto 1.5rem;
+      image-rendering: pixelated;
+    }
 
-        .mascot {
-            display: block;
-            width: 128px;
-            height: 128px;
-            margin: 0 auto 1.5rem;
-            image-rendering: pixelated;
-        }
+    h1 {
+      font-size: clamp(1.9rem, 4.5vw, 2.5rem);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin: 0 0 0.6rem;
+      text-align: center;
+    }
 
-        h1 {
-            font-size: clamp(1.75rem, 4.5vw, 2.5rem);
-            font-weight: 600;
-            letter-spacing: -0.02em;
-            margin: 0 0 0.5rem;
-        }
+    .tagline {
+      color: var(--mute);
+      font-size: 1.1rem;
+      line-height: 1.55;
+      margin: 0 auto 2rem;
+      max-width: 50ch;
+      text-align: center;
+    }
 
-        .tagline {
-            color: var(--mute);
-            font-size: 1.05rem;
-            line-height: 1.55;
-            margin: 0 0 2.5rem;
-            max-width: 58ch;
-        }
+    .install {
+      background: var(--term-bg);
+      color: var(--term-ink);
+      border-radius: 10px;
+      padding: 0.95rem 1.15rem;
+      font-family: var(--mono);
+      font-size: 0.95rem;
+      display: flex; align-items: center; gap: 0.6rem;
+      overflow-x: auto;
+      white-space: nowrap;
+      margin: 0 0 1.75rem;
+    }
+    .install::before {
+      content: "$";
+      color: var(--term-prompt);
+      user-select: none;
+    }
 
-        .install {
-            background: var(--code-bg);
-            border-radius: 10px;
-            padding: 1rem 1.25rem;
-            font-family: var(--mono);
-            font-size: 0.95rem;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            overflow-x: auto;
-            white-space: nowrap;
-            margin: 0 0 2rem;
-        }
+    .demo {
+      display: block;
+      width: 100%; height: auto;
+      border-radius: 10px;
+      margin: 0 0 0.75rem;
+      background: var(--code-bg);
+    }
 
-        .install::before {
-            content: "$";
-            color: var(--mute);
-            user-select: none;
-        }
+    .caption {
+      color: var(--mute);
+      font-size: 0.92rem;
+      line-height: 1.55;
+      margin: 0 0 2.75rem;
+      text-align: center;
+    }
 
-        .install code {
-            color: var(--ink);
-        }
+    h2 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin: 2.5rem 0 0.85rem;
+      padding-top: 2rem;
+      border-top: 1px solid var(--rule);
+    }
+    h2:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
 
-        .demo {
-            display: block;
-            width: 100%;
-            height: auto;
-            border-radius: 10px;
-            margin: 0 0 0.75rem;
-            background: var(--code-bg);
-        }
+    p { color: var(--ink); font-size: 1rem; line-height: 1.6; margin: 0 0 1rem; }
 
-        .caption {
-            color: var(--mute);
-            font-size: 0.9rem;
-            line-height: 1.55;
-            margin: 0 0 2.5rem;
-        }
+    ul.features {
+      list-style: none;
+      padding: 0;
+      margin: 0 0 0.5rem;
+    }
+    ul.features li {
+      position: relative;
+      padding-left: 1.25rem;
+      margin-bottom: 0.65rem;
+      font-size: 0.98rem;
+      line-height: 1.55;
+    }
+    ul.features li::before {
+      content: "·";
+      color: var(--accent);
+      font-weight: 700;
+      position: absolute;
+      left: 0; top: 0;
+    }
+    ul.features strong { font-weight: 600; }
+    ul.features code {
+      font-family: var(--mono);
+      font-size: 0.88em;
+      background: var(--code-bg);
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+    }
+    ul.features a {
+      color: var(--ink);
+      text-decoration: none;
+      border-bottom: 1px solid var(--rule);
+    }
+    ul.features a:hover { border-color: var(--accent); }
 
-        ul.features {
-            list-style: none;
-            padding: 0;
-            margin: 0 0 2.5rem;
-        }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.85rem;
+      margin: 0 0 1.5rem;
+    }
+    .card {
+      display: block;
+      padding: 1.1rem 1.2rem;
+      border: 1px solid var(--rule);
+      border-radius: 10px;
+      background: var(--bg);
+      text-decoration: none;
+      color: var(--ink);
+      transition: border-color 0.15s, transform 0.15s;
+    }
+    .card:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+    .card .card-title {
+      display: block;
+      font-weight: 600;
+      font-size: 1rem;
+      margin-bottom: 0.35rem;
+      letter-spacing: -0.01em;
+    }
+    .card .card-desc {
+      display: block;
+      color: var(--mute);
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
 
-        ul.features li {
-            position: relative;
-            padding-left: 1.25rem;
-            margin-bottom: 0.6rem;
-            font-size: 0.98rem;
-            line-height: 1.55;
-        }
+    footer {
+      padding: 1.5rem var(--gutter);
+      color: var(--mute);
+      font-size: 0.85rem;
+      width: 100%;
+      max-width: 1100px;
+      margin: 0 auto;
+      border-top: 1px solid var(--rule);
+    }
+    footer a {
+      color: var(--mute);
+      text-decoration: none;
+      border-bottom: 1px solid var(--rule);
+      padding-bottom: 1px;
+    }
+    footer a:hover { color: var(--ink); border-color: var(--accent); }
 
-        ul.features li:last-child {
-            margin-bottom: 0;
-        }
-
-        ul.features li::before {
-            content: "·";
-            color: var(--accent);
-            font-weight: 700;
-            position: absolute;
-            left: 0;
-            top: 0;
-        }
-
-        ul.features strong {
-            font-weight: 600;
-        }
-
-        ul.features code {
-            font-family: var(--mono);
-            font-size: 0.88em;
-            background: var(--code-bg);
-            padding: 0.1em 0.35em;
-            border-radius: 4px;
-        }
-
-        ul.features a {
-            color: var(--ink);
-            text-decoration: none;
-            border-bottom: 1px solid var(--rule);
-        }
-
-        ul.features a:hover {
-            border-color: var(--accent);
-        }
-
-        .site-header {
-            position: sticky;
-            top: 0;
-            z-index: 10;
-            background: rgba(255, 255, 255, 0.9);
-            backdrop-filter: saturate(180%) blur(8px);
-            -webkit-backdrop-filter: saturate(180%) blur(8px);
-            border-bottom: 1px solid var(--rule);
-        }
-
-        .site-header-inner {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-            max-width: 1100px;
-            margin: 0 auto;
-            padding: 0.75rem 1.75rem;
-            min-height: 4rem;
-        }
-
-        .brand {
-            display: flex;
-            align-items: center;
-            gap: 0.7rem;
-            text-decoration: none;
-            color: var(--ink);
-            font-weight: 600;
-            font-size: 1rem;
-            letter-spacing: -0.01em;
-        }
-
-        .brand img {
-            width: 32px;
-            height: 32px;
-            image-rendering: pixelated;
-            flex-shrink: 0;
-        }
-
-        .site-nav {
-            margin-left: auto;
-            display: flex;
-            gap: 1.25rem;
-            font-size: 0.95rem;
-        }
-
-        .site-nav a {
-            color: var(--ink);
-            text-decoration: none;
-            border-bottom: 1px solid var(--rule);
-            padding-bottom: 2px;
-            white-space: nowrap;
-        }
-
-        .site-nav a:hover {
-            border-color: var(--accent);
-        }
-
-        footer {
-            max-width: 1100px;
-            margin: 0 auto;
-            padding: 1.5rem 1.75rem;
-            color: var(--mute);
-            font-size: 0.85rem;
-            width: 100%;
-            border-top: 1px solid var(--rule);
-        }
-    </style>
+    @media (max-width: 720px) {
+      .site-header-inner {
+        flex-wrap: wrap;
+        gap: 0.5rem 1rem;
+      }
+      .brand span { display: none; }
+      .site-nav {
+        margin-left: 0;
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        flex-wrap: nowrap;
+        gap: 1.1rem;
+        padding-bottom: 0.15rem;
+      }
+      .site-nav::-webkit-scrollbar { display: none; }
+      .site-nav { scrollbar-width: none; }
+    }
+    @media (max-width: 520px) {
+      :root { --gutter: 1rem; }
+      .brand img { width: 28px; height: 28px; }
+      main { padding: 2.25rem 1rem 2.5rem; }
+      .install { font-size: 0.85rem; padding: 0.8rem 0.95rem; }
+      h2 { font-size: 1.15rem; padding-top: 1.5rem; margin-top: 2rem; }
+    }
+  </style>
 </head>
 
 <body>
-    <header class="site-header">
-        <div class="site-header-inner">
-            <a href="/" class="brand">
-                <img src="favicon.svg" alt="" width="32" height="32">
-                <span>Pollen</span>
-            </a>
-            <nav class="site-nav">
-                <a href="https://docs.pln.sh/">Docs</a>
-                <a href="https://github.com/sambigeara/pollen">GitHub</a>
-                <a href="https://github.com/sambigeara/pollen/releases">Releases</a>
-            </nav>
-        </div>
-    </header>
-    <main>
-        <svg class="mascot" viewBox="0 0 20 20" shape-rendering="crispEdges" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-            <g fill="#8B5A1B"><rect x="7" y="0" width="6" height="1"/><rect x="5" y="1" width="2" height="1"/><rect x="13" y="1" width="2" height="1"/><rect x="4" y="2" width="1" height="1"/><rect x="15" y="2" width="1" height="1"/><rect x="3" y="3" width="1" height="1"/><rect x="16" y="3" width="1" height="1"/><rect x="2" y="4" width="1" height="9"/><rect x="17" y="4" width="1" height="9"/><rect x="3" y="13" width="1" height="1"/><rect x="16" y="13" width="1" height="1"/><rect x="4" y="14" width="1" height="1"/><rect x="15" y="14" width="1" height="1"/><rect x="5" y="15" width="2" height="1"/><rect x="13" y="15" width="2" height="1"/><rect x="7" y="16" width="6" height="1"/></g>
-            <g fill="#FFC93C"><rect x="7" y="1" width="6" height="1"/><rect x="5" y="2" width="10" height="1"/><rect x="4" y="3" width="12" height="1"/><rect x="3" y="4" width="3" height="1"/><rect x="8" y="4" width="4" height="1"/><rect x="14" y="4" width="3" height="1"/><rect x="3" y="5" width="3" height="1"/><rect x="8" y="5" width="4" height="1"/><rect x="14" y="5" width="3" height="1"/><rect x="3" y="6" width="14" height="1"/><rect x="3" y="7" width="4" height="1"/><rect x="8" y="7" width="4" height="1"/><rect x="13" y="7" width="4" height="1"/><rect x="3" y="8" width="5" height="1"/><rect x="12" y="8" width="5" height="1"/><rect x="3" y="9" width="14" height="1"/><rect x="3" y="10" width="14" height="1"/><rect x="3" y="11" width="14" height="1"/><rect x="3" y="12" width="14" height="1"/><rect x="4" y="13" width="12" height="1"/><rect x="5" y="14" width="10" height="1"/><rect x="7" y="15" width="6" height="1"/></g>
-            <g fill="#1A1A1A"><rect x="6" y="4" width="1" height="1"/><rect x="12" y="4" width="1" height="1"/><rect x="6" y="5" width="2" height="1"/><rect x="12" y="5" width="2" height="1"/><rect x="7" y="7" width="1" height="1"/><rect x="12" y="7" width="1" height="1"/><rect x="8" y="8" width="4" height="1"/></g>
-            <g fill="#FFFFFF"><rect x="7" y="4" width="1" height="1"/><rect x="13" y="4" width="1" height="1"/></g>
-            <g fill="#B8433A"><rect x="7" y="11" width="1" height="3"/><rect x="8" y="11" width="1" height="1"/><rect x="8" y="13" width="1" height="1"/></g>
-            <g fill="#2E3F75"><rect x="12" y="11" width="1" height="3"/><rect x="11" y="11" width="1" height="1"/><rect x="11" y="13" width="1" height="1"/></g>
-            <g fill="#DCB876"><rect x="8" y="12" width="1" height="1"/><rect x="11" y="12" width="1" height="1"/></g>
-            <g fill="#6A3E12"><rect x="9" y="12" width="2" height="1"/></g>
-            <g fill="#5FA84E"><rect x="5" y="17" width="2" height="1"/><rect x="13" y="17" width="2" height="1"/><rect x="5" y="18" width="2" height="1"/><rect x="13" y="18" width="2" height="1"/></g>
-            <g fill="#2E6A23"><rect x="4" y="18" width="1" height="1"/><rect x="15" y="18" width="1" height="1"/><rect x="5" y="19" width="2" height="1"/><rect x="13" y="19" width="2" height="1"/></g>
-        </svg>
-        <h1>Pollen</h1>
-        <p class="tagline">Distributed WASM runtime. Workloads place themselves over a zero-trust mesh. One static binary.</p>
-        <div class="install"><code>curl -fsSL https://pln.sh/install.sh | bash</code></div>
-        <video class="demo" autoplay loop muted playsinline controls>
-            <source src="pln-demo-web.mp4" type="video/mp4">
-        </video>
-        <p class="caption">Zero to cluster to loadtest. Errors are nodes applying backpressure.</p>
-        <ul class="features">
-            <li><strong>WASM seeds.</strong> Deploy with <code>pln seed</code>; artifacts distribute peer-to-peer by hash. A seed invokes another by host call (<code>pln://seed/&lt;name&gt;/&lt;fn&gt;</code>) or by returning a <code>tail_call</code> marker, so authz, routing, and policy can live inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism</a>.</li>
-            <li><strong>Mesh services.</strong> <code>pln serve 8080 api</code> here, <code>pln connect api</code> there (or <code>pln://service/&lt;name&gt;</code> from a seed). TCP and UDP, end-to-end mTLS.</li>
-            <li><strong>Static sites &amp; blobs.</strong> <code>pln seed ./public</code> publishes a site; <code>pln seed ./file</code> shares a file. Same verb across kinds; autodetected. Content-addressed, gossiped, streamed peer-to-peer over QUIC.</li>
-            <li><strong>Self-organising.</strong> No scheduler, no leader, no coordinator. Topology, placement, and routing emerge from local state; calls go to the nearest, least-loaded replica, and replicas migrate toward demand.</li>
-            <li><strong>CRDT-native.</strong> A converging document on every node; changes gossip, conflicts resolve.</li>
-            <li><strong>Partition-tolerant.</strong> Both sides of a split keep running; state converges on rejoin; survivors rehost workloads from failed nodes.</li>
-            <li><strong>QUIC transport.</strong> One multiplexed, encrypted, UDP-based connection per peer carries gossip, services, and seeds. Connections punch direct between peers; otherwise they relay through any cluster node both peers can reach.</li>
-            <li><strong>Cryptographic admission.</strong> No shared secrets, no firewall rules. Every link is mTLS.</li>
-            <li><strong>Edge-ready.</strong> Pure Go, no CGO. Raspberry Pi to cloud host.</li>
-            <li><strong>Ergonomic.</strong> Opinionated defaults, opt-in configuration.</li>
-        </ul>
-    </main>
-    <footer>&copy; 2026 Sam Lock &middot; Apache-2.0</footer>
-</body>
+<header class="site-header">
+  <div class="site-header-inner">
+    <a href="/" class="brand">
+      <img src="favicon.svg" alt="" width="32" height="32">
+      <span>Pollen</span>
+    </a>
+    <nav class="site-nav">
+      <a href="https://docs.pln.sh/">Docs</a>
+      <a href="https://docs.pln.sh/quickstart.html">Quickstart</a>
+      <a href="https://github.com/sambigeara/pollen">GitHub</a>
+      <a href="https://github.com/sambigeara/pollen/releases">Releases</a>
+    </nav>
+  </div>
+</header>
 
+<main>
+  <svg class="mascot" viewBox="0 0 20 20" shape-rendering="crispEdges" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <g fill="#8B5A1B"><rect x="7" y="0" width="6" height="1"/><rect x="5" y="1" width="2" height="1"/><rect x="13" y="1" width="2" height="1"/><rect x="4" y="2" width="1" height="1"/><rect x="15" y="2" width="1" height="1"/><rect x="3" y="3" width="1" height="1"/><rect x="16" y="3" width="1" height="1"/><rect x="2" y="4" width="1" height="9"/><rect x="17" y="4" width="1" height="9"/><rect x="3" y="13" width="1" height="1"/><rect x="16" y="13" width="1" height="1"/><rect x="4" y="14" width="1" height="1"/><rect x="15" y="14" width="1" height="1"/><rect x="5" y="15" width="2" height="1"/><rect x="13" y="15" width="2" height="1"/><rect x="7" y="16" width="6" height="1"/></g>
+    <g fill="#FFC93C"><rect x="7" y="1" width="6" height="1"/><rect x="5" y="2" width="10" height="1"/><rect x="4" y="3" width="12" height="1"/><rect x="3" y="4" width="3" height="1"/><rect x="8" y="4" width="4" height="1"/><rect x="14" y="4" width="3" height="1"/><rect x="3" y="5" width="3" height="1"/><rect x="8" y="5" width="4" height="1"/><rect x="14" y="5" width="3" height="1"/><rect x="3" y="6" width="14" height="1"/><rect x="3" y="7" width="4" height="1"/><rect x="8" y="7" width="4" height="1"/><rect x="13" y="7" width="4" height="1"/><rect x="3" y="8" width="5" height="1"/><rect x="12" y="8" width="5" height="1"/><rect x="3" y="9" width="14" height="1"/><rect x="3" y="10" width="14" height="1"/><rect x="3" y="11" width="14" height="1"/><rect x="3" y="12" width="14" height="1"/><rect x="4" y="13" width="12" height="1"/><rect x="5" y="14" width="10" height="1"/><rect x="7" y="15" width="6" height="1"/></g>
+    <g fill="#1A1A1A"><rect x="6" y="4" width="1" height="1"/><rect x="12" y="4" width="1" height="1"/><rect x="6" y="5" width="2" height="1"/><rect x="12" y="5" width="2" height="1"/><rect x="7" y="7" width="1" height="1"/><rect x="12" y="7" width="1" height="1"/><rect x="8" y="8" width="4" height="1"/></g>
+    <g fill="#FFFFFF"><rect x="7" y="4" width="1" height="1"/><rect x="13" y="4" width="1" height="1"/></g>
+    <g fill="#B8433A"><rect x="7" y="11" width="1" height="3"/><rect x="8" y="11" width="1" height="1"/><rect x="8" y="13" width="1" height="1"/></g>
+    <g fill="#2E3F75"><rect x="12" y="11" width="1" height="3"/><rect x="11" y="11" width="1" height="1"/><rect x="11" y="13" width="1" height="1"/></g>
+    <g fill="#DCB876"><rect x="8" y="12" width="1" height="1"/><rect x="11" y="12" width="1" height="1"/></g>
+    <g fill="#6A3E12"><rect x="9" y="12" width="2" height="1"/></g>
+    <g fill="#5FA84E"><rect x="5" y="17" width="2" height="1"/><rect x="13" y="17" width="2" height="1"/><rect x="5" y="18" width="2" height="1"/><rect x="13" y="18" width="2" height="1"/></g>
+    <g fill="#2E6A23"><rect x="4" y="18" width="1" height="1"/><rect x="15" y="18" width="1" height="1"/><rect x="5" y="19" width="2" height="1"/><rect x="13" y="19" width="2" height="1"/></g>
+  </svg>
+
+  <h1>Pollen</h1>
+  <p class="tagline">A self-organising mesh and WASM runtime in a single static binary. Workloads place themselves over a zero-trust mesh; every node holds the same converged state and decides locally.</p>
+
+  <div class="install"><code>curl -fsSL https://pln.sh/install.sh | bash</code></div>
+
+  <video class="demo" autoplay loop muted playsinline controls>
+    <source src="pln-demo-web.mp4" type="video/mp4">
+  </video>
+  <p class="caption">Zero to cluster to loadtest. Errors are nodes applying backpressure.</p>
+
+  <h2>What's in the box</h2>
+  <ul class="features">
+    <li><strong>WASM seeds.</strong> Deploy with <code>pln seed</code>; artifacts distribute peer-to-peer by hash. A seed invokes another by host call (<code>pln://seed/&lt;name&gt;/&lt;fn&gt;</code>) or by returning a <code>tail_call</code> marker, so authz, routing, and policy can live inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism</a>.</li>
+    <li><strong>Mesh services.</strong> <code>pln serve 8080 api</code> here, <code>pln connect api</code> there (or <code>pln://service/&lt;name&gt;</code> from a seed). TCP and UDP, end-to-end mTLS.</li>
+    <li><strong>Static sites &amp; blobs.</strong> <code>pln seed ./public</code> publishes a site; <code>pln seed ./file</code> shares a file. Same verb across kinds; autodetected. Content-addressed, gossiped, streamed peer-to-peer over QUIC.</li>
+    <li><strong>Self-organising.</strong> No scheduler, no leader, no coordinator. Topology, placement, and routing emerge from local state; calls go to the nearest, least-loaded replica, and replicas migrate toward demand.</li>
+    <li><strong>CRDT-native.</strong> A converging document on every node; changes gossip, conflicts resolve.</li>
+    <li><strong>Partition-tolerant.</strong> Both sides of a split keep running; state converges on rejoin; survivors rehost workloads from failed nodes.</li>
+    <li><strong>QUIC transport.</strong> One multiplexed, encrypted, UDP-based connection per peer carries gossip, services, and seeds. Connections punch direct between peers; otherwise they relay through any cluster node both peers can reach.</li>
+    <li><strong>Cryptographic admission.</strong> No shared secrets, no firewall rules. Every link is mTLS; capabilities ride on signed delegation certs.</li>
+    <li><strong>Edge-ready.</strong> Pure Go, no CGO. Raspberry Pi to cloud host.</li>
+    <li><strong>Ergonomic.</strong> Opinionated defaults, opt-in configuration.</li>
+  </ul>
+
+  <h2>Where it fits</h2>
+  <ul class="features">
+    <li><strong>Edge fleets</strong> where machines come and go and there's no central control plane.</li>
+    <li><strong>Internal platforms</strong> where you want services and workloads addressable by name across NAT.</li>
+    <li><strong>Self-hosters</strong> spreading load across personal hardware without becoming a sysadmin.</li>
+    <li><strong>Anyone</strong> who wants Kubernetes-shaped behaviour without Kubernetes-shaped operations.</li>
+  </ul>
+
+  <h2>Get started</h2>
+  <div class="cards">
+    <a class="card" href="https://docs.pln.sh/quickstart.html">
+      <span class="card-title">Quickstart</span>
+      <span class="card-desc">Install, stand up a cluster, deploy a workload, and call it.</span>
+    </a>
+    <a class="card" href="https://docs.pln.sh/concepts.html">
+      <span class="card-title">Concepts</span>
+      <span class="card-desc">The model: mesh, gossiped CRDT, placement, storage, capabilities.</span>
+    </a>
+  </div>
+</main>
+
+<footer>&copy; 2026 Sam Lock &middot; Apache-2.0 &middot; <a href="https://docs.pln.sh/">docs</a></footer>
+</body>
 </html>

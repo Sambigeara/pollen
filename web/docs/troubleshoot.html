@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Troubleshoot · Pollen docs</title>
+  <meta name="description" content="Common Pollen symptoms with their causes and fixes.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="site-header-inner">
+    <a href="index.html" class="brand">
+      <img src="logo.svg" alt="" width="32" height="32">
+      <span>Pollen docs</span>
+    </a>
+    <nav class="site-nav">
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="how-to.html">How-to</a>
+      <a href="cli.html">CLI</a>
+      <a href="troubleshoot.html" class="active">Troubleshoot</a>
+      <a href="https://github.com/sambigeara/pollen">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="layout">
+  <main class="no-rule">
+    <h1>Troubleshoot</h1>
+    <p class="lede">Common symptoms with their likely causes and the fix. Use the symptom you actually see as the lookup key. If nothing here matches, the daemon log is the next place to look — <code>pln logs -f</code> follows it live.</p>
+
+    <h2 id="diagnostics">Before you dig in</h2>
+    <p>Three commands will tell you most of what you need to know:</p>
+    <div class="terminal">
+      <span class="cmd">pln status                <span class="cmt"># peers, services, seeds, sites, blobs at a glance</span></span>
+      <span class="cmd">pln logs -f -n 200        <span class="cmt"># tail the daemon log; ctrl-c to exit</span></span>
+      <span class="cmd">pln version               <span class="cmt"># confirm the binary you have</span></span>
+    </div>
+    <p>If <code>pln status</code> errors immediately, the daemon isn't running. Skip to <a href="#daemon-down">Daemon won't start or isn't reachable</a>.</p>
+
+    <h2 id="mac-local-network">macOS: <code>sendmsg: no route to host</code> on LAN dials</h2>
+    <p><strong>Symptom.</strong> Calls to peers on the same network silently fail or surface <code>EHOSTUNREACH</code>. Internet peers work fine. Restarting the daemon doesn't help.</p>
+    <p><strong>Cause.</strong> macOS Local Network Privacy is denying <code>pln</code> access to the LAN. The first time the binary tries to reach a LAN peer, macOS prompts; if you missed the prompt, or the binary's signature changed (after an upgrade or ad-hoc resign), the privilege is revoked silently.</p>
+    <p><strong>Fix.</strong> Grant access in <strong>System Settings → Privacy &amp; Security → Local Network</strong>, then restart the daemon:</p>
+    <div class="terminal">
+      <span class="cmd">pln restart</span>
+    </div>
+    <p>If <code>pln</code> isn't listed, force the prompt by running <code>pln status</code> while a LAN peer is up.</p>
+
+    <h2 id="socket-permission">Linux: <code>permission denied</code> on the daemon socket</h2>
+    <p><strong>Symptom.</strong></p>
+    <div class="terminal">
+      <span class="out">Error: dial unix /var/lib/pln/pln.sock: permission denied</span>
+    </div>
+    <p><strong>Cause.</strong> The system daemon runs as the <code>pln</code> user and the socket is group-owned by <code>pln</code>. Your shell user isn't in the group yet.</p>
+    <p><strong>Fix.</strong> The installer adds you to the group automatically when run with <code>sudo</code>. If something went sideways:</p>
+    <div class="terminal">
+      <span class="cmd">sudo usermod -aG pln "$USER"</span>
+    </div>
+    <p>Open a new shell for the change to take effect (or <code>newgrp pln</code> in the current one).</p>
+
+    <h2 id="daemon-down">Daemon won't start or isn't reachable</h2>
+    <p><strong>Symptom.</strong></p>
+    <div class="terminal">
+      <span class="out">Error: control plane unreachable: dial unix /var/lib/pln/pln.sock: connect: no such file or directory</span>
+    </div>
+    <p>or the daemon flips to failed in <code>brew services</code> / <code>systemctl status pln</code>.</p>
+
+    <p><strong>Cause(s).</strong> One of:</p>
+    <ul>
+      <li><strong>Port already in use.</strong> Another process holds UDP <code>60611</code> (default).</li>
+      <li><strong>State directory unwritable.</strong> Ownership of <code>~/.pln</code> or <code>/var/lib/pln</code> got out of sync after a manual file copy or a failed install.</li>
+      <li><strong>Cert expired in degraded mode.</strong> The daemon will start but log a warning and refuse some operations until renewal succeeds.</li>
+    </ul>
+
+    <p><strong>Fix.</strong> Check the log first:</p>
+    <div class="terminal">
+      <span class="cmd">pln logs -n 200</span>
+    </div>
+    <p>For port collisions, change the listening port: <code>pln up --port 60612</code> (foreground) or edit the service unit. For ownership, run <code>sudo chown -R pln:pln /var/lib/pln</code> on Linux. For an expired cert, see <a href="#cert-expired">Cert expired</a>.</p>
+
+    <h2 id="peer-offline">A peer shows offline that should be online</h2>
+    <p><strong>Symptom.</strong></p>
+    <div class="terminal">
+      <span class="cmd">pln status nodes</span>
+      <span class="out">offline peers: 1 (use --include-offline)</span>
+    </div>
+    <p><strong>Cause(s).</strong></p>
+    <ul>
+      <li><strong>Daemon down on the peer.</strong> The mesh marks unreachable peers offline after a short grace period.</li>
+      <li><strong>NAT punching failed and there's no relay.</strong> The two peers can't find a direct path and can't relay either.</li>
+      <li><strong>Firewall.</strong> A new outbound rule blocks UDP <code>60611</code> in either direction.</li>
+    </ul>
+    <p><strong>Fix.</strong> SSH to the peer and check <code>pln status</code> there. If the daemon is up but isolated, add a relay (<a href="how-to.html#add-relay">recipe</a>) so peers behind NAT can fall back to it. For firewalls, allow outbound UDP on the configured port (default <code>60611</code>) and any other ports the relay uses.</p>
+
+    <h2 id="seed-not-placed">Seed never reaches its target replica count</h2>
+    <p><strong>Symptom.</strong></p>
+    <div class="terminal">
+      <span class="cmd">pln status seeds</span>
+      <span class="out">SEEDS
+NAME    HASH      STATUS    REPLICAS  LOCAL  UPTIME
+hello   4f3a7c91  pending   0/2       -      30s</span>
+    </div>
+    <p><strong>Cause(s).</strong></p>
+    <ul>
+      <li><strong>No node has capacity.</strong> The scoring round didn't find a candidate. Add a node, or raise the per-workload limits (<code>--memory</code>, <code>--timeout</code>) to fit on what you have.</li>
+      <li><strong>Artifact hasn't replicated yet.</strong> A scheduled host is still pulling the WASM bytes. Watch <code>pln status blobs</code> to confirm the hash is reaching new nodes.</li>
+      <li><strong>Spec policy excludes every node from acting on it.</strong> Rare, but possible if you used <code>--allow-props</code> on a workload such that no node-side identity matches.</li>
+    </ul>
+    <p><strong>Fix.</strong> Watch the daemon log on the candidate hosts (<code>pln logs -f</code> on each). The supervisor logs scoring decisions and any failures (CAS pull errors, validation failures).</p>
+
+    <h2 id="call-denied">Call returns <code>stream closed by peer</code></h2>
+    <p><strong>Symptom.</strong></p>
+    <div class="terminal">
+      <span class="cmd">pln call greeter run 'hi'</span>
+      <span class="out">Error: stream closed by peer</span>
+    </div>
+    <p><strong>Cause.</strong> Authorisation denied. The runtime gate evaluates <code>--allow-props</code> clauses against the caller's cert; failed matches close the stream silently to prevent probing.</p>
+    <p><strong>Fix.</strong> Inspect the spec and the caller's cert:</p>
+    <div class="terminal">
+      <span class="cmd">pln status seeds --wide                        <span class="cmt"># shows policy on the spec</span></span>
+      <span class="cmd">pln status nodes --wide                        <span class="cmt"># shows your peer's properties</span></span>
+    </div>
+    <p>Then either add the missing property to your cert (<code>pln grant &lt;your-peer&gt; --prop key=value</code> from an admin shell) or relax the spec by re-publishing without the offending clause.</p>
+
+    <h2 id="cert-expired">Cert expired</h2>
+    <p><strong>Symptom.</strong> Daemon starts but logs:</p>
+    <div class="terminal">
+      <span class="out">delegation certificate has expired — starting in degraded mode, will attempt renewal</span>
+    </div>
+    <p>Some operations still work (read-only status); others fail until a fresh cert arrives.</p>
+    <p><strong>Cause.</strong> The peer was offline through its renewal window and the cluster's automatic renewal pipeline hasn't yet caught up. The default delegation TTL is 30 days.</p>
+    <p><strong>Fix.</strong> If the peer can reach an admin-capable node, renewal is automatic — just wait a minute. If not, mint a fresh cert from any admin shell:</p>
+    <div class="terminal">
+      <span class="cmd">pln grant &lt;peer-id&gt; --prop key=value …      <span class="cmt"># re-issue with whatever properties were in place</span></span>
+    </div>
+    <p>For root, restart: <code>pln restart</code> re-issues the self-signed cert from <code>config.yaml</code>.</p>
+
+    <h2 id="bootstrap-fails"><code>pln bootstrap ssh</code> fails</h2>
+    <p><strong>Symptom.</strong></p>
+    <div class="terminal">
+      <span class="out">  user@host                                failed (ssh: handshake failed)
+0 succeeded, 1 failed
+hint: for failed hosts, use `pln invite` and run `pln join &lt;token&gt;` on the remote host</span>
+    </div>
+    <p><strong>Cause(s).</strong></p>
+    <ul>
+      <li><strong>SSH access not set up.</strong> Bootstrap needs SSH as root or with passwordless <code>sudo</code>.</li>
+      <li><strong>Target isn't Linux.</strong> Bootstrap-ssh is Linux-only.</li>
+      <li><strong>Network blocks SSH.</strong> Firewall or VPN.</li>
+    </ul>
+    <p><strong>Fix.</strong> Test SSH directly: <code>ssh user@host sudo -n true</code> should succeed silently. If it doesn't, fix that first. As the hint suggests, you can always fall back to the out-of-band path:</p>
+    <div class="terminal">
+      <span class="cmd">pln invite --subject $(ssh user@host pln id)</span>
+      <span class="cmd">ssh user@host pln join &lt;token&gt;</span>
+    </div>
+
+    <h2 id="static-404">Static site returns 404</h2>
+    <p><strong>Symptom.</strong> A site you published responds 404 instead of serving content.</p>
+    <p><strong>Cause(s).</strong></p>
+    <ul>
+      <li><strong>Static-HTTP not enabled on the node you're hitting.</strong> Sites are routed by <code>Host</code> header on each node's static-http listener. A node without that listener can't serve sites.</li>
+      <li><strong>Spec hasn't reached this node yet.</strong> Possible right after publish; usually a couple of seconds.</li>
+      <li><strong>Wrong <code>Host</code> header.</strong> The site name needs to match what you used when publishing.</li>
+    </ul>
+    <p><strong>Fix.</strong></p>
+    <div class="terminal">
+      <span class="cmd">pln set                       <span class="cmt"># confirm static-http is set</span></span>
+      <span class="cmd">pln status static --include-offline</span>
+      <span class="cmd">curl -H "Host: my-site" -v http://localhost:8080/</span>
+    </div>
+    <p>If <code>static-http</code> isn't set, run <code>pln set static-http</code> and <code>pln restart</code>.</p>
+
+    <h2 id="props-stale">Properties don't seem to take effect</h2>
+    <p><strong>Symptom.</strong> You ran <code>pln props</code> or <code>pln grant --prop</code> but downstream policy decisions still use the old values.</p>
+    <p><strong>Cause.</strong> Properties live in certs, so a change is a cert re-issue. Until the new cert reaches the relevant party, the old cert is what the gate sees.</p>
+    <ul>
+      <li>For <strong>root</strong>: <code>pln props</code> updates the persisted file but doesn't re-issue the cert in-flight; restart to apply (<code>pln restart</code>).</li>
+      <li>For a <strong>delegated peer</strong>: <code>pln grant</code> issues immediately, but the cert needs to gossip to whichever node is enforcing the policy. Usually a couple of seconds.</li>
+    </ul>
+    <p><strong>Fix.</strong> Restart root after <code>pln props</code>. For delegated peers, watch <code>pln status nodes --wide</code> until the new properties show on the affected node.</p>
+
+    <h2 id="reset">Last resort: nuke and start over</h2>
+    <p>If a node's local state is wedged beyond reason and you don't mind losing it:</p>
+    <div class="terminal">
+      <span class="cmd">pln down</span>
+      <span class="cmd">pln purge --yes              <span class="cmt"># wipes cluster state, preserves identity keys</span></span>
+      <span class="cmd">pln purge --yes --include-keys  <span class="cmt"># wipes everything, including identity</span></span>
+    </div>
+    <p>Then re-init or re-join. <code>--include-keys</code> means the node will appear as a fresh identity to the cluster, so previous peers will refuse to talk to it without a fresh invite.</p>
+
+    <h2 id="reaching-out">Still stuck</h2>
+    <p>Open an issue with the symptom, the steps that produced it, and the relevant log excerpt at <a href="https://github.com/sambigeara/pollen/issues">github.com/sambigeara/pollen/issues</a>. Pollen is small enough that most issues get a fix or a workaround quickly.</p>
+  </main>
+
+  <aside class="sidebar">
+    <div class="sidebar-title">Symptoms</div>
+    <nav>
+      <a href="#diagnostics">Before you dig in</a>
+      <a href="#mac-local-network">macOS LAN dials fail</a>
+      <a href="#socket-permission">Linux socket permission</a>
+      <a href="#daemon-down">Daemon won't start</a>
+      <a href="#peer-offline">Peer offline</a>
+      <a href="#seed-not-placed">Seed not placed</a>
+      <a href="#call-denied">Call denied silently</a>
+      <a href="#cert-expired">Cert expired</a>
+      <a href="#bootstrap-fails">bootstrap ssh fails</a>
+      <a href="#static-404">Static site 404</a>
+      <a href="#props-stale">Properties stale</a>
+      <a href="#reset">Last resort</a>
+    </nav>
+  </aside>
+</div>
+
+<footer>&copy; 2026 Sam Lock &middot; Apache-2.0 &middot; <a href="https://pln.sh/">pln.sh</a></footer>
+</body>
+</html>

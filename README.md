@@ -33,6 +33,18 @@ This demo shows a simple processing pipeline: two chained workloads and a single
 - **Edge-ready.** Pure Go, no CGO. Raspberry Pi to cloud host.
 - **Ergonomic.** Opinionated defaults, opt-in configuration.
 
+## Documentation
+
+Full docs at [docs.pln.sh](https://docs.pln.sh):
+
+- [Quickstart](https://docs.pln.sh/quickstart.html) — install, cluster, workload, call.
+- [Concepts](https://docs.pln.sh/concepts.html) — the model: mesh, gossiped CRDT, placement, storage, capabilities.
+- [How-to](https://docs.pln.sh/how-to.html) — recipes for relays, offline root, property-based access, rollouts.
+- [CLI reference](https://docs.pln.sh/cli.html) — every command, every flag.
+- [Troubleshoot](https://docs.pln.sh/troubleshoot.html) — symptom → cause → fix.
+
+The rest of this README is a condensed tour. See the docs for the full picture.
+
 ## Quickstart
 
 ### Install
@@ -67,7 +79,7 @@ online.
 **With SSH.** From any admin node:
 
 ```bash
-pln bootstrap ssh user@host [--admin]
+pln bootstrap ssh user@host [--admin] [--prop region=eu]
 
 # Or pipe labelled targets from stdin or a file:
 echo "media=alice@10.0.0.5" | pln bootstrap ssh -
@@ -75,14 +87,15 @@ echo "media=alice@10.0.0.5" | pln bootstrap ssh -
 
 Installs Pollen, enrols in the cluster, and starts. Linux targets only;
 needs SSH as root or passwordless sudo. `--admin` delegates admin
-authority; prefix a target with `name=` to label the node. Run
+authority; `--prop` bakes properties into each joiner's cert at issue
+time; prefix a target with `name=` to label the node. Run
 `pln bootstrap ssh --help` for the full flag set.
 
 **Out-of-band.** Mint a token on an admin node, ship it to the joiner:
 
 ```bash
 # Admin node:
-pln invite [--subject foo]   # subject key can be retrieved with `pln id` on the subject node
+pln invite [--admin] [--subject foo]   # subject is the joiner's `pln id`
 
 # New node:
 pln join <token>
@@ -148,20 +161,23 @@ original caller.
 # node offline:
 pln grant <peer-id> --admin
 
-# Bake arbitrary key/value metadata into a peer's cert. Seeds see
+# Bake arbitrary key/value properties into a peer's cert. Seeds see
 # the caller's peer key and properties on every invocation, so auth,
 # routing, and policy decisions can live inside the workload:
 pln grant <peer-id> --prop role=lead --prop team=backend
 
-# Or bake them in at join time:
+# Or bake them in at join time, on either path:
 pln invite --prop role=engineer --prop team=backend
+pln bootstrap ssh root@host --prop region=eu --prop tier=edge
 
 # Pipe a JSON payload from a file:
 cat props.json | pln grant <peer-id> --prop -
 
-# Set the root node's own properties at init time (or later by
-# editing `properties:` in config.yaml and restarting):
-pln init --prop role=primary --prop region=eu
+# Set the root node's own properties at init time (or replace
+# them later with `pln props`):
+pln init  --prop role=primary --prop region=eu
+pln props role=primary region=eu        # replace
+pln props --clear                       # wipe
 ```
 
 ### Restrict who can call what
