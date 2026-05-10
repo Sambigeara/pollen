@@ -20,7 +20,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 const (
@@ -41,7 +40,7 @@ type TunnelingAPI interface {
 	Stop() error
 	Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) (uint32, error)
 	Disconnect(service string) error
-	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, policy *admissionv1.Predicate) error
+	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, policy *admissionv1.Predicate) error
 	UnexposeService(name string) error
 	ListConnections() []ConnectionInfo
 	Serve(stream io.ReadWriteCloser, peer types.PeerKey, port uint32)
@@ -56,7 +55,7 @@ type TunnelingAPI interface {
 
 type ServiceState interface {
 	Snapshot() state.Snapshot
-	SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, policy *admissionv1.Predicate) ([]state.Event, error)
+	SetService(port uint32, name string, protocol statev1.ServiceProtocol, policy *admissionv1.Predicate) ([]state.Event, error)
 	RemoveService(name string) ([]state.Event, error)
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []state.Event
 }
@@ -258,7 +257,7 @@ func (s *Service) Disconnect(service string) error {
 	return fmt.Errorf("no connection for service %q", service)
 }
 
-func (s *Service) ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, policy *admissionv1.Predicate) error {
+func (s *Service) ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, policy *admissionv1.Predicate) error {
 	s.mu.Lock()
 	sk := serviceKey{port: port, protocol: protocol}
 
@@ -275,7 +274,7 @@ func (s *Service) ExposeService(port uint32, name string, protocol statev1.Servi
 		}
 	}
 
-	events, err := s.store.SetService(port, name, protocol, properties, policy)
+	events, err := s.store.SetService(port, name, protocol, policy)
 	if err != nil {
 		s.mu.Unlock()
 		return err

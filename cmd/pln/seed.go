@@ -141,17 +141,8 @@ func validateSeedFlags(cmd *cobra.Command, kind seedKind) error {
 			}
 		}
 	}
-	if kind == kindStatic {
-		// Static sites are served via plain HTTP with no authenticated
-		// principal, so a caller predicate has no identity to match
-		// against. Refuse the publish here so the operator finds out
-		// before the manifest and blobs upload.
-		policyFlags := []string{"allow-caller", "allow-caller-in", "allow-target"}
-		for _, f := range policyFlags {
-			if cmd.Flags().Changed(f) {
-				return fmt.Errorf("--%s not supported for static sites; HTTP serving is unauthenticated", f)
-			}
-		}
+	if kind == kindStatic && cmd.Flags().Changed("allow-props") {
+		return fmt.Errorf("--allow-props not supported for static sites; HTTP serving is unauthenticated")
 	}
 	return nil
 }

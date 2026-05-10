@@ -71,7 +71,7 @@ type PlacementControl interface {
 type TunnelingControl interface {
 	Connect(ctx context.Context, peer types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) (uint32, error)
 	Disconnect(service string) error
-	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, policy *admissionv1.Predicate) error
+	ExposeService(port uint32, name string, protocol statev1.ServiceProtocol, policy *admissionv1.Predicate) error
 	UnexposeService(name string) error
 	ListConnections() []tunneling.ConnectionInfo
 }
@@ -538,7 +538,7 @@ func (s *Service) RegisterService(_ context.Context, req *controlv1.RegisterServ
 		return nil, status.Error(codes.PermissionDenied, "only admin nodes can publish services")
 	}
 	name := serviceNameOrDefault(req.GetName(), req.Port)
-	if err := s.tunneling.ExposeService(req.Port, name, state.NormaliseProtocol(req.GetProtocol()), req.GetProperties(), req.GetPolicy()); err != nil {
+	if err := s.tunneling.ExposeService(req.Port, name, state.NormaliseProtocol(req.GetProtocol()), req.GetPolicy()); err != nil {
 		return nil, s.fail(err, "register service failed")
 	}
 	return &controlv1.RegisterServiceResponse{}, nil

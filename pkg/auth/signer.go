@@ -97,6 +97,7 @@ func (s *DelegationSigner) IssueInviteToken(
 	tokenTTL time.Duration,
 	membershipTTL time.Duration,
 	attributes *structpb.Struct,
+	admin bool,
 ) (*admissionv1.InviteToken, error) {
 	if tokenTTL <= 0 {
 		return nil, errors.New("token ttl must be positive")
@@ -117,6 +118,7 @@ func (s *DelegationSigner) IssueInviteToken(
 		ExpiresAtUnix:        now.Add(tokenTTL).Unix(),
 		MembershipTtlSeconds: int64(membershipTTL / time.Second),
 		Attributes:           attributes,
+		Admin:                admin,
 	}
 	if err := protovalidate.Validate(claims); err != nil {
 		return nil, fmt.Errorf("invite token claims invalid: %w", err)
@@ -143,6 +145,7 @@ func (s *DelegationSigner) IssueJoinToken(
 	membershipTTL time.Duration,
 	accessDeadline time.Time,
 	attributes *structpb.Struct,
+	admin bool,
 ) (*admissionv1.JoinToken, error) {
 	if err := ValidateAttributes(attributes); err != nil {
 		return nil, err
@@ -156,6 +159,9 @@ func (s *DelegationSigner) IssueJoinToken(
 	}
 
 	caps := LeafCapabilities()
+	if admin {
+		caps = FullCapabilities()
+	}
 	caps.Attributes = attributes
 
 	memberCert, err := IssueDelegationCert(

@@ -69,6 +69,7 @@ message InviteTokenClaims {
   int64 expires_at_unix = 6;
   int64 membership_ttl_seconds = 7;
   google.protobuf.Struct attributes = 8;
+  bool admin = 9;
 }
 
 message InviteToken {
@@ -132,12 +133,7 @@ message InlinePredicate {
 
 message Clause {
   string key = 1 [(buf.validate.field).string = {min_len: 1}];
-  oneof match {
-    string equals = 2;
-    StringList in = 3;
-  }
-}
-
-message StringList {
-  repeated string values = 1;
+  string equals = 2;
+  reserved 3;
+  reserved "in";
 }

@@ -6,7 +6,6 @@ package gate
 import (
 	"encoding/hex"
 	"errors"
-	"slices"
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
@@ -18,10 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const (
-	CallerKey = "pln.caller"
-	TargetKey = "pln.target"
-)
+const CallerKey = "pln.caller"
 
 type StateReader interface {
 	Snapshot() state.Snapshot
@@ -68,7 +64,7 @@ func (g *Gate) Admit(sc *statev1.SpecChange) error {
 	return auth.VerifySpecAuth(specAuth, body, g.rootPub, time.Now())
 }
 
-func (g *Gate) Invoke(peerKey types.PeerKey, hash, function string) (wasm.CallerInfo, error) {
+func (g *Gate) Invoke(peerKey types.PeerKey, hash string) (wasm.CallerInfo, error) {
 	snap := g.store.Snapshot()
 	caller, ok := snap.Nodes[peerKey]
 	if !ok || caller.Cert == nil {
@@ -78,7 +74,7 @@ func (g *Gate) Invoke(peerKey types.PeerKey, hash, function string) (wasm.Caller
 	if !ok || sv.Auth == nil {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
-	if err := decide(caller.Cert, sv.Auth, function, time.Now(), asCaller); err != nil {
+	if err := decide(caller.Cert, sv.Auth, time.Now()); err != nil {
 		return wasm.CallerInfo{}, err
 	}
 	return wasm.CallerInfo{PeerKey: peerKey, Attributes: caller.Cert.GetClaims().GetCapabilities().GetAttributes().AsMap()}, nil
@@ -94,7 +90,7 @@ func (g *Gate) Fetch(peerKey types.PeerKey, hash string) error {
 	if !ok || view.Auth == nil {
 		return wasm.ErrTargetNotFound
 	}
-	return decide(caller.Cert, view.Auth, "", time.Now(), asCaller)
+	return decide(caller.Cert, view.Auth, time.Now())
 }
 
 // Connect authorises callerKey to open a connection to (hostPeer, port).
@@ -115,33 +111,22 @@ func (g *Gate) Connect(callerKey, hostPeer types.PeerKey, port uint32) error {
 		if svc.Port != port || svc.Auth == nil {
 			continue
 		}
-		return decide(caller.Cert, svc.Auth, "", time.Now(), asCaller)
+		return decide(caller.Cert, svc.Auth, time.Now())
 	}
 	return wasm.ErrTargetNotFound
 }
 
 // MayHost authorises hostCert to host the workload described by specAuth.
-// A host running a workload can necessarily invoke any function on it
-// locally (loopback, direct state access), so identity-keyed clauses
-// must hold against the host's cert. Per-function clauses keyed on
-// pln.target apply only to external callers and are skipped here: a
-// host implicitly satisfies every function value, so the only sensible
-// way to evaluate them in this direction is to ignore them.
+// Hosting includes loopback invocation, so the spec's policy must hold
+// against the host's own cert.
 func (g *Gate) MayHost(hostCert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth) error {
 	if hostCert == nil || specAuth == nil {
 		return wasm.ErrTargetNotFound
 	}
-	return decide(hostCert, specAuth, "", time.Now(), asHost)
+	return decide(hostCert, specAuth, time.Now())
 }
 
-type subjectMode uint8
-
-const (
-	asCaller subjectMode = iota
-	asHost
-)
-
-func decide(cert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth, target string, now time.Time, mode subjectMode) error {
+func decide(cert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth, now time.Time) error {
 	if auth.IsCertExpired(cert, now) {
 		return wasm.ErrTargetNotFound
 	}
@@ -156,30 +141,11 @@ func decide(cert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth, ta
 			ctx[k] = s
 		}
 	}
-
 	ctx[CallerKey] = hex.EncodeToString(cert.GetClaims().GetSubjectPub())
-	if target != "" {
-		ctx[TargetKey] = target
-	}
 
 	for _, clause := range policy.GetInline().GetClauses() {
-		if mode == asHost && clause.GetKey() == TargetKey {
-			continue
-		}
 		got, ok := ctx[clause.GetKey()]
-		if !ok {
-			return wasm.ErrTargetNotFound
-		}
-		switch m := clause.GetMatch().(type) {
-		case *admissionv1.Clause_Equals:
-			if got != m.Equals {
-				return wasm.ErrTargetNotFound
-			}
-		case *admissionv1.Clause_In:
-			if !slices.Contains(m.In.GetValues(), got) {
-				return wasm.ErrTargetNotFound
-			}
-		default:
+		if !ok || got != clause.GetEquals() {
 			return wasm.ErrTargetNotFound
 		}
 	}

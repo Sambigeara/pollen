@@ -15,7 +15,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type Snapshot struct {
@@ -86,11 +85,10 @@ type TrafficSnapshot struct {
 }
 
 type Service struct {
-	Properties *structpb.Struct
-	Auth       *admissionv1.SpecAuth
-	Name       string
-	Port       uint32
-	Protocol   statev1.ServiceProtocol
+	Auth     *admissionv1.SpecAuth
+	Name     string
+	Port     uint32
+	Protocol statev1.ServiceProtocol
 }
 
 type Digest struct {
@@ -164,12 +162,11 @@ func (s Snapshot) LocalSpecByName(name string, localID types.PeerKey) (string, b
 }
 
 type ServiceInfo struct {
-	Properties *structpb.Struct
-	Auth       *admissionv1.SpecAuth
-	Name       string
-	Peer       types.PeerKey
-	Port       uint32
-	Protocol   statev1.ServiceProtocol
+	Auth     *admissionv1.SpecAuth
+	Name     string
+	Peer     types.PeerKey
+	Port     uint32
+	Protocol statev1.ServiceProtocol
 }
 
 // PeersWithBlob returns live peers advertising hash. Stale BlobAvailability
@@ -253,7 +250,7 @@ func (s Snapshot) Services() []ServiceInfo {
 	var out []ServiceInfo
 	for pk, nv := range s.Nodes {
 		for name, svc := range nv.Services {
-			out = append(out, ServiceInfo{Name: name, Port: svc.Port, Peer: pk, Protocol: svc.Protocol, Properties: svc.Properties, Auth: svc.Auth})
+			out = append(out, ServiceInfo{Name: name, Port: svc.Port, Peer: pk, Protocol: svc.Protocol, Auth: svc.Auth})
 		}
 	}
 	return out
@@ -445,7 +442,7 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 			nv.ObservedExternalIP, nv.ExternalPort = v.ObservedAddress.Ip, v.ObservedAddress.Port
 		case *statev1.GossipEvent_SpecChange:
 			if svc := v.SpecChange.GetService(); svc != nil {
-				nv.Services[key.name] = &Service{Name: key.name, Port: svc.Port, Protocol: NormaliseProtocol(svc.Protocol), Properties: svc.Properties, Auth: v.SpecChange.GetAuth()}
+				nv.Services[key.name] = &Service{Name: key.name, Port: svc.Port, Protocol: NormaliseProtocol(svc.Protocol), Auth: v.SpecChange.GetAuth()}
 			}
 		case *statev1.GossipEvent_Reachability:
 			nv.Reachable[key.peer] = struct{}{}

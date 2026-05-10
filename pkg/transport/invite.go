@@ -285,6 +285,7 @@ func ProcessInviteRedeem(
 		membershipTTL,
 		accessDeadline,
 		attrs,
+		claims.GetAdmin(),
 	)
 	if err != nil {
 		return &meshv1.InviteRedeemResponse{Reason: err.Error()}

@@ -19,7 +19,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event)) []Event {
@@ -379,10 +378,10 @@ func (s *store) SetPerSeedCallCounts(counts map[string]uint64) []Event {
 	})
 }
 
-func (s *store) SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, policy *admissionv1.Predicate) ([]Event, error) {
+func (s *store) SetService(port uint32, name string, protocol statev1.ServiceProtocol, policy *admissionv1.Predicate) ([]Event, error) {
 	var signerErr error
 	var events []Event
-	owned := &statev1.ServiceChange{Name: name, Port: port, Protocol: protocol, Properties: properties}
+	owned := &statev1.ServiceChange{Name: name, Port: port, Protocol: protocol}
 	events = s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
 		specChange, err := s.signedSpecChangeLocked(serviceResourceID(owned), owned, policy, false)
 		if err != nil {

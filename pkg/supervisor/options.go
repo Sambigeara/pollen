@@ -11,7 +11,6 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/types"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type Options struct {
@@ -50,8 +49,7 @@ type ConnectionEntry struct {
 }
 
 type ServiceEntry struct {
-	Properties *structpb.Struct
-	Name       string
-	Port       uint32
-	Protocol   statev1.ServiceProtocol
+	Name     string
+	Port     uint32
+	Protocol statev1.ServiceProtocol
 }

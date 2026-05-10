@@ -20,9 +20,8 @@ import (
 )
 
 type gateCall struct {
-	peer     types.PeerKey
-	hash     string
-	function string
+	peer types.PeerKey
+	hash string
 }
 
 type recordingGate struct {
@@ -33,10 +32,10 @@ type recordingGate struct {
 	returnErr  error
 }
 
-func (g *recordingGate) Invoke(peer types.PeerKey, hash, function string) (wasm.CallerInfo, error) {
+func (g *recordingGate) Invoke(peer types.PeerKey, hash string) (wasm.CallerInfo, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.calls = append(g.calls, gateCall{peer: peer, hash: hash, function: function})
+	g.calls = append(g.calls, gateCall{peer: peer, hash: hash})
 	return g.returnInfo, g.returnErr
 }
 
@@ -118,7 +117,6 @@ func TestServeConsultsGate(t *testing.T) {
 	require.Equal(t, 1, gate.callCount(), "gate.Invoke should have been called")
 	last := gate.lastCall()
 	require.Equal(t, hash, last.hash)
-	require.Equal(t, "run", last.function)
 }
 
 func TestServeClosesStreamOnGateDeny(t *testing.T) {
@@ -183,7 +181,6 @@ func TestCallConsultsGate(t *testing.T) {
 	require.Equal(t, 1, gate.callCount(), "Call must consult gate.Invoke before dispatching")
 	last := gate.lastCall()
 	require.Equal(t, seedHash, last.hash)
-	require.Equal(t, "run", last.function)
 }
 
 func TestCallDeniesAtGate(t *testing.T) {

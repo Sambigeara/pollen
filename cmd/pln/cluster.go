@@ -81,22 +81,26 @@ passwordless sudo. Linux only.
 
 Prefix a target with ` + "`name=`" + ` to label the node, or pipe a list of targets
 on stdin via ` + "`-`" + `. Pass --admin to delegate admin authority to the new
-relay so the cluster keeps working with the root offline. Pass --no-up
-to skip starting the local daemon when the orchestrator also enrols
-itself as a cluster member.
+relay so the cluster keeps working with the root offline. Properties
+passed via --prop are baked into each relay's membership cert.
+
+Pass --no-up to skip starting the local daemon when the orchestrator
+also enrols itself as a cluster member.
 
 The token-authenticated control API is bound on each target at the
 standard port so the node is remotely manageable out of the box.`,
 		Example: `  pln bootstrap ssh user@host
   pln bootstrap ssh relay-eu=root@10.0.0.5 relay-us=root@10.0.0.6 --admin
+  pln bootstrap ssh edge=root@10.0.0.7 --prop region=eu --prop tier=edge
   echo "media=alice@10.0.0.5" | pln bootstrap ssh -`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: withEnv(runBootstrapSSH),
 	}
 	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
 	sshCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the relay peer")
-	sshCmd.Flags().Bool("admin", false, "Delegate admin authority to the relay")
+	sshCmd.Flags().Bool("admin", false, "Issue with full admin capabilities")
 	sshCmd.Flags().Bool("no-up", false, "Enrol the orchestrator without starting its local daemon")
+	sshCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin (applied to every target)")
 
 	cmd.AddCommand(sshCmd)
 	return cmd
@@ -136,8 +140,10 @@ once enrolment succeeds; use --no-up to defer.`,
 		Long: `Mints a signed invite token. Pass to ` + "`pln join`" + ` on the joining node.
 Tokens are time-limited (--ttl) and may bind to a specific subject key
 or carry hard access deadlines. Properties are baked into the issued
-cert and surfaced to seeds at call time.`,
-		Example: "  pln invite --ttl 30m --prop role=worker\n  pln invite --subject $(ssh laptop pln id) --prop role=editor",
+cert and surfaced to seeds at call time. Pass --admin to issue an
+admin-capable membership cert on join (so the invited peer can in turn
+admit and grant).`,
+		Example: "  pln invite --ttl 30m --prop role=worker\n  pln invite --subject $(ssh laptop pln id) --prop role=editor\n  pln invite --admin --subject $(ssh relay pln id)",
 		Args:    cobra.RangeArgs(0, 1),
 		RunE:    withEnv(runInvite),
 	}
@@ -145,6 +151,7 @@ cert and surfaced to seeds at call time.`,
 	inviteCmd.Flags().Duration("ttl", defaultInviteTTL, "Invite token validity duration")
 	inviteCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the invited peer")
 	inviteCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin")
+	inviteCmd.Flags().Bool("admin", false, "Issue with full admin capabilities")
 
 	adminCmd := &cobra.Command{Use: "admin", Short: "Manage admin keys (advanced)"}
 	adminCmd.AddCommand(&cobra.Command{
@@ -192,6 +199,21 @@ later.`,
 	}
 	initCmd.Flags().StringArray("prop", nil, "Root node properties: key=value, JSON, or - for stdin")
 
+	propsCmd := &cobra.Command{
+		Use:   "props [key=value ...]",
+		Short: "List or replace local node properties",
+		Long: `Without arguments, prints the local node's properties as recorded
+in config.yaml. With key=value arguments, replaces the entire property
+set: keys not listed are removed. Pass --clear to empty the set.
+
+Properties take effect on the next ` + "`pln up`" + `, when the root cert is
+re-issued from config. On non-root nodes, an admin must re-grant with
+` + "`pln grant <peer-id> --prop ...`" + ` to update the cert.`,
+		Example: "  pln props\n  pln props role=primary region=eu\n  pln props --clear",
+		RunE:    withEnv(runProps, localOnly()),
+	}
+	propsCmd.Flags().Bool("clear", false, "Remove all properties")
+
 	return []*cobra.Command{
 		initCmd,
 		purgeCmd,
@@ -199,6 +221,7 @@ later.`,
 		inviteCmd,
 		adminCmd,
 		grantCmd,
+		propsCmd,
 		newBootstrapCmd(),
 	}
 }
@@ -262,6 +285,63 @@ func runInit(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	_, adminPub, _ := auth.LoadAdminKey(identityDir)
 	fmt.Fprintf(cmd.OutOrStdout(), "initialized root cluster\nroot_pub: %s\ncluster_id: %x\n", hex.EncodeToString(adminPub), sha256.Sum256(creds.RootPub()))
 	return nil
+}
+
+func runProps(cmd *cobra.Command, args []string, env *cliEnv) error {
+	clearAll, _ := cmd.Flags().GetBool("clear")
+	if clearAll && len(args) > 0 {
+		return errors.New("--clear cannot be combined with positional arguments")
+	}
+
+	if !clearAll && len(args) == 0 {
+		printProps(cmd.OutOrStdout(), env.cfg.Properties)
+		return nil
+	}
+
+	// On non-root nodes the root cert is signed by an admin; the local
+	// node can't re-issue it from config. Refuse rather than silently
+	// writing a value that won't take effect.
+	identityDir := auth.IdentityPath(env.dir)
+	creds, err := auth.LoadNodeCredentials(identityDir)
+	if err != nil {
+		return fmt.Errorf("load credentials: %w", err)
+	}
+	if _, isRoot, err := auth.LocalRootAuthority(identityDir, creds); err != nil {
+		return err
+	} else if !isRoot {
+		return errors.New("only root nodes may set properties locally; ask an admin to `pln grant <peer-id> --prop ...`")
+	}
+
+	if clearAll {
+		env.cfg.Properties = nil
+	} else {
+		props, err := parsePropertyValues(cmd, args)
+		if err != nil {
+			return err
+		}
+		env.cfg.Properties = props.AsMap()
+	}
+
+	if err := config.Save(env.dir, env.cfg); err != nil {
+		return fmt.Errorf("persist properties to config: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "properties updated %s\n", applyHint(env.dir))
+	return nil
+}
+
+func printProps(out io.Writer, props map[string]any) {
+	if len(props) == 0 {
+		fmt.Fprintln(out, "(no properties set)")
+		return
+	}
+	keys := make([]string, 0, len(props))
+	for k := range props {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		fmt.Fprintf(out, "%s=%v\n", k, props[k])
+	}
 }
 
 func runPurge(cmd *cobra.Command, _ []string, env *cliEnv) error {
@@ -385,8 +465,12 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if err != nil {
 		return err
 	}
+	admin, _ := cmd.Flags().GetBool("admin")
+	if admin && !signer.IssuerCert().GetClaims().GetCapabilities().GetCanAdmit() {
+		return errors.New("--admin requires a node with admin capability")
+	}
 
-	token, err := signer.IssueInviteToken(subjectPub, bootstrap, time.Now(), ttl, expireAfter, attrs)
+	token, err := signer.IssueInviteToken(subjectPub, bootstrap, time.Now(), ttl, expireAfter, attrs, admin)
 	if err != nil {
 		return err
 	}
@@ -445,6 +529,10 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	}
 	expireAfter, _ := cmd.Flags().GetDuration("expire-after")
 	delegateAdmin, _ := cmd.Flags().GetBool("admin")
+	attrs, err := parseProperties(cmd)
+	if err != nil {
+		return err
+	}
 
 	identityDir := auth.IdentityPath(env.dir)
 	nodePriv, localPub, err := auth.EnsureIdentityKey(identityDir)
@@ -454,6 +542,9 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	signer, err := auth.NewDelegationSigner(identityDir, nodePriv)
 	if err != nil {
 		return errors.New("this node cannot issue tokens; only delegated admins can sign enrollment tokens")
+	}
+	if delegateAdmin && !signer.IssuerCert().GetClaims().GetCapabilities().GetCanAdmit() {
+		return errors.New("--admin requires a node with admin capability")
 	}
 
 	// Each remote must know about every other remote as a bootstrap peer,
@@ -521,7 +612,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		prepared := d.prepared
 		enrollWG.Go(func() {
 			seeded := seedPeersFor(peerPool, prepared.peerPub)
-			if err := enrollRemote(cmd.Context(), env, signer, prepared, seeded, expireAfter, delegateAdmin); err != nil {
+			if err := enrollRemote(cmd.Context(), signer, prepared, seeded, expireAfter, delegateAdmin, attrs); err != nil {
 				results <- bootstrapResult{target: prepared.spec.target, err: err}
 				return
 			}
@@ -579,7 +670,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 			})
 		}
 
-		joinToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, localPub, defaultInviteTTL, expireAfter, bsPeers, nil)
+		joinToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, localPub, defaultInviteTTL, expireAfter, bsPeers, nil, false)
 		if err != nil {
 			return fmt.Errorf("create local join token: %w", err)
 		}
@@ -650,12 +741,12 @@ func discoverRemote(ctx context.Context, spec sshTargetSpec, relayPort int) (pre
 	}, nil
 }
 
-func enrollRemote(ctx context.Context, env *cliEnv, signer *auth.DelegationSigner, remote preparedRemote, bootstrapPeers []*admissionv1.BootstrapPeer, expireAfter time.Duration, delegateAdmin bool) error {
-	seedToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, remote.peerPub, 1*time.Minute, expireAfter, bootstrapPeers, nil)
+func enrollRemote(ctx context.Context, signer *auth.DelegationSigner, remote preparedRemote, bootstrapPeers []*admissionv1.BootstrapPeer, expireAfter time.Duration, delegateAdmin bool, attrs *structpb.Struct) error {
+	seedToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, remote.peerPub, 1*time.Minute, expireAfter, bootstrapPeers, attrs, delegateAdmin)
 	if err != nil {
 		return fmt.Errorf("create seed token: %w", err)
 	}
-	return bootstrapRelayOverSSH(ctx, env, remote.spec.target, seedToken, remote.peerPub, delegateAdmin, remote.spec.nodeName, remote.public)
+	return bootstrapRelayOverSSH(ctx, remote.spec.target, seedToken, remote.spec.nodeName, remote.public)
 }
 
 func seedPeersFor(pool map[string]*admissionv1.BootstrapPeer, self ed25519.PublicKey) []*admissionv1.BootstrapPeer {
@@ -673,7 +764,7 @@ func seedPeersFor(pool map[string]*admissionv1.BootstrapPeer, self ed25519.Publi
 	return out
 }
 
-func bootstrapRelayOverSSH(ctx context.Context, env *cliEnv, sshTarget, seedToken string, relayPub ed25519.PublicKey, delegateAdmin bool, nodeName string, public bool) error {
+func bootstrapRelayOverSSH(ctx context.Context, sshTarget, seedToken, nodeName string, public bool) error {
 	joinArgs := []string{"join", "--no-up"}
 	if public {
 		joinArgs = append(joinArgs, "--public")
@@ -698,42 +789,10 @@ func bootstrapRelayOverSSH(ctx context.Context, env *cliEnv, sshTarget, seedToke
 	if out, err := sshPln(ctx, sshTarget, "set", "control-addr", config.DefaultControlAddr).CombinedOutput(); err != nil {
 		return fmt.Errorf("set control-addr: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
-	if delegateAdmin {
-		if err := provisionRelayAdminDelegation(ctx, env, sshTarget, relayPub); err != nil {
-			return err
-		}
-	}
 	if out, err := sshSudo(ctx, sshTarget, "pln", "restart").CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	return waitForRelayReady(ctx, sshTarget)
-}
-
-func provisionRelayAdminDelegation(ctx context.Context, env *cliEnv, sshTarget string, relayPub ed25519.PublicKey) error {
-	identityDir := auth.IdentityPath(env.dir)
-	nodePriv, _, err := auth.EnsureIdentityKey(identityDir)
-	if err != nil {
-		return err
-	}
-	signer, err := auth.NewDelegationSigner(identityDir, nodePriv)
-	if err != nil || !signer.IsRoot() {
-		return errors.New("only root admin can delegate relay admin certs")
-	}
-
-	cert, err := signer.IssueMemberCert(relayPub, auth.FullCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(auth.DefaultDelegationTTL), time.Time{})
-	if err != nil {
-		return err
-	}
-
-	encoded, err := auth.MarshalDelegationCertBase64(cert)
-	if err != nil {
-		return err
-	}
-
-	if out, err := sshPln(ctx, sshTarget, "admin", "set-cert", encoded).CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to install relay admin cert: %w\n%s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }
 
 func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
@@ -782,6 +841,10 @@ func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 func parseProperties(cmd *cobra.Command) (*structpb.Struct, error) {
 	vals, _ := cmd.Flags().GetStringArray("prop")
+	return parsePropertyValues(cmd, vals)
+}
+
+func parsePropertyValues(cmd *cobra.Command, vals []string) (*structpb.Struct, error) {
 	if len(vals) == 0 {
 		return nil, nil
 	}
@@ -806,7 +869,7 @@ func parseProperties(cmd *cobra.Command) (*structpb.Struct, error) {
 		case strings.HasPrefix(v, "{"):
 			var obj map[string]any
 			if err := json.Unmarshal([]byte(v), &obj); err != nil {
-				return nil, fmt.Errorf("invalid JSON in --prop: %w", err)
+				return nil, fmt.Errorf("invalid JSON property: %w", err)
 			}
 			maps.Copy(merged, obj)
 		default:
@@ -890,12 +953,12 @@ func resolveJoinToken(ctx context.Context, priv ed25519.PrivateKey, encoded stri
 	return transport.RedeemInvite(ctx, priv, inviteToken)
 }
 
-func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer, attributes *structpb.Struct) (string, error) {
+func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer, attributes *structpb.Struct, admin bool) (string, error) {
 	var accessDeadline time.Time
 	if expireAfter > 0 {
 		accessDeadline = time.Now().Add(expireAfter)
 	}
-	token, err := signer.IssueJoinToken(subjectPub, bootstrap, time.Now(), ttl, defaultMembershipTTL, accessDeadline, attributes)
+	token, err := signer.IssueJoinToken(subjectPub, bootstrap, time.Now(), ttl, defaultMembershipTTL, accessDeadline, attributes, admin)
 	if err != nil {
 		return "", err
 	}

@@ -167,22 +167,19 @@ pln init --prop role=primary --prop region=eu
 ### Restrict who can call what
 
 ```bash
-# Require an attribute on the caller's cert; repeatable, all
+# Require a property on the caller's cert; repeatable, all
 # clauses must match:
-pln serve 8080 internal --allow-caller team=backend
-pln seed ./hello.wasm --allow-caller role=lead
-
-# Any-of matching for a single attribute:
-pln serve 9000 vip --allow-caller-in tier=gold,silver
-
-# Workloads only: restrict which exported functions may be invoked:
-pln seed ./hello.wasm --allow-target run
+pln serve 8080 internal --allow-props team=backend
+pln seed ./hello.wasm --allow-props role=lead
 ```
 
-Policy flags ride on the spec's signed cert. The runtime gate
-evaluates them against the caller's delegation-cert attributes on
+Policy clauses ride on the spec's signed cert. The runtime gate
+evaluates them against the caller's delegation-cert properties on
 every invoke, fetch, or connect; failed matches close the stream.
-Without a flag the resource is open to any authenticated peer.
+Disjunction lives at issuance: if you want "editors or admins",
+mint both with `pln grant --prop tier=privileged` and require
+`tier=privileged` on the spec. Without a flag the resource is
+open to any authenticated peer.
 
 ### Serve a static site
 

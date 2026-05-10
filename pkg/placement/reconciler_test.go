@@ -181,7 +181,7 @@ type fakeHostGate struct {
 	deny func(*admissionv1.SpecAuth) error
 }
 
-func (f *fakeHostGate) Invoke(types.PeerKey, string, string) (wasm.CallerInfo, error) {
+func (f *fakeHostGate) Invoke(types.PeerKey, string) (wasm.CallerInfo, error) {
 	return wasm.CallerInfo{}, nil
 }
 

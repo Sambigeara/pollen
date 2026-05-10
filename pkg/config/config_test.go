@@ -67,14 +67,14 @@ func TestSave(t *testing.T) {
 func TestAddService(t *testing.T) {
 	t.Run("appends new service", func(t *testing.T) {
 		cfg := &Config{}
-		cfg.AddService("http", 8080, "", nil)
+		cfg.AddService("http", 8080, "")
 
 		require.Equal(t, []Service{{Name: "http", Port: 8080}}, cfg.Services)
 	})
 
 	t.Run("updates port for existing name", func(t *testing.T) {
 		cfg := &Config{Services: []Service{{Name: "http", Port: 8080}}}
-		cfg.AddService("http", 9090, "", nil)
+		cfg.AddService("http", 9090, "")
 
 		require.Len(t, cfg.Services, 1)
 		require.Equal(t, uint32(9090), cfg.Services[0].Port)
@@ -82,8 +82,8 @@ func TestAddService(t *testing.T) {
 
 	t.Run("preserves order across names", func(t *testing.T) {
 		cfg := &Config{}
-		cfg.AddService("http", 8080, "", nil)
-		cfg.AddService("dns", 53, "", nil)
+		cfg.AddService("http", 8080, "")
+		cfg.AddService("dns", 53, "")
 
 		require.Equal(t, "http", cfg.Services[0].Name)
 		require.Equal(t, "dns", cfg.Services[1].Name)
@@ -91,15 +91,15 @@ func TestAddService(t *testing.T) {
 
 	t.Run("empty name defaults to port string", func(t *testing.T) {
 		cfg := &Config{}
-		cfg.AddService("", 8080, "", nil)
+		cfg.AddService("", 8080, "")
 
 		require.Equal(t, "8080", cfg.Services[0].Name)
 	})
 
 	t.Run("empty name deduplicates by generated name", func(t *testing.T) {
 		cfg := &Config{}
-		cfg.AddService("", 8080, "", nil)
-		cfg.AddService("", 8080, "", nil)
+		cfg.AddService("", 8080, "")
+		cfg.AddService("", 8080, "")
 
 		require.Len(t, cfg.Services, 1)
 	})

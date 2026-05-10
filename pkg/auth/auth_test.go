@@ -45,7 +45,7 @@ func issueRootJoinToken(t *testing.T, rootPriv ed25519.PrivateKey, rootPub, subj
 	issuer, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, auth.FullCapabilities(), now.Add(-time.Minute), now.Add(membershipTTL), time.Time{})
 	require.NoError(t, err)
 	signer := testauth.LoadTestSigner(t, rootPriv, rootPub, issuer)
-	token, err := signer.IssueJoinToken(subject, nil, now, time.Hour, membershipTTL, accessDeadline, nil)
+	token, err := signer.IssueJoinToken(subject, nil, now, time.Hour, membershipTTL, accessDeadline, nil, false)
 	require.NoError(t, err)
 	return token
 }
@@ -72,7 +72,7 @@ func TestSpecAuthVerifiesSignedBody(t *testing.T) {
 		Hash: bytes.Repeat([]byte{0xaa}, 32),
 	}}}
 	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: "role", Match: &admissionv1.Clause_Equals{Equals: "worker"}},
+		{Key: "role", Equals: "worker"},
 	}}}
 
 	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, policy, false)
@@ -424,7 +424,7 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 
 	t.Run("invite token", func(t *testing.T) {
 		bootstrap := []*admissionv1.BootstrapPeer{{PeerPub: nodePub, Addrs: []string{"127.0.0.1:60611"}}}
-		invite, err := signer.IssueInviteToken(nodePub, bootstrap, now, 10*time.Minute, 24*time.Hour, nil)
+		invite, err := signer.IssueInviteToken(nodePub, bootstrap, now, 10*time.Minute, 24*time.Hour, nil, false)
 		require.NoError(t, err)
 
 		require.NoError(t, auth.VerifyInviteToken(invite, nodePub, now))
@@ -435,7 +435,7 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 	})
 
 	t.Run("join token", func(t *testing.T) {
-		join, err := signer.IssueJoinToken(nodePub, nil, now, 10*time.Minute, 24*time.Hour, time.Time{}, nil)
+		join, err := signer.IssueJoinToken(nodePub, nil, now, 10*time.Minute, 24*time.Hour, time.Time{}, nil, false)
 		require.NoError(t, err)
 
 		verified, err := auth.VerifyJoinToken(join, nodePub, now)
@@ -458,12 +458,29 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 		delegatedSigner := testauth.LoadTestSigner(t, delegatedPriv, nodePub, issuer)
 		subjectPub, _ := newKeyPair(t)
 
-		token, err := delegatedSigner.IssueJoinToken(subjectPub, nil, now, time.Hour, 4*time.Hour, time.Time{}, nil)
+		token, err := delegatedSigner.IssueJoinToken(subjectPub, nil, now, time.Hour, 4*time.Hour, time.Time{}, nil, false)
 		require.NoError(t, err)
 
 		verified, err := auth.VerifyJoinToken(token, subjectPub, now)
 		require.NoError(t, err)
 		require.EqualValues(t, delegatedPub, verified.Cert.GetClaims().GetIssuerPub())
+	})
+
+	t.Run("admin join token mints admin cert", func(t *testing.T) {
+		subjectPub, _ := newKeyPair(t)
+		token, err := signer.IssueJoinToken(subjectPub, nil, now, 10*time.Minute, 24*time.Hour, time.Time{}, nil, true)
+		require.NoError(t, err)
+
+		caps := token.GetClaims().GetMemberCert().GetClaims().GetCapabilities()
+		require.True(t, caps.GetCanAdmit(), "admin=true must mint a cert with CanAdmit")
+		require.True(t, caps.GetCanDelegate(), "admin=true must mint a cert with CanDelegate")
+	})
+
+	t.Run("admin invite claim", func(t *testing.T) {
+		subjectPub, _ := newKeyPair(t)
+		invite, err := signer.IssueInviteToken(subjectPub, []*admissionv1.BootstrapPeer{{PeerPub: nodePub, Addrs: []string{"127.0.0.1:60611"}}}, now, 10*time.Minute, 24*time.Hour, nil, true)
+		require.NoError(t, err)
+		require.True(t, invite.GetClaims().GetAdmin(), "admin flag must round-trip in invite claims")
 	})
 }
 
@@ -826,7 +843,7 @@ func TestInviteTokenOpenSubject(t *testing.T) {
 	invite, err := signer.IssueInviteToken(
 		nil,
 		[]*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}},
-		now, time.Hour, 0, nil,
+		now, time.Hour, 0, nil, false,
 	)
 	require.NoError(t, err)
 
@@ -851,7 +868,7 @@ func TestInviteTokenSubjectBoundMismatch(t *testing.T) {
 	invite, err := signer.IssueInviteToken(
 		boundSubject,
 		[]*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}},
-		now, time.Hour, 0, nil,
+		now, time.Hour, 0, nil, false,
 	)
 	require.NoError(t, err)
 
@@ -919,9 +936,9 @@ func TestInviteConsumer_ExportAndLoad(t *testing.T) {
 	bootstrapPub, _ := newKeyPair(t)
 	bootstrapPeers := []*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}}
 
-	invite1, err := signer.IssueInviteToken(nil, bootstrapPeers, now, time.Hour, 0, nil)
+	invite1, err := signer.IssueInviteToken(nil, bootstrapPeers, now, time.Hour, 0, nil, false)
 	require.NoError(t, err)
-	invite2, err := signer.IssueInviteToken(nil, bootstrapPeers, now, time.Hour, 0, nil)
+	invite2, err := signer.IssueInviteToken(nil, bootstrapPeers, now, time.Hour, 0, nil, false)
 	require.NoError(t, err)
 
 	ok, err := consumer.TryConsume(invite1, now)
@@ -996,7 +1013,7 @@ func TestInviteAttributesTransfer(t *testing.T) {
 	require.NoError(t, err)
 
 	subjectPub, _ := newKeyPair(t)
-	token, err := signer.IssueJoinToken(subjectPub, nil, now, time.Hour, 24*time.Hour, time.Time{}, attrs)
+	token, err := signer.IssueJoinToken(subjectPub, nil, now, time.Hour, 24*time.Hour, time.Time{}, attrs, false)
 	require.NoError(t, err)
 
 	memberCert := token.GetClaims().GetMemberCert()

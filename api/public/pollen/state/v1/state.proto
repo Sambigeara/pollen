@@ -6,7 +6,6 @@ syntax = "proto3";
 package pollen.state.v1;
 
 import "buf/validate/validate.proto";
-import "google/protobuf/struct.proto";
 import "pollen/admission/v1/admission.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1";
@@ -30,7 +29,8 @@ message ServiceChange {
   string name = 1;
   uint32 port = 2;
   ServiceProtocol protocol = 3;
-  google.protobuf.Struct properties = 4;
+  reserved 4;
+  reserved "properties";
 }
 
 message ReachabilityChange {

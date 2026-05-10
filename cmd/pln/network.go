@@ -84,7 +84,6 @@ publishing a service issues a signed resource certificate.`,
 		RunE:    withEnv(runServe),
 	}
 	serveCmd.Flags().Bool("udp", false, "Expose as a UDP service")
-	serveCmd.Flags().StringArray("prop", nil, "Service-publisher property: key=value or JSON object (e.g. --prop '{\"public\":true}')")
 	addPolicyFlags(serveCmd)
 
 	unserveCmd := &cobra.Command{
@@ -245,23 +244,15 @@ func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
 		}
 	}
 
-	props, err := parseProperties(cmd)
-	if err != nil {
-		return err
-	}
 	policy, err := policyFromFlags(cmd)
 	if err != nil {
 		return err
 	}
-	var propMap map[string]any
-	if props != nil {
-		propMap = props.AsMap()
-	}
-	env.cfg.AddService(name, uint32(port), cfgProto, propMap)
+	env.cfg.AddService(name, uint32(port), cfgProto)
 
 	sockPath := filepath.Join(env.dir, socketName)
 	if nodeSocketActive(sockPath) {
-		req := &controlv1.RegisterServiceRequest{Port: uint32(port), Protocol: proto, Properties: props, Policy: policy}
+		req := &controlv1.RegisterServiceRequest{Port: uint32(port), Protocol: proto, Policy: policy}
 		if name != "" {
 			req.Name = &name
 		}

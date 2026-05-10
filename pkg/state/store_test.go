@@ -99,12 +99,12 @@ func TestStore_SnapshotIsImmutable(t *testing.T) {
 	s := newTestStore(t, pk)
 
 	s.SetLocalAddresses([]netip.AddrPort{netip.MustParseAddrPort("10.0.0.1:9000")})
-	_, _ = s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil)
+	_, _ = s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 
 	snap1 := s.Snapshot()
 
 	s.SetLocalAddresses([]netip.AddrPort{netip.MustParseAddrPort("10.0.0.99:7777")})
-	_, _ = s.SetService(9090, "api", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil)
+	_, _ = s.SetService(9090, "api", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 	_, _ = s.RemoveService("web")
 
 	snap2 := s.Snapshot()
@@ -132,7 +132,7 @@ func TestStore_MutationsReturnEvents(t *testing.T) {
 	events = s.SetLocalObservedAddress("203.0.113.1", 9000)
 	require.Equal(t, []Event{TopologyChanged{Peer: s.localID}, AddressesChanged{Peer: s.localID}}, events)
 
-	events, _ = s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil)
+	events, _ = s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 	require.Len(t, events, 1)
 	require.Equal(t, ServiceChanged{Peer: s.localID, Name: "web"}, events[0])
 
@@ -153,7 +153,7 @@ func TestStore_MutationsReturnEvents(t *testing.T) {
 func TestStore_ApplyDeltaReturnsEvents(t *testing.T) {
 	pkA := genKey(t)
 	storeA := newTestStore(t, pkA)
-	_, _ = storeA.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil)
+	_, _ = storeA.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 	fullData := storeA.EncodeFull()
 
 	pkB := genKey(t)
@@ -298,7 +298,7 @@ func TestStore_PublishWorkloadIssuesSpecAuth(t *testing.T) {
 	s := newTestStore(t, pk)
 	s.SetLocalSigner(fakeSpecSigner{pub: pk.Bytes()})
 	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: "role", Match: &admissionv1.Clause_Equals{Equals: "worker"}},
+		{Key: "role", Equals: "worker"},
 	}}}
 
 	hash := strings.Repeat("a", 64)
@@ -372,8 +372,8 @@ func TestStore_RejectsSelfConflictCounterInflation(t *testing.T) {
 	victim := genKey(t)
 	s := newTestStore(t, local)
 
-	_, _ = s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil)
-	_, _ = s.SetService(9090, "api", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil)
+	_, _ = s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
+	_, _ = s.SetService(9090, "api", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil)
 	beforeCounter := s.nodes[local].maxCounter
 
 	// Self-Deny events from peers are filtered by acceptableSelfEventLocked,

@@ -106,7 +106,7 @@ type StreamOpener interface {
 // all, gating the reconciler's claim before any blob fetch or memory
 // reservation.
 type Gate interface {
-	Invoke(peerKey types.PeerKey, hash, function string) (wasm.CallerInfo, error)
+	Invoke(peerKey types.PeerKey, hash string) (wasm.CallerInfo, error)
 	MayHost(hostCert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth) error
 }
 
@@ -422,7 +422,7 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 
 	if s.gate != nil {
 		info, _ := wasm.CallerInfoFromContext(ctx)
-		gated, err := s.gate.Invoke(info.PeerKey, hash, function)
+		gated, err := s.gate.Invoke(info.PeerKey, hash)
 		if err != nil {
 			return ctx, hash, nil, fmt.Errorf("invoke %s: %w", types.ShortHash(hash), wasm.ErrTargetNotFound)
 		}
@@ -569,7 +569,7 @@ func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 		return
 	}
 	if s.gate != nil {
-		gated, err := s.gate.Invoke(peerKey, hash, function)
+		gated, err := s.gate.Invoke(peerKey, hash)
 		if err != nil {
 			return
 		}

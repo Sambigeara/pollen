@@ -151,7 +151,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		stateStore.LoadLastAddrs(lastAddrs)
 	}
 	for _, svc := range opts.InitialServices {
-		if _, err := stateStore.SetService(svc.Port, svc.Name, svc.Protocol, svc.Properties, nil); err != nil {
+		if _, err := stateStore.SetService(svc.Port, svc.Name, svc.Protocol, nil); err != nil {
 			return nil, err
 		}
 	}

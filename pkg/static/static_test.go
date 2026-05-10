@@ -115,7 +115,7 @@ func TestSeedStaticRejectsPolicy(t *testing.T) {
 	svc := New(types.PeerKey{1}, &fakeStore{}, newFakeBlobs(), true, zap.S())
 	digest := bytes.Repeat([]byte{0xab}, digestSize)
 	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: "role", Match: &admissionv1.Clause_Equals{Equals: "admin"}},
+		{Key: "role", Equals: "admin"},
 	}}}
 	err := svc.SeedStatic("home.local", digest, policy)
 	require.ErrorIs(t, err, ErrPolicyOnStatic)

@@ -39,7 +39,7 @@ func TestPublicMesh_GossipConvergence(t *testing.T) {
 	})
 
 	t.Run("StateConvergesAfterMutation", func(t *testing.T) {
-		c.Node("node-0").Node().Tunneling().ExposeService(8080, "http", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil) //nolint:mnd
+		c.Node("node-0").Node().Tunneling().ExposeService(8080, "http", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
 		// Use eagerTimeout: state must arrive via eager push, not digest sync.
 		c.RequireEventually(t, func() bool {
 			pk := c.PeerKeyByName("node-0")
@@ -174,7 +174,7 @@ func TestPublicMesh_NodeJoinLeave(t *testing.T) {
 	c.RequireConverged(t)
 
 	t.Run("JoinReceivesOngoingGossip", func(t *testing.T) {
-		c.Node("node-0").Node().Tunneling().ExposeService(9090, "grpc", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil) //nolint:mnd
+		c.Node("node-0").Node().Tunneling().ExposeService(9090, "grpc", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
 
 		joiner := c.AddNodeAndStart(t, "late-joiner", Public, ctx)
 
@@ -219,7 +219,7 @@ func TestPublicMesh_ServiceExposure(t *testing.T) {
 	c.RequireConverged(t)
 
 	t.Run("VisibleClusterWide", func(t *testing.T) {
-		c.Node("node-1").Node().Tunneling().ExposeService(3000, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil) //nolint:mnd
+		c.Node("node-1").Node().Tunneling().ExposeService(3000, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
 		pk1 := c.PeerKeyByName("node-1")
 		c.RequireEventually(t, func() bool {
 			for _, n := range c.Nodes() {
@@ -272,6 +272,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 			5*time.Minute, //nolint:mnd
 			24*time.Hour,  //nolint:mnd
 			nil,
+			false,
 		)
 		require.NoError(t, err)
 
@@ -300,6 +301,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 			5*time.Minute, //nolint:mnd
 			24*time.Hour,  //nolint:mnd
 			nil,
+			false,
 		)
 		require.NoError(t, err)
 
@@ -324,6 +326,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 			5*time.Minute, //nolint:mnd
 			24*time.Hour,  //nolint:mnd
 			nil,
+			false,
 		)
 		require.NoError(t, err)
 
@@ -368,6 +371,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 			5*time.Minute, //nolint:mnd
 			24*time.Hour,  //nolint:mnd
 			nil,
+			false,
 		)
 		require.NoError(t, err)
 
@@ -424,6 +428,7 @@ func TestPublicMesh_DelegatedAdminInviteRedeemsViaRootBootstrap(t *testing.T) {
 		5*time.Minute, //nolint:mnd
 		24*time.Hour,  //nolint:mnd
 		attrs,
+		false,
 	)
 	require.NoError(t, err)
 
@@ -502,7 +507,7 @@ func TestPublicMesh_EagerGossipPropagation(t *testing.T) {
 	c.RequireConverged(t)
 
 	// Mutate state on node-0 by registering a service.
-	c.Node("node-0").Node().Tunneling().ExposeService(5050, "eager-prop", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil) //nolint:mnd
+	c.Node("node-0").Node().Tunneling().ExposeService(5050, "eager-prop", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
 
 	// The mutation must arrive at every other node within eagerTimeout (500ms),
 	// well under the 1s gossip tick configured in test clusters.
@@ -645,7 +650,7 @@ func TestRelayRegions_PartitionAndHeal(t *testing.T) {
 	t.Run("PartitionBlocksPropagation", func(t *testing.T) {
 		c.Partition(region0, region1)
 
-		c.Node("relay-0").Node().Tunneling().ExposeService(7070, "isolated", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil) //nolint:mnd
+		c.Node("relay-0").Node().Tunneling().ExposeService(7070, "isolated", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
 
 		pk0 := c.PeerKeyByName("relay-0")
 		c.RequireNever(t, func() bool {
@@ -758,7 +763,7 @@ func TestPublicMesh_ServiceUnexposure(t *testing.T) {
 	c := PublicMesh(t, 3, ctx) //nolint:mnd
 	c.RequireConverged(t)
 
-	c.Node("node-0").Node().Tunneling().ExposeService(6060, "temp-svc", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil, nil) //nolint:mnd
+	c.Node("node-0").Node().Tunneling().ExposeService(6060, "temp-svc", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
 	c.RequireServiceVisible(t, "node-0", 6060, "temp-svc")                                                                 //nolint:mnd
 
 	require.NoError(t, c.Node("node-0").Node().Tunneling().UnexposeService("temp-svc"))
@@ -788,6 +793,7 @@ func TestPublicMesh_ExpiredInviteToken(t *testing.T) {
 		time.Minute,
 		24*time.Hour, //nolint:mnd
 		nil,
+		false,
 	)
 	require.NoError(t, err)
 
@@ -867,10 +873,8 @@ func newLiveTunnel(t *testing.T, ctx context.Context, name string) *liveTunnel {
 		}
 	}()
 
-	pubProps, err := structpb.NewStruct(map[string]any{"public": true})
-	require.NoError(t, err)
 	require.NoError(t,
-		c.Node("node-0").Node().Tunneling().ExposeService(appPort, name, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, pubProps, nil),
+		c.Node("node-0").Node().Tunneling().ExposeService(appPort, name, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil),
 	)
 	c.RequireServiceVisible(t, "node-0", appPort, name)
 
@@ -917,21 +921,6 @@ func (lt *liveTunnel) requireClosed(t *testing.T) { //nolint:thelper
 	if errors.As(err, &ne) {
 		require.Falsef(t, ne.Timeout(), "tunnel was not torn down promptly: %v", err)
 	}
-}
-
-func TestPublicMesh_ServicePropChangeRevokesActiveTunnels(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
-	t.Cleanup(cancel)
-
-	lt := newLiveTunnel(t, ctx, "samflix")
-
-	privProps, err := structpb.NewStruct(map[string]any{"public": false})
-	require.NoError(t, err)
-	require.NoError(t,
-		lt.c.Node(lt.publisher).Node().Tunneling().ExposeService(lt.appPort, lt.serviceNm, statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, privProps, nil),
-	)
-
-	lt.requireClosed(t)
 }
 
 func TestPublicMesh_ServiceUnexposureRevokesActiveTunnels(t *testing.T) {

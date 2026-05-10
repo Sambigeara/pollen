@@ -16,7 +16,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var (
@@ -88,7 +87,7 @@ type StateStore interface {
 
 	SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []Event
 
-	SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, policy *admissionv1.Predicate) ([]Event, error)
+	SetService(port uint32, name string, protocol statev1.ServiceProtocol, policy *admissionv1.Predicate) ([]Event, error)
 	RemoveService(name string) ([]Event, error)
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event
 

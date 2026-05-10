@@ -267,15 +267,7 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 
 	initialServices := make([]supervisor.ServiceEntry, 0, len(env.cfg.Services))
 	for _, svc := range env.cfg.Services {
-		var props *structpb.Struct
-		if len(svc.Properties) > 0 {
-			s, err := structpb.NewStruct(svc.Properties)
-			if err != nil {
-				return fmt.Errorf("invalid service %q properties: %w", svc.Name, err)
-			}
-			props = s
-		}
-		initialServices = append(initialServices, supervisor.ServiceEntry{Name: svc.Name, Port: svc.Port, Protocol: configProtocolToProto(svc.Protocol), Properties: props})
+		initialServices = append(initialServices, supervisor.ServiceEntry{Name: svc.Name, Port: svc.Port, Protocol: configProtocolToProto(svc.Protocol)})
 	}
 
 	n, err := supervisor.New(supervisor.Options{

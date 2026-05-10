@@ -181,7 +181,8 @@ message RegisterServiceRequest {
     max_len: 64
   }];
   pollen.state.v1.ServiceProtocol protocol = 3;
-  google.protobuf.Struct properties = 4;
+  reserved 4;
+  reserved "properties";
   pollen.admission.v1.Predicate policy = 5;
 }
 

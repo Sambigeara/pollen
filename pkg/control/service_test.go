@@ -1226,7 +1226,7 @@ func (f *fakeTunneling) Disconnect(service string) error {
 	return f.disconnectErr
 }
 
-func (f *fakeTunneling) ExposeService(port uint32, name string, _ statev1.ServiceProtocol, _ *structpb.Struct, _ *admissionv1.Predicate) error {
+func (f *fakeTunneling) ExposeService(port uint32, name string, _ statev1.ServiceProtocol, _ *admissionv1.Predicate) error {
 	f.exposedPort = port
 	f.exposedName = name
 	return f.exposeErr

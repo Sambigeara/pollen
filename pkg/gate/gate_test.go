@@ -71,7 +71,7 @@ func TestInvokeUsesCallerCertAttributes(t *testing.T) {
 	publisher := testCert(t, rootPriv, rootPub, nil, now)
 	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("b", 64), Name: "echo", MinReplicas: 1}
 	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: "role", Match: &admissionv1.Clause_Equals{Equals: "worker"}},
+		{Key: "role", Equals: "worker"},
 	}}}
 	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: "echo", Hash: bytesOf(0xbb)}}}, body, policy, false)
 	require.NoError(t, err)
@@ -81,7 +81,7 @@ func TestInvokeUsesCallerCertAttributes(t *testing.T) {
 		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
 	}
 
-	info, err := New(rootPub, fakeStore{snap: snap}).Invoke(callerKey, body.GetHash(), "run")
+	info, err := New(rootPub, fakeStore{snap: snap}).Invoke(callerKey, body.GetHash())
 	require.NoError(t, err)
 	require.Equal(t, "worker", info.Attributes["role"])
 }
@@ -92,14 +92,14 @@ func TestInvokeDeniesPolicyMismatch(t *testing.T) {
 		map[string]any{"role": "operator"},
 		clauseEquals("role", "worker"),
 	)
-	_, err := g.Invoke(callerKey, hash, "run")
+	_, err := g.Invoke(callerKey, hash)
 	require.ErrorIs(t, err, wasm.ErrTargetNotFound)
 }
 
 func TestInvokeAllowsOpenPolicy(t *testing.T) {
 	now := time.Now()
 	g, callerKey, hash := newWorkloadFixture(t, now, nil, nil)
-	info, err := g.Invoke(callerKey, hash, "run")
+	info, err := g.Invoke(callerKey, hash)
 	require.NoError(t, err)
 	require.NotNil(t, info)
 }
@@ -123,34 +123,14 @@ func TestInvokeDeniesExpiredCallerCert(t *testing.T) {
 		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
 	}
 	g := New(rootPub, fakeStore{snap: snap})
-	_, err = g.Invoke(callerKey, body.GetHash(), "run")
-	require.ErrorIs(t, err, wasm.ErrTargetNotFound)
-}
-
-func TestInvokeMatchesInClause(t *testing.T) {
-	now := time.Now()
-	g, callerKey, hash := newWorkloadFixture(t, now,
-		map[string]any{"role": "operator"},
-		clauseIn("role", "worker", "operator"),
-	)
-	_, err := g.Invoke(callerKey, hash, "run")
-	require.NoError(t, err)
-}
-
-func TestInvokeRejectsValueNotInClause(t *testing.T) {
-	now := time.Now()
-	g, callerKey, hash := newWorkloadFixture(t, now,
-		map[string]any{"role": "intern"},
-		clauseIn("role", "worker", "operator"),
-	)
-	_, err := g.Invoke(callerKey, hash, "run")
+	_, err = g.Invoke(callerKey, body.GetHash())
 	require.ErrorIs(t, err, wasm.ErrTargetNotFound)
 }
 
 func TestInvokeRejectsPolicyWithoutInline(t *testing.T) {
 	now := time.Now()
 	g, callerKey, hash := newWorkloadFixture(t, now, nil, &admissionv1.Predicate{})
-	_, err := g.Invoke(callerKey, hash, "run")
+	_, err := g.Invoke(callerKey, hash)
 	require.ErrorIs(t, err, wasm.ErrTargetNotFound, "non-Inline Predicate must fail closed even though Inline is currently the only variant")
 }
 
@@ -273,24 +253,6 @@ func TestMayHostAllowsOpenPolicy(t *testing.T) {
 	require.NoError(t, g.MayHost(hostCert, specAuth))
 }
 
-// Per-function clauses keyed on pln.target only meaningfully constrain
-// external callers: a host implicitly satisfies every function value
-// because hosting includes loopback invocation. MayHost must skip them
-// rather than collapse to "no host can ever satisfy a per-function
-// policy", which would make per-function policies inadvertently
-// unhostable.
-func TestMayHostSkipsTargetClauses(t *testing.T) {
-	now := time.Now()
-	g, hostCert, specAuth := newHostFixture(t, now,
-		map[string]any{"team": "blue"},
-		&admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-			{Key: "team", Match: &admissionv1.Clause_Equals{Equals: "blue"}},
-			{Key: TargetKey, Match: &admissionv1.Clause_Equals{Equals: "read"}},
-		}}},
-	)
-	require.NoError(t, g.MayHost(hostCert, specAuth), "host should pass identity clause and bypass target clause")
-}
-
 func TestMayHostRejectsExpiredHost(t *testing.T) {
 	now := time.Now()
 	rootPub, rootPriv := newKeyPair(t)
@@ -348,13 +310,7 @@ func bytesAsHex(b []byte) string {
 
 func clauseEquals(key, value string) *admissionv1.Predicate {
 	return &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: key, Match: &admissionv1.Clause_Equals{Equals: value}},
-	}}}
-}
-
-func clauseIn(key string, values ...string) *admissionv1.Predicate {
-	return &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: key, Match: &admissionv1.Clause_In{In: &admissionv1.StringList{Values: values}}},
+		{Key: key, Equals: value},
 	}}}
 }
 
