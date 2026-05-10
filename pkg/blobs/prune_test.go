@@ -66,7 +66,7 @@ func TestPrune_GracePeriodProtectsRecentBlobs(t *testing.T) {
 	store, err := cas.New(dir)
 	require.NoError(t, err)
 
-	hash, err := store.Put(strings.NewReader("fresh"))
+	hash, err := store.Put(strings.NewReader("fresh"), testDEK(t))
 	require.NoError(t, err)
 
 	svc := &Service{store: store, local: map[string]struct{}{hash: {}}}
@@ -82,7 +82,7 @@ func TestPrune_ZeroGraceEvictsImmediately(t *testing.T) {
 	store, err := cas.New(dir)
 	require.NoError(t, err)
 
-	hash, err := store.Put(strings.NewReader("payload"))
+	hash, err := store.Put(strings.NewReader("payload"), testDEK(t))
 	require.NoError(t, err)
 
 	svc := &Service{store: store, local: map[string]struct{}{hash: {}}}
@@ -98,10 +98,17 @@ func TestPrune_ZeroGraceEvictsImmediately(t *testing.T) {
 // implicit.
 func putAged(t *testing.T, store *cas.Store, dir, content string) string {
 	t.Helper()
-	hash, err := store.Put(strings.NewReader(content))
+	hash, err := store.Put(strings.NewReader(content), testDEK(t))
 	require.NoError(t, err)
 	path := filepath.Join(dir, "cas", hash[:2], hash)
 	when := time.Now().Add(-time.Hour)
 	require.NoError(t, os.Chtimes(path, when, when))
 	return hash
+}
+
+func testDEK(t *testing.T) []byte {
+	t.Helper()
+	dek, err := cas.GenerateDEK()
+	require.NoError(t, err)
+	return dek
 }

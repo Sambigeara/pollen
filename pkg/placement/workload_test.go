@@ -6,6 +6,7 @@ package placement
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"testing"
 
@@ -15,6 +16,19 @@ import (
 	"github.com/sambigeara/pollen/pkg/cas"
 	"github.com/sambigeara/pollen/pkg/wasm"
 )
+
+// fixedDEKStore adapts *cas.Store to placement's DEK-less blobStore by
+// reusing one DEK for every blob. Production wires a real blobs.Service
+// that derives DEKs per gossiped wrapping; the manager doesn't care.
+type fixedDEKStore struct {
+	s   *cas.Store
+	dek []byte
+}
+
+func (f *fixedDEKStore) Put(r io.Reader) (string, error) { return f.s.Put(r, f.dek) }
+func (f *fixedDEKStore) Get(h string) (io.ReadCloser, error) {
+	return f.s.Get(h, f.dek)
+}
 
 type noopRequestRouter struct{}
 
@@ -38,13 +52,15 @@ func newTestManager(t *testing.T) *manager {
 
 	casStore, err := cas.New(t.TempDir())
 	require.NoError(t, err)
+	dek, err := cas.GenerateDEK()
+	require.NoError(t, err)
 
 	hostFuncs := wasm.NewHostFunctions(zap.NewNop().Sugar(), noopRequestRouter{})
 	rt, err := wasm.NewRuntime(hostFuncs)
 	require.NoError(t, err)
 	t.Cleanup(func() { rt.Close(context.Background()) })
 
-	return newManager(casStore, rt)
+	return newManager(&fixedDEKStore{s: casStore, dek: dek}, rt)
 }
 
 func TestSeedAndCall(t *testing.T) {

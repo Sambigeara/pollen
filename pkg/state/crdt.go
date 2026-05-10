@@ -44,6 +44,7 @@ const (
 	attrBackoffTTL
 	attrPerSeedCallCounts
 	attrDelegationCert
+	attrBlobWrapping
 )
 
 type attrKey struct {
@@ -133,6 +134,19 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		if isSpecKind(key.kind) && !s.acceptableSpecEventLocked(pk, ev) {
 			continue
 		}
+		// Wrapping tombstones never travel over the wire: revocation is a
+		// local action (Service.Remove evicts the on-disk envelope and
+		// drops the cached DEK), and the wrapping signature alone cannot
+		// authenticate the deletion bit because the bit lives on the
+		// gossip envelope, not in the signed payload. Allowing tombstones
+		// would let any cluster member replay a captured live wrapping
+		// with the bit flipped and erase the recipient's only path back
+		// to the DEK.
+		if key.kind == attrBlobWrapping {
+			if ev.Deleted || !s.isAcceptableWrappingEvent(pk, ev) {
+				continue
+			}
+		}
 
 		rec, exists := s.nodes[pk]
 		if !exists {
@@ -219,6 +233,28 @@ func (s *store) isAcceptableCertEvent(pk types.PeerKey, ev *statev1.GossipEvent)
 	return true
 }
 
+// isAcceptableWrappingEvent enforces that a live wrapping was actually
+// signed by the wrapper claimed in the gossip envelope and that the
+// wrapper's cert chains to the cluster root. Tombstones are rejected
+// upstream: callers must guard with `ev.Deleted` before invoking this.
+func (s *store) isAcceptableWrappingEvent(pk types.PeerKey, ev *statev1.GossipEvent) bool {
+	wrapping := ev.GetBlobWrapping()
+	if wrapping == nil {
+		return false
+	}
+	wrapper := wrapping.GetWrapper()
+	if wrapper == nil {
+		return false
+	}
+	if !bytes.Equal(wrapper.GetClaims().GetSubjectPub(), pk.Bytes()) {
+		return false
+	}
+	if err := auth.VerifyBlobWrapping(wrapping, s.rootPub, s.nowFunc()); err != nil {
+		return false
+	}
+	return true
+}
+
 // acceptableSpecEventLocked admits a spec event from a remote peer.
 // The publisher pub embedded in SpecAuth must match the gossip's peer
 // id (no impersonation), the signed deleted bit must match the gossip
@@ -258,6 +294,8 @@ func (s *store) acceptableSelfEventLocked(kind attrKind, ev *statev1.GossipEvent
 		return s.isAcceptableCertEvent(s.localID, ev)
 	case attrWorkloadSpec, attrService, attrStaticSpec, attrBlobSpec:
 		return s.acceptableSpecEventLocked(s.localID, ev)
+	case attrBlobWrapping:
+		return s.isAcceptableWrappingEvent(s.localID, ev)
 	case attrNetwork, attrNodeName,
 		attrWorkloadClaim, attrReachability, attrHeartbeat, attrBlobAvailability,
 		attrStaticClaim, attrBackoffTTL, attrPerSeedCallCounts:
@@ -364,7 +402,7 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent, live bool) []*
 	if ok && !ev.Deleted && (!live || s.acceptableSelfEventLocked(key.kind, ev)) {
 		if _, exists := rec.log[key]; !exists {
 			switch key.kind { //nolint:exhaustive
-			case attrWorkloadSpec, attrService, attrNetwork, attrDeny, attrNodeName, attrStaticSpec, attrBlobSpec, attrDelegationCert:
+			case attrWorkloadSpec, attrService, attrNetwork, attrDeny, attrNodeName, attrStaticSpec, attrBlobSpec, attrDelegationCert, attrBlobWrapping:
 				rec.maxCounter++
 				rec.log[key] = &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
@@ -591,6 +629,12 @@ func getAttrKey(ev *statev1.GossipEvent) (attrKey, bool) {
 		return attrKey{kind: attrPerSeedCallCounts}, true
 	case *statev1.GossipEvent_DelegationCert:
 		return attrKey{kind: attrDelegationCert}, true
+	case *statev1.GossipEvent_BlobWrapping:
+		w := v.BlobWrapping
+		if len(w.GetBlobHash()) == 0 || len(w.GetRecipientPubkey()) == 0 {
+			return attrKey{}, false
+		}
+		return attrKey{kind: attrBlobWrapping, name: hex.EncodeToString(w.GetBlobHash()), peer: types.PeerKeyFromBytes(w.GetRecipientPubkey())}, true
 	}
 	return attrKey{}, false
 }

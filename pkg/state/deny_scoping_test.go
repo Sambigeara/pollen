@@ -4,8 +4,10 @@
 package state
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"slices"
 	"testing"
 	"time"
@@ -309,6 +311,56 @@ func TestStore_RejectsForgedCertTombstone(t *testing.T) {
 
 	require.NotNil(t, s.Snapshot().Nodes[f.leafA.key].Cert,
 		"cert tombstone events must be rejected; legitimate cert must still be present")
+}
+
+// TestStore_RejectsForgedBlobWrappingTombstone covers the revocation
+// hijack: an attacker captures a wrapper's live BlobWrappingChange off
+// the wire and replays it with the gossip envelope's Deleted bit
+// flipped. The wrapping signature only covers the inner payload, so
+// flipping the envelope bit doesn't invalidate it; the only barrier is
+// the apply-time admission gate refusing tombstones outright. Without
+// the gate any cluster member could erase a recipient's published path
+// back to the DEK and lock them out of every blob the wrapper had ever
+// granted them access to.
+func TestStore_RejectsForgedBlobWrappingTombstone(t *testing.T) {
+	f := newDenyScopingFixture(t)
+	observer := genKey(t)
+	s := newTestStore(t, observer, f.rootPub())
+
+	pushCert(t, s, f.adminA.key, f.adminAC, f.adminA.priv)
+
+	blobHash := bytes.Repeat([]byte{0xab}, 32)
+	wrappedDEK := bytes.Repeat([]byte{0x01}, 48)
+	wrapping, err := auth.IssueBlobWrapping(f.adminA.priv, f.adminAC, blobHash, f.leafA.pub, wrappedDEK)
+	require.NoError(t, err)
+
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  f.adminA.key.String(),
+		Counter: 1,
+		Change:  &statev1.GossipEvent_BlobWrapping{BlobWrapping: wrapping},
+	})
+
+	hashHex := hex.EncodeToString(blobHash)
+	live, ok := s.Snapshot().WrappingFor(hashHex, f.leafA.key)
+	require.True(t, ok, "legitimate wrapping must populate the snapshot before the tombstone test")
+	require.NotNil(t, live)
+
+	// Replay the wrapper's own signed wrapping with Deleted=true and a
+	// higher counter — what an attacker who captured the live event
+	// would do. The wrapper field still verifies (untouched) and the
+	// peer_id still matches the wrapper's subject pub, so the only
+	// thing standing between this event and an erased wrapping is the
+	// admission gate's tombstone refusal.
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  f.adminA.key.String(),
+		Counter: 99,
+		Deleted: true,
+		Change:  &statev1.GossipEvent_BlobWrapping{BlobWrapping: wrapping},
+	})
+
+	live, ok = s.Snapshot().WrappingFor(hashHex, f.leafA.key)
+	require.True(t, ok, "wrapping tombstone events must be rejected; live wrapping must remain")
+	require.NotNil(t, live)
 }
 
 func TestDenyScoping_RejectsForgedCertChain(t *testing.T) {

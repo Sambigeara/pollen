@@ -212,7 +212,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 
 	streamAdapter := &streamOpenAdapter{t: m}
 
-	blobsSvc, err := blobs.New(pollenDir, self, streamAdapter, stateStore, runtimeGate)
+	blobsSvc, err := blobs.New(pollenDir, self, streamAdapter, stateStore, runtimeGate, creds, privKey)
 	if err != nil {
 		return nil, fmt.Errorf("create blob store: %w", err)
 	}
@@ -569,7 +569,7 @@ func (n *Supervisor) dispatchBlobFetch(stream io.ReadWriteCloser, peerKey types.
 		stream.Close() //nolint:errcheck
 		return
 	}
-	n.blobs.Serve(stream, hash)
+	n.blobs.Serve(stream, hash, peerKey)
 }
 
 // Denied connects close the stream without a distinguishing reply so

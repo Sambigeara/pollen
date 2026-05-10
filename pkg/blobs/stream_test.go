@@ -56,17 +56,23 @@ func (o *hangingOpener) OpenStream(_ context.Context, _ types.PeerKey, _ transpo
 
 type fakeStore struct{}
 
-func (f *fakeStore) Put(r io.Reader) (string, error) {
+func (f *fakeStore) Put(r io.Reader, _ []byte) (string, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return "", err
 	}
 	return string(data), nil
 }
-func (f *fakeStore) Get(string) (io.ReadCloser, error) { return nil, nil }
-func (f *fakeStore) Has(string) bool                   { return false }
-func (f *fakeStore) Remove(string) error               { return nil }
-func (f *fakeStore) Entries() ([]cas.Entry, error)     { return nil, nil }
+
+func (f *fakeStore) PutCiphertext(_ string, r io.Reader) error {
+	_, err := io.Copy(io.Discard, r)
+	return err
+}
+func (f *fakeStore) Get(string, []byte) (io.ReadCloser, error)   { return nil, nil }
+func (f *fakeStore) GetCiphertext(string) (io.ReadCloser, error) { return nil, nil }
+func (f *fakeStore) Has(string) bool                             { return false }
+func (f *fakeStore) Remove(string) error                         { return nil }
+func (f *fakeStore) Entries() ([]cas.Entry, error)               { return nil, nil }
 
 func peerKey(b byte) types.PeerKey {
 	var k types.PeerKey

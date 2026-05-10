@@ -72,18 +72,18 @@ func (s *Service) fetchFrom(ctx context.Context, hash string, peer types.PeerKey
 	}
 
 	// Reject before consuming the body. Storing first then evicting
-	// would briefly land unentitled bytes on disk, defeating the
-	// at-rest invariant Phase 3 will rely on.
+	// would briefly land unentitled bytes on disk, undermining the
+	// at-rest contract.
 	if err := s.MayStore(hash); err != nil {
 		return fmt.Errorf("local cert not entitled to hold blob %s: %w", hash[:min(hashDisplayLen, len(hash))], err)
 	}
 
-	gotHash, err := s.store.Put(stream)
-	if err != nil {
-		return fmt.Errorf("store blob: %w", err)
-	}
-	if gotHash != hash {
-		return fmt.Errorf("hash mismatch: expected %s, got %s", hash, gotHash)
+	// PutCiphertext writes the envelope as-received: ciphertext flows
+	// through wire and disk without any node decrypting in transit.
+	// Hash integrity is checked at first read (Get fails on tag
+	// mismatch) since we have no DEK to verify here.
+	if err := s.store.PutCiphertext(hash, stream); err != nil {
+		return fmt.Errorf("store envelope: %w", err)
 	}
 	return s.Announce(hash)
 }
@@ -97,11 +97,16 @@ func ReadHash(r io.Reader) (string, error) {
 }
 
 // Serve responds to an inbound blob fetch. The hash must already be
-// consumed from the stream before calling.
-func (s *Service) Serve(stream io.ReadWriteCloser, hash string) {
+// consumed from the stream before calling. After streaming ciphertext,
+// the server issues a wrapping addressed to the requesting peer so
+// they can decrypt locally; without this, the receiver would land
+// undecryptable ciphertext on disk and would have no path back to the
+// DEK without a separate RPC. Authorisation for both the fetch and
+// the wrapping has already been enforced upstream by gate.Fetch.
+func (s *Service) Serve(stream io.ReadWriteCloser, hash string, requester types.PeerKey) {
 	defer stream.Close()
 
-	rc, err := s.store.Get(hash)
+	rc, err := s.store.GetCiphertext(hash)
 	if err != nil {
 		stream.Write([]byte{statusNotFound}) //nolint:errcheck
 		return
@@ -110,6 +115,13 @@ func (s *Service) Serve(stream io.ReadWriteCloser, hash string) {
 
 	stream.Write([]byte{statusOK}) //nolint:errcheck
 	io.Copy(stream, rc)            //nolint:errcheck
+
+	if err := s.issueWrappingFor(hash, requester); err != nil {
+		// Wrapping is best-effort: the requester can retry or
+		// request from another holder. Logging would be helpful
+		// here once the service has a logger field.
+		_ = err
+	}
 }
 
 func watchStream(ctx context.Context, stream io.Closer) func() {

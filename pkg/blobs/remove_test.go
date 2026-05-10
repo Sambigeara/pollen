@@ -25,7 +25,7 @@ func TestRemove_Local_Succeeds(t *testing.T) {
 	store, err := cas.New(t.TempDir())
 	require.NoError(t, err)
 
-	hash, err := store.Put(strings.NewReader("payload"))
+	hash, err := store.Put(strings.NewReader("payload"), testDEK(t))
 	require.NoError(t, err)
 
 	svc := &Service{store: store, local: map[string]struct{}{hash: {}}}

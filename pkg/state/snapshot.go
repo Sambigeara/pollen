@@ -26,6 +26,7 @@ type Snapshot struct {
 	StaticSpecs    map[string]StaticSpecView
 	StaticClaims   map[string]map[types.PeerKey]struct{}
 	BlobSpecs      map[string]BlobSpecView
+	Wrappings      map[string]map[types.PeerKey]*statev1.BlobWrappingChange
 	digest         Digest
 	live           map[types.PeerKey]struct{}
 	PeerKeys       []types.PeerKey
@@ -125,6 +126,17 @@ func NormaliseProtocol(p statev1.ServiceProtocol) statev1.ServiceProtocol {
 func (s Snapshot) Digest() Digest               { return s.digest }
 func (s Snapshot) DeniedPeers() []types.PeerKey { return s.DeniedKeys }
 
+// LocalCert returns the local node's delegation cert as published into
+// gossip, or nil if the local node hasn't published one yet (the
+// cluster-bootstrap window before SetLocalDelegationCert fires).
+func (s Snapshot) LocalCert() *admissionv1.DelegationCert {
+	nv, ok := s.Nodes[s.LocalID]
+	if !ok {
+		return nil
+	}
+	return nv.Cert
+}
+
 func (s Snapshot) SpecByName(name string) (string, WorkloadSpecView, bool) {
 	var bestHash string
 	var bestView WorkloadSpecView
@@ -178,6 +190,19 @@ func (s Snapshot) PeersWithBlob(hash string) []types.PeerKey {
 		}
 	}
 	return out
+}
+
+// WrappingFor returns the wrapping addressed to recipient for
+// blobHash, or false when no peer has gossiped one. Callers can trust
+// the wrapper identity without re-verifying because admission already
+// validated the chain and signature.
+func (s Snapshot) WrappingFor(blobHash string, recipient types.PeerKey) (*statev1.BlobWrappingChange, bool) {
+	byRecipient, ok := s.Wrappings[blobHash]
+	if !ok {
+		return nil, false
+	}
+	w, ok := byRecipient[recipient]
+	return w, ok
 }
 
 // BlobEntitlements returns every spec auth that directly references hash
@@ -278,6 +303,8 @@ func (s *store) buildSnapshot() Snapshot {
 	specs := make(map[string]WorkloadSpecView)
 	staticSpecs := make(map[string]StaticSpecView)
 	blobSpecs := make(map[string]BlobSpecView)
+	wrappings := make(map[string]map[types.PeerKey]*statev1.BlobWrappingChange)
+	wrapperBy := make(map[string]map[types.PeerKey]types.PeerKey)
 	// Iterating valid (not s.nodes) means specs published only by a
 	// denied peer drop out of the snapshot. Their gossip events stay in
 	// the log so deny scoping can still reason about them, but
@@ -319,6 +346,26 @@ func (s *store) buildSnapshot() Snapshot {
 						Publisher: pk,
 					}
 				}
+			case attrBlobWrapping:
+				w := ev.GetBlobWrapping()
+				if w == nil {
+					continue
+				}
+				if existingPub, ok := wrapperBy[key.name][key.peer]; ok && !outranks(pk, existingPub) {
+					continue
+				}
+				byRecipient, ok := wrappings[key.name]
+				if !ok {
+					byRecipient = make(map[types.PeerKey]*statev1.BlobWrappingChange)
+					wrappings[key.name] = byRecipient
+				}
+				byPub, ok := wrapperBy[key.name]
+				if !ok {
+					byPub = make(map[types.PeerKey]types.PeerKey)
+					wrapperBy[key.name] = byPub
+				}
+				byRecipient[key.peer] = w
+				byPub[key.peer] = pk
 			}
 		}
 	}
@@ -348,6 +395,7 @@ func (s *store) buildSnapshot() Snapshot {
 		StaticSpecs:    staticSpecs,
 		StaticClaims:   filteredStaticClaims,
 		BlobSpecs:      blobSpecs,
+		Wrappings:      wrappings,
 		live:           live,
 		PeerKeys:       slices.SortedFunc(maps.Keys(live), types.PeerKey.Compare),
 		DeniedKeys:     denied,

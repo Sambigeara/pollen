@@ -117,7 +117,7 @@ func (r *reconciler) Run(ctx context.Context) {
 
 func (r *reconciler) reconcile(ctx context.Context) {
 	snap := r.store.Snapshot()
-	localCert := localCertFromSnap(snap)
+	localCert := snap.LocalCert()
 
 	// Lowest-PeerKey publisher wins when names collide; unnamed specs
 	// pass through unchanged.
@@ -276,8 +276,6 @@ func (r *reconciler) executeClaim(ctx context.Context, hash string, peers []type
 		}
 	}
 
-	// TODO(saml) should we thread the snapshot through for the lifecycle of the event?
-	// would negate the need for the double gate (`mayHost`) below
 	snap := r.store.Snapshot()
 	sv, specExists := snap.Specs[hash]
 	if !specExists {
@@ -285,7 +283,7 @@ func (r *reconciler) executeClaim(ctx context.Context, hash string, peers []type
 		return
 	}
 
-	if !r.mayHost(localCertFromSnap(snap), sv.Auth) {
+	if !r.mayHost(snap.LocalCert(), sv.Auth) {
 		r.log.Infow("policy denies local hosting, abandoning claim", "hash", types.ShortHash(hash), "name", sv.Spec.Name)
 		return
 	}
@@ -331,14 +329,6 @@ func (r *reconciler) mayHost(cert *admissionv1.DelegationCert, sa *admissionv1.S
 		return true
 	}
 	return r.gate.MayHost(cert, sa) == nil
-}
-
-func localCertFromSnap(snap state.Snapshot) *admissionv1.DelegationCert {
-	nv, ok := snap.Nodes[snap.LocalID]
-	if !ok {
-		return nil
-	}
-	return nv.Cert
 }
 
 func (r *reconciler) cleanupStaleClaims(claims map[string]map[types.PeerKey]struct{}) {

@@ -5,6 +5,8 @@ package blobs
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -37,7 +39,8 @@ func (f *fakeState) SetLocalBlobs([]string) []state.Event { return nil }
 func (f *fakeState) SetBlobSpec(state.BlobSpec, *admissionv1.Predicate) ([]state.Event, error) {
 	return nil, nil
 }
-func (f *fakeState) DeleteBlobSpec(string) ([]state.Event, error) { return nil, nil }
+func (f *fakeState) DeleteBlobSpec(string) ([]state.Event, error)              { return nil, nil }
+func (f *fakeState) SetBlobWrapping(*statev1.BlobWrappingChange) []state.Event { return nil }
 
 type fakeGate struct {
 	deny func(*admissionv1.SpecAuth) error
@@ -123,7 +126,9 @@ func TestMayStore_AllowsViaStaticManifest(t *testing.T) {
 }
 
 func TestMayStore_AllowsViaNestedManifestPath(t *testing.T) {
-	local := peerKey(1)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	local := types.PeerKeyFromBytes(pub)
 	dir := t.TempDir()
 	store, err := cas.New(dir)
 	require.NoError(t, err)
@@ -134,15 +139,39 @@ func TestMayStore_AllowsViaNestedManifestPath(t *testing.T) {
 	manifestBytes, err := manifest.MarshalVT()
 	require.NoError(t, err)
 
-	manifestDigest, err := store.Put(strings.NewReader(string(manifestBytes)))
+	dek, err := cas.GenerateDEK()
 	require.NoError(t, err)
+	manifestDigest, err := store.Put(strings.NewReader(string(manifestBytes)), dek)
+	require.NoError(t, err)
+
+	wrapped, err := cas.WrapDEK(dek, pub)
+	require.NoError(t, err)
+	manifestHashBytes, err := hex.DecodeString(manifestDigest)
+	require.NoError(t, err)
+	wrapping := &statev1.BlobWrappingChange{
+		BlobHash:        manifestHashBytes,
+		RecipientPubkey: pub,
+		WrappedDek:      wrapped,
+	}
 
 	snap := snapWithLocalCert(local, dummyCert())
 	snap.StaticSpecs = map[string]state.StaticSpecView{
 		"site": {Spec: state.StaticSpec{Name: "site", ManifestDigest: manifestDigest}, Auth: authWithName("s")},
 	}
+	snap.Wrappings = map[string]map[types.PeerKey]*statev1.BlobWrappingChange{
+		manifestDigest: {local: wrapping},
+	}
 	st := &fakeState{snap: snap}
-	svc := &Service{store: store, state: st, gate: &fakeGate{}, parsedManifest: map[string]map[string]struct{}{}}
+	svc := &Service{
+		store:          store,
+		state:          st,
+		gate:           &fakeGate{},
+		signPriv:       priv,
+		signPub:        pub,
+		self:           local,
+		parsedManifest: map[string]map[string]struct{}{},
+		dekCache:       map[string][]byte{},
+	}
 
 	require.NoError(t, svc.MayStore(hex.EncodeToString(pathDigest)), "nested path digest must be entitled by the static spec")
 }

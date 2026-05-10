@@ -21,6 +21,7 @@ import (
 
 	"buf.build/go/protovalidate"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -45,6 +46,7 @@ const (
 	pemTypeAdminPriv = "POLLEN ADMIN ED25519 PRIVATE KEY"
 	pemTypeAdminPub  = "POLLEN ADMIN ED25519 PUBLIC KEY"
 
+	sigContextBlobWrapping      = "pollen.blobwrapping.v1"
 	sigContextDelegation        = "pollen.delegation.v1"
 	sigContextJoinClaims        = "pollen.join.v1"
 	sigContextInvite            = "pollen.invite.v1"
@@ -677,6 +679,70 @@ func VerifySpecAuth(specAuth *admissionv1.SpecAuth, body SpecBody, rootPub []byt
 		return errors.New("spec auth signature invalid")
 	}
 	return nil
+}
+
+// IssueBlobWrapping seals dek's wrapping into a signed gossip payload.
+// wrapperPriv must match wrapper.subject_pub. The signature scope is
+// pollen.blobwrapping.v1 so wrappings cannot be replayed under any
+// other signature context.
+func IssueBlobWrapping(
+	wrapperPriv ed25519.PrivateKey,
+	wrapper *admissionv1.DelegationCert,
+	blobHash, recipientPub, wrappedDEK []byte,
+) (*statev1.BlobWrappingChange, error) {
+	if err := protovalidate.Validate(wrapper); err != nil {
+		return nil, fmt.Errorf("wrapper cert invalid: %w", err)
+	}
+	wrapperPub := wrapperPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
+	if !bytes.Equal(wrapper.GetClaims().GetSubjectPub(), wrapperPub) {
+		return nil, errors.New("wrapper key does not match cert subject")
+	}
+	wrapping := &statev1.BlobWrappingChange{
+		BlobHash:        blobHash,
+		RecipientPubkey: recipientPub,
+		WrappedDek:      wrappedDEK,
+		Wrapper:         wrapper,
+	}
+	msg, err := blobWrappingPayload(wrapping)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := signPayload(wrapperPriv, msg, sigContextBlobWrapping)
+	if err != nil {
+		return nil, err
+	}
+	wrapping.Signature = sig
+	if err := protovalidate.Validate(wrapping); err != nil {
+		return nil, fmt.Errorf("blob wrapping invalid: %w", err)
+	}
+	return wrapping, nil
+}
+
+// VerifyBlobWrapping checks the wrapper's cert chain against rootPub
+// and the signature against the wrapper's pubkey. Tampered or
+// expired-chain wrappings fail closed.
+func VerifyBlobWrapping(wrapping *statev1.BlobWrappingChange, rootPub []byte, now time.Time) error {
+	if err := protovalidate.Validate(wrapping); err != nil {
+		return fmt.Errorf("blob wrapping invalid: %w", err)
+	}
+	wrapper := wrapping.GetWrapper()
+	if err := VerifyDelegationCert(wrapper, rootPub, now, nil); err != nil {
+		return fmt.Errorf("wrapper cert invalid: %w", err)
+	}
+	msg, err := blobWrappingPayload(wrapping)
+	if err != nil {
+		return err
+	}
+	if err := verifyPayload(ed25519.PublicKey(wrapper.GetClaims().GetSubjectPub()), msg, wrapping.GetSignature(), sigContextBlobWrapping); err != nil {
+		return errors.New("blob wrapping signature invalid")
+	}
+	return nil
+}
+
+func blobWrappingPayload(w *statev1.BlobWrappingChange) ([]byte, error) {
+	payload := proto.Clone(w).(*statev1.BlobWrappingChange) //nolint:forcetypeassert
+	payload.Signature = nil
+	return signaturePayload(payload)
 }
 
 func specAuthPayload(specAuth *admissionv1.SpecAuth) ([]byte, error) {

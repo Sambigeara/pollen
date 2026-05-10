@@ -5,6 +5,7 @@ package blobs
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/cas"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
@@ -26,6 +28,7 @@ const defaultFetchTimeout = 15 * time.Second
 var (
 	ErrNotLocal    = errors.New("blob not present in local store")
 	ErrNotEntitled = errors.New("local cert not entitled to hold blob")
+	errNoWrapping  = errors.New("local node has no DEK wrapping for blob")
 )
 
 type BlobsAPI interface {
@@ -33,7 +36,7 @@ type BlobsAPI interface {
 	Get(hash string) (io.ReadCloser, error)
 	Has(hash string) bool
 	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
-	Serve(stream io.ReadWriteCloser, hash string)
+	Serve(stream io.ReadWriteCloser, hash string, requester types.PeerKey)
 	Announce(hash string) error
 	Publish(hash, name string, policy *admissionv1.Predicate) error
 	Remove(hash string) error
@@ -50,11 +53,14 @@ type blobState interface {
 	SetLocalBlobs(digests []string) []state.Event
 	SetBlobSpec(spec state.BlobSpec, policy *admissionv1.Predicate) ([]state.Event, error)
 	DeleteBlobSpec(digest string) ([]state.Event, error)
+	SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []state.Event
 }
 
 type blobStore interface {
-	Put(r io.Reader) (string, error)
-	Get(hash string) (io.ReadCloser, error)
+	Put(r io.Reader, dek []byte) (string, error)
+	PutCiphertext(plaintextHash string, r io.Reader) error
+	Get(hash string, dek []byte) (io.ReadCloser, error)
+	GetCiphertext(hash string) (io.ReadCloser, error)
 	Has(hash string) bool
 	Remove(hash string) error
 	Entries() ([]cas.Entry, error)
@@ -72,46 +78,195 @@ type Service struct {
 	mesh           streamOpener
 	state          blobState
 	gate           hostGate
+	creds          credsProvider
+	dekCache       map[string][]byte
 	local          map[string]struct{}
 	parsedManifest map[string]map[string]struct{}
+	signPub        ed25519.PublicKey
+	signPriv       ed25519.PrivateKey
 	timeout        time.Duration
 	mu             sync.Mutex
 	manifestMu     sync.Mutex
+	dekMu          sync.Mutex
 	self           types.PeerKey
+}
+
+// credsProvider lets blobs.Service look up the local node's current
+// delegation cert without coupling to the auth package's full
+// NodeCredentials surface. The cert is needed to sign self-wrappings
+// at publish time.
+type credsProvider interface {
+	Cert() *admissionv1.DelegationCert
 }
 
 var _ BlobsAPI = (*Service)(nil)
 
-func New(pollenDir string, self types.PeerKey, mesh streamOpener, st blobState, gate hostGate) (*Service, error) {
+func New(pollenDir string, self types.PeerKey, mesh streamOpener, st blobState, gate hostGate, creds credsProvider, signPriv ed25519.PrivateKey) (*Service, error) {
 	c, err := cas.New(pollenDir)
 	if err != nil {
 		return nil, err
+	}
+	var signPub ed25519.PublicKey
+	if signPriv != nil {
+		signPub = signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 	}
 	return &Service{
 		store:          c,
 		mesh:           mesh,
 		state:          st,
 		gate:           gate,
+		creds:          creds,
+		signPriv:       signPriv,
+		signPub:        signPub,
 		self:           self,
 		timeout:        defaultFetchTimeout,
 		local:          make(map[string]struct{}),
 		parsedManifest: make(map[string]map[string]struct{}),
+		dekCache:       make(map[string][]byte),
 	}, nil
 }
 
+// Put encrypts under a fresh DEK and gossips a self-addressed wrapping
+// so the publisher retains read access. The returned hash is sha256 of
+// the plaintext, not the envelope.
 func (s *Service) Put(r io.Reader) (string, error) {
-	hash, err := s.store.Put(r)
+	dek, err := cas.GenerateDEK()
 	if err != nil {
 		return "", err
 	}
+	hash, err := s.store.Put(r, dek)
+	if err != nil {
+		return "", err
+	}
+	if err := s.publishSelfWrapping(hash, dek); err != nil {
+		// Roll back the on-disk envelope so callers don't see an
+		// undecryptable orphan if wrapping fails (e.g. signer not
+		// configured during early startup).
+		_ = s.store.Remove(hash) //nolint:errcheck
+		return "", err
+	}
+	s.cacheDEK(hash, dek)
 	if err := s.Announce(hash); err != nil {
 		return "", err
 	}
 	return hash, nil
 }
 
-func (s *Service) Get(hash string) (io.ReadCloser, error) { return s.store.Get(hash) }
-func (s *Service) Has(hash string) bool                   { return s.store.Has(hash) }
+// Get returns an error when no path back to the DEK has been gossiped
+// to this node yet; the caller can retry once gossip settles.
+func (s *Service) Get(hash string) (io.ReadCloser, error) {
+	dek, err := s.localDEK(hash)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.Get(hash, dek)
+}
+
+func (s *Service) Has(hash string) bool { return s.store.Has(hash) }
+
+func (s *Service) localDEK(hash string) ([]byte, error) {
+	// Always hand callers a copy: evictDEK zeroises the cache backing
+	// in place, so a Get racing a Remove must not see its DEK mutated
+	// mid-decrypt.
+	s.dekMu.Lock()
+	if dek, ok := s.dekCache[hash]; ok {
+		out := slices.Clone(dek)
+		s.dekMu.Unlock()
+		return out, nil
+	}
+	s.dekMu.Unlock()
+
+	if s.state == nil || s.signPriv == nil {
+		return nil, errNoWrapping
+	}
+	snap := s.state.Snapshot()
+	wrapping, ok := snap.WrappingFor(hash, s.self)
+	if !ok {
+		return nil, errNoWrapping
+	}
+	dek, err := cas.UnwrapDEK(wrapping.GetWrappedDek(), s.signPub, s.signPriv)
+	if err != nil {
+		return nil, err
+	}
+	s.cacheDEK(hash, dek)
+	return slices.Clone(dek), nil
+}
+
+func (s *Service) cacheDEK(hash string, dek []byte) {
+	s.dekMu.Lock()
+	defer s.dekMu.Unlock()
+	s.dekCache[hash] = dek
+}
+
+func (s *Service) evictDEK(hash string) {
+	s.dekMu.Lock()
+	defer s.dekMu.Unlock()
+	if dek, ok := s.dekCache[hash]; ok {
+		// Zeroise the live slice; the GC may still hold a copy, which
+		// is acceptable for code blobs. Larger payloads would need an
+		// mlock-backed cache.
+		for i := range dek {
+			dek[i] = 0
+		}
+		delete(s.dekCache, hash)
+	}
+}
+
+// publishSelfWrapping ties decryption access to the gossip layer
+// rather than to a sidecar key file that would survive cert revocation.
+func (s *Service) publishSelfWrapping(hash string, dek []byte) error {
+	return s.issueWrappingForKey(hash, s.signPub, func() ([]byte, error) { return dek, nil })
+}
+
+// issueWrappingFor gives recipient a published path back to the DEK.
+// No-op when this node lacks a signer (test fixtures that bypass
+// wrapping) or recipient is self (Put's self-wrap already covers it).
+func (s *Service) issueWrappingFor(hash string, recipient types.PeerKey) error {
+	if s.signPriv == nil || s.state == nil || s.creds == nil {
+		return nil
+	}
+	if recipient == s.self {
+		return nil
+	}
+	snap := s.state.Snapshot()
+	if _, alreadyWrapped := snap.WrappingFor(hash, recipient); alreadyWrapped {
+		return nil
+	}
+	return s.issueWrappingForKey(hash, ed25519.PublicKey(recipient.Bytes()), func() ([]byte, error) {
+		return s.localDEK(hash)
+	})
+}
+
+func (s *Service) issueWrappingForKey(hash string, recipient ed25519.PublicKey, source func() ([]byte, error)) error {
+	if s.state == nil {
+		return nil
+	}
+	if s.signPriv == nil || s.creds == nil {
+		return errors.New("blobs: cannot publish wrapping without signer + cert")
+	}
+	cert := s.creds.Cert()
+	if cert == nil {
+		return errors.New("blobs: local cert unavailable; cannot wrap DEK")
+	}
+	dek, err := source()
+	if err != nil {
+		return err
+	}
+	hashBytes, err := hex.DecodeString(hash)
+	if err != nil {
+		return err
+	}
+	wrapped, err := cas.WrapDEK(dek, recipient)
+	if err != nil {
+		return err
+	}
+	wrapping, err := auth.IssueBlobWrapping(s.signPriv, cert, hashBytes, recipient, wrapped)
+	if err != nil {
+		return err
+	}
+	s.state.SetBlobWrapping(wrapping)
+	return nil
+}
 
 func (s *Service) Announce(hash string) error {
 	if !s.store.Has(hash) {
@@ -152,7 +307,15 @@ func (s *Service) Remove(hash string) error {
 	digests := slices.Sorted(maps.Keys(s.local))
 	s.mu.Unlock()
 	s.publish(digests)
+	s.evictDEK(hash)
 	if s.state != nil {
+		// Wrappings are append-only on the wire (admission rejects
+		// tombstones), so the spec deletion below is what eventually
+		// revokes receiver access: BlobSpec drops out of the keep set
+		// at the next Prune, the receiver's evictDEK runs, and the
+		// stranded wrapping in gossip ages out with the wrapper's
+		// cert. Until that cycle completes, receivers that already
+		// hold the bytes can keep reading them.
 		if _, err := s.state.DeleteBlobSpec(hash); err != nil {
 			return err
 		}
@@ -221,7 +384,7 @@ func (s *Service) MayStore(hash string) error {
 		return nil
 	}
 	snap := s.state.Snapshot()
-	cert := localCertFromSnap(snap)
+	cert := snap.LocalCert()
 	if cert == nil {
 		return ErrNotEntitled
 	}
@@ -247,7 +410,7 @@ func (s *Service) filterByEntitlement(keep map[string]struct{}) map[string]struc
 		return keep
 	}
 	snap := s.state.Snapshot()
-	cert := localCertFromSnap(snap)
+	cert := snap.LocalCert()
 	if cert == nil {
 		return keep
 	}
@@ -258,14 +421,6 @@ func (s *Service) filterByEntitlement(keep map[string]struct{}) map[string]struc
 		}
 	}
 	return out
-}
-
-func localCertFromSnap(snap state.Snapshot) *admissionv1.DelegationCert {
-	nv, ok := snap.Nodes[snap.LocalID]
-	if !ok {
-		return nil
-	}
-	return nv.Cert
 }
 
 // nestedManifestEntitlements reports static-spec auths whose manifest is
@@ -302,7 +457,9 @@ func (s *Service) manifestPaths(digest string) (map[string]struct{}, bool) {
 		return cached, true
 	}
 
-	rc, err := s.store.Get(digest)
+	// Manifests live encrypted on disk; route through Service.Get so
+	// the decryption + DEK lookup happens once and is cached.
+	rc, err := s.Get(digest)
 	if err != nil {
 		return nil, false
 	}

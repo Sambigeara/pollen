@@ -551,6 +551,29 @@ func (s *store) DeleteBlobSpec(digest string) ([]Event, error) {
 // remote rejects on the validate hook — silent partial publish.
 var ErrNoSigner = errors.New("local node has no delegation signer; publish requires admin authority")
 
+// SetBlobWrapping gossips a pre-signed wrapping. The wrapping must
+// have already been produced by auth.IssueBlobWrapping (or an
+// equivalent path that signs with the local node's identity key). The
+// CRDT keys it as (blob_hash, recipient) per peer; replaying with the
+// same payload is a no-op.
+func (s *store) SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []Event {
+	if wrapping == nil {
+		return nil
+	}
+	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		key := attrKey{
+			kind: attrBlobWrapping,
+			name: hex.EncodeToString(wrapping.GetBlobHash()),
+			peer: types.PeerKeyFromBytes(wrapping.GetRecipientPubkey()),
+		}
+		if ev, ok := rec.log[key]; ok && !ev.Deleted && proto.Equal(ev.GetBlobWrapping(), wrapping) {
+			return nil, nil
+		}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_BlobWrapping{BlobWrapping: wrapping}}
+		return []*statev1.GossipEvent{change}, nil
+	})
+}
+
 func (s *store) signedSpecChangeLocked(resource *admissionv1.ResourceID, body auth.SpecBody, policy *admissionv1.Predicate, deleted bool) (*statev1.SpecChange, error) {
 	if s.signer == nil {
 		return nil, ErrNoSigner

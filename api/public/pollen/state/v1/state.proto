@@ -191,6 +191,24 @@ message DelegationCertChange {
   bytes subject_signature = 2 [(buf.validate.field).bytes = {len: 64}];
 }
 
+// BlobWrappingChange gossips a sealed DEK addressed to one entitled
+// host. Wrappers are authorisations to decrypt one blob; the receiving
+// host opens the wrapped DEK with its own private key, then decrypts
+// the on-disk envelope. Wrappings are append-only on the wire: the
+// admission filter rejects any event with GossipEvent.deleted set,
+// because the deletion bit lives outside the signed payload and a
+// captured live wrapping replayed with the bit flipped would
+// otherwise erase the recipient's only path back to the DEK. Effective
+// revocation is local-side eviction of the on-disk envelope; a stale
+// wrapping then resolves to a cas.ErrNotFound at first read.
+message BlobWrappingChange {
+  bytes blob_hash = 1 [(buf.validate.field).bytes = {len: 32}];
+  bytes recipient_pubkey = 2 [(buf.validate.field).bytes = {len: 32}];
+  bytes wrapped_dek = 3 [(buf.validate.field).bytes = {min_len: 1}];
+  pollen.admission.v1.DelegationCert wrapper = 4 [(buf.validate.field).required = true];
+  bytes signature = 5 [(buf.validate.field).bytes = {len: 64}];
+}
+
 message GossipEvent {
   string peer_id = 1 [(buf.validate.field).string = {
     pattern: "^[a-fA-F0-9]{64}$"
@@ -218,6 +236,7 @@ message GossipEvent {
     PerSeedCallCountsChange per_seed_call_counts = 34;
     DelegationCertChange delegation_cert = 35;
     SpecChange spec_change = 36;
+    BlobWrappingChange blob_wrapping = 37;
   }
   bool deleted = 14;
   reserved 5, 6, 15, 24, 27, 29, 31;

@@ -86,6 +86,8 @@ type StateStore interface {
 	SetBlobSpec(spec BlobSpec, policy *admissionv1.Predicate) ([]Event, error)
 	DeleteBlobSpec(digest string) ([]Event, error)
 
+	SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []Event
+
 	SetService(port uint32, name string, protocol statev1.ServiceProtocol, properties *structpb.Struct, policy *admissionv1.Predicate) ([]Event, error)
 	RemoveService(name string) ([]Event, error)
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event
