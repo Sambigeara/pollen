@@ -193,6 +193,34 @@ func TestHandleCertRenewalInstallsFreshCertIntoLocalCache(t *testing.T) {
 		"renewal must extend the NotAfter — otherwise the cache isn't the renewed cert")
 }
 
+// TestHandleCertRenewalPreservesPublisherCapability pins the invariant
+// that a publisher renewing through an admin keeps CanPublish. Without
+// this, applyNewCert sees the renewed cert as a publisher→leaf
+// downgrade and tombstones every spec the node had gossiped, so a
+// healthy publisher silently disappears from the mesh on routine
+// cert refresh.
+func TestHandleCertRenewalPreservesPublisherCapability(t *testing.T) {
+	creds, _, _, _ := newRootCredentialsWithAttrs(t, nil)
+	certs := newFakeCertManager()
+	svc := newIssuerService(t, creds, certs)
+
+	subjectPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	subject := types.PeerKeyFromBytes(subjectPub)
+
+	seed, err := creds.DelegationKey().IssueMemberCert(subjectPub, auth.PublisherCapabilities(),
+		time.Now().Add(-time.Minute), time.Now().Add(30*time.Minute), time.Time{})
+	require.NoError(t, err)
+	certs.SetPeerDelegationCert(subject, seed)
+
+	svc.handleCertRenewalRequest(context.Background(), subject, &meshv1.CertRenewalRequest{PeerPub: subjectPub})
+
+	got, ok := certs.PeerDelegationCert(subject)
+	require.True(t, ok, "renewed cert must be cached")
+	require.True(t, got.GetClaims().GetCapabilities().GetCanPublish(),
+		"renewal must preserve CanPublish — otherwise applyNewCert tombstones every spec on the next renewal cycle")
+}
+
 func TestAttemptCertRenewalRootSelfRenewsWithoutPeers(t *testing.T) {
 	creds, pollenDir, nodePriv, nodePub := newRootCredentialsWithIdentity(t)
 

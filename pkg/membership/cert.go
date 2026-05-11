@@ -267,19 +267,42 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 		return
 	}
 
-	ttl := s.membershipTTL
-	caps := auth.LeafCapabilities()
-	var accessDeadline time.Time
-	if peerCert, ok := s.certs.PeerDelegationCert(from); ok {
-		ttl = auth.CertTTL(peerCert)
-		caps.Attributes = peerCert.GetClaims().GetCapabilities().GetAttributes()
-		if dl, hasDeadline := auth.CertAccessDeadline(peerCert); hasDeadline {
-			if time.Now().After(dl) {
-				sendReject("access deadline has passed")
-				return
-			}
-			accessDeadline = dl
+	// Preserve the requester's current capabilities verbatim. Defaulting
+	// to leaf and copying only attributes silently downgrades publishers
+	// and delegated admins on every renewal, which then trips
+	// applyNewCert's downgrade branch and tombstones every spec the
+	// node had gossiped — a healthy node vanishes from the mesh on a
+	// routine expiry refresh.
+	peerCert, ok := s.certs.PeerDelegationCert(from)
+	if !ok {
+		// Routed renewals come from peers without a direct session, so
+		// fall back to the gossiped cert. Inbound admission already
+		// verified its chain and subject signature, so it's authoritative.
+		if nv, found := s.store.Snapshot().Nodes[from]; found && nv.Cert != nil {
+			peerCert = nv.Cert
 		}
+	}
+	if peerCert == nil {
+		sendReject("no current cert known for requester")
+		return
+	}
+
+	peerCaps := peerCert.GetClaims().GetCapabilities()
+	caps := &admissionv1.Capabilities{
+		CanDelegate: peerCaps.GetCanDelegate(),
+		CanAdmit:    peerCaps.GetCanAdmit(),
+		CanPublish:  peerCaps.GetCanPublish(),
+		MaxDepth:    peerCaps.GetMaxDepth(),
+		Attributes:  peerCaps.GetAttributes(),
+	}
+	ttl := auth.CertTTL(peerCert)
+	var accessDeadline time.Time
+	if dl, hasDeadline := auth.CertAccessDeadline(peerCert); hasDeadline {
+		if time.Now().After(dl) {
+			sendReject("access deadline has passed")
+			return
+		}
+		accessDeadline = dl
 	}
 
 	now := time.Now()
