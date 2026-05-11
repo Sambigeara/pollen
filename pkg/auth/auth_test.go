@@ -45,7 +45,7 @@ func issueRootJoinToken(t *testing.T, rootPriv ed25519.PrivateKey, rootPub, subj
 	issuer, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, auth.FullCapabilities(), now.Add(-time.Minute), now.Add(membershipTTL), time.Time{})
 	require.NoError(t, err)
 	signer := testauth.LoadTestSigner(t, rootPriv, rootPub, issuer)
-	token, err := signer.IssueJoinToken(subject, nil, now, time.Hour, membershipTTL, accessDeadline, nil, false)
+	token, err := signer.IssueJoinToken(subject, nil, now, time.Hour, membershipTTL, accessDeadline, auth.LeafCapabilities())
 	require.NoError(t, err)
 	return token
 }
@@ -424,7 +424,7 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 
 	t.Run("invite token", func(t *testing.T) {
 		bootstrap := []*admissionv1.BootstrapPeer{{PeerPub: nodePub, Addrs: []string{"127.0.0.1:60611"}}}
-		invite, err := signer.IssueInviteToken(nodePub, bootstrap, now, 10*time.Minute, 24*time.Hour, nil, false)
+		invite, err := signer.IssueInviteToken(nodePub, bootstrap, now, 10*time.Minute, 24*time.Hour, auth.LeafCapabilities())
 		require.NoError(t, err)
 
 		require.NoError(t, auth.VerifyInviteToken(invite, nodePub, now))
@@ -435,7 +435,7 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 	})
 
 	t.Run("join token", func(t *testing.T) {
-		join, err := signer.IssueJoinToken(nodePub, nil, now, 10*time.Minute, 24*time.Hour, time.Time{}, nil, false)
+		join, err := signer.IssueJoinToken(nodePub, nil, now, 10*time.Minute, 24*time.Hour, time.Time{}, auth.LeafCapabilities())
 		require.NoError(t, err)
 
 		verified, err := auth.VerifyJoinToken(join, nodePub, now)
@@ -458,7 +458,7 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 		delegatedSigner := testauth.LoadTestSigner(t, delegatedPriv, nodePub, issuer)
 		subjectPub, _ := newKeyPair(t)
 
-		token, err := delegatedSigner.IssueJoinToken(subjectPub, nil, now, time.Hour, 4*time.Hour, time.Time{}, nil, false)
+		token, err := delegatedSigner.IssueJoinToken(subjectPub, nil, now, time.Hour, 4*time.Hour, time.Time{}, auth.LeafCapabilities())
 		require.NoError(t, err)
 
 		verified, err := auth.VerifyJoinToken(token, subjectPub, now)
@@ -468,19 +468,31 @@ func TestDelegationSignerAndTokens(t *testing.T) {
 
 	t.Run("admin join token mints admin cert", func(t *testing.T) {
 		subjectPub, _ := newKeyPair(t)
-		token, err := signer.IssueJoinToken(subjectPub, nil, now, 10*time.Minute, 24*time.Hour, time.Time{}, nil, true)
+		token, err := signer.IssueJoinToken(subjectPub, nil, now, 10*time.Minute, 24*time.Hour, time.Time{}, auth.FullCapabilities())
 		require.NoError(t, err)
 
 		caps := token.GetClaims().GetMemberCert().GetClaims().GetCapabilities()
-		require.True(t, caps.GetCanAdmit(), "admin=true must mint a cert with CanAdmit")
-		require.True(t, caps.GetCanDelegate(), "admin=true must mint a cert with CanDelegate")
+		require.True(t, caps.GetCanAdmit(), "admin caps must mint a cert with CanAdmit")
+		require.True(t, caps.GetCanDelegate(), "admin caps must mint a cert with CanDelegate")
+		require.True(t, caps.GetCanPublish(), "admin caps must mint a cert with CanPublish")
+	})
+
+	t.Run("publisher join token mints publisher cert", func(t *testing.T) {
+		subjectPub, _ := newKeyPair(t)
+		token, err := signer.IssueJoinToken(subjectPub, nil, now, 10*time.Minute, 24*time.Hour, time.Time{}, auth.PublisherCapabilities())
+		require.NoError(t, err)
+
+		caps := token.GetClaims().GetMemberCert().GetClaims().GetCapabilities()
+		require.True(t, caps.GetCanPublish(), "publisher caps must mint a cert with CanPublish")
+		require.False(t, caps.GetCanAdmit(), "publisher caps must not mint a cert with CanAdmit")
+		require.False(t, caps.GetCanDelegate(), "publisher caps must not mint a cert with CanDelegate")
 	})
 
 	t.Run("admin invite claim", func(t *testing.T) {
 		subjectPub, _ := newKeyPair(t)
-		invite, err := signer.IssueInviteToken(subjectPub, []*admissionv1.BootstrapPeer{{PeerPub: nodePub, Addrs: []string{"127.0.0.1:60611"}}}, now, 10*time.Minute, 24*time.Hour, nil, true)
+		invite, err := signer.IssueInviteToken(subjectPub, []*admissionv1.BootstrapPeer{{PeerPub: nodePub, Addrs: []string{"127.0.0.1:60611"}}}, now, 10*time.Minute, 24*time.Hour, auth.FullCapabilities())
 		require.NoError(t, err)
-		require.True(t, invite.GetClaims().GetAdmin(), "admin flag must round-trip in invite claims")
+		require.True(t, invite.GetClaims().GetCertCaps().GetCanAdmit(), "admin caps must round-trip in invite claims")
 	})
 }
 
@@ -636,6 +648,48 @@ func TestNewDelegationSigner_RefreshesStaleRootCert(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, auth.IsCertExpired(loaded.Cert(), time.Now()),
 		"refresh must persist a fresh cert, not just hold one in memory")
+}
+
+func TestNewSpecSigner_PublisherCanSign(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	pubPub, pubPriv := newKeyPair(t)
+
+	now := time.Now()
+	publisherCert, err := auth.IssueDelegationCert(rootPriv, nil, pubPub, auth.PublisherCapabilities(),
+		now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	dir := testIdentityDir(t)
+	require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(rootPub, publisherCert)))
+
+	specSigner, err := auth.NewSpecSigner(dir, pubPriv)
+	require.NoError(t, err, "publisher cert must produce a SpecSigner")
+	require.False(t, specSigner.IsRoot())
+
+	_, err = auth.NewDelegationSigner(dir, pubPriv)
+	require.ErrorContains(t, err, "delegation capability", "publisher cert must NOT produce a DelegationSigner")
+
+	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Service{Service: &admissionv1.ServiceID{Name: "api"}}}
+	body := &statev1.ServiceChange{Name: "api", Port: 8080} //nolint:mnd
+	signed, err := specSigner.IssueSpecAuth(resource, body, nil, false)
+	require.NoError(t, err, "publisher must be able to sign a service spec")
+	require.NotNil(t, signed.GetSignature())
+}
+
+func TestNewSpecSigner_LeafRefuses(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	leafPub, leafPriv := newKeyPair(t)
+
+	now := time.Now()
+	leafCert, err := auth.IssueDelegationCert(rootPriv, nil, leafPub, auth.LeafCapabilities(),
+		now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	dir := testIdentityDir(t)
+	require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(rootPub, leafCert)))
+
+	_, err = auth.NewSpecSigner(dir, leafPriv)
+	require.ErrorContains(t, err, "publish capability", "leaf cert must NOT produce a SpecSigner")
 }
 
 func TestNewDelegationSigner_RejectsSubjectMismatchForDelegated(t *testing.T) {
@@ -843,7 +897,7 @@ func TestInviteTokenOpenSubject(t *testing.T) {
 	invite, err := signer.IssueInviteToken(
 		nil,
 		[]*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}},
-		now, time.Hour, 0, nil, false,
+		now, time.Hour, 0, auth.LeafCapabilities(),
 	)
 	require.NoError(t, err)
 
@@ -868,7 +922,7 @@ func TestInviteTokenSubjectBoundMismatch(t *testing.T) {
 	invite, err := signer.IssueInviteToken(
 		boundSubject,
 		[]*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}},
-		now, time.Hour, 0, nil, false,
+		now, time.Hour, 0, auth.LeafCapabilities(),
 	)
 	require.NoError(t, err)
 
@@ -936,9 +990,9 @@ func TestInviteConsumer_ExportAndLoad(t *testing.T) {
 	bootstrapPub, _ := newKeyPair(t)
 	bootstrapPeers := []*admissionv1.BootstrapPeer{{PeerPub: bootstrapPub, Addrs: []string{"127.0.0.1:60611"}}}
 
-	invite1, err := signer.IssueInviteToken(nil, bootstrapPeers, now, time.Hour, 0, nil, false)
+	invite1, err := signer.IssueInviteToken(nil, bootstrapPeers, now, time.Hour, 0, auth.LeafCapabilities())
 	require.NoError(t, err)
-	invite2, err := signer.IssueInviteToken(nil, bootstrapPeers, now, time.Hour, 0, nil, false)
+	invite2, err := signer.IssueInviteToken(nil, bootstrapPeers, now, time.Hour, 0, auth.LeafCapabilities())
 	require.NoError(t, err)
 
 	ok, err := consumer.TryConsume(invite1, now)
@@ -1013,7 +1067,9 @@ func TestInviteAttributesTransfer(t *testing.T) {
 	require.NoError(t, err)
 
 	subjectPub, _ := newKeyPair(t)
-	token, err := signer.IssueJoinToken(subjectPub, nil, now, time.Hour, 24*time.Hour, time.Time{}, attrs, false)
+	caps := auth.LeafCapabilities()
+	caps.Attributes = attrs
+	token, err := signer.IssueJoinToken(subjectPub, nil, now, time.Hour, 24*time.Hour, time.Time{}, caps)
 	require.NoError(t, err)
 
 	memberCert := token.GetClaims().GetMemberCert()
@@ -1106,6 +1162,11 @@ func TestIssueDelegationCert_RejectsCapsExceedingParent(t *testing.T) {
 			name: "child_can_admit_parent_lacks_it",
 			caps: &admissionv1.Capabilities{CanAdmit: true},
 			want: "CanAdmit",
+		},
+		{
+			name: "child_can_publish_parent_lacks_it",
+			caps: &admissionv1.Capabilities{CanPublish: true},
+			want: "CanPublish",
 		},
 		{
 			name: "child_max_depth_exceeds_parent",

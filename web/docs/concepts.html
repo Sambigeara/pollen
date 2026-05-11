@@ -55,7 +55,7 @@
 
            A &lt;----&gt; R &lt;----&gt; B</div>
 
-    <p>A relay is just a regular node that happens to be publicly reachable. Bootstrap one with <code>pln bootstrap ssh root@host --admin</code> on a machine with a public IP, or hint it on start with <code>pln up --public</code>; the mesh verifies actual reachability via NAT probing. Public nodes' addresses are woven into invite tokens automatically, so a joiner behind NAT has a route in without you plumbing anything.</p>
+    <p>A relay is just a regular node that happens to be publicly reachable. Bootstrap one with <code>pln bootstrap ssh root@host --admin</code> (or <code>--publisher</code> if it only forwards traffic) on a machine with a public IP, or hint it on start with <code>pln up --public</code>; the mesh verifies actual reachability via NAT probing. Public nodes' addresses are woven into invite tokens automatically, so a joiner behind NAT has a route in without you plumbing anything.</p>
 
     <h3>One transport, one connection</h3>
     <p>QUIC carries everything. Gossip messages, service tunnels, and seed RPCs share the same multiplexed stream per peer. Encryption is end-to-end; relays cannot read traffic they forward. There is no separate VPN, ingress controller, or sidecar.</p>
@@ -67,7 +67,7 @@
 
     <p>That property gives Pollen three things for free:</p>
     <ul>
-      <li><strong>No leader.</strong> No node is the source of truth. Every node can read, every admin-capable node can write, and every node observes the same world.</li>
+      <li><strong>No leader.</strong> No node is the source of truth. Every node can read; writes are gated by cert capability (publishers publish specs, admins also delegate); every node observes the same world.</li>
       <li><strong>Partition tolerance.</strong> Split the cluster in half and both sides keep working. Reunite them and the document re-converges.</li>
       <li><strong>Local decisions.</strong> Because every node has the same view, every node can make placement and routing decisions without consulting anyone else.</li>
     </ul>
@@ -156,21 +156,29 @@
     <p>Pollen's authorisation model is two parts: a chain of cryptographic capabilities that say <em>who you are</em>, and policy clauses on each spec that say <em>who may use it</em>. The runtime gate compares the two on every invoke, fetch, or connect.</p>
 
     <h3>The capability tree</h3>
-    <p>Every cert in the cluster traces back to the root key created by <code>pln init</code>. Admin authority can be delegated; properties (key/value metadata) can be baked into a cert at issue time. Capability subsetting is enforced at issuance: a leaf cannot be issued more rights than the issuer holds.</p>
+    <p>Every cert in the cluster traces back to the root key created by <code>pln init</code>. Pollen has three tiers, ordered as a strict superset chain:</p>
+    <ul>
+      <li><strong>Leaf</strong> (default): can call workloads and connect to services. Cannot publish, cannot delegate.</li>
+      <li><strong>Publisher</strong>: can publish workloads, services, blobs, and static sites. Cannot delegate further.</li>
+      <li><strong>Admin</strong>: everything publisher can do, plus admit and grant new peers. Only the root admin can mint other admins.</li>
+    </ul>
+    <p>Properties (key/value metadata) ride alongside the tier and can be baked into any cert at issue time. Capability subsetting is enforced at issuance: a child cannot be issued more rights than the issuer holds.</p>
 
-    <div class="diagram">                      [ root cert ]
-                            |
-                            |  delegates admin authority
-                            |
-              +-------------+-------------+
-              |                           |
-         [ admin-A ]                 [ admin-B ]
-              |                           |
-              |  delegates leaf certs
-              |                           |
-         [ leaf-A ]                  [ leaf-B ]
-         role=engineer               role=admin
-         team=backend                team=ops</div>
+    <div class="diagram">                       [ root (admin) ]
+                              |
+                              |  delegates
+                              |
+              +---------------+---------------+
+              |                               |
+         [ admin-A ]                   [ publisher-A ]
+              |                              (CI box)
+              |  grants
+              |
+       +------+------+
+       |             |
+  [ publisher-B ]  [ leaf-A ]
+   role=engineer    role=viewer
+   team=backend     team=ops</div>
 
     <p>The relationships are stored on the gossiped CRDT, so every node can independently verify any cert. Revocation works through a deny set on the same document; the CRDT propagates revocations the same way it propagates everything else.</p>
 
@@ -186,11 +194,11 @@ pln bootstrap ssh root@host --prop region=eu</code></pre>
     <h3>The policy gate</h3>
     <p>Every published spec — workload, service, static site, named blob — can carry policy clauses. The runtime gate evaluates them against the caller's properties on every call.</p>
 
-    <div class="diagram">   spec(hello, --allow-props role=admin)
+    <div class="diagram">   spec(hello, --allow-prop role=admin)
 
    On every call, the runtime gate runs:
 
-        for each --allow-props clause on the spec:
+        for each --allow-prop clause on the spec:
             require caller's properties match exactly
         if any clause fails: close the stream silently
 
@@ -199,11 +207,11 @@ pln bootstrap ssh root@host --prop region=eu</code></pre>
         leaf-A calls hello   { role=engineer }    -&gt; deny (silent)
         leaf-B calls hello   { role=admin }       -&gt; allow</div>
 
-    <p>Clauses are <strong>conjunctive</strong>: every <code>--allow-props</code> on the spec must match. To express disjunction (<em>"editors or admins"</em>), mint both groups with a shared property and require it on the spec:</p>
+    <p>Clauses are <strong>conjunctive</strong>: every <code>--allow-prop</code> on the spec must match. To express disjunction (<em>"editors or admins"</em>), mint both groups with a shared property and require it on the spec:</p>
 
     <pre><code>pln grant &lt;editor&gt; --prop tier=privileged
 pln grant &lt;admin&gt;  --prop tier=privileged
-pln serve 8080 ops --allow-props tier=privileged</code></pre>
+pln serve 8080 ops --allow-prop tier=privileged</code></pre>
 
     <p>Two consequences of pushing disjunction up to the issuance side:</p>
     <ul>
@@ -219,7 +227,7 @@ pln serve 8080 ops --allow-props tier=privileged</code></pre>
     <p>A single <code>pln seed</code> exercises the whole stack:</p>
     <ol>
       <li>The CLI hashes the artifact and stores it in the local CAS.</li>
-      <li>The supervisor signs a spec with the local admin cert; the spec carries the hash, any policy clauses, and the publisher's identity.</li>
+      <li>The supervisor signs a spec with the local delegation cert; the spec carries the hash, any policy clauses, and the publisher's identity.</li>
       <li>The change goes into the CRDT and gossips to every peer.</li>
       <li>Each peer scores itself as a candidate host. Selected peers fetch the artifact from any holder over QUIC, verifying the hash on arrival.</li>
       <li>The first call into the workload routes to whichever replica is nearest and least loaded. The runtime gate checks the caller's properties against the spec's policy. If it passes, the call goes through.</li>

@@ -318,32 +318,32 @@ func closeEntry(e *serviceEntry) {
 	e.cancel()
 }
 
+// UnexposeService tears down both the gossip spec and the runtime
+// state (serviceEntry + bridged streams) for a locally-exposed service.
+// Idempotent: safe to call when the spec is already tombstoned (e.g.
+// from the cap-downgrade cascade in pkg/membership), in which case
+// RemoveService is a no-op and only the runtime teardown runs.
 func (s *Service) UnexposeService(name string) error {
 	s.mu.Lock()
-	snap := s.store.Snapshot()
-	for _, svc := range snap.Services() {
-		if svc.Peer == s.self && svc.Name == name {
-			sk := serviceKey{port: svc.Port, protocol: svc.Protocol}
-			entry := s.services[sk]
+	if _, err := s.store.RemoveService(name); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	var entries []*serviceEntry
+	for sk, entry := range s.services {
+		if entry.name == name {
+			entries = append(entries, entry)
 			delete(s.services, sk)
-			events, err := s.store.RemoveService(name)
-			if err != nil {
-				s.services[sk] = entry
-				s.mu.Unlock()
-				return err
-			}
-			var toClose []io.Closer
-			if len(events) > 0 {
-				toClose = s.detachServesLocked(name)
-			}
-			s.mu.Unlock()
-			closeEntry(entry)
-			closeAll(toClose)
-			return nil
 		}
 	}
+	toClose := s.detachServesLocked(name)
 	s.mu.Unlock()
-	return fmt.Errorf("service %q not found", name)
+
+	for _, e := range entries {
+		closeEntry(e)
+	}
+	closeAll(toClose)
+	return nil
 }
 
 func ReadPort(r io.Reader) (uint32, error) {

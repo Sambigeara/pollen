@@ -32,6 +32,7 @@ type Capabilities struct {
 	CanAdmit      bool                   `protobuf:"varint,2,opt,name=can_admit,json=canAdmit,proto3" json:"can_admit,omitempty"`
 	MaxDepth      uint32                 `protobuf:"varint,3,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
 	Attributes    *structpb.Struct       `protobuf:"bytes,4,opt,name=attributes,proto3" json:"attributes,omitempty"`
+	CanPublish    bool                   `protobuf:"varint,5,opt,name=can_publish,json=canPublish,proto3" json:"can_publish,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -92,6 +93,13 @@ func (x *Capabilities) GetAttributes() *structpb.Struct {
 		return x.Attributes
 	}
 	return nil
+}
+
+func (x *Capabilities) GetCanPublish() bool {
+	if x != nil {
+		return x.CanPublish
+	}
+	return false
 }
 
 type DelegationCertClaims struct {
@@ -443,8 +451,7 @@ type InviteTokenClaims struct {
 	IssuedAtUnix         int64                  `protobuf:"varint,5,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
 	ExpiresAtUnix        int64                  `protobuf:"varint,6,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
 	MembershipTtlSeconds int64                  `protobuf:"varint,7,opt,name=membership_ttl_seconds,json=membershipTtlSeconds,proto3" json:"membership_ttl_seconds,omitempty"`
-	Attributes           *structpb.Struct       `protobuf:"bytes,8,opt,name=attributes,proto3" json:"attributes,omitempty"`
-	Admin                bool                   `protobuf:"varint,9,opt,name=admin,proto3" json:"admin,omitempty"`
+	CertCaps             *Capabilities          `protobuf:"bytes,10,opt,name=cert_caps,json=certCaps,proto3" json:"cert_caps,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -528,18 +535,11 @@ func (x *InviteTokenClaims) GetMembershipTtlSeconds() int64 {
 	return 0
 }
 
-func (x *InviteTokenClaims) GetAttributes() *structpb.Struct {
+func (x *InviteTokenClaims) GetCertCaps() *Capabilities {
 	if x != nil {
-		return x.Attributes
+		return x.CertCaps
 	}
 	return nil
-}
-
-func (x *InviteTokenClaims) GetAdmin() bool {
-	if x != nil {
-		return x.Admin
-	}
-	return false
 }
 
 type InviteToken struct {
@@ -1136,14 +1136,16 @@ var File_pollen_admission_v1_admission_proto protoreflect.FileDescriptor
 
 const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\n" +
-	"#pollen/admission/v1/admission.proto\x12\x13pollen.admission.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xa4\x01\n" +
+	"#pollen/admission/v1/admission.proto\x12\x13pollen.admission.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xc5\x01\n" +
 	"\fCapabilities\x12!\n" +
 	"\fcan_delegate\x18\x01 \x01(\bR\vcanDelegate\x12\x1b\n" +
 	"\tcan_admit\x18\x02 \x01(\bR\bcanAdmit\x12\x1b\n" +
 	"\tmax_depth\x18\x03 \x01(\rR\bmaxDepth\x127\n" +
 	"\n" +
 	"attributes\x18\x04 \x01(\v2\x17.google.protobuf.StructR\n" +
-	"attributes\"\xcf\x02\n" +
+	"attributes\x12\x1f\n" +
+	"\vcan_publish\x18\x05 \x01(\bR\n" +
+	"canPublish\"\xcf\x02\n" +
 	"\x14DelegationCertClaims\x12(\n" +
 	"\vsubject_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\n" +
 	"subjectPub\x12&\n" +
@@ -1172,7 +1174,7 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\x0fexpires_at_unix\x18\x06 \x01(\x03R\rexpiresAtUnix\"x\n" +
 	"\tJoinToken\x12D\n" +
 	"\x06claims\x18\x01 \x01(\v2$.pollen.admission.v1.JoinTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
-	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xac\x03\n" +
+	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xc4\x03\n" +
 	"\x11InviteTokenClaims\x12#\n" +
 	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12&\n" +
 	"\n" +
@@ -1183,11 +1185,11 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"subjectPub\x12$\n" +
 	"\x0eissued_at_unix\x18\x05 \x01(\x03R\fissuedAtUnix\x12&\n" +
 	"\x0fexpires_at_unix\x18\x06 \x01(\x03R\rexpiresAtUnix\x124\n" +
-	"\x16membership_ttl_seconds\x18\a \x01(\x03R\x14membershipTtlSeconds\x127\n" +
-	"\n" +
-	"attributes\x18\b \x01(\v2\x17.google.protobuf.StructR\n" +
-	"attributes\x12\x14\n" +
-	"\x05admin\x18\t \x01(\bR\x05admin\"|\n" +
+	"\x16membership_ttl_seconds\x18\a \x01(\x03R\x14membershipTtlSeconds\x12F\n" +
+	"\tcert_caps\x18\n" +
+	" \x01(\v2!.pollen.admission.v1.CapabilitiesB\x06\xbaH\x03\xc8\x01\x01R\bcertCapsJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
+	"R\n" +
+	"attributesR\x05admin\"|\n" +
 	"\vInviteToken\x12F\n" +
 	"\x06claims\x18\x01 \x01(\v2&.pollen.admission.v1.InviteTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
 	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xb9\x02\n" +
@@ -1269,7 +1271,7 @@ var file_pollen_admission_v1_admission_proto_depIdxs = []int32{
 	3,  // 5: pollen.admission.v1.JoinTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
 	4,  // 6: pollen.admission.v1.JoinToken.claims:type_name -> pollen.admission.v1.JoinTokenClaims
 	3,  // 7: pollen.admission.v1.InviteTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
-	17, // 8: pollen.admission.v1.InviteTokenClaims.attributes:type_name -> google.protobuf.Struct
+	0,  // 8: pollen.admission.v1.InviteTokenClaims.cert_caps:type_name -> pollen.admission.v1.Capabilities
 	6,  // 9: pollen.admission.v1.InviteToken.claims:type_name -> pollen.admission.v1.InviteTokenClaims
 	9,  // 10: pollen.admission.v1.SpecAuth.resource:type_name -> pollen.admission.v1.ResourceID
 	14, // 11: pollen.admission.v1.SpecAuth.policy:type_name -> pollen.admission.v1.Predicate

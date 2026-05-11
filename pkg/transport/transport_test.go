@@ -143,8 +143,7 @@ func TestJoinWithInviteHappyPath(t *testing.T) {
 		time.Now(),
 		time.Hour,
 		0,
-		nil,
-		false,
+		auth.LeafCapabilities(),
 	)
 	require.NoError(t, err)
 
@@ -187,7 +186,7 @@ func TestProcessInviteRedeemRejectsNonIssuerSigner(t *testing.T) {
 	invite, err := adminSigner.IssueInviteToken(joinerPub, []*admissionv1.BootstrapPeer{{
 		PeerPub: rootPub,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", "1")},
-	}}, now, time.Hour, 0, nil, false)
+	}}, now, time.Hour, 0, auth.LeafCapabilities())
 	require.NoError(t, err)
 
 	resp := transport.ProcessInviteRedeem(rootSigner, &testConsumer{seen: make(map[string]struct{})}, config.DefaultMembershipTTL, types.PeerKeyFromBytes(joinerPub), &meshv1.InviteRedeemRequest{Token: invite})
@@ -224,8 +223,7 @@ func TestRedeemInviteRacesAddresses(t *testing.T) {
 		time.Now(),
 		time.Hour,
 		time.Hour,
-		nil,
-		false,
+		auth.LeafCapabilities(),
 	)
 	require.NoError(t, err)
 
@@ -273,8 +271,7 @@ func TestJoinWithInviteRejectsExpiredInviteTTL(t *testing.T) {
 		time.Now().Add(-2*time.Second),
 		time.Second,
 		0,
-		nil,
-		false,
+		auth.LeafCapabilities(),
 	)
 	require.NoError(t, err)
 

@@ -43,6 +43,10 @@ func (g *recordingGate) MayHost(*admissionv1.DelegationCert, *admissionv1.SpecAu
 	return nil
 }
 
+func (g *recordingGate) MayPublish(*admissionv1.DelegationCert, *admissionv1.Predicate) error {
+	return nil
+}
+
 func (g *recordingGate) callCount() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()

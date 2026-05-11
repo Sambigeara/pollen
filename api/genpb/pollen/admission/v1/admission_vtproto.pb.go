@@ -50,6 +50,16 @@ func (m *Capabilities) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.CanPublish {
+		i--
+		if m.CanPublish {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x28
+	}
 	if m.Attributes != nil {
 		size, err := (*structpb.Struct)(m.Attributes).MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
@@ -435,25 +445,15 @@ func (m *InviteTokenClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.Admin {
-		i--
-		if m.Admin {
-			dAtA[i] = 1
-		} else {
-			dAtA[i] = 0
-		}
-		i--
-		dAtA[i] = 0x48
-	}
-	if m.Attributes != nil {
-		size, err := (*structpb.Struct)(m.Attributes).MarshalToSizedBufferVT(dAtA[:i])
+	if m.CertCaps != nil {
+		size, err := m.CertCaps.MarshalToSizedBufferVT(dAtA[:i])
 		if err != nil {
 			return 0, err
 		}
 		i -= size
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		i--
-		dAtA[i] = 0x42
+		dAtA[i] = 0x52
 	}
 	if m.MembershipTtlSeconds != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.MembershipTtlSeconds))
@@ -1112,6 +1112,9 @@ func (m *Capabilities) SizeVT() (n int) {
 		l = (*structpb.Struct)(m.Attributes).SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
+	if m.CanPublish {
+		n += 2
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -1279,12 +1282,9 @@ func (m *InviteTokenClaims) SizeVT() (n int) {
 	if m.MembershipTtlSeconds != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.MembershipTtlSeconds))
 	}
-	if m.Attributes != nil {
-		l = (*structpb.Struct)(m.Attributes).SizeVT()
+	if m.CertCaps != nil {
+		l = m.CertCaps.SizeVT()
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	if m.Admin {
-		n += 2
 	}
 	n += len(m.unknownFields)
 	return n
@@ -1650,6 +1650,26 @@ func (m *Capabilities) UnmarshalVT(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 5:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CanPublish", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.CanPublish = bool(v != 0)
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -2741,9 +2761,9 @@ func (m *InviteTokenClaims) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
-		case 8:
+		case 10:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Attributes", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field CertCaps", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -2770,33 +2790,13 @@ func (m *InviteTokenClaims) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.Attributes == nil {
-				m.Attributes = &structpb1.Struct{}
+			if m.CertCaps == nil {
+				m.CertCaps = &Capabilities{}
 			}
-			if err := (*structpb.Struct)(m.Attributes).UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+			if err := m.CertCaps.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
 			iNdEx = postIndex
-		case 9:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Admin", wireType)
-			}
-			var v int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				v |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			m.Admin = bool(v != 0)
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

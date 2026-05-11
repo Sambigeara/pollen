@@ -112,6 +112,7 @@ message CertInfo {
   uint32 max_depth = 7;
   int64 access_deadline_unix = 8;
   google.protobuf.Struct attributes = 9;
+  bool can_publish = 10;
 }
 
 message GetStatusResponse {
@@ -313,8 +314,9 @@ message GetMetricsResponse {
 
 message IssueCertRequest {
   bytes peer_pub = 1 [(buf.validate.field).bytes = {len: 32}];
-  bool admin = 2;
-  google.protobuf.Struct attributes = 3;
+  reserved 2, 3;
+  reserved "admin", "attributes";
+  pollen.admission.v1.Capabilities cert_caps = 4 [(buf.validate.field).required = true];
 }
 
 message IssueCertResponse {}

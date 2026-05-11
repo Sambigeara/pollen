@@ -153,6 +153,12 @@ func (r *reconciler) reconcile(ctx context.Context) {
 	// branch covers the case where the spec is still live but our
 	// entitlement (cert attributes, policy revision, parent revocation)
 	// has shifted under us.
+	//
+	// Tracked in policyReleased so the action loop below doesn't
+	// immediately re-mark the same hash as draining — that would
+	// republish a claim with draining=true and the loop would never
+	// converge.
+	policyReleased := make(map[string]struct{})
 	for hash, claimants := range snap.Claims {
 		if _, mine := claimants[r.localID]; !mine {
 			continue
@@ -167,6 +173,7 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		r.log.Infow("policy denies local hosting, releasing claim", "hash", types.ShortHash(hash), "name", sv.Spec.Name)
 		r.executeRelease(hash)
 		delete(r.pendingRelease, hash)
+		policyReleased[hash] = struct{}{}
 	}
 
 	actions := evaluate(evaluateInput{
@@ -192,6 +199,9 @@ func (r *reconciler) reconcile(ctx context.Context) {
 			}
 			r.startClaim(ctx, a.Hash, snap.Specs, snap.Claims)
 		case actionRelease:
+			if _, alreadyReleased := policyReleased[a.Hash]; alreadyReleased {
+				continue
+			}
 			if _, specExists := snap.Specs[a.Hash]; !specExists {
 				r.executeRelease(a.Hash)
 				delete(r.pendingRelease, a.Hash)

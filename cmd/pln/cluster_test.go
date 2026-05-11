@@ -110,6 +110,36 @@ func TestRunPropsRejectsClearWithArgs(t *testing.T) {
 	require.ErrorContains(t, err, "--clear cannot be combined")
 }
 
+func TestCapsFromFlags(t *testing.T) {
+	cases := []struct {
+		name      string
+		admin     bool
+		publisher bool
+		want      string
+		wantErr   string
+	}{
+		{name: "default", want: "leaf"},
+		{name: "admin", admin: true, want: "admin"},
+		{name: "publisher", publisher: true, want: "publisher"},
+		{name: "both", admin: true, publisher: true, wantErr: "mutually exclusive"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			cmd.Flags().Bool("admin", tc.admin, "")
+			cmd.Flags().Bool("publisher", tc.publisher, "")
+
+			caps, err := capsFromFlags(cmd, nil)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, capsTierLabel(caps))
+		})
+	}
+}
+
 func TestRunPropsRejectsNonRoot(t *testing.T) {
 	dir := t.TempDir()
 	identityDir := auth.IdentityPath(dir)

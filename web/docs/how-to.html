@@ -48,7 +48,7 @@
 
 1 succeeded, 0 failed</span>
         </div>
-        <p><code>--admin</code> delegates admin authority too, so the relay can keep admitting peers if your root machine is offline. Drop it for a relay that only forwards traffic.</p>
+        <p><code>--admin</code> delegates admin authority too, so the relay can keep admitting peers if your root machine is offline. Use <code>--publisher</code> instead if the relay should be able to publish its own services or workloads but not admit peers, or drop both flags for a relay that only forwards traffic.</p>
       </li>
       <li>
         <h3>Verify reachability</h3>
@@ -98,13 +98,13 @@ ab12cd34e5f6789a1b2c3d4e5f6789a1b2c3d4e5...                    online (public) 1
     </ol>
 
     <div class="callout">
-      <p><strong>Bake admin in at join time.</strong> If you're standing up a fresh relay, skip the post-hoc grant: <code>pln bootstrap ssh root@host --admin</code> or <code>pln invite --admin --subject &lt;peer-pub&gt;</code> mints the relay with admin capability from the start.</p>
+      <p><strong>Bake the tier in at join time.</strong> If you're standing up a fresh relay, skip the post-hoc grant: <code>pln bootstrap ssh root@host --admin</code> or <code>pln invite --admin --subject &lt;peer-pub&gt;</code> mints the relay with admin capability from the start. Use <code>--publisher</code> for a relay that should publish but not delegate.</p>
     </div>
 
     <p><strong>Related:</strong> <a href="concepts.html#authorisation">Concepts → Authorisation</a>, <a href="cli.html#grant"><code>pln grant</code></a>, <a href="cli.html#invite"><code>pln invite</code></a>.</p>
 
     <h2 id="restrict-access">Restrict who can call a workload or service</h2>
-    <p>Bake properties into the callers' certs, attach <code>--allow-props</code> clauses to the spec. The runtime gate checks them on every call. See <a href="concepts.html#authorisation">Concepts → Authorisation</a> for the model.</p>
+    <p>Bake properties into the callers' certs, attach <code>--allow-prop</code> clauses to the spec. The runtime gate checks them on every call. See <a href="concepts.html#authorisation">Concepts → Authorisation</a> for the model.</p>
 
     <ol class="steps">
       <li>
@@ -122,10 +122,10 @@ ab12cd34e5f6789a1b2c3d4e5f6789a1b2c3d4e5...                    online (public) 1
       <li>
         <h3>Publish the resource with policy</h3>
         <div class="terminal">
-          <span class="cmd">pln serve 8080 internal-api --allow-props team=backend</span>
-          <span class="cmd">pln seed ./hello.wasm greeter --allow-props role=lead</span>
+          <span class="cmd">pln serve 8080 internal-api --allow-prop team=backend</span>
+          <span class="cmd">pln seed ./hello.wasm greeter --allow-prop role=lead</span>
         </div>
-        <p>Repeat <code>--allow-props</code> for additional clauses; all must match (conjunction).</p>
+        <p>Repeat <code>--allow-prop</code> for additional clauses; all must match (conjunction).</p>
       </li>
       <li>
         <h3>Verify denials are silent</h3>
@@ -141,7 +141,7 @@ ab12cd34e5f6789a1b2c3d4e5f6789a1b2c3d4e5...                    online (public) 1
       <p><strong>Need disjunction?</strong> Mint both groups with a shared property and require it on the spec:</p>
       <pre><code>pln grant &lt;editor&gt; --prop tier=privileged
 pln grant &lt;admin&gt;  --prop tier=privileged
-pln serve 8080 ops --allow-props tier=privileged</code></pre>
+pln serve 8080 ops --allow-prop tier=privileged</code></pre>
       <p>Pollen pushes disjunction up to the issuance side so the runtime gate stays trivially fast. The property name itself is your conceptual group.</p>
     </div>
 
@@ -161,7 +161,7 @@ pln serve 8080 ops --allow-props tier=privileged</code></pre>
         <p>Pass a port to override: <code>pln set static-http :9000</code>. Run on every node you want to serve from.</p>
       </li>
       <li>
-        <h3>Publish the directory from any admin node</h3>
+        <h3>Publish the directory from any publisher or admin node</h3>
         <div class="terminal">
           <span class="cmd">pln seed ./public my-site</span>
           <span class="out">seeded my-site (12 files, manifest 3a8c7d2e)</span>
@@ -203,9 +203,9 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
     <div class="terminal">
       <span class="cmd">pln grant &lt;node&gt; --prop region=eu</span>
       <span class="cmd">pln grant &lt;node&gt; --prop region=eu</span>
-      <span class="cmd">pln seed ./eu-only.wasm --allow-props region=eu</span>
+      <span class="cmd">pln seed ./eu-only.wasm --allow-prop region=eu</span>
     </div>
-    <p class="aside">Strictly, <code>--allow-props</code> gates <em>callers</em>, not <em>placement</em>. To restrict placement specifically you'd compose a policy that matches host-side properties; the simplest workaround for now is property-tagging the nodes you want to host and gating the resource so only they can act on it.</p>
+    <p class="aside">Strictly, <code>--allow-prop</code> gates <em>callers</em>, not <em>placement</em>. To restrict placement specifically you'd compose a policy that matches host-side properties; the simplest workaround for now is property-tagging the nodes you want to host and gating the resource so only they can act on it.</p>
 
     <p><strong>Related:</strong> <a href="concepts.html#workloads">Concepts → Workloads</a>, <a href="cli.html#seed"><code>pln seed</code></a>.</p>
 

@@ -142,25 +142,25 @@ echo "$STATUS" | grep -q "(self)" || fail "Step 1" "self not visible in status"
 pass "Step 1: Local root initialized"
 
 echo -e "\n${BOLD}Step 2: Bootstrap relay (nbg1-1)${RESET}"
-lpln bootstrap ssh "root@${ROOT_IP}"
+lpln bootstrap ssh "root@${ROOT_IP}" --admin
 sleep 3
 
 poll "root sees relay" 15 bash -c "[[ \$(\"$PLN_LOCAL\" --dir \"$PLN_TEST_DIR\" status 2>&1 | grep -cE 'direct|relay|indirect' || true) -ge 1 ]]"
 poll "relay sees root" 15 bash -c "[[ \$(ssh $SSH_OPTS root@$ROOT_IP '/usr/bin/pln --dir /var/lib/pln status' 2>&1 | grep -cE 'direct|relay|indirect' || true) -ge 1 ]]"
 pass "Step 2: Bootstrap relay — bidirectional"
 
-echo -e "\n${BOLD}Step 3: Join node 2 (nbg1-2)${RESET}"
-TOKEN=$(lpln invite)
+echo -e "\n${BOLD}Step 3: Join node 2 (nbg1-2) as publisher${RESET}"
+TOKEN=$(lpln invite --publisher)
 rpln "$NODE2_IP" join "$TOKEN"
 sleep 3
 
 poll "3 nodes visible" 15 bash -c "[[ \$(\"$PLN_LOCAL\" --dir \"$PLN_TEST_DIR\" status 2>&1 | grep -cE 'direct|relay|indirect' || true) -ge 2 ]]"
 pass "Step 3: Node 2 joined — 3 nodes visible"
 
-echo -e "\n${BOLD}Step 4: Targeted invite node 3 (hel1)${RESET}"
+echo -e "\n${BOLD}Step 4: Targeted invite node 3 (hel1) as publisher${RESET}"
 rssh "$NODE3_IP" "pln --dir /var/lib/pln init --no-up 2>/dev/null" || true
 NODE3_ID=$(rpln "$NODE3_IP" id)
-TOKEN=$(lpln invite --subject "$NODE3_ID")
+TOKEN=$(lpln invite --publisher --subject "$NODE3_ID")
 rpln "$NODE3_IP" join "$TOKEN"
 sleep 3
 
@@ -315,6 +315,17 @@ echo -e "\n${BOLD}Step 13: pln context flow${RESET}"
     [ ! -d "$CTX_HOME/.pln/contexts/prod" ] || { echo "ctx rm left identity dir behind"; exit 1; }
 ) || fail "Step 13" "pln context flow failed"
 pass "Step 13: pln context — transport, identity signing, env override, cleanup"
+
+echo -e "\n${BOLD}Step 14: Publisher tier enforcement${RESET}"
+# node2 holds a publisher cert (no CanDelegate), so neither invite nor grant
+# may succeed. invite fails locally because NewDelegationSigner refuses a
+# non-delegating cert; grant reaches the daemon but its canDelegate gate
+# returns delegate-capability-required.
+INVITE_OUT=$(rpln "$NODE2_IP" invite 2>&1 || true)
+echo "$INVITE_OUT" | grep -qiE "delegat|capability" || fail "Step 14" "publisher should not be able to invite: got '$INVITE_OUT'"
+GRANT_OUT=$(rpln "$NODE2_IP" grant "${NODE3_ID:0:8}" 2>&1 || true)
+echo "$GRANT_OUT" | grep -qiE "delegat|capability" || fail "Step 14" "publisher should not be able to grant: got '$GRANT_OUT'"
+pass "Step 14: Publisher cannot delegate"
 
 echo -e "\n${BOLD}=== VERIFICATION SUMMARY ===${RESET}"
 for r in "${RESULTS[@]}"; do echo -e "  $r"; done

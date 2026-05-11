@@ -9,9 +9,10 @@ terraform {
 
 provider "hcloud" {}
 
-variable "ssh_public_key_path" {
-  type    = string
-  default = "~/.ssh/id_ed25519.pub"
+variable "ssh_key_name" {
+  type        = string
+  default     = "pln-prod"
+  description = "Name of an existing Hetzner SSH key to authorise on the test nodes."
 }
 
 locals {
@@ -22,9 +23,8 @@ locals {
   }
 }
 
-resource "hcloud_ssh_key" "pollen" {
-  name       = "pollen-hetzner"
-  public_key = file(var.ssh_public_key_path)
+data "hcloud_ssh_key" "pollen" {
+  name = var.ssh_key_name
 }
 
 resource "hcloud_firewall" "pollen" {
@@ -53,7 +53,7 @@ resource "hcloud_server" "node" {
   server_type  = "cax11"
   image        = "ubuntu-22.04"
   location     = each.value
-  ssh_keys     = [hcloud_ssh_key.pollen.id]
+  ssh_keys     = [data.hcloud_ssh_key.pollen.id]
   firewall_ids = [hcloud_firewall.pollen.id]
 }
 

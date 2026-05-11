@@ -293,6 +293,36 @@ func TestStore_WorkloadSpecConflict(t *testing.T) {
 	require.Equal(t, winnerPK, specs[hash].Publisher)
 }
 
+func TestStore_RevokeOwnSpecsTombstonesEveryKind(t *testing.T) {
+	pk := genKey(t)
+	s := newTestStore(t, pk)
+
+	hash := strings.Repeat("a", 64)
+	_, err := s.PublishWorkload(WorkloadSpec{Name: "echo", Hash: hash, MinReplicas: 1}, nil)
+	require.NoError(t, err)
+	_, err = s.SetService(8080, "web", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil) //nolint:mnd
+	require.NoError(t, err)
+	_, err = s.SetStaticSpec(StaticSpec{Name: "site", ManifestDigest: strings.Repeat("c", 64)}, nil)
+	require.NoError(t, err)
+	_, err = s.SetBlobSpec(BlobSpec{Name: "payload", Digest: strings.Repeat("b", 64)}, nil)
+	require.NoError(t, err)
+
+	pre := s.Snapshot()
+	require.Contains(t, pre.Specs, hash, "workload spec must exist before revoke")
+	require.Contains(t, pre.Nodes[pk].Services, "web", "service must exist before revoke")
+	require.Contains(t, pre.StaticSpecs, "site", "static spec must exist before revoke")
+	require.NotEmpty(t, pre.BlobSpecs, "blob spec must exist before revoke")
+
+	_, err = s.RevokeOwnSpecs()
+	require.NoError(t, err)
+
+	post := s.Snapshot()
+	require.NotContains(t, post.Specs, hash, "workload spec must be tombstoned")
+	require.NotContains(t, post.Nodes[pk].Services, "web", "service must be tombstoned")
+	require.NotContains(t, post.StaticSpecs, "site", "static spec must be tombstoned")
+	require.Empty(t, post.BlobSpecs, "blob specs must be tombstoned")
+}
+
 func TestStore_PublishWorkloadIssuesSpecAuth(t *testing.T) {
 	pk := genKey(t)
 	s := newTestStore(t, pk)

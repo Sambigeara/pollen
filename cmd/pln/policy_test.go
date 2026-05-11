@@ -24,10 +24,10 @@ func TestPolicyFromFlags_NoFlags(t *testing.T) {
 	require.Nil(t, policy)
 }
 
-func TestPolicyFromFlags_AllowProps(t *testing.T) {
+func TestPolicyFromFlags_AllowProp(t *testing.T) {
 	cmd := newPolicyCmd(t)
-	require.NoError(t, cmd.Flags().Set("allow-props", "role=admin"))
-	require.NoError(t, cmd.Flags().Set("allow-props", "team=backend"))
+	require.NoError(t, cmd.Flags().Set("allow-prop", "role=admin"))
+	require.NoError(t, cmd.Flags().Set("allow-prop", "team=backend"))
 
 	policy, err := policyFromFlags(cmd)
 	require.NoError(t, err)
@@ -39,9 +39,9 @@ func TestPolicyFromFlags_AllowProps(t *testing.T) {
 	require.Equal(t, "backend", clauses[1].GetEquals())
 }
 
-func TestPolicyFromFlags_RejectsMalformedAllowProps(t *testing.T) {
+func TestPolicyFromFlags_RejectsMalformedAllowProp(t *testing.T) {
 	cmd := newPolicyCmd(t)
-	require.NoError(t, cmd.Flags().Set("allow-props", "no-equals-sign"))
+	require.NoError(t, cmd.Flags().Set("allow-prop", "no-equals-sign"))
 
 	_, err := policyFromFlags(cmd)
 	require.ErrorContains(t, err, "key=value")
@@ -49,7 +49,7 @@ func TestPolicyFromFlags_RejectsMalformedAllowProps(t *testing.T) {
 
 func TestPolicyFromFlags_RejectsEmptyValue(t *testing.T) {
 	cmd := newPolicyCmd(t)
-	require.NoError(t, cmd.Flags().Set("allow-props", "role="))
+	require.NoError(t, cmd.Flags().Set("allow-prop", "role="))
 
 	_, err := policyFromFlags(cmd)
 	require.ErrorContains(t, err, "empty value")

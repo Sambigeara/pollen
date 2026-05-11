@@ -78,15 +78,21 @@ func FullCapabilities() *admissionv1.Capabilities {
 	return &admissionv1.Capabilities{
 		CanDelegate: true,
 		CanAdmit:    true,
+		CanPublish:  true,
 		MaxDepth:    255, //nolint:mnd
+	}
+}
+
+func PublisherCapabilities() *admissionv1.Capabilities {
+	return &admissionv1.Capabilities{
+		CanPublish: true,
+		MaxDepth:   0,
 	}
 }
 
 func LeafCapabilities() *admissionv1.Capabilities {
 	return &admissionv1.Capabilities{
-		CanDelegate: false,
-		CanAdmit:    false,
-		MaxDepth:    0,
+		MaxDepth: 0,
 	}
 }
 
@@ -131,6 +137,7 @@ func CertAccessDeadline(cert *admissionv1.DelegationCert) (time.Time, bool) {
 
 type NodeCredentials struct {
 	cert          *admissionv1.DelegationCert
+	specSigner    *SpecSigner
 	delegationKey *DelegationSigner
 	rootPub       ed25519.PublicKey
 	mu            sync.RWMutex
@@ -148,16 +155,37 @@ func (c *NodeCredentials) Cert() *admissionv1.DelegationCert {
 
 func (c *NodeCredentials) RootPub() ed25519.PublicKey { return c.rootPub }
 
+// SpecSigner returns the signer used to publish resource specs. Non-nil
+// for any node whose cert holds CanPublish (publisher or admin tiers).
+func (c *NodeCredentials) SpecSigner() *SpecSigner {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.specSigner
+}
+
+func (c *NodeCredentials) SetSpecSigner(s *SpecSigner) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.specSigner = s
+}
+
+// DelegationKey returns the signer used to mint child certs and tokens.
+// Non-nil only when the local cert holds CanDelegate (admin tier).
 func (c *NodeCredentials) DelegationKey() *DelegationSigner {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.delegationKey
 }
 
+// SetDelegationKey stores the delegation signer and also exposes its
+// embedded SpecSigner via SpecSigner(), since admins are publishers too.
 func (c *NodeCredentials) SetDelegationKey(s *DelegationSigner) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.delegationKey = s
+	if s != nil {
+		c.specSigner = s.SpecSigner
+	}
 }
 
 func (c *NodeCredentials) SetCert(cert *admissionv1.DelegationCert) {
@@ -525,6 +553,9 @@ func validateChildCapabilities(child, parent *admissionv1.Capabilities) error {
 	}
 	if child.GetCanAdmit() && !parent.GetCanAdmit() {
 		return errors.New("child capabilities exceed parent: CanAdmit")
+	}
+	if child.GetCanPublish() && !parent.GetCanPublish() {
+		return errors.New("child capabilities exceed parent: CanPublish")
 	}
 	if child.GetMaxDepth() > parent.GetMaxDepth() {
 		return errors.New("child capabilities exceed parent: MaxDepth")

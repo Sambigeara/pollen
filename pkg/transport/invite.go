@@ -272,8 +272,8 @@ func ProcessInviteRedeem(
 		accessDeadline = now.Add(time.Duration(s) * time.Second)
 	}
 
-	attrs := claims.GetAttributes()
-	if err := auth.ValidateAttributes(attrs); err != nil {
+	certCaps := claims.GetCertCaps()
+	if err := auth.ValidateAttributes(certCaps.GetAttributes()); err != nil {
 		return &meshv1.InviteRedeemResponse{Reason: err.Error()}
 	}
 
@@ -284,8 +284,7 @@ func ProcessInviteRedeem(
 		ttl,
 		membershipTTL,
 		accessDeadline,
-		attrs,
-		claims.GetAdmin(),
+		certCaps,
 	)
 	if err != nil {
 		return &meshv1.InviteRedeemResponse{Reason: err.Error()}

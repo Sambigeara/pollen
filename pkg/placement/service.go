@@ -99,15 +99,19 @@ type StreamOpener interface {
 	OpenStream(ctx context.Context, peer types.PeerKey, st transport.StreamType) (io.ReadWriteCloser, error)
 }
 
-// Gate authorises both invocations and host placement decisions. Invoke
-// returns the cert-bound CallerInfo to plumb into the seed's execution
-// context whenever a call is dispatched inbound or outbound. MayHost
-// decides whether the local node is entitled to run the workload at
-// all, gating the reconciler's claim before any blob fetch or memory
-// reservation.
+// Gate authorises invocations, host placement, and publish decisions.
+// Invoke returns the cert-bound CallerInfo to plumb into the seed's
+// execution context whenever a call is dispatched inbound or outbound.
+// MayHost decides whether the local node is entitled to run the workload
+// at all, gating the reconciler's claim before any blob fetch or memory
+// reservation. MayPublish gates Seed against orphaning a spec: if the
+// publisher's cert doesn't satisfy the workload's policy, the local
+// self-claim is released on the next reconcile and only unseed+seed
+// can clear the stranded spec.
 type Gate interface {
 	Invoke(peerKey types.PeerKey, hash string) (wasm.CallerInfo, error)
 	MayHost(hostCert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth) error
+	MayPublish(cert *admissionv1.DelegationCert, policy *admissionv1.Predicate) error
 }
 
 type Service struct {
@@ -175,7 +179,7 @@ func New(self types.PeerKey, store WorkloadState, blobs blobsAPI, wasmRT WASMRun
 		scaleUpThreshold:   replicaScaleUpThreshold,
 		scaleDownThreshold: replicaScaleDownThreshold,
 		scaleDownGrace:     replicaScaleDownGrace,
-	}, store, s.calls, s.backoff)
+	}, store, s.calls, s.backoff, s.gate)
 
 	return s
 }
@@ -266,6 +270,11 @@ func (s *Service) publishResources() {
 func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admissionv1.Predicate) error {
 	hash, name := spec.Hash, spec.Name
 	snap := s.store.Snapshot()
+	if s.gate != nil {
+		if err := s.gate.MayPublish(snap.LocalCert(), policy); err != nil {
+			return fmt.Errorf("%w: %w", ErrPublishDenied, err)
+		}
+	}
 	if oldHash, ok := snap.LocalSpecByName(name, s.localID); ok { //nolint:nestif
 		if oldHash != hash {
 			if s.manager.IsRunning(oldHash) {

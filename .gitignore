@@ -57,3 +57,5 @@ pln-local
 
 # Local justfile (personal deploy recipes)
 .justfile.local
+
+CLAUDE.md

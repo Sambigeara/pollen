@@ -731,6 +731,7 @@ type CertInfo struct {
 	MaxDepth           uint32                 `protobuf:"varint,7,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
 	AccessDeadlineUnix int64                  `protobuf:"varint,8,opt,name=access_deadline_unix,json=accessDeadlineUnix,proto3" json:"access_deadline_unix,omitempty"`
 	Attributes         *structpb.Struct       `protobuf:"bytes,9,opt,name=attributes,proto3" json:"attributes,omitempty"`
+	CanPublish         bool                   `protobuf:"varint,10,opt,name=can_publish,json=canPublish,proto3" json:"can_publish,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -826,6 +827,13 @@ func (x *CertInfo) GetAttributes() *structpb.Struct {
 		return x.Attributes
 	}
 	return nil
+}
+
+func (x *CertInfo) GetCanPublish() bool {
+	if x != nil {
+		return x.CanPublish
+	}
+	return false
 }
 
 type GetStatusResponse struct {
@@ -2369,8 +2377,7 @@ func (x *GetMetricsResponse) GetEagerSyncFailures() uint64 {
 type IssueCertRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerPub       []byte                 `protobuf:"bytes,1,opt,name=peer_pub,json=peerPub,proto3" json:"peer_pub,omitempty"`
-	Admin         bool                   `protobuf:"varint,2,opt,name=admin,proto3" json:"admin,omitempty"`
-	Attributes    *structpb.Struct       `protobuf:"bytes,3,opt,name=attributes,proto3" json:"attributes,omitempty"`
+	CertCaps      *v11.Capabilities      `protobuf:"bytes,4,opt,name=cert_caps,json=certCaps,proto3" json:"cert_caps,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2412,16 +2419,9 @@ func (x *IssueCertRequest) GetPeerPub() []byte {
 	return nil
 }
 
-func (x *IssueCertRequest) GetAdmin() bool {
+func (x *IssueCertRequest) GetCertCaps() *v11.Capabilities {
 	if x != nil {
-		return x.Admin
-	}
-	return false
-}
-
-func (x *IssueCertRequest) GetAttributes() *structpb.Struct {
-	if x != nil {
-		return x.Attributes
+		return x.CertCaps
 	}
 	return nil
 }
@@ -3195,7 +3195,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x05addrs\x18\x02 \x03(\tR\x05addrs\"V\n" +
 	"\x18GetBootstrapInfoResponse\x12:\n" +
 	"\x05peers\x18\x01 \x03(\v2$.pollen.control.v1.BootstrapPeerInfoR\x05peers\"\x12\n" +
-	"\x10GetStatusRequest\"\xef\x02\n" +
+	"\x10GetStatusRequest\"\x90\x03\n" +
 	"\bCertInfo\x12&\n" +
 	"\x0fnot_before_unix\x18\x01 \x01(\x03R\rnotBeforeUnix\x12$\n" +
 	"\x0enot_after_unix\x18\x02 \x01(\x03R\fnotAfterUnix\x12\x16\n" +
@@ -3207,7 +3207,10 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x14access_deadline_unix\x18\b \x01(\x03R\x12accessDeadlineUnix\x127\n" +
 	"\n" +
 	"attributes\x18\t \x01(\v2\x17.google.protobuf.StructR\n" +
-	"attributes\"\x91\x04\n" +
+	"attributes\x12\x1f\n" +
+	"\vcan_publish\x18\n" +
+	" \x01(\bR\n" +
+	"canPublish\"\x91\x04\n" +
 	"\x11GetStatusResponse\x122\n" +
 	"\x04self\x18\x01 \x01(\v2\x1e.pollen.control.v1.NodeSummaryR\x04self\x124\n" +
 	"\x05nodes\x18\x02 \x03(\v2\x1e.pollen.control.v1.NodeSummaryR\x05nodes\x12=\n" +
@@ -3323,12 +3326,10 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x0fvivaldi_samples\x18\x0e \x01(\x04R\x0evivaldiSamples\x12\x1f\n" +
 	"\veager_syncs\x18\x0f \x01(\x04R\n" +
 	"eagerSyncs\x12.\n" +
-	"\x13eager_sync_failures\x18\x10 \x01(\x04R\x11eagerSyncFailures\"\x85\x01\n" +
+	"\x13eager_sync_failures\x18\x10 \x01(\x04R\x11eagerSyncFailures\"\x9d\x01\n" +
 	"\x10IssueCertRequest\x12\"\n" +
-	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\x12\x14\n" +
-	"\x05admin\x18\x02 \x01(\bR\x05admin\x127\n" +
-	"\n" +
-	"attributes\x18\x03 \x01(\v2\x17.google.protobuf.StructR\n" +
+	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\x12F\n" +
+	"\tcert_caps\x18\x04 \x01(\v2!.pollen.admission.v1.CapabilitiesB\x06\xbaH\x03\xc8\x01\x01R\bcertCapsJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x05adminR\n" +
 	"attributes\"\x13\n" +
 	"\x11IssueCertResponse\"y\n" +
 	"\x10FetchBlobRequest\x12/\n" +
@@ -3494,6 +3495,7 @@ var file_pollen_control_v1_control_proto_goTypes = []any{
 	(v1.ServiceProtocol)(0),           // 55: pollen.state.v1.ServiceProtocol
 	(*structpb.Struct)(nil),           // 56: google.protobuf.Struct
 	(*v11.Predicate)(nil),             // 57: pollen.admission.v1.Predicate
+	(*v11.Capabilities)(nil),          // 58: pollen.admission.v1.Capabilities
 }
 var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	4,  // 0: pollen.control.v1.NodeSummary.node:type_name -> pollen.control.v1.NodeRef
@@ -3523,7 +3525,7 @@ var file_pollen_control_v1_control_proto_depIdxs = []int32{
 	31, // 24: pollen.control.v1.SeedWorkloadRequest.header:type_name -> pollen.control.v1.SeedWorkloadHeader
 	57, // 25: pollen.control.v1.SeedWorkloadHeader.policy:type_name -> pollen.admission.v1.Predicate
 	3,  // 26: pollen.control.v1.GetMetricsResponse.health:type_name -> pollen.control.v1.HealthStatus
-	56, // 27: pollen.control.v1.IssueCertRequest.attributes:type_name -> google.protobuf.Struct
+	58, // 27: pollen.control.v1.IssueCertRequest.cert_caps:type_name -> pollen.admission.v1.Capabilities
 	44, // 28: pollen.control.v1.UploadBlobRequest.header:type_name -> pollen.control.v1.UploadBlobHeader
 	57, // 29: pollen.control.v1.UploadBlobHeader.policy:type_name -> pollen.admission.v1.Predicate
 	57, // 30: pollen.control.v1.SeedStaticRequest.policy:type_name -> pollen.admission.v1.Predicate

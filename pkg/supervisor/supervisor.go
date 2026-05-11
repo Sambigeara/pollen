@@ -124,8 +124,10 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	stateStore := state.New(self, creds.RootPub())
 	runtimeGate := gate.New(creds.RootPub(), stateStore)
 	stateStore.SetMutationValidator(runtimeGate.Admit)
-	if signer := creds.DelegationKey(); signer != nil {
+	hasSigner := false
+	if signer := creds.SpecSigner(); signer != nil {
 		stateStore.SetLocalSigner(signer)
+		hasSigner = true
 	}
 	if opts.BootstrapPublic {
 		stateStore.SetPublic()
@@ -150,9 +152,14 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		}
 		stateStore.LoadLastAddrs(lastAddrs)
 	}
-	for _, svc := range opts.InitialServices {
-		if _, err := stateStore.SetService(svc.Port, svc.Name, svc.Protocol, nil); err != nil {
-			return nil, err
+	if !hasSigner && len(opts.InitialServices) > 0 {
+		log.Warnw("ignoring configured services: node lacks publish capability", "count", len(opts.InitialServices))
+	}
+	if hasSigner {
+		for _, svc := range opts.InitialServices {
+			if _, err := stateStore.SetService(svc.Port, svc.Name, svc.Protocol, nil); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if opts.NodeName != "" {
@@ -665,7 +672,32 @@ func (n *Supervisor) dispatchEvents(ctx context.Context, events []state.Event) {
 			n.placement.Signal()
 		case state.StaticChanged:
 			n.static.Signal()
+		case state.ServiceChanged:
+			n.handleServiceChanged(e)
+		case state.CertChanged:
+			n.placement.Signal()
 		}
+	}
+}
+
+// handleServiceChanged tears down tunneling runtime state when a local
+// service spec is tombstoned. The gossip side is already done by the
+// time we get here (RevokeOwnSpecs on cap downgrade, RemoveService on
+// pln unserve); without this hook, bridged streams stay open and the
+// app keeps serving traffic to existing clients long after the spec is
+// gone.
+func (n *Supervisor) handleServiceChanged(e state.ServiceChanged) {
+	snap := n.store.Snapshot()
+	if e.Peer != snap.LocalID {
+		return
+	}
+	if local, ok := snap.Nodes[snap.LocalID]; ok {
+		if _, present := local.Services[e.Name]; present {
+			return
+		}
+	}
+	if err := n.tunneling.UnexposeService(e.Name); err != nil {
+		n.log.Warnw("teardown local service on revocation", "name", e.Name, "err", err)
 	}
 }
 

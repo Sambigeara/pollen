@@ -15,17 +15,16 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func TestPublicMesh_GossipConvergence(t *testing.T) {
@@ -271,8 +270,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 			time.Now(),
 			5*time.Minute, //nolint:mnd
 			24*time.Hour,  //nolint:mnd
-			nil,
-			false,
+			auth.LeafCapabilities(),
 		)
 		require.NoError(t, err)
 
@@ -300,8 +298,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 			time.Now(),
 			5*time.Minute, //nolint:mnd
 			24*time.Hour,  //nolint:mnd
-			nil,
-			false,
+			auth.LeafCapabilities(),
 		)
 		require.NoError(t, err)
 
@@ -325,8 +322,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 			time.Now(),
 			5*time.Minute, //nolint:mnd
 			24*time.Hour,  //nolint:mnd
-			nil,
-			false,
+			auth.LeafCapabilities(),
 		)
 		require.NoError(t, err)
 
@@ -370,8 +366,7 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 			time.Now(),
 			5*time.Minute, //nolint:mnd
 			24*time.Hour,  //nolint:mnd
-			nil,
-			false,
+			auth.LeafCapabilities(),
 		)
 		require.NoError(t, err)
 
@@ -415,8 +410,6 @@ func TestPublicMesh_DelegatedAdminInviteRedeemsViaRootBootstrap(t *testing.T) {
 	require.NotNil(t, admin.Node().Credentials().DelegationKey())
 
 	joiner := c.AddNodeAndStart(t, "joiner", Public, ctx)
-	attrs, err := structpb.NewStruct(map[string]any{"payload": strings.Repeat("x", 550)}) //nolint:mnd
-	require.NoError(t, err)
 	bootstrap := []*admissionv1.BootstrapPeer{{
 		PeerPub: root.PeerKey().Bytes(),
 		Addrs:   []string{root.VirtualAddr().String()},
@@ -427,8 +420,7 @@ func TestPublicMesh_DelegatedAdminInviteRedeemsViaRootBootstrap(t *testing.T) {
 		time.Now(),
 		5*time.Minute, //nolint:mnd
 		24*time.Hour,  //nolint:mnd
-		attrs,
-		false,
+		auth.LeafCapabilities(),
 	)
 	require.NoError(t, err)
 
@@ -792,8 +784,7 @@ func TestPublicMesh_ExpiredInviteToken(t *testing.T) {
 		time.Now().Add(-time.Hour),
 		time.Minute,
 		24*time.Hour, //nolint:mnd
-		nil,
-		false,
+		auth.LeafCapabilities(),
 	)
 	require.NoError(t, err)
 

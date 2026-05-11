@@ -181,6 +181,9 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		if key.kind == attrDeny || key.kind == attrDelegationCert {
 			denyOrCertChanged = true
 		}
+		if key.kind == attrDelegationCert {
+			domainEvents = append(domainEvents, CertChanged{Peer: pk})
+		}
 		if key.kind == attrService {
 			domainEvents = append(domainEvents, ServiceChanged{Peer: pk, Name: key.name})
 		}

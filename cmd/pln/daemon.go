@@ -209,9 +209,10 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		logger.Warnw("delegation certificate has expired — starting in degraded mode, will attempt renewal", "expired_at", auth.CertExpiresAt(creds.Cert()))
 	}
 
-	signer, err := auth.NewDelegationSigner(identityDir, privKey)
-	if err == nil {
-		creds.SetDelegationKey(signer)
+	if delSigner, err := auth.NewDelegationSigner(identityDir, privKey); err == nil {
+		creds.SetDelegationKey(delSigner)
+	} else if specSigner, specErr := auth.NewSpecSigner(identityDir, privKey); specErr == nil {
+		creds.SetSpecSigner(specSigner)
 	}
 
 	var runtimeState *statev1.RuntimeState

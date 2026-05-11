@@ -4,13 +4,20 @@
 package placement
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/wasm"
 	"github.com/stretchr/testify/require"
 )
+
+func certWithSubject(p types.PeerKey) *admissionv1.DelegationCert {
+	return &admissionv1.DelegationCert{Claims: &admissionv1.DelegationCertClaims{SubjectPub: p[:]}}
+}
 
 func defaultReplicaCountCfg() replicaCountConfig {
 	return replicaCountConfig{
@@ -25,7 +32,7 @@ func newReplicaCountHarness(t *testing.T, self types.PeerKey, cfg replicaCountCo
 	t.Helper()
 	clock := &mockClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	b := newBackoff(defaultBackoffCfg(), func(time.Duration) {})
-	r := newReplicaCountLoop(self, cfg, store, calls, b)
+	r := newReplicaCountLoop(self, cfg, store, calls, b, &fakeHostGate{})
 	r.now = clock.Now
 	return r, clock
 }
@@ -45,7 +52,7 @@ func TestHeaviestUnservedSource_PicksMostCalls(t *testing.T) {
 		{caller: a, count: 5},
 		{caller: b, count: 10},
 	}
-	heaviest, ok := heaviestUnservedSource(sources, 0, self, nil, nil)
+	heaviest, ok := heaviestUnservedSource(sources, 0, self, nil, nil, nil)
 	require.True(t, ok)
 	require.Equal(t, b, heaviest)
 }
@@ -56,7 +63,7 @@ func TestHeaviestUnservedSource_ExcludesReplicas(t *testing.T) {
 		{caller: a, count: 100},
 		{caller: b, count: 5},
 	}
-	heaviest, ok := heaviestUnservedSource(sources, 0, self, []types.PeerKey{a}, nil)
+	heaviest, ok := heaviestUnservedSource(sources, 0, self, []types.PeerKey{a}, nil, nil)
 	require.True(t, ok)
 	require.Equal(t, b, heaviest)
 }
@@ -67,7 +74,7 @@ func TestHeaviestUnservedSource_LexMinTiebreak(t *testing.T) {
 		{caller: b, count: 5},
 		{caller: a, count: 5},
 	}
-	heaviest, ok := heaviestUnservedSource(sources, 0, self, nil, nil)
+	heaviest, ok := heaviestUnservedSource(sources, 0, self, nil, nil, nil)
 	require.True(t, ok)
 	require.Equal(t, a, heaviest)
 }
@@ -75,7 +82,7 @@ func TestHeaviestUnservedSource_LexMinTiebreak(t *testing.T) {
 func TestHeaviestUnservedSource_NoCandidates(t *testing.T) {
 	self, a := peerKey(1), peerKey(2)
 	sources := []sourceCount{{caller: a, count: 5}}
-	_, ok := heaviestUnservedSource(sources, 0, self, []types.PeerKey{a}, nil)
+	_, ok := heaviestUnservedSource(sources, 0, self, []types.PeerKey{a}, nil, nil)
 	require.False(t, ok)
 }
 
@@ -86,7 +93,7 @@ func TestHeaviestUnservedSource_ExcludesBackedOff(t *testing.T) {
 		{caller: b, count: 5},
 	}
 	backed := map[types.PeerKey]struct{}{a: {}}
-	heaviest, ok := heaviestUnservedSource(sources, 0, self, nil, backed)
+	heaviest, ok := heaviestUnservedSource(sources, 0, self, nil, backed, nil)
 	require.True(t, ok)
 	require.Equal(t, b, heaviest, "heavier-but-backed-off peer must be skipped")
 }
@@ -95,9 +102,21 @@ func TestHeaviestUnservedSource_ExcludesSelfWhenBackedOff(t *testing.T) {
 	self, a := peerKey(1), peerKey(2)
 	sources := []sourceCount{{caller: a, count: 1}}
 	backed := map[types.PeerKey]struct{}{self: {}}
-	heaviest, ok := heaviestUnservedSource(sources, 100, self, nil, backed)
+	heaviest, ok := heaviestUnservedSource(sources, 100, self, nil, backed, nil)
 	require.True(t, ok)
 	require.Equal(t, a, heaviest, "self in backoff must not elect itself even when heaviest")
+}
+
+func TestHeaviestUnservedSource_ExcludesIneligible(t *testing.T) {
+	self, a, b := peerKey(1), peerKey(2), peerKey(3)
+	sources := []sourceCount{
+		{caller: a, count: 100},
+		{caller: b, count: 5},
+	}
+	eligible := func(p types.PeerKey) bool { return p != a }
+	heaviest, ok := heaviestUnservedSource(sources, 0, self, nil, nil, eligible)
+	require.True(t, ok)
+	require.Equal(t, b, heaviest, "ineligible heavier peer must be skipped")
 }
 
 func TestReplicaCountLoop_ScalesUpWhenSelfIsHeaviest(t *testing.T) {
@@ -219,6 +238,48 @@ func TestReplicaCountLoop_FloorSkipsBackedOffPeers(t *testing.T) {
 	rC.now = func() time.Time { return now }
 	rC.tick()
 	require.True(t, storeC.claimed["seed-x"], "next-lex-min peer claims when lex-min is backed off")
+}
+
+func TestReplicaCountLoop_FloorSkipsIneligiblePeer(t *testing.T) {
+	a, b, c := peerKey(1), peerKey(2), peerKey(3)
+	specAuth := &admissionv1.SpecAuth{}
+	mkStore := func() *mockStore {
+		return &mockStore{
+			specs: map[string]state.WorkloadSpecView{
+				"seed-x": {Spec: state.WorkloadSpec{Hash: "seed-x", MinReplicas: 2}, Auth: specAuth},
+			},
+			claims:   map[string]map[types.PeerKey]struct{}{"seed-x": {a: {}}},
+			allPeers: []types.PeerKey{a, b, c},
+			nodes: map[types.PeerKey]state.NodeView{
+				a: {Cert: certWithSubject(a)},
+				b: {Cert: certWithSubject(b)},
+				c: {Cert: certWithSubject(c)},
+			},
+		}
+	}
+	calls := newCallTracker(time.Hour, func(_ map[string]uint64) {})
+	denyForPeer := func(target types.PeerKey) func(*admissionv1.DelegationCert) error {
+		return func(cert *admissionv1.DelegationCert) error {
+			if bytes.Equal(cert.GetClaims().GetSubjectPub(), target[:]) {
+				return wasm.ErrTargetNotFound
+			}
+			return nil
+		}
+	}
+
+	storeB := mkStore()
+	storeB.localID = b
+	bH, _ := newReplicaCountHarness(t, b, defaultReplicaCountCfg(), storeB, calls)
+	bH.gate = &fakeHostGate{denyCert: denyForPeer(b)}
+	bH.tick()
+	require.False(t, storeB.claimed["seed-x"], "ineligible lex-min (b) must not claim")
+
+	storeC := mkStore()
+	storeC.localID = c
+	cH, _ := newReplicaCountHarness(t, c, defaultReplicaCountCfg(), storeC, calls)
+	cH.gate = &fakeHostGate{denyCert: denyForPeer(b)}
+	cH.tick()
+	require.True(t, storeC.claimed["seed-x"], "next-lex-min eligible peer (c) claims when lex-min (b) is ineligible")
 }
 
 func TestReplicaCountLoop_FloorSkipsLocallyOverloadedSelf(t *testing.T) {

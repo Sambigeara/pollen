@@ -22,6 +22,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
+	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -101,6 +102,29 @@ func TestHandleCertPushRotatesOnLeafCertPush(t *testing.T) {
 	}
 }
 
+func TestHandleCertPushForwardsRevokeEventsOnPublisherDowngrade(t *testing.T) {
+	// Cap-downgrade tombstones every locally-published spec via
+	// RevokeOwnSpecs. The returned events must flow out through
+	// Events() so the supervisor cascade can tear down live runtime
+	// state (tunneling bridges, placement claims). Without forwarding,
+	// the spec disappears from gossip but bridged streams stay open.
+	h := newRecipientHarness(t, true)
+	h.state.revokeEvents = []state.Event{state.ServiceChanged{Peer: types.PeerKeyFromBytes(h.selfPub), Name: "samflix"}}
+
+	h.svc.handleCertPushRequest(context.Background(), peerKey(4), &meshv1.CertPushRequest{
+		Cert: h.issueCert(t, false),
+	})
+
+	select {
+	case ev := <-h.svc.Events():
+		got, ok := ev.(state.ServiceChanged)
+		require.True(t, ok, "expected ServiceChanged, got %T", ev)
+		require.Equal(t, "samflix", got.Name)
+	case <-time.After(time.Second):
+		require.FailNow(t, "RevokeOwnSpecs events must reach the supervisor cascade via Events()")
+	}
+}
+
 func TestHandleCertPushRotatesOnAdminToAdminRegrant(t *testing.T) {
 	h := newRecipientHarness(t, true)
 	h.network.setConnectedPeers(peerKey(2), peerKey(3))
@@ -131,7 +155,9 @@ func TestIssueCertInstallsFreshCertIntoLocalCache(t *testing.T) {
 	require.NoError(t, err)
 	subject := types.PeerKeyFromBytes(subjectPub)
 
-	require.NoError(t, svc.IssueCert(context.Background(), subject, false, attrs))
+	caps := auth.LeafCapabilities()
+	caps.Attributes = attrs
+	require.NoError(t, svc.IssueCert(context.Background(), subject, caps))
 
 	got, ok := certs.PeerDelegationCert(subject)
 	require.True(t, ok, "issuer must hold a cached cert for the subject after IssueCert")
@@ -269,6 +295,7 @@ type recipientHarness struct {
 	closer   *fakePeerSessionCloser
 	capTrans *fakeCapTransitioner
 	network  *fakeNetwork
+	state    *fakeClusterState
 }
 
 func newRecipientHarness(t *testing.T, startAsAdmin bool) *recipientHarness {
@@ -322,6 +349,7 @@ func newRecipientHarness(t *testing.T, startAsAdmin bool) *recipientHarness {
 		closer:   closer,
 		capTrans: capTrans,
 		network:  net,
+		state:    st,
 	}
 }
 

@@ -107,9 +107,23 @@ hello   4f3a7c91  pending   0/2       -      30s</span>
     <ul>
       <li><strong>No node has capacity.</strong> The scoring round didn't find a candidate. Add a node, or raise the per-workload limits (<code>--memory</code>, <code>--timeout</code>) to fit on what you have.</li>
       <li><strong>Artifact hasn't replicated yet.</strong> A scheduled host is still pulling the WASM bytes. Watch <code>pln status blobs</code> to confirm the hash is reaching new nodes.</li>
-      <li><strong>Spec policy excludes every node from acting on it.</strong> Rare, but possible if you used <code>--allow-props</code> on a workload such that no node-side identity matches.</li>
+      <li><strong>Spec policy excludes every node from acting on it.</strong> Rare, but possible if you used <code>--allow-prop</code> on a workload such that no node-side identity matches.</li>
     </ul>
     <p><strong>Fix.</strong> Watch the daemon log on the candidate hosts (<code>pln logs -f</code> on each). The supervisor logs scoring decisions and any failures (CAS pull errors, validation failures).</p>
+
+    <h2 id="publish-denied"><code>pln seed</code> fails with <code>publish denied</code></h2>
+    <p><strong>Symptom.</strong></p>
+    <div class="terminal">
+      <span class="cmd">pln seed ./hello.wasm --allow-prop role=admin</span>
+      <span class="out">Error: publish denied: local cert is missing prop "role" (policy requires "admin")</span>
+    </div>
+    <p><strong>Cause.</strong> Hosting a workload includes loopback invocation, so the spec's policy must hold against the host's own cert. The publisher is checked at <code>pln seed</code> time: if the local cert doesn't satisfy the policy, the spec is rejected up front rather than left orphaned in gossip.</p>
+    <p><strong>Fix.</strong> Either remove the offending <code>--allow-prop</code> clause, or grant the local node the required property first:</p>
+    <div class="terminal">
+      <span class="cmd">pln grant $(pln id) --prop role=admin                <span class="cmt"># from an admin shell</span></span>
+      <span class="cmd">pln seed ./hello.wasm --allow-prop role=admin</span>
+    </div>
+    <p>See <a href="concepts.html#authorisation">Authorisation</a> for why hosts are gated alongside callers.</p>
 
     <h2 id="call-denied">Call returns <code>stream closed by peer</code></h2>
     <p><strong>Symptom.</strong></p>
@@ -117,7 +131,7 @@ hello   4f3a7c91  pending   0/2       -      30s</span>
       <span class="cmd">pln call greeter run 'hi'</span>
       <span class="out">Error: stream closed by peer</span>
     </div>
-    <p><strong>Cause.</strong> Authorisation denied. The runtime gate evaluates <code>--allow-props</code> clauses against the caller's cert; failed matches close the stream silently to prevent probing.</p>
+    <p><strong>Cause.</strong> Authorisation denied. The runtime gate evaluates <code>--allow-prop</code> clauses against the caller's cert; failed matches close the stream silently to prevent probing.</p>
     <p><strong>Fix.</strong> Inspect the spec and the caller's cert:</p>
     <div class="terminal">
       <span class="cmd">pln status seeds --wide                        <span class="cmt"># shows policy on the spec</span></span>
@@ -204,6 +218,7 @@ hint: for failed hosts, use `pln invite` and run `pln join &lt;token&gt;` on the
       <a href="#daemon-down">Daemon won't start</a>
       <a href="#peer-offline">Peer offline</a>
       <a href="#seed-not-placed">Seed not placed</a>
+      <a href="#publish-denied">Publish denied</a>
       <a href="#call-denied">Call denied silently</a>
       <a href="#cert-expired">Cert expired</a>
       <a href="#bootstrap-fails">bootstrap ssh fails</a>

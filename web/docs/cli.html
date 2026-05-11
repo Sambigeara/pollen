@@ -99,13 +99,13 @@ pln up -d --name relay --public</code></pre>
     <h2 id="content">Content</h2>
 
     <h3 id="seed"><code>pln seed &lt;source&gt; [name]</code></h3>
-    <p>Publish content to the mesh. The kind is autodetected from the source: <code>.wasm</code> → workload, directory → static site, anything else → blob (or stdin when source is <code>-</code>). Publishing workloads, static sites, and named blobs requires an admin-capable node, because each published resource carries a signed cert anchored to the publisher's admin delegation cert.</p>
+    <p>Publish content to the mesh. The kind is autodetected from the source: <code>.wasm</code> → workload, directory → static site, anything else → blob (or stdin when source is <code>-</code>). Publishing workloads, static sites, and named blobs requires the publisher capability (or admin, which is a strict superset). Each published resource carries a signed cert anchored to the publisher's delegation cert.</p>
     <dl class="flags">
       <dt>--min-replicas &lt;n&gt;</dt><dd>Workload only. Minimum replicas; default 2. Static sites fan out to every node with <code>static-http</code> enabled; blobs replicate on demand.</dd>
       <dt>--everywhere</dt><dd>Workload only. Place a replica on every node.</dd>
       <dt>--memory, --mem &lt;size&gt;</dt><dd>Workload only. Memory limit (e.g. <code>64MiB</code>, <code>1GiB</code>). Default 8MiB; raise it for Go-WASM guests.</dd>
       <dt>--timeout &lt;dur&gt;</dt><dd>Workload only. Per-invocation timeout (e.g. <code>500ms</code>, <code>5s</code>).</dd>
-      <dt>--allow-props key=value</dt><dd>Require the caller's delegation-cert property to equal value. Repeatable; all clauses must match. Without any policy flag the resource is open to every authenticated peer. See <a href="concepts.html#authorisation">Concepts → Authorisation</a>.</dd>
+      <dt>--allow-prop key=value</dt><dd>Require the caller's delegation-cert property to equal value. Repeatable; all clauses must match. Without any policy flag the resource is open to every authenticated peer. See <a href="concepts.html#authorisation">Concepts → Authorisation</a>.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln seed ./hello.wasm</span>
@@ -146,14 +146,14 @@ pln fetch ab12cd34 --from &lt;peer-hex&gt;</code></pre>
     <h2 id="networking">Networking</h2>
 
     <h3 id="serve"><code>pln serve &lt;port&gt; [name]</code></h3>
-    <p>Register a local TCP (or UDP) port as a mesh service. Requires an admin-capable node and is persisted to <code>config.yaml</code>. Every register issues a fresh signed cert anchored to the publisher's admin delegation cert.</p>
+    <p>Register a local TCP (or UDP) port as a mesh service. Requires the publisher capability (or admin) and is persisted to <code>config.yaml</code>. Every register issues a fresh signed cert anchored to the publisher's delegation cert.</p>
     <dl class="flags">
       <dt>--udp</dt><dd>Expose as a UDP service.</dd>
-      <dt>--allow-props key=value</dt><dd>Require the caller's delegation-cert property to equal value. Repeatable; all clauses must match. Without any policy flag the service is open to every authenticated peer. See <a href="concepts.html#authorisation">Concepts → Authorisation</a>.</dd>
+      <dt>--allow-prop key=value</dt><dd>Require the caller's delegation-cert property to equal value. Repeatable; all clauses must match. Without any policy flag the service is open to every authenticated peer. See <a href="concepts.html#authorisation">Concepts → Authorisation</a>.</dd>
     </dl>
     <pre><code>pln serve 8080 api
 pln serve 5353 dns --udp
-pln serve 9000 internal --allow-props team=backend</code></pre>
+pln serve 9000 internal --allow-prop team=backend</code></pre>
 
     <h3 id="unserve"><code>pln unserve &lt;port|name&gt;</code></h3>
     <p>Unregister a local mesh service. Removes it from <code>config.yaml</code>; open tunnels from peers terminate.</p>
@@ -189,27 +189,31 @@ cluster_id: a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2</sp
     </dl>
 
     <h3 id="invite"><code>pln invite [subject-pub]</code></h3>
-    <p>Mint a signed invite token. Pass to <code>pln join</code>. Requires admin capability.</p>
+    <p>Mint a signed invite token. Pass to <code>pln join</code>. Requires admin capability on the issuing node. The default tier is leaf (consume only); pass <code>--publisher</code> or <code>--admin</code> to widen.</p>
     <dl class="flags">
       <dt>--subject &lt;hex&gt;</dt><dd>Bind to a specific node public key. Without it, the token admits any node.</dd>
       <dt>--ttl &lt;dur&gt;</dt><dd>Token validity (default 5m).</dd>
       <dt>--expire-after &lt;dur&gt;</dt><dd>Hard access expiry on the issued cert.</dd>
-      <dt>--admin</dt><dd>Mint the joiner's cert with full admin capability. The issuer must itself be admin-capable.</dd>
+      <dt>--publisher</dt><dd>Mint the joiner's cert with publisher capability so it can publish workloads, blobs, services, and static sites.</dd>
+      <dt>--admin</dt><dd>Mint the joiner's cert with admin capabilities (delegate, admit, publish). The issuer must itself be admin-capable. Mutually exclusive with <code>--publisher</code>.</dd>
       <dt>--prop key=val</dt><dd>Properties baked into the joining peer's cert. Repeatable; accepts <code>key=value</code>, a JSON object, or <code>-</code> to read JSON from stdin.</dd>
     </dl>
     <pre><code>pln invite --ttl 30m --prop role=worker
-pln invite --subject $(ssh joiner pln id) --prop tier=gold
+pln invite --publisher --subject $(ssh worker pln id)
 pln invite --admin --subject $(ssh relay pln id)</code></pre>
 
     <h3 id="grant"><code>pln grant &lt;peer-id&gt;</code></h3>
-    <p>Issue a fresh delegation cert to a connected peer. Identify by peer-id prefix.</p>
+    <p>Issue a fresh delegation cert to a connected peer. Identify by peer-id prefix. Default tier is leaf.</p>
     <dl class="flags">
-      <dt>--admin</dt><dd>Delegate admin authority (so the cluster keeps working with root offline).</dd>
+      <dt>--publisher</dt><dd>Grant publisher capability so the peer can publish resources.</dd>
+      <dt>--admin</dt><dd>Delegate admin authority (so the cluster keeps working with root offline). Mutually exclusive with <code>--publisher</code>.</dd>
       <dt>--prop key=val</dt><dd>Cert properties.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln grant ab12cd34 --prop role=lead --prop team=backend</span>
       <span class="out">certificate issued (leaf) to ab12cd34</span>
+      <span class="cmd">pln grant worker1 --publisher</span>
+      <span class="out">certificate issued (publisher) to 8c4d2f9a</span>
       <span class="cmd">pln grant relay1 --admin</span>
       <span class="out">certificate issued (admin) to ab12cd34</span>
     </div>
@@ -227,7 +231,8 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
     <h3 id="bootstrap"><code>pln bootstrap ssh [name=]&lt;target&gt; …</code></h3>
     <p>Install Pollen, enrol, and start the daemon on each SSH target in parallel. Linux only. Needs SSH as root or with passwordless sudo. Targets may also be piped from stdin (one per line) using <code>-</code>.</p>
     <dl class="flags">
-      <dt>--admin</dt><dd>Delegate admin authority to every enrolled node.</dd>
+      <dt>--publisher</dt><dd>Issue publisher capability to every enrolled node.</dd>
+      <dt>--admin</dt><dd>Delegate admin authority to every enrolled node. Mutually exclusive with <code>--publisher</code>.</dd>
       <dt>--prop key=val</dt><dd>Properties baked into every enrolled node's cert. Repeatable; accepts <code>key=value</code>, a JSON object, or <code>-</code> to read JSON from stdin.</dd>
       <dt>--relay-port &lt;n&gt;</dt><dd>Relay UDP port to advertise (default 60611).</dd>
       <dt>--expire-after &lt;dur&gt;</dt><dd>Hard access expiry on the issued cert.</dd>
@@ -240,6 +245,7 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
 
 1 succeeded, 0 failed</span>
       <span class="cmd">pln bootstrap ssh relay-eu=root@10.0.0.5 relay-us=root@10.0.0.6 --admin</span>
+      <span class="cmd">pln bootstrap ssh worker=root@10.0.0.7 --publisher</span>
       <span class="cmd">echo "media=alice@10.0.0.5" | pln bootstrap ssh -</span>
     </div>
 

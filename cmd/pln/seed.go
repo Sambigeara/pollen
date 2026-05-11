@@ -141,8 +141,8 @@ func validateSeedFlags(cmd *cobra.Command, kind seedKind) error {
 			}
 		}
 	}
-	if kind == kindStatic && cmd.Flags().Changed("allow-props") {
-		return fmt.Errorf("--allow-props not supported for static sites; HTTP serving is unauthenticated")
+	if kind == kindStatic && cmd.Flags().Changed("allow-prop") {
+		return fmt.Errorf("--allow-prop not supported for static sites; HTTP serving is unauthenticated")
 	}
 	return nil
 }

@@ -47,7 +47,7 @@ func (c *ClusterAuth) TokenFor(t testing.TB, subject, bootstrapPub ed25519.Publi
 	token, err := signer.IssueJoinToken(subject, []*admissionv1.BootstrapPeer{{
 		PeerPub: bootstrapPub,
 		Addrs:   []string{bootstrapAddr},
-	}}, now, time.Hour, membershipTTL, time.Time{}, nil, false)
+	}}, now, time.Hour, membershipTTL, time.Time{}, auth.LeafCapabilities())
 	require.NoError(t, err)
 	return token
 }

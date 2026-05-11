@@ -132,6 +132,71 @@ func TestHandlePeerDenied(t *testing.T) {
 	require.Empty(t, svc.ListDesiredConnections())
 }
 
+func TestUnexposeService_TearsDownAfterExternalTombstone(t *testing.T) {
+	// Cap-downgrade cascade: state.RevokeOwnSpecs tombstones the spec
+	// in gossip, then the supervisor calls UnexposeService to clean up
+	// runtime state. UnexposeService must close active bridges even
+	// though RemoveService is a no-op on the already-tombstoned spec.
+	self := types.PeerKey{1}
+	peer := types.PeerKey{2}
+	store := &mockStore{snap: state.Snapshot{LocalID: self, Nodes: map[types.PeerKey]state.NodeView{self: {}}}}
+	svc := New(self, store, &mockTransport{}, &mockDatagramTransport{}, &mockRouter{})
+
+	app, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = app.Close() })
+	appPort := uint32(app.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert
+
+	require.NoError(t, svc.ExposeService(appPort, "samflix", statev1.ServiceProtocol_SERVICE_PROTOCOL_TCP, nil))
+
+	appAccepted := make(chan net.Conn, 1)
+	go func() {
+		c, _ := app.Accept()
+		appAccepted <- c
+	}()
+
+	streamSrv, streamPeer := net.Pipe()
+	t.Cleanup(func() { _ = streamPeer.Close() })
+
+	svc.Serve(streamSrv, peer, appPort)
+
+	select {
+	case c := <-appAccepted:
+		t.Cleanup(func() { _ = c.Close() })
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "bridge did not dial local app")
+	}
+
+	require.Eventually(t, func() bool {
+		svc.mu.RLock()
+		defer svc.mu.RUnlock()
+		return len(svc.activeServes["samflix"]) == 1
+	}, time.Second, 10*time.Millisecond, "Serve should register active session")
+
+	// Simulate RevokeOwnSpecs: state is already tombstoned before the
+	// supervisor dispatch routes the ServiceChanged event to us.
+	store.mu.Lock()
+	delete(store.snap.Nodes[self].Services, "samflix")
+	store.mu.Unlock()
+
+	require.NoError(t, svc.UnexposeService("samflix"))
+
+	_ = streamPeer.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1)
+	_, readErr := streamPeer.Read(buf)
+	require.Error(t, readErr)
+	require.True(t,
+		errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrClosedPipe),
+		"unexpected error after external tombstone + UnexposeService: %v", readErr,
+	)
+
+	require.Eventually(t, func() bool {
+		svc.mu.RLock()
+		defer svc.mu.RUnlock()
+		return len(svc.activeServes["samflix"]) == 0
+	}, time.Second, 10*time.Millisecond, "active session should deregister after bridge exit")
+}
+
 func TestRevokeService_ClosesActiveServe(t *testing.T) {
 	self := types.PeerKey{1}
 	peer := types.PeerKey{2}

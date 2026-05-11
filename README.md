@@ -64,38 +64,39 @@ first-connect permissions note.
 ### Two commands to a cluster
 
 ```bash
-pln init                                # creates a new cluster rooted here
-pln bootstrap ssh user@host [--admin]   # requires passwordless SSH + sudo
+pln init                                                  # creates a new cluster rooted here
+pln bootstrap ssh user@host [--publisher|--admin]         # requires passwordless SSH + sudo
 ```
 
 You have a zero-trust mesh, a peer-to-peer artifact store, and a WASM
 runtime. Public nodes automatically become relays, so the mesh handles
-NAT traversal without configuration. Pass `--admin` to delegate admin
-authority to the new node, so your root machine doesn't need to stay
-online.
+NAT traversal without configuration. Pass `--publisher` to let the new
+node publish workloads and services, or `--admin` for full delegation
+authority so your root machine doesn't need to stay online.
 
 ### Add more nodes
 
 **With SSH.** From any admin node:
 
 ```bash
-pln bootstrap ssh user@host [--admin] [--prop region=eu]
+pln bootstrap ssh user@host [--publisher|--admin] [--prop region=eu]
 
 # Or pipe labelled targets from stdin or a file:
 echo "media=alice@10.0.0.5" | pln bootstrap ssh -
 ```
 
 Installs Pollen, enrols in the cluster, and starts. Linux targets only;
-needs SSH as root or passwordless sudo. `--admin` delegates admin
-authority; `--prop` bakes properties into each joiner's cert at issue
-time; prefix a target with `name=` to label the node. Run
-`pln bootstrap ssh --help` for the full flag set.
+needs SSH as root or passwordless sudo. The default tier is leaf
+(consume only); `--publisher` allows the joiner to publish, `--admin`
+delegates full admin authority. `--prop` bakes properties into each
+joiner's cert at issue time; prefix a target with `name=` to label the
+node. Run `pln bootstrap ssh --help` for the full flag set.
 
 **Out-of-band.** Mint a token on an admin node, ship it to the joiner:
 
 ```bash
 # Admin node:
-pln invite [--admin] [--subject foo]   # subject is the joiner's `pln id`
+pln invite [--publisher|--admin] [--subject foo]   # subject is the joiner's `pln id`
 
 # New node:
 pln join <token>
@@ -134,9 +135,10 @@ pln call hello greet '{"name":"world"}'
 *locally* whether to claim a replica, scoring themselves on available
 capacity, cached artifacts, and proximity to traffic. There is no central
 scheduler. When a node goes down, survivors pick up the slack.
-Publishing workloads, static sites, named blobs, and services requires an
-admin-capable node: each published resource carries a signed cert anchored
-to the publisher's admin delegation cert.
+Publishing workloads, static sites, named blobs, and services requires
+the publisher capability (or admin, which is a strict superset). Each
+published resource carries a signed cert anchored to the publisher's
+delegation cert.
 
 Example modules live in [`examples/`](examples/). Run `pln --help` for
 the full CLI reference.
@@ -155,10 +157,18 @@ original caller.
 
 ### Grant capabilities
 
+Pollen has three tiers. Pick the smallest that does the job.
+
+- **Leaf** (default): can call workloads and connect to services. Cannot publish, cannot delegate.
+- **Publisher** (`--publisher`): can publish workloads, services, blobs, and static sites. Cannot delegate further.
+- **Admin** (`--admin`): everything publisher can do, plus admit and grant new peers. Only the root admin can mint other admins.
+
 ```bash
-# Delegate admin authority to an existing peer; handy for keeping
-# the mesh operable (admissions, cert re-issues, etc.) with the root
-# node offline:
+# Grant publisher capability to an existing peer:
+pln grant <peer-id> --publisher
+
+# Delegate admin authority; useful for keeping the mesh operable
+# (admissions, cert re-issues) with the root node offline:
 pln grant <peer-id> --admin
 
 # Bake arbitrary key/value properties into a peer's cert. Seeds see
@@ -167,15 +177,15 @@ pln grant <peer-id> --admin
 pln grant <peer-id> --prop role=lead --prop team=backend
 
 # Or bake them in at join time, on either path:
-pln invite --prop role=engineer --prop team=backend
-pln bootstrap ssh root@host --prop region=eu --prop tier=edge
+pln invite --publisher --prop role=engineer --prop team=backend
+pln bootstrap ssh root@host --admin --prop region=eu --prop tier=edge
 
 # Pipe a JSON payload from a file:
 cat props.json | pln grant <peer-id> --prop -
 
 # Set the root node's own properties at init time (or replace
 # them later with `pln props`):
-pln init  --prop role=primary --prop region=eu
+pln init --prop role=primary --prop region=eu
 pln props role=primary region=eu        # replace
 pln props --clear                       # wipe
 ```
@@ -185,8 +195,8 @@ pln props --clear                       # wipe
 ```bash
 # Require a property on the caller's cert; repeatable, all
 # clauses must match:
-pln serve 8080 internal --allow-props team=backend
-pln seed ./hello.wasm --allow-props role=lead
+pln serve 8080 internal --allow-prop team=backend
+pln seed ./hello.wasm --allow-prop role=lead
 ```
 
 Policy clauses ride on the spec's signed cert. The runtime gate

@@ -18,7 +18,6 @@ import (
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func (s *Service) checkCertExpiry() bool {
@@ -163,24 +162,46 @@ func (s *Service) applyNewCert(newCert *admissionv1.DelegationCert) error {
 		return err
 	}
 
+	// If the new cert strips publish authority, tombstone every spec
+	// this node owns while the old signer is still wired into the store.
+	// Without this, services and seeds the peer published as a publisher
+	// keep gossiping under their old (still-cryptographically-valid)
+	// SpecAuth even after the admin downgrades them. The returned events
+	// must be forwarded so the supervisor cascade tears down live
+	// runtime state (tunneling bridges, placement claims) alongside
+	// the gossip tombstones.
+	oldCaps := s.creds.Cert().GetClaims().GetCapabilities()
+	if oldCaps.GetCanPublish() && !newCert.GetClaims().GetCapabilities().GetCanPublish() {
+		revokeEvents, revokeErr := s.store.RevokeOwnSpecs()
+		if revokeErr != nil {
+			s.log.Warnw("revoke own specs on cap downgrade", "err", revokeErr)
+		}
+		s.forwardEvents(revokeEvents)
+	}
+
 	s.certs.UpdateMeshCert(tlsCert)
 	s.creds.SetCert(newCert)
 
-	// DelegationSigner captures its issuer cert by value, so every
-	// renewal must rebuild it; otherwise SpecAuth issuance and invite
-	// minting keep embedding the about-to-expire cert as publisher and
-	// fresh joiners reject those events once the old TTL elapses. The
-	// cert-push path used to handle this externally; folding it in here
-	// covers root self-renewal and routed admin renewal too. Gated on
-	// CanDelegate so leaf renewals (no signer) stay a no-op; the
-	// admin→leaf transition is still handled by the caller because it
-	// needs the prior capability to decide whether to downgrade.
-	if newCert.GetClaims().GetCapabilities().GetCanDelegate() {
+	// Signers capture their issuer cert by value, so every renewal must
+	// rebuild them; otherwise SpecAuth issuance and invite minting keep
+	// embedding the about-to-expire cert as publisher and fresh joiners
+	// reject those events once the old TTL elapses. Admin→non-admin
+	// transitions still happen in the caller, which has the prior
+	// capability to decide whether to clear the delegation key.
+	switch caps := newCert.GetClaims().GetCapabilities(); {
+	case caps.GetCanDelegate():
 		signer := auth.NewDelegationSignerFromCert(s.signPriv, newCert)
 		s.creds.SetDelegationKey(signer)
 		if s.capTransition != nil {
 			s.capTransition.UpgradeToAdmin(signer)
 		}
+	case caps.GetCanPublish():
+		signer := auth.NewSpecSignerFromCert(s.signPriv, newCert)
+		s.creds.SetSpecSigner(signer)
+		// Refresh the store's signer too: cert renewal goes through
+		// applyNewCert without touching capTransition, so without this
+		// the store keeps the about-to-expire signer.
+		s.store.SetLocalSigner(signer)
 	}
 
 	if err := auth.SaveNodeCredentials(auth.IdentityPath(s.pollenDir), s.creds); err != nil {
@@ -286,27 +307,24 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 	s.certs.SetPeerDelegationCert(from, newCert)
 }
 
-func (s *Service) IssueCert(ctx context.Context, peerKey types.PeerKey, admin bool, attributes *structpb.Struct) error {
+func (s *Service) IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps *admissionv1.Capabilities) error {
+	if certCaps == nil {
+		return errors.New("cert caps must be provided")
+	}
 	signer := s.creds.DelegationKey()
 	if signer == nil {
 		return errors.New("this node has no delegation authority")
 	}
-	if admin && !signer.IsRoot() {
+	if certCaps.GetCanAdmit() && !signer.IsRoot() {
 		return errors.New("only the root admin can issue admin certificates")
 	}
 
-	caps := auth.LeafCapabilities()
-	if admin {
-		caps = auth.FullCapabilities()
-	}
-	caps.Attributes = attributes
-
 	now := time.Now()
 	ttl := s.membershipTTL
-	if admin {
+	if certCaps.GetCanAdmit() {
 		ttl = auth.DefaultDelegationTTL
 	}
-	cert, err := signer.IssueMemberCert(peerKey.Bytes(), caps, now, now.Add(ttl), time.Time{})
+	cert, err := signer.IssueMemberCert(peerKey.Bytes(), certCaps, now, now.Add(ttl), time.Time{})
 	if err != nil {
 		return fmt.Errorf("issue cert: %w", err)
 	}
@@ -337,13 +355,22 @@ func (s *Service) handleCertPushRequest(ctx context.Context, from types.PeerKey,
 		return
 	}
 
-	newCanDelegate := newCert.GetClaims().GetCapabilities().GetCanDelegate()
+	newCaps := newCert.GetClaims().GetCapabilities()
+	newCanDelegate := newCaps.GetCanDelegate()
 	// The upgrade/regrant case is handled inside applyNewCert; only
 	// the downgrade needs the prior capability to know it has to
-	// strip the signer and clear the admin marker.
+	// strip the delegation key and clear the admin marker. Publishers
+	// keep a spec signer so they can still publish resources.
 	if !newCanDelegate {
 		s.creds.SetDelegationKey(nil)
-		s.capTransition.DowngradeToLeaf()
+		var specSigner *auth.SpecSigner
+		if newCaps.GetCanPublish() {
+			specSigner = auth.NewSpecSignerFromCert(s.signPriv, newCert)
+			s.creds.SetSpecSigner(specSigner)
+		} else {
+			s.creds.SetSpecSigner(nil)
+		}
+		s.capTransition.DowngradeFromAdmin(specSigner)
 	}
 
 	s.log.Infow("certificate pushed", "from", from.Short(), "can_delegate", newCanDelegate)

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -127,6 +128,38 @@ func TestService_Unseed_UnknownHash(t *testing.T) {
 	s, _ := newServiceForUnseedTests(peerKey(1), &mockStore{})
 
 	require.ErrorIs(t, s.Unseed("deadbeef"), ErrNotRunning)
+}
+
+func TestService_Seed_RejectsWhenPublisherFailsPolicy(t *testing.T) {
+	local := peerKey(1)
+	store := &mockStore{}
+	gate := &publishDenyGate{denyPublish: errors.New(`local cert is missing prop "role" (policy requires "admin")`)}
+
+	s := New(local, store, &mockBlobs{}, nil, WithGate(gate))
+
+	err := s.Seed([]byte("ignored"), state.WorkloadSpec{
+		Hash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		Name: "guarded",
+	}, nil)
+	require.ErrorIs(t, err, ErrPublishDenied)
+	require.Contains(t, err.Error(), `missing prop "role"`)
+	require.Equal(t, 0, store.publishCount(), "must not publish a spec the publisher can't satisfy")
+}
+
+type publishDenyGate struct {
+	denyPublish error
+}
+
+func (g *publishDenyGate) Invoke(types.PeerKey, string) (wasm.CallerInfo, error) {
+	return wasm.CallerInfo{}, nil
+}
+
+func (g *publishDenyGate) MayHost(*admissionv1.DelegationCert, *admissionv1.SpecAuth) error {
+	return nil
+}
+
+func (g *publishDenyGate) MayPublish(*admissionv1.DelegationCert, *admissionv1.Predicate) error {
+	return g.denyPublish
 }
 
 func TestService_Call_UnknownTarget(t *testing.T) {

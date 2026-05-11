@@ -6,6 +6,7 @@ package gate
 import (
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
@@ -80,17 +81,24 @@ func (g *Gate) Invoke(peerKey types.PeerKey, hash string) (wasm.CallerInfo, erro
 	return wasm.CallerInfo{PeerKey: peerKey, Attributes: caller.Cert.GetClaims().GetCapabilities().GetAttributes().AsMap()}, nil
 }
 
+// Fetch authorises callerKey to read the CAS object at hash. The same
+// stream type carries both blob-spec payloads and workload binaries, so
+// the lookup falls through from BlobSpecs to Specs — without the second
+// branch, a non-publisher replica can never fetch the wasm bytes from
+// the publisher and stays stuck in a fetch-EOF loop.
 func (g *Gate) Fetch(peerKey types.PeerKey, hash string) error {
 	snap := g.store.Snapshot()
 	caller, ok := snap.Nodes[peerKey]
 	if !ok || caller.Cert == nil {
 		return wasm.ErrTargetNotFound
 	}
-	view, ok := snap.BlobSpecs[hash]
-	if !ok || view.Auth == nil {
-		return wasm.ErrTargetNotFound
+	if view, ok := snap.BlobSpecs[hash]; ok && view.Auth != nil {
+		return decide(caller.Cert, view.Auth, time.Now())
 	}
-	return decide(caller.Cert, view.Auth, time.Now())
+	if sv, ok := snap.Specs[hash]; ok && sv.Auth != nil {
+		return decide(caller.Cert, sv.Auth, time.Now())
+	}
+	return wasm.ErrTargetNotFound
 }
 
 // Connect authorises callerKey to open a connection to (hostPeer, port).
@@ -126,15 +134,65 @@ func (g *Gate) MayHost(hostCert *admissionv1.DelegationCert, specAuth *admission
 	return decide(hostCert, specAuth, time.Now())
 }
 
+// MayPublish reports whether cert satisfies policy at publish time.
+// The returned error is descriptive so the local publisher can see
+// exactly why their cert doesn't qualify. The other gate methods
+// (Invoke, Fetch, Connect, MayHost) return opaque ErrTargetNotFound
+// to avoid leaking admission state to remote callers; MayPublish
+// runs against the local cert only, so descriptive errors are safe.
+//
+// A nil policy is always permitted, even when cert is nil, so that
+// publishes during the bootstrap window (before the local cert lands
+// in gossip) keep working.
+func (g *Gate) MayPublish(cert *admissionv1.DelegationCert, policy *admissionv1.Predicate) error {
+	if policy == nil {
+		return nil
+	}
+	if cert == nil {
+		return errors.New("local cert is not yet published")
+	}
+	if auth.IsCertExpired(cert, time.Now()) {
+		return errors.New("local cert is expired")
+	}
+	return checkPolicyClauses(cert, policy)
+}
+
 func decide(cert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth, now time.Time) error {
 	if auth.IsCertExpired(cert, now) {
 		return wasm.ErrTargetNotFound
 	}
-	policy := specAuth.GetPolicy()
-	if policy != nil && policy.GetInline() == nil {
+	if err := checkPolicyClauses(cert, specAuth.GetPolicy()); err != nil {
 		return wasm.ErrTargetNotFound
 	}
+	return nil
+}
 
+// checkPolicyClauses returns nil if cert satisfies every clause of
+// policy, or a descriptive error otherwise. A nil policy is permitted;
+// a policy without inline clauses is rejected (no other shapes are
+// supported today).
+func checkPolicyClauses(cert *admissionv1.DelegationCert, policy *admissionv1.Predicate) error {
+	if policy == nil {
+		return nil
+	}
+	inline := policy.GetInline()
+	if inline == nil {
+		return errors.New("policy has no inline clauses")
+	}
+	ctx := certContext(cert)
+	for _, clause := range inline.GetClauses() {
+		got, ok := ctx[clause.GetKey()]
+		if !ok {
+			return fmt.Errorf("local cert is missing prop %q (policy requires %q)", clause.GetKey(), clause.GetEquals())
+		}
+		if got != clause.GetEquals() {
+			return fmt.Errorf("local cert prop %q is %q; policy requires %q", clause.GetKey(), got, clause.GetEquals())
+		}
+	}
+	return nil
+}
+
+func certContext(cert *admissionv1.DelegationCert) map[string]string {
 	ctx := make(map[string]string)
 	for k, v := range cert.GetClaims().GetCapabilities().GetAttributes().GetFields() {
 		if s := v.GetStringValue(); s != "" {
@@ -142,14 +200,7 @@ func decide(cert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth, no
 		}
 	}
 	ctx[CallerKey] = hex.EncodeToString(cert.GetClaims().GetSubjectPub())
-
-	for _, clause := range policy.GetInline().GetClauses() {
-		got, ok := ctx[clause.GetKey()]
-		if !ok || got != clause.GetEquals() {
-			return wasm.ErrTargetNotFound
-		}
-	}
-	return nil
+	return ctx
 }
 
 // resolveSeedSpec accepts either a workload hash or a workload name.

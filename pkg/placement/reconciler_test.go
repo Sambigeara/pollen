@@ -26,14 +26,15 @@ func testBackoff(t *testing.T) *backoff {
 }
 
 type mockStore struct {
-	mu       sync.Mutex
-	specs    map[string]state.WorkloadSpecView
-	claims   map[string]map[types.PeerKey]struct{}
-	allPeers []types.PeerKey
-	claimed  map[string]bool
-	draining map[string]bool
-	nodes    map[types.PeerKey]state.NodeView
-	localID  types.PeerKey
+	mu        sync.Mutex
+	specs     map[string]state.WorkloadSpecView
+	claims    map[string]map[types.PeerKey]struct{}
+	allPeers  []types.PeerKey
+	claimed   map[string]bool
+	draining  map[string]bool
+	nodes     map[types.PeerKey]state.NodeView
+	localID   types.PeerKey
+	published int
 }
 
 func (m *mockStore) Snapshot() state.Snapshot {
@@ -87,7 +88,16 @@ func (m *mockStore) Snapshot() state.Snapshot {
 }
 
 func (m *mockStore) PublishWorkload(state.WorkloadSpec, *admissionv1.Predicate) ([]state.Event, error) {
+	m.mu.Lock()
+	m.published++
+	m.mu.Unlock()
 	return nil, nil
+}
+
+func (m *mockStore) publishCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.published
 }
 
 func (m *mockStore) DeleteWorkloadSpec(hash string) ([]state.Event, error) {
@@ -178,18 +188,28 @@ func (m *mockBlobs) Fetch(_ context.Context, _ string, _ []types.PeerKey) error 
 }
 
 type fakeHostGate struct {
-	deny func(*admissionv1.SpecAuth) error
+	deny     func(*admissionv1.SpecAuth) error
+	denyCert func(*admissionv1.DelegationCert) error
 }
 
 func (f *fakeHostGate) Invoke(types.PeerKey, string) (wasm.CallerInfo, error) {
 	return wasm.CallerInfo{}, nil
 }
 
-func (f *fakeHostGate) MayHost(_ *admissionv1.DelegationCert, sa *admissionv1.SpecAuth) error {
+func (f *fakeHostGate) MayHost(cert *admissionv1.DelegationCert, sa *admissionv1.SpecAuth) error {
+	if f.denyCert != nil {
+		if err := f.denyCert(cert); err != nil {
+			return err
+		}
+	}
 	if f.deny == nil {
 		return nil
 	}
 	return f.deny(sa)
+}
+
+func (f *fakeHostGate) MayPublish(*admissionv1.DelegationCert, *admissionv1.Predicate) error {
+	return nil
 }
 
 func TestReconcile_FiltersSpecsByHostPolicy(t *testing.T) {
@@ -244,8 +264,10 @@ func TestReconcile_EvictsClaimWhenPolicyDenies(t *testing.T) {
 
 	ms.mu.Lock()
 	stillClaimed := ms.claimed[hash]
+	stillDraining := ms.draining[hash]
 	ms.mu.Unlock()
 	require.False(t, stillClaimed, "policy denial must release in-flight claim immediately, no cooldown")
+	require.False(t, stillDraining, "policy-denied claim must not be re-marked draining by the action loop in the same tick")
 }
 
 func TestExecuteClaim_RejectsClaimWhenPolicyDenies(t *testing.T) {

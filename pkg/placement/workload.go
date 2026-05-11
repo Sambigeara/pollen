@@ -28,6 +28,7 @@ var (
 	ErrStore          = errors.New("store blob")
 	ErrCompile        = errors.New("compile module")
 	ErrWorkloadFailed = errors.New("workload execution failed")
+	ErrPublishDenied  = errors.New("publish denied")
 )
 
 type WASMRuntime interface {

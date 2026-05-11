@@ -15,6 +15,7 @@ message Capabilities {
   bool can_admit = 2;
   uint32 max_depth = 3;
   google.protobuf.Struct attributes = 4;
+  bool can_publish = 5;
 }
 
 message DelegationCertClaims {
@@ -68,8 +69,9 @@ message InviteTokenClaims {
   int64 issued_at_unix = 5;
   int64 expires_at_unix = 6;
   int64 membership_ttl_seconds = 7;
-  google.protobuf.Struct attributes = 8;
-  bool admin = 9;
+  reserved 8, 9;
+  reserved "attributes", "admin";
+  Capabilities cert_caps = 10 [(buf.validate.field).required = true];
 }
 
 message InviteToken {

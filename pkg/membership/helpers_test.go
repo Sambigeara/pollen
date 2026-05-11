@@ -91,6 +91,7 @@ type fakeClusterState struct {
 	flushedEvents  []*statev1.GossipEvent
 	localReachable []types.PeerKey
 	localCoord     coords.Coord
+	revokeEvents   []state.Event
 }
 
 func newFakeClusterState(localID types.PeerKey) *fakeClusterState {
@@ -176,6 +177,14 @@ func (f *fakeClusterState) SetLocalDelegationCert(_ *admissionv1.DelegationCert,
 	return nil
 }
 
+func (f *fakeClusterState) SetLocalSigner(_ state.LocalSigner) {}
+
+func (f *fakeClusterState) RevokeOwnSpecs() ([]state.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.revokeEvents, nil
+}
+
 func (f *fakeClusterState) EmitHeartbeatIfNeeded() []state.Event {
 	return nil
 }
@@ -254,7 +263,7 @@ type fakeCapTransitioner struct {
 }
 
 func (f *fakeCapTransitioner) UpgradeToAdmin(*auth.DelegationSigner) { f.upgraded.Store(true) }
-func (f *fakeCapTransitioner) DowngradeToLeaf()                      { f.downgraded.Store(true) }
+func (f *fakeCapTransitioner) DowngradeFromAdmin(*auth.SpecSigner)   { f.downgraded.Store(true) }
 
 type fakePeerSessionCloser struct {
 	mu     sync.Mutex

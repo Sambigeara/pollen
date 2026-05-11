@@ -80,9 +80,10 @@ SSH target in parallel. Targets must accept SSH as root or with
 passwordless sudo. Linux only.
 
 Prefix a target with ` + "`name=`" + ` to label the node, or pipe a list of targets
-on stdin via ` + "`-`" + `. Pass --admin to delegate admin authority to the new
-relay so the cluster keeps working with the root offline. Properties
-passed via --prop are baked into each relay's membership cert.
+on stdin via ` + "`-`" + `. The default tier is leaf; pass --publisher to allow
+the node to publish resources, or --admin to also delegate admit and
+grant authority so the cluster keeps working with the root offline.
+Properties passed via --prop are baked into each node's membership cert.
 
 Pass --no-up to skip starting the local daemon when the orchestrator
 also enrols itself as a cluster member.
@@ -98,7 +99,8 @@ standard port so the node is remotely manageable out of the box.`,
 	}
 	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
 	sshCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the relay peer")
-	sshCmd.Flags().Bool("admin", false, "Issue with full admin capabilities")
+	sshCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
+	sshCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
 	sshCmd.Flags().Bool("no-up", false, "Enrol the orchestrator without starting its local daemon")
 	sshCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin (applied to every target)")
 
@@ -140,10 +142,13 @@ once enrolment succeeds; use --no-up to defer.`,
 		Long: `Mints a signed invite token. Pass to ` + "`pln join`" + ` on the joining node.
 Tokens are time-limited (--ttl) and may bind to a specific subject key
 or carry hard access deadlines. Properties are baked into the issued
-cert and surfaced to seeds at call time. Pass --admin to issue an
-admin-capable membership cert on join (so the invited peer can in turn
-admit and grant).`,
-		Example: "  pln invite --ttl 30m --prop role=worker\n  pln invite --subject $(ssh laptop pln id) --prop role=editor\n  pln invite --admin --subject $(ssh relay pln id)",
+cert and surfaced to seeds at call time.
+
+The default tier is leaf (consume only). Pass --publisher to allow
+the peer to publish workloads, blobs, services, and static sites.
+Pass --admin to additionally allow admitting peers and delegating
+further certs.`,
+		Example: "  pln invite --ttl 30m --prop role=worker\n  pln invite --publisher --subject $(ssh worker pln id)\n  pln invite --admin --subject $(ssh relay pln id)",
 		Args:    cobra.RangeArgs(0, 1),
 		RunE:    withEnv(runInvite),
 	}
@@ -151,7 +156,8 @@ admit and grant).`,
 	inviteCmd.Flags().Duration("ttl", defaultInviteTTL, "Invite token validity duration")
 	inviteCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the invited peer")
 	inviteCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin")
-	inviteCmd.Flags().Bool("admin", false, "Issue with full admin capabilities")
+	inviteCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
+	inviteCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
 
 	adminCmd := &cobra.Command{Use: "admin", Short: "Manage admin keys (advanced)"}
 	adminCmd.AddCommand(&cobra.Command{
@@ -174,14 +180,16 @@ admit and grant).`,
 		Use:   "grant <peer-id>",
 		Short: "Grant a certificate to a connected peer",
 		Long: `Issues a fresh delegation cert to an already-connected peer. Use
---admin to delegate admin authority (so the cluster stays operable
-without the root). Properties are baked into the cert and visible to
-seeds and the policy router.`,
-		Example: "  pln grant ab12cd34 --prop role=lead --prop team=backend\n  pln grant relay1 --admin",
+--publisher to grant publishing rights, or --admin to delegate full
+admin authority (so the cluster stays operable without the root).
+Properties are baked into the cert and visible to seeds and the
+policy router.`,
+		Example: "  pln grant ab12cd34 --prop role=lead --prop team=backend\n  pln grant worker1 --publisher\n  pln grant relay1 --admin",
 		Args:    cobra.ExactArgs(1),
 		RunE:    withEnv(runGrant),
 	}
-	grantCmd.Flags().Bool("admin", false, "Issue with full admin capabilities")
+	grantCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
+	grantCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
 	grantCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin")
 
 	initCmd := &cobra.Command{
@@ -465,12 +473,15 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if err != nil {
 		return err
 	}
-	admin, _ := cmd.Flags().GetBool("admin")
-	if admin && !signer.IssuerCert().GetClaims().GetCapabilities().GetCanAdmit() {
-		return errors.New("--admin requires a node with admin capability")
+	certCaps, err := capsFromFlags(cmd, attrs)
+	if err != nil {
+		return err
+	}
+	if err := validateCapsAgainstSigner(certCaps, signer.IssuerCert().GetClaims().GetCapabilities()); err != nil {
+		return err
 	}
 
-	token, err := signer.IssueInviteToken(subjectPub, bootstrap, time.Now(), ttl, expireAfter, attrs, admin)
+	token, err := signer.IssueInviteToken(subjectPub, bootstrap, time.Now(), ttl, expireAfter, certCaps)
 	if err != nil {
 		return err
 	}
@@ -528,8 +539,11 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return fmt.Errorf("invalid relay port %d", relayPort)
 	}
 	expireAfter, _ := cmd.Flags().GetDuration("expire-after")
-	delegateAdmin, _ := cmd.Flags().GetBool("admin")
 	attrs, err := parseProperties(cmd)
+	if err != nil {
+		return err
+	}
+	certCaps, err := capsFromFlags(cmd, attrs)
 	if err != nil {
 		return err
 	}
@@ -543,8 +557,8 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if err != nil {
 		return errors.New("this node cannot issue tokens; only delegated admins can sign enrollment tokens")
 	}
-	if delegateAdmin && !signer.IssuerCert().GetClaims().GetCapabilities().GetCanAdmit() {
-		return errors.New("--admin requires a node with admin capability")
+	if err := validateCapsAgainstSigner(certCaps, signer.IssuerCert().GetClaims().GetCapabilities()); err != nil {
+		return err
 	}
 
 	// Each remote must know about every other remote as a bootstrap peer,
@@ -612,7 +626,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		prepared := d.prepared
 		enrollWG.Go(func() {
 			seeded := seedPeersFor(peerPool, prepared.peerPub)
-			if err := enrollRemote(cmd.Context(), signer, prepared, seeded, expireAfter, delegateAdmin, attrs); err != nil {
+			if err := enrollRemote(cmd.Context(), signer, prepared, seeded, expireAfter, certCaps); err != nil {
 				results <- bootstrapResult{target: prepared.spec.target, err: err}
 				return
 			}
@@ -670,7 +684,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 			})
 		}
 
-		joinToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, localPub, defaultInviteTTL, expireAfter, bsPeers, nil, false)
+		joinToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, localPub, defaultInviteTTL, expireAfter, bsPeers, auth.LeafCapabilities())
 		if err != nil {
 			return fmt.Errorf("create local join token: %w", err)
 		}
@@ -741,8 +755,8 @@ func discoverRemote(ctx context.Context, spec sshTargetSpec, relayPort int) (pre
 	}, nil
 }
 
-func enrollRemote(ctx context.Context, signer *auth.DelegationSigner, remote preparedRemote, bootstrapPeers []*admissionv1.BootstrapPeer, expireAfter time.Duration, delegateAdmin bool, attrs *structpb.Struct) error {
-	seedToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, remote.peerPub, 1*time.Minute, expireAfter, bootstrapPeers, attrs, delegateAdmin)
+func enrollRemote(ctx context.Context, signer *auth.DelegationSigner, remote preparedRemote, bootstrapPeers []*admissionv1.BootstrapPeer, expireAfter time.Duration, certCaps *admissionv1.Capabilities) error {
+	seedToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, remote.peerPub, 1*time.Minute, expireAfter, bootstrapPeers, certCaps)
 	if err != nil {
 		return fmt.Errorf("create seed token: %w", err)
 	}
@@ -797,9 +811,12 @@ func bootstrapRelayOverSSH(ctx context.Context, sshTarget, seedToken, nodeName s
 
 func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 	prefix := strings.ToLower(args[0])
-	admin, _ := cmd.Flags().GetBool("admin")
 
 	attrs, err := parseProperties(cmd)
+	if err != nil {
+		return err
+	}
+	certCaps, err := capsFromFlags(cmd, attrs)
 	if err != nil {
 		return err
 	}
@@ -824,24 +841,64 @@ func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 	peerID := matches[0]
 	if _, err := env.client.IssueCert(cmd.Context(), connect.NewRequest(&controlv1.IssueCertRequest{
-		PeerPub:    peerID,
-		Admin:      admin,
-		Attributes: attrs,
+		PeerPub:  peerID,
+		CertCaps: certCaps,
 	})); err != nil {
 		return err
 	}
 
-	level := "leaf"
-	if admin {
-		level = "admin"
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "certificate issued (%s) to %s\n", level, hex.EncodeToString(peerID)[:shortHexLen])
+	fmt.Fprintf(cmd.OutOrStdout(), "certificate issued (%s) to %s\n", capsTierLabel(certCaps), hex.EncodeToString(peerID)[:shortHexLen])
 	return nil
+}
+
+func capsTierLabel(caps *admissionv1.Capabilities) string {
+	switch {
+	case caps.GetCanAdmit():
+		return "admin"
+	case caps.GetCanPublish():
+		return "publisher"
+	default:
+		return "leaf"
+	}
 }
 
 func parseProperties(cmd *cobra.Command) (*structpb.Struct, error) {
 	vals, _ := cmd.Flags().GetStringArray("prop")
 	return parsePropertyValues(cmd, vals)
+}
+
+// capsFromFlags translates the --admin/--publisher flag pair plus parsed
+// attributes into a cert capability set. Mutually exclusive; default is leaf.
+func capsFromFlags(cmd *cobra.Command, attrs *structpb.Struct) (*admissionv1.Capabilities, error) {
+	admin, _ := cmd.Flags().GetBool("admin")
+	publisher, _ := cmd.Flags().GetBool("publisher")
+	if admin && publisher {
+		return nil, errors.New("--admin and --publisher are mutually exclusive")
+	}
+	var caps *admissionv1.Capabilities
+	switch {
+	case admin:
+		caps = auth.FullCapabilities()
+	case publisher:
+		caps = auth.PublisherCapabilities()
+	default:
+		caps = auth.LeafCapabilities()
+	}
+	caps.Attributes = attrs
+	return caps, nil
+}
+
+// validateCapsAgainstSigner reports an error if the requested caps cannot
+// be issued by a signer holding signerCaps. Used by code paths that mint
+// locally; the control RPC enforces the same on the server side.
+func validateCapsAgainstSigner(requested, signerCaps *admissionv1.Capabilities) error {
+	if requested.GetCanAdmit() && !signerCaps.GetCanAdmit() {
+		return errors.New("--admin requires admit capability")
+	}
+	if requested.GetCanPublish() && !signerCaps.GetCanPublish() {
+		return errors.New("--publisher requires publish capability")
+	}
+	return nil
 }
 
 func parsePropertyValues(cmd *cobra.Command, vals []string) (*structpb.Struct, error) {
@@ -953,12 +1010,12 @@ func resolveJoinToken(ctx context.Context, priv ed25519.PrivateKey, encoded stri
 	return transport.RedeemInvite(ctx, priv, inviteToken)
 }
 
-func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer, attributes *structpb.Struct, admin bool) (string, error) {
+func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer, certCaps *admissionv1.Capabilities) (string, error) {
 	var accessDeadline time.Time
 	if expireAfter > 0 {
 		accessDeadline = time.Now().Add(expireAfter)
 	}
-	token, err := signer.IssueJoinToken(subjectPub, bootstrap, time.Now(), ttl, defaultMembershipTTL, accessDeadline, attributes, admin)
+	token, err := signer.IssueJoinToken(subjectPub, bootstrap, time.Now(), ttl, defaultMembershipTTL, accessDeadline, certCaps)
 	if err != nil {
 		return "", err
 	}

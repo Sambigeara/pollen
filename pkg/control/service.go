@@ -39,7 +39,6 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 const ControlTokenMetadataKey = "x-pln-token"
@@ -58,7 +57,7 @@ type Metrics struct {
 
 type MembershipControl interface {
 	DenyPeer(key types.PeerKey) error
-	IssueCert(ctx context.Context, peerKey types.PeerKey, admin bool, attributes *structpb.Struct) error
+	IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps *admissionv1.Capabilities) error
 }
 
 type PlacementControl interface {
@@ -135,8 +134,16 @@ type Service struct {
 	log        *zap.SugaredLogger
 }
 
-func (s *Service) canPublishResources() bool {
-	return s.creds != nil && s.creds.DelegationKey() != nil
+func (s *Service) canPublish() bool {
+	return s.creds != nil && s.creds.Cert().GetClaims().GetCapabilities().GetCanPublish()
+}
+
+func (s *Service) canDelegate() bool {
+	return s.creds != nil && s.creds.Cert().GetClaims().GetCapabilities().GetCanDelegate()
+}
+
+func (s *Service) canAdmit() bool {
+	return s.creds != nil && s.creds.Cert().GetClaims().GetCapabilities().GetCanAdmit()
 }
 
 func (s *Service) localPeerKey() types.PeerKey {
@@ -534,8 +541,8 @@ func sortStatusResponse(out *controlv1.GetStatusResponse) {
 }
 
 func (s *Service) RegisterService(_ context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
-	if !s.canPublishResources() {
-		return nil, status.Error(codes.PermissionDenied, "only admin nodes can publish services")
+	if !s.canPublish() {
+		return nil, status.Error(codes.PermissionDenied, "publish capability required")
 	}
 	name := serviceNameOrDefault(req.GetName(), req.Port)
 	if err := s.tunneling.ExposeService(req.Port, name, state.NormaliseProtocol(req.GetProtocol()), req.GetPolicy()); err != nil {
@@ -605,8 +612,8 @@ func (s *Service) DisconnectService(_ context.Context, req *controlv1.Disconnect
 }
 
 func (s *Service) DenyPeer(_ context.Context, req *controlv1.DenyPeerRequest) (*controlv1.DenyPeerResponse, error) {
-	if s.creds == nil || s.creds.DelegationKey() == nil {
-		return nil, status.Error(codes.FailedPrecondition, "delegation key not available; this node cannot deny peers")
+	if !s.canAdmit() {
+		return nil, status.Error(codes.PermissionDenied, "admit capability required")
 	}
 	if err := s.membership.DenyPeer(types.PeerKeyFromBytes(req.GetPeerPub())); err != nil {
 		return nil, s.fail(err, "deny peer failed")
@@ -615,13 +622,17 @@ func (s *Service) DenyPeer(_ context.Context, req *controlv1.DenyPeerRequest) (*
 }
 
 func (s *Service) IssueCert(ctx context.Context, req *controlv1.IssueCertRequest) (*controlv1.IssueCertResponse, error) {
-	if !s.canPublishResources() {
-		return nil, status.Error(codes.FailedPrecondition, "this node has no delegation authority")
+	if !s.canDelegate() {
+		return nil, status.Error(codes.PermissionDenied, "delegate capability required")
 	}
-	if err := auth.ValidateAttributes(req.GetAttributes()); err != nil {
+	certCaps := req.GetCertCaps()
+	if certCaps == nil {
+		return nil, status.Error(codes.InvalidArgument, "cert_caps required")
+	}
+	if err := auth.ValidateAttributes(certCaps.GetAttributes()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := s.membership.IssueCert(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), req.GetAdmin(), req.GetAttributes()); err != nil {
+	if err := s.membership.IssueCert(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), certCaps); err != nil {
 		return nil, s.fail(err, "issue cert failed")
 	}
 	return &controlv1.IssueCertResponse{}, nil
@@ -668,8 +679,8 @@ func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) 
 }
 
 func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedWorkloadRequest, controlv1.SeedWorkloadResponse]) error {
-	if !s.canPublishResources() {
-		return status.Error(codes.PermissionDenied, "only admin nodes can seed workloads")
+	if !s.canPublish() {
+		return status.Error(codes.PermissionDenied, "publish capability required")
 	}
 
 	first, err := stream.Recv()
@@ -728,6 +739,8 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 			return status.Error(codes.InvalidArgument, "failed to compile workload")
 		case errors.Is(err, placement.ErrRelayOnly):
 			return status.Error(codes.FailedPrecondition, "node is relay-only; workload hosting disabled")
+		case errors.Is(err, placement.ErrPublishDenied):
+			return status.Error(codes.FailedPrecondition, err.Error())
 		default:
 			return s.fail(err, "failed to seed workload")
 		}
@@ -760,8 +773,8 @@ func (s *Service) FetchBlob(ctx context.Context, req *controlv1.FetchBlobRequest
 }
 
 func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadBlobRequest, controlv1.UploadBlobResponse]) error {
-	if !s.canPublishResources() {
-		return status.Error(codes.PermissionDenied, "only admin nodes can upload blobs")
+	if !s.canPublish() {
+		return status.Error(codes.PermissionDenied, "publish capability required")
 	}
 
 	first, err := stream.Recv()
@@ -812,8 +825,8 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 }
 
 func (s *Service) RemoveBlob(_ context.Context, req *controlv1.RemoveBlobRequest) (*controlv1.RemoveBlobResponse, error) {
-	if !s.canPublishResources() {
-		return nil, status.Error(codes.PermissionDenied, "only admin nodes can remove blobs")
+	if !s.canPublish() {
+		return nil, status.Error(codes.PermissionDenied, "publish capability required")
 	}
 	hash := req.GetHash()
 	snap := s.state.Snapshot()
@@ -834,8 +847,8 @@ func (s *Service) RemoveBlob(_ context.Context, req *controlv1.RemoveBlobRequest
 }
 
 func (s *Service) SeedStatic(_ context.Context, req *controlv1.SeedStaticRequest) (*controlv1.SeedStaticResponse, error) {
-	if !s.canPublishResources() {
-		return nil, status.Error(codes.PermissionDenied, "only admin nodes can seed static sites")
+	if !s.canPublish() {
+		return nil, status.Error(codes.PermissionDenied, "publish capability required")
 	}
 	if err := s.static.SeedStatic(req.GetName(), req.GetManifestDigest(), req.GetPolicy()); err != nil {
 		return nil, s.fail(err, "seed static")
@@ -844,8 +857,8 @@ func (s *Service) SeedStatic(_ context.Context, req *controlv1.SeedStaticRequest
 }
 
 func (s *Service) UnseedStatic(_ context.Context, req *controlv1.UnseedStaticRequest) (*controlv1.UnseedStaticResponse, error) {
-	if !s.canPublishResources() {
-		return nil, status.Error(codes.PermissionDenied, "only admin nodes can unseed static sites")
+	if !s.canPublish() {
+		return nil, status.Error(codes.PermissionDenied, "publish capability required")
 	}
 	if err := s.static.UnseedStatic(req.GetName()); err != nil {
 		return nil, s.fail(err, "unseed static")
@@ -928,8 +941,8 @@ func (s *Service) buildBlobSummaries(snap state.Snapshot) []*controlv1.BlobSumma
 }
 
 func (s *Service) UnseedWorkload(_ context.Context, req *controlv1.UnseedWorkloadRequest) (*controlv1.UnseedWorkloadResponse, error) {
-	if !s.canPublishResources() {
-		return nil, status.Error(codes.PermissionDenied, "only admin nodes can unseed workloads")
+	if !s.canPublish() {
+		return nil, status.Error(codes.PermissionDenied, "publish capability required")
 	}
 	if err := s.placement.Unseed(req.GetHash()); err != nil {
 		if errors.Is(err, placement.ErrRelayOnly) {

@@ -26,10 +26,17 @@ type replicaCountConfig struct {
 // saturation = |claims ∩ backed_off| / |claims|: scale up at the
 // heaviest unserved source, scale down on sustained low saturation
 // with the lex-min replica electing to relinquish.
+//
+// Elections filter out peers whose cert doesn't satisfy the spec's
+// host policy: without the filter, the lex-min loop perpetually elects
+// an ineligible peer, the reconciler releases the claim on the next
+// tick, and the cycle continues — masking the apparent replica count
+// at MinReplicas while no eligible peer ever gets a chance to claim.
 type replicaCountLoop struct {
 	store    WorkloadState
 	calls    *callTracker
 	backoff  *backoff
+	gate     Gate
 	now      func() time.Time
 	lowSince map[string]time.Time
 	cfg      replicaCountConfig
@@ -37,13 +44,14 @@ type replicaCountLoop struct {
 	self     types.PeerKey
 }
 
-func newReplicaCountLoop(self types.PeerKey, cfg replicaCountConfig, store WorkloadState, calls *callTracker, b *backoff) *replicaCountLoop {
+func newReplicaCountLoop(self types.PeerKey, cfg replicaCountConfig, store WorkloadState, calls *callTracker, b *backoff, gate Gate) *replicaCountLoop {
 	return &replicaCountLoop{
 		self:     self,
 		cfg:      cfg,
 		store:    store,
 		calls:    calls,
 		backoff:  b,
+		gate:     gate,
 		now:      time.Now,
 		lowSince: make(map[string]time.Time),
 	}
@@ -93,15 +101,17 @@ func (r *replicaCountLoop) evaluate(snap state.Snapshot, seed string, backed map
 	replicas := replicasOf(snap, seed)
 	target := targetFor(snap, seed)
 
+	eligible := r.eligibilityPredicate(snap, seed)
+
 	if uint32(len(replicas)) < target {
-		r.tryFillFloor(snap, seed, replicas, backed)
+		r.tryFillFloor(snap, seed, replicas, backed, eligible)
 		r.clearLowSince(seed)
 		return
 	}
 
 	saturation := saturationOf(replicas, backed)
 	if saturation >= r.cfg.scaleUpThreshold {
-		r.tryScaleUp(snap, seed, replicas, backed)
+		r.tryScaleUp(snap, seed, replicas, backed, eligible)
 		r.clearLowSince(seed)
 		return
 	}
@@ -114,7 +124,21 @@ func (r *replicaCountLoop) evaluate(snap state.Snapshot, seed string, backed map
 	r.clearLowSince(seed)
 }
 
-func (r *replicaCountLoop) tryFillFloor(snap state.Snapshot, seed string, replicas []types.PeerKey, backed map[types.PeerKey]struct{}) {
+// eligibilityPredicate returns a function reporting whether a peer's
+// cert satisfies the seed's host policy. A nil gate (test path) leaves
+// every peer eligible; otherwise the decision delegates to the gate,
+// which rejects a nil cert in production.
+func (r *replicaCountLoop) eligibilityPredicate(snap state.Snapshot, seed string) func(types.PeerKey) bool {
+	if r.gate == nil {
+		return func(types.PeerKey) bool { return true }
+	}
+	specAuth := snap.Specs[seed].Auth
+	return func(p types.PeerKey) bool {
+		return r.gate.MayHost(snap.Nodes[p].Cert, specAuth) == nil
+	}
+}
+
+func (r *replicaCountLoop) tryFillFloor(snap state.Snapshot, seed string, replicas []types.PeerKey, backed map[types.PeerKey]struct{}, eligible func(types.PeerKey) bool) {
 	replicaSet := make(map[types.PeerKey]struct{}, len(replicas))
 	for _, p := range replicas {
 		replicaSet[p] = struct{}{}
@@ -126,6 +150,9 @@ func (r *replicaCountLoop) tryFillFloor(snap state.Snapshot, seed string, replic
 			continue
 		}
 		if _, off := backed[p]; off {
+			continue
+		}
+		if !eligible(p) {
 			continue
 		}
 		if !found || bytes.Compare(p[:], lexMin[:]) < 0 {
@@ -148,14 +175,14 @@ func (r *replicaCountLoop) tryFillFloor(snap state.Snapshot, seed string, replic
 // the lex-min non-replica election. Without the fallback, autoscale
 // freezes at MinReplicas whenever traffic enters at the replicas
 // themselves.
-func (r *replicaCountLoop) tryScaleUp(snap state.Snapshot, seed string, replicas []types.PeerKey, backed map[types.PeerKey]struct{}) {
-	if heaviest, ok := heaviestUnservedSource(sourcesOf(snap, seed), r.calls.localCount(seed), r.self, replicas, backed); ok {
+func (r *replicaCountLoop) tryScaleUp(snap state.Snapshot, seed string, replicas []types.PeerKey, backed map[types.PeerKey]struct{}, eligible func(types.PeerKey) bool) {
+	if heaviest, ok := heaviestUnservedSource(sourcesOf(snap, seed), r.calls.localCount(seed), r.self, replicas, backed, eligible); ok {
 		if heaviest == r.self {
 			r.store.ClaimWorkload(seed)
 		}
 		return
 	}
-	r.tryFillFloor(snap, seed, replicas, backed)
+	r.tryFillFloor(snap, seed, replicas, backed, eligible)
 }
 
 func targetFor(snap state.Snapshot, seed string) uint32 {
@@ -218,7 +245,12 @@ func saturationOf(replicas []types.PeerKey, backed map[types.PeerKey]struct{}) f
 // the in-flight window hasn't gossiped yet. Lex-min on PeerKey breaks
 // ties so every node converges on the same candidate. Peers in backoff
 // are excluded so saturated nodes can't be elected to take more load.
-func heaviestUnservedSource(sources []sourceCount, localCount uint64, self types.PeerKey, replicas []types.PeerKey, backed map[types.PeerKey]struct{}) (types.PeerKey, bool) {
+// Peers that fail the eligibility predicate (host-policy mismatch) are
+// also excluded — see replicaCountLoop's doc comment.
+func heaviestUnservedSource(sources []sourceCount, localCount uint64, self types.PeerKey, replicas []types.PeerKey, backed map[types.PeerKey]struct{}, eligible func(types.PeerKey) bool) (types.PeerKey, bool) {
+	if eligible == nil {
+		eligible = func(types.PeerKey) bool { return true }
+	}
 	replicaSet := make(map[types.PeerKey]struct{}, len(replicas))
 	for _, r := range replicas {
 		replicaSet[r] = struct{}{}
@@ -228,8 +260,10 @@ func heaviestUnservedSource(sources []sourceCount, localCount uint64, self types
 		if _, hasReplica := replicaSet[p]; hasReplica {
 			return true
 		}
-		_, off := backed[p]
-		return off
+		if _, off := backed[p]; off {
+			return true
+		}
+		return !eligible(p)
 	}
 
 	candidates := make([]sourceCount, 0, len(sources)+1)

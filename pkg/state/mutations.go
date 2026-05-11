@@ -34,10 +34,14 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 
 	now := s.nowFunc()
 	denyOrCertChanged := false
+	certChanged := false
 	for _, ev := range gossips {
 		key, _ := getAttrKey(ev)
 		if key.kind == attrDeny || key.kind == attrDelegationCert {
 			denyOrCertChanged = true
+		}
+		if key.kind == attrDelegationCert {
+			certChanged = true
 		}
 		rec.maxCounter++
 		ev.PeerId = s.localID.String()
@@ -52,6 +56,9 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 
 	if denyOrCertChanged {
 		events = append(events, s.recomputeDeniedLocked()...)
+	}
+	if certChanged {
+		events = append(events, CertChanged{Peer: s.localID})
 	}
 
 	s.updateSnapshotLocked()
@@ -545,10 +552,49 @@ func (s *store) DeleteBlobSpec(digest string) ([]Event, error) {
 }
 
 // ErrNoSigner is returned when a publish path runs on a node that holds
-// no delegation signer. The local mutation would otherwise produce a
+// no spec signer. The local mutation would otherwise produce a
 // SpecChange with Auth: nil, which the local store accepts but every
 // remote rejects on the validate hook — silent partial publish.
-var ErrNoSigner = errors.New("local node has no delegation signer; publish requires admin authority")
+var ErrNoSigner = errors.New("local node has no spec signer; publish requires publisher or admin capability")
+
+// RevokeOwnSpecs tombstones every workload, service, blob, and static
+// spec this node has published. Used when a cap downgrade strips
+// publish authority: the still-valid old signer is used to sign the
+// tombstones before the new cert (which can't sign) replaces it. The
+// returned events are emitted to peers like any other publish change;
+// remotes drop the resources from their CRDTs as the tombstones land.
+func (s *store) RevokeOwnSpecs() ([]Event, error) {
+	snap := s.Snapshot()
+	var events []Event
+	var firstErr error
+	record := func(evs []Event, err error) {
+		events = append(events, evs...)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if local, ok := snap.Nodes[snap.LocalID]; ok {
+		for name := range local.Services {
+			record(s.RemoveService(name))
+		}
+	}
+	for hash, spec := range snap.Specs {
+		if spec.Publisher == snap.LocalID {
+			record(s.DeleteWorkloadSpec(hash))
+		}
+	}
+	for name, spec := range snap.StaticSpecs {
+		if spec.Publisher == snap.LocalID {
+			record(s.DeleteStaticSpec(name))
+		}
+	}
+	for digest, spec := range snap.BlobSpecs {
+		if spec.Publisher == snap.LocalID {
+			record(s.DeleteBlobSpec(digest))
+		}
+	}
+	return events, firstErr
+}
 
 // SetBlobWrapping gossips a pre-signed wrapping. The wrapping must
 // have already been produced by auth.IssueBlobWrapping (or an

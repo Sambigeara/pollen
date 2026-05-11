@@ -13,16 +13,18 @@ import (
 	"buf.build/go/protovalidate"
 	"github.com/google/uuid"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
-type DelegationSigner struct {
+// SpecSigner signs published resource specs (workloads, services, blobs,
+// static sites). Available to any cert with CanPublish, which includes
+// both publisher and admin tiers.
+type SpecSigner struct {
 	issuer *admissionv1.DelegationCert
 	priv   ed25519.PrivateKey
 	root   bool
 }
 
-func NewDelegationSigner(identityDir string, nodePriv ed25519.PrivateKey) (*DelegationSigner, error) {
+func NewSpecSigner(identityDir string, nodePriv ed25519.PrivateKey) (*SpecSigner, error) {
 	creds, err := LoadNodeCredentials(identityDir)
 	if err != nil {
 		return nil, err
@@ -46,42 +48,42 @@ func NewDelegationSigner(identityDir string, nodePriv ed25519.PrivateKey) (*Dele
 	if IsCertExpired(creds.cert, time.Now()) {
 		return nil, fmt.Errorf("delegation cert: %w", ErrCertExpired)
 	}
-	if !creds.cert.GetClaims().GetCapabilities().GetCanDelegate() {
-		return nil, errors.New("node cert lacks delegation capability")
+	if !creds.cert.GetClaims().GetCapabilities().GetCanPublish() {
+		return nil, errors.New("node cert lacks publish capability")
 	}
 	if !bytes.Equal(creds.cert.GetClaims().GetSubjectPub(), nodePub) {
 		return nil, errors.New("delegation cert subject does not match local node identity")
 	}
 
-	return &DelegationSigner{
+	return &SpecSigner{
 		priv:   nodePriv,
 		issuer: creds.cert,
 		root:   isRoot,
 	}, nil
 }
 
-func NewDelegationSignerFromCert(nodePriv ed25519.PrivateKey, cert *admissionv1.DelegationCert) *DelegationSigner {
-	return &DelegationSigner{priv: nodePriv, issuer: cert}
+func NewSpecSignerFromCert(nodePriv ed25519.PrivateKey, cert *admissionv1.DelegationCert) *SpecSigner {
+	return &SpecSigner{priv: nodePriv, issuer: cert}
 }
 
-func (s *DelegationSigner) IsRoot() bool {
+func (s *SpecSigner) IsRoot() bool {
 	return s.root
 }
 
 // IssuerPub is the subject pub of this signer's own cert. Tokens carry it
 // so verifiers and forwarders can authenticate against the issuing key
 // without embedding the full cert.
-func (s *DelegationSigner) IssuerPub() ed25519.PublicKey {
+func (s *SpecSigner) IssuerPub() ed25519.PublicKey {
 	return ed25519.PublicKey(s.issuer.GetClaims().GetSubjectPub())
 }
 
 // IssuerCert returns the signer's own cert. Used by callers that need the
 // issuer's expiry or chain (e.g. redemption-side validity checks).
-func (s *DelegationSigner) IssuerCert() *admissionv1.DelegationCert {
+func (s *SpecSigner) IssuerCert() *admissionv1.DelegationCert {
 	return s.issuer
 }
 
-func (s *DelegationSigner) IssueSpecAuth(
+func (s *SpecSigner) IssueSpecAuth(
 	resource *admissionv1.ResourceID,
 	body SpecBody,
 	policy *admissionv1.Predicate,
@@ -90,19 +92,42 @@ func (s *DelegationSigner) IssueSpecAuth(
 	return IssueSpecAuth(s.priv, s.issuer, resource, body, policy, deleted)
 }
 
+// DelegationSigner extends SpecSigner with the ability to mint child
+// certs and tokens. Available only to certs with CanDelegate.
+type DelegationSigner struct {
+	*SpecSigner
+}
+
+func NewDelegationSigner(identityDir string, nodePriv ed25519.PrivateKey) (*DelegationSigner, error) {
+	spec, err := NewSpecSigner(identityDir, nodePriv)
+	if err != nil {
+		return nil, err
+	}
+	if !spec.issuer.GetClaims().GetCapabilities().GetCanDelegate() {
+		return nil, errors.New("node cert lacks delegation capability")
+	}
+	return &DelegationSigner{SpecSigner: spec}, nil
+}
+
+func NewDelegationSignerFromCert(nodePriv ed25519.PrivateKey, cert *admissionv1.DelegationCert) *DelegationSigner {
+	return &DelegationSigner{SpecSigner: NewSpecSignerFromCert(nodePriv, cert)}
+}
+
 func (s *DelegationSigner) IssueInviteToken(
 	subject ed25519.PublicKey,
 	bootstrap []*admissionv1.BootstrapPeer,
 	now time.Time,
 	tokenTTL time.Duration,
 	membershipTTL time.Duration,
-	attributes *structpb.Struct,
-	admin bool,
+	certCaps *admissionv1.Capabilities,
 ) (*admissionv1.InviteToken, error) {
 	if tokenTTL <= 0 {
 		return nil, errors.New("token ttl must be positive")
 	}
-	if err := ValidateAttributes(attributes); err != nil {
+	if certCaps == nil {
+		return nil, errors.New("cert caps must be provided")
+	}
+	if err := ValidateAttributes(certCaps.GetAttributes()); err != nil {
 		return nil, err
 	}
 	if err := protovalidate.Validate(s.issuer); err != nil {
@@ -117,8 +142,7 @@ func (s *DelegationSigner) IssueInviteToken(
 		IssuedAtUnix:         now.Unix(),
 		ExpiresAtUnix:        now.Add(tokenTTL).Unix(),
 		MembershipTtlSeconds: int64(membershipTTL / time.Second),
-		Attributes:           attributes,
-		Admin:                admin,
+		CertCaps:             certCaps,
 	}
 	if err := protovalidate.Validate(claims); err != nil {
 		return nil, fmt.Errorf("invite token claims invalid: %w", err)
@@ -144,10 +168,12 @@ func (s *DelegationSigner) IssueJoinToken(
 	tokenTTL time.Duration,
 	membershipTTL time.Duration,
 	accessDeadline time.Time,
-	attributes *structpb.Struct,
-	admin bool,
+	certCaps *admissionv1.Capabilities,
 ) (*admissionv1.JoinToken, error) {
-	if err := ValidateAttributes(attributes); err != nil {
+	if certCaps == nil {
+		return nil, errors.New("cert caps must be provided")
+	}
+	if err := ValidateAttributes(certCaps.GetAttributes()); err != nil {
 		return nil, err
 	}
 
@@ -158,17 +184,11 @@ func (s *DelegationSigner) IssueJoinToken(
 		notAfter = accessDeadline
 	}
 
-	caps := LeafCapabilities()
-	if admin {
-		caps = FullCapabilities()
-	}
-	caps.Attributes = attributes
-
 	memberCert, err := IssueDelegationCert(
 		s.priv,
 		parentChain,
 		subject,
-		caps,
+		certCaps,
 		now,
 		notAfter,
 		accessDeadline,

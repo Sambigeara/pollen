@@ -162,6 +162,33 @@ func TestFetchHonoursPolicy(t *testing.T) {
 	require.ErrorIs(t, g.Fetch(callerKey, digest), wasm.ErrTargetNotFound)
 }
 
+func TestFetchAuthorisesWorkloadBinary(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	callerPub, callerPriv := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	allow := testCert(t, callerPriv, callerPub, map[string]any{"role": "admin"}, now)
+	deny := testCert(t, callerPriv, callerPub, map[string]any{"role": "intern"}, now)
+
+	body := &statev1.WorkloadSpecChange{Name: "echo", Hash: bytesAsHex(bytesOf(0xda))}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
+		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xda)}}},
+		body, clauseEquals("role", "admin"), false)
+	require.NoError(t, err)
+
+	callerKey := types.PeerKeyFromBytes(callerPub)
+	snap := state.Snapshot{
+		Nodes: map[types.PeerKey]state.NodeView{callerKey: {Cert: allow}},
+		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
+	}
+	g := New(rootPub, fakeStore{snap: snap})
+	require.NoError(t, g.Fetch(callerKey, body.GetHash()), "caller with admin role must fetch workload binary")
+
+	snap.Nodes[callerKey] = state.NodeView{Cert: deny}
+	g.store = fakeStore{snap: snap}
+	require.ErrorIs(t, g.Fetch(callerKey, body.GetHash()), wasm.ErrTargetNotFound, "caller without admin role must be denied")
+}
+
 func TestConnectHonoursPolicy(t *testing.T) {
 	now := time.Now()
 	rootPub, rootPriv := newKeyPair(t)
@@ -274,6 +301,75 @@ func TestMayHostRejectsNilInputs(t *testing.T) {
 	g := New(nil, fakeStore{})
 	require.ErrorIs(t, g.MayHost(nil, &admissionv1.SpecAuth{}), wasm.ErrTargetNotFound)
 	require.ErrorIs(t, g.MayHost(&admissionv1.DelegationCert{}, nil), wasm.ErrTargetNotFound)
+}
+
+func TestMayPublishAcceptsMatchingCert(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	cert := testCert(t, rootPriv, rootPub, map[string]any{"role": "admin"}, now)
+	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
+		{Key: "role", Equals: "admin"},
+	}}}
+	require.NoError(t, New(rootPub, fakeStore{}).MayPublish(cert, policy))
+}
+
+func TestMayPublishAcceptsNoPolicy(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	cert := testCert(t, rootPriv, rootPub, nil, now)
+	require.NoError(t, New(rootPub, fakeStore{}).MayPublish(cert, nil))
+}
+
+func TestMayPublishReportsMissingProp(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	cert := testCert(t, rootPriv, rootPub, map[string]any{"team": "blue"}, now)
+	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
+		{Key: "role", Equals: "admin"},
+	}}}
+	err := New(rootPub, fakeStore{}).MayPublish(cert, policy)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `missing prop "role"`)
+	require.Contains(t, err.Error(), `"admin"`)
+}
+
+func TestMayPublishReportsWrongValue(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	cert := testCert(t, rootPriv, rootPub, map[string]any{"role": "worker"}, now)
+	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
+		{Key: "role", Equals: "admin"},
+	}}}
+	err := New(rootPub, fakeStore{}).MayPublish(cert, policy)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `"worker"`)
+	require.Contains(t, err.Error(), `"admin"`)
+}
+
+func TestMayPublishRejectsExpiredCert(t *testing.T) {
+	now := time.Now()
+	pub, priv := newKeyPair(t)
+	expired, err := auth.IssueDelegationCert(priv, nil, pub, auth.FullCapabilities(),
+		now.Add(-2*time.Hour), now.Add(-time.Hour), time.Time{})
+	require.NoError(t, err)
+	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
+		{Key: "role", Equals: "admin"},
+	}}}
+	require.ErrorContains(t, New(nil, fakeStore{}).MayPublish(expired, policy), "expired")
+}
+
+func TestMayPublishAllowsNilCertWithoutPolicy(t *testing.T) {
+	// Bootstrap window: cert isn't in gossip yet, but a no-policy
+	// publish must still succeed so the user can ship work without
+	// waiting for the cert to round-trip.
+	require.NoError(t, New(nil, fakeStore{}).MayPublish(nil, nil))
+}
+
+func TestMayPublishRejectsNilCertWithPolicy(t *testing.T) {
+	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
+		{Key: "role", Equals: "admin"},
+	}}}
+	require.ErrorContains(t, New(nil, fakeStore{}).MayPublish(nil, policy), "not yet published")
 }
 
 func newHostFixture(t *testing.T, now time.Time, hostAttrs map[string]any, policy *admissionv1.Predicate) (*Gate, *admissionv1.DelegationCert, *admissionv1.SpecAuth) {

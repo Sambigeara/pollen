@@ -31,7 +31,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/zap"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var ErrCertExpired = errors.New("delegation certificate has expired")
@@ -63,7 +62,7 @@ type MembershipAPI interface {
 	Stop() error
 
 	DenyPeer(key types.PeerKey) error
-	IssueCert(ctx context.Context, peerKey types.PeerKey, admin bool, attributes *structpb.Struct) error
+	IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps *admissionv1.Capabilities) error
 
 	HandleDigestStream(ctx context.Context, stream transport.Stream, peer types.PeerKey)
 
@@ -88,6 +87,8 @@ type ClusterState interface {
 	SetLocalReachable([]types.PeerKey) []state.Event
 	SetLocalObservedAddress(string, uint32) []state.Event
 	SetLocalDelegationCert(cert *admissionv1.DelegationCert, subjectSig []byte) []state.Event
+	SetLocalSigner(signer state.LocalSigner)
+	RevokeOwnSpecs() ([]state.Event, error)
 }
 
 type Network interface {
@@ -128,7 +129,7 @@ type RoutedSender interface {
 
 type CapabilityTransitioner interface {
 	UpgradeToAdmin(signer *auth.DelegationSigner)
-	DowngradeToLeaf()
+	DowngradeFromAdmin(specSigner *auth.SpecSigner)
 }
 
 type ControlMetrics struct {

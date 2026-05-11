@@ -36,6 +36,7 @@ type (
 	TopologyChanged  struct{ Peer types.PeerKey }
 	AddressesChanged struct{ Peer types.PeerKey }
 	StaticChanged    struct{ Name string }
+	CertChanged      struct{ Peer types.PeerKey }
 )
 
 func (PeerJoined) stateEvent()       {}
@@ -45,6 +46,7 @@ func (WorkloadChanged) stateEvent()  {}
 func (TopologyChanged) stateEvent()  {}
 func (AddressesChanged) stateEvent() {}
 func (StaticChanged) stateEvent()    {}
+func (CertChanged) stateEvent()      {}
 
 type LocalSigner interface {
 	IssueSpecAuth(resource *admissionv1.ResourceID, body auth.SpecBody, policy *admissionv1.Predicate, deleted bool) (*admissionv1.SpecAuth, error)
@@ -89,6 +91,7 @@ type StateStore interface {
 
 	SetService(port uint32, name string, protocol statev1.ServiceProtocol, policy *admissionv1.Predicate) ([]Event, error)
 	RemoveService(name string) ([]Event, error)
+	RevokeOwnSpecs() ([]Event, error)
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event
 
 	EmitHeartbeatIfNeeded() []Event

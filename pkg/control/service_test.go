@@ -34,7 +34,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type harness struct {
@@ -618,7 +617,7 @@ func TestDenyPeerNoCreds(t *testing.T) {
 	_, err := h.svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{PeerPub: testPeerKey(5).Bytes()})
 	require.Error(t, err)
 	st, _ := status.FromError(err)
-	require.Equal(t, codes.FailedPrecondition, st.Code())
+	require.Equal(t, codes.PermissionDenied, st.Code())
 }
 
 func TestDenyPeerError(t *testing.T) {
@@ -1088,7 +1087,7 @@ func (f *fakeMembership) DenyPeer(key types.PeerKey) error {
 	return f.denyErr
 }
 
-func (f *fakeMembership) IssueCert(_ context.Context, _ types.PeerKey, _ bool, _ *structpb.Struct) error {
+func (f *fakeMembership) IssueCert(_ context.Context, _ types.PeerKey, _ *admissionv1.Capabilities) error {
 	return nil
 }
 
@@ -1384,17 +1383,84 @@ func (f *fakeUploadStream) SendAndClose(resp *controlv1.UploadBlobResponse) erro
 
 func dummyCreds(t *testing.T) *auth.NodeCredentials {
 	t.Helper()
+	return credsWithCaps(t, auth.FullCapabilities())
+}
+
+func publisherCreds(t *testing.T) *auth.NodeCredentials {
+	t.Helper()
+	return credsWithCaps(t, auth.PublisherCapabilities())
+}
+
+func leafCreds(t *testing.T) *auth.NodeCredentials {
+	t.Helper()
+	return credsWithCaps(t, auth.LeafCapabilities())
+}
+
+// credsWithCaps mints a self-signed cert at the requested cap level. Admin
+// certs additionally hold a delegation signer so paths that need to issue
+// downstream certs work; publisher and leaf certs deliberately omit it.
+func credsWithCaps(t *testing.T, caps *admissionv1.Capabilities) *auth.NodeCredentials {
+	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	issuer, err := auth.IssueDelegationCert(priv, nil, pub, auth.FullCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
+	issuer, err := auth.IssueDelegationCert(priv, nil, pub, caps, time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
 	require.NoError(t, err)
-	dir := t.TempDir()
-	require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(pub, issuer)))
-	signer, err := auth.NewDelegationSigner(dir, priv)
-	require.NoError(t, err)
-	creds := auth.NewNodeCredentials(nil, nil)
-	creds.SetDelegationKey(signer)
+	creds := auth.NewNodeCredentials(pub, issuer)
+	if caps.GetCanDelegate() {
+		dir := t.TempDir()
+		require.NoError(t, auth.SaveNodeCredentials(dir, auth.NewNodeCredentials(pub, issuer)))
+		signer, err := auth.NewDelegationSigner(dir, priv)
+		require.NoError(t, err)
+		creds.SetDelegationKey(signer)
+	}
 	return creds
+}
+
+func TestCapabilityMatrix(t *testing.T) {
+	cases := []struct {
+		name        string
+		creds       *auth.NodeCredentials
+		canPublish  bool
+		canDelegate bool
+		canAdmit    bool
+	}{
+		{"leaf", leafCreds(t), false, false, false},
+		{"publisher", publisherCreds(t), true, false, false},
+		{"admin", dummyCreds(t), true, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, control.WithCredentials(tc.creds))
+
+			_, err := h.svc.RegisterService(context.Background(), &controlv1.RegisterServiceRequest{
+				Port: 8080, //nolint:mnd
+				Name: new("web"),
+			})
+			requirePermission(t, err, tc.canPublish)
+
+			_, err = h.svc.IssueCert(context.Background(), &controlv1.IssueCertRequest{
+				PeerPub:  testPeerKey(2).Bytes(),
+				CertCaps: auth.LeafCapabilities(),
+			})
+			requirePermission(t, err, tc.canDelegate)
+
+			_, err = h.svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{
+				PeerPub: testPeerKey(3).Bytes(),
+			})
+			requirePermission(t, err, tc.canAdmit)
+		})
+	}
+}
+
+func requirePermission(t *testing.T, err error, allowed bool) {
+	t.Helper()
+	if allowed {
+		require.NoError(t, err)
+		return
+	}
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
 }
 
 func TestGetStatus_NodeNames(t *testing.T) {
