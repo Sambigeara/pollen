@@ -566,7 +566,7 @@ func (n *Supervisor) Run(ctx context.Context) error {
 	}
 }
 
-func (n *Supervisor) dispatchBlobFetch(stream io.ReadWriteCloser, peerKey types.PeerKey) {
+func (n *Supervisor) dispatchAuthorisedBlobStream(stream io.ReadWriteCloser, peerKey types.PeerKey, serve func(io.ReadWriteCloser, string)) {
 	hash, err := blobs.ReadHash(stream)
 	if err != nil {
 		stream.Close() //nolint:errcheck
@@ -576,7 +576,7 @@ func (n *Supervisor) dispatchBlobFetch(stream io.ReadWriteCloser, peerKey types.
 		stream.Close() //nolint:errcheck
 		return
 	}
-	n.blobs.Serve(stream, hash, peerKey)
+	serve(stream, hash)
 }
 
 // Denied connects close the stream without a distinguishing reply so
@@ -613,7 +613,16 @@ func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 			n.spawn(func() { n.dispatchServiceConnect(stream, peerKey) })
 		case transport.StreamTypeBlob:
 			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
-			n.spawn(func() { n.dispatchBlobFetch(s, peerKey) })
+			n.spawn(func() {
+				n.dispatchAuthorisedBlobStream(s, peerKey, func(s io.ReadWriteCloser, hash string) {
+					n.blobs.Serve(s, hash, peerKey)
+				})
+			})
+		case transport.StreamTypeBlobPlaintext:
+			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
+			n.spawn(func() {
+				n.dispatchAuthorisedBlobStream(s, peerKey, n.blobs.ServePlaintext)
+			})
 		case transport.StreamTypeWorkload:
 			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
 			n.spawn(func() { n.dispatchWorkloadCall(s, peerKey) })

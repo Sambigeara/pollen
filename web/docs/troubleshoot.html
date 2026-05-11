@@ -125,6 +125,23 @@ hello   4f3a7c91  pending   0/2       -      30s</span>
     </div>
     <p>See <a href="concepts.html#authorisation">Authorisation</a> for why hosts are gated alongside callers.</p>
 
+    <h2 id="fetch-no-publisher"><code>pln fetch</code> fails with <code>no publisher known for blob</code></h2>
+    <p><strong>Symptom.</strong></p>
+    <div class="terminal">
+      <span class="cmd">pln fetch ab12cd34 ./out.bin</span>
+      <span class="out">Error: no publisher known for blob ab12cd34</span>
+    </div>
+    <p><strong>Cause.</strong> Fetch always streams from the blob's publisher. If the blob has no <code>BlobSpec</code> in gossip (an orphan, or a digest you typed wrong) there is no origin to talk to.</p>
+    <p><strong>Fix.</strong> List the blobs the cluster knows about and pick a name or matching digest:</p>
+    <div class="terminal">
+      <span class="cmd">pln status</span>
+    </div>
+
+    <h2 id="fetch-publisher-offline"><code>pln fetch</code> fails with <code>open stream to publisher … failed</code></h2>
+    <p><strong>Symptom.</strong> Fetch returns an error referencing the publisher's short peer ID.</p>
+    <p><strong>Cause.</strong> The publisher is unreachable: offline, partitioned, or behind NAT that the mesh hasn't punched yet. Fetch does not fall back to other holders.</p>
+    <p><strong>Fix.</strong> Confirm the publisher is online in <code>pln status</code>. If it stays offline, the bytes are not retrievable until it returns; pin a copy locally with <a href="cli.html#seed"><code>pln seed</code></a> in advance for content you need available without the origin.</p>
+
     <h2 id="call-denied">Call returns <code>stream closed by peer</code></h2>
     <p><strong>Symptom.</strong></p>
     <div class="terminal">
@@ -219,6 +236,8 @@ hint: for failed hosts, use `pln invite` and run `pln join &lt;token&gt;` on the
       <a href="#peer-offline">Peer offline</a>
       <a href="#seed-not-placed">Seed not placed</a>
       <a href="#publish-denied">Publish denied</a>
+      <a href="#fetch-no-publisher">Fetch: no publisher known</a>
+      <a href="#fetch-publisher-offline">Fetch: publisher unreachable</a>
       <a href="#call-denied">Call denied silently</a>
       <a href="#cert-expired">Cert expired</a>
       <a href="#bootstrap-fails">bootstrap ssh fails</a>

@@ -4,6 +4,7 @@
 package control_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -264,28 +265,34 @@ func TestCallWorkloadRelayOnly(t *testing.T) {
 	require.Equal(t, codes.FailedPrecondition, st.Code())
 }
 
-func TestFetchBlobPeer(t *testing.T) {
+func TestFetchBlobStreamsPlaintext(t *testing.T) {
 	h := newHarness(t)
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte("remote")))
-	_, err := h.svc.FetchBlob(context.Background(), &controlv1.FetchBlobRequest{
-		Hash:    hash,
-		PeerPub: testPeerKey(1).Bytes(),
-	})
-	require.NoError(t, err)
-	require.Equal(t, []byte("fetched-"+hash), h.blobs.store[hash])
+	h.blobs.store[hash] = []byte("hello world")
+
+	stream := newFetchStream(t)
+	require.NoError(t, h.svc.FetchBlob(&controlv1.FetchBlobRequest{Hash: hash}, stream))
+	require.Equal(t, []byte("hello world"), stream.bytes())
 }
 
-func TestFetchBlobError(t *testing.T) {
+func TestFetchBlobNoPublisher(t *testing.T) {
 	h := newHarness(t)
-	h.blobs.fetchErr = errors.New("no peers reachable")
-	hash := fmt.Sprintf("%x", sha256.Sum256([]byte("remote")))
-	_, err := h.svc.FetchBlob(context.Background(), &controlv1.FetchBlobRequest{
-		Hash:    hash,
-		PeerPub: testPeerKey(1).Bytes(),
-	})
+	h.blobs.fetchErr = blobs.ErrNoPublisher
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte("orphan")))
+	err := h.svc.FetchBlob(&controlv1.FetchBlobRequest{Hash: hash}, newFetchStream(t))
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.NotFound, st.Code())
+}
+
+func TestFetchBlobPublisherUnreachable(t *testing.T) {
+	h := newHarness(t)
+	h.blobs.fetchErr = errors.New("no peers reachable")
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte("remote")))
+	err := h.svc.FetchBlob(&controlv1.FetchBlobRequest{Hash: hash}, newFetchStream(t))
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.Unavailable, st.Code())
 }
 
 func TestUploadBlob(t *testing.T) {
@@ -713,11 +720,7 @@ func TestFetchBlobConsultsGate(t *testing.T) {
 	h := newHarness(t, control.WithCredentials(dc), control.WithOperatorGate(gate))
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte("payload")))
 
-	_, err := h.svc.FetchBlob(context.Background(), &controlv1.FetchBlobRequest{
-		Hash:    hash,
-		PeerPub: testPeerKey(9).Bytes(),
-	})
-	require.NoError(t, err)
+	require.NoError(t, h.svc.FetchBlob(&controlv1.FetchBlobRequest{Hash: hash}, newFetchStream(t)))
 	require.NotNil(t, gate.fetchArgs)
 	require.Equal(t, hash, gate.fetchArgs.hash)
 }
@@ -727,10 +730,10 @@ func TestFetchBlobDeniedByGate(t *testing.T) {
 	gate := &fakeGate{fetchErr: errors.New("no")}
 	h := newHarness(t, control.WithCredentials(dc), control.WithOperatorGate(gate))
 
-	_, err := h.svc.FetchBlob(context.Background(), &controlv1.FetchBlobRequest{
-		Hash:    fmt.Sprintf("%x", sha256.Sum256([]byte("blocked"))),
-		PeerPub: testPeerKey(9).Bytes(),
-	})
+	err := h.svc.FetchBlob(
+		&controlv1.FetchBlobRequest{Hash: fmt.Sprintf("%x", sha256.Sum256([]byte("blocked")))},
+		newFetchStream(t),
+	)
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.PermissionDenied, st.Code())
@@ -1148,6 +1151,17 @@ func (f *fakeBlobs) Fetch(_ context.Context, hash string, _ []types.PeerKey) err
 	return nil
 }
 
+func (f *fakeBlobs) FetchPlaintext(_ context.Context, hash string) (io.ReadCloser, error) {
+	if f.fetchErr != nil {
+		return nil, f.fetchErr
+	}
+	data, ok := f.store[hash]
+	if !ok {
+		data = []byte("plain-" + hash)
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
 func (f *fakeBlobs) Put(r io.Reader) (string, error) {
 	if f.putErr != nil {
 		return "", f.putErr
@@ -1333,6 +1347,26 @@ func (f *fakeSeedStream) SendAndClose(resp *controlv1.SeedWorkloadResponse) erro
 	f.sent = resp
 	return nil
 }
+
+type fakeFetchStream struct {
+	grpc.ServerStream
+	ctx context.Context //nolint:containedctx
+	buf bytes.Buffer
+}
+
+func newFetchStream(t *testing.T) *fakeFetchStream {
+	t.Helper()
+	return &fakeFetchStream{ctx: context.Background()}
+}
+
+func (f *fakeFetchStream) Context() context.Context { return f.ctx }
+
+func (f *fakeFetchStream) Send(resp *controlv1.FetchBlobResponse) error {
+	f.buf.Write(resp.GetChunk())
+	return nil
+}
+
+func (f *fakeFetchStream) bytes() []byte { return f.buf.Bytes() }
 
 type fakeUploadStream struct {
 	grpc.ServerStream

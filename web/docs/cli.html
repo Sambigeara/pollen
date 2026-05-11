@@ -123,13 +123,10 @@ pln up -d --name relay --public</code></pre>
     <pre><code>pln unseed hello
 pln unseed ab12cd34       <span class="c"># by hash prefix</span></code></pre>
 
-    <h3 id="fetch"><code>pln fetch &lt;name-or-hash&gt;</code></h3>
-    <p>Force this node to download a blob from a peer that already advertises it. Useful for pre-warming or pinning.</p>
-    <dl class="flags">
-      <dt>--from &lt;peer-hex&gt;</dt><dd>Force-fetch from a specific peer instead of any holder.</dd>
-    </dl>
-    <pre><code>pln fetch payload
-pln fetch ab12cd34 --from &lt;peer-hex&gt;</code></pre>
+    <h3 id="fetch"><code>pln fetch &lt;name-or-hash&gt; &lt;dest&gt;</code></h3>
+    <p>Stream a blob's plaintext bytes from its publisher and write them to <code>&lt;dest&gt;</code>. Pass <code>-</code> as the destination to write to stdout. The local content store is not modified; use <a href="#seed"><code>pln seed</code></a> to host a copy on this node.</p>
+    <pre><code>pln fetch payload ./payload.bin
+pln fetch ab12cd34 -</code></pre>
 
     <h3 id="call"><code>pln call &lt;name-or-hash&gt; &lt;function&gt; [input]</code></h3>
     <p>Invoke a WASM function. Routed to the nearest, least-loaded replica via P2C. Input may be the third positional or piped on stdin; output is written raw to stdout.</p>

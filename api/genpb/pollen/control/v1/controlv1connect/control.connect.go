@@ -112,7 +112,7 @@ type ControlServiceClient interface {
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
 	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
-	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.Response[v1.FetchBlobResponse], error)
+	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.ServerStreamForClient[v1.FetchBlobResponse], error)
 	UploadBlob(context.Context) *connect.ClientStreamForClient[v1.UploadBlobRequest, v1.UploadBlobResponse]
 	RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error)
 	SeedStatic(context.Context, *connect.Request[v1.SeedStaticRequest]) (*connect.Response[v1.SeedStaticResponse], error)
@@ -349,8 +349,8 @@ func (c *controlServiceClient) IssueCert(ctx context.Context, req *connect.Reque
 }
 
 // FetchBlob calls pollen.control.v1.ControlService.FetchBlob.
-func (c *controlServiceClient) FetchBlob(ctx context.Context, req *connect.Request[v1.FetchBlobRequest]) (*connect.Response[v1.FetchBlobResponse], error) {
-	return c.fetchBlob.CallUnary(ctx, req)
+func (c *controlServiceClient) FetchBlob(ctx context.Context, req *connect.Request[v1.FetchBlobRequest]) (*connect.ServerStreamForClient[v1.FetchBlobResponse], error) {
+	return c.fetchBlob.CallServerStream(ctx, req)
 }
 
 // UploadBlob calls pollen.control.v1.ControlService.UploadBlob.
@@ -394,7 +394,7 @@ type ControlServiceHandler interface {
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
 	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
-	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.Response[v1.FetchBlobResponse], error)
+	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest], *connect.ServerStream[v1.FetchBlobResponse]) error
 	UploadBlob(context.Context, *connect.ClientStream[v1.UploadBlobRequest]) (*connect.Response[v1.UploadBlobResponse], error)
 	RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error)
 	SeedStatic(context.Context, *connect.Request[v1.SeedStaticRequest]) (*connect.Response[v1.SeedStaticResponse], error)
@@ -493,7 +493,7 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("IssueCert")),
 		connect.WithHandlerOptions(opts...),
 	)
-	controlServiceFetchBlobHandler := connect.NewUnaryHandler(
+	controlServiceFetchBlobHandler := connect.NewServerStreamHandler(
 		ControlServiceFetchBlobProcedure,
 		svc.FetchBlob,
 		connect.WithSchema(controlServiceMethods.ByName("FetchBlob")),
@@ -636,8 +636,8 @@ func (UnimplementedControlServiceHandler) IssueCert(context.Context, *connect.Re
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.IssueCert is not implemented"))
 }
 
-func (UnimplementedControlServiceHandler) FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.Response[v1.FetchBlobResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.FetchBlob is not implemented"))
+func (UnimplementedControlServiceHandler) FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest], *connect.ServerStream[v1.FetchBlobResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.FetchBlob is not implemented"))
 }
 
 func (UnimplementedControlServiceHandler) UploadBlob(context.Context, *connect.ClientStream[v1.UploadBlobRequest]) (*connect.Response[v1.UploadBlobResponse], error) {

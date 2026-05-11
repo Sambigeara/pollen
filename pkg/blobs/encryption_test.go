@@ -170,6 +170,63 @@ func TestService_ServeSkipsWrappingForSelf(t *testing.T) {
 	require.Zero(t, count, "Serve to self must not emit a fresh wrapping; the publisher self-wrap from Put already covers it")
 }
 
+func TestFetchPlaintext_SelfPublisher_ReadsLocalCAS(t *testing.T) {
+	svc, rs := newTestService(t)
+
+	plaintext := []byte("export me")
+	hash, err := svc.Put(strings.NewReader(string(plaintext)))
+	require.NoError(t, err)
+
+	rs.mu.Lock()
+	if rs.snap.BlobSpecs == nil {
+		rs.snap.BlobSpecs = map[string]state.BlobSpecView{}
+	}
+	rs.snap.BlobSpecs[hash] = state.BlobSpecView{
+		Spec:      state.BlobSpec{Name: "named", Digest: hash},
+		Publisher: svc.self,
+	}
+	rs.mu.Unlock()
+
+	rc, err := svc.FetchPlaintext(t.Context(), hash)
+	require.NoError(t, err)
+	t.Cleanup(func() { rc.Close() })
+	got, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	require.Equal(t, plaintext, got)
+}
+
+func TestFetchPlaintext_NoPublisher(t *testing.T) {
+	svc, _ := newTestService(t)
+	hash := strings.Repeat("ab", 32)
+	_, err := svc.FetchPlaintext(t.Context(), hash)
+	require.ErrorIs(t, err, ErrNoPublisher)
+}
+
+func TestFetchPlaintext_ResolvesViaWorkloadSpec(t *testing.T) {
+	svc, rs := newTestService(t)
+
+	plaintext := []byte("wasm bytes here")
+	hash, err := svc.Put(strings.NewReader(string(plaintext)))
+	require.NoError(t, err)
+
+	rs.mu.Lock()
+	if rs.snap.Specs == nil {
+		rs.snap.Specs = map[string]state.WorkloadSpecView{}
+	}
+	rs.snap.Specs[hash] = state.WorkloadSpecView{
+		Spec:      state.WorkloadSpec{Name: "hello", Hash: hash},
+		Publisher: svc.self,
+	}
+	rs.mu.Unlock()
+
+	rc, err := svc.FetchPlaintext(t.Context(), hash)
+	require.NoError(t, err)
+	t.Cleanup(func() { rc.Close() })
+	got, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	require.Equal(t, plaintext, got)
+}
+
 // helpers below avoid pulling in nettest just for a one-shot pipe.
 
 type discardPipe struct{ closed bool }

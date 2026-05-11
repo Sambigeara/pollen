@@ -147,7 +147,10 @@
       <li><strong>Free deduplication.</strong> Two seeds that share an artifact share one entry in the store.</li>
     </ul>
 
-    <p>Blobs are encrypted at rest with a per-node key. The plaintext only ever exists in memory, so a node's disk is safe to lose without leaking content.</p>
+    <p>Blobs are encrypted at rest. Each blob carries a fresh AES-256-GCM data key, and every recipient gets that key wrapped to their identity key. A node's disk holds only ciphertext plus the wrappings addressed to it, so losing the disk leaks nothing.</p>
+
+    <h3 id="reading-blobs">Reading a blob</h3>
+    <p>Because the on-disk form is ciphertext, you can't <code>cat</code> a blob out of the store. <a href="cli.html#fetch"><code>pln fetch</code></a> is the export path: it streams plaintext bytes from the blob's publisher and writes them to the path you give. The local store is not touched, and the fetcher never holds an encrypted copy on disk. To host a copy on this node, use <a href="cli.html#seed"><code>pln seed</code></a>.</p>
 
     <h3>Eviction</h3>
     <p>When a spec is unseeded, its hash becomes a tombstone in the gossip layer. Holders that don't see any other live spec referencing the hash drop it from their store on the next sweep. There is no explicit GC step.</p>

@@ -209,6 +209,31 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
 
     <p><strong>Related:</strong> <a href="concepts.html#workloads">Concepts → Workloads</a>, <a href="cli.html#seed"><code>pln seed</code></a>.</p>
 
+    <h2 id="export-blob">Export a blob's contents to a local file</h2>
+    <p>Blobs are encrypted at rest, so reading one from the on-disk store is not possible directly. <code>pln fetch</code> is the export path: it streams plaintext bytes from the publisher and writes them to the file you choose.</p>
+
+    <ol class="steps">
+      <li>
+        <h3>Pick the destination</h3>
+        <p>The second positional argument is the destination. Use a file path to write to disk, or <code>-</code> to write to stdout (handy for piping into <code>tar</code>, <code>jq</code>, <code>file</code>, and so on).</p>
+        <div class="terminal">
+          <span class="cmd">pln fetch payload ./payload.bin</span>
+          <span class="out">wrote 9f2b...e814 to ./payload.bin</span>
+        </div>
+      </li>
+      <li>
+        <h3>Verify</h3>
+        <p>Hash the file locally; it must match the blob's content address.</p>
+        <div class="terminal">
+          <span class="cmd">shasum -a 256 ./payload.bin</span>
+        </div>
+      </li>
+    </ol>
+
+    <p class="aside">The local content store is not modified by fetch. If you want this node to also host the blob, use <a href="cli.html#seed"><code>pln seed</code></a> separately.</p>
+
+    <p><strong>Related:</strong> <a href="concepts.html#storage">Concepts → Storage</a>, <a href="cli.html#fetch"><code>pln fetch</code></a>.</p>
+
     <h2 id="multiple-clusters">Manage multiple clusters from one shell</h2>
     <p>Contexts let you point your CLI at different daemons without re-typing flags. The reserved name <code>default</code> always resolves to the local daemon at <code>$PLN_DIR</code>.</p>
 
@@ -322,6 +347,7 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
       <a href="#restrict-access">Restrict access</a>
       <a href="#publish-site">Publish a static site</a>
       <a href="#pin-workload">Pin workload placement</a>
+      <a href="#export-blob">Export a blob to a file</a>
       <a href="#multiple-clusters">Multiple clusters</a>
       <a href="#rotate-properties">Rotate properties</a>
       <a href="#revoke-peer">Revoke a peer</a>

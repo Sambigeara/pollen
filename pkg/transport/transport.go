@@ -75,12 +75,13 @@ var _ Transport = (*QUICTransport)(nil)
 type StreamType byte
 
 const (
-	StreamTypeDigest     StreamType = 1
-	StreamTypeTunnel     StreamType = 2
-	StreamTypeRouted     StreamType = 3
-	StreamTypeBlob       StreamType = 4
-	StreamTypeWorkload   StreamType = 5
-	StreamTypeMembership StreamType = 6
+	StreamTypeDigest        StreamType = 1
+	StreamTypeTunnel        StreamType = 2
+	StreamTypeRouted        StreamType = 3
+	StreamTypeBlob          StreamType = 4
+	StreamTypeWorkload      StreamType = 5
+	StreamTypeMembership    StreamType = 6
+	StreamTypeBlobPlaintext StreamType = 7
 )
 
 type DatagramType byte

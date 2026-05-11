@@ -36,7 +36,9 @@ type BlobsAPI interface {
 	Get(hash string) (io.ReadCloser, error)
 	Has(hash string) bool
 	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
+	FetchPlaintext(ctx context.Context, hash string) (io.ReadCloser, error)
 	Serve(stream io.ReadWriteCloser, hash string, requester types.PeerKey)
+	ServePlaintext(stream io.ReadWriteCloser, hash string)
 	Announce(hash string) error
 	Publish(hash, name string, policy *admissionv1.Predicate) error
 	Remove(hash string) error

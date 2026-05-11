@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -101,16 +102,14 @@ admin-capable node.`,
 	}
 
 	fetchCmd := &cobra.Command{
-		Use:   "fetch <name-or-hash>",
-		Short: "Pull a blob into the local content store",
-		Long: `Forces this node to download a blob from a peer that already advertises
-it. Useful for pre-warming caches or pinning content locally. Without
---from, any peer holding the blob is acceptable.`,
-		Example: "  pln fetch payload\n  pln fetch ab12cd34 --from <peer-hex>",
-		Args:    cobra.ExactArgs(1),
+		Use:   "fetch <name-or-hash> <dest>",
+		Short: "Export a blob's plaintext bytes to a local file",
+		Long: `Streams decrypted bytes from the blob's publisher and writes them to
+<dest>. Use - to write to stdout. The local content store is not modified.`,
+		Example: "  pln fetch payload ./payload.bin\n  pln fetch ab12cd34 -",
+		Args:    cobra.ExactArgs(2), //nolint:mnd
 		RunE:    withEnv(runFetch),
 	}
-	fetchCmd.Flags().String("from", "", "force-fetch from this peer (hex); by default any peer advertising the blob is acceptable")
 
 	return []*cobra.Command{seedCmd, unseedCmd, fetchCmd}
 }
@@ -443,20 +442,86 @@ func runFetch(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if err != nil {
 		return err
 	}
+	dest := args[1]
 
-	req := &controlv1.FetchBlobRequest{Hash: hash}
-	if from, _ := cmd.Flags().GetString("from"); from != "" {
-		peerPub, err := hex.DecodeString(from)
-		if err != nil {
-			return fmt.Errorf("invalid --from peer key: %w", err)
-		}
-		req.PeerPub = peerPub
-	}
-	if _, err := env.client.FetchBlob(cmd.Context(), connect.NewRequest(req)); err != nil {
+	sink, err := openFetchSink(cmd, dest)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "fetched %s\n", hash)
+	defer sink.cleanup()
+
+	stream, err := env.client.FetchBlob(cmd.Context(), connect.NewRequest(&controlv1.FetchBlobRequest{Hash: hash}))
+	if err != nil {
+		return err
+	}
+	hasher := sha256.New()
+	for stream.Receive() {
+		chunk := stream.Msg().GetChunk()
+		hasher.Write(chunk)
+		if _, err := sink.Write(chunk); err != nil {
+			return fmt.Errorf("write %s: %w", dest, err)
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return err
+	}
+	got := hex.EncodeToString(hasher.Sum(nil))
+	if got != hash {
+		return fmt.Errorf("digest mismatch: expected %s, got %s", hash[:shortHexLen], got[:shortHexLen])
+	}
+	if err := sink.commit(); err != nil {
+		return err
+	}
+	if dest != "-" {
+		fmt.Fprintf(cmd.OutOrStdout(), "wrote %s to %s\n", hash[:shortHexLen], dest)
+	}
 	return nil
+}
+
+// fetchSink abstracts the output destination so the file path can stage
+// to a sibling .tmp and rename on commit, while stdout writes through
+// without staging.
+type fetchSink struct {
+	w       io.Writer
+	cleanup func()
+	commit  func() error
+}
+
+func (s *fetchSink) Write(p []byte) (int, error) { return s.w.Write(p) }
+
+func openFetchSink(cmd *cobra.Command, dest string) (*fetchSink, error) {
+	if dest == "-" {
+		return &fetchSink{
+			w:       cmd.OutOrStdout(),
+			cleanup: func() {},
+			commit:  func() error { return nil },
+		}, nil
+	}
+	tmp := dest + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", tmp, err)
+	}
+	committed := false
+	return &fetchSink{
+		w: f,
+		cleanup: func() {
+			f.Close() //nolint:errcheck
+			if !committed {
+				os.Remove(tmp) //nolint:errcheck
+			}
+		},
+		commit: func() error {
+			if err := f.Close(); err != nil {
+				return fmt.Errorf("close %s: %w", tmp, err)
+			}
+			if err := os.Rename(tmp, dest); err != nil {
+				return fmt.Errorf("rename %s -> %s: %w", tmp, dest, err)
+			}
+			committed = true
+			return nil
+		},
+	}, nil
 }
 
 func resolveBlob(cmd *cobra.Command, env *cliEnv, arg string) (string, error) {
@@ -569,7 +634,7 @@ func blobCollisionError(name string, matches []*controlv1.BlobSummary) error {
 		if len(hash) > shortHexLen {
 			hash = hash[:shortHexLen]
 		}
-		fmt.Fprintf(&b, "  pln fetch %s-%s    (%s, published by %s)\n", name, prefixes[i], hash, formatPeerID(blob.GetPublisher().GetPeerPub(), false))
+		fmt.Fprintf(&b, "  %s-%s    (%s, published by %s)\n", name, prefixes[i], hash, formatPeerID(blob.GetPublisher().GetPeerPub(), false))
 	}
 	return wrapExit(exitAmbiguous, errors.New(strings.TrimSpace(b.String())))
 }

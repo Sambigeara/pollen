@@ -234,12 +234,14 @@ pln seed ./big-file.bin           # prints sha-256 digest
 pln seed ./big-file.bin payload   # …or publish under a name
 
 # From any other node:
-pln fetch <digest|name>           # pulls peer-to-peer over QUIC into the local store
+pln fetch <digest|name> ./out.bin     # streams plaintext from the publisher to ./out.bin
 ```
 
 > Blobs are the primitive behind static sites: content-addressed,
 > gossip-advertised, streamed peer-to-peer over QUIC. Receivers verify
-> the digest on arrival.
+> the digest on arrival. Bytes are encrypted at rest, so `pln fetch`
+> is the export path — it never writes the encrypted form to your local
+> store.
 
 ## FAQ
 

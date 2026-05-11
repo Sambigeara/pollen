@@ -27,7 +27,7 @@ service ControlService {
   rpc UnseedWorkload(UnseedWorkloadRequest) returns (UnseedWorkloadResponse);
   rpc CallWorkload(CallWorkloadRequest) returns (CallWorkloadResponse);
   rpc IssueCert(IssueCertRequest) returns (IssueCertResponse);
-  rpc FetchBlob(FetchBlobRequest) returns (FetchBlobResponse);
+  rpc FetchBlob(FetchBlobRequest) returns (stream FetchBlobResponse);
   rpc UploadBlob(stream UploadBlobRequest) returns (UploadBlobResponse);
   rpc RemoveBlob(RemoveBlobRequest) returns (RemoveBlobResponse);
   rpc SeedStatic(SeedStaticRequest) returns (SeedStaticResponse);
@@ -326,10 +326,11 @@ message FetchBlobRequest {
     pattern: "^[a-fA-F0-9]{64}$"
     len: 64
   }];
-  optional bytes peer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
 }
 
-message FetchBlobResponse {}
+message FetchBlobResponse {
+  bytes chunk = 1;
+}
 
 // The first UploadBlobRequest must carry `header`; subsequent messages
 // carry binary `chunk` fragments.

@@ -6,8 +6,10 @@ package blobs
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -96,6 +98,115 @@ func ReadHash(r io.Reader) (string, error) {
 	return string(hashBuf[:]), nil
 }
 
+// ErrNoPublisher signals that no spec in gossip references the hash, so
+// there is no origin to stream plaintext from. Distinguished from
+// publisher-unreachable so handlers can surface NotFound vs Unavailable.
+var ErrNoPublisher = errors.New("no publisher known for blob")
+
+// FetchPlaintext returns plaintext bytes for hash by contacting the
+// blob's publisher. When the local node is the publisher, it reads from
+// the local CAS directly. The returned reader does not persist anything
+// to the local CAS: this is a one-shot export path for `pln fetch`.
+//
+// Resolution mirrors the gate's Fetch fall-through: BlobSpecs first (a
+// named blob published via `pln seed <file> <name>`), then Specs (a
+// workload binary, whose hash is the spec key). Static-manifest digests
+// are intentionally not exposed here — they are an internal artefact
+// of the static-site spec and have no user-facing export use case.
+func (s *Service) FetchPlaintext(ctx context.Context, hash string) (io.ReadCloser, error) {
+	publisher, ok := s.resolvePublisher(hash)
+	if !ok {
+		return nil, fmt.Errorf("%w %s", ErrNoPublisher, hash[:min(hashDisplayLen, len(hash))])
+	}
+	if publisher == s.self {
+		return s.Get(hash)
+	}
+	return s.fetchPlaintextFrom(ctx, hash, publisher)
+}
+
+func (s *Service) resolvePublisher(hash string) (types.PeerKey, bool) {
+	snap := s.state.Snapshot()
+	if view, ok := snap.BlobSpecs[hash]; ok {
+		return view.Publisher, true
+	}
+	if sv, ok := snap.Specs[hash]; ok {
+		return sv.Publisher, true
+	}
+	return types.PeerKey{}, false
+}
+
+// fetchPlaintextFrom opens a plaintext stream to publisher. s.timeout
+// bounds only the handshake (dial + hash write + status byte); the body
+// inherits the caller's ctx so large transfers are not truncated.
+func (s *Service) fetchPlaintextFrom(ctx context.Context, hash string, publisher types.PeerKey) (io.ReadCloser, error) {
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, s.timeout)
+	defer cancelHandshake()
+
+	stream, err := s.mesh.OpenStream(handshakeCtx, publisher, transport.StreamTypeBlobPlaintext)
+	if err != nil {
+		return nil, fmt.Errorf("open stream to publisher %s: %w", publisher.Short(), err)
+	}
+	closeOnError := watchStream(handshakeCtx, stream)
+	bodyCtx, cancelBody := context.WithCancel(ctx)
+	defer func() {
+		if err != nil {
+			cancelBody()
+		}
+	}()
+
+	if _, err = stream.Write([]byte(hash)); err != nil {
+		closeOnError()
+		stream.Close() //nolint:errcheck
+		return nil, fmt.Errorf("write hash: %w", err)
+	}
+
+	var status [1]byte
+	if _, err = io.ReadFull(stream, status[:]); err != nil {
+		closeOnError()
+		stream.Close() //nolint:errcheck
+		return nil, fmt.Errorf("read status: %w", err)
+	}
+	if status[0] != statusOK {
+		closeOnError()
+		stream.Close() //nolint:errcheck
+		err = fmt.Errorf("publisher %s does not have blob", publisher.Short())
+		return nil, err
+	}
+	closeOnError()
+	return newCancellingReader(stream, bodyCtx, cancelBody), nil
+}
+
+// cancellingReader wraps a stream so Close cancels the body context
+// (which closes the stream via watchStream) exactly once. Used so
+// FetchPlaintext can hand the body off to a downstream consumer while
+// keeping shutdown deterministic.
+type cancellingReader struct {
+	stream      io.ReadWriteCloser
+	cancelBody  context.CancelFunc
+	cancelWatch func()
+	once        sync.Once
+}
+
+func newCancellingReader(stream io.ReadWriteCloser, bodyCtx context.Context, cancelBody context.CancelFunc) *cancellingReader {
+	return &cancellingReader{
+		stream:      stream,
+		cancelBody:  cancelBody,
+		cancelWatch: watchStream(bodyCtx, stream),
+	}
+}
+
+func (c *cancellingReader) Read(b []byte) (int, error) { return c.stream.Read(b) }
+
+func (c *cancellingReader) Close() error {
+	var err error
+	c.once.Do(func() {
+		c.cancelWatch()
+		err = c.stream.Close()
+		c.cancelBody()
+	})
+	return err
+}
+
 // Serve responds to an inbound blob fetch. The hash must already be
 // consumed from the stream before calling. After streaming ciphertext,
 // the server issues a wrapping addressed to the requesting peer so
@@ -122,6 +233,28 @@ func (s *Service) Serve(stream io.ReadWriteCloser, hash string, requester types.
 		// here once the service has a logger field.
 		_ = err
 	}
+}
+
+// ServePlaintext responds to an inbound plaintext-fetch stream from
+// `pln fetch`. Only the blob's publisher should reach this path: the
+// supervisor verifies that via the fetch gate before dispatching. The
+// hash has already been consumed from the stream; the body is the local
+// CAS read after decryption with the publisher's own DEK.
+//
+// No integrity trailer is sent because the fetcher already knows the
+// expected SHA-256 (it's the request key). The CLI re-hashes on receipt.
+func (s *Service) ServePlaintext(stream io.ReadWriteCloser, hash string) {
+	defer stream.Close()
+
+	rc, err := s.Get(hash)
+	if err != nil {
+		stream.Write([]byte{statusNotFound}) //nolint:errcheck
+		return
+	}
+	defer rc.Close()
+
+	stream.Write([]byte{statusOK}) //nolint:errcheck
+	io.Copy(stream, rc)            //nolint:errcheck
 }
 
 func watchStream(ctx context.Context, stream io.Closer) func() {

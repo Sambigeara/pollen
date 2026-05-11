@@ -81,6 +81,7 @@ type StateReader interface {
 
 type BlobsControl interface {
 	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
+	FetchPlaintext(ctx context.Context, hash string) (io.ReadCloser, error)
 	Put(r io.Reader) (string, error)
 	Publish(hash, name string, policy *admissionv1.Predicate) error
 	Remove(hash string) error
@@ -749,27 +750,48 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 	return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name})
 }
 
-func (s *Service) FetchBlob(ctx context.Context, req *controlv1.FetchBlobRequest) (*controlv1.FetchBlobResponse, error) {
+// fetchChunkSize is the plaintext payload per FetchBlobResponse frame.
+// 32 KiB keeps gRPC framing overhead amortised while staying well below
+// the default 4 MiB message-size limit.
+const fetchChunkSize = 32 * 1024
+
+func (s *Service) FetchBlob(req *controlv1.FetchBlobRequest, stream grpc.ServerStreamingServer[controlv1.FetchBlobResponse]) error {
 	hash := req.GetHash()
 	if s.gate != nil {
 		if err := s.gate.Fetch(s.localPeerKey(), hash); err != nil {
-			return nil, status.Error(codes.PermissionDenied, "fetch denied")
+			return status.Error(codes.PermissionDenied, "fetch denied")
 		}
 	}
-	var peers []types.PeerKey
-	if pub := req.GetPeerPub(); len(pub) > 0 {
-		peers = []types.PeerKey{types.PeerKeyFromBytes(pub)}
-	} else {
-		peers = s.state.Snapshot().PeersWithBlob(hash)
-		if len(peers) == 0 {
-			return nil, status.Error(codes.NotFound, "no peers advertise blob")
-		}
-	}
-	if err := s.blobs.Fetch(ctx, hash, peers); err != nil {
+	rc, err := s.blobs.FetchPlaintext(stream.Context(), hash)
+	if err != nil {
 		s.log.Warnw("fetch blob failed", "hash", types.ShortHash(hash), "err", err)
-		return nil, status.Error(codes.NotFound, "fetch blob")
+		switch {
+		case errors.Is(err, blobs.ErrNoPublisher):
+			return status.Error(codes.NotFound, "no publisher known for blob")
+		case errors.Is(err, blobs.ErrNotLocal):
+			return status.Error(codes.Unavailable, "publisher does not have blob")
+		default:
+			return status.Error(codes.Unavailable, "fetch blob from publisher")
+		}
 	}
-	return &controlv1.FetchBlobResponse{}, nil
+	defer rc.Close()
+
+	buf := make([]byte, fetchChunkSize)
+	for {
+		n, readErr := rc.Read(buf)
+		if n > 0 {
+			if sendErr := stream.Send(&controlv1.FetchBlobResponse{Chunk: buf[:n]}); sendErr != nil {
+				return sendErr
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		if readErr != nil {
+			s.log.Warnw("fetch blob stream error", "hash", types.ShortHash(hash), "err", readErr)
+			return status.Error(codes.Internal, "fetch blob stream")
+		}
+	}
 }
 
 func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadBlobRequest, controlv1.UploadBlobResponse]) error {

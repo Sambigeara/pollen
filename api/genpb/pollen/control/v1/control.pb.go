@@ -2465,7 +2465,6 @@ func (*IssueCertResponse) Descriptor() ([]byte, []int) {
 type FetchBlobRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
-	PeerPub       []byte                 `protobuf:"bytes,2,opt,name=peer_pub,json=peerPub,proto3,oneof" json:"peer_pub,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2507,15 +2506,9 @@ func (x *FetchBlobRequest) GetHash() string {
 	return ""
 }
 
-func (x *FetchBlobRequest) GetPeerPub() []byte {
-	if x != nil {
-		return x.PeerPub
-	}
-	return nil
-}
-
 type FetchBlobResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Chunk         []byte                 `protobuf:"bytes,1,opt,name=chunk,proto3" json:"chunk,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2548,6 +2541,13 @@ func (x *FetchBlobResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use FetchBlobResponse.ProtoReflect.Descriptor instead.
 func (*FetchBlobResponse) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *FetchBlobResponse) GetChunk() []byte {
+	if x != nil {
+		return x.Chunk
+	}
+	return nil
 }
 
 // The first UploadBlobRequest must carry `header`; subsequent messages
@@ -3331,12 +3331,11 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\x12F\n" +
 	"\tcert_caps\x18\x04 \x01(\v2!.pollen.admission.v1.CapabilitiesB\x06\xbaH\x03\xc8\x01\x01R\bcertCapsJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x05adminR\n" +
 	"attributes\"\x13\n" +
-	"\x11IssueCertResponse\"y\n" +
+	"\x11IssueCertResponse\"C\n" +
 	"\x10FetchBlobRequest\x12/\n" +
-	"\x04hash\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x04hash\x12'\n" +
-	"\bpeer_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h H\x00R\apeerPub\x88\x01\x01B\v\n" +
-	"\t_peer_pub\"\x13\n" +
-	"\x11FetchBlobResponse\"u\n" +
+	"\x04hash\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x04hash\")\n" +
+	"\x11FetchBlobResponse\x12\x14\n" +
+	"\x05chunk\x18\x01 \x01(\fR\x05chunk\"u\n" +
 	"\x11UploadBlobRequest\x12=\n" +
 	"\x06header\x18\x01 \x01(\v2#.pollen.control.v1.UploadBlobHeaderH\x00R\x06header\x12\x16\n" +
 	"\x05chunk\x18\x02 \x01(\fH\x00R\x05chunkB\t\n" +
@@ -3394,7 +3393,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x19HEALTH_STATUS_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15HEALTH_STATUS_HEALTHY\x10\x01\x12\x1a\n" +
 	"\x16HEALTH_STATUS_DEGRADED\x10\x02\x12\x1b\n" +
-	"\x17HEALTH_STATUS_UNHEALTHY\x10\x032\x93\x0f\n" +
+	"\x17HEALTH_STATUS_UNHEALTHY\x10\x032\x95\x0f\n" +
 	"\x0eControlService\x12S\n" +
 	"\bShutdown\x12\".pollen.control.v1.ShutdownRequest\x1a#.pollen.control.v1.ShutdownResponse\x12k\n" +
 	"\x10GetBootstrapInfo\x12*.pollen.control.v1.GetBootstrapInfoRequest\x1a+.pollen.control.v1.GetBootstrapInfoResponse\x12V\n" +
@@ -3410,8 +3409,8 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\fSeedWorkload\x12&.pollen.control.v1.SeedWorkloadRequest\x1a'.pollen.control.v1.SeedWorkloadResponse(\x01\x12e\n" +
 	"\x0eUnseedWorkload\x12(.pollen.control.v1.UnseedWorkloadRequest\x1a).pollen.control.v1.UnseedWorkloadResponse\x12_\n" +
 	"\fCallWorkload\x12&.pollen.control.v1.CallWorkloadRequest\x1a'.pollen.control.v1.CallWorkloadResponse\x12V\n" +
-	"\tIssueCert\x12#.pollen.control.v1.IssueCertRequest\x1a$.pollen.control.v1.IssueCertResponse\x12V\n" +
-	"\tFetchBlob\x12#.pollen.control.v1.FetchBlobRequest\x1a$.pollen.control.v1.FetchBlobResponse\x12[\n" +
+	"\tIssueCert\x12#.pollen.control.v1.IssueCertRequest\x1a$.pollen.control.v1.IssueCertResponse\x12X\n" +
+	"\tFetchBlob\x12#.pollen.control.v1.FetchBlobRequest\x1a$.pollen.control.v1.FetchBlobResponse0\x01\x12[\n" +
 	"\n" +
 	"UploadBlob\x12$.pollen.control.v1.UploadBlobRequest\x1a%.pollen.control.v1.UploadBlobResponse(\x01\x12Y\n" +
 	"\n" +
@@ -3590,7 +3589,6 @@ func file_pollen_control_v1_control_proto_init() {
 		(*SeedWorkloadRequest_Header)(nil),
 		(*SeedWorkloadRequest_Chunk)(nil),
 	}
-	file_pollen_control_v1_control_proto_msgTypes[37].OneofWrappers = []any{}
 	file_pollen_control_v1_control_proto_msgTypes[39].OneofWrappers = []any{
 		(*UploadBlobRequest_Header)(nil),
 		(*UploadBlobRequest_Chunk)(nil),
