@@ -185,6 +185,8 @@
 
     <p>The relationships are stored on the gossiped CRDT, so every node can independently verify any cert. Revocation works through a deny set on the same document; the CRDT propagates revocations the same way it propagates everything else.</p>
 
+    <p>To see a single peer's tier, attributes, issuer chain, and the resources it publishes, use <a href="cli.html#inspect"><code>pln inspect &lt;peer-id&gt;</code></a>.</p>
+
     <h3>Properties</h3>
     <p>Properties are key/value strings baked into a cert. Seeds see the caller's peer key and properties on every invocation, so authorisation, routing, and policy decisions can live inside workload code. Operators bake them in at issue time:</p>
 

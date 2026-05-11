@@ -42,6 +42,7 @@ const (
 	ControlService_SeedStatic_FullMethodName        = "/pollen.control.v1.ControlService/SeedStatic"
 	ControlService_UnseedStatic_FullMethodName      = "/pollen.control.v1.ControlService/UnseedStatic"
 	ControlService_ListStatic_FullMethodName        = "/pollen.control.v1.ControlService/ListStatic"
+	ControlService_Inspect_FullMethodName           = "/pollen.control.v1.ControlService/Inspect"
 )
 
 // ControlServiceClient is the client API for ControlService service.
@@ -68,6 +69,7 @@ type ControlServiceClient interface {
 	SeedStatic(ctx context.Context, in *SeedStaticRequest, opts ...grpc.CallOption) (*SeedStaticResponse, error)
 	UnseedStatic(ctx context.Context, in *UnseedStaticRequest, opts ...grpc.CallOption) (*UnseedStaticResponse, error)
 	ListStatic(ctx context.Context, in *ListStaticRequest, opts ...grpc.CallOption) (*ListStaticResponse, error)
+	Inspect(ctx context.Context, in *InspectRequest, opts ...grpc.CallOption) (*InspectResponse, error)
 }
 
 type controlServiceClient struct {
@@ -293,6 +295,16 @@ func (c *controlServiceClient) ListStatic(ctx context.Context, in *ListStaticReq
 	return out, nil
 }
 
+func (c *controlServiceClient) Inspect(ctx context.Context, in *InspectRequest, opts ...grpc.CallOption) (*InspectResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InspectResponse)
+	err := c.cc.Invoke(ctx, ControlService_Inspect_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ControlServiceServer is the server API for ControlService service.
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
@@ -317,6 +329,7 @@ type ControlServiceServer interface {
 	SeedStatic(context.Context, *SeedStaticRequest) (*SeedStaticResponse, error)
 	UnseedStatic(context.Context, *UnseedStaticRequest) (*UnseedStaticResponse, error)
 	ListStatic(context.Context, *ListStaticRequest) (*ListStaticResponse, error)
+	Inspect(context.Context, *InspectRequest) (*InspectResponse, error)
 	mustEmbedUnimplementedControlServiceServer()
 }
 
@@ -386,6 +399,9 @@ func (UnimplementedControlServiceServer) UnseedStatic(context.Context, *UnseedSt
 }
 func (UnimplementedControlServiceServer) ListStatic(context.Context, *ListStaticRequest) (*ListStaticResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListStatic not implemented")
+}
+func (UnimplementedControlServiceServer) Inspect(context.Context, *InspectRequest) (*InspectResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Inspect not implemented")
 }
 func (UnimplementedControlServiceServer) mustEmbedUnimplementedControlServiceServer() {}
 func (UnimplementedControlServiceServer) testEmbeddedByValue()                        {}
@@ -739,6 +755,24 @@ func _ControlService_ListStatic_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_Inspect_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InspectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).Inspect(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_Inspect_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).Inspect(ctx, req.(*InspectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ControlService_ServiceDesc is the grpc.ServiceDesc for ControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -813,6 +847,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListStatic",
 			Handler:    _ControlService_ListStatic_Handler,
+		},
+		{
+			MethodName: "Inspect",
+			Handler:    _ControlService_Inspect_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

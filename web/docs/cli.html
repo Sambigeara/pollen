@@ -270,6 +270,36 @@ NAME    HASH      STATUS  REPLICAS  LOCAL  UPTIME
 hello   4f3a7c91  ready   2/2       *      4m</span>
     </div>
 
+    <h3 id="inspect"><code>pln inspect &lt;target&gt;</code></h3>
+    <p>Drill into a single peer or resource. <code>&lt;target&gt;</code> resolves against the cluster view this node holds: a peer-id hex prefix, a workload or static-site name, a blob name or hash prefix, or a service name (suffixed when several peers serve the same name). Use this when <a href="#status"><code>pln status</code></a> shows the row but you need the underlying cert, properties, telemetry, or publish list.</p>
+    <p>Node detail is implemented. Resource targets (workloads, static sites, blobs, services) are recognised but currently return <code>resource inspection not yet implemented</code>; use <a href="#status"><code>pln status</code></a> for resource details in the meantime.</p>
+    <div class="terminal">
+      <span class="cmd">pln inspect ab12cd34</span>
+      <span class="out">NODE
+name          gamer
+peer-id       ab12cd34ef56011223344556677889aabbccddeeff00112233445566778899aa
+status        direct (public)
+addr          10.0.0.42:7531
+tier          PUBLISHER
+membership    expires in 23h
+issued by     root-admin [d3f9ab12]
+attributes
+  region      eu
+  role        worker
+
+TELEMETRY
+cpu           8 cores, 14%
+mem           8 GiB total, 41%
+nat           easy
+reachable     3 peers
+tunnels       2
+
+PUBLISHES
+services      api, dns
+workloads     greeter
+blobs         payload</span>
+    </div>
+
     <h3 id="id"><code>pln id</code></h3>
     <p>Print this node's hex-encoded identity public key. Pipe-friendly. Used as the <code>--subject</code> of an invite token.</p>
     <pre><code>pln invite --subject $(ssh user@host pln id)</code></pre>

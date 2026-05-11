@@ -384,7 +384,10 @@ func runUnseed(cmd *cobra.Command, args []string, env *cliEnv) error {
 	}
 	st := statusResp.Msg
 
-	wl := matchWorkloadArg(st.GetWorkloads(), arg)
+	wl, wlErr := matchWorkloadArg(st.GetWorkloads(), arg)
+	if wlErr != nil {
+		return wlErr
+	}
 	site := matchStaticArg(st.GetSites(), arg)
 	blobHash, blobErr := matchBlobArg(st.GetBlobs(), arg)
 	hasBlob := blobErr == nil
@@ -535,26 +538,56 @@ func resolveBlob(cmd *cobra.Command, env *cliEnv, arg string) (string, error) {
 	return matchBlobArg(statusResp.Msg.GetBlobs(), arg)
 }
 
-func matchWorkloadArg(workloads []*controlv1.WorkloadSummary, arg string) *controlv1.WorkloadSummary {
+// matchWorkloadArg resolves arg against the workload list. Exact name or
+// hash matches win immediately. For hex prefixes, a unique workload is
+// returned; multiple hash-prefix matches surface as exitAmbiguous so
+// callers can prompt the operator to disambiguate.
+func matchWorkloadArg(workloads []*controlv1.WorkloadSummary, arg string) (*controlv1.WorkloadSummary, error) {
 	for _, w := range workloads {
 		if w.GetName() == arg || w.GetHash() == arg {
-			return w
+			return w, nil
 		}
 	}
 	lower := strings.ToLower(arg)
 	if !isHexPrefix(lower) {
-		return nil
+		return nil, nil
 	}
-	var found *controlv1.WorkloadSummary
+	var matches []*controlv1.WorkloadSummary
 	for _, w := range workloads {
 		if strings.HasPrefix(w.GetHash(), lower) {
-			if found != nil {
-				return nil
-			}
-			found = w
+			matches = append(matches, w)
 		}
 	}
-	return found
+	switch len(matches) {
+	case 0:
+		return nil, nil
+	case 1:
+		return matches[0], nil
+	default:
+		return nil, workloadHashPrefixCollisionError(arg, matches)
+	}
+}
+
+func workloadHashPrefixCollisionError(prefix string, matches []*controlv1.WorkloadSummary) error {
+	hashes := make([]string, len(matches))
+	for i, w := range matches {
+		hashes[i] = w.GetHash()
+	}
+	prefixes := minUniquePrefixes(hashes)
+	var b strings.Builder
+	fmt.Fprintf(&b, "prefix %q matches multiple workloads — pick one:\n", prefix)
+	for i, w := range matches {
+		short := w.GetHash()
+		if len(short) > shortHexLen {
+			short = short[:shortHexLen]
+		}
+		name := w.GetName()
+		if name == "" {
+			name = short
+		}
+		fmt.Fprintf(&b, "  %s    (%s, %s)\n", prefixes[i], name, short)
+	}
+	return wrapExit(exitAmbiguous, errors.New(strings.TrimSpace(b.String())))
 }
 
 func matchStaticArg(sites []*controlv1.StaticSummary, arg string) *controlv1.StaticSummary {

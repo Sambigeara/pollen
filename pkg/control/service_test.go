@@ -24,6 +24,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/blobs"
 	"github.com/sambigeara/pollen/pkg/control"
+	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/placement"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
@@ -35,6 +36,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type harness struct {
@@ -918,6 +921,174 @@ func TestGetStatusCertificatesCapabilities(t *testing.T) {
 	}
 }
 
+func TestInspectNode_Local(t *testing.T) {
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)))
+	local := testPeerKey(1)
+	h.state.snap.LocalID = local
+	rootCert := mustIssueRootCert(t, auth.FullCapabilities(), map[string]any{"role": "primary"})
+	h.state.snap.Nodes[local] = state.NodeView{
+		PeerPub:            local.Bytes(),
+		Name:               "alpha",
+		IPs:                []string{"10.0.0.1"},
+		LocalPort:          5000,
+		Cert:               rootCert,
+		CPUPercent:         25,
+		MemPercent:         40,
+		NumCPU:             4,
+		PubliclyAccessible: true,
+	}
+	h.state.snap.Specs = map[string]state.WorkloadSpecView{
+		"abc": {Spec: state.WorkloadSpec{Name: "greeter"}, Publisher: local},
+	}
+	h.state.snap.BlobSpecs = map[string]state.BlobSpecView{
+		hexDigest32(): {Spec: state.BlobSpec{Name: "payload"}, Publisher: local},
+	}
+
+	resp, err := h.svc.Inspect(context.Background(), &controlv1.InspectRequest{
+		Target: &controlv1.InspectRequest_NodePub{NodePub: local.Bytes()},
+	})
+	require.NoError(t, err)
+	node := resp.GetNode()
+	require.NotNil(t, node, "node detail expected")
+	require.Equal(t, "alpha", node.GetSummary().GetName())
+	require.True(t, node.GetSummary().GetPubliclyAccessible())
+	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_ONLINE, node.GetSummary().GetStatus())
+
+	cert := node.GetCert()
+	require.NotNil(t, cert)
+	require.True(t, cert.GetCanAdmit())
+	require.True(t, cert.GetCanPublish())
+	require.True(t, cert.GetCanDelegate())
+	require.Equal(t, "primary", cert.GetAttributes().GetFields()["role"].GetStringValue())
+
+	require.Empty(t, node.GetIssuerChain(), "self-issued root cert has no issuer chain")
+	require.Contains(t, node.GetPublishedWorkloads(), "greeter")
+	require.Contains(t, node.GetPublishedBlobs(), "payload")
+}
+
+func TestInspectNode_Peer(t *testing.T) {
+	h := newHarness(t)
+	local := testPeerKey(1)
+	peerKey := testPeerKey(2)
+	h.state.snap.LocalID = local
+	h.state.snap.Nodes[local] = state.NodeView{}
+	peerCert := mustIssueChildCert(t, peerKey, auth.PublisherCapabilities())
+	h.state.snap.Nodes[peerKey] = state.NodeView{
+		PeerPub:    peerKey.Bytes(),
+		Name:       "beta",
+		Cert:       peerCert,
+		Reachable:  map[types.PeerKey]struct{}{local: {}},
+		NatType:    nat.Easy,
+		CPUPercent: 12,
+	}
+	h.transport.activeAddrs[peerKey] = &net.UDPAddr{IP: net.ParseIP("10.0.0.2"), Port: 7531}
+	h.transport.rtts[peerKey] = 7 * time.Millisecond
+
+	resp, err := h.svc.Inspect(context.Background(), &controlv1.InspectRequest{
+		Target: &controlv1.InspectRequest_NodePub{NodePub: peerKey.Bytes()},
+	})
+	require.NoError(t, err)
+	node := resp.GetNode()
+	require.NotNil(t, node)
+	require.Equal(t, "beta", node.GetSummary().GetName())
+	require.Equal(t, controlv1.NodeStatus_NODE_STATUS_ONLINE, node.GetSummary().GetStatus())
+	require.Equal(t, "10.0.0.2:7531", node.GetSummary().GetAddr())
+	require.InDelta(t, 7.0, node.GetSummary().GetLatencyMs(), 0.1)
+
+	cert := node.GetCert()
+	require.NotNil(t, cert)
+	require.True(t, cert.GetCanPublish())
+	require.False(t, cert.GetCanAdmit())
+
+	require.Len(t, node.GetIssuerChain(), 1, "publisher cert chains up to a single root")
+	require.Equal(t, "easy", node.GetNatType())
+	require.Len(t, node.GetReachablePeers(), 1)
+}
+
+func TestInspectNode_NotFound(t *testing.T) {
+	h := newHarness(t)
+	h.state.snap.LocalID = testPeerKey(1)
+	h.state.snap.Nodes[testPeerKey(1)] = state.NodeView{}
+
+	_, err := h.svc.Inspect(context.Background(), &controlv1.InspectRequest{
+		Target: &controlv1.InspectRequest_NodePub{NodePub: testPeerKey(9).Bytes()},
+	})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.NotFound, st.Code())
+}
+
+func TestInspect_Unimplemented(t *testing.T) {
+	h := newHarness(t)
+	h.state.snap.LocalID = testPeerKey(1)
+	h.state.snap.Nodes[testPeerKey(1)] = state.NodeView{}
+
+	for _, target := range []*controlv1.InspectRequest{
+		{Target: &controlv1.InspectRequest_WorkloadHash{WorkloadHash: hexDigest32()}},
+		{Target: &controlv1.InspectRequest_StaticName{StaticName: "site"}},
+		{Target: &controlv1.InspectRequest_BlobHash{BlobHash: hexDigest32()}},
+		{Target: &controlv1.InspectRequest_Service{Service: &controlv1.InspectServiceTarget{Name: "api", ProviderPub: testPeerKey(1).Bytes()}}},
+	} {
+		_, err := h.svc.Inspect(context.Background(), target)
+		require.Error(t, err)
+		st, _ := status.FromError(err)
+		require.Equal(t, codes.Unimplemented, st.Code())
+	}
+}
+
+func TestInspect_NilTarget(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.svc.Inspect(context.Background(), &controlv1.InspectRequest{})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.InvalidArgument, st.Code())
+}
+
+// TestInspectNode_IssuerChainFourDeep exercises a delegation chain deep
+// enough to catch a flat-chain-walk regression. Depth 3 incidentally
+// passes the old recursive walk because the immediate parent's
+// issuer_pub is the grandparent. The bug only manifests at depth 4+,
+// where the root ends up beyond the reach of nested-chain traversal
+// after stripChainEntries flattens.
+func TestInspectNode_IssuerChainFourDeep(t *testing.T) {
+	h := newHarness(t)
+	local := testPeerKey(1)
+	leaf := testPeerKey(2)
+	h.state.snap.LocalID = local
+	h.state.snap.Nodes[local] = state.NodeView{}
+
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	rootCert, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, auth.FullCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	gpPub, gpPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	gpCert, err := auth.IssueDelegationCert(rootPriv, []*admissionv1.DelegationCert{rootCert}, gpPub, auth.FullCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	parentPub, parentPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	parentCert, err := auth.IssueDelegationCert(gpPriv, []*admissionv1.DelegationCert{gpCert, rootCert}, parentPub, auth.FullCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	leafCert, err := auth.IssueDelegationCert(parentPriv, []*admissionv1.DelegationCert{parentCert, gpCert, rootCert}, leaf.Bytes(), auth.PublisherCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	h.state.snap.Nodes[leaf] = state.NodeView{PeerPub: leaf.Bytes(), Cert: leafCert}
+
+	resp, err := h.svc.Inspect(context.Background(), &controlv1.InspectRequest{
+		Target: &controlv1.InspectRequest_NodePub{NodePub: leaf.Bytes()},
+	})
+	require.NoError(t, err)
+
+	chain := resp.GetNode().GetIssuerChain()
+	require.Len(t, chain, 3, "expected root, grandparent, and parent in chain")
+	require.Equal(t, []byte(rootPub), chain[0].GetPeerPub(), "root first")
+	require.Equal(t, []byte(gpPub), chain[1].GetPeerPub(), "grandparent in middle")
+	require.Equal(t, []byte(parentPub), chain[2].GetPeerPub(), "parent immediately above leaf")
+}
+
 func TestGetStatusOfflinePeer(t *testing.T) {
 	h := newHarness(t)
 	local := testPeerKey(1)
@@ -1442,6 +1613,41 @@ func (f *fakeUploadStream) Recv() (*controlv1.UploadBlobRequest, error) {
 func (f *fakeUploadStream) SendAndClose(resp *controlv1.UploadBlobResponse) error {
 	f.sent = resp
 	return nil
+}
+
+// mustIssueRootCert mints a self-signed delegation cert with the requested
+// caps and attributes. Returned cert has no chain entries (root).
+func mustIssueRootCert(t *testing.T, caps *admissionv1.Capabilities, attrs map[string]any) *admissionv1.DelegationCert {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	if attrs != nil {
+		s, err := structpb.NewStruct(attrs)
+		require.NoError(t, err)
+		caps = proto.Clone(caps).(*admissionv1.Capabilities) //nolint:forcetypeassert
+		caps.Attributes = s
+	}
+	cert, err := auth.IssueDelegationCert(priv, nil, pub, caps, time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
+	require.NoError(t, err)
+	return cert
+}
+
+// mustIssueChildCert mints a publisher/leaf cert issued by a synthetic
+// root, with the given subject pub. Subject is included in claims so the
+// resulting cert references a concrete peer key.
+func mustIssueChildCert(t *testing.T, subject types.PeerKey, caps *admissionv1.Capabilities) *admissionv1.DelegationCert {
+	t.Helper()
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	rootCert, err := auth.IssueDelegationCert(rootPriv, nil, rootPub, auth.FullCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
+	require.NoError(t, err)
+	child, err := auth.IssueDelegationCert(rootPriv, []*admissionv1.DelegationCert{rootCert}, subject.Bytes(), caps, time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{})
+	require.NoError(t, err)
+	return child
+}
+
+func hexDigest32() string {
+	return "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
 }
 
 func dummyCreds(t *testing.T) *auth.NodeCredentials {

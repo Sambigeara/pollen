@@ -152,7 +152,7 @@ hello   4f3a7c91  pending   0/2       -      30s</span>
     <p><strong>Fix.</strong> Inspect the spec and the caller's cert:</p>
     <div class="terminal">
       <span class="cmd">pln status seeds --wide                        <span class="cmt"># shows policy on the spec</span></span>
-      <span class="cmd">pln status nodes --wide                        <span class="cmt"># shows your peer's properties</span></span>
+      <span class="cmd">pln inspect $(pln id)                          <span class="cmt"># shows your tier and attributes</span></span>
     </div>
     <p>Then either add the missing property to your cert (<code>pln grant &lt;your-peer&gt; --prop key=value</code> from an admin shell) or relax the spec by re-publishing without the offending clause.</p>
 

@@ -152,7 +152,7 @@ Two commands to a cluster:
 	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted (env: PLN_DIR)")
 	rootCmd.PersistentFlags().StringP("host", "H", "", "Target daemon over SSH, e.g. user@host (env: PLN_HOST)")
 
-	rootCmd.AddCommand(newVersionCmd(), newIDCmd(), newBridgeCmd(), newContextCmds(), newCallCmd())
+	rootCmd.AddCommand(newVersionCmd(), newIDCmd(), newBridgeCmd(), newContextCmds(), newCallCmd(), newInspectCmd())
 	rootCmd.AddCommand(newDaemonCmds()...)
 	rootCmd.AddCommand(newClusterCmds()...)
 	rootCmd.AddCommand(newNetworkCmds()...)

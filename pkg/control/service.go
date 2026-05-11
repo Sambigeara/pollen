@@ -26,6 +26,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/blobs"
 	"github.com/sambigeara/pollen/pkg/membership"
+	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/placement"
 	"github.com/sambigeara/pollen/pkg/plnfs"
 	"github.com/sambigeara/pollen/pkg/state"
@@ -312,6 +313,231 @@ func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*
 	return out, nil
 }
 
+func (s *Service) Inspect(_ context.Context, req *controlv1.InspectRequest) (*controlv1.InspectResponse, error) {
+	switch t := req.GetTarget().(type) {
+	case *controlv1.InspectRequest_NodePub:
+		detail, err := s.inspectNode(types.PeerKeyFromBytes(t.NodePub))
+		if err != nil {
+			return nil, err
+		}
+		return &controlv1.InspectResponse{Detail: &controlv1.InspectResponse_Node{Node: detail}}, nil
+	case *controlv1.InspectRequest_WorkloadHash,
+		*controlv1.InspectRequest_StaticName,
+		*controlv1.InspectRequest_BlobHash,
+		*controlv1.InspectRequest_Service:
+		return nil, status.Error(codes.Unimplemented, "resource inspect not yet implemented")
+	case nil:
+		return nil, status.Error(codes.InvalidArgument, "inspect target required")
+	}
+	// Go's type-switch cannot prove proto oneof exhaustiveness, so this
+	// trailing return is required even though every concrete variant is
+	// handled above.
+	return nil, status.Errorf(codes.InvalidArgument, "unrecognised inspect target type %T", req.GetTarget())
+}
+
+func (s *Service) inspectNode(peerKey types.PeerKey) (*controlv1.NodeDetail, error) {
+	snap := s.state.Snapshot()
+	nv, ok := snap.Nodes[peerKey]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "no peer %s in cluster view", peerKey.String())
+	}
+
+	connections := s.tunneling.ListConnections()
+	var summary *controlv1.NodeSummary
+	if peerKey == snap.LocalID {
+		summary = s.buildSelfSummary(peerKey, nv, connections)
+	} else {
+		summary = s.buildPeerSummary(snap, peerKey, nv, connections)
+	}
+
+	detail := &controlv1.NodeDetail{
+		Summary:       summary,
+		Cert:          nodeCertInfo(nv.Cert, time.Now()),
+		IssuerChain:   issuerChain(nv.Cert),
+		NatType:       natTypeLabel(nv.NatType),
+		MemTotalBytes: nv.MemTotalBytes,
+	}
+	if nv.VivaldiCoord != nil {
+		detail.VivaldiX = nv.VivaldiCoord.X
+		detail.VivaldiY = nv.VivaldiCoord.Y
+		detail.VivaldiHeight = nv.VivaldiCoord.Height
+		detail.VivaldiError = nv.VivaldiErr
+	}
+	detail.ReachablePeers = sortedReachableRefs(nv.Reachable)
+	fillPublishedResources(detail, snap, nv, peerKey)
+	return detail, nil
+}
+
+func sortedReachableRefs(reachable map[types.PeerKey]struct{}) []*controlv1.NodeRef {
+	if len(reachable) == 0 {
+		return nil
+	}
+	keys := make([]types.PeerKey, 0, len(reachable))
+	for pk := range reachable {
+		keys = append(keys, pk)
+	}
+	slices.SortFunc(keys, types.PeerKey.Compare)
+	refs := make([]*controlv1.NodeRef, len(keys))
+	for i, k := range keys {
+		refs[i] = &controlv1.NodeRef{PeerPub: k.Bytes()}
+	}
+	return refs
+}
+
+// fillPublishedResources populates the published_* slices on detail by
+// scanning the snapshot for resources whose publisher is peerKey. The
+// anonymous-publish fallback labels hash-only entries by their hash.
+func fillPublishedResources(detail *controlv1.NodeDetail, snap state.Snapshot, nv state.NodeView, peerKey types.PeerKey) {
+	for name := range nv.Services {
+		detail.PublishedServices = append(detail.PublishedServices, name)
+	}
+	slices.Sort(detail.PublishedServices)
+
+	for hash, sv := range snap.Specs {
+		if sv.Publisher != peerKey {
+			continue
+		}
+		label := sv.Spec.Name
+		if label == "" {
+			label = hash
+		}
+		detail.PublishedWorkloads = append(detail.PublishedWorkloads, label)
+	}
+	slices.Sort(detail.PublishedWorkloads)
+
+	for name, sv := range snap.StaticSpecs {
+		if sv.Publisher == peerKey {
+			detail.PublishedStatics = append(detail.PublishedStatics, name)
+		}
+	}
+	slices.Sort(detail.PublishedStatics)
+
+	for digest, bv := range snap.BlobSpecs {
+		if bv.Publisher != peerKey {
+			continue
+		}
+		label := bv.Spec.Name
+		if label == "" {
+			label = digest
+		}
+		detail.PublishedBlobs = append(detail.PublishedBlobs, label)
+	}
+	slices.Sort(detail.PublishedBlobs)
+}
+
+// buildPeerSummary builds a NodeSummary for one peer. It walks
+// snap.PeerKeys and connections directly; callers iterating the full
+// node set (buildNodeSummaries) precompute those into maps and use
+// peerSummary instead to avoid quadratic cost.
+func (s *Service) buildPeerSummary(snap state.Snapshot, peerKey types.PeerKey, nv state.NodeView, connections []tunneling.ConnectionInfo) *controlv1.NodeSummary {
+	isLive := slices.Contains(snap.PeerKeys, peerKey)
+	var tunnels uint32
+	for _, c := range connections {
+		if c.PeerID == peerKey {
+			tunnels++
+		}
+	}
+	return s.peerSummary(peerKey, nv, tunnels, isLive)
+}
+
+// peerSummary is the shared per-peer body used by buildNodeSummaries and
+// buildPeerSummary. Tunnels and liveness are precomputed by the caller
+// so this function carries no map lookups of its own.
+func (s *Service) peerSummary(peerKey types.PeerKey, nv state.NodeView, tunnels uint32, isLive bool) *controlv1.NodeSummary {
+	var isDirect bool
+	var addr *net.UDPAddr
+	if s.transport != nil {
+		addr, isDirect = s.transport.GetActivePeerAddress(peerKey)
+	}
+	peerStatus := controlv1.NodeStatus_NODE_STATUS_OFFLINE
+	addrStr := nodeViewAddr(nv)
+	if isDirect {
+		peerStatus = controlv1.NodeStatus_NODE_STATUS_ONLINE
+		addrStr = addr.String()
+	} else if isLive {
+		peerStatus = controlv1.NodeStatus_NODE_STATUS_INDIRECT
+	}
+	in, outBytes := sumTraffic(nv.TrafficRates)
+	ns := &controlv1.NodeSummary{
+		Node:               &controlv1.NodeRef{PeerPub: peerKey.Bytes()},
+		Name:               nv.Name,
+		Status:             peerStatus,
+		Addr:               addrStr,
+		PubliclyAccessible: nv.PubliclyAccessible,
+		TunnelCount:        tunnels,
+		CpuPercent:         nv.CPUPercent,
+		MemPercent:         nv.MemPercent,
+		NumCpu:             nv.NumCPU,
+		TrafficRateIn:      in,
+		TrafficRateOut:     outBytes,
+	}
+	if isDirect && s.transport != nil {
+		if rtt, ok := s.transport.PeerRTT(peerKey); ok {
+			ns.LatencyMs = float64(rtt.Microseconds()) / 1000.0 //nolint:mnd
+		}
+	}
+	return ns
+}
+
+// nodeCertInfo derives CertInfo from a peer's gossiped DelegationCert.
+// Health is computed against the cert's own expiry; the local-node
+// version in buildCertificates uses the credentials store directly
+// because it needs the renewal-window thresholds, which only apply to
+// the local node's own cert.
+func nodeCertInfo(cert *admissionv1.DelegationCert, now time.Time) *controlv1.CertInfo {
+	if cert == nil {
+		return nil
+	}
+	claims := cert.GetClaims()
+	caps := claims.GetCapabilities()
+	health := controlv1.CertHealth_CERT_HEALTH_OK
+	if auth.IsCertExpired(cert, now) {
+		health = controlv1.CertHealth_CERT_HEALTH_EXPIRED
+	}
+	return &controlv1.CertInfo{
+		NotBeforeUnix:      claims.GetNotBeforeUnix(),
+		NotAfterUnix:       claims.GetNotAfterUnix(),
+		Serial:             claims.GetSerial(),
+		Health:             health,
+		CanDelegate:        caps.GetCanDelegate(),
+		CanAdmit:           caps.GetCanAdmit(),
+		CanPublish:         caps.GetCanPublish(),
+		MaxDepth:           caps.GetMaxDepth(),
+		AccessDeadlineUnix: claims.GetAccessDeadlineUnix(),
+		Attributes:         caps.GetAttributes(),
+	}
+}
+
+// issuerChain returns the delegation chain root-down, ending at the peer
+// immediately above the inspected node. Empty for a self-issued root.
+//
+// cert.Chain is a flattened leaf-to-root list (auth.stripChainEntries
+// clears nested chains at issuance), so we iterate it in reverse to
+// surface root first.
+func issuerChain(cert *admissionv1.DelegationCert) []*controlv1.NodeRef {
+	chain := cert.GetChain()
+	if len(chain) == 0 {
+		return nil
+	}
+	refs := make([]*controlv1.NodeRef, 0, len(chain))
+	for i := len(chain) - 1; i >= 0; i-- {
+		sub := chain[i].GetClaims().GetSubjectPub()
+		refs = append(refs, &controlv1.NodeRef{PeerPub: bytes.Clone(sub)})
+	}
+	return refs
+}
+
+func natTypeLabel(t nat.Type) string {
+	switch t {
+	case nat.Easy:
+		return "easy"
+	case nat.Hard:
+		return "hard"
+	default:
+		return ""
+	}
+}
+
 func (s *Service) isDegraded(now time.Time) bool {
 	if s.creds == nil || s.creds.Cert() == nil || s.transport == nil {
 		return false
@@ -387,43 +613,8 @@ func (s *Service) buildNodeSummaries(snap state.Snapshot, nodes map[types.PeerKe
 		if key == snap.LocalID {
 			continue
 		}
-
-		var isDirect bool
-		var addr *net.UDPAddr
-		if s.transport != nil {
-			addr, isDirect = s.transport.GetActivePeerAddress(key)
-		}
-
-		peerStatus := controlv1.NodeStatus_NODE_STATUS_OFFLINE
-		addrStr := nodeViewAddr(node)
-
-		if isDirect {
-			peerStatus = controlv1.NodeStatus_NODE_STATUS_ONLINE
-			addrStr = addr.String()
-		} else if _, ok := liveSet[key]; ok {
-			peerStatus = controlv1.NodeStatus_NODE_STATUS_INDIRECT
-		}
-
-		in, outBytes := sumTraffic(node.TrafficRates)
-		ns := &controlv1.NodeSummary{
-			Node:               &controlv1.NodeRef{PeerPub: key.Bytes()},
-			Name:               node.Name,
-			Status:             peerStatus,
-			Addr:               addrStr,
-			PubliclyAccessible: node.PubliclyAccessible,
-			TunnelCount:        tunnelCounts[key],
-			CpuPercent:         node.CPUPercent,
-			MemPercent:         node.MemPercent,
-			NumCpu:             node.NumCPU,
-			TrafficRateIn:      in,
-			TrafficRateOut:     outBytes,
-		}
-		if isDirect && s.transport != nil {
-			if rtt, ok := s.transport.PeerRTT(key); ok {
-				ns.LatencyMs = float64(rtt.Microseconds()) / 1000.0 //nolint:mnd
-			}
-		}
-		out = append(out, ns)
+		_, isLive := liveSet[key]
+		out = append(out, s.peerSummary(key, node, tunnelCounts[key], isLive))
 	}
 	return out
 }

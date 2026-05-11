@@ -33,6 +33,7 @@ service ControlService {
   rpc SeedStatic(SeedStaticRequest) returns (SeedStaticResponse);
   rpc UnseedStatic(UnseedStaticRequest) returns (UnseedStaticResponse);
   rpc ListStatic(ListStaticRequest) returns (ListStaticResponse);
+  rpc Inspect(InspectRequest) returns (InspectResponse);
 }
 
 message NodeRef {
@@ -402,4 +403,70 @@ message StaticSummary {
 
 message ListStaticResponse {
   repeated StaticSummary sites = 1;
+}
+
+message InspectRequest {
+  oneof target {
+    bytes node_pub = 1 [(buf.validate.field).bytes = {len: 32}];
+    string workload_hash = 2 [(buf.validate.field).string = {
+      pattern: "^[a-fA-F0-9]{64}$"
+      len: 64
+    }];
+    string static_name = 3 [(buf.validate.field).string = {
+      min_len: 1
+      max_len: 255
+    }];
+    string blob_hash = 4 [(buf.validate.field).string = {
+      pattern: "^[a-fA-F0-9]{64}$"
+      len: 64
+    }];
+    InspectServiceTarget service = 5;
+  }
+}
+
+message InspectServiceTarget {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  bytes provider_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+}
+
+message InspectResponse {
+  // Resource-detail variants (workload/static/blob/service) are added in
+  // a follow-up. The Inspect handler returns codes.Unimplemented for
+  // those request targets until those variants land.
+  oneof detail {
+    NodeDetail node = 1;
+  }
+}
+
+// NodeDetail bundles per-peer state assembled from the gossip snapshot:
+// the public summary, the peer's delegation cert (including issuer chain
+// up to the root), telemetry, and the set of resources the peer publishes.
+message NodeDetail {
+  NodeSummary summary = 1;
+  // cert mirrors the local-node CertInfo shape but for the inspected peer.
+  // Tier (admin/publisher/leaf) and attributes are derived from
+  // cert.capabilities; expiry and access deadline come from claims.
+  CertInfo cert = 2;
+  // issuer_chain lists the delegation chain from root down to the issuer
+  // immediately above this peer. Empty for a root cert.
+  repeated NodeRef issuer_chain = 3;
+  string nat_type = 4;
+  double vivaldi_x = 5;
+  double vivaldi_y = 6;
+  double vivaldi_height = 7;
+  double vivaldi_error = 8;
+  // reachable_peers lists the peer-ids this node vouches it can reach
+  // directly. Used by the live-component calculation in state.
+  repeated NodeRef reachable_peers = 9;
+  uint64 mem_total_bytes = 10;
+  repeated string published_services = 13;
+  repeated string published_workloads = 14;
+  repeated string published_statics = 15;
+  repeated string published_blobs = 16;
+
+  reserved 11, 12, 17;
+  reserved "admin_capable", "can_serve_static", "seed_call_counts";
 }
