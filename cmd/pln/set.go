@@ -24,6 +24,7 @@ type settableKey struct {
 	name        string
 	description string
 	defaultVal  string
+	hidden      bool
 }
 
 func settableKeys() []settableKey {
@@ -48,6 +49,7 @@ func settableKeys() []settableKey {
 			defaultVal:  config.DefaultControlAddr,
 			apply:       func(c *config.Config, v string) (string, error) { return setAddr(&c.ControlAddr, v) },
 			clear:       func(c *config.Config) { c.ControlAddr = "" },
+			hidden:      true,
 		},
 		{
 			name:        "log-level",
@@ -142,6 +144,9 @@ func printSettableKeys(w io.Writer) {
 	slices.SortFunc(keys, func(a, b settableKey) int { return cmp.Compare(a.name, b.name) })
 	fmt.Fprintln(w, "Available keys:")
 	for _, k := range keys {
+		if k.hidden {
+			continue
+		}
 		fmt.Fprintf(w, "  %-14s %s (default %s)\n", k.name, k.description, k.defaultVal)
 	}
 }

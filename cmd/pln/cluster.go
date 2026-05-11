@@ -86,10 +86,7 @@ grant authority so the cluster keeps working with the root offline.
 Properties passed via --prop are baked into each node's membership cert.
 
 Pass --no-up to skip starting the local daemon when the orchestrator
-also enrols itself as a cluster member.
-
-The token-authenticated control API is bound on each target at the
-standard port so the node is remotely manageable out of the box.`,
+also enrols itself as a cluster member.`,
 		Example: `  pln bootstrap ssh user@host
   pln bootstrap ssh relay-eu=root@10.0.0.5 relay-us=root@10.0.0.6 --admin
   pln bootstrap ssh edge=root@10.0.0.7 --prop region=eu --prop tier=edge

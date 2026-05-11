@@ -333,13 +333,11 @@ pln upgrade --method tarball</code></pre>
     <dl class="flags">
       <dt>http</dt><dd>Prometheus metrics listener (default <code>:9090</code>).</dd>
       <dt>static-http</dt><dd>HTTP listener for static sites (default <code>:8080</code>).</dd>
-      <dt>control-addr</dt><dd>Control API listener (default <code>:50051</code>); reads <code>$PLN_DIR/control.token</code>.</dd>
       <dt>log-level</dt><dd>Verbosity: <code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code>.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln set</span>
       <span class="out">Available keys:
-  control-addr  TCP address for the control API (requires $PLN_DIR/control.token) (default :50051)
   http          HTTP address for Prometheus metrics (default :9090)
   log-level     Log verbosity: debug, info, warn, error (default info)
   static-http   HTTP address for serving static sites (default :8080)</span>
