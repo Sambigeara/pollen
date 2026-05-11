@@ -347,6 +347,7 @@ func (s *Service) buildCertificates() []*controlv1.CertInfo {
 		Health:             health,
 		CanDelegate:        caps.GetCanDelegate(),
 		CanAdmit:           caps.GetCanAdmit(),
+		CanPublish:         caps.GetCanPublish(),
 		MaxDepth:           caps.GetMaxDepth(),
 		AccessDeadlineUnix: claims.GetAccessDeadlineUnix(),
 		Attributes:         caps.GetAttributes(),

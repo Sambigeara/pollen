@@ -740,6 +740,7 @@ func TestEnsureLocalRootCredentials_ReissuesOnTruncatedCaps(t *testing.T) {
 	}{
 		{name: "no_can_delegate", mutate: func(c *admissionv1.Capabilities) { c.CanDelegate = false }},
 		{name: "no_can_admit", mutate: func(c *admissionv1.Capabilities) { c.CanAdmit = false }},
+		{name: "no_can_publish", mutate: func(c *admissionv1.Capabilities) { c.CanPublish = false }},
 		{name: "zero_max_depth", mutate: func(c *admissionv1.Capabilities) { c.MaxDepth = 0 }},
 	}
 
@@ -767,6 +768,7 @@ func TestEnsureLocalRootCredentials_ReissuesOnTruncatedCaps(t *testing.T) {
 			want := auth.FullCapabilities()
 			require.True(t, gotCaps.GetCanDelegate())
 			require.True(t, gotCaps.GetCanAdmit())
+			require.True(t, gotCaps.GetCanPublish())
 			require.Equal(t, want.MaxDepth, gotCaps.GetMaxDepth())
 		})
 	}

@@ -157,6 +157,31 @@ func TestMatchBlobArg_NamePreferredOverPrefix(t *testing.T) {
 	require.Equal(t, "beefcafe", got)
 }
 
+func TestLocalTier(t *testing.T) {
+	admin := &controlv1.CertInfo{CanAdmit: true, CanDelegate: true, CanPublish: true}
+	publisher := &controlv1.CertInfo{CanPublish: true}
+	leaf := &controlv1.CertInfo{}
+
+	cases := []struct {
+		name  string
+		certs []*controlv1.CertInfo
+		want  string
+	}{
+		{"no certs", nil, ""},
+		{"leaf only", []*controlv1.CertInfo{leaf}, "leaf"},
+		{"publisher only", []*controlv1.CertInfo{publisher}, "publisher"},
+		{"admin only", []*controlv1.CertInfo{admin}, "admin"},
+		{"publisher beats leaf", []*controlv1.CertInfo{leaf, publisher}, "publisher"},
+		{"admin beats publisher", []*controlv1.CertInfo{publisher, admin}, "admin"},
+		{"admin beats all, order-insensitive", []*controlv1.CertInfo{leaf, admin, publisher}, "admin"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, localTier(tc.certs))
+		})
+	}
+}
+
 func TestCollectStaticSection_ReplicasDisplay(t *testing.T) {
 	self := &controlv1.NodeSummary{Node: nodeRef("a")}
 	cases := []struct {

@@ -162,7 +162,7 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if metricsErr == nil {
 		health = metricsResp.Msg
 	}
-	renderStatusHeader(cmd.OutOrStdout(), health, statusContextLabel(env.dir))
+	renderStatusHeader(cmd.OutOrStdout(), health, st.GetCertificates(), statusContextLabel(env.dir))
 
 	var sections []statusSection
 	switch mode {
@@ -747,22 +747,45 @@ func renderStatusSections(w io.Writer, sections []statusSection) {
 	fmt.Fprintln(w)
 }
 
-func renderStatusHeader(w io.Writer, m *controlv1.GetMetricsResponse, contextLabel string) {
-	var label, color string
+func renderStatusHeader(w io.Writer, m *controlv1.GetMetricsResponse, certs []*controlv1.CertInfo, contextLabel string) {
+	var line string
+
+	var healthLabel, healthColor string
 	switch m.GetHealth() {
 	case controlv1.HealthStatus_HEALTH_STATUS_HEALTHY:
-		label, color = "HEALTHY", "2"
+		healthLabel, healthColor = "HEALTHY", "2"
 	case controlv1.HealthStatus_HEALTH_STATUS_DEGRADED:
-		label, color = "DEGRADED", "3"
+		healthLabel, healthColor = "DEGRADED", "3"
 	case controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY:
-		label, color = "UNHEALTHY", "1"
+		healthLabel, healthColor = "UNHEALTHY", "1"
 	case controlv1.HealthStatus_HEALTH_STATUS_UNSPECIFIED:
-		// no health line
+	}
+	if healthLabel != "" {
+		line = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(healthColor)).Render(healthLabel)
+	}
+
+	var tierStr string
+	var tierColor lipgloss.Color
+	switch localTier(certs) {
+	case tierAdmin:
+		tierStr, tierColor = "ADMIN", lipgloss.Color("5")
+	case tierPublisher:
+		tierStr, tierColor = "PUBLISHER", lipgloss.Color("6")
+	case tierLeaf:
+		tierStr, tierColor = "LEAF", mutedFG
+	}
+	if tierStr != "" {
+		chip := lipgloss.NewStyle().Bold(true).Foreground(tierColor).Render(tierStr)
+		if line != "" {
+			line += "  " + chip
+		} else {
+			line = chip
+		}
 	}
 
 	wrote := false
-	if label != "" {
-		fmt.Fprintln(w, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(label))
+	if line != "" {
+		fmt.Fprintln(w, line)
 		wrote = true
 	}
 	if contextLabel != "" {
@@ -772,6 +795,20 @@ func renderStatusHeader(w io.Writer, m *controlv1.GetMetricsResponse, contextLab
 	if wrote {
 		fmt.Fprintln(w)
 	}
+}
+
+func localTier(certs []*controlv1.CertInfo) string {
+	best := ""
+	for _, c := range certs {
+		t := tierLabel(c.GetCanAdmit(), c.GetCanPublish())
+		if t == tierAdmin {
+			return t
+		}
+		if best == "" || (t == tierPublisher && best == tierLeaf) {
+			best = t
+		}
+	}
+	return best
 }
 
 func statusContextLabel(defaultDir string) string {

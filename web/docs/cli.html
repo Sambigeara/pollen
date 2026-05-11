@@ -254,11 +254,15 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
       <dt>--wide</dt><dd>Full peer IDs, plus per-peer metrics (CPU, memory, latency, throughput).</dd>
       <dt>--include-offline</dt><dd>Include offline peers, services, and orphaned blobs.</dd>
     </dl>
+    <p>The header shows two chips: cluster <em>health</em> (HEALTHY / DEGRADED / UNHEALTHY) and the local node's <em>capability tier</em> (ADMIN / PUBLISHER / LEAF). The tier reflects what this node can do; commands that require a higher tier (e.g. <a href="#grant"><code>pln grant</code></a>) fail with a clear error when invoked from below it.</p>
     <div class="terminal">
       <span class="cmd">pln status</span>
-      <span class="out">PEERS
-NODE             STATUS         ADDR                CPUs  CPU  MEM  TUNNELS  LATENCY  IN  OUT
-7c9a4f8d (self)  -              -                   8     2%   18%  1        -        -   -
+      <span class="out">HEALTHY  PUBLISHER
+context: home
+
+PEERS
+NODE             STATUS          ADDR                CPUs  CPU  MEM  TUNNELS  LATENCY  IN  OUT
+7c9a4f8d (self)  -               -                   8     2%   18%  1        -        -   -
 ab12cd34         online (public) 198.51.100.10:60611 4     1%   8%   1        12ms     0   0
 
 SEEDS

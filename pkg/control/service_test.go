@@ -889,6 +889,35 @@ func TestGetStatusBasic(t *testing.T) {
 	require.InDelta(t, 10.0, resp.Nodes[0].LatencyMs, 0.1)
 }
 
+func TestGetStatusCertificatesCapabilities(t *testing.T) {
+	cases := []struct {
+		name        string
+		creds       func(*testing.T) *auth.NodeCredentials
+		canDelegate bool
+		canAdmit    bool
+		canPublish  bool
+	}{
+		{name: "admin", creds: dummyCreds, canDelegate: true, canAdmit: true, canPublish: true},
+		{name: "publisher", creds: publisherCreds, canPublish: true},
+		{name: "leaf", creds: leafCreds},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, control.WithCredentials(tc.creds(t)))
+			local := testPeerKey(1)
+			h.state.snap.LocalID = local
+			h.state.snap.Nodes[local] = state.NodeView{}
+
+			resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+			require.NoError(t, err)
+			require.Len(t, resp.Certificates, 1)
+			require.Equal(t, tc.canDelegate, resp.Certificates[0].CanDelegate)
+			require.Equal(t, tc.canAdmit, resp.Certificates[0].CanAdmit)
+			require.Equal(t, tc.canPublish, resp.Certificates[0].CanPublish)
+		})
+	}
+}
+
 func TestGetStatusOfflinePeer(t *testing.T) {
 	h := newHarness(t)
 	local := testPeerKey(1)

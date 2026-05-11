@@ -295,6 +295,7 @@ func rootCertHealthy(existing *NodeCredentials, nodePub, adminPub ed25519.Public
 	got := claims.GetCapabilities()
 	if got.GetCanDelegate() != want.CanDelegate ||
 		got.GetCanAdmit() != want.CanAdmit ||
+		got.GetCanPublish() != want.CanPublish ||
 		got.GetMaxDepth() != want.MaxDepth {
 		return false
 	}

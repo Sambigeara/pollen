@@ -851,14 +851,24 @@ func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 	return nil
 }
 
+const (
+	tierAdmin     = "admin"
+	tierPublisher = "publisher"
+	tierLeaf      = "leaf"
+)
+
 func capsTierLabel(caps *admissionv1.Capabilities) string {
+	return tierLabel(caps.GetCanAdmit(), caps.GetCanPublish())
+}
+
+func tierLabel(canAdmit, canPublish bool) string {
 	switch {
-	case caps.GetCanAdmit():
-		return "admin"
-	case caps.GetCanPublish():
-		return "publisher"
+	case canAdmit:
+		return tierAdmin
+	case canPublish:
+		return tierPublisher
 	default:
-		return "leaf"
+		return tierLeaf
 	}
 }
 
