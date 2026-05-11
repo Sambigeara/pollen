@@ -223,6 +223,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	if err != nil {
 		return nil, fmt.Errorf("create blob store: %w", err)
 	}
+	runtimeGate.SetManifestPaths(blobsSvc)
 	if err := blobsSvc.Rescan(); err != nil {
 		log.Warnw("scan local blobs", zap.Error(err))
 	}

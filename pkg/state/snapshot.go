@@ -202,18 +202,26 @@ func (s Snapshot) WrappingFor(blobHash string, recipient types.PeerKey) (*statev
 	return w, ok
 }
 
-// BlobEntitlements returns every spec auth that directly references hash
-// (workload-spec hash, blob-spec digest, or static-spec manifest digest).
-// Each returned auth is a candidate entitlement: a node may hold the
-// bytes if its cert satisfies any one of them. The set is union, not
-// intersection: revoking one publisher's entitlement only matters if it
-// was the last reference standing.
+// ManifestPaths resolves a static-manifest digest to the set of file
+// content-addressed digests it references. Implementations read the
+// manifest blob from local CAS; missing or not-yet-fetched manifests
+// return (nil, false).
+type ManifestPaths interface {
+	ManifestPaths(digest string) (map[string]struct{}, bool)
+}
+
+// BlobEntitlements returns every spec auth that references hash, either
+// directly (workload-spec hash, blob-spec digest, static-spec manifest
+// digest) or indirectly via a locally-readable static manifest's path
+// list. Each returned auth is a candidate entitlement: a node may hold
+// or serve the bytes if any cert satisfies one of them. The set is
+// union, not intersection: revoking one publisher's entitlement only
+// matters if it was the last reference standing.
 //
-// Nested static-manifest paths are not surfaced here; that requires
-// reading the manifest blob, which the snapshot has no access to.
-// Callers needing nested entitlement (blobs.Service.MayStore) overlay
-// the manifest-derived set on top.
-func (s Snapshot) BlobEntitlements(hash string) []*admissionv1.SpecAuth {
+// Pass a nil mp to skip nested-manifest resolution; callers that don't
+// have a CAS handle (e.g. snapshot-only tests) still get correct
+// answers for the direct cases.
+func (s Snapshot) BlobEntitlements(hash string, mp ManifestPaths) []*admissionv1.SpecAuth {
 	var out []*admissionv1.SpecAuth
 	if sv, ok := s.Specs[hash]; ok && sv.Auth != nil {
 		out = append(out, sv.Auth)
@@ -222,7 +230,21 @@ func (s Snapshot) BlobEntitlements(hash string) []*admissionv1.SpecAuth {
 		out = append(out, bv.Auth)
 	}
 	for _, sv := range s.StaticSpecs {
-		if sv.Spec.ManifestDigest == hash && sv.Auth != nil {
+		if sv.Auth == nil {
+			continue
+		}
+		if sv.Spec.ManifestDigest == hash {
+			out = append(out, sv.Auth)
+			continue
+		}
+		if mp == nil {
+			continue
+		}
+		paths, ok := mp.ManifestPaths(sv.Spec.ManifestDigest)
+		if !ok {
+			continue
+		}
+		if _, hit := paths[hash]; hit {
 			out = append(out, sv.Auth)
 		}
 	}

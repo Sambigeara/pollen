@@ -189,6 +189,63 @@ func TestFetchAuthorisesWorkloadBinary(t *testing.T) {
 	require.ErrorIs(t, g.Fetch(callerKey, body.GetHash()), wasm.ErrTargetNotFound, "caller without admin role must be denied")
 }
 
+func TestFetchAuthorisesStaticManifest(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	callerPub, callerPriv := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	caller := testCert(t, callerPriv, callerPub, nil, now)
+
+	manifestDigest := strings.Repeat("ab", 32)
+	body := &statev1.StaticSpecChange{Name: "site", ManifestDigest: bytesOf(0xab)}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
+		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Static{Static: &admissionv1.StaticID{Name: body.GetName(), ManifestDigest: body.GetManifestDigest()}}},
+		body, nil, false)
+	require.NoError(t, err)
+
+	callerKey := types.PeerKeyFromBytes(callerPub)
+	snap := state.Snapshot{
+		Nodes:       map[types.PeerKey]state.NodeView{callerKey: {Cert: caller}},
+		StaticSpecs: map[string]state.StaticSpecView{body.GetName(): {Spec: state.StaticSpec{Name: body.GetName(), ManifestDigest: manifestDigest}, Auth: specAuth}},
+	}
+	g := New(rootPub, fakeStore{snap: snap})
+	require.NoError(t, g.Fetch(callerKey, manifestDigest), "manifest digest must be authorised via StaticSpec")
+}
+
+func TestFetchAuthorisesNestedStaticPath(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	callerPub, callerPriv := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	caller := testCert(t, callerPriv, callerPub, nil, now)
+
+	manifestDigest := strings.Repeat("cd", 32)
+	pathDigest := strings.Repeat("ef", 32)
+	body := &statev1.StaticSpecChange{Name: "site", ManifestDigest: bytesOf(0xcd)}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
+		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Static{Static: &admissionv1.StaticID{Name: body.GetName(), ManifestDigest: body.GetManifestDigest()}}},
+		body, nil, false)
+	require.NoError(t, err)
+
+	callerKey := types.PeerKeyFromBytes(callerPub)
+	snap := state.Snapshot{
+		Nodes:       map[types.PeerKey]state.NodeView{callerKey: {Cert: caller}},
+		StaticSpecs: map[string]state.StaticSpecView{body.GetName(): {Spec: state.StaticSpec{Name: body.GetName(), ManifestDigest: manifestDigest}, Auth: specAuth}},
+	}
+	g := New(rootPub, fakeStore{snap: snap})
+	require.ErrorIs(t, g.Fetch(callerKey, pathDigest), wasm.ErrTargetNotFound, "nested path is denied without a manifest resolver")
+
+	g.SetManifestPaths(fakeManifestPaths{manifestDigest: {pathDigest: {}}})
+	require.NoError(t, g.Fetch(callerKey, pathDigest), "nested path is authorised once the manifest resolves")
+}
+
+type fakeManifestPaths map[string]map[string]struct{}
+
+func (f fakeManifestPaths) ManifestPaths(digest string) (map[string]struct{}, bool) {
+	paths, ok := f[digest]
+	return paths, ok
+}
+
 func TestConnectHonoursPolicy(t *testing.T) {
 	now := time.Now()
 	rootPub, rootPriv := newKeyPair(t)

@@ -39,8 +39,9 @@ type StateReader interface {
 // otherwise runtime decisions can be poisoned with attacker-supplied
 // policy.
 type Gate struct {
-	store   StateReader
-	rootPub []byte
+	store     StateReader
+	manifests state.ManifestPaths
+	rootPub   []byte
 }
 
 func New(rootPub []byte, store StateReader) *Gate {
@@ -48,6 +49,15 @@ func New(rootPub []byte, store StateReader) *Gate {
 		panic("gate.New: store is required")
 	}
 	return &Gate{store: store, rootPub: rootPub}
+}
+
+// SetManifestPaths wires a static-manifest reader so Fetch can authorise
+// blobs nested inside a published static site. Without it, only direct
+// references (workload hash, blob digest, manifest digest itself) are
+// authorised — nested file blobs are denied, breaking cross-node static
+// replication. Call once after the blobs service is constructed.
+func (g *Gate) SetManifestPaths(mp state.ManifestPaths) {
+	g.manifests = mp
 }
 
 func (g *Gate) Admit(sc *statev1.SpecChange) error {
@@ -82,21 +92,27 @@ func (g *Gate) Invoke(peerKey types.PeerKey, hash string) (wasm.CallerInfo, erro
 }
 
 // Fetch authorises callerKey to read the CAS object at hash. The same
-// stream type carries both blob-spec payloads and workload binaries, so
-// the lookup falls through from BlobSpecs to Specs — without the second
-// branch, a non-publisher replica can never fetch the wasm bytes from
-// the publisher and stays stuck in a fetch-EOF loop.
+// stream type carries workload binaries, named-blob payloads, static
+// manifests, and the file blobs nested inside those manifests, so the
+// lookup unions every referencing spec's auth and admits the caller if
+// any one of them allows the cert. Without unioning, a non-publisher
+// replica can never fetch the bytes from the publisher and stays stuck
+// in a fetch-EOF loop.
 func (g *Gate) Fetch(peerKey types.PeerKey, hash string) error {
 	snap := g.store.Snapshot()
 	caller, ok := snap.Nodes[peerKey]
 	if !ok || caller.Cert == nil {
 		return wasm.ErrTargetNotFound
 	}
-	if view, ok := snap.BlobSpecs[hash]; ok && view.Auth != nil {
-		return decide(caller.Cert, view.Auth, time.Now())
+	auths := snap.BlobEntitlements(hash, g.manifests)
+	if len(auths) == 0 {
+		return wasm.ErrTargetNotFound
 	}
-	if sv, ok := snap.Specs[hash]; ok && sv.Auth != nil {
-		return decide(caller.Cert, sv.Auth, time.Now())
+	now := time.Now()
+	for _, sa := range auths {
+		if decide(caller.Cert, sa, now) == nil {
+			return nil
+		}
 	}
 	return wasm.ErrTargetNotFound
 }

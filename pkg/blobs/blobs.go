@@ -394,8 +394,7 @@ func (s *Service) MayStore(hash string) error {
 }
 
 func (s *Service) mayStoreSnap(snap state.Snapshot, cert *admissionv1.DelegationCert, hash string) error {
-	auths := snap.BlobEntitlements(hash)
-	auths = append(auths, s.nestedManifestEntitlements(snap, hash)...)
+	auths := snap.BlobEntitlements(hash, s)
 	if len(auths) == 0 {
 		return ErrNotEntitled
 	}
@@ -425,30 +424,11 @@ func (s *Service) filterByEntitlement(keep map[string]struct{}) map[string]struc
 	return out
 }
 
-// nestedManifestEntitlements reports static-spec auths whose manifest is
-// locally available and references hash as one of its path digests.
-// Skips manifests that aren't readable yet: a not-yet-fetched manifest
-// can't entitle its nested blobs, but the entitlement materialises on
-// the next pass once the manifest arrives in CAS.
-func (s *Service) nestedManifestEntitlements(snap state.Snapshot, hash string) []*admissionv1.SpecAuth {
-	var out []*admissionv1.SpecAuth
-	for _, sv := range snap.StaticSpecs {
-		digest := sv.Spec.ManifestDigest
-		if digest == "" || sv.Auth == nil {
-			continue
-		}
-		paths, ok := s.manifestPaths(digest)
-		if !ok {
-			continue
-		}
-		if _, hit := paths[hash]; hit {
-			out = append(out, sv.Auth)
-		}
-	}
-	return out
-}
-
-func (s *Service) manifestPaths(digest string) (map[string]struct{}, bool) {
+// ManifestPaths resolves a static-manifest digest to its referenced
+// file digests, reading the manifest blob from local CAS on first
+// access and caching the result. Returns (nil, false) when the
+// manifest isn't readable yet; callers re-poll on the next pass.
+func (s *Service) ManifestPaths(digest string) (map[string]struct{}, bool) {
 	if s.store == nil {
 		return nil, false
 	}
