@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -58,7 +60,7 @@ type Metrics struct {
 
 type MembershipControl interface {
 	DenyPeer(key types.PeerKey) error
-	IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps *admissionv1.Capabilities) error
+	IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps *admissionv1.Capabilities, mintOnly bool) (*admissionv1.DelegationCert, error)
 }
 
 type PlacementControl interface {
@@ -121,19 +123,20 @@ var _ controlv1.ControlServiceServer = (*Service)(nil)
 
 type Service struct {
 	controlv1.UnimplementedControlServiceServer
-	membership MembershipControl
-	placement  PlacementControl
+	state      StateReader
+	metrics    MetricsSource
 	tunneling  TunnelingControl
 	blobs      BlobsControl
 	static     StaticControl
-	state      StateReader
+	membership MembershipControl
 	gate       OperatorGate
-	shutdown   func()
-	creds      *auth.NodeCredentials
-	transport  TransportInfo
-	metrics    MetricsSource
 	connector  MeshConnector
+	placement  PlacementControl
+	transport  TransportInfo
+	creds      *auth.NodeCredentials
+	shutdown   func()
 	log        *zap.SugaredLogger
+	signPriv   ed25519.PrivateKey
 }
 
 func (s *Service) canPublish() bool {
@@ -167,6 +170,7 @@ func WithTransportInfo(t TransportInfo) Option       { return func(s *Service) {
 func WithMetricsSource(m MetricsSource) Option       { return func(s *Service) { s.metrics = m } }
 func WithMeshConnector(c MeshConnector) Option       { return func(s *Service) { s.connector = c } }
 func WithOperatorGate(g OperatorGate) Option         { return func(s *Service) { s.gate = g } }
+func WithSignPriv(priv ed25519.PrivateKey) Option    { return func(s *Service) { s.signPriv = priv } }
 
 func NewService(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, blobs BlobsControl, sc StaticControl, state StateReader, opts ...Option) *Service {
 	s := &Service{
@@ -198,8 +202,8 @@ func New(membership MembershipControl, placement PlacementControl, tunneling Tun
 		log: zap.S().Named("grpc"),
 	}
 	s.gs = grpc.NewServer(
-		grpc.UnaryInterceptor(s.authInterceptor),
-		grpc.StreamInterceptor(s.streamAuthInterceptor),
+		grpc.ChainUnaryInterceptor(s.authInterceptor, s.callerInterceptor),
+		grpc.ChainStreamInterceptor(s.streamAuthInterceptor, s.streamCallerInterceptor),
 	)
 	controlv1.RegisterControlServiceServer(s.gs, svc)
 	return s
@@ -239,6 +243,34 @@ func (s *Server) streamAuthInterceptor(srv any, ss grpc.ServerStream, _ *grpc.St
 	return handler(srv, ss)
 }
 
+// callerInterceptor injects an auth.RPCCaller into the request context
+// for every unary RPC, resolved by injectCaller from whatever identity
+// the inbound transport carries.
+func (s *Server) callerInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	return handler(s.injectCaller(ctx), req)
+}
+
+func (s *Server) streamCallerInterceptor(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	return handler(srv, &callerStream{ServerStream: ss, ctx: s.injectCaller(ss.Context())})
+}
+
+func (s *Server) injectCaller(ctx context.Context) context.Context {
+	if cert := callerCertFromContext(ctx); cert != nil {
+		return auth.WithRPCCaller(ctx, auth.NewRPCCaller(cert))
+	}
+	if s.svc == nil || s.svc.creds == nil {
+		return ctx
+	}
+	return auth.WithRPCCaller(ctx, auth.NewRPCCaller(s.svc.creds.Cert()))
+}
+
+type callerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (c *callerStream) Context() context.Context { return c.ctx }
+
 func (s *Server) Start(socketPath string) error {
 	if _, err := os.Stat(socketPath); err == nil {
 		if conn, dialErr := net.DialTimeout("unix", socketPath, time.Second); dialErr == nil { //nolint:noctx
@@ -273,6 +305,42 @@ func (s *Server) StartTCP(addr string) error {
 	return s.Serve(l)
 }
 
+// StartTLS opens a public TLS+mTLS listener for the control RPC at the
+// given address. Inbound clients must present an x509 cert whose pollen
+// DelegationCert extension chains back to the cluster root.
+func (s *Server) StartTLS(addr string) error {
+	tcp, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("control tls listen: %w", err)
+	}
+	return s.ServeTLS(tcp)
+}
+
+// ServeTLS wraps a pre-bound TCP listener with the control TLS config
+// and serves it. Useful when the caller needs the bound address before
+// serving (dynamic-port tests, integration smokes).
+func (s *Server) ServeTLS(l net.Listener) error {
+	if s.svc == nil || s.svc.creds == nil {
+		return errors.New("control tls: no credentials configured")
+	}
+	if len(s.svc.signPriv) == 0 {
+		return errors.New("control tls: no signing private key configured")
+	}
+	if len(s.svc.creds.RootPub()) == 0 {
+		return errors.New("control tls: credentials missing root pub")
+	}
+	serverCert, err := transport.GenerateIdentityCert(s.svc.signPriv, s.svc.creds.Cert(), controlTLSIdentityTTL)
+	if err != nil {
+		return fmt.Errorf("control tls identity cert: %w", err)
+	}
+	cfg := newControlTLSConfig(serverCert, s.svc.creds.RootPub())
+	tlsL := tls.NewListener(l, cfg)
+	s.log.Infow("control tls listener", "addr", tlsL.Addr().String())
+	return s.Serve(tlsL)
+}
+
+const controlTLSIdentityTTL = 24 * time.Hour
+
 func (s *Server) Serve(l net.Listener) error { return s.gs.Serve(l) }
 
 func (s *Server) Stop()             { s.gs.GracefulStop() }
@@ -293,30 +361,36 @@ func (s *Service) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootstrapI
 	}, nil
 }
 
-func (s *Service) GetStatus(_ context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
+func (s *Service) GetStatus(ctx context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
 	snap := s.state.Snapshot()
 	connections := s.tunneling.ListConnections()
+	scope := s.viewScope(ctx)
 
 	out := &controlv1.GetStatusResponse{
 		Degraded:     s.isDegraded(time.Now()),
-		Certificates: s.buildCertificates(),
+		Certificates: s.buildCertificates(snap),
 		Self:         s.buildSelfSummary(snap.LocalID, snap.Nodes[snap.LocalID], connections),
 		Nodes:        s.buildNodeSummaries(snap, snap.Nodes, connections),
-		Services:     buildServiceSummaries(snap.Nodes),
+		Services:     buildServiceSummaries(snap.Nodes, scope),
 		Connections:  buildConnectionSummaries(snap.Nodes, connections),
-		Workloads:    s.buildWorkloadSummaries(snap),
-		Sites:        buildStaticSummaries(snap),
-		Blobs:        s.buildBlobSummaries(snap),
+		Workloads:    s.buildWorkloadSummaries(snap, scope),
+		Sites:        buildStaticSummaries(snap, scope),
+		Blobs:        s.buildBlobSummaries(snap, scope),
 	}
 
 	sortStatusResponse(out)
 	return out, nil
 }
 
-func (s *Service) Inspect(_ context.Context, req *controlv1.InspectRequest) (*controlv1.InspectResponse, error) {
+func (s *Service) Inspect(ctx context.Context, req *controlv1.InspectRequest) (*controlv1.InspectResponse, error) {
+	scope := s.viewScope(ctx)
 	switch t := req.GetTarget().(type) {
 	case *controlv1.InspectRequest_NodePub:
-		detail, err := s.inspectNode(types.PeerKeyFromBytes(t.NodePub))
+		peerKey := types.PeerKeyFromBytes(t.NodePub)
+		if !scope.showAll && peerKey != scope.caller {
+			return nil, status.Errorf(codes.NotFound, "no peer %s in cluster view", peerKey.String())
+		}
+		detail, err := s.inspectNode(peerKey)
 		if err != nil {
 			return nil, err
 		}
@@ -352,7 +426,7 @@ func (s *Service) inspectNode(peerKey types.PeerKey) (*controlv1.NodeDetail, err
 
 	detail := &controlv1.NodeDetail{
 		Summary:       summary,
-		Cert:          nodeCertInfo(nv.Cert, time.Now()),
+		Cert:          nodeCertInfo(nv.Cert, time.Now(), snap.IsDenied(peerKey)),
 		IssuerChain:   issuerChain(nv.Cert),
 		NatType:       natTypeLabel(nv.NatType),
 		MemTotalBytes: nv.MemTotalBytes,
@@ -483,8 +557,10 @@ func (s *Service) peerSummary(peerKey types.PeerKey, nv state.NodeView, tunnels 
 // Health is computed against the cert's own expiry; the local-node
 // version in buildCertificates uses the credentials store directly
 // because it needs the renewal-window thresholds, which only apply to
-// the local node's own cert.
-func nodeCertInfo(cert *admissionv1.DelegationCert, now time.Time) *controlv1.CertInfo {
+// the local node's own cert. denied reflects whether the cluster has
+// revoked this peer; callers must source it from the same snapshot
+// they read the cert from.
+func nodeCertInfo(cert *admissionv1.DelegationCert, now time.Time, denied bool) *controlv1.CertInfo {
 	if cert == nil {
 		return nil
 	}
@@ -505,6 +581,7 @@ func nodeCertInfo(cert *admissionv1.DelegationCert, now time.Time) *controlv1.Ce
 		MaxDepth:           caps.GetMaxDepth(),
 		AccessDeadlineUnix: claims.GetAccessDeadlineUnix(),
 		Attributes:         caps.GetAttributes(),
+		Denied:             denied,
 	}
 }
 
@@ -547,7 +624,7 @@ func (s *Service) isDegraded(now time.Time) bool {
 	return auth.IsCertExpired(cert, now) && now.Before(auth.CertExpiresAt(cert).Add(window))
 }
 
-func (s *Service) buildCertificates() []*controlv1.CertInfo {
+func (s *Service) buildCertificates(snap state.Snapshot) []*controlv1.CertInfo {
 	if s.creds == nil || s.creds.Cert() == nil {
 		return nil
 	}
@@ -577,6 +654,7 @@ func (s *Service) buildCertificates() []*controlv1.CertInfo {
 		MaxDepth:           caps.GetMaxDepth(),
 		AccessDeadlineUnix: claims.GetAccessDeadlineUnix(),
 		Attributes:         caps.GetAttributes(),
+		Denied:             snap.IsDenied(snap.LocalID),
 	}}
 }
 
@@ -619,10 +697,21 @@ func (s *Service) buildNodeSummaries(snap state.Snapshot, nodes map[types.PeerKe
 	return out
 }
 
-func buildServiceSummaries(nodes map[types.PeerKey]state.NodeView) []*controlv1.ServiceSummary {
+func buildServiceSummaries(nodes map[types.PeerKey]state.NodeView, scope viewScope) []*controlv1.ServiceSummary {
 	var out []*controlv1.ServiceSummary
 	for key, node := range nodes {
 		for _, svc := range node.Services {
+			// Services are scoped by their SpecAuth signer: only the
+			// publisher (or an admin) sees them. Services without auth
+			// are visible only to admins.
+			publisher := servicePublisher(svc)
+			if !hasServicePublisher(svc) {
+				if !scope.showAll {
+					continue
+				}
+			} else if !scope.permits(publisher) {
+				continue
+			}
 			out = append(out, &controlv1.ServiceSummary{
 				Name:     serviceNameOrDefault(svc.Name, svc.Port),
 				Provider: &controlv1.NodeRef{PeerPub: key.Bytes()},
@@ -632,6 +721,14 @@ func buildServiceSummaries(nodes map[types.PeerKey]state.NodeView) []*controlv1.
 		}
 	}
 	return out
+}
+
+func hasServicePublisher(svc *state.Service) bool {
+	return svc != nil && svc.Auth != nil && len(svc.Auth.GetPublisher().GetClaims().GetSubjectPub()) > 0
+}
+
+func servicePublisher(svc *state.Service) types.PeerKey {
+	return types.PeerKeyFromBytes(svc.Auth.GetPublisher().GetClaims().GetSubjectPub())
 }
 
 func buildConnectionSummaries(nodes map[types.PeerKey]state.NodeView, connections []tunneling.ConnectionInfo) []*controlv1.ConnectionSummary {
@@ -657,11 +754,15 @@ func buildConnectionSummaries(nodes map[types.PeerKey]state.NodeView, connection
 	return out
 }
 
-func (s *Service) buildWorkloadSummaries(snap state.Snapshot) []*controlv1.WorkloadSummary {
+func (s *Service) buildWorkloadSummaries(snap state.Snapshot, scope viewScope) []*controlv1.WorkloadSummary {
 	var out []*controlv1.WorkloadSummary
 	seen := make(map[string]struct{})
 
 	for _, w := range s.placement.Status() {
+		sv, hasSpec := snap.Specs[w.Hash]
+		if hasSpec && !scope.permits(sv.Publisher) {
+			continue
+		}
 		seen[w.Hash] = struct{}{}
 		ws := &controlv1.WorkloadSummary{
 			Hash:           w.Hash,
@@ -671,7 +772,7 @@ func (s *Service) buildWorkloadSummaries(snap state.Snapshot) []*controlv1.Workl
 			Local:          true,
 			ActiveReplicas: uint32(len(snap.Claims[w.Hash])),
 		}
-		if sv, ok := snap.Specs[w.Hash]; ok {
+		if hasSpec {
 			ws.MinReplicas = sv.Spec.MinReplicas
 			ws.Spread = sv.Spec.Spread
 		}
@@ -680,6 +781,9 @@ func (s *Service) buildWorkloadSummaries(snap state.Snapshot) []*controlv1.Workl
 
 	for hash, sv := range snap.Specs {
 		if _, ok := seen[hash]; ok {
+			continue
+		}
+		if !scope.permits(sv.Publisher) {
 			continue
 		}
 		ws := &controlv1.WorkloadSummary{
@@ -744,12 +848,26 @@ func (s *Service) RegisterService(_ context.Context, req *controlv1.RegisterServ
 	return &controlv1.RegisterServiceResponse{}, nil
 }
 
-func (s *Service) UnregisterService(_ context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
+func (s *Service) UnregisterService(ctx context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
 	name := serviceNameOrDefault(req.GetName(), req.GetPort())
+	if svc := s.lookupLocalService(name); hasServicePublisher(svc) {
+		if err := s.authoriseOwnership(ctx, servicePublisher(svc)); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.tunneling.UnexposeService(name); err != nil {
 		return nil, s.fail(err, "unregister service failed")
 	}
 	return &controlv1.UnregisterServiceResponse{}, nil
+}
+
+func (s *Service) lookupLocalService(name string) *state.Service {
+	snap := s.state.Snapshot()
+	nv, ok := snap.Nodes[snap.LocalID]
+	if !ok {
+		return nil
+	}
+	return nv.Services[name]
 }
 
 func (s *Service) ConnectPeer(ctx context.Context, req *controlv1.ConnectPeerRequest) (*controlv1.ConnectPeerResponse, error) {
@@ -825,10 +943,11 @@ func (s *Service) IssueCert(ctx context.Context, req *controlv1.IssueCertRequest
 	if err := auth.ValidateAttributes(certCaps.GetAttributes()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if err := s.membership.IssueCert(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), certCaps); err != nil {
+	cert, err := s.membership.IssueCert(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), certCaps, req.GetMintOnly())
+	if err != nil {
 		return nil, s.fail(err, "issue cert failed")
 	}
-	return &controlv1.IssueCertResponse{}, nil
+	return &controlv1.IssueCertResponse{Cert: cert}, nil
 }
 
 func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) (*controlv1.GetMetricsResponse, error) {
@@ -1038,7 +1157,7 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 	return stream.SendAndClose(&controlv1.UploadBlobResponse{Hash: hash})
 }
 
-func (s *Service) RemoveBlob(_ context.Context, req *controlv1.RemoveBlobRequest) (*controlv1.RemoveBlobResponse, error) {
+func (s *Service) RemoveBlob(ctx context.Context, req *controlv1.RemoveBlobRequest) (*controlv1.RemoveBlobResponse, error) {
 	if !s.canPublish() {
 		return nil, status.Error(codes.PermissionDenied, "publish capability required")
 	}
@@ -1049,6 +1168,11 @@ func (s *Service) RemoveBlob(_ context.Context, req *controlv1.RemoveBlobRequest
 	}
 	if _, ok := s.static.StaticBlobs()[hash]; ok {
 		return nil, status.Error(codes.FailedPrecondition, "blob is referenced by a static manifest; unseed the static site instead")
+	}
+	if bv, ok := snap.BlobSpecs[hash]; ok {
+		if err := s.authoriseOwnership(ctx, bv.Publisher); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.blobs.Remove(hash); err != nil {
 		if errors.Is(err, blobs.ErrNotLocal) {
@@ -1070,9 +1194,14 @@ func (s *Service) SeedStatic(_ context.Context, req *controlv1.SeedStaticRequest
 	return &controlv1.SeedStaticResponse{}, nil
 }
 
-func (s *Service) UnseedStatic(_ context.Context, req *controlv1.UnseedStaticRequest) (*controlv1.UnseedStaticResponse, error) {
+func (s *Service) UnseedStatic(ctx context.Context, req *controlv1.UnseedStaticRequest) (*controlv1.UnseedStaticResponse, error) {
 	if !s.canPublish() {
 		return nil, status.Error(codes.PermissionDenied, "publish capability required")
+	}
+	if sv, ok := s.state.Snapshot().StaticSpecs[req.GetName()]; ok {
+		if err := s.authoriseOwnership(ctx, sv.Publisher); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.static.UnseedStatic(req.GetName()); err != nil {
 		return nil, s.fail(err, "unseed static")
@@ -1080,11 +1209,11 @@ func (s *Service) UnseedStatic(_ context.Context, req *controlv1.UnseedStaticReq
 	return &controlv1.UnseedStaticResponse{}, nil
 }
 
-func (s *Service) ListStatic(_ context.Context, _ *controlv1.ListStaticRequest) (*controlv1.ListStaticResponse, error) {
-	return &controlv1.ListStaticResponse{Sites: buildStaticSummaries(s.state.Snapshot())}, nil
+func (s *Service) ListStatic(ctx context.Context, _ *controlv1.ListStaticRequest) (*controlv1.ListStaticResponse, error) {
+	return &controlv1.ListStaticResponse{Sites: buildStaticSummaries(s.state.Snapshot(), s.viewScope(ctx))}, nil
 }
 
-func buildStaticSummaries(snap state.Snapshot) []*controlv1.StaticSummary {
+func buildStaticSummaries(snap state.Snapshot, scope viewScope) []*controlv1.StaticSummary {
 	var capacity uint32
 	for _, nv := range snap.Nodes {
 		if nv.CanServeStatic {
@@ -1093,6 +1222,9 @@ func buildStaticSummaries(snap state.Snapshot) []*controlv1.StaticSummary {
 	}
 	out := make([]*controlv1.StaticSummary, 0, len(snap.StaticSpecs))
 	for name, spec := range snap.StaticSpecs {
+		if !scope.permits(spec.Publisher) {
+			continue
+		}
 		digest, _ := hex.DecodeString(spec.Spec.ManifestDigest)
 		claimants := snap.StaticClaims[name]
 		_, local := claimants[snap.LocalID]
@@ -1113,7 +1245,7 @@ func buildStaticSummaries(snap state.Snapshot) []*controlv1.StaticSummary {
 
 // Restricts holders to live peers; stale BlobAvailability from offline
 // peers would inflate replicas and surface phantom orphans.
-func (s *Service) buildBlobSummaries(snap state.Snapshot) []*controlv1.BlobSummary {
+func (s *Service) buildBlobSummaries(snap state.Snapshot, scope viewScope) []*controlv1.BlobSummary {
 	liveSet := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
 	for _, pk := range snap.PeerKeys {
 		liveSet[pk] = struct{}{}
@@ -1137,13 +1269,24 @@ func (s *Service) buildBlobSummaries(snap state.Snapshot) []*controlv1.BlobSumma
 		if _, ok := staticBlobs[hash]; ok {
 			continue
 		}
+		view, hasSpec := snap.BlobSpecs[hash]
+		// Orphan blobs (no named BlobSpec) carry no publisher attribution,
+		// so non-admin callers can't claim ownership of them — only admins
+		// see them.
+		if hasSpec {
+			if !scope.permits(view.Publisher) {
+				continue
+			}
+		} else if !scope.showAll {
+			continue
+		}
 		_, local := localBlobs[hash]
 		summary := &controlv1.BlobSummary{
 			Hash:     hash,
 			Replicas: n,
 			Local:    local,
 		}
-		if view, ok := snap.BlobSpecs[hash]; ok {
+		if hasSpec {
 			summary.Name = view.Spec.Name
 			summary.Publisher = &controlv1.NodeRef{PeerPub: view.Publisher.Bytes()}
 		} else {
@@ -1154,9 +1297,14 @@ func (s *Service) buildBlobSummaries(snap state.Snapshot) []*controlv1.BlobSumma
 	return out
 }
 
-func (s *Service) UnseedWorkload(_ context.Context, req *controlv1.UnseedWorkloadRequest) (*controlv1.UnseedWorkloadResponse, error) {
+func (s *Service) UnseedWorkload(ctx context.Context, req *controlv1.UnseedWorkloadRequest) (*controlv1.UnseedWorkloadResponse, error) {
 	if !s.canPublish() {
 		return nil, status.Error(codes.PermissionDenied, "publish capability required")
+	}
+	if sv, ok := s.state.Snapshot().Specs[req.GetHash()]; ok {
+		if err := s.authoriseOwnership(ctx, sv.Publisher); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.placement.Unseed(req.GetHash()); err != nil {
 		if errors.Is(err, placement.ErrRelayOnly) {

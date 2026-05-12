@@ -1005,6 +1005,42 @@ func TestInspectNode_Peer(t *testing.T) {
 	require.Len(t, node.GetReachablePeers(), 1)
 }
 
+func TestInspectNode_Denied(t *testing.T) {
+	h := newHarness(t)
+	local := testPeerKey(1)
+	peerKey := testPeerKey(2)
+	h.state.snap.LocalID = local
+	h.state.snap.Nodes[local] = state.NodeView{}
+	peerCert := mustIssueChildCert(t, peerKey, auth.PublisherCapabilities())
+	h.state.snap.Nodes[peerKey] = state.NodeView{
+		PeerPub: peerKey.Bytes(),
+		Name:    "denied-tenant",
+		Cert:    peerCert,
+	}
+	h.state.snap.DeniedKeys = []types.PeerKey{peerKey}
+
+	resp, err := h.svc.Inspect(context.Background(), &controlv1.InspectRequest{
+		Target: &controlv1.InspectRequest_NodePub{NodePub: peerKey.Bytes()},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.GetNode().GetCert().GetDenied(),
+		"denied peer's cert must surface denied=true to sibling callers")
+}
+
+func TestGetStatusLocalCertDenied(t *testing.T) {
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)))
+	local := testPeerKey(1)
+	h.state.snap.LocalID = local
+	h.state.snap.Nodes[local] = state.NodeView{}
+	h.state.snap.DeniedKeys = []types.PeerKey{local}
+
+	resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.Certificates, 1)
+	require.True(t, resp.Certificates[0].GetDenied(),
+		"local cert must surface denied=true when own peer is in denied set (parent revoked)")
+}
+
 func TestInspectNode_NotFound(t *testing.T) {
 	h := newHarness(t)
 	h.state.snap.LocalID = testPeerKey(1)
@@ -1087,6 +1123,124 @@ func TestInspectNode_IssuerChainFourDeep(t *testing.T) {
 	require.Equal(t, []byte(rootPub), chain[0].GetPeerPub(), "root first")
 	require.Equal(t, []byte(gpPub), chain[1].GetPeerPub(), "grandparent in middle")
 	require.Equal(t, []byte(parentPub), chain[2].GetPeerPub(), "parent immediately above leaf")
+}
+
+func TestGetStatusScopedToPublisher(t *testing.T) {
+	pubCreds := publisherCreds(t)
+	h := newHarness(t, control.WithCredentials(pubCreds))
+	myPub := types.PeerKeyFromBytes(pubCreds.Cert().GetClaims().GetSubjectPub())
+	otherPub := testPeerKey(99)
+
+	local := testPeerKey(1)
+	h.state.snap.LocalID = local
+	h.state.snap.Nodes[local] = state.NodeView{}
+	h.state.snap.Specs = map[string]state.WorkloadSpecView{
+		"mine":   {Spec: state.WorkloadSpec{Name: "mine"}, Publisher: myPub},
+		"theirs": {Spec: state.WorkloadSpec{Name: "theirs"}, Publisher: otherPub},
+	}
+	h.state.snap.StaticSpecs = map[string]state.StaticSpecView{
+		"mysite":  {Spec: state.StaticSpec{ManifestDigest: hexDigest32()}, Publisher: myPub},
+		"hersite": {Spec: state.StaticSpec{ManifestDigest: hexDigest32()}, Publisher: otherPub},
+	}
+	h.state.snap.BlobSpecs = map[string]state.BlobSpecView{
+		hexDigest32(): {Spec: state.BlobSpec{Name: "myblob"}, Publisher: myPub},
+	}
+
+	resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.Workloads, 1, "publisher must only see their own workload")
+	require.Equal(t, "mine", resp.Workloads[0].Name)
+	require.Len(t, resp.Sites, 1, "publisher must only see their own site")
+	require.Equal(t, "mysite", resp.Sites[0].Name)
+}
+
+func TestGetStatusAdminSeesAllPublishers(t *testing.T) {
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)))
+	local := testPeerKey(1)
+	h.state.snap.LocalID = local
+	h.state.snap.Nodes[local] = state.NodeView{}
+	h.state.snap.Specs = map[string]state.WorkloadSpecView{
+		"a": {Spec: state.WorkloadSpec{Name: "a"}, Publisher: testPeerKey(2)},
+		"b": {Spec: state.WorkloadSpec{Name: "b"}, Publisher: testPeerKey(3)},
+	}
+
+	resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.Workloads, 2, "admin must see workloads from every publisher")
+}
+
+func TestGetStatusScopedByExplicitCaller(t *testing.T) {
+	// Simulates the wire-mode path where the interceptor injects a
+	// caller cert distinct from the daemon's own creds.
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)))
+	local := testPeerKey(1)
+	h.state.snap.LocalID = local
+	h.state.snap.Nodes[local] = state.NodeView{}
+
+	tenantCert := mustIssueChildCert(t, testPeerKey(7), auth.PublisherCapabilities())
+	tenantPub := types.PeerKeyFromBytes(tenantCert.GetClaims().GetSubjectPub())
+	h.state.snap.Specs = map[string]state.WorkloadSpecView{
+		"tenant": {Spec: state.WorkloadSpec{Name: "tenant"}, Publisher: tenantPub},
+		"other":  {Spec: state.WorkloadSpec{Name: "other"}, Publisher: testPeerKey(8)},
+	}
+
+	ctx := auth.WithRPCCaller(context.Background(), auth.NewRPCCaller(tenantCert))
+	resp, err := h.svc.GetStatus(ctx, &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.Workloads, 1)
+	require.Equal(t, "tenant", resp.Workloads[0].Name)
+}
+
+func TestUnseedRejectsNonPublisher(t *testing.T) {
+	pubCreds := publisherCreds(t)
+	h := newHarness(t, control.WithCredentials(pubCreds))
+	myPub := types.PeerKeyFromBytes(pubCreds.Cert().GetClaims().GetSubjectPub())
+	otherPub := testPeerKey(99)
+
+	h.state.snap.LocalID = testPeerKey(1)
+	h.state.snap.Nodes[testPeerKey(1)] = state.NodeView{}
+	h.state.snap.Specs = map[string]state.WorkloadSpecView{
+		"mine":   {Spec: state.WorkloadSpec{Name: "mine"}, Publisher: myPub},
+		"theirs": {Spec: state.WorkloadSpec{Name: "theirs"}, Publisher: otherPub},
+	}
+	h.state.snap.StaticSpecs = map[string]state.StaticSpecView{
+		"hersite": {Spec: state.StaticSpec{ManifestDigest: hexDigest32()}, Publisher: otherPub},
+	}
+	h.state.snap.BlobSpecs = map[string]state.BlobSpecView{
+		hexDigest32(): {Spec: state.BlobSpec{Name: "hers"}, Publisher: otherPub},
+	}
+
+	_, err := h.svc.UnseedWorkload(context.Background(), &controlv1.UnseedWorkloadRequest{Hash: "theirs"})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code(), "unseed of another publisher's workload must be denied")
+
+	_, err = h.svc.UnseedStatic(context.Background(), &controlv1.UnseedStaticRequest{Name: "hersite"})
+	require.Error(t, err)
+	st, _ = status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code(), "unseed of another publisher's static must be denied")
+
+	_, err = h.svc.RemoveBlob(context.Background(), &controlv1.RemoveBlobRequest{Hash: hexDigest32()})
+	require.Error(t, err)
+	st, _ = status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code(), "remove of another publisher's blob must be denied")
+}
+
+func TestInspectNodeNotFoundForNonAdmin(t *testing.T) {
+	pubCreds := publisherCreds(t)
+	h := newHarness(t, control.WithCredentials(pubCreds))
+	local := testPeerKey(1)
+	other := testPeerKey(2)
+	h.state.snap.LocalID = local
+	h.state.snap.Nodes[local] = state.NodeView{Cert: mustIssueChildCert(t, local, auth.PublisherCapabilities())}
+	h.state.snap.Nodes[other] = state.NodeView{Cert: mustIssueChildCert(t, other, auth.PublisherCapabilities())}
+
+	_, err := h.svc.Inspect(context.Background(), &controlv1.InspectRequest{
+		Target: &controlv1.InspectRequest_NodePub{NodePub: other.Bytes()},
+	})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.NotFound, st.Code())
 }
 
 func TestGetStatusOfflinePeer(t *testing.T) {
@@ -1290,8 +1444,8 @@ func (f *fakeMembership) DenyPeer(key types.PeerKey) error {
 	return f.denyErr
 }
 
-func (f *fakeMembership) IssueCert(_ context.Context, _ types.PeerKey, _ *admissionv1.Capabilities) error {
-	return nil
+func (f *fakeMembership) IssueCert(_ context.Context, _ types.PeerKey, _ *admissionv1.Capabilities, _ bool) (*admissionv1.DelegationCert, error) {
+	return nil, nil
 }
 
 type fakePlacement struct {

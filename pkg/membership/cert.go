@@ -330,16 +330,16 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 	s.certs.SetPeerDelegationCert(from, newCert)
 }
 
-func (s *Service) IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps *admissionv1.Capabilities) error {
+func (s *Service) IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps *admissionv1.Capabilities, mintOnly bool) (*admissionv1.DelegationCert, error) {
 	if certCaps == nil {
-		return errors.New("cert caps must be provided")
+		return nil, errors.New("cert caps must be provided")
 	}
 	signer := s.creds.DelegationKey()
 	if signer == nil {
-		return errors.New("this node has no delegation authority")
+		return nil, errors.New("this node has no delegation authority")
 	}
 	if certCaps.GetCanAdmit() && !signer.IsRoot() {
-		return errors.New("only the root admin can issue admin certificates")
+		return nil, errors.New("only the root admin can issue admin certificates")
 	}
 
 	now := time.Now()
@@ -349,19 +349,25 @@ func (s *Service) IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps
 	}
 	cert, err := signer.IssueMemberCert(peerKey.Bytes(), certCaps, now, now.Add(ttl), time.Time{})
 	if err != nil {
-		return fmt.Errorf("issue cert: %w", err)
+		return nil, fmt.Errorf("issue cert: %w", err)
 	}
 
-	if err := s.certs.PushCert(ctx, peerKey, cert); err != nil {
-		return err
-	}
-	// Install into our own cache so subsequent authz evaluations and
-	// renewal handlers see ground truth immediately — without waiting
-	// for the target's TLS session to us to re-handshake. Without this,
-	// a renewal routed through the issuer rebuilds the cert from the
-	// stale cache and silently drops the attributes we just granted.
+	// Install into our own cache so the cert gossips and subsequent authz
+	// evaluations see ground truth immediately. Without this, a renewal
+	// routed through the issuer rebuilds the cert from the stale cache
+	// and silently drops the attributes we just granted.
 	s.certs.SetPeerDelegationCert(peerKey, cert)
-	return nil
+
+	// Skip the QUIC push when the recipient has no mesh session yet
+	// (thin-client tenants delivered out of band via HTTPS). The cert
+	// still gossips via the local cache write above.
+	if mintOnly {
+		return cert, nil
+	}
+	if err := s.certs.PushCert(ctx, peerKey, cert); err != nil {
+		return nil, err
+	}
+	return cert, nil
 }
 
 func (s *Service) handleCertPushRequest(ctx context.Context, from types.PeerKey, req *meshv1.CertPushRequest) {

@@ -49,7 +49,10 @@ func marshalDelegationExtension(cert *admissionv1.DelegationCert) (pkix.Extensio
 	}, nil
 }
 
-func parseDelegationExtension(certDER []byte) (*admissionv1.DelegationCert, error) {
+// ParseDelegationExtension extracts the pollen DelegationCert embedded
+// as an ASN.1 extension in an x509 cert. Returns (nil, nil) if the
+// extension is absent.
+func ParseDelegationExtension(certDER []byte) (*admissionv1.DelegationCert, error) {
 	cert, err := x509.ParseCertificate(certDER)
 	if err != nil {
 		return nil, fmt.Errorf("parse x509 certificate: %w", err)
@@ -148,7 +151,7 @@ func delegationCertFromConn(qc *quic.Conn) *admissionv1.DelegationCert {
 	if len(tlsState.PeerCertificates) == 0 {
 		return nil
 	}
-	dc, err := parseDelegationExtension(tlsState.PeerCertificates[0].Raw)
+	dc, err := ParseDelegationExtension(tlsState.PeerCertificates[0].Raw)
 	if err != nil || dc == nil {
 		return nil
 	}
@@ -185,7 +188,7 @@ func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certif
 			return err
 		}
 
-		dc, err := parseDelegationExtension(rawCerts[0])
+		dc, err := ParseDelegationExtension(rawCerts[0])
 		if err != nil {
 			return fmt.Errorf("parse delegation extension: %w", err)
 		}

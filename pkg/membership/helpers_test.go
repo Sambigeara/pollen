@@ -207,6 +207,7 @@ type fakeCertManager struct {
 	renewalErr      error
 	peerCerts       map[types.PeerKey]*admissionv1.DelegationCert
 	updatedCert     *tls.Certificate
+	pushCount       int
 }
 
 func newFakeCertManager() *fakeCertManager {
@@ -235,7 +236,16 @@ func (f *fakeCertManager) PeerDelegationCert(peer types.PeerKey) (*admissionv1.D
 }
 
 func (f *fakeCertManager) PushCert(_ context.Context, _ types.PeerKey, _ *admissionv1.DelegationCert) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pushCount++
 	return nil
+}
+
+func (f *fakeCertManager) PushCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pushCount
 }
 
 func (f *fakeCertManager) SetPeerDelegationCert(peer types.PeerKey, cert *admissionv1.DelegationCert) {

@@ -114,6 +114,7 @@ message CertInfo {
   int64 access_deadline_unix = 8;
   google.protobuf.Struct attributes = 9;
   bool can_publish = 10;
+  bool denied = 11;
 }
 
 message GetStatusResponse {
@@ -318,9 +319,16 @@ message IssueCertRequest {
   reserved 2, 3;
   reserved "admin", "attributes";
   pollen.admission.v1.Capabilities cert_caps = 4 [(buf.validate.field).required = true];
+  bool mint_only = 5;
 }
 
-message IssueCertResponse {}
+message IssueCertResponse {
+  // cert is the newly minted delegation cert. Populated for every
+  // request, but only meaningful to callers that need to deliver it out
+  // of band (mint_only=true). Existing mesh callers can ignore it; the
+  // recipient receives the cert via the synchronous QUIC push.
+  pollen.admission.v1.DelegationCert cert = 1;
+}
 
 message FetchBlobRequest {
   string hash = 1 [(buf.validate.field).string = {

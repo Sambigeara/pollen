@@ -157,12 +157,34 @@ func TestIssueCertInstallsFreshCertIntoLocalCache(t *testing.T) {
 
 	caps := auth.LeafCapabilities()
 	caps.Attributes = attrs
-	require.NoError(t, svc.IssueCert(context.Background(), subject, caps))
+	_, err = svc.IssueCert(context.Background(), subject, caps, false)
+	require.NoError(t, err)
 
 	got, ok := certs.PeerDelegationCert(subject)
 	require.True(t, ok, "issuer must hold a cached cert for the subject after IssueCert")
 	require.Equal(t, "admin", got.GetClaims().GetCapabilities().GetAttributes().AsMap()["host"],
 		"cached cert must carry the attrs we just signed")
+}
+
+func TestIssueCertMintOnlySkipsPushButGossips(t *testing.T) {
+	creds, _, _, _ := newRootCredentialsWithAttrs(t, nil)
+	certs := newFakeCertManager()
+	svc := newIssuerService(t, creds, certs)
+
+	subjectPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	subject := types.PeerKeyFromBytes(subjectPub)
+
+	cert, err := svc.IssueCert(context.Background(), subject, auth.LeafCapabilities(), true)
+	require.NoError(t, err)
+	require.NotNil(t, cert, "mint_only must return the minted cert for out-of-band delivery")
+	require.Equal(t, 0, certs.PushCallCount(),
+		"mint_only must not invoke PushCert; the recipient has no mesh session")
+
+	cached, ok := certs.PeerDelegationCert(subject)
+	require.True(t, ok, "mint_only must still cache locally so the cert gossips")
+	require.Equal(t, cert.GetSignature(), cached.GetSignature(),
+		"returned cert and cached cert must be the same")
 }
 
 func TestHandleCertRenewalInstallsFreshCertIntoLocalCache(t *testing.T) {

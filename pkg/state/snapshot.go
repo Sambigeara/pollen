@@ -124,6 +124,10 @@ func NormaliseProtocol(p statev1.ServiceProtocol) statev1.ServiceProtocol {
 func (s Snapshot) Digest() Digest               { return s.digest }
 func (s Snapshot) DeniedPeers() []types.PeerKey { return s.DeniedKeys }
 
+func (s Snapshot) IsDenied(peer types.PeerKey) bool {
+	return slices.Contains(s.DeniedKeys, peer)
+}
+
 // LocalCert returns the local node's delegation cert as published into
 // gossip, or nil if the local node hasn't published one yet (the
 // cluster-bootstrap window before SetLocalDelegationCert fires).

@@ -98,6 +98,10 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 			cliCfg = &config.Config{}
 		}
 
+		baseURL := "http://unix"
+		if addr, ok := parsePlnTarget(host); ok {
+			baseURL = "https://" + addr
+		}
 		env := &cliEnv{
 			dir: dir,
 			cfg: cliCfg,
@@ -112,7 +116,7 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 						DialTLS:   dialTLSFunc(dir, host),
 					},
 				},
-				"http://unix",
+				baseURL,
 				connect.WithGRPC(),
 			),
 		}
@@ -122,6 +126,9 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 }
 
 func dialTLSFunc(dir, target string) func(string, string, *tls.Config) (net.Conn, error) {
+	if addr, ok := parsePlnTarget(target); ok {
+		return plnNativeDialer(dir, addr)
+	}
 	if target != "" {
 		return func(_, _ string, _ *tls.Config) (net.Conn, error) {
 			return sshBridgeDial(target)

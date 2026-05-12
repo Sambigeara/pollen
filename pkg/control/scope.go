@@ -1,0 +1,56 @@
+// Copyright 2026 Sam Lock
+// SPDX-License-Identifier: Apache-2.0
+
+package control
+
+import (
+	"context"
+
+	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/types"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+// viewScope captures the read-side authority of an incoming control
+// RPC. Admin callers (can_admit) get the unfiltered cluster view;
+// everyone else sees only resources where Publisher matches their
+// cert's subject pub.
+type viewScope struct {
+	showAll bool
+	caller  types.PeerKey
+}
+
+func (v viewScope) permits(publisher types.PeerKey) bool {
+	return v.showAll || publisher == v.caller
+}
+
+// viewScope derives a scope from the request context's RPCCaller, with
+// fall-throughs for paths that bypass the interceptor (test harnesses
+// that call handlers directly; bring-up before creds are set).
+func (s *Service) viewScope(ctx context.Context) viewScope {
+	if caller, ok := auth.RPCCallerFromContext(ctx); ok && caller.Cert() != nil {
+		return viewScope{
+			showAll: caller.CanAdmit(),
+			caller:  caller.SubjectPub(),
+		}
+	}
+	if s.creds != nil && s.creds.Cert() != nil {
+		cert := s.creds.Cert()
+		return viewScope{
+			showAll: cert.GetClaims().GetCapabilities().GetCanAdmit(),
+			caller:  types.PeerKeyFromBytes(cert.GetClaims().GetSubjectPub()),
+		}
+	}
+	return viewScope{showAll: true}
+}
+
+// authoriseOwnership rejects non-admin callers who aren't the resource's
+// publisher. Admins (can_admit) bypass the check.
+func (s *Service) authoriseOwnership(ctx context.Context, publisher types.PeerKey) error {
+	scope := s.viewScope(ctx)
+	if scope.showAll || publisher == scope.caller {
+		return nil
+	}
+	return status.Error(codes.PermissionDenied, "caller is not the resource publisher")
+}
