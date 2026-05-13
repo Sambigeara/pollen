@@ -36,10 +36,18 @@ func (r *recordingState) Snapshot() state.Snapshot {
 }
 
 func (r *recordingState) SetLocalBlobs([]string) []state.Event { return nil }
+func (r *recordingState) SetBlobSpecPresigned(state.BlobSpec, *admissionv1.SpecAuth) ([]state.Event, error) {
+	return nil, nil
+}
+
 func (r *recordingState) SetBlobSpec(state.BlobSpec, *admissionv1.Predicate) ([]state.Event, error) {
 	return nil, nil
 }
 func (r *recordingState) DeleteBlobSpec(string) ([]state.Event, error) { return nil, nil }
+func (r *recordingState) DeleteBlobSpecPresigned(string, *admissionv1.SpecAuth) ([]state.Event, error) {
+	return nil, nil
+}
+
 func (r *recordingState) SetBlobWrapping(w *statev1.BlobWrappingChange) []state.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -181,10 +189,14 @@ func TestFetchPlaintext_SelfPublisher_ReadsLocalCAS(t *testing.T) {
 	if rs.snap.BlobSpecs == nil {
 		rs.snap.BlobSpecs = map[string]state.BlobSpecView{}
 	}
+	if rs.snap.BlobStoringPeers == nil {
+		rs.snap.BlobStoringPeers = map[string]map[types.PeerKey]struct{}{}
+	}
 	rs.snap.BlobSpecs[hash] = state.BlobSpecView{
 		Spec:      state.BlobSpec{Name: "named", Digest: hash},
 		Publisher: svc.self,
 	}
+	rs.snap.BlobStoringPeers[hash] = map[types.PeerKey]struct{}{svc.self: {}}
 	rs.mu.Unlock()
 
 	rc, err := svc.FetchPlaintext(t.Context(), hash)
@@ -213,10 +225,14 @@ func TestFetchPlaintext_ResolvesViaWorkloadSpec(t *testing.T) {
 	if rs.snap.Specs == nil {
 		rs.snap.Specs = map[string]state.WorkloadSpecView{}
 	}
+	if rs.snap.WorkloadStoringPeers == nil {
+		rs.snap.WorkloadStoringPeers = map[string]map[types.PeerKey]struct{}{}
+	}
 	rs.snap.Specs[hash] = state.WorkloadSpecView{
 		Spec:      state.WorkloadSpec{Name: "hello", Hash: hash},
 		Publisher: svc.self,
 	}
+	rs.snap.WorkloadStoringPeers[hash] = map[types.PeerKey]struct{}{svc.self: {}}
 	rs.mu.Unlock()
 
 	rc, err := svc.FetchPlaintext(t.Context(), hash)

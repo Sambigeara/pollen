@@ -79,6 +79,18 @@ message InviteToken {
   bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
 }
 
+message AccessTokenClaims {
+  ResourceID resource = 1 [(buf.validate.field).required = true];
+  bytes issuer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+  int64 issued_at_unix = 3;
+  int64 expires_at_unix = 4;
+}
+
+message AccessToken {
+  AccessTokenClaims claims = 1 [(buf.validate.field).required = true];
+  bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
+}
+
 message SpecAuth {
   ResourceID resource = 1 [(buf.validate.field).required = true];
   Predicate policy = 2;

@@ -45,9 +45,10 @@ var (
 )
 
 type cliEnv struct {
-	client controlv1connect.ControlServiceClient
-	cfg    *config.Config
-	dir    string
+	client   controlv1connect.ControlServiceClient
+	cfg      *config.Config
+	dir      string
+	wireMode bool
 }
 
 type envConfig struct {
@@ -99,12 +100,15 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 		}
 
 		baseURL := "http://unix"
+		wire := false
 		if addr, ok := parsePlnTarget(host); ok {
 			baseURL = "https://" + addr
+			wire = true
 		}
 		env := &cliEnv{
-			dir: dir,
-			cfg: cliCfg,
+			dir:      dir,
+			cfg:      cliCfg,
+			wireMode: wire,
 			// No http.Client.Timeout: per-command deadlines own the budget via
 			// context.WithTimeout on cmd.Context(). A global wall-clock would
 			// otherwise mask real errors and truncate long-lived calls before
@@ -159,7 +163,7 @@ Two commands to a cluster:
 	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted (env: PLN_DIR)")
 	rootCmd.PersistentFlags().StringP("host", "H", "", "Target daemon over SSH, e.g. user@host (env: PLN_HOST)")
 
-	rootCmd.AddCommand(newVersionCmd(), newIDCmd(), newBridgeCmd(), newContextCmds(), newCallCmd(), newInspectCmd())
+	rootCmd.AddCommand(newVersionCmd(), newIDCmd(), newBridgeCmd(), newContextCmds(), newCallCmd(), newInspectCmd(), newShareCmd())
 	rootCmd.AddCommand(newDaemonCmds()...)
 	rootCmd.AddCommand(newClusterCmds()...)
 	rootCmd.AddCommand(newNetworkCmds()...)

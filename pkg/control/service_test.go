@@ -33,8 +33,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -538,80 +536,6 @@ func TestCallWorkloadMissingTarget(t *testing.T) {
 	require.Equal(t, codes.InvalidArgument, st.Code())
 }
 
-func TestStartTCP_TokenAuth(t *testing.T) {
-	startServer := func(token string) (*control.Server, string, func()) {
-		placementStub := &fakePlacement{callOut: []byte("ok")}
-		srv := control.New(&fakeMembership{}, placementStub, &fakeTunneling{}, &fakeBlobs{}, &fakeStatic{}, &fakeState{snap: state.Snapshot{Nodes: make(map[types.PeerKey]state.NodeView)}})
-		if token != "" {
-			srv.SetToken(token)
-		}
-
-		l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		addr := l.Addr().String()
-
-		go func() { _ = srv.Serve(l) }()
-
-		cleanup := func() {
-			srv.Stop()
-			_ = l.Close()
-		}
-		return srv, addr, cleanup
-	}
-
-	dialClient := func(t *testing.T, addr string) controlv1.ControlServiceClient {
-		t.Helper()
-		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = conn.Close() })
-		return controlv1.NewControlServiceClient(conn)
-	}
-
-	t.Run("valid token", func(t *testing.T) {
-		_, addr, done := startServer("secret-token-xyz")
-		t.Cleanup(done)
-
-		client := dialClient(t, addr)
-		ctx := metadata.AppendToOutgoingContext(context.Background(), control.ControlTokenMetadataKey, "secret-token-xyz")
-		resp, err := client.CallWorkload(ctx, &controlv1.CallWorkloadRequest{Uri: "pln://seed/ingest/handle"})
-		require.NoError(t, err)
-		require.Equal(t, []byte("ok"), resp.Output)
-	})
-
-	t.Run("missing token rejected", func(t *testing.T) {
-		_, addr, done := startServer("secret-token-xyz")
-		t.Cleanup(done)
-
-		client := dialClient(t, addr)
-		_, err := client.CallWorkload(context.Background(), &controlv1.CallWorkloadRequest{Uri: "pln://seed/ingest/handle"})
-		require.Error(t, err)
-		st, _ := status.FromError(err)
-		require.Equal(t, codes.Unauthenticated, st.Code())
-	})
-
-	t.Run("wrong token rejected", func(t *testing.T) {
-		_, addr, done := startServer("secret-token-xyz")
-		t.Cleanup(done)
-
-		client := dialClient(t, addr)
-		ctx := metadata.AppendToOutgoingContext(context.Background(), control.ControlTokenMetadataKey, "wrong")
-		_, err := client.CallWorkload(ctx, &controlv1.CallWorkloadRequest{Uri: "pln://seed/ingest/handle"})
-		require.Error(t, err)
-		st, _ := status.FromError(err)
-		require.Equal(t, codes.Unauthenticated, st.Code())
-	})
-
-	t.Run("no token mode bypasses auth", func(t *testing.T) {
-		_, addr, done := startServer("")
-		t.Cleanup(done)
-
-		client := dialClient(t, addr)
-		resp, err := client.CallWorkload(context.Background(), &controlv1.CallWorkloadRequest{Uri: "pln://seed/ingest/handle"})
-		require.NoError(t, err)
-		require.Equal(t, []byte("ok"), resp.Output)
-	})
-}
-
 func TestDenyPeer(t *testing.T) {
 	dc := dummyCreds(t)
 	h := newHarness(t, control.WithCredentials(dc))
@@ -967,7 +891,7 @@ func TestInspectNode_Local(t *testing.T) {
 }
 
 func TestInspectNode_Peer(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)))
 	local := testPeerKey(1)
 	peerKey := testPeerKey(2)
 	h.state.snap.LocalID = local
@@ -1006,7 +930,7 @@ func TestInspectNode_Peer(t *testing.T) {
 }
 
 func TestInspectNode_Denied(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)))
 	local := testPeerKey(1)
 	peerKey := testPeerKey(2)
 	h.state.snap.LocalID = local
@@ -1087,7 +1011,7 @@ func TestInspect_NilTarget(t *testing.T) {
 // where the root ends up beyond the reach of nested-chain traversal
 // after stripChainEntries flattens.
 func TestInspectNode_IssuerChainFourDeep(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)))
 	local := testPeerKey(1)
 	leaf := testPeerKey(2)
 	h.state.snap.LocalID = local
@@ -1299,7 +1223,7 @@ func TestGetStatusWorkloads(t *testing.T) {
 }
 
 func TestGetStatusBlobsExcludesWasmAndStatic(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)))
 	local := testPeerKey(1)
 	h.state.snap.LocalID = local
 	h.state.snap.PeerKeys = []types.PeerKey{local}
@@ -1328,7 +1252,7 @@ func TestGetStatusBlobsExcludesWasmAndStatic(t *testing.T) {
 }
 
 func TestGetStatusBlobsIncludesName(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness(t, control.WithCredentials(dummyCreds(t)))
 	local := testPeerKey(1)
 	h.state.snap.LocalID = local
 	h.state.snap.PeerKeys = []types.PeerKey{local}
@@ -1471,6 +1395,18 @@ func (f *fakePlacement) Seed(binary []byte, spec state.WorkloadSpec, _ *admissio
 	return f.seedErr
 }
 
+func (f *fakePlacement) SeedPresigned(binary []byte, spec state.WorkloadSpec, _ *admissionv1.SpecAuth) error {
+	f.seededName = spec.Name
+	f.seededHash = spec.Hash
+	f.seededBinary = binary
+	return f.seedErr
+}
+
+func (f *fakePlacement) UnseedPresigned(hash string, _ *admissionv1.SpecAuth) error {
+	f.unseededHash = hash
+	return f.unseedErr
+}
+
 func (f *fakePlacement) Unseed(hash string) error {
 	f.unseededHash = hash
 	return f.unseedErr
@@ -1544,10 +1480,25 @@ func (f *fakeBlobs) Publish(hash, name string, _ *admissionv1.Predicate) error {
 	return nil
 }
 
+func (f *fakeBlobs) PublishPresigned(hash, name string, _ *admissionv1.SpecAuth) error {
+	if _, ok := f.store[hash]; !ok {
+		return blobs.ErrNotLocal
+	}
+	if f.names == nil {
+		f.names = make(map[string]string)
+	}
+	f.names[hash] = name
+	return nil
+}
+
 func (f *fakeBlobs) Remove(hash string) error {
 	delete(f.store, hash)
 	delete(f.names, hash)
 	return nil
+}
+
+func (f *fakeBlobs) RemovePresigned(hash string, _ *admissionv1.SpecAuth) error {
+	return f.Remove(hash)
 }
 
 type fakeStatic struct {
@@ -1559,7 +1510,14 @@ type fakeStatic struct {
 func (f *fakeStatic) SeedStatic(string, []byte, *admissionv1.Predicate) error {
 	return f.seedErr
 }
-func (f *fakeStatic) UnseedStatic(string) error        { return f.unseedErr }
+
+func (f *fakeStatic) SeedStaticPresigned(string, []byte, *admissionv1.SpecAuth) error {
+	return f.seedErr
+}
+func (f *fakeStatic) UnseedStatic(string) error { return f.unseedErr }
+func (f *fakeStatic) UnseedStaticPresigned(string, *admissionv1.SpecAuth) error {
+	return f.unseedErr
+}
 func (f *fakeStatic) StaticBlobs() map[string]struct{} { return f.blobs }
 
 type fakeTunneling struct {

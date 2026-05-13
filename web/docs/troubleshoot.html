@@ -174,7 +174,7 @@ hello   4f3a7c91  pending   0/2       -      30s</span>
     <div class="terminal">
       <span class="out">  user@host                                failed (ssh: handshake failed)
 0 succeeded, 1 failed
-hint: for failed hosts, use `pln invite` and run `pln join &lt;token&gt;` on the remote host</span>
+hint: for failed hosts, use `pln invite` and run `pln join --up &lt;token&gt;` on the remote host</span>
     </div>
     <p><strong>Cause(s).</strong></p>
     <ul>
@@ -185,7 +185,7 @@ hint: for failed hosts, use `pln invite` and run `pln join &lt;token&gt;` on the
     <p><strong>Fix.</strong> Test SSH directly: <code>ssh user@host sudo -n true</code> should succeed silently. If it doesn't, fix that first. As the hint suggests, you can always fall back to the out-of-band path:</p>
     <div class="terminal">
       <span class="cmd">pln invite --subject $(ssh user@host pln id)</span>
-      <span class="cmd">ssh user@host pln join &lt;token&gt;</span>
+      <span class="cmd">ssh user@host pln join --up &lt;token&gt;</span>
     </div>
 
     <h2 id="static-404">Static site returns 404</h2>

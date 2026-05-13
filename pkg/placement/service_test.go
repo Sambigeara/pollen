@@ -154,6 +154,10 @@ func (g *publishDenyGate) Invoke(types.PeerKey, string) (wasm.CallerInfo, error)
 	return wasm.CallerInfo{}, nil
 }
 
+func (g *publishDenyGate) InvokeByToken(*admissionv1.AccessToken, string) (wasm.CallerInfo, error) {
+	return wasm.CallerInfo{}, nil
+}
+
 func (g *publishDenyGate) MayHost(*admissionv1.DelegationCert, *admissionv1.SpecAuth) error {
 	return nil
 }

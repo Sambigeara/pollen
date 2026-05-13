@@ -4,6 +4,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -60,22 +61,34 @@ func buildPlnClientTLSConfig(dir string) (*tls.Config, error) {
 	}
 	rootPub := creds.RootPub()
 	return &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		Certificates:       []tls.Certificate{clientCert},
-		InsecureSkipVerify: true, //nolint:gosec
-		NextProtos:         []string{"h2"},
-		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			if len(rawCerts) == 0 {
-				return errors.New("server presented no certificate")
-			}
-			dc, err := transport.ParseDelegationExtension(rawCerts[0])
-			if err != nil {
-				return fmt.Errorf("parse server delegation: %w", err)
-			}
-			if dc == nil {
-				return errors.New("server cert missing delegation extension")
-			}
-			return auth.VerifyDelegationCert(dc, rootPub, time.Now(), nil)
-		},
+		MinVersion:            tls.VersionTLS13,
+		Certificates:          []tls.Certificate{clientCert},
+		InsecureSkipVerify:    true, //nolint:gosec
+		NextProtos:            []string{"h2"},
+		VerifyPeerCertificate: verifyServerDelegation(rootPub),
 	}, nil
+}
+
+func verifyServerDelegation(rootPub []byte) func([][]byte, [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return errors.New("server presented no certificate")
+		}
+		leaf, err := x509.ParseCertificate(rawCerts[0])
+		if err != nil {
+			return fmt.Errorf("parse server leaf: %w", err)
+		}
+		leafPub, ok := leaf.PublicKey.(ed25519.PublicKey)
+		if !ok {
+			return errors.New("server leaf must use ed25519")
+		}
+		dc, err := transport.ParseDelegationExtension(rawCerts[0])
+		if err != nil {
+			return fmt.Errorf("parse server delegation: %w", err)
+		}
+		if dc == nil {
+			return errors.New("server cert missing delegation extension")
+		}
+		return auth.VerifyDelegationCert(dc, rootPub, time.Now(), leafPub)
+	}
 }

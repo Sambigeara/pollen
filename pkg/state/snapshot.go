@@ -18,14 +18,24 @@ import (
 )
 
 type Snapshot struct {
-	Nodes          map[types.PeerKey]NodeView
-	Specs          map[string]WorkloadSpecView
-	Claims         map[string]map[types.PeerKey]struct{}
-	DrainingClaims map[string]map[types.PeerKey]struct{}
-	StaticSpecs    map[string]StaticSpecView
-	StaticClaims   map[string]map[types.PeerKey]struct{}
-	BlobSpecs      map[string]BlobSpecView
-	Wrappings      map[string]map[types.PeerKey]*statev1.BlobWrappingChange
+	Nodes                map[types.PeerKey]NodeView
+	Specs                map[string]WorkloadSpecView
+	Claims               map[string]map[types.PeerKey]struct{}
+	DrainingClaims       map[string]map[types.PeerKey]struct{}
+	StaticSpecs          map[string]StaticSpecView
+	StaticClaims         map[string]map[types.PeerKey]struct{}
+	BlobSpecs            map[string]BlobSpecView
+	Wrappings            map[string]map[types.PeerKey]*statev1.BlobWrappingChange
+	WorkloadStoringPeers map[string]map[types.PeerKey]struct{}
+	StaticStoringPeers   map[string]map[types.PeerKey]struct{}
+	BlobStoringPeers     map[string]map[types.PeerKey]struct{}
+	// StaticSpecsAll holds one entry per (publisher, name) pair without
+	// dedupe. The deduped StaticSpecs map keys on name and wins by
+	// publisher tie-break, which is the right shape for caller-scoped
+	// views — but the public gateway has to serve every publisher's
+	// site, even when names collide. Iterate this slice when the lookup
+	// must distinguish publishers.
+	StaticSpecsAll []StaticSpecView
 	digest         Digest
 	live           map[types.PeerKey]struct{}
 	PeerKeys       []types.PeerKey
@@ -193,6 +203,34 @@ func (s Snapshot) PeersWithBlob(hash string) []types.PeerKey {
 	return out
 }
 
+// PeersWithWorkloadSpec returns live peers whose log carries a
+// non-deleted workload-spec entry for hash. With signed-event relay,
+// this is distinct from the spec's Publisher (authority): a peer can
+// store and gossip a spec it didn't sign. Fetch routing for the
+// workload binary consults this set, not Publisher.
+func (s Snapshot) PeersWithWorkloadSpec(hash string) []types.PeerKey {
+	return sortedPeerSet(s.WorkloadStoringPeers[hash])
+}
+
+// PeersWithStaticSpec returns live peers whose log carries a
+// non-deleted static-spec entry for name. See PeersWithWorkloadSpec.
+func (s Snapshot) PeersWithStaticSpec(name string) []types.PeerKey {
+	return sortedPeerSet(s.StaticStoringPeers[name])
+}
+
+// PeersWithBlobSpec returns live peers whose log carries a
+// non-deleted blob-spec entry for digest. See PeersWithWorkloadSpec.
+func (s Snapshot) PeersWithBlobSpec(digest string) []types.PeerKey {
+	return sortedPeerSet(s.BlobStoringPeers[digest])
+}
+
+func sortedPeerSet(set map[types.PeerKey]struct{}) []types.PeerKey {
+	if len(set) == 0 {
+		return nil
+	}
+	return slices.SortedFunc(maps.Keys(set), types.PeerKey.Compare)
+}
+
 // WrappingFor returns the wrapping addressed to recipient for
 // blobHash, or false when no peer has gossiped one. Callers can trust
 // the wrapper identity without re-verifying because admission already
@@ -325,7 +363,11 @@ func (s *store) buildSnapshot() Snapshot {
 
 	specs := make(map[string]WorkloadSpecView)
 	staticSpecs := make(map[string]StaticSpecView)
+	staticSpecsByPub := make(map[types.PeerKey]map[string]StaticSpecView)
 	blobSpecs := make(map[string]BlobSpecView)
+	specStoring := make(map[string]map[types.PeerKey]struct{})
+	staticStoring := make(map[string]map[types.PeerKey]struct{})
+	blobStoring := make(map[string]map[types.PeerKey]struct{})
 	wrappings := make(map[string]map[types.PeerKey]*statev1.BlobWrappingChange)
 	wrapperBy := make(map[string]map[types.PeerKey]types.PeerKey)
 	// Iterating valid (not s.nodes) means specs published only by a
@@ -343,30 +385,55 @@ func (s *store) buildSnapshot() Snapshot {
 			}
 			switch key.kind { //nolint:exhaustive
 			case attrWorkloadSpec:
-				if existing, ok := specs[key.name]; !ok || outranks(pk, existing.Publisher) {
-					sc := ev.GetSpecChange()
+				sc := ev.GetSpecChange()
+				publisher := types.PeerKeyFromBytes(sc.GetAuth().GetPublisher().GetClaims().GetSubjectPub())
+				if specStoring[key.name] == nil {
+					specStoring[key.name] = make(map[types.PeerKey]struct{})
+				}
+				specStoring[key.name][pk] = struct{}{}
+				if existing, ok := specs[key.name]; !ok || outranks(publisher, existing.Publisher) {
 					specs[key.name] = WorkloadSpecView{
 						Spec:      workloadSpecFromProto(sc.GetWorkload()),
 						Auth:      sc.GetAuth(),
-						Publisher: pk,
+						Publisher: publisher,
 					}
 				}
 			case attrStaticSpec:
-				if existing, ok := staticSpecs[key.name]; !ok || outranks(pk, existing.Publisher) {
-					sc := ev.GetSpecChange()
-					staticSpecs[key.name] = StaticSpecView{
-						Spec:      staticSpecFromProto(sc.GetStatic()),
-						Auth:      sc.GetAuth(),
-						Publisher: pk,
-					}
+				sc := ev.GetSpecChange()
+				publisher := types.PeerKeyFromBytes(sc.GetAuth().GetPublisher().GetClaims().GetSubjectPub())
+				if staticStoring[key.name] == nil {
+					staticStoring[key.name] = make(map[types.PeerKey]struct{})
 				}
+				staticStoring[key.name][pk] = struct{}{}
+				view := StaticSpecView{
+					Spec:      staticSpecFromProto(sc.GetStatic()),
+					Auth:      sc.GetAuth(),
+					Publisher: publisher,
+				}
+				if existing, ok := staticSpecs[key.name]; !ok || outranks(publisher, existing.Publisher) {
+					staticSpecs[key.name] = view
+				}
+				// Per-publisher view: dedupe by (publisher, name)
+				// across every peer's log so a wire-mode tenant's
+				// spec is visible even when their daemon — if any —
+				// is offline and the spec is only carried by edge
+				// relays.
+				if staticSpecsByPub[publisher] == nil {
+					staticSpecsByPub[publisher] = make(map[string]StaticSpecView)
+				}
+				staticSpecsByPub[publisher][key.name] = view
 			case attrBlobSpec:
-				if existing, ok := blobSpecs[key.name]; !ok || outranks(pk, existing.Publisher) {
-					sc := ev.GetSpecChange()
+				sc := ev.GetSpecChange()
+				publisher := types.PeerKeyFromBytes(sc.GetAuth().GetPublisher().GetClaims().GetSubjectPub())
+				if blobStoring[key.name] == nil {
+					blobStoring[key.name] = make(map[types.PeerKey]struct{})
+				}
+				blobStoring[key.name][pk] = struct{}{}
+				if existing, ok := blobSpecs[key.name]; !ok || outranks(publisher, existing.Publisher) {
 					blobSpecs[key.name] = BlobSpecView{
 						Spec:      blobSpecFromProto(sc.GetBlob()),
 						Auth:      sc.GetAuth(),
-						Publisher: pk,
+						Publisher: publisher,
 					}
 				}
 			case attrBlobWrapping:
@@ -408,21 +475,28 @@ func (s *store) buildSnapshot() Snapshot {
 	filteredClaims := filterLive(claims, live)
 	filteredDrainingClaims := filterLive(drainingClaims, live)
 	filteredStaticClaims := filterLive(staticClaims, live)
+	filteredSpecStoring := filterLive(specStoring, live)
+	filteredStaticStoring := filterLive(staticStoring, live)
+	filteredBlobStoring := filterLive(blobStoring, live)
 
 	return Snapshot{
-		LocalID:        s.localID,
-		Nodes:          nodes,
-		Specs:          specs,
-		DrainingClaims: filteredDrainingClaims,
-		Claims:         filteredClaims,
-		StaticSpecs:    staticSpecs,
-		StaticClaims:   filteredStaticClaims,
-		BlobSpecs:      blobSpecs,
-		Wrappings:      wrappings,
-		live:           live,
-		PeerKeys:       slices.SortedFunc(maps.Keys(live), types.PeerKey.Compare),
-		DeniedKeys:     denied,
-		digest:         Digest{proto: &statev1.Digest{Peers: peersDigest}},
+		LocalID:              s.localID,
+		Nodes:                nodes,
+		Specs:                specs,
+		DrainingClaims:       filteredDrainingClaims,
+		Claims:               filteredClaims,
+		StaticSpecs:          staticSpecs,
+		StaticSpecsAll:       flattenStaticSpecsByPub(staticSpecsByPub),
+		StaticClaims:         filteredStaticClaims,
+		BlobSpecs:            blobSpecs,
+		Wrappings:            wrappings,
+		WorkloadStoringPeers: filteredSpecStoring,
+		StaticStoringPeers:   filteredStaticStoring,
+		BlobStoringPeers:     filteredBlobStoring,
+		live:                 live,
+		PeerKeys:             slices.SortedFunc(maps.Keys(live), types.PeerKey.Compare),
+		DeniedKeys:           denied,
+		digest:               Digest{proto: &statev1.Digest{Peers: peersDigest}},
 	}
 }
 
@@ -518,6 +592,19 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 		}
 	}
 	return nv, claims, staticClaims
+}
+
+func flattenStaticSpecsByPub(byPub map[types.PeerKey]map[string]StaticSpecView) []StaticSpecView {
+	if len(byPub) == 0 {
+		return nil
+	}
+	out := make([]StaticSpecView, 0, len(byPub))
+	for _, named := range byPub {
+		for _, v := range named {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func staticSpecFromProto(p *statev1.StaticSpecChange) StaticSpec {

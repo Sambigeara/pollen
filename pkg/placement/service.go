@@ -4,6 +4,7 @@
 package placement
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/gate"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -64,7 +66,9 @@ type PlacementAPI interface {
 	Stop() error
 
 	Seed(binary []byte, spec state.WorkloadSpec, policy *admissionv1.Predicate) error
+	SeedPresigned(binary []byte, spec state.WorkloadSpec, presignedAuth *admissionv1.SpecAuth) error
 	Unseed(hash string) error
+	UnseedPresigned(hash string, presignedAuth *admissionv1.SpecAuth) error
 	Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
 	Status() []WorkloadSummary
 
@@ -86,7 +90,9 @@ var _ PlacementAPI = (*Service)(nil)
 type WorkloadState interface {
 	Snapshot() state.Snapshot
 	PublishWorkload(spec state.WorkloadSpec, policy *admissionv1.Predicate) ([]state.Event, error)
+	PublishWorkloadPresigned(spec state.WorkloadSpec, presignedAuth *admissionv1.SpecAuth) ([]state.Event, error)
 	DeleteWorkloadSpec(hash string) ([]state.Event, error)
+	DeleteWorkloadSpecPresigned(hash string, presignedAuth *admissionv1.SpecAuth) ([]state.Event, error)
 	ClaimWorkload(hash string) []state.Event
 	MarkWorkloadDraining(hash string) []state.Event
 	ReleaseWorkload(hash string) []state.Event
@@ -110,6 +116,7 @@ type StreamOpener interface {
 // can clear the stranded spec.
 type Gate interface {
 	Invoke(peerKey types.PeerKey, hash string) (wasm.CallerInfo, error)
+	InvokeByToken(token *admissionv1.AccessToken, hash string) (wasm.CallerInfo, error)
 	MayHost(hostCert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth) error
 	MayPublish(cert *admissionv1.DelegationCert, policy *admissionv1.Predicate) error
 }
@@ -265,6 +272,37 @@ func (s *Service) publishResources() {
 		MemTotalBytes: memTotal,
 		NumCPU:        uint32(runtime.NumCPU()), //nolint:gosec
 	})
+}
+
+// UnseedPresigned applies a tenant-signed workload tombstone. Local
+// hosting (if any) is torn down and the budget is released; the
+// underlying tombstone is signed by the publisher, not the daemon.
+func (s *Service) UnseedPresigned(hash string, presignedAuth *admissionv1.SpecAuth) error {
+	if s.manager.IsRunning(hash) {
+		_ = s.manager.Unseed(hash)
+		s.budget.Release(hash)
+	}
+	s.store.ReleaseWorkload(hash)
+	_, err := s.store.DeleteWorkloadSpecPresigned(hash, presignedAuth)
+	return err
+}
+
+// SeedPresigned lands a tenant-signed workload spec via the relay
+// path. The daemon stores the binary in CAS so reconcilers on hosts
+// (which match the spec's policy) can fetch it, then publishes the
+// presigned spec. Compilation is deferred to the reconciler if/when
+// the daemon decides to host; for pure-relay daemons it never happens.
+func (s *Service) SeedPresigned(binary []byte, spec state.WorkloadSpec, presignedAuth *admissionv1.SpecAuth) error {
+	if _, err := s.blobs.Put(bytes.NewReader(binary)); err != nil {
+		return fmt.Errorf("workload: %w: %w", ErrStore, err)
+	}
+	if spec.MinReplicas == 0 {
+		spec.MinReplicas = 1
+	}
+	if _, err := s.store.PublishWorkloadPresigned(spec, presignedAuth); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admissionv1.Predicate) error {
@@ -431,7 +469,13 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 
 	if s.gate != nil {
 		info, _ := wasm.CallerInfoFromContext(ctx)
-		gated, err := s.gate.Invoke(info.PeerKey, hash)
+		var gated wasm.CallerInfo
+		var err error
+		if token, ok := gate.AccessTokenFromContext(ctx); ok {
+			gated, err = s.gate.InvokeByToken(token, hash)
+		} else {
+			gated, err = s.gate.Invoke(info.PeerKey, hash)
+		}
 		if err != nil {
 			return ctx, hash, nil, fmt.Errorf("invoke %s: %w", types.ShortHash(hash), wasm.ErrTargetNotFound)
 		}
@@ -571,14 +615,23 @@ func (s *Service) Status() []WorkloadSummary {
 // Serve handles an inbound workload call. peerKey must be the
 // transport-authenticated identity; wire-reported caller attributes
 // are replaced by the gate's cert-bound view before the seed runs.
+// When the inbound envelope carries an AccessToken the gate switches
+// to token-based authorisation (the upstream is relaying an anonymous
+// call from the HTTP gateway).
 func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	defer stream.Close()
-	info, chain, hash, function, err := ReadHeader(stream, peerKey)
+	info, chain, token, hash, function, err := ReadHeader(stream, peerKey)
 	if err != nil {
 		return
 	}
 	if s.gate != nil {
-		gated, err := s.gate.Invoke(peerKey, hash)
+		var gated wasm.CallerInfo
+		var err error
+		if token != nil {
+			gated, err = s.gate.InvokeByToken(token, hash)
+		} else {
+			gated, err = s.gate.Invoke(peerKey, hash)
+		}
 		if err != nil {
 			return
 		}
@@ -588,6 +641,9 @@ func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 
 	ctx := withChainSnapshot(s.ctx, chain)
 	ctx = wasm.WithCallerInfo(ctx, info)
+	if token != nil {
+		ctx = gate.WithAccessToken(ctx, token)
+	}
 	ctx, deadlineCancel := withCallerDeadline(ctx, info)
 	defer deadlineCancel()
 

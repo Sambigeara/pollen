@@ -142,7 +142,7 @@ pln call echo shout 'hello world'      <span class="c"># → HELLO WORLD</span><
     <p>Linux targets only, SSH as root or with passwordless sudo. The orchestrator installs Pollen on the target, mints a cert, and starts the daemon. Within seconds the new node appears in <code>pln status</code> and replicas start to balance.</p>
 
     <div class="callout">
-      <p><strong>Out of band joins.</strong> If you can't SSH directly, mint an invite token on the admin and ship it (Slack, email, anywhere). On the joiner, run <code>pln join &lt;token&gt;</code>. Tokens are signed and self-contained; the default TTL is five minutes.</p>
+      <p><strong>Out of band joins.</strong> If you can't SSH directly, mint an invite token on the admin and ship it (Slack, email, anywhere). On the joiner, run <code>pln join --up &lt;token&gt;</code>. Tokens are signed and self-contained; the default TTL is five minutes.</p>
     </div>
 
     <h2 id="what-happened">What just happened</h2>

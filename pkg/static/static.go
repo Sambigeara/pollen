@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,14 +33,18 @@ type StaticAPI interface {
 	Signal()
 	Events() <-chan state.Event
 	SeedStatic(name string, manifestDigest []byte, policy *admissionv1.Predicate) error
+	SeedStaticPresigned(name string, manifestDigest []byte, presignedAuth *admissionv1.SpecAuth) error
 	UnseedStatic(name string) error
+	UnseedStaticPresigned(name string, presignedAuth *admissionv1.SpecAuth) error
 	StaticBlobs() map[string]struct{}
 }
 
 type stateStore interface {
 	Snapshot() state.Snapshot
 	SetStaticSpec(spec state.StaticSpec, policy *admissionv1.Predicate) ([]state.Event, error)
+	SetStaticSpecPresigned(spec state.StaticSpec, presignedAuth *admissionv1.SpecAuth) ([]state.Event, error)
 	DeleteStaticSpec(name string) ([]state.Event, error)
+	DeleteStaticSpecPresigned(name string, presignedAuth *admissionv1.SpecAuth) ([]state.Event, error)
 	ClaimStatic(name string) []state.Event
 	ReleaseStatic(name string) []state.Event
 }
@@ -58,6 +63,7 @@ type Service struct {
 	trigger       chan struct{}
 	events        chan state.Event
 	cancel        context.CancelFunc
+	domain        string
 	wg            sync.WaitGroup
 	localID       types.PeerKey
 	canServe      bool
@@ -77,6 +83,23 @@ func New(localID types.PeerKey, store stateStore, blobs blobStore, canServe bool
 		trigger:       make(chan struct{}, 1),
 		events:        make(chan state.Event, eventBufferSize),
 	}
+}
+
+// SetDomain configures the public DNS suffix served by this listener.
+// When non-empty, the static handler resolves an incoming Host as
+// `<name>-<short-pub>.<domain>`: it strips the configured suffix, then
+// splits the remainder on the final `-` to recover the spec name and
+// the publisher's 8-char hex prefix. Empty domain preserves the
+// pre-Pollen-Cloud behaviour (Host == spec name).
+func (s *Service) SetDomain(d string) {
+	if d == "" {
+		s.domain = ""
+		return
+	}
+	if d[0] != '.' {
+		d = "." + d
+	}
+	s.domain = strings.ToLower(d)
 }
 
 func (s *Service) Start(ctx context.Context) error {
@@ -135,6 +158,28 @@ func (s *Service) SeedStatic(name string, manifestDigest []byte, policy *admissi
 	return nil
 }
 
+// SeedStaticPresigned stores a tenant-signed static spec without
+// re-signing. Used by the wire-mode caller flow where the daemon acts
+// as a relay: the SpecAuth is validated against the cluster root and
+// gossipped as-is.
+func (s *Service) SeedStaticPresigned(name string, manifestDigest []byte, presignedAuth *admissionv1.SpecAuth) error {
+	if presignedAuth.GetPolicy() != nil {
+		return ErrPolicyOnStatic
+	}
+	if len(manifestDigest) != digestSize {
+		return fmt.Errorf("manifest digest must be %d bytes", digestSize)
+	}
+	events, err := s.store.SetStaticSpecPresigned(state.StaticSpec{
+		Name:           name,
+		ManifestDigest: hex.EncodeToString(manifestDigest),
+	}, presignedAuth)
+	if err != nil {
+		return err
+	}
+	s.forwardEvents(events)
+	return nil
+}
+
 func (s *Service) UnseedStatic(name string) error {
 	snap := s.store.Snapshot()
 	sv, ok := snap.StaticSpecs[name]
@@ -145,6 +190,19 @@ func (s *Service) UnseedStatic(name string) error {
 		return fmt.Errorf("static site %q is owned by peer %s; run unseed on that node", name, sv.Publisher.Short())
 	}
 	events, err := s.store.DeleteStaticSpec(name)
+	if err != nil {
+		return err
+	}
+	s.forwardEvents(events)
+	s.forwardEvents(s.store.ReleaseStatic(name))
+	return nil
+}
+
+// UnseedStaticPresigned applies a tenant-signed tombstone for the
+// static spec named name. The daemon re-wraps the auth against the
+// live body in its slot before gossiping.
+func (s *Service) UnseedStaticPresigned(name string, presignedAuth *admissionv1.SpecAuth) error {
+	events, err := s.store.DeleteStaticSpecPresigned(name, presignedAuth)
 	if err != nil {
 		return err
 	}

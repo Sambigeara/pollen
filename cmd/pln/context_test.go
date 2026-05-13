@@ -54,3 +54,39 @@ func TestResolveContextName_NoFileReturnsDefault(t *testing.T) {
 
 	require.Equal(t, defaultContextName, resolveContextName())
 }
+
+func TestInferTarget(t *testing.T) {
+	tmp := t.TempDir()
+
+	cases := []struct {
+		name     string
+		arg      string
+		wantHost string
+		wantDir  string
+		wantErr  bool
+		dirIsAbs bool
+	}{
+		{name: "ssh", arg: "user@host", wantHost: "user@host"},
+		{name: "pln wire", arg: "pln://edge.pln.sh:7443", wantHost: "pln://edge.pln.sh:7443"},
+		{name: "absolute path", arg: tmp, wantDir: tmp, dirIsAbs: true},
+		{name: "tilde path", arg: "~/missing-pln-dir", dirIsAbs: true},
+		{name: "ambiguous bare word", arg: "myhost", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, host, err := inferTarget(tc.arg)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.wantHost, host)
+			if tc.dirIsAbs {
+				require.True(t, filepath.IsAbs(dir), "want absolute dir, got %q", dir)
+			}
+			if tc.wantDir != "" {
+				require.Equal(t, tc.wantDir, dir)
+			}
+		})
+	}
+}

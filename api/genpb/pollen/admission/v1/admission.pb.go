@@ -594,6 +594,126 @@ func (x *InviteToken) GetSignature() []byte {
 	return nil
 }
 
+type AccessTokenClaims struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Resource      *ResourceID            `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
+	IssuerPub     []byte                 `protobuf:"bytes,2,opt,name=issuer_pub,json=issuerPub,proto3" json:"issuer_pub,omitempty"`
+	IssuedAtUnix  int64                  `protobuf:"varint,3,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
+	ExpiresAtUnix int64                  `protobuf:"varint,4,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AccessTokenClaims) Reset() {
+	*x = AccessTokenClaims{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AccessTokenClaims) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AccessTokenClaims) ProtoMessage() {}
+
+func (x *AccessTokenClaims) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AccessTokenClaims.ProtoReflect.Descriptor instead.
+func (*AccessTokenClaims) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *AccessTokenClaims) GetResource() *ResourceID {
+	if x != nil {
+		return x.Resource
+	}
+	return nil
+}
+
+func (x *AccessTokenClaims) GetIssuerPub() []byte {
+	if x != nil {
+		return x.IssuerPub
+	}
+	return nil
+}
+
+func (x *AccessTokenClaims) GetIssuedAtUnix() int64 {
+	if x != nil {
+		return x.IssuedAtUnix
+	}
+	return 0
+}
+
+func (x *AccessTokenClaims) GetExpiresAtUnix() int64 {
+	if x != nil {
+		return x.ExpiresAtUnix
+	}
+	return 0
+}
+
+type AccessToken struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Claims        *AccessTokenClaims     `protobuf:"bytes,1,opt,name=claims,proto3" json:"claims,omitempty"`
+	Signature     []byte                 `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AccessToken) Reset() {
+	*x = AccessToken{}
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AccessToken) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AccessToken) ProtoMessage() {}
+
+func (x *AccessToken) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AccessToken.ProtoReflect.Descriptor instead.
+func (*AccessToken) Descriptor() ([]byte, []int) {
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *AccessToken) GetClaims() *AccessTokenClaims {
+	if x != nil {
+		return x.Claims
+	}
+	return nil
+}
+
+func (x *AccessToken) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
 type SpecAuth struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Resource      *ResourceID            `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
@@ -608,7 +728,7 @@ type SpecAuth struct {
 
 func (x *SpecAuth) Reset() {
 	*x = SpecAuth{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[8]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -620,7 +740,7 @@ func (x *SpecAuth) String() string {
 func (*SpecAuth) ProtoMessage() {}
 
 func (x *SpecAuth) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[8]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -633,7 +753,7 @@ func (x *SpecAuth) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SpecAuth.ProtoReflect.Descriptor instead.
 func (*SpecAuth) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{8}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *SpecAuth) GetResource() *ResourceID {
@@ -693,7 +813,7 @@ type ResourceID struct {
 
 func (x *ResourceID) Reset() {
 	*x = ResourceID{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[9]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -705,7 +825,7 @@ func (x *ResourceID) String() string {
 func (*ResourceID) ProtoMessage() {}
 
 func (x *ResourceID) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[9]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -718,7 +838,7 @@ func (x *ResourceID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceID.ProtoReflect.Descriptor instead.
 func (*ResourceID) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{9}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ResourceID) GetBody() isResourceID_Body {
@@ -802,7 +922,7 @@ type SeedID struct {
 
 func (x *SeedID) Reset() {
 	*x = SeedID{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[10]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -814,7 +934,7 @@ func (x *SeedID) String() string {
 func (*SeedID) ProtoMessage() {}
 
 func (x *SeedID) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[10]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -827,7 +947,7 @@ func (x *SeedID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SeedID.ProtoReflect.Descriptor instead.
 func (*SeedID) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{10}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SeedID) GetName() string {
@@ -854,7 +974,7 @@ type BlobID struct {
 
 func (x *BlobID) Reset() {
 	*x = BlobID{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[11]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -866,7 +986,7 @@ func (x *BlobID) String() string {
 func (*BlobID) ProtoMessage() {}
 
 func (x *BlobID) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[11]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -879,7 +999,7 @@ func (x *BlobID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BlobID.ProtoReflect.Descriptor instead.
 func (*BlobID) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{11}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *BlobID) GetName() string {
@@ -906,7 +1026,7 @@ type StaticID struct {
 
 func (x *StaticID) Reset() {
 	*x = StaticID{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[12]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -918,7 +1038,7 @@ func (x *StaticID) String() string {
 func (*StaticID) ProtoMessage() {}
 
 func (x *StaticID) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[12]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -931,7 +1051,7 @@ func (x *StaticID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StaticID.ProtoReflect.Descriptor instead.
 func (*StaticID) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{12}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *StaticID) GetName() string {
@@ -957,7 +1077,7 @@ type ServiceID struct {
 
 func (x *ServiceID) Reset() {
 	*x = ServiceID{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[13]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -969,7 +1089,7 @@ func (x *ServiceID) String() string {
 func (*ServiceID) ProtoMessage() {}
 
 func (x *ServiceID) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[13]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -982,7 +1102,7 @@ func (x *ServiceID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServiceID.ProtoReflect.Descriptor instead.
 func (*ServiceID) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{13}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ServiceID) GetName() string {
@@ -1001,7 +1121,7 @@ type Predicate struct {
 
 func (x *Predicate) Reset() {
 	*x = Predicate{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[14]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1013,7 +1133,7 @@ func (x *Predicate) String() string {
 func (*Predicate) ProtoMessage() {}
 
 func (x *Predicate) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[14]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1026,7 +1146,7 @@ func (x *Predicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Predicate.ProtoReflect.Descriptor instead.
 func (*Predicate) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{14}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Predicate) GetInline() *InlinePredicate {
@@ -1045,7 +1165,7 @@ type InlinePredicate struct {
 
 func (x *InlinePredicate) Reset() {
 	*x = InlinePredicate{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[15]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1057,7 +1177,7 @@ func (x *InlinePredicate) String() string {
 func (*InlinePredicate) ProtoMessage() {}
 
 func (x *InlinePredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[15]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1070,7 +1190,7 @@ func (x *InlinePredicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InlinePredicate.ProtoReflect.Descriptor instead.
 func (*InlinePredicate) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{15}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *InlinePredicate) GetClauses() []*Clause {
@@ -1090,7 +1210,7 @@ type Clause struct {
 
 func (x *Clause) Reset() {
 	*x = Clause{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[16]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1102,7 +1222,7 @@ func (x *Clause) String() string {
 func (*Clause) ProtoMessage() {}
 
 func (x *Clause) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[16]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1115,7 +1235,7 @@ func (x *Clause) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Clause.ProtoReflect.Descriptor instead.
 func (*Clause) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{16}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *Clause) GetKey() string {
@@ -1192,6 +1312,15 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"attributesR\x05admin\"|\n" +
 	"\vInviteToken\x12F\n" +
 	"\x06claims\x18\x01 \x01(\v2&.pollen.admission.v1.InviteTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
+	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xce\x01\n" +
+	"\x11AccessTokenClaims\x12C\n" +
+	"\bresource\x18\x01 \x01(\v2\x1f.pollen.admission.v1.ResourceIDB\x06\xbaH\x03\xc8\x01\x01R\bresource\x12&\n" +
+	"\n" +
+	"issuer_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\tissuerPub\x12$\n" +
+	"\x0eissued_at_unix\x18\x03 \x01(\x03R\fissuedAtUnix\x12&\n" +
+	"\x0fexpires_at_unix\x18\x04 \x01(\x03R\rexpiresAtUnix\"|\n" +
+	"\vAccessToken\x12F\n" +
+	"\x06claims\x18\x01 \x01(\v2&.pollen.admission.v1.AccessTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
 	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xb9\x02\n" +
 	"\bSpecAuth\x12C\n" +
 	"\bresource\x18\x01 \x01(\v2\x1f.pollen.admission.v1.ResourceIDB\x06\xbaH\x03\xc8\x01\x01R\bresource\x126\n" +
@@ -1241,7 +1370,7 @@ func file_pollen_admission_v1_admission_proto_rawDescGZIP() []byte {
 	return file_pollen_admission_v1_admission_proto_rawDescData
 }
 
-var file_pollen_admission_v1_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_pollen_admission_v1_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_pollen_admission_v1_admission_proto_goTypes = []any{
 	(*Capabilities)(nil),         // 0: pollen.admission.v1.Capabilities
 	(*DelegationCertClaims)(nil), // 1: pollen.admission.v1.DelegationCertClaims
@@ -1251,19 +1380,21 @@ var file_pollen_admission_v1_admission_proto_goTypes = []any{
 	(*JoinToken)(nil),            // 5: pollen.admission.v1.JoinToken
 	(*InviteTokenClaims)(nil),    // 6: pollen.admission.v1.InviteTokenClaims
 	(*InviteToken)(nil),          // 7: pollen.admission.v1.InviteToken
-	(*SpecAuth)(nil),             // 8: pollen.admission.v1.SpecAuth
-	(*ResourceID)(nil),           // 9: pollen.admission.v1.ResourceID
-	(*SeedID)(nil),               // 10: pollen.admission.v1.SeedID
-	(*BlobID)(nil),               // 11: pollen.admission.v1.BlobID
-	(*StaticID)(nil),             // 12: pollen.admission.v1.StaticID
-	(*ServiceID)(nil),            // 13: pollen.admission.v1.ServiceID
-	(*Predicate)(nil),            // 14: pollen.admission.v1.Predicate
-	(*InlinePredicate)(nil),      // 15: pollen.admission.v1.InlinePredicate
-	(*Clause)(nil),               // 16: pollen.admission.v1.Clause
-	(*structpb.Struct)(nil),      // 17: google.protobuf.Struct
+	(*AccessTokenClaims)(nil),    // 8: pollen.admission.v1.AccessTokenClaims
+	(*AccessToken)(nil),          // 9: pollen.admission.v1.AccessToken
+	(*SpecAuth)(nil),             // 10: pollen.admission.v1.SpecAuth
+	(*ResourceID)(nil),           // 11: pollen.admission.v1.ResourceID
+	(*SeedID)(nil),               // 12: pollen.admission.v1.SeedID
+	(*BlobID)(nil),               // 13: pollen.admission.v1.BlobID
+	(*StaticID)(nil),             // 14: pollen.admission.v1.StaticID
+	(*ServiceID)(nil),            // 15: pollen.admission.v1.ServiceID
+	(*Predicate)(nil),            // 16: pollen.admission.v1.Predicate
+	(*InlinePredicate)(nil),      // 17: pollen.admission.v1.InlinePredicate
+	(*Clause)(nil),               // 18: pollen.admission.v1.Clause
+	(*structpb.Struct)(nil),      // 19: google.protobuf.Struct
 }
 var file_pollen_admission_v1_admission_proto_depIdxs = []int32{
-	17, // 0: pollen.admission.v1.Capabilities.attributes:type_name -> google.protobuf.Struct
+	19, // 0: pollen.admission.v1.Capabilities.attributes:type_name -> google.protobuf.Struct
 	0,  // 1: pollen.admission.v1.DelegationCertClaims.capabilities:type_name -> pollen.admission.v1.Capabilities
 	1,  // 2: pollen.admission.v1.DelegationCert.claims:type_name -> pollen.admission.v1.DelegationCertClaims
 	2,  // 3: pollen.admission.v1.DelegationCert.chain:type_name -> pollen.admission.v1.DelegationCert
@@ -1273,20 +1404,22 @@ var file_pollen_admission_v1_admission_proto_depIdxs = []int32{
 	3,  // 7: pollen.admission.v1.InviteTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
 	0,  // 8: pollen.admission.v1.InviteTokenClaims.cert_caps:type_name -> pollen.admission.v1.Capabilities
 	6,  // 9: pollen.admission.v1.InviteToken.claims:type_name -> pollen.admission.v1.InviteTokenClaims
-	9,  // 10: pollen.admission.v1.SpecAuth.resource:type_name -> pollen.admission.v1.ResourceID
-	14, // 11: pollen.admission.v1.SpecAuth.policy:type_name -> pollen.admission.v1.Predicate
-	2,  // 12: pollen.admission.v1.SpecAuth.publisher:type_name -> pollen.admission.v1.DelegationCert
-	10, // 13: pollen.admission.v1.ResourceID.seed:type_name -> pollen.admission.v1.SeedID
-	11, // 14: pollen.admission.v1.ResourceID.blob:type_name -> pollen.admission.v1.BlobID
-	12, // 15: pollen.admission.v1.ResourceID.static:type_name -> pollen.admission.v1.StaticID
-	13, // 16: pollen.admission.v1.ResourceID.service:type_name -> pollen.admission.v1.ServiceID
-	15, // 17: pollen.admission.v1.Predicate.inline:type_name -> pollen.admission.v1.InlinePredicate
-	16, // 18: pollen.admission.v1.InlinePredicate.clauses:type_name -> pollen.admission.v1.Clause
-	19, // [19:19] is the sub-list for method output_type
-	19, // [19:19] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	11, // 10: pollen.admission.v1.AccessTokenClaims.resource:type_name -> pollen.admission.v1.ResourceID
+	8,  // 11: pollen.admission.v1.AccessToken.claims:type_name -> pollen.admission.v1.AccessTokenClaims
+	11, // 12: pollen.admission.v1.SpecAuth.resource:type_name -> pollen.admission.v1.ResourceID
+	16, // 13: pollen.admission.v1.SpecAuth.policy:type_name -> pollen.admission.v1.Predicate
+	2,  // 14: pollen.admission.v1.SpecAuth.publisher:type_name -> pollen.admission.v1.DelegationCert
+	12, // 15: pollen.admission.v1.ResourceID.seed:type_name -> pollen.admission.v1.SeedID
+	13, // 16: pollen.admission.v1.ResourceID.blob:type_name -> pollen.admission.v1.BlobID
+	14, // 17: pollen.admission.v1.ResourceID.static:type_name -> pollen.admission.v1.StaticID
+	15, // 18: pollen.admission.v1.ResourceID.service:type_name -> pollen.admission.v1.ServiceID
+	17, // 19: pollen.admission.v1.Predicate.inline:type_name -> pollen.admission.v1.InlinePredicate
+	18, // 20: pollen.admission.v1.InlinePredicate.clauses:type_name -> pollen.admission.v1.Clause
+	21, // [21:21] is the sub-list for method output_type
+	21, // [21:21] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_pollen_admission_v1_admission_proto_init() }
@@ -1294,7 +1427,7 @@ func file_pollen_admission_v1_admission_proto_init() {
 	if File_pollen_admission_v1_admission_proto != nil {
 		return
 	}
-	file_pollen_admission_v1_admission_proto_msgTypes[9].OneofWrappers = []any{
+	file_pollen_admission_v1_admission_proto_msgTypes[11].OneofWrappers = []any{
 		(*ResourceID_Seed)(nil),
 		(*ResourceID_Blob)(nil),
 		(*ResourceID_Static)(nil),
@@ -1306,7 +1439,7 @@ func file_pollen_admission_v1_admission_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_admission_v1_admission_proto_rawDesc), len(file_pollen_admission_v1_admission_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

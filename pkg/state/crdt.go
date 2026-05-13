@@ -131,7 +131,7 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 				continue
 			}
 		}
-		if isSpecKind(key.kind) && !s.acceptableSpecEventLocked(pk, ev) {
+		if isSpecKind(key.kind) && !s.acceptableSpecEventLocked(ev) {
 			continue
 		}
 		// Wrapping tombstones never travel over the wire: revocation is a
@@ -258,17 +258,18 @@ func (s *store) isAcceptableWrappingEvent(pk types.PeerKey, ev *statev1.GossipEv
 	return true
 }
 
-// acceptableSpecEventLocked admits a spec event from a remote peer.
-// The publisher pub embedded in SpecAuth must match the gossip's peer
-// id (no impersonation), the signed deleted bit must match the gossip
-// envelope's Deleted flag (so a published SpecAuth cannot be replayed
-// as a tombstone), and the validate hook must accept the change (which
-// in production runs gate.Admit and verifies the SpecAuth signature).
-func (s *store) acceptableSpecEventLocked(pk types.PeerKey, ev *statev1.GossipEvent) bool {
+// acceptableSpecEventLocked admits a spec event from any peer slot.
+// Under the signed-event relay model, the gossip-source peer is the
+// storing peer for the spec; the SpecAuth signer is the authoritative
+// Publisher. They may differ — a daemon storing and gossipping a
+// tenant's signed spec is the canonical case.
+//
+// The signed deleted bit must match the gossip envelope's Deleted flag
+// (so a published SpecAuth cannot be replayed as a tombstone), and the
+// validate hook must accept the change (which in production runs
+// gate.Admit and verifies the SpecAuth signature).
+func (s *store) acceptableSpecEventLocked(ev *statev1.GossipEvent) bool {
 	sc := ev.GetSpecChange()
-	if !specAuthMatchesPeer(pk, sc) {
-		return false
-	}
 	if sc.GetAuth().GetDeleted() != ev.Deleted {
 		return false
 	}
@@ -296,7 +297,14 @@ func (s *store) acceptableSelfEventLocked(kind attrKind, ev *statev1.GossipEvent
 	case attrDelegationCert:
 		return s.isAcceptableCertEvent(s.localID, ev)
 	case attrWorkloadSpec, attrService, attrStaticSpec, attrBlobSpec:
-		return s.acceptableSpecEventLocked(s.localID, ev)
+		// Reject foreign-signed specs from being adopted into our own
+		// slot via gossip impersonation. The relay model still applies
+		// to other peers' slots; here we enforce that our slot stays
+		// authoritatively ours.
+		if !specAuthMatchesPeer(s.localID, ev.GetSpecChange()) {
+			return false
+		}
+		return s.acceptableSpecEventLocked(ev)
 	case attrBlobWrapping:
 		return s.isAcceptableWrappingEvent(s.localID, ev)
 	case attrNetwork, attrNodeName,
@@ -499,12 +507,35 @@ func (s *store) encodeDelta(since Digest) []byte {
 	return data
 }
 
-func (s *store) isValidOwnerLocked(peerID types.PeerKey) bool {
-	if _, denied := s.denied[peerID]; denied {
-		return false
+// specOwnerConflictLocked returns the Publisher of an existing
+// non-deleted spec event matching key, when that Publisher is a
+// different identity from claimingPublisher and is not denied. The
+// gossip-source peer is irrelevant: relayed specs land in another
+// peer's slot, but the SpecAuth signer is the authority.
+func (s *store) specOwnerConflictLocked(key attrKey, claimingPublisher types.PeerKey) (types.PeerKey, bool) {
+	for _, r := range s.nodes {
+		ev, ok := r.log[key]
+		if !ok || ev.Deleted {
+			continue
+		}
+		publisher := types.PeerKeyFromBytes(ev.GetSpecChange().GetAuth().GetPublisher().GetClaims().GetSubjectPub())
+		if publisher == claimingPublisher {
+			continue
+		}
+		if _, denied := s.denied[publisher]; denied {
+			continue
+		}
+		return publisher, true
 	}
-	_, ok := s.nodes[peerID]
-	return ok
+	return types.PeerKey{}, false
+}
+
+func (s *store) workloadOwnerConflictLocked(hash string, claimingPublisher types.PeerKey) (types.PeerKey, bool) {
+	return s.specOwnerConflictLocked(attrKey{kind: attrWorkloadSpec, name: hash}, claimingPublisher)
+}
+
+func (s *store) staticOwnerConflictLocked(name string, claimingPublisher types.PeerKey) (types.PeerKey, bool) {
+	return s.specOwnerConflictLocked(attrKey{kind: attrStaticSpec, name: name}, claimingPublisher)
 }
 
 func (s *store) tombstoneStaleAttrsLocked(rec *nodeRecord) {

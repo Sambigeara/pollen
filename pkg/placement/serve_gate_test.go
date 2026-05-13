@@ -4,7 +4,10 @@
 package placement
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/binary"
 	"io"
 	"net"
@@ -13,6 +16,8 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/gate"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
@@ -25,8 +30,9 @@ type gateCall struct {
 }
 
 type recordingGate struct {
-	mu    sync.Mutex
-	calls []gateCall
+	mu         sync.Mutex
+	calls      []gateCall
+	tokenCalls []string
 
 	returnInfo wasm.CallerInfo
 	returnErr  error
@@ -36,6 +42,13 @@ func (g *recordingGate) Invoke(peer types.PeerKey, hash string) (wasm.CallerInfo
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls = append(g.calls, gateCall{peer: peer, hash: hash})
+	return g.returnInfo, g.returnErr
+}
+
+func (g *recordingGate) InvokeByToken(_ *admissionv1.AccessToken, hash string) (wasm.CallerInfo, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.tokenCalls = append(g.tokenCalls, hash)
 	return g.returnInfo, g.returnErr
 }
 
@@ -51,6 +64,12 @@ func (g *recordingGate) callCount() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return len(g.calls)
+}
+
+func (g *recordingGate) tokenCallCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.tokenCalls)
 }
 
 func (g *recordingGate) lastCall() gateCall {
@@ -201,4 +220,90 @@ func TestCallDeniesAtGate(t *testing.T) {
 
 	_, err := s.Call(context.Background(), seedHash, "run", nil)
 	require.ErrorIs(t, err, wasm.ErrTargetNotFound)
+}
+
+func TestCallPrefersTokenGateWhenSet(t *testing.T) {
+	const seedHash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	g := &recordingGate{returnInfo: wasm.CallerInfo{}}
+
+	store := &mockStore{
+		specs: map[string]state.WorkloadSpecView{
+			seedHash: {Spec: state.WorkloadSpec{Hash: seedHash, Name: "myseed", MinReplicas: 1}},
+		},
+	}
+	s := New(peerKey(1), store, &mockBlobs{}, nil, WithGate(g))
+	defer func() { _ = s.Stop() }()
+
+	tok := &admissionv1.AccessToken{Claims: &admissionv1.AccessTokenClaims{}}
+	ctx := gate.WithAccessToken(context.Background(), tok)
+	_, _ = s.Call(ctx, seedHash, "run", nil)
+
+	require.Equal(t, 0, g.callCount(), "Call must skip cert-based Invoke when ctx carries a token")
+	require.Equal(t, 1, g.tokenCallCount(), "Call must route through InvokeByToken when ctx carries a token")
+}
+
+func TestServeRoutesTokenInEnvelopeToInvokeByToken(t *testing.T) {
+	hash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	g := &recordingGate{returnInfo: wasm.CallerInfo{}}
+
+	store := &mockStore{}
+	blobs := &mockBlobs{}
+	svc := New(types.PeerKey{}, store, blobs, nil, WithGate(g))
+	defer func() { _ = svc.Stop() }()
+
+	// Build a real wire envelope so accessTokenFromJSON exercises the
+	// same path the receiver uses in production.
+	_, issuerPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: "n", Hash: bytes.Repeat([]byte{0xab}, 32)}}}
+	token, err := auth.SignAccessToken(issuerPriv, resource, time.Now(), time.Hour)
+	require.NoError(t, err)
+
+	envelope := marshalWorkloadCallerInfo(wasm.CallerInfo{}, nil, token)
+	header := buildHeaderWithEnvelope(t, envelope, hash, "run")
+
+	server, client := net.Pipe()
+	t.Cleanup(func() {
+		server.Close()
+		client.Close()
+	})
+
+	go func() {
+		_, _ = client.Write(header)
+		_, _ = io.Copy(io.Discard, client)
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.Serve(server, types.PeerKey{})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return")
+	}
+
+	require.Equal(t, 1, g.tokenCallCount(), "Serve must call InvokeByToken when envelope carries a token")
+	require.Equal(t, 0, g.callCount(), "Serve must skip cert-based Invoke when envelope carries a token")
+}
+
+func buildHeaderWithEnvelope(t *testing.T, envelope []byte, hash, function string) []byte {
+	t.Helper()
+	require.Len(t, hash, hashLen)
+	require.LessOrEqual(t, len(function), maxFuncLen)
+	require.LessOrEqual(t, len(envelope), 0xFFFF)
+
+	buf := make([]byte, 0, callerInfoLenSize+len(envelope)+hashLen+1+len(function)+4)
+	var lenBuf [callerInfoLenSize]byte
+	binary.BigEndian.PutUint16(lenBuf[:], uint16(len(envelope)))
+	buf = append(buf, lenBuf[:]...)
+	buf = append(buf, envelope...)
+	buf = append(buf, []byte(hash)...)
+	buf = append(buf, byte(len(function)))
+	buf = append(buf, []byte(function)...)
+	var inputLen [4]byte
+	binary.BigEndian.PutUint32(inputLen[:], 0)
+	return append(buf, inputLen[:]...)
 }

@@ -131,6 +131,9 @@ func resolveContextBindings(name, defaultDir string) (dir, host string, err erro
 }
 
 func inferTarget(arg string) (dir, host string, err error) {
+	if strings.HasPrefix(arg, plnTargetScheme) {
+		return "", arg, nil
+	}
 	if strings.Contains(arg, "@") {
 		return "", arg, nil
 	}
@@ -138,7 +141,7 @@ func inferTarget(arg string) (dir, host string, err error) {
 		strings.HasPrefix(arg, "./") || strings.HasPrefix(arg, "../")
 	if !pathLike {
 		if info, statErr := os.Stat(arg); statErr != nil || !info.IsDir() {
-			return "", "", fmt.Errorf("ambiguous target %q: prefix with ./ for a directory or user@ for an SSH host", arg)
+			return "", "", fmt.Errorf("ambiguous target %q: prefix with ./ for a directory, user@ for an SSH host, or pln:// for a wire-mode endpoint", arg)
 		}
 	}
 	abs, err := filepath.Abs(expandHome(arg))
@@ -242,7 +245,7 @@ func runContextAdd(cmd *cobra.Command, args []string) error {
 
 	entry := contextEntry{Dir: dir, Host: host}
 	if host != "" {
-		ctxDir, err := provisionRemoteIdentity(cmd, name)
+		ctxDir, err := provisionRemoteIdentity(cmd, name, host)
 		if err != nil {
 			return err
 		}
@@ -284,7 +287,7 @@ func pickFreeUDPPort() (int, error) {
 	return addr.Port, nil
 }
 
-func provisionRemoteIdentity(cmd *cobra.Command, name string) (string, error) {
+func provisionRemoteIdentity(cmd *cobra.Command, name, host string) (string, error) {
 	ctxDir, err := contextDir(name)
 	if err != nil {
 		return "", err
@@ -294,6 +297,15 @@ func provisionRemoteIdentity(cmd *cobra.Command, name string) (string, error) {
 		return "", fmt.Errorf("create identity dir: %w", err)
 	}
 	from, _ := cmd.Flags().GetString("from")
+	if strings.HasPrefix(host, plnTargetScheme) {
+		// Wire-mode contexts get their identity from `pln join`; an
+		// admin key would be dead weight (and would mislead the user
+		// into thinking the context has signing authority).
+		if from != "" {
+			return "", errors.New("--from is only supported for SSH-bridge contexts; wire-mode identities come from `pln join`")
+		}
+		return ctxDir, nil
+	}
 	switch from {
 	case "":
 		if _, _, err := auth.EnsureAdminKey(identityDir); err != nil {

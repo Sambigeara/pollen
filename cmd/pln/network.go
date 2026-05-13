@@ -222,6 +222,9 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 }
 
 func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
+	if env.wireMode {
+		return errors.New("pln serve is not supported against a remote target; run on a local daemon")
+	}
 	portStr := args[0]
 	name := ""
 	if len(args) > 1 {
@@ -252,11 +255,11 @@ func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 	sockPath := filepath.Join(env.dir, socketName)
 	if nodeSocketActive(sockPath) {
-		req := &controlv1.RegisterServiceRequest{Port: uint32(port), Protocol: proto, Policy: policy}
+		req := &controlv1.RegisterServiceRequest{Port: uint32(port), Protocol: proto, Policy: policy} //nolint:gosec
 		if name != "" {
 			req.Name = &name
 		}
-		if _, err = env.client.RegisterService(cmd.Context(), connect.NewRequest(req)); err != nil {
+		if _, err := env.client.RegisterService(cmd.Context(), connect.NewRequest(req)); err != nil {
 			return err
 		}
 	}
@@ -274,6 +277,9 @@ func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
 }
 
 func runUnserve(cmd *cobra.Command, args []string, env *cliEnv) error {
+	if env.wireMode {
+		return errors.New("pln unserve is not supported against a remote target; run on a local daemon")
+	}
 	arg := args[0]
 	var port uint32
 	var name string
@@ -581,10 +587,18 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 }
 
 func collectStaticSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
-	sec := statusSection{
-		title:   "STATIC",
-		headers: []string{"NAME", "MANIFEST", "REPLICAS", "LOCAL", "PUBLISHER"},
+	hasURL := false
+	for _, site := range st.GetSites() {
+		if site.GetPublicUrl() != "" {
+			hasURL = true
+			break
+		}
 	}
+	headers := []string{"NAME", "MANIFEST", "REPLICAS", "LOCAL", "PUBLISHER"}
+	if hasURL {
+		headers = append(headers, "URL")
+	}
+	sec := statusSection{title: "STATIC", headers: headers}
 	nameLabels := nodeNameLabels(st.GetSelf(), st.GetNodes(), opts.wide)
 	for _, site := range st.GetSites() {
 		digest := hex.EncodeToString(site.GetManifestDigest())
@@ -601,7 +615,11 @@ func collectStaticSection(st *controlv1.GetStatusResponse, opts statusViewOpts) 
 		if publisher == "" {
 			publisher = formatPeerID(site.GetPublisher().GetPeerPub(), opts.wide)
 		}
-		sec.rows = append(sec.rows, []string{site.GetName(), digest, replicas, local, publisher})
+		row := []string{site.GetName(), digest, replicas, local, publisher}
+		if hasURL {
+			row = append(row, site.GetPublicUrl())
+		}
+		sec.rows = append(sec.rows, row)
 	}
 	return sec
 }

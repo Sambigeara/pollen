@@ -70,7 +70,9 @@ PLN_CONTEXT=prod pln status             <span class="c"># one-off</span></code><
 
     <h2 id="lifecycle">Lifecycle</h2>
 
-    <h3 id="up"><code>pln up</code></h3>
+    <p>Daemon lifecycle verbs live under <code>pln daemon</code>; <code>pln up</code>, <code>pln logs</code>, and <code>pln upgrade</code> are top-level aliases for the same handlers.</p>
+
+    <h3 id="up"><code>pln up</code> (alias <code>pln daemon up</code>)</h3>
     <p>Start the local node. Foreground by default; <code>-d</code> hands off to launchd (macOS) or systemd (Linux). If no credentials exist, auto-initialises a single-node root cluster.</p>
     <dl class="flags">
       <dt>-d, --detach</dt><dd>Run as background service.</dd>
@@ -83,13 +85,13 @@ PLN_CONTEXT=prod pln status             <span class="c"># one-off</span></code><
     <pre><code>pln up
 pln up -d --name relay --public</code></pre>
 
-    <h3 id="down"><code>pln down</code></h3>
+    <h3 id="down"><code>pln down</code> (alias <code>pln daemon down</code>)</h3>
     <p>Stop the background service. State and credentials are preserved.</p>
 
-    <h3 id="restart"><code>pln restart</code></h3>
+    <h3 id="restart"><code>pln restart</code> (alias <code>pln daemon restart</code>)</h3>
     <p>Restart the background service. Use after <code>pln set</code> or <code>pln serve</code> to rebind listeners, or after <code>pln props</code> on root to re-issue the self-signed cert.</p>
 
-    <h3 id="logs"><code>pln logs</code></h3>
+    <h3 id="logs"><code>pln logs</code> (alias <code>pln daemon logs</code>)</h3>
     <p>Tail the background daemon's log (Homebrew log on macOS, journalctl on Linux).</p>
     <dl class="flags">
       <dt>-f, --follow</dt><dd>Stream in real time.</dd>
@@ -140,6 +142,19 @@ pln fetch ab12cd34 -</code></pre>
       <span class="cmd">cat payload.json | pln call hello greet</span>
     </div>
 
+    <h3 id="share"><code>pln share &lt;name-or-hash&gt;</code></h3>
+    <p>Mint a signed, time-limited URL authorising anonymous access to a blob (fetch) or workload (invoke). The token carries the resource identity and the publisher's signature; the share-URL gateway verifies both before passing the request through. Publish-tier capability or above; the daemon refuses to sign for resources the caller didn't publish.</p>
+    <dl class="flags">
+      <dt>--ttl &lt;dur&gt;</dt><dd>Validity window (default <code>1h</code>).</dd>
+      <dt>--gateway &lt;host&gt;</dt><dd>Gateway base DNS (default <code>pln.sh</code>). The URL becomes <code>https://blob.&lt;host&gt;/&lt;token&gt;</code> or <code>https://fn.&lt;host&gt;/&lt;token&gt;</code>.</dd>
+    </dl>
+    <div class="terminal">
+      <span class="cmd">pln share payload</span>
+      <span class="out">https://blob.pln.sh/RrkFG...AAAA</span>
+      <span class="cmd">pln share echo --ttl 24h</span>
+      <span class="out">https://fn.pln.sh/RrkFG...AAAA</span>
+    </div>
+
     <h2 id="networking">Networking</h2>
 
     <h3 id="serve"><code>pln serve &lt;port&gt; [name]</code></h3>
@@ -179,9 +194,9 @@ cluster_id: a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2</sp
     </div>
 
     <h3 id="join"><code>pln join &lt;token&gt;</code></h3>
-    <p>Enrol this node into the cluster the token was minted for. Starts the daemon by default.</p>
+    <p>Enrol this node into the cluster the token was minted for. Writes credentials and exits; pass <code>--up</code> to also start the daemon.</p>
     <dl class="flags">
-      <dt>--no-up</dt><dd>Enrol credentials without starting.</dd>
+      <dt>-u, --up</dt><dd>Start the daemon after enrolment.</dd>
       <dt>--public</dt><dd>Hint that this node is publicly reachable, making it a relay candidate. Actual reachability is verified by the mesh via NAT probing.</dd>
     </dl>
 
@@ -333,6 +348,8 @@ pln upgrade --method tarball</code></pre>
     <dl class="flags">
       <dt>http</dt><dd>Prometheus metrics listener (default <code>:9090</code>).</dd>
       <dt>static-http</dt><dd>HTTP listener for static sites (default <code>:8080</code>).</dd>
+      <dt>control-tls</dt><dd>TLS+mTLS listener for the public control RPC (e.g. <code>:7443</code>).</dd>
+      <dt>gateway</dt><dd>HTTP listener for the anonymous share-URL gateway (e.g. <code>:8088</code>). Route <code>blob.&lt;domain&gt;</code> and <code>fn.&lt;domain&gt;</code> at this listener.</dd>
       <dt>log-level</dt><dd>Verbosity: <code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code>.</dd>
     </dl>
     <div class="terminal">

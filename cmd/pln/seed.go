@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 )
 
 var hashPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
@@ -206,38 +208,49 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string, policy *
 		spread = 1.0
 	}
 
+	header := &controlv1.SeedWorkloadHeader{
+		Name:        name,
+		MinReplicas: minReplicas,
+		Spread:      spread,
+		MemoryBytes: memoryBytes,
+		TimeoutMs:   uint32(timeout.Milliseconds()),
+		Policy:      policy,
+	}
+
+	if env.wireMode {
+		hashBytes, err := hashReader(f)
+		if err != nil {
+			return fmt.Errorf("hash %s: %w", source, err)
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("rewind %s: %w", source, err)
+		}
+		body := &statev1.WorkloadSpecChange{
+			Hash:        hex.EncodeToString(hashBytes),
+			Name:        name,
+			MinReplicas: minReplicas,
+			MemoryBytes: memoryBytes,
+			TimeoutMs:   uint32(timeout.Milliseconds()),
+			Spread:      spread,
+		}
+		specAuth, err := signWith(env.dir, func(priv ed25519.PrivateKey, cert *admissionv1.DelegationCert) (*admissionv1.SpecAuth, error) {
+			return auth.SignWorkloadSpec(priv, cert, hashBytes, body, policy)
+		})
+		if err != nil {
+			return fmt.Errorf("sign workload spec: %w", err)
+		}
+		header.PreSignedAuth = specAuth
+	}
+
 	stream := env.client.SeedWorkload(cmd.Context())
 	if err := stream.Send(&controlv1.SeedWorkloadRequest{
-		Payload: &controlv1.SeedWorkloadRequest_Header{
-			Header: &controlv1.SeedWorkloadHeader{
-				Name:        name,
-				MinReplicas: minReplicas,
-				Spread:      spread,
-				MemoryBytes: memoryBytes,
-				TimeoutMs:   uint32(timeout.Milliseconds()),
-				Policy:      policy,
-			},
-		},
+		Payload: &controlv1.SeedWorkloadRequest_Header{Header: header},
 	}); err != nil {
 		return err
 	}
 
-	buf := make([]byte, streamChunkBytes)
-	for {
-		n, readErr := f.Read(buf)
-		if n > 0 {
-			if err := stream.Send(&controlv1.SeedWorkloadRequest{
-				Payload: &controlv1.SeedWorkloadRequest_Chunk{Chunk: buf[:n]},
-			}); err != nil {
-				return err
-			}
-		}
-		if errors.Is(readErr, io.EOF) {
-			break
-		}
-		if readErr != nil {
-			return fmt.Errorf("failed to read %s: %w", source, readErr)
-		}
+	if err := streamWorkloadChunks(stream, f); err != nil {
+		return fmt.Errorf("send %s: %w", source, err)
 	}
 
 	resp, err := stream.CloseAndReceive()
@@ -251,6 +264,57 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string, policy *
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "seeded %s (%s)\n", resp.Msg.GetName(), hash)
 	return nil
+}
+
+func streamWorkloadChunks(stream *connect.ClientStreamForClient[controlv1.SeedWorkloadRequest, controlv1.SeedWorkloadResponse], r io.Reader) error {
+	buf := make([]byte, streamChunkBytes)
+	for {
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			if err := stream.Send(&controlv1.SeedWorkloadRequest{
+				Payload: &controlv1.SeedWorkloadRequest_Chunk{Chunk: buf[:n]},
+			}); err != nil {
+				return err
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+}
+
+func hashReader(r io.Reader) ([]byte, error) {
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		return nil, err
+	}
+	return h.Sum(nil), nil
+}
+
+// hashBlobSource returns the SHA-256 of the blob source and a reader
+// positioned at the start of the body for upload. When f is non-nil the
+// file is hashed once and rewound to avoid buffering large payloads;
+// stdin sources fall back to buffering since they are not seekable.
+func hashBlobSource(r io.Reader, f *os.File, source string) ([]byte, io.Reader, error) {
+	if f != nil {
+		digest, err := hashReader(f)
+		if err != nil {
+			return nil, nil, fmt.Errorf("hash %s: %w", source, err)
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return nil, nil, fmt.Errorf("rewind %s: %w", source, err)
+		}
+		return digest, f, nil
+	}
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read blob: %w", err)
+	}
+	sum := sha256.Sum256(buf)
+	return sum[:], bytes.NewReader(buf), nil
 }
 
 func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string, policy *admissionv1.Predicate) error {
@@ -299,11 +363,21 @@ func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string, policy *admis
 	}
 	manifestDigest, _ := hex.DecodeString(manifestHash)
 
-	if _, err := env.client.SeedStatic(cmd.Context(), connect.NewRequest(&controlv1.SeedStaticRequest{
+	req := &controlv1.SeedStaticRequest{
 		Name:           name,
 		ManifestDigest: manifestDigest,
 		Policy:         policy,
-	})); err != nil {
+	}
+	if env.wireMode {
+		specAuth, err := signWith(env.dir, func(priv ed25519.PrivateKey, cert *admissionv1.DelegationCert) (*admissionv1.SpecAuth, error) {
+			return auth.SignStaticSpec(priv, cert, name, manifestDigest)
+		})
+		if err != nil {
+			return fmt.Errorf("sign static spec: %w", err)
+		}
+		req.PreSignedAuth = specAuth
+	}
+	if _, err := env.client.SeedStatic(cmd.Context(), connect.NewRequest(req)); err != nil {
 		return err
 	}
 
@@ -313,10 +387,12 @@ func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string, policy *admis
 
 func seedBlob(cmd *cobra.Command, env *cliEnv, source, name string, policy *admissionv1.Predicate) error {
 	var r io.Reader
+	var f *os.File
 	if source == "-" {
 		r = cmd.InOrStdin()
 	} else {
-		f, err := os.Open(source)
+		var err error
+		f, err = os.Open(source)
 		if err != nil {
 			return fmt.Errorf("open %s: %w", source, err)
 		}
@@ -330,6 +406,21 @@ func seedBlob(cmd *cobra.Command, env *cliEnv, source, name string, policy *admi
 		header.Name = &name
 	} else {
 		header.Anchor = true
+	}
+
+	if env.wireMode && name != "" {
+		digest, body, err := hashBlobSource(r, f, source)
+		if err != nil {
+			return err
+		}
+		r = body
+		specAuth, err := signWith(env.dir, func(priv ed25519.PrivateKey, cert *admissionv1.DelegationCert) (*admissionv1.SpecAuth, error) {
+			return auth.SignBlobSpec(priv, cert, name, digest, policy)
+		})
+		if err != nil {
+			return fmt.Errorf("sign blob spec: %w", err)
+		}
+		header.PreSignedAuth = specAuth
 	}
 
 	hash, err := uploadBlob(cmd, env, header, r)
@@ -423,21 +514,92 @@ func runUnseed(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 	switch {
 	case wl != nil:
-		if _, err := env.client.UnseedWorkload(cmd.Context(), connect.NewRequest(&controlv1.UnseedWorkloadRequest{Hash: arg})); err != nil {
+		if err := unseedWorkload(cmd, env, wl, arg); err != nil {
 			return err
 		}
 	case site != nil:
-		if _, err := env.client.UnseedStatic(cmd.Context(), connect.NewRequest(&controlv1.UnseedStaticRequest{Name: site.GetName()})); err != nil {
+		if err := unseedStatic(cmd, env, site); err != nil {
 			return err
 		}
 	case hasBlob:
-		if _, err := env.client.RemoveBlob(cmd.Context(), connect.NewRequest(&controlv1.RemoveBlobRequest{Hash: blobHash})); err != nil {
+		if err := removeBlob(cmd, env, blobHash, st.GetBlobs()); err != nil {
 			return err
 		}
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "unseeded %s\n", arg)
 	return nil
+}
+
+func unseedWorkload(cmd *cobra.Command, env *cliEnv, wl *controlv1.WorkloadSummary, arg string) error {
+	req := &controlv1.UnseedWorkloadRequest{Hash: arg}
+	if env.wireMode {
+		hashBytes, err := hex.DecodeString(wl.GetHash())
+		if err != nil {
+			return fmt.Errorf("decode hash: %w", err)
+		}
+		body := &statev1.WorkloadSpecChange{
+			Hash:        wl.GetHash(),
+			Name:        wl.GetName(),
+			MinReplicas: wl.GetMinReplicas(),
+			MemoryBytes: wl.GetMemoryBytes(),
+			TimeoutMs:   wl.GetTimeoutMs(),
+			Spread:      wl.GetSpread(),
+		}
+		specAuth, err := signWith(env.dir, func(priv ed25519.PrivateKey, cert *admissionv1.DelegationCert) (*admissionv1.SpecAuth, error) {
+			return auth.SignWorkloadTombstone(priv, cert, hashBytes, body, nil)
+		})
+		if err != nil {
+			return fmt.Errorf("sign workload tombstone: %w", err)
+		}
+		req.PreSignedAuth = specAuth
+	}
+	_, err := env.client.UnseedWorkload(cmd.Context(), connect.NewRequest(req))
+	return err
+}
+
+func unseedStatic(cmd *cobra.Command, env *cliEnv, site *controlv1.StaticSummary) error {
+	req := &controlv1.UnseedStaticRequest{Name: site.GetName()}
+	if env.wireMode {
+		specAuth, err := signWith(env.dir, func(priv ed25519.PrivateKey, cert *admissionv1.DelegationCert) (*admissionv1.SpecAuth, error) {
+			return auth.SignStaticTombstone(priv, cert, site.GetName(), site.GetManifestDigest())
+		})
+		if err != nil {
+			return fmt.Errorf("sign static tombstone: %w", err)
+		}
+		req.PreSignedAuth = specAuth
+	}
+	_, err := env.client.UnseedStatic(cmd.Context(), connect.NewRequest(req))
+	return err
+}
+
+func removeBlob(cmd *cobra.Command, env *cliEnv, hash string, blobs []*controlv1.BlobSummary) error {
+	req := &controlv1.RemoveBlobRequest{Hash: hash}
+	if env.wireMode {
+		name := ""
+		for _, b := range blobs {
+			if b.GetHash() == hash {
+				name = b.GetName()
+				break
+			}
+		}
+		if name == "" {
+			return fmt.Errorf("wire-mode blob remove requires a named blob; %s is anonymous", hash[:shortHexLen])
+		}
+		digestBytes, err := hex.DecodeString(hash)
+		if err != nil {
+			return fmt.Errorf("decode hash: %w", err)
+		}
+		specAuth, err := signWith(env.dir, func(priv ed25519.PrivateKey, cert *admissionv1.DelegationCert) (*admissionv1.SpecAuth, error) {
+			return auth.SignBlobTombstone(priv, cert, name, digestBytes, nil)
+		})
+		if err != nil {
+			return fmt.Errorf("sign blob tombstone: %w", err)
+		}
+		req.PreSignedAuth = specAuth
+	}
+	_, err := env.client.RemoveBlob(cmd.Context(), connect.NewRequest(req))
+	return err
 }
 
 func runFetch(cmd *cobra.Command, args []string, env *cliEnv) error {

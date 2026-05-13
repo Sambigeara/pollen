@@ -158,6 +158,11 @@ message WorkloadSummary {
   float spread = 8;
   reserved 9, 10;
   reserved "effective_target", "pressure";
+  // Body fields below mirror WorkloadSpec so wire-mode callers can
+  // reconstruct the body byte-for-byte and sign matching tombstones.
+  uint64 memory_bytes = 11;
+  uint32 timeout_ms = 12;
+  NodeRef publisher = 13;
 }
 
 message ConnectionSummary {
@@ -258,6 +263,11 @@ message SeedWorkloadHeader {
   reserved 6, 7;
   reserved "latency_slo_ms", "properties";
   pollen.admission.v1.Predicate policy = 8;
+  // pre_signed_auth lets a wire-mode caller publish under their own
+  // publisher key without delegating signing to the daemon. The daemon
+  // validates the auth against the cluster root, ensures publisher
+  // matches the caller's cert subject, and gossips the spec as-is.
+  optional pollen.admission.v1.SpecAuth pre_signed_auth = 9;
 }
 
 message SeedWorkloadResponse {
@@ -267,6 +277,9 @@ message SeedWorkloadResponse {
 
 message UnseedWorkloadRequest {
   string hash = 1 [(buf.validate.field).string = {min_len: 1}];
+  // pre_signed_auth carries a tenant-signed tombstone for wire-mode
+  // unseeds; the daemon re-wraps against the live spec body.
+  optional pollen.admission.v1.SpecAuth pre_signed_auth = 2;
 }
 
 message UnseedWorkloadResponse {}
@@ -359,6 +372,10 @@ message UploadBlobHeader {
   reserved "properties";
   bool anchor = 3;
   pollen.admission.v1.Predicate policy = 4;
+  // pre_signed_auth lets a wire-mode caller publish the named blob
+  // spec under their own publisher key. Only meaningful when name is
+  // set; anchor-only uploads carry no spec.
+  optional pollen.admission.v1.SpecAuth pre_signed_auth = 5;
 }
 
 message UploadBlobResponse {
@@ -370,6 +387,9 @@ message RemoveBlobRequest {
     pattern: "^[a-fA-F0-9]{64}$"
     len: 64
   }];
+  // pre_signed_auth carries a tenant-signed tombstone for wire-mode
+  // removals; the daemon re-wraps against the live spec body.
+  optional pollen.admission.v1.SpecAuth pre_signed_auth = 2;
 }
 
 message RemoveBlobResponse {}
@@ -383,6 +403,11 @@ message SeedStaticRequest {
   reserved 3, 4;
   reserved "min_replicas", "properties";
   pollen.admission.v1.Predicate policy = 5;
+  // pre_signed_auth lets a wire-mode caller publish under their own
+  // publisher key without delegating signing to the daemon. The daemon
+  // validates the auth against the cluster root, ensures publisher
+  // matches the caller's cert subject, and gossips the spec as-is.
+  optional pollen.admission.v1.SpecAuth pre_signed_auth = 6;
 }
 
 message SeedStaticResponse {}
@@ -392,6 +417,9 @@ message UnseedStaticRequest {
     min_len: 1
     max_len: 255
   }];
+  // pre_signed_auth carries a tenant-signed tombstone for wire-mode
+  // unseeds; the daemon re-wraps against the live spec body.
+  optional pollen.admission.v1.SpecAuth pre_signed_auth = 2;
 }
 
 message UnseedStaticResponse {}
@@ -407,6 +435,10 @@ message StaticSummary {
   NodeRef publisher = 5;
   bool local = 6;
   uint32 serving_capacity = 7;
+  // public_url is set when the responding node has a configured
+  // static_http_domain; the URL is rendered server-side as
+  // `<name>-<short-pub>.<domain>` so the CLI can show it verbatim.
+  string public_url = 8;
 }
 
 message ListStaticResponse {

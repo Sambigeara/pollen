@@ -486,3 +486,106 @@ func newWorkloadFixture(t *testing.T, now time.Time, callerAttrs map[string]any,
 	g := New(rootPub, fakeStore{snap: snap})
 	return g, callerKey, body.GetHash()
 }
+
+func TestFetchByTokenAllowsBlob(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	body := &statev1.BlobSpecChange{Name: "payload", Digest: bytesOf(0xa1)}
+	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{Name: body.GetName(), Digest: body.GetDigest()}}}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
+	require.NoError(t, err)
+
+	digest := bytesAsHex(body.GetDigest())
+	snap := state.Snapshot{
+		BlobSpecs: map[string]state.BlobSpecView{digest: {Spec: state.BlobSpec{Name: body.GetName(), Digest: digest}, Auth: specAuth}},
+	}
+	g := New(rootPub, fakeStore{snap: snap})
+
+	token, err := auth.SignAccessToken(rootPriv, resource, now, time.Hour)
+	require.NoError(t, err)
+	require.NoError(t, g.FetchByToken(token, digest))
+}
+
+func TestFetchByTokenRejectsWrongIssuer(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	body := &statev1.BlobSpecChange{Name: "payload", Digest: bytesOf(0xa2)}
+	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{Name: body.GetName(), Digest: body.GetDigest()}}}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
+	require.NoError(t, err)
+
+	digest := bytesAsHex(body.GetDigest())
+	snap := state.Snapshot{
+		BlobSpecs: map[string]state.BlobSpecView{digest: {Spec: state.BlobSpec{Name: body.GetName(), Digest: digest}, Auth: specAuth}},
+	}
+	g := New(rootPub, fakeStore{snap: snap})
+
+	_, attackerPriv := newKeyPair(t)
+	token, err := auth.SignAccessToken(attackerPriv, resource, now, time.Hour)
+	require.NoError(t, err)
+	require.ErrorIs(t, g.FetchByToken(token, digest), wasm.ErrTargetNotFound)
+}
+
+func TestFetchByTokenRejectsHashMismatch(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	body := &statev1.BlobSpecChange{Name: "payload", Digest: bytesOf(0xa3)}
+	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{Name: body.GetName(), Digest: body.GetDigest()}}}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
+	require.NoError(t, err)
+
+	digest := bytesAsHex(body.GetDigest())
+	otherDigest := bytesAsHex(bytesOf(0xa4))
+	snap := state.Snapshot{
+		BlobSpecs: map[string]state.BlobSpecView{digest: {Spec: state.BlobSpec{Name: body.GetName(), Digest: digest}, Auth: specAuth}},
+	}
+	g := New(rootPub, fakeStore{snap: snap})
+
+	token, err := auth.SignAccessToken(rootPriv, resource, now, time.Hour)
+	require.NoError(t, err)
+	require.ErrorIs(t, g.FetchByToken(token, otherDigest), wasm.ErrTargetNotFound)
+}
+
+func TestInvokeByTokenAllowsWorkload(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("c", 64), Name: "echo", MinReplicas: 1}
+	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xcc)}}}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
+	require.NoError(t, err)
+
+	snap := state.Snapshot{
+		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
+	}
+	g := New(rootPub, fakeStore{snap: snap})
+
+	token, err := auth.SignAccessToken(rootPriv, resource, now, time.Hour)
+	require.NoError(t, err)
+	info, err := g.InvokeByToken(token, body.GetHash())
+	require.NoError(t, err)
+	require.Empty(t, info.Attributes, "anonymous caller carries no attributes")
+}
+
+func TestInvokeByTokenRejectsExpired(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("e", 64), Name: "echo", MinReplicas: 1}
+	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xee)}}}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
+	require.NoError(t, err)
+
+	snap := state.Snapshot{
+		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
+	}
+	g := New(rootPub, fakeStore{snap: snap})
+
+	token, err := auth.SignAccessToken(rootPriv, resource, now.Add(-2*time.Hour), time.Hour)
+	require.NoError(t, err)
+	_, err = g.InvokeByToken(token, body.GetHash())
+	require.ErrorIs(t, err, wasm.ErrTargetNotFound)
+}

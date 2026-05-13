@@ -15,6 +15,7 @@ import (
 	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -49,9 +50,9 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host := hostOnly(r.Host)
+	host := strings.ToLower(hostOnly(r.Host))
 	snap := s.store.Snapshot()
-	spec, ok := snap.StaticSpecs[host]
+	spec, ok := s.lookupSpec(snap, host)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -123,6 +124,58 @@ func (s *Service) loadManifest(digest string) (*parsedManifest, error) {
 	}
 	s.manifestCache.store(digest, pm)
 	return pm, nil
+}
+
+// lookupSpec resolves a Host header to a StaticSpec. When the service
+// has a configured domain (Pollen-Cloud-style deployment), the Host is
+// parsed as `<name>-<8hex-of-publisher>.<domain>` and matched against
+// the per-publisher snapshot view so two tenants can publish sites with
+// the same name without colliding. Without a configured domain (the
+// default operator-side deployment), the Host is the spec name and the
+// deduped view's publisher tie-break wins.
+func (s *Service) lookupSpec(snap state.Snapshot, host string) (state.StaticSpecView, bool) {
+	if s.domain == "" {
+		spec, ok := snap.StaticSpecs[host]
+		return spec, ok
+	}
+	if !strings.HasSuffix(host, s.domain) {
+		return state.StaticSpecView{}, false
+	}
+	prefix := strings.TrimSuffix(host, s.domain)
+	dash := strings.LastIndexByte(prefix, '-')
+	if dash <= 0 {
+		return state.StaticSpecView{}, false
+	}
+	name := prefix[:dash]
+	pubShort := prefix[dash+1:]
+	if !isShortPub(pubShort) {
+		return state.StaticSpecView{}, false
+	}
+	for _, sv := range snap.StaticSpecsAll {
+		if sv.Spec.Name != name {
+			continue
+		}
+		if !strings.HasPrefix(sv.Publisher.String(), pubShort) {
+			continue
+		}
+		return sv, true
+	}
+	return state.StaticSpecView{}, false
+}
+
+const shortPubLen = 8
+
+func isShortPub(s string) bool {
+	if len(s) != shortPubLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // hostOnly strips :port, handling IPv6 bracketed literals.

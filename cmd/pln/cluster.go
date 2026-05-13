@@ -62,7 +62,7 @@ func newIDCmd() *cobra.Command {
 on first call. Pipe-friendly (no trailing newline). Other admins use
 this value as the --subject of an invite token.`,
 		Example: "  pln id\n  pln invite --subject \"$(ssh user@host pln id)\"",
-		RunE:    withEnv(runID, localOnly()),
+		RunE:    withEnv(runID),
 	}
 }
 
@@ -124,13 +124,14 @@ Errors if the daemon is running. Prompts unless --yes is given.`,
 		Use:   "join <token>",
 		Short: "Join a cluster using a token",
 		Long: `Enrols this node into the cluster the token was minted for. Tokens
-come from ` + "`pln invite`" + ` on an admin node. By default, starts the daemon
-once enrolment succeeds; use --no-up to defer.`,
-		Example: "  pln join \"$(ssh admin pln invite --subject $(pln id))\"",
+come from ` + "`pln invite`" + ` on an admin node. Credentials are written and
+the command exits; pass --up to also start the daemon once enrolment
+succeeds.`,
+		Example: "  pln join \"$(ssh admin pln invite --subject $(pln id))\"\n  pln join --up \"$TOKEN\"",
 		Args:    cobra.ExactArgs(1),
 		RunE:    withEnv(runJoin, wantsRoot(), localOnly()),
 	}
-	joinCmd.Flags().Bool("no-up", false, "Enroll credentials without starting the daemon")
+	joinCmd.Flags().BoolP("up", "u", false, "Start the daemon after enrolment")
 	joinCmd.Flags().Bool("public", false, "Hint that this node is publicly reachable; the mesh may use it as a relay (verified at runtime)")
 
 	inviteCmd := &cobra.Command{
@@ -383,13 +384,19 @@ func runPurge(cmd *cobra.Command, _ []string, env *cliEnv) error {
 }
 
 func runJoin(cmd *cobra.Command, args []string, env *cliEnv) error {
+	up, _ := cmd.Flags().GetBool("up")
+	public, _ := cmd.Flags().GetBool("public")
+	return joinCluster(cmd, env, args[0], up, public)
+}
+
+func joinCluster(cmd *cobra.Command, env *cliEnv, token string, startDaemon, public bool) error {
 	identityDir := auth.IdentityPath(env.dir)
 	privKey, pubKey, err := auth.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return err
 	}
 
-	tkn, err := resolveJoinToken(cmd.Context(), privKey, args[0])
+	tkn, err := resolveJoinToken(cmd.Context(), privKey, token)
 	if err != nil {
 		return fmt.Errorf("resolve token: %w", err)
 	}
@@ -408,14 +415,14 @@ func runJoin(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return fmt.Errorf("persist bootstrap peers: %w", err)
 	}
 
-	if public, _ := cmd.Flags().GetBool("public"); public {
+	if public {
 		env.cfg.Public = true
 		if err := config.Save(env.dir, env.cfg); err != nil {
 			return err
 		}
 	}
 
-	if noUp, _ := cmd.Flags().GetBool("no-up"); noUp {
+	if !startDaemon {
 		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pln up -d` to start the node")
 		return nil
 	}
@@ -686,7 +693,8 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 			return fmt.Errorf("create local join token: %w", err)
 		}
 
-		if err := runJoin(cmd, []string{joinToken}, env); err != nil {
+		noUp, _ := cmd.Flags().GetBool("no-up")
+		if err := joinCluster(cmd, env, joinToken, !noUp, false); err != nil {
 			return err
 		}
 	}
@@ -695,7 +703,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		fmt.Fprintf(out, "%d succeeded, %d failed\n", succeeded, failed)
 	}
 	if failed > 0 {
-		fmt.Fprintf(out, "hint: for failed hosts, use `pln invite` and run `pln join <token>` on the remote host\n")
+		fmt.Fprintf(out, "hint: for failed hosts, use `pln invite` and run `pln join --up <token>` on the remote host\n")
 		return errors.Join(failErrs...)
 	}
 	return nil
@@ -776,7 +784,7 @@ func seedPeersFor(pool map[string]*admissionv1.BootstrapPeer, self ed25519.Publi
 }
 
 func bootstrapRelayOverSSH(ctx context.Context, sshTarget, seedToken, nodeName string, public bool) error {
-	joinArgs := []string{"join", "--no-up"}
+	joinArgs := []string{"join"}
 	if public {
 		joinArgs = append(joinArgs, "--public")
 	}
@@ -790,18 +798,6 @@ func bootstrapRelayOverSSH(ctx context.Context, sshTarget, seedToken, nodeName s
 	}
 	if out, err := sshSudo(ctx, sshTarget, upArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
-	}
-	if err := waitForRelayReady(ctx, sshTarget); err != nil {
-		return err
-	}
-
-	// Applied post-start to survive the config round-trip that
-	// `pln join --public` and `pln up -d --name` perform.
-	if out, err := sshPln(ctx, sshTarget, "set", "control-addr", config.DefaultControlAddr).CombinedOutput(); err != nil {
-		return fmt.Errorf("set control-addr: %w\n%s", err, strings.TrimSpace(string(out)))
-	}
-	if out, err := sshSudo(ctx, sshTarget, "pln", "restart").CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	return waitForRelayReady(ctx, sshTarget)
 }

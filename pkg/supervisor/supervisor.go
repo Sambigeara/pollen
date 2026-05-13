@@ -94,7 +94,8 @@ type Supervisor struct {
 	staticAddr       string
 	httpAddr         string
 	socketPath       string
-	controlAddr      string
+	controlTLSAddr   string
+	gatewayAddr      string
 	pollenDir        string
 	signPriv         ed25519.PrivateKey
 	wg               sync.WaitGroup
@@ -242,7 +243,6 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		signPriv:         privKey,
 		pollenDir:        pollenDir,
 		socketPath:       opts.SocketPath,
-		controlAddr:      opts.ControlAddr,
 		peerTickInterval: opts.PeerTickInterval,
 		peerCache:        peerCache,
 		reconnectWindow:  config.DefaultReconnectWindow,
@@ -373,25 +373,27 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	n.gate = runtimeGate
 
 	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", log.Named("static"))
+	staticSvc.SetDomain(opts.StaticDomain)
 	n.static = staticSvc
 	n.staticSvc = staticSvc
 	n.staticAddr = opts.StaticAddr
 
 	controlOpts := []control.Option{
 		control.WithCredentials(creds),
+		control.WithSignPriv(privKey),
 		control.WithTransportInfo(n),
 		control.WithMetricsSource(n),
 		control.WithMeshConnector(n),
 		control.WithOperatorGate(runtimeGate),
+		control.WithStaticDomain(opts.StaticDomain),
 	}
 	if opts.ShutdownFunc != nil {
 		controlOpts = append(controlOpts, control.WithShutdown(opts.ShutdownFunc))
 	}
 
 	n.controlSrv = control.New(n.membership, n.placement, n.tunneling, n.blobs, n.static, stateStore, controlOpts...)
-	if opts.ControlToken != "" {
-		n.controlSrv.SetToken(opts.ControlToken)
-	}
+	n.controlTLSAddr = opts.ControlTLSAddr
+	n.gatewayAddr = opts.GatewayAddr
 
 	for _, conn := range opts.InitialConnections {
 		n.AddDesiredConnection(conn.PeerKey, conn.RemotePort, conn.LocalPort, conn.Protocol)
@@ -464,10 +466,10 @@ func (n *Supervisor) Run(ctx context.Context) error {
 		}
 	})
 
-	if n.controlAddr != "" {
+	if n.controlTLSAddr != "" {
 		n.spawn(func() {
-			if err := n.controlSrv.StartTCP(n.controlAddr); err != nil {
-				n.log.Warnw("control tcp server failed", zap.Error(err))
+			if err := n.controlSrv.StartTLS(n.controlTLSAddr); err != nil {
+				n.log.Warnw("control tls listener failed", zap.Error(err), "addr", n.controlTLSAddr)
 			}
 		})
 	}
@@ -484,6 +486,14 @@ func (n *Supervisor) Run(ctx context.Context) error {
 		n.spawn(func() {
 			if err := n.startStaticHTTP(ctx, n.staticAddr); err != nil {
 				n.log.Warnw("static http server failed", zap.Error(err))
+			}
+		})
+	}
+
+	if n.gatewayAddr != "" {
+		n.spawn(func() {
+			if err := n.startGatewayHTTP(ctx, n.gatewayAddr); err != nil {
+				n.log.Warnw("gateway http server failed", zap.Error(err))
 			}
 		})
 	}

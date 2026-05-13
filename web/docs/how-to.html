@@ -331,6 +331,63 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
 
     <p><strong>Related:</strong> <a href="cli.html#daemon-upgrade"><code>pln upgrade</code></a>.</p>
 
+    <h2 id="public-edge">Run a public edge for tenant share URLs</h2>
+    <p>Pollen Cloud-style deployments expose three operator-controlled listeners on each edge so anyone with a token, a tenant's pubkey, or a published site name can reach the cluster from the open internet.</p>
+
+    <ol class="steps">
+      <li>
+        <h3>Enable the three listeners</h3>
+        <div class="terminal">
+          <span class="cmd">pln set control-tls :7443       <span class="cmt"># tenant CLIs dial here over mTLS</span></span>
+          <span class="cmd">pln set static-http :8080       <span class="cmt"># static-site serving</span></span>
+          <span class="cmd">pln set static-http-domain pln.sh <span class="cmt"># enables &lt;name&gt;-&lt;short-pub&gt;.&lt;domain&gt; routing</span></span>
+          <span class="cmd">pln set gateway :8088           <span class="cmd"># anonymous blob/fn redemption</span></span>
+          <span class="cmd">pln restart</span>
+        </div>
+        <p>All three are plain HTTP (or TLS+mTLS in the case of <code>control-tls</code>); a TLS-terminating proxy in front handles public certs.</p>
+      </li>
+      <li>
+        <h3>Point DNS at the edge</h3>
+        <p>Three DNS records resolve to the edge node's public IP. Front them with Cloudflare orange-cloud (or any TLS terminator) so browsers see valid certs; the QUIC mesh on <code>:7443</code> goes through grey-cloud / direct A records — Cloudflare can't proxy custom QUIC.</p>
+        <ul>
+          <li><code>blob.pln.sh</code> &rarr; edge IP, proxied, origin <code>edge:8088</code></li>
+          <li><code>fn.pln.sh</code> &rarr; edge IP, proxied, origin <code>edge:8088</code></li>
+          <li><code>*.pln.sh</code> (wildcard) &rarr; edge IP, proxied, origin <code>edge:8080</code> — serves <code>pln seed</code>'d sites at <code>&lt;name&gt;-&lt;short-pub&gt;.pln.sh</code></li>
+          <li><code>edge.pln.sh:7443</code> &rarr; edge IP, <em>direct</em> (grey cloud / non-Cloudflare) — wire-mode CLI mTLS endpoint</li>
+        </ul>
+        <p>Top-level subdomains <code>blob</code>, <code>fn</code>, and any future system names are reserved — the static handler only matches Hosts that parse as <code>&lt;name&gt;-&lt;8hex&gt;.&lt;domain&gt;</code>, so a tenant who publishes a site called <code>blob</code> lands at <code>blob-ab12cd34.pln.sh</code> and can't shadow <code>blob.pln.sh</code>.</p>
+      </li>
+      <li>
+        <h3>Tenants join the cluster over the wire</h3>
+        <div class="terminal">
+          <span class="cmd">pln context add cloud pln://edge.pln.sh:7443</span>
+          <span class="cmd">pln context use cloud</span>
+          <span class="cmd">pln join &lt;token&gt;        <span class="cmt"># token from `pln invite` on an admin node</span></span>
+        </div>
+        <p>Wire-mode contexts skip admin-key generation; identity is minted at <code>pln join</code> time against the token's cluster claim. No local daemon required — every subsequent <code>pln</code> command dials the edge over mTLS-QUIC.</p>
+      </li>
+      <li>
+        <h3>Verify the loop end-to-end</h3>
+        <div class="terminal">
+          <span class="cmd">pln seed ./photo.png       <span class="cmt"># blob</span></span>
+          <span class="cmd">pln share photo.png</span>
+          <span class="out">https://blob.pln.sh/RrkFG...AAAA</span>
+          <span class="cmd">curl -sf https://blob.pln.sh/RrkFG...AAAA &gt; out.png</span>
+          <span class="cmd">pln seed ./dist mysite     <span class="cmt"># static site</span></span>
+          <span class="cmd">pln status sites</span>
+          <span class="out">NAME    MANIFEST  REPLICAS  LOCAL  PUBLISHER     URL
+mysite  3a8c7d2e  1/1              ab12cd34...   https://mysite-ab12cd34.pln.sh</span>
+          <span class="cmd">curl -sf https://mysite-ab12cd34.pln.sh/</span>
+        </div>
+      </li>
+    </ol>
+
+    <div class="callout">
+      <p><strong>Infra is out of scope.</strong> The Terraform that provisions the edge node, registers DNS, and configures Cloudflare lives outside this repo. Update it alongside any change to listener ports or DNS shape; the pln binary alone can't reconfigure your zone.</p>
+    </div>
+
+    <p><strong>Related:</strong> <a href="cli.html#set"><code>pln set</code></a>, <a href="cli.html#share"><code>pln share</code></a>, <a href="cli.html#context-add"><code>pln context add</code></a>, <a href="concepts.html#authorisation">Concepts &rarr; Authorisation</a>.</p>
+
     <h2 id="next">Where to go next</h2>
     <ul>
       <li><a href="concepts.html">Concepts</a> for the model behind these recipes.</li>
@@ -352,6 +409,7 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
       <a href="#rotate-properties">Rotate properties</a>
       <a href="#revoke-peer">Revoke a peer</a>
       <a href="#upgrade">Upgrade the cluster</a>
+      <a href="#public-edge">Run a public edge</a>
     </nav>
   </aside>
 </div>

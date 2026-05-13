@@ -23,7 +23,6 @@ const (
 
 	DefaultHTTPAddr       = ":9090"
 	DefaultStaticHTTPAddr = ":8080"
-	DefaultControlAddr    = ":50051"
 
 	DefaultLogLevel = "info"
 
@@ -55,17 +54,19 @@ type Placement struct {
 }
 
 type Config struct {
-	Name        string         `yaml:"name,omitempty"`
-	HTTP        string         `yaml:"http,omitempty"`
-	Properties  map[string]any `yaml:"properties,omitempty"`
-	StaticHTTP  string         `yaml:"staticHTTP,omitempty"`
-	ControlAddr string         `yaml:"controlAddr,omitempty"`
-	LogLevel    string         `yaml:"logLevel,omitempty"`
-	Connections []Connection   `yaml:"connections,omitempty"`
-	Services    []Service      `yaml:"services,omitempty"`
-	Placement   Placement      `yaml:"placement,omitempty"`
-	Public      bool           `yaml:"public,omitempty"`
-	RelayOnly   bool           `yaml:"relayOnly,omitempty"`
+	Name             string         `yaml:"name,omitempty"`
+	HTTP             string         `yaml:"http,omitempty"`
+	Properties       map[string]any `yaml:"properties,omitempty"`
+	StaticHTTP       string         `yaml:"staticHTTP,omitempty"`
+	StaticHTTPDomain string         `yaml:"staticHTTPDomain,omitempty"`
+	ControlTLS       string         `yaml:"controlTLS,omitempty"`
+	Gateway          string         `yaml:"gateway,omitempty"`
+	LogLevel         string         `yaml:"logLevel,omitempty"`
+	Connections      []Connection   `yaml:"connections,omitempty"`
+	Services         []Service      `yaml:"services,omitempty"`
+	Placement        Placement      `yaml:"placement,omitempty"`
+	Public           bool           `yaml:"public,omitempty"`
+	RelayOnly        bool           `yaml:"relayOnly,omitempty"`
 }
 
 func Load(pollenDir string) (*Config, error) {

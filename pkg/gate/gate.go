@@ -4,6 +4,8 @@
 package gate
 
 import (
+	"bytes"
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -19,6 +21,27 @@ import (
 )
 
 const CallerKey = "pln.caller"
+
+type accessTokenCtxKey struct{}
+
+// WithAccessToken attaches an AccessToken to ctx so downstream gate
+// decisions can substitute token-based authorisation for cert-based
+// authorisation. The anonymous HTTP gateway sets the token here; the
+// peer cert path leaves the ctx untouched and falls through to the
+// existing checks.
+func WithAccessToken(ctx context.Context, token *admissionv1.AccessToken) context.Context {
+	if token == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, accessTokenCtxKey{}, token)
+}
+
+// AccessTokenFromContext returns the AccessToken set by WithAccessToken,
+// if any.
+func AccessTokenFromContext(ctx context.Context) (*admissionv1.AccessToken, bool) {
+	t, ok := ctx.Value(accessTokenCtxKey{}).(*admissionv1.AccessToken)
+	return t, ok && t != nil
+}
 
 type StateReader interface {
 	Snapshot() state.Snapshot
@@ -81,7 +104,7 @@ func (g *Gate) Invoke(peerKey types.PeerKey, hash string) (wasm.CallerInfo, erro
 	if !ok || caller.Cert == nil {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
-	_, sv, ok := resolveSeedSpec(snap, hash)
+	sv, ok := resolveSeedSpec(snap, hash)
 	if !ok || sv.Auth == nil {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
@@ -138,6 +161,51 @@ func (g *Gate) Connect(callerKey, hostPeer types.PeerKey, port uint32) error {
 		return decide(caller.Cert, svc.Auth, time.Now())
 	}
 	return wasm.ErrTargetNotFound
+}
+
+// FetchByToken authorises an anonymous caller holding token to read the
+// CAS object at hash. The token must verify (signature, expiry) and the
+// token's resource must correspond to a spec whose publisher signed the
+// token and whose entitlements cover hash.
+func (g *Gate) FetchByToken(token *admissionv1.AccessToken, hash string) error {
+	if err := auth.VerifyAccessToken(token, time.Now()); err != nil {
+		return wasm.ErrTargetNotFound
+	}
+	resource := token.GetClaims().GetResource()
+	issuer := token.GetClaims().GetIssuerPub()
+	snap := g.store.Snapshot()
+	for _, sa := range snap.BlobEntitlements(hash, g.manifests) {
+		if !bytes.Equal(sa.GetPublisher().GetClaims().GetSubjectPub(), issuer) {
+			continue
+		}
+		if !proto.Equal(sa.GetResource(), resource) {
+			continue
+		}
+		return nil
+	}
+	return wasm.ErrTargetNotFound
+}
+
+// InvokeByToken authorises an anonymous caller holding token to invoke
+// the workload at hash. Same shape as Invoke but the identity comes
+// from the token rather than a peer cert; the returned CallerInfo has
+// no attributes since anonymous callers carry no cert.
+func (g *Gate) InvokeByToken(token *admissionv1.AccessToken, hash string) (wasm.CallerInfo, error) {
+	if err := auth.VerifyAccessToken(token, time.Now()); err != nil {
+		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
+	}
+	snap := g.store.Snapshot()
+	sv, ok := resolveSeedSpec(snap, hash)
+	if !ok || sv.Auth == nil {
+		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
+	}
+	if !bytes.Equal(sv.Auth.GetPublisher().GetClaims().GetSubjectPub(), token.GetClaims().GetIssuerPub()) {
+		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
+	}
+	if !proto.Equal(sv.Auth.GetResource(), token.GetClaims().GetResource()) {
+		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
+	}
+	return wasm.CallerInfo{}, nil
 }
 
 // MayHost authorises hostCert to host the workload described by specAuth.
@@ -222,11 +290,12 @@ func certContext(cert *admissionv1.DelegationCert) map[string]string {
 // resolveSeedSpec accepts either a workload hash or a workload name.
 // snap.Specs is keyed by hash, so the hash lookup wins when the
 // identifier matches one; otherwise we fall back to a by-name scan.
-func resolveSeedSpec(snap state.Snapshot, identifier string) (string, state.WorkloadSpecView, bool) {
+func resolveSeedSpec(snap state.Snapshot, identifier string) (state.WorkloadSpecView, bool) {
 	if sv, ok := snap.Specs[identifier]; ok {
-		return identifier, sv, true
+		return sv, true
 	}
-	return snap.SpecByName(identifier)
+	_, sv, ok := snap.SpecByName(identifier)
+	return sv, ok
 }
 
 func decodeSpecChange(sc *statev1.SpecChange) (auth.SpecBody, *admissionv1.ResourceID, error) {

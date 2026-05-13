@@ -99,7 +99,7 @@ node. Run `pln bootstrap ssh --help` for the full flag set.
 pln invite [--publisher|--admin] [--subject foo]   # subject is the joiner's `pln id`
 
 # New node:
-pln join <token>
+pln join --up <token>
 ```
 
 The token is self-contained: signed admission credentials, the cluster's

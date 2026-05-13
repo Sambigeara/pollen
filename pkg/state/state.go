@@ -70,7 +70,9 @@ type StateStore interface {
 	SetLocalObservedAddress(ip string, port uint32) []Event
 
 	PublishWorkload(spec WorkloadSpec, policy *admissionv1.Predicate) ([]Event, error)
+	PublishWorkloadPresigned(spec WorkloadSpec, presignedAuth *admissionv1.SpecAuth) ([]Event, error)
 	DeleteWorkloadSpec(hash string) ([]Event, error)
+	DeleteWorkloadSpecPresigned(hash string, presignedAuth *admissionv1.SpecAuth) ([]Event, error)
 	ClaimWorkload(hash string) []Event
 	MarkWorkloadDraining(hash string) []Event
 	ReleaseWorkload(hash string) []Event
@@ -80,12 +82,16 @@ type StateStore interface {
 	SetLocalBlobs(digests []string) []Event
 
 	SetStaticSpec(spec StaticSpec, policy *admissionv1.Predicate) ([]Event, error)
+	SetStaticSpecPresigned(spec StaticSpec, presignedAuth *admissionv1.SpecAuth) ([]Event, error)
 	DeleteStaticSpec(name string) ([]Event, error)
+	DeleteStaticSpecPresigned(name string, presignedAuth *admissionv1.SpecAuth) ([]Event, error)
 	ClaimStatic(name string) []Event
 	ReleaseStatic(name string) []Event
 
 	SetBlobSpec(spec BlobSpec, policy *admissionv1.Predicate) ([]Event, error)
+	SetBlobSpecPresigned(spec BlobSpec, presignedAuth *admissionv1.SpecAuth) ([]Event, error)
 	DeleteBlobSpec(digest string) ([]Event, error)
+	DeleteBlobSpecPresigned(digest string, presignedAuth *admissionv1.SpecAuth) ([]Event, error)
 
 	SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []Event
 

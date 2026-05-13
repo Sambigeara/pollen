@@ -31,7 +31,12 @@ func (*NoopService) Seed([]byte, state.WorkloadSpec, *admissionv1.Predicate) err
 	return ErrRelayOnly
 }
 
-func (*NoopService) Unseed(string) error { return ErrRelayOnly }
+func (*NoopService) SeedPresigned([]byte, state.WorkloadSpec, *admissionv1.SpecAuth) error {
+	return ErrRelayOnly
+}
+
+func (*NoopService) Unseed(string) error                                 { return ErrRelayOnly }
+func (*NoopService) UnseedPresigned(string, *admissionv1.SpecAuth) error { return ErrRelayOnly }
 
 func (*NoopService) Call(context.Context, string, string, []byte) ([]byte, error) {
 	return nil, ErrRelayOnly

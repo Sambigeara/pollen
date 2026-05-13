@@ -9,7 +9,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
@@ -20,6 +19,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
@@ -39,12 +39,8 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
-
-const ControlTokenMetadataKey = "x-pln-token"
 
 type Metrics struct {
 	CertExpirySeconds  float64
@@ -65,7 +61,9 @@ type MembershipControl interface {
 
 type PlacementControl interface {
 	Seed(binary []byte, spec state.WorkloadSpec, policy *admissionv1.Predicate) error
+	SeedPresigned(binary []byte, spec state.WorkloadSpec, presignedAuth *admissionv1.SpecAuth) error
 	Unseed(hash string) error
+	UnseedPresigned(hash string, presignedAuth *admissionv1.SpecAuth) error
 	Call(ctx context.Context, hash, fn string, input []byte) ([]byte, error)
 	Status() []placement.WorkloadSummary
 }
@@ -87,12 +85,16 @@ type BlobsControl interface {
 	FetchPlaintext(ctx context.Context, hash string) (io.ReadCloser, error)
 	Put(r io.Reader) (string, error)
 	Publish(hash, name string, policy *admissionv1.Predicate) error
+	PublishPresigned(hash, name string, presignedAuth *admissionv1.SpecAuth) error
 	Remove(hash string) error
+	RemovePresigned(hash string, presignedAuth *admissionv1.SpecAuth) error
 }
 
 type StaticControl interface {
 	SeedStatic(name string, manifestDigest []byte, policy *admissionv1.Predicate) error
+	SeedStaticPresigned(name string, manifestDigest []byte, presignedAuth *admissionv1.SpecAuth) error
 	UnseedStatic(name string) error
+	UnseedStaticPresigned(name string, presignedAuth *admissionv1.SpecAuth) error
 	StaticBlobs() map[string]struct{}
 }
 
@@ -123,20 +125,21 @@ var _ controlv1.ControlServiceServer = (*Service)(nil)
 
 type Service struct {
 	controlv1.UnimplementedControlServiceServer
-	state      StateReader
-	metrics    MetricsSource
-	tunneling  TunnelingControl
-	blobs      BlobsControl
-	static     StaticControl
-	membership MembershipControl
-	gate       OperatorGate
-	connector  MeshConnector
-	placement  PlacementControl
-	transport  TransportInfo
-	creds      *auth.NodeCredentials
-	shutdown   func()
-	log        *zap.SugaredLogger
-	signPriv   ed25519.PrivateKey
+	state        StateReader
+	metrics      MetricsSource
+	tunneling    TunnelingControl
+	blobs        BlobsControl
+	static       StaticControl
+	membership   MembershipControl
+	gate         OperatorGate
+	connector    MeshConnector
+	placement    PlacementControl
+	transport    TransportInfo
+	creds        *auth.NodeCredentials
+	shutdown     func()
+	log          *zap.SugaredLogger
+	staticDomain string
+	signPriv     ed25519.PrivateKey
 }
 
 func (s *Service) canPublish() bool {
@@ -171,6 +174,14 @@ func WithMetricsSource(m MetricsSource) Option       { return func(s *Service) {
 func WithMeshConnector(c MeshConnector) Option       { return func(s *Service) { s.connector = c } }
 func WithOperatorGate(g OperatorGate) Option         { return func(s *Service) { s.gate = g } }
 func WithSignPriv(priv ed25519.PrivateKey) Option    { return func(s *Service) { s.signPriv = priv } }
+func WithStaticDomain(d string) Option {
+	return func(s *Service) {
+		if d != "" && d[0] != '.' {
+			d = "." + d
+		}
+		s.staticDomain = strings.ToLower(d)
+	}
+}
 
 func NewService(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, blobs BlobsControl, sc StaticControl, state StateReader, opts ...Option) *Service {
 	s := &Service{
@@ -189,10 +200,9 @@ func NewService(membership MembershipControl, placement PlacementControl, tunnel
 }
 
 type Server struct {
-	svc   *Service
-	gs    *grpc.Server
-	log   *zap.SugaredLogger
-	token string
+	svc *Service
+	gs  *grpc.Server
+	log *zap.SugaredLogger
 }
 
 func New(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, blobs BlobsControl, sc StaticControl, state StateReader, opts ...Option) *Server {
@@ -202,45 +212,11 @@ func New(membership MembershipControl, placement PlacementControl, tunneling Tun
 		log: zap.S().Named("grpc"),
 	}
 	s.gs = grpc.NewServer(
-		grpc.ChainUnaryInterceptor(s.authInterceptor, s.callerInterceptor),
-		grpc.ChainStreamInterceptor(s.streamAuthInterceptor, s.streamCallerInterceptor),
+		grpc.ChainUnaryInterceptor(s.callerInterceptor),
+		grpc.ChainStreamInterceptor(s.streamCallerInterceptor),
 	)
 	controlv1.RegisterControlServiceServer(s.gs, svc)
 	return s
-}
-
-func (s *Server) SetToken(token string) { s.token = token }
-
-func (s *Server) checkToken(ctx context.Context) error {
-	if s.token == "" {
-		return nil
-	}
-	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil && p.Addr.Network() == "unix" {
-		return nil
-	}
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return status.Error(codes.Unauthenticated, "missing metadata")
-	}
-	vals := md.Get(ControlTokenMetadataKey)
-	if len(vals) == 0 || subtle.ConstantTimeCompare([]byte(vals[0]), []byte(s.token)) != 1 {
-		return status.Error(codes.Unauthenticated, "invalid control token")
-	}
-	return nil
-}
-
-func (s *Server) authInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-	if err := s.checkToken(ctx); err != nil {
-		return nil, err
-	}
-	return handler(ctx, req)
-}
-
-func (s *Server) streamAuthInterceptor(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-	if err := s.checkToken(ss.Context()); err != nil {
-		return err
-	}
-	return handler(srv, ss)
 }
 
 // callerInterceptor injects an auth.RPCCaller into the request context
@@ -293,15 +269,6 @@ func (s *Server) Start(socketPath string) error {
 		s.log.Warnw("socket group permissions", "err", err)
 	}
 
-	return s.Serve(l)
-}
-
-func (s *Server) StartTCP(addr string) error {
-	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
-	if err != nil {
-		return fmt.Errorf("control tcp listen: %w", err)
-	}
-	s.log.Infow("control tcp listener", "addr", l.Addr().String(), "auth", s.token != "")
 	return s.Serve(l)
 }
 
@@ -374,7 +341,7 @@ func (s *Service) GetStatus(ctx context.Context, _ *controlv1.GetStatusRequest) 
 		Services:     buildServiceSummaries(snap.Nodes, scope),
 		Connections:  buildConnectionSummaries(snap.Nodes, connections),
 		Workloads:    s.buildWorkloadSummaries(snap, scope),
-		Sites:        buildStaticSummaries(snap, scope),
+		Sites:        s.buildStaticSummaries(snap, scope),
 		Blobs:        s.buildBlobSummaries(snap, scope),
 	}
 
@@ -699,22 +666,18 @@ func (s *Service) buildNodeSummaries(snap state.Snapshot, nodes map[types.PeerKe
 
 func buildServiceSummaries(nodes map[types.PeerKey]state.NodeView, scope viewScope) []*controlv1.ServiceSummary {
 	var out []*controlv1.ServiceSummary
-	for key, node := range nodes {
+	for slot, node := range nodes {
 		for _, svc := range node.Services {
-			// Services are scoped by their SpecAuth signer: only the
-			// publisher (or an admin) sees them. Services without auth
-			// are visible only to admins.
-			publisher := servicePublisher(svc)
-			if !hasServicePublisher(svc) {
-				if !scope.showAll {
+			if hasServicePublisher(svc) {
+				if !scope.permits(servicePublisher(svc)) {
 					continue
 				}
-			} else if !scope.permits(publisher) {
+			} else if !scope.showAll {
 				continue
 			}
 			out = append(out, &controlv1.ServiceSummary{
 				Name:     serviceNameOrDefault(svc.Name, svc.Port),
-				Provider: &controlv1.NodeRef{PeerPub: key.Bytes()},
+				Provider: &controlv1.NodeRef{PeerPub: slot.Bytes()},
 				Port:     svc.Port,
 				Protocol: svc.Protocol,
 			})
@@ -773,8 +736,7 @@ func (s *Service) buildWorkloadSummaries(snap state.Snapshot, scope viewScope) [
 			ActiveReplicas: uint32(len(snap.Claims[w.Hash])),
 		}
 		if hasSpec {
-			ws.MinReplicas = sv.Spec.MinReplicas
-			ws.Spread = sv.Spec.Spread
+			fillWorkloadSpecFields(ws, sv)
 		}
 		out = append(out, ws)
 	}
@@ -789,13 +751,20 @@ func (s *Service) buildWorkloadSummaries(snap state.Snapshot, scope viewScope) [
 		ws := &controlv1.WorkloadSummary{
 			Hash:           hash,
 			Name:           sv.Spec.Name,
-			MinReplicas:    sv.Spec.MinReplicas,
-			Spread:         sv.Spec.Spread,
 			ActiveReplicas: uint32(len(snap.Claims[hash])),
 		}
+		fillWorkloadSpecFields(ws, sv)
 		out = append(out, ws)
 	}
 	return out
+}
+
+func fillWorkloadSpecFields(ws *controlv1.WorkloadSummary, sv state.WorkloadSpecView) {
+	ws.MinReplicas = sv.Spec.MinReplicas
+	ws.Spread = sv.Spec.Spread
+	ws.MemoryBytes = sv.Spec.MemoryBytes
+	ws.TimeoutMs = uint32(sv.Spec.Timeout / time.Millisecond)
+	ws.Publisher = &controlv1.NodeRef{PeerPub: sv.Publisher.Bytes()}
 }
 
 func sortStatusResponse(out *controlv1.GetStatusResponse) {
@@ -837,18 +806,25 @@ func sortStatusResponse(out *controlv1.GetStatusResponse) {
 	})
 }
 
-func (s *Service) RegisterService(_ context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
+func (s *Service) RegisterService(ctx context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
 	if !s.canPublish() {
 		return nil, status.Error(codes.PermissionDenied, "publish capability required")
 	}
+	if caller, ok := auth.RPCCallerFromContext(ctx); ok && caller.SubjectPub() != s.localPeerKey() {
+		return nil, status.Error(codes.InvalidArgument, "service exposure is not supported for wire-mode callers")
+	}
 	name := serviceNameOrDefault(req.GetName(), req.Port)
-	if err := s.tunneling.ExposeService(req.Port, name, state.NormaliseProtocol(req.GetProtocol()), req.GetPolicy()); err != nil {
+	protocol := state.NormaliseProtocol(req.GetProtocol())
+	if err := s.tunneling.ExposeService(req.Port, name, protocol, req.GetPolicy()); err != nil {
 		return nil, s.fail(err, "register service failed")
 	}
 	return &controlv1.RegisterServiceResponse{}, nil
 }
 
 func (s *Service) UnregisterService(ctx context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
+	if caller, ok := auth.RPCCallerFromContext(ctx); ok && caller.SubjectPub() != s.localPeerKey() {
+		return nil, status.Error(codes.InvalidArgument, "service exposure is not supported for wire-mode callers")
+	}
 	name := serviceNameOrDefault(req.GetName(), req.GetPort())
 	if svc := s.lookupLocalService(name); hasServicePublisher(svc) {
 		if err := s.authoriseOwnership(ctx, servicePublisher(svc)); err != nil {
@@ -859,6 +835,27 @@ func (s *Service) UnregisterService(ctx context.Context, req *controlv1.Unregist
 		return nil, s.fail(err, "unregister service failed")
 	}
 	return &controlv1.UnregisterServiceResponse{}, nil
+}
+
+// authorisePresignedTombstone validates that a presigned tombstone
+// comes from the caller's cert and carries Deleted=true. Shared shape
+// across UnseedWorkload/UnseedStatic/RemoveBlob/UnregisterService.
+func (s *Service) authorisePresignedTombstone(ctx context.Context, presigned *admissionv1.SpecAuth) error {
+	caller, ok := auth.RPCCallerFromContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "caller cert required for presigned tombstone")
+	}
+	if !caller.CanPublish() {
+		return status.Error(codes.PermissionDenied, "publish capability required")
+	}
+	if !presigned.GetDeleted() {
+		return status.Error(codes.InvalidArgument, "presigned tombstone must have Deleted=true")
+	}
+	publisher := types.PeerKeyFromBytes(presigned.GetPublisher().GetClaims().GetSubjectPub())
+	if publisher != caller.SubjectPub() {
+		return status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
+	}
+	return nil
 }
 
 func (s *Service) lookupLocalService(name string) *state.Service {
@@ -991,10 +988,6 @@ func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) 
 }
 
 func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedWorkloadRequest, controlv1.SeedWorkloadResponse]) error {
-	if !s.canPublish() {
-		return status.Error(codes.PermissionDenied, "publish capability required")
-	}
-
 	first, err := stream.Recv()
 	if err != nil {
 		if errors.Is(err, io.EOF) {
@@ -1044,6 +1037,20 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 		Timeout:     time.Duration(header.GetTimeoutMs()) * time.Millisecond,
 		Spread:      header.GetSpread(),
 	}
+
+	if presigned := header.GetPreSignedAuth(); presigned != nil {
+		if err := s.seedWorkloadPresigned(stream.Context(), wasmBytes, spec, presigned); err != nil {
+			return err
+		}
+		return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name})
+	}
+
+	if !s.canPublish() {
+		return status.Error(codes.PermissionDenied, "publish capability required")
+	}
+	if caller, ok := auth.RPCCallerFromContext(stream.Context()); ok && caller.SubjectPub() != s.localPeerKey() {
+		return status.Error(codes.InvalidArgument, "wire-mode callers must supply pre_signed_auth")
+	}
 	if err := s.placement.Seed(wasmBytes, spec, header.GetPolicy()); err != nil {
 		switch {
 		case errors.Is(err, placement.ErrCompile):
@@ -1059,6 +1066,24 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 	}
 
 	return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name})
+}
+
+func (s *Service) seedWorkloadPresigned(ctx context.Context, wasmBytes []byte, spec state.WorkloadSpec, presigned *admissionv1.SpecAuth) error {
+	caller, ok := auth.RPCCallerFromContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "caller cert required for presigned spec")
+	}
+	if !caller.CanPublish() {
+		return status.Error(codes.PermissionDenied, "publish capability required")
+	}
+	publisher := types.PeerKeyFromBytes(presigned.GetPublisher().GetClaims().GetSubjectPub())
+	if publisher != caller.SubjectPub() {
+		return status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
+	}
+	if err := s.placement.SeedPresigned(wasmBytes, spec, presigned); err != nil {
+		return s.fail(err, "failed to seed workload")
+	}
+	return nil
 }
 
 // fetchChunkSize is the plaintext payload per FetchBlobResponse frame.
@@ -1106,10 +1131,6 @@ func (s *Service) FetchBlob(req *controlv1.FetchBlobRequest, stream grpc.ServerS
 }
 
 func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadBlobRequest, controlv1.UploadBlobResponse]) error {
-	if !s.canPublish() {
-		return status.Error(codes.PermissionDenied, "publish capability required")
-	}
-
 	first, err := stream.Recv()
 	if err != nil {
 		if errors.Is(err, io.EOF) {
@@ -1120,6 +1141,10 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 	header := first.GetHeader()
 	if header == nil {
 		return status.Error(codes.InvalidArgument, "first message must carry header")
+	}
+
+	if err := s.authoriseBlobUpload(stream.Context(), header); err != nil {
+		return err
 	}
 
 	var buf bytes.Buffer
@@ -1148,19 +1173,66 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 		name = types.ShortHash(hash)
 	}
 	if name != "" {
-		if err := s.blobs.Publish(hash, name, header.GetPolicy()); err != nil {
-			s.log.Warnw("publish blob failed", "hash", types.ShortHash(hash), "name", name, "err", err)
-			return status.Error(codes.Internal, "publish blob")
+		if err := s.publishUploadedBlob(hash, name, header); err != nil {
+			return err
 		}
 	}
 
 	return stream.SendAndClose(&controlv1.UploadBlobResponse{Hash: hash})
 }
 
-func (s *Service) RemoveBlob(ctx context.Context, req *controlv1.RemoveBlobRequest) (*controlv1.RemoveBlobResponse, error) {
-	if !s.canPublish() {
-		return nil, status.Error(codes.PermissionDenied, "publish capability required")
+func (s *Service) publishUploadedBlob(hash, name string, header *controlv1.UploadBlobHeader) error {
+	if presigned := header.GetPreSignedAuth(); presigned != nil {
+		if err := s.blobs.PublishPresigned(hash, name, presigned); err != nil {
+			s.log.Warnw("publish blob (presigned) failed", "hash", types.ShortHash(hash), "name", name, "err", err)
+			return status.Error(codes.Internal, "publish blob")
+		}
+		return nil
 	}
+	if err := s.blobs.Publish(hash, name, header.GetPolicy()); err != nil {
+		s.log.Warnw("publish blob failed", "hash", types.ShortHash(hash), "name", name, "err", err)
+		return status.Error(codes.Internal, "publish blob")
+	}
+	return nil
+}
+
+// authoriseBlobUpload runs the auth dispatch for UploadBlob. Wire-mode
+// callers either supply a pre_signed_auth for the named spec (publisher
+// must match caller), or upload anchor/anonymous bytes (publish path
+// not taken, no SpecAuth needed). Daemon-self runs through the existing
+// canPublish gate.
+func (s *Service) authoriseBlobUpload(ctx context.Context, header *controlv1.UploadBlobHeader) error {
+	caller, hasCaller := auth.RPCCallerFromContext(ctx)
+	presigned := header.GetPreSignedAuth()
+	if presigned != nil {
+		if !hasCaller {
+			return status.Error(codes.Unauthenticated, "caller cert required for presigned spec")
+		}
+		if !caller.CanPublish() {
+			return status.Error(codes.PermissionDenied, "publish capability required")
+		}
+		publisher := types.PeerKeyFromBytes(presigned.GetPublisher().GetClaims().GetSubjectPub())
+		if publisher != caller.SubjectPub() {
+			return status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
+		}
+		return nil
+	}
+	if hasCaller && caller.SubjectPub() != s.localPeerKey() {
+		if header.GetName() != "" || header.GetAnchor() {
+			return status.Error(codes.InvalidArgument, "wire-mode named/anchor uploads must supply pre_signed_auth")
+		}
+		if !caller.CanPublish() {
+			return status.Error(codes.PermissionDenied, "publish capability required")
+		}
+		return nil
+	}
+	if !s.canPublish() {
+		return status.Error(codes.PermissionDenied, "publish capability required")
+	}
+	return nil
+}
+
+func (s *Service) RemoveBlob(ctx context.Context, req *controlv1.RemoveBlobRequest) (*controlv1.RemoveBlobResponse, error) {
 	hash := req.GetHash()
 	snap := s.state.Snapshot()
 	if _, ok := snap.Specs[hash]; ok {
@@ -1169,24 +1241,46 @@ func (s *Service) RemoveBlob(ctx context.Context, req *controlv1.RemoveBlobReque
 	if _, ok := s.static.StaticBlobs()[hash]; ok {
 		return nil, status.Error(codes.FailedPrecondition, "blob is referenced by a static manifest; unseed the static site instead")
 	}
+	if presigned := req.GetPreSignedAuth(); presigned != nil {
+		if err := s.authorisePresignedTombstone(ctx, presigned); err != nil {
+			return nil, err
+		}
+		if err := s.blobs.RemovePresigned(hash, presigned); err != nil {
+			return nil, s.failBlobRemove(hash, err)
+		}
+		return &controlv1.RemoveBlobResponse{}, nil
+	}
+	if !s.canPublish() {
+		return nil, status.Error(codes.PermissionDenied, "publish capability required")
+	}
 	if bv, ok := snap.BlobSpecs[hash]; ok {
 		if err := s.authoriseOwnership(ctx, bv.Publisher); err != nil {
 			return nil, err
 		}
 	}
 	if err := s.blobs.Remove(hash); err != nil {
-		if errors.Is(err, blobs.ErrNotLocal) {
-			return nil, status.Error(codes.FailedPrecondition, "blob not present locally")
-		}
-		s.log.Warnw("remove blob failed", "hash", types.ShortHash(hash), "err", err)
-		return nil, status.Error(codes.Internal, "remove blob")
+		return nil, s.failBlobRemove(hash, err)
 	}
 	return &controlv1.RemoveBlobResponse{}, nil
 }
 
-func (s *Service) SeedStatic(_ context.Context, req *controlv1.SeedStaticRequest) (*controlv1.SeedStaticResponse, error) {
+func (s *Service) failBlobRemove(hash string, err error) error {
+	if errors.Is(err, blobs.ErrNotLocal) {
+		return status.Error(codes.FailedPrecondition, "blob not present locally")
+	}
+	s.log.Warnw("remove blob failed", "hash", types.ShortHash(hash), "err", err)
+	return status.Error(codes.Internal, "remove blob")
+}
+
+func (s *Service) SeedStatic(ctx context.Context, req *controlv1.SeedStaticRequest) (*controlv1.SeedStaticResponse, error) {
+	if presigned := req.GetPreSignedAuth(); presigned != nil {
+		return s.seedStaticPresigned(ctx, req, presigned)
+	}
 	if !s.canPublish() {
 		return nil, status.Error(codes.PermissionDenied, "publish capability required")
+	}
+	if caller, ok := auth.RPCCallerFromContext(ctx); ok && caller.SubjectPub() != s.localPeerKey() {
+		return nil, status.Error(codes.InvalidArgument, "wire-mode callers must supply pre_signed_auth")
 	}
 	if err := s.static.SeedStatic(req.GetName(), req.GetManifestDigest(), req.GetPolicy()); err != nil {
 		return nil, s.fail(err, "seed static")
@@ -1194,7 +1288,34 @@ func (s *Service) SeedStatic(_ context.Context, req *controlv1.SeedStaticRequest
 	return &controlv1.SeedStaticResponse{}, nil
 }
 
+func (s *Service) seedStaticPresigned(ctx context.Context, req *controlv1.SeedStaticRequest, presigned *admissionv1.SpecAuth) (*controlv1.SeedStaticResponse, error) {
+	caller, ok := auth.RPCCallerFromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "caller cert required for presigned spec")
+	}
+	if !caller.CanPublish() {
+		return nil, status.Error(codes.PermissionDenied, "publish capability required")
+	}
+	publisher := types.PeerKeyFromBytes(presigned.GetPublisher().GetClaims().GetSubjectPub())
+	if publisher != caller.SubjectPub() {
+		return nil, status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
+	}
+	if err := s.static.SeedStaticPresigned(req.GetName(), req.GetManifestDigest(), presigned); err != nil {
+		return nil, s.fail(err, "seed static")
+	}
+	return &controlv1.SeedStaticResponse{}, nil
+}
+
 func (s *Service) UnseedStatic(ctx context.Context, req *controlv1.UnseedStaticRequest) (*controlv1.UnseedStaticResponse, error) {
+	if presigned := req.GetPreSignedAuth(); presigned != nil {
+		if err := s.authorisePresignedTombstone(ctx, presigned); err != nil {
+			return nil, err
+		}
+		if err := s.static.UnseedStaticPresigned(req.GetName(), presigned); err != nil {
+			return nil, s.fail(err, "unseed static")
+		}
+		return &controlv1.UnseedStaticResponse{}, nil
+	}
 	if !s.canPublish() {
 		return nil, status.Error(codes.PermissionDenied, "publish capability required")
 	}
@@ -1210,10 +1331,10 @@ func (s *Service) UnseedStatic(ctx context.Context, req *controlv1.UnseedStaticR
 }
 
 func (s *Service) ListStatic(ctx context.Context, _ *controlv1.ListStaticRequest) (*controlv1.ListStaticResponse, error) {
-	return &controlv1.ListStaticResponse{Sites: buildStaticSummaries(s.state.Snapshot(), s.viewScope(ctx))}, nil
+	return &controlv1.ListStaticResponse{Sites: s.buildStaticSummaries(s.state.Snapshot(), s.viewScope(ctx))}, nil
 }
 
-func buildStaticSummaries(snap state.Snapshot, scope viewScope) []*controlv1.StaticSummary {
+func (s *Service) buildStaticSummaries(snap state.Snapshot, scope viewScope) []*controlv1.StaticSummary {
 	var capacity uint32
 	for _, nv := range snap.Nodes {
 		if nv.CanServeStatic {
@@ -1234,6 +1355,7 @@ func buildStaticSummaries(snap state.Snapshot, scope viewScope) []*controlv1.Sta
 			Publisher:       &controlv1.NodeRef{PeerPub: spec.Publisher.Bytes()},
 			Local:           local,
 			ServingCapacity: capacity,
+			PublicUrl:       s.publicStaticURL(name, spec.Publisher),
 		}
 		for pk := range claimants {
 			summary.Claimants = append(summary.Claimants, &controlv1.NodeRef{PeerPub: pk.Bytes()})
@@ -1241,6 +1363,21 @@ func buildStaticSummaries(snap state.Snapshot, scope viewScope) []*controlv1.Sta
 		out = append(out, summary)
 	}
 	return out
+}
+
+// publicStaticURL renders the externally-reachable URL for a static
+// site, when the daemon has a static-http-domain configured. Empty
+// otherwise — the operator deployment doesn't surface a public name.
+func (s *Service) publicStaticURL(name string, publisher types.PeerKey) string {
+	if s.staticDomain == "" {
+		return ""
+	}
+	pub := publisher.String()
+	const shortPubLen = 8
+	if len(pub) < shortPubLen {
+		return ""
+	}
+	return "https://" + name + "-" + pub[:shortPubLen] + s.staticDomain
 }
 
 // Restricts holders to live peers; stale BlobAvailability from offline
@@ -1298,6 +1435,15 @@ func (s *Service) buildBlobSummaries(snap state.Snapshot, scope viewScope) []*co
 }
 
 func (s *Service) UnseedWorkload(ctx context.Context, req *controlv1.UnseedWorkloadRequest) (*controlv1.UnseedWorkloadResponse, error) {
+	if presigned := req.GetPreSignedAuth(); presigned != nil {
+		if err := s.authorisePresignedTombstone(ctx, presigned); err != nil {
+			return nil, err
+		}
+		if err := s.placement.UnseedPresigned(req.GetHash(), presigned); err != nil {
+			return nil, s.fail(err, "unseed workload failed", "hash", req.GetHash())
+		}
+		return &controlv1.UnseedWorkloadResponse{}, nil
+	}
 	if !s.canPublish() {
 		return nil, status.Error(codes.PermissionDenied, "publish capability required")
 	}
@@ -1373,6 +1519,9 @@ func (s *Service) localCallerContext(ctx context.Context) context.Context {
 }
 
 func (s *Service) fail(err error, msg string, kv ...any) error {
+	if errors.Is(err, state.ErrTombstoneNotOurSlot) {
+		return status.Error(codes.FailedPrecondition, "spec not stored on this node; direct the tombstone at the daemon that accepted the spec")
+	}
 	s.log.Warnw(msg, append(kv, "err", err)...)
 	return status.Error(codes.Internal, msg)
 }

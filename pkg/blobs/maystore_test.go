@@ -39,7 +39,14 @@ func (f *fakeState) SetLocalBlobs([]string) []state.Event { return nil }
 func (f *fakeState) SetBlobSpec(state.BlobSpec, *admissionv1.Predicate) ([]state.Event, error) {
 	return nil, nil
 }
-func (f *fakeState) DeleteBlobSpec(string) ([]state.Event, error)              { return nil, nil }
+
+func (f *fakeState) SetBlobSpecPresigned(state.BlobSpec, *admissionv1.SpecAuth) ([]state.Event, error) {
+	return nil, nil
+}
+func (f *fakeState) DeleteBlobSpec(string) ([]state.Event, error) { return nil, nil }
+func (f *fakeState) DeleteBlobSpecPresigned(string, *admissionv1.SpecAuth) ([]state.Event, error) {
+	return nil, nil
+}
 func (f *fakeState) SetBlobWrapping(*statev1.BlobWrappingChange) []state.Event { return nil }
 
 type fakeGate struct {

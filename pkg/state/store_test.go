@@ -341,6 +341,32 @@ func TestStore_PublishWorkloadIssuesSpecAuth(t *testing.T) {
 	require.Equal(t, hash, hex.EncodeToString(view.Auth.GetResource().GetSeed().GetHash()))
 }
 
+// Publisher (authority) is derived from SpecAuth, not the gossip-source
+// peer key. Storing peer is the gossip-source. For a locally-published
+// spec the two collapse to localID, but they live in distinct fields
+// — wire-mode tenants depend on the split.
+func TestStore_PublisherAndStoringPeerSplit(t *testing.T) {
+	pk := genKey(t)
+	s := newTestStore(t, pk)
+	s.SetLocalSigner(fakeSpecSigner{pub: pk.Bytes()})
+
+	hash := strings.Repeat("a", 64)
+	_, err := s.PublishWorkload(WorkloadSpec{Name: "echo", Hash: hash, MinReplicas: 1}, nil)
+	require.NoError(t, err)
+
+	snap := s.Snapshot()
+	view, ok := snap.Specs[hash]
+	require.True(t, ok)
+	require.Equal(t, pk, view.Publisher,
+		"Publisher must equal SpecAuth.Publisher.Claims.SubjectPub")
+	require.Equal(t, pk.Bytes(), view.Auth.GetPublisher().GetClaims().GetSubjectPub(),
+		"SpecAuth publisher must match the local node's pubkey")
+
+	require.Equal(t, []types.PeerKey{pk}, snap.PeersWithWorkloadSpec(hash),
+		"local node's log carries the spec, so it is a storing peer")
+	require.Contains(t, snap.WorkloadStoringPeers[hash], pk)
+}
+
 func TestStore_ApplyDeltaRejectsInvalidSpecAuth(t *testing.T) {
 	pk := genKey(t)
 	remote := genKey(t)
@@ -356,19 +382,60 @@ func TestStore_ApplyDeltaRejectsInvalidSpecAuth(t *testing.T) {
 	require.Empty(t, s.Snapshot().Specs)
 }
 
-func TestStore_RejectsSpecAuthFromDifferentPeerSlot(t *testing.T) {
+// PublishWorkloadPresigned lands a tenant-signed spec in our own slot
+// with the tenant as Publisher. The daemon acts as a relay: it stores
+// and gossips bytes signed by someone else, without re-signing.
+func TestStore_PublishWorkloadPresigned_DaemonAsRelay(t *testing.T) {
+	local := genKey(t)
+	tenant := genKey(t)
+	s := newTestStore(t, local)
+	s.SetMutationValidator(func(*statev1.SpecChange) error { return nil })
+
+	hash := strings.Repeat("a", 64)
+	hashBytes, _ := hex.DecodeString(hash)
+	spec := WorkloadSpec{Name: "tenant-app", Hash: hash, MinReplicas: 1}
+	tenantAuth := &admissionv1.SpecAuth{
+		Resource:  seedResourceID(spec.Name, hashBytes),
+		BodyHash:  bytes.Repeat([]byte{0x42}, sha256Len),
+		Publisher: &admissionv1.DelegationCert{Claims: &admissionv1.DelegationCertClaims{SubjectPub: tenant.Bytes()}},
+	}
+
+	_, err := s.PublishWorkloadPresigned(spec, tenantAuth)
+	require.NoError(t, err)
+
+	snap := s.Snapshot()
+	view, ok := snap.Specs[hash]
+	require.True(t, ok)
+	require.Equal(t, tenant, view.Publisher, "Publisher must be the tenant (SpecAuth signer)")
+	require.Equal(t, []types.PeerKey{local}, snap.PeersWithWorkloadSpec(hash), "the daemon's slot stores the bytes")
+
+	// No auto-claim emitted by the relay path; daemon does not
+	// implicitly host the tenant's workload.
+	require.Empty(t, snap.Claims[hash], "presigned publish must not auto-claim")
+}
+
+// Under signed-event relay, a peer can store and gossip a spec signed
+// by a different publisher. The SpecAuth signature is the authority;
+// the gossip-source peer becomes a storing peer (source).
+func TestStore_AcceptsRelayedSignedSpec(t *testing.T) {
 	local := genKey(t)
 	remote := genKey(t)
-	other := genKey(t)
+	publisher := genKey(t)
 	s := newTestStore(t, local)
+	s.SetLocalReachable([]types.PeerKey{remote})
+	hash := strings.Repeat("c", 64)
 	sc := &statev1.SpecChange{
-		Auth: &admissionv1.SpecAuth{Publisher: &admissionv1.DelegationCert{Claims: &admissionv1.DelegationCertClaims{SubjectPub: other.Bytes()}}},
-		Body: &statev1.SpecChange_Workload{Workload: &statev1.WorkloadSpecChange{Hash: strings.Repeat("c", 64), Name: "echo", MinReplicas: 1}},
+		Auth: &admissionv1.SpecAuth{Publisher: &admissionv1.DelegationCert{Claims: &admissionv1.DelegationCertClaims{SubjectPub: publisher.Bytes()}}},
+		Body: &statev1.SpecChange_Workload{Workload: &statev1.WorkloadSpecChange{Hash: hash, Name: "echo", MinReplicas: 1}},
 	}
 
 	applyTestEvent(t, s, &statev1.GossipEvent{PeerId: remote.String(), Counter: 1, Change: &statev1.GossipEvent_SpecChange{SpecChange: sc}})
 
-	require.Empty(t, s.Snapshot().Specs)
+	snap := s.Snapshot()
+	view, ok := snap.Specs[hash]
+	require.True(t, ok, "relayed signed spec must land in the snapshot")
+	require.Equal(t, publisher, view.Publisher, "Publisher must come from SpecAuth, not the gossip-source peer")
+	require.Equal(t, []types.PeerKey{remote}, snap.PeersWithWorkloadSpec(hash), "the gossip-source peer is the storing peer")
 }
 
 func TestStore_RejectsForgedSelfSpecFromAttacker(t *testing.T) {

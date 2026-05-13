@@ -9,7 +9,6 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
 	"go.uber.org/zap"
@@ -197,7 +196,7 @@ func (r *reconciler) reconcile(ctx context.Context) {
 				r.store.ClaimWorkload(a.Hash)
 				continue
 			}
-			r.startClaim(ctx, a.Hash, snap.Specs, snap.Claims)
+			r.startClaim(ctx, a.Hash, snap.WorkloadStoringPeers, snap.Claims)
 		case actionRelease:
 			if _, alreadyReleased := policyReleased[a.Hash]; alreadyReleased {
 				continue
@@ -240,7 +239,7 @@ func (r *reconciler) reconcile(ctx context.Context) {
 	}
 }
 
-func (r *reconciler) startClaim(ctx context.Context, hash string, specViews map[string]state.WorkloadSpecView, claims map[string]map[types.PeerKey]struct{}) {
+func (r *reconciler) startClaim(ctx context.Context, hash string, storing, claims map[string]map[types.PeerKey]struct{}) {
 	r.inFlightMu.Lock()
 	if _, ok := r.inFlight[hash]; ok {
 		r.inFlightMu.Unlock()
@@ -259,8 +258,8 @@ func (r *reconciler) startClaim(ctx context.Context, hash string, specViews map[
 	}
 
 	var peers []types.PeerKey
-	if sv, ok := specViews[hash]; ok {
-		peers = append(peers, sv.Publisher)
+	for pk := range storing[hash] {
+		peers = append(peers, pk)
 	}
 	for pk := range claims[hash] {
 		peers = append(peers, pk)

@@ -52,6 +52,7 @@ const (
 	sigContextInvite            = "pollen.invite.v1"
 	sigContextDelegationSubject = "pollen.delegation.subject.v1"
 	sigContextSpecAuth          = "pollen.specauth.v1"
+	sigContextAccessToken       = "pollen.accesstoken.v1"
 
 	timeSkewAllowance = time.Minute
 )

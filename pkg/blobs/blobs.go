@@ -41,7 +41,9 @@ type BlobsAPI interface {
 	ServePlaintext(stream io.ReadWriteCloser, hash string)
 	Announce(hash string) error
 	Publish(hash, name string, policy *admissionv1.Predicate) error
+	PublishPresigned(hash, name string, presignedAuth *admissionv1.SpecAuth) error
 	Remove(hash string) error
+	RemovePresigned(hash string, presignedAuth *admissionv1.SpecAuth) error
 	Rescan() error
 	Prune(keep map[string]struct{}, minAge time.Duration) ([]string, error)
 }
@@ -54,7 +56,9 @@ type blobState interface {
 	Snapshot() state.Snapshot
 	SetLocalBlobs(digests []string) []state.Event
 	SetBlobSpec(spec state.BlobSpec, policy *admissionv1.Predicate) ([]state.Event, error)
+	SetBlobSpecPresigned(spec state.BlobSpec, presignedAuth *admissionv1.SpecAuth) ([]state.Event, error)
 	DeleteBlobSpec(digest string) ([]state.Event, error)
+	DeleteBlobSpecPresigned(digest string, presignedAuth *admissionv1.SpecAuth) ([]state.Event, error)
 	SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []state.Event
 }
 
@@ -297,7 +301,54 @@ func (s *Service) Publish(hash, name string, policy *admissionv1.Predicate) erro
 	return err
 }
 
+// PublishPresigned records a tenant-signed BlobSpec. The bytes must
+// already be in local CAS (the daemon stored them via Put earlier);
+// the spec carries the tenant's signature.
+func (s *Service) PublishPresigned(hash, name string, presignedAuth *admissionv1.SpecAuth) error {
+	if !s.store.Has(hash) {
+		return ErrNotLocal
+	}
+	if s.state == nil {
+		return nil
+	}
+	_, err := s.state.SetBlobSpecPresigned(state.BlobSpec{Name: name, Digest: hash}, presignedAuth)
+	return err
+}
+
 func (s *Service) Remove(hash string) error {
+	if err := s.removeLocalBytes(hash); err != nil {
+		return err
+	}
+	if s.state == nil {
+		return nil
+	}
+	if _, err := s.state.DeleteBlobSpec(hash); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RemovePresigned applies a tenant-signed tombstone for a named blob.
+// The daemon evicts the local bytes (and DEK), then gossips the
+// presigned tombstone. See Remove for the wrapping-vs-spec lifecycle.
+func (s *Service) RemovePresigned(hash string, presignedAuth *admissionv1.SpecAuth) error {
+	if err := s.removeLocalBytes(hash); err != nil {
+		return err
+	}
+	if s.state == nil {
+		return nil
+	}
+	_, err := s.state.DeleteBlobSpecPresigned(hash, presignedAuth)
+	return err
+}
+
+// removeLocalBytes evicts hash from the CAS and re-publishes the local
+// blob list. Wrappings are append-only on the wire (admission rejects
+// tombstones), so the spec deletion that callers chain after this is
+// what eventually revokes receiver access: BlobSpec drops out of the
+// keep set at the next Prune, the receiver's evictDEK runs, and the
+// stranded wrapping in gossip ages out with the wrapper's cert.
+func (s *Service) removeLocalBytes(hash string) error {
 	if err := s.store.Remove(hash); err != nil {
 		if errors.Is(err, cas.ErrNotFound) {
 			return ErrNotLocal
@@ -310,18 +361,6 @@ func (s *Service) Remove(hash string) error {
 	s.mu.Unlock()
 	s.publish(digests)
 	s.evictDEK(hash)
-	if s.state != nil {
-		// Wrappings are append-only on the wire (admission rejects
-		// tombstones), so the spec deletion below is what eventually
-		// revokes receiver access: BlobSpec drops out of the keep set
-		// at the next Prune, the receiver's evictDEK runs, and the
-		// stranded wrapping in gossip ages out with the wrapper's
-		// cert. Until that cycle completes, receivers that already
-		// hold the bytes can keep reading them.
-		if _, err := s.state.DeleteBlobSpec(hash); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 

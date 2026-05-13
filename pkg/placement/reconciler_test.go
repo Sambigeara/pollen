@@ -94,6 +94,17 @@ func (m *mockStore) PublishWorkload(state.WorkloadSpec, *admissionv1.Predicate) 
 	return nil, nil
 }
 
+func (m *mockStore) PublishWorkloadPresigned(state.WorkloadSpec, *admissionv1.SpecAuth) ([]state.Event, error) {
+	m.mu.Lock()
+	m.published++
+	m.mu.Unlock()
+	return nil, nil
+}
+
+func (m *mockStore) DeleteWorkloadSpecPresigned(string, *admissionv1.SpecAuth) ([]state.Event, error) {
+	return nil, nil
+}
+
 func (m *mockStore) publishCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -193,6 +204,10 @@ type fakeHostGate struct {
 }
 
 func (f *fakeHostGate) Invoke(types.PeerKey, string) (wasm.CallerInfo, error) {
+	return wasm.CallerInfo{}, nil
+}
+
+func (f *fakeHostGate) InvokeByToken(*admissionv1.AccessToken, string) (wasm.CallerInfo, error) {
 	return wasm.CallerInfo{}, nil
 }
 

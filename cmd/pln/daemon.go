@@ -36,7 +36,27 @@ import (
 )
 
 func newDaemonCmds() []*cobra.Command {
-	upCmd := &cobra.Command{
+	daemonGroup := &cobra.Command{
+		Use:   "daemon",
+		Short: "Manage the pln background service",
+		Long: `Daemon lifecycle and platform integration. ` + "`pln up`" + `, ` + "`pln down`" + `,
+` + "`pln restart`" + `, ` + "`pln logs`" + `, and ` + "`pln upgrade`" + ` are top-level aliases
+for the same handlers — use whichever feels natural.`,
+	}
+	daemonGroup.AddCommand(
+		newUpCmd(),
+		newDownCmd(),
+		newRestartCmd(),
+		newLogsCmd(),
+		newDaemonInstallCmd(),
+		newDaemonUninstallCmd(),
+		newUpgradeCmd(),
+	)
+	return []*cobra.Command{newUpCmd(), newDownCmd(), newRestartCmd(), newLogsCmd(), newUpgradeCmd(), daemonGroup}
+}
+
+func newUpCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "up",
 		Short: "Start a Pollen node (foreground by default, -d for background service)",
 		Long: `Brings the local Pollen node online. By default runs in the foreground
@@ -48,29 +68,37 @@ cluster — equivalent to running ` + "`pln init`" + ` first.`,
 		Example: "  pln up                        # foreground\n  pln up -d                     # detached\n  pln up --public --name relay  # advertise as a relay",
 		RunE:    withEnv(runUp, localOnly()),
 	}
-	upCmd.Flags().Int("port", config.DefaultBootstrapPort, "Listening port")
-	upCmd.Flags().IPSlice("ips", []net.IP{}, "Advertised IPs")
-	upCmd.Flags().Bool("public", false, "Hint that this node is publicly reachable; the mesh may use it as a relay (verified at runtime)")
-	upCmd.Flags().BoolP("detach", "d", false, "Run as a background service")
-	upCmd.Flags().Bool("metrics", false, "Log metrics and trace output at debug level")
-	upCmd.Flags().String("name", "", "Human-readable node name")
+	cmd.Flags().Int("port", config.DefaultBootstrapPort, "Listening port")
+	cmd.Flags().IPSlice("ips", []net.IP{}, "Advertised IPs")
+	cmd.Flags().Bool("public", false, "Hint that this node is publicly reachable; the mesh may use it as a relay (verified at runtime)")
+	cmd.Flags().BoolP("detach", "d", false, "Run as a background service")
+	cmd.Flags().Bool("metrics", false, "Log metrics and trace output at debug level")
+	cmd.Flags().String("name", "", "Human-readable node name")
+	return cmd
+}
 
-	downCmd := &cobra.Command{
+func newDownCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "down",
 		Short: "Stop the background service",
 		Long:  "Stops the launchd (macOS) or systemd (Linux) unit. Local state and credentials are preserved — a subsequent `pln up -d` restarts the same node.",
 		Args:  cobra.NoArgs,
 		RunE:  withEnv(runDown, localOnly(), systemService()),
 	}
-	restartCmd := &cobra.Command{
+}
+
+func newRestartCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "restart",
 		Short: "Restart the background service",
 		Long:  "Restarts the background service so config changes (`pln set`, `pln serve`, etc.) take effect on listeners and bind addresses.",
 		Args:  cobra.NoArgs,
 		RunE:  withEnv(runRestart, localOnly(), systemService()),
 	}
+}
 
-	logsCmd := &cobra.Command{
+func newLogsCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "logs",
 		Short: "Show daemon logs",
 		Long: `Tails the background service log: ` + "`tail`" + ` against the Homebrew log file
@@ -80,19 +108,9 @@ control how many lines to show.`,
 		Args:    cobra.NoArgs,
 		RunE:    withEnv(runLogs, localOnly(), systemService()),
 	}
-	logsCmd.Flags().BoolP("follow", "f", false, "Stream logs in real time")
-	logsCmd.Flags().IntP("lines", "n", 50, "Number of lines to show") //nolint:mnd
-
-	return []*cobra.Command{upCmd, downCmd, restartCmd, logsCmd, newUpgradeCmd(), newDaemonGroupCmd()}
-}
-
-func newDaemonGroupCmd() *cobra.Command {
-	root := &cobra.Command{
-		Use:   "daemon",
-		Short: "Manage the pln background service (install/uninstall/upgrade)",
-	}
-	root.AddCommand(newDaemonInstallCmd(), newDaemonUninstallCmd(), newUpgradeCmd())
-	return root
+	cmd.Flags().BoolP("follow", "f", false, "Stream logs in real time")
+	cmd.Flags().IntP("lines", "n", 50, "Number of lines to show") //nolint:mnd
+	return cmd
 }
 
 func newUpgradeCmd() *cobra.Command {
@@ -239,16 +257,6 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 	staticAddr := env.cfg.StaticHTTP
 	port, _ := cmd.Flags().GetInt("port")
 
-	controlAddr := env.cfg.ControlAddr
-	var controlToken string
-	if controlAddr != "" {
-		t, err := ensureControlToken(env.dir)
-		if err != nil {
-			return fmt.Errorf("load control token: %w", err)
-		}
-		controlToken = t
-	}
-
 	var addrs []string
 	if cmd.Flags().Changed("ips") {
 		ips, _ := cmd.Flags().GetIPSlice("ips")
@@ -290,8 +298,9 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		MetricsEnabled:     metricsEnabled,
 		HTTPAddr:           httpAddr,
 		StaticAddr:         staticAddr,
-		ControlAddr:        controlAddr,
-		ControlToken:       controlToken,
+		StaticDomain:       env.cfg.StaticHTTPDomain,
+		ControlTLSAddr:     env.cfg.ControlTLS,
+		GatewayAddr:        env.cfg.Gateway,
 		IdleInstanceTTL:    env.cfg.Placement.IdleInstanceTTL,
 		RelayOnly:          env.cfg.RelayOnly,
 	}, creds, inviteConsumer)

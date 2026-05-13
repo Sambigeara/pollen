@@ -26,8 +26,9 @@ func (v viewScope) permits(publisher types.PeerKey) bool {
 }
 
 // viewScope derives a scope from the request context's RPCCaller, with
-// fall-throughs for paths that bypass the interceptor (test harnesses
-// that call handlers directly; bring-up before creds are set).
+// a fall-through for daemon-self paths that pre-date the interceptor.
+// Fully unidentified callers get an empty leaf-scope (default-deny) so
+// a misconfigured daemon never leaks admin views.
 func (s *Service) viewScope(ctx context.Context) viewScope {
 	if caller, ok := auth.RPCCallerFromContext(ctx); ok && caller.Cert() != nil {
 		return viewScope{
@@ -42,7 +43,7 @@ func (s *Service) viewScope(ctx context.Context) viewScope {
 			caller:  types.PeerKeyFromBytes(cert.GetClaims().GetSubjectPub()),
 		}
 	}
-	return viewScope{showAll: true}
+	return viewScope{}
 }
 
 // authoriseOwnership rejects non-admin callers who aren't the resource's

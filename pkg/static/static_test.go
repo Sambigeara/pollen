@@ -31,7 +31,15 @@ func (f *fakeStore) Snapshot() state.Snapshot { return f.snap }
 func (f *fakeStore) SetStaticSpec(state.StaticSpec, *admissionv1.Predicate) ([]state.Event, error) {
 	return nil, nil
 }
+
+func (f *fakeStore) SetStaticSpecPresigned(state.StaticSpec, *admissionv1.SpecAuth) ([]state.Event, error) {
+	return nil, nil
+}
 func (f *fakeStore) DeleteStaticSpec(string) ([]state.Event, error) { return nil, nil }
+func (f *fakeStore) DeleteStaticSpecPresigned(string, *admissionv1.SpecAuth) ([]state.Event, error) {
+	return nil, nil
+}
+
 func (f *fakeStore) ReleaseStatic(name string) []state.Event {
 	f.mu.Lock()
 	f.released = append(f.released, name)

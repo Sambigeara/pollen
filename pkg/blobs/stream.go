@@ -103,48 +103,59 @@ func ReadHash(r io.Reader) (string, error) {
 // publisher-unreachable so handlers can surface NotFound vs Unavailable.
 var ErrNoPublisher = errors.New("no publisher known for blob")
 
-// FetchPlaintext returns plaintext bytes for hash by contacting the
-// blob's publisher. When the local node is the publisher, it reads from
-// the local CAS directly. The returned reader does not persist anything
-// to the local CAS: this is a one-shot export path for `pln fetch`.
+// FetchPlaintext returns plaintext bytes for hash by contacting a peer
+// whose log carries the spec. When the local node is one of those
+// peers, it reads from the local CAS directly. The returned reader
+// does not persist anything to the local CAS: this is a one-shot
+// export path for `pln fetch`.
 //
 // Resolution mirrors the gate's Fetch fall-through: BlobSpecs first (a
 // named blob published via `pln seed <file> <name>`), then Specs (a
 // workload binary, whose hash is the spec key). Static-manifest digests
 // are intentionally not exposed here — they are an internal artefact
 // of the static-site spec and have no user-facing export use case.
+//
+// Source peer is distinct from Publisher under the signed-event relay
+// model: a daemon storing a tenant's spec is a valid source, even
+// though the tenant signed (and is the Publisher of) the spec.
 func (s *Service) FetchPlaintext(ctx context.Context, hash string) (io.ReadCloser, error) {
-	publisher, ok := s.resolvePublisher(hash)
+	source, ok := s.resolveStoringPeer(hash)
 	if !ok {
 		return nil, fmt.Errorf("%w %s", ErrNoPublisher, hash[:min(hashDisplayLen, len(hash))])
 	}
-	if publisher == s.self {
+	if source == s.self {
 		return s.Get(hash)
 	}
-	return s.fetchPlaintextFrom(ctx, hash, publisher)
+	return s.fetchPlaintextFrom(ctx, hash, source)
 }
 
-func (s *Service) resolvePublisher(hash string) (types.PeerKey, bool) {
+func (s *Service) resolveStoringPeer(hash string) (types.PeerKey, bool) {
 	snap := s.state.Snapshot()
-	if view, ok := snap.BlobSpecs[hash]; ok {
-		return view.Publisher, true
+	peers := snap.PeersWithBlobSpec(hash)
+	if len(peers) == 0 {
+		peers = snap.PeersWithWorkloadSpec(hash)
 	}
-	if sv, ok := snap.Specs[hash]; ok {
-		return sv.Publisher, true
+	if len(peers) == 0 {
+		return types.PeerKey{}, false
 	}
-	return types.PeerKey{}, false
+	for _, pk := range peers {
+		if pk == s.self {
+			return pk, true
+		}
+	}
+	return peers[0], true
 }
 
-// fetchPlaintextFrom opens a plaintext stream to publisher. s.timeout
+// fetchPlaintextFrom opens a plaintext stream to source. s.timeout
 // bounds only the handshake (dial + hash write + status byte); the body
 // inherits the caller's ctx so large transfers are not truncated.
-func (s *Service) fetchPlaintextFrom(ctx context.Context, hash string, publisher types.PeerKey) (io.ReadCloser, error) {
+func (s *Service) fetchPlaintextFrom(ctx context.Context, hash string, source types.PeerKey) (io.ReadCloser, error) {
 	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, s.timeout)
 	defer cancelHandshake()
 
-	stream, err := s.mesh.OpenStream(handshakeCtx, publisher, transport.StreamTypeBlobPlaintext)
+	stream, err := s.mesh.OpenStream(handshakeCtx, source, transport.StreamTypeBlobPlaintext)
 	if err != nil {
-		return nil, fmt.Errorf("open stream to publisher %s: %w", publisher.Short(), err)
+		return nil, fmt.Errorf("open stream to source %s: %w", source.Short(), err)
 	}
 	closeOnError := watchStream(handshakeCtx, stream)
 	bodyCtx, cancelBody := context.WithCancel(ctx)
@@ -169,7 +180,7 @@ func (s *Service) fetchPlaintextFrom(ctx context.Context, hash string, publisher
 	if status[0] != statusOK {
 		closeOnError()
 		stream.Close() //nolint:errcheck
-		err = fmt.Errorf("publisher %s does not have blob", publisher.Short())
+		err = fmt.Errorf("source %s does not have blob", source.Short())
 		return nil, err
 	}
 	closeOnError()

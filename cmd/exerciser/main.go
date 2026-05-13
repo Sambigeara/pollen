@@ -20,10 +20,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
-	"github.com/sambigeara/pollen/pkg/control"
 )
 
 const (
@@ -53,8 +51,7 @@ func workersFor(rate int) int {
 }
 
 func main() {
-	target := flag.String("target", "", "host:port of the target pollen node's TCP control endpoint (required)")
-	token := flag.String("token", "", "shared secret for the control endpoint (defaults to $PLN_CONTROL_TOKEN)")
+	target := flag.String("target", "", "host:port of the target pollen node's control endpoint (required)")
 	rate := flag.Int("rate", defaultRate, "target calls per second")
 	duration := flag.Duration("duration", 0, "run duration; zero means run until signalled")
 	uri := flag.String("uri", defaultURI, "pln:// URI to invoke")
@@ -67,10 +64,6 @@ func main() {
 	}
 	if *rate <= 0 {
 		log.Fatal("--rate must be positive")
-	}
-	secret := *token
-	if secret == "" {
-		secret = os.Getenv("PLN_CONTROL_TOKEN")
 	}
 	targetLabel := *label
 	if targetLabel == "" {
@@ -124,13 +117,13 @@ func main() {
 		log.Printf("exerciser firing %d/s at %s (uri=%s)", *rate, *target, *uri)
 	}
 
-	runLoadLoop(ctx, client, secret, *uri, *rate, targetLabel, calls, sheds, callDuration, inflight)
+	runLoadLoop(ctx, client, *uri, *rate, targetLabel, calls, sheds, callDuration, inflight)
 }
 
 func runLoadLoop(
 	ctx context.Context,
 	client controlv1.ControlServiceClient,
-	token, uri string,
+	uri string,
 	rate int,
 	label string,
 	calls, sheds *prometheus.CounterVec,
@@ -144,9 +137,6 @@ func runLoadLoop(
 	gauge := inflight.WithLabelValues(label)
 
 	baseCtx := ctx
-	if token != "" {
-		baseCtx = metadata.AppendToOutgoingContext(ctx, control.ControlTokenMetadataKey, token)
-	}
 
 	n := workersFor(rate)
 	ticks := make(chan struct{}, n)
