@@ -4,9 +4,7 @@
 package main
 
 import (
-	"crypto/ed25519"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
@@ -44,14 +42,15 @@ func plnNativeDialer(dir, addr string) func(string, string, *tls.Config) (net.Co
 }
 
 func buildPlnClientTLSConfig(dir string) (*tls.Config, error) {
-	creds, err := auth.LoadNodeCredentials(dir)
+	identityDir := auth.IdentityPath(dir)
+	creds, err := auth.LoadNodeCredentials(identityDir)
 	if err != nil {
 		return nil, fmt.Errorf("load node credentials: %w", err)
 	}
 	if creds == nil || creds.Cert() == nil {
 		return nil, errors.New("no node credentials in this context; run `pln join` first")
 	}
-	priv, _, err := auth.EnsureIdentityKey(dir)
+	priv, _, err := auth.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return nil, fmt.Errorf("load identity key: %w", err)
 	}
@@ -61,34 +60,14 @@ func buildPlnClientTLSConfig(dir string) (*tls.Config, error) {
 	}
 	rootPub := creds.RootPub()
 	return &tls.Config{
-		MinVersion:            tls.VersionTLS13,
-		Certificates:          []tls.Certificate{clientCert},
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{clientCert},
+		// pln:// targets are not DNS-validated by Go's verifier; the
+		// pollen DelegationCert chain replaces SAN-based hostname
+		// checks. VerifyPeerCertificate below performs full chain plus
+		// leaf-key-binding verification.
 		InsecureSkipVerify:    true, //nolint:gosec
 		NextProtos:            []string{"h2"},
-		VerifyPeerCertificate: verifyServerDelegation(rootPub),
+		VerifyPeerCertificate: transport.VerifyDelegatedCounterparty(rootPub),
 	}, nil
-}
-
-func verifyServerDelegation(rootPub []byte) func([][]byte, [][]*x509.Certificate) error {
-	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		if len(rawCerts) == 0 {
-			return errors.New("server presented no certificate")
-		}
-		leaf, err := x509.ParseCertificate(rawCerts[0])
-		if err != nil {
-			return fmt.Errorf("parse server leaf: %w", err)
-		}
-		leafPub, ok := leaf.PublicKey.(ed25519.PublicKey)
-		if !ok {
-			return errors.New("server leaf must use ed25519")
-		}
-		dc, err := transport.ParseDelegationExtension(rawCerts[0])
-		if err != nil {
-			return fmt.Errorf("parse server delegation: %w", err)
-		}
-		if dc == nil {
-			return errors.New("server cert missing delegation extension")
-		}
-		return auth.VerifyDelegationCert(dc, rootPub, time.Now(), leafPub)
-	}
 }

@@ -5,18 +5,12 @@ package control
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/tls"
-	"crypto/x509"
-	"errors"
-	"fmt"
-	"time"
 
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/transport"
 )
 
@@ -33,31 +27,7 @@ func newControlTLSConfig(serverCert tls.Certificate, rootPub []byte) *tls.Config
 		Certificates:          []tls.Certificate{serverCert},
 		ClientAuth:            tls.RequireAnyClientCert,
 		NextProtos:            []string{"h2"},
-		VerifyPeerCertificate: verifyPeerDelegation(rootPub),
-	}
-}
-
-func verifyPeerDelegation(rootPub []byte) func([][]byte, [][]*x509.Certificate) error {
-	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		if len(rawCerts) == 0 {
-			return errors.New("control tls: no peer certificate")
-		}
-		leaf, err := x509.ParseCertificate(rawCerts[0])
-		if err != nil {
-			return fmt.Errorf("parse peer leaf: %w", err)
-		}
-		leafPub, ok := leaf.PublicKey.(ed25519.PublicKey)
-		if !ok {
-			return errors.New("control tls: peer leaf must use ed25519")
-		}
-		dc, err := transport.ParseDelegationExtension(rawCerts[0])
-		if err != nil {
-			return fmt.Errorf("parse delegation extension: %w", err)
-		}
-		if dc == nil {
-			return errors.New("control tls: peer certificate missing delegation extension")
-		}
-		return auth.VerifyDelegationCert(dc, rootPub, time.Now(), leafPub)
+		VerifyPeerCertificate: transport.VerifyDelegatedCounterparty(rootPub),
 	}
 }
 

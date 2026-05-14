@@ -29,7 +29,20 @@ func NewClusterAuth(t testing.TB) *ClusterAuth { //nolint:thelper
 
 func (c *ClusterAuth) CredsFor(t testing.TB, subject ed25519.PublicKey) *auth.NodeCredentials { //nolint:thelper
 	t.Helper()
-	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, subject, auth.LeafCapabilities(), time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{}) //nolint:mnd
+	return c.credsFor(t, subject, auth.LeafCapabilities())
+}
+
+// AdminCredsFor mints admin (CanAdmit/CanDelegate/CanPublish) credentials.
+// Use it in tests that exercise capability-gated admin RPCs (ConnectPeer,
+// DenyPeer, IssueCert) against the live supervisor surface.
+func (c *ClusterAuth) AdminCredsFor(t testing.TB, subject ed25519.PublicKey) *auth.NodeCredentials { //nolint:thelper
+	t.Helper()
+	return c.credsFor(t, subject, auth.FullCapabilities())
+}
+
+func (c *ClusterAuth) credsFor(t testing.TB, subject ed25519.PublicKey, caps *admissionv1.Capabilities) *auth.NodeCredentials { //nolint:thelper
+	t.Helper()
+	cert, err := auth.IssueDelegationCert(c.adminPriv, nil, subject, caps, time.Now().Add(-time.Minute), time.Now().Add(24*time.Hour), time.Time{}) //nolint:mnd
 	require.NoError(t, err)
 	return auth.NewNodeCredentials(c.rootPub, cert)
 }

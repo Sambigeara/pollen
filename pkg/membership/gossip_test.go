@@ -60,7 +60,8 @@ func TestBroadcastGossipBatchesSkipsSelf(t *testing.T) {
 
 func TestBatchEventsSingleBatch(t *testing.T) {
 	events := []*statev1.GossipEvent{{}, {}}
-	batches := batchEvents(events, 2000)
+	batches, dropped := batchEvents(events, 2000)
+	require.Empty(t, dropped)
 	require.Len(t, batches, 1)
 	require.Len(t, batches[0], 2)
 }
@@ -72,7 +73,8 @@ func TestBatchEventsMultipleBatches(t *testing.T) {
 			PeerId: string(rune(i)),
 		})
 	}
-	batches := batchEvents(events, 100)
+	batches, dropped := batchEvents(events, 100)
+	require.Empty(t, dropped)
 	require.Greater(t, len(batches), 1, "should split into multiple batches with tight size limit")
 
 	var total int
@@ -83,8 +85,30 @@ func TestBatchEventsMultipleBatches(t *testing.T) {
 }
 
 func TestBatchEventsEmpty(t *testing.T) {
-	batches := batchEvents(nil, 1000)
+	batches, dropped := batchEvents(nil, 1000)
 	require.Nil(t, batches)
+	require.Nil(t, dropped)
+}
+
+func TestBatchEventsDropsOversizedEvent(t *testing.T) {
+	bigDigests := make([][]byte, 40)
+	for i := range bigDigests {
+		bigDigests[i] = make([]byte, 32)
+		bigDigests[i][0] = byte(i)
+	}
+	oversized := &statev1.GossipEvent{
+		Change: &statev1.GossipEvent_BlobAvailability{
+			BlobAvailability: &statev1.BlobAvailabilityChange{Digests: bigDigests},
+		},
+	}
+	small := &statev1.GossipEvent{PeerId: "tiny"}
+
+	batches, dropped := batchEvents([]*statev1.GossipEvent{oversized, small}, 1149)
+	require.Len(t, dropped, 1)
+	require.Equal(t, oversized, dropped[0])
+	require.Len(t, batches, 1)
+	require.Len(t, batches[0], 1)
+	require.Equal(t, small, batches[0][0])
 }
 
 func TestHandleDatagramEventsForwardsAndRebroadcasts(t *testing.T) {

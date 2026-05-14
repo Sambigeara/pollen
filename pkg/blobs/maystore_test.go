@@ -124,9 +124,9 @@ func TestMayStore_AllowsViaStaticManifest(t *testing.T) {
 	local := peerKey(1)
 	manifestDigest := strings.Repeat("c", 64)
 	snap := snapWithLocalCert(local, dummyCert())
-	snap.StaticSpecs = map[string]state.StaticSpecView{
-		"site": {Spec: state.StaticSpec{Name: "site", ManifestDigest: manifestDigest}, Auth: authWithName("s")},
-	}
+	siteView := state.StaticSpecView{Spec: state.StaticSpec{Name: "site", ManifestDigest: manifestDigest}, Auth: authWithName("s")}
+	snap.StaticSpecs = map[string]state.StaticSpecView{"site": siteView}
+	snap.StaticSpecsAll = []state.StaticSpecView{siteView}
 	st := &fakeState{snap: snap}
 	svc := &Service{state: st, gate: &fakeGate{}}
 	require.NoError(t, svc.MayStore(manifestDigest))
@@ -162,9 +162,9 @@ func TestMayStore_AllowsViaNestedManifestPath(t *testing.T) {
 	}
 
 	snap := snapWithLocalCert(local, dummyCert())
-	snap.StaticSpecs = map[string]state.StaticSpecView{
-		"site": {Spec: state.StaticSpec{Name: "site", ManifestDigest: manifestDigest}, Auth: authWithName("s")},
-	}
+	siteView := state.StaticSpecView{Spec: state.StaticSpec{Name: "site", ManifestDigest: manifestDigest}, Auth: authWithName("s")}
+	snap.StaticSpecs = map[string]state.StaticSpecView{"site": siteView}
+	snap.StaticSpecsAll = []state.StaticSpecView{siteView}
 	snap.Wrappings = map[string]map[types.PeerKey]*statev1.BlobWrappingChange{
 		manifestDigest: {local: wrapping},
 	}
@@ -192,9 +192,9 @@ func TestMayStore_DeniesNestedPathWhenManifestNotLocal(t *testing.T) {
 	pathDigest := strings.Repeat("e", 64)
 
 	snap := snapWithLocalCert(local, dummyCert())
-	snap.StaticSpecs = map[string]state.StaticSpecView{
-		"site": {Spec: state.StaticSpec{Name: "site", ManifestDigest: missingManifest}, Auth: authWithName("s")},
-	}
+	siteView := state.StaticSpecView{Spec: state.StaticSpec{Name: "site", ManifestDigest: missingManifest}, Auth: authWithName("s")}
+	snap.StaticSpecs = map[string]state.StaticSpecView{"site": siteView}
+	snap.StaticSpecsAll = []state.StaticSpecView{siteView}
 	st := &fakeState{snap: snap}
 	svc := &Service{store: store, state: st, gate: &fakeGate{}, parsedManifest: map[string]map[string]struct{}{}}
 

@@ -46,7 +46,7 @@ func settableKeys() []settableKey {
 		},
 		{
 			name:        "static-http-domain",
-			description: "Public DNS suffix served by the static listener (e.g. pln.sh); enables `<name>-<short-pub>.<domain>` routing",
+			description: "Public DNS suffix served by the static listener (e.g. pln.sh); enables `<name>-<slug>.<domain>` routing",
 			apply: func(c *config.Config, v string) (string, error) {
 				c.StaticHTTPDomain = strings.ToLower(v)
 				return v, nil
@@ -61,7 +61,7 @@ func settableKeys() []settableKey {
 		},
 		{
 			name:        "gateway",
-			description: "HTTP address for the anonymous share-URL gateway (e.g. :8080)",
+			description: "HTTP address for the anonymous share-URL gateway (e.g. :8088)",
 			apply:       func(c *config.Config, v string) (string, error) { return setAddr(&c.Gateway, v) },
 			clear:       func(c *config.Config) { c.Gateway = "" },
 		},

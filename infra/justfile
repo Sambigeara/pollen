@@ -1,35 +1,143 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set dotenv-path := "../.env"
 
-ssh_args  := "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-repo_root := justfile_directory() / ".."
-prod_tf   := justfile_directory() / "prod"
+ssh_args   := "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+repo_root  := justfile_directory() / ".."
+prod_tf    := justfile_directory() / "prod"
+staging_tf := justfile_directory() / "staging"
+shared_tf  := justfile_directory() / "shared"
 
 default:
     @just --list
 
+# ── Shared zone state (Cloudflare ruleset + zone settings) ────────────
+#
+# Cloudflare permits exactly one custom ruleset per zone per phase, and
+# zone settings (SSL mode, min TLS, etc) apply globally. Lifting these
+# out of any single cluster keeps `just prod-down` or `just staging-down`
+# from collaterally destroying state the other cluster depends on.
+#
+# Bring up: `just shared-plan && just shared-apply`. Apply this first;
+# both `staging-apply` and `prod-apply` fail fast without it.
+
+# Preview shared zone-state changes. Writes shared.tfplan; nothing
+# is applied. Run `just shared-apply` to execute the saved plan after
+# reviewing it.
+#
+# Plan shared zone state (CF ruleset + zone settings) into shared.tfplan.
+shared-plan:
+    cd {{ shared_tf }} && terraform init -input=false && terraform plan -out=shared.tfplan
+
+# Apply the saved plan from `shared-plan`. Refuses to run if the plan
+# is missing or older than the most-recent edit to the .tf sources.
+#
+# Apply shared.tfplan to the Cloudflare zone.
+shared-apply:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{ shared_tf }}
+    if [ ! -f shared.tfplan ]; then
+      echo "no shared.tfplan; run \`just shared-plan\` first" >&2
+      exit 1
+    fi
+    plan_mtime=$(date -r shared.tfplan +%s)
+    for src in *.tf; do
+      src_mtime=$(date -r "$src" +%s)
+      if [ "$src_mtime" -gt "$plan_mtime" ]; then
+        echo "shared.tfplan is older than $src; re-run \`just shared-plan\`" >&2
+        exit 1
+      fi
+    done
+    terraform apply shared.tfplan
+    rm shared.tfplan
+
+# Destroy shared zone state. WARNING: removes the origin-port ruleset
+# and zone settings; both prod and staging depend on this. Refuses to
+# run while either cluster's state still has resources.
+#
+# Destroy shared zone state (typed confirmation; refuses if clusters still up).
+shared-down:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Filter out `data.*` entries; a stray `terraform plan` or `refresh`
+    # re-caches data sources into state long after the managed resources
+    # are gone, and we only refuse here when managed resources remain.
+    if [ -f {{ prod_tf }}/terraform.tfstate ] && [ "$(terraform -chdir={{ prod_tf }} state list 2>/dev/null | grep -cv '^data\.' || true)" -gt 0 ]; then
+      echo "refusing: {{ prod_tf }}/terraform.tfstate still has managed resources; run \`just prod-down\` first" >&2
+      exit 1
+    fi
+    if [ -f {{ staging_tf }}/terraform.tfstate ] && [ "$(terraform -chdir={{ staging_tf }} state list 2>/dev/null | grep -cv '^data\.' || true)" -gt 0 ]; then
+      echo "refusing: {{ staging_tf }}/terraform.tfstate still has managed resources; run \`just staging-down\` first" >&2
+      exit 1
+    fi
+    read -r -p "Type 'destroy pln-shared' to confirm: " confirm
+    [ "$confirm" = "destroy pln-shared" ] || { echo "aborted"; exit 1; }
+    cd {{ shared_tf }} && terraform destroy
+
 # ── Prod (pln.sh) ─────────────────────────────────────────────────────
 #
 # Day-to-day lifecycle:
-#   just prod-up          # terraform apply (hetzner + cloudflare)
+#   just prod-plan        # terraform plan → prod.tfplan (review before apply)
+#   just prod-apply       # terraform apply prod.tfplan
 #   just prod-bootstrap   # auto-install pln on nodes, form the mesh
 #   just prod-seed        # seed apex + docs sites
 #   just prod-upgrade     # bump pln on every node to the latest release
 #   just prod-status
 #
 # Teardown:
-#   just prod-down        # terraform destroy
+#   just prod-down        # terraform destroy (typed confirmation required)
 #
 # All recipes run under PLN_CONTEXT=prod. The ctx is an SSH-bridged admin
-# handle — no local prod daemon required. `pln ctx add prod root@<host>`
+# handle; no local prod daemon required. `pln ctx add prod root@<host>`
 # bootstraps the ctx.
 
-# Provision hetzner nodes + cloudflare DNS + rules.
-prod-up:
-    cd {{ prod_tf }} && terraform init -input=false && terraform apply -auto-approve
+# Preview prod infrastructure changes. Writes prod.tfplan; nothing
+# is applied. Run `just prod-apply` to execute the saved plan after
+# reviewing it.
+#
+# Plan prod infra into prod.tfplan (refuses if shared state missing).
+prod-plan:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _require-shared-state
+    cd {{ prod_tf }} && terraform init -input=false && terraform plan -out=prod.tfplan
+
+# Apply the saved plan from `prod-plan`. Refuses to run if prod.tfplan
+# is missing or older than the most-recent edit to the .tf sources;
+# stale plans bypass the review that prod-plan is for.
+#
+# Apply prod.tfplan (refuses if plan is stale; no auto-approve).
+prod-apply:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{ prod_tf }}
+    if [ ! -f prod.tfplan ]; then
+      echo "no prod.tfplan; run \`just prod-plan\` first" >&2
+      exit 1
+    fi
+    plan_mtime=$(date -r prod.tfplan +%s)
+    for src in *.tf; do
+      src_mtime=$(date -r "$src" +%s)
+      if [ "$src_mtime" -gt "$plan_mtime" ]; then
+        echo "prod.tfplan is older than $src; re-run \`just prod-plan\`" >&2
+        exit 1
+      fi
+    done
+    terraform apply prod.tfplan
+    rm prod.tfplan
 
 # Destroy prod infrastructure. WARNING: terminates nodes, removes DNS.
+# Prod reads shared state via `terraform_remote_state`, so `shared-down`
+# must run AFTER both clusters have been torn down. Refuse if the
+# shared state file is missing.
+#
+# Destroy prod cluster (typed confirmation; no auto-approve).
 prod-down:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _require-shared-state
+    read -r -p "Type 'destroy pln-prod' to confirm: " confirm
+    [ "$confirm" = "destroy pln-prod" ] || { echo "aborted"; exit 1; }
     cd {{ prod_tf }} && terraform destroy
 
 # Form the mesh. pln bootstrap ssh auto-installs pln via install.sh on
@@ -37,6 +145,8 @@ prod-down:
 # prod ctx's admin keys. --admin delegates signing authority to each
 # prod node. Post-join, each node gets its static-http listener bound
 # to :8080 (CF origin rule routes proxied traffic there).
+#
+# Bootstrap prod nodes: auto-install pln, join mesh, bind :8080.
 prod-bootstrap:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -47,20 +157,23 @@ prod-bootstrap:
     terraform output -raw bootstrap_targets | pln bootstrap ssh --admin -
 
     echo "configuring static-http :8080 on each node..."
-    # `|| [ -n "$line" ]` catches the final line when terraform output
-    # omits its trailing newline — otherwise read drops it silently.
-    while IFS= read -r line || [ -n "$line" ]; do
-      host=${line##*=root@}
-      ssh {{ ssh_args }} -n "root@$host" "pln --dir /var/lib/pln set static-http :8080 && systemctl restart pln"
-      echo "  $host ready"
-    done < <(terraform output -raw bootstrap_targets)
+    terraform output -json node_ips | jq -r 'to_entries[] | "\(.key)\t\(.value)"' | \
+      while IFS=$'\t' read -r name ip; do
+        ssh {{ ssh_args }} -n "root@$ip" "pln --dir /var/lib/pln set static-http :8080 && systemctl restart pln"
+        echo "  $name ($ip) ready"
+      done
+
+    expected=$(terraform output -json node_ips | jq 'length')
+    just _verify-mesh prod "$expected"
 
 # Seed the apex landing page + install.sh and the docs stub.
 #
 # The apex bundle is assembled in a tmp dir: the static HTML from
 # web/apex/ plus install.sh with the latest release tag baked in (same
 # sed goreleaser does at release time). Seeds flow through the prod ctx
-# directly to the target daemon — no laptop CAS involved.
+# directly to the target daemon; no laptop CAS involved.
+#
+# Seed pln.sh apex and docs.pln.sh to the prod mesh.
 prod-seed:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -76,17 +189,19 @@ prod-seed:
     pln seed web/docs docs.pln.sh
 
 # Upgrade pln on every node to the latest release. `pln upgrade` is
-# localOnly, so it has to run on each node directly — can't go through
+# localOnly, so it has to run on each node directly; can't go through
 # the prod ctx. The .deb postinstall restarts an active service.
+#
+# Upgrade pln on every prod node to the latest tagged release.
 prod-upgrade:
     #!/usr/bin/env bash
     set -euo pipefail
     cd {{ prod_tf }}
-    while IFS= read -r line || [ -n "$line" ]; do
-      host=${line##*=root@}
-      echo "upgrading $host..."
-      ssh {{ ssh_args }} -n "root@$host" "pln upgrade"
-    done < <(terraform output -raw bootstrap_targets)
+    terraform output -json node_ips | jq -r 'to_entries[] | "\(.key)\t\(.value)"' | \
+      while IFS=$'\t' read -r name ip; do
+        echo "upgrading $name ($ip)..."
+        ssh {{ ssh_args }} -n "root@$ip" "pln upgrade"
+      done
 
 # Mesh status via the prod ctx.
 prod-status:
@@ -98,3 +213,216 @@ prod-ssh name="eu":
     set -euo pipefail
     HOST=$(cd {{ prod_tf }} && terraform output -json node_hostnames | jq -r ".[\"{{ name }}\"]")
     exec ssh {{ ssh_args }} "root@$HOST"
+
+# ── Staging (staging.pln.sh) ──────────────────────────────────────────
+#
+# Mirrors the prod cluster on a separate subdomain and Hetzner firewall.
+# Same lifecycle verbs prefixed `staging-`. The staging cluster opens
+# extra listeners (control-tls :7443 for wire-mode CLIs, gateway :8088
+# for blob/fn share URLs, static-http-domain so <name>-<short-pub>.
+# staging.pln.sh resolves to tenant sites) so the full Pollen Cloud
+# substrate can be exercised without touching prod.
+#
+# All recipes run under PLN_CONTEXT=staging-admin. Set up the admin ctx
+# once with `pln ctx add staging-admin root@<eu-ip>` after `staging-apply`.
+
+# Preview staging infrastructure changes. Writes staging.tfplan; nothing
+# is applied. Run `just staging-apply` to execute the saved plan after
+# reviewing it.
+#
+# Plan staging infra into staging.tfplan (refuses if shared state missing).
+staging-plan:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _require-shared-state
+    cd {{ staging_tf }} && terraform init -input=false && terraform plan -out=staging.tfplan
+
+# Apply the saved plan from `staging-plan`. Refuses to run if the plan
+# is missing or older than the most-recent edit to the .tf sources.
+#
+# Apply staging.tfplan (refuses if plan is stale).
+staging-apply:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{ staging_tf }}
+    if [ ! -f staging.tfplan ]; then
+      echo "no staging.tfplan; run \`just staging-plan\` first" >&2
+      exit 1
+    fi
+    plan_mtime=$(date -r staging.tfplan +%s)
+    for src in *.tf; do
+      src_mtime=$(date -r "$src" +%s)
+      if [ "$src_mtime" -gt "$plan_mtime" ]; then
+        echo "staging.tfplan is older than $src; re-run \`just staging-plan\`" >&2
+        exit 1
+      fi
+    done
+    terraform apply staging.tfplan
+    rm staging.tfplan
+
+# Destroy staging infrastructure. WARNING: terminates nodes, removes DNS.
+# Staging reads shared state via `terraform_remote_state`, so `shared-down`
+# must run AFTER both clusters have been torn down. Refuse if the shared
+# state file is missing.
+#
+# Destroy staging cluster (typed confirmation; no auto-approve).
+staging-down:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just _require-shared-state
+    read -r -p "Type 'destroy pln-staging' to confirm: " confirm
+    [ "$confirm" = "destroy pln-staging" ] || { echo "aborted"; exit 1; }
+    cd {{ staging_tf }} && terraform destroy
+
+# Form the staging mesh. install.sh on each node pulls the latest tagged
+# release just so the systemd unit + /var/lib/pln user exist; the Phase 7
+# listener surface gets layered on by `staging-deploy-dev` next.
+#
+# Bootstrap staging nodes: install released pln and join the mesh.
+staging-bootstrap:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{ staging_tf }}
+    echo "forming mesh via pln bootstrap ssh..."
+    terraform output -raw bootstrap_targets | PLN_CONTEXT=staging-admin pln bootstrap ssh --admin -
+
+    expected=$(terraform output -json node_ips | jq 'length')
+    just _verify-mesh staging-admin "$expected"
+
+# Overlay a locally-built linux/amd64 binary on every staging node and
+# apply the wire-mode / static-domain / gateway listener config. Run
+# this any time `plncl-substrate` advances and you want staging to track
+# it without cutting a release. Each node keeps a `pln.prev` copy of
+# the previous binary; on health-check failure the recipe rolls back
+# that node before exiting non-zero.
+#
+# Overlay locally-built pln on staging nodes (auto-rollback on failure).
+staging-deploy-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{ repo_root }}
+    BIN={{ repo_root }}/dist/pln-linux-amd64
+    echo "building $BIN..."
+    GOOS=linux GOARCH=amd64 go build -o "$BIN" ./cmd/pln/
+
+    cd {{ staging_tf }}
+    STAGING_DOMAIN=$(terraform output -raw apex_host)
+    terraform output -json node_ips | jq -r 'to_entries[] | "\(.key)\t\(.value)"' | \
+      while IFS=$'\t' read -r name ip; do
+        echo "deploying to $name ($ip)..."
+        # scp to /tmp first; install(1) atomically replaces /usr/bin/pln
+        # (rename(2) on the path keeps the running process's open file
+        # mapping intact so it doesn't crash mid-upload). `scp` direct to
+        # /usr/bin/pln fails with ETXTBSY while the daemon is running.
+        # The pln.prev copy is the rollback target if the post-restart
+        # health probe fails.
+        scp -O {{ ssh_args }} "$BIN" "root@$ip:/tmp/pln.new"
+        ssh {{ ssh_args }} -n "root@$ip" "
+          set -e
+          cp /usr/bin/pln /usr/bin/pln.prev
+          install -m 0755 /tmp/pln.new /usr/bin/pln
+          rm -f /tmp/pln.new
+          pln --dir /var/lib/pln set static-http :8080
+          pln --dir /var/lib/pln set static-http-domain $STAGING_DOMAIN
+          pln --dir /var/lib/pln set control-tls :7443
+          pln --dir /var/lib/pln set gateway :8088
+          # systemctl restart can exit non-zero (e.g. start-limit-hit) before
+          # the probe loop runs; ignore its rc and let the probe decide.
+          systemctl restart pln || true
+          for i in \$(seq 1 5); do
+            if systemctl is-active --quiet pln; then exit 0; fi
+            sleep 1
+          done
+          echo 'pln failed health check after restart; rolling back' >&2
+          install -m 0755 /usr/bin/pln.prev /usr/bin/pln
+          # Clear systemd's start-limit window before the rollback restart;
+          # repeated failures in the probe loop can trip start-limit-hit,
+          # which would otherwise refuse the rollback start.
+          systemctl reset-failed pln || true
+          systemctl restart pln || true
+          exit 1
+        "
+        echo "  $name ($ip) ready"
+      done
+
+    expected=$(terraform output -json node_ips | jq 'length')
+    just _verify-mesh staging-admin "$expected"
+
+# Upgrade pln on every staging node to the latest tagged release. Only
+# useful when staging is tracking a release; if you've been running
+# `staging-deploy-dev`, use that instead.
+#
+# Upgrade pln on every staging node to the latest tagged release.
+staging-upgrade:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{ staging_tf }}
+    terraform output -json node_ips | jq -r 'to_entries[] | "\(.key)\t\(.value)"' | \
+      while IFS=$'\t' read -r name ip; do
+        echo "upgrading $name ($ip)..."
+        ssh {{ ssh_args }} -n "root@$ip" "pln upgrade"
+      done
+
+# Mesh status via the staging admin ctx.
+staging-status:
+    PLN_CONTEXT=staging-admin pln status
+
+# SSH into a staging node by name (eu or us).
+staging-ssh name="eu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    HOST=$(cd {{ staging_tf }} && terraform output -json node_hostnames | jq -r ".[\"{{ name }}\"]")
+    exec ssh {{ ssh_args }} "root@$HOST"
+
+# ── Internal helpers ─────────────────────────────────────────────────
+
+# Wait up to 60s for `pln status nodes` to report `expected` reachable
+# peers via the given context. `formatStatus()` and the self-row code in
+# cmd/pln/network.go produce these stable tokens for a reachable peer:
+#
+#   `(self)` in the NODE column for the local node
+#   `direct` or `indirect` in the STATUS column for joined peers
+#
+# Offline peers are filtered by default. The grep below counts rows
+# carrying any of those markers, which gives a reachable-peer total
+# including self. `pln status` has no --json flag today; this textual
+# parse is the most robust verification surface available.
+#
+# Poll the given ctx until `expected` reachable peers are visible.
+_verify-mesh ctx expected:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    expected={{ expected }}
+    actual=0
+    echo "verifying mesh formed ($expected peers reachable)..."
+    for i in $(seq 1 30); do
+      actual=$(PLN_CONTEXT={{ ctx }} pln status nodes 2>/dev/null | \
+        grep -Ec '(\(self\)|\bdirect\b|\bindirect\b)' || true)
+      actual=${actual:-0}
+      if [ "$actual" -ge "$expected" ]; then
+        echo "  mesh up: $actual/$expected peers reachable"
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "mesh failed to form: only $actual/$expected peers reachable" >&2
+    exit 1
+
+# Refuse to plan, apply, or destroy a cluster module while shared
+# state is missing or empty. Prod and staging both read shared via
+# `terraform_remote_state`, so without a valid shared state the
+# cluster module cannot resolve its zone IDs. A non-empty zone_id
+# output is the strongest signal that shared has been applied.
+#
+# Assert shared state exists and exposes a zone_id output.
+_require-shared-state:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -s {{ shared_tf }}/terraform.tfstate ]; then
+      echo "shared state missing or empty; run \`just shared-plan && just shared-apply\` first" >&2
+      exit 1
+    fi
+    if ! (cd {{ shared_tf }} && terraform output -raw zone_id >/dev/null 2>&1); then
+      echo "shared state has no zone_id output; re-run \`just shared-plan && just shared-apply\`" >&2
+      exit 1
+    fi

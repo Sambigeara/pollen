@@ -52,7 +52,7 @@ func newTestNode(t *testing.T, cluster *testauth.ClusterAuth, ips []string) *tes
 		port:    0,
 		dir:     dir,
 		privKey: priv,
-		creds:   cluster.CredsFor(t, pub),
+		creds:   cluster.AdminCredsFor(t, pub),
 	}
 	t.Cleanup(tn.stop)
 	return tn
@@ -99,6 +99,14 @@ func (tn *testNode) start(t *testing.T) {
 	tn.errCh = errCh
 }
 
+// daemonCtx returns a context with an RPCCaller bound to this node's
+// own cert. Tests that call admin RPCs directly on tn.svc (bypassing
+// the gRPC interceptor) need this so capability-gated handlers see
+// the daemon's authority.
+func (tn *testNode) daemonCtx() context.Context {
+	return auth.WithRPCCaller(context.Background(), auth.NewRPCCaller(tn.creds.Cert()))
+}
+
 func (tn *testNode) stop() {
 	if tn.cancel == nil {
 		return
@@ -143,7 +151,7 @@ func TestConnectPeerFlow(t *testing.T) {
 	b := newTestNode(t, cluster, nodeIPs)
 	b.start(t)
 
-	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+	_, err := a.svc.ConnectPeer(a.daemonCtx(), &controlv1.ConnectPeerRequest{
 		PeerPub: b.pubKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
 	})
@@ -168,7 +176,7 @@ func TestInitialVivaldiCoordPropagatesAfterConnect(t *testing.T) {
 	b := newTestNode(t, cluster, nodeIPs)
 	b.start(t)
 
-	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+	_, err := a.svc.ConnectPeer(a.daemonCtx(), &controlv1.ConnectPeerRequest{
 		PeerPub: b.pubKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
 	})
@@ -190,7 +198,7 @@ func TestConnectPeerAfterPriorConnection(t *testing.T) {
 
 	c := newTestNode(t, cluster, nodeIPs)
 	c.start(t)
-	_, err := a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+	_, err := a.svc.ConnectPeer(a.daemonCtx(), &controlv1.ConnectPeerRequest{
 		PeerPub: c.pubKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(c.port))},
 	})
@@ -202,7 +210,7 @@ func TestConnectPeerAfterPriorConnection(t *testing.T) {
 
 	b := newTestNode(t, cluster, nodeIPs)
 	b.start(t)
-	_, err = a.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+	_, err = a.svc.ConnectPeer(a.daemonCtx(), &controlv1.ConnectPeerRequest{
 		PeerPub: b.pubKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(b.port))},
 	})
@@ -222,7 +230,7 @@ func TestRelayOnlyNodePeersAndRefusesSeed(t *testing.T) {
 	peer := newTestNode(t, cluster, nodeIPs)
 	peer.start(t)
 
-	_, err := relay.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+	_, err := relay.svc.ConnectPeer(relay.daemonCtx(), &controlv1.ConnectPeerRequest{
 		PeerPub: peer.pubKey,
 		Addrs:   []string{net.JoinHostPort("127.0.0.1", strconv.Itoa(peer.port))},
 	})

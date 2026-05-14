@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -13,12 +14,20 @@ import (
 
 func addPolicyFlags(cmd *cobra.Command) {
 	cmd.Flags().StringArray("allow-prop", nil, "Require caller cert property key=value (repeatable; AND across clauses)")
+	cmd.Flags().Bool("public", false, "Permit anonymous callers via the canonical gateway URL")
 }
 
 func policyFromFlags(cmd *cobra.Command) (*admissionv1.Predicate, error) {
 	attrs, _ := cmd.Flags().GetStringArray("allow-prop")
-	if len(attrs) == 0 {
+	public, _ := cmd.Flags().GetBool("public")
+	if public && len(attrs) > 0 {
+		return nil, errors.New("--public and --allow-prop are mutually exclusive; --public admits anyone, --allow-prop gates by cert claims")
+	}
+	if !public && len(attrs) == 0 {
 		return nil, nil
+	}
+	if public {
+		return &admissionv1.Predicate{Public: true}, nil
 	}
 	clauses := make([]*admissionv1.Clause, 0, len(attrs))
 	for _, raw := range attrs {

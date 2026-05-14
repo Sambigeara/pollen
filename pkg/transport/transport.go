@@ -592,8 +592,7 @@ func (m *QUICTransport) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 	for {
 		payload, err := s.conn.ReceiveDatagram(ctx)
 		if err != nil {
-			reason := classifyQUICError(err)
-			m.removePeer(peerKey, s, reason)
+			m.classifyAndRemovePeer(peerKey, s, err)
 			return
 		}
 		m.metrics.DatagramsRecv.Add(ctx, 1)
@@ -989,13 +988,28 @@ func (m *QUICTransport) ClosePeerSession(peer types.PeerKey, reason DisconnectRe
 	}
 }
 
+// classifyAndRemovePeer tears the peer session down with a reason
+// derived from err. For unclassified errors it also logs the raw type
+// and message, which the downstream PeerEventDisconnected log line
+// would otherwise drop.
+func (m *QUICTransport) classifyAndRemovePeer(peerKey types.PeerKey, s *peerSession, err error) {
+	reason := classifyQUICError(err)
+	if reason == disconnectUnknown {
+		m.log.Infow("unclassified peer disconnect",
+			"peer_id", peerKey.Short(),
+			"err_type", fmt.Sprintf("%T", err),
+			"err", err.Error())
+	}
+	m.removePeer(peerKey, s, reason)
+}
+
 func (m *QUICTransport) sendRawDatagram(ctx context.Context, peerKey types.PeerKey, data []byte) error {
 	s, ok := m.getSession(peerKey)
 	if !ok {
 		return fmt.Errorf("no connection to peer %s", peerKey.Short())
 	}
 	if err := s.conn.SendDatagram(data); err != nil {
-		m.removePeer(peerKey, s, classifyQUICError(err))
+		m.classifyAndRemovePeer(peerKey, s, err)
 		m.metrics.DatagramErrors.Add(ctx, 1)
 		return err
 	}

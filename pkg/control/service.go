@@ -9,7 +9,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -39,7 +38,11 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type Metrics struct {
@@ -116,9 +119,14 @@ type MeshConnector interface {
 // OperatorGate authorises Connect and Fetch. Workload invocations are
 // gated in placement.Call because that path catches remote dispatch and
 // seed-to-seed tail calls as well as operator RPCs.
+//
+// Connect and Fetch take the caller's cert directly so wire-mode tenants
+// (whose certs aren't gossiped into the mesh snapshot) can be authorised
+// against their own authority. Mesh-peer call sites resolve the cert via
+// LookupCert from the snapshot before calling.
 type OperatorGate interface {
-	Connect(callerKey, hostPeer types.PeerKey, port uint32) error
-	Fetch(callerKey types.PeerKey, hash string) error
+	Connect(callerCert *admissionv1.DelegationCert, hostPeer types.PeerKey, port uint32) error
+	Fetch(callerCert *admissionv1.DelegationCert, hash string) error
 }
 
 var _ controlv1.ControlServiceServer = (*Service)(nil)
@@ -142,16 +150,13 @@ type Service struct {
 	signPriv     ed25519.PrivateKey
 }
 
+// canPublish guards the SeedWorkload daemon-self path, which uses the
+// daemon's signer to mint a SpecAuth on the caller's behalf. Wire-mode
+// callers must instead supply pre_signed_auth and are gated by the
+// per-RPC caller-cap check; only the unix-socket daemon-self path
+// consults this helper.
 func (s *Service) canPublish() bool {
 	return s.creds != nil && s.creds.Cert().GetClaims().GetCapabilities().GetCanPublish()
-}
-
-func (s *Service) canDelegate() bool {
-	return s.creds != nil && s.creds.Cert().GetClaims().GetCapabilities().GetCanDelegate()
-}
-
-func (s *Service) canAdmit() bool {
-	return s.creds != nil && s.creds.Cert().GetClaims().GetCapabilities().GetCanAdmit()
 }
 
 func (s *Service) localPeerKey() types.PeerKey {
@@ -200,9 +205,10 @@ func NewService(membership MembershipControl, placement PlacementControl, tunnel
 }
 
 type Server struct {
-	svc *Service
-	gs  *grpc.Server
-	log *zap.SugaredLogger
+	svc   *Service
+	gs    *grpc.Server
+	tlsGS *grpc.Server
+	log   *zap.SugaredLogger
 }
 
 func New(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, blobs BlobsControl, sc StaticControl, state StateReader, opts ...Option) *Server {
@@ -234,10 +240,41 @@ func (s *Server) injectCaller(ctx context.Context) context.Context {
 	if cert := callerCertFromContext(ctx); cert != nil {
 		return auth.WithRPCCaller(ctx, auth.NewRPCCaller(cert))
 	}
+	// Only fall back to the daemon's own cert when the inbound
+	// transport is a local credential (unix socket). On TLS paths a
+	// missing peer cert means the mTLS handshake didn't populate
+	// peer.AuthInfo as expected — leaking daemon-self privileges to
+	// such a caller would erase the wire-mode security boundary.
+	if !isLocalCallerCtx(ctx) {
+		return ctx
+	}
 	if s.svc == nil || s.svc.creds == nil {
 		return ctx
 	}
 	return auth.WithRPCCaller(ctx, auth.NewRPCCaller(s.svc.creds.Cert()))
+}
+
+// isLocalCallerCtx reports whether the inbound RPC arrived over the
+// local unix socket. We detect it by inspecting peer.Peer's addr: TLS
+// streams expose a credentials.TLSInfo with a SAN-bearing AuthInfo and
+// always have a network addr; the unix-socket path uses a stdlib
+// *net.UnixAddr (or no addr at all for in-process tests).
+func isLocalCallerCtx(ctx context.Context) bool {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		// In-process tests dial via grpc.NewServer in-process without
+		// populating peer.Peer. Treat the absence as local so the
+		// existing test surface keeps working; production transports
+		// always populate peer.Peer.
+		return true
+	}
+	if _, isTLS := p.AuthInfo.(credentials.TLSInfo); isTLS {
+		return false
+	}
+	if _, ok := p.Addr.(*net.UnixAddr); ok {
+		return true
+	}
+	return p.Addr == nil
 }
 
 type callerStream struct {
@@ -301,19 +338,36 @@ func (s *Server) ServeTLS(l net.Listener) error {
 		return fmt.Errorf("control tls identity cert: %w", err)
 	}
 	cfg := newControlTLSConfig(serverCert, s.svc.creds.RootPub())
-	tlsL := tls.NewListener(l, cfg)
-	s.log.Infow("control tls listener", "addr", tlsL.Addr().String())
-	return s.Serve(tlsL)
+	// gRPC's TLS credentials drive both the handshake and the population
+	// of peer.AuthInfo; pre-wrapping the listener with tls.NewListener
+	// leaves AuthInfo nil, which strips the caller cert from every RPC.
+	tlsGS := grpc.NewServer(
+		grpc.Creds(credentials.NewTLS(cfg)),
+		grpc.ChainUnaryInterceptor(s.callerInterceptor),
+		grpc.ChainStreamInterceptor(s.streamCallerInterceptor),
+	)
+	controlv1.RegisterControlServiceServer(tlsGS, s.svc)
+	s.tlsGS = tlsGS
+	s.log.Infow("control tls listener", "addr", l.Addr().String())
+	return tlsGS.Serve(l)
 }
 
 const controlTLSIdentityTTL = 24 * time.Hour
 
 func (s *Server) Serve(l net.Listener) error { return s.gs.Serve(l) }
 
-func (s *Server) Stop()             { s.gs.GracefulStop() }
+func (s *Server) Stop() {
+	if s.tlsGS != nil {
+		s.tlsGS.GracefulStop()
+	}
+	s.gs.GracefulStop()
+}
 func (s *Server) Service() *Service { return s.svc }
 
-func (s *Service) Shutdown(_ context.Context, _ *controlv1.ShutdownRequest) (*controlv1.ShutdownResponse, error) {
+func (s *Service) Shutdown(ctx context.Context, _ *controlv1.ShutdownRequest) (*controlv1.ShutdownResponse, error) {
+	if err := s.requireDaemonSelf(ctx, "shutdown is daemon-self only"); err != nil {
+		return nil, err
+	}
 	if s.shutdown == nil {
 		return nil, status.Error(codes.FailedPrecondition, "shutdown callback not configured")
 	}
@@ -334,15 +388,16 @@ func (s *Service) GetStatus(ctx context.Context, _ *controlv1.GetStatusRequest) 
 	scope := s.viewScope(ctx)
 
 	out := &controlv1.GetStatusResponse{
-		Degraded:     s.isDegraded(time.Now()),
-		Certificates: s.buildCertificates(snap),
-		Self:         s.buildSelfSummary(snap.LocalID, snap.Nodes[snap.LocalID], connections),
-		Nodes:        s.buildNodeSummaries(snap, snap.Nodes, connections),
-		Services:     buildServiceSummaries(snap.Nodes, scope),
-		Connections:  buildConnectionSummaries(snap.Nodes, connections),
-		Workloads:    s.buildWorkloadSummaries(snap, scope),
-		Sites:        s.buildStaticSummaries(snap, scope),
-		Blobs:        s.buildBlobSummaries(snap, scope),
+		Degraded:      s.isDegraded(time.Now()),
+		Certificates:  s.buildCertificates(snap),
+		Self:          s.buildSelfSummary(snap.LocalID, snap.Nodes[snap.LocalID], connections),
+		Nodes:         s.buildNodeSummaries(snap, snap.Nodes, connections),
+		Services:      buildServiceSummaries(snap.Nodes, scope),
+		Connections:   buildConnectionSummaries(snap.Nodes, connections),
+		Workloads:     s.buildWorkloadSummaries(snap, scope),
+		Sites:         s.buildStaticSummaries(snap, scope),
+		Blobs:         s.buildBlobSummaries(snap, scope),
+		GatewayDomain: strings.TrimPrefix(s.staticDomain, "."),
 	}
 
 	sortStatusResponse(out)
@@ -354,7 +409,7 @@ func (s *Service) Inspect(ctx context.Context, req *controlv1.InspectRequest) (*
 	switch t := req.GetTarget().(type) {
 	case *controlv1.InspectRequest_NodePub:
 		peerKey := types.PeerKeyFromBytes(t.NodePub)
-		if !scope.showAll && peerKey != scope.caller {
+		if !scope.permits(peerKey) {
 			return nil, status.Errorf(codes.NotFound, "no peer %s in cluster view", peerKey.String())
 		}
 		detail, err := s.inspectNode(peerKey)
@@ -369,11 +424,9 @@ func (s *Service) Inspect(ctx context.Context, req *controlv1.InspectRequest) (*
 		return nil, status.Error(codes.Unimplemented, "resource inspect not yet implemented")
 	case nil:
 		return nil, status.Error(codes.InvalidArgument, "inspect target required")
+	default:
+		return nil, status.Errorf(codes.InvalidArgument, "unrecognised inspect target type %T", req.GetTarget())
 	}
-	// Go's type-switch cannot prove proto oneof exhaustiveness, so this
-	// trailing return is required even though every concrete variant is
-	// handled above.
-	return nil, status.Errorf(codes.InvalidArgument, "unrecognised inspect target type %T", req.GetTarget())
 }
 
 func (s *Service) inspectNode(peerKey types.PeerKey) (*controlv1.NodeDetail, error) {
@@ -868,6 +921,9 @@ func (s *Service) lookupLocalService(name string) *state.Service {
 }
 
 func (s *Service) ConnectPeer(ctx context.Context, req *controlv1.ConnectPeerRequest) (*controlv1.ConnectPeerResponse, error) {
+	if err := s.requireCallerCap(ctx, admitCap, "admit"); err != nil {
+		return nil, err
+	}
 	if s.connector == nil {
 		return nil, status.Error(codes.FailedPrecondition, "mesh connector not configured")
 	}
@@ -889,7 +945,7 @@ func (s *Service) ConnectPeer(ctx context.Context, req *controlv1.ConnectPeerReq
 func (s *Service) ConnectService(ctx context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
 	peerKey := types.PeerKeyFromBytes(req.Node.PeerPub)
 	if s.gate != nil {
-		if err := s.gate.Connect(s.localPeerKey(), peerKey, req.GetRemotePort()); err != nil {
+		if err := s.gate.Connect(s.callerCert(ctx), peerKey, req.GetRemotePort()); err != nil {
 			return nil, status.Error(codes.PermissionDenied, "connect denied")
 		}
 	}
@@ -900,7 +956,10 @@ func (s *Service) ConnectService(ctx context.Context, req *controlv1.ConnectServ
 	return &controlv1.ConnectServiceResponse{LocalPort: boundPort}, nil
 }
 
-func (s *Service) DisconnectService(_ context.Context, req *controlv1.DisconnectServiceRequest) (*controlv1.DisconnectServiceResponse, error) {
+func (s *Service) DisconnectService(ctx context.Context, req *controlv1.DisconnectServiceRequest) (*controlv1.DisconnectServiceResponse, error) {
+	if err := s.requireCallerCap(ctx, admitCap, "admit"); err != nil {
+		return nil, err
+	}
 	localPort := req.GetLocalPort()
 	snap := s.state.Snapshot()
 	var serviceName string
@@ -919,9 +978,9 @@ func (s *Service) DisconnectService(_ context.Context, req *controlv1.Disconnect
 	return &controlv1.DisconnectServiceResponse{}, nil
 }
 
-func (s *Service) DenyPeer(_ context.Context, req *controlv1.DenyPeerRequest) (*controlv1.DenyPeerResponse, error) {
-	if !s.canAdmit() {
-		return nil, status.Error(codes.PermissionDenied, "admit capability required")
+func (s *Service) DenyPeer(ctx context.Context, req *controlv1.DenyPeerRequest) (*controlv1.DenyPeerResponse, error) {
+	if err := s.requireCallerCap(ctx, admitCap, "admit"); err != nil {
+		return nil, err
 	}
 	if err := s.membership.DenyPeer(types.PeerKeyFromBytes(req.GetPeerPub())); err != nil {
 		return nil, s.fail(err, "deny peer failed")
@@ -930,7 +989,8 @@ func (s *Service) DenyPeer(_ context.Context, req *controlv1.DenyPeerRequest) (*
 }
 
 func (s *Service) IssueCert(ctx context.Context, req *controlv1.IssueCertRequest) (*controlv1.IssueCertResponse, error) {
-	if !s.canDelegate() {
+	caller, ok := auth.RPCCallerFromContext(ctx)
+	if !ok || !caller.CanDelegate() {
 		return nil, status.Error(codes.PermissionDenied, "delegate capability required")
 	}
 	certCaps := req.GetCertCaps()
@@ -940,11 +1000,38 @@ func (s *Service) IssueCert(ctx context.Context, req *controlv1.IssueCertRequest
 	if err := auth.ValidateAttributes(certCaps.GetAttributes()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	// Caller cannot grant capabilities they don't hold themselves.
+	// Bool caps gate cluster-admin escalation; MaxDepth and Attributes
+	// gate downstream delegation reach and runtime policy clauses. The
+	// daemon's signer only enforces child ≤ daemon's parent chain, so
+	// a CanDelegate tenant with MaxDepth=2 and attrs={role:"worker"}
+	// could otherwise request a child cert with MaxDepth=255 and
+	// attrs={role:"admin"} via a higher-cap relay daemon.
+	callerCaps := caller.Cert().GetClaims().GetCapabilities()
+	if certCaps.GetCanAdmit() && !callerCaps.GetCanAdmit() {
+		return nil, status.Error(codes.PermissionDenied, "cannot grant admit; caller lacks admit")
+	}
+	if certCaps.GetCanDelegate() && !callerCaps.GetCanDelegate() {
+		return nil, status.Error(codes.PermissionDenied, "cannot grant delegate; caller lacks delegate")
+	}
+	if certCaps.GetCanPublish() && !callerCaps.GetCanPublish() {
+		return nil, status.Error(codes.PermissionDenied, "cannot grant publish; caller lacks publish")
+	}
+	if certCaps.GetMaxDepth() > callerCaps.GetMaxDepth() {
+		return nil, status.Errorf(codes.PermissionDenied, "cannot grant max_depth %d; caller's max_depth is %d", certCaps.GetMaxDepth(), callerCaps.GetMaxDepth())
+	}
+	if err := attributesSubsetOf(certCaps.GetAttributes(), callerCaps.GetAttributes()); err != nil {
+		return nil, status.Errorf(codes.PermissionDenied, "cannot grant attributes: %v", err)
+	}
 	cert, err := s.membership.IssueCert(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), certCaps, req.GetMintOnly())
 	if err != nil {
 		return nil, s.fail(err, "issue cert failed")
 	}
-	return &controlv1.IssueCertResponse{Cert: cert}, nil
+	resp := &controlv1.IssueCertResponse{}
+	if req.GetMintOnly() {
+		resp.Cert = cert
+	}
+	return resp, nil
 }
 
 func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) (*controlv1.GetMetricsResponse, error) {
@@ -1042,7 +1129,8 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 		if err := s.seedWorkloadPresigned(stream.Context(), wasmBytes, spec, presigned); err != nil {
 			return err
 		}
-		return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name})
+		publisher := types.PeerKeyFromBytes(presigned.GetPublisher().GetClaims().GetSubjectPub())
+		return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name, PublicUrl: s.pathBasedURL("fn", name, publisher, presigned.GetPolicy().GetPublic())})
 	}
 
 	if !s.canPublish() {
@@ -1065,7 +1153,7 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 		}
 	}
 
-	return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name})
+	return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name, PublicUrl: s.pathBasedURL("fn", name, s.localPeerKey(), header.GetPolicy().GetPublic())})
 }
 
 func (s *Service) seedWorkloadPresigned(ctx context.Context, wasmBytes []byte, spec state.WorkloadSpec, presigned *admissionv1.SpecAuth) error {
@@ -1094,7 +1182,7 @@ const fetchChunkSize = 32 * 1024
 func (s *Service) FetchBlob(req *controlv1.FetchBlobRequest, stream grpc.ServerStreamingServer[controlv1.FetchBlobResponse]) error {
 	hash := req.GetHash()
 	if s.gate != nil {
-		if err := s.gate.Fetch(s.localPeerKey(), hash); err != nil {
+		if err := s.gate.Fetch(s.callerCert(stream.Context()), hash); err != nil {
 			return status.Error(codes.PermissionDenied, "fetch denied")
 		}
 	}
@@ -1172,13 +1260,18 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 	if name == "" && header.GetAnchor() {
 		name = types.ShortHash(hash)
 	}
+	var publisher types.PeerKey
 	if name != "" {
 		if err := s.publishUploadedBlob(hash, name, header); err != nil {
 			return err
 		}
+		if presigned := header.GetPreSignedAuth(); presigned != nil {
+			publisher = types.PeerKeyFromBytes(presigned.GetPublisher().GetClaims().GetSubjectPub())
+		} else {
+			publisher = s.localPeerKey()
+		}
 	}
-
-	return stream.SendAndClose(&controlv1.UploadBlobResponse{Hash: hash})
+	return stream.SendAndClose(&controlv1.UploadBlobResponse{Hash: hash, PublicUrl: s.pathBasedURL("blob", name, publisher, header.GetPolicy().GetPublic())})
 }
 
 func (s *Service) publishUploadedBlob(hash, name string, header *controlv1.UploadBlobHeader) error {
@@ -1285,7 +1378,7 @@ func (s *Service) SeedStatic(ctx context.Context, req *controlv1.SeedStaticReque
 	if err := s.static.SeedStatic(req.GetName(), req.GetManifestDigest(), req.GetPolicy()); err != nil {
 		return nil, s.fail(err, "seed static")
 	}
-	return &controlv1.SeedStaticResponse{}, nil
+	return &controlv1.SeedStaticResponse{PublicUrl: s.hostBasedURL(req.GetName(), s.localPeerKey())}, nil
 }
 
 func (s *Service) seedStaticPresigned(ctx context.Context, req *controlv1.SeedStaticRequest, presigned *admissionv1.SpecAuth) (*controlv1.SeedStaticResponse, error) {
@@ -1303,7 +1396,7 @@ func (s *Service) seedStaticPresigned(ctx context.Context, req *controlv1.SeedSt
 	if err := s.static.SeedStaticPresigned(req.GetName(), req.GetManifestDigest(), presigned); err != nil {
 		return nil, s.fail(err, "seed static")
 	}
-	return &controlv1.SeedStaticResponse{}, nil
+	return &controlv1.SeedStaticResponse{PublicUrl: s.hostBasedURL(req.GetName(), publisher)}, nil
 }
 
 func (s *Service) UnseedStatic(ctx context.Context, req *controlv1.UnseedStaticRequest) (*controlv1.UnseedStaticResponse, error) {
@@ -1355,7 +1448,7 @@ func (s *Service) buildStaticSummaries(snap state.Snapshot, scope viewScope) []*
 			Publisher:       &controlv1.NodeRef{PeerPub: spec.Publisher.Bytes()},
 			Local:           local,
 			ServingCapacity: capacity,
-			PublicUrl:       s.publicStaticURL(name, spec.Publisher),
+			PublicUrl:       s.hostBasedURL(name, spec.Publisher),
 		}
 		for pk := range claimants {
 			summary.Claimants = append(summary.Claimants, &controlv1.NodeRef{PeerPub: pk.Bytes()})
@@ -1365,19 +1458,24 @@ func (s *Service) buildStaticSummaries(snap state.Snapshot, scope viewScope) []*
 	return out
 }
 
-// publicStaticURL renders the externally-reachable URL for a static
-// site, when the daemon has a static-http-domain configured. Empty
-// otherwise — the operator deployment doesn't surface a public name.
-func (s *Service) publicStaticURL(name string, publisher types.PeerKey) string {
-	if s.staticDomain == "" {
+// hostBasedURL renders a static-style URL: `https://<name>-<slug>.<domain>`.
+// Returns "" when no gateway domain is configured.
+func (s *Service) hostBasedURL(name string, publisher types.PeerKey) string {
+	if s.staticDomain == "" || name == "" {
 		return ""
 	}
-	pub := publisher.String()
-	const shortPubLen = 8
-	if len(pub) < shortPubLen {
+	return "https://" + name + "-" + publisher.Slug() + s.staticDomain
+}
+
+// pathBasedURL renders a canonical fn/blob URL:
+// `https://<subdomain>.<domain>/<slug>/<name>`. Anonymous callers reach
+// it only when the spec's policy is public; the URL is suppressed for
+// non-public specs to keep the CLI output truthful.
+func (s *Service) pathBasedURL(subdomain, name string, publisher types.PeerKey, public bool) string {
+	if !public || s.staticDomain == "" || name == "" {
 		return ""
 	}
-	return "https://" + name + "-" + pub[:shortPubLen] + s.staticDomain
+	return "https://" + subdomain + s.staticDomain + "/" + publisher.Slug() + "/" + name
 }
 
 // Restricts holders to live peers; stale BlobAvailability from offline
@@ -1477,7 +1575,7 @@ func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadR
 		return nil, status.Error(codes.InvalidArgument, "either (hash, function) or uri must be set")
 	}
 
-	ctx = s.localCallerContext(ctx)
+	ctx = s.callerWasmContext(ctx)
 	output, err := s.placement.Call(ctx, hash, function, req.GetInput())
 	if err != nil {
 		s.log.Warnw("call workload failed", "hash", hash, "function", function, "err", err)
@@ -1501,11 +1599,14 @@ func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadR
 	return &controlv1.CallWorkloadResponse{Output: output}, nil
 }
 
-func (s *Service) localCallerContext(ctx context.Context) context.Context {
-	if s.creds == nil {
-		return ctx
-	}
-	cert := s.creds.Cert()
+// callerWasmContext seeds a wasm.CallerInfo on ctx from the caller's
+// cert (set by the gRPC interceptor). Unix-socket and SSH-bridge paths
+// hit the daemon-self fallback in injectCaller and naturally carry the
+// daemon's own cert; wire-mode callers carry their own mTLS-validated
+// cert. Either way the downstream placement layer sees the authentic
+// caller identity, not a substituted daemon identity.
+func (s *Service) callerWasmContext(ctx context.Context) context.Context {
+	cert := s.callerCert(ctx)
 	if cert == nil {
 		return ctx
 	}
@@ -1518,9 +1619,75 @@ func (s *Service) localCallerContext(ctx context.Context) context.Context {
 	return wasm.WithCallerInfo(ctx, info)
 }
 
+// callerCert returns the caller's cert from the RPC context. Returns
+// nil if no caller is present — the interceptor (injectCaller) is the
+// only legitimate source of a caller cert, and its TLS-path guard
+// refuses the daemon-self fallback for wire-mode peers. Mirroring that
+// refusal here keeps the security boundary at one well-defined edge.
+// Downstream gate methods (Connect, Fetch, Invoke) fail closed on nil.
+func (s *Service) callerCert(ctx context.Context) *admissionv1.DelegationCert {
+	rpc, ok := auth.RPCCallerFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	return rpc.Cert()
+}
+
+type capabilityCheck func(auth.RPCCaller) bool
+
+func admitCap(c auth.RPCCaller) bool { return c.CanAdmit() }
+
+// attributesSubsetOf returns nil if every key/value pair in child is
+// present with the same value in parent. An empty child is a subset of
+// anything (callers who request no attributes don't need to bound them).
+// A missing parent attribute is treated as not-granted: the child can't
+// introduce keys the parent doesn't carry.
+func attributesSubsetOf(child, parent *structpb.Struct) error {
+	if child == nil || len(child.GetFields()) == 0 {
+		return nil
+	}
+	parentFields := parent.GetFields()
+	for key, childVal := range child.GetFields() {
+		parentVal, ok := parentFields[key]
+		if !ok {
+			return fmt.Errorf("attribute %q absent from caller's cert", key)
+		}
+		if !proto.Equal(childVal, parentVal) {
+			return fmt.Errorf("attribute %q value %q does not match caller's %q", key, childVal.GetStringValue(), parentVal.GetStringValue())
+		}
+	}
+	return nil
+}
+
+// requireCallerCap returns a PermissionDenied unless the caller's cert
+// holds the named capability. Unlike the legacy s.canX() helpers it
+// resolves the caller from the RPC context, so wire-mode tenants are
+// gated by their OWN authority instead of riding the daemon's cert.
+func (s *Service) requireCallerCap(ctx context.Context, want capabilityCheck, friendly string) error {
+	caller, ok := auth.RPCCallerFromContext(ctx)
+	if !ok || !want(caller) {
+		return status.Errorf(codes.PermissionDenied, "%s capability required", friendly)
+	}
+	return nil
+}
+
+// requireDaemonSelf restricts an RPC to callers whose cert subject pub
+// matches the daemon's own. Used for verbs that are nonsensical or
+// dangerous to expose to wire-mode tenants (Shutdown).
+func (s *Service) requireDaemonSelf(ctx context.Context, friendly string) error {
+	rpc, ok := auth.RPCCallerFromContext(ctx)
+	if !ok {
+		return status.Error(codes.PermissionDenied, friendly)
+	}
+	if rpc.SubjectPub() != s.localPeerKey() {
+		return status.Error(codes.PermissionDenied, friendly)
+	}
+	return nil
+}
+
 func (s *Service) fail(err error, msg string, kv ...any) error {
-	if errors.Is(err, state.ErrTombstoneNotOurSlot) {
-		return status.Error(codes.FailedPrecondition, "spec not stored on this node; direct the tombstone at the daemon that accepted the spec")
+	if errors.Is(err, state.ErrTombstoneNoLiveSpec) {
+		return status.Error(codes.NotFound, "no live spec by this publisher matches; nothing to unseed")
 	}
 	s.log.Warnw(msg, append(kv, "err", err)...)
 	return status.Error(codes.Internal, msg)

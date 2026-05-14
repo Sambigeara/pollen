@@ -222,6 +222,37 @@ func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Ce
 	}
 }
 
+// VerifyDelegatedCounterparty builds a TLS VerifyPeerCertificate callback
+// suitable for both the wire-mode mTLS server (peer = client) and dialer
+// (peer = server). It verifies that the peer presented a single x509
+// leaf bound to an ed25519 public key, whose DelegationCert extension
+// chains back to rootPub. Use this when you have a public host string
+// (not a known peer key) and need to admit any caller whose authority
+// chains to the cluster root.
+func VerifyDelegatedCounterparty(rootPub []byte) func([][]byte, [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return errors.New("transport: no peer certificate")
+		}
+		leaf, err := x509.ParseCertificate(rawCerts[0])
+		if err != nil {
+			return fmt.Errorf("parse peer leaf: %w", err)
+		}
+		leafPub, ok := leaf.PublicKey.(ed25519.PublicKey)
+		if !ok {
+			return errors.New("transport: peer leaf must use ed25519")
+		}
+		dc, err := ParseDelegationExtension(rawCerts[0])
+		if err != nil {
+			return fmt.Errorf("parse delegation extension: %w", err)
+		}
+		if dc == nil {
+			return errors.New("transport: peer certificate missing delegation extension")
+		}
+		return auth.VerifyDelegationCert(dc, rootPub, time.Now(), leafPub)
+	}
+}
+
 type serverTLSParams struct {
 	meshCertPtr     *atomic.Pointer[tls.Certificate]
 	inviteCert      tls.Certificate

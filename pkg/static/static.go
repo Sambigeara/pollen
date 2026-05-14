@@ -87,10 +87,12 @@ func New(localID types.PeerKey, store stateStore, blobs blobStore, canServe bool
 
 // SetDomain configures the public DNS suffix served by this listener.
 // When non-empty, the static handler resolves an incoming Host as
-// `<name>-<short-pub>.<domain>`: it strips the configured suffix, then
-// splits the remainder on the final `-` to recover the spec name and
-// the publisher's 8-char hex prefix. Empty domain preserves the
-// pre-Pollen-Cloud behaviour (Host == spec name).
+// `<name>-<slug>.<domain>` where slug is the publisher's PublisherSlug.
+// Empty domain preserves the pre-Pollen-Cloud behaviour (Host == spec
+// name).
+//
+// Call SetDomain before Start: the field is read by request handlers
+// from goroutines spawned by Start.
 func (s *Service) SetDomain(d string) {
 	if d == "" {
 		s.domain = ""
@@ -228,17 +230,22 @@ func (s *Service) run(ctx context.Context) {
 
 func (s *Service) reconcile(ctx context.Context) {
 	snap := s.store.Snapshot()
-	for name, spec := range snap.StaticSpecs {
-		if err := s.ensureReplicated(ctx, snap, name, spec.Spec); err != nil {
-			s.log.Debugw("static replication pending", "name", name, "err", err)
+	// Iterate the per-publisher view, not the deduped one. When two
+	// publishers seed sites under the same name, the deduped view
+	// drops one of them and the losing publisher's bytes never
+	// replicate; the per-publisher view keeps every (publisher, name)
+	// pair so both tenants converge.
+	for _, sv := range snap.StaticSpecsAll {
+		if err := s.ensureReplicated(ctx, snap, sv.Spec.Name, sv.Spec); err != nil {
+			s.log.Debugw("static replication pending", "name", sv.Spec.Name, "publisher", sv.Publisher.Short(), "err", err)
 		}
 	}
 }
 
 func (s *Service) StaticBlobs() map[string]struct{} {
 	snap := s.store.Snapshot()
-	out := make(map[string]struct{}, len(snap.StaticSpecs))
-	for _, spec := range snap.StaticSpecs {
+	out := make(map[string]struct{}, len(snap.StaticSpecsAll))
+	for _, spec := range snap.StaticSpecsAll {
 		digest := spec.Spec.ManifestDigest
 		out[digest] = struct{}{}
 		manifest, err := s.loadManifest(digest)
@@ -272,6 +279,13 @@ func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, nam
 		}
 	}
 
+	// Claims today are keyed by name only (not (publisher, name)); a
+	// shared name across publishers means a single claim represents
+	// the storing peer's commitment to whichever publisher's spec it
+	// reconciled. The data is the same set of digests either way, so
+	// the claim still admits the correct set of file blobs. Promoting
+	// the claim key to (publisher, name) needs a proto change to
+	// statev1.StaticClaimChange and is deferred.
 	if _, alreadyClaimed := snap.StaticClaims[name][s.localID]; alreadyClaimed {
 		return nil
 	}

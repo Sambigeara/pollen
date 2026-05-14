@@ -72,6 +72,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	digest, ok := manifest.paths[reqPath]
 	if !ok {
+		// Log path-misses at debug only and emit the manifest's path
+		// count instead of the full list; a probing scanner can
+		// otherwise generate unbounded log volume against a public
+		// listener.
+		s.log.Debugw("static path miss", "host", host, "req_path", reqPath, "manifest_paths", len(manifest.paths))
 		http.NotFound(w, r)
 		return
 	}
@@ -126,13 +131,10 @@ func (s *Service) loadManifest(digest string) (*parsedManifest, error) {
 	return pm, nil
 }
 
-// lookupSpec resolves a Host header to a StaticSpec. When the service
-// has a configured domain (Pollen-Cloud-style deployment), the Host is
-// parsed as `<name>-<8hex-of-publisher>.<domain>` and matched against
-// the per-publisher snapshot view so two tenants can publish sites with
-// the same name without colliding. Without a configured domain (the
-// default operator-side deployment), the Host is the spec name and the
-// deduped view's publisher tie-break wins.
+// lookupSpec resolves a Host header to a StaticSpec. With a configured
+// domain the Host is `<name>-<slug>.<domain>` where slug is the
+// publisher's PublisherSlug; without one the Host is the spec name and
+// the deduped view's publisher tie-break wins.
 func (s *Service) lookupSpec(snap state.Snapshot, host string) (state.StaticSpecView, bool) {
 	if s.domain == "" {
 		spec, ok := snap.StaticSpecs[host]
@@ -147,35 +149,16 @@ func (s *Service) lookupSpec(snap state.Snapshot, host string) (state.StaticSpec
 		return state.StaticSpecView{}, false
 	}
 	name := prefix[:dash]
-	pubShort := prefix[dash+1:]
-	if !isShortPub(pubShort) {
+	slug := prefix[dash+1:]
+	if !types.IsValidSlug(slug) {
 		return state.StaticSpecView{}, false
 	}
 	for _, sv := range snap.StaticSpecsAll {
-		if sv.Spec.Name != name {
-			continue
+		if sv.Spec.Name == name && sv.Publisher.Slug() == slug {
+			return sv, true
 		}
-		if !strings.HasPrefix(sv.Publisher.String(), pubShort) {
-			continue
-		}
-		return sv, true
 	}
 	return state.StaticSpecView{}, false
-}
-
-const shortPubLen = 8
-
-func isShortPub(s string) bool {
-	if len(s) != shortPubLen {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // hostOnly strips :port, handling IPv6 bracketed literals.

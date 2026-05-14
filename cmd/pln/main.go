@@ -48,6 +48,7 @@ type cliEnv struct {
 	client   controlv1connect.ControlServiceClient
 	cfg      *config.Config
 	dir      string
+	host     string
 	wireMode bool
 }
 
@@ -75,8 +76,14 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 			return err
 		}
 
+		// Wire-mode hosts are not "remote" in the localOnly sense — the
+		// command still runs locally, writing to the local context dir.
+		// SSH-bridge hosts run the command on the remote node, which is
+		// what localOnly is guarding against.
 		if cfg.localOnly && host != "" {
-			return errRemoteUnsupported
+			if _, isWire := parsePlnTarget(host); !isWire {
+				return errRemoteUnsupported
+			}
 		}
 		if cfg.systemService {
 			if err := ensureSystemServiceContext(); err != nil {
@@ -107,6 +114,7 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 		}
 		env := &cliEnv{
 			dir:      dir,
+			host:     host,
 			cfg:      cliCfg,
 			wireMode: wire,
 			// No http.Client.Timeout: per-command deadlines own the budget via

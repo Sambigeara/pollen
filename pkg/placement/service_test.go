@@ -150,7 +150,7 @@ type publishDenyGate struct {
 	denyPublish error
 }
 
-func (g *publishDenyGate) Invoke(types.PeerKey, string) (wasm.CallerInfo, error) {
+func (g *publishDenyGate) Invoke(*admissionv1.DelegationCert, string) (wasm.CallerInfo, error) {
 	return wasm.CallerInfo{}, nil
 }
 
@@ -165,6 +165,8 @@ func (g *publishDenyGate) MayHost(*admissionv1.DelegationCert, *admissionv1.Spec
 func (g *publishDenyGate) MayPublish(*admissionv1.DelegationCert, *admissionv1.Predicate) error {
 	return g.denyPublish
 }
+
+func (g *publishDenyGate) LookupCert(types.PeerKey) *admissionv1.DelegationCert { return nil }
 
 func TestService_Call_UnknownTarget(t *testing.T) {
 	s, _ := newServiceForUnseedTests(peerKey(1), &mockStore{})

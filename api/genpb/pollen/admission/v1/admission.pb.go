@@ -1113,8 +1113,13 @@ func (x *ServiceID) GetName() string {
 }
 
 type Predicate struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Inline        *InlinePredicate       `protobuf:"bytes,1,opt,name=inline,proto3" json:"inline,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Inline *InlinePredicate       `protobuf:"bytes,1,opt,name=inline,proto3" json:"inline,omitempty"`
+	// public, when true, permits anonymous callers (no DelegationCert)
+	// and short-circuits cert-attribute clause evaluation. The HTTP
+	// gateway's canonical URL (`<sub>.pln.sh/<slug>/<resource>`) is the
+	// entry point that surfaces this.
+	Public        bool `protobuf:"varint,2,opt,name=public,proto3" json:"public,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1154,6 +1159,13 @@ func (x *Predicate) GetInline() *InlinePredicate {
 		return x.Inline
 	}
 	return nil
+}
+
+func (x *Predicate) GetPublic() bool {
+	if x != nil {
+		return x.Public
+	}
+	return false
 }
 
 type InlinePredicate struct {
@@ -1349,9 +1361,10 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\x0fmanifest_digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x0emanifestDigest\"+\n" +
 	"\tServiceID\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
-	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\"I\n" +
+	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\"a\n" +
 	"\tPredicate\x12<\n" +
-	"\x06inline\x18\x01 \x01(\v2$.pollen.admission.v1.InlinePredicateR\x06inline\"H\n" +
+	"\x06inline\x18\x01 \x01(\v2$.pollen.admission.v1.InlinePredicateR\x06inline\x12\x16\n" +
+	"\x06public\x18\x02 \x01(\bR\x06public\"H\n" +
 	"\x0fInlinePredicate\x125\n" +
 	"\aclauses\x18\x01 \x03(\v2\x1b.pollen.admission.v1.ClauseR\aclauses\"E\n" +
 	"\x06Clause\x12\x19\n" +

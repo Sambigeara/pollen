@@ -46,10 +46,10 @@ func (n *Supervisor) startPrometheus(ctx context.Context, addr string) error {
 		ReadHeaderTimeout: prometheusReadHeaderTimeout,
 	}
 
-	go func() {
+	n.spawn(func() {
 		<-ctx.Done()
 		srv.Close() //nolint:errcheck
-	}()
+	})
 
 	n.log.Infow("prometheus server listening", "addr", addr)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {

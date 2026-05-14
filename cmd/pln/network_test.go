@@ -216,3 +216,32 @@ func TestCollectStaticSection_ReplicasDisplay(t *testing.T) {
 		})
 	}
 }
+
+func TestCollectBlobsSection_OrphanLabelling(t *testing.T) {
+	resp := &controlv1.GetStatusResponse{
+		Blobs: []*controlv1.BlobSummary{
+			{Hash: "aaaa", Orphan: true, Local: true, Replicas: 1},
+			{Hash: "bbbb", Orphan: true, Local: false, Replicas: 1},
+			{Hash: "cccc", Name: "config", Publisher: nodeRef("a"), Local: true, Replicas: 1},
+		},
+	}
+
+	t.Run("default hides remote orphans, labels local orphans", func(t *testing.T) {
+		sec := collectBlobsSection(resp, statusViewOpts{})
+		// Remote orphan filtered out; local orphan + named blob shown.
+		require.Len(t, sec.rows, 2)
+		// Rows are emitted in the order they pass the filter.
+		require.Equal(t, "(orphaned)", sec.rows[0][0])
+		require.Equal(t, "config", sec.rows[1][0])
+		require.Equal(t, "1 orphaned blobs hidden (use --include-offline)", sec.footer)
+	})
+
+	t.Run("includeAll shows and labels every orphan", func(t *testing.T) {
+		sec := collectBlobsSection(resp, statusViewOpts{includeAll: true})
+		require.Len(t, sec.rows, 3)
+		require.Equal(t, "(orphaned)", sec.rows[0][0])
+		require.Equal(t, "(orphaned)", sec.rows[1][0])
+		require.Equal(t, "config", sec.rows[2][0])
+		require.Empty(t, sec.footer)
+	})
+}

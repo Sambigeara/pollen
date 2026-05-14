@@ -21,10 +21,10 @@ func (n *Supervisor) startStaticHTTP(ctx context.Context, addr string) error {
 	}
 	n.log.Infow("static http listener", "addr", l.Addr().String())
 	srv := &http.Server{Handler: n.staticSvc, ReadHeaderTimeout: staticReadHeaderTimeout}
-	go func() {
+	n.spawn(func() {
 		<-ctx.Done()
 		srv.Close() //nolint:errcheck
-	}()
+	})
 	if err := srv.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

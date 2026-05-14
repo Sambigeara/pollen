@@ -54,3 +54,22 @@ func TestPolicyFromFlags_RejectsEmptyValue(t *testing.T) {
 	_, err := policyFromFlags(cmd)
 	require.ErrorContains(t, err, "empty value")
 }
+
+func TestPolicyFromFlags_PublicOnly(t *testing.T) {
+	cmd := newPolicyCmd(t)
+	require.NoError(t, cmd.Flags().Set("public", "true"))
+
+	policy, err := policyFromFlags(cmd)
+	require.NoError(t, err)
+	require.True(t, policy.GetPublic())
+	require.Empty(t, policy.GetInline().GetClauses())
+}
+
+func TestPolicyFromFlags_RejectsPublicAndAllowPropTogether(t *testing.T) {
+	cmd := newPolicyCmd(t)
+	require.NoError(t, cmd.Flags().Set("public", "true"))
+	require.NoError(t, cmd.Flags().Set("allow-prop", "role=admin"))
+
+	_, err := policyFromFlags(cmd)
+	require.ErrorContains(t, err, "mutually exclusive")
+}

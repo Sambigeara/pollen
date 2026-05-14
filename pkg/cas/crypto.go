@@ -43,6 +43,14 @@ func Encrypt(plaintext, dek []byte) ([]byte, error) {
 	return aead.Seal(envelope, nonce, plaintext, nil), nil
 }
 
+// ErrAEADAuth signals the AEAD authentication tag did not match the
+// envelope under the supplied DEK. Almost always means the local
+// envelope was Put under one DEK while the wrapping the caller
+// unwrapped was minted under another (a pre-idempotent-Put re-publish
+// cycle could leave this stale state). Callers that hold both sides
+// can recover by evicting the envelope + wrapping and re-fetching.
+var ErrAEADAuth = errors.New("cas: aead authentication failed")
+
 func Decrypt(envelope, dek []byte) ([]byte, error) {
 	aead, err := newAEAD(dek)
 	if err != nil {
@@ -54,7 +62,10 @@ func Decrypt(envelope, dek []byte) ([]byte, error) {
 	nonce, ct := envelope[:aead.NonceSize()], envelope[aead.NonceSize():]
 	plaintext, err := aead.Open(nil, nonce, ct, nil)
 	if err != nil {
-		return nil, fmt.Errorf("cas: open envelope: %w", err)
+		// Multiple %w needs Go 1.20+; errors.Is walks both wrapped
+		// targets so callers can match on ErrAEADAuth or on the
+		// underlying aead error.
+		return nil, fmt.Errorf("%w: %w", ErrAEADAuth, err)
 	}
 	return plaintext, nil
 }

@@ -104,14 +104,14 @@ func seedManifest(t *testing.T, blobs *fakeBlobs, fileDigests ...string) string 
 }
 
 func snapshotWith(manifestDigest string, publisher types.PeerKey) state.Snapshot {
+	view := state.StaticSpecView{
+		Spec:      state.StaticSpec{Name: "home.local", ManifestDigest: manifestDigest},
+		Publisher: publisher,
+	}
 	return state.Snapshot{
-		StaticSpecs: map[string]state.StaticSpecView{
-			"home.local": {
-				Spec:      state.StaticSpec{Name: "home.local", ManifestDigest: manifestDigest},
-				Publisher: publisher,
-			},
-		},
-		StaticClaims: map[string]map[types.PeerKey]struct{}{},
+		StaticSpecs:    map[string]state.StaticSpecView{"home.local": view},
+		StaticSpecsAll: []state.StaticSpecView{view},
+		StaticClaims:   map[string]map[types.PeerKey]struct{}{},
 		Nodes: map[types.PeerKey]state.NodeView{
 			publisher: {Blobs: map[string]struct{}{manifestDigest: {}}},
 		},

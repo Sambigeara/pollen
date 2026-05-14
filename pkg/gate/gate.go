@@ -95,61 +95,86 @@ func (g *Gate) Admit(sc *statev1.SpecChange) error {
 	if !proto.Equal(specAuth.GetResource(), expected) {
 		return errors.New("gate: spec auth resource mismatch")
 	}
-	return auth.VerifySpecAuth(specAuth, body, g.rootPub, time.Now())
+	if err := auth.VerifySpecAuth(specAuth, body, g.rootPub, time.Now()); err != nil {
+		return err
+	}
+	// A spec that carries both public=true and inline clauses looks
+	// gated to a casual reader but admits anyone at runtime (decide
+	// short-circuits on public). The CLI rejects the combination at
+	// publish time; rejecting it at Admit closes the same door against
+	// tampered or hand-crafted specs.
+	policy := specAuth.GetPolicy()
+	if policy.GetPublic() && policy.GetInline() != nil {
+		return errors.New("gate: predicate has both public=true and inline clauses")
+	}
+	// Defence-in-depth against a publisher whose slug grinds against a
+	// live mesh peer's slug. PublisherSlug is 60 bits, so a real
+	// collision is statistically unreachable; the check guarantees
+	// canonical-URL routing stays unambiguous against active peers.
+	publisher := types.PeerKeyFromBytes(specAuth.GetPublisher().GetClaims().GetSubjectPub())
+	slug := publisher.Slug()
+	for peer := range g.store.Snapshot().Nodes {
+		if peer != publisher && peer.Slug() == slug {
+			return fmt.Errorf("gate: publisher slug %q collides with existing peer %s", slug, peer.Short())
+		}
+	}
+	return nil
 }
 
-func (g *Gate) Invoke(peerKey types.PeerKey, hash string) (wasm.CallerInfo, error) {
+// Invoke authorises callerCert to invoke the workload at hash. A nil
+// callerCert is admitted only when the spec's policy has public=true;
+// in that case the returned CallerInfo is empty, mirroring the
+// InvokeByToken path. Mesh-peer callers resolve the cert from
+// snap.Nodes via LookupCert, wire-mode callers pass their
+// mTLS-validated cert directly.
+func (g *Gate) Invoke(callerCert *admissionv1.DelegationCert, hash string) (wasm.CallerInfo, error) {
 	snap := g.store.Snapshot()
-	caller, ok := snap.Nodes[peerKey]
-	if !ok || caller.Cert == nil {
-		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
-	}
 	sv, ok := resolveSeedSpec(snap, hash)
 	if !ok || sv.Auth == nil {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
-	if err := decide(caller.Cert, sv.Auth, time.Now()); err != nil {
+	if err := decide(callerCert, sv.Auth, time.Now()); err != nil {
 		return wasm.CallerInfo{}, err
 	}
-	return wasm.CallerInfo{PeerKey: peerKey, Attributes: caller.Cert.GetClaims().GetCapabilities().GetAttributes().AsMap()}, nil
+	if callerCert == nil {
+		return wasm.CallerInfo{}, nil
+	}
+	return wasm.CallerInfo{
+		PeerKey:    types.PeerKeyFromBytes(callerCert.GetClaims().GetSubjectPub()),
+		Attributes: callerCert.GetClaims().GetCapabilities().GetAttributes().AsMap(),
+	}, nil
 }
 
-// Fetch authorises callerKey to read the CAS object at hash. The same
+// Fetch authorises callerCert to read the CAS object at hash. The same
 // stream type carries workload binaries, named-blob payloads, static
 // manifests, and the file blobs nested inside those manifests, so the
 // lookup unions every referencing spec's auth and admits the caller if
 // any one of them allows the cert. Without unioning, a non-publisher
 // replica can never fetch the bytes from the publisher and stays stuck
-// in a fetch-EOF loop.
-func (g *Gate) Fetch(peerKey types.PeerKey, hash string) error {
+// in a fetch-EOF loop. A nil callerCert is admitted only when at least
+// one referencing spec has policy.public=true.
+func (g *Gate) Fetch(callerCert *admissionv1.DelegationCert, hash string) error {
 	snap := g.store.Snapshot()
-	caller, ok := snap.Nodes[peerKey]
-	if !ok || caller.Cert == nil {
-		return wasm.ErrTargetNotFound
-	}
 	auths := snap.BlobEntitlements(hash, g.manifests)
 	if len(auths) == 0 {
 		return wasm.ErrTargetNotFound
 	}
 	now := time.Now()
 	for _, sa := range auths {
-		if decide(caller.Cert, sa, now) == nil {
+		if decide(callerCert, sa, now) == nil {
 			return nil
 		}
 	}
 	return wasm.ErrTargetNotFound
 }
 
-// Connect authorises callerKey to open a connection to (hostPeer, port).
+// Connect authorises callerCert to open a connection to (hostPeer, port).
 // The decision is direction-agnostic: callers pass the local peer as
 // hostPeer when authorising an inbound stream, and the remote peer when
-// authorising one this node is about to open.
-func (g *Gate) Connect(callerKey, hostPeer types.PeerKey, port uint32) error {
+// authorising one this node is about to open. A nil callerCert is
+// admitted only when the target service's policy has public=true.
+func (g *Gate) Connect(callerCert *admissionv1.DelegationCert, hostPeer types.PeerKey, port uint32) error {
 	snap := g.store.Snapshot()
-	caller, ok := snap.Nodes[callerKey]
-	if !ok || caller.Cert == nil {
-		return wasm.ErrTargetNotFound
-	}
 	target, ok := snap.Nodes[hostPeer]
 	if !ok {
 		return wasm.ErrTargetNotFound
@@ -158,9 +183,23 @@ func (g *Gate) Connect(callerKey, hostPeer types.PeerKey, port uint32) error {
 		if svc.Port != port || svc.Auth == nil {
 			continue
 		}
-		return decide(caller.Cert, svc.Auth, time.Now())
+		return decide(callerCert, svc.Auth, time.Now())
 	}
 	return wasm.ErrTargetNotFound
+}
+
+// LookupCert resolves a mesh peer's cert via the gossiped snapshot. Use
+// it on transport-authenticated inbound paths (mesh streams) where the
+// only thing the caller can present is their peer key; wire-mode RPC
+// paths already carry the cert in the request context and should pass
+// it directly.
+func (g *Gate) LookupCert(peerKey types.PeerKey) *admissionv1.DelegationCert {
+	snap := g.store.Snapshot()
+	nv, ok := snap.Nodes[peerKey]
+	if !ok {
+		return nil
+	}
+	return nv.Cert
 }
 
 // FetchByToken authorises an anonymous caller holding token to read the
@@ -241,11 +280,23 @@ func (g *Gate) MayPublish(cert *admissionv1.DelegationCert, policy *admissionv1.
 	return checkPolicyClauses(cert, policy)
 }
 
+// decide authorises cert against specAuth. A nil cert (anonymous
+// caller) is admitted only when the spec's policy has public=true;
+// otherwise the cert is checked for expiry and predicate-clause match.
+// Public also short-circuits cert-bearing callers: anyone reaching a
+// public spec is admitted regardless of their attribute claims.
 func decide(cert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth, now time.Time) error {
+	policy := specAuth.GetPolicy()
+	if policy.GetPublic() {
+		return nil
+	}
+	if cert == nil {
+		return wasm.ErrTargetNotFound
+	}
 	if auth.IsCertExpired(cert, now) {
 		return wasm.ErrTargetNotFound
 	}
-	if err := checkPolicyClauses(cert, specAuth.GetPolicy()); err != nil {
+	if err := checkPolicyClauses(cert, policy); err != nil {
 		return wasm.ErrTargetNotFound
 	}
 	return nil
@@ -296,6 +347,14 @@ func resolveSeedSpec(snap state.Snapshot, identifier string) (state.WorkloadSpec
 	}
 	_, sv, ok := snap.SpecByName(identifier)
 	return sv, ok
+}
+
+// AllowAnonymous reports whether an anonymous caller (no cert) may
+// access a spec described by auth. Used by the HTTP gateway's canonical
+// URL handlers once they have resolved (publisher-slug, resource-name)
+// against the snapshot.
+func (g *Gate) AllowAnonymous(auth *admissionv1.SpecAuth) error {
+	return decide(nil, auth, time.Now())
 }
 
 func decodeSpecChange(sc *statev1.SpecChange) (auth.SpecBody, *admissionv1.ResourceID, error) {

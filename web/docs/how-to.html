@@ -340,7 +340,7 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
         <div class="terminal">
           <span class="cmd">pln set control-tls :7443       <span class="cmt"># tenant CLIs dial here over mTLS</span></span>
           <span class="cmd">pln set static-http :8080       <span class="cmt"># static-site serving</span></span>
-          <span class="cmd">pln set static-http-domain pln.sh <span class="cmt"># enables &lt;name&gt;-&lt;short-pub&gt;.&lt;domain&gt; routing</span></span>
+          <span class="cmd">pln set static-http-domain pln.sh <span class="cmt"># enables &lt;name&gt;-&lt;slug&gt;.&lt;domain&gt; routing</span></span>
           <span class="cmd">pln set gateway :8088           <span class="cmd"># anonymous blob/fn redemption</span></span>
           <span class="cmd">pln restart</span>
         </div>
@@ -348,14 +348,14 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
       </li>
       <li>
         <h3>Point DNS at the edge</h3>
-        <p>Three DNS records resolve to the edge node's public IP. Front them with Cloudflare orange-cloud (or any TLS terminator) so browsers see valid certs; the QUIC mesh on <code>:7443</code> goes through grey-cloud / direct A records — Cloudflare can't proxy custom QUIC.</p>
+        <p>Three DNS records resolve to the edge node's public IP. Front them with Cloudflare orange-cloud (or any TLS terminator) so browsers see valid certs; the mTLS endpoint on <code>:7443</code> goes through grey-cloud / direct A records. Cloudflare can't proxy custom-protocol mTLS where the client cert is the auth.</p>
         <ul>
           <li><code>blob.pln.sh</code> &rarr; edge IP, proxied, origin <code>edge:8088</code></li>
           <li><code>fn.pln.sh</code> &rarr; edge IP, proxied, origin <code>edge:8088</code></li>
-          <li><code>*.pln.sh</code> (wildcard) &rarr; edge IP, proxied, origin <code>edge:8080</code> — serves <code>pln seed</code>'d sites at <code>&lt;name&gt;-&lt;short-pub&gt;.pln.sh</code></li>
-          <li><code>edge.pln.sh:7443</code> &rarr; edge IP, <em>direct</em> (grey cloud / non-Cloudflare) — wire-mode CLI mTLS endpoint</li>
+          <li><code>*.pln.sh</code> (wildcard) &rarr; edge IP, proxied, origin <code>edge:8080</code>; serves <code>pln seed</code>'d sites at <code>&lt;name&gt;-&lt;slug&gt;.pln.sh</code> where the slug is the 12-char base32 of SHA-256 of the publisher's pubkey</li>
+          <li><code>edge.pln.sh:7443</code> &rarr; edge IP, <em>direct</em> (grey cloud / non-Cloudflare); wire-mode CLI mTLS endpoint</li>
         </ul>
-        <p>Top-level subdomains <code>blob</code>, <code>fn</code>, and any future system names are reserved — the static handler only matches Hosts that parse as <code>&lt;name&gt;-&lt;8hex&gt;.&lt;domain&gt;</code>, so a tenant who publishes a site called <code>blob</code> lands at <code>blob-ab12cd34.pln.sh</code> and can't shadow <code>blob.pln.sh</code>.</p>
+        <p>Top-level subdomains <code>blob</code>, <code>fn</code>, and any future system names are reserved. The static handler only matches Hosts that parse as <code>&lt;name&gt;-&lt;slug&gt;.&lt;domain&gt;</code>, so a tenant who publishes a site called <code>blob</code> lands at <code>blob-k7r4z9xa8n2p.pln.sh</code> and can't shadow <code>blob.pln.sh</code>.</p>
       </li>
       <li>
         <h3>Tenants join the cluster over the wire</h3>
@@ -364,20 +364,23 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
           <span class="cmd">pln context use cloud</span>
           <span class="cmd">pln join &lt;token&gt;        <span class="cmt"># token from `pln invite` on an admin node</span></span>
         </div>
-        <p>Wire-mode contexts skip admin-key generation; identity is minted at <code>pln join</code> time against the token's cluster claim. No local daemon required — every subsequent <code>pln</code> command dials the edge over mTLS-QUIC.</p>
+        <p>Wire-mode contexts skip admin-key generation; identity is minted at <code>pln join</code> time against the token's cluster claim. No local daemon required. Every subsequent <code>pln</code> command dials the edge over mTLS-QUIC.</p>
       </li>
       <li>
         <h3>Verify the loop end-to-end</h3>
         <div class="terminal">
-          <span class="cmd">pln seed ./photo.png       <span class="cmt"># blob</span></span>
+          <span class="cmd">pln seed ./photo.png       <span class="cmt"># blob (token-only)</span></span>
           <span class="cmd">pln share photo.png</span>
-          <span class="out">https://blob.pln.sh/RrkFG...AAAA</span>
-          <span class="cmd">curl -sf https://blob.pln.sh/RrkFG...AAAA &gt; out.png</span>
+          <span class="out">https://blob.pln.sh/_/RrkFG...AAAA</span>
+          <span class="cmd">curl -sf https://blob.pln.sh/_/RrkFG...AAAA &gt; out.png</span>
+          <span class="cmd">pln seed ./echo.wasm --public <span class="cmt"># workload (anonymous)</span></span>
+          <span class="out">seeded echo (3a8c7d2e) → https://fn.pln.sh/k7r4z9xa8n2p/echo</span>
+          <span class="cmd">curl -sf https://fn.pln.sh/k7r4z9xa8n2p/echo -d 'hello'</span>
           <span class="cmd">pln seed ./dist mysite     <span class="cmt"># static site</span></span>
           <span class="cmd">pln status sites</span>
           <span class="out">NAME    MANIFEST  REPLICAS  LOCAL  PUBLISHER     URL
-mysite  3a8c7d2e  1/1              ab12cd34...   https://mysite-ab12cd34.pln.sh</span>
-          <span class="cmd">curl -sf https://mysite-ab12cd34.pln.sh/</span>
+mysite  3a8c7d2e  1/1              ab12cd34...   https://mysite-k7r4z9xa8n2p.pln.sh</span>
+          <span class="cmd">curl -sf https://mysite-k7r4z9xa8n2p.pln.sh/</span>
         </div>
       </li>
     </ol>

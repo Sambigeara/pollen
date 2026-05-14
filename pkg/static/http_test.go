@@ -35,7 +35,7 @@ func TestLookupSpec_NoDomain_ExactNameMatch(t *testing.T) {
 	require.Equal(t, "mysite", got.Spec.Name)
 }
 
-func TestLookupSpec_WithDomain_DisambiguatesByPubPrefix(t *testing.T) {
+func TestLookupSpec_WithDomain_DisambiguatesByPubSlug(t *testing.T) {
 	alice := makePub(0x12)
 	bob := makePub(0xff)
 	snap := state.Snapshot{
@@ -50,12 +50,12 @@ func TestLookupSpec_WithDomain_DisambiguatesByPubPrefix(t *testing.T) {
 	svc := &Service{log: zap.NewNop().Sugar()}
 	svc.SetDomain("pln.sh")
 
-	got, ok := svc.lookupSpec(snap, "mysite-12121212.pln.sh")
+	got, ok := svc.lookupSpec(snap, "mysite-"+alice.Slug()+".pln.sh")
 	require.True(t, ok)
-	require.Equal(t, alice, got.Publisher, "alice's mysite must resolve via her pub prefix")
+	require.Equal(t, alice, got.Publisher)
 	require.Equal(t, "alice", got.Spec.ManifestDigest)
 
-	got, ok = svc.lookupSpec(snap, "mysite-ffffffff.pln.sh")
+	got, ok = svc.lookupSpec(snap, "mysite-"+bob.Slug()+".pln.sh")
 	require.True(t, ok)
 	require.Equal(t, bob, got.Publisher)
 	require.Equal(t, "bob", got.Spec.ManifestDigest)
@@ -77,17 +77,17 @@ func TestLookupSpec_WithDomain_ReservedTopLevelFallsThrough(t *testing.T) {
 	}
 }
 
-func TestLookupSpec_WithDomain_RejectsMalformedPubSegment(t *testing.T) {
+func TestLookupSpec_WithDomain_RejectsMalformedSlug(t *testing.T) {
 	svc := &Service{log: zap.NewNop().Sugar()}
 	svc.SetDomain("pln.sh")
 	snap := state.Snapshot{}
 
 	for _, host := range []string{
 		"mysite-tooshort.pln.sh",
-		"mysite-uvwxyzab.pln.sh",  // non-hex
-		"mysite-1234567.pln.sh",   // 7 chars
-		"mysite-123456789.pln.sh", // 9 chars
-		"mysite.example.com",      // wrong suffix
+		"mysite-iiiiiiiiiiii.pln.sh",  // i excluded from Crockford alphabet
+		"mysite-12345678901.pln.sh",   // 11 chars
+		"mysite-1234567890123.pln.sh", // 13 chars
+		"mysite.example.com",          // wrong suffix
 	} {
 		_, ok := svc.lookupSpec(snap, host)
 		require.False(t, ok, "%q must not match", host)

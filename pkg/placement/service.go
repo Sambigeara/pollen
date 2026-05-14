@@ -15,6 +15,7 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/gate"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
@@ -115,10 +116,11 @@ type StreamOpener interface {
 // self-claim is released on the next reconcile and only unseed+seed
 // can clear the stranded spec.
 type Gate interface {
-	Invoke(peerKey types.PeerKey, hash string) (wasm.CallerInfo, error)
+	Invoke(callerCert *admissionv1.DelegationCert, hash string) (wasm.CallerInfo, error)
 	InvokeByToken(token *admissionv1.AccessToken, hash string) (wasm.CallerInfo, error)
 	MayHost(hostCert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth) error
 	MayPublish(cert *admissionv1.DelegationCert, policy *admissionv1.Predicate) error
+	LookupCert(peerKey types.PeerKey) *admissionv1.DelegationCert
 }
 
 type Service struct {
@@ -296,9 +298,11 @@ func (s *Service) SeedPresigned(binary []byte, spec state.WorkloadSpec, presigne
 	if _, err := s.blobs.Put(bytes.NewReader(binary)); err != nil {
 		return fmt.Errorf("workload: %w: %w", ErrStore, err)
 	}
-	if spec.MinReplicas == 0 {
-		spec.MinReplicas = 1
-	}
+	// Don't rebase MinReplicas here: the publisher signed a body with a
+	// specific MinReplicas, and the spec we gossip must match the body
+	// hash they committed to. The CLI applies the sensible default at
+	// signing time (cmd/pln/seed.go); rebasing post-sign would split
+	// the body hash from what every other peer validates against.
 	if _, err := s.store.PublishWorkloadPresigned(spec, presignedAuth); err != nil {
 		return err
 	}
@@ -474,7 +478,7 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 		if token, ok := gate.AccessTokenFromContext(ctx); ok {
 			gated, err = s.gate.InvokeByToken(token, hash)
 		} else {
-			gated, err = s.gate.Invoke(info.PeerKey, hash)
+			gated, err = s.gate.Invoke(s.callerCert(ctx, info.PeerKey), hash)
 		}
 		if err != nil {
 			return ctx, hash, nil, fmt.Errorf("invoke %s: %w", types.ShortHash(hash), wasm.ErrTargetNotFound)
@@ -491,6 +495,20 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 
 	out, err := s.callHop(ctx, hash, function, input, local)
 	return ctx, hash, out, err
+}
+
+// callerCert resolves the cert authorising the current call. For the
+// first hop, control RPCs inject the caller identity via auth.RPCCaller;
+// for downstream hops (wasm-to-wasm or relayed mesh streams) the cert
+// lives in the gossiped snapshot keyed on peerKey.
+func (s *Service) callerCert(ctx context.Context, peerKey types.PeerKey) *admissionv1.DelegationCert {
+	if rpc, ok := auth.RPCCallerFromContext(ctx); ok && rpc.Cert() != nil {
+		return rpc.Cert()
+	}
+	if s.gate == nil {
+		return nil
+	}
+	return s.gate.LookupCert(peerKey)
 }
 
 func (s *Service) callHop(ctx context.Context, hash, function string, input []byte, local localCall) ([]byte, error) {
@@ -630,7 +648,7 @@ func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 		if token != nil {
 			gated, err = s.gate.InvokeByToken(token, hash)
 		} else {
-			gated, err = s.gate.Invoke(peerKey, hash)
+			gated, err = s.gate.Invoke(s.gate.LookupCert(peerKey), hash)
 		}
 		if err != nil {
 			return

@@ -30,6 +30,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/tunneling"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/wasm"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -73,11 +74,22 @@ func newHarness(t *testing.T, opts ...control.Option) *harness { //nolint:thelpe
 	return h
 }
 
+// callerCtx returns a context carrying an RPCCaller for the supplied
+// cert, matching what the gRPC interceptor injects in production. Use
+// this in any test that exercises a capability-gated RPC.
+func callerCtx(c *auth.NodeCredentials) context.Context {
+	if c == nil {
+		return context.Background()
+	}
+	return auth.WithRPCCaller(context.Background(), auth.NewRPCCaller(c.Cert()))
+}
+
 func TestShutdownInvokesCallback(t *testing.T) {
 	done := make(chan struct{})
-	h := newHarness(t, control.WithShutdown(func() { close(done) }))
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc), control.WithShutdown(func() { close(done) }))
 
-	_, err := h.svc.Shutdown(context.Background(), &controlv1.ShutdownRequest{})
+	_, err := h.svc.Shutdown(callerCtx(dc), &controlv1.ShutdownRequest{})
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
@@ -91,11 +103,23 @@ func TestShutdownInvokesCallback(t *testing.T) {
 }
 
 func TestShutdownNoCallback(t *testing.T) {
-	svc := control.NewService(nil, nil, nil, nil, nil, nil)
-	_, err := svc.Shutdown(context.Background(), &controlv1.ShutdownRequest{})
+	dc := dummyCreds(t)
+	svc := control.NewService(nil, nil, nil, nil, nil, nil, control.WithCredentials(dc))
+	_, err := svc.Shutdown(callerCtx(dc), &controlv1.ShutdownRequest{})
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.FailedPrecondition, st.Code())
+}
+
+func TestShutdownRejectsNonDaemonCaller(t *testing.T) {
+	dc := dummyCreds(t)
+	other := dummyCreds(t) // different keypair
+	h := newHarness(t, control.WithCredentials(dc), control.WithShutdown(func() {}))
+
+	_, err := h.svc.Shutdown(callerCtx(other), &controlv1.ShutdownRequest{})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
 }
 
 func TestRegisterService(t *testing.T) {
@@ -149,10 +173,11 @@ func TestUnregisterServiceError(t *testing.T) {
 }
 
 func TestConnectPeer(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	pk := testPeerKey(1)
 
-	_, err := h.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+	_, err := h.svc.ConnectPeer(callerCtx(dc), &controlv1.ConnectPeerRequest{
 		PeerPub: pk.Bytes(),
 		Addrs:   []string{"1.2.3.4:5000"},
 	})
@@ -162,8 +187,9 @@ func TestConnectPeer(t *testing.T) {
 }
 
 func TestConnectPeerNoConnector(t *testing.T) {
-	svc := control.NewService(nil, nil, nil, nil, nil, nil)
-	_, err := svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+	dc := dummyCreds(t)
+	svc := control.NewService(nil, nil, nil, nil, nil, nil, control.WithCredentials(dc))
+	_, err := svc.ConnectPeer(callerCtx(dc), &controlv1.ConnectPeerRequest{
 		PeerPub: testPeerKey(1).Bytes(),
 	})
 	require.Error(t, err)
@@ -172,8 +198,9 @@ func TestConnectPeerNoConnector(t *testing.T) {
 }
 
 func TestConnectPeerInvalidAddr(t *testing.T) {
-	h := newHarness(t)
-	_, err := h.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
+	_, err := h.svc.ConnectPeer(callerCtx(dc), &controlv1.ConnectPeerRequest{
 		PeerPub: testPeerKey(1).Bytes(),
 		Addrs:   []string{"not-an-addr"},
 	})
@@ -183,15 +210,29 @@ func TestConnectPeerInvalidAddr(t *testing.T) {
 }
 
 func TestConnectPeerError(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	h.connector.err = errors.New("boom")
-	_, err := h.svc.ConnectPeer(context.Background(), &controlv1.ConnectPeerRequest{
+	_, err := h.svc.ConnectPeer(callerCtx(dc), &controlv1.ConnectPeerRequest{
 		PeerPub: testPeerKey(1).Bytes(),
 		Addrs:   []string{"1.2.3.4:5000"},
 	})
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.Internal, st.Code())
+}
+
+func TestConnectPeerRejectsNonAdminCaller(t *testing.T) {
+	dc := dummyCreds(t)
+	leaf := leafCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
+	_, err := h.svc.ConnectPeer(callerCtx(leaf), &controlv1.ConnectPeerRequest{
+		PeerPub: testPeerKey(1).Bytes(),
+		Addrs:   []string{"1.2.3.4:5000"},
+	})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
 }
 
 func TestSeedWorkloadNoCreds(t *testing.T) {
@@ -461,6 +502,32 @@ func TestCallWorkload(t *testing.T) {
 	require.Equal(t, []byte("input"), h.placement.calledInput)
 }
 
+func TestCallWorkload_SeedsCallerInfoFromCaller(t *testing.T) {
+	// Wire-mode tenants must NOT inherit the daemon's identity when
+	// invoking workloads; placement and the wasm runtime see CallerInfo
+	// built from the caller's own cert (or daemon's via interceptor
+	// fallback on unix-socket). This pins F2.
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
+	h.placement.callOut = []byte("ok")
+
+	tenantPub, tenantPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	tenantAttrs, err := structpb.NewStruct(map[string]any{"role": "worker"})
+	require.NoError(t, err)
+	caps := &admissionv1.Capabilities{CanPublish: true, MaxDepth: 1, Attributes: tenantAttrs}
+	tenantCert, err := auth.IssueDelegationCert(tenantPriv, nil, tenantPub, caps, time.Now().Add(-time.Minute), time.Now().Add(time.Hour), time.Time{})
+	require.NoError(t, err)
+	ctx := auth.WithRPCCaller(context.Background(), auth.NewRPCCaller(tenantCert))
+
+	_, err = h.svc.CallWorkload(ctx, &controlv1.CallWorkloadRequest{Hash: "h", Function: "run"})
+	require.NoError(t, err)
+	require.Equal(t, types.PeerKeyFromBytes(tenantPub), h.placement.calledCaller.PeerKey,
+		"wasm CallerInfo must carry the tenant's pub, not the daemon's")
+	require.Equal(t, "worker", h.placement.calledCaller.Attributes["role"],
+		"wasm CallerInfo must carry the tenant's attributes")
+}
+
 func TestCallWorkloadNotRunning(t *testing.T) {
 	h := newHarness(t)
 	h.placement.callErr = placement.ErrNotRunning
@@ -541,7 +608,7 @@ func TestDenyPeer(t *testing.T) {
 	h := newHarness(t, control.WithCredentials(dc))
 	pk := testPeerKey(5)
 
-	_, err := h.svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{PeerPub: pk.Bytes()})
+	_, err := h.svc.DenyPeer(callerCtx(dc), &controlv1.DenyPeerRequest{PeerPub: pk.Bytes()})
 	require.NoError(t, err)
 	require.Equal(t, pk, h.membership.deniedKey)
 }
@@ -559,7 +626,7 @@ func TestDenyPeerError(t *testing.T) {
 	h := newHarness(t, control.WithCredentials(dc))
 	h.membership.denyErr = errors.New("boom")
 
-	_, err := h.svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{PeerPub: testPeerKey(5).Bytes()})
+	_, err := h.svc.DenyPeer(callerCtx(dc), &controlv1.DenyPeerRequest{PeerPub: testPeerKey(5).Bytes()})
 	require.Error(t, err)
 	st, _ := status.FromError(err)
 	require.Equal(t, codes.Internal, st.Code())
@@ -591,21 +658,22 @@ type fakeGate struct {
 }
 
 type fakeGateConnect struct {
-	caller, host types.PeerKey
-	port         uint32
+	caller *admissionv1.DelegationCert
+	host   types.PeerKey
+	port   uint32
 }
 
 type fakeGateFetch struct {
-	caller types.PeerKey
+	caller *admissionv1.DelegationCert
 	hash   string
 }
 
-func (g *fakeGate) Connect(caller, host types.PeerKey, port uint32) error {
+func (g *fakeGate) Connect(caller *admissionv1.DelegationCert, host types.PeerKey, port uint32) error {
 	g.connectArgs = &fakeGateConnect{caller: caller, host: host, port: port}
 	return g.connectErr
 }
 
-func (g *fakeGate) Fetch(caller types.PeerKey, hash string) error {
+func (g *fakeGate) Fetch(caller *admissionv1.DelegationCert, hash string) error {
 	g.fetchArgs = &fakeGateFetch{caller: caller, hash: hash}
 	return g.fetchErr
 }
@@ -666,7 +734,7 @@ func TestFetchBlobDeniedByGate(t *testing.T) {
 	require.Equal(t, codes.PermissionDenied, st.Code())
 }
 
-func TestConnectServiceWithoutCredsCallsGateWithZeroCaller(t *testing.T) {
+func TestConnectServiceWithoutCredsCallsGateWithNilCaller(t *testing.T) {
 	gate := &fakeGate{}
 	h := newHarness(t, control.WithOperatorGate(gate))
 	pk := testPeerKey(10)
@@ -677,7 +745,7 @@ func TestConnectServiceWithoutCredsCallsGateWithZeroCaller(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, gate.connectArgs)
-	require.Equal(t, types.PeerKey{}, gate.connectArgs.caller, "missing creds yields zero caller key — production gate looks up the snapshot, sees no caller, and denies")
+	require.Nil(t, gate.connectArgs.caller, "missing creds yields nil caller cert; production gate fails closed against nil")
 }
 
 func TestDisconnectService(t *testing.T) {
@@ -692,7 +760,14 @@ func TestDisconnectService(t *testing.T) {
 		},
 	}
 
-	_, err := h.svc.DisconnectService(context.Background(), &controlv1.DisconnectServiceRequest{
+	dc := dummyCreds(t)
+	h.svc = control.NewService(h.membership, h.placement, h.tunneling, h.blobs, h.static, h.state,
+		control.WithTransportInfo(h.transport),
+		control.WithMetricsSource(h.metrics),
+		control.WithMeshConnector(h.connector),
+		control.WithCredentials(dc),
+	)
+	_, err := h.svc.DisconnectService(callerCtx(dc), &controlv1.DisconnectServiceRequest{
 		LocalPort: 3000,
 	})
 	require.NoError(t, err)
@@ -700,8 +775,9 @@ func TestDisconnectService(t *testing.T) {
 }
 
 func TestDisconnectServiceNotFound(t *testing.T) {
-	h := newHarness(t)
-	_, err := h.svc.DisconnectService(context.Background(), &controlv1.DisconnectServiceRequest{
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
+	_, err := h.svc.DisconnectService(callerCtx(dc), &controlv1.DisconnectServiceRequest{
 		LocalPort: 9999,
 	})
 	require.Error(t, err)
@@ -1182,7 +1258,8 @@ func TestGetStatusOfflinePeer(t *testing.T) {
 }
 
 func TestGetStatusWorkloads(t *testing.T) {
-	h := newHarness(t)
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
 	local := testPeerKey(1)
 	h.state.snap.LocalID = local
 	h.state.snap.Nodes[local] = state.NodeView{}
@@ -1198,7 +1275,7 @@ func TestGetStatusWorkloads(t *testing.T) {
 		{Hash: "abc", CompiledAt: time.Unix(1000, 0)},
 	}
 
-	resp, err := h.svc.GetStatus(context.Background(), &controlv1.GetStatusRequest{})
+	resp, err := h.svc.GetStatus(callerCtx(dc), &controlv1.GetStatusRequest{})
 	require.NoError(t, err)
 	require.Len(t, resp.Workloads, 2)
 
@@ -1386,6 +1463,7 @@ type fakePlacement struct {
 	calledHash   string
 	calledFn     string
 	calledInput  []byte
+	calledCaller wasm.CallerInfo
 }
 
 func (f *fakePlacement) Seed(binary []byte, spec state.WorkloadSpec, _ *admissionv1.Predicate) error {
@@ -1412,10 +1490,13 @@ func (f *fakePlacement) Unseed(hash string) error {
 	return f.unseedErr
 }
 
-func (f *fakePlacement) Call(_ context.Context, hash, fn string, input []byte) ([]byte, error) {
+func (f *fakePlacement) Call(ctx context.Context, hash, fn string, input []byte) ([]byte, error) {
 	f.calledHash = hash
 	f.calledFn = fn
 	f.calledInput = input
+	if info, ok := wasm.CallerInfoFromContext(ctx); ok {
+		f.calledCaller = info
+	}
 	return f.callOut, f.callErr
 }
 
@@ -1812,25 +1893,141 @@ func TestCapabilityMatrix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t, control.WithCredentials(tc.creds))
+			ctx := callerCtx(tc.creds)
 
-			_, err := h.svc.RegisterService(context.Background(), &controlv1.RegisterServiceRequest{
+			_, err := h.svc.RegisterService(ctx, &controlv1.RegisterServiceRequest{
 				Port: 8080, //nolint:mnd
 				Name: new("web"),
 			})
 			requirePermission(t, err, tc.canPublish)
 
-			_, err = h.svc.IssueCert(context.Background(), &controlv1.IssueCertRequest{
+			_, err = h.svc.IssueCert(ctx, &controlv1.IssueCertRequest{
 				PeerPub:  testPeerKey(2).Bytes(),
 				CertCaps: auth.LeafCapabilities(),
 			})
 			requirePermission(t, err, tc.canDelegate)
 
-			_, err = h.svc.DenyPeer(context.Background(), &controlv1.DenyPeerRequest{
+			_, err = h.svc.DenyPeer(ctx, &controlv1.DenyPeerRequest{
 				PeerPub: testPeerKey(3).Bytes(),
 			})
 			requirePermission(t, err, tc.canAdmit)
 		})
 	}
+}
+
+func TestIssueCert_RejectsCapElevation(t *testing.T) {
+	// A CanDelegate caller can issue downstream certs, but not certs
+	// that exceed their own authority. Each subcase builds a synthetic
+	// caller cert (full admin daemon issues, caller has restricted
+	// caps) and asserts the handler refuses to mint.
+	daemon := dummyCreds(t)
+	build := func(t *testing.T, callerCaps *admissionv1.Capabilities) *admissionv1.DelegationCert {
+		t.Helper()
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		require.NoError(t, err)
+		cert, err := auth.IssueDelegationCert(priv, nil, priv.Public().(ed25519.PublicKey),
+			callerCaps, time.Now().Add(-time.Minute), time.Now().Add(time.Hour), time.Time{})
+		require.NoError(t, err)
+		return cert
+	}
+	ctxFor := func(cert *admissionv1.DelegationCert) context.Context {
+		return auth.WithRPCCaller(context.Background(), auth.NewRPCCaller(cert))
+	}
+	t.Run("can_admit", func(t *testing.T) {
+		h := newHarness(t, control.WithCredentials(daemon))
+		callerCert := build(t, &admissionv1.Capabilities{CanDelegate: true, MaxDepth: 2})
+		_, err := h.svc.IssueCert(ctxFor(callerCert), &controlv1.IssueCertRequest{
+			PeerPub:  testPeerKey(11).Bytes(),
+			CertCaps: &admissionv1.Capabilities{CanAdmit: true},
+		})
+		require.Error(t, err)
+		st, _ := status.FromError(err)
+		require.Equal(t, codes.PermissionDenied, st.Code())
+	})
+	t.Run("can_publish", func(t *testing.T) {
+		h := newHarness(t, control.WithCredentials(daemon))
+		callerCert := build(t, &admissionv1.Capabilities{CanDelegate: true, MaxDepth: 2})
+		_, err := h.svc.IssueCert(ctxFor(callerCert), &controlv1.IssueCertRequest{
+			PeerPub:  testPeerKey(12).Bytes(),
+			CertCaps: &admissionv1.Capabilities{CanPublish: true},
+		})
+		require.Error(t, err)
+		st, _ := status.FromError(err)
+		require.Equal(t, codes.PermissionDenied, st.Code())
+	})
+	t.Run("max_depth", func(t *testing.T) {
+		h := newHarness(t, control.WithCredentials(daemon))
+		callerCert := build(t, &admissionv1.Capabilities{CanDelegate: true, MaxDepth: 2})
+		_, err := h.svc.IssueCert(ctxFor(callerCert), &controlv1.IssueCertRequest{
+			PeerPub:  testPeerKey(13).Bytes(),
+			CertCaps: &admissionv1.Capabilities{CanDelegate: true, MaxDepth: 255},
+		})
+		require.Error(t, err)
+		st, _ := status.FromError(err)
+		require.Equal(t, codes.PermissionDenied, st.Code())
+	})
+	t.Run("attributes_value_mismatch", func(t *testing.T) {
+		callerAttrs, err := structpb.NewStruct(map[string]any{"role": "worker"})
+		require.NoError(t, err)
+		h := newHarness(t, control.WithCredentials(daemon))
+		callerCert := build(t, &admissionv1.Capabilities{CanDelegate: true, MaxDepth: 2, Attributes: callerAttrs})
+		childAttrs, err := structpb.NewStruct(map[string]any{"role": "admin"})
+		require.NoError(t, err)
+		_, err = h.svc.IssueCert(ctxFor(callerCert), &controlv1.IssueCertRequest{
+			PeerPub:  testPeerKey(14).Bytes(),
+			CertCaps: &admissionv1.Capabilities{CanDelegate: true, MaxDepth: 1, Attributes: childAttrs},
+		})
+		require.Error(t, err)
+		st, _ := status.FromError(err)
+		require.Equal(t, codes.PermissionDenied, st.Code())
+	})
+	t.Run("attributes_unknown_key", func(t *testing.T) {
+		// Child introduces a key the parent doesn't carry at all.
+		h := newHarness(t, control.WithCredentials(daemon))
+		callerCert := build(t, &admissionv1.Capabilities{CanDelegate: true, MaxDepth: 2})
+		childAttrs, err := structpb.NewStruct(map[string]any{"role": "worker"})
+		require.NoError(t, err)
+		_, err = h.svc.IssueCert(ctxFor(callerCert), &controlv1.IssueCertRequest{
+			PeerPub:  testPeerKey(16).Bytes(),
+			CertCaps: &admissionv1.Capabilities{CanDelegate: true, MaxDepth: 1, Attributes: childAttrs},
+		})
+		require.Error(t, err)
+		st, _ := status.FromError(err)
+		require.Equal(t, codes.PermissionDenied, st.Code())
+	})
+	t.Run("attributes_subset_ok", func(t *testing.T) {
+		callerAttrs, err := structpb.NewStruct(map[string]any{"role": "worker", "team": "blue"})
+		require.NoError(t, err)
+		h := newHarness(t, control.WithCredentials(daemon))
+		callerCert := build(t, &admissionv1.Capabilities{CanDelegate: true, MaxDepth: 2, Attributes: callerAttrs})
+		childAttrs, err := structpb.NewStruct(map[string]any{"role": "worker"})
+		require.NoError(t, err)
+		_, err = h.svc.IssueCert(ctxFor(callerCert), &controlv1.IssueCertRequest{
+			PeerPub:  testPeerKey(15).Bytes(),
+			CertCaps: &admissionv1.Capabilities{CanDelegate: true, MaxDepth: 1, Attributes: childAttrs},
+		})
+		require.NoError(t, err)
+	})
+}
+
+func TestDisconnectServiceRejectsNonAdminCaller(t *testing.T) {
+	dc := dummyCreds(t)
+	leaf := leafCreds(t)
+	h := newHarness(t, control.WithCredentials(dc))
+	_, err := h.svc.DisconnectService(callerCtx(leaf), &controlv1.DisconnectServiceRequest{
+		LocalPort: 3000,
+	})
+	require.Error(t, err)
+	st, _ := status.FromError(err)
+	require.Equal(t, codes.PermissionDenied, st.Code())
+}
+
+func TestGetStatusEchoesGatewayDomain(t *testing.T) {
+	dc := dummyCreds(t)
+	h := newHarness(t, control.WithCredentials(dc), control.WithStaticDomain("staging.pln.sh"))
+	resp, err := h.svc.GetStatus(callerCtx(dc), &controlv1.GetStatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, "staging.pln.sh", resp.GetGatewayDomain())
 }
 
 func requirePermission(t *testing.T, err error, allowed bool) {

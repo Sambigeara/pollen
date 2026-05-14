@@ -1,4 +1,5 @@
 terraform {
+  required_version = ">= 1.7"
   required_providers {
     hcloud = {
       source  = "hetznercloud/hcloud"
@@ -21,6 +22,16 @@ provider "cloudflare" {}
 data "http" "cf_ipv4" { url = "https://www.cloudflare.com/ips-v4" }
 data "http" "cf_ipv6" { url = "https://www.cloudflare.com/ips-v6" }
 
+# Zone-singleton state (origin-port ruleset, zone settings) lives in
+# `infra/shared/`. Reading its state here makes the dependency explicit:
+# `terraform plan` fails fast if `just shared-apply` has not run.
+data "terraform_remote_state" "shared" {
+  backend = "local"
+  config = {
+    path = "${path.module}/../shared/terraform.tfstate"
+  }
+}
+
 locals {
   # EU runs cpx22 (Hetzner's new-gen replacement for the deprecated
   # cpx21 in EU DCs); US stays on cpx21. Both AMD x86_64 so one amd64
@@ -34,11 +45,13 @@ locals {
     split("\n", trimspace(data.http.cf_ipv4.response_body)),
     split("\n", trimspace(data.http.cf_ipv6.response_body)),
   )
+
+  zone_id   = data.terraform_remote_state.shared.outputs.zone_id
+  zone_name = data.terraform_remote_state.shared.outputs.zone_name
 }
 
-resource "hcloud_ssh_key" "pln" {
-  name       = "pln-prod"
-  public_key = file(var.ssh_public_key_path)
+data "hcloud_ssh_key" "pln" {
+  name = var.ssh_key_name
 }
 
 resource "hcloud_firewall" "pln" {
@@ -49,7 +62,7 @@ resource "hcloud_firewall" "pln" {
     direction   = "in"
     protocol    = "tcp"
     port        = "22"
-    source_ips  = ["0.0.0.0/0", "::/0"]
+    source_ips  = var.ssh_source_ips
   }
 
   rule {
@@ -75,18 +88,23 @@ resource "hcloud_server" "node" {
   server_type  = each.value.server_type
   image        = "ubuntu-22.04"
   location     = each.value.location
-  ssh_keys     = [hcloud_ssh_key.pln.id]
+  ssh_keys     = [data.hcloud_ssh_key.pln.id]
   firewall_ids = [hcloud_firewall.pln.id]
-}
 
-data "cloudflare_zone" "pln" {
-  filter = { name = var.zone_name }
+  # ssh_keys is forceNew in the hcloud provider. Changing `ssh_key_name`
+  # at the variable level resolves to a different key id and would queue
+  # a destroy + recreate of every node, wiping /var/lib/pln. Ignoring
+  # ssh_keys keeps the variable change a no-op for existing servers;
+  # fresh bring-ups still consume the current default.
+  lifecycle {
+    ignore_changes = [ssh_keys]
+  }
 }
 
 resource "cloudflare_dns_record" "apex" {
   for_each = hcloud_server.node
-  zone_id  = data.cloudflare_zone.pln.id
-  name     = var.zone_name
+  zone_id  = local.zone_id
+  name     = local.zone_name
   type     = "A"
   content  = each.value.ipv4_address
   ttl      = 1
@@ -96,7 +114,7 @@ resource "cloudflare_dns_record" "apex" {
 
 resource "cloudflare_dns_record" "docs" {
   for_each = hcloud_server.node
-  zone_id  = data.cloudflare_zone.pln.id
+  zone_id  = local.zone_id
   name     = "docs"
   type     = "A"
   content  = each.value.ipv4_address
@@ -108,31 +126,31 @@ resource "cloudflare_dns_record" "docs" {
 # CNAME to apex gives CF a host to answer for; the ruleset below handles
 # the 301 redirect.
 resource "cloudflare_dns_record" "www" {
-  zone_id = data.cloudflare_zone.pln.id
+  zone_id = local.zone_id
   name    = "www"
   type    = "CNAME"
-  content = var.zone_name
+  content = local.zone_name
   ttl     = 1
   proxied = true
   comment = "www redirects to apex"
 }
 
 resource "cloudflare_ruleset" "www_redirect" {
-  zone_id = data.cloudflare_zone.pln.id
+  zone_id = local.zone_id
   name    = "www redirect"
   kind    = "zone"
   phase   = "http_request_dynamic_redirect"
 
   rules = [{
     description = "Redirect www.pln.sh to apex"
-    expression  = "(http.host eq \"www.${var.zone_name}\")"
+    expression  = "(http.host eq \"www.${local.zone_name}\")"
     action      = "redirect"
     enabled     = true
     action_parameters = {
       from_value = {
         status_code = 301
         target_url = {
-          expression = "concat(\"https://${var.zone_name}\", http.request.uri.path)"
+          expression = "concat(\"https://${local.zone_name}\", http.request.uri.path)"
         }
         preserve_query_string = true
       }
@@ -140,33 +158,11 @@ resource "cloudflare_ruleset" "www_redirect" {
   }]
 }
 
-# Route CF → origin on :8080 instead of the default :80, so the pln
-# static-http listener can run as the unprivileged pln user without
-# needing CAP_NET_BIND_SERVICE.
-resource "cloudflare_ruleset" "origin_port" {
-  zone_id = data.cloudflare_zone.pln.id
-  name    = "origin port override"
-  kind    = "zone"
-  phase   = "http_request_origin"
-
-  rules = [{
-    description = "Static sites listen on :8080"
-    expression  = "(http.host in {\"${var.zone_name}\" \"docs.${var.zone_name}\"})"
-    action      = "route"
-    enabled     = true
-    action_parameters = {
-      origin = {
-        port = 8080
-      }
-    }
-  }]
-}
-
-# Grey-cloud (unproxied) — the UDP mesh port can't go through CF's
+# Grey-cloud (unproxied); the UDP mesh port can't go through CF's
 # HTTPS-only proxy.
 resource "cloudflare_dns_record" "node" {
   for_each = hcloud_server.node
-  zone_id  = data.cloudflare_zone.pln.id
+  zone_id  = local.zone_id
   name     = each.value.name
   type     = "A"
   content  = hcloud_server.node[each.key].ipv4_address
@@ -175,28 +171,51 @@ resource "cloudflare_dns_record" "node" {
   comment  = "direct hostname for pln-prod-${each.key}"
 }
 
-# Zone security settings. SSL mode stays flexible (origin is plain HTTP
-# on :8080 via the origin port ruleset) — not strict.
-resource "cloudflare_zone_setting" "always_use_https" {
-  zone_id    = data.cloudflare_zone.pln.id
-  setting_id = "always_use_https"
-  value      = "on"
+# The origin-port ruleset, zone settings, and the staging ACM cert pack
+# all moved out of this module. The ruleset and zone settings live in
+# `infra/shared/`; the staging wildcard pack lives in `infra/staging/`.
+# `removed {}` blocks (terraform 1.7+) tell this module "stop tracking
+# these resources, do not destroy them". The migration runbook in
+# `infra/README.md` walks the `terraform import` into shared/staging
+# state. The `removed` blocks can be deleted once the migration is done.
+removed {
+  from = cloudflare_ruleset.origin_port
+  lifecycle {
+    destroy = false
+  }
 }
 
-resource "cloudflare_zone_setting" "automatic_https_rewrites" {
-  zone_id    = data.cloudflare_zone.pln.id
-  setting_id = "automatic_https_rewrites"
-  value      = "on"
+removed {
+  from = cloudflare_zone_setting.always_use_https
+  lifecycle {
+    destroy = false
+  }
 }
 
-resource "cloudflare_zone_setting" "min_tls_version" {
-  zone_id    = data.cloudflare_zone.pln.id
-  setting_id = "min_tls_version"
-  value      = "1.2"
+removed {
+  from = cloudflare_zone_setting.automatic_https_rewrites
+  lifecycle {
+    destroy = false
+  }
 }
 
-resource "cloudflare_zone_setting" "tls_1_3" {
-  zone_id    = data.cloudflare_zone.pln.id
-  setting_id = "tls_1_3"
-  value      = "on"
+removed {
+  from = cloudflare_zone_setting.min_tls_version
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = cloudflare_zone_setting.tls_1_3
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = cloudflare_certificate_pack.staging_wildcard
+  lifecycle {
+    destroy = false
+  }
 }

@@ -25,7 +25,7 @@ import (
 )
 
 type gateCall struct {
-	peer types.PeerKey
+	cert *admissionv1.DelegationCert
 	hash string
 }
 
@@ -38,10 +38,10 @@ type recordingGate struct {
 	returnErr  error
 }
 
-func (g *recordingGate) Invoke(peer types.PeerKey, hash string) (wasm.CallerInfo, error) {
+func (g *recordingGate) Invoke(cert *admissionv1.DelegationCert, hash string) (wasm.CallerInfo, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.calls = append(g.calls, gateCall{peer: peer, hash: hash})
+	g.calls = append(g.calls, gateCall{cert: cert, hash: hash})
 	return g.returnInfo, g.returnErr
 }
 
@@ -59,6 +59,8 @@ func (g *recordingGate) MayHost(*admissionv1.DelegationCert, *admissionv1.SpecAu
 func (g *recordingGate) MayPublish(*admissionv1.DelegationCert, *admissionv1.Predicate) error {
 	return nil
 }
+
+func (g *recordingGate) LookupCert(types.PeerKey) *admissionv1.DelegationCert { return nil }
 
 func (g *recordingGate) callCount() int {
 	g.mu.Lock()

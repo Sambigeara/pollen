@@ -150,6 +150,9 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 		if connect.CodeOf(err) != connect.CodeUnavailable {
 			return err
 		}
+		if env.wireMode {
+			return unreachableErr(fmt.Sprintf("cannot reach %s: %v\n  if the cluster was re-rooted, this context's creds no longer validate against the new root; rejoin with a fresh `pln join <token>`", env.host, err))
+		}
 		if socketPermissionDenied(env.dir) {
 			return permissionErr("cannot reach daemon — are you in the pln group?\n  fix: sudo usermod -aG pln $(whoami) && newgrp pln")
 		}
@@ -662,7 +665,7 @@ func collectBlobsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		}
 		name := b.GetName()
 		switch {
-		case isRemoteOrphan(b):
+		case b.GetOrphan():
 			name = "(orphaned)"
 		case name == "":
 			name = "-"

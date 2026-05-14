@@ -28,6 +28,8 @@ internal/dev/demo/exerciser_targets.json
 .terraform/
 *.tfstate
 *.tfstate.*
+*.tfplan
+*.tfplan.*
 crash.log
 crash.*.log
 *.tfvars

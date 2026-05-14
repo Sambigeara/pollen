@@ -53,7 +53,7 @@ const (
 	maxRouteDelay         = time.Second
 	loopIntervalJitter    = 0.1
 	maxConcurrentPunches  = 8
-	blobPruneInterval     = 5 * time.Minute
+	blobPruneInterval     = 2 * time.Minute
 	// blobPruneGrace must comfortably exceed the worst-case duration of a
 	// directory seed so a janitor tick mid-seed can't race the spec
 	// publish that claims the just-uploaded file blobs.
@@ -583,7 +583,7 @@ func (n *Supervisor) dispatchAuthorisedBlobStream(stream io.ReadWriteCloser, pee
 		stream.Close() //nolint:errcheck
 		return
 	}
-	if err := n.gate.Fetch(peerKey, hash); err != nil {
+	if err := n.gate.Fetch(n.gate.LookupCert(peerKey), hash); err != nil {
 		stream.Close() //nolint:errcheck
 		return
 	}
@@ -598,7 +598,7 @@ func (n *Supervisor) dispatchServiceConnect(stream io.ReadWriteCloser, peerKey t
 		stream.Close() //nolint:errcheck
 		return
 	}
-	if err := n.gate.Connect(peerKey, n.localID, port); err != nil {
+	if err := n.gate.Connect(n.gate.LookupCert(peerKey), n.localID, port); err != nil {
 		stream.Close() //nolint:errcheck
 		return
 	}
@@ -936,7 +936,7 @@ func (n *Supervisor) routeServiceRequest(ctx context.Context, callerKey types.Pe
 	}
 
 	svc := pickNearestService(snap, candidates)
-	if err := n.gate.Connect(callerKey, svc.Peer, svc.Port); err != nil {
+	if err := n.gate.Connect(n.gate.LookupCert(callerKey), svc.Peer, svc.Port); err != nil {
 		return nil, fmt.Errorf("connect %s: %w", name, wasm.ErrTargetNotFound)
 	}
 	if svc.Peer == snap.LocalID {

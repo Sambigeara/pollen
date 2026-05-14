@@ -73,3 +73,25 @@ func TestAccessTokenRejectsNegativeTTL(t *testing.T) {
 	_, err := auth.SignAccessToken(issuerPriv, staticResource(t), time.Now(), 0)
 	require.ErrorContains(t, err, "ttl must be positive")
 }
+
+func TestAccessTokenRejectsNilResource(t *testing.T) {
+	_, issuerPriv := newKeyPair(t)
+	_, err := auth.SignAccessToken(issuerPriv, nil, time.Now(), time.Hour)
+	require.ErrorContains(t, err, "resource")
+}
+
+func TestAccessTokenRejectsEmptyResourceBody(t *testing.T) {
+	_, issuerPriv := newKeyPair(t)
+	_, err := auth.SignAccessToken(issuerPriv, &admissionv1.ResourceID{}, time.Now(), time.Hour)
+	require.ErrorContains(t, err, "discriminator is unset")
+}
+
+func TestAccessTokenRejectsNilInnerSeed(t *testing.T) {
+	// Discriminator set, inner variant nil. Without the explicit
+	// variant check this would sign a degenerate token whose Verify
+	// failure mode is much less obvious.
+	_, issuerPriv := newKeyPair(t)
+	bogus := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: nil}}
+	_, err := auth.SignAccessToken(issuerPriv, bogus, time.Now(), time.Hour)
+	require.ErrorContains(t, err, "seed body is required")
+}

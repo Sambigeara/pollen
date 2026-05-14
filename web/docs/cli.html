@@ -108,12 +108,15 @@ pln up -d --name relay --public</code></pre>
       <dt>--memory, --mem &lt;size&gt;</dt><dd>Workload only. Memory limit (e.g. <code>64MiB</code>, <code>1GiB</code>). Default 8MiB; raise it for Go-WASM guests.</dd>
       <dt>--timeout &lt;dur&gt;</dt><dd>Workload only. Per-invocation timeout (e.g. <code>500ms</code>, <code>5s</code>).</dd>
       <dt>--allow-prop key=value</dt><dd>Require the caller's delegation-cert property to equal value. Repeatable; all clauses must match. Without any policy flag the resource is open to every authenticated peer. See <a href="concepts.html#authorisation">Concepts → Authorisation</a>.</dd>
+      <dt>--public</dt><dd>Permit anonymous (no-cert) callers via the canonical gateway URL <code>https://fn.&lt;domain&gt;/&lt;slug&gt;/&lt;name&gt;</code> (workload) or <code>https://blob.&lt;domain&gt;/&lt;slug&gt;/&lt;name&gt;</code> (blob). Mutually exclusive with <code>--allow-prop</code>.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln seed ./hello.wasm</span>
       <span class="out">seeded hello (4f3a7c91)</span>
+      <span class="cmd">pln seed ./echo.wasm --public</span>
+      <span class="out">seeded echo (3a8c7d2e) → https://fn.pln.sh/k7r4z9xa8n2p/echo</span>
       <span class="cmd">pln seed ./public my-site</span>
-      <span class="out">seeded my-site (12 files, manifest 3a8c7d2e)</span>
+      <span class="out">seeded my-site (12 files, manifest 3a8c7d2e) → https://my-site-k7r4z9xa8n2p.pln.sh</span>
       <span class="cmd">pln seed ./big.bin payload</span>
       <span class="out">seeded payload (e892bca7)</span>
       <span class="cmd">cat data | pln seed -</span>
@@ -146,13 +149,13 @@ pln fetch ab12cd34 -</code></pre>
     <p>Mint a signed, time-limited URL authorising anonymous access to a blob (fetch) or workload (invoke). The token carries the resource identity and the publisher's signature; the share-URL gateway verifies both before passing the request through. Publish-tier capability or above; the daemon refuses to sign for resources the caller didn't publish.</p>
     <dl class="flags">
       <dt>--ttl &lt;dur&gt;</dt><dd>Validity window (default <code>1h</code>).</dd>
-      <dt>--gateway &lt;host&gt;</dt><dd>Gateway base DNS (default <code>pln.sh</code>). The URL becomes <code>https://blob.&lt;host&gt;/&lt;token&gt;</code> or <code>https://fn.&lt;host&gt;/&lt;token&gt;</code>.</dd>
+      <dt>--gateway &lt;host&gt;</dt><dd>Gateway base DNS (default <code>pln.sh</code>). The URL becomes <code>https://blob.&lt;host&gt;/_/&lt;token&gt;</code> or <code>https://fn.&lt;host&gt;/_/&lt;token&gt;</code>; the <code>_</code> segment is reserved so it never collides with a publisher slug.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln share payload</span>
-      <span class="out">https://blob.pln.sh/RrkFG...AAAA</span>
+      <span class="out">https://blob.pln.sh/_/RrkFG...AAAA</span>
       <span class="cmd">pln share echo --ttl 24h</span>
-      <span class="out">https://fn.pln.sh/RrkFG...AAAA</span>
+      <span class="out">https://fn.pln.sh/_/RrkFG...AAAA</span>
     </div>
 
     <h2 id="networking">Networking</h2>
@@ -162,6 +165,7 @@ pln fetch ab12cd34 -</code></pre>
     <dl class="flags">
       <dt>--udp</dt><dd>Expose as a UDP service.</dd>
       <dt>--allow-prop key=value</dt><dd>Require the caller's delegation-cert property to equal value. Repeatable; all clauses must match. Without any policy flag the service is open to every authenticated peer. See <a href="concepts.html#authorisation">Concepts → Authorisation</a>.</dd>
+      <dt>--public</dt><dd>Permit anonymous callers. Mutually exclusive with <code>--allow-prop</code>.</dd>
     </dl>
     <pre><code>pln serve 8080 api
 pln serve 5353 dns --udp

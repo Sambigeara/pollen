@@ -203,13 +203,15 @@ type fakeHostGate struct {
 	denyCert func(*admissionv1.DelegationCert) error
 }
 
-func (f *fakeHostGate) Invoke(types.PeerKey, string) (wasm.CallerInfo, error) {
+func (f *fakeHostGate) Invoke(*admissionv1.DelegationCert, string) (wasm.CallerInfo, error) {
 	return wasm.CallerInfo{}, nil
 }
 
 func (f *fakeHostGate) InvokeByToken(*admissionv1.AccessToken, string) (wasm.CallerInfo, error) {
 	return wasm.CallerInfo{}, nil
 }
+
+func (f *fakeHostGate) LookupCert(types.PeerKey) *admissionv1.DelegationCert { return nil }
 
 func (f *fakeHostGate) MayHost(cert *admissionv1.DelegationCert, sa *admissionv1.SpecAuth) error {
 	if f.denyCert != nil {

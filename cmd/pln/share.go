@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/types"
 )
 
 const (
@@ -37,7 +39,7 @@ to sign for resources the caller didn't publish.`,
 		RunE:    withEnv(runShare),
 	}
 	cmd.Flags().Duration("ttl", time.Hour, "Validity window")
-	cmd.Flags().String("gateway", "pln.sh", "Gateway base DNS")
+	cmd.Flags().String("gateway", "", "Gateway base DNS (overrides the cluster's configured domain)")
 	return cmd
 }
 
@@ -51,6 +53,12 @@ func runShare(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return err
 	}
 	st := statusResp.Msg
+	if gateway == "" {
+		gateway = st.GetGatewayDomain()
+	}
+	if gateway == "" {
+		return errors.New("gateway domain not configured on the cluster; set `pln set static-http` on the daemon or pass --gateway")
+	}
 
 	wl, wlErr := matchWorkloadArg(st.GetWorkloads(), arg)
 	if wlErr != nil {
@@ -83,38 +91,6 @@ func runShare(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return ambiguousErr("multiple matches for %q (%s); pass a more specific identifier", arg, strings.Join(kinds, ", "))
 	}
 
-	var resource *admissionv1.ResourceID
-	var subdomain string
-	switch {
-	case wl != nil:
-		hashBytes, err := hex.DecodeString(wl.GetHash())
-		if err != nil {
-			return fmt.Errorf("decode workload hash: %w", err)
-		}
-		resource = &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{
-			Name: wl.GetName(),
-			Hash: hashBytes,
-		}}}
-		subdomain = shareSubdomainWorkload
-	case hasBlob:
-		name := ""
-		digestBytes, err := hex.DecodeString(blobHash)
-		if err != nil {
-			return fmt.Errorf("decode blob hash: %w", err)
-		}
-		for _, b := range st.GetBlobs() {
-			if b.GetHash() == blobHash {
-				name = b.GetName()
-				break
-			}
-		}
-		resource = &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{
-			Name:   name,
-			Digest: digestBytes,
-		}}}
-		subdomain = shareSubdomainBlob
-	}
-
 	creds, err := auth.LoadNodeCredentials(auth.IdentityPath(env.dir))
 	if err != nil {
 		return fmt.Errorf("load credentials: %w", err)
@@ -122,6 +98,13 @@ func runShare(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if creds == nil || creds.Cert() == nil {
 		return errors.New("no credentials in this context; run `pln join` first")
 	}
+	localPub := creds.Cert().GetClaims().GetSubjectPub()
+
+	resource, subdomain, err := buildShareResource(wl, hasBlob, blobHash, st.GetBlobs(), localPub)
+	if err != nil {
+		return err
+	}
+
 	priv, _, err := auth.EnsureIdentityKey(auth.IdentityPath(env.dir))
 	if err != nil {
 		return fmt.Errorf("load identity key: %w", err)
@@ -136,6 +119,51 @@ func runShare(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return fmt.Errorf("encode access token: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "https://%s.%s/%s\n", subdomain, gateway, encoded)
+	fmt.Fprintf(cmd.OutOrStdout(), "https://%s.%s/%s/%s\n", subdomain, gateway, types.ReservedBearerSlug, encoded)
 	return nil
+}
+
+// buildShareResource resolves the share target to a ResourceID and the
+// matching gateway subdomain. It also enforces the publisher-match
+// invariant: only the publisher of a resource can mint a token for it
+// (the gateway rejects mismatched issuer/publisher pairs at fetch time,
+// so catching the mismatch here surfaces a useful error instead of a
+// non-working URL).
+func buildShareResource(wl *controlv1.WorkloadSummary, hasBlob bool, blobHash string, blobs []*controlv1.BlobSummary, localPub []byte) (*admissionv1.ResourceID, string, error) {
+	switch {
+	case wl != nil:
+		if pub := wl.GetPublisher().GetPeerPub(); len(pub) > 0 && !bytes.Equal(pub, localPub) {
+			return nil, "", fmt.Errorf("cannot share %q: published by another peer; only the publisher's context can mint share tokens", wl.GetName())
+		}
+		hashBytes, err := hex.DecodeString(wl.GetHash())
+		if err != nil {
+			return nil, "", fmt.Errorf("decode workload hash: %w", err)
+		}
+		return &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{
+			Name: wl.GetName(),
+			Hash: hashBytes,
+		}}}, shareSubdomainWorkload, nil
+	case hasBlob:
+		name := ""
+		var pubKey []byte
+		for _, b := range blobs {
+			if b.GetHash() == blobHash {
+				name = b.GetName()
+				pubKey = b.GetPublisher().GetPeerPub()
+				break
+			}
+		}
+		if len(pubKey) > 0 && !bytes.Equal(pubKey, localPub) {
+			return nil, "", fmt.Errorf("cannot share blob %s: published by another peer; only the publisher's context can mint share tokens", blobHash[:shortHexLen])
+		}
+		digestBytes, err := hex.DecodeString(blobHash)
+		if err != nil {
+			return nil, "", fmt.Errorf("decode blob hash: %w", err)
+		}
+		return &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{
+			Name:   name,
+			Digest: digestBytes,
+		}}}, shareSubdomainBlob, nil
+	}
+	return nil, "", fmt.Errorf("no share target")
 }

@@ -4,6 +4,7 @@
 package state
 
 import (
+	"cmp"
 	"encoding/hex"
 	"fmt"
 	"maps"
@@ -271,7 +272,12 @@ func (s Snapshot) BlobEntitlements(hash string, mp ManifestPaths) []*admissionv1
 	if bv, ok := s.BlobSpecs[hash]; ok && bv.Auth != nil {
 		out = append(out, bv.Auth)
 	}
-	for _, sv := range s.StaticSpecs {
+	// Walk StaticSpecsAll, not StaticSpecs. The deduped map keys on name
+	// and tie-breaks by publisher; if two tenants seed sites with the
+	// same name, the loser's blobs need to remain entitled. Without this
+	// the gate denies fetches for blobs referenced solely by the losing
+	// publisher's manifest, and their site can't replicate cross-node.
+	for _, sv := range s.StaticSpecsAll {
 		if sv.Auth == nil {
 			continue
 		}
@@ -318,6 +324,31 @@ func (s Snapshot) Services() []ServiceInfo {
 		}
 	}
 	return out
+}
+
+// tombstoneBodyHashLen is the fixed width of SpecAuth.BodyHash (sha256
+// today). The width is part of the tombstoneKey struct so the key
+// stays comparable as a map key; if a future SpecAuth swaps in a
+// different digest algorithm this size needs to grow with it.
+const tombstoneBodyHashLen = 32
+
+// tombstoneKey identifies the (kind, identifier, publisher, body_hash)
+// tuple whose presence in any peer's log suppresses live specs that
+// match exactly across the cluster. publisher carries cross-slot
+// suppression (Phase 3f); body_hash discriminates so a tombstone for
+// an older revision of a name doesn't permanently kill future
+// re-publishes under different content.
+type tombstoneKey struct {
+	name      string
+	publisher types.PeerKey
+	kind      attrKind
+	bodyHash  [tombstoneBodyHashLen]byte
+}
+
+func newTombstoneKey(kind attrKind, name string, pub types.PeerKey, bodyHash []byte) tombstoneKey {
+	k := tombstoneKey{kind: kind, name: name, publisher: pub}
+	copy(k.bodyHash[:], bodyHash)
+	return k
 }
 
 func (s *store) buildSnapshot() Snapshot {
@@ -370,6 +401,22 @@ func (s *store) buildSnapshot() Snapshot {
 	blobStoring := make(map[string]map[types.PeerKey]struct{})
 	wrappings := make(map[string]map[types.PeerKey]*statev1.BlobWrappingChange)
 	wrapperBy := make(map[string]map[types.PeerKey]types.PeerKey)
+	// Pre-pass: collect every publisher-signed tombstone keyed by
+	// (kind, name, publisher). A tombstone in any peer's slot kills
+	// every live spec by the same publisher with the same (kind, name)
+	// across the cluster — this is what makes wire-mode unseeds work
+	// from an edge node that didn't originally accept the seed.
+	tombstones := make(map[tombstoneKey]struct{})
+	for _, rec := range valid {
+		for key, ev := range rec.log {
+			if !ev.Deleted || !isSpecKind(key.kind) {
+				continue
+			}
+			auth := ev.GetSpecChange().GetAuth()
+			pub := types.PeerKeyFromBytes(auth.GetPublisher().GetClaims().GetSubjectPub())
+			tombstones[newTombstoneKey(key.kind, key.name, pub, auth.GetBodyHash())] = struct{}{}
+		}
+	}
 	// Iterating valid (not s.nodes) means specs published only by a
 	// denied peer drop out of the snapshot. Their gossip events stay in
 	// the log so deny scoping can still reason about them, but
@@ -383,10 +430,17 @@ func (s *store) buildSnapshot() Snapshot {
 			if ev.Deleted {
 				continue
 			}
+			var publisher types.PeerKey
+			if isSpecKind(key.kind) {
+				auth := ev.GetSpecChange().GetAuth()
+				publisher = types.PeerKeyFromBytes(auth.GetPublisher().GetClaims().GetSubjectPub())
+				if _, killed := tombstones[newTombstoneKey(key.kind, key.name, publisher, auth.GetBodyHash())]; killed {
+					continue
+				}
+			}
 			switch key.kind { //nolint:exhaustive
 			case attrWorkloadSpec:
 				sc := ev.GetSpecChange()
-				publisher := types.PeerKeyFromBytes(sc.GetAuth().GetPublisher().GetClaims().GetSubjectPub())
 				if specStoring[key.name] == nil {
 					specStoring[key.name] = make(map[types.PeerKey]struct{})
 				}
@@ -400,7 +454,6 @@ func (s *store) buildSnapshot() Snapshot {
 				}
 			case attrStaticSpec:
 				sc := ev.GetSpecChange()
-				publisher := types.PeerKeyFromBytes(sc.GetAuth().GetPublisher().GetClaims().GetSubjectPub())
 				if staticStoring[key.name] == nil {
 					staticStoring[key.name] = make(map[types.PeerKey]struct{})
 				}
@@ -424,7 +477,6 @@ func (s *store) buildSnapshot() Snapshot {
 				staticSpecsByPub[publisher][key.name] = view
 			case attrBlobSpec:
 				sc := ev.GetSpecChange()
-				publisher := types.PeerKeyFromBytes(sc.GetAuth().GetPublisher().GetClaims().GetSubjectPub())
 				if blobStoring[key.name] == nil {
 					blobStoring[key.name] = make(map[types.PeerKey]struct{})
 				}
@@ -594,6 +646,9 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 	return nv, claims, staticClaims
 }
 
+// flattenStaticSpecsByPub returns every (publisher, name) static spec
+// in a stable order so cluster-wide views and test fixtures stay
+// reproducible across daemon restarts.
 func flattenStaticSpecsByPub(byPub map[types.PeerKey]map[string]StaticSpecView) []StaticSpecView {
 	if len(byPub) == 0 {
 		return nil
@@ -604,6 +659,12 @@ func flattenStaticSpecsByPub(byPub map[types.PeerKey]map[string]StaticSpecView) 
 			out = append(out, v)
 		}
 	}
+	slices.SortFunc(out, func(a, b StaticSpecView) int {
+		if c := a.Publisher.Compare(b.Publisher); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Spec.Name, b.Spec.Name)
+	})
 	return out
 }
 

@@ -63,6 +63,63 @@ func TestAdmitVerifiesSpecAuthBody(t *testing.T) {
 	require.Error(t, g.Admit(sc))
 }
 
+func TestAdmitAllowsSamePublisherMultipleSpecs(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	publisherKey := types.PeerKeyFromBytes(rootPub)
+	// Pre-populate the snapshot with the publisher in Nodes, mirroring
+	// the post-first-spec state, so the slug-collision check has to skip
+	// it for the second spec to admit.
+	snap := state.Snapshot{Nodes: map[types.PeerKey]state.NodeView{publisherKey: {Cert: publisher}}}
+	g := New(rootPub, fakeStore{snap: snap})
+
+	for _, c := range []struct {
+		hex string
+		raw byte
+	}{{"a", 0xaa}, {"b", 0xbb}} {
+		body := &statev1.WorkloadSpecChange{Hash: strings.Repeat(c.hex, 64), Name: "echo", MinReplicas: 1}
+		resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(c.raw)}}}
+		specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
+		require.NoError(t, err)
+		require.NoError(t, g.Admit(&statev1.SpecChange{Auth: specAuth, Body: &statev1.SpecChange_Workload{Workload: body}}))
+	}
+}
+
+func TestAdmitRejectsPublicWithInlineClauses(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("a", 64), Name: "echo", MinReplicas: 1}
+	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xaa)}}}
+	policy := &admissionv1.Predicate{
+		Public: true,
+		Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "role", Equals: "admin"}}},
+	}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, policy, false)
+	require.NoError(t, err)
+	g := New(rootPub, fakeStore{})
+	err = g.Admit(&statev1.SpecChange{Auth: specAuth, Body: &statev1.SpecChange_Workload{Workload: body}})
+	require.ErrorContains(t, err, "public=true and inline clauses")
+}
+
+func TestAdmitDistinctPublishersBothSucceed(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	otherPub, _ := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	// Snapshot already contains another peer with a distinct slug; the
+	// new publisher must not be rejected for someone else's presence.
+	snap := state.Snapshot{Nodes: map[types.PeerKey]state.NodeView{types.PeerKeyFromBytes(otherPub): {}}}
+	g := New(rootPub, fakeStore{snap: snap})
+
+	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("c", 64), Name: "echo", MinReplicas: 1}
+	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xcc)}}}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
+	require.NoError(t, err)
+	require.NoError(t, g.Admit(&statev1.SpecChange{Auth: specAuth, Body: &statev1.SpecChange_Workload{Workload: body}}))
+}
+
 func TestInvokeUsesCallerCertAttributes(t *testing.T) {
 	now := time.Now()
 	rootPub, rootPriv := newKeyPair(t)
@@ -81,25 +138,25 @@ func TestInvokeUsesCallerCertAttributes(t *testing.T) {
 		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
 	}
 
-	info, err := New(rootPub, fakeStore{snap: snap}).Invoke(callerKey, body.GetHash())
+	info, err := New(rootPub, fakeStore{snap: snap}).Invoke(callerCert, body.GetHash())
 	require.NoError(t, err)
 	require.Equal(t, "worker", info.Attributes["role"])
 }
 
 func TestInvokeDeniesPolicyMismatch(t *testing.T) {
 	now := time.Now()
-	g, callerKey, hash := newWorkloadFixture(t, now,
+	g, callerCert, hash := newWorkloadFixture(t, now,
 		map[string]any{"role": "operator"},
 		clauseEquals("role", "worker"),
 	)
-	_, err := g.Invoke(callerKey, hash)
+	_, err := g.Invoke(callerCert, hash)
 	require.ErrorIs(t, err, wasm.ErrTargetNotFound)
 }
 
 func TestInvokeAllowsOpenPolicy(t *testing.T) {
 	now := time.Now()
-	g, callerKey, hash := newWorkloadFixture(t, now, nil, nil)
-	info, err := g.Invoke(callerKey, hash)
+	g, callerCert, hash := newWorkloadFixture(t, now, nil, nil)
+	info, err := g.Invoke(callerCert, hash)
 	require.NoError(t, err)
 	require.NotNil(t, info)
 }
@@ -117,21 +174,65 @@ func TestInvokeDeniesExpiredCallerCert(t *testing.T) {
 		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xee)}}},
 		body, nil, false)
 	require.NoError(t, err)
-	callerKey := types.PeerKeyFromBytes(callerPub)
 	snap := state.Snapshot{
-		Nodes: map[types.PeerKey]state.NodeView{callerKey: {Cert: expired}},
 		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
 	}
 	g := New(rootPub, fakeStore{snap: snap})
-	_, err = g.Invoke(callerKey, body.GetHash())
+	_, err = g.Invoke(expired, body.GetHash())
 	require.ErrorIs(t, err, wasm.ErrTargetNotFound)
 }
 
 func TestInvokeRejectsPolicyWithoutInline(t *testing.T) {
 	now := time.Now()
-	g, callerKey, hash := newWorkloadFixture(t, now, nil, &admissionv1.Predicate{})
-	_, err := g.Invoke(callerKey, hash)
+	g, callerCert, hash := newWorkloadFixture(t, now, nil, &admissionv1.Predicate{})
+	_, err := g.Invoke(callerCert, hash)
 	require.ErrorIs(t, err, wasm.ErrTargetNotFound, "non-Inline Predicate must fail closed even though Inline is currently the only variant")
+}
+
+func TestInvokeRejectsNilCert(t *testing.T) {
+	now := time.Now()
+	g, _, hash := newWorkloadFixture(t, now, nil, nil)
+	_, err := g.Invoke(nil, hash)
+	require.ErrorIs(t, err, wasm.ErrTargetNotFound, "nil caller cert must fail closed when spec is not public")
+}
+
+func TestInvokeAllowsAnonymousWhenPublic(t *testing.T) {
+	now := time.Now()
+	g, _, hash := newWorkloadFixture(t, now, nil, &admissionv1.Predicate{Public: true})
+	info, err := g.Invoke(nil, hash)
+	require.NoError(t, err)
+	require.Equal(t, types.PeerKey{}, info.PeerKey, "anonymous CallerInfo carries no peer identity")
+	require.Nil(t, info.Attributes)
+}
+
+func TestInvokePublicSpecBypassesPredicateClauses(t *testing.T) {
+	now := time.Now()
+	policy := &admissionv1.Predicate{
+		Public: true,
+		Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "role", Equals: "admin"}}},
+	}
+	g, callerCert, hash := newWorkloadFixture(t, now, map[string]any{"role": "intern"}, policy)
+	info, err := g.Invoke(callerCert, hash)
+	require.NoError(t, err, "public=true must short-circuit even when cert attributes don't satisfy clauses")
+	require.NotEqual(t, types.PeerKey{}, info.PeerKey)
+}
+
+func TestFetchAllowsAnonymousWhenPublic(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+	publisher := testCert(t, rootPriv, rootPub, nil, now)
+	body := &statev1.BlobSpecChange{Name: "payload", Digest: bytesOf(0xb1)}
+	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
+		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{Name: body.GetName(), Digest: body.GetDigest()}}},
+		body, &admissionv1.Predicate{Public: true}, false)
+	require.NoError(t, err)
+
+	digest := bytesAsHex(body.GetDigest())
+	snap := state.Snapshot{
+		BlobSpecs: map[string]state.BlobSpecView{digest: {Spec: state.BlobSpec{Name: body.GetName(), Digest: digest}, Auth: specAuth}},
+	}
+	g := New(rootPub, fakeStore{snap: snap})
+	require.NoError(t, g.Fetch(nil, digest))
 }
 
 func TestFetchHonoursPolicy(t *testing.T) {
@@ -149,17 +250,12 @@ func TestFetchHonoursPolicy(t *testing.T) {
 	require.NoError(t, err)
 
 	digest := bytesAsHex(body.GetDigest())
-	callerKey := types.PeerKeyFromBytes(callerPub)
 	snap := state.Snapshot{
-		Nodes:     map[types.PeerKey]state.NodeView{callerKey: {Cert: allow}},
 		BlobSpecs: map[string]state.BlobSpecView{digest: {Spec: state.BlobSpec{Name: body.GetName(), Digest: digest}, Auth: specAuth}},
 	}
 	g := New(rootPub, fakeStore{snap: snap})
-	require.NoError(t, g.Fetch(callerKey, digest))
-
-	snap.Nodes[callerKey] = state.NodeView{Cert: deny}
-	g.store = fakeStore{snap: snap}
-	require.ErrorIs(t, g.Fetch(callerKey, digest), wasm.ErrTargetNotFound)
+	require.NoError(t, g.Fetch(allow, digest))
+	require.ErrorIs(t, g.Fetch(deny, digest), wasm.ErrTargetNotFound)
 }
 
 func TestFetchAuthorisesWorkloadBinary(t *testing.T) {
@@ -176,17 +272,12 @@ func TestFetchAuthorisesWorkloadBinary(t *testing.T) {
 		body, clauseEquals("role", "admin"), false)
 	require.NoError(t, err)
 
-	callerKey := types.PeerKeyFromBytes(callerPub)
 	snap := state.Snapshot{
-		Nodes: map[types.PeerKey]state.NodeView{callerKey: {Cert: allow}},
 		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
 	}
 	g := New(rootPub, fakeStore{snap: snap})
-	require.NoError(t, g.Fetch(callerKey, body.GetHash()), "caller with admin role must fetch workload binary")
-
-	snap.Nodes[callerKey] = state.NodeView{Cert: deny}
-	g.store = fakeStore{snap: snap}
-	require.ErrorIs(t, g.Fetch(callerKey, body.GetHash()), wasm.ErrTargetNotFound, "caller without admin role must be denied")
+	require.NoError(t, g.Fetch(allow, body.GetHash()), "caller with admin role must fetch workload binary")
+	require.ErrorIs(t, g.Fetch(deny, body.GetHash()), wasm.ErrTargetNotFound, "caller without admin role must be denied")
 }
 
 func TestFetchAuthorisesStaticManifest(t *testing.T) {
@@ -203,13 +294,13 @@ func TestFetchAuthorisesStaticManifest(t *testing.T) {
 		body, nil, false)
 	require.NoError(t, err)
 
-	callerKey := types.PeerKeyFromBytes(callerPub)
+	manifestSpec := state.StaticSpecView{Spec: state.StaticSpec{Name: body.GetName(), ManifestDigest: manifestDigest}, Auth: specAuth}
 	snap := state.Snapshot{
-		Nodes:       map[types.PeerKey]state.NodeView{callerKey: {Cert: caller}},
-		StaticSpecs: map[string]state.StaticSpecView{body.GetName(): {Spec: state.StaticSpec{Name: body.GetName(), ManifestDigest: manifestDigest}, Auth: specAuth}},
+		StaticSpecs:    map[string]state.StaticSpecView{body.GetName(): manifestSpec},
+		StaticSpecsAll: []state.StaticSpecView{manifestSpec},
 	}
 	g := New(rootPub, fakeStore{snap: snap})
-	require.NoError(t, g.Fetch(callerKey, manifestDigest), "manifest digest must be authorised via StaticSpec")
+	require.NoError(t, g.Fetch(caller, manifestDigest), "manifest digest must be authorised via StaticSpec")
 }
 
 func TestFetchAuthorisesNestedStaticPath(t *testing.T) {
@@ -227,16 +318,16 @@ func TestFetchAuthorisesNestedStaticPath(t *testing.T) {
 		body, nil, false)
 	require.NoError(t, err)
 
-	callerKey := types.PeerKeyFromBytes(callerPub)
+	manifestSpec := state.StaticSpecView{Spec: state.StaticSpec{Name: body.GetName(), ManifestDigest: manifestDigest}, Auth: specAuth}
 	snap := state.Snapshot{
-		Nodes:       map[types.PeerKey]state.NodeView{callerKey: {Cert: caller}},
-		StaticSpecs: map[string]state.StaticSpecView{body.GetName(): {Spec: state.StaticSpec{Name: body.GetName(), ManifestDigest: manifestDigest}, Auth: specAuth}},
+		StaticSpecs:    map[string]state.StaticSpecView{body.GetName(): manifestSpec},
+		StaticSpecsAll: []state.StaticSpecView{manifestSpec},
 	}
 	g := New(rootPub, fakeStore{snap: snap})
-	require.ErrorIs(t, g.Fetch(callerKey, pathDigest), wasm.ErrTargetNotFound, "nested path is denied without a manifest resolver")
+	require.ErrorIs(t, g.Fetch(caller, pathDigest), wasm.ErrTargetNotFound, "nested path is denied without a manifest resolver")
 
 	g.SetManifestPaths(fakeManifestPaths{manifestDigest: {pathDigest: {}}})
-	require.NoError(t, g.Fetch(callerKey, pathDigest), "nested path is authorised once the manifest resolves")
+	require.NoError(t, g.Fetch(caller, pathDigest), "nested path is authorised once the manifest resolves")
 }
 
 type fakeManifestPaths map[string]map[string]struct{}
@@ -260,23 +351,19 @@ func TestConnectHonoursPolicy(t *testing.T) {
 		body, clauseEquals("team", "blue"), false)
 	require.NoError(t, err)
 
-	callerKey := types.PeerKeyFromBytes(callerPub)
 	localKey := types.PeerKeyFromBytes(localPub)
 	svc := &state.Service{Name: "api", Port: 8080, Auth: specAuth}
 	snap := state.Snapshot{
 		LocalID: localKey,
 		Nodes: map[types.PeerKey]state.NodeView{
-			callerKey: {Cert: caller},
-			localKey:  {Services: map[string]*state.Service{"api": svc}},
+			localKey: {Services: map[string]*state.Service{"api": svc}},
 		},
 	}
 	g := New(rootPub, fakeStore{snap: snap})
-	require.NoError(t, g.Connect(callerKey, localKey, 8080))
+	require.NoError(t, g.Connect(caller, localKey, 8080))
 
 	caller2 := testCert(t, callerPriv, callerPub, map[string]any{"team": "red"}, now)
-	snap.Nodes[callerKey] = state.NodeView{Cert: caller2}
-	g.store = fakeStore{snap: snap}
-	require.ErrorIs(t, g.Connect(callerKey, localKey, 8080), wasm.ErrTargetNotFound)
+	require.ErrorIs(t, g.Connect(caller2, localKey, 8080), wasm.ErrTargetNotFound)
 }
 
 func TestConnectAuthorsesAgainstChosenHost(t *testing.T) {
@@ -295,7 +382,6 @@ func TestConnectAuthorsesAgainstChosenHost(t *testing.T) {
 		&statev1.ServiceChange{Name: "api", Port: 8081}, clauseEquals("team", "blue"), false)
 	require.NoError(t, err)
 
-	callerKey := types.PeerKeyFromBytes(callerPub)
 	strictHostKey, _ := newKeyPair(t)
 	looseHostKey, _ := newKeyPair(t)
 	strictKey := types.PeerKeyFromBytes(strictHostKey)
@@ -303,14 +389,13 @@ func TestConnectAuthorsesAgainstChosenHost(t *testing.T) {
 
 	snap := state.Snapshot{
 		Nodes: map[types.PeerKey]state.NodeView{
-			callerKey: {Cert: caller},
 			strictKey: {Services: map[string]*state.Service{"api": {Name: "api", Port: 8080, Auth: strict}}},
 			looseKey:  {Services: map[string]*state.Service{"api": {Name: "api", Port: 8081, Auth: loose}}},
 		},
 	}
 	g := New(rootPub, fakeStore{snap: snap})
-	require.ErrorIs(t, g.Connect(callerKey, strictKey, 8080), wasm.ErrTargetNotFound, "strict host's red-only policy must reject blue caller")
-	require.NoError(t, g.Connect(callerKey, looseKey, 8081), "loose host's blue policy must accept blue caller")
+	require.ErrorIs(t, g.Connect(caller, strictKey, 8080), wasm.ErrTargetNotFound, "strict host's red-only policy must reject blue caller")
+	require.NoError(t, g.Connect(caller, looseKey, 8081), "loose host's blue policy must accept blue caller")
 }
 
 func TestMayHostAcceptsMatchingHost(t *testing.T) {
@@ -467,7 +552,7 @@ func clauseEquals(key, value string) *admissionv1.Predicate {
 	}}}
 }
 
-func newWorkloadFixture(t *testing.T, now time.Time, callerAttrs map[string]any, policy *admissionv1.Predicate) (*Gate, types.PeerKey, string) {
+func newWorkloadFixture(t *testing.T, now time.Time, callerAttrs map[string]any, policy *admissionv1.Predicate) (*Gate, *admissionv1.DelegationCert, string) {
 	t.Helper()
 	rootPub, rootPriv := newKeyPair(t)
 	callerPub, callerPriv := newKeyPair(t)
@@ -484,7 +569,7 @@ func newWorkloadFixture(t *testing.T, now time.Time, callerAttrs map[string]any,
 		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
 	}
 	g := New(rootPub, fakeStore{snap: snap})
-	return g, callerKey, body.GetHash()
+	return g, callerCert, body.GetHash()
 }
 
 func TestFetchByTokenAllowsBlob(t *testing.T) {

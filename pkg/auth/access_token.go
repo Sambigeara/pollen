@@ -23,6 +23,9 @@ func SignAccessToken(issuerPriv ed25519.PrivateKey, resource *admissionv1.Resour
 	if resource == nil {
 		return nil, errors.New("access token resource is required")
 	}
+	if err := validateResourceBody(resource); err != nil {
+		return nil, err
+	}
 	if ttl <= 0 {
 		return nil, errors.New("access token ttl must be positive")
 	}
@@ -75,6 +78,36 @@ func EncodeAccessToken(token *admissionv1.AccessToken) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// validateResourceBody requires the oneof discriminator AND the inner
+// variant to be populated. A discriminator-only construction (e.g.
+// `&ResourceID{Body: &ResourceID_Seed{Seed: nil}}`) would otherwise
+// sign a degenerate token whose Verify-side error is less clear.
+func validateResourceBody(resource *admissionv1.ResourceID) error {
+	switch v := resource.GetBody().(type) {
+	case *admissionv1.ResourceID_Seed:
+		if v.Seed == nil {
+			return errors.New("access token seed body is required")
+		}
+	case *admissionv1.ResourceID_Service:
+		if v.Service == nil {
+			return errors.New("access token service body is required")
+		}
+	case *admissionv1.ResourceID_Static:
+		if v.Static == nil {
+			return errors.New("access token static body is required")
+		}
+	case *admissionv1.ResourceID_Blob:
+		if v.Blob == nil {
+			return errors.New("access token blob body is required")
+		}
+	case nil:
+		return errors.New("access token resource body discriminator is unset")
+	default:
+		return fmt.Errorf("access token resource body type %T unsupported", v)
+	}
+	return nil
 }
 
 func DecodeAccessToken(s string) (*admissionv1.AccessToken, error) {

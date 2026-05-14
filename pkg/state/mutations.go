@@ -658,11 +658,11 @@ func isOwnerConflictKind(kind attrKind) bool {
 }
 
 // DeleteWorkloadSpecPresigned applies a tenant-signed workload-spec
-// tombstone. The daemon must hold the live spec in its own slot to
-// satisfy the body-hash validation; cross-slot tombstone propagation
-// is a follow-up (publisher-scoped tombstone suppression in
-// buildSnapshot lets remote slots see the deletion when one peer
-// receives it).
+// tombstone. The body the publisher signed at create time is looked up
+// across every peer's log, so unseeds work even when the daemon serving
+// the RPC isn't the one that originally accepted the spec — combined
+// with publisher-scoped tombstone suppression in buildSnapshot, this
+// is what makes cross-slot unseeds Just Work in wire mode.
 func (s *store) DeleteWorkloadSpecPresigned(hash string, presignedAuth *admissionv1.SpecAuth) ([]Event, error) {
 	if _, err := hex.DecodeString(hash); err != nil || len(hash) != sha256HexLen {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, hash)
@@ -683,11 +683,12 @@ func (s *store) DeleteBlobSpecPresigned(digest string, presignedAuth *admissionv
 	return s.applyPresignedTombstone(attrKey{kind: attrBlobSpec, name: digest}, presignedAuth, nil)
 }
 
-// ErrTombstoneNotOurSlot is returned when a presigned tombstone arrives
-// for a spec the local daemon never stored locally. Cross-slot tombstone
-// propagation is a follow-up; until it lands, callers must direct the
-// tombstone at the relay daemon that originally accepted the spec.
-var ErrTombstoneNotOurSlot = errors.New("presigned tombstone: live spec not stored on this node")
+// ErrTombstoneNoLiveSpec is returned when a presigned tombstone arrives
+// for a spec the cluster has no record of (neither locally nor on any
+// other peer). The publisher's signature can't be verified without the
+// body it was signed over, so the daemon refuses rather than emit an
+// unverifiable tombstone.
+var ErrTombstoneNoLiveSpec = errors.New("presigned tombstone: live spec not found on any peer")
 
 func (s *store) applyPresignedTombstone(key attrKey, presignedAuth *admissionv1.SpecAuth, domainEvent Event) ([]Event, error) {
 	if presignedAuth == nil {
@@ -699,16 +700,15 @@ func (s *store) applyPresignedTombstone(key attrKey, presignedAuth *admissionv1.
 	if s.validate == nil {
 		return nil, ErrNoValidator
 	}
+	publisherPub := presignedAuth.GetPublisher().GetClaims().GetSubjectPub()
 	var rebuildErr error
 	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		ev, ok := rec.log[key]
-		if !ok || ev.Deleted {
-			rebuildErr = ErrTombstoneNotOurSlot
+		if ev, ok := rec.log[key]; ok && ev.Deleted {
 			return nil, nil
 		}
-		body := liveSpecBody(ev.GetSpecChange())
+		body := s.findLiveSpecBodyForPublisherLocked(key, publisherPub, presignedAuth.GetBodyHash())
 		if body == nil {
-			rebuildErr = errors.New("existing spec body unrecognised")
+			rebuildErr = ErrTombstoneNoLiveSpec
 			return nil, nil
 		}
 		specChange := wrapSpecBody(presignedAuth, body)
@@ -724,6 +724,56 @@ func (s *store) applyPresignedTombstone(key attrKey, presignedAuth *admissionv1.
 		return []*statev1.GossipEvent{gossip}, domain
 	})
 	return events, rebuildErr
+}
+
+// findLiveSpecBodyForPublisherLocked returns the body the publisher
+// signed at create time, looking first at the local slot and then
+// across every other peer's log. wantBodyHash is the body_hash the
+// tombstone was signed over; matching on it disambiguates re-seeded
+// content (otherwise map-iteration order could return a stale body
+// from a previous tenure that's still cached on some peer). The
+// publisher filter remains the primary gate since workload hash and
+// static name are not unique across publishers. s.mu must be held by
+// the caller.
+func (s *store) findLiveSpecBodyForPublisherLocked(key attrKey, publisherPub, wantBodyHash []byte) auth.SpecBody {
+	matches := func(ev *statev1.GossipEvent) auth.SpecBody {
+		if ev == nil || ev.Deleted {
+			return nil
+		}
+		sc := ev.GetSpecChange()
+		sa := sc.GetAuth()
+		if !bytes.Equal(sa.GetPublisher().GetClaims().GetSubjectPub(), publisherPub) {
+			return nil
+		}
+		// When the tombstone's body_hash is unset (older callers), accept
+		// any publisher-owned body. Otherwise require the live spec's
+		// own signed body_hash to match so map-iteration order doesn't
+		// pick a stale body cached on a relay peer.
+		if len(wantBodyHash) > 0 && !bytes.Equal(sa.GetBodyHash(), wantBodyHash) {
+			return nil
+		}
+		return liveSpecBody(sc)
+	}
+	if rec, ok := s.nodes[s.localID]; ok {
+		if ev, ok := rec.log[key]; ok {
+			if body := matches(ev); body != nil {
+				return body
+			}
+		}
+	}
+	for pk, rec := range s.nodes {
+		if pk == s.localID {
+			continue
+		}
+		ev, ok := rec.log[key]
+		if !ok {
+			continue
+		}
+		if body := matches(ev); body != nil {
+			return body
+		}
+	}
+	return nil
 }
 
 // liveSpecBody returns the typed body proto for the live spec change,

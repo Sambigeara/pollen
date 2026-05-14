@@ -845,16 +845,22 @@ func (x *CertInfo) GetDenied() bool {
 }
 
 type GetStatusResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Self          *NodeSummary           `protobuf:"bytes,1,opt,name=self,proto3" json:"self,omitempty"`
-	Nodes         []*NodeSummary         `protobuf:"bytes,2,rep,name=nodes,proto3" json:"nodes,omitempty"`
-	Services      []*ServiceSummary      `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty"`
-	Connections   []*ConnectionSummary   `protobuf:"bytes,4,rep,name=connections,proto3" json:"connections,omitempty"`
-	Certificates  []*CertInfo            `protobuf:"bytes,5,rep,name=certificates,proto3" json:"certificates,omitempty"`
-	Degraded      bool                   `protobuf:"varint,6,opt,name=degraded,proto3" json:"degraded,omitempty"`
-	Workloads     []*WorkloadSummary     `protobuf:"bytes,7,rep,name=workloads,proto3" json:"workloads,omitempty"`
-	Sites         []*StaticSummary       `protobuf:"bytes,8,rep,name=sites,proto3" json:"sites,omitempty"`
-	Blobs         []*BlobSummary         `protobuf:"bytes,9,rep,name=blobs,proto3" json:"blobs,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Self         *NodeSummary           `protobuf:"bytes,1,opt,name=self,proto3" json:"self,omitempty"`
+	Nodes        []*NodeSummary         `protobuf:"bytes,2,rep,name=nodes,proto3" json:"nodes,omitempty"`
+	Services     []*ServiceSummary      `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty"`
+	Connections  []*ConnectionSummary   `protobuf:"bytes,4,rep,name=connections,proto3" json:"connections,omitempty"`
+	Certificates []*CertInfo            `protobuf:"bytes,5,rep,name=certificates,proto3" json:"certificates,omitempty"`
+	Degraded     bool                   `protobuf:"varint,6,opt,name=degraded,proto3" json:"degraded,omitempty"`
+	Workloads    []*WorkloadSummary     `protobuf:"bytes,7,rep,name=workloads,proto3" json:"workloads,omitempty"`
+	Sites        []*StaticSummary       `protobuf:"bytes,8,rep,name=sites,proto3" json:"sites,omitempty"`
+	Blobs        []*BlobSummary         `protobuf:"bytes,9,rep,name=blobs,proto3" json:"blobs,omitempty"`
+	// Public DNS base for the anonymous HTTP gateway, e.g. "pln.sh" or
+	// "staging.pln.sh". Empty when the daemon hasn't been told (no
+	// gateway listener configured). `pln share` reads this so the
+	// composed URL matches the cluster's actual gateway hostname
+	// instead of a hardcoded CLI default.
+	GatewayDomain string `protobuf:"bytes,10,opt,name=gateway_domain,json=gatewayDomain,proto3" json:"gateway_domain,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -950,6 +956,13 @@ func (x *GetStatusResponse) GetBlobs() []*BlobSummary {
 		return x.Blobs
 	}
 	return nil
+}
+
+func (x *GetStatusResponse) GetGatewayDomain() string {
+	if x != nil {
+		return x.GatewayDomain
+	}
+	return ""
 }
 
 type BlobSummary struct {
@@ -1973,9 +1986,15 @@ func (x *SeedWorkloadHeader) GetPreSignedAuth() *v11.SpecAuth {
 }
 
 type SeedWorkloadResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Hash  string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	Name  string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// public_url is the canonical gateway URL the workload is reachable
+	// at when the daemon has `static-http-domain` configured, rendered
+	// as `https://fn.<domain>/<slug>/<name>`. Anonymous callers need the
+	// spec's policy to be public to reach it; cert-bearing callers
+	// always do.
+	PublicUrl     string `protobuf:"bytes,3,opt,name=public_url,json=publicUrl,proto3" json:"public_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2020,6 +2039,13 @@ func (x *SeedWorkloadResponse) GetHash() string {
 func (x *SeedWorkloadResponse) GetName() string {
 	if x != nil {
 		return x.Name
+	}
+	return ""
+}
+
+func (x *SeedWorkloadResponse) GetPublicUrl() string {
+	if x != nil {
+		return x.PublicUrl
 	}
 	return ""
 }
@@ -2492,10 +2518,10 @@ func (x *IssueCertRequest) GetMintOnly() bool {
 
 type IssueCertResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// cert is the newly minted delegation cert. Populated for every
-	// request, but only meaningful to callers that need to deliver it out
-	// of band (mint_only=true). Existing mesh callers can ignore it; the
-	// recipient receives the cert via the synchronous QUIC push.
+	// cert is the newly minted delegation cert, populated only when
+	// mint_only=true. Mesh callers that take the push path receive the
+	// cert via the synchronous QUIC delivery and leave this empty so
+	// the response stays small for the common case.
 	Cert          *v11.DelegationCert `protobuf:"bytes,1,opt,name=cert,proto3" json:"cert,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2782,8 +2808,13 @@ func (x *UploadBlobHeader) GetPreSignedAuth() *v11.SpecAuth {
 }
 
 type UploadBlobResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Hash  string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
+	// public_url is the canonical gateway URL a named blob is reachable
+	// at when the daemon has `static-http-domain` configured, rendered
+	// as `https://blob.<domain>/<slug>/<name>`. Anonymous blobs (no
+	// name) have no canonical URL and rely on bearer tokens.
+	PublicUrl     string `protobuf:"bytes,2,opt,name=public_url,json=publicUrl,proto3" json:"public_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2821,6 +2852,13 @@ func (*UploadBlobResponse) Descriptor() ([]byte, []int) {
 func (x *UploadBlobResponse) GetHash() string {
 	if x != nil {
 		return x.Hash
+	}
+	return ""
+}
+
+func (x *UploadBlobResponse) GetPublicUrl() string {
+	if x != nil {
+		return x.PublicUrl
 	}
 	return ""
 }
@@ -2988,7 +3026,11 @@ func (x *SeedStaticRequest) GetPreSignedAuth() *v11.SpecAuth {
 }
 
 type SeedStaticResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// public_url is the externally-reachable URL the seeded site will
+	// serve at, derived from the daemon's `static-http-domain` config
+	// and the publisher's slug. Empty when no domain is set.
+	PublicUrl     string `protobuf:"bytes,1,opt,name=public_url,json=publicUrl,proto3" json:"public_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3021,6 +3063,13 @@ func (x *SeedStaticResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use SeedStaticResponse.ProtoReflect.Descriptor instead.
 func (*SeedStaticResponse) Descriptor() ([]byte, []int) {
 	return file_pollen_control_v1_control_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *SeedStaticResponse) GetPublicUrl() string {
+	if x != nil {
+		return x.PublicUrl
+	}
+	return ""
 }
 
 type UnseedStaticRequest struct {
@@ -3159,7 +3208,7 @@ type StaticSummary struct {
 	ServingCapacity uint32                 `protobuf:"varint,7,opt,name=serving_capacity,json=servingCapacity,proto3" json:"serving_capacity,omitempty"`
 	// public_url is set when the responding node has a configured
 	// static_http_domain; the URL is rendered server-side as
-	// `<name>-<short-pub>.<domain>` so the CLI can show it verbatim.
+	// `<name>-<slug>.<domain>` so the CLI can show it verbatim.
 	PublicUrl     string `protobuf:"bytes,8,opt,name=public_url,json=publicUrl,proto3" json:"public_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3751,7 +3800,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\vcan_publish\x18\n" +
 	" \x01(\bR\n" +
 	"canPublish\x12\x16\n" +
-	"\x06denied\x18\v \x01(\bR\x06denied\"\x91\x04\n" +
+	"\x06denied\x18\v \x01(\bR\x06denied\"\xb8\x04\n" +
 	"\x11GetStatusResponse\x122\n" +
 	"\x04self\x18\x01 \x01(\v2\x1e.pollen.control.v1.NodeSummaryR\x04self\x124\n" +
 	"\x05nodes\x18\x02 \x03(\v2\x1e.pollen.control.v1.NodeSummaryR\x05nodes\x12=\n" +
@@ -3761,7 +3810,9 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\bdegraded\x18\x06 \x01(\bR\bdegraded\x12@\n" +
 	"\tworkloads\x18\a \x03(\v2\".pollen.control.v1.WorkloadSummaryR\tworkloads\x126\n" +
 	"\x05sites\x18\b \x03(\v2 .pollen.control.v1.StaticSummaryR\x05sites\x124\n" +
-	"\x05blobs\x18\t \x03(\v2\x1e.pollen.control.v1.BlobSummaryR\x05blobs\"\xb9\x01\n" +
+	"\x05blobs\x18\t \x03(\v2\x1e.pollen.control.v1.BlobSummaryR\x05blobs\x12%\n" +
+	"\x0egateway_domain\x18\n" +
+	" \x01(\tR\rgatewayDomain\"\xb9\x01\n" +
 	"\vBlobSummary\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x12\x1a\n" +
 	"\breplicas\x18\x02 \x01(\rR\breplicas\x12\x14\n" +
@@ -3840,10 +3891,12 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x06policy\x18\b \x01(\v2\x1e.pollen.admission.v1.PredicateR\x06policy\x12J\n" +
 	"\x0fpre_signed_auth\x18\t \x01(\v2\x1d.pollen.admission.v1.SpecAuthH\x00R\rpreSignedAuth\x88\x01\x01B\x12\n" +
 	"\x10_pre_signed_authJ\x04\b\x06\x10\aJ\x04\b\a\x10\bR\x0elatency_slo_msR\n" +
-	"properties\">\n" +
+	"properties\"]\n" +
 	"\x14SeedWorkloadResponse\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\"\x94\x01\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1d\n" +
+	"\n" +
+	"public_url\x18\x03 \x01(\tR\tpublicUrl\"\x94\x01\n" +
 	"\x15UnseedWorkloadRequest\x12\x1b\n" +
 	"\x04hash\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x10\x01R\x04hash\x12J\n" +
 	"\x0fpre_signed_auth\x18\x02 \x01(\v2\x1d.pollen.admission.v1.SpecAuthH\x00R\rpreSignedAuth\x88\x01\x01B\x12\n" +
@@ -3899,9 +3952,11 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x0fpre_signed_auth\x18\x05 \x01(\v2\x1d.pollen.admission.v1.SpecAuthH\x01R\rpreSignedAuth\x88\x01\x01B\a\n" +
 	"\x05_nameB\x12\n" +
 	"\x10_pre_signed_authJ\x04\b\x02\x10\x03R\n" +
-	"properties\"(\n" +
+	"properties\"G\n" +
 	"\x12UploadBlobResponse\x12\x12\n" +
-	"\x04hash\x18\x01 \x01(\tR\x04hash\"\xa4\x01\n" +
+	"\x04hash\x18\x01 \x01(\tR\x04hash\x12\x1d\n" +
+	"\n" +
+	"public_url\x18\x02 \x01(\tR\tpublicUrl\"\xa4\x01\n" +
 	"\x11RemoveBlobRequest\x12/\n" +
 	"\x04hash\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x04hash\x12J\n" +
 	"\x0fpre_signed_auth\x18\x02 \x01(\v2\x1d.pollen.admission.v1.SpecAuthH\x00R\rpreSignedAuth\x88\x01\x01B\x12\n" +
@@ -3914,8 +3969,10 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x06policy\x18\x05 \x01(\v2\x1e.pollen.admission.v1.PredicateR\x06policy\x12J\n" +
 	"\x0fpre_signed_auth\x18\x06 \x01(\v2\x1d.pollen.admission.v1.SpecAuthH\x00R\rpreSignedAuth\x88\x01\x01B\x12\n" +
 	"\x10_pre_signed_authJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\fmin_replicasR\n" +
-	"properties\"\x14\n" +
-	"\x12SeedStaticResponse\"\x95\x01\n" +
+	"properties\"3\n" +
+	"\x12SeedStaticResponse\x12\x1d\n" +
+	"\n" +
+	"public_url\x18\x01 \x01(\tR\tpublicUrl\"\x95\x01\n" +
 	"\x13UnseedStaticRequest\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x12J\n" +

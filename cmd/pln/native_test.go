@@ -78,14 +78,17 @@ func TestPlnNativeDial_GetStatusRoundTrip(t *testing.T) {
 	})
 
 	// Client side: a separate publisher cert in a fresh context dir, dialed
-	// via the same plumbing withEnv uses.
+	// via the same plumbing withEnv uses. Credentials live under
+	// auth.IdentityPath(dir) so the test exercises the production
+	// layout that buildPlnClientTLSConfig reads from.
 	clientDir := t.TempDir()
-	_, clientPub, err := auth.EnsureIdentityKey(clientDir)
+	clientKeys := auth.IdentityPath(clientDir)
+	_, clientPub, err := auth.EnsureIdentityKey(clientKeys)
 	require.NoError(t, err)
 	clientCert, err := signer.IssueMemberCert(clientPub, auth.PublisherCapabilities(), time.Now(), time.Now().Add(time.Hour), time.Time{})
 	require.NoError(t, err)
 	clientCreds := auth.NewNodeCredentials(serverCreds.RootPub(), clientCert)
-	require.NoError(t, auth.SaveNodeCredentials(clientDir, clientCreds))
+	require.NoError(t, auth.SaveNodeCredentials(clientKeys, clientCreds))
 
 	httpClient := &http.Client{
 		Transport: &http2.Transport{

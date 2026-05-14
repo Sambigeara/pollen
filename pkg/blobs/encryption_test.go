@@ -18,6 +18,7 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/cas"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
@@ -88,6 +89,104 @@ func TestService_PutGetEncryptsAndDecrypts(t *testing.T) {
 	got, err := io.ReadAll(rc)
 	require.NoError(t, err)
 	require.Equal(t, plaintext, got)
+}
+
+func TestService_RePutIsIdempotent(t *testing.T) {
+	// Re-Putting the same content must NOT rewrite the envelope or
+	// rotate the DEK — doing so silently strands every peer we'd
+	// previously wrapped for under a now-stale DEK. Idempotency keeps
+	// envelope-on-disk and every issued wrapping aligned through any
+	// number of re-seeds.
+	dir := t.TempDir()
+	svc, rs := newTestServiceAt(t, dir)
+
+	recipientPub, recipientPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	recipient := types.PeerKeyFromBytes(recipientPub)
+
+	plaintext := "shared content"
+	hash, err := svc.Put(strings.NewReader(plaintext))
+	require.NoError(t, err)
+
+	require.NoError(t, svc.issueWrappingForKey(hash, recipientPub, func() ([]byte, error) {
+		return svc.localDEK(hash)
+	}))
+
+	rs.mu.Lock()
+	firstWrapping := rs.snap.Wrappings[hash][recipient]
+	require.NotNil(t, firstWrapping)
+	rs.mu.Unlock()
+	envelopePath := filepath.Join(dir, "cas", hash[:2], hash)
+	firstEnvelope, err := os.ReadFile(envelopePath)
+	require.NoError(t, err)
+
+	hashAgain, err := svc.Put(strings.NewReader(plaintext))
+	require.NoError(t, err)
+	require.Equal(t, hash, hashAgain)
+
+	secondEnvelope, err := os.ReadFile(envelopePath)
+	require.NoError(t, err)
+	require.Equal(t, firstEnvelope, secondEnvelope, "idempotent Put must not rewrite the envelope")
+
+	rs.mu.Lock()
+	secondWrapping := rs.snap.Wrappings[hash][recipient]
+	rs.mu.Unlock()
+	require.Equal(t, firstWrapping.GetWrappedDek(), secondWrapping.GetWrappedDek(),
+		"idempotent Put must not refresh the recipient's wrapping")
+
+	dek, err := cas.UnwrapDEK(secondWrapping.GetWrappedDek(), recipientPub, recipientPriv)
+	require.NoError(t, err)
+	plain, err := cas.Decrypt(secondEnvelope, dek)
+	require.NoError(t, err)
+	require.Equal(t, plaintext, string(plain))
+}
+
+func TestService_RefanoutsWhenLocalEnvelopeMissing(t *testing.T) {
+	// The defence-in-depth path: if the local envelope went missing
+	// (manual cleanup, half-pruned state) but stale fanout wrappings
+	// remain in gossip, Put falls through to the full re-encrypt path.
+	// refanoutWrappings then refreshes every wrapping we'd previously
+	// issued so peers don't AEAD-fail against the freshly-encrypted
+	// envelope.
+	svc, rs := newTestService(t)
+
+	recipientPub, recipientPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	recipient := types.PeerKeyFromBytes(recipientPub)
+
+	plaintext := "shared content"
+	hash, err := svc.Put(strings.NewReader(plaintext))
+	require.NoError(t, err)
+
+	require.NoError(t, svc.issueWrappingForKey(hash, recipientPub, func() ([]byte, error) {
+		return svc.localDEK(hash)
+	}))
+
+	rs.mu.Lock()
+	firstWrapping := rs.snap.Wrappings[hash][recipient]
+	rs.mu.Unlock()
+
+	require.NoError(t, svc.store.Remove(hash))
+	svc.evictDEK(hash)
+
+	hashAgain, err := svc.Put(strings.NewReader(plaintext))
+	require.NoError(t, err)
+	require.Equal(t, hash, hashAgain)
+
+	rs.mu.Lock()
+	secondWrapping := rs.snap.Wrappings[hash][recipient]
+	rs.mu.Unlock()
+	require.NotEqual(t, firstWrapping.GetWrappedDek(), secondWrapping.GetWrappedDek(),
+		"refanout must replace fanout wrapping with one carrying the new DEK")
+
+	dek, err := cas.UnwrapDEK(secondWrapping.GetWrappedDek(), recipientPub, recipientPriv)
+	require.NoError(t, err)
+	rc, err := svc.store.Get(hash, dek)
+	require.NoError(t, err)
+	t.Cleanup(func() { rc.Close() })
+	got, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	require.Equal(t, plaintext, string(got), "refanouted wrapping must decrypt the freshly-encrypted envelope")
 }
 
 func TestService_PutEnvelopeIsEncryptedOnDisk(t *testing.T) {
@@ -241,6 +340,44 @@ func TestFetchPlaintext_ResolvesViaWorkloadSpec(t *testing.T) {
 	got, err := io.ReadAll(rc)
 	require.NoError(t, err)
 	require.Equal(t, plaintext, got)
+}
+
+// TestService_PutWithoutStateUsesFastPath verifies that a Service
+// constructed without a state reader (test fixture / bootstrap) still
+// takes the idempotent fast path on re-Put of the same content. Before
+// the explicit state-nil branch, the fall-through path would re-encrypt
+// under a fresh DEK and corrupt the on-disk envelope, leaving any
+// remote-wrapping cache stale at AEAD-fail time.
+func TestService_PutWithoutStateUsesFastPath(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	// No state passed in.
+	svc, err := New(dir, types.PeerKeyFromBytes(pub), nil, nil, nil, staticCert{}, priv)
+	require.NoError(t, err)
+
+	hash1, err := svc.Put(strings.NewReader("hello"))
+	require.NoError(t, err)
+
+	// On-disk envelope path.
+	envelopePath := filepath.Join(dir, "cas", hash1[:2], hash1)
+	info1, err := os.Stat(envelopePath)
+	require.NoError(t, err)
+	bytes1, err := os.ReadFile(envelopePath)
+	require.NoError(t, err)
+
+	// Re-Put the same content; fast path must not touch the envelope.
+	hash2, err := svc.Put(strings.NewReader("hello"))
+	require.NoError(t, err)
+	require.Equal(t, hash1, hash2)
+
+	info2, err := os.Stat(envelopePath)
+	require.NoError(t, err)
+	bytes2, err := os.ReadFile(envelopePath)
+	require.NoError(t, err)
+
+	require.Equal(t, info1.ModTime(), info2.ModTime(), "envelope must not be re-encrypted on idempotent Put")
+	require.Equal(t, bytes1, bytes2, "envelope bytes must remain identical after re-Put")
 }
 
 // helpers below avoid pulling in nettest just for a one-shot pipe.

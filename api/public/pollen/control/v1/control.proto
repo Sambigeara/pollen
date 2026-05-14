@@ -127,6 +127,12 @@ message GetStatusResponse {
   repeated WorkloadSummary workloads = 7;
   repeated StaticSummary sites = 8;
   repeated BlobSummary blobs = 9;
+  // Public DNS base for the anonymous HTTP gateway, e.g. "pln.sh" or
+  // "staging.pln.sh". Empty when the daemon hasn't been told (no
+  // gateway listener configured). `pln share` reads this so the
+  // composed URL matches the cluster's actual gateway hostname
+  // instead of a hardcoded CLI default.
+  string gateway_domain = 10;
 }
 
 message BlobSummary {
@@ -273,6 +279,12 @@ message SeedWorkloadHeader {
 message SeedWorkloadResponse {
   string hash = 1;
   string name = 2;
+  // public_url is the canonical gateway URL the workload is reachable
+  // at when the daemon has `static-http-domain` configured, rendered
+  // as `https://fn.<domain>/<slug>/<name>`. Anonymous callers need the
+  // spec's policy to be public to reach it; cert-bearing callers
+  // always do.
+  string public_url = 3;
 }
 
 message UnseedWorkloadRequest {
@@ -336,10 +348,10 @@ message IssueCertRequest {
 }
 
 message IssueCertResponse {
-  // cert is the newly minted delegation cert. Populated for every
-  // request, but only meaningful to callers that need to deliver it out
-  // of band (mint_only=true). Existing mesh callers can ignore it; the
-  // recipient receives the cert via the synchronous QUIC push.
+  // cert is the newly minted delegation cert, populated only when
+  // mint_only=true. Mesh callers that take the push path receive the
+  // cert via the synchronous QUIC delivery and leave this empty so
+  // the response stays small for the common case.
   pollen.admission.v1.DelegationCert cert = 1;
 }
 
@@ -380,6 +392,11 @@ message UploadBlobHeader {
 
 message UploadBlobResponse {
   string hash = 1;
+  // public_url is the canonical gateway URL a named blob is reachable
+  // at when the daemon has `static-http-domain` configured, rendered
+  // as `https://blob.<domain>/<slug>/<name>`. Anonymous blobs (no
+  // name) have no canonical URL and rely on bearer tokens.
+  string public_url = 2;
 }
 
 message RemoveBlobRequest {
@@ -410,7 +427,12 @@ message SeedStaticRequest {
   optional pollen.admission.v1.SpecAuth pre_signed_auth = 6;
 }
 
-message SeedStaticResponse {}
+message SeedStaticResponse {
+  // public_url is the externally-reachable URL the seeded site will
+  // serve at, derived from the daemon's `static-http-domain` config
+  // and the publisher's slug. Empty when no domain is set.
+  string public_url = 1;
+}
 
 message UnseedStaticRequest {
   string name = 1 [(buf.validate.field).string = {
@@ -437,7 +459,7 @@ message StaticSummary {
   uint32 serving_capacity = 7;
   // public_url is set when the responding node has a configured
   // static_http_domain; the URL is rendered server-side as
-  // `<name>-<short-pub>.<domain>` so the CLI can show it verbatim.
+  // `<name>-<slug>.<domain>` so the CLI can show it verbatim.
   string public_url = 8;
 }
 

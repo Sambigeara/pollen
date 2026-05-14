@@ -465,6 +465,11 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 	signer, err := auth.NewDelegationSigner(identityDir, nodePriv)
 	if err != nil {
+		if env.host != "" {
+			if _, isWire := parsePlnTarget(env.host); !isWire {
+				return fmt.Errorf("this context's local keys can't sign invite tokens — admin keys live on the remote; mint the token there:\n  ssh %s pln invite", env.host)
+			}
+		}
 		return errors.New("this node cannot issue invites; only delegated admins can sign invite tokens")
 	}
 

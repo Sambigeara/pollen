@@ -1081,6 +1081,207 @@ func TestSpecs_SignedRemoteTombstonePropagates(t *testing.T) {
 	require.NotContains(t, dst.Snapshot().StaticSpecs, "site.example")
 }
 
+func TestSpecs_PresignedTombstoneCrossSlotSuppresses(t *testing.T) {
+	// The Phase 3f promise: a tenant-signed unseed RPC succeeds on any
+	// edge node, regardless of which node originally accepted the seed.
+	// edgeA holds no live spec; edgeB's slot does. The tombstone arrives
+	// at edgeA — applyPresignedTombstone must find the body via the
+	// cross-peer lookup, emit the tombstone in edgeA's slot, and the
+	// snapshot must drop the spec by publisher P across the cluster.
+	edgeA, edgeB, publisher := genKey(t), genKey(t), genKey(t)
+
+	s := newTestStore(t, edgeA, publisher.Bytes())
+	s.SetMutationValidator(func(*statev1.SpecChange) error { return nil })
+
+	digest := make([]byte, sha256Len)
+	digest[0] = 0x01
+	bodyHash := bytes.Repeat([]byte{0x42}, sha256Len)
+	liveAuth := authBy(publisher)
+	liveAuth.BodyHash = bodyHash
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  edgeB.String(),
+		Counter: 1,
+		Change: &statev1.GossipEvent_SpecChange{SpecChange: &statev1.SpecChange{
+			Auth: liveAuth,
+			Body: &statev1.SpecChange_Static{Static: &statev1.StaticSpecChange{Name: "x", ManifestDigest: digest}},
+		}},
+	})
+	require.Contains(t, s.Snapshot().StaticSpecs, "x")
+
+	tomb := &admissionv1.SpecAuth{
+		Resource:  &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Static{Static: &admissionv1.StaticID{Name: "x", ManifestDigest: digest}}},
+		BodyHash:  bodyHash,
+		Publisher: &admissionv1.DelegationCert{Claims: &admissionv1.DelegationCertClaims{SubjectPub: publisher.Bytes()}},
+		Deleted:   true,
+	}
+	_, err := s.DeleteStaticSpecPresigned("x", tomb)
+	require.NoError(t, err)
+	require.NotContains(t, s.Snapshot().StaticSpecs, "x", "publisher-scoped tombstone must suppress live spec in any peer's slot")
+}
+
+func TestSpecs_PresignedTombstoneDoesNotKillLaterRepublish(t *testing.T) {
+	// Re-publishing a name with different content after an unseed must
+	// produce a live spec again. The tombstone is bound to the body it
+	// was signed against; a re-publish with a different body_hash gets
+	// past the suppression and lights up cluster-wide.
+	edgeA, edgeB, publisher := genKey(t), genKey(t), genKey(t)
+
+	s := newTestStore(t, edgeA, publisher.Bytes())
+	s.SetMutationValidator(func(*statev1.SpecChange) error { return nil })
+
+	oldDigest := make([]byte, sha256Len)
+	oldDigest[0] = 0x01
+	oldBodyHash := bytes.Repeat([]byte{0x42}, sha256Len)
+	oldAuth := authBy(publisher)
+	oldAuth.BodyHash = oldBodyHash
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  edgeB.String(),
+		Counter: 1,
+		Change: &statev1.GossipEvent_SpecChange{SpecChange: &statev1.SpecChange{
+			Auth: oldAuth,
+			Body: &statev1.SpecChange_Static{Static: &statev1.StaticSpecChange{Name: "x", ManifestDigest: oldDigest}},
+		}},
+	})
+	tomb := &admissionv1.SpecAuth{
+		Resource:  &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Static{Static: &admissionv1.StaticID{Name: "x", ManifestDigest: oldDigest}}},
+		BodyHash:  oldBodyHash,
+		Publisher: &admissionv1.DelegationCert{Claims: &admissionv1.DelegationCertClaims{SubjectPub: publisher.Bytes()}},
+		Deleted:   true,
+	}
+	_, err := s.DeleteStaticSpecPresigned("x", tomb)
+	require.NoError(t, err)
+	require.NotContains(t, s.Snapshot().StaticSpecs, "x", "tombstone must kill the matching live spec")
+
+	newDigest := make([]byte, sha256Len)
+	newDigest[0] = 0x02
+	newBodyHash := bytes.Repeat([]byte{0x55}, sha256Len)
+	newAuth := authBy(publisher)
+	newAuth.BodyHash = newBodyHash
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  edgeB.String(),
+		Counter: 2,
+		Change: &statev1.GossipEvent_SpecChange{SpecChange: &statev1.SpecChange{
+			Auth: newAuth,
+			Body: &statev1.SpecChange_Static{Static: &statev1.StaticSpecChange{Name: "x", ManifestDigest: newDigest}},
+		}},
+	})
+	require.Contains(t, s.Snapshot().StaticSpecs, "x", "re-publish with different body must survive the older tombstone")
+}
+
+func TestSpecs_PresignedTombstoneRequiresMatchingPublisher(t *testing.T) {
+	// A tombstone signed by P1 must not delete a spec by P2 just because
+	// they share the same (kind, name). The cross-peer body lookup
+	// filters by publisher, so the lookup returns nil and the call
+	// surfaces ErrTombstoneNoLiveSpec — there's no live spec by *this*
+	// publisher to verify the tombstone against.
+	edgeA, edgeB, p1, p2 := genKey(t), genKey(t), genKey(t), genKey(t)
+
+	s := newTestStore(t, edgeA, p1.Bytes())
+	s.SetMutationValidator(func(*statev1.SpecChange) error { return nil })
+
+	digest := make([]byte, sha256Len)
+	digest[0] = 0x02
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  edgeB.String(),
+		Counter: 1,
+		Change:  staticSpecChange(p2, &statev1.StaticSpecChange{Name: "x", ManifestDigest: digest}),
+	})
+
+	tomb := &admissionv1.SpecAuth{
+		Resource:  &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Static{Static: &admissionv1.StaticID{Name: "x", ManifestDigest: digest}}},
+		BodyHash:  bytes.Repeat([]byte{0x42}, sha256Len),
+		Publisher: &admissionv1.DelegationCert{Claims: &admissionv1.DelegationCertClaims{SubjectPub: p1.Bytes()}},
+		Deleted:   true,
+	}
+	_, err := s.DeleteStaticSpecPresigned("x", tomb)
+	require.ErrorIs(t, err, ErrTombstoneNoLiveSpec)
+	require.Contains(t, s.Snapshot().StaticSpecs, "x", "tombstone by mismatched publisher must not affect the spec")
+}
+
+func TestSpecs_PresignedTombstoneBodyHashSelectsCorrectPeer(t *testing.T) {
+	// Two peers each carry a publisher-owned spec for "x" but with
+	// different body_hashes (one stale, one fresh). The tombstone's
+	// body_hash field must drive the lookup to the matching peer's
+	// body. To prove the body_hash filter actually fires (not just
+	// "any matching publisher's body"), install a validator that
+	// REJECTS the stale body and accepts only the fresh one — under
+	// the bug, map iteration would sometimes return the stale body
+	// and the call would fail validation; under the fix it always
+	// returns fresh and the call succeeds.
+	edgeA, edgeB, edgeC, publisher := genKey(t), genKey(t), genKey(t), genKey(t)
+
+	s := newTestStore(t, edgeA, publisher.Bytes())
+	// Seed both slots through admission first using a permissive
+	// validator; otherwise the strict validator below would reject
+	// the stale event at apply time and the body_hash filter would
+	// have nothing to discriminate against.
+	s.SetMutationValidator(func(*statev1.SpecChange) error { return nil })
+
+	staleDigest := make([]byte, sha256Len)
+	staleDigest[0] = 0x01
+	staleBodyHash := bytes.Repeat([]byte{0xAA}, sha256Len)
+	staleAuth := authBy(publisher)
+	staleAuth.BodyHash = staleBodyHash
+
+	freshDigest := make([]byte, sha256Len)
+	freshDigest[0] = 0x02
+	freshBodyHash := bytes.Repeat([]byte{0xBB}, sha256Len)
+	freshAuth := authBy(publisher)
+	freshAuth.BodyHash = freshBodyHash
+
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  edgeB.String(),
+		Counter: 1,
+		Change: &statev1.GossipEvent_SpecChange{SpecChange: &statev1.SpecChange{
+			Auth: staleAuth,
+			Body: &statev1.SpecChange_Static{Static: &statev1.StaticSpecChange{Name: "x", ManifestDigest: staleDigest}},
+		}},
+	})
+	applyTestEvent(t, s, &statev1.GossipEvent{
+		PeerId:  edgeC.String(),
+		Counter: 1,
+		Change: &statev1.GossipEvent_SpecChange{SpecChange: &statev1.SpecChange{
+			Auth: freshAuth,
+			Body: &statev1.SpecChange_Static{Static: &statev1.StaticSpecChange{Name: "x", ManifestDigest: freshDigest}},
+		}},
+	})
+
+	// Sanity-check: both slots actually carry their respective bodies
+	// (would otherwise mask the test bug Cycle 4 caught).
+	require.NotNil(t, s.nodes[edgeB].log[attrKey{kind: attrStaticSpec, name: "x"}], "edgeB must hold the stale spec")
+	require.NotNil(t, s.nodes[edgeC].log[attrKey{kind: attrStaticSpec, name: "x"}], "edgeC must hold the fresh spec")
+
+	// Now switch to the strict validator. Any subsequent rewrap that
+	// pulls the stale body via the cross-peer lookup will be rejected;
+	// the body_hash filter must steer the lookup to fresh every time.
+	s.SetMutationValidator(func(sc *statev1.SpecChange) error {
+		if st := sc.GetStatic(); st != nil && bytes.Equal(st.GetManifestDigest(), staleDigest) {
+			return errors.New("validator: stale body must not be re-wrapped into a tombstone")
+		}
+		return nil
+	})
+
+	// Repeat to amplify any map-iteration variance under the bug.
+	// Each iteration clears the local tombstone so the cross-peer
+	// lookup re-enters and the body_hash filter fires again.
+	for i := range 10 {
+		s.mu.Lock()
+		if rec, ok := s.nodes[s.localID]; ok {
+			delete(rec.log, attrKey{kind: attrStaticSpec, name: "x"})
+		}
+		s.mu.Unlock()
+
+		tombFresh := &admissionv1.SpecAuth{
+			Resource:  &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Static{Static: &admissionv1.StaticID{Name: "x", ManifestDigest: freshDigest}}},
+			BodyHash:  freshBodyHash,
+			Publisher: &admissionv1.DelegationCert{Claims: &admissionv1.DelegationCertClaims{SubjectPub: publisher.Bytes()}},
+			Deleted:   true,
+		}
+		_, err := s.DeleteStaticSpecPresigned("x", tombFresh)
+		require.NoError(t, err, "iteration %d: tombstone must always resolve to the fresh body", i)
+	}
+}
+
 func TestSpecs_ValidPublisherOutranksInvalid(t *testing.T) {
 	s := newTestStore(t, genKey(t))
 
