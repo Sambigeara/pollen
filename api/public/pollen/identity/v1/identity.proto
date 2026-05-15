@@ -1,0 +1,98 @@
+// Copyright 2026 Sam Lock
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package pollen.identity.v1;
+
+import "buf/validate/validate.proto";
+import "google/protobuf/struct.proto";
+import "pollen/admission/v1/admission.proto";
+
+option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1;identityv1";
+
+message PublishCapability {
+  bool functions = 1;
+  bool blobs = 2;
+  bool sites = 3;
+  bool services = 4;
+}
+
+message Capabilities {
+  bool can_delegate = 1;
+  bool can_admit = 2;
+  uint32 max_depth = 3;
+  google.protobuf.Struct attributes = 4;
+  PublishCapability publish = 5 [(buf.validate.field).required = true];
+}
+
+message Budget {
+  uint32 max_functions = 1;
+  uint32 max_blobs = 2;
+  uint32 max_sites = 3;
+  uint64 max_total_bytes = 4;
+  uint64 max_traffic_bytes = 5;
+}
+
+message GrantClaims {
+  bytes subject_pub = 1 [(buf.validate.field).bytes = {len: 32}];
+  bytes issuer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+  Capabilities capabilities = 3 [(buf.validate.field).required = true];
+  Budget budget = 4 [(buf.validate.field).required = true];
+  int64 not_before_unix = 5;
+  int64 grant_deadline_unix = 6;
+  uint64 serial = 7;
+}
+
+message Grant {
+  GrantClaims claims = 1 [(buf.validate.field).required = true];
+  repeated Grant chain = 2;
+  bytes signature = 3 [(buf.validate.field).bytes = {len: 64}];
+}
+
+message SessionClaims {
+  Grant grant = 1 [(buf.validate.field).required = true];
+  int64 not_before_unix = 2;
+  int64 not_after_unix = 3;
+  uint64 nonce = 4;
+}
+
+message Session {
+  SessionClaims claims = 1 [(buf.validate.field).required = true];
+  bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
+}
+
+message GrantTokenClaims {
+  string token_id = 1 [(buf.validate.field).string = {uuid: true}];
+  bytes issuer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+  Grant grant = 3 [(buf.validate.field).required = true];
+  repeated pollen.admission.v1.BootstrapPeer bootstrap = 4;
+  bytes root_pub = 5 [(buf.validate.field).bytes = {len: 32}];
+  int64 issued_at_unix = 6;
+  int64 expires_at_unix = 7;
+}
+
+message GrantToken {
+  GrantTokenClaims claims = 1 [(buf.validate.field).required = true];
+  bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
+}
+
+message InviteTicketClaims {
+  string ticket_id = 1 [(buf.validate.field).string = {uuid: true}];
+  bytes issuer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+  repeated pollen.admission.v1.BootstrapPeer bootstrap = 3 [(buf.validate.field).repeated.min_items = 1];
+  bytes subject_pub = 4 [
+    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
+    (buf.validate.field).bytes = {len: 32}
+  ];
+  int64 issued_at_unix = 5;
+  int64 expires_at_unix = 6;
+  Capabilities capabilities = 7 [(buf.validate.field).required = true];
+  Budget budget = 8 [(buf.validate.field).required = true];
+  int64 grant_deadline_unix = 9;
+}
+
+message InviteTicket {
+  InviteTicketClaims claims = 1 [(buf.validate.field).required = true];
+  bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
+}
