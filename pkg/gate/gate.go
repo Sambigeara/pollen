@@ -95,7 +95,14 @@ func (g *Gate) Admit(sc *statev1.SpecChange) error {
 	if !proto.Equal(specAuth.GetResource(), expected) {
 		return errors.New("gate: spec auth resource mismatch")
 	}
-	if err := auth.VerifySpecAuth(specAuth, body, g.rootPub, time.Now()); err != nil {
+	// Durable specs bind to the publisher's authority horizon plus the
+	// denylist (see auth.VerifySpecAuth). Snapshot() is a lock-free
+	// atomic load, so sourcing deny here is safe even though Admit runs
+	// as the store's validate hook under its lock. A deny arriving in
+	// the same gossip batch is caught by the post-admission publisher
+	// filter in buildSnapshot.
+	denied := g.store.Snapshot().DenyChecker()
+	if err := auth.VerifySpecAuth(specAuth, body, g.rootPub, time.Now(), denied); err != nil {
 		return err
 	}
 	// A spec that carries both public=true and inline clauses looks

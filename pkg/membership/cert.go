@@ -28,6 +28,18 @@ func (s *Service) checkCertExpiry() bool {
 
 	s.nodeMetrics.CertExpirySeconds.Record(context.Background(), remaining.Seconds())
 
+	// Hard ceiling: past access_deadline the cluster refuses every
+	// renewal (renewMemberCert → ErrAccessDeadlinePassed). Spinning in
+	// degraded mode for the whole reconnect window only delays the
+	// signal the operator needs, so fail fast with a rejoin instruction.
+	// CheckCert reports Expired with a zero AccessDeadline for legacy
+	// no-ceiling certs; those keep the not_after reconnect-window path.
+	if chk := auth.CheckCert(cert, s.creds.RootPub(), now, nil, nil); chk.Status == auth.CertStatusExpired && !chk.AccessDeadline.IsZero() {
+		s.renewalFailed.Store(true)
+		s.log.Errorw("delegation certificate past access_deadline; renewal no longer possible, rejoin with a fresh `pln join <token>`", "access_deadline", chk.AccessDeadline)
+		return true
+	}
+
 	if auth.IsCertExpired(cert, now) {
 		if s.attemptCertRenewal() {
 			s.renewalFailed.Store(false)
@@ -246,6 +258,63 @@ func (s *Service) sendCertRenewalResponse(ctx context.Context, to types.PeerKey,
 	_ = s.routedSender.SendMembershipDatagram(ctx, to, data)
 }
 
+var (
+	ErrNotAdmin             = errors.New("this node has no delegation authority")
+	ErrSubjectDenied        = errors.New("subject has been denied")
+	ErrAccessDeadlinePassed = errors.New("access deadline has passed; re-join required")
+	ErrNoCurrentCert        = errors.New("no current cert known for requester")
+)
+
+// renewMemberCert mints a successor for currentCert, preserving its
+// capabilities verbatim and the original access_deadline ceiling while
+// refreshing not_after. Preserving caps matters: defaulting to leaf and
+// copying only attributes silently downgrades publishers and delegated
+// admins on every renewal, tripping applyNewCert's downgrade branch and
+// tombstoning every spec the node gossiped. The ceiling is fixed at the
+// original mint and never extended, so renewal cannot indefinitely
+// outlive a re-bootstrap requirement.
+func (s *Service) renewMemberCert(currentCert *admissionv1.DelegationCert) (*admissionv1.DelegationCert, error) {
+	signer := s.creds.DelegationKey()
+	if signer == nil {
+		return nil, ErrNotAdmin
+	}
+	subjectPub := currentCert.GetClaims().GetSubjectPub()
+	if slices.Contains(s.store.Snapshot().DeniedPeers(), types.PeerKeyFromBytes(subjectPub)) {
+		return nil, ErrSubjectDenied
+	}
+
+	pc := currentCert.GetClaims().GetCapabilities()
+	caps := &admissionv1.Capabilities{
+		CanDelegate: pc.GetCanDelegate(),
+		CanAdmit:    pc.GetCanAdmit(),
+		CanPublish:  pc.GetCanPublish(),
+		MaxDepth:    pc.GetMaxDepth(),
+		Attributes:  pc.GetAttributes(),
+	}
+	now := time.Now()
+	ttl := auth.CertTTL(currentCert)
+	var accessDeadline time.Time
+	if dl, hasDeadline := auth.CertAccessDeadline(currentCert); hasDeadline {
+		if now.After(dl) {
+			return nil, ErrAccessDeadlinePassed
+		}
+		accessDeadline = dl
+	}
+	notAfter := now.Add(ttl)
+	if !accessDeadline.IsZero() && notAfter.After(accessDeadline) {
+		notAfter = accessDeadline
+	}
+	return signer.IssueMemberCert(subjectPub, caps, now, notAfter, accessDeadline)
+}
+
+// RenewCert mints a successor for the cert a wire-mode caller
+// authenticated with over mTLS. The control service supplies the
+// verified session cert; the caller can only renew the identity it
+// holds the key for.
+func (s *Service) RenewCert(currentCert *admissionv1.DelegationCert) (*admissionv1.DelegationCert, error) {
+	return s.renewMemberCert(currentCert)
+}
+
 func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerKey, req *meshv1.CertRenewalRequest) {
 	sendReject := func(reason string) {
 		s.sendCertRenewalResponse(ctx, from, &meshv1.CertRenewalResponse{Reason: reason})
@@ -256,68 +325,21 @@ func (s *Service) handleCertRenewalRequest(ctx context.Context, from types.PeerK
 		return
 	}
 
-	signer := s.creds.DelegationKey()
-	if signer == nil {
-		sendReject("this node is not an admin")
-		return
-	}
-
-	if slices.Contains(s.store.Snapshot().DeniedPeers(), types.PeerKeyFromBytes(req.GetPeerPub())) {
-		sendReject("subject has been denied")
-		return
-	}
-
-	// Preserve the requester's current capabilities verbatim. Defaulting
-	// to leaf and copying only attributes silently downgrades publishers
-	// and delegated admins on every renewal, which then trips
-	// applyNewCert's downgrade branch and tombstones every spec the
-	// node had gossiped — a healthy node vanishes from the mesh on a
-	// routine expiry refresh.
+	// Routed renewals come from peers without a direct session, so fall
+	// back to the gossiped cert. Inbound admission already verified its
+	// chain and subject signature, so it's authoritative.
 	peerCert, ok := s.certs.PeerDelegationCert(from)
 	if !ok {
-		// Routed renewals come from peers without a direct session, so
-		// fall back to the gossiped cert. Inbound admission already
-		// verified its chain and subject signature, so it's authoritative.
 		if nv, found := s.store.Snapshot().Nodes[from]; found && nv.Cert != nil {
 			peerCert = nv.Cert
 		}
 	}
 	if peerCert == nil {
-		sendReject("no current cert known for requester")
+		sendReject(ErrNoCurrentCert.Error())
 		return
 	}
 
-	peerCaps := peerCert.GetClaims().GetCapabilities()
-	caps := &admissionv1.Capabilities{
-		CanDelegate: peerCaps.GetCanDelegate(),
-		CanAdmit:    peerCaps.GetCanAdmit(),
-		CanPublish:  peerCaps.GetCanPublish(),
-		MaxDepth:    peerCaps.GetMaxDepth(),
-		Attributes:  peerCaps.GetAttributes(),
-	}
-	ttl := auth.CertTTL(peerCert)
-	var accessDeadline time.Time
-	if dl, hasDeadline := auth.CertAccessDeadline(peerCert); hasDeadline {
-		if time.Now().After(dl) {
-			sendReject("access deadline has passed")
-			return
-		}
-		accessDeadline = dl
-	}
-
-	now := time.Now()
-	notAfter := now.Add(ttl)
-	if !accessDeadline.IsZero() && notAfter.After(accessDeadline) {
-		notAfter = accessDeadline
-	}
-
-	newCert, err := signer.IssueMemberCert(
-		req.GetPeerPub(),
-		caps,
-		now,
-		notAfter,
-		accessDeadline,
-	)
+	newCert, err := s.renewMemberCert(peerCert)
 	if err != nil {
 		sendReject(err.Error())
 		return
@@ -344,10 +366,17 @@ func (s *Service) IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps
 
 	now := time.Now()
 	ttl := s.membershipTTL
+	// Admin/infra certs carry no hard ceiling; they have their own
+	// rotation story (root self-renews; delegated admins are managed
+	// infrastructure). Only delegated tenant certs get a re-bootstrap
+	// ceiling, bounding stolen-key exposure for the wire-mode case.
+	accessDeadline := time.Time{}
 	if certCaps.GetCanAdmit() {
 		ttl = auth.DefaultDelegationTTL
+	} else {
+		accessDeadline = now.Add(auth.DefaultAccessDeadlineTTL)
 	}
-	cert, err := signer.IssueMemberCert(peerKey.Bytes(), certCaps, now, now.Add(ttl), time.Time{})
+	cert, err := signer.IssueMemberCert(peerKey.Bytes(), certCaps, now, now.Add(ttl), accessDeadline)
 	if err != nil {
 		return nil, fmt.Errorf("issue cert: %w", err)
 	}

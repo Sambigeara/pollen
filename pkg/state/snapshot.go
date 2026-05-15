@@ -13,6 +13,7 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -137,6 +138,16 @@ func (s Snapshot) DeniedPeers() []types.PeerKey { return s.DeniedKeys }
 
 func (s Snapshot) IsDenied(peer types.PeerKey) bool {
 	return slices.Contains(s.DeniedKeys, peer)
+}
+
+// DenyChecker adapts this snapshot's chain-aware deny set to the
+// auth.DenyChecker shape used by durable-credential verification. The
+// snapshot is captured by value, so the checker is a stable view safe
+// to call from any goroutine.
+func (s Snapshot) DenyChecker() auth.DenyChecker {
+	return func(subjectPub []byte) bool {
+		return s.IsDenied(types.PeerKeyFromBytes(subjectPub))
+	}
 }
 
 // LocalCert returns the local node's delegation cert as published into

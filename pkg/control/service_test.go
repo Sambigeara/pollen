@@ -1436,8 +1436,11 @@ func TestGetStatus_SelfTrafficAggregation(t *testing.T) {
 }
 
 type fakeMembership struct {
-	denyErr   error
-	deniedKey types.PeerKey
+	denyErr     error
+	deniedKey   types.PeerKey
+	renewCert   *admissionv1.DelegationCert
+	renewErr    error
+	renewedFrom *admissionv1.DelegationCert
 }
 
 func (f *fakeMembership) DenyPeer(key types.PeerKey) error {
@@ -1447,6 +1450,11 @@ func (f *fakeMembership) DenyPeer(key types.PeerKey) error {
 
 func (f *fakeMembership) IssueCert(_ context.Context, _ types.PeerKey, _ *admissionv1.Capabilities, _ bool) (*admissionv1.DelegationCert, error) {
 	return nil, nil
+}
+
+func (f *fakeMembership) RenewCert(currentCert *admissionv1.DelegationCert) (*admissionv1.DelegationCert, error) {
+	f.renewedFrom = currentCert
+	return f.renewCert, f.renewErr
 }
 
 type fakePlacement struct {

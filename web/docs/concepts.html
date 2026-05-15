@@ -187,6 +187,13 @@
 
     <p>To see a single peer's tier, attributes, issuer chain, and the resources it publishes, use <a href="cli.html#inspect"><code>pln inspect &lt;peer-id&gt;</code></a>.</p>
 
+    <h3>Cert lifetime and renewal</h3>
+    <p>A delegated cert carries two deadlines. <code>not_after</code> is the working lifetime: a short window the cert authenticates within. <code>access_deadline</code> is a hard ceiling, fixed when the cert is first minted and never extended. Between <code>not_after</code> and the ceiling the cert can mint its own successor; past the ceiling it is dead and the holder must rejoin with a fresh token.</p>
+    <p>Renewal is automatic and needs no operator action. A running daemon renews its own cert in the background. A wire-mode context with no daemon renews transparently before a command once the cert is past its half-life or its <code>not_after</code>. The ceiling carries across every renewal unchanged, so a leaked key cannot be refreshed forever; it stops at the original ceiling no matter how often it was renewed.</p>
+    <p>Admin and infrastructure certs carry no ceiling. The root self-renews from its own key and delegated admins are managed nodes, so the re-bootstrap ceiling exists to bound exposure for the many short-lived tenant identities, not the few long-lived operators.</p>
+    <p>A published spec or blob wrapping carries the publisher's cert with it. Other nodes admit it for as long as that cert is within its <code>access_deadline</code> and not denied, so a static site or blob keeps its replicas while the publisher is offline and its working window has lapsed. The artefact is only re-signed, by re-publishing, once the publisher's cert passes its ceiling or is denied.</p>
+    <p>Inspect any context's windows and capabilities with <a href="cli.html#context-show"><code>pln context show</code></a>. When a command is refused for a cert reason it names the precise cause and the exact rejoin step; see <a href="troubleshoot.html#cert-expired">cert expired</a>.</p>
+
     <h3>Properties</h3>
     <p>Properties are key/value strings baked into a cert. Seeds see the caller's peer key and properties on every invocation, so authorisation, routing, and policy decisions can live inside workload code. Operators bake them in at issue time:</p>
 

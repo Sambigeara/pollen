@@ -60,6 +60,7 @@ type Metrics struct {
 type MembershipControl interface {
 	DenyPeer(key types.PeerKey) error
 	IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps *admissionv1.Capabilities, mintOnly bool) (*admissionv1.DelegationCert, error)
+	RenewCert(currentCert *admissionv1.DelegationCert) (*admissionv1.DelegationCert, error)
 }
 
 type PlacementControl interface {
@@ -228,12 +229,46 @@ func New(membership MembershipControl, placement PlacementControl, tunneling Tun
 // callerInterceptor injects an auth.RPCCaller into the request context
 // for every unary RPC, resolved by injectCaller from whatever identity
 // the inbound transport carries.
-func (s *Server) callerInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-	return handler(s.injectCaller(ctx), req)
+func (s *Server) callerInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	ctx = s.injectCaller(ctx)
+	if err := s.gateWireRenewal(ctx, info.FullMethod); err != nil {
+		return nil, err
+	}
+	return handler(ctx, req)
 }
 
-func (s *Server) streamCallerInterceptor(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-	return handler(srv, &callerStream{ServerStream: ss, ctx: s.injectCaller(ss.Context())})
+func (s *Server) streamCallerInterceptor(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	ctx := s.injectCaller(ss.Context())
+	if err := s.gateWireRenewal(ctx, info.FullMethod); err != nil {
+		return err
+	}
+	return handler(srv, &callerStream{ServerStream: ss, ctx: ctx})
+}
+
+const renewCertFullMethod = "/pollen.control.v1.ControlService/RenewCert"
+
+// gateWireRenewal restricts a wire-mode caller whose cert is past
+// not_after to the RenewCert RPC only. The TLS handshake admits
+// NeedsRenewal certs so they can reach RenewCert; every other RPC must
+// present a cert currently valid for authentication. Non-wire callers
+// (unix socket, SSH bridge, daemon-self) carry no peer cert here and
+// have no wire cert lifecycle, so they pass through untouched.
+func (s *Server) gateWireRenewal(ctx context.Context, fullMethod string) error {
+	if fullMethod == renewCertFullMethod {
+		return nil
+	}
+	cert := callerCertFromContext(ctx)
+	if cert == nil || s.svc == nil || s.svc.creds == nil {
+		return nil
+	}
+	denied := func(sub []byte) bool {
+		return s.svc.state.Snapshot().IsDenied(types.PeerKeyFromBytes(sub))
+	}
+	chk := auth.CheckCert(cert, s.svc.creds.RootPub(), time.Now(), nil, denied)
+	if chk.Status.CanAuthenticate() {
+		return nil
+	}
+	return status.Errorf(codes.FailedPrecondition, "client certificate must be renewed (call RenewCert): %s", chk.Reason)
 }
 
 func (s *Server) injectCaller(ctx context.Context) context.Context {
@@ -337,7 +372,10 @@ func (s *Server) ServeTLS(l net.Listener) error {
 	if err != nil {
 		return fmt.Errorf("control tls identity cert: %w", err)
 	}
-	cfg := newControlTLSConfig(serverCert, s.svc.creds.RootPub())
+	denied := func(sub []byte) bool {
+		return s.svc.state.Snapshot().IsDenied(types.PeerKeyFromBytes(sub))
+	}
+	cfg := newControlTLSConfig(serverCert, s.svc.creds.RootPub(), denied)
 	// gRPC's TLS credentials drive both the handshake and the population
 	// of peer.AuthInfo; pre-wrapping the listener with tls.NewListener
 	// leaves AuthInfo nil, which strips the caller cert from every RPC.
@@ -1032,6 +1070,31 @@ func (s *Service) IssueCert(ctx context.Context, req *controlv1.IssueCertRequest
 		resp.Cert = cert
 	}
 	return resp, nil
+}
+
+// RenewCert mints a successor for the cert the caller authenticated
+// with over the mTLS wire session. The subject is taken from the
+// verified session cert (not the request), so a caller can only renew
+// the identity it holds the key for. Unavailable to local/SSH callers,
+// whose identity has no wire-mode lifecycle.
+func (s *Service) RenewCert(ctx context.Context, _ *controlv1.RenewCertRequest) (*controlv1.RenewCertResponse, error) {
+	cert := callerCertFromContext(ctx)
+	if cert == nil {
+		return nil, status.Error(codes.Unauthenticated, "cert renewal is only available over an mTLS wire session")
+	}
+	renewed, err := s.membership.RenewCert(cert)
+	switch {
+	case errors.Is(err, membership.ErrSubjectDenied):
+		s.log.Warnw("renew cert denied", zap.Error(err))
+		return nil, status.Error(codes.PermissionDenied, "subject has been denied")
+	case errors.Is(err, membership.ErrAccessDeadlinePassed):
+		return nil, status.Error(codes.FailedPrecondition, "access deadline passed; rejoin with a fresh token")
+	case errors.Is(err, membership.ErrNotAdmin):
+		return nil, status.Error(codes.FailedPrecondition, "this node cannot issue certs; target a cluster admin")
+	case err != nil:
+		return nil, s.fail(err, "renew cert failed")
+	}
+	return &controlv1.RenewCertResponse{Cert: renewed}, nil
 }
 
 func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) (*controlv1.GetMetricsResponse, error) {

@@ -57,6 +57,22 @@ PLN_CONTEXT=prod pln status             <span class="c"># one-off</span></code><
     <h3 id="context-current"><code>pln ctx current</code></h3>
     <p>Print the active context name. Useful in shell prompts.</p>
 
+    <h3 id="context-show"><code>pln ctx show [name]</code> (alias <code>pln ctx whoami</code>)</h3>
+    <p>Print a context's target, identity, capabilities, and delegation cert validity windows (the active context if no name is given). Use it to check why a wire-mode command was refused.</p>
+    <div class="terminal">
+      <span class="cmd">pln ctx show staging</span>
+      <span class="out">context: staging</span>
+      <span class="out">target:  pln://edge.example.com:7443</span>
+      <span class="out">identity: k7m2q8x4</span>
+      <span class="out">issuer:   a1b9c3d2</span>
+      <span class="out">status:   ok</span>
+      <span class="out">not before: 15 May 2026 09:25 BST</span>
+      <span class="out">not after:  15 May 2026 13:25 BST</span>
+      <span class="out">rejoin by:  14 Jun 2026 09:25 BST</span>
+      <span class="out">caps:     delegate=false admit=false publish=true max_depth=0</span>
+    </div>
+    <p>A cert past <code>not after</code> but before <code>rejoin by</code> renews itself on the next command. Past <code>rejoin by</code> it is dead; see <a href="troubleshoot.html#cert-expired">cert expired</a>.</p>
+
     <h3 id="globals">Per-command override</h3>
     <p>Three ways to point a single command somewhere other than the active context, without switching it:</p>
     <dl class="flags">

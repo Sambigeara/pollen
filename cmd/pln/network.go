@@ -151,7 +151,7 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 			return err
 		}
 		if env.wireMode {
-			return unreachableErr(fmt.Sprintf("cannot reach %s: %v\n  if the cluster was re-rooted, this context's creds no longer validate against the new root; rejoin with a fresh `pln join <token>`", env.host, err))
+			return unreachableErr(wireCertDiagnosis(env.dir, env.host, err))
 		}
 		if socketPermissionDenied(env.dir) {
 			return permissionErr("cannot reach daemon — are you in the pln group?\n  fix: sudo usermod -aG pln $(whoami) && newgrp pln")

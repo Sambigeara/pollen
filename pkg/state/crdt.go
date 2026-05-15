@@ -252,7 +252,7 @@ func (s *store) isAcceptableWrappingEvent(pk types.PeerKey, ev *statev1.GossipEv
 	if !bytes.Equal(wrapper.GetClaims().GetSubjectPub(), pk.Bytes()) {
 		return false
 	}
-	if err := auth.VerifyBlobWrapping(wrapping, s.rootPub, s.nowFunc()); err != nil {
+	if err := auth.VerifyBlobWrapping(wrapping, s.rootPub, s.nowFunc(), s.Snapshot().DenyChecker()); err != nil {
 		return false
 	}
 	return true

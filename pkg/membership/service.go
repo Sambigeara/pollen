@@ -63,6 +63,7 @@ type MembershipAPI interface {
 
 	DenyPeer(key types.PeerKey) error
 	IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps *admissionv1.Capabilities, mintOnly bool) (*admissionv1.DelegationCert, error)
+	RenewCert(currentCert *admissionv1.DelegationCert) (*admissionv1.DelegationCert, error)
 
 	HandleDigestStream(ctx context.Context, stream transport.Stream, peer types.PeerKey)
 

@@ -53,9 +53,10 @@ type cliEnv struct {
 }
 
 type envConfig struct {
-	wantsRoot     bool
-	localOnly     bool
-	systemService bool
+	wantsRoot       bool
+	localOnly       bool
+	systemService   bool
+	skipCertRenewal bool
 }
 
 type envOption func(*envConfig)
@@ -63,6 +64,12 @@ type envOption func(*envConfig)
 func wantsRoot() envOption     { return func(c *envConfig) { c.wantsRoot = true } }
 func localOnly() envOption     { return func(c *envConfig) { c.localOnly = true } }
 func systemService() envOption { return func(c *envConfig) { c.systemService = true } }
+
+// skipCertRenewal opts a command out of the wire-mode cert renewal
+// preflight. Required for `pln join`: it replaces the context identity
+// from a token and must run even when the existing context cert is
+// expired — the preflight would otherwise refuse the only recovery path.
+func skipCertRenewal() envOption { return func(c *envConfig) { c.skipCertRenewal = true } }
 
 func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption) func(*cobra.Command, []string) error {
 	cfg := envConfig{}
@@ -112,6 +119,17 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 			baseURL = "https://" + addr
 			wire = true
 		}
+
+		// Wire-mode callers have no daemon renewing their cert; refresh
+		// it here before the command's RPC so a half-life or past-
+		// not_after cert self-heals transparently. Runs before env.client
+		// is built so the command dials with the freshly persisted cert.
+		if wire && !cfg.skipCertRenewal {
+			if err := ensureWireCertFresh(cmd.Context(), dir, host, baseURL); err != nil {
+				return err
+			}
+		}
+
 		env := &cliEnv{
 			dir:      dir,
 			host:     host,

@@ -129,7 +129,7 @@ the command exits; pass --up to also start the daemon once enrolment
 succeeds.`,
 		Example: "  pln join \"$(ssh admin pln invite --subject $(pln id))\"\n  pln join --up \"$TOKEN\"",
 		Args:    cobra.ExactArgs(1),
-		RunE:    withEnv(runJoin, wantsRoot(), localOnly()),
+		RunE:    withEnv(runJoin, wantsRoot(), localOnly(), skipCertRenewal()),
 	}
 	joinCmd.Flags().BoolP("up", "u", false, "Start the daemon after enrolment")
 	joinCmd.Flags().Bool("public", false, "Hint that this node is publicly reachable; the mesh may use it as a relay (verified at runtime)")
@@ -1020,8 +1020,11 @@ func resolveJoinToken(ctx context.Context, priv ed25519.PrivateKey, encoded stri
 
 func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer, certCaps *admissionv1.Capabilities) (string, error) {
 	var accessDeadline time.Time
-	if expireAfter > 0 {
+	switch {
+	case expireAfter > 0:
 		accessDeadline = time.Now().Add(expireAfter)
+	case !certCaps.GetCanAdmit():
+		accessDeadline = time.Now().Add(auth.DefaultAccessDeadlineTTL)
 	}
 	token, err := signer.IssueJoinToken(subjectPub, bootstrap, time.Now(), ttl, defaultMembershipTTL, accessDeadline, certCaps)
 	if err != nil {

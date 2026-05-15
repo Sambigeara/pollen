@@ -370,6 +370,7 @@ func (m *QUICTransport) Start(ctx context.Context) error {
 		rootPub:         m.rootPub,
 		reconnectWindow: m.reconnectWindow,
 		inviteEnabled:   m.inviteSigner != nil || m.inviteForwarder != nil,
+		denied:          m.deniedSubject,
 	}), quicConfig())
 	if err != nil {
 		_ = pconn.Close()
@@ -558,6 +559,17 @@ func (m *QUICTransport) isChainDenied(peerKey types.PeerKey, dc *admissionv1.Del
 	return false
 }
 
+// deniedSubject adapts the peer-key denylist to the auth.DenyChecker
+// shape consumed by CheckCert at the TLS handshake. CheckCert walks the
+// full delegation chain, so a leaf-level check here yields the same
+// subtree-poisoning semantics as isChainDenied.
+func (m *QUICTransport) deniedSubject(subjectPub []byte) bool {
+	if m.isDenied == nil {
+		return false
+	}
+	return m.isDenied(types.PeerKeyFromBytes(subjectPub))
+}
+
 func (m *QUICTransport) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
 	ctx := s.conn.Context()
 	for {
@@ -659,7 +671,7 @@ func (m *QUICTransport) Connect(ctx context.Context, peerKey types.PeerKey, addr
 
 	for _, ap := range addrs {
 		m.acceptWG.Go(func() {
-			tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, peerKey, m.rootPub, m.reconnectWindow)
+			tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, peerKey, m.rootPub, m.reconnectWindow, m.deniedSubject)
 			qc, err := m.mainQT.Dial(dialCtx, net.UDPAddrFromAddrPort(ap), tlsCfg, quicConfig())
 			if err != nil {
 				ch <- result{err: err}
@@ -718,7 +730,7 @@ func (m *QUICTransport) Punch(ctx context.Context, peerKey types.PeerKey, addr *
 		dialAddr = peerAddr
 	}
 
-	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, peerKey, m.rootPub, m.reconnectWindow)
+	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, peerKey, m.rootPub, m.reconnectWindow, m.deniedSubject)
 
 	var qc *quic.Conn
 	var qt *quic.Transport
@@ -824,7 +836,7 @@ func (m *QUICTransport) raceDirectDial(ctx context.Context, peerKey types.PeerKe
 
 	for _, ap := range addrs {
 		go func(addr netip.AddrPort) {
-			tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, peerKey, m.rootPub, m.reconnectWindow)
+			tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, peerKey, m.rootPub, m.reconnectWindow, m.deniedSubject)
 			qc, err := m.mainQT.Dial(dialCtx, net.UDPAddrFromAddrPort(addr), tlsCfg, quicConfig())
 			if err != nil {
 				ch <- result{err: err}

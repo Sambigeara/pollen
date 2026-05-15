@@ -66,8 +66,10 @@ func buildPlnClientTLSConfig(dir string) (*tls.Config, error) {
 		// pollen DelegationCert chain replaces SAN-based hostname
 		// checks. VerifyPeerCertificate below performs full chain plus
 		// leaf-key-binding verification.
-		InsecureSkipVerify:    true, //nolint:gosec
-		NextProtos:            []string{"h2"},
-		VerifyPeerCertificate: transport.VerifyDelegatedCounterparty(rootPub),
+		InsecureSkipVerify: true, //nolint:gosec
+		NextProtos:         []string{"h2"},
+		// Client side has no cluster denylist; nil skips that check. The
+		// server's cert chain + access_deadline are still enforced.
+		VerifyPeerCertificate: transport.VerifyDelegatedCounterparty(rootPub, nil),
 	}, nil
 }

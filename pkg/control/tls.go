@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/peer"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/transport"
 )
 
@@ -21,13 +22,13 @@ import (
 // who has seen the victim's gossiped DelegationCert can mint a new
 // leaf and impersonate them. The verified DelegationCert is later
 // retrieved from the gRPC peer context by callerCertFromContext.
-func newControlTLSConfig(serverCert tls.Certificate, rootPub []byte) *tls.Config {
+func newControlTLSConfig(serverCert tls.Certificate, rootPub []byte, denied auth.DenyChecker) *tls.Config {
 	return &tls.Config{
 		MinVersion:            tls.VersionTLS13,
 		Certificates:          []tls.Certificate{serverCert},
 		ClientAuth:            tls.RequireAnyClientCert,
 		NextProtos:            []string{"h2"},
-		VerifyPeerCertificate: transport.VerifyDelegatedCounterparty(rootPub),
+		VerifyPeerCertificate: transport.VerifyDelegatedCounterparty(rootPub, denied),
 	}
 }
 

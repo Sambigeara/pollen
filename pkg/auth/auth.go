@@ -689,7 +689,13 @@ func IssueSpecAuth(
 	return specAuth, nil
 }
 
-func VerifySpecAuth(specAuth *admissionv1.SpecAuth, body SpecBody, rootPub []byte, now time.Time) error {
+// VerifySpecAuth authenticates a relayed spec. The publisher cert is
+// checked against the durable-credential rule (chain + access_deadline
+// + denylist) rather than the short not_after window: a published spec
+// must stay admissible while its possibly-offline publisher's cert is
+// merely past not_after but still within its authority horizon. denied
+// may be nil to skip the denylist consultation.
+func VerifySpecAuth(specAuth *admissionv1.SpecAuth, body SpecBody, rootPub []byte, now time.Time, denied DenyChecker) error {
 	if err := protovalidate.Validate(specAuth); err != nil {
 		return fmt.Errorf("spec auth invalid: %w", err)
 	}
@@ -701,8 +707,8 @@ func VerifySpecAuth(specAuth *admissionv1.SpecAuth, body SpecBody, rootPub []byt
 		return errors.New("spec auth body hash mismatch")
 	}
 	publisher := specAuth.GetPublisher()
-	if err := VerifyDelegationCert(publisher, rootPub, now, nil); err != nil {
-		return fmt.Errorf("publisher cert invalid: %w", err)
+	if chk := CheckCert(publisher, rootPub, now, nil, denied); !chk.Status.CanRenew() {
+		return fmt.Errorf("publisher cert invalid: %s", chk.Reason)
 	}
 	msg, err := specAuthPayload(specAuth)
 	if err != nil {
@@ -752,15 +758,19 @@ func IssueBlobWrapping(
 }
 
 // VerifyBlobWrapping checks the wrapper's cert chain against rootPub
-// and the signature against the wrapper's pubkey. Tampered or
-// expired-chain wrappings fail closed.
-func VerifyBlobWrapping(wrapping *statev1.BlobWrappingChange, rootPub []byte, now time.Time) error {
+// and the signature against the wrapper's pubkey. The wrapper cert is
+// held to the durable-credential rule (chain + access_deadline +
+// denylist), so a wrapping stays valid while its offline wrapper's
+// cert is past not_after but inside its authority horizon. Tampered,
+// denied, or past-access_deadline wrappings fail closed. denied may be
+// nil to skip the denylist consultation.
+func VerifyBlobWrapping(wrapping *statev1.BlobWrappingChange, rootPub []byte, now time.Time, denied DenyChecker) error {
 	if err := protovalidate.Validate(wrapping); err != nil {
 		return fmt.Errorf("blob wrapping invalid: %w", err)
 	}
 	wrapper := wrapping.GetWrapper()
-	if err := VerifyDelegationCert(wrapper, rootPub, now, nil); err != nil {
-		return fmt.Errorf("wrapper cert invalid: %w", err)
+	if chk := CheckCert(wrapper, rootPub, now, nil, denied); !chk.Status.CanRenew() {
+		return fmt.Errorf("wrapper cert invalid: %s", chk.Reason)
 	}
 	msg, err := blobWrappingPayload(wrapping)
 	if err != nil {

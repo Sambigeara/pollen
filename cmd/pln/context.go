@@ -220,7 +220,17 @@ shell can act as an admin against the remote cluster.`,
 		RunE:  runContextCurrent,
 	}
 
-	root.AddCommand(addCmd, switchCmd, lsCmd, rmCmd, currentCmd)
+	showCmd := &cobra.Command{
+		Use:     "show [name]",
+		Aliases: []string{"whoami"},
+		Short:   "Show a context's identity and cert status",
+		Long:    "Prints the target, identity, capabilities, and delegation cert validity windows for a context (the active one if no name is given). Use it to check why a wire-mode command was refused.",
+		Example: "  pln context show\n  pln ctx whoami staging",
+		Args:    cobra.MaximumNArgs(1),
+		RunE:    runContextShow,
+	}
+
+	root.AddCommand(addCmd, switchCmd, lsCmd, rmCmd, currentCmd, showCmd)
 	return root
 }
 

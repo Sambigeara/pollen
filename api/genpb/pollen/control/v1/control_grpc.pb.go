@@ -36,6 +36,7 @@ const (
 	ControlService_UnseedWorkload_FullMethodName    = "/pollen.control.v1.ControlService/UnseedWorkload"
 	ControlService_CallWorkload_FullMethodName      = "/pollen.control.v1.ControlService/CallWorkload"
 	ControlService_IssueCert_FullMethodName         = "/pollen.control.v1.ControlService/IssueCert"
+	ControlService_RenewCert_FullMethodName         = "/pollen.control.v1.ControlService/RenewCert"
 	ControlService_FetchBlob_FullMethodName         = "/pollen.control.v1.ControlService/FetchBlob"
 	ControlService_UploadBlob_FullMethodName        = "/pollen.control.v1.ControlService/UploadBlob"
 	ControlService_RemoveBlob_FullMethodName        = "/pollen.control.v1.ControlService/RemoveBlob"
@@ -63,6 +64,7 @@ type ControlServiceClient interface {
 	UnseedWorkload(ctx context.Context, in *UnseedWorkloadRequest, opts ...grpc.CallOption) (*UnseedWorkloadResponse, error)
 	CallWorkload(ctx context.Context, in *CallWorkloadRequest, opts ...grpc.CallOption) (*CallWorkloadResponse, error)
 	IssueCert(ctx context.Context, in *IssueCertRequest, opts ...grpc.CallOption) (*IssueCertResponse, error)
+	RenewCert(ctx context.Context, in *RenewCertRequest, opts ...grpc.CallOption) (*RenewCertResponse, error)
 	FetchBlob(ctx context.Context, in *FetchBlobRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FetchBlobResponse], error)
 	UploadBlob(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadBlobRequest, UploadBlobResponse], error)
 	RemoveBlob(ctx context.Context, in *RemoveBlobRequest, opts ...grpc.CallOption) (*RemoveBlobResponse, error)
@@ -223,6 +225,16 @@ func (c *controlServiceClient) IssueCert(ctx context.Context, in *IssueCertReque
 	return out, nil
 }
 
+func (c *controlServiceClient) RenewCert(ctx context.Context, in *RenewCertRequest, opts ...grpc.CallOption) (*RenewCertResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RenewCertResponse)
+	err := c.cc.Invoke(ctx, ControlService_RenewCert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *controlServiceClient) FetchBlob(ctx context.Context, in *FetchBlobRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FetchBlobResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &ControlService_ServiceDesc.Streams[1], ControlService_FetchBlob_FullMethodName, cOpts...)
@@ -323,6 +335,7 @@ type ControlServiceServer interface {
 	UnseedWorkload(context.Context, *UnseedWorkloadRequest) (*UnseedWorkloadResponse, error)
 	CallWorkload(context.Context, *CallWorkloadRequest) (*CallWorkloadResponse, error)
 	IssueCert(context.Context, *IssueCertRequest) (*IssueCertResponse, error)
+	RenewCert(context.Context, *RenewCertRequest) (*RenewCertResponse, error)
 	FetchBlob(*FetchBlobRequest, grpc.ServerStreamingServer[FetchBlobResponse]) error
 	UploadBlob(grpc.ClientStreamingServer[UploadBlobRequest, UploadBlobResponse]) error
 	RemoveBlob(context.Context, *RemoveBlobRequest) (*RemoveBlobResponse, error)
@@ -381,6 +394,9 @@ func (UnimplementedControlServiceServer) CallWorkload(context.Context, *CallWork
 }
 func (UnimplementedControlServiceServer) IssueCert(context.Context, *IssueCertRequest) (*IssueCertResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method IssueCert not implemented")
+}
+func (UnimplementedControlServiceServer) RenewCert(context.Context, *RenewCertRequest) (*RenewCertResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RenewCert not implemented")
 }
 func (UnimplementedControlServiceServer) FetchBlob(*FetchBlobRequest, grpc.ServerStreamingServer[FetchBlobResponse]) error {
 	return status.Error(codes.Unimplemented, "method FetchBlob not implemented")
@@ -665,6 +681,24 @@ func _ControlService_IssueCert_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ControlService_RenewCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RenewCertRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).RenewCert(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_RenewCert_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).RenewCert(ctx, req.(*RenewCertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ControlService_FetchBlob_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(FetchBlobRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -831,6 +865,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "IssueCert",
 			Handler:    _ControlService_IssueCert_Handler,
+		},
+		{
+			MethodName: "RenewCert",
+			Handler:    _ControlService_RenewCert_Handler,
 		},
 		{
 			MethodName: "RemoveBlob",

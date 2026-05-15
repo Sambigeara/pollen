@@ -27,6 +27,7 @@ service ControlService {
   rpc UnseedWorkload(UnseedWorkloadRequest) returns (UnseedWorkloadResponse);
   rpc CallWorkload(CallWorkloadRequest) returns (CallWorkloadResponse);
   rpc IssueCert(IssueCertRequest) returns (IssueCertResponse);
+  rpc RenewCert(RenewCertRequest) returns (RenewCertResponse);
   rpc FetchBlob(FetchBlobRequest) returns (stream FetchBlobResponse);
   rpc UploadBlob(stream UploadBlobRequest) returns (UploadBlobResponse);
   rpc RemoveBlob(RemoveBlobRequest) returns (RemoveBlobResponse);
@@ -352,6 +353,16 @@ message IssueCertResponse {
   // mint_only=true. Mesh callers that take the push path receive the
   // cert via the synchronous QUIC delivery and leave this empty so
   // the response stays small for the common case.
+  pollen.admission.v1.DelegationCert cert = 1;
+}
+
+// RenewCert mints a successor for the cert the caller authenticated
+// with over mTLS. The subject is taken from the verified session cert,
+// so the request carries no fields: a caller can only renew the
+// identity it holds the key for.
+message RenewCertRequest {}
+
+message RenewCertResponse {
   pollen.admission.v1.DelegationCert cert = 1;
 }
 

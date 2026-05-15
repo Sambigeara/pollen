@@ -156,18 +156,53 @@ hello   4f3a7c91  pending   0/2       -      30s</span>
     </div>
     <p>Then either add the missing property to your cert (<code>pln grant &lt;your-peer&gt; --prop key=value</code> from an admin shell) or relax the spec by re-publishing without the offending clause.</p>
 
-    <h2 id="cert-expired">Cert expired</h2>
-    <p><strong>Symptom.</strong> Daemon starts but logs:</p>
+    <h2 id="cert-expired">Cert expired or <code>tls: bad certificate</code></h2>
+    <p><strong>Symptom.</strong> A wire-mode command refuses to connect:</p>
     <div class="terminal">
-      <span class="out">delegation certificate has expired — starting in degraded mode, will attempt renewal</span>
+      <span class="cmd">pln status</span>
+      <span class="out">cannot reach pln://edge.example.com:7443: unavailable: remote error: tls: bad certificate</span>
+      <span class="out">  context cert expired at 14 May 2026 22:25 BST beyond renewal; rejoin with `pln join &lt;token&gt;` (mint one on the cluster with `pln invite`)</span>
     </div>
-    <p>Some operations still work (read-only status); others fail until a fresh cert arrives.</p>
-    <p><strong>Cause.</strong> The peer was offline through its renewal window and the cluster's automatic renewal pipeline hasn't yet caught up. The default delegation TTL is 30 days.</p>
-    <p><strong>Fix.</strong> If the peer can reach an admin-capable node, renewal is automatic — just wait a minute. If not, mint a fresh cert from any admin shell:</p>
+    <p>Or a daemon starts but logs:</p>
     <div class="terminal">
-      <span class="cmd">pln grant &lt;peer-id&gt; --prop key=value …      <span class="cmt"># re-issue with whatever properties were in place</span></span>
+      <span class="out">delegation certificate past access_deadline; renewal no longer possible, rejoin with a fresh `pln join &lt;token&gt;`</span>
     </div>
-    <p>For root, restart: <code>pln restart</code> re-issues the self-signed cert from <code>config.yaml</code>.</p>
+    <p><strong>Cause.</strong> A delegated cert has two deadlines. <code>not_after</code> is a short working window the cert authenticates within; <code>access_deadline</code> is a hard ceiling fixed when the cert was first minted and never extended. Past <code>not_after</code> the cert renews itself automatically. Past the ceiling it is dead, and the holder must rejoin. The default working window is 4 hours and the default ceiling is 30 days. The line under the error states which case you are in; <code>tls: bad certificate</code> on its own almost always means the local cert lapsed, not that the endpoint is down.</p>
+    <p><strong>Fix.</strong> Inspect the context to see exactly where the cert stands:</p>
+    <div class="terminal">
+      <span class="cmd">pln context show</span>
+      <span class="out">context: staging</span>
+      <span class="out">status:   expired</span>
+      <span class="out">not after:  14 May 2026 22:25 BST</span>
+      <span class="out">rejoin by:  13 Jun 2026 18:25 BST</span>
+    </div>
+    <p>If the status is <code>needs-renewal</code>, the next command renews transparently; just retry. If it is <code>expired</code> or <code>revoked</code>, mint a fresh token on the cluster and rejoin:</p>
+    <div class="terminal">
+      <span class="cmd">ssh root@edge.example.com pln invite --ttl 24h</span>
+      <span class="cmd">pln --context staging join &lt;token&gt;</span>
+    </div>
+    <p>A running daemon renews its own cert in the background; for the root node, <code>pln restart</code> re-issues the self-signed cert from <code>config.yaml</code>.</p>
+
+    <h2 id="reduced-replicas">A site or blob keeps fewer replicas than expected</h2>
+    <p><strong>Symptom.</strong> A static site or named blob shows fewer claimants than its serving capacity, and a restarted or freshly joined node never picks up a copy:</p>
+    <div class="terminal">
+      <span class="cmd">pln status</span>
+      <span class="out">STATIC
+NAME    MANIFEST  REPLICAS  LOCAL  PUBLISHER
+docs    9f3a1c20  1/2              7c4d8e10</span>
+    </div>
+    <p><strong>Cause.</strong> A spec travels with the publisher's cert. A node admits it from gossip only while that cert is within its <code>access_deadline</code> and the publisher is not denied. Once the publisher's cert passes its ceiling, or the publisher is denied, a restarted or new node refuses the spec and will not claim a replica. A node already holding it keeps serving from its own slot, so the site or blob stays reachable at reduced replication. See <a href="concepts.html#authorisation">cert lifetime</a>.</p>
+    <p><strong>Fix.</strong> Rejoin the publishing context and re-publish so the spec is re-signed under a current cert. Check where that context stands first:</p>
+    <div class="terminal">
+      <span class="cmd">pln --context staging context show</span>
+      <span class="out">context: staging</span>
+      <span class="out">status:   expired</span>
+    </div>
+    <p>If the status is <code>expired</code> or <code>revoked</code>, rejoin (see <a href="#cert-expired">Cert expired</a>), then publish the same source under the same name:</p>
+    <div class="terminal">
+      <span class="cmd">pln --context staging seed ./public docs</span>
+    </div>
+    <p>Replication returns to capacity as nodes admit the re-signed spec.</p>
 
     <h2 id="bootstrap-fails"><code>pln bootstrap ssh</code> fails</h2>
     <p><strong>Symptom.</strong></p>
@@ -240,6 +275,7 @@ hint: for failed hosts, use `pln invite` and run `pln join --up &lt;token&gt;` o
       <a href="#fetch-publisher-offline">Fetch: publisher unreachable</a>
       <a href="#call-denied">Call denied silently</a>
       <a href="#cert-expired">Cert expired</a>
+      <a href="#reduced-replicas">Reduced replicas</a>
       <a href="#bootstrap-fails">bootstrap ssh fails</a>
       <a href="#static-404">Static site 404</a>
       <a href="#props-stale">Properties stale</a>

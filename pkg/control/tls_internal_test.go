@@ -78,7 +78,7 @@ func TestStartTLS_PeerCertFlowsToCaller(t *testing.T) {
 
 	serverCert, err := transport.GenerateIdentityCert(nodePriv, serverCreds.Cert(), time.Hour)
 	require.NoError(t, err)
-	tlsCfg := newControlTLSConfig(serverCert, serverCreds.RootPub())
+	tlsCfg := newControlTLSConfig(serverCert, serverCreds.RootPub(), nil)
 	tlsListener := tls.NewListener(listener, tlsCfg)
 	go func() { _ = srv.Serve(tlsListener) }()
 	t.Cleanup(func() {

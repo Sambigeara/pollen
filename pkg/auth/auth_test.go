@@ -78,7 +78,7 @@ func TestSpecAuthVerifiesSignedBody(t *testing.T) {
 	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, policy, false)
 	require.NoError(t, err)
 
-	require.NoError(t, auth.VerifySpecAuth(specAuth, body, rootPub, now))
+	require.NoError(t, auth.VerifySpecAuth(specAuth, body, rootPub, now, nil))
 }
 
 func TestSpecAuthRejectsTamperedBodyHash(t *testing.T) {
@@ -99,7 +99,7 @@ func TestSpecAuthRejectsTamperedBodyHash(t *testing.T) {
 	require.NoError(t, err)
 	specAuth.BodyHash[0] ^= 0xFF
 
-	require.ErrorContains(t, auth.VerifySpecAuth(specAuth, body, rootPub, now), "body hash")
+	require.ErrorContains(t, auth.VerifySpecAuth(specAuth, body, rootPub, now, nil), "body hash")
 }
 
 func TestIssueSpecAuthRejectsPublisherKeyMismatch(t *testing.T) {

@@ -449,6 +449,12 @@ func newRootCredentialsWithAttrs(t *testing.T, attrs *structpb.Struct) (*auth.No
 
 func newIssuerService(t *testing.T, creds *auth.NodeCredentials, certs CertManager) *Service {
 	t.Helper()
+	svc, _ := newIssuerServiceWithState(t, creds, certs)
+	return svc
+}
+
+func newIssuerServiceWithState(t *testing.T, creds *auth.NodeCredentials, certs CertManager) (*Service, *fakeClusterState) {
+	t.Helper()
 	net := newFakeNetwork()
 	st := newFakeClusterState(peerKey(1))
 	return New(peerKey(1), creds, net, st, Config{
@@ -466,7 +472,7 @@ func newIssuerService(t *testing.T, creds *auth.NodeCredentials, certs CertManag
 		NATDetector:      nat.NewDetector(),
 		ReconnectWindow:  time.Hour,
 		MembershipTTL:    time.Hour,
-	})
+	}), st
 }
 
 type noopRoutedSender struct{}

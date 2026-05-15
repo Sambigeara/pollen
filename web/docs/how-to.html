@@ -209,6 +209,48 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
 
     <p><strong>Related:</strong> <a href="concepts.html#workloads">Concepts → Workloads</a>, <a href="cli.html#seed"><code>pln seed</code></a>.</p>
 
+    <h2 id="recover-context">Recover a context that can't connect</h2>
+    <p>A wire-mode context with no daemon renews its own cert before each command. If the machine was offline long enough for the cert to pass its hard ceiling, renewal is no longer possible and the context must rejoin.</p>
+
+    <ol class="steps">
+      <li>
+        <h3>Read the precise cause</h3>
+        <p>The refused command already names it. Confirm with the context's own windows:</p>
+        <div class="terminal">
+          <span class="cmd">pln context show</span>
+          <span class="out">context: staging</span>
+          <span class="out">status:   expired</span>
+          <span class="out">not after:  14 May 2026 22:25 BST</span>
+          <span class="out">rejoin by:  13 Jun 2026 18:25 BST</span>
+        </div>
+        <p>A <code>needs-renewal</code> status fixes itself: just rerun the command and it renews transparently. Only <code>expired</code> or <code>revoked</code> needs the steps below.</p>
+      </li>
+      <li>
+        <h3>Mint a fresh token on the cluster</h3>
+        <p>Invites are signed on the node, so mint over SSH against an edge node:</p>
+        <div class="terminal">
+          <span class="cmd">ssh root@edge.example.com pln invite --ttl 24h</span>
+          <span class="out">pln join eyJ0b2tlbiI6...</span>
+        </div>
+      </li>
+      <li>
+        <h3>Rejoin the existing context</h3>
+        <p>Redeem the token into the same context name; this replaces the dead identity in place:</p>
+        <div class="terminal">
+          <span class="cmd">pln --context staging join eyJ0b2tlbiI6...</span>
+        </div>
+      </li>
+      <li>
+        <h3>Verify</h3>
+        <div class="terminal">
+          <span class="cmd">pln --context staging status</span>
+          <span class="out">PEERS  2 online</span>
+        </div>
+        <p>The status table prints instead of a connection error, and <code>pln context show</code> reports <code>status: ok</code>.</p>
+      </li>
+    </ol>
+    <p><strong>Related:</strong> <a href="concepts.html#authorisation">Concepts → Authorisation</a>, <a href="cli.html#context-show"><code>pln ctx show</code></a>, <a href="troubleshoot.html#cert-expired">Troubleshoot → Cert expired</a>.</p>
+
     <h2 id="export-blob">Export a blob's contents to a local file</h2>
     <p>Blobs are encrypted at rest, so reading one from the on-disk store is not possible directly. <code>pln fetch</code> is the export path: it streams plaintext bytes from the publisher and writes them to the file you choose.</p>
 
@@ -407,6 +449,7 @@ mysite  3a8c7d2e  1/1              ab12cd34...   https://mysite-k7r4z9xa8n2p.pln
       <a href="#restrict-access">Restrict access</a>
       <a href="#publish-site">Publish a static site</a>
       <a href="#pin-workload">Pin workload placement</a>
+      <a href="#recover-context">Recover a stuck context</a>
       <a href="#export-blob">Export a blob to a file</a>
       <a href="#multiple-clusters">Multiple clusters</a>
       <a href="#rotate-properties">Rotate properties</a>

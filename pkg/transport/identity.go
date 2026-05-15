@@ -160,6 +160,7 @@ func delegationCertFromConn(qc *quic.Conn) *admissionv1.DelegationCert {
 
 type verifyMeshPeerOpts struct {
 	expectedPeer    *types.PeerKey
+	denied          auth.DenyChecker
 	rootPub         []byte
 	reconnectWindow time.Duration
 }
@@ -197,22 +198,30 @@ func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certif
 		}
 
 		now := time.Now()
-		if err := auth.VerifyDelegationCert(dc, opts.rootPub, now, peerKey.Bytes()); err != nil {
-			return tryReconnectWindow(dc, opts, now, err)
-		}
-
-		return nil
+		chk := auth.CheckCert(dc, opts.rootPub, now, peerKey.Bytes(), opts.denied)
+		return admitMeshCert(chk, opts.reconnectWindow, now)
 	}
 }
 
-func tryReconnectWindow(dc *admissionv1.DelegationCert, opts verifyMeshPeerOpts, now time.Time, origErr error) error {
-	if opts.reconnectWindow <= 0 || !errors.Is(origErr, auth.ErrCertExpired) {
-		return origErr
+// admitMeshCert maps a mesh peer cert check to a handshake decision. A
+// cert past its renewable window (not_after) is admitted within
+// reconnectWindow so the membership service can drive renewal over the
+// reconnected session. The access_deadline ceiling, denial, and chain
+// failures are hard stops the reconnect window cannot bypass.
+func admitMeshCert(chk auth.CertCheck, reconnectWindow time.Duration, now time.Time) error {
+	if chk.Status.CanAuthenticate() {
+		return nil
 	}
-	if !now.Before(auth.CertExpiresAt(dc).Add(opts.reconnectWindow)) {
-		return origErr
+	// NeedsRenewal, or a legacy no-ceiling cert past not_after, may
+	// reconnect within the grace window; the membership service renews
+	// over the new session. A cert past access_deadline is Expired with
+	// a non-zero deadline and does not qualify.
+	pastNotAfterRenewable := chk.Status == auth.CertStatusNeedsRenewal ||
+		(chk.Status == auth.CertStatusExpired && chk.AccessDeadline.IsZero())
+	if pastNotAfterRenewable && reconnectWindow > 0 && now.Before(chk.NotAfter.Add(reconnectWindow)) {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("mesh peer cert rejected (%s): %s", chk.Status, chk.Reason)
 }
 
 func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Certificate) error {
@@ -229,7 +238,7 @@ func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Ce
 // chains back to rootPub. Use this when you have a public host string
 // (not a known peer key) and need to admit any caller whose authority
 // chains to the cluster root.
-func VerifyDelegatedCounterparty(rootPub []byte) func([][]byte, [][]*x509.Certificate) error {
+func VerifyDelegatedCounterparty(rootPub []byte, denied auth.DenyChecker) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
 			return errors.New("transport: no peer certificate")
@@ -249,12 +258,21 @@ func VerifyDelegatedCounterparty(rootPub []byte) func([][]byte, [][]*x509.Certif
 		if dc == nil {
 			return errors.New("transport: peer certificate missing delegation extension")
 		}
-		return auth.VerifyDelegationCert(dc, rootPub, time.Now(), leafPub)
+		// Admit OK and NeedsRenewal: a cert past not_after but within
+		// access_deadline must be able to reach the RenewCert RPC. The
+		// control service's interceptor restricts NeedsRenewal callers
+		// to RenewCert only; Expired/Revoked/invalid are rejected here.
+		chk := auth.CheckCert(dc, rootPub, time.Now(), leafPub, denied)
+		if !chk.Status.CanRenew() {
+			return fmt.Errorf("transport: peer cert rejected (%s): %s", chk.Status, chk.Reason)
+		}
+		return nil
 	}
 }
 
 type serverTLSParams struct {
 	meshCertPtr     *atomic.Pointer[tls.Certificate]
+	denied          auth.DenyChecker
 	inviteCert      tls.Certificate
 	rootPub         []byte
 	reconnectWindow time.Duration
@@ -272,6 +290,7 @@ func newServerTLSConfig(p serverTLSParams) *tls.Config {
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{
 			rootPub:         p.rootPub,
 			reconnectWindow: p.reconnectWindow,
+			denied:          p.denied,
 		}),
 	}
 
@@ -300,7 +319,7 @@ func newServerTLSConfig(p serverTLSParams) *tls.Config {
 	}
 }
 
-func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expectedPeer types.PeerKey, rootPub []byte, reconnectWindow time.Duration) *tls.Config {
+func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expectedPeer types.PeerKey, rootPub []byte, reconnectWindow time.Duration, denied auth.DenyChecker) *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -315,6 +334,7 @@ func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expected
 			rootPub:         rootPub,
 			expectedPeer:    &expectedPeer,
 			reconnectWindow: reconnectWindow,
+			denied:          denied,
 		}),
 	}
 }
