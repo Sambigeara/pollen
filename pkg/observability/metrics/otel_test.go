@@ -17,16 +17,12 @@ func TestCollectSnapshot(t *testing.T) {
 	nm := NewNodeMetrics(p.Meter())
 	ctx := context.Background()
 
-	nm.CertRenewals.Add(ctx, 3)
-	nm.CertRenewalsFailed.Add(ctx, 1)
 	nm.PunchAttempts.Add(ctx, 10)
 	nm.PunchFailures.Add(ctx, 2)
 	nm.CertExpirySeconds.Record(ctx, 3600.0)
 
 	snap, err := p.CollectSnapshot(ctx)
 	require.NoError(t, err)
-	require.Equal(t, int64(3), snap.CertRenewals)
-	require.Equal(t, int64(1), snap.CertRenewalsFailed)
 	require.Equal(t, int64(10), snap.PunchAttempts)
 	require.Equal(t, int64(2), snap.PunchFailures)
 	require.Equal(t, 3600.0, snap.CertExpirySeconds)

@@ -285,7 +285,7 @@ func New(self types.PeerKey, creds *identity.Credentials, listenAddr string, opt
 		}
 	}
 
-	session, err := creds.EnsureFreshSession(time.Now(), o.tlsIdentityTTL, o.tlsIdentityTTL/2)
+	session, err := creds.EnsureFreshSession(time.Now(), o.tlsIdentityTTL, o.tlsIdentityTTL/2) //nolint:mnd
 	if err != nil {
 		return nil, fmt.Errorf("mint session: %w", err)
 	}
@@ -399,7 +399,7 @@ func (m *QUICTransport) Start(ctx context.Context) error {
 // mesh round-trip, so a stale session is a node that stopped running,
 // never a renewal that failed to reach an admin.
 func (m *QUICTransport) sessionRefreshLoop(ctx context.Context) {
-	interval := m.tlsIdentityTTL / 3
+	interval := m.tlsIdentityTTL / 3 //nolint:mnd
 	if interval <= 0 {
 		interval = time.Minute
 	}
@@ -416,7 +416,7 @@ func (m *QUICTransport) sessionRefreshLoop(ctx context.Context) {
 }
 
 func (m *QUICTransport) refreshMeshCert() {
-	session, err := m.creds.EnsureFreshSession(time.Now(), m.tlsIdentityTTL, m.tlsIdentityTTL/2)
+	session, err := m.creds.EnsureFreshSession(time.Now(), m.tlsIdentityTTL, m.tlsIdentityTTL/2) //nolint:mnd
 	if err != nil {
 		m.log.Warnw("session re-mint failed", "err", err)
 		return

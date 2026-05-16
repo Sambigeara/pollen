@@ -30,6 +30,7 @@ const (
 
 	rootPubName   = "root.pub"
 	grantCertName = "grant.pb"
+	factSeqName   = "fact.seq"
 
 	pemTypePriv = "ED25519 PRIVATE KEY"
 	pemTypePub  = "ED25519 PUBLIC KEY"
@@ -50,6 +51,13 @@ const MaxAttributesSize = 4096
 
 func IdentityPath(pollenDir string) string {
 	return filepath.Join(pollenDir, keysSubdir)
+}
+
+// FactSeqPath is where a durable fact.Signer persists its per-authority
+// sequence high-water. identityDir is the keys directory returned by
+// IdentityPath.
+func FactSeqPath(identityDir string) string {
+	return filepath.Join(identityDir, factSeqName)
 }
 
 func ValidateAttributes(attrs *structpb.Struct) error {

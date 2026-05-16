@@ -40,7 +40,6 @@ const (
 	certCheckInterval          = 5 * time.Minute
 	CertWarnThreshold          = 1 * time.Hour
 	CertCriticalThreshold      = 15 * time.Minute
-	certRenewalTimeout         = 10 * time.Second
 	gossipStreamTimeout        = 5 * time.Second
 	maxResponseSize            = 4 << 20 // 4 MB
 	vivaldiWarmupDuration      = 5 * time.Second

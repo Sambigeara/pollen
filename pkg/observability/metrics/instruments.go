@@ -73,19 +73,15 @@ func NewTopologyMetrics(mp metric.MeterProvider) *TopologyMetrics {
 }
 
 type NodeMetrics struct {
-	CertExpirySeconds  metric.Float64Gauge
-	CertRenewals       metric.Int64Counter
-	CertRenewalsFailed metric.Int64Counter
-	PunchAttempts      metric.Int64Counter
-	PunchFailures      metric.Int64Counter
+	CertExpirySeconds metric.Float64Gauge
+	PunchAttempts     metric.Int64Counter
+	PunchFailures     metric.Int64Counter
 }
 
 func NewNodeMetrics(mp metric.MeterProvider) *NodeMetrics {
 	m := mp.Meter("pollen/node")
 	nm := &NodeMetrics{}
 	nm.CertExpirySeconds, _ = m.Float64Gauge(nameCertExpirySeconds)
-	nm.CertRenewals, _ = m.Int64Counter(nameCertRenewals)
-	nm.CertRenewalsFailed, _ = m.Int64Counter(nameCertRenewalsFailed)
 	nm.PunchAttempts, _ = m.Int64Counter(namePunchAttempts)
 	nm.PunchFailures, _ = m.Int64Counter(namePunchFailures)
 	return nm

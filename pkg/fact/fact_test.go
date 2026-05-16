@@ -121,6 +121,62 @@ func TestVerifyFact(t *testing.T) {
 	})
 }
 
+// delegatedAuthority builds a depth-2 chain: admin root-grants an
+// intermediate with delegation, the intermediate grants the publishing
+// authority. Returns the cluster root pub, the intermediate pub (a
+// chain ancestor), and the authority's key + resolved grant.
+func delegatedAuthority(t *testing.T, now, deadline time.Time) (rootPub, intermediatePub, authorityPub ed25519.PublicKey, authorityPriv ed25519.PrivateKey, grant *identityv1.Grant) {
+	t.Helper()
+	adminPub, adminPriv := newKeyPair(t)
+	intermediatePub, intermediatePriv := newKeyPair(t)
+	authorityPub, authorityPriv = newKeyPair(t)
+
+	root, err := identity.IssueGrant(adminPriv, nil, intermediatePub,
+		identity.FullCapabilities(), identity.UnlimitedBudget(),
+		now.Add(-time.Hour), time.Time{})
+	require.NoError(t, err)
+	grant, err = identity.IssueGrant(intermediatePriv, []*identityv1.Grant{root}, authorityPub,
+		identity.PublisherCapabilities(), &identityv1.Budget{MaxSites: 2},
+		now.Add(-time.Minute), deadline)
+	require.NoError(t, err)
+	return adminPub, intermediatePub, authorityPub, authorityPriv, grant
+}
+
+func TestVerifyFactDelegatedAuthority(t *testing.T) {
+	now := time.Now()
+	res, body := seedResource()
+
+	t.Run("delegated authority admitted by non-holder while publisher offline", func(t *testing.T) {
+		rootPub, _, _, aPriv, grant := delegatedAuthority(t, now, now.Add(30*24*time.Hour))
+		f, err := fact.IssueFact(aPriv, res, body, nil, 1, false)
+		require.NoError(t, err)
+		// A relaying non-holder verifies long after the publisher left,
+		// up to the grant horizon, with no liveness from the authority.
+		require.NoError(t, fact.VerifyFact(f, body, grant, rootPub, now.Add(20*24*time.Hour), nil))
+	})
+
+	t.Run("rejected past grant deadline on a delegated chain", func(t *testing.T) {
+		rootPub, _, _, aPriv, grant := delegatedAuthority(t, now, now.Add(time.Hour))
+		f, err := fact.IssueFact(aPriv, res, body, nil, 1, false)
+		require.NoError(t, err)
+		err = fact.VerifyFact(f, body, grant, rootPub, now.Add(2*time.Hour), nil)
+		require.ErrorIs(t, err, fact.ErrFactInvalid)
+		require.ErrorContains(t, err, "expired")
+	})
+
+	t.Run("rejected when chain ancestor denied", func(t *testing.T) {
+		rootPub, intPub, _, aPriv, grant := delegatedAuthority(t, now, now.Add(30*24*time.Hour))
+		f, err := fact.IssueFact(aPriv, res, body, nil, 1, false)
+		require.NoError(t, err)
+		// Deny the intermediate, not the authority itself: the
+		// chain-aware denylist must poison the descendant fact.
+		denied := func(p []byte) bool { return string(p) == string(intPub) }
+		err = fact.VerifyFact(f, body, grant, rootPub, now, denied)
+		require.ErrorIs(t, err, fact.ErrFactInvalid)
+		require.ErrorContains(t, err, "revoked")
+	})
+}
+
 func TestVerifyBlobWrapping(t *testing.T) {
 	now := time.Now()
 	blobHash := bytes.Repeat([]byte{0xcc}, 32)
@@ -147,6 +203,49 @@ func TestVerifyBlobWrapping(t *testing.T) {
 		w, err := fact.IssueBlobWrapping(aPriv, blobHash, recipient, dek, 1)
 		require.NoError(t, err)
 		w.Signature[0] ^= 0xff
+		require.ErrorContains(t, fact.VerifyBlobWrapping(w, grant, rootPub, now, nil), "signature invalid")
+	})
+}
+
+// TestVerifyBlobWrappingParity mirrors the Fact durable-authority
+// matrix so wrappings ride exactly the same rule as specs.
+func TestVerifyBlobWrappingParity(t *testing.T) {
+	now := time.Now()
+	blobHash := bytes.Repeat([]byte{0xcc}, 32)
+	recipient, _ := newKeyPair(t)
+	dek := bytes.Repeat([]byte{0xdd}, 48)
+
+	t.Run("survives offline authority past working window", func(t *testing.T) {
+		rootPub, _, aPriv, grant := authorityGrant(t, now, now.Add(30*24*time.Hour))
+		w, err := fact.IssueBlobWrapping(aPriv, blobHash, recipient, dek, 1)
+		require.NoError(t, err)
+		require.NoError(t, fact.VerifyBlobWrapping(w, grant, rootPub, now.Add(20*24*time.Hour), nil))
+	})
+
+	t.Run("rejected past grant deadline", func(t *testing.T) {
+		rootPub, _, aPriv, grant := authorityGrant(t, now, now.Add(time.Hour))
+		w, err := fact.IssueBlobWrapping(aPriv, blobHash, recipient, dek, 1)
+		require.NoError(t, err)
+		err = fact.VerifyBlobWrapping(w, grant, rootPub, now.Add(2*time.Hour), nil)
+		require.ErrorIs(t, err, fact.ErrWrappingInvalid)
+		require.ErrorContains(t, err, "expired")
+	})
+
+	t.Run("rejected when chain ancestor denied", func(t *testing.T) {
+		rootPub, intPub, _, aPriv, grant := delegatedAuthority(t, now, now.Add(30*24*time.Hour))
+		w, err := fact.IssueBlobWrapping(aPriv, blobHash, recipient, dek, 1)
+		require.NoError(t, err)
+		denied := func(p []byte) bool { return string(p) == string(intPub) }
+		err = fact.VerifyBlobWrapping(w, grant, rootPub, now, denied)
+		require.ErrorIs(t, err, fact.ErrWrappingInvalid)
+		require.ErrorContains(t, err, "revoked")
+	})
+
+	t.Run("tampered binding fails closed", func(t *testing.T) {
+		rootPub, _, aPriv, grant := authorityGrant(t, now, now.Add(30*24*time.Hour))
+		w, err := fact.IssueBlobWrapping(aPriv, blobHash, recipient, dek, 1)
+		require.NoError(t, err)
+		w.WrappedDek[0] ^= 0xff
 		require.ErrorContains(t, fact.VerifyBlobWrapping(w, grant, rootPub, now, nil), "signature invalid")
 	})
 }

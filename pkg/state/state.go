@@ -160,6 +160,9 @@ func New(self types.PeerKey, rootPub []byte) StateStore {
 	return s
 }
 
+// Snapshot must stay lock-free (a plain atomic load): gate.Admit is
+// wired as the mutation validator and calls Snapshot() while the store
+// lock is held, so taking s.mu here would deadlock the apply path.
 func (s *store) Snapshot() Snapshot {
 	return *s.snap.Load()
 }

@@ -302,9 +302,6 @@ func (s *store) setWorkloadClaimLocked(hash string, claimed, draining bool) []Ev
 		if claimed && exists && draining == currDraining {
 			return nil, nil
 		}
-		if !claimed && !exists {
-			return nil, nil
-		}
 
 		change := &statev1.GossipEvent{
 			Deleted: !claimed,

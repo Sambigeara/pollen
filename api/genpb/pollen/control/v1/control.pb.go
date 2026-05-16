@@ -2295,25 +2295,23 @@ func (*GetMetricsRequest) Descriptor() ([]byte, []int) {
 }
 
 type GetMetricsResponse struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	PeersDiscovered    uint32                 `protobuf:"varint,1,opt,name=peers_discovered,json=peersDiscovered,proto3" json:"peers_discovered,omitempty"`
-	PeersConnecting    uint32                 `protobuf:"varint,2,opt,name=peers_connecting,json=peersConnecting,proto3" json:"peers_connecting,omitempty"`
-	PeersConnected     uint32                 `protobuf:"varint,3,opt,name=peers_connected,json=peersConnected,proto3" json:"peers_connected,omitempty"`
-	PeersUnreachable   uint32                 `protobuf:"varint,4,opt,name=peers_unreachable,json=peersUnreachable,proto3" json:"peers_unreachable,omitempty"`
-	EventsApplied      uint64                 `protobuf:"varint,5,opt,name=events_applied,json=eventsApplied,proto3" json:"events_applied,omitempty"`
-	EventsStale        uint64                 `protobuf:"varint,6,opt,name=events_stale,json=eventsStale,proto3" json:"events_stale,omitempty"`
-	VivaldiError       float64                `protobuf:"fixed64,7,opt,name=vivaldi_error,json=vivaldiError,proto3" json:"vivaldi_error,omitempty"`
-	CertExpirySeconds  float64                `protobuf:"fixed64,8,opt,name=cert_expiry_seconds,json=certExpirySeconds,proto3" json:"cert_expiry_seconds,omitempty"`
-	CertRenewals       uint64                 `protobuf:"varint,9,opt,name=cert_renewals,json=certRenewals,proto3" json:"cert_renewals,omitempty"`
-	CertRenewalsFailed uint64                 `protobuf:"varint,10,opt,name=cert_renewals_failed,json=certRenewalsFailed,proto3" json:"cert_renewals_failed,omitempty"`
-	PunchAttempts      uint64                 `protobuf:"varint,11,opt,name=punch_attempts,json=punchAttempts,proto3" json:"punch_attempts,omitempty"`
-	PunchFailures      uint64                 `protobuf:"varint,12,opt,name=punch_failures,json=punchFailures,proto3" json:"punch_failures,omitempty"`
-	Health             HealthStatus           `protobuf:"varint,13,opt,name=health,proto3,enum=pollen.control.v1.HealthStatus" json:"health,omitempty"`
-	VivaldiSamples     uint64                 `protobuf:"varint,14,opt,name=vivaldi_samples,json=vivaldiSamples,proto3" json:"vivaldi_samples,omitempty"`
-	EagerSyncs         uint64                 `protobuf:"varint,15,opt,name=eager_syncs,json=eagerSyncs,proto3" json:"eager_syncs,omitempty"`
-	EagerSyncFailures  uint64                 `protobuf:"varint,16,opt,name=eager_sync_failures,json=eagerSyncFailures,proto3" json:"eager_sync_failures,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	PeersDiscovered   uint32                 `protobuf:"varint,1,opt,name=peers_discovered,json=peersDiscovered,proto3" json:"peers_discovered,omitempty"`
+	PeersConnecting   uint32                 `protobuf:"varint,2,opt,name=peers_connecting,json=peersConnecting,proto3" json:"peers_connecting,omitempty"`
+	PeersConnected    uint32                 `protobuf:"varint,3,opt,name=peers_connected,json=peersConnected,proto3" json:"peers_connected,omitempty"`
+	PeersUnreachable  uint32                 `protobuf:"varint,4,opt,name=peers_unreachable,json=peersUnreachable,proto3" json:"peers_unreachable,omitempty"`
+	EventsApplied     uint64                 `protobuf:"varint,5,opt,name=events_applied,json=eventsApplied,proto3" json:"events_applied,omitempty"`
+	EventsStale       uint64                 `protobuf:"varint,6,opt,name=events_stale,json=eventsStale,proto3" json:"events_stale,omitempty"`
+	VivaldiError      float64                `protobuf:"fixed64,7,opt,name=vivaldi_error,json=vivaldiError,proto3" json:"vivaldi_error,omitempty"`
+	CertExpirySeconds float64                `protobuf:"fixed64,8,opt,name=cert_expiry_seconds,json=certExpirySeconds,proto3" json:"cert_expiry_seconds,omitempty"`
+	PunchAttempts     uint64                 `protobuf:"varint,11,opt,name=punch_attempts,json=punchAttempts,proto3" json:"punch_attempts,omitempty"`
+	PunchFailures     uint64                 `protobuf:"varint,12,opt,name=punch_failures,json=punchFailures,proto3" json:"punch_failures,omitempty"`
+	Health            HealthStatus           `protobuf:"varint,13,opt,name=health,proto3,enum=pollen.control.v1.HealthStatus" json:"health,omitempty"`
+	VivaldiSamples    uint64                 `protobuf:"varint,14,opt,name=vivaldi_samples,json=vivaldiSamples,proto3" json:"vivaldi_samples,omitempty"`
+	EagerSyncs        uint64                 `protobuf:"varint,15,opt,name=eager_syncs,json=eagerSyncs,proto3" json:"eager_syncs,omitempty"`
+	EagerSyncFailures uint64                 `protobuf:"varint,16,opt,name=eager_sync_failures,json=eagerSyncFailures,proto3" json:"eager_sync_failures,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *GetMetricsResponse) Reset() {
@@ -2398,20 +2396,6 @@ func (x *GetMetricsResponse) GetVivaldiError() float64 {
 func (x *GetMetricsResponse) GetCertExpirySeconds() float64 {
 	if x != nil {
 		return x.CertExpirySeconds
-	}
-	return 0
-}
-
-func (x *GetMetricsResponse) GetCertRenewals() uint64 {
-	if x != nil {
-		return x.CertRenewals
-	}
-	return 0
-}
-
-func (x *GetMetricsResponse) GetCertRenewalsFailed() uint64 {
-	if x != nil {
-		return x.CertRenewalsFailed
 	}
 	return 0
 }
@@ -3909,7 +3893,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x03uri\x18\x04 \x01(\tR\x03uri\".\n" +
 	"\x14CallWorkloadResponse\x12\x16\n" +
 	"\x06output\x18\x01 \x01(\fR\x06output\"\x13\n" +
-	"\x11GetMetricsRequest\"\xb7\x05\n" +
+	"\x11GetMetricsRequest\"\x91\x05\n" +
 	"\x12GetMetricsResponse\x12)\n" +
 	"\x10peers_discovered\x18\x01 \x01(\rR\x0fpeersDiscovered\x12)\n" +
 	"\x10peers_connecting\x18\x02 \x01(\rR\x0fpeersConnecting\x12'\n" +
@@ -3918,17 +3902,16 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x0eevents_applied\x18\x05 \x01(\x04R\reventsApplied\x12!\n" +
 	"\fevents_stale\x18\x06 \x01(\x04R\veventsStale\x12#\n" +
 	"\rvivaldi_error\x18\a \x01(\x01R\fvivaldiError\x12.\n" +
-	"\x13cert_expiry_seconds\x18\b \x01(\x01R\x11certExpirySeconds\x12#\n" +
-	"\rcert_renewals\x18\t \x01(\x04R\fcertRenewals\x120\n" +
-	"\x14cert_renewals_failed\x18\n" +
-	" \x01(\x04R\x12certRenewalsFailed\x12%\n" +
+	"\x13cert_expiry_seconds\x18\b \x01(\x01R\x11certExpirySeconds\x12%\n" +
 	"\x0epunch_attempts\x18\v \x01(\x04R\rpunchAttempts\x12%\n" +
 	"\x0epunch_failures\x18\f \x01(\x04R\rpunchFailures\x127\n" +
 	"\x06health\x18\r \x01(\x0e2\x1f.pollen.control.v1.HealthStatusR\x06health\x12'\n" +
 	"\x0fvivaldi_samples\x18\x0e \x01(\x04R\x0evivaldiSamples\x12\x1f\n" +
 	"\veager_syncs\x18\x0f \x01(\x04R\n" +
 	"eagerSyncs\x12.\n" +
-	"\x13eager_sync_failures\x18\x10 \x01(\x04R\x11eagerSyncFailures\"\xc1\x01\n" +
+	"\x13eager_sync_failures\x18\x10 \x01(\x04R\x11eagerSyncFailuresJ\x04\b\t\x10\n" +
+	"J\x04\b\n" +
+	"\x10\vR\rcert_renewalsR\x14cert_renewals_failed\"\xc1\x01\n" +
 	"\x11IssueGrantRequest\x12\"\n" +
 	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\x12L\n" +
 	"\fcapabilities\x18\x04 \x01(\v2 .pollen.identity.v1.CapabilitiesB\x06\xbaH\x03\xc8\x01\x01R\fcapabilities\x12\x1b\n" +

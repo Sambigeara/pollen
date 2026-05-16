@@ -359,7 +359,7 @@ func runPurge(cmd *cobra.Command, _ []string, env *cliEnv) error {
 
 	paths := []string{
 		"keys/root.pub", "keys/grant.pb", "keys/ed25519.key", "keys/ed25519.pub",
-		"keys/admin_ed25519.key", "keys/admin_ed25519.pub", "config.yaml",
+		"keys/fact.seq", "keys/admin_ed25519.key", "keys/admin_ed25519.pub", "config.yaml",
 		"state.pb", "state.yaml", "state.yaml.bak", "consumed_invites.json",
 		"peers.json", "invites", "cas", "pln.log", socketName,
 	}

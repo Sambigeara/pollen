@@ -6,13 +6,17 @@ package gate
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/fact"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
@@ -31,646 +35,232 @@ func newKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	return pub, priv
 }
 
-func testCert(t *testing.T, priv ed25519.PrivateKey, pub ed25519.PublicKey, attrs map[string]any, now time.Time) *admissionv1.DelegationCert {
+// authority builds a root-signed publisher grant. attrs, when set,
+// become the grant's capability attributes for inline-clause tests.
+func authority(t *testing.T, now, deadline time.Time, attrs map[string]any) (rootPub, authPub ed25519.PublicKey, authPriv ed25519.PrivateKey, grant *identityv1.Grant) {
 	t.Helper()
-	var sattrs *structpb.Struct
+	adminPub, adminPriv := newKeyPair(t)
+	authPub, authPriv = newKeyPair(t)
+	caps := identity.PublisherCapabilities()
 	if attrs != nil {
-		var err error
-		sattrs, err = structpb.NewStruct(attrs)
+		s, err := structpb.NewStruct(attrs)
 		require.NoError(t, err)
+		caps.Attributes = s
 	}
-	caps := auth.FullCapabilities()
-	caps.Attributes = sattrs
-	cert, err := auth.IssueDelegationCert(priv, nil, pub, caps, now.Add(-time.Minute), now.Add(time.Hour), time.Time{})
+	grant, err := identity.IssueGrant(adminPriv, nil, authPub, caps, identity.UnlimitedBudget(), now.Add(-time.Hour), deadline)
 	require.NoError(t, err)
-	return cert
+	return adminPub, authPub, authPriv, grant
 }
 
-func TestAdmitVerifiesSpecAuthBody(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("a", 64), Name: "echo", MinReplicas: 1}
-	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: "echo", Hash: bytesOf(0xaa)}}}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
-	require.NoError(t, err)
-	sc := &statev1.SpecChange{Auth: specAuth, Body: &statev1.SpecChange_Workload{Workload: body}}
-
-	g := New(rootPub, fakeStore{})
-	require.NoError(t, g.Admit(sc))
-
-	sc.GetWorkload().Name = "tampered"
-	require.Error(t, g.Admit(sc))
+func seedBodyResource(name, hexByte string) (*statev1.WorkloadSpecChange, *admissionv1.ResourceID) {
+	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat(hexByte, 64), Name: name, MinReplicas: 1}
+	hb, _ := hex.DecodeString(body.GetHash())
+	return body, &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: name, Hash: hb}}}
 }
 
-func TestAdmitAllowsSamePublisherMultipleSpecs(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	publisherKey := types.PeerKeyFromBytes(rootPub)
-	// Pre-populate the snapshot with the publisher in Nodes, mirroring
-	// the post-first-spec state, so the slug-collision check has to skip
-	// it for the second spec to admit.
-	snap := state.Snapshot{Nodes: map[types.PeerKey]state.NodeView{publisherKey: {Cert: publisher}}}
-	g := New(rootPub, fakeStore{snap: snap})
+func nodes(authPub ed25519.PublicKey, grant *identityv1.Grant) map[types.PeerKey]state.NodeView {
+	return map[types.PeerKey]state.NodeView{
+		types.PeerKeyFromBytes(authPub): {Grant: grant},
+	}
+}
 
-	for _, c := range []struct {
-		hex string
-		raw byte
-	}{{"a", 0xaa}, {"b", 0xbb}} {
-		body := &statev1.WorkloadSpecChange{Hash: strings.Repeat(c.hex, 64), Name: "echo", MinReplicas: 1}
-		resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(c.raw)}}}
-		specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
+func TestAdmit(t *testing.T) {
+	now := time.Now()
+
+	t.Run("accepts a well-formed workload fact", func(t *testing.T) {
+		rootPub, authPub, authPriv, grant := authority(t, now, now.Add(30*24*time.Hour), nil)
+		body, res := seedBodyResource("echo", "a")
+		f, err := fact.IssueFact(authPriv, res, body, nil, 1, false)
 		require.NoError(t, err)
-		require.NoError(t, g.Admit(&statev1.SpecChange{Auth: specAuth, Body: &statev1.SpecChange_Workload{Workload: body}}))
-	}
+		sc := &statev1.SpecChange{Fact: f, Body: &statev1.SpecChange_Workload{Workload: body}}
+		g := New(rootPub, fakeStore{snap: state.Snapshot{Nodes: nodes(authPub, grant)}})
+		require.NoError(t, g.Admit(sc))
+	})
+
+	t.Run("accepts static and blob facts", func(t *testing.T) {
+		rootPub, authPub, authPriv, grant := authority(t, now, now.Add(30*24*time.Hour), nil)
+		store := fakeStore{snap: state.Snapshot{Nodes: nodes(authPub, grant)}}
+		g := New(rootPub, store)
+
+		sb := &statev1.StaticSpecChange{Name: "site", ManifestDigest: []byte("digest-bytes-32-aaaaaaaaaaaaaaaa")}
+		sres := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Static{Static: &admissionv1.StaticID{Name: "site", ManifestDigest: sb.GetManifestDigest()}}}
+		sf, err := fact.IssueFact(authPriv, sres, sb, nil, 1, false)
+		require.NoError(t, err)
+		require.NoError(t, g.Admit(&statev1.SpecChange{Fact: sf, Body: &statev1.SpecChange_Static{Static: sb}}))
+
+		bb := &statev1.BlobSpecChange{Name: "blob", Digest: []byte("digest-bytes-32-bbbbbbbbbbbbbbbb")}
+		bres := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{Name: "blob", Digest: bb.GetDigest()}}}
+		bf, err := fact.IssueFact(authPriv, bres, bb, nil, 1, false)
+		require.NoError(t, err)
+		require.NoError(t, g.Admit(&statev1.SpecChange{Fact: bf, Body: &statev1.SpecChange_Blob{Blob: bb}}))
+	})
+
+	t.Run("fail-closed rejections", func(t *testing.T) {
+		rootPub, authPub, authPriv, grant := authority(t, now, now.Add(30*24*time.Hour), nil)
+		body, res := seedBodyResource("echo", "a")
+		goodFact := func() *factv1.Fact {
+			f, err := fact.IssueFact(authPriv, res, body, nil, 1, false)
+			require.NoError(t, err)
+			return f
+		}
+
+		t.Run("missing fact", func(t *testing.T) {
+			g := New(rootPub, fakeStore{snap: state.Snapshot{Nodes: nodes(authPub, grant)}})
+			err := g.Admit(&statev1.SpecChange{Body: &statev1.SpecChange_Workload{Workload: body}})
+			require.Error(t, err)
+		})
+
+		t.Run("resource does not match body", func(t *testing.T) {
+			f := goodFact()
+			tampered := &statev1.WorkloadSpecChange{Hash: body.GetHash(), Name: "tampered", MinReplicas: 1}
+			g := New(rootPub, fakeStore{snap: state.Snapshot{Nodes: nodes(authPub, grant)}})
+			err := g.Admit(&statev1.SpecChange{Fact: f, Body: &statev1.SpecChange_Workload{Workload: tampered}})
+			require.Error(t, err)
+		})
+
+		t.Run("authority grant not in cluster state", func(t *testing.T) {
+			g := New(rootPub, fakeStore{snap: state.Snapshot{}})
+			err := g.Admit(&statev1.SpecChange{Fact: goodFact(), Body: &statev1.SpecChange_Workload{Workload: body}})
+			require.ErrorContains(t, err, "authority grant not in cluster state")
+		})
+
+		t.Run("expired authority grant", func(t *testing.T) {
+			rp, ap, apriv, expg := authority(t, now.Add(-48*time.Hour), now.Add(-time.Hour), nil)
+			f, err := fact.IssueFact(apriv, res, body, nil, 1, false)
+			require.NoError(t, err)
+			g := New(rp, fakeStore{snap: state.Snapshot{Nodes: nodes(ap, expg)}})
+			err = g.Admit(&statev1.SpecChange{Fact: f, Body: &statev1.SpecChange_Workload{Workload: body}})
+			require.ErrorContains(t, err, "expired")
+		})
+
+		t.Run("denied authority", func(t *testing.T) {
+			snap := state.Snapshot{
+				Nodes:      nodes(authPub, grant),
+				DeniedKeys: []types.PeerKey{types.PeerKeyFromBytes(authPub)},
+			}
+			g := New(rootPub, fakeStore{snap: snap})
+			err := g.Admit(&statev1.SpecChange{Fact: goodFact(), Body: &statev1.SpecChange_Workload{Workload: body}})
+			require.ErrorContains(t, err, "revoked")
+		})
+
+		t.Run("public plus inline contradiction", func(t *testing.T) {
+			pol := &admissionv1.Predicate{Public: true, Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "team", Equals: "core"}}}}
+			f, err := fact.IssueFact(authPriv, res, body, pol, 1, false)
+			require.NoError(t, err)
+			g := New(rootPub, fakeStore{snap: state.Snapshot{Nodes: nodes(authPub, grant)}})
+			err = g.Admit(&statev1.SpecChange{Fact: f, Body: &statev1.SpecChange_Workload{Workload: body}})
+			require.ErrorContains(t, err, "public=true and inline")
+		})
+	})
 }
 
-func TestAdmitRejectsPublicWithInlineClauses(t *testing.T) {
+func TestDecideFailClosed(t *testing.T) {
 	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("a", 64), Name: "echo", MinReplicas: 1}
-	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xaa)}}}
-	policy := &admissionv1.Predicate{
-		Public: true,
-		Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "role", Equals: "admin"}}},
-	}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, policy, false)
-	require.NoError(t, err)
+	rootPub, _, _, grant := authority(t, now, now.Add(30*24*time.Hour), map[string]any{"team": "core"})
 	g := New(rootPub, fakeStore{})
-	err = g.Admit(&statev1.SpecChange{Auth: specAuth, Body: &statev1.SpecChange_Workload{Workload: body}})
-	require.ErrorContains(t, err, "public=true and inline clauses")
+	denied := func([]byte) bool { return false }
+
+	pub := &factv1.Fact{Policy: &admissionv1.Predicate{Public: true}}
+	inline := &factv1.Fact{Policy: &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "team", Equals: "core"}}}}}
+	inlineMiss := &factv1.Fact{Policy: &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "team", Equals: "wrong"}}}}}
+
+	require.NoError(t, g.decide(nil, pub, now, denied), "public admits anonymous")
+	require.NoError(t, g.decide(grant, pub, now, denied), "public admits grant-bearing")
+	require.ErrorIs(t, g.decide(nil, inline, now, denied), wasm.ErrTargetNotFound, "nil grant on gated spec")
+	require.NoError(t, g.decide(grant, inline, now, denied), "matching attribute admitted")
+	require.ErrorIs(t, g.decide(grant, inlineMiss, now, denied), wasm.ErrTargetNotFound, "attribute mismatch rejected")
+
+	deniedSubject := func(p []byte) bool { return string(p) == string(grant.GetClaims().GetSubjectPub()) }
+	require.ErrorIs(t, g.decide(grant, inline, now, deniedSubject), wasm.ErrTargetNotFound, "denied grant rejected")
+
+	_, _, _, expired := authority(t, now.Add(-48*time.Hour), now.Add(-time.Hour), map[string]any{"team": "core"})
+	require.ErrorIs(t, g.decide(expired, inline, now, denied), wasm.ErrTargetNotFound, "expired grant rejected")
 }
 
-func TestAdmitDistinctPublishersBothSucceed(t *testing.T) {
+func TestConnectAuthorises(t *testing.T) {
 	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	otherPub, _ := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	// Snapshot already contains another peer with a distinct slug; the
-	// new publisher must not be rejected for someone else's presence.
-	snap := state.Snapshot{Nodes: map[types.PeerKey]state.NodeView{types.PeerKeyFromBytes(otherPub): {}}}
-	g := New(rootPub, fakeStore{snap: snap})
-
-	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("c", 64), Name: "echo", MinReplicas: 1}
-	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xcc)}}}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
+	rootPub, authPub, authPriv, grant := authority(t, now, now.Add(30*24*time.Hour), nil)
+	body, res := seedBodyResource("svc", "c")
+	svcFact, err := fact.IssueFact(authPriv, res, body, nil, 1, false)
 	require.NoError(t, err)
-	require.NoError(t, g.Admit(&statev1.SpecChange{Auth: specAuth, Body: &statev1.SpecChange_Workload{Workload: body}}))
-}
 
-func TestInvokeUsesCallerCertAttributes(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	callerPub, callerPriv := newKeyPair(t)
-	callerCert := testCert(t, callerPriv, callerPub, map[string]any{"role": "worker"}, now)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("b", 64), Name: "echo", MinReplicas: 1}
-	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: "role", Equals: "worker"},
-	}}}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: "echo", Hash: bytesOf(0xbb)}}}, body, policy, false)
-	require.NoError(t, err)
-	callerKey := types.PeerKeyFromBytes(callerPub)
-	snap := state.Snapshot{
-		Nodes: map[types.PeerKey]state.NodeView{callerKey: {Cert: callerCert}},
-		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
+	host := types.PeerKeyFromBytes(authPub)
+	const port = 8443
+	mkSnap := func(denied []types.PeerKey) state.Snapshot {
+		return state.Snapshot{
+			Nodes: map[types.PeerKey]state.NodeView{
+				host: {Grant: grant, Services: map[string]*state.Service{
+					"svc": {Name: "svc", Port: port, Fact: svcFact},
+				}},
+			},
+			DeniedKeys: denied,
+		}
 	}
 
-	info, err := New(rootPub, fakeStore{snap: snap}).Invoke(callerCert, body.GetHash())
+	g := New(rootPub, fakeStore{snap: mkSnap(nil)})
+	require.NoError(t, g.Connect(grant, host, port), "valid grant reaches the service")
+	require.ErrorIs(t, g.Connect(grant, host, 9999), wasm.ErrTargetNotFound, "no service on that port")
+
+	gd := New(rootPub, fakeStore{snap: mkSnap([]types.PeerKey{types.PeerKeyFromBytes(authPub)})})
+	require.ErrorIs(t, gd.Connect(grant, host, port), wasm.ErrTargetNotFound, "denied caller refused")
+}
+
+func TestRuntimeMethodsFailClosed(t *testing.T) {
+	now := time.Now()
+	rootPub, authPub, authPriv, grant := authority(t, now, now.Add(30*24*time.Hour), nil)
+
+	body, res := seedBodyResource("echo", "a")
+	gatedFact, err := fact.IssueFact(authPriv, res, body, &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "team", Equals: "core"}}}}, 1, false)
 	require.NoError(t, err)
-	require.Equal(t, "worker", info.Attributes["role"])
-}
-
-func TestInvokeDeniesPolicyMismatch(t *testing.T) {
-	now := time.Now()
-	g, callerCert, hash := newWorkloadFixture(t, now,
-		map[string]any{"role": "operator"},
-		clauseEquals("role", "worker"),
-	)
-	_, err := g.Invoke(callerCert, hash)
-	require.ErrorIs(t, err, wasm.ErrTargetNotFound)
-}
-
-func TestInvokeAllowsOpenPolicy(t *testing.T) {
-	now := time.Now()
-	g, callerCert, hash := newWorkloadFixture(t, now, nil, nil)
-	info, err := g.Invoke(callerCert, hash)
-	require.NoError(t, err)
-	require.NotNil(t, info)
-}
-
-func TestInvokeDeniesExpiredCallerCert(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	callerPub, callerPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	expired, err := auth.IssueDelegationCert(callerPriv, nil, callerPub, auth.FullCapabilities(),
-		now.Add(-2*time.Hour), now.Add(-time.Hour), time.Time{})
-	require.NoError(t, err)
-	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("e", 64), Name: "echo", MinReplicas: 1}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
-		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xee)}}},
-		body, nil, false)
-	require.NoError(t, err)
-	snap := state.Snapshot{
-		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-	_, err = g.Invoke(expired, body.GetHash())
-	require.ErrorIs(t, err, wasm.ErrTargetNotFound)
-}
-
-func TestInvokeRejectsPolicyWithoutInline(t *testing.T) {
-	now := time.Now()
-	g, callerCert, hash := newWorkloadFixture(t, now, nil, &admissionv1.Predicate{})
-	_, err := g.Invoke(callerCert, hash)
-	require.ErrorIs(t, err, wasm.ErrTargetNotFound, "non-Inline Predicate must fail closed even though Inline is currently the only variant")
-}
-
-func TestInvokeRejectsNilCert(t *testing.T) {
-	now := time.Now()
-	g, _, hash := newWorkloadFixture(t, now, nil, nil)
-	_, err := g.Invoke(nil, hash)
-	require.ErrorIs(t, err, wasm.ErrTargetNotFound, "nil caller cert must fail closed when spec is not public")
-}
-
-func TestInvokeAllowsAnonymousWhenPublic(t *testing.T) {
-	now := time.Now()
-	g, _, hash := newWorkloadFixture(t, now, nil, &admissionv1.Predicate{Public: true})
-	info, err := g.Invoke(nil, hash)
-	require.NoError(t, err)
-	require.Equal(t, types.PeerKey{}, info.PeerKey, "anonymous CallerInfo carries no peer identity")
-	require.Nil(t, info.Attributes)
-}
-
-func TestInvokePublicSpecBypassesPredicateClauses(t *testing.T) {
-	now := time.Now()
-	policy := &admissionv1.Predicate{
-		Public: true,
-		Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "role", Equals: "admin"}}},
-	}
-	g, callerCert, hash := newWorkloadFixture(t, now, map[string]any{"role": "intern"}, policy)
-	info, err := g.Invoke(callerCert, hash)
-	require.NoError(t, err, "public=true must short-circuit even when cert attributes don't satisfy clauses")
-	require.NotEqual(t, types.PeerKey{}, info.PeerKey)
-}
-
-func TestFetchAllowsAnonymousWhenPublic(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	body := &statev1.BlobSpecChange{Name: "payload", Digest: bytesOf(0xb1)}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
-		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{Name: body.GetName(), Digest: body.GetDigest()}}},
-		body, &admissionv1.Predicate{Public: true}, false)
-	require.NoError(t, err)
-
-	digest := bytesAsHex(body.GetDigest())
-	snap := state.Snapshot{
-		BlobSpecs: map[string]state.BlobSpecView{digest: {Spec: state.BlobSpec{Name: body.GetName(), Digest: digest}, Auth: specAuth}},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-	require.NoError(t, g.Fetch(nil, digest))
-}
-
-func TestFetchHonoursPolicy(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	callerPub, callerPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	allow := testCert(t, callerPriv, callerPub, map[string]any{"role": "reader"}, now)
-	deny := testCert(t, callerPriv, callerPub, map[string]any{"role": "intern"}, now)
-
-	body := &statev1.BlobSpecChange{Name: "manifest", Digest: bytesOf(0xcc)}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
-		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{Name: body.GetName(), Digest: body.GetDigest()}}},
-		body, clauseEquals("role", "reader"), false)
-	require.NoError(t, err)
-
-	digest := bytesAsHex(body.GetDigest())
-	snap := state.Snapshot{
-		BlobSpecs: map[string]state.BlobSpecView{digest: {Spec: state.BlobSpec{Name: body.GetName(), Digest: digest}, Auth: specAuth}},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-	require.NoError(t, g.Fetch(allow, digest))
-	require.ErrorIs(t, g.Fetch(deny, digest), wasm.ErrTargetNotFound)
-}
-
-func TestFetchAuthorisesWorkloadBinary(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	callerPub, callerPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	allow := testCert(t, callerPriv, callerPub, map[string]any{"role": "admin"}, now)
-	deny := testCert(t, callerPriv, callerPub, map[string]any{"role": "intern"}, now)
-
-	body := &statev1.WorkloadSpecChange{Name: "echo", Hash: bytesAsHex(bytesOf(0xda))}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
-		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xda)}}},
-		body, clauseEquals("role", "admin"), false)
+	publicBody, publicRes := seedBodyResource("open", "b")
+	publicFact, err := fact.IssueFact(authPriv, publicRes, publicBody, &admissionv1.Predicate{Public: true}, 1, false)
 	require.NoError(t, err)
 
 	snap := state.Snapshot{
-		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-	require.NoError(t, g.Fetch(allow, body.GetHash()), "caller with admin role must fetch workload binary")
-	require.ErrorIs(t, g.Fetch(deny, body.GetHash()), wasm.ErrTargetNotFound, "caller without admin role must be denied")
-}
-
-func TestFetchAuthorisesStaticManifest(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	callerPub, callerPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	caller := testCert(t, callerPriv, callerPub, nil, now)
-
-	manifestDigest := strings.Repeat("ab", 32)
-	body := &statev1.StaticSpecChange{Name: "site", ManifestDigest: bytesOf(0xab)}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
-		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Static{Static: &admissionv1.StaticID{Name: body.GetName(), ManifestDigest: body.GetManifestDigest()}}},
-		body, nil, false)
-	require.NoError(t, err)
-
-	manifestSpec := state.StaticSpecView{Spec: state.StaticSpec{Name: body.GetName(), ManifestDigest: manifestDigest}, Auth: specAuth}
-	snap := state.Snapshot{
-		StaticSpecs:    map[string]state.StaticSpecView{body.GetName(): manifestSpec},
-		StaticSpecsAll: []state.StaticSpecView{manifestSpec},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-	require.NoError(t, g.Fetch(caller, manifestDigest), "manifest digest must be authorised via StaticSpec")
-}
-
-func TestFetchAuthorisesNestedStaticPath(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	callerPub, callerPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	caller := testCert(t, callerPriv, callerPub, nil, now)
-
-	manifestDigest := strings.Repeat("cd", 32)
-	pathDigest := strings.Repeat("ef", 32)
-	body := &statev1.StaticSpecChange{Name: "site", ManifestDigest: bytesOf(0xcd)}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
-		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Static{Static: &admissionv1.StaticID{Name: body.GetName(), ManifestDigest: body.GetManifestDigest()}}},
-		body, nil, false)
-	require.NoError(t, err)
-
-	manifestSpec := state.StaticSpecView{Spec: state.StaticSpec{Name: body.GetName(), ManifestDigest: manifestDigest}, Auth: specAuth}
-	snap := state.Snapshot{
-		StaticSpecs:    map[string]state.StaticSpecView{body.GetName(): manifestSpec},
-		StaticSpecsAll: []state.StaticSpecView{manifestSpec},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-	require.ErrorIs(t, g.Fetch(caller, pathDigest), wasm.ErrTargetNotFound, "nested path is denied without a manifest resolver")
-
-	g.SetManifestPaths(fakeManifestPaths{manifestDigest: {pathDigest: {}}})
-	require.NoError(t, g.Fetch(caller, pathDigest), "nested path is authorised once the manifest resolves")
-}
-
-type fakeManifestPaths map[string]map[string]struct{}
-
-func (f fakeManifestPaths) ManifestPaths(digest string) (map[string]struct{}, bool) {
-	paths, ok := f[digest]
-	return paths, ok
-}
-
-func TestConnectHonoursPolicy(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	callerPub, callerPriv := newKeyPair(t)
-	localPub, _ := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	caller := testCert(t, callerPriv, callerPub, map[string]any{"team": "blue"}, now)
-
-	body := &statev1.ServiceChange{Name: "api", Port: 8080}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
-		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Service{Service: &admissionv1.ServiceID{Name: body.GetName()}}},
-		body, clauseEquals("team", "blue"), false)
-	require.NoError(t, err)
-
-	localKey := types.PeerKeyFromBytes(localPub)
-	svc := &state.Service{Name: "api", Port: 8080, Auth: specAuth}
-	snap := state.Snapshot{
-		LocalID: localKey,
-		Nodes: map[types.PeerKey]state.NodeView{
-			localKey: {Services: map[string]*state.Service{"api": svc}},
+		Nodes: nodes(authPub, grant),
+		Specs: map[string]state.WorkloadSpecView{
+			body.GetHash():       {Fact: gatedFact, Spec: state.WorkloadSpec{Name: "echo"}},
+			publicBody.GetHash(): {Fact: publicFact, Spec: state.WorkloadSpec{Name: "open"}},
 		},
 	}
 	g := New(rootPub, fakeStore{snap: snap})
-	require.NoError(t, g.Connect(caller, localKey, 8080))
 
-	caller2 := testCert(t, callerPriv, callerPub, map[string]any{"team": "red"}, now)
-	require.ErrorIs(t, g.Connect(caller2, localKey, 8080), wasm.ErrTargetNotFound)
-}
-
-func TestConnectAuthorsesAgainstChosenHost(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	callerPub, callerPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	caller := testCert(t, callerPriv, callerPub, map[string]any{"team": "blue"}, now)
-
-	strict, err := auth.IssueSpecAuth(rootPriv, publisher,
-		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Service{Service: &admissionv1.ServiceID{Name: "api"}}},
-		&statev1.ServiceChange{Name: "api", Port: 8080}, clauseEquals("team", "red"), false)
-	require.NoError(t, err)
-	loose, err := auth.IssueSpecAuth(rootPriv, publisher,
-		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Service{Service: &admissionv1.ServiceID{Name: "api"}}},
-		&statev1.ServiceChange{Name: "api", Port: 8081}, clauseEquals("team", "blue"), false)
-	require.NoError(t, err)
-
-	strictHostKey, _ := newKeyPair(t)
-	looseHostKey, _ := newKeyPair(t)
-	strictKey := types.PeerKeyFromBytes(strictHostKey)
-	looseKey := types.PeerKeyFromBytes(looseHostKey)
-
-	snap := state.Snapshot{
-		Nodes: map[types.PeerKey]state.NodeView{
-			strictKey: {Services: map[string]*state.Service{"api": {Name: "api", Port: 8080, Auth: strict}}},
-			looseKey:  {Services: map[string]*state.Service{"api": {Name: "api", Port: 8081, Auth: loose}}},
-		},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-	require.ErrorIs(t, g.Connect(caller, strictKey, 8080), wasm.ErrTargetNotFound, "strict host's red-only policy must reject blue caller")
-	require.NoError(t, g.Connect(caller, looseKey, 8081), "loose host's blue policy must accept blue caller")
-}
-
-func TestMayHostAcceptsMatchingHost(t *testing.T) {
-	now := time.Now()
-	g, hostCert, specAuth := newHostFixture(t, now,
-		map[string]any{"team": "blue"},
-		clauseEquals("team", "blue"),
-	)
-	require.NoError(t, g.MayHost(hostCert, specAuth))
-}
-
-func TestMayHostRejectsMismatchedHost(t *testing.T) {
-	now := time.Now()
-	g, hostCert, specAuth := newHostFixture(t, now,
-		map[string]any{"team": "red"},
-		clauseEquals("team", "blue"),
-	)
-	require.ErrorIs(t, g.MayHost(hostCert, specAuth), wasm.ErrTargetNotFound)
-}
-
-func TestMayHostAllowsOpenPolicy(t *testing.T) {
-	now := time.Now()
-	g, hostCert, specAuth := newHostFixture(t, now, nil, nil)
-	require.NoError(t, g.MayHost(hostCert, specAuth))
-}
-
-func TestMayHostRejectsExpiredHost(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	hostPub, hostPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	expired, err := auth.IssueDelegationCert(hostPriv, nil, hostPub, auth.FullCapabilities(),
-		now.Add(-2*time.Hour), now.Add(-time.Hour), time.Time{})
-	require.NoError(t, err)
-	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("9", 64), Name: "echo", MinReplicas: 1}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
-		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0x99)}}},
-		body, nil, false)
-	require.NoError(t, err)
-	g := New(rootPub, fakeStore{})
-	require.ErrorIs(t, g.MayHost(expired, specAuth), wasm.ErrTargetNotFound)
-}
-
-func TestMayHostRejectsNilInputs(t *testing.T) {
-	g := New(nil, fakeStore{})
-	require.ErrorIs(t, g.MayHost(nil, &admissionv1.SpecAuth{}), wasm.ErrTargetNotFound)
-	require.ErrorIs(t, g.MayHost(&admissionv1.DelegationCert{}, nil), wasm.ErrTargetNotFound)
-}
-
-func TestMayPublishAcceptsMatchingCert(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	cert := testCert(t, rootPriv, rootPub, map[string]any{"role": "admin"}, now)
-	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: "role", Equals: "admin"},
-	}}}
-	require.NoError(t, New(rootPub, fakeStore{}).MayPublish(cert, policy))
-}
-
-func TestMayPublishAcceptsNoPolicy(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	cert := testCert(t, rootPriv, rootPub, nil, now)
-	require.NoError(t, New(rootPub, fakeStore{}).MayPublish(cert, nil))
-}
-
-func TestMayPublishReportsMissingProp(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	cert := testCert(t, rootPriv, rootPub, map[string]any{"team": "blue"}, now)
-	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: "role", Equals: "admin"},
-	}}}
-	err := New(rootPub, fakeStore{}).MayPublish(cert, policy)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), `missing prop "role"`)
-	require.Contains(t, err.Error(), `"admin"`)
-}
-
-func TestMayPublishReportsWrongValue(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	cert := testCert(t, rootPriv, rootPub, map[string]any{"role": "worker"}, now)
-	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: "role", Equals: "admin"},
-	}}}
-	err := New(rootPub, fakeStore{}).MayPublish(cert, policy)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), `"worker"`)
-	require.Contains(t, err.Error(), `"admin"`)
-}
-
-func TestMayPublishRejectsExpiredCert(t *testing.T) {
-	now := time.Now()
-	pub, priv := newKeyPair(t)
-	expired, err := auth.IssueDelegationCert(priv, nil, pub, auth.FullCapabilities(),
-		now.Add(-2*time.Hour), now.Add(-time.Hour), time.Time{})
-	require.NoError(t, err)
-	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: "role", Equals: "admin"},
-	}}}
-	require.ErrorContains(t, New(nil, fakeStore{}).MayPublish(expired, policy), "expired")
-}
-
-func TestMayPublishAllowsNilCertWithoutPolicy(t *testing.T) {
-	// Bootstrap window: cert isn't in gossip yet, but a no-policy
-	// publish must still succeed so the user can ship work without
-	// waiting for the cert to round-trip.
-	require.NoError(t, New(nil, fakeStore{}).MayPublish(nil, nil))
-}
-
-func TestMayPublishRejectsNilCertWithPolicy(t *testing.T) {
-	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: "role", Equals: "admin"},
-	}}}
-	require.ErrorContains(t, New(nil, fakeStore{}).MayPublish(nil, policy), "not yet published")
-}
-
-func newHostFixture(t *testing.T, now time.Time, hostAttrs map[string]any, policy *admissionv1.Predicate) (*Gate, *admissionv1.DelegationCert, *admissionv1.SpecAuth) {
-	t.Helper()
-	rootPub, rootPriv := newKeyPair(t)
-	hostPub, hostPriv := newKeyPair(t)
-	hostCert := testCert(t, hostPriv, hostPub, hostAttrs, now)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("c", 64), Name: "echo", MinReplicas: 1}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
-		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xcc)}}},
-		body, policy, false)
-	require.NoError(t, err)
-	return New(rootPub, fakeStore{}), hostCert, specAuth
-}
-
-func bytesOf(v byte) []byte {
-	out := make([]byte, 32)
-	for i := range out {
-		out[i] = v
-	}
-	return out
-}
-
-func bytesAsHex(b []byte) string {
-	const hexdigits = "0123456789abcdef"
-	out := make([]byte, len(b)*2)
-	for i, c := range b {
-		out[i*2] = hexdigits[c>>4]
-		out[i*2+1] = hexdigits[c&0x0f]
-	}
-	return string(out)
-}
-
-func clauseEquals(key, value string) *admissionv1.Predicate {
-	return &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{
-		{Key: key, Equals: value},
-	}}}
-}
-
-func newWorkloadFixture(t *testing.T, now time.Time, callerAttrs map[string]any, policy *admissionv1.Predicate) (*Gate, *admissionv1.DelegationCert, string) {
-	t.Helper()
-	rootPub, rootPriv := newKeyPair(t)
-	callerPub, callerPriv := newKeyPair(t)
-	callerCert := testCert(t, callerPriv, callerPub, callerAttrs, now)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("d", 64), Name: "echo", MinReplicas: 1}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher,
-		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xdd)}}},
-		body, policy, false)
-	require.NoError(t, err)
-	callerKey := types.PeerKeyFromBytes(callerPub)
-	snap := state.Snapshot{
-		Nodes: map[types.PeerKey]state.NodeView{callerKey: {Cert: callerCert}},
-		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-	return g, callerCert, body.GetHash()
-}
-
-func TestFetchByTokenAllowsBlob(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	body := &statev1.BlobSpecChange{Name: "payload", Digest: bytesOf(0xa1)}
-	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{Name: body.GetName(), Digest: body.GetDigest()}}}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
-	require.NoError(t, err)
-
-	digest := bytesAsHex(body.GetDigest())
-	snap := state.Snapshot{
-		BlobSpecs: map[string]state.BlobSpecView{digest: {Spec: state.BlobSpec{Name: body.GetName(), Digest: digest}, Auth: specAuth}},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-
-	token, err := auth.SignAccessToken(rootPriv, resource, now, time.Hour)
-	require.NoError(t, err)
-	require.NoError(t, g.FetchByToken(token, digest))
-}
-
-func TestFetchByTokenRejectsWrongIssuer(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	body := &statev1.BlobSpecChange{Name: "payload", Digest: bytesOf(0xa2)}
-	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{Name: body.GetName(), Digest: body.GetDigest()}}}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
-	require.NoError(t, err)
-
-	digest := bytesAsHex(body.GetDigest())
-	snap := state.Snapshot{
-		BlobSpecs: map[string]state.BlobSpecView{digest: {Spec: state.BlobSpec{Name: body.GetName(), Digest: digest}, Auth: specAuth}},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-
-	_, attackerPriv := newKeyPair(t)
-	token, err := auth.SignAccessToken(attackerPriv, resource, now, time.Hour)
-	require.NoError(t, err)
-	require.ErrorIs(t, g.FetchByToken(token, digest), wasm.ErrTargetNotFound)
-}
-
-func TestFetchByTokenRejectsHashMismatch(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	body := &statev1.BlobSpecChange{Name: "payload", Digest: bytesOf(0xa3)}
-	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{Name: body.GetName(), Digest: body.GetDigest()}}}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
-	require.NoError(t, err)
-
-	digest := bytesAsHex(body.GetDigest())
-	otherDigest := bytesAsHex(bytesOf(0xa4))
-	snap := state.Snapshot{
-		BlobSpecs: map[string]state.BlobSpecView{digest: {Spec: state.BlobSpec{Name: body.GetName(), Digest: digest}, Auth: specAuth}},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-
-	token, err := auth.SignAccessToken(rootPriv, resource, now, time.Hour)
-	require.NoError(t, err)
-	require.ErrorIs(t, g.FetchByToken(token, otherDigest), wasm.ErrTargetNotFound)
-}
-
-func TestInvokeByTokenAllowsWorkload(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("c", 64), Name: "echo", MinReplicas: 1}
-	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xcc)}}}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
-	require.NoError(t, err)
-
-	snap := state.Snapshot{
-		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-
-	token, err := auth.SignAccessToken(rootPriv, resource, now, time.Hour)
-	require.NoError(t, err)
-	info, err := g.InvokeByToken(token, body.GetHash())
-	require.NoError(t, err)
-	require.Empty(t, info.Attributes, "anonymous caller carries no attributes")
-}
-
-func TestInvokeByTokenRejectsExpired(t *testing.T) {
-	now := time.Now()
-	rootPub, rootPriv := newKeyPair(t)
-	publisher := testCert(t, rootPriv, rootPub, nil, now)
-	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat("e", 64), Name: "echo", MinReplicas: 1}
-	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: body.GetName(), Hash: bytesOf(0xee)}}}
-	specAuth, err := auth.IssueSpecAuth(rootPriv, publisher, resource, body, nil, false)
-	require.NoError(t, err)
-
-	snap := state.Snapshot{
-		Specs: map[string]state.WorkloadSpecView{body.GetHash(): {Spec: state.WorkloadSpec{Hash: body.GetHash(), Name: body.GetName()}, Auth: specAuth}},
-	}
-	g := New(rootPub, fakeStore{snap: snap})
-
-	token, err := auth.SignAccessToken(rootPriv, resource, now.Add(-2*time.Hour), time.Hour)
-	require.NoError(t, err)
-	_, err = g.InvokeByToken(token, body.GetHash())
-	require.ErrorIs(t, err, wasm.ErrTargetNotFound)
+	t.Run("Invoke unknown target", func(t *testing.T) {
+		_, err := g.Invoke(grant, "deadbeef")
+		require.ErrorIs(t, err, wasm.ErrTargetNotFound)
+	})
+	t.Run("Invoke gated spec with nil caller", func(t *testing.T) {
+		_, err := g.Invoke(nil, body.GetHash())
+		require.ErrorIs(t, err, wasm.ErrTargetNotFound)
+	})
+	t.Run("Invoke public spec with nil caller", func(t *testing.T) {
+		_, err := g.Invoke(nil, publicBody.GetHash())
+		require.NoError(t, err)
+	})
+	t.Run("Fetch with no entitlement", func(t *testing.T) {
+		require.ErrorIs(t, g.Fetch(grant, "unreferenced"), wasm.ErrTargetNotFound)
+	})
+	t.Run("Fetch public blob with nil caller", func(t *testing.T) {
+		require.NoError(t, g.Fetch(nil, publicBody.GetHash()))
+	})
+	t.Run("Connect unknown service", func(t *testing.T) {
+		require.ErrorIs(t, g.Connect(grant, types.PeerKeyFromBytes(authPub), 9999), wasm.ErrTargetNotFound)
+	})
+	t.Run("MayHost nil grant or fact", func(t *testing.T) {
+		require.ErrorIs(t, g.MayHost(nil, gatedFact), wasm.ErrTargetNotFound)
+		require.ErrorIs(t, g.MayHost(grant, nil), wasm.ErrTargetNotFound)
+	})
+	t.Run("MayHost public spec", func(t *testing.T) {
+		require.NoError(t, g.MayHost(grant, publicFact))
+	})
+	t.Run("MayPublish", func(t *testing.T) {
+		require.NoError(t, g.MayPublish(grant, nil), "nil policy always permitted")
+		require.Error(t, g.MayPublish(nil, &admissionv1.Predicate{Public: true}), "nil grant with policy rejected")
+		_, _, _, expired := authority(t, now.Add(-48*time.Hour), now.Add(-time.Hour), nil)
+		require.Error(t, g.MayPublish(expired, &admissionv1.Predicate{Public: true}))
+	})
+	t.Run("AllowAnonymous", func(t *testing.T) {
+		require.NoError(t, g.AllowAnonymous(publicFact))
+		require.ErrorIs(t, g.AllowAnonymous(gatedFact), wasm.ErrTargetNotFound)
+	})
 }

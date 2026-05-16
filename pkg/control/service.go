@@ -50,8 +50,6 @@ import (
 
 type Metrics struct {
 	CertExpirySeconds  float64
-	CertRenewals       uint64
-	CertRenewalsFailed uint64
 	PunchAttempts      uint64
 	PunchFailures      uint64
 	SmoothedVivaldiErr float64
@@ -324,7 +322,7 @@ func (s *Server) Start(socketPath string) error {
 
 // StartTLS opens a public TLS+mTLS listener for the control RPC at the
 // given address. Inbound clients must present an x509 cert whose pollen
-// DelegationCert extension chains back to the cluster root.
+// session extension chains back to the cluster root.
 func (s *Server) StartTLS(addr string) error {
 	tcp, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 	if err != nil {
@@ -346,7 +344,7 @@ func (s *Server) ServeTLS(l net.Listener) error {
 	if len(s.svc.creds.RootPub()) == 0 {
 		return errors.New("control tls: credentials missing root pub")
 	}
-	session, err := s.svc.creds.EnsureFreshSession(time.Now(), controlTLSIdentityTTL, controlTLSIdentityTTL/2)
+	session, err := s.svc.creds.EnsureFreshSession(time.Now(), controlTLSIdentityTTL, controlTLSIdentityTTL/2) //nolint:mnd
 	if err != nil {
 		return fmt.Errorf("control tls session: %w", err)
 	}
@@ -596,10 +594,10 @@ func (s *Service) peerSummary(peerKey types.PeerKey, nv state.NodeView, tunnels 
 // nodeCertInfo derives CertInfo from a peer's gossiped Grant. Health is
 // computed against the grant's own deadline; the local-node version in
 // buildCertificates uses the credentials store directly because it
-// needs the renewal-window thresholds, which only apply to the local
-// node's own grant. denied reflects whether the cluster has revoked
-// this peer; callers must source it from the same snapshot they read
-// the grant from.
+// applies the grant-horizon warn/critical thresholds, which only matter
+// for the local node's own grant. denied reflects whether the cluster
+// has revoked this peer; callers must source it from the same snapshot
+// they read the grant from.
 func nodeCertInfo(grant *identityv1.Grant, now time.Time, denied bool) *controlv1.CertInfo {
 	if grant == nil {
 		return nil
@@ -1039,21 +1037,8 @@ func (s *Service) IssueGrant(ctx context.Context, req *controlv1.IssueGrantReque
 	// membership signer only enforces child ≤ this node's parent chain,
 	// so a CanDelegate tenant could otherwise request a child with
 	// MaxDepth=255 / attrs={role:"admin"} via a higher-cap relay daemon.
-	callerCaps := caller.Grant().GetClaims().GetCapabilities()
-	if caps.GetCanAdmit() && !callerCaps.GetCanAdmit() {
-		return nil, status.Error(codes.PermissionDenied, "cannot grant admit; caller lacks admit")
-	}
-	if caps.GetCanDelegate() && !callerCaps.GetCanDelegate() {
-		return nil, status.Error(codes.PermissionDenied, "cannot grant delegate; caller lacks delegate")
-	}
-	if grantCapsPublishExceeds(caps, callerCaps) {
-		return nil, status.Error(codes.PermissionDenied, "cannot grant publish; caller lacks publish")
-	}
-	if caps.GetMaxDepth() > callerCaps.GetMaxDepth() {
-		return nil, status.Errorf(codes.PermissionDenied, "cannot grant max_depth %d; caller's max_depth is %d", caps.GetMaxDepth(), callerCaps.GetMaxDepth())
-	}
-	if err := attributesSubsetOf(caps.GetAttributes(), callerCaps.GetAttributes()); err != nil {
-		return nil, status.Errorf(codes.PermissionDenied, "cannot grant attributes: %v", err)
+	if err := enforceGrantCeiling(caps, caller.Grant().GetClaims().GetCapabilities()); err != nil {
+		return nil, err
 	}
 	grant, err := s.membership.IssueGrant(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), caps, identity.UnlimitedBudget())
 	if err != nil {
@@ -1063,6 +1048,32 @@ func (s *Service) IssueGrant(ctx context.Context, req *controlv1.IssueGrantReque
 		return nil, s.fail(err, "issue grant failed")
 	}
 	return &controlv1.IssueGrantResponse{Grant: grant}, nil
+}
+
+// enforceGrantCeiling rejects a requested capability set that exceeds
+// the caller's own in any dimension. The membership signer only
+// enforces child <= this node's parent chain, so without this a
+// CanDelegate tenant could request a child with admit / extra publish
+// kinds / MaxDepth=255 / attrs={role:"admin"} via a higher-cap relay
+// daemon. Returns a gRPC status error so the handler propagates it
+// verbatim.
+func enforceGrantCeiling(reqCaps, callerCaps *identityv1.Capabilities) error {
+	if reqCaps.GetCanAdmit() && !callerCaps.GetCanAdmit() {
+		return status.Error(codes.PermissionDenied, "cannot grant admit; caller lacks admit")
+	}
+	if reqCaps.GetCanDelegate() && !callerCaps.GetCanDelegate() {
+		return status.Error(codes.PermissionDenied, "cannot grant delegate; caller lacks delegate")
+	}
+	if grantCapsPublishExceeds(reqCaps, callerCaps) {
+		return status.Error(codes.PermissionDenied, "cannot grant publish; caller lacks publish")
+	}
+	if reqCaps.GetMaxDepth() > callerCaps.GetMaxDepth() {
+		return status.Errorf(codes.PermissionDenied, "cannot grant max_depth %d; caller's max_depth is %d", reqCaps.GetMaxDepth(), callerCaps.GetMaxDepth())
+	}
+	if err := attributesSubsetOf(reqCaps.GetAttributes(), callerCaps.GetAttributes()); err != nil {
+		return status.Errorf(codes.PermissionDenied, "cannot grant attributes: %v", err)
+	}
+	return nil
 }
 
 // grantCapsPublishExceeds reports whether child requests any publish
@@ -1102,19 +1113,17 @@ func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) 
 	}
 
 	return &controlv1.GetMetricsResponse{
-		PeersDiscovered:    counts.Backoff,
-		PeersConnecting:    counts.Connecting,
-		PeersConnected:     counts.Connected,
-		VivaldiError:       m.SmoothedVivaldiErr,
-		CertExpirySeconds:  certExpiry,
-		CertRenewals:       m.CertRenewals,
-		CertRenewalsFailed: m.CertRenewalsFailed,
-		PunchAttempts:      m.PunchAttempts,
-		PunchFailures:      m.PunchFailures,
-		Health:             health,
-		VivaldiSamples:     m.VivaldiSamples,
-		EagerSyncs:         m.EagerSyncs,
-		EagerSyncFailures:  m.EagerSyncFailures,
+		PeersDiscovered:   counts.Backoff,
+		PeersConnecting:   counts.Connecting,
+		PeersConnected:    counts.Connected,
+		VivaldiError:      m.SmoothedVivaldiErr,
+		CertExpirySeconds: certExpiry,
+		PunchAttempts:     m.PunchAttempts,
+		PunchFailures:     m.PunchFailures,
+		Health:            health,
+		VivaldiSamples:    m.VivaldiSamples,
+		EagerSyncs:        m.EagerSyncs,
+		EagerSyncFailures: m.EagerSyncFailures,
 	}, nil
 }
 
@@ -1334,9 +1343,9 @@ func (s *Service) publishUploadedBlob(hash, name string, header *controlv1.Uploa
 }
 
 // authoriseBlobUpload runs the auth dispatch for UploadBlob. Wire-mode
-// callers either supply a pre_signed_auth for the named spec (publisher
+// callers either supply a pre_signed_fact for the named spec (publisher
 // must match caller), or upload anchor/anonymous bytes (publish path
-// not taken, no SpecAuth needed). Daemon-self runs through the existing
+// not taken, no fact needed). Daemon-self runs through the existing
 // canPublish gate.
 func (s *Service) authoriseBlobUpload(ctx context.Context, header *controlv1.UploadBlobHeader) error {
 	caller, hasCaller := auth.RPCCallerFromContext(ctx)

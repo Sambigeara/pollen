@@ -859,9 +859,6 @@ func renderMetricsDetails(w io.Writer, m *controlv1.GetMetricsResponse) {
 	if m.GetPunchAttempts() > 0 {
 		fmt.Fprintf(w, "punch success:    %d/%d\n", m.GetPunchAttempts()-m.GetPunchFailures(), m.GetPunchAttempts())
 	}
-	if m.GetCertRenewals() > 0 || m.GetCertRenewalsFailed() > 0 {
-		fmt.Fprintf(w, "cert renewals:    %d ok, %d failed\n", m.GetCertRenewals(), m.GetCertRenewalsFailed())
-	}
 	fmt.Fprintln(w)
 }
 

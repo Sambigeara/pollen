@@ -331,8 +331,8 @@ message GetMetricsResponse {
   uint64 events_stale = 6;
   double vivaldi_error = 7;
   double cert_expiry_seconds = 8;
-  uint64 cert_renewals = 9;
-  uint64 cert_renewals_failed = 10;
+  reserved 9, 10;
+  reserved "cert_renewals", "cert_renewals_failed";
   uint64 punch_attempts = 11;
   uint64 punch_failures = 12;
   HealthStatus health = 13;

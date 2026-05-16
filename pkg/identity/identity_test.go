@@ -4,11 +4,13 @@
 package identity_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"testing"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/stretchr/testify/require"
@@ -142,9 +144,8 @@ func TestVerifySessionFailClosed(t *testing.T) {
 
 func TestIssueGrantChildCannotExceedParent(t *testing.T) {
 	now := time.Now()
-	adminPub, adminPriv := newKeyPair(t)
+	_, adminPriv := newKeyPair(t)
 	rnPub, rnPriv := newKeyPair(t)
-	_ = adminPub
 
 	// Parent may publish sites only, no delegation downstream beyond it.
 	parentCaps := &identityv1.Capabilities{
@@ -203,6 +204,24 @@ func TestCheckGrantStatuses(t *testing.T) {
 	}
 }
 
+func TestCheckGrantSubjectMismatch(t *testing.T) {
+	now := time.Now()
+	adminPub, adminPriv := newKeyPair(t)
+	subPub, _ := newKeyPair(t)
+	other, _ := newKeyPair(t)
+
+	g, err := identity.IssueGrant(adminPriv, nil, subPub,
+		identity.FullCapabilities(), identity.UnlimitedBudget(),
+		now.Add(-time.Hour), now.Add(24*time.Hour))
+	require.NoError(t, err)
+
+	ok := identity.CheckGrant(g, adminPub, now, subPub, nil)
+	require.Equal(t, identity.GrantStatusOK, ok.Status, ok.Reason)
+
+	mism := identity.CheckGrant(g, adminPub, now, other, nil)
+	require.Equal(t, identity.GrantStatusSubjectMismatch, mism.Status)
+}
+
 func TestCredentialsRoundTripAndLocalRenewal(t *testing.T) {
 	dir := t.TempDir()
 	keys := identity.IdentityPath(dir)
@@ -247,4 +266,156 @@ func TestResolvePrincipal(t *testing.T) {
 	denied := func(p []byte) bool { return string(p) == string(subPub) }
 	_, err = identity.ResolvePrincipal(grant, rootPub, now, denied)
 	require.ErrorIs(t, err, identity.ErrGrantInvalid)
+}
+
+func TestGrantTokenRoundTrip(t *testing.T) {
+	now := time.Now()
+	adminPub, adminPriv := newKeyPair(t)
+	joinerPub, _ := newKeyPair(t)
+
+	grant, err := identity.IssueGrant(adminPriv, nil, joinerPub,
+		identity.PublisherCapabilities(), identity.UnlimitedBudget(),
+		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+	require.NoError(t, err)
+
+	tok, err := identity.IssueGrantToken(adminPriv, grant, nil, adminPub, now, time.Hour)
+	require.NoError(t, err)
+
+	enc, err := identity.EncodeGrantToken(tok)
+	require.NoError(t, err)
+	dec, err := identity.DecodeGrantToken(enc)
+	require.NoError(t, err)
+
+	v, err := identity.VerifyGrantToken(dec, joinerPub, now)
+	require.NoError(t, err)
+	require.Equal(t, []byte(joinerPub), v.Grant.GetClaims().GetSubjectPub())
+	require.Equal(t, []byte(adminPub), []byte(v.RootPub))
+
+	_, err = identity.VerifyGrantToken(dec, joinerPub, now.Add(time.Hour+2*time.Minute))
+	require.ErrorContains(t, err, "expired")
+
+	other, _ := newKeyPair(t)
+	_, err = identity.VerifyGrantToken(dec, other, now)
+	require.ErrorContains(t, err, "subject mismatch")
+
+	dec.Signature[0] ^= 0xff
+	_, err = identity.VerifyGrantToken(dec, joinerPub, now)
+	require.ErrorContains(t, err, "signature invalid")
+}
+
+func TestEnrollGrant(t *testing.T) {
+	now := time.Now()
+	dir := identity.IdentityPath(t.TempDir())
+	_, nodePub, err := identity.EnsureIdentityKey(dir)
+	require.NoError(t, err)
+
+	adminPub, adminPriv := newKeyPair(t)
+	grant, err := identity.IssueGrant(adminPriv, nil, nodePub,
+		identity.PublisherCapabilities(), identity.UnlimitedBudget(),
+		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+	require.NoError(t, err)
+	tok, err := identity.IssueGrantToken(adminPriv, grant, nil, adminPub, now, time.Hour)
+	require.NoError(t, err)
+
+	creds, err := identity.EnrollGrant(dir, nodePub, tok, now)
+	require.NoError(t, err)
+	require.NotNil(t, creds.Grant())
+
+	loaded, err := identity.LoadCredentials(dir)
+	require.NoError(t, err)
+	require.Equal(t, grant.GetClaims().GetSerial(), loaded.Grant().GetClaims().GetSerial())
+
+	// A token from a different cluster root must be refused once enrolled.
+	adminBPub, adminBPriv := newKeyPair(t)
+	grantB, err := identity.IssueGrant(adminBPriv, nil, nodePub,
+		identity.PublisherCapabilities(), identity.UnlimitedBudget(),
+		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+	require.NoError(t, err)
+	tokB, err := identity.IssueGrantToken(adminBPriv, grantB, nil, adminBPub, now, time.Hour)
+	require.NoError(t, err)
+	_, err = identity.EnrollGrant(dir, nodePub, tokB, now)
+	require.ErrorIs(t, err, identity.ErrDifferentCluster)
+}
+
+func TestInviteTicketRedeemAndConsume(t *testing.T) {
+	now := time.Now()
+	adminPub, adminPriv := newKeyPair(t)
+	hostPub, hostPriv := newKeyPair(t)
+	joinerPub, _ := newKeyPair(t)
+
+	hostGrant, err := identity.IssueGrant(adminPriv, nil, hostPub,
+		identity.FullCapabilities(), identity.UnlimitedBudget(),
+		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+	require.NoError(t, err)
+
+	bootstrap := []*admissionv1.BootstrapPeer{{
+		PeerPub: bytes.Repeat([]byte{0x07}, 32),
+		Addrs:   []string{"203.0.113.7:60611"},
+	}}
+	ticket, err := identity.IssueInviteTicket(hostPriv, bootstrap, joinerPub,
+		identity.PublisherCapabilities(), &identityv1.Budget{MaxSites: 1},
+		now.Add(30*24*time.Hour), now, time.Hour)
+	require.NoError(t, err)
+
+	_, err = identity.VerifyInviteTicket(ticket, joinerPub, now)
+	require.NoError(t, err)
+	other, _ := newKeyPair(t)
+	_, err = identity.VerifyInviteTicket(ticket, other, now)
+	require.ErrorContains(t, err, "subject mismatch")
+	_, err = identity.VerifyInviteTicket(ticket, joinerPub, now.Add(time.Hour+2*time.Minute))
+	require.ErrorContains(t, err, "expired")
+
+	_, otherPriv := newKeyPair(t)
+	_, err = identity.RedeemInviteTicket(otherPriv, []*identityv1.Grant{hostGrant}, adminPub, ticket, joinerPub, now, time.Hour)
+	require.ErrorContains(t, err, "issuer is not the redeeming host")
+
+	tok, err := identity.RedeemInviteTicket(hostPriv, []*identityv1.Grant{hostGrant}, adminPub, ticket, joinerPub, now, time.Hour)
+	require.NoError(t, err)
+	v, err := identity.VerifyGrantToken(tok, joinerPub, now)
+	require.NoError(t, err)
+	require.Equal(t, []byte(joinerPub), v.Grant.GetClaims().GetSubjectPub())
+
+	c := identity.NewInviteConsumer(nil)
+	ok, err := c.TryConsume(ticket, now)
+	require.NoError(t, err)
+	require.True(t, ok)
+	ok, err = c.TryConsume(ticket, now)
+	require.NoError(t, err)
+	require.False(t, ok, "second redemption of the same ticket is refused")
+
+	rebuilt := identity.NewInviteConsumer(c.Export())
+	ok, err = rebuilt.TryConsume(ticket, now)
+	require.NoError(t, err)
+	require.False(t, ok, "consumed set survives a rebuild so a ticket cannot be replayed")
+}
+
+func TestVerifiedSessionPrincipal(t *testing.T) {
+	now := time.Now()
+	rootPub, grant, subPub, subPriv, _ := chain(t, now, now.Add(30*24*time.Hour))
+	s, err := identity.MintSession(grant, subPriv, now, time.Hour)
+	require.NoError(t, err)
+	vs, err := identity.VerifySession(s, rootPub, now, nil, nil)
+	require.NoError(t, err)
+
+	p := vs.Principal()
+	require.Equal(t, []byte(subPub), []byte(p.SubjectPub))
+	require.True(t, p.Capabilities.GetPublish().GetSites())
+	require.Equal(t, uint32(3), p.Budget.GetMaxSites())
+}
+
+func TestCheckGrantRejectsSplicedChain(t *testing.T) {
+	now := time.Now()
+	rootPub, child, _, _, _ := chain(t, now, now.Add(30*24*time.Hour))
+
+	// Splice an unrelated cluster's grant in as the chain anchor: the
+	// leaf's issuer no longer matches the chain link, so the walk fails.
+	adminBPub, adminBPriv := newKeyPair(t)
+	bogus, err := identity.IssueGrant(adminBPriv, nil, adminBPub,
+		identity.FullCapabilities(), identity.UnlimitedBudget(),
+		now.Add(-time.Hour), time.Time{})
+	require.NoError(t, err)
+	child.Chain[0] = bogus
+
+	chk := identity.CheckGrant(child, rootPub, now, nil, nil)
+	require.Equal(t, identity.GrantStatusInvalidChain, chk.Status, chk.Reason)
 }

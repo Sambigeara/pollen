@@ -4,7 +4,6 @@
 package main
 
 import (
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 
@@ -15,14 +14,14 @@ import (
 	"github.com/sambigeara/pollen/pkg/identity"
 )
 
-// signFact loads the caller's signing key from dir and invokes fn to
-// produce a presigned Fact. Used by every wire-mode publish/tombstone
-// path; the load-creds error message is shared across all callers.
-//
-// The CLI builds a one-shot presigned Fact per invocation (seq is fixed
-// at 1, not a monotonic stream): wire callers do not hold the durable
-// per-authority sequence the daemon's fact.Signer maintains.
-func signFact(dir string, fn func(ed25519.PrivateKey) (*factv1.Fact, error)) (*factv1.Fact, error) {
+// signFact loads the caller's signing key from dir and invokes fn with
+// a durable per-context fact signer to produce a presigned Fact. Used
+// by every wire-mode publish/tombstone path; the load-creds error
+// message is shared across all callers. A wire context is the single
+// producer for its authority key, so its sequence high-water is
+// persisted next to the identity and stays monotonic across CLI
+// invocations exactly as the daemon's signer does.
+func signFact(dir string, fn func(*fact.Signer) (*factv1.Fact, error)) (*factv1.Fact, error) {
 	identityDir := identity.IdentityPath(dir)
 	creds, err := identity.LoadCredentials(identityDir)
 	if err != nil {
@@ -35,7 +34,11 @@ func signFact(dir string, fn func(ed25519.PrivateKey) (*factv1.Fact, error)) (*f
 	if err != nil {
 		return nil, fmt.Errorf("load identity key: %w", err)
 	}
-	return fn(priv)
+	signer, err := fact.NewDurableSigner(priv, identity.FactSeqPath(identityDir))
+	if err != nil {
+		return nil, fmt.Errorf("open fact signer: %w", err)
+	}
+	return fn(signer)
 }
 
 // The presigned* builders below mirror, exactly, the (resource, body)
@@ -45,28 +48,28 @@ func signFact(dir string, fn func(ed25519.PrivateKey) (*factv1.Fact, error)) (*f
 // Any divergence makes the body hash or resource mismatch and the
 // daemon silently rejects the Fact, so they must stay in lock-step.
 
-func presignedWorkload(priv ed25519.PrivateKey, hashBytes []byte, body *statev1.WorkloadSpecChange, policy *admissionv1.Predicate, deleted bool) (*factv1.Fact, error) {
+func presignedWorkload(s *fact.Signer, hashBytes []byte, body *statev1.WorkloadSpecChange, policy *admissionv1.Predicate, deleted bool) (*factv1.Fact, error) {
 	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{
 		Name: body.GetName(),
 		Hash: hashBytes,
 	}}}
-	return fact.IssueFact(priv, resource, body, policy, 1, deleted)
+	return s.IssueFact(resource, body, policy, deleted)
 }
 
-func presignedStatic(priv ed25519.PrivateKey, name string, manifestDigest []byte, deleted bool) (*factv1.Fact, error) {
+func presignedStatic(s *fact.Signer, name string, manifestDigest []byte, deleted bool) (*factv1.Fact, error) {
 	body := &statev1.StaticSpecChange{Name: name, ManifestDigest: manifestDigest}
 	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Static{Static: &admissionv1.StaticID{
 		Name:           name,
 		ManifestDigest: manifestDigest,
 	}}}
-	return fact.IssueFact(priv, resource, body, nil, 1, deleted)
+	return s.IssueFact(resource, body, nil, deleted)
 }
 
-func presignedBlob(priv ed25519.PrivateKey, name string, digest []byte, policy *admissionv1.Predicate, deleted bool) (*factv1.Fact, error) {
+func presignedBlob(s *fact.Signer, name string, digest []byte, policy *admissionv1.Predicate, deleted bool) (*factv1.Fact, error) {
 	body := &statev1.BlobSpecChange{Name: name, Digest: digest}
 	resource := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{
 		Name:   name,
 		Digest: digest,
 	}}}
-	return fact.IssueFact(priv, resource, body, policy, 1, deleted)
+	return s.IssueFact(resource, body, policy, deleted)
 }

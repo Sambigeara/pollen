@@ -129,8 +129,12 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 	// One fact signer for the node's lifetime: facts are named by
 	// pubkey and their authority's Grant is resolved from gossip, so
 	// the signer never changes when capabilities change — only the
-	// gossiped Grant does.
-	signer := fact.NewSigner(privKey)
+	// gossiped Grant does. The sequence high-water is durable so seq
+	// stays monotonic across daemon restarts.
+	signer, err := fact.NewDurableSigner(privKey, identity.FactSeqPath(identity.IdentityPath(pollenDir)))
+	if err != nil {
+		return nil, fmt.Errorf("open fact signer: %w", err)
+	}
 	stateStore.SetLocalSigner(signer)
 	caps := creds.Grant().GetClaims().GetCapabilities()
 	canPublishSvcs := caps.GetPublish().GetServices()
@@ -881,8 +885,6 @@ func (n *Supervisor) ControlMetrics() control.Metrics {
 	cm := n.membership.ControlMetrics()
 	return control.Metrics{
 		CertExpirySeconds:  snap.CertExpirySeconds,
-		CertRenewals:       uint64(snap.CertRenewals),
-		CertRenewalsFailed: uint64(snap.CertRenewalsFailed),
 		PunchAttempts:      uint64(snap.PunchAttempts),
 		PunchFailures:      uint64(snap.PunchFailures),
 		SmoothedVivaldiErr: cm.SmoothedErr,

@@ -50,7 +50,7 @@ func buildPlnClientTLSConfig(dir string) (*tls.Config, error) {
 	if creds == nil || creds.Grant() == nil {
 		return nil, errors.New("no node credentials in this context; run `pln join` first")
 	}
-	session, err := creds.EnsureFreshSession(time.Now(), clientIdentityTTL, clientIdentityTTL/2)
+	session, err := creds.EnsureFreshSession(time.Now(), clientIdentityTTL, clientIdentityTTL/2) //nolint:mnd
 	if err != nil {
 		return nil, fmt.Errorf("mint session: %w", err)
 	}

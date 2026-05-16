@@ -19,10 +19,12 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// DefaultGrantDeadlineTTL is the hard authority horizon applied to
-// delegated grants where the issuer specifies none. Past it the grant
-// can no longer mint sessions or vouch for facts; a fresh join is
-// required. Admin/root grants carry no horizon (zero).
+// DefaultGrantDeadlineTTL is the horizon callers (join/bootstrap and
+// membership) apply to delegated grants when the issuer specifies none.
+// This package does not impose it: IssueGrant leaves a zero deadline as
+// no-horizon and clamps only to the parent. Past the applied horizon a
+// grant can no longer mint sessions or vouch for facts and a fresh join
+// is required. Admin/root grants carry no horizon (zero).
 const DefaultGrantDeadlineTTL = 30 * 24 * time.Hour
 
 var ErrGrantInvalid = errors.New("grant invalid")
@@ -100,7 +102,12 @@ func IssueGrant(
 
 // applyParent clamps a child grant's horizon to its parent's and
 // enforces that the signer owns the parent and is not granting beyond
-// its own authority.
+// its own authority. These are issuance-time conveniences that fail
+// early with a clear error; they are not the security boundary.
+// verifyGrantChain re-enforces the same subset and horizon rules on
+// every link and re-anchors the chain at the pinned root, so a caller
+// passing an unverified or forged parent here cannot produce a grant
+// that verifies.
 func applyParent(
 	parent *identityv1.Grant,
 	signerPub ed25519.PublicKey,
@@ -220,6 +227,23 @@ func validateAttributesSubset(child, parent *structpb.Struct) error {
 	return nil
 }
 
+// childDeadlineWithinParent enforces that a horizon cannot widen down
+// the chain: a child of a horizon-bounded parent must itself carry a
+// horizon no later than its parent's. A parent with no horizon (the
+// cluster root) places no bound. Issuance clamps this; verification
+// rejects a forged grant that tried to extend its own horizon.
+func childDeadlineWithinParent(child, parent *identityv1.GrantClaims) error {
+	pd := parent.GetGrantDeadlineUnix()
+	if pd == 0 {
+		return nil
+	}
+	cd := child.GetGrantDeadlineUnix()
+	if cd == 0 || cd > pd {
+		return errors.New("grant chain escalation: child horizon exceeds parent")
+	}
+	return nil
+}
+
 // stripChainEntries returns parents with each entry's own Chain cleared.
 // verifyGrantChain walks one level via grant.GetChain(), so leaving
 // nested chains populated duplicates every ancestor at every level.
@@ -237,12 +261,28 @@ func stripChainEntries(parents []*identityv1.Grant) []*identityv1.Grant {
 	return out
 }
 
+// maxGrantChainDepth bounds the chain walk. Real delegation topologies
+// (root, regional admin, tenant admin, tenant, workload) are a handful
+// deep; the cap stops a hostile peer gossiping a multi-thousand-entry
+// chain that would force that many signature verifications per check.
+const maxGrantChainDepth = 64
+
 func verifyGrantChain(grant *identityv1.Grant) (ed25519.PublicKey, error) {
 	if err := protovalidate.Validate(grant); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrGrantInvalid, err)
 	}
+	if len(grant.GetChain()) > maxGrantChainDepth {
+		return nil, fmt.Errorf("grant chain exceeds max depth %d", maxGrantChainDepth)
+	}
 
 	current := grant
+	// depthBelow counts delegation hops beneath the parent at each step.
+	// max_depth is the depth of the subtree a grant may root, so it must
+	// be enforced against the realised chain here at verification, not
+	// only as a monotone scalar at issuance: an attacker holding a
+	// shallow-budget grant could otherwise sign an arbitrarily deep
+	// subtree directly.
+	depthBelow := 0
 	for _, parent := range grant.GetChain() {
 		if !bytes.Equal(current.GetClaims().GetIssuerPub(), parent.GetClaims().GetSubjectPub()) {
 			return nil, errors.New("grant chain issuer/subject mismatch")
@@ -253,6 +293,22 @@ func verifyGrantChain(grant *identityv1.Grant) (ed25519.PublicKey, error) {
 		}
 		if err := VerifyPayload(ed25519.PublicKey(current.GetClaims().GetIssuerPub()), msg, current.GetSignature(), sigContextGrant); err != nil {
 			return nil, errors.New("grant signature invalid")
+		}
+		// The capability subset, attribute subset and horizon clamp are
+		// enforced again here, not only at issuance: an attacker holding
+		// any delegating grant owns its subject key and can sign a child
+		// proto directly, bypassing IssueGrant. Verification, not
+		// issuance, is the authority boundary, so every parent->child
+		// link is re-checked against the same predicate.
+		if err := validateChildCapabilities(current.GetClaims().GetCapabilities(), parent.GetClaims().GetCapabilities()); err != nil {
+			return nil, fmt.Errorf("grant chain escalation: %w", err)
+		}
+		if err := childDeadlineWithinParent(current.GetClaims(), parent.GetClaims()); err != nil {
+			return nil, err
+		}
+		depthBelow++
+		if int64(parent.GetClaims().GetCapabilities().GetMaxDepth()) < int64(depthBelow) {
+			return nil, fmt.Errorf("grant chain escalation: subtree depth %d exceeds parent max_depth %d", depthBelow, parent.GetClaims().GetCapabilities().GetMaxDepth())
 		}
 		current = parent
 	}
@@ -356,12 +412,16 @@ type DenyChecker func(subjectPub []byte) bool
 // and the short liveness window lives entirely in Session.
 type GrantStatus int
 
+// GrantStatusInvalidChain is deliberately the zero value: a
+// default-constructed GrantCheck is fail-closed, so a future code path
+// that returns one before setting Status explicitly denies rather than
+// silently authorises.
 const (
-	GrantStatusOK GrantStatus = iota
+	GrantStatusInvalidChain GrantStatus = iota
+	GrantStatusOK
 	GrantStatusNotYetValid
 	GrantStatusExpired
 	GrantStatusRevoked
-	GrantStatusInvalidChain
 	GrantStatusSubjectMismatch
 )
 

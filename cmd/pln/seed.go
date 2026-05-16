@@ -5,7 +5,6 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -26,6 +25,7 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/fact"
 )
 
 var hashPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
@@ -233,8 +233,8 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string, policy *
 			TimeoutMs:   uint32(timeout.Milliseconds()),
 			Spread:      spread,
 		}
-		presigned, err := signFact(env.dir, func(priv ed25519.PrivateKey) (*factv1.Fact, error) {
-			return presignedWorkload(priv, hashBytes, body, policy, false)
+		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
+			return presignedWorkload(s, hashBytes, body, policy, false)
 		})
 		if err != nil {
 			return fmt.Errorf("sign workload spec: %w", err)
@@ -374,8 +374,8 @@ func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string, policy *admis
 		Policy:         policy,
 	}
 	if env.wireMode {
-		presigned, err := signFact(env.dir, func(priv ed25519.PrivateKey) (*factv1.Fact, error) {
-			return presignedStatic(priv, name, manifestDigest, false)
+		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
+			return presignedStatic(s, name, manifestDigest, false)
 		})
 		if err != nil {
 			return fmt.Errorf("sign static spec: %w", err)
@@ -433,8 +433,8 @@ func seedBlob(cmd *cobra.Command, env *cliEnv, source, name string, policy *admi
 			return err
 		}
 		r = body
-		presigned, err := signFact(env.dir, func(priv ed25519.PrivateKey) (*factv1.Fact, error) {
-			return presignedBlob(priv, name, digest, policy, false)
+		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
+			return presignedBlob(s, name, digest, policy, false)
 		})
 		if err != nil {
 			return fmt.Errorf("sign blob spec: %w", err)
@@ -570,8 +570,8 @@ func unseedWorkload(cmd *cobra.Command, env *cliEnv, wl *controlv1.WorkloadSumma
 			TimeoutMs:   wl.GetTimeoutMs(),
 			Spread:      wl.GetSpread(),
 		}
-		presigned, err := signFact(env.dir, func(priv ed25519.PrivateKey) (*factv1.Fact, error) {
-			return presignedWorkload(priv, hashBytes, body, nil, true)
+		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
+			return presignedWorkload(s, hashBytes, body, nil, true)
 		})
 		if err != nil {
 			return fmt.Errorf("sign workload tombstone: %w", err)
@@ -585,8 +585,8 @@ func unseedWorkload(cmd *cobra.Command, env *cliEnv, wl *controlv1.WorkloadSumma
 func unseedStatic(cmd *cobra.Command, env *cliEnv, site *controlv1.StaticSummary) error {
 	req := &controlv1.UnseedStaticRequest{Name: site.GetName()}
 	if env.wireMode {
-		presigned, err := signFact(env.dir, func(priv ed25519.PrivateKey) (*factv1.Fact, error) {
-			return presignedStatic(priv, site.GetName(), site.GetManifestDigest(), true)
+		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
+			return presignedStatic(s, site.GetName(), site.GetManifestDigest(), true)
 		})
 		if err != nil {
 			return fmt.Errorf("sign static tombstone: %w", err)
@@ -614,8 +614,8 @@ func removeBlob(cmd *cobra.Command, env *cliEnv, hash string, blobs []*controlv1
 		if err != nil {
 			return fmt.Errorf("decode hash: %w", err)
 		}
-		presigned, err := signFact(env.dir, func(priv ed25519.PrivateKey) (*factv1.Fact, error) {
-			return presignedBlob(priv, name, digestBytes, nil, true)
+		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
+			return presignedBlob(s, name, digestBytes, nil, true)
 		})
 		if err != nil {
 			return fmt.Errorf("sign blob tombstone: %w", err)

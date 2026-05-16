@@ -2005,16 +2005,6 @@ func (m *GetMetricsResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x58
 	}
-	if m.CertRenewalsFailed != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.CertRenewalsFailed))
-		i--
-		dAtA[i] = 0x50
-	}
-	if m.CertRenewals != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.CertRenewals))
-		i--
-		dAtA[i] = 0x48
-	}
 	if m.CertExpirySeconds != 0 {
 		i -= 8
 		binary.LittleEndian.PutUint64(dAtA[i:], uint64(math.Float64bits(float64(m.CertExpirySeconds))))
@@ -4133,12 +4123,6 @@ func (m *GetMetricsResponse) SizeVT() (n int) {
 	}
 	if m.CertExpirySeconds != 0 {
 		n += 9
-	}
-	if m.CertRenewals != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.CertRenewals))
-	}
-	if m.CertRenewalsFailed != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.CertRenewalsFailed))
 	}
 	if m.PunchAttempts != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.PunchAttempts))
@@ -9184,44 +9168,6 @@ func (m *GetMetricsResponse) UnmarshalVT(dAtA []byte) error {
 			v = uint64(binary.LittleEndian.Uint64(dAtA[iNdEx:]))
 			iNdEx += 8
 			m.CertExpirySeconds = float64(math.Float64frombits(v))
-		case 9:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field CertRenewals", wireType)
-			}
-			m.CertRenewals = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.CertRenewals |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 10:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field CertRenewalsFailed", wireType)
-			}
-			m.CertRenewalsFailed = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.CertRenewalsFailed |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
 		case 11:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field PunchAttempts", wireType)
