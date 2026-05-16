@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/gate"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -234,12 +235,12 @@ func (h *gatewayHandler) handleNamedFetch(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	hash, specAuth, ok := h.resolveBlob(slug, name)
+	hash, f, ok := h.resolveBlob(slug, name)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	if err := h.gate.AllowAnonymous(specAuth); err != nil {
+	if err := h.gate.AllowAnonymous(f); err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -255,31 +256,31 @@ func (h *gatewayHandler) handleNamedInvoke(w http.ResponseWriter, r *http.Reques
 	if fn == "" {
 		fn = "main"
 	}
-	hash, specAuth, ok := h.resolveWorkload(slug, name)
+	hash, f, ok := h.resolveWorkload(slug, name)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	if err := h.gate.AllowAnonymous(specAuth); err != nil {
+	if err := h.gate.AllowAnonymous(f); err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	h.callWorkload(w, r, hash, fn)
 }
 
-func (h *gatewayHandler) resolveBlob(slug, name string) (string, *admissionv1.SpecAuth, bool) {
+func (h *gatewayHandler) resolveBlob(slug, name string) (string, *factv1.Fact, bool) {
 	for digest, sv := range h.snap.Snapshot().BlobSpecs {
 		if sv.Publisher.Slug() == slug && sv.Spec.Name == name {
-			return digest, sv.Auth, true
+			return digest, sv.Fact, true
 		}
 	}
 	return "", nil, false
 }
 
-func (h *gatewayHandler) resolveWorkload(slug, name string) (string, *admissionv1.SpecAuth, bool) {
+func (h *gatewayHandler) resolveWorkload(slug, name string) (string, *factv1.Fact, bool) {
 	for hash, sv := range h.snap.Snapshot().Specs {
 		if sv.Publisher.Slug() == slug && sv.Spec.Name == name {
-			return hash, sv.Auth, true
+			return hash, sv.Fact, true
 		}
 	}
 	return "", nil, false

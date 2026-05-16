@@ -21,7 +21,6 @@ import (
 
 	"buf.build/go/protovalidate"
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -718,74 +717,6 @@ func VerifySpecAuth(specAuth *admissionv1.SpecAuth, body SpecBody, rootPub []byt
 		return errors.New("spec auth signature invalid")
 	}
 	return nil
-}
-
-// IssueBlobWrapping seals dek's wrapping into a signed gossip payload.
-// wrapperPriv must match wrapper.subject_pub. The signature scope is
-// pollen.blobwrapping.v1 so wrappings cannot be replayed under any
-// other signature context.
-func IssueBlobWrapping(
-	wrapperPriv ed25519.PrivateKey,
-	wrapper *admissionv1.DelegationCert,
-	blobHash, recipientPub, wrappedDEK []byte,
-) (*statev1.BlobWrappingChange, error) {
-	if err := protovalidate.Validate(wrapper); err != nil {
-		return nil, fmt.Errorf("wrapper cert invalid: %w", err)
-	}
-	wrapperPub := wrapperPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
-	if !bytes.Equal(wrapper.GetClaims().GetSubjectPub(), wrapperPub) {
-		return nil, errors.New("wrapper key does not match cert subject")
-	}
-	wrapping := &statev1.BlobWrappingChange{
-		BlobHash:        blobHash,
-		RecipientPubkey: recipientPub,
-		WrappedDek:      wrappedDEK,
-		Wrapper:         wrapper,
-	}
-	msg, err := blobWrappingPayload(wrapping)
-	if err != nil {
-		return nil, err
-	}
-	sig, err := signPayload(wrapperPriv, msg, sigContextBlobWrapping)
-	if err != nil {
-		return nil, err
-	}
-	wrapping.Signature = sig
-	if err := protovalidate.Validate(wrapping); err != nil {
-		return nil, fmt.Errorf("blob wrapping invalid: %w", err)
-	}
-	return wrapping, nil
-}
-
-// VerifyBlobWrapping checks the wrapper's cert chain against rootPub
-// and the signature against the wrapper's pubkey. The wrapper cert is
-// held to the durable-credential rule (chain + access_deadline +
-// denylist), so a wrapping stays valid while its offline wrapper's
-// cert is past not_after but inside its authority horizon. Tampered,
-// denied, or past-access_deadline wrappings fail closed. denied may be
-// nil to skip the denylist consultation.
-func VerifyBlobWrapping(wrapping *statev1.BlobWrappingChange, rootPub []byte, now time.Time, denied DenyChecker) error {
-	if err := protovalidate.Validate(wrapping); err != nil {
-		return fmt.Errorf("blob wrapping invalid: %w", err)
-	}
-	wrapper := wrapping.GetWrapper()
-	if chk := CheckCert(wrapper, rootPub, now, nil, denied); !chk.Status.CanRenew() {
-		return fmt.Errorf("wrapper cert invalid: %s", chk.Reason)
-	}
-	msg, err := blobWrappingPayload(wrapping)
-	if err != nil {
-		return err
-	}
-	if err := verifyPayload(ed25519.PublicKey(wrapper.GetClaims().GetSubjectPub()), msg, wrapping.GetSignature(), sigContextBlobWrapping); err != nil {
-		return errors.New("blob wrapping signature invalid")
-	}
-	return nil
-}
-
-func blobWrappingPayload(w *statev1.BlobWrappingChange) ([]byte, error) {
-	payload := proto.Clone(w).(*statev1.BlobWrappingChange) //nolint:forcetypeassert
-	payload.Signature = nil
-	return signaturePayload(payload)
 }
 
 func specAuthPayload(specAuth *admissionv1.SpecAuth) ([]byte, error) {

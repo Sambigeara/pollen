@@ -8,6 +8,8 @@ package pollen.control.v1;
 import "buf/validate/validate.proto";
 import "google/protobuf/struct.proto";
 import "pollen/admission/v1/admission.proto";
+import "pollen/fact/v1/fact.proto";
+import "pollen/identity/v1/identity.proto";
 import "pollen/state/v1/state.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1";
@@ -26,8 +28,7 @@ service ControlService {
   rpc SeedWorkload(stream SeedWorkloadRequest) returns (SeedWorkloadResponse);
   rpc UnseedWorkload(UnseedWorkloadRequest) returns (UnseedWorkloadResponse);
   rpc CallWorkload(CallWorkloadRequest) returns (CallWorkloadResponse);
-  rpc IssueCert(IssueCertRequest) returns (IssueCertResponse);
-  rpc RenewCert(RenewCertRequest) returns (RenewCertResponse);
+  rpc IssueGrant(IssueGrantRequest) returns (IssueGrantResponse);
   rpc FetchBlob(FetchBlobRequest) returns (stream FetchBlobResponse);
   rpc UploadBlob(stream UploadBlobRequest) returns (UploadBlobResponse);
   rpc RemoveBlob(RemoveBlobRequest) returns (RemoveBlobResponse);
@@ -270,11 +271,11 @@ message SeedWorkloadHeader {
   reserved 6, 7;
   reserved "latency_slo_ms", "properties";
   pollen.admission.v1.Predicate policy = 8;
-  // pre_signed_auth lets a wire-mode caller publish under their own
-  // publisher key without delegating signing to the daemon. The daemon
-  // validates the auth against the cluster root, ensures publisher
-  // matches the caller's cert subject, and gossips the spec as-is.
-  optional pollen.admission.v1.SpecAuth pre_signed_auth = 9;
+  // pre_signed_fact lets a wire-mode caller publish under their own
+  // authority key without delegating signing to the daemon. The daemon
+  // validates the Fact against the cluster root, ensures the authority
+  // matches the caller's grant subject, and gossips the spec as-is.
+  optional pollen.fact.v1.Fact pre_signed_fact = 9;
 }
 
 message SeedWorkloadResponse {
@@ -290,9 +291,9 @@ message SeedWorkloadResponse {
 
 message UnseedWorkloadRequest {
   string hash = 1 [(buf.validate.field).string = {min_len: 1}];
-  // pre_signed_auth carries a tenant-signed tombstone for wire-mode
+  // pre_signed_fact carries a tenant-signed tombstone for wire-mode
   // unseeds; the daemon re-wraps against the live spec body.
-  optional pollen.admission.v1.SpecAuth pre_signed_auth = 2;
+  optional pollen.fact.v1.Fact pre_signed_fact = 2;
 }
 
 message UnseedWorkloadResponse {}
@@ -340,30 +341,18 @@ message GetMetricsResponse {
   uint64 eager_sync_failures = 16;
 }
 
-message IssueCertRequest {
+message IssueGrantRequest {
   bytes peer_pub = 1 [(buf.validate.field).bytes = {len: 32}];
   reserved 2, 3;
   reserved "admin", "attributes";
-  pollen.admission.v1.Capabilities cert_caps = 4 [(buf.validate.field).required = true];
+  pollen.identity.v1.Capabilities capabilities = 4 [(buf.validate.field).required = true];
   bool mint_only = 5;
 }
 
-message IssueCertResponse {
-  // cert is the newly minted delegation cert, populated only when
-  // mint_only=true. Mesh callers that take the push path receive the
-  // cert via the synchronous QUIC delivery and leave this empty so
-  // the response stays small for the common case.
-  pollen.admission.v1.DelegationCert cert = 1;
-}
-
-// RenewCert mints a successor for the cert the caller authenticated
-// with over mTLS. The subject is taken from the verified session cert,
-// so the request carries no fields: a caller can only renew the
-// identity it holds the key for.
-message RenewCertRequest {}
-
-message RenewCertResponse {
-  pollen.admission.v1.DelegationCert cert = 1;
+message IssueGrantResponse {
+  // grant is the newly minted child grant. The caller persists it and
+  // mints its own sessions locally; no renewal round-trip exists.
+  pollen.identity.v1.Grant grant = 1;
 }
 
 message FetchBlobRequest {
@@ -395,10 +384,10 @@ message UploadBlobHeader {
   reserved "properties";
   bool anchor = 3;
   pollen.admission.v1.Predicate policy = 4;
-  // pre_signed_auth lets a wire-mode caller publish the named blob
-  // spec under their own publisher key. Only meaningful when name is
+  // pre_signed_fact lets a wire-mode caller publish the named blob
+  // spec under their own authority key. Only meaningful when name is
   // set; anchor-only uploads carry no spec.
-  optional pollen.admission.v1.SpecAuth pre_signed_auth = 5;
+  optional pollen.fact.v1.Fact pre_signed_fact = 5;
 }
 
 message UploadBlobResponse {
@@ -415,9 +404,9 @@ message RemoveBlobRequest {
     pattern: "^[a-fA-F0-9]{64}$"
     len: 64
   }];
-  // pre_signed_auth carries a tenant-signed tombstone for wire-mode
+  // pre_signed_fact carries a tenant-signed tombstone for wire-mode
   // removals; the daemon re-wraps against the live spec body.
-  optional pollen.admission.v1.SpecAuth pre_signed_auth = 2;
+  optional pollen.fact.v1.Fact pre_signed_fact = 2;
 }
 
 message RemoveBlobResponse {}
@@ -431,11 +420,11 @@ message SeedStaticRequest {
   reserved 3, 4;
   reserved "min_replicas", "properties";
   pollen.admission.v1.Predicate policy = 5;
-  // pre_signed_auth lets a wire-mode caller publish under their own
-  // publisher key without delegating signing to the daemon. The daemon
-  // validates the auth against the cluster root, ensures publisher
-  // matches the caller's cert subject, and gossips the spec as-is.
-  optional pollen.admission.v1.SpecAuth pre_signed_auth = 6;
+  // pre_signed_fact lets a wire-mode caller publish under their own
+  // authority key without delegating signing to the daemon. The daemon
+  // validates the Fact against the cluster root, ensures the authority
+  // matches the caller's grant subject, and gossips the spec as-is.
+  optional pollen.fact.v1.Fact pre_signed_fact = 6;
 }
 
 message SeedStaticResponse {
@@ -450,9 +439,9 @@ message UnseedStaticRequest {
     min_len: 1
     max_len: 255
   }];
-  // pre_signed_auth carries a tenant-signed tombstone for wire-mode
+  // pre_signed_fact carries a tenant-signed tombstone for wire-mode
   // unseeds; the daemon re-wraps against the live spec body.
-  optional pollen.admission.v1.SpecAuth pre_signed_auth = 2;
+  optional pollen.fact.v1.Fact pre_signed_fact = 2;
 }
 
 message UnseedStaticResponse {}

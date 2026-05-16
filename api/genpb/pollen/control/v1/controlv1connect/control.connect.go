@@ -73,12 +73,9 @@ const (
 	// ControlServiceCallWorkloadProcedure is the fully-qualified name of the ControlService's
 	// CallWorkload RPC.
 	ControlServiceCallWorkloadProcedure = "/pollen.control.v1.ControlService/CallWorkload"
-	// ControlServiceIssueCertProcedure is the fully-qualified name of the ControlService's IssueCert
+	// ControlServiceIssueGrantProcedure is the fully-qualified name of the ControlService's IssueGrant
 	// RPC.
-	ControlServiceIssueCertProcedure = "/pollen.control.v1.ControlService/IssueCert"
-	// ControlServiceRenewCertProcedure is the fully-qualified name of the ControlService's RenewCert
-	// RPC.
-	ControlServiceRenewCertProcedure = "/pollen.control.v1.ControlService/RenewCert"
+	ControlServiceIssueGrantProcedure = "/pollen.control.v1.ControlService/IssueGrant"
 	// ControlServiceFetchBlobProcedure is the fully-qualified name of the ControlService's FetchBlob
 	// RPC.
 	ControlServiceFetchBlobProcedure = "/pollen.control.v1.ControlService/FetchBlob"
@@ -116,8 +113,7 @@ type ControlServiceClient interface {
 	SeedWorkload(context.Context) *connect.ClientStreamForClient[v1.SeedWorkloadRequest, v1.SeedWorkloadResponse]
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
-	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
-	RenewCert(context.Context, *connect.Request[v1.RenewCertRequest]) (*connect.Response[v1.RenewCertResponse], error)
+	IssueGrant(context.Context, *connect.Request[v1.IssueGrantRequest]) (*connect.Response[v1.IssueGrantResponse], error)
 	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.ServerStreamForClient[v1.FetchBlobResponse], error)
 	UploadBlob(context.Context) *connect.ClientStreamForClient[v1.UploadBlobRequest, v1.UploadBlobResponse]
 	RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error)
@@ -216,16 +212,10 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("CallWorkload")),
 			connect.WithClientOptions(opts...),
 		),
-		issueCert: connect.NewClient[v1.IssueCertRequest, v1.IssueCertResponse](
+		issueGrant: connect.NewClient[v1.IssueGrantRequest, v1.IssueGrantResponse](
 			httpClient,
-			baseURL+ControlServiceIssueCertProcedure,
-			connect.WithSchema(controlServiceMethods.ByName("IssueCert")),
-			connect.WithClientOptions(opts...),
-		),
-		renewCert: connect.NewClient[v1.RenewCertRequest, v1.RenewCertResponse](
-			httpClient,
-			baseURL+ControlServiceRenewCertProcedure,
-			connect.WithSchema(controlServiceMethods.ByName("RenewCert")),
+			baseURL+ControlServiceIssueGrantProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("IssueGrant")),
 			connect.WithClientOptions(opts...),
 		),
 		fetchBlob: connect.NewClient[v1.FetchBlobRequest, v1.FetchBlobResponse](
@@ -288,8 +278,7 @@ type controlServiceClient struct {
 	seedWorkload      *connect.Client[v1.SeedWorkloadRequest, v1.SeedWorkloadResponse]
 	unseedWorkload    *connect.Client[v1.UnseedWorkloadRequest, v1.UnseedWorkloadResponse]
 	callWorkload      *connect.Client[v1.CallWorkloadRequest, v1.CallWorkloadResponse]
-	issueCert         *connect.Client[v1.IssueCertRequest, v1.IssueCertResponse]
-	renewCert         *connect.Client[v1.RenewCertRequest, v1.RenewCertResponse]
+	issueGrant        *connect.Client[v1.IssueGrantRequest, v1.IssueGrantResponse]
 	fetchBlob         *connect.Client[v1.FetchBlobRequest, v1.FetchBlobResponse]
 	uploadBlob        *connect.Client[v1.UploadBlobRequest, v1.UploadBlobResponse]
 	removeBlob        *connect.Client[v1.RemoveBlobRequest, v1.RemoveBlobResponse]
@@ -364,14 +353,9 @@ func (c *controlServiceClient) CallWorkload(ctx context.Context, req *connect.Re
 	return c.callWorkload.CallUnary(ctx, req)
 }
 
-// IssueCert calls pollen.control.v1.ControlService.IssueCert.
-func (c *controlServiceClient) IssueCert(ctx context.Context, req *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error) {
-	return c.issueCert.CallUnary(ctx, req)
-}
-
-// RenewCert calls pollen.control.v1.ControlService.RenewCert.
-func (c *controlServiceClient) RenewCert(ctx context.Context, req *connect.Request[v1.RenewCertRequest]) (*connect.Response[v1.RenewCertResponse], error) {
-	return c.renewCert.CallUnary(ctx, req)
+// IssueGrant calls pollen.control.v1.ControlService.IssueGrant.
+func (c *controlServiceClient) IssueGrant(ctx context.Context, req *connect.Request[v1.IssueGrantRequest]) (*connect.Response[v1.IssueGrantResponse], error) {
+	return c.issueGrant.CallUnary(ctx, req)
 }
 
 // FetchBlob calls pollen.control.v1.ControlService.FetchBlob.
@@ -424,8 +408,7 @@ type ControlServiceHandler interface {
 	SeedWorkload(context.Context, *connect.ClientStream[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error)
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
-	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
-	RenewCert(context.Context, *connect.Request[v1.RenewCertRequest]) (*connect.Response[v1.RenewCertResponse], error)
+	IssueGrant(context.Context, *connect.Request[v1.IssueGrantRequest]) (*connect.Response[v1.IssueGrantResponse], error)
 	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest], *connect.ServerStream[v1.FetchBlobResponse]) error
 	UploadBlob(context.Context, *connect.ClientStream[v1.UploadBlobRequest]) (*connect.Response[v1.UploadBlobResponse], error)
 	RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error)
@@ -520,16 +503,10 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("CallWorkload")),
 		connect.WithHandlerOptions(opts...),
 	)
-	controlServiceIssueCertHandler := connect.NewUnaryHandler(
-		ControlServiceIssueCertProcedure,
-		svc.IssueCert,
-		connect.WithSchema(controlServiceMethods.ByName("IssueCert")),
-		connect.WithHandlerOptions(opts...),
-	)
-	controlServiceRenewCertHandler := connect.NewUnaryHandler(
-		ControlServiceRenewCertProcedure,
-		svc.RenewCert,
-		connect.WithSchema(controlServiceMethods.ByName("RenewCert")),
+	controlServiceIssueGrantHandler := connect.NewUnaryHandler(
+		ControlServiceIssueGrantProcedure,
+		svc.IssueGrant,
+		connect.WithSchema(controlServiceMethods.ByName("IssueGrant")),
 		connect.WithHandlerOptions(opts...),
 	)
 	controlServiceFetchBlobHandler := connect.NewServerStreamHandler(
@@ -602,10 +579,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceUnseedWorkloadHandler.ServeHTTP(w, r)
 		case ControlServiceCallWorkloadProcedure:
 			controlServiceCallWorkloadHandler.ServeHTTP(w, r)
-		case ControlServiceIssueCertProcedure:
-			controlServiceIssueCertHandler.ServeHTTP(w, r)
-		case ControlServiceRenewCertProcedure:
-			controlServiceRenewCertHandler.ServeHTTP(w, r)
+		case ControlServiceIssueGrantProcedure:
+			controlServiceIssueGrantHandler.ServeHTTP(w, r)
 		case ControlServiceFetchBlobProcedure:
 			controlServiceFetchBlobHandler.ServeHTTP(w, r)
 		case ControlServiceUploadBlobProcedure:
@@ -681,12 +656,8 @@ func (UnimplementedControlServiceHandler) CallWorkload(context.Context, *connect
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.CallWorkload is not implemented"))
 }
 
-func (UnimplementedControlServiceHandler) IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.IssueCert is not implemented"))
-}
-
-func (UnimplementedControlServiceHandler) RenewCert(context.Context, *connect.Request[v1.RenewCertRequest]) (*connect.Response[v1.RenewCertResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.RenewCert is not implemented"))
+func (UnimplementedControlServiceHandler) IssueGrant(context.Context, *connect.Request[v1.IssueGrantRequest]) (*connect.Response[v1.IssueGrantResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.IssueGrant is not implemented"))
 }
 
 func (UnimplementedControlServiceHandler) FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest], *connect.ServerStream[v1.FetchBlobResponse]) error {

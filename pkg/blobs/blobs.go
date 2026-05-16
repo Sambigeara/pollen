@@ -18,9 +18,11 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/cas"
+	"github.com/sambigeara/pollen/pkg/fact"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -31,7 +33,7 @@ const defaultFetchTimeout = 15 * time.Second
 
 var (
 	ErrNotLocal    = errors.New("blob not present in local store")
-	ErrNotEntitled = errors.New("local cert not entitled to hold blob")
+	ErrNotEntitled = errors.New("local grant not entitled to hold blob")
 	errNoWrapping  = errors.New("local node has no DEK wrapping for blob")
 )
 
@@ -45,9 +47,9 @@ type BlobsAPI interface {
 	ServePlaintext(stream io.ReadWriteCloser, hash string)
 	Announce(hash string) error
 	Publish(hash, name string, policy *admissionv1.Predicate) error
-	PublishPresigned(hash, name string, presignedAuth *admissionv1.SpecAuth) error
+	PublishPresigned(hash, name string, presignedFact *factv1.Fact) error
 	Remove(hash string) error
-	RemovePresigned(hash string, presignedAuth *admissionv1.SpecAuth) error
+	RemovePresigned(hash string, presignedFact *factv1.Fact) error
 	Rescan() error
 	Prune(keep map[string]struct{}, minAge time.Duration) ([]string, error)
 }
@@ -60,10 +62,10 @@ type blobState interface {
 	Snapshot() state.Snapshot
 	SetLocalBlobs(digests []string) []state.Event
 	SetBlobSpec(spec state.BlobSpec, policy *admissionv1.Predicate) ([]state.Event, error)
-	SetBlobSpecPresigned(spec state.BlobSpec, presignedAuth *admissionv1.SpecAuth) ([]state.Event, error)
+	SetBlobSpecPresigned(spec state.BlobSpec, presignedFact *factv1.Fact) ([]state.Event, error)
 	DeleteBlobSpec(digest string) ([]state.Event, error)
-	DeleteBlobSpecPresigned(digest string, presignedAuth *admissionv1.SpecAuth) ([]state.Event, error)
-	SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []state.Event
+	DeleteBlobSpecPresigned(digest string, presignedFact *factv1.Fact) ([]state.Event, error)
+	SetBlobWrapping(wrapping *factv1.BlobWrapping) []state.Event
 }
 
 type blobStore interface {
@@ -77,10 +79,10 @@ type blobStore interface {
 }
 
 // hostGate authorises a host (the local node) to hold bytes covered by
-// specAuth's policy. Nil gate means hosting is unrestricted, used by
+// the Fact's policy. Nil gate means hosting is unrestricted, used by
 // tests that don't exercise entitlement.
 type hostGate interface {
-	MayHost(hostCert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth) error
+	MayHost(hostGrant *identityv1.Grant, f *factv1.Fact) error
 }
 
 type Service struct {
@@ -88,7 +90,7 @@ type Service struct {
 	mesh           streamOpener
 	state          blobState
 	gate           hostGate
-	creds          credsProvider
+	signer         *fact.Signer
 	dekCache       map[string][]byte
 	local          map[string]struct{}
 	parsedManifest map[string]map[string]struct{}
@@ -102,17 +104,9 @@ type Service struct {
 	self           types.PeerKey
 }
 
-// credsProvider lets blobs.Service look up the local node's current
-// delegation cert without coupling to the auth package's full
-// NodeCredentials surface. The cert is needed to sign self-wrappings
-// at publish time.
-type credsProvider interface {
-	Cert() *admissionv1.DelegationCert
-}
-
 var _ BlobsAPI = (*Service)(nil)
 
-func New(pollenDir string, self types.PeerKey, mesh streamOpener, st blobState, gate hostGate, creds credsProvider, signPriv ed25519.PrivateKey) (*Service, error) {
+func New(pollenDir string, self types.PeerKey, mesh streamOpener, st blobState, gate hostGate, signer *fact.Signer, signPriv ed25519.PrivateKey) (*Service, error) {
 	c, err := cas.New(pollenDir)
 	if err != nil {
 		return nil, err
@@ -126,7 +120,7 @@ func New(pollenDir string, self types.PeerKey, mesh streamOpener, st blobState, 
 		mesh:           mesh,
 		state:          st,
 		gate:           gate,
-		creds:          creds,
+		signer:         signer,
 		signPriv:       signPriv,
 		signPub:        signPub,
 		self:           self,
@@ -210,7 +204,7 @@ func (s *Service) Put(r io.Reader) (string, error) {
 // and re-issues it under the supplied DEK. Wrappings issued by other
 // peers are left alone — those gossip slots are theirs to refresh.
 func (s *Service) refanoutWrappings(hash string, dek []byte) error {
-	if s.state == nil || s.signPriv == nil || s.creds == nil {
+	if s.state == nil || s.signPriv == nil || s.signer == nil {
 		return nil
 	}
 	snap := s.state.Snapshot()
@@ -222,7 +216,7 @@ func (s *Service) refanoutWrappings(hash string, dek []byte) error {
 		if recipient == s.self {
 			continue
 		}
-		if !bytes.Equal(w.GetWrapper().GetClaims().GetSubjectPub(), s.signPub) {
+		if !bytes.Equal(w.GetAuthorityPub(), s.signPub) {
 			continue
 		}
 		if err := s.issueWrappingForKey(hash, ed25519.PublicKey(recipient.Bytes()), func() ([]byte, error) {
@@ -325,7 +319,7 @@ func (s *Service) publishSelfWrapping(hash string, dek []byte) error {
 // SetBlobWrapping dedups exact byte-equality, so this is only spammy
 // when the wrapping actually needs to change.
 func (s *Service) issueWrappingFor(hash string, recipient types.PeerKey) error {
-	if s.signPriv == nil || s.state == nil || s.creds == nil {
+	if s.signPriv == nil || s.state == nil || s.signer == nil {
 		return nil
 	}
 	if recipient == s.self {
@@ -340,12 +334,8 @@ func (s *Service) issueWrappingForKey(hash string, recipient ed25519.PublicKey, 
 	if s.state == nil {
 		return nil
 	}
-	if s.signPriv == nil || s.creds == nil {
-		return errors.New("blobs: cannot publish wrapping without signer + cert")
-	}
-	cert := s.creds.Cert()
-	if cert == nil {
-		return errors.New("blobs: local cert unavailable; cannot wrap DEK")
+	if s.signer == nil {
+		return errors.New("blobs: cannot publish wrapping without a fact signer")
 	}
 	dek, err := source()
 	if err != nil {
@@ -359,7 +349,7 @@ func (s *Service) issueWrappingForKey(hash string, recipient ed25519.PublicKey, 
 	if err != nil {
 		return err
 	}
-	wrapping, err := auth.IssueBlobWrapping(s.signPriv, cert, hashBytes, recipient, wrapped)
+	wrapping, err := s.signer.IssueBlobWrapping(hashBytes, recipient, wrapped)
 	if err != nil {
 		return err
 	}
@@ -397,14 +387,14 @@ func (s *Service) Publish(hash, name string, policy *admissionv1.Predicate) erro
 // PublishPresigned records a tenant-signed BlobSpec. The bytes must
 // already be in local CAS (the daemon stored them via Put earlier);
 // the spec carries the tenant's signature.
-func (s *Service) PublishPresigned(hash, name string, presignedAuth *admissionv1.SpecAuth) error {
+func (s *Service) PublishPresigned(hash, name string, presignedFact *factv1.Fact) error {
 	if !s.store.Has(hash) {
 		return ErrNotLocal
 	}
 	if s.state == nil {
 		return nil
 	}
-	_, err := s.state.SetBlobSpecPresigned(state.BlobSpec{Name: name, Digest: hash}, presignedAuth)
+	_, err := s.state.SetBlobSpecPresigned(state.BlobSpec{Name: name, Digest: hash}, presignedFact)
 	return err
 }
 
@@ -428,14 +418,14 @@ func (s *Service) Remove(hash string) error {
 // of them can relay the tombstone now that DeleteBlobSpecPresigned
 // looks up the body across every peer's log (Phase 3f). See Remove
 // for the wrapping-vs-spec lifecycle.
-func (s *Service) RemovePresigned(hash string, presignedAuth *admissionv1.SpecAuth) error {
+func (s *Service) RemovePresigned(hash string, presignedFact *factv1.Fact) error {
 	if err := s.removeLocalBytes(hash); err != nil && !errors.Is(err, ErrNotLocal) {
 		return err
 	}
 	if s.state == nil {
 		return nil
 	}
-	_, err := s.state.DeleteBlobSpecPresigned(hash, presignedAuth)
+	_, err := s.state.DeleteBlobSpecPresigned(hash, presignedFact)
 	return err
 }
 
@@ -510,32 +500,32 @@ func (s *Service) Prune(keep map[string]struct{}, minAge time.Duration) ([]strin
 }
 
 // MayStore decides whether the local node is entitled to hold the bytes
-// addressed by hash. A blob is held iff at least one referencing spec's
-// policy is satisfied by the local cert, where references are direct
+// addressed by hash. A blob is held iff at least one referencing Fact's
+// policy is satisfied by the local grant, where references are direct
 // (workload hash, blob digest, static manifest digest) and nested
 // (paths inside a locally-available static manifest).
 //
-// Returns ErrNotEntitled when no referencing spec admits the local
-// cert, including the case where no referencing spec exists at all.
+// Returns ErrNotEntitled when no referencing Fact admits the local
+// grant, including the case where no referencing Fact exists at all.
 func (s *Service) MayStore(hash string) error {
 	if s.gate == nil || s.state == nil {
 		return nil
 	}
 	snap := s.state.Snapshot()
-	cert := snap.LocalCert()
-	if cert == nil {
+	grant := snap.LocalGrant()
+	if grant == nil {
 		return ErrNotEntitled
 	}
-	return s.mayStoreSnap(snap, cert, hash)
+	return s.mayStoreSnap(snap, grant, hash)
 }
 
-func (s *Service) mayStoreSnap(snap state.Snapshot, cert *admissionv1.DelegationCert, hash string) error {
-	auths := snap.BlobEntitlements(hash, s)
-	if len(auths) == 0 {
+func (s *Service) mayStoreSnap(snap state.Snapshot, grant *identityv1.Grant, hash string) error {
+	facts := snap.BlobEntitlements(hash, s)
+	if len(facts) == 0 {
 		return ErrNotEntitled
 	}
-	for _, sa := range auths {
-		if s.gate.MayHost(cert, sa) == nil {
+	for _, f := range facts {
+		if s.gate.MayHost(grant, f) == nil {
 			return nil
 		}
 	}
@@ -547,13 +537,13 @@ func (s *Service) filterByEntitlement(keep map[string]struct{}) map[string]struc
 		return keep
 	}
 	snap := s.state.Snapshot()
-	cert := snap.LocalCert()
-	if cert == nil {
+	grant := snap.LocalGrant()
+	if grant == nil {
 		return keep
 	}
 	out := make(map[string]struct{}, len(keep))
 	for h := range keep {
-		if s.mayStoreSnap(snap, cert, h) == nil {
+		if s.mayStoreSnap(snap, grant, h) == nil {
 			out[h] = struct{}{}
 		}
 	}

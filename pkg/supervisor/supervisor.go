@@ -20,14 +20,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	promexporter "go.opentelemetry.io/otel/exporters/prometheus"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/blobs"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/control"
+	"github.com/sambigeara/pollen/pkg/fact"
 	"github.com/sambigeara/pollen/pkg/gate"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
@@ -61,7 +62,7 @@ const (
 )
 
 type Supervisor struct {
-	inviteConsumer   auth.InviteConsumer
+	inviteConsumer   identity.InviteConsumer
 	membership       membership.MembershipAPI
 	placement        placement.PlacementAPI
 	tunneling        tunneling.TunnelingAPI
@@ -89,7 +90,7 @@ type Supervisor struct {
 	ready            chan struct{}
 	punchSem         chan struct{}
 	metricsProviders *metrics.Provider
-	creds            *auth.NodeCredentials
+	creds            *identity.Credentials
 	shutdownCh       chan struct{}
 	staticAddr       string
 	httpAddr         string
@@ -106,7 +107,7 @@ type Supervisor struct {
 	useHMACNearest   bool
 }
 
-func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteConsumer) (*Supervisor, error) {
+func New(opts Options, creds *identity.Credentials, inviteConsumer identity.InviteConsumer) (*Supervisor, error) {
 	log := zap.S().Named("supervisor")
 	privKey := opts.SigningKey
 	pubKey := privKey.Public().(ed25519.PublicKey) //nolint:forcetypeassert
@@ -125,15 +126,18 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	stateStore := state.New(self, creds.RootPub())
 	runtimeGate := gate.New(creds.RootPub(), stateStore)
 	stateStore.SetMutationValidator(runtimeGate.Admit)
-	hasSigner := false
-	if signer := creds.SpecSigner(); signer != nil {
-		stateStore.SetLocalSigner(signer)
-		hasSigner = true
-	}
+	// One fact signer for the node's lifetime: facts are named by
+	// pubkey and their authority's Grant is resolved from gossip, so
+	// the signer never changes when capabilities change — only the
+	// gossiped Grant does.
+	signer := fact.NewSigner(privKey)
+	stateStore.SetLocalSigner(signer)
+	caps := creds.Grant().GetClaims().GetCapabilities()
+	canPublishSvcs := caps.GetPublish().GetServices()
 	if opts.BootstrapPublic {
 		stateStore.SetPublic()
 	}
-	if creds.DelegationKey() != nil {
+	if caps.GetCanDelegate() {
 		stateStore.SetAdmin()
 	}
 	if opts.StaticAddr != "" {
@@ -153,10 +157,10 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		}
 		stateStore.LoadLastAddrs(lastAddrs)
 	}
-	if !hasSigner && len(opts.InitialServices) > 0 {
-		log.Warnw("ignoring configured services: node lacks publish capability", "count", len(opts.InitialServices))
+	if !canPublishSvcs && len(opts.InitialServices) > 0 {
+		log.Warnw("ignoring configured services: node grant lacks service publish capability", "count", len(opts.InitialServices))
 	}
-	if hasSigner {
+	if canPublishSvcs {
 		for _, svc := range opts.InitialServices {
 			if _, err := stateStore.SetService(svc.Port, svc.Name, svc.Protocol, nil); err != nil {
 				return nil, err
@@ -192,7 +196,6 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		transport.WithSigningKey(privKey),
 		transport.WithTLSIdentityTTL(config.DefaultTLSIdentityTTL),
 		transport.WithMembershipTTL(config.DefaultMembershipTTL),
-		transport.WithReconnectWindow(config.DefaultReconnectWindow),
 		transport.WithMaxConnectionAge(opts.MaxConnectionAge),
 		transport.WithPeerTickInterval(opts.PeerTickInterval),
 		transport.WithIsDenied(func(pk types.PeerKey) bool {
@@ -220,7 +223,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 
 	streamAdapter := &streamOpenAdapter{t: m}
 
-	blobsSvc, err := blobs.New(pollenDir, self, streamAdapter, stateStore, runtimeGate, creds, privKey)
+	blobsSvc, err := blobs.New(pollenDir, self, streamAdapter, stateStore, runtimeGate, signer, privKey)
 	if err != nil {
 		return nil, fmt.Errorf("create blob store: %w", err)
 	}
@@ -268,13 +271,6 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 
 	m.SetInviteForwarder(n.forwardInviteToAdmin)
 
-	capTrans := &capTransitioner{
-		mesh:               m,
-		store:              stateStore,
-		fwd:                n.forwardInviteToAdmin,
-		supervisorConsumer: &n.inviteConsumer,
-	}
-
 	n.tunneling = tunneling.New(
 		self, stateStore, streamAdapter, m, router,
 		tunneling.WithTrafficTracking(),
@@ -295,11 +291,9 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		membership.Config{
 			Streams:          m,
 			RTT:              m,
-			Certs:            m,
 			PeerAddrs:        m,
 			SessionCloser:    m,
 			RoutedSender:     m,
-			CapTransition:    capTrans,
 			SmoothedErr:      vivaldiErr,
 			TracerProvider:   tp.Tracer(),
 			NATDetector:      n.natDetector,
@@ -583,7 +577,7 @@ func (n *Supervisor) dispatchAuthorisedBlobStream(stream io.ReadWriteCloser, pee
 		stream.Close() //nolint:errcheck
 		return
 	}
-	if err := n.gate.Fetch(n.gate.LookupCert(peerKey), hash); err != nil {
+	if err := n.gate.Fetch(n.gate.LookupGrant(peerKey), hash); err != nil {
 		stream.Close() //nolint:errcheck
 		return
 	}
@@ -598,7 +592,7 @@ func (n *Supervisor) dispatchServiceConnect(stream io.ReadWriteCloser, peerKey t
 		stream.Close() //nolint:errcheck
 		return
 	}
-	if err := n.gate.Connect(n.gate.LookupCert(peerKey), n.localID, port); err != nil {
+	if err := n.gate.Connect(n.gate.LookupGrant(peerKey), n.localID, port); err != nil {
 		stream.Close() //nolint:errcheck
 		return
 	}
@@ -901,11 +895,11 @@ func (n *Supervisor) ControlMetrics() control.Metrics {
 func (n *Supervisor) RouteRequest(ctx context.Context, uri wasm.URI, input []byte) ([]byte, error) {
 	info, ok := wasm.CallerInfoFromContext(ctx)
 	if !ok {
-		if cert := n.creds.Cert(); cert != nil {
+		if grant := n.creds.Grant(); grant != nil {
 			info = wasm.CallerInfo{
-				PeerKey: types.PeerKeyFromBytes(cert.GetClaims().GetSubjectPub()),
+				PeerKey: types.PeerKeyFromBytes(grant.GetClaims().GetSubjectPub()),
 			}
-			if attrs := cert.GetClaims().GetCapabilities().GetAttributes(); attrs != nil {
+			if attrs := grant.GetClaims().GetCapabilities().GetAttributes(); attrs != nil {
 				info.Attributes = attrs.AsMap()
 			}
 		}
@@ -936,7 +930,7 @@ func (n *Supervisor) routeServiceRequest(ctx context.Context, callerKey types.Pe
 	}
 
 	svc := pickNearestService(snap, candidates)
-	if err := n.gate.Connect(n.gate.LookupCert(callerKey), svc.Peer, svc.Port); err != nil {
+	if err := n.gate.Connect(n.gate.LookupGrant(callerKey), svc.Peer, svc.Port); err != nil {
 		return nil, fmt.Errorf("connect %s: %w", name, wasm.ErrTargetNotFound)
 	}
 	if svc.Peer == snap.LocalID {
@@ -968,9 +962,9 @@ func (n *Supervisor) SeedWorkload(wasmBytes []byte, spec state.WorkloadSpec) (st
 	return hash, nil
 }
 func (n *Supervisor) UnseedWorkload(hash string) error   { return n.placement.Unseed(hash) }
-func (n *Supervisor) Credentials() *auth.NodeCredentials { return n.creds }
-func (n *Supervisor) JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
-	return n.mesh.JoinWithInvite(ctx, token)
+func (n *Supervisor) Credentials() *identity.Credentials { return n.creds }
+func (n *Supervisor) JoinWithInvite(ctx context.Context, ticket *identityv1.InviteTicket) (*identityv1.GrantToken, error) {
+	return n.mesh.JoinWithInvite(ctx, ticket)
 }
 
 func (n *Supervisor) AddDesiredConnection(pk types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) {

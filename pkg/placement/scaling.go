@@ -125,16 +125,16 @@ func (r *replicaCountLoop) evaluate(snap state.Snapshot, seed string, backed map
 }
 
 // eligibilityPredicate returns a function reporting whether a peer's
-// cert satisfies the seed's host policy. A nil gate (test path) leaves
+// grant satisfies the seed's host policy. A nil gate (test path) leaves
 // every peer eligible; otherwise the decision delegates to the gate,
-// which rejects a nil cert in production.
+// which rejects a nil grant in production.
 func (r *replicaCountLoop) eligibilityPredicate(snap state.Snapshot, seed string) func(types.PeerKey) bool {
 	if r.gate == nil {
 		return func(types.PeerKey) bool { return true }
 	}
-	specAuth := snap.Specs[seed].Auth
+	f := snap.Specs[seed].Fact
 	return func(p types.PeerKey) bool {
-		return r.gate.MayHost(snap.Nodes[p].Cert, specAuth) == nil
+		return r.gate.MayHost(snap.Nodes[p].Grant, f) == nil
 	}
 }
 

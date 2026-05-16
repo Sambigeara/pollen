@@ -27,8 +27,8 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
 	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/supervisor"
@@ -145,7 +145,7 @@ func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {
 
 	cfgDirty := false
 	if public {
-		if _, _, err := auth.LoadAdminKey(auth.IdentityPath(env.dir)); err != nil {
+		if _, _, err := identity.LoadAdminKey(identity.IdentityPath(env.dir)); err != nil {
 			return errors.New("--public requires admin keys; run `pln init` to create a root cluster")
 		}
 		env.cfg.Public = true
@@ -185,8 +185,8 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopFunc()
 
-	identityDir := auth.IdentityPath(env.dir)
-	privKey, pubKey, err := auth.EnsureIdentityKey(identityDir)
+	identityDir := identity.IdentityPath(env.dir)
+	privKey, pubKey, err := identity.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return fmt.Errorf("failed to load signing keys: %w", err)
 	}
@@ -199,38 +199,37 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		}
 	}
 
-	creds, err := auth.LoadNodeCredentials(identityDir)
-	if err != nil && !errors.Is(err, auth.ErrCredentialsNotFound) {
+	creds, err := identity.LoadCredentials(identityDir)
+	if err != nil && !errors.Is(err, identity.ErrCredentialsNotFound) {
 		return err
 	}
 
-	_, isRoot, err := auth.LocalRootAuthority(identityDir, creds)
-	if err != nil {
-		return err
+	isRoot := false
+	if creds != nil {
+		if _, adminPub, adminErr := identity.LoadAdminKey(identityDir); adminErr == nil {
+			isRoot = bytes.Equal(adminPub, creds.Grant().GetClaims().GetIssuerPub())
+		}
 	}
 
 	switch {
 	case creds == nil:
 		logger.Info("node is not initialized; auto-initializing root cluster")
-		creds, err = auth.EnsureLocalRootCredentials(identityDir, pubKey, nodeProps, time.Now(), auth.DefaultDelegationTTL)
+		creds, err = identity.EnsureLocalRootGrant(identityDir, pubKey, nodeProps, time.Now())
 		if err != nil {
 			return fmt.Errorf("auto-init failed: %w", err)
 		}
 	case isRoot:
-		// Re-issue so property changes apply and the cert refreshes ahead
-		// of expiry without peer-routed renewal.
-		creds, err = auth.EnsureLocalRootCredentials(identityDir, pubKey, nodeProps, time.Now(), auth.DefaultDelegationTTL)
+		// Re-issue so property changes apply. Root grants carry no
+		// horizon, so there is no expiry refresh concern.
+		creds, err = identity.EnsureLocalRootGrant(identityDir, pubKey, nodeProps, time.Now())
 		if err != nil {
-			return fmt.Errorf("root cert refresh: %w", err)
+			return fmt.Errorf("root grant refresh: %w", err)
 		}
-	case auth.IsCertExpired(creds.Cert(), time.Now()):
-		logger.Warnw("delegation certificate has expired — starting in degraded mode, will attempt renewal", "expired_at", auth.CertExpiresAt(creds.Cert()))
-	}
-
-	if delSigner, err := auth.NewDelegationSigner(identityDir, privKey); err == nil {
-		creds.SetDelegationKey(delSigner)
-	} else if specSigner, specErr := auth.NewSpecSigner(identityDir, privKey); specErr == nil {
-		creds.SetSpecSigner(specSigner)
+	default:
+		if chk := identity.CheckGrant(creds.Grant(), creds.RootPub(), time.Now(), nil, nil); !chk.Status.Valid() {
+			logger.Warnw("node grant no longer valid — starting in degraded mode; rejoin with `pln join <token>`",
+				"status", chk.Status, "reason", chk.Reason)
+		}
 	}
 
 	var runtimeState *statev1.RuntimeState
@@ -242,7 +241,7 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 	if runtimeState != nil {
 		consumedEntries = runtimeState.GetConsumedInvites()
 	}
-	inviteConsumer := auth.NewInviteConsumer(consumedEntries)
+	inviteConsumer := identity.NewInviteConsumer(consumedEntries)
 
 	peerCache, err := peercache.Open(env.dir)
 	if err != nil {

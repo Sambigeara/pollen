@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -32,50 +32,53 @@ const (
 	alpnInvite = "pollen-invite/1"
 )
 
-var oidPollenDelegationCert = asn1.ObjectIdentifier{2, 25, 37271, 6445, 64343, 17344, 33689, 44400, 19083, 581, 1, 1}
+var oidPollenSession = asn1.ObjectIdentifier{2, 25, 37271, 6445, 64343, 17344, 33689, 44400, 19083, 581, 1, 1}
 
-func marshalDelegationExtension(cert *admissionv1.DelegationCert) (pkix.Extension, error) {
-	raw, err := cert.MarshalVT()
+func marshalSessionExtension(session *identityv1.Session) (pkix.Extension, error) {
+	raw, err := session.MarshalVT()
 	if err != nil {
-		return pkix.Extension{}, fmt.Errorf("marshal delegation cert: %w", err)
+		return pkix.Extension{}, fmt.Errorf("marshal session: %w", err)
 	}
 	val, err := asn1.Marshal(raw)
 	if err != nil {
-		return pkix.Extension{}, fmt.Errorf("asn1 wrap delegation cert: %w", err)
+		return pkix.Extension{}, fmt.Errorf("asn1 wrap session: %w", err)
 	}
 	return pkix.Extension{
-		Id:    oidPollenDelegationCert,
+		Id:    oidPollenSession,
 		Value: val,
 	}, nil
 }
 
-// ParseDelegationExtension extracts the pollen DelegationCert embedded
-// as an ASN.1 extension in an x509 cert. Returns (nil, nil) if the
-// extension is absent.
-func ParseDelegationExtension(certDER []byte) (*admissionv1.DelegationCert, error) {
+// ParseSessionExtension extracts the pollen Session embedded as an
+// ASN.1 extension in an x509 cert. Returns (nil, nil) if the extension
+// is absent (e.g. the bare invite cert).
+func ParseSessionExtension(certDER []byte) (*identityv1.Session, error) {
 	cert, err := x509.ParseCertificate(certDER)
 	if err != nil {
 		return nil, fmt.Errorf("parse x509 certificate: %w", err)
 	}
 
 	for _, ext := range cert.Extensions {
-		if ext.Id.Equal(oidPollenDelegationCert) {
+		if ext.Id.Equal(oidPollenSession) {
 			var raw []byte
 			if _, err := asn1.Unmarshal(ext.Value, &raw); err != nil {
-				return nil, fmt.Errorf("asn1 unwrap delegation cert: %w", err)
+				return nil, fmt.Errorf("asn1 unwrap session: %w", err)
 			}
-			dc := &admissionv1.DelegationCert{}
-			if err := dc.UnmarshalVT(raw); err != nil {
-				return nil, fmt.Errorf("unmarshal delegation cert: %w", err)
+			s := &identityv1.Session{}
+			if err := s.UnmarshalVT(raw); err != nil {
+				return nil, fmt.Errorf("unmarshal session: %w", err)
 			}
-			return dc, nil
+			return s, nil
 		}
 	}
 
 	return nil, nil
 }
 
-func GenerateIdentityCert(signPriv ed25519.PrivateKey, delegationCert *admissionv1.DelegationCert, validity time.Duration) (tls.Certificate, error) {
+// GenerateIdentityCert mints an ephemeral x509 leaf bound to signPriv's
+// ed25519 key, embedding session as the pollen authority extension. A
+// nil session yields a bare cert (the invite path, identity only).
+func GenerateIdentityCert(signPriv ed25519.PrivateKey, session *identityv1.Session, validity time.Duration) (tls.Certificate, error) {
 	pub := signPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), certSerialBits))
@@ -95,8 +98,8 @@ func GenerateIdentityCert(signPriv ed25519.PrivateKey, delegationCert *admission
 		BasicConstraintsValid: true,
 	}
 
-	if delegationCert != nil {
-		ext, err := marshalDelegationExtension(delegationCert)
+	if session != nil {
+		ext, err := marshalSessionExtension(session)
 		if err != nil {
 			return tls.Certificate{}, err
 		}
@@ -146,23 +149,22 @@ func peerKeyFromConn(qc *quic.Conn) (types.PeerKey, error) {
 	return types.PeerKeyFromBytes(pub), nil
 }
 
-func delegationCertFromConn(qc *quic.Conn) *admissionv1.DelegationCert {
+func sessionFromConn(qc *quic.Conn) *identityv1.Session {
 	tlsState := qc.ConnectionState().TLS
 	if len(tlsState.PeerCertificates) == 0 {
 		return nil
 	}
-	dc, err := ParseDelegationExtension(tlsState.PeerCertificates[0].Raw)
-	if err != nil || dc == nil {
+	s, err := ParseSessionExtension(tlsState.PeerCertificates[0].Raw)
+	if err != nil || s == nil {
 		return nil
 	}
-	return dc
+	return s
 }
 
 type verifyMeshPeerOpts struct {
-	expectedPeer    *types.PeerKey
-	denied          auth.DenyChecker
-	rootPub         []byte
-	reconnectWindow time.Duration
+	expectedPeer *types.PeerKey
+	denied       identity.DenyChecker
+	rootPub      []byte
 }
 
 func verifyPeerIdentity(rawCerts [][]byte, expectedPeer *types.PeerKey) (types.PeerKey, error) {
@@ -182,6 +184,12 @@ func verifyPeerIdentity(rawCerts [][]byte, expectedPeer *types.PeerKey) (types.P
 	return peerKey, nil
 }
 
+// verifyMeshPeerCert authenticates a mesh QUIC counterparty: the leaf
+// ed25519 key must match the embedded Session's grant subject, the
+// grant must chain to root and be within its horizon and not denied,
+// and the short session window must be current. A peer self-mints a
+// fresh session locally, so there is no renewal grace: a stale session
+// is a peer that failed to re-mint.
 func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		peerKey, err := verifyPeerIdentity(rawCerts, opts.expectedPeer)
@@ -189,39 +197,19 @@ func verifyMeshPeerCert(opts verifyMeshPeerOpts) func([][]byte, [][]*x509.Certif
 			return err
 		}
 
-		dc, err := ParseDelegationExtension(rawCerts[0])
+		session, err := ParseSessionExtension(rawCerts[0])
 		if err != nil {
-			return fmt.Errorf("parse delegation extension: %w", err)
+			return fmt.Errorf("parse session extension: %w", err)
 		}
-		if dc == nil {
-			return errors.New("peer certificate missing delegation extension")
+		if session == nil {
+			return errors.New("peer certificate missing session extension")
 		}
 
-		now := time.Now()
-		chk := auth.CheckCert(dc, opts.rootPub, now, peerKey.Bytes(), opts.denied)
-		return admitMeshCert(chk, opts.reconnectWindow, now)
-	}
-}
-
-// admitMeshCert maps a mesh peer cert check to a handshake decision. A
-// cert past its renewable window (not_after) is admitted within
-// reconnectWindow so the membership service can drive renewal over the
-// reconnected session. The access_deadline ceiling, denial, and chain
-// failures are hard stops the reconnect window cannot bypass.
-func admitMeshCert(chk auth.CertCheck, reconnectWindow time.Duration, now time.Time) error {
-	if chk.Status.CanAuthenticate() {
+		if _, err := identity.VerifySession(session, opts.rootPub, time.Now(), peerKey.Bytes(), opts.denied); err != nil {
+			return fmt.Errorf("mesh peer session rejected: %w", err)
+		}
 		return nil
 	}
-	// NeedsRenewal, or a legacy no-ceiling cert past not_after, may
-	// reconnect within the grace window; the membership service renews
-	// over the new session. A cert past access_deadline is Expired with
-	// a non-zero deadline and does not qualify.
-	pastNotAfterRenewable := chk.Status == auth.CertStatusNeedsRenewal ||
-		(chk.Status == auth.CertStatusExpired && chk.AccessDeadline.IsZero())
-	if pastNotAfterRenewable && reconnectWindow > 0 && now.Before(chk.NotAfter.Add(reconnectWindow)) {
-		return nil
-	}
-	return fmt.Errorf("mesh peer cert rejected (%s): %s", chk.Status, chk.Reason)
 }
 
 func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Certificate) error {
@@ -231,14 +219,13 @@ func verifyIdentityOnly(expectedPeer *types.PeerKey) func([][]byte, [][]*x509.Ce
 	}
 }
 
-// VerifyDelegatedCounterparty builds a TLS VerifyPeerCertificate callback
-// suitable for both the wire-mode mTLS server (peer = client) and dialer
-// (peer = server). It verifies that the peer presented a single x509
-// leaf bound to an ed25519 public key, whose DelegationCert extension
-// chains back to rootPub. Use this when you have a public host string
-// (not a known peer key) and need to admit any caller whose authority
-// chains to the cluster root.
-func VerifyDelegatedCounterparty(rootPub []byte, denied auth.DenyChecker) func([][]byte, [][]*x509.Certificate) error {
+// VerifyDelegatedCounterparty builds a TLS VerifyPeerCertificate
+// callback for both the wire-mode mTLS server (peer = client) and
+// dialer (peer = server). The peer must present a single x509 leaf
+// bound to an ed25519 key whose embedded Session's grant chains to
+// rootPub. Use this when you have a public host string (not a known
+// peer key) and admit any caller whose authority chains to root.
+func VerifyDelegatedCounterparty(rootPub []byte, denied identity.DenyChecker) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
 			return errors.New("transport: no peer certificate")
@@ -251,32 +238,26 @@ func VerifyDelegatedCounterparty(rootPub []byte, denied auth.DenyChecker) func([
 		if !ok {
 			return errors.New("transport: peer leaf must use ed25519")
 		}
-		dc, err := ParseDelegationExtension(rawCerts[0])
+		session, err := ParseSessionExtension(rawCerts[0])
 		if err != nil {
-			return fmt.Errorf("parse delegation extension: %w", err)
+			return fmt.Errorf("parse session extension: %w", err)
 		}
-		if dc == nil {
-			return errors.New("transport: peer certificate missing delegation extension")
+		if session == nil {
+			return errors.New("transport: peer certificate missing session extension")
 		}
-		// Admit OK and NeedsRenewal: a cert past not_after but within
-		// access_deadline must be able to reach the RenewCert RPC. The
-		// control service's interceptor restricts NeedsRenewal callers
-		// to RenewCert only; Expired/Revoked/invalid are rejected here.
-		chk := auth.CheckCert(dc, rootPub, time.Now(), leafPub, denied)
-		if !chk.Status.CanRenew() {
-			return fmt.Errorf("transport: peer cert rejected (%s): %s", chk.Status, chk.Reason)
+		if _, err := identity.VerifySession(session, rootPub, time.Now(), leafPub, denied); err != nil {
+			return fmt.Errorf("transport: peer session rejected: %w", err)
 		}
 		return nil
 	}
 }
 
 type serverTLSParams struct {
-	meshCertPtr     *atomic.Pointer[tls.Certificate]
-	denied          auth.DenyChecker
-	inviteCert      tls.Certificate
-	rootPub         []byte
-	reconnectWindow time.Duration
-	inviteEnabled   bool
+	meshCertPtr   *atomic.Pointer[tls.Certificate]
+	denied        identity.DenyChecker
+	inviteCert    tls.Certificate
+	rootPub       []byte
+	inviteEnabled bool
 }
 
 func newServerTLSConfig(p serverTLSParams) *tls.Config {
@@ -288,9 +269,8 @@ func newServerTLSConfig(p serverTLSParams) *tls.Config {
 		ClientAuth: tls.RequireAnyClientCert,
 		NextProtos: []string{alpnMesh},
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{
-			rootPub:         p.rootPub,
-			reconnectWindow: p.reconnectWindow,
-			denied:          p.denied,
+			rootPub: p.rootPub,
+			denied:  p.denied,
 		}),
 	}
 
@@ -319,7 +299,7 @@ func newServerTLSConfig(p serverTLSParams) *tls.Config {
 	}
 }
 
-func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expectedPeer types.PeerKey, rootPub []byte, reconnectWindow time.Duration, denied auth.DenyChecker) *tls.Config {
+func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expectedPeer types.PeerKey, rootPub []byte, denied identity.DenyChecker) *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -331,10 +311,9 @@ func newExpectedPeerTLSConfig(certPtr *atomic.Pointer[tls.Certificate], expected
 		InsecureSkipVerify: true, //nolint:gosec
 		NextProtos:         []string{alpnMesh},
 		VerifyPeerCertificate: verifyMeshPeerCert(verifyMeshPeerOpts{
-			rootPub:         rootPub,
-			expectedPeer:    &expectedPeer,
-			reconnectWindow: reconnectWindow,
-			denied:          denied,
+			rootPub:      rootPub,
+			expectedPeer: &expectedPeer,
+			denied:       denied,
 		}),
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/quic-go/quic-go"
-	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -270,24 +269,6 @@ func (m *QUICTransport) handleRoutedDatagram(ctx context.Context, payload []byte
 }
 
 func (m *QUICTransport) deliverRoutedMembershipDatagram(ctx context.Context, source types.PeerKey, data []byte) {
-	env := &meshv1.Envelope{}
-	if err := env.UnmarshalVT(data); err != nil {
-		return
-	}
-	if resp, ok := env.GetBody().(*meshv1.Envelope_CertRenewalResponse); ok {
-		select {
-		case m.renewalCh <- resp.CertRenewalResponse:
-		case <-ctx.Done():
-		}
-		return
-	}
-	if resp, ok := env.GetBody().(*meshv1.Envelope_CertPushResponse); ok {
-		select {
-		case m.certPushCh <- resp.CertPushResponse:
-		case <-ctx.Done():
-		}
-		return
-	}
 	select {
 	case m.recvCh <- Packet{From: source, Data: data}:
 	case <-ctx.Done():

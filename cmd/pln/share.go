@@ -17,6 +17,7 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -91,21 +92,21 @@ func runShare(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return ambiguousErr("multiple matches for %q (%s); pass a more specific identifier", arg, strings.Join(kinds, ", "))
 	}
 
-	creds, err := auth.LoadNodeCredentials(auth.IdentityPath(env.dir))
+	creds, err := identity.LoadCredentials(identity.IdentityPath(env.dir))
 	if err != nil {
 		return fmt.Errorf("load credentials: %w", err)
 	}
-	if creds == nil || creds.Cert() == nil {
+	if creds == nil || creds.Grant() == nil {
 		return errors.New("no credentials in this context; run `pln join` first")
 	}
-	localPub := creds.Cert().GetClaims().GetSubjectPub()
+	localPub := creds.Grant().GetClaims().GetSubjectPub()
 
 	resource, subdomain, err := buildShareResource(wl, hasBlob, blobHash, st.GetBlobs(), localPub)
 	if err != nil {
 		return err
 	}
 
-	priv, _, err := auth.EnsureIdentityKey(auth.IdentityPath(env.dir))
+	priv, _, err := identity.EnsureIdentityKey(identity.IdentityPath(env.dir))
 	if err != nil {
 		return fmt.Errorf("load identity key: %w", err)
 	}

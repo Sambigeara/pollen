@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -78,6 +79,61 @@ func (c *Credentials) EnsureFreshSession(now time.Time, ttl, refreshBefore time.
 	}
 	c.session = session
 	return session, nil
+}
+
+// IssueInvite signs an invite ticket as this node's authority. The
+// node must hold a delegating grant for the ticket to be redeemable.
+func (c *Credentials) IssueInvite(
+	bootstrap []*admissionv1.BootstrapPeer,
+	subjectPub ed25519.PublicKey,
+	caps *identityv1.Capabilities,
+	budget *identityv1.Budget,
+	grantDeadline, now time.Time,
+	ttl time.Duration,
+) (*identityv1.InviteTicket, error) {
+	return IssueInviteTicket(c.signPriv, bootstrap, subjectPub, caps, budget, grantDeadline, now, ttl)
+}
+
+// IssueGrant mints a child grant for subjectPub under this node's
+// grant chain, clamped to this node's authority and horizon. The node
+// must hold a delegating grant.
+func (c *Credentials) IssueGrant(
+	subjectPub ed25519.PublicKey,
+	caps *identityv1.Capabilities,
+	budget *identityv1.Budget,
+	now, grantDeadline time.Time,
+) (*identityv1.Grant, error) {
+	c.mu.RLock()
+	grant := c.grant
+	c.mu.RUnlock()
+	return IssueGrant(c.signPriv, []*identityv1.Grant{grant}, subjectPub, caps, budget, now, grantDeadline)
+}
+
+// IssueGrantToken wraps an already-issued grant into a GrantToken
+// signed by this node, for direct (non-invite) enrolment such as the
+// SSH-bridge bootstrap path where the joiner key is known up front.
+func (c *Credentials) IssueGrantToken(
+	grant *identityv1.Grant,
+	bootstrap []*admissionv1.BootstrapPeer,
+	now time.Time,
+	ttl time.Duration,
+) (*identityv1.GrantToken, error) {
+	return IssueGrantToken(c.signPriv, grant, bootstrap, c.rootPub, now, ttl)
+}
+
+// RedeemInvite is the host side of a join: it mints a joiner grant
+// under this node's grant chain and wraps it into a GrantToken. The
+// node must be the ticket's named issuer and hold a delegating grant.
+func (c *Credentials) RedeemInvite(
+	ticket *identityv1.InviteTicket,
+	joinerPub ed25519.PublicKey,
+	now time.Time,
+	tokenTTL time.Duration,
+) (*identityv1.GrantToken, error) {
+	c.mu.RLock()
+	grant := c.grant
+	c.mu.RUnlock()
+	return RedeemInviteTicket(c.signPriv, []*identityv1.Grant{grant}, c.rootPub, ticket, joinerPub, now, tokenTTL)
 }
 
 func grantPath(identityDir string) string { return filepath.Join(identityDir, grantCertName) }

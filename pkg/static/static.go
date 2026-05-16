@@ -16,6 +16,7 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
@@ -33,18 +34,18 @@ type StaticAPI interface {
 	Signal()
 	Events() <-chan state.Event
 	SeedStatic(name string, manifestDigest []byte, policy *admissionv1.Predicate) error
-	SeedStaticPresigned(name string, manifestDigest []byte, presignedAuth *admissionv1.SpecAuth) error
+	SeedStaticPresigned(name string, manifestDigest []byte, presignedFact *factv1.Fact) error
 	UnseedStatic(name string) error
-	UnseedStaticPresigned(name string, presignedAuth *admissionv1.SpecAuth) error
+	UnseedStaticPresigned(name string, presignedFact *factv1.Fact) error
 	StaticBlobs() map[string]struct{}
 }
 
 type stateStore interface {
 	Snapshot() state.Snapshot
 	SetStaticSpec(spec state.StaticSpec, policy *admissionv1.Predicate) ([]state.Event, error)
-	SetStaticSpecPresigned(spec state.StaticSpec, presignedAuth *admissionv1.SpecAuth) ([]state.Event, error)
+	SetStaticSpecPresigned(spec state.StaticSpec, presignedFact *factv1.Fact) ([]state.Event, error)
 	DeleteStaticSpec(name string) ([]state.Event, error)
-	DeleteStaticSpecPresigned(name string, presignedAuth *admissionv1.SpecAuth) ([]state.Event, error)
+	DeleteStaticSpecPresigned(name string, presignedFact *factv1.Fact) ([]state.Event, error)
 	ClaimStatic(name string) []state.Event
 	ReleaseStatic(name string) []state.Event
 }
@@ -162,10 +163,10 @@ func (s *Service) SeedStatic(name string, manifestDigest []byte, policy *admissi
 
 // SeedStaticPresigned stores a tenant-signed static spec without
 // re-signing. Used by the wire-mode caller flow where the daemon acts
-// as a relay: the SpecAuth is validated against the cluster root and
+// as a relay: the Fact is validated against the cluster root and
 // gossipped as-is.
-func (s *Service) SeedStaticPresigned(name string, manifestDigest []byte, presignedAuth *admissionv1.SpecAuth) error {
-	if presignedAuth.GetPolicy() != nil {
+func (s *Service) SeedStaticPresigned(name string, manifestDigest []byte, presignedFact *factv1.Fact) error {
+	if presignedFact.GetPolicy() != nil {
 		return ErrPolicyOnStatic
 	}
 	if len(manifestDigest) != digestSize {
@@ -174,7 +175,7 @@ func (s *Service) SeedStaticPresigned(name string, manifestDigest []byte, presig
 	events, err := s.store.SetStaticSpecPresigned(state.StaticSpec{
 		Name:           name,
 		ManifestDigest: hex.EncodeToString(manifestDigest),
-	}, presignedAuth)
+	}, presignedFact)
 	if err != nil {
 		return err
 	}
@@ -203,8 +204,8 @@ func (s *Service) UnseedStatic(name string) error {
 // UnseedStaticPresigned applies a tenant-signed tombstone for the
 // static spec named name. The daemon re-wraps the auth against the
 // live body in its slot before gossiping.
-func (s *Service) UnseedStaticPresigned(name string, presignedAuth *admissionv1.SpecAuth) error {
-	events, err := s.store.DeleteStaticSpecPresigned(name, presignedAuth)
+func (s *Service) UnseedStaticPresigned(name string, presignedFact *factv1.Fact) error {
+	events, err := s.store.DeleteStaticSpecPresigned(name, presignedFact)
 	if err != nil {
 		return err
 	}

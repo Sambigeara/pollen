@@ -9,6 +9,7 @@ import (
 	"io"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -31,12 +32,12 @@ func (*NoopService) Seed([]byte, state.WorkloadSpec, *admissionv1.Predicate) err
 	return ErrRelayOnly
 }
 
-func (*NoopService) SeedPresigned([]byte, state.WorkloadSpec, *admissionv1.SpecAuth) error {
+func (*NoopService) SeedPresigned([]byte, state.WorkloadSpec, *factv1.Fact) error {
 	return ErrRelayOnly
 }
 
-func (*NoopService) Unseed(string) error                                 { return ErrRelayOnly }
-func (*NoopService) UnseedPresigned(string, *admissionv1.SpecAuth) error { return ErrRelayOnly }
+func (*NoopService) Unseed(string) error                        { return ErrRelayOnly }
+func (*NoopService) UnseedPresigned(string, *factv1.Fact) error { return ErrRelayOnly }
 
 func (*NoopService) Call(context.Context, string, string, []byte) ([]byte, error) {
 	return nil, ErrRelayOnly

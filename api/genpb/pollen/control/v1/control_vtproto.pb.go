@@ -10,6 +10,8 @@ import (
 	protohelpers "github.com/planetscale/vtprotobuf/protohelpers"
 	structpb "github.com/planetscale/vtprotobuf/types/known/structpb"
 	v11 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	v12 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	v13 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	v1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	proto "google.golang.org/protobuf/proto"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -1583,8 +1585,8 @@ func (m *SeedWorkloadHeader) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.PreSignedAuth != nil {
-		if vtmsg, ok := interface{}(m.PreSignedAuth).(interface {
+	if m.PreSignedFact != nil {
+		if vtmsg, ok := interface{}(m.PreSignedFact).(interface {
 			MarshalToSizedBufferVT([]byte) (int, error)
 		}); ok {
 			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
@@ -1594,7 +1596,7 @@ func (m *SeedWorkloadHeader) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			i -= size
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		} else {
-			encoded, err := proto.Marshal(m.PreSignedAuth)
+			encoded, err := proto.Marshal(m.PreSignedFact)
 			if err != nil {
 				return 0, err
 			}
@@ -1742,8 +1744,8 @@ func (m *UnseedWorkloadRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error)
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.PreSignedAuth != nil {
-		if vtmsg, ok := interface{}(m.PreSignedAuth).(interface {
+	if m.PreSignedFact != nil {
+		if vtmsg, ok := interface{}(m.PreSignedFact).(interface {
 			MarshalToSizedBufferVT([]byte) (int, error)
 		}); ok {
 			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
@@ -1753,7 +1755,7 @@ func (m *UnseedWorkloadRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error)
 			i -= size
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		} else {
-			encoded, err := proto.Marshal(m.PreSignedAuth)
+			encoded, err := proto.Marshal(m.PreSignedFact)
 			if err != nil {
 				return 0, err
 			}
@@ -2058,7 +2060,7 @@ func (m *GetMetricsResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *IssueCertRequest) MarshalVT() (dAtA []byte, err error) {
+func (m *IssueGrantRequest) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -2071,12 +2073,12 @@ func (m *IssueCertRequest) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *IssueCertRequest) MarshalToVT(dAtA []byte) (int, error) {
+func (m *IssueGrantRequest) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *IssueCertRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *IssueGrantRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -2098,8 +2100,8 @@ func (m *IssueCertRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x28
 	}
-	if m.CertCaps != nil {
-		if vtmsg, ok := interface{}(m.CertCaps).(interface {
+	if m.Capabilities != nil {
+		if vtmsg, ok := interface{}(m.Capabilities).(interface {
 			MarshalToSizedBufferVT([]byte) (int, error)
 		}); ok {
 			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
@@ -2109,7 +2111,7 @@ func (m *IssueCertRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			i -= size
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		} else {
-			encoded, err := proto.Marshal(m.CertCaps)
+			encoded, err := proto.Marshal(m.Capabilities)
 			if err != nil {
 				return 0, err
 			}
@@ -2130,7 +2132,7 @@ func (m *IssueCertRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *IssueCertResponse) MarshalVT() (dAtA []byte, err error) {
+func (m *IssueGrantResponse) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -2143,12 +2145,12 @@ func (m *IssueCertResponse) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *IssueCertResponse) MarshalToVT(dAtA []byte) (int, error) {
+func (m *IssueGrantResponse) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *IssueCertResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *IssueGrantResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -2160,8 +2162,8 @@ func (m *IssueCertResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.Cert != nil {
-		if vtmsg, ok := interface{}(m.Cert).(interface {
+	if m.Grant != nil {
+		if vtmsg, ok := interface{}(m.Grant).(interface {
 			MarshalToSizedBufferVT([]byte) (int, error)
 		}); ok {
 			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
@@ -2171,95 +2173,7 @@ func (m *IssueCertResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			i -= size
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		} else {
-			encoded, err := proto.Marshal(m.Cert)
-			if err != nil {
-				return 0, err
-			}
-			i -= len(encoded)
-			copy(dAtA[i:], encoded)
-			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(encoded)))
-		}
-		i--
-		dAtA[i] = 0xa
-	}
-	return len(dAtA) - i, nil
-}
-
-func (m *RenewCertRequest) MarshalVT() (dAtA []byte, err error) {
-	if m == nil {
-		return nil, nil
-	}
-	size := m.SizeVT()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *RenewCertRequest) MarshalToVT(dAtA []byte) (int, error) {
-	size := m.SizeVT()
-	return m.MarshalToSizedBufferVT(dAtA[:size])
-}
-
-func (m *RenewCertRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
-	if m == nil {
-		return 0, nil
-	}
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if m.unknownFields != nil {
-		i -= len(m.unknownFields)
-		copy(dAtA[i:], m.unknownFields)
-	}
-	return len(dAtA) - i, nil
-}
-
-func (m *RenewCertResponse) MarshalVT() (dAtA []byte, err error) {
-	if m == nil {
-		return nil, nil
-	}
-	size := m.SizeVT()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *RenewCertResponse) MarshalToVT(dAtA []byte) (int, error) {
-	size := m.SizeVT()
-	return m.MarshalToSizedBufferVT(dAtA[:size])
-}
-
-func (m *RenewCertResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
-	if m == nil {
-		return 0, nil
-	}
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if m.unknownFields != nil {
-		i -= len(m.unknownFields)
-		copy(dAtA[i:], m.unknownFields)
-	}
-	if m.Cert != nil {
-		if vtmsg, ok := interface{}(m.Cert).(interface {
-			MarshalToSizedBufferVT([]byte) (int, error)
-		}); ok {
-			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
-			if err != nil {
-				return 0, err
-			}
-			i -= size
-			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
-		} else {
-			encoded, err := proto.Marshal(m.Cert)
+			encoded, err := proto.Marshal(m.Grant)
 			if err != nil {
 				return 0, err
 			}
@@ -2462,8 +2376,8 @@ func (m *UploadBlobHeader) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.PreSignedAuth != nil {
-		if vtmsg, ok := interface{}(m.PreSignedAuth).(interface {
+	if m.PreSignedFact != nil {
+		if vtmsg, ok := interface{}(m.PreSignedFact).(interface {
 			MarshalToSizedBufferVT([]byte) (int, error)
 		}); ok {
 			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
@@ -2473,7 +2387,7 @@ func (m *UploadBlobHeader) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			i -= size
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		} else {
-			encoded, err := proto.Marshal(m.PreSignedAuth)
+			encoded, err := proto.Marshal(m.PreSignedFact)
 			if err != nil {
 				return 0, err
 			}
@@ -2603,8 +2517,8 @@ func (m *RemoveBlobRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.PreSignedAuth != nil {
-		if vtmsg, ok := interface{}(m.PreSignedAuth).(interface {
+	if m.PreSignedFact != nil {
+		if vtmsg, ok := interface{}(m.PreSignedFact).(interface {
 			MarshalToSizedBufferVT([]byte) (int, error)
 		}); ok {
 			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
@@ -2614,7 +2528,7 @@ func (m *RemoveBlobRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			i -= size
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		} else {
-			encoded, err := proto.Marshal(m.PreSignedAuth)
+			encoded, err := proto.Marshal(m.PreSignedFact)
 			if err != nil {
 				return 0, err
 			}
@@ -2698,8 +2612,8 @@ func (m *SeedStaticRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.PreSignedAuth != nil {
-		if vtmsg, ok := interface{}(m.PreSignedAuth).(interface {
+	if m.PreSignedFact != nil {
+		if vtmsg, ok := interface{}(m.PreSignedFact).(interface {
 			MarshalToSizedBufferVT([]byte) (int, error)
 		}); ok {
 			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
@@ -2709,7 +2623,7 @@ func (m *SeedStaticRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			i -= size
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		} else {
-			encoded, err := proto.Marshal(m.PreSignedAuth)
+			encoded, err := proto.Marshal(m.PreSignedFact)
 			if err != nil {
 				return 0, err
 			}
@@ -2829,8 +2743,8 @@ func (m *UnseedStaticRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.PreSignedAuth != nil {
-		if vtmsg, ok := interface{}(m.PreSignedAuth).(interface {
+	if m.PreSignedFact != nil {
+		if vtmsg, ok := interface{}(m.PreSignedFact).(interface {
 			MarshalToSizedBufferVT([]byte) (int, error)
 		}); ok {
 			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
@@ -2840,7 +2754,7 @@ func (m *UnseedStaticRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 			i -= size
 			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
 		} else {
-			encoded, err := proto.Marshal(m.PreSignedAuth)
+			encoded, err := proto.Marshal(m.PreSignedFact)
 			if err != nil {
 				return 0, err
 			}
@@ -4070,13 +3984,13 @@ func (m *SeedWorkloadHeader) SizeVT() (n int) {
 		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.PreSignedAuth != nil {
-		if size, ok := interface{}(m.PreSignedAuth).(interface {
+	if m.PreSignedFact != nil {
+		if size, ok := interface{}(m.PreSignedFact).(interface {
 			SizeVT() int
 		}); ok {
 			l = size.SizeVT()
 		} else {
-			l = proto.Size(m.PreSignedAuth)
+			l = proto.Size(m.PreSignedFact)
 		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -4116,13 +4030,13 @@ func (m *UnseedWorkloadRequest) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.PreSignedAuth != nil {
-		if size, ok := interface{}(m.PreSignedAuth).(interface {
+	if m.PreSignedFact != nil {
+		if size, ok := interface{}(m.PreSignedFact).(interface {
 			SizeVT() int
 		}); ok {
 			l = size.SizeVT()
 		} else {
-			l = proto.Size(m.PreSignedAuth)
+			l = proto.Size(m.PreSignedFact)
 		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -4248,7 +4162,7 @@ func (m *GetMetricsResponse) SizeVT() (n int) {
 	return n
 }
 
-func (m *IssueCertRequest) SizeVT() (n int) {
+func (m *IssueGrantRequest) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -4258,13 +4172,13 @@ func (m *IssueCertRequest) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.CertCaps != nil {
-		if size, ok := interface{}(m.CertCaps).(interface {
+	if m.Capabilities != nil {
+		if size, ok := interface{}(m.Capabilities).(interface {
 			SizeVT() int
 		}); ok {
 			l = size.SizeVT()
 		} else {
-			l = proto.Size(m.CertCaps)
+			l = proto.Size(m.Capabilities)
 		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -4275,49 +4189,19 @@ func (m *IssueCertRequest) SizeVT() (n int) {
 	return n
 }
 
-func (m *IssueCertResponse) SizeVT() (n int) {
+func (m *IssueGrantResponse) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.Cert != nil {
-		if size, ok := interface{}(m.Cert).(interface {
+	if m.Grant != nil {
+		if size, ok := interface{}(m.Grant).(interface {
 			SizeVT() int
 		}); ok {
 			l = size.SizeVT()
 		} else {
-			l = proto.Size(m.Cert)
-		}
-		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
-	}
-	n += len(m.unknownFields)
-	return n
-}
-
-func (m *RenewCertRequest) SizeVT() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	n += len(m.unknownFields)
-	return n
-}
-
-func (m *RenewCertResponse) SizeVT() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if m.Cert != nil {
-		if size, ok := interface{}(m.Cert).(interface {
-			SizeVT() int
-		}); ok {
-			l = size.SizeVT()
-		} else {
-			l = proto.Size(m.Cert)
+			l = proto.Size(m.Grant)
 		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -4413,13 +4297,13 @@ func (m *UploadBlobHeader) SizeVT() (n int) {
 		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.PreSignedAuth != nil {
-		if size, ok := interface{}(m.PreSignedAuth).(interface {
+	if m.PreSignedFact != nil {
+		if size, ok := interface{}(m.PreSignedFact).(interface {
 			SizeVT() int
 		}); ok {
 			l = size.SizeVT()
 		} else {
-			l = proto.Size(m.PreSignedAuth)
+			l = proto.Size(m.PreSignedFact)
 		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -4455,13 +4339,13 @@ func (m *RemoveBlobRequest) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.PreSignedAuth != nil {
-		if size, ok := interface{}(m.PreSignedAuth).(interface {
+	if m.PreSignedFact != nil {
+		if size, ok := interface{}(m.PreSignedFact).(interface {
 			SizeVT() int
 		}); ok {
 			l = size.SizeVT()
 		} else {
-			l = proto.Size(m.PreSignedAuth)
+			l = proto.Size(m.PreSignedFact)
 		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -4503,13 +4387,13 @@ func (m *SeedStaticRequest) SizeVT() (n int) {
 		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.PreSignedAuth != nil {
-		if size, ok := interface{}(m.PreSignedAuth).(interface {
+	if m.PreSignedFact != nil {
+		if size, ok := interface{}(m.PreSignedFact).(interface {
 			SizeVT() int
 		}); ok {
 			l = size.SizeVT()
 		} else {
-			l = proto.Size(m.PreSignedAuth)
+			l = proto.Size(m.PreSignedFact)
 		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -4541,13 +4425,13 @@ func (m *UnseedStaticRequest) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.PreSignedAuth != nil {
-		if size, ok := interface{}(m.PreSignedAuth).(interface {
+	if m.PreSignedFact != nil {
+		if size, ok := interface{}(m.PreSignedFact).(interface {
 			SizeVT() int
 		}); ok {
 			l = size.SizeVT()
 		} else {
-			l = proto.Size(m.PreSignedAuth)
+			l = proto.Size(m.PreSignedFact)
 		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -8429,7 +8313,7 @@ func (m *SeedWorkloadHeader) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 9:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field PreSignedAuth", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field PreSignedFact", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -8456,17 +8340,17 @@ func (m *SeedWorkloadHeader) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.PreSignedAuth == nil {
-				m.PreSignedAuth = &v11.SpecAuth{}
+			if m.PreSignedFact == nil {
+				m.PreSignedFact = &v12.Fact{}
 			}
-			if unmarshal, ok := interface{}(m.PreSignedAuth).(interface {
+			if unmarshal, ok := interface{}(m.PreSignedFact).(interface {
 				UnmarshalVT([]byte) error
 			}); ok {
 				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.PreSignedAuth); err != nil {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.PreSignedFact); err != nil {
 					return err
 				}
 			}
@@ -8703,7 +8587,7 @@ func (m *UnseedWorkloadRequest) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field PreSignedAuth", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field PreSignedFact", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -8730,17 +8614,17 @@ func (m *UnseedWorkloadRequest) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.PreSignedAuth == nil {
-				m.PreSignedAuth = &v11.SpecAuth{}
+			if m.PreSignedFact == nil {
+				m.PreSignedFact = &v12.Fact{}
 			}
-			if unmarshal, ok := interface{}(m.PreSignedAuth).(interface {
+			if unmarshal, ok := interface{}(m.PreSignedFact).(interface {
 				UnmarshalVT([]byte) error
 			}); ok {
 				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.PreSignedAuth); err != nil {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.PreSignedFact); err != nil {
 					return err
 				}
 			}
@@ -9474,7 +9358,7 @@ func (m *GetMetricsResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *IssueCertRequest) UnmarshalVT(dAtA []byte) error {
+func (m *IssueGrantRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -9497,10 +9381,10 @@ func (m *IssueCertRequest) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: IssueCertRequest: wiretype end group for non-group")
+			return fmt.Errorf("proto: IssueGrantRequest: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: IssueCertRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: IssueGrantRequest: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
@@ -9539,7 +9423,7 @@ func (m *IssueCertRequest) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 4:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field CertCaps", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field Capabilities", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -9566,17 +9450,17 @@ func (m *IssueCertRequest) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.CertCaps == nil {
-				m.CertCaps = &v11.Capabilities{}
+			if m.Capabilities == nil {
+				m.Capabilities = &v13.Capabilities{}
 			}
-			if unmarshal, ok := interface{}(m.CertCaps).(interface {
+			if unmarshal, ok := interface{}(m.Capabilities).(interface {
 				UnmarshalVT([]byte) error
 			}); ok {
 				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.CertCaps); err != nil {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.Capabilities); err != nil {
 					return err
 				}
 			}
@@ -9623,7 +9507,7 @@ func (m *IssueCertRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *IssueCertResponse) UnmarshalVT(dAtA []byte) error {
+func (m *IssueGrantResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -9646,15 +9530,15 @@ func (m *IssueCertResponse) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: IssueCertResponse: wiretype end group for non-group")
+			return fmt.Errorf("proto: IssueGrantResponse: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: IssueCertResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: IssueGrantResponse: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Cert", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field Grant", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -9681,163 +9565,17 @@ func (m *IssueCertResponse) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.Cert == nil {
-				m.Cert = &v11.DelegationCert{}
+			if m.Grant == nil {
+				m.Grant = &v13.Grant{}
 			}
-			if unmarshal, ok := interface{}(m.Cert).(interface {
+			if unmarshal, ok := interface{}(m.Grant).(interface {
 				UnmarshalVT([]byte) error
 			}); ok {
 				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.Cert); err != nil {
-					return err
-				}
-			}
-			iNdEx = postIndex
-		default:
-			iNdEx = preIndex
-			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *RenewCertRequest) UnmarshalVT(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return protohelpers.ErrIntOverflow
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: RenewCertRequest: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: RenewCertRequest: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		default:
-			iNdEx = preIndex
-			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *RenewCertResponse) UnmarshalVT(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return protohelpers.ErrIntOverflow
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: RenewCertResponse: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: RenewCertResponse: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Cert", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return protohelpers.ErrInvalidLength
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if m.Cert == nil {
-				m.Cert = &v11.DelegationCert{}
-			}
-			if unmarshal, ok := interface{}(m.Cert).(interface {
-				UnmarshalVT([]byte) error
-			}); ok {
-				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-					return err
-				}
-			} else {
-				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.Cert); err != nil {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.Grant); err != nil {
 					return err
 				}
 			}
@@ -10285,7 +10023,7 @@ func (m *UploadBlobHeader) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 5:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field PreSignedAuth", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field PreSignedFact", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -10312,17 +10050,17 @@ func (m *UploadBlobHeader) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.PreSignedAuth == nil {
-				m.PreSignedAuth = &v11.SpecAuth{}
+			if m.PreSignedFact == nil {
+				m.PreSignedFact = &v12.Fact{}
 			}
-			if unmarshal, ok := interface{}(m.PreSignedAuth).(interface {
+			if unmarshal, ok := interface{}(m.PreSignedFact).(interface {
 				UnmarshalVT([]byte) error
 			}); ok {
 				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.PreSignedAuth); err != nil {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.PreSignedFact); err != nil {
 					return err
 				}
 			}
@@ -10527,7 +10265,7 @@ func (m *RemoveBlobRequest) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field PreSignedAuth", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field PreSignedFact", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -10554,17 +10292,17 @@ func (m *RemoveBlobRequest) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.PreSignedAuth == nil {
-				m.PreSignedAuth = &v11.SpecAuth{}
+			if m.PreSignedFact == nil {
+				m.PreSignedFact = &v12.Fact{}
 			}
-			if unmarshal, ok := interface{}(m.PreSignedAuth).(interface {
+			if unmarshal, ok := interface{}(m.PreSignedFact).(interface {
 				UnmarshalVT([]byte) error
 			}); ok {
 				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.PreSignedAuth); err != nil {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.PreSignedFact); err != nil {
 					return err
 				}
 			}
@@ -10783,7 +10521,7 @@ func (m *SeedStaticRequest) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 6:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field PreSignedAuth", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field PreSignedFact", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -10810,17 +10548,17 @@ func (m *SeedStaticRequest) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.PreSignedAuth == nil {
-				m.PreSignedAuth = &v11.SpecAuth{}
+			if m.PreSignedFact == nil {
+				m.PreSignedFact = &v12.Fact{}
 			}
-			if unmarshal, ok := interface{}(m.PreSignedAuth).(interface {
+			if unmarshal, ok := interface{}(m.PreSignedFact).(interface {
 				UnmarshalVT([]byte) error
 			}); ok {
 				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.PreSignedAuth); err != nil {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.PreSignedFact); err != nil {
 					return err
 				}
 			}
@@ -10993,7 +10731,7 @@ func (m *UnseedStaticRequest) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field PreSignedAuth", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field PreSignedFact", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -11020,17 +10758,17 @@ func (m *UnseedStaticRequest) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.PreSignedAuth == nil {
-				m.PreSignedAuth = &v11.SpecAuth{}
+			if m.PreSignedFact == nil {
+				m.PreSignedFact = &v12.Fact{}
 			}
-			if unmarshal, ok := interface{}(m.PreSignedAuth).(interface {
+			if unmarshal, ok := interface{}(m.PreSignedFact).(interface {
 				UnmarshalVT([]byte) error
 			}); ok {
 				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
 					return err
 				}
 			} else {
-				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.PreSignedAuth); err != nil {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.PreSignedFact); err != nil {
 					return err
 				}
 			}

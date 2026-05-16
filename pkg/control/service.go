@@ -23,9 +23,12 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/blobs"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/placement"
@@ -59,15 +62,14 @@ type Metrics struct {
 
 type MembershipControl interface {
 	DenyPeer(key types.PeerKey) error
-	IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps *admissionv1.Capabilities, mintOnly bool) (*admissionv1.DelegationCert, error)
-	RenewCert(currentCert *admissionv1.DelegationCert) (*admissionv1.DelegationCert, error)
+	IssueGrant(ctx context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget) (*identityv1.Grant, error)
 }
 
 type PlacementControl interface {
 	Seed(binary []byte, spec state.WorkloadSpec, policy *admissionv1.Predicate) error
-	SeedPresigned(binary []byte, spec state.WorkloadSpec, presignedAuth *admissionv1.SpecAuth) error
+	SeedPresigned(binary []byte, spec state.WorkloadSpec, presignedFact *factv1.Fact) error
 	Unseed(hash string) error
-	UnseedPresigned(hash string, presignedAuth *admissionv1.SpecAuth) error
+	UnseedPresigned(hash string, presignedFact *factv1.Fact) error
 	Call(ctx context.Context, hash, fn string, input []byte) ([]byte, error)
 	Status() []placement.WorkloadSummary
 }
@@ -89,16 +91,16 @@ type BlobsControl interface {
 	FetchPlaintext(ctx context.Context, hash string) (io.ReadCloser, error)
 	Put(r io.Reader) (string, error)
 	Publish(hash, name string, policy *admissionv1.Predicate) error
-	PublishPresigned(hash, name string, presignedAuth *admissionv1.SpecAuth) error
+	PublishPresigned(hash, name string, presignedFact *factv1.Fact) error
 	Remove(hash string) error
-	RemovePresigned(hash string, presignedAuth *admissionv1.SpecAuth) error
+	RemovePresigned(hash string, presignedFact *factv1.Fact) error
 }
 
 type StaticControl interface {
 	SeedStatic(name string, manifestDigest []byte, policy *admissionv1.Predicate) error
-	SeedStaticPresigned(name string, manifestDigest []byte, presignedAuth *admissionv1.SpecAuth) error
+	SeedStaticPresigned(name string, manifestDigest []byte, presignedFact *factv1.Fact) error
 	UnseedStatic(name string) error
-	UnseedStaticPresigned(name string, presignedAuth *admissionv1.SpecAuth) error
+	UnseedStaticPresigned(name string, presignedFact *factv1.Fact) error
 	StaticBlobs() map[string]struct{}
 }
 
@@ -121,13 +123,13 @@ type MeshConnector interface {
 // gated in placement.Call because that path catches remote dispatch and
 // seed-to-seed tail calls as well as operator RPCs.
 //
-// Connect and Fetch take the caller's cert directly so wire-mode tenants
-// (whose certs aren't gossiped into the mesh snapshot) can be authorised
-// against their own authority. Mesh-peer call sites resolve the cert via
-// LookupCert from the snapshot before calling.
+// Connect and Fetch take the caller's grant directly so wire-mode
+// tenants (whose grants aren't gossiped into the mesh snapshot) can be
+// authorised against their own authority. Mesh-peer call sites resolve
+// the grant via LookupGrant from the snapshot before calling.
 type OperatorGate interface {
-	Connect(callerCert *admissionv1.DelegationCert, hostPeer types.PeerKey, port uint32) error
-	Fetch(callerCert *admissionv1.DelegationCert, hash string) error
+	Connect(caller *identityv1.Grant, hostPeer types.PeerKey, port uint32) error
+	Fetch(caller *identityv1.Grant, hash string) error
 }
 
 var _ controlv1.ControlServiceServer = (*Service)(nil)
@@ -144,7 +146,7 @@ type Service struct {
 	connector    MeshConnector
 	placement    PlacementControl
 	transport    TransportInfo
-	creds        *auth.NodeCredentials
+	creds        *identity.Credentials
 	shutdown     func()
 	log          *zap.SugaredLogger
 	staticDomain string
@@ -152,29 +154,38 @@ type Service struct {
 }
 
 // canPublish guards the SeedWorkload daemon-self path, which uses the
-// daemon's signer to mint a SpecAuth on the caller's behalf. Wire-mode
-// callers must instead supply pre_signed_auth and are gated by the
+// daemon's signer to mint a Fact on the caller's behalf. Wire-mode
+// callers must instead supply pre_signed_fact and are gated by the
 // per-RPC caller-cap check; only the unix-socket daemon-self path
 // consults this helper.
 func (s *Service) canPublish() bool {
-	return s.creds != nil && s.creds.Cert().GetClaims().GetCapabilities().GetCanPublish()
+	return s.creds != nil && grantCanPublish(s.creds.Grant())
+}
+
+// grantCanPublish reports whether a grant permits publishing any
+// resource kind. Per-kind enforcement lives in the admission pipeline;
+// this coarse check mirrors auth.RPCCaller.CanPublish for the
+// daemon-self path.
+func grantCanPublish(g *identityv1.Grant) bool {
+	p := g.GetClaims().GetCapabilities().GetPublish()
+	return p.GetFunctions() || p.GetBlobs() || p.GetSites() || p.GetServices()
 }
 
 func (s *Service) localPeerKey() types.PeerKey {
 	if s.creds == nil {
 		return types.PeerKey{}
 	}
-	cert := s.creds.Cert()
-	if cert == nil {
+	grant := s.creds.Grant()
+	if grant == nil {
 		return types.PeerKey{}
 	}
-	return types.PeerKeyFromBytes(cert.GetClaims().GetSubjectPub())
+	return types.PeerKeyFromBytes(grant.GetClaims().GetSubjectPub())
 }
 
 type Option func(*Service)
 
 func WithShutdown(fn func()) Option                  { return func(s *Service) { s.shutdown = fn } }
-func WithCredentials(c *auth.NodeCredentials) Option { return func(s *Service) { s.creds = c } }
+func WithCredentials(c *identity.Credentials) Option { return func(s *Service) { s.creds = c } }
 func WithTransportInfo(t TransportInfo) Option       { return func(s *Service) { s.transport = t } }
 func WithMetricsSource(m MetricsSource) Option       { return func(s *Service) { s.metrics = m } }
 func WithMeshConnector(c MeshConnector) Option       { return func(s *Service) { s.connector = c } }
@@ -229,53 +240,20 @@ func New(membership MembershipControl, placement PlacementControl, tunneling Tun
 // callerInterceptor injects an auth.RPCCaller into the request context
 // for every unary RPC, resolved by injectCaller from whatever identity
 // the inbound transport carries.
-func (s *Server) callerInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-	ctx = s.injectCaller(ctx)
-	if err := s.gateWireRenewal(ctx, info.FullMethod); err != nil {
-		return nil, err
-	}
-	return handler(ctx, req)
+func (s *Server) callerInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	return handler(s.injectCaller(ctx), req)
 }
 
-func (s *Server) streamCallerInterceptor(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+func (s *Server) streamCallerInterceptor(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 	ctx := s.injectCaller(ss.Context())
-	if err := s.gateWireRenewal(ctx, info.FullMethod); err != nil {
-		return err
-	}
 	return handler(srv, &callerStream{ServerStream: ss, ctx: ctx})
 }
 
-const renewCertFullMethod = "/pollen.control.v1.ControlService/RenewCert"
-
-// gateWireRenewal restricts a wire-mode caller whose cert is past
-// not_after to the RenewCert RPC only. The TLS handshake admits
-// NeedsRenewal certs so they can reach RenewCert; every other RPC must
-// present a cert currently valid for authentication. Non-wire callers
-// (unix socket, SSH bridge, daemon-self) carry no peer cert here and
-// have no wire cert lifecycle, so they pass through untouched.
-func (s *Server) gateWireRenewal(ctx context.Context, fullMethod string) error {
-	if fullMethod == renewCertFullMethod {
-		return nil
-	}
-	cert := callerCertFromContext(ctx)
-	if cert == nil || s.svc == nil || s.svc.creds == nil {
-		return nil
-	}
-	denied := func(sub []byte) bool {
-		return s.svc.state.Snapshot().IsDenied(types.PeerKeyFromBytes(sub))
-	}
-	chk := auth.CheckCert(cert, s.svc.creds.RootPub(), time.Now(), nil, denied)
-	if chk.Status.CanAuthenticate() {
-		return nil
-	}
-	return status.Errorf(codes.FailedPrecondition, "client certificate must be renewed (call RenewCert): %s", chk.Reason)
-}
-
 func (s *Server) injectCaller(ctx context.Context) context.Context {
-	if cert := callerCertFromContext(ctx); cert != nil {
-		return auth.WithRPCCaller(ctx, auth.NewRPCCaller(cert))
+	if grant := callerGrantFromContext(ctx); grant != nil {
+		return auth.WithRPCCaller(ctx, auth.NewRPCCaller(grant))
 	}
-	// Only fall back to the daemon's own cert when the inbound
+	// Only fall back to the daemon's own grant when the inbound
 	// transport is a local credential (unix socket). On TLS paths a
 	// missing peer cert means the mTLS handshake didn't populate
 	// peer.AuthInfo as expected — leaking daemon-self privileges to
@@ -286,7 +264,7 @@ func (s *Server) injectCaller(ctx context.Context) context.Context {
 	if s.svc == nil || s.svc.creds == nil {
 		return ctx
 	}
-	return auth.WithRPCCaller(ctx, auth.NewRPCCaller(s.svc.creds.Cert()))
+	return auth.WithRPCCaller(ctx, auth.NewRPCCaller(s.svc.creds.Grant()))
 }
 
 // isLocalCallerCtx reports whether the inbound RPC arrived over the
@@ -368,7 +346,11 @@ func (s *Server) ServeTLS(l net.Listener) error {
 	if len(s.svc.creds.RootPub()) == 0 {
 		return errors.New("control tls: credentials missing root pub")
 	}
-	serverCert, err := transport.GenerateIdentityCert(s.svc.signPriv, s.svc.creds.Cert(), controlTLSIdentityTTL)
+	session, err := s.svc.creds.EnsureFreshSession(time.Now(), controlTLSIdentityTTL, controlTLSIdentityTTL/2)
+	if err != nil {
+		return fmt.Errorf("control tls session: %w", err)
+	}
+	serverCert, err := transport.GenerateIdentityCert(s.svc.signPriv, session, controlTLSIdentityTTL)
 	if err != nil {
 		return fmt.Errorf("control tls identity cert: %w", err)
 	}
@@ -484,8 +466,8 @@ func (s *Service) inspectNode(peerKey types.PeerKey) (*controlv1.NodeDetail, err
 
 	detail := &controlv1.NodeDetail{
 		Summary:       summary,
-		Cert:          nodeCertInfo(nv.Cert, time.Now(), snap.IsDenied(peerKey)),
-		IssuerChain:   issuerChain(nv.Cert),
+		Cert:          nodeCertInfo(nv.Grant, time.Now(), snap.IsDenied(peerKey)),
+		IssuerChain:   issuerChain(nv.Grant),
 		NatType:       natTypeLabel(nv.NatType),
 		MemTotalBytes: nv.MemTotalBytes,
 	}
@@ -611,46 +593,49 @@ func (s *Service) peerSummary(peerKey types.PeerKey, nv state.NodeView, tunnels 
 	return ns
 }
 
-// nodeCertInfo derives CertInfo from a peer's gossiped DelegationCert.
-// Health is computed against the cert's own expiry; the local-node
-// version in buildCertificates uses the credentials store directly
-// because it needs the renewal-window thresholds, which only apply to
-// the local node's own cert. denied reflects whether the cluster has
-// revoked this peer; callers must source it from the same snapshot
-// they read the cert from.
-func nodeCertInfo(cert *admissionv1.DelegationCert, now time.Time, denied bool) *controlv1.CertInfo {
-	if cert == nil {
+// nodeCertInfo derives CertInfo from a peer's gossiped Grant. Health is
+// computed against the grant's own deadline; the local-node version in
+// buildCertificates uses the credentials store directly because it
+// needs the renewal-window thresholds, which only apply to the local
+// node's own grant. denied reflects whether the cluster has revoked
+// this peer; callers must source it from the same snapshot they read
+// the grant from.
+func nodeCertInfo(grant *identityv1.Grant, now time.Time, denied bool) *controlv1.CertInfo {
+	if grant == nil {
 		return nil
 	}
-	claims := cert.GetClaims()
+	claims := grant.GetClaims()
 	caps := claims.GetCapabilities()
 	health := controlv1.CertHealth_CERT_HEALTH_OK
-	if auth.IsCertExpired(cert, now) {
+	if dl := claims.GetGrantDeadlineUnix(); dl > 0 && now.After(time.Unix(dl, 0)) {
+		health = controlv1.CertHealth_CERT_HEALTH_EXPIRED
+	}
+	if denied {
 		health = controlv1.CertHealth_CERT_HEALTH_EXPIRED
 	}
 	return &controlv1.CertInfo{
 		NotBeforeUnix:      claims.GetNotBeforeUnix(),
-		NotAfterUnix:       claims.GetNotAfterUnix(),
+		NotAfterUnix:       claims.GetGrantDeadlineUnix(),
 		Serial:             claims.GetSerial(),
 		Health:             health,
 		CanDelegate:        caps.GetCanDelegate(),
 		CanAdmit:           caps.GetCanAdmit(),
-		CanPublish:         caps.GetCanPublish(),
+		CanPublish:         grantCanPublish(grant),
 		MaxDepth:           caps.GetMaxDepth(),
-		AccessDeadlineUnix: claims.GetAccessDeadlineUnix(),
+		AccessDeadlineUnix: claims.GetGrantDeadlineUnix(),
 		Attributes:         caps.GetAttributes(),
 		Denied:             denied,
 	}
 }
 
-// issuerChain returns the delegation chain root-down, ending at the peer
+// issuerChain returns the grant chain root-down, ending at the peer
 // immediately above the inspected node. Empty for a self-issued root.
 //
-// cert.Chain is a flattened leaf-to-root list (auth.stripChainEntries
-// clears nested chains at issuance), so we iterate it in reverse to
-// surface root first.
-func issuerChain(cert *admissionv1.DelegationCert) []*controlv1.NodeRef {
-	chain := cert.GetChain()
+// grant.Chain is a flattened leaf-to-root list (the issuer clears
+// nested chains at issuance), so we iterate it in reverse to surface
+// root first.
+func issuerChain(grant *identityv1.Grant) []*controlv1.NodeRef {
+	chain := grant.GetChain()
 	if len(chain) == 0 {
 		return nil
 	}
@@ -674,23 +659,33 @@ func natTypeLabel(t nat.Type) string {
 }
 
 func (s *Service) isDegraded(now time.Time) bool {
-	if s.creds == nil || s.creds.Cert() == nil || s.transport == nil {
+	if s.creds == nil || s.creds.Grant() == nil || s.transport == nil {
 		return false
 	}
-	cert := s.creds.Cert()
+	dl := s.creds.Grant().GetClaims().GetGrantDeadlineUnix()
+	if dl == 0 {
+		return false
+	}
+	expiry := time.Unix(dl, 0)
 	window := s.transport.ReconnectWindowDuration()
-	return auth.IsCertExpired(cert, now) && now.Before(auth.CertExpiresAt(cert).Add(window))
+	return now.After(expiry) && now.Before(expiry.Add(window))
 }
 
 func (s *Service) buildCertificates(snap state.Snapshot) []*controlv1.CertInfo {
-	if s.creds == nil || s.creds.Cert() == nil {
+	if s.creds == nil || s.creds.Grant() == nil {
 		return nil
 	}
-	cert := s.creds.Cert()
-	claims := cert.GetClaims()
+	grant := s.creds.Grant()
+	claims := grant.GetClaims()
 	caps := claims.GetCapabilities()
 	health := controlv1.CertHealth_CERT_HEALTH_OK
-	remaining := time.Until(auth.CertExpiresAt(cert))
+	var remaining time.Duration
+	if dl := claims.GetGrantDeadlineUnix(); dl > 0 {
+		remaining = time.Until(time.Unix(dl, 0))
+	} else {
+		// Admin/root grants carry no horizon: always healthy.
+		remaining = membership.CertWarnThreshold + time.Hour
+	}
 
 	switch {
 	case remaining <= 0:
@@ -703,14 +698,14 @@ func (s *Service) buildCertificates(snap state.Snapshot) []*controlv1.CertInfo {
 
 	return []*controlv1.CertInfo{{
 		NotBeforeUnix:      claims.GetNotBeforeUnix(),
-		NotAfterUnix:       claims.GetNotAfterUnix(),
+		NotAfterUnix:       claims.GetGrantDeadlineUnix(),
 		Serial:             claims.GetSerial(),
 		Health:             health,
 		CanDelegate:        caps.GetCanDelegate(),
 		CanAdmit:           caps.GetCanAdmit(),
-		CanPublish:         caps.GetCanPublish(),
+		CanPublish:         grantCanPublish(grant),
 		MaxDepth:           caps.GetMaxDepth(),
-		AccessDeadlineUnix: claims.GetAccessDeadlineUnix(),
+		AccessDeadlineUnix: claims.GetGrantDeadlineUnix(),
 		Attributes:         caps.GetAttributes(),
 		Denied:             snap.IsDenied(snap.LocalID),
 	}}
@@ -778,11 +773,11 @@ func buildServiceSummaries(nodes map[types.PeerKey]state.NodeView, scope viewSco
 }
 
 func hasServicePublisher(svc *state.Service) bool {
-	return svc != nil && svc.Auth != nil && len(svc.Auth.GetPublisher().GetClaims().GetSubjectPub()) > 0
+	return svc != nil && svc.Fact != nil && len(svc.Fact.GetAuthorityPub()) > 0
 }
 
 func servicePublisher(svc *state.Service) types.PeerKey {
-	return types.PeerKeyFromBytes(svc.Auth.GetPublisher().GetClaims().GetSubjectPub())
+	return types.PeerKeyFromBytes(svc.Fact.GetAuthorityPub())
 }
 
 func buildConnectionSummaries(nodes map[types.PeerKey]state.NodeView, connections []tunneling.ConnectionInfo) []*controlv1.ConnectionSummary {
@@ -929,12 +924,12 @@ func (s *Service) UnregisterService(ctx context.Context, req *controlv1.Unregist
 }
 
 // authorisePresignedTombstone validates that a presigned tombstone
-// comes from the caller's cert and carries Deleted=true. Shared shape
+// comes from the caller's grant and carries Deleted=true. Shared shape
 // across UnseedWorkload/UnseedStatic/RemoveBlob/UnregisterService.
-func (s *Service) authorisePresignedTombstone(ctx context.Context, presigned *admissionv1.SpecAuth) error {
+func (s *Service) authorisePresignedTombstone(ctx context.Context, presigned *factv1.Fact) error {
 	caller, ok := auth.RPCCallerFromContext(ctx)
 	if !ok {
-		return status.Error(codes.Unauthenticated, "caller cert required for presigned tombstone")
+		return status.Error(codes.Unauthenticated, "caller grant required for presigned tombstone")
 	}
 	if !caller.CanPublish() {
 		return status.Error(codes.PermissionDenied, "publish capability required")
@@ -942,9 +937,9 @@ func (s *Service) authorisePresignedTombstone(ctx context.Context, presigned *ad
 	if !presigned.GetDeleted() {
 		return status.Error(codes.InvalidArgument, "presigned tombstone must have Deleted=true")
 	}
-	publisher := types.PeerKeyFromBytes(presigned.GetPublisher().GetClaims().GetSubjectPub())
+	publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
 	if publisher != caller.SubjectPub() {
-		return status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
+		return status.Error(codes.PermissionDenied, "pre_signed_fact authority must match caller grant")
 	}
 	return nil
 }
@@ -983,7 +978,7 @@ func (s *Service) ConnectPeer(ctx context.Context, req *controlv1.ConnectPeerReq
 func (s *Service) ConnectService(ctx context.Context, req *controlv1.ConnectServiceRequest) (*controlv1.ConnectServiceResponse, error) {
 	peerKey := types.PeerKeyFromBytes(req.Node.PeerPub)
 	if s.gate != nil {
-		if err := s.gate.Connect(s.callerCert(ctx), peerKey, req.GetRemotePort()); err != nil {
+		if err := s.gate.Connect(s.callerGrant(ctx), peerKey, req.GetRemotePort()); err != nil {
 			return nil, status.Error(codes.PermissionDenied, "connect denied")
 		}
 	}
@@ -1026,75 +1021,59 @@ func (s *Service) DenyPeer(ctx context.Context, req *controlv1.DenyPeerRequest) 
 	return &controlv1.DenyPeerResponse{}, nil
 }
 
-func (s *Service) IssueCert(ctx context.Context, req *controlv1.IssueCertRequest) (*controlv1.IssueCertResponse, error) {
+func (s *Service) IssueGrant(ctx context.Context, req *controlv1.IssueGrantRequest) (*controlv1.IssueGrantResponse, error) {
 	caller, ok := auth.RPCCallerFromContext(ctx)
 	if !ok || !caller.CanDelegate() {
 		return nil, status.Error(codes.PermissionDenied, "delegate capability required")
 	}
-	certCaps := req.GetCertCaps()
-	if certCaps == nil {
-		return nil, status.Error(codes.InvalidArgument, "cert_caps required")
+	caps := req.GetCapabilities()
+	if caps == nil {
+		return nil, status.Error(codes.InvalidArgument, "capabilities required")
 	}
-	if err := auth.ValidateAttributes(certCaps.GetAttributes()); err != nil {
+	if err := identity.ValidateAttributes(caps.GetAttributes()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	// Caller cannot grant capabilities they don't hold themselves.
 	// Bool caps gate cluster-admin escalation; MaxDepth and Attributes
 	// gate downstream delegation reach and runtime policy clauses. The
-	// daemon's signer only enforces child ≤ daemon's parent chain, so
-	// a CanDelegate tenant with MaxDepth=2 and attrs={role:"worker"}
-	// could otherwise request a child cert with MaxDepth=255 and
-	// attrs={role:"admin"} via a higher-cap relay daemon.
-	callerCaps := caller.Cert().GetClaims().GetCapabilities()
-	if certCaps.GetCanAdmit() && !callerCaps.GetCanAdmit() {
+	// membership signer only enforces child ≤ this node's parent chain,
+	// so a CanDelegate tenant could otherwise request a child with
+	// MaxDepth=255 / attrs={role:"admin"} via a higher-cap relay daemon.
+	callerCaps := caller.Grant().GetClaims().GetCapabilities()
+	if caps.GetCanAdmit() && !callerCaps.GetCanAdmit() {
 		return nil, status.Error(codes.PermissionDenied, "cannot grant admit; caller lacks admit")
 	}
-	if certCaps.GetCanDelegate() && !callerCaps.GetCanDelegate() {
+	if caps.GetCanDelegate() && !callerCaps.GetCanDelegate() {
 		return nil, status.Error(codes.PermissionDenied, "cannot grant delegate; caller lacks delegate")
 	}
-	if certCaps.GetCanPublish() && !callerCaps.GetCanPublish() {
+	if grantCapsPublishExceeds(caps, callerCaps) {
 		return nil, status.Error(codes.PermissionDenied, "cannot grant publish; caller lacks publish")
 	}
-	if certCaps.GetMaxDepth() > callerCaps.GetMaxDepth() {
-		return nil, status.Errorf(codes.PermissionDenied, "cannot grant max_depth %d; caller's max_depth is %d", certCaps.GetMaxDepth(), callerCaps.GetMaxDepth())
+	if caps.GetMaxDepth() > callerCaps.GetMaxDepth() {
+		return nil, status.Errorf(codes.PermissionDenied, "cannot grant max_depth %d; caller's max_depth is %d", caps.GetMaxDepth(), callerCaps.GetMaxDepth())
 	}
-	if err := attributesSubsetOf(certCaps.GetAttributes(), callerCaps.GetAttributes()); err != nil {
+	if err := attributesSubsetOf(caps.GetAttributes(), callerCaps.GetAttributes()); err != nil {
 		return nil, status.Errorf(codes.PermissionDenied, "cannot grant attributes: %v", err)
 	}
-	cert, err := s.membership.IssueCert(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), certCaps, req.GetMintOnly())
+	grant, err := s.membership.IssueGrant(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), caps, identity.UnlimitedBudget())
 	if err != nil {
-		return nil, s.fail(err, "issue cert failed")
+		if errors.Is(err, membership.ErrNotDelegating) {
+			return nil, status.Error(codes.FailedPrecondition, "this node has no delegation authority; target a delegating node")
+		}
+		return nil, s.fail(err, "issue grant failed")
 	}
-	resp := &controlv1.IssueCertResponse{}
-	if req.GetMintOnly() {
-		resp.Cert = cert
-	}
-	return resp, nil
+	return &controlv1.IssueGrantResponse{Grant: grant}, nil
 }
 
-// RenewCert mints a successor for the cert the caller authenticated
-// with over the mTLS wire session. The subject is taken from the
-// verified session cert (not the request), so a caller can only renew
-// the identity it holds the key for. Unavailable to local/SSH callers,
-// whose identity has no wire-mode lifecycle.
-func (s *Service) RenewCert(ctx context.Context, _ *controlv1.RenewCertRequest) (*controlv1.RenewCertResponse, error) {
-	cert := callerCertFromContext(ctx)
-	if cert == nil {
-		return nil, status.Error(codes.Unauthenticated, "cert renewal is only available over an mTLS wire session")
-	}
-	renewed, err := s.membership.RenewCert(cert)
-	switch {
-	case errors.Is(err, membership.ErrSubjectDenied):
-		s.log.Warnw("renew cert denied", zap.Error(err))
-		return nil, status.Error(codes.PermissionDenied, "subject has been denied")
-	case errors.Is(err, membership.ErrAccessDeadlinePassed):
-		return nil, status.Error(codes.FailedPrecondition, "access deadline passed; rejoin with a fresh token")
-	case errors.Is(err, membership.ErrNotAdmin):
-		return nil, status.Error(codes.FailedPrecondition, "this node cannot issue certs; target a cluster admin")
-	case err != nil:
-		return nil, s.fail(err, "renew cert failed")
-	}
-	return &controlv1.RenewCertResponse{Cert: renewed}, nil
+// grantCapsPublishExceeds reports whether child requests any publish
+// kind the parent does not hold. Publish is per-kind now, so the old
+// single CanPublish bool becomes a per-kind subset check.
+func grantCapsPublishExceeds(child, parent *identityv1.Capabilities) bool {
+	cp, pp := child.GetPublish(), parent.GetPublish()
+	return (cp.GetFunctions() && !pp.GetFunctions()) ||
+		(cp.GetBlobs() && !pp.GetBlobs()) ||
+		(cp.GetSites() && !pp.GetSites()) ||
+		(cp.GetServices() && !pp.GetServices())
 }
 
 func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) (*controlv1.GetMetricsResponse, error) {
@@ -1108,13 +1087,15 @@ func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) 
 	}
 
 	certExpiry := m.CertExpirySeconds
-	if certExpiry == 0 && s.creds != nil && s.creds.Cert() != nil {
-		certExpiry = time.Until(auth.CertExpiresAt(s.creds.Cert())).Seconds()
+	if certExpiry == 0 && s.creds != nil && s.creds.Grant() != nil {
+		if dl := s.creds.Grant().GetClaims().GetGrantDeadlineUnix(); dl > 0 {
+			certExpiry = time.Until(time.Unix(dl, 0)).Seconds()
+		}
 	}
 
 	health := controlv1.HealthStatus_HEALTH_STATUS_HEALTHY
 	switch {
-	case (certExpiry <= 0 && s.creds != nil && s.creds.Cert() != nil) || (counts.Connected == 0 && (counts.Connecting > 0 || counts.Backoff > 0)):
+	case (certExpiry < 0 && s.creds != nil && s.creds.Grant() != nil && s.creds.Grant().GetClaims().GetGrantDeadlineUnix() > 0) || (counts.Connected == 0 && (counts.Connecting > 0 || counts.Backoff > 0)):
 		health = controlv1.HealthStatus_HEALTH_STATUS_UNHEALTHY
 	case m.SmoothedVivaldiErr > vivaldiDegradedThreshold:
 		health = controlv1.HealthStatus_HEALTH_STATUS_DEGRADED
@@ -1188,11 +1169,11 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 		Spread:      header.GetSpread(),
 	}
 
-	if presigned := header.GetPreSignedAuth(); presigned != nil {
+	if presigned := header.GetPreSignedFact(); presigned != nil {
 		if err := s.seedWorkloadPresigned(stream.Context(), wasmBytes, spec, presigned); err != nil {
 			return err
 		}
-		publisher := types.PeerKeyFromBytes(presigned.GetPublisher().GetClaims().GetSubjectPub())
+		publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
 		return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name, PublicUrl: s.pathBasedURL("fn", name, publisher, presigned.GetPolicy().GetPublic())})
 	}
 
@@ -1219,7 +1200,7 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 	return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name, PublicUrl: s.pathBasedURL("fn", name, s.localPeerKey(), header.GetPolicy().GetPublic())})
 }
 
-func (s *Service) seedWorkloadPresigned(ctx context.Context, wasmBytes []byte, spec state.WorkloadSpec, presigned *admissionv1.SpecAuth) error {
+func (s *Service) seedWorkloadPresigned(ctx context.Context, wasmBytes []byte, spec state.WorkloadSpec, presigned *factv1.Fact) error {
 	caller, ok := auth.RPCCallerFromContext(ctx)
 	if !ok {
 		return status.Error(codes.Unauthenticated, "caller cert required for presigned spec")
@@ -1227,7 +1208,7 @@ func (s *Service) seedWorkloadPresigned(ctx context.Context, wasmBytes []byte, s
 	if !caller.CanPublish() {
 		return status.Error(codes.PermissionDenied, "publish capability required")
 	}
-	publisher := types.PeerKeyFromBytes(presigned.GetPublisher().GetClaims().GetSubjectPub())
+	publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
 	if publisher != caller.SubjectPub() {
 		return status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
 	}
@@ -1245,7 +1226,7 @@ const fetchChunkSize = 32 * 1024
 func (s *Service) FetchBlob(req *controlv1.FetchBlobRequest, stream grpc.ServerStreamingServer[controlv1.FetchBlobResponse]) error {
 	hash := req.GetHash()
 	if s.gate != nil {
-		if err := s.gate.Fetch(s.callerCert(stream.Context()), hash); err != nil {
+		if err := s.gate.Fetch(s.callerGrant(stream.Context()), hash); err != nil {
 			return status.Error(codes.PermissionDenied, "fetch denied")
 		}
 	}
@@ -1328,8 +1309,8 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 		if err := s.publishUploadedBlob(hash, name, header); err != nil {
 			return err
 		}
-		if presigned := header.GetPreSignedAuth(); presigned != nil {
-			publisher = types.PeerKeyFromBytes(presigned.GetPublisher().GetClaims().GetSubjectPub())
+		if presigned := header.GetPreSignedFact(); presigned != nil {
+			publisher = types.PeerKeyFromBytes(presigned.GetAuthorityPub())
 		} else {
 			publisher = s.localPeerKey()
 		}
@@ -1338,7 +1319,7 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 }
 
 func (s *Service) publishUploadedBlob(hash, name string, header *controlv1.UploadBlobHeader) error {
-	if presigned := header.GetPreSignedAuth(); presigned != nil {
+	if presigned := header.GetPreSignedFact(); presigned != nil {
 		if err := s.blobs.PublishPresigned(hash, name, presigned); err != nil {
 			s.log.Warnw("publish blob (presigned) failed", "hash", types.ShortHash(hash), "name", name, "err", err)
 			return status.Error(codes.Internal, "publish blob")
@@ -1359,7 +1340,7 @@ func (s *Service) publishUploadedBlob(hash, name string, header *controlv1.Uploa
 // canPublish gate.
 func (s *Service) authoriseBlobUpload(ctx context.Context, header *controlv1.UploadBlobHeader) error {
 	caller, hasCaller := auth.RPCCallerFromContext(ctx)
-	presigned := header.GetPreSignedAuth()
+	presigned := header.GetPreSignedFact()
 	if presigned != nil {
 		if !hasCaller {
 			return status.Error(codes.Unauthenticated, "caller cert required for presigned spec")
@@ -1367,7 +1348,7 @@ func (s *Service) authoriseBlobUpload(ctx context.Context, header *controlv1.Upl
 		if !caller.CanPublish() {
 			return status.Error(codes.PermissionDenied, "publish capability required")
 		}
-		publisher := types.PeerKeyFromBytes(presigned.GetPublisher().GetClaims().GetSubjectPub())
+		publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
 		if publisher != caller.SubjectPub() {
 			return status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
 		}
@@ -1397,7 +1378,7 @@ func (s *Service) RemoveBlob(ctx context.Context, req *controlv1.RemoveBlobReque
 	if _, ok := s.static.StaticBlobs()[hash]; ok {
 		return nil, status.Error(codes.FailedPrecondition, "blob is referenced by a static manifest; unseed the static site instead")
 	}
-	if presigned := req.GetPreSignedAuth(); presigned != nil {
+	if presigned := req.GetPreSignedFact(); presigned != nil {
 		if err := s.authorisePresignedTombstone(ctx, presigned); err != nil {
 			return nil, err
 		}
@@ -1429,7 +1410,7 @@ func (s *Service) failBlobRemove(hash string, err error) error {
 }
 
 func (s *Service) SeedStatic(ctx context.Context, req *controlv1.SeedStaticRequest) (*controlv1.SeedStaticResponse, error) {
-	if presigned := req.GetPreSignedAuth(); presigned != nil {
+	if presigned := req.GetPreSignedFact(); presigned != nil {
 		return s.seedStaticPresigned(ctx, req, presigned)
 	}
 	if !s.canPublish() {
@@ -1444,7 +1425,7 @@ func (s *Service) SeedStatic(ctx context.Context, req *controlv1.SeedStaticReque
 	return &controlv1.SeedStaticResponse{PublicUrl: s.hostBasedURL(req.GetName(), s.localPeerKey())}, nil
 }
 
-func (s *Service) seedStaticPresigned(ctx context.Context, req *controlv1.SeedStaticRequest, presigned *admissionv1.SpecAuth) (*controlv1.SeedStaticResponse, error) {
+func (s *Service) seedStaticPresigned(ctx context.Context, req *controlv1.SeedStaticRequest, presigned *factv1.Fact) (*controlv1.SeedStaticResponse, error) {
 	caller, ok := auth.RPCCallerFromContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "caller cert required for presigned spec")
@@ -1452,7 +1433,7 @@ func (s *Service) seedStaticPresigned(ctx context.Context, req *controlv1.SeedSt
 	if !caller.CanPublish() {
 		return nil, status.Error(codes.PermissionDenied, "publish capability required")
 	}
-	publisher := types.PeerKeyFromBytes(presigned.GetPublisher().GetClaims().GetSubjectPub())
+	publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
 	if publisher != caller.SubjectPub() {
 		return nil, status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
 	}
@@ -1463,7 +1444,7 @@ func (s *Service) seedStaticPresigned(ctx context.Context, req *controlv1.SeedSt
 }
 
 func (s *Service) UnseedStatic(ctx context.Context, req *controlv1.UnseedStaticRequest) (*controlv1.UnseedStaticResponse, error) {
-	if presigned := req.GetPreSignedAuth(); presigned != nil {
+	if presigned := req.GetPreSignedFact(); presigned != nil {
 		if err := s.authorisePresignedTombstone(ctx, presigned); err != nil {
 			return nil, err
 		}
@@ -1596,7 +1577,7 @@ func (s *Service) buildBlobSummaries(snap state.Snapshot, scope viewScope) []*co
 }
 
 func (s *Service) UnseedWorkload(ctx context.Context, req *controlv1.UnseedWorkloadRequest) (*controlv1.UnseedWorkloadResponse, error) {
-	if presigned := req.GetPreSignedAuth(); presigned != nil {
+	if presigned := req.GetPreSignedFact(); presigned != nil {
 		if err := s.authorisePresignedTombstone(ctx, presigned); err != nil {
 			return nil, err
 		}
@@ -1663,37 +1644,37 @@ func (s *Service) CallWorkload(ctx context.Context, req *controlv1.CallWorkloadR
 }
 
 // callerWasmContext seeds a wasm.CallerInfo on ctx from the caller's
-// cert (set by the gRPC interceptor). Unix-socket and SSH-bridge paths
+// grant (set by the gRPC interceptor). Unix-socket and SSH-bridge paths
 // hit the daemon-self fallback in injectCaller and naturally carry the
-// daemon's own cert; wire-mode callers carry their own mTLS-validated
-// cert. Either way the downstream placement layer sees the authentic
+// daemon's own grant; wire-mode callers carry their own mTLS-validated
+// grant. Either way the downstream placement layer sees the authentic
 // caller identity, not a substituted daemon identity.
 func (s *Service) callerWasmContext(ctx context.Context) context.Context {
-	cert := s.callerCert(ctx)
-	if cert == nil {
+	grant := s.callerGrant(ctx)
+	if grant == nil {
 		return ctx
 	}
 	info := wasm.CallerInfo{
-		PeerKey: types.PeerKeyFromBytes(cert.GetClaims().GetSubjectPub()),
+		PeerKey: types.PeerKeyFromBytes(grant.GetClaims().GetSubjectPub()),
 	}
-	if attrs := cert.GetClaims().GetCapabilities().GetAttributes(); attrs != nil {
+	if attrs := grant.GetClaims().GetCapabilities().GetAttributes(); attrs != nil {
 		info.Attributes = attrs.AsMap()
 	}
 	return wasm.WithCallerInfo(ctx, info)
 }
 
-// callerCert returns the caller's cert from the RPC context. Returns
+// callerGrant returns the caller's grant from the RPC context. Returns
 // nil if no caller is present — the interceptor (injectCaller) is the
-// only legitimate source of a caller cert, and its TLS-path guard
+// only legitimate source of a caller grant, and its TLS-path guard
 // refuses the daemon-self fallback for wire-mode peers. Mirroring that
 // refusal here keeps the security boundary at one well-defined edge.
 // Downstream gate methods (Connect, Fetch, Invoke) fail closed on nil.
-func (s *Service) callerCert(ctx context.Context) *admissionv1.DelegationCert {
+func (s *Service) callerGrant(ctx context.Context) *identityv1.Grant {
 	rpc, ok := auth.RPCCallerFromContext(ctx)
 	if !ok {
 		return nil
 	}
-	return rpc.Cert()
+	return rpc.Grant()
 }
 
 type capabilityCheck func(auth.RPCCaller) bool

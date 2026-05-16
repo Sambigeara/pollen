@@ -11,9 +11,11 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
+	"github.com/sambigeara/pollen/pkg/fact"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -49,7 +51,7 @@ func (StaticChanged) stateEvent()    {}
 func (CertChanged) stateEvent()      {}
 
 type LocalSigner interface {
-	IssueSpecAuth(resource *admissionv1.ResourceID, body auth.SpecBody, policy *admissionv1.Predicate, deleted bool) (*admissionv1.SpecAuth, error)
+	IssueFact(resource *admissionv1.ResourceID, body fact.Body, policy *admissionv1.Predicate, deleted bool) (*factv1.Fact, error)
 }
 
 type MutationValidator func(*statev1.SpecChange) error
@@ -70,9 +72,9 @@ type StateStore interface {
 	SetLocalObservedAddress(ip string, port uint32) []Event
 
 	PublishWorkload(spec WorkloadSpec, policy *admissionv1.Predicate) ([]Event, error)
-	PublishWorkloadPresigned(spec WorkloadSpec, presignedAuth *admissionv1.SpecAuth) ([]Event, error)
+	PublishWorkloadPresigned(spec WorkloadSpec, presignedFact *factv1.Fact) ([]Event, error)
 	DeleteWorkloadSpec(hash string) ([]Event, error)
-	DeleteWorkloadSpecPresigned(hash string, presignedAuth *admissionv1.SpecAuth) ([]Event, error)
+	DeleteWorkloadSpecPresigned(hash string, presignedFact *factv1.Fact) ([]Event, error)
 	ClaimWorkload(hash string) []Event
 	MarkWorkloadDraining(hash string) []Event
 	ReleaseWorkload(hash string) []Event
@@ -82,18 +84,18 @@ type StateStore interface {
 	SetLocalBlobs(digests []string) []Event
 
 	SetStaticSpec(spec StaticSpec, policy *admissionv1.Predicate) ([]Event, error)
-	SetStaticSpecPresigned(spec StaticSpec, presignedAuth *admissionv1.SpecAuth) ([]Event, error)
+	SetStaticSpecPresigned(spec StaticSpec, presignedFact *factv1.Fact) ([]Event, error)
 	DeleteStaticSpec(name string) ([]Event, error)
-	DeleteStaticSpecPresigned(name string, presignedAuth *admissionv1.SpecAuth) ([]Event, error)
+	DeleteStaticSpecPresigned(name string, presignedFact *factv1.Fact) ([]Event, error)
 	ClaimStatic(name string) []Event
 	ReleaseStatic(name string) []Event
 
 	SetBlobSpec(spec BlobSpec, policy *admissionv1.Predicate) ([]Event, error)
-	SetBlobSpecPresigned(spec BlobSpec, presignedAuth *admissionv1.SpecAuth) ([]Event, error)
+	SetBlobSpecPresigned(spec BlobSpec, presignedFact *factv1.Fact) ([]Event, error)
 	DeleteBlobSpec(digest string) ([]Event, error)
-	DeleteBlobSpecPresigned(digest string, presignedAuth *admissionv1.SpecAuth) ([]Event, error)
+	DeleteBlobSpecPresigned(digest string, presignedFact *factv1.Fact) ([]Event, error)
 
-	SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []Event
+	SetBlobWrapping(wrapping *factv1.BlobWrapping) []Event
 
 	SetService(port uint32, name string, protocol statev1.ServiceProtocol, policy *admissionv1.Predicate) ([]Event, error)
 	RemoveService(name string) ([]Event, error)
@@ -109,7 +111,7 @@ type StateStore interface {
 	ClearAdmin()
 	SetStaticCapable()
 	SetNodeName(name string)
-	SetLocalDelegationCert(cert *admissionv1.DelegationCert, subjectSig []byte) []Event
+	SetLocalGrant(grant *identityv1.Grant, subjectSig []byte) []Event
 	SetLocalSigner(signer LocalSigner)
 	SetMutationValidator(v MutationValidator)
 	ExportLastAddrs() map[types.PeerKey]string

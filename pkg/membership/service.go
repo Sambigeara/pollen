@@ -6,7 +6,6 @@ package membership
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/tls"
 	"errors"
 	"maps"
 	"math/rand/v2"
@@ -17,11 +16,11 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/state"
@@ -62,8 +61,7 @@ type MembershipAPI interface {
 	Stop() error
 
 	DenyPeer(key types.PeerKey) error
-	IssueCert(ctx context.Context, peerKey types.PeerKey, certCaps *admissionv1.Capabilities, mintOnly bool) (*admissionv1.DelegationCert, error)
-	RenewCert(currentCert *admissionv1.DelegationCert) (*admissionv1.DelegationCert, error)
+	IssueGrant(ctx context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget) (*identityv1.Grant, error)
 
 	HandleDigestStream(ctx context.Context, stream transport.Stream, peer types.PeerKey)
 
@@ -87,7 +85,7 @@ type ClusterState interface {
 	SetLocalNAT(nat.Type) []state.Event
 	SetLocalReachable([]types.PeerKey) []state.Event
 	SetLocalObservedAddress(string, uint32) []state.Event
-	SetLocalDelegationCert(cert *admissionv1.DelegationCert, subjectSig []byte) []state.Event
+	SetLocalGrant(grant *identityv1.Grant, subjectSig []byte) []state.Event
 	SetLocalSigner(signer state.LocalSigner)
 	RevokeOwnSpecs() ([]state.Event, error)
 }
@@ -108,14 +106,6 @@ type RTTSource interface {
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
 }
 
-type CertManager interface {
-	UpdateMeshCert(cert tls.Certificate)
-	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.DelegationCert, error)
-	PeerDelegationCert(peer types.PeerKey) (*admissionv1.DelegationCert, bool)
-	SetPeerDelegationCert(peer types.PeerKey, cert *admissionv1.DelegationCert)
-	PushCert(ctx context.Context, peer types.PeerKey, cert *admissionv1.DelegationCert) error
-}
-
 type PeerAddressSource interface {
 	GetActivePeerAddress(peer types.PeerKey) (*net.UDPAddr, bool)
 }
@@ -128,11 +118,6 @@ type RoutedSender interface {
 	SendMembershipDatagram(ctx context.Context, peer types.PeerKey, data []byte) error
 }
 
-type CapabilityTransitioner interface {
-	UpgradeToAdmin(signer *auth.DelegationSigner)
-	DowngradeFromAdmin(specSigner *auth.SpecSigner)
-}
-
 type ControlMetrics struct {
 	LocalCoord        coords.Coord
 	SmoothedErr       float64
@@ -143,7 +128,6 @@ type ControlMetrics struct {
 
 type Config struct {
 	RTT              RTTSource
-	Certs            CertManager
 	PeerAddrs        PeerAddressSource
 	SessionCloser    PeerSessionCloser
 	TracerProvider   trace.TracerProvider
@@ -153,7 +137,6 @@ type Config struct {
 	NATDetector      *nat.Detector
 	NodeMetrics      *metrics.NodeMetrics
 	RoutedSender     RoutedSender
-	CapTransition    CapabilityTransitioner
 	DatagramHandler  func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope)
 	Log              *zap.SugaredLogger
 	PollenDir        string
@@ -178,14 +161,13 @@ type Service struct {
 	mesh              Network
 	streams           StreamOpener
 	rtt               RTTSource
-	certs             CertManager
 	peerAddrs         PeerAddressSource
 	sessionCloser     PeerSessionCloser
 	store             ClusterState
 	lastSentAddr      map[types.PeerKey]sentAddr
 	peerConnectTime   map[types.PeerKey]time.Time
 	natDetector       *nat.Detector
-	creds             *auth.NodeCredentials
+	creds             *identity.Credentials
 	nodeMetrics       *metrics.NodeMetrics
 	smoothedErr       *metrics.EWMA
 	log               *zap.SugaredLogger
@@ -194,7 +176,6 @@ type Service struct {
 	lastEagerSync     map[types.PeerKey]time.Time
 	shutdownCh        chan<- struct{}
 	routedSender      RoutedSender
-	capTransition     CapabilityTransitioner
 	datagramHandler   func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope)
 	pollenDir         string
 	advertisedIPs     []string
@@ -205,30 +186,25 @@ type Service struct {
 	gossipInterval    time.Duration
 	eagerSyncs        atomic.Int64
 	gossipJitter      float64
-	reconnectWindow   time.Duration
 	membershipTTL     time.Duration
 	peerTickInterval  time.Duration
 	vivaldiSamples    atomic.Int64
 	localCoordErr     float64
 	eagerSyncFailures atomic.Int64
-	tlsIdentityTTL    time.Duration
 	stopOnce          sync.Once
 	mu                sync.Mutex
-	renewalFailed     atomic.Bool
 	localID           types.PeerKey
 }
 
-func New(self types.PeerKey, creds *auth.NodeCredentials, net Network, cluster ClusterState, cfg Config) *Service {
+func New(self types.PeerKey, creds *identity.Credentials, net Network, cluster ClusterState, cfg Config) *Service {
 	s := &Service{
 		store:            cluster,
 		mesh:             net,
 		streams:          cfg.Streams,
 		rtt:              cfg.RTT,
-		certs:            cfg.Certs,
 		peerAddrs:        cfg.PeerAddrs,
 		sessionCloser:    cfg.SessionCloser,
 		routedSender:     cfg.RoutedSender,
-		capTransition:    cfg.CapTransition,
 		datagramHandler:  cfg.DatagramHandler,
 		natDetector:      cfg.NATDetector,
 		creds:            creds,
@@ -247,9 +223,7 @@ func New(self types.PeerKey, creds *auth.NodeCredentials, net Network, cluster C
 		advertisedIPs:    cfg.AdvertisedIPs,
 		pollenDir:        cfg.PollenDir,
 		port:             cfg.Port,
-		tlsIdentityTTL:   cfg.TLSIdentityTTL,
 		membershipTTL:    cfg.MembershipTTL,
-		reconnectWindow:  cfg.ReconnectWindow,
 		gossipInterval:   cfg.GossipInterval,
 		gossipJitter:     cfg.GossipJitter,
 		peerTickInterval: cfg.PeerTickInterval,
@@ -273,12 +247,12 @@ func New(self types.PeerKey, creds *auth.NodeCredentials, net Network, cluster C
 
 func (s *Service) Start(ctx context.Context) error {
 	s.store.SetLocalCoord(s.localCoord, s.localCoordErr)
-	// Seed the cert graph before the initial full-state broadcast so
+	// Seed the grant graph before the initial full-state broadcast so
 	// other nodes can immediately authorise denies for / against us.
-	s.publishLocalDelegationCert(s.creds.Cert())
+	s.publishLocalGrant(s.creds.Grant())
 	s.broadcastBatchBytes(ctx, s.store.EncodeFull())
 
-	if s.checkCertExpiry() {
+	if s.checkGrantExpiry() {
 		return ErrCertExpired
 	}
 
@@ -291,7 +265,7 @@ func (s *Service) Start(ctx context.Context) error {
 	s.spawn(runCtx, s.runPeerEventLoop)
 	s.spawn(runCtx, s.runPeerTick)
 	s.spawn(runCtx, s.runPendingGossipBroadcast)
-	s.spawn(runCtx, s.runCertCheckTicker)
+	s.spawn(runCtx, s.runGrantCheckTicker)
 
 	if len(s.advertisedIPs) == 0 {
 		s.spawn(runCtx, s.runIPRefresh)
@@ -433,7 +407,6 @@ func (s *Service) runPeerEventLoop(ctx context.Context) {
 func (s *Service) runPeerTick(ctx context.Context) {
 	ticker := time.NewTicker(s.peerTickInterval)
 	defer ticker.Stop()
-	var lastExpirySweep time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -442,10 +415,6 @@ func (s *Service) runPeerTick(ctx context.Context) {
 			snap := s.store.Snapshot()
 			s.updateVivaldiCoords(snap)
 			s.resendObservedAddresses(snap)
-			if time.Since(lastExpirySweep) >= expirySweepInterval {
-				s.disconnectExpiredPeers()
-				lastExpirySweep = time.Now()
-			}
 		}
 	}
 }
@@ -487,31 +456,19 @@ func (s *Service) runPendingGossipBroadcast(ctx context.Context) {
 	}
 }
 
-func (s *Service) runCertCheckTicker(ctx context.Context) {
-	certInterval := certCheckInterval
-	if auth.IsCertExpired(s.creds.Cert(), time.Now()) {
-		certInterval = expirySweepInterval
-	}
-	ticker := time.NewTicker(certInterval)
+func (s *Service) runGrantCheckTicker(ctx context.Context) {
+	ticker := time.NewTicker(certCheckInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if s.checkCertExpiry() {
+			if s.checkGrantExpiry() {
 				if s.shutdownCh != nil {
 					s.shutdownCh <- struct{}{}
 				}
 				return
-			}
-			newInterval := certCheckInterval
-			if s.renewalFailed.Load() {
-				newInterval = expirySweepInterval
-			}
-			if newInterval != certInterval {
-				certInterval = newInterval
-				ticker.Reset(certInterval)
 			}
 		}
 	}

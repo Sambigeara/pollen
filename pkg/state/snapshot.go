@@ -11,10 +11,11 @@ import (
 	"slices"
 	"time"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -27,7 +28,7 @@ type Snapshot struct {
 	StaticSpecs          map[string]StaticSpecView
 	StaticClaims         map[string]map[types.PeerKey]struct{}
 	BlobSpecs            map[string]BlobSpecView
-	Wrappings            map[string]map[types.PeerKey]*statev1.BlobWrappingChange
+	Wrappings            map[string]map[types.PeerKey]*factv1.BlobWrapping
 	WorkloadStoringPeers map[string]map[types.PeerKey]struct{}
 	StaticStoringPeers   map[string]map[types.PeerKey]struct{}
 	BlobStoringPeers     map[string]map[types.PeerKey]struct{}
@@ -46,13 +47,13 @@ type Snapshot struct {
 }
 
 type StaticSpecView struct {
-	Auth      *admissionv1.SpecAuth
+	Fact      *factv1.Fact
 	Spec      StaticSpec
 	Publisher types.PeerKey
 }
 
 type BlobSpecView struct {
-	Auth      *admissionv1.SpecAuth
+	Fact      *factv1.Fact
 	Spec      BlobSpec
 	Publisher types.PeerKey
 }
@@ -65,7 +66,7 @@ type NodeView struct {
 	Services           map[string]*Service
 	CallCounts         map[string]uint64
 	Blobs              map[string]struct{}
-	Cert               *admissionv1.DelegationCert
+	Grant              *identityv1.Grant
 	VivaldiCoord       *coords.Coord
 	ObservedExternalIP string
 	LastAddr           string
@@ -86,7 +87,7 @@ type NodeView struct {
 }
 
 type WorkloadSpecView struct {
-	Auth      *admissionv1.SpecAuth
+	Fact      *factv1.Fact
 	Spec      WorkloadSpec
 	Publisher types.PeerKey
 }
@@ -97,7 +98,7 @@ type TrafficSnapshot struct {
 }
 
 type Service struct {
-	Auth     *admissionv1.SpecAuth
+	Fact     *factv1.Fact
 	Name     string
 	Port     uint32
 	Protocol statev1.ServiceProtocol
@@ -141,24 +142,36 @@ func (s Snapshot) IsDenied(peer types.PeerKey) bool {
 }
 
 // DenyChecker adapts this snapshot's chain-aware deny set to the
-// auth.DenyChecker shape used by durable-credential verification. The
-// snapshot is captured by value, so the checker is a stable view safe
-// to call from any goroutine.
-func (s Snapshot) DenyChecker() auth.DenyChecker {
+// identity.DenyChecker shape used by durable-authority verification.
+// The snapshot is captured by value, so the checker is a stable view
+// safe to call from any goroutine.
+func (s Snapshot) DenyChecker() identity.DenyChecker {
 	return func(subjectPub []byte) bool {
 		return s.IsDenied(types.PeerKeyFromBytes(subjectPub))
 	}
 }
 
-// LocalCert returns the local node's delegation cert as published into
-// gossip, or nil if the local node hasn't published one yet (the
-// cluster-bootstrap window before SetLocalDelegationCert fires).
-func (s Snapshot) LocalCert() *admissionv1.DelegationCert {
+// LocalGrant returns the local node's grant as published into gossip,
+// or nil if the local node hasn't published one yet (the
+// cluster-bootstrap window before SetLocalGrant fires).
+func (s Snapshot) LocalGrant() *identityv1.Grant {
 	nv, ok := s.Nodes[s.LocalID]
 	if !ok {
 		return nil
 	}
-	return nv.Cert
+	return nv.Grant
+}
+
+// GrantFor returns the grant gossiped for the node whose subject is
+// authorityPub, or nil if that authority has not gossiped a grant. This
+// is how a Fact's named authority is resolved to its durable Grant at
+// admission and runtime, mirroring the store's grantForPeerLocked.
+func (s Snapshot) GrantFor(authorityPub []byte) *identityv1.Grant {
+	nv, ok := s.Nodes[types.PeerKeyFromBytes(authorityPub)]
+	if !ok {
+		return nil
+	}
+	return nv.Grant
 }
 
 func (s Snapshot) SpecByName(name string) (string, WorkloadSpecView, bool) {
@@ -188,7 +201,7 @@ func (s Snapshot) LocalSpecByName(name string, localID types.PeerKey) (string, b
 }
 
 type ServiceInfo struct {
-	Auth     *admissionv1.SpecAuth
+	Fact     *factv1.Fact
 	Name     string
 	Peer     types.PeerKey
 	Port     uint32
@@ -247,7 +260,7 @@ func sortedPeerSet(set map[types.PeerKey]struct{}) []types.PeerKey {
 // blobHash, or false when no peer has gossiped one. Callers can trust
 // the wrapper identity without re-verifying because admission already
 // validated the chain and signature.
-func (s Snapshot) WrappingFor(blobHash string, recipient types.PeerKey) (*statev1.BlobWrappingChange, bool) {
+func (s Snapshot) WrappingFor(blobHash string, recipient types.PeerKey) (*factv1.BlobWrapping, bool) {
 	byRecipient, ok := s.Wrappings[blobHash]
 	if !ok {
 		return nil, false
@@ -275,13 +288,13 @@ type ManifestPaths interface {
 // Pass a nil mp to skip nested-manifest resolution; callers that don't
 // have a CAS handle (e.g. snapshot-only tests) still get correct
 // answers for the direct cases.
-func (s Snapshot) BlobEntitlements(hash string, mp ManifestPaths) []*admissionv1.SpecAuth {
-	var out []*admissionv1.SpecAuth
-	if sv, ok := s.Specs[hash]; ok && sv.Auth != nil {
-		out = append(out, sv.Auth)
+func (s Snapshot) BlobEntitlements(hash string, mp ManifestPaths) []*factv1.Fact {
+	var out []*factv1.Fact
+	if sv, ok := s.Specs[hash]; ok && sv.Fact != nil {
+		out = append(out, sv.Fact)
 	}
-	if bv, ok := s.BlobSpecs[hash]; ok && bv.Auth != nil {
-		out = append(out, bv.Auth)
+	if bv, ok := s.BlobSpecs[hash]; ok && bv.Fact != nil {
+		out = append(out, bv.Fact)
 	}
 	// Walk StaticSpecsAll, not StaticSpecs. The deduped map keys on name
 	// and tie-breaks by publisher; if two tenants seed sites with the
@@ -289,11 +302,11 @@ func (s Snapshot) BlobEntitlements(hash string, mp ManifestPaths) []*admissionv1
 	// the gate denies fetches for blobs referenced solely by the losing
 	// publisher's manifest, and their site can't replicate cross-node.
 	for _, sv := range s.StaticSpecsAll {
-		if sv.Auth == nil {
+		if sv.Fact == nil {
 			continue
 		}
 		if sv.Spec.ManifestDigest == hash {
-			out = append(out, sv.Auth)
+			out = append(out, sv.Fact)
 			continue
 		}
 		if mp == nil {
@@ -304,7 +317,7 @@ func (s Snapshot) BlobEntitlements(hash string, mp ManifestPaths) []*admissionv1
 			continue
 		}
 		if _, hit := paths[hash]; hit {
-			out = append(out, sv.Auth)
+			out = append(out, sv.Fact)
 		}
 	}
 	return out
@@ -331,7 +344,7 @@ func (s Snapshot) Services() []ServiceInfo {
 	var out []ServiceInfo
 	for pk, nv := range s.Nodes {
 		for name, svc := range nv.Services {
-			out = append(out, ServiceInfo{Name: name, Port: svc.Port, Peer: pk, Protocol: svc.Protocol, Auth: svc.Auth})
+			out = append(out, ServiceInfo{Name: name, Port: svc.Port, Peer: pk, Protocol: svc.Protocol, Fact: svc.Fact})
 		}
 	}
 	return out
@@ -410,7 +423,7 @@ func (s *store) buildSnapshot() Snapshot {
 	specStoring := make(map[string]map[types.PeerKey]struct{})
 	staticStoring := make(map[string]map[types.PeerKey]struct{})
 	blobStoring := make(map[string]map[types.PeerKey]struct{})
-	wrappings := make(map[string]map[types.PeerKey]*statev1.BlobWrappingChange)
+	wrappings := make(map[string]map[types.PeerKey]*factv1.BlobWrapping)
 	wrapperBy := make(map[string]map[types.PeerKey]types.PeerKey)
 	// Pre-pass: collect every publisher-signed tombstone keyed by
 	// (kind, name, publisher). A tombstone in any peer's slot kills
@@ -423,8 +436,8 @@ func (s *store) buildSnapshot() Snapshot {
 			if !ev.Deleted || !isSpecKind(key.kind) {
 				continue
 			}
-			auth := ev.GetSpecChange().GetAuth()
-			pub := types.PeerKeyFromBytes(auth.GetPublisher().GetClaims().GetSubjectPub())
+			auth := ev.GetSpecChange().GetFact()
+			pub := types.PeerKeyFromBytes(auth.GetAuthorityPub())
 			tombstones[newTombstoneKey(key.kind, key.name, pub, auth.GetBodyHash())] = struct{}{}
 		}
 	}
@@ -443,8 +456,8 @@ func (s *store) buildSnapshot() Snapshot {
 			}
 			var publisher types.PeerKey
 			if isSpecKind(key.kind) {
-				auth := ev.GetSpecChange().GetAuth()
-				publisher = types.PeerKeyFromBytes(auth.GetPublisher().GetClaims().GetSubjectPub())
+				auth := ev.GetSpecChange().GetFact()
+				publisher = types.PeerKeyFromBytes(auth.GetAuthorityPub())
 				if _, killed := tombstones[newTombstoneKey(key.kind, key.name, publisher, auth.GetBodyHash())]; killed {
 					continue
 				}
@@ -459,7 +472,7 @@ func (s *store) buildSnapshot() Snapshot {
 				if existing, ok := specs[key.name]; !ok || outranks(publisher, existing.Publisher) {
 					specs[key.name] = WorkloadSpecView{
 						Spec:      workloadSpecFromProto(sc.GetWorkload()),
-						Auth:      sc.GetAuth(),
+						Fact:      sc.GetFact(),
 						Publisher: publisher,
 					}
 				}
@@ -471,7 +484,7 @@ func (s *store) buildSnapshot() Snapshot {
 				staticStoring[key.name][pk] = struct{}{}
 				view := StaticSpecView{
 					Spec:      staticSpecFromProto(sc.GetStatic()),
-					Auth:      sc.GetAuth(),
+					Fact:      sc.GetFact(),
 					Publisher: publisher,
 				}
 				if existing, ok := staticSpecs[key.name]; !ok || outranks(publisher, existing.Publisher) {
@@ -495,7 +508,7 @@ func (s *store) buildSnapshot() Snapshot {
 				if existing, ok := blobSpecs[key.name]; !ok || outranks(publisher, existing.Publisher) {
 					blobSpecs[key.name] = BlobSpecView{
 						Spec:      blobSpecFromProto(sc.GetBlob()),
-						Auth:      sc.GetAuth(),
+						Fact:      sc.GetFact(),
 						Publisher: publisher,
 					}
 				}
@@ -509,7 +522,7 @@ func (s *store) buildSnapshot() Snapshot {
 				}
 				byRecipient, ok := wrappings[key.name]
 				if !ok {
-					byRecipient = make(map[types.PeerKey]*statev1.BlobWrappingChange)
+					byRecipient = make(map[types.PeerKey]*factv1.BlobWrapping)
 					wrappings[key.name] = byRecipient
 				}
 				byPub, ok := wrapperBy[key.name]
@@ -605,7 +618,7 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 			nv.ObservedExternalIP, nv.ExternalPort = v.ObservedAddress.Ip, v.ObservedAddress.Port
 		case *statev1.GossipEvent_SpecChange:
 			if svc := v.SpecChange.GetService(); svc != nil {
-				nv.Services[key.name] = &Service{Name: key.name, Port: svc.Port, Protocol: NormaliseProtocol(svc.Protocol), Auth: v.SpecChange.GetAuth()}
+				nv.Services[key.name] = &Service{Name: key.name, Port: svc.Port, Protocol: NormaliseProtocol(svc.Protocol), Fact: v.SpecChange.GetFact()}
 			}
 		case *statev1.GossipEvent_Reachability:
 			nv.Reachable[key.peer] = struct{}{}
@@ -650,8 +663,8 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 			nv.Name = v.NodeName.Name
 		case *statev1.GossipEvent_StaticClaim:
 			staticClaims[key.name] = struct{}{}
-		case *statev1.GossipEvent_DelegationCert:
-			nv.Cert = v.DelegationCert.GetCert()
+		case *statev1.GossipEvent_Grant:
+			nv.Grant = v.Grant.GetGrant()
 		}
 	}
 	return nv, claims, staticClaims

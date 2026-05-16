@@ -13,9 +13,11 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
+	"github.com/sambigeara/pollen/pkg/fact"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
 	"google.golang.org/protobuf/proto"
@@ -37,10 +39,10 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 	certChanged := false
 	for _, ev := range gossips {
 		key, _ := getAttrKey(ev)
-		if key.kind == attrDeny || key.kind == attrDelegationCert {
+		if key.kind == attrDeny || key.kind == attrGrant {
 			denyOrCertChanged = true
 		}
-		if key.kind == attrDelegationCert {
+		if key.kind == attrGrant {
 			certChanged = true
 		}
 		rec.maxCounter++
@@ -81,27 +83,27 @@ func (s *store) DenyPeer(key types.PeerKey) []Event {
 	})
 }
 
-// SetLocalDelegationCert publishes the local node's current delegation
-// cert into the CRDT so every other node can evaluate chain-scoped
-// rules (most importantly: subtree-bounded deny authorisation).
+// SetLocalGrant publishes the local node's current grant into the CRDT
+// so every other node can evaluate chain-scoped rules (most
+// importantly: subtree-bounded deny authorisation).
 //
-// subjectSig must be a valid ed25519 signature by cert.subject_pub
-// (== local node identity) over the cert's claims, produced by
-// auth.SignDelegationCertSubject. Without subject proof-of-possession,
-// any admin could forge a cert for another peer's pub and bypass deny
+// subjectSig must be a valid ed25519 signature by grant.subject_pub
+// (== local node identity) over the grant's claims, produced by
+// identity.SignGrantSubject. Without subject proof-of-possession, any
+// admin could forge a grant for another peer's pub and bypass deny
 // scoping. Callers in production wire this from the signing key; tests
-// that exercise non-cert paths can leave subjectSig empty (apply-time
+// that exercise non-grant paths can leave subjectSig empty (apply-time
 // verification is skipped when rootPub is unset).
-func (s *store) SetLocalDelegationCert(cert *admissionv1.DelegationCert, subjectSig []byte) []Event {
-	if cert == nil {
+func (s *store) SetLocalGrant(grant *identityv1.Grant, subjectSig []byte) []Event {
+	if grant == nil {
 		return nil
 	}
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		owned := &statev1.DelegationCertChange{Cert: cert, SubjectSignature: subjectSig}
-		if ev, ok := rec.log[attrKey{kind: attrDelegationCert}]; ok && !ev.Deleted && proto.Equal(ev.GetDelegationCert(), owned) {
+		owned := &statev1.GrantChange{Grant: grant, SubjectSignature: subjectSig}
+		if ev, ok := rec.log[attrKey{kind: attrGrant}]; ok && !ev.Deleted && proto.Equal(ev.GetGrant(), owned) {
 			return nil, nil
 		}
-		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_DelegationCert{DelegationCert: owned}}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_Grant{Grant: owned}}
 		return []*statev1.GossipEvent{change}, nil
 	})
 }
@@ -262,7 +264,7 @@ func (s *store) DeleteWorkloadSpec(hash string) ([]Event, error) {
 			return nil, nil
 		}
 		body := ev.GetSpecChange().GetWorkload()
-		specChange, err := s.signedSpecChangeLocked(seedResourceID(body.GetName(), hashBytes), body, ev.GetSpecChange().GetAuth().GetPolicy(), true)
+		specChange, err := s.signedSpecChangeLocked(seedResourceID(body.GetName(), hashBytes), body, ev.GetSpecChange().GetFact().GetPolicy(), true)
 		if err != nil {
 			signerErr = err
 			return nil, nil
@@ -406,7 +408,7 @@ func (s *store) RemoveService(name string) ([]Event, error) {
 			return nil, nil
 		}
 		body := ev.GetSpecChange().GetService()
-		specChange, err := s.signedSpecChangeLocked(serviceResourceID(body), body, ev.GetSpecChange().GetAuth().GetPolicy(), true)
+		specChange, err := s.signedSpecChangeLocked(serviceResourceID(body), body, ev.GetSpecChange().GetFact().GetPolicy(), true)
 		if err != nil {
 			signerErr = err
 			return nil, nil
@@ -458,7 +460,7 @@ func (s *store) DeleteStaticSpec(name string) ([]Event, error) {
 			return nil, nil
 		}
 		body := ev.GetSpecChange().GetStatic()
-		specChange, err := s.signedSpecChangeLocked(staticResourceID(body), body, ev.GetSpecChange().GetAuth().GetPolicy(), true)
+		specChange, err := s.signedSpecChangeLocked(staticResourceID(body), body, ev.GetSpecChange().GetFact().GetPolicy(), true)
 		if err != nil {
 			signerErr = err
 			return nil, nil
@@ -530,7 +532,7 @@ func (s *store) DeleteBlobSpec(digest string) ([]Event, error) {
 			return nil, nil
 		}
 		body := ev.GetSpecChange().GetBlob()
-		specChange, err := s.signedSpecChangeLocked(blobResourceID(body), body, ev.GetSpecChange().GetAuth().GetPolicy(), true)
+		specChange, err := s.signedSpecChangeLocked(blobResourceID(body), body, ev.GetSpecChange().GetFact().GetPolicy(), true)
 		if err != nil {
 			signerErr = err
 			return nil, nil
@@ -563,12 +565,12 @@ var ErrNoValidator = errors.New("presigned mutations require a validate hook")
 // wire-mode caller, validated against the cluster root, and gossipped
 // as-is. No auto-claim is emitted; placement is decided by reconcilers
 // on hosts that match the policy.
-func (s *store) PublishWorkloadPresigned(spec WorkloadSpec, presignedAuth *admissionv1.SpecAuth) ([]Event, error) {
+func (s *store) PublishWorkloadPresigned(spec WorkloadSpec, presignedFact *factv1.Fact) ([]Event, error) {
 	hashBytes, err := hex.DecodeString(spec.Hash)
 	if err != nil || len(hashBytes) != sha256Len {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, spec.Hash)
 	}
-	specChange, publisher, err := s.preparePresignedSpec(workloadSpecToProto(spec), presignedAuth)
+	specChange, publisher, err := s.preparePresignedSpec(workloadSpecToProto(spec), presignedFact)
 	if err != nil {
 		return nil, err
 	}
@@ -577,13 +579,13 @@ func (s *store) PublishWorkloadPresigned(spec WorkloadSpec, presignedAuth *admis
 
 // SetStaticSpecPresigned stores a tenant-signed static-site spec without
 // re-signing. See PublishWorkloadPresigned.
-func (s *store) SetStaticSpecPresigned(spec StaticSpec, presignedAuth *admissionv1.SpecAuth) ([]Event, error) {
+func (s *store) SetStaticSpecPresigned(spec StaticSpec, presignedFact *factv1.Fact) ([]Event, error) {
 	digest, err := hex.DecodeString(spec.ManifestDigest)
 	if err != nil || len(digest) != sha256Len {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, spec.ManifestDigest)
 	}
 	body := &statev1.StaticSpecChange{Name: spec.Name, ManifestDigest: digest}
-	specChange, publisher, err := s.preparePresignedSpec(body, presignedAuth)
+	specChange, publisher, err := s.preparePresignedSpec(body, presignedFact)
 	if err != nil {
 		return nil, err
 	}
@@ -592,13 +594,13 @@ func (s *store) SetStaticSpecPresigned(spec StaticSpec, presignedAuth *admission
 
 // SetBlobSpecPresigned stores a tenant-signed blob spec without
 // re-signing. See PublishWorkloadPresigned.
-func (s *store) SetBlobSpecPresigned(spec BlobSpec, presignedAuth *admissionv1.SpecAuth) ([]Event, error) {
+func (s *store) SetBlobSpecPresigned(spec BlobSpec, presignedFact *factv1.Fact) ([]Event, error) {
 	digest, err := hex.DecodeString(spec.Digest)
 	if err != nil || len(digest) != sha256Len {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, spec.Digest)
 	}
 	body := &statev1.BlobSpecChange{Name: spec.Name, Digest: digest}
-	specChange, publisher, err := s.preparePresignedSpec(body, presignedAuth)
+	specChange, publisher, err := s.preparePresignedSpec(body, presignedFact)
 	if err != nil {
 		return nil, err
 	}
@@ -609,18 +611,18 @@ func (s *store) SetBlobSpecPresigned(spec BlobSpec, presignedAuth *admissionv1.S
 // auth and runs the validate hook. The hook (gate.Admit in production)
 // re-derives the resource ID from the body and rejects mismatches, so
 // callers can't smuggle a mismatched resource through SpecAuth.
-func (s *store) preparePresignedSpec(body auth.SpecBody, presignedAuth *admissionv1.SpecAuth) (*statev1.SpecChange, types.PeerKey, error) {
-	if presignedAuth == nil {
+func (s *store) preparePresignedSpec(body fact.Body, presignedFact *factv1.Fact) (*statev1.SpecChange, types.PeerKey, error) {
+	if presignedFact == nil {
 		return nil, types.PeerKey{}, ErrPresignedAuthRequired
 	}
 	if s.validate == nil {
 		return nil, types.PeerKey{}, ErrNoValidator
 	}
-	specChange := wrapSpecBody(presignedAuth, body)
+	specChange := wrapSpecBody(presignedFact, body)
 	if err := s.validate(specChange); err != nil {
 		return nil, types.PeerKey{}, fmt.Errorf("validate presigned spec: %w", err)
 	}
-	publisher := types.PeerKeyFromBytes(presignedAuth.GetPublisher().GetClaims().GetSubjectPub())
+	publisher := types.PeerKeyFromBytes(presignedFact.GetAuthorityPub())
 	return specChange, publisher, nil
 }
 
@@ -663,24 +665,24 @@ func isOwnerConflictKind(kind attrKind) bool {
 // the RPC isn't the one that originally accepted the spec — combined
 // with publisher-scoped tombstone suppression in buildSnapshot, this
 // is what makes cross-slot unseeds Just Work in wire mode.
-func (s *store) DeleteWorkloadSpecPresigned(hash string, presignedAuth *admissionv1.SpecAuth) ([]Event, error) {
+func (s *store) DeleteWorkloadSpecPresigned(hash string, presignedFact *factv1.Fact) ([]Event, error) {
 	if _, err := hex.DecodeString(hash); err != nil || len(hash) != sha256HexLen {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, hash)
 	}
-	return s.applyPresignedTombstone(attrKey{kind: attrWorkloadSpec, name: hash}, presignedAuth, WorkloadChanged{Hash: hash})
+	return s.applyPresignedTombstone(attrKey{kind: attrWorkloadSpec, name: hash}, presignedFact, WorkloadChanged{Hash: hash})
 }
 
 // DeleteStaticSpecPresigned applies a tenant-signed static-spec tombstone.
-func (s *store) DeleteStaticSpecPresigned(name string, presignedAuth *admissionv1.SpecAuth) ([]Event, error) {
-	return s.applyPresignedTombstone(attrKey{kind: attrStaticSpec, name: name}, presignedAuth, StaticChanged{Name: name})
+func (s *store) DeleteStaticSpecPresigned(name string, presignedFact *factv1.Fact) ([]Event, error) {
+	return s.applyPresignedTombstone(attrKey{kind: attrStaticSpec, name: name}, presignedFact, StaticChanged{Name: name})
 }
 
 // DeleteBlobSpecPresigned applies a tenant-signed blob-spec tombstone.
-func (s *store) DeleteBlobSpecPresigned(digest string, presignedAuth *admissionv1.SpecAuth) ([]Event, error) {
+func (s *store) DeleteBlobSpecPresigned(digest string, presignedFact *factv1.Fact) ([]Event, error) {
 	if _, err := hex.DecodeString(digest); err != nil || len(digest) != sha256HexLen {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, digest)
 	}
-	return s.applyPresignedTombstone(attrKey{kind: attrBlobSpec, name: digest}, presignedAuth, nil)
+	return s.applyPresignedTombstone(attrKey{kind: attrBlobSpec, name: digest}, presignedFact, nil)
 }
 
 // ErrTombstoneNoLiveSpec is returned when a presigned tombstone arrives
@@ -690,28 +692,28 @@ func (s *store) DeleteBlobSpecPresigned(digest string, presignedAuth *admissionv
 // unverifiable tombstone.
 var ErrTombstoneNoLiveSpec = errors.New("presigned tombstone: live spec not found on any peer")
 
-func (s *store) applyPresignedTombstone(key attrKey, presignedAuth *admissionv1.SpecAuth, domainEvent Event) ([]Event, error) {
-	if presignedAuth == nil {
+func (s *store) applyPresignedTombstone(key attrKey, presignedFact *factv1.Fact, domainEvent Event) ([]Event, error) {
+	if presignedFact == nil {
 		return nil, ErrPresignedAuthRequired
 	}
-	if !presignedAuth.GetDeleted() {
+	if !presignedFact.GetDeleted() {
 		return nil, errors.New("presigned tombstone must have Deleted=true")
 	}
 	if s.validate == nil {
 		return nil, ErrNoValidator
 	}
-	publisherPub := presignedAuth.GetPublisher().GetClaims().GetSubjectPub()
+	publisherPub := presignedFact.GetAuthorityPub()
 	var rebuildErr error
 	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
 		if ev, ok := rec.log[key]; ok && ev.Deleted {
 			return nil, nil
 		}
-		body := s.findLiveSpecBodyForPublisherLocked(key, publisherPub, presignedAuth.GetBodyHash())
+		body := s.findLiveSpecBodyForPublisherLocked(key, publisherPub, presignedFact.GetBodyHash())
 		if body == nil {
 			rebuildErr = ErrTombstoneNoLiveSpec
 			return nil, nil
 		}
-		specChange := wrapSpecBody(presignedAuth, body)
+		specChange := wrapSpecBody(presignedFact, body)
 		if err := s.validate(specChange); err != nil {
 			rebuildErr = fmt.Errorf("validate presigned tombstone: %w", err)
 			return nil, nil
@@ -735,14 +737,14 @@ func (s *store) applyPresignedTombstone(key attrKey, presignedAuth *admissionv1.
 // publisher filter remains the primary gate since workload hash and
 // static name are not unique across publishers. s.mu must be held by
 // the caller.
-func (s *store) findLiveSpecBodyForPublisherLocked(key attrKey, publisherPub, wantBodyHash []byte) auth.SpecBody {
-	matches := func(ev *statev1.GossipEvent) auth.SpecBody {
+func (s *store) findLiveSpecBodyForPublisherLocked(key attrKey, publisherPub, wantBodyHash []byte) fact.Body {
+	matches := func(ev *statev1.GossipEvent) fact.Body {
 		if ev == nil || ev.Deleted {
 			return nil
 		}
 		sc := ev.GetSpecChange()
-		sa := sc.GetAuth()
-		if !bytes.Equal(sa.GetPublisher().GetClaims().GetSubjectPub(), publisherPub) {
+		sa := sc.GetFact()
+		if !bytes.Equal(sa.GetAuthorityPub(), publisherPub) {
 			return nil
 		}
 		// When the tombstone's body_hash is unset (older callers), accept
@@ -779,7 +781,7 @@ func (s *store) findLiveSpecBodyForPublisherLocked(key attrKey, publisherPub, wa
 // liveSpecBody returns the typed body proto for the live spec change,
 // so a presigned tombstone can be rewrapped against the same body the
 // publisher signed at create time.
-func liveSpecBody(sc *statev1.SpecChange) auth.SpecBody {
+func liveSpecBody(sc *statev1.SpecChange) fact.Body {
 	switch v := sc.GetBody().(type) {
 	case *statev1.SpecChange_Workload:
 		return v.Workload
@@ -837,7 +839,7 @@ func (s *store) RevokeOwnSpecs() ([]Event, error) {
 // equivalent path that signs with the local node's identity key). The
 // CRDT keys it as (blob_hash, recipient) per peer; replaying with the
 // same payload is a no-op.
-func (s *store) SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []Event {
+func (s *store) SetBlobWrapping(wrapping *factv1.BlobWrapping) []Event {
 	if wrapping == nil {
 		return nil
 	}
@@ -845,7 +847,7 @@ func (s *store) SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []Event {
 		key := attrKey{
 			kind: attrBlobWrapping,
 			name: hex.EncodeToString(wrapping.GetBlobHash()),
-			peer: types.PeerKeyFromBytes(wrapping.GetRecipientPubkey()),
+			peer: types.PeerKeyFromBytes(wrapping.GetRecipientPub()),
 		}
 		if ev, ok := rec.log[key]; ok && !ev.Deleted && proto.Equal(ev.GetBlobWrapping(), wrapping) {
 			return nil, nil
@@ -855,22 +857,22 @@ func (s *store) SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []Event {
 	})
 }
 
-func (s *store) signedSpecChangeLocked(resource *admissionv1.ResourceID, body auth.SpecBody, policy *admissionv1.Predicate, deleted bool) (*statev1.SpecChange, error) {
+func (s *store) signedSpecChangeLocked(resource *admissionv1.ResourceID, body fact.Body, policy *admissionv1.Predicate, deleted bool) (*statev1.SpecChange, error) {
 	if s.signer == nil {
 		return nil, ErrNoSigner
 	}
-	specAuth, err := s.signer.IssueSpecAuth(resource, body, policy, deleted)
+	f, err := s.signer.IssueFact(resource, body, policy, deleted)
 	if err != nil {
 		return nil, err
 	}
-	return wrapSpecBody(specAuth, body), nil
+	return wrapSpecBody(f, body), nil
 }
 
-// wrapSpecBody assembles a SpecChange from a pre-built SpecAuth and a
-// body. Used by the local-signer path (signedSpecChangeLocked) and by
-// presigned wire-mode paths that supply the SpecAuth themselves.
-func wrapSpecBody(specAuth *admissionv1.SpecAuth, body auth.SpecBody) *statev1.SpecChange {
-	specChange := &statev1.SpecChange{Auth: specAuth}
+// wrapSpecBody assembles a SpecChange from a pre-built Fact and a body.
+// Used by the local-signer path (signedSpecChangeLocked) and by
+// presigned wire-mode paths that supply the Fact themselves.
+func wrapSpecBody(f *factv1.Fact, body fact.Body) *statev1.SpecChange {
+	specChange := &statev1.SpecChange{Fact: f}
 	switch v := body.(type) {
 	case *statev1.WorkloadSpecChange:
 		specChange.Body = &statev1.SpecChange_Workload{Workload: v}

@@ -15,6 +15,8 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/gate"
 	"github.com/sambigeara/pollen/pkg/state"
@@ -67,9 +69,9 @@ type PlacementAPI interface {
 	Stop() error
 
 	Seed(binary []byte, spec state.WorkloadSpec, policy *admissionv1.Predicate) error
-	SeedPresigned(binary []byte, spec state.WorkloadSpec, presignedAuth *admissionv1.SpecAuth) error
+	SeedPresigned(binary []byte, spec state.WorkloadSpec, presignedFact *factv1.Fact) error
 	Unseed(hash string) error
-	UnseedPresigned(hash string, presignedAuth *admissionv1.SpecAuth) error
+	UnseedPresigned(hash string, presignedFact *factv1.Fact) error
 	Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
 	Status() []WorkloadSummary
 
@@ -91,9 +93,9 @@ var _ PlacementAPI = (*Service)(nil)
 type WorkloadState interface {
 	Snapshot() state.Snapshot
 	PublishWorkload(spec state.WorkloadSpec, policy *admissionv1.Predicate) ([]state.Event, error)
-	PublishWorkloadPresigned(spec state.WorkloadSpec, presignedAuth *admissionv1.SpecAuth) ([]state.Event, error)
+	PublishWorkloadPresigned(spec state.WorkloadSpec, presignedFact *factv1.Fact) ([]state.Event, error)
 	DeleteWorkloadSpec(hash string) ([]state.Event, error)
-	DeleteWorkloadSpecPresigned(hash string, presignedAuth *admissionv1.SpecAuth) ([]state.Event, error)
+	DeleteWorkloadSpecPresigned(hash string, presignedFact *factv1.Fact) ([]state.Event, error)
 	ClaimWorkload(hash string) []state.Event
 	MarkWorkloadDraining(hash string) []state.Event
 	ReleaseWorkload(hash string) []state.Event
@@ -107,20 +109,20 @@ type StreamOpener interface {
 }
 
 // Gate authorises invocations, host placement, and publish decisions.
-// Invoke returns the cert-bound CallerInfo to plumb into the seed's
+// Invoke returns the grant-bound CallerInfo to plumb into the seed's
 // execution context whenever a call is dispatched inbound or outbound.
 // MayHost decides whether the local node is entitled to run the workload
 // at all, gating the reconciler's claim before any blob fetch or memory
 // reservation. MayPublish gates Seed against orphaning a spec: if the
-// publisher's cert doesn't satisfy the workload's policy, the local
+// publisher's grant doesn't satisfy the workload's policy, the local
 // self-claim is released on the next reconcile and only unseed+seed
 // can clear the stranded spec.
 type Gate interface {
-	Invoke(callerCert *admissionv1.DelegationCert, hash string) (wasm.CallerInfo, error)
+	Invoke(caller *identityv1.Grant, hash string) (wasm.CallerInfo, error)
 	InvokeByToken(token *admissionv1.AccessToken, hash string) (wasm.CallerInfo, error)
-	MayHost(hostCert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth) error
-	MayPublish(cert *admissionv1.DelegationCert, policy *admissionv1.Predicate) error
-	LookupCert(peerKey types.PeerKey) *admissionv1.DelegationCert
+	MayHost(hostGrant *identityv1.Grant, f *factv1.Fact) error
+	MayPublish(grant *identityv1.Grant, policy *admissionv1.Predicate) error
+	LookupGrant(peerKey types.PeerKey) *identityv1.Grant
 }
 
 type Service struct {
@@ -279,13 +281,13 @@ func (s *Service) publishResources() {
 // UnseedPresigned applies a tenant-signed workload tombstone. Local
 // hosting (if any) is torn down and the budget is released; the
 // underlying tombstone is signed by the publisher, not the daemon.
-func (s *Service) UnseedPresigned(hash string, presignedAuth *admissionv1.SpecAuth) error {
+func (s *Service) UnseedPresigned(hash string, presignedFact *factv1.Fact) error {
 	if s.manager.IsRunning(hash) {
 		_ = s.manager.Unseed(hash)
 		s.budget.Release(hash)
 	}
 	s.store.ReleaseWorkload(hash)
-	_, err := s.store.DeleteWorkloadSpecPresigned(hash, presignedAuth)
+	_, err := s.store.DeleteWorkloadSpecPresigned(hash, presignedFact)
 	return err
 }
 
@@ -294,7 +296,7 @@ func (s *Service) UnseedPresigned(hash string, presignedAuth *admissionv1.SpecAu
 // (which match the spec's policy) can fetch it, then publishes the
 // presigned spec. Compilation is deferred to the reconciler if/when
 // the daemon decides to host; for pure-relay daemons it never happens.
-func (s *Service) SeedPresigned(binary []byte, spec state.WorkloadSpec, presignedAuth *admissionv1.SpecAuth) error {
+func (s *Service) SeedPresigned(binary []byte, spec state.WorkloadSpec, presignedFact *factv1.Fact) error {
 	if _, err := s.blobs.Put(bytes.NewReader(binary)); err != nil {
 		return fmt.Errorf("workload: %w: %w", ErrStore, err)
 	}
@@ -303,7 +305,7 @@ func (s *Service) SeedPresigned(binary []byte, spec state.WorkloadSpec, presigne
 	// hash they committed to. The CLI applies the sensible default at
 	// signing time (cmd/pln/seed.go); rebasing post-sign would split
 	// the body hash from what every other peer validates against.
-	if _, err := s.store.PublishWorkloadPresigned(spec, presignedAuth); err != nil {
+	if _, err := s.store.PublishWorkloadPresigned(spec, presignedFact); err != nil {
 		return err
 	}
 	return nil
@@ -313,7 +315,7 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admission
 	hash, name := spec.Hash, spec.Name
 	snap := s.store.Snapshot()
 	if s.gate != nil {
-		if err := s.gate.MayPublish(snap.LocalCert(), policy); err != nil {
+		if err := s.gate.MayPublish(snap.LocalGrant(), policy); err != nil {
 			return fmt.Errorf("%w: %w", ErrPublishDenied, err)
 		}
 	}
@@ -478,7 +480,7 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 		if token, ok := gate.AccessTokenFromContext(ctx); ok {
 			gated, err = s.gate.InvokeByToken(token, hash)
 		} else {
-			gated, err = s.gate.Invoke(s.callerCert(ctx, info.PeerKey), hash)
+			gated, err = s.gate.Invoke(s.callerGrant(ctx, info.PeerKey), hash)
 		}
 		if err != nil {
 			return ctx, hash, nil, fmt.Errorf("invoke %s: %w", types.ShortHash(hash), wasm.ErrTargetNotFound)
@@ -497,18 +499,18 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 	return ctx, hash, out, err
 }
 
-// callerCert resolves the cert authorising the current call. For the
+// callerGrant resolves the grant authorising the current call. For the
 // first hop, control RPCs inject the caller identity via auth.RPCCaller;
-// for downstream hops (wasm-to-wasm or relayed mesh streams) the cert
+// for downstream hops (wasm-to-wasm or relayed mesh streams) the grant
 // lives in the gossiped snapshot keyed on peerKey.
-func (s *Service) callerCert(ctx context.Context, peerKey types.PeerKey) *admissionv1.DelegationCert {
-	if rpc, ok := auth.RPCCallerFromContext(ctx); ok && rpc.Cert() != nil {
-		return rpc.Cert()
+func (s *Service) callerGrant(ctx context.Context, peerKey types.PeerKey) *identityv1.Grant {
+	if rpc, ok := auth.RPCCallerFromContext(ctx); ok && rpc.Grant() != nil {
+		return rpc.Grant()
 	}
 	if s.gate == nil {
 		return nil
 	}
-	return s.gate.LookupCert(peerKey)
+	return s.gate.LookupGrant(peerKey)
 }
 
 func (s *Service) callHop(ctx context.Context, hash, function string, input []byte, local localCall) ([]byte, error) {
@@ -648,7 +650,7 @@ func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 		if token != nil {
 			gated, err = s.gate.InvokeByToken(token, hash)
 		} else {
-			gated, err = s.gate.Invoke(s.gate.LookupCert(peerKey), hash)
+			gated, err = s.gate.Invoke(s.gate.LookupGrant(peerKey), hash)
 		}
 		if err != nil {
 			return

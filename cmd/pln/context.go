@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/identity"
 )
 
 const (
@@ -302,7 +302,7 @@ func provisionRemoteIdentity(cmd *cobra.Command, name, host string) (string, err
 	if err != nil {
 		return "", err
 	}
-	identityDir := auth.IdentityPath(ctxDir)
+	identityDir := identity.IdentityPath(ctxDir)
 	if err := os.MkdirAll(identityDir, 0o700); err != nil { //nolint:mnd
 		return "", fmt.Errorf("create identity dir: %w", err)
 	}
@@ -318,12 +318,12 @@ func provisionRemoteIdentity(cmd *cobra.Command, name, host string) (string, err
 	}
 	switch from {
 	case "":
-		if _, _, err := auth.EnsureAdminKey(identityDir); err != nil {
+		if _, _, err := identity.EnsureAdminKey(identityDir); err != nil {
 			return "", fmt.Errorf("generate admin key: %w", err)
 		}
 	case defaultContextName:
 		defaultDir, _ := cmd.Flags().GetString("dir")
-		if err := copyIdentity(auth.IdentityPath(defaultDir), identityDir); err != nil {
+		if err := copyIdentity(identity.IdentityPath(defaultDir), identityDir); err != nil {
 			return "", fmt.Errorf("import from default: %w", err)
 		}
 	default:

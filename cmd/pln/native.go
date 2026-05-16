@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/transport"
 )
 
@@ -42,19 +42,23 @@ func plnNativeDialer(dir, addr string) func(string, string, *tls.Config) (net.Co
 }
 
 func buildPlnClientTLSConfig(dir string) (*tls.Config, error) {
-	identityDir := auth.IdentityPath(dir)
-	creds, err := auth.LoadNodeCredentials(identityDir)
+	identityDir := identity.IdentityPath(dir)
+	creds, err := identity.LoadCredentials(identityDir)
 	if err != nil {
 		return nil, fmt.Errorf("load node credentials: %w", err)
 	}
-	if creds == nil || creds.Cert() == nil {
+	if creds == nil || creds.Grant() == nil {
 		return nil, errors.New("no node credentials in this context; run `pln join` first")
 	}
-	priv, _, err := auth.EnsureIdentityKey(identityDir)
+	session, err := creds.EnsureFreshSession(time.Now(), clientIdentityTTL, clientIdentityTTL/2)
+	if err != nil {
+		return nil, fmt.Errorf("mint session: %w", err)
+	}
+	priv, _, err := identity.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return nil, fmt.Errorf("load identity key: %w", err)
 	}
-	clientCert, err := transport.GenerateIdentityCert(priv, creds.Cert(), clientIdentityTTL)
+	clientCert, err := transport.GenerateIdentityCert(priv, session, clientIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate client identity cert: %w", err)
 	}
@@ -63,13 +67,13 @@ func buildPlnClientTLSConfig(dir string) (*tls.Config, error) {
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{clientCert},
 		// pln:// targets are not DNS-validated by Go's verifier; the
-		// pollen DelegationCert chain replaces SAN-based hostname
-		// checks. VerifyPeerCertificate below performs full chain plus
+		// pollen grant chain replaces SAN-based hostname checks.
+		// VerifyPeerCertificate below performs full chain plus
 		// leaf-key-binding verification.
 		InsecureSkipVerify: true, //nolint:gosec
 		NextProtos:         []string{"h2"},
 		// Client side has no cluster denylist; nil skips that check. The
-		// server's cert chain + access_deadline are still enforced.
+		// server's grant chain + horizon are still enforced.
 		VerifyPeerCertificate: transport.VerifyDelegatedCounterparty(rootPub, nil),
 	}, nil
 }

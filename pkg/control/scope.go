@@ -15,7 +15,7 @@ import (
 // viewScope captures the read-side authority of an incoming control
 // RPC. Admin callers (can_admit) get the unfiltered cluster view;
 // everyone else sees only resources where Publisher matches their
-// cert's subject pub. valid distinguishes an "unidentified caller"
+// grant's subject pub. valid distinguishes an "unidentified caller"
 // (zero scope, deny everything) from a "real leaf with zero-pub"
 // (impossible in practice, but the flag makes the deny explicit).
 type viewScope struct {
@@ -36,19 +36,19 @@ func (v viewScope) permits(publisher types.PeerKey) bool {
 // Fully unidentified callers get an invalid leaf-scope (default-deny)
 // so a misconfigured daemon never leaks admin views.
 func (s *Service) viewScope(ctx context.Context) viewScope {
-	if caller, ok := auth.RPCCallerFromContext(ctx); ok && caller.Cert() != nil {
+	if caller, ok := auth.RPCCallerFromContext(ctx); ok && caller.Grant() != nil {
 		return viewScope{
 			showAll: caller.CanAdmit(),
 			valid:   true,
 			caller:  caller.SubjectPub(),
 		}
 	}
-	if s.creds != nil && s.creds.Cert() != nil {
-		cert := s.creds.Cert()
+	if s.creds != nil && s.creds.Grant() != nil {
+		grant := s.creds.Grant()
 		return viewScope{
-			showAll: cert.GetClaims().GetCapabilities().GetCanAdmit(),
+			showAll: grant.GetClaims().GetCapabilities().GetCanAdmit(),
 			valid:   true,
-			caller:  types.PeerKeyFromBytes(cert.GetClaims().GetSubjectPub()),
+			caller:  types.PeerKeyFromBytes(grant.GetClaims().GetSubjectPub()),
 		}
 	}
 	return viewScope{}

@@ -24,8 +24,8 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 )
 
 var hashPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
@@ -233,13 +233,13 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string, policy *
 			TimeoutMs:   uint32(timeout.Milliseconds()),
 			Spread:      spread,
 		}
-		specAuth, err := signWith(env.dir, func(priv ed25519.PrivateKey, cert *admissionv1.DelegationCert) (*admissionv1.SpecAuth, error) {
-			return auth.SignWorkloadSpec(priv, cert, hashBytes, body, policy)
+		presigned, err := signFact(env.dir, func(priv ed25519.PrivateKey) (*factv1.Fact, error) {
+			return presignedWorkload(priv, hashBytes, body, policy, false)
 		})
 		if err != nil {
 			return fmt.Errorf("sign workload spec: %w", err)
 		}
-		header.PreSignedAuth = specAuth
+		header.PreSignedFact = presigned
 	}
 
 	stream := env.client.SeedWorkload(cmd.Context())
@@ -374,13 +374,13 @@ func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string, policy *admis
 		Policy:         policy,
 	}
 	if env.wireMode {
-		specAuth, err := signWith(env.dir, func(priv ed25519.PrivateKey, cert *admissionv1.DelegationCert) (*admissionv1.SpecAuth, error) {
-			return auth.SignStaticSpec(priv, cert, name, manifestDigest)
+		presigned, err := signFact(env.dir, func(priv ed25519.PrivateKey) (*factv1.Fact, error) {
+			return presignedStatic(priv, name, manifestDigest, false)
 		})
 		if err != nil {
 			return fmt.Errorf("sign static spec: %w", err)
 		}
-		req.PreSignedAuth = specAuth
+		req.PreSignedFact = presigned
 	}
 	resp, err := env.client.SeedStatic(cmd.Context(), connect.NewRequest(req))
 	if err != nil {
@@ -433,13 +433,13 @@ func seedBlob(cmd *cobra.Command, env *cliEnv, source, name string, policy *admi
 			return err
 		}
 		r = body
-		specAuth, err := signWith(env.dir, func(priv ed25519.PrivateKey, cert *admissionv1.DelegationCert) (*admissionv1.SpecAuth, error) {
-			return auth.SignBlobSpec(priv, cert, name, digest, policy)
+		presigned, err := signFact(env.dir, func(priv ed25519.PrivateKey) (*factv1.Fact, error) {
+			return presignedBlob(priv, name, digest, policy, false)
 		})
 		if err != nil {
 			return fmt.Errorf("sign blob spec: %w", err)
 		}
-		header.PreSignedAuth = specAuth
+		header.PreSignedFact = presigned
 	}
 
 	resp, err := uploadBlob(cmd, env, header, r)
@@ -570,13 +570,13 @@ func unseedWorkload(cmd *cobra.Command, env *cliEnv, wl *controlv1.WorkloadSumma
 			TimeoutMs:   wl.GetTimeoutMs(),
 			Spread:      wl.GetSpread(),
 		}
-		specAuth, err := signWith(env.dir, func(priv ed25519.PrivateKey, cert *admissionv1.DelegationCert) (*admissionv1.SpecAuth, error) {
-			return auth.SignWorkloadTombstone(priv, cert, hashBytes, body, nil)
+		presigned, err := signFact(env.dir, func(priv ed25519.PrivateKey) (*factv1.Fact, error) {
+			return presignedWorkload(priv, hashBytes, body, nil, true)
 		})
 		if err != nil {
 			return fmt.Errorf("sign workload tombstone: %w", err)
 		}
-		req.PreSignedAuth = specAuth
+		req.PreSignedFact = presigned
 	}
 	_, err := env.client.UnseedWorkload(cmd.Context(), connect.NewRequest(req))
 	return err
@@ -585,13 +585,13 @@ func unseedWorkload(cmd *cobra.Command, env *cliEnv, wl *controlv1.WorkloadSumma
 func unseedStatic(cmd *cobra.Command, env *cliEnv, site *controlv1.StaticSummary) error {
 	req := &controlv1.UnseedStaticRequest{Name: site.GetName()}
 	if env.wireMode {
-		specAuth, err := signWith(env.dir, func(priv ed25519.PrivateKey, cert *admissionv1.DelegationCert) (*admissionv1.SpecAuth, error) {
-			return auth.SignStaticTombstone(priv, cert, site.GetName(), site.GetManifestDigest())
+		presigned, err := signFact(env.dir, func(priv ed25519.PrivateKey) (*factv1.Fact, error) {
+			return presignedStatic(priv, site.GetName(), site.GetManifestDigest(), true)
 		})
 		if err != nil {
 			return fmt.Errorf("sign static tombstone: %w", err)
 		}
-		req.PreSignedAuth = specAuth
+		req.PreSignedFact = presigned
 	}
 	_, err := env.client.UnseedStatic(cmd.Context(), connect.NewRequest(req))
 	return err
@@ -614,13 +614,13 @@ func removeBlob(cmd *cobra.Command, env *cliEnv, hash string, blobs []*controlv1
 		if err != nil {
 			return fmt.Errorf("decode hash: %w", err)
 		}
-		specAuth, err := signWith(env.dir, func(priv ed25519.PrivateKey, cert *admissionv1.DelegationCert) (*admissionv1.SpecAuth, error) {
-			return auth.SignBlobTombstone(priv, cert, name, digestBytes, nil)
+		presigned, err := signFact(env.dir, func(priv ed25519.PrivateKey) (*factv1.Fact, error) {
+			return presignedBlob(priv, name, digestBytes, nil, true)
 		})
 		if err != nil {
 			return fmt.Errorf("sign blob tombstone: %w", err)
 		}
-		req.PreSignedAuth = specAuth
+		req.PreSignedFact = presigned
 	}
 	_, err := env.client.RemoveBlob(cmd.Context(), connect.NewRequest(req))
 	return err

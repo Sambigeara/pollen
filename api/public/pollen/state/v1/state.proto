@@ -6,7 +6,8 @@ syntax = "proto3";
 package pollen.state.v1;
 
 import "buf/validate/validate.proto";
-import "pollen/admission/v1/admission.proto";
+import "pollen/fact/v1/fact.proto";
+import "pollen/identity/v1/identity.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/state/v1;statev1";
 
@@ -119,7 +120,7 @@ message BlobSpecChange {
 }
 
 message SpecChange {
-  pollen.admission.v1.SpecAuth auth = 1 [(buf.validate.field).required = true];
+  pollen.fact.v1.Fact fact = 1 [(buf.validate.field).required = true];
   oneof body {
     ServiceChange service = 2;
     WorkloadSpecChange workload = 3;
@@ -186,27 +187,9 @@ message PerSeedCallCountsChange {
   map<string, uint64> counts = 1;
 }
 
-message DelegationCertChange {
-  pollen.admission.v1.DelegationCert cert = 1 [(buf.validate.field).required = true];
+message GrantChange {
+  pollen.identity.v1.Grant grant = 1 [(buf.validate.field).required = true];
   bytes subject_signature = 2 [(buf.validate.field).bytes = {len: 64}];
-}
-
-// BlobWrappingChange gossips a sealed DEK addressed to one entitled
-// host. Wrappers are authorisations to decrypt one blob; the receiving
-// host opens the wrapped DEK with its own private key, then decrypts
-// the on-disk envelope. Wrappings are append-only on the wire: the
-// admission filter rejects any event with GossipEvent.deleted set,
-// because the deletion bit lives outside the signed payload and a
-// captured live wrapping replayed with the bit flipped would
-// otherwise erase the recipient's only path back to the DEK. Effective
-// revocation is local-side eviction of the on-disk envelope; a stale
-// wrapping then resolves to a cas.ErrNotFound at first read.
-message BlobWrappingChange {
-  bytes blob_hash = 1 [(buf.validate.field).bytes = {len: 32}];
-  bytes recipient_pubkey = 2 [(buf.validate.field).bytes = {len: 32}];
-  bytes wrapped_dek = 3 [(buf.validate.field).bytes = {min_len: 1}];
-  pollen.admission.v1.DelegationCert wrapper = 4 [(buf.validate.field).required = true];
-  bytes signature = 5 [(buf.validate.field).bytes = {len: 64}];
 }
 
 message GossipEvent {
@@ -234,9 +217,16 @@ message GossipEvent {
     StaticCapableChange static_capable = 32;
     BackoffTTLChange backoff_ttl = 33;
     PerSeedCallCountsChange per_seed_call_counts = 34;
-    DelegationCertChange delegation_cert = 35;
+    GrantChange grant = 35;
     SpecChange spec_change = 36;
-    BlobWrappingChange blob_wrapping = 37;
+    // blob_wrapping gossips a sealed DEK addressed to one entitled
+    // host. Wrappings are append-only on the wire: the admission
+    // filter rejects any event with GossipEvent.deleted set, because
+    // the deletion bit lives outside the signed payload and a captured
+    // live wrapping replayed with the bit flipped would otherwise
+    // erase the recipient's only path back to the DEK. Effective
+    // revocation is local-side eviction of the on-disk envelope.
+    pollen.fact.v1.BlobWrapping blob_wrapping = 37;
   }
   bool deleted = 14;
   reserved 5, 6, 15, 24, 27, 29, 31;

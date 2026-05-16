@@ -8,7 +8,8 @@ import (
 	"sync"
 	"time"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
 	"go.uber.org/zap"
@@ -116,7 +117,7 @@ func (r *reconciler) Run(ctx context.Context) {
 
 func (r *reconciler) reconcile(ctx context.Context) {
 	snap := r.store.Snapshot()
-	localCert := snap.LocalCert()
+	localGrant := snap.LocalGrant()
 
 	// Lowest-PeerKey publisher wins when names collide; unnamed specs
 	// pass through unchanged.
@@ -137,7 +138,7 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		if name != "" && nameWinners[name] != hash {
 			continue
 		}
-		if !r.mayHost(localCert, sv.Auth) {
+		if !r.mayHost(localGrant, sv.Fact) {
 			continue
 		}
 		specs[hash] = spec{
@@ -166,7 +167,7 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		if r.mayHost(localCert, sv.Auth) {
+		if r.mayHost(localGrant, sv.Fact) {
 			continue
 		}
 		r.log.Infow("policy denies local hosting, releasing claim", "hash", types.ShortHash(hash), "name", sv.Spec.Name)
@@ -292,7 +293,7 @@ func (r *reconciler) executeClaim(ctx context.Context, hash string, peers []type
 		return
 	}
 
-	if !r.mayHost(snap.LocalCert(), sv.Auth) {
+	if !r.mayHost(snap.LocalGrant(), sv.Fact) {
 		r.log.Infow("policy denies local hosting, abandoning claim", "hash", types.ShortHash(hash), "name", sv.Spec.Name)
 		return
 	}
@@ -330,14 +331,14 @@ func (r *reconciler) executeRelease(hash string) {
 }
 
 // mayHost returns true when the local node is entitled to host the
-// workload described by sa. A nil gate (test fixtures) is treated as
-// permissive; a nil cert with a configured gate is treated as denial,
+// workload described by f. A nil gate (test fixtures) is treated as
+// permissive; a nil grant with a configured gate is treated as denial,
 // since hosting without a verifiable identity must fail closed.
-func (r *reconciler) mayHost(cert *admissionv1.DelegationCert, sa *admissionv1.SpecAuth) bool {
+func (r *reconciler) mayHost(grant *identityv1.Grant, f *factv1.Fact) bool {
 	if r.gate == nil {
 		return true
 	}
-	return r.gate.MayHost(cert, sa) == nil
+	return r.gate.MayHost(grant, f) == nil
 }
 
 func (r *reconciler) cleanupStaleClaims(claims map[string]map[types.PeerKey]struct{}) {

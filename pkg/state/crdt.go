@@ -12,9 +12,10 @@ import (
 	"slices"
 	"time"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/fact"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -43,7 +44,7 @@ const (
 	attrStaticCapable
 	attrBackoffTTL
 	attrPerSeedCallCounts
-	attrDelegationCert
+	attrGrant
 	attrBlobWrapping
 )
 
@@ -126,8 +127,8 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		// overwrites the live event, revocation goes through deny), so
 		// admitting them would let any peer wipe another's cert by
 		// replaying a captured cert event with the Deleted bit flipped.
-		if key.kind == attrDelegationCert {
-			if ev.Deleted || !s.isAcceptableCertEvent(pk, ev) {
+		if key.kind == attrGrant {
+			if ev.Deleted || !s.isAcceptableGrantEvent(pk, ev) {
 				continue
 			}
 		}
@@ -178,10 +179,10 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 			continue
 		}
 
-		if key.kind == attrDeny || key.kind == attrDelegationCert {
+		if key.kind == attrDeny || key.kind == attrGrant {
 			denyOrCertChanged = true
 		}
-		if key.kind == attrDelegationCert {
+		if key.kind == attrGrant {
 			domainEvents = append(domainEvents, CertChanged{Peer: pk})
 		}
 		if key.kind == attrService {
@@ -208,54 +209,75 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 	return domainEvents, rebroadcast
 }
 
-// isAcceptableCertEvent enforces three invariants on incoming cert events:
-//   - The cert's subject_pub matches the gossip event's peer_id (basic
+// isAcceptableGrantEvent enforces three invariants on incoming grant
+// events:
+//   - The grant's subject_pub matches the gossip event's peer_id (basic
 //     shape check).
 //   - The chain is structurally and cryptographically valid (signatures
-//   - root anchor). Expiry is not enforced; past chains stay
-//     authoritative for chain-scoped decisions even after their TTL.
-//   - The subject_signature is valid under cert.subject_pub. This is
+//   - root anchor). The grant deadline is not enforced here; a past
+//     grant stays authoritative for chain-scoped decisions.
+//   - The subject_signature is valid under grant.subject_pub. This is
 //     the proof-of-possession that prevents a delegated admin from
-//     forging a cert for someone else's pub and re-parenting them into
+//     forging a grant for someone else's pub and re-parenting them into
 //     the admin's subtree.
-func (s *store) isAcceptableCertEvent(pk types.PeerKey, ev *statev1.GossipEvent) bool {
-	change := ev.GetDelegationCert()
-	cert := change.GetCert()
-	if cert == nil {
+func (s *store) isAcceptableGrantEvent(pk types.PeerKey, ev *statev1.GossipEvent) bool {
+	change := ev.GetGrant()
+	grant := change.GetGrant()
+	if grant == nil {
 		return false
 	}
-	if !bytes.Equal(cert.GetClaims().GetSubjectPub(), pk.Bytes()) {
+	if !bytes.Equal(grant.GetClaims().GetSubjectPub(), pk.Bytes()) {
 		return false
 	}
-	if err := auth.VerifyDelegationCertStructure(cert, s.rootPub); err != nil {
+	if err := identity.VerifyGrantStructure(grant, s.rootPub); err != nil {
 		return false
 	}
-	if err := auth.VerifyDelegationCertSubject(cert, change.GetSubjectSignature()); err != nil {
+	if err := identity.VerifyGrantSubject(grant, change.GetSubjectSignature()); err != nil {
 		return false
 	}
 	return true
 }
 
-// isAcceptableWrappingEvent enforces that a live wrapping was actually
-// signed by the wrapper claimed in the gossip envelope and that the
-// wrapper's cert chains to the cluster root. Tombstones are rejected
-// upstream: callers must guard with `ev.Deleted` before invoking this.
-func (s *store) isAcceptableWrappingEvent(pk types.PeerKey, ev *statev1.GossipEvent) bool {
+// isAcceptableWrappingEvent verifies a live wrapping against its named
+// authority's grant resolved from gossiped state, holding it to the
+// durable-authority rule. Tombstones are rejected upstream: callers
+// must guard with `ev.Deleted` before invoking this.
+func (s *store) isAcceptableWrappingEvent(_ types.PeerKey, ev *statev1.GossipEvent) bool {
 	wrapping := ev.GetBlobWrapping()
 	if wrapping == nil {
 		return false
 	}
-	wrapper := wrapping.GetWrapper()
-	if wrapper == nil {
+	grant := s.grantForPeerLocked(types.PeerKeyFromBytes(wrapping.GetAuthorityPub()))
+	if grant == nil {
 		return false
 	}
-	if !bytes.Equal(wrapper.GetClaims().GetSubjectPub(), pk.Bytes()) {
-		return false
-	}
-	if err := auth.VerifyBlobWrapping(wrapping, s.rootPub, s.nowFunc(), s.Snapshot().DenyChecker()); err != nil {
+	if err := fact.VerifyBlobWrapping(wrapping, grant, s.rootPub, s.nowFunc(), s.deniedCheckerLocked()); err != nil {
 		return false
 	}
 	return true
+}
+
+// grantForPeerLocked returns the grant a peer has gossiped, or nil. The
+// caller must hold s.mu.
+func (s *store) grantForPeerLocked(pk types.PeerKey) *identityv1.Grant {
+	rec, ok := s.nodes[pk]
+	if !ok {
+		return nil
+	}
+	ev, ok := rec.log[attrKey{kind: attrGrant}]
+	if !ok || ev.Deleted {
+		return nil
+	}
+	return ev.GetGrant().GetGrant()
+}
+
+// deniedCheckerLocked adapts the locked denied set to identity's
+// subject-pub deny predicate for fact verification.
+func (s *store) deniedCheckerLocked() identity.DenyChecker {
+	return func(subjectPub []byte) bool {
+		_, denied := s.denied[types.PeerKeyFromBytes(subjectPub)]
+		return denied
+	}
 }
 
 // acceptableSpecEventLocked admits a spec event from any peer slot.
@@ -270,7 +292,7 @@ func (s *store) isAcceptableWrappingEvent(pk types.PeerKey, ev *statev1.GossipEv
 // gate.Admit and verifies the SpecAuth signature).
 func (s *store) acceptableSpecEventLocked(ev *statev1.GossipEvent) bool {
 	sc := ev.GetSpecChange()
-	if sc.GetAuth().GetDeleted() != ev.Deleted {
+	if sc.GetFact().GetDeleted() != ev.Deleted {
 		return false
 	}
 	if s.validate != nil {
@@ -294,14 +316,14 @@ func (s *store) acceptableSpecEventLocked(ev *statev1.GossipEvent) bool {
 // re-issuing the deny rather than trusting a peer's recollection.
 func (s *store) acceptableSelfEventLocked(kind attrKind, ev *statev1.GossipEvent) bool {
 	switch kind { //nolint:exhaustive
-	case attrDelegationCert:
-		return s.isAcceptableCertEvent(s.localID, ev)
+	case attrGrant:
+		return s.isAcceptableGrantEvent(s.localID, ev)
 	case attrWorkloadSpec, attrService, attrStaticSpec, attrBlobSpec:
 		// Reject foreign-signed specs from being adopted into our own
 		// slot via gossip impersonation. The relay model still applies
 		// to other peers' slots; here we enforce that our slot stays
 		// authoritatively ours.
-		if !specAuthMatchesPeer(s.localID, ev.GetSpecChange()) {
+		if !factAuthorityMatchesPeer(s.localID, ev.GetSpecChange()) {
 			return false
 		}
 		return s.acceptableSpecEventLocked(ev)
@@ -316,22 +338,22 @@ func (s *store) acceptableSelfEventLocked(kind attrKind, ev *statev1.GossipEvent
 }
 
 // recomputeDeniedLocked rebuilds s.denied from authorised deny events
-// plus the gossiped cert graph. Returns PeerDenied domain events for
+// plus the gossiped grant graph. Returns PeerDenied domain events for
 // peers newly classified as denied. A peer becomes denied iff some
-// node in its current delegation chain has an authorised deny against
-// it; "authorised" means the deny was issued by the cluster root or
-// by an ancestor of the subject in the subject's own cert chain.
+// node in its current grant chain has an authorised deny against it;
+// "authorised" means the deny was issued by the cluster root or by an
+// ancestor of the subject in the subject's own grant chain.
 func (s *store) recomputeDeniedLocked() []Event {
 	revoked := make(map[types.PeerKey]struct{})
 
-	certs := make(map[types.PeerKey]*admissionv1.DelegationCert)
+	grants := make(map[types.PeerKey]*identityv1.Grant)
 	for pk, rec := range s.nodes {
-		ev, ok := rec.log[attrKey{kind: attrDelegationCert}]
+		ev, ok := rec.log[attrKey{kind: attrGrant}]
 		if !ok || ev.Deleted {
 			continue
 		}
-		if cert := ev.GetDelegationCert().GetCert(); cert != nil {
-			certs[pk] = cert
+		if grant := ev.GetGrant().GetGrant(); grant != nil {
+			grants[pk] = grant
 		}
 	}
 
@@ -344,22 +366,21 @@ func (s *store) recomputeDeniedLocked() []Event {
 			}
 			subject := types.PeerKeyFromBytes(ev.GetDeny().PeerPub)
 
-			// Self-deny is always allowed (peer disowning itself,
-			// e.g. on cert expiry sweep). Root-issued denies are
-			// authorised regardless of cert availability; root is
-			// the universal ancestor.
+			// Self-deny is always allowed (peer disowning itself).
+			// Root-issued denies are authorised regardless of grant
+			// availability; root is the universal ancestor.
 			if issuerPK == subject || issuerPK == rootKey {
 				revoked[subject] = struct{}{}
 				continue
 			}
 
-			cert, ok := certs[subject]
+			grant, ok := grants[subject]
 			if !ok {
 				// Subject's chain unknown; deny stays pending until
-				// their cert is gossiped.
+				// their grant is gossiped.
 				continue
 			}
-			for _, sub := range auth.ChainSubjectPubs(cert) {
+			for _, sub := range identity.ChainSubjectPubs(grant) {
 				if bytes.Equal(sub, issuerPK.Bytes()) {
 					revoked[subject] = struct{}{}
 					break
@@ -372,11 +393,11 @@ func (s *store) recomputeDeniedLocked() []Event {
 	for r := range revoked {
 		effective[r] = struct{}{}
 	}
-	for pk, cert := range certs {
+	for pk, grant := range grants {
 		if _, already := effective[pk]; already {
 			continue
 		}
-		for _, sub := range auth.ChainSubjectPubs(cert) {
+		for _, sub := range identity.ChainSubjectPubs(grant) {
 			if _, ok := revoked[types.PeerKeyFromBytes(sub)]; ok {
 				effective[pk] = struct{}{}
 				break
@@ -413,7 +434,7 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent, live bool) []*
 	if ok && !ev.Deleted && (!live || s.acceptableSelfEventLocked(key.kind, ev)) {
 		if _, exists := rec.log[key]; !exists {
 			switch key.kind { //nolint:exhaustive
-			case attrWorkloadSpec, attrService, attrNetwork, attrDeny, attrNodeName, attrStaticSpec, attrBlobSpec, attrDelegationCert, attrBlobWrapping:
+			case attrWorkloadSpec, attrService, attrNetwork, attrDeny, attrNodeName, attrStaticSpec, attrBlobSpec, attrGrant, attrBlobWrapping:
 				rec.maxCounter++
 				rec.log[key] = &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
@@ -518,7 +539,7 @@ func (s *store) specOwnerConflictLocked(key attrKey, claimingPublisher types.Pee
 		if !ok || ev.Deleted {
 			continue
 		}
-		publisher := types.PeerKeyFromBytes(ev.GetSpecChange().GetAuth().GetPublisher().GetClaims().GetSubjectPub())
+		publisher := types.PeerKeyFromBytes(ev.GetSpecChange().GetFact().GetAuthorityPub())
 		if publisher == claimingPublisher {
 			continue
 		}
@@ -661,14 +682,14 @@ func getAttrKey(ev *statev1.GossipEvent) (attrKey, bool) {
 		return attrKey{kind: attrBackoffTTL}, true
 	case *statev1.GossipEvent_PerSeedCallCounts:
 		return attrKey{kind: attrPerSeedCallCounts}, true
-	case *statev1.GossipEvent_DelegationCert:
-		return attrKey{kind: attrDelegationCert}, true
+	case *statev1.GossipEvent_Grant:
+		return attrKey{kind: attrGrant}, true
 	case *statev1.GossipEvent_BlobWrapping:
 		w := v.BlobWrapping
-		if len(w.GetBlobHash()) == 0 || len(w.GetRecipientPubkey()) == 0 {
+		if len(w.GetBlobHash()) == 0 || len(w.GetRecipientPub()) == 0 {
 			return attrKey{}, false
 		}
-		return attrKey{kind: attrBlobWrapping, name: hex.EncodeToString(w.GetBlobHash()), peer: types.PeerKeyFromBytes(w.GetRecipientPubkey())}, true
+		return attrKey{kind: attrBlobWrapping, name: hex.EncodeToString(w.GetBlobHash()), peer: types.PeerKeyFromBytes(w.GetRecipientPub())}, true
 	}
 	return attrKey{}, false
 }
@@ -704,6 +725,6 @@ func specAttrKey(sc *statev1.SpecChange) (attrKey, bool) {
 	return attrKey{}, false
 }
 
-func specAuthMatchesPeer(pk types.PeerKey, sc *statev1.SpecChange) bool {
-	return bytes.Equal(sc.GetAuth().GetPublisher().GetClaims().GetSubjectPub(), pk.Bytes())
+func factAuthorityMatchesPeer(pk types.PeerKey, sc *statev1.SpecChange) bool {
+	return bytes.Equal(sc.GetFact().GetAuthorityPub(), pk.Bytes())
 }

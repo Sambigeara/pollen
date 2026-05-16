@@ -10,19 +10,19 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/transport"
 )
 
 // newControlTLSConfig builds a TLS config for the control RPC listener.
-// Inbound clients must present a cert whose DelegationCert extension
-// chains back to the configured root AND whose TLS leaf public key
-// matches the DelegationCert subject — without that binding, anyone
-// who has seen the victim's gossiped DelegationCert can mint a new
-// leaf and impersonate them. The verified DelegationCert is later
-// retrieved from the gRPC peer context by callerCertFromContext.
-func newControlTLSConfig(serverCert tls.Certificate, rootPub []byte, denied auth.DenyChecker) *tls.Config {
+// Inbound clients must present a cert whose Session extension chains
+// back to the configured root AND whose TLS leaf public key matches the
+// Session's grant subject — without that binding, anyone who has seen
+// the victim's gossiped Session can mint a new leaf and impersonate
+// them. The verified Session is later retrieved from the gRPC peer
+// context by callerGrantFromContext.
+func newControlTLSConfig(serverCert tls.Certificate, rootPub []byte, denied identity.DenyChecker) *tls.Config {
 	return &tls.Config{
 		MinVersion:            tls.VersionTLS13,
 		Certificates:          []tls.Certificate{serverCert},
@@ -32,10 +32,10 @@ func newControlTLSConfig(serverCert tls.Certificate, rootPub []byte, denied auth
 	}
 }
 
-// callerCertFromContext returns the verified caller DelegationCert if
-// the inbound gRPC session carried a mTLS peer cert with our delegation
+// callerGrantFromContext returns the verified caller Grant if the
+// inbound gRPC session carried a mTLS peer cert with our pollen Session
 // extension. Returns nil for unix-socket and SSH-bridge transports.
-func callerCertFromContext(ctx context.Context) *admissionv1.DelegationCert {
+func callerGrantFromContext(ctx context.Context) *identityv1.Grant {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
 		return nil
@@ -45,9 +45,9 @@ func callerCertFromContext(ctx context.Context) *admissionv1.DelegationCert {
 		return nil
 	}
 	leaf := tlsInfo.State.PeerCertificates[0]
-	dc, err := transport.ParseDelegationExtension(leaf.Raw)
-	if err != nil || dc == nil {
+	session, err := transport.ParseSessionExtension(leaf.Raw)
+	if err != nil || session == nil {
 		return nil
 	}
-	return dc
+	return session.GetClaims().GetGrant()
 }
