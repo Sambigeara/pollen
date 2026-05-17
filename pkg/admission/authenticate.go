@@ -83,7 +83,7 @@ func (p *Pipeline) resolveAndVerify(snap state.Snapshot, f *factv1.Fact, body fa
 		g := snap.LocalGrant()
 		if g == nil {
 			if f.GetPolicy() != nil {
-				return nil, errors.New("local grant is not yet published")
+				return nil, errLocalGrantUnpublished
 			}
 			return nil, nil //nolint:nilnil
 		}

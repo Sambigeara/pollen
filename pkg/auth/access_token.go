@@ -13,7 +13,12 @@ import (
 	"buf.build/go/protovalidate"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/identity"
 )
+
+// sigContextAccessToken domain-separates access-token signatures from
+// every other ed25519 signature in the system.
+const sigContextAccessToken = "pollen.accesstoken.v1"
 
 // SignAccessToken signs an ephemeral access token over a resource using
 // the issuer's identity key. The issuer must be the resource's
@@ -36,11 +41,11 @@ func SignAccessToken(issuerPriv ed25519.PrivateKey, resource *admissionv1.Resour
 		IssuedAtUnix:  now.Unix(),
 		ExpiresAtUnix: now.Add(ttl).Unix(),
 	}
-	msg, err := signaturePayload(claims)
+	msg, err := identity.SignaturePayload(claims)
 	if err != nil {
 		return nil, err
 	}
-	sig, err := signPayload(issuerPriv, msg, sigContextAccessToken)
+	sig, err := identity.SignPayload(issuerPriv, msg, sigContextAccessToken)
 	if err != nil {
 		return nil, err
 	}
@@ -53,16 +58,16 @@ func VerifyAccessToken(token *admissionv1.AccessToken, now time.Time) error {
 		return fmt.Errorf("access token invalid: %w", err)
 	}
 	claims := token.GetClaims()
-	msg, err := signaturePayload(claims)
+	msg, err := identity.SignaturePayload(claims)
 	if err != nil {
 		return err
 	}
-	if err := verifyPayload(ed25519.PublicKey(claims.GetIssuerPub()), msg, token.GetSignature(), sigContextAccessToken); err != nil {
+	if err := identity.VerifyPayload(ed25519.PublicKey(claims.GetIssuerPub()), msg, token.GetSignature(), sigContextAccessToken); err != nil {
 		return errors.New("access token signature invalid")
 	}
 
-	issuedAt := time.Unix(claims.GetIssuedAtUnix(), 0).Add(-timeSkewAllowance)
-	expiresAt := time.Unix(claims.GetExpiresAtUnix(), 0).Add(timeSkewAllowance)
+	issuedAt := time.Unix(claims.GetIssuedAtUnix(), 0).Add(-identity.TimeSkewAllowance)
+	expiresAt := time.Unix(claims.GetExpiresAtUnix(), 0).Add(identity.TimeSkewAllowance)
 	if !expiresAt.After(issuedAt) {
 		return errors.New("access token validity window invalid")
 	}

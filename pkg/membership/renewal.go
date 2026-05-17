@@ -57,23 +57,15 @@ func (s *Service) renewGrantOnce(ctx context.Context) (*identityv1.Grant, error)
 	return wire.RenewGrantAt(ctx, addr, s.creds, s.signPriv)
 }
 
-// installRenewedGrant validates a freshly issued grant against our own
-// root and subject before adopting it, then hot-swaps it into the live
-// credentials, persists it, and re-gossips it. The renewal response is
-// not trusted blindly: a grant that does not chain to our root, is for
-// a different subject, is denied, or is outside its horizon is
-// rejected and the node keeps its current grant. SetGrant clears the
-// cached session so the next session is minted from the new grant.
+// installRenewedGrant adopts a freshly issued grant into the live
+// credentials (validated against our own root, subject, horizon and the
+// cluster denylist by AdoptRenewedGrant), then persists and re-gossips
+// it. A grant that fails validation is rejected and the node keeps its
+// current grant.
 func (s *Service) installRenewedGrant(g *identityv1.Grant) error {
-	cur := s.creds.Grant()
-	if cur == nil {
-		return errors.New("no current grant to renew")
+	if err := s.creds.AdoptRenewedGrant(g, time.Now(), s.store.Snapshot().DenyChecker()); err != nil {
+		return err
 	}
-	chk := identity.CheckGrant(g, s.creds.RootPub(), time.Now(), cur.GetClaims().GetSubjectPub(), s.store.Snapshot().DenyChecker())
-	if !chk.Status.Valid() {
-		return fmt.Errorf("renewed grant rejected: %s: %s", chk.Status, chk.Reason)
-	}
-	s.creds.SetGrant(g)
 	if err := identity.SaveCredentials(identity.IdentityPath(s.pollenDir), s.creds); err != nil {
 		return fmt.Errorf("persist renewed grant: %w", err)
 	}
@@ -81,24 +73,15 @@ func (s *Service) installRenewedGrant(g *identityv1.Grant) error {
 	return nil
 }
 
-// renewLeadWindow is how far before the grant deadline the node starts
-// trying to renew. It must comfortably exceed certCheckInterval so a
-// node gets many retry ticks against a possibly-unreachable delegating
-// peer before the deadline actually bites. One third of the tenant
-// horizon gives ~10 days of retry runway on the 30-day default; a
-// healthy node renews long before it could ever hard-stop.
-const renewLeadWindow = identity.DefaultGrantDeadlineTTL / 3
-
 // grantMaintenanceTick runs one periodic pass: it proactively renews
-// the grant once the deadline is within renewLeadWindow, then reports
+// the grant once it is within the renewal lead window, then reports
 // whether the node must shut down. The terminal check runs against the
 // possibly just-renewed grant, so a node that renews successfully never
 // reaches the hard stop; only a node that cannot reach any delegating
 // peer for the entire lead window expires. Admin/root grants carry no
 // deadline and are neither renewed nor expired here.
 func (s *Service) grantMaintenanceTick(ctx context.Context) bool {
-	if dl := s.creds.Grant().GetClaims().GetGrantDeadlineUnix(); dl > 0 &&
-		time.Until(time.Unix(dl, 0)) < renewLeadWindow {
+	if identity.GrantRenewDue(s.creds.Grant(), time.Now()) {
 		s.attemptRenewal(ctx)
 	}
 	return s.checkGrantExpiry()

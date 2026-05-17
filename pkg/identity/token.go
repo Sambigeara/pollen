@@ -81,8 +81,8 @@ func VerifyGrantToken(token *identityv1.GrantToken, expectedSubject ed25519.Publ
 		return nil, errors.New("grant token signature invalid")
 	}
 
-	issuedAt := time.Unix(claims.GetIssuedAtUnix(), 0).Add(-timeSkewAllowance)
-	expiresAt := time.Unix(claims.GetExpiresAtUnix(), 0).Add(timeSkewAllowance)
+	issuedAt := time.Unix(claims.GetIssuedAtUnix(), 0).Add(-TimeSkewAllowance)
+	expiresAt := time.Unix(claims.GetExpiresAtUnix(), 0).Add(TimeSkewAllowance)
 	if !expiresAt.After(issuedAt) {
 		return nil, errors.New("grant token validity window invalid")
 	}

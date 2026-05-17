@@ -218,13 +218,10 @@ func (s *store) LoadGossipState(data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// applyBatchLocked owns the deny recompute for the restore path and
+	// admits spec events against the restored grant and deny graph;
+	// publish the resulting snapshot once it returns.
 	s.applyBatchLocked(batch.Events, false)
-
-	// Derive the denied set from the freshly-loaded cert + deny graph.
-	// applyBatchLocked skips this when live=false (replay/restore path),
-	// so we trigger it explicitly here.
-	s.recomputeDeniedLocked()
-
 	s.updateSnapshotLocked()
 	return nil
 }

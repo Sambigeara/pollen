@@ -228,7 +228,7 @@ func (c *cancellingReader) Close() error {
 // they can decrypt locally; without this, the receiver would land
 // undecryptable ciphertext on disk and would have no path back to the
 // DEK without a separate RPC. Authorisation for both the fetch and
-// the wrapping has already been enforced upstream by gate.Fetch.
+// the wrapping has already been enforced upstream by the admission Fetch check.
 func (s *Service) Serve(stream io.ReadWriteCloser, hash string, requester types.PeerKey) {
 	defer stream.Close()
 
@@ -242,12 +242,9 @@ func (s *Service) Serve(stream io.ReadWriteCloser, hash string, requester types.
 	stream.Write([]byte{statusOK}) //nolint:errcheck
 	io.Copy(stream, rc)            //nolint:errcheck
 
-	if err := s.issueWrappingFor(hash, requester); err != nil {
-		// Wrapping is best-effort: the requester can retry or
-		// request from another holder. Logging would be helpful
-		// here once the service has a logger field.
-		_ = err
-	}
+	// Wrapping is best-effort: on failure the requester retries or
+	// fetches from another holder, so a failed re-wrap is not fatal.
+	s.issueWrappingFor(hash, requester) //nolint:errcheck
 }
 
 // ServePlaintext responds to an inbound plaintext-fetch stream from

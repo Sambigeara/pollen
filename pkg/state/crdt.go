@@ -92,6 +92,17 @@ func (s *store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, er
 // events, and collects rebroadcast entries. When false (disk restore), it
 // inserts events without liveness stamps and produces no domain events.
 //
+// Spec events are admitted in a second pass, after every other event in
+// the batch has been applied and the denylist and snapshot refreshed.
+// Spec admission resolves the authority Grant and the denylist from the
+// snapshot, so a Grant and a Fact delivered together (the canonical
+// EncodeFull restore blob, which is delivered exactly once) must admit on
+// the first delivery rather than being dropped until anti-entropy
+// redelivers them, which never happens on the restore path. CRDT
+// registers are counter-keyed LWW, so the two-pass ordering changes no
+// converged value, and it is skipped when the batch carries no specs.
+// This function owns the batch's deny recompute for both paths.
+//
 // Deleted spec events are admitted iff the Fact carries `deleted=true`
 // signed by the publisher and validate accepts the signature; otherwise a
 // peer could unseed any spec by replaying a published Fact wrapped in a
@@ -101,10 +112,10 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 	var rebroadcast []*statev1.GossipEvent
 	denyOrGrantChanged := false
 
-	for _, ev := range events {
+	applyOne := func(ev *statev1.GossipEvent) {
 		pk, err := types.PeerKeyFromString(ev.PeerId)
 		if err != nil {
-			continue
+			return
 		}
 
 		if pk == s.localID {
@@ -112,12 +123,12 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 			if live {
 				rebroadcast = append(rebroadcast, bumped...)
 			}
-			continue
+			return
 		}
 
 		key, ok := getAttrKey(ev)
 		if !ok {
-			continue
+			return
 		}
 
 		// Drop structurally invalid or impostor grants at apply time. The
@@ -130,11 +141,11 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		// grant event with the Deleted bit flipped.
 		if key.kind == attrGrant {
 			if ev.Deleted || !s.isAcceptableGrantEvent(pk, ev) {
-				continue
+				return
 			}
 		}
 		if isSpecKind(key.kind) && !s.acceptableSpecEventLocked(ev) {
-			continue
+			return
 		}
 		// Wrapping tombstones never travel over the wire: revocation is a
 		// local action (Service.Remove evicts the on-disk envelope and
@@ -146,7 +157,7 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		// to the DEK.
 		if key.kind == attrBlobWrapping {
 			if ev.Deleted || !s.isAcceptableWrappingEvent(pk, ev) {
-				continue
+				return
 			}
 		}
 
@@ -163,7 +174,7 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 				rec.maxCounter = ev.Counter
 				s.nodes[pk] = rec
 			}
-			continue
+			return
 		}
 
 		rec.log[key] = ev
@@ -177,7 +188,7 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		s.nodes[pk] = rec
 
 		if !live {
-			continue
+			return
 		}
 
 		if key.kind == attrDeny || key.kind == attrGrant {
@@ -203,8 +214,41 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		}
 	}
 
-	if live && denyOrGrantChanged {
-		domainEvents = append(domainEvents, s.recomputeDeniedLocked()...)
+	var specs []*statev1.GossipEvent
+	for _, ev := range events {
+		if key, ok := getAttrKey(ev); ok && isSpecKind(key.kind) {
+			specs = append(specs, ev)
+			continue
+		}
+		applyOne(ev)
+	}
+
+	recompute := func() {
+		if !live || denyOrGrantChanged {
+			deny := s.recomputeDeniedLocked()
+			if live {
+				domainEvents = append(domainEvents, deny...)
+			}
+		}
+	}
+
+	if len(specs) == 0 {
+		recompute()
+		return domainEvents, rebroadcast
+	}
+
+	recompute()
+	s.updateSnapshotLocked()
+	// Spec admission counts budget against the snapshot refreshed once
+	// here, not per spec, so a batch carrying several of one authority's
+	// facts admits them all against the pre-loop usage. This is
+	// intentional and convergent: the publisher's own per-spec publish
+	// path enforces the budget at origin, gossip and restore only
+	// replay already-admitted facts, and every node applies the same
+	// batch to the same count, so no node can be driven to an
+	// authority-controlled over-count here.
+	for _, ev := range specs {
+		applyOne(ev)
 	}
 
 	return domainEvents, rebroadcast

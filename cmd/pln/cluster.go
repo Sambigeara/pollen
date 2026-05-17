@@ -110,8 +110,8 @@ func newClusterCmds() []*cobra.Command {
 	purgeCmd := &cobra.Command{
 		Use:   "purge",
 		Short: "Delete local cluster state",
-		Long: `Deletes local cluster credentials (root.pub, membership and
-delegation certs, admin keypair), CAS, runtime state, and config from
+		Long: `Deletes local cluster credentials (root.pub, the grant, admin
+keypair), CAS, runtime state, and config from
 $PLN_DIR. The node identity (ed25519.{key,pub}) is preserved by
 default — pass --include-keys to wipe the keys directory entirely.
 Errors if the daemon is running. Prompts unless --yes is given.`,
@@ -140,13 +140,13 @@ succeeds.`,
 		Short: "Generate an invite token",
 		Long: `Mints a signed invite token. Pass to ` + "`pln join`" + ` on the joining node.
 Tokens are time-limited (--ttl) and may bind to a specific subject key
-or carry hard access deadlines. Properties are baked into the issued
-cert and surfaced to seeds at call time.
+or carry a hard grant deadline. Properties are baked into the issued
+grant and surfaced to seeds at call time.
 
 The default tier is leaf (consume only). Pass --publisher to allow
 the peer to publish workloads, blobs, services, and static sites.
 Pass --admin to additionally allow admitting peers and delegating
-further certs.`,
+further grants.`,
 		Example: "  pln invite --ttl 30m --prop role=worker\n  pln invite --publisher --subject $(ssh worker pln id)\n  pln invite --admin --subject $(ssh relay pln id)",
 		Args:    cobra.RangeArgs(0, 1),
 		RunE:    withEnv(runInvite),
@@ -154,7 +154,7 @@ further certs.`,
 	inviteCmd.Flags().String("subject", "", "Optional hex node public key to bind invite")
 	inviteCmd.Flags().Duration("ttl", defaultInviteTTL, "Invite token validity duration")
 	inviteCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the invited peer")
-	inviteCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin")
+	inviteCmd.Flags().StringArray("prop", nil, "Grant properties: key=value, JSON, or - for stdin")
 	inviteCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
 	inviteCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
 
@@ -169,11 +169,11 @@ further certs.`,
 
 	grantCmd := &cobra.Command{
 		Use:   "grant <peer-id>",
-		Short: "Grant a certificate to a connected peer",
-		Long: `Issues a fresh delegation cert to an already-connected peer. Use
+		Short: "Grant authority to a connected peer",
+		Long: `Issues a fresh grant to an already-connected peer. Use
 --publisher to grant publishing rights, or --admin to delegate full
 admin authority (so the cluster stays operable without the root).
-Properties are baked into the cert and visible to seeds and the
+Properties are baked into the grant and visible to seeds and the
 policy router.`,
 		Example: "  pln grant ab12cd34 --prop role=lead --prop team=backend\n  pln grant worker1 --publisher\n  pln grant relay1 --admin",
 		Args:    cobra.ExactArgs(1),
@@ -181,7 +181,7 @@ policy router.`,
 	}
 	grantCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
 	grantCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
-	grantCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin")
+	grantCmd.Flags().StringArray("prop", nil, "Grant properties: key=value, JSON, or - for stdin")
 	grantCmd.Flags().Uint32("max-functions", 0, "Max functions the grantee may publish (0 = unlimited)")
 	grantCmd.Flags().Uint32("max-blobs", 0, "Max blobs the grantee may publish (0 = unlimited)")
 	grantCmd.Flags().Uint32("max-sites", 0, "Max sites the grantee may publish (0 = unlimited)")

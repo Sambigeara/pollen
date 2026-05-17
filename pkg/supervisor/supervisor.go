@@ -532,7 +532,7 @@ func (n *Supervisor) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-n.shutdownCh:
-			return membership.ErrCertExpired
+			return membership.ErrGrantExpired
 		case <-peerTicker.C:
 			n.syncPeersFromState(ctx, n.store.Snapshot())
 		case ev := <-n.membership.Events():

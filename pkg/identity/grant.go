@@ -27,6 +27,26 @@ import (
 // is required. Admin/root grants carry no horizon (zero).
 const DefaultGrantDeadlineTTL = 30 * 24 * time.Hour
 
+// renewLeadWindow is how far before its deadline a grant becomes due
+// for proactive renewal. It must comfortably exceed the renewal poll
+// interval (the daemon tick, or how often a wire tenant runs pln) so a
+// node gets many attempts against a possibly unreachable delegating
+// peer before the deadline bites. One third of the default horizon
+// gives roughly ten days of runway on the 30-day default.
+const renewLeadWindow = DefaultGrantDeadlineTTL / 3
+
+// GrantRenewDue reports whether grant has a finite horizon within the
+// renewal lead window of now. Grants with no horizon (admin/root) are
+// never due. It is the single owner of the renew-now policy shared by
+// the daemon maintenance loop and the wire-mode CLI.
+func GrantRenewDue(grant *identityv1.Grant, now time.Time) bool {
+	dl := grant.GetClaims().GetGrantDeadlineUnix()
+	if dl == 0 {
+		return false
+	}
+	return time.Unix(dl, 0).Sub(now) < renewLeadWindow
+}
+
 var ErrGrantInvalid = errors.New("grant invalid")
 
 func FullCapabilities() *identityv1.Capabilities {
@@ -407,9 +427,9 @@ func VerifyGrantStructure(grant *identityv1.Grant, rootPub []byte) error {
 type DenyChecker func(subjectPub []byte) bool
 
 // GrantStatus is the typed result of CheckGrant. A grant has a single
-// durable horizon, so unlike the legacy two-window cert there is no
-// NeedsRenewal state: a grant is authoritative until grant_deadline,
-// and the short liveness window lives entirely in Session.
+// durable horizon and no NeedsRenewal state: it is authoritative until
+// grant_deadline, and the short liveness window lives entirely in
+// Session.
 type GrantStatus int
 
 // GrantStatusInvalidChain is deliberately the zero value: a
@@ -506,12 +526,12 @@ func CheckGrant(
 			return out
 		}
 	}
-	if now.Before(nb.Add(-timeSkewAllowance)) {
+	if now.Before(nb.Add(-TimeSkewAllowance)) {
 		out.Status = GrantStatusNotYetValid
 		out.Reason = fmt.Sprintf("not yet valid until %s", nb.UTC().Format(time.RFC3339))
 		return out
 	}
-	if !gd.IsZero() && now.After(gd.Add(timeSkewAllowance)) {
+	if !gd.IsZero() && now.After(gd.Add(TimeSkewAllowance)) {
 		out.Status = GrantStatusExpired
 		out.Reason = fmt.Sprintf("grant deadline passed at %s; re-join required", gd.UTC().Format(time.RFC3339))
 		return out

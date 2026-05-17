@@ -485,8 +485,8 @@ func (s *store) buildSnapshot() Snapshot {
 	// Iterating valid (not s.nodes) means specs published only by a
 	// denied peer drop out of the snapshot. Their gossip events stay in
 	// the log so deny scoping can still reason about them, but
-	// gate.Invoke/Fetch/Connect should not surface a resource whose only
-	// publisher has lost authority.
+	// admission Invoke/Fetch/Connect should not surface a resource whose
+	// only publisher has lost authority.
 	outranks := func(candidate, incumbent types.PeerKey) bool {
 		return candidate.Compare(incumbent) < 0
 	}

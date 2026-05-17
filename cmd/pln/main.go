@@ -113,6 +113,13 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 		if addr, ok := parsePlnTarget(host); ok {
 			baseURL = "https://" + addr
 			wireMode = true
+			// A wire-mode tenant has no daemon running the proactive
+			// renewal loop, so renew opportunistically here when the grant
+			// is within its lead window. Best-effort: the command proceeds
+			// on the current still-valid grant and retries next time.
+			if err := wire.MaybeRenewGrant(cmd.Context(), dir, addr); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "pln: grant renewal failed: %v\n", err)
+			}
 		}
 
 		env := &cliEnv{

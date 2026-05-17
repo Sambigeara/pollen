@@ -36,14 +36,14 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 
 	now := s.nowFunc()
 	denyOrGrantChanged := false
-	certChanged := false
+	grantChanged := false
 	for _, ev := range gossips {
 		key, _ := getAttrKey(ev)
 		if key.kind == attrDeny || key.kind == attrGrant {
 			denyOrGrantChanged = true
 		}
 		if key.kind == attrGrant {
-			certChanged = true
+			grantChanged = true
 		}
 		rec.maxCounter++
 		ev.PeerId = s.localID.String()
@@ -59,7 +59,7 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 	if denyOrGrantChanged {
 		events = append(events, s.recomputeDeniedLocked()...)
 	}
-	if certChanged {
+	if grantChanged {
 		events = append(events, GrantChanged{Peer: s.localID})
 	}
 
@@ -795,7 +795,7 @@ func liveSpecBody(sc *statev1.SpecChange) fact.Body {
 // RevokeOwnSpecs tombstones every workload, service, blob, and static
 // spec this node has published. Used when a cap downgrade strips
 // publish authority: the still-valid old signer is used to sign the
-// tombstones before the new cert (which can't sign) replaces it. The
+// tombstones before the downgraded grant replaces it. The
 // returned events are emitted to peers like any other publish change;
 // remotes drop the resources from their CRDTs as the tombstones land.
 func (s *store) RevokeOwnSpecs() ([]Event, error) {

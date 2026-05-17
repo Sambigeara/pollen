@@ -718,13 +718,13 @@ func (s *Service) localCertificates(snap state.Snapshot) []*controlv1.CertInfo {
 		remaining = time.Until(time.Unix(dl, 0))
 	} else {
 		// Admin/root grants carry no horizon: always healthy.
-		remaining = membership.CertWarnThreshold + time.Hour
+		remaining = membership.GrantWarnThreshold + time.Hour
 	}
 
 	switch {
 	case remaining <= 0:
 		health = controlv1.CertHealth_CERT_HEALTH_EXPIRED
-	case remaining <= membership.CertWarnThreshold:
+	case remaining <= membership.GrantWarnThreshold:
 		health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
 	}
 

@@ -103,8 +103,8 @@ func VerifyInviteTicket(ticket *identityv1.InviteTicket, expectedSubject ed25519
 		return nil, errors.New("invite ticket subject mismatch")
 	}
 
-	issuedAt := time.Unix(claims.GetIssuedAtUnix(), 0).Add(-timeSkewAllowance)
-	expiresAt := time.Unix(claims.GetExpiresAtUnix(), 0).Add(timeSkewAllowance)
+	issuedAt := time.Unix(claims.GetIssuedAtUnix(), 0).Add(-TimeSkewAllowance)
+	expiresAt := time.Unix(claims.GetExpiresAtUnix(), 0).Add(TimeSkewAllowance)
 	if !expiresAt.After(issuedAt) {
 		return nil, errors.New("invite ticket validity window invalid")
 	}

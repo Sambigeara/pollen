@@ -169,6 +169,46 @@ func RenewGrantAt(ctx context.Context, addr string, creds *identity.Credentials,
 	return resp.Msg.GetGrant(), nil
 }
 
+// MaybeRenewGrant opportunistically renews a wire-mode tenant's grant
+// when it is within the renewal lead window, against the control
+// endpoint at addr, persisting the result so the next dial uses it. A
+// wire-mode tenant has no daemon to run the proactive loop, so this is
+// the renewal path for `pln join` clients. Best-effort: it returns an
+// error only when a renewal was due and failed; the caller proceeds on
+// the current still-valid grant (renewal runs well before the deadline)
+// and retries on the next invocation. It is a no-op when this context
+// is not enrolled or the grant is not yet due.
+func MaybeRenewGrant(ctx context.Context, dir, addr string) error {
+	identityDir := identity.IdentityPath(dir)
+	creds, err := identity.LoadCredentials(identityDir)
+	if err != nil {
+		return fmt.Errorf("load node credentials: %w", err)
+	}
+	if creds == nil || creds.Grant() == nil {
+		return nil
+	}
+	if !identity.GrantRenewDue(creds.Grant(), time.Now()) {
+		return nil
+	}
+	priv, _, err := identity.EnsureIdentityKey(identityDir)
+	if err != nil {
+		return fmt.Errorf("load identity key: %w", err)
+	}
+	g, err := RenewGrantAt(ctx, addr, creds, priv)
+	if err != nil {
+		return err
+	}
+	// nil denylist: the wire client holds no cluster snapshot, and the
+	// issuing server already enforced the denylist before re-issuing.
+	if err := creds.AdoptRenewedGrant(g, time.Now(), nil); err != nil {
+		return err
+	}
+	if err := identity.SaveCredentials(identityDir, creds); err != nil {
+		return fmt.Errorf("persist renewed grant: %w", err)
+	}
+	return nil
+}
+
 // ServerTLSConfig builds the TLS config for the control RPC listener.
 // Inbound clients must present a cert whose Session extension chains
 // back to the configured root AND whose TLS leaf public key matches the

@@ -61,6 +61,28 @@ func (c *Credentials) SetGrant(grant *identityv1.Grant) {
 	c.session = nil
 }
 
+// AdoptRenewedGrant validates g as a freshly re-issued grant for the
+// subject these credentials already hold and swaps it in. g must chain
+// to our root, be within its horizon, carry the current subject, and
+// not be denied; otherwise the current grant is kept and an error
+// returned, so a renewal response is never trusted blindly. It does not
+// persist or gossip: callers own those. denied may be nil when the
+// issuing server has already enforced the denylist and the caller has
+// no local cluster view (the wire client). SetGrant clears the cached
+// session so the next session mints from g.
+func (c *Credentials) AdoptRenewedGrant(g *identityv1.Grant, now time.Time, denied DenyChecker) error {
+	cur := c.Grant()
+	if cur == nil {
+		return errors.New("no current grant to renew")
+	}
+	chk := CheckGrant(g, c.rootPub, now, cur.GetClaims().GetSubjectPub(), denied)
+	if !chk.Status.Valid() {
+		return fmt.Errorf("renewed grant rejected: %s: %s", chk.Status, chk.Reason)
+	}
+	c.SetGrant(g)
+	return nil
+}
+
 // EnsureFreshSession returns a session valid for at least refreshBefore
 // into the future, minting a new one from the held grant if the cached
 // session is absent or close to expiry. Local only: no issuer, no mesh.

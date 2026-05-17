@@ -108,10 +108,10 @@ func VerifySession(
 	if !na.After(nb) {
 		return nil, fmt.Errorf("%w: session validity window invalid", ErrSessionInvalid)
 	}
-	if now.Before(nb.Add(-timeSkewAllowance)) {
+	if now.Before(nb.Add(-TimeSkewAllowance)) {
 		return nil, fmt.Errorf("%w: session not yet valid", ErrSessionInvalid)
 	}
-	if now.After(na.Add(timeSkewAllowance)) {
+	if now.After(na.Add(TimeSkewAllowance)) {
 		return nil, fmt.Errorf("%w: session expired at %s", ErrSessionInvalid, na.UTC().Format(time.RFC3339))
 	}
 

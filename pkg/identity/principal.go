@@ -67,12 +67,16 @@ func PrincipalFromGrant(grant *identityv1.Grant) Principal {
 	if gc == nil {
 		return Principal{}
 	}
+	var deadline time.Time
+	if d := gc.GetGrantDeadlineUnix(); d > 0 {
+		deadline = time.Unix(d, 0)
+	}
 	return Principal{
 		SubjectPub:    ed25519.PublicKey(gc.GetSubjectPub()),
 		Grant:         grant,
 		Capabilities:  gc.GetCapabilities(),
 		Budget:        gc.GetBudget(),
-		GrantDeadline: time.Unix(gc.GetGrantDeadlineUnix(), 0),
+		GrantDeadline: deadline,
 		valid:         true,
 	}
 }

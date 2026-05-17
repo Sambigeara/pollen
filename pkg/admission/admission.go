@@ -26,6 +26,12 @@ import (
 
 const CallerKey = "pln.caller"
 
+// errLocalGrantUnpublished is returned when a node acts on its own
+// authority before its Grant has gossiped. MayPublish and
+// resolveAndVerify share this one sentinel so the bootstrap-window rule
+// has a single owner.
+var errLocalGrantUnpublished = errors.New("local grant is not yet published")
+
 type accessTokenCtxKey struct{}
 
 // WithAccessToken attaches an AccessToken to ctx so downstream
@@ -260,7 +266,7 @@ func (p *Pipeline) MayPublish(grant *identityv1.Grant, policy *admissionv1.Predi
 		return nil
 	}
 	if grant == nil {
-		return errors.New("local grant is not yet published")
+		return errLocalGrantUnpublished
 	}
 	if chk := identity.CheckGrant(grant, p.rootPub, time.Now(), nil, nil); !chk.Status.Valid() {
 		return fmt.Errorf("local grant %s: %s", chk.Status, chk.Reason)
@@ -362,5 +368,5 @@ func decodeSpecChange(sc *statev1.SpecChange) (fact.Body, *admissionv1.ResourceI
 	case *statev1.SpecChange_Blob:
 		return body.Blob, &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{Name: body.Blob.GetName(), Digest: body.Blob.GetDigest()}}}, nil
 	}
-	return nil, nil, errors.New("gate: empty spec body")
+	return nil, nil, errors.New("admission: empty spec body")
 }

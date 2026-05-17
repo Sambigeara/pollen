@@ -44,7 +44,7 @@ const (
 	sigContextGrantToken   = "pollen.granttoken.v1"
 	sigContextInviteTicket = "pollen.inviteticket.v1"
 
-	timeSkewAllowance = time.Minute
+	TimeSkewAllowance = time.Minute
 )
 
 const MaxAttributesSize = 4096

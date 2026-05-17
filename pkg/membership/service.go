@@ -32,14 +32,13 @@ import (
 	"go.uber.org/zap"
 )
 
-var ErrCertExpired = errors.New("delegation certificate has expired")
+var ErrGrantExpired = errors.New("grant has expired")
 
 const (
 	maxDatagramPayload         = transport.MaxDatagramPayload - 1 // minus 1-byte DatagramType prefix
 	eventBufSize               = 64
-	certCheckInterval          = 5 * time.Minute
-	CertWarnThreshold          = 1 * time.Hour
-	CertCriticalThreshold      = 15 * time.Minute
+	grantCheckInterval         = 5 * time.Minute
+	GrantWarnThreshold         = 1 * time.Hour
 	gossipStreamTimeout        = 5 * time.Second
 	maxResponseSize            = 4 << 20 // 4 MB
 	vivaldiWarmupDuration      = 5 * time.Second
@@ -254,7 +253,7 @@ func (s *Service) Start(ctx context.Context) error {
 	s.broadcastBatchBytes(ctx, s.store.EncodeFull())
 
 	if s.checkGrantExpiry() {
-		return ErrCertExpired
+		return ErrGrantExpired
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -458,7 +457,7 @@ func (s *Service) runPendingGossipBroadcast(ctx context.Context) {
 }
 
 func (s *Service) runGrantCheckTicker(ctx context.Context) {
-	ticker := time.NewTicker(certCheckInterval)
+	ticker := time.NewTicker(grantCheckInterval)
 	defer ticker.Stop()
 	for {
 		select {
