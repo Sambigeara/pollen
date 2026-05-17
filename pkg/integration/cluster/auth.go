@@ -8,13 +8,10 @@ package cluster
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/tls"
 	"testing"
 	"time"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/transport"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,52 +28,47 @@ func NewClusterAuth(t testing.TB) *ClusterAuth { //nolint:thelper
 	return &ClusterAuth{rootPub: pub, rootKey: priv, t: t}
 }
 
-func (ca *ClusterAuth) RootPub() ed25519.PublicKey { return ca.rootPub }
+func (ca *ClusterAuth) RootPub() ed25519.PublicKey  { return ca.rootPub }
 func (ca *ClusterAuth) RootKey() ed25519.PrivateKey { return ca.rootKey }
 
-func (ca *ClusterAuth) NodeCredentials(nodePriv ed25519.PrivateKey) (tls.Certificate, *admissionv1.DelegationCert) {
-	t := ca.t
+// NodeCredentials issues a root-signed leaf grant for a fresh member
+// key: full capabilities, bounded by a generous test horizon.
+func (ca *ClusterAuth) NodeCredentials(nodePriv ed25519.PrivateKey) *identity.Credentials {
 	nodePub := nodePriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	now := time.Now()
-	dc, err := auth.IssueDelegationCert(
+	grant, err := identity.IssueGrant(
 		ca.rootKey,
 		nil, // root issues directly
 		nodePub,
-		auth.FullCapabilities(),
+		identity.FullCapabilities(),
+		identity.UnlimitedBudget(),
 		now.Add(-time.Minute),
 		now.Add(24*time.Hour), //nolint:mnd
-		time.Time{},           // no access deadline
 	)
-	require.NoError(t, err)
+	require.NoError(ca.t, err)
 
-	tlsCert, err := transport.GenerateIdentityCert(nodePriv, dc, 24*time.Hour) //nolint:mnd
-	require.NoError(t, err)
-
-	return tlsCert, dc
+	return identity.NewCredentials(ca.rootPub, nodePriv, grant)
 }
 
-// RootNodeCredentials issues the self-signed root delegation cert and
-// the matching TLS identity. Used to spin up a test node that holds
-// the cluster's root key. A node "is root" when its signing key equals
-// the cluster root key, mirroring how production root nodes are
-// bootstrapped via EnsureLocalRootCredentials.
-func (ca *ClusterAuth) RootNodeCredentials() (tls.Certificate, *admissionv1.DelegationCert) {
-	t := ca.t
+// RootCredentials issues the self-signed root grant. The root node's
+// signing identity is the cluster root key, mirroring how production
+// root nodes are bootstrapped via EnsureLocalRootGrant. A node "is
+// root" when its signing key equals the cluster root key, so that
+// admin-scoped operations such as DenyPeer are authorised: only an
+// ancestor in a peer's chain, or the root itself, may revoke that peer.
+func (ca *ClusterAuth) RootCredentials() *identity.Credentials {
 	now := time.Now()
-	dc, err := auth.IssueDelegationCert(
+	grant, err := identity.IssueGrant(
 		ca.rootKey,
 		nil,
 		ca.rootPub, // self-signed: subject == issuer == rootPub
-		auth.FullCapabilities(),
+		identity.FullCapabilities(),
+		identity.UnlimitedBudget(),
 		now.Add(-time.Minute),
-		now.Add(24*time.Hour), //nolint:mnd
-		time.Time{},
+		time.Time{}, // root carries no horizon
 	)
-	require.NoError(t, err)
+	require.NoError(ca.t, err)
 
-	tlsCert, err := transport.GenerateIdentityCert(ca.rootKey, dc, 24*time.Hour) //nolint:mnd
-	require.NoError(t, err)
-
-	return tlsCert, dc
+	return identity.NewCredentials(ca.rootPub, ca.rootKey, grant)
 }

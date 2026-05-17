@@ -37,6 +37,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/tunneling"
 	"github.com/sambigeara/pollen/pkg/types"
+	"github.com/sambigeara/pollen/pkg/view"
 	"github.com/sambigeara/pollen/pkg/wasm"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -403,18 +404,19 @@ func (s *Service) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootstrapI
 func (s *Service) GetStatus(ctx context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
 	snap := s.state.Snapshot()
 	connections := s.tunneling.ListConnections()
-	scope := s.viewScope(ctx)
+	lens := s.lens(ctx)
+	scoped := view.Project(snap, lens)
 
 	out := &controlv1.GetStatusResponse{
 		Degraded:      s.isDegraded(time.Now()),
-		Certificates:  s.buildCertificates(snap),
-		Self:          s.buildSelfSummary(snap.LocalID, snap.Nodes[snap.LocalID], connections),
-		Nodes:         s.buildNodeSummaries(snap, snap.Nodes, connections),
-		Services:      buildServiceSummaries(snap.Nodes, scope),
-		Connections:   buildConnectionSummaries(snap.Nodes, connections),
-		Workloads:     s.buildWorkloadSummaries(snap, scope),
-		Sites:         s.buildStaticSummaries(snap, scope),
-		Blobs:         s.buildBlobSummaries(snap, scope),
+		Certificates:  s.buildCertificates(ctx, snap, lens),
+		Self:          s.buildSelfSummary(snap, lens, connections),
+		Nodes:         s.buildNodeSummaries(snap, scoped, lens, connections),
+		Services:      buildServiceSummaries(scoped.Nodes, lens),
+		Connections:   buildConnectionSummaries(scoped.Nodes, connections),
+		Workloads:     s.buildWorkloadSummaries(snap, lens),
+		Sites:         s.buildStaticSummaries(snap, scoped, lens),
+		Blobs:         s.buildBlobSummaries(snap, scoped, lens),
 		GatewayDomain: strings.TrimPrefix(s.staticDomain, "."),
 	}
 
@@ -423,14 +425,16 @@ func (s *Service) GetStatus(ctx context.Context, _ *controlv1.GetStatusRequest) 
 }
 
 func (s *Service) Inspect(ctx context.Context, req *controlv1.InspectRequest) (*controlv1.InspectResponse, error) {
-	scope := s.viewScope(ctx)
+	lens := s.lens(ctx)
 	switch t := req.GetTarget().(type) {
 	case *controlv1.InspectRequest_NodePub:
 		peerKey := types.PeerKeyFromBytes(t.NodePub)
-		if !scope.permits(peerKey) {
+		snap := s.state.Snapshot()
+		scoped := view.Project(snap, lens)
+		if _, ok := scoped.Nodes[peerKey]; !ok {
 			return nil, status.Errorf(codes.NotFound, "no peer %s in cluster view", peerKey.String())
 		}
-		detail, err := s.inspectNode(peerKey)
+		detail, err := s.inspectNode(snap, peerKey, lens)
 		if err != nil {
 			return nil, err
 		}
@@ -447,36 +451,45 @@ func (s *Service) Inspect(ctx context.Context, req *controlv1.InspectRequest) (*
 	}
 }
 
-func (s *Service) inspectNode(peerKey types.PeerKey) (*controlv1.NodeDetail, error) {
-	snap := s.state.Snapshot()
+func (s *Service) inspectNode(snap state.Snapshot, peerKey types.PeerKey, lens view.Lens) (*controlv1.NodeDetail, error) {
 	nv, ok := snap.Nodes[peerKey]
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "no peer %s in cluster view", peerKey.String())
 	}
 
 	connections := s.tunneling.ListConnections()
+	selfLens := operatorView(lens, snap)
 	var summary *controlv1.NodeSummary
-	if peerKey == snap.LocalID {
-		summary = s.buildSelfSummary(peerKey, nv, connections)
+	if peerKey == snap.LocalID && selfLens {
+		summary = s.buildSelfSummary(snap, lens, connections)
 	} else {
 		summary = s.buildPeerSummary(snap, peerKey, nv, connections)
 	}
+	if !lens.Admin() {
+		redactNodeTelemetry(summary)
+	}
 
 	detail := &controlv1.NodeDetail{
-		Summary:       summary,
-		Cert:          nodeCertInfo(nv.Grant, time.Now(), snap.IsDenied(peerKey)),
-		IssuerChain:   issuerChain(nv.Grant),
-		NatType:       natTypeLabel(nv.NatType),
-		MemTotalBytes: nv.MemTotalBytes,
+		Summary:     summary,
+		Cert:        nodeCertInfo(nv.Grant, time.Now(), snap.IsDenied(peerKey)),
+		IssuerChain: issuerChain(nv.Grant),
 	}
-	if nv.VivaldiCoord != nil {
-		detail.VivaldiX = nv.VivaldiCoord.X
-		detail.VivaldiY = nv.VivaldiCoord.Y
-		detail.VivaldiHeight = nv.VivaldiCoord.Height
-		detail.VivaldiError = nv.VivaldiErr
+	// Mesh topology (NAT class, Vivaldi position, host memory, reachable
+	// peers) is cluster-operator data. A tenant inspecting a node that
+	// merely holds its fact must not learn the host's mesh position or
+	// which other peers it can reach.
+	if lens.Admin() {
+		detail.NatType = natTypeLabel(nv.NatType)
+		detail.MemTotalBytes = nv.MemTotalBytes
+		if nv.VivaldiCoord != nil {
+			detail.VivaldiX = nv.VivaldiCoord.X
+			detail.VivaldiY = nv.VivaldiCoord.Y
+			detail.VivaldiHeight = nv.VivaldiCoord.Height
+			detail.VivaldiError = nv.VivaldiErr
+		}
+		detail.ReachablePeers = sortedReachableRefs(nv.Reachable)
 	}
-	detail.ReachablePeers = sortedReachableRefs(nv.Reachable)
-	fillPublishedResources(detail, snap, nv, peerKey)
+	fillPublishedResources(detail, snap, nv, peerKey, lens)
 	return detail, nil
 }
 
@@ -497,16 +510,22 @@ func sortedReachableRefs(reachable map[types.PeerKey]struct{}) []*controlv1.Node
 }
 
 // fillPublishedResources populates the published_* slices on detail by
-// scanning the snapshot for resources whose publisher is peerKey. The
-// anonymous-publish fallback labels hash-only entries by their hash.
-func fillPublishedResources(detail *controlv1.NodeDetail, snap state.Snapshot, nv state.NodeView, peerKey types.PeerKey) {
-	for name := range nv.Services {
+// scanning the snapshot for resources whose publisher is peerKey. A
+// non-admin caller additionally only sees resources it published
+// itself, so inspecting a shared holder never enumerates another
+// tenant's facts. The anonymous-publish fallback labels hash-only
+// entries by their hash.
+func fillPublishedResources(detail *controlv1.NodeDetail, snap state.Snapshot, nv state.NodeView, peerKey types.PeerKey, lens view.Lens) {
+	for name, svc := range nv.Services {
+		if !lens.Admin() && (!hasServicePublisher(svc) || !lens.Permits(servicePublisher(svc))) {
+			continue
+		}
 		detail.PublishedServices = append(detail.PublishedServices, name)
 	}
 	slices.Sort(detail.PublishedServices)
 
 	for hash, sv := range snap.Specs {
-		if sv.Publisher != peerKey {
+		if sv.Publisher != peerKey || !lens.Permits(sv.Publisher) {
 			continue
 		}
 		label := sv.Spec.Name
@@ -518,14 +537,14 @@ func fillPublishedResources(detail *controlv1.NodeDetail, snap state.Snapshot, n
 	slices.Sort(detail.PublishedWorkloads)
 
 	for name, sv := range snap.StaticSpecs {
-		if sv.Publisher == peerKey {
+		if sv.Publisher == peerKey && lens.Permits(sv.Publisher) {
 			detail.PublishedStatics = append(detail.PublishedStatics, name)
 		}
 	}
 	slices.Sort(detail.PublishedStatics)
 
 	for digest, bv := range snap.BlobSpecs {
-		if bv.Publisher != peerKey {
+		if bv.Publisher != peerKey || !lens.Permits(bv.Publisher) {
 			continue
 		}
 		label := bv.Spec.Name
@@ -669,7 +688,24 @@ func (s *Service) isDegraded(now time.Time) bool {
 	return now.After(expiry) && now.Before(expiry.Add(window))
 }
 
-func (s *Service) buildCertificates(snap state.Snapshot) []*controlv1.CertInfo {
+// buildCertificates reports the credential the caller cares about. An
+// admin operator or the daemon itself sees the serving node's own grant
+// with renewal-horizon health, since that node is the one that renews. A
+// wire tenant sees its OWN grant, never the serving daemon's: surfacing
+// the daemon's credential to a tenant is both a leak and the wrong
+// answer (a tenant wants its own expiry, not the host's).
+func (s *Service) buildCertificates(ctx context.Context, snap state.Snapshot, lens view.Lens) []*controlv1.CertInfo {
+	if operatorView(lens, snap) {
+		return s.localCertificates(snap)
+	}
+	ci := nodeCertInfo(s.scopeGrant(ctx), time.Now(), snap.IsDenied(lens.Subject()))
+	if ci == nil {
+		return nil
+	}
+	return []*controlv1.CertInfo{ci}
+}
+
+func (s *Service) localCertificates(snap state.Snapshot) []*controlv1.CertInfo {
 	if s.creds == nil || s.creds.Grant() == nil {
 		return nil
 	}
@@ -709,24 +745,34 @@ func (s *Service) buildCertificates(snap state.Snapshot) []*controlv1.CertInfo {
 	}}
 }
 
-func (s *Service) buildSelfSummary(localID types.PeerKey, localNode state.NodeView, connections []tunneling.ConnectionInfo) *controlv1.NodeSummary {
-	in, out := sumTraffic(localNode.TrafficRates)
+func (s *Service) buildSelfSummary(snap state.Snapshot, lens view.Lens, connections []tunneling.ConnectionInfo) *controlv1.NodeSummary {
+	if operatorView(lens, snap) {
+		localID := snap.LocalID
+		localNode := snap.Nodes[localID]
+		in, out := sumTraffic(localNode.TrafficRates)
+		return &controlv1.NodeSummary{
+			Node:               &controlv1.NodeRef{PeerPub: localID.Bytes()},
+			Name:               localNode.Name,
+			Status:             controlv1.NodeStatus_NODE_STATUS_ONLINE,
+			Addr:               nodeViewAddr(localNode),
+			PubliclyAccessible: localNode.PubliclyAccessible,
+			CpuPercent:         localNode.CPUPercent,
+			MemPercent:         localNode.MemPercent,
+			NumCpu:             localNode.NumCPU,
+			TunnelCount:        uint32(len(connections)),
+			TrafficRateIn:      in,
+			TrafficRateOut:     out,
+		}
+	}
+	// A wire tenant is not a mesh node; surface its own identity so the
+	// status header is the caller, never the serving daemon.
 	return &controlv1.NodeSummary{
-		Node:               &controlv1.NodeRef{PeerPub: localID.Bytes()},
-		Name:               localNode.Name,
-		Status:             controlv1.NodeStatus_NODE_STATUS_ONLINE,
-		Addr:               nodeViewAddr(localNode),
-		PubliclyAccessible: localNode.PubliclyAccessible,
-		CpuPercent:         localNode.CPUPercent,
-		MemPercent:         localNode.MemPercent,
-		NumCpu:             localNode.NumCPU,
-		TunnelCount:        uint32(len(connections)),
-		TrafficRateIn:      in,
-		TrafficRateOut:     out,
+		Node:   &controlv1.NodeRef{PeerPub: lens.Subject().Bytes()},
+		Status: controlv1.NodeStatus_NODE_STATUS_OFFLINE,
 	}
 }
 
-func (s *Service) buildNodeSummaries(snap state.Snapshot, nodes map[types.PeerKey]state.NodeView, connections []tunneling.ConnectionInfo) []*controlv1.NodeSummary {
+func (s *Service) buildNodeSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens, connections []tunneling.ConnectionInfo) []*controlv1.NodeSummary {
 	liveSet := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
 	for _, pk := range snap.PeerKeys {
 		liveSet[pk] = struct{}{}
@@ -737,26 +783,49 @@ func (s *Service) buildNodeSummaries(snap state.Snapshot, nodes map[types.PeerKe
 		tunnelCounts[c.PeerID]++
 	}
 
-	out := make([]*controlv1.NodeSummary, 0, len(nodes))
-	for key, node := range nodes {
-		if key == snap.LocalID {
+	// The serving node is rendered as Self only on the operator/daemon
+	// path. A tenant has no Self node, so the serving node (when it
+	// holds the tenant's fact) belongs in the node list like any other
+	// holder.
+	skipSelf := operatorView(lens, snap)
+	out := make([]*controlv1.NodeSummary, 0, len(scoped.Nodes))
+	for key, node := range scoped.Nodes {
+		if skipSelf && key == snap.LocalID {
 			continue
 		}
 		_, isLive := liveSet[key]
-		out = append(out, s.peerSummary(key, node, tunnelCounts[key], isLive))
+		ns := s.peerSummary(key, node, tunnelCounts[key], isLive)
+		if !lens.Admin() {
+			redactNodeTelemetry(ns)
+		}
+		out = append(out, ns)
 	}
 	return out
 }
 
-func buildServiceSummaries(nodes map[types.PeerKey]state.NodeView, scope viewScope) []*controlv1.ServiceSummary {
+// redactNodeTelemetry strips a node's operational metrics from a summary
+// shown to a non-admin caller. A tenant may see WHERE its facts run
+// (identity, status, address) but not the host's load or topology, which
+// would expose other tenants sharing the machine.
+func redactNodeTelemetry(ns *controlv1.NodeSummary) {
+	ns.CpuPercent = 0
+	ns.MemPercent = 0
+	ns.NumCpu = 0
+	ns.TrafficRateIn = 0
+	ns.TrafficRateOut = 0
+	ns.LatencyMs = 0
+	ns.TunnelCount = 0
+}
+
+func buildServiceSummaries(nodes map[types.PeerKey]state.NodeView, lens view.Lens) []*controlv1.ServiceSummary {
 	var out []*controlv1.ServiceSummary
 	for slot, node := range nodes {
 		for _, svc := range node.Services {
 			if hasServicePublisher(svc) {
-				if !scope.permits(servicePublisher(svc)) {
+				if !lens.Permits(servicePublisher(svc)) {
 					continue
 				}
-			} else if !scope.showAll {
+			} else if !lens.Admin() {
 				continue
 			}
 			out = append(out, &controlv1.ServiceSummary{
@@ -801,13 +870,19 @@ func buildConnectionSummaries(nodes map[types.PeerKey]state.NodeView, connection
 	return out
 }
 
-func (s *Service) buildWorkloadSummaries(snap state.Snapshot, scope viewScope) []*controlv1.WorkloadSummary {
+func (s *Service) buildWorkloadSummaries(snap state.Snapshot, lens view.Lens) []*controlv1.WorkloadSummary {
 	var out []*controlv1.WorkloadSummary
 	seen := make(map[string]struct{})
 
 	for _, w := range s.placement.Status() {
 		sv, hasSpec := snap.Specs[w.Hash]
-		if hasSpec && !scope.permits(sv.Publisher) {
+		if hasSpec {
+			if !lens.Permits(sv.Publisher) {
+				continue
+			}
+		} else if !lens.Admin() {
+			// An unattributed workload running locally carries no
+			// publisher, so a tenant cannot own it; only admins see it.
 			continue
 		}
 		seen[w.Hash] = struct{}{}
@@ -829,7 +904,7 @@ func (s *Service) buildWorkloadSummaries(snap state.Snapshot, scope viewScope) [
 		if _, ok := seen[hash]; ok {
 			continue
 		}
-		if !scope.permits(sv.Publisher) {
+		if !lens.Permits(sv.Publisher) {
 			continue
 		}
 		ws := &controlv1.WorkloadSummary{
@@ -1477,19 +1552,22 @@ func (s *Service) UnseedStatic(ctx context.Context, req *controlv1.UnseedStaticR
 }
 
 func (s *Service) ListStatic(ctx context.Context, _ *controlv1.ListStaticRequest) (*controlv1.ListStaticResponse, error) {
-	return &controlv1.ListStaticResponse{Sites: s.buildStaticSummaries(s.state.Snapshot(), s.viewScope(ctx))}, nil
+	snap := s.state.Snapshot()
+	lens := s.lens(ctx)
+	return &controlv1.ListStaticResponse{Sites: s.buildStaticSummaries(snap, view.Project(snap, lens), lens)}, nil
 }
 
-func (s *Service) buildStaticSummaries(snap state.Snapshot, scope viewScope) []*controlv1.StaticSummary {
+func (s *Service) buildStaticSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens) []*controlv1.StaticSummary {
+	selfLens := operatorView(lens, snap)
 	var capacity uint32
-	for _, nv := range snap.Nodes {
+	for _, nv := range scoped.Nodes {
 		if nv.CanServeStatic {
 			capacity++
 		}
 	}
 	out := make([]*controlv1.StaticSummary, 0, len(snap.StaticSpecs))
 	for name, spec := range snap.StaticSpecs {
-		if !scope.permits(spec.Publisher) {
+		if !lens.Permits(spec.Publisher) {
 			continue
 		}
 		digest, _ := hex.DecodeString(spec.Spec.ManifestDigest)
@@ -1499,11 +1577,14 @@ func (s *Service) buildStaticSummaries(snap state.Snapshot, scope viewScope) []*
 			Name:            name,
 			ManifestDigest:  digest,
 			Publisher:       &controlv1.NodeRef{PeerPub: spec.Publisher.Bytes()},
-			Local:           local,
+			Local:           local && selfLens,
 			ServingCapacity: capacity,
 			PublicUrl:       s.hostBasedURL(name, spec.Publisher),
 		}
 		for pk := range claimants {
+			if _, ok := scoped.Nodes[pk]; !ok {
+				continue
+			}
 			summary.Claimants = append(summary.Claimants, &controlv1.NodeRef{PeerPub: pk.Bytes()})
 		}
 		out = append(out, summary)
@@ -1533,13 +1614,14 @@ func (s *Service) pathBasedURL(subdomain, name string, publisher types.PeerKey, 
 
 // Restricts holders to live peers; stale BlobAvailability from offline
 // peers would inflate replicas and surface phantom orphans.
-func (s *Service) buildBlobSummaries(snap state.Snapshot, scope viewScope) []*controlv1.BlobSummary {
+func (s *Service) buildBlobSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens) []*controlv1.BlobSummary {
+	selfLens := operatorView(lens, snap)
 	liveSet := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
 	for _, pk := range snap.PeerKeys {
 		liveSet[pk] = struct{}{}
 	}
 	counts := make(map[string]uint32)
-	for pk, nv := range snap.Nodes {
+	for pk, nv := range scoped.Nodes {
 		if _, live := liveSet[pk]; !live {
 			continue
 		}
@@ -1557,26 +1639,26 @@ func (s *Service) buildBlobSummaries(snap state.Snapshot, scope viewScope) []*co
 		if _, ok := staticBlobs[hash]; ok {
 			continue
 		}
-		view, hasSpec := snap.BlobSpecs[hash]
+		bv, hasSpec := snap.BlobSpecs[hash]
 		// Orphan blobs (no named BlobSpec) carry no publisher attribution,
 		// so non-admin callers can't claim ownership of them — only admins
 		// see them.
 		if hasSpec {
-			if !scope.permits(view.Publisher) {
+			if !lens.Permits(bv.Publisher) {
 				continue
 			}
-		} else if !scope.showAll {
+		} else if !lens.Admin() {
 			continue
 		}
 		_, local := localBlobs[hash]
 		summary := &controlv1.BlobSummary{
 			Hash:     hash,
 			Replicas: n,
-			Local:    local,
+			Local:    local && selfLens,
 		}
 		if hasSpec {
-			summary.Name = view.Spec.Name
-			summary.Publisher = &controlv1.NodeRef{PeerPub: view.Publisher.Bytes()}
+			summary.Name = bv.Spec.Name
+			summary.Publisher = &controlv1.NodeRef{PeerPub: bv.Publisher.Bytes()}
 		} else {
 			summary.Orphan = true
 		}

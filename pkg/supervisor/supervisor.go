@@ -23,11 +23,11 @@ import (
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/blobs"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/control"
 	"github.com/sambigeara/pollen/pkg/fact"
-	"github.com/sambigeara/pollen/pkg/gate"
 	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/nat"
@@ -76,7 +76,7 @@ type Supervisor struct {
 	wasmRuntime      *wasm.Runtime
 	log              *zap.SugaredLogger
 	router           *atomicRouter
-	gate             *gate.Gate
+	gate             *admission.Pipeline
 	peerCache        *peercache.Store
 	nonTargetStreak  map[types.PeerKey]int
 	vivaldiErr       *metrics.EWMA
@@ -124,7 +124,7 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 	}
 
 	stateStore := state.New(self, creds.RootPub())
-	runtimeGate := gate.New(creds.RootPub(), stateStore)
+	runtimeGate := admission.New(creds.RootPub(), stateStore)
 	stateStore.SetMutationValidator(runtimeGate.Admit)
 	// One fact signer for the node's lifetime: facts are named by
 	// pubkey and their authority's Grant is resolved from gossip, so

@@ -17,8 +17,8 @@ import (
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
+	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/gate"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -477,7 +477,7 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 		info, _ := wasm.CallerInfoFromContext(ctx)
 		var gated wasm.CallerInfo
 		var err error
-		if token, ok := gate.AccessTokenFromContext(ctx); ok {
+		if token, ok := admission.AccessTokenFromContext(ctx); ok {
 			gated, err = s.gate.InvokeByToken(token, hash)
 		} else {
 			gated, err = s.gate.Invoke(s.callerGrant(ctx, info.PeerKey), hash)
@@ -662,7 +662,7 @@ func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	ctx := withChainSnapshot(s.ctx, chain)
 	ctx = wasm.WithCallerInfo(ctx, info)
 	if token != nil {
-		ctx = gate.WithAccessToken(ctx, token)
+		ctx = admission.WithAccessToken(ctx, token)
 	}
 	ctx, deadlineCancel := withCallerDeadline(ctx, info)
 	defer deadlineCancel()

@@ -14,8 +14,8 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/gate"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
 )
@@ -146,7 +146,7 @@ func invokeOverStream(ctx context.Context, stream io.ReadWriteCloser, hash, func
 	if dl, ok := ctx.Deadline(); ok {
 		info.DeadlineUnixMs = dl.UnixMilli()
 	}
-	token, _ := gate.AccessTokenFromContext(ctx)
+	token, _ := admission.AccessTokenFromContext(ctx)
 	var callerJSON []byte
 	marshaled := marshalWorkloadCallerInfo(info, chainForForward(ctx, hash), token)
 	if len(marshaled) > math.MaxUint16 {

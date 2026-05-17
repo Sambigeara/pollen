@@ -22,8 +22,8 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/gate"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -76,15 +76,15 @@ type gatewayWorkloadInvoker interface {
 }
 
 type gatewayHandler struct {
-	gate      *gate.Gate
-	snap      gate.StateReader
+	gate      *admission.Pipeline
+	snap      admission.StateReader
 	blobs     gatewayBlobReader
 	placement gatewayWorkloadInvoker
 	log       *zap.SugaredLogger
 	limiter   *tokenLimiter
 }
 
-func newGatewayHandler(g *gate.Gate, snap gate.StateReader, b gatewayBlobReader, p gatewayWorkloadInvoker, log *zap.SugaredLogger) *gatewayHandler {
+func newGatewayHandler(g *admission.Pipeline, snap admission.StateReader, b gatewayBlobReader, p gatewayWorkloadInvoker, log *zap.SugaredLogger) *gatewayHandler {
 	return &gatewayHandler{
 		gate:      g,
 		snap:      snap,
@@ -353,7 +353,7 @@ func (h *gatewayHandler) handleInvoke(w http.ResponseWriter, r *http.Request, to
 	}
 	// Carry the token onto the dispatch hop so any remote edge that
 	// claims the workload authorises by token end-to-end.
-	r = r.WithContext(gate.WithAccessToken(r.Context(), token))
+	r = r.WithContext(admission.WithAccessToken(r.Context(), token))
 	h.callWorkload(w, r, hash, fn)
 }
 

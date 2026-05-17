@@ -287,9 +287,9 @@ func (s *store) deniedCheckerLocked() identity.DenyChecker {
 // tenant's signed spec is the canonical case.
 //
 // The signed deleted bit must match the gossip envelope's Deleted flag
-// (so a published SpecAuth cannot be replayed as a tombstone), and the
-// validate hook must accept the change (which in production runs
-// gate.Admit and verifies the SpecAuth signature).
+// (so a published Fact cannot be replayed as a tombstone), and the
+// validate hook must accept the change (which in production runs the
+// admission pipeline and verifies the Fact signature).
 func (s *store) acceptableSpecEventLocked(ev *statev1.GossipEvent) bool {
 	sc := ev.GetSpecChange()
 	if sc.GetFact().GetDeleted() != ev.Deleted {

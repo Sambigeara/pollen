@@ -605,9 +605,9 @@ func (s *store) SetBlobSpecPresigned(spec BlobSpec, presignedFact *factv1.Fact) 
 }
 
 // preparePresignedSpec wraps the body in a SpecChange with the supplied
-// auth and runs the validate hook. The hook (gate.Admit in production)
-// re-derives the resource ID from the body and rejects mismatches, so
-// callers can't smuggle a mismatched resource through SpecAuth.
+// auth and runs the validate hook. The hook (the admission pipeline in
+// production) re-derives the resource ID from the body and rejects
+// mismatches, so callers can't smuggle a mismatched resource through.
 func (s *store) preparePresignedSpec(body fact.Body, presignedFact *factv1.Fact) (*statev1.SpecChange, types.PeerKey, error) {
 	if presignedFact == nil {
 		return nil, types.PeerKey{}, ErrPresignedAuthRequired
@@ -862,7 +862,20 @@ func (s *store) signedSpecChangeLocked(resource *admissionv1.ResourceID, body fa
 	if err != nil {
 		return nil, err
 	}
-	return wrapSpecBody(f, body), nil
+	sc := wrapSpecBody(f, body)
+	// Route local self-signed mutations through the same admission
+	// pipeline gossip and presigned writes already traverse, so a local
+	// seed/unseed cannot bypass authorise/account (closing the
+	// UnseedStatic and self-signed-delete gaps). Runs under s.mu via
+	// mutateLocal; the pipeline reads only the lock-free Snapshot(), so
+	// this is non-re-entrant. Gated on a configured validator: state
+	// tests that wire no validator keep the pre-pipeline behaviour.
+	if s.validate != nil {
+		if err := s.validate(sc); err != nil {
+			return nil, err
+		}
+	}
+	return sc, nil
 }
 
 // wrapSpecBody assembles a SpecChange from a pre-built Fact and a body.

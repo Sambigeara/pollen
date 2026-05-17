@@ -11,8 +11,8 @@ import (
 	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/fact"
-	"github.com/sambigeara/pollen/pkg/gate"
 	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -25,9 +25,9 @@ func (f fakeReader) Snapshot() state.Snapshot { return f.snap }
 
 // TestPresignRoundTrip locks the lock-step contract: the CLI presign
 // builders must produce a (resource, body, signature) the daemon's own
-// gate.Admit accepts after re-deriving the resource from the body. A
-// silent divergence in either derivation site fails this test instead
-// of silently dropping a user's publish.
+// admission pipeline accepts after re-deriving the resource from the
+// body. A silent divergence in either derivation site fails this test
+// instead of silently dropping a user's publish.
 func TestPresignRoundTrip(t *testing.T) {
 	now := time.Now()
 	adminPub, adminPriv, err := ed25519.GenerateKey(rand.Reader)
@@ -43,7 +43,7 @@ func TestPresignRoundTrip(t *testing.T) {
 	store := fakeReader{snap: state.Snapshot{Nodes: map[types.PeerKey]state.NodeView{
 		types.PeerKeyFromBytes(authPub): {Grant: grant},
 	}}}
-	g := gate.New(adminPub, store)
+	g := admission.New(adminPub, store)
 
 	hashBytes := make([]byte, 32)
 	for i := range hashBytes {

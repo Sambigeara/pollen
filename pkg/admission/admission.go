@@ -1,7 +1,7 @@
 // Copyright 2026 Sam Lock
 // SPDX-License-Identifier: Apache-2.0
 
-package gate
+package admission
 
 import (
 	"bytes"
@@ -28,7 +28,7 @@ const CallerKey = "pln.caller"
 
 type accessTokenCtxKey struct{}
 
-// WithAccessToken attaches an AccessToken to ctx so downstream gate
+// WithAccessToken attaches an AccessToken to ctx so downstream
 // decisions can substitute token-based authorisation for grant-based
 // authorisation. The anonymous HTTP gateway sets the token here; the
 // peer cert path leaves the ctx untouched and falls through to the
@@ -51,7 +51,8 @@ type StateReader interface {
 	Snapshot() state.Snapshot
 }
 
-// Gate runs admission checks (Admit) and runtime decisions (Invoke,
+// Pipeline runs the four-stage admission check (Admit:
+// authenticate->authorise->account) and the runtime decisions (Invoke,
 // Fetch, Connect) against a single store.
 //
 // Trust contract: runtime decisions trust Facts pulled from the store
@@ -60,21 +61,21 @@ type StateReader interface {
 // configured LocalSigner. Today the state package satisfies both
 // halves: applyBatchLocked invokes the validator on inbound gossip;
 // handleSelfConflictLocked invokes acceptableSelfEventLocked on live
-// self-conflict events; mutateLocal goes through signedSpecChangeLocked
-// which requires a non-nil LocalSigner. Any new log-writing path must
-// satisfy one of those two invariants, otherwise runtime decisions can
-// be poisoned with attacker-supplied policy.
-type Gate struct {
+// self-conflict events; signedSpecChangeLocked invokes the validator on
+// local self-signed mutations. Any new log-writing path must satisfy
+// one of those invariants, otherwise runtime decisions can be poisoned
+// with attacker-supplied policy.
+type Pipeline struct {
 	store     StateReader
 	manifests state.ManifestPaths
 	rootPub   []byte
 }
 
-func New(rootPub []byte, store StateReader) *Gate {
+func New(rootPub []byte, store StateReader) *Pipeline {
 	if store == nil {
-		panic("gate.New: store is required")
+		panic("admission.New: store is required")
 	}
-	return &Gate{store: store, rootPub: rootPub}
+	return &Pipeline{store: store, rootPub: rootPub}
 }
 
 // SetManifestPaths wires a static-manifest reader so Fetch can authorise
@@ -82,59 +83,29 @@ func New(rootPub []byte, store StateReader) *Gate {
 // references (workload hash, blob digest, manifest digest itself) are
 // authorised — nested file blobs are denied, breaking cross-node static
 // replication. Call once after the blobs service is constructed.
-func (g *Gate) SetManifestPaths(mp state.ManifestPaths) {
-	g.manifests = mp
+func (p *Pipeline) SetManifestPaths(mp state.ManifestPaths) {
+	p.manifests = mp
 }
 
-func (g *Gate) Admit(sc *statev1.SpecChange) error {
-	body, expected, err := decodeSpecChange(sc)
+// Admit is the four-stage Fact pipeline run on every write into the
+// CRDT log (gossip-received, presigned wire, and local self-signed).
+// authenticate proves the Fact and resolves the authority's Grant;
+// authorise checks the per-kind publish capability and the publisher's
+// own policy attributes; AccountCheck enforces the per-Principal count
+// budget; admit (the CRDT merge) is the caller's mutateLocal. One
+// snapshot is taken and threaded through every stage: Snapshot() is a
+// lock-free atomic load, so this is safe even though Admit runs as the
+// store's validate hook under its lock.
+func (p *Pipeline) Admit(sc *statev1.SpecChange) error {
+	snap := p.store.Snapshot()
+	authGrant, err := p.authenticate(snap, sc)
 	if err != nil {
 		return err
 	}
-	f := sc.GetFact()
-	if f == nil {
-		return errors.New("gate: spec change missing fact")
-	}
-	if !proto.Equal(f.GetResource(), expected) {
-		return errors.New("gate: fact resource mismatch")
-	}
-	// Durable specs bind to the authority's Grant horizon plus the
-	// denylist (see fact.VerifyFact). The authority's Grant is resolved
-	// from gossiped cluster state, so a Fact stays admissible after the
-	// publisher goes offline, up to grant_deadline. Snapshot() is a
-	// lock-free atomic load, so sourcing the grant and deny here is safe
-	// even though Admit runs as the store's validate hook under its
-	// lock. A deny or grant withdrawal arriving in the same gossip batch
-	// is caught by the post-admission publisher filter in buildSnapshot.
-	snap := g.store.Snapshot()
-	authGrant := snap.GrantFor(f.GetAuthorityPub())
-	if authGrant == nil {
-		return errors.New("gate: fact authority grant not in cluster state")
-	}
-	if err := fact.VerifyFact(f, body, authGrant, g.rootPub, time.Now(), snap.DenyChecker()); err != nil {
+	if err := authorise(sc, authGrant); err != nil {
 		return err
 	}
-	// A spec that carries both public=true and inline clauses looks
-	// gated to a casual reader but admits anyone at runtime (decide
-	// short-circuits on public). The CLI rejects the combination at
-	// publish time; rejecting it at Admit closes the same door against
-	// tampered or hand-crafted facts.
-	policy := f.GetPolicy()
-	if policy.GetPublic() && policy.GetInline() != nil {
-		return errors.New("gate: predicate has both public=true and inline clauses")
-	}
-	// Defence-in-depth against an authority whose slug grinds against a
-	// live mesh peer's slug. The slug is 60 bits, so a real collision is
-	// statistically unreachable; the check guarantees canonical-URL
-	// routing stays unambiguous against active peers.
-	authority := types.PeerKeyFromBytes(f.GetAuthorityPub())
-	slug := authority.Slug()
-	for peer := range snap.Nodes {
-		if peer != authority && peer.Slug() == slug {
-			return fmt.Errorf("gate: authority slug %q collides with existing peer %s", slug, peer.Short())
-		}
-	}
-	return nil
+	return AccountCheck(snap, sc.GetFact(), authGrant)
 }
 
 // Invoke authorises caller to invoke the workload at hash. A nil caller
@@ -143,13 +114,13 @@ func (g *Gate) Admit(sc *statev1.SpecChange) error {
 // Mesh-peer callers resolve their grant from snap.Nodes via
 // LookupGrant, wire-mode callers pass their session-bound grant
 // directly.
-func (g *Gate) Invoke(caller *identityv1.Grant, hash string) (wasm.CallerInfo, error) {
-	snap := g.store.Snapshot()
+func (p *Pipeline) Invoke(caller *identityv1.Grant, hash string) (wasm.CallerInfo, error) {
+	snap := p.store.Snapshot()
 	sv, ok := resolveSeedSpec(snap, hash)
 	if !ok || sv.Fact == nil {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
-	if err := g.decide(caller, sv.Fact, time.Now(), snap.DenyChecker()); err != nil {
+	if err := p.decide(caller, sv.Fact, time.Now(), snap.DenyChecker()); err != nil {
 		return wasm.CallerInfo{}, err
 	}
 	if caller == nil {
@@ -169,16 +140,16 @@ func (g *Gate) Invoke(caller *identityv1.Grant, hash string) (wasm.CallerInfo, e
 // can never fetch the bytes from the publisher and stays stuck in a
 // fetch-EOF loop. A nil caller is admitted only when at least one
 // referencing Fact has policy.public=true.
-func (g *Gate) Fetch(caller *identityv1.Grant, hash string) error {
-	snap := g.store.Snapshot()
-	facts := snap.BlobEntitlements(hash, g.manifests)
+func (p *Pipeline) Fetch(caller *identityv1.Grant, hash string) error {
+	snap := p.store.Snapshot()
+	facts := snap.BlobEntitlements(hash, p.manifests)
 	if len(facts) == 0 {
 		return wasm.ErrTargetNotFound
 	}
 	now := time.Now()
 	denied := snap.DenyChecker()
 	for _, f := range facts {
-		if g.decide(caller, f, now, denied) == nil {
+		if p.decide(caller, f, now, denied) == nil {
 			return nil
 		}
 	}
@@ -190,8 +161,8 @@ func (g *Gate) Fetch(caller *identityv1.Grant, hash string) error {
 // hostPeer when authorising an inbound stream, and the remote peer when
 // authorising one this node is about to open. A nil caller is admitted
 // only when the target service's policy has public=true.
-func (g *Gate) Connect(caller *identityv1.Grant, hostPeer types.PeerKey, port uint32) error {
-	snap := g.store.Snapshot()
+func (p *Pipeline) Connect(caller *identityv1.Grant, hostPeer types.PeerKey, port uint32) error {
+	snap := p.store.Snapshot()
 	target, ok := snap.Nodes[hostPeer]
 	if !ok {
 		return wasm.ErrTargetNotFound
@@ -200,7 +171,7 @@ func (g *Gate) Connect(caller *identityv1.Grant, hostPeer types.PeerKey, port ui
 		if svc.Port != port || svc.Fact == nil {
 			continue
 		}
-		return g.decide(caller, svc.Fact, time.Now(), snap.DenyChecker())
+		return p.decide(caller, svc.Fact, time.Now(), snap.DenyChecker())
 	}
 	return wasm.ErrTargetNotFound
 }
@@ -210,8 +181,8 @@ func (g *Gate) Connect(caller *identityv1.Grant, hostPeer types.PeerKey, port ui
 // the only thing the caller can present is their peer key; wire-mode
 // RPC paths already carry the grant in the request context and should
 // pass it directly.
-func (g *Gate) LookupGrant(peerKey types.PeerKey) *identityv1.Grant {
-	snap := g.store.Snapshot()
+func (p *Pipeline) LookupGrant(peerKey types.PeerKey) *identityv1.Grant {
+	snap := p.store.Snapshot()
 	nv, ok := snap.Nodes[peerKey]
 	if !ok {
 		return nil
@@ -223,14 +194,14 @@ func (g *Gate) LookupGrant(peerKey types.PeerKey) *identityv1.Grant {
 // CAS object at hash. The token must verify (signature, expiry) and the
 // token's resource must correspond to a Fact whose authority signed the
 // token and whose entitlements cover hash.
-func (g *Gate) FetchByToken(token *admissionv1.AccessToken, hash string) error {
+func (p *Pipeline) FetchByToken(token *admissionv1.AccessToken, hash string) error {
 	if err := auth.VerifyAccessToken(token, time.Now()); err != nil {
 		return wasm.ErrTargetNotFound
 	}
 	resource := token.GetClaims().GetResource()
 	issuer := token.GetClaims().GetIssuerPub()
-	snap := g.store.Snapshot()
-	for _, f := range snap.BlobEntitlements(hash, g.manifests) {
+	snap := p.store.Snapshot()
+	for _, f := range snap.BlobEntitlements(hash, p.manifests) {
 		if !bytes.Equal(f.GetAuthorityPub(), issuer) {
 			continue
 		}
@@ -246,11 +217,11 @@ func (g *Gate) FetchByToken(token *admissionv1.AccessToken, hash string) error {
 // the workload at hash. Same shape as Invoke but the identity comes
 // from the token rather than a peer grant; the returned CallerInfo has
 // no attributes since anonymous callers carry no grant.
-func (g *Gate) InvokeByToken(token *admissionv1.AccessToken, hash string) (wasm.CallerInfo, error) {
+func (p *Pipeline) InvokeByToken(token *admissionv1.AccessToken, hash string) (wasm.CallerInfo, error) {
 	if err := auth.VerifyAccessToken(token, time.Now()); err != nil {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
-	snap := g.store.Snapshot()
+	snap := p.store.Snapshot()
 	sv, ok := resolveSeedSpec(snap, hash)
 	if !ok || sv.Fact == nil {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
@@ -267,16 +238,16 @@ func (g *Gate) InvokeByToken(token *admissionv1.AccessToken, hash string) (wasm.
 // MayHost authorises hostGrant to host the workload described by f.
 // Hosting includes loopback invocation, so the spec's policy must hold
 // against the host's own grant.
-func (g *Gate) MayHost(hostGrant *identityv1.Grant, f *factv1.Fact) error {
+func (p *Pipeline) MayHost(hostGrant *identityv1.Grant, f *factv1.Fact) error {
 	if hostGrant == nil || f == nil {
 		return wasm.ErrTargetNotFound
 	}
-	return g.decide(hostGrant, f, time.Now(), g.store.Snapshot().DenyChecker())
+	return p.decide(hostGrant, f, time.Now(), p.store.Snapshot().DenyChecker())
 }
 
 // MayPublish reports whether grant satisfies policy at publish time.
 // The returned error is descriptive so the local publisher can see
-// exactly why their grant doesn't qualify. The other gate methods
+// exactly why their grant doesn't qualify. The other pipeline methods
 // (Invoke, Fetch, Connect, MayHost) return opaque ErrTargetNotFound
 // to avoid leaking admission state to remote callers; MayPublish
 // runs against the local grant only, so descriptive errors are safe.
@@ -284,14 +255,14 @@ func (g *Gate) MayHost(hostGrant *identityv1.Grant, f *factv1.Fact) error {
 // A nil policy is always permitted, even when grant is nil, so that
 // publishes during the bootstrap window (before the local grant lands
 // in gossip) keep working.
-func (g *Gate) MayPublish(grant *identityv1.Grant, policy *admissionv1.Predicate) error {
+func (p *Pipeline) MayPublish(grant *identityv1.Grant, policy *admissionv1.Predicate) error {
 	if policy == nil {
 		return nil
 	}
 	if grant == nil {
 		return errors.New("local grant is not yet published")
 	}
-	if chk := identity.CheckGrant(grant, g.rootPub, time.Now(), nil, nil); !chk.Status.Valid() {
+	if chk := identity.CheckGrant(grant, p.rootPub, time.Now(), nil, nil); !chk.Status.Valid() {
 		return fmt.Errorf("local grant %s: %s", chk.Status, chk.Reason)
 	}
 	return checkPolicyClauses(grant, policy)
@@ -304,7 +275,7 @@ func (g *Gate) MayPublish(grant *identityv1.Grant, policy *admissionv1.Predicate
 // against the policy's inline clauses. Public also short-circuits
 // grant-bearing callers: anyone reaching a public spec is admitted
 // regardless of their attribute claims.
-func (g *Gate) decide(grant *identityv1.Grant, f *factv1.Fact, now time.Time, denied identity.DenyChecker) error {
+func (p *Pipeline) decide(grant *identityv1.Grant, f *factv1.Fact, now time.Time, denied identity.DenyChecker) error {
 	policy := f.GetPolicy()
 	if policy.GetPublic() {
 		return nil
@@ -312,7 +283,7 @@ func (g *Gate) decide(grant *identityv1.Grant, f *factv1.Fact, now time.Time, de
 	if grant == nil {
 		return wasm.ErrTargetNotFound
 	}
-	if chk := identity.CheckGrant(grant, g.rootPub, now, nil, denied); !chk.Status.Valid() {
+	if chk := identity.CheckGrant(grant, p.rootPub, now, nil, denied); !chk.Status.Valid() {
 		return wasm.ErrTargetNotFound
 	}
 	if err := checkPolicyClauses(grant, policy); err != nil {
@@ -372,8 +343,8 @@ func resolveSeedSpec(snap state.Snapshot, identifier string) (state.WorkloadSpec
 // access a spec described by f. Used by the HTTP gateway's canonical
 // URL handlers once they have resolved (authority-slug, resource-name)
 // against the snapshot.
-func (g *Gate) AllowAnonymous(f *factv1.Fact) error {
-	return g.decide(nil, f, time.Now(), g.store.Snapshot().DenyChecker())
+func (p *Pipeline) AllowAnonymous(f *factv1.Fact) error {
+	return p.decide(nil, f, time.Now(), p.store.Snapshot().DenyChecker())
 }
 
 func decodeSpecChange(sc *statev1.SpecChange) (fact.Body, *admissionv1.ResourceID, error) {

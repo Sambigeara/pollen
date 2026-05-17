@@ -11,6 +11,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/sambigeara/pollen/pkg/route"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
 )
@@ -28,6 +29,7 @@ func (s *Service) Fetch(ctx context.Context, hash string, peers []types.PeerKey)
 	if s.store.Has(hash) {
 		return nil
 	}
+	peers = route.ByLocality(s.state.Snapshot(), s.self, peers)
 	var lastErr error
 	attempted := 0
 	for _, pk := range peers {
@@ -138,12 +140,14 @@ func (s *Service) resolveStoringPeer(hash string) (types.PeerKey, bool) {
 	if len(peers) == 0 {
 		return types.PeerKey{}, false
 	}
+	// Reading from the local CAS is free, so prefer self whenever it
+	// holds the blob; otherwise fetch from the nearest holder.
 	for _, pk := range peers {
 		if pk == s.self {
 			return pk, true
 		}
 	}
-	return peers[0], true
+	return route.Nearest(snap, s.self, peers)
 }
 
 // fetchPlaintextFrom opens a plaintext stream to source. s.timeout

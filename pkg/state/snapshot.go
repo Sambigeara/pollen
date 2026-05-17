@@ -174,6 +174,46 @@ func (s Snapshot) GrantFor(authorityPub []byte) *identityv1.Grant {
 	return nv.Grant
 }
 
+// AuthorityUsage is the set of resource names an authority currently
+// has live in cluster state, partitioned by budgeted kind. The account
+// stage counts these against the authority's Budget; set membership
+// keeps the check idempotent under gossip replay, since re-admitting a
+// resource the authority already holds does not grow the set.
+type AuthorityUsage struct {
+	FunctionNames map[string]struct{}
+	BlobNames     map[string]struct{}
+	SiteNames     map[string]struct{}
+}
+
+// UsageByAuthority projects the snapshot to the resource names the
+// authority owns, by budgeted kind. Sites come from StaticSpecsAll, the
+// un-deduped per-(publisher,name) source, so a tenant's site is counted
+// even when another tenant's same-named site wins the deduped view.
+func (s Snapshot) UsageByAuthority(authorityPub []byte) AuthorityUsage {
+	authority := types.PeerKeyFromBytes(authorityPub)
+	u := AuthorityUsage{
+		FunctionNames: make(map[string]struct{}),
+		BlobNames:     make(map[string]struct{}),
+		SiteNames:     make(map[string]struct{}),
+	}
+	for _, sv := range s.Specs {
+		if sv.Publisher == authority {
+			u.FunctionNames[sv.Spec.Name] = struct{}{}
+		}
+	}
+	for _, bv := range s.BlobSpecs {
+		if bv.Publisher == authority {
+			u.BlobNames[bv.Spec.Name] = struct{}{}
+		}
+	}
+	for _, sv := range s.StaticSpecsAll {
+		if sv.Publisher == authority {
+			u.SiteNames[sv.Spec.Name] = struct{}{}
+		}
+	}
+	return u
+}
+
 func (s Snapshot) SpecByName(name string) (string, WorkloadSpecView, bool) {
 	var bestHash string
 	var bestView WorkloadSpecView
