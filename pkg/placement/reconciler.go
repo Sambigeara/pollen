@@ -32,7 +32,7 @@ type reconciler struct {
 	store          WorkloadState
 	workloads      workloadManager
 	blobs          blobsAPI
-	budget         *budget
+	memGuard       *nodeMemoryGuard
 	backoff        *backoff
 	gate           Gate
 	claimStartTime map[string]time.Time
@@ -52,7 +52,7 @@ func newReconciler(
 	store WorkloadState,
 	workloads workloadManager,
 	blobs blobsAPI,
-	budget *budget,
+	memGuard *nodeMemoryGuard,
 	backoff *backoff,
 	gate Gate,
 	log *zap.SugaredLogger,
@@ -63,7 +63,7 @@ func newReconciler(
 		store:          store,
 		workloads:      workloads,
 		blobs:          blobs,
-		budget:         budget,
+		memGuard:       memGuard,
 		backoff:        backoff,
 		gate:           gate,
 		triggerCh:      make(chan struct{}, 1),
@@ -298,7 +298,7 @@ func (r *reconciler) executeClaim(ctx context.Context, hash string, peers []type
 		return
 	}
 
-	if !r.budget.Reserve(hash, replicaMemoryBytes(sv.Spec.MemoryBytes)) {
+	if !r.memGuard.Reserve(hash, replicaMemoryBytes(sv.Spec.MemoryBytes)) {
 		r.backoff.SignalRefusal()
 		r.log.Infow("refused claim: memory budget exhausted", "name", sv.Spec.Name, "hash", types.ShortHash(hash))
 		return
@@ -306,7 +306,7 @@ func (r *reconciler) executeClaim(ctx context.Context, hash string, peers []type
 
 	cfg := wasm.NewPluginConfig(sv.Spec.MemoryBytes, sv.Spec.Timeout)
 	if err := r.workloads.SeedFromCAS(ctx, hash, cfg); err != nil {
-		r.budget.Release(hash)
+		r.memGuard.Release(hash)
 		r.log.Warnw("seed from CAS failed", "name", sv.Spec.Name, "hash", types.ShortHash(hash), "err", err)
 		return
 	}
@@ -322,7 +322,7 @@ func (r *reconciler) executeRelease(hash string) {
 	if err := r.workloads.Unseed(hash); err != nil {
 		r.log.Warnw("unseed failed", "hash", hash, "err", err)
 	}
-	r.budget.Release(hash)
+	r.memGuard.Release(hash)
 	r.store.ReleaseWorkload(hash)
 	r.inFlightMu.Lock()
 	delete(r.claimStartTime, hash)

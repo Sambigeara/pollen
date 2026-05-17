@@ -39,6 +39,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/view"
 	"github.com/sambigeara/pollen/pkg/wasm"
+	"github.com/sambigeara/pollen/pkg/wire"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -152,19 +153,10 @@ type Service struct {
 	signPriv     ed25519.PrivateKey
 }
 
-// canPublish guards the SeedWorkload daemon-self path, which uses the
-// daemon's signer to mint a Fact on the caller's behalf. Wire-mode
-// callers must instead supply pre_signed_fact and are gated by the
-// per-RPC caller-cap check; only the unix-socket daemon-self path
-// consults this helper.
-func (s *Service) canPublish() bool {
-	return s.creds != nil && grantCanPublish(s.creds.Grant())
-}
-
 // grantCanPublish reports whether a grant permits publishing any
-// resource kind. Per-kind enforcement lives in the admission pipeline;
-// this coarse check mirrors auth.RPCCaller.CanPublish for the
-// daemon-self path.
+// resource kind. Per-kind enforcement is the admission pipeline's job;
+// this coarse predicate only populates the informational CanPublish
+// field in status and certificate summaries.
 func grantCanPublish(g *identityv1.Grant) bool {
 	p := g.GetClaims().GetCapabilities().GetPublish()
 	return p.GetFunctions() || p.GetBlobs() || p.GetSites() || p.GetServices()
@@ -236,9 +228,9 @@ func New(membership MembershipControl, placement PlacementControl, tunneling Tun
 	return s
 }
 
-// callerInterceptor injects an auth.RPCCaller into the request context
-// for every unary RPC, resolved by injectCaller from whatever identity
-// the inbound transport carries.
+// callerInterceptor injects the resolved caller identity.Principal into
+// the request context for every unary RPC, resolved by injectCaller from
+// whatever identity the inbound transport carries.
 func (s *Server) callerInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	return handler(s.injectCaller(ctx), req)
 }
@@ -249,8 +241,8 @@ func (s *Server) streamCallerInterceptor(srv any, ss grpc.ServerStream, _ *grpc.
 }
 
 func (s *Server) injectCaller(ctx context.Context) context.Context {
-	if grant := callerGrantFromContext(ctx); grant != nil {
-		return auth.WithRPCCaller(ctx, auth.NewRPCCaller(grant))
+	if p := identity.PrincipalFromGrant(wire.CallerGrantFromContext(ctx)); p.Valid() {
+		return auth.WithCaller(ctx, p)
 	}
 	// Only fall back to the daemon's own grant when the inbound
 	// transport is a local credential (unix socket). On TLS paths a
@@ -263,7 +255,7 @@ func (s *Server) injectCaller(ctx context.Context) context.Context {
 	if s.svc == nil || s.svc.creds == nil {
 		return ctx
 	}
-	return auth.WithRPCCaller(ctx, auth.NewRPCCaller(s.svc.creds.Grant()))
+	return auth.WithCaller(ctx, identity.PrincipalFromGrant(s.svc.creds.Grant()))
 }
 
 // isLocalCallerCtx reports whether the inbound RPC arrived over the
@@ -356,7 +348,7 @@ func (s *Server) ServeTLS(l net.Listener) error {
 	denied := func(sub []byte) bool {
 		return s.svc.state.Snapshot().IsDenied(types.PeerKeyFromBytes(sub))
 	}
-	cfg := newControlTLSConfig(serverCert, s.svc.creds.RootPub(), denied)
+	cfg := wire.ServerTLSConfig(serverCert, s.svc.creds.RootPub(), denied)
 	// gRPC's TLS credentials drive both the handshake and the population
 	// of peer.AuthInfo; pre-wrapping the listener with tls.NewListener
 	// leaves AuthInfo nil, which strips the caller cert from every RPC.
@@ -383,6 +375,17 @@ func (s *Server) Stop() {
 }
 func (s *Server) Service() *Service { return s.svc }
 
+// Handshake reports this daemon's protocol-version range. It is
+// deliberately unauthenticated and side-effect free: the client decides
+// compatibility from the returned range, so a mismatch becomes an
+// explicit "out of date" message instead of an opaque failure.
+func (s *Service) Handshake(_ context.Context, _ *controlv1.HandshakeRequest) (*controlv1.HandshakeResponse, error) {
+	return &controlv1.HandshakeResponse{
+		ServerMin: wire.ProtocolMin,
+		ServerMax: wire.ProtocolMax,
+	}, nil
+}
+
 func (s *Service) Shutdown(ctx context.Context, _ *controlv1.ShutdownRequest) (*controlv1.ShutdownResponse, error) {
 	if err := s.requireDaemonSelf(ctx, "shutdown is daemon-self only"); err != nil {
 		return nil, err
@@ -404,19 +407,20 @@ func (s *Service) GetBootstrapInfo(_ context.Context, _ *controlv1.GetBootstrapI
 func (s *Service) GetStatus(ctx context.Context, _ *controlv1.GetStatusRequest) (*controlv1.GetStatusResponse, error) {
 	snap := s.state.Snapshot()
 	connections := s.tunneling.ListConnections()
-	lens := s.lens(ctx)
+	lens := s.callerPrincipal(ctx)
 	scoped := view.Project(snap, lens)
+	operator := s.operatorRequest(ctx, lens)
 
 	out := &controlv1.GetStatusResponse{
 		Degraded:      s.isDegraded(time.Now()),
 		Certificates:  s.buildCertificates(ctx, snap, lens),
-		Self:          s.buildSelfSummary(snap, lens, connections),
-		Nodes:         s.buildNodeSummaries(snap, scoped, lens, connections),
+		Self:          s.buildSelfSummary(snap, lens, operator, connections),
+		Nodes:         s.buildNodeSummaries(snap, scoped, lens, operator, connections),
 		Services:      buildServiceSummaries(scoped.Nodes, lens),
 		Connections:   buildConnectionSummaries(scoped.Nodes, connections),
-		Workloads:     s.buildWorkloadSummaries(snap, lens),
-		Sites:         s.buildStaticSummaries(snap, scoped, lens),
-		Blobs:         s.buildBlobSummaries(snap, scoped, lens),
+		Workloads:     s.buildWorkloadSummaries(snap, scoped, lens),
+		Sites:         s.buildStaticSummaries(snap, scoped, operator),
+		Blobs:         s.buildBlobSummaries(snap, scoped, lens, operator),
 		GatewayDomain: strings.TrimPrefix(s.staticDomain, "."),
 	}
 
@@ -425,16 +429,13 @@ func (s *Service) GetStatus(ctx context.Context, _ *controlv1.GetStatusRequest) 
 }
 
 func (s *Service) Inspect(ctx context.Context, req *controlv1.InspectRequest) (*controlv1.InspectResponse, error) {
-	lens := s.lens(ctx)
+	lens := s.callerPrincipal(ctx)
 	switch t := req.GetTarget().(type) {
 	case *controlv1.InspectRequest_NodePub:
 		peerKey := types.PeerKeyFromBytes(t.NodePub)
 		snap := s.state.Snapshot()
 		scoped := view.Project(snap, lens)
-		if _, ok := scoped.Nodes[peerKey]; !ok {
-			return nil, status.Errorf(codes.NotFound, "no peer %s in cluster view", peerKey.String())
-		}
-		detail, err := s.inspectNode(snap, peerKey, lens)
+		detail, err := s.inspectNode(snap, scoped, peerKey, lens, s.operatorRequest(ctx, lens))
 		if err != nil {
 			return nil, err
 		}
@@ -451,17 +452,16 @@ func (s *Service) Inspect(ctx context.Context, req *controlv1.InspectRequest) (*
 	}
 }
 
-func (s *Service) inspectNode(snap state.Snapshot, peerKey types.PeerKey, lens view.Lens) (*controlv1.NodeDetail, error) {
-	nv, ok := snap.Nodes[peerKey]
+func (s *Service) inspectNode(snap state.Snapshot, scoped view.ScopedView, peerKey types.PeerKey, lens view.Lens, operator bool) (*controlv1.NodeDetail, error) {
+	nv, ok := scoped.Nodes[peerKey]
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "no peer %s in cluster view", peerKey.String())
 	}
 
 	connections := s.tunneling.ListConnections()
-	selfLens := operatorView(lens, snap)
 	var summary *controlv1.NodeSummary
-	if peerKey == snap.LocalID && selfLens {
-		summary = s.buildSelfSummary(snap, lens, connections)
+	if peerKey == snap.LocalID && operator {
+		summary = s.buildSelfSummary(snap, lens, operator, connections)
 	} else {
 		summary = s.buildPeerSummary(snap, peerKey, nv, connections)
 	}
@@ -489,7 +489,7 @@ func (s *Service) inspectNode(snap state.Snapshot, peerKey types.PeerKey, lens v
 		}
 		detail.ReachablePeers = sortedReachableRefs(nv.Reachable)
 	}
-	fillPublishedResources(detail, snap, nv, peerKey, lens)
+	fillPublishedResources(detail, scoped, nv, peerKey, lens)
 	return detail, nil
 }
 
@@ -509,13 +509,13 @@ func sortedReachableRefs(reachable map[types.PeerKey]struct{}) []*controlv1.Node
 	return refs
 }
 
-// fillPublishedResources populates the published_* slices on detail by
-// scanning the snapshot for resources whose publisher is peerKey. A
-// non-admin caller additionally only sees resources it published
-// itself, so inspecting a shared holder never enumerates another
-// tenant's facts. The anonymous-publish fallback labels hash-only
-// entries by their hash.
-func fillPublishedResources(detail *controlv1.NodeDetail, snap state.Snapshot, nv state.NodeView, peerKey types.PeerKey, lens view.Lens) {
+// fillPublishedResources populates the published_* slices on detail from
+// the already-projected view, narrowed to resources whose publisher is
+// peerKey. Because scoped is the caller's projection, a non-admin caller
+// only ever sees resources it published itself, so inspecting a shared
+// holder never enumerates another tenant's facts. The anonymous-publish
+// fallback labels hash-only entries by their hash.
+func fillPublishedResources(detail *controlv1.NodeDetail, scoped view.ScopedView, nv state.NodeView, peerKey types.PeerKey, lens view.Lens) {
 	for name, svc := range nv.Services {
 		if !lens.Admin() && (!hasServicePublisher(svc) || !lens.Permits(servicePublisher(svc))) {
 			continue
@@ -524,8 +524,8 @@ func fillPublishedResources(detail *controlv1.NodeDetail, snap state.Snapshot, n
 	}
 	slices.Sort(detail.PublishedServices)
 
-	for hash, sv := range snap.Specs {
-		if sv.Publisher != peerKey || !lens.Permits(sv.Publisher) {
+	for hash, sv := range scoped.Workloads {
+		if sv.Publisher != peerKey {
 			continue
 		}
 		label := sv.Spec.Name
@@ -536,15 +536,15 @@ func fillPublishedResources(detail *controlv1.NodeDetail, snap state.Snapshot, n
 	}
 	slices.Sort(detail.PublishedWorkloads)
 
-	for name, sv := range snap.StaticSpecs {
-		if sv.Publisher == peerKey && lens.Permits(sv.Publisher) {
+	for name, sv := range scoped.Statics {
+		if sv.Publisher == peerKey {
 			detail.PublishedStatics = append(detail.PublishedStatics, name)
 		}
 	}
 	slices.Sort(detail.PublishedStatics)
 
-	for digest, bv := range snap.BlobSpecs {
-		if bv.Publisher != peerKey || !lens.Permits(bv.Publisher) {
+	for digest, bv := range scoped.Blobs {
+		if bv.Publisher != peerKey {
 			continue
 		}
 		label := bv.Spec.Name
@@ -623,25 +623,22 @@ func nodeCertInfo(grant *identityv1.Grant, now time.Time, denied bool) *controlv
 	}
 	claims := grant.GetClaims()
 	caps := claims.GetCapabilities()
+	dl := claims.GetGrantDeadlineUnix()
 	health := controlv1.CertHealth_CERT_HEALTH_OK
-	if dl := claims.GetGrantDeadlineUnix(); dl > 0 && now.After(time.Unix(dl, 0)) {
-		health = controlv1.CertHealth_CERT_HEALTH_EXPIRED
-	}
-	if denied {
+	if denied || (dl > 0 && now.After(time.Unix(dl, 0))) {
 		health = controlv1.CertHealth_CERT_HEALTH_EXPIRED
 	}
 	return &controlv1.CertInfo{
-		NotBeforeUnix:      claims.GetNotBeforeUnix(),
-		NotAfterUnix:       claims.GetGrantDeadlineUnix(),
-		Serial:             claims.GetSerial(),
-		Health:             health,
-		CanDelegate:        caps.GetCanDelegate(),
-		CanAdmit:           caps.GetCanAdmit(),
-		CanPublish:         grantCanPublish(grant),
-		MaxDepth:           caps.GetMaxDepth(),
-		AccessDeadlineUnix: claims.GetGrantDeadlineUnix(),
-		Attributes:         caps.GetAttributes(),
-		Denied:             denied,
+		NotBeforeUnix:     claims.GetNotBeforeUnix(),
+		GrantDeadlineUnix: dl,
+		Serial:            claims.GetSerial(),
+		Health:            health,
+		CanDelegate:       caps.GetCanDelegate(),
+		CanAdmit:          caps.GetCanAdmit(),
+		CanPublish:        grantCanPublish(grant),
+		MaxDepth:          caps.GetMaxDepth(),
+		Attributes:        caps.GetAttributes(),
+		Denied:            denied,
 	}
 }
 
@@ -695,10 +692,10 @@ func (s *Service) isDegraded(now time.Time) bool {
 // the daemon's credential to a tenant is both a leak and the wrong
 // answer (a tenant wants its own expiry, not the host's).
 func (s *Service) buildCertificates(ctx context.Context, snap state.Snapshot, lens view.Lens) []*controlv1.CertInfo {
-	if operatorView(lens, snap) {
+	if s.operatorRequest(ctx, lens) {
 		return s.localCertificates(snap)
 	}
-	ci := nodeCertInfo(s.scopeGrant(ctx), time.Now(), snap.IsDenied(lens.Subject()))
+	ci := nodeCertInfo(s.callerPrincipal(ctx).Grant, time.Now(), snap.IsDenied(lens.Subject()))
 	if ci == nil {
 		return nil
 	}
@@ -724,29 +721,26 @@ func (s *Service) localCertificates(snap state.Snapshot) []*controlv1.CertInfo {
 	switch {
 	case remaining <= 0:
 		health = controlv1.CertHealth_CERT_HEALTH_EXPIRED
-	case remaining <= membership.CertCriticalThreshold:
-		health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
 	case remaining <= membership.CertWarnThreshold:
-		health = controlv1.CertHealth_CERT_HEALTH_RENEWING
+		health = controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON
 	}
 
 	return []*controlv1.CertInfo{{
-		NotBeforeUnix:      claims.GetNotBeforeUnix(),
-		NotAfterUnix:       claims.GetGrantDeadlineUnix(),
-		Serial:             claims.GetSerial(),
-		Health:             health,
-		CanDelegate:        caps.GetCanDelegate(),
-		CanAdmit:           caps.GetCanAdmit(),
-		CanPublish:         grantCanPublish(grant),
-		MaxDepth:           caps.GetMaxDepth(),
-		AccessDeadlineUnix: claims.GetGrantDeadlineUnix(),
-		Attributes:         caps.GetAttributes(),
-		Denied:             snap.IsDenied(snap.LocalID),
+		NotBeforeUnix:     claims.GetNotBeforeUnix(),
+		GrantDeadlineUnix: claims.GetGrantDeadlineUnix(),
+		Serial:            claims.GetSerial(),
+		Health:            health,
+		CanDelegate:       caps.GetCanDelegate(),
+		CanAdmit:          caps.GetCanAdmit(),
+		CanPublish:        grantCanPublish(grant),
+		MaxDepth:          caps.GetMaxDepth(),
+		Attributes:        caps.GetAttributes(),
+		Denied:            snap.IsDenied(snap.LocalID),
 	}}
 }
 
-func (s *Service) buildSelfSummary(snap state.Snapshot, lens view.Lens, connections []tunneling.ConnectionInfo) *controlv1.NodeSummary {
-	if operatorView(lens, snap) {
+func (s *Service) buildSelfSummary(snap state.Snapshot, lens view.Lens, operator bool, connections []tunneling.ConnectionInfo) *controlv1.NodeSummary {
+	if operator {
 		localID := snap.LocalID
 		localNode := snap.Nodes[localID]
 		in, out := sumTraffic(localNode.TrafficRates)
@@ -772,7 +766,7 @@ func (s *Service) buildSelfSummary(snap state.Snapshot, lens view.Lens, connecti
 	}
 }
 
-func (s *Service) buildNodeSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens, connections []tunneling.ConnectionInfo) []*controlv1.NodeSummary {
+func (s *Service) buildNodeSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens, operator bool, connections []tunneling.ConnectionInfo) []*controlv1.NodeSummary {
 	liveSet := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
 	for _, pk := range snap.PeerKeys {
 		liveSet[pk] = struct{}{}
@@ -787,7 +781,7 @@ func (s *Service) buildNodeSummaries(snap state.Snapshot, scoped view.ScopedView
 	// path. A tenant has no Self node, so the serving node (when it
 	// holds the tenant's fact) belongs in the node list like any other
 	// holder.
-	skipSelf := operatorView(lens, snap)
+	skipSelf := operator
 	out := make([]*controlv1.NodeSummary, 0, len(scoped.Nodes))
 	for key, node := range scoped.Nodes {
 		if skipSelf && key == snap.LocalID {
@@ -870,19 +864,16 @@ func buildConnectionSummaries(nodes map[types.PeerKey]state.NodeView, connection
 	return out
 }
 
-func (s *Service) buildWorkloadSummaries(snap state.Snapshot, lens view.Lens) []*controlv1.WorkloadSummary {
+func (s *Service) buildWorkloadSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens) []*controlv1.WorkloadSummary {
 	var out []*controlv1.WorkloadSummary
 	seen := make(map[string]struct{})
 
 	for _, w := range s.placement.Status() {
-		sv, hasSpec := snap.Specs[w.Hash]
-		if hasSpec {
-			if !lens.Permits(sv.Publisher) {
-				continue
-			}
-		} else if !lens.Admin() {
-			// An unattributed workload running locally carries no
-			// publisher, so a tenant cannot own it; only admins see it.
+		sv, inScope := scoped.Workloads[w.Hash]
+		// inScope means a named spec the caller may see. Not in scope and
+		// not admin: either another tenant's spec or an unattributed local
+		// workload with no publisher to own; neither is the caller's.
+		if !inScope && !lens.Admin() {
 			continue
 		}
 		seen[w.Hash] = struct{}{}
@@ -894,17 +885,14 @@ func (s *Service) buildWorkloadSummaries(snap state.Snapshot, lens view.Lens) []
 			Local:          true,
 			ActiveReplicas: uint32(len(snap.Claims[w.Hash])),
 		}
-		if hasSpec {
+		if inScope {
 			fillWorkloadSpecFields(ws, sv)
 		}
 		out = append(out, ws)
 	}
 
-	for hash, sv := range snap.Specs {
+	for hash, sv := range scoped.Workloads {
 		if _, ok := seen[hash]; ok {
-			continue
-		}
-		if !lens.Permits(sv.Publisher) {
 			continue
 		}
 		ws := &controlv1.WorkloadSummary{
@@ -966,10 +954,7 @@ func sortStatusResponse(out *controlv1.GetStatusResponse) {
 }
 
 func (s *Service) RegisterService(ctx context.Context, req *controlv1.RegisterServiceRequest) (*controlv1.RegisterServiceResponse, error) {
-	if !s.canPublish() {
-		return nil, status.Error(codes.PermissionDenied, "publish capability required")
-	}
-	if caller, ok := auth.RPCCallerFromContext(ctx); ok && caller.SubjectPub() != s.localPeerKey() {
+	if caller, ok := auth.CallerFromContext(ctx); ok && caller.Subject() != s.localPeerKey() {
 		return nil, status.Error(codes.InvalidArgument, "service exposure is not supported for wire-mode callers")
 	}
 	name := serviceNameOrDefault(req.GetName(), req.Port)
@@ -981,7 +966,7 @@ func (s *Service) RegisterService(ctx context.Context, req *controlv1.RegisterSe
 }
 
 func (s *Service) UnregisterService(ctx context.Context, req *controlv1.UnregisterServiceRequest) (*controlv1.UnregisterServiceResponse, error) {
-	if caller, ok := auth.RPCCallerFromContext(ctx); ok && caller.SubjectPub() != s.localPeerKey() {
+	if caller, ok := auth.CallerFromContext(ctx); ok && caller.Subject() != s.localPeerKey() {
 		return nil, status.Error(codes.InvalidArgument, "service exposure is not supported for wire-mode callers")
 	}
 	name := serviceNameOrDefault(req.GetName(), req.GetPort())
@@ -1000,18 +985,15 @@ func (s *Service) UnregisterService(ctx context.Context, req *controlv1.Unregist
 // comes from the caller's grant and carries Deleted=true. Shared shape
 // across UnseedWorkload/UnseedStatic/RemoveBlob/UnregisterService.
 func (s *Service) authorisePresignedTombstone(ctx context.Context, presigned *factv1.Fact) error {
-	caller, ok := auth.RPCCallerFromContext(ctx)
+	caller, ok := auth.CallerFromContext(ctx)
 	if !ok {
 		return status.Error(codes.Unauthenticated, "caller grant required for presigned tombstone")
-	}
-	if !caller.CanPublish() {
-		return status.Error(codes.PermissionDenied, "publish capability required")
 	}
 	if !presigned.GetDeleted() {
 		return status.Error(codes.InvalidArgument, "presigned tombstone must have Deleted=true")
 	}
 	publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
-	if publisher != caller.SubjectPub() {
+	if publisher != caller.Subject() {
 		return status.Error(codes.PermissionDenied, "pre_signed_fact authority must match caller grant")
 	}
 	return nil
@@ -1095,7 +1077,7 @@ func (s *Service) DenyPeer(ctx context.Context, req *controlv1.DenyPeerRequest) 
 }
 
 func (s *Service) IssueGrant(ctx context.Context, req *controlv1.IssueGrantRequest) (*controlv1.IssueGrantResponse, error) {
-	caller, ok := auth.RPCCallerFromContext(ctx)
+	caller, ok := auth.CallerFromContext(ctx)
 	if !ok || !caller.CanDelegate() {
 		return nil, status.Error(codes.PermissionDenied, "delegate capability required")
 	}
@@ -1112,10 +1094,13 @@ func (s *Service) IssueGrant(ctx context.Context, req *controlv1.IssueGrantReque
 	// membership signer only enforces child ≤ this node's parent chain,
 	// so a CanDelegate tenant could otherwise request a child with
 	// MaxDepth=255 / attrs={role:"admin"} via a higher-cap relay daemon.
-	if err := enforceGrantCeiling(caps, caller.Grant().GetClaims().GetCapabilities()); err != nil {
+	if err := enforceGrantCeiling(caps, caller.Capabilities); err != nil {
 		return nil, err
 	}
-	grant, err := s.membership.IssueGrant(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), caps, identity.UnlimitedBudget())
+	if err := enforceBudgetCeiling(req.GetBudget(), caller.Budget); err != nil {
+		return nil, err
+	}
+	grant, err := s.membership.IssueGrant(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), caps, req.GetBudget())
 	if err != nil {
 		if errors.Is(err, membership.ErrNotDelegating) {
 			return nil, status.Error(codes.FailedPrecondition, "this node has no delegation authority; target a delegating node")
@@ -1149,6 +1134,33 @@ func enforceGrantCeiling(reqCaps, callerCaps *identityv1.Capabilities) error {
 		return status.Errorf(codes.PermissionDenied, "cannot grant attributes: %v", err)
 	}
 	return nil
+}
+
+// enforceBudgetCeiling rejects a requested per-Principal Budget that
+// exceeds the caller's own in any count dimension. A zero dimension
+// means unlimited, so a caller limited in a dimension cannot mint a
+// child that is unlimited or larger there. A caller unlimited in a
+// dimension (zero) imposes no constraint for it.
+func enforceBudgetCeiling(req, caller *identityv1.Budget) error {
+	check := func(kind string, reqV, callerV uint32) error {
+		if callerV == 0 {
+			return nil
+		}
+		if reqV == 0 {
+			return status.Errorf(codes.PermissionDenied, "cannot grant unlimited %s; caller's limit is %d", kind, callerV)
+		}
+		if reqV > callerV {
+			return status.Errorf(codes.PermissionDenied, "cannot grant %s budget %d; caller's limit is %d", kind, reqV, callerV)
+		}
+		return nil
+	}
+	if err := check("functions", req.GetMaxFunctions(), caller.GetMaxFunctions()); err != nil {
+		return err
+	}
+	if err := check("blobs", req.GetMaxBlobs(), caller.GetMaxBlobs()); err != nil {
+		return err
+	}
+	return check("sites", req.GetMaxSites(), caller.GetMaxSites())
 }
 
 // grantCapsPublishExceeds reports whether child requests any publish
@@ -1261,10 +1273,7 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 		return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name, PublicUrl: s.pathBasedURL("fn", name, publisher, presigned.GetPolicy().GetPublic())})
 	}
 
-	if !s.canPublish() {
-		return status.Error(codes.PermissionDenied, "publish capability required")
-	}
-	if caller, ok := auth.RPCCallerFromContext(stream.Context()); ok && caller.SubjectPub() != s.localPeerKey() {
+	if caller, ok := auth.CallerFromContext(stream.Context()); ok && caller.Subject() != s.localPeerKey() {
 		return status.Error(codes.InvalidArgument, "wire-mode callers must supply pre_signed_auth")
 	}
 	if err := s.placement.Seed(wasmBytes, spec, header.GetPolicy()); err != nil {
@@ -1285,15 +1294,12 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 }
 
 func (s *Service) seedWorkloadPresigned(ctx context.Context, wasmBytes []byte, spec state.WorkloadSpec, presigned *factv1.Fact) error {
-	caller, ok := auth.RPCCallerFromContext(ctx)
+	caller, ok := auth.CallerFromContext(ctx)
 	if !ok {
 		return status.Error(codes.Unauthenticated, "caller cert required for presigned spec")
 	}
-	if !caller.CanPublish() {
-		return status.Error(codes.PermissionDenied, "publish capability required")
-	}
 	publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
-	if publisher != caller.SubjectPub() {
+	if publisher != caller.Subject() {
 		return status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
 	}
 	if err := s.placement.SeedPresigned(wasmBytes, spec, presigned); err != nil {
@@ -1417,38 +1423,30 @@ func (s *Service) publishUploadedBlob(hash, name string, header *controlv1.Uploa
 	return nil
 }
 
-// authoriseBlobUpload runs the auth dispatch for UploadBlob. Wire-mode
-// callers either supply a pre_signed_fact for the named spec (publisher
-// must match caller), or upload anchor/anonymous bytes (publish path
-// not taken, no fact needed). Daemon-self runs through the existing
-// canPublish gate.
+// authoriseBlobUpload runs the auth dispatch for UploadBlob. A wire-mode
+// caller either supplies a pre_signed_fact whose authority must match
+// the caller, or uploads anchor/anonymous content-addressed bytes that
+// create no durable spec. Per-kind publish capability is enforced by the
+// admission pipeline when a presigned fact reaches the CRDT write; the
+// caller's own Budget governs raw byte volume.
 func (s *Service) authoriseBlobUpload(ctx context.Context, header *controlv1.UploadBlobHeader) error {
-	caller, hasCaller := auth.RPCCallerFromContext(ctx)
+	caller, hasCaller := auth.CallerFromContext(ctx)
 	presigned := header.GetPreSignedFact()
 	if presigned != nil {
 		if !hasCaller {
 			return status.Error(codes.Unauthenticated, "caller cert required for presigned spec")
 		}
-		if !caller.CanPublish() {
-			return status.Error(codes.PermissionDenied, "publish capability required")
-		}
 		publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
-		if publisher != caller.SubjectPub() {
+		if publisher != caller.Subject() {
 			return status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
 		}
 		return nil
 	}
-	if hasCaller && caller.SubjectPub() != s.localPeerKey() {
+	if hasCaller && caller.Subject() != s.localPeerKey() {
 		if header.GetName() != "" || header.GetAnchor() {
 			return status.Error(codes.InvalidArgument, "wire-mode named/anchor uploads must supply pre_signed_auth")
 		}
-		if !caller.CanPublish() {
-			return status.Error(codes.PermissionDenied, "publish capability required")
-		}
 		return nil
-	}
-	if !s.canPublish() {
-		return status.Error(codes.PermissionDenied, "publish capability required")
 	}
 	return nil
 }
@@ -1470,9 +1468,6 @@ func (s *Service) RemoveBlob(ctx context.Context, req *controlv1.RemoveBlobReque
 			return nil, s.failBlobRemove(hash, err)
 		}
 		return &controlv1.RemoveBlobResponse{}, nil
-	}
-	if !s.canPublish() {
-		return nil, status.Error(codes.PermissionDenied, "publish capability required")
 	}
 	if bv, ok := snap.BlobSpecs[hash]; ok {
 		if err := s.authoriseOwnership(ctx, bv.Publisher); err != nil {
@@ -1497,10 +1492,7 @@ func (s *Service) SeedStatic(ctx context.Context, req *controlv1.SeedStaticReque
 	if presigned := req.GetPreSignedFact(); presigned != nil {
 		return s.seedStaticPresigned(ctx, req, presigned)
 	}
-	if !s.canPublish() {
-		return nil, status.Error(codes.PermissionDenied, "publish capability required")
-	}
-	if caller, ok := auth.RPCCallerFromContext(ctx); ok && caller.SubjectPub() != s.localPeerKey() {
+	if caller, ok := auth.CallerFromContext(ctx); ok && caller.Subject() != s.localPeerKey() {
 		return nil, status.Error(codes.InvalidArgument, "wire-mode callers must supply pre_signed_auth")
 	}
 	if err := s.static.SeedStatic(req.GetName(), req.GetManifestDigest(), req.GetPolicy()); err != nil {
@@ -1510,15 +1502,12 @@ func (s *Service) SeedStatic(ctx context.Context, req *controlv1.SeedStaticReque
 }
 
 func (s *Service) seedStaticPresigned(ctx context.Context, req *controlv1.SeedStaticRequest, presigned *factv1.Fact) (*controlv1.SeedStaticResponse, error) {
-	caller, ok := auth.RPCCallerFromContext(ctx)
+	caller, ok := auth.CallerFromContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "caller cert required for presigned spec")
 	}
-	if !caller.CanPublish() {
-		return nil, status.Error(codes.PermissionDenied, "publish capability required")
-	}
 	publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
-	if publisher != caller.SubjectPub() {
+	if publisher != caller.Subject() {
 		return nil, status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
 	}
 	if err := s.static.SeedStaticPresigned(req.GetName(), req.GetManifestDigest(), presigned); err != nil {
@@ -1537,9 +1526,6 @@ func (s *Service) UnseedStatic(ctx context.Context, req *controlv1.UnseedStaticR
 		}
 		return &controlv1.UnseedStaticResponse{}, nil
 	}
-	if !s.canPublish() {
-		return nil, status.Error(codes.PermissionDenied, "publish capability required")
-	}
 	if sv, ok := s.state.Snapshot().StaticSpecs[req.GetName()]; ok {
 		if err := s.authoriseOwnership(ctx, sv.Publisher); err != nil {
 			return nil, err
@@ -1553,23 +1539,19 @@ func (s *Service) UnseedStatic(ctx context.Context, req *controlv1.UnseedStaticR
 
 func (s *Service) ListStatic(ctx context.Context, _ *controlv1.ListStaticRequest) (*controlv1.ListStaticResponse, error) {
 	snap := s.state.Snapshot()
-	lens := s.lens(ctx)
-	return &controlv1.ListStaticResponse{Sites: s.buildStaticSummaries(snap, view.Project(snap, lens), lens)}, nil
+	lens := s.callerPrincipal(ctx)
+	return &controlv1.ListStaticResponse{Sites: s.buildStaticSummaries(snap, view.Project(snap, lens), s.operatorRequest(ctx, lens))}, nil
 }
 
-func (s *Service) buildStaticSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens) []*controlv1.StaticSummary {
-	selfLens := operatorView(lens, snap)
+func (s *Service) buildStaticSummaries(snap state.Snapshot, scoped view.ScopedView, operator bool) []*controlv1.StaticSummary {
 	var capacity uint32
 	for _, nv := range scoped.Nodes {
 		if nv.CanServeStatic {
 			capacity++
 		}
 	}
-	out := make([]*controlv1.StaticSummary, 0, len(snap.StaticSpecs))
-	for name, spec := range snap.StaticSpecs {
-		if !lens.Permits(spec.Publisher) {
-			continue
-		}
+	out := make([]*controlv1.StaticSummary, 0, len(scoped.Statics))
+	for name, spec := range scoped.Statics {
 		digest, _ := hex.DecodeString(spec.Spec.ManifestDigest)
 		claimants := snap.StaticClaims[name]
 		_, local := claimants[snap.LocalID]
@@ -1577,7 +1559,7 @@ func (s *Service) buildStaticSummaries(snap state.Snapshot, scoped view.ScopedVi
 			Name:            name,
 			ManifestDigest:  digest,
 			Publisher:       &controlv1.NodeRef{PeerPub: spec.Publisher.Bytes()},
-			Local:           local && selfLens,
+			Local:           local && operator,
 			ServingCapacity: capacity,
 			PublicUrl:       s.hostBasedURL(name, spec.Publisher),
 		}
@@ -1614,8 +1596,7 @@ func (s *Service) pathBasedURL(subdomain, name string, publisher types.PeerKey, 
 
 // Restricts holders to live peers; stale BlobAvailability from offline
 // peers would inflate replicas and surface phantom orphans.
-func (s *Service) buildBlobSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens) []*controlv1.BlobSummary {
-	selfLens := operatorView(lens, snap)
+func (s *Service) buildBlobSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens, operator bool) []*controlv1.BlobSummary {
 	liveSet := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
 	for _, pk := range snap.PeerKeys {
 		liveSet[pk] = struct{}{}
@@ -1642,9 +1623,9 @@ func (s *Service) buildBlobSummaries(snap state.Snapshot, scoped view.ScopedView
 		bv, hasSpec := snap.BlobSpecs[hash]
 		// Orphan blobs (no named BlobSpec) carry no publisher attribution,
 		// so non-admin callers can't claim ownership of them — only admins
-		// see them.
+		// see them. Named specs are gated by the caller's projection.
 		if hasSpec {
-			if !lens.Permits(bv.Publisher) {
+			if _, ok := scoped.Blobs[hash]; !ok {
 				continue
 			}
 		} else if !lens.Admin() {
@@ -1654,7 +1635,7 @@ func (s *Service) buildBlobSummaries(snap state.Snapshot, scoped view.ScopedView
 		summary := &controlv1.BlobSummary{
 			Hash:     hash,
 			Replicas: n,
-			Local:    local && selfLens,
+			Local:    local && operator,
 		}
 		if hasSpec {
 			summary.Name = bv.Spec.Name
@@ -1676,9 +1657,6 @@ func (s *Service) UnseedWorkload(ctx context.Context, req *controlv1.UnseedWorkl
 			return nil, s.fail(err, "unseed workload failed", "hash", req.GetHash())
 		}
 		return &controlv1.UnseedWorkloadResponse{}, nil
-	}
-	if !s.canPublish() {
-		return nil, status.Error(codes.PermissionDenied, "publish capability required")
 	}
 	if sv, ok := s.state.Snapshot().Specs[req.GetHash()]; ok {
 		if err := s.authoriseOwnership(ctx, sv.Publisher); err != nil {
@@ -1761,16 +1739,16 @@ func (s *Service) callerWasmContext(ctx context.Context) context.Context {
 // refusal here keeps the security boundary at one well-defined edge.
 // Downstream gate methods (Connect, Fetch, Invoke) fail closed on nil.
 func (s *Service) callerGrant(ctx context.Context) *identityv1.Grant {
-	rpc, ok := auth.RPCCallerFromContext(ctx)
+	rpc, ok := auth.CallerFromContext(ctx)
 	if !ok {
 		return nil
 	}
-	return rpc.Grant()
+	return rpc.Grant
 }
 
-type capabilityCheck func(auth.RPCCaller) bool
+type capabilityCheck func(identity.Principal) bool
 
-func admitCap(c auth.RPCCaller) bool { return c.CanAdmit() }
+func admitCap(c identity.Principal) bool { return c.Admin() }
 
 // attributesSubsetOf returns nil if every key/value pair in child is
 // present with the same value in parent. An empty child is a subset of
@@ -1799,7 +1777,7 @@ func attributesSubsetOf(child, parent *structpb.Struct) error {
 // resolves the caller from the RPC context, so wire-mode tenants are
 // gated by their OWN authority instead of riding the daemon's cert.
 func (s *Service) requireCallerCap(ctx context.Context, want capabilityCheck, friendly string) error {
-	caller, ok := auth.RPCCallerFromContext(ctx)
+	caller, ok := auth.CallerFromContext(ctx)
 	if !ok || !want(caller) {
 		return status.Errorf(codes.PermissionDenied, "%s capability required", friendly)
 	}
@@ -1810,11 +1788,11 @@ func (s *Service) requireCallerCap(ctx context.Context, want capabilityCheck, fr
 // matches the daemon's own. Used for verbs that are nonsensical or
 // dangerous to expose to wire-mode tenants (Shutdown).
 func (s *Service) requireDaemonSelf(ctx context.Context, friendly string) error {
-	rpc, ok := auth.RPCCallerFromContext(ctx)
+	rpc, ok := auth.CallerFromContext(ctx)
 	if !ok {
 		return status.Error(codes.PermissionDenied, friendly)
 	}
-	if rpc.SubjectPub() != s.localPeerKey() {
+	if rpc.Subject() != s.localPeerKey() {
 		return status.Error(codes.PermissionDenied, friendly)
 	}
 	return nil

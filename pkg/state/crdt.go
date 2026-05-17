@@ -91,14 +91,14 @@ func (s *store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, er
 // events, and collects rebroadcast entries. When false (disk restore), it
 // inserts events without liveness stamps and produces no domain events.
 //
-// Deleted spec events are admitted iff the SpecAuth carries `deleted=true`
+// Deleted spec events are admitted iff the Fact carries `deleted=true`
 // signed by the publisher and validate accepts the signature; otherwise a
-// peer could unseed any spec by replaying a published SpecAuth wrapped in a
+// peer could unseed any spec by replaying a published Fact wrapped in a
 // tombstone envelope.
 func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Event, []*statev1.GossipEvent) {
 	var domainEvents []Event
 	var rebroadcast []*statev1.GossipEvent
-	denyOrCertChanged := false
+	denyOrGrantChanged := false
 
 	for _, ev := range events {
 		pk, err := types.PeerKeyFromString(ev.PeerId)
@@ -119,14 +119,14 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 			continue
 		}
 
-		// Drop structurally invalid or impostor delegation certs at apply
-		// time. The cert chain is signed end-to-end so this is a free
-		// integrity check; without it any admitted peer could spoof
-		// another's chain and bypass deny scoping. Cert tombstones are
-		// always rejected: no legitimate code path produces one (rotation
-		// overwrites the live event, revocation goes through deny), so
-		// admitting them would let any peer wipe another's cert by
-		// replaying a captured cert event with the Deleted bit flipped.
+		// Drop structurally invalid or impostor grants at apply time. The
+		// grant chain is signed end-to-end so this is a free integrity
+		// check; without it any admitted peer could spoof another's chain
+		// and bypass deny scoping. Grant tombstones are always rejected:
+		// no legitimate code path produces one (re-mint overwrites the
+		// live event, revocation goes through deny), so admitting them
+		// would let any peer wipe another's grant by replaying a captured
+		// grant event with the Deleted bit flipped.
 		if key.kind == attrGrant {
 			if ev.Deleted || !s.isAcceptableGrantEvent(pk, ev) {
 				continue
@@ -180,10 +180,10 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		}
 
 		if key.kind == attrDeny || key.kind == attrGrant {
-			denyOrCertChanged = true
+			denyOrGrantChanged = true
 		}
 		if key.kind == attrGrant {
-			domainEvents = append(domainEvents, CertChanged{Peer: pk})
+			domainEvents = append(domainEvents, GrantChanged{Peer: pk})
 		}
 		if key.kind == attrService {
 			domainEvents = append(domainEvents, ServiceChanged{Peer: pk, Name: key.name})
@@ -202,7 +202,7 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		}
 	}
 
-	if live && denyOrCertChanged {
+	if live && denyOrGrantChanged {
 		domainEvents = append(domainEvents, s.recomputeDeniedLocked()...)
 	}
 
@@ -282,7 +282,7 @@ func (s *store) deniedCheckerLocked() identity.DenyChecker {
 
 // acceptableSpecEventLocked admits a spec event from any peer slot.
 // Under the signed-event relay model, the gossip-source peer is the
-// storing peer for the spec; the SpecAuth signer is the authoritative
+// storing peer for the spec; the Fact signer is the authoritative
 // Publisher. They may differ — a daemon storing and gossipping a
 // tenant's signed spec is the canonical case.
 //
@@ -306,7 +306,7 @@ func (s *store) acceptableSpecEventLocked(ev *statev1.GossipEvent) bool {
 // acceptableSelfEventLocked enforces the same admission checks on
 // gossip events that claim to be from us as we apply to events from
 // any other peer. Without these, any peer could plant a SpecChange or
-// DelegationCert under our peer-id and have us adopt it as our own
+// Grant under our peer-id and have us adopt it as our own
 // authoritative state.
 //
 // The default branch fails closed: any attr not explicitly listed
@@ -532,7 +532,7 @@ func (s *store) encodeDelta(since Digest) []byte {
 // non-deleted spec event matching key, when that Publisher is a
 // different identity from claimingPublisher and is not denied. The
 // gossip-source peer is irrelevant: relayed specs land in another
-// peer's slot, but the SpecAuth signer is the authority.
+// peer's slot, but the Fact signer is the authority.
 func (s *store) specOwnerConflictLocked(key attrKey, claimingPublisher types.PeerKey) (types.PeerKey, bool) {
 	for _, r := range s.nodes {
 		ev, ok := r.log[key]

@@ -15,6 +15,12 @@ import "pollen/state/v1/state.proto";
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1";
 
 service ControlService {
+  // Handshake exchanges the client and server protocol-version ranges
+  // before any functional RPC. The server only reports its own
+  // [server_min, server_max]; the client decides compatibility, so a
+  // version mismatch surfaces as an explicit "out of date" message
+  // rather than an opaque transport failure.
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
   rpc GetBootstrapInfo(GetBootstrapInfoRequest) returns (GetBootstrapInfoResponse);
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
@@ -36,6 +42,16 @@ service ControlService {
   rpc UnseedStatic(UnseedStaticRequest) returns (UnseedStaticResponse);
   rpc ListStatic(ListStaticRequest) returns (ListStaticResponse);
   rpc Inspect(InspectRequest) returns (InspectResponse);
+}
+
+message HandshakeRequest {
+  uint32 client_min = 1;
+  uint32 client_max = 2;
+}
+
+message HandshakeResponse {
+  uint32 server_min = 1;
+  uint32 server_max = 2;
 }
 
 message NodeRef {
@@ -102,18 +118,20 @@ enum CertHealth {
   CERT_HEALTH_OK = 1;
   CERT_HEALTH_EXPIRING_SOON = 2;
   CERT_HEALTH_EXPIRED = 3;
-  CERT_HEALTH_RENEWING = 4;
+  reserved 4;
+  reserved "CERT_HEALTH_RENEWING";
 }
 
 message CertInfo {
   int64 not_before_unix = 1;
-  int64 not_after_unix = 2;
+  int64 grant_deadline_unix = 2;
   uint64 serial = 3;
   CertHealth health = 4;
   bool can_delegate = 5;
   bool can_admit = 6;
   uint32 max_depth = 7;
-  int64 access_deadline_unix = 8;
+  reserved 8;
+  reserved "access_deadline_unix";
   google.protobuf.Struct attributes = 9;
   bool can_publish = 10;
   bool denied = 11;
@@ -347,6 +365,10 @@ message IssueGrantRequest {
   reserved "admin", "attributes";
   pollen.identity.v1.Capabilities capabilities = 4 [(buf.validate.field).required = true];
   bool mint_only = 5;
+  // budget is the per-Principal quota baked into the issued grant. Unset
+  // (or zero per dimension) means unlimited. A delegating caller cannot
+  // grant a budget exceeding its own.
+  pollen.identity.v1.Budget budget = 6;
 }
 
 message IssueGrantResponse {

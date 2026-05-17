@@ -16,33 +16,33 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/plnfs"
 )
 
 const casFile = "cas/ab/ab00000000000000000000000000000000000000000000000000000000000000.wasm"
 
 var permMap = map[string]os.FileMode{
-	".":                       os.ModeDir | os.ModeSetgid | 0o770,
-	"keys":                    os.ModeDir | os.ModeSetgid | 0o770,
-	"keys/ed25519.key":        0o640,
-	"keys/ed25519.pub":        0o640,
-	"keys/admin_ed25519.key":  0o640,
-	"keys/admin_ed25519.pub":  0o640,
-	"keys/root.pub":           0o640,
-	"keys/delegation.cert.pb": 0o640,
-	"config.yaml":             0o660,
-	"cas":                     os.ModeDir | os.ModeSetgid | 0o770,
-	"cas/ab":                  os.ModeDir | os.ModeSetgid | 0o770,
-	casFile:                   0o640,
+	".":                      os.ModeDir | os.ModeSetgid | 0o770,
+	"keys":                   os.ModeDir | os.ModeSetgid | 0o770,
+	"keys/ed25519.key":       0o640,
+	"keys/ed25519.pub":       0o640,
+	"keys/admin_ed25519.key": 0o640,
+	"keys/admin_ed25519.pub": 0o640,
+	"keys/root.pub":          0o640,
+	"keys/grant.pb":          0o640,
+	"config.yaml":            0o660,
+	"cas":                    os.ModeDir | os.ModeSetgid | 0o770,
+	"cas/ab":                 os.ModeDir | os.ModeSetgid | 0o770,
+	casFile:                  0o640,
 }
 
 var coreFiles = []string{
 	".", "keys",
 	"keys/ed25519.key", "keys/ed25519.pub",
 	"keys/admin_ed25519.key", "keys/admin_ed25519.pub",
-	"keys/root.pub", "keys/delegation.cert.pb",
+	"keys/root.pub", "keys/grant.pb",
 }
 
 type commandSequence struct {
@@ -69,17 +69,17 @@ func allSequences() []commandSequence {
 func opInit(t *testing.T, dir string) {
 	t.Helper()
 	require.NoError(t, plnfs.EnsureDir(dir))
-	identityDir := auth.IdentityPath(dir)
-	_, pub, err := auth.EnsureIdentityKey(identityDir)
+	identityDir := identity.IdentityPath(dir)
+	_, pub, err := identity.EnsureIdentityKey(identityDir)
 	require.NoError(t, err)
-	_, err = auth.EnsureLocalRootCredentials(identityDir, pub, nil, time.Now(), 30*24*time.Hour) //nolint:mnd
+	_, err = identity.EnsureLocalRootGrant(identityDir, pub, nil, time.Now())
 	require.NoError(t, err)
 }
 
 func opID(t *testing.T, dir string) {
 	t.Helper()
 	require.NoError(t, plnfs.EnsureDir(dir))
-	_, _, err := auth.EnsureIdentityKey(auth.IdentityPath(dir))
+	_, _, err := identity.EnsureIdentityKey(identity.IdentityPath(dir))
 	require.NoError(t, err)
 }
 

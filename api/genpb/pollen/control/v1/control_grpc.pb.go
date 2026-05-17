@@ -22,6 +22,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	ControlService_Handshake_FullMethodName         = "/pollen.control.v1.ControlService/Handshake"
 	ControlService_Shutdown_FullMethodName          = "/pollen.control.v1.ControlService/Shutdown"
 	ControlService_GetBootstrapInfo_FullMethodName  = "/pollen.control.v1.ControlService/GetBootstrapInfo"
 	ControlService_GetStatus_FullMethodName         = "/pollen.control.v1.ControlService/GetStatus"
@@ -49,6 +50,12 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ControlServiceClient interface {
+	// Handshake exchanges the client and server protocol-version ranges
+	// before any functional RPC. The server only reports its own
+	// [server_min, server_max]; the client decides compatibility, so a
+	// version mismatch surfaces as an explicit "out of date" message
+	// rather than an opaque transport failure.
+	Handshake(ctx context.Context, in *HandshakeRequest, opts ...grpc.CallOption) (*HandshakeResponse, error)
 	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error)
 	GetBootstrapInfo(ctx context.Context, in *GetBootstrapInfoRequest, opts ...grpc.CallOption) (*GetBootstrapInfoResponse, error)
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
@@ -78,6 +85,16 @@ type controlServiceClient struct {
 
 func NewControlServiceClient(cc grpc.ClientConnInterface) ControlServiceClient {
 	return &controlServiceClient{cc}
+}
+
+func (c *controlServiceClient) Handshake(ctx context.Context, in *HandshakeRequest, opts ...grpc.CallOption) (*HandshakeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HandshakeResponse)
+	err := c.cc.Invoke(ctx, ControlService_Handshake_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *controlServiceClient) Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error) {
@@ -309,6 +326,12 @@ func (c *controlServiceClient) Inspect(ctx context.Context, in *InspectRequest, 
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
 type ControlServiceServer interface {
+	// Handshake exchanges the client and server protocol-version ranges
+	// before any functional RPC. The server only reports its own
+	// [server_min, server_max]; the client decides compatibility, so a
+	// version mismatch surfaces as an explicit "out of date" message
+	// rather than an opaque transport failure.
+	Handshake(context.Context, *HandshakeRequest) (*HandshakeResponse, error)
 	Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error)
 	GetBootstrapInfo(context.Context, *GetBootstrapInfoRequest) (*GetBootstrapInfoResponse, error)
 	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
@@ -340,6 +363,9 @@ type ControlServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedControlServiceServer struct{}
 
+func (UnimplementedControlServiceServer) Handshake(context.Context, *HandshakeRequest) (*HandshakeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Handshake not implemented")
+}
 func (UnimplementedControlServiceServer) Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Shutdown not implemented")
 }
@@ -422,6 +448,24 @@ func RegisterControlServiceServer(s grpc.ServiceRegistrar, srv ControlServiceSer
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&ControlService_ServiceDesc, srv)
+}
+
+func _ControlService_Handshake_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HandshakeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).Handshake(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_Handshake_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).Handshake(ctx, req.(*HandshakeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _ControlService_Shutdown_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -780,6 +824,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "pollen.control.v1.ControlService",
 	HandlerType: (*ControlServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Handshake",
+			Handler:    _ControlService_Handshake_Handler,
+		},
 		{
 			MethodName: "Shutdown",
 			Handler:    _ControlService_Shutdown_Handler,

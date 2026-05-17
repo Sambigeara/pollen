@@ -38,7 +38,7 @@ type (
 	TopologyChanged  struct{ Peer types.PeerKey }
 	AddressesChanged struct{ Peer types.PeerKey }
 	StaticChanged    struct{ Name string }
-	CertChanged      struct{ Peer types.PeerKey }
+	GrantChanged     struct{ Peer types.PeerKey }
 )
 
 func (PeerJoined) stateEvent()       {}
@@ -48,7 +48,7 @@ func (WorkloadChanged) stateEvent()  {}
 func (TopologyChanged) stateEvent()  {}
 func (AddressesChanged) stateEvent() {}
 func (StaticChanged) stateEvent()    {}
-func (CertChanged) stateEvent()      {}
+func (GrantChanged) stateEvent()     {}
 
 type LocalSigner interface {
 	IssueFact(resource *admissionv1.ResourceID, body fact.Body, policy *admissionv1.Predicate, deleted bool) (*factv1.Fact, error)

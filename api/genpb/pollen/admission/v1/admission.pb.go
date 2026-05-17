@@ -13,7 +13,6 @@ import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	structpb "google.golang.org/protobuf/types/known/structpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -26,234 +25,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type Capabilities struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CanDelegate   bool                   `protobuf:"varint,1,opt,name=can_delegate,json=canDelegate,proto3" json:"can_delegate,omitempty"`
-	CanAdmit      bool                   `protobuf:"varint,2,opt,name=can_admit,json=canAdmit,proto3" json:"can_admit,omitempty"`
-	MaxDepth      uint32                 `protobuf:"varint,3,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
-	Attributes    *structpb.Struct       `protobuf:"bytes,4,opt,name=attributes,proto3" json:"attributes,omitempty"`
-	CanPublish    bool                   `protobuf:"varint,5,opt,name=can_publish,json=canPublish,proto3" json:"can_publish,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *Capabilities) Reset() {
-	*x = Capabilities{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Capabilities) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Capabilities) ProtoMessage() {}
-
-func (x *Capabilities) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Capabilities.ProtoReflect.Descriptor instead.
-func (*Capabilities) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *Capabilities) GetCanDelegate() bool {
-	if x != nil {
-		return x.CanDelegate
-	}
-	return false
-}
-
-func (x *Capabilities) GetCanAdmit() bool {
-	if x != nil {
-		return x.CanAdmit
-	}
-	return false
-}
-
-func (x *Capabilities) GetMaxDepth() uint32 {
-	if x != nil {
-		return x.MaxDepth
-	}
-	return 0
-}
-
-func (x *Capabilities) GetAttributes() *structpb.Struct {
-	if x != nil {
-		return x.Attributes
-	}
-	return nil
-}
-
-func (x *Capabilities) GetCanPublish() bool {
-	if x != nil {
-		return x.CanPublish
-	}
-	return false
-}
-
-type DelegationCertClaims struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	SubjectPub         []byte                 `protobuf:"bytes,1,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
-	IssuerPub          []byte                 `protobuf:"bytes,2,opt,name=issuer_pub,json=issuerPub,proto3" json:"issuer_pub,omitempty"`
-	Capabilities       *Capabilities          `protobuf:"bytes,3,opt,name=capabilities,proto3" json:"capabilities,omitempty"`
-	NotBeforeUnix      int64                  `protobuf:"varint,4,opt,name=not_before_unix,json=notBeforeUnix,proto3" json:"not_before_unix,omitempty"`
-	NotAfterUnix       int64                  `protobuf:"varint,5,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
-	Serial             uint64                 `protobuf:"varint,6,opt,name=serial,proto3" json:"serial,omitempty"`
-	AccessDeadlineUnix int64                  `protobuf:"varint,7,opt,name=access_deadline_unix,json=accessDeadlineUnix,proto3" json:"access_deadline_unix,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
-}
-
-func (x *DelegationCertClaims) Reset() {
-	*x = DelegationCertClaims{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DelegationCertClaims) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DelegationCertClaims) ProtoMessage() {}
-
-func (x *DelegationCertClaims) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DelegationCertClaims.ProtoReflect.Descriptor instead.
-func (*DelegationCertClaims) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *DelegationCertClaims) GetSubjectPub() []byte {
-	if x != nil {
-		return x.SubjectPub
-	}
-	return nil
-}
-
-func (x *DelegationCertClaims) GetIssuerPub() []byte {
-	if x != nil {
-		return x.IssuerPub
-	}
-	return nil
-}
-
-func (x *DelegationCertClaims) GetCapabilities() *Capabilities {
-	if x != nil {
-		return x.Capabilities
-	}
-	return nil
-}
-
-func (x *DelegationCertClaims) GetNotBeforeUnix() int64 {
-	if x != nil {
-		return x.NotBeforeUnix
-	}
-	return 0
-}
-
-func (x *DelegationCertClaims) GetNotAfterUnix() int64 {
-	if x != nil {
-		return x.NotAfterUnix
-	}
-	return 0
-}
-
-func (x *DelegationCertClaims) GetSerial() uint64 {
-	if x != nil {
-		return x.Serial
-	}
-	return 0
-}
-
-func (x *DelegationCertClaims) GetAccessDeadlineUnix() int64 {
-	if x != nil {
-		return x.AccessDeadlineUnix
-	}
-	return 0
-}
-
-type DelegationCert struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Claims        *DelegationCertClaims  `protobuf:"bytes,1,opt,name=claims,proto3" json:"claims,omitempty"`
-	Chain         []*DelegationCert      `protobuf:"bytes,2,rep,name=chain,proto3" json:"chain,omitempty"`
-	Signature     []byte                 `protobuf:"bytes,3,opt,name=signature,proto3" json:"signature,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DelegationCert) Reset() {
-	*x = DelegationCert{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DelegationCert) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DelegationCert) ProtoMessage() {}
-
-func (x *DelegationCert) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DelegationCert.ProtoReflect.Descriptor instead.
-func (*DelegationCert) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *DelegationCert) GetClaims() *DelegationCertClaims {
-	if x != nil {
-		return x.Claims
-	}
-	return nil
-}
-
-func (x *DelegationCert) GetChain() []*DelegationCert {
-	if x != nil {
-		return x.Chain
-	}
-	return nil
-}
-
-func (x *DelegationCert) GetSignature() []byte {
-	if x != nil {
-		return x.Signature
-	}
-	return nil
-}
-
 type BootstrapPeer struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PeerPub       []byte                 `protobuf:"bytes,1,opt,name=peer_pub,json=peerPub,proto3" json:"peer_pub,omitempty"`
@@ -264,7 +35,7 @@ type BootstrapPeer struct {
 
 func (x *BootstrapPeer) Reset() {
 	*x = BootstrapPeer{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[3]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -276,7 +47,7 @@ func (x *BootstrapPeer) String() string {
 func (*BootstrapPeer) ProtoMessage() {}
 
 func (x *BootstrapPeer) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[3]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -289,7 +60,7 @@ func (x *BootstrapPeer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BootstrapPeer.ProtoReflect.Descriptor instead.
 func (*BootstrapPeer) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{3}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *BootstrapPeer) GetPeerPub() []byte {
@@ -306,294 +77,6 @@ func (x *BootstrapPeer) GetAddrs() []string {
 	return nil
 }
 
-type JoinTokenClaims struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TokenId       string                 `protobuf:"bytes,1,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
-	IssuerPub     []byte                 `protobuf:"bytes,2,opt,name=issuer_pub,json=issuerPub,proto3" json:"issuer_pub,omitempty"`
-	MemberCert    *DelegationCert        `protobuf:"bytes,3,opt,name=member_cert,json=memberCert,proto3" json:"member_cert,omitempty"`
-	Bootstrap     []*BootstrapPeer       `protobuf:"bytes,4,rep,name=bootstrap,proto3" json:"bootstrap,omitempty"`
-	IssuedAtUnix  int64                  `protobuf:"varint,5,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
-	ExpiresAtUnix int64                  `protobuf:"varint,6,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *JoinTokenClaims) Reset() {
-	*x = JoinTokenClaims{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *JoinTokenClaims) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*JoinTokenClaims) ProtoMessage() {}
-
-func (x *JoinTokenClaims) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use JoinTokenClaims.ProtoReflect.Descriptor instead.
-func (*JoinTokenClaims) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *JoinTokenClaims) GetTokenId() string {
-	if x != nil {
-		return x.TokenId
-	}
-	return ""
-}
-
-func (x *JoinTokenClaims) GetIssuerPub() []byte {
-	if x != nil {
-		return x.IssuerPub
-	}
-	return nil
-}
-
-func (x *JoinTokenClaims) GetMemberCert() *DelegationCert {
-	if x != nil {
-		return x.MemberCert
-	}
-	return nil
-}
-
-func (x *JoinTokenClaims) GetBootstrap() []*BootstrapPeer {
-	if x != nil {
-		return x.Bootstrap
-	}
-	return nil
-}
-
-func (x *JoinTokenClaims) GetIssuedAtUnix() int64 {
-	if x != nil {
-		return x.IssuedAtUnix
-	}
-	return 0
-}
-
-func (x *JoinTokenClaims) GetExpiresAtUnix() int64 {
-	if x != nil {
-		return x.ExpiresAtUnix
-	}
-	return 0
-}
-
-type JoinToken struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Claims        *JoinTokenClaims       `protobuf:"bytes,1,opt,name=claims,proto3" json:"claims,omitempty"`
-	Signature     []byte                 `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *JoinToken) Reset() {
-	*x = JoinToken{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *JoinToken) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*JoinToken) ProtoMessage() {}
-
-func (x *JoinToken) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use JoinToken.ProtoReflect.Descriptor instead.
-func (*JoinToken) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *JoinToken) GetClaims() *JoinTokenClaims {
-	if x != nil {
-		return x.Claims
-	}
-	return nil
-}
-
-func (x *JoinToken) GetSignature() []byte {
-	if x != nil {
-		return x.Signature
-	}
-	return nil
-}
-
-type InviteTokenClaims struct {
-	state                protoimpl.MessageState `protogen:"open.v1"`
-	TokenId              string                 `protobuf:"bytes,1,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
-	IssuerPub            []byte                 `protobuf:"bytes,2,opt,name=issuer_pub,json=issuerPub,proto3" json:"issuer_pub,omitempty"`
-	Bootstrap            []*BootstrapPeer       `protobuf:"bytes,3,rep,name=bootstrap,proto3" json:"bootstrap,omitempty"`
-	SubjectPub           []byte                 `protobuf:"bytes,4,opt,name=subject_pub,json=subjectPub,proto3" json:"subject_pub,omitempty"`
-	IssuedAtUnix         int64                  `protobuf:"varint,5,opt,name=issued_at_unix,json=issuedAtUnix,proto3" json:"issued_at_unix,omitempty"`
-	ExpiresAtUnix        int64                  `protobuf:"varint,6,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix,omitempty"`
-	MembershipTtlSeconds int64                  `protobuf:"varint,7,opt,name=membership_ttl_seconds,json=membershipTtlSeconds,proto3" json:"membership_ttl_seconds,omitempty"`
-	CertCaps             *Capabilities          `protobuf:"bytes,10,opt,name=cert_caps,json=certCaps,proto3" json:"cert_caps,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
-}
-
-func (x *InviteTokenClaims) Reset() {
-	*x = InviteTokenClaims{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[6]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *InviteTokenClaims) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*InviteTokenClaims) ProtoMessage() {}
-
-func (x *InviteTokenClaims) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[6]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use InviteTokenClaims.ProtoReflect.Descriptor instead.
-func (*InviteTokenClaims) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{6}
-}
-
-func (x *InviteTokenClaims) GetTokenId() string {
-	if x != nil {
-		return x.TokenId
-	}
-	return ""
-}
-
-func (x *InviteTokenClaims) GetIssuerPub() []byte {
-	if x != nil {
-		return x.IssuerPub
-	}
-	return nil
-}
-
-func (x *InviteTokenClaims) GetBootstrap() []*BootstrapPeer {
-	if x != nil {
-		return x.Bootstrap
-	}
-	return nil
-}
-
-func (x *InviteTokenClaims) GetSubjectPub() []byte {
-	if x != nil {
-		return x.SubjectPub
-	}
-	return nil
-}
-
-func (x *InviteTokenClaims) GetIssuedAtUnix() int64 {
-	if x != nil {
-		return x.IssuedAtUnix
-	}
-	return 0
-}
-
-func (x *InviteTokenClaims) GetExpiresAtUnix() int64 {
-	if x != nil {
-		return x.ExpiresAtUnix
-	}
-	return 0
-}
-
-func (x *InviteTokenClaims) GetMembershipTtlSeconds() int64 {
-	if x != nil {
-		return x.MembershipTtlSeconds
-	}
-	return 0
-}
-
-func (x *InviteTokenClaims) GetCertCaps() *Capabilities {
-	if x != nil {
-		return x.CertCaps
-	}
-	return nil
-}
-
-type InviteToken struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Claims        *InviteTokenClaims     `protobuf:"bytes,1,opt,name=claims,proto3" json:"claims,omitempty"`
-	Signature     []byte                 `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *InviteToken) Reset() {
-	*x = InviteToken{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *InviteToken) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*InviteToken) ProtoMessage() {}
-
-func (x *InviteToken) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[7]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use InviteToken.ProtoReflect.Descriptor instead.
-func (*InviteToken) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *InviteToken) GetClaims() *InviteTokenClaims {
-	if x != nil {
-		return x.Claims
-	}
-	return nil
-}
-
-func (x *InviteToken) GetSignature() []byte {
-	if x != nil {
-		return x.Signature
-	}
-	return nil
-}
-
 type AccessTokenClaims struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Resource      *ResourceID            `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
@@ -606,7 +89,7 @@ type AccessTokenClaims struct {
 
 func (x *AccessTokenClaims) Reset() {
 	*x = AccessTokenClaims{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[8]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -618,7 +101,7 @@ func (x *AccessTokenClaims) String() string {
 func (*AccessTokenClaims) ProtoMessage() {}
 
 func (x *AccessTokenClaims) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[8]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -631,7 +114,7 @@ func (x *AccessTokenClaims) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccessTokenClaims.ProtoReflect.Descriptor instead.
 func (*AccessTokenClaims) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{8}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *AccessTokenClaims) GetResource() *ResourceID {
@@ -672,7 +155,7 @@ type AccessToken struct {
 
 func (x *AccessToken) Reset() {
 	*x = AccessToken{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[9]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -684,7 +167,7 @@ func (x *AccessToken) String() string {
 func (*AccessToken) ProtoMessage() {}
 
 func (x *AccessToken) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[9]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -697,7 +180,7 @@ func (x *AccessToken) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccessToken.ProtoReflect.Descriptor instead.
 func (*AccessToken) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{9}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *AccessToken) GetClaims() *AccessTokenClaims {
@@ -712,90 +195,6 @@ func (x *AccessToken) GetSignature() []byte {
 		return x.Signature
 	}
 	return nil
-}
-
-type SpecAuth struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Resource      *ResourceID            `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
-	Policy        *Predicate             `protobuf:"bytes,2,opt,name=policy,proto3" json:"policy,omitempty"`
-	BodyHash      []byte                 `protobuf:"bytes,3,opt,name=body_hash,json=bodyHash,proto3" json:"body_hash,omitempty"`
-	Publisher     *DelegationCert        `protobuf:"bytes,4,opt,name=publisher,proto3" json:"publisher,omitempty"`
-	Signature     []byte                 `protobuf:"bytes,5,opt,name=signature,proto3" json:"signature,omitempty"`
-	Deleted       bool                   `protobuf:"varint,6,opt,name=deleted,proto3" json:"deleted,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SpecAuth) Reset() {
-	*x = SpecAuth{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[10]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SpecAuth) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SpecAuth) ProtoMessage() {}
-
-func (x *SpecAuth) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[10]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SpecAuth.ProtoReflect.Descriptor instead.
-func (*SpecAuth) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{10}
-}
-
-func (x *SpecAuth) GetResource() *ResourceID {
-	if x != nil {
-		return x.Resource
-	}
-	return nil
-}
-
-func (x *SpecAuth) GetPolicy() *Predicate {
-	if x != nil {
-		return x.Policy
-	}
-	return nil
-}
-
-func (x *SpecAuth) GetBodyHash() []byte {
-	if x != nil {
-		return x.BodyHash
-	}
-	return nil
-}
-
-func (x *SpecAuth) GetPublisher() *DelegationCert {
-	if x != nil {
-		return x.Publisher
-	}
-	return nil
-}
-
-func (x *SpecAuth) GetSignature() []byte {
-	if x != nil {
-		return x.Signature
-	}
-	return nil
-}
-
-func (x *SpecAuth) GetDeleted() bool {
-	if x != nil {
-		return x.Deleted
-	}
-	return false
 }
 
 type ResourceID struct {
@@ -813,7 +212,7 @@ type ResourceID struct {
 
 func (x *ResourceID) Reset() {
 	*x = ResourceID{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[11]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -825,7 +224,7 @@ func (x *ResourceID) String() string {
 func (*ResourceID) ProtoMessage() {}
 
 func (x *ResourceID) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[11]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -838,7 +237,7 @@ func (x *ResourceID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceID.ProtoReflect.Descriptor instead.
 func (*ResourceID) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{11}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ResourceID) GetBody() isResourceID_Body {
@@ -922,7 +321,7 @@ type SeedID struct {
 
 func (x *SeedID) Reset() {
 	*x = SeedID{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[12]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -934,7 +333,7 @@ func (x *SeedID) String() string {
 func (*SeedID) ProtoMessage() {}
 
 func (x *SeedID) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[12]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -947,7 +346,7 @@ func (x *SeedID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SeedID.ProtoReflect.Descriptor instead.
 func (*SeedID) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{12}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SeedID) GetName() string {
@@ -974,7 +373,7 @@ type BlobID struct {
 
 func (x *BlobID) Reset() {
 	*x = BlobID{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[13]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -986,7 +385,7 @@ func (x *BlobID) String() string {
 func (*BlobID) ProtoMessage() {}
 
 func (x *BlobID) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[13]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -999,7 +398,7 @@ func (x *BlobID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BlobID.ProtoReflect.Descriptor instead.
 func (*BlobID) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{13}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *BlobID) GetName() string {
@@ -1026,7 +425,7 @@ type StaticID struct {
 
 func (x *StaticID) Reset() {
 	*x = StaticID{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[14]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1038,7 +437,7 @@ func (x *StaticID) String() string {
 func (*StaticID) ProtoMessage() {}
 
 func (x *StaticID) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[14]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1051,7 +450,7 @@ func (x *StaticID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StaticID.ProtoReflect.Descriptor instead.
 func (*StaticID) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{14}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *StaticID) GetName() string {
@@ -1077,7 +476,7 @@ type ServiceID struct {
 
 func (x *ServiceID) Reset() {
 	*x = ServiceID{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[15]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1089,7 +488,7 @@ func (x *ServiceID) String() string {
 func (*ServiceID) ProtoMessage() {}
 
 func (x *ServiceID) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[15]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1102,7 +501,7 @@ func (x *ServiceID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServiceID.ProtoReflect.Descriptor instead.
 func (*ServiceID) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{15}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ServiceID) GetName() string {
@@ -1115,10 +514,10 @@ func (x *ServiceID) GetName() string {
 type Predicate struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Inline *InlinePredicate       `protobuf:"bytes,1,opt,name=inline,proto3" json:"inline,omitempty"`
-	// public, when true, permits anonymous callers (no DelegationCert)
-	// and short-circuits cert-attribute clause evaluation. The HTTP
-	// gateway's canonical URL (`<sub>.pln.sh/<slug>/<resource>`) is the
-	// entry point that surfaces this.
+	// public, when true, permits anonymous callers (no grant) and
+	// short-circuits attribute clause evaluation. The HTTP gateway's
+	// canonical URL (`<sub>.pln.sh/<slug>/<resource>`) is the entry
+	// point that surfaces this.
 	Public        bool `protobuf:"varint,2,opt,name=public,proto3" json:"public,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1126,7 +525,7 @@ type Predicate struct {
 
 func (x *Predicate) Reset() {
 	*x = Predicate{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[16]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1138,7 +537,7 @@ func (x *Predicate) String() string {
 func (*Predicate) ProtoMessage() {}
 
 func (x *Predicate) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[16]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1151,7 +550,7 @@ func (x *Predicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Predicate.ProtoReflect.Descriptor instead.
 func (*Predicate) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{16}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Predicate) GetInline() *InlinePredicate {
@@ -1177,7 +576,7 @@ type InlinePredicate struct {
 
 func (x *InlinePredicate) Reset() {
 	*x = InlinePredicate{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[17]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1189,7 +588,7 @@ func (x *InlinePredicate) String() string {
 func (*InlinePredicate) ProtoMessage() {}
 
 func (x *InlinePredicate) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[17]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1202,7 +601,7 @@ func (x *InlinePredicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InlinePredicate.ProtoReflect.Descriptor instead.
 func (*InlinePredicate) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{17}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *InlinePredicate) GetClauses() []*Clause {
@@ -1222,7 +621,7 @@ type Clause struct {
 
 func (x *Clause) Reset() {
 	*x = Clause{}
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[18]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1234,7 +633,7 @@ func (x *Clause) String() string {
 func (*Clause) ProtoMessage() {}
 
 func (x *Clause) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_admission_v1_admission_proto_msgTypes[18]
+	mi := &file_pollen_admission_v1_admission_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1247,7 +646,7 @@ func (x *Clause) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Clause.ProtoReflect.Descriptor instead.
 func (*Clause) Descriptor() ([]byte, []int) {
-	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{18}
+	return file_pollen_admission_v1_admission_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Clause) GetKey() string {
@@ -1268,63 +667,10 @@ var File_pollen_admission_v1_admission_proto protoreflect.FileDescriptor
 
 const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\n" +
-	"#pollen/admission/v1/admission.proto\x12\x13pollen.admission.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xc5\x01\n" +
-	"\fCapabilities\x12!\n" +
-	"\fcan_delegate\x18\x01 \x01(\bR\vcanDelegate\x12\x1b\n" +
-	"\tcan_admit\x18\x02 \x01(\bR\bcanAdmit\x12\x1b\n" +
-	"\tmax_depth\x18\x03 \x01(\rR\bmaxDepth\x127\n" +
-	"\n" +
-	"attributes\x18\x04 \x01(\v2\x17.google.protobuf.StructR\n" +
-	"attributes\x12\x1f\n" +
-	"\vcan_publish\x18\x05 \x01(\bR\n" +
-	"canPublish\"\xcf\x02\n" +
-	"\x14DelegationCertClaims\x12(\n" +
-	"\vsubject_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\n" +
-	"subjectPub\x12&\n" +
-	"\n" +
-	"issuer_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\tissuerPub\x12M\n" +
-	"\fcapabilities\x18\x03 \x01(\v2!.pollen.admission.v1.CapabilitiesB\x06\xbaH\x03\xc8\x01\x01R\fcapabilities\x12&\n" +
-	"\x0fnot_before_unix\x18\x04 \x01(\x03R\rnotBeforeUnix\x12$\n" +
-	"\x0enot_after_unix\x18\x05 \x01(\x03R\fnotAfterUnix\x12\x16\n" +
-	"\x06serial\x18\x06 \x01(\x04R\x06serial\x120\n" +
-	"\x14access_deadline_unix\x18\a \x01(\x03R\x12accessDeadlineUnix\"\xbd\x01\n" +
-	"\x0eDelegationCert\x12I\n" +
-	"\x06claims\x18\x01 \x01(\v2).pollen.admission.v1.DelegationCertClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x129\n" +
-	"\x05chain\x18\x02 \x03(\v2#.pollen.admission.v1.DelegationCertR\x05chain\x12%\n" +
-	"\tsignature\x18\x03 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"Y\n" +
+	"#pollen/admission/v1/admission.proto\x12\x13pollen.admission.v1\x1a\x1bbuf/validate/validate.proto\"Y\n" +
 	"\rBootstrapPeer\x12\"\n" +
 	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\x12$\n" +
-	"\x05addrs\x18\x02 \x03(\tB\x0e\xbaH\v\x92\x01\b\b\x01\"\x04r\x02\x10\x01R\x05addrs\"\xbc\x02\n" +
-	"\x0fJoinTokenClaims\x12#\n" +
-	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12&\n" +
-	"\n" +
-	"issuer_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\tissuerPub\x12L\n" +
-	"\vmember_cert\x18\x03 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\n" +
-	"memberCert\x12@\n" +
-	"\tbootstrap\x18\x04 \x03(\v2\".pollen.admission.v1.BootstrapPeerR\tbootstrap\x12$\n" +
-	"\x0eissued_at_unix\x18\x05 \x01(\x03R\fissuedAtUnix\x12&\n" +
-	"\x0fexpires_at_unix\x18\x06 \x01(\x03R\rexpiresAtUnix\"x\n" +
-	"\tJoinToken\x12D\n" +
-	"\x06claims\x18\x01 \x01(\v2$.pollen.admission.v1.JoinTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
-	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xc4\x03\n" +
-	"\x11InviteTokenClaims\x12#\n" +
-	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12&\n" +
-	"\n" +
-	"issuer_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\tissuerPub\x12J\n" +
-	"\tbootstrap\x18\x03 \x03(\v2\".pollen.admission.v1.BootstrapPeerB\b\xbaH\x05\x92\x01\x02\b\x01R\tbootstrap\x12+\n" +
-	"\vsubject_pub\x18\x04 \x01(\fB\n" +
-	"\xbaH\a\xd8\x01\x01z\x02h R\n" +
-	"subjectPub\x12$\n" +
-	"\x0eissued_at_unix\x18\x05 \x01(\x03R\fissuedAtUnix\x12&\n" +
-	"\x0fexpires_at_unix\x18\x06 \x01(\x03R\rexpiresAtUnix\x124\n" +
-	"\x16membership_ttl_seconds\x18\a \x01(\x03R\x14membershipTtlSeconds\x12F\n" +
-	"\tcert_caps\x18\n" +
-	" \x01(\v2!.pollen.admission.v1.CapabilitiesB\x06\xbaH\x03\xc8\x01\x01R\bcertCapsJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
-	"R\n" +
-	"attributesR\x05admin\"|\n" +
-	"\vInviteToken\x12F\n" +
-	"\x06claims\x18\x01 \x01(\v2&.pollen.admission.v1.InviteTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
-	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xce\x01\n" +
+	"\x05addrs\x18\x02 \x03(\tB\x0e\xbaH\v\x92\x01\b\b\x01\"\x04r\x02\x10\x01R\x05addrs\"\xce\x01\n" +
 	"\x11AccessTokenClaims\x12C\n" +
 	"\bresource\x18\x01 \x01(\v2\x1f.pollen.admission.v1.ResourceIDB\x06\xbaH\x03\xc8\x01\x01R\bresource\x12&\n" +
 	"\n" +
@@ -1333,14 +679,7 @@ const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\x0fexpires_at_unix\x18\x04 \x01(\x03R\rexpiresAtUnix\"|\n" +
 	"\vAccessToken\x12F\n" +
 	"\x06claims\x18\x01 \x01(\v2&.pollen.admission.v1.AccessTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
-	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xb9\x02\n" +
-	"\bSpecAuth\x12C\n" +
-	"\bresource\x18\x01 \x01(\v2\x1f.pollen.admission.v1.ResourceIDB\x06\xbaH\x03\xc8\x01\x01R\bresource\x126\n" +
-	"\x06policy\x18\x02 \x01(\v2\x1e.pollen.admission.v1.PredicateR\x06policy\x12$\n" +
-	"\tbody_hash\x18\x03 \x01(\fB\a\xbaH\x04z\x02h R\bbodyHash\x12I\n" +
-	"\tpublisher\x18\x04 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\tpublisher\x12%\n" +
-	"\tsignature\x18\x05 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\x12\x18\n" +
-	"\adeleted\x18\x06 \x01(\bR\adeleted\"\xef\x01\n" +
+	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xef\x01\n" +
 	"\n" +
 	"ResourceID\x121\n" +
 	"\x04seed\x18\x01 \x01(\v2\x1b.pollen.admission.v1.SeedIDH\x00R\x04seed\x121\n" +
@@ -1383,56 +722,34 @@ func file_pollen_admission_v1_admission_proto_rawDescGZIP() []byte {
 	return file_pollen_admission_v1_admission_proto_rawDescData
 }
 
-var file_pollen_admission_v1_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_pollen_admission_v1_admission_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_pollen_admission_v1_admission_proto_goTypes = []any{
-	(*Capabilities)(nil),         // 0: pollen.admission.v1.Capabilities
-	(*DelegationCertClaims)(nil), // 1: pollen.admission.v1.DelegationCertClaims
-	(*DelegationCert)(nil),       // 2: pollen.admission.v1.DelegationCert
-	(*BootstrapPeer)(nil),        // 3: pollen.admission.v1.BootstrapPeer
-	(*JoinTokenClaims)(nil),      // 4: pollen.admission.v1.JoinTokenClaims
-	(*JoinToken)(nil),            // 5: pollen.admission.v1.JoinToken
-	(*InviteTokenClaims)(nil),    // 6: pollen.admission.v1.InviteTokenClaims
-	(*InviteToken)(nil),          // 7: pollen.admission.v1.InviteToken
-	(*AccessTokenClaims)(nil),    // 8: pollen.admission.v1.AccessTokenClaims
-	(*AccessToken)(nil),          // 9: pollen.admission.v1.AccessToken
-	(*SpecAuth)(nil),             // 10: pollen.admission.v1.SpecAuth
-	(*ResourceID)(nil),           // 11: pollen.admission.v1.ResourceID
-	(*SeedID)(nil),               // 12: pollen.admission.v1.SeedID
-	(*BlobID)(nil),               // 13: pollen.admission.v1.BlobID
-	(*StaticID)(nil),             // 14: pollen.admission.v1.StaticID
-	(*ServiceID)(nil),            // 15: pollen.admission.v1.ServiceID
-	(*Predicate)(nil),            // 16: pollen.admission.v1.Predicate
-	(*InlinePredicate)(nil),      // 17: pollen.admission.v1.InlinePredicate
-	(*Clause)(nil),               // 18: pollen.admission.v1.Clause
-	(*structpb.Struct)(nil),      // 19: google.protobuf.Struct
+	(*BootstrapPeer)(nil),     // 0: pollen.admission.v1.BootstrapPeer
+	(*AccessTokenClaims)(nil), // 1: pollen.admission.v1.AccessTokenClaims
+	(*AccessToken)(nil),       // 2: pollen.admission.v1.AccessToken
+	(*ResourceID)(nil),        // 3: pollen.admission.v1.ResourceID
+	(*SeedID)(nil),            // 4: pollen.admission.v1.SeedID
+	(*BlobID)(nil),            // 5: pollen.admission.v1.BlobID
+	(*StaticID)(nil),          // 6: pollen.admission.v1.StaticID
+	(*ServiceID)(nil),         // 7: pollen.admission.v1.ServiceID
+	(*Predicate)(nil),         // 8: pollen.admission.v1.Predicate
+	(*InlinePredicate)(nil),   // 9: pollen.admission.v1.InlinePredicate
+	(*Clause)(nil),            // 10: pollen.admission.v1.Clause
 }
 var file_pollen_admission_v1_admission_proto_depIdxs = []int32{
-	19, // 0: pollen.admission.v1.Capabilities.attributes:type_name -> google.protobuf.Struct
-	0,  // 1: pollen.admission.v1.DelegationCertClaims.capabilities:type_name -> pollen.admission.v1.Capabilities
-	1,  // 2: pollen.admission.v1.DelegationCert.claims:type_name -> pollen.admission.v1.DelegationCertClaims
-	2,  // 3: pollen.admission.v1.DelegationCert.chain:type_name -> pollen.admission.v1.DelegationCert
-	2,  // 4: pollen.admission.v1.JoinTokenClaims.member_cert:type_name -> pollen.admission.v1.DelegationCert
-	3,  // 5: pollen.admission.v1.JoinTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
-	4,  // 6: pollen.admission.v1.JoinToken.claims:type_name -> pollen.admission.v1.JoinTokenClaims
-	3,  // 7: pollen.admission.v1.InviteTokenClaims.bootstrap:type_name -> pollen.admission.v1.BootstrapPeer
-	0,  // 8: pollen.admission.v1.InviteTokenClaims.cert_caps:type_name -> pollen.admission.v1.Capabilities
-	6,  // 9: pollen.admission.v1.InviteToken.claims:type_name -> pollen.admission.v1.InviteTokenClaims
-	11, // 10: pollen.admission.v1.AccessTokenClaims.resource:type_name -> pollen.admission.v1.ResourceID
-	8,  // 11: pollen.admission.v1.AccessToken.claims:type_name -> pollen.admission.v1.AccessTokenClaims
-	11, // 12: pollen.admission.v1.SpecAuth.resource:type_name -> pollen.admission.v1.ResourceID
-	16, // 13: pollen.admission.v1.SpecAuth.policy:type_name -> pollen.admission.v1.Predicate
-	2,  // 14: pollen.admission.v1.SpecAuth.publisher:type_name -> pollen.admission.v1.DelegationCert
-	12, // 15: pollen.admission.v1.ResourceID.seed:type_name -> pollen.admission.v1.SeedID
-	13, // 16: pollen.admission.v1.ResourceID.blob:type_name -> pollen.admission.v1.BlobID
-	14, // 17: pollen.admission.v1.ResourceID.static:type_name -> pollen.admission.v1.StaticID
-	15, // 18: pollen.admission.v1.ResourceID.service:type_name -> pollen.admission.v1.ServiceID
-	17, // 19: pollen.admission.v1.Predicate.inline:type_name -> pollen.admission.v1.InlinePredicate
-	18, // 20: pollen.admission.v1.InlinePredicate.clauses:type_name -> pollen.admission.v1.Clause
-	21, // [21:21] is the sub-list for method output_type
-	21, // [21:21] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	3,  // 0: pollen.admission.v1.AccessTokenClaims.resource:type_name -> pollen.admission.v1.ResourceID
+	1,  // 1: pollen.admission.v1.AccessToken.claims:type_name -> pollen.admission.v1.AccessTokenClaims
+	4,  // 2: pollen.admission.v1.ResourceID.seed:type_name -> pollen.admission.v1.SeedID
+	5,  // 3: pollen.admission.v1.ResourceID.blob:type_name -> pollen.admission.v1.BlobID
+	6,  // 4: pollen.admission.v1.ResourceID.static:type_name -> pollen.admission.v1.StaticID
+	7,  // 5: pollen.admission.v1.ResourceID.service:type_name -> pollen.admission.v1.ServiceID
+	9,  // 6: pollen.admission.v1.Predicate.inline:type_name -> pollen.admission.v1.InlinePredicate
+	10, // 7: pollen.admission.v1.InlinePredicate.clauses:type_name -> pollen.admission.v1.Clause
+	8,  // [8:8] is the sub-list for method output_type
+	8,  // [8:8] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_pollen_admission_v1_admission_proto_init() }
@@ -1440,7 +757,7 @@ func file_pollen_admission_v1_admission_proto_init() {
 	if File_pollen_admission_v1_admission_proto != nil {
 		return
 	}
-	file_pollen_admission_v1_admission_proto_msgTypes[11].OneofWrappers = []any{
+	file_pollen_admission_v1_admission_proto_msgTypes[3].OneofWrappers = []any{
 		(*ResourceID_Seed)(nil),
 		(*ResourceID_Blob)(nil),
 		(*ResourceID_Static)(nil),
@@ -1452,7 +769,7 @@ func file_pollen_admission_v1_admission_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_admission_v1_admission_proto_rawDesc), len(file_pollen_admission_v1_admission_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   19,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

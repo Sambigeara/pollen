@@ -12,17 +12,22 @@ import (
 )
 
 const (
-	// memoryBudgetFraction caps allocated wasm memory at this share of
+	// nodeMemoryFraction caps allocated wasm memory at this share of
 	// the host's total RAM. Predictive admission: a reservation that
 	// would push the running total past this ceiling is refused before
 	// the kernel crosses its own limit.
-	memoryBudgetFraction = 0.7
+	nodeMemoryFraction = 0.7
 
 	defaultReplicaMemoryBytes int64 = 8 << 20
 )
 
-// budget rejects reservations once the running total would exceed
-// totalBytes. Two reservation paths share one accumulator:
+// nodeMemoryGuard is node-level OOM protection: it rejects wasm memory
+// reservations once this host's running total would exceed totalBytes
+// (a fraction of physical RAM). It is deliberately distinct from the
+// per-Principal identity.Budget, which is a cluster-wide fairness quota
+// enforced at admission; this guard protects one machine from
+// over-commit regardless of which principals own the workloads. Two
+// reservation paths share one accumulator:
 //
 //   - Replica reservations cover the warm-pool worst case
 //     (IdleCacheSize × per-spec-cap) and live for the lifetime of the
@@ -30,8 +35,8 @@ const (
 //   - Call reservations cover one in-flight invocation each (per-spec-cap)
 //     and are released on completion.
 //
-// totalBytes <= 0 disables the gate.
-type budget struct {
+// totalBytes <= 0 disables the guard.
+type nodeMemoryGuard struct {
 	holdings   map[string]int64
 	caps       map[string]int64
 	mu         sync.Mutex
@@ -39,24 +44,24 @@ type budget struct {
 	reserved   atomic.Int64
 }
 
-func newBudget(totalBytes int64) *budget {
-	return &budget{
+func newNodeMemoryGuard(totalBytes int64) *nodeMemoryGuard {
+	return &nodeMemoryGuard{
 		totalBytes: totalBytes,
 		holdings:   make(map[string]int64),
 		caps:       make(map[string]int64),
 	}
 }
 
-func detectMemoryBudget() int64 {
+func detectNodeMemoryCeiling() int64 {
 	vm, err := mem.VirtualMemory()
 	if err != nil {
 		return 0
 	}
-	return int64(float64(vm.Total) * memoryBudgetFraction)
+	return int64(float64(vm.Total) * nodeMemoryFraction)
 }
 
 // Reserve is idempotent per hash — replays must not double-count.
-func (b *budget) Reserve(hash string, bytes int64) bool {
+func (b *nodeMemoryGuard) Reserve(hash string, bytes int64) bool {
 	if b.totalBytes <= 0 {
 		return true
 	}
@@ -74,7 +79,7 @@ func (b *budget) Reserve(hash string, bytes int64) bool {
 	return true
 }
 
-func (b *budget) Release(hash string) {
+func (b *nodeMemoryGuard) Release(hash string) {
 	if b.totalBytes <= 0 {
 		return
 	}
@@ -90,7 +95,7 @@ func (b *budget) Release(hash string) {
 	b.reserved.Add(-bytes)
 }
 
-func (b *budget) ReserveCall(hash string) (func(), bool) {
+func (b *nodeMemoryGuard) ReserveCall(hash string) (func(), bool) {
 	if b.totalBytes <= 0 {
 		return func() {}, true
 	}
@@ -114,7 +119,7 @@ func (b *budget) ReserveCall(hash string) (func(), bool) {
 	}, true
 }
 
-func (b *budget) tryAdd(bytes int64) bool {
+func (b *nodeMemoryGuard) tryAdd(bytes int64) bool {
 	for {
 		cur := b.reserved.Load()
 		next := cur + bytes

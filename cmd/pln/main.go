@@ -22,9 +22,11 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/net/http2"
 
+	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/api/genpb/pollen/control/v1/controlv1connect"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/plnfs"
+	"github.com/sambigeara/pollen/pkg/wire"
 )
 
 const (
@@ -107,17 +109,17 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 		}
 
 		baseURL := "http://unix"
-		wire := false
+		wireMode := false
 		if addr, ok := parsePlnTarget(host); ok {
 			baseURL = "https://" + addr
-			wire = true
+			wireMode = true
 		}
 
 		env := &cliEnv{
 			dir:      dir,
 			host:     host,
 			cfg:      cliCfg,
-			wireMode: wire,
+			wireMode: wireMode,
 			// No http.Client.Timeout: per-command deadlines own the budget via
 			// context.WithTimeout on cmd.Context(). A global wall-clock would
 			// otherwise mask real errors and truncate long-lived calls before
@@ -134,8 +136,31 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 			),
 		}
 
+		if err := negotiateProtocol(cmd.Context(), env.client); err != nil {
+			return err
+		}
 		return fn(cmd, args, env)
 	}
+}
+
+// negotiateProtocol runs the version handshake before the functional
+// RPC. A version mismatch or a daemon too old to implement Handshake
+// becomes an explicit, typed error. Availability, certificate and
+// transport failures are left for the command to surface with its
+// richer diagnostics rather than masked behind a generic handshake
+// error.
+func negotiateProtocol(ctx context.Context, c controlv1connect.ControlServiceClient) error {
+	resp, err := c.Handshake(ctx, connect.NewRequest(&controlv1.HandshakeRequest{
+		ClientMin: wire.ProtocolMin,
+		ClientMax: wire.ProtocolMax,
+	}))
+	if err != nil {
+		if wire.DaemonLacksHandshake(err) {
+			return wire.ErrDaemonNoHandshake
+		}
+		return nil
+	}
+	return wire.CheckRange(resp.Msg.GetServerMin(), resp.Msg.GetServerMax())
 }
 
 func dialTLSFunc(dir, target string) func(string, string, *tls.Config) (net.Conn, error) {

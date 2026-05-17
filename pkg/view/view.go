@@ -7,49 +7,23 @@ import (
 	"maps"
 
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// Lens is the authority a snapshot is read through. It is derived from
-// the calling Grant, never from the serving node's own identity. The
-// zero Lens is the unidentified caller and permits nothing, so a
-// misconfigured daemon defaults to leaking nothing rather than
-// everything.
-type Lens struct {
-	admin   bool
-	subject types.PeerKey
-	valid   bool
-}
+// Lens is the authority a snapshot is read through: the resolved
+// Principal of the caller, never the serving node's own identity. It is
+// an alias rather than a parallel type so the read lens, control scoping
+// and admission all interpret one resolved authority. The zero Lens is
+// the unidentified caller and permits nothing, so a misconfigured daemon
+// defaults to leaking nothing rather than everything.
+type Lens = identity.Principal
 
-// LensFor derives the read and ownership lens from a caller Grant. A nil
-// Grant yields the default-deny zero Lens. Admin authority is the
-// can_admit capability; the subject is the Grant's own key, so a tenant
-// is scoped to facts it published rather than to whatever node happens
-// to be serving the request.
+// LensFor derives the read and ownership lens from an already-verified
+// caller Grant. A nil grant yields the default-deny zero Lens.
 func LensFor(grant *identityv1.Grant) Lens {
-	if grant == nil {
-		return Lens{}
-	}
-	return Lens{
-		admin:   grant.GetClaims().GetCapabilities().GetCanAdmit(),
-		subject: types.PeerKeyFromBytes(grant.GetClaims().GetSubjectPub()),
-		valid:   true,
-	}
-}
-
-func (l Lens) Admin() bool { return l.admin }
-
-func (l Lens) Subject() types.PeerKey { return l.subject }
-
-// Permits reports whether this lens may see or mutate a resource whose
-// authority is publisher. An admin sees the whole cluster; a tenant
-// sees only its own facts; an unidentified caller sees nothing.
-func (l Lens) Permits(publisher types.PeerKey) bool {
-	if !l.valid {
-		return false
-	}
-	return l.admin || publisher == l.subject
+	return identity.PrincipalFromGrant(grant)
 }
 
 // ScopedView is a snapshot projected through a Lens. The spec maps are
@@ -93,7 +67,7 @@ func Project(snap state.Snapshot, lens Lens) ScopedView {
 		}
 	}
 
-	if lens.admin {
+	if lens.Admin() {
 		sv.Nodes = make(map[types.PeerKey]state.NodeView, len(snap.Nodes))
 		maps.Copy(sv.Nodes, snap.Nodes)
 		return sv

@@ -172,14 +172,12 @@ func (x *Capabilities) GetPublish() *PublishCapability {
 }
 
 type Budget struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	MaxFunctions    uint32                 `protobuf:"varint,1,opt,name=max_functions,json=maxFunctions,proto3" json:"max_functions,omitempty"`
-	MaxBlobs        uint32                 `protobuf:"varint,2,opt,name=max_blobs,json=maxBlobs,proto3" json:"max_blobs,omitempty"`
-	MaxSites        uint32                 `protobuf:"varint,3,opt,name=max_sites,json=maxSites,proto3" json:"max_sites,omitempty"`
-	MaxTotalBytes   uint64                 `protobuf:"varint,4,opt,name=max_total_bytes,json=maxTotalBytes,proto3" json:"max_total_bytes,omitempty"`
-	MaxTrafficBytes uint64                 `protobuf:"varint,5,opt,name=max_traffic_bytes,json=maxTrafficBytes,proto3" json:"max_traffic_bytes,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MaxFunctions  uint32                 `protobuf:"varint,1,opt,name=max_functions,json=maxFunctions,proto3" json:"max_functions,omitempty"`
+	MaxBlobs      uint32                 `protobuf:"varint,2,opt,name=max_blobs,json=maxBlobs,proto3" json:"max_blobs,omitempty"`
+	MaxSites      uint32                 `protobuf:"varint,3,opt,name=max_sites,json=maxSites,proto3" json:"max_sites,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Budget) Reset() {
@@ -229,20 +227,6 @@ func (x *Budget) GetMaxBlobs() uint32 {
 func (x *Budget) GetMaxSites() uint32 {
 	if x != nil {
 		return x.MaxSites
-	}
-	return 0
-}
-
-func (x *Budget) GetMaxTotalBytes() uint64 {
-	if x != nil {
-		return x.MaxTotalBytes
-	}
-	return 0
-}
-
-func (x *Budget) GetMaxTrafficBytes() uint64 {
-	if x != nil {
-		return x.MaxTrafficBytes
 	}
 	return 0
 }
@@ -840,13 +824,11 @@ const file_pollen_identity_v1_identity_proto_rawDesc = "" +
 	"\n" +
 	"attributes\x18\x04 \x01(\v2\x17.google.protobuf.StructR\n" +
 	"attributes\x12G\n" +
-	"\apublish\x18\x05 \x01(\v2%.pollen.identity.v1.PublishCapabilityB\x06\xbaH\x03\xc8\x01\x01R\apublish\"\xbb\x01\n" +
+	"\apublish\x18\x05 \x01(\v2%.pollen.identity.v1.PublishCapabilityB\x06\xbaH\x03\xc8\x01\x01R\apublish\"\x97\x01\n" +
 	"\x06Budget\x12#\n" +
 	"\rmax_functions\x18\x01 \x01(\rR\fmaxFunctions\x12\x1b\n" +
 	"\tmax_blobs\x18\x02 \x01(\rR\bmaxBlobs\x12\x1b\n" +
-	"\tmax_sites\x18\x03 \x01(\rR\bmaxSites\x12&\n" +
-	"\x0fmax_total_bytes\x18\x04 \x01(\x04R\rmaxTotalBytes\x12*\n" +
-	"\x11max_traffic_bytes\x18\x05 \x01(\x04R\x0fmaxTrafficBytes\"\xd9\x02\n" +
+	"\tmax_sites\x18\x03 \x01(\rR\bmaxSitesJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\x0fmax_total_bytesR\x11max_traffic_bytes\"\xd9\x02\n" +
 	"\vGrantClaims\x12(\n" +
 	"\vsubject_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\n" +
 	"subjectPub\x12&\n" +

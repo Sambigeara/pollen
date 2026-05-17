@@ -137,11 +137,11 @@ func TestRenderNodeDetail_BasicAdmin(t *testing.T) {
 			PubliclyAccessible: true,
 		},
 		Cert: &controlv1.CertInfo{
-			CanAdmit:     true,
-			CanPublish:   true,
-			CanDelegate:  true,
-			NotAfterUnix: nowPlus(t, 23),
-			Attributes:   mustStruct(t, map[string]any{"role": "primary"}),
+			CanAdmit:          true,
+			CanPublish:        true,
+			CanDelegate:       true,
+			GrantDeadlineUnix: nowPlus(t, 23),
+			Attributes:        mustStruct(t, map[string]any{"role": "primary"}),
 		},
 		MemTotalBytes:      8 * 1024 * 1024 * 1024,
 		NatType:            "easy",
@@ -175,7 +175,7 @@ func TestRenderNodeDetail_LeafMinimal(t *testing.T) {
 	detail := &controlv1.NodeDetail{
 		Summary: &controlv1.NodeSummary{Node: nodeRef("b"), Status: controlv1.NodeStatus_NODE_STATUS_OFFLINE},
 		Cert: &controlv1.CertInfo{
-			NotAfterUnix: nowPlus(t, 1),
+			GrantDeadlineUnix: nowPlus(t, 1),
 		},
 	}
 
@@ -194,8 +194,8 @@ func TestRenderNodeDetail_ExpiredCert(t *testing.T) {
 	detail := &controlv1.NodeDetail{
 		Summary: &controlv1.NodeSummary{Node: nodeRef("b")},
 		Cert: &controlv1.CertInfo{
-			Health:       controlv1.CertHealth_CERT_HEALTH_EXPIRED,
-			NotAfterUnix: 1,
+			Health:            controlv1.CertHealth_CERT_HEALTH_EXPIRED,
+			GrantDeadlineUnix: 1,
 		},
 	}
 	var buf bytes.Buffer

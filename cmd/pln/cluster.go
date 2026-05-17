@@ -182,6 +182,9 @@ policy router.`,
 	grantCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
 	grantCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
 	grantCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin")
+	grantCmd.Flags().Uint32("max-functions", 0, "Max functions the grantee may publish (0 = unlimited)")
+	grantCmd.Flags().Uint32("max-blobs", 0, "Max blobs the grantee may publish (0 = unlimited)")
+	grantCmd.Flags().Uint32("max-sites", 0, "Max sites the grantee may publish (0 = unlimited)")
 
 	initCmd := &cobra.Command{
 		Use:   "init",
@@ -825,6 +828,7 @@ func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if _, err := env.client.IssueGrant(cmd.Context(), connect.NewRequest(&controlv1.IssueGrantRequest{
 		PeerPub:      peerID,
 		Capabilities: caps,
+		Budget:       budgetFromFlags(cmd),
 	})); err != nil {
 		return err
 	}
@@ -883,6 +887,19 @@ func capsFromFlags(cmd *cobra.Command, attrs *structpb.Struct) (*identityv1.Capa
 	}
 	caps.Attributes = attrs
 	return caps, nil
+}
+
+// budgetFromFlags builds the per-Principal Budget from the --max-*
+// flags. All-zero means no flags were set, so the request carries no
+// budget and the grantee is unlimited.
+func budgetFromFlags(cmd *cobra.Command) *identityv1.Budget {
+	fns, _ := cmd.Flags().GetUint32("max-functions")
+	blobs, _ := cmd.Flags().GetUint32("max-blobs")
+	sites, _ := cmd.Flags().GetUint32("max-sites")
+	if fns == 0 && blobs == 0 && sites == 0 {
+		return nil
+	}
+	return &identityv1.Budget{MaxFunctions: fns, MaxBlobs: blobs, MaxSites: sites}
 }
 
 // validateCapsAgainstSigner reports an error if the requested caps cannot

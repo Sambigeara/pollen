@@ -692,7 +692,7 @@ func (n *Supervisor) dispatchEvents(ctx context.Context, events []state.Event) {
 			n.static.Signal()
 		case state.ServiceChanged:
 			n.handleServiceChanged(e)
-		case state.CertChanged:
+		case state.GrantChanged:
 			n.placement.Signal()
 		}
 	}

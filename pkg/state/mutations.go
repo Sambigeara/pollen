@@ -35,12 +35,12 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 	}
 
 	now := s.nowFunc()
-	denyOrCertChanged := false
+	denyOrGrantChanged := false
 	certChanged := false
 	for _, ev := range gossips {
 		key, _ := getAttrKey(ev)
 		if key.kind == attrDeny || key.kind == attrGrant {
-			denyOrCertChanged = true
+			denyOrGrantChanged = true
 		}
 		if key.kind == attrGrant {
 			certChanged = true
@@ -56,11 +56,11 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 	s.lastLocalEmit = now
 	s.nodes[s.localID] = rec
 
-	if denyOrCertChanged {
+	if denyOrGrantChanged {
 		events = append(events, s.recomputeDeniedLocked()...)
 	}
 	if certChanged {
-		events = append(events, CertChanged{Peer: s.localID})
+		events = append(events, GrantChanged{Peer: s.localID})
 	}
 
 	s.updateSnapshotLocked()
@@ -547,8 +547,8 @@ func (s *store) DeleteBlobSpec(digest string) ([]Event, error) {
 var ErrNoSigner = errors.New("local node has no spec signer")
 
 // ErrPresignedAuthRequired is returned when a presigned mutation path
-// receives a nil SpecAuth. Wire-mode callers must supply the SpecAuth
-// signed under their own publisher key.
+// receives a nil Fact. Wire-mode callers must supply the Fact
+// signed under their own authority key.
 var ErrPresignedAuthRequired = errors.New("presigned spec auth required")
 
 // ErrNoValidator is returned when a presigned mutation is attempted on
@@ -558,7 +558,7 @@ var ErrPresignedAuthRequired = errors.New("presigned spec auth required")
 var ErrNoValidator = errors.New("presigned mutations require a validate hook")
 
 // PublishWorkloadPresigned stores a tenant-signed workload spec without
-// re-signing. The daemon acts as a relay: SpecAuth is supplied by the
+// re-signing. The daemon acts as a relay: the Fact is supplied by the
 // wire-mode caller, validated against the cluster root, and gossipped
 // as-is. No auto-claim is emitted; placement is decided by reconcilers
 // on hosts that match the policy.

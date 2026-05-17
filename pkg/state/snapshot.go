@@ -390,9 +390,9 @@ func (s Snapshot) Services() []ServiceInfo {
 	return out
 }
 
-// tombstoneBodyHashLen is the fixed width of SpecAuth.BodyHash (sha256
+// tombstoneBodyHashLen is the fixed width of a Fact's body hash (sha256
 // today). The width is part of the tombstoneKey struct so the key
-// stays comparable as a map key; if a future SpecAuth swaps in a
+// stays comparable as a map key; if a future Fact swaps in a
 // different digest algorithm this size needs to grow with it.
 const tombstoneBodyHashLen = 32
 

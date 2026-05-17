@@ -27,6 +27,92 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+func (m *HandshakeRequest) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *HandshakeRequest) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *HandshakeRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.ClientMax != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.ClientMax))
+		i--
+		dAtA[i] = 0x10
+	}
+	if m.ClientMin != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.ClientMin))
+		i--
+		dAtA[i] = 0x8
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *HandshakeResponse) MarshalVT() (dAtA []byte, err error) {
+	if m == nil {
+		return nil, nil
+	}
+	size := m.SizeVT()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBufferVT(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *HandshakeResponse) MarshalToVT(dAtA []byte) (int, error) {
+	size := m.SizeVT()
+	return m.MarshalToSizedBufferVT(dAtA[:size])
+}
+
+func (m *HandshakeResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.unknownFields != nil {
+		i -= len(m.unknownFields)
+		copy(dAtA[i:], m.unknownFields)
+	}
+	if m.ServerMax != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.ServerMax))
+		i--
+		dAtA[i] = 0x10
+	}
+	if m.ServerMin != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.ServerMin))
+		i--
+		dAtA[i] = 0x8
+	}
+	return len(dAtA) - i, nil
+}
+
 func (m *NodeRef) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
@@ -524,11 +610,6 @@ func (m *CertInfo) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x4a
 	}
-	if m.AccessDeadlineUnix != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.AccessDeadlineUnix))
-		i--
-		dAtA[i] = 0x40
-	}
 	if m.MaxDepth != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.MaxDepth))
 		i--
@@ -564,8 +645,8 @@ func (m *CertInfo) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x18
 	}
-	if m.NotAfterUnix != 0 {
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.NotAfterUnix))
+	if m.GrantDeadlineUnix != 0 {
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.GrantDeadlineUnix))
 		i--
 		dAtA[i] = 0x10
 	}
@@ -2080,6 +2161,28 @@ func (m *IssueGrantRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.Budget != nil {
+		if vtmsg, ok := interface{}(m.Budget).(interface {
+			MarshalToSizedBufferVT([]byte) (int, error)
+		}); ok {
+			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+		} else {
+			encoded, err := proto.Marshal(m.Budget)
+			if err != nil {
+				return 0, err
+			}
+			i -= len(encoded)
+			copy(dAtA[i:], encoded)
+			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(encoded)))
+		}
+		i--
+		dAtA[i] = 0x32
+	}
 	if m.MintOnly {
 		i--
 		if m.MintOnly {
@@ -3351,6 +3454,38 @@ func (m *NodeDetail) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
+func (m *HandshakeRequest) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.ClientMin != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.ClientMin))
+	}
+	if m.ClientMax != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.ClientMax))
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
+func (m *HandshakeResponse) SizeVT() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.ServerMin != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.ServerMin))
+	}
+	if m.ServerMax != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.ServerMax))
+	}
+	n += len(m.unknownFields)
+	return n
+}
+
 func (m *NodeRef) SizeVT() (n int) {
 	if m == nil {
 		return 0
@@ -3523,8 +3658,8 @@ func (m *CertInfo) SizeVT() (n int) {
 	if m.NotBeforeUnix != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.NotBeforeUnix))
 	}
-	if m.NotAfterUnix != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.NotAfterUnix))
+	if m.GrantDeadlineUnix != 0 {
+		n += 1 + protohelpers.SizeOfVarint(uint64(m.GrantDeadlineUnix))
 	}
 	if m.Serial != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.Serial))
@@ -3540,9 +3675,6 @@ func (m *CertInfo) SizeVT() (n int) {
 	}
 	if m.MaxDepth != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.MaxDepth))
-	}
-	if m.AccessDeadlineUnix != 0 {
-		n += 1 + protohelpers.SizeOfVarint(uint64(m.AccessDeadlineUnix))
 	}
 	if m.Attributes != nil {
 		l = (*structpb.Struct)(m.Attributes).SizeVT()
@@ -4169,6 +4301,16 @@ func (m *IssueGrantRequest) SizeVT() (n int) {
 	if m.MintOnly {
 		n += 2
 	}
+	if m.Budget != nil {
+		if size, ok := interface{}(m.Budget).(interface {
+			SizeVT() int
+		}); ok {
+			l = size.SizeVT()
+		} else {
+			l = proto.Size(m.Budget)
+		}
+		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -4682,6 +4824,184 @@ func (m *NodeDetail) SizeVT() (n int) {
 	return n
 }
 
+func (m *HandshakeRequest) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: HandshakeRequest: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: HandshakeRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ClientMin", wireType)
+			}
+			m.ClientMin = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.ClientMin |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 2:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ClientMax", wireType)
+			}
+			m.ClientMax = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.ClientMax |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *HandshakeResponse) UnmarshalVT(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return protohelpers.ErrIntOverflow
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: HandshakeResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: HandshakeResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ServerMin", wireType)
+			}
+			m.ServerMin = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.ServerMin |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 2:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ServerMax", wireType)
+			}
+			m.ServerMax = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.ServerMax |= uint32(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		default:
+			iNdEx = preIndex
+			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.unknownFields = append(m.unknownFields, dAtA[iNdEx:iNdEx+skippy]...)
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
 func (m *NodeRef) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -5697,9 +6017,9 @@ func (m *CertInfo) UnmarshalVT(dAtA []byte) error {
 			}
 		case 2:
 			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field NotAfterUnix", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field GrantDeadlineUnix", wireType)
 			}
-			m.NotAfterUnix = 0
+			m.GrantDeadlineUnix = 0
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return protohelpers.ErrIntOverflow
@@ -5709,7 +6029,7 @@ func (m *CertInfo) UnmarshalVT(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				m.NotAfterUnix |= int64(b&0x7F) << shift
+				m.GrantDeadlineUnix |= int64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
@@ -5807,25 +6127,6 @@ func (m *CertInfo) UnmarshalVT(dAtA []byte) error {
 				b := dAtA[iNdEx]
 				iNdEx++
 				m.MaxDepth |= uint32(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 8:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field AccessDeadlineUnix", wireType)
-			}
-			m.AccessDeadlineUnix = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.AccessDeadlineUnix |= int64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
@@ -9431,6 +9732,50 @@ func (m *IssueGrantRequest) UnmarshalVT(dAtA []byte) error {
 				}
 			}
 			m.MintOnly = bool(v != 0)
+		case 6:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Budget", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return protohelpers.ErrInvalidLength
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Budget == nil {
+				m.Budget = &v13.Budget{}
+			}
+			if unmarshal, ok := interface{}(m.Budget).(interface {
+				UnmarshalVT([]byte) error
+			}); ok {
+				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
+					return err
+				}
+			} else {
+				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.Budget); err != nil {
+					return err
+				}
+			}
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

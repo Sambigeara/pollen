@@ -18,7 +18,7 @@ import (
 // SignAccessToken signs an ephemeral access token over a resource using
 // the issuer's identity key. The issuer must be the resource's
 // publisher; the gate rejects tokens whose issuer doesn't match the
-// resource's SpecAuth.Publisher subject.
+// resource Fact's authority subject.
 func SignAccessToken(issuerPriv ed25519.PrivateKey, resource *admissionv1.ResourceID, now time.Time, ttl time.Duration) (*admissionv1.AccessToken, error) {
 	if resource == nil {
 		return nil, errors.New("access token resource is required")

@@ -36,6 +36,9 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
+	// ControlServiceHandshakeProcedure is the fully-qualified name of the ControlService's Handshake
+	// RPC.
+	ControlServiceHandshakeProcedure = "/pollen.control.v1.ControlService/Handshake"
 	// ControlServiceShutdownProcedure is the fully-qualified name of the ControlService's Shutdown RPC.
 	ControlServiceShutdownProcedure = "/pollen.control.v1.ControlService/Shutdown"
 	// ControlServiceGetBootstrapInfoProcedure is the fully-qualified name of the ControlService's
@@ -100,6 +103,12 @@ const (
 
 // ControlServiceClient is a client for the pollen.control.v1.ControlService service.
 type ControlServiceClient interface {
+	// Handshake exchanges the client and server protocol-version ranges
+	// before any functional RPC. The server only reports its own
+	// [server_min, server_max]; the client decides compatibility, so a
+	// version mismatch surfaces as an explicit "out of date" message
+	// rather than an opaque transport failure.
+	Handshake(context.Context, *connect.Request[v1.HandshakeRequest]) (*connect.Response[v1.HandshakeResponse], error)
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
 	GetBootstrapInfo(context.Context, *connect.Request[v1.GetBootstrapInfoRequest]) (*connect.Response[v1.GetBootstrapInfoResponse], error)
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
@@ -134,6 +143,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 	baseURL = strings.TrimRight(baseURL, "/")
 	controlServiceMethods := v1.File_pollen_control_v1_control_proto.Services().ByName("ControlService").Methods()
 	return &controlServiceClient{
+		handshake: connect.NewClient[v1.HandshakeRequest, v1.HandshakeResponse](
+			httpClient,
+			baseURL+ControlServiceHandshakeProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("Handshake")),
+			connect.WithClientOptions(opts...),
+		),
 		shutdown: connect.NewClient[v1.ShutdownRequest, v1.ShutdownResponse](
 			httpClient,
 			baseURL+ControlServiceShutdownProcedure,
@@ -265,6 +280,7 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 
 // controlServiceClient implements ControlServiceClient.
 type controlServiceClient struct {
+	handshake         *connect.Client[v1.HandshakeRequest, v1.HandshakeResponse]
 	shutdown          *connect.Client[v1.ShutdownRequest, v1.ShutdownResponse]
 	getBootstrapInfo  *connect.Client[v1.GetBootstrapInfoRequest, v1.GetBootstrapInfoResponse]
 	getStatus         *connect.Client[v1.GetStatusRequest, v1.GetStatusResponse]
@@ -286,6 +302,11 @@ type controlServiceClient struct {
 	unseedStatic      *connect.Client[v1.UnseedStaticRequest, v1.UnseedStaticResponse]
 	listStatic        *connect.Client[v1.ListStaticRequest, v1.ListStaticResponse]
 	inspect           *connect.Client[v1.InspectRequest, v1.InspectResponse]
+}
+
+// Handshake calls pollen.control.v1.ControlService.Handshake.
+func (c *controlServiceClient) Handshake(ctx context.Context, req *connect.Request[v1.HandshakeRequest]) (*connect.Response[v1.HandshakeResponse], error) {
+	return c.handshake.CallUnary(ctx, req)
 }
 
 // Shutdown calls pollen.control.v1.ControlService.Shutdown.
@@ -395,6 +416,12 @@ func (c *controlServiceClient) Inspect(ctx context.Context, req *connect.Request
 
 // ControlServiceHandler is an implementation of the pollen.control.v1.ControlService service.
 type ControlServiceHandler interface {
+	// Handshake exchanges the client and server protocol-version ranges
+	// before any functional RPC. The server only reports its own
+	// [server_min, server_max]; the client decides compatibility, so a
+	// version mismatch surfaces as an explicit "out of date" message
+	// rather than an opaque transport failure.
+	Handshake(context.Context, *connect.Request[v1.HandshakeRequest]) (*connect.Response[v1.HandshakeResponse], error)
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
 	GetBootstrapInfo(context.Context, *connect.Request[v1.GetBootstrapInfoRequest]) (*connect.Response[v1.GetBootstrapInfoResponse], error)
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
@@ -425,6 +452,12 @@ type ControlServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	controlServiceMethods := v1.File_pollen_control_v1_control_proto.Services().ByName("ControlService").Methods()
+	controlServiceHandshakeHandler := connect.NewUnaryHandler(
+		ControlServiceHandshakeProcedure,
+		svc.Handshake,
+		connect.WithSchema(controlServiceMethods.ByName("Handshake")),
+		connect.WithHandlerOptions(opts...),
+	)
 	controlServiceShutdownHandler := connect.NewUnaryHandler(
 		ControlServiceShutdownProcedure,
 		svc.Shutdown,
@@ -553,6 +586,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 	)
 	return "/pollen.control.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case ControlServiceHandshakeProcedure:
+			controlServiceHandshakeHandler.ServeHTTP(w, r)
 		case ControlServiceShutdownProcedure:
 			controlServiceShutdownHandler.ServeHTTP(w, r)
 		case ControlServiceGetBootstrapInfoProcedure:
@@ -603,6 +638,10 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 
 // UnimplementedControlServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedControlServiceHandler struct{}
+
+func (UnimplementedControlServiceHandler) Handshake(context.Context, *connect.Request[v1.HandshakeRequest]) (*connect.Response[v1.HandshakeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.Handshake is not implemented"))
+}
 
 func (UnimplementedControlServiceHandler) Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.Shutdown is not implemented"))

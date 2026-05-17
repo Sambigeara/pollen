@@ -13,7 +13,7 @@ import (
 )
 
 func TestBudget_ReserveAndRelease(t *testing.T) {
-	b := newBudget(1000)
+	b := newNodeMemoryGuard(1000)
 
 	require.True(t, b.Reserve("a", 400))
 	require.True(t, b.Reserve("b", 600))
@@ -24,14 +24,14 @@ func TestBudget_ReserveAndRelease(t *testing.T) {
 }
 
 func TestBudget_RefusesAtLimit(t *testing.T) {
-	b := newBudget(100)
+	b := newNodeMemoryGuard(100)
 	require.True(t, b.Reserve("a", 60))
 	require.False(t, b.Reserve("b", 60))
 	require.True(t, b.Reserve("b", 40))
 }
 
 func TestBudget_RepeatReserveIsNoop(t *testing.T) {
-	b := newBudget(100)
+	b := newNodeMemoryGuard(100)
 	require.True(t, b.Reserve("a", 60))
 	require.True(t, b.Reserve("a", 60), "repeat reservation for same hash must succeed without double-counting")
 	require.True(t, b.Reserve("b", 40))
@@ -39,14 +39,14 @@ func TestBudget_RepeatReserveIsNoop(t *testing.T) {
 }
 
 func TestBudget_ReleaseUnknownHashIsNoop(t *testing.T) {
-	b := newBudget(100)
+	b := newNodeMemoryGuard(100)
 	require.True(t, b.Reserve("a", 50))
 	b.Release("ghost")
 	require.False(t, b.Reserve("b", 60))
 }
 
 func TestBudget_ZeroTotalDisablesGate(t *testing.T) {
-	b := newBudget(0)
+	b := newNodeMemoryGuard(0)
 	require.True(t, b.Reserve("a", 1<<60))
 	require.True(t, b.Reserve("b", 1<<60))
 
@@ -60,7 +60,7 @@ func TestBudget_ConcurrentReserveRespectsLimit(t *testing.T) {
 	const each = 10
 	const goroutines = 200
 
-	b := newBudget(total)
+	b := newNodeMemoryGuard(total)
 	var wg sync.WaitGroup
 	var admitted, refused atomic.Int64
 
@@ -85,7 +85,7 @@ func TestBudget_ConcurrentReserveRespectsLimit(t *testing.T) {
 func TestBudget_ReserveCall_UsesPerSpecCap(t *testing.T) {
 	const specCap = int64(64 << 20)
 	const callSlots = 4
-	b := newBudget(replicaMemoryBytes(uint64(specCap)) + callSlots*specCap)
+	b := newNodeMemoryGuard(replicaMemoryBytes(uint64(specCap)) + callSlots*specCap)
 	require.True(t, b.Reserve("seed", replicaMemoryBytes(uint64(specCap))))
 
 	releases := make([]func(), 0, callSlots)
@@ -104,7 +104,7 @@ func TestBudget_ReserveCall_UsesPerSpecCap(t *testing.T) {
 }
 
 func TestBudget_ReserveCall_FallsBackToDefault(t *testing.T) {
-	b := newBudget(defaultReplicaMemoryBytes * 2)
+	b := newNodeMemoryGuard(defaultReplicaMemoryBytes * 2)
 
 	release, ok := b.ReserveCall("orphan")
 	require.True(t, ok)
@@ -114,7 +114,7 @@ func TestBudget_ReserveCall_FallsBackToDefault(t *testing.T) {
 }
 
 func TestBudget_ReserveCall_DoubleReleaseIsNoop(t *testing.T) {
-	b := newBudget(defaultReplicaMemoryBytes * 2)
+	b := newNodeMemoryGuard(defaultReplicaMemoryBytes * 2)
 	release, ok := b.ReserveCall("seed")
 	require.True(t, ok)
 	release()
@@ -127,7 +127,7 @@ func TestBudget_ReserveCall_ConcurrentRespectsLimit(t *testing.T) {
 	const slots = wasm.IdleCacheSize * 2
 	const specCap = int64(50)
 
-	b := newBudget(int64(slots) * specCap)
+	b := newNodeMemoryGuard(int64(slots) * specCap)
 	require.True(t, b.Reserve("seed", int64(wasm.IdleCacheSize)*specCap))
 
 	var admitted atomic.Int64
@@ -157,7 +157,7 @@ func TestBudget_ReserveCall_ConcurrentRespectsLimit(t *testing.T) {
 func TestBudget_ReserveAndCall_ShareCeiling(t *testing.T) {
 	const specCap = int64(64 << 20)
 	totalBudget := replicaMemoryBytes(uint64(specCap)) + specCap
-	b := newBudget(totalBudget)
+	b := newNodeMemoryGuard(totalBudget)
 	require.True(t, b.Reserve("seed", replicaMemoryBytes(uint64(specCap))))
 
 	release, ok := b.ReserveCall("seed")

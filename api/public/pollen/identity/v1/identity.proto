@@ -30,8 +30,8 @@ message Budget {
   uint32 max_functions = 1;
   uint32 max_blobs = 2;
   uint32 max_sites = 3;
-  uint64 max_total_bytes = 4;
-  uint64 max_traffic_bytes = 5;
+  reserved 4, 5;
+  reserved "max_total_bytes", "max_traffic_bytes";
 }
 
 message GrantClaims {

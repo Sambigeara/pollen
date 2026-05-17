@@ -352,10 +352,10 @@ func inspectTierChip(canAdmit, canPublish bool) string {
 }
 
 func inspectMembershipLine(cert *controlv1.CertInfo) string {
-	if cert.GetNotAfterUnix() == 0 {
+	if cert.GetGrantDeadlineUnix() == 0 {
 		return ""
 	}
-	exp := time.Unix(cert.GetNotAfterUnix(), 0)
+	exp := time.Unix(cert.GetGrantDeadlineUnix(), 0)
 	remaining := time.Until(exp)
 	switch {
 	case remaining <= 0 || cert.GetHealth() == controlv1.CertHealth_CERT_HEALTH_EXPIRED:

@@ -136,7 +136,7 @@ type Service struct {
 	cancel       context.CancelFunc
 	dispatcher   *dispatcher
 	backoff      *backoff
-	budget       *budget
+	memGuard     *nodeMemoryGuard
 	calls        *callTracker
 	placement    *placementLoop
 	replicaCount *replicaCountLoop
@@ -175,7 +175,7 @@ func New(self types.PeerKey, store WorkloadState, blobs blobsAPI, wasmRT WASMRun
 	s.backoff = newBackoff(backoffConfig{ttl: backoffTTL}, func(ttl time.Duration) {
 		store.SetBackoffTTL(time.Now().Add(ttl))
 	})
-	s.budget = newBudget(detectMemoryBudget())
+	s.memGuard = newNodeMemoryGuard(detectNodeMemoryCeiling())
 	s.calls = newCallTracker(callTrackerWindow, func(counts map[string]uint64) {
 		store.SetPerSeedCallCounts(counts)
 	})
@@ -204,7 +204,7 @@ func (s *Service) Start(ctx context.Context) error {
 		s.store,
 		s.manager,
 		s.blobs,
-		s.budget,
+		s.memGuard,
 		s.backoff,
 		s.gate,
 		s.log.Named("scheduler"),
@@ -284,7 +284,7 @@ func (s *Service) publishResources() {
 func (s *Service) UnseedPresigned(hash string, presignedFact *factv1.Fact) error {
 	if s.manager.IsRunning(hash) {
 		_ = s.manager.Unseed(hash)
-		s.budget.Release(hash)
+		s.memGuard.Release(hash)
 	}
 	s.store.ReleaseWorkload(hash)
 	_, err := s.store.DeleteWorkloadSpecPresigned(hash, presignedFact)
@@ -323,7 +323,7 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admission
 		if oldHash != hash {
 			if s.manager.IsRunning(oldHash) {
 				_ = s.manager.Unseed(oldHash)
-				s.budget.Release(oldHash)
+				s.memGuard.Release(oldHash)
 			}
 			s.store.ReleaseWorkload(oldHash)
 			if _, err := s.store.DeleteWorkloadSpec(oldHash); err != nil {
@@ -334,13 +334,13 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admission
 			if old.MemoryBytes != spec.MemoryBytes || old.Timeout != spec.Timeout {
 				if s.manager.IsRunning(oldHash) {
 					_ = s.manager.Unseed(oldHash)
-					s.budget.Release(oldHash)
+					s.memGuard.Release(oldHash)
 				}
 			}
 		}
 	}
 
-	if !s.budget.Reserve(hash, replicaMemoryBytes(spec.MemoryBytes)) {
+	if !s.memGuard.Reserve(hash, replicaMemoryBytes(spec.MemoryBytes)) {
 		s.backoff.SignalRefusal()
 		return newOverload(ErrOverloaded, "memory budget exhausted")
 	}
@@ -349,14 +349,14 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admission
 	gotHash, err := s.manager.Seed(s.ctx, binary, cfg)
 	alreadyRunning := errors.Is(err, ErrAlreadyRunning)
 	if err != nil && !alreadyRunning {
-		s.budget.Release(hash)
+		s.memGuard.Release(hash)
 		return err
 	}
 	if gotHash != hash {
 		if !alreadyRunning {
 			_ = s.manager.Unseed(gotHash)
 		}
-		s.budget.Release(hash)
+		s.memGuard.Release(hash)
 		return fmt.Errorf("hash mismatch: expected %s, got %s", hash, gotHash)
 	}
 	if spec.MinReplicas == 0 {
@@ -369,7 +369,7 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admission
 		if !alreadyRunning {
 			_ = s.manager.Unseed(hash)
 		}
-		s.budget.Release(hash)
+		s.memGuard.Release(hash)
 		return err
 	}
 	return nil
@@ -395,7 +395,7 @@ func (s *Service) Unseed(hash string) error {
 		if err := s.manager.Unseed(hash); err != nil {
 			return err
 		}
-		s.budget.Release(hash)
+		s.memGuard.Release(hash)
 	}
 	s.store.ReleaseWorkload(hash)
 	if _, err := s.store.DeleteWorkloadSpec(hash); err != nil {
@@ -500,12 +500,12 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 }
 
 // callerGrant resolves the grant authorising the current call. For the
-// first hop, control RPCs inject the caller identity via auth.RPCCaller;
-// for downstream hops (wasm-to-wasm or relayed mesh streams) the grant
-// lives in the gossiped snapshot keyed on peerKey.
+// first hop, control RPCs inject the caller as a resolved
+// identity.Principal; for downstream hops (wasm-to-wasm or relayed mesh
+// streams) the grant lives in the gossiped snapshot keyed on peerKey.
 func (s *Service) callerGrant(ctx context.Context, peerKey types.PeerKey) *identityv1.Grant {
-	if rpc, ok := auth.RPCCallerFromContext(ctx); ok && rpc.Grant() != nil {
-		return rpc.Grant()
+	if p, ok := auth.CallerFromContext(ctx); ok && p.Grant != nil {
+		return p.Grant
 	}
 	if s.gate == nil {
 		return nil
@@ -575,7 +575,7 @@ func preferStructured(first, second error) error {
 }
 
 func (s *Service) callLocal(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
-	release, ok := s.budget.ReserveCall(hash)
+	release, ok := s.memGuard.ReserveCall(hash)
 	if !ok {
 		s.backoff.SignalRefusal()
 		return nil, newOverload(ErrOverloaded, "node memory budget exhausted")

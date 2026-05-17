@@ -867,7 +867,7 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 	var latest time.Time
 	var health controlv1.CertHealth
 	for _, c := range st.GetCertificates() {
-		if t := time.Unix(c.GetNotAfterUnix(), 0); t.After(latest) {
+		if t := time.Unix(c.GetGrantDeadlineUnix(), 0); t.After(latest) {
 			latest, health = t, c.GetHealth()
 		}
 	}
@@ -878,7 +878,7 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 	remaining := time.Until(latest.Add(certExpirySkew))
 	var latestDeadline int64
 	for _, c := range st.GetCertificates() {
-		if dl := c.GetAccessDeadlineUnix(); dl > latestDeadline {
+		if dl := c.GetGrantDeadlineUnix(); dl > latestDeadline {
 			latestDeadline = dl
 		}
 	}
@@ -898,9 +898,7 @@ func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 
 	switch health { //nolint:exhaustive
 	case controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + " — auto-renewal failed — rejoin the cluster or contact a cluster admin")
-	case controlv1.CertHealth_CERT_HEALTH_RENEWING:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + " — auto-renewal in progress")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + " — rejoin the cluster or contact a cluster admin")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg)
 	}
