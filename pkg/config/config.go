@@ -30,9 +30,8 @@ const (
 )
 
 const (
-	DefaultMembershipTTL   = 4 * time.Hour
-	DefaultTLSIdentityTTL  = 4 * time.Hour
-	DefaultReconnectWindow = 7 * 24 * time.Hour
+	DefaultMembershipTTL  = 4 * time.Hour
+	DefaultTLSIdentityTTL = 4 * time.Hour
 )
 
 type Service struct {

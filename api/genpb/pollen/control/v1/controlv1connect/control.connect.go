@@ -79,6 +79,9 @@ const (
 	// ControlServiceIssueGrantProcedure is the fully-qualified name of the ControlService's IssueGrant
 	// RPC.
 	ControlServiceIssueGrantProcedure = "/pollen.control.v1.ControlService/IssueGrant"
+	// ControlServiceRenewGrantProcedure is the fully-qualified name of the ControlService's RenewGrant
+	// RPC.
+	ControlServiceRenewGrantProcedure = "/pollen.control.v1.ControlService/RenewGrant"
 	// ControlServiceFetchBlobProcedure is the fully-qualified name of the ControlService's FetchBlob
 	// RPC.
 	ControlServiceFetchBlobProcedure = "/pollen.control.v1.ControlService/FetchBlob"
@@ -123,6 +126,7 @@ type ControlServiceClient interface {
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
 	IssueGrant(context.Context, *connect.Request[v1.IssueGrantRequest]) (*connect.Response[v1.IssueGrantResponse], error)
+	RenewGrant(context.Context, *connect.Request[v1.RenewGrantRequest]) (*connect.Response[v1.RenewGrantResponse], error)
 	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.ServerStreamForClient[v1.FetchBlobResponse], error)
 	UploadBlob(context.Context) *connect.ClientStreamForClient[v1.UploadBlobRequest, v1.UploadBlobResponse]
 	RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error)
@@ -233,6 +237,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("IssueGrant")),
 			connect.WithClientOptions(opts...),
 		),
+		renewGrant: connect.NewClient[v1.RenewGrantRequest, v1.RenewGrantResponse](
+			httpClient,
+			baseURL+ControlServiceRenewGrantProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("RenewGrant")),
+			connect.WithClientOptions(opts...),
+		),
 		fetchBlob: connect.NewClient[v1.FetchBlobRequest, v1.FetchBlobResponse](
 			httpClient,
 			baseURL+ControlServiceFetchBlobProcedure,
@@ -295,6 +305,7 @@ type controlServiceClient struct {
 	unseedWorkload    *connect.Client[v1.UnseedWorkloadRequest, v1.UnseedWorkloadResponse]
 	callWorkload      *connect.Client[v1.CallWorkloadRequest, v1.CallWorkloadResponse]
 	issueGrant        *connect.Client[v1.IssueGrantRequest, v1.IssueGrantResponse]
+	renewGrant        *connect.Client[v1.RenewGrantRequest, v1.RenewGrantResponse]
 	fetchBlob         *connect.Client[v1.FetchBlobRequest, v1.FetchBlobResponse]
 	uploadBlob        *connect.Client[v1.UploadBlobRequest, v1.UploadBlobResponse]
 	removeBlob        *connect.Client[v1.RemoveBlobRequest, v1.RemoveBlobResponse]
@@ -379,6 +390,11 @@ func (c *controlServiceClient) IssueGrant(ctx context.Context, req *connect.Requ
 	return c.issueGrant.CallUnary(ctx, req)
 }
 
+// RenewGrant calls pollen.control.v1.ControlService.RenewGrant.
+func (c *controlServiceClient) RenewGrant(ctx context.Context, req *connect.Request[v1.RenewGrantRequest]) (*connect.Response[v1.RenewGrantResponse], error) {
+	return c.renewGrant.CallUnary(ctx, req)
+}
+
 // FetchBlob calls pollen.control.v1.ControlService.FetchBlob.
 func (c *controlServiceClient) FetchBlob(ctx context.Context, req *connect.Request[v1.FetchBlobRequest]) (*connect.ServerStreamForClient[v1.FetchBlobResponse], error) {
 	return c.fetchBlob.CallServerStream(ctx, req)
@@ -436,6 +452,7 @@ type ControlServiceHandler interface {
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
 	IssueGrant(context.Context, *connect.Request[v1.IssueGrantRequest]) (*connect.Response[v1.IssueGrantResponse], error)
+	RenewGrant(context.Context, *connect.Request[v1.RenewGrantRequest]) (*connect.Response[v1.RenewGrantResponse], error)
 	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest], *connect.ServerStream[v1.FetchBlobResponse]) error
 	UploadBlob(context.Context, *connect.ClientStream[v1.UploadBlobRequest]) (*connect.Response[v1.UploadBlobResponse], error)
 	RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error)
@@ -542,6 +559,12 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("IssueGrant")),
 		connect.WithHandlerOptions(opts...),
 	)
+	controlServiceRenewGrantHandler := connect.NewUnaryHandler(
+		ControlServiceRenewGrantProcedure,
+		svc.RenewGrant,
+		connect.WithSchema(controlServiceMethods.ByName("RenewGrant")),
+		connect.WithHandlerOptions(opts...),
+	)
 	controlServiceFetchBlobHandler := connect.NewServerStreamHandler(
 		ControlServiceFetchBlobProcedure,
 		svc.FetchBlob,
@@ -616,6 +639,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceCallWorkloadHandler.ServeHTTP(w, r)
 		case ControlServiceIssueGrantProcedure:
 			controlServiceIssueGrantHandler.ServeHTTP(w, r)
+		case ControlServiceRenewGrantProcedure:
+			controlServiceRenewGrantHandler.ServeHTTP(w, r)
 		case ControlServiceFetchBlobProcedure:
 			controlServiceFetchBlobHandler.ServeHTTP(w, r)
 		case ControlServiceUploadBlobProcedure:
@@ -697,6 +722,10 @@ func (UnimplementedControlServiceHandler) CallWorkload(context.Context, *connect
 
 func (UnimplementedControlServiceHandler) IssueGrant(context.Context, *connect.Request[v1.IssueGrantRequest]) (*connect.Response[v1.IssueGrantResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.IssueGrant is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) RenewGrant(context.Context, *connect.Request[v1.RenewGrantRequest]) (*connect.Response[v1.RenewGrantResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.RenewGrant is not implemented"))
 }
 
 func (UnimplementedControlServiceHandler) FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest], *connect.ServerStream[v1.FetchBlobResponse]) error {

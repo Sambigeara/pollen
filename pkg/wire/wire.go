@@ -5,15 +5,21 @@ package wire
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"time"
 
 	"connectrpc.com/connect"
+	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	"github.com/sambigeara/pollen/api/genpb/pollen/control/v1/controlv1connect"
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/transport"
+	"golang.org/x/net/http2"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 )
@@ -105,15 +111,26 @@ func ClientTLSConfig(dir string) (*tls.Config, error) {
 	if creds == nil || creds.Grant() == nil {
 		return nil, errors.New("no node credentials in this context; run `pln join` first")
 	}
-	session, err := creds.EnsureFreshSession(time.Now(), clientIdentityTTL, clientIdentityTTL/2) //nolint:mnd
-	if err != nil {
-		return nil, fmt.Errorf("mint session: %w", err)
-	}
 	priv, _, err := identity.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return nil, fmt.Errorf("load identity key: %w", err)
 	}
-	clientCert, err := transport.GenerateIdentityCert(priv, session, clientIdentityTTL)
+	return ClientTLSConfigFromCreds(creds, priv)
+}
+
+// ClientTLSConfigFromCreds builds the same client TLS config from an
+// in-memory credentials handle and signing key, for a long-lived
+// process (the daemon) that already holds live credentials and must not
+// re-read them from disk on every dial.
+func ClientTLSConfigFromCreds(creds *identity.Credentials, signPriv ed25519.PrivateKey) (*tls.Config, error) {
+	if creds == nil || creds.Grant() == nil {
+		return nil, errors.New("no node credentials")
+	}
+	session, err := creds.EnsureFreshSession(time.Now(), clientIdentityTTL, clientIdentityTTL/2) //nolint:mnd
+	if err != nil {
+		return nil, fmt.Errorf("mint session: %w", err)
+	}
+	clientCert, err := transport.GenerateIdentityCert(signPriv, session, clientIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate client identity cert: %w", err)
 	}
@@ -126,6 +143,30 @@ func ClientTLSConfig(dir string) (*tls.Config, error) {
 		// server's grant chain + horizon are still enforced.
 		VerifyPeerCertificate: transport.VerifyDelegatedCounterparty(creds.RootPub(), nil),
 	}, nil
+}
+
+// RenewGrantAt dials an admin-capable peer's control endpoint with the
+// caller's own live credentials and asks it to re-mint the caller's
+// grant. The server authenticates the caller from the mTLS session and
+// enforces chain + denylist before re-issuing, so this is safe to call
+// against any reachable delegating node, not only the original issuer.
+func RenewGrantAt(ctx context.Context, addr string, creds *identity.Credentials, signPriv ed25519.PrivateKey) (*identityv1.Grant, error) {
+	tlsCfg, err := ClientTLSConfigFromCreds(creds, signPriv)
+	if err != nil {
+		return nil, err
+	}
+	httpClient := &http.Client{Transport: &http2.Transport{
+		AllowHTTP: true,
+		DialTLS: func(network, a string, _ *tls.Config) (net.Conn, error) {
+			return (&tls.Dialer{Config: tlsCfg}).DialContext(ctx, network, a)
+		},
+	}}
+	client := controlv1connect.NewControlServiceClient(httpClient, "https://"+addr, connect.WithGRPC())
+	resp, err := client.RenewGrant(ctx, connect.NewRequest(&controlv1.RenewGrantRequest{}))
+	if err != nil {
+		return nil, fmt.Errorf("renew grant rpc: %w", err)
+	}
+	return resp.Msg.GetGrant(), nil
 }
 
 // ServerTLSConfig builds the TLS config for the control RPC listener.

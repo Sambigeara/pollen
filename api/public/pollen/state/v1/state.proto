@@ -179,6 +179,13 @@ message NodeNameChange {
   }];
 }
 
+// ControlAddrChange gossips the node's reachable control-plane TLS
+// endpoint so a delegated peer can find an admin to renew its grant
+// against without an operator-supplied address.
+message ControlAddrChange {
+  string addr = 1;
+}
+
 message BackoffTTLChange {
   int64 expires_at_unix_ms = 1;
 }
@@ -219,6 +226,7 @@ message GossipEvent {
     PerSeedCallCountsChange per_seed_call_counts = 34;
     GrantChange grant = 35;
     SpecChange spec_change = 36;
+    ControlAddrChange control_addr = 38;
     // blob_wrapping gossips a sealed DEK addressed to one entitled
     // host. Wrappings are append-only on the wire: the admission
     // filter rejects any event with GossipEvent.deleted set, because

@@ -63,6 +63,7 @@ type Metrics struct {
 type MembershipControl interface {
 	DenyPeer(key types.PeerKey) error
 	IssueGrant(ctx context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget) (*identityv1.Grant, error)
+	RenewalFailing() bool
 }
 
 type PlacementControl interface {
@@ -108,7 +109,6 @@ type TransportInfo interface {
 	PeerStateCounts() transport.PeerStateCounts
 	GetActivePeerAddress(types.PeerKey) (*net.UDPAddr, bool)
 	PeerRTT(types.PeerKey) (time.Duration, bool)
-	ReconnectWindowDuration() time.Duration
 }
 
 type MetricsSource interface {
@@ -412,7 +412,7 @@ func (s *Service) GetStatus(ctx context.Context, _ *controlv1.GetStatusRequest) 
 	operator := s.operatorRequest(ctx, lens)
 
 	out := &controlv1.GetStatusResponse{
-		Degraded:      s.isDegraded(time.Now()),
+		Degraded:      s.isDegraded(),
 		Certificates:  s.buildCertificates(ctx, snap, lens),
 		Self:          s.buildSelfSummary(snap, lens, operator, connections),
 		Nodes:         s.buildNodeSummaries(snap, scoped, lens, operator, connections),
@@ -672,17 +672,20 @@ func natTypeLabel(t nat.Type) string {
 	}
 }
 
-func (s *Service) isDegraded(now time.Time) bool {
-	if s.creds == nil || s.creds.Grant() == nil || s.transport == nil {
+// isDegraded reports the truthful pre-shutdown state: the node holds a
+// horizon-bound grant and its most recent proactive renewal attempt
+// failed, so it is acting before a hard stop. It is never a
+// post-deadline grace: once the deadline passes membership shuts the
+// node down, so there is no live post-deadline window to report.
+// Admin/root grants carry no horizon and are never degraded.
+func (s *Service) isDegraded() bool {
+	if s.creds == nil || s.creds.Grant() == nil {
 		return false
 	}
-	dl := s.creds.Grant().GetClaims().GetGrantDeadlineUnix()
-	if dl == 0 {
+	if s.creds.Grant().GetClaims().GetGrantDeadlineUnix() == 0 {
 		return false
 	}
-	expiry := time.Unix(dl, 0)
-	window := s.transport.ReconnectWindowDuration()
-	return now.After(expiry) && now.Before(expiry.Add(window))
+	return s.membership.RenewalFailing()
 }
 
 // buildCertificates reports the credential the caller cares about. An
@@ -1108,6 +1111,35 @@ func (s *Service) IssueGrant(ctx context.Context, req *controlv1.IssueGrantReque
 		return nil, s.fail(err, "issue grant failed")
 	}
 	return &controlv1.IssueGrantResponse{Grant: grant}, nil
+}
+
+// RenewGrant re-mints the caller's own grant with a fresh horizon. It
+// is deliberately distinct from IssueGrant: the caller renews itself
+// and need not hold delegate; the serving node supplies the delegating
+// authority. The mTLS handshake has already verified the caller's
+// session, its chain to root and the denylist before this handler
+// runs, so a revoked or expired key cannot reach here. The re-mint
+// copies the caller's current capabilities and budget verbatim;
+// applyParent on the serving node's chain reclamps them, so renewal
+// can never escalate. Grants with no horizon (admin/root) are refused:
+// they have nothing to renew and re-parenting them would only obscure
+// their chain.
+func (s *Service) RenewGrant(ctx context.Context, _ *controlv1.RenewGrantRequest) (*controlv1.RenewGrantResponse, error) {
+	caller, ok := auth.CallerFromContext(ctx)
+	if !ok || !caller.Valid() {
+		return nil, status.Error(codes.Unauthenticated, "no verified caller identity")
+	}
+	if caller.Grant.GetClaims().GetGrantDeadlineUnix() == 0 {
+		return nil, status.Error(codes.FailedPrecondition, "grant has no renewal horizon")
+	}
+	grant, err := s.membership.IssueGrant(ctx, caller.Subject(), caller.Capabilities, caller.Budget)
+	if err != nil {
+		if errors.Is(err, membership.ErrNotDelegating) {
+			return nil, status.Error(codes.FailedPrecondition, "this node has no delegation authority; target a delegating node")
+		}
+		return nil, s.fail(err, "renew grant failed")
+	}
+	return &controlv1.RenewGrantResponse{Grant: grant}, nil
 }
 
 // enforceGrantCeiling rejects a requested capability set that exceeds

@@ -101,7 +101,6 @@ type Supervisor struct {
 	signPriv         ed25519.PrivateKey
 	wg               sync.WaitGroup
 	peerTickInterval time.Duration
-	reconnectWindow  time.Duration
 	membershipTTL    time.Duration
 	localID          types.PeerKey
 	useHMACNearest   bool
@@ -173,6 +172,9 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 	}
 	if opts.NodeName != "" {
 		stateStore.SetNodeName(opts.NodeName)
+	}
+	if opts.ControlTLSAddr != "" {
+		stateStore.SetControlAddr(opts.ControlTLSAddr)
 	}
 
 	if err := initLocalAddresses(stateStore, opts); err != nil {
@@ -252,7 +254,6 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 		socketPath:       opts.SocketPath,
 		peerTickInterval: opts.PeerTickInterval,
 		peerCache:        peerCache,
-		reconnectWindow:  config.DefaultReconnectWindow,
 		punchSem:         make(chan struct{}, maxConcurrentPunches),
 		ready:            make(chan struct{}),
 		shutdownCh:       shutdownCh,
@@ -308,7 +309,6 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 			Port:             opts.ListenPort,
 			TLSIdentityTTL:   config.DefaultTLSIdentityTTL,
 			MembershipTTL:    config.DefaultMembershipTTL,
-			ReconnectWindow:  config.DefaultReconnectWindow,
 			GossipInterval:   opts.GossipInterval,
 			GossipJitter:     gossipJitter,
 			PeerTickInterval: opts.PeerTickInterval,
@@ -864,7 +864,7 @@ func (n *Supervisor) PeerStateCounts() transport.PeerStateCounts { return n.mesh
 func (n *Supervisor) GetActivePeerAddress(pk types.PeerKey) (*net.UDPAddr, bool) {
 	return n.mesh.GetActivePeerAddress(pk)
 }
-func (n *Supervisor) ReconnectWindowDuration() time.Duration { return n.reconnectWindow }
+
 func (n *Supervisor) PeerRTT(pk types.PeerKey) (time.Duration, bool) {
 	conn, ok := n.mesh.GetConn(pk)
 	if !ok {

@@ -1032,20 +1032,47 @@ func (s *store) SetStaticCapable() {
 	})
 }
 
-func (s *store) SetNodeName(name string) {
+// setLocalStringAttr is the shared tombstone-on-empty / dedupe / upsert
+// path for single-string per-node attributes. currentValue reads the
+// value from an existing event for the dedupe check; mk builds a fresh
+// gossip event for a non-empty value (the helper flips Deleted for the
+// tombstone case).
+func (s *store) setLocalStringAttr(
+	kind attrKind,
+	value string,
+	currentValue func(*statev1.GossipEvent) string,
+	mk func(string) *statev1.GossipEvent,
+) {
 	s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		key := attrKey{kind: attrNodeName}
-		if name == "" {
-			if ev, ok := rec.log[key]; !ok || ev.Deleted {
+		key := attrKey{kind: kind}
+		if value == "" {
+			ev, ok := rec.log[key]
+			if !ok || ev.Deleted {
 				return nil, nil
 			}
-			change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_NodeName{NodeName: &statev1.NodeNameChange{Name: name}}}
-			return []*statev1.GossipEvent{change}, nil
+			tomb := mk(value)
+			tomb.Deleted = true
+			return []*statev1.GossipEvent{tomb}, nil
 		}
-		if ev, ok := rec.log[key]; ok && !ev.Deleted && ev.GetNodeName().Name == name {
+		if ev, ok := rec.log[key]; ok && !ev.Deleted && currentValue(ev) == value {
 			return nil, nil
 		}
-		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_NodeName{NodeName: &statev1.NodeNameChange{Name: name}}}
-		return []*statev1.GossipEvent{change}, nil
+		return []*statev1.GossipEvent{mk(value)}, nil
 	})
+}
+
+func (s *store) SetNodeName(name string) {
+	s.setLocalStringAttr(attrNodeName, name,
+		func(ev *statev1.GossipEvent) string { return ev.GetNodeName().GetName() },
+		func(v string) *statev1.GossipEvent {
+			return &statev1.GossipEvent{Change: &statev1.GossipEvent_NodeName{NodeName: &statev1.NodeNameChange{Name: v}}}
+		})
+}
+
+func (s *store) SetControlAddr(addr string) {
+	s.setLocalStringAttr(attrControlAddr, addr,
+		func(ev *statev1.GossipEvent) string { return ev.GetControlAddr().GetAddr() },
+		func(v string) *statev1.GossipEvent {
+			return &statev1.GossipEvent{Change: &statev1.GossipEvent_ControlAddr{ControlAddr: &statev1.ControlAddrChange{Addr: v}}}
+		})
 }

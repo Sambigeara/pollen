@@ -61,6 +61,7 @@ type MembershipAPI interface {
 
 	DenyPeer(key types.PeerKey) error
 	IssueGrant(ctx context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget) (*identityv1.Grant, error)
+	RenewalFailing() bool
 
 	HandleDigestStream(ctx context.Context, stream transport.Stream, peer types.PeerKey)
 
@@ -143,7 +144,6 @@ type Config struct {
 	SignPriv         ed25519.PrivateKey
 	TLSIdentityTTL   time.Duration
 	MembershipTTL    time.Duration
-	ReconnectWindow  time.Duration
 	GossipInterval   time.Duration
 	GossipJitter     float64
 	PeerTickInterval time.Duration
@@ -156,40 +156,42 @@ type sentAddr struct {
 }
 
 type Service struct {
-	tracer            trace.Tracer
+	renewAttemptedAt  time.Time
+	routedSender      RoutedSender
 	mesh              Network
 	streams           StreamOpener
 	rtt               RTTSource
 	peerAddrs         PeerAddressSource
 	sessionCloser     PeerSessionCloser
 	store             ClusterState
-	lastSentAddr      map[types.PeerKey]sentAddr
-	peerConnectTime   map[types.PeerKey]time.Time
+	renewErr          error
+	tracer            trace.Tracer
 	natDetector       *nat.Detector
-	creds             *identity.Credentials
-	nodeMetrics       *metrics.NodeMetrics
+	datagramHandler   func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope)
 	smoothedErr       *metrics.EWMA
 	log               *zap.SugaredLogger
 	cancel            context.CancelFunc
 	events            chan state.Event
 	lastEagerSync     map[types.PeerKey]time.Time
 	shutdownCh        chan<- struct{}
-	routedSender      RoutedSender
-	datagramHandler   func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope)
+	creds             *identity.Credentials
+	peerConnectTime   map[types.PeerKey]time.Time
+	lastSentAddr      map[types.PeerKey]sentAddr
+	nodeMetrics       *metrics.NodeMetrics
 	pollenDir         string
-	advertisedIPs     []string
 	signPriv          ed25519.PrivateKey
+	advertisedIPs     []string
 	localCoord        coords.Coord
 	wg                sync.WaitGroup
 	port              int
-	gossipInterval    time.Duration
-	eagerSyncs        atomic.Int64
 	gossipJitter      float64
 	membershipTTL     time.Duration
 	peerTickInterval  time.Duration
 	vivaldiSamples    atomic.Int64
 	localCoordErr     float64
 	eagerSyncFailures atomic.Int64
+	eagerSyncs        atomic.Int64
+	gossipInterval    time.Duration
 	stopOnce          sync.Once
 	mu                sync.Mutex
 	localID           types.PeerKey
@@ -463,7 +465,7 @@ func (s *Service) runGrantCheckTicker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if s.checkGrantExpiry() {
+			if s.grantMaintenanceTick(ctx) {
 				if s.shutdownCh != nil {
 					s.shutdownCh <- struct{}{}
 				}

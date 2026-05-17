@@ -111,6 +111,7 @@ type StateStore interface {
 	ClearAdmin()
 	SetStaticCapable()
 	SetNodeName(name string)
+	SetControlAddr(addr string)
 	SetLocalGrant(grant *identityv1.Grant, subjectSig []byte) []Event
 	SetLocalSigner(signer LocalSigner)
 	SetMutationValidator(v MutationValidator)

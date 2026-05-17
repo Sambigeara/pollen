@@ -35,6 +35,7 @@ service ControlService {
   rpc UnseedWorkload(UnseedWorkloadRequest) returns (UnseedWorkloadResponse);
   rpc CallWorkload(CallWorkloadRequest) returns (CallWorkloadResponse);
   rpc IssueGrant(IssueGrantRequest) returns (IssueGrantResponse);
+  rpc RenewGrant(RenewGrantRequest) returns (RenewGrantResponse);
   rpc FetchBlob(FetchBlobRequest) returns (stream FetchBlobResponse);
   rpc UploadBlob(stream UploadBlobRequest) returns (UploadBlobResponse);
   rpc RemoveBlob(RemoveBlobRequest) returns (RemoveBlobResponse);
@@ -374,6 +375,16 @@ message IssueGrantRequest {
 message IssueGrantResponse {
   // grant is the newly minted child grant. The caller persists it and
   // mints its own sessions locally; no renewal round-trip exists.
+  pollen.identity.v1.Grant grant = 1;
+}
+
+// RenewGrant carries nothing: the authenticated session already proves
+// which subject is asking, so the request body is empty by design.
+message RenewGrantRequest {}
+
+message RenewGrantResponse {
+  // grant is the caller's own grant re-minted with a fresh horizon. The
+  // caller hot-swaps it locally and re-gossips; no session round-trip.
   pollen.identity.v1.Grant grant = 1;
 }
 
