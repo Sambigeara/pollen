@@ -113,6 +113,7 @@ type StateStore interface {
 	SetNodeName(name string)
 	SetControlAddr(addr string)
 	SetLocalGrant(grant *identityv1.Grant, subjectSig []byte) []Event
+	RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte) []Event
 	SetLocalSigner(signer LocalSigner)
 	SetMutationValidator(v MutationValidator)
 	ExportLastAddrs() map[types.PeerKey]string

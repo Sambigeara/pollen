@@ -45,7 +45,7 @@ func checkCount(kind string, held map[string]struct{}, name string, limit uint32
 		return nil
 	}
 	if len(held)+1 > int(limit) {
-		return fmt.Errorf("admission: %s budget exhausted: authority holds %d, limit %d", kind, len(held), limit)
+		return fmt.Errorf("%s budget exhausted: authority holds %d, limit %d", kind, len(held), limit)
 	}
 	return nil
 }

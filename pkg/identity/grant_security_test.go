@@ -165,6 +165,48 @@ func TestForgedDepthBudgetRejected(t *testing.T) {
 	require.Contains(t, chk.Reason, "max_depth")
 }
 
+// TestForgedBudgetRejected proves a per-Principal count budget is a real
+// chain constraint enforced at verification, not just an issuance
+// courtesy: a holder of a budget-limited grant can sign a child proto
+// with a fatter budget directly (bypassing applyParent), but the chain
+// fails CheckGrant. Issuance also rejects the same attempt early.
+func TestForgedBudgetRejected(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := kp(t)
+	mPub, mPriv := kp(t)
+
+	// M may publish at most 5 functions.
+	mGrant, err := IssueGrant(rootPriv, nil, mPub,
+		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 5, Publish: &identityv1.PublishCapability{Functions: true}},
+		&identityv1.Budget{MaxFunctions: 5}, now.Add(-time.Hour), now.Add(30*24*time.Hour))
+	require.NoError(t, err)
+
+	childCaps := &identityv1.Capabilities{Publish: &identityv1.PublishCapability{Functions: true}}
+
+	// Within budget: issues and verifies.
+	okPub, _ := kp(t)
+	ok, err := IssueGrant(mPriv, []*identityv1.Grant{mGrant}, okPub,
+		childCaps, &identityv1.Budget{MaxFunctions: 3}, now, now.Add(24*time.Hour))
+	require.NoError(t, err)
+	require.Equal(t, GrantStatusOK, CheckGrant(ok, rootPub, now, nil, nil).Status)
+
+	// Issuance rejects a child that asks for more than M holds.
+	fatPub, _ := kp(t)
+	_, err = IssueGrant(mPriv, []*identityv1.Grant{mGrant}, fatPub,
+		childCaps, &identityv1.Budget{MaxFunctions: 100}, now, now.Add(24*time.Hour))
+	require.ErrorContains(t, err, "child budget exceeds parent: functions")
+
+	// Forge it directly with signGrant, bypassing applyParent. Every
+	// signature is valid and the chain anchors at root, but verification
+	// is the authority boundary and rejects the budget escalation.
+	forged, err := signGrant(mPriv, []*identityv1.Grant{mGrant}, fatPub,
+		childCaps, &identityv1.Budget{MaxFunctions: 100}, now, now.Add(24*time.Hour))
+	require.NoError(t, err)
+	chk := CheckGrant(forged, rootPub, now, nil, nil)
+	require.Equal(t, GrantStatusInvalidChain, chk.Status, chk.Reason)
+	require.Contains(t, chk.Reason, "child budget exceeds parent")
+}
+
 func TestOverDeepChainRejected(t *testing.T) {
 	now := time.Now()
 	rootPub, rootPriv := kp(t)

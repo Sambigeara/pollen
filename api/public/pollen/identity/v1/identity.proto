@@ -60,6 +60,11 @@ message SessionClaims {
 message Session {
   SessionClaims claims = 1 [(buf.validate.field).required = true];
   bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
+  // subject_signature is the grant-subject proof-of-possession (over the
+  // embedded grant's claims, identity.SignGrantSubject shape) the serving
+  // node relays into cluster state so a daemonless wire publisher's grant
+  // can pass the same isAcceptableGrantEvent gate a gossiped grant must.
+  bytes subject_signature = 3 [(buf.validate.field).bytes = {len: 64}];
 }
 
 message GrantTokenClaims {

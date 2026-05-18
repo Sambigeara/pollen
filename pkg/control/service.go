@@ -26,6 +26,7 @@ import (
 	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/blobs"
 	"github.com/sambigeara/pollen/pkg/identity"
@@ -63,6 +64,7 @@ type Metrics struct {
 type MembershipControl interface {
 	DenyPeer(key types.PeerKey) error
 	IssueGrant(ctx context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget) (*identityv1.Grant, error)
+	RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte)
 	RenewalFailing() bool
 }
 
@@ -984,20 +986,37 @@ func (s *Service) UnregisterService(ctx context.Context, req *controlv1.Unregist
 	return &controlv1.UnregisterServiceResponse{}, nil
 }
 
-// authorisePresignedTombstone validates that a presigned tombstone
-// comes from the caller's grant and carries Deleted=true. Shared shape
-// across UnseedWorkload/UnseedStatic/RemoveBlob/UnregisterService.
-func (s *Service) authorisePresignedTombstone(ctx context.Context, presigned *factv1.Fact) error {
+// requirePresignedPublisher authenticates the wire caller behind a
+// presigned Fact, enforces that the Fact's authority is the caller, and
+// registers the caller's grant into cluster state so cluster-scoped
+// admission resolves the authority on every node: a wire publisher runs
+// no daemon to gossip its own grant, and the relayed Fact is admitted
+// on peers that never saw the caller's session. The store enforces the
+// same proof-of-possession gate a gossiped grant clears. Shared by
+// every presigned publish and tombstone entry point.
+func (s *Service) requirePresignedPublisher(ctx context.Context, presigned *factv1.Fact) error {
 	caller, ok := auth.CallerFromContext(ctx)
 	if !ok {
-		return status.Error(codes.Unauthenticated, "caller grant required for presigned tombstone")
+		return status.Error(codes.Unauthenticated, "caller cert required for presigned fact")
+	}
+	if types.PeerKeyFromBytes(presigned.GetAuthorityPub()) != caller.Subject() {
+		return status.Error(codes.PermissionDenied, "presigned fact authority must match caller cert")
+	}
+	if grant, subjectSig := wire.CallerCredentialFromContext(ctx); grant != nil {
+		s.membership.RegisterPeerGrant(caller.Subject(), grant, subjectSig)
+	}
+	return nil
+}
+
+// authorisePresignedTombstone authenticates the caller behind a
+// presigned tombstone and enforces the Deleted=true invariant. Shared
+// across UnseedWorkload/UnseedStatic/RemoveBlob/UnregisterService.
+func (s *Service) authorisePresignedTombstone(ctx context.Context, presigned *factv1.Fact) error {
+	if err := s.requirePresignedPublisher(ctx, presigned); err != nil {
+		return err
 	}
 	if !presigned.GetDeleted() {
 		return status.Error(codes.InvalidArgument, "presigned tombstone must have Deleted=true")
-	}
-	publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
-	if publisher != caller.Subject() {
-		return status.Error(codes.PermissionDenied, "pre_signed_fact authority must match caller grant")
 	}
 	return nil
 }
@@ -1326,13 +1345,8 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 }
 
 func (s *Service) seedWorkloadPresigned(ctx context.Context, wasmBytes []byte, spec state.WorkloadSpec, presigned *factv1.Fact) error {
-	caller, ok := auth.CallerFromContext(ctx)
-	if !ok {
-		return status.Error(codes.Unauthenticated, "caller cert required for presigned spec")
-	}
-	publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
-	if publisher != caller.Subject() {
-		return status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
+	if err := s.requirePresignedPublisher(ctx, presigned); err != nil {
+		return err
 	}
 	if err := s.placement.SeedPresigned(wasmBytes, spec, presigned); err != nil {
 		return s.fail(err, "failed to seed workload")
@@ -1443,14 +1457,12 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 func (s *Service) publishUploadedBlob(hash, name string, header *controlv1.UploadBlobHeader) error {
 	if presigned := header.GetPreSignedFact(); presigned != nil {
 		if err := s.blobs.PublishPresigned(hash, name, presigned); err != nil {
-			s.log.Warnw("publish blob (presigned) failed", "hash", types.ShortHash(hash), "name", name, "err", err)
-			return status.Error(codes.Internal, "publish blob")
+			return s.fail(err, "publish blob", "hash", types.ShortHash(hash), "name", name)
 		}
 		return nil
 	}
 	if err := s.blobs.Publish(hash, name, header.GetPolicy()); err != nil {
-		s.log.Warnw("publish blob failed", "hash", types.ShortHash(hash), "name", name, "err", err)
-		return status.Error(codes.Internal, "publish blob")
+		return s.fail(err, "publish blob", "hash", types.ShortHash(hash), "name", name)
 	}
 	return nil
 }
@@ -1465,14 +1477,7 @@ func (s *Service) authoriseBlobUpload(ctx context.Context, header *controlv1.Upl
 	caller, hasCaller := auth.CallerFromContext(ctx)
 	presigned := header.GetPreSignedFact()
 	if presigned != nil {
-		if !hasCaller {
-			return status.Error(codes.Unauthenticated, "caller cert required for presigned spec")
-		}
-		publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
-		if publisher != caller.Subject() {
-			return status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
-		}
-		return nil
+		return s.requirePresignedPublisher(ctx, presigned)
 	}
 	if hasCaller && caller.Subject() != s.localPeerKey() {
 		if header.GetName() != "" || header.GetAnchor() {
@@ -1534,18 +1539,13 @@ func (s *Service) SeedStatic(ctx context.Context, req *controlv1.SeedStaticReque
 }
 
 func (s *Service) seedStaticPresigned(ctx context.Context, req *controlv1.SeedStaticRequest, presigned *factv1.Fact) (*controlv1.SeedStaticResponse, error) {
-	caller, ok := auth.CallerFromContext(ctx)
-	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "caller cert required for presigned spec")
-	}
-	publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
-	if publisher != caller.Subject() {
-		return nil, status.Error(codes.PermissionDenied, "pre_signed_auth publisher must match caller cert")
+	if err := s.requirePresignedPublisher(ctx, presigned); err != nil {
+		return nil, err
 	}
 	if err := s.static.SeedStaticPresigned(req.GetName(), req.GetManifestDigest(), presigned); err != nil {
 		return nil, s.fail(err, "seed static")
 	}
-	return &controlv1.SeedStaticResponse{PublicUrl: s.hostBasedURL(req.GetName(), publisher)}, nil
+	return &controlv1.SeedStaticResponse{PublicUrl: s.hostBasedURL(req.GetName(), types.PeerKeyFromBytes(presigned.GetAuthorityPub()))}, nil
 }
 
 func (s *Service) UnseedStatic(ctx context.Context, req *controlv1.UnseedStaticRequest) (*controlv1.UnseedStaticResponse, error) {
@@ -1833,6 +1833,14 @@ func (s *Service) requireDaemonSelf(ctx context.Context, friendly string) error 
 func (s *Service) fail(err error, msg string, kv ...any) error {
 	if errors.Is(err, state.ErrTombstoneNoLiveSpec) {
 		return status.Error(codes.NotFound, "no live spec by this publisher matches; nothing to unseed")
+	}
+	// An admission authorise/account verdict is an operator-actionable
+	// client error, not a server fault: surface the reason verbatim as
+	// FailedPrecondition, exactly as the placement.ErrPublishDenied
+	// branch does, rather than logging it and returning a generic
+	// Internal.
+	if errors.Is(err, admission.ErrRejected) {
+		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	s.log.Warnw(msg, append(kv, "err", err)...)
 	return status.Error(codes.Internal, msg)

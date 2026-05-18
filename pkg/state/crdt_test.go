@@ -252,3 +252,66 @@ func TestPublishedFactCannotBeReplayedAsTombstone(t *testing.T) {
 	_, err = st.DeleteWorkloadSpecPresigned(hash, createFact)
 	require.ErrorContains(t, err, "must have Deleted=true")
 }
+
+// TestRegisterPeerGrantAdmitsDaemonlessPublisher pins the substrate fix
+// for the wire-tenant publish path. A wire publisher runs no daemon, so
+// it never SetLocalGrants its own grant; before the serving node relays
+// that grant in, snap.GrantFor(publisher) is nil and the admission
+// pipeline rejects every presigned Fact with "fact authority grant not
+// in cluster state". RegisterPeerGrant makes the grant resolvable while
+// reusing the identical proof-of-possession gate a gossiped grant must
+// clear, so it introduces no new trust, and the relayed grant converges
+// so peers that never saw the publisher's session admit its Facts too.
+func TestRegisterPeerGrantAdmitsDaemonlessPublisher(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := keyPair(t)
+	pPub, pPriv := keyPair(t)
+	pKey := types.PeerKeyFromBytes(pPub)
+	srvKey := types.PeerKeyFromBytes([]byte{0x07})
+
+	grantP, err := identity.IssueGrant(rootPriv, nil, pPub,
+		identity.PublisherCapabilities(), &identityv1.Budget{},
+		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+	require.NoError(t, err)
+	sigP, err := identity.SignGrantSubject(grantP, pPriv)
+	require.NoError(t, err)
+
+	t.Run("absent until relayed, then resolvable", func(t *testing.T) {
+		srv := New(srvKey, rootPub)
+		require.Nil(t, srv.Snapshot().GrantFor(pPub),
+			"daemonless publisher's grant is not in cluster state")
+
+		events := srv.RegisterPeerGrant(pKey, grantP, sigP)
+		require.Contains(t, events, GrantChanged{Peer: pKey})
+
+		got := srv.Snapshot().GrantFor(pPub)
+		require.NotNil(t, got, "relayed grant now resolves for admission")
+		require.Equal(t, grantP.GetClaims().GetSerial(), got.GetClaims().GetSerial())
+
+		require.Empty(t, srv.RegisterPeerGrant(pKey, grantP, sigP),
+			"re-registering identical content is a no-op, no slot churn")
+	})
+
+	t.Run("proof-of-possession gate still enforced", func(t *testing.T) {
+		srv := New(srvKey, rootPub)
+		require.Empty(t, srv.RegisterPeerGrant(pKey, grantP, nil))
+		require.Empty(t, srv.RegisterPeerGrant(pKey, grantP, bytes.Repeat([]byte{0x01}, 64)))
+		require.Nil(t, srv.Snapshot().GrantFor(pPub),
+			"a missing or forged subject proof is rejected, exactly as for gossip")
+
+		require.Empty(t, srv.RegisterPeerGrant(types.PeerKeyFromBytes([]byte{0x08}), grantP, sigP))
+		require.Nil(t, srv.Snapshot().GrantFor(pPub),
+			"a grant whose subject is not the slot peer is rejected")
+	})
+
+	t.Run("converges so non-publisher nodes admit the fact", func(t *testing.T) {
+		srv := New(srvKey, rootPub)
+		srv.RegisterPeerGrant(pKey, grantP, sigP)
+
+		b := New(types.PeerKeyFromBytes([]byte{0x09}), rootPub)
+		_, _, err := b.ApplyDelta(srvKey, srv.EncodeFull())
+		require.NoError(t, err)
+		require.NotNil(t, b.Snapshot().GrantFor(pPub),
+			"relayed grant reaches a node that never saw the publisher's session")
+	})
+}

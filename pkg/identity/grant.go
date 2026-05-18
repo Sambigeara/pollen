@@ -111,7 +111,7 @@ func IssueGrant(
 	signerPub := signerPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	if len(parentChain) > 0 {
-		clamped, err := applyParent(parentChain[0], signerPub, caps, grantDeadline)
+		clamped, err := applyParent(parentChain[0], signerPub, caps, budget, grantDeadline)
 		if err != nil {
 			return nil, err
 		}
@@ -132,6 +132,7 @@ func applyParent(
 	parent *identityv1.Grant,
 	signerPub ed25519.PublicKey,
 	caps *identityv1.Capabilities,
+	budget *identityv1.Budget,
 	grantDeadline time.Time,
 ) (time.Time, error) {
 	if pd := parent.GetClaims().GetGrantDeadlineUnix(); pd > 0 {
@@ -144,6 +145,9 @@ func applyParent(
 		return time.Time{}, errors.New("signer key does not match parent grant subject")
 	}
 	if err := validateChildCapabilities(caps, parent.GetClaims().GetCapabilities()); err != nil {
+		return time.Time{}, err
+	}
+	if err := validateChildBudget(budget, parent.GetClaims().GetBudget()); err != nil {
 		return time.Time{}, err
 	}
 	return grantDeadline, nil
@@ -247,6 +251,34 @@ func validateAttributesSubset(child, parent *structpb.Struct) error {
 	return nil
 }
 
+// validateChildBudget enforces that a child grant's per-Principal count
+// budget does not exceed its parent's in any dimension, under the
+// zero-means-unlimited rule: a parent dimension of 0 imposes no bound,
+// but a child of 0 beneath a bounded parent is itself unlimited and so
+// exceeds it. This is the budget analogue of validateChildCapabilities.
+// The control IssueGrant ceiling enforces the same relation against the
+// RPC caller on the `pln grant` path; enforcing it here on the signing
+// chain additionally bounds the invite->redeem path and any grant signed
+// directly against the proto, where no control-layer caller check runs.
+func validateChildBudget(child, parent *identityv1.Budget) error {
+	check := func(kind string, c, p uint32) error {
+		if p == 0 {
+			return nil
+		}
+		if c == 0 || c > p {
+			return fmt.Errorf("child budget exceeds parent: %s", kind)
+		}
+		return nil
+	}
+	if err := check("functions", child.GetMaxFunctions(), parent.GetMaxFunctions()); err != nil {
+		return err
+	}
+	if err := check("blobs", child.GetMaxBlobs(), parent.GetMaxBlobs()); err != nil {
+		return err
+	}
+	return check("sites", child.GetMaxSites(), parent.GetMaxSites())
+}
+
 // childDeadlineWithinParent enforces that a horizon cannot widen down
 // the chain: a child of a horizon-bounded parent must itself carry a
 // horizon no later than its parent's. A parent with no horizon (the
@@ -321,6 +353,9 @@ func verifyGrantChain(grant *identityv1.Grant) (ed25519.PublicKey, error) {
 		// issuance, is the authority boundary, so every parent->child
 		// link is re-checked against the same predicate.
 		if err := validateChildCapabilities(current.GetClaims().GetCapabilities(), parent.GetClaims().GetCapabilities()); err != nil {
+			return nil, fmt.Errorf("grant chain escalation: %w", err)
+		}
+		if err := validateChildBudget(current.GetClaims().GetBudget(), parent.GetClaims().GetBudget()); err != nil {
 			return nil, fmt.Errorf("grant chain escalation: %w", err)
 		}
 		if err := childDeadlineWithinParent(current.GetClaims(), parent.GetClaims()); err != nil {

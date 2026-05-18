@@ -4,9 +4,12 @@
 package control
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
+	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -132,4 +135,28 @@ func TestAttributesSubsetOf(t *testing.T) {
 	require.NoError(t, attributesSubsetOf(attrs(t, map[string]any{"team": "core"}), parent))
 	require.Error(t, attributesSubsetOf(attrs(t, map[string]any{"missing": "x"}), parent))
 	require.Error(t, attributesSubsetOf(attrs(t, map[string]any{"role": "root"}), parent), "value mismatch is not a subset")
+}
+
+// TestFailSurfacesAdmissionRejected proves the control fail() funnel
+// maps an admission authorise/account verdict to FailedPrecondition
+// with the reason verbatim, instead of logging it and returning a
+// generic Internal. The asserted strings are the exact text the
+// operator-facing docs quote for an exhausted budget and a missing
+// publish capability.
+func TestFailSurfacesAdmissionRejected(t *testing.T) {
+	s := &Service{}
+
+	budget := fmt.Errorf("%w: %w", admission.ErrRejected,
+		errors.New("functions budget exhausted: authority holds 1, limit 1"))
+	st, ok := status.FromError(s.fail(budget, "publish blob"))
+	require.True(t, ok)
+	require.Equal(t, codes.FailedPrecondition, st.Code())
+	require.Equal(t, "admission: functions budget exhausted: authority holds 1, limit 1", st.Message())
+
+	capErr := fmt.Errorf("%w: %w", admission.ErrRejected,
+		errors.New("authority grant lacks publish capability for functions"))
+	st, ok = status.FromError(s.fail(capErr, "failed to seed workload"))
+	require.True(t, ok)
+	require.Equal(t, codes.FailedPrecondition, st.Code())
+	require.Equal(t, "admission: authority grant lacks publish capability for functions", st.Message())
 }

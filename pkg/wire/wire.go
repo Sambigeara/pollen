@@ -181,11 +181,13 @@ func RenewGrantAt(ctx context.Context, addr string, creds *identity.Credentials,
 func MaybeRenewGrant(ctx context.Context, dir, addr string) error {
 	identityDir := identity.IdentityPath(dir)
 	creds, err := identity.LoadCredentials(identityDir)
+	if errors.Is(err, identity.ErrCredentialsNotFound) {
+		// Not enrolled: a fresh `pln join` runs this hook before its
+		// own body writes credentials. Nothing to renew, not an error.
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("load node credentials: %w", err)
-	}
-	if creds == nil || creds.Grant() == nil {
-		return nil
 	}
 	if !identity.GrantRenewDue(creds.Grant(), time.Now()) {
 		return nil
@@ -231,6 +233,20 @@ func ServerTLSConfig(serverCert tls.Certificate, rootPub []byte, denied identity
 // Session extension. Returns nil for unix-socket and SSH-bridge
 // transports, which carry no peer cert.
 func CallerGrantFromContext(ctx context.Context) *identityv1.Grant {
+	return callerSessionFromContext(ctx).GetClaims().GetGrant()
+}
+
+// CallerCredentialFromContext returns the caller's grant together with
+// the session's grant-subject proof-of-possession. The serving node
+// relays this pair into cluster state so a daemonless wire publisher's
+// grant clears the same isAcceptableGrantEvent gate a gossiped grant
+// does. Returns (nil, nil) for transports that carry no peer cert.
+func CallerCredentialFromContext(ctx context.Context) (*identityv1.Grant, []byte) {
+	session := callerSessionFromContext(ctx)
+	return session.GetClaims().GetGrant(), session.GetSubjectSignature()
+}
+
+func callerSessionFromContext(ctx context.Context) *identityv1.Session {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
 		return nil
@@ -241,8 +257,8 @@ func CallerGrantFromContext(ctx context.Context) *identityv1.Grant {
 	}
 	leaf := tlsInfo.State.PeerCertificates[0]
 	session, err := transport.ParseSessionExtension(leaf.Raw)
-	if err != nil || session == nil {
+	if err != nil {
 		return nil
 	}
-	return session.GetClaims().GetGrant()
+	return session
 }

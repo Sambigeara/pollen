@@ -60,6 +60,7 @@ type MembershipAPI interface {
 
 	DenyPeer(key types.PeerKey) error
 	IssueGrant(ctx context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget) (*identityv1.Grant, error)
+	RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte)
 	RenewalFailing() bool
 
 	HandleDigestStream(ctx context.Context, stream transport.Stream, peer types.PeerKey)
@@ -85,6 +86,7 @@ type ClusterState interface {
 	SetLocalReachable([]types.PeerKey) []state.Event
 	SetLocalObservedAddress(string, uint32) []state.Event
 	SetLocalGrant(grant *identityv1.Grant, subjectSig []byte) []state.Event
+	RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte) []state.Event
 	SetLocalSigner(signer state.LocalSigner)
 	RevokeOwnSpecs() ([]state.Event, error)
 }

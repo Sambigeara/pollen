@@ -212,7 +212,7 @@ Two commands to a cluster:
 	rootCmd.AddCommand(newSetCmds()...)
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, errorLine(err))
 		os.Exit(exitCodeOf(err))
 	}
 }

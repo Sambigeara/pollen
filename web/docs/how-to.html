@@ -44,9 +44,7 @@
         <div class="terminal">
           <span class="cmd">pln bootstrap ssh relay-eu=root@198.51.100.10 --admin</span>
           <span class="out">bootstrapping relay-eu=root@198.51.100.10...
-  relay-eu=root@198.51.100.10              ok
-
-1 succeeded, 0 failed</span>
+  relay-eu=root@198.51.100.10              ok</span>
         </div>
         <p><code>--admin</code> delegates admin authority too, so the relay can keep admitting peers if your root machine is offline. Use <code>--publisher</code> instead if the relay should be able to publish its own services or workloads but not admit peers, or drop both flags for a relay that only forwards traffic.</p>
       </li>
@@ -57,16 +55,16 @@
           <span class="out">PEERS
 NODE             STATUS         ADDR                 CPUs  CPU  MEM  TUNNELS  LATENCY  IN  OUT
 7c9a4f8d (self)  -              -                    8     2%   18%  1        -        -   -
-ab12cd34         online (public) 198.51.100.10:60611  4     1%   8%   1        12ms     0   0</span>
+ab12cd34         direct (public) 198.51.100.10:60611  4     1%   8%   1        12ms     0   0</span>
         </div>
         <p>The <code>(public)</code> tag means the cluster has verified the node is reachable from outside, not just hinted. New invite tokens minted from any admin will include this address as a bootstrap target.</p>
       </li>
     </ol>
 
-    <p><strong>Related:</strong> <a href="concepts.html#mesh">Concepts → The mesh</a>, <a href="cli.html#bootstrap"><code>pln bootstrap ssh</code></a>, <a href="cli.html#up"><code>pln up --public</code></a>.</p>
+    <p><strong>Related:</strong> <a href="concepts.html#mesh">the mesh</a>, <a href="cli.html#bootstrap"><code>pln bootstrap ssh</code></a>, <a href="cli.html#up"><code>pln up --public</code></a>.</p>
 
     <h2 id="offline-root">Run with the root machine offline</h2>
-    <p>So you can take your laptop with you. Delegate admin authority to a node that stays online, and the cluster keeps issuing certs, admitting peers, and renewing leases without you.</p>
+    <p>So you can take your laptop with you. Delegate an admin grant to a node that stays online. A delegated admin grant carries no deadline, every node mints its own short-lived sessions locally with no round-trip to root, and grants renew automatically against any reachable delegating peer. The root machine can stay offline indefinitely.</p>
 
     <ol class="steps">
       <li>
@@ -76,35 +74,57 @@ ab12cd34         online (public) 198.51.100.10:60611  4     1%   8%   1        1
           <span class="cmd">pln status nodes --wide</span>
           <span class="out">PEERS
 NODE                                                           STATUS         ADDR
-7c9a4f8d3e2b1c5a6d8e9f0a1b2c3d4e5f6a7b8c... (self)             -              -
-ab12cd34e5f6789a1b2c3d4e5f6789a1b2c3d4e5...                    online (public) 198.51.100.10:60611</span>
+7c9a4f8d3e2b1c5a6d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2 (self)  -               -
+ab12cd34e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7  direct (public) 198.51.100.10:60611</span>
         </div>
       </li>
       <li>
         <h3>Grant admin to that peer</h3>
         <div class="terminal">
           <span class="cmd">pln grant ab12cd34 --admin</span>
-          <span class="out">certificate issued (admin) to ab12cd34</span>
+          <span class="out">grant issued (admin) to ab12cd34</span>
         </div>
-        <p>The <code>--admin</code> flag mints a delegation cert with <code>CanDelegate</code> and <code>CanAdmit</code>. The new admin can issue further delegations and admit new peers without involving root.</p>
+        <p>The <code>--admin</code> tier lets the peer issue further grants and admit new peers without involving root. An admin grant has no deadline, so it never needs renewing and never expires while the peer stays in the cluster.</p>
       </li>
       <li>
         <h3>Confirm and shut root down</h3>
         <div class="terminal">
           <span class="cmd">pln down</span>
         </div>
-        <p>The cluster keeps running. Issue invites, grant new peers, and seed workloads from the relay using <code>--host</code> or a context (see <a href="#multiple-clusters">below</a>).</p>
+        <p>The cluster keeps running. Each node proves its own liveness with locally minted sessions, so admission carries on with root offline. Issue invites, grant new peers, and seed workloads from the relay using a context (see <a href="#multiple-clusters">below</a>).</p>
+      </li>
+      <li>
+        <h3>Verify with root down</h3>
+        <p>From the relay, the cluster reports healthy and admits work while the root machine is off:</p>
+        <div class="terminal">
+          <span class="cmd">pln status</span>
+          <span class="out">HEALTHY  ADMIN
+
+SEEDS
+NAME     HASH      STATUS   REPLICAS  LOCAL  UPTIME
+greeter  3a8c7d2e  running  2/2       *      14m</span>
+          <span class="cmd">pln context show</span>
+          <span class="out">context: default
+dir:     /var/lib/pln
+identity: 4e9b1c77
+issuer:   7c9a4f02
+status:   ok
+not before: 12 May 2026 09:14 BST
+rejoin by:  never (admin grant)
+caps:     delegate=true admit=true publish=true max_depth=3</span>
+        </div>
+        <p><code>rejoin by:  never (admin grant)</code> confirms the admin grant has no deadline. A delegated leaf or publisher grant would instead show a <code>rejoin by:</code> date that the daemon keeps fresh on its own.</p>
       </li>
     </ol>
 
     <div class="callout">
-      <p><strong>Bake the tier in at join time.</strong> If you're standing up a fresh relay, skip the post-hoc grant: <code>pln bootstrap ssh root@host --admin</code> or <code>pln invite --admin --subject &lt;peer-pub&gt;</code> mints the relay with admin capability from the start. Use <code>--publisher</code> for a relay that should publish but not delegate.</p>
+      <p><strong>Bake the tier in at join time.</strong> If you're standing up a fresh relay, skip the post-hoc grant: <code>pln bootstrap ssh root@host --admin</code> or <code>pln invite --admin --subject &lt;peer-pub&gt;</code> mints the relay with admin authority from the start. Use <code>--publisher</code> for a relay that should publish but not delegate.</p>
     </div>
 
-    <p><strong>Related:</strong> <a href="concepts.html#authorisation">Concepts → Authorisation</a>, <a href="cli.html#grant"><code>pln grant</code></a>, <a href="cli.html#invite"><code>pln invite</code></a>.</p>
+    <p><strong>Related:</strong> <a href="concepts.html#sessions">Sessions</a>, <a href="cli.html#grant"><code>pln grant</code></a>, <a href="cli.html#invite"><code>pln invite</code></a>.</p>
 
     <h2 id="restrict-access">Restrict who can call a workload or service</h2>
-    <p>Bake properties into the callers' certs, attach <code>--allow-prop</code> clauses to the spec. The runtime gate checks them on every call. See <a href="concepts.html#authorisation">Concepts → Authorisation</a> for the model.</p>
+    <p>Bake properties into the callers' grants and attach <code>--allow-prop</code> clauses to the published resource. The policy clause rides on the resource itself; the caller's grant properties are checked at the admission <code>authorise</code> stage on every call. See <a href="concepts.html#authorisation">Admission</a> for the model.</p>
 
     <ol class="steps">
       <li>
@@ -112,7 +132,7 @@ ab12cd34e5f6789a1b2c3d4e5f6789a1b2c3d4e5...                    online (public) 1
         <p>For peers that already exist:</p>
         <div class="terminal">
           <span class="cmd">pln grant ab12cd34 --prop role=lead --prop team=backend</span>
-          <span class="out">certificate issued (leaf) to ab12cd34</span>
+          <span class="out">grant issued (leaf) to ab12cd34</span>
         </div>
         <p>For new peers, bake at join time:</p>
         <div class="terminal">
@@ -128,24 +148,24 @@ ab12cd34e5f6789a1b2c3d4e5f6789a1b2c3d4e5...                    online (public) 1
         <p>Repeat <code>--allow-prop</code> for additional clauses; all must match (conjunction).</p>
       </li>
       <li>
-        <h3>Verify denials are silent</h3>
-        <p>Try to call the resource from a peer that doesn't carry the required property. The call closes the stream without revealing why; this prevents probing the resource shape.</p>
+        <h3>Verify denials are opaque</h3>
+        <p>Try to call the resource from a peer whose grant doesn't carry the required property. The <code>authorise</code> check fails and the call is reported as not found rather than as a distinct denial; this prevents an unauthorised caller probing for which workloads exist.</p>
         <div class="terminal">
           <span class="cmd">pln call greeter run 'hi'</span>
-          <span class="out">Error: stream closed by peer</span>
+          <span class="out">Error: no such workload</span>
         </div>
       </li>
     </ol>
 
     <div class="callout callout-info">
-      <p><strong>Need disjunction?</strong> Mint both groups with a shared property and require it on the spec:</p>
+      <p><strong>Need disjunction?</strong> Mint both groups with a shared property and require it on the resource:</p>
       <pre><code>pln grant &lt;editor&gt; --prop tier=privileged
 pln grant &lt;admin&gt;  --prop tier=privileged
 pln serve 8080 ops --allow-prop tier=privileged</code></pre>
-      <p>Pollen pushes disjunction up to the issuance side so the runtime gate stays trivially fast. The property name itself is your conceptual group.</p>
+      <p>Pollen pushes disjunction up to the issuance side so the <code>authorise</code> check stays a trivially fast property match. The property name itself is your conceptual group.</p>
     </div>
 
-    <p><strong>Related:</strong> <a href="concepts.html#authorisation">Concepts → Authorisation</a>, <a href="cli.html#serve"><code>pln serve</code></a>, <a href="cli.html#seed"><code>pln seed</code></a>.</p>
+    <p><strong>Related:</strong> <a href="concepts.html#authorisation">Admission</a>, <a href="cli.html#serve"><code>pln serve</code></a>, <a href="cli.html#seed"><code>pln seed</code></a>.</p>
 
     <h2 id="publish-site">Publish a static site across the cluster</h2>
     <p>Every node with <code>static-http</code> enabled claims the site and serves it locally; requests are routed by <code>Host</code> header.</p>
@@ -177,11 +197,11 @@ NAME     MANIFEST  REPLICAS  LOCAL  PUBLISHER
 my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
           <span class="cmd">curl -H "Host: my-site" http://localhost:8080/</span>
         </div>
-        <p><code>3/3</code> means three replicas claimed against three eligible nodes. Re-running <code>pln seed ./public my-site</code> is idempotent: the spec gets a fresh manifest, old blobs are GC'd once nothing references them.</p>
+        <p><code>3/3</code> means three replicas claimed against three eligible nodes. Re-running <code>pln seed ./public my-site</code> is idempotent: the spec gets a fresh manifest, old blobs are GC'd once nothing references them. The site keeps serving after the publishing node leaves; the spec lives in cluster state until it is unseeded, while the publishing grant is within its deadline and not revoked.</p>
       </li>
     </ol>
 
-    <p><strong>Related:</strong> <a href="concepts.html#storage">Concepts → Storage</a>, <a href="cli.html#seed"><code>pln seed</code></a>, <a href="cli.html#set"><code>pln set static-http</code></a>.</p>
+    <p><strong>Related:</strong> <a href="concepts.html#storage">Storage</a>, <a href="cli.html#seed"><code>pln seed</code></a>, <a href="cli.html#set"><code>pln set static-http</code></a>.</p>
 
     <h2 id="pin-workload">Pin a workload's placement</h2>
     <p>Pollen places replicas based on local scoring. You can tilt the scoring with flags, or override it for special cases.</p>
@@ -205,32 +225,37 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
       <span class="cmd">pln grant &lt;node&gt; --prop region=eu</span>
       <span class="cmd">pln seed ./eu-only.wasm --allow-prop region=eu</span>
     </div>
-    <p class="aside">Strictly, <code>--allow-prop</code> gates <em>callers</em>, not <em>placement</em>. To restrict placement specifically you'd compose a policy that matches host-side properties; the simplest workaround for now is property-tagging the nodes you want to host and gating the resource so only they can act on it.</p>
+    <p class="aside">Strictly, <code>--allow-prop</code> gates <em>callers</em> at the admission <code>authorise</code> check, not <em>placement</em>. To restrict placement specifically you'd match host-side properties; the simplest approach for now is property-tagging the nodes you want to host and gating the resource so only they can act on it.</p>
 
-    <p><strong>Related:</strong> <a href="concepts.html#workloads">Concepts → Workloads</a>, <a href="cli.html#seed"><code>pln seed</code></a>.</p>
+    <p><strong>Related:</strong> <a href="concepts.html#workloads">Workloads</a>, <a href="cli.html#seed"><code>pln seed</code></a>.</p>
 
     <h2 id="recover-context">Recover a context that can't connect</h2>
-    <p>A wire-mode context with no daemon renews its own cert before each command. If the machine was offline long enough for the cert to pass its hard ceiling, renewal is no longer possible and the context must rejoin.</p>
+    <p>A delegated grant has a single hard deadline (default 30 days). The daemon renews it automatically against any reachable delegating peer, and a wire-mode context renews opportunistically on the next <code>pln</code> call. If the machine was offline past the deadline, renewal is no longer possible and the context must rejoin with a fresh invite.</p>
 
     <ol class="steps">
       <li>
         <h3>Read the precise cause</h3>
-        <p>The refused command already names it. Confirm with the context's own windows:</p>
+        <p>The refused command already names it. Confirm with the context's own state:</p>
         <div class="terminal">
           <span class="cmd">pln context show</span>
-          <span class="out">context: staging</span>
-          <span class="out">status:   expired</span>
-          <span class="out">not after:  14 May 2026 22:25 BST</span>
-          <span class="out">rejoin by:  13 Jun 2026 18:25 BST</span>
+          <span class="out">context: staging
+target:  root@staging.example.com
+dir:     ~/.pln/contexts/staging
+identity: ab12cd34
+issuer:   7c9a4f02
+status:   expired
+not before: 14 May 2026 09:14 BST
+rejoin by:  13 Jun 2026 18:25 BST
+caps:     delegate=false admit=false publish=true max_depth=0</span>
         </div>
-        <p>A <code>needs-renewal</code> status fixes itself: just rerun the command and it renews transparently. Only <code>expired</code> or <code>revoked</code> needs the steps below.</p>
+        <p><code>status:</code> reads <code>expired</code> once the deadline has passed, or <code>revoked</code> if the identity was denied. There is no <code>degraded</code> here: a still-valid grant whose automatic renewal is failing shows as <code>DEGRADED</code> node health in <a href="cli.html#status"><code>pln status</code></a>, not in <code>context show</code>. Reconnect that node to any delegating peer and renewal resumes on its own. Only <code>expired</code> or <code>revoked</code> needs the steps below.</p>
       </li>
       <li>
         <h3>Mint a fresh token on the cluster</h3>
         <p>Invites are signed on the node, so mint over SSH against an edge node:</p>
         <div class="terminal">
           <span class="cmd">ssh root@edge.example.com pln invite --ttl 24h</span>
-          <span class="out">pln join eyJ0b2tlbiI6...</span>
+          <span class="out">eyJ0b2tlbiI6...</span>
         </div>
       </li>
       <li>
@@ -244,15 +269,25 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
         <h3>Verify</h3>
         <div class="terminal">
           <span class="cmd">pln --context staging status</span>
-          <span class="out">PEERS  2 online</span>
+          <span class="out">HEALTHY  PUBLISHER</span>
+          <span class="cmd">pln --context staging context show</span>
+          <span class="out">context: staging
+target:  root@staging.example.com
+dir:     ~/.pln/contexts/staging
+identity: ab12cd34
+issuer:   7c9a4f02
+status:   ok
+not before: 17 May 2026 14:25 BST
+rejoin by:  16 Jun 2026 14:25 BST
+caps:     delegate=false admit=false publish=true max_depth=0</span>
         </div>
-        <p>The status table prints instead of a connection error, and <code>pln context show</code> reports <code>status: ok</code>.</p>
+        <p>The status header prints instead of a connection error, and <code>context show</code> reports <code>status:   ok</code> with a fresh <code>rejoin by:</code> deadline the daemon will keep renewing on its own.</p>
       </li>
     </ol>
-    <p><strong>Related:</strong> <a href="concepts.html#authorisation">Concepts → Authorisation</a>, <a href="cli.html#context-show"><code>pln ctx show</code></a>, <a href="troubleshoot.html#cert-expired">Troubleshoot → Cert expired</a>.</p>
+    <p><strong>Related:</strong> <a href="concepts.html#sessions">Sessions</a>, <a href="cli.html#context-show"><code>pln ctx show</code></a>, <a href="troubleshoot.html#cert-expired">access expired or node degraded</a>.</p>
 
     <h2 id="export-blob">Export a blob's contents to a local file</h2>
-    <p>Blobs are encrypted at rest, so reading one from the on-disk store is not possible directly. <code>pln fetch</code> is the export path: it streams plaintext bytes from the publisher and writes them to the file you choose.</p>
+    <p>Blobs are encrypted at rest, so reading one from the on-disk store is not possible directly. <code>pln fetch</code> is the export path: it streams plaintext bytes from any node holding the blob and writes them to the file you choose. The publisher need not be online; a blob keeps serving from its holders while the publishing grant is within its deadline and not revoked.</p>
 
     <ol class="steps">
       <li>
@@ -260,7 +295,7 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
         <p>The second positional argument is the destination. Use a file path to write to disk, or <code>-</code> to write to stdout (handy for piping into <code>tar</code>, <code>jq</code>, <code>file</code>, and so on).</p>
         <div class="terminal">
           <span class="cmd">pln fetch payload ./payload.bin</span>
-          <span class="out">wrote 9f2b...e814 to ./payload.bin</span>
+          <span class="out">wrote 9f2b1c4d to ./payload.bin</span>
         </div>
       </li>
       <li>
@@ -274,7 +309,7 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
 
     <p class="aside">The local content store is not modified by fetch. If you want this node to also host the blob, use <a href="cli.html#seed"><code>pln seed</code></a> separately.</p>
 
-    <p><strong>Related:</strong> <a href="concepts.html#storage">Concepts → Storage</a>, <a href="cli.html#fetch"><code>pln fetch</code></a>.</p>
+    <p><strong>Related:</strong> <a href="concepts.html#storage">Storage</a>, <a href="cli.html#fetch"><code>pln fetch</code></a>.</p>
 
     <h2 id="multiple-clusters">Manage multiple clusters from one shell</h2>
     <p>Contexts let you point your CLI at different daemons without re-typing flags. The reserved name <code>default</code> always resolves to the local daemon at <code>$PLN_DIR</code>.</p>
@@ -310,17 +345,17 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
     <p><strong>Related:</strong> <a href="cli.html#context"><code>pln ctx</code></a>.</p>
 
     <h2 id="rotate-properties">Rotate a node's properties</h2>
-    <p>Properties are baked into certs, so a rotation means re-issuing the cert. The flow differs for delegated peers and the root.</p>
+    <p>Properties are baked into a peer's grant, so a rotation means re-issuing the grant. The flow differs for delegated peers and the root.</p>
 
     <h3>Delegated peer</h3>
-    <p>Re-issue with <code>pln grant</code>. The new cert supersedes the old one and gossips out:</p>
+    <p>Re-issue with <code>pln grant</code>. The new grant supersedes the old one and gossips out:</p>
     <div class="terminal">
       <span class="cmd">pln grant ab12cd34 --prop role=primary --prop region=eu</span>
-      <span class="out">certificate issued (leaf) to ab12cd34</span>
+      <span class="out">grant issued (leaf) to ab12cd34</span>
     </div>
 
     <h3>Root node</h3>
-    <p>Root issues its own cert from <code>config.yaml</code>, so update the persisted properties and let the next <code>pln up</code> re-issue:</p>
+    <p>Root issues its own grant from <code>config.yaml</code>, so update the persisted properties and let the next <code>pln up</code> re-issue:</p>
     <div class="terminal">
       <span class="cmd">pln props role=primary region=eu</span>
       <span class="out">properties updated (run `pln restart` to apply)</span>
@@ -328,10 +363,35 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
     </div>
     <p>Replace semantics: positional args define the complete set, so any unlisted key is removed. Use <code>pln props --clear</code> to wipe.</p>
 
-    <p><strong>Related:</strong> <a href="concepts.html#authorisation">Concepts → Authorisation</a>, <a href="cli.html#props"><code>pln props</code></a>, <a href="cli.html#grant"><code>pln grant</code></a>.</p>
+    <p><strong>Related:</strong> <a href="concepts.html#authorisation">Admission</a>, <a href="cli.html#props"><code>pln props</code></a>, <a href="cli.html#grant"><code>pln grant</code></a>.</p>
+
+    <h2 id="set-budget">Cap what a tenant can publish</h2>
+    <p>Bound a tenant's footprint by setting count budgets on its grant. Budgets are count-only: a maximum number of functions, blobs, and sites. There are no byte or traffic quotas. The accounting plane enforces the cap at the admission <code>account</code> stage on every write the tenant makes.</p>
+
+    <ol class="steps">
+      <li>
+        <h3>Issue the grant with budgets</h3>
+        <div class="terminal">
+          <span class="cmd">pln grant ab12cd34 --publisher --max-functions 10 --max-blobs 50 --max-sites 2</span>
+          <span class="out">grant issued (publisher) to ab12cd34</span>
+        </div>
+        <p>Each flag takes a <code>uint32</code> and defaults to <code>0</code>. Re-issue with <code>pln grant</code> to raise or lower a limit; the new grant supersedes the old one and gossips out. The same <code>--max-*</code> flags are accepted by <a href="cli.html#invite"><code>pln invite</code></a>, so a tenant can be capped at enrolment rather than after the fact.</p>
+      </li>
+      <li>
+        <h3>Verify the cap holds</h3>
+        <p>From the tenant, publish past the limit. The write is refused and the admission reason is on the CLI:</p>
+        <div class="terminal">
+          <span class="cmd">pln seed ./extra.wasm overflow</span>
+          <span class="out">Error: admission: functions budget exhausted: authority holds 10, limit 10</span>
+        </div>
+        <p>The kind token is plural (<code>functions</code>, <code>blobs</code> or <code>sites</code>); a blob or site over its cap is refused the same way with its own token. Existing resources keep serving; only the write that would exceed the cap is refused. See <a href="troubleshoot.html#budget-exhausted">budget exhausted</a>.</p>
+      </li>
+    </ol>
+
+    <p><strong>Related:</strong> <a href="concepts.html#authorisation">Admission</a>, <a href="cli.html#grant"><code>pln grant</code></a>, <a href="troubleshoot.html#budget-exhausted">budget exhausted</a>.</p>
 
     <h2 id="revoke-peer">Revoke a peer</h2>
-    <p>Tear down a peer's connections and put it on the deny set so it can't rejoin without a new cert.</p>
+    <p>Tear down a peer's connections and put it on the deny set so it can't rejoin without a fresh grant.</p>
 
     <ol class="steps">
       <li>
@@ -344,9 +404,9 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
         <h3>Deny it</h3>
         <div class="terminal">
           <span class="cmd">pln deny ab12cd34</span>
-          <span class="out">denied ab12cd34</span>
+          <span class="out">denied peer ab12cd34</span>
         </div>
-        <p>The deny gossips out. Every node tears down its tunnels to the denied peer and refuses to admit any cert that chains through it.</p>
+        <p>Deny is chain-aware. The deny gossips out and, on the next admission check, every node invalidates the denied peer's whole subtree and everything it published, cluster-wide. Every node also tears down its tunnels to the denied peer.</p>
       </li>
       <li>
         <h3>Verify</h3>
@@ -358,10 +418,10 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
     </ol>
 
     <div class="callout callout-warn">
-      <p><strong>Cascading revocation.</strong> If the denied peer had delegated admin to others, those leaves' certs chain through it and become invalid too. <code>pln status nodes --include-offline</code> shows the affected peers.</p>
+      <p><strong>Cascading revocation.</strong> If the denied peer had issued grants to others, those grants chain through it and become invalid too, and any workloads, blobs, or sites the subtree published stop being admitted. <code>pln status nodes --include-offline</code> shows the affected peers.</p>
     </div>
 
-    <p><strong>Related:</strong> <a href="cli.html#deny"><code>pln deny</code></a>, <a href="concepts.html#authorisation">Concepts → Authorisation</a>.</p>
+    <p><strong>Related:</strong> <a href="cli.html#deny"><code>pln deny</code></a>, <a href="concepts.html#authorisation">Admission</a>.</p>
 
     <h2 id="upgrade">Upgrade across the cluster</h2>
     <p>There is no rolling-upgrade orchestration. Run <code>pln upgrade --restart</code> on each machine independently.</p>
@@ -383,7 +443,7 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
           <span class="cmd">pln set control-tls :7443       <span class="cmt"># tenant CLIs dial here over mTLS</span></span>
           <span class="cmd">pln set static-http :8080       <span class="cmt"># static-site serving</span></span>
           <span class="cmd">pln set static-http-domain pln.sh <span class="cmt"># enables &lt;name&gt;-&lt;slug&gt;.&lt;domain&gt; routing</span></span>
-          <span class="cmd">pln set gateway :8088           <span class="cmd"># anonymous blob/fn redemption</span></span>
+          <span class="cmd">pln set gateway :8088           <span class="cmt"># anonymous blob/fn redemption</span></span>
           <span class="cmd">pln restart</span>
         </div>
         <p>All three are plain HTTP (or TLS+mTLS in the case of <code>control-tls</code>); a TLS-terminating proxy in front handles public certs.</p>
@@ -421,7 +481,7 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
           <span class="cmd">pln seed ./dist mysite     <span class="cmt"># static site</span></span>
           <span class="cmd">pln status sites</span>
           <span class="out">NAME    MANIFEST  REPLICAS  LOCAL  PUBLISHER     URL
-mysite  3a8c7d2e  1/1              ab12cd34...   https://mysite-k7r4z9xa8n2p.pln.sh</span>
+mysite  3a8c7d2e  1/1              ab12cd34      https://mysite-k7r4z9xa8n2p.pln.sh</span>
           <span class="cmd">curl -sf https://mysite-k7r4z9xa8n2p.pln.sh/</span>
         </div>
       </li>
@@ -431,7 +491,7 @@ mysite  3a8c7d2e  1/1              ab12cd34...   https://mysite-k7r4z9xa8n2p.pln
       <p><strong>Infra is out of scope.</strong> The Terraform that provisions the edge node, registers DNS, and configures Cloudflare lives outside this repo. Update it alongside any change to listener ports or DNS shape; the pln binary alone can't reconfigure your zone.</p>
     </div>
 
-    <p><strong>Related:</strong> <a href="cli.html#set"><code>pln set</code></a>, <a href="cli.html#share"><code>pln share</code></a>, <a href="cli.html#context-add"><code>pln context add</code></a>, <a href="concepts.html#authorisation">Concepts &rarr; Authorisation</a>.</p>
+    <p><strong>Related:</strong> <a href="cli.html#set"><code>pln set</code></a>, <a href="cli.html#share"><code>pln share</code></a>, <a href="cli.html#context-add"><code>pln context add</code></a>, <a href="concepts.html#authorisation">Admission</a>.</p>
 
     <h2 id="next">Where to go next</h2>
     <ul>
@@ -453,6 +513,7 @@ mysite  3a8c7d2e  1/1              ab12cd34...   https://mysite-k7r4z9xa8n2p.pln
       <a href="#export-blob">Export a blob to a file</a>
       <a href="#multiple-clusters">Multiple clusters</a>
       <a href="#rotate-properties">Rotate properties</a>
+      <a href="#set-budget">Cap a tenant's footprint</a>
       <a href="#revoke-peer">Revoke a peer</a>
       <a href="#upgrade">Upgrade the cluster</a>
       <a href="#public-edge">Run a public edge</a>

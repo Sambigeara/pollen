@@ -862,40 +862,34 @@ func renderMetricsDetails(w io.Writer, m *controlv1.GetMetricsResponse) {
 	fmt.Fprintln(w)
 }
 
+// certExpiryFooter renders the deadline line for a grant that has one.
+// Only delegated grants (leaf, publisher) carry a deadline; admin and
+// root grants have GrantDeadlineUnix==0 and get no footer at all. A zero
+// unix deadline is time.Unix(0,0) (1970), not the Go zero time, so it
+// must be filtered explicitly rather than via IsZero on the converted
+// value.
 func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 	const certExpirySkew = time.Minute
-	var latest time.Time
+	var deadline time.Time
 	var health controlv1.CertHealth
 	for _, c := range st.GetCertificates() {
-		if t := time.Unix(c.GetGrantDeadlineUnix(), 0); t.After(latest) {
-			latest, health = t, c.GetHealth()
+		dl := c.GetGrantDeadlineUnix()
+		if dl == 0 {
+			continue
+		}
+		if t := time.Unix(dl, 0); t.After(deadline) {
+			deadline, health = t, c.GetHealth()
 		}
 	}
-	if latest.IsZero() {
+	if deadline.IsZero() {
 		return ""
 	}
 
-	remaining := time.Until(latest.Add(certExpirySkew))
-	var latestDeadline int64
-	for _, c := range st.GetCertificates() {
-		if dl := c.GetGrantDeadlineUnix(); dl > latestDeadline {
-			latestDeadline = dl
-		}
-	}
-	hasDeadline := latestDeadline > 0
-
-	if remaining <= 0 || health == controlv1.CertHealth_CERT_HEALTH_EXPIRED {
-		if hasDeadline {
-			return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("temporary access expired — rejoin the cluster or contact a cluster admin")
-		}
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("membership expired — entering degraded mode; will auto-recover when an admin peer is reachable")
+	if time.Until(deadline.Add(certExpirySkew)) <= 0 || health == controlv1.CertHealth_CERT_HEALTH_EXPIRED {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("temporary access expired — rejoin the cluster or contact a cluster admin")
 	}
 
-	msg := "membership expires in " + humanDuration(remaining)
-	if hasDeadline {
-		msg = "temporary access expires in " + humanDuration(time.Until(time.Unix(latestDeadline, 0)))
-	}
-
+	msg := "temporary access expires in " + humanDuration(time.Until(deadline))
 	switch health { //nolint:exhaustive
 	case controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + " — rejoin the cluster or contact a cluster admin")

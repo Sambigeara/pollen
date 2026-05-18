@@ -108,6 +108,52 @@ func (s *store) SetLocalGrant(grant *identityv1.Grant, subjectSig []byte) []Even
 	})
 }
 
+// RegisterPeerGrant adopts a wire caller's grant into that caller's CRDT
+// slot so cluster-scoped admission can resolve the authority for a
+// presigned Fact whose publisher runs no daemon to gossip its own grant.
+// The serving node is a pure relay: the grant is admitted only if it
+// clears the identical proof-of-possession gate (isAcceptableGrantEvent)
+// a gossiped grant must, so no new trust is introduced. Idempotent: a
+// grant whose content already matches the stored one is a no-op, so
+// steady-state publishing does not churn the slot or the gossip stream.
+func (s *store) RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte) []Event {
+	if grant == nil || peer == s.localID {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	change := &statev1.GossipEvent{
+		PeerId: peer.String(),
+		Change: &statev1.GossipEvent_Grant{Grant: &statev1.GrantChange{Grant: grant, SubjectSignature: subjectSig}},
+	}
+	if !s.isAcceptableGrantEvent(peer, change) {
+		return nil
+	}
+
+	key := attrKey{kind: attrGrant}
+	rec, exists := s.nodes[peer]
+	if !exists {
+		rec = newNodeRecord()
+	}
+	if ev, ok := rec.log[key]; ok && !ev.Deleted && proto.Equal(ev.GetGrant(), change.GetGrant()) {
+		return nil
+	}
+
+	rec.maxCounter++
+	change.Counter = rec.maxCounter
+	rec.log[key] = change
+	rec.lastEventAt = s.nowFunc()
+	s.nodes[peer] = rec
+	s.pendingGossip = append(s.pendingGossip, change)
+
+	events := append([]Event{GrantChanged{Peer: peer}}, s.recomputeDeniedLocked()...)
+	s.updateSnapshotLocked()
+	s.notify()
+	return events
+}
+
 func (s *store) SetLocalAddresses(addrs []netip.AddrPort) []Event {
 	if len(addrs) == 0 {
 		return nil
@@ -617,7 +663,7 @@ func (s *store) preparePresignedSpec(body fact.Body, presignedFact *factv1.Fact)
 	}
 	specChange := wrapSpecBody(presignedFact, body)
 	if err := s.validate(specChange); err != nil {
-		return nil, types.PeerKey{}, fmt.Errorf("validate presigned spec: %w", err)
+		return nil, types.PeerKey{}, err
 	}
 	publisher := types.PeerKeyFromBytes(presignedFact.GetAuthorityPub())
 	return specChange, publisher, nil
@@ -712,7 +758,7 @@ func (s *store) applyPresignedTombstone(key attrKey, presignedFact *factv1.Fact,
 		}
 		specChange := wrapSpecBody(presignedFact, body)
 		if err := s.validate(specChange); err != nil {
-			rebuildErr = fmt.Errorf("validate presigned tombstone: %w", err)
+			rebuildErr = err
 			return nil, nil
 		}
 		gossip := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_SpecChange{SpecChange: specChange}}

@@ -275,6 +275,11 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 	}
 
 	m.SetInviteForwarder(n.forwardInviteToAdmin)
+	// The issuer redeems its own invites locally. Without this the
+	// fast path is dead and every redeem is forwarded; a redeem that
+	// lands on the issuing node then forwards to itself, which is
+	// unreachable (a node holds no mesh session to itself).
+	m.SetInviteIssuer(n.creds)
 
 	n.tunneling = tunneling.New(
 		self, stateStore, streamAdapter, m, router,

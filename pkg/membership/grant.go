@@ -54,6 +54,14 @@ func (s *Service) publishLocalGrant(grant *identityv1.Grant) {
 	s.forwardEvents(s.store.SetLocalGrant(grant, sig))
 }
 
+// RegisterPeerGrant adopts a wire caller's grant into cluster state and
+// gossips it onward, so a presigned Fact whose publisher runs no daemon
+// still resolves its authority on every node. The store enforces the
+// same proof-of-possession gate a gossiped grant clears.
+func (s *Service) RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte) {
+	s.forwardEvents(s.store.RegisterPeerGrant(peer, grant, subjectSig))
+}
+
 // IssueGrant mints a child grant for a wire-mode caller under this
 // node's grant chain. The node must hold a delegating grant. Admin
 // grants carry no horizon (managed infrastructure); delegated tenant

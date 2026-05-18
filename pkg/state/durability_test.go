@@ -8,9 +8,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"testing"
 	"time"
 
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
@@ -137,4 +139,28 @@ func TestRestoreStillRejectsFactWithNoAuthorityGrant(t *testing.T) {
 	require.NoError(t, b.LoadGossipState(orphan))
 	_, ok := b.Snapshot().Specs[hash]
 	require.False(t, ok, "fact with an unresolvable authority is still rejected")
+}
+
+// TestPresignedValidateErrorSurfacesUnwrapped is the G3 regression: a
+// validator (admission pipeline in production) rejection on the
+// presigned path must reach the operator as the clean admission
+// message, not buried under the internal "validate presigned spec:"
+// wrapper, exactly as the non-presigned signedSpecChangeLocked path
+// already does. The %w chain must stay intact so s.fail still routes
+// it to the verbatim FailedPrecondition branch.
+func TestPresignedValidateErrorSurfacesUnwrapped(t *testing.T) {
+	rootPub, _ := keyPair(t)
+	sentinel := fmt.Errorf("%w: authority grant lacks publish capability for functions", admission.ErrRejected)
+
+	st := state.New(types.PeerKeyFromBytes([]byte{0x09}), rootPub)
+	st.SetMutationValidator(func(*statev1.SpecChange) error { return sentinel })
+
+	hash := hex.EncodeToString(bytes.Repeat([]byte{0xaa}, 32))
+	_, err := st.PublishWorkloadPresigned(
+		state.WorkloadSpec{Hash: hash, Name: "echo", MinReplicas: 1},
+		&factv1.Fact{AuthorityPub: rootPub},
+	)
+	require.Error(t, err)
+	require.ErrorIs(t, err, admission.ErrRejected, "stays routable to s.fail's clean FailedPrecondition branch")
+	require.NotContains(t, err.Error(), "validate presigned spec", "internal wrapper prefix must not reach the operator")
 }

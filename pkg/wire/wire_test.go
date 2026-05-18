@@ -4,6 +4,7 @@
 package wire_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -65,4 +66,13 @@ func TestDaemonLacksHandshake(t *testing.T) {
 		"a genuine transport error is not a handshake-absence signal")
 	require.False(t, wire.DaemonLacksHandshake(connect.NewError(connect.CodeUnavailable, errors.New("down"))),
 		"availability errors pass through for the command to surface")
+}
+
+func TestMaybeRenewGrantNotEnrolledIsSilentNoop(t *testing.T) {
+	// A fresh `pln join` runs the renewal hook before its own body
+	// writes credentials, so the context dir has no credentials yet.
+	// That is not an error: nothing to renew, nothing to print, and
+	// no dial to addr (the bogus address must never be contacted).
+	err := wire.MaybeRenewGrant(context.Background(), t.TempDir(), "edge.invalid:1")
+	require.NoError(t, err)
 }

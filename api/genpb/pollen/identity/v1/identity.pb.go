@@ -452,11 +452,16 @@ func (x *SessionClaims) GetNonce() uint64 {
 }
 
 type Session struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Claims        *SessionClaims         `protobuf:"bytes,1,opt,name=claims,proto3" json:"claims,omitempty"`
-	Signature     []byte                 `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Claims    *SessionClaims         `protobuf:"bytes,1,opt,name=claims,proto3" json:"claims,omitempty"`
+	Signature []byte                 `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"`
+	// subject_signature is the grant-subject proof-of-possession (over the
+	// embedded grant's claims, identity.SignGrantSubject shape) the serving
+	// node relays into cluster state so a daemonless wire publisher's grant
+	// can pass the same isAcceptableGrantEvent gate a gossiped grant must.
+	SubjectSignature []byte `protobuf:"bytes,3,opt,name=subject_signature,json=subjectSignature,proto3" json:"subject_signature,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -499,6 +504,13 @@ func (x *Session) GetClaims() *SessionClaims {
 func (x *Session) GetSignature() []byte {
 	if x != nil {
 		return x.Signature
+	}
+	return nil
+}
+
+func (x *Session) GetSubjectSignature() []byte {
+	if x != nil {
+		return x.SubjectSignature
 	}
 	return nil
 }
@@ -847,10 +859,11 @@ const file_pollen_identity_v1_identity_proto_rawDesc = "" +
 	"\x05grant\x18\x01 \x01(\v2\x19.pollen.identity.v1.GrantB\x06\xbaH\x03\xc8\x01\x01R\x05grant\x12&\n" +
 	"\x0fnot_before_unix\x18\x02 \x01(\x03R\rnotBeforeUnix\x12$\n" +
 	"\x0enot_after_unix\x18\x03 \x01(\x03R\fnotAfterUnix\x12\x14\n" +
-	"\x05nonce\x18\x04 \x01(\x04R\x05nonce\"s\n" +
+	"\x05nonce\x18\x04 \x01(\x04R\x05nonce\"\xa9\x01\n" +
 	"\aSession\x12A\n" +
 	"\x06claims\x18\x01 \x01(\v2!.pollen.identity.v1.SessionClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
-	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xcc\x02\n" +
+	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\x124\n" +
+	"\x11subject_signature\x18\x03 \x01(\fB\a\xbaH\x04z\x02h@R\x10subjectSignature\"\xcc\x02\n" +
 	"\x10GrantTokenClaims\x12#\n" +
 	"\btoken_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\atokenId\x12&\n" +
 	"\n" +

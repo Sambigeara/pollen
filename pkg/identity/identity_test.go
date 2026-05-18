@@ -56,6 +56,8 @@ func TestSessionRenewalIsLocalAndOffline(t *testing.T) {
 	vs, err := identity.VerifySession(s1, rootPub, now, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, grant.GetClaims().GetSubjectPub(), []byte(vs.SubjectPub))
+	require.NoError(t, identity.VerifyGrantSubject(grant, s1.GetSubjectSignature()),
+		"every minted session carries the grant-subject proof the serving node relays")
 
 	// Past the session window: the old proof is rejected.
 	later := now.Add(2 * time.Hour)
@@ -139,6 +141,25 @@ func TestVerifySessionFailClosed(t *testing.T) {
 		require.NoError(t, err)
 		_, err = identity.VerifySession(s, adminPub, now, nil, nil)
 		require.ErrorContains(t, err, "not yet valid")
+	})
+
+	t.Run("tampered subject proof", func(t *testing.T) {
+		rootPub, grant, _, subPriv, _ := chain(t, now, now.Add(30*24*time.Hour))
+		s, err := identity.MintSession(grant, subPriv, now, time.Hour)
+		require.NoError(t, err)
+		s.SubjectSignature[0] ^= 0xff
+		_, err = identity.VerifySession(s, rootPub, now, nil, nil)
+		require.ErrorIs(t, err, identity.ErrSessionInvalid)
+		require.ErrorContains(t, err, "subject proof invalid")
+	})
+
+	t.Run("stripped subject proof", func(t *testing.T) {
+		rootPub, grant, _, subPriv, _ := chain(t, now, now.Add(30*24*time.Hour))
+		s, err := identity.MintSession(grant, subPriv, now, time.Hour)
+		require.NoError(t, err)
+		s.SubjectSignature = nil
+		_, err = identity.VerifySession(s, rootPub, now, nil, nil)
+		require.ErrorIs(t, err, identity.ErrSessionInvalid)
 	})
 }
 
@@ -387,6 +408,47 @@ func TestInviteTicketRedeemAndConsume(t *testing.T) {
 	ok, err = rebuilt.TryConsume(ticket, now)
 	require.NoError(t, err)
 	require.False(t, ok, "consumed set survives a rebuild so a ticket cannot be replayed")
+}
+
+// TestRedeemInviteClampsBudgetToIssuer proves the invite->redeem path
+// cannot mint a grant whose budget exceeds the redeeming issuer's own.
+// `pln invite` accepts --max-* so an admin holding a limited budget
+// could otherwise sign a ticket asking for more; the budget clamp now
+// lives in the shared identity chain, so redemption fails just as a
+// `pln grant` exceeding the caller's budget does.
+func TestRedeemInviteClampsBudgetToIssuer(t *testing.T) {
+	now := time.Now()
+	adminPub, adminPriv := newKeyPair(t)
+	hostPub, hostPriv := newKeyPair(t)
+	joinerPub, _ := newKeyPair(t)
+
+	// Host can delegate but its own budget allows at most 5 functions.
+	hostGrant, err := identity.IssueGrant(adminPriv, nil, hostPub,
+		identity.FullCapabilities(), &identityv1.Budget{MaxFunctions: 5},
+		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+	require.NoError(t, err)
+
+	bootstrap := []*admissionv1.BootstrapPeer{{
+		PeerPub: bytes.Repeat([]byte{0x07}, 32),
+		Addrs:   []string{"203.0.113.7:60611"},
+	}}
+	mkTicket := func(b *identityv1.Budget) *identityv1.InviteTicket {
+		tk, terr := identity.IssueInviteTicket(hostPriv, bootstrap, joinerPub,
+			identity.PublisherCapabilities(), b, now.Add(30*24*time.Hour), now, time.Hour)
+		require.NoError(t, terr)
+		return tk
+	}
+
+	_, err = identity.RedeemInviteTicket(hostPriv, []*identityv1.Grant{hostGrant}, adminPub,
+		mkTicket(&identityv1.Budget{MaxFunctions: 1_000_000}), joinerPub, now, time.Hour)
+	require.ErrorContains(t, err, "child budget exceeds parent: functions")
+
+	tok, err := identity.RedeemInviteTicket(hostPriv, []*identityv1.Grant{hostGrant}, adminPub,
+		mkTicket(&identityv1.Budget{MaxFunctions: 3}), joinerPub, now, time.Hour)
+	require.NoError(t, err)
+	v, err := identity.VerifyGrantToken(tok, joinerPub, now)
+	require.NoError(t, err)
+	require.Equal(t, uint32(3), v.Grant.GetClaims().GetBudget().GetMaxFunctions())
 }
 
 func TestVerifiedSessionPrincipal(t *testing.T) {

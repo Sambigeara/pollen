@@ -32,46 +32,73 @@
     <p class="lede">Every <code>pln</code> command grouped by topic. Same content as <code>pln &lt;command&gt; --help</code>, easier to scan. New to Pollen? Run through the <a href="quickstart.html">Quickstart</a> first; for the model behind the commands, see <a href="concepts.html">Concepts</a>.</p>
 
     <h2 id="context">Contexts</h2>
-    <p>Most <code>pln</code> commands need to know which daemon they're talking to. Named contexts are the primary mechanism. The reserved name <code>default</code> always resolves to the local daemon at <code>$PLN_DIR</code>; add more to point at remote hosts or alternate state directories. See <a href="how-to.html#multiple-clusters">How-to → Multiple clusters</a>.</p>
+    <p>Most <code>pln</code> commands need to know which daemon they're talking to. Named contexts are the primary mechanism. The reserved name <code>default</code> always resolves to the local daemon at <code>$PLN_DIR</code>; add more to point at remote hosts or alternate state directories. See <a href="how-to.html#multiple-clusters">the Multiple clusters recipe</a>.</p>
     <p><strong>Aliases.</strong> <code>pln ctx</code> is short for <code>pln context</code>, and <code>use</code> is short for <code>switch</code>. Examples below use the short forms; either works.</p>
 
     <h3 id="context-add"><code>pln ctx add &lt;name&gt; &lt;target&gt;</code></h3>
     <p>Targets containing <code>@</code> bind to a remote daemon over SSH; absolute paths bind to a local pln dir. Local named contexts get a free UDP port assigned automatically so they coexist with the default-context daemon without colliding on <code>:60611</code>.</p>
     <dl class="flags">
-      <dt>--from &lt;dir|default&gt;</dt><dd>For remote contexts: import an existing admin keypair so this shell can act as admin.</dd>
+      <dt>--from &lt;dir|default&gt;</dt><dd>For remote contexts: import an existing admin keypair so this shell can act as admin. Pass a directory, or <code>default</code> to take the keys from <code>$PLN_DIR/keys</code>.</dd>
     </dl>
-    <pre><code>pln ctx add prod root@prod.example.com --from default
-pln ctx add dev /tmp/pln-dev</code></pre>
+    <div class="terminal">
+      <span class="cmd">pln ctx add prod root@prod.example.com --from default</span>
+      <span class="out">added context "prod"</span>
+      <span class="cmd">pln ctx add dev /tmp/pln-dev</span>
+      <span class="out">added context "dev"</span>
+      <span class="out">warning: /tmp/pln-dev does not exist yet; run `pln init` or `pln up` after switching to this context</span>
+    </div>
 
     <h3 id="context-use"><code>pln ctx use &lt;name&gt;</code></h3>
     <p>Switch the active context. To use a different context for just one command, set <code>PLN_CONTEXT</code> for that invocation:</p>
-    <pre><code>pln ctx use prod                        <span class="c"># persistent</span>
-PLN_CONTEXT=prod pln status             <span class="c"># one-off</span></code></pre>
+    <div class="terminal">
+      <span class="cmd">pln ctx use prod</span>
+      <span class="out">current context: prod</span>
+      <span class="cmd">PLN_CONTEXT=prod pln status</span>
+      <span class="cmt"># one-off, active context unchanged</span>
+    </div>
 
     <h3 id="context-ls"><code>pln ctx ls</code></h3>
-    <p>List contexts. Active one marked with <code>*</code>.</p>
+    <p>List contexts. The active one is marked with <code>*</code> in the <code>CURRENT</code> column.</p>
+    <div class="terminal">
+      <span class="cmd">pln ctx ls</span>
+      <span class="out">NAME     TARGET                  CURRENT</span>
+      <span class="out">default  ~/.pln (local)          *</span>
+      <span class="out">prod     root@prod.example.com</span>
+      <span class="out">dev      /tmp/pln-dev :49213</span>
+    </div>
 
     <h3 id="context-rm"><code>pln ctx rm &lt;name&gt;</code></h3>
     <p>Remove a context. For remote contexts whose identity lives under <code>~/.pln/contexts/&lt;name&gt;/</code>, the per-context dir is also deleted.</p>
+    <div class="terminal">
+      <span class="cmd">pln ctx rm dev</span>
+      <span class="out">removed context "dev"</span>
+    </div>
 
     <h3 id="context-current"><code>pln ctx current</code></h3>
-    <p>Print the active context name. Useful in shell prompts.</p>
+    <p>Print the active context name only. Useful in shell prompts.</p>
+    <div class="terminal">
+      <span class="cmd">pln ctx current</span>
+      <span class="out">prod</span>
+    </div>
 
     <h3 id="context-show"><code>pln ctx show [name]</code> (alias <code>pln ctx whoami</code>)</h3>
-    <p>Print a context's target, identity, capabilities, and delegation cert validity windows (the active context if no name is given). Use it to check why a wire-mode command was refused.</p>
+    <p>Print a context's target, identity, capabilities, and grant status (the active context if no name is given). Use it to check why a wire-mode command was refused.</p>
     <div class="terminal">
       <span class="cmd">pln ctx show staging</span>
       <span class="out">context: staging</span>
       <span class="out">target:  pln://edge.example.com:7443</span>
+      <span class="out">dir:     ~/.pln/contexts/staging</span>
       <span class="out">identity: k7m2q8x4</span>
       <span class="out">issuer:   a1b9c3d2</span>
       <span class="out">status:   ok</span>
       <span class="out">not before: 15 May 2026 09:25 BST</span>
-      <span class="out">not after:  15 May 2026 13:25 BST</span>
       <span class="out">rejoin by:  14 Jun 2026 09:25 BST</span>
       <span class="out">caps:     delegate=false admit=false publish=true max_depth=0</span>
     </div>
-    <p>A cert past <code>not after</code> but before <code>rejoin by</code> renews itself on the next command. Past <code>rejoin by</code> it is dead; see <a href="troubleshoot.html#cert-expired">cert expired</a>.</p>
+    <p><code>rejoin by</code> is the grant deadline: the point past which the grant is dead and the node cannot rejoin on its own. Delegated grants default to a 30-day deadline; admin grants print <code>rejoin by:  never (admin grant)</code> and carry no deadline. Before the deadline the grant renews itself automatically against any reachable delegating peer, so a node keeps working with the root offline. When no identity is enrolled the block collapses to <code>identity: none (run `pln join &lt;token&gt;`)</code>.</p>
+    <div class="callout">
+      <p>There is no <code>pln renew</code>. Renewal is automatic: the daemon renews on a background loop, and wire-mode contexts renew on the next dial. If a grant passes its <code>rejoin by</code> deadline, recover with a fresh <a href="#invite"><code>pln invite</code></a> followed by <a href="#join"><code>pln join &lt;token&gt;</code></a>. See <a href="troubleshoot.html#cert-expired">access expired or node degraded</a> and <a href="concepts.html#grants">Grants</a> in Concepts.</p>
+    </div>
 
     <h3 id="globals">Per-command override</h3>
     <p>Three ways to point a single command somewhere other than the active context, without switching it:</p>
@@ -93,19 +120,20 @@ PLN_CONTEXT=prod pln status             <span class="c"># one-off</span></code><
     <dl class="flags">
       <dt>-d, --detach</dt><dd>Run as background service.</dd>
       <dt>--port &lt;n&gt;</dt><dd>Listening UDP port (default 60611).</dd>
-      <dt>--ips &lt;ip,…&gt;</dt><dd>Advertise these IPs to peers.</dd>
+      <dt>--ips &lt;ip,...&gt;</dt><dd>Advertise these IPs to peers.</dd>
       <dt>--public</dt><dd>Hint that this node is publicly reachable, making it a relay candidate. Actual reachability is verified by the mesh via NAT probing.</dd>
       <dt>--name &lt;str&gt;</dt><dd>Human-readable node name.</dd>
       <dt>--metrics</dt><dd>Log metrics and trace output at debug level.</dd>
     </dl>
     <pre><code>pln up
 pln up -d --name relay --public</code></pre>
+    <p>If the node's grant is no longer valid, the daemon still starts but prints <code>node grant no longer valid — starting in degraded mode; rejoin with `pln join &lt;token&gt;`</code> and runs degraded until an admin peer is reachable or you rejoin. Degraded is the state of a node still serving on a grant whose renewal is failing; it is not a post-deadline grace period. See <a href="concepts.html#grants">Grants</a> in Concepts.</p>
 
     <h3 id="down"><code>pln down</code> (alias <code>pln daemon down</code>)</h3>
     <p>Stop the background service. State and credentials are preserved.</p>
 
     <h3 id="restart"><code>pln restart</code> (alias <code>pln daemon restart</code>)</h3>
-    <p>Restart the background service. Use after <code>pln set</code> or <code>pln serve</code> to rebind listeners, or after <code>pln props</code> on root to re-issue the self-signed cert.</p>
+    <p>Restart the background service. Use after <code>pln set</code> or <code>pln serve</code> to rebind listeners, or after <code>pln props</code> on root to re-issue the root grant from the persisted properties.</p>
 
     <h3 id="logs"><code>pln logs</code> (alias <code>pln daemon logs</code>)</h3>
     <p>Tail the background daemon's log (Homebrew log on macOS, journalctl on Linux).</p>
@@ -117,14 +145,14 @@ pln up -d --name relay --public</code></pre>
     <h2 id="content">Content</h2>
 
     <h3 id="seed"><code>pln seed &lt;source&gt; [name]</code></h3>
-    <p>Publish content to the mesh. The kind is autodetected from the source: <code>.wasm</code> → workload, directory → static site, anything else → blob (or stdin when source is <code>-</code>). Publishing workloads, static sites, and named blobs requires the publisher capability (or admin, which is a strict superset). Each published resource carries a signed cert anchored to the publisher's delegation cert.</p>
+    <p>Publish content to the mesh. The kind is autodetected from the source: <code>.wasm</code> is a workload, a directory is a static site, anything else is a blob (or stdin when source is <code>-</code>). Publishing workloads, static sites, and named blobs requires the publisher capability (or admin, which is a strict superset). Each published resource is a signed record that names the publisher's grant; it stays valid while that grant is within its deadline and not revoked, even after the publisher leaves.</p>
     <dl class="flags">
       <dt>--min-replicas &lt;n&gt;</dt><dd>Workload only. Minimum replicas; default 2. Static sites fan out to every node with <code>static-http</code> enabled; blobs replicate on demand.</dd>
       <dt>--everywhere</dt><dd>Workload only. Place a replica on every node.</dd>
       <dt>--memory, --mem &lt;size&gt;</dt><dd>Workload only. Memory limit (e.g. <code>64MiB</code>, <code>1GiB</code>). Default 8MiB; raise it for Go-WASM guests.</dd>
       <dt>--timeout &lt;dur&gt;</dt><dd>Workload only. Per-invocation timeout (e.g. <code>500ms</code>, <code>5s</code>).</dd>
-      <dt>--allow-prop key=value</dt><dd>Require the caller's delegation-cert property to equal value. Repeatable; all clauses must match. Without any policy flag the resource is open to every authenticated peer. See <a href="concepts.html#authorisation">Concepts → Authorisation</a>.</dd>
-      <dt>--public</dt><dd>Permit anonymous (no-cert) callers via the canonical gateway URL <code>https://fn.&lt;domain&gt;/&lt;slug&gt;/&lt;name&gt;</code> (workload) or <code>https://blob.&lt;domain&gt;/&lt;slug&gt;/&lt;name&gt;</code> (blob). Mutually exclusive with <code>--allow-prop</code>.</dd>
+      <dt>--allow-prop key=value</dt><dd>Require the caller's grant property to equal value. Repeatable; all clauses must match (AND). Without any policy flag the resource is open to every authenticated peer. See <a href="concepts.html#authorisation">Admission</a> in Concepts.</dd>
+      <dt>--public</dt><dd>Permit anonymous callers (no grant) via the canonical gateway URL <code>https://fn.&lt;domain&gt;/&lt;slug&gt;/&lt;name&gt;</code> (workload) or <code>https://blob.&lt;domain&gt;/&lt;slug&gt;/&lt;name&gt;</code> (blob). Mutually exclusive with <code>--allow-prop</code>.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln seed ./hello.wasm</span>
@@ -132,7 +160,7 @@ pln up -d --name relay --public</code></pre>
       <span class="cmd">pln seed ./echo.wasm --public</span>
       <span class="out">seeded echo (3a8c7d2e) → https://fn.pln.sh/k7r4z9xa8n2p/echo</span>
       <span class="cmd">pln seed ./public my-site</span>
-      <span class="out">seeded my-site (12 files, manifest 3a8c7d2e) → https://my-site-k7r4z9xa8n2p.pln.sh</span>
+      <span class="out">seeded my-site (12 files, manifest 3a8c7d2e)</span>
       <span class="cmd">pln seed ./big.bin payload</span>
       <span class="out">seeded payload (e892bca7)</span>
       <span class="cmd">cat data | pln seed -</span>
@@ -177,105 +205,146 @@ pln fetch ab12cd34 -</code></pre>
     <h2 id="networking">Networking</h2>
 
     <h3 id="serve"><code>pln serve &lt;port&gt; [name]</code></h3>
-    <p>Register a local TCP (or UDP) port as a mesh service. Requires the publisher capability (or admin) and is persisted to <code>config.yaml</code>. Every register issues a fresh signed cert anchored to the publisher's delegation cert.</p>
+    <p>Register a local TCP (or UDP) port as a mesh service. Requires the publisher capability (or admin) and is persisted to <code>config.yaml</code>. Every register issues a fresh signed record that names the publisher's grant.</p>
     <dl class="flags">
       <dt>--udp</dt><dd>Expose as a UDP service.</dd>
-      <dt>--allow-prop key=value</dt><dd>Require the caller's delegation-cert property to equal value. Repeatable; all clauses must match. Without any policy flag the service is open to every authenticated peer. See <a href="concepts.html#authorisation">Concepts → Authorisation</a>.</dd>
+      <dt>--allow-prop key=value</dt><dd>Require the caller's grant property to equal value. Repeatable; all clauses must match (AND). Without any policy flag the service is open to every authenticated peer. See <a href="concepts.html#authorisation">Admission</a> in Concepts.</dd>
       <dt>--public</dt><dd>Permit anonymous callers. Mutually exclusive with <code>--allow-prop</code>.</dd>
     </dl>
-    <pre><code>pln serve 8080 api
-pln serve 5353 dns --udp
-pln serve 9000 internal --allow-prop team=backend</code></pre>
+    <div class="terminal">
+      <span class="cmd">pln serve 8080 api</span>
+      <span class="out">Registered service api on port: 8080</span>
+      <span class="cmd">pln serve 5353 dns --udp</span>
+      <span class="out">Registered service dns on port: 5353</span>
+      <span class="cmd">pln serve 9000 internal --allow-prop team=backend</span>
+      <span class="out">Registered service internal on port: 9000</span>
+    </div>
 
     <h3 id="unserve"><code>pln unserve &lt;port|name&gt;</code></h3>
     <p>Unregister a local mesh service. Removes it from <code>config.yaml</code>; open tunnels from peers terminate.</p>
+    <div class="terminal">
+      <span class="cmd">pln unserve api</span>
+      <span class="out">Unregistered service api</span>
+      <span class="cmd">pln unserve 5353</span>
+      <span class="out">Unregistered service on port: 5353</span>
+    </div>
 
     <h3 id="connect"><code>pln connect &lt;service&gt; [provider] [local-port]</code></h3>
     <p>Open a local listener forwarding to a remote mesh service. Provider disambiguates when multiple peers serve the same name (use the peer-id prefix from <code>pln status</code>). Persisted to <code>config.yaml</code>.</p>
-    <pre><code>pln connect api                <span class="c"># any provider, default port</span>
-pln connect api ab12 9090      <span class="c"># specific peer, local port 9090</span></code></pre>
+    <div class="terminal">
+      <span class="cmd">pln connect api</span>
+      <span class="out">forwarding localhost:8080 -&gt; api (198.51.100.10:8080)</span>
+      <span class="cmd">pln connect api ab12 9090</span>
+      <span class="out">forwarding localhost:9090 -&gt; api (198.51.100.10:8080)</span>
+    </div>
 
     <h3 id="disconnect"><code>pln disconnect &lt;service|local-port&gt; [provider]</code></h3>
     <p>Tear down a local tunnel. Identify by service name or local port. Removes from <code>config.yaml</code>.</p>
+    <div class="terminal">
+      <span class="cmd">pln disconnect api</span>
+      <span class="out">disconnected localhost:8080 from api (198.51.100.10:8080)</span>
+    </div>
 
     <h2 id="cluster">Cluster</h2>
 
     <h3 id="init"><code>pln init</code></h3>
     <p>Initialise a new root cluster on this node. Idempotent if already initialised as root.</p>
     <dl class="flags">
-      <dt>--prop key=val</dt><dd>Root node properties; baked into the self-signed cert and persisted to <code>config.yaml</code>. Update later with <a href="#props"><code>pln props</code></a> and restart.</dd>
+      <dt>--prop key=val</dt><dd>Root node properties; baked into the root grant and persisted to <code>config.yaml</code>. Update later with <a href="#props"><code>pln props</code></a> and restart.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln init</span>
-      <span class="out">initialized root cluster
-root_pub: 7c9a4f8d3e2b1c5a6d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c
-cluster_id: a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2</span>
+      <span class="out">initialized root cluster</span>
+      <span class="out">root_pub: 7c9a4f8d3e2b1c5a6d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c</span>
+      <span class="out">cluster_id: a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2</span>
       <span class="cmd">pln init --prop role=primary --prop region=eu</span>
     </div>
 
     <h3 id="join"><code>pln join &lt;token&gt;</code></h3>
-    <p>Enrol this node into the cluster the token was minted for. Writes credentials and exits; pass <code>--up</code> to also start the daemon.</p>
+    <p>Enrol this node into the cluster the token was minted for. Writes credentials and exits; pass <code>--up</code> to also start the daemon. This is also the recovery path: if a node's grant has passed its deadline, mint a fresh token with <a href="#invite"><code>pln invite</code></a> and run <code>pln join</code> again.</p>
     <dl class="flags">
       <dt>-u, --up</dt><dd>Start the daemon after enrolment.</dd>
       <dt>--public</dt><dd>Hint that this node is publicly reachable, making it a relay candidate. Actual reachability is verified by the mesh via NAT probing.</dd>
     </dl>
+    <div class="terminal">
+      <span class="cmd">pln join eyJhbG...AAAA</span>
+      <span class="out">credentials enrolled; run `pln up -d` to start the node</span>
+      <span class="cmd">pln join eyJhbG...AAAA --up</span>
+      <span class="out">credentials enrolled; starting daemon</span>
+    </div>
+    <div class="callout">
+      <p>Once enrolled, the grant renews itself automatically before its deadline against any reachable delegating peer, so there is no <code>pln renew</code> command and a node keeps working with the root offline. <code>pln join</code> is only needed for first enrolment or to recover a grant that has already passed its deadline. See <a href="concepts.html#grants">Grants</a> in Concepts.</p>
+    </div>
 
     <h3 id="invite"><code>pln invite [subject-pub]</code></h3>
-    <p>Mint a signed invite token. Pass to <code>pln join</code>. Requires admin capability on the issuing node. The default tier is leaf (consume only); pass <code>--publisher</code> or <code>--admin</code> to widen.</p>
+    <p>Mint a signed invite token. Pass to <code>pln join</code>. Requires admin capability on the issuing node. The default tier is leaf (consume only); pass <code>--publisher</code> or <code>--admin</code> to widen. The token is printed raw with no trailing newline, so it pipes cleanly.</p>
     <dl class="flags">
       <dt>--subject &lt;hex&gt;</dt><dd>Bind to a specific node public key. Without it, the token admits any node.</dd>
       <dt>--ttl &lt;dur&gt;</dt><dd>Token validity (default 5m).</dd>
-      <dt>--expire-after &lt;dur&gt;</dt><dd>Hard access expiry on the issued cert.</dd>
-      <dt>--publisher</dt><dd>Mint the joiner's cert with publisher capability so it can publish workloads, blobs, services, and static sites.</dd>
-      <dt>--admin</dt><dd>Mint the joiner's cert with admin capabilities (delegate, admit, publish). The issuer must itself be admin-capable. Mutually exclusive with <code>--publisher</code>.</dd>
-      <dt>--prop key=val</dt><dd>Properties baked into the joining peer's cert. Repeatable; accepts <code>key=value</code>, a JSON object, or <code>-</code> to read JSON from stdin.</dd>
+      <dt>--expire-after &lt;dur&gt;</dt><dd>Override the deadline on the issued grant (the point past which the node cannot rejoin on its own). Delegated grants default to a 30-day deadline.</dd>
+      <dt>--publisher</dt><dd>Mint the joiner's grant with publisher capability so it can publish workloads, blobs, services, and static sites.</dd>
+      <dt>--admin</dt><dd>Mint the joiner's grant with admin capabilities (delegate, admit, publish). The issuer must itself be admin-capable. Mutually exclusive with <code>--publisher</code>.</dd>
+      <dt>--prop key=val</dt><dd>Properties baked into the joining peer's grant. Repeatable; accepts <code>key=value</code>, a JSON object, or <code>-</code> to read JSON from stdin.</dd>
+      <dt>--max-functions &lt;n&gt;</dt><dd>Cap on workloads the joining peer may publish. Default 0 (no cap).</dd>
+      <dt>--max-blobs &lt;n&gt;</dt><dd>Cap on blobs the joining peer may publish. Default 0 (no cap).</dd>
+      <dt>--max-sites &lt;n&gt;</dt><dd>Cap on static sites the joining peer may publish. Default 0 (no cap). Budgets are a count of published resources; there are no byte or traffic quotas. The same flags are accepted by <a href="#grant"><code>pln grant</code></a> for a peer that has already joined.</dd>
     </dl>
     <pre><code>pln invite --ttl 30m --prop role=worker
 pln invite --publisher --subject $(ssh worker pln id)
+pln invite --publisher --max-functions 10 --max-blobs 50 --max-sites 2
 pln invite --admin --subject $(ssh relay pln id)</code></pre>
 
     <h3 id="grant"><code>pln grant &lt;peer-id&gt;</code></h3>
-    <p>Issue a fresh delegation cert to a connected peer. Identify by peer-id prefix. Default tier is leaf.</p>
+    <p>Issue a fresh grant to a connected peer. Identify by peer-id prefix. Default tier is leaf. A delegated grant carries a deadline (default 30 days) and renews itself automatically before then; admin grants carry no deadline.</p>
     <dl class="flags">
       <dt>--publisher</dt><dd>Grant publisher capability so the peer can publish resources.</dd>
       <dt>--admin</dt><dd>Delegate admin authority (so the cluster keeps working with root offline). Mutually exclusive with <code>--publisher</code>.</dd>
-      <dt>--prop key=val</dt><dd>Cert properties.</dd>
+      <dt>--prop key=value</dt><dd>Grant properties. Repeatable.</dd>
+      <dt>--max-functions &lt;n&gt;</dt><dd>Cap on workloads the peer may publish. Default 0 (no cap).</dd>
+      <dt>--max-blobs &lt;n&gt;</dt><dd>Cap on blobs the peer may publish. Default 0 (no cap).</dd>
+      <dt>--max-sites &lt;n&gt;</dt><dd>Cap on static sites the peer may publish. Default 0 (no cap). Budgets are a count of published resources; there are no byte or traffic quotas.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln grant ab12cd34 --prop role=lead --prop team=backend</span>
-      <span class="out">certificate issued (leaf) to ab12cd34</span>
-      <span class="cmd">pln grant worker1 --publisher</span>
-      <span class="out">certificate issued (publisher) to 8c4d2f9a</span>
+      <span class="out">grant issued (leaf) to ab12cd34</span>
+      <span class="cmd">pln grant worker1 --publisher --max-functions 10 --max-blobs 50</span>
+      <span class="out">grant issued (publisher) to 8c4d2f9a</span>
       <span class="cmd">pln grant relay1 --admin</span>
-      <span class="out">certificate issued (admin) to ab12cd34</span>
+      <span class="out">grant issued (admin) to ab12cd34</span>
     </div>
 
     <h3 id="deny"><code>pln deny &lt;peer-id&gt;</code></h3>
     <p>Revoke a peer's membership and tear down its connections. Identify by peer-id prefix. Cascades to peers admitted by the denied node.</p>
+    <div class="terminal">
+      <span class="cmd">pln deny ab12cd34</span>
+      <span class="out">denied peer ab12cd34</span>
+    </div>
 
     <h3 id="purge"><code>pln purge</code></h3>
-    <p>Delete local cluster credentials, CAS, runtime state, and config. Daemon must be down. Prompts unless <code>--yes</code>.</p>
+    <p>Delete local cluster credentials (including the stored grant at <code>keys/grant.pb</code>), CAS, runtime state, and config. Daemon must be down. Prompts unless <code>--yes</code>.</p>
     <dl class="flags">
       <dt>--include-keys</dt><dd>Also wipe the node identity keys.</dd>
       <dt>--yes</dt><dd>Skip confirmation.</dd>
     </dl>
+    <div class="terminal">
+      <span class="cmd">pln purge --yes</span>
+      <span class="out">local state purged</span>
+    </div>
 
-    <h3 id="bootstrap"><code>pln bootstrap ssh [name=]&lt;target&gt; …</code></h3>
+    <h3 id="bootstrap"><code>pln bootstrap ssh [name=]&lt;target&gt; ...</code></h3>
     <p>Install Pollen, enrol, and start the daemon on each SSH target in parallel. Linux only. Needs SSH as root or with passwordless sudo. Targets may also be piped from stdin (one per line) using <code>-</code>.</p>
     <dl class="flags">
       <dt>--publisher</dt><dd>Issue publisher capability to every enrolled node.</dd>
       <dt>--admin</dt><dd>Delegate admin authority to every enrolled node. Mutually exclusive with <code>--publisher</code>.</dd>
-      <dt>--prop key=val</dt><dd>Properties baked into every enrolled node's cert. Repeatable; accepts <code>key=value</code>, a JSON object, or <code>-</code> to read JSON from stdin.</dd>
+      <dt>--prop key=val</dt><dd>Properties baked into every enrolled node's grant. Repeatable; accepts <code>key=value</code>, a JSON object, or <code>-</code> to read JSON from stdin.</dd>
       <dt>--relay-port &lt;n&gt;</dt><dd>Relay UDP port to advertise (default 60611).</dd>
-      <dt>--expire-after &lt;dur&gt;</dt><dd>Hard access expiry on the issued cert.</dd>
+      <dt>--expire-after &lt;dur&gt;</dt><dd>Override the deadline on every issued grant. Delegated grants default to a 30-day deadline.</dd>
       <dt>--no-up</dt><dd>When the orchestrator also enrols itself, skip starting its local daemon.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln bootstrap ssh user@host</span>
       <span class="out">bootstrapping user@host...
-  user@host                                ok
-
-1 succeeded, 0 failed</span>
+  user@host                                ok</span>
       <span class="cmd">pln bootstrap ssh relay-eu=root@10.0.0.5 relay-us=root@10.0.0.6 --admin</span>
       <span class="cmd">pln bootstrap ssh worker=root@10.0.0.7 --publisher</span>
       <span class="cmd">echo "media=alice@10.0.0.5" | pln bootstrap ssh -</span>
@@ -292,64 +361,95 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
     <p>The header shows two chips: cluster <em>health</em> (HEALTHY / DEGRADED / UNHEALTHY) and the local node's <em>capability tier</em> (ADMIN / PUBLISHER / LEAF). The tier reflects what this node can do; commands that require a higher tier (e.g. <a href="#grant"><code>pln grant</code></a>) fail with a clear error when invoked from below it.</p>
     <div class="terminal">
       <span class="cmd">pln status</span>
-      <span class="out">HEALTHY  PUBLISHER
-context: home
-
-PEERS
-NODE             STATUS          ADDR                CPUs  CPU  MEM  TUNNELS  LATENCY  IN  OUT
-7c9a4f8d (self)  -               -                   8     2%   18%  1        -        -   -
-ab12cd34         online (public) 198.51.100.10:60611 4     1%   8%   1        12ms     0   0
-
-SEEDS
-NAME    HASH      STATUS  REPLICAS  LOCAL  UPTIME
-hello   4f3a7c91  ready   2/2       *      4m</span>
+      <span class="out">HEALTHY  PUBLISHER</span>
+      <span class="out">context: home</span>
+      <span class="out"></span>
+      <span class="out">PEERS</span>
+      <span class="out">NODE             STATUS           ADDR                CPUs  CPU  MEM  TUNNELS  LATENCY  IN  OUT</span>
+      <span class="out">7c9a4f8d (self)  -                -                   8     2%   18%  1        -        -   -</span>
+      <span class="out">ab12cd34         direct (public)  198.51.100.10:60611 4     1%   8%   1        12ms     0   0</span>
+      <span class="out"></span>
+      <span class="out">SEEDS</span>
+      <span class="out">NAME    HASH      STATUS  REPLICAS  LOCAL  UPTIME</span>
+      <span class="out">hello   4f3a7c91  running  2/2       *      4m</span>
+      <span class="out"></span>
+      <span class="out">temporary access expires in 23d</span>
     </div>
+    <p>The last line is the grant's deadline footer. A delegated leaf or publisher grant has a deadline, so it reads <code>temporary access expires in &lt;d&gt;</code> while the grant is valid and <code>temporary access expired — rejoin the cluster or contact a cluster admin</code> once the deadline has passed. Admin and root grants carry no deadline, so this footer does not apply to them.</p>
 
     <h3 id="inspect"><code>pln inspect &lt;target&gt;</code></h3>
-    <p>Drill into a single peer or resource. <code>&lt;target&gt;</code> resolves against the cluster view this node holds: a peer-id hex prefix, a workload or static-site name, a blob name or hash prefix, or a service name (suffixed when several peers serve the same name). Use this when <a href="#status"><code>pln status</code></a> shows the row but you need the underlying cert, properties, telemetry, or publish list.</p>
+    <p>Drill into a single peer or resource. <code>&lt;target&gt;</code> resolves against the cluster view this node holds: a peer-id hex prefix, a workload or static-site name, a blob name or hash prefix, or a service name (suffixed when several peers serve the same name). Use this when <a href="#status"><code>pln status</code></a> shows the row but you need the underlying grant, properties, telemetry, or publish list.</p>
     <p>Node detail is implemented. Resource targets (workloads, static sites, blobs, services) are recognised but currently return <code>resource inspection not yet implemented</code>; use <a href="#status"><code>pln status</code></a> for resource details in the meantime.</p>
     <div class="terminal">
       <span class="cmd">pln inspect ab12cd34</span>
-      <span class="out">NODE
-name          gamer
-peer-id       ab12cd34ef56011223344556677889aabbccddeeff00112233445566778899aa
-status        direct (public)
-addr          10.0.0.42:7531
-tier          PUBLISHER
-membership    expires in 23h
-issued by     root-admin [d3f9ab12]
-attributes
-  region      eu
-  role        worker
-
-TELEMETRY
-cpu           8 cores, 14%
-mem           8 GiB total, 41%
-nat           easy
-reachable     3 peers
-tunnels       2
-
-PUBLISHES
-services      api, dns
-workloads     greeter
-blobs         payload</span>
+      <span class="out">NODE</span>
+      <span class="out">name          gamer</span>
+      <span class="out">peer-id       ab12cd34ef56011223344556677889aabbccddeeff00112233445566778899aa</span>
+      <span class="out">status        direct (public)</span>
+      <span class="out">addr          10.0.0.42:7531</span>
+      <span class="out">tier          publisher</span>
+      <span class="out">membership    expires in 23d</span>
+      <span class="out">issued by     root-admin [d3f9ab12]</span>
+      <span class="out">attributes</span>
+      <span class="out">  region      eu</span>
+      <span class="out">  role        worker</span>
+      <span class="out"></span>
+      <span class="out">TELEMETRY</span>
+      <span class="out">cpu           8 cores, 14%</span>
+      <span class="out">mem           8 GiB total, 41%</span>
+      <span class="out">nat           easy</span>
+      <span class="out">reachable     3 peers</span>
+      <span class="out">tunnels       2</span>
+      <span class="out"></span>
+      <span class="out">PUBLISHES</span>
+      <span class="out">services      api, dns</span>
+      <span class="out">workloads     greeter</span>
+      <span class="out">blobs         payload</span>
     </div>
 
     <h3 id="id"><code>pln id</code></h3>
-    <p>Print this node's hex-encoded identity public key. Pipe-friendly. Used as the <code>--subject</code> of an invite token.</p>
+    <p>Print this node's hex-encoded ed25519 identity public key, with no trailing newline. Pipe-friendly. Used as the <code>--subject</code> of an invite token.</p>
     <pre><code>pln invite --subject $(ssh user@host pln id)</code></pre>
 
     <h3 id="version"><code>pln version</code></h3>
-    <p>Show binary version, commit, and build date. <code>--short</code> prints only the version.</p>
+    <p>Show binary version, commit, and build date. <code>--short</code> prints only the version string.</p>
+    <div class="terminal">
+      <span class="cmd">pln version</span>
+      <span class="out">version: 0.9.2</span>
+      <span class="out">commit: 4f3a7c91</span>
+      <span class="out">date: 2026-05-17</span>
+      <span class="cmd">pln version --short</span>
+      <span class="out">0.9.2</span>
+    </div>
+    <div class="callout-info">
+      <p>The control wire is versioned and negotiated per dial. If <code>pln</code> and the daemon disagree on the protocol range, the command fails with exactly one of:</p>
+      <pre><code>pln is out of date: this daemon speaks protocol X-Y but pln supports only up to Z; upgrade pln
+the daemon is out of date: it speaks protocol X-Y but pln requires at least Z; upgrade the daemon
+the daemon is out of date: it does not support protocol negotiation; upgrade the daemon</code></pre>
+      <p>Bring both sides onto a compatible build with <a href="#daemon-upgrade"><code>pln upgrade</code></a>. See <a href="concepts.html#versioned-wire">staying current</a> and <a href="troubleshoot.html#out-of-date">out of date</a>.</p>
+    </div>
 
     <h2 id="daemon">Daemon admin</h2>
     <p>Operations that act on the daemon binary or its background unit, rather than the running node. Operational lifecycle (<a href="#up">up</a>/<a href="#down">down</a>/<a href="#restart">restart</a>/<a href="#logs">logs</a>) stays at the top level.</p>
 
     <h3 id="daemon-install"><code>pln daemon install</code></h3>
     <p>Linux only. Creates the <code>pln</code> system user, state dir, drops the systemd unit, enables it. If invoked via <code>sudo</code>, adds the invoking user to the <code>pln</code> group. Idempotent.</p>
+    <div class="terminal">
+      <span class="cmd">sudo pln daemon install</span>
+      <span class="out">pln daemon installed at /lib/systemd/system/pln.service using /usr/local/bin/pln</span>
+    </div>
 
     <h3 id="daemon-uninstall"><code>pln daemon uninstall</code></h3>
     <p>Stop and remove the systemd unit. <code>--purge</code> also wipes <code>/var/lib/pln</code> (irreversible).</p>
+    <dl class="flags">
+      <dt>--purge</dt><dd>Also wipe <code>/var/lib/pln</code>.</dd>
+    </dl>
+    <div class="terminal">
+      <span class="cmd">sudo pln daemon uninstall</span>
+      <span class="out">pln daemon uninstalled</span>
+      <span class="cmd">sudo pln daemon uninstall --purge</span>
+      <span class="out">purged /var/lib/pln</span>
+    </div>
 
     <h3 id="daemon-upgrade"><code>pln upgrade</code> (alias <code>pln daemon upgrade</code>)</h3>
     <p>Upgrade the local pln binary via the platform package manager: Homebrew on macOS, the install script on Linux. Linux preserves the current install method by default: <code>/usr/local/bin/pln</code> stays on tarball installs; <code>/usr/bin/pln</code> uses distro package-manager detection.</p>
@@ -368,37 +468,47 @@ pln upgrade --method tarball</code></pre>
     <dl class="flags">
       <dt>http</dt><dd>Prometheus metrics listener (default <code>:9090</code>).</dd>
       <dt>static-http</dt><dd>HTTP listener for static sites (default <code>:8080</code>).</dd>
+      <dt>static-http-domain</dt><dd>Public DNS suffix served by the static listener (e.g. <code>pln.sh</code>); enables <code>&lt;name&gt;-&lt;slug&gt;.&lt;domain&gt;</code> routing.</dd>
       <dt>control-tls</dt><dd>TLS+mTLS listener for the public control RPC (e.g. <code>:7443</code>).</dd>
       <dt>gateway</dt><dd>HTTP listener for the anonymous share-URL gateway (e.g. <code>:8088</code>). Route <code>blob.&lt;domain&gt;</code> and <code>fn.&lt;domain&gt;</code> at this listener.</dd>
       <dt>log-level</dt><dd>Verbosity: <code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code>.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln set</span>
-      <span class="out">Available keys:
-  http          HTTP address for Prometheus metrics (default :9090)
-  log-level     Log verbosity: debug, info, warn, error (default info)
-  static-http   HTTP address for serving static sites (default :8080)</span>
+      <span class="out">Available keys:</span>
+      <span class="out">  control-tls    TLS+mTLS address for the public control RPC (e.g. :7443) (default )</span>
+      <span class="out">  gateway        HTTP address for the anonymous share-URL gateway (e.g. :8088) (default )</span>
+      <span class="out">  http           HTTP address for Prometheus metrics (default :9090)</span>
+      <span class="out">  log-level      Log verbosity: debug, info, warn, error (default info)</span>
+      <span class="out">  static-http    HTTP address for serving static sites (default :8080)</span>
+      <span class="out">  static-http-domain Public DNS suffix served by the static listener (e.g. pln.sh); enables `&lt;name&gt;-&lt;slug&gt;.&lt;domain&gt;` routing (default )</span>
       <span class="cmd">pln set http :9100</span>
       <span class="out">set http=:9100 (run `pln restart` to apply)</span>
     </div>
 
     <h3 id="unset"><code>pln unset &lt;key&gt;</code></h3>
     <p>Clear a daemon config value, restoring default behaviour.</p>
+    <div class="terminal">
+      <span class="cmd">pln unset http</span>
+      <span class="out">unset http (run `pln restart` to apply)</span>
+    </div>
 
-    <h3 id="props"><code>pln props [key=value …]</code></h3>
-    <p>List or replace this node's identity properties. Properties are baked into the local cert and surfaced to seeds and policies on every call. Local-only; root nodes only (delegated peers receive properties via <a href="#grant"><code>pln grant</code></a> or <a href="#invite"><code>pln invite --prop</code></a>).</p>
+    <h3 id="props"><code>pln props [key=value ...]</code></h3>
+    <p>List or replace this node's identity properties. Properties are baked into the local grant and surfaced to seeds and admission policy on every call. Local-only; root nodes only (delegated peers receive properties via <a href="#grant"><code>pln grant</code></a> or <a href="#invite"><code>pln invite --prop</code></a>).</p>
     <dl class="flags">
       <dt>--clear</dt><dd>Remove all properties. Cannot be combined with positional args.</dd>
     </dl>
-    <p>Replace semantics: positional args define the complete set, so any unlisted key is removed. Changes take effect on the next <code>pln up</code>; root re-issues its self-signed cert from the persisted properties on every start, and the cluster's renewal pipeline keeps it fresh from then on.</p>
+    <p>Replace semantics: positional args define the complete set, so any unlisted key is removed. Changes take effect on the next <code>pln up</code>; root re-issues its root grant from the persisted properties on every start, and renewal keeps delegated grants fresh from then on. The trailing hint reads <code>(run `pln restart` to apply)</code> when the daemon socket is active, otherwise <code>(will apply on next `pln up`)</code>.</p>
     <div class="terminal">
       <span class="cmd">pln props</span>
-      <span class="out">role=primary
-region=eu</span>
+      <span class="out">role=primary</span>
+      <span class="out">region=eu</span>
       <span class="cmd">pln props role=primary region=eu</span>
       <span class="out">properties updated (run `pln restart` to apply)</span>
       <span class="cmd">pln props --clear</span>
       <span class="out">properties updated (run `pln restart` to apply)</span>
+      <span class="cmd">pln props</span>
+      <span class="out">(no properties set)</span>
     </div>
 
     <h2 id="exit-codes">Exit codes</h2>

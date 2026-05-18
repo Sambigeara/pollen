@@ -71,7 +71,11 @@ func MintSession(
 	if err != nil {
 		return nil, err
 	}
-	session := &identityv1.Session{Claims: claims, Signature: sig}
+	subjectSig, err := SignGrantSubject(grant, subjectPriv)
+	if err != nil {
+		return nil, err
+	}
+	session := &identityv1.Session{Claims: claims, Signature: sig, SubjectSignature: subjectSig}
 	if err := protovalidate.Validate(session); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrSessionInvalid, err)
 	}
@@ -121,6 +125,13 @@ func VerifySession(
 	}
 	if err := VerifyPayload(ed25519.PublicKey(grant.GetClaims().GetSubjectPub()), msg, session.GetSignature(), sigContextSession); err != nil {
 		return nil, fmt.Errorf("%w: signature invalid", ErrSessionInvalid)
+	}
+	// The grant-subject proof rides every session so the serving node can
+	// relay a daemonless publisher's grant into cluster state through the
+	// same gate a gossiped grant passes. It is by the same key as the
+	// session signature, so a stripped or swapped proof simply fails here.
+	if err := VerifyGrantSubject(grant, session.GetSubjectSignature()); err != nil {
+		return nil, fmt.Errorf("%w: subject proof invalid", ErrSessionInvalid)
 	}
 
 	gc := grant.GetClaims()

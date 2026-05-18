@@ -157,6 +157,9 @@ further grants.`,
 	inviteCmd.Flags().StringArray("prop", nil, "Grant properties: key=value, JSON, or - for stdin")
 	inviteCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
 	inviteCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
+	inviteCmd.Flags().Uint32("max-functions", 0, "Max functions the grantee may publish (0 = unlimited)")
+	inviteCmd.Flags().Uint32("max-blobs", 0, "Max blobs the grantee may publish (0 = unlimited)")
+	inviteCmd.Flags().Uint32("max-sites", 0, "Max sites the grantee may publish (0 = unlimited)")
 
 	adminCmd := &cobra.Command{Use: "admin", Short: "Manage admin keys (advanced)"}
 	adminCmd.AddCommand(&cobra.Command{
@@ -491,7 +494,11 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 	case !caps.GetCanAdmit():
 		grantDeadline = now.Add(identity.DefaultGrantDeadlineTTL)
 	}
-	ticket, err := creds.IssueInvite(bootstrap, subjectPub, caps, identity.UnlimitedBudget(), grantDeadline, now, ttl)
+	budget := budgetFromFlags(cmd)
+	if budget == nil {
+		budget = identity.UnlimitedBudget()
+	}
+	ticket, err := creds.IssueInvite(bootstrap, subjectPub, caps, budget, grantDeadline, now, ttl)
 	if err != nil {
 		return err
 	}

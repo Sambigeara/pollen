@@ -952,3 +952,46 @@ func TestPublicMesh_ServiceUnexposureRevokesActiveTunnels(t *testing.T) {
 
 	lt.requireClosed(t)
 }
+
+// TestPublicMesh_InviteRedeemOnIssuerNode pins the case where the
+// joiner's only bootstrap peer is the issuing node itself. This is the
+// real-world `ssh <host> pln invite` pattern: the operator mints on a
+// node, so that node is both the issuer and the advertised entrypoint.
+// The redeem must be processed locally. The other invite tests always
+// bootstrap via a different node, so a regression where the daemon does
+// not wire its own invite-issuer credentials still passes there (the
+// receiving node forwards to the issuer over the mesh). Here the issuer
+// receives its own redeem; without the local fast path it forwards to
+// itself, and a node holds no mesh session to itself, so the join fails.
+func TestPublicMesh_InviteRedeemOnIssuerNode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
+	t.Cleanup(cancel)
+
+	c := PublicMesh(t, 2, ctx) //nolint:mnd
+	c.RequireConverged(t)
+
+	joiner := c.AddNodeAndStart(t, "issuer-dial-joiner", Public, ctx)
+
+	issuer := c.Node("node-0")
+	bootstrap := []*admissionv1.BootstrapPeer{{
+		PeerPub: issuer.PeerKey().Bytes(),
+		Addrs:   []string{issuer.VirtualAddr().String()},
+	}}
+
+	ticket, err := issuer.Node().Credentials().IssueInvite(
+		bootstrap,
+		ed25519.PublicKey(joiner.PeerKey().Bytes()),
+		identity.LeafCapabilities(),
+		identity.UnlimitedBudget(),
+		time.Now().Add(24*time.Hour), //nolint:mnd
+		time.Now(),
+		5*time.Minute, //nolint:mnd
+	)
+	require.NoError(t, err)
+
+	_, err = joiner.Node().JoinWithInvite(ctx, ticket)
+	require.NoError(t, err)
+
+	connectToBootstrap(ctx, t, joiner, issuer)
+	c.RequirePeerVisible(t, "issuer-dial-joiner")
+}

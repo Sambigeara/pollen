@@ -154,6 +154,49 @@ func TestAdmit(t *testing.T) {
 	})
 }
 
+// TestAdmitWrapsRejectionsAsErrRejected proves the authorise and
+// account verdicts surface through Admit as ErrRejected with their
+// reason verbatim (the control layer maps that to FailedPrecondition),
+// while the message stays byte-identical to what the daemon logs. The
+// expected strings are the exact text the operator-facing docs quote.
+func TestAdmitWrapsRejectionsAsErrRejected(t *testing.T) {
+	now := time.Now()
+
+	t.Run("authorise: missing publish capability", func(t *testing.T) {
+		rootPub, authPub, authPriv, grant := grantCaps(t, now, identity.LeafCapabilities())
+		body, res := seedBodyResource("echo", "a")
+		f, err := fact.IssueFact(authPriv, res, body, nil, 1, false)
+		require.NoError(t, err)
+		g := New(rootPub, fakeStore{snap: state.Snapshot{Nodes: nodes(authPub, grant)}})
+		err = g.Admit(&statev1.SpecChange{Fact: f, Body: &statev1.SpecChange_Workload{Workload: body}})
+		require.ErrorIs(t, err, ErrRejected)
+		require.EqualError(t, err, "admission: authority grant lacks publish capability for functions")
+	})
+
+	t.Run("account: count budget exhausted", func(t *testing.T) {
+		adminPub, adminPriv := newKeyPair(t)
+		authPub, authPriv := newKeyPair(t)
+		grant, err := identity.IssueGrant(adminPriv, nil, authPub,
+			identity.PublisherCapabilities(), &identityv1.Budget{MaxFunctions: 1},
+			now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		require.NoError(t, err)
+
+		snap := state.Snapshot{
+			Nodes: nodes(authPub, grant),
+			Specs: map[string]state.WorkloadSpecView{
+				"deadbeef": {Spec: state.WorkloadSpec{Name: "first"}, Publisher: types.PeerKeyFromBytes(authPub)},
+			},
+		}
+		body, res := seedBodyResource("second", "b")
+		f, err := fact.IssueFact(authPriv, res, body, nil, 1, false)
+		require.NoError(t, err)
+		g := New(adminPub, fakeStore{snap: snap})
+		err = g.Admit(&statev1.SpecChange{Fact: f, Body: &statev1.SpecChange_Workload{Workload: body}})
+		require.ErrorIs(t, err, ErrRejected)
+		require.EqualError(t, err, "admission: functions budget exhausted: authority holds 1, limit 1")
+	})
+}
+
 func TestDecideFailClosed(t *testing.T) {
 	now := time.Now()
 	rootPub, _, _, grant := authority(t, now, now.Add(30*24*time.Hour), map[string]any{"team": "core"})
@@ -255,6 +298,7 @@ func TestRuntimeMethodsFailClosed(t *testing.T) {
 	})
 	t.Run("MayPublish", func(t *testing.T) {
 		require.NoError(t, g.MayPublish(grant, nil), "nil policy always permitted")
+		require.NoError(t, g.MayPublish(grant, &admissionv1.Predicate{Public: true}), "valid grant may publish a public spec")
 		require.Error(t, g.MayPublish(nil, &admissionv1.Predicate{Public: true}), "nil grant with policy rejected")
 		_, _, _, expired := authority(t, now.Add(-48*time.Hour), now.Add(-time.Hour), nil)
 		require.Error(t, g.MayPublish(expired, &admissionv1.Predicate{Public: true}))

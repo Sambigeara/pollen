@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Quickstart · Pollen docs</title>
-  <meta name="description" content="Install Pollen, stand up a cluster, deploy a WASM workload, and call it. About fifteen minutes.">
+  <meta name="description" content="Install Pollen, stand up a cluster, deploy a WASM workload, and call it.">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -49,7 +49,9 @@
 
     <div class="terminal">
       <span class="cmd">pln version</span>
-      <span class="out">pln 0.x.y (build 9eefda9, 2026-05-10)</span>
+      <span class="out">version: 0.6.0
+commit: 9eefda9
+date: 2026-05-10</span>
     </div>
 
     <div class="callout">
@@ -57,7 +59,7 @@
     </div>
 
     <h2 id="cluster">2. Stand up a cluster</h2>
-    <p>One command creates the root cluster on this machine. Pollen mints an admin keypair, writes a self-signed root cert, and persists state under <code>~/.pln</code> (or <code>/var/lib/pln</code> on Linux when installed as a service).</p>
+    <p>One command creates the root cluster on this machine. Pollen mints an admin keypair, writes a self-signed root grant, and persists state under <code>~/.pln</code> (or <code>/var/lib/pln</code> on Linux when installed as a service).</p>
 
     <div class="terminal">
       <span class="cmd">pln init</span>
@@ -77,7 +79,9 @@ cluster_id: a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6789a1b2</sp
 
     <div class="terminal">
       <span class="cmd">pln status</span>
-      <span class="out">PEERS
+      <span class="out">HEALTHY  ADMIN
+
+PEERS
 NODE             STATUS  ADDR  CPUs  CPU   MEM   TUNNELS  LATENCY  IN  OUT
 7c9a4f8d (self)  -       -     8     2%    18%   0        -        -   -</span>
     </div>
@@ -102,13 +106,15 @@ done</span>
       <span class="out">seeded echo (4f3a7c91)</span>
     </div>
 
-    <p>Pollen has hashed the artifact, signed a workload spec with your local delegation cert, and gossiped both into the cluster. With one node you'll see one replica. With many nodes, replicas land wherever there's capacity nearby.</p>
+    <p>Pollen has hashed the artefact, signed a workload spec with your local grant, and gossiped both into the cluster. With one node you'll see one replica. With many nodes, replicas land wherever there's capacity nearby.</p>
 
     <div class="terminal">
       <span class="cmd">pln status seeds</span>
-      <span class="out">SEEDS
+      <span class="out">HEALTHY  ADMIN
+
+SEEDS
 NAME  HASH      STATUS  REPLICAS  LOCAL  UPTIME
-echo  4f3a7c91  ready   1/2       *      3s</span>
+echo  4f3a7c91  running  1/2       *      3s</span>
     </div>
 
     <p class="aside"><code>1/2</code> means one active replica out of a target of two. The default <code>--min-replicas</code> is two; with only one node available the second replica waits for capacity to appear.</p>
@@ -139,18 +145,18 @@ pln call echo shout 'hello world'      <span class="c"># → HELLO WORLD</span><
       <span class="cmd">pln bootstrap ssh edge-eu=root@10.0.0.5 edge-us=root@10.0.0.6</span>
     </div>
 
-    <p>Linux targets only, SSH as root or with passwordless sudo. The orchestrator installs Pollen on the target, mints a cert, and starts the daemon. Within seconds the new node appears in <code>pln status</code> and replicas start to balance.</p>
+    <p>Linux targets only, SSH as root or with passwordless sudo. The orchestrator installs Pollen on the target, issues it a grant, and starts the daemon. Within seconds the new node appears in <code>pln status</code> and replicas start to balance.</p>
 
     <div class="callout">
       <p><strong>Out of band joins.</strong> If you can't SSH directly, mint an invite token on the admin and ship it (Slack, email, anywhere). On the joiner, run <code>pln join --up &lt;token&gt;</code>. Tokens are signed and self-contained; the default TTL is five minutes.</p>
     </div>
 
     <h2 id="what-happened">What just happened</h2>
-    <p>Three things, in layers:</p>
     <ul>
-      <li><strong>A signed root.</strong> <code>pln init</code> created an ed25519 admin keypair and a self-signed root cert. Every cert in the cluster traces back to that root via a chain of delegations. Membership is cryptographic; there are no shared secrets to leak.</li>
-      <li><strong>A converging document.</strong> Every node holds the same CRDT describing peers, services, workloads, sites, and blobs. <code>pln seed</code> writes a fact into that document; the gossip layer fans it out to every other node, which then independently decides what to do about it.</li>
-      <li><strong>Local placement.</strong> No node tells any other node to host the workload. Each one scores itself against the spec — capacity, cached artifacts, proximity to traffic — and claims a replica if it's a good fit. Add a node, and it joins the scoring round.</li>
+      <li><strong>You created a root grant.</strong> <code>pln init</code> minted an ed25519 admin keypair and a root <a href="concepts.html#grants">grant</a> that names what you are allowed to do. Every other grant in the cluster traces back to it. Membership is cryptographic; there are no shared secrets to leak.</li>
+      <li><strong>Seeding signed a record.</strong> <code>pln seed</code> hashed the module and signed a workload record with your grant. That record gossiped to every node, and each one independently ran the same four <a href="concepts.html#authorisation">admission checks</a> against it before accepting it.</li>
+      <li><strong>Replicas placed themselves.</strong> No node tells another to host the workload. Each one weighs the record against its own spare capacity and cached artefacts and claims a replica if it is a good fit. Add a node and it joins the next round.</li>
+      <li><strong>The call took the shortest path.</strong> <code>pln call</code> was <a href="concepts.html#routing">routed</a> to the nearest, least-loaded replica that answered. With one node that was local; across a mesh it hops to whichever replica is closest.</li>
     </ul>
 
     <h2 id="next">Where to go next</h2>

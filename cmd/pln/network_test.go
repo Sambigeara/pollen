@@ -5,6 +5,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/stretchr/testify/require"
@@ -68,6 +69,64 @@ func TestNodeNameLabels_MixedNamedAndUnnamed(t *testing.T) {
 
 	require.Contains(t, labels[selfPK], "laptop [")
 	require.Empty(t, labels[peerPK])
+}
+
+func TestCertExpiryFooter(t *testing.T) {
+	resp := func(certs ...*controlv1.CertInfo) *controlv1.GetStatusResponse {
+		return &controlv1.GetStatusResponse{Certificates: certs}
+	}
+	future := time.Now().Add(23 * 24 * time.Hour).Unix()
+	past := time.Now().Add(-time.Hour).Unix()
+
+	t.Run("no certificates", func(t *testing.T) {
+		require.Empty(t, certExpiryFooter(resp()))
+	})
+
+	t.Run("admin/root grant with no deadline has no footer", func(t *testing.T) {
+		// GrantDeadlineUnix==0 is time.Unix(0,0) (1970), not the Go zero
+		// time; before the fix this rendered a spurious "membership
+		// expired" line on a healthy admin node.
+		got := certExpiryFooter(resp(&controlv1.CertInfo{
+			CanAdmit: true, CanDelegate: true,
+			Health: controlv1.CertHealth_CERT_HEALTH_OK,
+		}))
+		require.Empty(t, got)
+	})
+
+	t.Run("delegated grant within deadline", func(t *testing.T) {
+		got := certExpiryFooter(resp(&controlv1.CertInfo{
+			GrantDeadlineUnix: future,
+			Health:            controlv1.CertHealth_CERT_HEALTH_OK,
+		}))
+		require.Contains(t, got, "temporary access expires in")
+		require.NotContains(t, got, "expired")
+		require.NotContains(t, got, "membership")
+	})
+
+	t.Run("delegated grant past its deadline", func(t *testing.T) {
+		got := certExpiryFooter(resp(&controlv1.CertInfo{
+			GrantDeadlineUnix: past,
+			Health:            controlv1.CertHealth_CERT_HEALTH_EXPIRED,
+		}))
+		require.Contains(t, got, "temporary access expired")
+	})
+
+	t.Run("expiring soon prompts a rejoin", func(t *testing.T) {
+		got := certExpiryFooter(resp(&controlv1.CertInfo{
+			GrantDeadlineUnix: future,
+			Health:            controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON,
+		}))
+		require.Contains(t, got, "temporary access expires in")
+		require.Contains(t, got, "rejoin")
+	})
+
+	t.Run("admin grant alongside a delegated one uses the deadline", func(t *testing.T) {
+		got := certExpiryFooter(resp(
+			&controlv1.CertInfo{CanAdmit: true, Health: controlv1.CertHealth_CERT_HEALTH_OK},
+			&controlv1.CertInfo{GrantDeadlineUnix: future, Health: controlv1.CertHealth_CERT_HEALTH_OK},
+		))
+		require.Contains(t, got, "temporary access expires in")
+	})
 }
 
 func TestMatchBlobArg_Name(t *testing.T) {

@@ -126,7 +126,7 @@ func authorise(sc *statev1.SpecChange, authGrant *identityv1.Grant) error {
 		allowed, kind = pub.GetServices(), "services"
 	}
 	if !allowed {
-		return fmt.Errorf("admission: authority grant lacks publish capability for %s", kind)
+		return fmt.Errorf("authority grant lacks publish capability for %s", kind)
 	}
 	return checkPolicyClauses(authGrant, sc.GetFact().GetPolicy())
 }

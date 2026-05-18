@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Concepts · Pollen docs</title>
-  <meta name="description" content="The model behind Pollen: peers, gossiped state, workload placement, content storage, and the capability system.">
+  <meta name="description" content="The model behind Pollen: a peer-to-peer mesh, a gossiped CRDT, grants that renew themselves offline, four-stage admission, scoped status, and locality-aware placement.">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -29,13 +29,13 @@
 <div class="layout">
   <main class="no-rule">
     <h1>Concepts</h1>
-    <p class="lede">Pollen's surface is small because the model underneath is small. Five ideas are enough to explain everything else: a peer-to-peer mesh, a gossiped CRDT, locally-decided workload placement, a content-addressed store, and a capability model rooted in a single signing key.</p>
+    <p class="lede">Pollen's surface is small because the model underneath is small. A peer-to-peer mesh carries a gossiped CRDT that every node converges on. Your authority is a signed grant that keeps itself fresh while the root is offline. Published work outlives the publisher. Everything else on this page follows from those few ideas.</p>
 
     <h2 id="mesh">The mesh</h2>
     <p>Every node has an ed25519 identity. Peers maintain at most one QUIC connection between them, multiplexed for gossip, service tunnels, and seed traffic. mTLS is end-to-end; there are no shared secrets and no separate ingress.</p>
 
     <h3>Finding each other</h3>
-    <p>Two peers learn about each other through gossip. Once they've exchanged addresses they try a direct UDP punch. Most of the time it works, even between two NATs. When it doesn't, they fall back to relaying through any mutually-reachable cluster node.</p>
+    <p>Two peers learn about each other through gossip. Once they have exchanged addresses they try a direct UDP punch. Most of the time it works, even between two NATs. When it does not, they fall back to relaying through any mutually-reachable cluster node.</p>
 
     <div class="diagram">   Peer A and Peer B are both behind NAT, and want to talk.
 
@@ -62,12 +62,12 @@
 
     <p class="aside">See the <a href="how-to.html#add-relay">recipe for adding a relay</a> and the <a href="cli.html#bootstrap">bootstrap-ssh reference</a>.</p>
 
-    <h2 id="state">State and gossip</h2>
-    <p>Every node holds the same document: a CRDT describing peers, services, workloads, sites, blobs, and the capability tree. CRDTs are designed so that any two nodes that have seen the same set of changes converge on identical state, regardless of the order they observed those changes.</p>
+    <h2 id="state">Converged state</h2>
+    <p>Every node holds the same document: a CRDT describing peers, services, workloads, sites, blobs, and the grant tree. CRDTs are designed so that any two nodes that have seen the same set of changes converge on identical state, regardless of the order they observed those changes.</p>
 
     <p>That property gives Pollen three things for free:</p>
     <ul>
-      <li><strong>No leader.</strong> No node is the source of truth. Every node can read; writes are gated by cert capability (publishers publish specs, admins also delegate); every node observes the same world.</li>
+      <li><strong>No leader.</strong> No node is the source of truth. Every node can read; writes are gated by grant capability (publishers publish, admins also delegate); every node observes the same world.</li>
       <li><strong>Partition tolerance.</strong> Split the cluster in half and both sides keep working. Reunite them and the document re-converges.</li>
       <li><strong>Local decisions.</strong> Because every node has the same view, every node can make placement and routing decisions without consulting anyone else.</li>
     </ul>
@@ -85,87 +85,21 @@
 
         state.workloads[hello] = { hash: 4f3a, ... }</div>
 
-    <p>Changes ride QUIC streams between peers. Conflict resolution is built into the document itself: each entry is keyed by a stable identifier and most fields are write-once or last-writer-wins. Tombstones mark deletes and propagate the same way as creates, so a peer that's been offline for an hour will catch up on both sides of the timeline when it reconnects.</p>
+    <p>Changes ride QUIC streams between peers. Conflict resolution is built into the document itself: each entry is keyed by a stable identifier and most fields are write-once or last-writer-wins. Tombstones mark deletes and propagate the same way as creates, so a peer that has been offline for an hour will catch up on both sides of the timeline when it reconnects.</p>
 
-    <p class="aside">There's no "control plane" to fail because there's no control plane at all. Every node holds it.</p>
+    <p class="aside">There is no "control plane" to fail because there is no control plane at all. Every node holds it.</p>
 
-    <h2 id="workloads">Workloads (seeds)</h2>
-    <p>A seed is a unit of code that the cluster runs. Today that's a WebAssembly module compiled to <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism's plugin shape</a>, which you can produce from Go, Rust, JavaScript, Python, C#, or Zig. <code>pln seed</code> publishes one as a signed spec; the cluster handles everything else.</p>
+    <h2 id="grants">Grants: your authority, and how it stays fresh offline</h2>
+    <p>A grant is a signed, gossiped, revocable credential. It says who a key is, what it may do, how much it may publish, and until when. Every grant traces back to the root key created by <code>pln init</code>, through a chain of delegations. A child grant can never hold more than the grant that issued it; that subset rule is enforced when the grant is minted and re-checked every time it is verified.</p>
 
-    <h3>How replicas land somewhere</h3>
-    <p>There is no scheduler. When a workload spec gossips out, every node independently scores itself as a candidate host: does it have spare capacity? Does it already have the artifact in its content store? Is it close to where calls are originating? Each node decides locally whether to claim a replica, and how many.</p>
-
-    <div class="diagram">   $ pln seed ./hello.wasm --min-replicas 2
-
-   The spec gossips out: spec(hello, hash=4f3a, target=2)
-
-   Every node independently scores itself as a candidate host:
-
-        Node A:   cpu 20%   cache hit    score 0.85   -&gt; claim
-        Node B:   cpu 80%   cache miss   score 0.30   -&gt; skip
-        Node C:   cpu 30%   cache hit    score 0.70   -&gt; claim
-
-   Two replicas land. No node was told what to do.</div>
-
-    <p>The scoring system tries to minimise call latency by placing replicas near the traffic that uses them. As load shifts, replicas migrate. Kill a node and the survivors notice its claims have gone stale; the next scoring round produces a new placement and brings the workload back to its target replica count.</p>
-
-    <h3>How calls find a replica</h3>
-    <p>Every node knows where every replica lives. When you call a seed, the local node picks two candidates (power-of-two-choices) and routes to whichever responds with the lower load score. This works the same whether the caller is the CLI, a service, or another seed.</p>
-
-    <h3>Seeds calling seeds</h3>
-    <p>A seed can invoke another seed in two ways:</p>
-    <ul>
-      <li><strong>Host call:</strong> <code>pollen_request("pln://seed/upper/handle", input)</code> blocks until the inner seed returns. The runtime picks a replica, ships the call, and hands the response back. Good for composition where the outer seed needs the result.</li>
-      <li><strong>Tail call:</strong> the seed returns a JSON marker <code>{"kind":"tail_call","uri":"pln://seed/upper/handle","input":"..."}</code>. The runtime releases the caller's WASM instance immediately, routes the inner seed, and returns its output to the original caller. Good for fan-out and policy gateways where the outer seed has nothing more to do.</li>
-    </ul>
-
-    <p class="aside">The same model handles services: a seed can call <code>pln://service/&lt;name&gt;</code> to reach a TCP/UDP service somewhere on the mesh. Routing and authorisation are the same as for seed-to-seed calls.</p>
-
-    <h2 id="storage">Storage</h2>
-    <p>Workload modules, static-site files, and named blobs are all just bytes. Pollen stores them in a single content-addressed store keyed by SHA-256, with each artifact's hash baked into the spec that references it.</p>
-
-    <div class="diagram">   $ pln seed ./big.bin payload
-
-   Publisher writes the bytes to its local content store:
-
-        CAS[publisher] += { 4f3a... -&gt; bytes }
-
-   And gossips a blob spec:
-
-        blobspec(payload, hash=4f3a, publisher=...)
-
-   Every other node now knows the blob exists. Any of them
-   can stream it from any holder on demand, verifying the
-   SHA-256 on arrival:
-
-        Node B  &lt;------ stream over QUIC ------ Node A</div>
-
-    <p>Three things follow from content addressing:</p>
-    <ul>
-      <li><strong>Trust the bytes, not the source.</strong> Receivers verify the SHA-256 on arrival. A rogue peer cannot serve poisoned content under a known hash.</li>
-      <li><strong>One-shot transfer.</strong> The same hash from any holder is the same bytes. Two peers can each pull from a third without coordination.</li>
-      <li><strong>Free deduplication.</strong> Two seeds that share an artifact share one entry in the store.</li>
-    </ul>
-
-    <p>Blobs are encrypted at rest. Each blob carries a fresh AES-256-GCM data key, and every recipient gets that key wrapped to their identity key. A node's disk holds only ciphertext plus the wrappings addressed to it, so losing the disk leaks nothing.</p>
-
-    <h3 id="reading-blobs">Reading a blob</h3>
-    <p>Because the on-disk form is ciphertext, you can't <code>cat</code> a blob out of the store. <a href="cli.html#fetch"><code>pln fetch</code></a> is the export path: it streams plaintext bytes from the blob's publisher and writes them to the path you give. The local store is not touched, and the fetcher never holds an encrypted copy on disk. To host a copy on this node, use <a href="cli.html#seed"><code>pln seed</code></a>.</p>
-
-    <h3>Eviction</h3>
-    <p>When a spec is unseeded, its hash becomes a tombstone in the gossip layer. Holders that don't see any other live spec referencing the hash drop it from their store on the next sweep. There is no explicit GC step.</p>
-
-    <h2 id="authorisation">Authorisation</h2>
-    <p>Pollen's authorisation model is two parts: a chain of cryptographic capabilities that say <em>who you are</em>, and policy clauses on each spec that say <em>who may use it</em>. The runtime gate compares the two on every invoke, fetch, or connect.</p>
-
-    <h3>The capability tree</h3>
-    <p>Every cert in the cluster traces back to the root key created by <code>pln init</code>. Pollen has three tiers, ordered as a strict superset chain:</p>
+    <h3>Three tiers</h3>
+    <p>The ergonomic surface is three tiers. Pick the smallest that does the job.</p>
     <ul>
       <li><strong>Leaf</strong> (default): can call workloads and connect to services. Cannot publish, cannot delegate.</li>
-      <li><strong>Publisher</strong>: can publish workloads, services, blobs, and static sites. Cannot delegate further.</li>
-      <li><strong>Admin</strong>: everything publisher can do, plus admit and grant new peers. Only the root admin can mint other admins.</li>
+      <li><strong>Publisher</strong> (<code>--publisher</code>): can publish workloads, services, blobs, and static sites. Cannot delegate further.</li>
+      <li><strong>Admin</strong> (<code>--admin</code>): everything a publisher can do, plus admit and grant new peers. Only the root admin can mint other admins.</li>
     </ul>
-    <p>Properties (key/value metadata) ride alongside the tier and can be baked into any cert at issue time. Capability subsetting is enforced at issuance: a child cannot be issued more rights than the issuer holds.</p>
+    <p>Under the tier the grant carries fine-grained per-kind publish capability (workloads, services, blobs, sites separately) and an optional count budget. Set the budget with <code>--max-functions</code>, <code>--max-blobs</code>, and <code>--max-sites</code> on <code>pln invite</code> at enrolment, or on <code>pln grant</code> for a connected peer; a tenant cannot publish more of a kind than its budget allows, and an unset budget means no limit.</p>
 
     <div class="diagram">                       [ root (admin) ]
                               |
@@ -183,34 +117,54 @@
    role=engineer    role=viewer
    team=backend     team=ops</div>
 
-    <p>The relationships are stored on the gossiped CRDT, so every node can independently verify any cert. Revocation works through a deny set on the same document; the CRDT propagates revocations the same way it propagates everything else.</p>
-
-    <p>To see a single peer's tier, attributes, issuer chain, and the resources it publishes, use <a href="cli.html#inspect"><code>pln inspect &lt;peer-id&gt;</code></a>.</p>
-
-    <h3>Cert lifetime and renewal</h3>
-    <p>A delegated cert carries two deadlines. <code>not_after</code> is the working lifetime: a short window the cert authenticates within. <code>access_deadline</code> is a hard ceiling, fixed when the cert is first minted and never extended. Between <code>not_after</code> and the ceiling the cert can mint its own successor; past the ceiling it is dead and the holder must rejoin with a fresh token.</p>
-    <p>Renewal is automatic and needs no operator action. A running daemon renews its own cert in the background. A wire-mode context with no daemon renews transparently before a command once the cert is past its half-life or its <code>not_after</code>. The ceiling carries across every renewal unchanged, so a leaked key cannot be refreshed forever; it stops at the original ceiling no matter how often it was renewed.</p>
-    <p>Admin and infrastructure certs carry no ceiling. The root self-renews from its own key and delegated admins are managed nodes, so the re-bootstrap ceiling exists to bound exposure for the many short-lived tenant identities, not the few long-lived operators.</p>
-    <p>A published spec or blob wrapping carries the publisher's cert with it. Other nodes admit it for as long as that cert is within its <code>access_deadline</code> and not denied, so a static site or blob keeps its replicas while the publisher is offline and its working window has lapsed. The artefact is only re-signed, by re-publishing, once the publisher's cert passes its ceiling or is denied.</p>
-    <p>Inspect any context's windows and capabilities with <a href="cli.html#context-show"><code>pln context show</code></a>. When a command is refused for a cert reason it names the precise cause and the exact rejoin step; see <a href="troubleshoot.html#cert-expired">cert expired</a>.</p>
+    <p>The grant tree lives on the gossiped CRDT, so every node can independently verify any grant. Revocation works through a deny set on the same document, and it is chain-aware: deny an admin and every grant whose chain runs through it fails at once, cluster-wide. The CRDT propagates a revocation the same way it propagates everything else.</p>
 
     <h3>Properties</h3>
-    <p>Properties are key/value strings baked into a cert. Seeds see the caller's peer key and properties on every invocation, so authorisation, routing, and policy decisions can live inside workload code. Operators bake them in at issue time:</p>
+    <p>Properties are key/value strings baked into a grant at issue time. Seeds see the caller's key and properties on every invocation, so authorisation, routing, and policy decisions can live inside workload code:</p>
 
     <pre><code>pln invite --prop role=engineer --prop team=backend
 pln grant &lt;peer&gt; --prop tier=privileged
 pln bootstrap ssh root@host --prop region=eu</code></pre>
 
-    <p>The root node's own properties live in <code>config.yaml</code> and are re-applied on every <code>pln up</code>. Replace them with <code>pln props</code>.</p>
+    <p>The root node's own properties live in <code>config.yaml</code> and are re-applied on every <code>pln up</code>. Replace them with <code>pln props</code>. To see a single peer's tier, attributes, issuer chain, and the resources it publishes, use <a href="cli.html#inspect"><code>pln inspect &lt;peer-id&gt;</code></a>.</p>
 
-    <h3>The policy gate</h3>
-    <p>Every published spec — workload, service, static site, named blob — can carry policy clauses. The runtime gate evaluates them against the caller's properties on every call.</p>
+    <h3>The deadline is the stolen-key bound</h3>
+    <p>A delegated grant carries a single hard deadline. The default is 30 days. It is the deliberate upper bound on how long a lost or stolen key stays usable: a grant cannot be extended by the key that holds it, only re-issued by an authority above it. Admin and infrastructure grants carry no deadline, because they are the few long-lived operators; the deadline exists to bound exposure for the many short-lived tenant identities. Within the deadline the grant renews itself without operator action; the next section is how.</p>
 
-    <div class="diagram">   spec(hello, --allow-prop role=admin)
+    <p class="aside">Issue and scope grants with <a href="cli.html#grant"><code>pln grant</code></a> and <a href="cli.html#invite"><code>pln invite</code></a>. Revoke with <a href="how-to.html#revoke-peer"><code>pln deny</code></a>.</p>
 
-   On every call, the runtime gate runs:
+    <h2 id="sessions">Sessions: why nodes keep working with the root offline</h2>
+    <p>Liveness is proved by a session: a short-lived token a node mints for itself, locally, by signing over its own held grant with its own key. Minting a session needs nothing but the grant already on disk and the node's private key. There is no network round-trip, so a node keeps authenticating to peers while the root and the node that issued its grant are unreachable. A session is bound to the connection key, so a copied credential cannot be replayed from a different key.</p>
 
-        for each --allow-prop clause on the spec:
+    <p>A session cannot outrun its grant's deadline. Within the deadline, sessions re-mint locally and indefinitely. The grant itself is renewed automatically before the deadline arrives:</p>
+    <ul>
+      <li><strong>A running daemon</strong> renews its grant in the background. It asks any reachable peer that holds delegate authority; it does not need the original issuer or the root to be online. The peer that renews re-clamps the grant to its own chain, so renewal can never widen authority or move the deadline out further than the chain allows.</li>
+      <li><strong>A wire-mode context with no daemon</strong> renews opportunistically just before a command runs, once the grant has entered its renewal window. The window opens about a third of the way before the deadline, roughly 10 days out on the 30-day default, so a node gets many attempts before the deadline bites.</li>
+    </ul>
+
+    <p>In normal operation you see nothing; renewal is silent. If renewal keeps failing while the grant is still valid, the node reports as <strong>degraded</strong> in <code>pln status</code>: still serving, flagged before a hard stop. If the deadline passes with no successful renewal, the node stops and logs that its grant is no longer valid. Recovery is to obtain a fresh invite from an admin and run <code>pln join &lt;token&gt;</code>. There is no <code>pln renew</code> command; renewal is never a manual step.</p>
+
+    <p class="aside">See <a href="how-to.html#offline-root">Run with the root machine offline</a>, inspect a context's deadline with <a href="cli.html#context-show"><code>pln context show</code></a>, and read <a href="troubleshoot.html#cert-expired">access expired or node degraded</a> when it does not recover.</p>
+
+    <h2 id="authorisation">Admission: the four checks every publish passes</h2>
+    <p>Every write into cluster state passes the same four checks, whether it arrived by gossip from another node or was made locally on this one. Local writes are not a fast path around the checks.</p>
+    <ul>
+      <li><strong>authenticate.</strong> The signature is genuine, the body matches its hash, and the publisher's grant chains to the root, is within its deadline, and is not revoked.</li>
+      <li><strong>authorise.</strong> The grant actually carries the capability to publish this kind (workload, service, blob, or site), and the publisher satisfies its own policy clauses.</li>
+      <li><strong>account.</strong> The publisher's count budget has room for one more of this kind. Re-publishing something it already holds costs no slot.</li>
+      <li><strong>admit.</strong> The change merges into the CRDT and gossips on.</li>
+    </ul>
+
+    <p>Runtime calls run the same authority rule plus policy on every invoke, fetch, or connect. A resource published with <code>--public</code> admits anyone through its gateway URL. Otherwise the caller's grant must be valid and match the resource's policy clauses, or the call is refused without revealing the resource shape so a denied caller cannot probe it.</p>
+
+    <h3>Policy clauses</h3>
+    <p>Every published resource can carry policy clauses. The runtime compares them against the caller's properties on every call.</p>
+
+    <div class="diagram">   seed(hello, --allow-prop role=admin)
+
+   On every call, the runtime runs:
+
+        for each --allow-prop clause on the resource:
             require caller's properties match exactly
         if any clause fails: close the stream silently
 
@@ -219,41 +173,128 @@ pln bootstrap ssh root@host --prop region=eu</code></pre>
         leaf-A calls hello   { role=engineer }    -&gt; deny (silent)
         leaf-B calls hello   { role=admin }       -&gt; allow</div>
 
-    <p>Clauses are <strong>conjunctive</strong>: every <code>--allow-prop</code> on the spec must match. To express disjunction (<em>"editors or admins"</em>), mint both groups with a shared property and require it on the spec:</p>
+    <p>Clauses are <strong>conjunctive</strong>: every <code>--allow-prop</code> on the resource must match. To express disjunction (<em>editors or admins</em>), mint both groups with a shared property and require it:</p>
 
     <pre><code>pln grant &lt;editor&gt; --prop tier=privileged
 pln grant &lt;admin&gt;  --prop tier=privileged
 pln serve 8080 ops --allow-prop tier=privileged</code></pre>
 
-    <p>Two consequences of pushing disjunction up to the issuance side:</p>
+    <p>Pushing disjunction up to issuance keeps the runtime check fast (string equality across a few clauses, no expression evaluator on the hot path) and keeps policy auditable: who can call what is decided when the grant is minted, and the capable peers are visible from <code>pln status nodes --wide</code>. Without any policy flag a published resource is open to every authenticated peer in the cluster.</p>
+
+    <p>The check that fails tells you which stage rejected you. A forged or stale publish fails at <strong>authenticate</strong>. A grant that lacks the publish capability for a kind, or a property the policy requires, fails at <strong>authorise</strong>. A tenant over its count budget fails at <strong>account</strong> with an exhausted-budget message.</p>
+
+    <p class="aside">Recipes: <a href="how-to.html#restrict-access">Restrict who can call a workload</a> and <a href="how-to.html#set-budget">Cap what a tenant can publish</a>. Symptoms: <a href="troubleshoot.html#publish-denied">publish refused</a>, <a href="troubleshoot.html#call-denied">call denied</a>, <a href="troubleshoot.html#budget-exhausted">budget exhausted</a>.</p>
+
+    <h2 id="scoped-status">What you can see</h2>
+    <p><code>pln status</code> answers one question: what does my authority let me see. The answer is projected through the caller's own identity, and it is the same whichever node you dialled.</p>
     <ul>
-      <li><strong>The runtime gate stays trivially fast.</strong> String equality across a few clauses, no expression evaluator on the hot path.</li>
-      <li><strong>Policy is auditable.</strong> Who can call what is decided when you mint the cert, not at every invocation. The set of capable peers is visible from <code>pln status nodes --wide</code>.</li>
+      <li><strong>An admin</strong> sees everything: every workload, site, blob, and every node in the cluster.</li>
+      <li><strong>A tenant</strong> sees only its own workloads, sites, and blobs, and only the nodes that hold or run one of them. It never sees the serving node's view, other tenants' resources, or unrelated nodes.</li>
+      <li><strong>An unidentified caller</strong> sees nothing.</li>
+    </ul>
+    <p>A wire-mode tenant is not a mesh node, so its status header shows its own identity and its own grant's deadline, never the credential of the daemon it dialled. The serving node's identity is never the lens.</p>
+
+    <p class="aside">See the <a href="cli.html#status"><code>pln status</code></a> and <a href="cli.html#inspect"><code>pln inspect</code></a> references.</p>
+
+    <h2 id="workloads">Workloads, sites and blobs</h2>
+    <p>A seed is a unit of code that the cluster runs. Today that is a WebAssembly module compiled to <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism's plugin shape</a>, which you can produce from Go, Rust, JavaScript, Python, C#, or Zig. <code>pln seed</code> publishes one as a signed record; the cluster handles everything else.</p>
+
+    <h3>How replicas land somewhere</h3>
+    <p>There is no scheduler. When a workload record gossips out, every node independently scores itself as a candidate host: does it have spare capacity? Does it already have the artefact in its content store? Is it close to where calls are originating? Each node decides locally whether to claim a replica, and how many.</p>
+
+    <div class="diagram">   $ pln seed ./hello.wasm --min-replicas 2
+
+   The record gossips out: hello, hash=4f3a, target=2
+
+   Every node independently scores itself as a candidate host:
+
+        Node A:   cpu 20%   cache hit    score 0.85   -&gt; claim
+        Node B:   cpu 80%   cache miss   score 0.30   -&gt; skip
+        Node C:   cpu 30%   cache hit    score 0.70   -&gt; claim
+
+   Two replicas land. No node was told what to do.</div>
+
+    <p>The scoring system tries to minimise call latency by placing replicas near the traffic that uses them. As load shifts, replicas migrate. Kill a node and the survivors notice its claims have gone stale; the next scoring round produces a new placement and brings the workload back to its target replica count.</p>
+
+    <h3>Why they outlive you</h3>
+    <p>A published workload, site, or blob does not carry a copy of the publisher's credential. It names its publisher, and the cluster resolves that publisher's grant from converged state at admission time. So a published resource keeps serving for as long as the publisher's grant is within its deadline and not revoked, even after the publisher has left the cluster entirely. Revoking the publisher, or any admin above it, invalidates everything it published cluster-wide on the next check, with no per-resource cleanup step.</p>
+
+    <h3>Seeds calling seeds</h3>
+    <p>A seed can invoke another seed in two ways:</p>
+    <ul>
+      <li><strong>Host call:</strong> <code>pollen_request("pln://seed/upper/handle", input)</code> blocks until the inner seed returns. The runtime picks a replica, ships the call, and hands the response back. Good for composition where the outer seed needs the result.</li>
+      <li><strong>Tail call:</strong> the seed returns a JSON marker <code>{"kind":"tail_call","uri":"pln://seed/upper/handle","input":"..."}</code>. The runtime releases the caller's WASM instance immediately, routes the inner seed, and returns its output to the original caller. Good for fan-out and policy gateways where the outer seed has nothing more to do.</li>
     </ul>
 
-    <p>Without any policy flag a published resource is open to every authenticated peer in the cluster. Failed gate checks close the stream silently — a denied caller can't probe the resource shape.</p>
+    <h3 id="storage">Storage and content addressing</h3>
+    <p>Workload modules, static-site files, and named blobs are all just bytes. Pollen stores them in a single content-addressed store keyed by SHA-256, with each artefact's hash baked into the record that references it.</p>
 
-    <p class="aside">For the recipes that build on top of this, see <a href="how-to.html#restrict-access">Restrict who can call a workload</a> and <a href="how-to.html#offline-root">Run with the root machine offline</a>.</p>
+    <div class="diagram">   $ pln seed ./big.bin payload
+
+   Publisher writes the bytes to its local content store:
+
+        CAS[publisher] += { 4f3a... -&gt; bytes }
+
+   And gossips a blob record:
+
+        blob(payload, hash=4f3a, publisher=...)
+
+   Every other node now knows the blob exists. Any of them
+   can stream it from any holder on demand, verifying the
+   SHA-256 on arrival:
+
+        Node B  &lt;------ stream over QUIC ------ Node A</div>
+
+    <p>Three things follow from content addressing:</p>
+    <ul>
+      <li><strong>Trust the bytes, not the source.</strong> Receivers verify the SHA-256 on arrival. A rogue peer cannot serve poisoned content under a known hash.</li>
+      <li><strong>One-shot transfer.</strong> The same hash from any holder is the same bytes. Two peers can each pull from a third without coordination.</li>
+      <li><strong>Free deduplication.</strong> Two seeds that share an artefact share one entry in the store.</li>
+    </ul>
+
+    <p>Blobs are encrypted at rest. Each blob carries a fresh AES-256-GCM data key, and every recipient gets that key wrapped to their identity key. A node's disk holds only ciphertext plus the wrappings addressed to it, so losing the disk leaks nothing.</p>
+
+    <h3 id="reading-blobs">Reading a blob</h3>
+    <p>Because the on-disk form is ciphertext, you cannot <code>cat</code> a blob out of the store. <a href="cli.html#fetch"><code>pln fetch</code></a> is the export path: it streams plaintext bytes from a holder and writes them to the path you give. The local store is not touched, and the fetcher never holds an encrypted copy on disk. To host a copy on this node, use <a href="cli.html#seed"><code>pln seed</code></a>.</p>
+
+    <h3>Eviction</h3>
+    <p>When a resource is unseeded, its hash becomes a tombstone in the gossip layer. Holders that do not see any other live record referencing the hash drop it from their store on the next sweep. There is no explicit GC step.</p>
+
+    <h2 id="routing">Routing to the nearest copy</h2>
+    <p>Who may publish a thing and where its bytes physically live are separate questions. The set of nodes holding a copy is tracked per resource, and it carries locality. A fetch or a call is served from the nearest holder by network coordinate, not from wherever the resource was first published, so a geographically spread cluster stays fast.</p>
+    <p>When you call a seed, the local node picks two candidates (power-of-two-choices) and routes to whichever responds with the lower load score. Distance ties break deterministically by peer key, so repeated fetches keep hitting the same warm copy. Placement and call routing share the same nearest-holder choice, so a blob fetch and a workload invocation agree on what "nearest" means.</p>
+
+    <p class="aside">The same model handles services: a seed can call <code>pln://service/&lt;name&gt;</code> to reach a TCP or UDP service somewhere on the mesh, with the same routing and the same admission checks as seed-to-seed calls.</p>
+
+    <h2 id="versioned-wire">Staying current</h2>
+    <p>The CLI and the daemon negotiate a protocol version range when they connect. If their ranges do not overlap, the side that is behind is told so explicitly, with the action to take. There is never silent misbehaviour on a mismatch.</p>
+    <ul>
+      <li><strong><code>pln</code> is behind:</strong> <code>pln is out of date: this daemon speaks protocol X-Y but pln supports only up to Z; upgrade pln</code>. Upgrade the <code>pln</code> binary.</li>
+      <li><strong>The daemon is behind:</strong> <code>the daemon is out of date: it speaks protocol X-Y but pln requires at least Z; upgrade the daemon</code>. Upgrade the daemon.</li>
+      <li><strong>The daemon predates negotiation entirely:</strong> <code>the daemon is out of date: it does not support protocol negotiation; upgrade the daemon</code>.</li>
+    </ul>
+
+    <p class="aside">Upgrade either side with <a href="how-to.html#upgrade">the upgrade recipe</a>; see also <a href="troubleshoot.html#out-of-date">client or daemon out of date</a>.</p>
 
     <h2 id="putting-together">How the pieces fit</h2>
     <p>A single <code>pln seed</code> exercises the whole stack:</p>
     <ol>
-      <li>The CLI hashes the artifact and stores it in the local CAS.</li>
-      <li>The supervisor signs a spec with the local delegation cert; the spec carries the hash, any policy clauses, and the publisher's identity.</li>
-      <li>The change goes into the CRDT and gossips to every peer.</li>
-      <li>Each peer scores itself as a candidate host. Selected peers fetch the artifact from any holder over QUIC, verifying the hash on arrival.</li>
-      <li>The first call into the workload routes to whichever replica is nearest and least loaded. The runtime gate checks the caller's properties against the spec's policy. If it passes, the call goes through.</li>
+      <li>The CLI hashes the artefact and stores it in the local content store.</li>
+      <li>The supervisor signs a record with the local grant; the record carries the hash, any policy clauses, and the publisher's identity by key.</li>
+      <li>The change enters the CRDT and passes the four admission checks on every node that receives it, by gossip or locally.</li>
+      <li>Each peer scores itself as a candidate host. Selected peers fetch the artefact from the nearest holder over QUIC, verifying the hash on arrival.</li>
+      <li>The first call routes to whichever replica is nearest and least loaded. The runtime checks the caller against the resource's policy. If it passes, the call goes through.</li>
     </ol>
 
     <p>No central coordinator was contacted. No shared secrets were used. Every step was decided locally against the same converged view of the world.</p>
 
-    <p>The other commands — <code>pln serve</code>, <code>pln connect</code>, <code>pln invite</code>, <code>pln grant</code>, <code>pln deny</code> — exercise the same machinery with different payloads. Once you've understood seeds, the rest of the surface follows.</p>
+    <p>The other commands, <code>pln serve</code>, <code>pln connect</code>, <code>pln invite</code>, <code>pln grant</code>, <code>pln deny</code>, exercise the same machinery with different payloads. Once you have understood seeds, the rest of the surface follows.</p>
 
     <h2 id="next">Where to go next</h2>
     <ul>
-      <li><a href="how-to.html">How-to recipes</a> for the operator-side patterns this implies: relays, offline root, property-based access.</li>
+      <li><a href="how-to.html">How-to recipes</a> for the operator-side patterns this implies: relays, offline root, property-based access, tenant budgets.</li>
       <li><a href="cli.html">CLI reference</a> for the surface that exposes all of this.</li>
-      <li><a href="https://github.com/sambigeara/pollen">Source</a> if you want to see how it's actually wired.</li>
+      <li><a href="https://github.com/sambigeara/pollen">Source</a> if you want to see how it is actually wired.</li>
     </ul>
   </main>
 
@@ -261,10 +302,14 @@ pln serve 8080 ops --allow-prop tier=privileged</code></pre>
     <div class="sidebar-title">On this page</div>
     <nav>
       <a href="#mesh">The mesh</a>
-      <a href="#state">State and gossip</a>
-      <a href="#workloads">Workloads (seeds)</a>
-      <a href="#storage">Storage</a>
-      <a href="#authorisation">Authorisation</a>
+      <a href="#state">Converged state</a>
+      <a href="#grants">Grants</a>
+      <a href="#sessions">Sessions</a>
+      <a href="#authorisation">Admission</a>
+      <a href="#scoped-status">What you can see</a>
+      <a href="#workloads">Workloads, sites and blobs</a>
+      <a href="#routing">Routing</a>
+      <a href="#versioned-wire">Staying current</a>
       <a href="#putting-together">How the pieces fit</a>
       <a href="#next">Where to go next</a>
     </nav>

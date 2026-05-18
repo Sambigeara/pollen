@@ -32,6 +32,18 @@ const CallerKey = "pln.caller"
 // has a single owner.
 var errLocalGrantUnpublished = errors.New("local grant is not yet published")
 
+// ErrRejected wraps an authorise- or account-stage verdict so the
+// control layer can surface the operator-facing reason as
+// FailedPrecondition instead of a generic Internal, exactly as it does
+// for placement.ErrPublishDenied. Its text is "admission", so a wrapped
+// error reads "admission: <reason>". authenticate-stage failures are
+// deliberately not wrapped: they are integrity faults, not
+// authorisation verdicts, and stay opaque. Runtime decisions
+// (Invoke/Fetch/Connect) likewise do not wrap with this; they return
+// opaque wasm.ErrTargetNotFound to avoid leaking admission state to
+// remote callers.
+var ErrRejected = errors.New("admission")
+
 type accessTokenCtxKey struct{}
 
 // WithAccessToken attaches an AccessToken to ctx so downstream
@@ -109,9 +121,12 @@ func (p *Pipeline) Admit(sc *statev1.SpecChange) error {
 		return err
 	}
 	if err := authorise(sc, authGrant); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrRejected, err)
 	}
-	return AccountCheck(snap, sc.GetFact(), authGrant)
+	if err := AccountCheck(snap, sc.GetFact(), authGrant); err != nil {
+		return fmt.Errorf("%w: %w", ErrRejected, err)
+	}
+	return nil
 }
 
 // Invoke authorises caller to invoke the workload at hash. A nil caller
@@ -298,12 +313,15 @@ func (p *Pipeline) decide(grant *identityv1.Grant, f *factv1.Fact, now time.Time
 	return nil
 }
 
-// checkPolicyClauses returns nil if grant satisfies every clause of
-// policy, or a descriptive error otherwise. A nil policy is permitted;
-// a policy without inline clauses is rejected (no other shapes are
-// supported today).
+// checkPolicyClauses returns nil if grant satisfies policy, or a
+// descriptive error otherwise. A nil or public policy is trivially
+// satisfied; an inline policy is matched clause by clause against the
+// grant's attributes.
 func checkPolicyClauses(grant *identityv1.Grant, policy *admissionv1.Predicate) error {
 	if policy == nil {
+		return nil
+	}
+	if policy.GetPublic() {
 		return nil
 	}
 	inline := policy.GetInline()

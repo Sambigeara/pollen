@@ -60,7 +60,7 @@
     </div>
 
     <h2 id="what-is-pollen">What Pollen is</h2>
-    <p>A peer-to-peer runtime for distributed software. You install <code>pln</code> on a few machines, join them into a cluster, and publish workloads, services, sites, and blobs into it. The cluster places replicas, routes calls to the nearest one, and reorganises around failure. Operators issue capability-bearing certificates rather than push config. Workloads carry their authorisation policy on the spec they're published with.</p>
+    <p>A peer-to-peer runtime for distributed software. You install <code>pln</code> on a few machines, join them into a cluster, and publish workloads, services, sites, and blobs into it. The cluster places replicas, routes calls to the nearest one, and reorganises around failure. Operators hand out capability-bearing grants rather than push config: each grant carries a tier (leaf, publisher, admin), renews itself, and lets the root machine stay offline. Published work outlives the publisher, and workloads carry their authorisation policy on the record they're published with.</p>
 
     <p>Pollen is well-suited to:</p>
     <ul>
@@ -72,11 +72,12 @@
 
     <h2 id="popular">Popular topics</h2>
     <ul>
-      <li><a href="concepts.html#authorisation">The capability model</a> — how delegation, properties, and the policy gate fit together.</li>
-      <li><a href="how-to.html#offline-root">Run with the root machine offline</a> — delegate admin to a relay so you can power it down.</li>
-      <li><a href="how-to.html#restrict-access">Restrict who can call a workload</a> — properties on certs, clauses on specs.</li>
-      <li><a href="concepts.html#mesh">How peers find each other</a> — direct UDP punching, relays, address gossip.</li>
-      <li><a href="cli.html#status"><code>pln status</code> walkthrough</a> — read the cluster at a glance.</li>
+      <li><a href="concepts.html#authorisation">The capability model</a>. How grants, properties, and admission fit together.</li>
+      <li><a href="how-to.html#offline-root">Run with the root machine offline</a>. Grants renew themselves on a 30-day deadline, so the root can power down.</li>
+      <li><a href="how-to.html#restrict-access">Restrict who can call a workload</a>. Properties on grants, clauses on the published resource.</li>
+      <li><a href="concepts.html#scoped-status">What each tenant can see</a>. <code>pln status</code> is scoped to the caller's authority.</li>
+      <li><a href="concepts.html#mesh">How peers find each other</a>. Direct UDP punching, relays, address gossip.</li>
+      <li><a href="cli.html#status"><code>pln status</code> walkthrough</a>. Read the cluster at a glance.</li>
     </ul>
 
     <h2 id="help">Get help</h2>

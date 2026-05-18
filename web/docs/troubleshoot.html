@@ -29,7 +29,7 @@
 <div class="layout">
   <main class="no-rule">
     <h1>Troubleshoot</h1>
-    <p class="lede">Common symptoms with their likely causes and the fix. Use the symptom you actually see as the lookup key. If nothing here matches, the daemon log is the next place to look — <code>pln logs -f</code> follows it live.</p>
+    <p class="lede">Common symptoms with their likely causes and the fix. Use the symptom you actually see as the lookup key. If nothing here matches, the daemon log is the next place to look. <code>pln logs -f</code> follows it live.</p>
 
     <h2 id="diagnostics">Before you dig in</h2>
     <p>Three commands will tell you most of what you need to know:</p>
@@ -52,7 +52,8 @@
     <h2 id="socket-permission">Linux: <code>permission denied</code> on the daemon socket</h2>
     <p><strong>Symptom.</strong></p>
     <div class="terminal">
-      <span class="out">Error: dial unix /var/lib/pln/pln.sock: permission denied</span>
+      <span class="out">Error: cannot reach daemon — are you in the pln group?
+  fix: sudo usermod -aG pln $(whoami) &amp;&amp; newgrp pln</span>
     </div>
     <p><strong>Cause.</strong> The system daemon runs as the <code>pln</code> user and the socket is group-owned by <code>pln</code>. Your shell user isn't in the group yet.</p>
     <p><strong>Fix.</strong> The installer adds you to the group automatically when run with <code>sudo</code>. If something went sideways:</p>
@@ -64,7 +65,7 @@
     <h2 id="daemon-down">Daemon won't start or isn't reachable</h2>
     <p><strong>Symptom.</strong></p>
     <div class="terminal">
-      <span class="out">Error: control plane unreachable: dial unix /var/lib/pln/pln.sock: connect: no such file or directory</span>
+      <span class="out">Error: daemon is not running</span>
     </div>
     <p>or the daemon flips to failed in <code>brew services</code> / <code>systemctl status pln</code>.</p>
 
@@ -72,14 +73,14 @@
     <ul>
       <li><strong>Port already in use.</strong> Another process holds UDP <code>60611</code> (default).</li>
       <li><strong>State directory unwritable.</strong> Ownership of <code>~/.pln</code> or <code>/var/lib/pln</code> got out of sync after a manual file copy or a failed install.</li>
-      <li><strong>Cert expired in degraded mode.</strong> The daemon will start but log a warning and refuse some operations until renewal succeeds.</li>
+      <li><strong>Grant past its deadline (degraded mode).</strong> The daemon starts but logs <code>node grant no longer valid — starting in degraded mode</code> and refuses some operations until it can rejoin.</li>
     </ul>
 
     <p><strong>Fix.</strong> Check the log first:</p>
     <div class="terminal">
       <span class="cmd">pln logs -n 200</span>
     </div>
-    <p>For port collisions, change the listening port: <code>pln up --port 60612</code> (foreground) or edit the service unit. For ownership, run <code>sudo chown -R pln:pln /var/lib/pln</code> on Linux. For an expired cert, see <a href="#cert-expired">Cert expired</a>.</p>
+    <p>For port collisions, change the listening port: <code>pln up --port 60612</code> (foreground) or edit the service unit. For ownership, run <code>sudo chown -R pln:pln /var/lib/pln</code> on Linux. For a grant past its deadline, see <a href="#cert-expired">Access expired or node degraded</a>.</p>
 
     <h2 id="peer-offline">A peer shows offline that should be online</h2>
     <p><strong>Symptom.</strong></p>
@@ -101,26 +102,26 @@
       <span class="cmd">pln status seeds</span>
       <span class="out">SEEDS
 NAME    HASH      STATUS    REPLICAS  LOCAL  UPTIME
-hello   4f3a7c91  pending   0/2       -      30s</span>
+hello   4f3a7c91  unknown   0/2       -      30s</span>
     </div>
     <p><strong>Cause(s).</strong></p>
     <ul>
       <li><strong>No node has capacity.</strong> The scoring round didn't find a candidate. Add a node, or raise the per-workload limits (<code>--memory</code>, <code>--timeout</code>) to fit on what you have.</li>
-      <li><strong>Artifact hasn't replicated yet.</strong> A scheduled host is still pulling the WASM bytes. Watch <code>pln status blobs</code> to confirm the hash is reaching new nodes.</li>
+      <li><strong>Artefact hasn't replicated yet.</strong> A scheduled host is still pulling the WASM bytes. Watch <code>pln status blobs</code> to confirm the hash is reaching new nodes.</li>
       <li><strong>Spec policy excludes every node from acting on it.</strong> Rare, but possible if you used <code>--allow-prop</code> on a workload such that no node-side identity matches.</li>
     </ul>
     <p><strong>Fix.</strong> Watch the daemon log on the candidate hosts (<code>pln logs -f</code> on each). The supervisor logs scoring decisions and any failures (CAS pull errors, validation failures).</p>
 
-    <h2 id="publish-denied"><code>pln seed</code> fails with <code>publish denied</code></h2>
-    <p><strong>Symptom.</strong></p>
+    <h2 id="publish-denied"><code>pln seed --allow-prop</code> is refused with <code>publish denied</code></h2>
+    <p><strong>Symptom.</strong> A publish carrying an <code>--allow-prop</code> clause is refused and the CLI prints why:</p>
     <div class="terminal">
       <span class="cmd">pln seed ./hello.wasm --allow-prop role=admin</span>
-      <span class="out">Error: publish denied: local cert is missing prop "role" (policy requires "admin")</span>
+      <span class="out">Error: publish denied: local grant is missing prop "role" (policy requires "admin")</span>
     </div>
-    <p><strong>Cause.</strong> Hosting a workload includes loopback invocation, so the spec's policy must hold against the host's own cert. The publisher is checked at <code>pln seed</code> time: if the local cert doesn't satisfy the policy, the spec is rejected up front rather than left orphaned in gossip.</p>
-    <p><strong>Fix.</strong> Either remove the offending <code>--allow-prop</code> clause, or grant the local node the required property first:</p>
+    <p><strong>Cause.</strong> The publish was rejected at the admission authorise stage. Hosting a workload includes loopback invocation, so a node must satisfy the policy clause it attaches to its own spec. If the publishing node's grant does not carry the property the <code>--allow-prop</code> clause requires, the spec is rejected up front rather than left orphaned in gossip. This is the local publisher acting on its own grant, so the reason is returned in full; a remote caller denied by the same clause sees an opaque not-found instead (see <a href="#call-denied">Call returns <code>no such workload</code></a>). It is also distinct from the authenticate stage, where an invalid session fails first (see <a href="#cert-expired">Access expired or node degraded</a>).</p>
+    <p><strong>Fix.</strong> Have an admin add the missing property to the publisher's grant, or relax the clause by re-publishing without it:</p>
     <div class="terminal">
-      <span class="cmd">pln grant $(pln id) --prop role=admin                <span class="cmt"># from an admin shell</span></span>
+      <span class="cmd">pln grant &lt;publisher-peer&gt; --prop role=admin       <span class="cmt"># from an admin shell</span></span>
       <span class="cmd">pln seed ./hello.wasm --allow-prop role=admin</span>
     </div>
     <p>See <a href="concepts.html#authorisation">Authorisation</a> for why hosts are gated alongside callers.</p>
@@ -129,7 +130,7 @@ hello   4f3a7c91  pending   0/2       -      30s</span>
     <p><strong>Symptom.</strong></p>
     <div class="terminal">
       <span class="cmd">pln fetch ab12cd34 ./out.bin</span>
-      <span class="out">Error: no publisher known for blob ab12cd34</span>
+      <span class="out">Error: no publisher known for blob</span>
     </div>
     <p><strong>Cause.</strong> Fetch always streams from the blob's publisher. If the blob has no <code>BlobSpec</code> in gossip (an orphan, or a digest you typed wrong) there is no origin to talk to.</p>
     <p><strong>Fix.</strong> List the blobs the cluster knows about and pick a name or matching digest:</p>
@@ -137,51 +138,97 @@ hello   4f3a7c91  pending   0/2       -      30s</span>
       <span class="cmd">pln status</span>
     </div>
 
-    <h2 id="fetch-publisher-offline"><code>pln fetch</code> fails with <code>open stream to publisher … failed</code></h2>
-    <p><strong>Symptom.</strong> Fetch returns an error referencing the publisher's short peer ID.</p>
-    <p><strong>Cause.</strong> The publisher is unreachable: offline, partitioned, or behind NAT that the mesh hasn't punched yet. Fetch does not fall back to other holders.</p>
-    <p><strong>Fix.</strong> Confirm the publisher is online in <code>pln status</code>. If it stays offline, the bytes are not retrievable until it returns; pin a copy locally with <a href="cli.html#seed"><code>pln seed</code></a> in advance for content you need available without the origin.</p>
+    <h2 id="fetch-publisher-offline"><code>pln fetch</code> fails with <code>open stream to publisher ... failed</code></h2>
+    <p><strong>Symptom.</strong> A one-shot <code>pln fetch</code> returns an error referencing the publisher's short peer ID. A blob, site or workload that was <em>seeded</em> (replicated across the mesh) keeps serving even while its publisher is offline.</p>
+    <p><strong>Cause.</strong> <code>pln fetch</code> streams directly from the blob's origin and does not fall back to other holders, so it fails if the publisher is offline, partitioned, or behind NAT the mesh has not punched yet. A seeded artefact is different: replicas already hold the bytes and keep serving while the publisher's grant is within its deadline and not revoked. It only stops being admitted by new or restarted nodes once that grant has expired or the publisher's identity was denied (see <a href="#reduced-replicas">A site or blob keeps fewer replicas than expected</a>).</p>
+    <p><strong>Fix.</strong> Confirm the publisher is online in <code>pln status</code>. For content you need retrievable without the origin, do not rely on <code>pln fetch</code>; seed it so replicas hold it:</p>
+    <div class="terminal">
+      <span class="cmd">pln seed ab12cd34 myblob                        <span class="cmt"># pin a named, replicated copy</span></span>
+    </div>
+    <p>A seeded copy survives the original publisher going offline; a bare <code>pln fetch</code> does not. See <a href="cli.html#seed"><code>pln seed</code></a>.</p>
 
-    <h2 id="call-denied">Call returns <code>stream closed by peer</code></h2>
+    <h2 id="call-denied">Call returns <code>no such workload</code></h2>
     <p><strong>Symptom.</strong></p>
     <div class="terminal">
       <span class="cmd">pln call greeter run 'hi'</span>
-      <span class="out">Error: stream closed by peer</span>
+      <span class="out">Error: no such workload</span>
     </div>
-    <p><strong>Cause.</strong> Authorisation denied. The runtime gate evaluates <code>--allow-prop</code> clauses against the caller's cert; failed matches close the stream silently to prevent probing.</p>
-    <p><strong>Fix.</strong> Inspect the spec and the caller's cert:</p>
+    <p><strong>Cause.</strong> The target could not be resolved on any reachable node. A caller denied at the authorise stage sees the same opaque answer as a genuinely absent workload: the authorise stage evaluates the resource's <code>--allow-prop</code> clauses against the caller's authority, and a failed match is reported as not found rather than as a distinct denial, so an unauthorised caller cannot probe for which workloads exist. If the session itself were invalid the call would fail to authenticate first instead (see <a href="#cert-expired">Access expired or node degraded</a>).</p>
+    <p><strong>Fix.</strong> Inspect the spec and the caller's authority:</p>
     <div class="terminal">
       <span class="cmd">pln status seeds --wide                        <span class="cmt"># shows policy on the spec</span></span>
       <span class="cmd">pln inspect $(pln id)                          <span class="cmt"># shows your tier and attributes</span></span>
     </div>
-    <p>Then either add the missing property to your cert (<code>pln grant &lt;your-peer&gt; --prop key=value</code> from an admin shell) or relax the spec by re-publishing without the offending clause.</p>
+    <p>Then either have an admin add the missing property to your grant (<code>pln grant &lt;your-peer&gt; --prop key=value</code>) or relax the spec by re-publishing without the offending clause.</p>
 
-    <h2 id="cert-expired">Cert expired or <code>tls: bad certificate</code></h2>
-    <p><strong>Symptom.</strong> A wire-mode command refuses to connect:</p>
+    <h2 id="budget-exhausted">Publish refused with <code>budget exhausted</code> or <code>lacks publish capability</code></h2>
+    <p><strong>Symptom.</strong> A publish is refused and the CLI prints the admission reason:</p>
+    <div class="terminal">
+      <span class="cmd">pln seed ./hello.wasm hello</span>
+      <span class="out">Error: admission: functions budget exhausted: authority holds 5, limit 5</span>
+    </div>
+    <p>A static site or a blob over its cap is refused the same way, with its own kind token (<code>sites</code> or <code>blobs</code>).</p>
+    <p><strong>Cause.</strong> The write was rejected at the admission account or authorise stage. That verdict is returned to the publisher as a failed precondition, so the reason is on the CLI; the same line is also recorded in the daemon log. It is one of:</p>
+    <ul>
+      <li><code>admission: functions budget exhausted: authority holds 5, limit 5</code>: the count budget for that kind is full. The kind token is plural (<code>functions</code>, <code>blobs</code> or <code>sites</code>).</li>
+      <li><code>admission: authority grant lacks publish capability for functions</code>: the grant was never given the right to publish that kind, so no budget applies.</li>
+    </ul>
+    <p><strong>Fix.</strong> For an exhausted budget, unseed something of that kind to free a slot, or have an admin raise the limit, either on a connected peer or at enrolment:</p>
+    <div class="terminal">
+      <span class="cmd">pln grant &lt;peer-id&gt; --max-functions 20            <span class="cmt"># or --max-blobs / --max-sites</span></span>
+      <span class="cmd">pln invite --publisher --max-functions 20         <span class="cmt"># same flags at enrolment</span></span>
+    </div>
+    <p>For a missing capability, an admin must re-grant the peer at a tier that may publish that kind:</p>
+    <div class="terminal">
+      <span class="cmd">pln grant &lt;peer-id&gt; --publisher</span>
+    </div>
+    <p>See <a href="concepts.html#authorisation">Admission</a> for how the account and authorise stages check budgets and capability.</p>
+
+    <h2 id="out-of-date">Wire command fails with <code>out of date</code></h2>
+    <p><strong>Symptom.</strong> Exactly one of:</p>
     <div class="terminal">
       <span class="cmd">pln status</span>
-      <span class="out">cannot reach pln://edge.example.com:7443: unavailable: remote error: tls: bad certificate</span>
-      <span class="out">  context cert expired at 14 May 2026 22:25 BST beyond renewal; rejoin with `pln join &lt;token&gt;` (mint one on the cluster with `pln invite`)</span>
+      <span class="out">pln is out of date: this daemon speaks protocol 1-3 but pln supports only up to 2; upgrade pln</span>
     </div>
-    <p>Or a daemon starts but logs:</p>
     <div class="terminal">
-      <span class="out">delegation certificate past access_deadline; renewal no longer possible, rejoin with a fresh `pln join &lt;token&gt;`</span>
+      <span class="out">the daemon is out of date: it speaks protocol 1-2 but pln requires at least 3; upgrade the daemon</span>
     </div>
-    <p><strong>Cause.</strong> A delegated cert has two deadlines. <code>not_after</code> is a short working window the cert authenticates within; <code>access_deadline</code> is a hard ceiling fixed when the cert was first minted and never extended. Past <code>not_after</code> the cert renews itself automatically. Past the ceiling it is dead, and the holder must rejoin. The default working window is 4 hours and the default ceiling is 30 days. The line under the error states which case you are in; <code>tls: bad certificate</code> on its own almost always means the local cert lapsed, not that the endpoint is down.</p>
-    <p><strong>Fix.</strong> Inspect the context to see exactly where the cert stands:</p>
     <div class="terminal">
-      <span class="cmd">pln context show</span>
-      <span class="out">context: staging</span>
-      <span class="out">status:   expired</span>
-      <span class="out">not after:  14 May 2026 22:25 BST</span>
-      <span class="out">rejoin by:  13 Jun 2026 18:25 BST</span>
+      <span class="out">the daemon is out of date: it does not support protocol negotiation; upgrade the daemon</span>
     </div>
-    <p>If the status is <code>needs-renewal</code>, the next command renews transparently; just retry. If it is <code>expired</code> or <code>revoked</code>, mint a fresh token on the cluster and rejoin:</p>
+    <p><strong>Cause.</strong> A wire client and the daemon it connects to negotiate a protocol version. These messages mean the two supported ranges do not overlap, so the older side cannot speak the newer side's protocol.</p>
+    <p><strong>Fix.</strong> Upgrade whichever side the message names. If it says <code>upgrade pln</code>, update the local CLI; if it says <code>upgrade the daemon</code>, update the remote host's binary and restart it:</p>
     <div class="terminal">
-      <span class="cmd">ssh root@edge.example.com pln invite --ttl 24h</span>
+      <span class="cmd">pln upgrade                                    <span class="cmt"># local CLI</span></span>
+      <span class="cmd">ssh edge.example.com 'pln upgrade &amp;&amp; pln restart'  <span class="cmt"># remote daemon</span></span>
+    </div>
+    <p>Keep client and daemon on close versions to avoid the gap reopening. See <a href="concepts.html#versioned-wire">Versioned wire</a>.</p>
+
+    <h2 id="cert-expired">Access expired or node degraded</h2>
+    <p><strong>Symptom.</strong> The <code>pln status</code> footer prints a single line for a grant that has a deadline (a delegated leaf or publisher grant). While the grant is valid it reads <code>temporary access expires in 2d</code>; once the deadline passes it becomes <code>temporary access expired — rejoin the cluster or contact a cluster admin</code>:</p>
+    <div class="terminal">
+      <span class="cmd">pln status</span>
+      <span class="out">temporary access expired — rejoin the cluster or contact a cluster admin</span>
+    </div>
+    <p>A daemon restarted while the grant was already past its deadline logs:</p>
+    <div class="terminal">
+      <span class="out">node grant no longer valid — starting in degraded mode; rejoin with `pln join &lt;token&gt;`</span>
+    </div>
+    <p>In wire mode the failing command itself diagnoses it: an opaque dial error is turned into an actionable two-line message on stderr.</p>
+    <div class="terminal">
+      <span class="cmd">pln --context staging status</span>
+      <span class="out">cannot reach pln://staging.example.com: unavailable: remote error: tls: bad certificate
+  context grant deadline passed at 14 May 2026 22:25 BST; rejoin with `pln join &lt;token&gt;` (mint one on the cluster with `pln invite`)</span>
+    </div>
+    <p>The indented second line is the actionable part and varies with the cause: <code>this context's identity has been denied by the cluster; you need a fresh `pln join &lt;token&gt;`</code>, or <code>context grant no longer validates against the stored root (the cluster was likely re-rooted); rejoin with a fresh `pln join &lt;token&gt;`</code>, or <code>no credentials in this context; run `pln join &lt;token&gt;` first</code>. The bare transport error before diagnosis is usually <code>tls: bad certificate</code>: the session no longer authenticates because the underlying grant is no longer valid; the endpoint itself is reachable. <code>pln context show</code> reports the same state structurally as <code>status:   expired</code> or <code>status:   revoked</code> (see <a href="how-to.html#recover-context">Recover a context that can't connect</a>).</p>
+    <p><strong>Cause.</strong> A delegated grant has one hard deadline (default 30 days) fixed when it is first issued. Renewal is automatic and happens in the background against any reachable delegating peer, so this state is only reached after prolonged isolation: the node could not reach any delegating peer for the entire renewal window, or its identity was denied by the cluster, or the cluster was re-rooted so the grant no longer validates against the stored root. Admin and infra grants carry no deadline and are unaffected.</p>
+    <p>Distinguish the two states. <strong>Degraded</strong> means the node is still serving on a valid-but-expiring grant whose renewal keeps failing; you have until the deadline to restore connectivity to a delegating peer and let renewal succeed on its own. <strong>Expired</strong> means the deadline has passed: the node has stopped, no further renewal is possible, and it must rejoin with a fresh grant.</p>
+    <p><strong>Fix.</strong> There is no <code>pln renew</code>; renewal is automatic and only fails after the node has been cut off for the whole renewal window. If the node is degraded, restore its path to a delegating peer (see <a href="#peer-offline">A peer shows offline that should be online</a>) and renewal recovers on its own before the deadline. If the deadline has already passed, or the identity was denied, or the cluster was re-rooted, mint a fresh invite on an admin and rejoin:</p>
+    <div class="terminal">
+      <span class="cmd">ssh admin.example.com pln invite --ttl 24h</span>
       <span class="cmd">pln --context staging join &lt;token&gt;</span>
     </div>
-    <p>A running daemon renews its own cert in the background; for the root node, <code>pln restart</code> re-issues the self-signed cert from <code>config.yaml</code>.</p>
+    <p>See <a href="concepts.html#sessions">Sessions</a> for how automatic renewal works and <a href="concepts.html#grants">Grants</a> for the deadline.</p>
 
     <h2 id="reduced-replicas">A site or blob keeps fewer replicas than expected</h2>
     <p><strong>Symptom.</strong> A static site or named blob shows fewer claimants than its serving capacity, and a restarted or freshly joined node never picks up a copy:</p>
@@ -191,14 +238,21 @@ hello   4f3a7c91  pending   0/2       -      30s</span>
 NAME    MANIFEST  REPLICAS  LOCAL  PUBLISHER
 docs    9f3a1c20  1/2              7c4d8e10</span>
     </div>
-    <p><strong>Cause.</strong> A spec travels with the publisher's cert. A node admits it from gossip only while that cert is within its <code>access_deadline</code> and the publisher is not denied. Once the publisher's cert passes its ceiling, or the publisher is denied, a restarted or new node refuses the spec and will not claim a replica. A node already holding it keeps serving from its own slot, so the site or blob stays reachable at reduced replication. See <a href="concepts.html#authorisation">cert lifetime</a>.</p>
-    <p><strong>Fix.</strong> Rejoin the publishing context and re-publish so the spec is re-signed under a current cert. Check where that context stands first:</p>
+    <p><strong>Cause.</strong> A spec travels with the publisher's grant. A node admits it from gossip only while that grant is within its deadline and the publisher's identity is not denied. Once the publisher's grant passes its deadline, or the identity is denied, a restarted or freshly joined node refuses the spec and will not claim a replica. A node already holding it keeps serving from its own slot, so the site or blob stays reachable at reduced replication rather than disappearing. See <a href="concepts.html#grants">Grants</a> for the deadline.</p>
+    <p><strong>Fix.</strong> Rejoin the publishing context and re-publish so the spec travels under a current grant. Check where that context stands first:</p>
     <div class="terminal">
       <span class="cmd">pln --context staging context show</span>
-      <span class="out">context: staging</span>
-      <span class="out">status:   expired</span>
+      <span class="out">context: staging
+target:  root@staging.example.com
+dir:     ~/.pln/contexts/staging
+identity: ab12cd34
+issuer:   7c9a4f02
+status:   expired
+not before: 14 Apr 2026 22:25 BST
+rejoin by:  14 May 2026 22:25 BST
+caps:     delegate=false admit=false publish=true max_depth=0</span>
     </div>
-    <p>If the status is <code>expired</code> or <code>revoked</code>, rejoin (see <a href="#cert-expired">Cert expired</a>), then publish the same source under the same name:</p>
+    <p>If the grant deadline has passed or the identity was denied, rejoin (see <a href="#cert-expired">Access expired or node degraded</a>), then publish the same source under the same name:</p>
     <div class="terminal">
       <span class="cmd">pln --context staging seed ./public docs</span>
     </div>
@@ -208,7 +262,6 @@ docs    9f3a1c20  1/2              7c4d8e10</span>
     <p><strong>Symptom.</strong></p>
     <div class="terminal">
       <span class="out">  user@host                                failed (ssh: handshake failed)
-0 succeeded, 1 failed
 hint: for failed hosts, use `pln invite` and run `pln join --up &lt;token&gt;` on the remote host</span>
     </div>
     <p><strong>Cause(s).</strong></p>
@@ -241,10 +294,10 @@ hint: for failed hosts, use `pln invite` and run `pln join --up &lt;token&gt;` o
 
     <h2 id="props-stale">Properties don't seem to take effect</h2>
     <p><strong>Symptom.</strong> You ran <code>pln props</code> or <code>pln grant --prop</code> but downstream policy decisions still use the old values.</p>
-    <p><strong>Cause.</strong> Properties live in certs, so a change is a cert re-issue. Until the new cert reaches the relevant party, the old cert is what the gate sees.</p>
+    <p><strong>Cause.</strong> Properties live in the grant, so a change re-issues the grant. Until the new grant reaches the relevant party, the old one is what admission sees.</p>
     <ul>
-      <li>For <strong>root</strong>: <code>pln props</code> updates the persisted file but doesn't re-issue the cert in-flight; restart to apply (<code>pln restart</code>).</li>
-      <li>For a <strong>delegated peer</strong>: <code>pln grant</code> issues immediately, but the cert needs to gossip to whichever node is enforcing the policy. Usually a couple of seconds.</li>
+      <li>For <strong>root</strong>: <code>pln props</code> updates the persisted file but doesn't re-issue the grant in-flight; restart to apply (<code>pln restart</code>).</li>
+      <li>For a <strong>delegated peer</strong>: <code>pln grant</code> issues immediately, but the new grant needs to gossip to whichever node is enforcing the policy. Usually a couple of seconds.</li>
     </ul>
     <p><strong>Fix.</strong> Restart root after <code>pln props</code>. For delegated peers, watch <code>pln status nodes --wide</code> until the new properties show on the affected node.</p>
 
@@ -274,7 +327,9 @@ hint: for failed hosts, use `pln invite` and run `pln join --up &lt;token&gt;` o
       <a href="#fetch-no-publisher">Fetch: no publisher known</a>
       <a href="#fetch-publisher-offline">Fetch: publisher unreachable</a>
       <a href="#call-denied">Call denied silently</a>
-      <a href="#cert-expired">Cert expired</a>
+      <a href="#budget-exhausted">Budget exhausted</a>
+      <a href="#out-of-date">Out of date</a>
+      <a href="#cert-expired">Access expired or degraded</a>
       <a href="#reduced-replicas">Reduced replicas</a>
       <a href="#bootstrap-fails">bootstrap ssh fails</a>
       <a href="#static-404">Static site 404</a>
