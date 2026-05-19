@@ -15,6 +15,7 @@ import (
 	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/fact"
 	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/state"
@@ -56,6 +57,12 @@ func seedBodyResource(name, hexByte string) (*statev1.WorkloadSpecChange, *admis
 	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat(hexByte, 64), Name: name, MinReplicas: 1}
 	hb, _ := hex.DecodeString(body.GetHash())
 	return body, &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: name, Hash: hb}}}
+}
+
+func blobBodyResource(name, hexByte string) (*statev1.BlobSpecChange, *admissionv1.ResourceID) {
+	digest, _ := hex.DecodeString(strings.Repeat(hexByte, 64))
+	body := &statev1.BlobSpecChange{Name: name, Digest: digest}
+	return body, &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Blob{Blob: &admissionv1.BlobID{Name: name, Digest: digest}}}
 }
 
 func nodes(authPub ed25519.PublicKey, grant *identityv1.Grant) map[types.PeerKey]state.NodeView {
@@ -183,8 +190,8 @@ func TestAdmitWrapsRejectionsAsErrRejected(t *testing.T) {
 
 		snap := state.Snapshot{
 			Nodes: nodes(authPub, grant),
-			Specs: map[string]state.WorkloadSpecView{
-				"deadbeef": {Spec: state.WorkloadSpec{Name: "first"}, Publisher: types.PeerKeyFromBytes(authPub)},
+			SpecsAll: []state.WorkloadSpecView{
+				{Spec: state.WorkloadSpec{Name: "first"}, Publisher: types.PeerKeyFromBytes(authPub)},
 			},
 		}
 		body, res := seedBodyResource("second", "b")
@@ -259,25 +266,35 @@ func TestRuntimeMethodsFailClosed(t *testing.T) {
 	publicFact, err := fact.IssueFact(authPriv, publicRes, publicBody, &admissionv1.Predicate{Public: true}, 1, false)
 	require.NoError(t, err)
 
+	authPK := types.PeerKeyFromBytes(authPub)
+	views := []state.WorkloadSpecView{
+		{Fact: gatedFact, Spec: state.WorkloadSpec{Name: "echo", Hash: body.GetHash()}, Publisher: authPK},
+		{Fact: publicFact, Spec: state.WorkloadSpec{Name: "open", Hash: publicBody.GetHash()}, Publisher: authPK},
+	}
+	// Mirror buildSnapshot: the deduped runtime view and the
+	// per-(authority, name) publication view are both populated and
+	// consistent. Invoke now reads the publication view; Fetch still
+	// reads the deduped one.
 	snap := state.Snapshot{
 		Nodes: nodes(authPub, grant),
 		Specs: map[string]state.WorkloadSpecView{
-			body.GetHash():       {Fact: gatedFact, Spec: state.WorkloadSpec{Name: "echo"}},
-			publicBody.GetHash(): {Fact: publicFact, Spec: state.WorkloadSpec{Name: "open"}},
+			body.GetHash():       views[0],
+			publicBody.GetHash(): views[1],
 		},
+		SpecsAll: views,
 	}
 	g := New(rootPub, fakeStore{snap: snap})
 
 	t.Run("Invoke unknown target", func(t *testing.T) {
-		_, err := g.Invoke(grant, "deadbeef")
+		_, err := g.Invoke(grant, nil, "deadbeef")
 		require.ErrorIs(t, err, wasm.ErrTargetNotFound)
 	})
 	t.Run("Invoke gated spec with nil caller", func(t *testing.T) {
-		_, err := g.Invoke(nil, body.GetHash())
+		_, err := g.Invoke(nil, nil, body.GetHash())
 		require.ErrorIs(t, err, wasm.ErrTargetNotFound)
 	})
 	t.Run("Invoke public spec with nil caller", func(t *testing.T) {
-		_, err := g.Invoke(nil, publicBody.GetHash())
+		_, err := g.Invoke(nil, nil, publicBody.GetHash())
 		require.NoError(t, err)
 	})
 	t.Run("Fetch with no entitlement", func(t *testing.T) {
@@ -306,5 +323,159 @@ func TestRuntimeMethodsFailClosed(t *testing.T) {
 	t.Run("AllowAnonymous", func(t *testing.T) {
 		require.NoError(t, g.AllowAnonymous(publicFact))
 		require.ErrorIs(t, g.AllowAnonymous(gatedFact), wasm.ErrTargetNotFound)
+	})
+}
+
+// TestInvokeHostPublicationScopedMultiPublisher locks the multi-tenant
+// correctness the publication-scoped resolve restores: two authorities
+// publish byte-identical workloads under different names and policies,
+// and the deduped artefact winner is deliberately the gated one (the
+// shape that produced the live blocker). Invoke and MayHostByHash must
+// decide against the addressed publication / the union, never the
+// deduped winner. The matrix's T10 did not cover this collision.
+func TestInvokeHostPublicationScopedMultiPublisher(t *testing.T) {
+	now := time.Now()
+	rootA, aPub, aPriv, aGrant := authority(t, now, now.Add(30*24*time.Hour), nil)
+	_, bPub, bPriv, bGrant := authority(t, now, now.Add(30*24*time.Hour), nil)
+
+	// Identical bytes (same hex byte → same 64-char hash) under two
+	// distinct publications: A's is public, B's is gated.
+	bodyA, resA := seedBodyResource("echo", "a")
+	publicFact, err := fact.IssueFact(aPriv, resA, bodyA, &admissionv1.Predicate{Public: true}, 1, false)
+	require.NoError(t, err)
+	bodyB, resB := seedBodyResource("secret", "a")
+	gatedFact, err := fact.IssueFact(bPriv, resB, bodyB,
+		&admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "team", Equals: "core"}}}}, 1, false)
+	require.NoError(t, err)
+
+	hash := bodyA.GetHash()
+	require.Equal(t, hash, bodyB.GetHash(), "fixture must publish identical bytes")
+	aPK, bPK := types.PeerKeyFromBytes(aPub), types.PeerKeyFromBytes(bPub)
+
+	snap := state.Snapshot{
+		Nodes: map[types.PeerKey]state.NodeView{aPK: {Grant: aGrant}, bPK: {Grant: bGrant}},
+		// Deduped winner is the GATED publication: the exact shape that
+		// denied a legitimately-public publication on the live cluster.
+		Specs: map[string]state.WorkloadSpecView{
+			hash: {Fact: gatedFact, Spec: state.WorkloadSpec{Name: "secret", Hash: hash}, Publisher: bPK},
+		},
+		SpecsAll: []state.WorkloadSpecView{
+			{Fact: publicFact, Spec: state.WorkloadSpec{Name: "echo", Hash: hash}, Publisher: aPK},
+			{Fact: gatedFact, Spec: state.WorkloadSpec{Name: "secret", Hash: hash}, Publisher: bPK},
+		},
+	}
+	g := New(rootA, fakeStore{snap: snap})
+
+	t.Run("addressed public publication reachable despite gated dedupe winner", func(t *testing.T) {
+		_, err := g.Invoke(nil, &Publication{AuthorityPub: aPub, Name: "echo"}, hash)
+		require.NoError(t, err)
+	})
+	t.Run("addressed gated publication denied (no leak via identical public bytes)", func(t *testing.T) {
+		_, err := g.Invoke(nil, &Publication{AuthorityPub: bPub, Name: "secret"}, hash)
+		require.ErrorIs(t, err, wasm.ErrTargetNotFound)
+	})
+	t.Run("selector bound to dispatched hash (forged selector cannot borrow a policy)", func(t *testing.T) {
+		_, err := g.Invoke(nil, &Publication{AuthorityPub: aPub, Name: "echo"}, strings.Repeat("f", 64))
+		require.ErrorIs(t, err, wasm.ErrTargetNotFound)
+	})
+	t.Run("unknown name under a real authority denied", func(t *testing.T) {
+		_, err := g.Invoke(nil, &Publication{AuthorityPub: aPub, Name: "nope"}, hash)
+		require.ErrorIs(t, err, wasm.ErrTargetNotFound)
+	})
+	t.Run("bare-hash union admits via the public co-publication", func(t *testing.T) {
+		_, err := g.Invoke(nil, nil, hash)
+		require.NoError(t, err)
+	})
+	t.Run("MayHostByHash union admits because a co-publication is public", func(t *testing.T) {
+		require.NoError(t, g.MayHostByHash(bGrant, hash))
+	})
+	t.Run("MayHostByHash nil grant fails closed", func(t *testing.T) {
+		require.ErrorIs(t, g.MayHostByHash(nil, hash), wasm.ErrTargetNotFound)
+	})
+	t.Run("MayHostByHash denies when every co-publication is gated and unmet", func(t *testing.T) {
+		gatedOnly := state.Snapshot{
+			Nodes:    map[types.PeerKey]state.NodeView{bPK: {Grant: bGrant}},
+			SpecsAll: []state.WorkloadSpecView{{Fact: gatedFact, Spec: state.WorkloadSpec{Name: "secret", Hash: hash}, Publisher: bPK}},
+		}
+		require.ErrorIs(t, New(rootA, fakeStore{snap: gatedOnly}).MayHostByHash(bGrant, hash), wasm.ErrTargetNotFound)
+	})
+}
+
+// TestFetchBlobPublicationScopedMultiPublisher is the blob Fetch
+// analogue of TestInvokeHostPublicationScopedMultiPublisher: two
+// authorities publish byte-identical blob bytes under different names
+// and policies. Fetch (bare-hash union) and FetchByToken (exact
+// issuer+resource) must decide over every co-publication, never an
+// arbitrary deduped-map winner. The bug bites under opposite winners
+// for the two paths, so each is locked against the adversarial one.
+// The named blob path stays exact via AllowAnonymous and is covered by
+// TestRuntimeMethodsFailClosed.
+func TestFetchBlobPublicationScopedMultiPublisher(t *testing.T) {
+	now := time.Now()
+	rootA, aPub, aPriv, aGrant := authority(t, now, now.Add(30*24*time.Hour), nil)
+	_, bPub, bPriv, bGrant := authority(t, now, now.Add(30*24*time.Hour), nil)
+
+	bodyA, resA := blobBodyResource("pubdata", "a")
+	publicFact, err := fact.IssueFact(aPriv, resA, bodyA, &admissionv1.Predicate{Public: true}, 1, false)
+	require.NoError(t, err)
+	bodyB, resB := blobBodyResource("secret", "a")
+	gatedFact, err := fact.IssueFact(bPriv, resB, bodyB,
+		&admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "team", Equals: "core"}}}}, 1, false)
+	require.NoError(t, err)
+
+	hash := strings.Repeat("a", 64)
+	aPK, bPK := types.PeerKeyFromBytes(aPub), types.PeerKeyFromBytes(bPub)
+	bAll := []state.BlobSpecView{
+		{Fact: publicFact, Spec: state.BlobSpec{Name: "pubdata", Digest: hash}, Publisher: aPK},
+		{Fact: gatedFact, Spec: state.BlobSpec{Name: "secret", Digest: hash}, Publisher: bPK},
+	}
+	meshNodes := map[types.PeerKey]state.NodeView{aPK: {Grant: aGrant}, bPK: {Grant: bGrant}}
+
+	// Deduped winner is the GATED publication: pre-fix Fetch dropped the
+	// public co-publication, so an anonymous read of bytes a tenant
+	// published publicly was denied.
+	gatedWinner := New(rootA, fakeStore{snap: state.Snapshot{
+		Nodes:        meshNodes,
+		BlobSpecs:    map[string]state.BlobSpecView{hash: {Fact: gatedFact, Spec: state.BlobSpec{Name: "secret", Digest: hash}, Publisher: bPK}},
+		BlobSpecsAll: bAll,
+	}})
+	// Deduped winner is the PUBLIC publication: pre-fix FetchByToken
+	// dropped the gated co-publication, so a legitimate share-link
+	// holder for a gated blob was denied because someone else's
+	// identical bytes happened to be public.
+	publicWinner := New(rootA, fakeStore{snap: state.Snapshot{
+		Nodes:        meshNodes,
+		BlobSpecs:    map[string]state.BlobSpecView{hash: {Fact: publicFact, Spec: state.BlobSpec{Name: "pubdata", Digest: hash}, Publisher: aPK}},
+		BlobSpecsAll: bAll,
+	}})
+
+	mintToken := func(priv ed25519.PrivateKey, res *admissionv1.ResourceID) *admissionv1.AccessToken {
+		tok, err := auth.SignAccessToken(priv, res, now, time.Hour)
+		require.NoError(t, err)
+		return tok
+	}
+
+	t.Run("anonymous fetch admitted via the public co-publication despite gated dedupe winner", func(t *testing.T) {
+		require.NoError(t, gatedWinner.Fetch(nil, hash))
+	})
+	t.Run("gated-blob token holder authorised despite public dedupe winner", func(t *testing.T) {
+		require.NoError(t, publicWinner.FetchByToken(mintToken(bPriv, resB), hash))
+	})
+	t.Run("public-blob token holder authorised despite gated dedupe winner", func(t *testing.T) {
+		require.NoError(t, gatedWinner.FetchByToken(mintToken(aPriv, resA), hash))
+	})
+	t.Run("token bound to its hash: a forged hash cannot borrow the entitlement", func(t *testing.T) {
+		require.ErrorIs(t, publicWinner.FetchByToken(mintToken(bPriv, resB), strings.Repeat("f", 64)), wasm.ErrTargetNotFound)
+	})
+	t.Run("token resource mismatch fails closed: un-dedup does not widen token auth", func(t *testing.T) {
+		_, otherRes := blobBodyResource("elsewhere", "a")
+		require.ErrorIs(t, publicWinner.FetchByToken(mintToken(bPriv, otherRes), hash), wasm.ErrTargetNotFound)
+	})
+	t.Run("anonymous fetch denied when every co-publication is gated and unmet", func(t *testing.T) {
+		gatedOnly := New(rootA, fakeStore{snap: state.Snapshot{
+			Nodes:        map[types.PeerKey]state.NodeView{bPK: {Grant: bGrant}},
+			BlobSpecsAll: []state.BlobSpecView{{Fact: gatedFact, Spec: state.BlobSpec{Name: "secret", Digest: hash}, Publisher: bPK}},
+		}})
+		require.ErrorIs(t, gatedOnly.Fetch(nil, hash), wasm.ErrTargetNotFound)
 	})
 }

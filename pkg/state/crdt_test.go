@@ -90,7 +90,7 @@ func TestRootDenyPoisonsSubtree(t *testing.T) {
 	sigI, err := identity.SignGrantSubject(grantI, iPriv)
 	require.NoError(t, err)
 
-	grantP, err := identity.IssueGrant(iPriv, []*identityv1.Grant{grantI}, pPub,
+	grantP, err := identity.IssueGrant(iPriv, grantI, pPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
 		now.Add(-time.Minute), now.Add(30*24*time.Hour))
 	require.NoError(t, err)
@@ -202,7 +202,7 @@ func TestDenyBeforeGrantBecomesEffectiveOnArrival(t *testing.T) {
 	sigAdmin, err := identity.SignGrantSubject(adminGrant, adminPriv)
 	require.NoError(t, err)
 
-	grantX, err := identity.IssueGrant(adminPriv, []*identityv1.Grant{adminGrant}, xPub,
+	grantX, err := identity.IssueGrant(adminPriv, adminGrant, xPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
 		now.Add(-time.Minute), now.Add(30*24*time.Hour))
 	require.NoError(t, err)

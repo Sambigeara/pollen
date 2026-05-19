@@ -526,32 +526,32 @@ func fillPublishedResources(detail *controlv1.NodeDetail, scoped view.ScopedView
 	}
 	slices.Sort(detail.PublishedServices)
 
-	for hash, sv := range scoped.Workloads {
+	for _, sv := range scoped.Workloads {
 		if sv.Publisher != peerKey {
 			continue
 		}
 		label := sv.Spec.Name
 		if label == "" {
-			label = hash
+			label = sv.Spec.Hash
 		}
 		detail.PublishedWorkloads = append(detail.PublishedWorkloads, label)
 	}
 	slices.Sort(detail.PublishedWorkloads)
 
-	for name, sv := range scoped.Statics {
+	for _, sv := range scoped.Statics {
 		if sv.Publisher == peerKey {
-			detail.PublishedStatics = append(detail.PublishedStatics, name)
+			detail.PublishedStatics = append(detail.PublishedStatics, sv.Spec.Name)
 		}
 	}
 	slices.Sort(detail.PublishedStatics)
 
-	for digest, bv := range scoped.Blobs {
+	for _, bv := range scoped.Blobs {
 		if bv.Publisher != peerKey {
 			continue
 		}
 		label := bv.Spec.Name
 		if label == "" {
-			label = digest
+			label = bv.Spec.Digest
 		}
 		detail.PublishedBlobs = append(detail.PublishedBlobs, label)
 	}
@@ -870,43 +870,56 @@ func buildConnectionSummaries(nodes map[types.PeerKey]state.NodeView, connection
 }
 
 func (s *Service) buildWorkloadSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens) []*controlv1.WorkloadSummary {
-	var out []*controlv1.WorkloadSummary
-	seen := make(map[string]struct{})
-
+	type runInfo struct {
+		name          string
+		startedAtUnix int64
+	}
+	running := make(map[string]runInfo)
 	for _, w := range s.placement.Status() {
-		sv, inScope := scoped.Workloads[w.Hash]
-		// inScope means a named spec the caller may see. Not in scope and
-		// not admin: either another tenant's spec or an unattributed local
-		// workload with no publisher to own; neither is the caller's.
-		if !inScope && !lens.Admin() {
-			continue
-		}
-		seen[w.Hash] = struct{}{}
-		ws := &controlv1.WorkloadSummary{
-			Hash:           w.Hash,
-			Name:           w.Name,
-			Status:         controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING,
-			StartedAtUnix:  w.CompiledAt.Unix(),
-			Local:          true,
-			ActiveReplicas: uint32(len(snap.Claims[w.Hash])),
-		}
-		if inScope {
-			fillWorkloadSpecFields(ws, sv)
-		}
-		out = append(out, ws)
+		running[w.Hash] = runInfo{name: w.Name, startedAtUnix: w.CompiledAt.Unix()}
 	}
 
-	for hash, sv := range scoped.Workloads {
-		if _, ok := seen[hash]; ok {
-			continue
-		}
+	var out []*controlv1.WorkloadSummary
+	runningEmitted := make(map[string]struct{})
+
+	// One summary per (authority, name) the lens may see. Runtime state
+	// (running, replica count) is content-addressed and joined by hash:
+	// two tenants on identical bytes share one replica pool, so both
+	// correctly report the same replica count.
+	for _, sv := range scoped.Workloads {
+		hash := sv.Spec.Hash
 		ws := &controlv1.WorkloadSummary{
 			Hash:           hash,
 			Name:           sv.Spec.Name,
 			ActiveReplicas: uint32(len(snap.Claims[hash])),
 		}
+		if r, ok := running[hash]; ok {
+			ws.Status = controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING
+			ws.StartedAtUnix = r.startedAtUnix
+			ws.Local = true
+			runningEmitted[hash] = struct{}{}
+		}
 		fillWorkloadSpecFields(ws, sv)
 		out = append(out, ws)
+	}
+
+	// Admin also sees locally running workloads with no in-scope spec
+	// (unattributed, or running ahead of a published spec); a tenant
+	// never sees another authority's running workload.
+	if lens.Admin() {
+		for hash, r := range running {
+			if _, ok := runningEmitted[hash]; ok {
+				continue
+			}
+			out = append(out, &controlv1.WorkloadSummary{
+				Hash:           hash,
+				Name:           r.name,
+				Status:         controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING,
+				StartedAtUnix:  r.startedAtUnix,
+				Local:          true,
+				ActiveReplicas: uint32(len(snap.Claims[hash])),
+			})
+		}
 	}
 	return out
 }
@@ -945,16 +958,25 @@ func sortStatusResponse(out *controlv1.GetStatusResponse) {
 		if a.Name != b.Name {
 			return cmp.Compare(a.Name, b.Name)
 		}
-		return cmp.Compare(a.Hash, b.Hash)
+		if a.Hash != b.Hash {
+			return cmp.Compare(a.Hash, b.Hash)
+		}
+		return types.PeerKeyFromBytes(a.Publisher.GetPeerPub()).Compare(types.PeerKeyFromBytes(b.Publisher.GetPeerPub()))
 	})
 	slices.SortFunc(out.Sites, func(a, b *controlv1.StaticSummary) int {
-		return cmp.Compare(a.Name, b.Name)
+		if a.Name != b.Name {
+			return cmp.Compare(a.Name, b.Name)
+		}
+		return types.PeerKeyFromBytes(a.Publisher.GetPeerPub()).Compare(types.PeerKeyFromBytes(b.Publisher.GetPeerPub()))
 	})
 	slices.SortFunc(out.Blobs, func(a, b *controlv1.BlobSummary) int {
 		if a.Replicas != b.Replicas {
 			return cmp.Compare(b.Replicas, a.Replicas)
 		}
-		return cmp.Compare(a.Hash, b.Hash)
+		if a.Hash != b.Hash {
+			return cmp.Compare(a.Hash, b.Hash)
+		}
+		return types.PeerKeyFromBytes(a.Publisher.GetPeerPub()).Compare(types.PeerKeyFromBytes(b.Publisher.GetPeerPub()))
 	})
 }
 
@@ -1506,10 +1528,8 @@ func (s *Service) RemoveBlob(ctx context.Context, req *controlv1.RemoveBlobReque
 		}
 		return &controlv1.RemoveBlobResponse{}, nil
 	}
-	if bv, ok := snap.BlobSpecs[hash]; ok {
-		if err := s.authoriseOwnership(ctx, bv.Publisher); err != nil {
-			return nil, err
-		}
+	if err := s.authoriseUnpublish(ctx, snap, unpublishBlob, hash); err != nil {
+		return nil, err
 	}
 	if err := s.blobs.Remove(hash); err != nil {
 		return nil, s.failBlobRemove(hash, err)
@@ -1518,9 +1538,6 @@ func (s *Service) RemoveBlob(ctx context.Context, req *controlv1.RemoveBlobReque
 }
 
 func (s *Service) failBlobRemove(hash string, err error) error {
-	if errors.Is(err, blobs.ErrNotLocal) {
-		return status.Error(codes.FailedPrecondition, "blob not present locally")
-	}
 	s.log.Warnw("remove blob failed", "hash", types.ShortHash(hash), "err", err)
 	return status.Error(codes.Internal, "remove blob")
 }
@@ -1558,10 +1575,8 @@ func (s *Service) UnseedStatic(ctx context.Context, req *controlv1.UnseedStaticR
 		}
 		return &controlv1.UnseedStaticResponse{}, nil
 	}
-	if sv, ok := s.state.Snapshot().StaticSpecs[req.GetName()]; ok {
-		if err := s.authoriseOwnership(ctx, sv.Publisher); err != nil {
-			return nil, err
-		}
+	if err := s.authoriseUnpublish(ctx, s.state.Snapshot(), unpublishStatic, req.GetName()); err != nil {
+		return nil, err
 	}
 	if err := s.static.UnseedStatic(req.GetName()); err != nil {
 		return nil, s.fail(err, "unseed static")
@@ -1583,9 +1598,10 @@ func (s *Service) buildStaticSummaries(snap state.Snapshot, scoped view.ScopedVi
 		}
 	}
 	out := make([]*controlv1.StaticSummary, 0, len(scoped.Statics))
-	for name, spec := range scoped.Statics {
+	for _, spec := range scoped.Statics {
+		name := spec.Spec.Name
 		digest, _ := hex.DecodeString(spec.Spec.ManifestDigest)
-		claimants := snap.StaticClaims[name]
+		claimants := snap.StaticClaims[state.StaticClaimKey{Authority: spec.Publisher, Name: name}]
 		_, local := claimants[snap.LocalID]
 		summary := &controlv1.StaticSummary{
 			Name:            name,
@@ -1642,40 +1658,47 @@ func (s *Service) buildBlobSummaries(snap state.Snapshot, scoped view.ScopedView
 			counts[hash]++
 		}
 	}
-	staticBlobs := s.static.StaticBlobs()
 	localBlobs := snap.Nodes[snap.LocalID].Blobs
-	out := make([]*controlv1.BlobSummary, 0, len(counts))
-	for hash, n := range counts {
-		if _, ok := snap.Specs[hash]; ok {
-			continue
-		}
-		if _, ok := staticBlobs[hash]; ok {
-			continue
-		}
-		bv, hasSpec := snap.BlobSpecs[hash]
-		// Orphan blobs (no named BlobSpec) carry no publisher attribution,
-		// so non-admin callers can't claim ownership of them — only admins
-		// see them. Named specs are gated by the caller's projection.
-		if hasSpec {
-			if _, ok := scoped.Blobs[hash]; !ok {
+	out := make([]*controlv1.BlobSummary, 0, len(scoped.Blobs))
+
+	// One summary per (authority, name) the lens may see. Replica count
+	// is content-addressed: identical bytes share one replica pool, so
+	// each tenant's named blob correctly reports the shared count.
+	for _, bv := range scoped.Blobs {
+		digest := bv.Spec.Digest
+		_, local := localBlobs[digest]
+		out = append(out, &controlv1.BlobSummary{
+			Hash:      digest,
+			Name:      bv.Spec.Name,
+			Publisher: &controlv1.NodeRef{PeerPub: bv.Publisher.Bytes()},
+			Replicas:  counts[digest],
+			Local:     local && operator,
+		})
+	}
+
+	// Orphan blobs carry no named spec and no publisher attribution, so
+	// only admins see them. A workload artefact, a static file blob, or
+	// any digest with a named spec is not an orphan.
+	if lens.Admin() {
+		staticBlobs := s.static.StaticBlobs()
+		for hash, n := range counts {
+			if _, ok := snap.Specs[hash]; ok {
 				continue
 			}
-		} else if !lens.Admin() {
-			continue
+			if _, ok := staticBlobs[hash]; ok {
+				continue
+			}
+			if _, ok := snap.BlobSpecs[hash]; ok {
+				continue
+			}
+			_, local := localBlobs[hash]
+			out = append(out, &controlv1.BlobSummary{
+				Hash:     hash,
+				Replicas: n,
+				Local:    local && operator,
+				Orphan:   true,
+			})
 		}
-		_, local := localBlobs[hash]
-		summary := &controlv1.BlobSummary{
-			Hash:     hash,
-			Replicas: n,
-			Local:    local && operator,
-		}
-		if hasSpec {
-			summary.Name = bv.Spec.Name
-			summary.Publisher = &controlv1.NodeRef{PeerPub: bv.Publisher.Bytes()}
-		} else {
-			summary.Orphan = true
-		}
-		out = append(out, summary)
 	}
 	return out
 }
@@ -1690,10 +1713,8 @@ func (s *Service) UnseedWorkload(ctx context.Context, req *controlv1.UnseedWorkl
 		}
 		return &controlv1.UnseedWorkloadResponse{}, nil
 	}
-	if sv, ok := s.state.Snapshot().Specs[req.GetHash()]; ok {
-		if err := s.authoriseOwnership(ctx, sv.Publisher); err != nil {
-			return nil, err
-		}
+	if err := s.authoriseUnpublish(ctx, s.state.Snapshot(), unpublishWorkload, req.GetHash()); err != nil {
+		return nil, err
 	}
 	if err := s.placement.Unseed(req.GetHash()); err != nil {
 		if errors.Is(err, placement.ErrRelayOnly) {

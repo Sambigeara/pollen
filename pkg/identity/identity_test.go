@@ -35,7 +35,7 @@ func chain(t *testing.T, now, childDeadline time.Time) (rootPub ed25519.PublicKe
 	root, err := identity.IssueGrant(adminPriv, nil, rnPub, identity.FullCapabilities(), identity.UnlimitedBudget(), now.Add(-time.Hour), time.Time{})
 	require.NoError(t, err)
 
-	child, err = identity.IssueGrant(rnPrivK, []*identityv1.Grant{root}, subPub,
+	child, err = identity.IssueGrant(rnPrivK, root, subPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{MaxSites: 3},
 		now.Add(-time.Minute), childDeadline)
 	require.NoError(t, err)
@@ -179,18 +179,18 @@ func TestIssueGrantChildCannotExceedParent(t *testing.T) {
 
 	subPub, _ := newKeyPair(t)
 
-	_, err = identity.IssueGrant(rnPriv, []*identityv1.Grant{parent}, subPub,
+	_, err = identity.IssueGrant(rnPriv, parent, subPub,
 		&identityv1.Capabilities{Publish: &identityv1.PublishCapability{Functions: true}},
 		identity.UnlimitedBudget(), now, now.Add(time.Hour))
 	require.ErrorContains(t, err, "publish functions")
 
-	_, err = identity.IssueGrant(rnPriv, []*identityv1.Grant{parent}, subPub,
+	_, err = identity.IssueGrant(rnPriv, parent, subPub,
 		&identityv1.Capabilities{CanAdmit: true, Publish: &identityv1.PublishCapability{}},
 		identity.UnlimitedBudget(), now, now.Add(time.Hour))
 	require.ErrorContains(t, err, "CanAdmit")
 
 	// Within bounds: allowed, and the horizon clamps to the parent's.
-	ok, err := identity.IssueGrant(rnPriv, []*identityv1.Grant{parent}, subPub,
+	ok, err := identity.IssueGrant(rnPriv, parent, subPub,
 		&identityv1.Capabilities{Publish: &identityv1.PublishCapability{Sites: true}},
 		identity.UnlimitedBudget(), now, now.Add(time.Hour))
 	require.NoError(t, err)
@@ -387,10 +387,10 @@ func TestInviteTicketRedeemAndConsume(t *testing.T) {
 	require.ErrorContains(t, err, "expired")
 
 	_, otherPriv := newKeyPair(t)
-	_, err = identity.RedeemInviteTicket(otherPriv, []*identityv1.Grant{hostGrant}, adminPub, ticket, joinerPub, now, time.Hour)
+	_, err = identity.RedeemInviteTicket(otherPriv, hostGrant, adminPub, ticket, joinerPub, now, time.Hour)
 	require.ErrorContains(t, err, "issuer is not the redeeming host")
 
-	tok, err := identity.RedeemInviteTicket(hostPriv, []*identityv1.Grant{hostGrant}, adminPub, ticket, joinerPub, now, time.Hour)
+	tok, err := identity.RedeemInviteTicket(hostPriv, hostGrant, adminPub, ticket, joinerPub, now, time.Hour)
 	require.NoError(t, err)
 	v, err := identity.VerifyGrantToken(tok, joinerPub, now)
 	require.NoError(t, err)
@@ -439,11 +439,11 @@ func TestRedeemInviteClampsBudgetToIssuer(t *testing.T) {
 		return tk
 	}
 
-	_, err = identity.RedeemInviteTicket(hostPriv, []*identityv1.Grant{hostGrant}, adminPub,
+	_, err = identity.RedeemInviteTicket(hostPriv, hostGrant, adminPub,
 		mkTicket(&identityv1.Budget{MaxFunctions: 1_000_000}), joinerPub, now, time.Hour)
 	require.ErrorContains(t, err, "child budget exceeds parent: functions")
 
-	tok, err := identity.RedeemInviteTicket(hostPriv, []*identityv1.Grant{hostGrant}, adminPub,
+	tok, err := identity.RedeemInviteTicket(hostPriv, hostGrant, adminPub,
 		mkTicket(&identityv1.Budget{MaxFunctions: 3}), joinerPub, now, time.Hour)
 	require.NoError(t, err)
 	v, err := identity.VerifyGrantToken(tok, joinerPub, now)
@@ -480,4 +480,62 @@ func TestCheckGrantRejectsSplicedChain(t *testing.T) {
 
 	chk := identity.CheckGrant(child, rootPub, now, nil, nil)
 	require.Equal(t, identity.GrantStatusInvalidChain, chk.Status, chk.Reason)
+}
+
+// TestCredentialsIssueAtDepthAnchorsAtTrueRoot is the regression for the
+// staging chain-truncation defect: a node that is itself a delegate
+// (its own grant already carries a chain) must mint child grants that
+// still verify against the cluster root, not against its own immediate
+// issuer. Credentials.IssueGrant / RedeemInvite previously handed the
+// signer only its own grant, dropping the ancestry, so any issuer more
+// than one hop from root anchored the child at the wrong root and every
+// root-pinned consumer rejected it as "chain root mismatch". This walks
+// the exact production seam (the Credentials methods) at depth two.
+func TestCredentialsIssueAtDepthAnchorsAtTrueRoot(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := newKeyPair(t)
+
+	// Depth-1: the root node's own grant, root-signed, no chain.
+	n0Pub, n0Priv := newKeyPair(t)
+	g0, err := identity.IssueGrant(rootPriv, nil, n0Pub,
+		identity.FullCapabilities(), identity.UnlimitedBudget(),
+		now.Add(-time.Hour), time.Time{})
+	require.NoError(t, err)
+	creds0 := identity.NewCredentials(rootPub, n0Priv, g0)
+
+	// Depth-2: a delegate admin minted by the root node via the
+	// production Credentials seam. Its grant now carries a chain.
+	n1Pub, n1Priv := newKeyPair(t)
+	g1, err := creds0.IssueGrant(n1Pub, identity.FullCapabilities(),
+		identity.UnlimitedBudget(), now, now.Add(30*24*time.Hour))
+	require.NoError(t, err)
+	require.NotEmpty(t, g1.GetChain(), "delegate grant must carry its issuer lineage")
+	creds1 := identity.NewCredentials(rootPub, n1Priv, g1)
+
+	// creds1 is itself a delegate. A tenant grant it issues must still
+	// anchor at rootPub, not at n0 (the pre-fix failure).
+	tenantPub, _ := newKeyPair(t)
+	g2, err := creds1.IssueGrant(tenantPub, identity.PublisherCapabilities(),
+		&identityv1.Budget{MaxSites: 1}, now, now.Add(30*24*time.Hour))
+	require.NoError(t, err)
+	chk := identity.CheckGrant(g2, rootPub, now, nil, nil)
+	require.Equal(t, identity.GrantStatusOK, chk.Status, chk.Reason)
+
+	// The same property over the invite -> redeem path a daemonless wire
+	// joiner takes.
+	joinerPub, _ := newKeyPair(t)
+	bootstrap := []*admissionv1.BootstrapPeer{{
+		PeerPub: bytes.Repeat([]byte{0x07}, 32),
+		Addrs:   []string{"203.0.113.7:60611"},
+	}}
+	ticket, err := creds1.IssueInvite(bootstrap, joinerPub,
+		identity.PublisherCapabilities(), &identityv1.Budget{MaxSites: 1},
+		now.Add(30*24*time.Hour), now, time.Hour)
+	require.NoError(t, err)
+	tok, err := creds1.RedeemInvite(ticket, joinerPub, now, time.Hour)
+	require.NoError(t, err)
+	v, err := identity.VerifyGrantToken(tok, joinerPub, now)
+	require.NoError(t, err)
+	require.Equal(t, identity.GrantStatusOK,
+		identity.CheckGrant(v.Grant, rootPub, now, nil, nil).Status)
 }

@@ -43,11 +43,13 @@ func validatedStore(t *testing.T, self types.PeerKey, rootPub ed25519.PublicKey)
 	return st
 }
 
-// publisherFullState produces the EncodeFull blob of a publisher that
-// holds a root-issued grant and has published one workload fact. This is
-// the canonical durable blob: a single delivery carrying both the
-// authority grant and the fact that references it.
-func publisherFullState(t *testing.T, rootPriv ed25519.PrivateKey, rootPub ed25519.PublicKey) (types.PeerKey, ed25519.PublicKey, string, []byte) {
+// publisherStore builds a live publisher store holding a root-issued
+// grant and one published "echo" workload over byte-identical content
+// (hash 0xaa*32). Called twice it yields the canonical multi-tenant
+// collision: two distinct authorities publishing identical bytes under
+// the same logical name. The live store is returned so callers can
+// drive further mutations (e.g. unseed) before encoding.
+func publisherStore(t *testing.T, rootPriv ed25519.PrivateKey, rootPub ed25519.PublicKey) (state.StateStore, types.PeerKey, ed25519.PublicKey, string) {
 	t.Helper()
 	now := time.Now()
 	pPub, pPriv := keyPair(t)
@@ -67,6 +69,16 @@ func publisherFullState(t *testing.T, rootPriv ed25519.PrivateKey, rootPub ed255
 	_, err = a.PublishWorkload(state.WorkloadSpec{Hash: hash, Name: "echo", MinReplicas: 1}, nil)
 	require.NoError(t, err)
 
+	return a, pKey, pPub, hash
+}
+
+// publisherFullState produces the EncodeFull blob of a publisher that
+// holds a root-issued grant and has published one workload fact. This is
+// the canonical durable blob: a single delivery carrying both the
+// authority grant and the fact that references it.
+func publisherFullState(t *testing.T, rootPriv ed25519.PrivateKey, rootPub ed25519.PublicKey) (types.PeerKey, ed25519.PublicKey, string, []byte) {
+	t.Helper()
+	a, pKey, pPub, hash := publisherStore(t, rootPriv, rootPub)
 	return pKey, pPub, hash, a.EncodeFull()
 }
 

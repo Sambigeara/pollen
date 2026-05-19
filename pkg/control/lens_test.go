@@ -106,14 +106,14 @@ func TestFillPublishedResources(t *testing.T) {
 	tenantB := pk(2)
 	svcA := &state.Service{Name: "svcA", Fact: &factv1.Fact{AuthorityPub: nodeA.Bytes()}}
 	snap := state.Snapshot{
-		Specs: map[string]state.WorkloadSpecView{
-			"wA": {Publisher: nodeA, Spec: state.WorkloadSpec{Name: "wA"}},
+		SpecsAll: []state.WorkloadSpecView{
+			{Publisher: nodeA, Spec: state.WorkloadSpec{Name: "wA", Hash: "wAh"}},
 		},
-		StaticSpecs: map[string]state.StaticSpecView{
-			"sA": {Publisher: nodeA},
+		StaticSpecsAll: []state.StaticSpecView{
+			{Publisher: nodeA, Spec: state.StaticSpec{Name: "sA"}},
 		},
-		BlobSpecs: map[string]state.BlobSpecView{
-			"bA": {Publisher: nodeA, Spec: state.BlobSpec{Name: "bA"}},
+		BlobSpecsAll: []state.BlobSpecView{
+			{Publisher: nodeA, Spec: state.BlobSpec{Name: "bA", Digest: "bAd"}},
 		},
 	}
 	nv := state.NodeView{Services: map[string]*state.Service{"svcA": svcA}}

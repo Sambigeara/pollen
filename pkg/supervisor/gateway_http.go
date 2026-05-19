@@ -256,7 +256,7 @@ func (h *gatewayHandler) handleNamedInvoke(w http.ResponseWriter, r *http.Reques
 	if fn == "" {
 		fn = "main"
 	}
-	hash, f, ok := h.resolveWorkload(slug, name)
+	hash, f, authority, ok := h.resolveWorkload(slug, name)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -265,25 +265,35 @@ func (h *gatewayHandler) handleNamedInvoke(w http.ResponseWriter, r *http.Reques
 		http.NotFound(w, r)
 		return
 	}
+	// Carry the resolved (authority, name) onto the dispatch hop so a
+	// remote edge that claims the workload authorises this exact
+	// publication, not whichever co-publisher of identical bytes wins
+	// the deduped artefact view.
+	r = r.WithContext(admission.WithInvokedPublication(r.Context(), &admission.Publication{AuthorityPub: authority.Bytes(), Name: name}))
 	h.callWorkload(w, r, hash, fn)
 }
 
+// resolveBlob and resolveWorkload map a public `<slug>/<name>` URL to a
+// fact. The slug is the publisher's one-way PublisherSlug, so it is the
+// authority selector: iterate the per-(authority,name) publication
+// source, not the deduped runtime map, or a tenant whose bytes collide
+// with another's would be unreachable by its own URL.
 func (h *gatewayHandler) resolveBlob(slug, name string) (string, *factv1.Fact, bool) {
-	for digest, sv := range h.snap.Snapshot().BlobSpecs {
+	for _, sv := range h.snap.Snapshot().BlobSpecsAll {
 		if sv.Publisher.Slug() == slug && sv.Spec.Name == name {
-			return digest, sv.Fact, true
+			return sv.Spec.Digest, sv.Fact, true
 		}
 	}
 	return "", nil, false
 }
 
-func (h *gatewayHandler) resolveWorkload(slug, name string) (string, *factv1.Fact, bool) {
-	for hash, sv := range h.snap.Snapshot().Specs {
+func (h *gatewayHandler) resolveWorkload(slug, name string) (string, *factv1.Fact, types.PeerKey, bool) {
+	for _, sv := range h.snap.Snapshot().SpecsAll {
 		if sv.Publisher.Slug() == slug && sv.Spec.Name == name {
-			return hash, sv.Fact, true
+			return sv.Spec.Hash, sv.Fact, sv.Publisher, true
 		}
 	}
-	return "", nil, false
+	return "", nil, types.PeerKey{}, false
 }
 
 // serveBearer handles `/_/<token>` URLs minted by `pln share`. The token

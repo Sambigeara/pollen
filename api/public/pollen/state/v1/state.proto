@@ -82,7 +82,10 @@ message WorkloadSpecChange {
   uint32 min_replicas = 2;
   uint64 memory_bytes = 3;
   uint32 timeout_ms = 4;
-  string name = 5;
+  string name = 5 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 255
+  }];
   float spread = 6;
   reserved 7, 8;
   reserved "latency_slo_ms", "publisher_claim";
@@ -107,6 +110,7 @@ message StaticClaimChange {
     min_len: 1
     max_len: 255
   }];
+  bytes authority_pub = 2 [(buf.validate.field).bytes = {len: 32}];
 }
 
 message BlobSpecChange {

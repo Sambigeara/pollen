@@ -65,6 +65,58 @@ func AccessTokenFromContext(ctx context.Context) (*admissionv1.AccessToken, bool
 	return t, ok && t != nil
 }
 
+// Publication selects the (authority, name) publication a runtime
+// decision authorises against. Policy is a per-publication property:
+// two authorities can publish byte-identical content under different
+// policies. Resolving through this selector rather than the deduped
+// artefact map is what stops a co-publisher of identical bytes masking
+// or satisfying another publication's policy.
+type Publication struct {
+	Name         string
+	AuthorityPub []byte
+}
+
+type invokedPubCtxKey struct{}
+
+// WithInvokedPublication records the (authority, name) publication the
+// caller addressed so a remote dispatch hop authorises the same
+// publication the gateway resolved, mirroring WithAccessToken. The
+// selector is unauthenticated and only narrows the decision: the hop
+// re-resolves it against its own gossiped state and binds it to the
+// dispatched content hash, so a forged selector can only name a real
+// publication whose own policy is then enforced. A nil selector or
+// empty fields leave the context untouched.
+func WithInvokedPublication(ctx context.Context, pub *Publication) context.Context {
+	if pub == nil || len(pub.AuthorityPub) == 0 || pub.Name == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, invokedPubCtxKey{}, pub)
+}
+
+// InvokedPublicationFromContext returns the publication set by
+// WithInvokedPublication, if any.
+func InvokedPublicationFromContext(ctx context.Context) (*Publication, bool) {
+	p, ok := ctx.Value(invokedPubCtxKey{}).(*Publication)
+	return p, ok && p != nil
+}
+
+// PublicationFromToken derives the (authority, name) publication an
+// access token authorises: the issuer is the publishing authority and
+// the token's seed resource carries the logical name. Returns false for
+// a non-seed token (e.g. a blob token presented to the fn gateway) or a
+// token with no issuer.
+func PublicationFromToken(token *admissionv1.AccessToken) (*Publication, bool) {
+	seed := token.GetClaims().GetResource().GetSeed()
+	if seed == nil {
+		return nil, false
+	}
+	issuer := token.GetClaims().GetIssuerPub()
+	if len(issuer) == 0 {
+		return nil, false
+	}
+	return &Publication{AuthorityPub: issuer, Name: seed.GetName()}, true
+}
+
 type StateReader interface {
 	Snapshot() state.Snapshot
 }
@@ -129,28 +181,52 @@ func (p *Pipeline) Admit(sc *statev1.SpecChange) error {
 	return nil
 }
 
-// Invoke authorises caller to invoke the workload at hash. A nil caller
-// is admitted only when the spec's policy has public=true; in that case
-// the returned CallerInfo is empty, mirroring the InvokeByToken path.
-// Mesh-peer callers resolve their grant from snap.Nodes via
-// LookupGrant, wire-mode callers pass their session-bound grant
-// directly.
-func (p *Pipeline) Invoke(caller *identityv1.Grant, hash string) (wasm.CallerInfo, error) {
+// Invoke authorises caller to invoke the workload at hash. When pub is
+// non-nil the caller addressed one specific (authority, name)
+// publication (an anonymous named URL, an access token, or a name
+// resolved within the caller's own authority): the decision is against
+// exactly that publication's Fact, and the publication's content hash
+// must equal hash so a permissive policy cannot be paired with other
+// bytes. When pub is nil — a downstream relay hop, or a bare-hash
+// invoke that names no publication — the decision is a union over every
+// publication of these bytes, mirroring Fetch: admitted if any one
+// allows the caller. The deduped artefact map is never consulted, so a
+// co-publisher of identical bytes can neither mask nor satisfy
+// another's policy. A nil caller is admitted only by a public policy;
+// in that case the returned CallerInfo is empty, mirroring the
+// InvokeByToken path. Mesh-peer callers resolve their grant from
+// snap.Nodes via LookupGrant, wire-mode callers pass their
+// session-bound grant directly.
+func (p *Pipeline) Invoke(caller *identityv1.Grant, pub *Publication, hash string) (wasm.CallerInfo, error) {
 	snap := p.store.Snapshot()
-	sv, ok := resolveSeedSpec(snap, hash)
-	if !ok || sv.Fact == nil {
-		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
+	var facts []*factv1.Fact
+	if pub != nil {
+		f, ok := publicationFact(snap, *pub, hash)
+		if !ok {
+			return wasm.CallerInfo{}, wasm.ErrTargetNotFound
+		}
+		facts = []*factv1.Fact{f}
+	} else {
+		facts = snap.WorkloadEntitlements(hash)
+		if len(facts) == 0 {
+			return wasm.CallerInfo{}, wasm.ErrTargetNotFound
+		}
 	}
-	if err := p.decide(caller, sv.Fact, time.Now(), snap.DenyChecker()); err != nil {
-		return wasm.CallerInfo{}, err
+	now := time.Now()
+	denied := snap.DenyChecker()
+	for _, f := range facts {
+		if p.decide(caller, f, now, denied) != nil {
+			continue
+		}
+		if caller == nil {
+			return wasm.CallerInfo{}, nil
+		}
+		return wasm.CallerInfo{
+			PeerKey:    types.PeerKeyFromBytes(caller.GetClaims().GetSubjectPub()),
+			Attributes: caller.GetClaims().GetCapabilities().GetAttributes().AsMap(),
+		}, nil
 	}
-	if caller == nil {
-		return wasm.CallerInfo{}, nil
-	}
-	return wasm.CallerInfo{
-		PeerKey:    types.PeerKeyFromBytes(caller.GetClaims().GetSubjectPub()),
-		Attributes: caller.GetClaims().GetCapabilities().GetAttributes().AsMap(),
-	}, nil
+	return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 }
 
 // Fetch authorises caller to read the CAS object at hash. The same
@@ -242,28 +318,54 @@ func (p *Pipeline) InvokeByToken(token *admissionv1.AccessToken, hash string) (w
 	if err := auth.VerifyAccessToken(token, time.Now()); err != nil {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
-	snap := p.store.Snapshot()
-	sv, ok := resolveSeedSpec(snap, hash)
-	if !ok || sv.Fact == nil {
+	pub, ok := PublicationFromToken(token)
+	if !ok {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
-	if !bytes.Equal(sv.Fact.GetAuthorityPub(), token.GetClaims().GetIssuerPub()) {
-		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
-	}
-	if !proto.Equal(sv.Fact.GetResource(), token.GetClaims().GetResource()) {
-		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
-	}
-	return wasm.CallerInfo{}, nil
+	// The token's issuer is the authority and its seed resource the
+	// name; publicationFact resolves that exact publication and binds
+	// it to hash, subsuming the old issuer/resource equality checks
+	// while no longer trusting the deduped artefact winner.
+	return p.Invoke(nil, pub, hash)
 }
 
-// MayHost authorises hostGrant to host the workload described by f.
-// Hosting includes loopback invocation, so the spec's policy must hold
-// against the host's own grant.
+// MayHost authorises hostGrant to host the workload described by the
+// single Fact f. Hosting includes loopback invocation, so the policy
+// must hold against the host's own grant. Callers that hold one
+// specific referencing Fact (blobs unions BlobEntitlements itself) use
+// this; workload hosting, where the bytes are shared across
+// publications, goes through MayHostByHash.
 func (p *Pipeline) MayHost(hostGrant *identityv1.Grant, f *factv1.Fact) error {
 	if hostGrant == nil || f == nil {
 		return wasm.ErrTargetNotFound
 	}
 	return p.decide(hostGrant, f, time.Now(), p.store.Snapshot().DenyChecker())
+}
+
+// MayHostByHash authorises hostGrant to host the bytes at hash. Hosting
+// is artefact-shared: one module serves every publication of identical
+// bytes, so the decision is a union over WorkloadEntitlements(hash) —
+// the host may run the bytes if any referencing publication's policy
+// admits it, mirroring blobs.MayStore over BlobEntitlements. A
+// co-publisher's stricter policy therefore cannot suppress hosting of a
+// permissive publication of the same bytes.
+func (p *Pipeline) MayHostByHash(hostGrant *identityv1.Grant, hash string) error {
+	if hostGrant == nil {
+		return wasm.ErrTargetNotFound
+	}
+	snap := p.store.Snapshot()
+	facts := snap.WorkloadEntitlements(hash)
+	if len(facts) == 0 {
+		return wasm.ErrTargetNotFound
+	}
+	now := time.Now()
+	denied := snap.DenyChecker()
+	for _, f := range facts {
+		if p.decide(hostGrant, f, now, denied) == nil {
+			return nil
+		}
+	}
+	return wasm.ErrTargetNotFound
 }
 
 // MayPublish reports whether grant satisfies policy at publish time.
@@ -352,15 +454,20 @@ func grantContext(grant *identityv1.Grant) map[string]string {
 	return ctx
 }
 
-// resolveSeedSpec accepts either a workload hash or a workload name.
-// snap.Specs is keyed by hash, so the hash lookup wins when the
-// identifier matches one; otherwise we fall back to a by-name scan.
-func resolveSeedSpec(snap state.Snapshot, identifier string) (state.WorkloadSpecView, bool) {
-	if sv, ok := snap.Specs[identifier]; ok {
-		return sv, true
+// publicationFact resolves the Fact for the (authority, name)
+// publication pub, requiring its content hash to equal hash.
+// Resolution is authority-scoped via SpecByName, never the deduped
+// Specs map: publication identity is (authority, name) and policy is a
+// per-publication property, so a co-publisher of identical bytes must
+// not be reachable here. The hash equality binds the authorised policy
+// to the bytes actually dispatched, so a forged selector cannot pair a
+// permissive publication with another's content.
+func publicationFact(snap state.Snapshot, pub Publication, hash string) (*factv1.Fact, bool) {
+	_, sv, ok := snap.SpecByName(pub.Name, types.PeerKeyFromBytes(pub.AuthorityPub))
+	if !ok || sv.Fact == nil || sv.Spec.Hash != hash {
+		return nil, false
 	}
-	_, sv, ok := snap.SpecByName(identifier)
-	return sv, ok
+	return sv.Fact, true
 }
 
 // AllowAnonymous reports whether an anonymous caller (no grant) may

@@ -19,15 +19,14 @@ func authorityPub(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
 
 func buildSnap(pub []byte, fns, blobs, sites []string) state.Snapshot {
 	owner := types.PeerKeyFromBytes(pub)
-	snap := state.Snapshot{
-		Specs:     make(map[string]state.WorkloadSpecView),
-		BlobSpecs: make(map[string]state.BlobSpecView),
-	}
+	var snap state.Snapshot
 	for _, n := range fns {
-		snap.Specs[n] = state.WorkloadSpecView{Spec: state.WorkloadSpec{Name: n}, Publisher: owner}
+		snap.SpecsAll = append(snap.SpecsAll,
+			state.WorkloadSpecView{Spec: state.WorkloadSpec{Name: n}, Publisher: owner})
 	}
 	for _, n := range blobs {
-		snap.BlobSpecs[n] = state.BlobSpecView{Spec: state.BlobSpec{Name: n}, Publisher: owner}
+		snap.BlobSpecsAll = append(snap.BlobSpecsAll,
+			state.BlobSpecView{Spec: state.BlobSpec{Name: n}, Publisher: owner})
 	}
 	for _, n := range sites {
 		snap.StaticSpecsAll = append(snap.StaticSpecsAll,

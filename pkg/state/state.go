@@ -20,10 +20,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-var (
-	ErrSpecOwnedByPeer = errors.New("spec already published by another peer")
-	ErrInvalidDigest   = errors.New("invalid manifest digest")
-)
+var ErrInvalidDigest = errors.New("invalid manifest digest")
 
 type Event interface{ stateEvent() }
 
@@ -87,8 +84,8 @@ type StateStore interface {
 	SetStaticSpecPresigned(spec StaticSpec, presignedFact *factv1.Fact) ([]Event, error)
 	DeleteStaticSpec(name string) ([]Event, error)
 	DeleteStaticSpecPresigned(name string, presignedFact *factv1.Fact) ([]Event, error)
-	ClaimStatic(name string) []Event
-	ReleaseStatic(name string) []Event
+	ClaimStatic(name string, authority types.PeerKey) []Event
+	ReleaseStatic(name string, authority types.PeerKey) []Event
 
 	SetBlobSpec(spec BlobSpec, policy *admissionv1.Predicate) ([]Event, error)
 	SetBlobSpecPresigned(spec BlobSpec, presignedFact *factv1.Fact) ([]Event, error)

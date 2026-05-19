@@ -118,12 +118,14 @@ func VerifyInviteTicket(ticket *identityv1.InviteTicket, expectedSubject ed25519
 // RedeemInviteTicket is the host side of a join: verify the ticket,
 // mint a child grant for joinerPub bounded by the ticket's
 // capabilities, budget and horizon, and wrap it with the cluster
-// bootstrap into a short-lived GrantToken the joiner enrols. The
-// redeeming host must be the ticket's named issuer and hold the
-// matching delegating grant chain.
+// bootstrap into a short-lived GrantToken the joiner enrols. parent is
+// the redeeming host's own grant; its lineage is carried into the
+// joiner grant so the chain anchors at the true cluster root even when
+// the host is itself a delegate. The host must be the ticket's named
+// issuer and hold a delegating grant.
 func RedeemInviteTicket(
 	issuerPriv ed25519.PrivateKey,
-	parentChain []*identityv1.Grant,
+	parent *identityv1.Grant,
 	rootPub ed25519.PublicKey,
 	ticket *identityv1.InviteTicket,
 	joinerPub ed25519.PublicKey,
@@ -145,7 +147,7 @@ func RedeemInviteTicket(
 		grantDeadline = time.Unix(d, 0)
 	}
 
-	childGrant, err := IssueGrant(issuerPriv, parentChain, joinerPub, claims.GetCapabilities(), claims.GetBudget(), now, grantDeadline)
+	childGrant, err := IssueGrant(issuerPriv, parent, joinerPub, claims.GetCapabilities(), claims.GetBudget(), now, grantDeadline)
 	if err != nil {
 		return nil, fmt.Errorf("mint joiner grant: %w", err)
 	}

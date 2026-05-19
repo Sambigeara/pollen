@@ -26,19 +26,24 @@ type Snapshot struct {
 	Claims               map[string]map[types.PeerKey]struct{}
 	DrainingClaims       map[string]map[types.PeerKey]struct{}
 	StaticSpecs          map[string]StaticSpecView
-	StaticClaims         map[string]map[types.PeerKey]struct{}
+	StaticClaims         map[StaticClaimKey]map[types.PeerKey]struct{}
 	BlobSpecs            map[string]BlobSpecView
 	Wrappings            map[string]map[types.PeerKey]*factv1.BlobWrapping
 	WorkloadStoringPeers map[string]map[types.PeerKey]struct{}
 	StaticStoringPeers   map[string]map[types.PeerKey]struct{}
 	BlobStoringPeers     map[string]map[types.PeerKey]struct{}
-	// StaticSpecsAll holds one entry per (publisher, name) pair without
-	// dedupe. The deduped StaticSpecs map keys on name and wins by
-	// publisher tie-break, which is the right shape for caller-scoped
-	// views — but the public gateway has to serve every publisher's
-	// site, even when names collide. Iterate this slice when the lookup
-	// must distinguish publishers.
+	// SpecsAll/StaticSpecsAll/BlobSpecsAll hold one entry per (authority
+	// Principal, logical name) without dedupe. The deduped Specs map
+	// keys on the wasm content-hash and BlobSpecs on the blob digest
+	// (the artefact identity, deliberately shared when two tenants
+	// publish identical bytes), and StaticSpecs keys on name. Those are
+	// the runtime/serving views. Ownership, visibility and accounting
+	// are publication concerns and must iterate these per-authority
+	// slices, because a tenant whose artefact or name collides with
+	// another's is otherwise invisible in the deduped maps.
+	SpecsAll       []WorkloadSpecView
 	StaticSpecsAll []StaticSpecView
+	BlobSpecsAll   []BlobSpecView
 	digest         Digest
 	live           map[types.PeerKey]struct{}
 	PeerKeys       []types.PeerKey
@@ -56,6 +61,15 @@ type BlobSpecView struct {
 	Fact      *factv1.Fact
 	Spec      BlobSpec
 	Publisher types.PeerKey
+}
+
+// StaticClaimKey identifies a static-site claim by publishing authority
+// and logical name. Two tenants naming a site the same would share one
+// name-only claim register; keying by (authority, name) keeps each
+// tenant's serving peers distinct.
+type StaticClaimKey struct {
+	Name      string
+	Authority types.PeerKey
 }
 
 type NodeView struct {
@@ -187,9 +201,10 @@ type AuthorityUsage struct {
 }
 
 // UsageByAuthority projects the snapshot to the resource names the
-// authority owns, by budgeted kind. Sites come from StaticSpecsAll, the
-// un-deduped per-(publisher,name) source, so a tenant's site is counted
-// even when another tenant's same-named site wins the deduped view.
+// authority owns, by budgeted kind. All three kinds come from the
+// un-deduped per-(authority,name) sources, so a tenant's resource is
+// counted even when another tenant's same-named or same-content
+// resource wins the deduped runtime view.
 func (s Snapshot) UsageByAuthority(authorityPub []byte) AuthorityUsage {
 	authority := types.PeerKeyFromBytes(authorityPub)
 	u := AuthorityUsage{
@@ -197,12 +212,12 @@ func (s Snapshot) UsageByAuthority(authorityPub []byte) AuthorityUsage {
 		BlobNames:     make(map[string]struct{}),
 		SiteNames:     make(map[string]struct{}),
 	}
-	for _, sv := range s.Specs {
+	for _, sv := range s.SpecsAll {
 		if sv.Publisher == authority {
 			u.FunctionNames[sv.Spec.Name] = struct{}{}
 		}
 	}
-	for _, bv := range s.BlobSpecs {
+	for _, bv := range s.BlobSpecsAll {
 		if bv.Publisher == authority {
 			u.BlobNames[bv.Spec.Name] = struct{}{}
 		}
@@ -215,30 +230,61 @@ func (s Snapshot) UsageByAuthority(authorityPub []byte) AuthorityUsage {
 	return u
 }
 
-func (s Snapshot) SpecByName(name string) (string, WorkloadSpecView, bool) {
-	var bestHash string
-	var bestView WorkloadSpecView
-	found := false
-	for hash, sv := range s.Specs {
-		if sv.Spec.Name != name {
-			continue
-		}
-		if !found || sv.Publisher.Compare(bestView.Publisher) < 0 {
-			bestHash = hash
-			bestView = sv
-			found = true
+// SpecByName resolves a workload logical name within a single authority.
+// Publication identity is (authority, name), so a name resolves to at
+// most one spec per authority and there is no cross-tenant tie-break:
+// two tenants' identically named workloads are distinct registers.
+func (s Snapshot) SpecByName(name string, authority types.PeerKey) (string, WorkloadSpecView, bool) {
+	for _, sv := range s.SpecsAll {
+		if sv.Spec.Name == name && sv.Publisher == authority {
+			return sv.Spec.Hash, sv, true
 		}
 	}
-	return bestHash, bestView, found
+	return "", WorkloadSpecView{}, false
 }
 
+// LocalSpecByName resolves a workload name published by this node. It
+// is SpecByName scoped to the local authority: resolving through
+// SpecsAll, not the deduped Specs map, is what stops a remote tenant's
+// byte-identical content from hiding this node's own spec.
 func (s Snapshot) LocalSpecByName(name string, localID types.PeerKey) (string, bool) {
-	for hash, sv := range s.Specs {
-		if sv.Spec.Name == name && sv.Publisher == localID {
-			return hash, true
+	hash, _, ok := s.SpecByName(name, localID)
+	return hash, ok
+}
+
+// LocalPublishesWorkload reports whether localID published a workload
+// under hash. Like LocalSpecByName it scans SpecsAll, not the deduped
+// Specs map, so a remote tenant's byte-identical content cannot shadow
+// this node's own publication.
+func (s Snapshot) LocalPublishesWorkload(hash string, localID types.PeerKey) bool {
+	for _, sv := range s.SpecsAll {
+		if sv.Spec.Hash == hash && sv.Publisher == localID {
+			return true
 		}
 	}
-	return "", false
+	return false
+}
+
+// LocalPublishesStatic reports whether localID published a static site
+// under name; see LocalPublishesWorkload.
+func (s Snapshot) LocalPublishesStatic(name string, localID types.PeerKey) bool {
+	for _, sv := range s.StaticSpecsAll {
+		if sv.Spec.Name == name && sv.Publisher == localID {
+			return true
+		}
+	}
+	return false
+}
+
+// LocalPublishesBlob reports whether localID published a named blob
+// under digest; see LocalPublishesWorkload.
+func (s Snapshot) LocalPublishesBlob(digest string, localID types.PeerKey) bool {
+	for _, bv := range s.BlobSpecsAll {
+		if bv.Spec.Digest == digest && bv.Publisher == localID {
+			return true
+		}
+	}
+	return false
 }
 
 type ServiceInfo struct {
@@ -318,30 +364,28 @@ type ManifestPaths interface {
 	ManifestPaths(digest string) (map[string]struct{}, bool)
 }
 
-// BlobEntitlements returns every spec auth that references hash, either
-// directly (workload-spec hash, blob-spec digest, static-spec manifest
-// digest) or indirectly via a locally-readable static manifest's path
-// list. Each returned auth is a candidate entitlement: a node may hold
-// or serve the bytes if any cert satisfies one of them. The set is
-// union, not intersection: revoking one publisher's entitlement only
-// matters if it was the last reference standing.
+// BlobEntitlements returns every Fact that references hash directly
+// (workload-spec hash, blob-spec digest, static-spec manifest digest)
+// or indirectly via a locally-readable static manifest's path list. A
+// node may hold or serve the bytes if any one Fact satisfies the
+// caller; the set is a union, not an intersection, so revoking one
+// publisher's entitlement only matters if it was the last reference
+// standing. It is taken over the per-(authority,name) publication
+// sources, never the deduped runtime maps: byte-identical bytes from
+// two tenants are distinct publications with their own policies, and
+// collapsing them to one arbitrary co-publisher would deny the loser's
+// own entitled fetches and block its replicas.
 //
-// Pass a nil mp to skip nested-manifest resolution; callers that don't
-// have a CAS handle (e.g. snapshot-only tests) still get correct
-// answers for the direct cases.
+// Pass a nil mp to skip nested-manifest resolution; callers without a
+// CAS handle (e.g. snapshot-only tests) still get correct answers for
+// the direct cases.
 func (s Snapshot) BlobEntitlements(hash string, mp ManifestPaths) []*factv1.Fact {
-	var out []*factv1.Fact
-	if sv, ok := s.Specs[hash]; ok && sv.Fact != nil {
-		out = append(out, sv.Fact)
+	out := s.WorkloadEntitlements(hash)
+	for _, bv := range s.BlobSpecsAll {
+		if bv.Spec.Digest == hash && bv.Fact != nil {
+			out = append(out, bv.Fact)
+		}
 	}
-	if bv, ok := s.BlobSpecs[hash]; ok && bv.Fact != nil {
-		out = append(out, bv.Fact)
-	}
-	// Walk StaticSpecsAll, not StaticSpecs. The deduped map keys on name
-	// and tie-breaks by publisher; if two tenants seed sites with the
-	// same name, the loser's blobs need to remain entitled. Without this
-	// the gate denies fetches for blobs referenced solely by the losing
-	// publisher's manifest, and their site can't replicate cross-node.
 	for _, sv := range s.StaticSpecsAll {
 		if sv.Fact == nil {
 			continue
@@ -364,21 +408,22 @@ func (s Snapshot) BlobEntitlements(hash string, mp ManifestPaths) []*factv1.Fact
 	return out
 }
 
-func (s Snapshot) BlobByName(name string) (string, BlobSpecView, bool) {
-	var bestDigest string
-	var bestView BlobSpecView
-	found := false
-	for digest, view := range s.BlobSpecs {
-		if view.Spec.Name != name {
-			continue
-		}
-		if !found || view.Publisher.Compare(bestView.Publisher) < 0 {
-			bestDigest = digest
-			bestView = view
-			found = true
+// WorkloadEntitlements returns every workload Fact whose content hash
+// is hash, one per publishing authority. Invoke and host decisions
+// over shared bytes are a union: two tenants on identical bytes are
+// distinct publications with their own policies, so a caller that
+// holds no specific (authority, name) authorises against the set and
+// is admitted if any member allows it. The deduped Specs map is
+// deliberately not consulted; it would collapse the set to one
+// arbitrary co-publisher.
+func (s Snapshot) WorkloadEntitlements(hash string) []*factv1.Fact {
+	var out []*factv1.Fact
+	for _, sv := range s.SpecsAll {
+		if sv.Spec.Hash == hash && sv.Fact != nil {
+			out = append(out, sv.Fact)
 		}
 	}
-	return bestDigest, bestView, found
+	return out
 }
 
 func (s Snapshot) Services() []ServiceInfo {
@@ -430,7 +475,7 @@ func (s *store) buildSnapshot() Snapshot {
 	nodes := make(map[types.PeerKey]NodeView)
 	claims := make(map[string]map[types.PeerKey]struct{})
 	drainingClaims := make(map[string]map[types.PeerKey]struct{})
-	staticClaims := make(map[string]map[types.PeerKey]struct{})
+	staticClaims := make(map[StaticClaimKey]map[types.PeerKey]struct{})
 
 	for pk, rec := range valid {
 		nv, recClaims, recStaticClaims := buildNodeView(pk, rec)
@@ -449,18 +494,20 @@ func (s *store) buildSnapshot() Snapshot {
 			}
 		}
 
-		for name := range recStaticClaims {
-			if staticClaims[name] == nil {
-				staticClaims[name] = make(map[types.PeerKey]struct{})
+		for ck := range recStaticClaims {
+			if staticClaims[ck] == nil {
+				staticClaims[ck] = make(map[types.PeerKey]struct{})
 			}
-			staticClaims[name][pk] = struct{}{}
+			staticClaims[ck][pk] = struct{}{}
 		}
 	}
 
 	specs := make(map[string]WorkloadSpecView)
+	specsByPub := make(map[types.PeerKey]map[string]WorkloadSpecView)
 	staticSpecs := make(map[string]StaticSpecView)
 	staticSpecsByPub := make(map[types.PeerKey]map[string]StaticSpecView)
 	blobSpecs := make(map[string]BlobSpecView)
+	blobSpecsByPub := make(map[types.PeerKey]map[string]BlobSpecView)
 	specStoring := make(map[string]map[types.PeerKey]struct{})
 	staticStoring := make(map[string]map[types.PeerKey]struct{})
 	blobStoring := make(map[string]map[types.PeerKey]struct{})
@@ -469,7 +516,7 @@ func (s *store) buildSnapshot() Snapshot {
 	// Pre-pass: collect every publisher-signed tombstone keyed by
 	// (kind, name, publisher). A tombstone in any peer's slot kills
 	// every live spec by the same publisher with the same (kind, name)
-	// across the cluster — this is what makes wire-mode unseeds work
+	// across the cluster; this is what makes wire-mode unseeds work
 	// from an edge node that didn't originally accept the seed.
 	tombstones := make(map[tombstoneKey]struct{})
 	for _, rec := range valid {
@@ -506,17 +553,29 @@ func (s *store) buildSnapshot() Snapshot {
 			switch key.kind { //nolint:exhaustive
 			case attrWorkloadSpec:
 				sc := ev.GetSpecChange()
-				if specStoring[key.name] == nil {
-					specStoring[key.name] = make(map[types.PeerKey]struct{})
+				view := WorkloadSpecView{
+					Spec:      workloadSpecFromProto(sc.GetWorkload()),
+					Fact:      sc.GetFact(),
+					Publisher: publisher,
 				}
-				specStoring[key.name][pk] = struct{}{}
-				if existing, ok := specs[key.name]; !ok || outranks(publisher, existing.Publisher) {
-					specs[key.name] = WorkloadSpecView{
-						Spec:      workloadSpecFromProto(sc.GetWorkload()),
-						Fact:      sc.GetFact(),
-						Publisher: publisher,
-					}
+				// Runtime/fetch views key on the wasm content-hash: two
+				// tenants on identical bytes share one artefact, claim
+				// set and replica pool by design. outranks only makes
+				// the shared entry deterministic, it is not ownership.
+				if specStoring[view.Spec.Hash] == nil {
+					specStoring[view.Spec.Hash] = make(map[types.PeerKey]struct{})
 				}
+				specStoring[view.Spec.Hash][pk] = struct{}{}
+				if existing, ok := specs[view.Spec.Hash]; !ok || outranks(publisher, existing.Publisher) {
+					specs[view.Spec.Hash] = view
+				}
+				// Publication view: one entry per (authority, name) so a
+				// tenant sees its own workload even when its bytes or
+				// name collide with another tenant's.
+				if specsByPub[publisher] == nil {
+					specsByPub[publisher] = make(map[string]WorkloadSpecView)
+				}
+				specsByPub[publisher][key.name] = view
 			case attrStaticSpec:
 				sc := ev.GetSpecChange()
 				if staticStoring[key.name] == nil {
@@ -533,7 +592,7 @@ func (s *store) buildSnapshot() Snapshot {
 				}
 				// Per-publisher view: dedupe by (publisher, name)
 				// across every peer's log so a wire-mode tenant's
-				// spec is visible even when their daemon — if any —
+				// spec is visible even when their daemon, if any,
 				// is offline and the spec is only carried by edge
 				// relays.
 				if staticSpecsByPub[publisher] == nil {
@@ -542,17 +601,26 @@ func (s *store) buildSnapshot() Snapshot {
 				staticSpecsByPub[publisher][key.name] = view
 			case attrBlobSpec:
 				sc := ev.GetSpecChange()
-				if blobStoring[key.name] == nil {
-					blobStoring[key.name] = make(map[types.PeerKey]struct{})
+				view := BlobSpecView{
+					Spec:      blobSpecFromProto(sc.GetBlob()),
+					Fact:      sc.GetFact(),
+					Publisher: publisher,
 				}
-				blobStoring[key.name][pk] = struct{}{}
-				if existing, ok := blobSpecs[key.name]; !ok || outranks(publisher, existing.Publisher) {
-					blobSpecs[key.name] = BlobSpecView{
-						Spec:      blobSpecFromProto(sc.GetBlob()),
-						Fact:      sc.GetFact(),
-						Publisher: publisher,
-					}
+				// Runtime/fetch views key on the content digest, shared
+				// across tenants by design; outranks only makes the
+				// shared entry deterministic.
+				if blobStoring[view.Spec.Digest] == nil {
+					blobStoring[view.Spec.Digest] = make(map[types.PeerKey]struct{})
 				}
+				blobStoring[view.Spec.Digest][pk] = struct{}{}
+				if existing, ok := blobSpecs[view.Spec.Digest]; !ok || outranks(publisher, existing.Publisher) {
+					blobSpecs[view.Spec.Digest] = view
+				}
+				// Publication view: one entry per (authority, name).
+				if blobSpecsByPub[publisher] == nil {
+					blobSpecsByPub[publisher] = make(map[string]BlobSpecView)
+				}
+				blobSpecsByPub[publisher][key.name] = view
 			case attrBlobWrapping:
 				w := ev.GetBlobWrapping()
 				if w == nil {
@@ -602,10 +670,12 @@ func (s *store) buildSnapshot() Snapshot {
 		Specs:                specs,
 		DrainingClaims:       filteredDrainingClaims,
 		Claims:               filteredClaims,
+		SpecsAll:             flattenSpecsByPub(specsByPub, func(v WorkloadSpecView) (types.PeerKey, string) { return v.Publisher, v.Spec.Name }),
 		StaticSpecs:          staticSpecs,
-		StaticSpecsAll:       flattenStaticSpecsByPub(staticSpecsByPub),
+		StaticSpecsAll:       flattenSpecsByPub(staticSpecsByPub, func(v StaticSpecView) (types.PeerKey, string) { return v.Publisher, v.Spec.Name }),
 		StaticClaims:         filteredStaticClaims,
 		BlobSpecs:            blobSpecs,
+		BlobSpecsAll:         flattenSpecsByPub(blobSpecsByPub, func(v BlobSpecView) (types.PeerKey, string) { return v.Publisher, v.Spec.Name }),
 		Wrappings:            wrappings,
 		WorkloadStoringPeers: filteredSpecStoring,
 		StaticStoringPeers:   filteredStaticStoring,
@@ -617,8 +687,8 @@ func (s *store) buildSnapshot() Snapshot {
 	}
 }
 
-func filterLive(claims map[string]map[types.PeerKey]struct{}, live map[types.PeerKey]struct{}) map[string]map[types.PeerKey]struct{} {
-	out := make(map[string]map[types.PeerKey]struct{})
+func filterLive[K comparable](claims map[K]map[types.PeerKey]struct{}, live map[types.PeerKey]struct{}) map[K]map[types.PeerKey]struct{} {
+	out := make(map[K]map[types.PeerKey]struct{})
 	for key, peerMap := range claims {
 		for pk := range peerMap {
 			if _, ok := live[pk]; ok {
@@ -634,7 +704,7 @@ func filterLive(claims map[string]map[types.PeerKey]struct{}, live map[types.Pee
 
 // claims bool value: true = draining (still claimant but scheduled for
 // release), allowing peers to issue replacement claims for make-before-break.
-func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool, map[string]struct{}) {
+func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool, map[StaticClaimKey]struct{}) {
 	nv := NodeView{
 		PeerPub:      pk.Bytes(),
 		Services:     make(map[string]*Service),
@@ -646,7 +716,7 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 		LastEventAt:  rec.lastEventAt,
 	}
 	claims := make(map[string]bool)
-	staticClaims := make(map[string]struct{})
+	staticClaims := make(map[StaticClaimKey]struct{})
 
 	for key, ev := range rec.log {
 		if ev.Deleted {
@@ -705,7 +775,7 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 		case *statev1.GossipEvent_ControlAddr:
 			nv.ControlAddr = v.ControlAddr.Addr
 		case *statev1.GossipEvent_StaticClaim:
-			staticClaims[key.name] = struct{}{}
+			staticClaims[StaticClaimKey{Authority: key.peer, Name: key.name}] = struct{}{}
 		case *statev1.GossipEvent_Grant:
 			nv.Grant = v.Grant.GetGrant()
 		}
@@ -713,24 +783,27 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 	return nv, claims, staticClaims
 }
 
-// flattenStaticSpecsByPub returns every (publisher, name) static spec
-// in a stable order so cluster-wide views and test fixtures stay
-// reproducible across daemon restarts.
-func flattenStaticSpecsByPub(byPub map[types.PeerKey]map[string]StaticSpecView) []StaticSpecView {
+// flattenSpecsByPub returns every (authority, name) spec view in a
+// stable (publisher, name) order so cluster-wide views and test
+// fixtures stay reproducible across daemon restarts. key extracts the
+// sort tuple from a view.
+func flattenSpecsByPub[V any](byPub map[types.PeerKey]map[string]V, key func(V) (types.PeerKey, string)) []V {
 	if len(byPub) == 0 {
 		return nil
 	}
-	out := make([]StaticSpecView, 0, len(byPub))
+	out := make([]V, 0, len(byPub))
 	for _, named := range byPub {
 		for _, v := range named {
 			out = append(out, v)
 		}
 	}
-	slices.SortFunc(out, func(a, b StaticSpecView) int {
-		if c := a.Publisher.Compare(b.Publisher); c != 0 {
+	slices.SortFunc(out, func(a, b V) int {
+		ap, an := key(a)
+		bp, bn := key(b)
+		if c := ap.Compare(bp); c != 0 {
 			return c
 		}
-		return cmp.Compare(a.Spec.Name, b.Spec.Name)
+		return cmp.Compare(an, bn)
 	})
 	return out
 }

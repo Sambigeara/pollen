@@ -823,6 +823,7 @@ func (x *StaticSpecChange) GetManifestDigest() []byte {
 type StaticClaimChange struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	AuthorityPub  []byte                 `protobuf:"bytes,2,opt,name=authority_pub,json=authorityPub,proto3" json:"authority_pub,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -862,6 +863,13 @@ func (x *StaticClaimChange) GetName() string {
 		return x.Name
 	}
 	return ""
+}
+
+func (x *StaticClaimChange) GetAuthorityPub() []byte {
+	if x != nil {
+		return x.AuthorityPub
+	}
+	return nil
 }
 
 type BlobSpecChange struct {
@@ -2389,24 +2397,26 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\vmem_percent\x18\x02 \x01(\rR\n" +
 	"memPercent\x12&\n" +
 	"\x0fmem_total_bytes\x18\x03 \x01(\x04R\rmemTotalBytes\x12\x17\n" +
-	"\anum_cpu\x18\x04 \x01(\rR\x06numCpuJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\a\x10\bR\x12cpu_budget_percentR\x12mem_budget_percentR\x0fadmission_state\"\xe6\x01\n" +
+	"\anum_cpu\x18\x04 \x01(\rR\x06numCpuJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\a\x10\bR\x12cpu_budget_percentR\x12mem_budget_percentR\x0fadmission_state\"\xf2\x01\n" +
 	"\x12WorkloadSpecChange\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x12!\n" +
 	"\fmin_replicas\x18\x02 \x01(\rR\vminReplicas\x12!\n" +
 	"\fmemory_bytes\x18\x03 \x01(\x04R\vmemoryBytes\x12\x1d\n" +
 	"\n" +
-	"timeout_ms\x18\x04 \x01(\rR\ttimeoutMs\x12\x12\n" +
-	"\x04name\x18\x05 \x01(\tR\x04name\x12\x16\n" +
+	"timeout_ms\x18\x04 \x01(\rR\ttimeoutMs\x12\x1e\n" +
+	"\x04name\x18\x05 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x12\x16\n" +
 	"\x06spread\x18\x06 \x01(\x02R\x06spreadJ\x04\b\a\x10\bJ\x04\b\b\x10\tR\x0elatency_slo_msR\x0fpublisher_claim\"2\n" +
 	"\x16BlobAvailabilityChange\x12\x18\n" +
 	"\adigests\x18\x01 \x03(\fR\adigests\"\x8f\x01\n" +
 	"\x10StaticSpecChange\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x120\n" +
-	"\x0fmanifest_digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x0emanifestDigestJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\fmin_replicasR\x0fpublisher_claim\"3\n" +
+	"\x0fmanifest_digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x0emanifestDigestJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\fmin_replicasR\x0fpublisher_claim\"a\n" +
 	"\x11StaticClaimChange\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
-	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\"h\n" +
+	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x12,\n" +
+	"\rauthority_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\fauthorityPub\"h\n" +
 	"\x0eBlobSpecChange\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x12\x1f\n" +

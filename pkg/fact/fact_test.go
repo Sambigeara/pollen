@@ -135,7 +135,7 @@ func delegatedAuthority(t *testing.T, now, deadline time.Time) (rootPub, interme
 		identity.FullCapabilities(), identity.UnlimitedBudget(),
 		now.Add(-time.Hour), time.Time{})
 	require.NoError(t, err)
-	grant, err = identity.IssueGrant(intermediatePriv, []*identityv1.Grant{root}, authorityPub,
+	grant, err = identity.IssueGrant(intermediatePriv, root, authorityPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{MaxSites: 2},
 		now.Add(-time.Minute), deadline)
 	require.NoError(t, err)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/identity"
+	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/view"
 	"google.golang.org/grpc/codes"
@@ -44,10 +45,49 @@ func (s *Service) operatorRequest(ctx context.Context, lens view.Lens) bool {
 }
 
 // authoriseOwnership rejects non-admin callers who are not the
-// resource's publisher. Admins bypass the check.
+// resource's publisher. Admins bypass the check. Callers resolve the
+// single authority that owns the resource being acted on first: an
+// exposed service has one local owner, and a publication unpublish
+// only ever tombstones this node's own (authority, key) register, so
+// there is exactly one publisher to authorise against.
 func (s *Service) authoriseOwnership(ctx context.Context, publisher types.PeerKey) error {
 	if s.callerPrincipal(ctx).Permits(publisher) {
 		return nil
 	}
 	return status.Error(codes.PermissionDenied, "caller is not the resource publisher")
+}
+
+// unpublishKind selects which publication register an unpublish
+// authorises against. Centralising the selection is the whole point of
+// authoriseUnpublish: an open-coded per-call-site predicate choice is
+// the one thing that diverged across the handlers and produced a
+// cross-tenant ownership defect.
+type unpublishKind int
+
+const (
+	unpublishWorkload unpublishKind = iota
+	unpublishStatic
+	unpublishBlob
+)
+
+// authoriseUnpublish is the single ownership chokepoint for the
+// non-presigned unpublish handlers. When the local node is the
+// publisher of id under kind, the caller must be that publisher or an
+// admin. A non-locally-published id is left to the self-scoping store
+// mutation, which only ever tombstones this node's own (authority,
+// key) register, so a non-owner is a harmless no-op.
+func (s *Service) authoriseUnpublish(ctx context.Context, snap state.Snapshot, kind unpublishKind, id string) error {
+	var published bool
+	switch kind {
+	case unpublishWorkload:
+		published = snap.LocalPublishesWorkload(id, s.localPeerKey())
+	case unpublishStatic:
+		published = snap.LocalPublishesStatic(id, s.localPeerKey())
+	case unpublishBlob:
+		published = snap.LocalPublishesBlob(id, s.localPeerKey())
+	}
+	if !published {
+		return nil
+	}
+	return s.authoriseOwnership(ctx, s.localPeerKey())
 }

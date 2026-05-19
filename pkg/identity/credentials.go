@@ -128,7 +128,7 @@ func (c *Credentials) IssueGrant(
 	c.mu.RLock()
 	grant := c.grant
 	c.mu.RUnlock()
-	return IssueGrant(c.signPriv, []*identityv1.Grant{grant}, subjectPub, caps, budget, now, grantDeadline)
+	return IssueGrant(c.signPriv, grant, subjectPub, caps, budget, now, grantDeadline)
 }
 
 // IssueGrantToken wraps an already-issued grant into a GrantToken
@@ -155,7 +155,7 @@ func (c *Credentials) RedeemInvite(
 	c.mu.RLock()
 	grant := c.grant
 	c.mu.RUnlock()
-	return RedeemInviteTicket(c.signPriv, []*identityv1.Grant{grant}, c.rootPub, ticket, joinerPub, now, tokenTTL)
+	return RedeemInviteTicket(c.signPriv, grant, c.rootPub, ticket, joinerPub, now, tokenTTL)
 }
 
 func grantPath(identityDir string) string { return filepath.Join(identityDir, grantCertName) }

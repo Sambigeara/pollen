@@ -84,9 +84,14 @@ func UnlimitedBudget() *identityv1.Budget {
 	return &identityv1.Budget{}
 }
 
+// IssueGrant signs a grant for subjectPub. parent is the signer's own
+// grant (the immediate delegating authority) or nil for a root
+// self-issue. The embedded chain is derived from parent alone, so a
+// caller cannot truncate the lineage: signGrant flattens parent plus
+// parent's own already-flattened chain.
 func IssueGrant(
 	signerPriv ed25519.PrivateKey,
-	parentChain []*identityv1.Grant,
+	parent *identityv1.Grant,
 	subjectPub ed25519.PublicKey,
 	caps *identityv1.Capabilities,
 	budget *identityv1.Budget,
@@ -110,14 +115,14 @@ func IssueGrant(
 
 	signerPub := signerPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
-	if len(parentChain) > 0 {
-		clamped, err := applyParent(parentChain[0], signerPub, caps, budget, grantDeadline)
+	if parent != nil {
+		clamped, err := applyParent(parent, signerPub, caps, budget, grantDeadline)
 		if err != nil {
 			return nil, err
 		}
 		grantDeadline = clamped
 	}
-	return signGrant(signerPriv, parentChain, subjectPub, caps, budget, notBefore, grantDeadline)
+	return signGrant(signerPriv, parent, subjectPub, caps, budget, notBefore, grantDeadline)
 }
 
 // applyParent clamps a child grant's horizon to its parent's and
@@ -155,7 +160,7 @@ func applyParent(
 
 func signGrant(
 	signerPriv ed25519.PrivateKey,
-	parentChain []*identityv1.Grant,
+	parent *identityv1.Grant,
 	subjectPub ed25519.PublicKey,
 	caps *identityv1.Capabilities,
 	budget *identityv1.Budget,
@@ -195,7 +200,7 @@ func signGrant(
 
 	return &identityv1.Grant{
 		Claims:    claims,
-		Chain:     stripChainEntries(parentChain),
+		Chain:     flattenLineage(parent),
 		Signature: sig,
 	}, nil
 }
@@ -296,21 +301,30 @@ func childDeadlineWithinParent(child, parent *identityv1.GrantClaims) error {
 	return nil
 }
 
-// stripChainEntries returns parents with each entry's own Chain cleared.
-// verifyGrantChain walks one level via grant.GetChain(), so leaving
-// nested chains populated duplicates every ancestor at every level.
-func stripChainEntries(parents []*identityv1.Grant) []*identityv1.Grant {
-	if len(parents) == 0 {
+// flattenLineage returns the child's embedded chain: parent followed by
+// parent's own (already-flattened) ancestors, leaf-to-root, with every
+// entry's nested Chain cleared. Deriving the full lineage here from the
+// single parent, rather than trusting a caller-supplied slice, makes a
+// truncated chain unrepresentable: a depth-N issuer can no longer
+// produce a grant that anchors at the wrong root. nil parent (a root
+// self-issue) yields no chain.
+func flattenLineage(parent *identityv1.Grant) []*identityv1.Grant {
+	if parent == nil {
 		return nil
 	}
-	out := make([]*identityv1.Grant, len(parents))
-	for i, p := range parents {
-		out[i] = &identityv1.Grant{
-			Claims:    p.GetClaims(),
-			Signature: p.GetSignature(),
-		}
+	ancestors := parent.GetChain()
+	out := make([]*identityv1.Grant, 0, len(ancestors)+1)
+	out = append(out, stripped(parent))
+	for _, g := range ancestors {
+		out = append(out, stripped(g))
 	}
 	return out
+}
+
+// stripped copies a grant with its nested Chain dropped: an entry in a
+// flattened lineage carries only its own claims and signature.
+func stripped(g *identityv1.Grant) *identityv1.Grant {
+	return &identityv1.Grant{Claims: g.GetClaims(), Signature: g.GetSignature()}
 }
 
 // maxGrantChainDepth bounds the chain walk. Real delegation topologies

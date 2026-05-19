@@ -132,9 +132,8 @@ func (r *replicaCountLoop) eligibilityPredicate(snap state.Snapshot, seed string
 	if r.gate == nil {
 		return func(types.PeerKey) bool { return true }
 	}
-	f := snap.Specs[seed].Fact
 	return func(p types.PeerKey) bool {
-		return r.gate.MayHost(snap.Nodes[p].Grant, f) == nil
+		return r.gate.MayHostByHash(snap.Nodes[p].Grant, seed) == nil
 	}
 }
 

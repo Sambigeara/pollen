@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
@@ -119,8 +118,12 @@ func (r *reconciler) reconcile(ctx context.Context) {
 	snap := r.store.Snapshot()
 	localGrant := snap.LocalGrant()
 
-	// Lowest-PeerKey publisher wins when names collide; unnamed specs
-	// pass through unchanged.
+	// Deterministic placement tie-break over the content-addressed
+	// runtime view: when one logical name maps to several content
+	// hashes, host the lowest-PeerKey publisher's. Ownership no longer
+	// collides (registers are keyed by (kind, name, authority)); this is
+	// host selection, not a conflict gate. Unnamed specs pass through
+	// unchanged.
 	nameWinners := make(map[string]string)
 	for hash, sv := range snap.Specs {
 		name := sv.Spec.Name
@@ -138,7 +141,7 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		if name != "" && nameWinners[name] != hash {
 			continue
 		}
-		if !r.mayHost(localGrant, sv.Fact) {
+		if !r.mayHost(localGrant, hash) {
 			continue
 		}
 		specs[hash] = spec{
@@ -167,7 +170,7 @@ func (r *reconciler) reconcile(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		if r.mayHost(localGrant, sv.Fact) {
+		if r.mayHost(localGrant, hash) {
 			continue
 		}
 		r.log.Infow("policy denies local hosting, releasing claim", "hash", types.ShortHash(hash), "name", sv.Spec.Name)
@@ -293,7 +296,7 @@ func (r *reconciler) executeClaim(ctx context.Context, hash string, peers []type
 		return
 	}
 
-	if !r.mayHost(snap.LocalGrant(), sv.Fact) {
+	if !r.mayHost(snap.LocalGrant(), hash) {
 		r.log.Infow("policy denies local hosting, abandoning claim", "hash", types.ShortHash(hash), "name", sv.Spec.Name)
 		return
 	}
@@ -331,14 +334,17 @@ func (r *reconciler) executeRelease(hash string) {
 }
 
 // mayHost returns true when the local node is entitled to host the
-// workload described by f. A nil gate (test fixtures) is treated as
-// permissive; a nil grant with a configured gate is treated as denial,
-// since hosting without a verifiable identity must fail closed.
-func (r *reconciler) mayHost(grant *identityv1.Grant, f *factv1.Fact) bool {
+// bytes at hash. The decision unions every publication of those bytes
+// (MayHostByHash), so a co-publisher's stricter policy cannot suppress
+// a permissive publication of identical content. A nil gate (test
+// fixtures) is treated as permissive; a nil grant with a configured
+// gate is treated as denial, since hosting without a verifiable
+// identity must fail closed.
+func (r *reconciler) mayHost(grant *identityv1.Grant, hash string) bool {
 	if r.gate == nil {
 		return true
 	}
-	return r.gate.MayHost(grant, f) == nil
+	return r.gate.MayHostByHash(grant, hash) == nil
 }
 
 func (r *reconciler) cleanupStaleClaims(claims map[string]map[types.PeerKey]struct{}) {

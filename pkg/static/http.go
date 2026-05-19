@@ -133,8 +133,12 @@ func (s *Service) loadManifest(digest string) (*parsedManifest, error) {
 
 // lookupSpec resolves a Host header to a StaticSpec. With a configured
 // domain the Host is `<name>-<slug>.<domain>` where slug is the
-// publisher's PublisherSlug; without one the Host is the spec name and
-// the deduped view's publisher tie-break wins.
+// publisher's PublisherSlug, so it carries the authority and resolves
+// per-(authority,name) from the publication source. Without a domain
+// the Host is a bare name with no authority channel: this mode is
+// inherently single-tenant, and when two tenants name a site the same
+// the deduped view's lowest-publisher tie-break wins. Multi-tenant
+// static hosting requires a configured domain.
 func (s *Service) lookupSpec(snap state.Snapshot, host string) (state.StaticSpecView, bool) {
 	if s.domain == "" {
 		spec, ok := snap.StaticSpecs[host]

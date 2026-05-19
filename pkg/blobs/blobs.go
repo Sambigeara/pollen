@@ -398,30 +398,24 @@ func (s *Service) PublishPresigned(hash, name string, presignedFact *factv1.Fact
 	return err
 }
 
+// Remove tombstones the named blob's spec and gossips it synchronously.
+// It deliberately does not touch local bytes: a digest may be shared by
+// another owner's still-live spec, so byte reclamation is the keep-set
+// janitor's sole responsibility (Prune).
 func (s *Service) Remove(hash string) error {
-	if err := s.removeLocalBytes(hash); err != nil {
-		return err
-	}
 	if s.state == nil {
 		return nil
 	}
-	if _, err := s.state.DeleteBlobSpec(hash); err != nil {
-		return err
-	}
-	return nil
+	_, err := s.state.DeleteBlobSpec(hash)
+	return err
 }
 
-// RemovePresigned applies a tenant-signed tombstone for a named blob.
-// The daemon evicts the local bytes (and DEK) when it has them, then
-// gossips the presigned tombstone regardless. In wire mode the caller
-// may dial any edge node — only one of them holds the bytes, but all
-// of them can relay the tombstone now that DeleteBlobSpecPresigned
-// looks up the body across every peer's log (Phase 3f). See Remove
-// for the wrapping-vs-spec lifecycle.
+// RemovePresigned applies a tenant-signed tombstone for a named blob and
+// gossips it. In wire mode the caller may dial any edge node; only one
+// holds the bytes, but all can relay the tombstone now that
+// DeleteBlobSpecPresigned looks up the body across every peer's log
+// (Phase 3f). Like Remove it leaves bytes to the janitor.
 func (s *Service) RemovePresigned(hash string, presignedFact *factv1.Fact) error {
-	if err := s.removeLocalBytes(hash); err != nil && !errors.Is(err, ErrNotLocal) {
-		return err
-	}
 	if s.state == nil {
 		return nil
 	}
@@ -430,11 +424,12 @@ func (s *Service) RemovePresigned(hash string, presignedFact *factv1.Fact) error
 }
 
 // removeLocalBytes evicts hash from the CAS and re-publishes the local
-// blob list. Wrappings are append-only on the wire (admission rejects
-// tombstones), so the spec deletion that callers chain after this is
-// what eventually revokes receiver access: BlobSpec drops out of the
-// keep set at the next Prune, the receiver's evictDEK runs, and the
-// stranded wrapping in gossip ages out with the wrapper's cert.
+// blob list. It is the keep-set janitor's byte-evict primitive, called
+// only from Prune once a digest has dropped out of the keep set (every
+// referencing spec already tombstoned). Wrappings are append-only on
+// the wire (admission rejects tombstones), so eviction here is what
+// revokes receiver access: the receiver's evictDEK runs and the
+// stranded wrapping in gossip ages out with the wrapper's grant.
 func (s *Service) removeLocalBytes(hash string) error {
 	if err := s.store.Remove(hash); err != nil {
 		if errors.Is(err, cas.ErrNotFound) {
@@ -451,13 +446,19 @@ func (s *Service) removeLocalBytes(hash string) error {
 	return nil
 }
 
+// KeepSet is the set of content hashes the local node must retain: a
+// hash is pinned iff at least one live (authority, name) spec from any
+// owner references it. It iterates the un-deduped per-(authority, name)
+// sources, not the deduped runtime maps, so a tie-break loser's
+// reference still pins the bytes a co-owner serves. The static extras
+// (state.StaticBlobs) already enumerate StaticSpecsAll.
 func KeepSet(snap state.Snapshot, extras ...map[string]struct{}) map[string]struct{} {
-	keep := make(map[string]struct{}, len(snap.Specs)+len(snap.BlobSpecs))
-	for h := range snap.Specs {
-		keep[h] = struct{}{}
+	keep := make(map[string]struct{}, len(snap.SpecsAll)+len(snap.BlobSpecsAll))
+	for _, sv := range snap.SpecsAll {
+		keep[sv.Spec.Hash] = struct{}{}
 	}
-	for h := range snap.BlobSpecs {
-		keep[h] = struct{}{}
+	for _, bv := range snap.BlobSpecsAll {
+		keep[bv.Spec.Digest] = struct{}{}
 	}
 	for _, extra := range extras {
 		for h := range extra {
@@ -488,7 +489,7 @@ func (s *Service) Prune(keep map[string]struct{}, minAge time.Duration) ([]strin
 		if e.ModTime.After(cutoff) {
 			continue
 		}
-		if err := s.Remove(e.Hash); err != nil {
+		if err := s.removeLocalBytes(e.Hash); err != nil {
 			if errors.Is(err, ErrNotLocal) {
 				continue
 			}

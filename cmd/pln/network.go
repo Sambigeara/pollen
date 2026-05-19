@@ -603,6 +603,9 @@ func collectStaticSection(st *controlv1.GetStatusResponse, opts statusViewOpts) 
 	}
 	sec := statusSection{title: "STATIC", headers: headers}
 	nameLabels := nodeNameLabels(st.GetSelf(), st.GetNodes(), opts.wide)
+	suffixes := nameCollisionSuffixes(st.GetSites(), func(site *controlv1.StaticSummary) (string, string, bool) {
+		return site.GetName(), peerKeyString(site.GetPublisher().GetPeerPub()), true
+	})
 	for _, site := range st.GetSites() {
 		digest := hex.EncodeToString(site.GetManifestDigest())
 		if !opts.wide && len(digest) > shortHexLen {
@@ -618,7 +621,11 @@ func collectStaticSection(st *controlv1.GetStatusResponse, opts statusViewOpts) 
 		if publisher == "" {
 			publisher = formatPeerID(site.GetPublisher().GetPeerPub(), opts.wide)
 		}
-		row := []string{site.GetName(), digest, replicas, local, publisher}
+		name := site.GetName()
+		if sfx := suffixes[namePeerKey{name, publisherPK}]; sfx != "" {
+			name += "-" + sfx
+		}
+		row := []string{name, digest, replicas, local, publisher}
 		if hasURL {
 			row = append(row, site.GetPublicUrl())
 		}
@@ -695,11 +702,16 @@ func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 
 	now := time.Now()
 	clusterSize := uint32(len(st.GetNodes()) + 1) // +1 for self (not included in Nodes)
+	suffixes := nameCollisionSuffixes(st.GetWorkloads(), func(w *controlv1.WorkloadSummary) (string, string, bool) {
+		return w.GetName(), peerKeyString(w.GetPublisher().GetPeerPub()), true
+	})
 	for _, w := range st.GetWorkloads() {
 		name := w.GetName()
 		hash := w.GetHash()
 		if name == hash || name == "" {
 			name = "-"
+		} else if sfx := suffixes[namePeerKey{name, peerKeyString(w.GetPublisher().GetPeerPub())}]; sfx != "" {
+			name += "-" + sfx
 		}
 		if !opts.wide && len(hash) > shortHexLen {
 			hash = hash[:shortHexLen]

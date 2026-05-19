@@ -206,8 +206,11 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 		if key.kind == attrNetwork || key.kind == attrObservedAddress {
 			domainEvents = append(domainEvents, AddressesChanged{Peer: pk})
 		}
-		if key.kind == attrWorkloadClaim || key.kind == attrWorkloadSpec {
+		if key.kind == attrWorkloadClaim {
 			domainEvents = append(domainEvents, WorkloadChanged{Hash: key.name})
+		}
+		if key.kind == attrWorkloadSpec {
+			domainEvents = append(domainEvents, WorkloadChanged{Hash: ev.GetSpecChange().GetWorkload().GetHash()})
 		}
 		if key.kind == attrStaticSpec || key.kind == attrStaticClaim {
 			domainEvents = append(domainEvents, StaticChanged{Name: key.name})
@@ -328,7 +331,7 @@ func (s *store) deniedCheckerLocked() identity.DenyChecker {
 // acceptableSpecEventLocked admits a spec event from any peer slot.
 // Under the signed-event relay model, the gossip-source peer is the
 // storing peer for the spec; the Fact signer is the authoritative
-// Publisher. They may differ — a daemon storing and gossipping a
+// Publisher. They may differ: a daemon storing and gossipping a
 // tenant's signed spec is the canonical case.
 //
 // The signed deleted bit must match the gossip envelope's Deleted flag
@@ -356,7 +359,7 @@ func (s *store) acceptableSpecEventLocked(ev *statev1.GossipEvent) bool {
 //
 // The default branch fails closed: any attr not explicitly listed
 // here cannot be adopted via self-conflict. attrDeny in particular
-// must never be adopted from a peer's claim — legitimate self-deny
+// must never be adopted from a peer's claim. Legitimate self-deny
 // goes through DenyPeer; recovery of a lost self-deny is handled by
 // re-issuing the deny rather than trusting a peer's recollection.
 func (s *store) acceptableSelfEventLocked(kind attrKind, ev *statev1.GossipEvent) bool {
@@ -573,37 +576,6 @@ func (s *store) encodeDelta(since Digest) []byte {
 	return data
 }
 
-// specOwnerConflictLocked returns the Publisher of an existing
-// non-deleted spec event matching key, when that Publisher is a
-// different identity from claimingPublisher and is not denied. The
-// gossip-source peer is irrelevant: relayed specs land in another
-// peer's slot, but the Fact signer is the authority.
-func (s *store) specOwnerConflictLocked(key attrKey, claimingPublisher types.PeerKey) (types.PeerKey, bool) {
-	for _, r := range s.nodes {
-		ev, ok := r.log[key]
-		if !ok || ev.Deleted {
-			continue
-		}
-		publisher := types.PeerKeyFromBytes(ev.GetSpecChange().GetFact().GetAuthorityPub())
-		if publisher == claimingPublisher {
-			continue
-		}
-		if _, denied := s.denied[publisher]; denied {
-			continue
-		}
-		return publisher, true
-	}
-	return types.PeerKey{}, false
-}
-
-func (s *store) workloadOwnerConflictLocked(hash string, claimingPublisher types.PeerKey) (types.PeerKey, bool) {
-	return s.specOwnerConflictLocked(attrKey{kind: attrWorkloadSpec, name: hash}, claimingPublisher)
-}
-
-func (s *store) staticOwnerConflictLocked(name string, claimingPublisher types.PeerKey) (types.PeerKey, bool) {
-	return s.specOwnerConflictLocked(attrKey{kind: attrStaticSpec, name: name}, claimingPublisher)
-}
-
 func (s *store) tombstoneStaleAttrsLocked(rec *nodeRecord) {
 	ephemeral := []*statev1.GossipEvent{
 		{Change: &statev1.GossipEvent_ObservedAddress{ObservedAddress: &statev1.ObservedAddressChange{}}},
@@ -722,7 +694,7 @@ func getAttrKey(ev *statev1.GossipEvent) (attrKey, bool) {
 		if v.StaticClaim.GetName() == "" {
 			return attrKey{}, false
 		}
-		return attrKey{kind: attrStaticClaim, name: v.StaticClaim.GetName()}, true
+		return attrKey{kind: attrStaticClaim, name: v.StaticClaim.GetName(), peer: types.PeerKeyFromBytes(v.StaticClaim.GetAuthorityPub())}, true
 	case *statev1.GossipEvent_SpecChange:
 		return specAttrKey(v.SpecChange)
 	case *statev1.GossipEvent_BackoffTtl:
@@ -745,13 +717,23 @@ func isSpecKind(kind attrKind) bool {
 	return kind == attrWorkloadSpec || kind == attrService || kind == attrStaticSpec || kind == attrBlobSpec
 }
 
+// specAttrKey derives a spec event's CRDT register key. Workload,
+// static and blob specs are publication identities keyed by (authority
+// Principal, logical name): the authority is the Fact signer, the name
+// is the publisher-chosen logical name. Two tenants publishing the same
+// bytes or the same name therefore occupy distinct registers and never
+// collide, which is what makes the cluster multi-tenant. The content
+// hash/digest is the artefact identity, carried on the body and keyed
+// by the runtime/fetch indices, not here. Services bind per-peer and
+// keep their name-only key (no tenant authority dimension).
 func specAttrKey(sc *statev1.SpecChange) (attrKey, bool) {
+	authority := types.PeerKeyFromBytes(sc.GetFact().GetAuthorityPub())
 	switch body := sc.GetBody().(type) {
 	case *statev1.SpecChange_Workload:
-		if body.Workload.GetHash() == "" {
+		if body.Workload.GetName() == "" || body.Workload.GetHash() == "" {
 			return attrKey{}, false
 		}
-		return attrKey{kind: attrWorkloadSpec, name: body.Workload.GetHash()}, true
+		return attrKey{kind: attrWorkloadSpec, name: body.Workload.GetName(), peer: authority}, true
 	case *statev1.SpecChange_Service:
 		if body.Service.GetName() == "" {
 			return attrKey{}, false
@@ -761,13 +743,12 @@ func specAttrKey(sc *statev1.SpecChange) (attrKey, bool) {
 		if body.Static.GetName() == "" {
 			return attrKey{}, false
 		}
-		return attrKey{kind: attrStaticSpec, name: body.Static.GetName()}, true
+		return attrKey{kind: attrStaticSpec, name: body.Static.GetName(), peer: authority}, true
 	case *statev1.SpecChange_Blob:
-		digest := body.Blob.GetDigest()
-		if len(digest) != sha256Len {
+		if body.Blob.GetName() == "" || len(body.Blob.GetDigest()) != sha256Len {
 			return attrKey{}, false
 		}
-		return attrKey{kind: attrBlobSpec, name: hex.EncodeToString(digest)}, true
+		return attrKey{kind: attrBlobSpec, name: body.Blob.GetName(), peer: authority}, true
 	}
 	return attrKey{}, false
 }

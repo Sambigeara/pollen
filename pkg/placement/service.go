@@ -118,9 +118,9 @@ type StreamOpener interface {
 // self-claim is released on the next reconcile and only unseed+seed
 // can clear the stranded spec.
 type Gate interface {
-	Invoke(caller *identityv1.Grant, hash string) (wasm.CallerInfo, error)
+	Invoke(caller *identityv1.Grant, pub *admission.Publication, hash string) (wasm.CallerInfo, error)
 	InvokeByToken(token *admissionv1.AccessToken, hash string) (wasm.CallerInfo, error)
-	MayHost(hostGrant *identityv1.Grant, f *factv1.Fact) error
+	MayHostByHash(hostGrant *identityv1.Grant, hash string) error
 	MayPublish(grant *identityv1.Grant, policy *admissionv1.Predicate) error
 	LookupGrant(peerKey types.PeerKey) *identityv1.Grant
 }
@@ -379,16 +379,14 @@ func (s *Service) Unseed(hash string) error {
 	_, hash = s.resolveLocalFirst(hash)
 
 	snap := s.store.Snapshot()
-	sv, specExists := snap.Specs[hash]
+	publishedHere := snap.LocalPublishesWorkload(hash, s.localID)
 	locallyRunning := s.manager.IsRunning(hash)
 
-	if !specExists && !locallyRunning {
+	if !publishedHere && !locallyRunning {
 		return fmt.Errorf("%w: %s", ErrNotRunning, types.ShortHash(hash))
 	}
-
-	// Tombstones from non-publishers are ignored by gossip.
-	if specExists && sv.Publisher != s.localID {
-		return fmt.Errorf("workload %s is owned by peer %s; run unseed on that node", types.ShortHash(hash), sv.Publisher.Short())
+	if !publishedHere {
+		return fmt.Errorf("workload %s not published by this node", types.ShortHash(hash))
 	}
 
 	if locallyRunning {
@@ -398,13 +396,8 @@ func (s *Service) Unseed(hash string) error {
 		s.memGuard.Release(hash)
 	}
 	s.store.ReleaseWorkload(hash)
-	if _, err := s.store.DeleteWorkloadSpec(hash); err != nil {
-		return err
-	}
-	if err := s.blobs.Remove(hash); err != nil {
-		s.log.Warnw("evict wasm blob failed after unseed", "hash", types.ShortHash(hash), "err", err)
-	}
-	return nil
+	_, err := s.store.DeleteWorkloadSpec(hash)
+	return err
 }
 
 type firstHopMode uint8
@@ -459,12 +452,15 @@ func (s *Service) callFirstLocalHop(ctx context.Context, hash, function string, 
 		return ctx, nil, fmt.Errorf("%w: %s", ErrCycle, types.ShortHash(hash))
 	}
 	ctx = withChain(ctx, hash)
+	// A relayed seed run here may itself tail-call; its delegation must
+	// resolve in this seed's publisher namespace, not the caller's.
+	ctx = wasm.WithExecutingSeed(ctx, hash)
 	out, err := local(ctx, hash, function, input)
 	return ctx, out, err
 }
 
 func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, input []byte, tailHop bool, local localCall) (context.Context, string, []byte, error) {
-	resolved, found := s.resolveGlobal(hash)
+	resolved, pub, found := s.resolveGlobal(ctx, hash, s.resolveAuthority(ctx))
 	if !found {
 		if tailHop {
 			return ctx, hash, nil, fmt.Errorf("%w: tail call target %q not found", ErrWorkloadFailed, hash)
@@ -475,16 +471,11 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 
 	if s.gate != nil {
 		info, _ := wasm.CallerInfoFromContext(ctx)
-		var gated wasm.CallerInfo
-		var err error
-		if token, ok := admission.AccessTokenFromContext(ctx); ok {
-			gated, err = s.gate.InvokeByToken(token, hash)
-		} else {
-			gated, err = s.gate.Invoke(s.callerGrant(ctx, info.PeerKey), hash)
-		}
+		gated, resolvedPub, err := s.gateInvoke(ctx, pub, hash)
 		if err != nil {
 			return ctx, hash, nil, fmt.Errorf("invoke %s: %w", types.ShortHash(hash), wasm.ErrTargetNotFound)
 		}
+		pub = resolvedPub
 		gated.DeadlineUnixMs = info.DeadlineUnixMs
 		ctx = wasm.WithCallerInfo(ctx, gated)
 	}
@@ -493,10 +484,36 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 		return ctx, hash, nil, fmt.Errorf("%w: %s", ErrCycle, types.ShortHash(hash))
 	}
 	ctx = withChain(ctx, hash)
+	// Carry this seed's publication forward so a tail call it emits
+	// resolves the target name in this seed's publisher namespace, not
+	// the original caller's, and so the executing authority is the
+	// invoked publication's rather than the deduped artefact winner's
+	// (confused-deputy safe).
+	if pub != nil {
+		ctx = admission.WithInvokedPublication(ctx, pub)
+	}
+	ctx = wasm.WithExecutingSeed(ctx, hash)
 	s.calls.RecordCall(hash)
 
 	out, err := s.callHop(ctx, hash, function, input, local)
 	return ctx, hash, out, err
+}
+
+// gateInvoke runs the gate for one dispatch hop and returns the
+// publication to carry forward. The token path authorises by token and
+// adopts the token's own publication for downstream name resolution;
+// the grant path authorises the resolved publication and keeps it.
+func (s *Service) gateInvoke(ctx context.Context, pub *admission.Publication, hash string) (wasm.CallerInfo, *admission.Publication, error) {
+	if token, ok := admission.AccessTokenFromContext(ctx); ok {
+		gated, err := s.gate.InvokeByToken(token, hash)
+		if tp, ok := admission.PublicationFromToken(token); ok {
+			return gated, tp, err
+		}
+		return gated, pub, err
+	}
+	info, _ := wasm.CallerInfoFromContext(ctx)
+	gated, err := s.gate.Invoke(s.callerGrant(ctx, info.PeerKey), pub, hash)
+	return gated, pub, err
 }
 
 // callerGrant resolves the grant authorising the current call. For the
@@ -511,6 +528,34 @@ func (s *Service) callerGrant(ctx context.Context, peerKey types.PeerKey) *ident
 		return nil
 	}
 	return s.gate.LookupGrant(peerKey)
+}
+
+// resolveAuthority returns the Principal a workload name resolves
+// under. When a seed is executing (a tail call it returned, or a
+// seed:// host call it made) the name resolves in that seed's own
+// publisher namespace, so a caller cannot redirect a shared seed's
+// internal delegation at code of the caller's choosing
+// (confused-deputy safe). That authority is the invoked publication's,
+// threaded onto the context at dispatch; only when the call named no
+// publication (a bare hash, deliberately cross-tenant) does it fall
+// back to the deduped artefact winner. A genuine first hop (a human
+// `pln call`, the gateway) has no executing seed and resolves under
+// the caller's own authority, so `pln call hello` finds the caller's
+// hello and never another tenant's. The zero key (anonymous/token
+// callers with no publication) resolves nothing by name, which is
+// correct because that path arrives pre-resolved to a content hash.
+func (s *Service) resolveAuthority(ctx context.Context) types.PeerKey {
+	if execHash := wasm.ExecutingSeedFromContext(ctx); execHash != "" {
+		if p, ok := admission.InvokedPublicationFromContext(ctx); ok {
+			return types.PeerKeyFromBytes(p.AuthorityPub)
+		}
+		return s.store.Snapshot().Specs[execHash].Publisher
+	}
+	info, _ := wasm.CallerInfoFromContext(ctx)
+	if g := s.callerGrant(ctx, info.PeerKey); g != nil {
+		return types.PeerKeyFromBytes(g.GetClaims().GetSubjectPub())
+	}
+	return types.PeerKey{}
 }
 
 func (s *Service) callHop(ctx context.Context, hash, function string, input []byte, local localCall) ([]byte, error) {
@@ -640,7 +685,7 @@ func (s *Service) Status() []WorkloadSummary {
 // call from the HTTP gateway).
 func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	defer stream.Close()
-	info, chain, token, hash, function, err := ReadHeader(stream, peerKey)
+	info, chain, token, pub, hash, function, err := ReadHeader(stream, peerKey)
 	if err != nil {
 		return
 	}
@@ -650,7 +695,7 @@ func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 		if token != nil {
 			gated, err = s.gate.InvokeByToken(token, hash)
 		} else {
-			gated, err = s.gate.Invoke(s.gate.LookupGrant(peerKey), hash)
+			gated, err = s.gate.Invoke(s.gate.LookupGrant(peerKey), pub, hash)
 		}
 		if err != nil {
 			return
@@ -663,6 +708,9 @@ func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	ctx = wasm.WithCallerInfo(ctx, info)
 	if token != nil {
 		ctx = admission.WithAccessToken(ctx, token)
+	}
+	if pub != nil {
+		ctx = admission.WithInvokedPublication(ctx, pub)
 	}
 	ctx, deadlineCancel := withCallerDeadline(ctx, info)
 	defer deadlineCancel()
@@ -700,17 +748,15 @@ func (s *Service) Signal() {
 	s.reconciler.Signal()
 }
 
-// resolveLocalFirst resolves for operator-facing operations: local
-// matches win so operators manage their own seeds; remote falls
-// through so non-publishers still get the ownership error.
+// resolveLocalFirst resolves for operator-facing operations. It matches
+// a name this node itself published, or a content-hash prefix. It does
+// not resolve another tenant's name: publication identity is
+// per-authority, so a bare name an operator did not publish is simply
+// not found here rather than resolving to a peer's spec.
 func (s *Service) resolveLocalFirst(identifier string) (string, string) {
 	snap := s.store.Snapshot()
 
 	if hash, ok := snap.LocalSpecByName(identifier, s.localID); ok {
-		return identifier, hash
-	}
-
-	if hash, _, ok := snap.SpecByName(identifier); ok {
 		return identifier, hash
 	}
 
@@ -725,16 +771,40 @@ func (s *Service) resolveLocalFirst(identifier string) (string, string) {
 	return name, hash
 }
 
-func (s *Service) resolveGlobal(identifier string) (string, bool) {
+// resolveGlobal resolves identifier to a content hash and, when the
+// resolution names a single (authority, name) publication, that
+// publication. A non-nil publication makes the gate decision exact; a
+// nil one (a bare hash prefix, deliberately cross-tenant) falls to the
+// union path. The entry hop may carry an invoked-publication selector
+// (an anonymous named URL the gateway resolved): it is honoured only
+// when no seed is executing, so a tail or host call inside a shared
+// seed resolves its target name within the executing authority instead
+// of being redirected by the original selector.
+func (s *Service) resolveGlobal(ctx context.Context, identifier string, authority types.PeerKey) (string, *admission.Publication, bool) {
 	snap := s.store.Snapshot()
 
-	if hash, _, ok := snap.SpecByName(identifier); ok {
-		return hash, true
+	if wasm.ExecutingSeedFromContext(ctx) == "" {
+		if p, ok := admission.InvokedPublicationFromContext(ctx); ok {
+			h, sv, ok := snap.SpecByName(p.Name, types.PeerKeyFromBytes(p.AuthorityPub))
+			if !ok || sv.Fact == nil {
+				return "", nil, false
+			}
+			return h, p, true
+		}
 	}
 
-	return s.resolveHashPrefix(identifier, snap)
+	if hash, sv, ok := snap.SpecByName(identifier, authority); ok {
+		return hash, &admission.Publication{AuthorityPub: sv.Publisher.Bytes(), Name: sv.Spec.Name}, true
+	}
+
+	h, ok := s.resolveHashPrefix(identifier, snap)
+	return h, nil, ok
 }
 
+// resolveHashPrefix resolves a content-hash prefix. A hash is the
+// artefact identity and is deliberately cross-tenant: two tenants
+// publishing identical bytes share one hash, so this stays global and
+// is not authority-scoped (name resolution is, hash resolution is not).
 func (s *Service) resolveHashPrefix(prefix string, snap state.Snapshot) (string, bool) {
 	// Gossip-only: trusting the local manager would let a stale
 	// in-process module shadow a peer-published workload.

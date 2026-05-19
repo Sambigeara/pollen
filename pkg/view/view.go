@@ -26,17 +26,19 @@ func LensFor(grant *identityv1.Grant) Lens {
 	return identity.PrincipalFromGrant(grant)
 }
 
-// ScopedView is a snapshot projected through a Lens. The spec maps are
-// keyed exactly as the snapshot keys them so callers iterate them in
-// place. Nodes is the set of nodes the lens may observe: every node for
-// an admin, and for a tenant only the nodes that hold at least one of
-// the tenant's own facts (its functions, sites or blobs), so node
-// visibility stays coupled to the caller's own authority.
+// ScopedView is a snapshot projected through a Lens. The spec slices
+// hold one entry per (authority, logical name) the lens may see, so a
+// tenant whose artefact or name collides with another's still appears
+// and an admin sees every colliding tenant distinctly. Nodes is the set
+// of nodes the lens may observe: every node for an admin, and for a
+// tenant only the nodes that hold at least one of the tenant's own facts
+// (its functions, sites or blobs), so node visibility stays coupled to
+// the caller's own authority.
 type ScopedView struct {
 	Nodes     map[types.PeerKey]state.NodeView
-	Workloads map[string]state.WorkloadSpecView
-	Statics   map[string]state.StaticSpecView
-	Blobs     map[string]state.BlobSpecView
+	Workloads []state.WorkloadSpecView
+	Statics   []state.StaticSpecView
+	Blobs     []state.BlobSpecView
 	Lens      Lens
 }
 
@@ -45,25 +47,29 @@ type ScopedView struct {
 // store or run the tenant's own facts, which is exactly what the
 // snapshot's storing-peer and claim indices already track.
 func Project(snap state.Snapshot, lens Lens) ScopedView {
-	sv := ScopedView{
-		Lens:      lens,
-		Workloads: make(map[string]state.WorkloadSpecView),
-		Statics:   make(map[string]state.StaticSpecView),
-		Blobs:     make(map[string]state.BlobSpecView),
-	}
-	for hash, w := range snap.Specs {
+	sv := ScopedView{Lens: lens}
+	// Iterate the un-deduped per-(authority,name) publication sources,
+	// not the deduped runtime maps: the deduped Specs/BlobSpecs key on
+	// artefact content and StaticSpecs on name, so a tenant whose bytes
+	// or name collide with another's is dropped before the lens runs.
+	// Visibility is a publication concern and reads the publication
+	// source. Each (authority, name) is carried through verbatim, so an
+	// admin lens sees every colliding tenant and a tenant sees only its
+	// own; (authority, name) is already unique in the source, so there
+	// is no tie-break.
+	for _, w := range snap.SpecsAll {
 		if lens.Permits(w.Publisher) {
-			sv.Workloads[hash] = w
+			sv.Workloads = append(sv.Workloads, w)
 		}
 	}
-	for name, st := range snap.StaticSpecs {
+	for _, st := range snap.StaticSpecsAll {
 		if lens.Permits(st.Publisher) {
-			sv.Statics[name] = st
+			sv.Statics = append(sv.Statics, st)
 		}
 	}
-	for digest, b := range snap.BlobSpecs {
+	for _, b := range snap.BlobSpecsAll {
 		if lens.Permits(b.Publisher) {
-			sv.Blobs[digest] = b
+			sv.Blobs = append(sv.Blobs, b)
 		}
 	}
 
@@ -79,17 +85,20 @@ func Project(snap state.Snapshot, lens Lens) ScopedView {
 			holders[pk] = struct{}{}
 		}
 	}
-	for hash := range sv.Workloads {
-		addPeers(snap.WorkloadStoringPeers[hash])
-		addPeers(snap.Claims[hash])
-		addPeers(snap.DrainingClaims[hash])
+	// Holder lookups stay on the content/name runtime indices: a
+	// shared artefact's storing peers and claims are deliberately
+	// cross-tenant, but the static-claim register is now per-authority.
+	for _, w := range sv.Workloads {
+		addPeers(snap.WorkloadStoringPeers[w.Spec.Hash])
+		addPeers(snap.Claims[w.Spec.Hash])
+		addPeers(snap.DrainingClaims[w.Spec.Hash])
 	}
-	for name := range sv.Statics {
-		addPeers(snap.StaticStoringPeers[name])
-		addPeers(snap.StaticClaims[name])
+	for _, st := range sv.Statics {
+		addPeers(snap.StaticStoringPeers[st.Spec.Name])
+		addPeers(snap.StaticClaims[state.StaticClaimKey{Authority: st.Publisher, Name: st.Spec.Name}])
 	}
-	for digest := range sv.Blobs {
-		addPeers(snap.BlobStoringPeers[digest])
+	for _, b := range sv.Blobs {
+		addPeers(snap.BlobStoringPeers[b.Spec.Digest])
 	}
 
 	sv.Nodes = make(map[types.PeerKey]state.NodeView, len(holders))

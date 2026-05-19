@@ -46,8 +46,8 @@ type stateStore interface {
 	SetStaticSpecPresigned(spec state.StaticSpec, presignedFact *factv1.Fact) ([]state.Event, error)
 	DeleteStaticSpec(name string) ([]state.Event, error)
 	DeleteStaticSpecPresigned(name string, presignedFact *factv1.Fact) ([]state.Event, error)
-	ClaimStatic(name string) []state.Event
-	ReleaseStatic(name string) []state.Event
+	ClaimStatic(name string, authority types.PeerKey) []state.Event
+	ReleaseStatic(name string, authority types.PeerKey) []state.Event
 }
 
 type blobStore interface {
@@ -184,20 +184,12 @@ func (s *Service) SeedStaticPresigned(name string, manifestDigest []byte, presig
 }
 
 func (s *Service) UnseedStatic(name string) error {
-	snap := s.store.Snapshot()
-	sv, ok := snap.StaticSpecs[name]
-	if !ok {
-		return fmt.Errorf("static site %q not published", name)
-	}
-	if sv.Publisher != s.localID {
-		return fmt.Errorf("static site %q is owned by peer %s; run unseed on that node", name, sv.Publisher.Short())
-	}
 	events, err := s.store.DeleteStaticSpec(name)
 	if err != nil {
 		return err
 	}
 	s.forwardEvents(events)
-	s.forwardEvents(s.store.ReleaseStatic(name))
+	s.forwardEvents(s.store.ReleaseStatic(name, s.localID))
 	return nil
 }
 
@@ -210,7 +202,7 @@ func (s *Service) UnseedStaticPresigned(name string, presignedFact *factv1.Fact)
 		return err
 	}
 	s.forwardEvents(events)
-	s.forwardEvents(s.store.ReleaseStatic(name))
+	s.forwardEvents(s.store.ReleaseStatic(name, types.PeerKeyFromBytes(presignedFact.GetAuthorityPub())))
 	return nil
 }
 
@@ -237,7 +229,7 @@ func (s *Service) reconcile(ctx context.Context) {
 	// replicate; the per-publisher view keeps every (publisher, name)
 	// pair so both tenants converge.
 	for _, sv := range snap.StaticSpecsAll {
-		if err := s.ensureReplicated(ctx, snap, sv.Spec.Name, sv.Spec); err != nil {
+		if err := s.ensureReplicated(ctx, snap, sv.Spec, sv.Publisher); err != nil {
 			s.log.Debugw("static replication pending", "name", sv.Spec.Name, "publisher", sv.Publisher.Short(), "err", err)
 		}
 	}
@@ -260,7 +252,7 @@ func (s *Service) StaticBlobs() map[string]struct{} {
 	return out
 }
 
-func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, name string, spec state.StaticSpec) error {
+func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, spec state.StaticSpec, authority types.PeerKey) error {
 	if err := s.ensureLocal(ctx, snap, spec.ManifestDigest); err != nil {
 		return fmt.Errorf("manifest: %w", err)
 	}
@@ -280,18 +272,11 @@ func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, nam
 		}
 	}
 
-	// Claims today are keyed by name only (not (publisher, name)); a
-	// shared name across publishers means a single claim represents
-	// the storing peer's commitment to whichever publisher's spec it
-	// reconciled. The data is the same set of digests either way, so
-	// the claim still admits the correct set of file blobs. Promoting
-	// the claim key to (publisher, name) needs a proto change to
-	// statev1.StaticClaimChange and is deferred.
-	if _, alreadyClaimed := snap.StaticClaims[name][s.localID]; alreadyClaimed {
+	if _, alreadyClaimed := snap.StaticClaims[state.StaticClaimKey{Authority: authority, Name: spec.Name}][s.localID]; alreadyClaimed {
 		return nil
 	}
-	s.forwardEvents(s.store.ClaimStatic(name))
-	s.log.Infow("claimed static site", "name", name, "paths", len(manifest.paths))
+	s.forwardEvents(s.store.ClaimStatic(spec.Name, authority))
+	s.log.Infow("claimed static site", "name", spec.Name, "publisher", authority.Short(), "paths", len(manifest.paths))
 	return nil
 }
 

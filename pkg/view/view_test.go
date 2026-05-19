@@ -60,17 +60,17 @@ func TestProjectScopesResourcesByAuthority(t *testing.T) {
 		Nodes: map[types.PeerKey]state.NodeView{
 			key(10): {}, key(11): {}, key(12): {},
 		},
-		Specs: map[string]state.WorkloadSpecView{
-			"wmine":  {Publisher: tenant},
-			"wother": {Publisher: other},
+		SpecsAll: []state.WorkloadSpecView{
+			{Spec: state.WorkloadSpec{Hash: "wmine", Name: "fnmine"}, Publisher: tenant},
+			{Spec: state.WorkloadSpec{Hash: "wother", Name: "fnother"}, Publisher: other},
 		},
-		StaticSpecs: map[string]state.StaticSpecView{
-			"smine":  {Publisher: tenant},
-			"sother": {Publisher: other},
+		StaticSpecsAll: []state.StaticSpecView{
+			{Spec: state.StaticSpec{Name: "smine"}, Publisher: tenant},
+			{Spec: state.StaticSpec{Name: "sother"}, Publisher: other},
 		},
-		BlobSpecs: map[string]state.BlobSpecView{
-			"bmine":  {Publisher: tenant},
-			"bother": {Publisher: other},
+		BlobSpecsAll: []state.BlobSpecView{
+			{Spec: state.BlobSpec{Name: "blmine", Digest: "bmine"}, Publisher: tenant},
+			{Spec: state.BlobSpec{Name: "blother", Digest: "bother"}, Publisher: other},
 		},
 		WorkloadStoringPeers: map[string]map[types.PeerKey]struct{}{
 			"wmine": {key(10): {}},
@@ -96,9 +96,9 @@ func TestProjectScopesResourcesByAuthority(t *testing.T) {
 
 	t.Run("tenant sees only its own facts and their holders", func(t *testing.T) {
 		sv := view.Project(snap, view.LensFor(grant(tenant, false)))
-		require.Equal(t, []string{"wmine"}, keysOf(sv.Workloads))
-		require.Equal(t, []string{"smine"}, keysOf(sv.Statics))
-		require.Equal(t, []string{"bmine"}, keysOf(sv.Blobs))
+		require.Equal(t, []string{"wmine"}, pluck(sv.Workloads, func(v state.WorkloadSpecView) string { return v.Spec.Hash }))
+		require.Equal(t, []string{"smine"}, pluck(sv.Statics, func(v state.StaticSpecView) string { return v.Spec.Name }))
+		require.Equal(t, []string{"bmine"}, pluck(sv.Blobs, func(v state.BlobSpecView) string { return v.Spec.Digest }))
 
 		// Nodes = storers + claimants of the tenant's own facts only:
 		// key(10) stores wmine, key(11) claims wmine, key(12) stores
@@ -127,10 +127,42 @@ func TestProjectScopesResourcesByAuthority(t *testing.T) {
 	})
 }
 
-func keysOf[V any](m map[string]V) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+// TestProjectSurfacesCollidingAuthorities proves the P2 reshape: when
+// two principals publish byte-identical content, the listing projection
+// no longer collapses to a single lowest-publisher winner. An admin
+// sees BOTH (authority, name) publications, order-independently, and a
+// tenant still sees only its own under the shared content hash.
+func TestProjectSurfacesCollidingAuthorities(t *testing.T) {
+	lo, hi := key(1), key(2)
+	require.True(t, lo.Compare(hi) < 0)
+	forward := []state.WorkloadSpecView{
+		{Spec: state.WorkloadSpec{Hash: "shared", Name: "a"}, Publisher: lo},
+		{Spec: state.WorkloadSpec{Hash: "shared", Name: "b"}, Publisher: hi},
+	}
+	reversed := []state.WorkloadSpecView{forward[1], forward[0]}
+
+	for _, order := range [][]state.WorkloadSpecView{forward, reversed} {
+		snap := state.Snapshot{SpecsAll: order}
+
+		admin := view.Project(snap, view.LensFor(grant(key(9), true)))
+		require.Len(t, admin.Workloads, 2)
+		got := map[types.PeerKey]string{}
+		for _, w := range admin.Workloads {
+			got[w.Publisher] = w.Spec.Name
+		}
+		require.Equal(t, map[types.PeerKey]string{lo: "a", hi: "b"}, got)
+
+		hiOwn := view.Project(snap, view.LensFor(grant(hi, false)))
+		require.Len(t, hiOwn.Workloads, 1)
+		require.Equal(t, hi, hiOwn.Workloads[0].Publisher)
+		require.Equal(t, "b", hiOwn.Workloads[0].Spec.Name)
+	}
+}
+
+func pluck[T any](xs []T, key func(T) string) []string {
+	out := make([]string, 0, len(xs))
+	for _, x := range xs {
+		out = append(out, key(x))
 	}
 	return out
 }
