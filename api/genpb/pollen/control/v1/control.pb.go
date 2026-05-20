@@ -835,6 +835,7 @@ type CertInfo struct {
 	Attributes        *structpb.Struct       `protobuf:"bytes,9,opt,name=attributes,proto3" json:"attributes,omitempty"`
 	CanPublish        bool                   `protobuf:"varint,10,opt,name=can_publish,json=canPublish,proto3" json:"can_publish,omitempty"`
 	Denied            bool                   `protobuf:"varint,11,opt,name=denied,proto3" json:"denied,omitempty"`
+	IsWorkspaceAdmin  bool                   `protobuf:"varint,12,opt,name=is_workspace_admin,json=isWorkspaceAdmin,proto3" json:"is_workspace_admin,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -935,6 +936,13 @@ func (x *CertInfo) GetCanPublish() bool {
 func (x *CertInfo) GetDenied() bool {
 	if x != nil {
 		return x.Denied
+	}
+	return false
+}
+
+func (x *CertInfo) GetIsWorkspaceAdmin() bool {
+	if x != nil {
+		return x.IsWorkspaceAdmin
 	}
 	return false
 }
@@ -3972,7 +3980,7 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\x05addrs\x18\x02 \x03(\tR\x05addrs\"V\n" +
 	"\x18GetBootstrapInfoResponse\x12:\n" +
 	"\x05peers\x18\x01 \x03(\v2$.pollen.control.v1.BootstrapPeerInfoR\x05peers\"\x12\n" +
-	"\x10GetStatusRequest\"\x9c\x03\n" +
+	"\x10GetStatusRequest\"\xca\x03\n" +
 	"\bCertInfo\x12&\n" +
 	"\x0fnot_before_unix\x18\x01 \x01(\x03R\rnotBeforeUnix\x12.\n" +
 	"\x13grant_deadline_unix\x18\x02 \x01(\x03R\x11grantDeadlineUnix\x12\x16\n" +
@@ -3987,7 +3995,8 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\vcan_publish\x18\n" +
 	" \x01(\bR\n" +
 	"canPublish\x12\x16\n" +
-	"\x06denied\x18\v \x01(\bR\x06deniedJ\x04\b\b\x10\tR\x14access_deadline_unix\"\xb8\x04\n" +
+	"\x06denied\x18\v \x01(\bR\x06denied\x12,\n" +
+	"\x12is_workspace_admin\x18\f \x01(\bR\x10isWorkspaceAdminJ\x04\b\b\x10\tR\x14access_deadline_unix\"\xb8\x04\n" +
 	"\x11GetStatusResponse\x122\n" +
 	"\x04self\x18\x01 \x01(\v2\x1e.pollen.control.v1.NodeSummaryR\x04self\x124\n" +
 	"\x05nodes\x18\x02 \x03(\v2\x1e.pollen.control.v1.NodeSummaryR\x05nodes\x12=\n" +

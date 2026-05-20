@@ -82,6 +82,11 @@
     </div>
     <p>For port collisions, change the listening port: <code>pln up --port 60612</code> (foreground) or edit the service unit. For ownership, run <code>sudo chown -R pln:pln /var/lib/pln</code> on Linux. For a grant past its deadline, see <a href="#cert-expired">Access expired or node degraded</a>.</p>
 
+    <h2 id="peer-invisible">A peer or resource doesn't appear in <code>pln status</code></h2>
+    <p><strong>Symptom.</strong> Another tenant's workload, or another tenant's node, is missing from your view of the cluster even though the cluster is healthy.</p>
+    <p><strong>Cause.</strong> Visibility is scoped to the caller's authority within the delegation tree. You see your own resources, your workspace peers (other grants under the same nearest <code>--workspace</code> ancestor), and your subtree. A grant with no workspace-admin in its chain sits in its own isolated lens by default.</p>
+    <p><strong>Fix.</strong> If two tenants need to see each other, mint them under a shared workspace-admin so they share a workspace boundary. The cluster admin can verify what each tenant sees by impersonating the projection layer; from the admin lens everything is visible. See <a href="how-to.html#workspace">Isolate tenants in workspaces</a> and <a href="concepts.html#scoped-status">What you can see</a>.</p>
+
     <h2 id="peer-offline">A peer shows offline that should be online</h2>
     <p><strong>Symptom.</strong></p>
     <div class="terminal">

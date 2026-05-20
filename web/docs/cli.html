@@ -277,13 +277,14 @@ pln fetch ab12cd34 -</code></pre>
     </div>
 
     <h3 id="invite"><code>pln invite [subject-pub]</code></h3>
-    <p>Mint a signed invite token. Pass to <code>pln join</code>. Requires admin capability on the issuing node. The default tier is leaf (consume only); pass <code>--publisher</code> or <code>--admin</code> to widen. The token is printed raw with no trailing newline, so it pipes cleanly.</p>
+    <p>Mint a signed invite token. Pass to <code>pln join</code>. Requires admin capability on the issuing node. The default tier is leaf (consume only); pass <code>--publisher</code>, <code>--workspace</code> or <code>--admin</code> to widen. The token is printed raw with no trailing newline, so it pipes cleanly.</p>
     <dl class="flags">
       <dt>--subject &lt;hex&gt;</dt><dd>Bind to a specific node public key. Without it, the token admits any node.</dd>
       <dt>--ttl &lt;dur&gt;</dt><dd>Token validity (default 5m).</dd>
       <dt>--expire-after &lt;dur&gt;</dt><dd>Override the deadline on the issued grant (the point past which the node cannot rejoin on its own). Delegated grants default to a 30-day deadline.</dd>
       <dt>--publisher</dt><dd>Mint the joiner's grant with publisher capability so it can publish workloads, blobs, services, and static sites.</dd>
-      <dt>--admin</dt><dd>Mint the joiner's grant with admin capabilities (delegate, admit, publish). The issuer must itself be admin-capable. Mutually exclusive with <code>--publisher</code>.</dd>
+      <dt>--workspace</dt><dd>Mint the joiner's grant as a workspace-admin: founds a workspace, may delegate within it, sees its chain ancestors and its own subtree. Mutually exclusive with <code>--publisher</code> and <code>--admin</code>.</dd>
+      <dt>--admin</dt><dd>Mint the joiner's grant with admin capabilities (delegate, admit, publish, cluster-wide visibility). The issuer must itself be admin-capable. Mutually exclusive with <code>--publisher</code> and <code>--workspace</code>.</dd>
       <dt>--prop key=val</dt><dd>Properties baked into the joining peer's grant. Repeatable; accepts <code>key=value</code>, a JSON object, or <code>-</code> to read JSON from stdin.</dd>
       <dt>--max-functions &lt;n&gt;</dt><dd>Cap on workloads the joining peer may publish. Default 0 (no cap).</dd>
       <dt>--max-blobs &lt;n&gt;</dt><dd>Cap on blobs the joining peer may publish. Default 0 (no cap).</dd>
@@ -298,7 +299,8 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
     <p>Re-grant a connected peer with fresh capabilities. Identify by peer-id prefix. Default tier is leaf. A delegated grant carries a deadline (default 30 days) and renews itself automatically before then; admin grants carry no deadline. The admin mints the grant and pushes it to the peer over the existing mesh connection; the peer verifies, swaps in its own credentials, and gossips the new grant with its own subject signature. Capabilities a peer loses in the process trigger automatic tombstones of any resources the peer had published under those kinds.</p>
     <dl class="flags">
       <dt>--publisher</dt><dd>Grant publisher capability so the peer can publish resources.</dd>
-      <dt>--admin</dt><dd>Delegate admin authority (so the cluster keeps working with root offline). Mutually exclusive with <code>--publisher</code>.</dd>
+      <dt>--workspace</dt><dd>Promote to workspace-admin: the peer founds a workspace it may delegate within and sees its chain ancestors plus its own subtree. Mutually exclusive with <code>--publisher</code> and <code>--admin</code>.</dd>
+      <dt>--admin</dt><dd>Delegate admin authority (so the cluster keeps working with root offline). Mutually exclusive with <code>--publisher</code> and <code>--workspace</code>.</dd>
       <dt>--prop key=value</dt><dd>Grant properties. Repeatable.</dd>
       <dt>--max-functions &lt;n&gt;</dt><dd>Cap on workloads the peer may publish. Default 0 (no cap).</dd>
       <dt>--max-blobs &lt;n&gt;</dt><dd>Cap on blobs the peer may publish. Default 0 (no cap).</dd>
@@ -336,7 +338,8 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
     <p>Install Pollen, enrol, and start the daemon on each SSH target in parallel. Linux only. Needs SSH as root or with passwordless sudo. Targets may also be piped from stdin (one per line) using <code>-</code>.</p>
     <dl class="flags">
       <dt>--publisher</dt><dd>Issue publisher capability to every enrolled node.</dd>
-      <dt>--admin</dt><dd>Delegate admin authority to every enrolled node. Mutually exclusive with <code>--publisher</code>.</dd>
+      <dt>--workspace</dt><dd>Issue workspace-admin capability to every enrolled node. Mutually exclusive with <code>--publisher</code> and <code>--admin</code>.</dd>
+      <dt>--admin</dt><dd>Delegate admin authority to every enrolled node. Mutually exclusive with <code>--publisher</code> and <code>--workspace</code>.</dd>
       <dt>--prop key=val</dt><dd>Properties baked into every enrolled node's grant. Repeatable; accepts <code>key=value</code>, a JSON object, or <code>-</code> to read JSON from stdin.</dd>
       <dt>--relay-port &lt;n&gt;</dt><dd>Relay UDP port to advertise (default 60611).</dd>
       <dt>--expire-after &lt;dur&gt;</dt><dd>Override the deadline on every issued grant. Delegated grants default to a 30-day deadline.</dd>
@@ -359,7 +362,7 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
       <dt>--wide</dt><dd>Full peer IDs, plus per-peer metrics (CPU, memory, latency, throughput).</dd>
       <dt>--include-offline</dt><dd>Include offline peers, services, and orphaned blobs.</dd>
     </dl>
-    <p>The header shows two chips: cluster <em>health</em> (HEALTHY / DEGRADED / UNHEALTHY) and the local node's <em>capability tier</em> (ADMIN / PUBLISHER / LEAF). The tier reflects what this node can do; commands that require a higher tier (e.g. <a href="#grant"><code>pln grant</code></a>) fail with a clear error when invoked from below it.</p>
+    <p>The header shows two chips: cluster <em>health</em> (HEALTHY / DEGRADED / UNHEALTHY) and the local node's <em>capability tier</em> (ADMIN / WORKSPACE / PUBLISHER / LEAF). The tier reflects what this node can do; commands that require a higher tier (e.g. <a href="#grant"><code>pln grant</code></a>) fail with a clear error when invoked from below it.</p>
     <div class="terminal">
       <span class="cmd">pln status</span>
       <span class="out">HEALTHY  PUBLISHER</span>

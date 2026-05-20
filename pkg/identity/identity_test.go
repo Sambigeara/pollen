@@ -189,6 +189,11 @@ func TestIssueGrantChildCannotExceedParent(t *testing.T) {
 		identity.UnlimitedBudget(), now, now.Add(time.Hour))
 	require.ErrorContains(t, err, "CanAdmit")
 
+	_, err = identity.IssueGrant(rnPriv, parent, subPub,
+		&identityv1.Capabilities{IsWorkspaceAdmin: true, Publish: &identityv1.PublishCapability{}},
+		identity.UnlimitedBudget(), now, now.Add(time.Hour))
+	require.ErrorContains(t, err, "IsWorkspaceAdmin")
+
 	// Within bounds: allowed, and the horizon clamps to the parent's.
 	ok, err := identity.IssueGrant(rnPriv, parent, subPub,
 		&identityv1.Capabilities{Publish: &identityv1.PublishCapability{Sites: true}},

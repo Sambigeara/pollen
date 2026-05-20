@@ -96,14 +96,20 @@ func (x *PublishCapability) GetServices() bool {
 }
 
 type Capabilities struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CanDelegate   bool                   `protobuf:"varint,1,opt,name=can_delegate,json=canDelegate,proto3" json:"can_delegate,omitempty"`
-	CanAdmit      bool                   `protobuf:"varint,2,opt,name=can_admit,json=canAdmit,proto3" json:"can_admit,omitempty"`
-	MaxDepth      uint32                 `protobuf:"varint,3,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
-	Attributes    *structpb.Struct       `protobuf:"bytes,4,opt,name=attributes,proto3" json:"attributes,omitempty"`
-	Publish       *PublishCapability     `protobuf:"bytes,5,opt,name=publish,proto3" json:"publish,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	CanDelegate bool                   `protobuf:"varint,1,opt,name=can_delegate,json=canDelegate,proto3" json:"can_delegate,omitempty"`
+	CanAdmit    bool                   `protobuf:"varint,2,opt,name=can_admit,json=canAdmit,proto3" json:"can_admit,omitempty"`
+	MaxDepth    uint32                 `protobuf:"varint,3,opt,name=max_depth,json=maxDepth,proto3" json:"max_depth,omitempty"`
+	Attributes  *structpb.Struct       `protobuf:"bytes,4,opt,name=attributes,proto3" json:"attributes,omitempty"`
+	Publish     *PublishCapability     `protobuf:"bytes,5,opt,name=publish,proto3" json:"publish,omitempty"`
+	// is_workspace_admin marks this grant as the operator of a workspace:
+	// a delegation-tree boundary inside which member grants see each
+	// other. The grant's subtree is the workspace. Workspace-admins also
+	// see their chain ancestors (operational context) and may delegate
+	// further workspace-admins and publishers beneath them.
+	IsWorkspaceAdmin bool `protobuf:"varint,6,opt,name=is_workspace_admin,json=isWorkspaceAdmin,proto3" json:"is_workspace_admin,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Capabilities) Reset() {
@@ -169,6 +175,13 @@ func (x *Capabilities) GetPublish() *PublishCapability {
 		return x.Publish
 	}
 	return nil
+}
+
+func (x *Capabilities) GetIsWorkspaceAdmin() bool {
+	if x != nil {
+		return x.IsWorkspaceAdmin
+	}
+	return false
 }
 
 type Budget struct {
@@ -828,7 +841,7 @@ const file_pollen_identity_v1_identity_proto_rawDesc = "" +
 	"\tfunctions\x18\x01 \x01(\bR\tfunctions\x12\x14\n" +
 	"\x05blobs\x18\x02 \x01(\bR\x05blobs\x12\x14\n" +
 	"\x05sites\x18\x03 \x01(\bR\x05sites\x12\x1a\n" +
-	"\bservices\x18\x04 \x01(\bR\bservices\"\xed\x01\n" +
+	"\bservices\x18\x04 \x01(\bR\bservices\"\x9b\x02\n" +
 	"\fCapabilities\x12!\n" +
 	"\fcan_delegate\x18\x01 \x01(\bR\vcanDelegate\x12\x1b\n" +
 	"\tcan_admit\x18\x02 \x01(\bR\bcanAdmit\x12\x1b\n" +
@@ -836,7 +849,8 @@ const file_pollen_identity_v1_identity_proto_rawDesc = "" +
 	"\n" +
 	"attributes\x18\x04 \x01(\v2\x17.google.protobuf.StructR\n" +
 	"attributes\x12G\n" +
-	"\apublish\x18\x05 \x01(\v2%.pollen.identity.v1.PublishCapabilityB\x06\xbaH\x03\xc8\x01\x01R\apublish\"\x97\x01\n" +
+	"\apublish\x18\x05 \x01(\v2%.pollen.identity.v1.PublishCapabilityB\x06\xbaH\x03\xc8\x01\x01R\apublish\x12,\n" +
+	"\x12is_workspace_admin\x18\x06 \x01(\bR\x10isWorkspaceAdmin\"\x97\x01\n" +
 	"\x06Budget\x12#\n" +
 	"\rmax_functions\x18\x01 \x01(\rR\fmaxFunctions\x12\x1b\n" +
 	"\tmax_blobs\x18\x02 \x01(\rR\bmaxBlobs\x12\x1b\n" +

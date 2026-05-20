@@ -390,6 +390,54 @@ caps:     delegate=false admit=false publish=true max_depth=0</span>
 
     <p><strong>Related:</strong> <a href="concepts.html#authorisation">Admission</a>, <a href="cli.html#grant"><code>pln grant</code></a>, <a href="troubleshoot.html#budget-exhausted">budget exhausted</a>.</p>
 
+    <h2 id="workspace">Isolate tenants in workspaces</h2>
+    <p>A workspace is a boundary in the delegation tree: grants inside the same workspace see each other and may operate on each other's resources; grants in sibling workspaces stay invisible to each other. Use it when one cluster hosts multiple tenants that must not see each other's workloads, sites or blobs.</p>
+
+    <ol class="steps">
+      <li>
+        <h3>Create the workspace</h3>
+        <p>From an admin node, mint a workspace-admin grant for the tenant. The peer founds the workspace and may delegate publishers beneath it.</p>
+        <div class="terminal">
+          <span class="cmd">pln grant tenant-a --workspace --max-functions 10 --max-blobs 50 --max-sites 2</span>
+          <span class="out">upgraded tenant-a (44a13d80) → workspace</span>
+        </div>
+        <p>The same flag is accepted by <a href="cli.html#invite"><code>pln invite --workspace</code></a> at enrolment for a tenant who has not joined yet.</p>
+      </li>
+      <li>
+        <h3>Add publishers inside the workspace</h3>
+        <p>From the tenant's own daemon (over SSH or its own machine), provision publishers under it. They inherit the workspace boundary.</p>
+        <div class="terminal">
+          <span class="cmd">ssh tenant-a-host pln grant alice --publisher</span>
+          <span class="out">upgraded alice (a1b2c3d4) → publisher</span>
+          <span class="cmd">ssh tenant-a-host pln grant bob --publisher</span>
+          <span class="out">upgraded bob (b0b1b2b3) → publisher</span>
+        </div>
+      </li>
+      <li>
+        <h3>Verify</h3>
+        <p>From alice, <code>pln status</code> shows alice, bob and tenant-a (chain ancestor), and nothing from sibling workspaces or the broader cluster. From the cluster admin the same command lists every node.</p>
+        <div class="terminal">
+          <span class="cmd">PLN_CONTEXT=alice pln status nodes</span>
+          <span class="out">HEALTHY  PUBLISHER</span>
+          <span class="out">context: alice</span>
+          <span class="out"></span>
+          <span class="out">PEERS</span>
+          <span class="out">NODE             STATUS           ADDR                CPUs  CPU  MEM  TUNNELS  LATENCY  IN  OUT</span>
+          <span class="out">a1b2c3d4 (self)  -                -                   -     -    -    -        -        -   -</span>
+          <span class="out">44a13d80         direct (public)  198.51.100.10:60611 -     -    -    -        12ms     0   0</span>
+          <span class="out">b0b1b2b3         direct (public)  198.51.100.20:60611 -     -    -    -        14ms     0   0</span>
+          <span class="cmd">PLN_CONTEXT=tenant-a pln status</span>
+          <span class="out">HEALTHY  WORKSPACE</span>
+          <span class="out">context: tenant-a</span>
+          <span class="cmd">PLN_CONTEXT=admin pln status nodes | grep -c "^[0-9a-f]"</span>
+          <span class="out">5</span>
+        </div>
+        <p>Alice's lens lists three peers (alice, bob, tenant-a) and redacts host telemetry. The tenant-a lens shows the WORKSPACE chip and sees the same subtree plus the chain up to root. The admin lens enumerates every node in the cluster regardless of workspace. The row count is the load-bearing signal: a workspace member should never see the headcount the admin sees.</p>
+      </li>
+    </ol>
+
+    <p><strong>Related:</strong> <a href="concepts.html#grants">Grants and tiers</a>, <a href="concepts.html#scoped-status">What you can see</a>, <a href="cli.html#grant"><code>pln grant</code></a>.</p>
+
     <h2 id="revoke-peer">Revoke a peer</h2>
     <p>Tear down a peer's connections and put it on the deny set so it can't rejoin without a fresh grant.</p>
 

@@ -230,7 +230,7 @@ func renderNodeDetail(w io.Writer, detail *controlv1.NodeDetail, st *controlv1.G
 		renderKV(w, "addr", addr)
 	}
 	if cert := detail.GetCert(); cert != nil {
-		renderKV(w, "tier", inspectTierChip(cert.GetCanAdmit(), cert.GetCanPublish()))
+		renderKV(w, "tier", inspectTierChip(cert.GetCanAdmit(), cert.GetIsWorkspaceAdmin(), cert.GetCanPublish()))
 		if line := inspectMembershipLine(cert); line != "" {
 			renderKV(w, "membership", line)
 		}
@@ -339,10 +339,12 @@ func inspectStatusLabel(summary *controlv1.NodeSummary, isSelf bool) string {
 	return label
 }
 
-func inspectTierChip(canAdmit, canPublish bool) string {
-	switch tierLabel(canAdmit, canPublish) {
+func inspectTierChip(canAdmit, isWorkspaceAdmin, canPublish bool) string {
+	switch tierLabel(canAdmit, isWorkspaceAdmin, canPublish) {
 	case tierAdmin:
 		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5")).Render("ADMIN")
+	case tierWorkspace:
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Render("WORKSPACE")
 	case tierPublisher:
 		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Render("PUBLISHER")
 	case tierLeaf:

@@ -92,30 +92,28 @@
     <h2 id="grants">Grants: your authority, and how it stays fresh offline</h2>
     <p>A grant is a signed, gossiped, revocable credential. It says who a key is, what it may do, how much it may publish, and until when. Every grant traces back to the root key created by <code>pln init</code>, through a chain of delegations. A child grant can never hold more than the grant that issued it; that subset rule is enforced when the grant is minted and re-checked every time it is verified.</p>
 
-    <h3>Three tiers</h3>
-    <p>The ergonomic surface is three tiers. Pick the smallest that does the job.</p>
+    <h3>Four tiers</h3>
+    <p>The ergonomic surface is four tiers. Pick the smallest that does the job.</p>
     <ul>
       <li><strong>Leaf</strong> (default): can call workloads and connect to services. Cannot publish, cannot delegate.</li>
       <li><strong>Publisher</strong> (<code>--publisher</code>): can publish workloads, services, blobs, and static sites. Cannot delegate further.</li>
-      <li><strong>Admin</strong> (<code>--admin</code>): everything a publisher can do, plus admit and grant new peers. Only the root admin can mint other admins.</li>
+      <li><strong>Workspace-admin</strong> (<code>--workspace</code>): founds a workspace and operates inside it. Holds delegate authority and full publish capability bounded to that workspace, sees its chain ancestors and its own subtree, but does not see siblings or other tenants. The workspace is the subtree of grants the workspace-admin and its descendants form.</li>
+      <li><strong>Admin</strong> (<code>--admin</code>): everything below plus cluster-wide reach: admit and grant new peers anywhere, and see every workload, site, blob and node. Only the root admin can mint other admins.</li>
     </ul>
     <p>Under the tier the grant carries fine-grained per-kind publish capability (workloads, services, blobs, sites separately) and an optional count budget. Set the budget with <code>--max-functions</code>, <code>--max-blobs</code>, and <code>--max-sites</code> on <code>pln invite</code> at enrolment, or on <code>pln grant</code> for a connected peer; a tenant cannot publish more of a kind than its budget allows, and an unset budget means no limit.</p>
 
-    <div class="diagram">                       [ root (admin) ]
-                              |
-                              |  delegates
-                              |
-              +---------------+---------------+
-              |                               |
-         [ admin-A ]                   [ publisher-A ]
-              |                              (CI box)
-              |  grants
-              |
-       +------+------+
-       |             |
-  [ publisher-B ]  [ leaf-A ]
-   role=engineer    role=viewer
-   team=backend     team=ops</div>
+    <div class="diagram">root (admin)
+  |
+  +-- tenant-A (--workspace)
+  |     |
+  |     +-- alice (--publisher)   role=engineer team=backend
+  |     +-- bob   (--publisher)   role=viewer   team=ops
+  |
+  +-- tenant-B (--workspace)
+        |
+        +-- user-1 (--publisher)  role=engineer</div>
+
+    <p>Visibility follows the tree. Two peers see each other only when one is the other's delegation ancestor, or when both share the same nearest workspace. In the diagram, alice and bob see each other (both publishers under tenant-A) but neither reaches user-1. tenant-A sees its own subtree and root; tenant-B's interior is opaque to it.</p>
 
     <p>The grant tree lives on the gossiped CRDT, so every node can independently verify any grant. Revocation works through a deny set on the same document, and it is chain-aware: deny an admin and every grant whose chain runs through it fails at once, cluster-wide. The CRDT propagates a revocation the same way it propagates everything else.</p>
 
@@ -190,13 +188,15 @@ pln serve 8080 ops --allow-prop tier=privileged</code></pre>
     <p class="aside">Recipes: <a href="how-to.html#restrict-access">Restrict who can call a workload</a> and <a href="how-to.html#set-budget">Cap what a tenant can publish</a>. Symptoms: <a href="troubleshoot.html#publish-denied">publish refused</a>, <a href="troubleshoot.html#call-denied">call denied</a>, <a href="troubleshoot.html#budget-exhausted">budget exhausted</a>.</p>
 
     <h2 id="scoped-status">What you can see</h2>
-    <p><code>pln status</code> answers one question: what does my authority let me see. The answer is projected through the caller's own identity, and it is the same whichever node you dialled.</p>
+    <p><code>pln status</code> answers one question: what does my authority let me see. The answer is projected through the caller's own identity, and it is the same whichever node you dialled. The rule is one sentence: you always see your own resources, and beyond that what you see depends on your tier.</p>
     <ul>
       <li><strong>An admin</strong> sees everything: every workload, site, blob, and every node in the cluster.</li>
-      <li><strong>A tenant</strong> sees only its own workloads, sites, and blobs, and only the nodes that hold or run one of them. It never sees the serving node's view, other tenants' resources, or unrelated nodes.</li>
+      <li><strong>A workspace-admin</strong> sees its chain ancestors and its own subtree, transparent through any sub-workspaces nested beneath it. It does not see siblings or sibling workspaces.</li>
+      <li><strong>A publisher</strong> sees its workspace peers (other grants under the same nearest workspace-admin). It does not see ancestors above the workspace, sibling workspaces, or unrelated nodes.</li>
       <li><strong>An unidentified caller</strong> sees nothing.</li>
     </ul>
     <p>A wire-mode tenant is not a mesh node, so its status header shows its own identity and its own grant's deadline, never the credential of the daemon it dialled. The serving node's identity is never the lens.</p>
+    <p>A grant with no workspace-admin anywhere in its chain has no workspace, so the workspace-peers rule never matches: two such grants stay isolated to themselves by default. Provision <code>--workspace</code> grants to draw boundaries deliberately.</p>
 
     <p class="aside">See the <a href="cli.html#status"><code>pln status</code></a> and <a href="cli.html#inspect"><code>pln inspect</code></a> references.</p>
 

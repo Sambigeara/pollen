@@ -802,6 +802,8 @@ func renderStatusHeader(w io.Writer, m *controlv1.GetMetricsResponse, certs []*c
 	switch localTier(certs) {
 	case tierAdmin:
 		tierStr, tierColor = "ADMIN", lipgloss.Color("5")
+	case tierWorkspace:
+		tierStr, tierColor = "WORKSPACE", lipgloss.Color("4")
 	case tierPublisher:
 		tierStr, tierColor = "PUBLISHER", lipgloss.Color("6")
 	case tierLeaf:
@@ -833,15 +835,35 @@ func renderStatusHeader(w io.Writer, m *controlv1.GetMetricsResponse, certs []*c
 func localTier(certs []*controlv1.CertInfo) string {
 	best := ""
 	for _, c := range certs {
-		t := tierLabel(c.GetCanAdmit(), c.GetCanPublish())
-		if t == tierAdmin {
-			return t
-		}
-		if best == "" || (t == tierPublisher && best == tierLeaf) {
+		t := tierLabel(c.GetCanAdmit(), c.GetIsWorkspaceAdmin(), c.GetCanPublish())
+		if tierRank(t) > tierRank(best) {
 			best = t
 		}
 	}
 	return best
+}
+
+// Tier ranks order localTier's pick from leaf (lowest) to admin
+// (highest); a higher rank wins when a node holds multiple grants.
+const (
+	tierLeafRank = iota
+	tierPublisherRank
+	tierWorkspaceRank
+	tierAdminRank
+)
+
+func tierRank(t string) int {
+	switch t {
+	case tierAdmin:
+		return tierAdminRank
+	case tierWorkspace:
+		return tierWorkspaceRank
+	case tierPublisher:
+		return tierPublisherRank
+	case tierLeaf:
+		return tierLeafRank
+	}
+	return -1
 }
 
 func statusContextLabel(defaultDir string) string {

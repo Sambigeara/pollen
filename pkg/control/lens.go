@@ -44,14 +44,15 @@ func (s *Service) operatorRequest(ctx context.Context, lens view.Lens) bool {
 	return lens.Admin() || isLocalCallerCtx(ctx)
 }
 
-// authoriseOwnership rejects non-admin callers who are not the
-// resource's publisher. Admins bypass the check. Callers resolve the
-// single authority that owns the resource being acted on first: an
-// exposed service has one local owner, and a publication unpublish
-// only ever tombstones this node's own (authority, key) register, so
-// there is exactly one publisher to authorise against.
-func (s *Service) authoriseOwnership(ctx context.Context, publisher types.PeerKey) error {
-	if s.callerPrincipal(ctx).Permits(publisher) {
+// authoriseOwnership rejects callers the cluster visibility rule does
+// not let act on publisher's resources. The rule lives in view.Permits;
+// this is the gate that funnels every mutation through it. Callers
+// resolve the single authority that owns the resource being acted on
+// first: an exposed service has one local owner, and a publication
+// unpublish only ever tombstones this node's own (authority, key)
+// register, so there is exactly one publisher to authorise against.
+func (s *Service) authoriseOwnership(ctx context.Context, snap state.Snapshot, publisher types.PeerKey) error {
+	if view.Permits(s.callerPrincipal(ctx), publisher, snap) {
 		return nil
 	}
 	return status.Error(codes.PermissionDenied, "caller is not the resource publisher")
@@ -89,5 +90,5 @@ func (s *Service) authoriseUnpublish(ctx context.Context, snap state.Snapshot, k
 	if !published {
 		return nil
 	}
-	return s.authoriseOwnership(ctx, s.localPeerKey())
+	return s.authoriseOwnership(ctx, snap, s.localPeerKey())
 }

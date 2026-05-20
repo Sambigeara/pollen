@@ -158,15 +158,20 @@ original caller.
 
 ### Grant capabilities
 
-Pollen has three tiers. Pick the smallest that does the job.
+Pollen has four tiers. Pick the smallest that does the job.
 
 - **Leaf** (default): can call workloads and connect to services. Cannot publish, cannot delegate.
 - **Publisher** (`--publisher`): can publish workloads, services, blobs, and static sites. Cannot delegate further.
-- **Admin** (`--admin`): everything publisher can do, plus admit and grant new peers. Only the root admin can mint other admins.
+- **Workspace-admin** (`--workspace`): founds a workspace and operates inside it. Holds delegate authority and full publish capability bounded to that workspace; sees its chain ancestors and own subtree but not siblings or other tenants.
+- **Admin** (`--admin`): cluster-wide. Everything below plus admit and grant new peers anywhere; sees every workload, site, blob and node. Only the root admin can mint other admins.
 
 ```bash
 # Grant publisher capability to an existing peer:
 pln grant <peer-id> --publisher
+
+# Promote to a workspace-admin for multi-tenant isolation; the peer
+# may delegate publishers under it inside its workspace boundary:
+pln grant <peer-id> --workspace
 
 # Delegate admin authority; useful for keeping the mesh operable
 # (admissions, grant renewals) with the root node offline:

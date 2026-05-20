@@ -217,7 +217,8 @@ func TestMatchBlobArg_NamePreferredOverPrefix(t *testing.T) {
 }
 
 func TestLocalTier(t *testing.T) {
-	admin := &controlv1.CertInfo{CanAdmit: true, CanDelegate: true, CanPublish: true}
+	admin := &controlv1.CertInfo{CanAdmit: true, CanDelegate: true, CanPublish: true, IsWorkspaceAdmin: true}
+	workspace := &controlv1.CertInfo{IsWorkspaceAdmin: true, CanDelegate: true, CanPublish: true}
 	publisher := &controlv1.CertInfo{CanPublish: true}
 	leaf := &controlv1.CertInfo{}
 
@@ -229,10 +230,12 @@ func TestLocalTier(t *testing.T) {
 		{"no certs", nil, ""},
 		{"leaf only", []*controlv1.CertInfo{leaf}, "leaf"},
 		{"publisher only", []*controlv1.CertInfo{publisher}, "publisher"},
+		{"workspace only", []*controlv1.CertInfo{workspace}, "workspace"},
 		{"admin only", []*controlv1.CertInfo{admin}, "admin"},
 		{"publisher beats leaf", []*controlv1.CertInfo{leaf, publisher}, "publisher"},
-		{"admin beats publisher", []*controlv1.CertInfo{publisher, admin}, "admin"},
-		{"admin beats all, order-insensitive", []*controlv1.CertInfo{leaf, admin, publisher}, "admin"},
+		{"workspace beats publisher", []*controlv1.CertInfo{publisher, workspace}, "workspace"},
+		{"admin beats workspace", []*controlv1.CertInfo{workspace, admin}, "admin"},
+		{"admin beats all, order-insensitive", []*controlv1.CertInfo{leaf, admin, workspace, publisher}, "admin"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

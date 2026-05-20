@@ -97,6 +97,7 @@ Pass --no-up to skip starting the local daemon after bootstrapping.`,
 	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
 	sshCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the relay peer")
 	sshCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
+	sshCmd.Flags().Bool("workspace", false, workspaceFlagDesc)
 	sshCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
 	sshCmd.Flags().Bool("no-up", false, "Skip starting the local daemon after bootstrapping")
 	sshCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin (applied to every target)")
@@ -155,6 +156,7 @@ further grants.`,
 	inviteCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the invited peer")
 	inviteCmd.Flags().StringArray("prop", nil, "Grant properties: key=value, JSON, or - for stdin")
 	inviteCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
+	inviteCmd.Flags().Bool("workspace", false, workspaceFlagDesc)
 	inviteCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
 	inviteCmd.Flags().Uint32("max-functions", 0, "Max functions the grantee may publish (0 = unlimited)")
 	inviteCmd.Flags().Uint32("max-blobs", 0, "Max blobs the grantee may publish (0 = unlimited)")
@@ -182,6 +184,7 @@ policy router.`,
 		RunE:    withEnv(runGrant),
 	}
 	grantCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
+	grantCmd.Flags().Bool("workspace", false, workspaceFlagDesc)
 	grantCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
 	grantCmd.Flags().StringArray("prop", nil, "Grant properties: key=value, JSON, or - for stdin")
 	grantCmd.Flags().Uint32("max-functions", 0, "Max functions the grantee may publish (0 = unlimited)")
@@ -900,12 +903,15 @@ func issueUpgradeToken(cmd *cobra.Command, env *cliEnv, peerID []byte, peerShort
 
 const (
 	tierAdmin     = "admin"
+	tierWorkspace = "workspace"
 	tierPublisher = "publisher"
 	tierLeaf      = "leaf"
 )
 
+const workspaceFlagDesc = "Issue as a workspace-admin: founds a workspace, may delegate within it, sees its chain ancestors and own subtree"
+
 func capsTierLabel(caps *identityv1.Capabilities) string {
-	return tierLabel(caps.GetCanAdmit(), capsCanPublish(caps))
+	return tierLabel(caps.GetCanAdmit(), caps.GetIsWorkspaceAdmin(), capsCanPublish(caps))
 }
 
 func capsCanPublish(c *identityv1.Capabilities) bool {
@@ -913,10 +919,16 @@ func capsCanPublish(c *identityv1.Capabilities) bool {
 	return p.GetFunctions() || p.GetBlobs() || p.GetSites() || p.GetServices()
 }
 
-func tierLabel(canAdmit, canPublish bool) string {
+// tierLabel ranks roles top-down. Admin wins outright (cluster-wide
+// authority). A workspace-admin without admit becomes the workspace
+// tier. A grant that only carries publish caps is a publisher.
+// Everything else is a leaf.
+func tierLabel(canAdmit, isWorkspaceAdmin, canPublish bool) string {
 	switch {
 	case canAdmit:
 		return tierAdmin
+	case isWorkspaceAdmin:
+		return tierWorkspace
 	case canPublish:
 		return tierPublisher
 	default:
@@ -929,18 +941,29 @@ func parseProperties(cmd *cobra.Command) (*structpb.Struct, error) {
 	return parsePropertyValues(cmd, vals)
 }
 
-// capsFromFlags translates the --admin/--publisher flag pair plus parsed
-// attributes into a cert capability set. Mutually exclusive; default is leaf.
+// capsFromFlags translates the role-selecting flag triple
+// (--admin / --workspace / --publisher) plus parsed attributes into a
+// cert capability set. The three flags are mutually exclusive; default
+// is leaf.
 func capsFromFlags(cmd *cobra.Command, attrs *structpb.Struct) (*identityv1.Capabilities, error) {
 	admin, _ := cmd.Flags().GetBool("admin")
+	workspace, _ := cmd.Flags().GetBool("workspace")
 	publisher, _ := cmd.Flags().GetBool("publisher")
-	if admin && publisher {
-		return nil, errors.New("--admin and --publisher are mutually exclusive")
+	roles := 0
+	for _, set := range []bool{admin, workspace, publisher} {
+		if set {
+			roles++
+		}
+	}
+	if roles > 1 {
+		return nil, errors.New("--admin, --workspace and --publisher are mutually exclusive")
 	}
 	var caps *identityv1.Capabilities
 	switch {
 	case admin:
 		caps = identity.FullCapabilities()
+	case workspace:
+		caps = identity.WorkspaceCapabilities()
 	case publisher:
 		caps = identity.PublisherCapabilities()
 	default:
@@ -969,6 +992,9 @@ func budgetFromFlags(cmd *cobra.Command) *identityv1.Budget {
 func validateCapsAgainstSigner(requested, signerCaps *identityv1.Capabilities) error {
 	if requested.GetCanAdmit() && !signerCaps.GetCanAdmit() {
 		return errors.New("--admin requires admit capability")
+	}
+	if requested.GetIsWorkspaceAdmin() && !signerCaps.GetIsWorkspaceAdmin() {
+		return errors.New("--workspace requires workspace-admin capability")
 	}
 	if capsCanPublish(requested) && !capsCanPublish(signerCaps) {
 		return errors.New("--publisher requires publish capability")

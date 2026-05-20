@@ -121,7 +121,7 @@ func TestFillPublishedResources(t *testing.T) {
 	t.Run("admin sees the node's published resources", func(t *testing.T) {
 		d := &controlv1.NodeDetail{}
 		lens := lensFor(pk(9), true)
-		fillPublishedResources(d, view.Project(snap, lens), nv, nodeA, lens)
+		fillPublishedResources(snap, d, view.Project(snap, lens), nv, nodeA, lens)
 		require.Equal(t, []string{"svcA"}, d.GetPublishedServices())
 		require.Equal(t, []string{"wA"}, d.GetPublishedWorkloads())
 		require.Equal(t, []string{"sA"}, d.GetPublishedStatics())
@@ -131,7 +131,7 @@ func TestFillPublishedResources(t *testing.T) {
 	t.Run("other tenant sees none of them", func(t *testing.T) {
 		d := &controlv1.NodeDetail{}
 		lens := lensFor(tenantB, false)
-		fillPublishedResources(d, view.Project(snap, lens), nv, nodeA, lens)
+		fillPublishedResources(snap, d, view.Project(snap, lens), nv, nodeA, lens)
 		require.Empty(t, d.GetPublishedServices())
 		require.Empty(t, d.GetPublishedWorkloads())
 		require.Empty(t, d.GetPublishedStatics())
@@ -141,7 +141,7 @@ func TestFillPublishedResources(t *testing.T) {
 	t.Run("owning tenant sees its own", func(t *testing.T) {
 		d := &controlv1.NodeDetail{}
 		lens := lensFor(nodeA, false)
-		fillPublishedResources(d, view.Project(snap, lens), nv, nodeA, lens)
+		fillPublishedResources(snap, d, view.Project(snap, lens), nv, nodeA, lens)
 		require.Equal(t, []string{"svcA"}, d.GetPublishedServices())
 		require.Equal(t, []string{"wA"}, d.GetPublishedWorkloads())
 	})

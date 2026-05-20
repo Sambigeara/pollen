@@ -115,13 +115,11 @@ func (p Principal) CanDelegate() bool {
 	return p.Capabilities.GetCanDelegate()
 }
 
-// Permits reports whether this principal may see or mutate a resource
-// whose authority is publisher. An admin reaches the whole cluster; a
-// tenant reaches only its own facts; an unidentified caller reaches
-// nothing.
-func (p Principal) Permits(publisher types.PeerKey) bool {
-	if !p.valid {
-		return false
-	}
-	return p.Admin() || publisher == p.Subject()
+// IsWorkspaceAdmin reports whether the principal founds a workspace:
+// a delegation-tree boundary inside which member grants see each other.
+// A workspace-admin sees its chain ancestors and its own subtree
+// (transparent through nested workspaces) without reaching laterally
+// across the cluster. The full visibility rule lives in view.Permits.
+func (p Principal) IsWorkspaceAdmin() bool {
+	return p.Capabilities.GetIsWorkspaceAdmin()
 }

@@ -136,6 +136,7 @@ message CertInfo {
   google.protobuf.Struct attributes = 9;
   bool can_publish = 10;
   bool denied = 11;
+  bool is_workspace_admin = 12;
 }
 
 message GetStatusResponse {

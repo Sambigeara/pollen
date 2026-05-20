@@ -24,6 +24,12 @@ message Capabilities {
   uint32 max_depth = 3;
   google.protobuf.Struct attributes = 4;
   PublishCapability publish = 5 [(buf.validate.field).required = true];
+  // is_workspace_admin marks this grant as the operator of a workspace:
+  // a delegation-tree boundary inside which member grants see each
+  // other. The grant's subtree is the workspace. Workspace-admins also
+  // see their chain ancestors (operational context) and may delegate
+  // further workspace-admins and publishers beneath them.
+  bool is_workspace_admin = 6;
 }
 
 message Budget {

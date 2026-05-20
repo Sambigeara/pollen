@@ -30,10 +30,9 @@ func LensFor(grant *identityv1.Grant) Lens {
 // hold one entry per (authority, logical name) the lens may see, so a
 // tenant whose artefact or name collides with another's still appears
 // and an admin sees every colliding tenant distinctly. Nodes is the set
-// of nodes the lens may observe: every node for an admin, and for a
-// tenant only the nodes that hold at least one of the tenant's own facts
-// (its functions, sites or blobs), so node visibility stays coupled to
-// the caller's own authority.
+// of nodes the lens may observe, computed by Project as a union of
+// structural visibility (Permits over each node's grant) and the hosts
+// of any visible resource.
 type ScopedView struct {
 	Nodes     map[types.PeerKey]state.NodeView
 	Workloads []state.WorkloadSpecView
@@ -42,10 +41,14 @@ type ScopedView struct {
 	Lens      Lens
 }
 
-// Project filters snap through lens. Resource visibility is by authority
-// equality; node visibility for a tenant is the union of the peers that
-// store or run the tenant's own facts, which is exactly what the
-// snapshot's storing-peer and claim indices already track.
+// Project filters snap through lens. Resource visibility is by the
+// cluster visibility rule (see Permits). Node visibility is the union
+// of two sets: nodes whose grant the lens sees structurally (chain,
+// subtree, workspace peers), plus nodes that store or run any
+// visible resource. The first set keeps every member of the lens's
+// workspace visible even before any deployment lands; the second
+// keeps any host of a visible workload in view even when that host
+// sits outside the workspace.
 func Project(snap state.Snapshot, lens Lens) ScopedView {
 	sv := ScopedView{Lens: lens}
 	// Iterate the un-deduped per-(authority,name) publication sources,
@@ -58,17 +61,17 @@ func Project(snap state.Snapshot, lens Lens) ScopedView {
 	// own; (authority, name) is already unique in the source, so there
 	// is no tie-break.
 	for _, w := range snap.SpecsAll {
-		if lens.Permits(w.Publisher) {
+		if Permits(lens, w.Publisher, snap) {
 			sv.Workloads = append(sv.Workloads, w)
 		}
 	}
 	for _, st := range snap.StaticSpecsAll {
-		if lens.Permits(st.Publisher) {
+		if Permits(lens, st.Publisher, snap) {
 			sv.Statics = append(sv.Statics, st)
 		}
 	}
 	for _, b := range snap.BlobSpecsAll {
-		if lens.Permits(b.Publisher) {
+		if Permits(lens, b.Publisher, snap) {
 			sv.Blobs = append(sv.Blobs, b)
 		}
 	}
@@ -79,15 +82,31 @@ func Project(snap state.Snapshot, lens Lens) ScopedView {
 		return sv
 	}
 
-	holders := make(map[types.PeerKey]struct{})
-	addPeers := func(set map[types.PeerKey]struct{}) {
-		for pk := range set {
-			holders[pk] = struct{}{}
+	sv.Nodes = make(map[types.PeerKey]state.NodeView)
+	// Structural visibility: every node whose grant the lens sees.
+	for pk, nv := range snap.Nodes {
+		if Permits(lens, pk, snap) {
+			sv.Nodes[pk] = nv
 		}
 	}
-	// Holder lookups stay on the content/name runtime indices: a
-	// shared artefact's storing peers and claims are deliberately
-	// cross-tenant, but the static-claim register is now per-authority.
+	// Plus the hosts of any visible resource, so a workload running on
+	// a peer outside the lens's workspace is still locatable. Holder
+	// lookups stay on the content/name runtime indices: a shared
+	// artefact's storing peers and claims are deliberately cross-tenant,
+	// but the static-claim register is per-authority.
+	addNode := func(pk types.PeerKey) {
+		if _, already := sv.Nodes[pk]; already {
+			return
+		}
+		if n, ok := snap.Nodes[pk]; ok {
+			sv.Nodes[pk] = n
+		}
+	}
+	addPeers := func(set map[types.PeerKey]struct{}) {
+		for pk := range set {
+			addNode(pk)
+		}
+	}
 	for _, w := range sv.Workloads {
 		addPeers(snap.WorkloadStoringPeers[w.Spec.Hash])
 		addPeers(snap.Claims[w.Spec.Hash])
@@ -99,13 +118,6 @@ func Project(snap state.Snapshot, lens Lens) ScopedView {
 	}
 	for _, b := range sv.Blobs {
 		addPeers(snap.BlobStoringPeers[b.Spec.Digest])
-	}
-
-	sv.Nodes = make(map[types.PeerKey]state.NodeView, len(holders))
-	for pk := range holders {
-		if n, ok := snap.Nodes[pk]; ok {
-			sv.Nodes[pk] = n
-		}
 	}
 	return sv
 }

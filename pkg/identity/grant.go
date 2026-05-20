@@ -51,9 +51,29 @@ var ErrGrantInvalid = errors.New("grant invalid")
 
 func FullCapabilities() *identityv1.Capabilities {
 	return &identityv1.Capabilities{
-		CanDelegate: true,
-		CanAdmit:    true,
-		MaxDepth:    255, //nolint:mnd
+		CanDelegate:      true,
+		CanAdmit:         true,
+		IsWorkspaceAdmin: true,
+		MaxDepth:         255, //nolint:mnd
+		Publish: &identityv1.PublishCapability{
+			Functions: true,
+			Blobs:     true,
+			Sites:     true,
+			Services:  true,
+		},
+	}
+}
+
+// WorkspaceCapabilities is the cap profile for the --workspace role: a
+// scoped admin who founds a workspace boundary, may delegate within it
+// (CanDelegate + IsWorkspaceAdmin), and may publish any kind inside
+// their workspace. They do not hold CanAdmit, so visibility stays
+// bounded to chain ancestors + own subtree rather than cluster-wide.
+func WorkspaceCapabilities() *identityv1.Capabilities {
+	return &identityv1.Capabilities{
+		CanDelegate:      true,
+		IsWorkspaceAdmin: true,
+		MaxDepth:         255, //nolint:mnd
 		Publish: &identityv1.PublishCapability{
 			Functions: true,
 			Blobs:     true,
@@ -214,6 +234,9 @@ func validateChildCapabilities(child, parent *identityv1.Capabilities) error {
 	}
 	if child.GetCanAdmit() && !parent.GetCanAdmit() {
 		return errors.New("child capabilities exceed parent: CanAdmit")
+	}
+	if child.GetIsWorkspaceAdmin() && !parent.GetIsWorkspaceAdmin() {
+		return errors.New("child capabilities exceed parent: IsWorkspaceAdmin")
 	}
 	cp, pp := child.GetPublish(), parent.GetPublish()
 	if cp.GetFunctions() && !pp.GetFunctions() {

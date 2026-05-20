@@ -432,7 +432,7 @@ func (s *Service) GetStatus(ctx context.Context, _ *controlv1.GetStatusRequest) 
 		Certificates:  s.buildCertificates(ctx, snap, lens),
 		Self:          s.buildSelfSummary(snap, lens, operator, connections),
 		Nodes:         s.buildNodeSummaries(snap, scoped, lens, operator, connections),
-		Services:      buildServiceSummaries(scoped.Nodes, lens),
+		Services:      buildServiceSummaries(snap, scoped.Nodes, lens),
 		Connections:   buildConnectionSummaries(scoped.Nodes, connections),
 		Workloads:     s.buildWorkloadSummaries(snap, scoped, lens),
 		Sites:         s.buildStaticSummaries(snap, scoped, operator),
@@ -505,7 +505,7 @@ func (s *Service) inspectNode(snap state.Snapshot, scoped view.ScopedView, peerK
 		}
 		detail.ReachablePeers = sortedReachableRefs(nv.Reachable)
 	}
-	fillPublishedResources(detail, scoped, nv, peerKey, lens)
+	fillPublishedResources(snap, detail, scoped, nv, peerKey, lens)
 	return detail, nil
 }
 
@@ -527,13 +527,13 @@ func sortedReachableRefs(reachable map[types.PeerKey]struct{}) []*controlv1.Node
 
 // fillPublishedResources populates the published_* slices on detail from
 // the already-projected view, narrowed to resources whose publisher is
-// peerKey. Because scoped is the caller's projection, a non-admin caller
-// only ever sees resources it published itself, so inspecting a shared
-// holder never enumerates another tenant's facts. The anonymous-publish
-// fallback labels hash-only entries by their hash.
-func fillPublishedResources(detail *controlv1.NodeDetail, scoped view.ScopedView, nv state.NodeView, peerKey types.PeerKey, lens view.Lens) {
+// peerKey. Visibility is exactly what view.Permits grants the lens, so
+// inspecting a shared holder never enumerates resources the lens
+// cannot itself see. The anonymous-publish fallback labels hash-only
+// entries by their hash.
+func fillPublishedResources(snap state.Snapshot, detail *controlv1.NodeDetail, scoped view.ScopedView, nv state.NodeView, peerKey types.PeerKey, lens view.Lens) {
 	for name, svc := range nv.Services {
-		if !lens.Admin() && (!hasServicePublisher(svc) || !lens.Permits(servicePublisher(svc))) {
+		if !lens.Admin() && (!hasServicePublisher(svc) || !view.Permits(lens, servicePublisher(svc), snap)) {
 			continue
 		}
 		detail.PublishedServices = append(detail.PublishedServices, name)
@@ -652,6 +652,7 @@ func nodeCertInfo(grant *identityv1.Grant, now time.Time, denied bool) *controlv
 		CanDelegate:       caps.GetCanDelegate(),
 		CanAdmit:          caps.GetCanAdmit(),
 		CanPublish:        grantCanPublish(grant),
+		IsWorkspaceAdmin:  caps.GetIsWorkspaceAdmin(),
 		MaxDepth:          caps.GetMaxDepth(),
 		Attributes:        caps.GetAttributes(),
 		Denied:            denied,
@@ -752,6 +753,7 @@ func (s *Service) localCertificates(snap state.Snapshot) []*controlv1.CertInfo {
 		CanDelegate:       caps.GetCanDelegate(),
 		CanAdmit:          caps.GetCanAdmit(),
 		CanPublish:        grantCanPublish(grant),
+		IsWorkspaceAdmin:  caps.GetIsWorkspaceAdmin(),
 		MaxDepth:          caps.GetMaxDepth(),
 		Attributes:        caps.GetAttributes(),
 		Denied:            snap.IsDenied(snap.LocalID),
@@ -830,12 +832,12 @@ func redactNodeTelemetry(ns *controlv1.NodeSummary) {
 	ns.TunnelCount = 0
 }
 
-func buildServiceSummaries(nodes map[types.PeerKey]state.NodeView, lens view.Lens) []*controlv1.ServiceSummary {
+func buildServiceSummaries(snap state.Snapshot, nodes map[types.PeerKey]state.NodeView, lens view.Lens) []*controlv1.ServiceSummary {
 	var out []*controlv1.ServiceSummary
 	for slot, node := range nodes {
 		for _, svc := range node.Services {
 			if hasServicePublisher(svc) {
-				if !lens.Permits(servicePublisher(svc)) {
+				if !view.Permits(lens, servicePublisher(svc), snap) {
 					continue
 				}
 			} else if !lens.Admin() {
@@ -1012,7 +1014,7 @@ func (s *Service) UnregisterService(ctx context.Context, req *controlv1.Unregist
 	}
 	name := serviceNameOrDefault(req.GetName(), req.GetPort())
 	if svc := s.lookupLocalService(name); hasServicePublisher(svc) {
-		if err := s.authoriseOwnership(ctx, servicePublisher(svc)); err != nil {
+		if err := s.authoriseOwnership(ctx, s.state.Snapshot(), servicePublisher(svc)); err != nil {
 			return nil, err
 		}
 	}
@@ -1237,6 +1239,9 @@ func (s *Service) RenewGrant(ctx context.Context, _ *controlv1.RenewGrantRequest
 func enforceGrantCeiling(reqCaps, callerCaps *identityv1.Capabilities) error {
 	if reqCaps.GetCanAdmit() && !callerCaps.GetCanAdmit() {
 		return status.Error(codes.PermissionDenied, "cannot grant admit; caller lacks admit")
+	}
+	if reqCaps.GetIsWorkspaceAdmin() && !callerCaps.GetIsWorkspaceAdmin() {
+		return status.Error(codes.PermissionDenied, "cannot grant workspace-admin; caller lacks workspace-admin")
 	}
 	if reqCaps.GetCanDelegate() && !callerCaps.GetCanDelegate() {
 		return status.Error(codes.PermissionDenied, "cannot grant delegate; caller lacks delegate")

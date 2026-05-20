@@ -55,6 +55,7 @@ func TestEnforceGrantCeiling(t *testing.T) {
 		msg  string
 	}{
 		{"admit escalation", &identityv1.Capabilities{CanAdmit: true}, "cannot grant admit"},
+		{"workspace-admin escalation", &identityv1.Capabilities{IsWorkspaceAdmin: true}, "cannot grant workspace-admin"},
 		{"delegate escalation", &identityv1.Capabilities{CanDelegate: true}, "cannot grant delegate"},
 		{"publish escalation", &identityv1.Capabilities{Publish: &identityv1.PublishCapability{Functions: true}}, "cannot grant publish"},
 		{"max_depth escalation", &identityv1.Capabilities{MaxDepth: 9}, "cannot grant max_depth"},

@@ -580,6 +580,16 @@ func (m *CertInfo) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.IsWorkspaceAdmin {
+		i--
+		if m.IsWorkspaceAdmin {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x60
+	}
 	if m.Denied {
 		i--
 		if m.Denied {
@@ -3759,6 +3769,9 @@ func (m *CertInfo) SizeVT() (n int) {
 	if m.Denied {
 		n += 2
 	}
+	if m.IsWorkspaceAdmin {
+		n += 2
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -6304,6 +6317,26 @@ func (m *CertInfo) UnmarshalVT(dAtA []byte) error {
 				}
 			}
 			m.Denied = bool(v != 0)
+		case 12:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field IsWorkspaceAdmin", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.IsWorkspaceAdmin = bool(v != 0)
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
