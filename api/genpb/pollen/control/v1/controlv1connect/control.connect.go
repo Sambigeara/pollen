@@ -76,9 +76,9 @@ const (
 	// ControlServiceCallWorkloadProcedure is the fully-qualified name of the ControlService's
 	// CallWorkload RPC.
 	ControlServiceCallWorkloadProcedure = "/pollen.control.v1.ControlService/CallWorkload"
-	// ControlServiceIssueGrantProcedure is the fully-qualified name of the ControlService's IssueGrant
-	// RPC.
-	ControlServiceIssueGrantProcedure = "/pollen.control.v1.ControlService/IssueGrant"
+	// ControlServiceUpgradePeerProcedure is the fully-qualified name of the ControlService's
+	// UpgradePeer RPC.
+	ControlServiceUpgradePeerProcedure = "/pollen.control.v1.ControlService/UpgradePeer"
 	// ControlServiceRenewGrantProcedure is the fully-qualified name of the ControlService's RenewGrant
 	// RPC.
 	ControlServiceRenewGrantProcedure = "/pollen.control.v1.ControlService/RenewGrant"
@@ -125,7 +125,7 @@ type ControlServiceClient interface {
 	SeedWorkload(context.Context) *connect.ClientStreamForClient[v1.SeedWorkloadRequest, v1.SeedWorkloadResponse]
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
-	IssueGrant(context.Context, *connect.Request[v1.IssueGrantRequest]) (*connect.Response[v1.IssueGrantResponse], error)
+	UpgradePeer(context.Context, *connect.Request[v1.UpgradePeerRequest]) (*connect.Response[v1.UpgradePeerResponse], error)
 	RenewGrant(context.Context, *connect.Request[v1.RenewGrantRequest]) (*connect.Response[v1.RenewGrantResponse], error)
 	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.ServerStreamForClient[v1.FetchBlobResponse], error)
 	UploadBlob(context.Context) *connect.ClientStreamForClient[v1.UploadBlobRequest, v1.UploadBlobResponse]
@@ -231,10 +231,10 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("CallWorkload")),
 			connect.WithClientOptions(opts...),
 		),
-		issueGrant: connect.NewClient[v1.IssueGrantRequest, v1.IssueGrantResponse](
+		upgradePeer: connect.NewClient[v1.UpgradePeerRequest, v1.UpgradePeerResponse](
 			httpClient,
-			baseURL+ControlServiceIssueGrantProcedure,
-			connect.WithSchema(controlServiceMethods.ByName("IssueGrant")),
+			baseURL+ControlServiceUpgradePeerProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("UpgradePeer")),
 			connect.WithClientOptions(opts...),
 		),
 		renewGrant: connect.NewClient[v1.RenewGrantRequest, v1.RenewGrantResponse](
@@ -304,7 +304,7 @@ type controlServiceClient struct {
 	seedWorkload      *connect.Client[v1.SeedWorkloadRequest, v1.SeedWorkloadResponse]
 	unseedWorkload    *connect.Client[v1.UnseedWorkloadRequest, v1.UnseedWorkloadResponse]
 	callWorkload      *connect.Client[v1.CallWorkloadRequest, v1.CallWorkloadResponse]
-	issueGrant        *connect.Client[v1.IssueGrantRequest, v1.IssueGrantResponse]
+	upgradePeer       *connect.Client[v1.UpgradePeerRequest, v1.UpgradePeerResponse]
 	renewGrant        *connect.Client[v1.RenewGrantRequest, v1.RenewGrantResponse]
 	fetchBlob         *connect.Client[v1.FetchBlobRequest, v1.FetchBlobResponse]
 	uploadBlob        *connect.Client[v1.UploadBlobRequest, v1.UploadBlobResponse]
@@ -385,9 +385,9 @@ func (c *controlServiceClient) CallWorkload(ctx context.Context, req *connect.Re
 	return c.callWorkload.CallUnary(ctx, req)
 }
 
-// IssueGrant calls pollen.control.v1.ControlService.IssueGrant.
-func (c *controlServiceClient) IssueGrant(ctx context.Context, req *connect.Request[v1.IssueGrantRequest]) (*connect.Response[v1.IssueGrantResponse], error) {
-	return c.issueGrant.CallUnary(ctx, req)
+// UpgradePeer calls pollen.control.v1.ControlService.UpgradePeer.
+func (c *controlServiceClient) UpgradePeer(ctx context.Context, req *connect.Request[v1.UpgradePeerRequest]) (*connect.Response[v1.UpgradePeerResponse], error) {
+	return c.upgradePeer.CallUnary(ctx, req)
 }
 
 // RenewGrant calls pollen.control.v1.ControlService.RenewGrant.
@@ -451,7 +451,7 @@ type ControlServiceHandler interface {
 	SeedWorkload(context.Context, *connect.ClientStream[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error)
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
-	IssueGrant(context.Context, *connect.Request[v1.IssueGrantRequest]) (*connect.Response[v1.IssueGrantResponse], error)
+	UpgradePeer(context.Context, *connect.Request[v1.UpgradePeerRequest]) (*connect.Response[v1.UpgradePeerResponse], error)
 	RenewGrant(context.Context, *connect.Request[v1.RenewGrantRequest]) (*connect.Response[v1.RenewGrantResponse], error)
 	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest], *connect.ServerStream[v1.FetchBlobResponse]) error
 	UploadBlob(context.Context, *connect.ClientStream[v1.UploadBlobRequest]) (*connect.Response[v1.UploadBlobResponse], error)
@@ -553,10 +553,10 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("CallWorkload")),
 		connect.WithHandlerOptions(opts...),
 	)
-	controlServiceIssueGrantHandler := connect.NewUnaryHandler(
-		ControlServiceIssueGrantProcedure,
-		svc.IssueGrant,
-		connect.WithSchema(controlServiceMethods.ByName("IssueGrant")),
+	controlServiceUpgradePeerHandler := connect.NewUnaryHandler(
+		ControlServiceUpgradePeerProcedure,
+		svc.UpgradePeer,
+		connect.WithSchema(controlServiceMethods.ByName("UpgradePeer")),
 		connect.WithHandlerOptions(opts...),
 	)
 	controlServiceRenewGrantHandler := connect.NewUnaryHandler(
@@ -637,8 +637,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceUnseedWorkloadHandler.ServeHTTP(w, r)
 		case ControlServiceCallWorkloadProcedure:
 			controlServiceCallWorkloadHandler.ServeHTTP(w, r)
-		case ControlServiceIssueGrantProcedure:
-			controlServiceIssueGrantHandler.ServeHTTP(w, r)
+		case ControlServiceUpgradePeerProcedure:
+			controlServiceUpgradePeerHandler.ServeHTTP(w, r)
 		case ControlServiceRenewGrantProcedure:
 			controlServiceRenewGrantHandler.ServeHTTP(w, r)
 		case ControlServiceFetchBlobProcedure:
@@ -720,8 +720,8 @@ func (UnimplementedControlServiceHandler) CallWorkload(context.Context, *connect
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.CallWorkload is not implemented"))
 }
 
-func (UnimplementedControlServiceHandler) IssueGrant(context.Context, *connect.Request[v1.IssueGrantRequest]) (*connect.Response[v1.IssueGrantResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.IssueGrant is not implemented"))
+func (UnimplementedControlServiceHandler) UpgradePeer(context.Context, *connect.Request[v1.UpgradePeerRequest]) (*connect.Response[v1.UpgradePeerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.UpgradePeer is not implemented"))
 }
 
 func (UnimplementedControlServiceHandler) RenewGrant(context.Context, *connect.Request[v1.RenewGrantRequest]) (*connect.Response[v1.RenewGrantResponse], error) {

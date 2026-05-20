@@ -295,7 +295,7 @@ pln invite --publisher --max-functions 10 --max-blobs 50 --max-sites 2
 pln invite --admin --subject $(ssh relay pln id)</code></pre>
 
     <h3 id="grant"><code>pln grant &lt;peer-id&gt;</code></h3>
-    <p>Issue a fresh grant to a connected peer. Identify by peer-id prefix. Default tier is leaf. A delegated grant carries a deadline (default 30 days) and renews itself automatically before then; admin grants carry no deadline.</p>
+    <p>Re-grant a connected peer with fresh capabilities. Identify by peer-id prefix. Default tier is leaf. A delegated grant carries a deadline (default 30 days) and renews itself automatically before then; admin grants carry no deadline. The admin mints the grant and pushes it to the peer over the existing mesh connection; the peer verifies, swaps in its own credentials, and gossips the new grant with its own subject signature. Capabilities a peer loses in the process trigger automatic tombstones of any resources the peer had published under those kinds.</p>
     <dl class="flags">
       <dt>--publisher</dt><dd>Grant publisher capability so the peer can publish resources.</dd>
       <dt>--admin</dt><dd>Delegate admin authority (so the cluster keeps working with root offline). Mutually exclusive with <code>--publisher</code>.</dd>
@@ -306,12 +306,13 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
     </dl>
     <div class="terminal">
       <span class="cmd">pln grant ab12cd34 --prop role=lead --prop team=backend</span>
-      <span class="out">grant issued (leaf) to ab12cd34</span>
+      <span class="out">upgraded ab12cd34 → leaf</span>
       <span class="cmd">pln grant worker1 --publisher --max-functions 10 --max-blobs 50</span>
-      <span class="out">grant issued (publisher) to 8c4d2f9a</span>
+      <span class="out">upgraded 8c4d2f9a → publisher</span>
       <span class="cmd">pln grant relay1 --admin</span>
-      <span class="out">grant issued (admin) to ab12cd34</span>
+      <span class="out">upgraded ab12cd34 → admin</span>
     </div>
+    <p>When the named peer is a wire-mode tenant with no live daemon, <code>pln grant</code> falls back to printing a subject-pinned invite token; the tenant redeems it with <a href="#join"><code>pln join &lt;token&gt;</code></a> to swap their credentials in place. This is the same path as a first join, just bound to the existing identity. See <a href="concepts.html#grants">Grants</a> in Concepts.</p>
 
     <h3 id="deny"><code>pln deny &lt;peer-id&gt;</code></h3>
     <p>Revoke a peer's membership and tear down its connections. Identify by peer-id prefix. Cascades to peers admitted by the denied node.</p>
@@ -339,7 +340,7 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
       <dt>--prop key=val</dt><dd>Properties baked into every enrolled node's grant. Repeatable; accepts <code>key=value</code>, a JSON object, or <code>-</code> to read JSON from stdin.</dd>
       <dt>--relay-port &lt;n&gt;</dt><dd>Relay UDP port to advertise (default 60611).</dd>
       <dt>--expire-after &lt;dur&gt;</dt><dd>Override the deadline on every issued grant. Delegated grants default to a 30-day deadline.</dd>
-      <dt>--no-up</dt><dd>When the orchestrator also enrols itself, skip starting its local daemon.</dd>
+      <dt>--no-up</dt><dd>Skip starting the local daemon after bootstrapping.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln bootstrap ssh user@host</span>

@@ -61,6 +61,7 @@ type MembershipAPI interface {
 	DenyPeer(key types.PeerKey) error
 	IssueGrant(ctx context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget) (*identityv1.Grant, error)
 	RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte)
+	ReceiveGrantOffer(req *meshv1.GrantOfferRequest) *meshv1.GrantOfferResponse
 	RenewalFailing() bool
 
 	HandleDigestStream(ctx context.Context, stream transport.Stream, peer types.PeerKey)
@@ -88,7 +89,7 @@ type ClusterState interface {
 	SetLocalGrant(grant *identityv1.Grant, subjectSig []byte) []state.Event
 	RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte) []state.Event
 	SetLocalSigner(signer state.LocalSigner)
-	RevokeOwnSpecs() ([]state.Event, error)
+	RevokeOwnSpecs(retain *identityv1.Capabilities) ([]state.Event, error)
 }
 
 type Network interface {

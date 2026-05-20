@@ -895,13 +895,17 @@ func liveSpecBody(sc *statev1.SpecChange) fact.Body {
 	return nil
 }
 
-// RevokeOwnSpecs tombstones every workload, service, blob, and static
-// spec this node has published. Used when a cap downgrade strips
-// publish authority: the still-valid old signer is used to sign the
-// tombstones before the downgraded grant replaces it. The
-// returned events are emitted to peers like any other publish change;
-// remotes drop the resources from their CRDTs as the tombstones land.
-func (s *store) RevokeOwnSpecs() ([]Event, error) {
+// RevokeOwnSpecs tombstones this node's published Facts whose required
+// publish kind is not present in retain. Used on a capability change
+// (downgrade, or admin-issued upgrade that drops a kind): the still-valid
+// old signer is used to sign the tombstones before the new grant
+// replaces it, so each tombstone chains correctly. A nil retain
+// argument means no kinds are retained, equivalent to a full publish
+// drop. The returned events are emitted to peers like any other publish
+// change; remotes drop the resources from their CRDTs as the
+// tombstones land.
+func (s *store) RevokeOwnSpecs(retain *identityv1.Capabilities) ([]Event, error) {
+	p := retain.GetPublish()
 	snap := s.Snapshot()
 	var events []Event
 	var firstErr error
@@ -911,9 +915,11 @@ func (s *store) RevokeOwnSpecs() ([]Event, error) {
 			firstErr = err
 		}
 	}
-	if local, ok := snap.Nodes[snap.LocalID]; ok {
-		for name := range local.Services {
-			record(s.RemoveService(name))
+	if !p.GetServices() {
+		if local, ok := snap.Nodes[snap.LocalID]; ok {
+			for name := range local.Services {
+				record(s.RemoveService(name))
+			}
 		}
 	}
 	// Iterate the per-(authority,name) publication sources, not the
@@ -923,19 +929,25 @@ func (s *store) RevokeOwnSpecs() ([]Event, error) {
 	// cap-downgraded principal would keep a live gossiped spec it has
 	// lost authority to publish. The delete helpers resolve the local
 	// (authority, name) register by content id.
-	for _, spec := range snap.SpecsAll {
-		if spec.Publisher == snap.LocalID {
-			record(s.DeleteWorkloadSpec(spec.Spec.Hash))
+	if !p.GetFunctions() {
+		for _, spec := range snap.SpecsAll {
+			if spec.Publisher == snap.LocalID {
+				record(s.DeleteWorkloadSpec(spec.Spec.Hash))
+			}
 		}
 	}
-	for _, spec := range snap.StaticSpecsAll {
-		if spec.Publisher == snap.LocalID {
-			record(s.DeleteStaticSpec(spec.Spec.Name))
+	if !p.GetSites() {
+		for _, spec := range snap.StaticSpecsAll {
+			if spec.Publisher == snap.LocalID {
+				record(s.DeleteStaticSpec(spec.Spec.Name))
+			}
 		}
 	}
-	for _, spec := range snap.BlobSpecsAll {
-		if spec.Publisher == snap.LocalID {
-			record(s.DeleteBlobSpec(spec.Spec.Digest))
+	if !p.GetBlobs() {
+		for _, spec := range snap.BlobSpecsAll {
+			if spec.Publisher == snap.LocalID {
+				record(s.DeleteBlobSpec(spec.Spec.Digest))
+			}
 		}
 	}
 	return events, firstErr

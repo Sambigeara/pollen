@@ -82,9 +82,9 @@ ab12cd34e5f6789a1b2c3d4e5f6789a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7  direct (public
         <h3>Grant admin to that peer</h3>
         <div class="terminal">
           <span class="cmd">pln grant ab12cd34 --admin</span>
-          <span class="out">grant issued (admin) to ab12cd34</span>
+          <span class="out">upgraded ab12cd34 → admin</span>
         </div>
-        <p>The <code>--admin</code> tier lets the peer issue further grants and admit new peers without involving root. An admin grant has no deadline, so it never needs renewing and never expires while the peer stays in the cluster.</p>
+        <p>The <code>--admin</code> tier lets the peer issue further grants and admit new peers without involving root. An admin grant has no deadline, so it never needs renewing and never expires while the peer stays in the cluster. The new grant is pushed to the peer over the existing mesh connection and adopted on the spot.</p>
       </li>
       <li>
         <h3>Confirm and shut root down</h3>

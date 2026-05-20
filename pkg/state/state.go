@@ -96,7 +96,7 @@ type StateStore interface {
 
 	SetService(port uint32, name string, protocol statev1.ServiceProtocol, policy *admissionv1.Predicate) ([]Event, error)
 	RemoveService(name string) ([]Event, error)
-	RevokeOwnSpecs() ([]Event, error)
+	RevokeOwnSpecs(retain *identityv1.Capabilities) ([]Event, error)
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event
 
 	EmitHeartbeatIfNeeded() []Event

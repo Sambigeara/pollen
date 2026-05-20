@@ -385,6 +385,7 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 		control.WithCredentials(creds),
 		control.WithSignPriv(privKey),
 		control.WithTransportInfo(n),
+		control.WithPeerDelivery(n.mesh),
 		control.WithMetricsSource(n),
 		control.WithMeshConnector(n),
 		control.WithOperatorGate(runtimeGate),
@@ -612,6 +613,23 @@ func (n *Supervisor) dispatchWorkloadCall(stream io.ReadWriteCloser, peerKey typ
 	n.placement.Serve(stream, peerKey)
 }
 
+// dispatchGrantOffer terminates an inbound admin-initiated upgrade
+// push. Reads the offered grant, runs it through the membership's
+// verify-adopt-revoke-gossip pipeline, and writes the typed response
+// back so the issuer's CLI surfaces a clear outcome.
+func (n *Supervisor) dispatchGrantOffer(stream transport.Stream, peerKey types.PeerKey) {
+	defer stream.Close() //nolint:errcheck
+	req, err := transport.ReadGrantOfferRequest(stream)
+	if err != nil {
+		n.log.Debugw("grant-offer stream read failed", "peer", peerKey.Short(), "err", err)
+		return
+	}
+	resp := n.membership.ReceiveGrantOffer(req)
+	if err := transport.WriteGrantOfferResponse(stream, resp); err != nil {
+		n.log.Debugw("grant-offer response write failed", "peer", peerKey.Short(), "err", err)
+	}
+}
+
 func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 	for {
 		stream, stype, peerKey, err := n.mesh.AcceptStream(ctx)
@@ -640,6 +658,8 @@ func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 		case transport.StreamTypeWorkload:
 			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
 			n.spawn(func() { n.dispatchWorkloadCall(s, peerKey) })
+		case transport.StreamTypeGrantOffer:
+			n.spawn(func() { n.dispatchGrantOffer(stream, peerKey) })
 		default:
 			n.log.Warnw("unknown stream type", "type", uint8(stype))
 			stream.Close()

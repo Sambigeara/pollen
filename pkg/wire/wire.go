@@ -202,13 +202,10 @@ func MaybeRenewGrant(ctx context.Context, dir, addr string) error {
 	}
 	// nil denylist: the wire client holds no cluster snapshot, and the
 	// issuing server already enforced the denylist before re-issuing.
-	if err := creds.AdoptRenewedGrant(g, time.Now(), nil); err != nil {
-		return err
-	}
-	if err := identity.SaveCredentials(identityDir, creds); err != nil {
-		return fmt.Errorf("persist renewed grant: %w", err)
-	}
-	return nil
+	// AdoptGrant persists internally via the handle's identityDir
+	// captured at load time, so a successful swap is durable before
+	// MaybeRenewGrant returns.
+	return creds.AdoptGrant(g, time.Now(), nil)
 }
 
 // ServerTLSConfig builds the TLS config for the control RPC listener.

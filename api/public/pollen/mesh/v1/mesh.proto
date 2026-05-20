@@ -45,6 +45,20 @@ message ForwardedInviteRedeemResponse {
   bytes joiner_pub = 2;
 }
 
+// GrantOfferRequest pushes a freshly-minted grant to its intended
+// subject so the subject's daemon can adopt it without waiting on its
+// own renewal tick. The receiver verifies the grant chains to root,
+// matches its own subject pubkey, and falls within its budget+horizon
+// before swapping in local creds and gossiping with its own subject PoP.
+message GrantOfferRequest {
+  pollen.identity.v1.Grant grant = 1;
+}
+
+message GrantOfferResponse {
+  bool accepted = 1;
+  string reason = 2;
+}
+
 message Envelope {
   oneof body {
     PunchCoordRequest punch_coord_request = 1;
@@ -55,6 +69,8 @@ message Envelope {
     pollen.state.v1.GossipEventBatch events = 6;
     ForwardedInviteRedeemRequest forwarded_invite_request = 10;
     ForwardedInviteRedeemResponse forwarded_invite_response = 11;
+    GrantOfferRequest grant_offer_request = 14;
+    GrantOfferResponse grant_offer_response = 15;
   }
   reserved 7, 8, 12, 13;
   bytes trace_id = 9;

@@ -106,8 +106,21 @@ func (p *Pipeline) resolveAndVerify(snap state.Snapshot, f *factv1.Fact, body fa
 // for the resource kind and the publisher's own policy attributes. A
 // nil authGrant is the tolerated bootstrap window (authenticate already
 // permitted it), so there is nothing to enforce yet.
+//
+// Signed tombstones bypass authorise: a publisher who has lost (e.g.)
+// publish:functions must still be able to retire their previously
+// authorised workload Facts, otherwise an admin-initiated cap-shrink
+// would strand the recipient's old publications on remote peers. Only
+// the publisher can produce a tombstone for their own Fact (the Fact
+// is signed by their signing key, verified in authenticate), and a
+// fully denied publisher fails the chain check upstream, so this is
+// safe. The cap- and attribute-clause checks remain on every non
+// tombstone Fact, which is the path that actually publishes new state.
 func authorise(sc *statev1.SpecChange, authGrant *identityv1.Grant) error {
 	if authGrant == nil {
+		return nil
+	}
+	if sc.GetFact().GetDeleted() {
 		return nil
 	}
 	pub := authGrant.GetClaims().GetCapabilities().GetPublish()

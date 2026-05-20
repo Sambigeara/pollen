@@ -34,7 +34,7 @@ service ControlService {
   rpc SeedWorkload(stream SeedWorkloadRequest) returns (SeedWorkloadResponse);
   rpc UnseedWorkload(UnseedWorkloadRequest) returns (UnseedWorkloadResponse);
   rpc CallWorkload(CallWorkloadRequest) returns (CallWorkloadResponse);
-  rpc IssueGrant(IssueGrantRequest) returns (IssueGrantResponse);
+  rpc UpgradePeer(UpgradePeerRequest) returns (UpgradePeerResponse);
   rpc RenewGrant(RenewGrantRequest) returns (RenewGrantResponse);
   rpc FetchBlob(FetchBlobRequest) returns (stream FetchBlobResponse);
   rpc UploadBlob(stream UploadBlobRequest) returns (UploadBlobResponse);
@@ -360,22 +360,28 @@ message GetMetricsResponse {
   uint64 eager_sync_failures = 16;
 }
 
-message IssueGrantRequest {
+// UpgradePeerRequest asks the local admin daemon to mint a fresh grant
+// for peer_pub with the supplied capabilities and budget, then deliver it
+// to that peer's daemon over the mesh. Subject-PoP gossip is performed by
+// the receiving peer, not by the issuer, so the cluster CRDT invariant
+// holds end-to-end.
+message UpgradePeerRequest {
   bytes peer_pub = 1 [(buf.validate.field).bytes = {len: 32}];
-  reserved 2, 3;
-  reserved "admin", "attributes";
+  reserved 2, 3, 5;
+  reserved "admin", "attributes", "mint_only";
   pollen.identity.v1.Capabilities capabilities = 4 [(buf.validate.field).required = true];
-  bool mint_only = 5;
   // budget is the per-Principal quota baked into the issued grant. Unset
   // (or zero per dimension) means unlimited. A delegating caller cannot
   // grant a budget exceeding its own.
   pollen.identity.v1.Budget budget = 6;
 }
 
-message IssueGrantResponse {
-  // grant is the newly minted child grant. The caller persists it and
-  // mints its own sessions locally; no renewal round-trip exists.
-  pollen.identity.v1.Grant grant = 1;
+message UpgradePeerResponse {
+  // delivered reports whether the receiving peer adopted the new grant.
+  // false means the peer is offline, unreachable, or rejected the offer;
+  // reason carries one-line operator-readable detail.
+  bool delivered = 1;
+  string reason = 2;
 }
 
 // RenewGrant carries nothing: the authenticated session already proves

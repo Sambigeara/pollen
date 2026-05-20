@@ -70,6 +70,54 @@ func TestMultiTenantSpecIsolation(t *testing.T) {
 	// existing deny/transitive-revocation suite.
 }
 
+// TestRevokeOwnSpecsRetainsAuthorisedKinds proves the cap-aware filter:
+// a retain capability set covering the kind keeps the matching spec
+// in cluster state; a retain set without the kind tombstones it.
+// Exercises the contract that a partial cap-shrink (e.g. publish:sites
+// drops while publish:functions stays) does not collapse the publisher's
+// entire surface — only the kinds that lost authority go.
+func TestRevokeOwnSpecsRetainsAuthorisedKinds(t *testing.T) {
+	rootPub, rootPriv := keyPair(t)
+	now := time.Now()
+
+	makeStore := func(t *testing.T) (state.StateStore, string) {
+		t.Helper()
+		pPub, pPriv := keyPair(t)
+		pKey := types.PeerKeyFromBytes(pPub)
+		st := validatedStore(t, pKey, rootPub)
+		grant, err := identity.IssueGrant(rootPriv, nil, pPub,
+			identity.PublisherCapabilities(), &identityv1.Budget{},
+			now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		require.NoError(t, err)
+		sig, err := identity.SignGrantSubject(grant, pPriv)
+		require.NoError(t, err)
+		st.SetLocalSigner(fact.NewSigner(pPriv))
+		st.SetLocalGrant(grant, sig)
+
+		hash := validHash(t)
+		_, err = st.PublishWorkload(state.WorkloadSpec{Hash: hash, Name: "echo", MinReplicas: 1}, nil)
+		require.NoError(t, err)
+		return st, hash
+	}
+
+	t.Run("retain functions keeps the workload", func(t *testing.T) {
+		st, hash := makeStore(t)
+		retain := &identityv1.Capabilities{Publish: &identityv1.PublishCapability{Functions: true}}
+		_, err := st.RevokeOwnSpecs(retain)
+		require.NoError(t, err)
+		require.Contains(t, st.Snapshot().Specs, hash, "kind retained by caps must not be tombstoned")
+	})
+
+	t.Run("retain sites without functions tombstones the workload", func(t *testing.T) {
+		st, hash := makeStore(t)
+		retain := &identityv1.Capabilities{Publish: &identityv1.PublishCapability{Sites: true}}
+		_, err := st.RevokeOwnSpecs(retain)
+		require.NoError(t, err)
+		_, present := st.Snapshot().Specs[hash]
+		require.False(t, present, "kind without retain authority must be tombstoned")
+	})
+}
+
 // TestRevokeOwnSpecsIgnoresDedupeWinner is the regression for the
 // cycle-2 CRITICAL: RevokeOwnSpecs must tombstone this node's own spec
 // even when a colliding remote tenant publishing byte-identical content
@@ -117,7 +165,7 @@ func TestRevokeOwnSpecsIgnoresDedupeWinner(t *testing.T) {
 	require.Len(t, pre.Specs, 1)
 	require.Equal(t, remotePK, pre.Specs[hash].Publisher)
 
-	_, err = b.RevokeOwnSpecs()
+	_, err = b.RevokeOwnSpecs(nil)
 	require.NoError(t, err)
 
 	after := b.Snapshot()
@@ -129,6 +177,72 @@ func TestRevokeOwnSpecsIgnoresDedupeWinner(t *testing.T) {
 		}
 	}
 	require.True(t, remoteStillPresent, "revoking own specs must not touch another tenant's identical-content spec")
+}
+
+// TestCapShrinkConvergesOnRemotePeer pins the end-to-end convergence
+// shape an admin-initiated cap-shrink upgrade depends on: the recipient
+// queues tombstones for the kinds they have lost, then gossips the new
+// (shrunken) grant in the same batch. applyBatchLocked admits the new
+// grant in the first pass before the second-pass spec tombstones, so a
+// remote peer's authorise stage sees the recipient's NEW caps when
+// admitting the tombstones. The tombstone exemption in authorise lets
+// those tombstones land regardless, and B drops the spec; without it,
+// the spec would be stranded on every peer except the publisher.
+func TestCapShrinkConvergesOnRemotePeer(t *testing.T) {
+	rootPub, rootPriv := keyPair(t)
+	now := time.Now()
+
+	// A: publisher with publish:functions. Publishes a workload and
+	// gossips full state to B.
+	aPub, aPriv := keyPair(t)
+	aKey := types.PeerKeyFromBytes(aPub)
+	a := validatedStore(t, aKey, rootPub)
+	aGrant, err := identity.IssueGrant(rootPriv, nil, aPub,
+		identity.PublisherCapabilities(), &identityv1.Budget{},
+		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+	require.NoError(t, err)
+	aSig, err := identity.SignGrantSubject(aGrant, aPriv)
+	require.NoError(t, err)
+	a.SetLocalSigner(fact.NewSigner(aPriv))
+	a.SetLocalGrant(aGrant, aSig)
+	hash := validHash(t)
+	_, err = a.PublishWorkload(state.WorkloadSpec{Hash: hash, Name: "echo", MinReplicas: 1}, nil)
+	require.NoError(t, err)
+
+	bPub, _ := keyPair(t)
+	bKey := types.PeerKeyFromBytes(bPub)
+	b := validatedStore(t, bKey, rootPub)
+	require.NoError(t, b.LoadGossipState(a.EncodeFull()))
+	require.Contains(t, b.Snapshot().Specs, hash, "B observes A's workload before the upgrade")
+
+	// A receives an admin-initiated cap-shrink: drops publish:functions.
+	// RevokeOwnSpecs queues the tombstone (signed under A's still-current
+	// signing key, which is unchanged), then SetLocalGrant queues the
+	// new grant event. FlushPendingGossip drains both into one batch.
+	shrunken := &identityv1.Capabilities{
+		Publish: &identityv1.PublishCapability{Sites: true},
+	}
+	_, err = a.RevokeOwnSpecs(shrunken)
+	require.NoError(t, err)
+	newGrant, err := identity.IssueGrant(rootPriv, nil, aPub,
+		shrunken, &identityv1.Budget{},
+		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+	require.NoError(t, err)
+	newSig, err := identity.SignGrantSubject(newGrant, aPriv)
+	require.NoError(t, err)
+	a.SetLocalGrant(newGrant, newSig)
+
+	// Send A's full state to B (the FlushPendingGossip equivalent for
+	// the test: a single delivery covering tombstone + new grant).
+	_, _, err = b.ApplyDelta(aKey, a.EncodeFull())
+	require.NoError(t, err)
+
+	snap := b.Snapshot()
+	_, stillThere := snap.Specs[hash]
+	require.False(t, stillThere,
+		"B must drop A's workload once A has tombstoned it and gossiped the cap-shrunken grant")
+	require.False(t, snap.Nodes[aKey].Grant.GetClaims().GetCapabilities().GetPublish().GetFunctions(),
+		"B must observe A's new (shrunken) caps")
 }
 
 func validHash(t *testing.T) string {

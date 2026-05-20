@@ -166,12 +166,15 @@ func TestLocalGossipParity(t *testing.T) {
 	require.Error(t, localView.Admit(tampered), "local path rejects mismatched body")
 }
 
-// TestStaticUnseedGated proves a static tombstone (deleted Fact) is
-// subject to the same authorise stage as a create. Once the state seam
-// routes self-signed mutations through the pipeline, an authority
-// without the Sites bit can no longer unseed a site — closing the
-// previously ungated UnseedStatic path.
-func TestStaticUnseedGated(t *testing.T) {
+// TestTombstoneBypassesPublishCap proves a publisher who has lost a
+// publish capability can still tombstone their previously authorised
+// Facts of that kind. The authenticate stage proves the tombstone is
+// signed by the publisher (a non-publisher cannot forge it); authorise
+// then exempts tombstones from the per-kind check so an admin-initiated
+// cap-shrink does not strand the recipient's old publications on remote
+// peers. The cap check remains active on every non-tombstone Fact,
+// which is the only path that publishes new state.
+func TestTombstoneBypassesPublishCap(t *testing.T) {
 	now := time.Now()
 	caps := &identityv1.Capabilities{Publish: &identityv1.PublishCapability{Functions: true}}
 	rootPub, authPub, authPriv, grant := grantCaps(t, now, caps)
@@ -179,6 +182,11 @@ func TestStaticUnseedGated(t *testing.T) {
 	tombstone, err := fact.IssueFact(authPriv, sres, sb, nil, 2, true)
 	require.NoError(t, err)
 	g := New(rootPub, fakeStore{snap: state.Snapshot{Nodes: nodes(authPub, grant)}})
-	err = g.Admit(&statev1.SpecChange{Fact: tombstone, Body: &statev1.SpecChange_Static{Static: sb}})
-	require.ErrorContains(t, err, "lacks publish capability for sites")
+	require.NoError(t, g.Admit(&statev1.SpecChange{Fact: tombstone, Body: &statev1.SpecChange_Static{Static: sb}}))
+
+	create, err := fact.IssueFact(authPriv, sres, sb, nil, 3, false)
+	require.NoError(t, err)
+	err = g.Admit(&statev1.SpecChange{Fact: create, Body: &statev1.SpecChange_Static{Static: sb}})
+	require.ErrorContains(t, err, "lacks publish capability for sites",
+		"a non-tombstone create still requires the per-kind cap")
 }

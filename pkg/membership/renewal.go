@@ -6,7 +6,6 @@ package membership
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sort"
 	"time"
 
@@ -58,16 +57,14 @@ func (s *Service) renewGrantOnce(ctx context.Context) (*identityv1.Grant, error)
 }
 
 // installRenewedGrant adopts a freshly issued grant into the live
-// credentials (validated against our own root, subject, horizon and the
-// cluster denylist by AdoptRenewedGrant), then persists and re-gossips
-// it. A grant that fails validation is rejected and the node keeps its
-// current grant.
+// credentials (validated against our own root, subject, horizon and
+// the cluster denylist by AdoptGrant, which also rewrites the on-disk
+// copy as part of the swap), then gossips the new grant via the
+// Principal CRDT. A grant that fails validation or persistence is
+// rejected and the node keeps its current grant.
 func (s *Service) installRenewedGrant(g *identityv1.Grant) error {
-	if err := s.creds.AdoptRenewedGrant(g, time.Now(), s.store.Snapshot().DenyChecker()); err != nil {
+	if err := s.creds.AdoptGrant(g, time.Now(), s.store.Snapshot().DenyChecker()); err != nil {
 		return err
-	}
-	if err := identity.SaveCredentials(identity.IdentityPath(s.pollenDir), s.creds); err != nil {
-		return fmt.Errorf("persist renewed grant: %w", err)
 	}
 	s.publishLocalGrant(g)
 	return nil

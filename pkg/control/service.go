@@ -25,6 +25,7 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
+	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/auth"
@@ -121,6 +122,17 @@ type MeshConnector interface {
 	Connect(ctx context.Context, peer types.PeerKey, addrs []netip.AddrPort) error
 }
 
+// PeerDelivery pushes an admin-minted grant to its subject peer over
+// the existing mesh transport. The recipient adopts the grant locally
+// and gossips the new Principal entry with its own subject PoP, so the
+// CRDT invariant holds end-to-end. ErrPeerOffline distinguishes
+// "subject has no live mesh daemon" from other failures so the
+// UpgradePeer handler can map it to a delivered=false response with a
+// stable reason string for the operator.
+type PeerDelivery interface {
+	SendGrantOffer(ctx context.Context, peer types.PeerKey, grant *identityv1.Grant) (*meshv1.GrantOfferResponse, error)
+}
+
 // OperatorGate authorises Connect and Fetch. Workload invocations are
 // gated in placement.Call because that path catches remote dispatch and
 // seed-to-seed tail calls as well as operator RPCs.
@@ -148,6 +160,7 @@ type Service struct {
 	connector    MeshConnector
 	placement    PlacementControl
 	transport    TransportInfo
+	delivery     PeerDelivery
 	creds        *identity.Credentials
 	shutdown     func()
 	log          *zap.SugaredLogger
@@ -180,6 +193,7 @@ type Option func(*Service)
 func WithShutdown(fn func()) Option                  { return func(s *Service) { s.shutdown = fn } }
 func WithCredentials(c *identity.Credentials) Option { return func(s *Service) { s.creds = c } }
 func WithTransportInfo(t TransportInfo) Option       { return func(s *Service) { s.transport = t } }
+func WithPeerDelivery(d PeerDelivery) Option         { return func(s *Service) { s.delivery = d } }
 func WithMetricsSource(m MetricsSource) Option       { return func(s *Service) { s.metrics = m } }
 func WithMeshConnector(c MeshConnector) Option       { return func(s *Service) { s.connector = c } }
 func WithOperatorGate(g OperatorGate) Option         { return func(s *Service) { s.gate = g } }
@@ -1120,7 +1134,20 @@ func (s *Service) DenyPeer(ctx context.Context, req *controlv1.DenyPeerRequest) 
 	return &controlv1.DenyPeerResponse{}, nil
 }
 
-func (s *Service) IssueGrant(ctx context.Context, req *controlv1.IssueGrantRequest) (*controlv1.IssueGrantResponse, error) {
+// UpgradePeer mints a fresh grant for peer_pub under the caller's
+// authority and pushes it to that peer's daemon over the existing
+// mesh transport. The minted grant is never returned to the issuer:
+// an admin-side artifact is useless because only the subject can adopt
+// a grant into its own credentials.
+//
+// A peer with no live mesh daemon (wire-mode tenant) surfaces as
+// codes.Unavailable, the gRPC convention for "the resource is not
+// currently reachable; retry later". The CLI uses that single
+// discriminator to fall back to a subject-pinned invite ticket. Any
+// other failure (recipient rejection, stream error, etc.) returns
+// Delivered=false with a one-line Reason so the operator sees exactly
+// what the recipient said and does not get a misleading token.
+func (s *Service) UpgradePeer(ctx context.Context, req *controlv1.UpgradePeerRequest) (*controlv1.UpgradePeerResponse, error) {
 	caller, ok := auth.CallerFromContext(ctx)
 	if !ok || !caller.CanDelegate() {
 		return nil, status.Error(codes.PermissionDenied, "delegate capability required")
@@ -1144,14 +1171,31 @@ func (s *Service) IssueGrant(ctx context.Context, req *controlv1.IssueGrantReque
 	if err := enforceBudgetCeiling(req.GetBudget(), caller.Budget); err != nil {
 		return nil, err
 	}
-	grant, err := s.membership.IssueGrant(ctx, types.PeerKeyFromBytes(req.GetPeerPub()), caps, req.GetBudget())
+	peerKey := types.PeerKeyFromBytes(req.GetPeerPub())
+	grant, err := s.membership.IssueGrant(ctx, peerKey, caps, req.GetBudget())
 	if err != nil {
 		if errors.Is(err, membership.ErrNotDelegating) {
 			return nil, status.Error(codes.FailedPrecondition, "this node has no delegation authority; target a delegating node")
 		}
-		return nil, s.fail(err, "issue grant failed")
+		return nil, s.fail(err, "mint upgrade grant failed")
 	}
-	return &controlv1.IssueGrantResponse{Grant: grant}, nil
+
+	resp, err := s.delivery.SendGrantOffer(ctx, peerKey, grant)
+	if err != nil {
+		if errors.Is(err, transport.ErrPeerOffline) {
+			return nil, status.Error(codes.Unavailable, "peer has no live mesh daemon")
+		}
+		s.log.Errorw("grant offer dispatch failed", "peer", peerKey.Short(), zap.Error(err))
+		return nil, status.Error(codes.Internal, "deliver upgrade to peer failed")
+	}
+	if !resp.GetAccepted() {
+		reason := resp.GetReason()
+		if reason == "" {
+			reason = "peer rejected grant"
+		}
+		return &controlv1.UpgradePeerResponse{Reason: reason}, nil
+	}
+	return &controlv1.UpgradePeerResponse{Delivered: true}, nil
 }
 
 // RenewGrant re-mints the caller's own grant with a fresh horizon. It

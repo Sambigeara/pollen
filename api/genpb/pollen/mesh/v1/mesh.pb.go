@@ -390,6 +390,107 @@ func (x *ForwardedInviteRedeemResponse) GetJoinerPub() []byte {
 	return nil
 }
 
+// GrantOfferRequest pushes a freshly-minted grant to its intended
+// subject so the subject's daemon can adopt it without waiting on its
+// own renewal tick. The receiver verifies the grant chains to root,
+// matches its own subject pubkey, and falls within its budget+horizon
+// before swapping in local creds and gossiping with its own subject PoP.
+type GrantOfferRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Grant         *v1.Grant              `protobuf:"bytes,1,opt,name=grant,proto3" json:"grant,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GrantOfferRequest) Reset() {
+	*x = GrantOfferRequest{}
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GrantOfferRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GrantOfferRequest) ProtoMessage() {}
+
+func (x *GrantOfferRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GrantOfferRequest.ProtoReflect.Descriptor instead.
+func (*GrantOfferRequest) Descriptor() ([]byte, []int) {
+	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *GrantOfferRequest) GetGrant() *v1.Grant {
+	if x != nil {
+		return x.Grant
+	}
+	return nil
+}
+
+type GrantOfferResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GrantOfferResponse) Reset() {
+	*x = GrantOfferResponse{}
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GrantOfferResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GrantOfferResponse) ProtoMessage() {}
+
+func (x *GrantOfferResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GrantOfferResponse.ProtoReflect.Descriptor instead.
+func (*GrantOfferResponse) Descriptor() ([]byte, []int) {
+	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GrantOfferResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *GrantOfferResponse) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 type Envelope struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Body:
@@ -402,6 +503,8 @@ type Envelope struct {
 	//	*Envelope_Events
 	//	*Envelope_ForwardedInviteRequest
 	//	*Envelope_ForwardedInviteResponse
+	//	*Envelope_GrantOfferRequest
+	//	*Envelope_GrantOfferResponse
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
 	TraceId       []byte          `protobuf:"bytes,9,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -410,7 +513,7 @@ type Envelope struct {
 
 func (x *Envelope) Reset() {
 	*x = Envelope{}
-	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[7]
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -422,7 +525,7 @@ func (x *Envelope) String() string {
 func (*Envelope) ProtoMessage() {}
 
 func (x *Envelope) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[7]
+	mi := &file_pollen_mesh_v1_mesh_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -435,7 +538,7 @@ func (x *Envelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Envelope.ProtoReflect.Descriptor instead.
 func (*Envelope) Descriptor() ([]byte, []int) {
-	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{7}
+	return file_pollen_mesh_v1_mesh_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *Envelope) GetBody() isEnvelope_Body {
@@ -517,6 +620,24 @@ func (x *Envelope) GetForwardedInviteResponse() *ForwardedInviteRedeemResponse {
 	return nil
 }
 
+func (x *Envelope) GetGrantOfferRequest() *GrantOfferRequest {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_GrantOfferRequest); ok {
+			return x.GrantOfferRequest
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetGrantOfferResponse() *GrantOfferResponse {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_GrantOfferResponse); ok {
+			return x.GrantOfferResponse
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetTraceId() []byte {
 	if x != nil {
 		return x.TraceId
@@ -560,6 +681,14 @@ type Envelope_ForwardedInviteResponse struct {
 	ForwardedInviteResponse *ForwardedInviteRedeemResponse `protobuf:"bytes,11,opt,name=forwarded_invite_response,json=forwardedInviteResponse,proto3,oneof"`
 }
 
+type Envelope_GrantOfferRequest struct {
+	GrantOfferRequest *GrantOfferRequest `protobuf:"bytes,14,opt,name=grant_offer_request,json=grantOfferRequest,proto3,oneof"`
+}
+
+type Envelope_GrantOfferResponse struct {
+	GrantOfferResponse *GrantOfferResponse `protobuf:"bytes,15,opt,name=grant_offer_response,json=grantOfferResponse,proto3,oneof"`
+}
+
 func (*Envelope_PunchCoordRequest) isEnvelope_Body() {}
 
 func (*Envelope_PunchCoordTrigger) isEnvelope_Body() {}
@@ -575,6 +704,10 @@ func (*Envelope_Events) isEnvelope_Body() {}
 func (*Envelope_ForwardedInviteRequest) isEnvelope_Body() {}
 
 func (*Envelope_ForwardedInviteResponse) isEnvelope_Body() {}
+
+func (*Envelope_GrantOfferRequest) isEnvelope_Body() {}
+
+func (*Envelope_GrantOfferResponse) isEnvelope_Body() {}
 
 var File_pollen_mesh_v1_mesh_proto protoreflect.FileDescriptor
 
@@ -604,7 +737,12 @@ const file_pollen_mesh_v1_mesh_proto_rawDesc = "" +
 	"\x1dForwardedInviteRedeemResponse\x12:\n" +
 	"\x05inner\x18\x01 \x01(\v2$.pollen.mesh.v1.InviteRedeemResponseR\x05inner\x12\x1d\n" +
 	"\n" +
-	"joiner_pub\x18\x02 \x01(\fR\tjoinerPub\"\x8a\x06\n" +
+	"joiner_pub\x18\x02 \x01(\fR\tjoinerPub\"D\n" +
+	"\x11GrantOfferRequest\x12/\n" +
+	"\x05grant\x18\x01 \x01(\v2\x19.pollen.identity.v1.GrantR\x05grant\"H\n" +
+	"\x12GrantOfferResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xb7\a\n" +
 	"\bEnvelope\x12S\n" +
 	"\x13punch_coord_request\x18\x01 \x01(\v2!.pollen.mesh.v1.PunchCoordRequestH\x00R\x11punchCoordRequest\x12S\n" +
 	"\x13punch_coord_trigger\x18\x02 \x01(\v2!.pollen.mesh.v1.PunchCoordTriggerH\x00R\x11punchCoordTrigger\x12Y\n" +
@@ -614,7 +752,9 @@ const file_pollen_mesh_v1_mesh_proto_rawDesc = "" +
 	"\x06events\x18\x06 \x01(\v2!.pollen.state.v1.GossipEventBatchH\x00R\x06events\x12h\n" +
 	"\x18forwarded_invite_request\x18\n" +
 	" \x01(\v2,.pollen.mesh.v1.ForwardedInviteRedeemRequestH\x00R\x16forwardedInviteRequest\x12k\n" +
-	"\x19forwarded_invite_response\x18\v \x01(\v2-.pollen.mesh.v1.ForwardedInviteRedeemResponseH\x00R\x17forwardedInviteResponse\x12\x19\n" +
+	"\x19forwarded_invite_response\x18\v \x01(\v2-.pollen.mesh.v1.ForwardedInviteRedeemResponseH\x00R\x17forwardedInviteResponse\x12S\n" +
+	"\x13grant_offer_request\x18\x0e \x01(\v2!.pollen.mesh.v1.GrantOfferRequestH\x00R\x11grantOfferRequest\x12V\n" +
+	"\x14grant_offer_response\x18\x0f \x01(\v2\".pollen.mesh.v1.GrantOfferResponseH\x00R\x12grantOfferResponse\x12\x19\n" +
 	"\btrace_id\x18\t \x01(\fR\atraceIdB\x06\n" +
 	"\x04bodyJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eB>Z<github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1;meshv1b\x06proto3"
 
@@ -630,7 +770,7 @@ func file_pollen_mesh_v1_mesh_proto_rawDescGZIP() []byte {
 	return file_pollen_mesh_v1_mesh_proto_rawDescData
 }
 
-var file_pollen_mesh_v1_mesh_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_pollen_mesh_v1_mesh_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_pollen_mesh_v1_mesh_proto_goTypes = []any{
 	(*PunchCoordRequest)(nil),             // 0: pollen.mesh.v1.PunchCoordRequest
 	(*PunchCoordTrigger)(nil),             // 1: pollen.mesh.v1.PunchCoordTrigger
@@ -639,29 +779,35 @@ var file_pollen_mesh_v1_mesh_proto_goTypes = []any{
 	(*ObservedAddress)(nil),               // 4: pollen.mesh.v1.ObservedAddress
 	(*ForwardedInviteRedeemRequest)(nil),  // 5: pollen.mesh.v1.ForwardedInviteRedeemRequest
 	(*ForwardedInviteRedeemResponse)(nil), // 6: pollen.mesh.v1.ForwardedInviteRedeemResponse
-	(*Envelope)(nil),                      // 7: pollen.mesh.v1.Envelope
-	(*v1.InviteTicket)(nil),               // 8: pollen.identity.v1.InviteTicket
-	(*v1.GrantToken)(nil),                 // 9: pollen.identity.v1.GrantToken
-	(*v11.GossipEventBatch)(nil),          // 10: pollen.state.v1.GossipEventBatch
+	(*GrantOfferRequest)(nil),             // 7: pollen.mesh.v1.GrantOfferRequest
+	(*GrantOfferResponse)(nil),            // 8: pollen.mesh.v1.GrantOfferResponse
+	(*Envelope)(nil),                      // 9: pollen.mesh.v1.Envelope
+	(*v1.InviteTicket)(nil),               // 10: pollen.identity.v1.InviteTicket
+	(*v1.GrantToken)(nil),                 // 11: pollen.identity.v1.GrantToken
+	(*v1.Grant)(nil),                      // 12: pollen.identity.v1.Grant
+	(*v11.GossipEventBatch)(nil),          // 13: pollen.state.v1.GossipEventBatch
 }
 var file_pollen_mesh_v1_mesh_proto_depIdxs = []int32{
-	8,  // 0: pollen.mesh.v1.InviteRedeemRequest.ticket:type_name -> pollen.identity.v1.InviteTicket
-	9,  // 1: pollen.mesh.v1.InviteRedeemResponse.grant_token:type_name -> pollen.identity.v1.GrantToken
+	10, // 0: pollen.mesh.v1.InviteRedeemRequest.ticket:type_name -> pollen.identity.v1.InviteTicket
+	11, // 1: pollen.mesh.v1.InviteRedeemResponse.grant_token:type_name -> pollen.identity.v1.GrantToken
 	2,  // 2: pollen.mesh.v1.ForwardedInviteRedeemRequest.inner:type_name -> pollen.mesh.v1.InviteRedeemRequest
 	3,  // 3: pollen.mesh.v1.ForwardedInviteRedeemResponse.inner:type_name -> pollen.mesh.v1.InviteRedeemResponse
-	0,  // 4: pollen.mesh.v1.Envelope.punch_coord_request:type_name -> pollen.mesh.v1.PunchCoordRequest
-	1,  // 5: pollen.mesh.v1.Envelope.punch_coord_trigger:type_name -> pollen.mesh.v1.PunchCoordTrigger
-	2,  // 6: pollen.mesh.v1.Envelope.invite_redeem_request:type_name -> pollen.mesh.v1.InviteRedeemRequest
-	3,  // 7: pollen.mesh.v1.Envelope.invite_redeem_response:type_name -> pollen.mesh.v1.InviteRedeemResponse
-	4,  // 8: pollen.mesh.v1.Envelope.observed_address:type_name -> pollen.mesh.v1.ObservedAddress
-	10, // 9: pollen.mesh.v1.Envelope.events:type_name -> pollen.state.v1.GossipEventBatch
-	5,  // 10: pollen.mesh.v1.Envelope.forwarded_invite_request:type_name -> pollen.mesh.v1.ForwardedInviteRedeemRequest
-	6,  // 11: pollen.mesh.v1.Envelope.forwarded_invite_response:type_name -> pollen.mesh.v1.ForwardedInviteRedeemResponse
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	12, // 4: pollen.mesh.v1.GrantOfferRequest.grant:type_name -> pollen.identity.v1.Grant
+	0,  // 5: pollen.mesh.v1.Envelope.punch_coord_request:type_name -> pollen.mesh.v1.PunchCoordRequest
+	1,  // 6: pollen.mesh.v1.Envelope.punch_coord_trigger:type_name -> pollen.mesh.v1.PunchCoordTrigger
+	2,  // 7: pollen.mesh.v1.Envelope.invite_redeem_request:type_name -> pollen.mesh.v1.InviteRedeemRequest
+	3,  // 8: pollen.mesh.v1.Envelope.invite_redeem_response:type_name -> pollen.mesh.v1.InviteRedeemResponse
+	4,  // 9: pollen.mesh.v1.Envelope.observed_address:type_name -> pollen.mesh.v1.ObservedAddress
+	13, // 10: pollen.mesh.v1.Envelope.events:type_name -> pollen.state.v1.GossipEventBatch
+	5,  // 11: pollen.mesh.v1.Envelope.forwarded_invite_request:type_name -> pollen.mesh.v1.ForwardedInviteRedeemRequest
+	6,  // 12: pollen.mesh.v1.Envelope.forwarded_invite_response:type_name -> pollen.mesh.v1.ForwardedInviteRedeemResponse
+	7,  // 13: pollen.mesh.v1.Envelope.grant_offer_request:type_name -> pollen.mesh.v1.GrantOfferRequest
+	8,  // 14: pollen.mesh.v1.Envelope.grant_offer_response:type_name -> pollen.mesh.v1.GrantOfferResponse
+	15, // [15:15] is the sub-list for method output_type
+	15, // [15:15] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_pollen_mesh_v1_mesh_proto_init() }
@@ -669,7 +815,7 @@ func file_pollen_mesh_v1_mesh_proto_init() {
 	if File_pollen_mesh_v1_mesh_proto != nil {
 		return
 	}
-	file_pollen_mesh_v1_mesh_proto_msgTypes[7].OneofWrappers = []any{
+	file_pollen_mesh_v1_mesh_proto_msgTypes[9].OneofWrappers = []any{
 		(*Envelope_PunchCoordRequest)(nil),
 		(*Envelope_PunchCoordTrigger)(nil),
 		(*Envelope_InviteRedeemRequest)(nil),
@@ -678,6 +824,8 @@ func file_pollen_mesh_v1_mesh_proto_init() {
 		(*Envelope_Events)(nil),
 		(*Envelope_ForwardedInviteRequest)(nil),
 		(*Envelope_ForwardedInviteResponse)(nil),
+		(*Envelope_GrantOfferRequest)(nil),
+		(*Envelope_GrantOfferResponse)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -685,7 +833,7 @@ func file_pollen_mesh_v1_mesh_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_mesh_v1_mesh_proto_rawDesc), len(file_pollen_mesh_v1_mesh_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

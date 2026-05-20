@@ -126,7 +126,12 @@ func DecodeGrantToken(s string) (*identityv1.GrantToken, error) {
 }
 
 // EnrollGrant verifies a grant token for the local node and persists
-// the grant + root pub as the node's durable credential.
+// the grant + root pub as the node's durable credential. First-time
+// enrol and same-subject re-enrol (e.g., an admin-issued upgrade token
+// redeemed by an already-joined node) funnel through the same path:
+// the on-disk identity key is reused, the new grant is adopted via
+// AdoptGrant, and the durable record on disk is rewritten as part of
+// that adoption.
 func EnrollGrant(identityDir string, nodePub ed25519.PublicKey, token *identityv1.GrantToken, now time.Time) (*Credentials, error) {
 	verified, err := VerifyGrantToken(token, nodePub, now)
 	if err != nil {
@@ -146,8 +151,12 @@ func EnrollGrant(identityDir string, nodePub ed25519.PublicKey, token *identityv
 		return nil, ErrDifferentCluster
 	}
 
-	creds := NewCredentials(verified.RootPub, signPriv, verified.Grant)
-	if err := SaveCredentials(identityDir, creds); err != nil {
+	creds := &Credentials{
+		rootPub:     verified.RootPub,
+		signPriv:    signPriv,
+		identityDir: identityDir,
+	}
+	if err := creds.AdoptGrant(verified.Grant, now, nil); err != nil {
 		return nil, err
 	}
 	return creds, nil

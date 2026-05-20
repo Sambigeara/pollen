@@ -31,13 +31,17 @@ var (
 // session is the short-lived liveness proof, re-minted locally on
 // demand with no network round-trip.
 type Credentials struct {
-	grant    *identityv1.Grant
-	session  *identityv1.Session
-	rootPub  ed25519.PublicKey
-	signPriv ed25519.PrivateKey
-	mu       sync.RWMutex
+	grant       *identityv1.Grant
+	session     *identityv1.Session
+	identityDir string
+	rootPub     ed25519.PublicKey
+	signPriv    ed25519.PrivateKey
+	mu          sync.RWMutex
 }
 
+// NewCredentials builds an in-memory Credentials handle that AdoptGrant
+// will not persist. Production callers use LoadCredentials or
+// EnrollGrant for a persistent handle.
 func NewCredentials(rootPub ed25519.PublicKey, signPriv ed25519.PrivateKey, grant *identityv1.Grant) *Credentials {
 	return &Credentials{rootPub: rootPub, signPriv: signPriv, grant: grant}
 }
@@ -54,32 +58,35 @@ func (c *Credentials) Grant() *identityv1.Grant {
 	return c.grant
 }
 
-func (c *Credentials) SetGrant(grant *identityv1.Grant) {
+// AdoptGrant validates g and installs it as the live grant, clearing
+// the cached session and rewriting the on-disk copy under one lock so
+// readers never observe a half-committed state. g must chain to our
+// root, be within its horizon, carry our own signing key as its
+// subject, and not be denied; otherwise the current grant is kept and
+// an error returned. The same entry point covers first-time enrol,
+// proactive renewal and admin-initiated upgrade. denied may be nil
+// when the issuing server has already enforced the denylist and the
+// caller has no local cluster view (wire client); the mesh handler
+// supplies a real DenyChecker. On persist failure the in-memory swap
+// is rolled back before the lock releases.
+func (c *Credentials) AdoptGrant(g *identityv1.Grant, now time.Time, denied DenyChecker) error {
+	chk := CheckGrant(g, c.rootPub, now, c.SubjectPub(), denied)
+	if !chk.Status.Valid() {
+		return fmt.Errorf("grant rejected: %s: %s", chk.Status, chk.Reason)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.grant = grant
+	prevGrant, prevSession := c.grant, c.session
+	c.grant = g
 	c.session = nil
-}
-
-// AdoptRenewedGrant validates g as a freshly re-issued grant for the
-// subject these credentials already hold and swaps it in. g must chain
-// to our root, be within its horizon, carry the current subject, and
-// not be denied; otherwise the current grant is kept and an error
-// returned, so a renewal response is never trusted blindly. It does not
-// persist or gossip: callers own those. denied may be nil when the
-// issuing server has already enforced the denylist and the caller has
-// no local cluster view (the wire client). SetGrant clears the cached
-// session so the next session mints from g.
-func (c *Credentials) AdoptRenewedGrant(g *identityv1.Grant, now time.Time, denied DenyChecker) error {
-	cur := c.Grant()
-	if cur == nil {
-		return errors.New("no current grant to renew")
+	if c.identityDir == "" {
+		return nil
 	}
-	chk := CheckGrant(g, c.rootPub, now, cur.GetClaims().GetSubjectPub(), denied)
-	if !chk.Status.Valid() {
-		return fmt.Errorf("renewed grant rejected: %s: %s", chk.Status, chk.Reason)
+	if err := writeCredentials(c.identityDir, c.rootPub, g); err != nil {
+		c.grant = prevGrant
+		c.session = prevSession
+		return fmt.Errorf("persist grant: %w", err)
 	}
-	c.SetGrant(g)
 	return nil
 }
 
@@ -200,20 +207,32 @@ func LoadCredentials(identityDir string) (*Credentials, error) {
 	}
 
 	return &Credentials{
-		rootPub:  ed25519.PublicKey(rootRaw),
-		signPriv: signPriv,
-		grant:    grant,
+		rootPub:     ed25519.PublicKey(rootRaw),
+		signPriv:    signPriv,
+		grant:       grant,
+		identityDir: identityDir,
 	}, nil
 }
 
+// SaveCredentials writes c's root pub and grant to identityDir. Useful
+// for callers that build a Credentials directly (tests, integration
+// harnesses) and want the durable record laid down once; the live
+// adopt and refresh path goes through AdoptGrant, which calls the
+// underlying writeCredentials helper while holding c.mu.
 func SaveCredentials(identityDir string, c *Credentials) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return writeCredentials(identityDir, c.rootPub, c.grant)
+}
+
+func writeCredentials(identityDir string, rootPub ed25519.PublicKey, grant *identityv1.Grant) error {
 	if err := plnfs.EnsureDir(identityDir); err != nil {
 		return err
 	}
-	if err := plnfs.WriteGroupReadable(rootPubPath(identityDir), []byte(c.rootPub)); err != nil {
+	if err := plnfs.WriteGroupReadable(rootPubPath(identityDir), []byte(rootPub)); err != nil {
 		return err
 	}
-	raw, err := c.Grant().MarshalVT()
+	raw, err := grant.MarshalVT()
 	if err != nil {
 		return err
 	}
@@ -257,7 +276,12 @@ func EnsureLocalRootGrant(identityDir string, nodePub ed25519.PublicKey, attrs *
 		return nil, err
 	}
 
-	creds := NewCredentials(adminPub, signPriv, grant)
+	creds := &Credentials{
+		rootPub:     adminPub,
+		signPriv:    signPriv,
+		grant:       grant,
+		identityDir: identityDir,
+	}
 	if err := SaveCredentials(identityDir, creds); err != nil {
 		return nil, err
 	}

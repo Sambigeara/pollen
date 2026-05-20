@@ -19,6 +19,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
+	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
@@ -63,6 +64,7 @@ type Transport interface {
 	SetInviteIssuer(c *identity.Credentials)
 	SetInviteConsumer(c identity.InviteConsumer)
 	JoinWithInvite(ctx context.Context, ticket *identityv1.InviteTicket) (*identityv1.GrantToken, error)
+	SendGrantOffer(ctx context.Context, peer types.PeerKey, grant *identityv1.Grant) (*meshv1.GrantOfferResponse, error)
 }
 
 var _ Transport = (*QUICTransport)(nil)
@@ -77,6 +79,7 @@ const (
 	StreamTypeWorkload      StreamType = 5
 	StreamTypeMembership    StreamType = 6
 	StreamTypeBlobPlaintext StreamType = 7
+	StreamTypeGrantOffer    StreamType = 8
 )
 
 type DatagramType byte

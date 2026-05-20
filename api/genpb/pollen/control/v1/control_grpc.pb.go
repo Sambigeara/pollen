@@ -36,7 +36,7 @@ const (
 	ControlService_SeedWorkload_FullMethodName      = "/pollen.control.v1.ControlService/SeedWorkload"
 	ControlService_UnseedWorkload_FullMethodName    = "/pollen.control.v1.ControlService/UnseedWorkload"
 	ControlService_CallWorkload_FullMethodName      = "/pollen.control.v1.ControlService/CallWorkload"
-	ControlService_IssueGrant_FullMethodName        = "/pollen.control.v1.ControlService/IssueGrant"
+	ControlService_UpgradePeer_FullMethodName       = "/pollen.control.v1.ControlService/UpgradePeer"
 	ControlService_RenewGrant_FullMethodName        = "/pollen.control.v1.ControlService/RenewGrant"
 	ControlService_FetchBlob_FullMethodName         = "/pollen.control.v1.ControlService/FetchBlob"
 	ControlService_UploadBlob_FullMethodName        = "/pollen.control.v1.ControlService/UploadBlob"
@@ -70,7 +70,7 @@ type ControlServiceClient interface {
 	SeedWorkload(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[SeedWorkloadRequest, SeedWorkloadResponse], error)
 	UnseedWorkload(ctx context.Context, in *UnseedWorkloadRequest, opts ...grpc.CallOption) (*UnseedWorkloadResponse, error)
 	CallWorkload(ctx context.Context, in *CallWorkloadRequest, opts ...grpc.CallOption) (*CallWorkloadResponse, error)
-	IssueGrant(ctx context.Context, in *IssueGrantRequest, opts ...grpc.CallOption) (*IssueGrantResponse, error)
+	UpgradePeer(ctx context.Context, in *UpgradePeerRequest, opts ...grpc.CallOption) (*UpgradePeerResponse, error)
 	RenewGrant(ctx context.Context, in *RenewGrantRequest, opts ...grpc.CallOption) (*RenewGrantResponse, error)
 	FetchBlob(ctx context.Context, in *FetchBlobRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FetchBlobResponse], error)
 	UploadBlob(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadBlobRequest, UploadBlobResponse], error)
@@ -232,10 +232,10 @@ func (c *controlServiceClient) CallWorkload(ctx context.Context, in *CallWorkloa
 	return out, nil
 }
 
-func (c *controlServiceClient) IssueGrant(ctx context.Context, in *IssueGrantRequest, opts ...grpc.CallOption) (*IssueGrantResponse, error) {
+func (c *controlServiceClient) UpgradePeer(ctx context.Context, in *UpgradePeerRequest, opts ...grpc.CallOption) (*UpgradePeerResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(IssueGrantResponse)
-	err := c.cc.Invoke(ctx, ControlService_IssueGrant_FullMethodName, in, out, cOpts...)
+	out := new(UpgradePeerResponse)
+	err := c.cc.Invoke(ctx, ControlService_UpgradePeer_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +357,7 @@ type ControlServiceServer interface {
 	SeedWorkload(grpc.ClientStreamingServer[SeedWorkloadRequest, SeedWorkloadResponse]) error
 	UnseedWorkload(context.Context, *UnseedWorkloadRequest) (*UnseedWorkloadResponse, error)
 	CallWorkload(context.Context, *CallWorkloadRequest) (*CallWorkloadResponse, error)
-	IssueGrant(context.Context, *IssueGrantRequest) (*IssueGrantResponse, error)
+	UpgradePeer(context.Context, *UpgradePeerRequest) (*UpgradePeerResponse, error)
 	RenewGrant(context.Context, *RenewGrantRequest) (*RenewGrantResponse, error)
 	FetchBlob(*FetchBlobRequest, grpc.ServerStreamingServer[FetchBlobResponse]) error
 	UploadBlob(grpc.ClientStreamingServer[UploadBlobRequest, UploadBlobResponse]) error
@@ -418,8 +418,8 @@ func (UnimplementedControlServiceServer) UnseedWorkload(context.Context, *Unseed
 func (UnimplementedControlServiceServer) CallWorkload(context.Context, *CallWorkloadRequest) (*CallWorkloadResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CallWorkload not implemented")
 }
-func (UnimplementedControlServiceServer) IssueGrant(context.Context, *IssueGrantRequest) (*IssueGrantResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method IssueGrant not implemented")
+func (UnimplementedControlServiceServer) UpgradePeer(context.Context, *UpgradePeerRequest) (*UpgradePeerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpgradePeer not implemented")
 }
 func (UnimplementedControlServiceServer) RenewGrant(context.Context, *RenewGrantRequest) (*RenewGrantResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RenewGrant not implemented")
@@ -707,20 +707,20 @@ func _ControlService_CallWorkload_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ControlService_IssueGrant_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(IssueGrantRequest)
+func _ControlService_UpgradePeer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpgradePeerRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ControlServiceServer).IssueGrant(ctx, in)
+		return srv.(ControlServiceServer).UpgradePeer(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ControlService_IssueGrant_FullMethodName,
+		FullMethod: ControlService_UpgradePeer_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlServiceServer).IssueGrant(ctx, req.(*IssueGrantRequest))
+		return srv.(ControlServiceServer).UpgradePeer(ctx, req.(*UpgradePeerRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -911,8 +911,8 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ControlService_CallWorkload_Handler,
 		},
 		{
-			MethodName: "IssueGrant",
-			Handler:    _ControlService_IssueGrant_Handler,
+			MethodName: "UpgradePeer",
+			Handler:    _ControlService_UpgradePeer_Handler,
 		},
 		{
 			MethodName: "RenewGrant",

@@ -2131,7 +2131,7 @@ func (m *GetMetricsResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *IssueGrantRequest) MarshalVT() (dAtA []byte, err error) {
+func (m *UpgradePeerRequest) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -2144,12 +2144,12 @@ func (m *IssueGrantRequest) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *IssueGrantRequest) MarshalToVT(dAtA []byte) (int, error) {
+func (m *UpgradePeerRequest) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *IssueGrantRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *UpgradePeerRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -2183,16 +2183,6 @@ func (m *IssueGrantRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x32
 	}
-	if m.MintOnly {
-		i--
-		if m.MintOnly {
-			dAtA[i] = 1
-		} else {
-			dAtA[i] = 0
-		}
-		i--
-		dAtA[i] = 0x28
-	}
 	if m.Capabilities != nil {
 		if vtmsg, ok := interface{}(m.Capabilities).(interface {
 			MarshalToSizedBufferVT([]byte) (int, error)
@@ -2225,7 +2215,7 @@ func (m *IssueGrantRequest) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *IssueGrantResponse) MarshalVT() (dAtA []byte, err error) {
+func (m *UpgradePeerResponse) MarshalVT() (dAtA []byte, err error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -2238,12 +2228,12 @@ func (m *IssueGrantResponse) MarshalVT() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *IssueGrantResponse) MarshalToVT(dAtA []byte) (int, error) {
+func (m *UpgradePeerResponse) MarshalToVT(dAtA []byte) (int, error) {
 	size := m.SizeVT()
 	return m.MarshalToSizedBufferVT(dAtA[:size])
 }
 
-func (m *IssueGrantResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
+func (m *UpgradePeerResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
@@ -2255,27 +2245,22 @@ func (m *IssueGrantResponse) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if m.Grant != nil {
-		if vtmsg, ok := interface{}(m.Grant).(interface {
-			MarshalToSizedBufferVT([]byte) (int, error)
-		}); ok {
-			size, err := vtmsg.MarshalToSizedBufferVT(dAtA[:i])
-			if err != nil {
-				return 0, err
-			}
-			i -= size
-			i = protohelpers.EncodeVarint(dAtA, i, uint64(size))
+	if len(m.Reason) > 0 {
+		i -= len(m.Reason)
+		copy(dAtA[i:], m.Reason)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Reason)))
+		i--
+		dAtA[i] = 0x12
+	}
+	if m.Delivered {
+		i--
+		if m.Delivered {
+			dAtA[i] = 1
 		} else {
-			encoded, err := proto.Marshal(m.Grant)
-			if err != nil {
-				return 0, err
-			}
-			i -= len(encoded)
-			copy(dAtA[i:], encoded)
-			i = protohelpers.EncodeVarint(dAtA, i, uint64(len(encoded)))
+			dAtA[i] = 0
 		}
 		i--
-		dAtA[i] = 0xa
+		dAtA[i] = 0x8
 	}
 	return len(dAtA) - i, nil
 }
@@ -4366,7 +4351,7 @@ func (m *GetMetricsResponse) SizeVT() (n int) {
 	return n
 }
 
-func (m *IssueGrantRequest) SizeVT() (n int) {
+func (m *UpgradePeerRequest) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -4386,9 +4371,6 @@ func (m *IssueGrantRequest) SizeVT() (n int) {
 		}
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	if m.MintOnly {
-		n += 2
-	}
 	if m.Budget != nil {
 		if size, ok := interface{}(m.Budget).(interface {
 			SizeVT() int
@@ -4403,20 +4385,17 @@ func (m *IssueGrantRequest) SizeVT() (n int) {
 	return n
 }
 
-func (m *IssueGrantResponse) SizeVT() (n int) {
+func (m *UpgradePeerResponse) SizeVT() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.Grant != nil {
-		if size, ok := interface{}(m.Grant).(interface {
-			SizeVT() int
-		}); ok {
-			l = size.SizeVT()
-		} else {
-			l = proto.Size(m.Grant)
-		}
+	if m.Delivered {
+		n += 2
+	}
+	l = len(m.Reason)
+	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
 	n += len(m.unknownFields)
@@ -9723,7 +9702,7 @@ func (m *GetMetricsResponse) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *IssueGrantRequest) UnmarshalVT(dAtA []byte) error {
+func (m *UpgradePeerRequest) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -9746,10 +9725,10 @@ func (m *IssueGrantRequest) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: IssueGrantRequest: wiretype end group for non-group")
+			return fmt.Errorf("proto: UpgradePeerRequest: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: IssueGrantRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: UpgradePeerRequest: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
@@ -9830,26 +9809,6 @@ func (m *IssueGrantRequest) UnmarshalVT(dAtA []byte) error {
 				}
 			}
 			iNdEx = postIndex
-		case 5:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field MintOnly", wireType)
-			}
-			var v int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return protohelpers.ErrIntOverflow
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				v |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			m.MintOnly = bool(v != 0)
 		case 6:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field Budget", wireType)
@@ -9916,7 +9875,7 @@ func (m *IssueGrantRequest) UnmarshalVT(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *IssueGrantResponse) UnmarshalVT(dAtA []byte) error {
+func (m *UpgradePeerResponse) UnmarshalVT(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -9939,17 +9898,17 @@ func (m *IssueGrantResponse) UnmarshalVT(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: IssueGrantResponse: wiretype end group for non-group")
+			return fmt.Errorf("proto: UpgradePeerResponse: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: IssueGrantResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: UpgradePeerResponse: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Grant", wireType)
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Delivered", wireType)
 			}
-			var msglen int
+			var v int
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return protohelpers.ErrIntOverflow
@@ -9959,35 +9918,43 @@ func (m *IssueGrantResponse) UnmarshalVT(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				msglen |= int(b&0x7F) << shift
+				v |= int(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
 			}
-			if msglen < 0 {
+			m.Delivered = bool(v != 0)
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Reason", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
 				return protohelpers.ErrInvalidLength
 			}
-			postIndex := iNdEx + msglen
+			postIndex := iNdEx + intStringLen
 			if postIndex < 0 {
 				return protohelpers.ErrInvalidLength
 			}
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.Grant == nil {
-				m.Grant = &v13.Grant{}
-			}
-			if unmarshal, ok := interface{}(m.Grant).(interface {
-				UnmarshalVT([]byte) error
-			}); ok {
-				if err := unmarshal.UnmarshalVT(dAtA[iNdEx:postIndex]); err != nil {
-					return err
-				}
-			} else {
-				if err := proto.Unmarshal(dAtA[iNdEx:postIndex], m.Grant); err != nil {
-					return err
-				}
-			}
+			m.Reason = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
